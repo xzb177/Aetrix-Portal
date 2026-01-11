@@ -343,6 +343,88 @@ class EmbyClient:
         """
         return f'{prefix}_{user_id}'
 
+    # ==================== 权限策略管理 ====================
+
+    def set_user_policy(
+        self,
+        user_id: str,
+        max_active_sessions: int = 3,
+        enable_video_playback: bool = True,
+        enable_audio_playback: bool = True,
+        enable_content_deletion: bool = False,
+        enable_content_downloading: bool = False,
+        enable_sync_transcoding: bool = True,
+        enable_media_conversion: bool = True,
+        max_streaming_bitrate: int = 150000000,  # 默认 150Mbps
+        blocked_tags: Optional[List[str]] = None,
+        enabled_folders: Optional[List[str]] = None
+    ) -> bool:
+        """
+        设置用户策略（权限映射）
+
+        Args:
+            user_id: Emby 用户 ID
+            max_active_sessions: 最大同时活跃会话数（防账号共享）
+            enable_video_playback: 是否允许视频播放
+            enable_audio_playback: 是否允许音频播放
+            enable_content_deletion: 是否允许删除内容
+            enable_content_downloading: 是否允许下载
+            enable_sync_transcoding: 是否允许转码
+            enable_media_conversion: 是否允许媒体转换
+            max_streaming_bitrate: 最大码率（bps）
+            blocked_tags: 屏蔽的标签
+            enabled_folders: 允许访问的媒体库文件夹ID列表
+
+        Returns:
+            是否成功
+        """
+        # 获取用户当前信息
+        user_info = self._request('GET', f'/Users/{user_id}')
+        if not user_info:
+            return False
+
+        # 构建策略数据
+        policy = user_info.get('Policy', {})
+
+        # 更新策略
+        policy.update({
+            'MaxActiveSessions': max_active_sessions,
+            'EnableVideoPlayback': enable_video_playback,
+            'EnableAudioPlayback': enable_audio_playback,
+            'EnableContentDeletion': enable_content_deletion,
+            'EnableContentDownloading': enable_content_downloading,
+            'EnableSyncTranscoding': enable_sync_transcoding,
+            'EnableMediaConversion': enable_media_conversion,
+            'MaxStreamingBitrate': max_streaming_bitrate,
+        })
+
+        if blocked_tags:
+            policy['BlockedTags'] = blocked_tags
+
+        if enabled_folders is not None:
+            policy['EnabledFolders'] = enabled_folders
+
+        # 更新用户策略
+        result = self._request('POST', f'/Users/{user_id}/Policy', json=policy)
+        return result is not None
+
+    def get_user_policy(self, user_id: str) -> Optional[Dict]:
+        """
+        获取用户策略
+
+        Args:
+            user_id: Emby 用户 ID
+
+        Returns:
+            用户策略字典
+        """
+        user_info = self._request('GET', f'/Users/{user_id}')
+        if user_info:
+            return user_info.get('Policy')
+        return None
+
+    # ==================== 会话管理 ====================
+
     def get_sessions(self) -> List[Dict]:
         """
         获取当前活跃会话（在线用户）

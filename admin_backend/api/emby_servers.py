@@ -379,3 +379,126 @@ async def remove_server_from_plan(
     db.commit()
 
     return {"message": "关联移除成功"}
+
+
+@router.get("/servers/{server_id}/users/{emby_user_id}/policy")
+async def get_user_policy(
+    server_id: int,
+    emby_user_id: str,
+    db: Session = Depends(get_user_db),
+    admin = Depends(get_current_admin)
+):
+    """获取 Emby 用户策略"""
+    server = db.query(EmbyServer).filter(EmbyServer.id == server_id).first()
+    if not server:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="服务器不存在"
+        )
+
+    from admin_utils.utils.emby_client import load_emby_server
+    client = load_emby_server(server.url, server.api_key)
+    policy = client.get_user_policy(emby_user_id)
+
+    if not policy:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="用户不存在或获取策略失败"
+        )
+
+    return policy
+
+
+@router.post("/servers/{server_id}/users/{emby_user_id}/policy")
+async def update_user_policy(
+    server_id: int,
+    emby_user_id: str,
+    data: dict,
+    db: Session = Depends(get_user_db),
+    admin = Depends(get_current_admin)
+):
+    """更新 Emby 用户策略"""
+    server = db.query(EmbyServer).filter(EmbyServer.id == server_id).first()
+    if not server:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="服务器不存在"
+        )
+
+    from admin_utils.utils.emby_client import load_emby_server
+    client = load_emby_server(server.url, server.api_key)
+
+    # 获取可选参数
+    max_active_sessions = data.get('max_active_sessions', 3)
+    enable_video_playback = data.get('enable_video_playback', True)
+    enable_audio_playback = data.get('enable_audio_playback', True)
+    enable_content_deletion = data.get('enable_content_deletion', False)
+    enable_content_downloading = data.get('enable_content_downloading', False)
+    enable_sync_transcoding = data.get('enable_sync_transcoding', True)
+    enable_media_conversion = data.get('enable_media_conversion', True)
+    max_streaming_bitrate = data.get('max_streaming_bitrate', 150000000)
+    blocked_tags = data.get('blocked_tags')
+    enabled_folders = data.get('enabled_folders')
+
+    success = client.set_user_policy(
+        user_id=emby_user_id,
+        max_active_sessions=max_active_sessions,
+        enable_video_playback=enable_video_playback,
+        enable_audio_playback=enable_audio_playback,
+        enable_content_deletion=enable_content_deletion,
+        enable_content_downloading=enable_content_downloading,
+        enable_sync_transcoding=enable_sync_transcoding,
+        enable_media_conversion=enable_media_conversion,
+        max_streaming_bitrate=max_streaming_bitrate,
+        blocked_tags=blocked_tags,
+        enabled_folders=enabled_folders
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="设置用户策略失败"
+        )
+
+    return {"message": "用户策略更新成功"}
+
+
+@router.post("/servers/{server_id}/users/{emby_user_id}/policy/reset")
+async def reset_user_policy(
+    server_id: int,
+    emby_user_id: str,
+    db: Session = Depends(get_user_db),
+    admin = Depends(get_current_admin)
+):
+    """重置用户策略为默认值"""
+    server = db.query(EmbyServer).filter(EmbyServer.id == server_id).first()
+    if not server:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="服务器不存在"
+        )
+
+    from admin_utils.utils.emby_client import load_emby_server
+    client = load_emby_server(server.url, server.api_key)
+
+    # 重置为默认值
+    success = client.set_user_policy(
+        user_id=emby_user_id,
+        max_active_sessions=3,
+        enable_video_playback=True,
+        enable_audio_playback=True,
+        enable_content_deletion=False,
+        enable_content_downloading=False,
+        enable_sync_transcoding=True,
+        enable_media_conversion=True,
+        max_streaming_bitrate=150000000,
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="重置用户策略失败"
+        )
+
+    return {"message": "用户策略已重置为默认值"}
+
