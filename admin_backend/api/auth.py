@@ -130,7 +130,7 @@ async def login(
             action="login_attempt_locked",
             ip_address=client_ip,
             user_agent=request.headers.get("user-agent"),
-            details=f"账号已锁定，尝试登录",
+            details={"message": "账号已锁定，尝试登录", "ip": client_ip},
         )
         db.add(log)
         db.commit()
@@ -161,7 +161,7 @@ async def login(
             action="login_failed",
             ip_address=client_ip,
             user_agent=request.headers.get("user-agent"),
-            details=f"登录失败，IP: {client_ip}",
+            details={"message": "登录失败", "ip": client_ip},
         )
         db.add(log)
         db.commit()
@@ -333,7 +333,7 @@ async def change_password(
             action="change_password_failed",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent"),
-            details="旧密码验证失败",
+            details={"message": "旧密码验证失败"},
         )
         db.add(log)
         db.commit()
