@@ -5,17 +5,23 @@
 # 使用: ./deploy.sh [选项]
 #
 # 选项:
-#   --build       强制重新构建镜像
-#   --no-cache    构建时不使用缓存
-#   --backend     仅部署后端服务
-#   --frontend    仅部署前端服务
-#   --bot         仅部署 Telegram Bot
-#   --all         部署所有服务
-#   --rollback    回滚到上一版本
-#   --status      显示服务状态
-#   --logs        显示服务日志
-#   --update      更新代码并部署
-#   -h, --help    显示帮助信息
+#   --build           强制重新构建镜像
+#   --no-cache        构建时不使用缓存
+#   --backend         仅部署后端服务 (admin + user)
+#   --admin-backend   仅部署管理后台后端
+#   --user-backend    仅部署用户端后端
+#   --frontend        仅部署前端服务 (admin + user)
+#   --admin-frontend  仅部署管理后台前端
+#   --user-frontend   仅部署用户端前端
+#   --admin           仅部署管理后台 (backend + frontend)
+#   --user            仅部署用户端 (backend + frontend)
+#   --bot             仅部署 Telegram Bot
+#   --all             部署所有服务
+#   --rollback        回滚到上一版本
+#   --status          显示服务状态
+#   --logs            显示服务日志
+#   --update          更新代码并部署
+#   -h, --help        显示帮助信息
 ################################################################################
 
 set -e
@@ -52,8 +58,32 @@ while [[ $# -gt 0 ]]; do
       SERVICES="admin_backend user_backend"
       shift
       ;;
+    --admin-backend)
+      SERVICES="admin_backend"
+      shift
+      ;;
+    --user-backend)
+      SERVICES="user_backend"
+      shift
+      ;;
     --frontend)
       SERVICES="admin_frontend user_frontend"
+      shift
+      ;;
+    --admin-frontend)
+      SERVICES="admin_frontend"
+      shift
+      ;;
+    --user-frontend)
+      SERVICES="user_frontend"
+      shift
+      ;;
+    --user)
+      SERVICES="user_backend user_frontend"
+      shift
+      ;;
+    --admin)
+      SERVICES="admin_backend admin_frontend"
       shift
       ;;
     --bot)
@@ -86,24 +116,33 @@ while [[ $# -gt 0 ]]; do
       echo "用法: $0 [选项]"
       echo ""
       echo "选项:"
-      echo "  --build       强制重新构建镜像"
-      echo "  --no-cache    构建时不使用缓存"
-      echo "  --backend     仅部署后端服务"
-      echo "  --frontend    仅部署前端服务"
-      echo "  --bot         仅部署 Telegram Bot"
-      echo "  --all         部署所有服务"
-      echo "  --rollback    回滚到上一版本"
-      echo "  --status      显示服务状态"
-      echo "  --logs        显示服务日志"
-      echo "  --update      更新代码并部署"
-      echo "  -h, --help    显示帮助信息"
+      echo "  --build           强制重新构建镜像"
+      echo "  --no-cache        构建时不使用缓存"
+      echo "  --backend         仅部署后端服务 (admin + user)"
+      echo "  --admin-backend   仅部署管理后台后端"
+      echo "  --user-backend    仅部署用户端后端"
+      echo "  --frontend        仅部署前端服务 (admin + user)"
+      echo "  --admin-frontend  仅部署管理后台前端"
+      echo "  --user-frontend   仅部署用户端前端"
+      echo "  --admin           仅部署管理后台 (backend + frontend)"
+      echo "  --user            仅部署用户端 (backend + frontend)"
+      echo "  --bot             仅部署 Telegram Bot"
+      echo "  --all             部署所有服务"
+      echo "  --rollback        回滚到上一版本"
+      echo "  --status          显示服务状态"
+      echo "  --logs            显示服务日志"
+      echo "  --update          更新代码并部署"
+      echo "  -h, --help        显示帮助信息"
       echo ""
       echo "示例:"
-      echo "  $0                # 部署所有服务"
+      echo "  $0                # 部署默认服务 (admin_backend + admin_frontend)"
       echo "  $0 --build        # 强制重新构建并部署"
-      echo "  $0 --backend      # 仅部署后端服务"
+      echo "  $0 --backend      # 仅部署后端服务 (admin + user)"
+      echo "  $0 --admin        # 仅部署管理后台"
+      echo "  $0 --user         # 仅部署用户端"
       echo "  $0 --update       # 更新代码并部署"
       echo "  $0 --rollback     # 回滚到上一版本"
+      echo "  $0 --status       # 显示服务状态"
       exit 0
       ;;
     *)
@@ -193,9 +232,20 @@ build_images() {
   log_info "构建 Docker 镜像..."
 
   if [ -z "$SERVICES" ]; then
-    docker compose build $CACHE_FLAG admin_backend admin_frontend telegram_login_bot
+    # 默认构建 admin_backend 和 admin_frontend
+    docker compose build $CACHE_FLAG admin_backend admin_frontend
   else
-    docker compose build $CACHE_FLAG $SERVICES
+    # 根据指定的服务构建
+    for service in $SERVICES; do
+      case $service in
+        admin_backend|admin_frontend|user_backend|user_frontend|telegram_login_bot)
+          docker compose build $CACHE_FLAG $service
+          ;;
+        *)
+          log_warning "未知服务: $service，跳过构建"
+          ;;
+      esac
+    done
   fi
 
   log_success "镜像构建完成"
@@ -210,24 +260,28 @@ deploy_services() {
   fi
 
   # 停止旧服务
-  log_info "停止旧服务..."
-  docker compose stop $SERVICES || true
+  log_info "停止旧服务: $SERVICES"
+  docker compose stop $SERVICES 2>/dev/null || true
 
   # 启动新服务
-  log_info "启动新服务..."
+  log_info "启动新服务: $SERVICES"
   docker compose up -d $BUILD_FLAG $SERVICES
 
   # 等待服务健康检查
   log_info "等待服务健康检查..."
-  sleep 10
+  sleep 5
 
   # 检查服务状态
   for service in $SERVICES; do
     CONTAINER_NAME="royalbot_${service}"
     if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-      HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
-      if [ "$HEALTH_STATUS" = "healthy" ] || [ "$HEALTH_STATUS" = "unknown" ]; then
-        log_success "$service 服务运行正常"
+      STATUS=$(docker inspect --format='{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null)
+      HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "no healthcheck")
+
+      if [ "$HEALTH_STATUS" = "healthy" ] || [ "$HEALTH_STATUS" = "no healthcheck" ]; then
+        log_success "$service 服务运行正常 ($STATUS)"
+      elif [ "$HEALTH_STATUS" = "starting" ]; then
+        log_warning "$service 服务正在启动..."
       else
         log_warning "$service 服务健康检查: $HEALTH_STATUS"
       fi
