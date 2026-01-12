@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  user_frontend:
+    build:
+      context: ./user_frontend
+      dockerfile: Dockerfile
+    image: royalbot-portal-user_frontend:latest
+    container_name: royalbot_user_frontend
+    restart: unless-stopped
+    networks:
+      - royalbot-portal_royalbot_network
+    environment:
+      - TZ=Asia/Shanghai
+
+networks:
+  royalbot-portal_royalbot_network:
+    external: true
