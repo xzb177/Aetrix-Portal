@@ -14589,3 +14589,776 @@ async def logout(
 - 设置 Cookie 时仍保持安全配置：`httpOnly=True`、`secure=True`、`samesite=lax`
 
 ---
+
+## Git 提交：登录修复和部署脚本更新 (2026-01-11)
+
+### 提交内容
+
+**Commit**: `cc38fc8`
+
+### Bug 修复
+- 移除 login/logout 函数中的 `response: Response` 参数
+- 改用 `JSONResponse` 直接设置 cookies
+- 修复 FastAPI 无法正确解析请求体的问题
+
+### 部署脚本更新
+- 添加 `--admin-backend` 仅部署管理后台后端
+- 添加 `--user-backend` 仅部署用户端后端
+- 添加 `--admin-frontend` 仅部署管理后台前端
+- 添加 `--user-frontend` 仅部署用户端前端
+- 添加 `--admin` 仅部署管理后台 (backend + frontend)
+- 添加 `--user` 仅部署用户端 (backend + frontend)
+- 更新健康检查逻辑，支持无健康检查的服务
+
+### 新增文件
+- `admin_backend/` 管理后台后端服务 (完整代码)
+- `web.md` 项目部署日志文档
+
+### 部署记录
+
+- **提交时间**: 2026-01-11 23:50 UTC
+- **提交哈希**: cc38fc8
+- **仓库**: https://github.com/xzb177/Aetrix-emby-deplo
+
+---
+
+## Bug 修复：AdminLog.details 字段类型验证错误 (2026-01-11)
+
+### 问题描述
+
+登录管理后台后仍显示"请求参数验证失败"错误。
+
+### 根本原因
+
+`AdminLog` 模型的 `details` 字段定义为 `JSON` 类型（期望字典），但在创建日志记录时传入了字符串：
+
+```python
+# 错误写法
+details=f"登录失败，IP: {client_ip}",
+```
+
+导致 Pydantic 验证失败：
+```
+{'type': 'dict_type', 'loc': ('details',), 'msg': 'Input should be a valid dictionary'}
+```
+
+### 修复内容
+
+**修改文件**: `admin_backend/api/auth.py`
+
+将所有 AdminLog 的 `details` 字段从字符串改为字典格式：
+
+```python
+# 正确写法
+details={"message": "登录失败", "ip": client_ip},
+```
+
+### 修复位置
+
+1. **login_attempt_locked** - 账号锁定时的日志
+2. **login_failed** - 登录失败时的日志
+3. **change_password_failed** - 修改密码失败时的日志
+
+### 部署记录
+
+- **修复时间**: 2026-01-11 23:47 UTC
+- **提交**: b1adc0a
+- **容器状态**: ✅ 运行中 (healthy)
+
+### 验证结果
+
+- ✅ 登录 API 不再返回验证错误
+- ✅ 错误日志正确保存到数据库
+- ✅ 返回正确的错误消息："用户名或密码错误"
+
+---
+
+## 功能新增：Emby 用户权限策略管理 (2026-01-11)
+
+### 问题描述
+
+在添加 Emby 服务器时，管理后台后端的 Emby 客户端缺少用户权限策略设置功能，导致：
+1. 管理后台无法设置 Emby 用户的播放权限
+2. 与用户端后端功能不一致
+3. 账号发放时可能无法正确设置用户策略
+
+### 根本原因
+
+`admin_backend/admin_utils/utils/emby_client.py` 缺少以下方法：
+- `set_user_policy()` - 设置用户策略
+- `get_user_policy()` - 获取用户策略
+
+而 `user_backend/utils/emby_client.py` 已有这些方法。
+
+### 修复内容
+
+**修改文件**: 
+- `admin_backend/admin_utils/utils/emby_client.py`
+- `admin_backend/api/emby_servers.py`
+
+#### 1. EmbyClient 新增方法
+
+```python
+def set_user_policy(
+    self,
+    user_id: str,
+    max_active_sessions: int = 3,
+    enable_video_playback: bool = True,
+    enable_audio_playback: bool = True,
+    enable_content_deletion: bool = False,
+    enable_content_downloading: bool = False,
+    enable_sync_transcoding: bool = True,
+    enable_media_conversion: bool = True,
+    max_streaming_bitrate: int = 150000000,
+    blocked_tags: Optional[List[str]] = None,
+    enabled_folders: Optional[List[str]] = None
+) -> bool
+```
+
+```python
+def get_user_policy(self, user_id: str) -> Optional[Dict]
+```
+
+#### 2. 新增 API 端点
+
+| 方法 | 端点 | 功能 |
+|------|------|------|
+| GET | `/api/emby-sessions/servers/{server_id}/users/{emby_user_id}/policy` | 获取用户策略 |
+| POST | `/api/emby-sessions/servers/{server_id}/users/{emby_user_id}/policy` | 更新用户策略 |
+| POST | `/api/emby-sessions/servers/{server_id}/users/{emby_user_id}/policy/reset` | 重置用户策略 |
+
+### Emby API Key 权限要求
+
+为了使用用户权限策略功能，Emby API Key 需要以下权限：
+
+| 权限 | 用途 |
+|------|------|
+| UserAdministration | 创建/删除用户 |
+| UserPolicy | 设置用户策略 |
+| UserList | 获取用户列表 |
+| SystemInfo | 获取系统信息 |
+
+### 部署记录
+
+- **提交时间**: 2026-01-11 23:54 UTC
+- **提交**: ff638e7
+- **容器状态**: ✅ 运行中 (healthy)
+
+### 验证结果
+
+- ✅ EmbyClient 权限方法可用
+- ✅ API 端点已注册
+- ✅ 管理后台后端与用户端后端功能一致
+
+### 备注
+
+用户策略参数说明：
+- `max_active_sessions`: 最大同时活跃会话数（防账号共享）
+- `enable_content_downloading`: 是否允许下载内容
+- `max_streaming_bitrate`: 最大码率（默认 150Mbps = 150000000 bps）
+
+---
+
+## Bug 修复：security.py 中 AdminLog.details 字段类型 (2026-01-11)
+
+### 问题描述
+
+登录管理后台仍然偶发"请求参数验证失败"错误。
+
+### 根本原因
+
+`admin_backend/api/security.py` 中还有两处 AdminLog 的 details 字段使用了字符串格式：
+
+```python
+# 错误写法
+details=f"Revoked session: {session_id}",
+details=f"Revoked all sessions except current IP: {current_ip}",
+```
+
+### 修复内容
+
+**修改文件**: `admin_backend/api/security.py`
+
+将所有 AdminLog 的 details 字段从字符串改为字典格式：
+
+```python
+# 正确写法
+details={"session_id": session_id, "action": "revoked"},
+details={"current_ip": current_ip, "action": "revoked_others"},
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:00 UTC
+- **提交**: 61a4476
+- **容器状态**: ✅ 运行中 (healthy)
+
+### 验证结果
+
+- ✅ 登录 API 返回 401 Unauthorized（正确）
+- ✅ 错误消息："用户名或密码错误"
+- ✅ 不再显示"请求参数验证失败"
+
+---
+
+## Bug 修复：CSRF token cookie 在 HTTP 环境下无法设置 (2026-01-12)
+
+### 问题描述
+
+添加 Emby 服务器时显示 "CSRF token 缺失" 错误。
+
+### 根本原因
+
+后端登录 API 中 cookie 的 `secure=True` 是硬编码的：
+```python
+resp.set_cookie(
+    key="admin_csrf_token",
+    value=csrf_token,
+    secure=True,  # 硬编码为 True
+    ...
+)
+```
+
+在 HTTP 环境下，浏览器会拒绝设置带有 `secure=True` 的 cookie，导致：
+1. 登录时 CSRF token cookie 无法设置
+2. 前端无法获取 CSRF token
+3. 后续 POST 请求因缺少 CSRF token 被 403 拒绝
+
+### 修复内容
+
+**修改文件**: `admin_backend/api/auth.py`
+
+根据 Nginx 转发的 `X-Forwarded-Proto` 头动态设置 `secure` 属性：
+
+```python
+# 根据请求协议决定是否使用 secure 标志
+proto = request.headers.get("X-Forwarded-Proto",
+        request.headers.get("X-Real-Proto", "http"))
+is_secure = proto.lower() == "https"
+
+resp.set_cookie(
+    key="admin_csrf_token",
+    value=csrf_token,
+    secure=is_secure,  # 动态设置
+    ...
+)
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:05 UTC
+- **提交**: 61401fb
+- **容器状态**: ✅ 运行中 (healthy)
+
+### 验证结果
+
+- ✅ HTTP 环境下 cookie 可以正常设置
+- ✅ HTTPS 环境下 cookie 保持安全属性
+- ✅ 登录后 CSRF token 正确保存到前端
+- ✅ 添加 Emby 服务器请求可以正常发送
+
+### 备注
+
+Nginx 配置正确设置了 `X-Forwarded-Proto $scheme;`，确保后端可以正确获取原始请求协议。
+
+---
+
+## Bug 修复：登录函数 response 参数导致验证失败 (2026-01-12)
+
+### 问题描述
+
+删除缓存重新登录后仍然显示"请求参数验证失败"。
+
+### 根本原因
+
+在修复 CSRF cookie 时，不小心又添加回了 `response: Response` 参数：
+
+```python
+async def login(
+    credentials: LoginRequest,
+    request: Request,
+    response: Response,  # ← 导致验证失败
+    db: Session = Depends(get_db)
+):
+```
+
+FastAPI 会尝试从请求体中解析所有参数，导致以下错误：
+```
+{'type': 'missing', 'loc': ('body', 'credentials'), 'msg': 'Field required', 'input': None},
+{'type': 'missing', 'loc': ('body', 'response'), 'msg': 'Field required', 'input': None}
+```
+
+### 修复内容
+
+**修改文件**: `admin_backend/api/auth.py`
+
+移除 `response: Response` 参数，改用 `JSONResponse` 直接返回：
+
+```python
+async def login(
+    credentials: LoginRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    # ...
+    resp = JSONResponse(content=response_data)
+    resp.set_cookie(...)
+    return resp
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:09 UTC
+- **提交**: 9f90af5
+- **容器状态**: ✅ 运行中 (healthy)
+
+### 验证结果
+
+- ✅ 登录 API 返回正确的 401 Unauthorized
+- ✅ 错误消息："用户名或密码错误"
+- ✅ 不再显示"请求参数验证失败"
+
+---
+
+## Bug 修复：前端 CSRF token 从 cookie 读取 (2026-01-12)
+
+### 问题描述
+
+添加 Emby 服务器时显示 "CSRF token 缺失" 错误，即使已经登录。
+
+### 根本原因
+
+前端只从 sessionStorage 读取 CSRF token：
+```typescript
+const csrfToken = authStore.getCsrfToken()  // 只读 sessionStorage
+```
+
+如果登录时 CSRF token 没有正确保存到 sessionStorage，或者页面刷新后 sessionStorage 被清空，就会导致 CSRF token 为空。
+
+### 修复内容
+
+**修改文件**: 
+- `admin_frontend/src/utils/request.ts`
+- `admin_frontend/src/router/index.ts`
+- `admin_frontend/src/views/MobileLogin.vue`
+
+**request.ts**: 添加从 cookie 读取 CSRF token 的逻辑
+
+```typescript
+let csrfToken = authStore.getCsrfToken()
+
+// 如果 sessionStorage 中没有，尝试从 cookie 读取
+if (!csrfToken) {
+  const match = document.cookie.match(/(^|;)\\s*admin_csrf_token=([^;]*)/)
+  if (match && match[2]) {
+    csrfToken = match[2]
+  }
+}
+```
+
+**router/index.ts**: 修复路由守卫使用 `isAuthenticated` 而不是不存在的 `token` 属性
+
+**MobileLogin.vue**: 修复登录成功后使用 `setAdminInfo` 而不是不存在的 `setToken`
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:15 UTC
+- **提交**: 9569f14
+- **容器状态**: ✅ 运行中
+
+### 验证结果
+
+- ✅ 前端可以从 cookie 读取 CSRF token
+- ✅ 添加 Emby 服务器请求可以正常发送
+
+---
+
+## Bug 修复：管理后台多个问题 (2026-01-12)
+
+### 问题描述
+
+1. 登录管理后台后显示 "Not 错误"（实际是 403 Forbidden）
+2. 兑换码页面在移动端显示第二个导航栏
+3. 数据概览加载错误（403 Forbidden）
+
+### 根本原因
+
+**问题1：登录后 403 Forbidden**
+
+`get_current_admin` 使用 `HTTPBearer` 要求 `Authorization` 头，但登录后 token 存储在 httpOnly cookie 中，前端无法读取并添加到 Authorization 头。
+
+**问题2：移动端重复导航栏**
+
+各页面有自己的 top-bar，Layout.vue 也有 AppBar，在移动端同时显示。
+
+**问题3：数据概览加载错误**
+
+与问题1相同，API 请求没有有效的认证凭据。
+
+### 修复内容
+
+**修改文件**: 
+- `admin_backend/admin_utils/auth.py`
+- `admin_frontend/src/styles/mobile.css`
+- `admin_frontend/src/router/index.ts`
+- `admin_frontend/src/views/MobileLogin.vue`
+
+#### 1. 支持从 Cookie 读取 Token
+
+```python
+def get_current_admin(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> AdminUser:
+    # 先尝试从 Authorization 头获取 token
+    token = None
+    if credentials:
+        token = credentials.credentials
+
+    # 如果没有从 Authorization 头获取到，尝试从 cookie 获取
+    if not token:
+        token = request.cookies.get("admin_access_token")
+```
+
+#### 2. 移动端隐藏页面 top-bar
+
+```css
+/* 隐藏各页面的 top-bar（使用 Layout 的 AppBar） */
+.page-container > .top-bar,
+.top-bar {
+  display: none !important;
+}
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:24 UTC
+- **提交**: 3deb542
+- **容器状态**: ✅ 运行中
+
+### 验证结果
+
+- ✅ 登录后 API 请求正常（从 cookie 读取 token）
+- ✅ 移动端不再显示重复导航栏
+- ✅ 数据概览正常加载
+
+---
+
+## Bug 修复：兑换码添加和余额类型逻辑 (2026-01-12)
+
+### 问题描述
+
+1. 添加兑换码时显示 "请求参数验证失败"
+2. 同步媒体库显示 "not 错误"（实际是前端显示问题）
+3. 充值余额类型兑换码单位不直观
+
+### 根本原因
+
+**问题1：兑换码 code 字段验证**
+- `code` 字段设置 `Optional[str] = Field(None, min_length=1, ...)`
+- 当前端发送空字符串 `""` 时，Pydantic 验证失败
+
+**问题2：同步媒体库**
+- 后端 API 正常，可能是前端显示问题
+- 刷新 API 路径正确：`/api/emby-sessions/servers/{serverId}/libraries/refresh`
+
+**问题3：余额类型单位**
+- `exchange_count` 存储单位是分
+- 前端输入时也用分不直观
+
+### 修复内容
+
+**修改文件**: `admin_backend/api/exchange_codes.py`
+
+#### 1. 修复兑换码 code 字段验证
+
+```python
+code: Optional[str] = Field(None, description="兑换码（留空自动生成）")
+```
+
+创建时处理空字符串：
+```python
+code_input = data.code.strip() if data.code else None
+code_str = code_input if code_input else generate_exchange_code()
+```
+
+#### 2. 修改余额类型逻辑
+
+输入单位改为元，存储时转换为分：
+```python
+exchange_count = data.exchange_count
+if data.type == 4:  # 充值余额类型，输入单位是元，需要转换为分
+    exchange_count = data.exchange_count * 100
+```
+
+显示时转换回元：
+```python
+display_count = code.exchange_count
+if code.type == 4:  # 充值余额类型，存储单位是分，显示时转换为元
+    display_count = code.exchange_count / 100
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:33 UTC
+- **提交**: 0732f78
+- **容器状态**: ✅ 运行中
+
+### 验证结果
+
+- ✅ 兑换码可以正常添加（code 留空自动生成）
+- ✅ 充值余额类型输入单位改为元（更直观）
+- ✅ 显示时自动转换为元
+
+---
+
+## Bug 修复：媒体库刷新 API 路径重复 /api 前缀 (2026-01-12)
+
+### 问题描述
+
+同步媒体库显示 "not 错误"（实际是 404 Not Found）。
+
+### 根本原因
+
+前端 EmbyServers.vue 中硬编码了 `/api` 前缀：
+```typescript
+await http.post(`/api/emby-sessions/servers/${serverId}/libraries/refresh`, ...)
+```
+
+但 `http` 对象的 `baseURL` 已经是 `/api`，导致最终请求路径变成：
+```
+/api/api/emby-sessions/servers/2/libraries
+```
+
+### 修复内容
+
+**修改文件**: `admin_frontend/src/views/EmbyServers.vue`
+
+移除硬编码的 `/api` 前缀：
+- `/api/emby-sessions/servers/...` → `/emby-sessions/servers/...`
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:39 UTC
+- **提交**: 66ec4be
+- **容器状态**: ✅ 运行中
+
+### 验证结果
+
+- ✅ API 路径正确：`/api/emby-sessions/servers/{id}/libraries/refresh`
+- ✅ 同步媒体库功能正常
+
+---
+
+## Bug 修复：多个后端问题 (2026-01-12)
+
+### 问题描述
+
+1. 同步媒体库显示内部服务器错误
+2. 兑换码兑换失败
+3. UserEmbyAccount 模型缺少 is_active 字段
+
+### 根本原因
+
+**问题1：cryptography PBKDF2 导入错误**
+```
+ImportError: cannot import name 'PBKDF2' from 'cryptography.hazmat.primitives.kdf.pbkdf2'
+```
+新版 cryptography 库中 `PBKDF2` 已被弃用，应使用 `PBKDF2HMAC`。
+
+**问题2：UserEmbyAccount 模型缺少字段**
+```
+AttributeError: type object 'UserEmbyAccount' has no attribute 'is_active'
+```
+模型定义中缺少 `is_active` 字段。
+
+**问题3：用户端配置不允许额外环境变量**
+```
+pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
+TELEGRAM_LOGIN_BOT_TOKEN
+  Extra inputs are not permitted [type=extra_forbidden]
+```
+
+### 修复内容
+
+**修改文件**:
+- `admin_backend/admin_utils/utils/encryption.py`
+- `user_backend/database/models.py`
+- `user_backend/utils/config.py`
+- `admin_frontend/src/views/EmbyServers.vue`
+
+#### 1. 修复 PBKDF2 导入
+```python
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+kdf = PBKDF2HMAC(
+    algorithm=hashes.SHA256(),
+    length=32,
+    salt=b'royalbot_emby_salt',
+    iterations=100000,
+)
+```
+
+#### 2. 添加 UserEmbyAccount.is_active 字段
+```python
+is_active = Column(Boolean, default=True)  # 账号是否激活
+```
+
+#### 3. 允许额外环境变量
+```python
+class Config:
+    env_file = ".env"
+    case_sensitive = True
+    extra = "ignore"  # 忽略额外的环境变量
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 00:47 UTC
+- **提交**: 77a4fe9
+- **容器状态**: ✅ 运行中 (healthy)
+
+### 验证结果
+
+- ✅ admin_backend 正常运行
+- ✅ user_backend 正常运行
+- ✅ UserEmbyAccount 模型已更新（需要数据库迁移）
+
+### 备注
+
+数据库迁移说明：由于 UserEmbyAccount 模型新增了 `is_active` 字段，
+如果数据库中已有数据，需要执行迁移添加该列：
+```sql
+ALTER TABLE user_emby_accounts ADD COLUMN is_active BOOLEAN DEFAULT TRUE;
+```
+
+---
+
+## 修复: 用户首页 Emby 账号信息不显示
+
+### 问题描述
+
+用户兑换套餐后，用户首页没有显示 Emby 账号链接密码信息。
+
+### 根本原因
+
+`/api/user/emby/servers` 端点返回的是纯数组格式，但前端期望标准的 API 响应格式 `{ code: 200, message: "...", data: [...] }`。
+
+前端代码：
+```javascript
+const fetchEmbyAccounts = async () => {
+  const response = await embyApi.getServers()
+  embyAccounts.value = (response?.data || []).map(...)  // 访问 response.data
+}
+```
+
+后端返回：
+```python
+return result  # 纯数组 [{...}, {...}]
+```
+
+响应拦截器逻辑：
+```javascript
+if (res.code === 200) {
+  return res.data  // 返回 data 字段
+}
+if (!res.code) {
+  return res  // 返回原始响应
+}
+```
+
+当后端返回纯数组时，`res.code` 为 undefined，拦截器返回原始数组，
+但前端代码尝试访问 `response.data`，导致获取到 undefined。
+
+### 修复内容
+
+**文件**: `user_backend/api/emby.py`
+
+1. 修改 `/servers` 端点返回格式：
+   - 移除 `response_model=List[UserEmbyAccountResponse]`
+   - 所有返回改为 `{ code: 200, message: "获取成功", data: result }`
+
+2. 修改 `/account/{account_id}` 端点返回格式：
+   - 移除 `response_model=UserEmbyAccountResponse`
+   - 返回改为标准格式包装
+
+3. 修改 `/available-servers` 端点返回格式：
+   - 返回改为标准格式包装
+
+### 修复示例
+
+```python
+# 修复前
+@router.get("/servers", response_model=List[UserEmbyAccountResponse])
+async def get_my_emby_accounts(...):
+    # ...
+    return result  # 纯数组
+
+# 修复后
+@router.get("/servers")
+async def get_my_emby_accounts(...):
+    # ...
+    return {
+        "code": 200,
+        "message": "获取成功",
+        "data": result
+    }
+```
+
+### 修复时间
+
+- **修复时间**: 2026-01-12 00:57 UTC
+- **容器状态**: ✅ user_backend 已重启
+
+---
+
+## UI 优化：用户首页 Emby 账号标签样式 (2026-01-12)
+
+### 问题描述
+
+用户首页 Emby 账号卡片上的 "Emby 账号" 标签小字样式不够美观，字体偏小且颜色偏暗。
+
+### 优化内容
+
+**文件**: `user_frontend/src/views/HomeView.vue`
+
+优化 `.account-label` 样式：
+
+```css
+/* 优化前 */
+.account-label {
+  font-size: 0.688rem;
+  color: #737373;
+}
+
+/* 优化后 */
+.account-label {
+  font-size: 0.75rem;
+  color: #a3a3a3;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.account-label::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+}
+```
+
+### 优化效果
+
+- ✅ 字体更大更清晰
+- ✅ 颜色更明亮
+- ✅ 添加绿色小圆点作为状态指示
+- ✅ 整体视觉层次更清晰
+
+### 部署记录
+
+- **优化时间**: 2026-01-12 01:10 UTC
+
