@@ -14,6 +14,14 @@ export function useToast() {
   const add = (message: string, type: ToastMessage['type'] = 'info', duration = 3000) => {
     const id = ++messageId
     messages.value.push({ id, type, message, duration })
+
+    // 自动关闭
+    if (duration > 0) {
+      setTimeout(() => {
+        remove(id)
+      }, duration)
+    }
+
     return id
   }
 

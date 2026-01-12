@@ -23,6 +23,7 @@ from schemas.exchange_code import (
 )
 from api.auth import get_current_user
 from schemas.auth import UserResponse
+from utils.emby_client import EmbyClient, create_emby_user
 
 logger = logging.getLogger(__name__)
 
@@ -267,16 +268,33 @@ async def process_activate_trial(
     server = get_available_server(db, plan_id)
 
     if server:
-        # 有服务器，创建 Emby 账号
-        emby_username = f"user_{user.id}_{secrets.token_hex(3)}"
+        # 有服务器，在 Emby 服务器上创建用户
+        emby_username = f"rb{user.id}{secrets.token_hex(2)}"
         emby_password = secrets.token_urlsafe(12)
 
+        # 调用 Emby API 创建用户
+        emby_user_id = None
+        try:
+            client = EmbyClient(server.url, server.api_key)
+            create_result = client.create_user(emby_username, emby_password)
+            if create_result.get('success'):
+                emby_user_id = create_result.get('user_id')
+                logger.info(f"兑换码激活试用: Emby 用户创建成功 - {emby_username}@{server.name}")
+            else:
+                logger.warning(f"兑换码激活试用: Emby 用户创建失败 - {create_result.get('message')}")
+                # 继续执行，在数据库中记录账号信息
+        except Exception as e:
+            logger.error(f"兑换码激活试用: Emby API 调用异常 - {e}", exc_info=True)
+            # 继续执行，在数据库中记录账号信息
+
+        # 在数据库中创建账号记录
         emby_account = UserEmbyAccount(
             user_id=user.id,
             server_id=server.id,
             subscription_id=subscription.id,
             username=emby_username,
             password=emby_password,
+            emby_user_id=emby_user_id,  # 保存 Emby 返回的用户 ID
             is_active=True,
             expires_at=end_date
         )
@@ -287,13 +305,26 @@ async def process_activate_trial(
 
         db.commit()
 
-        return {
-            "trial_days": trial_days,
-            "expires_at": end_date.isoformat(),
-            "emby_server": server.name,
-            "emby_username": emby_username,
-            "emby_password": emby_password
-        }, f"成功激活 {trial_days} 天试用"
+        if emby_user_id:
+            return {
+                "trial_days": trial_days,
+                "expires_at": end_date.isoformat(),
+                "emby_server": server.name,
+                "emby_server_url": server.url,
+                "emby_username": emby_username,
+                "emby_password": emby_password
+            }, f"成功激活 {trial_days} 天试用"
+        else:
+            # Emby API 创建失败，但数据库记录已保存
+            return {
+                "trial_days": trial_days,
+                "expires_at": end_date.isoformat(),
+                "emby_server": server.name,
+                "emby_server_url": server.url,
+                "emby_username": emby_username,
+                "emby_password": emby_password,
+                "api_failed": True
+            }, f"成功激活 {trial_days} 天试用（Emby 账号已记录，但服务器创建可能失败，请联系管理员）"
     else:
         # 没有服务器，只创建订阅，不创建 Emby 账号
         db.commit()
