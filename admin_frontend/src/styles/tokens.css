@@ -1,0 +1,185 @@
+/**
+ * RoyalBot Admin - Unified Design Tokens V5
+ * 移动端 H5 管理后台统一设计系统 - 深色玻璃质感
+ *
+ * 设计规范：
+ * - Spacing: 页面左右 16px, 卡片 padding 16px, 卡片间距 12px, 标题到内容 8px
+ * - Radius: 大卡片 20px, 小卡片/按钮/输入 14-16px
+ * - Elevation: 1px 半透明描边（白色 6-10%）+ 轻阴影 + 深色渐变背景
+ * - Typography: 主标题 20-22px, 分区标题 16-18px, 说明 12-13px, 数字 22-28px
+ * - 顶部栏: 左汉堡/中标题/右更多或刷新
+ * - 移动端列表默认卡片列表，表格仅桌面端使用
+ * - Colors: 紫色主题 (#8B5CF6) + 深色玻璃质感
+ */
+
+:root {
+  /* ========== 间距系统 ========== */
+  --space-1: 4px;    /* 极小间距 */
+  --space-2: 8px;    /* 小间距（标题到内容） */
+  --space-3: 12px;   /* 中间距（卡片间距） */
+  --space-4: 16px;   /* 标准间距（页面 padding、卡片 padding） */
+  --space-5: 20px;   /* 大间距 */
+  --space-6: 24px;   /* 超大间距 */
+
+  /* ========== 圆角 ========== */
+  --radius-sm: 14px;  /* 小卡片/按钮/输入框 */
+  --radius-md: 16px;  /* 标准卡片 */
+  --radius-lg: 20px;  /* 大卡片 */
+  --radius-full: 9999px; /* 胶囊按钮 */
+
+  /* ========== 字体 ========== */
+  --font-size-xs: 12px;   /* 辅助说明 */
+  --font-size-sm: 13px;   /* 说明 */
+  --font-size-md: 14px;   /* 正文（基准） */
+  --font-size-lg: 16px;   /* 分区标题 */
+  --font-size-xl: 18px;   /* 区块标题 */
+  --font-size-2xl: 20px;  /* 页面标题 */
+  --font-size-3xl: 22px;  /* 大标题 */
+  --font-size-4xl: 28px;  /* 数字显示 */
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* ========== 背景色（深色渐变玻璃质感） ========== */
+  --bg-primary: #0B0C0F;      /* 页面基色 */
+  --bg-surface: #0F1015;     /* 次级表面/Drawer */
+  --bg-card: rgba(20, 21, 26, 0.85);        /* 卡片背景 - 半透明 */
+  --bg-card-hover: rgba(26, 27, 33, 0.9);  /* 卡片悬停 */
+  --bg-input: rgba(15, 16, 21, 0.8);       /* 输入框背景 */
+  --bg-overlay: rgba(11, 12, 15, 0.85); /* 遮罩层 */
+
+  /* 玻璃渐变背景 */
+  --glass-gradient: linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%);
+  --glass-gradient-strong: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
+
+  /* ========== 边框色（半透明描边） ========== */
+  --border-subtle: rgba(255, 255, 255, 0.06);  /* 6% 透明 - 卡片描边 */
+  --border-default: rgba(255, 255, 255, 0.08); /* 8% 透明 */
+  --border-strong: rgba(255, 255, 255, 0.10);  /* 10% 透明 - 强调 */
+  --border-focus: rgba(139, 92, 246, 0.5);     /* 聚焦边框 */
+
+  /* ========== 文本色 ========== */
+  --text-primary: rgba(255, 255, 255, 0.92);   /* 主标题/正文 */
+  --text-secondary: rgba(255, 255, 255, 0.60); /* 副标题/说明 */
+  --text-tertiary: rgba(255, 255, 255, 0.40);  /* 辅助/占位 */
+  --text-inverse: rgba(0, 0, 0, 0.85);         /* 反色（主按钮文字） */
+
+  /* ========== 语义色 ========== */
+  /* 主色 - 紫色 */
+  --primary: #8B5CF6;                 /* Violet 500 */
+  --primary-hover: #A78BFA;           /* Violet 400 */
+  --primary-active: #7C3AED;          /* Violet 600 */
+  --primary-bg: rgba(139, 92, 246, 0.15);
+  --primary-on: rgba(255, 255, 255, 0.92);
+
+  /* 状态色 */
+  --success: #22C55E;                 /* 绿 - 启用/正常 */
+  --success-bg: rgba(34, 197, 94, 0.15);
+  --warning: #F59E0B;                 /* 橙 - 警告/待处理 */
+  --warning-bg: rgba(245, 158, 11, 0.15);
+  --danger: #EF4444;                  /* 红 - 禁用/错误 */
+  --danger-bg: rgba(239, 68, 68, 0.15);
+  --info: #3B82F6;                    /* 蓝 - 信息 */
+  --info-bg: rgba(59, 130, 246, 0.15);
+
+  /* ========== 阴影（轻阴影配合玻璃质感） ========== */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.15);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.20);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.25);
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.18); /* 卡片专用阴影 */
+
+  /* ========== 过渡 ========== */
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --transition-slow: 350ms ease;
+
+  /* ========== 触控 ========== */
+  --touch-target-min: 44px;
+  --list-item-min: 52px;
+
+  /* ========== Z-index ========== */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-fixed: 300;
+  --z-modal-backdrop: 400;
+  --z-modal: 500;
+  --z-popover: 600;
+  --z-tooltip: 700;
+}
+
+/* ========== 玻璃卡片基类 ========== */
+.glass-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
+}
+
+.glass-card-lg {
+  background: var(--glass-gradient-strong);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-md);
+}
+
+/* ========== 页面容器 ========== */
+.page-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0 var(--space-4);
+  min-height: 100vh;
+}
+
+/* ========== 统一卡片样式 ========== */
+.mobile-card {
+  padding: var(--space-4);
+  background: var(--glass-gradient);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.mobile-card-sm {
+  padding: var(--space-4);
+  background: var(--glass-gradient);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ========== 触控反馈 ========== */
+.touch-feedback {
+  transition: transform var(--transition-fast) ease,
+              opacity var(--transition-fast) ease;
+}
+
+.touch-feedback:active {
+  transform: scale(0.97);
+  opacity: 0.85;
+}
+
+/* ========== 状态色工具类 ========== */
+.bg-success { background-color: var(--success-bg); }
+.bg-warning { background-color: var(--warning-bg); }
+.bg-danger { background-color: var(--danger-bg); }
+.bg-info { background-color: var(--info-bg); }
+.bg-primary { background-color: var(--primary-bg); }
+
+.text-success { color: var(--success); }
+.text-warning { color: var(--warning); }
+.text-danger { color: var(--danger); }
+.text-info { color: var(--info); }
+.text-primary { color: var(--primary); }
