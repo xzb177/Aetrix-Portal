@@ -115,7 +115,6 @@ def sanitize_log_value(value: str) -> str:
 async def login(
     credentials: LoginRequest,
     request: Request,
-    response: Response,
     db: Session = Depends(get_db)
 ):
     """管理员登录 - 安全增强版"""
