@@ -96,12 +96,17 @@ async def get_exchange_codes(
             user = db.query(WebUser).filter(WebUser.id == code.used_by_user_id).first()
             used_by_username = user.username if user else "未知用户"
 
+        # 类型4（充值余额）需要将分转换为元显示
+        display_count = code.exchange_count
+        if code.type == 4:  # 充值余额类型，存储单位是分，显示时转换为元
+            display_count = code.exchange_count / 100
+
         result.append({
             "id": code.id,
             "code": code.code,
             "type": code.type,
             "type_name": get_exchange_code_type_name(code.type),
-            "exchange_count": code.exchange_count,
+            "exchange_count": display_count,  # 显示值（元）
             "status": code.status,
             "status_name": get_exchange_code_status_name(code.status),
             "used_by_user_id": code.used_by_user_id,
@@ -139,12 +144,17 @@ async def get_exchange_code(
         user = db.query(WebUser).filter(WebUser.id == code.used_by_user_id).first()
         used_by_username = user.username if user else "未知用户"
 
+    # 类型4（充值余额）需要将分转换为元显示
+    display_count = code.exchange_count
+    if code.type == 4:  # 充值余额类型，存储单位是分，显示时转换为元
+        display_count = code.exchange_count / 100
+
     return {
         "id": code.id,
         "code": code.code,
         "type": code.type,
         "type_name": get_exchange_code_type_name(code.type),
-        "exchange_count": code.exchange_count,
+        "exchange_count": display_count,  # 显示值（元）
         "status": code.status,
         "status_name": get_exchange_code_status_name(code.status),
         "used_by_user_id": code.used_by_user_id,
@@ -161,17 +171,36 @@ async def get_exchange_code(
 # 请求模型
 class CreateExchangeCodeRequest(BaseModel):
     """创建兑换码请求"""
-    code: Optional[str] = Field(None, min_length=1, max_length=64, description="兑换码（留空自动生成）")
+    code: Optional[str] = Field(None, description="兑换码（留空自动生成）")
     type: int = Field(1, ge=1, le=4, description="兑换码类型：1激活试用 2按天续期 3按月续期 4充值余额")
-    exchange_count: int = Field(1, ge=1, description="兑换数量/天数/金额（分）")
+    exchange_count: int = Field(1, ge=1, description="兑换数量/天数/余额（元）")
     note: Optional[str] = Field(None, description="备注")
+
+    # 验证器：处理空字符串
+    @staticmethod
+    def validate_code(code: Optional[str]) -> Optional[str]:
+        """验证并清理兑换码"""
+        if code is None or code.strip() == "":
+            return None
+        return code.strip()[:64]
+
+    class Config:
+        # 使用自定义验证
+        schema_extra = {
+            "example": {
+                "code": "",
+                "type": 1,
+                "exchange_count": 1,
+                "note": "备注"
+            }
+        }
 
 
 class BatchCreateExchangeCodeRequest(BaseModel):
     """批量创建兑换码请求"""
     count: int = Field(..., ge=1, le=100, description="生成数量")
     type: int = Field(..., ge=1, le=4, description="兑换码类型")
-    exchange_count: int = Field(1, ge=1, description="兑换数量/天数/金额（分）")
+    exchange_count: int = Field(1, ge=1, description="兑换数量/天数/余额（元）")
     note: Optional[str] = Field(None, description="备注")
 
 
@@ -183,7 +212,9 @@ async def create_exchange_code(
 ):
     """创建兑换码（单个）"""
     try:
-        code_str = data.code if data.code else generate_exchange_code()
+        # 处理空字符串
+        code_input = data.code.strip() if data.code else None
+        code_str = code_input if code_input else generate_exchange_code()
 
         # 检查兑换码是否已存在
         existing = db.query(ExchangeCode).filter(
@@ -195,11 +226,16 @@ async def create_exchange_code(
                 detail="兑换码已存在"
             )
 
+        # 类型4（充值余额）需要将元转换为分
+        exchange_count = data.exchange_count
+        if data.type == 4:  # 充值余额类型，输入单位是元，需要转换为分
+            exchange_count = data.exchange_count * 100
+
         # 创建兑换码
         code = ExchangeCode(
             code=code_str.upper(),
             type=data.type,
-            exchange_count=data.exchange_count,
+            exchange_count=exchange_count,
             note=data.note,
             status=0,
             created_by_admin_id=admin.id
@@ -207,6 +243,11 @@ async def create_exchange_code(
         db.add(code)
         db.commit()
         db.refresh(code)
+
+        # 类型4（充值余额）需要将分转换为元显示
+        display_count = code.exchange_count
+        if code.type == 4:  # 充值余额类型，存储单位是分，显示时转换为元
+            display_count = code.exchange_count / 100
 
         return ApiResponse(
             code=200,
@@ -216,7 +257,7 @@ async def create_exchange_code(
                 "code": code.code,
                 "type": code.type,
                 "type_name": get_exchange_code_type_name(code.type),
-                "exchange_count": code.exchange_count,
+                "exchange_count": display_count,  # 显示值（元）
                 "status": code.status,
                 "note": code.note
             }
@@ -246,13 +287,18 @@ async def batch_create_exchange_codes(
 ):
     """批量生成兑换码"""
     try:
+        # 类型4（充值余额）需要将元转换为分
+        exchange_count = data.exchange_count
+        if data.type == 4:  # 充值余额类型，输入单位是元，需要转换为分
+            exchange_count = data.exchange_count * 100
+
         created_codes = []
         for _ in range(data.count):
             code_str = generate_exchange_code()
             code = ExchangeCode(
                 code=code_str,
                 type=data.type,
-                exchange_count=data.exchange_count,
+                exchange_count=exchange_count,
                 note=data.note,
                 status=0,
                 created_by_admin_id=admin.id
