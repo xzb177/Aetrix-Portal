@@ -21,7 +21,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 # 版本
-VERSION="1.5.0"
+VERSION="1.6.0"
 
 # 检测 Docker Compose 命令
 if docker compose version &> /dev/null; then
