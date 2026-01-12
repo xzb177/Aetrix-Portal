@@ -6,7 +6,7 @@ import os
 import base64
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # 从环境变量获取加密密钥，如果没有则生成一个
 ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', '')
@@ -17,8 +17,8 @@ if not ENCRYPTION_KEY:
 
 def _get_cipher():
     """获取加密器"""
-    # 使用 PBKDF2 从密钥派生 Fernet 密钥
-    kdf = PBKDF2(
+    # 使用 PBKDF2HMAC 从密钥派生 Fernet 密钥
+    kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=b'royalbot_emby_salt',  # 固定 salt，实际应用中应该从配置读取
