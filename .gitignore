@@ -93,3 +93,41 @@ temp/
 .cache/
 coverage/
 *.tsbuildinfo
+
+# ==================== 源代码目录 (不开源) ====================
+# 后端源代码
+admin_backend/
+user_backend/
+backend/
+shared/
+telegram_login_bot/
+EmbyController/
+
+# 前端源代码
+admin_frontend/src/
+admin_frontend/public/
+user_frontend/src/
+user_frontend/public/
+user_frontend_dist/
+
+# 测试代码
+tests/
+
+# 监控配置
+monitoring/
+
+# 构建产物
+admin_frontend/dist/
+user_frontend/dist/
+
+# 文档（除 README 外）
+*.md
+!README.md
+
+# 其他配置文件
+CHANGELOG.md
+FRONTEND_BACKEND_LINKAGE.md
+pytest.ini
+nginx.conf
+.env.example
+.env.template

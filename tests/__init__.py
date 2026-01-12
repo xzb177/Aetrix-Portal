@@ -1,3 +1,0 @@
-"""
-RoyalBot Portal Test Suite
-"""

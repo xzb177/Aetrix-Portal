@@ -1,67 +1,84 @@
-# RoyalBot Portal
+# RoyalBot Portal 部署脚本
 
-独立的 RoyalBot Web 门户项目，包含用户端和管理后台。
+Emby 影视账号订阅服务系统的一键部署脚本。
 
-## 项目结构
+## 功能特性
 
-```
-/root/RoyalBot-Portal/
-├── user_frontend/      # 用户端前端 (Vue 3 + Tailwind CSS)
-│   └── dist/           # 构建输出
-├── user_backend/       # 用户端后端 (FastAPI + Python)
-│   ├── api/            # API 路由
-│   ├── database/       # 数据库模型
-│   ├── schemas/        # Pydantic 模型
-│   ├── utils/          # 工具函数
-│   ├── venv/           # Python 虚拟环境
-│   ├── run.py          # 启动脚本
-│   └── main.py         # FastAPI 应用
-├── admin_frontend/     # 管理后台前端
-│   └── dist/           # 构建输出
-└── admin_backend/      # 管理后台后端
-```
+- 用户端：订阅套餐、媒体求片、充值兑换、工单系统
+- 管理后台：用户管理、数据统计、系统配置
+- 支持多种支付方式
+- 邀请码和兑换码系统
+- Telegram 一键登录
 
-## 访问地址
+## 快速开始
 
-| 服务 | 地址 | 说明 |
-|------|------|------|
-| 用户端 | http://154.40.33.2/ | 订阅、求片、充值 |
-| 管理后台 | http://154.40.33.2/admin | 用户管理、数据统计 |
-| 用户端 API | http://154.40.33.2:8001/ | FastAPI + Swagger UI |
-| 管理后台 API | http://154.40.33.2:8000/ | FastAPI + Swagger UI |
-
-## 服务管理
+### 下载部署脚本
 
 ```bash
-# 用户端后端
-systemctl start|stop|restart|status royalbot-portal.service
-
-# 管理后台后端
-systemctl start|stop|restart|status royalbot-admin.service
-
-# 查看日志
-journalctl -u royalbot-portal.service -f
-journalctl -u royalbot-admin.service -f
-
-# 重载 Nginx
-systemctl reload nginx
+wget https://github.com/xxx/RoyalBot-Portal/raw/main/deploy.sh
+chmod +x deploy.sh
 ```
 
-## 前端构建
+### 一键部署
 
 ```bash
-# 用户端
-cd /root/RoyalBot-Portal/user_frontend
-npm run build-only
-
-# 管理后台
-cd /root/RoyalBot-Portal/admin_frontend
-npm run build
+./deploy.sh --full
 ```
 
-## 依赖关系
+### 开发环境
 
-- **机器人项目**: `/root/royalbot/` (主项目，包含数据库)
-- **Portal 项目**: `/root/RoyalBot-Portal/` (本项，独立 Web 服务)
+```bash
+./dev.sh
+```
 
-Portal 项目通过读取 `/root/royalbot/royalbot.db` 数据库与机器人项目关联。
+## 脚本选项
+
+### deploy.sh
+
+```
+--full         完整部署（前后端 + Docker）
+--fe-only      仅构建前端
+--backend      仅启动后端
+--backup       备份数据库
+--restore      恢复数据库
+--update       更新并重启服务
+--logs         查看日志
+--menu         交互式菜单
+```
+
+### dev.sh
+
+开发环境快速启动，包含热重载功能。
+
+## 目录结构
+
+```
+RoyalBot-Portal/
+├── deploy.sh           # 一键部署脚本
+├── dev.sh              # 开发环境脚本
+└── scripts/            # 辅助脚本
+    ├── backup_db.sh
+    ├── restore_db.sh
+    ├── docker-deploy.sh
+    └── ...
+```
+
+## 环境要求
+
+- Docker & Docker Compose
+- Python 3.10+
+- Node.js 18+
+- PostgreSQL / SQLite
+
+## 配置说明
+
+首次运行前请配置 `.env` 文件中的必要参数：
+
+- 数据库连接信息
+- JWT 密钥
+- 支付配置
+- Telegram Bot 配置
+
+## 许可证
+
+Copyright (c) 2024 RoyalBot. All rights reserved.
