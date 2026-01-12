@@ -84,7 +84,7 @@ def create_emby_account(db: Session, user_id: int, subscription: UserSubscriptio
     }
 
 
-@router.get("/servers", response_model=List[UserEmbyAccountResponse])
+@router.get("/servers")
 async def get_my_emby_accounts(
     db: Session = Depends(get_session),
     current_user: UserResponse = Depends(get_current_user)
@@ -97,20 +97,30 @@ async def get_my_emby_accounts(
     """
     from datetime import datetime
 
+    logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} ({current_user.username}) 请求 Emby 账号")
+
     # 获取用户的有效订阅
     active_subscriptions = db.query(UserSubscription).filter(
         UserSubscription.user_id == current_user.id,
         UserSubscription.status == "active"
     ).all()
 
+    logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} 有 {len(active_subscriptions)} 个活跃订阅")
+
     if not active_subscriptions:
-        return []
+        return {
+            "code": 200,
+            "message": "获取成功",
+            "data": []
+        }
 
     # 获取这些订阅对应的 Emby 账号
     subscription_ids = [sub.id for sub in active_subscriptions]
     accounts = db.query(UserEmbyAccount).filter(
         UserEmbyAccount.subscription_id.in_(subscription_ids)
     ).all()
+
+    logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} 的订阅 {subscription_ids} 已有 {len(accounts)} 个账号")
 
     result = []
 
@@ -121,9 +131,10 @@ async def get_my_emby_accounts(
 
         if not sub_accounts:
             # 没有账号，自动创建
-            logger.info(f"用户 {current_user.id} 的订阅 {subscription.id} 没有账号，自动创建")
+            logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} 的订阅 {subscription.id} (plan_id={subscription.plan_id}) 没有账号，开始创建")
             account_data = create_emby_account(db, current_user.id, subscription)
             if account_data:
+                logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} 账号创建成功: {account_data['username']}")
                 is_expired = account_data["expires_at"] and account_data["expires_at"] < datetime.now()
                 result.append(UserEmbyAccountResponse(
                     id=account_data["id"],
@@ -135,6 +146,8 @@ async def get_my_emby_accounts(
                     expires_at=account_data["expires_at"],
                     is_expired=is_expired
                 ))
+            else:
+                logger.warning(f"[EMBY_DEBUG] 用户 {current_user.id} 账号创建失败")
         else:
             # 有账号，添加到结果
             for account in sub_accounts:
@@ -152,10 +165,16 @@ async def get_my_emby_accounts(
                         is_expired=is_expired
                     ))
 
-    return result
+    logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} 返回 {len(result)} 个账号")
+
+    return {
+        "code": 200,
+        "message": "获取成功",
+        "data": result
+    }
 
 
-@router.get("/account/{account_id}", response_model=UserEmbyAccountResponse)
+@router.get("/account/{account_id}")
 async def get_emby_account(
     account_id: int,
     db: Session = Depends(get_session),
@@ -185,16 +204,20 @@ async def get_emby_account(
     from datetime import datetime
     is_expired = account.expires_at and account.expires_at < datetime.now()
 
-    return UserEmbyAccountResponse(
-        id=account.id,
-        server_id=server.id,
-        server_name=server.name,
-        server_url=server.url,
-        username=account.username,
-        password=account.password,
-        expires_at=account.expires_at,
-        is_expired=is_expired
-    )
+    return {
+        "code": 200,
+        "message": "获取成功",
+        "data": UserEmbyAccountResponse(
+            id=account.id,
+            server_id=server.id,
+            server_name=server.name,
+            server_url=server.url,
+            username=account.username,
+            password=account.password,
+            expires_at=account.expires_at,
+            is_expired=is_expired
+        )
+    }
 
 
 @router.get("/available-servers")
@@ -214,7 +237,11 @@ async def get_available_servers(
     ).all()
 
     if not active_subscriptions:
-        return {"servers": []}
+        return {
+            "code": 200,
+            "message": "获取成功",
+            "data": {"servers": []}
+        }
 
     # 获取订阅套餐关联的服务器
     plan_ids = [sub.plan_id for sub in active_subscriptions]
@@ -229,14 +256,18 @@ async def get_available_servers(
     ).all()
 
     return {
-        "servers": [
-            {
-                "id": s.id,
-                "name": s.name,
-                "url": s.url,
-                "current_users": s.current_users,
-                "max_users": s.max_users
-            }
-            for s in servers
-        ]
+        "code": 200,
+        "message": "获取成功",
+        "data": {
+            "servers": [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "url": s.url,
+                    "current_users": s.current_users,
+                    "max_users": s.max_users
+                }
+                for s in servers
+            ]
+        }
     }

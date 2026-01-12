@@ -1,0 +1,36 @@
+# Aetrix Portal 开发模式 Docker Compose 配置
+# 支持后端代码挂载和自动重载
+# 使用方式: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: '3.8'
+
+services:
+  # ==================== 用户端后端（开发模式）====================
+  user_backend:
+    volumes:
+      # 挂载源代码（实时同步，修改后自动重载）
+      - ./user_backend:/app:rw
+      # 挂载日志目录
+      - user_backend_logs:/app/logs
+    environment:
+      # 开发模式
+      - DEBUG=True
+    # 开发模式使用 root 用户运行（解决挂载权限问题）
+    user: root
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload --log-level debug
+
+  # ==================== 管理后台后端（开发模式）====================
+  admin_backend:
+    volumes:
+      # 挂载源代码（实时同步，修改后自动重载）
+      - ./admin_backend:/app:rw
+      # 挂载日志目录
+      - admin_backend_logs:/app/logs
+      # 挂载主项目数据库（只读）
+      - /root/royalbot/royalbot.db:/app/data/royalbot.db:ro
+    environment:
+      # 开发模式
+      - DEBUG=True
+    # 开发模式使用 root 用户运行（解决挂载权限问题）
+    user: root
+    command: uvicorn main:app --host 0.0.0.0 --port 8080 --reload --log-level debug

@@ -4,6 +4,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from typing import List, Optional
 from datetime import datetime
 
@@ -55,7 +56,7 @@ async def get_users(
     # 一次性查询所有用户的 Emby 账号数量
     emby_counts = db.query(
         UserEmbyAccount.user_id,
-        db.func.count(UserEmbyAccount.id).label('count')
+        func.count(UserEmbyAccount.id).label('count')
     ).filter(
         UserEmbyAccount.user_id.in_(user_ids)
     ).group_by(UserEmbyAccount.user_id).all()

@@ -1,11 +1,20 @@
-# RoyalBot Emby Portal - Production Deployment
-# 官方一键部署配置
-# 文档: https://github.com/your-org/royalbot-emby-deploy
+# RoyalBot Portal Docker Compose 配置
+# 项目结构：user_backend, admin_backend, user_frontend, admin_frontend, telegram_login_bot
+#
+# 快速开始:
+#   1. 复制 .env.example 到 .env 并配置环境变量
+#   2. 运行: docker compose up -d
+#   3. 使用 ./deploy.sh 快速部署
+#
+# 一键部署脚本:
+#   ./deploy.sh --help    # 查看帮助
+#   ./deploy.sh           # 部署所有服务
+#   ./deploy.sh --build   # 强制重新构建
 
 version: '3.8'
 
 services:
-  # ==================== PostgreSQL Database ====================
+  # ==================== PostgreSQL 数据库 ====================
   postgres:
     image: postgres:15-alpine
     container_name: royalbot_postgres
@@ -13,10 +22,11 @@ services:
     environment:
       POSTGRES_DB: royalbot
       POSTGRES_USER: royalbot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-royalbot_change_me}
       TZ: Asia/Shanghai
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # 初始化脚本
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "5432:5432"
@@ -27,18 +37,13 @@ services:
       retries: 5
     networks:
       - royalbot_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ==================== Redis Cache ====================
+  # ==================== Redis 缓存 ====================
   redis:
     image: redis:7-alpine
     container_name: royalbot_redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_change_me}
     environment:
       TZ: Asia/Shanghai
     volumes:
@@ -46,38 +51,58 @@ services:
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
       - royalbot_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ==================== User Backend API ====================
+  # ==================== 用户端后端 ====================
   user_backend:
-    image: ${REGISTRY:-ghcr.io/royalbot}/royalbot-user-backend:${IMAGE_TAG:-latest}
+    build:
+      context: ./user_backend
+      dockerfile: Dockerfile
     container_name: royalbot_user_backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://royalbot:${POSTGRES_PASSWORD}@postgres:5432/royalbot
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # 数据库 - 使用 PostgreSQL
+      DATABASE_TYPE: postgresql
+      DATABASE_URL: postgresql://royalbot:${POSTGRES_PASSWORD:-royalbot_change_me}@postgres:5432/royalbot
+
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
       REDIS_ENABLED: "true"
-      SECRET_KEY: ${JWT_SECRET_KEY}
+
+      # JWT
+      SECRET_KEY: ${JWT_SECRET_KEY:-change_this_secret_key}
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 240
+
+      # 应用配置
+      APP_NAME: RoyalBot User Portal
       DEBUG: ${DEBUG:-False}
-      FRONTEND_URL: ${FRONTEND_URL:-https://login.laodaemby.xyz}
+
+      # 前端 URL（用于 CORS）
+      FRONTEND_URL: ${FRONTEND_URL:-http://154.40.33.2}
+
+      # Telegram
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME}
+
+      # 易支付配置
       YIPAY_GATEWAY_URL: ${YIPAY_GATEWAY_URL}
       YIPAY_PARTNER_ID: ${YIPAY_PARTNER_ID}
       YIPAY_KEY: ${YIPAY_KEY}
-      CRON_SECRET: ${CRON_SECRET}
+      YIPAY_NOTIFY_URL: ${YIPAY_NOTIFY_URL:-http://154.40.33.2/api/user/payment/notify}
+      YIPAY_RETURN_URL: ${YIPAY_RETURN_URL:-http://154.40.33.2/payment/return}
+
+      # 定时任务鉴权（API 调用需要此密钥）
+      CRON_SECRET: ${CRON_SECRET:-cron_default_secret_change_me}
+
+      # 加密密钥（用于加密 API Key 等敏感数据）
       CRYPTO_KEY: ${CRYPTO_KEY}
+
       TZ: Asia/Shanghai
     volumes:
       - user_backend_logs:/app/logs
@@ -89,39 +114,75 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
     networks:
       - royalbot_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ==================== Admin Backend API ====================
+  # ==================== 管理后台后端 ====================
   admin_backend:
-    image: ${REGISTRY:-ghcr.io/royalbot}/royalbot-admin-backend:${IMAGE_TAG:-latest}
+    build:
+      context: ./admin_backend
+      dockerfile: Dockerfile
     container_name: royalbot_admin_backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://royalbot:${POSTGRES_PASSWORD}@postgres:5432/royalbot
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      # 数据库 - 使用 PostgreSQL（共享同一个数据库）
+      DATABASE_TYPE: postgresql
+      DATABASE_URL: postgresql://royalbot:${POSTGRES_PASSWORD:-royalbot_change_me}@postgres:5432/royalbot
+
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_change_me}@redis:6379/0
       REDIS_ENABLED: "true"
-      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD}
-      SECRET_KEY: ${JWT_SECRET_KEY}
+      CACHE_TTL: "300"  # 缓存5分钟
+
+      # JWT 配置
+      SECRET_KEY: ${JWT_SECRET_KEY:-change_this_secret_key}
       ALGORITHM: HS256
-      ACCESS_TOKEN_EXPIRE_MINUTES: 240
+      ACCESS_TOKEN_EXPIRE_MINUTES: 60
+
+      # 管理员配置
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD}
+      ADMIN_SECRET_KEY: ${JWT_SECRET_KEY}
+
+      # 应用配置
+      APP_NAME: RoyalBot Admin Portal
       DEBUG: ${DEBUG:-False}
-      FRONTEND_URL: ${FRONTEND_URL:-https://login.laodaemby.xyz}
+      LOG_LEVEL: INFO
+
+      # CORS 配置
+      FRONTEND_URL: ${FRONTEND_URL:-http://154.40.33.2}
+      ADMIN_FRONTEND_URLS: ${FRONTEND_URL:-http://154.40.33.2}
+
+      # 安全配置
+      ENABLE_RATE_LIMIT: "true"
+      RATE_LIMIT_PER_MINUTE: "60"
+      ENABLE_CSRF_PROTECTION: "true"
+      ENABLE_COOKIE_AUTH: "true"
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+
+      # 密码策略
+      MIN_PASSWORD_LENGTH: "12"
+      REQUIRE_PASSWORD_COMPLEXITY: "true"
+      MAX_LOGIN_ATTEMPTS: "5"
+      LOCKOUT_DURATION_MINUTES: "30"
+      SESSION_TIMEOUT_MINUTES: "60"
+
+      # Telegram
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+
+      # 主项目数据库路径（用于读取 UserBinding 等数据）
       MAIN_DB_PATH: /app/data/royalbot.db
+
+      # 时区
       TZ: Asia/Shanghai
     volumes:
       - admin_backend_logs:/app/logs
+      # 挂载主项目数据库目录（只读）
+      - /root/royalbot:/app/royalbot:ro
     ports:
       - "8080:8080"
     depends_on:
@@ -130,46 +191,67 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
     networks:
       - royalbot_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ==================== User Frontend ====================
+  # ==================== 用户端前端 ====================
   user_frontend:
-    image: ${REGISTRY:-ghcr.io/royalbot}/royalbot-user-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./user_frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-https://login.laodaemby.xyz}
     container_name: royalbot_user_frontend
     restart: unless-stopped
     networks:
       - royalbot_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ==================== Admin Frontend ====================
+  # ==================== 管理后台前端 ====================
   admin_frontend:
-    image: ${REGISTRY:-ghcr.io/royalbot}/royalbot-admin-frontend:${IMAGE_TAG:-latest}
+    build:
+      context: ./admin_frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://154.40.33.2}
     container_name: royalbot_admin_frontend
     restart: unless-stopped
     networks:
       - royalbot_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ==================== Nginx Reverse Proxy ====================
+  # ==================== Telegram 登录 Bot ====================
+  telegram_login_bot:
+    build:
+      context: ./telegram_login_bot
+      dockerfile: Dockerfile
+    container_name: royalbot_telegram_login_bot
+    restart: unless-stopped
+    environment:
+      # Bot Token（必填）
+      TELEGRAM_LOGIN_BOT_TOKEN: ${TELEGRAM_LOGIN_BOT_TOKEN}
+      # 网页 URL
+      WEB_URL: ${WEB_URL:-https://login.laodaemby.xyz}
+      # 管理后台 API（用于获取动态配置）
+      ADMIN_BACKEND_URL: http://admin_backend:8080
+      # 管理员 ID（逗号分隔，用于接收错误通知）
+      ADMIN_IDS: ${ADMIN_IDS:-}
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - royalbot_network
+    profiles:
+      - bot  # 使用 profile 控制是否启动，docker compose --profile bot up
+
+  # ==================== Nginx 反向代理 ====================
   nginx:
     image: nginx:alpine
     container_name: royalbot_nginx
@@ -177,30 +259,128 @@ services:
     command: ["/bin/sh", "-c", "rm -f /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"]
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
+      - /etc/letsencrypt/live/login.laodaemby.xyz:/etc/letsencrypt/live:ro
       - nginx_logs:/var/log/nginx
     ports:
       - "80:80"
       - "443:443"
+    extra_hosts:
+      - "login.laodaemby.xyz:172.66.148.34"
     depends_on:
       - user_backend
       - admin_backend
       - user_frontend
       - admin_frontend
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
     networks:
       - royalbot_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
+  # ==================== Prometheus 监控 ====================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: royalbot_prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - royalbot_network
+    profiles:
+      - monitoring
+
+  # ==================== Grafana 可视化 ====================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: royalbot_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin_change_me}
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3002:3000"
+    networks:
+      - royalbot_network
+    profiles:
+      - monitoring
+
+  # ==================== Redis Exporter ====================
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: royalbot_redis_exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_change_me}
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
+    networks:
+      - royalbot_network
+    profiles:
+      - monitoring
+
+  # ==================== Postgres Exporter ====================
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: royalbot_postgres_exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://royalbot:${POSTGRES_PASSWORD:-royalbot_change_me}@postgres:5432/royalbot?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      - postgres
+    networks:
+      - royalbot_network
+    profiles:
+      - monitoring
+
+  # ==================== 数据库自动备份服务 ====================
+  backup:
+    image: postgres:15-alpine
+    container_name: royalbot_backup
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: royalbot
+      PGUSER: royalbot
+      PGPASSWORD: ${POSTGRES_PASSWORD:-royalbot_change_me}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./scripts/backup_docker.sh:/backup.sh:ro
+      - backup_data:/backups
+    command: >
+      /bin/sh -c "
+      echo 'Setting up automated backups...' &&
+      chmod +x /backup.sh &&
+      echo '0 2 * * * /backup.sh daily >> /var/log/backup.log 2>&1' | crond -f -l 2 -c /etc/crontabs
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - royalbot_network
+    profiles:
+      - backup
+
+# ==================== 数据卷 ====================
 volumes:
   postgres_data:
     driver: local
@@ -212,7 +392,16 @@ volumes:
     driver: local
   nginx_logs:
     driver: local
+  nginx_conf_d:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  backup_data:
+    driver: local
 
+# ==================== 网络 ====================
 networks:
   royalbot_network:
     driver: bridge
