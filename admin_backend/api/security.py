@@ -115,7 +115,7 @@ async def revoke_session(
         admin_id=current_admin.id,
         admin_username=current_admin.username,
         action="session_revoked",
-        details=f"Revoked session: {session_id}",
+        details={"session_id": session_id, "action": "revoked"},
         ip_address=session_id,
     )
     db.add(log)
@@ -138,7 +138,7 @@ async def revoke_all_other_sessions(
         admin_id=current_admin.id,
         admin_username=current_admin.username,
         action="revoke_other_sessions",
-        details=f"Revoked all sessions except current IP: {current_ip}",
+        details={"current_ip": current_ip, "action": "revoked_others"},
         ip_address=current_ip,
         user_agent=request.headers.get("user-agent"),
     )
