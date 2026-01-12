@@ -1,0 +1,150 @@
+/**
+ * RoyalBot Admin - Glass Morphism Utility Classes
+ * 暗色玻璃拟态工具类
+ */
+
+/* ==================== 玻璃卡片基础 ==================== */
+.glass-card {
+  background: var(--glass-surface);
+  backdrop-filter: var(--blur-md);
+  -webkit-backdrop-filter: var(--blur-md);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+.glass-card-sm {
+  background: rgba(20, 21, 26, 0.6);
+  backdrop-filter: var(--blur-sm);
+  -webkit-backdrop-filter: var(--blur-sm);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.glass-card-lg {
+  background: rgba(20, 21, 26, 0.85);
+  backdrop-filter: var(--blur-lg);
+  -webkit-backdrop-filter: var(--blur-lg);
+  border: 1px solid var(--glass-border-strong);
+  box-shadow: var(--glass-shadow-lg);
+}
+
+/* ==================== 玻璃表面 ==================== */
+.glass-surface {
+  background: var(--glass-surface);
+}
+
+.glass-overlay {
+  background: rgba(11, 12, 15, 0.85);
+  backdrop-filter: var(--blur-md);
+  -webkit-backdrop-filter: var(--blur-md);
+}
+
+/* ==================== 触控反馈 ==================== */
+.touch-feedback {
+  transition: transform var(--transition-fast) ease,
+              opacity var(--transition-fast) ease;
+}
+
+.touch-feedback:active {
+  transform: scale(0.97);
+  opacity: 0.85;
+}
+
+/* ==================== 悬停效果 ==================== */
+.hover-lift {
+  transition: transform var(--transition-base) ease,
+              box-shadow var(--transition-base) ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--glass-shadow-lg);
+}
+
+.hover-glow:hover {
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.15);
+}
+
+/* ==================== 状态色背景类 ==================== */
+.bg-success { background-color: var(--success-bg); }
+.bg-warning { background-color: var(--warning-bg); }
+.bg-danger { background-color: var(--danger-bg); }
+.bg-info { background-color: var(--info-bg); }
+.bg-primary { background-color: rgba(99, 102, 241, 0.1); }
+
+.text-success { color: var(--success); }
+.text-warning { color: var(--warning); }
+.text-danger { color: var(--danger); }
+.text-info { color: var(--info); }
+.text-primary { color: var(--primary); }
+
+/* ==================== 文字颜色类 ==================== */
+.text-primary-custom { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.text-tertiary { color: var(--text-tertiary); }
+
+/* ==================== 背景色类 ==================== */
+.bg-base { background-color: var(--bg-base); }
+.bg-surface { background-color: var(--bg-surface); }
+.bg-card { background-color: var(--bg-card); }
+.bg-input { background-color: var(--bg-input); }
+
+/* ==================== 边框类 ==================== */
+.border-glass {
+  border: 1px solid var(--glass-border);
+}
+
+.border-glass-strong {
+  border: 1px solid var(--glass-border-strong);
+}
+
+/* ==================== 圆角类 ==================== */
+.rounded-glass-sm { border-radius: var(--radius-md); }
+.rounded-glass-md { border-radius: var(--radius-lg); }
+.rounded-glass-lg { border-radius: var(--radius-xl); }
+
+/* ==================== 统计卡片网格 ==================== */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .stats-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+  }
+}
+
+/* ==================== 快捷操作网格 ==================== */
+.quick-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.75rem;
+}
+
+/* ==================== 列表容器 ==================== */
+.list-container {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--glass-border);
+  overflow: hidden;
+}
+
+/* ==================== 响应式间距 ==================== */
+.page-padding {
+  padding: 1rem;
+}
+
+@media (min-width: 640px) {
+  .page-padding {
+    padding: 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .page-padding {
+    padding: 2rem;
+  }
+}

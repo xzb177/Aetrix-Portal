@@ -1,6 +1,24 @@
 version: "3.8"
 
 services:
+  admin_frontend:
+    build:
+      context: ./admin_frontend
+      dockerfile: Dockerfile
+    image: royalbot-portal-admin_frontend:latest
+    container_name: royalbot_admin_frontend
+    restart: unless-stopped
+    networks:
+      - royalbot-portal_royalbot_network
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
   user_frontend:
     build:
       context: ./user_frontend
