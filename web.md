@@ -15528,3 +15528,56 @@ async def get_my_emby_accounts(...):
 - **提交**: cdd2b13
 - **容器状态**: ✅ user_frontend 已更新
 
+---
+
+## Bug 修复：后端 API 返回 balance 字段 (2026-01-12)
+
+### 问题描述
+
+前端已修复分转元的显示逻辑，但用户 xiaye 仍然看不到 1000 元余额。经排查，发现后端 `/api/user/me` 没有返回 `balance` 字段。
+
+### 根本原因
+
+`user_backend/api/auth.py` 中的 `get_user_response` 函数：
+- 只返回了旧数据库（SQLite）中的 `points` 字段
+- 没有返回用户表（PostgreSQL）中的 `balance` 字段
+- 用户 `xiaye` 的 `balance` 是 100000 分，但 API 返回的 `points` 是 0
+
+### 修复内容
+
+**文件**:
+- `user_backend/schemas/auth.py` - UserResponse schema
+- `user_backend/api/auth.py` - get_user_response 函数
+
+**修复详情**:
+
+1. **UserResponse schema**
+   ```python
+   class UserResponse(BaseModel):
+       ...
+       balance: Optional[int] = 0  # 余额，单位：分
+       points: Optional[int] = 0  # @deprecated 旧字段，保留兼容性
+   ```
+
+2. **get_user_response 函数**
+   ```python
+   # 优先使用用户表的 balance 字段（单位：分）
+   "balance": user.balance if hasattr(user, 'balance') and user.balance is not None else 0,
+   "points": binding["points"] if binding else 0,  # 保留兼容性
+   ```
+
+### 验证结果
+
+```bash
+User ID: 13
+Username: xiaye
+Balance (cents): 100000
+Balance (yuan): 1000.0
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 04:00 UTC
+- **提交**: 97a3373
+- **容器状态**: ✅ user_backend 已更新
+

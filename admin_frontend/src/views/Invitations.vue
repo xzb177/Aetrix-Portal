@@ -40,6 +40,17 @@ const statsLoading = ref(false)
 const codes = ref<any[]>([])
 const codesLoading = ref(false)
 
+// 复制状态映射
+const copyStates = ref<Record<number, { copying: boolean; copied: boolean }>>({})
+
+// 获取复制状态
+function getCopyState(codeId: number) {
+  if (!copyStates.value[codeId]) {
+    copyStates.value[codeId] = { copying: false, copied: false }
+  }
+  return copyStates.value[codeId]
+}
+
 // 邀请记录列表
 const records = ref<any[]>([])
 const recordsLoading = ref(false)
@@ -122,9 +133,60 @@ function refreshAll() {
 }
 
 // 复制邀请码
-function copyCode(code: string) {
-  navigator.clipboard.writeText(code)
-  ElMessage.success('已复制到剪贴板')
+async function copyCode(code: string, codeId: number) {
+  const state = getCopyState(codeId)
+  state.copying = true
+  state.copied = false
+
+  try {
+    await navigator.clipboard.writeText(code)
+    state.copied = true
+    ElMessage.success({
+      message: '已复制到剪贴板',
+      duration: 2000,
+      showClose: false
+    })
+
+    // 2秒后重置状态
+    setTimeout(() => {
+      state.copied = false
+    }, 2000)
+  } catch (err) {
+    // 降级方案：使用 textarea 复制
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = code
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const successful = document.execCommand('copy')
+      document.body.removeChild(textarea)
+
+      if (successful) {
+        state.copied = true
+        ElMessage.success({
+          message: '已复制到剪贴板',
+          duration: 2000,
+          showClose: false
+        })
+
+        setTimeout(() => {
+          state.copied = false
+        }, 2000)
+      } else {
+        throw new Error('复制失败')
+      }
+    } catch (fallbackErr) {
+      console.error('复制失败:', fallbackErr)
+      ElMessage.error({
+        message: '复制失败，请手动复制',
+        duration: 3000
+      })
+    }
+  } finally {
+    state.copying = false
+  }
 }
 
 // 格式化时间
@@ -311,8 +373,13 @@ onMounted(() => {
           :show-arrow="false"
         >
           <template #right>
-            <button class="btn-copy" @click.stop="copyCode(code.code)">
-              <Copy :size="14" />
+            <button
+              class="btn-copy"
+              :class="{ 'btn-copy-copied': getCopyState(code.id).copied, 'btn-copying': getCopyState(code.id).copying }"
+              @click.stop="copyCode(code.code, code.id)"
+            >
+              <Check v-if="getCopyState(code.id).copied" :size="14" />
+              <Copy v-else :size="14" />
             </button>
           </template>
         </ListRow>
@@ -661,8 +728,27 @@ onMounted(() => {
 }
 
 .btn-copy:active {
-  background: var(--primary);
-  color: white;
+  transform: scale(0.92);
+}
+
+.btn-copy:active,
+.btn-copy:hover {
+  background: var(--bg-card-hover);
+}
+
+.btn-copy-copied {
+  background: var(--success-bg) !important;
+  color: var(--success) !important;
+  border: 1px solid var(--success);
+}
+
+.btn-copying {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.btn-copying svg {
+  animation: spin 0.5s linear infinite;
 }
 
 /* 响应式 */

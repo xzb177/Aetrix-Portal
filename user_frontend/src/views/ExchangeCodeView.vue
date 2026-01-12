@@ -10,7 +10,9 @@ import {
   Info,
   Sparkles,
   CalendarPlus,
-  Wallet
+  Wallet,
+  Copy,
+  Check
 } from 'lucide-vue-next'
 
 const code = ref('')
@@ -22,11 +24,20 @@ const result = ref<{
   type: number
   message: string
   details: any
+  code?: string
 }>({
   show: false,
   type: 0,
   message: '',
-  details: null
+  details: null,
+  code: ''
+})
+
+// 复制状态
+const copyState = ref({
+  copying: false,
+  copied: false,
+  showCopy: false
 })
 
 // 兑换码类型说明 - 使用 lucide-vue-next 图标替换 emoji
@@ -49,16 +60,23 @@ async function redeemCode() {
     return
   }
 
+  const codeValue = code.value.trim().toUpperCase()
   redeeming.value = true
   try {
-    const res = await exchangeCodeApi.redeem(code.value.trim().toUpperCase())
+    const res = await exchangeCodeApi.redeem(codeValue)
     const data = res.data || res
 
     result.value = {
       show: true,
       type: data.type,
       message: data.message,
-      details: data.result
+      details: data.result,
+      code: codeValue
+    }
+
+    // 如果成功且有需要复制的内容，显示复制按钮
+    if (data.type > 0) {
+      copyState.value.showCopy = hasCopyableContent(data.type, data.result)
     }
 
     // 清空输入框并刷新记录
@@ -88,8 +106,87 @@ async function redeemCode() {
       message: errorMsg,
       details: null
     }
+    copyState.value.showCopy = false
   } finally {
     redeeming.value = false
+  }
+}
+
+// 判断是否有可复制的内容
+function hasCopyableContent(type: number, details: any): boolean {
+  // 激活试用且有 Emby 账号信息
+  if (type === 1 && details?.emby_username && details?.emby_password) {
+    return true
+  }
+  return false
+}
+
+// 生成复制内容
+function getCopyContent(): string {
+  if (!result.value.details) return ''
+
+  const d = result.value.details
+  let content = ''
+
+  if (result.value.type === 1) {
+    // 激活试用
+    content = `Emby 账号信息\n`
+    content += `服务器: ${d.emby_server || '请联系管理员'}\n`
+    content += `用户名: ${d.emby_username}\n`
+    content += `密码: ${d.emby_password}\n`
+    if (d.expires_at) {
+      content += `有效期至: ${formatDate(d.expires_at)}\n`
+    }
+  } else if (result.value.type === 2 || result.value.type === 3) {
+    // 续期
+    content = `续期成功\n`
+    if (d.new_end_date) {
+      content += `有效期至: ${formatDate(d.new_end_date)}\n`
+    }
+  } else if (result.value.type === 4) {
+    // 充值余额
+    content = `充值成功\n`
+    content += `充值金额: ¥${(d.recharge_amount || 0) / 100} 元\n`
+    if (d.new_balance !== undefined) {
+      content += `当前余额: ¥${d.new_balance / 100} 元\n`
+    }
+  }
+
+  return content
+}
+
+// 复制内容
+async function copyResult() {
+  const content = getCopyContent()
+  if (!content) return
+
+  copyState.value.copying = true
+  try {
+    await navigator.clipboard.writeText(content)
+    copyState.value.copied = true
+    setTimeout(() => {
+      copyState.value.copied = false
+    }, 2000)
+  } catch (err) {
+    // 降级方案
+    const textarea = document.createElement('textarea')
+    textarea.value = content
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+      copyState.value.copied = true
+      setTimeout(() => {
+        copyState.value.copied = false
+      }, 2000)
+    } catch (e) {
+      console.error('复制失败', e)
+    }
+    document.body.removeChild(textarea)
+  } finally {
+    copyState.value.copying = false
   }
 }
 
@@ -192,11 +289,11 @@ onMounted(() => {
               </div>
               <div v-if="result.type === 1 && result.details.emby_username" class="detail-item">
                 <span class="detail-label">Emby 账号</span>
-                <span class="detail-value">{{ result.details.emby_username }}</span>
+                <span class="detail-value selectable">{{ result.details.emby_username }}</span>
               </div>
               <div v-if="result.type === 1 && result.details.emby_password" class="detail-item">
                 <span class="detail-label">密码</span>
-                <span class="detail-value">{{ result.details.emby_password }}</span>
+                <span class="detail-value selectable">{{ result.details.emby_password }}</span>
               </div>
               <div v-if="result.type === 2" class="detail-item">
                 <span class="detail-label">续期天数</span>
@@ -210,15 +307,25 @@ onMounted(() => {
                 <span class="detail-label">充值余额</span>
                 <span class="detail-value">+¥{{ (result.details.recharge_amount || 0) / 100 }} 元</span>
               </div>
+              <div v-if="result.type === 4 && result.details.new_balance !== undefined" class="detail-item">
+                <span class="detail-label">当前余额</span>
+                <span class="detail-value">¥{{ result.details.new_balance / 100 }} 元</span>
+              </div>
               <div v-if="result.details.new_end_date" class="detail-item">
                 <span class="detail-label">有效期至</span>
                 <span class="detail-value">{{ formatDate(result.details.new_end_date) }}</span>
               </div>
             </div>
 
-            <button @click="closeResult" class="app-btn-secondary">
-              确定
-            </button>
+            <div class="result-actions">
+              <button v-if="copyState.showCopy" @click="copyResult" class="app-btn-copy">
+                <component :is="copyState.copied ? Check : Copy" :size="16" />
+                {{ copyState.copied ? '已复制' : '复制信息' }}
+              </button>
+              <button @click="closeResult" class="app-btn-secondary">
+                确定
+              </button>
+            </div>
           </div>
         </div>
       </Transition>
@@ -538,6 +645,41 @@ onMounted(() => {
   font-size: 0.875rem;
   color: rgba(255, 255, 255, 0.9);
   font-weight: 500;
+}
+
+.detail-value.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.05em;
+}
+
+/* 结果弹窗操作按钮 */
+.result-actions {
+  display: flex;
+  gap: 0.625rem;
+}
+
+.app-btn-copy {
+  flex: 1;
+  height: 48px;
+  border-radius: 1rem;
+  background: rgba(52, 211, 153, 0.16);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  color: rgba(52, 211, 153, 0.9);
+  font-size: 0.938rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.app-btn-copy:active {
+  transform: scale(0.98);
+  background: rgba(52, 211, 153, 0.25);
 }
 
 /* 弹窗动画 */
