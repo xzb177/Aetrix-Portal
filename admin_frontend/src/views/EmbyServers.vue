@@ -254,7 +254,7 @@ const handleManageLibraries = async (server: any) => {
 // 加载媒体库列表
 const loadLibraries = async (serverId: number) => {
   try {
-    const response = await http.get<{ libraries: any[] }>(`/api/emby-sessions/servers/${serverId}/libraries`)
+    const response = await http.get<{ libraries: any[] }>(`/emby-sessions/servers/${serverId}/libraries`)
     libraries.value = response.libraries || []
   } catch (error) {
     console.error('加载媒体库失败:', error)
@@ -267,7 +267,7 @@ const handleRefreshLibrary = async (libraryId: string | null) => {
   refreshingLibrary.value = libraryId || 'all'
   try {
     const serverId = selectedServerForLibraries.value.id
-    await http.post(`/api/emby-sessions/servers/${serverId}/libraries/refresh`, {
+    await http.post(`/emby-sessions/servers/${serverId}/libraries/refresh`, {
       library_id: libraryId
     })
     showToastMessage(libraryId ? '媒体库刷新任务已提交' : '所有媒体库刷新任务已提交', 'success')
@@ -284,7 +284,7 @@ const handleScanLibrary = async (libraryId: string | null) => {
   scanningLibrary.value = libraryId || 'all'
   try {
     const serverId = selectedServerForLibraries.value.id
-    await http.post(`/api/emby-sessions/servers/${serverId}/libraries/scan`, {
+    await http.post(`/emby-sessions/servers/${serverId}/libraries/scan`, {
       library_id: libraryId
     })
     showToastMessage(libraryId ? '媒体库扫描任务已提交' : '所有媒体库扫描任务已提交', 'success')
