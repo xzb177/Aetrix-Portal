@@ -104,7 +104,9 @@ def get_user_response(user: WebUser, db: Session) -> dict:
         "telegram_id": user.telegram_id,
         "is_vip": binding["is_vip"] if binding else False,
         "emby_account": binding["emby_account"] if binding else None,
-        "points": binding["points"] if binding else 0,
+        # 优先使用用户表的 balance 字段（单位：分），兼容旧的 points
+        "balance": user.balance if hasattr(user, 'balance') and user.balance is not None else 0,
+        "points": binding["points"] if binding else 0,  # 保留兼容性
         "registered_date": user.created_at.isoformat() if user.created_at else None,
     }
 

@@ -15482,3 +15482,49 @@ async def get_my_emby_accounts(...):
 - **提交**: 00b8433
 - **容器状态**: ✅ admin_frontend 已更新
 
+---
+
+## Bug 修复：余额显示问题（分转元）(2026-01-12)
+
+### 问题描述
+
+用户兑换了 1000 元余额的兑换码后，前端显示余额为 "0" 或显示不正确。经排查，问题在于：
+
+1. 数据库中 `balance` 字段单位为**分**（100000 分 = 1000 元）
+2. 前端 `ProfileHeader.vue` 使用了旧字段 `points`，而不是新字段 `balance`
+3. `HomeView.vue` 中获取余额时也使用了 `points` 字段
+4. 没有将分转换为元进行显示
+
+### 修复内容
+
+**文件**:
+- `user_frontend/src/components/profile/ProfileHeader.vue`
+- `user_frontend/src/views/HomeView.vue`
+
+**修复详情**:
+
+1. **ProfileHeader.vue**
+   - 添加 `balance` 字段到 TypeScript 接口
+   - 添加 `displayBalance` 计算属性，自动将分转换为元
+   - 优先使用 `balance`，兼容旧的 `points` 字段
+
+2. **HomeView.vue**
+   - `fetchUserBalance` 函数改为使用 `balance` 字段
+   - 添加分转元的计算（除以 100）
+   - 兼容处理：`balance || points`
+
+### 数据验证
+
+兑换记录验证（兑换码: WZ0OMDPDR5DQF1L8）:
+```
+- 兑换金额: 100000 分
+- 用户余额: 100000 分
+- 转换后显示: 1000.00 元
+```
+
+### 部署记录
+
+- **修复时间**: 2026-01-12 03:45 UTC
+- **提交**: cdd2b13
+- **容器状态**: ✅ user_frontend 已更新
+

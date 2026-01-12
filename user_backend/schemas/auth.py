@@ -43,7 +43,8 @@ class UserResponse(BaseModel):
     telegram_id: Optional[int] = None
     is_vip: bool = False
     emby_account: Optional[str] = None
-    points: Optional[int] = 0
+    balance: Optional[int] = 0  # 余额，单位：分
+    points: Optional[int] = 0  # @deprecated 旧字段，保留兼容性
     registered_date: Optional[datetime] = None
 
     class Config:
