@@ -29,12 +29,12 @@ onMounted(async () => {
         sessionStorage.removeItem('telegram_redirect')
         router.push(redirect || '/')
       } else {
-        router.push('/login?error=no_callback_params')
+        router.push('/?error=no_callback_params')
       }
     }
   } catch (err) {
     console.error('Telegram callback failed:', err)
-    router.push('/login?error=telegram_callback_failed')
+    router.push('/?error=telegram_callback_failed')
   }
 })
 </script>

@@ -167,7 +167,7 @@ async function copyLink() {
 
   copying.value = true
   try {
-    const url = `${window.location.origin}/login?invite=${inviteData.value.code}`
+    const url = `${window.location.origin}/?invite=${inviteData.value.code}`
     await navigator.clipboard.writeText(url)
     copied.value = true
     setTimeout(() => {

@@ -4,9 +4,11 @@ import { useUserStore } from '@/stores/user'
 import { computed, ref } from 'vue'
 import { Tv, Crown, Calendar, User, LogOut, Menu, X } from 'lucide-vue-next'
 import BrandIcon from '@/components/BrandIcon.vue'
+import { useAuthSheet } from '@/composables/useAuthSheet'
 
 const userStore = useUserStore()
 const route = useRoute()
+const { openAuthSheet } = useAuthSheet()
 
 const isLoggedIn = computed(() => userStore.isLoggedIn)
 const isVIP = computed(() => userStore.isVIP)
@@ -23,11 +25,13 @@ const navLinks = computed(() => {
       { name: '个人中心', path: '/profile', icon: User, highlight: true },
     ]
   }
-  return [
-    { name: '登录', path: '/login' },
-    { name: '注册', path: '/login?mode=register', highlight: true },
-  ]
+  return []
 })
+
+function handleLogin() {
+  openAuthSheet()
+  mobileMenuOpen.value = false
+}
 
 function handleLogout() {
   if (confirm('确定要退出登录吗？')) {
@@ -67,10 +71,10 @@ function handleLogout() {
             </RouterLink>
           </template>
           <template v-else>
-            <RouterLink to="/login" class="text-gray-600 hover:text-gray-900 font-medium">登录</RouterLink>
-            <RouterLink to="/login?mode=register" class="px-4 py-2 bg-gradient-to-r from-emerald-500 to-purple-600 text-white rounded-full font-medium hover:shadow-lg transition-all">
+            <button @click="handleLogin" class="text-gray-600 hover:text-gray-900 font-medium">登录</button>
+            <button @click="handleLogin" class="px-4 py-2 bg-gradient-to-r from-emerald-500 to-purple-600 text-white rounded-full font-medium hover:shadow-lg transition-all">
               注册
-            </RouterLink>
+            </button>
           </template>
         </div>
 
@@ -113,20 +117,18 @@ function handleLogout() {
             </button>
           </template>
           <template v-else>
-            <RouterLink
-              to="/login"
-              @click="mobileMenuOpen = false"
+            <button
+              @click="handleLogin"
               class="flex items-center gap-2 px-4 py-3 rounded-xl text-gray-600 hover:bg-gray-100"
             >
               登录
-            </RouterLink>
-            <RouterLink
-              to="/login?mode=register"
-              @click="mobileMenuOpen = false"
+            </button>
+            <button
+              @click="handleLogin"
               class="flex items-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-purple-600 text-white"
             >
               注册
-            </RouterLink>
+            </button>
           </template>
         </div>
       </div>

@@ -3,6 +3,7 @@ import { ref, onMounted, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
+import { useAuthSheet } from '@/composables/useAuthSheet'
 import { paymentApi, subscriptionApi, authApi } from '@/api'
 import {
   Crown,
@@ -27,6 +28,7 @@ import {
 const router = useRouter()
 const userStore = useUserStore()
 const toast = useToast()
+const { openAuthSheet } = useAuthSheet()
 
 // 状态
 const pageLoaded = ref(false)
@@ -181,7 +183,7 @@ function savingsPercentage(price: number, days: number) {
 // 打开支付选择弹窗
 function openPaymentModal(planId: number) {
   if (!isLoggedIn.value) {
-    router.push('/login?redirect=' + encodeURIComponent('/subscription'))
+    openAuthSheet()
     return
   }
   selectedPlanId.value = planId
@@ -278,7 +280,7 @@ function getPaymentIcon(methodId: string) {
 
 async function handlePurchase(planId: number) {
   if (!isLoggedIn.value) {
-    router.push('/login?redirect=' + encodeURIComponent('/subscription'))
+    openAuthSheet()
     return
   }
 

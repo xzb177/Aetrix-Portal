@@ -664,25 +664,58 @@ async def balance_pay(
                     ).first()
 
                     if existing_account:
-                        # 更新现有账号
-                        existing_account.username = random_username
-                        existing_account.password = random_password
-                        existing_account.expires_at = expires_at
-                        existing_account.subscription_id = subscription.id
+                        # 更新现有账号（先删除 Emby 上的旧用户）
+                        try:
+                            from utils.emby_client import EmbyClient
+                            client = EmbyClient(selected_server.url, selected_server.api_key)
+                            old_emby_id = existing_account.emby_user_id
+                            if old_emby_id:
+                                client.delete_user(old_emby_id)
+                        except Exception as e:
+                            logger.warning(f"删除旧 Emby 用户失败: {e}")
+
+                        # 在 Emby 上创建新用户
+                        try:
+                            from utils.emby_client import EmbyClient
+                            client = EmbyClient(selected_server.url, selected_server.api_key)
+                            result = client.create_user(random_username, random_password)
+                            if result.get('success'):
+                                emby_user_id = result.get('user_id')
+                                existing_account.username = random_username
+                                existing_account.password = random_password
+                                existing_account.emby_user_id = emby_user_id
+                                existing_account.expires_at = expires_at
+                                existing_account.subscription_id = subscription.id
+                                logger.info(f"更新 Emby 账号: {random_username}@{selected_server.name}, ID: {emby_user_id}")
+                            else:
+                                logger.error(f"创建 Emby 用户失败: {result.get('message')}")
+                        except Exception as e:
+                            logger.error(f"创建 Emby 用户异常: {e}")
                     else:
-                        # 创建新账号
-                        emby_account = UserEmbyAccount(
-                            user_id=current_user.id,
-                            server_id=selected_server.id,
-                            subscription_id=subscription.id,
-                            username=random_username,
-                            password=random_password,
-                            expires_at=expires_at
-                        )
-                        db.add(emby_account)
+                        # 创建新账号 - 先在 Emby 上创建用户
+                        try:
+                            from utils.emby_client import EmbyClient
+                            client = EmbyClient(selected_server.url, selected_server.api_key)
+                            result = client.create_user(random_username, random_password)
+                            if result.get('success'):
+                                emby_user_id = result.get('user_id')
+                                emby_account = UserEmbyAccount(
+                                    user_id=current_user.id,
+                                    server_id=selected_server.id,
+                                    subscription_id=subscription.id,
+                                    emby_user_id=emby_user_id,
+                                    username=random_username,
+                                    password=random_password,
+                                    expires_at=expires_at
+                                )
+                                db.add(emby_account)
+                                logger.info(f"创建 Emby 账号成功: {random_username}@{selected_server.name}, ID: {emby_user_id}")
+                            else:
+                                logger.error(f"创建 Emby 用户失败: {result.get('message')}")
+                        except Exception as e:
+                            logger.error(f"创建 Emby 用户异常: {e}")
 
                     db.commit()
-                    logger.info(f"为用户 {current_user.id} 分配 Emby 账号: {selected_server.name}")
 
         except Exception as e:
             logger.error(f"创建 Emby 账号失败: {e}")

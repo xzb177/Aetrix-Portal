@@ -5,13 +5,20 @@ import { computed, ref } from 'vue'
 import { Menu, X, User, LogOut, Crown, Tv, ChevronDown } from 'lucide-vue-next'
 import NotificationCenter from '@/components/NotificationCenter.vue'
 import BrandIcon from '@/components/BrandIcon.vue'
+import { useAuthSheet } from '@/composables/useAuthSheet'
 
 const userStore = useUserStore()
 const router = useRouter()
 const route = useRoute()
+const { openAuthSheet } = useAuthSheet()
 
 const mobileMenuOpen = ref(false)
 const userMenuOpen = ref(false)
+
+function handleLogin() {
+  openAuthSheet()
+  mobileMenuOpen.value = false
+}
 
 const navItems = computed(() => {
   const items = [
@@ -161,9 +168,9 @@ function handleClickOutside() {
           </template>
 
           <template v-else>
-            <RouterLink to="/login" @click="handleClickOutside" class="mobile-link mobile-link-primary">
+            <button @click="handleLogin" class="mobile-link mobile-link-primary">
               登录 / 注册
-            </RouterLink>
+            </button>
           </template>
         </div>
       </div>

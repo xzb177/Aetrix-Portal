@@ -159,7 +159,7 @@ const goBack = () => {
 }
 
 const goToLogin = () => {
-  router.push({ name: 'login', query: route.query })
+  router.push({ name: 'home', query: route.query })
 }
 
 // 密码强度指示

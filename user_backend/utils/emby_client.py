@@ -164,14 +164,21 @@ class EmbyClient:
 
             # 步骤 2: 设置密码（必须步骤，否则用户无法登录）
             if password:
-                password_result = self._request('POST', f'/Users/{user_id}/Password', json={
-                    'NewPassword': password,
-                    'ResetPassword': False
-                })
-                if password_result is None:
+                try:
+                    password_response = requests.post(
+                        f"{self.server_url}/Users/{user_id}/Password",
+                        headers=self.headers,
+                        json={'NewPassword': password, 'ResetPassword': False},
+                        timeout=10
+                    )
+                    password_response.raise_for_status()
+                    # 204 No Content 表示成功
+                    if password_response.status_code not in [200, 204]:
+                        raise Exception(f"密码设置返回状态码: {password_response.status_code}")
+                except Exception as e:
                     # 密码设置失败，删除用户并返回错误
                     self.delete_user(user_id)
-                    return {'success': False, 'message': '用户创建成功，但密码设置失败'}
+                    return {'success': False, 'message': f'用户创建成功，但密码设置失败: {str(e)}'}
 
             return {
                 'success': True,
@@ -507,3 +514,34 @@ def load_emby_server(server_url: str, api_key: str) -> EmbyClient:
         EmbyClient 实例
     """
     return EmbyClient(server_url, api_key)
+
+
+async def create_emby_user(
+    server_url: str,
+    api_key: str,
+    username: str,
+    password: str,
+    email: Optional[str] = None
+) -> Optional[str]:
+    """
+    在 Emby 服务器上创建新用户
+
+    Args:
+        server_url: Emby 服务器地址
+        api_key: Emby API Key
+        username: 用户名
+        password: 密码
+        email: 邮箱（可选）
+
+    Returns:
+        成功时返回用户 ID，失败时返回 None
+    """
+    try:
+        client = EmbyClient(server_url, api_key)
+        result = client.create_user(username, password, email)
+        if result.get('success'):
+            return result.get('user_id')
+        return None
+    except Exception as e:
+        print(f"创建 Emby 用户失败: {e}")
+        return None

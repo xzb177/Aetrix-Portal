@@ -8,10 +8,12 @@ import EmbyCard from '@/components/profile/EmbyCard.vue'
 import QuickGrid from '@/components/profile/QuickGrid.vue'
 import SettingsList from '@/components/profile/SettingsList.vue'
 import { useToast } from '@/composables/useToast'
+import { useAuthSheet } from '@/composables/useAuthSheet'
 
 const router = useRouter()
 const userStore = useUserStore()
 const toast = useToast()
+const { openAuthSheet } = useAuthSheet()
 
 const profile = ref<any>(null)
 const loading = ref(true)
@@ -24,7 +26,7 @@ const isVIP = computed(() => userStore.isVIP)
 
 onMounted(async () => {
   if (!isLoggedIn.value) {
-    router.push('/login?redirect=' + encodeURIComponent('/profile'))
+    openAuthSheet()
     return
   }
   await Promise.all([fetchProfile(), fetchEmbyAccounts(), fetchSubscription()])

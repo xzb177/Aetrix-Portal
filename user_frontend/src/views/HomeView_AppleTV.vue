@@ -13,8 +13,10 @@ import { RouterLink } from 'vue-router'
 import { Play, Menu } from 'lucide-vue-next'
 import { ref } from 'vue'
 import BrandIcon from '@/components/BrandIcon.vue'
+import { useAuthSheet } from '@/composables/useAuthSheet'
 
 const mobileMenuOpen = ref(false)
+const { openAuthSheet } = useAuthSheet()
 </script>
 
 <template>
@@ -27,7 +29,7 @@ const mobileMenuOpen = ref(false)
       <RouterLink to="/" class="header-logo">
         <BrandIcon :size="32" />
         <span class="logo-text">RoyalBot</span>
-      </RouterLink>
+      </button>
 
       <!-- 右侧仅保留菜单图标 -->
       <button
@@ -43,16 +45,16 @@ const mobileMenuOpen = ref(false)
     <Transition name="drawer">
       <div v-if="mobileMenuOpen" class="mobile-drawer" @click.self="mobileMenuOpen = false">
         <nav class="drawer-nav">
-          <RouterLink to="/login" @click="mobileMenuOpen = false" class="drawer-link drawer-link-primary">
+          <button @click="openAuthSheet(); mobileMenuOpen = false" class="drawer-link drawer-link-primary">
             登录 / 注册
-          </RouterLink>
+          </button>
           <div class="drawer-divider"></div>
           <RouterLink to="/subscription" @click="mobileMenuOpen = false" class="drawer-link">
             套餐说明
-          </RouterLink>
+          </button>
           <RouterLink to="/tickets" @click="mobileMenuOpen = false" class="drawer-link">
             联系客服
-          </RouterLink>
+          </button>
         </nav>
       </div>
     </Transition>
@@ -69,9 +71,9 @@ const mobileMenuOpen = ref(false)
       <p class="main-subtitle">领取账号 · 即刻观影</p>
 
       <!-- 唯一主 CTA -->
-      <RouterLink to="/login" class="main-cta">
+      <button @click="openAuthSheet" class="main-cta">
         <span>登录 / 注册</span>
-      </RouterLink>
+      </button>
 
       <!-- 信任小字 -->
       <p class="trust-text">无自动续费 · 订单可查</p>
@@ -97,9 +99,9 @@ const mobileMenuOpen = ref(false)
 
       <!-- 极弱次要入口 -->
       <div class="secondary-links">
-        <RouterLink to="/subscription" class="weak-link">套餐说明</RouterLink>
+        <RouterLink to="/subscription" class="weak-link">套餐说明</button>
         <span class="weak-divider">·</span>
-        <RouterLink to="/tickets" class="weak-link">联系客服</RouterLink>
+        <RouterLink to="/tickets" class="weak-link">联系客服</button>
       </div>
     </main>
   </div>
