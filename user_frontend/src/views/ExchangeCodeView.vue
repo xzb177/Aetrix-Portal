@@ -40,6 +40,9 @@ const copyState = ref({
   showCopy: false
 })
 
+// 兑换记录复制状态
+const recordCopyStates = ref<Record<number, { copying: boolean; copied: boolean }>>({})
+
 // 兑换码类型说明 - 使用 lucide-vue-next 图标替换 emoji
 const codeTypes = [
   { type: 1, name: '激活试用', desc: '激活 Emby 账号并获得试用天数', icon: Sparkles },
@@ -200,6 +203,88 @@ async function fetchRecords() {
     console.error('获取兑换记录失败:', error)
   } finally {
     loading.value = false
+  }
+}
+
+// 获取兑换记录的复制状态
+function getRecordCopyState(recordId: number) {
+  if (!recordCopyStates.value[recordId]) {
+    recordCopyStates.value[recordId] = { copying: false, copied: false }
+  }
+  return recordCopyStates.value[recordId]
+}
+
+// 复制兑换记录信息
+async function copyRecord(record: any) {
+  const state = getRecordCopyState(record.id)
+  state.copying = true
+  state.copied = false
+
+  // 生成复制内容
+  let content = `【兑换记录】\n`
+  content += `兑换类型: ${record.type_name || getTypeName(record.type)}\n`
+  content += `兑换码: ${record.code}\n`
+  if (record.description) {
+    content += `说明: ${record.description}\n`
+  }
+  content += `兑换时间: ${formatDate(record.created_at || record.used_at)}\n`
+
+  // 如果有详细信息，也复制
+  if (record.effect && typeof record.effect === 'object') {
+    content += `\n【兑换详情】\n`
+    const effect = record.effect
+    if (effect.trial_days) {
+      content += `试用天数: ${effect.trial_days} 天\n`
+    }
+    if (effect.emby_server) {
+      content += `服务器: ${effect.emby_server}\n`
+    }
+    if (effect.emby_username) {
+      content += `用户名: ${effect.emby_username}\n`
+    }
+    if (effect.emby_password) {
+      content += `密码: ${effect.emby_password}\n`
+    }
+    if (effect.extended_days) {
+      content += `续期: +${effect.extended_days} 天\n`
+    }
+    if (effect.extended_months) {
+      content += `续期: +${effect.extended_months} 个月\n`
+    }
+    if (effect.recharge_amount) {
+      content += `充值: ¥${effect.recharge_amount / 100} 元\n`
+    }
+    if (effect.new_end_date) {
+      content += `有效期至: ${formatDate(effect.new_end_date)}\n`
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(content)
+    state.copied = true
+    setTimeout(() => {
+      state.copied = false
+    }, 2000)
+  } catch (err) {
+    // 降级方案
+    const textarea = document.createElement('textarea')
+    textarea.value = content
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+      state.copied = true
+      setTimeout(() => {
+        state.copied = false
+      }, 2000)
+    } catch (e) {
+      console.error('复制失败', e)
+    }
+    document.body.removeChild(textarea)
+  } finally {
+    state.copying = false
   }
 }
 
@@ -380,13 +465,20 @@ onMounted(() => {
             </div>
             <div class="record-info">
               <p class="record-code">{{ record.code }}</p>
-              <p class="record-note" v-if="record.note">{{ record.note }}</p>
+              <p class="record-note" v-if="record.note || record.description">{{ record.note || record.description }}</p>
               <p class="record-date">
                 <Calendar :size="11" class="text-white/30" />
-                {{ formatDate(record.used_at) }}
+                {{ formatDate(record.created_at || record.used_at) }}
               </p>
             </div>
-            <span class="record-count">×{{ record.exchange_count }}</span>
+            <button
+              class="record-copy-btn"
+              :class="{ 'record-copy-copied': getRecordCopyState(record.id).copied }"
+              @click.stop="copyRecord(record)"
+            >
+              <Check v-if="getRecordCopyState(record.id).copied" :size="14" />
+              <Copy v-else :size="14" />
+            </button>
           </div>
         </div>
       </div>
@@ -873,5 +965,36 @@ onMounted(() => {
   font-weight: 600;
   border: 1px solid rgba(52, 211, 153, 0.15);
   flex-shrink: 0;
+}
+
+/* 兑换记录复制按钮 */
+.record-copy-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 0.5rem;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.record-copy-btn:active {
+  transform: scale(0.92);
+}
+
+.record-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.record-copy-btn.record-copy-copied {
+  background: rgba(16, 185, 129, 0.2);
+  color: rgba(52, 211, 153, 0.9);
+  border: 1px solid rgba(52, 211, 153, 0.3);
 }
 </style>

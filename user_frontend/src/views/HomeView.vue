@@ -323,9 +323,10 @@ const fetchSubscription = async () => {
 // 获取用户余额
 const fetchUserBalance = async () => {
   try {
-    const response = await authApi.getCurrentUser()
+    const response = await authApi.getCurrentUser() as any
+    // API 拦截器已经返回了 res.data，所以直接访问 response.balance
     // balance 单位是分，需要转换为元
-    userBalance.value = (response?.data?.balance || response?.data?.points || 0) / 100
+    userBalance.value = (response?.balance || response?.points || 0) / 100
   } catch (error) {
     userBalance.value = 0
   }
