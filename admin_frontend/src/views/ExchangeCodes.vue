@@ -63,6 +63,39 @@ const batchCreating = ref(false)
 const batchResult = ref<string[]>([])
 const showBatchResultDialog = ref(false)
 
+// 根据兑换码类型获取字段标签
+function getCountLabel(type: number): string {
+  const labels: Record<number, string> = {
+    1: '试用天数',
+    2: '续期天数',
+    3: '续期月数',
+    4: '充值金额（元）'
+  }
+  return labels[type] || '数量'
+}
+
+// 根据兑换码类型获取占位符
+function getCountPlaceholder(type: number): string {
+  const placeholders: Record<number, string> = {
+    1: '输入试用天数，如：7',
+    2: '输入续期天数，如：30',
+    3: '输入续期月数，如：1',
+    4: '输入充值金额（元），如：10'
+  }
+  return placeholders[type] || '请输入'
+}
+
+// 根据兑换码类型获取最大值
+function getCountMax(type: number): number {
+  const maxValues: Record<number, number> = {
+    1: 365,    // 试用最多1年
+    2: 3650,   // 天数最多10年
+    3: 120,    // 月数最多10年
+    4: 10000   // 余额最多10000元
+  }
+  return maxValues[type] || 3650
+}
+
 // 获取统计数据
 async function fetchStats() {
   try {
@@ -209,6 +242,17 @@ function handleDelete(row: any) {
 function getTypeName(type: number) {
   const t = codeTypes.find(t => t.value === type)
   return t ? t.label : '未知'
+}
+
+// 根据类型获取数量单位标签
+function getCountUnit(type: number): string {
+  const units: Record<number, string> = {
+    1: '天',
+    2: '天',
+    3: '个月',
+    4: '元'
+  }
+  return units[type] || ''
 }
 
 function getTypeColor(type: number) {
@@ -400,7 +444,7 @@ onMounted(() => {
             </div>
             <div class="code-info-row">
               <span class="code-label">数量</span>
-              <span class="code-value">x{{ row.exchange_count }}</span>
+              <span class="code-value">{{ row.exchange_count }}{{ getCountUnit(row.type) }}</span>
             </div>
             <div v-if="row.used_by_username" class="code-info-row">
               <User :size="14" class="row-icon" />
@@ -486,14 +530,30 @@ onMounted(() => {
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">数量/天数</label>
+            <label class="form-label">{{ getCountLabel(createForm.type) }}</label>
             <input
               v-model.number="createForm.exchange_count"
               type="number"
               class="form-input"
+              :placeholder="getCountPlaceholder(createForm.type)"
               min="1"
-              max="3650"
+              :max="getCountMax(createForm.type)"
+              step="0.01"
             />
+            <span class="form-hint">
+              <template v-if="createForm.type === 4">
+                用户兑换后将获得对应金额的余额（单位：元）
+              </template>
+              <template v-else-if="createForm.type === 1">
+                用户兑换后将获得对应天数的试用会员
+              </template>
+              <template v-else-if="createForm.type === 2">
+                用户兑换后会员将延长对应天数
+              </template>
+              <template v-else>
+                用户兑换后会员将延长对应月数
+              </template>
+            </span>
           </div>
           <div class="form-group">
             <label class="form-label">备注</label>
@@ -538,14 +598,30 @@ onMounted(() => {
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">数量/天数</label>
+            <label class="form-label">{{ getCountLabel(batchForm.type) }}</label>
             <input
               v-model.number="batchForm.exchange_count"
               type="number"
               class="form-input"
+              :placeholder="getCountPlaceholder(batchForm.type)"
               min="1"
-              max="3650"
+              :max="getCountMax(batchForm.type)"
+              step="0.01"
             />
+            <span class="form-hint">
+              <template v-if="batchForm.type === 4">
+                用户兑换后将获得对应金额的余额（单位：元）
+              </template>
+              <template v-else-if="batchForm.type === 1">
+                用户兑换后将获得对应天数的试用会员
+              </template>
+              <template v-else-if="batchForm.type === 2">
+                用户兑换后会员将延长对应天数
+              </template>
+              <template v-else>
+                用户兑换后会员将延长对应月数
+              </template>
+            </span>
           </div>
           <div class="form-group">
             <label class="form-label">备注</label>
@@ -1114,6 +1190,12 @@ onMounted(() => {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   color: var(--text-primary);
+}
+
+.form-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  line-height: 1.4;
 }
 
 .form-input, .form-select, .form-textarea {
