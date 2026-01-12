@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { Tickets, CircleCheck, CircleX, Search, RefreshCw, Plus, Copy, Trash2, Menu, Calendar, User } from 'lucide-vue-next'
+import { Tickets, CircleCheck, CircleX, Search, RefreshCw, Plus, Copy, Trash2, Menu, Calendar, User, Check } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus'
 import {
   getExchangeCodes,
   createExchangeCode,
@@ -62,6 +63,9 @@ const creating = ref(false)
 const batchCreating = ref(false)
 const batchResult = ref<string[]>([])
 const showBatchResultDialog = ref(false)
+
+// 复制状态
+const copyStates = ref<Record<number, { copying: boolean; copied: boolean }>>({})
 
 // 根据兑换码类型获取字段标签
 function getCountLabel(type: number): string {
@@ -207,8 +211,55 @@ async function handleBatchCreate() {
 }
 
 // 复制兑换码
-function copyCode(code: string) {
-  navigator.clipboard.writeText(code)
+async function copyCode(code: string, codeId: number) {
+  const state = copyStates.value[codeId] || { copying: false, copied: false }
+  copyStates.value[codeId] = state
+  state.copying = true
+  state.copied = false
+
+  try {
+    await navigator.clipboard.writeText(code)
+    state.copied = true
+    ElMessage.success({
+      message: '已复制到剪贴板',
+      duration: 2000,
+      showClose: false
+    })
+
+    setTimeout(() => {
+      state.copied = false
+    }, 2000)
+  } catch (err) {
+    // 降级方案
+    const textarea = document.createElement('textarea')
+    textarea.value = code
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const successful = document.execCommand('copy')
+    document.body.removeChild(textarea)
+
+    if (successful) {
+      state.copied = true
+      ElMessage.success({
+        message: '已复制到剪贴板',
+        duration: 2000,
+        showClose: false
+      })
+
+      setTimeout(() => {
+        state.copied = false
+      }, 2000)
+    } else {
+      ElMessage.error({
+        message: '复制失败，请手动复制',
+        duration: 3000
+      })
+    }
+  } finally {
+    state.copying = false
+  }
 }
 
 // 复制批量生成的兑换码
@@ -466,10 +517,12 @@ onMounted(() => {
             <button
               v-if="row.status === 0"
               class="btn-copy"
-              @click="copyCode(row.code)"
+              :class="{ 'btn-copy-copied': copyStates[row.id]?.copied, 'btn-copying': copyStates[row.id]?.copying }"
+              @click="copyCode(row.code, row.id)"
             >
-              <Copy :size="14" />
-              复制
+              <Check v-if="copyStates[row.id]?.copied" :size="14" />
+              <Copy v-else :size="14" />
+              {{ copyStates[row.id]?.copied ? '已复制' : '复制' }}
             </button>
             <button
               v-if="row.status !== 1"
@@ -1087,6 +1140,31 @@ onMounted(() => {
 .btn-copy {
   background: var(--primary-bg);
   color: var(--primary);
+  transition: all 150ms ease;
+}
+
+.btn-copy:active {
+  transform: scale(0.95);
+}
+
+.btn-copy-copied {
+  background: var(--success-bg) !important;
+  color: var(--success) !important;
+  border: 1px solid var(--success);
+}
+
+.btn-copying {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.btn-copying svg {
+  animation: spin 0.5s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .btn-delete {
