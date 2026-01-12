@@ -115,6 +115,7 @@ def sanitize_log_value(value: str) -> str:
 async def login(
     credentials: LoginRequest,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db)
 ):
     """管理员登录 - 安全增强版"""
@@ -247,6 +248,12 @@ async def login(
 
         resp = JSONResponse(content=response_data)
 
+        # 根据请求协议决定是否使用 secure 标志
+        # 检查 X-Forwarded-Proto 或 X-Real-Proto 头（Nginx 代理）
+        proto = request.headers.get("X-Forwarded-Proto",
+                request.headers.get("X-Real-Proto", "http"))
+        is_secure = proto.lower() == "https"
+
         # 设置访问令牌 cookie (httpOnly - 防止 XSS 窃取)
         resp.set_cookie(
             key="admin_access_token",
@@ -254,7 +261,7 @@ async def login(
             max_age=max_age,
             path="/",
             domain=cookie_domain,
-            secure=True,  # 仅 HTTPS
+            secure=is_secure,  # 根据协议动态设置
             httponly=True,  # 防止 JavaScript 访问
             samesite="lax",  # 防止 CSRF
         )
@@ -266,7 +273,7 @@ async def login(
             max_age=max_age,
             path="/",
             domain=cookie_domain,
-            secure=True,
+            secure=is_secure,  # 根据协议动态设置
             httponly=False,  # 前端需要读取
             samesite="lax",
         )
