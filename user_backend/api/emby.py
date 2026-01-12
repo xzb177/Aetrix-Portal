@@ -68,10 +68,11 @@ def create_emby_account(db: Session, user_id: int, subscription: UserSubscriptio
     # ========== 关键修复：在 Emby 服务器上创建用户 ==========
     emby_client = EmbyClient(selected_server.url, selected_server.api_key)
 
-    # 确保用户名唯一
+    # 确保用户名唯一（优化版：一次性获取所有用户名，避免多次 API 调用）
+    existing_usernames = emby_client.get_usernames_set(use_cache=True)
     counter = 0
     base_username = random_username
-    while emby_client.user_exists(random_username) and counter < 10:
+    while random_username in existing_usernames and counter < 10:
         counter += 1
         random_username = f"{base_username}_{counter}"
 

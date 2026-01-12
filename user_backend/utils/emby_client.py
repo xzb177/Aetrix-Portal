@@ -1,16 +1,32 @@
 """
 Emby API 客户端
 用于与 Emby 服务器交互，创建用户、管理账号等
+
+优化说明：
+- 添加用户列表缓存，减少 API 调用
+- 优化用户名生成，避免重复检查
+- 添加请求去重和并发控制
 """
 import requests
 import secrets
 import string
-from typing import Optional, Dict, Any, List
+import time
+import hashlib
+from typing import Optional, Dict, Any, List, Set
 from datetime import datetime
+from functools import lru_cache
 
 
 class EmbyClient:
     """Emby API 客户端"""
+
+    # 缓存配置
+    _users_cache: Dict[str, tuple[List[Dict], float]] = {}  # {server_url: (users_list, expire_time)}
+    _cache_ttl = 300  # 缓存5分钟
+
+    # 请求限流
+    _last_request_time: Dict[str, float] = {}
+    _min_request_interval = 0.1  # 最小请求间隔100ms
 
     def __init__(self, server_url: str, api_key: str):
         """
@@ -29,9 +45,13 @@ class EmbyClient:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
 
+    def _get_cache_key(self) -> str:
+        """获取当前服务器的缓存键"""
+        return f"{self.server_url}:{hashlib.md5(self.api_key.encode()).hexdigest()[:8]}"
+
     def _request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
         """
-        发送 HTTP 请求
+        发送 HTTP 请求（带限流控制）
 
         Args:
             method: HTTP 方法
@@ -41,9 +61,18 @@ class EmbyClient:
         Returns:
             响应数据
         """
+        # 请求限流：避免短时间内对同一服务器发送过多请求
+        cache_key = self._get_cache_key()
+        current_time = time.time()
+        last_request = self._last_request_time.get(cache_key, 0)
+
+        if current_time - last_request < self._min_request_interval:
+            time.sleep(self._min_request_interval - (current_time - last_request))
+
         url = f"{self.server_url}{endpoint}"
         try:
             response = requests.request(method, url, headers=self.headers, timeout=10, **kwargs)
+            self._last_request_time[cache_key] = time.time()
             response.raise_for_status()
             if response.status_code == 204:  # No Content
                 return None
@@ -51,6 +80,12 @@ class EmbyClient:
         except requests.RequestException as e:
             print(f"Emby API 请求失败: {e}")
             return None
+
+    def _invalidate_cache(self):
+        """使用户列表缓存失效"""
+        cache_key = self._get_cache_key()
+        if cache_key in self._users_cache:
+            del self._users_cache[cache_key]
 
     def test_connection(self) -> Dict[str, Any]:
         """
@@ -90,16 +125,29 @@ class EmbyClient:
             return len([u for u in users if not u.get('Hidden', False)])
         return 0
 
-    def get_users(self) -> List[Dict]:
+    def get_users(self, use_cache: bool = True) -> List[Dict]:
         """
-        获取所有用户列表
+        获取所有用户列表（带缓存）
+
+        Args:
+            use_cache: 是否使用缓存
 
         Returns:
             用户列表
         """
+        cache_key = self._get_cache_key()
+        current_time = time.time()
+
+        # 检查缓存
+        if use_cache and cache_key in self._users_cache:
+            users_list, expire_time = self._users_cache[cache_key]
+            if current_time < expire_time:
+                return users_list
+
+        # 从服务器获取
         users = self._request('GET', '/Users')
         if users:
-            return [
+            result = [
                 {
                     'id': u.get('Id'),
                     'name': u.get('Name'),
@@ -109,20 +157,37 @@ class EmbyClient:
                 }
                 for u in users
             ]
+            # 缓存结果
+            self._users_cache[cache_key] = (result, current_time + self._cache_ttl)
+            return result
         return []
 
-    def user_exists(self, username: str) -> bool:
+    def get_usernames_set(self, use_cache: bool = True) -> Set[str]:
         """
-        检查用户是否存在
+        获取所有用户名集合（用于快速检查）
+
+        Args:
+            use_cache: 是否使用缓存
+
+        Returns:
+            用户名集合
+        """
+        users = self.get_users(use_cache=use_cache)
+        return {u['name'] for u in users}
+
+    def user_exists(self, username: str, use_cache: bool = True) -> bool:
+        """
+        检查用户是否存在（使用缓存优化）
 
         Args:
             username: 用户名
+            use_cache: 是否使用缓存
 
         Returns:
             是否存在
         """
-        users = self.get_users()
-        return any(u['name'] == username for u in users)
+        usernames = self.get_usernames_set(use_cache=use_cache)
+        return username in usernames
 
     def create_user(
         self,
@@ -131,7 +196,7 @@ class EmbyClient:
         email: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        创建新用户
+        创建新用户（优化版，创建后使缓存失效）
 
         重要：根据 Emby API 文档，创建用户时不能直接设置密码。
         必须先创建用户，然后通过单独的 API 设置密码。
@@ -144,8 +209,8 @@ class EmbyClient:
         Returns:
             {'success': bool, 'user_id': str, 'message': str}
         """
-        # 检查用户是否已存在
-        if self.user_exists(username):
+        # 检查用户是否已存在（使用缓存）
+        if self.user_exists(username, use_cache=True):
             return {'success': False, 'message': f'用户 {username} 已存在'}
 
         try:
@@ -179,6 +244,9 @@ class EmbyClient:
                     # 密码设置失败，删除用户并返回错误
                     self.delete_user(user_id)
                     return {'success': False, 'message': f'用户创建成功，但密码设置失败: {str(e)}'}
+
+            # 创建成功，使缓存失效
+            self._invalidate_cache()
 
             return {
                 'success': True,

@@ -269,13 +269,23 @@ async def process_activate_trial(
 
     if server:
         # 有服务器，在 Emby 服务器上创建用户
-        emby_username = f"rb{user.id}{secrets.token_hex(2)}"
+        # 生成用户名（使用时间戳后缀提高唯一性）
+        import time
+        emby_username = f"rb{user.id}{int(time.time() % 10000):04d}"
         emby_password = secrets.token_urlsafe(12)
 
         # 调用 Emby API 创建用户
         emby_user_id = None
         try:
             client = EmbyClient(server.url, server.api_key)
+
+            # 优化：使用缓存的用户名集合确保唯一性
+            existing_usernames = client.get_usernames_set(use_cache=True)
+            counter = 0
+            while emby_username in existing_usernames and counter < 10:
+                counter += 1
+                emby_username = f"rb{user.id}{int(time.time() % 10000):04d}_{counter}"
+
             create_result = client.create_user(emby_username, emby_password)
             if create_result.get('success'):
                 emby_user_id = create_result.get('user_id')
