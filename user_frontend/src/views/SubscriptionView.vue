@@ -19,6 +19,8 @@ import {
   Sparkles,
   HelpCircle,
   X,
+  PartyPopper,
+  Clock,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -40,6 +42,18 @@ const plans = ref<any[]>([])
 const mySubscription = ref<any>(null)
 const purchasing = ref<number | null>(null)
 const expandedFaq = ref<number | null>(null)
+
+// 购买成功弹窗
+const showSuccessModal = ref(false)
+const successData = ref<{
+  planName: string
+  endDate: string
+  price: number
+}>({
+  planName: '',
+  endDate: '',
+  price: 0
+})
 
 // V3: 套餐展开状态（推荐套餐默认展开，其他默认折叠）
 const expandedPlans = ref<Set<number>>(new Set())
@@ -200,9 +214,24 @@ async function confirmPayment() {
       const { data } = await paymentApi.balancePay({
         plan_id: selectedPlanId.value
       })
+
+      // 关闭支付弹窗
       closePaymentModal()
-      toast.success(`订阅成功！有效期至 ${new Date(data.end_date).toLocaleDateString('zh-CN')}`)
-      window.location.reload()
+
+      // 显示成功弹窗
+      successData.value = {
+        planName: selectedPlan.value.name,
+        endDate: new Date(data.end_date).toLocaleDateString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }),
+        price: selectedPlan.value.price
+      }
+      showSuccessModal.value = true
+
+      // 刷新用户数据
+      await fetchUserBalance()
     } catch (error: any) {
       console.error('余额支付失败:', error)
       paymentError.value = error.response?.data?.detail || '余额支付失败，请稍后重试'
@@ -227,6 +256,13 @@ async function confirmPayment() {
   } finally {
     loadingPayment.value = false
   }
+}
+
+// 关闭成功弹窗
+function closeSuccessModal() {
+  showSuccessModal.value = false
+  // 刷新页面以更新状态
+  window.location.reload()
 }
 
 // 切换 FAQ 展开
@@ -505,6 +541,61 @@ async function handlePurchase(planId: number) {
           </div>
         </div>
       </div>
+    </Teleport>
+
+    <!-- 购买成功弹窗 -->
+    <Teleport to="body">
+      <Transition name="success-modal">
+        <div v-if="showSuccessModal" class="success-modal-overlay" @click.self="closeSuccessModal">
+          <div class="success-modal glass-card">
+            <!-- 成功动画 -->
+            <div class="success-animation">
+              <div class="success-icon-wrapper">
+                <PartyPopper :size="48" class="party-popper" />
+                <div class="success-check">
+                  <Check :size="32" />
+                </div>
+              </div>
+            </div>
+
+            <!-- 成功内容 -->
+            <div class="success-content">
+              <h3 class="success-title">订阅成功！</h3>
+              <p class="success-desc">您已成功购买 {{ successData.planName }}</p>
+
+              <!-- 详情列表 -->
+              <div class="success-details">
+                <div class="success-detail-item">
+                  <span class="detail-label">
+                    <Crown :size="14" />
+                    套餐名称
+                  </span>
+                  <span class="detail-value">{{ successData.planName }}</span>
+                </div>
+                <div class="success-detail-item">
+                  <span class="detail-label">
+                    <Wallet :size="14" />
+                    支付金额
+                  </span>
+                  <span class="detail-value highlight">¥{{ successData.price }}</span>
+                </div>
+                <div class="success-detail-item">
+                  <span class="detail-label">
+                    <Clock :size="14" />
+                    有效期至
+                  </span>
+                  <span class="detail-value">{{ successData.endDate }}</span>
+                </div>
+              </div>
+
+              <!-- 确认按钮 -->
+              <button @click="closeSuccessModal" class="success-btn">
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </Teleport>
   </div>
 </template>
@@ -1062,4 +1153,176 @@ async function handlePurchase(planId: number) {
     gap: 0.5rem;
   }
 }
+
+/* ==================== 购买成功弹窗 ==================== */
+.success-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+.success-modal {
+  width: 100%;
+  max-width: 380px;
+  overflow: hidden;
+  padding: 2rem 1.5rem;
+  text-align: center;
+}
+
+/* 成功动画 */
+.success-animation {
+  margin-bottom: 1.5rem;
+}
+
+.success-icon-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.party-popper {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  color: var(--brand-500, #10b981);
+  animation: bounce 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes bounce {
+  from {
+    transform: translateY(0) rotate(-10deg);
+  }
+  to {
+    transform: translateY(-8px) rotate(10deg);
+  }
+}
+
+.success-check {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--brand-500, #10b981);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: popIn 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+@keyframes popIn {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 成功内容 */
+.success-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.success-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #fafafa;
+  margin: 0;
+}
+
+.success-desc {
+  font-size: 0.9375rem;
+  color: rgba(250, 250, 250, 0.7);
+  margin: 0;
+}
+
+/* 详情列表 */
+.success-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.success-detail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.detail-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: rgba(250, 250, 250, 0.6);
+}
+
+.detail-label svg {
+  color: var(--brand-500, #10b981);
+}
+
+.detail-value {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #fafafa;
+}
+
+.detail-value.highlight {
+  color: var(--brand-500, #10b981);
+  font-weight: 600;
+}
+
+/* 成功按钮 */
+.success-btn {
+  padding: 0.875rem 2rem;
+  background: var(--brand-500, #10b981);
+  color: white;
+  border: none;
+  border-radius: 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.success-btn:active {
+  transform: scale(0.96);
+  background: var(--brand-600, #059669);
+}
+
+/* 弹窗动画 */
+.success-modal-enter-active,
+.success-modal-leave-active {
+  transition: all 0.3s ease;
+}
+
+.success-modal-enter-from,
+.success-modal-leave-to {
+  opacity: 0;
+}
+
+.success-modal-enter-from .success-modal,
+.success-modal-leave-to .success-modal {
+  transform: scale(0.8);
+}
+
 </style>
