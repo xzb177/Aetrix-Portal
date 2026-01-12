@@ -87,6 +87,17 @@
     display: none !important;
   }
 
+  /* 隐藏各页面的 top-bar（使用 Layout 的 AppBar） */
+  .page-container > .top-bar,
+  .top-bar {
+    display: none !important;
+  }
+
+  /* 为 AppBar 预留空间后的内容调整 */
+  .page-container {
+    padding-top: 0 !important;
+  }
+
   /* 分页器优化 */
   .pagination {
     flex-wrap: wrap;

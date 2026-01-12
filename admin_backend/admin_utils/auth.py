@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 import bcrypt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from admin_database import AdminSessionLocal as SessionLocal
@@ -13,7 +13,7 @@ from admin_utils.models_loader import AdminUser, Permission
 from admin_utils.config import settings
 
 # HTTP Bearer 认证
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)  # 设置 auto_error=False 以支持 cookie 认证
 
 
 def get_password_hash(password: str) -> str:
@@ -48,11 +48,37 @@ def decode_access_token(token: str) -> dict:
         return None
 
 
+def get_token_from_request(request: Request) -> Optional[str]:
+    """从请求中获取 token（支持 Authorization 头和 cookie）"""
+    # 先尝试从 Authorization 头获取
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header[7:]
+
+    # 再尝试从 cookie 获取
+    return request.cookies.get("admin_access_token")
+
+
 def get_current_admin(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> AdminUser:
     """获取当前登录的管理员"""
-    token = credentials.credentials
+    # 先尝试从 Authorization 头获取 token
+    token = None
+    if credentials:
+        token = credentials.credentials
+
+    # 如果没有从 Authorization 头获取到，尝试从 cookie 获取
+    if not token:
+        token = request.cookies.get("admin_access_token")
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="未提供认证凭据",
+        )
+
     payload = decode_access_token(token)
     if payload is None:
         raise HTTPException(
