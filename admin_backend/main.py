@@ -6,6 +6,10 @@ import sys
 import os
 import traceback
 
+# 加载 .env 文件（必须在其他导入之前）
+from dotenv import load_dotenv
+load_dotenv()
+
 # 添加主项目路径
 sys.path.insert(0, "/root/royalbot")
 

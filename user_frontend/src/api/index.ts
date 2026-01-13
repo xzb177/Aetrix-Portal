@@ -122,7 +122,7 @@ export const paymentApi = {
 
 export const requestApi = {
   // 提交求片请求
-  submit: (data: { movie_name: string; year?: string; type?: string; note?: string }) =>
+  submit: (data: { movie_name: string; year?: string; type?: string; note?: string; tmdb_id?: string; poster_url?: string }) =>
     api.post('/api/user/requests', data),
 
   // 获取我的求片列表
@@ -130,6 +130,25 @@ export const requestApi = {
 
   // 获取求片详情
   getDetail: (id: number) => api.get(`/api/user/requests/${id}`),
+
+  // 获取海报墙求片列表（公共池）
+  getGallery: (params?: {
+    status_filter?: string
+    type_filter?: string
+    sort_by?: string
+    page?: number
+    limit?: number
+  }) => api.get('/api/user/requests/gallery', { params }),
+
+  // TMDB 搜索
+  searchTmdb: (query: string, media_type?: string) =>
+    api.get('/api/user/requests/tmdb-search', { params: { query, media_type } }),
+
+  // 订阅/投票求片
+  subscribe: (id: number) => api.post(`/api/user/requests/${id}/subscribe`),
+
+  // 获取统计
+  getStats: () => api.get('/api/user/requests/stats'),
 }
 
 export const rechargeApi = {

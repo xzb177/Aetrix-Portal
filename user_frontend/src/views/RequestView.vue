@@ -1,126 +1,250 @@
 <script setup lang="ts">
 /**
- * 资源申请 - Apple TV 风格
+ * 求片分类中心 - 海报墙
  *
- * 设计原则：
- * - 暗黑玻璃体：所有卡片使用玻璃质感
- * - 弱绿点缀：状态标签不再用彩色块
- * - 单一主 CTA：同屏只有一个主按钮
- * - 克制高级：移除所有蓝/紫实心按钮与彩色 icon 块
+ * 功能：
+ * - 公共求片池海报墙展示
+ * - TMDB 搜索提交
+ * - 分类筛选
+ * - 投票/订阅
+ * - 我的求片记录
  */
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { requestApi } from '@/api'
-import { Film, Plus, Clock, ChevronRight, Loader2, X } from 'lucide-vue-next'
-import BrandIcon from '@/components/BrandIcon.vue'
+import MediaGallery, { type MediaItem } from '@/components/MediaGallery.vue'
+import MediaSearchSheet, { type TmdbResult } from '@/components/MediaSearchSheet.vue'
+import CategoryFilter from '@/components/CategoryFilter.vue'
+import { Film, Plus, Search, ChevronDown, ChevronUp, Loader2 } from 'lucide-vue-next'
 
-interface Request {
+interface MyRequest {
   id: number
   movie_name: string
   year?: string
   type?: string
   note?: string
-  status: 'pending' | 'approved' | 'rejected' | 'completed'
-  created_at: string
+  status: string
   admin_note?: string
-  emby_item_id?: string
+  tmdb_id?: string
+  poster_url?: string
+  subscriber_count: number
+  created_at: string
 }
 
-const requests = ref<Request[]>([])
-const loading = ref(true)
-const submitting = ref(false)
+// ==================== 状态 ====================
+const viewMode = ref<'gallery' | 'my'>('gallery') // gallery=公共求片, my=我的求片
+const isLoading = ref(true)
+const isSubmitting = ref(false)
+const galleryItems = ref<MediaItem[]>([])
+const myRequests = ref<MyRequest[]>([])
+const hasMore = ref(true)
+const currentPage = ref(1)
 
-// 表单数据
-const formData = ref({
-  movie_name: '',
-  year: '',
-  type: 'movie',
-  note: '',
+// 筛选条件
+const filters = ref({
+  status: '',
+  type: '',
+  sort: 'hot'
 })
 
-const typeOptions = [
-  { value: 'movie', label: '电影' },
-  { value: 'series', label: '剧集' },
-  { value: 'anime', label: '动漫' },
-  { value: 'documentary', label: '纪录片' },
-  { value: 'other', label: '其他' },
-]
+// 统计数据
+const stats = ref({
+  total: 0,
+  pending: 0,
+  approved: 0,
+  completed: 0,
+  by_type: {} as Record<string, number>
+})
 
-// 状态映射 - 统一弱绿点缀风格
+// 搜索弹窗
+const showSearch = ref(false)
+
+// 我的求片展开状态
+const showMyRequests = ref(false)
+
+// ==================== 类型映射 ====================
+const typeLabels: Record<string, string> = {
+  movie: '电影',
+  series: '剧集',
+  anime: '动漫',
+  documentary: '纪录片',
+  other: '其他',
+}
+
+// 状态配置
 const statusConfig = {
-  pending: {
-    label: '待处理',
-    class: 'status-pending'
-  },
-  approved: {
-    label: '已通过',
-    class: 'status-approved'
-  },
-  rejected: {
-    label: '已拒绝',
-    class: 'status-rejected'
-  },
-  completed: {
-    label: '已完成',
-    class: 'status-completed'
-  }
+  pending: { label: '待处理', class: 'status-pending' },
+  approved: { label: '处理中', class: 'status-approved' },
+  rejected: { label: '已拒绝', class: 'status-rejected' },
+  completed: { label: '已完成', class: 'status-completed' }
 }
 
-onMounted(async () => {
-  await fetchRequests()
+// ==================== 计算属性 ====================
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (filters.value.status) count++
+  if (filters.value.type) count++
+  return count
 })
 
-async function fetchRequests() {
-  loading.value = true
-  try {
-    const res = await requestApi.getMyRequests()
-    requests.value = res.data || []
-  } catch (error) {
-    console.error('Failed to fetch requests:', error)
-    requests.value = []
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleSubmit() {
-  if (!formData.value.movie_name.trim()) {
-    return
+// ==================== 数据加载 ====================
+// 加载公共求片池
+async function loadGallery(reset = false) {
+  if (reset) {
+    currentPage.value = 1
+    galleryItems.value = []
+    hasMore.value = true
   }
 
-  submitting.value = true
+  if (!hasMore.value) return
+
   try {
-    await requestApi.submit({
-      movie_name: formData.value.movie_name,
-      year: formData.value.year || undefined,
-      type: formData.value.type,
-      note: formData.value.note || undefined,
+    const data = await requestApi.getGallery({
+      status_filter: filters.value.status || undefined,
+      type_filter: filters.value.type || undefined,
+      sort_by: filters.value.sort as 'hot' | 'latest',
+      page: currentPage.value,
+      limit: 30
     })
 
-    // Reset form
-    formData.value = { movie_name: '', year: '', type: 'movie', note: '' }
+    if (reset) {
+      galleryItems.value = data || []
+    } else {
+      galleryItems.value.push(...(data || []))
+    }
 
-    await fetchRequests()
+    hasMore.value = (data || []).length >= 30
+    currentPage.value++
   } catch (error) {
-    console.error('Failed to submit request:', error)
-    alert('提交失败，请稍后重试')
+    console.error('加载求片失败:', error)
   } finally {
-    submitting.value = false
+    isLoading.value = false
   }
 }
 
+// 加载我的求片
+async function loadMyRequests() {
+  try {
+    const data = await requestApi.getMyRequests()
+    myRequests.value = data || []
+  } catch (error) {
+    console.error('加载我的求片失败:', error)
+  }
+}
+
+// 加载统计数据
+async function loadStats() {
+  try {
+    const data = await requestApi.getStats()
+    stats.value = data
+  } catch (error) {
+    console.error('加载统计失败:', error)
+  }
+}
+
+// 刷新数据
+async function refresh() {
+  isLoading.value = true
+  await Promise.all([
+    loadGallery(true),
+    loadStats()
+  ])
+}
+
+// ==================== 交互操作 ====================
+// TMDB 搜索选择
+async function handleTmdbSelect(result: TmdbResult) {
+  isSubmitting.value = true
+  try {
+    const typeMap: Record<string, string> = {
+      movie: 'movie',
+      series: 'series'
+    }
+
+    await requestApi.submit({
+      movie_name: result.title,
+      year: result.year?.toString(),
+      type: typeMap[result.media_type] || 'movie',
+      tmdb_id: result.tmdb_id.toString(),
+      poster_url: result.poster_url_large || result.poster_url
+    })
+
+    // 刷新数据
+    await refresh()
+  } catch (error: any) {
+    console.error('提交求片失败:', error)
+    const message = error?.response?.data?.detail || error?.message || '提交失败，请稍后重试'
+    alert(message)
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+// 投票/订阅
+async function handleVote(id: number) {
+  try {
+    await requestApi.subscribe(id)
+
+    // 更新本地数据
+    const item = galleryItems.value.find(i => i.id === id)
+    if (item) {
+      // 重新加载以获取正确数据
+      await loadGallery(true)
+    }
+  } catch (error) {
+    console.error('投票失败:', error)
+  }
+}
+
+// 点击海报
+function handleItemClick(item: MediaItem) {
+  // 可以打开详情弹窗
+  console.log('点击:', item)
+}
+
+// 加载更多
+function handleLoadMore() {
+  loadGallery()
+}
+
+// 切换视图模式
+function switchView(mode: 'gallery' | 'my') {
+  viewMode.value = mode
+  if (mode === 'my' && myRequests.value.length === 0) {
+    loadMyRequests()
+  }
+}
+
+// 切换我的求片展开
+function toggleMyRequests() {
+  showMyRequests.value = !showMyRequests.value
+  if (showMyRequests.value && myRequests.value.length === 0) {
+    loadMyRequests()
+  }
+}
+
+// 格式化日期
 function formatDate(dateStr: string) {
   return new Date(dateStr).toLocaleDateString('zh-CN', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
     hour: '2-digit',
-    minute: '2-digit',
+    minute: '2-digit'
   })
 }
 
-function getTypeLabel(type: string) {
-  return typeOptions.find(o => o.value === type)?.label || type
-}
+// ==================== 监听筛选变化 ====================
+watch(filters, () => {
+  loadGallery(true)
+}, { deep: true })
+
+// ==================== 生命周期 ====================
+onMounted(async () => {
+  await Promise.all([
+    loadGallery(true),
+    loadStats()
+  ])
+})
 </script>
 
 <template>
@@ -129,128 +253,160 @@ function getTypeLabel(type: string) {
     <div class="request-bg"></div>
 
     <div class="request-container">
-      <!-- A) 顶部模块：AppIconTile + 标题 + 说明 -->
+      <!-- ==================== 顶部导航 ==================== -->
       <header class="page-header">
         <div class="header-left">
-          <!-- AppIconTile (40px) -->
           <div class="app-icon-tile">
             <Film :size="20" class="text-white/80" />
           </div>
           <div class="header-text">
-            <h1 class="page-title">资源申请</h1>
-            <p class="page-subtitle">找不到想看的内容？提交申请，为您添加</p>
+            <h1 class="page-title">求片分类中心</h1>
+            <p class="page-subtitle">发现大家都在看什么</p>
           </div>
         </div>
-        <!-- 右侧隐藏新建按钮，只保留中间主 CTA -->
+        <button
+          class="search-btn"
+          :class="{ loading: isSubmitting }"
+          :disabled="isSubmitting"
+          @click="showSearch = true"
+        >
+          <Loader2 v-if="isSubmitting" class="spin" :size="18" />
+          <Search v-else :size="18" />
+          <span v-if="!isSubmitting">搜索求片</span>
+        </button>
       </header>
 
-      <!-- B) 表单模块 - 始终展示（避免弹窗） -->
-      <div class="app-card form-card">
-        <h2 class="card-title">提交资源申请</h2>
-
-        <div class="form-group">
-          <label class="form-label">内容名称 *</label>
-          <input
-            v-model="formData.movie_name"
-            type="text"
-            class="app-input"
-            placeholder="例如：星际穿越"
-          />
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">年份（可选）</label>
-            <input
-              v-model="formData.year"
-              type="text"
-              class="app-input"
-              placeholder="例如：2014"
-            />
-          </div>
-          <div class="form-group">
-            <label class="form-label">类型</label>
-            <select v-model="formData.type" class="app-input">
-              <option v-for="opt in typeOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">备注（可选）</label>
-          <textarea
-            v-model="formData.note"
-            class="app-input app-textarea"
-            rows="3"
-            placeholder="可以提供更多信息，如导演、主演等"
-          ></textarea>
-        </div>
-
-        <!-- 唯一主 CTA：Primary 提交按钮 -->
+      <!-- ==================== 视图切换 ==================== -->
+      <div class="view-tabs">
         <button
-          @click="handleSubmit"
-          :disabled="submitting || !formData.movie_name.trim()"
-          class="app-btn-primary"
+          :class="['view-tab', { active: viewMode === 'gallery' }]"
+          @click="switchView('gallery')"
         >
-          <Loader2 v-if="submitting" class="spin" :size="18" />
-          <span v-else>提交申请</span>
+          <span>公共求片池</span>
+          <span class="tab-count">{{ stats.total }}</span>
+        </button>
+        <button
+          :class="['view-tab', { active: viewMode === 'my' }]"
+          @click="switchView('my')"
+        >
+          <span>我的求片</span>
+          <span class="tab-count">{{ myRequests.length }}</span>
         </button>
       </div>
 
-      <!-- C) 加载状态 -->
-      <div v-if="loading" class="loading-state">
-        <div class="app-spinner">
-          <Loader2 :size="28" class="spin" />
+      <!-- ==================== 公共求片池 ==================== -->
+      <div v-show="viewMode === 'gallery'" class="gallery-view">
+        <!-- 分类筛选 -->
+        <CategoryFilter v-model="filters" :stats="stats" />
+
+        <!-- 加载状态 -->
+        <div v-if="isLoading && galleryItems.length === 0" class="loading-state">
+          <div class="loading-spinner">
+            <Loader2 :size="32" class="spin text-white/40" />
+          </div>
+          <p class="text-white/40 text-sm">加载中...</p>
         </div>
-        <p class="loading-text">加载中...</p>
+
+        <!-- 海报墙 -->
+        <MediaGallery
+          v-else
+          :items="galleryItems"
+          :loading="isLoading"
+          :has-more="hasMore"
+          @vote="handleVote"
+          @click="handleItemClick"
+          @load-more="handleLoadMore"
+        />
       </div>
 
-      <!-- D) 空状态 - 玻璃 Empty 样式 -->
-      <div v-else-if="requests.length === 0" class="empty-state">
-        <div class="empty-icon-wrapper">
-          <Film :size="32" class="text-white/30" />
+      <!-- ==================== 我的求片 ==================== -->
+      <div v-show="viewMode === 'my'" class="my-requests-view">
+        <!-- 空状态 -->
+        <div v-if="myRequests.length === 0 && !isLoading" class="empty-state">
+          <div class="empty-icon-wrapper">
+            <Film :size="32" class="text-white/20" />
+          </div>
+          <h3 class="empty-title">还没有求片记录</h3>
+          <p class="empty-desc">点击上方搜索按钮，提交您的第一个求片</p>
         </div>
-        <h3 class="empty-title">暂无申请记录</h3>
-        <p class="empty-desc">提交上方表单，创建您的第一个申请</p>
+
+        <!-- 求片列表 -->
+        <div v-else class="my-requests-list">
+          <div
+            v-for="request in myRequests"
+            :key="request.id"
+            class="request-card"
+          >
+            <!-- 海报缩略图 -->
+            <div class="request-poster">
+              <img
+                v-if="request.poster_url"
+                :src="request.poster_url"
+                :alt="request.movie_name"
+              />
+              <div v-else class="poster-placeholder">
+                <Film :size="20" class="text-white/20" />
+              </div>
+            </div>
+
+            <!-- 信息 -->
+            <div class="request-info">
+              <div class="request-header">
+                <h3 class="request-title">{{ request.movie_name }}</h3>
+                <span :class="['status-badge', statusConfig[request.status].class]">
+                  {{ statusConfig[request.status].label }}
+                </span>
+              </div>
+              <div class="request-meta">
+                <span v-if="request.year" class="meta-tag">{{ request.year }}</span>
+                <span v-if="typeLabels[request.type]" class="meta-tag">
+                  {{ typeLabels[request.type] }}
+                </span>
+                <span class="meta-subscribers">{{ request.subscriber_count }} 人想要</span>
+              </div>
+              <p v-if="request.note" class="request-note">{{ request.note }}</p>
+              <p v-if="request.admin_note" class="request-reply">
+                <span class="reply-label">管理员：</span>{{ request.admin_note }}
+              </p>
+              <p class="request-date">{{ formatDate(request.created_at) }}</p>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- E) 列表状态 - ListItem 整行可点 -->
-      <div v-else class="requests-list">
-        <div
-          v-for="request in requests"
-          :key="request.id"
-          class="list-item"
-        >
-          <div class="list-item-main">
-            <div class="list-item-header">
-              <h3 class="list-item-title">{{ request.movie_name }}</h3>
-              <span :class="['status-badge', statusConfig[request.status].class]">
+      <!-- ==================== 我的求片折叠面板（公共池模式下） ==================== -->
+      <div v-if="viewMode === 'gallery'" class="my-requests-drawer">
+        <button class="drawer-toggle" @click="toggleMyRequests">
+          <span>我的求片 ({{ myRequests.length }})</span>
+          <ChevronDown v-if="!showMyRequests" :size="18" />
+          <ChevronUp v-else :size="18" />
+        </button>
+
+        <div v-if="showMyRequests" class="drawer-content">
+          <div v-if="myRequests.length === 0" class="drawer-empty">
+            <p class="text-white/40 text-sm">暂无求片记录</p>
+          </div>
+          <div v-else class="drawer-list">
+            <div
+              v-for="request in myRequests"
+              :key="request.id"
+              class="drawer-item"
+            >
+              <span class="drawer-item-title">{{ request.movie_name }}</span>
+              <span :class="['drawer-item-status', statusConfig[request.status].class]">
                 {{ statusConfig[request.status].label }}
               </span>
             </div>
-            <p class="list-item-date">{{ formatDate(request.created_at) }}</p>
-
-            <div class="list-item-details">
-              <div class="list-item-meta">
-                <span v-if="request.year" class="meta-tag">{{ request.year }}</span>
-                <span v-if="request.type" class="meta-tag">{{ getTypeLabel(request.type) }}</span>
-              </div>
-              <p v-if="request.note" class="list-item-note">
-                <span class="note-label">备注：</span>{{ request.note }}
-              </p>
-              <p v-if="request.admin_note" class="list-item-reply">
-                <span class="reply-label">管理员回复：</span>{{ request.admin_note }}
-              </p>
-            </div>
           </div>
-
-          <!-- 右侧箭头 -->
-          <ChevronRight :size="18" class="text-white/35" />
         </div>
       </div>
     </div>
+
+    <!-- ==================== TMDB 搜索弹窗 ==================== -->
+    <MediaSearchSheet
+      v-model:is-open="showSearch"
+      @select="handleTmdbSelect"
+    />
   </div>
 </template>
 
@@ -270,20 +426,20 @@ function getTypeLabel(type: string) {
   inset: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse at 20% 0%, rgba(60, 60, 60, 0.15) 0%, transparent 60%),
-    radial-gradient(ellipse at 80% 100%, rgba(50, 50, 50, 0.1) 0%, transparent 50%),
-    linear-gradient(180deg, #1a1a1a 0%, #0a0a0a 100%);
+    radial-gradient(ellipse at 20% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(16, 185, 129, 0.05) 0%, transparent 50%),
+    linear-gradient(180deg, #0a0a0a 0%, #0a0a0a 100%);
 }
 
 .request-container {
-  max-width: 640px;
+  max-width: 1200px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 1rem;
 }
 
-/* ==================== 顶部模块 ==================== */
+/* ==================== 顶部导航 ==================== */
 .page-header {
   display: flex;
   align-items: center;
@@ -297,7 +453,6 @@ function getTypeLabel(type: string) {
   gap: 0.75rem;
 }
 
-/* AppIconTile (40px) */
 .app-icon-tile {
   height: 40px;
   width: 40px;
@@ -305,8 +460,6 @@ function getTypeLabel(type: string) {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(12px);
-  ring: 1px solid rgba(16, 185, 129, 0.2);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -323,132 +476,333 @@ function getTypeLabel(type: string) {
   color: rgba(255, 255, 255, 0.95);
   margin: 0;
   line-height: 1.3;
-  letter-spacing: -0.01em;
 }
 
 .page-subtitle {
   font-size: 0.813rem;
   color: rgba(255, 255, 255, 0.5);
   margin: 0;
-  font-weight: 400;
-  line-height: 1.4;
 }
 
-/* ==================== AppCard（玻璃卡片） ==================== */
-.app-card {
-  border-radius: 1.5rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
-}
-
-.form-card {
-  padding: 1.5rem;
-}
-
-.card-title {
-  font-size: 1.063rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.92);
-  margin: 0 0 1.25rem 0;
-  letter-spacing: -0.01em;
-}
-
-/* ==================== 表单 ==================== */
-.form-group {
-  margin-bottom: 1rem;
-}
-
-.form-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-}
-
-.form-label {
-  display: block;
-  font-size: 0.813rem;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.65);
-  margin-bottom: 0.5rem;
-  letter-spacing: 0.01em;
-}
-
-.app-input {
-  width: 100%;
-  padding: 0.75rem 1rem;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+.search-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(52, 211, 153, 0.25);
   border-radius: 0.75rem;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 0.938rem;
-  outline: none;
-  transition: all 0.2s ease;
-}
-
-.app-input:focus {
-  border-color: rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.app-input::placeholder {
-  color: rgba(255, 255, 255, 0.35);
-}
-
-.app-textarea {
-  resize: vertical;
-  min-height: 80px;
-  line-height: 1.5;
-}
-
-select.app-input {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.875rem;
+  font-weight: 500;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-select.app-input option {
-  background: #1a1a1a;
-  color: rgba(255, 255, 255, 0.92);
+.search-btn:hover {
+  background: rgba(16, 185, 129, 0.22);
 }
 
-/* ==================== 按钮 ==================== */
-/* AppButton Primary - 唯一主 CTA */
-.app-btn-primary {
+.search-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ==================== 视图切换 ==================== */
+.view-tabs {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.25rem;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 0.75rem;
+}
+
+.view-tab {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  height: 56px;
-  width: 100%;
-  border-radius: 1rem;
-  background: rgba(16, 185, 129, 0.16);
-  border: 1px solid rgba(52, 211, 153, 0.25);
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 1rem;
+  padding: 0.625rem 1rem;
+  background: transparent;
+  border: none;
+  border-radius: 0.625rem;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
-  margin-top: 0.5rem;
-  letter-spacing: 0.01em;
 }
 
-.app-btn-primary:active:not(:disabled) {
-  transform: scale(0.98);
-  background: rgba(16, 185, 129, 0.22);
+.view-tab:hover {
+  color: rgba(255, 255, 255, 0.8);
 }
 
-.app-btn-primary:focus-visible {
-  outline: none;
-  ring: 2px solid rgba(52, 211, 153, 0.35);
+.view-tab.active {
+  background: rgba(16, 185, 129, 0.15);
+  color: rgba(52, 211, 153, 0.9);
 }
 
-.app-btn-primary:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  transform: none;
+.tab-count {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.6);
 }
 
+.view-tab.active .tab-count {
+  background: rgba(16, 185, 129, 0.2);
+  color: rgba(52, 211, 153, 0.8);
+}
+
+/* ==================== 加载状态 ==================== */
+.loading-state {
+  text-align: center;
+  padding: 4rem 1rem;
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  margin: 0 auto 1rem;
+}
+
+/* ==================== 空状态 ==================== */
+.empty-state {
+  text-align: center;
+  padding: 4rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.empty-icon-wrapper {
+  width: 64px;
+  height: 64px;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.empty-title {
+  font-size: 1rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+  margin: 0 0 0.375rem 0;
+}
+
+.empty-desc {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 0;
+}
+
+/* ==================== 我的求片列表 ==================== */
+.my-requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.request-card {
+  display: flex;
+  gap: 0.875rem;
+  padding: 0.875rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.75rem;
+}
+
+.request-poster {
+  width: 56px;
+  height: 84px;
+  flex-shrink: 0;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.request-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.poster-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.request-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.request-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+}
+
+.request-title {
+  font-size: 0.938rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.688rem;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.status-pending {
+  background: rgba(251, 191, 36, 0.12);
+  color: rgba(251, 191, 36, 0.9);
+}
+
+.status-approved {
+  background: rgba(59, 130, 246, 0.12);
+  color: rgba(96, 165, 250, 0.9);
+}
+
+.status-completed {
+  background: rgba(16, 185, 129, 0.12);
+  color: rgba(52, 211, 153, 0.9);
+}
+
+.status-rejected {
+  background: rgba(239, 68, 68, 0.12);
+  color: rgba(248, 113, 113, 0.9);
+}
+
+.request-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.meta-tag {
+  font-size: 0.688rem;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 0.125rem 0.375rem;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+}
+
+.meta-subscribers {
+  font-size: 0.688rem;
+  color: rgba(16, 185, 129, 0.8);
+}
+
+.request-note {
+  font-size: 0.813rem;
+  color: rgba(255, 255, 255, 0.6);
+  margin: 0.25rem 0;
+  line-height: 1.5;
+}
+
+.request-reply {
+  font-size: 0.813rem;
+  color: rgba(251, 191, 36, 0.85);
+  margin: 0.25rem 0;
+  line-height: 1.5;
+}
+
+.reply-label {
+  font-weight: 500;
+  color: rgba(251, 191, 36, 0.95);
+}
+
+.request-date {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 0.25rem 0 0;
+}
+
+/* ==================== 我的求片折叠面板 ==================== */
+.my-requests-drawer {
+  margin-top: auto;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.drawer-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1rem;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.drawer-toggle:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.drawer-content {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 0.75rem 1rem 1rem;
+}
+
+.drawer-empty {
+  text-align: center;
+  padding: 1rem 0;
+}
+
+.drawer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.drawer-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 0.5rem;
+}
+
+.drawer-item-title {
+  font-size: 0.813rem;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.drawer-item-status {
+  font-size: 0.688rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+}
+
+/* ==================== 动画 ==================== */
 .spin {
   animation: spin 0.8s linear infinite;
 }
@@ -457,206 +811,10 @@ select.app-input option {
   to { transform: rotate(360deg); }
 }
 
-/* ==================== 加载状态 ==================== */
-.loading-state {
-  text-align: center;
-  padding: 3rem 1.5rem;
-}
-
-.app-spinner {
-  width: 28px;
-  height: 28px;
-  margin: 0 auto 1rem;
-  color: rgba(255, 255, 255, 0.4);
-}
-
-.loading-text {
-  font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.5);
-  margin: 0;
-}
-
-/* ==================== 空状态（玻璃 Empty） ==================== */
-.empty-state {
-  text-align: center;
-  padding: 3rem 1.5rem;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.empty-icon-wrapper {
-  height: 56px;
-  width: 56px;
-  border-radius: 1.25rem;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 1rem;
-}
-
-.empty-title {
-  font-size: 1.063rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.85);
-  margin: 0 0 0.375rem 0;
-  letter-spacing: -0.01em;
-}
-
-.empty-desc {
-  font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.45);
-  margin: 0;
-  line-height: 1.5;
-}
-
-/* ==================== 列表状态（ListItem） ==================== */
-.requests-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.list-item {
-  display: flex;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 1rem 1rem;
-  border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: all 0.15s ease;
-  cursor: pointer;
-}
-
-.list-item:active {
-  background: rgba(255, 255, 255, 0.08);
-  transform: scale(0.99);
-}
-
-.list-item-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.list-item-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
-}
-
-.list-item-title {
-  font-size: 1rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.92);
-  margin: 0;
-  letter-spacing: -0.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 状态徽章 - 弱绿点缀风格，无彩色块 */
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.625rem;
-  border-radius: 6px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  flex-shrink: 0;
-  letter-spacing: 0.02em;
-}
-
-.status-pending {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.7);
-}
-
-.status-approved {
-  background: rgba(16, 185, 129, 0.12);
-  color: rgba(52, 211, 153, 0.85);
-  border: 1px solid rgba(16, 185, 129, 0.2);
-}
-
-.status-rejected {
-  background: rgba(239, 68, 68, 0.12);
-  color: rgba(248, 113, 113, 0.85);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-}
-
-.status-completed {
-  background: rgba(16, 185, 129, 0.16);
-  color: rgba(52, 211, 153, 0.9);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-}
-
-.list-item-date {
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.4);
-  margin: 0;
-  letter-spacing: 0.01em;
-}
-
-.list-item-details {
-  padding-top: 0.625rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  margin-top: 0.5rem;
-}
-
-.list-item-meta {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.375rem;
-  flex-wrap: wrap;
-}
-
-.meta-tag {
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.55);
-  padding: 0.125rem 0.5rem;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 4px;
-  letter-spacing: 0.01em;
-}
-
-.list-item-note {
-  font-size: 0.813rem;
-  color: rgba(255, 255, 255, 0.65);
-  margin: 0.25rem 0 0 0;
-  line-height: 1.5;
-}
-
-.list-item-reply {
-  font-size: 0.813rem;
-  color: rgba(251, 191, 36, 0.85);
-  margin: 0.25rem 0 0 0;
-  line-height: 1.5;
-}
-
-.note-label {
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.75);
-}
-
-.reply-label {
-  font-weight: 500;
-  color: rgba(251, 191, 36, 0.95);
-}
-
 /* ==================== 响应式 ==================== */
 @media (max-width: 480px) {
   .request-page {
     padding: 1.25rem 0.875rem 2rem;
-  }
-
-  .form-row {
-    grid-template-columns: 1fr;
   }
 
   .page-title {
@@ -667,13 +825,8 @@ select.app-input option {
     font-size: 0.75rem;
   }
 
-  .list-item-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .status-badge {
-    align-self: flex-start;
+  .search-btn span {
+    display: none;
   }
 }
 </style>

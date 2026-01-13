@@ -401,3 +401,125 @@ lenna://x-callback-url/addServer?url=SERVER_URL&username=USERNAME&password=PASSW
 - royalbot_admin_frontend: Up (healthy)
 
 ---
+
+### 2026-01-13 求片分类中心 - 海报墙功能
+
+**新增功能：** 将现有求片功能升级为海报墙展示，集成 TMDB 数据
+
+**功能特性：**
+1. **公共求片池海报墙** - 显示所有用户的求片请求，以海报形式展示
+2. **TMDB 集成** - 搜索 TMDB 影片自动获取海报和元数据
+3. **分类筛选** - 按状态（待处理/处理中/已完成）、类型（电影/剧集/动漫/纪录片）筛选
+4. **投票/订阅** - 用户可以给想要的影片投票，提高热度
+5. **混合显示模式** - 默认公共求片池，可切换到"我的求片"
+6. **视觉冲击力** - 响应式海报网格布局，悬停缩放效果
+
+**新增文件：**
+- `user_backend/services/tmdb.py` - TMDB API 集成服务
+- `user_frontend/src/components/MediaGallery.vue` - 海报墙组件
+- `user_frontend/src/components/MediaSearchSheet.vue` - TMDB 搜索弹窗
+- `user_frontend/src/components/CategoryFilter.vue` - 分类筛选组件
+
+**修改文件：**
+- `user_backend/api/request.py` - 添加 gallery/搜索/投票 API
+- `user_backend/schemas/request.py` - 添加 GalleryResponse/TmdbSearchResult schema
+- `user_frontend/src/api/index.ts` - 扩展 requestApi 接口
+- `user_frontend/src/views/RequestView.vue` - 重构为海报墙布局
+
+**新增 API 端点：**
+```
+GET  /api/user/requests/gallery       - 获取海报墙求片列表
+GET  /api/user/requests/tmdb-search   - TMDB 搜索
+POST /api/user/requests/{id}/subscribe - 投票/订阅
+GET  /api/user/requests/stats         - 获取统计数据
+```
+
+**UI 效果：**
+- 响应式网格：移动端 3 列，平板 4-5 列，桌面 6 列
+- 海报卡片：状态标签、热度标签、悬停放大效果
+- 热度分级：🔥爆款(50+)、⭐热门(20+)、普通(5+)
+- 无限滚动加载
+- 投票按钮悬停显示
+
+**环境变量配置：**
+- `TMDB_API_KEY` - TMDB API 密钥（需要在 .env 中配置）
+
+**容器状态：**
+- royalbot_user_frontend: Up (running)
+- royalbot_user_backend: Up (healthy)
+
+---
+
+### 2026-01-13 TMDB API 可视化配置功能
+
+**新增功能：** 在管理后台系统配置中添加 TMDB API 设置
+
+**功能特性：**
+- 在系统配置的 "MoviePilot" 分类下新增 TMDB 配置项
+- 支持可视化配置 TMDB API Key，无需修改 .env 文件
+- 配置自动生效，5分钟缓存刷新
+- 支持配置 API 地址、图片地址、搜索语言
+
+**新增配置项：**
+| 配置键 | 说明 | 类型 |
+|--------|------|------|
+| `tmdb_api_key` | TMDB API Key | password |
+| `tmdb_base_url` | TMDB API 地址 | url |
+| `tmdb_image_base_url` | TMDB 图片地址 | url |
+| `tmdb_language` | 搜索语言 | text |
+
+**修改文件：**
+- `admin_backend/api/settings.py` - 添加 TMDB 配置项定义和公开 API 端点
+- `user_backend/services/tmdb.py` - 从配置系统读取 API Key
+
+**新增 API 端点：**
+```
+GET /settings/public/tmdb - 获取 TMDB 公开配置（无需鉴权）
+```
+
+**使用方式：**
+1. 登录管理后台
+2. 进入「系统配置」→「MoviePilot」分类
+3. 填写 TMDB API Key（向 https://www.themoviedb.org/settings/api 申请）
+4. 保存后自动生效，无需重启服务
+
+**容器状态：**
+- royalbot_admin_backend: Up (healthy)
+- royalbot_user_backend: Up (healthy)
+
+---
+
+### 2026-01-13 User Backend 重新部署完成
+
+**问题：** user_backend 容器缺少 tmdb.py 文件，无法加载 TMDB 配置
+
+**解决方案：**
+1. 重新构建 user_backend Docker 镜像（--no-cache）
+2. 修复 tmdb.py 中的 admin backend 连接 URL：
+   - 从 `http://admin_backend:8080` 修改为 `http://royalbot_admin_backend:8080`
+   - 添加 `ADMIN_BACKEND_URL` 环境变量支持
+3. 删除并重新创建容器，确保使用新镜像
+
+**修改文件：**
+- `user_backend/services/tmdb.py:50-54` - 修复 admin backend URL
+
+**验证结果：**
+- ✅ TMDB 配置从 admin backend 成功加载
+- ✅ API 端点 `/api/settings/public/tmdb` 正常响应
+- ✅ 容器健康检查通过
+
+**当前 TMDB 配置：**
+```json
+{
+  "tmdb_api_key": "",
+  "tmdb_base_url": "https://api.themoviedb.org/3",
+  "tmdb_image_base_url": "https://image.tmdb.org/t/p",
+  "tmdb_language": "zh-CN"
+}
+```
+
+**后续步骤：**
+1. 在管理后台系统配置中填写 TMDB API Key
+2. 测试海报墙功能（搜索、显示、投票）
+
+---

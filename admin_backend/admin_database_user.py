@@ -11,8 +11,8 @@ import os
 
 # 用户端数据库 - 使用 PostgreSQL
 USER_DB_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://royalbot:royalbot_prod_2026_secure@127.0.0.1:5432/royalbot"
+    "DB_URL",
+    "postgresql+psycopg2://royalbot:royalbot_prod_2026_secure@royalbot_postgres:5432/royalbot"
 )
 
 # 创建引擎

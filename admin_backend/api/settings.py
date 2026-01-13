@@ -55,6 +55,34 @@ CONFIG_DEFINITIONS = {
         "type": "password",
         "label": "API Token"
     },
+    "tmdb_api_key": {
+        "category": "MoviePilot",
+        "description": "TMDB API Key（用于搜索影视信息、获取海报等）。向 https://www.themoviedb.org/settings/api 申请",
+        "default": "",
+        "type": "password",
+        "label": "TMDB API Key"
+    },
+    "tmdb_base_url": {
+        "category": "MoviePilot",
+        "description": "TMDB API 基础地址（留空使用默认值）",
+        "default": "https://api.themoviedb.org/3",
+        "type": "url",
+        "label": "TMDB API 地址"
+    },
+    "tmdb_image_base_url": {
+        "category": "MoviePilot",
+        "description": "TMDB 图片服务地址（留空使用默认值）",
+        "default": "https://image.tmdb.org/t/p",
+        "type": "url",
+        "label": "TMDB 图片地址"
+    },
+    "tmdb_language": {
+        "category": "MoviePilot",
+        "description": "TMDB 搜索语言（如：zh-CN, en-US, ja-JP）",
+        "default": "zh-CN",
+        "type": "text",
+        "label": "TMDB 语言"
+    },
 
     # Telegram 通知配置
     "telegram_bot_token": {
@@ -547,6 +575,32 @@ async def get_public_telegram_login_config():
             "telegram_login_enabled": enabled,
             "telegram_login_bot_username": bot_username,
             "telegram_login_bot_id": bot_id
+        }
+    finally:
+        db.close()
+
+
+@router.get("/public/tmdb")
+async def get_public_tmdb_config():
+    """
+    获取公开的 TMDB 配置（无需鉴权）
+    用于 user_backend 获取 TMDB API 配置
+    """
+    from admin_database_user import get_user_db as get_db
+
+    db = next(get_db())
+    try:
+        # 获取 TMDB 相关配置
+        api_key = get_config_value(db, "tmdb_api_key", "")
+        base_url = get_config_value(db, "tmdb_base_url", "https://api.themoviedb.org/3")
+        image_base_url = get_config_value(db, "tmdb_image_base_url", "https://image.tmdb.org/t/p")
+        language = get_config_value(db, "tmdb_language", "zh-CN")
+
+        return {
+            "tmdb_api_key": api_key,
+            "tmdb_base_url": base_url,
+            "tmdb_image_base_url": image_base_url,
+            "tmdb_language": language
         }
     finally:
         db.close()
