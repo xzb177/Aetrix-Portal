@@ -43,6 +43,7 @@ const emit = defineEmits<Emits>()
 
 // 状态
 const searchQuery = ref('')
+const searchInputRef = ref<HTMLInputElement | null>(null)
 const selectedType = ref(props.defaultType || 'all')
 const isSearching = ref(false)
 const searchResults = ref<TmdbResult[]>([])
@@ -94,6 +95,10 @@ watch(selectedType, () => {
 
 // 选择结果
 const handleSelect = (result: TmdbResult) => {
+  // 收起手机端键盘
+  if (searchInputRef.value) {
+    searchInputRef.value.blur()
+  }
   emit('select', result)
   handleClose()
 }
@@ -140,6 +145,7 @@ const formatRating = (rating?: number) => {
             <div class="search-input-wrapper">
               <Search :size="18" class="search-icon" />
               <input
+                ref="searchInputRef"
                 v-model="searchQuery"
                 type="text"
                 class="search-input"

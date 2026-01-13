@@ -7,6 +7,7 @@ import ProfileHeader from '@/components/profile/ProfileHeader.vue'
 import EmbyCard from '@/components/profile/EmbyCard.vue'
 import QuickGrid from '@/components/profile/QuickGrid.vue'
 import SettingsList from '@/components/profile/SettingsList.vue'
+import RequestLimitCard from '@/components/profile/RequestLimitCard.vue'
 import { useToast } from '@/composables/useToast'
 import { useAuthSheet } from '@/composables/useAuthSheet'
 
@@ -164,6 +165,9 @@ function formatDate(dateStr?: string) {
           :is-VIP="isVIP"
           :vip-expiry="vipExpiry"
         />
+
+        <!-- 求片限制卡片 -->
+        <RequestLimitCard :is-VIP="isVIP" />
 
         <!-- Emby 账号主卡（三态） -->
         <EmbyCard

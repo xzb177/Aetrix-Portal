@@ -79,3 +79,13 @@ class GalleryStatsResponse(BaseModel):
     approved: int
     completed: int
     by_type: dict
+
+
+class UserRequestLimitResponse(BaseModel):
+    """用户求片限制响应"""
+    limit: int  # 用户可提交的求片总数
+    used: int  # 已使用的次数
+    remaining: int  # 剩余次数
+    period: str  # 限制周期: total, monthly, weekly
+    is_vip: bool  # 是否是 VIP
+    vip_bonus: int  # VIP 额外次数

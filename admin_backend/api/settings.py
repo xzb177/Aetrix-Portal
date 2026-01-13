@@ -137,6 +137,29 @@ CONFIG_DEFINITIONS = {
         "label": "欢迎消息"
     },
 
+    # 求片配置
+    "request_limit_per_user": {
+        "category": "求片配置",
+        "description": "每个用户可提交的求片数量限制（0表示不限制）",
+        "default": "5",
+        "type": "number",
+        "label": "求片数量限制"
+    },
+    "request_limit_vip_bonus": {
+        "category": "求片配置",
+        "description": "VIP 用户额外获得的求片次数",
+        "default": "5",
+        "type": "number",
+        "label": "VIP 额外次数"
+    },
+    "request_limit_period": {
+        "category": "求片配置",
+        "description": "求片限制周期：total=总计有效求片，monthly=当月求片，weekly=当周求片",
+        "default": "total",
+        "type": "text",
+        "label": "限制周期"
+    },
+
     # 推送策略配置
     "high_quality_push_hour": {
         "category": "推送策略",
@@ -601,6 +624,30 @@ async def get_public_tmdb_config():
             "tmdb_base_url": base_url,
             "tmdb_image_base_url": image_base_url,
             "tmdb_language": language
+        }
+    finally:
+        db.close()
+
+
+@router.get("/public/request-limit")
+async def get_public_request_limit_config():
+    """
+    获取公开的求片限制配置（无需鉴权）
+    用于 user_backend 获取求片限制配置
+    """
+    from admin_database_user import get_user_db as get_db
+
+    db = next(get_db())
+    try:
+        # 获取求片限制相关配置
+        limit_per_user = get_config_value(db, "request_limit_per_user", "5")
+        vip_bonus = get_config_value(db, "request_limit_vip_bonus", "5")
+        limit_period = get_config_value(db, "request_limit_period", "total")
+
+        return {
+            "request_limit_per_user": int(limit_per_user),
+            "request_limit_vip_bonus": int(vip_bonus),
+            "request_limit_period": limit_period
         }
     finally:
         db.close()

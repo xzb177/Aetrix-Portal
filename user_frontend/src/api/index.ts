@@ -149,6 +149,9 @@ export const requestApi = {
 
   // 获取统计
   getStats: () => api.get('/api/user/requests/stats'),
+
+  // 获取我的求片限制
+  getMyLimit: () => api.get('/api/user/requests/my/limit'),
 }
 
 export const rechargeApi = {

@@ -11,14 +11,75 @@ from schemas.request import (
     MovieRequestResponse,
     MovieRequestGalleryResponse,
     TmdbSearchResult,
-    GalleryStatsResponse
+    GalleryStatsResponse,
+    UserRequestLimitResponse
 )
 from api.auth import get_current_user
 from typing import List, Optional
 import logging
+from datetime import datetime, timedelta
+import httpx
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def get_request_config():
+    """从 admin backend 获取求片配置"""
+    try:
+        admin_backend_url = "http://royalbot_admin_backend:8080"
+        response = httpx.get(
+            f"{admin_backend_url}/api/settings/public/request-limit",
+            timeout=5.0
+        )
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        logger.warning(f"获取求片配置失败: {e}")
+
+    # 默认配置
+    return {
+        "request_limit_per_user": 5,
+        "request_limit_vip_bonus": 5,
+        "request_limit_period": "total"
+    }
+
+
+def get_user_request_count(user_id: int, period: str, db: Session) -> int:
+    """获取用户在指定周期内的求片数量"""
+    query = db.query(func.count(MovieRequest.id)).filter(
+        MovieRequest.user_id == user_id,
+        MovieRequest.status.in_(['pending', 'approved'])  # 只计算有效的求片
+    )
+
+    if period == "monthly":
+        # 本月
+        from datetime import date
+        today = date.today()
+        start_of_month = today.replace(day=1)
+        query = query.filter(MovieRequest.created_at >= start_of_month)
+    elif period == "weekly":
+        # 本周
+        from datetime import date
+        today = date.today()
+        start_of_week = today - timedelta(days=today.weekday())
+        query = query.filter(MovieRequest.created_at >= start_of_week)
+
+    return query.scalar() or 0
+
+
+def check_user_is_vip(user_id: int, db: Session) -> bool:
+    """检查用户是否是有效的 VIP"""
+    from database.models import UserSubscription
+    from datetime import datetime
+
+    subscription = db.query(UserSubscription).filter(
+        UserSubscription.user_id == user_id,
+        UserSubscription.status == 'active',
+        UserSubscription.end_time > datetime.now()
+    ).first()
+
+    return subscription is not None
 
 
 async def send_new_request_notification(request: MovieRequest, username: str):
@@ -44,6 +105,25 @@ async def create_movie_request(
     db: Session = Depends(get_session)
 ):
     """提交求片请求（支持 TMDB 数据）"""
+    # 获取求片配置
+    config = get_request_config()
+    limit_per_user = int(config.get("request_limit_per_user", 5))
+    vip_bonus = int(config.get("request_limit_vip_bonus", 5))
+    limit_period = config.get("request_limit_period", "total")
+
+    # 检查求片限制
+    if limit_per_user > 0:
+        is_vip = check_user_is_vip(current_user.id, db)
+        user_limit = limit_per_user + (vip_bonus if is_vip else 0)
+        used_count = get_user_request_count(current_user.id, limit_period, db)
+
+        if used_count >= user_limit:
+            period_text = {"total": "总计", "monthly": "本月", "weekly": "本周"}.get(limit_period, "总计")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"您的求片次数已用尽（{period_text}{user_limit}次）。VIP用户可获得额外{vip_bonus}次求片额度。"
+            )
+
     # 检查是否有重复的待处理请求
     existing = db.query(MovieRequest).filter(
         MovieRequest.user_id == current_user.id,
@@ -294,3 +374,41 @@ async def get_request_detail(
     request_dict['is_subscribed'] = is_subscribed
 
     return request_dict
+
+
+@router.get("/my/limit", response_model=UserRequestLimitResponse)
+async def get_my_request_limit(
+    current_user: WebUser = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    获取当前用户的求片限制状态
+
+    返回用户的求片配额、已使用次数、剩余次数等信息
+    """
+    # 获取求片配置
+    config = get_request_config()
+    limit_per_user = int(config.get("request_limit_per_user", 5))
+    vip_bonus = int(config.get("request_limit_vip_bonus", 5))
+    limit_period = config.get("request_limit_period", "total")
+
+    # 检查 VIP 状态
+    is_vip = check_user_is_vip(current_user.id, db)
+
+    # 计算用户限制
+    user_limit = limit_per_user + (vip_bonus if is_vip else 0)
+
+    # 获取已使用次数
+    used_count = get_user_request_count(current_user.id, limit_period, db)
+
+    # 计算剩余次数
+    remaining = max(0, user_limit - used_count) if limit_per_user > 0 else 999
+
+    return UserRequestLimitResponse(
+        limit=user_limit if limit_per_user > 0 else 0,
+        used=used_count,
+        remaining=remaining,
+        period=limit_period,
+        is_vip=is_vip,
+        vip_bonus=vip_bonus
+    )
