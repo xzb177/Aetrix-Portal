@@ -76,7 +76,7 @@ def check_user_is_vip(user_id: int, db: Session) -> bool:
     subscription = db.query(UserSubscription).filter(
         UserSubscription.user_id == user_id,
         UserSubscription.status == 'active',
-        UserSubscription.end_time > datetime.now()
+        UserSubscription.end_date > datetime.now()
     ).first()
 
     return subscription is not None
@@ -116,6 +116,8 @@ async def create_movie_request(
         is_vip = check_user_is_vip(current_user.id, db)
         user_limit = limit_per_user + (vip_bonus if is_vip else 0)
         used_count = get_user_request_count(current_user.id, limit_period, db)
+
+        logger.info(f"求片限制检查: user_id={current_user.id}, is_vip={is_vip}, user_limit={user_limit}, used_count={used_count}, limit_per_user={limit_per_user}")
 
         if used_count >= user_limit:
             period_text = {"total": "总计", "monthly": "本月", "weekly": "本周"}.get(limit_period, "总计")
