@@ -44,7 +44,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 # 版本
-VERSION="1.7.0"
+VERSION="1.8.0"
 
 # 默认选项
 BUILD_FLAG=""

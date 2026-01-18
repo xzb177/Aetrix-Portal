@@ -318,6 +318,8 @@ class WebUser(Base):
     is_staff = Column(Boolean, default=False)
     points = Column(Integer, default=0)  # MP 积分余额（已废弃，兼容旧数据）
     balance = Column(Integer, default=0)  # 充值余额（单位：分）
+    completed_requests_count = Column(Integer, default=0)  # 成功求片入库数量
+    total_requests_count = Column(Integer, default=0)  # 总求片数量
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

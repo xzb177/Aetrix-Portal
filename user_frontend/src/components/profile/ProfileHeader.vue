@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { User } from 'lucide-vue-next'
+import { User, Award, Sparkles } from 'lucide-vue-next'
 
 interface Profile {
   username: string
   id: number
   points?: number  // @deprecated 旧字段，使用 balance
   balance?: number  // 新字段，单位：分
+  completed_requests_count?: number  // 成功求片入库数量
+  total_requests_count?: number  // 总求片数量
 }
 
 interface Props {
@@ -30,6 +32,21 @@ const effectiveIsVIP = computed(() => props.isVIP ?? props.isVIP_v2 ?? false)
 const displayBalance = computed(() => {
   const balanceInCents = props.profile?.balance ?? props.profile?.points ?? 0
   return (balanceInCents / 100).toFixed(2)
+})
+
+// 求片统计
+const completedRequests = computed(() => props.profile?.completed_requests_count || 0)
+const totalRequests = computed(() => props.profile?.total_requests_count || 0)
+
+// 求片徽章等级
+const requestBadge = computed(() => {
+  const count = completedRequests.value
+  if (count >= 50) return { level: '求片传说', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)', icon: Sparkles }
+  if (count >= 20) return { level: '求片大师', color: '#a855f7', bg: 'rgba(168, 85, 247, 0.15)', icon: Award }
+  if (count >= 10) return { level: '求片专家', color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.15)', icon: Award }
+  if (count >= 5) return { level: '求片达人', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', icon: Award }
+  if (count >= 1) return { level: '求片新手', color: '#6b7280', bg: 'rgba(107, 114, 128, 0.15)', icon: null }
+  return null
 })
 
 function getDaysRemaining(expiryDate?: string) {
@@ -58,19 +75,35 @@ function getDaysRemaining(expiryDate?: string) {
   <!-- Normal State -->
   <div v-else-if="profile" class="profile-header flex items-center gap-3 px-4 py-3 bg-card border-b border-white/6">
     <!-- Avatar -->
-    <div class="w-12 h-12 rounded-lg bg-elevated flex items-center justify-center border border-white/10 shadow-card">
+    <div class="w-12 h-12 rounded-lg bg-elevated flex items-center justify-center border border-white/10 shadow-card relative">
       <User :size="22" class="text-white/60" />
+      <!-- 求片徽章图标 -->
+      <div v-if="requestBadge && completedRequests > 0" class="badge-icon" :style="{ backgroundColor: requestBadge.color }">
+        <component :is="requestBadge.icon" :size="10" class="text-white" />
+      </div>
     </div>
 
     <!-- User Info -->
     <div class="flex-1 min-w-0">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <span class="text-white font-semibold text-base truncate">{{ profile.username }}</span>
+        <!-- VIP 标签 -->
         <span v-if="effectiveIsVIP && vipExpiry" class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent whitespace-nowrap">
           VIP {{ getDaysRemaining(vipExpiry) }}天
         </span>
+        <!-- 求片徽章 -->
+        <span v-if="requestBadge && completedRequests > 0" class="request-badge" :style="{
+          backgroundColor: requestBadge.bg,
+          color: requestBadge.color
+        }">
+          <component v-if="requestBadge.icon" :is="requestBadge.icon" :size="10" />
+          {{ requestBadge.level }}
+        </span>
       </div>
-      <div class="text-white/50 text-sm">ID: {{ profile.id }}</div>
+      <div class="text-white/50 text-sm flex items-center gap-2">
+        <span>ID: {{ profile.id }}</span>
+        <span v-if="totalRequests > 0" class="text-xs text-white/30">· 已求片 {{ totalRequests }} 部</span>
+      </div>
     </div>
 
     <!-- Balance -->
@@ -102,6 +135,31 @@ function getDaysRemaining(expiryDate?: string) {
   color: var(--accent);
 }
 
+.badge-icon {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.request-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
 .bg-accent\/10 {
   background: rgba(16, 185, 129, 0.1);
 }
@@ -124,6 +182,10 @@ function getDaysRemaining(expiryDate?: string) {
 
 .text-white\/40 {
   color: rgba(255, 255, 255, 0.4);
+}
+
+.text-white\/30 {
+  color: rgba(255, 255, 255, 0.3);
 }
 
 .shadow-card {

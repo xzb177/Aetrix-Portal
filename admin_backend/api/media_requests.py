@@ -265,9 +265,19 @@ async def update_media_request_status(
     if data.tmdb_id is not None:
         req.tmdb_id = data.tmdb_id
 
-    # 如果是完成状态，记录完成时间
-    if data.status == "completed" and not req.completed_at:
+    # 如果是完成状态，记录完成时间并更新用户统计
+    if data.status == "completed" and old_status != "completed":
         req.completed_at = datetime.now()
+        # 更新用户成功求片统计
+        user = db.query(WebUser).filter(WebUser.id == req.user_id).first()
+        if user:
+            user.completed_requests_count = (user.completed_requests_count or 0) + 1
+
+    # 更新用户总求片数（只增加一次）
+    if old_status == "pending" and data.status != "pending":
+        user = db.query(WebUser).filter(WebUser.id == req.user_id).first()
+        if user:
+            user.total_requests_count = (user.total_requests_count or 0) + 1
 
     db.commit()
 

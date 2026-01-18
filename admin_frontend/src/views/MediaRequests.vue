@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Refresh, Film, Clock, CircleCheck, CircleClose, Loading,
-  Search, Delete, View, Edit, Download, Picture, User
+  Search, Delete, View, Edit, Download, Picture, User, UserFilled
 } from '@element-plus/icons-vue'
 import {
   getMediaRequests,
@@ -275,15 +275,15 @@ const handleAddSubscribe = async () => {
   }
 }
 
-// 状态标签
-const getStatusTag = (status: string) => {
-  const statusMap: Record<string, { label: string; type: any; class: string }> = {
-    pending: { label: '待审核', type: 'info', class: 'status-pending' },
-    approved: { label: '已批准', type: 'success', class: 'status-approved' },
-    completed: { label: '已完成', type: 'success', class: 'status-completed' },
-    rejected: { label: '已拒绝', type: 'danger', class: 'status-rejected' }
+// 状态标签配置
+const getStatusConfig = (status: string) => {
+  const statusMap: Record<string, { label: string; color: string; bgColor: string; icon: any }> = {
+    pending: { label: '待审核', color: '#f59e0b', bgColor: 'rgba(245, 158, 11, 0.12)', icon: Clock },
+    approved: { label: '处理中', color: '#3b82f6', bgColor: 'rgba(59, 130, 246, 0.12)', icon: Loading },
+    completed: { label: '已完成', color: '#10b981', bgColor: 'rgba(16, 185, 129, 0.12)', icon: CircleCheck },
+    rejected: { label: '已拒绝', color: '#ef4444', bgColor: 'rgba(239, 68, 68, 0.12)', icon: CircleClose }
   }
-  return statusMap[status] || { label: status, type: 'info', class: 'status-default' }
+  return statusMap[status] || { label: status, color: '#6b7280', bgColor: 'rgba(107, 114, 128, 0.12)', icon: Film }
 }
 
 // 格式化日期
@@ -324,10 +324,14 @@ onMounted(() => {
 
 <template>
   <div class="media-requests-page">
-    <!-- 刷新按钮 -->
-    <div class="page-actions">
-      <button class="btn-action" @click="loadRequests" :class="{ spinning: loading }">
-        <Refresh />
+    <!-- 顶部操作栏 -->
+    <div class="page-header">
+      <div class="header-left">
+        <h1 class="page-title">求片管理</h1>
+        <p class="page-subtitle">管理和处理用户的求片请求</p>
+      </div>
+      <button class="btn-refresh" @click="loadRequests" :class="{ spinning: loading }">
+        <Refresh :size="16" />
         刷新
       </button>
     </div>
@@ -335,62 +339,76 @@ onMounted(() => {
     <!-- 统计卡片 -->
     <div class="stats-grid">
       <div class="stat-card" :class="{ 'active': filters.status === '' }" @click="handleStatClick('')">
-        <div class="stat-icon default">
-          <Film />
+        <div class="stat-icon-wrapper">
+          <div class="stat-icon default">
+            <Film :size="20" />
+          </div>
         </div>
         <div class="stat-content">
-          <div class="stat-label">全部</div>
           <div class="stat-value">{{ stats.total }}</div>
+          <div class="stat-label">全部求片</div>
         </div>
       </div>
       <div class="stat-card" :class="{ 'active': filters.status === 'pending' }" @click="handleStatClick('pending')">
-        <div class="stat-icon warning">
-          <Clock />
+        <div class="stat-icon-wrapper">
+          <div class="stat-icon warning">
+            <Clock :size="20" />
+          </div>
         </div>
         <div class="stat-content">
-          <div class="stat-label">待审核</div>
           <div class="stat-value">{{ stats.pending }}</div>
+          <div class="stat-label">待审核</div>
         </div>
+        <div class="stat-indicator" v-if="stats.pending > 0"></div>
       </div>
       <div class="stat-card" :class="{ 'active': filters.status === 'approved' }" @click="handleStatClick('approved')">
-        <div class="stat-icon success">
-          <CircleCheck />
+        <div class="stat-icon-wrapper">
+          <div class="stat-icon info">
+            <Loading :size="20" />
+          </div>
         </div>
         <div class="stat-content">
-          <div class="stat-label">已批准</div>
           <div class="stat-value">{{ stats.approved }}</div>
+          <div class="stat-label">处理中</div>
         </div>
       </div>
       <div class="stat-card" :class="{ 'active': filters.status === 'completed' }" @click="handleStatClick('completed')">
-        <div class="stat-icon success">
-          <CircleCheck />
+        <div class="stat-icon-wrapper">
+          <div class="stat-icon success">
+            <CircleCheck :size="20" />
+          </div>
         </div>
         <div class="stat-content">
-          <div class="stat-label">已完成</div>
           <div class="stat-value">{{ stats.completed }}</div>
+          <div class="stat-label">已完成</div>
         </div>
       </div>
       <div class="stat-card" :class="{ 'active': filters.status === 'rejected' }" @click="handleStatClick('rejected')">
-        <div class="stat-icon danger">
-          <CircleClose />
+        <div class="stat-icon-wrapper">
+          <div class="stat-icon danger">
+            <CircleClose :size="20" />
+          </div>
         </div>
         <div class="stat-content">
-          <div class="stat-label">已拒绝</div>
           <div class="stat-value">{{ stats.rejected }}</div>
+          <div class="stat-label">已拒绝</div>
         </div>
       </div>
     </div>
 
     <!-- 筛选栏 -->
-    <div class="admin-card filter-bar">
+    <div class="filter-bar">
       <div class="filter-left">
-        <input
-          v-model="filters.search"
-          type="text"
-          placeholder="搜索影片名称..."
-          class="filter-input"
-          @keyup.enter="handleFilter"
-        />
+        <div class="search-box">
+          <Search :size="16" class="search-icon" />
+          <input
+            v-model="filters.search"
+            type="text"
+            placeholder="搜索影片名称..."
+            class="search-input"
+            @keyup.enter="handleFilter"
+          />
+        </div>
         <select v-model="filters.status" class="filter-select">
           <option value="">全部状态</option>
           <option value="pending">待审核</option>
@@ -404,7 +422,7 @@ onMounted(() => {
           <option value="tv">电视剧</option>
         </select>
         <button class="btn-primary" @click="handleFilter">
-          <Search />
+          <Search :size="14" />
           搜索
         </button>
         <button class="btn-secondary" @click="handleResetFilter">
@@ -414,67 +432,102 @@ onMounted(() => {
     </div>
 
     <!-- 求片列表 -->
-    <div class="admin-card requests-card">
-      <div v-loading="loading" class="requests-container">
+    <div class="requests-container">
+      <div v-loading="loading" class="requests-wrapper">
+        <!-- 空状态 -->
         <div v-if="requests.length === 0 && !loading" class="empty-state">
-          <Film :size="48" />
-          <p class="empty-state-text">暂无求片记录</p>
+          <div class="empty-icon">
+            <Film :size="64" />
+          </div>
+          <h3 class="empty-title">暂无求片记录</h3>
+          <p class="empty-desc">当用户提交求片请求时，会显示在这里</p>
         </div>
 
-        <div v-else class="requests-list">
+        <!-- 求片卡片网格 -->
+        <div v-else class="requests-grid">
           <div
             v-for="request in requests"
             :key="request.id"
-            class="request-item"
-            :class="[`request-${request.status}`]"
+            class="request-card"
+            :class="[`status-${request.status}`]"
           >
-            <div class="request-poster" v-if="request.poster_url">
-              <img :src="request.poster_url" :alt="request.movie_name" />
-            </div>
-            <div class="request-poster placeholder" v-else>
-              <Picture />
+            <!-- 海报区域 -->
+            <div class="card-poster">
+              <img
+                v-if="request.poster_url"
+                :src="request.poster_url"
+                :alt="request.movie_name"
+                class="poster-image"
+              />
+              <div v-else class="poster-placeholder">
+                <Picture :size="32" />
+              </div>
+              <!-- 状态徽章 -->
+              <div class="status-badge" :style="{
+                backgroundColor: getStatusConfig(request.status).bgColor,
+                color: getStatusConfig(request.status).color
+              }">
+                <component :is="getStatusConfig(request.status).icon" :size="12" />
+                {{ getStatusConfig(request.status).label }}
+              </div>
             </div>
 
-            <div class="request-content">
-              <div class="request-header">
-                <h3 class="request-title">{{ request.movie_name }}</h3>
-                <span class="status-tag" :class="getStatusTag(request.status).class">
-                  {{ getStatusTag(request.status).label }}
+            <!-- 内容区域 -->
+            <div class="card-content">
+              <!-- 标题 -->
+              <h3 class="card-title" :title="request.movie_name">
+                {{ request.movie_name }}
+              </h3>
+
+              <!-- 元信息 -->
+              <div class="card-meta">
+                <span v-if="request.year" class="meta-tag year">{{ request.year }}</span>
+                <span v-if="request.type" class="meta-tag type">
+                  {{ request.type === 'movie' ? '电影' : '剧集' }}
+                </span>
+                <span class="meta-tag subscriber">
+                  <UserFilled :size="12" />
+                  {{ request.subscriber_count || 1 }} 人订阅
                 </span>
               </div>
 
-              <div class="request-meta">
-                <span v-if="request.year" class="meta-item">{{ request.year }}</span>
-                <span v-if="request.type" class="meta-item">{{ request.type === 'movie' ? '电影' : '电视剧' }}</span>
-                <span class="meta-item">
-                  <User :size="12" />
-                  {{ request.username }}
-                </span>
+              <!-- 用户信息 -->
+              <div class="card-user">
+                <User :size="12" />
+                <span>{{ request.username || '未知用户' }}</span>
+                <span class="user-time">{{ formatDate(request.created_at) }}</span>
               </div>
 
-              <div class="request-time">
-                <Clock :size="12" />
-                {{ formatDate(request.created_at) }}
+              <!-- 备注 -->
+              <div class="card-note" v-if="request.note" :title="request.note">
+                <span class="note-icon">💬</span>
+                {{ request.note }}
               </div>
 
-              <div class="request-note" v-if="request.note">
-                备注: {{ request.note }}
+              <!-- 管理备注 -->
+              <div class="card-admin-note" v-if="request.admin_note" :title="request.admin_note">
+                <span class="note-icon">📝</span>
+                {{ request.admin_note }}
               </div>
+            </div>
 
-              <div class="request-actions">
-                <button class="btn-icon" @click="handleViewDetail(request)" title="详情">
-                  <View :size="16" />
-                </button>
-                <button class="btn-icon btn-primary" @click="handleSubscribeDialog(request)" title="订阅下载">
-                  <Download :size="16" />
-                </button>
-                <button class="btn-icon" @click="handleStatusDialog(request)" title="更新状态">
-                  <Edit :size="16" />
-                </button>
-                <button class="btn-icon btn-danger" @click="handleDelete(request)" title="删除">
-                  <Delete :size="16" />
-                </button>
-              </div>
+            <!-- 操作按钮 -->
+            <div class="card-actions">
+              <button class="action-btn detail" @click="handleViewDetail(request)" title="查看详情">
+                <View :size="14" />
+                详情
+              </button>
+              <button class="action-btn subscribe" @click="handleSubscribeDialog(request)" title="添加订阅">
+                <Download :size="14" />
+                订阅
+              </button>
+              <button class="action-btn edit" @click="handleStatusDialog(request)" title="更新状态">
+                <Edit :size="14" />
+                状态
+              </button>
+              <button class="action-btn delete" @click="handleDelete(request)" title="删除">
+                <Delete :size="14" />
+              </button>
             </div>
           </div>
         </div>
@@ -498,6 +551,7 @@ onMounted(() => {
       title="求片详情"
       :width="dialogWidth"
       :close-on-click-modal="false"
+      class="detail-dialog"
     >
       <div v-if="requestDetail" class="detail-content">
         <div class="detail-poster" v-if="requestDetail.poster_url">
@@ -507,34 +561,44 @@ onMounted(() => {
         <div class="detail-info">
           <h2>{{ requestDetail.movie_name }}</h2>
 
-          <div class="detail-row">
-            <span class="label">类型:</span>
-            <span>{{ requestDetail.type === 'movie' ? '电影' : '电视剧' }}</span>
-          </div>
-          <div class="detail-row" v-if="requestDetail.year">
-            <span class="label">年份:</span>
-            <span>{{ requestDetail.year }}</span>
-          </div>
-          <div class="detail-row">
-            <span class="label">状态:</span>
-            <span class="status-tag" :class="getStatusTag(requestDetail.status).class">
-              {{ getStatusTag(requestDetail.status).label }}
-            </span>
-          </div>
-          <div class="detail-row" v-if="requestDetail.tmdb_id">
-            <span class="label">TMDB ID:</span>
-            <span>{{ requestDetail.tmdb_id }}</span>
-          </div>
-          <div class="detail-row" v-if="requestDetail.note">
-            <span class="label">备注:</span>
-            <span>{{ requestDetail.note }}</span>
+          <div class="detail-meta">
+            <div class="detail-row">
+              <span class="label">类型</span>
+              <span class="value">{{ requestDetail.type === 'movie' ? '电影' : '电视剧' }}</span>
+            </div>
+            <div class="detail-row" v-if="requestDetail.year">
+              <span class="label">年份</span>
+              <span class="value">{{ requestDetail.year }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="label">状态</span>
+              <span class="status-tag" :style="{
+                backgroundColor: getStatusConfig(requestDetail.status).bgColor,
+                color: getStatusConfig(requestDetail.status).color
+              }">
+                <component :is="getStatusConfig(requestDetail.status).icon" :size="12" />
+                {{ getStatusConfig(requestDetail.status).label }}
+              </span>
+            </div>
+            <div class="detail-row" v-if="requestDetail.tmdb_id">
+              <span class="label">TMDB ID</span>
+              <span class="value">{{ requestDetail.tmdb_id }}</span>
+            </div>
+            <div class="detail-row" v-if="requestDetail.note">
+              <span class="label">用户备注</span>
+              <span class="value">{{ requestDetail.note }}</span>
+            </div>
           </div>
 
           <div class="detail-section" v-if="subscribers.length > 0">
-            <h4>订阅用户 ({{ subscribers.length }})</h4>
+            <h4>
+              <UserFilled :size="16" />
+              订阅用户 ({{ subscribers.length }})
+            </h4>
             <div class="subscribers-list">
               <span v-for="sub in subscribers" :key="sub.id" class="subscriber-tag">
-                {{ sub.username || sub.user_id }}
+                <User :size="12" />
+                {{ sub.username || `用户${sub.user_id}` }}
               </span>
             </div>
           </div>
@@ -542,11 +606,11 @@ onMounted(() => {
       </div>
 
       <template #footer>
-        <button class="btn-secondary" @click="showDetailDialog = false">关闭</button>
-        <button class="btn-primary" @click="handleSubscribeDialog(selectedRequest)">
-          <Download />
+        <el-button @click="showDetailDialog = false">关闭</el-button>
+        <el-button type="primary" @click="handleSubscribeDialog(selectedRequest)">
+          <Download :size="14" />
           添加到 MoviePilot
-        </button>
+        </el-button>
       </template>
     </el-dialog>
 
@@ -584,10 +648,10 @@ onMounted(() => {
       </el-form>
 
       <template #footer>
-        <button class="btn-secondary" @click="showStatusDialog = false">取消</button>
-        <button class="btn-primary" :loading="submitting" @click="handleUpdateStatus">
+        <el-button @click="showStatusDialog = false">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="handleUpdateStatus">
           确认更新
-        </button>
+        </el-button>
       </template>
     </el-dialog>
 
@@ -616,14 +680,16 @@ onMounted(() => {
             show-password
           />
         </div>
-        <button class="btn-secondary" @click="handleTestConnection" :loading="testingConnection">
-          测试连接
-        </button>
-        <span v-if="connectionStatus === 'success'" class="status-tag success">连接成功</span>
-        <span v-if="connectionStatus === 'error'" class="status-tag danger">连接失败</span>
+        <div class="test-connection">
+          <el-button @click="handleTestConnection" :loading="testingConnection">
+            测试连接
+          </el-button>
+          <span v-if="connectionStatus === 'success'" class="status-tag success">连接成功</span>
+          <span v-if="connectionStatus === 'error'" class="status-tag error">连接失败</span>
+        </div>
       </div>
 
-      <div class="divider"></div>
+      <el-divider />
 
       <div class="config-section">
         <h4>订阅信息</h4>
@@ -649,49 +715,71 @@ onMounted(() => {
       </div>
 
       <template #footer>
-        <button class="btn-secondary" @click="showSubscribeDialog = false">取消</button>
-        <button class="btn-primary" :loading="submitting" @click="handleAddSubscribe">
+        <el-button @click="showSubscribeDialog = false">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="handleAddSubscribe">
           添加订阅
-        </button>
+        </el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
+/* 页面容器 */
 .media-requests-page {
-  padding: 20px;
-  max-width: 1400px;
+  padding: 24px;
+  max-width: 1600px;
   margin: 0 auto;
 }
 
-/* 操作按钮区 */
-.page-actions {
+/* 顶部操作栏 */
+.page-header {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
 }
 
-.btn-action {
+.header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.page-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+
+.btn-refresh {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
+  gap: 8px;
+  padding: 10px 20px;
   background: var(--bg-card);
   border: 1px solid var(--border-base);
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 14px;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s;
 }
 
-.btn-action:hover {
+.btn-refresh:hover {
   border-color: var(--primary);
   color: var(--primary);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
 }
 
-.btn-action.spinning svg {
+.btn-refresh.spinning svg {
   animation: spin 1s linear infinite;
 }
 
@@ -703,90 +791,150 @@ onMounted(() => {
 /* 统计卡片 */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
 }
 
 .stat-card {
+  position: relative;
   background: var(--bg-card);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 16px;
+  padding: 20px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  border: 1px solid var(--border-base);
+  gap: 16px;
+  border: 2px solid transparent;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .stat-card:hover {
+  transform: translateY(-2px);
   border-color: var(--primary);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
 }
 
 .stat-card.active {
   border-color: var(--primary);
-  background: var(--info-bg);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(99, 102, 241, 0.02));
+}
+
+.stat-icon-wrapper {
+  position: relative;
 }
 
 .stat-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
-.stat-icon.default { background: var(--text-tertiary); }
-.stat-icon.warning { background: var(--warning); }
-.stat-icon.success { background: var(--primary); }
-.stat-icon.info { background: var(--info); }
-.stat-icon.danger { background: var(--danger); }
+.stat-icon.default { background: linear-gradient(135deg, #6366f1, #4f46e5); }
+.stat-icon.warning { background: linear-gradient(135deg, #f59e0b, #d97706); }
+.stat-icon.info { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.stat-icon.success { background: linear-gradient(135deg, #10b981, #059669); }
+.stat-icon.danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
 
 .stat-content {
   flex: 1;
 }
 
-.stat-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+  margin-bottom: 4px;
 }
 
-.stat-value {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-primary);
+.stat-label {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.stat-indicator {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.2); }
 }
 
 /* 筛选栏 */
 .filter-bar {
-  padding: 16px 20px;
-  margin-bottom: 20px;
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
 .filter-left {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
-.filter-input {
-  padding: 8px 12px;
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.search-input {
+  padding: 10px 14px 10px 40px;
   border: 1px solid var(--border-base);
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 14px;
-  width: 200px;
+  width: 240px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  transition: all 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
 .filter-select {
-  padding: 8px 12px;
+  padding: 10px 14px;
   border: 1px solid var(--border-base);
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 14px;
-  background: var(--bg-card);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: var(--primary);
 }
 
 /* 按钮 */
@@ -794,159 +942,172 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: 10px 20px;
   background: var(--primary);
   color: #fff;
   border: none;
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .btn-primary:hover {
   background: var(--primary-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
 }
 
 .btn-secondary {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
-  background: var(--bg-card);
+  padding: 10px 20px;
+  background: var(--bg-elevated);
   color: var(--text-secondary);
   border: 1px solid var(--border-base);
-  border-radius: 6px;
+  border-radius: 10px;
   font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .btn-secondary:hover {
   border-color: var(--text-tertiary);
-}
-
-.btn-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
   background: var(--bg-hover);
-  border: none;
-  border-radius: 6px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.2s;
 }
 
-.btn-icon:hover {
-  background: var(--bg-elevated);
-}
-
-.btn-icon.btn-primary {
-  background: var(--primary);
-  color: #fff;
-}
-
-.btn-icon.btn-primary:hover {
-  background: var(--primary-dark);
-}
-
-.btn-icon.btn-danger {
-  background: var(--danger);
-  color: #fff;
-}
-
-.btn-icon.btn-danger:hover {
-  background: var(--danger-dark);
-}
-
-/* 求片列表 */
-.requests-card {
-  min-height: 400px;
-}
-
+/* 求片容器 */
 .requests-container {
-  padding: 20px;
+  background: var(--bg-card);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
 }
 
+.requests-wrapper {
+  padding: 24px;
+}
+
+/* 空状态 */
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px 20px;
+  padding: 80px 20px;
   color: var(--text-tertiary);
 }
 
-.empty-state svg {
-  margin-bottom: 16px;
-}
-
-.requests-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-  gap: 16px;
-}
-
-.request-item {
-  display: flex;
-  gap: 16px;
-  padding: 16px;
-  background: var(--bg-elevated);
-  border-radius: 8px;
-  border-left: 3px solid transparent;
-  transition: all 0.2s;
-}
-
-.request-item:hover {
-  background: var(--bg-hover);
-  box-shadow: var(--shadow-sm);
-}
-
-.request-item.request-pending { border-left-color: var(--warning); }
-.request-item.request-approved { border-left-color: var(--primary); }
-.request-item.request-completed { border-left-color: var(--primary); }
-.request-item.request-rejected { border-left-color: var(--danger); }
-
-.request-poster {
-  width: 80px;
+.empty-icon {
+  width: 120px;
   height: 120px;
-  border-radius: 6px;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+  color: var(--text-tertiary);
+}
+
+.empty-title {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.empty-desc {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+
+/* 求片网格 */
+.requests-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 20px;
+}
+
+/* 求片卡片 */
+.request-card {
+  background: var(--bg-elevated);
+  border-radius: 16px;
   overflow: hidden;
+  display: flex;
+  border: 1px solid var(--border-base);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.request-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
+  border-color: var(--primary);
+}
+
+/* 状态边框 */
+.request-card.status-pending { border-left: 4px solid #f59e0b; }
+.request-card.status-approved { border-left: 4px solid #3b82f6; }
+.request-card.status-completed { border-left: 4px solid #10b981; }
+.request-card.status-rejected { border-left: 4px solid #ef4444; }
+
+/* 海报区域 */
+.card-poster {
+  position: relative;
+  width: 140px;
   flex-shrink: 0;
 }
 
-.request-poster img {
+.poster-image {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  min-height: 200px;
 }
 
-.request-poster.placeholder {
-  background: var(--bg-elevated);
+.poster-placeholder {
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+  background: linear-gradient(135deg, var(--bg-hover), var(--bg-elevated));
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-tertiary);
 }
 
-.request-content {
+/* 状态徽章 */
+.status-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* 内容区域 */
+.card-content {
   flex: 1;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
 }
 
-.request-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.request-title {
+.card-title {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
@@ -954,85 +1115,139 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding-right: 40px;
 }
 
-.request-meta {
+.card-meta {
   display: flex;
-  gap: 12px;
-  font-size: 13px;
-  color: var(--text-tertiary);
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.meta-item {
-  display: flex;
+.meta-tag {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-}
-
-.request-time {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
   font-size: 12px;
+  font-weight: 500;
+}
+
+.meta-tag.year {
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366f1;
+}
+
+.meta-tag.type {
+  background: rgba(168, 85, 247, 0.12);
+  color: #a855f7;
+}
+
+.meta-tag.subscriber {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+
+.card-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
   color: var(--text-tertiary);
 }
 
-.request-note {
-  font-size: 13px;
-  color: var(--text-secondary);
-  background: var(--bg-card);
-  padding: 6px 10px;
-  border-radius: 4px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.user-time {
+  margin-left: auto;
+  font-size: 12px;
 }
 
-.request-actions {
+.card-note,
+.card-admin-note {
   display: flex;
+  align-items: flex-start;
   gap: 6px;
-  margin-top: auto;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.card-note {
+  background: rgba(99, 102, 241, 0.06);
+  color: #6366f1;
+}
+
+.card-admin-note {
+  background: rgba(245, 158, 11, 0.06);
+  color: #f59e0b;
+}
+
+.note-icon {
+  flex-shrink: 0;
+}
+
+/* 操作按钮 */
+.card-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+  padding: 12px 16px;
+  background: var(--bg-hover);
+  border-top: 1px solid var(--border-base);
+}
+
+.action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-btn:hover {
+  background: var(--bg-card);
+}
+
+.action-btn.detail:hover { color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+.action-btn.subscribe:hover { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+.action-btn.edit:hover { color: #f59e0b; background: rgba(245, 158, 11, 0.1); }
+.action-btn.delete:hover { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
 
 /* 分页 */
 .pagination-bar {
   display: flex;
   justify-content: center;
-  padding: 16px;
+  padding: 20px;
   border-top: 1px solid var(--border-base);
+  background: var(--bg-hover);
 }
-
-/* 状态标签 */
-.status-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.status-pending { background: var(--warning-bg); color: var(--warning); }
-.status-approved { background: var(--info-bg); color: var(--primary); }
-.status-completed { background: var(--info-bg); color: var(--primary); }
-.status-rejected { background: var(--danger-bg); color: var(--danger); }
-.status-default { background: var(--bg-hover); color: var(--text-tertiary); }
 
 /* 详情对话框 */
 .detail-content {
   display: flex;
-  gap: 20px;
+  gap: 24px;
 }
 
 .detail-poster {
-  width: 140px;
+  width: 160px;
   flex-shrink: 0;
 }
 
 .detail-poster img {
   width: 100%;
-  border-radius: 8px;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
 .detail-info {
@@ -1040,30 +1255,60 @@ onMounted(() => {
 }
 
 .detail-info h2 {
-  margin: 0 0 16px 0;
-  font-size: 20px;
+  margin: 0 0 20px 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.detail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .detail-row {
   display: flex;
-  margin-bottom: 10px;
+  align-items: center;
+  gap: 12px;
 }
 
 .detail-row .label {
   width: 80px;
   color: var(--text-tertiary);
+  font-size: 14px;
   flex-shrink: 0;
 }
 
+.detail-row .value {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.detail-row .status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .detail-section {
-  margin-top: 16px;
-  padding-top: 16px;
+  margin-top: 20px;
+  padding-top: 20px;
   border-top: 1px solid var(--border-base);
 }
 
 .detail-section h4 {
-  margin: 0 0 10px 0;
-  font-size: 14px;
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .subscribers-list {
@@ -1073,21 +1318,27 @@ onMounted(() => {
 }
 
 .subscriber-tag {
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
   background: var(--bg-hover);
-  border-radius: 12px;
-  font-size: 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-base);
 }
 
 /* 配置区域 */
 .config-section {
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .config-section h4 {
-  margin: 0 0 12px 0;
-  font-size: 14px;
-  color: var(--text-secondary);
+  margin: 0 0 16px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .form-group {
@@ -1096,52 +1347,82 @@ onMounted(() => {
 
 .form-group label {
   display: block;
-  margin-bottom: 6px;
-  font-size: 13px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 500;
   color: var(--text-secondary);
 }
 
-.divider {
-  height: 1px;
-  background: var(--bg-hover);
-  margin: 16px 0;
+.test-connection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.test-connection .status-tag {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.test-connection .status-tag.success {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+
+.test-connection .status-tag.error {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
 }
 
 /* 响应式 */
 @media (max-width: 768px) {
   .media-requests-page {
-    padding: 12px;
+    padding: 16px;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
   }
 
   .stats-grid {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
   }
 
   .stat-card {
-    padding: 12px;
+    padding: 16px;
   }
 
   .stat-icon {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
   }
 
   .stat-value {
-    font-size: 16px;
+    font-size: 24px;
   }
 
-  .requests-list {
+  .requests-grid {
     grid-template-columns: 1fr;
   }
 
-  .request-item {
+  .request-card {
     flex-direction: column;
   }
 
-  .request-poster {
+  .card-poster {
     width: 100%;
-    height: 160px;
+    height: 180px;
+  }
+
+  .poster-image,
+  .poster-placeholder {
+    min-height: 180px;
   }
 
   .filter-left {
@@ -1149,15 +1430,32 @@ onMounted(() => {
     align-items: stretch;
   }
 
-  .filter-input,
+  .search-input,
   .filter-select {
+    width: 100%;
+  }
+
+  .detail-content {
+    flex-direction: column;
+  }
+
+  .detail-poster {
     width: 100%;
   }
 }
 
 @media (max-width: 480px) {
   .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr;
+  }
+
+  .card-actions {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .action-btn {
+    padding: 12px 4px;
+    font-size: 11px;
   }
 }
 </style>

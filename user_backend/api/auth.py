@@ -108,6 +108,9 @@ def get_user_response(user: WebUser, db: Session) -> dict:
         "balance": user.balance if hasattr(user, 'balance') and user.balance is not None else 0,
         "points": binding["points"] if binding else 0,  # 保留兼容性
         "registered_date": user.created_at.isoformat() if user.created_at else None,
+        # 求片统计
+        "completed_requests_count": user.completed_requests_count if hasattr(user, 'completed_requests_count') else 0,
+        "total_requests_count": user.total_requests_count if hasattr(user, 'total_requests_count') else 0,
     }
 
 

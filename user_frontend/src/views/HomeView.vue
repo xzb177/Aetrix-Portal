@@ -10,7 +10,7 @@
  *
  * 转化路径：用户无需纠结 → 点击唯一主按钮 → 进入订阅页
  */
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { announcementApi, authApi, subscriptionApi, userApi, embyApi } from '@/api'
@@ -363,14 +363,34 @@ const showPlayerSelector = ref(false)
 const selectedAccount = ref<any>(null)
 
 // 登录成功回调
-const handleAuthSuccess = () => {
+const handleAuthSuccess = async () => {
   // 刷新用户数据
-  Promise.all([
-    fetchEmbyAccounts(),
-    fetchSubscription(),
-    fetchUserBalance()
-  ])
+  await loadUserData()
 }
+
+// 加载用户数据（统一入口）
+const loadUserData = async () => {
+  if (!isLoggedIn.value) return
+  loading.value = true
+  try {
+    await Promise.all([
+      fetchAnnouncements(),
+      fetchEmbyAccounts(),
+      fetchSubscription(),
+      fetchUserBalance()
+    ])
+  } finally {
+    loading.value = false
+  }
+}
+
+// 监听登录状态变化 - 当从未登录变为已登录时自动加载数据
+watch(isLoggedIn, (newValue, oldValue) => {
+  // 只在从未登录变为已登录时触发
+  if (newValue && !oldValue) {
+    loadUserData()
+  }
+})
 
 const handleP0SummaryClick = () => {
   // 从摘要条打开弹窗（非强制模式）
@@ -382,17 +402,12 @@ const handleP0SummaryClick = () => {
 // 页面加载
 onMounted(async () => {
   await fetchUserStats()
-  if (!isLoggedIn.value) {
+  // 如果已登录，加载用户数据
+  if (isLoggedIn.value) {
+    await loadUserData()
+  } else {
     loading.value = false
-    return
   }
-  await Promise.all([
-    fetchAnnouncements(),
-    fetchEmbyAccounts(),
-    fetchSubscription(),
-    fetchUserBalance()
-  ])
-  loading.value = false
 
   // 初始化 P0 公告（仅在首页触发）
   await p0Announcement.init()
@@ -467,8 +482,47 @@ onMounted(async () => {
       </main>
     </div>
 
+    <!-- 骨架屏 - 加载中 -->
+    <div v-else-if="loading && isLoggedIn" class="skeleton-view">
+      <!-- 骨架：3 步流程指示器 -->
+      <div class="progress-stepper skeleton-stepper">
+        <div class="step" v-for="i in 3" :key="i">
+          <div class="skeleton-step-dot"></div>
+          <div class="skeleton-step-label"></div>
+        </div>
+        <div class="skeleton-step-line" v-for="i in 2" :key="`line-${i}`"></div>
+      </div>
+
+      <!-- 骨架：状态卡片 -->
+      <div class="status-card skeleton-card">
+        <div class="skeleton-header">
+          <div class="skeleton-greeting"></div>
+          <div class="skeleton-badge"></div>
+        </div>
+        <div class="skeleton-divider"></div>
+        <div class="skeleton-cta-button"></div>
+        <div class="skeleton-secondary-links"></div>
+        <div class="skeleton-divider"></div>
+        <!-- 骨架：账号预览 -->
+        <div class="skeleton-account-preview">
+          <div class="skeleton-preview-header"></div>
+          <div class="skeleton-preview-body">
+            <div class="skeleton-preview-field" v-for="i in 3" :key="i"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 骨架：快捷网格 -->
+      <div class="quick-grid skeleton-grid">
+        <div class="skeleton-quick-item" v-for="i in 4" :key="i">
+          <div class="skeleton-quick-icon"></div>
+          <div class="skeleton-quick-label"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- 已登录状态 - V3 改造 -->
-    <div v-else-if="!loading" class="logged-in-view">
+    <div v-else class="logged-in-view">
       <!-- V3: 3 步流程指示器 -->
       <div class="progress-stepper">
         <div
@@ -740,12 +794,6 @@ onMounted(async () => {
           </div>
         </div>
       </div>
-    </div>
-
-    <!-- Loading -->
-    <div v-if="loading && isLoggedIn" class="loading-state">
-      <div class="spinner spinner-lg"></div>
-      <p>加载中...</p>
     </div>
 
     <!-- P0 公告弹层（仅在首页强制弹出） -->
@@ -1704,6 +1752,371 @@ onMounted(async () => {
 
   .text-link {
     font-size: 0.75rem;
+  }
+}
+
+/* ==================== 骨架屏 + 品牌脉冲圆环加载动画 ==================== */
+
+/* 骨架屏视图容器 */
+.skeleton-view {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 1rem 1rem 1.5rem;
+  animation: skeleton-fade-in 0.3s ease-out;
+}
+
+@keyframes skeleton-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 骨架屏基础动画 - 微光扫过效果 */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* 骨架基础样式 */
+.skeleton-bg {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* 骨架卡片 */
+.skeleton-card {
+  background: rgba(26, 26, 26, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* 骨架头部 */
+.skeleton-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.skeleton-greeting {
+  width: 120px;
+  height: 24px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+.skeleton-badge {
+  width: 80px;
+  height: 28px;
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.1) 0%,
+    rgba(16, 185, 129, 0.2) 50%,
+    rgba(16, 185, 129, 0.1) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 9999px;
+}
+
+/* 骨架分割线 */
+.skeleton-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 1rem 0;
+}
+
+/* 骨架 CTA 按钮 */
+.skeleton-cta-button {
+  width: 100%;
+  height: 52px;
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.15) 0%,
+    rgba(16, 185, 129, 0.3) 50%,
+    rgba(16, 185, 129, 0.15) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+/* CTA 按钮中心的品牌脉冲圆环 */
+.skeleton-cta-button::after {
+  content: '';
+  position: absolute;
+  width: 32px;
+  height: 32px;
+}
+
+/* 品牌脉冲圆环 - 使用伪元素实现 */
+.skeleton-cta-button::before {
+  content: '';
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  border-top-color: #10b981;
+  border-right-color: #10b981;
+  animation: brand-pulse-spin 0.8s linear infinite;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+}
+
+/* 骨架次要链接 */
+.skeleton-secondary-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.skeleton-secondary-links::before,
+.skeleton-secondary-links::after {
+  content: '';
+  width: 50px;
+  height: 14px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* 骨架账号预览 */
+.skeleton-account-preview {
+  width: 100%;
+  max-width: 280px;
+  margin: 0 auto;
+  background: rgba(26, 26, 26, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.skeleton-preview-header {
+  height: 36px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.skeleton-preview-body {
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.skeleton-preview-field {
+  height: 36px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.02) 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+/* 骨架流程指示器 */
+.skeleton-stepper {
+  opacity: 0.7;
+}
+
+.skeleton-step-dot {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border: 2px solid rgba(255, 255, 255, 0.08);
+  margin: 0 auto 0.5rem;
+}
+
+.skeleton-step-label {
+  width: 40px;
+  height: 12px;
+  margin: 0 auto;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+.skeleton-step-line {
+  width: 2.5rem;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 -0.25rem;
+  margin-bottom: 1.125rem;
+}
+
+/* 骨架快捷网格 */
+.skeleton-grid {
+  opacity: 0.7;
+}
+
+.skeleton-quick-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: rgba(26, 26, 26, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.75rem;
+  min-height: 90px;
+}
+
+.skeleton-quick-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.5rem;
+  background: linear-gradient(
+    90deg,
+    rgba(16, 185, 129, 0.1) 0%,
+    rgba(16, 185, 129, 0.2) 50%,
+    rgba(16, 185, 129, 0.1) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+.skeleton-quick-label {
+  width: 60px;
+  height: 14px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* ==================== 品牌脉冲圆环动画 ==================== */
+
+/* 圆环旋转动画 */
+@keyframes brand-pulse-spin {
+  0% {
+    transform: rotate(0deg);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+  }
+  100% {
+    transform: rotate(360deg);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+/* 品牌圆环呼吸光效 */
+@keyframes brand-pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.6));
+  }
+  50% {
+    opacity: 0.8;
+    filter: drop-shadow(0 0 12px rgba(16, 185, 129, 0.9));
+  }
+}
+
+/* ==================== 骨架屏响应式 ==================== */
+@media (max-width: 640px) {
+  .skeleton-view {
+    padding: 0.75rem 0.75rem 1rem;
+  }
+
+  .skeleton-stepper {
+    padding: 0.75rem 0.5rem 1rem;
+  }
+
+  .skeleton-step-dot {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
+  .skeleton-step-label {
+    width: 36px;
+    height: 10px;
+  }
+
+  .skeleton-step-line {
+    width: 2rem;
+  }
+
+  .skeleton-greeting {
+    width: 100px;
+    height: 20px;
+  }
+
+  .skeleton-badge {
+    width: 70px;
+    height: 24px;
+  }
+
+  .skeleton-cta-button {
+    height: 48px;
   }
 }
 </style>

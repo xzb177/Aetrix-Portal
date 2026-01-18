@@ -523,3 +523,181 @@ GET /settings/public/tmdb - 获取 TMDB 公开配置（无需鉴权）
 2. 测试海报墙功能（搜索、显示、投票）
 
 ---
+
+### 2026-01-18 用户首页加载动画优化
+
+**新增功能：** 骨架屏 + 品牌脉冲圆环组合加载动画
+
+**设计理念：**
+- **骨架屏**：在数据加载时显示与真实内容结构相同的灰色占位，提供内容预览
+- **品牌脉冲圆环**：绿色渐变圆环旋转 + 呼吸光效，与主 CTA 按钮风格统一
+
+**动画效果：**
+1. **微光扫过效果** (`skeleton-shimmer`) - 骨架元素上从左到右的渐变光波，循环 1.5s
+2. **品牌脉冲圆环** (`brand-pulse-spin`) - 28px 绿色圆环旋转，配合呼吸光晕，循环 0.8s
+3. **淡入动画** (`skeleton-fade-in`) - 骨架屏整体向上滑动淡入，300ms
+
+**骨架结构：**
+| 组件 | 骨架元素 |
+|------|----------|
+| 3 步流程指示器 | 3 个圆点 + 2 条连线 |
+| 状态卡片 | 问候语 + VIP 徽章 + CTA 按钮 + 次要链接 |
+| 账号预览 | 标题栏 + 3 个字段 |
+| 快捷网格 | 4 个图标卡片 |
+
+**颜色规范：**
+- 骨架基础：`rgba(255, 255, 255, 0.03~0.1)` 渐变
+- VIP 徽章骨架：`rgba(16, 185, 129, 0.1~0.2)` 绿色
+- CTA 按钮骨架：`rgba(16, 185, 129, 0.15~0.3)` 绿色渐变
+- 快捷图标骨架：`rgba(16, 185, 129, 0.1~0.2)` 绿色
+
+**修改文件：**
+- `/root/RoyalBot-Portal/user_frontend/src/views/HomeView.vue`
+  - 模板：添加 `.skeleton-view` 骨架屏结构
+  - 样式：添加约 370 行骨架屏和品牌脉冲圆环 CSS
+
+**技术细节：**
+- 使用 CSS 伪元素 `::before` 实现品牌脉冲圆环，无需额外 DOM
+- 所有骨架元素共享 `skeleton-shimmer` 动画，保持同步
+- 响应式适配：移动端骨架元素尺寸自动缩小
+
+---
+
+### 2026-01-18 修复 502 Bad Gateway 网络问题
+
+**问题描述：** 网站访问显示 502 Bad Gateway
+
+**问题根因：** Docker 网络隔离问题
+
+容器分布在两个不同的 Docker 网络：
+- `royalbot-emby-deploy_royalbot_network` (旧网络)
+- `royalbot-portal_royalbot_network` (新网络)
+
+| 容器 | 修复前网络 | 修复后网络 |
+|------|-----------|-----------|
+| royalbot_nginx | 旧网络 + 新网络 | 新网络 |
+| royalbot_user_frontend | 新网络 | 新网络 |
+| royalbot_admin_frontend | 旧网络 ❌ | 新网络 ✅ |
+| royalbot_user_backend | 新网络 | 新网络 |
+| royalbot_admin_backend | 新网络 | 新网络 |
+
+Nginx 容器同时连接在两个网络中，DNS 解析混乱导致尝试连接到错误的 IP（`172.19.0.3` 而非 `172.18.0.3`），产生 `Host is unreachable` 错误。
+
+**修复操作：**
+```bash
+# 1. 将 nginx 从旧网络中断开
+docker network disconnect royalbot-emby-deploy_royalbot_network royalbot_nginx
+
+# 2. 将 admin_frontend 连接到新网络
+docker network connect royalbot-portal_royalbot_network royalbot_admin_frontend
+
+# 3. 将 admin_frontend 从旧网络中断开
+docker network disconnect royalbot-emby-deploy_royalbot_network royalbot_admin_frontend
+
+# 4. 重启 nginx 清除 DNS 缓存
+docker restart royalbot_nginx
+```
+
+**修复结果：**
+- ✅ 网站访问正常，返回 HTTP 200
+- ✅ 所有容器在同一网络 `royalbot-portal_royalbot_network`
+- ✅ Nginx 可正确解析所有 upstream 服务
+
+---
+
+### 2026-01-18 修复登录后首页数据不显示问题
+
+**问题描述：** 用户登录成功后进入首页，不会显示账号信息，需要刷新页面才能看到
+
+**问题根因：** Vue 组件生命周期时序问题
+
+| 阶段 | 状态 |
+|------|------|
+| 1. 用户打开首页（未登录） | `onMounted` 执行，`isLoggedIn` = false，不加载数据 |
+| 2. 用户点击登录 | 登录成功后 `userStore.token` 和 `userStore.user` 更新 |
+| 3. 跳转回首页 | `onMounted` **不会再次执行**，数据未加载 |
+| 4. 手动刷新页面 | 组件重新挂载，`onMounted` 再次执行，此时已登录 |
+
+问题关键：`onMounted` 钩子只在组件挂载时执行一次，不会响应登录状态的变化。
+
+**修复内容：**
+
+添加了 `watch` 监听器，监听 `isLoggedIn` 状态变化，当从未登录变为已登录时自动加载数据。
+
+**修改文件：** `/root/RoyalBot-Portal/user_frontend/src/views/HomeView.vue`
+
+**修改前：**
+```javascript
+onMounted(async () => {
+  await fetchUserStats()
+  if (!isLoggedIn.value) {
+    loading.value = false
+    return
+  }
+  await Promise.all([
+    fetchAnnouncements(),
+    fetchEmbyAccounts(),
+    fetchSubscription(),
+    fetchUserBalance()
+  ])
+  loading.value = false
+  await p0Announcement.init()
+})
+
+const handleAuthSuccess = () => {
+  Promise.all([
+    fetchEmbyAccounts(),
+    fetchSubscription(),
+    fetchUserBalance()
+  ])
+}
+```
+
+**修改后：**
+```javascript
+// 新增：统一的用户数据加载函数
+const loadUserData = async () => {
+  if (!isLoggedIn.value) return
+  loading.value = true
+  try {
+    await Promise.all([
+      fetchAnnouncements(),
+      fetchEmbyAccounts(),
+      fetchSubscription(),
+      fetchUserBalance()
+    ])
+  } finally {
+    loading.value = false
+  }
+}
+
+// 新增：监听登录状态变化
+watch(isLoggedIn, (newValue, oldValue) => {
+  // 只在从未登录变为已登录时触发
+  if (newValue && !oldValue) {
+    loadUserData()
+  }
+})
+
+onMounted(async () => {
+  await fetchUserStats()
+  if (isLoggedIn.value) {
+    await loadUserData()  // 使用统一函数
+  } else {
+    loading.value = false
+  }
+  await p0Announcement.init()
+})
+
+// 修改：添加 await 确保数据加载完成
+const handleAuthSuccess = async () => {
+  await loadUserData()
+}
+```
+
+**修复结果：**
+- ✅ 登录成功后自动加载数据
+- ✅ 无需刷新页面即可看到账号信息
+- ✅ 统一的数据加载入口，代码更简洁
+
+---
