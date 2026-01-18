@@ -701,3 +701,43 @@ const handleAuthSuccess = async () => {
 - ✅ 统一的数据加载入口，代码更简洁
 
 ---
+
+### 2026-01-18 版本更新 v1.8.0
+
+**更新内容：**
+- 修复登录后首页数据不显示问题
+- 添加 watch 监听 isLoggedIn 状态变化
+- 新增统一的 loadUserData 函数
+- 更新部署脚本版本至 v1.8.0
+
+**仓库变更：**
+- **源代码仓库（私密）：** https://github.com/xzb177/Aetrix-Portal.git
+  - 推送完整源代码
+  - 包含前后端、数据库、脚本等全部文件
+
+- **脚本仓库（公开）：** https://github.com/xzb177/royalbot-deploy-scripts.git
+  - 仅包含部署脚本 `deploy.sh` 和 `update.sh`
+  - 公开可供任何人下载使用
+  - 用户可通过 curl 直接下载使用
+
+**Git 提交：**
+```
+commit 72eff65
+fix: 修复登录后首页数据不显示问题
+```
+
+**文件变更：**
+- `user_frontend/src/views/HomeView.vue` - 添加 watch 和 loadUserData
+- `deploy.sh` - 版本更新至 v1.8.0
+- `update.sh` - 版本更新至 v1.8.0
+- `web.md` - 添加更新记录
+
+**使用方式：**
+```bash
+# 下载部署脚本
+curl -fsSL https://raw.githubusercontent.com/xzb177/royalbot-deploy-scripts/main/deploy.sh -o deploy.sh
+chmod +x deploy.sh
+./deploy.sh
+```
+
+---
