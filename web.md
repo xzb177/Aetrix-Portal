@@ -940,4 +940,41 @@ royalbot_nginx                Up (running)
 - 用户前端: https://localhost/user/ → HTTP 200 ✅
 - 管理前端: https://localhost/admin/ → HTTP 200 ✅
 
+### 2026-01-19 Nginx 反向代理配置修复
+
+**问题描述：**
+部署后前端页面没有显示新设计，发现 nginx 容器使用了默认配置而非正确的反向代理配置。
+
+**问题根因：**
+- `/etc/nginx/conf.d/default.conf` 存在于容器内
+- 这个文件会覆盖主配置文件 `nginx.conf` 的 server 块
+- docker-compose.yml 中的启动命令应该删除它，但由于 conf.d 目录挂载问题而失效
+
+**修复操作：**
+
+1. **删除容器内的 default.conf**
+   ```bash
+   docker exec royalbot_nginx rm -f /etc/nginx/conf.d/default.conf
+   ```
+
+2. **在宿主机创建空的 conf.d 目录**
+   ```bash
+   mkdir -p /root/royalbot-emby-deploy/nginx/conf.d
+   ```
+
+3. **重启 nginx 容器**
+   ```bash
+   docker restart royalbot_nginx
+   ```
+
+**修复后验证：**
+- `/etc/nginx/conf.d/` 目录为空 ✅
+- nginx 配置测试通过 ✅
+- 前端 CSS 包含新颜色值 (`text-primary: #ffffff`) ✅
+- HTTP 301 重定向到 HTTPS 正常工作 ✅
+
+**相关文件：**
+- `/root/royalbot-emby-deploy/nginx/nginx.conf` - 主配置文件
+- `/root/royalbot-emby-deploy/nginx/conf.d/` - 额外配置目录（新建）
+
 ---

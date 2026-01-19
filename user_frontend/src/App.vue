@@ -7,8 +7,10 @@ import AnnouncementBanner from '@/components/AnnouncementBanner.vue'
 import TelegramBrowserBanner from '@/components/TelegramBrowserBanner.vue'
 import Toast from '@/components/Toast.vue'
 import AuthSheet from '@/components/AuthSheet.vue'
+import ThemeCustomizer from '@/components/ui/ThemeCustomizer.vue'
 import { useToast } from '@/composables/useToast'
 import { useAuthSheet } from '@/composables/useAuthSheet'
+import './composables/useTheme'  // 初始化主题系统
 
 const userStore = useUserStore()
 const route = useRoute()
@@ -66,6 +68,8 @@ watch(() => userStore.isLoggedIn, (isLoggedIn) => {
       @update:show="closeAuthSheet"
       @success="handleAuthSuccess"
     />
+    <!-- 主题自定义面板 -->
+    <ThemeCustomizer />
   </div>
 </template>
 

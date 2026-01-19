@@ -11,6 +11,7 @@ const STORAGE_KEY = 'royalbot-theme'
 // 全局共享状态
 const currentTheme = ref<Theme>('auto')
 const resolvedTheme = ref<'light' | 'dark'>('dark')
+let isInitialized = false
 
 // 从 localStorage 读取
 const loadTheme = (): Theme => {
@@ -64,25 +65,40 @@ const applyTheme = (theme: 'light' | 'dark') => {
 }
 
 export function useTheme() {
-  // 初始化
-  onMounted(() => {
-    currentTheme.value = loadTheme()
-    applyTheme(resolveTheme(currentTheme.value))
+  // 初始化（只执行一次）
+  const initTheme = () => {
+    if (isInitialized) return
+    isInitialized = true
 
-    // 监听系统主题变化
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-    const handleChange = () => {
-      if (currentTheme.value === 'auto') {
-        applyTheme(resolveTheme('auto'))
+    if (typeof window !== 'undefined') {
+      currentTheme.value = loadTheme()
+      applyTheme(resolveTheme(currentTheme.value))
+
+      // 监听系统主题变化
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      const handleChange = () => {
+        if (currentTheme.value === 'auto') {
+          applyTheme(resolveTheme('auto'))
+        }
+      }
+      mediaQuery.addEventListener('change', handleChange)
+
+      // 清理
+      return () => {
+        mediaQuery.removeEventListener('change', handleChange)
       }
     }
-    mediaQuery.addEventListener('change', handleChange)
+  }
 
-    // 清理
-    return () => {
-      mediaQuery.removeEventListener('change', handleChange)
+  // 自动初始化（当在组件中使用时）
+  if (typeof window !== 'undefined') {
+    // 延迟初始化，确保 DOM 已准备好
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initTheme)
+    } else {
+      initTheme()
     }
-  })
+  }
 
   // 监听主题变化
   watch(currentTheme, (newTheme) => {
