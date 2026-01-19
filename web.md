@@ -911,3 +911,33 @@ chmod +x deploy.sh
 | `user_frontend/src/components/ui/PageTransition.vue` | 页面过渡 |
 
 ---
+
+### 2026-01-19 设计系统 v2.0 部署完成
+
+**部署操作：**
+
+1. **代码提交** - Git commit `1ab902f`
+   - 23 个文件变更
+   - +3787 行新增代码
+   - -120 行删除代码
+
+2. **镜像重建**
+   - `royalbot-portal-user_frontend:latest` - 重新构建
+   - `royalbot-portal-admin_frontend:latest` - 重新构建
+
+3. **容器重启**
+   - `royalbot_user_frontend` - 重新创建并启动
+   - `royalbot_admin_frontend` - 重新创建并启动
+
+**部署状态：**
+```
+royalbot_user_frontend        Up (running)
+royalbot_admin_frontend       Up (healthy)
+royalbot_nginx                Up (running)
+```
+
+**访问验证：**
+- 用户前端: https://localhost/user/ → HTTP 200 ✅
+- 管理前端: https://localhost/admin/ → HTTP 200 ✅
+
+---
