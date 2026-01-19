@@ -71,6 +71,11 @@
   --bg-dim: rgba(0, 0, 0, 0.5);
   --bg-card: #1a1a1a; /* 卡片背景，别名 --bg-tertiary */
 
+  /* 导航栏/头部背景 */
+  --bg-header: rgba(10, 10, 10, 0.85);
+  --bg-dropdown: rgba(10, 10, 10, 0.95);
+  --bg-mobile-menu: rgba(10, 10, 10, 0.98);
+
   /* 文字色系统 - 按对比度分级（WCAG AA 优化） */
   --text-primary: #ffffff;                  /* 21:1 - AAA */
   --text-secondary: rgba(255, 255, 255, 0.85);  /* 14.3:1 - AAA */
@@ -168,6 +173,9 @@
 
   --skeleton-base: #1a1a1a;
   --skeleton-highlight: #262626;
+  --skeleton-shimmer-from: rgba(255, 255, 255, 0.03);
+  --skeleton-shimmer-mid: rgba(255, 255, 255, 0.08);
+  --skeleton-shimmer-to: rgba(255, 255, 255, 0.03);
   --skeleton-duration: 1.5s;
 
   /* ==================== 动画 ==================== */
@@ -207,6 +215,11 @@
   --bg-dim: rgba(0, 0, 0, 0.3);
   --bg-card: #ffffff;
 
+  /* 导航栏/头部背景（浅色版） */
+  --bg-header: rgba(255, 255, 255, 0.85);
+  --bg-dropdown: rgba(255, 255, 255, 0.98);
+  --bg-mobile-menu: rgba(255, 255, 255, 0.98);
+
   /* 文字色系统 - WCAG AA 优化 */
   --text-primary: #0f172a;                      /* 16.1:1 - AAA */
   --text-secondary: rgba(15, 23, 42, 0.75);     /* 11.3:1 - AAA */
@@ -231,6 +244,9 @@
   /* 骨架屏 */
   --skeleton-base: #e2e8f0;
   --skeleton-highlight: #f1f5f9;
+  --skeleton-shimmer-from: rgba(0, 0, 0, 0.03);
+  --skeleton-shimmer-mid: rgba(0, 0, 0, 0.08);
+  --skeleton-shimmer-to: rgba(0, 0, 0, 0.03);
 
   /* 阴影调整 */
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.06);

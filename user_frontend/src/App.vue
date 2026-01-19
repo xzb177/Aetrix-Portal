@@ -75,7 +75,7 @@ watch(() => userStore.isLoggedIn, (isLoggedIn) => {
 
 <style scoped>
 .bg-primary {
-  background: #030303;
+  background: var(--bg-primary);
 }
 
 /* 有公告横幅时的额外顶部间距 */

@@ -1080,14 +1080,14 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   padding: 0.5rem 0.75rem;
-  background: rgba(255, 255, 255, 0.03);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--bg-elevated-hover);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .preview-label {
   font-size: 0.688rem;
   font-weight: 600;
-  color: #737373;
+  color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1210,30 +1210,12 @@ onMounted(async () => {
   overflow-x: hidden;
 }
 
-/* 背景层：深色渐变 + 噪点 + 微光晕 */
+/* 背景层：渐变 + 微光晕 */
 .guest-bg {
   position: fixed;
   inset: 0;
   z-index: -1;
-  background:
-    /* 径向光晕（左上暗角） */
-    radial-gradient(ellipse at 20% 0%, rgba(60, 60, 60, 0.15) 0%, transparent 60%),
-    /* 径向光晕（右下微光） */
-    radial-gradient(ellipse at 80% 100%, rgba(50, 50, 50, 0.1) 0%, transparent 50%),
-    /* 主渐变：从深灰到近黑 */
-    linear-gradient(180deg, #1a1a1a 0%, #0a0a0a 100%);
-}
-
-/* 噪点质感（用伪元素实现） */
-.guest-bg::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  /* SVG 噪点 data URI（极细噪点） */
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  opacity: 0.03;
-  pointer-events: none;
+  background: var(--bg-primary);
 }
 
 /* 主内容区 */
@@ -1250,7 +1232,7 @@ onMounted(async () => {
 .guest-title {
   font-size: 1.375rem;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.95);
+  color: var(--text-primary);
   margin: 0 0 0.75rem;
   letter-spacing: -0.02em;
   line-height: 1.3;
@@ -1259,7 +1241,7 @@ onMounted(async () => {
 /* 副标题 */
 .guest-subtitle {
   font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-secondary);
   margin: 0 0 2rem;
   font-weight: 400;
   letter-spacing: 0.01em;
@@ -1274,10 +1256,10 @@ onMounted(async () => {
   max-width: 280px;
   height: 52px;
   /* 玻璃态，低饱和 */
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--brand-primary);
+  border: none;
   border-radius: 12px;
-  color: rgba(255, 255, 255, 0.95);
+  color: #ffffff;
   font-size: 1rem;
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -1288,15 +1270,14 @@ onMounted(async () => {
 }
 
 .guest-cta:active {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.3);
+  background: var(--brand-primary-hover);
   transform: scale(0.98);
 }
 
 /* 信任小字 */
 .guest-trust {
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-tertiary);
   margin-top: 1rem;
   letter-spacing: 0.02em;
 }
@@ -1309,7 +1290,7 @@ onMounted(async () => {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 255, 255, 0.1) 50%,
+    var(--divider-color) 50%,
     transparent 100%
   );
   margin: 1.5rem 0;
@@ -1336,13 +1317,13 @@ onMounted(async () => {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--bg-elevated-hover);
+  border: 1px solid var(--border-default);
 }
 
 .feature-label {
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-secondary);
   font-weight: 400;
 }
 
@@ -1357,17 +1338,17 @@ onMounted(async () => {
 
 .weak-link {
   font-size: 0.813rem;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--text-tertiary);
   text-decoration: none;
   transition: color 0.15s ease;
 }
 
 .weak-link:active {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-secondary);
 }
 
 .weak-divider {
-  color: rgba(255, 255, 255, 0.15);
+  color: var(--text-quaternary);
   font-size: 0.75rem;
 }
 
@@ -1447,11 +1428,11 @@ onMounted(async () => {
 }
 
 .account-item {
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 0.75rem;
   overflow: hidden;
   transition: all 0.2s ease;
-  background: rgba(26, 26, 26, 0.6);
+  background: var(--bg-card);
 }
 
 .account-header {
@@ -1460,12 +1441,12 @@ onMounted(async () => {
   justify-content: space-between;
   padding: 0.875rem 1rem;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-elevated-hover);
   transition: background 0.2s ease;
 }
 
 .account-header:active {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-elevated-active);
 }
 
 .account-info {
@@ -1476,7 +1457,7 @@ onMounted(async () => {
 
 .account-label {
   font-size: 0.688rem;
-  color: #737373;
+  color: var(--text-tertiary);
   font-weight: 500;
   letter-spacing: 0.02em;
   display: flex;
@@ -1497,7 +1478,7 @@ onMounted(async () => {
 .account-username {
   font-size: 0.875rem;
   font-weight: 600;
-  color: #fafafa;
+  color: var(--text-primary);
   font-family: 'SF Mono', ui-monospace, monospace;
 }
 
@@ -1618,8 +1599,8 @@ onMounted(async () => {
   align-items: center;
   gap: 0.5rem;
   padding: 1rem;
-  background: rgba(26, 26, 26, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 0.75rem;
   text-decoration: none;
   transition: all 0.15s ease;
@@ -1628,7 +1609,7 @@ onMounted(async () => {
 
 .quick-item:active {
   transform: scale(0.98);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-elevated-hover);
 }
 
 .quick-icon {
@@ -1645,12 +1626,12 @@ onMounted(async () => {
 .quick-label {
   font-size: 0.813rem;
   font-weight: 500;
-  color: #fafafa;
+  color: var(--text-primary);
 }
 
 .quick-value {
   font-size: 0.688rem;
-  color: #737373;
+  color: var(--text-tertiary);
 }
 
 /* ==================== 公告区域 ==================== */
@@ -1790,19 +1771,19 @@ onMounted(async () => {
 .skeleton-bg {
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.03) 0%,
-    rgba(255, 255, 255, 0.08) 50%,
-    rgba(255, 255, 255, 0.03) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
   border-radius: 6px;
 }
 
 /* 骨架卡片 */
 .skeleton-card {
-  background: rgba(26, 26, 26, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
   padding: 1rem;
   margin-bottom: 1rem;
 }
@@ -1821,12 +1802,12 @@ onMounted(async () => {
   height: 24px;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.04) 0%,
-    rgba(255, 255, 255, 0.1) 50%,
-    rgba(255, 255, 255, 0.04) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
   border-radius: 6px;
 }
 
@@ -1847,7 +1828,7 @@ onMounted(async () => {
 /* 骨架分割线 */
 .skeleton-divider {
   height: 1px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--divider-color);
   margin: 1rem 0;
 }
 
@@ -1862,7 +1843,7 @@ onMounted(async () => {
     var(--brand-primary-light) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
   border-radius: 1rem;
   display: flex;
   align-items: center;
@@ -1909,12 +1890,12 @@ onMounted(async () => {
   height: 14px;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.03) 0%,
-    rgba(255, 255, 255, 0.08) 50%,
-    rgba(255, 255, 255, 0.03) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
   border-radius: 4px;
 }
 
@@ -1923,8 +1904,8 @@ onMounted(async () => {
   width: 100%;
   max-width: 280px;
   margin: 0 auto;
-  background: rgba(26, 26, 26, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 0.75rem;
   overflow: hidden;
 }
@@ -1933,13 +1914,13 @@ onMounted(async () => {
   height: 36px;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.03) 0%,
-    rgba(255, 255, 255, 0.08) 50%,
-    rgba(255, 255, 255, 0.03) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .skeleton-preview-body {
@@ -1953,14 +1934,14 @@ onMounted(async () => {
   height: 36px;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.02) 0%,
-    rgba(255, 255, 255, 0.06) 50%,
-    rgba(255, 255, 255, 0.02) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
   border-radius: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 /* 骨架流程指示器 */
@@ -1974,13 +1955,13 @@ onMounted(async () => {
   border-radius: 50%;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.04) 0%,
-    rgba(255, 255, 255, 0.1) 50%,
-    rgba(255, 255, 255, 0.04) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
-  border: 2px solid rgba(255, 255, 255, 0.08);
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  border: 2px solid var(--border-default);
   margin: 0 auto 0.5rem;
 }
 
@@ -1990,19 +1971,19 @@ onMounted(async () => {
   margin: 0 auto;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.03) 0%,
-    rgba(255, 255, 255, 0.08) 50%,
-    rgba(255, 255, 255, 0.03) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
   border-radius: 4px;
 }
 
 .skeleton-step-line {
   width: 2.5rem;
   height: 2px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--border-subtle);
   margin: 0 -0.25rem;
   margin-bottom: 1.125rem;
 }
@@ -2018,8 +1999,8 @@ onMounted(async () => {
   align-items: center;
   gap: 0.5rem;
   padding: 1rem;
-  background: rgba(26, 26, 26, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 0.75rem;
   min-height: 90px;
 }
@@ -2043,12 +2024,12 @@ onMounted(async () => {
   height: 14px;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.04) 0%,
-    rgba(255, 255, 255, 0.1) 50%,
-    rgba(255, 255, 255, 0.04) 100%
+    var(--skeleton-shimmer-from) 0%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-to) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
   border-radius: 4px;
 }
 

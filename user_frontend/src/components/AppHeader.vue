@@ -185,9 +185,9 @@ function handleClickOutside() {
   left: 0;
   right: 0;
   z-index: 50;
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--bg-header);
   backdrop-filter: blur(8px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom: 1px solid var(--border-default);
 }
 
 .header-container {
@@ -210,7 +210,7 @@ function handleClickOutside() {
 .logo-text {
   font-size: 1rem;
   font-weight: 700;
-  color: #fafafa;
+  color: var(--text-primary);
   max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -228,19 +228,19 @@ function handleClickOutside() {
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
   font-weight: 500;
-  color: rgba(250, 250, 250, 0.7);
+  color: var(--text-secondary);
   text-decoration: none;
   border-radius: 0.5rem;
   transition: all 0.2s ease;
 }
 
 .nav-link:hover {
-  color: #fafafa;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  background: var(--bg-elevated-hover);
 }
 
 .nav-link-active {
-  color: #fafafa;
+  color: var(--text-primary);
   background: var(--brand-primary-light);
 }
 
@@ -299,10 +299,11 @@ function handleClickOutside() {
   top: calc(100% + 0.5rem);
   right: 0;
   min-width: 160px;
-  background: rgba(0, 0, 0, 0.9);
+  background: var(--bg-dropdown);
   backdrop-filter: blur(8px);
   border-radius: 0.75rem;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
 
@@ -314,7 +315,7 @@ function handleClickOutside() {
   padding: 0.625rem 1rem;
   font-size: 0.875rem;
   font-weight: 500;
-  color: rgba(250, 250, 250, 0.8);
+  color: var(--text-secondary);
   text-decoration: none;
   text-align: left;
   border: none;
@@ -324,17 +325,17 @@ function handleClickOutside() {
 }
 
 .dropdown-item:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fafafa;
+  background: var(--bg-elevated-hover);
+  color: var(--text-primary);
 }
 
 .dropdown-logout {
-  color: #ef4444;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--color-danger);
+  border-top: 1px solid var(--divider-color);
 }
 
 .dropdown-logout:hover {
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--color-danger-bg);
 }
 
 /* Login Button */
@@ -363,10 +364,10 @@ function handleClickOutside() {
   display: none;
   padding: 0.5rem;
   border: none;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--bg-elevated-hover);
   border-radius: 0.5rem;
   cursor: pointer;
-  color: rgba(250, 250, 250, 0.8);
+  color: var(--text-secondary);
 }
 
 .mobile-btn svg {
@@ -382,9 +383,9 @@ function handleClickOutside() {
 }
 
 .mobile-menu-container {
-  background: rgba(0, 0, 0, 0.95);
+  background: var(--bg-mobile-menu);
   backdrop-filter: blur(8px);
-  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  border-top: 1px solid var(--border-default);
   padding: 1rem 1.5rem;
 }
 
@@ -395,7 +396,7 @@ function handleClickOutside() {
   padding: 0.75rem 1rem;
   font-size: 0.875rem;
   font-weight: 500;
-  color: rgba(250, 250, 250, 0.8);
+  color: var(--text-secondary);
   text-decoration: none;
   border-radius: 0.5rem;
   transition: background 0.2s ease;
@@ -406,27 +407,27 @@ function handleClickOutside() {
 }
 
 .mobile-link:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fafafa;
+  background: var(--bg-elevated-hover);
+  color: var(--text-primary);
 }
 
 .mobile-link-active {
   background: var(--brand-primary-light);
-  color: #fafafa;
+  color: var(--text-primary);
 }
 
 .mobile-link svg {
-  color: rgba(250, 250, 250, 0.6);
+  color: var(--text-tertiary);
 }
 
 .mobile-divider {
   height: 1px;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--divider-color);
   margin: 0.5rem 0;
 }
 
 .mobile-link-logout {
-  color: #ef4444;
+  color: var(--color-danger);
 }
 
 .mobile-link-primary {
