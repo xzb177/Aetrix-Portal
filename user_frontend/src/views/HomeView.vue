@@ -865,16 +865,16 @@ onMounted(async () => {
 }
 
 .step.active .step-dot {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
   color: white;
-  border-color: #10b981;
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 3px var(--brand-primary-light);
 }
 
 .step.completed .step-dot {
-  background: #10b981;
+  background: var(--brand-primary);
   color: white;
-  border-color: #10b981;
+  border-color: var(--brand-primary);
 }
 
 .step-label {
@@ -889,7 +889,7 @@ onMounted(async () => {
 }
 
 .step.completed .step-label {
-  color: #10b981;
+  color: var(--brand-primary);
 }
 
 .step-line {
@@ -903,7 +903,7 @@ onMounted(async () => {
 }
 
 .step-line.active {
-  background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(90deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
 }
 
 /* ==================== V3: 主 CTA 按钮 ==================== */
@@ -914,7 +914,7 @@ onMounted(async () => {
   gap: 0.5rem;
   width: 100%;
   padding: 1rem 1.5rem;
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
   color: white;
   font-size: 1rem;
   font-weight: 600;
@@ -922,12 +922,12 @@ onMounted(async () => {
   border: none;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 20px var(--brand-primary-light);
 }
 
 .main-cta-button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 30px rgba(16, 185, 129, 0.4);
+  box-shadow: 0 6px 30px var(--accent-glow);
 }
 
 .main-cta-button:active {
@@ -950,10 +950,10 @@ onMounted(async () => {
 
 @keyframes cta-pulse {
   0%, 100% {
-    box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+    box-shadow: 0 4px 20px var(--brand-primary-light);
   }
   50% {
-    box-shadow: 0 4px 30px rgba(16, 185, 129, 0.6), 0 0 0 4px rgba(16, 185, 129, 0.2);
+    box-shadow: 0 4px 30px var(--accent-glow), 0 0 0 4px var(--brand-primary-lighter);
   }
 }
 
@@ -1043,11 +1043,11 @@ onMounted(async () => {
   width: 3rem;
   height: 3rem;
   border-radius: 0.75rem;
-  background: rgba(16, 185, 129, 0.1);
+  background: var(--brand-primary-light);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #10b981;
+  color: var(--brand-primary);
   margin-bottom: 0.75rem;
 }
 
@@ -1138,8 +1138,8 @@ onMounted(async () => {
 
 .preview-footer {
   padding: 0.5rem 0.75rem;
-  background: rgba(16, 185, 129, 0.05);
-  border-top: 1px solid rgba(16, 185, 129, 0.1);
+  background: var(--brand-primary-lighter);
+  border-top: 1px solid var(--brand-primary-light);
 }
 
 .preview-tip {
@@ -1148,7 +1148,7 @@ onMounted(async () => {
   justify-content: center;
   gap: 0.25rem;
   font-size: 0.688rem;
-  color: #10b981;
+  color: var(--brand-primary);
 }
 
 .empty-cta {
@@ -1156,19 +1156,19 @@ onMounted(async () => {
   align-items: center;
   gap: 0.375rem;
   padding: 0.75rem 1.5rem;
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
   color: white;
   font-size: 0.875rem;
   font-weight: 600;
   border-radius: 0.75rem;
   transition: all 0.2s ease;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 16px var(--brand-primary-light);
   text-decoration: none;
 }
 
 .empty-cta:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(16, 185, 129, 0.4);
+  box-shadow: 0 6px 24px var(--accent-glow);
 }
 
 /* ==================== Hero 主播放图标 ==================== */
@@ -1180,7 +1180,7 @@ onMounted(async () => {
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow:
     0 2px 8px rgba(0, 0, 0, 0.2),
-    0 0 0 1px rgba(16, 185, 129, 0.1);
+    0 0 0 1px var(--brand-primary-lighter);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1419,8 +1419,8 @@ onMounted(async () => {
 }
 
 .status-badge.text-green-400 {
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
+  background: var(--brand-primary-light);
+  color: var(--brand-primary);
 }
 
 .status-badge.text-yellow-400 {
@@ -1490,8 +1490,8 @@ onMounted(async () => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+  background: var(--brand-primary);
+  box-shadow: 0 0 8px var(--brand-primary-light);
 }
 
 .account-username {
@@ -1549,7 +1549,7 @@ onMounted(async () => {
 }
 
 .detail-value.detail-url {
-  color: #10b981;
+  color: var(--brand-primary);
 }
 
 .btn-icon-sm {
@@ -1568,9 +1568,9 @@ onMounted(async () => {
 }
 
 .btn-icon-sm:hover {
-  background: rgba(16, 185, 129, 0.15);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
+  background: var(--brand-primary-light);
+  border-color: var(--brand-primary-light);
+  color: var(--brand-primary);
 }
 
 .btn-icon-sm:active {
@@ -1585,10 +1585,10 @@ onMounted(async () => {
   width: 100%;
   padding: 0.75rem;
   margin-top: 0.25rem;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: linear-gradient(135deg, var(--brand-primary-light) 0%, var(--brand-primary-lighter) 100%);
+  border: 1px solid var(--brand-primary-light);
   border-radius: 0.625rem;
-  color: #10b981;
+  color: var(--brand-primary);
   font-size: 0.813rem;
   font-weight: 500;
   cursor: pointer;
@@ -1596,8 +1596,8 @@ onMounted(async () => {
 }
 
 .btn-copy-all:hover {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.15) 100%);
-  border-color: rgba(16, 185, 129, 0.4);
+  background: linear-gradient(135deg, var(--brand-primary-light) 0%, var(--brand-primary-lighter) 100%);
+  border-color: var(--brand-primary-light);
 }
 
 .btn-copy-all:active {
@@ -1635,11 +1635,11 @@ onMounted(async () => {
   width: 2.75rem;
   height: 2.75rem;
   border-radius: 0.5rem;
-  background: rgba(16, 185, 129, 0.15);
+  background: var(--brand-primary-light);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #10b981;
+  color: var(--brand-primary);
 }
 
 .quick-label {
@@ -1835,9 +1835,9 @@ onMounted(async () => {
   height: 28px;
   background: linear-gradient(
     90deg,
-    rgba(16, 185, 129, 0.1) 0%,
-    rgba(16, 185, 129, 0.2) 50%,
-    rgba(16, 185, 129, 0.1) 100%
+    var(--brand-primary-lighter) 0%,
+    var(--brand-primary-light) 50%,
+    var(--brand-primary-lighter) 100%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -1857,9 +1857,9 @@ onMounted(async () => {
   height: 52px;
   background: linear-gradient(
     90deg,
-    rgba(16, 185, 129, 0.15) 0%,
-    rgba(16, 185, 129, 0.3) 50%,
-    rgba(16, 185, 129, 0.15) 100%
+    var(--brand-primary-light) 0%,
+    var(--brand-primary-light) 50%,
+    var(--brand-primary-light) 100%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -1887,10 +1887,10 @@ onMounted(async () => {
   height: 28px;
   border-radius: 50%;
   border: 3px solid transparent;
-  border-top-color: #10b981;
-  border-right-color: #10b981;
+  border-top-color: var(--brand-primary);
+  border-right-color: var(--brand-primary);
   animation: brand-pulse-spin 0.8s linear infinite;
-  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  box-shadow: 0 0 0 0 var(--brand-primary-light);
 }
 
 /* 骨架次要链接 */
@@ -2030,9 +2030,9 @@ onMounted(async () => {
   border-radius: 0.5rem;
   background: linear-gradient(
     90deg,
-    rgba(16, 185, 129, 0.1) 0%,
-    rgba(16, 185, 129, 0.2) 50%,
-    rgba(16, 185, 129, 0.1) 100%
+    var(--brand-primary-lighter) 0%,
+    var(--brand-primary-light) 50%,
+    var(--brand-primary-lighter) 100%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -2058,14 +2058,14 @@ onMounted(async () => {
 @keyframes brand-pulse-spin {
   0% {
     transform: rotate(0deg);
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+    box-shadow: 0 0 0 0 var(--brand-primary-light);
   }
   50% {
-    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 8px transparent;
   }
   100% {
     transform: rotate(360deg);
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
@@ -2073,11 +2073,11 @@ onMounted(async () => {
 @keyframes brand-pulse-glow {
   0%, 100% {
     opacity: 1;
-    filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.6));
+    filter: drop-shadow(0 0 4px var(--accent-glow));
   }
   50% {
     opacity: 0.8;
-    filter: drop-shadow(0 0 12px rgba(16, 185, 129, 0.9));
+    filter: drop-shadow(0 0 12px var(--accent-glow));
   }
 }
 

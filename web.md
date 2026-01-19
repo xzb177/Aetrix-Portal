@@ -977,4 +977,40 @@ royalbot_nginx                Up (running)
 - `/root/royalbot-emby-deploy/nginx/nginx.conf` - 主配置文件
 - `/root/royalbot-emby-deploy/nginx/conf.d/` - 额外配置目录（新建）
 
+### 2026-01-19 组件集成修复
+
+**问题描述：**
+设计系统组件已创建，但没有导入到应用中，导致无法显示。
+
+**修复操作：**
+
+1. **修改 App.vue**
+   - 导入 `ThemeCustomizer` 组件
+   - 导入 `useTheme` composable
+   - 在模板中添加 `<ThemeCustomizer />` 组件
+
+2. **修改 useTheme.ts**
+   - 添加自动初始化逻辑
+   - 支持导入时自动执行主题设置
+   - 添加 `isInitialized` 标志防止重复初始化
+
+3. **重新构建和部署**
+   ```bash
+   docker compose build --no-cache user_frontend
+   docker compose up -d --force-recreate user_frontend
+   ```
+
+**验证结果：**
+- `ThemeCustomizer` 组件已包含在 JS bundle 中 ✅
+- 主题设置样式已包含在 CSS 中 ✅
+- 新 CSS 文件: `index-ItypMX-n.css` ✅
+
+**使用说明：**
+- 访问网站后在右下角会看到绿色浮动按钮
+- 点击按钮打开主题设置面板
+- 可以选择预设主题色或自定义颜色
+- 支持浅色/深色/跟随系统三种模式
+
+**Git 提交：** `159d4f1`
+
 ---
