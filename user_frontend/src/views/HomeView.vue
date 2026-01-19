@@ -865,16 +865,16 @@ onMounted(async () => {
 }
 
 .step.active .step-dot {
-  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
-  border-color: var(--brand-primary);
-  box-shadow: 0 0 0 3px var(--brand-primary-light);
+  border-color: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
 }
 
 .step.completed .step-dot {
-  background: var(--brand-primary);
+  background: #10b981;
   color: white;
-  border-color: var(--brand-primary);
+  border-color: #10b981;
 }
 
 .step-label {
@@ -889,7 +889,7 @@ onMounted(async () => {
 }
 
 .step.completed .step-label {
-  color: var(--brand-primary);
+  color: #10b981;
 }
 
 .step-line {
@@ -903,7 +903,7 @@ onMounted(async () => {
 }
 
 .step-line.active {
-  background: linear-gradient(90deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
+  background: linear-gradient(90deg, #10b981 0%, #059669 100%);
 }
 
 /* ==================== V3: 主 CTA 按钮 ==================== */
@@ -914,7 +914,7 @@ onMounted(async () => {
   gap: 0.5rem;
   width: 100%;
   padding: 1rem 1.5rem;
-  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
   font-size: 1rem;
   font-weight: 600;
@@ -922,12 +922,12 @@ onMounted(async () => {
   border: none;
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 4px 20px var(--brand-primary-light);
+  box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
 }
 
 .main-cta-button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 30px var(--accent-glow);
+  box-shadow: 0 6px 30px rgba(16, 185, 129, 0.4);
 }
 
 .main-cta-button:active {
@@ -950,10 +950,10 @@ onMounted(async () => {
 
 @keyframes cta-pulse {
   0%, 100% {
-    box-shadow: 0 4px 20px var(--brand-primary-light);
+    box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
   }
   50% {
-    box-shadow: 0 4px 30px var(--accent-glow), 0 0 0 4px var(--brand-primary-lighter);
+    box-shadow: 0 4px 30px rgba(16, 185, 129, 0.6), 0 0 0 4px rgba(16, 185, 129, 0.2);
   }
 }
 
@@ -1043,11 +1043,11 @@ onMounted(async () => {
   width: 3rem;
   height: 3rem;
   border-radius: 0.75rem;
-  background: var(--brand-primary-light);
+  background: rgba(16, 185, 129, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--brand-primary);
+  color: #10b981;
   margin-bottom: 0.75rem;
 }
 
@@ -1080,14 +1080,14 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   padding: 0.5rem 0.75rem;
-  background: var(--bg-elevated-hover);
-  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .preview-label {
   font-size: 0.688rem;
   font-weight: 600;
-  color: var(--text-tertiary);
+  color: #737373;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1138,8 +1138,8 @@ onMounted(async () => {
 
 .preview-footer {
   padding: 0.5rem 0.75rem;
-  background: var(--brand-primary-lighter);
-  border-top: 1px solid var(--brand-primary-light);
+  background: rgba(16, 185, 129, 0.05);
+  border-top: 1px solid rgba(16, 185, 129, 0.1);
 }
 
 .preview-tip {
@@ -1148,7 +1148,7 @@ onMounted(async () => {
   justify-content: center;
   gap: 0.25rem;
   font-size: 0.688rem;
-  color: var(--brand-primary);
+  color: #10b981;
 }
 
 .empty-cta {
@@ -1156,19 +1156,19 @@ onMounted(async () => {
   align-items: center;
   gap: 0.375rem;
   padding: 0.75rem 1.5rem;
-  background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-primary-hover) 100%);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   color: white;
   font-size: 0.875rem;
   font-weight: 600;
   border-radius: 0.75rem;
   transition: all 0.2s ease;
-  box-shadow: 0 4px 16px var(--brand-primary-light);
+  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
   text-decoration: none;
 }
 
 .empty-cta:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 24px var(--accent-glow);
+  box-shadow: 0 6px 24px rgba(16, 185, 129, 0.4);
 }
 
 /* ==================== Hero 主播放图标 ==================== */
@@ -1180,7 +1180,7 @@ onMounted(async () => {
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow:
     0 2px 8px rgba(0, 0, 0, 0.2),
-    0 0 0 1px var(--brand-primary-lighter);
+    0 0 0 1px rgba(16, 185, 129, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1210,12 +1210,30 @@ onMounted(async () => {
   overflow-x: hidden;
 }
 
-/* 背景层：渐变 + 微光晕 */
+/* 背景层：深色渐变 + 噪点 + 微光晕 */
 .guest-bg {
   position: fixed;
   inset: 0;
   z-index: -1;
-  background: var(--bg-primary);
+  background:
+    /* 径向光晕（左上暗角） */
+    radial-gradient(ellipse at 20% 0%, rgba(60, 60, 60, 0.15) 0%, transparent 60%),
+    /* 径向光晕（右下微光） */
+    radial-gradient(ellipse at 80% 100%, rgba(50, 50, 50, 0.1) 0%, transparent 50%),
+    /* 主渐变：从深灰到近黑 */
+    linear-gradient(180deg, #1a1a1a 0%, #0a0a0a 100%);
+}
+
+/* 噪点质感（用伪元素实现） */
+.guest-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /* SVG 噪点 data URI（极细噪点） */
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  opacity: 0.03;
+  pointer-events: none;
 }
 
 /* 主内容区 */
@@ -1232,7 +1250,7 @@ onMounted(async () => {
 .guest-title {
   font-size: 1.375rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: rgba(255, 255, 255, 0.95);
   margin: 0 0 0.75rem;
   letter-spacing: -0.02em;
   line-height: 1.3;
@@ -1241,7 +1259,7 @@ onMounted(async () => {
 /* 副标题 */
 .guest-subtitle {
   font-size: 0.875rem;
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.5);
   margin: 0 0 2rem;
   font-weight: 400;
   letter-spacing: 0.01em;
@@ -1256,10 +1274,10 @@ onMounted(async () => {
   max-width: 280px;
   height: 52px;
   /* 玻璃态，低饱和 */
-  background: var(--brand-primary);
-  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 12px;
-  color: #ffffff;
+  color: rgba(255, 255, 255, 0.95);
   font-size: 1rem;
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -1270,14 +1288,15 @@ onMounted(async () => {
 }
 
 .guest-cta:active {
-  background: var(--brand-primary-hover);
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
   transform: scale(0.98);
 }
 
 /* 信任小字 */
 .guest-trust {
   font-size: 0.75rem;
-  color: var(--text-tertiary);
+  color: rgba(255, 255, 255, 0.35);
   margin-top: 1rem;
   letter-spacing: 0.02em;
 }
@@ -1290,7 +1309,7 @@ onMounted(async () => {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    var(--divider-color) 50%,
+    rgba(255, 255, 255, 0.1) 50%,
     transparent 100%
   );
   margin: 1.5rem 0;
@@ -1317,13 +1336,13 @@ onMounted(async () => {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: var(--bg-elevated-hover);
-  border: 1px solid var(--border-default);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 .feature-label {
   font-size: 0.75rem;
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.5);
   font-weight: 400;
 }
 
@@ -1338,17 +1357,17 @@ onMounted(async () => {
 
 .weak-link {
   font-size: 0.813rem;
-  color: var(--text-tertiary);
+  color: rgba(255, 255, 255, 0.35);
   text-decoration: none;
   transition: color 0.15s ease;
 }
 
 .weak-link:active {
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .weak-divider {
-  color: var(--text-quaternary);
+  color: rgba(255, 255, 255, 0.15);
   font-size: 0.75rem;
 }
 
@@ -1400,8 +1419,8 @@ onMounted(async () => {
 }
 
 .status-badge.text-green-400 {
-  background: var(--brand-primary-light);
-  color: var(--brand-primary);
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
 }
 
 .status-badge.text-yellow-400 {
@@ -1428,11 +1447,11 @@ onMounted(async () => {
 }
 
 .account-item {
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 0.75rem;
   overflow: hidden;
   transition: all 0.2s ease;
-  background: var(--bg-card);
+  background: rgba(26, 26, 26, 0.6);
 }
 
 .account-header {
@@ -1441,12 +1460,12 @@ onMounted(async () => {
   justify-content: space-between;
   padding: 0.875rem 1rem;
   cursor: pointer;
-  background: var(--bg-elevated-hover);
+  background: rgba(255, 255, 255, 0.02);
   transition: background 0.2s ease;
 }
 
 .account-header:active {
-  background: var(--bg-elevated-active);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .account-info {
@@ -1457,7 +1476,7 @@ onMounted(async () => {
 
 .account-label {
   font-size: 0.688rem;
-  color: var(--text-tertiary);
+  color: #737373;
   font-weight: 500;
   letter-spacing: 0.02em;
   display: flex;
@@ -1471,14 +1490,14 @@ onMounted(async () => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--brand-primary);
-  box-shadow: 0 0 8px var(--brand-primary-light);
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
 }
 
 .account-username {
   font-size: 0.875rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: #fafafa;
   font-family: 'SF Mono', ui-monospace, monospace;
 }
 
@@ -1530,7 +1549,7 @@ onMounted(async () => {
 }
 
 .detail-value.detail-url {
-  color: var(--brand-primary);
+  color: #10b981;
 }
 
 .btn-icon-sm {
@@ -1549,9 +1568,9 @@ onMounted(async () => {
 }
 
 .btn-icon-sm:hover {
-  background: var(--brand-primary-light);
-  border-color: var(--brand-primary-light);
-  color: var(--brand-primary);
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #10b981;
 }
 
 .btn-icon-sm:active {
@@ -1566,10 +1585,10 @@ onMounted(async () => {
   width: 100%;
   padding: 0.75rem;
   margin-top: 0.25rem;
-  background: linear-gradient(135deg, var(--brand-primary-light) 0%, var(--brand-primary-lighter) 100%);
-  border: 1px solid var(--brand-primary-light);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.25);
   border-radius: 0.625rem;
-  color: var(--brand-primary);
+  color: #10b981;
   font-size: 0.813rem;
   font-weight: 500;
   cursor: pointer;
@@ -1577,8 +1596,8 @@ onMounted(async () => {
 }
 
 .btn-copy-all:hover {
-  background: linear-gradient(135deg, var(--brand-primary-light) 0%, var(--brand-primary-lighter) 100%);
-  border-color: var(--brand-primary-light);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.15) 100%);
+  border-color: rgba(16, 185, 129, 0.4);
 }
 
 .btn-copy-all:active {
@@ -1599,8 +1618,8 @@ onMounted(async () => {
   align-items: center;
   gap: 0.5rem;
   padding: 1rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
+  background: rgba(26, 26, 26, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 0.75rem;
   text-decoration: none;
   transition: all 0.15s ease;
@@ -1609,29 +1628,29 @@ onMounted(async () => {
 
 .quick-item:active {
   transform: scale(0.98);
-  background: var(--bg-elevated-hover);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .quick-icon {
   width: 2.75rem;
   height: 2.75rem;
   border-radius: 0.5rem;
-  background: var(--brand-primary-light);
+  background: rgba(16, 185, 129, 0.15);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--brand-primary);
+  color: #10b981;
 }
 
 .quick-label {
   font-size: 0.813rem;
   font-weight: 500;
-  color: var(--text-primary);
+  color: #fafafa;
 }
 
 .quick-value {
   font-size: 0.688rem;
-  color: var(--text-tertiary);
+  color: #737373;
 }
 
 /* ==================== 公告区域 ==================== */
@@ -1771,19 +1790,19 @@ onMounted(async () => {
 .skeleton-bg {
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
   border-radius: 6px;
 }
 
 /* 骨架卡片 */
 .skeleton-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
+  background: rgba(26, 26, 26, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   padding: 1rem;
   margin-bottom: 1rem;
 }
@@ -1802,12 +1821,12 @@ onMounted(async () => {
   height: 24px;
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
   border-radius: 6px;
 }
 
@@ -1816,9 +1835,9 @@ onMounted(async () => {
   height: 28px;
   background: linear-gradient(
     90deg,
-    var(--brand-primary-lighter) 0%,
-    var(--brand-primary-light) 50%,
-    var(--brand-primary-lighter) 100%
+    rgba(16, 185, 129, 0.1) 0%,
+    rgba(16, 185, 129, 0.2) 50%,
+    rgba(16, 185, 129, 0.1) 100%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -1828,7 +1847,7 @@ onMounted(async () => {
 /* 骨架分割线 */
 .skeleton-divider {
   height: 1px;
-  background: var(--divider-color);
+  background: rgba(255, 255, 255, 0.06);
   margin: 1rem 0;
 }
 
@@ -1838,12 +1857,12 @@ onMounted(async () => {
   height: 52px;
   background: linear-gradient(
     90deg,
-    var(--brand-primary-light) 0%,
-    var(--brand-primary-light) 50%,
-    var(--brand-primary-light) 100%
+    rgba(16, 185, 129, 0.15) 0%,
+    rgba(16, 185, 129, 0.3) 50%,
+    rgba(16, 185, 129, 0.15) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
   border-radius: 1rem;
   display: flex;
   align-items: center;
@@ -1868,10 +1887,10 @@ onMounted(async () => {
   height: 28px;
   border-radius: 50%;
   border: 3px solid transparent;
-  border-top-color: var(--brand-primary);
-  border-right-color: var(--brand-primary);
+  border-top-color: #10b981;
+  border-right-color: #10b981;
   animation: brand-pulse-spin 0.8s linear infinite;
-  box-shadow: 0 0 0 0 var(--brand-primary-light);
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
 }
 
 /* 骨架次要链接 */
@@ -1890,12 +1909,12 @@ onMounted(async () => {
   height: 14px;
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
   border-radius: 4px;
 }
 
@@ -1904,8 +1923,8 @@ onMounted(async () => {
   width: 100%;
   max-width: 280px;
   margin: 0 auto;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
+  background: rgba(26, 26, 26, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 0.75rem;
   overflow: hidden;
 }
@@ -1914,13 +1933,13 @@ onMounted(async () => {
   height: 36px;
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
-  border-bottom: 1px solid var(--border-subtle);
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .skeleton-preview-body {
@@ -1934,14 +1953,14 @@ onMounted(async () => {
   height: 36px;
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.02) 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.02) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
   border-radius: 6px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
 
 /* 骨架流程指示器 */
@@ -1955,13 +1974,13 @@ onMounted(async () => {
   border-radius: 50%;
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
-  border: 2px solid var(--border-default);
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border: 2px solid rgba(255, 255, 255, 0.08);
   margin: 0 auto 0.5rem;
 }
 
@@ -1971,19 +1990,19 @@ onMounted(async () => {
   margin: 0 auto;
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.03) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
   border-radius: 4px;
 }
 
 .skeleton-step-line {
   width: 2.5rem;
   height: 2px;
-  background: var(--border-subtle);
+  background: rgba(255, 255, 255, 0.08);
   margin: 0 -0.25rem;
   margin-bottom: 1.125rem;
 }
@@ -1999,8 +2018,8 @@ onMounted(async () => {
   align-items: center;
   gap: 0.5rem;
   padding: 1rem;
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
+  background: rgba(26, 26, 26, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 0.75rem;
   min-height: 90px;
 }
@@ -2011,9 +2030,9 @@ onMounted(async () => {
   border-radius: 0.5rem;
   background: linear-gradient(
     90deg,
-    var(--brand-primary-lighter) 0%,
-    var(--brand-primary-light) 50%,
-    var(--brand-primary-lighter) 100%
+    rgba(16, 185, 129, 0.1) 0%,
+    rgba(16, 185, 129, 0.2) 50%,
+    rgba(16, 185, 129, 0.1) 100%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -2024,12 +2043,12 @@ onMounted(async () => {
   height: 14px;
   background: linear-gradient(
     90deg,
-    var(--skeleton-shimmer-from) 0%,
-    var(--skeleton-shimmer-mid) 50%,
-    var(--skeleton-shimmer-to) 100%
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
   border-radius: 4px;
 }
 
@@ -2039,14 +2058,14 @@ onMounted(async () => {
 @keyframes brand-pulse-spin {
   0% {
     transform: rotate(0deg);
-    box-shadow: 0 0 0 0 var(--brand-primary-light);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
   }
   50% {
-    box-shadow: 0 0 0 8px transparent;
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
   }
   100% {
     transform: rotate(360deg);
-    box-shadow: 0 0 0 0 transparent;
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
   }
 }
 
@@ -2054,11 +2073,11 @@ onMounted(async () => {
 @keyframes brand-pulse-glow {
   0%, 100% {
     opacity: 1;
-    filter: drop-shadow(0 0 4px var(--accent-glow));
+    filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.6));
   }
   50% {
     opacity: 0.8;
-    filter: drop-shadow(0 0 12px var(--accent-glow));
+    filter: drop-shadow(0 0 12px rgba(16, 185, 129, 0.9));
   }
 }
 

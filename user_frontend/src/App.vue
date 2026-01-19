@@ -10,7 +10,6 @@ import AuthSheet from '@/components/AuthSheet.vue'
 import ThemeCustomizer from '@/components/ui/ThemeCustomizer.vue'
 import { useToast } from '@/composables/useToast'
 import { useAuthSheet } from '@/composables/useAuthSheet'
-import './composables/useTheme'  // 初始化主题系统
 
 const userStore = useUserStore()
 const route = useRoute()
@@ -75,7 +74,7 @@ watch(() => userStore.isLoggedIn, (isLoggedIn) => {
 
 <style scoped>
 .bg-primary {
-  background: var(--bg-primary);
+  background: #030303;
 }
 
 /* 有公告横幅时的额外顶部间距 */

@@ -53,51 +53,6 @@
             </div>
           </div>
 
-          <!-- 主题模式 -->
-          <div class="theme-customizer__section">
-            <label class="theme-customizer__label">外观模式</label>
-            <div class="theme-modes">
-              <button
-                :class="['theme-mode', { 'theme-mode--active': resolvedTheme === 'light' }]"
-                @click="setThemeMode('light')"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="5"/>
-                  <line x1="12" y1="1" x2="12" y2="3"/>
-                  <line x1="12" y1="21" x2="12" y2="23"/>
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-                  <line x1="1" y1="12" x2="3" y2="12"/>
-                  <line x1="21" y1="12" x2="23" y2="12"/>
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-                </svg>
-                <span>浅色</span>
-              </button>
-              <button
-                :class="['theme-mode', { 'theme-mode--active': resolvedTheme === 'dark' }]"
-                @click="setThemeMode('dark')"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                </svg>
-                <span>深色</span>
-              </button>
-              <button
-                :class="['theme-mode', { 'theme-mode--active': theme === 'auto' }]"
-                @click="setThemeMode('auto')"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                  <line x1="9" y1="9" x2="9" y2="9"/>
-                  <line x1="15" y1="9" x2="15" y2="9"/>
-                  <line x1="9" y1="15" x2="15" y2="15"/>
-                </svg>
-                <span>跟随系统</span>
-              </button>
-            </div>
-          </div>
-
           <!-- 重置按钮 -->
           <button class="theme-customizer__reset" @click="resetTheme">
             重置为默认
@@ -109,8 +64,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { useThemeSingleton } from '@/composables/useTheme'
+import { ref } from 'vue'
 
 interface ThemePreset {
   name: string
@@ -119,8 +73,6 @@ interface ThemePreset {
   primary: string
   hover: string
 }
-
-const { theme, resolvedTheme, setTheme } = useThemeSingleton()
 
 const isOpen = ref(false)
 const customColor = ref('#10b981')
@@ -160,14 +112,9 @@ const updateCSSVariables = (primary: string, hover: string) => {
   root.style.setProperty('--color-focus-ring', primary)
 }
 
-const setThemeMode = (mode: 'light' | 'dark' | 'auto') => {
-  setTheme(mode)
-}
-
 const resetTheme = () => {
   const defaultPreset = presets[0]
   applyPreset(defaultPreset)
-  setTheme('auto')
 }
 
 // 保存到 localStorage
