@@ -62,7 +62,7 @@
 }
 
 .hover-glow:hover {
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
 }
 
 /* ==================== 状态色背景类 ==================== */
@@ -70,7 +70,7 @@
 .bg-warning { background-color: var(--warning-bg); }
 .bg-danger { background-color: var(--danger-bg); }
 .bg-info { background-color: var(--info-bg); }
-.bg-primary { background-color: rgba(99, 102, 241, 0.1); }
+.bg-primary { background-color: rgba(16, 185, 129, 0.1); }
 
 .text-success { color: var(--success); }
 .text-warning { color: var(--warning); }

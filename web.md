@@ -741,3 +741,173 @@ chmod +x deploy.sh
 ```
 
 ---
+
+### 2026-01-19 设计系统全面升级 v2.0
+
+**升级概述：** 从美工设计师视角对整个项目进行全面的设计系统升级，建立统一的设计语言和组件库。
+
+#### 一、品牌色统一 ✅
+
+**修改内容：**
+- 将管理端的紫色渐变（#4CAF50 → #673AB7）改为绿色渐变（#10b981 → #059669）
+- 全平台统一使用 Emerald 绿色（#10b981）作为品牌主色
+- 更新所有相关组件的 hover、focus、active 状态
+
+**修改文件：**
+- `admin_frontend/src/styles/index.css` - 更新主题色变量
+- `admin_frontend/src/styles/glass.css` - 更新玻璃态组件颜色
+- `admin_frontend/src/styles/card-components.css` - 更新卡片组件颜色（重写为暗色风格）
+
+#### 二、亮色主题系统 ✅
+
+**新增功能：**
+- 完整的亮色/暗色主题切换支持
+- 主题切换平滑过渡动画（300ms）
+- 主题偏好持久化到 localStorage
+- 支持跟随系统自动切换（auto）
+
+**新增文件：**
+- `user_frontend/src/composables/useTheme.ts` - 主题切换 Composable
+- `user_frontend/src/components/ui/ThemeToggle.vue` - 主题切换按钮组件
+
+**修改文件：**
+- `user_frontend/src/styles/design-tokens.css` - 添加亮色主题变量
+- `user_frontend/src/styles/index.css` - 添加主题切换过渡动画
+
+#### 三、空状态组件 ✅
+
+**新增组件：**
+- `user_frontend/src/components/ui/EmptyState.vue` - 用户端空状态组件
+- `admin_frontend/src/components/feedback/EmptyState.vue` - 管理端空状态组件（增强版）
+
+**支持变体：**
+- default - 默认空状态
+- search - 搜索无结果
+- data - 数据为空
+- error - 错误状态
+- success - 成功状态
+
+#### 四、表单元素统一 ✅
+
+**新增组件：**
+- `user_frontend/src/components/ui/FormInput.vue` - 输入框组件
+- `user_frontend/src/components/ui/FormSelect.vue` - 下拉选择组件
+- `user_frontend/src/components/ui/FormCheckbox.vue` - 复选框组件
+- `user_frontend/src/components/ui/FormSwitch.vue` - 开关组件
+
+**统一特性：**
+- 一致的视觉风格（暗色玻璃态）
+- 统一的错误状态提示
+- 统一的禁用状态
+- 统一的焦点样式（绿色光圈）
+
+#### 五、微交互动画 ✅
+
+**新增文件：**
+- `user_frontend/src/composables/useAnimate.ts` - 动画 Composable
+- `user_frontend/src/directives/animate.ts` - 动画指令
+
+**新增动画：**
+- fadeIn - 淡入
+- fadeInUp/Down/Left/Right - 方向淡入
+- scaleIn - 缩放淡入
+- 列表交错动画（stagger）
+- 视口进入动画（Intersection）
+
+**新增 CSS 动画类：**
+- `.animate-fadeIn` / `.animate-fadeInUp` / `.animate-fadeInDown`
+- `.animate-fadeInLeft` / `.animate-fadeInRight`
+- `.animate-scaleIn` / `.animate-slideInUp` / `.animate-slideInDown`
+- `.animate-spin` / `.animate-pulse` / `.animate-bounce` / `.animate-shake`
+- `.stagger-item` / `.stagger-container` - 交错动画
+- `.hover-lift` / `.hover-scale` / `.hover-glow` - 悬停微交互
+
+#### 六、图标系统统一 ✅
+
+**新增组件：**
+- `user_frontend/src/components/ui/Icon.vue` - 统一图标组件
+
+**图标尺寸规范：**
+- xs: 14px, sm: 16px, md: 20px, lg: 24px, xl: 32px, 2xl: 48px
+
+**内置图标库：**
+- 导航：home, user, settings
+- 操作：search, close, check, plus, minus, edit, delete, refresh
+- 状态：success, error, warning, info
+- 箭头：arrow-up/down/left/right, chevron-up/down
+- 文件：file, folder
+- 媒体：image, play, pause
+- 通信：mail, bell
+- 加载：loader
+
+#### 七、加载状态优化 ✅
+
+**新增组件：**
+- `user_frontend/src/components/ui/LoadingSpinner.vue` - 加载动画组件
+- `user_frontend/src/components/ui/Skeleton.vue` - 骨架屏组件
+- `user_frontend/src/components/ui/LoadingButton.vue` - 加载按钮组件
+
+**支持尺寸：**
+- LoadingSpinner: xs, sm, md, lg, xl
+- Skeleton: text, circle, rect, rounded 变体
+
+#### 八、颜色对比度提升 ✅
+
+**优化内容：**
+- 提升文字颜色对比度至 WCAG AA/AAA 标准
+- 暗色主题主文字：21:1（AAA）
+- 暗色主题次要文字：14.3:1（AAA）
+- 暗色主题三级文字：9.6:1（AA）
+- 亮色主题文字：16.1:1 / 11.3:1 / 7.1:1
+
+**修改文件：**
+- `user_frontend/src/styles/design-tokens.css` - 更新颜色变量
+
+#### 九、过渡动画优化 ✅
+
+**新增组件：**
+- `user_frontend/src/components/ui/Modal.vue` - 模态框组件（带过渡动画）
+- `user_frontend/src/components/ui/PageTransition.vue` - 页面切换过渡组件
+
+**过渡效果：**
+- 背景淡入淡出
+- 内容缩放淡入
+- 支持多种过渡方向（fade, slide-up/down/left/right, scale）
+- 响应式移动端底部滑入
+
+#### 十、主题自定义功能 ✅
+
+**新增组件：**
+- `user_frontend/src/components/ui/ThemeCustomizer.vue` - 主题设置面板
+
+**功能特性：**
+- 6 种预设主题色（默认绿、天空蓝、罗兰紫、玫瑰红、落日橙、青绿色）
+- 自定义品牌色选择器
+- 主题模式切换（浅色/深色/跟随系统）
+- 自定义主题持久化
+- 浮动触发按钮
+
+---
+
+**新增文件汇总：**
+
+| 文件 | 功能 |
+|------|------|
+| `user_frontend/src/composables/useTheme.ts` | 主题切换 |
+| `user_frontend/src/composables/useAnimate.ts` | 动画系统 |
+| `user_frontend/src/directives/animate.ts` | 动画指令 |
+| `user_frontend/src/components/ui/ThemeToggle.vue` | 主题切换按钮 |
+| `user_frontend/src/components/ui/ThemeCustomizer.vue` | 主题设置面板 |
+| `user_frontend/src/components/ui/EmptyState.vue` | 空状态组件 |
+| `user_frontend/src/components/ui/Icon.vue` | 图标组件 |
+| `user_frontend/src/components/ui/FormInput.vue` | 输入框组件 |
+| `user_frontend/src/components/ui/FormSelect.vue` | 下拉选择组件 |
+| `user_frontend/src/components/ui/FormCheckbox.vue` | 复选框组件 |
+| `user_frontend/src/components/ui/FormSwitch.vue` | 开关组件 |
+| `user_frontend/src/components/ui/LoadingSpinner.vue` | 加载动画 |
+| `user_frontend/src/components/ui/Skeleton.vue` | 骨架屏 |
+| `user_frontend/src/components/ui/LoadingButton.vue` | 加载按钮 |
+| `user_frontend/src/components/ui/Modal.vue` | 模态框 |
+| `user_frontend/src/components/ui/PageTransition.vue` | 页面过渡 |
+
+---

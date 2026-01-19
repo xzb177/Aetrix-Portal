@@ -10,11 +10,11 @@
 
 /* ==================== Tailwind 主题配置 - 暗色玻璃态 ==================== */
 @theme {
-  /* 品牌色 - 绿紫渐变 */
-  --color-primary-from: #4CAF50;
-  --color-primary-to: #673AB7;
-  --color-primary-dark-from: #43A047;
-  --color-primary-dark-to: #5E35B1;
+  /* 品牌色 - 统一绿色（与用户端保持一致） */
+  --color-primary-from: #10b981;
+  --color-primary-to: #059669;
+  --color-primary-dark-from: #059669;
+  --color-primary-dark-to: #047857;
 
   /* 暗色背景 */
   --color-bg-primary: #0a0a0a;
@@ -125,8 +125,8 @@ body {
 }
 
 .sidebar-item-active {
-  background: linear-gradient(135deg, rgba(76, 175, 80, 0.2) 0%, rgba(103, 58, 183, 0.2) 100%);
-  color: #4CAF50;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.15) 100%);
+  color: #10b981;
   font-weight: 500;
 }
 
@@ -138,9 +138,9 @@ body {
   transform: translateY(-50%);
   width: 3px;
   height: 60%;
-  background: linear-gradient(180deg, #4CAF50 0%, #673AB7 100%);
+  background: linear-gradient(180deg, #10b981 0%, #059669 100%);
   border-radius: 0 2px 2px 0;
-  box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
 }
 
 /* ==================== 统计卡片 ==================== */
@@ -161,13 +161,13 @@ body {
   right: 0;
   width: 150px;
   height: 150px;
-  background: radial-gradient(circle, rgba(76, 175, 80, 0.1) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.1) 0%, transparent 70%);
   pointer-events: none;
 }
 
 .stats-card:hover {
   transform: translateY(-4px);
-  border-color: rgba(76, 175, 80, 0.3);
+  border-color: rgba(16, 185, 129, 0.3);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
 
@@ -191,13 +191,13 @@ body {
 /* ==================== 按钮组件 ==================== */
 .btn-primary {
   @apply inline-flex items-center justify-center px-6 py-2.5 text-sm font-medium text-white rounded-full;
-  background: linear-gradient(135deg, #4CAF50 0%, #673AB7 100%);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
   transform: transition-all 0.2s ease;
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, #43A047 0%, #5E35B1 100%);
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
   transform: translateY(-1px);
   box-shadow: 0 8px 15px rgba(0, 0, 0, 0.5);
 }
@@ -249,7 +249,7 @@ body {
 }
 
 .card:hover {
-  border-color: rgba(76, 175, 80, 0.3);
+  border-color: rgba(16, 185, 129, 0.3);
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
 }
 
@@ -264,8 +264,8 @@ body {
 
 .input:focus {
   outline: none;
-  border-color: #4CAF50;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.15);
+  border-color: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
 }
 
 .input::placeholder {
@@ -333,7 +333,7 @@ body {
 
 /* ==================== 渐变文字 ==================== */
 .text-gradient {
-  background: linear-gradient(135deg, #4CAF50 0%, #673AB7 100%);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
