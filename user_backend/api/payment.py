@@ -15,7 +15,7 @@ import os
 from typing import Optional
 
 from database import get_session
-from database.models import SubscriptionOrder, SubscriptionPlan, UserSubscription, WebUser, EmbyServer, PlanServerRelation, UserEmbyAccount
+from database.models import SubscriptionOrder, SubscriptionPlan, UserSubscription, WebUser, EmbyServer, PlanServerRelation, UserEmbyAccount, PaymentConfig
 from schemas.payment import CreatePaymentRequest, PaymentResponse, PaymentStatusResponse
 from utils.yi_pay import YiPayClient, TradeStatus
 from utils.config import settings
@@ -125,14 +125,37 @@ def validate_callback_timestamp(params: dict) -> bool:
         return False
 
 
-def get_yipay_client() -> YiPayClient:
-    """获取易支付客户端"""
+def get_yipay_client(db: Session = None) -> YiPayClient:
+    """
+    获取易支付客户端
+
+    优先从数据库读取配置，如果数据库没有配置则使用环境变量
+    """
+    # 尝试从数据库读取配置
+    gateway_url = settings.YIPAY_GATEWAY_URL
+    partner_id = settings.YIPAY_PARTNER_ID
+    key = settings.YIPAY_KEY
+    notify_url = settings.YIPAY_NOTIFY_URL
+    return_url = settings.YIPAY_RETURN_URL
+
+    if db:
+        try:
+            config = db.query(PaymentConfig).first()
+            if config:
+                gateway_url = config.gateway_url
+                partner_id = config.partner_id
+                key = config.key
+                notify_url = config.notify_url
+                return_url = config.return_url
+        except Exception as e:
+            logger.warning(f"从数据库读取支付配置失败: {e}")
+
     return YiPayClient(
-        gateway_url=settings.YIPAY_GATEWAY_URL,
-        partner_id=settings.YIPAY_PARTNER_ID,
-        key=settings.YIPAY_KEY,
-        notify_url=settings.YIPAY_NOTIFY_URL,
-        return_url=settings.YIPAY_RETURN_URL
+        gateway_url=gateway_url,
+        partner_id=partner_id,
+        key=key,
+        notify_url=notify_url,
+        return_url=return_url
     )
 
 
@@ -160,8 +183,9 @@ async def create_payment(
     if request.payment_method not in valid_methods:
         raise HTTPException(status_code=400, detail=f"不支持的支付方式，请选择: {', '.join(valid_methods)}")
 
-    # 检查易支付配置
-    if not settings.YIPAY_GATEWAY_URL or not settings.YIPAY_PARTNER_ID or not settings.YIPAY_KEY:
+    # 检查易支付配置（从数据库或环境变量）
+    client = get_yipay_client(db)
+    if not client.gateway_url or not client.partner_id or not client.key:
         raise HTTPException(status_code=503, detail="支付功能暂时不可用，请稍后重试或联系管理员")
 
     # 查询套餐
@@ -184,7 +208,7 @@ async def create_payment(
     ).first()
     if recent_order:
         # 返回已有订单的支付链接
-        client = get_yipay_client()
+        client = get_yipay_client(db)
         params = client.create_payment(
             out_trade_no=recent_order.order_id,
             amount=float(recent_order.amount),
@@ -212,7 +236,7 @@ async def create_payment(
     db.commit()
 
     # 创建支付参数
-    client = get_yipay_client()
+    client = get_yipay_client(db)
     params = client.create_payment(
         out_trade_no=order_id,
         amount=float(plan.price),
@@ -265,7 +289,7 @@ async def payment_notify(
     logger.info(f"收到支付回调: {safe_params}")
 
     # ========== 2. 签名验证 ==========
-    client = get_yipay_client()
+    client = get_yipay_client(db)
     if not client.verify_sign(params):
         logger.warning(f"支付签名验证失败: {safe_params}")
         return HTMLResponse(content="fail", status_code=200)

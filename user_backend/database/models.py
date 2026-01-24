@@ -714,3 +714,16 @@ INITIAL_BADGES = [
         'sort_order': 5,
     },
 ]
+
+
+class PaymentConfig(Base):
+    """支付配置表"""
+    __tablename__ = 'payment_config'
+
+    id = Column(Integer, primary_key=True)
+    gateway_url = Column(String(255), nullable=False)  # 支付网关地址
+    partner_id = Column(String(100), nullable=False)  # 商户ID
+    key = Column(String(255), nullable=False)  # 商户密钥
+    notify_url = Column(String(500))  # 异步回调地址
+    return_url = Column(String(500))  # 同步跳转地址
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
