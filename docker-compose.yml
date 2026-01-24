@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   admin_frontend:
     build:
@@ -18,6 +16,26 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  admin_backend:
+    build:
+      context: ./admin_backend
+      dockerfile: Dockerfile
+    image: royalbot-portal-admin_backend:latest
+    container_name: royalbot_admin_backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - royalbot-portal_royalbot_network
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   user_frontend:
     build:

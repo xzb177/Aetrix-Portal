@@ -11,7 +11,7 @@
  * 转化路径：用户无需纠结 → 点击唯一主按钮 → 进入订阅页
  */
 import { ref, onMounted, computed, watch } from 'vue'
-import { useRouter, RouterLink } from 'vue-router'
+import { useRouter, useRoute, RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { announcementApi, authApi, subscriptionApi, userApi, embyApi } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -50,6 +50,7 @@ import {
 } from 'lucide-vue-next'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const toast = useToast()
 const { showAuthSheet, openAuthSheet, closeAuthSheet } = useAuthSheet()

@@ -347,7 +347,7 @@ async def get_payment_order_detail(
             "amount": float(order.amount),
             "payment_method": order.payment_method,
             "status": order.status,
-            "transaction_id": order.order_id  # 使用 order_id 作为交易 ID,
+            "transaction_id": order.order_id,  # 使用 order_id 作为交易 ID
             "paid_at": order.paid_at,
             "created_at": order.created_at,
             "updated_at": order.updated_at
