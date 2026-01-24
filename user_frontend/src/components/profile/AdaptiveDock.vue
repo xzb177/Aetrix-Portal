@@ -10,7 +10,7 @@
  * - 支持自定义配置
  */
 import { ref, computed, onMounted } from 'vue'
-import { Wallet, Users, Ticket, MessageCircle, Settings, LogOut, ChevronRight } from 'lucide-vue-next'
+import { Wallet, Users, Ticket, MessageCircle, Settings, LogOut, KeyRound, ChevronRight } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 
 interface DockItem {
@@ -36,6 +36,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   logout: []
   settings: []
+  changePassword: []
 }>()
 
 const router = useRouter()
@@ -93,6 +94,11 @@ const handleSettings = () => {
   emit('settings')
 }
 
+// 处理修改密码
+const handleChangePassword = () => {
+  emit('changePassword')
+}
+
 // 从 localStorage 加载点击计数
 const loadClickCounts = () => {
   try {
@@ -148,6 +154,18 @@ defineExpose({
         <span class="dock-label">{{ item.label }}</span>
         <ChevronRight :size="14" class="dock-arrow" />
       </div>
+
+      <!-- 修改密码按钮 -->
+      <button
+        class="dock-item dock-password"
+        @click="handleChangePassword"
+      >
+        <div class="dock-icon text-emerald-400">
+          <KeyRound :size="22" />
+        </div>
+        <span class="dock-label">修改密码</span>
+        <ChevronRight :size="14" class="dock-arrow" />
+      </button>
 
       <!-- 登出按钮（可选） -->
       <button

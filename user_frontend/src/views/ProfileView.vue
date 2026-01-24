@@ -408,6 +408,7 @@ function formatDate(dateStr?: string) {
           :show-logout="true"
           @logout="handleLogout"
           @settings="handleSettings"
+          @change-password="handleChangePassword"
         />
       </div>
 
