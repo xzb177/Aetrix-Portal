@@ -142,7 +142,10 @@ router.beforeEach((to, from, next) => {
 
   // 需要登录的页面
   if (to.meta.requiresAuth) {
-    if (!userStore.isLoggedIn) {
+    // 首先检查 token 是否存在（以 localStorage 为准，因为 store 可能尚未 hydrate）
+    const hasToken = localStorage.getItem('access_token')
+
+    if (!hasToken && !userStore.isLoggedIn) {
       // 未登录，重定向到首页并弹出登录窗口
       next({ name: 'home', query: { auth: 'required', redirect: to.fullPath } })
       setTimeout(() => openAuthSheet(), 0)
@@ -150,7 +153,7 @@ router.beforeEach((to, from, next) => {
     }
 
     // 有 token 但没有用户信息，尝试获取用户信息
-    if (!userStore.user) {
+    if (hasToken && !userStore.user) {
       userStore.fetchUser().then(() => {
         next()
       }).catch(() => {

@@ -7014,3 +7014,222 @@ docker compose up -d user_frontend
 3. 使用密码登录或 Telegram 登录
 4. 登录成功后应自动跳转回 `/subscription` 页面
 
+
+### 2026-01-24 支付配置500错误 + 用户登录无反应修复
+
+**问题描述：**
+1. 管理后台保存支付配置时报错 "Request failed with status code 500"
+2. 用户登录账号点击没有任何反应
+
+**问题根因：**
+
+#### 1. admin_backend 支付配置 500 错误
+- `payment.py` 第152/154行使用了 `logger` 但未导入
+- `docker-compose.yml` 缺少 `DB_URL` 环境变量
+- admin_backend 默认使用 SQLite 而不是 PostgreSQL
+- admin_backend 与 royalbot_postgres 不在同一网络
+
+#### 2. 用户登录无反应
+- `announcements` 表缺少 `priority_level`、`start_at`、`end_at` 字段
+- API 调用 `/api/announcements` 失败，导致前端初始化异常
+
+**修复内容：**
+
+#### 1. 修复 logger 导入问题
+**修改文件：** `admin_backend/api/payment.py`
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+```
+
+#### 2. 修复 PostgreSQL 连接配置
+**修改文件：** `docker-compose.yml`
+
+**新增内容：**
+```yaml
+services:
+  admin_backend:
+    environment:
+      - DB_URL=postgresql://royalbot:royalbot_prod_2026_secure@royalbot_postgres:5432/royalbot
+    networks:
+      - royalbot-portal_royalbot_network
+      - royalbot-emby-deploy_royalbot_network  # 新增：连接到 PostgreSQL 所在网络
+
+networks:
+  royalbot-emby-deploy_royalbot_network:
+    external: true
+```
+
+#### 3. 修复 announcements 表结构
+**执行命令：**
+```bash
+docker exec royalbot_user_backend python3 -c "
+from sqlalchemy import create_engine, text
+engine = create_engine('sqlite:////data/user_backend/royalbot.db')
+with engine.connect() as conn:
+    conn.execute(text('ALTER TABLE announcements ADD COLUMN priority_level INTEGER DEFAULT 2'))
+    conn.execute(text('ALTER TABLE announcements ADD COLUMN start_at TIMESTAMP'))
+    conn.execute(text('ALTER TABLE announcements ADD COLUMN end_at TIMESTAMP'))
+    conn.commit()
+"
+```
+
+**修改文件：**
+- `/root/RoyalBot-Portal/admin_backend/api/payment.py` - 添加 logger 导入
+- `/root/RoyalBot-Portal/docker-compose.yml` - 添加 DB_URL 环境变量和网络配置
+
+**修复时间：** 2026-01-24 23:27 CST
+
+**部署命令：**
+```bash
+# 修复 announcements 表
+docker exec royalbot_user_backend python3 -c "
+from sqlalchemy import create_engine, text
+engine = create_engine('sqlite:////data/user_backend/royalbot.db')
+with engine.connect() as conn:
+    conn.execute(text('ALTER TABLE announcements ADD COLUMN priority_level INTEGER DEFAULT 2'))
+    conn.execute(text('ALTER TABLE announcements ADD COLUMN start_at TIMESTAMP'))
+    conn.execute(text('ALTER TABLE announcements ADD COLUMN end_at TIMESTAMP'))
+    conn.commit()
+"
+
+# 重新部署 admin_backend
+cd /root/RoyalBot-Portal
+docker stop royalbot_admin_backend && docker rm royalbot_admin_backend
+docker compose up -d admin_backend
+```
+
+**验证方法：**
+1. 管理后台登录后进入支付配置页面
+2. 修改支付配置并保存，应显示"配置保存成功"
+3. 用户端登录应正常工作，无报错
+
+
+
+### 2026-01-24 用户登录态问题修复
+
+**问题描述：**
+用户提交登录后"没有任何反应/又跳转回未登录首页"。
+
+**问题根因：**
+
+1. **API 响应拦截器误伤登录请求** - `api/index.ts:40-48`
+   - 登录失败（密码错误）时后端返回 401
+   - 响应拦截器捕获所有 401 错误，直接执行 `window.location.replace('/')`
+   - 导致登录流程被中断，用户看不到错误提示，页面被强制刷新
+
+2. **fetchUser 失败导致登录态丢失** - `App.vue:19-36`
+   - 登录成功后调用 `fetchUser()` 获取用户信息
+   - 如果 fetchUser 失败（如网络问题），会触发 `logout()`
+   - 导致刚登录成功又被踢出登录状态
+
+3. **路由守卫判断依赖 Pinia 内存态** - `router/index.ts:145`
+   - `userStore.isLoggedIn` 检查的是 `token.value`
+   - 如果 store 尚未从 localStorage 恢复，会误判为未登录
+
+**修复内容：**
+
+#### 1. 修复 API 响应拦截器 (`user_frontend/src/api/index.ts`)
+
+**修改前：**
+```javascript
+if (error.response?.status === 401) {
+  localStorage.removeItem('access_token')
+  localStorage.removeItem('user')
+  window.location.replace('/')  // 会中断登录流程
+}
+```
+
+**修改后：**
+```javascript
+if (error.response?.status === 401) {
+  // 检查是否是登录请求，如果是则不处理重定向
+  const isLoginRequest = error.config?.url?.includes('/api/user/auth/login') ||
+                         error.config?.url?.includes('/api/user/auth/register')
+
+  if (!isLoginRequest) {
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('user')
+    window.location.replace('/')
+  }
+  // 登录请求的 401 错误直接抛出，由调用方处理
+}
+```
+
+#### 2. 修复登录成功后跳转逻辑 (`user_frontend/src/App.vue`)
+
+**修改前：**
+```javascript
+const handleAuthSuccess = async () => {
+  await userStore.fetchUser()  // 如果失败会触发 logout
+  const redirect = getRedirectAndClear()
+  router.push(redirect)
+}
+```
+
+**修改后：**
+```javascript
+const handleAuthSuccess = async () => {
+  const redirect = getRedirectAndClear()
+
+  // fetchUser 失败不影响登录流程，token 已经由 login() 设置好了
+  userStore.fetchUser().catch(() => {
+    console.warn('Failed to fetch user info after login, but login state is preserved')
+  })
+
+  await nextTick()  // 等待 Vue 响应式更新完成
+
+  if (redirect === '/' || redirect === route.fullPath) {
+    if (route.query.auth || route.query.redirect) {
+      router.replace({ query: {} })
+    }
+    // 不需要跳转，保持在当前页面
+  } else {
+    router.push(redirect)
+  }
+}
+```
+
+#### 3. 修复路由守卫判断 (`user_frontend/src/router/index.ts`)
+
+**修改前：**
+```javascript
+if (to.meta.requiresAuth) {
+  if (!userStore.isLoggedIn) {  // 只检查 Pinia 内存态
+    next({ name: 'home', query: { auth: 'required', redirect: to.fullPath } })
+    return
+  }
+}
+```
+
+**修改后：**
+```javascript
+if (to.meta.requiresAuth) {
+  // 以 localStorage 为准，因为 store 可能尚未 hydrate
+  const hasToken = localStorage.getItem('access_token')
+
+  if (!hasToken && !userStore.isLoggedIn) {
+    next({ name: 'home', query: { auth: 'required', redirect: to.fullPath } })
+    return
+  }
+}
+```
+
+**修改文件列表：**
+- `user_frontend/src/api/index.ts` - 修复 401 响应拦截器
+- `user_frontend/src/App.vue` - 修复登录成功后跳转逻辑
+- `user_frontend/src/router/index.ts` - 修复路由守卫判断
+
+**根因分类：**
+1. **请求拦截器误伤登录请求** - 登录接口 401 错误被全局拦截器误处理
+2. **fetchUser 失败导致退出** - 登录后获取用户信息失败触发 logout
+3. **守卫顺序错误** - 路由守卫只检查 Pinia 内存态，未检查 localStorage
+
+**修复时间：** 2026-01-24 23:40 CST
+
+**回归测试：**
+1. 登录成功后应进入已登录状态，不再回退到未登录首页
+2. 密码错误时应显示错误提示，而不是刷新页面
+3. 刷新页面后登录状态应保持（localStorage 持久化）

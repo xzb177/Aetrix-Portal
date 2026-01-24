@@ -39,12 +39,19 @@ api.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401) {
-      // Token 过期或无效，清除登录信息
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('user')
-      // 不再跳转到 /login 页面，而是由 AuthSheet 处理
-      // 页面上的路由守卫会触发 AuthSheet
-      window.location.replace('/')
+      // 检查是否是登录请求，如果是则不处理重定向（让登录流程自己处理错误）
+      const isLoginRequest = error.config?.url?.includes('/api/user/auth/login') ||
+                             error.config?.url?.includes('/api/user/auth/register')
+
+      if (!isLoginRequest) {
+        // Token 过期或无效，清除登录信息
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('user')
+        // 不再跳转到 /login 页面，而是由 AuthSheet 处理
+        // 页面上的路由守卫会触发 AuthSheet
+        window.location.replace('/')
+      }
+      // 登录请求的 401 错误直接抛出，由调用方处理（显示错误提示）
     }
 
     // 获取错误信息并显示友好提示

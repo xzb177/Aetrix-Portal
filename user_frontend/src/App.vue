@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { onMounted, computed, watch } from 'vue'
+import { onMounted, computed, watch, nextTick } from 'vue'
 import AppHeader from '@/components/AppHeader.vue'
 import AnnouncementBanner from '@/components/AnnouncementBanner.vue'
 import TelegramBrowserBanner from '@/components/TelegramBrowserBanner.vue'
@@ -18,17 +18,24 @@ const { showAuthSheet, closeAuthSheet, getRedirectAndClear } = useAuthSheet()
 
 // AuthSheet 成功回调 - 刷新用户信息并处理跳转
 const handleAuthSuccess = async () => {
-  // 刷新用户信息
-  await userStore.fetchUser()
-
   // 处理跳转逻辑 - 优先使用 sessionStorage 中保存的 redirect
   const redirect = getRedirectAndClear()
+
+  // 刷新用户信息（不阻塞跳转，如果失败不影响登录态）
+  userStore.fetchUser().catch(() => {
+    // fetchUser 失败不影响登录流程，token 已经由 login() 设置好了
+    console.warn('Failed to fetch user info after login, but login state is preserved')
+  })
+
+  // 等待 Vue 响应式更新完成，确保 isLoggedIn 已更新
+  await nextTick()
 
   // 如果是首页，清除 URL 参数
   if (redirect === '/' || redirect === route.fullPath) {
     if (route.query.auth || route.query.redirect) {
       router.replace({ query: {} })
     }
+    // 不需要跳转，保持在当前页面，登录状态已更新
   } else {
     // 跳转到目标页面
     router.push(redirect)
