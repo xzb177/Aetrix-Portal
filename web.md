@@ -6116,3 +6116,34 @@ docker compose up -d admin_frontend
 docker restart royalbot_nginx
 ```
 
+
+
+---
+
+### 2026-01-24 登录成功后跳转修复
+
+**问题描述：**
+登录成功后页面不跳转，停留在登录页面。
+
+**问题根因：**
+`user_frontend/src/views/HomeView.vue:401` 的 `handleAuthSuccess` 回调只刷新了用户数据，没有处理 URL 上的 `redirect` 参数。
+
+**修复内容：**
+- `user_frontend/src/views/HomeView.vue` - 登录成功后跳转到 redirect 参数指定的页面
+
+**部署结果：**
+| 服务 | 状态 | 镜像 |
+|------|------|------|
+| user_frontend | Up (healthy) | royalbot-portal-user_frontend:latest |
+
+**部署时间：** 2026-01-24 20:20 CST
+
+**部署命令：**
+```bash
+cd /root/RoyalBot-Portal/user_frontend
+npm run build-only
+docker compose build --no-cache user_frontend
+docker stop royalbot_user_frontend && docker rm royalbot_user_frontend
+docker compose up -d user_frontend
+```
+

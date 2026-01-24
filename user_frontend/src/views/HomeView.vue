@@ -401,6 +401,16 @@ const selectedAccount = ref<any>(null)
 const handleAuthSuccess = async () => {
   // 刷新用户数据
   await loadUserData()
+
+  // 处理跳转逻辑
+  const redirect = route.query.redirect as string
+  if (redirect) {
+    // 清除 URL 中的 auth 和 redirect 参数，然后跳转
+    router.push(redirect)
+  } else if (route.query.auth) {
+    // 只有 auth 参数没有 redirect，清除参数后留在首页
+    router.replace({ query: {} })
+  }
 }
 
 // 加载用户数据（统一入口）
