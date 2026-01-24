@@ -167,22 +167,45 @@ def init_db():
 def _create_routes_table():
     """创建 routes 表（线路管理）"""
     from sqlalchemy import text
+
+    # 检测数据库类型（SQLite 或 PostgreSQL）
+    is_postgres = 'postgresql' in str(admin_engine.url)
+
     with admin_engine.connect() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS payment_config (
-                id SERIAL PRIMARY KEY,
-                gateway_url VARCHAR(500),
-                partner_id VARCHAR(100),
-                key VARCHAR(500),
-                notify_url VARCHAR(500),
-                return_url VARCHAR(500),
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """))
+        # 使用 SQLite 兼容的语法创建 payment_config 表
+        if is_postgres:
+            # PostgreSQL 语法
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS payment_config (
+                    id SERIAL PRIMARY KEY,
+                    gateway_url VARCHAR(500),
+                    partner_id VARCHAR(100),
+                    key VARCHAR(500),
+                    notify_url VARCHAR(500),
+                    return_url VARCHAR(500),
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+        else:
+            # SQLite 语法
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS payment_config (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    gateway_url TEXT,
+                    partner_id TEXT,
+                    key TEXT,
+                    notify_url TEXT,
+                    return_url TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
         conn.commit()
+
     with admin_engine.connect() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS routes (
+        if is_postgres:
+            # PostgreSQL 语法（保留原有功能）
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS routes (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(100) UNIQUE NOT NULL,
                 description TEXT,
@@ -216,18 +239,62 @@ def _create_routes_table():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_routes_enabled ON routes(enabled)
-        """))
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_routes_priority ON routes(priority)
-        """))
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status)
-        """))
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_routes_tags ON routes USING GIN(tags)
-        """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_routes_enabled ON routes(enabled)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_routes_priority ON routes(priority)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_routes_tags ON routes USING GIN(tags)
+            """))
+        else:
+            # SQLite 语法（简化版 routes 表）
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS routes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    description TEXT,
+                    enabled INTEGER DEFAULT 1,
+                    priority INTEGER DEFAULT 100,
+                    tags TEXT,
+                    region_scope TEXT,
+                    domain TEXT NOT NULL,
+                    tls INTEGER DEFAULT 1,
+                    base_path TEXT DEFAULT '',
+                    worker_route TEXT,
+                    origin_type TEXT DEFAULT 'emby',
+                    rewrite_from TEXT,
+                    rewrite_to TEXT,
+                    headers TEXT,
+                    auth_mode TEXT DEFAULT 'none',
+                    cache_mode TEXT DEFAULT 'bypass',
+                    status TEXT DEFAULT 'ok',
+                    maintenance_message TEXT,
+                    rollout_percent INTEGER DEFAULT 100,
+                    health_url TEXT,
+                    health_expect_status INTEGER DEFAULT 200,
+                    health_timeout_ms INTEGER DEFAULT 5000,
+                    health_interval_sec INTEGER DEFAULT 60,
+                    health_last_ok_at TIMESTAMP,
+                    health_last_latency_ms INTEGER,
+                    health_fail_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_routes_enabled ON routes(enabled)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_routes_priority ON routes(priority)
+            """))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status)
+            """))
         conn.commit()
 
 

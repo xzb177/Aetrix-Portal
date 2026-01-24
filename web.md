@@ -12,6 +12,95 @@
 
 ## 操作记录
 
+### 2026-01-24 支付功能修复（payment_config 表缺失 + SQL 语法兼容性）
+
+**问题描述：**
+用户订阅购买使用支付宝支付时显示支付失败。
+
+**问题根因：**
+
+#### 1. payment_config 表在两个数据库中都不存在
+- **admin_backend 数据库**：`payment_config` 表未创建（SQL 语法问题）
+- **user_backend 数据库**：`payment_config` 表未创建
+
+#### 2. admin_backend SQL 语法不兼容
+`admin_backend/admin_database.py:172-180` 使用 PostgreSQL 特有语法（`SERIAL` 类型）创建表，但实际数据库是 SQLite：
+```python
+# 问题代码（只支持 PostgreSQL）
+CREATE TABLE IF NOT EXISTS payment_config (
+    id SERIAL PRIMARY KEY,  # ❌ SQLite 不支持
+    gateway_url VARCHAR(500),
+    ...
+)
+```
+
+#### 3. 环境变量中只有示例配置
+`user_backend/.env` 中的支付配置是示例值，不是真实配置：
+```
+YIPAY_GATEWAY_URL=https://pay.example.com/submit.php  # 示例
+YIPAY_PARTNER_ID=your_partner_id  # 示例
+YIPAY_KEY=your_merchant_key  # 示例
+```
+
+**修复内容：**
+
+#### 1. 修复 admin_backend SQL 语法兼容性
+
+**修改文件：** `admin_backend/admin_database.py:167-298`
+
+**修改内容：**
+- 添加数据库类型检测（`is_postgres = 'postgresql' in str(admin_engine.url)`）
+- 为 SQLite 添加兼容的表创建语法：
+  - `SERIAL` → `INTEGER PRIMARY KEY AUTOINCREMENT`
+  - `VARCHAR(n)` → `TEXT`
+  - `BOOLEAN` → `INTEGER`
+  - `JSONB` → `TEXT`
+  - 数组类型 → `TEXT`
+
+#### 2. 在 user_backend 数据库中创建 payment_config 表
+
+```sql
+CREATE TABLE IF NOT EXISTS payment_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    gateway_url TEXT NOT NULL,
+    partner_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    notify_url TEXT,
+    return_url TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+#### 3. 重新构建并部署 admin_backend
+
+**部署命令：**
+```bash
+cd /root/RoyalBot-Portal
+docker build -t royalbot-portal-admin_backend:latest ./admin_backend
+docker rm -f royalbot_admin_backend
+docker run -d --name royalbot_admin_backend --network royalbot-portal_royalbot_network \
+  --restart unless-stopped -e TZ=Asia/Shanghai royalbot-portal-admin_backend:latest
+```
+
+**验证结果：**
+- ✅ admin_backend 数据库中 `payment_config` 表已创建
+- ✅ user_backend 数据库中 `payment_config` 表已创建
+
+**后续操作：**
+
+用户需要在管理后台重新配置支付信息：
+1. 登录管理后台
+2. 进入「系统配置」→「支付配置」
+3. 填写真实的易支付网关信息：
+   - 支付网关地址（如：`https://pay.xxx.com/submit.php`）
+   - 商户ID（pid）
+   - 商户密钥（Key）
+4. 保存后支付配置会同时写入 user_backend 数据库
+
+**修改时间：** 2026-01-24 22:00 CST
+
+---
+
 ### 2026-01-24 用户登录功能全面修复（数据库字段缺失 + 错误提示优化）
 
 **问题描述：**
@@ -6245,3 +6334,174 @@ git checkout HEAD~1 user_frontend/package.json user_frontend/src/views/HomeView.
 cd user_frontend && npm run build && cd ..
 docker compose build user_frontend && docker compose up -d user_frontend
 ```
+
+
+---
+
+### 2026-01-24 功能更新：用户修改密码功能
+
+**新增功能：**
+- 用户可以在个人中心修改密码
+- 需要验证旧密码才能修改
+- 新密码至少6位字符
+
+**修改文件：**
+- `user_backend/api/auth.py` - 新增 `/api/user/auth/change-password` 接口
+- `user_backend/api/payment.py` - 优化支付错误提示
+- `user_frontend/src/api/index.ts` - 添加 changePassword API 方法
+- `user_frontend/src/components/profile/SettingsList.vue` - 添加修改密码按钮
+- `user_frontend/src/views/ProfileView.vue` - 添加修改密码弹窗
+
+**使用方式：**
+1. 进入个人中心页面
+2. 点击"修改密码"按钮
+3. 输入当前密码和新密码
+4. 确认修改后自动登出，需重新登录
+
+**关于支付功能：**
+- 支付功能需要配置易支付相关环境变量才能使用
+- 未配置时显示"支付功能暂时不可用，请稍后重试或联系管理员"
+- 需要配置的环境变量：
+  - YIPAY_GATEWAY_URL
+  - YIPAY_PARTNER_ID
+  - YIPAY_KEY
+
+**部署时间：** 2026-01-24 21:00 CST
+
+**部署命令：**
+```bash
+cd /root/RoyalBot-Portal/user_frontend && npm run build
+docker compose build user_frontend
+docker compose up -d user_frontend
+# 需要重启 user_backend 使后端修改生效
+docker restart royalbot_user_backend
+```
+
+
+---
+
+### 2026-01-24 修复：支付功能从数据库读取配置
+
+**问题描述：**
+- 用户在管理后台配置的支付信息无法使用
+- 创建支付订单时报错"支付功能暂时不可用"
+
+**问题根因：**
+- user_backend 从环境变量读取支付配置
+- 实际支付配置存储在 PostgreSQL payment_config 表中
+
+**修复内容：**
+- 添加 PaymentConfig 模型到 database/models.py
+- 修改 get_yipay_client 函数优先从数据库读取配置
+- 回退到环境变量（如果数据库没有配置）
+
+**修改文件：**
+- `user_backend/database/models.py` - 添加 PaymentConfig 模型
+- `user_backend/api/payment.py` - 从数据库读取支付配置
+
+**验证结果：**
+- 支付订单创建成功
+- 支付 URL 正确返回
+
+**部署时间：** 2026-01-24 21:10 CST
+
+**部署命令：**
+```bash
+cd /root/RoyalBot-Portal/user_backend
+docker build -t royalbot-user-backend:latest .
+docker stop royalbot_user_backend && docker rm royalbot_user_backend
+docker run -d \
+  --name royalbot_user_backend \
+  --network royalbot-portal_royalbot_network \
+  --restart unless-stopped \
+  -e DATABASE_URL=postgresql://royalbot:royalbot_prod_2026_secure@royalbot_postgres:5432/royalbot \
+  -e REDIS_URL=redis://:f0f84753fce8c86074f5f43cb1cc96c9@royalbot_redis:6379/0 \
+  -e REDIS_ENABLED=true \
+  -e SECRET_KEY=51bd2d92c737e54698d761a800620d57839446ca47397710f7de2c375d9263a8 \
+  -e ALGORITHM=HS256 \
+  -e ACCESS_TOKEN_EXPIRE_MINUTES=240 \
+  -e FRONTEND_URL=https://login.laodaemby.xyz \
+  -e TZ=Asia/Shanghai \
+  -p 8001:8001 \
+  royalbot-user-backend:latest
+```
+
+
+---
+
+### 2026-01-24 前端功能验证与重新部署
+
+**问题描述：**
+- 用户反馈修改密码功能看不到
+- 用户反馈支付功能不能正常使用
+
+**排查过程：**
+
+1. **修改密码功能排查**
+   - 检查源代码：`user_frontend/src/views/ProfileView.vue` 包含完整修改密码实现
+   - 检查组件：`AdaptiveDock.vue` 和 `SettingsList.vue` 都有修改密码按钮
+   - 检查 API：`user_backend/api/auth.py:494-526` 实现了 `/api/user/auth/change-password` 接口
+   - 检查前端 API：`user_frontend/src/api/index.ts:92-94` 定义了 `changePassword` 方法
+
+2. **支付功能排查**
+   - 支付配置存在于数据库 `payment_config` 表
+   - 支付 API 正常工作：
+     - `GET /api/user/payment/methods` - 200 OK
+     - `POST /api/user/payment/create` - 有成功日志
+   - 日志显示有用户成功创建支付订单
+
+**问题根因：**
+- 前端 dist 目录构建时间（13:17）早于源代码修改时间（13:20）
+- 容器中的文件版本与源代码不同步
+- 用户可能遇到浏览器缓存问题
+
+**修复内容：**
+
+1. **重新构建前端**
+   ```bash
+   cd /root/RoyalBot-Portal/user_frontend
+   npm run build
+   ```
+
+2. **验证新构建包含修改密码功能**
+   - `ProfileView-Bcg-LbXc.js` 包含 5 个 `changePassword` 函数引用
+   - `index-kFhmc0cB.js` 为最新构建产物
+
+3. **重新部署容器**
+   ```bash
+   docker compose build user_frontend
+   docker stop royalbot_user_frontend && docker rm royalbot_user_frontend
+   docker compose up -d user_frontend
+   ```
+
+**验证结果：**
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 修改密码 API | ✅ 正常 | `POST /api/user/auth/change-password` 返回正确响应 |
+| 支付方式 API | ✅ 正常 | `GET /api/user/payment/methods` 返回支付方式列表 |
+| 支付订单创建 | ✅ 正常 | 日志显示有用户成功创建订单 |
+| 前端构建 | ✅ 最新 | `ProfileView-Bcg-LbXc.js` 包含修改密码功能 |
+
+**修改文件：**
+- `/root/RoyalBot-Portal/user_frontend/dist/` - 重新构建所有产物
+
+**部署时间：** 2026-01-24 21:33 CST
+
+**部署命令：**
+```bash
+# 前端构建
+cd /root/RoyalBot-Portal/user_frontend
+npm run build
+
+# 容器构建与部署
+cd /root/RoyalBot-Portal
+docker compose build user_frontend
+docker stop royalbot_user_frontend && docker rm royalbot_user_frontend
+docker compose up -d user_frontend
+```
+
+**用户提示：**
+- 如果修改密码按钮仍不可见，请清除浏览器缓存或使用 Ctrl+F5 强制刷新
+- 支付功能需要先登录才能使用
+- 创建支付订单需要选择套餐和支付方式
