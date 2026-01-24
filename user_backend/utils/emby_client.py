@@ -569,6 +569,139 @@ class EmbyClient:
             'is_suspicious': len(active_streams) > 1 or len(unique_devices) > 2
         }
 
+    def authenticate_user(self, username: str, password: str) -> Dict[str, Any]:
+        """
+        验证用户凭证是否有效
+
+        使用 Emby 的 authenticate 端点验证用户名密码是否正确
+
+        Args:
+            username: 用户名
+            password: 密码
+
+        Returns:
+            {'valid': bool, 'user_id': str, 'message': str}
+        """
+        try:
+            # 使用 Emby 的认证端点
+            auth_url = f"{self.server_url}/Users/authenticate"
+            # 不使用 X-Emby-Token，而是使用用户名密码认证
+            auth_headers = {
+                'Content-Type': 'application/json',
+                'X-Emby-Client': 'RoyalBot-Portal',
+                'X-Emby-Device-Name': 'Validation',
+                'X-Emby-Device-Id': 'validation_device',
+                'X-Emby-Application': 'RoyalBot-Portal/1.0'
+            }
+
+            response = requests.post(
+                auth_url,
+                headers=auth_headers,
+                json={'Username': username, 'Pw': password},
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                user_info = data.get('User', {})
+                return {
+                    'valid': True,
+                    'user_id': user_info.get('Id'),
+                    'access_token': data.get('AccessToken'),
+                    'message': '认证成功'
+                }
+            elif response.status_code == 401:
+                return {
+                    'valid': False,
+                    'user_id': None,
+                    'message': '用户名或密码错误'
+                }
+            else:
+                return {
+                    'valid': False,
+                    'user_id': None,
+                    'message': f'认证失败: HTTP {response.status_code}'
+                }
+        except requests.RequestException as e:
+            return {
+                'valid': False,
+                'user_id': None,
+                'message': f'网络请求失败: {str(e)}'
+            }
+
+    def verify_and_recreate_user(
+        self,
+        username: str,
+        password: str,
+        new_password: str = None
+    ) -> Dict[str, Any]:
+        """
+        验证用户凭证，如果无效则尝试重建
+
+        Args:
+            username: 用户名
+            password: 当前密码
+            new_password: 新密码（可选，不提供则生成随机密码）
+
+        Returns:
+            {'valid': bool, 'recreated': bool, 'username': str, 'password': str, 'message': str}
+        """
+        # 先尝试验证
+        auth_result = self.authenticate_user(username, password)
+        if auth_result['valid']:
+            return {
+                'valid': True,
+                'recreated': False,
+                'username': username,
+                'password': password,
+                'message': '账号有效'
+            }
+
+        # 验证失败，检查用户是否存在于服务器
+        user_id = self.get_user_id(username)
+
+        if user_id:
+            # 用户存在但密码错误，更新密码
+            print(f"[EmbyClient] 用户 {username} 存在但密码错误，尝试更新密码")
+            if self.update_user_password(user_id, new_password or password):
+                return {
+                    'valid': True,
+                    'recreated': True,
+                    'username': username,
+                    'password': new_password or password,
+                    'message': '密码已更新'
+                }
+            else:
+                return {
+                    'valid': False,
+                    'recreated': False,
+                    'username': username,
+                    'password': password,
+                    'message': '密码更新失败'
+                }
+
+        # 用户不存在，需要重建
+        print(f"[EmbyClient] 用户 {username} 不存在于服务器，需要重建")
+        new_password = new_password or self.generate_password(12)
+        create_result = self.create_user(username, new_password)
+
+        if create_result['success']:
+            return {
+                'valid': True,
+                'recreated': True,
+                'username': username,
+                'password': new_password,
+                'message': '账号已重建'
+            }
+
+        return {
+            'valid': False,
+            'recreated': False,
+            'username': username,
+            'password': password,
+            'message': f"重建失败: {create_result['message']}"
+        }
+
 
 def load_emby_server(server_url: str, api_key: str) -> EmbyClient:
     """

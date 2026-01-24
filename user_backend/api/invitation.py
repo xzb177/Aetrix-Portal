@@ -215,6 +215,9 @@ async def get_invitation_records(
             id=record.id,
             invitee_username=invitee.username if invitee else "未知用户",
             reward_points=record.reward_points,
+            conversion_status=record.conversion_status or 'registered',
+            first_payment_at=record.first_payment_at,
+            first_subscription_at=record.first_subscription_at,
             created_at=record.created_at
         ))
 
@@ -388,3 +391,72 @@ def process_invitation_reward(db: Session, invitee_id: int, code_str: str):
 
     # TODO: 这里可以集成 MP 积分系统
     # 给邀请者和被邀请者发放积分
+
+
+def update_conversion_status(db: Session, user_id: int, status: str):
+    """
+    更新邀请转化状态
+
+    在用户首次支付或订阅成功时调用
+
+    Args:
+        db: 数据库会话
+        user_id: 用户 ID
+        status: 转化状态 (paid/subscribed)
+    """
+    from datetime import datetime
+
+    record = db.query(InvitationRecord).filter(
+        InvitationRecord.invitee_id == user_id
+    ).first()
+
+    if not record:
+        return
+
+    updated = False
+    now = datetime.now()
+
+    if status == 'paid' and record.conversion_status == 'registered':
+        record.conversion_status = 'paid'
+        record.first_payment_at = now
+        updated = True
+
+    if status == 'subscribed':
+        # 订阅是更高的状态，无论当前状态如何都更新
+        if record.conversion_status != 'subscribed':
+            record.conversion_status = 'subscribed'
+            record.first_subscription_at = now
+            # 如果还没有首次支付时间，同时设置
+            if not record.first_payment_at:
+                record.first_payment_at = now
+            updated = True
+
+    if updated:
+        db.commit()
+        logger.info(f"更新邀请转化状态: user_id={user_id}, status={status}, record_id={record.id}")
+
+
+def get_conversion_stats(db: Session, inviter_id: int) -> dict:
+    """
+    获取邀请转化统计
+
+    Args:
+        db: 数据库会话
+        inviter_id: 邀请者 ID
+
+    Returns:
+        转化统计数据
+    """
+    records = db.query(InvitationRecord).filter(
+        InvitationRecord.inviter_id == inviter_id
+    ).all()
+
+    return {
+        'total': len(records),
+        'registered': sum(1 for r in records if r.conversion_status == 'registered'),
+        'paid': sum(1 for r in records if r.conversion_status == 'paid'),
+        'subscribed': sum(1 for r in records if r.conversion_status == 'subscribed'),
+        'conversion_rate': round(
+            sum(1 for r in records if r.conversion_status in ['paid', 'subscribed']) / len(records) * 100, 1
+        ) if records else 0
+    }

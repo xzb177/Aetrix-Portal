@@ -5,9 +5,26 @@
     <link rel="icon" href="/vite.svg">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RoyalBot Admin</title>
+    <style>
+      /* 初始加载中样式 - 通过 .loading 类控制 */
+      #app {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0a0a0a;
+        color: #fff;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      /* 只有在 app 有 loading 类时才显示加载中 */
+      #app.loading::before {
+        content: '加载中...';
+        font-size: 14px;
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app" class="loading"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

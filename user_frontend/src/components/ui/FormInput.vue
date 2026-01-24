@@ -1,11 +1,11 @@
 <template>
-  <div :class="['form-input', { 'form-input--error': error, 'form-input--disabled': disabled, 'form-input--focused': focused }]">
-    <label v-if="label" :class="['form-input__label', { 'form-input__label--required': required }]">
+  <div :class="['neo-input', { 'neo-input--error': error, 'neo-input--disabled': disabled, 'neo-input--focused': focused }]">
+    <label v-if="label" :class="['neo-input__label', { 'neo-input__label--required': required }]">
       {{ label }}
     </label>
 
-    <div class="form-input__wrapper">
-      <span v-if="prefixIcon" class="form-input__icon form-input__icon--prefix">
+    <div class="neo-input__wrapper">
+      <span v-if="prefixIcon" class="neo-input__icon neo-input__icon--prefix">
         <component :is="prefixIcon" />
       </span>
 
@@ -19,19 +19,19 @@
         :readonly="readonly"
         :maxlength="maxlength"
         :autocomplete="autocomplete"
-        :class="['form-input__field', { 'form-input__field--has-icon': prefixIcon || suffixIcon }]"
+        :class="['neo-input__field', { 'neo-input__field--has-icon': prefixIcon || suffixIcon }]"
         @focus="handleFocus"
         @blur="handleBlur"
       />
 
-      <span v-if="suffixIcon" class="form-input__icon form-input__icon--suffix">
+      <span v-if="suffixIcon" class="neo-input__icon neo-input__icon--suffix">
         <component :is="suffixIcon" />
       </span>
 
       <button
         v-if="clearable && modelValue && !disabled"
         type="button"
-        class="form-input__clear"
+        class="neo-input__clear"
         @click="handleClear"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -41,9 +41,9 @@
       </button>
     </div>
 
-    <div v-if="error || hint" class="form-input__message">
-      <span v-if="error" class="form-input__error">{{ error }}</span>
-      <span v-else-if="hint" class="form-input__hint">{{ hint }}</span>
+    <div v-if="error || hint" class="neo-input__message">
+      <span v-if="error" class="neo-input__error">{{ error }}</span>
+      <span v-else-if="hint" class="neo-input__hint">{{ hint }}</span>
     </div>
   </div>
 </template>
@@ -114,132 +114,141 @@ defineExpose({
 </script>
 
 <style scoped>
-.form-input {
+.neo-input {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--neo-space-2);
 }
 
-.form-input__label {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-secondary);
+.neo-input__label {
+  font-size: var(--neo-font-size-sm);
+  font-weight: var(--neo-font-weight-medium);
+  color: var(--neo-text-secondary);
 }
 
-.form-input__label--required::after {
+.neo-input__label--required::after {
   content: '*';
-  color: var(--color-danger);
-  margin-left: 0.25rem;
+  color: var(--neo-danger);
+  margin-left: 4px;
 }
 
-.form-input__wrapper {
+.neo-input__wrapper {
   position: relative;
   display: flex;
   align-items: center;
 }
 
-.form-input__field {
+.neo-input__field {
   width: 100%;
-  padding: 0.75rem 1rem;
-  font-size: 0.875rem;
-  color: var(--text-primary);
-  background: var(--bg-glass);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  transition: all 0.2s ease;
+  height: var(--neo-input-height);
+  padding: var(--neo-input-padding);
+  font-size: var(--neo-font-size-md);
+  color: var(--neo-text-primary);
+  background: var(--neo-bg-surface-1);
+  border: 1px solid var(--neo-border-default);
+  border-radius: var(--neo-input-radius);
+  transition: all var(--neo-duration-fast) var(--neo-ease-default);
   outline: none;
 }
 
-.form-input__field::placeholder {
-  color: var(--text-tertiary);
+.neo-input__field::placeholder {
+  color: var(--neo-text-tertiary);
 }
 
-.form-input__field--has-icon {
-  padding-left: 2.75rem;
+.neo-input__field--has-icon {
+  padding-left: 44px;
 }
 
-.form-input__field:hover:not(:disabled) {
-  border-color: var(--border-strong);
+.neo-input__field:hover:not(:disabled) {
+  border-color: var(--neo-border-strong);
 }
 
-.form-input--focused .form-input__field {
-  border-color: var(--brand-primary);
-  box-shadow: 0 0 0 3px var(--brand-primary-light);
+.neo-input--focused .neo-input__field {
+  border-color: var(--neo-primary);
+  box-shadow: 0 0 0 3px var(--neo-primary-dim);
 }
 
-.form-input--error .form-input__field {
-  border-color: var(--color-danger);
+.neo-input--error .neo-input__field {
+  border-color: var(--neo-danger);
 }
 
-.form-input--error.form-input--focused .form-input__field {
-  box-shadow: 0 0 0 3px var(--color-danger-light);
+.neo-input--error.neo-input--focused .neo-input__field {
+  box-shadow: 0 0 0 3px var(--neo-danger-bg);
 }
 
-.form-input--disabled .form-input__field {
+.neo-input--disabled .neo-input__field {
   opacity: 0.5;
   cursor: not-allowed;
-  background: var(--bg-tertiary);
+  background: var(--neo-bg-surface-2);
 }
 
-.form-input__icon {
+.neo-input__icon {
   position: absolute;
-  width: 20px;
-  height: 20px;
-  color: var(--text-tertiary);
+  width: 18px;
+  height: 18px;
+  color: var(--neo-text-tertiary);
   pointer-events: none;
+  stroke-width: 1.5;
 }
 
-.form-input__icon--prefix {
-  left: 0.875rem;
+.neo-input__icon--prefix {
+  left: 14px;
 }
 
-.form-input__icon--suffix {
-  right: 0.875rem;
+.neo-input__icon--suffix {
+  right: 14px;
 }
 
-.form-input__clear {
+.neo-input__clear {
   position: absolute;
-  right: 0.5rem;
+  right: 8px;
   width: 28px;
   height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-tertiary);
+  background: var(--neo-bg-surface-2);
   border: none;
   border-radius: 50%;
   cursor: pointer;
-  color: var(--text-tertiary);
-  transition: all 0.2s ease;
+  color: var(--neo-text-tertiary);
+  transition: all var(--neo-duration-fast) var(--neo-ease-default);
 }
 
-.form-input__clear:hover {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
+.neo-input__clear:hover {
+  background: var(--neo-bg-surface-3);
+  color: var(--neo-text-primary);
 }
 
-.form-input__clear svg {
+.neo-input__clear svg {
   width: 14px;
   height: 14px;
 }
 
-.form-input__message {
+.neo-input__message {
   display: flex;
   align-items: center;
-  min-height: 1.25rem;
+  min-height: 18px;
 }
 
-.form-input__error,
-.form-input__hint {
-  font-size: 0.75rem;
-  line-height: 1.25rem;
+.neo-input__error,
+.neo-input__hint {
+  font-size: var(--neo-font-size-sm);
+  line-height: 18px;
 }
 
-.form-input__error {
-  color: var(--color-danger);
+.neo-input__error {
+  color: var(--neo-danger);
 }
 
-.form-input__hint {
-  color: var(--text-tertiary);
+.neo-input__hint {
+  color: var(--neo-text-tertiary);
+}
+
+/* 减少动画 */
+@media (prefers-reduced-motion: reduce) {
+  .neo-input__field {
+    transition: none;
+  }
 }
 </style>

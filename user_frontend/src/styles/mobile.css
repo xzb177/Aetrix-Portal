@@ -1,39 +1,41 @@
-/* ==================== 全局移动端响应式优化 - 用户端 V2 ==================== */
+/* ==================== 移动端响应式优化 - Neo-Noir 2.0 ==================== */
 
-/* 全局按下态（V2 增强） */
+/* ==================== 全局按下态（Neo-Noir 2.0） ==================== */
 @media (hover: none) {
-  /* 所有可交互元素按下态 */
+  /* 所有可交互元素按下态 - 统一缩放比例 */
   button:active,
   a:active,
   .btn:active,
+  .neo-btn:active,
   .quick-item:active,
   .amount-btn:active,
   .payment-btn:active,
   .method-card:active,
   .payment-option:active,
-  .faq-item:active {
-    transform: scale(0.96);
-    opacity: 0.9;
-    transition: transform var(--duration-fast, 150ms) ease, opacity var(--duration-fast, 150ms) ease;
+  .faq-item:active,
+  .neo-card--clickable:active {
+    transform: scale(var(--neo-scale-press, 0.98));
+    transition: transform var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
   }
 
   /* 禁用态不缩放 */
   button:disabled:active,
-  .btn:disabled:active {
+  .btn:disabled:active,
+  .neo-btn--disabled:active {
     transform: none;
     opacity: 0.5;
   }
 }
 
-/* 触摸优化 */
+/* ==================== 触摸优化 ==================== */
 @media (max-width: 768px) {
-  /* 增大可点击区域 */
-  button, .btn, a, .card, .clickable {
-    min-height: 44px;  /* iOS 推荐的最小触摸目标 */
+  /* 增大可点击区域 - 使用 Neo-Noir 触控规范 */
+  button, .btn, .neo-btn, a, .card, .neo-card, .clickable {
+    min-height: var(--neo-touch-min, 44px);
   }
 
   /* 按钮/卡片文字居中 */
-  .btn, .card-btn {
+  .btn, .neo-btn, .card-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -44,12 +46,13 @@
   .links-grid,
   .cards-grid {
     grid-template-columns: 1fr !important;
-    gap: 0.75rem !important;
+    gap: var(--neo-space-3, 12px) !important;
   }
 
   /* 弹窗全屏 */
   .modal,
-  .dialog {
+  .dialog,
+  .modal-container {
     width: 100% !important;
     height: 100% !important;
     max-width: none !important;
@@ -59,50 +62,51 @@
 
   /* Hero 区域优化 */
   .hero-section {
-    padding: 2rem 1rem;
+    padding: var(--neo-space-8, 32px) var(--neo-space-4, 16px);
     min-height: 50vh;
   }
 
   .hero-title {
-    font-size: 1.75rem !important;
+    font-size: var(--neo-font-size-2xl, 20px) !important;
   }
 
   .hero-description {
-    font-size: 0.9rem !important;
+    font-size: var(--neo-font-size-md, 14px) !important;
   }
 
   /* 导航栏 */
   .nav-bar {
-    padding: 0.75rem 1rem;
+    padding: var(--neo-space-3, 12px) var(--neo-space-4, 16px);
   }
 
   .nav-items {
-    gap: 0.5rem;
+    gap: var(--neo-space-2, 8px);
   }
 
   .nav-item {
-    padding: 0.5rem 0.75rem;
-    font-size: 0.875rem;
+    padding: var(--neo-space-2, 8px) var(--neo-space-3, 12px);
+    font-size: var(--neo-font-size-md, 14px);
   }
 
   /* 表格横向滚动 */
   .table-wrapper {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-    margin: 0 -1rem;
-    padding: 0 1rem;
+    margin: 0 calc(-1 * var(--neo-space-4, 16px));
+    padding: 0 var(--neo-space-4, 16px);
   }
 
   /* 表单优化 */
   .form-group {
-    margin-bottom: 1rem;
+    margin-bottom: var(--neo-space-4, 16px);
   }
 
   input,
   select,
-  textarea {
-    font-size: 16px !important;  /* 防止 iOS 自动缩放 */
-    padding: 0.75rem;
+  textarea,
+  .neo-input__field {
+    font-size: 16px !important; /* 防止 iOS 自动缩放 */
+    padding: var(--neo-space-3, 12px);
   }
 
   /* 按钮组堆叠 */
@@ -135,51 +139,52 @@
   /* 内边距调整 */
   .section,
   .container {
-    padding: 1rem !important;
+    padding: var(--neo-space-4, 16px) !important;
   }
 
-  /* 底部导航 */
+  /* ==================== 底部导航（统一 safe-area） ==================== */
   .bottom-nav {
     position: fixed;
     bottom: 0;
     left: 0;
     right: 0;
-    background: white;
-    border-top: 1px solid #e5e7eb;
+    background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+    border-top: 1px solid var(--neo-border-default, rgba(255, 255, 255, 0.08));
     display: flex;
     justify-content: space-around;
-    padding: 0.5rem 0;
-    z-index: 50;
-    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+    padding: var(--neo-space-2, 8px) 0;
+    z-index: var(--neo-z-float, 20);
+    /* Neo-Noir 2.0 统一 safe-area */
+    padding-bottom: var(--neo-safe-bottom, calc(24px + env(safe-area-inset-bottom, 0px)));
   }
 
   .bottom-nav-item {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.25rem;
-    font-size: 0.7rem;
-    color: #6b7280;
+    gap: 4px;
+    font-size: var(--neo-font-size-xs, 11px);
+    color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
   }
 
   .bottom-nav-item.active {
-    color: var(--brand-primary);
+    color: var(--neo-primary, #10B981);
   }
 
   /* 为底部导航留出空间 */
   body.has-bottom-nav {
-    padding-bottom: 60px;
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
   }
 }
 
-/* 超小屏幕优化 */
+/* ==================== 超小屏幕优化 ==================== */
 @media (max-width: 480px) {
   html {
     font-size: 14px;
   }
 
   .hero-title {
-    font-size: 1.5rem !important;
+    font-size: var(--neo-font-size-xl, 18px) !important;
   }
 
   .hero-actions {
@@ -194,33 +199,33 @@
 
   /* 统计卡片更紧凑 */
   .stat-card {
-    padding: 0.875rem !important;
+    padding: var(--neo-space-3, 12px) !important;
   }
 
   .stat-value {
-    font-size: 1.25rem !important;
+    font-size: var(--neo-font-size-xl, 18px) !important;
   }
 
   /* 登录表单 */
   .login-form {
-    padding: 1.5rem !important;
+    padding: var(--neo-space-6, 24px) !important;
   }
 
   .login-title {
-    font-size: 1.25rem !important;
+    font-size: var(--neo-font-size-xl, 18px) !important;
   }
 
   /* 订阅卡片 */
   .plan-card {
-    padding: 1rem !important;
+    padding: var(--neo-space-4, 16px) !important;
   }
 
   .plan-price {
-    font-size: 1.5rem !important;
+    font-size: var(--neo-font-size-2xl, 20px) !important;
   }
 }
 
-/* 平板优化 */
+/* ==================== 平板优化 ==================== */
 @media (min-width: 769px) and (max-width: 1024px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -231,15 +236,15 @@
   }
 }
 
-/* 横屏优化 */
+/* ==================== 横屏优化 ==================== */
 @media (max-height: 600px) and (orientation: landscape) {
   .hero-section {
     min-height: auto;
-    padding: 1.5rem;
+    padding: var(--neo-space-5, 20px);
   }
 
   .hero-title {
-    font-size: 1.25rem !important;
+    font-size: var(--neo-font-size-lg, 16px) !important;
   }
 
   .modal-content {
@@ -248,11 +253,12 @@
   }
 }
 
-/* 触摸反馈 */
+/* ==================== 触摸反馈（Neo-Noir 2.0） ==================== */
 @media (hover: none) and (pointer: coarse) {
   button,
   a,
   .card,
+  .neo-card,
   .clickable,
   .glass-card,
   .quick-item,
@@ -263,27 +269,30 @@
   button:active,
   a:active,
   .card:active,
+  .neo-card:active,
   .glass-card:active,
   .quick-item:active,
   .action-card:active {
     opacity: 0.8;
-    transform: scale(0.98);
+    transform: scale(var(--neo-scale-press, 0.98));
   }
 
   /* 移除悬停效果 */
   .card:hover,
+  .neo-card:hover,
   .glass-card:hover {
     transform: none;
   }
 }
 
-/* 触摸反馈 - 增强版 */
+/* ==================== 触摸反馈 - 增强版 ==================== */
 @media (hover: none) and (pointer: coarse) {
   /* 按钮按下态 */
   .btn:active,
+  .neo-btn:active,
   .btn-primary:active,
   .btn-secondary:active {
-    transform: scale(0.96);
+    transform: scale(var(--neo-scale-press, 0.98));
     opacity: 0.85;
     transition: transform 0.1s ease, opacity 0.1s ease;
   }
@@ -295,13 +304,15 @@
 
   /* 卡片按下态 */
   .glass-card:active,
-  .card:active {
-    background: var(--bg-elevated-active);
+  .card:active,
+  .neo-card--clickable:active {
+    background: var(--neo-bg-surface-active, rgba(255, 255, 255, 0.12));
   }
 
   /* 图标按钮按下态 */
   .btn-icon:active,
-  .btn-icon-sm:active {
+  .btn-icon-sm:active,
+  .neo-icon-btn:active {
     transform: scale(0.9);
     background: rgba(255, 255, 255, 0.15);
   }
@@ -309,58 +320,71 @@
   /* 输入框聚焦态 */
   input:focus,
   select:focus,
-  textarea:focus {
+  textarea:focus,
+  .neo-input__field:focus {
     transform: scale(0.99);
   }
 }
 
-/* 安全区域适配（iPhone X+） */
+/* ==================== 安全区域适配（Neo-Noir 2.0 统一规范） ==================== */
 @supports (padding: max(0px)) {
-  .safe-bottom {
-    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  .safe-bottom,
+  .neo-safe-bottom {
+    padding-bottom: var(--neo-safe-bottom, calc(24px + env(safe-area-inset-bottom, 0px)));
   }
 
-  .safe-top {
-    padding-top: max(1rem, env(safe-area-inset-top));
+  .safe-top,
+  .neo-safe-top {
+    padding-top: max(var(--neo-space-4, 16px), env(safe-area-inset-top, 0px));
   }
 }
 
-/* 暗色模式 */
+/* ==================== 暗色模式（使用 Neo-Noir tokens） ==================== */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg-primary: #0f0f0f;
-    --bg-secondary: #1a1a1a;
-    --bg-elevated: #252525;
-    --text-primary: #f5f5f5;
-    --text-secondary: #a0a0a0;
-    --border-color: #333333;
+    /* 背景使用 Neo-Noir tokens */
+    --bg-primary: var(--neo-bg-base, #0B0F14);
+    --bg-secondary: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+    --bg-elevated: var(--neo-bg-surface-2, rgba(255, 255, 255, 0.06));
+    --bg-elevated-hover: var(--neo-bg-surface-hover, rgba(255, 255, 255, 0.08));
+
+    /* 文字使用 Neo-Noir tokens */
+    --text-primary: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
+    --text-secondary: var(--neo-text-secondary, rgba(255, 255, 255, 0.68));
+    --text-tertiary: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
+
+    /* 边框使用 Neo-Noir tokens */
+    --border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
+    --border-glass: var(--neo-border-default, rgba(255, 255, 255, 0.08));
   }
 
   body {
-    background: var(--bg-primary);
-    color: var(--text-primary);
+    background: var(--neo-bg-base, #0B0F14);
+    color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
   }
 
-  .card {
-    background: var(--bg-secondary);
-    border-color: var(--border-color);
+  .card,
+  .neo-card {
+    background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+    border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
   }
 
   .glass-card {
-    background: rgba(30, 30, 30, 0.8);
-    border-color: rgba(255, 255, 255, 0.1);
+    background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+    border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
   }
 
   input,
   select,
-  textarea {
-    background: var(--bg-elevated);
-    border-color: var(--border-color);
-    color: var(--text-primary);
+  textarea,
+  .neo-input__field {
+    background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+    border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
+    color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
   }
 }
 
-/* 减少动画 */
+/* ==================== 减少动画（Neo-Noir 2.0） ==================== */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -368,22 +392,100 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    transform: none !important;
   }
 }
 
-/* 焦点样式（键盘导航） */
+/* ==================== 焦点样式（键盘导航 - Neo-Noir 2.0） ==================== */
 :focus-visible {
-  outline: 2px solid var(--brand-primary);
+  outline: 2px solid var(--neo-primary, #10B981);
   outline-offset: 2px;
 }
 
-/* 高对比度模式 */
+/* ==================== 高对比度模式 ==================== */
 @media (prefers-contrast: high) {
-  button {
+  button,
+  .neo-btn {
     border: 2px solid currentColor;
   }
 
-  .card {
+  .card,
+  .neo-card {
     border: 2px solid currentColor;
+  }
+}
+
+/* ==================== Neo-Noir 2.0 移动端专用样式 ==================== */
+@media (max-width: 768px) {
+  /* 统一页面内边距 */
+  .home-page,
+  .logged-in-view,
+  .request-page,
+  .recharge-page,
+  .subscription-page,
+  .messages-page {
+    padding: var(--neo-space-4, 16px);
+    padding-bottom: var(--neo-safe-bottom, calc(24px + env(safe-area-inset-bottom, 0px)));
+  }
+
+  /* 统一卡片内边距 */
+  .card,
+  .neo-card,
+  .status-card,
+  .glass-card {
+    padding: var(--neo-card-padding, 16px);
+    border-radius: var(--neo-radius-lg, 18px);
+  }
+
+  /* 统一按钮高度 */
+  .btn,
+  .neo-btn,
+  .main-cta-button {
+    height: var(--neo-btn-height-lg, 52px);
+    border-radius: var(--neo-btn-radius-lg, 18px);
+  }
+
+  /* 统一输入框 */
+  input,
+  select,
+  textarea,
+  .neo-input__field {
+    height: var(--neo-input-height, 44px);
+    border-radius: var(--neo-input-radius, 14px);
+  }
+
+  /* 统一 Chip/筛选标签 */
+  .chip,
+  .neo-chip,
+  .filter-chip {
+    height: var(--neo-chip-height, 32px);
+    border-radius: var(--neo-chip-radius, 9999px);
+    padding: 0 var(--neo-chip-padding, 14px);
+    font-size: var(--neo-font-size-sm, 12px);
+  }
+
+  /* 统一 Badge */
+  .badge,
+  .neo-badge {
+    height: var(--neo-badge-height, 20px);
+    border-radius: var(--neo-badge-radius, 9999px);
+    padding: 0 var(--neo-badge-padding, 8px);
+    font-size: var(--neo-badge-font-size, 11px);
+  }
+
+  /* 统一 Segmented Control */
+  .segmented-control,
+  .neo-segment {
+    height: var(--neo-segment-height, 36px);
+    border-radius: var(--neo-segment-radius, 10px);
+  }
+
+  /* 统一 Icon Button */
+  .icon-btn,
+  .neo-icon-btn,
+  .btn-icon-sm {
+    width: var(--neo-icon-btn-md, 40px);
+    height: var(--neo-icon-btn-md, 40px);
+    border-radius: var(--neo-icon-btn-radius, 10px);
   }
 }

@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     EMBY_URL: str = os.getenv("EMBY_URL", "")
     EMBY_API_KEY: str = os.getenv("EMBY_API_KEY", "")
 
+    # 线路管理功能开关（默认启用）
+    FEATURE_ROUTE_ADMIN: bool = os.getenv("FEATURE_ROUTE_ADMIN", "true").lower() == "true"
+
     # 推送配置
     TELEGRAM_BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
     NOTIFICATION_CHATS: List[str] = os.getenv("EMBY_NOTIFY_CHATS", "").split(",") if os.getenv("EMBY_NOTIFY_CHATS") else []

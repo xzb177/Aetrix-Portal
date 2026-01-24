@@ -11,4 +11,13 @@ export { default as Button } from './Button.vue'
 export { default as AppBar } from './AppBar.vue'
 export { default as TabBar } from './TabBar.vue'
 
+// Neo-Noir 2.0 新增组件
+export { default as IconButton } from './IconButton.vue'
+export { default as Badge } from './Badge.vue'
+export { default as Chip } from './Chip.vue'
+export { default as SegmentedControl } from './SegmentedControl.vue'
+
+// 线路配置组件
+export { default as RouteInfoCard } from './RouteInfoCard.vue'
+
 export type { Tab as TabBarTab } from './TabBar.vue'

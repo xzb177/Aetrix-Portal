@@ -99,7 +99,10 @@ async def check_expired_subscriptions():
                                 account.emby_user_id,
                                 EmbyClient.generate_password(16)
                             )
-                            logger.info(f"已禁用用户 {account.user_id} 的 Emby 账号")
+                            # 标记账号为禁用状态
+                            account.is_active = False
+                            db.add(account)
+                            logger.info(f"已禁用用户 {account.user_id} 的 Emby 账号 (ID: {account.id})")
                         except Exception as e:
                             logger.error(f"禁用 Emby 账号失败: {e}")
                             failed_count += 1
@@ -241,6 +244,113 @@ async def cleanup_pending_orders():
 
     except Exception as e:
         logger.error(f"订单超时清理任务出错: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+# ==================== P0: 订阅续费后账号恢复 ====================
+
+async def reactivate_emby_accounts():
+    """
+    P0 定时任务：恢复已续费但账号仍处于禁用状态的账号
+
+    执行时间：每 10 分钟
+    逻辑：
+    1. 查询 status='active' 且未过期的订阅
+    2. 检查关联的 Emby 账号中 is_active=False 的
+    3. 生成新密码并恢复账号
+    4. 发送站内消息通知用户新密码
+    """
+    logger.info("开始执行账号恢复检查...")
+    reactivated_count = 0
+    failed_count = 0
+
+    db = SessionLocal()
+    try:
+        # 查询所有活跃且未过期的订阅
+        active_subs = db.query(UserSubscription).filter(
+            UserSubscription.status == 'active',
+            UserSubscription.end_date > datetime.now()
+        ).all()
+
+        logger.info(f"发现 {len(active_subs)} 个活跃订阅")
+
+        for sub in active_subs:
+            # 查找该订阅下被禁用的账号
+            disabled_accounts = db.query(UserEmbyAccount).filter(
+                UserEmbyAccount.subscription_id == sub.id,
+                UserEmbyAccount.is_active == False
+            ).all()
+
+            if not disabled_accounts:
+                continue
+
+            logger.info(f"订阅 {sub.id} 有 {len(disabled_accounts)} 个待恢复账号")
+
+            for account in disabled_accounts:
+                server = db.query(EmbyServer).filter(
+                    EmbyServer.id == account.server_id
+                ).first()
+
+                if not server or not server.is_active:
+                    logger.warning(f"服务器 {account.server_id} 不可用，跳过账号恢复")
+                    continue
+
+                try:
+                    emby_client = EmbyClient(server.url, server.api_key)
+
+                    # 生成新密码
+                    new_password = EmbyClient.generate_password(12)
+
+                    # 更新 Emby 密码
+                    result = emby_client.update_user_password(
+                        account.emby_user_id,
+                        new_password
+                    )
+
+                    if result.get('success'):
+                        # 更新数据库
+                        account.password = new_password
+                        account.is_active = True
+                        # 更新过期时间
+                        account.expires_at = sub.end_date + timedelta(days=7)
+                        db.add(account)
+
+                        logger.info(f"已恢复账号 {account.username}@{server.name}")
+
+                        # 发送站内消息通知用户
+                        user = db.query(WebUser).filter(WebUser.id == sub.user_id).first()
+                        if user:
+                            message = Message(
+                                user_id=user.id,
+                                title="Emby 账号已恢复",
+                                content=f"您的订阅已续费，Emby 账号已恢复使用！\n\n服务器: {server.name}\n地址: {server.url}\n用户名: {account.username}\n密码: {new_password}\n\n过期时间: {account.expires_at.strftime('%Y-%m-%d')}",
+                                message_type="subscription",
+                                related_id=sub.id
+                            )
+                            db.add(message)
+
+                        reactivated_count += 1
+                    else:
+                        logger.error(f"恢复 Emby 密码失败: {result.get('message')}")
+                        failed_count += 1
+
+                except Exception as e:
+                    logger.error(f"恢复账号 {account.id} 时出错: {e}")
+                    failed_count += 1
+
+        db.commit()
+        logger.info(f"账号恢复检查完成: 恢复 {reactivated_count} 个，失败 {failed_count} 个")
+
+        # 发送汇总通知
+        if reactivated_count > 0:
+            await send_system_alert_message(
+                f"账号恢复完成\n恢复数量: {reactivated_count}\n失败数量: {failed_count}"
+            )
+
+    except Exception as e:
+        logger.error(f"账号恢复检查任务出错: {e}")
         db.rollback()
     finally:
         db.close()
@@ -433,6 +543,15 @@ def start_scheduler():
         CronTrigger(minute=0),
         id='cleanup_pending_orders',
         name='订单超时清理',
+        replace_existing=True
+    )
+
+    # P0: 订阅续费后账号恢复（每10分钟）
+    scheduler.add_job(
+        reactivate_emby_accounts,
+        CronTrigger(minute='*/10'),
+        id='reactivate_emby_accounts',
+        name='订阅续费后账号恢复',
         replace_existing=True
     )
 

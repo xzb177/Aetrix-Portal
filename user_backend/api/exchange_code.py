@@ -376,16 +376,23 @@ async def process_extend_days(
     subscription.end_date = new_end_date
     db.commit()
 
-    # 更新 Emby 账号过期时间
+    # 更新 Emby 账号过期时间并恢复被禁用的账号
     emby_accounts = db.query(UserEmbyAccount).filter(
-        UserEmbyAccount.user_id == user.id,
-        UserEmbyAccount.is_active == True
+        UserEmbyAccount.user_id == user.id
     ).all()
 
     for account in emby_accounts:
         account.expires_at = new_end_date
 
     db.commit()
+
+    # 恢复被禁用的账号
+    try:
+        from utils.account_recovery import reactivate_subscription_accounts
+        recovery_result = await reactivate_subscription_accounts(db, subscription)
+        logger.info(f"兑换码续费账号恢复结果: {recovery_result}")
+    except Exception as e:
+        logger.error(f"兑换码续费账号恢复失败: {e}")
 
     return {
         "extended_days": days,
@@ -426,16 +433,23 @@ async def process_extend_months(
     subscription.end_date = new_end_date
     db.commit()
 
-    # 更新 Emby 账号过期时间
+    # 更新 Emby 账号过期时间并恢复被禁用的账号
     emby_accounts = db.query(UserEmbyAccount).filter(
-        UserEmbyAccount.user_id == user.id,
-        UserEmbyAccount.is_active == True
+        UserEmbyAccount.user_id == user.id
     ).all()
 
     for account in emby_accounts:
         account.expires_at = new_end_date
 
     db.commit()
+
+    # 恢复被禁用的账号
+    try:
+        from utils.account_recovery import reactivate_subscription_accounts
+        recovery_result = await reactivate_subscription_accounts(db, subscription)
+        logger.info(f"兑换码续月账号恢复结果: {recovery_result}")
+    except Exception as e:
+        logger.error(f"兑换码续月账号恢复失败: {e}")
 
     return {
         "extended_months": months,

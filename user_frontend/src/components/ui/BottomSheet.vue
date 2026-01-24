@@ -1,4 +1,16 @@
 <script setup lang="ts">
+/**
+ * BottomSheet - 底部弹出面板组件
+ *
+ * 功能：
+ * - 从底部滑入/滑出
+ * - 支持手势拖拽关闭
+ * - ESC 键关闭
+ * - 点击遮罩关闭
+ * - Safe Area 支持
+ * - 滚动锁定
+ * - prefers-reduced-motion 支持
+ */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { X } from 'lucide-vue-next'
 
@@ -42,7 +54,7 @@ const dragOffset = ref(0)
 const isVisible = ref(false)
 const isAnimating = ref(false)
 
-// 计算样式
+// ==================== 计算样式 ====================
 const transformStyle = computed(() => {
   if (dragOffset.value > 0) {
     return `translateY(${dragOffset.value}px)`
@@ -60,7 +72,7 @@ const shouldClose = computed(() => {
   return dragOffset.value > 100
 })
 
-// 锁定/解锁背景滚动
+// ==================== 滚动锁定 ====================
 const lockScroll = () => {
   document.body.style.overflow = 'hidden'
   document.body.style.position = 'fixed'
@@ -73,7 +85,7 @@ const unlockScroll = () => {
   document.body.style.width = ''
 }
 
-// 关闭 Sheet
+// ==================== 关闭操作 ====================
 const close = (method: 'mask' | 'button' | 'swipe' | 'escape' = 'button') => {
   isAnimating.value = true
   isVisible.value = false
@@ -99,14 +111,13 @@ const open = () => {
   }, 280)
 }
 
-// 手势处理
+// ==================== 手势处理 ====================
 const handleTouchStart = (e: TouchEvent) => {
   if (!props.closeOnSwipeDown) return
 
   const touch = e.touches[0]
   const target = e.target as HTMLElement
 
-  // 只在拖拽条或 Sheet 顶部区域开始拖拽
   const isDragHandle = target.closest('.sheet-drag-handle')
   const isHeaderArea = target.closest('.sheet-header')
 
@@ -124,7 +135,6 @@ const handleTouchMove = (e: TouchEvent) => {
   currentY.value = touch.clientY
   const deltaY = currentY.value - startY.value
 
-  // 只允许向下拖拽
   if (deltaY > 0) {
     dragOffset.value = deltaY
     e.preventDefault()
@@ -137,7 +147,6 @@ const handleTouchEnd = () => {
   if (shouldClose.value) {
     close('swipe')
   } else {
-    // 回弹动画
     dragOffset.value = 0
   }
 
@@ -214,6 +223,9 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('keydown', handleEscapeKey)
   unlockScroll()
+  // 清理鼠标事件监听器
+  document.removeEventListener('mousemove', handleMouseMove)
+  document.removeEventListener('mouseup', handleMouseUp)
 })
 </script>
 
@@ -269,25 +281,36 @@ onUnmounted(() => {
 .sheet-overlay {
   position: fixed;
   inset: 0;
-  z-index: var(--z-sheet, 200);
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  z-index: var(--neo-z-overlay, 80);
+  background: var(--neo-bg-overlay, rgba(0, 0, 0, 0.75));
   display: flex;
   align-items: flex-end;
   justify-content: center;
   padding: 0;
 }
 
+/* prefers-reduced-motion：禁用模糊 */
+@media (prefers-reduced-motion: reduce) {
+  .sheet-overlay {
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sheet-overlay {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+}
+
 /* ==================== Bottom Sheet ==================== */
 .bottom-sheet {
   width: 100%;
   max-width: 480px;
-  background: linear-gradient(180deg, #1a1a1a 0%, #141414 100%);
-  border-radius: var(--radius-lg, 16px) var(--radius-lg, 16px) 0 0;
-  box-shadow:
-    0 -4px 24px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(255, 255, 255, 0.08);
+  background: var(--neo-bg-base, #0B0F14);
+  border: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--neo-radius-lg, 18px) var(--neo-radius-lg, 18px) 0 0;
+  box-shadow: var(--neo-shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.6));
   display: flex;
   flex-direction: column;
   max-height: v-bind(maxHeight);
@@ -296,7 +319,7 @@ onUnmounted(() => {
 
 @media (min-width: 481px) {
   .bottom-sheet {
-    border-radius: var(--radius-lg, 16px);
+    border-radius: var(--neo-radius-lg, 18px);
     margin-bottom: env(safe-area-inset-bottom, 0);
   }
 }
@@ -315,23 +338,23 @@ onUnmounted(() => {
 .sheet-drag-handle {
   width: 36px;
   height: 4px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: var(--radius-sm, 8px);
+  background: var(--neo-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--neo-radius-sm, 12px);
   margin-bottom: 8px;
   cursor: grab;
-  transition: background var(--duration-fast, 150ms) ease;
+  transition: background var(--neo-duration-fast, 150ms) ease;
 }
 
 .sheet-drag-handle:active {
   cursor: grabbing;
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--neo-border-strong, rgba(255, 255, 255, 0.12));
 }
 
 /* 标题 */
 .sheet-title {
-  font-size: var(--text-subtitle-size, 16px);
-  font-weight: var(--font-weight-semibold, 600);
-  color: var(--text-subtitle-color, #ffffff);
+  font-size: var(--neo-font-size-lg, 16px);
+  font-weight: var(--neo-font-weight-semibold, 600);
+  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
   text-align: center;
   margin: 0;
   flex: 1;
@@ -347,17 +370,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.08);
-  border: none;
-  border-radius: var(--radius-sm, 8px);
-  color: var(--text-quaternary, rgba(255, 255, 255, 0.5));
+  background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--neo-radius-xs, 8px);
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
   cursor: pointer;
-  transition: all var(--duration-fast, 150ms) ease;
+  transition: all var(--neo-duration-fast, 150ms) ease;
 }
 
 .sheet-close:active {
-  background: rgba(255, 255, 255, 0.15);
-  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+  background: var(--neo-bg-surface-hover, rgba(255, 255, 255, 0.08));
+  color: var(--neo-text-secondary, rgba(255, 255, 255, 0.68));
 }
 
 /* ==================== 内容区域 ==================== */
@@ -371,22 +394,30 @@ onUnmounted(() => {
 
 /* 隐藏滚动条但保留功能 */
 .sheet-content::-webkit-scrollbar {
-  display: none;
+  width: 4px;
 }
 
-.sheet-content {
-  scrollbar-width: none;
+.sheet-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sheet-content::-webkit-scrollbar-thumb {
+  background: var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: 2px;
+}
+
+.sheet-content::-webkit-scrollbar-thumb:hover {
+  background: var(--neo-border-default, rgba(255, 255, 255, 0.08));
 }
 
 /* ==================== 安全区域 ==================== */
 .sheet-safe-area {
   flex-shrink: 0;
-  height: env(safe-area-inset-bottom, 0);
+  height: env(safe-area-inset-bottom, 0px);
   min-height: var(--space-sm, 12px);
 }
 
 /* ==================== 动画 ==================== */
-
 /* 遮罩淡入淡出 */
 .sheet-fade-enter-active,
 .sheet-fade-leave-active {
@@ -413,6 +444,29 @@ onUnmounted(() => {
 
 .sheet-slide-leave-to {
   transform: translateY(100%);
+}
+
+/* ==================== 动效降级 ==================== */
+@media (prefers-reduced-motion: reduce) {
+  .sheet-close:active {
+    transform: none;
+  }
+
+  .sheet-drag-handle {
+    transition: none;
+  }
+
+  .sheet-fade-enter-active,
+  .sheet-fade-leave-active,
+  .sheet-slide-enter-active,
+  .sheet-slide-leave-active {
+    transition: opacity 0.1s;
+  }
+
+  .sheet-slide-enter-from,
+  .sheet-slide-leave-to {
+    transform: none;
+  }
 }
 
 /* ==================== 顶部高光边框 ==================== */

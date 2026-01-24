@@ -39,6 +39,7 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/settings', name: '系统设置', tab: 'settings', group: '系统管理', icon: 'settings' },
   { path: '/system-config', name: '系统配置', tab: 'settings', group: '系统管理', icon: 'config' },
   { path: '/security', name: '安全设置', tab: 'settings', group: '系统管理', icon: 'shield' },
+  { path: '/routes', name: '线路管理', tab: 'settings', group: '系统管理', icon: 'route' },
   { path: '/admins', name: '管理员', tab: 'settings', group: '系统管理', icon: 'admin' },
   { path: '/roles', name: '角色权限', tab: 'settings', group: '系统管理', icon: 'role' },
   { path: '/system-logs', name: '系统日志', tab: 'settings', group: '系统管理', icon: 'log' },

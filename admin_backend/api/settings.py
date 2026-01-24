@@ -651,3 +651,25 @@ async def get_public_request_limit_config():
         }
     finally:
         db.close()
+
+
+@router.get("/public/moviepilot")
+async def get_public_moviepilot_config():
+    """
+    获取公开的 MoviePilot 配置（无需鉴权）
+    用于 user_backend 获取 MoviePilot API 配置以自动订阅
+    """
+    from admin_database_user import get_user_db as get_db
+
+    db = next(get_db())
+    try:
+        # 获取 MoviePilot 相关配置
+        url = get_config_value(db, "moviepilot_url", "")
+        api_token = get_config_value(db, "moviepilot_api_token", "")
+
+        return {
+            "moviepilot_url": url,
+            "moviepilot_api_token": api_token
+        }
+    finally:
+        db.close()

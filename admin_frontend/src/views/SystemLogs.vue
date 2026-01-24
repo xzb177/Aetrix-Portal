@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { FileText, Download, RefreshCw, Search, Play, Pause, Trash2 } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus'
+import request from '@/utils/request'
 
 // ==================== 类型定义 ====================
 interface LogFile {
@@ -28,52 +30,32 @@ const searchKeyword = ref('')
 const fetchLogFiles = async () => {
   loading.value = true
   try {
-    // TODO: API 调用
-    // const response = await api.get('/api/admin/system-logs/files')
-    // logFiles.value = response.data
-
-    // 模拟数据
-    logFiles.value = [
-      { name: 'app.log', path: '/app.log', size: '1.2 MB', modified: '2026-01-06 12:00:00' },
-      { name: 'error.log', path: '/error.log', size: '256 KB', modified: '2026-01-06 11:30:00' },
-      { name: 'access.log', path: '/access.log', size: '5.8 MB', modified: '2026-01-06 12:05:00' }
-    ]
-  } catch (error) {
+    const response = await request.get<any>('/system-logs/files') as any
+    logFiles.value = response || []
+  } catch (error: any) {
     console.error('获取日志文件失败:', error)
+    ElMessage.error('获取日志文件失败: ' + (error.message || '未知错误'))
   } finally {
     loading.value = false
   }
 }
 
 // ==================== 读取日志内容 ====================
-const fetchLogContent = async (filePath: string) => {
-  selectedFile.value = filePath
+const fetchLogContent = async (fileName: string) => {
+  selectedFile.value = fileName
   logContent.value = []
   loading.value = true
   stopTail()
 
   try {
-    // TODO: API 调用
-    // const response = await api.get('/api/admin/system-logs/view', {
-    //   params: { filename: filePath, mode: 'tail', lines: 100 }
-    // })
-    // logContent.value = response.data.content
-    // currentPosition.value = response.data.position
-
-    // 模拟数据
-    logContent.value = [
-      '[2026-01-06 12:00:00] INFO  Application started',
-      '[2026-01-06 12:00:01] INFO  Database connected',
-      '[2026-01-06 12:00:02] INFO  Server listening on port 8000',
-      '[2026-01-06 12:00:05] INFO  New user registered: user123',
-      '[2026-01-06 12:00:10] INFO  Payment received: order #1234',
-      '[2026-01-06 12:00:15] WARN  High memory usage detected',
-      '[2026-01-06 12:00:20] INFO  Emby sync completed',
-      '[2026-01-06 12:00:25] INFO  User login: admin'
-    ]
-    currentPosition.value = logContent.value.length
-  } catch (error) {
+    const response = await request.get<any>('/system-logs/view', {
+      params: { filename: fileName, lines: 500 }
+    }) as any
+    logContent.value = response.content || []
+    currentPosition.value = response.total_lines || logContent.value.length
+  } catch (error: any) {
     console.error('读取日志失败:', error)
+    ElMessage.error('读取日志失败: ' + (error.response?.data?.detail || error.message || '未知错误'))
   } finally {
     loading.value = false
   }
@@ -88,24 +70,19 @@ const startTail = async () => {
   // 定时获取新日志
   tailInterval.value = window.setInterval(async () => {
     try {
-      // TODO: API 调用 - tailf
-      // const response = await api.get('/api/admin/system-logs/tailf', {
-      //   params: { filename: selectedFile.value, position: currentPosition.value }
-      // })
-      //
-      // if (response.data.content) {
-      //   logContent.value.push(...response.data.content.split('\n'))
-      //   currentPosition.value = response.data.position
-      //   scrollToBottom()
-      // }
+      const response = await request.get<any>('/system-logs/tailf', {
+        params: { filename: selectedFile.value, position: currentPosition.value }
+      }) as any
 
-      // 模拟新日志
-      if (Math.random() > 0.7) {
-        const newLog = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] INFO  System running normally`
-        logContent.value.push(newLog)
-        if (logContent.value.length > 500) {
-          logContent.value.shift()
+      if (response.content && response.content.length > 0) {
+        logContent.value.push(...response.content)
+        currentPosition.value = response.position || currentPosition.value + response.content.length
+
+        // 限制日志行数，避免内存溢出
+        if (logContent.value.length > 1000) {
+          logContent.value = logContent.value.slice(-1000)
         }
+
         await nextTick()
         scrollToBottom()
       }
@@ -140,19 +117,23 @@ const refreshLogs = () => {
 }
 
 const clearLogs = () => {
-  if (!confirm('确定要清空当前日志显示吗？')) return
   logContent.value = []
+  ElMessage.info('日志显示已清空')
 }
 
 const downloadLogs = () => {
-  if (!selectedFile.value || logContent.value.length === 0) return
+  if (!selectedFile.value || logContent.value.length === 0) {
+    ElMessage.warning('请先选择日志文件')
+    return
+  }
 
   const content = logContent.value.join('\n')
   const blob = new Blob([content], { type: 'text/plain' })
   const link = document.createElement('a')
   link.href = URL.createObjectURL(blob)
-  link.download = selectedFile.value.split('/').pop() || 'logs.txt'
+  link.download = selectedFile.value || 'logs.txt'
   link.click()
+  ElMessage.success('日志下载成功')
 }
 
 // ==================== 搜索过滤 ====================
@@ -207,9 +188,9 @@ onUnmounted(() => {
           <div v-else-if="logFiles.length === 0" class="empty">暂无日志文件</div>
           <div
             v-for="file in logFiles"
-            :key="file.path"
-            :class="['file-item', { active: selectedFile === file.path }]"
-            @click="fetchLogContent(file.path)"
+            :key="file.name"
+            :class="['file-item', { active: selectedFile === file.name }]"
+            @click="fetchLogContent(file.name)"
           >
             <FileText :size="16" />
             <div class="file-info">
@@ -231,7 +212,7 @@ onUnmounted(() => {
           <!-- 工具栏 -->
           <div class="logs-toolbar">
             <div class="toolbar-left">
-              <span class="file-name">{{ selectedFile.split('/').pop() }}</span>
+              <span class="file-name">{{ selectedFile }}</span>
               <span v-if="isTailing" class="live-indicator">
                 <span class="live-dot"></span>
                 实时监控中

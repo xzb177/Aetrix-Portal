@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { User, Award, Sparkles } from 'lucide-vue-next'
+import { useLongPress } from '@/composables/useLongPress'
 
 interface Profile {
   username: string
@@ -18,11 +19,28 @@ interface Props {
   isVIP_v2?: boolean
   vipExpiry?: string
   loading?: boolean
+  /** 是否启用彩蛋功能（通过 Feature Flag 控制） */
+  enableEasterEgg?: boolean
+}
+
+interface Emits {
+  (e: 'longPress'): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
   isVIP: false,
-  loading: false
+  loading: false,
+  enableEasterEgg: false
+})
+
+const emit = defineEmits<Emits>()
+
+// 长按检测（仅当启用彩蛋时）
+const { longPressProps, isPressing } = useLongPress({
+  delay: 1000,
+  onLongPress: () => {
+    emit('longPress')
+  }
 })
 
 // 兼容两种 prop 名称
@@ -73,7 +91,12 @@ function getDaysRemaining(expiryDate?: string) {
   </div>
 
   <!-- Normal State -->
-  <div v-else-if="profile" class="profile-header flex items-center gap-3 px-4 py-3 bg-card border-b border-white/6">
+  <div
+    v-else-if="profile"
+    class="profile-header flex items-center gap-3 px-4 py-3 bg-card border-b border-white/6"
+    :class="{ 'is-pressing': isPressing && enableEasterEgg }"
+    v-bind="enableEasterEgg ? longPressProps : {}"
+  >
     <!-- Avatar -->
     <div class="w-12 h-12 rounded-lg bg-elevated flex items-center justify-center border border-white/10 shadow-card relative">
       <User :size="22" class="text-white/60" />
@@ -117,6 +140,19 @@ function getDaysRemaining(expiryDate?: string) {
 <style scoped>
 .profile-header {
   background: var(--bg-card);
+  transition: background-color 0.2s ease, transform 0.15s ease;
+}
+
+/* 长按时的视觉反馈 */
+.profile-header.is-pressing {
+  background: rgba(16, 185, 129, 0.08);
+}
+
+/* 动效降级 */
+@media (prefers-reduced-motion: reduce) {
+  .profile-header {
+    transition: none;
+  }
 }
 
 .bg-elevated {

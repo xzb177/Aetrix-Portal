@@ -3,6 +3,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from typing import List, Optional
 from datetime import datetime
 import json
@@ -13,16 +14,13 @@ from admin_database_user import (
 )
 from admin_utils.auth import get_current_admin
 from admin_utils.config import settings
+from admin_database import admin_engine
 
 router = APIRouter()
 
-# 配置文件路径（使用 settings 中的配置）
-USER_BACKEND_DIR = settings.USER_BACKEND_DIR
-ENV_FILE = os.path.join(USER_BACKEND_DIR, ".env")
 
-
-def read_env_config():
-    """读取用户后端的 .env 配置"""
+def read_payment_config():
+    """从数据库读取支付配置"""
     config = {
         "gateway_url": "",
         "partner_id": "",
@@ -31,77 +29,63 @@ def read_env_config():
         "return_url": ""
     }
 
-    if os.path.exists(ENV_FILE):
-        with open(ENV_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    if key == 'YIPAY_GATEWAY_URL':
-                        config['gateway_url'] = value
-                    elif key == 'YIPAY_PARTNER_ID':
-                        config['partner_id'] = value
-                    elif key == 'YIPAY_KEY':
-                        # 脱敏显示
-                        config['key'] = value if len(value) <= 8 else value[:4] + '****' + value[-4:]
-                    elif key == 'YIPAY_NOTIFY_URL':
-                        config['notify_url'] = value
-                    elif key == 'YIPAY_RETURN_URL':
-                        config['return_url'] = value
+    try:
+        with admin_engine.connect() as conn:
+            result = conn.execute(text("SELECT gateway_url, partner_id, key, notify_url, return_url FROM payment_config ORDER BY id DESC LIMIT 1"))
+            row = result.fetchone()
+            if row:
+                config['gateway_url'] = row[0] or ""
+                config['partner_id'] = row[1] or ""
+                # 脱敏显示密钥
+                key_value = row[2] or ""
+                config['key'] = key_value if len(key_value) <= 8 else key_value[:4] + '****' + key_value[-4:]
+                config['notify_url'] = row[3] or ""
+                config['return_url'] = row[4] or ""
+    except Exception as e:
+        # 表可能不存在，返回空配置
+        pass
 
     return config
 
 
-def write_env_config(config: dict):
-    """写入支付配置到 .env 文件"""
-    if not os.path.exists(ENV_FILE):
-        # 创建新的 .env 文件
-        with open(ENV_FILE, 'w', encoding='utf-8') as f:
-            f.write("# 易支付配置\n")
-            f.write(f"YIPAY_GATEWAY_URL={config.get('gateway_url', '')}\n")
-            f.write(f"YIPAY_PARTNER_ID={config.get('partner_id', '')}\n")
-            f.write(f"YIPAY_KEY={config.get('key', '')}\n")
-            f.write(f"YIPAY_NOTIFY_URL={config.get('notify_url', '')}\n")
-            f.write(f"YIPAY_RETURN_URL={config.get('return_url', '')}\n")
-        return
+def write_payment_config(config: dict):
+    """写入支付配置到数据库"""
+    with admin_engine.connect() as conn:
+        # 先检查是否有现有配置
+        result = conn.execute(text("SELECT id FROM payment_config"))
+        existing = result.fetchone()
 
-    # 读取现有配置
-    lines = []
-    with open(ENV_FILE, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-
-    # 更新配置
-    updated_lines = []
-    config_keys = {
-        'YIPAY_GATEWAY_URL': config.get('gateway_url'),
-        'YIPAY_PARTNER_ID': config.get('partner_id'),
-        'YIPAY_KEY': config.get('key'),
-        'YIPAY_NOTIFY_URL': config.get('notify_url'),
-        'YIPAY_RETURN_URL': config.get('return_url')
-    }
-    updated_keys = set()
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith('#') and '=' in stripped:
-            key = stripped.split('=', 1)[0].strip()
-            if key in config_keys:
-                if config_keys[key] is not None:
-                    updated_lines.append(f"{key}={config_keys[key]}\n")
-                updated_keys.add(key)
-                continue
-        updated_lines.append(line)
-
-    # 添加新配置
-    for key, value in config_keys.items():
-        if key not in updated_keys and value is not None:
-            updated_lines.append(f"{key}={value}\n")
-
-    # 写回文件
-    with open(ENV_FILE, 'w', encoding='utf-8') as f:
-        f.writelines(updated_lines)
+        if existing:
+            # 更新现有配置
+            conn.execute(text("""
+                UPDATE payment_config
+                SET gateway_url = :gateway_url,
+                    partner_id = :partner_id,
+                    key = :key,
+                    notify_url = :notify_url,
+                    return_url = :return_url,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = (SELECT id FROM payment_config ORDER BY id DESC LIMIT 1)
+            """), {
+                'gateway_url': config.get('gateway_url', ''),
+                'partner_id': config.get('partner_id', ''),
+                'key': config.get('key', ''),
+                'notify_url': config.get('notify_url', ''),
+                'return_url': config.get('return_url', '')
+            })
+        else:
+            # 插入新配置
+            conn.execute(text("""
+                INSERT INTO payment_config (gateway_url, partner_id, key, notify_url, return_url)
+                VALUES (:gateway_url, :partner_id, :key, :notify_url, :return_url)
+            """), {
+                'gateway_url': config.get('gateway_url', ''),
+                'partner_id': config.get('partner_id', ''),
+                'key': config.get('key', ''),
+                'notify_url': config.get('notify_url', ''),
+                'return_url': config.get('return_url', '')
+            })
+        conn.commit()
 
 
 @router.get("/payment/config")
@@ -109,7 +93,7 @@ async def get_payment_config(
     admin = Depends(get_current_admin)
 ):
     """获取支付配置"""
-    config = read_env_config()
+    config = read_payment_config()
 
     # 检查配置是否完整
     is_configured = all([
@@ -119,12 +103,16 @@ async def get_payment_config(
     ])
 
     return {
-        "is_configured": is_configured,
-        "gateway_url": config['gateway_url'],
-        "partner_id": config['partner_id'],
-        "key": config['key'],  # 已脱敏
-        "notify_url": config['notify_url'],
-        "return_url": config['return_url']
+        "code": 200,
+        "message": "success",
+        "data": {
+            "is_configured": is_configured,
+            "gateway_url": config['gateway_url'],
+            "partner_id": config['partner_id'],
+            "key": config['key'],  # 已脱敏
+            "notify_url": config['notify_url'],
+            "return_url": config['return_url']
+        }
     }
 
 
@@ -157,8 +145,8 @@ async def update_payment_config(
     }
 
     try:
-        write_env_config(config)
-        return {"message": "支付配置更新成功"}
+        write_payment_config(config)
+        return {"code": 200, "message": "配置保存成功", "data": None}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -171,7 +159,7 @@ async def test_payment(
     admin = Depends(get_current_admin)
 ):
     """测试支付连接"""
-    config = read_env_config()
+    config = read_payment_config()
 
     if not all([config['gateway_url'], config['partner_id'], config['key']]):
         raise HTTPException(
@@ -188,24 +176,30 @@ async def test_payment(
         )
 
         return {
-            "success": True,
+            "code": 200,
             "message": "支付网关连接成功",
-            "gateway_url": config['gateway_url']
+            "data": {
+                "success": True,
+                "gateway_url": config['gateway_url']
+            }
         }
     except requests.exceptions.Timeout:
         return {
-            "success": False,
-            "message": "支付网关连接超时，请检查网络"
+            "code": 200,
+            "message": "支付网关连接超时，请检查网络",
+            "data": {"success": False}
         }
     except requests.exceptions.ConnectionError:
         return {
-            "success": False,
-            "message": "支付网关无法连接，请检查地址是否正确"
+            "code": 200,
+            "message": "支付网关无法连接，请检查地址是否正确",
+            "data": {"success": False}
         }
     except Exception as e:
         return {
-            "success": False,
-            "message": f"连接失败: {str(e)}"
+            "code": 200,
+            "message": f"连接失败: {str(e)}",
+            "data": {"success": False}
         }
 
 
@@ -244,12 +238,16 @@ async def get_payment_orders(
             "status": order.status,
             "paid_at": order.paid_at,
             "created_at": order.created_at,
-            "transaction_id": order.transaction_id
+            "transaction_id": order.order_id  # 使用 order_id 作为交易 ID
         })
 
     return {
-        "total": total,
-        "orders": result
+        "code": 200,
+        "message": "success",
+        "data": {
+            "total": total,
+            "orders": result
+        }
     }
 
 
@@ -297,12 +295,16 @@ async def get_payment_stats(
     month_revenue = sum(float(o.amount) for o in month_orders)
 
     return {
-        "total_orders": total_orders,
-        "pending_orders": pending_orders,
-        "paid_orders": paid_orders,
-        "total_revenue": total_revenue,
-        "today_revenue": today_revenue,
-        "month_revenue": month_revenue
+        "code": 200,
+        "message": "success",
+        "data": {
+            "total_orders": total_orders,
+            "pending_orders": pending_orders,
+            "paid_orders": paid_orders,
+            "total_revenue": total_revenue,
+            "today_revenue": today_revenue,
+            "month_revenue": month_revenue
+        }
     }
 
 
@@ -327,23 +329,27 @@ async def get_payment_order_detail(
     plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == order.plan_id).first()
 
     return {
-        "id": order.id,
-        "order_id": order.order_id,
-        "user": {
-            "id": user.id if user else None,
-            "username": user.username if user else "未知用户",
-            "email": user.email if user else ""
-        } if user else None,
-        "plan": {
-            "id": plan.id if plan else None,
-            "name": plan.name if plan else "未知套餐",
-            "price": float(plan.price) if plan else 0
-        } if plan else None,
-        "amount": float(order.amount),
-        "payment_method": order.payment_method,
-        "status": order.status,
-        "transaction_id": order.transaction_id,
-        "paid_at": order.paid_at,
-        "created_at": order.created_at,
-        "updated_at": order.updated_at
+        "code": 200,
+        "message": "success",
+        "data": {
+            "id": order.id,
+            "order_id": order.order_id,
+            "user": {
+                "id": user.id if user else None,
+                "username": user.username if user else "未知用户",
+                "email": user.email if user else ""
+            } if user else None,
+            "plan": {
+                "id": plan.id if plan else None,
+                "name": plan.name if plan else "未知套餐",
+                "price": float(plan.price) if plan else 0
+            } if plan else None,
+            "amount": float(order.amount),
+            "payment_method": order.payment_method,
+            "status": order.status,
+            "transaction_id": order.order_id  # 使用 order_id 作为交易 ID,
+            "paid_at": order.paid_at,
+            "created_at": order.created_at,
+            "updated_at": order.updated_at
+        }
     }

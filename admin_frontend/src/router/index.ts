@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useLoadingStore } from '@/stores/loading'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -150,6 +151,18 @@ const routes: RouteRecordRaw[] = [
 
       // ==================== 系统管理 ====================
       {
+        path: 'routes',
+        name: 'Routes',
+        component: () => import('@/views/Routes.vue'),
+        meta: { title: '线路管理', icon: 'Route', permission: 'routes.view' },
+      },
+      {
+        path: 'admin-ops',
+        name: 'AdminOps',
+        component: () => import('@/views/AdminOps.vue'),
+        meta: { title: '运营中控台', icon: 'Shield', permission: 'system.admin' },
+      },
+      {
         path: 'admins',
         name: 'Admins',
         component: () => import('@/views/Admins.vue'),
@@ -194,32 +207,128 @@ const router = createRouter({
   routes,
 })
 
+// ============================================================
+// 自诊断模式 - 路由守卫增强日志
+// ============================================================
+
+// 调试日志辅助函数
+const debugLog = (category: string, message: string, data?: any) => {
+  const timestamp = new Date().toLocaleTimeString()
+  const logMsg = `[${timestamp}] [${category}] ${message}`
+  console.log(logMsg, data || '')
+
+  // 写入全局调试日志（如果启用）
+  if ((window as any).__addDebugLog) {
+    ;(window as any).__addDebugLog(`${category}: ${message}`)
+    if (data) {
+      ;(window as any).__addDebugLog(`  -> ${JSON.stringify(data)}`)
+    }
+  }
+}
+
+// 检测 sessionStorage 可用性
+const checkSessionStorage = () => {
+  try {
+    const testKey = '__session_storage_test__'
+    sessionStorage.setItem(testKey, '1')
+    sessionStorage.removeItem(testKey)
+    return { available: true }
+  } catch (e) {
+    return { available: false, error: (e as Error).message }
+  }
+}
+
 // 路由守卫
-router.beforeEach((to, _from, next) => {
+router.beforeEach((to, from, next) => {
+  debugLog('Router', `=== 守卫检查 ===`)
+  debugLog('Router', `from: ${from.fullPath} -> to: ${to.fullPath}`)
+
+  // 检测 sessionStorage
+  const storageCheck = checkSessionStorage()
+  debugLog('Router', `sessionStorage 可用: ${storageCheck.available}`, storageCheck.error ? { error: storageCheck.error } : undefined)
+
   const authStore = useAuthStore()
+
+  // 关键修复：每次守卫执行前，先从 sessionStorage 恢复状态
+  // 解决 Pinia store 实例状态不一致问题（特别是 Safari）
+  authStore.restoreState()
+  debugLog('Router', `restoreState 已调用`)
+
+  // 检查 localStorage 和 sessionStorage 的内容
+  const localStorageKeys = Object.keys(localStorage)
+  const sessionStorageKeys = Object.keys(sessionStorage)
+  debugLog('Router', `存储状态`, {
+    localStorage: localStorageKeys.filter(k => k.includes('admin') || k.includes('token')),
+    sessionStorage: sessionStorageKeys.filter(k => k.includes('admin') || k.includes('token'))
+  })
 
   // 设置页面标题
   document.title = `${to.meta.title || 'Aetrix 后台'} - 管理系统`
 
-  // 检查是否需要登录
-  if (to.meta.requiresAuth !== false && !authStore.isAuthenticated) {
+  // 详细的状态日志
+  debugLog('Router', `认证状态检查`, {
+    isAuthenticated: authStore.isAuthenticated,
+    hasAdminInfo: !!authStore.adminInfo,
+    adminUsername: authStore.adminInfo?.username || '(none)',
+    requiresAuth: to.meta.requiresAuth,
+    permission: to.meta.permission
+  })
+
+  // 分支判断日志
+  const needsAuth = to.meta.requiresAuth !== false
+  if (needsAuth && !authStore.isAuthenticated) {
+    debugLog('Router', `>>> 分支: 未认证，重定向到 /login`)
     next('/login')
     return
   }
 
-  // 检查权限
   if (to.meta.permission && !authStore.hasPermission(to.meta.permission as string)) {
+    debugLog('Router', `>>> 分支: 权限不足，重定向到 /`)
     next('/')
     return
   }
 
-  // 已登录用户访问登录页，跳转到首页
   if ((to.path === '/login' || to.path === '/m/login') && authStore.isAuthenticated) {
+    debugLog('Router', `>>> 分支: 已登录访问登录页，重定向到 /`)
     next('/')
     return
   }
 
+  debugLog('Router', `>>> 分支: 通过检查，继续导航到 ${to.path}`)
   next()
+})
+
+// 路由导航后日志
+router.afterEach((to, from) => {
+  debugLog('Router', `导航完成: ${from.fullPath} -> ${to.fullPath}`)
+  debugLog('Router', `当前 URL: ${window.location.href}`)
+
+  // 兜底：确保每次路由切换后清除 loading 状态（DOM class）
+  const appEl = document.getElementById('app')
+  if (appEl && appEl.classList.contains('loading')) {
+    appEl.classList.remove('loading')
+    console.log('[Router] Loading cleared after navigation')
+  }
+
+  // 兜底：强制停止全局 loading store
+  const loadingStore = useLoadingStore()
+  loadingStore.ensureStopped('router.afterEach')
+})
+
+// 路由错误处理 - 确保 loading 不会卡住
+router.onError((error) => {
+  console.error('[Router] Navigation error:', error)
+
+  // 强制停止所有 loading
+  const loadingStore = useLoadingStore()
+  loadingStore.ensureStopped('router.onError')
+
+  // 清除 DOM loading class
+  const appEl = document.getElementById('app')
+  if (appEl && appEl.classList.contains('loading')) {
+    appEl.classList.remove('loading')
+    console.log('[Router] Loading cleared due to navigation error')
+  }
 })
 
 export default router

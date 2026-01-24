@@ -255,6 +255,18 @@ if settings_api:
 # Emby 会话和转码管理路由
 if emby_sessions:
     app.include_router(emby_sessions.router, prefix="/api/emby-sessions", tags=["Emby会话管理"])
+# 系统日志查看路由
+system_logs = api_modules.get('system_logs')
+if system_logs:
+    app.include_router(system_logs.router, prefix="/api", tags=["系统日志"])
+# 运营中控台路由
+admin_ops = api_modules.get('admin_ops')
+if admin_ops:
+    app.include_router(admin_ops.router, tags=["运营中控台"])
+# 线路管理路由
+routes_api = api_modules.get('routes')
+if routes_api:
+    app.include_router(routes_api.router, prefix="/api/routes", tags=["线路管理"])
 
 
 # 健康检查

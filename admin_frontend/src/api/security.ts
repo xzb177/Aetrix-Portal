@@ -57,3 +57,12 @@ export const updateSystemConfig = (data: {
 export const checkPasswordStrength = (password: string) => {
   return http.post('/auth/check-password-strength', { password })
 }
+
+// 修改密码
+export const changePassword = (data: {
+  old_password: string
+  new_password: string
+  confirm_password: string
+}) => {
+  return http.post('/auth/change-password', data)
+}

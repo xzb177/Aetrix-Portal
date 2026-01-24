@@ -22,8 +22,10 @@ RUN npm run build
 # ==================== 阶段2: Nginx 运行阶段 ====================
 FROM nginx:alpine
 
-# 复制构建产物到 /admin 子目录
-COPY --from=builder /app/dist /usr/share/nginx/html/admin
+# 复制构建产物到 nginx 根目录
+# 注意：vite.config.ts 设置了 base: '/admin/'，所以资源路径是 /admin/assets/...
+# nginx alias 会将 /admin 路径映射到这里
+COPY --from=builder /app/dist /usr/share/nginx/html
 
 # 复制 nginx 配置
 COPY nginx.conf /etc/nginx/conf.d/default.conf

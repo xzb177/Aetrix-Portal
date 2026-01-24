@@ -149,6 +149,7 @@ async def get_my_emby_accounts(
 
     返回用户所有有效订阅对应的 Emby 服务器账号信息
     如果有订阅但没有账号，会自动创建
+    如果账号无效（401），会自动修复
     """
     from datetime import datetime
 
@@ -204,21 +205,38 @@ async def get_my_emby_accounts(
             else:
                 logger.warning(f"[EMBY_DEBUG] 用户 {current_user.id} 账号创建失败")
         else:
-            # 有账号，添加到结果
+            # 有账号，验证并添加到结果
             for account in sub_accounts:
                 server = db.query(EmbyServer).filter(EmbyServer.id == account.server_id).first()
-                if server:
-                    is_expired = account.expires_at and account.expires_at < datetime.now()
-                    result.append(UserEmbyAccountResponse(
-                        id=account.id,
-                        server_id=server.id,
-                        server_name=server.name,
-                        server_url=server.url,
-                        username=account.username,
-                        password=account.password,
-                        expires_at=account.expires_at,
-                        is_expired=is_expired
-                    ))
+                if not server:
+                    continue
+
+                is_expired = account.expires_at and account.expires_at < datetime.now()
+
+                # ========== 验证账号有效性，自动修复 401 错误 ==========
+                emby_client = EmbyClient(server.url, server.api_key)
+                verify_result = emby_client.verify_and_recreate_user(
+                    username=account.username,
+                    password=account.password
+                )
+
+                # 如果账号被修复，更新数据库
+                if verify_result['recreated']:
+                    logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} 的账号 {account.username} 已修复: {verify_result['message']}")
+                    account.username = verify_result['username']
+                    account.password = verify_result['password']
+                    db.commit()
+
+                result.append(UserEmbyAccountResponse(
+                    id=account.id,
+                    server_id=server.id,
+                    server_name=server.name,
+                    server_url=server.url,
+                    username=verify_result['username'],  # 使用修复后的用户名和密码
+                    password=verify_result['password'],
+                    expires_at=account.expires_at,
+                    is_expired=is_expired
+                ))
 
     logger.info(f"[EMBY_DEBUG] 用户 {current_user.id} 返回 {len(result)} 个账号")
 

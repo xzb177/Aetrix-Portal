@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 求片分类中心 - 海报墙
+ * 求片分类中心 - Neo-Noir 2.0 设计
  *
  * 功能：
  * - 公共求片池海报墙展示
@@ -14,7 +14,10 @@ import { requestApi } from '@/api'
 import MediaGallery, { type MediaItem } from '@/components/MediaGallery.vue'
 import MediaSearchSheet, { type TmdbResult } from '@/components/MediaSearchSheet.vue'
 import CategoryFilter from '@/components/CategoryFilter.vue'
-import { Film, Plus, Search, ChevronDown, ChevronUp, Loader2 } from 'lucide-vue-next'
+import { SegmentedControl } from '@/components/ui'
+import { Badge, Chip } from '@/components/ui'
+import { IconButton } from '@/components/ui'
+import { Film, Search, ChevronDown, ChevronUp, Loader2 } from 'lucide-vue-next'
 
 interface MyRequest {
   id: number
@@ -31,7 +34,7 @@ interface MyRequest {
 }
 
 // ==================== 状态 ====================
-const viewMode = ref<'gallery' | 'my'>('gallery') // gallery=公共求片, my=我的求片
+const viewMode = ref<'gallery' | 'my'>('gallery')
 const isLoading = ref(true)
 const isSubmitting = ref(false)
 const galleryItems = ref<MediaItem[]>([])
@@ -70,13 +73,19 @@ const typeLabels: Record<string, string> = {
   other: '其他',
 }
 
-// 状态配置
-const statusConfig = {
-  pending: { label: '待处理', class: 'status-pending' },
-  approved: { label: '处理中', class: 'status-approved' },
-  rejected: { label: '已拒绝', class: 'status-rejected' },
-  completed: { label: '已完成', class: 'status-completed' }
+// 状态配置 - 使用 variant 替代 class
+const statusConfig: Record<string, { label: string; variant: 'success' | 'warning' | 'danger' | 'info' | 'default' }> = {
+  pending: { label: '待处理', variant: 'warning' },
+  approved: { label: '处理中', variant: 'info' },
+  rejected: { label: '已拒绝', variant: 'danger' },
+  completed: { label: '已完成', variant: 'success' }
 }
+
+// ==================== SegmentedControl 选项 ====================
+const viewOptions = computed(() => [
+  { label: '公共求片池', value: 'gallery' as const },
+  { label: '我的求片', value: 'my' as const }
+])
 
 // ==================== 计算属性 ====================
 const activeFilterCount = computed(() => {
@@ -87,7 +96,6 @@ const activeFilterCount = computed(() => {
 })
 
 // ==================== 数据加载 ====================
-// 加载公共求片池
 async function loadGallery(reset = false) {
   if (reset) {
     currentPage.value = 1
@@ -121,7 +129,6 @@ async function loadGallery(reset = false) {
   }
 }
 
-// 加载我的求片
 async function loadMyRequests() {
   try {
     const data = await requestApi.getMyRequests()
@@ -131,7 +138,6 @@ async function loadMyRequests() {
   }
 }
 
-// 加载统计数据
 async function loadStats() {
   try {
     const data = await requestApi.getStats()
@@ -141,7 +147,6 @@ async function loadStats() {
   }
 }
 
-// 刷新数据
 async function refresh() {
   isLoading.value = true
   await Promise.all([
@@ -151,7 +156,6 @@ async function refresh() {
 }
 
 // ==================== 交互操作 ====================
-// TMDB 搜索选择
 async function handleTmdbSelect(result: TmdbResult) {
   isSubmitting.value = true
   try {
@@ -168,7 +172,6 @@ async function handleTmdbSelect(result: TmdbResult) {
       poster_url: result.poster_url_large || result.poster_url
     })
 
-    // 刷新数据
     await refresh()
   } catch (error: any) {
     console.error('提交求片失败:', error)
@@ -179,15 +182,11 @@ async function handleTmdbSelect(result: TmdbResult) {
   }
 }
 
-// 投票/订阅
 async function handleVote(id: number) {
   try {
     await requestApi.subscribe(id)
-
-    // 更新本地数据
     const item = galleryItems.value.find(i => i.id === id)
     if (item) {
-      // 重新加载以获取正确数据
       await loadGallery(true)
     }
   } catch (error) {
@@ -195,18 +194,14 @@ async function handleVote(id: number) {
   }
 }
 
-// 点击海报
 function handleItemClick(item: MediaItem) {
-  // 可以打开详情弹窗
   console.log('点击:', item)
 }
 
-// 加载更多
 function handleLoadMore() {
   loadGallery()
 }
 
-// 切换视图模式
 function switchView(mode: 'gallery' | 'my') {
   viewMode.value = mode
   if (mode === 'my' && myRequests.value.length === 0) {
@@ -214,7 +209,6 @@ function switchView(mode: 'gallery' | 'my') {
   }
 }
 
-// 切换我的求片展开
 function toggleMyRequests() {
   showMyRequests.value = !showMyRequests.value
   if (showMyRequests.value && myRequests.value.length === 0) {
@@ -222,7 +216,6 @@ function toggleMyRequests() {
   }
 }
 
-// 格式化日期
 function formatDate(dateStr: string) {
   return new Date(dateStr).toLocaleDateString('zh-CN', {
     year: 'numeric',
@@ -253,45 +246,34 @@ onMounted(async () => {
     <div class="request-bg"></div>
 
     <div class="request-container">
-      <!-- ==================== 顶部导航 ==================== -->
+      <!-- ==================== 顶部标题块 ==================== -->
       <header class="page-header">
         <div class="header-left">
-          <div class="app-icon-tile">
-            <Film :size="20" class="text-white/80" />
+          <div class="header-icon">
+            <Film :size="20" />
           </div>
           <div class="header-text">
-            <h1 class="page-title">求片分类中心</h1>
-            <p class="page-subtitle">发现大家都在看什么</p>
+            <h1 class="page-title">影单广场</h1>
+            <p class="page-subtitle">发现社群热门影视</p>
           </div>
         </div>
-        <button
-          class="search-btn"
-          :class="{ loading: isSubmitting }"
-          :disabled="isSubmitting"
+        <IconButton
+          :icon="Search"
+          :loading="isSubmitting"
           @click="showSearch = true"
         >
-          <Loader2 v-if="isSubmitting" class="spin" :size="18" />
-          <Search v-else :size="18" />
-          <span v-if="!isSubmitting">搜索求片</span>
-        </button>
+          <span v-if="!isSubmitting" class="icon-btn-label">搜索</span>
+        </IconButton>
       </header>
 
-      <!-- ==================== 视图切换 ==================== -->
-      <div class="view-tabs">
-        <button
-          :class="['view-tab', { active: viewMode === 'gallery' }]"
-          @click="switchView('gallery')"
-        >
-          <span>公共求片池</span>
-          <span class="tab-count">{{ stats.total }}</span>
-        </button>
-        <button
-          :class="['view-tab', { active: viewMode === 'my' }]"
-          @click="switchView('my')"
-        >
-          <span>我的求片</span>
-          <span class="tab-count">{{ myRequests.length }}</span>
-        </button>
+      <!-- ==================== 视图切换 SegmentedControl ==================== -->
+      <div class="view-switcher">
+        <SegmentedControl
+          v-model="viewMode"
+          :options="viewOptions"
+          size="md"
+          @update:model-value="switchView"
+        />
       </div>
 
       <!-- ==================== 公共求片池 ==================== -->
@@ -301,10 +283,8 @@ onMounted(async () => {
 
         <!-- 加载状态 -->
         <div v-if="isLoading && galleryItems.length === 0" class="loading-state">
-          <div class="loading-spinner">
-            <Loader2 :size="32" class="spin text-white/40" />
-          </div>
-          <p class="text-white/40 text-sm">加载中...</p>
+          <Loader2 :size="28" class="spin" />
+          <p class="loading-text">加载中</p>
         </div>
 
         <!-- 海报墙 -->
@@ -323,11 +303,11 @@ onMounted(async () => {
       <div v-show="viewMode === 'my'" class="my-requests-view">
         <!-- 空状态 -->
         <div v-if="myRequests.length === 0 && !isLoading" class="empty-state">
-          <div class="empty-icon-wrapper">
-            <Film :size="32" class="text-white/20" />
+          <div class="empty-icon">
+            <Film :size="28" />
           </div>
-          <h3 class="empty-title">还没有求片记录</h3>
-          <p class="empty-desc">点击上方搜索按钮，提交您的第一个求片</p>
+          <h3 class="empty-title">暂无求片记录</h3>
+          <p class="empty-desc">点击右上角搜索，提交您的第一个求片请求</p>
         </div>
 
         <!-- 求片列表 -->
@@ -335,56 +315,60 @@ onMounted(async () => {
           <div
             v-for="request in myRequests"
             :key="request.id"
-            class="request-card"
+            class="media-task-card"
           >
             <!-- 海报缩略图 -->
-            <div class="request-poster">
+            <div class="task-poster">
               <img
                 v-if="request.poster_url"
                 :src="request.poster_url"
                 :alt="request.movie_name"
               />
               <div v-else class="poster-placeholder">
-                <Film :size="20" class="text-white/20" />
+                <Film :size="18" />
               </div>
             </div>
 
-            <!-- 信息 -->
-            <div class="request-info">
-              <div class="request-header">
-                <h3 class="request-title">{{ request.movie_name }}</h3>
-                <span :class="['status-badge', statusConfig[request.status].class]">
+            <!-- 三行信息 -->
+            <div class="task-info">
+              <div class="task-row-primary">
+                <h3 class="task-title">{{ request.movie_name }}</h3>
+                <Badge :variant="statusConfig[request.status].variant" size="sm">
                   {{ statusConfig[request.status].label }}
-                </span>
+                </Badge>
               </div>
-              <div class="request-meta">
-                <span v-if="request.year" class="meta-tag">{{ request.year }}</span>
-                <span v-if="typeLabels[request.type]" class="meta-tag">
+
+              <div class="task-row-secondary">
+                <span v-if="request.year" class="meta-text">{{ request.year }}</span>
+                <span v-if="typeLabels[request.type]" class="meta-text">
                   {{ typeLabels[request.type] }}
                 </span>
                 <span class="meta-subscribers">{{ request.subscriber_count }} 人想要</span>
               </div>
-              <p v-if="request.note" class="request-note">{{ request.note }}</p>
-              <p v-if="request.admin_note" class="request-reply">
-                <span class="reply-label">管理员：</span>{{ request.admin_note }}
-              </p>
-              <p class="request-date">{{ formatDate(request.created_at) }}</p>
+
+              <div class="task-row-tertiary">
+                <p v-if="request.note" class="task-note">{{ request.note }}</p>
+                <p v-if="request.admin_note" class="task-reply">
+                  <span class="reply-label">管理员</span>{{ request.admin_note }}
+                </p>
+                <span v-else class="task-date">{{ formatDate(request.created_at) }}</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
       <!-- ==================== 我的求片折叠面板（公共池模式下） ==================== -->
-      <div v-if="viewMode === 'gallery'" class="my-requests-drawer">
+      <div v-if="viewMode === 'gallery'" class="requests-drawer">
         <button class="drawer-toggle" @click="toggleMyRequests">
           <span>我的求片 ({{ myRequests.length }})</span>
-          <ChevronDown v-if="!showMyRequests" :size="18" />
-          <ChevronUp v-else :size="18" />
+          <ChevronDown v-if="!showMyRequests" :size="16" />
+          <ChevronUp v-else :size="16" />
         </button>
 
         <div v-if="showMyRequests" class="drawer-content">
           <div v-if="myRequests.length === 0" class="drawer-empty">
-            <p class="text-white/40 text-sm">暂无求片记录</p>
+            <p class="drawer-empty-text">暂无求片记录</p>
           </div>
           <div v-else class="drawer-list">
             <div
@@ -393,9 +377,9 @@ onMounted(async () => {
               class="drawer-item"
             >
               <span class="drawer-item-title">{{ request.movie_name }}</span>
-              <span :class="['drawer-item-status', statusConfig[request.status].class]">
+              <Chip :size="'sm'" :selected="request.status === 'completed'">
                 {{ statusConfig[request.status].label }}
-              </span>
+              </Chip>
             </div>
           </div>
         </div>
@@ -418,17 +402,19 @@ onMounted(async () => {
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: 1.5rem 1rem 2rem;
+  padding: var(--space-6, 24px) var(--space-5, 20px) var(--neo-safe-bottom);
+  background: var(--neo-bg-base);
 }
 
 .request-bg {
   position: fixed;
   inset: 0;
-  z-index: -1;
+  z-index: var(--neo-z-base);
+  pointer-events: none;
   background:
-    radial-gradient(ellipse at 20% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 100%, rgba(16, 185, 129, 0.05) 0%, transparent 50%),
-    linear-gradient(180deg, #0a0a0a 0%, #0a0a0a 100%);
+    radial-gradient(ellipse at 15% 0%, rgba(16, 185, 129, 0.06) 0%, transparent 45%),
+    radial-gradient(ellipse at 85% 100%, rgba(16, 185, 129, 0.04) 0%, transparent 45%),
+    var(--neo-bg-base);
 }
 
 .request-container {
@@ -436,198 +422,162 @@ onMounted(async () => {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: var(--space-4, 16px);
+  position: relative;
+  z-index: var(--neo-z-base);
 }
 
-/* ==================== 顶部导航 ==================== */
+/* ==================== 顶部标题块 ==================== */
 .page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-3, 12px);
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: var(--space-3, 12px);
 }
 
-.app-icon-tile {
-  height: 40px;
-  width: 40px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(12px);
+.header-icon {
+  width: var(--neo-icon-btn-md, 40px);
+  height: var(--neo-icon-btn-md, 40px);
+  border-radius: var(--neo-radius-sm, 12px);
+  background: var(--neo-bg-surface-2);
+  border: 1px solid var(--neo-border-default);
   display: grid;
   place-items: center;
+  color: var(--neo-text-primary);
   flex-shrink: 0;
 }
 
 .header-text {
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
 .page-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.95);
+  font-size: var(--neo-font-size-xl, 18px);
+  font-weight: var(--neo-font-weight-semibold, 600);
+  color: var(--neo-text-primary);
   margin: 0;
-  line-height: 1.3;
+  line-height: var(--neo-line-height-tight, 1.25);
 }
 
 .page-subtitle {
-  font-size: 0.813rem;
-  color: rgba(255, 255, 255, 0.5);
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-tertiary);
   margin: 0;
+  font-weight: var(--neo-font-weight-normal, 400);
 }
 
-.search-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1rem;
-  background: rgba(16, 185, 129, 0.15);
-  border: 1px solid rgba(52, 211, 153, 0.25);
-  border-radius: 0.75rem;
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.search-btn:hover {
-  background: rgba(16, 185, 129, 0.22);
-}
-
-.search-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.icon-btn-label {
+  font-size: var(--neo-font-size-sm, 12px);
+  margin-left: 4px;
 }
 
 /* ==================== 视图切换 ==================== */
-.view-tabs {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.25rem;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 0.75rem;
-}
-
-.view-tab {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1rem;
-  background: transparent;
-  border: none;
-  border-radius: 0.625rem;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.view-tab:hover {
-  color: rgba(255, 255, 255, 0.8);
-}
-
-.view-tab.active {
-  background: rgba(16, 185, 129, 0.15);
-  color: rgba(52, 211, 153, 0.9);
-}
-
-.tab-count {
-  font-size: 0.75rem;
-  padding: 0.125rem 0.5rem;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  color: rgba(255, 255, 255, 0.6);
-}
-
-.view-tab.active .tab-count {
-  background: rgba(16, 185, 129, 0.2);
-  color: rgba(52, 211, 153, 0.8);
+.view-switcher {
+  width: 100%;
 }
 
 /* ==================== 加载状态 ==================== */
 .loading-state {
   text-align: center;
-  padding: 4rem 1rem;
+  padding: var(--space-12, 48px) var(--space-4, 16px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3, 12px);
 }
 
-.loading-spinner {
-  width: 32px;
-  height: 32px;
-  margin: 0 auto 1rem;
+.loading-text {
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-tertiary);
+  margin: 0;
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+  color: var(--neo-text-tertiary);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ==================== 空状态 ==================== */
 .empty-state {
   text-align: center;
-  padding: 4rem 1.5rem;
+  padding: var(--space-12, 48px) var(--space-4, 16px);
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: var(--space-3, 12px);
 }
 
-.empty-icon-wrapper {
-  width: 64px;
-  height: 64px;
-  border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+.empty-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--neo-radius-md, 14px);
+  background: var(--neo-bg-surface-1);
+  border: 1px solid var(--neo-border-subtle);
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 1rem;
+  color: var(--neo-text-tertiary);
 }
 
 .empty-title {
-  font-size: 1rem;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.7);
-  margin: 0 0 0.375rem 0;
-}
-
-.empty-desc {
-  font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.4);
+  font-size: var(--neo-font-size-lg, 16px);
+  font-weight: var(--neo-font-weight-medium, 500);
+  color: var(--neo-text-secondary);
   margin: 0;
 }
 
-/* ==================== 我的求片列表 ==================== */
+.empty-desc {
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-tertiary);
+  margin: 0;
+  max-width: 200px;
+}
+
+/* ==================== 影视任务卡 ==================== */
 .my-requests-list {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-3, 12px);
 }
 
-.request-card {
+.media-task-card {
   display: flex;
-  gap: 0.875rem;
-  padding: 0.875rem;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 0.75rem;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  background: var(--neo-bg-surface-1);
+  border: 1px solid var(--neo-border-subtle);
+  border-radius: var(--neo-radius-md, 14px);
+  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default);
 }
 
-.request-poster {
-  width: 56px;
-  height: 84px;
+.media-task-card:active {
+  background: var(--neo-bg-surface-hover);
+  transform: scale(var(--neo-scale-press, 0.98));
+}
+
+/* 海报缩略图 */
+.task-poster {
+  width: 52px;
+  height: 78px;
   flex-shrink: 0;
-  border-radius: 0.5rem;
+  border-radius: var(--neo-radius-xs, 8px);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--neo-bg-surface-2);
 }
 
-.request-poster img {
+.task-poster img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -639,111 +589,102 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--neo-text-tertiary);
 }
 
-.request-info {
+/* 三行信息 */
+.task-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
 }
 
-.request-header {
+/* 第一行：标题 + 状态 */
+.task-row-primary {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.375rem;
+  gap: var(--space-2, 8px);
 }
 
-.request-title {
-  font-size: 0.938rem;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.9);
+.task-title {
+  font-size: var(--neo-font-size-md, 14px);
+  font-weight: var(--neo-font-weight-medium, 500);
+  color: var(--neo-text-primary);
   margin: 0;
-  line-height: 1.4;
+  line-height: var(--neo-line-height-tight, 1.25);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.688rem;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-
-.status-pending {
-  background: rgba(251, 191, 36, 0.12);
-  color: rgba(251, 191, 36, 0.9);
-}
-
-.status-approved {
-  background: rgba(59, 130, 246, 0.12);
-  color: rgba(96, 165, 250, 0.9);
-}
-
-.status-completed {
-  background: rgba(16, 185, 129, 0.12);
-  color: rgba(52, 211, 153, 0.9);
-}
-
-.status-rejected {
-  background: rgba(239, 68, 68, 0.12);
-  color: rgba(248, 113, 113, 0.9);
-}
-
-.request-meta {
+/* 第二行：年份 + 类型 + 想要人数 */
+.task-row-secondary {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.375rem;
+  gap: var(--space-2, 8px);
   flex-wrap: wrap;
 }
 
-.meta-tag {
-  font-size: 0.688rem;
-  color: rgba(255, 255, 255, 0.6);
-  padding: 0.125rem 0.375rem;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px;
+.meta-text {
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-text-tertiary);
+  padding: 2px 6px;
+  background: var(--neo-bg-surface-2);
+  border-radius: var(--neo-radius-xs, 8px);
 }
 
 .meta-subscribers {
-  font-size: 0.688rem;
-  color: rgba(16, 185, 129, 0.8);
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-primary);
+  margin-left: auto;
 }
 
-.request-note {
-  font-size: 0.813rem;
-  color: rgba(255, 255, 255, 0.6);
-  margin: 0.25rem 0;
-  line-height: 1.5;
+/* 第三行：备注/回复/时间 */
+.task-row-tertiary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.request-reply {
-  font-size: 0.813rem;
-  color: rgba(251, 191, 36, 0.85);
-  margin: 0.25rem 0;
-  line-height: 1.5;
+.task-note {
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-secondary);
+  margin: 0;
+  line-height: var(--neo-line-height-normal, 1.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.task-reply {
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-warning);
+  margin: 0;
+  line-height: var(--neo-line-height-normal, 1.5);
 }
 
 .reply-label {
-  font-weight: 500;
-  color: rgba(251, 191, 36, 0.95);
+  font-weight: var(--neo-font-weight-medium, 500);
+  color: var(--neo-warning);
 }
 
-.request-date {
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.4);
-  margin: 0.25rem 0 0;
+.task-date {
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-text-tertiary);
 }
 
 /* ==================== 我的求片折叠面板 ==================== */
-.my-requests-drawer {
+.requests-drawer {
   margin-top: auto;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 0.75rem;
+  background: var(--neo-bg-surface-1);
+  border: 1px solid var(--neo-border-subtle);
+  border-radius: var(--neo-radius-md, 14px);
   overflow: hidden;
 }
 
@@ -752,81 +693,89 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem 1rem;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 0.875rem;
-  font-weight: 500;
+  color: var(--neo-text-secondary);
+  font-size: var(--neo-font-size-md, 14px);
+  font-weight: var(--neo-font-weight-medium, 500);
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background var(--neo-duration-fast, 150ms) var(--neo-ease-default);
 }
 
-.drawer-toggle:hover {
-  background: rgba(255, 255, 255, 0.04);
+.drawer-toggle:active {
+  background: var(--neo-bg-surface-hover);
 }
 
 .drawer-content {
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 0.75rem 1rem 1rem;
+  border-top: 1px solid var(--neo-border-subtle);
+  padding: var(--space-2, 8px) var(--space-4, 16px) var(--space-4, 16px);
 }
 
 .drawer-empty {
   text-align: center;
-  padding: 1rem 0;
+  padding: var(--space-4, 16px) 0;
+}
+
+.drawer-empty-text {
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-tertiary);
+  margin: 0;
 }
 
 .drawer-list {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: var(--space-1, 4px);
 }
 
 .drawer-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem 0.75rem;
-  background: rgba(255, 255, 255, 0.03);
-  border-radius: 0.5rem;
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  background: var(--neo-bg-surface-1);
+  border-radius: var(--neo-radius-xs, 8px);
+  gap: var(--space-2, 8px);
 }
 
 .drawer-item-title {
-  font-size: 0.813rem;
-  color: rgba(255, 255, 255, 0.8);
-}
-
-.drawer-item-status {
-  font-size: 0.688rem;
-  padding: 0.125rem 0.375rem;
-  border-radius: 3px;
-}
-
-/* ==================== 动画 ==================== */
-.spin {
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ==================== 响应式 ==================== */
 @media (max-width: 480px) {
   .request-page {
-    padding: 1.25rem 0.875rem 2rem;
+    padding: var(--space-5, 20px) var(--space-4, 16px) var(--neo-safe-bottom);
   }
 
-  .page-title {
-    font-size: 1rem;
-  }
-
-  .page-subtitle {
-    font-size: 0.75rem;
-  }
-
-  .search-btn span {
+  .icon-btn-label {
     display: none;
+  }
+
+  .task-poster {
+    width: 48px;
+    height: 72px;
+  }
+}
+
+/* ==================== 减少动画 ==================== */
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+
+  .media-task-card:active {
+    transform: none;
+  }
+
+  .drawer-toggle:active {
+    transform: none;
   }
 }
 </style>

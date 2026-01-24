@@ -1,6 +1,7 @@
 import axios, { type AxiosError, type AxiosRequestConfig, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useLoadingStore } from '@/stores/loading'
 
 // API 基础地址
 // 开发环境使用 Vite 代理，生产环境使用完整 URL
@@ -47,12 +48,19 @@ const setCache = (config: InternalAxiosRequestConfig, data: any) => {
   })
 }
 
-// ============ 请求重试配置 ============
+// ============ 扩展配置接口 ============
 interface AxiosRequestConfigExtended extends AxiosRequestConfig {
+  // 重试配置
   __retryCount?: number
   __shouldRetry?: boolean
+  // Loading 配置
+  __skipLoading?: boolean
+  __loadingLabel?: string
+  // 请求 ID（用于追踪）
+  __requestId?: string
 }
 
+// ============ 请求重试配置 ============
 const MAX_RETRY = 2
 const RETRY_DELAY = 1000
 
@@ -65,9 +73,55 @@ const request = axios.create({
   },
 })
 
+// ============ Loading 管理辅助函数 ============
+// 生成简单的请求 ID
+let requestIdCounter = 0
+const generateRequestId = () => `req_${++requestIdCounter}_${Date.now()}`
+
+// 存储每个请求的 loading label
+const requestLabels = new Map<string, string>()
+
+/**
+ * 开始请求 loading
+ * 注意：默认跳过全局 loading，避免每个请求都触发
+ * 只有显式设置 __skipLoading = false 的请求才显示 loading
+ */
+const handleRequestStart = (config: InternalAxiosRequestConfig): string => {
+  const extendedConfig = config as AxiosRequestConfigExtended
+  // 默认跳过全局 loading，避免每个请求都触发
+  // 只有显式设置 __skipLoading = false 的请求才显示 loading
+  if (extendedConfig.__skipLoading === false) {
+    const loadingStore = useLoadingStore()
+    const requestId = extendedConfig.__requestId || generateRequestId()
+    extendedConfig.__requestId = requestId
+    const label = extendedConfig.__loadingLabel || `${config.method?.toUpperCase()} ${config.url}`
+    requestLabels.set(requestId, label)
+    loadingStore.startLoading(label)
+    return requestId
+  }
+  return ''
+}
+
+/**
+ * 结束请求 loading
+ */
+const handleRequestEnd = (requestId: string) => {
+  if (requestId) {
+    const loadingStore = useLoadingStore()
+    const label = requestLabels.get(requestId) || 'request.end'
+    requestLabels.delete(requestId)
+    loadingStore.stopLoading(label)
+  }
+}
+
 // 请求拦截器
 request.interceptors.request.use(
   (config) => {
+    // 开始 loading（返回请求 ID）
+    const requestId = handleRequestStart(config)
+    // 存储请求 ID 到 config 中，供响应拦截器使用
+    ;(config as AxiosRequestConfigExtended).__requestId = requestId
+
     // 检查缓存
     const cached = checkCache(config)
     if (cached) {
@@ -105,6 +159,9 @@ request.interceptors.request.use(
     return config
   },
   (error) => {
+    // 请求错误也要停止 loading
+    const requestId = (error.config as AxiosRequestConfigExtended).__requestId || ''
+    handleRequestEnd(requestId)
     return Promise.reject(error)
   }
 )
@@ -112,6 +169,10 @@ request.interceptors.request.use(
 // 响应拦截器
 request.interceptors.response.use(
   (response) => {
+    // 停止 loading（成功路径）
+    const requestId = (response.config as AxiosRequestConfigExtended).__requestId || ''
+    handleRequestEnd(requestId)
+
     // 设置缓存
     const config = response.config as InternalAxiosRequestConfig
     if (!config.headers?.['__fromCache']) {
@@ -134,82 +195,94 @@ request.interceptors.response.use(
     }
     return res
   },
-  async (error: AxiosError) => {
-    const config = error.config as AxiosRequestConfigExtended
+  async (error) => {
+    // 获取请求 ID，确保 finally 中能停止 loading
+    const requestId = (error.config as AxiosRequestConfigExtended)?.__requestId || ''
 
-    // 网络错误或服务器错误时重试
-    if (config && config.__shouldRetry !== false) {
-      config.__retryCount = config.__retryCount || 0
+    try {
+      const config = error.config as AxiosRequestConfigExtended
 
-      // 判断是否应该重试
-      const shouldRetry = config.__retryCount < MAX_RETRY && (
-        !error.response || // 网络错误
-        error.response.status >= 500 || // 服务器错误
-        error.response.status === 429 // 限流
-      )
+      // 网络错误或服务器错误时重试
+      if (config && config.__shouldRetry !== false) {
+        config.__retryCount = config.__retryCount || 0
 
-      if (shouldRetry) {
-        config.__retryCount = (config.__retryCount || 0) + 1
-        // 延迟重试
-        const retryCount = config.__retryCount
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * retryCount))
-        return request(config)
-      }
-    }
+        // 判断是否应该重试
+        const shouldRetry = config.__retryCount < MAX_RETRY && (
+          !error.response || // 网络错误
+          error.response.status >= 500 || // 服务器错误
+          error.response.status === 429 // 限流
+        )
 
-    const authStore = useAuthStore()
-
-    if (error.response) {
-      const status = error.response.status
-      // 优先显示后端返回的 detail 信息
-      const responseData = error.response.data as any
-      let message = '请求失败'
-
-      // 尝试获取后端返回的错误信息
-      if (responseData) {
-        if (typeof responseData === 'string') {
-          message = responseData
-        } else if (responseData.detail) {
-          message = responseData.detail
-        } else if (responseData.message) {
-          message = responseData.message
+        if (shouldRetry) {
+          config.__retryCount = (config.__retryCount || 0) + 1
+          // 延迟重试
+          const retryCount = config.__retryCount
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * retryCount))
+          return request(config)
         }
       }
 
-      switch (status) {
-        case 401:
-          ElMessage.error('登录已过期，请重新登录')
-          authStore.logout()
-          // 使用 router 跳转而不是 window.location.href
-          window.location.href = window.location.pathname.startsWith('/admin') ? '/admin/login' : '/login'
-          break
-        case 403:
-          ElMessage.error(message || '权限不足')
-          break
-        case 404:
-          ElMessage.error(message || '请求的资源不存在')
-          break
-        case 429:
-          ElMessage.error(message || '请求过于频繁，请稍后再试')
-          break
-        case 500:
-          ElMessage.error(message || '服务器内部错误，请稍后重试')
-          break
-        case 502:
-        case 503:
-        case 504:
-          ElMessage.error(message || '服务暂时不可用，请稍后重试')
-          break
-        default:
-          ElMessage.error(message)
-      }
-    } else if (error.request) {
-      ElMessage.error('网络错误，请检查网络连接')
-    } else {
-      ElMessage.error('请求失败：' + (error.message || '未知错误'))
-    }
+      const authStore = useAuthStore()
 
-    return Promise.reject(error)
+      if (error.response) {
+        const status = error.response.status
+        // 优先显示后端返回的 detail 信息
+        const responseData = error.response.data as any
+        let message = '请求失败'
+
+        // 尝试获取后端返回的错误信息
+        if (responseData) {
+          if (typeof responseData === 'string') {
+            message = responseData
+          } else if (responseData.detail) {
+            message = responseData.detail
+          } else if (responseData.message) {
+            message = responseData.message
+          }
+        }
+
+        switch (status) {
+          case 401:
+            // 如果已经在登录页面，不显示"登录已过期"，只显示具体错误信息
+            const isLoginPage = window.location.pathname.includes('/login')
+            ElMessage.error(isLoginPage ? message : '登录已过期，请重新登录')
+            // 只有非登录页面才执行登出和重定向
+            if (!isLoginPage) {
+              authStore.logout()
+              window.location.href = window.location.pathname.startsWith('/admin') ? '/admin/login' : '/login'
+            }
+            break
+          case 403:
+            ElMessage.error(message || '权限不足')
+            break
+          case 404:
+            ElMessage.error(message || '请求的资源不存在')
+            break
+          case 429:
+            ElMessage.error(message || '请求过于频繁，请稍后再试')
+            break
+          case 500:
+            ElMessage.error(message || '服务器内部错误，请稍后重试')
+            break
+          case 502:
+          case 503:
+          case 504:
+            ElMessage.error(message || '服务暂时不可用，请稍后重试')
+            break
+          default:
+            ElMessage.error(message)
+        }
+      } else if (error.request) {
+        ElMessage.error('网络错误，请检查网络连接')
+      } else {
+        ElMessage.error('请求失败：' + (error.message || '未知错误'))
+      }
+
+      return Promise.reject(error)
+    } finally {
+      // 兜底：确保无论如何都停止 loading
+      handleRequestEnd(requestId)
+    }
   }
 )
 

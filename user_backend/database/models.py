@@ -206,6 +206,7 @@ class InvitationRecord(Base):
     __table_args__ = (
         Index('idx_inv_inviter', 'inviter_id'),
         Index('idx_inv_invitee', 'invitee_id'),
+        Index('idx_inv_conversion', 'conversion_status'),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -213,7 +214,12 @@ class InvitationRecord(Base):
     invitee_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)  # 被邀请者
     code = Column(String(20), nullable=False)  # 邀请码
     reward_points = Column(Integer, default=0)  # 总奖励积分
+    # 转化状态追踪
+    conversion_status = Column(String(20), default='registered')  # registered/paid/subscribed
+    first_payment_at = Column(DateTime)  # 首次支付时间
+    first_subscription_at = Column(DateTime)  # 首次订阅时间
     created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     inviter = relationship("WebUser", foreign_keys=[inviter_id])
     invitee = relationship("WebUser", foreign_keys=[invitee_id])
@@ -532,3 +538,179 @@ class AccountDeliveryQueue(Base):
     user = relationship("WebUser")
     subscription = relationship("UserSubscription")
     plan = relationship("SubscriptionPlan")
+
+
+# ==================== 数据埋点 ====================
+
+class AnalyticsEvent(Base):
+    """事件埋点表"""
+    __tablename__ = 'analytics_events'
+
+    __table_args__ = (
+        Index('idx_event_user', 'user_id'),
+        Index('idx_event_name', 'event_name'),
+        Index('idx_event_time', 'created_at'),
+        Index('idx_event_session', 'session_id'),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)  # 可为空（未登录用户）
+    session_id = Column(String(64), nullable=True)  # 会话ID
+    event_name = Column(String(50), nullable=False, index=True)  # 事件名称
+    event_category = Column(String(50))  # 事件分类：invite/payment/subscription等
+    properties = Column(JSON)  # 事件属性（JSON格式）
+    page_url = Column(String(500))  # 页面URL
+    referrer = Column(String(500))  # 来源页面
+    user_agent = Column(String(500))  # 用户代理
+    ip_address = Column(String(64))  # IP地址
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    user = relationship("WebUser")
+
+
+class DailyStats(Base):
+    """每日统计表"""
+    __tablename__ = 'daily_stats'
+
+    __table_args__ = (
+        Index('idx_stats_date', 'stat_date'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stat_date = Column(DateTime, nullable=False, unique=True)  # 统计日期
+    # 用户数据
+    new_users = Column(Integer, default=0)  # 新增用户
+    active_users = Column(Integer, default=0)  # 活跃用户
+    # 订阅数据
+    new_subscriptions = Column(Integer, default=0)  # 新增订阅
+    active_subscriptions = Column(Integer, default=0)  # 活跃订阅
+    expired_subscriptions = Column(Integer, default=0)  # 过期订阅
+    # 订单数据
+    total_orders = Column(Integer, default=0)  # 总订单数
+    paid_orders = Column(Integer, default=0)  # 已支付订单
+    total_revenue = Column(Numeric(10, 2), default=0)  # 总收入
+    # 邀请数据
+    total_invitations = Column(Integer, default=0)  # 总邀请数
+    converted_invitations = Column(Integer, default=0)  # 转化邀请数（已付费/订阅）
+    conversion_rate = Column(Numeric(5, 2), default=0)  # 转化率（百分比）
+    # 时间戳
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ==================== 徽章系统 ====================
+
+class Badge(Base):
+    """徽章定义表"""
+    __tablename__ = 'badges'
+
+    __table_args__ = (
+        Index('idx_badge_code', 'code'),
+        Index('idx_badge_active', 'is_active'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(50), unique=True, nullable=False)  # 徽章代码（如：bridge_operator）
+    name = Column(String(100), nullable=False)  # 徽章名称
+    name_en = Column(String(100))  # 英文名称
+    description = Column(Text)  # 描述
+    icon = Column(String(100))  # 图标（emoji 或图标名）
+    color = Column(String(20), default='#673AB7')  # 主题色
+    rarity = Column(String(20), default='common')  # 稀有度: common, rare, epic, legendary
+    category = Column(String(50), default='achievement')  # 分类: achievement, milestone, special
+    requirement_type = Column(String(50))  # 要求类型: first_bind, request_count, recharge_amount
+    requirement_value = Column(Integer, default=0)  # 要求值
+    is_active = Column(Boolean, default=True)  # 是否启用
+    sort_order = Column(Integer, default=0)  # 排序
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class UserBadge(Base):
+    """用户徽章关联表"""
+    __tablename__ = 'user_badges'
+
+    __table_args__ = (
+        Index('idx_ub_user', 'user_id'),
+        Index('idx_ub_badge', 'badge_id'),
+        Index('idx_ub_unlocked', 'unlocked_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    badge_id = Column(Integer, ForeignKey('badges.id'), nullable=False)
+    progress = Column(Integer, default=0)  # 进度（如：已求片次数）
+    unlocked_at = Column(DateTime)  # 解锁时间
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    badge = relationship("Badge")
+
+
+# 初始化徽章数据
+INITIAL_BADGES = [
+    {
+        'code': 'bridge_operator',
+        'name': 'BRIDGE OPERATOR',
+        'name_en': 'Bridge Operator',
+        'description': '完成首次登船，连接到 Aetrix',
+        'icon': '🌉',
+        'color': '#4CAF50',
+        'rarity': 'common',
+        'category': 'milestone',
+        'requirement_type': 'first_bind',
+        'requirement_value': 1,
+        'sort_order': 1,
+    },
+    {
+        'code': 'signal_runner',
+        'name': 'SIGNAL RUNNER',
+        'name_en': 'Signal Runner',
+        'description': '累计求片达到 10 次',
+        'icon': '📡',
+        'color': '#2196F3',
+        'rarity': 'rare',
+        'category': 'achievement',
+        'requirement_type': 'request_count',
+        'requirement_value': 10,
+        'sort_order': 2,
+    },
+    {
+        'code': 'vault_member',
+        'name': 'VAULT MEMBER',
+        'name_en': 'Vault Member',
+        'description': '累计充值达到 100 元',
+        'icon': '💎',
+        'color': '#FF9800',
+        'rarity': 'rare',
+        'category': 'achievement',
+        'requirement_type': 'recharge_amount',
+        'requirement_value': 10000,  # 单位：分
+        'sort_order': 3,
+    },
+    {
+        'code': 'elite_runner',
+        'name': 'ELITE RUNNER',
+        'name_en': 'Elite Runner',
+        'description': '累计求片达到 50 次',
+        'icon': '🚀',
+        'color': '#9C27B0',
+        'rarity': 'epic',
+        'category': 'achievement',
+        'requirement_type': 'request_count',
+        'requirement_value': 50,
+        'sort_order': 4,
+    },
+    {
+        'code': 'prime_vault',
+        'name': 'PRIME VAULT',
+        'name_en': 'Prime Vault',
+        'description': '累计充值达到 500 元',
+        'icon': '👑',
+        'color': '#FFD700',
+        'rarity': 'legendary',
+        'category': 'achievement',
+        'requirement_type': 'recharge_amount',
+        'requirement_value': 50000,
+        'sort_order': 5,
+    },
+]

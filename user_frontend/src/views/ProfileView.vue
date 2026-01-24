@@ -3,18 +3,51 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { userApi, subscriptionApi } from '@/api'
+// 原有组件
 import ProfileHeader from '@/components/profile/ProfileHeader.vue'
 import EmbyCard from '@/components/profile/EmbyCard.vue'
 import QuickGrid from '@/components/profile/QuickGrid.vue'
 import SettingsList from '@/components/profile/SettingsList.vue'
 import RequestLimitCard from '@/components/profile/RequestLimitCard.vue'
+import BridgeDebugSheet from '@/components/profile/BridgeDebugSheet.vue'
+// Bridge 组件
+import HoloIdCard from '@/components/profile/HoloIdCard.vue'
+import TripleDashboard from '@/components/profile/TripleDashboard.vue'
+import AccountVault from '@/components/profile/AccountVault.vue'
+import AdaptiveDock from '@/components/profile/AdaptiveDock.vue'
+import ActivityTimeline, { type TimelineEvent } from '@/components/profile/ActivityTimeline.vue'
+import ProfileSettingsSheet from '@/components/profile/ProfileSettingsSheet.vue'
+// 线路信息组件
+import { RouteInfoCard } from '@/components/ui'
+// Composables
 import { useToast } from '@/composables/useToast'
 import { useAuthSheet } from '@/composables/useAuthSheet'
+import { useFeatureFlags } from '@/composables/useFeatureFlags'
 
 const router = useRouter()
 const userStore = useUserStore()
 const toast = useToast()
 const { openAuthSheet } = useAuthSheet()
+const { PROFILE_EASTER_EGG, PROFILE_BRIDGE, flags } = useFeatureFlags()
+
+// 调试面板状态
+const showDebugSheet = ref(false)
+
+// 设置面板状态
+const showSettingsSheet = ref(false)
+const settingsSheetRef = ref<InstanceType<typeof ProfileSettingsSheet> | null>(null)
+
+// 模块可见性状态
+const moduleVisibility = ref<Record<string, boolean>>({
+  holoId: true,
+  dashboard: true,
+  accountVault: true,
+  timeline: true,
+})
+
+// 页面加载时间（用于性能监控）
+const pageLoadTime = ref(0)
+const pageLoadStart = performance.now()
 
 const profile = ref<any>(null)
 const loading = ref(true)
@@ -22,16 +55,68 @@ const embyAccounts = ref<any[]>([])
 const claimingAccount = ref(false)
 const vipExpiry = ref<string | undefined>(undefined)
 
+// Activity Timeline 数据
+const timelineEvents = ref<TimelineEvent[]>([])
+const timelineLoading = ref(false)
+
 const isLoggedIn = computed(() => userStore.isLoggedIn)
-const isVIP = computed(() => userStore.isVIP)
+
+// 本地计算 VIP 状态：优先使用 vipExpiry（订阅 API），其次使用 store
+const isVIP = computed(() => {
+  if (vipExpiry.value) {
+    // 有订阅到期时间，检查是否过期
+    const expiryDate = new Date(vipExpiry.value)
+    const now = new Date()
+    return expiryDate > now
+  }
+  // 回退到 store 中的值
+  return userStore.isVIP
+})
 
 onMounted(async () => {
   if (!isLoggedIn.value) {
     openAuthSheet()
     return
   }
-  await Promise.all([fetchProfile(), fetchEmbyAccounts(), fetchSubscription()])
+
+  // 加载模块可见性设置
+  loadModuleVisibility()
+
+  await Promise.all([
+    fetchProfile(),
+    fetchEmbyAccounts(),
+    fetchSubscription(),
+    fetchTimelineEvents()
+  ])
+
+  // 记录页面加载完成时间
+  pageLoadTime.value = performance.now() - pageLoadStart
 })
+
+// 长按 Holo-ID 卡片触发调试模式
+const handleLongPress = () => {
+  if (!PROFILE_EASTER_EGG.value) return
+
+  showDebugSheet.value = true
+  toast.success('已进入舰桥调试模式')
+}
+
+// 打开设置面板
+const handleSettings = () => {
+  showSettingsSheet.value = true
+}
+
+// 从 localStorage 加载模块可见性设置
+const loadModuleVisibility = () => {
+  try {
+    const stored = localStorage.getItem('profile_visibility')
+    if (stored) {
+      moduleVisibility.value = JSON.parse(stored)
+    }
+  } catch {
+    // 使用默认值
+  }
+}
 
 async function fetchProfile() {
   try {
@@ -55,10 +140,14 @@ async function fetchEmbyAccounts() {
     })
     if (res.ok) {
       const data = await res.json()
-      embyAccounts.value = data
+      // 后端返回格式: { code: 200, message: "获取成功", data: [...] }
+      embyAccounts.value = data.data || []
+    } else {
+      embyAccounts.value = []
     }
   } catch (error) {
     console.error('Failed to fetch Emby accounts:', error)
+    embyAccounts.value = []
   } finally {
     loading.value = false
   }
@@ -67,16 +156,55 @@ async function fetchEmbyAccounts() {
 async function fetchSubscription() {
   try {
     const res = await subscriptionApi.getMySubscription()
-    if (res.data && res.data.expires_at) {
-      vipExpiry.value = res.data.expires_at
-      // 更新 store 中的 VIP 状态
-      if (!userStore.isVIP) {
+    // 后端返回的字段是 end_date，不是 expires_at
+    if (res.data && res.data.end_date) {
+      const expiryDate = new Date(res.data.end_date)
+      const now = new Date()
+      // 检查订阅是否已过期
+      if (expiryDate > now) {
+        vipExpiry.value = res.data.end_date
+        // 订阅有效，更新 store 中的 VIP 状态
         userStore.updateUser({ is_vip: true })
+      } else {
+        // 订阅已过期
+        vipExpiry.value = undefined
+        userStore.updateUser({ is_vip: false })
       }
+    } else {
+      // 没有订阅数据
+      vipExpiry.value = undefined
+      userStore.updateUser({ is_vip: false })
     }
   } catch (error) {
     // 没有订阅或订阅已过期是正常情况
     vipExpiry.value = undefined
+    userStore.updateUser({ is_vip: false })
+  }
+}
+
+async function fetchTimelineEvents() {
+  timelineLoading.value = true
+  try {
+    // 从后端获取活动时间线
+    const res = await fetch('/api/user/timeline', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
+      }
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      timelineEvents.value = data || []
+    } else {
+      // 如果 API 不存在或出错，返回空数组
+      timelineEvents.value = []
+    }
+  } catch (error) {
+    console.error('Failed to fetch timeline:', error)
+    // API 不可用时返回空数组，不影响页面显示
+    timelineEvents.value = []
+  } finally {
+    timelineLoading.value = false
   }
 }
 
@@ -118,6 +246,7 @@ function handleLogout() {
   router.push('/')
 }
 
+// 原有设置项（非 Bridge 模式）
 const settingsItems = computed(() => {
   if (!profile.value) return []
 
@@ -147,7 +276,7 @@ function formatDate(dateStr?: string) {
 </script>
 
 <template>
-  <div class="profile-page">
+  <div class="profile-page" :class="{ 'profile-bridge': PROFILE_BRIDGE }">
     <div class="profile-container">
       <!-- Loading Skeleton -->
       <div v-if="loading" class="profile-content">
@@ -157,13 +286,69 @@ function formatDate(dateStr?: string) {
         <SettingsList :items="[]" />
       </div>
 
-      <!-- Profile Content -->
+      <!-- ============================================== -->
+      <!-- Bridge 模式 (Aetrix Bridge Profile) -->
+      <!-- ============================================== -->
+      <div v-else-if="PROFILE_BRIDGE" class="profile-content profile-bridge-content">
+        <!-- 1. Holo-ID 全息身份卡 -->
+        <HoloIdCard
+          v-if="moduleVisibility.holoId"
+          :profile="profile || userStore.user"
+          :is-VIP="isVIP"
+          :vip-expiry="vipExpiry"
+          :enable-easter-egg="PROFILE_EASTER_EGG"
+          @long-press="handleLongPress"
+        />
+
+        <!-- 2. 三联仪表盘 -->
+        <TripleDashboard
+          v-if="moduleVisibility.dashboard"
+          :is-VIP="isVIP"
+          :vip-expiry="vipExpiry"
+          :balance="(profile?.balance || profile?.points || 0)"
+          :completed-requests="profile?.completed_requests_count || 0"
+        />
+
+        <!-- 3. 账号保险箱 -->
+        <AccountVault
+          v-if="moduleVisibility.accountVault"
+          :is-VIP="isVIP"
+          :emby-accounts="embyAccounts"
+          :vip-expiry="vipExpiry"
+          @claim-account="handleClaimAccount"
+          @copy="handleCopy"
+        />
+
+        <!-- 4. 活动时间线 -->
+        <ActivityTimeline
+          v-if="moduleVisibility.timeline"
+          :events="timelineEvents"
+          :loading="timelineLoading"
+          :max-items="3"
+        />
+
+        <!-- 5. 线路信息（功能开关控制） -->
+        <RouteInfoCard />
+
+        <!-- 6. 自适应 Dock -->
+        <AdaptiveDock
+          :show-logout="true"
+          @logout="handleLogout"
+          @settings="handleSettings"
+        />
+      </div>
+
+      <!-- ============================================== -->
+      <!-- 传统模式 (Legacy Profile) -->
+      <!-- ============================================== -->
       <div v-else class="profile-content">
         <!-- 顶部概览条 -->
         <ProfileHeader
           :profile="profile || userStore.user"
           :is-VIP="isVIP"
           :vip-expiry="vipExpiry"
+          :enable-easter-egg="PROFILE_EASTER_EGG"
+          @long-press="handleLongPress"
         />
 
         <!-- 求片限制卡片 -->
@@ -181,6 +366,9 @@ function formatDate(dateStr?: string) {
         <!-- 快捷入口宫格 -->
         <QuickGrid />
 
+        <!-- 线路信息（功能开关控制） -->
+        <RouteInfoCard />
+
         <!-- 账号信息设置列表 -->
         <SettingsList
           :items="settingsItems"
@@ -189,6 +377,23 @@ function formatDate(dateStr?: string) {
         />
       </div>
     </div>
+
+    <!-- 舰桥调试模式（彩蛋） -->
+    <BridgeDebugSheet
+      :show="showDebugSheet"
+      @update:show="showDebugSheet = $event"
+      :feature-flags="flags"
+      :page-load-time="pageLoadTime"
+      @refresh="() => {}"
+    />
+
+    <!-- 个人中心设置面板 -->
+    <ProfileSettingsSheet
+      v-if="PROFILE_BRIDGE"
+      :show="showSettingsSheet"
+      @update:show="showSettingsSheet = $event"
+      ref="settingsSheetRef"
+    />
   </div>
 </template>
 
@@ -211,8 +416,48 @@ function formatDate(dateStr?: string) {
   padding: 0.75rem 1rem 2rem;
 }
 
+/* ==================== Bridge 模式专用样式 ==================== */
+.profile-bridge-content {
+  gap: var(--neo-space-3, 12px);
+  padding: var(--neo-space-4, 16px);
+}
+
+/* Bridge 模式下的页面容器 */
+.profile-page.profile-bridge {
+  background: var(--neo-bg-base, #0B0F14);
+}
+
 /* 确保页面背景是纯黑，更符合 Apple TV+ 风格 */
 :deep(.bg-card) {
   background: var(--bg-card);
+}
+
+/* Bridge 模式下的卡片间距调整 */
+.profile-bridge-content > * {
+  animation: bridge-fade-in 0.4s ease backwards;
+}
+
+.profile-bridge-content > *:nth-child(1) { animation-delay: 0ms; }
+.profile-bridge-content > *:nth-child(2) { animation-delay: 50ms; }
+.profile-bridge-content > *:nth-child(3) { animation-delay: 100ms; }
+.profile-bridge-content > *:nth-child(4) { animation-delay: 150ms; }
+.profile-bridge-content > *:nth-child(5) { animation-delay: 200ms; }
+
+@keyframes bridge-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ==================== 动效降级 ==================== */
+@media (prefers-reduced-motion: reduce) {
+  .profile-bridge-content > * {
+    animation: none;
+  }
 }
 </style>

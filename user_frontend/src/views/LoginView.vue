@@ -74,13 +74,48 @@ async function handleSubmit() {
     const redirect = route.query.redirect as string || '/'
     router.push(redirect)
   } catch (err: any) {
-    let errorMsg = err.response?.data?.detail
-    if (Array.isArray(errorMsg)) {
-      errorMsg = errorMsg[0]?.msg || errorMsg[0]?.detail || '请求参数错误'
-    } else if (typeof errorMsg === 'object') {
-      errorMsg = errorMsg.msg || errorMsg.detail || '请求失败'
+    // 更友好的错误提示
+    let errorMsg = ''
+
+    // 获取后端返回的错误信息
+    const backendError = err.response?.data
+
+    if (typeof backendError === 'string') {
+      errorMsg = backendError
+    } else if (backendError?.detail) {
+      errorMsg = backendError.detail
+    } else if (backendError?.message) {
+      errorMsg = backendError.message
     }
-    error.value = errorMsg || (isLogin.value ? '登录失败，请检查用户名和密码' : '注册失败，请稍后重试')
+
+    // 将技术错误转换为用户友好的提示
+    const errorMap: Record<string, string> = {
+      '用户名或密码错误': '用户名或密码错误，请检查后重试',
+      '账户已被禁用': '您的账户已被禁用，请联系客服',
+      '用户名已存在': '该用户名已被注册，请更换',
+      '邀请码不存在': '邀请码无效，请检查后重试',
+      'Network Error': '网络连接失败，请检查网络后重试',
+      'timeout': '请求超时，请稍后重试',
+      '401': '登录已过期，请重新登录',
+      '500': '服务器繁忙，请稍后重试',
+    }
+
+    // 查找匹配的错误提示
+    for (const [key, value] of Object.entries(errorMap)) {
+      if (errorMsg.includes(key)) {
+        errorMsg = value
+        break
+      }
+    }
+
+    // 如果没有具体错误信息，使用默认提示
+    if (!errorMsg) {
+      errorMsg = isLogin.value
+        ? '登录失败，请检查用户名和密码是否正确'
+        : '注册失败，请稍后重试或联系客服'
+    }
+
+    error.value = errorMsg
   } finally {
     loading.value = false
   }

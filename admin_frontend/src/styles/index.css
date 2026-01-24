@@ -71,6 +71,16 @@ body {
 
 #app {
   @apply bg-[#0a0a0a] min-h-screen;
+  /* 重置 index.html 中的初始加载样式 */
+  display: block !important;
+  align-items: initial !important;
+  justify-content: initial !important;
+}
+
+/* 强制隐藏初始加载的"加载中..."文字 */
+#app.loading::before {
+  display: none !important;
+  content: none !important;
 }
 
 /* ==================== 玻璃态效果 ==================== */

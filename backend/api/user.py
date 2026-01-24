@@ -36,14 +36,14 @@ async def get_current_user(
             detail="未提供认证凭证"
         )
 
-    # TODO: 实现 JWT 验证
-    # token = credentials.credentials
-    # payload = decode_jwt(token)
-    # user = db.query(models.WebUser).filter(models.WebUser.id == payload["user_id"]).first()
+    # 处理 Bearer 前缀
+    token = credentials.credentials
+    if token.startswith("Bearer "):
+        token = token[7:]  # 去掉 "Bearer " 前缀
 
     # 临时：使用 token 直接作为 user_id（仅用于开发测试）
     try:
-        user_id = int(credentials.credentials)
+        user_id = int(token)
         user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     except (ValueError, AttributeError):
         raise HTTPException(
@@ -91,6 +91,24 @@ class UnreadCountResponse(BaseModel):
 class ExchangeCodeRedeemRequest(BaseModel):
     """兑换码兑换请求"""
     code: str
+
+
+class UserMeResponse(BaseModel):
+    """当前用户信息响应"""
+    id: int
+    username: str
+    email: Optional[str] = None
+    is_vip: bool
+    points: Optional[int] = None
+    balance: Optional[int] = None
+    telegram_id: Optional[int] = None
+    avatar_url: Optional[str] = None
+    completed_requests_count: int = 0
+    total_requests_count: int = 0
+    registered_date: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
 class ExchangeCodeRedeemResponse(BaseModel):
@@ -152,6 +170,39 @@ class AnnouncementResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==================== 认证/用户信息 API ====================
+
+@user_router.get("/auth/me", response_model=UserMeResponse)
+async def get_me(
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """获取当前用户信息"""
+    # 获取求片统计
+    completed_count = db.query(models.MediaRequest).filter(
+        models.MediaRequest.user_id == current_user.id,
+        models.MediaRequest.status == "completed"
+    ).count()
+
+    total_count = db.query(models.MediaRequest).filter(
+        models.MediaRequest.user_id == current_user.id
+    ).count()
+
+    return UserMeResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        is_vip=current_user.is_vip,
+        points=current_user.points,
+        balance=current_user.balance,
+        telegram_id=current_user.telegram_id,
+        avatar_url=current_user.avatar_url,
+        completed_requests_count=completed_count,
+        total_requests_count=total_count,
+        registered_date=current_user.created_at.isoformat() if current_user.created_at else None
+    )
 
 
 # ==================== 站内消息 API ====================

@@ -25,7 +25,8 @@ import {
   revokeAllOtherSessions,
   getSecurityStats,
   updateSecuritySettings,
-  checkPasswordStrength
+  checkPasswordStrength,
+  changePassword
 } from '@/api/security'
 import { useAuthStore } from '@/stores/auth'
 
@@ -61,6 +62,26 @@ const securitySettings = ref({
   trusted_ips: [] as string[]
 })
 const savingSettings = ref(false)
+
+// 密码修改
+const passwordForm = ref({
+  old_password: '',
+  new_password: '',
+  confirm_password: ''
+})
+const showPassword = ref({
+  old: false,
+  new: false,
+  confirm: false
+})
+const passwordStrength = ref<{
+  score: number
+  strength: 'weak' | 'medium' | 'strong'
+  feedback: string[]
+} | null>(null)
+const checkingStrength = ref(false)
+const changingPassword = ref(false)
+const passwordError = ref('')
 
 // 新增信任IP
 const newIp = ref('')
@@ -164,6 +185,117 @@ const handleRemoveTrustedIp = (ip: string) => {
   securitySettings.value.trusted_ips = securitySettings.value.trusted_ips.filter(i => i !== ip)
 }
 
+// 密码强度检查
+const checkStrength = async (password: string) => {
+  if (!password) {
+    passwordStrength.value = null
+    return
+  }
+
+  checkingStrength.value = true
+  try {
+    const response = await checkPasswordStrength(password) as any
+    passwordStrength.value = response
+  } catch (error) {
+    console.error('密码强度检查失败:', error)
+  } finally {
+    checkingStrength.value = false
+  }
+}
+
+// 监听新密码变化，实时检查强度
+const onNewPasswordChange = (value: string) => {
+  passwordForm.value.new_password = value
+  passwordError.value = ''
+  checkStrength(value)
+}
+
+// 密码强度样式
+const getStrengthClass = () => {
+  if (!passwordStrength.value) return ''
+  const strength = passwordStrength.value.strength
+  if (strength === 'strong') return 'strength-strong'
+  if (strength === 'medium') return 'strength-medium'
+  return 'strength-weak'
+}
+
+const getStrengthColor = () => {
+  if (!passwordStrength.value) return 'var(--text-muted)'
+  const strength = passwordStrength.value.strength
+  if (strength === 'strong') return '#4CAF50'
+  if (strength === 'medium') return '#FF9800'
+  return '#F44336'
+}
+
+const getStrengthText = () => {
+  if (!passwordStrength.value) return ''
+  const strength = passwordStrength.value.strength
+  if (strength === 'strong') return '强'
+  if (strength === 'medium') return '中'
+  return '弱'
+}
+
+// 修改密码
+const handleChangePassword = async () => {
+  // 验证表单
+  if (!passwordForm.value.old_password) {
+    passwordError.value = '请输入当前密码'
+    return
+  }
+  if (!passwordForm.value.new_password) {
+    passwordError.value = '请输入新密码'
+    return
+  }
+  if (!passwordForm.value.confirm_password) {
+    passwordError.value = '请确认新密码'
+    return
+  }
+  if (passwordForm.value.new_password !== passwordForm.value.confirm_password) {
+    passwordError.value = '两次输入的新密码不一致'
+    return
+  }
+  if (passwordStrength.value && passwordStrength.value.score < 50) {
+    passwordError.value = '新密码强度太弱，请使用更强的密码'
+    return
+  }
+
+  changingPassword.value = true
+  passwordError.value = ''
+
+  try {
+    await changePassword({
+      old_password: passwordForm.value.old_password,
+      new_password: passwordForm.value.new_password,
+      confirm_password: passwordForm.value.confirm_password
+    })
+    alert('密码修改成功！请使用新密码重新登录。')
+    // 清空表单
+    passwordForm.value = {
+      old_password: '',
+      new_password: '',
+      confirm_password: ''
+    }
+    passwordStrength.value = null
+    // 重新加载安全统计
+    await loadSecurityStats()
+  } catch (error: any) {
+    passwordError.value = error?.response?.data?.detail || '密码修改失败'
+  } finally {
+    changingPassword.value = false
+  }
+}
+
+// 重置密码表单
+const resetPasswordForm = () => {
+  passwordForm.value = {
+    old_password: '',
+    new_password: '',
+    confirm_password: ''
+  }
+  passwordStrength.value = null
+  passwordError.value = ''
+}
+
 // 计算属性
 const securityScore = computed(() => {
   const score = securityStats.value.security_score
@@ -175,6 +307,12 @@ const securityScore = computed(() => {
 const failedLogins = computed(() => {
   return loginHistory.value.filter(log => log.action.includes('failed'))
 })
+
+// 密码验证计算属性
+const hasUpperCase = computed(() => /[A-Z]/.test(passwordForm.value.new_password))
+const hasLowerCase = computed(() => /[a-z]/.test(passwordForm.value.new_password))
+const hasDigit = computed(() => /\d/.test(passwordForm.value.new_password))
+const hasSpecialChar = computed(() => /[!@#$%^&*()_+\-=\[\]{};:"\\|,.<>?]/.test(passwordForm.value.new_password))
 
 const successfulLogins = computed(() => {
   return loginHistory.value.filter(log => log.action.includes('success'))
@@ -446,6 +584,135 @@ onMounted(() => {
             <input type="checkbox" v-model="securitySettings.enable_2fa" disabled>
             <span class="toggle-slider"></span>
           </label>
+        </div>
+      </div>
+
+      <!-- 密码修改 -->
+      <div class="settings-section">
+        <h3>
+          <Lock :size="18" />
+          修改密码
+        </h3>
+        <p class="section-desc">定期修改密码可以有效保护账户安全</p>
+
+        <div class="password-form">
+          <div class="form-group">
+            <label class="form-label">当前密码</label>
+            <div class="password-input">
+              <input
+                :type="showPassword.old ? 'text' : 'password'"
+                v-model="passwordForm.old_password"
+                placeholder="请输入当前密码"
+                @focus="passwordError = ''"
+              >
+              <button class="toggle-visibility" @click="showPassword.old = !showPassword.old">
+                <EyeOff v-if="showPassword.old" :size="18" />
+                <Eye v-else :size="18" />
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">新密码</label>
+            <div class="password-input">
+              <input
+                :type="showPassword.new ? 'text' : 'password'"
+                :value="passwordForm.new_password"
+                @input="onNewPasswordChange(($event.target as HTMLInputElement).value)"
+                placeholder="请输入新密码（至少12位，包含大小写字母、数字、特殊字符）"
+                @focus="passwordError = ''"
+              >
+              <button class="toggle-visibility" @click="showPassword.new = !showPassword.new">
+                <EyeOff v-if="showPassword.new" :size="18" />
+                <Eye v-else :size="18" />
+              </button>
+            </div>
+            <!-- 密码强度指示器 -->
+            <div v-if="passwordForm.new_password" class="password-strength">
+              <div class="strength-bar">
+                <div class="strength-fill" :class="getStrengthClass()" :style="{ width: passwordStrength?.score + '%' }"></div>
+              </div>
+              <span class="strength-text" :style="{ color: getStrengthColor() }">
+                {{ getStrengthText() || '输入中...' }}
+              </span>
+            </div>
+            <!-- 密码要求提示 -->
+            <div class="password-requirements">
+              <p class="req-title">密码要求：</p>
+              <ul class="req-list">
+                <li :class="{ met: passwordForm.new_password.length >= 12 }">
+                  <CheckCircle v-if="passwordForm.new_password.length >= 12" :size="14" />
+                  <XCircle v-else :size="14" />
+                  至少12位
+                </li>
+                <li :class="{ met: hasUpperCase }">
+                  <CheckCircle v-if="hasUpperCase" :size="14" />
+                  <XCircle v-else :size="14" />
+                  包含大写字母
+                </li>
+                <li :class="{ met: hasLowerCase }">
+                  <CheckCircle v-if="hasLowerCase" :size="14" />
+                  <XCircle v-else :size="14" />
+                  包含小写字母
+                </li>
+                <li :class="{ met: hasDigit }">
+                  <CheckCircle v-if="hasDigit" :size="14" />
+                  <XCircle v-else :size="14" />
+                  包含数字
+                </li>
+                <li :class="{ met: hasSpecialChar }">
+                  <CheckCircle v-if="hasSpecialChar" :size="14" />
+                  <XCircle v-else :size="14" />
+                  包含特殊字符
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">确认新密码</label>
+            <div class="password-input">
+              <input
+                :type="showPassword.confirm ? 'text' : 'password'"
+                v-model="passwordForm.confirm_password"
+                placeholder="请再次输入新密码"
+                @focus="passwordError = ''"
+              >
+              <button class="toggle-visibility" @click="showPassword.confirm = !showPassword.confirm">
+                <EyeOff v-if="showPassword.confirm" :size="18" />
+                <Eye v-else :size="18" />
+              </button>
+            </div>
+            <!-- 密码匹配提示 -->
+            <div v-if="passwordForm.confirm_password" class="password-match" :class="{ match: passwordForm.new_password === passwordForm.confirm_password }">
+              <CheckCircle v-if="passwordForm.new_password === passwordForm.confirm_password" :size="14" />
+              <XCircle v-else :size="14" />
+              <span>{{ passwordForm.new_password === passwordForm.confirm_password ? '密码一致' : '密码不一致' }}</span>
+            </div>
+          </div>
+
+          <!-- 错误提示 -->
+          <div v-if="passwordError" class="error-message">
+            <AlertTriangle :size="16" />
+            {{ passwordError }}
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="form-actions">
+            <button class="btn-secondary" @click="resetPasswordForm" :disabled="changingPassword">
+              重置
+            </button>
+            <button
+              class="btn-primary"
+              @click="handleChangePassword"
+              :disabled="changingPassword || !passwordForm.old_password || !passwordForm.new_password || !passwordForm.confirm_password"
+            >
+              <span v-if="changingPassword" class="spinner"></span>
+              <RefreshCw v-else-if="changingPassword" :size="16" class="btn-icon" />
+              <Key v-else :size="16" class="btn-icon" />
+              {{ changingPassword ? '修改中...' : '修改密码' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1074,6 +1341,192 @@ onMounted(() => {
 .toggle-switch input:disabled + .toggle-slider {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 密码修改表单 */
+.password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.password-input {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.password-input input {
+  flex: 1;
+  padding: 0.75rem 3rem 0.75rem 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: border-color 0.2s ease;
+}
+
+.password-input input:focus {
+  outline: none;
+  border-color: #673AB7;
+}
+
+.toggle-visibility {
+  position: absolute;
+  right: 0.75rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.toggle-visibility:hover {
+  color: var(--text-primary);
+}
+
+/* 密码强度指示器 */
+.password-strength {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.strength-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--border-color);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.strength-fill {
+  height: 100%;
+  transition: all 0.3s ease;
+}
+
+.strength-weak { background: #F44336; }
+.strength-medium { background: #FF9800; }
+.strength-strong { background: #4CAF50; }
+
+.strength-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  min-width: 30px;
+}
+
+/* 密码要求提示 */
+.password-requirements {
+  padding: 0.75rem 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  margin-top: 0.5rem;
+}
+
+.req-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 0.5rem 0;
+}
+
+.req-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.375rem;
+}
+
+.req-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.req-list li.met {
+  color: #4CAF50;
+}
+
+/* 密码匹配提示 */
+.password-match {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.password-match svg {
+  flex-shrink: 0;
+  color: #F44336;
+}
+
+.password-match span {
+  color: var(--text-muted);
+}
+
+.password-match.match svg {
+  color: #4CAF50;
+}
+
+.password-match.match span {
+  color: #4CAF50;
+}
+
+/* 错误提示 */
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  border-radius: 8px;
+  color: #F44336;
+  font-size: 0.875rem;
+}
+
+/* 表单操作按钮 */
+.form-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  padding-top: 0.5rem;
+}
+
+.form-actions .btn-secondary {
+  padding: 0.625rem 1.5rem;
+}
+
+.form-actions .btn-primary {
+  padding: 0.625rem 1.5rem;
+}
+
+.form-actions .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }
 
 /* 信任IP */

@@ -81,6 +81,8 @@ const subscribeForm = ref({
 // 测试连接状态
 const testingConnection = ref(false)
 const connectionStatus = ref<'idle' | 'success' | 'error'>('idle')
+const configLoaded = ref(false)
+const configError = ref('')
 
 // 响应式检测
 const isMobile = computed(() => {
@@ -316,9 +318,28 @@ const handleStatClick = (status: string) => {
   handleFilter()
 }
 
+// 加载 MoviePilot 配置
+const loadMoviePilotConfig = async () => {
+  try {
+    const res = await getMoviePilotConfig()
+    moviePilotConfig.value = {
+      url: res.url || '',
+      api_token: res.api_token || ''
+    }
+    configLoaded.value = true
+    if (!res.url || !res.api_token) {
+      configError.value = '请在系统配置中设置 MoviePilot'
+    }
+  } catch (error: any) {
+    configError.value = '加载配置失败'
+    console.error('加载 MoviePilot 配置失败:', error)
+  }
+}
+
 onMounted(() => {
   loadStats()
   loadRequests()
+  loadMoviePilotConfig()
 })
 </script>
 
@@ -662,31 +683,17 @@ onMounted(() => {
       :width="dialogWidth"
       :close-on-click-modal="false"
     >
-      <div class="config-section">
-        <h4>MoviePilot 配置</h4>
-        <div class="form-group">
-          <label>地址</label>
-          <el-input
-            v-model="moviePilotConfig.url"
-            placeholder="http://localhost:3000"
-          />
-        </div>
-        <div class="form-group">
-          <label>API Token</label>
-          <el-input
-            v-model="moviePilotConfig.api_token"
-            type="password"
-            placeholder="默认: moviepilot"
-            show-password
-          />
-        </div>
-        <div class="test-connection">
-          <el-button @click="handleTestConnection" :loading="testingConnection">
-            测试连接
-          </el-button>
-          <span v-if="connectionStatus === 'success'" class="status-tag success">连接成功</span>
-          <span v-if="connectionStatus === 'error'" class="status-tag error">连接失败</span>
-        </div>
+      <!-- 配置状态提示 -->
+      <div class="config-status" :class="{ error: !!configError, success: !configError && configLoaded }">
+        <span v-if="configError" class="status-text error">
+          ⚠️ {{ configError }}
+        </span>
+        <span v-else-if="configLoaded" class="status-text success">
+          ✅ 已从系统配置加载 MoviePilot 设置
+        </span>
+        <span v-else class="status-text loading">
+          正在加载配置...
+        </span>
       </div>
 
       <el-divider />
@@ -716,7 +723,12 @@ onMounted(() => {
 
       <template #footer>
         <el-button @click="showSubscribeDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleAddSubscribe">
+        <el-button
+          type="primary"
+          :loading="submitting"
+          :disabled="!!configError || !configLoaded"
+          @click="handleAddSubscribe"
+        >
           添加订阅
         </el-button>
       </template>
@@ -1457,5 +1469,41 @@ onMounted(() => {
     padding: 12px 4px;
     font-size: 11px;
   }
+}
+
+/* 配置状态提示 */
+.config-status {
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-base);
+  text-align: center;
+}
+
+.config-status.success {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.config-status.error {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.status-text {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.status-text.success {
+  color: #10b981;
+}
+
+.status-text.error {
+  color: #ef4444;
+}
+
+.status-text.loading {
+  color: var(--text-tertiary);
 }
 </style>

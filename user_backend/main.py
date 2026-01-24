@@ -24,7 +24,7 @@ from database import init_db
 from middleware import RateLimitMiddleware
 
 # 导入 API 路由
-from api import auth, subscription, request, recharge, emby, announcement, ticket, invitation, payment, stats, message, exchange_code, cron
+from api import auth, subscription, request, recharge, emby, announcement, ticket, invitation, payment, stats, message, exchange_code, cron, analytics, badges, routes
 
 # 日志配置
 logging.basicConfig(level=logging.INFO)
@@ -106,6 +106,9 @@ app.include_router(invitation.router, prefix="/api/user/invitation", tags=["邀�
 app.include_router(exchange_code.router, prefix="/api/user/exchange-code", tags=["兑换码"])
 app.include_router(payment.router, prefix="/api/user/payment", tags=["支付"])
 app.include_router(message.router, prefix="/api/user/messages", tags=["站内消息"])
+app.include_router(analytics.router, prefix="/api/user/analytics", tags=["数据埋点"])
+app.include_router(badges.router, prefix="/api/user/badges", tags=["徽章系统"])
+app.include_router(routes.router, prefix="/api/user/routes", tags=["线路选择"])
 # 定时任务 API（需要 CRON_SECRET 鉴权）
 app.include_router(cron.router, prefix="/api", tags=["定时任务"])
 

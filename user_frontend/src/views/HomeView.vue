@@ -239,16 +239,51 @@ const openEmbyApp = (account: any) => {
 
 // 主 CTA 点击处理
 const handleMainCTA = () => {
+  // 调试日志
+  console.log('[handleMainCTA] 被调用', {
+    isExternal: mainCTA.value.isExternal,
+    link: mainCTA.value.link,
+    text: mainCTA.value.text,
+    embyAccountsLength: embyAccounts.value.length
+  })
+
   if (mainCTA.value.isExternal) {
-    // 显示播放器选择器
-    selectedAccount.value = embyAccounts.value[0]
-    showPlayerSelector.value = true
+    // 多线路优化：如果有多个账号，显示线路选择器
+    if (embyAccounts.value.length === 0) {
+      toast.error('没有可用的 Emby 账号')
+      return
+    }
+
+    if (embyAccounts.value.length === 1) {
+      // 只有一个账号，直接打开播放器选择器
+      selectedAccount.value = embyAccounts.value[0]
+      showPlayerSelector.value = true
+    } else {
+      // 多个账号，显示线路选择器
+      showRouteSelector.value = true
+    }
   } else if (mainCTA.value.link.startsWith('#')) {
     // 滚动到账号区域
     document.querySelector('.account-section')?.scrollIntoView({ behavior: 'smooth' })
   } else {
     router.push(mainCTA.value.link)
   }
+}
+
+// 线路选择器状态
+const showRouteSelector = ref(false)
+
+// 选择线路并打开播放器选择器
+const selectRoute = (account: any) => {
+  selectedAccount.value = account
+  showRouteSelector.value = false
+  showPlayerSelector.value = true
+}
+
+// 快速打开播放器（跳过选择，直接使用第一个账号）
+const quickOpenPlayer = (account: any) => {
+  selectedAccount.value = account
+  showPlayerSelector.value = true
 }
 
 // 复制到剪贴板
@@ -611,7 +646,10 @@ onMounted(async () => {
             >
               <div class="account-header" @click="toggleAccountDetail(account.id)">
                 <div class="account-info">
-                  <span class="account-label">Emby 账号</span>
+                  <span class="account-label">
+                    {{ account.server_name || 'Emby 账号' }}
+                    <span v-if="account.is_expired" class="account-expired-tag">已过期</span>
+                  </span>
                   <span class="account-username">{{ account.username }}</span>
                 </div>
                 <ChevronDown
@@ -687,6 +725,14 @@ onMounted(async () => {
                 >
                   <Copy :size="14" />
                   一键复制全部信息
+                </button>
+                <!-- 一键导入播放器 -->
+                <button
+                  @click.stop="quickOpenPlayer(account)"
+                  class="btn-import-player"
+                >
+                  <Play :size="14" />
+                  一键导入播放器
                 </button>
               </div>
             </div>
@@ -815,9 +861,8 @@ onMounted(async () => {
 
     <!-- 播放器选择 Bottom Sheet -->
     <PlayerSelectorSheet
-      v-if="selectedAccount"
-      :show="showPlayerSelector"
-      :account="selectedAccount"
+      :show="showPlayerSelector && selectedAccount !== null"
+      :account="selectedAccount || { server_url: '', username: '', password: '' }"
       @update:show="showPlayerSelector = $event"
     />
   </div>
@@ -1030,86 +1075,86 @@ onMounted(async () => {
   color: #a3a3a3;
 }
 
-/* ==================== V3: 空状态账号预览 ==================== */
+/* ==================== V3: 空状态账号预览 (Neo-Noir 2.0) ==================== */
 .account-empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 1.5rem 1rem;
+  padding: var(--neo-space-5, 20px) var(--neo-space-4, 16px);
   text-align: center;
 }
 
 .empty-icon {
   width: 3rem;
   height: 3rem;
-  border-radius: 0.75rem;
-  background: rgba(16, 185, 129, 0.1);
+  border-radius: var(--neo-radius-sm, 12px);
+  background: var(--neo-primary-dim, rgba(16, 185, 129, 0.12));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #10b981;
-  margin-bottom: 0.75rem;
+  color: var(--neo-primary, #10B981);
+  margin-bottom: var(--neo-space-3, 12px);
 }
 
 .empty-title {
-  font-size: 1rem;
-  font-weight: 600;
-  color: #ffffff;
-  margin: 0 0 0.25rem;
+  font-size: var(--neo-font-size-md, 14px);
+  font-weight: var(--neo-font-weight-semibold, 600);
+  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
+  margin: 0 0 var(--neo-space-1, 4px);
 }
 
 .empty-desc {
-  font-size: 0.813rem;
-  color: #a3a3a3;
-  margin: 0 0 1rem;
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-secondary, rgba(255, 255, 255, 0.68));
+  margin: 0 0 var(--neo-space-4, 16px);
 }
 
-/* 预览卡片 */
+/* 预览卡片 (Neo-Noir 2.0) */
 .account-preview {
   width: 100%;
   max-width: 280px;
-  background: rgba(26, 26, 26, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 0.75rem;
+  background: var(--neo-bg-surface-2, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--neo-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--neo-radius-lg, 18px);
   overflow: hidden;
-  margin-bottom: 1rem;
+  margin-bottom: var(--neo-space-4, 16px);
 }
 
 .preview-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem 0.75rem;
-  background: rgba(255, 255, 255, 0.03);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding: var(--neo-space-2, 8px) var(--neo-space-3, 12px);
+  background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+  border-bottom: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.05));
 }
 
 .preview-label {
-  font-size: 0.688rem;
-  font-weight: 600;
-  color: #737373;
+  font-size: var(--neo-font-size-xs, 11px);
+  font-weight: var(--neo-font-weight-semibold, 600);
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .preview-tag {
-  padding: 0.125rem 0.375rem;
-  background: rgba(255, 255, 255, 0.05);
-  color: #525252;
-  font-size: 0.625rem;
-  border-radius: 0.25rem;
+  padding: var(--neo-space-1, 4px) var(--neo-space-2, 8px);
+  background: var(--neo-bg-surface-3, rgba(255, 255, 255, 0.08));
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
+  font-size: 10px;
+  border-radius: var(--neo-radius-xs, 8px);
 }
 
 .preview-body {
-  padding: 0.75rem;
+  padding: var(--neo-space-3, 12px);
 }
 
 .preview-field {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  gap: var(--neo-space-2, 8px);
+  padding: var(--neo-space-2, 8px) 0;
+  border-bottom: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.03));
 }
 
 .preview-field:last-child {
@@ -1117,58 +1162,64 @@ onMounted(async () => {
 }
 
 .field-icon {
-  color: #525252;
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
   flex-shrink: 0;
 }
 
 .field-label {
-  font-size: 0.75rem;
-  color: #737373;
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
   min-width: 3rem;
   text-align: left;
 }
 
 .field-value {
-  font-size: 0.813rem;
-  color: #d4d4d4;
+  font-size: var(--neo-font-size-sm, 12px);
+  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   flex: 1;
   text-align: right;
 }
 
 .preview-footer {
-  padding: 0.5rem 0.75rem;
-  background: rgba(16, 185, 129, 0.05);
-  border-top: 1px solid rgba(16, 185, 129, 0.1);
+  padding: var(--neo-space-2, 8px) var(--neo-space-3, 12px);
+  background: var(--neo-primary-dim, rgba(16, 185, 129, 0.08));
+  border-top: 1px solid var(--neo-border-focus, rgba(16, 185, 129, 0.1));
 }
 
 .preview-tip {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.25rem;
-  font-size: 0.688rem;
-  color: #10b981;
+  gap: var(--neo-space-1, 4px);
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-primary, #10B981);
 }
 
+/* 空状态 CTA 按钮 (Neo-Noir 2.0) */
 .empty-cta {
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0.75rem 1.5rem;
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  color: white;
-  font-size: 0.875rem;
-  font-weight: 600;
-  border-radius: 0.75rem;
-  transition: all 0.2s ease;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+  gap: var(--neo-space-1, 4px);
+  padding: var(--neo-space-3, 12px) var(--neo-space-5, 20px);
+  background: var(--neo-primary, #10B981);
+  color: var(--neo-text-inverse, #ffffff);
+  font-size: var(--neo-font-size-sm, 12px);
+  font-weight: var(--neo-font-weight-semibold, 600);
+  border-radius: var(--neo-radius-sm, 12px);
+  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+  box-shadow: var(--neo-glow-primary, 0 4px 16px rgba(16, 185, 129, 0.3));
   text-decoration: none;
 }
 
 .empty-cta:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(16, 185, 129, 0.4);
+  box-shadow: var(--neo-shadow-lg, 0 8px 24px rgba(16, 185, 129, 0.4));
+  background: var(--neo-primary-hover, #059669);
+}
+
+.empty-cta:active {
+  transform: scale(var(--neo-scale-press, 0.98));
 }
 
 /* ==================== Hero 主播放图标 ==================== */
@@ -1439,49 +1490,49 @@ onMounted(async () => {
   margin: 1rem 0;
 }
 
-/* ==================== 账号列表 ==================== */
+/* ==================== 账号列表 (Neo-Noir 2.0) ==================== */
 .accounts-list {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--neo-space-2, 8px);
 }
 
 .account-item {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 0.75rem;
+  border: 1px solid var(--neo-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--neo-radius-lg, 18px);
   overflow: hidden;
-  transition: all 0.2s ease;
-  background: rgba(26, 26, 26, 0.6);
+  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+  background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
 }
 
 .account-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.875rem 1rem;
+  padding: var(--neo-space-3, 12px) var(--neo-space-4, 16px);
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.02);
-  transition: background 0.2s ease;
+  background: var(--neo-bg-surface-2, rgba(255, 255, 255, 0.06));
+  transition: background var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .account-header:active {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--neo-bg-surface-hover, rgba(255, 255, 255, 0.08));
 }
 
 .account-info {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--neo-space-1, 4px);
 }
 
 .account-label {
-  font-size: 0.688rem;
-  color: #737373;
-  font-weight: 500;
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
+  font-weight: var(--neo-font-weight-medium, 500);
   letter-spacing: 0.02em;
   display: flex;
   align-items: center;
-  gap: 0.375rem;
+  gap: var(--neo-space-1, 4px);
   text-transform: uppercase;
 }
 
@@ -1490,167 +1541,212 @@ onMounted(async () => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+  background: var(--neo-primary, #10B981);
+  box-shadow: var(--neo-glow-primary, 0 0 8px rgba(16, 185, 129, 0.4));
 }
 
 .account-username {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #fafafa;
+  font-size: var(--neo-font-size-sm, 12px);
+  font-weight: var(--neo-font-weight-semibold, 600);
+  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
   font-family: 'SF Mono', ui-monospace, monospace;
 }
 
 .account-chevron {
-  color: #525252;
-  transition: transform 0.2s ease;
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
+  transition: transform var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .account-chevron.rotated {
   transform: rotate(180deg);
 }
 
-/* 账号详情 */
+/* 账号详情 (Neo-Noir 2.0) */
 .account-detail {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
-  padding: 0.75rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(0, 0, 0, 0.2);
+  gap: var(--neo-space-2, 8px);
+  padding: var(--neo-space-3, 12px);
+  border-top: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
 }
 
 .detail-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0;
+  gap: var(--neo-space-2, 8px);
+  padding: var(--neo-space-1, 4px) 0;
 }
 
 .detail-label {
   width: 3rem;
-  font-size: 0.688rem;
-  color: #737373;
-  font-weight: 500;
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
+  font-weight: var(--neo-font-weight-medium, 500);
 }
 
 .detail-value {
   flex: 1;
-  font-size: 0.75rem;
-  padding: 0.5rem 0.625rem;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
+  font-size: var(--neo-font-size-sm, 12px);
+  padding: var(--neo-space-2, 8px) 10px;
+  background: var(--neo-bg-surface-2, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: var(--neo-radius-sm, 12px);
   font-family: 'SF Mono', ui-monospace, monospace;
-  color: rgba(250, 250, 250, 0.9);
+  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .detail-value.detail-url {
-  color: #10b981;
+  color: var(--neo-primary, #10B981);
 }
 
+/* 小图标按钮 (Neo-Noir 2.0) */
 .btn-icon-sm {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
-  color: #737373;
+  width: var(--neo-icon-btn-sm, 32px);
+  height: var(--neo-icon-btn-sm, 32px);
+  border-radius: var(--neo-radius-xs, 8px);
+  border: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  background: var(--neo-bg-surface-2, rgba(255, 255, 255, 0.06));
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
   flex-shrink: 0;
 }
 
 .btn-icon-sm:hover {
-  background: rgba(16, 185, 129, 0.15);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
+  background: var(--neo-primary-dim, rgba(16, 185, 129, 0.12));
+  border-color: var(--neo-border-focus, rgba(16, 185, 129, 0.3));
+  color: var(--neo-primary, #10B981);
 }
 
 .btn-icon-sm:active {
-  transform: scale(0.95);
+  transform: scale(var(--neo-scale-press, 0.98));
 }
 
+/* 一键复制全部按钮 (Neo-Noir 2.0) */
 .btn-copy-all {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: var(--neo-space-2, 8px);
   width: 100%;
-  padding: 0.75rem;
-  margin-top: 0.25rem;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  border-radius: 0.625rem;
-  color: #10b981;
-  font-size: 0.813rem;
-  font-weight: 500;
+  padding: var(--neo-space-3, 12px);
+  margin-top: var(--neo-space-1, 4px);
+  background: var(--neo-primary-dim, rgba(16, 185, 129, 0.12));
+  border: 1px solid var(--neo-border-focus, rgba(16, 185, 129, 0.25));
+  border-radius: var(--neo-radius-sm, 12px);
+  color: var(--neo-primary, #10B981);
+  font-size: var(--neo-font-size-sm, 12px);
+  font-weight: var(--neo-font-weight-medium, 500);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .btn-copy-all:hover {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.15) 100%);
-  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.18);
+  border-color: var(--neo-border-focus, rgba(16, 185, 129, 0.4));
 }
 
 .btn-copy-all:active {
-  transform: scale(0.98);
+  transform: scale(var(--neo-scale-press, 0.98));
 }
 
-/* ==================== 快捷网格 ==================== */
+/* 一键导入播放器按钮 (Neo-Noir 2.0) */
+.btn-import-player {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--neo-space-2, 8px);
+  width: 100%;
+  padding: var(--neo-space-3, 12px);
+  margin-top: var(--neo-space-2, 8px);
+  background: var(--neo-bg-surface-2, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--neo-border-default, rgba(255, 255, 255, 0.12));
+  border-radius: var(--neo-radius-sm, 12px);
+  color: var(--neo-text-secondary, rgba(255, 255, 255, 0.7));
+  font-size: var(--neo-font-size-sm, 12px);
+  font-weight: var(--neo-font-weight-medium, 500);
+  cursor: pointer;
+  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.btn-import-player:hover {
+  background: var(--neo-bg-surface-hover, rgba(255, 255, 255, 0.1));
+  border-color: var(--neo-border-hover, rgba(255, 255, 255, 0.2));
+  color: var(--neo-text-primary, rgba(255, 255, 255, 0.9));
+}
+
+.btn-import-player:active {
+  transform: scale(var(--neo-scale-press, 0.98));
+}
+
+/* 账号过期标签 */
+.account-expired-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  margin-left: var(--neo-space-1, 4px);
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  font-size: 10px;
+  color: #ef4444;
+  font-weight: 500;
+}
+
+/* ==================== 快捷网格 (Neo-Noir 2.0) ==================== */
 .quick-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  gap: var(--neo-space-3, 12px);
+  margin-bottom: var(--neo-space-5, 20px);
 }
 
 .quick-item {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
-  padding: 1rem;
-  background: rgba(26, 26, 26, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 0.75rem;
+  gap: var(--neo-space-2, 8px);
+  padding: var(--neo-space-4, 16px);
+  background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--neo-border-default, rgba(255, 255, 255, 0.08));
+  border-radius: var(--neo-radius-lg, 18px);
   text-decoration: none;
-  transition: all 0.15s ease;
+  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
   min-height: 90px;
 }
 
 .quick-item:active {
-  transform: scale(0.98);
-  background: rgba(255, 255, 255, 0.03);
+  transform: scale(var(--neo-scale-press, 0.98));
+  background: var(--neo-bg-surface-hover, rgba(255, 255, 255, 0.08));
 }
 
 .quick-icon {
   width: 2.75rem;
   height: 2.75rem;
-  border-radius: 0.5rem;
-  background: rgba(16, 185, 129, 0.15);
+  border-radius: var(--neo-radius-sm, 12px);
+  background: var(--neo-primary-dim, rgba(16, 185, 129, 0.15));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #10b981;
+  color: var(--neo-primary, #10B981);
 }
 
 .quick-label {
-  font-size: 0.813rem;
-  font-weight: 500;
-  color: #fafafa;
+  font-size: var(--neo-font-size-sm, 12px);
+  font-weight: var(--neo-font-weight-medium, 500);
+  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
 }
 
 .quick-value {
-  font-size: 0.688rem;
-  color: #737373;
+  font-size: var(--neo-font-size-xs, 11px);
+  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
 }
 
 /* ==================== 公告区域 ==================== */

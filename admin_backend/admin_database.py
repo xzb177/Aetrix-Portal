@@ -100,6 +100,9 @@ def init_db():
     AdminRole.metadata.create_all(bind=admin_engine)
     AdminLog.metadata.create_all(bind=admin_engine)
 
+    # 创建线路管理表（使用原始 SQL）
+    _create_routes_table()
+
     # 创建默认管理员（如果不存在）
     db = AdminSessionLocal()
     try:
@@ -159,6 +162,73 @@ def init_db():
         raise
     finally:
         db.close()
+
+
+def _create_routes_table():
+    """创建 routes 表（线路管理）"""
+    from sqlalchemy import text
+    with admin_engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS payment_config (
+                id SERIAL PRIMARY KEY,
+                gateway_url VARCHAR(500),
+                partner_id VARCHAR(100),
+                key VARCHAR(500),
+                notify_url VARCHAR(500),
+                return_url VARCHAR(500),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.commit()
+    with admin_engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS routes (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) UNIQUE NOT NULL,
+                description TEXT,
+                enabled BOOLEAN DEFAULT TRUE,
+                priority INTEGER DEFAULT 100,
+                tags VARCHAR(50)[],
+                region_scope VARCHAR(50)[] DEFAULT ARRAY['GLOBAL'],
+                domain VARCHAR(255) NOT NULL,
+                tls BOOLEAN DEFAULT TRUE,
+                base_path VARCHAR(255) DEFAULT '',
+                worker_route VARCHAR(255),
+                origin_type VARCHAR(20) DEFAULT 'emby',
+                rewrite_from VARCHAR(255),
+                rewrite_to VARCHAR(255),
+                headers JSONB DEFAULT '{}',
+                auth_mode VARCHAR(20) DEFAULT 'none',
+                cache_mode VARCHAR(20) DEFAULT 'bypass',
+                status VARCHAR(20) DEFAULT 'ok',
+                maintenance_message TEXT,
+                rollout_percent INTEGER DEFAULT 100,
+                rollout_allow_user_ids INTEGER[] DEFAULT ARRAY[]::INTEGER[],
+                rollout_deny_user_ids INTEGER[] DEFAULT ARRAY[]::INTEGER[],
+                health_url VARCHAR(500),
+                health_expect_status INTEGER DEFAULT 200,
+                health_timeout_ms INTEGER DEFAULT 5000,
+                health_interval_sec INTEGER DEFAULT 60,
+                health_last_ok_at TIMESTAMP,
+                health_last_latency_ms INTEGER,
+                health_fail_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_routes_enabled ON routes(enabled)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_routes_priority ON routes(priority)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_routes_tags ON routes USING GIN(tags)
+        """))
+        conn.commit()
 
 
 def get_admin_db() -> Session:

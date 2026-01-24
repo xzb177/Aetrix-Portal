@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
@@ -52,6 +53,32 @@ def get_current_user(
             detail="User not found"
         )
 
+    return user
+
+
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security),
+    db: Session = Depends(get_session)
+) -> Optional[WebUser]:
+    """
+    获取当前登录用户（可选）
+
+    如果没有提供 Token 或 Token 无效，返回 None 而不是抛出异常
+    用于游客可访问的接口
+    """
+    if not credentials:
+        return None
+
+    token = credentials.credentials
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+
+    user = db.query(WebUser).filter(WebUser.id == user_id).first()
     return user
 
 
@@ -462,3 +489,96 @@ async def telegram_widget_login(
 async def logout():
     """登出（前端清除 Token 即可）"""
     return {"message": "Logged out successfully"}
+
+
+@router.get("/timeline")
+async def get_user_timeline(
+    current_user: WebUser = Depends(get_current_user),
+    db: Session = Depends(get_session),
+    limit: int = Query(10, ge=1, le=50)
+):
+    """
+    获取用户活动时间线
+
+    包括：
+    - 充值记录
+    - 求片记录
+    - 订阅记录
+    - 兑换记录
+    """
+    from datetime import datetime
+    from database.models import RechargeOrder, MediaRequest, ExchangeCodeRecord, Subscription
+
+    events = []
+
+    # 1. 充值记录
+    recharge_orders = db.query(RechargeOrder).filter(
+        RechargeOrder.user_id == current_user.id
+    ).order_by(RechargeOrder.created_at.desc()).limit(5).all()
+
+    for order in recharge_orders:
+        events.append({
+            "id": f"recharge-{order.id}",
+            "type": "recharge",
+            "title": f"充值 ¥{order.amount}",
+            "description": f"订单号: {order.order_id}" if order.order_id else None,
+            "timestamp": order.created_at.isoformat() if order.created_at else datetime.utcnow().isoformat(),
+            "status": "success" if order.status == "success" else "pending"
+        })
+
+    # 2. 求片记录
+    media_requests = db.query(MediaRequest).filter(
+        MediaRequest.user_id == current_user.id
+    ).order_by(MediaRequest.created_at.desc()).limit(5).all()
+
+    for request in media_requests:
+        status_map = {
+            "pending": "pending",
+            "approved": "success",
+            "completed": "success",
+            "rejected": "failed"
+        }
+        events.append({
+            "id": f"request-{request.id}",
+            "type": "request",
+            "title": f"求片: {request.movie_name}",
+            "description": request.note or None,
+            "timestamp": request.created_at.isoformat() if request.created_at else datetime.utcnow().isoformat(),
+            "status": status_map.get(request.status, "pending")
+        })
+
+    # 3. 订阅记录
+    subscriptions = db.query(Subscription).filter(
+        Subscription.user_id == current_user.id
+    ).order_by(Subscription.created_at.desc()).limit(3).all()
+
+    for sub in subscriptions:
+        events.append({
+            "id": f"subscription-{sub.id}",
+            "type": "subscription",
+            "title": f"订阅套餐: {sub.plan_id or '未知'}",
+            "description": f"有效期至 {sub.expires_at.strftime('%Y-%m-%d')}" if sub.expires_at else None,
+            "timestamp": sub.created_at.isoformat() if sub.created_at else datetime.utcnow().isoformat(),
+            "status": "success"
+        })
+
+    # 4. 兑换记录
+    exchange_records = db.query(ExchangeCodeRecord).filter(
+        ExchangeCodeRecord.user_id == current_user.id
+    ).order_by(ExchangeCodeRecord.created_at.desc()).limit(3).all()
+
+    for record in exchange_records:
+        events.append({
+            "id": f"exchange-{record.id}",
+            "type": "subscription",
+            "title": f"兑换码: {record.code}",
+            "description": None,
+            "timestamp": record.created_at.isoformat() if record.created_at else datetime.utcnow().isoformat(),
+            "status": "success"
+        })
+
+    # 按时间戳排序，最新的在前
+    events.sort(key=lambda x: x["timestamp"], reverse=True)
+
+    # 限制返回数量
+    return events[:limit]

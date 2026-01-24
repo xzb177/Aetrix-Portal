@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { User, Lock, Eye, EyeOff } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
@@ -28,16 +28,76 @@ const handleLogin = async () => {
   loading.value = true
   errorMsg.value = ''
 
+  // 登录开始日志
+  const logDebug = (msg: string, data?: any) => {
+    console.log(`[Login] ${msg}`, data || '')
+    if ((window as any).__addDebugLog) {
+      ;(window as any).__addDebugLog(`Login: ${msg}`)
+    }
+  }
+
+  logDebug('=== 开始登录流程 ===')
+  logDebug(`用户名: ${form.username}`)
+
   try {
-    const res = await login(form)
+    logDebug('调用 login API...')
+    const res = await login(form) as any
+    logDebug('API 响应成功', { hasAdminInfo: !!res?.admin_info, hasCsrf: !!res?.csrf_token })
+
+    // 检查响应数据
+    if (!res || !res.admin_info) {
+      logDebug('ERROR: 响应数据无效')
+      errorMsg.value = '登录响应数据无效'
+      return
+    }
+
     // 安全改进: 使用 httpOnly Cookie 存储 Token，不再手动设置 token
     // 只保存 admin_info 和 csrf_token
+    logDebug('调用 setAdminInfo...')
     authStore.setAdminInfo(res.admin_info, res.csrf_token)
-    router.push('/')
+
+    // 关键修复：等待下一个 tick 确保 Pinia 状态已更新
+    // 然后再次手动调用 restoreState 确保状态同步
+    await nextTick()
+    authStore.restoreState()
+    logDebug('restoreState 已调用')
+
+    logDebug('认证状态检查', {
+      isAuthenticated: authStore.isAuthenticated,
+      adminUsername: authStore.adminInfo?.username,
+      csrfToken: authStore.csrfToken?.substring(0, 10) + '...'
+    })
+
+    // 验证 sessionStorage 是否正确存储
+    try {
+      const savedInfo = sessionStorage.getItem('admin_info')
+      const savedCsrf = sessionStorage.getItem('admin_csrf')
+      logDebug('sessionStorage 验证', { hasInfo: !!savedInfo, hasCsrf: !!savedCsrf })
+      if (!savedInfo || !savedCsrf) {
+        logDebug('ERROR: sessionStorage 存储失败!')
+        errorMsg.value = '登录状态保存失败，请检查浏览器设置'
+        return
+      }
+    } catch (e) {
+      logDebug('ERROR: sessionStorage 不可用')
+      errorMsg.value = '登录状态保存失败，请检查浏览器隐私设置'
+      return
+    }
+
+    // 使用 router.push 跳转，避免页面刷新导致 sessionStorage 丢失
+    logDebug('准备调用 router.push("/")...')
+    const result = router.push('/')
+    logDebug('router.push 已调用', { result })
+
+    // 等待路由跳转
+    await result
+    logDebug('router.push 完成')
   } catch (error: any) {
-    errorMsg.value = error?.response?.data?.detail || '登录失败，请检查用户名和密码'
+    logDebug('ERROR: 登录失败', { message: error?.message, detail: error?.response?.data?.detail })
+    errorMsg.value = error?.response?.data?.detail || error?.message || '登录失败，请检查用户名和密码'
   } finally {
     loading.value = false
+    logDebug('登录流程结束')
   }
 }
 </script>

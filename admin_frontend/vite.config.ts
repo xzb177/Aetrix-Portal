@@ -21,6 +21,8 @@ export default defineConfig({
     assetsDir: 'assets',
     sourcemap: false,
     chunkSizeWarningLimit: 1000,
+    // 禁用 CSS 代码分割，避免懒加载路由的 CSS 预加载失败
+    cssCodeSplit: false,
     rollupOptions: {
       output: {
         manualChunks: {

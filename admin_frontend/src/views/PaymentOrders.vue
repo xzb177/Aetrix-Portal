@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { CreditCard, RefreshCw, Search, Filter, DollarSign, Menu, Calendar, User, Package } from 'lucide-vue-next'
+import { CreditCard, RefreshCw, Search, Calendar, User, Package } from 'lucide-vue-next'
 import request from '@/utils/request'
 
 interface Order {
@@ -19,28 +19,21 @@ interface Order {
 
 interface Stats {
   total_orders: number
-  pending_orders: number
   paid_orders: number
   total_revenue: number
-  today_revenue: number
-  month_revenue: number
 }
 
 const loading = ref(false)
 const orders = ref<Order[]>([])
 const stats = ref<Stats>({
   total_orders: 0,
-  pending_orders: 0,
   paid_orders: 0,
-  total_revenue: 0,
-  today_revenue: 0,
-  month_revenue: 0
+  total_revenue: 0
 })
 
 const searchQuery = ref('')
 const statusFilter = ref('all')
 const refreshing = ref(false)
-const showMoreMenu = ref(false)
 
 const filteredOrders = computed(() => {
   let result = orders.value
@@ -68,8 +61,14 @@ const loadData = async () => {
       request.get<{ orders: Order[] }>('/payment/orders') as any,
       request.get<Stats>('/payment/stats') as any
     ])
-    orders.value = ordersRes.orders
-    stats.value = statsRes
+    orders.value = ordersRes.orders || []
+    stats.value = {
+      total_orders: statsRes.total_orders || 0,
+      paid_orders: statsRes.paid_orders || 0,
+      total_revenue: statsRes.total_revenue || 0
+    }
+  } catch (err) {
+    console.error('加载数据失败:', err)
   } finally {
     loading.value = false
   }
@@ -108,19 +107,7 @@ const formatAmount = (amount: number) => {
   return `¥${amount.toFixed(2)}`
 }
 
-const formatDate = (dateStr: string | null) => {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
-const formatDateShort = (dateStr: string) => {
+const formatDate = (dateStr: string) => {
   const date = new Date(dateStr)
   return date.toLocaleString('zh-CN', {
     month: '2-digit',
@@ -136,32 +123,22 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="payment-orders-page page-container">
+  <div class="payment-orders-page">
     <!-- 统计卡片 -->
     <div class="stats-grid">
-      <div class="stat-card mobile-card">
+      <div class="stat-card">
         <div class="stat-icon stat-blue">
-          <CreditCard :size="20" />
+          <CreditCard :size="18" />
         </div>
         <div class="stat-content">
           <p class="stat-value">{{ stats.total_orders }}</p>
-          <p class="stat-label">总订单数</p>
+          <p class="stat-label">总订单</p>
         </div>
       </div>
 
-      <div class="stat-card mobile-card">
-        <div class="stat-icon stat-yellow">
-          <CreditCard :size="20" />
-        </div>
-        <div class="stat-content">
-          <p class="stat-value">{{ stats.pending_orders }}</p>
-          <p class="stat-label">待支付</p>
-        </div>
-      </div>
-
-      <div class="stat-card mobile-card">
+      <div class="stat-card">
         <div class="stat-icon stat-green">
-          <CreditCard :size="20" />
+          <CreditCard :size="18" />
         </div>
         <div class="stat-content">
           <p class="stat-value">{{ stats.paid_orders }}</p>
@@ -169,46 +146,29 @@ onMounted(() => {
         </div>
       </div>
 
-      <div class="stat-card mobile-card">
+      <div class="stat-card">
         <div class="stat-icon stat-purple">
-          <DollarSign :size="20" />
+          <CreditCard :size="18" />
         </div>
         <div class="stat-content">
-          <p class="stat-value">¥{{ stats.total_revenue.toFixed(2) }}</p>
+          <p class="stat-value">¥{{ stats.total_revenue.toFixed(0) }}</p>
           <p class="stat-label">总收入</p>
         </div>
       </div>
-    </div>
 
-    <!-- 收入统计 -->
-    <div class="revenue-card mobile-card">
-      <h3 class="section-title">收入统计</h3>
-      <div class="revenue-items">
-        <div class="revenue-item">
-          <div class="revenue-info">
-            <span class="revenue-label">今日收入</span>
-            <span class="revenue-value revenue-today">¥{{ stats.today_revenue.toFixed(2) }}</span>
-          </div>
-          <div class="revenue-bar">
-            <div class="revenue-fill revenue-today" :style="{ width: `${Math.min((stats.today_revenue / (stats.total_revenue || 1)) * 100, 100)}%` }"></div>
-          </div>
-        </div>
-        <div class="revenue-item">
-          <div class="revenue-info">
-            <span class="revenue-label">本月收入</span>
-            <span class="revenue-value revenue-month">¥{{ stats.month_revenue.toFixed(2) }}</span>
-          </div>
-          <div class="revenue-bar">
-            <div class="revenue-fill revenue-month" :style="{ width: `${Math.min((stats.month_revenue / (stats.total_revenue || 1)) * 100, 100)}%` }"></div>
-          </div>
-        </div>
-      </div>
+      <button
+        class="refresh-btn"
+        :class="{ spinning: refreshing }"
+        @click="refreshData"
+      >
+        <RefreshCw :size="18" />
+      </button>
     </div>
 
     <!-- 筛选栏 -->
-    <div class="filter-card mobile-card">
+    <div class="filter-card">
       <div class="search-box">
-        <Search :size="18" class="search-icon" />
+        <Search :size="16" class="search-icon" />
         <input
           v-model="searchQuery"
           type="text"
@@ -225,345 +185,162 @@ onMounted(() => {
           <option value="failed">支付失败</option>
           <option value="cancelled">已取消</option>
         </select>
-        <span class="result-count">共 {{ filteredOrders.length }} 条</span>
+        <span class="result-count">{{ filteredOrders.length }} 条</span>
       </div>
     </div>
 
-    <!-- 移动端卡片列表 -->
-    <div class="order-cards mobile-only">
+    <!-- 订单列表 -->
+    <div class="order-list">
       <div
         v-for="order in filteredOrders"
         :key="order.id"
-        class="order-card mobile-card"
+        class="order-card"
       >
-        <div class="order-card-header">
-          <div class="order-id-wrapper">
-            <CreditCard :size="16" class="order-icon" />
-            <code class="order-id-short">{{ order.order_id.slice(-8) }}</code>
+        <div class="order-header">
+          <div class="order-id">
+            <code>{{ order.order_id.slice(-8) }}</code>
           </div>
           <span class="status-badge" :class="getStatusClass(order.status)">
             {{ getStatusText(order.status) }}
           </span>
         </div>
 
-        <div class="order-card-body">
-          <div class="order-info-row">
-            <User :size="14" class="info-icon" />
-            <span class="info-label">用户</span>
-            <span class="info-value">{{ order.username }}</span>
+        <div class="order-body">
+          <div class="order-info">
+            <User :size="14" />
+            <span>{{ order.username }}</span>
           </div>
-          <div class="order-info-row">
-            <Package :size="14" class="info-icon" />
-            <span class="info-label">套餐</span>
-            <span class="info-value">{{ order.plan_name }}</span>
+          <div class="order-info">
+            <Package :size="14" />
+            <span>{{ order.plan_name }}</span>
           </div>
-          <div class="order-info-row">
-            <Calendar :size="14" class="info-icon" />
-            <span class="info-label">创建时间</span>
-            <span class="info-value">{{ formatDateShort(order.created_at) }}</span>
+          <div class="order-info">
+            <Calendar :size="14" />
+            <span>{{ formatDate(order.created_at) }}</span>
           </div>
         </div>
 
-        <div class="order-card-footer">
-          <div class="order-amount">{{ formatAmount(order.amount) }}</div>
-          <span class="payment-method">{{ order.payment_method }}</span>
+        <div class="order-footer">
+          <span class="order-amount">{{ formatAmount(order.amount) }}</span>
+          <span class="payment-method">{{ order.payment_method || '-' }}</span>
         </div>
       </div>
 
       <!-- 空状态 -->
       <div v-if="!filteredOrders.length && !loading" class="empty-state">
-        <CreditCard :size="48" />
-        <p>暂无订单记录</p>
+        <CreditCard :size="40" />
+        <p>暂无订单</p>
       </div>
-    </div>
 
-    <!-- 桌面端表格 -->
-    <div class="table-wrapper desktop-only">
-      <table class="orders-table">
-        <thead>
-          <tr>
-            <th>订单号</th>
-            <th>用户</th>
-            <th>套餐</th>
-            <th>金额</th>
-            <th>支付方式</th>
-            <th>状态</th>
-            <th>支付时间</th>
-            <th>创建时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="!filteredOrders.length && !loading">
-            <td colspan="8" class="empty-state">
-              <CreditCard :size="48" />
-              <p>暂无订单记录</p>
-            </td>
-          </tr>
-          <tr v-for="order in filteredOrders" :key="order.id" class="order-row">
-            <td class="order-id">
-              <code>{{ order.order_id }}</code>
-            </td>
-            <td>{{ order.username }}</td>
-            <td>{{ order.plan_name }}</td>
-            <td class="amount">{{ formatAmount(order.amount) }}</td>
-            <td>
-              <span class="payment-method">{{ order.payment_method }}</span>
-            </td>
-            <td>
-              <span class="status-badge" :class="getStatusClass(order.status)">
-                {{ getStatusText(order.status) }}
-              </span>
-            </td>
-            <td class="time">{{ formatDate(order.paid_at) }}</td>
-            <td class="time">{{ formatDate(order.created_at) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <!-- 加载状态 -->
+      <div v-if="loading" class="loading-state">
+        <RefreshCw :size="24" class="spinning" />
+        <p>加载中...</p>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .payment-orders-page {
-  background: var(--bg-primary);
-}
-
-/* ===== 顶部栏 ===== */
-.top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-2) 0;
-}
-
-.top-bar-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.menu-btn {
-  display: none;
-}
-
-@media (max-width: 1024px) {
-  .menu-btn {
-    display: flex;
-  }
-}
-
-.top-icon {
-  color: var(--primary);
-}
-
-.top-titles {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1rem;
 }
 
-.page-title {
-  font-size: var(--font-size-2xl);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-  margin: 0;
-  line-height: var(--line-height-tight);
-}
-
-.page-subtitle {
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
-  margin: 0;
-}
-
-.top-bar-right {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.icon-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  background: var(--glass-gradient);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition-fast) ease;
-}
-
-.icon-btn:active {
-  transform: scale(0.95);
-  background: var(--bg-card-hover);
-}
-
-.icon-btn.spinning svg {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* ===== 统计卡片 ===== */
+/* 统计卡片 */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: var(--space-3);
-}
-
-@media (min-width: 640px) {
-  .stats-grid {
-    grid-template-columns: repeat(4, 1fr);
-  }
+  grid-template-columns: repeat(3, 1fr) auto;
+  gap: 0.75rem;
 }
 
 .stat-card {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4);
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--bg-card, white);
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle, #e8edf3);
 }
 
 .stat-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-sm);
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
-  flex-shrink: 0;
 }
 
-.stat-blue {
-  background: linear-gradient(135deg, #3B82F6, #2563EB);
-}
-
-.stat-yellow {
-  background: linear-gradient(135deg, #F59E0B, #D97706);
-}
-
-.stat-green {
-  background: linear-gradient(135deg, #22C55E, #16A34A);
-}
-
-.stat-purple {
-  background: linear-gradient(135deg, #8B5CF6, #7C3AED);
-}
+.stat-blue { background: linear-gradient(135deg, #3B82F6, #2563EB); }
+.stat-green { background: linear-gradient(135deg, #22C55E, #16A34A); }
+.stat-purple { background: linear-gradient(135deg, #8B5CF6, #7C3AED); }
 
 .stat-content {
   flex: 1;
-  min-width: 0;
 }
 
 .stat-value {
-  font-size: var(--font-size-4xl);
-  font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary, #1a1a2e);
   margin: 0;
   line-height: 1;
 }
 
 .stat-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
-  margin: var(--space-1) 0 0 0;
+  font-size: 0.75rem;
+  color: var(--text-tertiary, #94a3b8);
+  margin: 0.25rem 0 0 0;
 }
 
-/* ===== 收入统计 ===== */
-.revenue-card {
-  padding: var(--space-4);
-}
-
-.section-title {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-  margin: 0 0 var(--space-3) 0;
-}
-
-.revenue-items {
+.refresh-btn {
+  width: 42px;
+  height: 42px;
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.revenue-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.revenue-info {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: center;
+  background: var(--bg-card, white);
+  border: 1px solid var(--border-subtle, #e8edf3);
+  border-radius: 10px;
+  color: var(--text-secondary, #64748b);
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.revenue-label {
-  font-size: var(--font-size-sm);
-  color: var(--text-tertiary);
+.refresh-btn:hover {
+  color: var(--primary, #673AB7);
+  border-color: var(--primary, #673AB7);
 }
 
-.revenue-value {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-semibold);
+.refresh-btn.spinning svg {
+  animation: spin 1s linear infinite;
 }
 
-.revenue-today {
-  color: var(--success);
-}
-
-.revenue-month {
-  color: var(--primary);
-}
-
-.revenue-bar {
-  height: 6px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.revenue-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-.revenue-fill.revenue-today {
-  background: var(--success);
-}
-
-.revenue-fill.revenue-month {
-  background: var(--primary);
-}
-
-/* ===== 筛选栏 ===== */
+/* 筛选栏 */
 .filter-card {
-  padding: var(--space-4);
+  background: var(--bg-card, white);
+  border-radius: 10px;
+  padding: 1rem;
+  border: 1px solid var(--border-subtle, #e8edf3);
 }
 
 .search-box {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  margin-bottom: var(--space-3);
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-input, #f8fafc);
+  border: 1px solid var(--border-subtle, #e2e8f0);
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
 }
 
 .search-icon {
-  color: var(--text-tertiary);
-  flex-shrink: 0;
+  color: var(--text-tertiary, #94a3b8);
 }
 
 .search-input {
@@ -571,277 +348,162 @@ onMounted(() => {
   border: none;
   background: transparent;
   outline: none;
-  font-size: var(--font-size-md);
-  color: var(--text-primary);
-}
-
-.search-input::placeholder {
-  color: var(--text-tertiary);
+  font-size: 0.875rem;
+  color: var(--text-primary, #1a1a2e);
 }
 
 .filter-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
 }
 
 .filter-select {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
-  background: var(--bg-input);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-subtle, #e2e8f0);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: var(--text-primary, #1a1a2e);
+  background: var(--bg-input, #f8fafc);
   outline: none;
-  cursor: pointer;
 }
 
 .result-count {
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  color: var(--text-tertiary, #94a3b8);
 }
 
-/* ===== 移动端卡片列表 ===== */
-.mobile-only {
+/* 订单列表 */
+.order-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-}
-
-.order-cards {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  gap: 0.5rem;
 }
 
 .order-card {
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  background: var(--bg-card, white);
+  border-radius: 10px;
+  padding: 1rem;
+  border: 1px solid var(--border-subtle, #e8edf3);
 }
 
-.order-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.order-id-wrapper {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.order-icon {
-  color: var(--primary);
-}
-
-.order-id-short {
-  font-family: monospace;
-  font-size: var(--font-size-sm);
-  background: var(--primary-bg);
-  color: var(--primary);
-  padding: 2px var(--space-2);
-  border-radius: var(--radius-sm);
-}
-
-.order-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.order-info-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.info-icon {
-  color: var(--text-tertiary);
-  flex-shrink: 0;
-  width: 16px;
-}
-
-.info-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
-  min-width: 60px;
-}
-
-.info-value {
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.order-card-footer {
+.order-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--border-subtle);
-}
-
-.order-amount {
-  font-size: var(--font-size-2xl);
-  font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
-}
-
-.payment-method {
-  font-size: var(--font-size-xs);
-  padding: 2px var(--space-2);
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: var(--radius-sm);
-  color: var(--text-tertiary);
-}
-
-/* ===== 桌面端表格 ===== */
-.desktop-only {
-  display: none;
-}
-
-.table-wrapper {
-  background: var(--glass-gradient);
-  backdrop-filter: blur(20px);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-
-@media (min-width: 1025px) {
-  .mobile-only {
-    display: none;
-  }
-
-  .desktop-only {
-    display: block;
-  }
-}
-
-.orders-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.orders-table th {
-  text-align: left;
-  padding: var(--space-3) var(--space-4);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
-}
-
-.orders-table td {
-  padding: var(--space-3) var(--space-4);
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-}
-
-.order-row:last-child td {
-  border-bottom: none;
-}
-
-.order-row:hover {
-  background: rgba(255, 255, 255, 0.02);
+  margin-bottom: 0.75rem;
 }
 
 .order-id code {
   font-family: monospace;
-  font-size: var(--font-size-xs);
-  background: var(--primary-bg);
-  padding: 2px var(--space-2);
+  font-size: 0.75rem;
+  background: var(--primary-bg, rgba(103, 58, 183, 0.1));
+  color: var(--primary, #673AB7);
+  padding: 2px 6px;
   border-radius: 4px;
-  color: var(--primary);
 }
 
-.amount {
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+.order-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
 }
 
-.time {
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+.order-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary, #64748b);
 }
 
-/* ===== 状态标签 ===== */
+.order-info svg {
+  flex-shrink: 0;
+}
+
+.order-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-subtle, #f1f5f9);
+}
+
+.order-amount {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary, #1a1a2e);
+}
+
+.payment-method {
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  background: var(--bg-secondary, #f8fafc);
+  border-radius: 4px;
+  color: var(--text-tertiary, #94a3b8);
+}
+
+/* 状态标签 */
 .status-badge {
   display: inline-block;
-  padding: 4px var(--space-2);
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-medium);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
 .status-paid {
-  background: var(--success-bg);
-  color: var(--success);
+  background: rgba(34, 197, 94, 0.1);
+  color: #22C55E;
 }
 
 .status-pending {
-  background: var(--warning-bg);
-  color: var(--warning);
+  background: rgba(245, 158, 11, 0.1);
+  color: #F59E0B;
 }
 
 .status-failed {
-  background: var(--danger-bg);
-  color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+  color: #EF4444;
 }
 
 .status-cancelled {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-tertiary);
+  background: rgba(148, 163, 184, 0.1);
+  color: #94A3B8;
 }
 
-/* ===== 空状态 ===== */
-.empty-state {
+/* 空状态和加载状态 */
+.empty-state, .loading-state {
   text-align: center;
-  padding: var(--space-6) var(--space-4);
-  color: var(--text-tertiary);
+  padding: 2rem;
+  color: var(--text-tertiary, #94a3b8);
 }
 
-.empty-state svg {
-  margin-bottom: var(--space-3);
+.empty-state svg, .loading-state svg {
+  margin-bottom: 0.5rem;
   opacity: 0.5;
 }
 
-.empty-state p {
+.empty-state p, .loading-state p {
   margin: 0;
+  font-size: 0.875rem;
 }
 
-/* ===== 响应式 ===== */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 移动端适配 */
 @media (max-width: 640px) {
-  .filter-row {
-    flex-wrap: wrap;
-  }
-
-  .filter-select {
-    flex: 1;
-    min-width: 120px;
-  }
-
-  .result-count {
-    width: 100%;
-    text-align: center;
-  }
-
   .stats-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, 1fr);
   }
 
-  .stat-value {
-    font-size: var(--font-size-3xl);
+  .refresh-btn {
+    grid-column: span 2;
+    width: 100%;
+    height: 36px;
   }
 }
 </style>

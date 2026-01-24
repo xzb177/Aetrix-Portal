@@ -292,3 +292,50 @@ export const mediaSeekApi = {
   create: (data: { movie_name: string; year?: string; type?: string; note?: string }) =>
     api.post('/api/user/media-seek', data),
 }
+
+// 活动记录 API
+export const activityApi = {
+  // 获取用户活动时间线
+  getTimeline: () => api.get('/api/user/timeline'),
+}
+
+// 线路配置 API - 路由选择引擎
+export interface RouteInfo {
+  id: number
+  name: string
+  description?: string
+  priority: number
+  domain: string
+  tls: boolean
+  base_path: string
+  tags: string[]
+  region_scope: string[]
+  worker_route?: string
+  origin_type: string
+}
+
+export const routesApi = {
+  // 获取可用线路列表
+  getRoutes: (params?: { region?: string }) =>
+    api.get('/api/routes/', { params }),
+
+  // 获取当前激活线路
+  getActiveRoute: (params?: { region?: string }) =>
+    api.get('/api/routes/active', { params }),
+
+  // 获取调试信息
+  getDebugInfo: () =>
+    api.get('/api/routes/debug'),
+}
+
+// 徽章系统 API（彩蛋功能）
+export const badgesApi = {
+  // 获取用户徽章列表
+  getBadges: () => api.get('/api/user/badges'),
+
+  // 获取身份卡数据
+  getIdentityCard: () => api.get('/api/user/badges/identity-card'),
+
+  // 检查徽章解锁（测试用）
+  checkBadges: () => api.post('/api/user/badges/check'),
+}

@@ -358,6 +358,13 @@ async def payment_notify(
 
         db.commit()
 
+        # 更新邀请转化状态（订阅成功）
+        try:
+            from api.invitation import update_conversion_status
+            update_conversion_status(db, order.user_id, 'subscribed')
+        except Exception as e:
+            logger.warning(f"更新邀请转化状态失败: {e}")
+
         # 创建/更新 Emby 账号
         try:
             # 获取套餐关联的服务器（按权重分配）
@@ -420,6 +427,15 @@ async def payment_notify(
                         db.commit()
 
                         logger.info(f"为用户 {order.user_id} 创建 Emby 账号: {username}@{selected_server.name}")
+
+                    # 恢复可能被禁用的账号
+                    if existing_sub:  # 续费情况
+                        try:
+                            from utils.account_recovery import reactivate_subscription_accounts
+                            recovery_result = await reactivate_subscription_accounts(db, subscription)
+                            logger.info(f"账号恢复结果: {recovery_result}")
+                        except Exception as e:
+                            logger.error(f"账号恢复失败: {e}")
         except Exception as e:
             logger.error(f"创建 Emby 账号失败: {e}")
 
@@ -624,6 +640,13 @@ async def balance_pay(
 
         db.commit()
 
+        # 更新邀请转化状态（订阅成功）
+        try:
+            from api.invitation import update_conversion_status
+            update_conversion_status(db, current_user.id, 'subscribed')
+        except Exception as e:
+            logger.warning(f"更新邀请转化状态失败: {e}")
+
         # 创建/更新 Emby 账号
         try:
             # 获取套餐关联的服务器（按权重分配）
@@ -716,6 +739,15 @@ async def balance_pay(
                             logger.error(f"创建 Emby 用户异常: {e}")
 
                     db.commit()
+
+                    # 恢复可能被禁用的账号
+                    if existing_sub:  # 续费情况
+                        try:
+                            from utils.account_recovery import reactivate_subscription_accounts
+                            recovery_result = await reactivate_subscription_accounts(db, subscription)
+                            logger.info(f"账号恢复结果: {recovery_result}")
+                        except Exception as e:
+                            logger.error(f"账号恢复失败: {e}")
 
         except Exception as e:
             logger.error(f"创建 Emby 账号失败: {e}")

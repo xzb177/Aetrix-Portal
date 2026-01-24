@@ -93,6 +93,8 @@ class Permission:
             "system.admins", "system.roles", "system.logs", "system.config", "system.view",
             # 支付管理
             "payment.config", "payment.orders", "payment.view",
+            # 线路管理
+            "routes.view", "routes.create", "routes.update", "routes.delete",
         ],
         "admin": [
             "users.view", "users.edit", "users.vip",
@@ -107,6 +109,7 @@ class Permission:
             "system.logs",
             "payment.orders",
             "system.view",
+            "routes.view", "routes.create", "routes.update",
         ],
         "operator": [
             "users.view",
@@ -120,6 +123,7 @@ class Permission:
             "tickets.view",
             "system.view",
             "payment.view",
+            "routes.view",
         ],
         "viewer": [
             "stats.view",
@@ -179,6 +183,11 @@ class Permission:
         "payment.config": "配置支付",
         "payment.orders": "查看支付订单",
         "payment.view": "查看支付信息",
+        # 线路管理
+        "routes.view": "查看线路配置",
+        "routes.create": "创建线路",
+        "routes.update": "修改线路",
+        "routes.delete": "删除线路",
     }
 
     # 权限分组
@@ -194,6 +203,7 @@ class Permission:
         "工单管理": ["tickets.view", "tickets.reply", "tickets.close"],
         "系统管理": ["system.admins", "system.roles", "system.logs", "system.config", "system.view"],
         "支付管理": ["payment.config", "payment.orders", "payment.view"],
+        "线路管理": ["routes.view", "routes.create", "routes.update", "routes.delete"],
     }
 
     @classmethod

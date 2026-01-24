@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     CRON_SECRET: str = ""  # 定时任务 API 鉴权密钥
     CRYPTO_KEY: str = ""  # 加密密钥（Fernet 格式）
 
+    # 彩蛋功能开关
+    FEATURE_EASTER_EGG: bool = True  # 身份签名卡 + 徽章系统开关
+
     class Config:
         env_file = ".env"
         case_sensitive = True

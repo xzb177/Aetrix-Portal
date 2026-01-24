@@ -254,18 +254,44 @@ const handlePasswordLogin = async () => {
 }
 
 const handleLoginError = (errorMsg: string) => {
+  // 更友好的错误提示
+  let friendlyMsg = ''
+
+  const errorMap: Record<string, string> = {
+    '用户名或密码错误': '用户名或密码错误，请检查后重试',
+    '账户已被禁用': '您的账户已被禁用，请联系客服',
+    '不存在': '该用户不存在',
+    'not found': '该用户不存在',
+    'Network Error': '网络连接失败，请检查网络后重试',
+    '500': '服务器繁忙，请稍后重试',
+  }
+
+  // 查找匹配的错误提示
+  for (const [key, value] of Object.entries(errorMap)) {
+    if (errorMsg.includes(key)) {
+      friendlyMsg = value
+      break
+    }
+  }
+
+  // 默认错误消息
+  if (!friendlyMsg) {
+    friendlyMsg = errorMsg || '登录失败，请稍后重试'
+  }
+
+  // 根据错误类型显示在对应字段
   if (
     errorMsg.includes('用户') ||
     errorMsg.includes('不存在') ||
     errorMsg.includes('not found')
   ) {
-    loginErrors.account = '该用户不存在'
+    loginErrors.account = friendlyMsg
     triggerShake('account', 'login')
   } else if (errorMsg.includes('密码') || errorMsg.includes('密码错误')) {
-    loginErrors.password = '密码错误'
+    loginErrors.password = friendlyMsg
     triggerShake('password', 'login')
   } else {
-    loginErrors.password = errorMsg
+    loginErrors.password = friendlyMsg
     triggerShake('password', 'login')
   }
 }
@@ -354,14 +380,40 @@ const handleRegister = async () => {
 }
 
 const handleRegisterError = (errorMsg: string) => {
-  if (errorMsg.includes('用户名') || errorMsg.includes('已存在')) {
-    registerErrors.username = '该用户名已被注册'
+  // 更友好的错误提示
+  let friendlyMsg = ''
+
+  const errorMap: Record<string, string> = {
+    '用户名已存在': '该用户名已被注册，请更换',
+    '已存在': '该用户名已被注册',
+    'exists': '该用户名已被注册',
+    '邀请码不存在': '邀请码无效，请检查后重试',
+    '无效': '邀请码无效',
+    'Network Error': '网络连接失败，请检查网络后重试',
+  }
+
+  // 查找匹配的错误提示
+  for (const [key, value] of Object.entries(errorMap)) {
+    if (errorMsg.includes(key)) {
+      friendlyMsg = value
+      break
+    }
+  }
+
+  // 默认错误消息
+  if (!friendlyMsg) {
+    friendlyMsg = errorMsg || '注册失败，请稍后重试'
+  }
+
+  // 根据错误类型显示在对应字段
+  if (errorMsg.includes('用户名') || errorMsg.includes('已存在') || errorMsg.includes('exists')) {
+    registerErrors.username = friendlyMsg
     triggerShake('username', 'register')
   } else if (errorMsg.includes('邀请码') || errorMsg.includes('无效')) {
-    registerErrors.username = '邀请码无效'
+    registerErrors.username = friendlyMsg
     triggerShake('username', 'register')
   } else {
-    registerErrors.password = errorMsg
+    registerErrors.password = friendlyMsg
     triggerShake('password', 'register')
   }
 }

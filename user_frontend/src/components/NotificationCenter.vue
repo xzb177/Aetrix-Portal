@@ -579,7 +579,9 @@ function stopPropagation(e: Event) {
 
 onMounted(() => {
   messageApi.getUnreadCount().then(res => {
-    unreadCount.value = res.data.unread_count || 0
+    unreadCount.value = res?.data?.unread_count || 0
+  }).catch(() => {
+    unreadCount.value = 0
   })
 
   hasSubscription.value = true

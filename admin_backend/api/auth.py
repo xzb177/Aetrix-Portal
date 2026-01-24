@@ -148,7 +148,13 @@ async def login(
     # 验证密码（无论用户是否存在都进行相同的验证，防止用户枚举）
     password_correct = False
     if admin:
-        password_correct = verify_password(credentials.password, admin.password_hash)
+        # 调试：检查密码哈希是否存在
+        if not admin.password_hash:
+            print(f"[登录调试] 用户 {credentials.username} 的密码哈希为空！")
+        else:
+            # 尝试验证密码
+            password_correct = verify_password(credentials.password, admin.password_hash)
+            print(f"[登录调试] 用户 {credentials.username} 密码验证: {password_correct}")
 
     if not admin or not password_correct:
         # 记录失败尝试

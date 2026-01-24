@@ -54,6 +54,24 @@ const router = createRouter({
       meta: { title: '充值中心', requiresAuth: true },
     },
     {
+      path: '/recharge/success',
+      name: 'recharge-success',
+      component: () => import('@/views/RechargeSuccessView.vue'),
+      meta: { title: '充值成功', requiresAuth: true },
+    },
+    {
+      path: '/recharge/fail',
+      name: 'recharge-fail',
+      component: () => import('@/views/RechargeFailView.vue'),
+      meta: { title: '充值失败', requiresAuth: true },
+    },
+    {
+      path: '/payment/return',
+      name: 'payment-return',
+      component: () => import('@/views/PaymentReturnView.vue'),
+      meta: { title: '支付返回' },
+    },
+    {
       path: '/profile',
       name: 'profile',
       component: () => import('@/views/ProfileView.vue'),
@@ -105,13 +123,16 @@ const router = createRouter({
 })
 
 // 路由守卫
+let initialized = false
+
 router.beforeEach((to, from, next) => {
   const userStore = useUserStore()
   const { openAuthSheet } = useAuthSheet()
 
-  // 初始化用户状态
-  if (!userStore.user && !userStore.token) {
+  // 只在首次访问时初始化用户状态
+  if (!initialized) {
     userStore.init()
+    initialized = true
   }
 
   // 设置页面标题
@@ -120,24 +141,29 @@ router.beforeEach((to, from, next) => {
   }
 
   // 需要登录的页面
-  if (to.meta.requiresAuth && !userStore.isLoggedIn) {
-    // 未登录，重定向到首页并弹出登录窗口
-    next({ name: 'home', query: { auth: 'required', redirect: to.fullPath } })
-    // 在 nextTick 中打开弹窗，确保路由已经跳转
-    setTimeout(() => openAuthSheet(), 0)
-  } else if (to.meta.requiresAuth && userStore.isLoggedIn && !userStore.user) {
-    // 有 token 但没有用户信息，尝试获取用户信息
-    userStore.fetchUser().then(() => {
-      next()
-    }).catch(() => {
-      // 获取用户信息失败，清除状态并重定向到首页
-      userStore.logout()
+  if (to.meta.requiresAuth) {
+    if (!userStore.isLoggedIn) {
+      // 未登录，重定向到首页并弹出登录窗口
       next({ name: 'home', query: { auth: 'required', redirect: to.fullPath } })
       setTimeout(() => openAuthSheet(), 0)
-    })
-  } else {
-    next()
+      return
+    }
+
+    // 有 token 但没有用户信息，尝试获取用户信息
+    if (!userStore.user) {
+      userStore.fetchUser().then(() => {
+        next()
+      }).catch(() => {
+        // 获取用户信息失败，清除状态并重定向到首页
+        userStore.logout()
+        next({ name: 'home', query: { auth: 'required', redirect: to.fullPath } })
+        setTimeout(() => openAuthSheet(), 0)
+      })
+      return
+    }
   }
+
+  next()
 })
 
 export default router

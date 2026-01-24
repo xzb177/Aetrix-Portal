@@ -30,6 +30,9 @@ class InvitationRecordResponse(BaseModel):
     id: int
     invitee_username: str
     reward_points: int
+    conversion_status: str = 'registered'  # registered/paid/subscribed
+    first_payment_at: Optional[datetime] = None
+    first_subscription_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:

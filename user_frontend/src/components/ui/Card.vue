@@ -1,14 +1,15 @@
 <script setup lang="ts">
 /**
- * Card - 卡片容器组件
+ * Card - 卡片容器组件 (Neo-Noir 2.0)
  *
- * 统一的卡片样式，提供玻璃拟态效果。
+ * 统一的卡片样式，支持点击、悬停效果。
  *
  * @props
  * - padding: 卡片内边距 ('none' | 'sm' | 'md' | 'lg')
  * - hover: 是否支持悬停效果
  * - clickable: 是否可点击（带点击态）
  * - radius: 圆角大小 ('sm' | 'md' | 'lg')
+ * - tag: HTML 标签
  */
 
 interface Props {
@@ -31,13 +32,13 @@ const props = withDefaults(defineProps<Props>(), {
 <template>
   <component
     :is="tag"
-    class="ui-card"
+    class="neo-card"
     :class="[
-      `ui-card--padding-${padding}`,
-      `ui-card--radius-${radius}`,
+      `neo-card--padding-${padding}`,
+      `neo-card--radius-${radius}`,
       {
-        'ui-card--hover': hover,
-        'ui-card--clickable': clickable
+        'neo-card--hover': hover,
+        'neo-card--clickable': clickable
       }
     ]"
   >
@@ -46,38 +47,62 @@ const props = withDefaults(defineProps<Props>(), {
 </template>
 
 <style scoped>
-.ui-card {
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  box-shadow: var(--card-shadow);
-  transition: background-color var(--duration-fast) var(--ease-out),
-              border-color var(--duration-fast) var(--ease-out),
-              transform var(--duration-fast) var(--ease-out);
+.neo-card {
+  background: var(--neo-bg-surface-1);
+  border: 1px solid var(--neo-border-default);
+  box-shadow: var(--neo-shadow-sm);
+  transition: background-color var(--neo-duration-fast) var(--neo-ease-default),
+              border-color var(--neo-duration-fast) var(--neo-ease-default),
+              transform var(--neo-duration-fast) var(--neo-ease-default);
+  position: relative;
+}
+
+/* 内阴影边框效果（增强质感） */
+.neo-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: var(--neo-shadow-inset);
 }
 
 /* Padding 变体 */
-.ui-card--padding-none { padding: 0; }
-.ui-card--padding-sm { padding: var(--space-sm); }
-.ui-card--padding-md { padding: var(--space-md); }
-.ui-card--padding-lg { padding: var(--space-lg); }
+.neo-card--padding-none { padding: 0; }
+.neo-card--padding-sm { padding: var(--neo-space-3); }
+.neo-card--padding-md { padding: var(--neo-card-padding); }
+.neo-card--padding-lg { padding: var(--neo-space-5); }
 
 /* Radius 变体 */
-.ui-card--radius-sm { border-radius: var(--radius-sm); }
-.ui-card--radius-md { border-radius: var(--radius-md); }
-.ui-card--radius-lg { border-radius: var(--radius-lg); }
+.neo-card--radius-sm { border-radius: var(--neo-radius-sm); }
+.neo-card--radius-md { border-radius: var(--neo-radius-md); }
+.neo-card--radius-lg { border-radius: var(--neo-card-radius); }
 
 /* 悬停效果 */
-.ui-card--hover:hover,
-.ui-card--clickable:active {
-  background: var(--card-bg-hover);
+.neo-card--hover:hover,
+.neo-card--clickable:active {
+  background: var(--neo-bg-surface-hover);
+  border-color: var(--neo-border-strong);
 }
 
-.ui-card--clickable {
+.neo-card--clickable {
   cursor: pointer;
   user-select: none;
 }
 
-.ui-card--clickable:hover {
-  background: var(--card-bg-hover);
+/* 点击态 */
+.neo-card--clickable:active {
+  transform: scale(var(--neo-scale-press));
+}
+
+/* 减少动画 */
+@media (prefers-reduced-motion: reduce) {
+  .neo-card {
+    transition: none;
+  }
+
+  .neo-card--clickable:active {
+    transform: none;
+  }
 }
 </style>
