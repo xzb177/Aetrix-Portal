@@ -8,6 +8,9 @@ from typing import List, Optional
 from datetime import datetime
 import json
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 from admin_database_user import (
     get_user_db, SubscriptionOrder, SubscriptionPlan, WebUser, user_engine

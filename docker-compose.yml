@@ -28,9 +28,11 @@ services:
       - "127.0.0.1:8080:8080"
     networks:
       - royalbot-portal_royalbot_network
+      - royalbot-emby-deploy_royalbot_network
     environment:
       - TZ=Asia/Shanghai
       - USER_BACKEND_DB_PATH=/shared/user_backend/user_backend/royalbot.db
+      - DB_URL=postgresql://royalbot:royalbot_prod_2026_secure@royalbot_postgres:5432/royalbot
     volumes:
       - royalbot_user_data:/shared/user_backend
     healthcheck:
@@ -54,6 +56,8 @@ services:
 
 networks:
   royalbot-portal_royalbot_network:
+    external: true
+  royalbot-emby-deploy_royalbot_network:
     external: true
 
 volumes:
