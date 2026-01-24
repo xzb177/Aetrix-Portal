@@ -88,6 +88,10 @@ export const authApi = {
 
   // 登出
   logout: () => api.post('/api/user/auth/logout'),
+
+  // 修改密码
+  changePassword: (data: { old_password: string; new_password: string }) =>
+    api.post('/api/user/auth/change-password', null, { params: data }),
 }
 
 export const subscriptionApi = {

@@ -162,7 +162,7 @@ async def create_payment(
 
     # 检查易支付配置
     if not settings.YIPAY_GATEWAY_URL or not settings.YIPAY_PARTNER_ID or not settings.YIPAY_KEY:
-        raise HTTPException(status_code=500, detail="支付功能未配置，请联系管理员")
+        raise HTTPException(status_code=503, detail="支付功能暂时不可用，请稍后重试或联系管理员")
 
     # 查询套餐
     plan = db.query(SubscriptionPlan).filter(

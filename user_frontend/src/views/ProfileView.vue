@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { userApi, subscriptionApi } from '@/api'
+import { userApi, subscriptionApi, authApi } from '@/api'
 // 原有组件
 import ProfileHeader from '@/components/profile/ProfileHeader.vue'
 import EmbyCard from '@/components/profile/EmbyCard.vue'
@@ -10,6 +10,7 @@ import QuickGrid from '@/components/profile/QuickGrid.vue'
 import SettingsList from '@/components/profile/SettingsList.vue'
 import RequestLimitCard from '@/components/profile/RequestLimitCard.vue'
 import BridgeDebugSheet from '@/components/profile/BridgeDebugSheet.vue'
+import BottomSheet from '@/components/ui/BottomSheet.vue'
 // Bridge 组件
 import HoloIdCard from '@/components/profile/HoloIdCard.vue'
 import TripleDashboard from '@/components/profile/TripleDashboard.vue'
@@ -58,6 +59,16 @@ const vipExpiry = ref<string | undefined>(undefined)
 // Activity Timeline 数据
 const timelineEvents = ref<TimelineEvent[]>([])
 const timelineLoading = ref(false)
+
+// 修改密码弹窗状态
+const showChangePasswordSheet = ref(false)
+const changePasswordForm = ref({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+const changePasswordLoading = ref(false)
+const changePasswordError = ref('')
 
 const isLoggedIn = computed(() => userStore.isLoggedIn)
 
@@ -241,6 +252,68 @@ function handleCopy(text: string, type: string) {
   toast.success('已复制到剪贴板')
 }
 
+// 打开修改密码弹窗
+function handleChangePassword() {
+  changePasswordForm.value = {
+    oldPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  }
+  changePasswordError.value = ''
+  showChangePasswordSheet.value = true
+}
+
+// 关闭修改密码弹窗
+function closeChangePasswordSheet() {
+  showChangePasswordSheet.value = false
+}
+
+// 提交修改密码
+async function submitChangePassword() {
+  changePasswordError.value = ''
+
+  // 验证输入
+  if (!changePasswordForm.value.oldPassword) {
+    changePasswordError.value = '请输入当前密码'
+    return
+  }
+  if (!changePasswordForm.value.newPassword) {
+    changePasswordError.value = '请输入新密码'
+    return
+  }
+  if (changePasswordForm.value.newPassword.length < 6) {
+    changePasswordError.value = '新密码至少需要 6 位字符'
+    return
+  }
+  if (changePasswordForm.value.newPassword !== changePasswordForm.value.confirmPassword) {
+    changePasswordError.value = '两次输入的新密码不一致'
+    return
+  }
+
+  changePasswordLoading.value = true
+  try {
+    await authApi.changePassword({
+      old_password: changePasswordForm.value.oldPassword,
+      new_password: changePasswordForm.value.newPassword
+    })
+    toast.success('密码修改成功，请重新登录')
+    closeChangePasswordSheet()
+    // 登出并返回首页
+    setTimeout(() => {
+      userStore.logout()
+      router.push('/')
+    }, 1500)
+  } catch (error: any) {
+    const errorMsg = error.response?.data?.detail || '修改密码失败，请稍后重试'
+    changePasswordError.value = errorMsg
+    if (errorMsg.includes('原密码错误')) {
+      changePasswordError.value = '当前密码不正确'
+    }
+  } finally {
+    changePasswordLoading.value = false
+  }
+}
+
 function handleLogout() {
   userStore.logout()
   router.push('/')
@@ -374,6 +447,7 @@ function formatDate(dateStr?: string) {
           :items="settingsItems"
           @logout="handleLogout"
           @copy="handleCopy"
+          @change-password="handleChangePassword"
         />
       </div>
     </div>
@@ -394,6 +468,72 @@ function formatDate(dateStr?: string) {
       @update:show="showSettingsSheet = $event"
       ref="settingsSheetRef"
     />
+
+    <!-- 修改密码弹窗 -->
+    <BottomSheet
+      :show="showChangePasswordSheet"
+      @update:show="closeChangePasswordSheet"
+      max-height="70vh"
+    >
+      <div class="change-password-sheet">
+        <h2 class="sheet-title">修改密码</h2>
+
+        <div class="form-group">
+          <label class="form-label">当前密码</label>
+          <input
+            v-model="changePasswordForm.oldPassword"
+            type="password"
+            class="form-input"
+            placeholder="请输入当前密码"
+            :disabled="changePasswordLoading"
+          />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">新密码</label>
+          <input
+            v-model="changePasswordForm.newPassword"
+            type="password"
+            class="form-input"
+            placeholder="至少 6 位字符"
+            :disabled="changePasswordLoading"
+          />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">确认新密码</label>
+          <input
+            v-model="changePasswordForm.confirmPassword"
+            type="password"
+            class="form-input"
+            placeholder="再次输入新密码"
+            :disabled="changePasswordLoading"
+          />
+        </div>
+
+        <div v-if="changePasswordError" class="error-message">
+          {{ changePasswordError }}
+        </div>
+
+        <div class="form-actions">
+          <button
+            class="btn-cancel"
+            @click="closeChangePasswordSheet"
+            :disabled="changePasswordLoading"
+          >
+            取消
+          </button>
+          <button
+            class="btn-confirm"
+            @click="submitChangePassword"
+            :disabled="changePasswordLoading"
+          >
+            <span v-if="changePasswordLoading">提交中...</span>
+            <span v-else>确认修改</span>
+          </button>
+        </div>
+      </div>
+    </BottomSheet>
   </div>
 </template>
 
@@ -459,5 +599,107 @@ function formatDate(dateStr?: string) {
   .profile-bridge-content > * {
     animation: none;
   }
+}
+
+/* ==================== 修改密码弹窗样式 ==================== */
+.change-password-sheet {
+  padding: 1.5rem 1rem 2rem;
+}
+
+.sheet-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0 0 1.5rem 0;
+  text-align: center;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-label {
+  display: block;
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 0.5rem;
+}
+
+.form-input {
+  width: 100%;
+  padding: 0.875rem 1rem;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  color: #ffffff;
+  font-size: 1rem;
+  transition: all 0.2s;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
+}
+
+.form-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.form-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.error-message {
+  color: #ef4444;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+  text-align: center;
+}
+
+.form-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.btn-cancel,
+.btn-confirm {
+  flex: 1;
+  padding: 0.875rem;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.btn-cancel {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.btn-cancel:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.btn-confirm {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+}
+
+.btn-confirm:hover:not(:disabled) {
+  transform: scale(0.98);
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);
+}
+
+.btn-cancel:disabled,
+.btn-confirm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
 }
 </style>

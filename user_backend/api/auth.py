@@ -491,6 +491,41 @@ async def logout():
     return {"message": "Logged out successfully"}
 
 
+@router.post("/change-password")
+async def change_password(
+    old_password: str = Query(..., description="旧密码"),
+    new_password: str = Query(..., description="新密码（至少6位）"),
+    current_user: WebUser = Depends(get_current_user),
+    db: Session = Depends(get_session)
+):
+    """
+    修改当前用户密码
+
+    需要验证旧密码正确后才能修改
+    """
+    # 验证新密码长度
+    if len(new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="新密码至少需要 6 位字符"
+        )
+
+    # 验证旧密码
+    if not verify_password(old_password, current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="原密码错误"
+        )
+
+    # 更新密码
+    current_user.password_hash = get_password_hash(new_password)
+    db.commit()
+
+    logger.info(f"用户 {current_user.username} 修改了密码")
+
+    return {"message": "密码修改成功"}
+
+
 @router.get("/timeline")
 async def get_user_timeline(
     current_user: WebUser = Depends(get_current_user),

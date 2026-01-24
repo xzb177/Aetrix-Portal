@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Copy, LogOut } from 'lucide-vue-next'
+import { Copy, LogOut, KeyRound } from 'lucide-vue-next'
 
 interface SettingItem {
   label: string
@@ -18,6 +18,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   logout: []
   copy: [text: string, type: string]
+  changePassword: []
 }>()
 
 const copiedItem = ref<string | null>(null)
@@ -38,6 +39,10 @@ async function copyToClipboard(text: string, label: string) {
 
 function handleLogout() {
   emit('logout')
+}
+
+function handleChangePassword() {
+  emit('changePassword')
 }
 </script>
 
@@ -68,10 +73,19 @@ function handleLogout() {
       </div>
     </div>
 
+    <!-- Change Password Button -->
+    <button
+      @click="handleChangePassword"
+      class="action-btn w-full py-4 mt-4 text-accent/80 hover:text-accent text-sm font-medium active:bg-accent/5 transition-all flex items-center justify-center gap-2"
+    >
+      <KeyRound :size="16" />
+      修改密码
+    </button>
+
     <!-- Logout Button -->
     <button
       @click="handleLogout"
-      class="logout-btn w-full py-4 mt-4 text-danger/70 hover:text-danger text-sm font-medium active:bg-danger/5 transition-all flex items-center justify-center gap-2"
+      class="logout-btn w-full py-4 mt-2 text-danger/70 hover:text-danger text-sm font-medium active:bg-danger/5 transition-all flex items-center justify-center gap-2"
     >
       <LogOut :size="16" />
       退出登录
@@ -82,6 +96,18 @@ function handleLogout() {
 <style scoped>
 .settings-list {
   margin-bottom: 1rem;
+}
+
+.action-btn {
+  color: rgba(16, 185, 129, 0.8);
+}
+
+.action-btn:hover {
+  color: rgb(16, 185, 129);
+}
+
+.bg-accent\/5 {
+  background: rgba(16, 185, 129, 0.05);
 }
 
 .bg-card {
