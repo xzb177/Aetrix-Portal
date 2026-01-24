@@ -428,10 +428,10 @@ class RechargeOrder(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     order_id = Column(String(64), unique=True, nullable=False, index=True)  # 外部订单号
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
-    package_id = Column(Integer, ForeignKey('recharge_packages.id'), nullable=False)
-    amount = Column(Integer, nullable=False)  # MP 积分数量
-    price = Column(Numeric(10, 2), nullable=False)  # 价格（元）
-    payment_method = Column(String(50))  # xunhu, alipay, wechat
+    package_id = Column(Integer, ForeignKey('recharge_packages.id'), nullable=True)  # 支持按金额充值时为空
+    amount = Column(Integer, nullable=False)  # 到账积分数量
+    price = Column(Numeric(10, 2), nullable=False)  # 支付价格（元）
+    payment_method = Column(String(50))  # alipay, wxpay
     status = Column(String(20), default='pending')  # pending, paid, failed, cancelled
     payment_url = Column(String(500))  # 支付链接
     paid_at = Column(DateTime)

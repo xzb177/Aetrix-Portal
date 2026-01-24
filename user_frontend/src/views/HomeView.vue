@@ -20,6 +20,8 @@ import { getP0AnnouncementInstance } from '@/composables/useP0Announcement'
 import P0AnnouncementModal from '@/components/P0AnnouncementModal.vue'
 import AnnouncementSummaryBar from '@/components/AnnouncementSummaryBar.vue'
 import PlayerSelectorSheet from '@/components/PlayerSelectorSheet.vue'
+
+// AuthSheet 已经在 App.vue 中全局注册，无需重复导入
 import {
   Play,
   Copy,
@@ -53,7 +55,7 @@ const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 const toast = useToast()
-const { showAuthSheet, openAuthSheet, closeAuthSheet } = useAuthSheet()
+const { openAuthSheet } = useAuthSheet()
 
 // P0 公告实例（仅首页使用）
 const p0Announcement = getP0AnnouncementInstance()
@@ -397,22 +399,6 @@ const handleP0Copy = async () => {
 // 播放器选择 Sheet 状态
 const showPlayerSelector = ref(false)
 const selectedAccount = ref<any>(null)
-
-// 登录成功回调
-const handleAuthSuccess = async () => {
-  // 刷新用户数据
-  await loadUserData()
-
-  // 处理跳转逻辑
-  const redirect = route.query.redirect as string
-  if (redirect) {
-    // 清除 URL 中的 auth 和 redirect 参数，然后跳转
-    router.push(redirect)
-  } else if (route.query.auth) {
-    // 只有 auth 参数没有 redirect，清除参数后留在首页
-    router.replace({ query: {} })
-  }
-}
 
 // 加载用户数据（统一入口）
 const loadUserData = async () => {
@@ -861,13 +847,6 @@ onMounted(async () => {
       :show-copy-button="true"
       @close="p0Announcement.closeP0Modal"
       @copy="handleP0Copy"
-    />
-
-    <!-- 登录/注册 Bottom Sheet -->
-    <AuthSheet
-      :show="(showAuthSheet as boolean)"
-      @update:show="closeAuthSheet"
-      @success="handleAuthSuccess"
     />
 
     <!-- 播放器选择 Bottom Sheet -->

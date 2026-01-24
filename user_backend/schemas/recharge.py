@@ -21,8 +21,9 @@ class RechargePackageResponse(BaseModel):
 
 class CreateRechargeOrder(BaseModel):
     """创建充值订单"""
-    package_id: int
-    payment_method: str = "xunhu"
+    package_id: int | None = None  # 套餐ID（优先使用套餐）
+    amount: int | None = None  # 充值金额（分，不使用套餐时直接按金额充值）
+    payment_method: str = "alipay"  # 默认支付宝
 
 
 class RechargeOrderResponse(BaseModel):

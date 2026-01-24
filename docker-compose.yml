@@ -30,6 +30,9 @@ services:
       - royalbot-portal_royalbot_network
     environment:
       - TZ=Asia/Shanghai
+      - USER_BACKEND_DB_PATH=/shared/user_backend/user_backend/royalbot.db
+    volumes:
+      - royalbot_user_data:/shared/user_backend
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 30s
@@ -51,4 +54,8 @@ services:
 
 networks:
   royalbot-portal_royalbot_network:
+    external: true
+
+volumes:
+  royalbot_user_data:
     external: true

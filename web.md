@@ -12,6 +12,358 @@
 
 ## 操作记录
 
+### 2026-01-24 支付配置同步问题修复（双数据库架构 + 共享卷）
+
+**问题描述：**
+管理后台配置支付后，用户购买订阅时支付宝支付失败。
+
+**问题根因：**
+
+#### 1. 双数据库架构不同步
+- **admin_backend** 使用 PostgreSQL (`royalbot` 数据库)
+- **user_backend** 使用 SQLite (`royalbot.db`)
+- 管理后台保存支付配置到 PostgreSQL 的 `payment_config` 表
+- 用户后端从 SQLite 的 `payment_config` 表读取配置
+- **两个完全不同的数据库，配置无法同步！**
+
+#### 2. 容器隔离问题
+- `admin_backend` 容器无法访问 `user_backend` 容器内的 SQLite 文件
+- 数据库文件没有持久化到共享卷
+
+**修复内容：**
+
+#### 1. 创建共享数据卷
+```bash
+docker volume create royalbot_user_data
+```
+
+#### 2. 将 user_backend 数据库复制到共享卷
+```bash
+# 从运行中的容器复制数据库
+docker cp royalbot_user_backend:/app/royalbot.db /tmp/royalbot_user.db
+# 复制到共享卷
+docker run --rm -v royalbot_user_data:/data -v /tmp/royalbot_user.db:/source.db \
+  alpine sh -c "mkdir -p /data/user_backend && cp /source.db /data/user_backend/royalbot.db"
+```
+
+#### 3. 修改 admin_backend 支付配置保存逻辑
+**修改文件：** `admin_backend/api/payment.py:51-155`
+
+**修改内容：** `write_payment_config` 函数同时写入到两个数据库
+- 写入 admin_backend PostgreSQL 数据库（原有逻辑）
+- **新增：** 同时写入 user_backend SQLite 数据库（通过共享卷）
+
+```python
+def write_payment_config(config: dict):
+    # 1. 写入 admin_backend PostgreSQL 数据库
+    ...
+
+    # 2. 同时写入 user_backend SQLite 数据库
+    try:
+        import sqlite3
+        sqlite_db_path = os.getenv("USER_BACKEND_DB_PATH", "/app/royalbot.db")
+        conn = sqlite3.connect(sqlite_db_path)
+        ...
+```
+
+#### 4. 修改容器启动配置
+**修改文件：** `docker-compose.yml`
+
+**新增内容：**
+```yaml
+volumes:
+  royalbot_user_data:
+    external: true
+
+services:
+  admin_backend:
+    environment:
+      - USER_BACKEND_DB_PATH=/shared/user_backend/user_backend/royalbot.db
+    volumes:
+      - royalbot_user_data:/shared/user_backend
+```
+
+**user_backend 容器启动命令：**
+```bash
+docker run -d --name royalbot_user_backend \
+  -e DATABASE_URL=sqlite:////data/user_backend/royalbot.db \
+  -v royalbot_user_data:/data \
+  royalbot-user-backend:latest
+```
+
+#### 5. 修复文件权限
+```bash
+# 修改共享卷权限为 999:999 (royalbot 用户)
+docker run --rm -v royalbot_user_data:/data alpine sh -c "
+  chown -R 999:999 /data
+  chmod -R 755 /data
+"
+```
+
+**部署结果：**
+
+| 组件 | 状态 | 数据库 |
+|------|------|--------|
+| admin_backend | Up (healthy) | PostgreSQL + 共享 SQLite |
+| user_backend | Up (healthy) | 共享 SQLite |
+
+**共享卷结构：**
+```
+royalbot_user_data:
+  └── user_backend/
+      └── royalbot.db  (user_backend 读取的位置)
+```
+
+**容器挂载点：**
+- `admin_backend`: `/shared/user_backend` → `royalbot_user_data`
+- `user_backend`: `/data` → `royalbot_user_data`
+
+**验证结果：**
+- ✅ admin_backend 可以写入共享 SQLite 数据库
+- ✅ user_backend 可以读取共享 SQLite 数据库的支付配置
+- ✅ 支付配置同步机制已建立
+
+**修改时间：** 2026-01-25 00:00 CST
+
+**后续操作：**
+1. 登录管理后台 → 系统配置 → 支付配置
+2. 填写真实的易支付网关信息：
+   - 支付网关地址（如：`https://pay.xxx.com/submit.php`）
+   - 商户ID（pid）
+   - 商户密钥（Key）
+3. 保存后，配置会自动同步到 user_backend 数据库
+4. 用户购买订阅时可以正常使用支付宝支付
+
+---
+
+### 2026-01-24 密码登录不跳转问题修复（fetchUser 数据访问错误 + 支付配置页面字体不可见）
+
+**问题描述：**
+
+#### 1. 密码登录成功后页面不刷新，仍显示未登录状态
+- 使用账号密码登录成功后，toast 显示"登录成功"
+- 但页面没有刷新，仍显示未登录状态
+- 只有 Telegram 登录能正常跳转
+
+#### 2. 管理后台支付配置页面输入框字体不可见
+- 在「系统配置」→「支付配置」页面
+- 输入框中输入的字符看不见（白色文字在白色背景上）
+- 只有密码框能显示内容（因为是 * 号）
+
+**问题根因：**
+
+#### 1. user.ts fetchUser 函数数据访问错误
+`user_frontend/src/stores/user.ts:104` 中：
+
+```typescript
+// ❌ 错误：response 已经是拦截器解包后的数据，没有 .data 属性
+const response = await authApi.getCurrentUser()
+user.value = response.data  // undefined
+```
+
+API 拦截器逻辑（`api/index.ts:26-38`）：
+```typescript
+api.interceptors.response.use(
+  (response) => {
+    const res = response.data
+    if (res.code === 200) return res.data
+    if (!res.code) return res  // 直接返回数据，没有包装在 .data 中
+    return res
+  }
+)
+```
+
+后端 `/api/user/auth/me` 返回 `UserResponse` 对象，被拦截器直接返回，没有 `.data` 属性。
+
+**结果：** `user.value = undefined`，导致 `isLoggedIn = computed(() => !!token.value)` 判断为 true 但用户信息为空。
+
+#### 2. PaymentConfig.vue CSS 变量冲突
+`admin_frontend/src/views/PaymentConfig.vue:227`：
+- `.config-card` 使用 `background: var(--bg-card, white)` - 白色背景
+- `.form-input` 使用 `color: var(--text-primary, #1a1f35)` - 但 `--text-primary` 在管理后台被定义为白色 `#ffffff`
+- 白色文字在白色背景上不可见
+
+**修复内容：**
+
+#### 1. 修复 user.ts fetchUser 数据访问
+
+**修改文件：** `user_frontend/src/stores/user.ts:97-113`
+
+```typescript
+// 获取用户信息
+async function fetchUser() {
+  if (!token.value) return
+
+  loading.value = true
+  try {
+    const response = await authApi.getCurrentUser() as User  // 添加类型断言
+    user.value = response  // 直接使用 response，不访问 .data
+    localStorage.setItem('user', JSON.stringify(response))
+  } catch (error) {
+    console.error('Fetch user failed:', error)
+    logout()
+  } finally {
+    loading.value = false
+  }
+}
+```
+
+#### 2. 修复 PaymentConfig.vue 输入框字体颜色
+
+**修改文件：** `admin_frontend/src/views/PaymentConfig.vue`
+
+**修改内容：**
+- `.config-title`：`color: #1a1f35`（硬编码深色，不使用 CSS 变量）
+- `.form-input`：`color: #1a1f35`（硬编码深色）
+- `.form-input::placeholder`：`color: #94a3b8`（添加灰色 placeholder）
+
+```css
+.form-input {
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--border-subtle, #e2e8f0);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: #1a1f35;  /* 深色文字，确保在白色背景上可见 */
+  transition: border-color 0.2s;
+}
+
+.form-input::placeholder {
+  color: #94a3b8;  /* 灰色 placeholder */
+}
+```
+
+**部署结果：**
+
+| 组件 | 状态 | 镜像 |
+|------|------|------|
+| user_frontend | Up | royalbot-portal-user_frontend:latest |
+| admin_frontend | Up (health: starting) | royalbot-portal-admin_frontend:latest |
+
+**前端构建产物：**
+- `user_frontend`: `index-LUi5JOQE.js` - 71.21 kB
+- `admin_frontend`: `index-BAXhawwG.js` - 29.62 kB
+
+**验证结果：**
+- ✅ 密码登录成功后正确刷新用户信息
+- ✅ 登录后页面正确显示已登录状态
+- ✅ 管理后台支付配置页面输入框文字可见
+- ✅ Placeholder 提示文字可见
+
+**修改时间：** 2026-01-24 23:50 CST
+
+**部署命令：**
+```bash
+# 用户前端
+cd /root/RoyalBot-Portal/user_frontend
+npm run build-only
+
+# 管理前端
+cd /root/RoyalBot-Portal/admin_frontend
+npm run build
+
+# Docker 镜像构建
+cd /root/RoyalBot-Portal
+docker compose build user_frontend admin_frontend
+
+# 容器重启
+docker stop royalbot_user_frontend royalbot_admin_frontend
+docker rm royalbot_user_frontend royalbot_admin_frontend
+docker run -d --name royalbot_user_frontend --network royalbot-portal_royalbot_network \
+  --restart unless-stopped -e TZ=Asia/Shanghai royalbot-portal-user_frontend:latest
+docker run -d --name royalbot_admin_frontend --network royalbot-portal_royalbot_network \
+  --restart unless-stopped -e TZ=Asia/Shanghai royalbot-portal-admin_frontend:latest
+```
+
+---
+
+### 2026-01-24 用户登录不跳转问题修复（重复 AuthSheet 组件冲突）
+
+**问题描述：**
+用户在首页登录成功后，页面不跳转也不更新视图。
+
+**问题根因：**
+
+#### 1. 存在两个 AuthSheet 组件实例
+- **App.vue**（第 69-73 行）：全局 `AuthSheet` 组件
+- **HomeView.vue**（第 870-874 行）：首页自己的 `AuthSheet` 组件
+
+虽然两个组件共享 `showAuthSheet` 状态（来自 `useAuthSheet` composable），但它们的 `@success` 事件处理函数不同：
+- App.vue 的 `handleAuthSuccess`：只调用 `userStore.fetchUser()`
+- HomeView.vue 的 `handleAuthSuccess`：处理完整的跳转逻辑
+
+#### 2. 事件处理冲突
+当用户在首页登录时，两个 `AuthSheet` 组件都会响应 `success` 事件，导致：
+- 事件处理顺序不确定
+- 跳转逻辑可能被覆盖或延迟执行
+- 视图更新时机混乱
+
+**修复内容：**
+
+#### 1. 移除 HomeView.vue 中重复的 AuthSheet
+
+**修改文件：**
+- `user_frontend/src/views/HomeView.vue:58` - 移除 `showAuthSheet`、`closeAuthSheet`、`getRedirectAndClear` 的解构
+- `user_frontend/src/views/HomeView.vue:402-418` - 移除 `handleAuthSuccess` 函数
+- `user_frontend/src/views/HomeView.vue:852-857` - 移除模板中的 `<AuthSheet>` 组件
+
+#### 2. 增强全局 handleAuthScore 函数
+
+**修改文件：** `user_frontend/src/App.vue:1-37`
+
+**修改内容：**
+- 添加 `useRouter` 导入（合并到原有 `useRoute` 导入）
+- 添加 `getRedirectAndClear` 解构
+- 增强 `handleAuthSuccess` 函数，添加跳转逻辑：
+
+```typescript
+const handleAuthSuccess = async () => {
+  // 刷新用户信息
+  await userStore.fetchUser()
+
+  // 处理跳转逻辑 - 优先使用 sessionStorage 中保存的 redirect
+  const redirect = getRedirectAndClear()
+
+  // 如果是首页，清除 URL 参数
+  if (redirect === '/' || redirect === route.fullPath) {
+    if (route.query.auth || route.query.redirect) {
+      router.replace({ query: {} })
+    }
+  } else {
+    // 跳转到目标页面
+    router.push(redirect)
+  }
+}
+```
+
+**部署结果：**
+
+| 组件 | 状态 | 镜像 |
+|------|------|------|
+| user_frontend | Up (healthy) | royalbot-portal-user_frontend:latest |
+
+**前端构建产物：**
+- `index-CPJfkPTb.js` - 71.22 kB
+- `HomeView-BRhRBuYp.js` - 27.43 kB
+
+**验证结果：**
+- ✅ 登录成功后页面正确跳转或更新视图
+- ✅ URL 参数正确清除
+- ✅ 不再存在重复 AuthSheet 组件
+
+**修改时间：** 2026-01-24 23:30 CST
+
+**部署命令：**
+```bash
+cd /root/RoyalBot-Portal/user_frontend
+npm run build-only
+cd /root/RoyalBot-Portal
+docker compose build user_frontend
+docker rm -f royalbot_user_frontend
+docker run -d --name royalbot_user_frontend --network royalbot-portal_royalbot_network --restart unless-stopped -e TZ=Asia/Shanghai royalbot-portal-user_frontend:latest
+```
+
+---
+
 ### 2026-01-24 支付功能修复（payment_config 表缺失 + SQL 语法兼容性）
 
 **问题描述：**
@@ -6575,4 +6927,90 @@ ALTER TABLE invitation_records ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEF
 "
 ```
 
+
+
+
+---
+
+### 2026-01-24 登录跳转修复（第二轮）
+
+**问题描述：**
+用户在 `/subscription` 等页面点击登录按钮，登录成功后页面不跳转。
+
+**问题根因：**
+1. 用户直接访问 `/subscription`，URL 中没有 `?redirect=/subscription` 参数
+2. `openAuthSheet()` 调用时不保存当前页面路径
+3. 登录成功后 `handleAuthSuccess` 检查 `route.query.redirect`，为 `undefined`，不执行跳转
+
+**修复内容：**
+
+1. **修改 `useAuthSheet.ts`** - 自动保存当前页面路径
+   ```typescript
+   const open = (redirectUrl?: string) => {
+     const redirect = redirectUrl || router.currentRoute.value.fullPath
+     sessionStorage.setItem('auth_redirect', redirect)
+     showAuthSheet.value = true
+   }
+   
+   const getRedirectAndClear = () => {
+     const redirect = sessionStorage.getItem('auth_redirect') || '/'
+     sessionStorage.removeItem('auth_redirect')
+     return redirect
+   }
+   ```
+
+2. **修改 `HomeView.vue`** - 使用保存的 redirect
+   ```typescript
+   const { showAuthSheet, openAuthSheet, closeAuthSheet, getRedirectAndClear } = useAuthSheet()
+   
+   const handleAuthSuccess = async () => {
+     await loadUserData()
+     const redirect = getRedirectAndClear()
+     if (redirect === '/' || redirect === router.currentRoute.value.fullPath) {
+       if (route.query.auth || route.query.redirect) {
+         router.replace({ query: {} })
+       }
+     } else {
+       router.push(redirect)
+     }
+   }
+   ```
+
+3. **修改 `AuthSheet.vue`** - Telegram 登录使用保存的 redirect
+   ```typescript
+   let redirect = sessionStorage.getItem('auth_redirect')
+   if (!redirect && route.query.redirect) {
+     redirect = route.query.redirect as string
+   }
+   if (redirect) {
+     sessionStorage.setItem('telegram_redirect', redirect)
+   }
+   ```
+
+**修改文件：**
+- `/root/RoyalBot-Portal/user_frontend/src/composables/useAuthSheet.ts`
+- `/root/RoyalBot-Portal/user_frontend/src/views/HomeView.vue`
+- `/root/RoyalBot-Portal/user_frontend/src/components/AuthSheet.vue`
+
+**修复时间：** 2026-01-24 22:25 CST
+
+**部署命令：**
+```bash
+cd /root/RoyalBot-Portal/user_frontend
+npm run build
+cd /root/RoyalBot-Portal
+docker compose build user_frontend
+docker stop royalbot_user_frontend && docker rm royalbot_user_frontend
+docker compose up -d user_frontend
+```
+
+**新构建产物：**
+- `HomeView--XNTNMhI.js` - 27.77 kB（包含新的跳转逻辑）
+- `index-D4U2TSeR.js` - 71.06 kB
+
+**验证方法：**
+1. 访问 `/subscription` 页面
+2. 点击"购买"按钮，触发登录弹窗
+3. 使用密码登录或 Telegram 登录
+4. 登录成功后应自动跳转回 `/subscription` 页面
 

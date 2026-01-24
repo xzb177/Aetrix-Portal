@@ -10,7 +10,7 @@ import json
 import os
 
 from admin_database_user import (
-    get_user_db, SubscriptionOrder, SubscriptionPlan, WebUser
+    get_user_db, SubscriptionOrder, SubscriptionPlan, WebUser, user_engine
 )
 from admin_utils.auth import get_current_admin
 from admin_utils.config import settings
@@ -49,7 +49,8 @@ def read_payment_config():
 
 
 def write_payment_config(config: dict):
-    """写入支付配置到数据库"""
+    """写入支付配置到数据库（同时写入 admin 和 user 数据库）"""
+    # 1. 写入 admin_backend 数据库
     with admin_engine.connect() as conn:
         # 先检查是否有现有配置
         result = conn.execute(text("SELECT id FROM payment_config"))
@@ -86,6 +87,72 @@ def write_payment_config(config: dict):
                 'return_url': config.get('return_url', '')
             })
         conn.commit()
+
+    # 2. 同时写入 user_backend SQLite 数据库
+    try:
+        import sqlite3
+        # user_backend SQLite 数据库路径
+        sqlite_db_path = os.getenv("USER_BACKEND_DB_PATH", "/app/royalbot.db")
+
+        # 先确保表存在
+        conn = sqlite3.connect(sqlite_db_path)
+        cursor = conn.cursor()
+
+        # 创建表（如果不存在）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS payment_config (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gateway_url TEXT NOT NULL,
+                partner_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                notify_url TEXT,
+                return_url TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 检查是否有现有配置
+        cursor.execute("SELECT id FROM payment_config ORDER BY id DESC LIMIT 1")
+        existing = cursor.fetchone()
+
+        if existing:
+            # 更新现有配置
+            cursor.execute("""
+                UPDATE payment_config
+                SET gateway_url = ?,
+                    partner_id = ?,
+                    key = ?,
+                    notify_url = ?,
+                    return_url = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                config.get('gateway_url', ''),
+                config.get('partner_id', ''),
+                config.get('key', ''),
+                config.get('notify_url', ''),
+                config.get('return_url', ''),
+                existing[0]
+            ))
+        else:
+            # 插入新配置
+            cursor.execute("""
+                INSERT INTO payment_config (gateway_url, partner_id, key, notify_url, return_url)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                config.get('gateway_url', ''),
+                config.get('partner_id', ''),
+                config.get('key', ''),
+                config.get('notify_url', ''),
+                config.get('return_url', '')
+            ))
+
+        conn.commit()
+        conn.close()
+        logger.info(f"支付配置已同步到 user_backend SQLite 数据库: {sqlite_db_path}")
+    except Exception as e:
+        logger.error(f"同步支付配置到 user_backend SQLite 失败: {e}")
+        # 不影响主流程，admin 数据库已保存成功
 
 
 @router.get("/payment/config")

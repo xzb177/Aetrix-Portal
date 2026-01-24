@@ -100,9 +100,9 @@ export const useUserStore = defineStore('user', () => {
 
     loading.value = true
     try {
-      const response = await authApi.getCurrentUser()
-      user.value = response.data
-      localStorage.setItem('user', JSON.stringify(response.data))
+      const response = await authApi.getCurrentUser() as User
+      user.value = response
+      localStorage.setItem('user', JSON.stringify(response))
     } catch (error) {
       console.error('Fetch user failed:', error)
       // 如果获取失败，清除登录状态

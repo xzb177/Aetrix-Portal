@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { RouterView, useRoute } from 'vue-router'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { onMounted, computed, watch } from 'vue'
 import AppHeader from '@/components/AppHeader.vue'
@@ -11,13 +11,28 @@ import { useToast } from '@/composables/useToast'
 import { useAuthSheet } from '@/composables/useAuthSheet'
 
 const userStore = useUserStore()
+const router = useRouter()
 const route = useRoute()
 const { messages, remove } = useToast()
-const { showAuthSheet, closeAuthSheet } = useAuthSheet()
+const { showAuthSheet, closeAuthSheet, getRedirectAndClear } = useAuthSheet()
 
-// AuthSheet 成功回调 - 刷新用户信息
-const handleAuthSuccess = () => {
-  userStore.fetchUser()
+// AuthSheet 成功回调 - 刷新用户信息并处理跳转
+const handleAuthSuccess = async () => {
+  // 刷新用户信息
+  await userStore.fetchUser()
+
+  // 处理跳转逻辑 - 优先使用 sessionStorage 中保存的 redirect
+  const redirect = getRedirectAndClear()
+
+  // 如果是首页，清除 URL 参数
+  if (redirect === '/' || redirect === route.fullPath) {
+    if (route.query.auth || route.query.redirect) {
+      router.replace({ query: {} })
+    }
+  } else {
+    // 跳转到目标页面
+    router.push(redirect)
+  }
 }
 
 // 这些页面有自己的导航栏，不显示全局 AppHeader

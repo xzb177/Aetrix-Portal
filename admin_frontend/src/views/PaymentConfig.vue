@@ -202,7 +202,7 @@ onMounted(() => {
 .config-title {
   font-size: 1rem;
   font-weight: 600;
-  color: var(--text-primary, #1a1a2e);
+  color: #1a1f35;
   margin: 0 0 1rem 0;
 }
 
@@ -224,8 +224,12 @@ onMounted(() => {
   border: 1px solid var(--border-subtle, #e2e8f0);
   border-radius: 8px;
   font-size: 0.875rem;
-  color: var(--text-primary, #1a1a2e);
+  color: #1a1f35;
   transition: border-color 0.2s;
+}
+
+.form-input::placeholder {
+  color: #94a3b8;
 }
 
 .form-input:focus {

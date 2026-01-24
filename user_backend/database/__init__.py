@@ -57,7 +57,7 @@ def _run_migrations():
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # 检查 web_users 表并添加缺失的字段
+        # 1. 检查 web_users 表并添加缺失的字段
         cursor.execute('PRAGMA table_info(web_users)')
         columns = [col[1] for col in cursor.fetchall()]
 
@@ -77,6 +77,60 @@ def _run_migrations():
                 except sqlite3.OperationalError as e:
                     if 'duplicate column' not in str(e).lower():
                         print(f'[DB Migration] 警告: {e}')
+
+        # 2. 修改 recharge_orders 表的 package_id 为可空（SQLite 不支持直接修改，需要重建表）
+        cursor.execute('PRAGMA table_info(recharge_orders)')
+        recharge_columns = cursor.fetchall()
+        recharge_col_names = [col[1] for col in recharge_columns]
+
+        # 检查 package_id 是否允许 NULL
+        package_id_nullable = None
+        for col in recharge_columns:
+            if col[1] == 'package_id':
+                package_id_nullable = col[3]  # 0 = NOT NULL, 1 = NULL
+                break
+
+        # 如果 package_id 存在且为 NOT NULL，需要重建表
+        if package_id_nullable == 0:
+            print('[DB Migration] 重建 recharge_orders 表，使 package_id 可空...')
+            try:
+                # 1. 创建新表
+                cursor.execute('''
+                    CREATE TABLE recharge_orders_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        order_id VARCHAR(64) UNIQUE NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        package_id INTEGER NULL,
+                        amount INTEGER NOT NULL,
+                        price DECIMAL(10, 2) NOT NULL,
+                        payment_method VARCHAR(50),
+                        status VARCHAR(20) DEFAULT 'pending',
+                        payment_url VARCHAR(500),
+                        paid_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+
+                # 2. 复制数据
+                cursor.execute('''
+                    INSERT INTO recharge_orders_new
+                    SELECT * FROM recharge_orders
+                ''')
+
+                # 3. 删除旧表
+                cursor.execute('DROP TABLE recharge_orders')
+
+                # 4. 重命名新表
+                cursor.execute('ALTER TABLE recharge_orders_new RENAME TO recharge_orders')
+
+                # 5. 重建索引
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_recharge_user ON recharge_orders(user_id)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_recharge_status ON recharge_orders(status)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_recharge_order_id ON recharge_orders(order_id)')
+
+                print('[DB Migration] recharge_orders 表重建完成')
+            except Exception as e:
+                print(f'[DB Migration] 重建 recharge_orders 表失败: {e}')
 
         conn.commit()
         conn.close()

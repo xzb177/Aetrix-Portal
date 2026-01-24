@@ -441,8 +441,11 @@ const handleTelegramLogin = () => {
     return
   }
 
-  // 保存重定向地址
-  const redirect = route.query.redirect as string
+  // 保存重定向地址 - 优先使用 sessionStorage 中保存的 auth_redirect
+  let redirect = sessionStorage.getItem('auth_redirect')
+  if (!redirect && route.query.redirect) {
+    redirect = route.query.redirect as string
+  }
   if (redirect) {
     sessionStorage.setItem('telegram_redirect', redirect)
   }

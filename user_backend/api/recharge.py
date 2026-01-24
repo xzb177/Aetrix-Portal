@@ -23,17 +23,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def get_recharge_yipay_client() -> YiPayClient:
-    """获取充值专用的易支付客户端"""
-    return YiPayClient(
-        gateway_url=settings.YIPAY_GATEWAY_URL,
-        partner_id=settings.YIPAY_PARTNER_ID,
-        key=settings.YIPAY_KEY,
-        notify_url=settings.YIPAY_RECHARGE_NOTIFY_URL,
-        return_url=settings.YIPAY_RECHARGE_RETURN_URL
-    )
-
-
 def generate_recharge_order_id() -> str:
     """生成唯一的充值订单号"""
     timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -60,7 +49,12 @@ async def create_recharge_order(
     """
     创建充值订单
 
-    - **package_id**: 套餐ID
+    支持两种模式：
+    1. 按套餐充值：传入 package_id（有赠送优惠）
+    2. 按金额充值：传入 amount（1:1到账，无赠送）
+
+    - **package_id**: 套餐ID（可选，优先使用套餐）
+    - **amount**: 充值金额（元，不使用套餐时直接按金额充值）
     - **payment_method**: 支付方式 (alipay=支付宝, wxpay=微信支付)
     """
     # 验证支付方式
@@ -71,49 +65,83 @@ async def create_recharge_order(
             detail=f"不支持的支付方式，请选择: {', '.join(valid_methods)}"
         )
 
-    # 检查易支付配置
-    if not settings.YIPAY_GATEWAY_URL or not settings.YIPAY_PARTNER_ID or not settings.YIPAY_KEY:
+    # 检查易支付配置（从数据库读取）
+    from database.models import PaymentConfig
+    config = db.query(PaymentConfig).first()
+    gateway_url = config.gateway_url if config else settings.YIPAY_GATEWAY_URL
+    partner_id = config.partner_id if config else settings.YIPAY_PARTNER_ID
+    key = config.key if config else settings.YIPAY_KEY
+
+    if not gateway_url or not partner_id or not key:
         raise HTTPException(
-            status_code=500,
-            detail="支付功能未配置，请联系管理员"
+            status_code=503,
+            detail="支付功能暂时不可用，请联系管理员配置支付"
         )
 
-    # 获取套餐
-    package = db.query(RechargePackage).filter(
-        RechargePackage.id == data.package_id,
-        RechargePackage.is_active == True
-    ).first()
-    if not package:
+    # 解析套餐和金额
+    package = None
+    recharge_amount = 0  # 到账金额（积分/余额）
+    price_yuan = 0  # 支付金额（元）
+
+    if data.package_id:
+        # 按套餐充值
+        package = db.query(RechargePackage).filter(
+            RechargePackage.id == data.package_id,
+            RechargePackage.is_active == True
+        ).first()
+        if not package:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="套餐不存在或已下架"
+            )
+        recharge_amount = package.amount + (package.bonus or 0)
+        price_yuan = float(package.price)
+    elif data.amount:
+        # 按金额充值（1:1到账）
+        if data.amount < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="充值金额不能小于 1 元"
+            )
+        recharge_amount = data.amount
+        price_yuan = float(data.amount)
+    else:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="套餐不存在或已下架"
+            status_code=400,
+            detail="请选择套餐或输入充值金额"
         )
 
     # 生成订单号
     order_id = generate_recharge_order_id()
 
-    # 计算充值金额（基础金额 + 赠送金额）
-    total_amount = package.amount + (package.bonus or 0)
-
     # 创建订单
     order = RechargeOrder(
         order_id=order_id,
         user_id=current_user.id,
-        package_id=package.id,
-        amount=total_amount,
-        price=package.price,
+        package_id=package.id if package else None,
+        amount=recharge_amount,
+        price=price_yuan,
         payment_method=data.payment_method,
         status="pending"
     )
     db.add(order)
     db.commit()
+    db.refresh(order)
 
-    # 创建易支付参数
-    client = get_recharge_yipay_client()
+    # 创建易支付客户端（使用数据库配置）
+    client = YiPayClient(
+        gateway_url=gateway_url,
+        partner_id=partner_id,
+        key=key,
+        notify_url=settings.YIPAY_RECHARGE_NOTIFY_URL,
+        return_url=settings.YIPAY_RECHARGE_RETURN_URL
+    )
+
+    # 创建支付参数
     params = client.create_payment(
         out_trade_no=order_id,
-        amount=float(package.price),
-        name=f"余额充值 - {package.name}",
+        amount=price_yuan,
+        name=f"余额充值 - {package.name if package else f'{recharge_amount}积分'}",
         pay_type=data.payment_method,
         param=str(current_user.id)  # 传递用户ID
     )
@@ -121,21 +149,29 @@ async def create_recharge_order(
     # 生成支付URL
     payment_url = client.get_payment_url(params)
 
-    logger.info(f"用户 {current_user.username} 创建充值订单: {order_id}, 金额: {total_amount}")
+    logger.info(f"用户 {current_user.username} 创建充值订单: {order_id}, 支付金额: {price_yuan}元, 到账: {recharge_amount}")
 
+    # 构建响应
     return RechargeOrderResponse(
         id=order.id,
         order_id=order_id,
         package=RechargePackageResponse(
-            id=package.id,
-            name=package.name,
-            amount=package.amount,
-            price=float(package.price),
-            bonus=package.bonus,
-            is_popular=package.is_popular,
+            id=package.id if package else 0,
+            name=package.name if package else f"自定义充值 {recharge_amount}积分",
+            amount=recharge_amount,
+            price=price_yuan,
+            bonus=0,
+            is_popular=False,
+        ) if package else RechargePackageResponse(
+            id=0,
+            name=f"自定义充值 {recharge_amount}积分",
+            amount=recharge_amount,
+            price=price_yuan,
+            bonus=0,
+            is_popular=False,
         ),
-        amount=total_amount,
-        price=float(order.price),
+        amount=recharge_amount,
+        price=price_yuan,
         payment_method=order.payment_method,
         status=order.status,
         payment_url=payment_url,
@@ -158,12 +194,29 @@ async def recharge_notify(
     form_data = await request.form()
     params = dict(form_data)
 
-    logger.info(f"收到充值支付回调: {params}")
+    # 隐藏敏感信息
+    safe_params = {k: v for k, v in params.items() if k not in ['sign', 'key']}
+    logger.info(f"收到充值支付回调: {safe_params}")
+
+    # 从数据库读取支付配置
+    from database.models import PaymentConfig
+    config = db.query(PaymentConfig).first()
+    gateway_url = config.gateway_url if config else settings.YIPAY_GATEWAY_URL
+    partner_id = config.partner_id if config else settings.YIPAY_PARTNER_ID
+    key = config.key if config else settings.YIPAY_KEY
+
+    if not gateway_url or not partner_id or not key:
+        logger.warning("支付配置缺失")
+        return HTMLResponse(content="fail", status_code=200)
 
     # 验证签名
-    client = get_recharge_yipay_client()
+    client = YiPayClient(
+        gateway_url=gateway_url,
+        partner_id=partner_id,
+        key=key
+    )
     if not client.verify_sign(params):
-        logger.warning(f"充值支付签名验证失败: {params}")
+        logger.warning(f"充值支付签名验证失败: {safe_params}")
         return HTMLResponse(content="fail", status_code=200)
 
     # 解析回调数据
@@ -199,11 +252,29 @@ async def recharge_notify(
     order.status = 'completed'
     order.paid_at = datetime.now()
 
-    # 给用户增加余额
+    # 给用户增加余额（balance 单位是分，需要转换）
     user = db.query(WebUser).filter(WebUser.id == order.user_id).first()
     if user:
-        user.points = (user.points or 0) + order.amount
-        logger.info(f"用户 {user.username} 余额充值成功: +{order.amount}, 当前余额: {user.points}")
+        old_balance = user.balance or 0
+        # order.amount 是积分数量，1积分 = 1分（人民币1分）
+        recharge_fen = order.amount  # 充值金额转分
+        user.balance = old_balance + recharge_fen
+
+        # 创建余额交易记录
+        from database.models import BalanceTransaction
+        transaction = BalanceTransaction(
+            user_id=user.id,
+            amount=recharge_fen,  # 正数表示增加
+            balance_before=old_balance,
+            balance_after=user.balance,
+            transaction_type='recharge',
+            source_type='recharge_order',
+            source_id=order.id,
+            description=f"充值到账 {order.amount}积分"
+        )
+        db.add(transaction)
+
+        logger.info(f"用户 {user.username} 充值成功: +{order.amount}积分, 余额: {old_balance} -> {user.balance}")
 
     db.commit()
 
@@ -250,17 +321,32 @@ async def get_recharge_history(
 
     result = []
     for order in orders:
-        result.append(RechargeOrderResponse(
-            id=order.id,
-            order_id=order.order_id,
-            package=RechargePackageResponse(
+        # 处理按套餐充值和按金额充值两种情况
+        if order.package_id:
+            # 按套餐充值
+            package_info = RechargePackageResponse(
                 id=order.package.id,
                 name=order.package.name,
                 amount=order.package.amount,
                 price=float(order.package.price),
                 bonus=order.package.bonus,
                 is_popular=order.package.is_popular,
-            ),
+            )
+        else:
+            # 按金额充值（自定义金额）
+            package_info = RechargePackageResponse(
+                id=0,
+                name=f"自定义充值 {order.amount}积分",
+                amount=order.amount,
+                price=float(order.price),
+                bonus=0,
+                is_popular=False,
+            )
+
+        result.append(RechargeOrderResponse(
+            id=order.id,
+            order_id=order.order_id,
+            package=package_info,
             amount=order.amount,
             price=float(order.price),
             payment_method=order.payment_method,
