@@ -174,49 +174,38 @@ async def refresh_token(
     request: Request,
     db: Session = Depends(get_session)
 ):
-    """使用 Refresh Token 换取新的 Access Token"""
-    # 从请求体或 header 获取 refresh token
-    import json as _json
+    """使用 Refresh Token 换取新的 Access Token（一次性 JTI 防重放）"""
     body = await request.json() if request.method == "POST" else {}
     token = body.get("refresh_token", "")
 
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="缺少 refresh_token"
-        )
+        raise HTTPException(status_code=400, detail="缺少 refresh_token")
 
     payload = decode_access_token(token)
     if not payload or payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的 refresh_token"
-        )
+        raise HTTPException(status_code=401, detail="无效的 refresh_token")
+
+    # 一次性 JTI 检查（防止 Token 重放攻击）
+    jti = payload.get("jti")
+    if jti:
+        from utils.security import is_jti_used, mark_jti_used
+        if is_jti_used(jti):
+            raise HTTPException(status_code=401, detail="refresh_token 已失效")
+        mark_jti_used(jti)
 
     user_id = payload.get("sub")
     if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的 refresh_token"
-        )
+        raise HTTPException(status_code=401, detail="无效的 refresh_token")
 
-    # 验证用户存在且活跃
     user = db.query(WebUser).filter(WebUser.id == user_id).first()
     if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在或已被禁用"
-        )
+        raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
 
-    # 生成新的双 Token
+    # 生成新的双 Token（旧 refresh_token 已通过 JTI 标记失效）
     new_access = create_access_token(data={"sub": str(user.id)})
     new_refresh = create_refresh_token(data={"sub": str(user.id)})
 
-    return {
-        "access_token": new_access,
-        "refresh_token": new_refresh,
-        "token_type": "bearer",
-    }
+    return {"access_token": new_access, "refresh_token": new_refresh, "token_type": "bearer"}
 
 
 @router.post("/register", response_model=TokenResponse)

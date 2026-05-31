@@ -185,12 +185,13 @@ class LoginDiagnosis:
                 "info": result.get("info", {})
             }
         except Exception as e:
+            error_msg = "连接超时" if "timeout" in str(e).lower() else "连接失败"
             return {
                 "server_id": server.id,
                 "name": server.name,
                 "url": server.url,
                 "reachable": False,
-                "error": str(e),
+                "error": error_msg,
                 "is_active": server.is_active
             }
 

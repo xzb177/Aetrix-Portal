@@ -45,8 +45,22 @@ class TieredInviteService:
 
     @staticmethod
     def check_and_reward(user_id: int, db: Session) -> List[Dict]:
-        """检查用户邀请进度，发放未领取的奖励"""
+        """检查用户邀请进度，发放未领取的奖励（带幂等锁）"""
+        import redis as _redis
+        import os as _os
         rewards_earned = []
+
+        # 幂等锁：防止并发重复发放
+        lock_key = f"invite_reward_lock:{user_id}"
+        try:
+            r = _redis.from_url(
+                _os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                decode_responses=True, socket_timeout=3
+            )
+            if not r.set(lock_key, "1", nx=True, ex=10):
+                return []  # 另一个请求正在处理
+        except Exception:
+            pass  # Redis 不可用时降级
 
         # 获取或创建进度记录
         progress = db.query(UserInviteProgress).filter(
