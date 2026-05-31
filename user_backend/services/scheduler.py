@@ -573,6 +573,30 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # ==================== 创新功能定时任务 ====================
+
+    # P1: 智能续费提醒（每日上午 9:30）
+    from services.smart_reminder import SmartReminderService
+    scheduler.add_job(
+        SmartReminderService.check_and_remind,
+        CronTrigger(hour=9, minute=30),
+        args=[SessionLocal()],
+        id='smart_reminders',
+        name='智能续费提醒',
+        replace_existing=True
+    )
+
+    # P2: 流失预测扫描（每日凌晨 4:00）
+    from services.churn_prediction import ChurnPredictionService
+    scheduler.add_job(
+        ChurnPredictionService.run_churn_scan,
+        CronTrigger(hour=4, minute=0),
+        args=[SessionLocal(), True],  # auto_action=True
+        id='churn_prediction',
+        name='流失预测扫描',
+        replace_existing=True
+    )
+
     scheduler.start()
     logger.info("定时任务调度器已启动")
     logger.info("已注册任务:")
