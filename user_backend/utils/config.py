@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     # Access Token 有效期（4小时 - 安全性平衡）
     # 生产环境建议使用 15-30 分钟 + Refresh Token 机制
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30  # 30分钟（有 Refresh Token 机制）
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 4  # 4 小时
     # Refresh Token 有效期（7天 - 用于长期保持登录）
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
