@@ -264,3 +264,91 @@ export interface Badge {
   earned: boolean
   earned_at?: string
 }
+
+// ==================== 创新功能 ====================
+
+export interface LoginDiagnosis {
+  can_login: boolean
+  issues: Array<{
+    type: string
+    severity: string
+    message: string
+    action: string
+  }>
+  server_status: Array<{
+    server_id: number
+    name: string
+    reachable: boolean
+    latency_ms: number
+    is_active: boolean
+    current_users: number
+    max_users: number
+  }>
+  account_info: Record<string, unknown>
+}
+
+export interface ServerDiagnosis {
+  all_healthy: boolean
+  total_servers: number
+  online_count: number
+  servers: Array<{
+    server_id: number
+    name: string
+    reachable: boolean
+    latency_ms: number
+    is_active: boolean
+  }>
+}
+
+export interface ViewingProfile {
+  total_items: number
+  top_genres: Array<{ name: string; count: number }>
+  type_distribution: Record<string, number>
+  drop_off_count: number
+  drop_off_rate: number
+  favorite_genres: string[]
+  generated_at: string
+}
+
+export interface FamilyMember {
+  id: number
+  username: string
+  nickname: string
+  role: string
+  joined_at?: string
+}
+
+export interface FamilyInfo {
+  has_family: boolean
+  family_id?: number
+  plan_type?: string
+  plan_name?: string
+  max_members?: number
+  current_members?: number
+  members?: FamilyMember[]
+  created_at?: string
+}
+
+export interface InviteTier {
+  tier: number
+  required: number
+  description: string
+  completed: boolean
+  progress: number
+}
+
+export interface InviteProgress {
+  total_invites: number
+  completed_tiers: number[]
+  tiers: InviteTier[]
+}
+
+export interface AddOnPackage {
+  id: number
+  name: string
+  description: string
+  package_type: string
+  price: number
+  duration_days: number
+  features: Record<string, unknown>
+}

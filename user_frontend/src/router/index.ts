@@ -90,6 +90,18 @@ const router = createRouter({
       meta: { title: '邀请好友', requiresAuth: true },
     },
     {
+      path: '/family',
+      name: 'family',
+      component: () => import('@/views/FamilyView.vue'),
+      meta: { title: '家庭席位', requiresAuth: true },
+    },
+    {
+      path: '/viewing',
+      name: 'viewing-profile',
+      component: () => import('@/views/ViewingProfileView.vue'),
+      meta: { title: '观影画像', requiresAuth: true },
+    },
+    {
       path: '/exchange-code',
       name: 'exchange-code',
       component: () => import('@/views/ExchangeCodeView.vue'),
