@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     # Access Token 有效期（4小时 - 安全性平衡）
     # 生产环境建议使用 15-30 分钟 + Refresh Token 机制
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 4  # 4 小时
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30  # 30分钟（有 Refresh Token 机制）
     # Refresh Token 有效期（7天 - 用于长期保持登录）
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
@@ -91,10 +91,13 @@ def get_settings() -> Settings:
                 "Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
             )
 
-    # 处理额外的 CORS 源
+    # 处理额外的 CORS 源（过滤空字符串）
     if settings.ADDITIONAL_CORS_ORIGINS:
-        additional_origins = [origin.strip() for origin in settings.ADDITIONAL_CORS_ORIGINS.split(",")]
+        additional_origins = [origin.strip() for origin in settings.ADDITIONAL_CORS_ORIGINS.split(",") if origin.strip()]
         settings.FRONTEND_URLS.extend(additional_origins)
+
+    # 过滤空字符串
+    settings.FRONTEND_URLS = [u for u in settings.FRONTEND_URLS if u.strip()]
 
     return settings
 

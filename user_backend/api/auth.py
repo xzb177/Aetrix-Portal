@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from database import get_session
 from database.models import WebUser
 from schemas.auth import UserLogin, UserRegister, TelegramCallback, UserResponse, TokenResponse
-from utils.security import verify_password, get_password_hash, create_access_token, decode_access_token
+from utils.security import verify_password, get_password_hash, create_access_token, create_refresh_token, decode_access_token
 from typing import Optional
 import json
 import urllib.parse
@@ -158,13 +158,65 @@ async def login(credentials: UserLogin, db: Session = Depends(get_session)):
             detail="账户已被禁用"
         )
 
-    # 创建 Token
+    # 创建 Token（Access + Refresh）
     access_token = create_access_token(data={"sub": str(user.id)})
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
 
     return TokenResponse(
         access_token=access_token,
+        refresh_token=refresh_token,
         user=get_user_response(user, db)
     )
+
+
+@router.post("/refresh")
+async def refresh_token(
+    request: Request,
+    db: Session = Depends(get_session)
+):
+    """使用 Refresh Token 换取新的 Access Token"""
+    # 从请求体或 header 获取 refresh token
+    import json as _json
+    body = await request.json() if request.method == "POST" else {}
+    token = body.get("refresh_token", "")
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="缺少 refresh_token"
+        )
+
+    payload = decode_access_token(token)
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的 refresh_token"
+        )
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的 refresh_token"
+        )
+
+    # 验证用户存在且活跃
+    user = db.query(WebUser).filter(WebUser.id == user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户不存在或已被禁用"
+        )
+
+    # 生成新的双 Token
+    new_access = create_access_token(data={"sub": str(user.id)})
+    new_refresh = create_refresh_token(data={"sub": str(user.id)})
+
+    return {
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+        "token_type": "bearer",
+    }
 
 
 @router.post("/register", response_model=TokenResponse)

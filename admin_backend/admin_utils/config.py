@@ -8,23 +8,12 @@ from pydantic_settings import BaseSettings
 
 
 def generate_secret_key() -> str:
-    """生成或获取密钥"""
-    # 使用容器内路径，通过持久化卷保存
-    key_file = "/app/data/.secret_key"
-    if os.path.exists(key_file):
-        with open(key_file, "r") as f:
-            return f.read().strip()
-    # 生成新密钥
-    key = secrets.token_urlsafe(64)
-    try:
-        os.makedirs(os.path.dirname(key_file), exist_ok=True)
-        with open(key_file, "w") as f:
-            f.write(key)
-        os.chmod(key_file, 0o600)
-    except (OSError, PermissionError):
-        # 如果无法写入文件，直接返回生成的密钥
-        pass
-    return key
+    """从环境变量获取密钥，未设置则生成随机密钥（不写文件）"""
+    key = os.getenv("ADMIN_SECRET_KEY", "")
+    if key:
+        return key
+    # 生成随机密钥（每次重启变化，适合开发环境）
+    return secrets.token_urlsafe(64)
 
 
 class Settings(BaseSettings):

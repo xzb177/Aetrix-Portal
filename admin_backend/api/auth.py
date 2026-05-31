@@ -18,10 +18,26 @@ from admin_utils.config import settings
 
 router = APIRouter()
 
-# 登录失败跟踪 - 存储IP和用户名的失败尝试
-login_attempts: dict[str, list] = defaultdict(list)
-# 账号锁定状态 {username: unlock_time}
-locked_accounts: dict[str, datetime] = {}
+# 登录失败跟踪（Redis 存储，支持多实例）
+import json as _json
+
+_redis_client = None
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is None:
+        try:
+            import redis
+            _redis_client = redis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_timeout=3,
+                socket_connect_timeout=3,
+            )
+            _redis_client.ping()
+        except Exception:
+            _redis_client = None
+    return _redis_client
 
 
 def get_client_ip(request: Request) -> str:
@@ -34,41 +50,50 @@ def get_client_ip(request: Request) -> str:
 
 def is_account_locked(username: str) -> tuple[bool, int]:
     """检查账号是否被锁定"""
-    if username in locked_accounts:
-        if datetime.now() < locked_accounts[username]:
-            remaining = int((locked_accounts[username] - datetime.now()).total_seconds())
-            return True, remaining
-        else:
-            # 锁定已过期，解除锁定
-            del locked_accounts[username]
+    r = _get_redis()
+    if not r:
+        return False, 0
+    lock_until = r.get(f"admin_lock:{username}")
+    if lock_until:
+        try:
+            lock_time = datetime.fromisoformat(lock_until)
+            if datetime.now() < lock_time:
+                return True, int((lock_time - datetime.now()).total_seconds())
+            else:
+                r.delete(f"admin_lock:{username}")
+        except Exception:
+            r.delete(f"admin_lock:{username}")
     return False, 0
 
 
 def record_failed_attempt(ip: str, username: str):
     """记录登录失败尝试"""
-    key = f"{ip}:{username}"
-    login_attempts[key].append(datetime.now())
+    r = _get_redis()
+    if not r:
+        return
+    key = f"admin_attempts:{ip}:{username}"
+    now = datetime.now().isoformat()
+    r.lpush(key, now)
+    r.ltrim(key, 0, 19)  # 保留最近20条
+    r.expire(key, 900)    # 15分钟过期
 
-    # 清理5分钟前的记录
-    cutoff = datetime.now() - timedelta(minutes=5)
-    login_attempts[key] = [t for t in login_attempts[key] if t > cutoff]
+    # 统计最近15分钟的失败次数
+    records = r.lrange(key, 0, 19)
+    cutoff = datetime.now() - timedelta(minutes=15)
+    count = sum(1 for r_str in records if datetime.fromisoformat(r_str) > cutoff)
 
-    # 检查是否超过最大尝试次数
-    recent_attempts = len([t for t in login_attempts[key]
-                           if t > datetime.now() - timedelta(minutes=15)])
-
-    if recent_attempts >= settings.MAX_LOGIN_ATTEMPTS:
-        # 锁定账号
-        locked_accounts[username] = datetime.now() + timedelta(
-            minutes=settings.LOCKOUT_DURATION_MINUTES
-        )
+    if count >= settings.MAX_LOGIN_ATTEMPTS:
+        lock_until = datetime.now() + timedelta(minutes=settings.LOCKOUT_DURATION_MINUTES)
+        r.set(f"admin_lock:{username}", lock_until.isoformat(),
+              ex=settings.LOCKOUT_DURATION_MINUTES * 60)
 
 
 def clear_failed_attempts(ip: str, username: str):
     """清除失败尝试记录（登录成功后）"""
-    key = f"{ip}:{username}"
-    if key in login_attempts:
-        del login_attempts[key]
+    r = _get_redis()
+    if not r:
+        return
+    r.delete(f"admin_attempts:{ip}:{username}")
 
 
 def validate_password_complexity(password: str) -> tuple[bool, str]:
