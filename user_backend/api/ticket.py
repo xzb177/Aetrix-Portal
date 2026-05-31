@@ -294,7 +294,23 @@ async def get_attachment(filename: str):
     """
     获取附件文件
     """
+    # 防止路径遍历攻击：只允许纯文件名，拒绝任何路径分隔符
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="非法文件名"
+        )
+
     filepath = os.path.join(UPLOAD_DIR, filename)
+
+    # 二次校验：确保解析后的路径确实在 UPLOAD_DIR 内
+    real_upload = os.path.realpath(UPLOAD_DIR)
+    real_file = os.path.realpath(filepath)
+    if not real_file.startswith(real_upload + os.sep):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="禁止访问"
+        )
 
     if not os.path.exists(filepath):
         raise HTTPException(

@@ -10,8 +10,10 @@ import traceback
 from dotenv import load_dotenv
 load_dotenv()
 
-# 添加主项目路径
-sys.path.insert(0, "/root/royalbot")
+# 添加主项目路径（优先从环境变量读取，回退到上级目录）
+parent_project = os.getenv("PARENT_PROJECT_PATH", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if parent_project not in sys.path:
+    sys.path.insert(0, parent_project)
 
 # 添加当前项目路径到 sys.path，并设置优先级
 current_dir = os.path.dirname(os.path.abspath(__file__))

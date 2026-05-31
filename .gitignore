@@ -27,6 +27,11 @@ build/
 .env.local
 .env.*.local
 
+# Secret keys
+.secret_key
+*.key
+*.pem
+
 # Database
 *.db
 *.sqlite

@@ -18,12 +18,30 @@ class EmbyServer(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)  # 服务器名称
     url = Column(String(255), nullable=False)  # 服务器地址（含端口）
-    api_key = Column(String(255), nullable=False)  # API Key
+    _api_key = Column("api_key", String(512), nullable=False)  # API Key（加密存储）
     is_active = Column(Boolean, default=True)  # 是否启用
     max_users = Column(Integer, default=0)  # 最大用户数（0为无限制）
     current_users = Column(Integer, default=0)  # 当前用户数
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def api_key(self) -> str:
+        """读取时自动解密"""
+        try:
+            from utils.crypto import decrypt_api_key
+            return decrypt_api_key(self._api_key)
+        except Exception:
+            return self._api_key  # 回退：可能是未加密的旧数据
+
+    @api_key.setter
+    def api_key(self, value: str):
+        """写入时自动加密"""
+        try:
+            from utils.crypto import encrypt_api_key
+            self._api_key = encrypt_api_key(value)
+        except Exception:
+            self._api_key = value  # 加密失败时回退存明文
 
 
 class PlanServerRelation(Base):

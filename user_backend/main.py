@@ -10,7 +10,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
 
 # 添加主项目路径（用于访问主项目的数据库）
-sys.path.append("/root/royalbot")
+# 优先从环境变量读取，回退到上级目录
+parent_project = os.getenv("PARENT_PROJECT_PATH", os.path.dirname(current_dir))
+if parent_project not in sys.path:
+    sys.path.append(parent_project)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,8 +23,8 @@ import logging
 from utils.config import settings
 from database import init_db
 
-# Rate limiting middleware
-from middleware import RateLimitMiddleware
+# 中间件
+from middleware import RateLimitMiddleware, SecurityHeadersMiddleware, SecurityRateLimitMiddleware
 
 # 导入 API 路由
 from api import auth, subscription, request, recharge, emby, announcement, ticket, invitation, payment, stats, message, exchange_code, cron, analytics, badges, routes
@@ -77,7 +80,9 @@ app = FastAPI(
     title=settings.APP_NAME,
     description="RoyalBot 用户端 API 接口",
     version=settings.APP_VERSION,
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs" if settings.DEBUG else None,  # 生产环境隐藏文档
+    redoc_url="/redoc" if settings.DEBUG else None,
 )
 
 # CORS 中间件
@@ -85,9 +90,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.FRONTEND_URLS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["Content-Type", "Authorization", "X-CSRF-Token"],
 )
+
+# 安全中间件（从外到内：SecurityHeaders → SecurityRateLimit → CORS → RateLimit）
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(SecurityRateLimitMiddleware)
 
 # Rate limiting middleware (must be after CORS)
 app.add_middleware(RateLimitMiddleware)
@@ -122,11 +131,13 @@ async def health_check():
 # 根路径
 @app.get("/")
 async def root():
-    return {
-        "name": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "docs": "/docs"
-    }
+    if settings.DEBUG:
+        return {
+            "name": settings.APP_NAME,
+            "version": settings.APP_VERSION,
+            "docs": "/docs"
+        }
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

@@ -155,145 +155,109 @@ async def check_concurrent_streams(
 # ==================== 异常登录检测 ====================
 
 class LoginTracker:
-    """登录追踪器（内存存储，生产环境应使用 Redis）"""
+    """登录追踪器（Redis 存储，支持多实例部署）"""
 
-    # 格式: {user_id: {'attempts': int, 'last_attempt': datetime, 'locked_until': datetime}}
-    _login_attempts: Dict[int, Dict] = {}
+    _redis = None
 
-    # 格式: {user_id: [{'ip': str, 'time': datetime}, ...]}
-    _login_history: Dict[int, List[Dict]] = {}
+    @classmethod
+    def _get_redis(cls):
+        if cls._redis is None:
+            from utils.redis_client import get_sync_redis
+            cls._redis = get_sync_redis()
+        return cls._redis
 
     @classmethod
     def check_login_allowed(cls, user_id: int, ip_address: str) -> Tuple[bool, Optional[str]]:
-        """
-        检查是否允许登录
-
-        Args:
-            user_id: 用户ID
-            ip_address: IP地址
-
-        Returns:
-            (是否允许, 拒绝原因)
-        """
+        """检查是否允许登录"""
         now = datetime.now()
+        redis = cls._get_redis()
+        if not redis.available:
+            return True, None  # Redis 不可用时降级放行
 
         # 检查是否被锁定
-        if user_id in cls._login_attempts:
-            attempt_data = cls._login_attempts[user_id]
-            if attempt_data.get('locked_until') and now < attempt_data['locked_until']:
-                remaining = int((attempt_data['locked_until'] - now).total_seconds() / 60)
+        locked_until = redis.get(f"login_lock:{user_id}")
+        if locked_until:
+            lock_time = datetime.fromisoformat(locked_until)
+            if now < lock_time:
+                remaining = int((lock_time - now).total_seconds() / 60)
                 return False, f"登录失败过多，请 {remaining} 分钟后再试"
 
         # 检查登录间隔（防爆破）
-        if user_id in cls._login_attempts:
-            last_attempt = cls._login_attempts[user_id].get('last_attempt')
-            if last_attempt:
-                interval = (now - last_attempt).total_seconds()
-                if interval < RISK_CONFIG['MIN_LOGIN_INTERVAL']:
-                    return False, f"登录过于频繁，请稍后再试"
+        last_attempt = redis.get(f"login_last:{user_id}")
+        if last_attempt:
+            interval = (now - datetime.fromisoformat(last_attempt)).total_seconds()
+            if interval < RISK_CONFIG['MIN_LOGIN_INTERVAL']:
+                return False, "登录过于频繁，请稍后再试"
 
         return True, None
 
     @classmethod
     def record_login_success(cls, user_id: int, ip_address: str, user_agent: str):
-        """
-        记录成功登录
-
-        Args:
-            user_id: 用户ID
-            ip_address: IP地址
-            user_agent: User-Agent
-        """
+        """记录成功登录"""
         now = datetime.now()
+        redis = cls._get_redis()
+        if not redis.available:
+            return
 
         # 清除失败记录
-        if user_id in cls._login_attempts:
-            cls._login_attempts[user_id] = {
-                'attempts': 0,
-                'last_attempt': None,
-                'locked_until': None
-            }
+        redis.delete(f"login_attempts:{user_id}", f"login_lock:{user_id}")
 
-        # 记录登录历史
-        if user_id not in cls._login_history:
-            cls._login_history[user_id] = []
-
-        cls._login_history[user_id].append({
-            'ip': ip_address,
-            'user_agent': user_agent,
-            'time': now
-        })
-
-        # 只保留最近100条记录
-        if len(cls._login_history[user_id]) > 100:
-            cls._login_history[user_id] = cls._login_history[user_id][-100:]
+        # 记录登录历史（用 Redis list，保留最近 100 条）
+        import json
+        history_key = f"login_history:{user_id}"
+        record = json.dumps({"ip": ip_address, "ua": user_agent, "time": now.isoformat()})
+        redis._client.lpush(history_key, record) if redis._client else None
+        if redis._client:
+            redis._client.ltrim(history_key, 0, 99)
+        redis.expire(history_key, 86400 * 7)  # 7 天过期
 
         logger.info(f"记录用户 {user_id} 登录成功: IP={ip_address}")
 
     @classmethod
     def record_login_failure(cls, user_id: int, ip_address: str):
-        """
-        记录登录失败
-
-        Args:
-            user_id: 用户ID
-            ip_address: IP地址
-        """
+        """记录登录失败"""
         now = datetime.now()
+        redis = cls._get_redis()
+        if not redis.available:
+            return
 
-        if user_id not in cls._login_attempts:
-            cls._login_attempts[user_id] = {
-                'attempts': 0,
-                'last_attempt': None,
-                'locked_until': None
-            }
-
-        data = cls._login_attempts[user_id]
-        data['attempts'] = data.get('attempts', 0) + 1
-        data['last_attempt'] = now
+        # 更新失败次数和时间
+        attempts_key = f"login_attempts:{user_id}"
+        attempts = redis.incr(attempts_key)
+        redis.expire(attempts_key, 3600)  # 1 小时窗口
+        redis.set(f"login_last:{user_id}", now.isoformat(), ex=3600)
 
         # 检查是否需要锁定
-        if data['attempts'] >= RISK_CONFIG['MAX_LOGIN_FAILURES']:
+        if attempts and int(attempts) >= RISK_CONFIG['MAX_LOGIN_FAILURES']:
             lock_until = now + timedelta(minutes=RISK_CONFIG['LOGIN_FAILURE_LOCKOUT'])
-            data['locked_until'] = lock_until
+            redis.set(f"login_lock:{user_id}", lock_until.isoformat(),
+                       ex=RISK_CONFIG['LOGIN_FAILURE_LOCKOUT'] * 60)
             logger.warning(f"用户 {user_id} 登录失败过多，已锁定 {RISK_CONFIG['LOGIN_FAILURE_LOCKOUT']} 分钟")
 
     @classmethod
     def get_recent_ips(cls, user_id: int, hours: int = 24) -> List[str]:
-        """
-        获取用户最近的IP地址列表
-
-        Args:
-            user_id: 用户ID
-            hours: 查询小时数
-
-        Returns:
-            IP地址列表
-        """
-        if user_id not in cls._login_history:
+        """获取用户最近的 IP 地址列表"""
+        redis = cls._get_redis()
+        if not redis.available or not redis._client:
             return []
 
+        history_key = f"login_history:{user_id}"
+        records = redis._client.lrange(history_key, 0, 99)
         cutoff = datetime.now() - timedelta(hours=hours)
-        recent = [
-            record['ip'] for record in cls._login_history[user_id]
-            if record['time'] > cutoff
-        ]
-
-        # 去重
-        return list(set(recent))
+        ips = set()
+        import json
+        for r in records:
+            try:
+                data = json.loads(r)
+                if datetime.fromisoformat(data["time"]) > cutoff:
+                    ips.add(data["ip"])
+            except Exception:
+                continue
+        return list(ips)
 
     @classmethod
     def check_new_location(cls, user_id: int, ip_address: str) -> bool:
-        """
-        检查是否为新位置登录
-
-        Args:
-            user_id: 用户ID
-            ip_address: IP地址
-
-        Returns:
-            是否为新位置
-        """
+        """检查是否为新位置登录"""
         recent_ips = cls.get_recent_ips(user_id, hours=24)
         return ip_address not in recent_ips and len(recent_ips) > 0
 

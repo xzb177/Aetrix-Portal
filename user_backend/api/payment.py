@@ -24,11 +24,13 @@ from api.auth import get_current_user
 logger = logging.getLogger(__name__)
 
 # 支付回调 IP 白名单（易支付服务器 IP）
-# 生产环境请根据实际易支付网关的 IP 地址配置
+# 从环境变量 YIPAY_WHITELIST_IPS 读取（逗号分隔），未配置则跳过验证
+import os as _os
+_raw_ips = _os.getenv("YIPAY_WHITELIST_IPS", "")
 YIPAY_WHITELIST_IPS: list[str] = [
-    # 易支付官方服务器 IP（需要根据实际情况添加）
-    # 示例: "127.0.0.1", "::1"
+    ip.strip() for ip in _raw_ips.split(",") if ip.strip()
 ]
+# 示例：export YIPAY_WHITELIST_IPS="1.2.3.4,5.6.7.8"
 
 # 允许回调的超时时间（秒），防止重放攻击
 CALLBACK_TIMEOUT_SECONDS = 300  # 5 分钟
