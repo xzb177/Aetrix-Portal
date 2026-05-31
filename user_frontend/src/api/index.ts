@@ -23,7 +23,20 @@ api.interceptors.request.use(
   }
 )
 
-// 响应拦截器 - 处理错误
+// ==================== Refresh Token 自动刷新 ====================
+let isRefreshing = false
+let refreshSubscribers: Array<(token: string) => void> = []
+
+function subscribeTokenRefresh(cb: (token: string) => void) {
+  refreshSubscribers.push(cb)
+}
+
+function onRefreshed(newToken: string) {
+  refreshSubscribers.forEach(cb => cb(newToken))
+  refreshSubscribers = []
+}
+
+// 响应拦截器 - 处理 401 + 自动刷新 Token
 api.interceptors.response.use(
   (response) => {
     const res = response.data
@@ -37,21 +50,78 @@ api.interceptors.response.use(
     }
     return res
   },
-  (error) => {
-    if (error.response?.status === 401) {
-      // 检查是否是登录请求，如果是则不处理重定向（让登录流程自己处理错误）
-      const isLoginRequest = error.config?.url?.includes('/api/user/auth/login') ||
-                             error.config?.url?.includes('/api/user/auth/register')
+  async (error) => {
+    const originalRequest = error.config
 
-      if (!isLoginRequest) {
-        // Token 过期或无效，清除登录信息
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('user')
-        // 不再跳转到 /login 页面，而是由 AuthSheet 处理
-        // 页面上的路由守卫会触发 AuthSheet
-        window.location.replace('/')
+    // 401 处理：尝试用 Refresh Token 刷新
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      // 跳过登录/注册/refresh 请求本身
+      const isAuthRequest =
+        originalRequest?.url?.includes('/api/user/auth/login') ||
+        originalRequest?.url?.includes('/api/user/auth/register') ||
+        originalRequest?.url?.includes('/api/user/auth/refresh')
+
+      if (isAuthRequest) {
+        // 认证请求的 401 直接抛出，由调用方处理
+        return Promise.reject(error)
       }
-      // 登录请求的 401 错误直接抛出，由调用方处理（显示错误提示）
+
+      const refreshToken = localStorage.getItem('refresh_token')
+
+      if (!refreshToken) {
+        // 没有 refresh token，清除登录状态
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('refresh_token')
+        localStorage.removeItem('user')
+        window.location.replace('/')
+        return Promise.reject(error)
+      }
+
+      // 如果正在刷新中，排队等待刷新完成
+      if (isRefreshing) {
+        return new Promise((resolve) => {
+          subscribeTokenRefresh((newToken: string) => {
+            originalRequest.headers.Authorization = `Bearer ${newToken}`
+            resolve(api(originalRequest))
+          })
+        })
+      }
+
+      // 开始刷新
+      isRefreshing = true
+      originalRequest._retry = true
+
+      try {
+        const res = await axios.post('/api/user/auth/refresh', {
+          refresh_token: refreshToken,
+        })
+
+        const data = res.data
+        const newAccessToken = data.access_token
+        const newRefreshToken = data.refresh_token
+
+        // 存储新 token
+        localStorage.setItem('access_token', newAccessToken)
+        if (newRefreshToken) {
+          localStorage.setItem('refresh_token', newRefreshToken)
+        }
+
+        // 通知所有排队的请求
+        onRefreshed(newAccessToken)
+
+        // 重试原始请求
+        originalRequest.headers.Authorization = `Bearer ${newAccessToken}`
+        return api(originalRequest)
+      } catch (refreshError) {
+        // 刷新失败，清除登录状态
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('refresh_token')
+        localStorage.removeItem('user')
+        window.location.replace('/')
+        return Promise.reject(refreshError)
+      } finally {
+        isRefreshing = false
+      }
     }
 
     // 获取错误信息并显示友好提示
@@ -67,9 +137,7 @@ api.interceptors.response.use(
       }
     }
 
-    // 可以在这里添加 toast 提示
     console.error('API Error:', errorMessage)
-
     return Promise.reject(error)
   }
 )
