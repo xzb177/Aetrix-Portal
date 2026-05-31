@@ -26,7 +26,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db():
     """初始化数据库表"""
     from . import models
-    from . import models_new  # 创新功能模型
     import sqlite3
 
     # badges: 暂时禁用，数据库表结构需要迁移
