@@ -2,7 +2,7 @@
 RoyalBot Portal - 统一后端主入口
 整合用户端和管理后台的所有 API
 """
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -63,14 +63,29 @@ app = FastAPI(
 
 # ==================== 中间件配置 ====================
 
-# CORS 中间件
+# CORS 中间件（生产环境请设置 CORS_ORIGINS 环境变量限制具体域名）
+_cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应该限制具体域名
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[o.strip() for o in _cors_origins_env.split(",") if o.strip()] or ["*"],
+    allow_credentials=bool(_cors_origins_env),  # 通配源时禁用 credentials（避免无效组合）
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
+                   "X-MediaBrowser-Token", "X-Device-Id"],
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
+
+
+# 安全响应头
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.url.path.startswith(("/api/", "/emby/")):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 # GZip 压缩
 app.add_middleware(GZipMiddleware, minimum_size=1000)

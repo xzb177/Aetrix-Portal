@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.emby_server.auth import ensure_emby_credentials
+from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token,
@@ -149,8 +150,11 @@ def get_current_user_compat(
 # ==================== Endpoints ====================
 
 @auth_router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def register(req: RegisterRequest, db: Session = Depends(get_db)):
+async def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     """注册新用户（用户名唯一，密码 bcrypt 存储，自动生成自建 Emby 凭据）"""
+    allowed, retry_after = check_rate_limit(f"register:{client_ip(request)}", 5, 3600)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
     username = req.username.strip()
     if not USERNAME_RE.match(username):
         raise HTTPException(
@@ -185,8 +189,11 @@ async def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @auth_router.post("/login", response_model=AuthResponse)
-async def login(req: LoginRequest, db: Session = Depends(get_db)):
-    """用户名密码登录，成功返回 JWT"""
+async def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
+    """用户名密码登录，成功返回 JWT（同 IP 每分钟最多 8 次尝试）"""
+    allowed, retry_after = check_rate_limit(f"login:{client_ip(request)}", 8, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
     user = (
         db.query(models.WebUser)
         .filter(models.WebUser.username == req.username.strip())
@@ -251,7 +258,7 @@ async def change_password(
         raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
 
     current_user.password_hash = hash_password(req.new_password)
-    # 同步自建 Emby 播放密码，保持两端一致
-    current_user.emby_password = req.new_password
+    # 同步自建 Emby 播放密码（bcrypt 哈希存储），保持两端一致
+    current_user.emby_password = hash_password(req.new_password)
     db.commit()
     return {"success": True, "message": "密码已更新"}

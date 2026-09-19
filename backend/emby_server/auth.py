@@ -1,5 +1,4 @@
 """自建 Emby 服务器：认证与 Token 管理"""
-import hashlib
 import secrets
 import uuid
 from datetime import datetime
@@ -12,6 +11,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.emby_server import models as emby_models
+from backend.security import hash_password, verify_password
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -33,8 +33,28 @@ def parse_emby_authorization(header_value: Optional[str]) -> dict:
     return result
 
 
-def _stable_hash(s: str) -> str:
-    return hashlib.md5(s.encode("utf-8")).hexdigest()
+def verify_emby_password(plain: str, stored: str) -> bool:
+    """校验 Emby 播放密码：支持 bcrypt 哈希与旧明文（明文仅作兼容）"""
+    if not stored:
+        return False
+    if stored.startswith("$2"):
+        from backend.security import verify_password
+
+        return verify_password(plain, stored)
+    return secrets.compare_digest(plain.encode(), stored.encode())
+
+
+def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None) -> Optional[str]:
+    """确保用户拥有自建 Emby 登录凭据；设置密码时返回哈希值"""
+    if not user.emby_username:
+        user.emby_username = f"emby_{user.id}_{uuid.uuid4().hex[:6]}"
+    if password:
+        hashed = hash_password(password)
+        user.emby_password = hashed
+        db.commit()
+        return hashed
+    db.commit()
+    return None
 
 
 def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[str, emby_models.EmbyApiToken]:
@@ -129,8 +149,13 @@ def get_emby_user(
 
 
 def get_admin_or_emby_user(request: Request, db: Session = Depends(get_db)) -> models.WebUser:
-    """门户端鉴权：JWT 优先，回退到 Emby token / 旧数字 token（向后兼容）"""
-    # 1) JWT access token
+    """门户端鉴权：JWT 优先，回退到 Emby 客户端 token
+
+    旧版数字 token 默认已禁用（可被枚举冒充任意用户）。
+    如需临时兼容已部署前端，可设置环境变量 EMBY_ALLOW_LEGACY_TOKENS=true。
+    """
+    import os
+
     raw = (
         request.headers.get("Authorization", "").replace("Bearer ", "").strip()
         or request.query_params.get("api_key", "")
@@ -139,25 +164,17 @@ def get_admin_or_emby_user(request: Request, db: Session = Depends(get_db)) -> m
         from backend.security import resolve_jwt_user_id
 
         jwt_user_id = resolve_jwt_user_id(raw)
-        if jwt_user_id is None and raw.isdigit():
-            jwt_user_id = int(raw)  # 旧版数字 token 兼容
+        if jwt_user_id is None and raw.isdigit() and os.getenv("EMBY_ALLOW_LEGACY_TOKENS", "").lower() == "true":
+            jwt_user_id = int(raw)  # 旧版数字 token 兼容（需显式开启）
         if jwt_user_id is not None:
             user = db.query(models.WebUser).filter(models.WebUser.id == jwt_user_id).first()
             if user and user.is_active:
                 return user
 
-    # 2) Emby 客户端 token
+    # Emby 客户端 token
     result = resolve_token(db, request)
     if result:
         return result[0]
 
     raise HTTPException(status_code=401, detail="未提供认证凭证")
 
-
-def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None) -> None:
-    """确保用户拥有自建 Emby 登录凭据"""
-    if not user.emby_username:
-        user.emby_username = f"emby_{user.id}_{uuid.uuid4().hex[:6]}"
-    if password:
-        user.emby_password = password
-    db.commit()

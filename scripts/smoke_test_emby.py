@@ -26,10 +26,19 @@ Session = sessionmaker(bind=engine)
 init_db()
 
 # ---- 造测试数据 ----
+from backend.security import hash_password  # noqa: E402
+
 db = Session()
 admin = models.AdminUser(username="admin", password_hash="x", role="super_admin")
 db.add(admin)
-user = models.WebUser(username="alice", password_hash="x", is_active=True)
+user = models.WebUser(
+    username="alice",
+    password_hash="x",
+    is_active=True,
+    is_staff=True,
+    emby_username="emby_alice",
+    emby_password=hash_password("alice-play-pw"),
+)
 db.add(user)
 db.commit()
 
@@ -95,12 +104,19 @@ assert r.status_code == 200, r.text
 assert "ServerName" in r.json()
 print("OK /emby/system/info/public")
 
-# 认证
+# 认证（正确密码）
 r = client.post("/emby/Users/AuthenticateByName",
-                json={"Username": "alice", "Pw": ""},
+                json={"Username": "alice", "Pw": "alice-play-pw"},
                 headers={"X-Emby-Authorization": 'MediaBrowser Client="Infuse", Device="Test", DeviceId="dev1", Version="7.0"'})
 assert r.status_code == 200, r.text
 auth = r.json()
+
+# 认证（错误密码必须拒绝）
+r = client.post("/emby/Users/AuthenticateByName",
+                json={"Username": "alice", "Pw": "nope"},
+                headers={"X-Emby-Authorization": 'MediaBrowser Client="Infuse", Device="Test", DeviceId="dev1b", Version="7.0"'})
+assert r.status_code == 401, f"错误密码应拒绝, got {r.status_code}"
+print("OK wrong password rejected")
 token = auth["AccessToken"]
 user_id = auth["User"]["Id"]
 print("OK AuthenticateByName -> token", token[:8], "user", user_id)
@@ -180,22 +196,42 @@ r = client.get(f"/emby/Shows/{series['Id']}/Episodes", headers=H)
 assert r.status_code == 200 and len(r.json()["Items"]) == 2, r.text
 print("OK Seasons/Episodes")
 
-# 门户 API
-r = client.get("/api/user/emby/server", headers={"Authorization": f"Bearer {user_id}"})
+# 门户 API（JWT）
+from backend.security import create_access_token  # noqa: E402
+
+db2 = Session()
+alice_id = db2.query(models.WebUser).filter(models.WebUser.username == "alice").first().id
+bob = models.WebUser(username="bob", password_hash="x", is_active=True, is_staff=False)
+db2.add(bob)
+db2.commit()
+bob_id = bob.id
+db2.close()
+
+jwt_token = create_access_token(alice_id, {"username": "alice"})
+r = client.get("/api/user/emby/server", headers={"Authorization": f"Bearer {jwt_token}"})
 assert r.status_code == 200, r.text
 server_info = r.json()
 assert server_info["emby_username"], server_info
+assert not server_info.get("emby_password"), "账号卡不应返回明文密码"
 print("OK portal /server:", server_info["server_name"], server_info["base_url"])
 
-r = client.get("/api/user/emby/resume", headers={"Authorization": f"Bearer {user_id}"})
+r = client.get("/api/user/emby/resume", headers={"Authorization": f"Bearer {jwt_token}"})
 assert r.status_code == 200, r.text
 print("OK portal /resume")
 
-# 管理端
-r = client.post("/api/admin/emby/libraries", json={"name": "库2", "collection_type": "tvshows",
-                                                   "paths": [lib_dir]})
-assert r.status_code == 200, r.text
+# 管理端（需 is_staff；无凭证应 401，非 staff 应 403）
 r = client.get("/api/admin/emby/overview")
+assert r.status_code == 401, f"未认证应 401, got {r.status_code}"
+bob_token = create_access_token(bob_id, {"username": "bob"})
+r = client.get("/api/admin/emby/overview", headers={"Authorization": f"Bearer {bob_token}"})
+assert r.status_code == 403, f"非 staff 应 403, got {r.status_code}"
+print("OK admin endpoints reject anonymous and non-staff")
+
+r = client.post("/api/admin/emby/libraries", json={"name": "库2", "collection_type": "tvshows",
+                                                   "paths": [lib_dir]},
+                headers={"Authorization": f"Bearer {jwt_token}"})
+assert r.status_code == 200, r.text
+r = client.get("/api/admin/emby/overview", headers={"Authorization": f"Bearer {jwt_token}"})
 assert r.status_code == 200, r.text
 print("OK admin overview:", r.json())
 

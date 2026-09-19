@@ -142,34 +142,48 @@ emby_password_synced = r.json()["user"]["emby_username"] is not None
 assert emby_password_synced
 print("OK relogin with new password")
 
-# Emby 播放密码同步验证
+# Emby 播放密码同步验证（应为 bcrypt 哈希，而非明文）
 import sqlite3  # noqa: E402
 
 db = sqlite3.connect(DB)
 row = db.execute("SELECT emby_password FROM web_users WHERE username='newuser'").fetchone()
 db.close()
-assert row and row[0] == "newpass456", f"Emby 密码应同步为 newpass456, got {row}"
-print("OK emby play password synced with portal password")
+assert row and row[0].startswith("$2"), f"Emby 密码应为 bcrypt 哈希, got {row}"
+print("OK emby play password stored as bcrypt hash")
 
-# ==================== 8. 旧数字 token 兼容（门户 Emby 端点）====================
+# 账号卡不再返回明文密码
+r = client.get("/api/user/emby/server", headers={"Authorization": f"Bearer {new_access}"})
+assert r.status_code == 200
+assert not r.json().get("emby_password"), "账号卡不应返回明文密码"
+assert r.json().get("has_password") is True
+print("OK account card hides plaintext password")
+
+# ==================== 8. 旧数字 token 默认已禁用（防 ID 枚举冒充）====================
 user_id = data["user"]["id"]
 r = client.get("/api/user/emby/server", headers={"Authorization": f"Bearer {user_id}"})
-assert r.status_code == 200, (r.status_code, r.text)
-print("OK legacy numeric token still works on /api/user/emby/server")
+assert r.status_code == 401, f"数字 token 应被拒绝, got {r.status_code}"
+print("OK legacy numeric token rejected by default")
 
 # JWT 也可访问门户 Emby 端点
 r = client.get("/api/user/emby/server", headers={"Authorization": f"Bearer {new_access}"})
 assert r.status_code == 200
 print("OK JWT works on /api/user/emby/server")
 
-# Emby 协议端点仍正常（注册时自动生成的凭据可直接登录）
+# ==================== 9. Emby 协议认证（bcrypt 哈希密码）====================
 r = client.post("/emby/Users/AuthenticateByName",
                 json={"Username": data["user"]["emby_username"], "Pw": "newpass456"},
                 headers={"X-Emby-Authorization": 'MediaBrowser Client="T", Device="T", DeviceId="t1", Version="1"'})
 assert r.status_code == 200, (r.status_code, r.text)
-print("OK Emby AuthenticateByName with synced credentials")
+print("OK Emby AuthenticateByName with bcrypt-hashed credentials")
 
-# ==================== 9. logout ====================
+# 错误密码必须被拒绝（此前空存储时任意密码可通过）
+r = client.post("/emby/Users/AuthenticateByName",
+                json={"Username": data["user"]["emby_username"], "Pw": "wrong-password"},
+                headers={"X-Emby-Authorization": 'MediaBrowser Client="T", Device="T", DeviceId="t2", Version="1"'})
+assert r.status_code == 401, f"错误密码应被拒绝, got {r.status_code}"
+print("OK Emby AuthenticateByName rejects wrong password")
+
+# ==================== 10. logout ====================
 r = client.post("/api/user/auth/logout", headers={"Authorization": f"Bearer {new_access}"})
 assert r.status_code == 200
 print("OK logout")

@@ -229,16 +229,14 @@ def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> d
 @emby_router.get("/emby/system/info/public")
 @emby_router.get("/System/Info")
 @emby_router.get("/System/Info/Public")
-async def system_info(request: Request, db: Session = Depends(get_db)):
-    auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
-    resolved = resolve_token(db, request)
+async def system_info(request: Request):
     return {
         "Id": SERVER_ID,
         "ServerName": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
         "Version": SERVER_VERSION,
         "ProductName": "Emby Server",
         "OperatingSystem": "Linux",
-        "TranscodingJobs": len(get_transcode("") or []) if False else 0,
+        "TranscodingJobs": 0,
         "LocalAddress": _base_url(request),
         "WanAddress": _base_url(request),
         "SupportsLibraryMonitor": False,
@@ -283,6 +281,18 @@ async def authenticate_by_name(
     credentials: dict = Body(...),
     db: Session = Depends(get_db),
 ):
+    # 限流：同 IP 每分钟最多 10 次认证尝试（防暴力破解）
+    from backend.ratelimit import check_rate_limit, client_ip
+
+    ip = client_ip(request)
+    allowed, retry_after = check_rate_limit(f"emby-auth:{ip}", 10, 60)
+    if not allowed:
+        return Response(
+            content='{"error": "TooManyAttempts"}',
+            status_code=429, media_type="application/json",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     username = (credentials.get("Username") or "").strip()
     password = credentials.get("Pw") or credentials.get("password") or ""
 
@@ -293,7 +303,7 @@ async def authenticate_by_name(
             or_(models.WebUser.emby_username == username, models.WebUser.username == username)
         ).first()
 
-    from backend.emby_server.auth import ensure_emby_credentials, issue_token
+    from backend.emby_server.auth import ensure_emby_credentials, issue_token, verify_emby_password
 
     def _auth_fail():
         return Response(
@@ -301,13 +311,15 @@ async def authenticate_by_name(
             status_code=401, media_type="application/json",
         )
 
-    if not user or not user.is_active:
+    if not user or not user.is_active or not password:
         return _auth_fail()
 
-    stored = user.emby_password or ""
-    # 自建凭据存在时校验之；否则接受门户密码（此处为简化校验）
-    if stored and password != stored:
+    # 密码校验：支持哈希与明文（明文用于兼容旧数据，校验后自动升级为哈希）
+    if not verify_emby_password(password, user.emby_password or ""):
         return _auth_fail()
+    if user.emby_password and not user.emby_password.startswith("$2"):
+        # 透明升级：明文 -> bcrypt
+        ensure_emby_credentials(db, user, password=password)
 
     ensure_emby_credentials(db, user)
     token_value, token_row = issue_token(db, user, request)
@@ -336,9 +348,6 @@ async def authenticate_by_name(
 
 
 def _user_dto(user: models.WebUser, db: Session) -> dict:
-    admin = db.query(models.AdminUser).filter(
-        models.AdminUser.username == user.username
-    ).first() if user.is_staff else None
     policy = {
         "IsAdministrator": bool(user.is_staff),
         "EnableContentDeletion": bool(user.is_staff),
@@ -381,7 +390,6 @@ async def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
 async def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
-    base = _base_url(request := None) if False else ""
     items = []
     for lib in libs:
         items.append({
@@ -850,7 +858,8 @@ async def item_image(item_id: str, image_type: str, request: Request,
         src = None
     if not src:
         raise HTTPException(status_code=404, detail="Image not found")
-    if src.startswith("http"):
+    if src.startswith("http://") or src.startswith("https://"):
+        # 仅允许代理 http(s) 远程图片（防 SSRF）
         import httpx
 
         r = httpx.get(src, timeout=10, follow_redirects=True)

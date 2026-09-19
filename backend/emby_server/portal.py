@@ -35,35 +35,50 @@ from backend.emby_server.streaming import stop_all_transcodes, stop_transcode
 
 logger = logging.getLogger(__name__)
 
+
+def require_staff(user: models.WebUser = Depends(get_admin_or_emby_user)) -> models.WebUser:
+    """管理端鉴权：仅 is_staff 用户可访问（/api/admin/emby/* 全部端点）"""
+    if not user.is_staff:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
+
+
 user_emby_router = APIRouter(prefix="/api/user/emby", tags=["用户端-自建Emby"])
-admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自建Emby"])
+admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自建Emby"], dependencies=[Depends(require_staff)])
 
 
 # ==================== 用户端 ====================
 
-@user_emby_router.get("/server")
-async def get_server_info(request_user: models.WebUser = Depends(get_admin_or_emby_user),
-                          db: Session = Depends(get_db)):
-    """返回账号卡信息：服务器地址 + 自建 Emby 凭据 + 播放器导入 scheme"""
-    base_url = os.getenv("EMBY_PUBLIC_URL", "").rstrip("/") or "http://localhost:8000"
-    user = request_user
-    ensure_emby_credentials(db, user)
-    scheme = os.getenv("EMBY_URL_SCHEME", "http")
-    host = base_url.split("//")[-1]
-    creds = f"scheme={scheme}&host={host}&username={user.emby_username}&password={user.emby_password or ''}"
+def _account_card(user: models.WebUser, db: Session) -> dict:
+    """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）"""
     return {
         "server_id": SERVER_ID,
         "server_name": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
-        "base_url": base_url,
+        "base_url": base_url(),
         "emby_username": user.emby_username,
-        "emby_password": user.emby_password or "",
+        "emby_password": None,
         "has_password": bool(user.emby_password),
         "import_schemes": {
-            "forward": f"forward://import?type=emby&{creds}",
-            "hills": f"hills://import?type=emby&{creds}",
-            "senplayer": f"senplayer://importserver?type=emby&name=RoyalBot&address={base_url}&username={user.emby_username}&password={user.emby_password or ''}",
+            "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={base_url().split('//')[-1]}&username={user.emby_username}",
+            "senplayer": f"senplayer://importserver?type=emby&name=RoyalBot&address={base_url()}&username={user.emby_username}",
         },
     }
+
+
+def base_url() -> str:
+    return os.getenv("EMBY_PUBLIC_URL", "").rstrip("/") or "http://localhost:8000"
+
+
+@user_emby_router.get("/server")
+async def get_server_info(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+                          db: Session = Depends(get_db)):
+    """返回账号卡信息：服务器地址 + 自建 Emby 用户名 + 播放器导入 scheme
+
+    安全：不返回密码明文。密码仅注册/重置时一次性返回。
+    """
+    user = request_user
+    ensure_emby_credentials(db, user)
+    return _account_card(user, db)
 
 
 class SetPasswordRequest(BaseModel):
@@ -76,7 +91,7 @@ async def set_emby_password(
     request_user: models.WebUser = Depends(get_admin_or_emby_user),
     db: Session = Depends(get_db),
 ):
-    """设置/修改自建 Emby 播放密码"""
+    """设置/修改自建 Emby 播放密码（bcrypt 哈希存储）"""
     if not (3 <= len(req.password) <= 64):
         raise HTTPException(status_code=400, detail="密码长度需为 3-64 位")
     ensure_emby_credentials(db, request_user, password=req.password)
@@ -208,7 +223,7 @@ class LibraryUpdate(BaseModel):
 
 
 @admin_emby_router.get("/overview")
-async def admin_overview(db: Session = Depends(get_db)):
+async def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     total_items = db.query(em.MediaItem).count()
     total_libraries = db.query(em.Library).count()
     active_sessions = (
@@ -225,7 +240,7 @@ async def admin_overview(db: Session = Depends(get_db)):
 
 
 @admin_emby_router.get("/libraries")
-async def list_libraries(db: Session = Depends(get_db)):
+async def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     libs = db.query(em.Library).order_by(em.Library.id).all()
     return {"libraries": [
         {
@@ -241,7 +256,7 @@ async def list_libraries(db: Session = Depends(get_db)):
 
 
 @admin_emby_router.post("/libraries")
-async def create_library(req: LibraryCreate, db: Session = Depends(get_db)):
+async def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     import uuid
 
     guid = uuid.uuid4().hex[:32]
@@ -259,7 +274,7 @@ async def create_library(req: LibraryCreate, db: Session = Depends(get_db)):
 
 
 @admin_emby_router.put("/libraries/{lib_id}")
-async def update_library(lib_id: int, req: LibraryUpdate, db: Session = Depends(get_db)):
+async def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
@@ -279,7 +294,7 @@ async def update_library(lib_id: int, req: LibraryUpdate, db: Session = Depends(
 
 
 @admin_emby_router.delete("/libraries/{lib_id}")
-async def delete_library(lib_id: int, db: Session = Depends(get_db)):
+async def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
@@ -294,7 +309,7 @@ async def delete_library(lib_id: int, db: Session = Depends(get_db)):
 
 
 @admin_emby_router.post("/libraries/{lib_id}/scan")
-async def scan_library_endpoint(lib_id: int, db: Session = Depends(get_db)):
+async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
@@ -308,7 +323,7 @@ async def scan_library_endpoint(lib_id: int, db: Session = Depends(get_db)):
 
 
 @admin_emby_router.get("/items")
-async def admin_search_items(db: Session = Depends(get_db),
+async def admin_search_items(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
                              search: str = "", type: str = "", limit: int = 50, offset: int = 0):
     query = db.query(em.MediaItem)
     if search:
@@ -327,7 +342,7 @@ async def admin_search_items(db: Session = Depends(get_db),
 
 
 @admin_emby_router.delete("/items/{item_id}")
-async def admin_delete_item(item_id: str, db: Session = Depends(get_db)):
+async def admin_delete_item(item_id: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="条目不存在")
@@ -339,7 +354,7 @@ async def admin_delete_item(item_id: str, db: Session = Depends(get_db)):
 
 
 @admin_emby_router.get("/sessions")
-async def admin_sessions(db: Session = Depends(get_db)):
+async def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     sessions = (
         db.query(em.PlaybackSession, models.WebUser, em.MediaItem)
         .join(models.WebUser, models.WebUser.id == em.PlaybackSession.user_id)
@@ -365,7 +380,7 @@ async def admin_sessions(db: Session = Depends(get_db)):
 
 
 @admin_emby_router.delete("/sessions/{session_key}")
-async def admin_stop_session(session_key: str, db: Session = Depends(get_db)):
+async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     session = db.query(em.PlaybackSession).filter(
         em.PlaybackSession.session_key == session_key
     ).first()
@@ -377,6 +392,6 @@ async def admin_stop_session(session_key: str, db: Session = Depends(get_db)):
 
 
 @admin_emby_router.post("/transcodes/stop-all")
-async def admin_stop_all_transcodes():
+async def admin_stop_all_transcodes(staff: models.WebUser = Depends(require_staff)):
     count = stop_all_transcodes()
     return {"success": True, "stopped": count}

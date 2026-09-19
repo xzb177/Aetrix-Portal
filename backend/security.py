@@ -18,7 +18,12 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
-if not os.getenv("SECRET_KEY"):
+if os.getenv("SECRET_KEY") and len(os.getenv("SECRET_KEY", "")) < 32:
+    logger.warning(
+        "SECRET_KEY 长度过短（<32 字符），建议使用 48+ 字节随机密钥。"
+        "生成方式: python3 -c \"import secrets; print(secrets.token_urlsafe(48))\""
+    )
+elif not os.getenv("SECRET_KEY"):
     logger.warning(
         "SECRET_KEY 未设置，使用临时随机密钥；重启后已签发的 token 将失效。"
         "生产环境请在环境变量中设置 SECRET_KEY。"

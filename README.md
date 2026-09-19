@@ -107,8 +107,17 @@ curl -X POST http://localhost:8000/api/user/auth/refresh \
 ```
 
 - JWT：HS256，`SECRET_KEY` 签名，access 2 小时 / refresh 30 天，类型隔离（refresh 不能访问业务端点）
-- 密码 bcrypt 存储；注册自动生成自建 Emby 凭据，改密自动同步 Emby 播放密码
-- 兼容：`/api/user/emby/*` 等门户端点同时接受 JWT、旧数字 token 和 Emby 客户端 token
+- 密码 bcrypt 存储（门户密码与 Emby 播放密码均为哈希存储）；注册自动生成自建 Emby 凭据，改密自动同步 Emby 播放密码
+- 兼容：`/api/user/emby/*` 等门户端点接受 JWT 与 Emby 客户端 token；旧版数字 token 默认禁用（可用 `EMBY_ALLOW_LEGACY_TOKENS=true` 临时开启）
+
+### 安全机制
+
+- 🔐 **认证限流**：登录（8 次/分/IP）、注册（5 次/时/IP）、Emby 协议认证（10 次/分/IP）
+- 🔐 **管理端保护**：`/api/admin/emby/*` 全部端点要求 `is_staff` 用户（未认证 401 / 非 staff 403）
+- 🔐 **密码策略**：空密码无法通过 Emby 协议认证；旧明文密码在登录时透明升级为 bcrypt
+- 🔐 **账号卡**：不返回密码明文，仅返回用户名与服务器地址
+- 🔐 **安全响应头**：`X-Content-Type-Options` / `X-Frame-Options` / `Referrer-Policy`；API 路径禁用缓存
+- 🔐 **CORS**：生产环境请设置 `CORS_ORIGINS` 环境变量限制来源域名
 
 ## 📦 目录结构
 
