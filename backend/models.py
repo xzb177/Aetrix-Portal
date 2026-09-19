@@ -145,6 +145,10 @@ class WebUser(Base):
     telegram_id = Column(BigInteger, unique=True)
     is_active = Column(Boolean, default=True)
     is_staff = Column(Boolean, default=False)
+
+    # 自建 Emby 凭据（完全自建模式下，Emby 客户端用此账号密码登录）
+    emby_username = Column(String(64), unique=True, nullable=True)
+    emby_password = Column(String(128), nullable=True)
     last_login_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -155,7 +159,7 @@ class TelegramUser(Base):
     __tablename__ = 'telegram_users'
 
     __table_args__ = (
-        Index('idx_tg_id', 'telegram_id'),
+        Index('idx_tg_id', 'id'),
         Index('idx_tg_username', 'username'),
     )
 

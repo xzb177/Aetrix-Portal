@@ -26,12 +26,12 @@ elif DATABASE_TYPE == "mysql":
         "mysql+pymysql://royalbot:password@localhost:3306/royalbot"
     )
 else:
-    # SQLite 默认路径
-    DATABASE_URL = "sqlite:////root/RoyalBot-Portal/backend/royalbot_unified.db"
+    # SQLite 默认路径（相对工作目录，可通过 DATABASE_URL 覆盖）
+    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 
 # Redis 配置
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-REDIS_ENABLED = os.getenv("REDIS_ENABLED", "true").lower() == "true"
+REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 
 # ==================== 数据库引擎 ====================
 engine_config = {
@@ -159,6 +159,7 @@ def get_db() -> Session:
 def init_db():
     """初始化数据库，创建所有表"""
     from backend import models  # 导入所有模型
+    from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
     Base.metadata.create_all(bind=engine)
     print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
