@@ -121,7 +121,7 @@ const handleKeydown = (e: KeyboardEvent) => {
   }
 }
 
-if (import.meta.client) {
+if (typeof window !== 'undefined') {
   onMounted(() => {
     document.addEventListener('keydown', handleKeydown)
   })

@@ -1,27 +1,18 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { authApi } from '@/api'
+import { authApi, tokenStore, type AuthUser } from '@/api'
 
-export interface User {
-  id: number
-  username: string
-  email?: string
-  is_vip: boolean
-  emby_account?: string
-  points?: number
-  telegram_id?: number
-  avatar_url?: string
-}
+export type { AuthUser as User }
 
 export const useUserStore = defineStore('user', () => {
-  const user = ref<User | null>(null)
+  const user = ref<AuthUser | null>(null)
   const token = ref<string | null>(null)
   const loading = ref(false)
 
   const isLoggedIn = computed(() => !!token.value)
-  const isVIP = computed(() => user.value?.is_vip ?? false)
+  const isVIP = computed(() => !!user.value?.is_vip)
 
-  // 初始化 - 从 localStorage 恢复
+  // 从 localStorage 恢复登录态
   function init() {
     const savedToken = localStorage.getItem('access_token')
     const savedUser = localStorage.getItem('user')
@@ -37,91 +28,59 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  // 登录
+  function _persist(response: { access_token: string; refresh_token: string; user: AuthUser }) {
+    token.value = response.access_token
+    user.value = response.user
+    tokenStore.set(response.access_token, response.refresh_token)
+    localStorage.setItem('user', JSON.stringify(response.user))
+  }
+
   async function login(username: string, password: string) {
     loading.value = true
     try {
-      const response = await authApi.login({ username, password }) as unknown as { access_token: string; user: User }
-      token.value = response.access_token
-      user.value = response.user
-
-      localStorage.setItem('access_token', response.access_token)
-      localStorage.setItem('user', JSON.stringify(response.user))
+      const response = await authApi.login({ username, password })
+      _persist(response)
       return true
-    } catch (error) {
-      console.error('Login failed:', error)
-      throw error
     } finally {
       loading.value = false
     }
   }
 
-  // 注册
-  async function register(username: string, password: string, email?: string, inviteCode?: string) {
+  async function register(username: string, password: string, email?: string) {
     loading.value = true
     try {
-      const response = await authApi.register({ username, password, email, invitation_code: inviteCode }) as unknown as { access_token: string; user: User }
-      token.value = response.access_token
-      user.value = response.user
-
-      localStorage.setItem('access_token', response.access_token)
-      localStorage.setItem('user', JSON.stringify(response.user))
+      const response = await authApi.register({ username, password, email })
+      _persist(response)
       return true
-    } catch (error) {
-      console.error('Register failed:', error)
-      throw error
     } finally {
       loading.value = false
     }
   }
 
-  // Telegram 登录回调
-  async function telegramCallback(queryString: string) {
-    loading.value = true
-    try {
-      const response = await authApi.telegramCallback({ query_string: queryString }) as unknown as { access_token: string; user: User }
-      token.value = response.access_token
-      user.value = response.user
-
-      localStorage.setItem('access_token', response.access_token)
-      localStorage.setItem('user', JSON.stringify(response.user))
-      return true
-    } catch (error) {
-      console.error('Telegram login failed:', error)
-      throw error
-    } finally {
-      loading.value = false
-    }
-  }
-
-  // 获取用户信息
   async function fetchUser() {
     if (!token.value) return
-
     loading.value = true
     try {
-      const response = await authApi.getCurrentUser() as User
+      const response = await authApi.getCurrentUser()
       user.value = response
       localStorage.setItem('user', JSON.stringify(response))
     } catch (error) {
+      // 获取失败（含刷新失败）时清除登录态；拦截器已处理跳转
       console.error('Fetch user failed:', error)
-      // 如果获取失败，清除登录状态
       logout()
+      throw error
     } finally {
       loading.value = false
     }
   }
 
-  // 登出
   function logout() {
     user.value = null
     token.value = null
-    localStorage.removeItem('access_token')
-    localStorage.removeItem('user')
+    tokenStore.clear()
   }
 
-  // 更新用户信息
-  function updateUser(userData: Partial<User>) {
+  function updateUser(userData: Partial<AuthUser>) {
     if (user.value) {
       user.value = { ...user.value, ...userData }
       localStorage.setItem('user', JSON.stringify(user.value))
@@ -137,7 +96,6 @@ export const useUserStore = defineStore('user', () => {
     init,
     login,
     register,
-    telegramCallback,
     fetchUser,
     logout,
     updateUser,

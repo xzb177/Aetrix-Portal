@@ -13,6 +13,7 @@ import logging
 from backend.database import get_db
 from backend import models
 from backend.notifications import get_notification_service, AdminEvent
+from backend.security import resolve_jwt_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,28 +30,21 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> models.WebUser:
-    """获取当前登录用户"""
+    """获取当前登录用户（JWT access token 鉴权）"""
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="未提供认证凭证"
         )
 
-    # 处理 Bearer 前缀
-    token = credentials.credentials
-    if token.startswith("Bearer "):
-        token = token[7:]  # 去掉 "Bearer " 前缀
-
-    # 临时：使用 token 直接作为 user_id（仅用于开发测试）
-    try:
-        user_id = int(token)
-        user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    except (ValueError, AttributeError):
+    user_id = resolve_jwt_user_id(credentials.credentials)
+    if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的认证凭证"
+            detail="无效或已过期的凭证"
         )
 
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -86,37 +80,6 @@ class MessageResponse(BaseModel):
 class UnreadCountResponse(BaseModel):
     """未读消息数响应"""
     unread_count: int
-
-
-class ExchangeCodeRedeemRequest(BaseModel):
-    """兑换码兑换请求"""
-    code: str
-
-
-class UserMeResponse(BaseModel):
-    """当前用户信息响应"""
-    id: int
-    username: str
-    email: Optional[str] = None
-    is_vip: bool
-    points: Optional[int] = None
-    balance: Optional[int] = None
-    telegram_id: Optional[int] = None
-    avatar_url: Optional[str] = None
-    completed_requests_count: int = 0
-    total_requests_count: int = 0
-    registered_date: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
-
-class ExchangeCodeRedeemResponse(BaseModel):
-    """兑换码兑换响应"""
-    success: bool
-    message: str
-    reward_type: Optional[str] = None
-    reward_amount: Optional[int] = None
 
 
 class TicketCreateRequest(BaseModel):
@@ -287,27 +250,6 @@ async def mark_all_read(
 
 
 # ==================== 兑换码 API ====================
-
-@user_router.post("/exchange-codes/redeem", response_model=ExchangeCodeRedeemResponse)
-async def redeem_exchange_code(
-    request: ExchangeCodeRedeemRequest,
-    current_user: models.WebUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """兑换兑换码 - 与后台兑换码管理联动"""
-    # TODO: 实现 ExchangeCode 模型
-    # code = db.query(models.ExchangeCode).filter(
-    #     models.ExchangeCode.code == request.code.upper()
-    # ).first()
-
-    # 模拟实现
-    return ExchangeCodeRedeemResponse(
-        success=True,
-        message="兑换成功！",
-        reward_type="rcoin",
-        reward_amount=100
-    )
-
 
 # ==================== 工单 API ====================
 

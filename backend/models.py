@@ -474,8 +474,8 @@ class TicketMessage(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ticket_id = Column(Integer, ForeignKey('tickets.id'), nullable=False)
-    user_id = Column(Integer, ForeignKey('web_users.id'))
-    admin_id = Column(Integer, ForeignKey('admin_users.id'))
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    admin_id = Column(Integer, ForeignKey('admin_users.id'), nullable=True)
     message = Column(Text, nullable=False)
     attachments = Column(JSON)
     is_admin = Column(Boolean, default=False)

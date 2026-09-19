@@ -9,7 +9,6 @@ import {
   Bell,
   Check,
   CheckCheck,
-  Trash2,
   MessageSquare,
   Ticket,
   Megaphone,
@@ -96,7 +95,7 @@ async function loadMessages() {
       limit: 100
     })
     // API 返回格式: { data: [...], total: number, unread_count: number }
-    messages.value = response.data?.data || response.data || []
+    messages.value = (response as any) || []
   } catch (error) {
     console.error('加载消息失败:', error)
   } finally {
@@ -113,7 +112,7 @@ async function refreshMessages() {
       limit: 100
     })
     // API 返回格式: { data: [...], total: number, unread_count: number }
-    messages.value = response.data?.data || response.data || []
+    messages.value = (response as any) || []
   } catch (error) {
     console.error('刷新消息失败:', error)
   } finally {
@@ -143,25 +142,7 @@ function closeDetail() {
   selectedMessage.value = null
 }
 
-// 删除消息
-async function deleteMessage(message: Message) {
-  if (!confirm(`确定要删除消息"${message.title}"吗？`)) {
-    return
-  }
 
-  try {
-    await messageApi.delete(message.id)
-    // 从列表中移除
-    messages.value = messages.value.filter(m => m.id !== message.id)
-    // 如果删除的是当前打开的消息，关闭弹窗
-    if (selectedMessage.value?.id === message.id) {
-      closeDetail()
-    }
-  } catch (error) {
-    console.error('删除消息失败:', error)
-    alert('删除失败，请稍后重试')
-  }
-}
 
 // 标记为已读
 async function markAsRead(message: Message) {
@@ -353,15 +334,6 @@ onMounted(() => {
               来自：{{ message.from_user }}
             </div>
           </div>
-
-          <!-- 删除按钮 -->
-          <button
-            class="delete-btn"
-            @click.stop="deleteMessage(message)"
-            title="删除消息"
-          >
-            <Trash2 :size="16" />
-          </button>
         </div>
       </div>
     </div>
@@ -410,10 +382,6 @@ onMounted(() => {
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="closeDetail">
               关闭
-            </button>
-            <button class="btn btn-danger" @click="deleteMessage(selectedMessage)">
-              <Trash2 :size="16" />
-              删除
             </button>
           </div>
         </div>

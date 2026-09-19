@@ -97,9 +97,18 @@ def _user_out(user: models.WebUser) -> UserOut:
     )
 
 
-def _issue_auth_response(user: models.WebUser, db: Session) -> AuthResponse:
-    """签发 access + refresh token，并确保自建 Emby 凭据存在"""
-    ensure_emby_credentials(db, user)
+def _issue_auth_response(
+    user: models.WebUser, db: Session, plain_password: str | None = None
+) -> AuthResponse:
+    """签发 access + refresh token，并确保自建 Emby 凭据存在
+
+    plain_password: 注册/登录成功后把门户密码同步为 Emby 播放密码（bcrypt 存储），
+    保证“门户账号即 Emby 账号”——用户无需另行设置即可在 Infuse 等客户端登录。
+    """
+    if plain_password:
+        ensure_emby_credentials(db, user, password=plain_password)
+    else:
+        ensure_emby_credentials(db, user)
     access = create_access_token(user.id, {"username": user.username})
     refresh = create_refresh_token(user.id)
 
@@ -185,7 +194,7 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     db.refresh(user)
 
     logger.info("新用户注册: %s (id=%s)", username, user.id)
-    return _issue_auth_response(user, db)
+    return _issue_auth_response(user, db, plain_password=req.password)
 
 
 @auth_router.post("/login", response_model=AuthResponse)
@@ -206,7 +215,8 @@ async def login(request: Request, req: LoginRequest, db: Session = Depends(get_d
 
     user.last_login_at = datetime.now()
     db.commit()
-    return _issue_auth_response(user, db)
+    # 旧数据迁移：emby_password 为空的老用户，登录成功后用已验证的门户密码补齐 Emby 凭据
+    return _issue_auth_response(user, db, plain_password=req.password)
 
 
 @auth_router.post("/refresh")

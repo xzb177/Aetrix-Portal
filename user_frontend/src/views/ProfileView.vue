@@ -1,706 +1,703 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+/**
+ * 个人中心 — 简化版
+ *
+ * 功能：账号信息、修改密码、Emby 播放密码、退出登录。
+ */
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { userApi, subscriptionApi, authApi } from '@/api'
-// 原有组件
-import ProfileHeader from '@/components/profile/ProfileHeader.vue'
-import EmbyCard from '@/components/profile/EmbyCard.vue'
-import QuickGrid from '@/components/profile/QuickGrid.vue'
-import SettingsList from '@/components/profile/SettingsList.vue'
-import RequestLimitCard from '@/components/profile/RequestLimitCard.vue'
-import BridgeDebugSheet from '@/components/profile/BridgeDebugSheet.vue'
-import BottomSheet from '@/components/ui/BottomSheet.vue'
-// Bridge 组件
-import HoloIdCard from '@/components/profile/HoloIdCard.vue'
-import TripleDashboard from '@/components/profile/TripleDashboard.vue'
-import AccountVault from '@/components/profile/AccountVault.vue'
-import AdaptiveDock from '@/components/profile/AdaptiveDock.vue'
-import ActivityTimeline, { type TimelineEvent } from '@/components/profile/ActivityTimeline.vue'
-import ProfileSettingsSheet from '@/components/profile/ProfileSettingsSheet.vue'
-// 线路信息组件
-import { RouteInfoCard } from '@/components/ui'
-// Composables
+import { authApi, embyApi, type AuthUser, type AccountCard } from '@/api'
 import { useToast } from '@/composables/useToast'
-import { useAuthSheet } from '@/composables/useAuthSheet'
-import { useFeatureFlags } from '@/composables/useFeatureFlags'
+import {
+  User, Lock, KeyRound, LogOut, ShieldCheck, RefreshCw, Eye, EyeOff, Copy, Check, Film,
+} from 'lucide-vue-next'
 
 const router = useRouter()
 const userStore = useUserStore()
 const toast = useToast()
-const { openAuthSheet } = useAuthSheet()
-const { PROFILE_EASTER_EGG, PROFILE_BRIDGE, flags } = useFeatureFlags()
 
-// 调试面板状态
-const showDebugSheet = ref(false)
+const user = computed(() => userStore.user as AuthUser | null)
 
-// 设置面板状态
-const showSettingsSheet = ref(false)
-const settingsSheetRef = ref<InstanceType<typeof ProfileSettingsSheet> | null>(null)
-
-// 模块可见性状态
-const moduleVisibility = ref<Record<string, boolean>>({
-  holoId: true,
-  dashboard: true,
-  accountVault: true,
-  timeline: true,
-})
-
-// 页面加载时间（用于性能监控）
-const pageLoadTime = ref(0)
-const pageLoadStart = performance.now()
-
-const profile = ref<any>(null)
+// ===== 数据 =====
 const loading = ref(true)
-const embyAccounts = ref<any[]>([])
-const claimingAccount = ref(false)
-const vipExpiry = ref<string | undefined>(undefined)
+const account = ref<AccountCard | null>(null)
 
-// Activity Timeline 数据
-const timelineEvents = ref<TimelineEvent[]>([])
-const timelineLoading = ref(false)
+const copiedField = ref('')
+const showPlayPassword = ref(false)
 
-// 修改密码弹窗状态
-const showChangePasswordSheet = ref(false)
-const changePasswordForm = ref({
-  oldPassword: '',
-  newPassword: '',
-  confirmPassword: ''
-})
-const changePasswordLoading = ref(false)
-const changePasswordError = ref('')
+const embyUsername = computed(() => account.value?.emby_username || user.value?.emby_username || user.value?.username || '—')
+const serverUrl = computed(() => account.value?.base_url || window.location.origin)
+const hasPlayPassword = computed(() => !!account.value?.has_password)
 
-const isLoggedIn = computed(() => userStore.isLoggedIn)
-
-// 本地计算 VIP 状态：优先使用 vipExpiry（订阅 API），其次使用 store
-const isVIP = computed(() => {
-  if (vipExpiry.value) {
-    // 有订阅到期时间，检查是否过期
-    const expiryDate = new Date(vipExpiry.value)
-    const now = new Date()
-    return expiryDate > now
+const copyText = async (text: string, field: string) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedField.value = field
+    toast.success('已复制')
+    setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1600)
+  } catch {
+    toast.error('复制失败')
   }
-  // 回退到 store 中的值
-  return userStore.isVIP
-})
+}
 
-onMounted(async () => {
-  if (!isLoggedIn.value) {
-    openAuthSheet()
+// ===== 修改门户密码 =====
+const showChangePwd = ref(false)
+const pwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
+const pwdLoading = ref(false)
+const pwdError = ref('')
+
+async function handleChangePassword() {
+  const { oldPassword, newPassword, confirmPassword } = pwdForm.value
+  if (!oldPassword || !newPassword || !confirmPassword) {
+    pwdError.value = '请填写完整'
     return
   }
-
-  // 加载模块可见性设置
-  loadModuleVisibility()
-
-  await Promise.all([
-    fetchProfile(),
-    fetchEmbyAccounts(),
-    fetchSubscription(),
-    fetchTimelineEvents()
-  ])
-
-  // 记录页面加载完成时间
-  pageLoadTime.value = performance.now() - pageLoadStart
-})
-
-// 长按 Holo-ID 卡片触发调试模式
-const handleLongPress = () => {
-  if (!PROFILE_EASTER_EGG.value) return
-
-  showDebugSheet.value = true
-  toast.success('已进入舰桥调试模式')
-}
-
-// 打开设置面板
-const handleSettings = () => {
-  showSettingsSheet.value = true
-}
-
-// 从 localStorage 加载模块可见性设置
-const loadModuleVisibility = () => {
+  if (newPassword.length < 6) {
+    pwdError.value = '新密码至少 6 位'
+    return
+  }
+  if (newPassword !== confirmPassword) {
+    pwdError.value = '两次输入的新密码不一致'
+    return
+  }
+  pwdError.value = ''
+  pwdLoading.value = true
   try {
-    const stored = localStorage.getItem('profile_visibility')
-    if (stored) {
-      moduleVisibility.value = JSON.parse(stored)
-    }
+    await authApi.changePassword({ old_password: oldPassword, new_password: newPassword })
+    toast.success('密码修改成功，播放密码已同步')
+    showChangePwd.value = false
+    pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    pwdError.value = typeof detail === 'string' ? detail : '修改失败，请稍后重试'
+  } finally {
+    pwdLoading.value = false
+  }
+}
+
+// ===== 设置播放密码 =====
+const showSetPlayPwd = ref(false)
+const playPwd = ref('')
+const playPwdLoading = ref(false)
+
+async function handleSetPlayPassword() {
+  if (playPwd.value.length < 6) {
+    toast.error('播放密码至少 6 位')
+    return
+  }
+  playPwdLoading.value = true
+  try {
+    await embyApi.setPassword(playPwd.value)
+    toast.success('播放密码已设置')
+    showSetPlayPwd.value = false
+    playPwd.value = ''
+    account.value = await embyApi.getAccountCard()
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '设置失败')
+  } finally {
+    playPwdLoading.value = false
+  }
+}
+
+// ===== 退出登录 =====
+async function handleLogout() {
+  await userStore.logout()
+  router.push('/login')
+}
+
+// ===== 初始化 =====
+onMounted(async () => {
+  try {
+    account.value = await embyApi.getAccountCard()
   } catch {
-    // 使用默认值
-  }
-}
-
-async function fetchProfile() {
-  try {
-    const res = await userApi.getProfile()
-    profile.value = res.data || res
-  } catch (error) {
-    console.error('Failed to fetch profile:', error)
-    // 如果 API 失败，尝试从 store 获取用户信息
-    if (userStore.user) {
-      profile.value = userStore.user
-    }
-  }
-}
-
-async function fetchEmbyAccounts() {
-  try {
-    const res = await fetch('/api/user/emby/servers', {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-      }
-    })
-    if (res.ok) {
-      const data = await res.json()
-      // 后端返回格式: { code: 200, message: "获取成功", data: [...] }
-      embyAccounts.value = data.data || []
-    } else {
-      embyAccounts.value = []
-    }
-  } catch (error) {
-    console.error('Failed to fetch Emby accounts:', error)
-    embyAccounts.value = []
+    // 401 已由拦截器处理
   } finally {
     loading.value = false
   }
-}
-
-async function fetchSubscription() {
-  try {
-    const res = await subscriptionApi.getMySubscription()
-    // 后端返回的字段是 end_date，不是 expires_at
-    if (res.data && res.data.end_date) {
-      const expiryDate = new Date(res.data.end_date)
-      const now = new Date()
-      // 检查订阅是否已过期
-      if (expiryDate > now) {
-        vipExpiry.value = res.data.end_date
-        // 订阅有效，更新 store 中的 VIP 状态
-        userStore.updateUser({ is_vip: true })
-      } else {
-        // 订阅已过期
-        vipExpiry.value = undefined
-        userStore.updateUser({ is_vip: false })
-      }
-    } else {
-      // 没有订阅数据
-      vipExpiry.value = undefined
-      userStore.updateUser({ is_vip: false })
-    }
-  } catch (error) {
-    // 没有订阅或订阅已过期是正常情况
-    vipExpiry.value = undefined
-    userStore.updateUser({ is_vip: false })
-  }
-}
-
-async function fetchTimelineEvents() {
-  timelineLoading.value = true
-  try {
-    // 从后端获取活动时间线
-    const res = await fetch('/api/user/timeline', {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('access_token')}`
-      }
-    })
-
-    if (res.ok) {
-      const data = await res.json()
-      timelineEvents.value = data || []
-    } else {
-      // 如果 API 不存在或出错，返回空数组
-      timelineEvents.value = []
-    }
-  } catch (error) {
-    console.error('Failed to fetch timeline:', error)
-    // API 不可用时返回空数组，不影响页面显示
-    timelineEvents.value = []
-  } finally {
-    timelineLoading.value = false
-  }
-}
-
-async function handleClaimAccount() {
-  if (claimingAccount.value) return
-
-  claimingAccount.value = true
-  try {
-    const res = await fetch('/api/user/emby/claim', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-        'Content-Type': 'application/json'
-      }
-    })
-
-    if (res.ok) {
-      const data = await res.json()
-      toast.success('账号领取成功')
-      await fetchEmbyAccounts()
-    } else {
-      const error = await res.json()
-      toast.error(error.detail || '领取失败，请稍后重试')
-    }
-  } catch (error) {
-    console.error('Failed to claim account:', error)
-    toast.error('网络异常，请稍后重试')
-  } finally {
-    claimingAccount.value = false
-  }
-}
-
-function handleCopy(text: string, type: string) {
-  toast.success('已复制到剪贴板')
-}
-
-// 打开修改密码弹窗
-function handleChangePassword() {
-  changePasswordForm.value = {
-    oldPassword: '',
-    newPassword: '',
-    confirmPassword: ''
-  }
-  changePasswordError.value = ''
-  showChangePasswordSheet.value = true
-}
-
-// 关闭修改密码弹窗
-function closeChangePasswordSheet() {
-  showChangePasswordSheet.value = false
-}
-
-// 提交修改密码
-async function submitChangePassword() {
-  changePasswordError.value = ''
-
-  // 验证输入
-  if (!changePasswordForm.value.oldPassword) {
-    changePasswordError.value = '请输入当前密码'
-    return
-  }
-  if (!changePasswordForm.value.newPassword) {
-    changePasswordError.value = '请输入新密码'
-    return
-  }
-  if (changePasswordForm.value.newPassword.length < 6) {
-    changePasswordError.value = '新密码至少需要 6 位字符'
-    return
-  }
-  if (changePasswordForm.value.newPassword !== changePasswordForm.value.confirmPassword) {
-    changePasswordError.value = '两次输入的新密码不一致'
-    return
-  }
-
-  changePasswordLoading.value = true
-  try {
-    await authApi.changePassword({
-      old_password: changePasswordForm.value.oldPassword,
-      new_password: changePasswordForm.value.newPassword
-    })
-    toast.success('密码修改成功，请重新登录')
-    closeChangePasswordSheet()
-    // 登出并返回首页
-    setTimeout(() => {
-      userStore.logout()
-      router.push('/')
-    }, 1500)
-  } catch (error: any) {
-    const errorMsg = error.response?.data?.detail || '修改密码失败，请稍后重试'
-    changePasswordError.value = errorMsg
-    if (errorMsg.includes('原密码错误')) {
-      changePasswordError.value = '当前密码不正确'
-    }
-  } finally {
-    changePasswordLoading.value = false
-  }
-}
-
-function handleLogout() {
-  userStore.logout()
-  router.push('/')
-}
-
-// 原有设置项（非 Bridge 模式）
-const settingsItems = computed(() => {
-  if (!profile.value) return []
-
-  return [
-    {
-      label: '用户 ID',
-      value: `#${profile.value.id}`,
-      copyable: true,
-      copyValue: String(profile.value.id)
-    },
-    {
-      label: '注册时间',
-      value: formatDate(profile.value.registered_date),
-      copyable: false
-    }
-  ]
 })
 
-function formatDate(dateStr?: string) {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  })
+function formatDate(iso?: string | null) {
+  if (!iso) return '—'
+  try {
+    return new Date(iso).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+  } catch {
+    return iso
+  }
 }
 </script>
 
 <template>
-  <div class="profile-page" :class="{ 'profile-bridge': PROFILE_BRIDGE }">
-    <div class="profile-container">
-      <!-- Loading Skeleton -->
-      <div v-if="loading" class="profile-content">
-        <ProfileHeader :profile="null" :loading="true" />
-        <EmbyCard :is-VIP="false" :emby-accounts="[]" :loading="true" />
-        <QuickGrid />
-        <SettingsList :items="[]" />
-      </div>
+  <div class="profile-view">
+    <div class="container">
+      <!-- 头部 -->
+      <section class="head">
+        <div class="avatar">
+          <User :size="26" />
+        </div>
+        <div class="head-info">
+          <h1 class="head-name">{{ user?.username || '用户' }}</h1>
+          <p class="head-meta">
+            <span v-if="user?.email">{{ user.email }}</span>
+            <span v-else>未绑定邮箱</span>
+            <span class="dot">·</span>
+            <span>注册于 {{ formatDate(user?.created_at) }}</span>
+          </p>
+        </div>
+        <div v-if="user?.is_vip" class="vip-badge">
+          <ShieldCheck :size="14" />
+          VIP
+        </div>
+      </section>
 
-      <!-- ============================================== -->
-      <!-- Bridge 模式 (Aetrix Bridge Profile) -->
-      <!-- ============================================== -->
-      <div v-else-if="PROFILE_BRIDGE" class="profile-content profile-bridge-content">
-        <!-- 1. Holo-ID 全息身份卡 -->
-        <HoloIdCard
-          v-if="moduleVisibility.holoId"
-          :profile="profile || userStore.user"
-          :is-VIP="isVIP"
-          :vip-expiry="vipExpiry"
-          :enable-easter-egg="PROFILE_EASTER_EGG"
-          @long-press="handleLongPress"
-        />
+      <!-- Emby 账号卡 -->
+      <section class="card">
+        <header class="card-head">
+          <h2 class="card-title">
+            <KeyRound :size="17" />
+            Emby 账号
+          </h2>
+          <button class="icon-btn" title="刷新" @click="loading = true; embyApi.getAccountCard().then(a => account = a).finally(() => loading = false)">
+            <RefreshCw :size="15" :class="{ spinning: loading }" />
+          </button>
+        </header>
 
-        <!-- 2. 三联仪表盘 -->
-        <TripleDashboard
-          v-if="moduleVisibility.dashboard"
-          :is-VIP="isVIP"
-          :vip-expiry="vipExpiry"
-          :balance="(profile?.balance || profile?.points || 0)"
-          :completed-requests="profile?.completed_requests_count || 0"
-        />
+        <div class="rows" :class="{ loading }">
+          <div class="row">
+            <span class="row-label">服务器</span>
+            <span class="row-value mono">{{ serverUrl }}</span>
+            <button class="copy-btn" @click="copyText(serverUrl, 'server')">
+              <Check v-if="copiedField === 'server'" :size="14" class="ok" />
+              <Copy v-else :size="14" />
+            </button>
+          </div>
+          <div class="row">
+            <span class="row-label">用户名</span>
+            <span class="row-value mono">{{ embyUsername }}</span>
+            <button class="copy-btn" @click="copyText(embyUsername, 'user')">
+              <Check v-if="copiedField === 'user'" :size="14" class="ok" />
+              <Copy v-else :size="14" />
+            </button>
+          </div>
+          <div class="row">
+            <span class="row-label">播放密码</span>
+            <span class="row-value mono">
+              <template v-if="hasPlayPassword">{{ showPlayPassword ? '已设置' : '••••••••' }}</template>
+              <template v-else>未设置</template>
+            </span>
+            <button v-if="hasPlayPassword" class="copy-btn" @click="showPlayPassword = !showPlayPassword">
+              <Eye v-if="showPlayPassword" :size="14" />
+              <EyeOff v-else :size="14" />
+            </button>
+            <button class="text-btn" @click="showSetPlayPwd = true">
+              {{ hasPlayPassword ? '修改' : '设置' }}
+            </button>
+          </div>
+        </div>
 
-        <!-- 3. 账号保险箱 -->
-        <AccountVault
-          v-if="moduleVisibility.accountVault"
-          :is-VIP="isVIP"
-          :emby-accounts="embyAccounts"
-          :vip-expiry="vipExpiry"
-          @claim-account="handleClaimAccount"
-          @copy="handleCopy"
-        />
+        <p class="card-tip">
+          播放密码用于 Emby 客户端登录，与门户密码相互独立。
+        </p>
+      </section>
 
-        <!-- 4. 活动时间线 -->
-        <ActivityTimeline
-          v-if="moduleVisibility.timeline"
-          :events="timelineEvents"
-          :loading="timelineLoading"
-          :max-items="3"
-        />
+      <!-- 安全设置 -->
+      <section class="card">
+        <header class="card-head">
+          <h2 class="card-title">
+            <Lock :size="17" />
+            安全设置
+          </h2>
+        </header>
 
-        <!-- 5. 线路信息（功能开关控制） -->
-        <RouteInfoCard />
+        <div class="list">
+          <button class="list-item" @click="showChangePwd = true">
+            <Lock :size="16" class="list-icon" />
+            <span class="list-text">修改登录密码</span>
+            <span class="list-arrow">›</span>
+          </button>
+          <button class="list-item danger" @click="handleLogout">
+            <LogOut :size="16" class="list-icon" />
+            <span class="list-text">退出登录</span>
+            <span class="list-arrow">›</span>
+          </button>
+        </div>
+      </section>
 
-        <!-- 6. 自适应 Dock -->
-        <AdaptiveDock
-          :show-logout="true"
-          @logout="handleLogout"
-          @settings="handleSettings"
-          @change-password="handleChangePassword"
-        />
-      </div>
+      <!-- 关联入口 -->
+      <section class="links-row">
+        <RouterLink to="/requests" class="link-card">
+          <Film :size="16" />
+          我的求片
+        </RouterLink>
+        <RouterLink to="/tickets" class="link-card">
+          <User :size="16" />
+          我的工单
+        </RouterLink>
+      </section>
+    </div>
 
-      <!-- ============================================== -->
-      <!-- 传统模式 (Legacy Profile) -->
-      <!-- ============================================== -->
-      <div v-else class="profile-content">
-        <!-- 顶部概览条 -->
-        <ProfileHeader
-          :profile="profile || userStore.user"
-          :is-VIP="isVIP"
-          :vip-expiry="vipExpiry"
-          :enable-easter-egg="PROFILE_EASTER_EGG"
-          @long-press="handleLongPress"
-        />
-
-        <!-- 求片限制卡片 -->
-        <RequestLimitCard :is-VIP="isVIP" />
-
-        <!-- Emby 账号主卡（三态） -->
-        <EmbyCard
-          :is-VIP="isVIP"
-          :emby-accounts="embyAccounts"
-          :vip-expiry="vipExpiry"
-          @claim-account="handleClaimAccount"
-          @copy="handleCopy"
-        />
-
-        <!-- 快捷入口宫格 -->
-        <QuickGrid />
-
-        <!-- 线路信息（功能开关控制） -->
-        <RouteInfoCard />
-
-        <!-- 账号信息设置列表 -->
-        <SettingsList
-          :items="settingsItems"
-          @logout="handleLogout"
-          @copy="handleCopy"
-          @change-password="handleChangePassword"
-        />
+    <!-- 修改密码弹窗 -->
+    <div v-if="showChangePwd" class="modal-mask" @click.self="showChangePwd = false">
+      <div class="modal">
+        <h3 class="modal-title">修改登录密码</h3>
+        <div class="field">
+          <label class="field-label">当前密码</label>
+          <input v-model="pwdForm.oldPassword" type="password" autocomplete="current-password" />
+        </div>
+        <div class="field">
+          <label class="field-label">新密码</label>
+          <input v-model="pwdForm.newPassword" type="password" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label class="field-label">确认新密码</label>
+          <input v-model="pwdForm.confirmPassword" type="password" autocomplete="new-password" />
+        </div>
+        <p v-if="pwdError" class="form-error">{{ pwdError }}</p>
+        <div class="modal-actions">
+          <button class="btn ghost" @click="showChangePwd = false">取消</button>
+          <button class="btn primary" :disabled="pwdLoading" @click="handleChangePassword">
+            {{ pwdLoading ? '提交中…' : '确认修改' }}
+          </button>
+        </div>
       </div>
     </div>
 
-    <!-- 舰桥调试模式（彩蛋） -->
-    <BridgeDebugSheet
-      :show="showDebugSheet"
-      @update:show="showDebugSheet = $event"
-      :feature-flags="flags"
-      :page-load-time="pageLoadTime"
-      @refresh="() => {}"
-    />
-
-    <!-- 个人中心设置面板 -->
-    <ProfileSettingsSheet
-      v-if="PROFILE_BRIDGE"
-      :show="showSettingsSheet"
-      @update:show="showSettingsSheet = $event"
-      ref="settingsSheetRef"
-    />
-
-    <!-- 修改密码弹窗 -->
-    <BottomSheet
-      :show="showChangePasswordSheet"
-      @update:show="closeChangePasswordSheet"
-      max-height="70vh"
-    >
-      <div class="change-password-sheet">
-        <h2 class="sheet-title">修改密码</h2>
-
-        <div class="form-group">
-          <label class="form-label">当前密码</label>
-          <input
-            v-model="changePasswordForm.oldPassword"
-            type="password"
-            class="form-input"
-            placeholder="请输入当前密码"
-            :disabled="changePasswordLoading"
-          />
+    <!-- 设置播放密码弹窗 -->
+    <div v-if="showSetPlayPwd" class="modal-mask" @click.self="showSetPlayPwd = false">
+      <div class="modal">
+        <h3 class="modal-title">设置 Emby 播放密码</h3>
+        <p class="modal-desc">此密码用于在 Emby 客户端（Infuse、Forward 等）中登录</p>
+        <div class="field">
+          <label class="field-label">播放密码</label>
+          <input v-model="playPwd" type="password" autocomplete="new-password" placeholder="至少 6 位" />
         </div>
-
-        <div class="form-group">
-          <label class="form-label">新密码</label>
-          <input
-            v-model="changePasswordForm.newPassword"
-            type="password"
-            class="form-input"
-            placeholder="至少 6 位字符"
-            :disabled="changePasswordLoading"
-          />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">确认新密码</label>
-          <input
-            v-model="changePasswordForm.confirmPassword"
-            type="password"
-            class="form-input"
-            placeholder="再次输入新密码"
-            :disabled="changePasswordLoading"
-          />
-        </div>
-
-        <div v-if="changePasswordError" class="error-message">
-          {{ changePasswordError }}
-        </div>
-
-        <div class="form-actions">
-          <button
-            class="btn-cancel"
-            @click="closeChangePasswordSheet"
-            :disabled="changePasswordLoading"
-          >
-            取消
-          </button>
-          <button
-            class="btn-confirm"
-            @click="submitChangePassword"
-            :disabled="changePasswordLoading"
-          >
-            <span v-if="changePasswordLoading">提交中...</span>
-            <span v-else>确认修改</span>
+        <div class="modal-actions">
+          <button class="btn ghost" @click="showSetPlayPwd = false">取消</button>
+          <button class="btn primary" :disabled="playPwdLoading || !playPwd" @click="handleSetPlayPassword">
+            {{ playPwdLoading ? '提交中…' : '确认设置' }}
           </button>
         </div>
       </div>
-    </BottomSheet>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.profile-page {
+.profile-view {
   min-height: 100vh;
-  background: var(--bg-primary);
-  padding: 0;
+  background: #05070a;
+  color: #e5e7eb;
+  padding-bottom: 3rem;
 }
 
-.profile-container {
-  max-width: 600px;
+.container {
+  max-width: 680px;
   margin: 0 auto;
+  padding: 0 1.25rem;
 }
 
-.profile-content {
+/* 头部 */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 2.5rem 0 1.75rem;
+}
+
+.avatar {
+  width: 60px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 18px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #10b981;
+}
+
+.head-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.head-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #fafafa;
+  margin: 0 0 0.25rem;
+}
+
+.head-meta {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: rgba(255, 255, 255, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  flex-wrap: wrap;
+}
+
+.dot {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.vip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.3125rem 0.625rem;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+  color: #f59e0b;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* 卡片 */
+.card {
+  background: rgba(13, 18, 24, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 16px;
+  padding: 1.375rem;
+  margin-bottom: 1.25rem;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.125rem;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #fafafa;
+  margin: 0;
+}
+
+.card-title svg {
+  color: #10b981;
+}
+
+.card-tip {
+  margin: 0.875rem 0 0;
+  padding-top: 0.875rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.35);
+  line-height: 1.5;
+}
+
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 9px;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.icon-btn:hover {
+  color: #fff;
+}
+
+.spinning {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 行 */
+.rows {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding: 0.75rem 1rem 2rem;
+  transition: opacity 0.2s ease;
 }
 
-/* ==================== Bridge 模式专用样式 ==================== */
-.profile-bridge-content {
-  gap: var(--neo-space-3, 12px);
-  padding: var(--neo-space-4, 16px);
+.rows.loading {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
-/* Bridge 模式下的页面容器 */
-.profile-page.profile-bridge {
-  background: var(--neo-bg-base, #0B0F14);
-}
-
-/* 确保页面背景是纯黑，更符合 Apple TV+ 风格 */
-:deep(.bg-card) {
-  background: var(--bg-card);
-}
-
-/* Bridge 模式下的卡片间距调整 */
-.profile-bridge-content > * {
-  animation: bridge-fade-in 0.4s ease backwards;
-}
-
-.profile-bridge-content > *:nth-child(1) { animation-delay: 0ms; }
-.profile-bridge-content > *:nth-child(2) { animation-delay: 50ms; }
-.profile-bridge-content > *:nth-child(3) { animation-delay: 100ms; }
-.profile-bridge-content > *:nth-child(4) { animation-delay: 150ms; }
-.profile-bridge-content > *:nth-child(5) { animation-delay: 200ms; }
-
-@keyframes bridge-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* ==================== 动效降级 ==================== */
-@media (prefers-reduced-motion: reduce) {
-  .profile-bridge-content > * {
-    animation: none;
-  }
-}
-
-/* ==================== 修改密码弹窗样式 ==================== */
-.change-password-sheet {
-  padding: 1.5rem 1rem 2rem;
-}
-
-.sheet-title {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: #ffffff;
-  margin: 0 0 1.5rem 0;
-  text-align: center;
-}
-
-.form-group {
-  margin-bottom: 1rem;
-}
-
-.form-label {
-  display: block;
-  font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.7);
-  margin-bottom: 0.5rem;
-}
-
-.form-input {
-  width: 100%;
-  padding: 0.875rem 1rem;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
-  color: #ffffff;
-  font-size: 1rem;
-  transition: all 0.2s;
-}
-
-.form-input:focus {
-  outline: none;
-  border-color: #10b981;
-  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.15);
-}
-
-.form-input:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.form-input::placeholder {
-  color: rgba(255, 255, 255, 0.3);
-}
-
-.error-message {
-  color: #ef4444;
-  font-size: 0.875rem;
-  margin-top: 0.5rem;
-  text-align: center;
-}
-
-.form-actions {
+.row {
   display: flex;
-  gap: 1rem;
-  margin-top: 1.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6875rem 0.875rem;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 11px;
 }
 
-.btn-cancel,
-.btn-confirm {
+.row-label {
+  flex-shrink: 0;
+  width: 64px;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.row-value {
   flex: 1;
-  padding: 0.875rem;
-  border-radius: 12px;
-  font-size: 1rem;
+  min-width: 0;
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.copy-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+}
+
+.copy-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+}
+
+.copy-btn .ok {
+  color: #10b981;
+}
+
+.text-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #10b981;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+}
+
+.text-btn:hover {
+  text-decoration: underline;
+}
+
+/* 列表 */
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 0.25rem;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.875rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.list-item:last-child {
+  border-bottom: none;
+}
+
+.list-item:hover {
+  color: #fff;
+}
+
+.list-item.danger {
+  color: #f87171;
+}
+
+.list-icon {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.list-item.danger .list-icon {
+  color: rgba(239, 68, 68, 0.6);
+}
+
+.list-text {
+  flex: 1;
+}
+
+.list-arrow {
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 1.125rem;
+}
+
+/* 链接卡 */
+.links-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.link-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 52px;
+  background: rgba(13, 18, 24, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.875rem;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.link-card:hover {
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #10b981;
+}
+
+/* 弹窗 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 100;
+}
+
+.modal {
+  width: 100%;
+  max-width: 360px;
+  background: #10161d;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  padding: 1.5rem;
+  animation: modalIn 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.96) translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.modal-title {
+  margin: 0 0 0.375rem;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: #fafafa;
+}
+
+.modal-desc {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  color: rgba(255, 255, 255, 0.45);
+  line-height: 1.5;
+}
+
+.field {
+  margin-bottom: 0.875rem;
+}
+
+.field-label {
+  display: block;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+  margin-bottom: 0.375rem;
+}
+
+.field input {
+  width: 100%;
+  height: 42px;
+  padding: 0 0.75rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  color: #fafafa;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+}
+
+.field input:focus {
+  border-color: rgba(16, 185, 129, 0.6);
+}
+
+.form-error {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 9px;
+  color: #f87171;
+  font-size: 0.8125rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.625rem;
+  margin-top: 1.125rem;
+}
+
+.btn {
+  height: 38px;
+  padding: 0 1rem;
+  border-radius: 10px;
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
   border: none;
+  transition: all 0.2s ease;
 }
 
-.btn-cancel {
+.btn.ghost {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.btn.ghost:hover {
   background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.7);
 }
 
-.btn-cancel:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
+.btn.primary {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
 }
 
-.btn-confirm {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  color: #ffffff;
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
-}
-
-.btn-confirm:hover:not(:disabled) {
-  transform: scale(0.98);
-  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);
-}
-
-.btn-cancel:disabled,
-.btn-confirm:disabled {
-  opacity: 0.4;
+.btn.primary:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
+}
+
+@media (max-width: 640px) {
+  .head {
+    padding: 2rem 0 1.5rem;
+  }
 }
 </style>

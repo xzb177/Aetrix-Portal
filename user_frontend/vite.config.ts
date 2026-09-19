@@ -1,7 +1,6 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { visualizer } from 'rollup-plugin-visualizer'
 
 // 生产环境禁用 DevTools
 const isProduction = process.env.NODE_ENV === 'production'
@@ -24,15 +23,8 @@ export default defineConfig({
     cssCodeSplit: true,
     // chunk 大小警告限制提高到 100KB
     chunkSizeWarningLimit: 100,
-    // 使用 esbuild 压缩
+    // 使用 esbuild 压缩（生产环境移除 console/debugger）
     minify: 'esbuild',
-    // esbuild 压缩选项
-    esbuildOptions: {
-      // 移除 console
-      drop: isProduction ? ['console', 'debugger'] : [],
-      // 压缩更多
-      pure: ['console.log', 'console.info'],
-    },
     // Rollup 配置
     rollupOptions: {
       output: {

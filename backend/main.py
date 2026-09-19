@@ -1,15 +1,18 @@
 """
 RoyalBot Portal - 统一后端主入口
-整合用户端和管理后台的所有 API
+整合用户端和管理后台的所有 API，并托管用户前端（Vue SPA）静态资源
 """
+import os
+
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
-import os
 from datetime import datetime
+from pathlib import Path
 from prometheus_client import make_asgi_app
 
 from backend.database import engine, get_db, init_db, cache, DATABASE_TYPE
@@ -195,6 +198,9 @@ app.include_router(auth_router)
 @app.get("/")
 async def root():
     """根路径"""
+    index_file = _FRONTEND_DIST / "index.html"
+    if index_file.is_file():
+        return FileResponse(index_file)
     return {
         "name": "RoyalBot Portal",
         "version": "2.0.0",
@@ -202,6 +208,37 @@ async def root():
         "timestamp": datetime.now().isoformat(),
         "docs": "/api/docs",
     }
+
+
+# ==================== 用户前端静态资源托管 ====================
+# 优先级顺序：先注册 API/WS 路由，再挂载静态资源与 SPA fallback，
+# 保证 /api/*、/emby/*、/ws 不被前端兜底路由吞掉。
+
+_FRONTEND_DIST = Path(
+    os.getenv(
+        "FRONTEND_DIST",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "user_frontend", "dist"),
+    )
+)
+
+if _FRONTEND_DIST.is_dir():
+    # 注意：/assets 由 StaticFiles 直接服务（构建产物固定输出到 assets/）
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        """SPA 兜底路由：非 API/WS 路径全部返回前端 index.html"""
+        if full_path.startswith(("api/", "emby/", "ws", "metrics")):
+            raise HTTPException(status_code=404, detail="Not Found")
+        # 真实存在的静态文件直接返回（favicon.ico / manifest.webmanifest 等），并防目录穿越
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        if candidate.is_file() and str(candidate).startswith(str(_FRONTEND_DIST.resolve())):
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")
+
+    logger.info("用户前端静态资源已挂载: %s", _FRONTEND_DIST)
+else:
+    logger.warning("前端构建产物不存在（%s），仅提供 API 服务", _FRONTEND_DIST)
 
 
 if __name__ == "__main__":

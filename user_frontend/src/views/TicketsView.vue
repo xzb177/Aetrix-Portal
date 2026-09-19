@@ -77,7 +77,7 @@ async function fetchTickets() {
   loading.value = true
   try {
     const res = await ticketApi.getMyTickets()
-    tickets.value = res.data || []
+    tickets.value = (res as any) || []
   } catch (error) {
     console.error('获取工单列表失败:', error)
   } finally {
@@ -130,7 +130,7 @@ async function fetchMessages(ticketId: number) {
   messagesLoading.value = true
   try {
     const res = await ticketApi.getMessages(ticketId)
-    messages.value = res.data || []
+    messages.value = (res as any) || []
   } catch (error) {
     console.error('获取消息失败:', error)
   } finally {
@@ -144,9 +144,7 @@ async function replyTicket() {
 
   replying.value = true
   try {
-    await ticketApi.reply(selectedTicket.value.id, {
-      message: replyMessage.value
-    })
+    await ticketApi.reply(selectedTicket.value.id, replyMessage.value)
     replyMessage.value = ''
     await fetchMessages(selectedTicket.value.id)
     await fetchTickets()
