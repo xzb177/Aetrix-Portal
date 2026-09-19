@@ -4,7 +4,7 @@
 支持 PostgreSQL/MySQL + Redis 缓存
 """
 import os
-from sqlalchemy import create_engine, event, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import datetime
@@ -41,8 +41,7 @@ engine_config = {
 }
 
 if DATABASE_TYPE == "sqlite":
-    # busy timeout：等待写锁而不是立刻报 "database is locked"（媒体扫描/播放上报并发场景）
-    engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
+    engine_config["connect_args"] = {"check_same_thread": False}
 elif DATABASE_TYPE == "postgresql":
     engine_config["pool_size"] = 20
     engine_config["max_overflow"] = 40
@@ -52,17 +51,6 @@ elif DATABASE_TYPE == "mysql":
     engine_config["pool_recycle"] = 7200
 
 engine = create_engine(DATABASE_URL, **engine_config)
-
-if DATABASE_TYPE == "sqlite":
-    @event.listens_for(engine, "connect")
-    def _sqlite_pragma(dbapi_conn, _record):
-        cursor = dbapi_conn.cursor()
-        # WAL 模式：读写不互斥，显著降低高并发下的写锁冲突；
-        # busy_timeout：写锁被占时等待而不是立刻报 "database is locked"
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

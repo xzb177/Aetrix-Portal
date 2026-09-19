@@ -119,12 +119,8 @@ def get_emby_user(
     request: Request,
     db: Session = Depends(get_db),
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-):
-    """Emby 客户端鉴权依赖：Emby 客户端 token 优先，回退到门户 JWT
-
-    回退 JWT 使网页端门户可直接复用 /emby/* 协议端点（媒体库浏览、播放、收藏等），
-    无需先走 AuthenticateByName 换取客户端 token。JWT 有效即视为已认证用户。
-    """
+) -> models.WebUser:
+    """Emby 客户端鉴权依赖"""
     result = None
     if credentials and credentials.credentials:
         row = (
@@ -141,21 +137,6 @@ def get_emby_user(
                 result = (user, row)
     if result is None:
         result = resolve_token(db, request)
-    if result is None:
-        # 回退：门户 JWT（Authorization: Bearer <jwt> 或 ?api_key=<jwt>）
-        raw = (
-            (credentials.credentials if credentials else None)
-            or request.query_params.get("api_key", "")
-            or request.headers.get("X-Emby-Token", "")
-        )
-        if raw:
-            from backend.security import resolve_jwt_user_id
-
-            jwt_user_id = resolve_jwt_user_id(raw)
-            if jwt_user_id is not None:
-                user = db.query(models.WebUser).filter(models.WebUser.id == jwt_user_id).first()
-                if user and user.is_active:
-                    return user
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

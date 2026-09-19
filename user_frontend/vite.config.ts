@@ -44,10 +44,6 @@ export default defineConfig({
             if (id.includes('lucide-vue-next')) {
               return 'icons'
             }
-            // 播放器（hls.js，独立分包避免阻塞首屏）
-            if (id.includes('hls.js') || id.includes('hls.js/dist')) {
-              return 'hls'
-            }
             // 工具库
             if (id.includes('axios') || id.includes('lodash-es')) {
               return 'utils'

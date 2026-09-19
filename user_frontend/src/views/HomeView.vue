@@ -8,8 +8,6 @@ import { useRouter, RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { embyApi, messageApi, announcementApi, type AccountCard, type Announcement } from '@/api'
 import { useToast } from '@/composables/useToast'
-import MediaRow from '@/components/media/MediaRow.vue'
-import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import {
   Play, Copy, Check, RefreshCw, Key, Server, Lock, Eye,
   MessageSquare, Film, Shield, User, Inbox, LogOut, type LucideIcon,
@@ -25,7 +23,6 @@ const loading = ref(true)
 const account = ref<AccountCard | null>(null)
 const notices = ref<Announcement[]>([])
 const unreadCount = ref(0)
-const resumeItems = ref<EmbyItem[]>([])
 
 const copiedField = ref('')
 const showPassword = ref(false)
@@ -73,16 +70,14 @@ const openScheme = (url: string) => {
 
 onMounted(async () => {
   try {
-    const [card, unread, anns, resume] = await Promise.all([
+    const [card, unread, anns] = await Promise.all([
       embyApi.getAccountCard(),
       messageApi.getUnreadCount().catch((): { unread_count: number } => ({ unread_count: 0 })),
       announcementApi.getAnnouncements().catch((): Announcement[] => []),
-      protocolApi.getResume(12).catch((): EmbyItem[] => []),
     ])
     account.value = card
     unreadCount.value = (unread as any)?.unread_count ?? 0
     notices.value = Array.isArray(anns) ? anns : []
-    resumeItems.value = resume
   } catch (err: any) {
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')
@@ -123,10 +118,15 @@ async function handleLogout() {
               你的门户账号即 Emby 账号 — 用同一组凭据登录任意客户端即可开始观影。
             </p>
             <div class="hero-actions">
-              <RouterLink class="btn btn-primary" to="/media">
+              <a
+                class="btn btn-primary"
+                href="/emby/web/index.html"
+                target="_blank"
+                rel="noopener"
+              >
                 <Play :size="16" />
-                进入媒体库
-              </RouterLink>
+                打开 Emby
+              </a>
               <RouterLink class="btn btn-ghost" to="/requests">
                 <Film :size="16" />
                 求片
@@ -148,9 +148,6 @@ async function handleLogout() {
     </section>
 
     <main class="container main">
-      <!-- 继续观看 -->
-      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" class="resume-row" />
-
       <section class="card">
         <header class="card-head">
           <div>
@@ -437,10 +434,6 @@ async function handleLogout() {
 
 .main {
   padding: 2rem 1.25rem 3rem;
-}
-
-.resume-row {
-  margin-bottom: 2rem;
 }
 
 .card {
