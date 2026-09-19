@@ -1,53 +1,41 @@
-# RoyalBot Portal 后端依赖
+# RoyalBot 统一后端依赖
+# 自建 Emby 服务器 + 用户门户 + 管理后台一体化
 
 # Web 框架
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-websockets==12.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
 
 # 数据库
-sqlalchemy==2.0.23
-alembic==1.12.1
-psycopg2-binary==2.9.9
-pymysql==1.1.0
-redis==5.0.1
+sqlalchemy>=2.0.23
+alembic>=1.12.0
+psycopg2-binary>=2.9.9
+pymysql>=1.1.0
+
+# 缓存
+redis>=5.0.0
 
 # 认证
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
 
-# 验证
-pydantic==2.5.0
-pydantic-settings==2.1.0
-email-validator==2.1.0
+# 配置与工具
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+email-validator>=2.1.0
+python-dotenv>=1.0.0
+httpx>=0.25.0
+aiofiles>=23.2.0
+apscheduler>=3.10.0
 
-# 工具
-python-dotenv==1.0.0
-httpx==0.25.2
-aiofiles==23.2.1
-apscheduler==3.10.4
-
-# Emby API
-requests==2.31.0
+# 转码（外部二进制，需系统安装 ffmpeg）
+# ffmpeg 由宿主系统/Docker 镜像提供
 
 # 监控
-prometheus-client==0.19.0
+prometheus-client>=0.19.0
 
 # 日志
-loguru==0.7.2
+loguru>=0.7.0
 
-# 图片处理
-pillow==10.1.0
-
-# 时间处理
-python-dateutil==2.8.2
-
-# 字符串处理
-slugify==0.0.1
-
-# 加密
-cryptography==41.0.7
-
-# 其他
-orjson==3.9.10
+# 性能
+orjson>=3.9.0

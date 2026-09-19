@@ -8,6 +8,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import logging
+import os
 from datetime import datetime
 from prometheus_client import make_asgi_app
 
@@ -15,6 +16,9 @@ from backend.database import engine, get_db, init_db, cache, DATABASE_TYPE
 from backend import models  # 导入所有模型
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
+from backend.emby_server.api import emby_router
+from backend.emby_server.portal import user_emby_router, admin_emby_router
+from backend.api.emby_portal import auth_router
 
 # 配置日志
 logging.basicConfig(
@@ -105,6 +109,7 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "database": DATABASE_TYPE,
         "online_users": manager.get_online_count(),
+        "emby_server": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
     }
 
 
@@ -158,6 +163,16 @@ app.include_router(user_router)
 
 # 管理后台 API 路由
 app.include_router(admin_router)
+
+# 自建 Emby 服务器（Emby 客户端直接连接本后端：https://host:port/emby）
+app.include_router(emby_router)
+
+# 自建 Emby 门户 API（用户端账号卡/续看/收藏 + 管理端媒体库管理）
+app.include_router(user_emby_router)
+app.include_router(admin_emby_router)
+
+# 用户门户认证 API（注册/登录/JWT）
+app.include_router(auth_router)
 
 
 # ==================== 根路径 ====================

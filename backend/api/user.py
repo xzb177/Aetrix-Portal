@@ -174,35 +174,7 @@ class AnnouncementResponse(BaseModel):
 
 # ==================== 认证/用户信息 API ====================
 
-@user_router.get("/auth/me", response_model=UserMeResponse)
-async def get_me(
-    current_user: models.WebUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """获取当前用户信息"""
-    # 获取求片统计
-    completed_count = db.query(models.MediaRequest).filter(
-        models.MediaRequest.user_id == current_user.id,
-        models.MediaRequest.status == "completed"
-    ).count()
-
-    total_count = db.query(models.MediaRequest).filter(
-        models.MediaRequest.user_id == current_user.id
-    ).count()
-
-    return UserMeResponse(
-        id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        is_vip=current_user.is_vip,
-        points=current_user.points,
-        balance=current_user.balance,
-        telegram_id=current_user.telegram_id,
-        avatar_url=current_user.avatar_url,
-        completed_requests_count=completed_count,
-        total_requests_count=total_count,
-        registered_date=current_user.created_at.isoformat() if current_user.created_at else None
-    )
+# /auth/me 已迁移至 backend/api/emby_portal.py（JWT 鉴权版，见 auth_router）
 
 
 # ==================== 站内消息 API ====================
