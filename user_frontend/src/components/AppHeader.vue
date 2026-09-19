@@ -2,7 +2,7 @@
 import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
-import { Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown } from 'lucide-vue-next'
+import { Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown, Popcorn } from 'lucide-vue-next'
 
 const userStore = useUserStore()
 const router = useRouter()
@@ -14,6 +14,7 @@ const userMenuRef = ref<HTMLElement | null>(null)
 
 const navItems = computed(() => [
   { name: '首页', path: '/' },
+  { name: '媒体库', path: '/media' },
   { name: '求片', path: '/requests' },
   { name: '工单', path: '/tickets' },
   { name: '消息', path: '/messages' },
@@ -124,6 +125,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         <RouterLink v-for="item in navItems" :key="item.path" :to="item.path" class="mobile-link" @click="closeMenus">
           <component :is="item.path === '/requests' ? Film : item.path === '/tickets' ? Ticket : Inbox" v-if="item.path !== '/'" :size="16" />
           {{ item.name }}
+        </RouterLink>
+        <RouterLink to="/media" class="mobile-link" @click="closeMenus">
+          <Popcorn :size="16" />
+          媒体库
         </RouterLink>
         <RouterLink to="/profile" class="mobile-link" @click="closeMenus">
           <User :size="16" />

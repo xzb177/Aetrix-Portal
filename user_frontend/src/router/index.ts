@@ -40,6 +40,31 @@ const router = createRouter({
       component: () => import('@/views/RequestView.vue'),
       meta: { title: '求片中心', requiresAuth: true },
     },
+    // ==================== 媒体库（Emby 协议端点） ====================
+    {
+      path: '/media',
+      name: 'media-home',
+      component: () => import('@/views/media/LibraryHomeView.vue'),
+      meta: { title: '媒体库', requiresAuth: true },
+    },
+    {
+      path: '/library/:id?',
+      name: 'library',
+      component: () => import('@/views/media/LibraryView.vue'),
+      meta: { title: '浏览媒体库', requiresAuth: true },
+    },
+    {
+      path: '/media/:id',
+      name: 'media-detail',
+      component: () => import('@/views/media/ItemDetailView.vue'),
+      meta: { title: '详情', requiresAuth: true },
+    },
+    {
+      path: '/watch/:id',
+      name: 'watch',
+      component: () => import('@/views/media/WatchView.vue'),
+      meta: { title: '播放', requiresAuth: true },
+    },
     {
       path: '/:pathMatch(.*)*',
       name: 'not-found',
