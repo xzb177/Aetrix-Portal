@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import urllib.parse
 from datetime import datetime, timedelta
 
@@ -159,6 +160,14 @@ def _user_data_dto(umd) -> dict:
         "IsFavorite": bool(umd.is_favorite),
         "LastPlayedDate": _iso(umd.last_played_at),
     }
+
+
+def _bearer_raw(request: Request) -> str:
+    """提取原始 Bearer 值（JWT 或客户端 token），用于拼接 api_key 查询参数"""
+    raw = request.headers.get("Authorization", "")
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return request.query_params.get("api_key", "")
 
 
 def _media_source(item: em.MediaItem, base: str) -> dict:
@@ -741,12 +750,16 @@ async def playback_info(
 
     media_source = _media_source(item, base)
     direct = item.bitrate and item.bitrate <= max_bitrate
+    # api_key：优先 Emby 客户端 token；JWT 访问时（网页端）直接把 JWT 作为 api_key，
+    # 流媒体端点（stream/master.m3u8/切片）均可通过 JWT 回退鉴权
+    token_row = resolve_token(db, request)
+    api_key = token_row[1].token if token_row else _bearer_raw(request)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
         "SupportsTranscoding": True,
-        "DirectStreamUrl": f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={resolve_token(db, request)[1].token if resolve_token(db, request) else ''}",
-        "TranscodingUrl": f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}",
+        "DirectStreamUrl": f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}",
+        "TranscodingUrl": f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}",
     })
 
     return {
@@ -764,9 +777,7 @@ async def video_stream(
     db: Session = Depends(get_db),
 ):
     item = _require_item(db, item_id)
-    # 授权校验：api_key 必须有效
-    if not resolve_token(db, request):
-        raise HTTPException(status_code=401, detail="Invalid access token")
+    # 授权已由 get_emby_user 依赖完成（Emby token 或 JWT 均可）
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     return serve_file(item.file_path, request, media_type)
 
@@ -783,6 +794,8 @@ async def video_hls(
     q = request.query_params
 
     # 已存在的转码会话：直接回放列表/切片
+    # 注意：切片请求走 session 票据校验（HLS 播放器无法对切片附加 api_key），
+    # 会话本身只在建立转码（master.m3u8 首次请求）时经过完整鉴权创建。
     existing = q.get("session")
     if existing and get_transcode(existing):
         info = get_transcode(existing)
@@ -796,6 +809,8 @@ async def video_hls(
         raise HTTPException(status_code=404, detail="Segment not ready")
 
     # 新转码请求
+    if not shutil.which(os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")):
+        raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法转码；请使用直连播放")
     video_bitrate = int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000)
     height = int(q.get("Height") or 0) or None
     start_ticks = int(q.get("PositionTicks") or 0)

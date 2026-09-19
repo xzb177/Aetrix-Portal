@@ -23,7 +23,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend import models
-from backend.database import get_db
+from backend.database import get_db, SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server.api import TICKS, SERVER_ID
 from backend.emby_server.auth import (
@@ -317,7 +317,20 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
         return {"success": False, "message": "正在扫描中"}
     import threading
 
-    thread = threading.Thread(target=scan_library_sync, args=(db, lib), daemon=True)
+    # 扫描在后台线程运行：必须用独立 Session（请求结束时请求级 Session 会被关闭，
+    # 复用会导致 "transaction is closed" 与 SQLite 写锁冲突）
+    lib_id_value = lib.id
+
+    def _run_scan():
+        scan_db = SessionLocal()
+        try:
+            scan_lib = scan_db.query(em.Library).filter(em.Library.id == lib_id_value).first()
+            if scan_lib:
+                scan_library_sync(scan_db, scan_lib)
+        finally:
+            scan_db.close()
+
+    thread = threading.Thread(target=_run_scan, daemon=True)
     thread.start()
     return {"success": True, "message": "扫描已启动"}
 
