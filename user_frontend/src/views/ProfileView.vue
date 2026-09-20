@@ -435,6 +435,13 @@ function formatDate(iso?: string | null) {
             <span class="list-text">修改登录密码</span>
             <span class="list-arrow">›</span>
           </button>
+          <!-- 管理员：直达管理后台。门户与后台同源、同一套 JWT，后台会自动接管当前登录态，
+               所以这里是一次登录两端通行的入口，不再要求二次登录 -->
+          <a v-if="userStore.user?.is_staff" href="/admin/" class="list-item">
+            <ShieldCheck :size="16" class="list-icon" />
+            <span class="list-text">管理后台</span>
+            <span class="list-arrow">›</span>
+          </a>
           <button class="list-item danger" @click="handleLogout">
             <LogOut :size="16" class="list-icon" />
             <span class="list-text">退出登录</span>
@@ -870,6 +877,9 @@ function formatDate(iso?: string | null) {
   font-size: 0.875rem;
   cursor: pointer;
   text-align: left;
+  /* 同一套样式同时用于 button 与 a（管理员入口） */
+  text-decoration: none;
+  width: 100%;
 }
 
 .list-item:last-child {
