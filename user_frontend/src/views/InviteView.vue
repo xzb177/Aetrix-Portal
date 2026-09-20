@@ -4,7 +4,7 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import {
-  Gift, Users, Coins, Percent, Copy, Check, Share2, UserPlus, Link2, Handshake,
+  Gift, Users, Coins, Percent, Copy, Check, Share2, UserPlus, Link2, Handshake, ChevronDown,
 } from 'lucide-vue-next'
 import {
   inviteApi,
@@ -117,27 +117,38 @@ onMounted(load)
       </div>
     </section>
 
-    <!-- 统计 -->
-    <section class="stat-grid au-anim-up" style="animation-delay: 70ms">
-      <div class="stat-card">
-        <span class="stat-icon c1"><Users :size="18" /></span>
-        <span class="stat-num">{{ info?.invited_count ?? '—' }}</span>
-        <span class="stat-label">累计邀请人数</span>
+    <!-- 统计：与主卡合并为单行数据条，减少碎片卡片 -->
+    <section class="stat-bar au-card au-anim-up" style="animation-delay: 70ms">
+      <div class="stat-cell">
+        <span class="stat-icon c1"><Users :size="17" /></span>
+        <div class="stat-body">
+          <span class="stat-num">{{ info?.invited_count ?? '—' }}</span>
+          <span class="stat-label">邀请好友</span>
+        </div>
       </div>
-      <div class="stat-card">
-        <span class="stat-icon c2"><Handshake :size="18" /></span>
-        <span class="stat-num">{{ info?.use_count ?? '—' }}</span>
-        <span class="stat-label">邀请码使用次数</span>
+      <span class="stat-divider" />
+      <div class="stat-cell">
+        <span class="stat-icon c3"><Coins :size="17" /></span>
+        <div class="stat-body">
+          <span class="stat-num">{{ totalRebate }}</span>
+          <span class="stat-label">累计返利</span>
+        </div>
       </div>
-      <div class="stat-card">
-        <span class="stat-icon c3"><Coins :size="18" /></span>
-        <span class="stat-num">{{ totalRebate }}</span>
-        <span class="stat-label">累计返利积分</span>
+      <span class="stat-divider" />
+      <div class="stat-cell">
+        <span class="stat-icon c2"><Handshake :size="17" /></span>
+        <div class="stat-body">
+          <span class="stat-num">{{ info?.use_count ?? '—' }}</span>
+          <span class="stat-label">码使用次数</span>
+        </div>
       </div>
-      <div class="stat-card">
-        <span class="stat-icon c4"><Percent :size="18" /></span>
-        <span class="stat-num">{{ info?.config.rebate_percent ?? '—' }}%</span>
-        <span class="stat-label">充值返利比例</span>
+      <span class="stat-divider hide-sm" />
+      <div class="stat-cell hide-sm">
+        <span class="stat-icon c4"><Percent :size="17" /></span>
+        <div class="stat-body">
+          <span class="stat-num">{{ info?.config.rebate_percent ?? '—' }}%</span>
+          <span class="stat-label">充值返利比</span>
+        </div>
       </div>
     </section>
 
@@ -186,16 +197,20 @@ onMounted(load)
       </section>
     </div>
 
-    <!-- 规则说明 -->
-    <section class="rules au-card au-card-pad au-anim-up" style="animation-delay: 170ms">
-      <h3><Gift :size="16" /> 活动规则</h3>
+    <!-- 规则说明：折叠式，避免占视觉主体 -->
+    <details class="rules au-card au-card-pad au-anim-up" style="animation-delay: 170ms">
+      <summary>
+        <Gift :size="16" />
+        活动规则
+        <ChevronDown :size="14" class="rules-chevron" />
+      </summary>
       <ol>
         <li>好友通过你的邀请码或链接注册，双方即刻获得积分奖励。</li>
         <li>好友每次充值成功，你将按比例获得返利积分，自动入账。</li>
         <li>积分可在钱包兑换订阅时长或参与其他活动。</li>
         <li>请勿使用邀请码进行刷号等违规操作，违规将取消奖励。</li>
       </ol>
-    </section>
+    </details>
   </div>
 </template>
 
@@ -280,33 +295,40 @@ onMounted(load)
 
 .link-row .link-input { flex: 1; font-size: 0.75rem; color: var(--au-text-2); }
 
-/* ===== 统计 ===== */
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.875rem;
+/* ===== 统计条（单卡分隔式，替代碎片 stat-card 网格） ===== */
+.stat-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.875rem 1.25rem;
+  flex-wrap: wrap;
 }
 
-.stat-card {
+.stat-cell {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.3125rem;
-  padding: 1.125rem 0.75rem;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-lg);
-  text-align: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.stat-body { display: flex; flex-direction: column; min-width: 0; }
+
+.stat-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--au-border);
+  flex-shrink: 0;
 }
 
 .stat-icon {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--au-r-md);
-  margin-bottom: 0.25rem;
+  flex-shrink: 0;
 }
 .stat-icon.c1 { background: var(--au-primary-soft); color: var(--au-primary); }
 .stat-icon.c2 { background: rgba(167, 139, 250, 0.12); color: var(--au-violet); }
@@ -314,10 +336,11 @@ onMounted(load)
 .stat-icon.c4 { background: var(--au-warning-soft); color: var(--au-warning); }
 
 .stat-num {
-  font-size: 1.375rem;
+  font-size: 1.0625rem;
   font-weight: 800;
   color: var(--au-text);
   font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 .stat-label { font-size: 0.6875rem; color: var(--au-text-3); }
 
@@ -385,25 +408,41 @@ onMounted(load)
 
 .row-amt { color: var(--au-success); font-size: 0.875rem; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
-/* ===== 规则 ===== */
-.rules h3 {
+/* ===== 规则（折叠） ===== */
+.rules summary {
   display: flex;
   align-items: center;
   gap: 0.4375rem;
-  margin: 0 0 0.75rem;
   font-size: 0.9375rem;
   font-weight: 700;
   color: var(--au-text);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
 }
-.rules svg { color: var(--au-violet); }
-.rules ol { margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.4375rem; }
+.rules summary::-webkit-details-marker { display: none; }
+.rules summary svg { color: var(--au-violet); }
+.rules-chevron {
+  margin-left: auto;
+  color: var(--au-text-4);
+  transition: transform var(--au-fast) var(--au-ease);
+}
+.rules[open] .rules-chevron { transform: rotate(180deg); }
+.rules ol {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4375rem;
+}
 .rules li { font-size: 0.8125rem; color: var(--au-text-2); line-height: 1.6; }
 
 .au-empty.compact { padding: 2rem 1rem; }
 .au-empty.compact p { margin: 0; font-size: 0.8125rem; }
 
 @media (max-width: 720px) {
-  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .stat-bar { justify-content: flex-start; gap: 1rem; }
+  .hide-sm { display: none; }
   .list-grid { grid-template-columns: 1fr; }
   .code-row { flex-wrap: wrap; }
   .code-value { font-size: 1.25rem; }
