@@ -12,6 +12,7 @@
   - **后端 · 冒烟测试**：`scripts/smoke_test_auth.py`（门户认证端到端）与 `scripts/smoke_test_admin_v240.py`（管理端接口，含后台免登 / 非管理员被拒）。不依赖构建产物，所以单独成 job，改后端时更快拿到反馈
   - **后端 · 部署自检**：把上一步的 `dist` 还原到 EM **实际托管**的位置后跑 `scripts/deploy_check.py`——真起 uvicorn、真发 HTTP，覆盖单进程与 EM/EA 分离两套形态；自检用独立数据库（`ci.db`）与显式 `SECRET_KEY`，即一次「从零部署」
 - 至此 PR 有了真正的状态检查：此前仓库没有任何 CI，`gh pr checks` 永远是「no checks reported」，门禁只能靠本地手跑
+- **`main` 分支保护：这四个检查已设为必需状态检查**（`前端 · user_frontend` / `前端 · admin_frontend` / `后端 · 冒烟测试` / `后端 · 部署自检（真起服务 + 真发 HTTP）`）——检查未通过时 GitHub 直接拒绝合并（`BLOCKED`），全部通过才转为 `CLEAN`。未开启 `strict`（要求分支先与 `main` 同步）与 `enforce_admins`（仓库管理员仍可直接向 `main` 推送）
 - `admin_frontend` 补上 `type-check` 脚本（`vue-tsc --noEmit -p tsconfig.json`），与用户端口径一致
 - README 补 CI 徽章与「持续集成（CI）」小节（含与 CI 同序的本地复现命令）
 

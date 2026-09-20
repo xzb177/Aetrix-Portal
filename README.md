@@ -231,6 +231,11 @@ python main.py
 | 后端 · 冒烟测试 | `scripts/smoke_test_auth.py`、`scripts/smoke_test_admin_v240.py`（TestClient 进程内，不需要构建产物） |
 | 后端 · 部署自检 | 还原前一个任务产出的 `dist` 后跑 `scripts/deploy_check.py`：**真起 uvicorn、真发 HTTP**，覆盖单进程与 EM/EA 分离两套形态 |
 
+这四个检查在 `main` 上是**必需状态检查**（branch protection）：PR 必须等到它们全部通过才能合并，
+挂着失败或还在跑的检查时 GitHub 会拒绝合并（`BLOCKED`，提示 `the base branch policy prohibits the merge`）；
+全部通过后转为 `CLEAN` 才可合入。`strict`（要求分支先与 `main` 同步）未开启，
+`enforce_admins` 也未开启（仓库管理员仍可直接向 `main` 推送）。
+
 本地复现（与 CI 同序）：
 
 ```bash
