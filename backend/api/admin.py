@@ -242,6 +242,122 @@ class BroadcastMessageRequest(BaseModel):
     content: str
 
 
+class SubscriptionGrantRequest(BaseModel):
+    """授予订阅请求"""
+    plan_id: int
+    duration_days: int
+
+
+class SubscriptionExtendRequest(BaseModel):
+    """延长订阅请求"""
+    days: int = Field(..., ge=1, le=3650)
+
+
+# ==================== 订阅管理 API ====================
+
+@admin_router.get("/plans")
+async def list_plans(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """订阅套餐列表（授予订阅时选择用）"""
+    plans = db.query(models.SubscriptionPlan).filter(
+        models.SubscriptionPlan.is_active == True  # noqa: E712
+    ).order_by(models.SubscriptionPlan.sort_order).all()
+    return {"plans": [
+        {
+            "id": p.id, "name": p.name, "description": p.description,
+            "price": float(p.price), "duration_days": p.duration_days,
+            "is_popular": p.is_popular,
+        }
+        for p in plans
+    ]}
+
+
+@admin_router.post("/users/{user_id}/subscriptions")
+async def grant_subscription(
+    user_id: int,
+    request: SubscriptionGrantRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """授予用户订阅 - 联动：通知用户"""
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    plan = db.query(models.SubscriptionPlan).filter(
+        models.SubscriptionPlan.id == request.plan_id
+    ).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="套餐不存在")
+
+    end_date = datetime.now() + timedelta(days=request.duration_days)
+    subscription = models.UserSubscription(
+        user_id=user_id,
+        plan_id=request.plan_id,
+        start_date=datetime.now(),
+        end_date=end_date,
+        status="active",
+    )
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+
+    _audit(db, current_admin, "grant_subscription", "subscription",
+           subscription.id, {"user_id": user_id, "plan_id": request.plan_id,
+                             "duration_days": request.duration_days})
+    db.commit()
+
+    await notify_admin_event(
+        event_type=AdminEvent.SUBSCRIPTION_MANUAL,
+        user_id=user_id,
+        title="🎉 恭喜获得订阅",
+        content=(f"管理员已为您开通「{plan.name}」订阅，有效期 {request.duration_days} 天"
+                 f"\n到期时间：{end_date.strftime('%Y-%m-%d')}"),
+        related_id=subscription.id,
+        from_admin_id=current_admin.id,
+    )
+    return {"success": True, "subscription_id": subscription.id,
+            "message": "订阅授予成功并已通知用户"}
+
+
+@admin_router.post("/subscriptions/{subscription_id}/extend")
+async def extend_subscription(
+    subscription_id: int,
+    request: SubscriptionExtendRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """延长订阅有效期 - 联动：通知用户"""
+    subscription = db.query(models.UserSubscription).filter(
+        models.UserSubscription.id == subscription_id
+    ).first()
+    if not subscription:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+
+    subscription.end_date = max(
+        subscription.end_date or datetime.now(), datetime.now()
+    ) + timedelta(days=request.days)
+    subscription.updated_at = datetime.now()
+    db.commit()
+
+    _audit(db, current_admin, "extend_subscription", "subscription",
+           subscription.id, {"days": request.days})
+    db.commit()
+
+    await notify_admin_event(
+        event_type=AdminEvent.SUBSCRIPTION_EXTENDED,
+        user_id=subscription.user_id,
+        title="订阅已延长",
+        content=(f"您的订阅已延长 {request.days} 天，"
+                 f"新到期时间：{subscription.end_date.strftime('%Y-%m-%d')}"),
+        related_id=subscription.id,
+        from_admin_id=current_admin.id,
+    )
+    return {"success": True, "message": "订阅延长成功"}
+
+
 # ==================== 用户管理 API ====================
 
 @admin_router.get("/users")
@@ -274,7 +390,7 @@ async def list_users(
             models.UserSubscription.user_id == u.id,
             models.UserSubscription.status == "active",
             models.UserSubscription.end_date > now,
-        ).first()
+        ).order_by(models.UserSubscription.end_date.desc()).first()
         items.append({
             "id": u.id,
             "username": u.username,
@@ -283,6 +399,7 @@ async def list_users(
             "is_staff": u.is_staff,
             "emby_username": u.emby_username,
             "has_subscription": active_sub is not None,
+            "subscription_id": active_sub.id if active_sub else None,
             "subscription_end": active_sub.end_date.isoformat() if active_sub else None,
             "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
             "created_at": _log_out(u),

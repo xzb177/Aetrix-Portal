@@ -22,6 +22,7 @@ export interface AdminUserRow {
   is_staff: boolean
   emby_username: string | null
   has_subscription: boolean
+  subscription_id: number | null
   subscription_end: string | null
   last_login_at: string | null
   created_at: string

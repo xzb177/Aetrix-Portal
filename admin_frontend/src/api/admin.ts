@@ -32,6 +32,23 @@ export const changePassword = (data: { old_password: string; new_password: strin
 export const fetchUsers = (params: { search?: string; active?: boolean; limit?: number; offset?: number }) =>
   get<UsersResponse>('/users', params)
 
+export interface PlanRow {
+  id: number
+  name: string
+  description: string | null
+  price: number
+  duration_days: number
+  is_popular: boolean
+}
+
+export const fetchPlans = () => get<{ plans: PlanRow[] }>('/plans')
+
+export const grantSubscription = (userId: number, data: { plan_id: number; duration_days: number }) =>
+  post<{ success: boolean }>(`/users/${userId}/subscriptions`, data)
+
+export const extendSubscription = (subscriptionId: number, days: number) =>
+  post<{ success: boolean }>(`/subscriptions/${subscriptionId}/extend`, { days })
+
 export const updateUser = (id: number, data: { is_active?: boolean; is_staff?: boolean }) =>
   put<{ success: boolean }>(`/users/${id}`, data)
 

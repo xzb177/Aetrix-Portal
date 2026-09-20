@@ -3,7 +3,17 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { KeyRound, Megaphone, RefreshCw, Search, ShieldCheck, UserX } from 'lucide-vue-next'
-import { broadcastMessage, fetchUsers, resetUserPassword, sendUserMessage, updateUser } from '@/api/admin'
+import {
+  broadcastMessage,
+  extendSubscription,
+  fetchPlans,
+  fetchUsers,
+  grantSubscription,
+  resetUserPassword,
+  sendUserMessage,
+  updateUser,
+  type PlanRow,
+} from '@/api/admin'
 import type { AdminUserRow } from '@/types'
 
 const users = ref<AdminUserRow[]>([])
@@ -77,6 +87,41 @@ async function broadcast() {
   await broadcastMessage({ title: '系统广播', content: value })
   ElMessage.success('广播已发送')
 }
+
+async function grantSub(u: AdminUserRow) {
+  const { plans } = await fetchPlans()
+  if (plans.length === 0) {
+    ElMessage.warning('暂无可用套餐，请先在数据库中创建 SubscriptionPlan')
+    return
+  }
+  const planOptions = plans.map((p: PlanRow) => `${p.name}（${p.duration_days} 天 / ¥${p.price}）`)
+  const planIdx = await ElMessageBox.prompt(
+    `选择套餐序号：\n${planOptions.map((t: string, i: number) => `${i + 1}. ${t}`).join('\n')}`,
+    `为「${u.username}」授予订阅`,
+    { inputPlaceholder: `输入 1-${plans.length}`, inputPattern: new RegExp(`^[1-${plans.length}]$`), inputErrorMessage: '请输入有效序号' }
+  )
+  const plan = plans[Number(planIdx.value) - 1]
+  const days = await ElMessageBox.prompt(
+    `「${plan.name}」标准有效期 ${plan.duration_days} 天，输入实际授予天数：`,
+    '授予天数',
+    { inputValue: String(plan.duration_days), inputPattern: /^\d{1,4}$/, inputErrorMessage: '请输入有效天数' }
+  )
+  await grantSubscription(u.id, { plan_id: plan.id, duration_days: Number(days.value) })
+  ElMessage.success('订阅已授予并通知用户')
+  load()
+}
+
+async function extendSub(u: AdminUserRow) {
+  if (!u.subscription_id) return
+  const { value } = await ElMessageBox.prompt(
+    `当前到期：${u.subscription_end?.slice(0, 10) || '—'}，输入延长天数：`,
+    `延长「${u.username}」的订阅`,
+    { inputPattern: /^\d{1,4}$/, inputErrorMessage: '请输入有效天数' }
+  )
+  await extendSubscription(u.subscription_id, Number(value))
+  ElMessage.success('订阅已延长并通知用户')
+  load()
+}
 </script>
 
 <template>
@@ -136,6 +181,8 @@ async function broadcast() {
             <el-button size="small" text :type="row.is_staff ? 'danger' : 'success'" @click="toggleStaff(row)">
               <ShieldCheck :size="14" style="margin-right: 2px" />{{ row.is_staff ? '降级' : '授权' }}
             </el-button>
+            <el-button v-if="row.has_subscription" size="small" text type="warning" @click="extendSub(row)">延长订阅</el-button>
+            <el-button v-else size="small" text type="warning" @click="grantSub(row)">授予订阅</el-button>
           </template>
         </el-table-column>
       </el-table>
