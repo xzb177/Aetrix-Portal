@@ -5,7 +5,7 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
   Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown,
   Wallet, CalendarCheck, Gift, MessageSquareDashed, Zap, History,
-  Search, Heart,
+  Search, Heart, ShieldCheck,
 } from 'lucide-vue-next'
 import api from '@/api'
 import { pointsApi } from '@/api/economy'
@@ -181,6 +181,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                 <RouterLink to="/invite" class="dropdown-item" @click="closeMenus">
                   <Gift :size="15" /> 邀请返利
                 </RouterLink>
+                <!-- 管理员：直达管理后台（同源同 JWT，后台会自动接管当前登录态，不再要求二次登录） -->
+                <a v-if="userStore.user?.is_staff" href="/admin/" class="dropdown-item" @click="closeMenus">
+                  <ShieldCheck :size="15" /> 管理后台
+                </a>
                 <button class="dropdown-item dropdown-logout" @click="handleLogout">
                   <LogOut :size="15" /> 退出登录
                 </button>
@@ -209,6 +213,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
             {{ item.name }}
             <span v-if="item.path === '/messages' && unreadCount > 0" class="mobile-msg-badge">{{ unreadCount }}</span>
           </RouterLink>
+          <a v-if="userStore.user?.is_staff" href="/admin/" class="mobile-link" @click="closeMenus">
+            <ShieldCheck :size="17" />
+            管理后台
+          </a>
           <button class="mobile-link logout" @click="handleLogout">
             <LogOut :size="17" />
             退出登录

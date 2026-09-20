@@ -2,6 +2,63 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.9] - 2026-09-20
+
+本次解决「管理员进了后台还要再输一遍账号」的重复动作：把门户与管理后台打通为**单点登录**。
+
+### 新增 (Added)
+- **门户免登（单点登录）**：管理后台与用户端本就同源、共用同一个 `SECRET_KEY` 与同一套 JWT（`get_current_admin` 只认 `is_staff` 的 `WebUser`），但两端各自存了一份 token（门户 `access_token` / 后台 `admin_access_token`），导致管理员在门户登录后打开 `/admin/` 还要再登录一次。现在后台在挂载路由前用门户会话**静默探测一次** `/api/admin/auth/me`：通过即接管该会话直接进入，**不再出现登录页**
+  - 门户 access token 已过期时，自动用门户 `refresh_token` 换新后重试（轮换后的票据同时写回门户键，两个前端都不断线）；换不到才落到登录页
+  - 探测失败给出可操作提示：门户账号不是管理员 → 「当前门户账号没有管理员权限，请使用管理员账号登录」；门户会话失效 → 「门户登录状态已失效，请重新登录」。探测只在有门户会话时发起，**不发无谓请求、不产生循环跳转**
+  - 探测走裸 `axios`，不经过管理端拦截器，因此 401/403 不会触发全局报错与强制跳转
+- **用户端新增「管理后台」入口**：顶栏用户菜单与移动端抽屉对 `is_staff` 账号显示入口，一次登录即可从门户直达后台
+- `GET /api/user/auth/me`（及登录 / 注册 / 刷新返回的 `user`）新增 `is_staff` 字段，前端据此判断是否展示后台入口
+
+### 变更 (Changed)
+- 后台「退出登录」是真退出：主动退出后**本标签页内**不再用门户会话自动免登（否则点了退出会被立刻登回去），关闭页面或重新在门户登录后恢复
+- `docs/deploy-em.md`「首次登录与管理」补充免登行为说明
+- 版本号：后端 / EA / 用户端 / 管理端 / 后台顶栏 2.6.9
+
+### 验证 (Verified)
+- `scripts/smoke_test_admin_v240.py` 新增 3 项断言（门户 token 直接通过 `/api/admin/auth/me`、门户返回 `is_staff`、非管理员门户 token 被拒 403），全量通过
+- `scripts/smoke_test_auth.py` 门户认证端到端回归通过；`vue-tsc` 双前端无新增类型错误
+
+## [2.6.8] - 2026-09-20
+
+本次做了一次**真实部署自检**（真起 uvicorn + 真发 HTTP），并修掉它发现的一处客户端兼容缺口。
+
+### 新增 (Added)
+- **`scripts/deploy_check.py`（部署自检）**：不依赖 TestClient，真的跑一遍 `python serve.py` 再发 HTTP：
+  依赖 / 数据库 / 静态产物预检 → 冷启动就绪（超时会打出服务日志）→ 用户端与管理端首页 →
+  Emby 协议面 → 登录与权限（错密码、未带 token）→ 挂载类型表（含 rclone）→ 挂载 CRUD 与目录浏览 →
+  媒体库绑定挂载并触发扫描 → 条目真的入库 → 收尾清理与优雅退出。退出码 0 即通过；
+  `--port` / `--timeout` / `--keep` 可选。共 46 项断言。
+- **分离部署（推荐产线形态）也进自检**：同一库里再起一套 `ENABLE_EMBY_GATEWAY=false` 的 EM
+  与独立 `serve_emby.py`，验证 EM 交出协议面并给出「去连 EA」404 指引、EA 上报
+  `service=ea` 且 `paired_with_em=true`、EA 的 `/emby/*` 与裸根路径都可用；
+  最关键的一步是**跨服务配对**——客户端在 EA 上用 EM 写的账号 `AuthenticateByName` 拿到
+  token，再用该 token 读到同一用户（`Bearer` 与 `X-Emby-Token` 两种形式都验）。
+- **配对闸门进自检（负向断言）**：不设 `SECRET_KEY` 时 EA 必须拒绝启动并打出提示——
+  自检会真的跑一次，确认它没「带病起来」。
+- **构建产物新鲜度检查**：EM 实际托管的是 `user_frontend/dist` 与 `admin_frontend/dist`
+  （可用 `FRONTEND_DIST` / `ADMIN_DIST` 覆盖），自检按这两个目录判定存在性，
+  并在「产物比 `src/` 旧」时警告——否则会部署出一套旧界面而代码里看不出来。
+
+### 修复 (Fixed)
+- **`/emby/System/Info/Public` 返回 404（客户端发现服务的第一个请求）**：此前只注册了首字母大写的
+  裸路径 `/System/Info/Public` 与全小写的 `/emby/system/info/public`，客户端按 Emby 文档拼
+  `/emby/System/Info/Public` 时会 404。现在三种写法都注册，`System/Ping` 与
+  `Branding/Configuration` 同理；`smoke_test_ea_split.py` 补上了对应断言。
+- 冒烟测试的计数断言改为按**本测试独有的路径前缀**统计，并在开跑前清理孤儿条目：
+  开发库共用一个 SQLite，删除后主键会被复用，按库 id / 全局计数会被其它测试的残留行干扰。
+- 自检用的账号现在同时建好**自建 Emby 凭据**（`emby_username` / `emby_password`）：
+  客户端认证走的是这两个字段，只给门户密码时 EA 会（正确地）返回 401。
+
+### 变更 (Changed)
+- 自检不需要显式配置即可跑（自造 `SECRET_KEY` 并给出 `WARN`），但**生产必须显式设置**：
+  不设时 EM 用临时随机密钥，EA 会直接拒绝启动。
+- 版本号：后端 / EA / 用户端 / 管理端 / 后台顶栏 2.6.8
+
 ## [2.6.7] - 2026-09-20
 
 本次在存储挂载里新增 **rclone 挂载**：直接复用 rclone 的 remote，把 rclone 支持的

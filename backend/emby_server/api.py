@@ -354,6 +354,10 @@ def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> d
 
 # ==================== 系统信息 ====================
 
+# 客户端发现服务时第一条请求就是它：Emby 官方文档写的是 /emby/System/Info/Public，
+# 而别的客户端可能会用裸路径或全小写，所以三种写法都注册（缺一个就会 404 连不上）。
+@emby_router.get("/emby/System/Info")
+@emby_router.get("/emby/System/Info/Public")
 @emby_router.get("/emby/system/info")
 @emby_router.get("/emby/system/info/public")
 @emby_router.get("/System/Info")
@@ -381,18 +385,21 @@ async def system_info(request: Request):
     }
 
 
+@emby_router.get("/emby/System/Ping")
 @emby_router.get("/emby/system/ping")
 @emby_router.get("/System/Ping")
 async def system_ping():
     return PlainTextResponse("Emby Server")
 
 
+@emby_router.post("/emby/System/Ping")
 @emby_router.post("/emby/system/ping")
 @emby_router.post("/System/Ping")
 async def system_ping_post():
     return PlainTextResponse("Emby Server")
 
 
+@emby_router.get("/emby/Branding/Configuration")
 @emby_router.get("/emby/branding/config")
 @emby_router.get("/Branding/Configuration")
 async def branding_config():

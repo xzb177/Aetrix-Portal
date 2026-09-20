@@ -754,6 +754,16 @@ def _purge_previous_runs() -> int:
     if ids:
         db.query(em.Library).filter(em.Library.id.in_(ids)).delete(synchronize_session=False)
     db.query(em.StorageMount).delete()
+    # 孤儿条目：库已经没了、条目还指向那个 id。SQLite 复用 id 时会把这些行算到新库头上
+    alive = {l.id for l in db.query(em.Library).all()}
+    for row in db.query(em.MediaItem).all():
+        if row.library_id not in alive:
+            db.query(em.MediaStream).filter(
+                em.MediaStream.item_id == row.id).delete(synchronize_session=False)
+            db.query(em.UserMediaData).filter(
+                em.UserMediaData.item_id == row.id).delete(synchronize_session=False)
+            db.delete(row)
+            seen.add(-1)
     for lib in db.query(em.Library).all():
         if lib.mount_ids:
             lib.mount_ids = ""
@@ -855,10 +865,11 @@ pan_row.is_enabled = True
 db.commit()
 
 # 条目 guid 由路径决定：同一目录被路径与挂载同时引用时，不会再产生第二份条目
-# 只统计这两个库的条目：全局计数会被其它冒烟测试留下的孤儿行干扰（开发库共用一个 SQLite）
+# 按本测试的目录前缀计数：全局计数与「按库 id」都会被其它测试的残留行干扰
+# （开发库共用一个 SQLite，删除后 id 会被复用），路径是本测试独有的
 def _dual_scope_count() -> int:
     return db.query(em.MediaItem).filter(
-        em.MediaItem.library_id.in_([lib_local.id, lib_dual.id])
+        em.MediaItem.file_path.like(f"{local_root}%")
     ).count()
 
 
@@ -1288,7 +1299,7 @@ lib_after = next(l for l in client.get("/api/admin/emby/libraries", headers=sh).
 check("删除后媒体库不再引用它", pan_api_id not in lib_after["mount_ids"], str(lib_after["mount_ids"]))
 check("删除挂载不会删掉已入库条目",
       db.query(em.MediaItem).filter(
-          em.MediaItem.library_id == lib_remote.id, em.MediaItem.file_path.isnot(None),
+          em.MediaItem.file_path.like(f"mount://{pan_row.id}/%"),
       ).count() == 2)
 
 r = client.post("/api/admin/emby/mounts",

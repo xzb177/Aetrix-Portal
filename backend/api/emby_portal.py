@@ -76,6 +76,8 @@ class UserOut(BaseModel):
     emby_username: str | None = None
     is_vip: bool = False
     is_active: bool = True
+    # 是否管理员：用户端据此显示「管理后台」入口（管理后台与门户同一套 JWT）
+    is_staff: bool = False
     # 付费墙是否开启（开启且非会员时播放会被拦截）
     subscription_required: bool = False
     # 站点是否允许下载 + 每用户设备上限（0 表示不限）
@@ -107,6 +109,7 @@ def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
         emby_username=user.emby_username,
         is_vip=is_vip,
         is_active=user.is_active,
+        is_staff=bool(user.is_staff),
         subscription_required=subscription_required(db) if db is not None else False,
         download_allowed=download_allowed(db) if db is not None else True,
         device_limit=device_limit(db) if db is not None else 0,

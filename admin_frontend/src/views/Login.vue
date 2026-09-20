@@ -45,6 +45,9 @@ async function submit() {
         <p>运营管理后台 · 仅限管理员账号登录</p>
       </div>
 
+      <!-- 门户（用户端）已登录时的免登结果：能自动进就直接进，不能进也要说明原因 -->
+      <p v-if="auth.ssoNotice" class="login-hint">{{ auth.ssoNotice }}</p>
+
       <form @submit.prevent="submit">
         <label class="field">
           <span class="field-label"><User :size="14" /> 用户名</span>
@@ -99,6 +102,16 @@ async function submit() {
   padding: 34px 28px 26px;
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(14px);
+}
+
+.login-hint {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  margin: 0 0 16px;
 }
 
 .login-brand { text-align: center; margin-bottom: 26px; }

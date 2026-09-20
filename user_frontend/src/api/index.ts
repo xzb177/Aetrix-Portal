@@ -133,6 +133,8 @@ export interface AuthUser {
   emby_username?: string | null
   is_vip: boolean
   is_active: boolean
+  /** 管理员：用户端据此显示「管理后台」入口（两端同源同 JWT，无需二次登录） */
+  is_staff?: boolean
   /** 付费墙是否开启：开启且非会员时播放会被拦截 */
   subscription_required?: boolean
   created_at?: string | null
