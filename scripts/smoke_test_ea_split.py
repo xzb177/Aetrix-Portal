@@ -90,6 +90,16 @@ with TestClient(ea.app) as client:
     r = client.get("/System/Info/Public")
     check("GET /System/Info/Public（裸根路径）", r.status_code == 200, f"HTTP {r.status_code}")
 
+    # Emby 官方文档里的规范地址是带 /emby 前缀且首字母大写（客户端发现服务第一条请求）
+    r = client.get("/emby/System/Info/Public")
+    check("GET /emby/System/Info/Public（规范地址）",
+          r.status_code == 200 and bool((r.json() if r.status_code == 200 else {}).get("ServerName")),
+          f"HTTP {r.status_code}")
+    r = client.get("/emby/System/Ping")
+    check("GET /emby/System/Ping", r.status_code == 200, f"HTTP {r.status_code}")
+    r = client.get("/emby/Branding/Configuration")
+    check("GET /emby/Branding/Configuration", r.status_code == 200, f"HTTP {r.status_code}")
+
     r = client.get("/api/health")
     body = r.json() if r.status_code == 200 else {}
     check(

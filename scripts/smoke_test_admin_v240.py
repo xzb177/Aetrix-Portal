@@ -90,6 +90,8 @@ r = client.post("/api/user/auth/login", json={"username": admin_name, "password"
 check("管理员登录", r.status_code == 200, str(r.status_code))
 token = r.json()["access_token"]
 headers = {"Authorization": f"Bearer {token}"}
+# 管理后台与门户同一套 JWT：管理员在门户登录后进后台无需二次登录
+check("门户登录返回 is_staff", r.json()["user"].get("is_staff") is True)
 
 try:
     # ---------- 用户详情 ----------
@@ -157,6 +159,16 @@ try:
 
     # ---------- 鉴权 ----------
     check("无 token 拒绝", client.get("/api/admin/stats/trend").status_code in (401, 403))
+
+    # ---------- 门户免登（跨端共用同一 token） ----------
+    r = client.get("/api/admin/auth/me", headers=headers)
+    check("门户 token 直接进后台", r.status_code == 200 and r.json().get("username") == admin_name,
+          str(r.status_code))
+    r = client.post("/api/user/auth/login", json={"username": f"usr{suf}", "password": "user12345"})
+    staff_headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    check("门户登录返回非管理员 is_staff", r.json()["user"].get("is_staff") is False)
+    check("非管理员门户 token 被拒",
+          client.get("/api/admin/auth/me", headers=staff_headers).status_code == 403)
 finally:
     db = SessionLocal()
     names = [f"adm{suf}", f"usr{suf}", f"inv{suf}"]

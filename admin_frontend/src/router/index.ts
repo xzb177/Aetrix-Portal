@@ -42,8 +42,15 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
+
+  // 门户免登：管理员在用户端已登录时，进后台直接接管该会话，不再要求二次登录。
+  // 只在没有后台会话时探测一次（ssoFromPortal 内部做了幂等与失败短路）。
+  if (!auth.isAuthenticated) {
+    await auth.ssoFromPortal()
+  }
+
   if (to.meta.requiresAuth !== false && !auth.isAuthenticated) {
     return { name: 'Login', query: { redirect: to.fullPath } }
   }
