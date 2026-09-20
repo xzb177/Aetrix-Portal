@@ -22,6 +22,8 @@ from backend.api import user_router, admin_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.portal import user_emby_router, admin_emby_router
 from backend.api.emby_portal import auth_router
+from backend.api.economy import router as economy_router
+from backend.api.invitation import router as invitation_router
 
 # 配置日志
 logging.basicConfig(
@@ -56,7 +58,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.1.0",
+    version="2.3.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -191,6 +193,10 @@ app.include_router(admin_emby_router)
 
 # 用户门户认证 API（注册/登录/JWT）
 app.include_router(auth_router)
+
+# 用户经济系统（签到/兑换码/支付/订单）与邀请返利
+app.include_router(economy_router)
+app.include_router(invitation_router)
 
 
 # ==================== 根路径 ====================

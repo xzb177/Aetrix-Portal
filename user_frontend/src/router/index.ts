@@ -40,6 +40,25 @@ const router = createRouter({
       component: () => import('@/views/RequestView.vue'),
       meta: { title: '求片中心', requiresAuth: true },
     },
+    // ==================== 经济系统（v2.3.0） ====================
+    {
+      path: '/wallet',
+      name: 'wallet',
+      component: () => import('@/views/WalletView.vue'),
+      meta: { title: '我的钱包', requiresAuth: true },
+    },
+    {
+      path: '/checkin',
+      name: 'checkin',
+      component: () => import('@/views/CheckinView.vue'),
+      meta: { title: '每日签到', requiresAuth: true },
+    },
+    {
+      path: '/invite',
+      name: 'invite',
+      component: () => import('@/views/InviteView.vue'),
+      meta: { title: '邀请返利', requiresAuth: true },
+    },
     // ==================== 媒体库（Emby 协议端点） ====================
     {
       path: '/media',

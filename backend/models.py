@@ -145,6 +145,7 @@ class WebUser(Base):
     telegram_id = Column(BigInteger, unique=True)
     is_active = Column(Boolean, default=True)
     is_staff = Column(Boolean, default=False)
+    points = Column(Integer, default=0)  # 积分余额（签到/邀请返利/兑换/充值）
 
     # 自建 Emby 凭据（完全自建模式下，Emby 客户端用此账号密码登录）
     emby_username = Column(String(64), unique=True, nullable=True)
@@ -542,6 +543,75 @@ class ThemeActivityProgress(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+# ==================== 经济系统（签到/积分/兑换码） ====================
+
+class CheckinRecord(Base):
+    """每日签到记录表"""
+    __tablename__ = 'checkin_records'
+
+    __table_args__ = (
+        Index('idx_checkin_user_date', 'user_id', 'checkin_date', unique=True),
+        Index('idx_checkin_date', 'checkin_date'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    checkin_date = Column(DateTime, nullable=False)  # 签到日期（零点）
+    points_awarded = Column(Integer, default=0)
+    streak = Column(Integer, default=1)  # 连续签到天数
+    created_at = Column(DateTime, default=datetime.now)
+
+    user = relationship("WebUser")
+
+
+class PointsLog(Base):
+    """积分流水表（收入/支出台账）"""
+    __tablename__ = 'points_logs'
+
+    __table_args__ = (
+        Index('idx_points_user', 'user_id'),
+        Index('idx_points_type', 'type'),
+        Index('idx_points_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    amount = Column(Integer, nullable=False)  # 正数收入 / 负数支出
+    balance_after = Column(Integer, default=0)  # 变动后余额
+    type = Column(String(30), default='system')  # checkin, invite, invitee, rebate, exchange, recharge, admin_grant, admin_deduct
+    description = Column(String(255))
+    ref_id = Column(String(64))  # 关联对象（订单号/兑换码等）
+    created_at = Column(DateTime, default=datetime.now)
+
+    user = relationship("WebUser")
+
+
+class ExchangeCode(Base):
+    """兑换码表（积分兑换 / 订阅兑换）"""
+    __tablename__ = 'exchange_codes'
+
+    __table_args__ = (
+        Index('idx_exchange_code', 'code'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(20), unique=True, nullable=False, index=True)
+    type = Column(String(20), default='points')  # points 积分 / subscription 订阅
+    points_value = Column(Integer, default=0)  # points 型：兑换积分数
+    plan_id = Column(Integer, ForeignKey('subscription_plans.id'), nullable=True)  # subscription 型：套餐
+    duration_days = Column(Integer, default=0)  # subscription 型：时长
+    max_uses = Column(Integer, default=1)
+    use_count = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    note = Column(String(255))
+    used_by = Column(String(500))  # 逗号分隔的 WebUser.id 审计
+    expires_at = Column(DateTime)
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    plan = relationship("SubscriptionPlan")
+
+
 # ==================== 邀请系统 ====================
 
 class RegistrationCode(Base):
@@ -707,6 +777,8 @@ __all__ = [
     "Ticket", "TicketMessage",
     # 公告和活动
     "Announcement", "ThemeActivity", "ThemeActivityProgress",
+    # 经济系统
+    "CheckinRecord", "PointsLog", "ExchangeCode",
     # 邀请
     "InvitationCode", "InvitationRecord",
     # 求片

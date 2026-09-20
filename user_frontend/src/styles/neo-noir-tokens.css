@@ -16,15 +16,15 @@
   /* ==================== 色彩系统 ==================== */
 
   /* 主色 - 绿色（仅用于主CTA，少量点缀） */
-  --neo-primary: #10B981;
-  --neo-primary-hover: #059669;
-  --neo-primary-active: #047857;
-  --neo-primary-dim: rgba(16, 185, 129, 0.08);
-  --neo-primary-glow: rgba(16, 185, 129, 0.25);
+  --neo-primary: #22d3ee;
+  --neo-primary-hover: #06b6d4;
+  --neo-primary-active: #0e7490;
+  --neo-primary-dim: rgba(34, 211, 238, 0.08);
+  --neo-primary-glow: rgba(34, 211, 238, 0.25);
 
   /* 语义色 */
-  --neo-success: #10B981;
-  --neo-success-bg: rgba(16, 185, 129, 0.12);
+  --neo-success: #22d3ee;
+  --neo-success-bg: rgba(34, 211, 238, 0.12);
   --neo-warning: #F59E0B;
   --neo-warning-bg: rgba(245, 158, 11, 0.12);
   --neo-danger: #EF4444;
@@ -72,7 +72,7 @@
   --neo-text-inverse: #0B0F14;
 
   /* 链接文字 */
-  --neo-text-link: #10B981;
+  --neo-text-link: #22d3ee;
   --neo-text-link-hover: #34D399;
 
   /* ==================== 边框系统 ==================== */
@@ -80,7 +80,7 @@
   --neo-border-subtle: rgba(255, 255, 255, 0.06);
   --neo-border-default: rgba(255, 255, 255, 0.08);
   --neo-border-strong: rgba(255, 255, 255, 0.12);
-  --neo-border-focus: rgba(16, 185, 129, 0.5);
+  --neo-border-focus: rgba(34, 211, 238, 0.5);
 
   /* 分割线 */
   --neo-divider: rgba(255, 255, 255, 0.06);
@@ -103,7 +103,7 @@
   --neo-shadow-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 
   /* 发光效果（仅用于主CTA） */
-  --neo-glow-primary: 0 0 24px rgba(16, 185, 129, 0.3);
+  --neo-glow-primary: 0 0 24px rgba(34, 211, 238, 0.3);
 
   /* ==================== 间距系统（8pt 栅格）==================== */
 
@@ -213,9 +213,9 @@
   /* ==================== Bridge Profile 专用 ==================== */
 
   /* Holo-ID 全息效果 */
-  --neo-holo-gradient: linear-gradient(135deg, #10B981 0%, #3B82F6 50%, #8B5CF6 100%);
-  --neo-holo-scan: linear-gradient(180deg, transparent 0%, rgba(16, 185, 129, 0.15) 50%, transparent 100%);
-  --neo-holo-glow: 0 0 30px rgba(16, 185, 129, 0.3);
+  --neo-holo-gradient: linear-gradient(135deg, #22d3ee 0%, #3B82F6 50%, #8B5CF6 100%);
+  --neo-holo-scan: linear-gradient(180deg, transparent 0%, rgba(34, 211, 238, 0.15) 50%, transparent 100%);
+  --neo-holo-glow: 0 0 30px rgba(34, 211, 238, 0.3);
 
   /* 翻转动画 */
   --neo-card-flip-duration: 600ms;
@@ -225,7 +225,7 @@
   --neo-gauge-radius: 40px;
   --neo-gauge-stroke: 6px;
   --neo-gauge-bg: rgba(255, 255, 255, 0.06);
-  --neo-gauge-primary: #10B981;
+  --neo-gauge-primary: #22d3ee;
   --neo-gauge-warning: #F59E0B;
   --neo-gauge-danger: #EF4444;
 

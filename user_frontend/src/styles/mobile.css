@@ -168,7 +168,7 @@
   }
 
   .bottom-nav-item.active {
-    color: var(--neo-primary, #10B981);
+    color: var(--neo-primary, #22d3ee);
   }
 
   /* 为底部导航留出空间 */
@@ -263,7 +263,7 @@
   .glass-card,
   .quick-item,
   .action-card {
-    -webkit-tap-highlight-color: rgba(16, 185, 129, 0.2);
+    -webkit-tap-highlight-color: rgba(34, 211, 238, 0.2);
   }
 
   button:active,
@@ -398,7 +398,7 @@
 
 /* ==================== 焦点样式（键盘导航 - Neo-Noir 2.0） ==================== */
 :focus-visible {
-  outline: 2px solid var(--neo-primary, #10B981);
+  outline: 2px solid var(--neo-primary, #22d3ee);
   outline-offset: 2px;
 }
 

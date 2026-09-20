@@ -48,7 +48,7 @@ class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=32)
     password: str = Field(..., min_length=6, max_length=64)
     email: str | None = None
-    invitation_code: str | None = None
+    invitation_code: str | None = None  # 邀请码（选填，双向奖励+返利绑定）
     registration_code: str | None = None  # 注册模式下必填
 
 
@@ -239,6 +239,17 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
         if reg_code.use_count >= reg_code.max_uses:
             reg_code.is_active = False
         db.commit()
+
+    # 邀请返利：注册时应用邀请码（双向发奖，失败静默不阻塞注册）
+    if req.invitation_code:
+        try:
+            from backend.api.invitation import apply_invitation
+            apply_invitation(db, user, req.invitation_code)
+            db.commit()
+        except Exception:  # noqa: BLE001 — 邀请奖励失败不阻塞注册
+            db.rollback()
+            logger.warning("邀请码应用失败: user=%s code=%s", user.id, req.invitation_code,
+                           exc_info=True)
 
     logger.info("新用户注册: %s (id=%s, mode=%s)", username, user.id, reg_mode)
     return _issue_auth_response(user, db, plain_password=req.password)

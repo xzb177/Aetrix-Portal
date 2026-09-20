@@ -197,7 +197,7 @@ onMounted(loadRequests)
 <style scoped>
 .request-view {
   min-height: 100vh;
-  background: #05070a;
+  background: #070b12;
   color: #e5e7eb;
   padding-bottom: 3rem;
 }
@@ -228,7 +228,7 @@ onMounted(loadRequests)
 }
 
 .page-title svg {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .page-sub {
@@ -306,7 +306,7 @@ onMounted(loadRequests)
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
-  border-color: rgba(16, 185, 129, 0.6);
+  border-color: rgba(34, 211, 238, 0.6);
 }
 
 .field select option {
@@ -337,9 +337,9 @@ onMounted(loadRequests)
 }
 
 .btn.primary {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, #22d3ee, #06b6d4);
   color: #fff;
-  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.22);
+  box-shadow: 0 4px 14px rgba(34, 211, 238, 0.22);
 }
 
 .btn.primary:disabled {
@@ -404,7 +404,7 @@ onMounted(loadRequests)
 }
 
 .empty-state svg {
-  color: rgba(16, 185, 129, 0.4);
+  color: rgba(34, 211, 238, 0.4);
 }
 
 .empty-state h3 {
@@ -438,7 +438,7 @@ onMounted(loadRequests)
 }
 
 .request-item:hover {
-  border-color: rgba(16, 185, 129, 0.2);
+  border-color: rgba(34, 211, 238, 0.2);
 }
 
 .item-head {
@@ -470,9 +470,9 @@ onMounted(loadRequests)
 
 .type-tag {
   padding: 0.0625rem 0.4375rem;
-  background: rgba(16, 185, 129, 0.08);
+  background: rgba(34, 211, 238, 0.08);
   border-radius: 6px;
-  color: rgba(16, 185, 129, 0.8);
+  color: rgba(34, 211, 238, 0.8);
 }
 
 .status {
@@ -502,7 +502,7 @@ onMounted(loadRequests)
 }
 
 .status.completed {
-  background: rgba(16, 185, 129, 0.1);
+  background: rgba(34, 211, 238, 0.1);
   color: #34d399;
 }
 
@@ -516,8 +516,8 @@ onMounted(loadRequests)
 .item-reply {
   margin: 0.625rem 0 0;
   padding: 0.5rem 0.75rem;
-  background: rgba(16, 185, 129, 0.05);
-  border: 1px solid rgba(16, 185, 129, 0.15);
+  background: rgba(34, 211, 238, 0.05);
+  border: 1px solid rgba(34, 211, 238, 0.15);
   border-radius: 9px;
   font-size: 0.8125rem;
   color: rgba(255, 255, 255, 0.75);
@@ -525,7 +525,7 @@ onMounted(loadRequests)
 }
 
 .reply-label {
-  color: #10b981;
+  color: #22d3ee;
   font-weight: 600;
   margin-right: 0.4375rem;
   font-size: 0.75rem;

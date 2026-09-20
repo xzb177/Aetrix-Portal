@@ -1,0 +1,300 @@
+/* ========================================
+   Aurora 设计系统 v3 — RoyalBot Portal
+   深蓝青色流光主题 · 全新视觉重构
+   ======================================== */
+
+:root {
+  /* 主色 — 电光青 */
+  --au-primary: #22d3ee;
+  --au-primary-strong: #06b6d4;
+  --au-primary-deep: #0e7490;
+  --au-primary-soft: rgba(34, 211, 238, 0.12);
+  --au-primary-border: rgba(34, 211, 238, 0.28);
+  --au-primary-glow: rgba(34, 211, 238, 0.35);
+
+  /* 辅助色 — 极光紫粉（渐变点缀） */
+  --au-violet: #a78bfa;
+  --au-pink: #f472b6;
+  --au-gradient: linear-gradient(135deg, #22d3ee 0%, #a78bfa 100%);
+  --au-gradient-warm: linear-gradient(135deg, #f472b6 0%, #a78bfa 100%);
+
+  /* 语义色 */
+  --au-success: #34d399;
+  --au-success-soft: rgba(52, 211, 153, 0.12);
+  --au-warning: #fbbf24;
+  --au-warning-soft: rgba(251, 191, 36, 0.12);
+  --au-danger: #fb7185;
+  --au-danger-soft: rgba(251, 113, 133, 0.12);
+  --au-info: #60a5fa;
+  --au-info-soft: rgba(96, 165, 250, 0.12);
+
+  /* 背景层级 */
+  --au-bg: #070b12;
+  --au-bg-soft: #0a101a;
+  --au-surface: rgba(148, 180, 220, 0.05);
+  --au-surface-2: rgba(148, 180, 220, 0.08);
+  --au-surface-3: rgba(148, 180, 220, 0.12);
+  --au-overlay: rgba(4, 7, 12, 0.82);
+
+  /* 文字 */
+  --au-text: #eaf2fb;
+  --au-text-2: rgba(234, 242, 251, 0.68);
+  --au-text-3: rgba(234, 242, 251, 0.45);
+  --au-text-4: rgba(234, 242, 251, 0.3);
+
+  /* 边框 */
+  --au-border: rgba(148, 180, 220, 0.12);
+  --au-border-strong: rgba(148, 180, 220, 0.2);
+  --au-border-focus: rgba(34, 211, 238, 0.55);
+
+  /* 圆角 */
+  --au-r-sm: 8px;
+  --au-r-md: 12px;
+  --au-r-lg: 16px;
+  --au-r-xl: 22px;
+  --au-r-full: 999px;
+
+  /* 阴影 */
+  --au-shadow-1: 0 2px 10px rgba(0, 0, 0, 0.35);
+  --au-shadow-2: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --au-shadow-glow: 0 0 24px var(--au-primary-glow);
+
+  /* 动效 */
+  --au-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --au-fast: 0.16s;
+  --au-med: 0.26s;
+
+  /* 兼容旧 token（媒体库等页面依赖） */
+  --brand-primary: var(--au-primary);
+  --brand-primary-hover: var(--au-primary-strong);
+  --brand-primary-light: var(--au-primary-soft);
+  --bg-primary: var(--au-bg);
+  --bg-glass: var(--au-surface);
+  --bg-glass-hover: var(--au-surface-2);
+  --bg-glass-light: var(--au-surface-2);
+  --text-primary: var(--au-text);
+  --text-secondary: var(--au-text-2);
+  --text-tertiary: var(--au-text-3);
+  --text-muted: var(--au-text-3);
+  --border-glass: var(--au-border);
+  --border-glass-light: var(--au-border);
+  --border-default: var(--au-border);
+  --border-subtle: var(--au-border);
+  --accent-red: var(--au-danger);
+  --accent-yellow: var(--au-warning);
+  --color-error: var(--au-danger);
+  --color-warning: var(--au-warning);
+  --radius-sm: var(--au-r-sm);
+  --radius-md: var(--au-r-md);
+  --radius-lg: var(--au-r-lg);
+}
+
+/* ==================== 基础 ==================== */
+
+body {
+  background:
+    radial-gradient(1000px 500px at 85% -10%, rgba(167, 139, 250, 0.07), transparent 60%),
+    radial-gradient(900px 480px at -10% 0%, rgba(34, 211, 238, 0.08), transparent 55%),
+    var(--au-bg);
+  color: var(--au-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ==================== 通用卡片 ==================== */
+
+.au-card {
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.au-card-pad { padding: 1.25rem; }
+
+/* 渐变强调边框卡片 */
+.au-card-accent {
+  position: relative;
+  background: linear-gradient(var(--au-bg-soft), var(--au-bg-soft)) padding-box,
+              var(--au-gradient) border-box;
+  border: 1px solid transparent;
+  border-radius: var(--au-r-lg);
+}
+
+/* ==================== 按钮 ==================== */
+
+.au-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 40px;
+  padding: 0 1.125rem;
+  border: none;
+  border-radius: var(--au-r-md);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all var(--au-fast) var(--au-ease);
+  white-space: nowrap;
+}
+
+.au-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.au-btn-primary {
+  background: var(--au-gradient);
+  color: #05141c;
+  box-shadow: 0 4px 16px var(--au-primary-glow);
+}
+.au-btn-primary:hover:not(:disabled) {
+  box-shadow: 0 6px 22px var(--au-primary-glow);
+  transform: translateY(-1px);
+}
+.au-btn-primary:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+
+.au-btn-ghost {
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  color: var(--au-text);
+}
+.au-btn-ghost:hover:not(:disabled) { background: var(--au-surface-3); border-color: var(--au-border-strong); }
+
+.au-btn-danger {
+  background: var(--au-danger-soft);
+  border: 1px solid rgba(251, 113, 133, 0.3);
+  color: var(--au-danger);
+}
+.au-btn-danger:hover:not(:disabled) { background: rgba(251, 113, 133, 0.2); }
+
+.au-btn-sm { height: 32px; padding: 0 0.75rem; font-size: 0.8125rem; border-radius: var(--au-r-sm); }
+
+/* ==================== 输入框 ==================== */
+
+.au-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 0.875rem;
+  background: rgba(7, 11, 18, 0.55);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  color: var(--au-text);
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color var(--au-fast), box-shadow var(--au-fast);
+  box-sizing: border-box;
+}
+
+.au-input::placeholder { color: var(--au-text-4); }
+.au-input:focus {
+  border-color: var(--au-border-focus);
+  box-shadow: 0 0 0 3px var(--au-primary-soft);
+}
+
+.au-label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--au-text-2);
+  margin-bottom: 0.4375rem;
+}
+
+/* ==================== 徽章 ==================== */
+
+.au-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1875rem 0.5625rem;
+  border-radius: var(--au-r-full);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.au-badge-cyan { background: var(--au-primary-soft); color: var(--au-primary); border: 1px solid var(--au-primary-border); }
+.au-badge-green { background: var(--au-success-soft); color: var(--au-success); }
+.au-badge-amber { background: var(--au-warning-soft); color: var(--au-warning); }
+.au-badge-rose { background: var(--au-danger-soft); color: var(--au-danger); }
+.au-badge-violet { background: rgba(167, 139, 250, 0.12); color: var(--au-violet); }
+
+/* ==================== 骨架屏 / 加载 ==================== */
+
+.au-skeleton {
+  background: linear-gradient(90deg, var(--au-surface) 25%, var(--au-surface-2) 50%, var(--au-surface) 75%);
+  background-size: 200% 100%;
+  animation: au-shimmer 1.4s infinite;
+  border-radius: var(--au-r-md);
+}
+
+@keyframes au-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.au-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--au-border-strong);
+  border-top-color: var(--au-primary);
+  border-radius: 50%;
+  animation: au-spin 0.8s linear infinite;
+}
+@keyframes au-spin { to { transform: rotate(360deg); } }
+
+/* ==================== 动画 ==================== */
+
+@keyframes au-fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+.au-anim-up { animation: au-fade-up 0.4s var(--au-ease) both; }
+
+@keyframes au-pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.au-pulse { animation: au-pulse-soft 1.6s ease-in-out infinite; }
+
+/* 流光文字 */
+.au-gradient-text {
+  background: var(--au-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 页面容器 */
+.au-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+
+@media (max-width: 640px) {
+  .au-page { padding: 1.125rem 1rem 5rem; }
+}
+
+/* 空状态 */
+.au-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 3rem 1rem;
+  text-align: center;
+  color: var(--au-text-3);
+}
+.au-empty svg { color: var(--au-text-4); }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--au-border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(148, 180, 220, 0.32); }
+
+::selection { background: var(--au-primary-soft); color: var(--au-text); }
+
+:focus-visible { outline: 2px solid var(--au-primary); outline-offset: 2px; }

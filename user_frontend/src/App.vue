@@ -23,6 +23,6 @@ onMounted(() => {
 <style scoped>
 .app-shell {
   min-height: 100vh;
-  background: #05070a;
+  background: #070b12;
 }
 </style>

@@ -137,7 +137,7 @@ onMounted(() => {
 <style scoped>
 .lib-home {
   min-height: 100vh;
-  background: #05070a;
+  background: #070b12;
   color: #e5e7eb;
   padding-bottom: 3rem;
 }
@@ -163,8 +163,8 @@ onMounted(() => {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(to top, #05070a 8%, rgba(5, 7, 10, 0.55) 45%, rgba(5, 7, 10, 0.35) 100%),
-    linear-gradient(100deg, rgba(5, 7, 10, 0.75) 25%, transparent 65%);
+    linear-gradient(to top, #070b12 8%, rgba(7, 11, 18, 0.55) 45%, rgba(7, 11, 18, 0.35) 100%),
+    linear-gradient(100deg, rgba(7, 11, 18, 0.75) 25%, transparent 65%);
 }
 
 .hero-content {
@@ -177,8 +177,8 @@ onMounted(() => {
 .hero-tag {
   display: inline-block;
   padding: 0.3125rem 0.625rem;
-  background: rgba(16, 185, 129, 0.15);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(34, 211, 238, 0.15);
+  border: 1px solid rgba(34, 211, 238, 0.3);
   border-radius: 8px;
   color: #34d399;
   font-size: 0.75rem;
@@ -205,7 +205,7 @@ onMounted(() => {
 
 .hero-progress-fill {
   height: 100%;
-  background: #10b981;
+  background: #22d3ee;
 }
 
 .hero-actions {
@@ -229,13 +229,13 @@ onMounted(() => {
 }
 
 .btn.primary {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, #22d3ee, #06b6d4);
   color: #fff;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 16px rgba(34, 211, 238, 0.3);
 }
 
 .btn.primary:hover {
-  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.4);
 }
 
 .btn.ghost {
@@ -263,7 +263,7 @@ onMounted(() => {
 }
 
 .row-title svg {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 /* 加载与空态 */
@@ -279,7 +279,7 @@ onMounted(() => {
 }
 
 .empty svg {
-  color: rgba(16, 185, 129, 0.4);
+  color: rgba(34, 211, 238, 0.4);
 }
 
 .empty h2 {
@@ -327,7 +327,7 @@ onMounted(() => {
 }
 
 .view-card:hover {
-  border-color: rgba(16, 185, 129, 0.3);
+  border-color: rgba(34, 211, 238, 0.3);
   transform: translateY(-2px);
 }
 
@@ -337,10 +337,10 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: rgba(34, 211, 238, 0.1);
+  border: 1px solid rgba(34, 211, 238, 0.2);
   border-radius: 12px;
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .view-body {

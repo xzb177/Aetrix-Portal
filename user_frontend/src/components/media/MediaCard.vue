@@ -140,7 +140,7 @@ function open() {
 
 .progress-fill {
   height: 100%;
-  background: #10b981;
+  background: #22d3ee;
 }
 
 .played-badge {
