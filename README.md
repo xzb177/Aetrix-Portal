@@ -213,7 +213,44 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## 🚢 部署
+
+### 为什么 Freebuff Hosting 会报「找不到受支持的框架」
+
+在本平台点「Deploy」时会出现：
+
+> Freebuff hosting could not identify a supported framework in package.json.
+> Hosting builds React projects only: Vite + React, Next.js, and Create React App.
+
+这不是配置写错或漏填，而是项目形态与 Freebuff Hosting 的支持范围不重合，改 `package.json` 无法绕过：
+
+| 本项目 | Freebuff Hosting 要求 |
+| --- | --- |
+| 门户 / 管理后台前端是 **Vue 3 + Vite**（依赖 `vue`、`@vitejs/plugin-vue`） | 只识别 **Vite + React** / Next.js / CRA |
+| 仓库根目录**没有** `package.json`（主体是 Python 后端） | 需要根 `package.json` 中能识别出受支持的框架 |
+| 后端是 **Python FastAPI**，依赖 SQLite / PostgreSQL、Redis、ffmpeg，并自带 Emby 协议端点与 WebSocket | 构建镜像仅 Node.js，Python 只能以 `api/*.py` 的无状态函数运行 |
+
+即使把前端换成能通过框架识别的形态，部署出来的也只是连不上后端 API 的空壳（播放、登录、支付、Emby 协议端点全部无法工作）。**Freebuff Hosting 不适用于本项目**；沙箱内的 `Preview`（`*.daytonaproxy01.net`）只用于开发预览，不是生产部署。
+
+### 正确的部署方式：项目自带的 Docker 栈
+
+本项目从一开始就是按「一台服务器 + Docker Compose」设计的（`docker-compose.yml` / `deploy.sh` / `update.sh` / `nginx.conf`）：
+
+```bash
+cp env.example .env      # 按注释填写数据库、JWT 密钥、支付网关等
+./deploy.sh --build      # 构建并启动全部服务（统一后端 + 用户端 + 管理后台）
+./deploy.sh --status     # 查看服务状态
+./deploy.sh --update     # 拉取新代码并滚动更新
+./deploy.sh --rollback   # 回滚到上一版本
+```
+
+部署后用户端、管理后台（`/admin`）、API 与 Emby 协议端点由同一端口对外服务，Emby / Infuse / SenPlayer 等客户端直接连该地址即可。
+
 ## 📝 更新日志
+
+### v2.6.1 (2026-09-20) — 钱包核销入口二合一 + 部署说明
+- ✅ **卡码 / 兑换码统一入口**：钱包顶部只保留一个「卡码 · 兑换码」输入框，提交后由后端预检自动识别来源（会员卡码展示类型与天数后确认开通、兑换码直接核销、邀请码提示去注册页），订阅页不再重复放输入框
+- ⚠️ **部署**：本平台 Hosting 只构建 React 项目，Vue + Python 栈请走自带的 Docker Compose 部署（见上方「部署」章节）
 
 ### v2.6.0 (2026-09-20) — 卡码体系 · 设备风控 · 登录安全日志
 - ✅ **卡码体系**：注册码 / 续期码 / 白名单码三类卡码，并含**诱饵码**（蜜罐：盗版渠道流通，使用即自动封禁账号）与**指名码**（仅限指定账号）；用户端钱包新增「会员卡码」面板（先预检类型与天数、确认后再核销），注册页凭码注册同样支持类型化授予
