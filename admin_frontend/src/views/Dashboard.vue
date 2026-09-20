@@ -414,4 +414,17 @@ function fmtMoney(v: number): string {
 .rank-type { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
 .rank-value { font-size: 12px; color: var(--text-secondary); }
 .empty-hint { font-size: 13px; color: var(--text-muted); padding: 12px 0; }
+
+/* ===== 手机 ===== */
+@media (max-width: 640px) {
+  .todo-bar { padding: 10px 12px; gap: 8px; }
+  .todo-lead { width: 100%; padding-right: 0; }
+  .metric-tabs { flex-wrap: wrap; }
+  .chart { height: 132px; }
+  /* 7-30 个日期标签在窄屏会挤成一团，隔一个显示一个 */
+  .chart-axis span:nth-child(even) { display: none; }
+  .trend-total-value { font-size: 18px; }
+  .stat-sub { font-size: 13px; }
+  .stats-two-col { grid-template-columns: 1fr; }
+}
 </style>

@@ -6,6 +6,9 @@
  * - 新增「用户 360°」详情抽屉（资料 / 订阅 / 积分 / 订单 / 邀请 / 签到 / 观看）
  * - 授予订阅、调整积分、重置密码、发送消息改为正规对话框（原先靠输入序号）
  * - 行内操作收敛为「详情 + 更多」下拉，表格不再横向堆 6 个按钮
+ *
+ * v2.6.10：手机（≤640px）下表格列收窄并隐藏「注册时间」（详情抽屉里本来就有），
+ * 否则 375px 宽的屏幕上列宽合计近 1000px，必须先横向拖很远才能看到操作列。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -20,8 +23,10 @@ import {
 import { adjustUserPoints } from '@/api/economy'
 import type { AdminUserRow, UserDetail } from '@/types'
 import { useAuthStore } from '@/stores/auth'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const auth = useAuthStore()
+const { isPhone } = useBreakpoint()
 
 const users = ref<AdminUserRow[]>([])
 const total = ref(0)
@@ -363,7 +368,7 @@ function logTypeLabel(type: string): string {
 
     <div class="admin-card">
       <el-table :data="visibleUsers" v-loading="loading" style="width: 100%">
-        <el-table-column label="用户" min-width="200">
+        <el-table-column label="用户" :min-width="isPhone ? 140 : 200">
           <template #default="{ row }">
             <div class="user-cell">
               <button class="user-link" @click="openDetail(row)">{{ row.username }}</button>
@@ -373,10 +378,10 @@ function logTypeLabel(type: string): string {
             <div class="user-sub">{{ row.email || '未绑定邮箱' }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="Emby 账号" min-width="130">
+        <el-table-column label="Emby 账号" :min-width="isPhone ? 110 : 130">
           <template #default="{ row }">{{ row.emby_username || '—' }}</template>
         </el-table-column>
-        <el-table-column label="订阅" min-width="160">
+        <el-table-column label="订阅" :min-width="isPhone ? 118 : 160">
           <template #default="{ row }">
             <template v-if="row.has_subscription">
               <span class="mini-badge vip">生效中</span>
@@ -385,13 +390,14 @@ function logTypeLabel(type: string): string {
             <span v-else class="user-sub">未订阅</span>
           </template>
         </el-table-column>
-        <el-table-column label="最近登录" width="150">
+        <el-table-column label="最近登录" :width="isPhone ? 112 : 150">
           <template #default="{ row }">{{ fmtDate(row.last_login_at) }}</template>
         </el-table-column>
-        <el-table-column label="注册时间" width="150">
+        <!-- 手机上藏掉注册时间：抽屉里有，保留它反而把操作列挤到屏幕外 -->
+        <el-table-column v-if="!isPhone" label="注册时间" width="150">
           <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" :width="isPhone ? 116 : 180" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openDetail(row)">
               <Eye :size="14" style="margin-right: 2px" />详情

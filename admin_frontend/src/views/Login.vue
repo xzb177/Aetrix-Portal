@@ -75,6 +75,7 @@ async function submit() {
 .login-page {
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -202,5 +203,12 @@ async function submit() {
   font-size: 11.5px;
   color: var(--text-muted);
   margin: 18px 0 0;
+}
+
+/* 手机：卡片少一点内边距，键盘弹起时不被顶出屏幕 */
+@media (max-width: 480px) {
+  .login-page { padding: 14px; align-items: flex-start; padding-top: max(28px, env(safe-area-inset-top)); }
+  .login-card { padding: 26px 20px 20px; }
+  .login-brand h1 { font-size: 18px; }
 }
 </style>
