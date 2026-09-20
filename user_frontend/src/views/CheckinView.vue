@@ -3,8 +3,9 @@
  * 每日签到 — 打卡日历式 UI，连签加成，积分到账动效
  */
 import { ref, computed, onMounted } from 'vue'
+import { RouterLink } from 'vue-router'
 import {
-  CalendarCheck, Flame, Zap, CalendarDays, PartyPopper,
+  CalendarCheck, Flame, Zap, CalendarDays, PartyPopper, ChevronRight,
 } from 'lucide-vue-next'
 import { checkinApi, pointsApi, type CheckinStatus, type PointsLogEntry } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
@@ -17,8 +18,8 @@ const signing = ref(false)
 const justSigned = ref(false)
 const rewardPreview = ref(0)
 
-// 最近签到获得积分的流水（简单展示用）
-const recentGains = ref<{ id: number; amount: number; created_at: string | null }[]>([])
+// 签到获得积分的流水（用于日历标记与最近列表）
+const checkinLogs = ref<{ id: number; amount: number; created_at: string | null }[]>([])
 
 // ===== 当月日历 =====
 const now = new Date()
@@ -40,6 +41,19 @@ const monthDays = computed(() => {
 
 const monthLabel = computed(() => `${year.value} 年 ${month.value + 1} 月`)
 
+// 本月已签到的日期集合（来自真实签到流水）
+const checkedDays = computed(() => {
+  const days = new Set<number>()
+  for (const l of checkinLogs.value) {
+    if (!l.created_at) continue
+    const d = new Date(l.created_at)
+    if (d.getFullYear() === year.value && d.getMonth() === month.value) {
+      days.add(d.getDate())
+    }
+  }
+  return days
+})
+
 // 今日预期奖励（若未签）
 const todayReward = computed(() => {
   if (!status.value) return 0
@@ -59,8 +73,7 @@ async function load() {
     ])
     status.value = s
     rewardPreview.value = todayReward.value
-    // 取最近 7 条签到流水展示
-    recentGains.value = log.logs.slice(0, 7).map(l => ({ id: l.id, amount: l.amount, created_at: l.created_at }))
+    checkinLogs.value = log.logs.map(l => ({ id: l.id, amount: l.amount, created_at: l.created_at }))
   } catch {
     /* 静默 */
   } finally {
@@ -151,7 +164,7 @@ onMounted(load)
       <section class="au-card au-card-pad cal au-anim-up" style="animation-delay: 80ms">
         <header class="cal-head">
           <h3><CalendarDays :size="16" /> {{ monthLabel }}</h3>
-          <span class="au-badge au-badge-cyan">本月打卡</span>
+          <span class="au-badge au-badge-cyan">本月已签 {{ checkedDays.size }} 天</span>
         </header>
         <div class="cal-week">
           <span v-for="w in ['日', '一', '二', '三', '四', '五', '六']" :key="w">{{ w }}</span>
@@ -162,23 +175,27 @@ onMounted(load)
             <span
               v-else
               class="cal-day"
-              :class="{ today: cell.isToday }"
+              :class="{ today: cell.isToday, done: checkedDays.has(cell.day) && !cell.isToday }"
             >{{ cell.day }}</span>
           </template>
         </div>
-        <p class="cal-note">日历仅作视觉打卡墙，连续签到以实际记录为准</p>
+        <p class="cal-note">日历标记最近签到记录，连续签到以实际记录为准</p>
       </section>
 
       <section class="au-card au-card-pad gains au-anim-up" style="animation-delay: 140ms">
         <header class="cal-head">
           <h3><Zap :size="16" /> 最近签到奖励</h3>
+          <RouterLink to="/wallet?tab=log" class="gains-more">
+            全部流水
+            <ChevronRight :size="13" />
+          </RouterLink>
         </header>
-        <div v-if="!recentGains.length" class="au-empty compact">
+        <div v-if="!checkinLogs.length" class="au-empty compact">
           <CalendarCheck :size="26" />
           <p>还没有签到记录</p>
         </div>
         <ul v-else class="gains-list">
-          <li v-for="g in recentGains" :key="g.id">
+          <li v-for="g in checkinLogs.slice(0, 7)" :key="g.id">
             <span class="gains-dot" />
             <span class="gains-desc">签到奖励</span>
             <span class="gains-time">{{ (g.created_at || '').slice(0, 10) }}</span>
@@ -313,6 +330,17 @@ onMounted(load)
 }
 .cal-head svg { color: var(--au-primary); }
 
+.gains-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--au-text-4);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+.gains-more:hover { color: var(--au-primary); }
+
 .cal-week {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -347,6 +375,11 @@ onMounted(load)
   color: #05141c;
   font-weight: 800;
   box-shadow: 0 3px 10px var(--au-primary-glow);
+}
+.cal-day.done {
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
+  font-weight: 600;
 }
 
 .cal-note { margin: 0.875rem 0 0; font-size: 0.6875rem; color: var(--au-text-4); }

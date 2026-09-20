@@ -150,6 +150,11 @@ const paidFlag = computed(() => route.query.paid === '1')
 
 onMounted(async () => {
   await loadAll()
+  // 支持 ?tab=log 等定位到指定选项卡（签到页「全部流水」链接）
+  const tabParam = route.query.tab
+  if (tabParam === 'recharge' || tabParam === 'plans' || tabParam === 'orders' || tabParam === 'log') {
+    tab.value = tabParam
+  }
   // 支付完成跳回时刷新余额并提示
   if (paidFlag.value) {
     toast.info('支付已提交，若已到账余额将自动更新', 5000)
@@ -159,8 +164,8 @@ onMounted(async () => {
 
 <template>
   <div class="au-page wallet-view">
-    <!-- 余额卡 -->
-    <section class="balance-card au-anim-up">
+    <!-- 余额 + 兑换：合并为一个主区，减少卡片割裂 -->
+    <section class="balance-hero au-anim-up">
       <div class="balance-left">
         <span class="balance-label">
           <Wallet :size="15" />
@@ -176,35 +181,34 @@ onMounted(async () => {
           <RouterLink to="/checkin" class="link">去签到 →</RouterLink>
         </div>
       </div>
-      <button class="au-btn au-btn-ghost au-btn-sm refresh" @click="loadAll">
-        <RefreshCw :size="14" :class="{ spinning: loading }" />
-        刷新
-      </button>
-    </section>
 
-    <!-- 兑换码 -->
-    <section class="redeem-card au-card au-card-pad au-anim-up" style="animation-delay: 60ms">
-      <div class="redeem-head">
-        <TicketCheck :size="17" class="redeem-icon" />
-        <div>
-          <h3>兑换码</h3>
-          <p>输入兑换码，积分或订阅时长立即到账</p>
-        </div>
-      </div>
-      <form class="redeem-form" @submit.prevent="handleRedeem">
-        <input
-          v-model="redeemCode"
-          class="au-input redeem-input"
-          placeholder="例如：ABCD-1234-EFGH"
-          maxlength="32"
-          autocomplete="off"
-        >
-        <button type="submit" class="au-btn au-btn-primary" :disabled="redeemLoading">
-          <Sparkles v-if="!redeemLoading" :size="15" />
-          <span v-if="redeemLoading" class="au-spinner spinner-sm" />
-          立即兑换
+      <div class="balance-right">
+        <form class="redeem-inline" @submit.prevent="handleRedeem">
+          <span class="redeem-label">
+            <TicketCheck :size="14" />
+            兑换码
+          </span>
+          <div class="redeem-row">
+            <input
+              v-model="redeemCode"
+              class="au-input redeem-input"
+              placeholder="输入兑换码"
+              maxlength="32"
+              autocomplete="off"
+            >
+            <button type="submit" class="au-btn au-btn-primary au-btn-sm" :disabled="redeemLoading || !redeemCode.trim()">
+              <Sparkles v-if="!redeemLoading" :size="14" />
+              <span v-if="redeemLoading" class="au-spinner spinner-sm" />
+              兑换
+            </button>
+          </div>
+          <p class="redeem-hint">积分或订阅时长即时到账</p>
+        </form>
+        <button class="au-btn au-btn-ghost au-btn-sm refresh" @click="loadAll">
+          <RefreshCw :size="14" :class="{ spinning: loading }" />
+          刷新
         </button>
-      </form>
+      </div>
     </section>
 
     <!-- 选项卡 -->
@@ -223,21 +227,22 @@ onMounted(async () => {
       </button>
     </nav>
 
+    <!-- 支付方式：仅在购买类选项卡显示一次 -->
+    <div v-if="(tab === 'recharge' || tab === 'plans') && methods.length" class="pay-methods au-anim-up">
+      <span class="pay-methods-label">支付方式</span>
+      <button
+        v-for="m in methods"
+        :key="m.id"
+        class="pay-method"
+        :class="{ active: payMethod === m.id }"
+        @click="payMethod = m.id"
+      >
+        {{ m.name }}
+      </button>
+    </div>
+
     <!-- 充值积分 -->
     <section v-if="tab === 'recharge'" class="tab-body au-anim-up">
-      <div v-if="methods.length" class="pay-methods">
-        <span class="pay-methods-label">支付方式</span>
-        <button
-          v-for="m in methods"
-          :key="m.id"
-          class="pay-method"
-          :class="{ active: payMethod === m.id }"
-          @click="payMethod = m.id"
-        >
-          {{ m.name }}
-        </button>
-      </div>
-
       <div v-if="!packages.length" class="au-empty">
         <Coins :size="30" />
         <p>暂无可用充值套餐</p>
@@ -269,19 +274,6 @@ onMounted(async () => {
 
     <!-- 购买订阅 -->
     <section v-if="tab === 'plans'" class="tab-body au-anim-up">
-      <div v-if="methods.length" class="pay-methods">
-        <span class="pay-methods-label">支付方式</span>
-        <button
-          v-for="m in methods"
-          :key="m.id"
-          class="pay-method"
-          :class="{ active: payMethod === m.id }"
-          @click="payMethod = m.id"
-        >
-          {{ m.name }}
-        </button>
-      </div>
-
       <div v-if="!plans.length" class="au-empty">
         <Zap :size="30" />
         <p>暂无可购买套餐，请联系管理员开通</p>
@@ -365,11 +357,12 @@ onMounted(async () => {
 <style scoped>
 .wallet-view { display: flex; flex-direction: column; gap: 1.125rem; }
 
-/* ===== 余额卡 ===== */
-.balance-card {
+/* ===== 余额主区（含兑换） ===== */
+.balance-hero {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 2rem;
   padding: 1.5rem;
   border-radius: var(--au-r-xl);
   background: linear-gradient(135deg, rgba(34, 211, 238, 0.14), rgba(167, 139, 250, 0.14) 55%, rgba(7, 11, 18, 0.2));
@@ -377,8 +370,9 @@ onMounted(async () => {
   backdrop-filter: blur(14px);
   position: relative;
   overflow: hidden;
+  flex-wrap: wrap;
 }
-.balance-card::after {
+.balance-hero::after {
   content: '';
   position: absolute;
   top: -60%;
@@ -389,6 +383,37 @@ onMounted(async () => {
   filter: blur(30px);
   pointer-events: none;
 }
+
+.balance-right {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.redeem-inline { min-width: 0; }
+
+.redeem-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--au-text-2);
+  margin-bottom: 0.4375rem;
+}
+
+.redeem-row { display: flex; gap: 0.5rem; }
+.redeem-input { flex: 1; min-width: 200px; height: 36px; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.8125rem; }
+
+.redeem-hint {
+  margin: 0.375rem 0 0;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+}
+
+.refresh { flex-shrink: 0; }
+.spinning { animation: au-spin 0.9s linear infinite; }
 
 .balance-label {
   display: inline-flex;
@@ -479,8 +504,8 @@ onMounted(async () => {
   box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
-/* ===== 支付方式 ===== */
-.pay-methods { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+/* ===== 支付方式（选项卡下统一一条） ===== */
+.pay-methods { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .pay-methods-label { font-size: 0.8125rem; color: var(--au-text-3); }
 .pay-method {
   height: 32px;
@@ -679,7 +704,9 @@ onMounted(async () => {
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 @media (max-width: 640px) {
-  .redeem-form { flex-direction: column; }
+  .balance-hero { flex-direction: column; gap: 1.25rem; }
+  .balance-right { width: 100%; flex-direction: column; gap: 0.75rem; }
+  .redeem-input { min-width: 0; flex: 1; }
   .order-item { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
   .order-side { flex-direction: row; align-items: center; gap: 0.625rem; }
   .balance-num .num { font-size: 2rem; }
