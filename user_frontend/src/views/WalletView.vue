@@ -3,10 +3,11 @@
  * 钱包 — 余额总览 / 积分充值（支付下单）/ 兑换码 / 订单记录 / 积分流水
  * 布局：余额卡左右分区（左余额+签到态，右兑换面板）；套餐卡横向结构化行
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
+import { useUserStore } from '@/stores/user'
 import {
-  Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame,
+  Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
 } from 'lucide-vue-next'
 import {
@@ -14,10 +15,12 @@ import {
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CheckinStatus,
 } from '@/api/economy'
+import { subscriptionApi, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
 const route = useRoute()
+const userStore = useUserStore()
 
 // ===== 状态 =====
 const loading = ref(true)
@@ -37,6 +40,12 @@ const orderLoading = ref<number | null>(null)
 const rechargeEnabled = ref(true)
 const plansEnabled = ref(true)
 const exchangeEnabled = ref(true)
+
+// ===== 当前会员（订阅 tab 顶部状态行）=====
+const subscriptions = ref<MySubscription[]>([])
+const currentSub = computed(
+  () => subscriptions.value.find((s) => s.status === 'active' && s.days_left > 0) || null,
+)
 
 // ===== 兑换码 =====
 const redeemCode = ref('')
@@ -104,8 +113,9 @@ async function loadAll() {
     const emptyLogs = { total: 0, balance: 0, logs: [] as PointsLogEntry[] }
 
     const statusFallback: CheckinStatus | null = null
+    const emptySubs: MySubscription[] = []
     const exchangeFallback = { enabled: true }
-    const [pkgRes, planRes, methodRes, orderRes, logRes, statusRes, exchangeRes] = await Promise.all([
+    const [pkgRes, planRes, methodRes, orderRes, logRes, statusRes, exchangeRes, subsRes] = await Promise.all([
       paymentApi.packages().catch(() => emptyPkgs),
       paymentApi.plans().catch(() => emptyPlans),
       paymentApi.methods().catch(() => emptyMethods),
@@ -113,6 +123,7 @@ async function loadAll() {
       pointsApi.log({ limit: 30 }).catch(() => emptyLogs),
       checkinApi.status().catch(() => statusFallback),
       exchangeApi.config().catch(() => exchangeFallback),
+      subscriptionApi.getMine().catch(() => emptySubs),
     ])
     packages.value = pkgRes.packages || []
     plans.value = planRes.plans || []
@@ -124,6 +135,7 @@ async function loadAll() {
     rechargeEnabled.value = pkgRes.enabled !== false
     plansEnabled.value = planRes.enabled !== false
     exchangeEnabled.value = exchangeRes.enabled !== false
+    subscriptions.value = Array.isArray(subsRes) ? subsRes : []
   } finally {
     loading.value = false
   }
@@ -157,6 +169,58 @@ function orderStatusMeta(s: string) {
 
 const paidFlag = computed(() => route.query.paid === '1')
 
+// ===== 支付回跳后的到账轮询 =====
+// 网关异步回调可能稍晚于浏览器跳转，这里轮询订单状态，到账后自动刷新积分与会员身份
+let payPollTimer: number | null = null
+const payPolling = ref(false)
+
+function stopPayPoll() {
+  if (payPollTimer !== null) {
+    window.clearInterval(payPollTimer)
+    payPollTimer = null
+  }
+  payPolling.value = false
+}
+
+async function pollPaymentResult() {
+  const targetOrder = (route.query.order as string) || ''
+  const paidBefore = new Set(
+    orders.value.filter((o) => o.status === 'paid').map((o) => o.order_id),
+  )
+  let attempts = 0
+  payPolling.value = true
+
+  payPollTimer = window.setInterval(async () => {
+    attempts += 1
+    try {
+      const res = await paymentApi.orders({ limit: 20 })
+      const list = res.orders || []
+      orders.value = list
+
+      const arrived = list.find((o) => {
+        if (o.status !== 'paid' || paidBefore.has(o.order_id)) return false
+        return targetOrder ? o.order_id === targetOrder : true
+      })
+
+      if (arrived) {
+        await refreshBalance()
+        // 会员身份 / 付费墙状态随之刷新（头像、VIP 标识、详情页提示）
+        userStore.fetchUser().catch(() => {})
+        toast.success(`支付成功，「${arrived.item_name}」已到账`)
+        stopPayPoll()
+        return
+      }
+    } catch {
+      /* 轮询失败不打断，等下一轮 */
+    }
+
+    if (attempts >= 10) {
+      stopPayPoll()
+      toast.info('暂未收到支付结果，到账后余额与会员会自动更新（可点刷新）', 5000)
+    }
+  }, 3000)
+}
+
 onMounted(async () => {
   await loadAll()
   // 支持 ?tab=log 等定位到指定选项卡（签到页「全部流水」链接）
@@ -164,11 +228,14 @@ onMounted(async () => {
   if (tabParam === 'recharge' || tabParam === 'plans' || tabParam === 'orders' || tabParam === 'log') {
     tab.value = tabParam
   }
-  // 支付完成跳回时刷新余额并提示
-  if (paidFlag.value) {
-    toast.info('支付已提交，若已到账余额将自动更新', 5000)
+  // 支付完成跳回：轮询到账结果（订单号来自 ?order=，兼容旧 ?paid=1）
+  if (paidFlag.value || route.query.order) {
+    toast.info('支付已提交，正在确认到账结果…', 4000)
+    pollPaymentResult()
   }
 })
+
+onBeforeUnmount(stopPayPoll)
 </script>
 
 <template>
@@ -310,6 +377,17 @@ onMounted(async () => {
 
     <!-- 购买订阅：头部价格区 + 权益列表 -->
     <section v-if="tab === 'plans'" class="tab-body au-anim-up">
+      <!-- 当前会员状态：已开通显示套餐与到期，未开通提示付费墙 -->
+      <div v-if="plansEnabled" class="member-status" :class="{ inactive: !currentSub }" >
+        <Crown :size="15" />
+        <template v-if="currentSub">
+          <span>当前会员：<strong>{{ currentSub.plan_name }}</strong></span>
+          <span class="ms-sep">·</span>
+          <span>剩 <strong>{{ currentSub.days_left }}</strong> 天（{{ currentSub.end_date?.slice(0, 10) }} 到期）</span>
+        </template>
+        <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
+      </div>
+
       <div v-if="!plansEnabled" class="au-empty">
         <CircleAlert :size="30" />
         <p>订阅购买暂未开启，可联系管理员开通</p>
@@ -703,6 +781,44 @@ onMounted(async () => {
 }
 
 .spinner-sm { width: 14px; height: 14px; border-width: 2px; }
+
+/* ==================== 当前会员状态行 ==================== */
+.member-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-bottom: 0.875rem;
+  padding: 0.6875rem 0.9375rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
+  font-size: 0.8125rem;
+  color: var(--au-text-2);
+}
+
+.member-status svg {
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.member-status strong {
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.member-status.inactive {
+  background: var(--au-warning-soft);
+  border-color: rgba(251, 191, 36, 0.28);
+}
+
+.member-status.inactive svg {
+  color: var(--au-warning);
+}
+
+.ms-sep {
+  color: var(--au-text-4);
+}
 
 /* ==================== 订阅套餐 ==================== */
 .plan-grid {

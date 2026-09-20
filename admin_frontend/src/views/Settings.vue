@@ -5,6 +5,7 @@
  * v2.4.0 新增：
  * - 注册策略（开放 / 注册码 / 关闭 + 关闭提示文案）
  * - 经济与支付配置（签到、兑换、充值、支付网关、邀请返利）按域分组保存
+ * v2.5.2 新增：付费墙分组（要求有效订阅 + 拦截提示文案）
  *
  * 说明：支付密钥等敏感项由后端以 ****** 掩码返回，留空即保持原值不变。
  */
@@ -12,7 +13,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   CalendarCheck, Coins, KeyRound, RefreshCw, Save, TicketCheck,
-  UserPlus, Wallet, ShieldAlert,
+  UserPlus, Wallet, ShieldAlert, Lock,
 } from 'lucide-vue-next'
 import { fetchRegistrationSettings, updateRegistrationSettings } from '@/api/admin'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
@@ -77,6 +78,26 @@ const GROUPS: Group[] = [
       { key: 'payment_partner_key', label: '商户密钥', type: 'secret', hint: '已配置时显示为 ******，留空不修改' },
       { key: 'payment_qqpay_enabled', label: '启用 QQ 钱包', type: 'bool' },
       { key: 'site_url', label: '站点地址', type: 'str', hint: '用于支付回调，必须是外网可访问地址' },
+    ],
+  },
+  {
+    id: 'paywall',
+    title: '付费墙（会员门禁）',
+    desc: '开启后，非会员无法播放与下载；管理员账号始终放行',
+    icon: Lock,
+    fields: [
+      {
+        key: 'subscription_required',
+        label: '要求有效订阅',
+        type: 'bool',
+        hint: '关闭则所有人均可直接播放',
+      },
+      {
+        key: 'subscription_gate_message',
+        label: '拦截提示文案',
+        type: 'str',
+        hint: '留空使用默认：需要有效的会员订阅才能播放，请先开通会员',
+      },
     ],
   },
   {

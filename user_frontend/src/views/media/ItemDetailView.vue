@@ -9,13 +9,16 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { embyApi, posterUrl, backdropUrl, progressPercent, ticksToSeconds, formatDuration, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
+import { useUserStore } from '@/stores/user'
 import {
   Play, Star, Heart, Eye, EyeOff, Clock, Layers, ChevronLeft, ChevronDown, Film,
+  Crown,
 } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const userStore = useUserStore()
 
 const item = ref<EmbyItem | null>(null)
 const loading = ref(true)
@@ -23,6 +26,9 @@ const seasons = ref<EmbyItem[]>([])
 const episodes = ref<EmbyItem[]>([])
 const selectedSeasonId = ref('')
 const togglingFavorite = ref(false)
+
+// 付费墙：开启且当前账号不是会员时，提前给出开通引导
+const needsSubscription = computed(() => userStore.needsSubscription)
 
 const itemId = computed(() => route.params.id as string)
 
@@ -164,6 +170,16 @@ onMounted(loadItem)
             </div>
 
             <p v-if="item.Overview" class="overview">{{ item.Overview }}</p>
+
+            <!-- 会员提示：付费墙开启且未订阅 -->
+            <RouterLink v-if="needsSubscription" to="/wallet?tab=plans" class="member-notice">
+              <Crown :size="16" class="notice-icon" />
+              <span class="notice-body">
+                <strong>会员专享</strong>
+                <em>当前账号没有生效中的订阅，开通后即可播放全库内容</em>
+              </span>
+              <span class="notice-cta">开通会员</span>
+            </RouterLink>
 
             <!-- 操作区 -->
             <div class="actions">
@@ -398,6 +414,64 @@ onMounted(loadItem)
   line-height: 1.7;
   color: rgba(255, 255, 255, 0.6);
   max-width: 560px;
+}
+
+/* 会员提示条（付费墙） */
+.member-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 560px;
+  padding: 0.75rem 0.875rem;
+  margin-bottom: 1rem;
+  background: linear-gradient(120deg, rgba(34, 211, 238, 0.12), rgba(167, 139, 250, 0.12));
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
+}
+
+.member-notice:hover {
+  border-color: var(--au-primary);
+  transform: translateY(-1px);
+}
+
+.notice-icon {
+  flex-shrink: 0;
+  color: var(--au-primary);
+}
+
+.notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.notice-body strong {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--au-text);
+}
+
+.notice-body em {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+}
+
+.notice-cta {
+  flex-shrink: 0;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  background: var(--au-gradient);
+  border-radius: var(--au-r-full);
+  color: #05141c;
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .actions {

@@ -14,13 +14,16 @@ import {
   embyApi, posterUrl, ticksToSeconds, type EmbyItem, type EmbyMediaSource,
 } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
+import { useUserStore } from '@/stores/user'
 import {
   Play, Pause, Volume2, VolumeX, Maximize, ChevronLeft, Film,
+  Crown, Sparkles, CalendarCheck, Wallet,
 } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const userStore = useUserStore()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
 const containerRef = ref<HTMLDivElement | null>(null)
@@ -29,6 +32,9 @@ const item = ref<EmbyItem | null>(null)
 const loading = ref(true)
 const playError = ref('')
 const playMethod = ref<'DirectStream' | 'HLS'>('DirectStream')
+// 付费墙拦截：需要订阅才能播放
+const paywalled = ref(false)
+const paywallMessage = ref('')
 
 // 播放器状态
 const isPlaying = ref(false)
@@ -112,6 +118,12 @@ async function resolveAndPlay() {
 
     playError.value = '没有可用的播放方式（直连与转码均不可用）'
   } catch (err: any) {
+    // 403 = 付费墙拦截（后端返回可读文案）
+    if (err?.response?.status === 403) {
+      paywalled.value = true
+      paywallMessage.value = err?.response?.data?.detail || '需要有效的会员订阅才能播放'
+      return
+    }
     playError.value = err?.response?.data?.detail || '获取播放信息失败'
   }
 }
@@ -308,8 +320,31 @@ onBeforeUnmount(() => {
         @click="togglePlay"
       ></video>
 
+      <!-- 付费墙：未订阅时引导开通，而不是丢一个播放错误 -->
+      <div v-if="paywalled" class="paywall-layer">
+        <div class="paywall-card">
+          <span class="paywall-icon">
+            <Crown :size="24" />
+          </span>
+          <h2 class="paywall-title">会员专享内容</h2>
+          <p class="paywall-text">{{ paywallMessage }}</p>
+          <div class="paywall-perks">
+            <span><Sparkles :size="13" /> 全库影视任意观看</span>
+            <span><CalendarCheck :size="13" /> 多端同步进度与收藏</span>
+            <span><Wallet :size="13" /> 支持积分与在线支付</span>
+          </div>
+          <div class="paywall-actions">
+            <RouterLink to="/wallet?tab=plans" class="btn primary">
+              <Crown :size="16" />
+              开通会员
+            </RouterLink>
+            <RouterLink :to="`/media/${itemId}`" class="btn ghost">返回详情</RouterLink>
+          </div>
+        </div>
+      </div>
+
       <!-- 错误 -->
-      <div v-if="playError" class="error-layer">
+      <div v-if="playError && !paywalled" class="error-layer">
         <p>{{ playError }}</p>
         <div class="error-actions">
           <button class="btn ghost" @click="resolveAndPlay">重试</button>
@@ -477,6 +512,99 @@ onBeforeUnmount(() => {
 
 .btn.ghost:hover {
   background: rgba(255, 255, 255, 0.14);
+}
+
+.btn.primary {
+  gap: 0.4375rem;
+  background: var(--au-gradient);
+  color: #05141c;
+  font-weight: 700;
+  box-shadow: 0 4px 16px var(--au-primary-glow);
+}
+
+.btn.primary:hover {
+  box-shadow: 0 6px 22px var(--au-primary-glow);
+}
+
+/* ==================== 付费墙 ==================== */
+
+.paywall-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(700px 380px at 50% 0%, rgba(167, 139, 250, 0.12), transparent 65%),
+    rgba(4, 7, 12, 0.9);
+  backdrop-filter: blur(8px);
+}
+
+.paywall-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 1.75rem 1.5rem;
+  text-align: center;
+  background: rgba(10, 16, 26, 0.9);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-xl);
+  box-shadow: var(--au-shadow-2);
+}
+
+.paywall-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 0.875rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: 50%;
+  color: var(--au-primary);
+}
+
+.paywall-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--au-text);
+}
+
+.paywall-text {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--au-text-2);
+}
+
+.paywall-perks {
+  display: grid;
+  gap: 0.4375rem;
+  margin-bottom: 1.25rem;
+  text-align: left;
+}
+
+.paywall-perks span {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.8125rem;
+  color: var(--au-text-2);
+}
+
+.paywall-perks svg {
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.paywall-actions {
+  display: flex;
+  gap: 0.625rem;
+  justify-content: center;
+  flex-wrap: wrap;
 }
 
 .back-btn {

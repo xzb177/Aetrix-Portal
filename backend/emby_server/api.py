@@ -38,6 +38,7 @@ from backend.emby_server.streaming import (
     start_transcode,
     stop_transcode,
 )
+from backend.subscriptions import ensure_playback_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -737,6 +738,8 @@ async def playback_info(
     db: Session = Depends(get_db),
 ):
     item = _require_item(db, item_id)
+    # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
+    ensure_playback_allowed(db, user)
     base = _base_url(request)
     body = {}
     try:
@@ -778,6 +781,7 @@ async def video_stream(
 ):
     item = _require_item(db, item_id)
     # 授权已由 get_emby_user 依赖完成（Emby token 或 JWT 均可）
+    ensure_playback_allowed(db, user)
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     return serve_file(item.file_path, request, media_type)
 
@@ -808,7 +812,8 @@ async def video_hls(
             return FileResponse(file_path, media_type=media_type)
         raise HTTPException(status_code=404, detail="Segment not ready")
 
-    # 新转码请求
+    # 新转码请求（付费墙：建立转码会话前校验）
+    ensure_playback_allowed(db, user)
     if not shutil.which(os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")):
         raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法转码；请使用直连播放")
     video_bitrate = int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000)
@@ -853,6 +858,8 @@ async def download_item(item_id: str, request: Request,
                         user: models.WebUser = Depends(get_emby_user),
                         db: Session = Depends(get_db)):
     item = _require_item(db, item_id)
+    # 付费墙：下载与在线播放同一门槛，避免绕过
+    ensure_playback_allowed(db, user)
     if not item.file_path or not os.path.isfile(item.file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(item.file_path, filename=os.path.basename(item.file_path))

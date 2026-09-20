@@ -11,6 +11,10 @@ export const useUserStore = defineStore('user', () => {
 
   const isLoggedIn = computed(() => !!token.value)
   const isVIP = computed(() => !!user.value?.is_vip)
+  /** 付费墙是否开启（后端配置），开启且非会员时播放会被拦截 */
+  const subscriptionRequired = computed(() => !!user.value?.subscription_required)
+  /** 需要被拦截：付费墙开启且当前账号不是会员 */
+  const needsSubscription = computed(() => subscriptionRequired.value && !isVIP.value)
 
   // 从 localStorage 恢复登录态
   function init() {
@@ -105,6 +109,8 @@ export const useUserStore = defineStore('user', () => {
     loading,
     isLoggedIn,
     isVIP,
+    subscriptionRequired,
+    needsSubscription,
     init,
     login,
     register,
