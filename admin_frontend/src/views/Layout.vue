@@ -1,106 +1,161 @@
 <script setup lang="ts">
 /**
- * 管理后台布局：分组侧边栏 + 面包屑顶栏 + 管理员菜单
+ * 管理后台外壳（Console v5）
  *
- * v2.4.0：导航按业务域分组、顶栏改面包屑、接上「修改密码」
- * v2.6.10：移动端重新适配——
- * - 侧边栏在 ≤1024px 变成抽屉（此前只在 <768px 变抽屉，平板仍是挤压的桌面布局）
- * - 汉堡按钮只在需要时出现（此前桌面端顶栏一直挂着一个没用的按钮）
- * - 抽屉打开时锁背景滚动、Esc / 点遮罩 / 切换路由都能关
- * - 顶栏右侧成一簇（版本号在窄屏隐藏），内容区左右留白与底部安全区随屏幕变化
+ * 结构：固定侧边栏（≤1024px 变抽屉）+ 顶栏（页面标题 / 刷新 / 管理员菜单）+ 内容区。
+ * 导航按业务域分组，可折叠（状态记在 localStorage），当前页所在分组自动展开；
+ * 手机上抽屉打开时锁背景滚动、Esc / 点遮罩 / 切路由都能关。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  LayoutDashboard, Users, Ticket, Megaphone, Film, ScrollText,
-  KeyRound, MessageSquareDashed, LogOut, Menu, X, ChevronRight,
-  Wallet, Package, TicketCheck, Gift, Settings, Crown, RefreshCw,
-  MonitorSmartphone, ShieldAlert, Link2, HardDrive,
+  LayoutDashboard, Users, Package, ShieldAlert, Film, Ticket, Settings,
+  Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Tv,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const sidebarOpen = ref(false)
+const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.6.10'
+const APP_VERSION = 'v2.6.11'
+const OPEN_GROUPS_KEY = 'admin_nav_groups'
+
+const drawerOpen = ref(false)
 
 interface NavItem {
   path: string
   label: string
-  icon: unknown
-  badge?: () => number | null
 }
 
-const navGroups: { title: string; items: NavItem[] }[] = [
-  {
-    title: '概览',
-    items: [{ path: '/', label: '数据概览', icon: LayoutDashboard }],
-  },
+interface NavGroup {
+  title: string
+  icon: unknown
+  items: NavItem[]
+}
+
+const navGroups: NavGroup[] = [
+  { title: '概览', icon: LayoutDashboard, items: [{ path: '/', label: '数据概览' }] },
   {
     title: '用户与订阅',
+    icon: Users,
     items: [
-      { path: '/users', label: '用户管理', icon: Users },
-      { path: '/subscriptions', label: '订阅管理', icon: Crown },
+      { path: '/users', label: '用户管理' },
+      { path: '/subscriptions', label: '订阅管理' },
     ],
   },
   {
     title: '运营',
+    icon: Package,
     items: [
-      { path: '/goods', label: '商品与套餐', icon: Package },
-      { path: '/orders', label: '订单管理', icon: Wallet },
-      { path: '/exchange-codes', label: '兑换码', icon: TicketCheck },
-      { path: '/invitations', label: '邀请与积分', icon: Gift },
-      { path: '/codes', label: '卡码管理', icon: KeyRound },
+      { path: '/goods', label: '商品与套餐' },
+      { path: '/orders', label: '订单管理' },
+      { path: '/exchange-codes', label: '兑换码' },
+      { path: '/invitations', label: '邀请与积分' },
+      { path: '/codes', label: '卡码管理' },
     ],
   },
   {
     title: '风控',
+    icon: ShieldAlert,
     items: [
-      { path: '/devices', label: '设备管理', icon: MonitorSmartphone },
-      { path: '/login-logs', label: '登录与安全日志', icon: ShieldAlert },
+      { path: '/devices', label: '设备管理' },
+      { path: '/login-logs', label: '登录与安全日志' },
     ],
   },
   {
     title: '内容',
+    icon: Film,
     items: [
-      { path: '/emby', label: '媒体库', icon: Film },
-      { path: '/mounts', label: '存储挂载', icon: HardDrive },
-      { path: '/transfer-115', label: '115 转存', icon: Link2 },
-      { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
-      { path: '/announcements', label: '公告管理', icon: Megaphone },
+      { path: '/emby', label: '媒体库' },
+      { path: '/mounts', label: '存储挂载' },
+      { path: '/transfer-115', label: '115 转存' },
+      { path: '/media-seek', label: '求片管理' },
+      { path: '/announcements', label: '公告管理' },
     ],
   },
-  {
-    title: '支持',
-    items: [{ path: '/tickets', label: '工单管理', icon: Ticket }],
-  },
+  { title: '支持', icon: Ticket, items: [{ path: '/tickets', label: '工单管理' }] },
   {
     title: '系统',
+    icon: Settings,
     items: [
-      { path: '/settings', label: '系统设置', icon: Settings },
-      { path: '/logs', label: '操作日志', icon: ScrollText },
+      { path: '/settings', label: '系统设置' },
+      { path: '/logs', label: '操作日志' },
     ],
   },
 ]
 
-/** 面包屑：分组名 + 页面名（窄屏只显示页面名，见样式） */
-const breadcrumb = computed(() => {
-  for (const group of navGroups) {
-    const hit = group.items.find((i) => i.path === route.path)
-    if (hit) return { group: group.title, page: hit.label }
+/** 当前路由所在分组 */
+const activeGroup = computed(() => navGroups.find((g) => g.items.some((i) => i.path === route.path)))
+
+const pageTitle = computed(() => (route.meta.title as string) || '管理后台')
+const crumbGroup = computed(() => (activeGroup.value?.items.length ? activeGroup.value.title : ''))
+
+// ==================== 分组折叠（记住上次展开状态）====================
+
+function loadOpenGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(OPEN_GROUPS_KEY)
+    if (raw) return JSON.parse(raw) as Record<string, boolean>
+  } catch {
+    /* 忽略损坏的缓存 */
   }
-  return { group: '', page: (route.meta.title as string) || '管理后台' }
+  return {}
+}
+
+const openGroups = reactive<Record<string, boolean>>(loadOpenGroups())
+
+function persistOpenGroups() {
+  try {
+    localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(openGroups))
+  } catch {
+    /* 隐私模式等场景写入失败不影响使用 */
+  }
+}
+
+function isOpen(title: string): boolean {
+  return !!openGroups[title]
+}
+
+function toggleGroup(title: string) {
+  if (navGroups.find((g) => g.title === title)?.items.length === 1) return
+  openGroups[title] = !openGroups[title]
+  persistOpenGroups()
+}
+
+// ==================== 抽屉 ====================
+
+function closeDrawer() {
+  drawerOpen.value = false
+}
+
+watch(drawerOpen, (open) => {
+  // 抽屉打开时锁住背景滚动（否则手机上滚的是底下的内容）
+  document.body.style.overflow = open && isTablet.value ? 'hidden' : ''
 })
 
-/** 最新操作日志时间（顶栏「最近活动」轻提示，失败静默） */
-const lastSync = ref('')
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeDrawer()
+}
+
+watch(
+  () => route.path,
+  (path) => {
+    closeDrawer()
+    const group = navGroups.find((g) => g.items.some((i) => i.path === path))
+    // 单项目分组不需要记忆；多项目分组进入时自动展开当前所在分组
+    if (group && group.items.length > 1 && !openGroups[group.title]) {
+      openGroups[group.title] = true
+      persistOpenGroups()
+    }
+  },
+)
 
 function refreshPage() {
-  lastSync.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   router.go(0)
 }
 
@@ -108,22 +163,6 @@ function logout() {
   auth.logout()
   router.push('/login')
 }
-
-function closeSidebar() {
-  sidebarOpen.value = false
-}
-
-// 抽屉打开时锁住背景滚动（否则手机上滚的是底下的内容），Esc 也能关
-watch(sidebarOpen, (open) => {
-  document.body.style.overflow = open ? 'hidden' : ''
-})
-
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') closeSidebar()
-}
-
-// 路由变化（含浏览器前进后退）一律收起抽屉
-watch(() => route.path, closeSidebar)
 
 // ==================== 修改密码 ====================
 
@@ -166,14 +205,16 @@ function onAdminCommand(cmd: string) {
   else if (cmd === 'logout') logout()
 }
 
-/** 进入后台时校正一次管理员身份（令牌失效 / 权限被回收时会被拦截器送回登录页） */
+const initial = computed(() => (auth.admin?.username || 'A').charAt(0).toUpperCase())
+
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
+  // 进入后台时校正一次管理员身份（令牌失效 / 权限被回收时会被拦截器送回登录页）
   try {
     const me = await fetchMe()
     if (auth.token) auth.setSession(auth.token, me)
   } catch {
-    // 拦截器已处理
+    /* 拦截器已处理 */
   }
 })
 
@@ -184,86 +225,116 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="admin-layout">
-    <!-- 抽屉遮罩（窄屏点它关闭菜单） -->
-    <div v-if="sidebarOpen" class="sidebar-mask" @click="closeSidebar" />
+  <div class="shell">
+    <!-- 抽屉遮罩（窄屏点它关闭） -->
+    <transition name="mask">
+      <div v-if="drawerOpen" class="shell-mask" @click="closeDrawer" />
+    </transition>
 
-    <!-- 侧边栏：宽屏常驻，窄屏变抽屉 -->
-    <aside class="sidebar" :class="{ open: sidebarOpen }">
-      <div class="sidebar-brand">
-        <span class="brand-mark" />
+    <!-- 侧边栏：宽屏常驻，≤1024px 变抽屉 -->
+    <aside class="sidebar" :class="{ open: drawerOpen }">
+      <div class="brand">
+        <span class="brand-mark"><Tv :size="18" /></span>
         <div class="brand-text">
           <strong>RoyalBot</strong>
-          <span>{{ APP_VERSION }} 控制台</span>
+          <span>管理控制台</span>
         </div>
-        <button class="icon-btn sidebar-close" @click="closeSidebar" aria-label="关闭菜单">
+        <button class="icon-btn brand-close" aria-label="关闭菜单" @click="closeDrawer">
           <X :size="18" />
         </button>
       </div>
 
-      <nav class="sidebar-nav">
-        <div v-for="group in navGroups" :key="group.title" class="nav-group">
-          <div class="nav-group-title">{{ group.title }}</div>
+      <nav class="nav">
+        <template v-for="group in navGroups" :key="group.title">
+          <!-- 单项分组：直接是入口 -->
           <RouterLink
-            v-for="item in group.items"
-            :key="item.path"
-            :to="item.path"
-            class="nav-item"
-            :class="{ active: route.path === item.path }"
-            @click="closeSidebar"
+            v-if="group.items.length === 1"
+            :to="group.items[0].path"
+            class="nav-group-head nav-single"
+            :class="{ active: route.path === group.items[0].path }"
           >
-            <component :is="item.icon" :size="17" />
-            <span>{{ item.label }}</span>
+            <component :is="group.icon" :size="18" />
+            <span>{{ group.title }}</span>
           </RouterLink>
-        </div>
+
+          <!-- 多项分组：可折叠 -->
+          <div v-else class="nav-group">
+            <button
+              class="nav-group-head"
+              :class="{ active: activeGroup?.title === group.title && !isOpen(group.title) }"
+              @click="toggleGroup(group.title)"
+            >
+              <component :is="group.icon" :size="18" />
+              <span>{{ group.title }}</span>
+              <ChevronDown :size="15" class="chev" :class="{ open: isOpen(group.title) }" />
+            </button>
+            <div v-show="isOpen(group.title)" class="nav-items">
+              <RouterLink
+                v-for="item in group.items"
+                :key="item.path"
+                :to="item.path"
+                class="nav-item"
+                :class="{ active: route.path === item.path }"
+              >
+                {{ item.label }}
+              </RouterLink>
+            </div>
+          </div>
+        </template>
       </nav>
 
-      <div class="sidebar-footer">
-        <div class="admin-who">
-          <div class="who-avatar">{{ auth.admin?.username?.charAt(0).toUpperCase() || 'A' }}</div>
+      <div class="sidebar-foot">
+        <div class="who">
+          <span class="who-avatar">{{ initial }}</span>
           <div class="who-info">
             <div class="who-name">{{ auth.admin?.username || '管理员' }}</div>
             <div class="who-role">超级管理员</div>
           </div>
-          <button class="icon-btn" title="修改密码" @click="openPwdDialog">
-            <KeyRound :size="15" />
+        </div>
+        <div class="foot-links">
+          <button class="foot-link" @click="openPwdDialog">
+            <KeyRound :size="15" />修改密码
+          </button>
+          <a class="foot-link" href="/">
+            <ExternalLink :size="15" />回到前台
+          </a>
+          <button class="foot-link danger" @click="logout">
+            <LogOut :size="15" />退出登录
           </button>
         </div>
+        <div class="foot-version">RoyalBot {{ APP_VERSION }}</div>
       </div>
     </aside>
 
-    <!-- 主内容区 -->
-    <div class="admin-main">
-      <header class="admin-topbar">
-        <button class="icon-btn menu-btn" @click="sidebarOpen = true" aria-label="打开菜单">
+    <!-- 主区域 -->
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" aria-label="打开菜单" @click="drawerOpen = true">
           <Menu :size="20" />
         </button>
 
-        <nav class="crumb" aria-label="面包屑">
-          <span class="crumb-group">{{ breadcrumb.group }}</span>
-          <ChevronRight :size="13" class="crumb-sep" />
-          <span class="crumb-page">{{ breadcrumb.page }}</span>
-        </nav>
+        <div class="topbar-title">
+          <h1>{{ pageTitle }}</h1>
+          <span v-if="crumbGroup" class="topbar-crumb">{{ crumbGroup }}</span>
+        </div>
 
-        <div class="topbar-right">
-          <span class="topbar-version">{{ APP_VERSION }}</span>
-
+        <div class="topbar-actions">
           <button class="icon-btn" title="刷新当前页" aria-label="刷新当前页" @click="refreshPage">
-            <RefreshCw :size="16" />
+            <RefreshCw :size="17" />
           </button>
-
           <el-dropdown trigger="click" @command="onAdminCommand">
             <button class="admin-chip" aria-label="管理员菜单">
-              <span class="chip-avatar">{{ auth.admin?.username?.charAt(0).toUpperCase() || 'A' }}</span>
+              <span class="chip-avatar">{{ initial }}</span>
               <span class="chip-name">{{ auth.admin?.username || '管理员' }}</span>
+              <ChevronDown :size="14" class="chip-chev" />
             </button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="password">
-                  <KeyRound :size="14" style="margin-right: 6px" />修改密码
+                  <KeyRound :size="15" style="margin-right: 8px" />修改密码
                 </el-dropdown-item>
                 <el-dropdown-item command="logout" divided>
-                  <LogOut :size="14" style="margin-right: 6px" />退出登录
+                  <LogOut :size="15" style="margin-right: 8px" />退出登录
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -271,13 +342,13 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <main class="admin-content">
+      <main class="content">
         <RouterView />
       </main>
     </div>
 
     <el-dialog v-model="pwdVisible" title="修改密码" width="420px">
-      <el-form label-width="88px" @submit.prevent>
+      <el-form label-position="top" @submit.prevent>
         <el-form-item label="当前密码">
           <el-input v-model="pwdForm.old_password" type="password" show-password placeholder="请输入当前密码" />
         </el-form-item>
@@ -297,13 +368,55 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.admin-layout {
+.shell {
   display: flex;
   min-height: 100vh;
   min-height: 100dvh;
+  background: transparent;
 }
 
 .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.icon-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* ==================== 侧边栏 ==================== */
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-w);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  z-index: var(--z-sticky);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  min-height: var(--header-h);
+}
+
+.brand-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -311,260 +424,237 @@ onUnmounted(() => {
   height: 32px;
   flex-shrink: 0;
   border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.icon-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-  border-color: var(--border-subtle);
-}
-
-/* ===== 侧边栏 ===== */
-.sidebar {
-  width: 236px;
-  flex-shrink: 0;
-  background: linear-gradient(180deg, rgba(13, 20, 32, 0.96), rgba(8, 12, 20, 0.96));
-  border-right: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  height: 100dvh;
-}
-
-.sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 18px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.brand-mark {
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  border-radius: 10px;
   background: var(--gradient-brand);
-  box-shadow: var(--shadow-glow);
+  color: var(--primary-on);
 }
 
 .brand-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
-.brand-text strong { font-size: 14px; letter-spacing: 0.02em; }
-.brand-text span { font-size: 11px; color: var(--text-muted); }
-.sidebar-close { display: none; margin-left: auto; }
+.brand-text strong { font-size: var(--font-size-md); font-weight: var(--font-weight-bold); letter-spacing: 0.01em; }
+.brand-text span { font-size: 11.5px; color: var(--text-muted); }
+.brand-close { display: none; margin-left: auto; }
 
-.sidebar-nav {
+.nav {
   flex: 1;
-  padding: 12px 10px 18px;
+  padding: 10px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.nav-group + .nav-group { margin-top: 14px; }
+.nav-group + .nav-group,
+.nav-single + .nav-group { margin-top: 2px; }
 
-.nav-group-title {
-  font-size: 11px;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  padding: 0 12px 6px;
-}
-
-.nav-item {
+.nav-group-head {
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 9px 12px;
-  border-radius: var(--radius-sm);
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  text-align: left;
   text-decoration: none;
-  font-size: 13.5px;
-  margin-bottom: 2px;
-  border: 1px solid transparent;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
-.nav-item:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+.nav-group-head:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-group-head.active { background: var(--bg-active); color: var(--primary); font-weight: var(--font-weight-semibold); }
+.nav-group-head .chev { margin-left: auto; color: var(--text-faint); transition: transform var(--transition-base); }
+.nav-group-head .chev.open { transform: rotate(180deg); }
+
+.nav-items { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 6px; }
+
+.nav-item {
+  display: block;
+  padding: 9px 12px 9px 41px;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
+
+.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
 
 .nav-item.active {
-  color: var(--primary);
   background: var(--primary-bg);
-  border-color: var(--primary-border);
+  color: #7fe6f6;
+  font-weight: var(--font-weight-semibold);
+  box-shadow: inset 2px 0 0 0 var(--primary);
 }
 
-.sidebar-footer {
+.sidebar-foot {
   padding: 12px;
   border-top: 1px solid var(--border-subtle);
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 
-.admin-who { display: flex; align-items: center; gap: 10px; }
+.who { display: flex; align-items: center; gap: 10px; padding: 4px 4px 12px; }
 
 .who-avatar,
 .chip-avatar {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
+  font-weight: var(--font-weight-bold);
   color: var(--primary-on);
   background: var(--gradient-brand);
 }
 
-.who-avatar { width: 32px; height: 32px; border-radius: 50%; font-size: 13px; flex-shrink: 0; }
-.chip-avatar { width: 22px; height: 22px; border-radius: 50%; font-size: 11px; }
+.who-avatar { width: 34px; height: 34px; border-radius: var(--radius-full); font-size: 13px; flex-shrink: 0; }
+.chip-avatar { width: 24px; height: 24px; border-radius: var(--radius-full); font-size: 11.5px; }
 
 .who-info { flex: 1; min-width: 0; }
-.who-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.who-role { font-size: 11px; color: var(--text-muted); }
+.who-name { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-role { font-size: 11.5px; color: var(--text-muted); }
 
-/* ===== 顶栏 ===== */
-.admin-main {
+.foot-links { display: flex; flex-direction: column; gap: 2px; }
+
+.foot-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  text-decoration: none;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.foot-link:hover { background: var(--bg-hover); color: var(--text-primary); }
+.foot-link.danger:hover { background: var(--danger-bg); color: #fda4af; }
+
+.foot-version {
+  margin-top: 8px;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: var(--tracking-wide);
+}
+
+/* ==================== 主区域 ==================== */
+.main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  margin-left: var(--sidebar-w);
 }
 
-.admin-topbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 20px;
-  border-bottom: 1px solid var(--border-subtle);
+.topbar {
   position: sticky;
   top: 0;
-  background: rgba(7, 11, 18, 0.78);
-  backdrop-filter: blur(12px);
-  z-index: 10;
+  z-index: var(--z-float);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--header-h);
+  padding: 0 20px;
+  padding-top: env(safe-area-inset-top);
+  background: rgba(12, 18, 28, 0.86);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-/* 汉堡只在窄屏出现：桌面端固定 236px 侧边栏，不需要它 */
-.menu-btn { display: none; }
+.topbar-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 
-.crumb { display: flex; align-items: center; gap: 7px; font-size: 13.5px; min-width: 0; }
-.crumb-group { color: var(--text-muted); }
-.crumb-sep { color: var(--text-muted); flex-shrink: 0; }
-.crumb-page {
-  font-weight: 600;
+.topbar-title h1 {
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.topbar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
+.topbar-crumb { font-size: var(--font-size-xs); color: var(--text-muted); flex-shrink: 0; }
 
-.topbar-version {
-  font-size: 11px;
-  color: var(--primary);
-  background: var(--primary-bg);
-  border: 1px solid var(--primary-border);
-  padding: 3px 10px;
-  border-radius: var(--radius-full);
-  white-space: nowrap;
-}
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 .admin-chip {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px 4px 5px;
+  padding: 5px 10px 5px 6px;
   border-radius: var(--radius-full);
   border: 1px solid var(--border-default);
-  background: var(--bg-glass);
+  background: var(--bg-elevated);
   color: var(--text-primary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: all var(--transition-fast);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
-.admin-chip:hover { border-color: var(--primary-border); background: var(--bg-glass-hover); }
+.admin-chip:hover { border-color: var(--border-strong); background: #1d2836; }
 .chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-chev { color: var(--text-faint); }
 
-.admin-content {
+.content {
   flex: 1;
-  padding: 20px;
-  max-width: 1440px;
   width: 100%;
+  max-width: 1440px;
   margin: 0 auto;
+  padding: 20px;
 }
+
+/* 抽屉遮罩 */
+.shell-mask {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-sticky) - 1);
+  background: var(--bg-overlay);
+  backdrop-filter: blur(3px);
+}
+
+.mask-enter-active,
+.mask-leave-active { transition: opacity var(--transition-base); }
+.mask-enter-from,
+.mask-leave-to { opacity: 0; }
 
 /* ==================== 响应式 ==================== */
 
-/* 平板及以下：侧边栏收成抽屉（桌面布局在 768-1024 这段宽度上会被挤扁，所以提前收） */
+/* ≤1024px（平板 / 小窗）：侧边栏收成抽屉。768~1024 这一档以前还是被挤扁的桌面布局 */
 @media (max-width: 1024px) {
   .sidebar {
-    position: fixed;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: min(288px, 84vw);
-    height: 100dvh;
-    z-index: 60;
+    z-index: var(--z-modal);
     transform: translateX(-100%);
-    /* 收起时同时隐藏，避免焦点落到屏幕外的菜单项上 */
     visibility: hidden;
     transition: transform var(--transition-base), visibility var(--transition-base);
     box-shadow: 0 0 48px rgba(0, 0, 0, 0.5);
-    will-change: transform;
   }
+
   .sidebar.open { transform: translateX(0); visibility: visible; }
-  .sidebar-close { display: inline-flex; }
 
-  .sidebar-mask {
-    position: fixed;
-    inset: 0;
-    background: var(--bg-overlay);
-    backdrop-filter: blur(2px);
-    z-index: 55;
-  }
-
-  .menu-btn { display: inline-flex; }
-
-  .admin-content { padding: 16px; }
+  .brand-close { display: inline-flex; }
+  .main { margin-left: 0; }
+  .content { padding: 16px; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .sidebar { transition: none; }
-}
-
-/* 宽屏下侧边栏常驻，不需要 visibility 过渡 */
 @media (min-width: 1025px) {
+  .menu-btn { display: none; }
   .sidebar { visibility: visible; }
 }
 
-/* 手机：顶栏与内容区收紧，触控目标放大 */
+/* 手机 */
 @media (max-width: 768px) {
-  .admin-topbar { padding: 8px 12px; gap: 8px; }
-  .admin-content {
-    padding: 12px 12px calc(24px + env(safe-area-inset-bottom));
-  }
-
-  .crumb-group,
-  .crumb-sep { display: none; }
-  .crumb { font-size: 14px; }
-
-  .topbar-version { display: none; }
-  .chip-name { display: none; }
-  .admin-chip { padding: 3px; border-radius: 50%; }
-
-  .icon-btn { width: 36px; height: 36px; }
-  .nav-item { padding: 11px 12px; }
-  .sidebar-brand { padding: 16px 14px; }
+  .topbar { padding: 0 12px; padding-top: env(safe-area-inset-top); gap: 8px; }
+  .topbar-title h1 { font-size: var(--font-size-lg); }
+  .topbar-crumb { display: none; }
+  .chip-name,
+  .chip-chev { display: none; }
+  .admin-chip { padding: 4px; border-radius: var(--radius-full); }
+  .chip-avatar { width: 28px; height: 28px; font-size: 12px; }
+  .content { padding: 12px 12px calc(28px + env(safe-area-inset-bottom)); }
+  .nav-item { padding: 11px 12px 11px 41px; }
+  .nav-group-head { padding: 12px; }
 }
 </style>

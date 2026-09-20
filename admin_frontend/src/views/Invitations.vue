@@ -4,6 +4,9 @@
  *
  * 参数配置（签到 / 支付 / 返利比例）已统一收归「系统设置」页，
  * 本页只负责台账与人工干预，避免两处入口改同一份配置。
+ *
+ * v2.6.11：两张台账改用 DataTable（手机上变成卡片列表，不再需要横向拖），
+ * 统计瓦片统一为全局 .stat-tile。
  */
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -19,6 +22,8 @@ import {
   type EconomyStats,
 } from '@/api/economy'
 import { fetchUsers } from '@/api/admin'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
 
 const loading = ref(false)
 const stats = ref<EconomyStats | null>(null)
@@ -26,11 +31,27 @@ const stats = ref<EconomyStats | null>(null)
 // ===== 邀请记录 =====
 const invitations = ref<InvitationRow[]>([])
 
+const inviteColumns: DataColumn[] = [
+  { key: 'inviter', label: '邀请人', width: 140, mobile: 'title' },
+  { key: 'invitee', label: '被邀请人', width: 140 },
+  { key: 'reward_points', label: '奖励', width: 100 },
+  { key: 'created_at', label: '时间' },
+]
+
 // ===== 积分流水 =====
 const logs = ref<PointsLogRow[]>([])
 const logTotal = ref(0)
 const logPage = ref(1)
 const logTypeFilter = ref('')
+
+const logColumns: DataColumn[] = [
+  { key: 'username', label: '用户', width: 130, mobile: 'title' },
+  { key: 'amount', label: '变动', width: 90 },
+  { key: 'type', label: '类型', width: 100 },
+  { key: 'description', label: '说明', minWidth: 170 },
+  { key: 'balance_after', label: '余额', width: 90 },
+  { key: 'created_at', label: '时间', width: 160 },
+]
 
 // ===== 手动调整 =====
 const adjustVisible = ref(false)
@@ -123,31 +144,37 @@ onMounted(load)
         <h1 class="admin-page-title">邀请与积分</h1>
         <p class="admin-page-subtitle">邀请台账与全站积分流水；规则参数已移至「系统设置」</p>
       </div>
-      <div class="head-actions">
-        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
-        <el-button :icon="Plus" @click="openAdjust">调整积分</el-button>
-        <RouterLink to="/settings">
-          <el-button :icon="Settings" type="primary">规则设置</el-button>
+      <div class="admin-page-actions">
+        <el-button :loading="loading" @click="load">
+          <RefreshCw :size="15" style="margin-right: 4px" />刷新
+        </el-button>
+        <el-button @click="openAdjust">
+          <Plus :size="15" style="margin-right: 4px" />调整积分
+        </el-button>
+        <RouterLink to="/settings" class="link-button">
+          <el-button type="primary">
+            <Settings :size="15" style="margin-right: 4px" />规则设置
+          </el-button>
         </RouterLink>
       </div>
     </div>
 
-    <section class="stat-row">
-      <div class="stat-item">
-        <span class="stat-label"><Gift :size="13" /> 本页邀请记录</span>
-        <span class="stat-value">{{ inviteTotal }}</span>
+    <section class="stat-grid">
+      <div class="stat-tile">
+        <div class="stat-label"><Gift :size="13" /> 本页邀请记录</div>
+        <div class="stat-value stat-accent">{{ inviteTotal }}</div>
       </div>
-      <div class="stat-item">
-        <span class="stat-label"><Coins :size="13" /> 全站积分存量</span>
-        <span class="stat-value">{{ stats?.total_points ?? '—' }}</span>
+      <div class="stat-tile">
+        <div class="stat-label"><Coins :size="13" /> 全站积分存量</div>
+        <div class="stat-value">{{ stats?.total_points ?? '—' }}</div>
       </div>
-      <div class="stat-item">
-        <span class="stat-label">累计邀请关系</span>
-        <span class="stat-value">{{ stats?.invitations ?? '—' }}</span>
+      <div class="stat-tile">
+        <div class="stat-label">累计邀请关系</div>
+        <div class="stat-value">{{ stats?.invitations ?? '—' }}</div>
       </div>
-      <div class="stat-item">
-        <span class="stat-label">本页返利合计</span>
-        <span class="stat-value">{{ rebateTotal }}</span>
+      <div class="stat-tile">
+        <div class="stat-label">本页返利合计</div>
+        <div class="stat-value stat-accent">{{ rebateTotal }}</div>
       </div>
     </section>
 
@@ -157,44 +184,52 @@ onMounted(load)
         <div class="block-head">
           <h3>邀请记录（最新 {{ invitations.length }} 条）</h3>
         </div>
-        <el-table :data="invitations" size="small" max-height="420">
-          <el-table-column prop="inviter" label="邀请人" width="120" />
-          <el-table-column prop="invitee" label="被邀请人" width="120" />
-          <el-table-column label="奖励" width="90">
-            <template #default="{ row }">+{{ row.reward_points }}</template>
-          </el-table-column>
-          <el-table-column label="时间">
-            <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
-          </el-table-column>
-        </el-table>
+        <DataTable :rows="invitations" :columns="inviteColumns" :loading="loading" empty="暂无邀请记录">
+          <template #cell-inviter="{ row }">
+            <span class="user-name">{{ row.inviter }}</span>
+          </template>
+          <template #cell-invitee="{ row }">{{ row.invitee }}</template>
+          <template #cell-reward_points="{ row }">
+            <span class="amt-in">+{{ row.reward_points }}</span>
+          </template>
+          <template #cell-created_at="{ row }">{{ fmtTime(row.created_at) }}</template>
+        </DataTable>
       </section>
 
       <!-- 积分流水 -->
       <section class="admin-card block">
         <div class="block-head">
           <h3>积分流水（共 {{ logTotal }} 条）</h3>
-          <el-select v-model="logTypeFilter" placeholder="全部类型" clearable size="small" style="width: 130px" @change="logPage = 1; load()">
+          <el-select
+            v-model="logTypeFilter"
+            placeholder="全部类型"
+            clearable
+            size="small"
+            style="width: 140px"
+            @change="logPage = 1; load()"
+          >
             <el-option v-for="(label, key) in TYPE_LABELS" :key="key" :label="label" :value="key" />
           </el-select>
         </div>
-        <el-table :data="logs" size="small" max-height="420">
-          <el-table-column prop="username" label="用户" width="110" />
-          <el-table-column label="变动" width="80">
-            <template #default="{ row }">
-              <span :class="row.amount > 0 ? 'amt-in' : 'amt-out'">{{ row.amount > 0 ? '+' : '' }}{{ row.amount }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="类型" width="90">
-            <template #default="{ row }">{{ TYPE_LABELS[row.type] || row.type }}</template>
-          </el-table-column>
-          <el-table-column prop="description" label="说明" min-width="150" show-overflow-tooltip />
-          <el-table-column label="余额" width="80">
-            <template #default="{ row }">{{ row.balance_after }}</template>
-          </el-table-column>
-          <el-table-column label="时间" width="150">
-            <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
-          </el-table-column>
-        </el-table>
+
+        <DataTable :rows="logs" :columns="logColumns" :loading="loading" empty="暂无积分流水">
+          <template #cell-username="{ row }">
+            <span class="user-name">{{ row.username }}</span>
+          </template>
+          <template #cell-amount="{ row }">
+            <span :class="row.amount > 0 ? 'amt-in' : 'amt-out'">
+              {{ row.amount > 0 ? '+' : '' }}{{ row.amount }}
+            </span>
+          </template>
+          <template #cell-type="{ row }">{{ TYPE_LABELS[row.type] || row.type }}</template>
+          <template #cell-description="{ row }">
+            <span v-if="!row.description" class="muted">—</span>
+            <span v-else>{{ row.description }}</span>
+          </template>
+          <template #cell-balance_after="{ row }">{{ row.balance_after }}</template>
+          <template #cell-created_at="{ row }">{{ fmtTime(row.created_at) }}</template>
+        </DataTable>
+
         <el-pagination
           v-if="logTotal > 30"
           v-model:current-page="logPage"
@@ -209,8 +244,8 @@ onMounted(load)
     </div>
 
     <!-- 调整积分对话框 -->
-    <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="440">
-      <el-form label-width="90px">
+    <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="440px">
+      <el-form label-position="top">
         <el-form-item label="用户">
           <el-select
             v-model="adjustForm.user_id"
@@ -229,86 +264,58 @@ onMounted(load)
               :value="u.id"
             />
           </el-select>
+          <div class="form-hint">支持按用户名模糊搜索，无需再手填数据库 ID</div>
         </el-form-item>
         <el-form-item label="调整数量">
           <el-input-number v-model="adjustForm.amount" :step="10" style="width: 100%" />
-          <div class="hint">正数发放 / 负数扣除（记账留审计）</div>
+          <div class="form-hint">正数发放 / 负数扣除（记账留审计）</div>
         </el-form-item>
         <el-form-item label="原因">
           <el-input v-model="adjustForm.reason" maxlength="100" placeholder="活动补偿等（选填）" />
         </el-form-item>
-        <el-form-item v-if="selectedUser" label=" ">
-          <span class="hint">将对「{{ selectedUser }}」发放/扣减 {{ adjustForm.amount }} 积分</span>
-        </el-form-item>
+        <div v-if="selectedUser" class="adjust-preview">
+          将对「{{ selectedUser }}」发放 / 扣减 {{ adjustForm.amount }} 积分
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="adjustVisible = false">取消</el-button>
         <el-button type="primary" :loading="adjustLoading" @click="handleAdjust">确认调整</el-button>
       </template>
     </el-dialog>
-
   </div>
 </template>
 
 <style scoped>
-.head-actions { display: flex; gap: 8px; align-items: center; }
-
-.stat-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-}
-
-.stat-item {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-}
-
-.stat-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
-}
-
-.stat-value {
-  display: block;
-  font-size: var(--font-size-3xl);
-  font-weight: 700;
-  margin-top: 2px;
-  color: var(--primary);
-}
+.link-button { text-decoration: none; }
 
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1.4fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
   gap: 14px;
   align-items: start;
 }
 
-.block { /* 沿用 .admin-card 视觉，仅补标题间距 */ }
-
-.block-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
+.block-head h3 {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
-.block-head h3 { margin: 0; font-size: 14.5px; font-weight: 600; }
+.user-name { font-weight: 600; color: var(--text-primary); }
+.amt-in { color: #6ee7b7; font-weight: 600; font-variant-numeric: tabular-nums; }
+.amt-out { color: #fda4af; font-weight: 600; font-variant-numeric: tabular-nums; }
 
-.amt-in { color: var(--success); font-weight: 600; }
-.amt-out { color: var(--danger); font-weight: 600; }
-
-.pager { margin-top: 10px; justify-content: flex-end; }
-
-.hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.adjust-preview {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-border);
+  color: #a5eefb;
+  font-size: var(--font-size-xs);
+}
 
 @media (max-width: 1000px) {
-  .grid { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

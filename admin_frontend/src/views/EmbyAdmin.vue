@@ -2,6 +2,10 @@
 /**
  * 媒体库管理：库列表/创建/扫描/删除 + 刮削策略 + 平台虚拟媒体库 + 图片修复队列
  * + 在线会话监控/强制下线 + 停止全部转码
+ *
+ * v2.6.11：会话表改用 DataTable（手机卡片）；媒体库卡片的「挂载 / 刮削策略 / 115 账号」
+ * 在窄屏改为「标签在上、控件在下」，不再把中文标签挤成竖排两行；页面里的硬编码灰度
+ * 全部换成主题令牌。
  */
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -22,6 +26,8 @@ import {
   updateLibrary,
 } from '@/api/admin'
 import type { EmbyLibrary, EmbySessionRow, Pan115Account, StorageMount } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
 
 const libraries = ref<EmbyLibrary[]>([])
 const sessions = ref<EmbySessionRow[]>([])
@@ -30,6 +36,16 @@ const mounts = ref<StorageMount[]>([])
 const loading = ref(false)
 const repairCount = ref(0)
 const virtualLoading = ref(false)
+
+const sessionColumns: DataColumn[] = [
+  { key: 'username', label: '用户', width: 130, mobile: 'title' },
+  { key: 'item', label: '内容', minWidth: 190 },
+  { key: 'device', label: '设备', minWidth: 150, mobile: 'hide' },
+  { key: 'progress', label: '进度', width: 120 },
+  { key: 'remote_addr', label: 'IP', width: 130, mobile: 'hide' },
+  { key: 'started_at', label: '开始时间', width: 150 },
+  { key: 'actions', label: '操作', width: 110, fixed: 'right', align: 'right' },
+]
 
 const createVisible = ref(false)
 const form = ref({
@@ -174,6 +190,10 @@ function progress(pos: number, dur: number): string {
   if (!dur) return '0%'
   return Math.min(100, Math.round((pos / dur) * 100)) + '%'
 }
+
+function typeLabel(t: string): string {
+  return { movies: '电影', tvshows: '剧集', music: '音乐', mixed: '混合' }[t] || t
+}
 </script>
 
 <template>
@@ -181,16 +201,24 @@ function progress(pos: number, dur: number): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">媒体库管理</h1>
-        <p class="admin-page-subtitle">自建 Emby：媒体库、扫描与会话监控</p>
+        <p class="admin-page-subtitle">自建 Emby：媒体库、扫描与在线会话</p>
       </div>
-      <div class="toolbar">
-        <el-button v-if="repairCount > 0" @click="repairNow">修复缺图（{{ repairCount }}）</el-button>
-        <el-button :loading="virtualLoading" @click="generateVirtual">
-          <Wand2 :size="13" style="margin-right: 4px" />生成平台虚拟库
+      <div class="admin-page-actions">
+        <el-button v-if="repairCount > 0" @click="repairNow">
+          修复缺图（{{ repairCount }}）
         </el-button>
-        <el-button @click="stopAll"><Square :size="13" style="margin-right: 4px" />停止全部转码</el-button>
-        <el-button type="primary" @click="createVisible = true"><FolderPlus :size="14" style="margin-right: 4px" />新建媒体库</el-button>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
+        <el-button :loading="virtualLoading" @click="generateVirtual">
+          <Wand2 :size="14" style="margin-right: 4px" />生成平台虚拟库
+        </el-button>
+        <el-button @click="stopAll">
+          <Square :size="13" style="margin-right: 4px" />停止全部转码
+        </el-button>
+        <el-button type="primary" @click="createVisible = true">
+          <FolderPlus :size="15" style="margin-right: 4px" />新建媒体库
+        </el-button>
+        <el-button :loading="loading" aria-label="刷新" @click="load">
+          <RefreshCw :size="15" />
+        </el-button>
       </div>
     </div>
 
@@ -199,22 +227,26 @@ function progress(pos: number, dur: number): string {
       <div v-for="l in libraries" :key="l.id" class="admin-card lib-card">
         <div class="lib-head">
           <span class="lib-name">{{ l.name }}</span>
-          <span v-if="l.is_virtual" class="mini-badge virtual">平台虚拟库</span>
-          <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">{{ l.is_enabled ? '启用' : '停用' }}</span>
+          <span v-if="l.is_virtual" class="mini-badge pin">虚拟库</span>
+          <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">
+            {{ l.is_enabled ? '启用' : '停用' }}
+          </span>
           <span v-if="l.is_scanning" class="mini-badge scanning">扫描中…</span>
         </div>
-        <div class="lib-meta">
-          {{ { movies: '电影', tvshows: '剧集', music: '音乐', mixed: '混合' }[l.collection_type] || l.collection_type }}
-          · {{ l.item_count }} 个条目
-        </div>
+
+        <div class="lib-meta">{{ typeLabel(l.collection_type) }} · {{ l.item_count }} 个条目</div>
+
         <div class="lib-paths">
-          <template v-if="l.is_virtual">按发行平台「{{ l.platform || '—' }}」聚合，条目仍归属原媒体库</template>
+          <template v-if="l.is_virtual">
+            按发行平台「{{ l.platform || '—' }}」聚合，条目仍归属原媒体库
+          </template>
           <template v-else>
             {{ [...l.paths, mountNames(l.mount_ids)].filter(Boolean).join(' | ') || '未配置来源' }}
           </template>
         </div>
+
         <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="lib-time">挂载</span>
+          <span class="policy-label">存储挂载</span>
           <el-select
             v-model="l.mount_ids"
             size="small"
@@ -222,101 +254,122 @@ function progress(pos: number, dur: number): string {
             collapse-tags
             collapse-tags-tooltip
             placeholder="未绑定"
-            style="width: 200px"
             @change="saveMounts(l)"
           >
             <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
           </el-select>
         </div>
+
         <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="lib-time">刮削策略</span>
-          <el-select v-model="l.scrape_policy" size="small" style="width: 150px" @change="savePolicy(l)">
+          <span class="policy-label">刮削策略</span>
+          <el-select v-model="l.scrape_policy" size="small" @change="savePolicy(l)">
             <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
           </el-select>
         </div>
+
         <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="lib-time">115 账号</span>
+          <span class="policy-label">115 账号</span>
           <el-select
             v-model="l.account_115_id"
             size="small"
             clearable
             placeholder="默认账号"
-            style="width: 150px"
             @change="saveAccount115(l)"
           >
             <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
           </el-select>
         </div>
+
         <div class="lib-foot">
           <span class="lib-time">上次扫描 {{ fmtDate(l.last_scan_at) }}</span>
           <div class="lib-actions">
-            <el-button size="small" text type="primary" @click="scan(l)">
-              <ScanSearch :size="13" style="margin-right: 2px" />扫描
+            <el-button size="small" type="primary" plain @click="scan(l)">
+              <ScanSearch :size="13" style="margin-right: 3px" />扫描
             </el-button>
-            <el-button size="small" text type="danger" @click="removeLib(l)"><Delete :size="13" /></el-button>
+            <el-button size="small" type="danger" plain @click="removeLib(l)">
+              <Delete :size="13" style="margin-right: 3px" />删除
+            </el-button>
           </div>
         </div>
       </div>
+
       <div v-if="libraries.length === 0 && !loading" class="admin-card empty-card">
         暂无媒体库，点击右上角「新建媒体库」开始
       </div>
     </div>
 
     <!-- 在线会话 -->
-    <div class="admin-card" style="margin-top: 16px">
-      <div class="sessions-head">
+    <div class="admin-card">
+      <div class="card-header">
         <h2>在线会话（{{ sessions.length }}）</h2>
       </div>
-      <el-table :data="sessions" style="width: 100%">
-        <el-table-column label="用户" prop="username" width="120" />
-        <el-table-column label="内容" min-width="180">
-          <template #default="{ row }">
-            {{ row.item }}
-            <span class="s-method">{{ row.play_method === 'Transcode' ? '转码' : '直连' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="设备" min-width="140">
-          <template #default="{ row }">{{ [row.client, row.device].filter(Boolean).join(' · ') || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="进度" width="110">
-          <template #default="{ row }">
-            <div class="progress-track">
-              <div class="progress-fill" :style="{ width: progress(row.position_ticks, row.duration_ticks) }" />
-            </div>
-            <span class="progress-num">{{ progress(row.position_ticks, row.duration_ticks) }}{{ row.is_paused ? ' · 已暂停' : '' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="IP" prop="remote_addr" width="130" />
-        <el-table-column label="开始时间" width="150">
-          <template #default="{ row }">{{ fmtDate(row.started_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" text type="danger" @click="kick(row)">下线</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable
+        :rows="sessions"
+        :columns="sessionColumns"
+        :loading="loading"
+        empty="当前没有正在播放的会话"
+        row-key="session_key"
+      >
+        <template #cell-username="{ row }">
+          <span class="user-name">{{ row.username }}</span>
+        </template>
+
+        <template #cell-item="{ row }">
+          {{ row.item }}
+          <span class="s-method">{{ row.play_method === 'Transcode' ? '转码' : '直连' }}</span>
+        </template>
+
+        <template #cell-device="{ row }">
+          {{ [row.client, row.device].filter(Boolean).join(' · ') || '—' }}
+        </template>
+
+        <template #cell-progress="{ row }">
+          <div class="progress-track">
+            <div class="progress-fill" :style="{ width: progress(row.position_ticks, row.duration_ticks) }" />
+          </div>
+          <span class="progress-num">
+            {{ progress(row.position_ticks, row.duration_ticks) }}{{ row.is_paused ? ' · 已暂停' : '' }}
+          </span>
+        </template>
+
+        <template #cell-remote_addr="{ row }">
+          <span class="mono">{{ row.remote_addr || '—' }}</span>
+        </template>
+
+        <template #cell-started_at="{ row }">{{ fmtDate(row.started_at) }}</template>
+
+        <template #cell-actions="{ row }">
+          <el-button size="small" type="danger" plain @click="kick(row)">下线</el-button>
+        </template>
+      </DataTable>
     </div>
 
     <!-- 新建弹窗 -->
-    <el-dialog v-model="createVisible" title="新建媒体库" width="440px">
-      <el-form label-width="80px">
-        <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：电影库 / 剧集库" /></el-form-item>
-        <el-form-item label="刮削策略">
-          <el-select v-model="form.scrape_policy" style="width: 200px">
-            <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
-          </el-select>
+    <el-dialog v-model="createVisible" title="新建媒体库" width="480px">
+      <el-form label-position="top">
+        <el-form-item label="名称">
+          <el-input v-model="form.name" placeholder="如：电影库 / 剧集库" />
         </el-form-item>
         <el-form-item label="类型">
-          <el-select v-model="form.collection_type" style="width: 160px">
+          <el-select v-model="form.collection_type" style="width: 100%">
             <el-option label="电影" value="movies" />
             <el-option label="剧集" value="tvshows" />
             <el-option label="音乐" value="music" />
             <el-option label="混合" value="mixed" />
           </el-select>
         </el-form-item>
+        <el-form-item label="刮削策略">
+          <el-select v-model="form.scrape_policy" style="width: 100%">
+            <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="路径">
-          <el-input v-model="form.paths" type="textarea" :rows="3" placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies" />
+          <el-input
+            v-model="form.paths"
+            type="textarea"
+            :rows="3"
+            placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies"
+          />
           <div class="form-hint">本机目录。也可以用下面的「存储挂载」接入 115 / WebDAV / AList 等来源。</div>
         </el-form-item>
         <el-form-item label="存储挂载">
@@ -341,43 +394,87 @@ function progress(pos: number, dur: number): string {
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.admin-page { gap: 16px; }
 
 .lib-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
 }
 
-.lib-card { display: flex; flex-direction: column; gap: 6px; }
-.lib-head { display: flex; align-items: center; gap: 8px; }
-.lib-name { font-weight: 700; font-size: 15px; }
-.lib-meta { font-size: 12px; color: var(--color-text-secondary, #a3a3a3); }
+.lib-card { display: flex; flex-direction: column; gap: 8px; }
+.lib-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lib-name { font-weight: var(--font-weight-bold); font-size: var(--font-size-lg); color: var(--text-primary); }
+.lib-meta { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+
 .lib-paths {
-  font-size: 11px;
-  font-family: ui-monospace, monospace;
-  color: var(--color-text-muted, #737373);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.lib-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
-.lib-time { font-size: 11px; color: var(--color-text-muted, #737373); }
-.lib-actions { display: flex; }
-.empty-card { text-align: center; color: var(--color-text-muted, #737373); padding: 40px 0; }
 
-.sessions-head h2 { font-size: 15px; margin: 0 0 12px; }
-.s-method { font-size: 10px; background: rgba(255, 255, 255, 0.08); border-radius: 999px; padding: 1px 6px; margin-left: 6px; color: var(--color-text-secondary, #a3a3a3); }
+.lib-policy { display: flex; align-items: center; gap: 10px; }
+.policy-label { font-size: var(--font-size-xs); color: var(--text-tertiary); width: 62px; flex-shrink: 0; }
+.lib-policy :deep(.el-select) { flex: 1; min-width: 0; }
 
-.progress-track { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
-.progress-fill { height: 100%; background: var(--gradient-brand); border-radius: 2px; }
-.progress-num { font-size: 11px; color: var(--color-text-muted, #737373); }
+.lib-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
 
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
-.mini-badge.scanning { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.mini-badge.virtual { background: rgba(168, 85, 247, 0.16); color: #a855f7; }
-.lib-policy { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.form-hint { font-size: 11px; color: var(--color-text-muted, #737373); margin-top: 4px; }
+.lib-time { font-size: var(--font-size-xs); color: var(--text-muted); }
+.lib-actions { display: flex; gap: 8px; }
+.lib-actions :deep(.el-button) { margin-left: 0; }
+
+.empty-card { text-align: center; color: var(--text-muted); padding: 40px 16px; font-size: var(--font-size-sm); }
+
+.card-header h2 {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.user-name { font-weight: 600; color: var(--text-primary); }
+
+.s-method {
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-full);
+  padding: 2px 7px;
+  margin-left: 7px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.progress-track {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+  max-width: 110px;
+}
+
+.progress-fill { height: 100%; background: var(--gradient-brand); border-radius: 3px; }
+.progress-num { font-size: var(--font-size-xs); color: var(--text-muted); }
+
+/* 手机：卡片内标签与控件竖排，路径允许换行 */
+@media (max-width: 640px) {
+  .lib-grid { grid-template-columns: minmax(0, 1fr); }
+  .lib-policy { flex-direction: column; align-items: stretch; gap: 6px; }
+  .policy-label { width: auto; }
+  .lib-paths { white-space: normal; word-break: break-all; }
+  .lib-actions { width: 100%; }
+  .lib-actions :deep(.el-button) { flex: 1; }
+  .admin-page-actions :deep(.el-button.is-primary) { flex: 1 1 100%; }
+}
 </style>
