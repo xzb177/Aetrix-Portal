@@ -87,6 +87,9 @@ jobs:
       - name: 管理端接口冒烟（含后台免登 / 非管理员被拒）
         run: python scripts/smoke_test_admin_v240.py
 
+      - name: 管理员账号工具冒烟（建号 / 升级 / 重置密码 / 真实登录）
+        run: python scripts/smoke_test_admin_account.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend

@@ -228,7 +228,7 @@ python main.py
 | 任务 | 内容 |
 | --- | --- |
 | 前端 · `user_frontend` / `admin_frontend` | `npm ci`（锁文件与 `package.json` 不同步即失败）→ `npm run type-check`（vue-tsc）→ `npm run build` |
-| 后端 · 冒烟测试 | `scripts/smoke_test_auth.py`、`scripts/smoke_test_admin_v240.py`（TestClient 进程内，不需要构建产物） |
+| 后端 · 冒烟测试 | `scripts/smoke_test_auth.py`、`scripts/smoke_test_admin_v240.py`、`scripts/smoke_test_admin_account.py`（TestClient 进程内，不需要构建产物） |
 | 后端 · 部署自检 | 还原前一个任务产出的 `dist` 后跑 `scripts/deploy_check.py`：**真起 uvicorn、真发 HTTP**，覆盖单进程与 EM/EA 分离两套形态 |
 
 这四个检查在 `main` 上是**必需状态检查**（branch protection）：PR 必须等到它们全部通过才能合并，
@@ -277,6 +277,7 @@ cp env.example .env                    # 至少设置 SECRET_KEY 与 EMBY_PUBLIC
 cd user_frontend  && npm ci && npm run build-only && cd ..
 cd admin_frontend && npm ci && npm run build      && cd ..
 
+python3 scripts/create_admin.py        # 新库里先造一个管理员（随机强密码，会打印）
 python serve.py                        # EM 面板 :8000（门户 / 管理后台 / API）
 python serve_emby.py                   # EA 网关 :8001（客户端连它，分离部署时才需要）
 ```

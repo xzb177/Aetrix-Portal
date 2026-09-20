@@ -4,7 +4,15 @@
 
 ## [未发布]
 
-本次为**工具链变更**（持续集成），不改动任何运行时行为，应用版本号保持 2.6.9。
+本次为**工具链 / 运维脚本变更**，不改动应用运行时行为，应用版本号保持 2.6.9。
+
+### 新增 (Added)
+- **`scripts/create_admin.py`：一条命令造出管理后台账号**。新库里一个账号都没有，而第一个注册的用户**不会**被自动提升为管理员（有意的安全设计），以前只能手工改库 `web_users.is_staff` 或先注册再跑 `_e2e_mkstaff.py`：
+  - 默认不带参数：创建（或升级）`admin` 并生成随机强密码后打印；`-u/-p` 指定账号密码
+  - 不带 `-p` 且账号已存在时**重置为新的随机密码**（忘了密码时就用它），只升级权限加 `--no-password`
+  - 幂等可重复执行；用户名 / 密码长度校验与门户注册同一口径；同时补齐 Emby 客户端凭据（门户密码即播放密码）；`--dry-run` 只看状态不写库
+- `scripts/smoke_test_admin_account.py`（25 项断言）：建号、幂等、不改密码语义、重置密码、升级普通账号、Emby 凭据、真登录 `/api/admin/auth/login` 与 `/api/admin/auth/me`、非管理员 403、非法用户名 / 过短密码被拒；已接入 CI 的冒烟测试任务
+- `docs/deploy-em.md`「首次登录与管理」与 README 最短部署路径改用新脚本：**明确指出 `scripts/reset_admin_password.py` 面向 v2.0 之前的旧拆分栈（`admin_backend.admin_users`），在 EM / EA 架构下用不了**——之前文档指向它，照着做会改错库
 
 ### 工具链 (CI)
 - 新增 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)：push 到 `main` / PR / 手动触发时跑三组检查——
