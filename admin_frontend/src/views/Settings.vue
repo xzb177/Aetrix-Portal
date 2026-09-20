@@ -259,7 +259,7 @@ async function saveRegistration() {
           </div>
         </header>
 
-        <el-form label-width="96px" class="field-form">
+        <el-form label-position="top" class="field-form">
           <el-form-item label="注册模式">
             <el-radio-group v-model="reg.mode">
               <el-radio-button value="open">开放注册</el-radio-button>
@@ -300,7 +300,7 @@ async function saveRegistration() {
           <span v-if="isDirty(g)" class="dirty-dot">未保存</span>
         </header>
 
-        <el-form label-width="120px" class="field-form">
+        <el-form label-position="top" class="field-form">
           <el-form-item v-for="f in g.fields" :key="f.key" :label="f.label">
             <el-switch
               v-if="f.type === 'bool'"
@@ -355,10 +355,13 @@ async function saveRegistration() {
 .card-title p { font-size: 12px; color: var(--text-muted); margin: 2px 0 0; }
 
 .field-form { max-width: 640px; }
-.field-suffix { margin-left: 8px; font-size: 12px; color: var(--text-muted); }
-.field-hint { margin-left: 10px; font-size: 12px; color: var(--text-muted); }
-.num-input { width: 140px; }
-.num-input :deep(.el-input__wrapper) { padding-left: 11px; }
+.field-suffix { margin-left: 8px; font-size: var(--font-size-xs); color: var(--text-tertiary); }
+.field-hint { font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.6; }
+.num-input { width: 160px; }
+
+/* 控件与标签之间留出呼吸位：label 在上时不再挤在一行里 */
+.field-form :deep(.el-form-item) { margin-bottom: 20px; }
+.field-form :deep(.el-form-item__content) { flex-wrap: wrap; gap: 6px 0; }
 
 .card-footer {
   display: flex;
@@ -380,27 +383,38 @@ async function saveRegistration() {
 .notice {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: 9px;
+  padding: 12px 14px;
   border-radius: var(--radius-md);
-  font-size: 13px;
-  border: 1px solid rgba(251, 191, 36, 0.28);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  border: 1px solid var(--warning-border);
   background: var(--warning-bg);
-  color: var(--warning);
+  color: #fde68a;
 }
 
+.notice :deep(svg) { flex-shrink: 0; }
+
 .notice.ok {
-  border-color: rgba(52, 211, 153, 0.28);
+  border-color: var(--success-border);
   background: var(--success-bg);
-  color: var(--success);
+  color: #a7f3d0;
 }
 
 .foot-note {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12.5px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
   padding: 4px 2px 10px;
+}
+
+/* 手机：数字输入铺满、保存按钮拉满整行、提示图标不压缩 */
+@media (max-width: 640px) {
+  .num-input { width: 100%; }
+  .card-footer { justify-content: stretch; }
+  .card-footer :deep(.el-button) { flex: 1; margin-left: 0; }
+  .settings-body { gap: 12px; }
 }
 </style>

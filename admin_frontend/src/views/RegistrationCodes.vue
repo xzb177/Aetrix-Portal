@@ -1,9 +1,13 @@
 <script setup lang="ts">
 /**
- * 卡码管理（v2.6.0）
+ * 卡码管理（v2.6.0 / v2.6.11 改版）
  *
  * 借鉴 twilight-kotomi 的 RegCode 体系：一套入口生成并管理
  * 注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码，并给出运营总览。
+ *
+ * v2.6.11：改用 DataTable（桌面表格 / 手机卡片列表），并把页面里那套
+ * `#737373`、`#a3a3a3` 之类的硬编码灰色换成主题令牌——这些写死的颜色既不符合
+ * 后台主题，对比度也不达标（#737373 在深色上只有 3.4:1）。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -19,6 +23,8 @@ import {
   updateRegistrationSettings,
 } from '@/api/admin'
 import type { CodeStats, RegistrationCode, RegistrationSettings } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
 
 const codes = ref<RegistrationCode[]>([])
 const stats = ref<CodeStats | null>(null)
@@ -55,6 +61,20 @@ const TYPE_META: Record<number, { label: string; desc: string }> = {
   2: { label: '续期码', desc: '在当前到期时间上叠加天数' },
   3: { label: '白名单码', desc: '置为长期有效（永久）' },
 }
+
+/** 表格列定义：手机端只保留最关键的几列，其余（用量 / 指名 / 备注 / 使用者）收进详情，避免卡片过长 */
+const columns: DataColumn[] = [
+  { key: 'code', label: '卡码', minWidth: 210, mobile: 'title' },
+  { key: 'code_type', label: '类型', width: 96 },
+  { key: 'days_text', label: '授予', width: 90 },
+  { key: 'use_count', label: '用量', width: 84, mobile: 'hide' },
+  { key: 'state', label: '状态', width: 92 },
+  { key: 'target_username', label: '指名', width: 110, mobile: 'hide' },
+  { key: 'expires_at', label: '有效期至', width: 150 },
+  { key: 'note', label: '备注', minWidth: 120, mobile: 'hide' },
+  { key: 'used_by', label: '使用者', minWidth: 150, mobile: 'hide' },
+  { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
+]
 
 const dailyDefault = computed(() =>
   genForm.value.code_type === 3 ? '永久' : `${genForm.value.days} 天`)
@@ -180,35 +200,37 @@ function usedByNames(row: RegistrationCode): string {
           注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码 —— 生成、审计与注册模式管控
         </p>
       </div>
-      <div class="toolbar">
+      <div class="admin-page-actions">
         <el-button @click="quickGenerate">
           <Plus :size="14" style="margin-right: 4px" />快捷生成 5 个注册码
         </el-button>
         <el-button type="primary" @click="openGenerate(1)">
-          <Plus :size="14" style="margin-right: 4px" />类型化生成
+          <Plus :size="15" style="margin-right: 4px" />类型化生成
         </el-button>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
+        <el-button class="icon-only" @click="load" aria-label="刷新">
+          <RefreshCw :size="15" />
+        </el-button>
       </div>
     </div>
 
     <!-- 运营总览 -->
     <div v-if="stats" class="stat-grid">
-      <div class="stat-card">
+      <div class="stat-tile">
         <div class="stat-label">卡码总数</div>
         <div class="stat-value">{{ stats.total }}</div>
         <div class="stat-hint">可用 {{ stats.active }} · 停用 {{ stats.disabled }}</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-tile">
         <div class="stat-label">已过期 / 已用尽</div>
         <div class="stat-value">{{ stats.expired }} / {{ stats.used_up }}</div>
         <div class="stat-hint">到期与次数用尽的卡码</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-tile">
         <div class="stat-label">累计授予</div>
-        <div class="stat-value">{{ stats.days_granted }} 天</div>
+        <div class="stat-value">{{ stats.days_granted }} <span class="unit">天</span></div>
         <div class="stat-hint">不含白名单（永久）与诱饵码</div>
       </div>
-      <div class="stat-card" :class="{ danger: stats.decoy.triggered > 0 }">
+      <div class="stat-tile" :class="{ 'is-alert': stats.decoy.triggered > 0 }">
         <div class="stat-label">诱饵码命中</div>
         <div class="stat-value">{{ stats.decoy.triggered }} / {{ stats.decoy.total }}</div>
         <div class="stat-hint">命中即自动封禁使用者账号</div>
@@ -275,7 +297,7 @@ function usedByNames(row: RegistrationCode): string {
 
     <!-- 生成弹窗 -->
     <el-dialog v-model="genVisible" title="生成卡码" width="520px">
-      <el-form label-width="96px">
+      <el-form label-position="top">
         <el-form-item label="卡码类型">
           <el-radio-group v-model="genForm.code_type">
             <el-radio-button :value="1">注册码</el-radio-button>
@@ -301,7 +323,7 @@ function usedByNames(row: RegistrationCode): string {
         </el-form-item>
         <el-form-item label="有效天数">
           <el-input-number v-model="genForm.expires_days" :min="1" :max="3650" />
-          <span class="form-hint" style="margin-left: 10px">卡码自身的兑换期限，过期作废</span>
+          <div class="form-hint">卡码自身的兑换期限，过期作废</div>
         </el-form-item>
         <el-form-item label="随机算法">
           <el-select v-model="genForm.algorithm" style="width: 100%">
@@ -316,9 +338,9 @@ function usedByNames(row: RegistrationCode): string {
         </el-form-item>
         <el-form-item label="诱饵码">
           <el-switch v-model="genForm.is_decoy" />
-          <span class="form-hint" style="margin-left: 10px">
+          <div class="form-hint">
             <ShieldAlert :size="12" /> 蜜罐：在盗版渠道流通，使用即自动封禁账号
-          </span>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -340,164 +362,136 @@ function usedByNames(row: RegistrationCode): string {
       </template>
     </el-dialog>
 
-    <!-- 码表 -->
+    <!-- 码表：桌面表格 / 手机卡片 -->
     <div class="admin-card">
-      <el-table :data="codes" v-loading="loading" style="width: 100%">
-        <el-table-column label="卡码" min-width="200">
-          <template #default="{ row }">
-            <button class="code-chip" @click="copyText(row.code)">
+      <DataTable :rows="codes" :columns="columns" :loading="loading" empty="还没有生成过卡码">
+        <template #cell-code="{ row }">
+          <div class="code-cell">
+            <button class="code-chip" @click.stop="copyText(row.code)">
               {{ row.code }}<Copy :size="12" />
             </button>
             <span v-if="row.is_decoy" class="mini-badge danger">诱饵</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="96">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="`type-${row.code_type}`">{{ row.code_type_name }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="授予" width="90">
-          <template #default="{ row }">{{ row.days_text }}</template>
-        </el-table-column>
-        <el-table-column label="用量" width="80">
-          <template #default="{ row }">{{ row.use_count }} / {{ row.max_uses }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="row.state === 'active' ? 'ok' : 'off'">
-              {{ STATE_LABEL[row.state] || row.state }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="指名" width="110">
-          <template #default="{ row }">
-            <span v-if="!row.target_username" class="muted">—</span>
-            <span v-else>{{ row.target_username }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="有效期至" width="150">
-          <template #default="{ row }">{{ fmtDateTime(row.expires_at) }}</template>
-        </el-table-column>
-        <el-table-column label="备注" min-width="120">
-          <template #default="{ row }">{{ row.note || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="使用者" min-width="150">
-          <template #default="{ row }">
-            <span v-if="row.used_by.length === 0" class="muted">—</span>
-            <span v-else>{{ usedByNames(row) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="140" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              text
-              :type="row.is_active ? 'danger' : 'success'"
-              @click="toggle(row)"
-            >
-              {{ row.is_active ? '停用' : '启用' }}
-            </el-button>
-            <el-button size="small" text type="danger" @click="remove(row)">
-              <Trash2 :size="13" />
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          </div>
+        </template>
+
+        <template #cell-code_type="{ row }">
+          <span class="mini-badge" :class="`type-${row.code_type}`">{{ row.code_type_name }}</span>
+        </template>
+
+        <template #cell-days_text="{ row }">{{ row.days_text }}</template>
+
+        <template #cell-use_count="{ row }">{{ row.use_count }} / {{ row.max_uses }}</template>
+
+        <template #cell-state="{ row }">
+          <span class="mini-badge" :class="row.state === 'active' ? 'ok' : 'off'">
+            {{ STATE_LABEL[row.state] || row.state }}
+          </span>
+        </template>
+
+        <template #cell-target_username="{ row }">
+          <span v-if="!row.target_username" class="muted">—</span>
+          <span v-else>{{ row.target_username }}</span>
+        </template>
+
+        <template #cell-expires_at="{ row }">{{ fmtDateTime(row.expires_at) }}</template>
+
+        <template #cell-note="{ row }">
+          <span v-if="!row.note" class="muted">—</span>
+          <span v-else>{{ row.note }}</span>
+        </template>
+
+        <template #cell-used_by="{ row }">
+          <span v-if="row.used_by.length === 0" class="muted">—</span>
+          <span v-else>{{ usedByNames(row) }}</span>
+        </template>
+
+        <template #cell-actions="{ row }">
+          <el-button
+            size="small"
+            :type="row.is_active ? 'danger' : 'success'"
+            plain
+            @click="toggle(row)"
+          >
+            {{ row.is_active ? '停用' : '启用' }}
+          </el-button>
+          <el-button size="small" type="danger" plain @click="remove(row)">
+            <Trash2 :size="13" style="margin-right: 2px" />删除
+          </el-button>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 页面只保留自己专有的样式；卡片、徽标、统计瓦片、form-hint 都走全局原语 */
 
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.stat-card {
-  background: var(--card-bg, #171717);
-  border: 1px solid var(--border-color, #262626);
-  border-radius: 12px;
-  padding: 14px 16px;
-}
-.stat-card.danger { border-color: rgba(239, 68, 68, 0.45); }
-.stat-label { font-size: 12px; color: var(--color-text-secondary, #a3a3a3); }
-.stat-value { font-size: 22px; font-weight: 600; margin: 4px 0 2px; }
-.stat-hint { font-size: 11px; color: var(--color-text-muted, #737373); }
+.stat-tile .unit { font-size: 14px; font-weight: 500; color: var(--text-tertiary); }
+.stat-tile.is-alert { border-color: var(--danger-border); }
 
-.type-row-card { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
-.type-chip { display: flex; flex-direction: column; gap: 2px; }
-.type-name { font-size: 13px; font-weight: 600; }
-.type-num { font-size: 12px; color: var(--color-text-secondary, #a3a3a3); }
-.type-used { font-size: 11px; color: var(--color-text-muted, #737373); }
+.type-row-card { display: flex; gap: 20px; flex-wrap: wrap; }
+.type-chip { display: flex; flex-direction: column; gap: 3px; }
+.type-name { font-size: var(--font-size-sm); font-weight: 600; color: var(--text-primary); }
+.type-num { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+.type-used { font-size: var(--font-size-xs); color: var(--text-muted); }
 
-.mode-card { margin-bottom: 14px; }
 .mode-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .mode-row + .mode-row { margin-top: 12px; }
-.mode-label { font-size: 13px; color: var(--color-text-secondary, #a3a3a3); }
-.mode-desc { font-size: 12px; color: var(--color-text-muted, #737373); }
+.mode-label { font-size: var(--font-size-sm); font-weight: 600; color: var(--text-tertiary); }
+.mode-desc { font-size: var(--font-size-xs); color: var(--text-muted); }
 
-.filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-.filter-count { font-size: 12px; color: var(--color-text-muted, #737373); margin-left: auto; }
+.filter-bar { margin-bottom: 0; }
+.filter-count { font-size: var(--font-size-xs); color: var(--text-muted); margin-left: auto; }
 
-.form-hint {
-  font-size: 12px;
-  color: var(--color-text-muted, #737373);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
-}
+.code-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .code-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: ui-monospace, monospace;
-  font-size: 13px;
-  letter-spacing: 1px;
-  background: var(--primary-bg);
-  color: var(--primary);
-  border: none;
-  border-radius: 8px;
-  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.06em;
+  background: var(--primary-soft);
+  color: #7fe6f6;
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
   cursor: pointer;
+  transition: background var(--transition-fast);
 }
-.code-chip:hover { filter: brightness(1.15); }
-.mini-badge {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  background: var(--border-color, #262626);
-  color: var(--color-text-secondary, #a3a3a3);
-}
-.mini-badge.ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
-.mini-badge.off { background: rgba(115, 115, 115, 0.2); color: #a3a3a3; }
-.mini-badge.danger { background: rgba(239, 68, 68, 0.15); color: #f87171; }
-.mini-badge.type-1 { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
-.mini-badge.type-2 { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
-.mini-badge.type-3 { background: rgba(250, 204, 21, 0.15); color: #facc15; }
-.muted { color: var(--color-text-muted, #737373); }
 
-.gen-list { display: flex; flex-direction: column; gap: 8px; }
+.code-chip:hover { background: var(--primary-bg); }
+
+/* 用 .admin-page 前缀把权重抬到高于全局徽标规则，颜色才不会被覆盖 */
+.admin-page .mini-badge.type-1 { background: var(--info-bg); color: #93c5fd; border-color: var(--info-border); }
+.admin-page .mini-badge.type-2 { background: rgba(167, 139, 250, 0.14); color: #c4b5fd; border-color: rgba(167, 139, 250, 0.3); }
+.admin-page .mini-badge.type-3 { background: var(--warning-bg); color: #fcd34d; border-color: var(--warning-border); }
+
+.gen-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; }
+
 .gen-code {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-family: ui-monospace, monospace;
-  letter-spacing: 1px;
-  background: var(--primary-bg);
-  color: var(--primary);
-  border: none;
-  border-radius: 8px;
-  padding: 8px 12px;
+  gap: 10px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
   cursor: pointer;
   text-align: left;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
 }
-.gen-code:hover { filter: brightness(1.15); }
-.gen-days { font-size: 12px; opacity: 0.75; }
+
+.gen-code:hover { border-color: var(--primary-border); background: var(--primary-soft); }
+.gen-days { font-size: var(--font-size-xs); color: var(--text-tertiary); white-space: nowrap; }
+
+/* 手机：主操作按钮铺满，次要按钮并排 */
+@media (max-width: 640px) {
+  .admin-page-actions > .el-button.is-primary { flex: 1 1 100%; }
+}
 </style>

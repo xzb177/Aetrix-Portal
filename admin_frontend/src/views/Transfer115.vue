@@ -6,10 +6,13 @@
  * - 转存任务：粘贴分享链接（或口令文本）→ 选择目标目录 → 转存 / 只取下载地址
  *   任务状态、已完成文件与下载地址都会持久化，进程重启后自动续跑，不会重复转存
  * - 未配置或失效的 Cookie 不会丢任务：置为「等待 Cookie」，修好后重试即可继续
+ *
+ * v2.6.11：两张表改用 DataTable（手机变卡片列表），页面里写死的灰度色换成主题令牌，
+ * 行内「重试 / 取消」由文字按钮改为描边按钮，手机上不再挤成一条被截断的窄条。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpen, Link2, Plus, RefreshCw, RotateCw, Trash2, XCircle } from 'lucide-vue-next'
+import { ExternalLink, FolderOpen, Link2, Plus, RefreshCw, RotateCw, Trash2, XCircle } from 'lucide-vue-next'
 import {
   browsePan115,
   cancelPan115Task,
@@ -26,6 +29,8 @@ import {
   verifyPan115Cookie,
 } from '@/api/admin'
 import type { EmbyLibrary, Pan115Account, Pan115DirEntry, Pan115Task } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
 
 const tab = ref<'tasks' | 'accounts'>('tasks')
 const loading = ref(false)
@@ -35,6 +40,26 @@ const libraries = ref<EmbyLibrary[]>([])
 const envCookieConfigured = ref(false)
 const activeCount = ref(0)
 const waitingAuthCount = ref(0)
+
+const taskColumns: DataColumn[] = [
+  { key: 'share_code', label: '分享码', minWidth: 170, mobile: 'title' },
+  { key: 'status', label: '状态', width: 140 },
+  { key: 'progress', label: '进度', width: 190 },
+  { key: 'target', label: '账号 / 目标', minWidth: 190, mobile: 'hide' },
+  { key: 'library', label: '完成后扫描', minWidth: 130, mobile: 'hide' },
+  { key: 'created_at', label: '创建时间', width: 150 },
+  { key: 'actions', label: '操作', width: 190, fixed: 'right', align: 'right' },
+]
+
+const accountColumns: DataColumn[] = [
+  { key: 'name', label: '名称', minWidth: 150, mobile: 'title' },
+  { key: 'cookie_preview', label: 'Cookie', width: 130, mobile: 'hide' },
+  { key: 'is_default', label: '默认', width: 80 },
+  { key: 'is_enabled', label: '状态', width: 100 },
+  { key: 'last_verified_at', label: '最近校验', minWidth: 190 },
+  { key: 'remark', label: '备注', minWidth: 120, mobile: 'hide' },
+  { key: 'actions', label: '操作', width: 170, fixed: 'right', align: 'right' },
+]
 
 async function load() {
   loading.value = true
@@ -66,7 +91,7 @@ function badgeClass(status: string): string {
   if (status === 'done') return 'ok'
   if (status === 'running') return 'running'
   if (status === 'waiting_auth') return 'warn'
-  if (status === 'failed') return 'bad'
+  if (status === 'failed') return 'danger'
   return 'off'
 }
 
@@ -310,18 +335,20 @@ const targetLabel = computed(() => form.target_path || '/')
         <h1 class="admin-page-title">115 下载与转存</h1>
         <p class="admin-page-subtitle">
           分享链接转存进 115 网盘，完成后自动触发媒体库扫描入库
-          <span v-if="activeCount > 0" class="mini-badge running" style="margin-left: 6px">
-            {{ activeCount }} 个进行中
-          </span>
-          <span v-if="waitingAuthCount > 0" class="mini-badge warn" style="margin-left: 6px">
+        </p>
+        <div v-if="activeCount > 0 || waitingAuthCount > 0" class="page-tags">
+          <span v-if="activeCount > 0" class="mini-badge running">{{ activeCount }} 个进行中</span>
+          <span v-if="waitingAuthCount > 0" class="mini-badge warn">
             {{ waitingAuthCount }} 个任务等待 Cookie
           </span>
-        </p>
+        </div>
       </div>
-      <div class="toolbar">
-        <el-button :loading="loading" @click="load"><RefreshCw :size="14" /></el-button>
+      <div class="admin-page-actions">
+        <el-button :loading="loading" aria-label="刷新" @click="load">
+          <RefreshCw :size="15" />
+        </el-button>
         <el-button type="primary" @click="openCreate">
-          <Plus :size="14" style="margin-right: 4px" />新建转存任务
+          <Plus :size="15" style="margin-right: 4px" />新建转存任务
         </el-button>
       </div>
     </div>
@@ -329,77 +356,84 @@ const targetLabel = computed(() => form.target_path || '/')
     <el-tabs v-model="tab">
       <el-tab-pane label="转存任务" name="tasks">
         <div class="admin-card">
-          <el-table :data="tasks" style="width: 100%" empty-text="暂无任务">
-            <el-table-column label="分享码" min-width="150">
-              <template #default="{ row }">
-                <span class="mono">{{ row.share_code }}</span>
-                <span class="s-method">{{ row.mode_label }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="140">
-              <template #default="{ row }">
-                <span class="mini-badge" :class="badgeClass(row.status)">{{ row.status_label }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="进度" width="180">
-              <template #default="{ row }">
-                <div class="progress-track">
-                  <div class="progress-fill" :style="{ width: `${row.progress || 0}%` }" />
-                </div>
-                <span class="progress-num">{{ row.done_files }}/{{ row.total_files }} 个文件</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="账号 / 目标" min-width="180">
-              <template #default="{ row }">
-                <div>{{ accountName(row.account_id) }}</div>
-                <div class="mono muted">{{ row.target_path || '（115 根目录）' }}</div>
-              </template>
-            </el-table-column>
-            <el-table-column label="完成后扫描" min-width="120">
-              <template #default="{ row }">{{ libraryName(row.library_id) }}</template>
-            </el-table-column>
-            <el-table-column label="创建时间" width="150">
-              <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="150" fixed="right">
-              <template #default="{ row }">
-                <el-button
-                  v-if="row.status !== 'done'"
-                  size="small"
-                  text
-                  type="primary"
-                  @click="retry(row)"
+          <DataTable
+            :rows="tasks"
+            :columns="taskColumns"
+            :loading="loading"
+            empty="暂无任务"
+            clickable
+          >
+            <template #cell-share_code="{ row }">
+              <span class="mono">{{ row.share_code }}</span>
+              <span class="s-method">{{ row.mode_label }}</span>
+            </template>
+
+            <template #cell-status="{ row }">
+              <span class="mini-badge" :class="badgeClass(row.status)">{{ row.status_label }}</span>
+            </template>
+
+            <template #cell-progress="{ row }">
+              <div class="progress-track">
+                <div class="progress-fill" :style="{ width: `${row.progress || 0}%` }" />
+              </div>
+              <span class="progress-num">{{ row.done_files }}/{{ row.total_files }} 个文件</span>
+            </template>
+
+            <template #cell-target="{ row }">
+              <div>{{ accountName(row.account_id) }}</div>
+              <div class="mono muted">{{ row.target_path || '（115 根目录）' }}</div>
+            </template>
+
+            <template #cell-library="{ row }">{{ libraryName(row.library_id) }}</template>
+
+            <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+
+            <template #cell-actions="{ row }">
+              <el-button
+                v-if="row.status !== 'done'"
+                size="small"
+                type="primary"
+                plain
+                @click="retry(row)"
+              >
+                <RotateCw :size="13" style="margin-right: 3px" />重试
+              </el-button>
+              <el-button
+                v-if="row.status === 'pending' || row.status === 'waiting_auth'"
+                size="small"
+                type="danger"
+                plain
+                @click="cancel(row)"
+              >
+                <XCircle :size="13" style="margin-right: 3px" />取消
+              </el-button>
+              <span v-if="row.status === 'done'" class="muted done-hint">已完成</span>
+            </template>
+
+            <template #card-extra="{ row }">
+              <div v-if="row.error" class="detail-error">{{ row.error }}</div>
+              <div v-if="row.items.length" class="detail-title">分享内容（{{ row.items.length }} 项）</div>
+              <div v-for="it in row.items.slice(0, 6)" :key="it.fid" class="detail-line">
+                <span class="mono">{{ it.is_dir ? '📁' : '🎬' }}</span>{{ it.name }}
+              </div>
+              <div v-if="row.items.length > 6" class="detail-line muted">
+                还有 {{ row.items.length - 6 }} 项…
+              </div>
+              <template v-if="row.urls.length">
+                <div class="detail-title">下载地址（{{ row.urls.length }}）</div>
+                <a
+                  v-for="(u, i) in row.urls.slice(0, 3)"
+                  :key="i"
+                  class="detail-line detail-link"
+                  :href="u"
+                  target="_blank"
+                  rel="noreferrer"
                 >
-                  <RotateCw :size="12" style="margin-right: 2px" />重试
-                </el-button>
-                <el-button
-                  v-if="row.status === 'pending' || row.status === 'waiting_auth'"
-                  size="small"
-                  text
-                  type="danger"
-                  @click="cancel(row)"
-                >
-                  <XCircle :size="12" />
-                </el-button>
+                  <ExternalLink :size="12" />{{ u.slice(0, 46) }}…
+                </a>
               </template>
-            </el-table-column>
-            <el-table-column type="expand">
-              <template #default="{ row }">
-                <div class="detail">
-                  <div v-if="row.error" class="detail-error">{{ row.error }}</div>
-                  <div class="detail-title">分享内容（{{ row.items.length }} 项）</div>
-                  <div v-for="it in row.items" :key="it.fid" class="detail-line">
-                    <span class="mono">{{ it.is_dir ? '📁' : '🎬' }}</span>
-                    {{ it.name }}
-                  </div>
-                  <template v-if="row.urls.length">
-                    <div class="detail-title">下载地址（{{ row.urls.length }}）</div>
-                    <div v-for="(u, i) in row.urls" :key="i" class="detail-line mono">{{ u }}</div>
-                  </template>
-                </div>
-              </template>
-            </el-table-column>
-          </el-table>
+            </template>
+          </DataTable>
         </div>
       </el-tab-pane>
 
@@ -414,58 +448,64 @@ const targetLabel = computed(() => form.target_path || '/')
               </div>
             </div>
             <el-button type="primary" @click="openAccount(null)">
-              <Plus :size="14" style="margin-right: 4px" />添加账号
+              <Plus :size="15" style="margin-right: 4px" />添加账号
             </el-button>
           </div>
-          <el-table :data="accounts" style="width: 100%" empty-text="还没有账号配置档">
-            <el-table-column label="名称" prop="name" min-width="140" />
-            <el-table-column label="Cookie" width="120">
-              <template #default="{ row }"><span class="mono muted">{{ row.cookie_preview || '—' }}</span></template>
-            </el-table-column>
-            <el-table-column label="默认" width="80">
-              <template #default="{ row }">
-                <span v-if="row.is_default" class="mini-badge ok">默认</span>
-                <span v-else class="muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="100">
-              <template #default="{ row }">
-                <span class="mini-badge" :class="row.is_enabled ? 'ok' : 'off'">
-                  {{ row.is_enabled ? '启用' : '停用' }}
+
+          <DataTable
+            :rows="accounts"
+            :columns="accountColumns"
+            :loading="loading"
+            empty="还没有账号配置档"
+            clickable
+          >
+            <template #cell-cookie_preview="{ row }">
+              <span class="mono muted">{{ row.cookie_preview || '—' }}</span>
+            </template>
+
+            <template #cell-is_default="{ row }">
+              <span v-if="row.is_default" class="mini-badge ok">默认</span>
+              <span v-else class="muted">—</span>
+            </template>
+
+            <template #cell-is_enabled="{ row }">
+              <span class="mini-badge" :class="row.is_enabled ? 'ok' : 'off'">
+                {{ row.is_enabled ? '启用' : '停用' }}
+              </span>
+            </template>
+
+            <template #cell-last_verified_at="{ row }">
+              <template v-if="row.last_verified_at">
+                {{ fmtDate(row.last_verified_at) }}
+                <span :class="row.last_verify_ok ? 'ok-text' : 'bad-text'">
+                  {{ row.last_verify_ok ? '有效' : '无效' }}
+                </span>
+                <span v-if="row.last_verify_message && !row.last_verify_ok" class="muted">
+                  · {{ row.last_verify_message }}
                 </span>
               </template>
-            </el-table-column>
-            <el-table-column label="最近校验" min-width="180">
-              <template #default="{ row }">
-                <span v-if="row.last_verified_at">
-                  {{ fmtDate(row.last_verified_at) }}
-                  <span :class="row.last_verify_ok ? 'ok-text' : 'bad-text'">
-                    {{ row.last_verify_ok ? '有效' : '无效' }}
-                  </span>
-                  <span v-if="row.last_verify_message && !row.last_verify_ok" class="muted">
-                    · {{ row.last_verify_message }}
-                  </span>
-                </span>
-                <span v-else class="muted">未校验</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="备注" prop="remark" min-width="120" />
-            <el-table-column label="操作" width="170" fixed="right">
-              <template #default="{ row }">
-                <el-button size="small" text type="primary" @click="openAccount(row)">编辑</el-button>
-                <el-button size="small" text type="danger" @click="removeAccount(row)">
-                  <Trash2 :size="12" />
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
+              <span v-else class="muted">未校验</span>
+            </template>
+
+            <template #cell-remark="{ row }">
+              <span v-if="!row.remark" class="muted">—</span>
+              <span v-else>{{ row.remark }}</span>
+            </template>
+
+            <template #cell-actions="{ row }">
+              <el-button size="small" type="primary" plain @click="openAccount(row)">编辑</el-button>
+              <el-button size="small" type="danger" plain @click="removeAccount(row)">
+                <Trash2 :size="13" style="margin-right: 3px" />删除
+              </el-button>
+            </template>
+          </DataTable>
         </div>
       </el-tab-pane>
     </el-tabs>
 
     <!-- 新建任务 -->
     <el-dialog v-model="createVisible" title="新建 115 转存任务" width="560px">
-      <el-form label-width="96px">
+      <el-form label-position="top">
         <el-form-item label="分享链接">
           <el-input
             v-model="form.share_url"
@@ -475,7 +515,7 @@ const targetLabel = computed(() => form.target_path || '/')
           />
           <div class="parse-row">
             <el-button size="small" :loading="parsing" @click="doParse">
-              <Link2 :size="12" style="margin-right: 2px" />解析
+              <Link2 :size="13" style="margin-right: 3px" />解析
             </el-button>
             <span v-if="parsedCode" class="parsed">已识别：{{ parsedCode }}</span>
           </div>
@@ -487,7 +527,7 @@ const targetLabel = computed(() => form.target_path || '/')
           </el-radio-group>
         </el-form-item>
         <el-form-item label="账号">
-          <el-select v-model="form.account_id" clearable placeholder="默认账号" style="width: 220px">
+          <el-select v-model="form.account_id" clearable placeholder="默认账号">
             <el-option v-for="a in accounts" :key="a.id" :label="a.name" :value="a.id" />
           </el-select>
         </el-form-item>
@@ -498,10 +538,10 @@ const targetLabel = computed(() => form.target_path || '/')
           <div class="browser">
             <div class="browser-bar">
               <el-button size="small" :loading="browsing" @click="startBrowse">
-                <FolderOpen :size="12" style="margin-right: 2px" />浏览
+                <FolderOpen :size="13" style="margin-right: 3px" />浏览
               </el-button>
               <span class="browser-path">{{ targetLabel }}</span>
-              <el-button size="small" text type="primary" @click="pickCurrentDir">用当前目录</el-button>
+              <el-button size="small" type="primary" plain @click="pickCurrentDir">用当前目录</el-button>
             </div>
             <div v-if="pathStack.length" class="crumbs">
               <span
@@ -517,12 +557,12 @@ const targetLabel = computed(() => form.target_path || '/')
               </div>
             </div>
             <div v-else-if="cookieSource" class="muted dir-empty">
-              该目录下没有子目录{{ cookieSource ? `（来源：${cookieSource}）` : '' }}
+              该目录下没有子目录（来源：{{ cookieSource }}）
             </div>
           </div>
         </el-form-item>
         <el-form-item label="完成后扫描">
-          <el-select v-model="form.library_id" clearable placeholder="不触发扫描" style="width: 220px">
+          <el-select v-model="form.library_id" clearable placeholder="不触发扫描">
             <el-option v-for="l in libraries" :key="l.id" :label="l.name" :value="l.id" />
           </el-select>
         </el-form-item>
@@ -535,7 +575,7 @@ const targetLabel = computed(() => form.target_path || '/')
 
     <!-- 账号编辑 -->
     <el-dialog v-model="accVisible" :title="accEditing ? '编辑 115 账号' : '添加 115 账号'" width="480px">
-      <el-form label-width="88px">
+      <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model="accForm.name" placeholder="如：主号 / 影库专号" />
         </el-form-item>
@@ -549,6 +589,7 @@ const targetLabel = computed(() => form.target_path || '/')
         </el-form-item>
         <el-form-item label="默认账号">
           <el-switch v-model="accForm.is_default" />
+          <div class="form-hint">同一时间只有一个默认账号；媒体库未单独绑定时会用它</div>
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="accForm.is_enabled" />
@@ -567,52 +608,110 @@ const targetLabel = computed(() => form.target_path || '/')
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
-.mono { font-family: ui-monospace, monospace; font-size: 12px; }
-.muted { color: var(--color-text-muted, #737373); }
-.ok-text { color: var(--success, #22c55e); }
-.bad-text { color: #ef4444; }
+.page-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 
 .s-method {
-  font-size: 10px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
-  padding: 1px 6px;
-  margin-left: 6px;
-  color: var(--color-text-secondary, #a3a3a3);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-full);
+  padding: 2px 7px;
+  margin-left: 7px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
-.progress-track { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
-.progress-fill { height: 100%; background: var(--gradient-brand); border-radius: 2px; transition: width 0.4s ease; }
-.progress-num { font-size: 11px; color: var(--color-text-muted, #737373); }
+.progress-track {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+  max-width: 160px;
+}
 
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
-.mini-badge.running { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.mini-badge.warn { background: rgba(245, 158, 11, 0.16); color: #f59e0b; }
-.mini-badge.bad { background: rgba(239, 68, 68, 0.16); color: #ef4444; }
+.progress-fill {
+  height: 100%;
+  background: var(--gradient-brand);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
 
-.detail { padding: 6px 18px 12px; }
-.detail-title { font-size: 12px; font-weight: 600; margin: 8px 0 4px; color: var(--color-text-secondary, #a3a3a3); }
-.detail-line { font-size: 12px; padding: 2px 0; word-break: break-all; }
-.detail-error { font-size: 12px; color: #f59e0b; margin-bottom: 6px; }
+.progress-num { font-size: var(--font-size-xs); color: var(--text-muted); }
 
-.acc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.acc-title { font-size: 15px; font-weight: 700; }
-.acc-hint { font-size: 12px; color: var(--color-text-muted, #737373); margin-top: 4px; max-width: 640px; }
+.ok-text { color: #6ee7b7; font-weight: 600; }
+.bad-text { color: #fda4af; font-weight: 600; }
+.done-hint { font-size: var(--font-size-xs); }
 
-.parse-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.parsed { font-size: 12px; color: var(--success, #22c55e); }
+.detail-title {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  margin: 8px 0 4px;
+  color: var(--text-tertiary);
+}
 
-.browser { width: 100%; border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1)); border-radius: 8px; padding: 8px; }
-.browser-bar { display: flex; align-items: center; gap: 8px; }
-.browser-path { flex: 1; font-size: 12px; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.crumbs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.crumb-item { font-size: 12px; cursor: pointer; color: var(--primary); }
-.crumb-item::after { content: ' /'; color: var(--color-text-muted, #737373); }
-.dir-list { margin-top: 6px; max-height: 160px; overflow-y: auto; }
-.dir-item { font-size: 12px; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
-.dir-item:hover { background: var(--bg-hover, rgba(255, 255, 255, 0.06)); }
-.dir-empty { margin-top: 6px; font-size: 12px; }
+.detail-line {
+  font-size: var(--font-size-xs);
+  padding: 2px 0;
+  word-break: break-all;
+  color: var(--text-secondary);
+}
+
+.detail-line .mono { margin-right: 4px; }
+.detail-link { display: flex; align-items: center; gap: 5px; color: var(--primary); }
+.detail-error { font-size: var(--font-size-xs); color: #fcd34d; margin-bottom: 6px; }
+
+.acc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.acc-title { font-size: var(--font-size-lg); font-weight: var(--font-weight-bold); color: var(--text-primary); }
+.acc-hint { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 5px; max-width: 640px; line-height: 1.6; }
+
+.parse-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.parsed { font-size: var(--font-size-xs); color: #6ee7b7; }
+
+.browser {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  background: var(--bg-inset);
+}
+
+.browser-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.browser-path {
+  flex: 1 1 140px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.crumb-item { font-size: var(--font-size-xs); cursor: pointer; color: var(--primary); }
+.crumb-item::after { content: ' /'; color: var(--text-faint); }
+
+.dir-list { margin-top: 8px; max-height: 180px; overflow-y: auto; }
+
+.dir-item {
+  font-size: var(--font-size-xs);
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.dir-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.dir-empty { margin-top: 8px; font-size: var(--font-size-xs); }
+
+@media (max-width: 640px) {
+  .acc-head { flex-direction: column; align-items: stretch; }
+  .progress-track { max-width: none; }
+}
 </style>

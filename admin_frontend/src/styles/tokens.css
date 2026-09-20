@@ -1,98 +1,134 @@
 /**
- * RoyalBot Admin - 设计令牌 V4.0（Aurora）
+ * RoyalBot Admin —— 设计令牌 v5（Console）
  *
- * 与用户端 aurora.css 同一套配色（电光青 #22d3ee + 极光紫粉点缀），
- * 使管理后台与前台视觉语言一致；同时保留 v3 的变量命名作为别名，
- * 避免历史页面样式失效。
+ * v5 的三条原则（对应上一版被吐槽的问题）：
+ * 1. **文字一律用实色**，不再用「半透明白」叠在深色上——透明叠色会让小字号标签
+ *    （「积分/次」这类 form-hint）实际对比度掉到 2~3:1，就是「字体看不清」的根因。
+ *    下面每个文字色都按 WCAG AA（正文 ≥4.5:1）挑过，注释里标了大致对比度。
+ * 2. **表面（surface）分层**：app → surface → card → elevated → inset，各层都有
+ *    明确用途，页面不再各自调 rgba 背景色，视觉才会统一。
+ * 3. **旧变量名全部保留**（--bg-card / --text-muted / --border-subtle …）作为别名，
+ *    历史页面的样式不会因为这次重命名而失效。
  */
 
 :root {
-  /* ========== 间距系统（8pt 栅格） ========== */
-  --space-1: 8px;
-  --space-2: 16px;
-  --space-3: 24px;
-  --space-4: 32px;
-  --space-5: 40px;
-  --space-6: 48px;
+  /* ==================== 间距（4pt 栅格） ==================== */
+  --space-0: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
 
-  /* ========== 圆角 ========== */
-  --radius-xs: 8px;
-  --radius-sm: 10px;
-  --radius-md: 14px;
-  --radius-lg: 18px;
+  /* ==================== 圆角 ==================== */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
   --radius-full: 9999px;
 
-  /* ========== 字体 ========== */
+  /* ==================== 字体 ==================== */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'HarmonyOS Sans SC', 'Hiragino Sans GB', 'Microsoft YaHei', Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
   --font-size-xs: 12px;
   --font-size-sm: 13px;
   --font-size-md: 14px;
-  --font-size-lg: 16px;
-  --font-size-xl: 18px;
+  --font-size-lg: 15px;
+  --font-size-xl: 17px;
   --font-size-2xl: 20px;
-  --font-size-3xl: 22px;
-  --font-size-4xl: 28px;
+  --font-size-3xl: 24px;
+  --font-size-4xl: 30px;
 
   --font-weight-normal: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
 
-  --line-height-tight: 1.2;
-  --line-height-normal: 1.5;
-  --line-height-relaxed: 1.75;
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.55;
+  --line-height-relaxed: 1.7;
 
-  /* ========== 主色 — 电光青（与用户端一致） ========== */
+  /* 中文小字行高要留够，否则字挤在一起显得很脏 */
+  --tracking-wide: 0.02em;
+
+  /* ==================== 表面层 ==================== */
+  --bg-app: #070b12;         /* 最底层画布 */
+  --bg-surface: #0c121c;     /* 侧边栏 / 顶栏 */
+  --bg-card: #101823;        /* 卡片 */
+  --bg-elevated: #16202d;    /* 弹层 / 抽屉 / 输入框 */
+  --bg-inset: #0a1018;       /* 内嵌区（表头、代码块、空状态） */
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(34, 211, 238, 0.12);
+  --bg-overlay: rgba(4, 7, 12, 0.72);
+
+  /* 名称兼容（历史页面大量引用） */
+  --bg-primary: var(--bg-app);
+  --bg-glass: rgba(255, 255, 255, 0.03);
+  --bg-glass-light: rgba(255, 255, 255, 0.02);
+  --bg-glass-hover: rgba(255, 255, 255, 0.06);
+  --bg-input: var(--bg-elevated);
+
+  /* ==================== 边框 ==================== */
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-default: rgba(255, 255, 255, 0.11);
+  --border-strong: rgba(255, 255, 255, 0.17);
+  --border-focus: rgba(34, 211, 238, 0.6);
+  --border-color: var(--border-default);
+  --border-color-light: var(--border-subtle);
+
+  /* ==================== 文字（实色，括号内为在 --bg-card 上的大致对比度）==================== */
+  --text-primary: #f2f6fb;   /* ≈16:1  正文 / 标题 */
+  --text-secondary: #cbd6e2; /* ≈11:1  次级正文 */
+  --text-tertiary: #a2b0c2;  /* ≈7:1   标签、表头 */
+  --text-muted: #8593a6;     /* ≈4.9:1 说明文字（依然是 AA） */
+  --text-faint: #5f6b7c;     /* ≈3.1:1 仅用于禁用态 / 大号装饰 */
+  --text-inverse: #05202a;   /* 亮色按钮上的深色文字 */
+
+  /* ==================== 主色 ==================== */
   --primary: #22d3ee;
-  --primary-hover: #06b6d4;
-  --primary-active: #0e7490;
+  --primary-hover: #4fdcf2;
+  --primary-active: #0fb9d6;
   --primary-bg: rgba(34, 211, 238, 0.12);
-  --primary-border: rgba(34, 211, 238, 0.28);
-  --primary-glow: rgba(34, 211, 238, 0.35);
-  --primary-on: #05141c;
+  --primary-soft: rgba(34, 211, 238, 0.08);
+  --primary-border: rgba(34, 211, 238, 0.32);
+  --primary-glow: rgba(34, 211, 238, 0.28);
+  --primary-on: #05202a;     /* 放在主色上的文字 */
 
   --violet: #a78bfa;
   --pink: #f472b6;
-  --gradient-brand: linear-gradient(135deg, #22d3ee 0%, #a78bfa 100%);
-  --gradient-brand-hover: linear-gradient(135deg, #06b6d4 0%, #8b5cf6 100%);
+  --gradient-brand: linear-gradient(135deg, #22d3ee 0%, #3b82f6 100%);
+  --gradient-brand-hover: linear-gradient(135deg, #4fdcf2 0%, #60a5fa 100%);
   --gradient-warm: linear-gradient(135deg, #f472b6 0%, #a78bfa 100%);
 
-  /* ========== 背景色 ========== */
-  --bg-primary: #070b12;
-  --bg-surface: #0a101a;
-  --bg-card: #0d1420;
-  --bg-input: rgba(7, 11, 18, 0.55);
-  --bg-elevated: #101a28;
-  --bg-hover: rgba(148, 180, 220, 0.08);
-  --bg-overlay: rgba(4, 7, 12, 0.82);
-
-  /* 玻璃态表面（保持旧名，供历史页面使用） */
-  --bg-glass: rgba(148, 180, 220, 0.05);
-  --bg-glass-light: rgba(148, 180, 220, 0.04);
-  --bg-glass-hover: rgba(148, 180, 220, 0.08);
-
-  /* ========== 边框色 ========== */
-  --border-subtle: rgba(148, 180, 220, 0.10);
-  --border-default: rgba(148, 180, 220, 0.14);
-  --border-strong: rgba(148, 180, 220, 0.22);
-  --border-focus: rgba(34, 211, 238, 0.55);
-  --border-color: rgba(148, 180, 220, 0.14);
-  --border-color-light: rgba(148, 180, 220, 0.10);
-
-  /* ========== 文本色 ========== */
-  --text-primary: #eaf2fb;
-  --text-secondary: rgba(234, 242, 251, 0.68);
-  --text-tertiary: rgba(234, 242, 251, 0.45);
-  --text-muted: rgba(234, 242, 251, 0.40);
-
-  /* ========== 语义色 ========== */
+  /* ==================== 语义色 ==================== */
   --success: #34d399;
+  --success-strong: #10b981;
   --success-bg: rgba(52, 211, 153, 0.14);
+  --success-border: rgba(52, 211, 153, 0.3);
+  --success-on: #04291d;
   --warning: #fbbf24;
+  --warning-strong: #f59e0b;
   --warning-bg: rgba(251, 191, 36, 0.14);
+  --warning-border: rgba(251, 191, 36, 0.3);
+  --warning-on: #2b1a02;
   --danger: #fb7185;
+  --danger-strong: #e11d48;
   --danger-bg: rgba(251, 113, 133, 0.14);
+  --danger-border: rgba(251, 113, 133, 0.3);
+  --danger-on: #ffffff;
   --info: #60a5fa;
+  --info-strong: #2563eb;
   --info-bg: rgba(96, 165, 250, 0.14);
+  --info-border: rgba(96, 165, 250, 0.3);
+  --info-on: #ffffff;
+
   /* 兼容旧命名 */
   --color-success: var(--success);
   --color-warning: var(--warning);
@@ -100,25 +136,29 @@
   --color-error: var(--danger);
   --color-info: var(--info);
 
-  /* ========== 阴影 ========== */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
-  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.45);
+  /* ==================== 阴影 ==================== */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.32);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.42);
   --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.55);
-  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.32);
-  --shadow-glow: 0 0 24px var(--primary-glow);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-glow: 0 6px 20px rgba(34, 211, 238, 0.22);
 
-  /* ========== 过渡 ========== */
+  /* ==================== 过渡 ==================== */
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-fast: 0.16s var(--ease);
-  --transition-base: 0.22s var(--ease);
-  --transition-normal: 0.22s var(--ease);
+  --transition-fast: 0.14s var(--ease);
+  --transition-base: 0.2s var(--ease);
+  --transition-normal: 0.2s var(--ease);
   --transition-slow: 0.3s var(--ease);
 
-  /* ========== 触控 ========== */
+  /* ==================== 尺寸 ==================== */
+  --sidebar-w: 240px;
+  --header-h: 56px;
+  --control-h: 36px;
   --touch-target-min: 44px;
   --list-item-min: 52px;
 
-  /* ========== Z-index ========== */
+  /* ==================== Z-index ==================== */
   --z-base: 0;
   --z-float: 20;
   --z-dropdown: 40;
@@ -127,7 +167,7 @@
   --z-modal: 100;
   --z-toast: 120;
 
-  /* ========== 兼容别名（历史页面 / index.css 使用） ========== */
+  /* ==================== 兼容别名 ==================== */
   --brand-primary: var(--primary);
   --brand-primary-hover: var(--primary-hover);
   --brand-primary-dark: var(--primary-active);
@@ -135,7 +175,7 @@
   --brand-secondary: var(--violet);
   --brand-secondary-dark: #8b5cf6;
 
-  --color-bg-primary: var(--bg-primary);
+  --color-bg-primary: var(--bg-app);
   --color-bg-secondary: var(--bg-surface);
   --color-bg-card: var(--bg-card);
   --color-bg-elevated: var(--bg-elevated);
@@ -149,49 +189,7 @@
   --glass-gradient-strong: linear-gradient(var(--bg-glass-hover), var(--bg-glass-hover));
 }
 
-/* ========== 玻璃卡片基类 ========== */
-.glass-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-card);
-}
-
-.glass-card-lg {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-default);
-  box-shadow: var(--shadow-md);
-}
-
-/* ========== 页面容器 ========== */
-.page-container {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: 0 var(--space-4);
-  min-height: 100vh;
-}
-
-/* ========== 统一卡片样式（兼容旧名） ========== */
-.mobile-card,
-.mobile-card-sm {
-  padding: var(--space-2);
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-}
-
-/* ========== 触控反馈 ========== */
-.touch-feedback {
-  transition: transform var(--transition-fast), opacity var(--transition-fast);
-}
-
-.touch-feedback:active {
-  transform: scale(0.97);
-  opacity: 0.85;
-}
-
-/* ========== 状态色工具类 ========== */
+/* ==================== 语义工具类 ==================== */
 .bg-success { background-color: var(--success-bg); }
 .bg-warning { background-color: var(--warning-bg); }
 .bg-danger { background-color: var(--danger-bg); }
@@ -203,3 +201,15 @@
 .text-danger { color: var(--danger); }
 .text-info { color: var(--info); }
 .text-primary { color: var(--primary); }
+
+.muted { color: var(--text-muted); }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.touch-feedback {
+  transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+
+.touch-feedback:active {
+  transform: scale(0.98);
+  opacity: 0.9;
+}

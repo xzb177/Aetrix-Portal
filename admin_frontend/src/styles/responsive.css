@@ -1,45 +1,54 @@
 /**
  * 管理端窄屏适配层（在 main.ts 里最后引入）
  *
- * 为什么单独一层、为什么有的地方要 !important：
- * 1. 各页面 `<style scoped>` 会编译成 `.toolbar[data-v-xxx]`，与全局 `.toolbar` 权重相同，
- *    谁后加载谁生效 —— 组件样式是运行时注入的（更靠后），所以这里统一加
- *    `.admin-layout .admin-content` 前缀把权重抬到三class，稳定覆盖组件样式。
- * 2. 页面模板里有写死的宽度（`el-select style="width: 220px"`）与 Element Plus 自己写在
- *    inline style 上的宽度（dialog 的 `width` prop、form 的 `label-width`），
- *    **只有样式表里的 !important 能压住 inline 声明**，所以这几处必须 !important。
- *
  * 断点：≤1024px 平板（侧边栏在 Layout.vue 里变抽屉）· ≤768px 窄屏 · ≤640px 手机
+ *
+ * 权重说明：各页面 `<style scoped>` 会编译成 `.toolbar[data-v-xxx]`（0,2,0），
+ * 所以这里统一用 `.admin-layout .admin-content`（0,3,0）前缀才压得住。
+ * 只有**必须压住 inline 声明**的地方（模板里写死的 `style="width:220px"`、
+ * Element Plus 写在元素上的 dialog 宽度）才用 `!important`，其余一律不用。
+ *
+ * 表格类页面（已迁移到 DataTable 组件的）在 ≤640px 会变成卡片列表，不在这里处理；
+ * 这里针对的是尚未迁移、仍用原始 el-table 的页面，只把字号与内边距收紧。
  */
 
 /* ==================== ≤1024px：留白与卡片节奏收一档 ==================== */
 @media (max-width: 1024px) {
-  .admin-layout .admin-content .admin-page { gap: 12px; }
-  .admin-layout .admin-content .admin-card { padding: 14px; }
+  .admin-layout .admin-content .admin-page { gap: 14px; }
+  .admin-layout .admin-content .admin-card { padding: 16px; }
   .admin-layout .admin-content .stat-grid {
     gap: 10px;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
-  .admin-layout .admin-content .stat-tile { padding: 12px 14px; }
-  .admin-layout .admin-content .stat-tile .stat-value { font-size: 24px; }
+  .admin-layout .admin-content .stat-tile { padding: 14px; }
+  .admin-layout .admin-content .stat-value { font-size: 26px; }
 }
 
-/* ==================== ≤768px：页面头部竖排、过滤器换行 ==================== */
+/* ==================== ≤768px：页面头竖排、过滤条铺满 ==================== */
 @media (max-width: 768px) {
-  /* 标题与操作按钮分成两行（两端对齐在窄屏会被挤成两截） */
   .admin-layout .admin-content .admin-page-header {
     flex-direction: column;
     align-items: stretch;
-    gap: 10px;
+    gap: 12px;
   }
-  .admin-layout .admin-content .admin-page-header > .toolbar { width: 100%; }
+
   .admin-layout .admin-content .admin-page-title { font-size: 20px; }
 
-  /* 过滤器一律换行，不再横向溢出 */
-  .admin-layout .admin-content .toolbar { flex-wrap: wrap; }
+  .admin-layout .admin-content .admin-page-actions,
+  .admin-layout .admin-content .toolbar,
+  .admin-layout .admin-content .filter-bar,
+  .admin-layout .admin-content .head-actions { width: 100%; }
+
+  .admin-layout .admin-content .toolbar > .el-input,
+  .admin-layout .admin-content .toolbar > .el-select,
+  .admin-layout .admin-content .filter-bar > .el-input,
+  .admin-layout .admin-content .filter-bar > .el-select,
+  .admin-layout .admin-content .head-actions > .el-button {
+    flex: 1 1 150px;
+    width: auto;
+  }
 
   /* 这些「一行放几个东西」的区块在窄屏都要能换行（它们原本是单行 flex） */
-  .admin-layout .admin-content .head-actions,
   .admin-layout .admin-content .acc-head,
   .admin-layout .admin-content .block-head,
   .admin-layout .admin-content .card-header,
@@ -48,24 +57,15 @@
   .admin-layout .admin-content .parse-row,
   .admin-layout .admin-content .lib-foot,
   .admin-layout .admin-content .mount-foot { flex-wrap: wrap; }
-  .admin-layout .admin-content .head-actions { width: 100%; }
 
-  .admin-layout .admin-content .pager { justify-content: center; padding: 12px 0 2px; }
+  .admin-layout .admin-content .pager { justify-content: center; margin-top: 14px; }
   .admin-layout .admin-content .detail-actions { width: 100%; }
 
-  /* 分页条在窄屏允许换行，否则「总数 + 页码 + 跳转」会被挤成一条溢出线 */
   .admin-layout .admin-content .el-pagination {
     flex-wrap: wrap;
     justify-content: center;
     row-gap: 8px;
   }
-
-  /* 详情类表格（el-descriptions）里的长邮箱 / 长 ID 允许断行，不撑破容器 */
-  .admin-layout .admin-content .el-descriptions,
-  .el-drawer .el-descriptions { font-size: 13px; }
-  .el-descriptions__content { word-break: break-word; }
-  .admin-layout .admin-content .card-footer { justify-content: stretch; }
-  .admin-layout .admin-content .card-footer .el-button { flex: 1 1 auto; margin-left: 0; }
 }
 
 /* ==================== ≤640px：手机 ==================== */
@@ -90,33 +90,39 @@
   .admin-layout .admin-content .el-pagination .el-input,
   .admin-layout .admin-content .el-pagination .el-select { width: auto !important; }
 
-  /* ---------- 2. 表单 label 上移（label-width 是 inline 宽度，窄屏留给输入框的只剩百来像素） ---------- */
+  /* ---------- 2. 表单 label 上移（label-width 是写在元素上的宽度，窄屏输入框只剩百来像素） ---------- */
   .el-form-item { display: block; }
-  .el-form-item__label {
+
+  /* 注意：Element Plus 用 `.el-form--label-right .el-form-item__label`（0,2,0）把标签
+     推到右边，只写 `.el-form-item__label` 是压不住的——这就是以前手机上标签依然右对齐的原因 */
+  .el-form .el-form-item__label,
+  .el-form--label-right .el-form-item__label,
+  .el-form--label-left .el-form-item__label {
     display: block;
     width: auto !important;
     float: none;
     text-align: left;
     justify-content: flex-start;
-    padding: 0 0 4px;
+    padding: 0 0 5px;
     min-height: 0;
-    line-height: 1.5;
+    line-height: var(--line-height-normal);
   }
+
   .el-form-item__content { margin-left: 0 !important; }
 
-  /* ---------- 3. 表格：字号与内边距收紧，横向滚动交给 Element Plus 自己的滚动容器 ---------- */
+  /* ---------- 3. 未迁移的表格：字号与内边距收紧，横向滚动交给 Element Plus 的滚动容器 ---------- */
   .admin-layout .admin-content .el-table { font-size: 12.5px; }
-  .admin-layout .admin-content .el-table .cell { padding: 0 8px; line-height: 1.5; }
+  .admin-layout .admin-content .el-table .cell { padding: 0 8px; }
   .admin-layout .admin-content .el-table th.el-table__cell { font-size: 12px; }
-  .admin-layout .admin-content .el-table .el-button--small { padding: 4px 6px; }
+  .admin-layout .admin-content .el-table .el-button--small { padding: 5px 8px; }
 
-  /* ---------- 4. 卡片 / 统计瓦片 / 待办条 ---------- */
-  .admin-layout .admin-content .admin-card { padding: 12px; border-radius: var(--radius-md); }
-  .admin-layout .admin-content .stat-grid { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
-  .admin-layout .admin-content .stat-tile { padding: 11px 12px; }
-  .admin-layout .admin-content .stat-tile .stat-value { font-size: 21px; }
+  /* ---------- 4. 卡片 / 统计瓦片 ---------- */
+  .admin-layout .admin-content .admin-card { padding: 14px; border-radius: var(--radius-md); }
+  .admin-layout .admin-content .stat-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .admin-layout .admin-content .stat-tile { padding: 13px; }
+  .admin-layout .admin-content .stat-value { font-size: 22px; }
 
-  /* ---------- 5. 浮层（dialog / drawer / message 都被 teleport 到 body，不能用 .admin-content 作用域） ---------- */
+  /* ---------- 5. 浮层（dialog / drawer / message 都被 teleport 到 body，不能用内容区作用域）---------- */
   .el-overlay-dialog .el-dialog,
   .el-dialog {
     width: 94vw !important;
@@ -124,22 +130,23 @@
     margin: 4vh auto 16px !important;
     border-radius: var(--radius-md);
   }
-  .el-dialog__header { padding: 14px 16px 6px; }
-  .el-dialog__body { padding: 10px 16px; }
-  .el-dialog__footer { padding: 10px 16px calc(14px + env(safe-area-inset-bottom)); }
+
+  .el-dialog__header { padding: 14px 16px; }
+  .el-dialog__body { padding: 14px 16px; }
+  .el-dialog__footer { padding: 12px 16px calc(14px + env(safe-area-inset-bottom)); }
 
   .el-drawer.rtl,
   .el-drawer.ltr { width: 92vw !important; }
-  .el-drawer__body { padding: 12px 14px calc(20px + env(safe-area-inset-bottom)); }
+  .el-drawer__body { padding: 14px 16px calc(20px + env(safe-area-inset-bottom)); }
 
   .el-message-box { width: 92vw !important; max-width: 92vw; }
   .el-message { min-width: 0; max-width: 92vw; }
 }
 
-/* ==================== 触屏：扩大可点区域，去掉点按高亮 ==================== */
+/* ==================== 触屏：扩大可点区域 ==================== */
 @media (hover: none) and (pointer: coarse) {
-  .admin-layout .admin-content .el-button--small { padding: 6px 10px; }
-  .admin-layout .admin-content .el-table .el-button--small { padding: 6px 8px; }
-  /* 抽屉里的导航项也按触屏尺寸来 */
-  .admin-layout .sidebar .nav-item { min-height: 44px; }
+  .admin-layout .admin-content .el-button--small { min-height: 32px; }
+  .admin-layout .admin-content .el-table .el-button--small { min-height: 32px; }
+  .admin-layout .sidebar .nav-item,
+  .admin-layout .sidebar .nav-group-head { min-height: 46px; }
 }

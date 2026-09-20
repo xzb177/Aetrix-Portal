@@ -1,671 +1,841 @@
 /**
- * Element Plus 主题覆盖 - V4 Aurora
+ * Element Plus 主题覆盖 v5（Console）
  *
- * 与用户端共用一套配色（电光青 #22d3ee + 极光紫点缀），
- * 全部通过 tokens.css 的变量取值，保证后续改主题只动一处。
+ * 核心修正：上一版只覆盖了 `.el-button--default`，但 Element Plus 2.x 对
+ * **没有 type 的按钮根本不会加这个类**，于是它就退回组件默认值
+ * `--el-button-bg-color: var(--el-fill-color-blank)`（= #fff 白底）配上我们设的
+ * 浅色文字 —— 这就是「按钮发白、字看不见」的原因。本版改成：
+ *
+ * 1. 先把 `--el-fill-color-blank` 之类的「白底源头变量」改掉；
+ * 2. 再按组件覆盖各自的可调变量（`--el-button-*` / `--el-input-*` / `--el-table-*`…），
+ *    用 Element Plus 自己的钩子而不是堆 `!important`；
+ * 3. 按钮按「实心 / 描边 / 文字」三种形态给出**明确的前景+背景配对**，亮底配深字、
+ *    深底配白字，任何组合都过 AA。
+ *
+ * 本文件在 main.ts 里于 `element-plus/dist/index.css` 之后引入，同权重规则后来者胜。
  */
 
-/* ==================== CSS 变量定义 ==================== */
+/* ==================== 1. 全局变量 ==================== */
 :root {
-  /* Element Plus 主题色映射 */
-  --el-color-primary: #22d3ee;
-  --el-color-primary-light-3: #5fe0f4;
-  --el-color-primary-light-5: #8aebfa;
-  --el-color-primary-light-7: #b7f2fc;
-  --el-color-primary-light-8: #cdf6fd;
-  --el-color-primary-light-9: #e6fbfe;
-  --el-color-primary-dark-2: #06b6d4;
+  /* ---- 主色 ---- */
+  --el-color-primary: var(--primary);
+  --el-color-primary-light-3: #63e2f5;
+  --el-color-primary-light-5: #8fe9f8;
+  --el-color-primary-light-7: rgba(34, 211, 238, 0.45);
+  --el-color-primary-light-8: rgba(34, 211, 238, 0.26);
+  --el-color-primary-light-9: rgba(34, 211, 238, 0.12);
+  --el-color-primary-dark-2: var(--primary-active);
+  --el-color-primary-rgb: 34, 211, 238;
 
-  --el-color-success: #34d399;
-  --el-color-warning: #fbbf24;
-  --el-color-danger: #fb7185;
-  --el-color-error: #fb7185;
-  --el-color-info: #60a5fa;
+  --el-color-success: var(--success);
+  --el-color-success-light-3: #6ee7b7;
+  --el-color-success-light-5: #a7f3d0;
+  --el-color-success-light-7: rgba(52, 211, 153, 0.42);
+  --el-color-success-light-8: rgba(52, 211, 153, 0.24);
+  --el-color-success-light-9: rgba(52, 211, 153, 0.12);
+  --el-color-success-dark-2: #059669;
 
-  /* 背景色（Aurora 深蓝黑） */
-  --el-bg-color: #0d1420;
-  --el-bg-color-page: #070b12;
-  --el-bg-color-overlay: #101a28;
+  --el-color-warning: var(--warning);
+  --el-color-warning-light-3: #fcd34d;
+  --el-color-warning-light-5: #fde68a;
+  --el-color-warning-light-7: rgba(251, 191, 36, 0.42);
+  --el-color-warning-light-8: rgba(251, 191, 36, 0.24);
+  --el-color-warning-light-9: rgba(251, 191, 36, 0.12);
+  --el-color-warning-dark-2: #b45309;
 
-  /* 填充色 */
-  --el-fill-color: rgba(148, 180, 220, 0.10);
-  --el-fill-color-light: rgba(148, 180, 220, 0.07);
-  --el-fill-color-lighter: rgba(148, 180, 220, 0.05);
-  --el-fill-color-extra-light: rgba(148, 180, 220, 0.03);
-  --el-fill-color-dark: rgba(148, 180, 220, 0.14);
-  --el-fill-color-darker: rgba(148, 180, 220, 0.18);
+  --el-color-danger: var(--danger);
+  --el-color-danger-light-3: #fca5b5;
+  --el-color-danger-light-5: #fecdd3;
+  --el-color-danger-light-7: rgba(251, 113, 133, 0.42);
+  --el-color-danger-light-8: rgba(251, 113, 133, 0.24);
+  --el-color-danger-light-9: rgba(251, 113, 133, 0.12);
+  --el-color-danger-dark-2: #be123c;
 
-  /* 文字颜色 */
-  --el-text-color-primary: #eaf2fb;
-  --el-text-color-regular: rgba(234, 242, 251, 0.68);
-  --el-text-color-secondary: rgba(234, 242, 251, 0.45);
-  --el-text-color-placeholder: rgba(234, 242, 251, 0.3);
-  --el-text-color-disabled: rgba(234, 242, 251, 0.24);
+  --el-color-error: var(--danger);
+  --el-color-error-light-9: rgba(251, 113, 133, 0.12);
 
-  /* 边框颜色 */
-  --el-border-color: rgba(148, 180, 220, 0.14);
-  --el-border-color-light: rgba(148, 180, 220, 0.12);
-  --el-border-color-lighter: rgba(148, 180, 220, 0.10);
-  --el-border-color-extra-light: rgba(148, 180, 220, 0.06);
-  --el-border-color-dark: rgba(148, 180, 220, 0.20);
-  --el-border-color-darker: rgba(148, 180, 220, 0.26);
+  --el-color-info: var(--info);
+  --el-color-info-light-3: #93c5fd;
+  --el-color-info-light-5: #bfdbfe;
+  --el-color-info-light-7: rgba(96, 165, 250, 0.42);
+  --el-color-info-light-8: rgba(96, 165, 250, 0.24);
+  --el-color-info-light-9: rgba(96, 165, 250, 0.12);
+  --el-color-info-dark-2: #1d4ed8;
 
-  /* 边框圆角 */
-  --el-border-radius-base: 10px;
-  --el-border-radius-small: 6px;
-  --el-border-radius-round: 9999px;
+  /* ---- 表面 ---- */
+  --el-bg-color: var(--bg-card);
+  --el-bg-color-page: var(--bg-app);
+  --el-bg-color-overlay: var(--bg-elevated);
+
+  /* 这一条是「白底」的总源头：默认按钮、输入框、部分面板都用它 */
+  --el-fill-color-blank: var(--bg-elevated);
+  --el-fill-color: rgba(255, 255, 255, 0.06);
+  --el-fill-color-light: rgba(255, 255, 255, 0.05);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.04);
+  --el-fill-color-extra-light: rgba(255, 255, 255, 0.03);
+  --el-fill-color-dark: rgba(255, 255, 255, 0.08);
+  --el-fill-color-darker: rgba(255, 255, 255, 0.12);
+
+  /* ---- 文字 ---- */
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-tertiary);
+  --el-text-color-placeholder: var(--text-muted);
+  --el-text-color-disabled: var(--text-faint);
+
+  /* ---- 边框 ---- */
+  --el-border-color: var(--border-default);
+  --el-border-color-light: var(--border-subtle);
+  --el-border-color-lighter: var(--border-subtle);
+  --el-border-color-extra-light: rgba(255, 255, 255, 0.05);
+  --el-border-color-dark: var(--border-strong);
+  --el-border-color-darker: var(--border-strong);
+  --el-border-color-hover: var(--border-strong);
+
+  /* ---- 圆角 / 尺寸 / 字体 ---- */
+  --el-border-radius-base: var(--radius-md);
+  --el-border-radius-small: var(--radius-sm);
+  --el-border-radius-round: var(--radius-full);
   --el-border-radius-circle: 50%;
 
-  /* 阴影 */
-  --el-box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
-  --el-box-shadow-light: 0 2px 4px rgba(0, 0, 0, 0.3);
-  --el-box-shadow-lighter: 0 1px 2px rgba(0, 0, 0, 0.2);
-  --el-box-shadow-dark: 0 10px 15px rgba(0, 0, 0, 0.5);
+  --el-component-size: 36px;
+  --el-component-size-large: 42px;
+  --el-component-size-small: 30px;
 
-  /* 字体 */
+  --el-font-family: var(--font-sans);
   --el-font-size-base: 14px;
-  --el-font-size-small: 12px;
+  --el-font-size-small: 12.5px;
+  --el-font-size-extra-small: 12px;
+  --el-font-size-medium: 14px;
   --el-font-size-large: 16px;
 
-  /* 禁用透明度 */
-  --el-disabled-bg-color: rgba(148, 180, 220, 0.04);
-  --el-disabled-text-color: rgba(234, 242, 251, 0.24);
-  --el-disabled-border-color: rgba(148, 180, 220, 0.08);
+  /* ---- 阴影 / 遮罩 ---- */
+  --el-box-shadow: var(--shadow-md);
+  --el-box-shadow-light: var(--shadow-sm);
+  --el-box-shadow-lighter: var(--shadow-xs);
+  --el-box-shadow-dark: var(--shadow-lg);
+  --el-overlay-color: rgba(0, 0, 0, 0.72);
+  --el-overlay-color-light: rgba(0, 0, 0, 0.6);
+  --el-mask-color: rgba(4, 7, 12, 0.8);
+  --el-mask-color-extra-light: rgba(4, 7, 12, 0.4);
 
-  /* 遮罩 */
-  --el-overlay-color: rgba(0, 0, 0, 0.7);
-  --el-overlay-color-light: rgba(0, 0, 0, 0.5);
-  --el-overlay-color-lighter: rgba(0, 0, 0, 0.3);
+  /* ---- 禁用 ---- */
+  --el-disabled-bg-color: rgba(255, 255, 255, 0.04);
+  --el-disabled-text-color: var(--text-faint);
+  --el-disabled-border-color: rgba(255, 255, 255, 0.07);
 
-  /* 表单 */
-  --el-form-label-font-size: 14px;
+  --el-form-label-font-size: var(--font-size-sm);
 }
 
-/* ==================== 按钮组件覆盖 ==================== */
+/* ==================== 2. 按钮 ==================== */
 .el-button {
-  border-radius: var(--el-border-radius-base) !important;
-  font-weight: 500;
-  transition: all var(--transition-fast);
-}
+  --el-button-bg-color: var(--bg-elevated);
+  --el-button-border-color: var(--border-strong);
+  --el-button-text-color: var(--text-primary);
+  --el-button-hover-bg-color: #1d2836;
+  --el-button-hover-border-color: rgba(255, 255, 255, 0.24);
+  --el-button-hover-text-color: var(--text-primary);
+  --el-button-active-bg-color: #131c28;
+  --el-button-active-border-color: var(--border-strong);
+  --el-button-disabled-bg-color: rgba(255, 255, 255, 0.04);
+  --el-button-disabled-border-color: rgba(255, 255, 255, 0.06);
+  --el-button-disabled-text-color: var(--text-faint);
 
-/* 表格 / 列表里的文字按钮保持无背景，避免视觉噪音 */
-.el-button.is-text {
-  border-radius: var(--el-border-radius-small) !important;
-  padding: 4px 6px;
-}
-
-.el-button--primary {
-  background: var(--gradient-brand);
-  border: none;
-  color: #05141c;
+  height: var(--el-component-size);
+  padding: 0 15px;
+  border-radius: var(--radius-md);
   font-weight: 600;
+  font-size: var(--font-size-sm);
+  letter-spacing: 0;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    color var(--transition-fast), transform var(--transition-fast);
 }
 
-.el-button--primary:hover,
-.el-button--primary:focus {
-  background: var(--gradient-brand-hover);
-  color: #05141c;
-  transform: translateY(-1px);
-  box-shadow: 0 8px 20px var(--primary-glow);
+.el-button + .el-button { margin-left: 8px; }
+
+/* 实心按钮：亮底 → 深字（对比度全部 ≥ 4.5:1） */
+.el-button--primary {
+  --el-button-text-color: var(--primary-on);
+  --el-button-bg-color: var(--primary);
+  --el-button-border-color: transparent;
+  --el-button-hover-text-color: var(--primary-on);
+  --el-button-hover-bg-color: var(--primary-hover);
+  --el-button-hover-border-color: transparent;
+  --el-button-active-text-color: var(--primary-on);
+  --el-button-active-bg-color: var(--primary-active);
 }
 
 .el-button--success {
-  background: linear-gradient(135deg, #34d399 0%, #059669 100%);
-  border: none;
+  --el-button-text-color: var(--success-on);
+  --el-button-bg-color: var(--success);
+  --el-button-border-color: transparent;
+  --el-button-hover-text-color: var(--success-on);
+  --el-button-hover-bg-color: #6ee7b7;
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: var(--success-strong);
 }
 
 .el-button--warning {
-  background: linear-gradient(135deg, #fbbf24 0%, #d97706 100%);
-  border: none;
-  color: #2a1a02;
-  font-weight: 600;
+  --el-button-text-color: var(--warning-on);
+  --el-button-bg-color: var(--warning);
+  --el-button-border-color: transparent;
+  --el-button-hover-text-color: var(--warning-on);
+  --el-button-hover-bg-color: #fcd34d;
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: var(--warning-strong);
 }
 
+/* 深底按钮 → 白字 */
 .el-button--danger {
-  background: linear-gradient(135deg, #fb7185 0%, #e11d48 100%);
-  border: none;
+  --el-button-text-color: #fff;
+  --el-button-bg-color: var(--danger-strong);
+  --el-button-border-color: transparent;
+  --el-button-hover-text-color: #fff;
+  --el-button-hover-bg-color: #f0435f;
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: #be123c;
 }
 
 .el-button--info {
-  background: linear-gradient(135deg, #60a5fa 0%, #2563eb 100%);
-  border: none;
+  --el-button-text-color: #fff;
+  --el-button-bg-color: var(--info-strong);
+  --el-button-border-color: transparent;
+  --el-button-hover-text-color: #fff;
+  --el-button-hover-bg-color: #3b82f6;
+  --el-button-hover-border-color: transparent;
+  --el-button-active-bg-color: #1d4ed8;
 }
 
-.el-button--default {
-  background: var(--el-bg-color-overlay);
-  border-color: var(--el-border-color);
+/* 描边（plain）：透明底 + 彩色字与边框，避免出现浅色块 */
+.el-button.is-plain {
+  --el-button-bg-color: transparent;
+  --el-button-hover-bg-color: var(--bg-hover);
+  --el-button-active-bg-color: var(--bg-hover);
 }
 
-.el-button.is-disabled {
-  opacity: 0.5;
-  transform: none !important;
+.el-button--primary.is-plain {
+  --el-button-text-color: #7fe6f6;
+  --el-button-border-color: var(--primary-border);
+  --el-button-hover-text-color: #a5eefb;
+  --el-button-hover-border-color: var(--primary);
 }
 
-/* 按钮尺寸 */
-.el-button--small {
-  padding: 6px 12px;
-  font-size: 12px;
+.el-button--danger.is-plain {
+  --el-button-text-color: #fda4af;
+  --el-button-border-color: var(--danger-border);
+  --el-button-hover-bg-color: rgba(251, 113, 133, 0.12);
+  --el-button-hover-text-color: #fecdd3;
 }
 
-.el-button--large {
-  padding: 12px 24px;
-  font-size: 16px;
+.el-button--success.is-plain {
+  --el-button-text-color: #6ee7b7;
+  --el-button-border-color: var(--success-border);
+  --el-button-hover-bg-color: rgba(52, 211, 153, 0.12);
 }
 
-/* ==================== 输入框组件覆盖 ==================== */
-.el-input__wrapper {
-  background: var(--el-bg-color-overlay) !important;
-  border: 1px solid var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  box-shadow: none !important;
-  transition: all 0.2s ease;
+.el-button--warning.is-plain {
+  --el-button-text-color: #fcd34d;
+  --el-button-border-color: var(--warning-border);
+  --el-button-hover-bg-color: rgba(251, 191, 36, 0.12);
 }
 
-.el-input__wrapper:hover {
-  border-color: var(--el-border-color-dark) !important;
+.el-button--info.is-plain {
+  --el-button-text-color: #93c5fd;
+  --el-button-border-color: var(--info-border);
+  --el-button-hover-bg-color: rgba(96, 165, 250, 0.12);
 }
 
-.el-input__wrapper.is-focus {
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18) !important;
-}
-
-.el-input__inner {
-  color: var(--el-text-color-primary) !important;
-}
-
-.el-input__inner::placeholder {
-  color: var(--el-text-color-placeholder) !important;
-}
-
-/* 文本域 */
-.el-textarea__inner {
-  background: var(--el-bg-color-overlay) !important;
-  border-color: var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  color: var(--el-text-color-primary) !important;
-}
-
-.el-textarea__inner:focus {
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18) !important;
-}
-
-/* ==================== 选择器组件覆盖 ==================== */
-.el-select__wrapper {
-  background: var(--el-bg-color-overlay) !important;
-  border-color: var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  box-shadow: none !important;
-}
-
-.el-select__wrapper:hover {
-  border-color: var(--el-border-color-dark) !important;
-}
-
-.el-select__wrapper.is-focus {
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18) !important;
-}
-
-/* 下拉面板 */
-.el-select-dropdown {
-  background: var(--el-bg-color) !important;
-  border-color: var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-}
-
-.el-select-dropdown__item {
-  color: var(--el-text-color-regular) !important;
-}
-
-.el-select-dropdown__item.hover,
-.el-select-dropdown__item:hover {
-  background: var(--el-fill-color) !important;
-}
-
-.el-select-dropdown__item.is-selected {
-  color: var(--primary) !important;
-  background: var(--primary-bg) !important;
-}
-
-/* ==================== 表格组件覆盖 ==================== */
-.el-table {
-  background: transparent !important;
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: transparent;
-  --el-table-row-hover-bg-color: var(--bg-hover);
-  --el-table-border-color: var(--border-subtle);
-  --el-table-text-color: var(--text-primary);
-  --el-table-header-text-color: var(--text-secondary);
-}
-
-.el-table th.el-table__cell {
-  background: transparent !important;
-  color: var(--text-secondary) !important;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.el-table__inner-wrapper::before {
-  display: none !important;
-}
-
-.el-table td.el-table__cell {
-  border-color: var(--el-border-color) !important;
-}
-
-.el-table tr:hover > td {
-  background: var(--bg-hover) !important;
-}
-
-.el-table--border .el-table__cell {
-  border-color: var(--el-border-color) !important;
-}
-
-.el-table--enable-row-hover .el-table__body tr:hover > td {
-  background: var(--bg-hover) !important;
-}
-
-/* ==================== 抽屉 / 下拉菜单 / 表单 ==================== */
-.el-drawer {
-  background: var(--bg-elevated) !important;
-  border-left: 1px solid var(--border-default) !important;
-}
-
-.el-drawer__header {
-  margin-bottom: 0 !important;
-  padding: 16px 20px !important;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-primary) !important;
-  font-weight: 600;
-}
-
-.el-drawer__body {
-  padding: 18px 20px !important;
-}
-
-.el-dropdown-menu {
-  background: var(--bg-elevated) !important;
-  border: 1px solid var(--border-default) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  padding: 6px !important;
-}
-
-.el-dropdown-menu__item {
-  color: var(--text-secondary) !important;
-  border-radius: var(--el-border-radius-small);
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-}
-
-.el-dropdown-menu__item:not(.is-disabled):hover {
-  background: var(--bg-hover) !important;
-  color: var(--text-primary) !important;
-}
-
-.el-dropdown-menu__item--divided {
-  border-top-color: var(--border-subtle) !important;
-}
-
-.el-form-item__label {
-  color: var(--text-secondary) !important;
-  font-size: 13px;
-}
-
-.el-tabs__item {
-  color: var(--text-secondary) !important;
-  font-size: 13.5px;
-}
-
-.el-tabs__item.is-active {
-  color: var(--primary) !important;
-}
-
-.el-tabs__active-bar {
-  background-color: var(--primary) !important;
-}
-
-.el-tabs__nav-wrap::after {
-  background-color: var(--border-subtle) !important;
-  height: 1px !important;
-}
-
-.el-empty__description p {
-  color: var(--text-muted) !important;
-}
-
-/* 表格空状态 */
-.el-table__empty-text {
-  color: var(--el-text-color-secondary) !important;
-}
-
-/* 表格加载状态 */
-.el-table__body-wrapper {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
-}
-
-/* ==================== 分页组件覆盖 ==================== */
-.el-pagination {
-  color: var(--el-text-color-regular) !important;
-}
-
-.el-pagination button {
-  background: var(--el-bg-color-overlay) !important;
-  color: var(--el-text-color-primary) !important;
-  border-radius: var(--el-border-radius-small) !important;
-}
-
-.el-pagination button:hover {
-  color: var(--primary) !important;
-}
-
-.el-pagination button:disabled {
-  background: var(--el-disabled-bg-color) !important;
-  color: var(--el-disabled-text-color) !important;
-}
-
-.el-pager li {
-  background: var(--el-bg-color-overlay) !important;
-  color: var(--el-text-color-primary) !important;
-  border-radius: var(--el-border-radius-small) !important;
-}
-
-.el-pager li:hover {
-  color: var(--primary) !important;
-}
-
-.el-pager li.is-active {
-  background: var(--gradient-brand) !important;
-  color: #05141c !important;
-  font-weight: 700;
-}
-
-/* ==================== 对话框组件覆盖 ==================== */
-.el-dialog {
-  background: var(--el-bg-color) !important;
-  border: 1px solid var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  box-shadow: var(--el-box-shadow-dark) !important;
-}
-
-.el-dialog__header {
-  border-bottom: 1px solid var(--el-border-color) !important;
-  padding: 20px !important;
-}
-
-.el-dialog__title {
-  color: var(--el-text-color-primary) !important;
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.el-dialog__body {
-  color: var(--el-text-color-regular) !important;
-  padding: 20px !important;
-}
-
-.el-dialog__footer {
-  border-top: 1px solid var(--el-border-color) !important;
-  padding: 16px 20px !important;
-}
-
-/* 遮罩层 */
-.el-overlay {
-  background: rgba(0, 0, 0, 0.7) !important;
-  backdrop-filter: blur(8px);
-}
-
-/* ==================== 消息提示组件覆盖 ==================== */
-.el-message {
-  background: var(--el-bg-color) !important;
-  border: 1px solid var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  box-shadow: var(--el-box-shadow-dark) !important;
-  padding: 12px 16px !important;
-}
-
-.el-message--success {
-  border-left: 3px solid var(--success) !important;
-}
-
-.el-message--warning {
-  border-left: 3px solid var(--warning) !important;
-}
-
-.el-message--error {
-  border-left: 3px solid var(--danger) !important;
-}
-
-.el-message--info {
-  border-left: 3px solid var(--info) !important;
-}
-
-.el-message__content {
-  color: var(--el-text-color-primary) !important;
-}
-
-/* ==================== 通知组件覆盖 ==================== */
-.el-notification {
-  background: var(--el-bg-color) !important;
-  border: 1px solid var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  box-shadow: var(--el-box-shadow-dark) !important;
-}
-
-.el-notification__title {
-  color: var(--el-text-color-primary) !important;
-}
-
-.el-notification__content {
-  color: var(--el-text-color-regular) !important;
-}
-
-/* ==================== 标签组件覆盖 ==================== */
-.el-tag {
-  border-radius: var(--el-border-radius-round) !important;
-  border: none !important;
+/* 文字 / link 按钮：透明底，靠颜色区分（表格行内操作最多） */
+.el-button.is-text,
+.el-button.is-link {
+  --el-button-bg-color: transparent;
+  --el-button-border-color: transparent;
+  --el-button-hover-bg-color: rgba(255, 255, 255, 0.08);
+  --el-button-active-bg-color: rgba(255, 255, 255, 0.1);
+  --el-button-text-color: var(--text-secondary);
+  --el-button-hover-text-color: var(--text-primary);
+  height: auto;
+  min-height: 30px;
+  padding: 5px 9px;
   font-weight: 500;
 }
 
-.el-tag--success {
-  background: var(--success-bg) !important;
-  color: var(--success) !important;
+.el-button.is-link { padding: 0 2px; min-height: 0; }
+.el-button.is-text { border-radius: var(--radius-sm); }
+
+.el-button--primary.is-text {
+  --el-button-text-color: #7fe6f6;
+  --el-button-hover-text-color: #a5eefb;
 }
 
-.el-tag--warning {
-  background: var(--warning-bg) !important;
-  color: var(--warning) !important;
+.el-button--danger.is-text,
+.el-button--danger.is-link {
+  --el-button-text-color: #fda4af;
+  --el-button-hover-text-color: #fecdd3;
+  --el-button-hover-bg-color: rgba(251, 113, 133, 0.14);
 }
 
-.el-tag--danger {
-  background: var(--danger-bg) !important;
-  color: var(--danger) !important;
+.el-button--success.is-text,
+.el-button--success.is-link {
+  --el-button-text-color: #6ee7b7;
+  --el-button-hover-text-color: #a7f3d0;
+  --el-button-hover-bg-color: rgba(52, 211, 153, 0.14);
 }
 
-.el-tag--info {
-  background: var(--info-bg) !important;
-  color: var(--info) !important;
+.el-button--warning.is-text,
+.el-button--warning.is-link {
+  --el-button-text-color: #fcd34d;
+  --el-button-hover-bg-color: rgba(251, 191, 36, 0.14);
 }
 
-.el-tag--primary {
-  background: var(--primary-bg) !important;
-  color: var(--primary) !important;
+.el-button--info.is-text,
+.el-button--info.is-link {
+  --el-button-text-color: #93c5fd;
+  --el-button-hover-bg-color: rgba(96, 165, 250, 0.14);
 }
 
-/* ==================== 卡片组件覆盖 ==================== */
-.el-card {
-  background: var(--el-bg-color) !important;
-  border: 1px solid var(--el-border-color) !important;
-  border-radius: var(--el-border-radius-base) !important;
-  box-shadow: var(--el-box-shadow-light) !important;
+/* 尺寸 */
+.el-button--small {
+  height: var(--el-component-size-small);
+  padding: 0 11px;
+  font-size: var(--font-size-xs);
+  border-radius: var(--radius-sm);
 }
 
-.el-card__header {
-  border-bottom: 1px solid var(--el-border-color) !important;
-  color: var(--el-text-color-primary) !important;
+.el-button--large {
+  height: var(--el-component-size-large);
+  padding: 0 20px;
+  font-size: var(--font-size-md);
 }
 
-.el-card__body {
-  color: var(--el-text-color-regular) !important;
+/* 圆形 / 图标按钮 */
+.el-button.is-circle {
+  width: var(--el-component-size);
+  padding: 0;
 }
 
-/* ==================== 单选/多选组件覆盖 ==================== */
+.el-button.is-circle.el-button--small { width: var(--el-component-size-small); }
+
+/* 禁用：降透明度但保证还能读出来 */
+.el-button.is-disabled,
+.el-button.is-disabled:hover {
+  opacity: 0.55;
+  transform: none;
+  box-shadow: none;
+}
+
+/* 按钮组 */
+.el-button-group > .el-button:first-child { border-radius: var(--radius-md) 0 0 var(--radius-md); }
+.el-button-group > .el-button:last-child { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
+
+/* ==================== 3. 表单 / 输入 ==================== */
+.el-input {
+  --el-input-bg-color: var(--bg-inset);
+  --el-input-border-color: var(--border-default);
+  --el-input-hover-border-color: var(--border-strong);
+  --el-input-focus-border-color: var(--primary);
+  --el-input-text-color: var(--text-primary);
+  --el-input-placeholder-color: var(--text-muted);
+  --el-input-border-radius: var(--radius-md);
+  --el-input-icon-color: var(--text-tertiary);
+}
+
+.el-input__wrapper {
+  background-color: var(--bg-inset);
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+  border-radius: var(--radius-md);
+  padding: 0 12px;
+  transition: box-shadow var(--transition-fast);
+}
+
+.el-input__wrapper:hover { box-shadow: 0 0 0 1px var(--border-strong) inset; }
+
+.el-input__wrapper.is-focus,
+.el-input__wrapper:focus-within {
+  box-shadow: 0 0 0 1px var(--primary) inset, 0 0 0 3px var(--primary-soft);
+}
+
+.el-input__inner {
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  height: 100%;
+}
+
+.el-input__inner::placeholder { color: var(--text-muted); }
+
+.el-input.is-disabled .el-input__wrapper { background-color: rgba(255, 255, 255, 0.03); }
+
+.el-textarea__inner {
+  background-color: var(--bg-inset);
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--font-size-md);
+  padding: 10px 12px;
+  line-height: var(--line-height-normal);
+  transition: box-shadow var(--transition-fast);
+}
+
+.el-textarea__inner::placeholder { color: var(--text-muted); }
+
+.el-textarea__inner:hover { box-shadow: 0 0 0 1px var(--border-strong) inset; }
+
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--primary) inset, 0 0 0 3px var(--primary-soft);
+}
+
+.el-select {
+  --el-select-input-focus-border-color: var(--primary);
+  --el-select-border-color-hover: var(--border-strong);
+}
+
+.el-select__wrapper {
+  background-color: var(--bg-inset);
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+  border-radius: var(--radius-md);
+  min-height: var(--el-component-size);
+  padding: 0 12px;
+  font-size: var(--font-size-md);
+  transition: box-shadow var(--transition-fast);
+}
+
+.el-select__wrapper:hover { box-shadow: 0 0 0 1px var(--border-strong) inset; }
+
+.el-select__wrapper.is-focused,
+.el-select__wrapper.is-hovering:not(.is-focused) {
+  box-shadow: 0 0 0 1px var(--primary) inset, 0 0 0 3px var(--primary-soft);
+}
+
+.el-select__placeholder { color: var(--text-muted); }
+.el-select__placeholder.is-transparent { color: var(--text-muted); }
+
+/* 输入数字 / 日期 */
+.el-input-number .el-input__wrapper { padding: 0 36px 0 12px; }
+
+.el-date-editor.el-input,
+.el-date-editor.el-input__wrapper { width: 100%; }
+
+.el-range-editor.el-input__wrapper { background-color: var(--bg-inset); box-shadow: 0 0 0 1px var(--border-default) inset; }
+
+/* 表单 */
+.el-form-item__label {
+  color: var(--text-tertiary);
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  padding-bottom: 4px;
+}
+
+.el-form-item__error { color: #fda4af; font-size: var(--font-size-xs); padding-top: 3px; }
+.el-form-item { margin-bottom: 18px; }
+
+.el-form--label-top .el-form-item__label { padding-bottom: 5px; }
+
+.el-form-item.is-required:not(.is-no-asterisk) > .el-form-item__label::before {
+  color: var(--danger);
+  margin-right: 3px;
+}
+
+/* 开关 */
+.el-switch {
+  --el-switch-on-color: var(--primary);
+  --el-switch-off-color: #3a4757;
+  --el-switch-border-color: transparent;
+}
+
+.el-switch__core { border: none; }
+.el-switch.is-checked .el-switch__core .el-switch__action { color: var(--primary); }
+
+/* 复选 / 单选 */
+.el-checkbox {
+  --el-checkbox-checked-text-color: var(--text-primary);
+  --el-checkbox-checked-bg-color: var(--primary);
+  --el-checkbox-checked-input-border-color: var(--primary);
+  --el-checkbox-checked-icon-color: var(--primary-on);
+  --el-checkbox-input-border: 1px solid var(--border-strong);
+  --el-checkbox-bg-color: transparent;
+  --el-checkbox-text-color: var(--text-secondary);
+  height: auto;
+}
+
+.el-radio {
+  --el-radio-input-border: 1px solid var(--border-strong);
+  --el-radio-checked-text-color: var(--primary);
+  --el-radio-checked-fill: var(--primary);
+  --el-radio-text-color: var(--text-secondary);
+  --el-radio-font-size: var(--font-size-md);
+  height: auto;
+}
+
 .el-radio-button__inner {
-  background: var(--el-bg-color-overlay) !important;
-  border-color: var(--el-border-color) !important;
-  color: var(--el-text-color-regular) !important;
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
+  color: var(--text-secondary);
 }
 
 .el-radio-button__original-radio:checked + .el-radio-button__inner {
-  background: var(--gradient-brand) !important;
-  border-color: transparent !important;
-  color: #05141c !important;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-on);
+  box-shadow: -1px 0 0 0 var(--primary);
 }
 
-.el-checkbox__inner {
-  background: var(--el-bg-color-overlay) !important;
-  border-color: var(--el-border-color) !important;
+/* ==================== 4. 表格 ==================== */
+.el-table {
+  --el-table-border-color: var(--border-subtle);
+  --el-table-border: 1px solid var(--border-subtle);
+  --el-table-text-color: var(--text-primary);
+  --el-table-header-text-color: var(--text-tertiary);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-current-row-bg-color: var(--primary-soft);
+  --el-table-header-bg-color: var(--bg-inset);
+  --el-table-tr-bg-color: transparent;
+  --el-table-bg-color: transparent;
+  --el-table-expanded-cell-bg-color: transparent;
+  background-color: transparent;
+  font-size: var(--font-size-sm);
 }
 
-.el-checkbox__input.is-checked .el-checkbox__inner {
-  background: var(--primary) !important;
-  border-color: var(--primary) !important;
+.el-table th.el-table__cell {
+  background-color: transparent;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  font-size: var(--font-size-xs);
+  letter-spacing: var(--tracking-wide);
+  height: 40px;
+  padding: 0;
 }
 
-/* ==================== 开关组件覆盖 ==================== */
-.el-switch {
-  --el-switch-on-color: #22d3ee;
-  --el-switch-off-color: rgba(148, 180, 220, 0.24);
+.el-table td.el-table__cell {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
 }
 
-.el-switch__core {
-  border: 1px solid var(--el-border-color) !important;
+.el-table .cell {
+  padding: 0 12px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
-/* ==================== 滑块组件覆盖 ==================== */
-.el-slider__runway {
-  background: var(--el-fill-color) !important;
+.el-table__inner-wrapper::before { display: none; }
+
+.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
+  background-color: var(--bg-hover);
 }
 
-.el-slider__bar {
-  background: var(--gradient-brand) !important;
+.el-table__body tr:last-child > td.el-table__cell { border-bottom: none; }
+
+.el-table__empty-text { color: var(--text-muted); }
+
+.el-table__fixed-right::before,
+.el-table__fixed::before { display: none; }
+
+.el-table__fixed-right,
+.el-table__fixed { background-color: var(--bg-card); }
+
+.el-table__border-left-patch { background-color: var(--border-subtle); }
+
+/* 表头排序图标 */
+.el-table .caret-wrapper { height: 20px; }
+
+/* 加载遮罩 */
+.el-loading-mask { background-color: rgba(7, 11, 18, 0.72); }
+.el-loading-spinner .path { stroke: var(--primary); }
+.el-loading-spinner .el-loading-text { color: var(--text-secondary); font-size: var(--font-size-sm); }
+
+/* ==================== 5. 分页 ==================== */
+.el-pagination {
+  --el-pagination-bg-color: transparent;
+  --el-pagination-text-color: var(--text-secondary);
+  --el-pagination-button-color: var(--text-secondary);
+  --el-pagination-button-bg-color: transparent;
+  --el-pagination-button-disabled-color: var(--text-faint);
+  --el-pagination-button-disabled-bg-color: transparent;
+  --el-pagination-hover-color: var(--primary);
+  --el-pagination-font-size: var(--font-size-sm);
+  --el-pagination-item-gap: 6px;
+  gap: 6px;
+  font-weight: 500;
 }
 
-.el-slider__button {
-  border: 2px solid var(--primary) !important;
+.el-pagination .btn-prev,
+.el-pagination .btn-next,
+.el-pagination .el-pager li {
+  background: transparent;
+  border-radius: var(--radius-sm);
+  min-width: 30px;
+  height: 30px;
+  line-height: 30px;
+  color: var(--text-secondary);
 }
 
-/* ==================== 进度条组件覆盖 ==================== */
-.el-progress-bar__inner {
-  background: var(--gradient-brand) !important;
+.el-pagination .btn-prev:hover,
+.el-pagination .btn-next:hover,
+.el-pagination .el-pager li:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.el-pagination .el-pager li.is-active {
+  background: var(--primary-bg);
+  color: #7fe6f6;
+  font-weight: 700;
 }
 
-/* ==================== 加载组件覆盖 ==================== */
-.el-loading-mask {
-  background: rgba(0, 0, 0, 0.7) !important;
-  backdrop-filter: blur(4px);
+.el-pagination__total,
+.el-pagination__jump { color: var(--text-muted); font-size: var(--font-size-xs); }
+
+/* ==================== 6. 标签 / 徽标 ==================== */
+.el-tag {
+  --el-tag-bg-color: rgba(255, 255, 255, 0.07);
+  --el-tag-border-color: var(--border-default);
+  --el-tag-text-color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  height: 24px;
+  padding: 0 8px;
 }
 
-.el-loading-spinner .circular {
-  stroke: var(--primary);
+.el-tag--primary { --el-tag-bg-color: var(--primary-bg); --el-tag-border-color: var(--primary-border); --el-tag-text-color: #7fe6f6; }
+.el-tag--success { --el-tag-bg-color: var(--success-bg); --el-tag-border-color: var(--success-border); --el-tag-text-color: #6ee7b7; }
+.el-tag--warning { --el-tag-bg-color: var(--warning-bg); --el-tag-border-color: var(--warning-border); --el-tag-text-color: #fcd34d; }
+.el-tag--danger { --el-tag-bg-color: var(--danger-bg); --el-tag-border-color: var(--danger-border); --el-tag-text-color: #fda4af; }
+.el-tag--info { --el-tag-bg-color: var(--info-bg); --el-tag-border-color: var(--info-border); --el-tag-text-color: #93c5fd; }
+
+/* ==================== 7. 弹层 ==================== */
+.el-overlay { background-color: var(--bg-overlay); backdrop-filter: blur(2px); }
+
+.el-dialog {
+  --el-dialog-bg-color: var(--bg-card);
+  --el-dialog-border-radius: var(--radius-lg);
+  --el-dialog-padding-primary: 18px;
+  --el-dialog-title-font-size: var(--font-size-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 0;
+  overflow: hidden;
 }
 
-/* ==================== 时间选择器组件覆盖 ==================== */
-.el-picker-panel {
-  background: var(--el-bg-color) !important;
-  border-color: var(--el-border-color) !important;
+.el-dialog__header {
+  padding: 16px 20px;
+  margin: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
 }
 
-.el-date-picker__header-label {
-  color: var(--el-text-color-primary) !important;
+.el-dialog__title { color: var(--text-primary); font-weight: 600; font-size: var(--font-size-lg); }
+.el-dialog__headerbtn { top: 12px; right: 12px; width: 32px; height: 32px; }
+.el-dialog__headerbtn .el-dialog__close { color: var(--text-tertiary); font-size: 17px; }
+.el-dialog__headerbtn:hover .el-dialog__close { color: var(--text-primary); }
+.el-dialog__body { padding: 18px 20px; color: var(--text-secondary); font-size: var(--font-size-md); }
+.el-dialog__footer {
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
 }
 
-.el-picker-panel__icon-btn {
-  color: var(--el-text-color-secondary) !important;
+.el-drawer {
+  --el-drawer-bg-color: var(--bg-card);
+  --el-drawer-padding-primary: 18px;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border-default);
 }
 
-.el-date-table th {
-  color: var(--el-text-color-secondary) !important;
-  border-color: var(--el-border-color) !important;
+.el-drawer__header {
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: var(--font-size-lg);
 }
 
-.el-date-table td.available .el-date-table-cell__text {
-  color: var(--el-text-color-primary) !important;
+.el-drawer__body { padding: 18px 20px; overflow-y: auto; }
+.el-drawer__close-btn { color: var(--text-tertiary); }
+.el-drawer__close-btn:hover { color: var(--text-primary); }
+
+.el-message-box {
+  --el-messagebox-title-color: var(--text-primary);
+  --el-messagebox-width: 420px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 18px;
 }
 
-.el-date-table td.available:hover .el-date-table-cell__text {
-  background: var(--el-fill-color) !important;
+.el-message-box__title { font-size: var(--font-size-lg); font-weight: 600; }
+.el-message-box__content { color: var(--text-secondary); font-size: var(--font-size-md); }
+.el-message-box__headerbtn .el-message-box__close { color: var(--text-tertiary); }
+
+.el-message {
+  --el-message-bg-color: var(--bg-elevated);
+  --el-message-border-color: var(--border-default);
+  --el-message-text-color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 11px 16px;
+  min-width: 260px;
 }
 
-.el-date-table td.today .el-date-table-cell__text {
-  color: var(--primary) !important;
+.el-message__content { font-size: var(--font-size-sm); font-weight: 500; }
+.el-message--success { --el-message-text-color: #a7f3d0; }
+.el-message--warning { --el-message-text-color: #fde68a; }
+.el-message--error { --el-message-text-color: #fecdd3; }
+.el-message--info { --el-message-text-color: #bfdbfe; }
+
+.el-notification { background: var(--bg-elevated); border: 1px solid var(--border-default); }
+
+/* 下拉 / 气泡 */
+.el-popper.is-light,
+.el-popper.is-dark {
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border-default) !important;
+  color: var(--text-secondary) !important;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  font-size: var(--font-size-sm);
 }
 
-.el-date-table td.current:not(.disabled) .el-date-table-cell__text {
-  background: var(--gradient-brand) !important;
-  color: #05141c !important;
+.el-popper.is-light .el-popper__arrow::before,
+.el-popper.is-dark .el-popper__arrow::before {
+  background: var(--bg-elevated) !important;
+  border-color: var(--border-default) !important;
 }
 
-/* ==================== 穿透滚动条 ==================== */
-.el-table__body-wrapper,
-.el-select-dropdown__wrap,
-.el-dialog__body,
-.el-drawer__body,
-.el-menu,
 .el-dropdown-menu {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  background: var(--bg-elevated);
+  padding: 6px;
+  border-radius: var(--radius-md);
 }
 
-.el-table__body-wrapper::-webkit-scrollbar,
-.el-select-dropdown__wrap::-webkit-scrollbar,
-.el-dialog__body::-webkit-scrollbar,
-.el-drawer__body::-webkit-scrollbar,
-.el-menu::-webkit-scrollbar,
-.el-dropdown-menu::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+.el-dropdown-menu__item {
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  padding: 8px 12px;
+  line-height: 1.4;
 }
 
-.el-table__body-wrapper::-webkit-scrollbar-thumb,
-.el-select-dropdown__wrap::-webkit-scrollbar-thumb,
-.el-dialog__body::-webkit-scrollbar-thumb,
-.el-drawer__body::-webkit-scrollbar-thumb,
-.el-menu::-webkit-scrollbar-thumb,
-.el-dropdown-menu::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 3px;
+.el-dropdown-menu__item:not(.is-disabled):hover,
+.el-dropdown-menu__item:not(.is-disabled):focus {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.el-table__body-wrapper::-webkit-scrollbar-thumb:hover,
-.el-select-dropdown__wrap::-webkit-scrollbar-thumb:hover,
-.el-dialog__body::-webkit-scrollbar-thumb:hover,
-.el-drawer__body::-webkit-scrollbar-thumb:hover,
-.el-menu::-webkit-scrollbar-thumb:hover,
-.el-dropdown-menu::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+.el-dropdown-menu__item--divided { border-top: 1px solid var(--border-subtle); margin-top: 6px; padding-top: 8px; }
+
+.el-select-dropdown {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
 }
 
-/* ==================== 响应式调整 ==================== */
-@media (max-width: 768px) {
-  .el-dialog {
-    width: 95% !important;
-    margin: 0 auto;
-  }
-
-  .el-dialog.is-fullscreen {
-    width: 100% !important;
-  }
-
-  .el-button {
-    padding: 8px 12px;
-  }
-
-  .el-button--small {
-    padding: 4px 8px;
-  }
+.el-select-dropdown__item {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  height: 36px;
+  line-height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  margin: 2px 6px;
 }
+
+.el-select-dropdown__item.is-hovering,
+.el-select-dropdown__item.hover,
+.el-select-dropdown__item:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.el-select-dropdown__item.is-selected { color: #7fe6f6; background: var(--primary-bg); font-weight: 600; }
+
+.el-select__tags .el-tag { background: var(--primary-bg); border-color: var(--primary-border); color: #7fe6f6; }
+
+/* 日期面板 */
+.el-picker-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+
+.el-picker-panel__icon-btn,
+.el-date-picker__header-label { color: var(--text-secondary); }
+
+.el-date-table th { color: var(--text-tertiary); font-weight: 600; }
+.el-date-table td.available:hover { color: var(--primary); }
+.el-date-table td.current:not(.disabled) .el-date-table-cell__text {
+  background: var(--primary);
+  color: var(--primary-on);
+  font-weight: 700;
+}
+
+/* ==================== 8. 其它常用组件 ==================== */
+.el-tabs {
+  --el-tabs-header-height: 42px;
+}
+
+.el-tabs__header { margin-bottom: 14px; }
+.el-tabs__nav-wrap::after { background-color: var(--border-subtle); height: 1px; }
+.el-tabs__item {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  padding: 0 16px;
+}
+
+.el-tabs__item.is-active { color: #7fe6f6; }
+.el-tabs__item:hover { color: var(--text-primary); }
+.el-tabs__active-bar { background-color: var(--primary); height: 2px; border-radius: 2px; }
+
+.el-collapse,
+.el-collapse-item__header,
+.el-collapse-item__wrap {
+  background-color: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.el-descriptions {
+  --el-descriptions-item-bordered-label-background: var(--bg-inset);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.el-descriptions__label { color: var(--text-tertiary) !important; font-weight: 600; }
+.el-descriptions__content { color: var(--text-primary) !important; }
+.el-descriptions__cell { border-color: var(--border-subtle) !important; padding: 10px 12px !important; }
+
+.el-empty__description { color: var(--text-muted); }
+
+.el-alert {
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  align-items: flex-start;
+}
+
+.el-alert--warning.is-light {
+  background: var(--warning-bg);
+  color: #fde68a;
+  border: 1px solid var(--warning-border);
+}
+
+.el-alert--error.is-light { background: var(--danger-bg); color: #fecdd3; border: 1px solid var(--danger-border); }
+.el-alert--success.is-light { background: var(--success-bg); color: #a7f3d0; border: 1px solid var(--success-border); }
+.el-alert--info.is-light { background: var(--info-bg); color: #bfdbfe; border: 1px solid var(--info-border); }
+.el-alert__title { font-size: var(--font-size-sm); font-weight: 600; }
+.el-alert__description { font-size: var(--font-size-xs); color: inherit; opacity: 0.9; }
+
+.el-progress-bar__outer { background-color: rgba(255, 255, 255, 0.08); }
+.el-progress-bar__inner { background: var(--gradient-brand); }
+
+.el-badge__content { border: none; font-weight: 700; }
+
+.el-skeleton__item { background: rgba(255, 255, 255, 0.06); }
+
+.el-tooltip__trigger:focus-visible { outline: none; }
+
+.el-scrollbar__bar .el-scrollbar__thumb { background-color: var(--border-strong); }
+
+.el-image-viewer__wrapper .el-image-viewer__mask { background: rgba(4, 7, 12, 0.92); }
