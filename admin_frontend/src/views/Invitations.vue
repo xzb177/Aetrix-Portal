@@ -1,22 +1,27 @@
 <script setup lang="ts">
 /**
- * 邀请与积分管理：邀请记录、积分流水、手动调整、经济系统设置
+ * 邀请与积分管理：邀请记录、积分流水、手动调整
+ *
+ * 参数配置（签到 / 支付 / 返利比例）已统一收归「系统设置」页，
+ * 本页只负责台账与人工干预，避免两处入口改同一份配置。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { RefreshCw, Settings, Plus } from 'lucide-vue-next'
+import { Coins, Gift, RefreshCw, Settings, Plus } from 'lucide-vue-next'
 import {
   fetchInvitations,
   fetchPointsLogs,
+  fetchEconomyStats,
   adjustUserPoints,
-  fetchEconomySettings,
-  updateEconomySettings,
   type InvitationRow,
   type PointsLogRow,
-  type EconomySettings as EconomySettingsMap,
+  type EconomyStats,
 } from '@/api/economy'
+import { fetchUsers } from '@/api/admin'
 
 const loading = ref(false)
+const stats = ref<EconomyStats | null>(null)
 
 // ===== 邀请记录 =====
 const invitations = ref<InvitationRow[]>([])
@@ -32,47 +37,52 @@ const adjustVisible = ref(false)
 const adjustForm = ref({ user_id: undefined as number | undefined, amount: 100, reason: '' })
 const adjustLoading = ref(false)
 
-// ===== 经济设置 =====
-const settingsVisible = ref(false)
-const settings = ref<EconomySettingsMap>({})
-const settingsLoading = ref(false)
+/** 用户搜索（远程）：不再要求管理员手填数据库 ID */
+const userOptions = ref<{ id: number; username: string }[]>([])
+const userSearching = ref(false)
 
-const SECRET_LABELS: Record<string, string> = {
-  checkin_enabled: '签到开启 (true/false)',
-  checkin_base_points: '签到基础积分',
-  checkin_streak_bonus: '连签每日加成',
-  checkin_streak_max_bonus: '连签加成上限',
-  exchange_enabled: '兑换码开启 (true/false)',
-  recharge_enabled: '充值开启 (true/false)',
-  subscription_purchase_enabled: '订阅购买开启 (true/false)',
-  payment_gateway_url: '支付网关地址（易支付 submit.php 同级）',
-  payment_partner_id: '支付商户 ID (pid)',
-  payment_partner_key: '支付商户密钥（留 ****** 不变）',
-  payment_qqpay_enabled: 'QQ 钱包支付 (true/false)',
-  site_url: '站点地址（回调用，如 https://example.com）',
-  invitation_enabled: '邀请开启 (true/false)',
-  invitation_reward_points: '邀请者奖励积分',
-  invitation_invitee_reward_points: '被邀请者奖励积分',
-  invitation_rebate_percent: '充值返利百分比 (%)',
+async function searchUsers(keyword: string) {
+  userSearching.value = true
+  try {
+    const res = await fetchUsers({ search: keyword || undefined, limit: 20 })
+    userOptions.value = res.users.map((u) => ({ id: u.id, username: u.username }))
+  } catch {
+    userOptions.value = []
+  } finally {
+    userSearching.value = false
+  }
 }
+
+const selectedUser = computed(() =>
+  userOptions.value.find((u) => u.id === adjustForm.value.user_id)?.username,
+)
+
+const inviteTotal = computed(() => invitations.value.length)
+const rebateTotal = computed(() =>
+  logs.value.filter((l) => l.type === 'rebate').reduce((s, l) => s + l.amount, 0),
+)
 
 async function load() {
   loading.value = true
   try {
-    const [inv, log] = await Promise.all([
+    const [inv, log, econ] = await Promise.all([
       fetchInvitations({ limit: 100 }).catch(() => ({ records: [] })),
       fetchPointsLogs({ limit: 30, offset: (logPage.value - 1) * 30, type_filter: logTypeFilter.value || undefined }),
+      fetchEconomyStats().catch(() => null),
     ])
     invitations.value = inv.records
     logs.value = log.logs
     logTotal.value = log.total
+    stats.value = econ
   } finally {
     loading.value = false
   }
 }
 
 async function openAdjust() {
+  adjustForm.value = { user_id: undefined, amount: 100, reason: '' }
   adjustVisible.value = true
+  await searchUsers('')
 }
 
 async function handleAdjust() {
@@ -87,34 +97,10 @@ async function handleAdjust() {
     ElMessage.success(`调整成功，该用户当前余额 ${res.balance}`)
     adjustVisible.value = false
     load()
-  } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '调整失败')
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
   } finally {
     adjustLoading.value = false
-  }
-}
-
-async function openSettings() {
-  settingsVisible.value = true
-  settingsLoading.value = true
-  try {
-    const res = await fetchEconomySettings()
-    settings.value = res.settings
-  } finally {
-    settingsLoading.value = false
-  }
-}
-
-async function saveSettings() {
-  settingsLoading.value = true
-  try {
-    await updateEconomySettings(settings.value)
-    ElMessage.success('设置已保存')
-    settingsVisible.value = false
-  } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '保存失败')
-  } finally {
-    settingsLoading.value = false
   }
 }
 
@@ -131,24 +117,47 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <header class="page-head">
+  <div class="admin-page">
+    <div class="admin-page-header">
       <div>
-        <h2 class="page-title">运营 · 邀请与积分</h2>
-        <p class="page-sub">邀请记录、全站积分流水与经济系统设置</p>
+        <h1 class="admin-page-title">邀请与积分</h1>
+        <p class="admin-page-subtitle">邀请台账与全站积分流水；规则参数已移至「系统设置」</p>
       </div>
       <div class="head-actions">
         <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
         <el-button :icon="Plus" @click="openAdjust">调整积分</el-button>
-        <el-button :icon="Settings" type="primary" @click="openSettings">经济设置</el-button>
+        <RouterLink to="/settings">
+          <el-button :icon="Settings" type="primary">规则设置</el-button>
+        </RouterLink>
       </div>
-    </header>
+    </div>
+
+    <section class="stat-row">
+      <div class="stat-item">
+        <span class="stat-label"><Gift :size="13" /> 本页邀请记录</span>
+        <span class="stat-value">{{ inviteTotal }}</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label"><Coins :size="13" /> 全站积分存量</span>
+        <span class="stat-value">{{ stats?.total_points ?? '—' }}</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">累计邀请关系</span>
+        <span class="stat-value">{{ stats?.invitations ?? '—' }}</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">本页返利合计</span>
+        <span class="stat-value">{{ rebateTotal }}</span>
+      </div>
+    </section>
 
     <div class="grid">
       <!-- 邀请记录 -->
-      <section class="block">
-        <h3>邀请记录（最新 {{ invitations.length }} 条）</h3>
-        <el-table :data="invitations" size="small" stripe max-height="420">
+      <section class="admin-card block">
+        <div class="block-head">
+          <h3>邀请记录（最新 {{ invitations.length }} 条）</h3>
+        </div>
+        <el-table :data="invitations" size="small" max-height="420">
           <el-table-column prop="inviter" label="邀请人" width="120" />
           <el-table-column prop="invitee" label="被邀请人" width="120" />
           <el-table-column label="奖励" width="90">
@@ -161,14 +170,14 @@ onMounted(load)
       </section>
 
       <!-- 积分流水 -->
-      <section class="block">
-        <div class="block-head-row">
+      <section class="admin-card block">
+        <div class="block-head">
           <h3>积分流水（共 {{ logTotal }} 条）</h3>
           <el-select v-model="logTypeFilter" placeholder="全部类型" clearable size="small" style="width: 130px" @change="logPage = 1; load()">
             <el-option v-for="(label, key) in TYPE_LABELS" :key="key" :label="label" :value="key" />
           </el-select>
         </div>
-        <el-table :data="logs" size="small" stripe max-height="420">
+        <el-table :data="logs" size="small" max-height="420">
           <el-table-column prop="username" label="用户" width="110" />
           <el-table-column label="变动" width="80">
             <template #default="{ row }">
@@ -200,10 +209,26 @@ onMounted(load)
     </div>
 
     <!-- 调整积分对话框 -->
-    <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="420">
+    <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="440">
       <el-form label-width="90px">
-        <el-form-item label="用户 ID">
-          <el-input-number v-model="adjustForm.user_id" :min="1" style="width: 100%" placeholder="WebUser ID" />
+        <el-form-item label="用户">
+          <el-select
+            v-model="adjustForm.user_id"
+            filterable
+            remote
+            reserve-keyword
+            :remote-method="searchUsers"
+            :loading="userSearching"
+            placeholder="搜索用户名"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="u in userOptions"
+              :key="u.id"
+              :label="u.username"
+              :value="u.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="调整数量">
           <el-input-number v-model="adjustForm.amount" :step="10" style="width: 100%" />
@@ -212,6 +237,9 @@ onMounted(load)
         <el-form-item label="原因">
           <el-input v-model="adjustForm.reason" maxlength="100" placeholder="活动补偿等（选填）" />
         </el-form-item>
+        <el-form-item v-if="selectedUser" label=" ">
+          <span class="hint">将对「{{ selectedUser }}」发放/扣减 {{ adjustForm.amount }} 积分</span>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="adjustVisible = false">取消</el-button>
@@ -219,78 +247,66 @@ onMounted(load)
       </template>
     </el-dialog>
 
-    <!-- 经济设置对话框 -->
-    <el-dialog v-model="settingsVisible" title="经济系统设置" width="640" top="5vh">
-      <div v-loading="settingsLoading" class="settings-grid">
-        <el-form v-if="Object.keys(settings).length" label-position="top" size="default">
-          <el-form-item v-for="(label, key) in SECRET_LABELS" :key="key" :label="String(label)">
-            <el-switch
-              v-if="key.endsWith('_enabled')"
-              :model-value="settings[key] === 'true'"
-              active-text="开"
-              inactive-text="关"
-              @update:model-value="(v: string | number | boolean) => settings[key] = v ? 'true' : 'false'"
-            />
-            <el-input-number
-              v-else-if="key.includes('points') || key.includes('percent') || key.includes('bonus')"
-              :model-value="Number(settings[key] || 0)"
-              :min="0"
-              style="width: 100%"
-              @update:model-value="(v?: number) => settings[key] = String(v ?? 0)"
-            />
-            <el-input
-              v-else
-              :model-value="settings[key]"
-              :placeholder="key === 'payment_partner_key' ? '未设置' : ''"
-              @update:model-value="(v: string) => settings[key] = v"
-            />
-          </el-form-item>
-        </el-form>
-        <div class="hint">密钥显示为 ****** 表示已设置且保持不变；填写新值即可替换。</div>
-      </div>
-      <template #footer>
-        <el-button @click="settingsVisible = false">取消</el-button>
-        <el-button type="primary" :loading="settingsLoading" @click="saveSettings">保存设置</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.page { display: flex; flex-direction: column; gap: 16px; }
+.head-actions { display: flex; gap: 8px; align-items: center; }
 
-.page-head { display: flex; align-items: flex-start; justify-content: space-between; }
-.page-title { margin: 0 0 4px; font-size: 20px; font-weight: 700; }
-.page-sub { margin: 0; font-size: 13px; opacity: 0.6; }
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
 
-.head-actions { display: flex; gap: 8px; }
+.stat-item {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+
+.stat-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.stat-value {
+  display: block;
+  font-size: var(--font-size-3xl);
+  font-weight: 700;
+  margin-top: 2px;
+  color: var(--primary);
+}
 
 .grid {
   display: grid;
   grid-template-columns: 1fr 1.4fr;
-  gap: 16px;
+  gap: 14px;
   align-items: start;
 }
 
-.block {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 12px;
-  padding: 16px;
+.block { /* 沿用 .admin-card 视觉，仅补标题间距 */ }
+
+.block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
 }
-.block h3 { margin: 0 0 12px; font-size: 15px; font-weight: 700; }
 
-.block-head-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.block-head-row h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.block-head h3 { margin: 0; font-size: 14.5px; font-weight: 600; }
 
-.amt-in { color: var(--el-color-success); font-weight: 600; }
-.amt-out { color: var(--el-color-danger); font-weight: 600; }
+.amt-in { color: var(--success); font-weight: 600; }
+.amt-out { color: var(--danger); font-weight: 600; }
 
 .pager { margin-top: 10px; justify-content: flex-end; }
 
-.hint { font-size: 12px; opacity: 0.55; margin-top: 4px; }
-
-.settings-grid { max-height: 62vh; overflow-y: auto; padding-right: 8px; }
+.hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
 @media (max-width: 1000px) {
   .grid { grid-template-columns: 1fr; }

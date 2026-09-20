@@ -1,76 +1,267 @@
 <script setup lang="ts">
-/** 数据概览：系统统计 + 自建 Emby 实时数据 + 播放统计 */
-import { onMounted, ref } from 'vue'
-import { Film, MessageSquareDashed, Play, Radio, Ticket, Users } from 'lucide-vue-next'
-import { fetchOverview, fetchPlaybackStats } from '@/api/admin'
-import type { OverviewStats, PlaybackStats } from '@/types'
+/**
+ * 数据概览 — 经营驾驶舱
+ *
+ * v2.4.0 重构：
+ * - 顶部「待办」条：待处理工单 / 待审求片 / 待支付订单，一点直达对应页面
+ * - 交易概览：今日营收、累计营收、积分存量、今日签到、兑换码核销、邀请人数
+ * - 趋势图：近 7/14/30 天的新增用户 / 播放 / 营收 / 签到（纯 SVG，无额外依赖）
+ * - 播放榜：用户榜 + 热门内容榜
+ */
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
+import {
+  Film, MessageSquareDashed, Play, Radio, Ticket, Users, Wallet,
+  Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
+} from 'lucide-vue-next'
+import { fetchOverview, fetchPlaybackStats, fetchStatsTrend } from '@/api/admin'
+import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
+import type { OverviewStats, PlaybackStats, TrendStats } from '@/types'
 
 const overview = ref<OverviewStats | null>(null)
 const playback = ref<PlaybackStats | null>(null)
+const economy = ref<EconomyStats | null>(null)
+const trend = ref<TrendStats | null>(null)
 const loading = ref(true)
+const trendLoading = ref(false)
+
+const days = ref(14)
+type Metric = 'new_users' | 'plays' | 'revenue' | 'checkins'
+const metric = ref<Metric>('new_users')
+const metricTabs: { key: Metric; label: string; color: string }[] = [
+  { key: 'new_users', label: '新增用户', color: '#22d3ee' },
+  { key: 'plays', label: '播放次数', color: '#a78bfa' },
+  { key: 'revenue', label: '营收 (¥)', color: '#34d399' },
+  { key: 'checkins', label: '签到次数', color: '#fbbf24' },
+]
+
+async function loadTrend() {
+  trendLoading.value = true
+  try {
+    trend.value = await fetchStatsTrend(days.value)
+  } finally {
+    trendLoading.value = false
+  }
+}
 
 onMounted(async () => {
   try {
-    const [o, p] = await Promise.all([fetchOverview(), fetchPlaybackStats()])
+    const [o, p, e] = await Promise.all([fetchOverview(), fetchPlaybackStats(), fetchEconomyStats()])
     overview.value = o
     playback.value = p
+    economy.value = e
+    await loadTrend()
   } finally {
     loading.value = false
   }
 })
+
+watch(days, loadTrend)
+
+// ==================== 待办 ====================
+
+const todos = computed(() => {
+  const list: { label: string; count: number; to: string; icon: unknown; tone: string }[] = []
+  if (overview.value) {
+    list.push({ label: '待处理工单', count: overview.value.tickets.open, to: '/tickets', icon: Ticket, tone: 'danger' })
+    list.push({ label: '待审求片', count: overview.value.media_seeks.pending, to: '/media-seek', icon: MessageSquareDashed, tone: 'warning' })
+  }
+  if (economy.value) {
+    list.push({ label: '待支付订单', count: economy.value.orders.pending, to: '/orders', icon: Wallet, tone: 'info' })
+  }
+  return list
+})
+
+const todoTotal = computed(() => todos.value.reduce((s, t) => s + t.count, 0))
+
+// ==================== 趋势图 ====================
+
+const currentMetric = computed(() => metricTabs.find((t) => t.key === metric.value)!)
+
+const series = computed(() => trend.value?.series ?? [])
+
+const values = computed(() => series.value.map((p) => Number(p[metric.value]) || 0))
+
+const maxValue = computed(() => Math.max(...values.value, 1))
+
+const CHART_W = 720
+const CHART_H = 150
+const PAD = 14
+
+const points = computed(() => {
+  const list = values.value
+  const n = list.length
+  if (n === 0) return []
+  const step = n > 1 ? CHART_W / (n - 1) : 0
+  return list.map((v, i) => {
+    const x = i * step
+    const y = CHART_H - PAD - (v / maxValue.value) * (CHART_H - PAD * 2)
+    return [x, y] as const
+  })
+})
+
+const linePath = computed(() =>
+  points.value.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' '),
+)
+
+const areaPath = computed(() =>
+  points.value.length ? `${linePath.value} L${CHART_W} ${CHART_H} L0 ${CHART_H} Z` : '',
+)
+
+/** x 轴标签：首 / 中 / 末，避免拥挤 */
+const axisLabels = computed(() => {
+  const list = series.value
+  if (list.length === 0) return []
+  const idx = [0, Math.floor(list.length / 2), list.length - 1]
+  return [...new Set(idx)].map((i) => list[i].date.slice(5))
+})
+
+function fmtMoney(v: number): string {
+  return `¥${v.toFixed(2)}`
+}
 </script>
 
 <template>
   <div class="admin-page">
     <div v-if="loading" class="page-loading">加载中…</div>
 
-    <template v-else-if="overview">
-      <!-- 系统统计 -->
-      <div class="stat-grid">
+    <template v-else>
+      <!-- 待办 -->
+      <section v-if="todos.length" class="todo-bar" :class="{ clear: todoTotal === 0 }">
+        <div class="todo-lead">
+          <span class="todo-lead-label">{{ todoTotal === 0 ? '全部处理完毕' : '待办事项' }}</span>
+          <span v-if="todoTotal > 0" class="todo-lead-count">{{ todoTotal }}</span>
+        </div>
+        <RouterLink
+          v-for="t in todos"
+          :key="t.label"
+          :to="t.to"
+          class="todo-pill"
+          :class="[t.tone, { zero: t.count === 0 }]"
+        >
+          <component :is="t.icon" :size="14" />
+          <span>{{ t.label }}</span>
+          <strong>{{ t.count }}</strong>
+          <ArrowRight :size="13" class="todo-arrow" />
+        </RouterLink>
+      </section>
+
+      <!-- 系统概览 -->
+      <section class="stat-grid">
         <div class="stat-tile">
           <div class="stat-label"><Users :size="13" /> 总用户 / 活跃</div>
           <div class="stat-value">
-            {{ overview.users.total }}<span class="stat-sub"> / {{ overview.users.active }}</span>
+            {{ overview?.users.total ?? 0 }}<span class="stat-sub"> / {{ overview?.users.active ?? 0 }}</span>
           </div>
         </div>
         <div class="stat-tile">
           <div class="stat-label"><Film :size="13" /> 媒体条目</div>
-          <div class="stat-value stat-accent">{{ overview.emby.total_items }}</div>
+          <div class="stat-value stat-accent">{{ overview?.emby.total_items ?? 0 }}</div>
         </div>
         <div class="stat-tile">
           <div class="stat-label"><Radio :size="13" /> 在线会话</div>
-          <div class="stat-value" :class="{ 'stat-accent': overview.emby.active_sessions > 0 }">
-            {{ overview.emby.active_sessions }}
+          <div class="stat-value" :class="{ 'stat-accent': (overview?.emby.active_sessions ?? 0) > 0 }">
+            {{ overview?.emby.active_sessions ?? 0 }}
           </div>
         </div>
         <div class="stat-tile">
-          <div class="stat-label"><Ticket :size="13" /> 待处理工单</div>
-          <div class="stat-value">{{ overview.tickets.open }}</div>
+          <div class="stat-label"><Play :size="13" /> 今日播放</div>
+          <div class="stat-value">{{ playback?.today.plays ?? 0 }}<span class="stat-sub"> 次 / {{ playback?.today.users ?? 0 }} 人</span></div>
+        </div>
+      </section>
+
+      <!-- 交易概览 -->
+      <section class="stat-grid">
+        <div class="stat-tile">
+          <div class="stat-label"><Wallet :size="13" /> 累计营收</div>
+          <div class="stat-value stat-accent">{{ fmtMoney(economy?.orders.revenue ?? 0) }}</div>
+          <div class="stat-foot">{{ economy?.orders.pending ?? 0 }} 笔待支付</div>
         </div>
         <div class="stat-tile">
-          <div class="stat-label"><MessageSquareDashed :size="13" /> 待审求片</div>
-          <div class="stat-value">{{ overview.media_seeks.pending }}</div>
+          <div class="stat-label"><Coins :size="13" /> 积分存量</div>
+          <div class="stat-value">{{ economy?.total_points ?? 0 }}</div>
+          <div class="stat-foot">全站用户持有</div>
         </div>
-      </div>
+        <div class="stat-tile">
+          <div class="stat-label"><CalendarCheck :size="13" /> 今日签到</div>
+          <div class="stat-value">{{ economy?.checkins_today ?? 0 }}</div>
+          <div class="stat-foot">人已签到</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label"><TicketCheck :size="13" /> 兑换码</div>
+          <div class="stat-value">
+            {{ economy?.exchange_codes.used ?? 0 }}<span class="stat-sub"> / {{ economy?.exchange_codes.total ?? 0 }}</span>
+          </div>
+          <div class="stat-foot">已核销 / 已生成</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-label"><Gift :size="13" /> 邀请关系</div>
+          <div class="stat-value">{{ economy?.invitations ?? 0 }}</div>
+          <div class="stat-foot">累计成功邀请</div>
+        </div>
+      </section>
 
-      <!-- 播放统计 -->
-      <div class="stats-two-col" v-if="playback">
+      <!-- 趋势 -->
+      <section class="admin-card trend-card">
+        <div class="card-header">
+          <h2><TrendingUp :size="15" /> 趋势</h2>
+          <div class="trend-controls">
+            <div class="metric-tabs">
+              <button
+                v-for="t in metricTabs"
+                :key="t.key"
+                class="metric-tab"
+                :class="{ active: metric === t.key }"
+                :style="metric === t.key ? { color: t.color, borderColor: t.color } : undefined"
+                @click="metric = t.key"
+              >
+                {{ t.label }}
+              </button>
+            </div>
+            <el-radio-group v-model="days" size="small">
+              <el-radio-button :value="7">7 天</el-radio-button>
+              <el-radio-button :value="14">14 天</el-radio-button>
+              <el-radio-button :value="30">30 天</el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
+
+        <div class="trend-total">
+          <span class="trend-total-label">近 {{ days }} 天合计</span>
+          <span class="trend-total-value" :style="{ color: currentMetric.color }">
+            {{ metric === 'revenue' ? fmtMoney(trend?.totals.revenue ?? 0) : (trend?.totals[metric] ?? 0) }}
+          </span>
+        </div>
+
+        <div class="chart-wrap" v-loading="trendLoading">
+          <svg class="chart" :viewBox="`0 0 ${CHART_W} ${CHART_H}`" preserveAspectRatio="none" role="img">
+            <defs>
+              <linearGradient :id="`grad-${metric}`" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" :stop-color="currentMetric.color" stop-opacity="0.36" />
+                <stop offset="100%" :stop-color="currentMetric.color" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+            <path :d="areaPath" :fill="`url(#grad-${metric})`" />
+            <path
+              :d="linePath"
+              fill="none"
+              :stroke="currentMetric.color"
+              stroke-width="2"
+              vector-effect="non-scaling-stroke"
+              stroke-linejoin="round"
+              stroke-linecap="round"
+            />
+          </svg>
+          <div class="chart-axis">
+            <span v-for="(l, i) in axisLabels" :key="l + i">{{ l }}</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 排行榜 -->
+      <section class="stats-two-col" v-if="playback">
         <div class="admin-card">
           <div class="card-header">
-            <h2><Play :size="15" /> 今日播放</h2>
-          </div>
-          <div class="today-stats">
-            <div class="today-item">
-              <div class="today-num">{{ playback.today.plays }}</div>
-              <div class="today-cap">播放次数</div>
-            </div>
-            <div class="today-item">
-              <div class="today-num">{{ playback.today.users }}</div>
-              <div class="today-cap">观看用户</div>
-            </div>
-          </div>
-
-          <div class="card-header" style="margin-top: 18px">
             <h2>用户播放排行 <span class="range-hint">近 7 天</span></h2>
           </div>
           <div v-if="playback.user_ranking.length === 0" class="empty-hint">暂无播放数据</div>
@@ -95,38 +286,132 @@ onMounted(async () => {
             <span class="rank-value">{{ it.plays }} 次</span>
           </div>
         </div>
-      </div>
+      </section>
     </template>
   </div>
 </template>
 
 <style scoped>
-.page-loading { text-align: center; color: var(--color-text-secondary, #a3a3a3); padding: 60px 0; }
-.stat-sub { font-size: 16px; color: var(--color-text-secondary, #a3a3a3); font-weight: 500; }
+.page-loading { text-align: center; color: var(--text-secondary); padding: 60px 0; }
+.stat-sub { font-size: 15px; color: var(--text-secondary); font-weight: 500; }
 .stat-label { display: flex; align-items: center; gap: 6px; }
+.stat-foot { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
 
+/* ===== 待办条 ===== */
+.todo-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+}
+
+.todo-bar.clear { border-color: rgba(52, 211, 153, 0.25); }
+
+.todo-lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding-right: 6px;
+}
+
+.todo-lead-count {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-radius: var(--radius-full);
+  padding: 1px 9px;
+  font-size: 12px;
+}
+
+.todo-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  text-decoration: none;
+  transition: all var(--transition-fast);
+}
+
+.todo-pill:hover { border-color: var(--primary-border); color: var(--text-primary); }
+.todo-pill strong { color: var(--text-primary); font-size: 13.5px; }
+.todo-pill.zero { opacity: 0.5; }
+.todo-pill.zero strong { color: var(--text-muted); }
+.todo-pill.danger strong { color: var(--danger); }
+.todo-pill.warning strong { color: var(--warning); }
+.todo-pill.info strong { color: var(--info); }
+.todo-arrow { opacity: 0; transition: opacity var(--transition-fast); }
+.todo-pill:hover .todo-arrow { opacity: 1; }
+
+/* ===== 趋势卡 ===== */
+.trend-card { margin-bottom: 14px; }
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.card-header h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; margin: 0; }
+
+.trend-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.metric-tabs { display: flex; gap: 6px; }
+
+.metric-tab {
+  padding: 4px 11px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.metric-tab:hover { color: var(--text-primary); border-color: var(--border-strong); }
+.metric-tab.active { background: var(--bg-glass); }
+
+.trend-total { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.trend-total-label { font-size: 12px; color: var(--text-muted); }
+.trend-total-value { font-size: 22px; font-weight: 700; }
+
+.chart-wrap { position: relative; }
+.chart { width: 100%; height: 150px; display: block; }
+
+.chart-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+/* ===== 双列 ===== */
 .stats-two-col {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 14px;
 }
 
-.card-header h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  margin: 0 0 12px;
-}
-
-.range-hint { font-size: 11px; color: var(--color-text-muted, #737373); font-weight: 400; }
-
-.today-stats { display: flex; gap: 24px; }
-.today-num { font-size: 26px; font-weight: 700; color: #10b981; }
-.today-cap { font-size: 12px; color: var(--color-text-secondary, #a3a3a3); }
+.range-hint { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 
 .rank-name { flex: 1; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rank-type { font-size: 11px; color: var(--color-text-muted, #737373); margin-left: 6px; }
-.rank-value { font-size: 12px; color: var(--color-text-secondary, #a3a3a3); }
-.empty-hint { font-size: 13px; color: var(--color-text-muted, #737373); padding: 12px 0; }
+.rank-type { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+.rank-value { font-size: 12px; color: var(--text-secondary); }
+.empty-hint { font-size: 13px; color: var(--text-muted); padding: 12px 0; }
 </style>

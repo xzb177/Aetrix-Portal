@@ -2,7 +2,7 @@
 /** 管理员登录页：JWT 登录 → 恢复 ?redirect 或进入概览 */
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Lock, User } from 'lucide-vue-next'
+import { Loader2, Lock, ShieldCheck, User } from 'lucide-vue-next'
 import { login } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 
@@ -36,11 +36,13 @@ async function submit() {
 
 <template>
   <div class="login-page">
+    <div class="login-glow" aria-hidden="true" />
+
     <div class="login-card">
       <div class="login-brand">
-        <span class="brand-dot" />
-        <h1>RoyalBot 管理后台</h1>
-        <p>仅限管理员账号登录</p>
+        <span class="brand-mark" />
+        <h1>RoyalBot 控制台</h1>
+        <p>运营管理后台 · 仅限管理员账号登录</p>
       </div>
 
       <form @submit.prevent="submit">
@@ -56,54 +58,70 @@ async function submit() {
         <div v-if="error" class="login-error">{{ error }}</div>
 
         <button class="login-btn" type="submit" :disabled="loading">
-          {{ loading ? '登录中…' : '登录' }}
+          <Loader2 v-if="loading" :size="16" class="spinning" />
+          <span>{{ loading ? '登录中…' : '登录' }}</span>
         </button>
       </form>
+
+      <p class="login-foot"><ShieldCheck :size="13" /> 登录状态保存在本地，操作会记入管理日志</p>
     </div>
   </div>
 </template>
 
 <style scoped>
 .login-page {
+  position: relative;
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    radial-gradient(ellipse 60% 40% at 50% 0%, rgba(16, 185, 129, 0.08), transparent),
-    var(--color-bg-primary, #0a0a0a);
   padding: 20px;
+  overflow: hidden;
+}
+
+.login-glow {
+  position: absolute;
+  inset: -20% -10% auto -10%;
+  height: 70vh;
+  background:
+    radial-gradient(ellipse 50% 60% at 30% 0%, rgba(34, 211, 238, 0.16), transparent 65%),
+    radial-gradient(ellipse 45% 55% at 78% 12%, rgba(167, 139, 250, 0.14), transparent 65%);
+  pointer-events: none;
 }
 
 .login-card {
+  position: relative;
   width: 100%;
-  max-width: 380px;
-  background: var(--color-bg-card, #1a1a1a);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 20px;
-  padding: 32px 28px;
+  max-width: 390px;
+  background: linear-gradient(180deg, rgba(16, 26, 40, 0.92), rgba(10, 16, 26, 0.92));
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 34px 28px 26px;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(14px);
 }
 
-.login-brand { text-align: center; margin-bottom: 28px; }
-.login-brand h1 { font-size: 20px; margin: 12px 0 4px; }
-.login-brand p { font-size: 13px; color: var(--color-text-secondary, #a3a3a3); margin: 0; }
+.login-brand { text-align: center; margin-bottom: 26px; }
+.login-brand h1 { font-size: 20px; margin: 14px 0 6px; letter-spacing: -0.01em; }
+.login-brand p { font-size: 12.5px; color: var(--text-secondary); margin: 0; }
 
-.brand-dot {
+.brand-mark {
   display: inline-block;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 16px rgba(16, 185, 129, 0.7);
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: var(--gradient-brand);
+  box-shadow: var(--shadow-glow);
 }
 
 .field { display: block; margin-bottom: 16px; }
+
 .field-label {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--color-text-secondary, #a3a3a3);
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 
@@ -111,38 +129,65 @@ async function submit() {
   width: 100%;
   box-sizing: border-box;
   padding: 11px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
-  color: #fff;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-primary);
   font-size: 14px;
   outline: none;
-  transition: border-color 0.15s ease;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.field input:focus { border-color: rgba(16, 185, 129, 0.5); }
+.field input::placeholder { color: var(--text-muted); }
+
+.field input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+}
 
 .login-error {
+  display: flex;
+  align-items: center;
   font-size: 13px;
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
-  border-radius: 10px;
-  padding: 10px 12px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid rgba(251, 113, 133, 0.28);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
   margin-bottom: 14px;
 }
 
 .login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   width: 100%;
   padding: 12px;
   border: none;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #10b981, #059669);
-  color: #fff;
+  border-radius: var(--radius-sm);
+  background: var(--gradient-brand);
+  color: var(--primary-on);
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s ease;
+  transition: filter var(--transition-fast), transform var(--transition-fast);
 }
 
-.login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.login-btn:hover:not(:disabled) { background: var(--gradient-brand-hover); }
+.login-btn:active:not(:disabled) { transform: scale(0.99); }
+.login-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.login-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: 18px 0 0;
+}
 </style>

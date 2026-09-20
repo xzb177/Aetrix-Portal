@@ -14,6 +14,8 @@ import type {
   RegistrationSettings,
   TicketMessageRow,
   TicketRow,
+  TrendStats,
+  UserDetail,
   UsersResponse,
 } from '@/types'
 
@@ -31,6 +33,12 @@ export const changePassword = (data: { old_password: string; new_password: strin
 
 export const fetchUsers = (params: { search?: string; active?: boolean; limit?: number; offset?: number }) =>
   get<UsersResponse>('/users', params)
+
+/** 用户 360° 详情：资料 / 订阅 / 积分 / 订单 / 邀请 / 签到 / 观看 */
+export const fetchUserDetail = (id: number) => get<UserDetail>(`/users/${id}`)
+
+/** 趋势统计（近 N 天，按日补零） */
+export const fetchStatsTrend = (days = 14) => get<TrendStats>('/stats/trend', { days })
 
 export interface PlanRow {
   id: number
@@ -83,7 +91,8 @@ export const updateRegistrationSettings = (data: { mode: string; message?: strin
 
 // ==================== 公告 ====================
 
-export const fetchAnnouncements = () => get<Announcement[]>('/announcements')
+export const fetchAnnouncements = (params: { active_only?: boolean } = {}) =>
+  get<Announcement[]>('/announcements', params)
 
 export const createAnnouncement = (data: { title: string; content: string; type?: string; is_pinned?: boolean }) =>
   post<{ success: boolean }>('/announcements', data)
@@ -97,6 +106,10 @@ export const deleteAnnouncement = (id: number) => del<{ success: boolean }>(`/an
 
 export const fetchTickets = (params: { status_filter?: string } = {}) =>
   get<TicketRow[]>('/tickets', params)
+
+/** 工单状态 / 优先级调整 */
+export const updateTicket = (id: number, data: { status?: string; priority?: string; category?: string }) =>
+  put<{ success: boolean }>(`/tickets/${id}`, data)
 
 export const fetchTicketMessages = (id: number) => get<TicketMessageRow[]>(`/tickets/${id}/messages`)
 

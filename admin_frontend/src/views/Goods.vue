@@ -155,22 +155,22 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <header class="page-head">
+  <div class="admin-page">
+    <div class="admin-page-header">
       <div>
-        <h2 class="page-title">运营 · 商品管理</h2>
-        <p class="page-sub">订阅套餐与积分充值套餐配置</p>
+        <h1 class="admin-page-title">商品与套餐</h1>
+        <p class="admin-page-subtitle">订阅套餐与积分充值套餐配置</p>
       </div>
       <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
-    </header>
+    </div>
 
     <!-- 订阅套餐 -->
-    <section class="block">
+    <section class="admin-card block">
       <header class="block-head">
         <h3>订阅套餐</h3>
         <el-button type="primary" size="small" :icon="Plus" @click="openPlanCreate">新增套餐</el-button>
       </header>
-      <el-table :data="plans" v-loading="loading" stripe size="default">
+      <el-table :data="plans" v-loading="loading" size="default">
         <el-table-column prop="name" label="名称" width="160" />
         <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
         <el-table-column label="价格" width="100">
@@ -201,7 +201,7 @@ onMounted(load)
     </section>
 
     <!-- 充值套餐 -->
-    <section class="block">
+    <section class="admin-card block">
       <header class="block-head">
         <h3>积分充值套餐</h3>
         <el-button type="primary" size="small" :icon="Plus" @click="openPkgCreate">新增套餐</el-button>
@@ -282,26 +282,15 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page { display: flex; flex-direction: column; gap: 16px; }
-
-.page-head { display: flex; align-items: flex-start; justify-content: space-between; }
-.page-title { margin: 0 0 4px; font-size: 20px; font-weight: 700; }
-.page-sub { margin: 0; font-size: 13px; opacity: 0.6; }
-
-.block {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 12px;
-  padding: 16px;
-}
-
 .block-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   margin-bottom: 12px;
 }
-.block-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
 
-.muted { opacity: 0.5; }
+.block-head h3 { margin: 0; font-size: 14.5px; font-weight: 600; }
+
+.muted { color: var(--text-muted); }
 </style>

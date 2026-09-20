@@ -56,7 +56,9 @@ export interface Announcement {
   content: string
   type: string
   is_pinned: boolean
+  is_active?: boolean
   created_at: string
+  updated_at?: string | null
 }
 
 export interface TicketRow {
@@ -113,6 +115,100 @@ export interface PlaybackStats {
   today: { plays: number; users: number }
   user_ranking: { username: string; plays: number }[]
   item_ranking: { name: string; type: string; plays: number }[]
+}
+
+// ==================== v2.4.0 运营管理补全 ====================
+
+/** 用户 360° 详情（GET /api/admin/users/{id}） */
+export interface UserDetailProfile {
+  id: number
+  username: string
+  email: string | null
+  is_active: boolean
+  is_staff: boolean
+  emby_username: string | null
+  points: number
+  last_login_at: string | null
+  created_at: string | null
+}
+
+export interface UserSubscriptionRow {
+  id: number
+  plan_name: string
+  start_date: string | null
+  end_date: string | null
+  days_left: number
+  status: string
+}
+
+export interface UserDetail {
+  profile: UserDetailProfile
+  subscription: { active: UserSubscriptionRow | null; history: UserSubscriptionRow[] }
+  points: {
+    balance: number
+    income: number
+    expense: number
+    recent: {
+      id: number
+      amount: number
+      balance_after: number
+      type: string
+      description: string | null
+      created_at: string | null
+    }[]
+  }
+  orders: {
+    paid_total: number
+    recharge: { order_id: string; item_name: string; amount: number; points: number; status: string; created_at: string | null }[]
+    subscription: { order_id: string; item_name: string; amount: number; status: string; created_at: string | null }[]
+  }
+  invitation: {
+    count: number
+    rebate_total: number
+    invitees: { username: string; reward_points: number; created_at: string | null }[]
+  }
+  checkin: { total: number; last_date: string | null; streak: number }
+  watch: { plays: number; watched_items: number }
+}
+
+/** 趋势统计（GET /api/admin/stats/trend） */
+export interface TrendPoint {
+  date: string
+  new_users: number
+  plays: number
+  revenue: number
+  checkins: number
+}
+
+export interface TrendStats {
+  days: number
+  series: TrendPoint[]
+  totals: { new_users: number; plays: number; revenue: number; checkins: number }
+}
+
+/** 订阅总览（GET /api/admin/economy/subscriptions） */
+export interface SubscriptionOverviewRow {
+  id: number
+  user_id: number
+  username: string
+  plan_name: string
+  start_date: string | null
+  end_date: string | null
+  days_left: number
+  status: string
+}
+
+export interface SubscriptionOverview {
+  summary: { total: number; active: number; expiring_7d: number; expired: number }
+  subscriptions: SubscriptionOverviewRow[]
+}
+
+export interface EconomyOverview {
+  total_points: number
+  checkins_today: number
+  orders: { pending: number; revenue: number }
+  exchange_codes: { total: number; used: number }
+  invitations: number
 }
 
 export interface EmbyLibrary {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 公告管理：创建/编辑/置顶/删除，联动全站推送 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshCw } from 'lucide-vue-next'
 import { createAnnouncement, deleteAnnouncement, fetchAnnouncements, updateAnnouncement } from '@/api/admin'
@@ -8,6 +8,12 @@ import type { Announcement } from '@/types'
 
 const list = ref<Announcement[]>([])
 const loading = ref(false)
+const activeOnly = ref(false)
+
+/** 前端按启用状态过滤（后端已支持 active_only，这里用本地切换避免重复请求） */
+const visibleList = computed(() =>
+  activeOnly.value ? list.value.filter((a) => a.is_active !== false) : list.value,
+)
 
 const dialogVisible = ref(false)
 const editing = ref<Announcement | null>(null)
@@ -64,6 +70,13 @@ async function togglePin(a: Announcement) {
   load()
 }
 
+async function toggleActive(a: Announcement) {
+  const next = a.is_active === false
+  await updateAnnouncement(a.id, { is_active: next })
+  ElMessage.success(next ? '公告已启用' : '公告已停用（用户端不再展示）')
+  load()
+}
+
 function fmtDate(s: string): string {
   return s.slice(0, 16).replace('T', ' ')
 }
@@ -77,13 +90,14 @@ function fmtDate(s: string): string {
         <p class="admin-page-subtitle">发布公告会实时推送给所有在线用户</p>
       </div>
       <div class="toolbar">
+        <el-switch v-model="activeOnly" active-text="仅看启用中" />
         <el-button type="primary" @click="openCreate"><Plus :size="14" style="margin-right: 4px" />发布公告</el-button>
         <el-button @click="load"><RefreshCw :size="14" /></el-button>
       </div>
     </div>
 
     <div class="admin-card">
-      <el-table :data="list" v-loading="loading" style="width: 100%" :header-cell-style="{ background: 'transparent', color: '#a3a3a3' }">
+      <el-table :data="visibleList" v-loading="loading" style="width: 100%">
         <el-table-column label="公告" min-width="260">
           <template #default="{ row }">
             <div class="ann-title">
@@ -98,12 +112,22 @@ function fmtDate(s: string): string {
             <span class="mini-badge type">{{ row.type === 'system' ? '系统' : row.type }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <span class="mini-badge" :class="row.is_active === false ? 'off' : 'on'">
+              {{ row.is_active === false ? '已停用' : '展示中' }}
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column label="发布时间" width="150">
           <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right">
+        <el-table-column label="操作" width="230" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text @click="togglePin(row)">{{ row.is_pinned ? '取消置顶' : '置顶' }}</el-button>
+            <el-button size="small" text @click="toggleActive(row)">
+              {{ row.is_active === false ? '启用' : '停用' }}
+            </el-button>
             <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" text type="danger" @click="remove(row)">删除</el-button>
           </template>
@@ -139,7 +163,7 @@ function fmtDate(s: string): string {
 .ann-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .ann-content {
   font-size: 12px;
-  color: var(--color-text-muted, #737373);
+  color: var(--text-muted);
   margin-top: 2px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -147,6 +171,8 @@ function fmtDate(s: string): string {
   overflow: hidden;
 }
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; flex-shrink: 0; }
-.mini-badge.pin { background: rgba(234, 179, 8, 0.15); color: #eab308; }
-.mini-badge.type { background: rgba(255, 255, 255, 0.08); color: var(--color-text-secondary, #a3a3a3); }
+.mini-badge.pin { background: var(--warning-bg); color: var(--warning); }
+.mini-badge.type { background: var(--bg-hover); color: var(--text-secondary); }
+.mini-badge.on { background: var(--success-bg); color: var(--success); }
+.mini-badge.off { background: var(--bg-hover); color: var(--text-muted); }
 </style>

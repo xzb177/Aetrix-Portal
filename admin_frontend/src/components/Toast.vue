@@ -13,11 +13,12 @@ const toastIcons = {
 }
 
 // Toast 颜色
+// 与 Aurora 令牌一致的语义色
 const toastColors = {
-  success: { bg: 'rgba(16, 185, 129, 0.15)', border: '#10b981', icon: '#10b981' },
-  error: { bg: 'rgba(239, 68, 68, 0.15)', border: '#ef4444', icon: '#ef4444' },
-  warning: { bg: 'rgba(245, 158, 11, 0.15)', border: '#f59e0b', icon: '#f59e0b' },
-  info: { bg: 'rgba(59, 130, 246, 0.15)', border: '#3b82f6', icon: '#3b82f6' },
+  success: { bg: 'rgba(52, 211, 153, 0.14)', border: '#34d399', icon: '#34d399' },
+  error: { bg: 'rgba(251, 113, 133, 0.14)', border: '#fb7185', icon: '#fb7185' },
+  warning: { bg: 'rgba(251, 191, 36, 0.14)', border: '#fbbf24', icon: '#fbbf24' },
+  info: { bg: 'rgba(96, 165, 250, 0.14)', border: '#60a5fa', icon: '#60a5fa' },
 }
 
 const getToastColor = (type: ToastType) => toastColors[type]
