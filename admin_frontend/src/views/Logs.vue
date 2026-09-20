@@ -1,324 +1,117 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { RefreshCw, FileText, Shield, Trash2, Lock, Bell } from 'lucide-vue-next'
-import { http } from '@/utils/request'
+/** 操作日志：管理员操作审计流水 */
+import { onMounted, ref } from 'vue'
+import { RefreshCw } from 'lucide-vue-next'
+import { fetchLogs } from '@/api/admin'
+import type { AdminLogRow } from '@/types'
 
-interface AdminLog {
-  id: number
-  admin_username: string
-  action: string
-  resource: string
-  resource_id: string
-  details: any
-  ip_address: string
-  created_at: string
+const logs = ref<AdminLogRow[]>([])
+const loading = ref(false)
+const actionFilter = ref('')
+const limit = ref(100)
+
+const ACTION_LABELS: Record<string, string> = {
+  admin_change_password: '管理员改密',
+  update_user: '更新用户',
+  reset_user_password: '重置用户密码',
+  send_user_message: '发送用户消息',
+  broadcast_message: '全站广播',
+  create_registration_codes: '生成注册码',
+  update_registration_code: '更新注册码',
+  set_registration_mode: '设置注册模式',
+  create_announcement: '发布公告',
+  update_announcement: '更新公告',
+  delete_announcement: '删除公告',
+  update_ticket: '更新工单',
+  reply_ticket: '回复工单',
+  update_media_seek: '审核求片',
 }
 
-const loading = ref(false)
-const logs = ref<AdminLog[]>([])
-
-const loadLogs = async () => {
+async function load() {
   loading.value = true
   try {
-    logs.value = await http.get<AdminLog[]>('/stats/logs?limit=100')
-  } catch (error) {
-    console.error('加载日志失败:', error)
+    const params: Record<string, unknown> = { limit: limit.value }
+    if (actionFilter.value) params.action_filter = actionFilter.value
+    logs.value = await fetchLogs(params)
   } finally {
     loading.value = false
   }
 }
 
-const getActionName = (action: string) => {
-  const actions: Record<string, string> = {
-    login: '登录',
-    logout: '登出',
-    update_user: '更新用户',
-    toggle_vip: '切换VIP',
-    delete_user: '删除用户',
-    unbind_emby: '解绑Emby',
-    create_activity: '创建活动',
-    update_activity: '更新活动',
-    delete_activity: '删除活动',
-    toggle_activity: '切换活动状态',
-    update_push_config: '更新推送配置',
-    change_password: '修改密码',
+onMounted(load)
+
+function fmtDate(s: string): string {
+  return s.slice(0, 19).replace('T', ' ')
+}
+
+function detailText(log: AdminLogRow): string {
+  if (!log.details) return ''
+  const parts: string[] = []
+  for (const [k, v] of Object.entries(log.details)) {
+    parts.push(`${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
   }
-  return actions[action] || action
+  return parts.join(' ')
 }
-
-const getActionIcon = (action: string) => {
-  const icons: Record<string, any> = {
-    login: Shield,
-    logout: Shield,
-    update_user: FileText,
-    toggle_vip: Bell,
-    delete_user: Trash2,
-    unbind_emby: Lock,
-    create_activity: FileText,
-    update_activity: FileText,
-    delete_activity: Trash2,
-    toggle_activity: Bell,
-    update_push_config: FileText,
-    change_password: Lock,
-  }
-  return icons[action] || FileText
-}
-
-const getActionColor = (action: string) => {
-  const colors: Record<string, string> = {
-    login: 'tag-success',
-    logout: 'tag-gray',
-    toggle_vip: 'tag-warning',
-    delete_user: 'tag-danger',
-    create_activity: 'tag-info',
-    change_password: 'tag-purple',
-  }
-  return colors[action] || 'tag-gray'
-}
-
-const formatDate = (dateStr: string) => {
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
-onMounted(() => {
-  loadLogs()
-})
 </script>
 
 <template>
-  <div class="logs-page">
-    <!-- 刷新按钮 -->
-    <div class="page-actions">
-      <button class="btn-secondary btn-icon" @click="loadLogs" :disabled="loading">
-        <RefreshCw :size="18" :class="{ 'animate-spin': loading }" />
-        刷新
-      </button>
+  <div class="admin-page">
+    <div class="admin-page-header">
+      <div>
+        <h1 class="admin-page-title">操作日志</h1>
+        <p class="admin-page-subtitle">全部管理操作均有审计记录（最近 {{ limit }} 条）</p>
+      </div>
+      <div class="toolbar">
+        <el-select v-model="actionFilter" placeholder="操作类型" clearable filterable style="width: 170px" @change="load">
+          <el-option v-for="(label, key) in ACTION_LABELS" :key="key" :label="label" :value="key" />
+        </el-select>
+        <el-button @click="load"><RefreshCw :size="14" /></el-button>
+      </div>
     </div>
 
-    <!-- 日志列表 -->
-    <div class="card table-card">
-      <div class="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th class="table-hide-mobile">ID</th>
-              <th class="table-hide-mobile">管理员</th>
-              <th>操作</th>
-              <th class="table-hide-mobile">资源</th>
-              <th class="table-hide-mobile">资源ID</th>
-              <th class="table-hide-mobile">详情</th>
-              <th class="table-hide-mobile">IP地址</th>
-              <th>时间</th>
-            </tr>
-          </thead>
-          <tbody v-if="!loading && logs.length > 0">
-            <tr v-for="log in logs" :key="log.id">
-              <td class="table-hide-mobile log-id">{{ log.id }}</td>
-              <td class="table-hide-mobile log-admin">{{ log.admin_username }}</td>
-              <td>
-                <span :class="['action-tag', getActionColor(log.action)]">
-                  <component :is="getActionIcon(log.action)" :size="12" class="mr-1" />
-                  {{ getActionName(log.action) }}
-                </span>
-              </td>
-              <td class="table-hide-mobile log-resource">{{ log.resource || '-' }}</td>
-              <td class="table-hide-mobile log-resource-id">{{ log.resource_id || '-' }}</td>
-              <td class="table-hide-mobile">
-                <span v-if="log.details" class="log-details">
-                  {{ JSON.stringify(log.details) }}
-                </span>
-                <span v-else class="log-empty">-</span>
-              </td>
-              <td class="table-hide-mobile log-ip">{{ log.ip_address }}</td>
-              <td class="log-time">{{ formatDate(log.created_at) }}</td>
-            </tr>
-          </tbody>
-          <tbody v-else-if="loading">
-            <tr v-for="i in 8" :key="i">
-              <td v-for="j in 8" :key="j" class="py-4">
-                <div class="skeleton-bar"></div>
-              </td>
-            </tr>
-          </tbody>
-          <tbody v-else>
-            <tr>
-              <td colspan="8">
-                <div class="empty-state">
-                  <div class="empty-state-icon">📋</div>
-                  <p class="empty-state-text">暂无日志记录</p>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="admin-card">
+      <el-table :data="logs" v-loading="loading" style="width: 100%" :header-cell-style="{ background: 'transparent', color: '#a3a3a3' }">
+        <el-table-column label="时间" width="170">
+          <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作人" prop="admin_name" width="120" />
+        <el-table-column label="操作" width="140">
+          <template #default="{ row }">
+            <span class="action-chip">{{ ACTION_LABELS[row.action] || row.action }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="目标" width="120">
+          <template #default="{ row }">
+            <span v-if="row.target_type">{{ row.target_type }}#{{ row.target_id }}</span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="详情" min-width="260">
+          <template #default="{ row }">
+            <span class="log-detail">{{ detailText(row) || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="IP" prop="ip_address" width="130">
+          <template #default="{ row }">{{ row.ip_address || '—' }}</template>
+        </el-table-column>
+      </el-table>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* ==================== Page Layout ==================== */
-.logs-page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
+.toolbar { display: flex; gap: 8px; }
+.action-chip {
+  font-size: 11px;
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  border-radius: 6px;
+  padding: 2px 8px;
 }
-
-/* 操作按钮区 */
-.page-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 1rem;
-}
-
-.btn-icon {
-  gap: 0.5rem;
-}
-
-/* ==================== Table Card ==================== */
-.table-card {
-  overflow: hidden;
-}
-
-.table-wrapper {
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-thead th {
-  padding: 1rem 1rem;
-  text-align: left;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  border-bottom: 1px solid var(--border-color);
-  background: rgba(255, 255, 255, 0.02);
-  white-space: nowrap;
-}
-
-tbody tr {
-  border-bottom: 1px solid var(--border-color);
-  transition: background 0.15s ease;
-}
-
-tbody tr:last-child {
-  border-bottom: none;
-}
-
-tbody tr:hover {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-tbody td {
-  padding: 1rem;
-  font-size: 0.875rem;
-  color: var(--text-primary);
-  vertical-align: middle;
-}
-
-.log-id {
-  font-weight: 500;
-  color: var(--brand-primary);
-}
-
-.log-admin {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.log-resource {
-  color: var(--text-secondary);
-}
-
-.log-resource-id {
-  font-size: 0.75rem;
-  font-family: 'Courier New', monospace;
-  color: var(--text-secondary);
-}
-
-.log-details {
-  display: inline-block;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  font-family: 'Courier New', monospace;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.log-empty {
-  color: var(--text-muted);
-}
-
-.log-ip {
-  font-size: 0.75rem;
-  font-family: 'Courier New', monospace;
-  color: var(--text-muted);
-}
-
-.log-time {
-  color: var(--text-secondary);
-}
-
-/* ==================== Action Tag ==================== */
-.action-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.625rem;
-  border-radius: 9999px;
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.mr-1 {
-  margin-right: 0.25rem;
-}
-
-/* ==================== Skeleton ==================== */
-.skeleton-bar {
-  height: 16px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 4px;
-  animation: skeleton-pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes skeleton-pulse {
-  0%, 100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-/* ==================== Mobile Responsive ==================== */
-@media (max-width: 640px) {
-
-  .page-title {
-    font-size: 1.25rem;
-  }
-
-  .table-wrapper {
-    margin-left: -1rem;
-    margin-right: -1rem;
-  }
-
-  .table-hide-mobile {
-    display: none;
-  }
+.log-detail {
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  color: var(--color-text-secondary, #a3a3a3);
+  word-break: break-all;
 }
 </style>
