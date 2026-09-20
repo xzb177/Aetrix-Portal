@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * 钱包 — 余额总览 / 积分充值（支付下单）/ 兑换码 / 订单记录 / 积分流水
- * 布局：余额卡左右分区（左余额+签到态，右兑换面板）；套餐卡横向结构化行
+ * 钱包 — 余额总览 / 积分充值（支付下单）/ 卡码·兑换码核销 / 订单记录 / 积分流水
+ * 布局：余额卡左右分区（左余额+签到态，右统一核销面板）；套餐卡横向结构化行
  */
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
@@ -9,7 +9,7 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, Search,
+  KeyRound,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi,
@@ -48,75 +48,92 @@ const currentSub = computed(
   () => subscriptions.value.find((s) => s.status === 'active' && s.days_left > 0) || null,
 )
 
-// ===== 兑换码 =====
+// ===== 统一核销入口（卡码 / 兑换码 / 邀请码自动识别）=====
+// 卡码（会员时长）与兑换码（积分/订阅）原本是两个输入框，用户得自己判断该填哪个。
+// 现在只留一个入口：先向后端预检识别来源，再走对应链路（邀请码给出指引）。
 const redeemCode = ref('')
 const redeemLoading = ref(false)
+const codePreview = ref<CodePreview | null>(null)
+const codeNotice = ref('')
+const redeemInputRef = ref<HTMLInputElement | null>(null)
+
+/** 重新输入时清掉上一轮预检结果，避免残留提示误导 */
+function resetCodeFeedback() {
+  codePreview.value = null
+  codeNotice.value = ''
+}
+
+/** 订阅页的一行指引：把焦点交回顶部唯一的核销面板 */
+function focusRedeem() {
+  redeemInputRef.value?.focus()
+  redeemInputRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
 
 async function handleRedeem() {
   const code = redeemCode.value.trim()
   if (!code) {
-    toast.error('请输入兑换码')
+    toast.error('请输入卡码或兑换码')
     return
   }
   redeemLoading.value = true
+  codePreview.value = null
+  codeNotice.value = ''
   try {
-    const res = await exchangeApi.redeem(code)
-    toast.success(res.message || '兑换成功')
-    redeemCode.value = ''
-    await refreshBalance()
+    const preview = await membershipApi.preview(code)
+
+    if (preview.kind === 'exchange') {
+      // 兑换码：无预检态，直接核销（积分或订阅时长）
+      if (!exchangeEnabled.value) {
+        codeNotice.value = '管理员已关闭兑换，如有兑换码请稍后再试'
+        return
+      }
+      const res = await exchangeApi.redeem(code)
+      toast.success(res.message || '兑换成功')
+      redeemCode.value = ''
+      await Promise.all([refreshBalance(), refreshSubscriptions()])
+      return
+    }
+
+    if (preview.kind === 'code' && preview.valid) {
+      // 会员卡码：先展示类型与天数，确认后再核销
+      codePreview.value = preview
+      return
+    }
+
+    // 邀请码 / 无效码 / 未识别：直接把后端给出的指引显示在面板下方
+    codeNotice.value = preview.message || '卡码或兑换码不存在'
   } catch (err: any) {
     const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '兑换失败，请稍后重试')
+    toast.error(typeof detail === 'string' ? detail : '核销失败，请稍后重试')
   } finally {
     redeemLoading.value = false
   }
 }
 
-// ===== 会员卡码（注册码 / 续期码 / 白名单码）=====
-// 先预检（识别类型与天数、指名义码提示），确认后再核销，避免误提交
-const codeInput = ref('')
-const codeChecking = ref(false)
-const codeRedeeming = ref(false)
-const codePreview = ref<CodePreview | null>(null)
-
-async function handleCodeCheck() {
-  const code = codeInput.value.trim()
-  if (!code) {
-    toast.error('请输入卡码')
-    return
-  }
-  codeChecking.value = true
-  codePreview.value = null
+async function refreshSubscriptions() {
+  subscriptions.value = await subscriptionApi.getMine().catch(() => subscriptions.value)
   try {
-    codePreview.value = await membershipApi.preview(code)
-  } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '卡码校验失败，请稍后重试')
-  } finally {
-    codeChecking.value = false
+    await userStore.fetchUser()
+  } catch {
+    // 会员身份刷新失败不影响核销结果
   }
 }
 
 async function confirmCodeRedeem() {
-  const code = codeInput.value.trim()
+  const code = redeemCode.value.trim()
   if (!code) return
-  codeRedeeming.value = true
+  redeemLoading.value = true
   try {
     const res = await membershipApi.redeem(code)
     toast.success(res.message || '卡码核销成功')
-    codeInput.value = ''
+    redeemCode.value = ''
     codePreview.value = null
-    subscriptions.value = await subscriptionApi.getMine().catch(() => subscriptions.value)
-    try {
-      await userStore.fetchUser()
-    } catch {
-      // 会员身份刷新失败不影响卡码核销结果
-    }
+    await refreshSubscriptions()
   } catch (err: any) {
     const detail = err?.response?.data?.detail
     toast.error(typeof detail === 'string' ? detail : '核销失败，请稍后重试')
   } finally {
-    codeRedeeming.value = false
+    redeemLoading.value = false
   }
 }
 
@@ -289,7 +306,7 @@ onBeforeUnmount(stopPayPoll)
 
 <template>
   <div class="au-page wallet-view">
-    <!-- 余额主卡：左右分区 — 左侧余额与签到态，右侧兑换面板 -->
+    <!-- 余额主卡：左右分区 — 左侧余额与签到态，右侧核销面板 -->
     <section class="balance-hero au-anim-up">
       <div class="bh-main">
         <span class="balance-label">
@@ -313,33 +330,54 @@ onBeforeUnmount(stopPayPoll)
 
       <div class="bh-divider" aria-hidden="true" />
 
-      <!-- 兑换面板 -->
+      <!-- 统一核销面板：卡码与兑换码共用同一个入口，由后端预检自动识别 -->
       <form class="bh-redeem" @submit.prevent="handleRedeem">
         <span class="redeem-label">
           <TicketCheck :size="14" />
-          兑换码
+          卡码 · 兑换码
         </span>
         <div class="redeem-row">
           <input
+            ref="redeemInputRef"
             v-model="redeemCode"
             class="au-input redeem-input"
-            :placeholder="exchangeEnabled ? '输入兑换码' : '兑换功能暂未开启'"
-            maxlength="32"
+            placeholder="输入卡码或兑换码"
+            maxlength="64"
             autocomplete="off"
-            :disabled="!exchangeEnabled"
+            @input="resetCodeFeedback"
           >
           <button
             type="submit"
             class="au-btn au-btn-primary"
-            :disabled="redeemLoading || !redeemCode.trim() || !exchangeEnabled"
+            :disabled="redeemLoading || !redeemCode.trim()"
           >
             <Sparkles v-if="!redeemLoading" :size="15" />
-            <span v-if="redeemLoading" class="au-spinner spinner-sm" />
-            兑换
+            <span v-else class="au-spinner spinner-sm" />
+            核销
           </button>
         </div>
-        <p class="redeem-hint">
-          {{ exchangeEnabled ? '积分或订阅时长即时到账' : '管理员已关闭兑换，如有兑换码请稍后再试' }}
+
+        <!-- 会员卡码预检通过：先给类型与天数，确认后再核销 -->
+        <div v-if="codePreview" class="redeem-preview">
+          <CircleCheck :size="14" />
+          <span class="rp-text">
+            {{ codePreview.type_name }}
+            <strong>· {{ codePreview.days_text }}</strong>
+            <template v-if="codePreview.is_named"> · 限指定账号</template>
+          </span>
+          <button
+            type="button"
+            class="au-btn au-btn-primary au-btn-sm"
+            :disabled="redeemLoading"
+            @click="confirmCodeRedeem"
+          >
+            <span v-if="redeemLoading" class="au-spinner spinner-sm" />
+            确认开通
+          </button>
+        </div>
+
+        <p v-else class="redeem-hint" :class="{ warn: !!codeNotice }">
+          {{ codeNotice || '会员时长 · 积分 · 订阅，自动识别类型' }}
         </p>
       </form>
 
@@ -437,56 +475,12 @@ onBeforeUnmount(stopPayPoll)
         <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
       </div>
 
-      <!-- 会员卡码：管理员发放的注册码 / 续期码 / 白名单码 -->
-      <form class="code-card" @submit.prevent="handleCodeCheck">
-        <div class="cc-head">
-          <span class="cc-title"><KeyRound :size="15" />会员卡码</span>
-          <span class="cc-sub">注册码开通、续期码叠加、白名单码长期有效</span>
-        </div>
-        <div class="cc-row">
-          <input
-            v-model="codeInput"
-            class="au-input cc-input"
-            placeholder="输入卡码，例如 REG-XXXXXXXX"
-            maxlength="64"
-            autocomplete="off"
-            @input="codePreview = null"
-          >
-          <button
-            type="submit"
-            class="au-btn au-btn-ghost"
-            :disabled="codeChecking || !codeInput.trim()"
-          >
-            <span v-if="codeChecking" class="au-spinner spinner-sm" />
-            <Search v-else :size="14" />
-            校验
-          </button>
-        </div>
-
-        <div v-if="codePreview" class="cc-preview" :class="{ ok: codePreview.valid, bad: !codePreview.valid }">
-          <template v-if="codePreview.valid">
-            <CircleCheck :size="15" />
-            <span>
-              {{ codePreview.type_name }}
-              <strong>· {{ codePreview.days_text }}</strong>
-              <template v-if="codePreview.is_named"> · 限指定账号</template>
-            </span>
-            <button
-              type="button"
-              class="au-btn au-btn-primary au-btn-sm"
-              :disabled="codeRedeeming"
-              @click="confirmCodeRedeem"
-            >
-              <span v-if="codeRedeeming" class="au-spinner spinner-sm" />
-              确认开通
-            </button>
-          </template>
-          <template v-else>
-            <CircleAlert :size="15" />
-            <span>{{ codePreview.message }}</span>
-          </template>
-        </div>
-      </form>
+      <!-- 卡码核销入口已收归顶部面板，这里只留一行指引，避免两个输入框让用户猜该填哪个 -->
+      <button v-if="plansEnabled" type="button" class="code-tip" @click="focusRedeem">
+        <KeyRound :size="14" />
+        <span>已有卡码 / 兑换码？用顶部「卡码 · 兑换码」入口，注册码 / 续期码 / 白名单码自动识别</span>
+        <ChevronRight :size="14" class="ct-arrow" />
+      </button>
 
       <div v-if="!plansEnabled" class="au-empty">
         <CircleAlert :size="30" />
@@ -897,79 +891,51 @@ onBeforeUnmount(stopPayPoll)
   color: var(--au-text-2);
 }
 
-/* ===== 会员卡码 ===== */
-.code-card {
-  margin-bottom: 0.875rem;
-  padding: 0.8125rem 0.9375rem;
-  background: var(--au-surface-2, rgba(255, 255, 255, 0.02));
-  border: 1px solid var(--au-border, rgba(255, 255, 255, 0.08));
-  border-radius: var(--au-r-md);
-}
-
-.cc-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.625rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.625rem;
-}
-
-.cc-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text-1);
-}
-
-.cc-title svg { color: var(--au-primary); }
-
-.cc-sub {
-  font-size: 0.75rem;
-  color: var(--au-text-3, var(--au-text-2));
-}
-
-.cc-row {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.cc-input {
-  flex: 1;
-  min-width: 0;
-  font-family: ui-monospace, monospace;
-  letter-spacing: 0.05em;
-}
-
-.cc-preview {
+/* 卡码预检通过后的确认行（内联在核销面板里） */
+.redeem-preview {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
   flex-wrap: wrap;
-  margin-top: 0.625rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: var(--au-r-sm, 0.5rem);
-  font-size: 0.8125rem;
-}
-
-.cc-preview.ok {
+  gap: 0.5rem;
+  padding: 0.4375rem 0.625rem;
   background: var(--au-primary-soft);
   border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
+  font-size: 0.75rem;
   color: var(--au-text-2);
 }
+.redeem-preview svg { color: var(--au-primary); flex-shrink: 0; }
+.redeem-preview strong { color: var(--au-text); font-variant-numeric: tabular-nums; }
+.redeem-preview .rp-text { flex: 1; min-width: 0; }
+.redeem-preview .au-btn { margin-left: auto; }
 
-.cc-preview.ok svg { color: var(--au-primary); }
+.redeem-hint.warn { color: var(--au-warning); }
 
-.cc-preview.bad {
-  background: rgba(244, 63, 94, 0.08);
-  border: 1px solid rgba(244, 63, 94, 0.3);
-  color: var(--au-text-2);
+/* ===== 订阅页的核销指引（入口已统一到顶部） ===== */
+.code-tip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin-bottom: 0.875rem;
+  padding: 0.625rem 0.875rem;
+  background: var(--au-surface-2, rgba(255, 255, 255, 0.02));
+  border: 1px dashed var(--au-border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--au-r-md);
+  color: var(--au-text-3, var(--au-text-2));
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
 }
-
-.cc-preview.bad svg { color: #fb7185; }
-
-.cc-preview .au-btn { margin-left: auto; }
+.code-tip svg { color: var(--au-primary); flex-shrink: 0; }
+.code-tip span { flex: 1; min-width: 0; }
+.code-tip .ct-arrow { color: var(--au-text-4); }
+.code-tip:hover {
+  border-color: var(--au-primary-border);
+  color: var(--au-text-2);
+  transform: translateY(-1px);
+}
 
 .member-status svg {
   color: var(--au-primary);
