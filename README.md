@@ -215,38 +215,35 @@ python main.py
 
 ## 🚢 部署
 
-### 为什么 Freebuff Hosting 会报「找不到受支持的框架」
+完整部署文档在 [`docs/`](./docs/README.md)：
 
-在本平台点「Deploy」时会出现：
-
-> Freebuff hosting could not identify a supported framework in package.json.
-> Hosting builds React projects only: Vite + React, Next.js, and Create React App.
-
-这不是配置写错或漏填，而是项目形态与 Freebuff Hosting 的支持范围不重合，改 `package.json` 无法绕过：
-
-| 本项目 | Freebuff Hosting 要求 |
+| 文档 | 内容 |
 | --- | --- |
-| 门户 / 管理后台前端是 **Vue 3 + Vite**（依赖 `vue`、`@vitejs/plugin-vue`） | 只识别 **Vite + React** / Next.js / CRA |
-| 仓库根目录**没有** `package.json`（主体是 Python 后端） | 需要根 `package.json` 中能识别出受支持的框架 |
-| 后端是 **Python FastAPI**，依赖 SQLite / PostgreSQL、Redis、ffmpeg，并自带 Emby 协议端点与 WebSocket | 构建镜像仅 Node.js，Python 只能以 `api/*.py` 的无状态函数运行 |
+| [文档中心](./docs/README.md) | 架构一图、该看哪一篇、为什么是单进程 |
+| [服务端部署](./docs/deploy-server.md) | 环境要求、`.env` 逐项说明、启动与 systemd 常驻、媒体库创建与扫描、播放器接入、监控 |
+| [门户与管理后台部署](./docs/deploy-web.md) | 两个前端构建、静态托管路径、Nginx + HTTPS、首次登录、验证清单 |
+| [运维 · 备份 · 排错](./docs/operations.md) | 上线检查清单、安全基线、备份恢复、常见问题 |
 
-即使把前端换成能通过框架识别的形态，部署出来的也只是连不上后端 API 的空壳（播放、登录、支付、Emby 协议端点全部无法工作）。**Freebuff Hosting 不适用于本项目**；沙箱内的 `Preview`（`*.daytonaproxy01.net`）只用于开发预览，不是生产部署。
-
-### 正确的部署方式：项目自带的 Docker 栈
-
-本项目从一开始就是按「一台服务器 + Docker Compose」设计的（`docker-compose.yml` / `deploy.sh` / `update.sh` / `nginx.conf`）：
+最短路径（单机裸部署）：
 
 ```bash
-cp env.example .env      # 按注释填写数据库、JWT 密钥、支付网关等
-./deploy.sh --build      # 构建并启动全部服务（统一后端 + 用户端 + 管理后台）
-./deploy.sh --status     # 查看服务状态
-./deploy.sh --update     # 拉取新代码并滚动更新
-./deploy.sh --rollback   # 回滚到上一版本
+pip install -r backend/requirements.txt
+cp env.example .env                    # 至少设置 SECRET_KEY 与 EMBY_PUBLIC_URL
+
+cd user_frontend  && npm ci && npm run build-only && cd ..
+cd admin_frontend && npm ci && npm run build      && cd ..
+
+python serve.py                        # 0.0.0.0:8000
 ```
 
-部署后用户端、管理后台（`/admin`）、API 与 Emby 协议端点由同一端口对外服务，Emby / Infuse / SenPlayer 等客户端直接连该地址即可。
+启动后门户（`/`）、管理后台（`/admin`）、门户 API（`/api/*`）、Emby 协议网关（`/emby/*`）由同一端口对外服务；再用 Nginx 终结 TLS 即可，Emby / Infuse / SenPlayer 等客户端直接连该域名（详见上方文档）。
+
+> ⚠️ **Freebuff Hosting 无法部署本项目**：该平台只构建 React 项目（Vite + React / Next.js / CRA），而本项目是 Vue 3 + Python FastAPI。原因与替代路径见 [运维 · 排错](./docs/operations.md#freebuff-hosting-报找不到受支持的框架)。
 
 ## 📝 更新日志
+
+### v2.6.2 (2026-09-20) — 文档中心（部署指南）
+- 📚 **新增 `docs/` 文档中心**：服务端部署、门户与管理后台部署、运维与排错三篇指南，加上索引页；README「部署」章节改为指向它（本版仅文档，应用版本号仍为 2.6.1）
 
 ### v2.6.1 (2026-09-20) — 钱包核销入口二合一 + 部署说明
 - ✅ **卡码 / 兑换码统一入口**：钱包顶部只保留一个「卡码 · 兑换码」输入框，提交后由后端预检自动识别来源（会员卡码展示类型与天数后确认开通、兑换码直接核销、邀请码提示去注册页），订阅页不再重复放输入框

@@ -2,6 +2,18 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.2] - 2026-09-20
+
+### 文档 (Docs)
+- **新增文档中心 `docs/`**（对标成熟媒体站项目的文档中心结构），共 4 篇：
+  - [`docs/README.md`](docs/README.md)：文档中心索引——架构一图、按场景的阅读路径、为什么统一后端必须单进程
+  - [`docs/deploy-server.md`](docs/deploy-server.md)：服务端部署——环境要求、`env.example` 逐项说明、启动与 systemd 常驻、媒体库创建与扫描、Emby 客户端接入、转码与直连、监控
+  - [`docs/deploy-web.md`](docs/deploy-web.md)：门户与管理后台部署——两个前端的构建与固定产物路径、静态托管、同源约束、Nginx + HTTPS 最小可用配置、首次登录与验证清单
+  - [`docs/operations.md`](docs/operations.md)：上线检查清单、安全基线（含风险最高的三项配置）、SQLite / PostgreSQL 备份与恢复、常见问题排错
+- README「部署」章节改为指向文档中心并保留最短部署路径；同步修正原描述——自带的一键脚本（`deploy.sh` / `docker-compose.yml`）面向 v2.0 之前的拆分栈，统一后端的部署入口是 `serve.py` 单进程
+- 文档中明确 Freebuff Hosting 只构建 React（Vite + React / Next.js / CRA），与本项目 Vue + Python 的形态不兼容，替代路径为服务器部署；并提示仓库内提交的 `nginx/ssl/` 证书不要直接用于生产
+- 本版为**纯文档变更**，不涉及代码，应用版本号保持用户端 2.6.1
+
 ## [2.6.1] - 2026-09-20
 
 ### 变更 (Changed)
