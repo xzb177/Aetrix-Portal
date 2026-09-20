@@ -116,15 +116,80 @@ def build_hls_command(
 
 
 def start_transcode(
-    file_path: str, start_seconds: float = 0, video_bitrate: int = 4_000_000, height: Optional[int] = None
+    file_path: str,
+    start_seconds: float = 0,
+    video_bitrate: int = 4_000_000,
+    height: Optional[int] = None,
+    user_id: Optional[int] = None,
+    item_guid: Optional[str] = None,
 ) -> str:
-    """启动转码，返回播放列表 URL 路径片段 /emby/videos/{session}/master.m3u8"""
+    """启动转码，返回播放列表 URL 路径片段 /emby/videos/{session}/master.m3u8
+
+    同一用户重复请求同一部影片时复用进行中的转码会话，避免客户端重试/多端拉起时
+    反复 fork ffmpeg（旧实现每次请求 master.m3u8 都会新建一个进程）。
+    """
+    reap_stale_transcodes()
+    if user_id is not None and item_guid:
+        existing = find_active_transcode(user_id, item_guid)
+        if existing:
+            logger.info("复用进行中的 HLS 转码 %s", existing)
+            return existing
     session_id = uuid.uuid4().hex[:16]
     out_dir = os.path.join(TRANSCODE_DIR, session_id)
     proc = build_hls_command(file_path, out_dir, start_seconds, video_bitrate, height)
-    _TRANSCODE_PROCS[session_id] = {"proc": proc, "dir": out_dir, "started": datetime.now()}
+    _TRANSCODE_PROCS[session_id] = {
+        "proc": proc,
+        "dir": out_dir,
+        "started": datetime.now(),
+        "user_id": user_id,
+        "item_guid": item_guid,
+        "file_path": file_path,
+    }
     logger.info("HLS 转码启动 %s -> %s", os.path.basename(file_path), session_id)
     return session_id
+
+
+def find_active_transcode(user_id: int, item_guid: str) -> Optional[str]:
+    """查找同一用户同一影片仍在运行的转码会话"""
+    for sid, info in _TRANSCODE_PROCS.items():
+        if info.get("user_id") != user_id or info.get("item_guid") != item_guid:
+            continue
+        proc = info.get("proc")
+        if proc is not None and proc.poll() is None:
+            return sid
+    return None
+
+
+def reap_stale_transcodes(max_age_seconds: int = 6 * 3600) -> int:
+    """回收已退出 / 超龄的转码会话（含清理磁盘目录）
+
+    客户端异常断开时不会上报 Stopped，若不回收会长期残留 ffmpeg 进程与临时分片。
+    """
+    now = datetime.now()
+    reaped = 0
+    for sid, info in list(_TRANSCODE_PROCS.items()):
+        proc = info.get("proc")
+        started = info.get("started") or now
+        exited = proc is not None and proc.poll() is not None
+        expired = (now - started).total_seconds() > max_age_seconds
+        if exited or expired:
+            stop_transcode(sid)
+            reaped += 1
+    if reaped:
+        logger.info("回收 %d 个失效 HLS 转码会话", reaped)
+    return reaped
+
+
+def wait_for_file(path: str, timeout: float = 10.0, interval: float = 0.2) -> bool:
+    """等待 ffmpeg 产出目标文件（客户端请求切片往往早于转码进度）"""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return True
+        time.sleep(interval)
+    return os.path.isfile(path) and os.path.getsize(path) > 0
 
 
 def stop_transcode(session_id: str) -> None:
@@ -148,8 +213,27 @@ def stop_all_transcodes() -> int:
     return count
 
 
+def stop_user_transcodes(user_id: int) -> int:
+    """停止某用户的全部转码会话（客户端请求 ActiveEncodings/Delete 时调用）"""
+    stopped = 0
+    for sid, info in list(_TRANSCODE_PROCS.items()):
+        if info.get("user_id") == user_id:
+            stop_transcode(sid)
+            stopped += 1
+    return stopped
+
+
 def get_transcode(session_id: str):
     return _TRANSCODE_PROCS.get(session_id)
+
+
+def transcode_alive(session_id: str) -> bool:
+    """转码进程是否仍在运行"""
+    info = _TRANSCODE_PROCS.get(session_id)
+    if not info:
+        return False
+    proc = info.get("proc")
+    return proc is not None and proc.poll() is None
 
 
 _TRANSCODE_PROCS: dict[str, dict] = {}

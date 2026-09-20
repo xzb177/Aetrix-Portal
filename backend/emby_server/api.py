@@ -11,8 +11,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+import secrets
 import shutil
 import urllib.parse
 from datetime import datetime, timedelta
@@ -23,20 +25,25 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from backend import models
-from backend.database import get_db
+from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
+from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
     get_emby_user,
     parse_emby_authorization,
     resolve_token,
 )
-from backend.emby_server.scanner import item_guid, parse_media_filename
+from backend.emby_server.scanner import item_guid, parse_media_filename, scan_library_sync
 from backend.emby_server.streaming import (
     get_transcode,
     serve_file,
     serve_image,
     start_transcode,
+    stop_all_transcodes,
     stop_transcode,
+    stop_user_transcodes,
+    transcode_alive,
+    wait_for_file,
 )
 from backend.subscriptions import ensure_playback_allowed
 
@@ -87,7 +94,8 @@ def _ticks_to_pos(ticks: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False) -> dict:
+def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
+              api_key: str = "") -> dict:
     umd = (
         db.query(em.UserMediaData)
         .filter(em.UserMediaData.user_id == user_id, em.UserMediaData.item_id == item.id)
@@ -111,6 +119,11 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "Studios": [s for s in (item.studios or "").split(",") if s],
         "PremiereDate": _iso(item.premiere_date),
         "DateCreated": _iso(item.date_added),
+        # 客户端靠 RunTimeTicks 展示时长/进度条，缺失会导致进度条不可用
+        "RunTimeTicks": item.duration_ticks or None,
+        "Container": item.container,
+        "Bitrate": item.bitrate or None,
+        "IsHD": bool((item.height or 0) >= 720),
         "ProviderIds": {"Tmdb": item.tmdb_id} if item.tmdb_id else {},
         "ImageTags": {"Primary": "1"} if _image_url(base, item) else {},
         "BackdropImageTags": ["1"] if _image_url(base, item, "Backdrop") else {},
@@ -132,7 +145,8 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     "SeriesName": item.series.name if item.series else None,
                     "IndexNumber": item.season_number})
     if full:
-        dto["MediaSources"] = [_media_source(item, base)]
+        dto["MediaSources"] = [_media_source(item, base, api_key)]
+        dto["MediaSourceCount"] = 1
         dto["Chapters"] = []
     return dto
 
@@ -171,30 +185,52 @@ def _bearer_raw(request: Request) -> str:
     return request.query_params.get("api_key", "")
 
 
-def _media_source(item: em.MediaItem, base: str) -> dict:
-    src_id = item.guid
+def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
+    dto = {
+        "Index": s.stream_index, "Type": s.stream_type, "Codec": s.codec,
+        "Language": s.language, "DisplayTitle": s.display_title or s.language,
+        "Title": s.title, "IsDefault": bool(s.is_default),
+        "IsForced": bool(s.is_forced), "IsExternal": bool(s.is_external),
+        "Channels": s.channels, "BitRate": s.bit_rate,
+    }
+    if (s.stream_type or "").lower() == "subtitle":
+        text_track = subs.is_text_track(s.codec)
+        dto["IsTextSubtitleStream"] = text_track
+        dto["SupportsExternalStream"] = text_track
+        dto["DeliveryMethod"] = "External"
+        if text_track:
+            # 客户端靠 DeliveryUrl 发现字幕地址；缺失会表现为“服务器无字幕”
+            dto["DeliveryUrl"] = (
+                f"{base}/emby/Videos/{item.guid}/{item.guid}"
+                f"/Subtitles/{s.stream_index}/Stream.vtt?api_key={api_key}"
+            )
+    return dto
+
+
+def _default_subtitle_index(item: em.MediaItem):
+    for s in item.streams:
+        if (s.stream_type or "").lower() == "subtitle" and subs.is_text_track(s.codec):
+            return s.stream_index
+    return None
+
+
+def _media_source(item: em.MediaItem, base: str, api_key: str = "") -> dict:
     return {
-        "Id": src_id,
+        "Id": item.guid,
         "Name": item.name,
         "Path": item.file_path,
         "Protocol": "File",
+        "Type": "Default",
         "Container": item.container,
         "Size": item.size,
+        "RunTimeTicks": item.duration_ticks or None,
+        "Bitrate": item.bitrate or None,
         "SupportsDirectPlay": True,
         "SupportsDirectStream": True,
         "SupportsTranscoding": True,
         "IsRemote": False,
-        "MediaStreams": [
-            {
-                "Index": s.stream_index, "Type": s.stream_type, "Codec": s.codec,
-                "Language": s.language, "DisplayTitle": s.display_title or s.language,
-                "Title": s.title, "IsDefault": bool(s.is_default),
-                "IsForced": bool(s.is_forced), "IsExternal": bool(s.is_external),
-                "Channels": s.channels, "BitRate": s.bit_rate,
-                "IsTextSubtitleStream": bool(s.is_external),
-            }
-            for s in item.streams
-        ],
+        "DefaultSubtitleStreamIndex": _default_subtitle_index(item),
+        "MediaStreams": [_stream_dto(s, base, item, api_key) for s in item.streams],
     }
 
 
@@ -250,8 +286,11 @@ async def system_info(request: Request):
         "LocalAddress": _base_url(request),
         "WanAddress": _base_url(request),
         "SupportsLibraryMonitor": False,
-        "SupportsSynchronization": True,
+        # 未实现 /Sync/* 离线同步接口，如实上报 False，避免客户端尝试无法完成的离线同步
+        "SupportsSynchronization": False,
+        "StartupWizardCompleted": True,
         "HasUpdateAvailable": False,
+        "CastReceiverApplications": [],
         "CanSelfRestart": False,
         "CanLaunchWebApp": True,
         "HavePendingRestart": False,
@@ -357,6 +396,78 @@ async def authenticate_by_name(
     }
 
 
+# ==================== 客户端兼容公共工具 ====================
+
+
+def _guid_of(kind: str, name: str) -> str:
+    """按名称生成稳定的 Emby 风格 32 位 Id（用于 Genre/Studio 等虚拟条目）"""
+    return hashlib.md5(f"{kind}:{name}".encode("utf-8")).hexdigest()
+
+
+def _empty_items() -> dict:
+    return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
+def _query_result(items: list, user: models.WebUser, db: Session, base: str) -> dict:
+    return {
+        "Items": [_item_dto(i, base, user.id, db) for i in items],
+        "TotalRecordCount": len(items),
+        "StartIndex": 0,
+    }
+
+
+def _api_key_for(db: Session, request: Request) -> str:
+    """拼接播放/字幕地址用的 api_key：客户端 token 优先，其次门户 JWT"""
+    token_row = resolve_token(db, request)
+    return token_row[1].token if token_row else _bearer_raw(request)
+
+
+def _policy_dto(user: models.WebUser) -> dict:
+    return {
+        "IsAdministrator": bool(user.is_staff),
+        "IsDisabled": not bool(user.is_active),
+        "EnableContentDeletion": bool(user.is_staff),
+        "EnableContentDownloading": True,
+        "EnableMediaPlayback": True,
+        "EnableAudioPlaybackTranscoding": True,
+        "EnableVideoPlaybackTranscoding": True,
+        "EnablePlaybackRemuxing": True,
+        "EnableSyncTranscoding": False,
+        "EnableAllDevices": True,
+        "EnableAllFolders": True,
+        "SimultaneousStreamLimit": 3,
+        "InvalidLoginAttemptCount": 0,
+    }
+
+
+# ---- 用户：/Users/Public、/Users/Me 必须注册在 /Users/{user_id} 之前 ----
+
+@emby_router.get("/emby/Users/Public")
+@emby_router.get("/Users/Public")
+async def users_public():
+    """客户端登录页的用户列表
+
+    按 Jellyfin 默认隐私策略返回空数组：本服务账号即门户账号，未认证地枚举用户列表
+    会泄露全站账号。返回空列表（而非 404）让客户端走“手动输入用户名”分支。
+    """
+    return []
+
+
+@emby_router.get("/emby/Users/Me")
+@emby_router.get("/Users/Me")
+async def users_me(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    return _user_dto(user, db)
+
+
+@emby_router.get("/emby/Users")
+@emby_router.get("/Users")
+async def users_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    if not user.is_staff:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    rows = db.query(models.WebUser).filter(models.WebUser.is_active == True).all()  # noqa: E712
+    return [_user_dto(u, db) for u in rows]
+
+
 def _user_dto(user: models.WebUser, db: Session) -> dict:
     policy = {
         "IsAdministrator": bool(user.is_staff),
@@ -439,8 +550,20 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     limit = int(q.get("Limit") or 100)
     recursive = (q.get("Recursive") or "false").lower() == "true"
     user_id = q.get("UserId") or str(user.id)
+    random_sort = any(c.strip().lower() == "random" for c in sort_by)
+    ids = [x.strip() for value in q.getlist("Ids") for x in value.split(",") if x.strip()]
+
+    # Filters / IsFavorite 等筛选：客户端“只看收藏 / 已看 / 未看 / 继续观看”依赖它，
+    # 旧实现忽略这些参数，导致筛选后返回全量。
+    filters = {f.strip().lower() for f in (q.get("Filters") or "").split(",") if f.strip()}
+    for flag in ("IsFavorite", "IsPlayed", "IsUnplayed", "IsResumable"):
+        if (q.get(flag) or "").lower() == "true":
+            filters.add(flag.lower())
 
     query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False)  # noqa: E712
+
+    if ids:
+        query = query.filter(em.MediaItem.guid.in_(ids))
 
     if parent_id:
         parent = db.query(em.MediaItem).filter(em.MediaItem.guid == parent_id).first()
@@ -492,6 +615,23 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         except ValueError:
             pass
 
+    if filters & {"isfavorite", "isplayed", "isunplayed", "isresumable"}:
+        query = query.outerjoin(
+            em.UserMediaData,
+            (em.UserMediaData.item_id == em.MediaItem.id)
+            & (em.UserMediaData.user_id == user.id),
+        )
+        if "isfavorite" in filters:
+            query = query.filter(em.UserMediaData.is_favorite == True)  # noqa: E712
+        if "isplayed" in filters:
+            query = query.filter(em.UserMediaData.played == True)  # noqa: E712
+        if "isunplayed" in filters:
+            query = query.filter(
+                or_(em.UserMediaData.played == False, em.UserMediaData.played.is_(None))  # noqa: E712
+            )
+        if "isresumable" in filters:
+            query = query.filter(em.UserMediaData.playback_position_ticks > 0)
+
     # 排序
     order_cols = []
     for col in sort_by:
@@ -507,7 +647,8 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         order_cols = [em.MediaItem.sort_name.asc()]
 
     total = query.count()
-    items = query.order_by(*order_cols).offset(start).limit(limit).all()
+    data_query = query.order_by(func.random()) if random_sort else query.order_by(*order_cols)
+    items = data_query.offset(start).limit(limit).all()
 
     return {
         "Items": [_item_dto(i, base, user.id, db) for i in items],
@@ -559,6 +700,63 @@ async def get_latest(request: Request, user: models.WebUser = Depends(get_emby_u
     return result
 
 
+# /Items/Counts、/Items/Filters、/Items/Intros 必须注册在 /Items/{item_id} 之前，
+# 否则会被当成 guid 解析而 404。
+
+@emby_router.get("/emby/Items/Counts")
+@emby_router.get("/Items/Counts")
+async def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    def _count(item_type: str) -> int:
+        return (
+            db.query(em.MediaItem)
+            .filter(em.MediaItem.item_type == item_type, em.MediaItem.is_hidden == False)  # noqa: E712
+            .count()
+        )
+
+    return {
+        "MovieCount": _count("movie"),
+        "SeriesCount": _count("series"),
+        "EpisodeCount": _count("episode"),
+        "ItemCount": db.query(em.MediaItem).count(),
+        "AlbumCount": 0, "SongCount": 0, "ArtistCount": 0, "AlbumArtistCount": 0,
+        "MusicVideoCount": 0, "TrailerCount": 0, "BoxSetCount": 0, "BookCount": 0,
+    }
+
+
+@emby_router.get("/emby/Items/Intros")
+@emby_router.get("/Items/Intros")
+async def items_intros(user: models.WebUser = Depends(get_emby_user)):
+    return _empty_items()
+
+
+def _filters_payload(db: Session) -> dict:
+    genres: set = set()
+    tags: set = set()
+    ratings: set = set()
+    years: set = set()
+    for item in db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False).all():  # noqa: E712
+        genres.update(g for g in (item.genres or "").split(",") if g)
+        tags.update(t for t in (item.tags or "").split(",") if t)
+        if item.official_rating:
+            ratings.add(item.official_rating)
+        if item.production_year:
+            years.add(item.production_year)
+    return {
+        "Genres": sorted(genres),
+        "Tags": sorted(tags),
+        "OfficialRatings": sorted(ratings),
+        "Years": sorted(years, reverse=True),
+    }
+
+
+@emby_router.get("/emby/Items/Filters")
+@emby_router.get("/Items/Filters")
+@emby_router.get("/emby/Items/Filters2")
+@emby_router.get("/Items/Filters2")
+async def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    return _filters_payload(db)
+
+
 @emby_router.get("/emby/Items/{item_id}")
 @emby_router.get("/Items/{item_id}")
 @emby_router.get("/emby/Users/{user_id}/Items/{item_id}")
@@ -570,7 +768,8 @@ async def get_item_detail(
     db: Session = Depends(get_db),
 ):
     item = _require_item(db, item_id)
-    return _item_dto(item, _base_url(request), user.id, db, full=True)
+    return _item_dto(item, _base_url(request), user.id, db, full=True,
+                     api_key=_api_key_for(db, request))
 
 
 @emby_router.get("/emby/Shows/{item_id}/Seasons")
@@ -732,8 +931,14 @@ async def mark_unplayed(item_id: str, user_id: str,
 
 @emby_router.post("/emby/Items/{item_id}/PlaybackInfo")
 @emby_router.post("/Items/{item_id}/PlaybackInfo")
+@emby_router.get("/emby/Items/{item_id}/PlaybackInfo")
+@emby_router.get("/Items/{item_id}/PlaybackInfo")
+@emby_router.post("/emby/Users/{user_id}/Items/{item_id}/PlaybackInfo")
+@emby_router.post("/Users/{user_id}/Items/{item_id}/PlaybackInfo")
+@emby_router.get("/emby/Users/{user_id}/Items/{item_id}/PlaybackInfo")
+@emby_router.get("/Users/{user_id}/Items/{item_id}/PlaybackInfo")
 async def playback_info(
-    item_id: str, request: Request,
+    item_id: str, request: Request, user_id: str = "",
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
@@ -755,8 +960,7 @@ async def playback_info(
     direct = item.bitrate and item.bitrate <= max_bitrate
     # api_key：优先 Emby 客户端 token；JWT 访问时（网页端）直接把 JWT 作为 api_key，
     # 流媒体端点（stream/master.m3u8/切片）均可通过 JWT 回退鉴权
-    token_row = resolve_token(db, request)
-    api_key = token_row[1].token if token_row else _bearer_raw(request)
+    api_key = _api_key_for(db, request)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
@@ -767,7 +971,8 @@ async def playback_info(
 
     return {
         "MediaSources": [media_source],
-        "PlaySessionId": item.guid[:16],
+        # 每次播放会话一个独立票据，客户端据此上报进度
+        "PlaySessionId": secrets.token_hex(8),
         "ErrorCode": None,
     }
 
@@ -800,17 +1005,28 @@ async def video_hls(
     # 已存在的转码会话：直接回放列表/切片
     # 注意：切片请求走 session 票据校验（HLS 播放器无法对切片附加 api_key），
     # 会话本身只在建立转码（master.m3u8 首次请求）时经过完整鉴权创建。
+    api_key = _api_key_for(db, request)
     existing = q.get("session")
     if existing and get_transcode(existing):
         info = get_transcode(existing)
         file_path = os.path.join(info["dir"], os.path.basename(transcode_path))
         if transcode_path.endswith(".m3u8"):
-            content = _rewrite_playlist(info["dir"], base, item.guid, existing)
+            playlist = os.path.join(info["dir"], "master.m3u8")
+            # ffmpeg 写完首个切片才落盘播放列表；直接返回空列表会让播放器判定播放失败
+            wait_for_file(playlist, timeout=15.0)
+            if not os.path.isfile(playlist):
+                if not transcode_alive(existing):
+                    raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
+                raise HTTPException(status_code=504, detail="转码尚未产出播放列表")
+            content = _rewrite_playlist(info["dir"], base, item.guid, existing, api_key)
             return Response(content, media_type="application/vnd.apple.mpegurl")
-        if os.path.isfile(file_path):
-            media_type = "video/mp2t" if transcode_path.endswith(".ts") else "application/octet-stream"
-            return FileResponse(file_path, media_type=media_type)
-        raise HTTPException(status_code=404, detail="Segment not ready")
+        # 客户端请求切片往往早于 ffmpeg 写出，短暂等待而非立即 404
+        if not wait_for_file(file_path, timeout=12.0):
+            if not transcode_alive(existing):
+                raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
+            raise HTTPException(status_code=404, detail="Segment not ready")
+        media_type = "video/mp2t" if transcode_path.endswith(".ts") else "application/octet-stream"
+        return FileResponse(file_path, media_type=media_type)
 
     # 新转码请求（付费墙：建立转码会话前校验）
     ensure_playback_allowed(db, user)
@@ -820,24 +1036,38 @@ async def video_hls(
     height = int(q.get("Height") or 0) or None
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS
-    session_id = start_transcode(item.file_path, start_seconds, video_bitrate, height)
-    playlist_url = f"{base}/emby/videos/{item.guid}/master.m3u8?session={session_id}"
+    session_id = start_transcode(
+        item.file_path, start_seconds, video_bitrate, height,
+        user_id=user.id, item_guid=item.guid,
+    )
+    # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
+    # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
+    variant_url = (
+        f"{base}/emby/videos/{item.guid}/main.m3u8"
+        f"?session={session_id}&api_key={urllib.parse.quote(api_key)}"
+    )
     return Response(
-        content=f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate},RESOLUTION=1920x1080\n{playlist_url}\n",
+        content=f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n",
         media_type="application/vnd.apple.mpegurl",
     )
 
 
-def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str) -> str:
+def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,
+                     api_key: str = "") -> str:
+    """重写 ffmpeg 播放列表：切片指向本服务，并带上 session 票据与 api_key
+
+    不带 api_key 时播放器对切片子请求不会附加认证头，会直接 401。
+    """
     master = os.path.join(out_dir, "master.m3u8")
     if not os.path.isfile(master):
         return "#EXTM3U\n"
     with open(master, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
+    suffix = f"&api_key={urllib.parse.quote(api_key)}" if api_key else ""
     lines = []
     for line in content.splitlines():
-        if line.endswith(".ts"):
-            lines.append(f"{base}/emby/videos/{item_guid_value}/{line}?session={session_id}")
+        if line.endswith((".ts", ".m4s", ".aac", ".vtt")):
+            lines.append(f"{base}/emby/videos/{item_guid_value}/{line}?session={session_id}{suffix}")
         else:
             lines.append(line)
     return "\n".join(lines) + "\n"
@@ -893,11 +1123,13 @@ async def item_image(item_id: str, image_type: str, request: Request,
     return serve_image(src)
 
 
-@emby_router.get("/emby/Items/{item_id}/Images/Primary/{index}")
-@emby_router.get("/Items/{item_id}/Images/Primary/{index}")
+@emby_router.get("/emby/Items/{item_id}/Images/{image_type}/{index}")
+@emby_router.get("/Items/{item_id}/Images/{image_type}/{index}")
 async def item_image_index(item_id: str, image_type: str, index: str, request: Request,
                            db: Session = Depends(get_db)):
-    return await item_image(item_id, "Primary", request, db)
+    # 客户端普遍请求 /Images/Backdrop/0、/Images/Primary/0 这类带序号的地址。
+    # 旧实现只注册了 Primary，其它类型（Backdrop/Thumb 等）会直接 404。
+    return await item_image(item_id, image_type, request, db)
 
 
 # ==================== 会话上报 ====================
@@ -1070,3 +1302,431 @@ async def swagger_json():
 @emby_router.get("/quickconnect/info")
 async def quickconnect_info():
     return {"Available": False, "State": "Unavailable"}
+
+
+# ==================== 客户端兼容补齐（对照 Emby 4.7 官方 API 面）====================
+#
+# 本节补齐真实客户端（Infuse / Forward / Hills / SenPlayer / 官方 App）会调用、
+# 但旧实现未覆盖的端点。原则：
+#   1) 有真实数据的给真实数据（搜索、相似、祖先、字幕、分类元数据）
+#   2) 本服务没有对应概念的（预告片/主题曲/片头/插件）返回空结果集而不是 404，
+#      客户端不会把 404 当错误反复重试
+#   3) 涉及隐私的（/Users/Public 用户列表）按 Jellyfin 默认策略返回空
+
+
+# ---- 用户策略 ----
+
+@emby_router.get("/emby/Users/{user_id}/Policy")
+@emby_router.get("/Users/{user_id}/Policy")
+async def get_user_policy(user_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return _policy_dto(user)
+
+
+@emby_router.post("/emby/Users/{user_id}/Policy")
+@emby_router.post("/Users/{user_id}/Policy")
+async def set_user_policy(user_id: str, user: models.WebUser = Depends(get_emby_user)):
+    # 用户策略由门户统一管理：忽略客户端写入，返回当前真实策略，避免客户端状态错乱
+    return _policy_dto(user)
+
+
+# ---- 搜索 ----
+
+@emby_router.get("/emby/Search/Hints")
+@emby_router.get("/Search/Hints")
+async def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user),
+                       db: Session = Depends(get_db)):
+    q = request.query_params
+    term = (q.get("SearchTerm") or "").strip()
+    limit = int(q.get("Limit") or 20)
+    include = [t.strip().lower() for t in (q.get("IncludeItemTypes") or "").split(",") if t.strip()]
+    base = _base_url(request)
+
+    query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False)  # noqa: E712
+    if term:
+        like = f"%{term}%"
+        query = query.filter(or_(em.MediaItem.name.ilike(like), em.MediaItem.original_title.ilike(like)))
+    if include:
+        type_map = {"movie": "movie", "series": "series", "episode": "episode", "season": "season"}
+        query = query.filter(em.MediaItem.item_type.in_([type_map.get(t, t) for t in include]))
+
+    hints = [
+        {
+            "ItemId": it.guid,
+            "Id": it.guid,
+            "Name": it.name,
+            "Type": _emby_type(it.item_type),
+            "MediaType": "Video" if it.item_type in ("movie", "episode") else None,
+            "ProductionYear": it.production_year,
+            "RunTimeTicks": it.duration_ticks or None,
+            "IndexNumber": it.episode_number,
+            "ParentIndexNumber": it.season_number,
+            "SeriesId": it.series.guid if it.series else None,
+            "PrimaryImageTag": "1" if _image_url(base, it) else None,
+        }
+        for it in query.limit(limit).all()
+    ]
+    return {"SearchHints": hints, "TotalRecordCount": len(hints)}
+
+
+# ---- 收藏的规范路由（客户端除 Rating 外还会直接调 FavoriteItems）----
+
+def _set_favorite(db: Session, user: models.WebUser, item_id: str, value: bool) -> dict:
+    item = _require_item(db, item_id)
+    umd = db.query(em.UserMediaData).filter(
+        em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
+    ).first()
+    if not umd:
+        umd = em.UserMediaData(user_id=user.id, item_id=item.id)
+        db.add(umd)
+    umd.is_favorite = value
+    db.commit()
+    return _user_data_dto(umd)
+
+
+@emby_router.post("/emby/Users/{user_id}/FavoriteItems/{item_id}")
+@emby_router.post("/Users/{user_id}/FavoriteItems/{item_id}")
+async def add_favorite(item_id: str, user_id: str,
+                       user: models.WebUser = Depends(get_emby_user),
+                       db: Session = Depends(get_db)):
+    return _set_favorite(db, user, item_id, True)
+
+
+@emby_router.delete("/emby/Users/{user_id}/FavoriteItems/{item_id}")
+@emby_router.delete("/Users/{user_id}/FavoriteItems/{item_id}")
+async def remove_favorite(item_id: str, user_id: str,
+                          user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    return _set_favorite(db, user, item_id, False)
+
+
+# ---- 相似推荐 ----
+
+@emby_router.get("/emby/Items/{item_id}/Similar")
+@emby_router.get("/Items/{item_id}/Similar")
+@emby_router.get("/emby/Movies/{item_id}/Similar")
+@emby_router.get("/Movies/{item_id}/Similar")
+@emby_router.get("/emby/Shows/{item_id}/Similar")
+@emby_router.get("/Shows/{item_id}/Similar")
+@emby_router.get("/emby/Trailers/{item_id}/Similar")
+@emby_router.get("/Trailers/{item_id}/Similar")
+async def similar_items(item_id: str, request: Request,
+                        user: models.WebUser = Depends(get_emby_user),
+                        db: Session = Depends(get_db)):
+    item = _require_item(db, item_id)
+    genres = [g for g in (item.genres or "").split(",") if g]
+    if not genres:
+        return _empty_items()
+    limit = int(request.query_params.get("Limit") or 12)
+    rows = (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.item_type == item.item_type,
+            em.MediaItem.id != item.id,
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            or_(*[em.MediaItem.genres.ilike(f"%{g}%") for g in genres]),
+        )
+        .order_by(func.coalesce(em.MediaItem.community_rating, 0).desc())
+        .limit(limit)
+        .all()
+    )
+    return _query_result(rows, user, db, _base_url(request))
+
+
+# ---- 祖先链路（客户端靠它做面包屑与“剧 → 季 → 集”导航）----
+
+@emby_router.get("/emby/Items/{item_id}/Ancestors")
+@emby_router.get("/Items/{item_id}/Ancestors")
+async def item_ancestors(item_id: str, request: Request,
+                         user: models.WebUser = Depends(get_emby_user),
+                         db: Session = Depends(get_db)):
+    item = _require_item(db, item_id)
+    chain: list = []
+    seen: set = set()
+    if item.item_type == "episode" and item.parent is not None:
+        chain.append(item.parent)
+        seen.add(item.parent.id)
+    if item.item_type in ("episode", "season") and item.series is not None and item.series.id not in seen:
+        chain.append(item.series)
+    return _query_result(chain, user, db, _base_url(request))
+
+
+# ---- 本服务没有的媒体附件：返回空结果集而非 404 ----
+
+@emby_router.get("/emby/Items/{item_id}/LocalTrailers")
+@emby_router.get("/Items/{item_id}/LocalTrailers")
+async def local_trailers(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return _empty_items()
+
+
+@emby_router.get("/emby/Items/{item_id}/SpecialFeatures")
+@emby_router.get("/Items/{item_id}/SpecialFeatures")
+async def special_features(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return _empty_items()
+
+
+@emby_router.get("/emby/Items/{item_id}/ThemeVideos")
+@emby_router.get("/Items/{item_id}/ThemeVideos")
+@emby_router.get("/emby/Items/{item_id}/ThemeSongs")
+@emby_router.get("/Items/{item_id}/ThemeSongs")
+async def theme_items(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return _empty_items()
+
+
+@emby_router.get("/emby/Items/{item_id}/ThemeMedia")
+@emby_router.get("/Items/{item_id}/ThemeMedia")
+async def theme_media(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return {
+        "ThemeVideosResult": _empty_items(),
+        "ThemeSongsResult": _empty_items(),
+        "SoundtrackSongsResult": _empty_items(),
+    }
+
+
+@emby_router.get("/emby/Items/{item_id}/Intros")
+@emby_router.get("/Items/{item_id}/Intros")
+@emby_router.get("/emby/Users/{user_id}/Items/{item_id}/Intros")
+@emby_router.get("/Users/{user_id}/Items/{item_id}/Intros")
+async def item_intros(item_id: str, user_id: str = "",
+                      user: models.WebUser = Depends(get_emby_user)):
+    return _empty_items()
+
+
+@emby_router.get("/emby/Items/{item_id}/CriticReviews")
+@emby_router.get("/Items/{item_id}/CriticReviews")
+async def critic_reviews(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return []
+
+
+# ---- 分类元数据 ----
+
+def _named_items(kind: str, names: list) -> dict:
+    items = [
+        {"Name": n, "Id": _guid_of(kind, n), "Type": kind,
+         "ImageTags": {}, "BackdropImageTags": []}
+        for n in names
+    ]
+    return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
+
+
+@emby_router.get("/emby/Genres")
+@emby_router.get("/Genres")
+async def genres_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    names = sorted({g for row in db.query(em.MediaItem.genres).all()
+                    for g in (row[0] or "").split(",") if g})
+    return _named_items("Genre", names)
+
+
+@emby_router.get("/emby/Genres/{name}")
+@emby_router.get("/Genres/{name}")
+async def genre_by_name(name: str, user: models.WebUser = Depends(get_emby_user)):
+    return {"Name": name, "Id": _guid_of("Genre", name), "Type": "Genre",
+            "ImageTags": {}, "BackdropImageTags": []}
+
+
+@emby_router.get("/emby/Studios")
+@emby_router.get("/Studios")
+async def studios_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    names = sorted({s for row in db.query(em.MediaItem.studios).all()
+                    for s in (row[0] or "").split(",") if s})
+    return _named_items("Studio", names)
+
+
+@emby_router.get("/emby/Persons")
+@emby_router.get("/Persons")
+async def persons_list(user: models.WebUser = Depends(get_emby_user)):
+    return _empty_items()  # 刮削未落演员表，返回空而非 404
+
+
+# ---- 媒体库视图别名 ----
+
+@emby_router.get("/emby/Library/MediaFolders")
+@emby_router.get("/Library/MediaFolders")
+async def library_media_folders(user: models.WebUser = Depends(get_emby_user),
+                                db: Session = Depends(get_db)):
+    return await user_views("me", user, db)
+
+
+@emby_router.get("/emby/UserViews")
+@emby_router.get("/UserViews")
+async def user_views_alias(user: models.WebUser = Depends(get_emby_user),
+                           db: Session = Depends(get_db)):
+    return await user_views("me", user, db)
+
+
+# ---- 系统 / 诊断 ----
+
+@emby_router.get("/emby/System/Endpoint")
+@emby_router.get("/System/Endpoint")
+async def system_endpoint(user: models.WebUser = Depends(get_emby_user)):
+    return {"IsLocal": True, "IsInNetwork": True}
+
+
+@emby_router.post("/emby/Sessions/Logout")
+@emby_router.post("/Sessions/Logout")
+async def sessions_logout(request: Request, user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    resolved = resolve_token(db, request)
+    if resolved:
+        resolved[1].is_revoked = True
+        db.commit()
+    return {"success": True}
+
+
+@emby_router.get("/emby/Localization/ParentalRatings")
+@emby_router.get("/Localization/ParentalRatings")
+async def parental_ratings(user: models.WebUser = Depends(get_emby_user)):
+    return []
+
+
+@emby_router.get("/emby/Plugins")
+@emby_router.get("/Plugins")
+async def plugins(user: models.WebUser = Depends(get_emby_user)):
+    return []
+
+
+@emby_router.get("/emby/ScheduledTasks")
+@emby_router.get("/ScheduledTasks")
+async def scheduled_tasks(user: models.WebUser = Depends(get_emby_user)):
+    return []
+
+
+@emby_router.get("/emby/Activity/Log/Entries")
+@emby_router.get("/Activity/Log/Entries")
+async def activity_log(user: models.WebUser = Depends(get_emby_user)):
+    return _empty_items()
+
+
+# ---- 转码释放 / 库刷新 ----
+
+@emby_router.delete("/emby/Videos/ActiveEncodings")
+@emby_router.delete("/Videos/ActiveEncodings")
+@emby_router.post("/emby/Videos/ActiveEncodings/Delete")
+@emby_router.post("/Videos/ActiveEncodings/Delete")
+async def delete_active_encodings(request: Request,
+                                  user: models.WebUser = Depends(get_emby_user)):
+    # 管理员释放全部转码，普通用户只能释放自己的（避免互相踢掉播放）
+    count = stop_all_transcodes() if user.is_staff else stop_user_transcodes(user.id)
+    logger.info("释放转码会话 user=%s count=%s", user.id, count)
+    return Response(status_code=204)
+
+
+@emby_router.post("/emby/Library/Refresh")
+@emby_router.post("/Library/Refresh")
+async def library_refresh(user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    if not user.is_staff:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    lib_ids = [
+        lib.id for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
+        if not lib.is_scanning
+    ]
+
+    def _run_scan() -> None:
+        # 后台线程必须用独立 Session（请求级 Session 结束即关闭）
+        scan_db = SessionLocal()
+        try:
+            for lib_id in lib_ids:
+                library = scan_db.query(em.Library).filter(em.Library.id == lib_id).first()
+                if library:
+                    scan_library_sync(scan_db, library)
+        finally:
+            scan_db.close()
+
+    import threading
+
+    threading.Thread(target=_run_scan, daemon=True).start()
+    return {"success": True, "libraries": len(lib_ids)}
+
+
+# ---- 播放流（容器后缀变体 / 原始文件）----
+
+@emby_router.get("/emby/Videos/{item_id}/stream.{container}")
+@emby_router.get("/Videos/{item_id}/stream.{container}")
+async def video_stream_container(item_id: str, container: str, request: Request,
+                                 user: models.WebUser = Depends(get_emby_user),
+                                 db: Session = Depends(get_db)):
+    return await video_stream(item_id, request, user, db)
+
+
+@emby_router.get("/emby/Items/{item_id}/File")
+@emby_router.get("/Items/{item_id}/File")
+async def item_file(item_id: str, user: models.WebUser = Depends(get_emby_user),
+                    db: Session = Depends(get_db)):
+    item = _require_item(db, item_id)
+    ensure_playback_allowed(db, user)
+    if not item.file_path or not os.path.isfile(item.file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(item.file_path, filename=os.path.basename(item.file_path))
+
+
+# ---- 字幕投递 ----
+
+def _find_subtitle_stream(item: em.MediaItem, sub_index: str):
+    try:
+        index = int(sub_index)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Subtitle stream not found")
+    for s in item.streams:
+        if (s.stream_type or "").lower() == "subtitle" and s.stream_index == index:
+            return s
+    raise HTTPException(status_code=404, detail="Subtitle stream not found")
+
+
+def _subtitle_ordinal(item: em.MediaItem, stream) -> int:
+    """该字幕轨在条目内“第几条字幕”（ffmpeg -map 0:s:N 需要序号而非绝对流索引）"""
+    ordered = sorted(
+        [s for s in item.streams if (s.stream_type or "").lower() == "subtitle"],
+        key=lambda s: s.stream_index or 0,
+    )
+    for i, s in enumerate(ordered):
+        if s.id == stream.id:
+            return i
+    return 0
+
+
+async def _serve_subtitle(item_id: str, sub_index: str, fmt: str, user, db) -> Response:
+    item = _require_item(db, item_id)
+    # 字幕与播放同一门槛，避免非会员绕过付费墙拿到内容文本
+    ensure_playback_allowed(db, user)
+    stream = _find_subtitle_stream(item, sub_index)
+    return subs.render_subtitle(
+        item_guid=item.guid,
+        media_path=item.file_path,
+        stream=stream,
+        fmt=fmt,
+        subtitle_ordinal=_subtitle_ordinal(item, stream),
+    )
+
+
+@emby_router.get("/emby/Videos/{item_id}/{media_source_id}/Subtitles/{sub_index}/Stream.{fmt}")
+@emby_router.get("/Videos/{item_id}/{media_source_id}/Subtitles/{sub_index}/Stream.{fmt}")
+@emby_router.get("/emby/Videos/{item_id}/subtitles/{sub_index}/Stream.{fmt}")
+@emby_router.get("/Videos/{item_id}/subtitles/{sub_index}/Stream.{fmt}")
+async def video_subtitle(item_id: str, sub_index: str, fmt: str, request: Request,
+                         media_source_id: str = "",
+                         user: models.WebUser = Depends(get_emby_user),
+                         db: Session = Depends(get_db)):
+    return await _serve_subtitle(item_id, sub_index, fmt, user, db)
+
+
+@emby_router.get("/emby/Videos/{item_id}/{media_source_id}/Subtitles/{sub_index}/{start_ticks}/Stream.{fmt}")
+@emby_router.get("/Videos/{item_id}/{media_source_id}/Subtitles/{sub_index}/{start_ticks}/Stream.{fmt}")
+@emby_router.get("/emby/Videos/{item_id}/subtitles/{sub_index}/{start_ticks}/Stream.{fmt}")
+@emby_router.get("/Videos/{item_id}/subtitles/{sub_index}/{start_ticks}/Stream.{fmt}")
+async def video_subtitle_offset(item_id: str, sub_index: str, start_ticks: str, fmt: str,
+                                request: Request, media_source_id: str = "",
+                                user: models.WebUser = Depends(get_emby_user),
+                                db: Session = Depends(get_db)):
+    # 非直播场景忽略时间偏移，直接投递完整字幕
+    return await _serve_subtitle(item_id, sub_index, fmt, user, db)
+
+
+# ---- HLS 大小写兼容（必须放在文件最后，避免抢在更具体的路由之前匹配）----
+
+@emby_router.get("/emby/Videos/{item_id}/{transcode_path:path}")
+@emby_router.get("/Videos/{item_id}/{transcode_path:path}")
+async def video_hls_upper(item_id: str, transcode_path: str, request: Request,
+                          user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    """Emby 客户端在不同版本混用 /Videos 与 /videos 前缀，补齐大写前缀的通配"""
+    return await video_hls(item_id, transcode_path, request, user, db)

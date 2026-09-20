@@ -67,7 +67,11 @@ export interface EmbyMediaSource {
     DisplayTitle?: string
     IsExternal?: boolean
     IsTextSubtitleStream?: boolean
+    IsDefault?: boolean
+    /** 字幕轨的可直取地址（服务端已附 api_key） */
+    DeliveryUrl?: string
   }>
+  DefaultSubtitleStreamIndex?: number | null
 }
 
 export interface EmbyQuery {

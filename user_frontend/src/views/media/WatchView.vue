@@ -35,6 +35,8 @@ const playMethod = ref<'DirectStream' | 'HLS'>('DirectStream')
 // 付费墙拦截：需要订阅才能播放
 const paywalled = ref(false)
 const paywallMessage = ref('')
+// 服务端投递的文本字幕轨（外挂/内封抽取），由 MediaSource 的 DeliveryUrl 提供
+const subtitleTrack = ref<{ url: string; label: string } | null>(null)
 
 // 播放器状态
 const isPlaying = ref(false)
@@ -82,6 +84,15 @@ async function resolveAndPlay() {
   try {
     const info = await embyApi.getPlaybackInfo(itemId.value)
     const source: EmbyMediaSource | undefined = info.MediaSources?.[0]
+
+    // 字幕：优先服务端标记的默认轨，否则取第一条可投递的文本字幕
+    const subStreams = (source?.MediaStreams || []).filter(
+      (s) => s.Type === 'Subtitle' && s.IsTextSubtitleStream && s.DeliveryUrl,
+    )
+    const chosenSub = subStreams.find((s) => s.IsDefault) || subStreams[0]
+    subtitleTrack.value = chosenSub
+      ? { url: chosenSub.DeliveryUrl as string, label: chosenSub.DisplayTitle || chosenSub.Language || '字幕' }
+      : null
 
     // 1) 直连优先（服务器地址与页面同源，JWT 已附在 api_key）
     const directUrl = source?.DirectStreamUrl
@@ -318,7 +329,16 @@ onBeforeUnmount(() => {
         @timeupdate="onTimeUpdate"
         @volumechange="onVolumeChange"
         @click="togglePlay"
-      ></video>
+      >
+        <track
+          v-if="subtitleTrack"
+          :key="subtitleTrack.url"
+          kind="subtitles"
+          :src="subtitleTrack.url"
+          :label="subtitleTrack.label"
+          default
+        />
+      </video>
 
       <!-- 付费墙：未订阅时引导开通，而不是丢一个播放错误 -->
       <div v-if="paywalled" class="paywall-layer">
