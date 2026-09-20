@@ -107,19 +107,19 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <header class="page-head">
+  <div class="admin-page">
+    <div class="admin-page-header">
       <div>
-        <h2 class="page-title">运营 · 兑换码</h2>
-        <p class="page-sub">积分/订阅兑换码生成与核销审计（已核销 {{ usedSummary }} 次）</p>
+        <h1 class="admin-page-title">兑换码</h1>
+        <p class="admin-page-subtitle">积分 / 订阅兑换码生成与核销审计（已核销 {{ usedSummary }} 次）</p>
       </div>
       <div class="head-actions">
         <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="genVisible = true">批量生成</el-button>
       </div>
-    </header>
+    </div>
 
-    <el-table :data="codes" v-loading="loading" stripe>
+    <el-table :data="codes" v-loading="loading">
       <el-table-column prop="code" label="兑换码" width="170">
         <template #default="{ row }">
           <span class="mono code">{{ row.code }}</span>
@@ -222,15 +222,9 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page { display: flex; flex-direction: column; gap: 16px; }
-
-.page-head { display: flex; align-items: flex-start; justify-content: space-between; }
-.page-title { margin: 0 0 4px; font-size: 20px; font-weight: 700; }
-.page-sub { margin: 0; font-size: 13px; opacity: 0.6; }
-
 .head-actions { display: flex; gap: 8px; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.code { letter-spacing: 0.06em; font-weight: 600; }
-.muted { opacity: 0.65; font-size: 12px; }
+.code { letter-spacing: 0.06em; font-weight: 600; color: var(--primary); }
+.muted { color: var(--text-muted); font-size: 12px; }
 </style>

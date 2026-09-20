@@ -1,20 +1,15 @@
+/* @tailwind 指令保留（历史工具类可能与模板并存），主题变量已统一到 Aurora 令牌 */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ==================== 管理端全局样式（深色质感 + 绿色点缀） ==================== */
-
-body {
-  background-color: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  -webkit-font-smoothing: antialiased;
-}
+/* ==================== 管理端全局样式（Aurora 深色 + 电光青） ==================== */
 
 /* 页面骨架 */
 .admin-page {
-  padding: var(--space-2, 16px);
-  max-width: 1400px;
-  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .admin-page-header {
@@ -22,67 +17,92 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
 .admin-page-title {
-  font-size: var(--font-size-2xl, 20px);
-  font-weight: var(--font-weight-bold, 700);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
   margin: 0;
+  letter-spacing: -0.01em;
 }
 
 .admin-page-subtitle {
-  font-size: var(--font-size-sm, 13px);
-  color: var(--color-text-secondary, #a3a3a3);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
   margin: 4px 0 0;
 }
 
 /* 卡片 */
 .admin-card {
-  background: var(--color-bg-card, #1a1a1a);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: var(--radius-md, 16px);
-  padding: var(--space-2, 16px);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2);
+  box-shadow: var(--shadow-card);
 }
 
 /* 统计瓦片 */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
-  margin-bottom: 16px;
 }
 
 .stat-tile {
-  background: var(--color-bg-card, #1a1a1a);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: var(--radius-md, 16px);
-  padding: 16px;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.stat-tile::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 2px;
+  background: var(--gradient-brand);
+  opacity: 0.5;
+}
+
+.stat-tile:hover {
+  border-color: var(--primary-border);
+  transform: translateY(-1px);
 }
 
 .stat-tile .stat-label {
-  font-size: var(--font-size-xs, 12px);
-  color: var(--color-text-secondary, #a3a3a3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
 }
 
 .stat-tile .stat-value {
-  font-size: var(--font-size-4xl, 28px);
-  font-weight: var(--font-weight-bold, 700);
+  font-size: var(--font-size-4xl);
+  font-weight: var(--font-weight-bold);
   margin-top: 4px;
+  color: var(--text-primary);
+  line-height: 1.2;
 }
 
 .stat-tile .stat-accent {
-  color: #10b981;
+  color: var(--primary);
+  text-shadow: 0 0 22px rgba(34, 211, 238, 0.22);
 }
 
 /* 表格行悬浮 */
 .hover-row {
-  transition: background 0.15s ease;
+  transition: background var(--transition-fast);
 }
 
 .hover-row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-hover);
 }
 
 /* 排行榜条目 */
@@ -90,8 +110,8 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .rank-row:last-child {
@@ -101,13 +121,46 @@ body {
 .rank-index {
   width: 24px;
   height: 24px;
-  border-radius: 8px;
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
+  border-radius: var(--radius-xs);
+  background: var(--primary-bg);
+  color: var(--primary);
   font-size: 12px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+/* Element Plus 表格：跟随主题，去掉默认浅色表头 */
+.el-table {
+  --el-table-border-color: var(--border-subtle);
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: transparent;
+  --el-table-header-text-color: var(--text-secondary);
+  --el-table-text-color: var(--text-primary);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  background: transparent;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.el-table__inner-wrapper::before {
+  display: none;
+}
+
+/* 抽屉 / 对话框跟随主题 */
+.el-drawer,
+.el-dialog {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+}
+
+.el-drawer__header {
+  color: var(--text-primary);
+  font-weight: 600;
 }

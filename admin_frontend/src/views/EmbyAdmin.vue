@@ -134,7 +134,7 @@ function progress(pos: number, dur: number): string {
       <div class="sessions-head">
         <h2>在线会话（{{ sessions.length }}）</h2>
       </div>
-      <el-table :data="sessions" style="width: 100%" :header-cell-style="{ background: 'transparent', color: '#a3a3a3' }">
+      <el-table :data="sessions" style="width: 100%">
         <el-table-column label="用户" prop="username" width="120" />
         <el-table-column label="内容" min-width="180">
           <template #default="{ row }">
@@ -219,11 +219,11 @@ function progress(pos: number, dur: number): string {
 .s-method { font-size: 10px; background: rgba(255, 255, 255, 0.08); border-radius: 999px; padding: 1px 6px; margin-left: 6px; color: var(--color-text-secondary, #a3a3a3); }
 
 .progress-track { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
-.progress-fill { height: 100%; background: #10b981; border-radius: 2px; }
+.progress-fill { height: 100%; background: var(--gradient-brand); border-radius: 2px; }
 .progress-num { font-size: 11px; color: var(--color-text-muted, #737373); }
 
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
-.mini-badge.ok { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
 .mini-badge.scanning { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
 </style>

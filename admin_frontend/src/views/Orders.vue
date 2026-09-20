@@ -69,40 +69,40 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <header class="page-head">
+  <div class="admin-page">
+    <div class="admin-page-header">
       <div>
-        <h2 class="page-title">运营 · 订单</h2>
-        <p class="page-sub">充值/订阅订单、营收统计与人工补单</p>
+        <h1 class="admin-page-title">订单管理</h1>
+        <p class="admin-page-subtitle">充值 / 订阅订单、营收统计与人工补单</p>
       </div>
       <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
-    </header>
+    </div>
 
     <!-- 统计卡 -->
-    <div v-if="stats" class="stat-cards">
-      <div class="stat-card">
-        <span class="stat-label">累计充值积分</span>
-        <span class="stat-value">{{ stats.total_points.toLocaleString() }}</span>
+    <div v-if="stats" class="stat-grid">
+      <div class="stat-tile">
+        <div class="stat-label">累计充值积分</div>
+        <div class="stat-value">{{ stats.total_points.toLocaleString() }}</div>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">今日签到人次</span>
-        <span class="stat-value">{{ stats.checkins_today }}</span>
+      <div class="stat-tile">
+        <div class="stat-label">今日签到人次</div>
+        <div class="stat-value">{{ stats.checkins_today }}</div>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">待支付订单</span>
-        <span class="stat-value warn">{{ stats.orders.pending }}</span>
+      <div class="stat-tile">
+        <div class="stat-label">待支付订单</div>
+        <div class="stat-value" :class="{ 'stat-warn': stats.orders.pending > 0 }">{{ stats.orders.pending }}</div>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">累计营收 (¥)</span>
-        <span class="stat-value">{{ stats.orders.revenue.toFixed(2) }}</span>
+      <div class="stat-tile">
+        <div class="stat-label">累计营收 (¥)</div>
+        <div class="stat-value stat-accent">{{ stats.orders.revenue.toFixed(2) }}</div>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">兑换码已用 / 总数</span>
-        <span class="stat-value">{{ stats.exchange_codes.used }} / {{ stats.exchange_codes.total }}</span>
+      <div class="stat-tile">
+        <div class="stat-label">兑换码已用 / 总数</div>
+        <div class="stat-value">{{ stats.exchange_codes.used }} / {{ stats.exchange_codes.total }}</div>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">邀请总数</span>
-        <span class="stat-value">{{ stats.invitations }}</span>
+      <div class="stat-tile">
+        <div class="stat-label">邀请总数</div>
+        <div class="stat-value">{{ stats.invitations }}</div>
       </div>
     </div>
 
@@ -185,29 +185,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page { display: flex; flex-direction: column; gap: 16px; }
-
-.page-head { display: flex; align-items: flex-start; justify-content: space-between; }
-.page-title { margin: 0 0 4px; font-size: 20px; font-weight: 700; }
-.page-sub { margin: 0; font-size: 13px; opacity: 0.6; }
-
-.stat-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-}
-
-.stat-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 16px;
-  background: var(--el-fill-color-light);
-  border-radius: 10px;
-}
-.stat-label { font-size: 12px; opacity: 0.6; }
-.stat-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.stat-value.warn { color: var(--el-color-warning); }
+.stat-warn { color: var(--warning); }
 
 .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 

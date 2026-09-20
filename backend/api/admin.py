@@ -680,6 +680,37 @@ async def get_registration_mode(
 
 # ==================== 公告管理 API ====================
 
+@admin_router.get("/announcements")
+async def get_announcements(
+    active_only: bool = False,
+    limit: int = 100,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """公告列表（管理端，含未启用项）"""
+    query = db.query(models.Announcement)
+    if active_only:
+        query = query.filter(models.Announcement.is_active == True)  # noqa: E712
+    announcements = (
+        query.order_by(models.Announcement.is_pinned.desc(), models.Announcement.created_at.desc())
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    return [
+        {
+            "id": a.id,
+            "title": a.title,
+            "content": a.content,
+            "type": a.type,
+            "is_active": bool(a.is_active),
+            "is_pinned": bool(a.is_pinned),
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+        }
+        for a in announcements
+    ]
+
+
 @admin_router.post("/announcements")
 async def create_announcement(
     request: AnnouncementCreateRequest,
@@ -803,6 +834,42 @@ async def get_tickets(
             "latest_message": latest_message.message[:100] if latest_message else "",
         })
     return result
+
+
+@admin_router.get("/tickets/{ticket_id}/messages")
+async def get_ticket_messages(
+    ticket_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """工单会话内容（管理端）"""
+    ticket = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="工单不存在")
+
+    messages = (
+        db.query(models.TicketMessage)
+        .filter(models.TicketMessage.ticket_id == ticket_id)
+        .order_by(models.TicketMessage.created_at.asc())
+        .all()
+    )
+
+    author_ids = [m.user_id for m in messages if m.user_id]
+    authors = {
+        u.id: u.username
+        for u in db.query(models.WebUser).filter(models.WebUser.id.in_(author_ids)).all()
+    } if author_ids else {}
+
+    return [
+        {
+            "id": m.id,
+            "message": m.message,
+            "is_admin": bool(m.is_admin),
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+            "admin_name": authors.get(m.user_id, "管理员") if m.is_admin else None,
+        }
+        for m in messages
+    ]
 
 
 @admin_router.put("/tickets/{ticket_id}")
@@ -1760,6 +1827,366 @@ async def economy_stats(
                 models.ExchangeCode.use_count > 0).count(),
         },
         "invitations": db.query(models.InvitationRecord).count(),
+    }
+
+
+# ==================== 用户详情 / 趋势 / 订阅总览（v2.4.0 补齐） ====================
+
+
+def _days_left(end_date: Optional[datetime], now: datetime) -> int:
+    if not end_date:
+        return 0
+    return max(0, (end_date - now).days)
+
+
+@admin_router.get("/users/{user_id}")
+async def get_user_detail(
+    user_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """用户 360° 详情：资料 / 订阅 / 积分 / 订单 / 邀请 / 签到 / 观看"""
+    from backend.emby_server import models as em
+
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    now = datetime.now()
+
+    # ---------- 订阅 ----------
+    subs = (
+        db.query(models.UserSubscription)
+        .filter(models.UserSubscription.user_id == user_id)
+        .order_by(models.UserSubscription.end_date.desc())
+        .limit(10)
+        .all()
+    )
+    active_sub = next(
+        (s for s in subs if s.status == "active" and s.end_date and s.end_date > now), None
+    )
+
+    def _sub_row(s: models.UserSubscription) -> dict:
+        return {
+            "id": s.id,
+            "plan_name": s.plan.name if s.plan else f"套餐 #{s.plan_id}",
+            "start_date": s.start_date.isoformat() if s.start_date else None,
+            "end_date": s.end_date.isoformat() if s.end_date else None,
+            "days_left": _days_left(s.end_date, now),
+            "status": s.status,
+        }
+
+    # ---------- 积分 ----------
+    income = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user_id, models.PointsLog.amount > 0
+    ).scalar() or 0
+    expense = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user_id, models.PointsLog.amount < 0
+    ).scalar() or 0
+    recent_logs = (
+        db.query(models.PointsLog)
+        .filter(models.PointsLog.user_id == user_id)
+        .order_by(models.PointsLog.created_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    # ---------- 订单 ----------
+    recharge_orders = (
+        db.query(models.RechargeOrder)
+        .filter(models.RechargeOrder.user_id == user_id)
+        .order_by(models.RechargeOrder.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    sub_orders = (
+        db.query(models.SubscriptionOrder)
+        .filter(models.SubscriptionOrder.user_id == user_id)
+        .order_by(models.SubscriptionOrder.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    paid_total = float(
+        db.query(func.coalesce(func.sum(models.RechargeOrder.price), 0)).filter(
+            models.RechargeOrder.user_id == user_id,
+            models.RechargeOrder.status == "paid",
+        ).scalar() or 0
+    ) + float(
+        db.query(func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)).filter(
+            models.SubscriptionOrder.user_id == user_id,
+            models.SubscriptionOrder.status == "paid",
+        ).scalar() or 0
+    )
+
+    # ---------- 邀请 ----------
+    invite_records = (
+        db.query(models.InvitationRecord)
+        .filter(models.InvitationRecord.inviter_id == user_id)
+        .order_by(models.InvitationRecord.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    invitee_ids = [r.invitee_id for r in invite_records]
+    invitee_names = {
+        u.id: u.username
+        for u in db.query(models.WebUser).filter(models.WebUser.id.in_(invitee_ids)).all()
+    } if invitee_ids else {}
+    rebate_total = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user_id, models.PointsLog.type == "rebate"
+    ).scalar() or 0
+
+    # ---------- 签到 ----------
+    checkin_count = db.query(models.CheckinRecord).filter(
+        models.CheckinRecord.user_id == user_id
+    ).count()
+    last_checkin = (
+        db.query(models.CheckinRecord)
+        .filter(models.CheckinRecord.user_id == user_id)
+        .order_by(models.CheckinRecord.checkin_date.desc())
+        .first()
+    )
+
+    # ---------- 观看 ----------
+    plays = db.query(em.PlaybackSession).filter(em.PlaybackSession.user_id == user_id).count()
+    watched_items = db.query(em.UserMediaData).filter(
+        em.UserMediaData.user_id == user_id,
+        em.UserMediaData.played == True,  # noqa: E712
+    ).count()
+
+    return {
+        "profile": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "is_active": user.is_active,
+            "is_staff": user.is_staff,
+            "emby_username": user.emby_username,
+            "points": user.points or 0,
+            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+        },
+        "subscription": {
+            "active": _sub_row(active_sub) if active_sub else None,
+            "history": [_sub_row(s) for s in subs],
+        },
+        "points": {
+            "balance": user.points or 0,
+            "income": int(income),
+            "expense": abs(int(expense)),
+            "recent": [
+                {
+                    "id": l.id,
+                    "amount": l.amount,
+                    "balance_after": l.balance_after,
+                    "type": l.type,
+                    "description": l.description,
+                    "created_at": l.created_at.isoformat() if l.created_at else None,
+                }
+                for l in recent_logs
+            ],
+        },
+        "orders": {
+            "paid_total": round(paid_total, 2),
+            "recharge": [
+                {
+                    "order_id": o.order_id,
+                    "item_name": o.package.name if o.package else f"套餐 #{o.package_id}",
+                    "amount": float(o.price),
+                    "points": o.amount,
+                    "status": o.status,
+                    "created_at": o.created_at.isoformat() if o.created_at else None,
+                }
+                for o in recharge_orders
+            ],
+            "subscription": [
+                {
+                    "order_id": o.order_id,
+                    "item_name": o.item_name or (o.plan.name if o.plan else f"套餐 #{o.plan_id}"),
+                    "amount": float(o.amount),
+                    "status": o.status,
+                    "created_at": o.created_at.isoformat() if o.created_at else None,
+                }
+                for o in sub_orders
+            ],
+        },
+        "invitation": {
+            "count": db.query(models.InvitationRecord).filter(
+                models.InvitationRecord.inviter_id == user_id
+            ).count(),
+            "rebate_total": int(rebate_total),
+            "invitees": [
+                {
+                    "username": invitee_names.get(r.invitee_id, "未知"),
+                    "reward_points": r.reward_points,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in invite_records
+            ],
+        },
+        "checkin": {
+            "total": checkin_count,
+            "last_date": last_checkin.checkin_date.isoformat() if last_checkin else None,
+            "streak": last_checkin.streak if last_checkin else 0,
+        },
+        "watch": {
+            "plays": plays,
+            "watched_items": watched_items,
+        },
+    }
+
+
+@admin_router.get("/stats/trend")
+async def get_stats_trend(
+    days: int = 14,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """趋势统计（默认近 14 天）：新增用户 / 播放次数 / 营收 / 签到
+
+    单次聚合查询后按日补零，保证折线图连续。
+    """
+    from backend.emby_server import models as em
+
+    days = max(1, min(days, 90))
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today - timedelta(days=days - 1)
+
+    def _series(rows) -> dict:
+        out: dict = {}
+        for day, value in rows:
+            key = str(day)[:10]
+            out[key] = out.get(key, 0) + (value or 0)
+        return out
+
+    user_rows = db.query(
+        func.date(models.WebUser.created_at), func.count(models.WebUser.id)
+    ).filter(models.WebUser.created_at >= start).group_by(
+        func.date(models.WebUser.created_at)
+    ).all()
+
+    play_rows = db.query(
+        func.date(em.PlaybackSession.start_time), func.count(em.PlaybackSession.id)
+    ).filter(em.PlaybackSession.start_time >= start).group_by(
+        func.date(em.PlaybackSession.start_time)
+    ).all()
+
+    recharge_rows = db.query(
+        func.date(models.RechargeOrder.paid_at), func.coalesce(func.sum(models.RechargeOrder.price), 0)
+    ).filter(
+        models.RechargeOrder.status == "paid", models.RechargeOrder.paid_at >= start
+    ).group_by(func.date(models.RechargeOrder.paid_at)).all()
+
+    sub_rows = db.query(
+        func.date(models.SubscriptionOrder.paid_at), func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)
+    ).filter(
+        models.SubscriptionOrder.status == "paid", models.SubscriptionOrder.paid_at >= start
+    ).group_by(func.date(models.SubscriptionOrder.paid_at)).all()
+
+    checkin_rows = db.query(
+        func.date(models.CheckinRecord.checkin_date), func.count(models.CheckinRecord.id)
+    ).filter(models.CheckinRecord.checkin_date >= start).group_by(
+        func.date(models.CheckinRecord.checkin_date)
+    ).all()
+
+    users_map = _series(user_rows)
+    plays_map = _series(play_rows)
+    recharge_map = _series(recharge_rows)
+    sub_map = _series(sub_rows)
+    checkin_map = _series(checkin_rows)
+
+    series = []
+    for i in range(days):
+        day = start + timedelta(days=i)
+        key = day.strftime("%Y-%m-%d")
+        series.append({
+            "date": key,
+            "new_users": int(users_map.get(key, 0)),
+            "plays": int(plays_map.get(key, 0)),
+            "revenue": round(float(recharge_map.get(key, 0)) + float(sub_map.get(key, 0)), 2),
+            "checkins": int(checkin_map.get(key, 0)),
+        })
+
+    return {
+        "days": days,
+        "series": series,
+        "totals": {
+            "new_users": sum(p["new_users"] for p in series),
+            "plays": sum(p["plays"] for p in series),
+            "revenue": round(sum(p["revenue"] for p in series), 2),
+            "checkins": sum(p["checkins"] for p in series),
+        },
+    }
+
+
+@admin_router.get("/economy/subscriptions")
+async def economy_list_subscriptions(
+    status_filter: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """订阅总览：全部订阅记录 + 状态筛选 + 到期概览
+
+    status_filter: active（生效中）/ expiring（7 天内到期）/ expired（已过期）
+    """
+    now = datetime.now()
+    week_later = now + timedelta(days=7)
+
+    q = db.query(models.UserSubscription)
+    if status_filter == "active":
+        q = q.filter(models.UserSubscription.status == "active",
+                     models.UserSubscription.end_date > now)
+    elif status_filter == "expiring":
+        q = q.filter(models.UserSubscription.status == "active",
+                     models.UserSubscription.end_date > now,
+                     models.UserSubscription.end_date <= week_later)
+    elif status_filter == "expired":
+        q = q.filter(or_(models.UserSubscription.status == "expired",
+                         models.UserSubscription.end_date <= now))
+
+    total = q.count()
+    rows = q.order_by(models.UserSubscription.end_date.asc()).offset(offset).limit(min(limit, 200)).all()
+
+    user_ids = {r.user_id for r in rows}
+    users = {
+        u.id: u.username
+        for u in db.query(models.WebUser).filter(models.WebUser.id.in_(user_ids)).all()
+    } if user_ids else {}
+
+    active_count = db.query(models.UserSubscription).filter(
+        models.UserSubscription.status == "active", models.UserSubscription.end_date > now
+    ).count()
+    expiring_count = db.query(models.UserSubscription).filter(
+        models.UserSubscription.status == "active",
+        models.UserSubscription.end_date > now,
+        models.UserSubscription.end_date <= week_later,
+    ).count()
+    expired_count = db.query(models.UserSubscription).filter(
+        or_(models.UserSubscription.status == "expired",
+            models.UserSubscription.end_date <= now)
+    ).count()
+
+    return {
+        "total": total,
+        "summary": {
+            "active": active_count,
+            "expiring_7d": expiring_count,
+            "expired": expired_count,
+        },
+        "subscriptions": [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "username": users.get(r.user_id, "未知"),
+                "plan_name": r.plan.name if r.plan else f"套餐 #{r.plan_id}",
+                "start_date": r.start_date.isoformat() if r.start_date else None,
+                "end_date": r.end_date.isoformat() if r.end_date else None,
+                "days_left": _days_left(r.end_date, now),
+                "status": "active" if (r.status == "active" and r.end_date and r.end_date > now) else "expired",
+            }
+            for r in rows
+        ],
     }
 
 

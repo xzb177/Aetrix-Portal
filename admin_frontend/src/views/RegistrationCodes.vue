@@ -140,7 +140,7 @@ function usedByNames(row: RegistrationCode): string {
 
     <!-- 码表 -->
     <div class="admin-card">
-      <el-table :data="codes" v-loading="loading" style="width: 100%" :header-cell-style="{ background: 'transparent', color: '#a3a3a3' }">
+      <el-table :data="codes" v-loading="loading" style="width: 100%">
         <el-table-column label="注册码" min-width="160">
           <template #default="{ row }">
             <button class="code-chip" @click="copyText(row.code)">{{ row.code }}<Copy :size="12" /></button>
@@ -193,8 +193,8 @@ function usedByNames(row: RegistrationCode): string {
   font-family: ui-monospace, monospace;
   font-size: 13px;
   letter-spacing: 1px;
-  background: rgba(16, 185, 129, 0.1);
-  color: #10b981;
+  background: var(--primary-bg);
+  color: var(--primary);
   border: none;
   border-radius: 8px;
   padding: 4px 10px;
@@ -202,7 +202,7 @@ function usedByNames(row: RegistrationCode): string {
 }
 
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
-.mini-badge.ok { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
 .muted { color: var(--color-text-muted, #737373); }
 
@@ -212,9 +212,9 @@ function usedByNames(row: RegistrationCode): string {
   font-size: 14px;
   letter-spacing: 2px;
   text-align: center;
-  background: rgba(16, 185, 129, 0.1);
-  color: #10b981;
-  border: 1px dashed rgba(16, 185, 129, 0.4);
+  background: var(--primary-bg);
+  color: var(--primary);
+  border: 1px dashed var(--primary-border);
   border-radius: 10px;
   padding: 10px;
   cursor: pointer;

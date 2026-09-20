@@ -74,7 +74,7 @@ function statusLabel(status: string): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="list" v-loading="loading" style="width: 100%" :header-cell-style="{ background: 'transparent', color: '#a3a3a3' }">
+      <el-table :data="list" v-loading="loading" style="width: 100%">
         <el-table-column label="片名" min-width="200">
           <template #default="{ row }">
             <span class="movie-name">《{{ row.movie_name }}》</span>
@@ -123,7 +123,7 @@ function statusLabel(status: string): string {
 .movie-year { font-size: 12px; color: var(--color-text-muted, #737373); margin-left: 6px; }
 .movie-note { font-size: 12px; color: var(--color-text-muted, #737373); margin-top: 2px; }
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
-.mini-badge.ok { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.warn { background: rgba(234, 179, 8, 0.15); color: #eab308; }
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
 </style>
