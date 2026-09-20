@@ -11,7 +11,7 @@ import { authApi, embyApi, subscriptionApi, type AuthUser, type AccountCard, typ
 import { useToast } from '@/composables/useToast'
 import {
   User, Lock, KeyRound, LogOut, ShieldCheck, RefreshCw, Eye, EyeOff, Copy, Check, Film,
-  Play, History, Crown, Heart,
+  Play, History, Crown, Heart, Sparkles,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -44,6 +44,13 @@ const showPlayPassword = ref(false)
 const embyUsername = computed(() => account.value?.emby_username || user.value?.emby_username || user.value?.username || '—')
 const serverUrl = computed(() => account.value?.base_url || window.location.origin)
 const hasPlayPassword = computed(() => !!account.value?.has_password)
+
+// 播放器一键导入（服务器地址 / 账号 信息集中在本页，首页不再重复）
+const importSchemes = computed(() => account.value?.import_schemes || {})
+const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
+function openScheme(url: string) {
+  window.location.href = url
+}
 
 const copyText = async (text: string, field: string) => {
   try {
@@ -219,8 +226,23 @@ function formatDate(iso?: string | null) {
           </div>
         </div>
 
+        <div v-if="hasSchemes" class="scheme-row">
+          <span class="scheme-label">一键导入到客户端</span>
+          <div class="scheme-btns">
+            <button
+              v-for="(url, name) in importSchemes"
+              :key="name"
+              class="scheme-btn"
+              @click="openScheme(url)"
+            >
+              <Sparkles :size="13" />
+              {{ name }}
+            </button>
+          </div>
+        </div>
+
         <p class="card-tip">
-          播放密码用于 Emby 客户端登录，与门户密码相互独立。
+          播放密码用于 Emby 客户端登录，与门户密码相互独立；也可用上方按钮一键导入。
         </p>
       </section>
 
@@ -489,6 +511,48 @@ function formatDate(iso?: string | null) {
   font-size: 0.75rem;
   color: rgba(255, 255, 255, 0.35);
   line-height: 1.5;
+}
+
+/* 一键导入到客户端 */
+.scheme-row {
+  margin-top: 0.875rem;
+  padding-top: 0.875rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.scheme-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+}
+
+.scheme-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.scheme-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 32px;
+  padding: 0 0.8125rem;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-sm);
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
+}
+
+.scheme-btn:hover {
+  background: var(--au-primary-soft);
+  border-color: var(--au-primary-border);
+  color: var(--au-primary);
 }
 
 .icon-btn {
