@@ -145,12 +145,12 @@ const getToastClass = (type: string) => {
 
 /* 成功状态 */
 .toast-success {
-  border-color: var(--brand-primary-light, rgba(16, 185, 129, 0.3));
+  border-color: var(--brand-primary-light, rgba(34, 211, 238, 0.3));
 }
 
 .toast-success .toast-icon {
-  background: var(--brand-primary-light, rgba(16, 185, 129, 0.2));
-  color: var(--brand-primary, #10b981);
+  background: var(--brand-primary-light, rgba(34, 211, 238, 0.2));
+  color: var(--brand-primary, #22d3ee);
 }
 
 /* 错误状态 */

@@ -314,7 +314,7 @@ function formatDate(iso?: string | null) {
 
       <!-- 关联入口 -->
       <section class="links-row">
-        <RouterLink to="/requests" class="link-card">
+        <RouterLink to="/request" class="link-card">
           <Film :size="16" />
           我的求片
         </RouterLink>
@@ -374,7 +374,7 @@ function formatDate(iso?: string | null) {
 <style scoped>
 .profile-view {
   min-height: 100vh;
-  background: #05070a;
+  background: #070b12;
   color: #e5e7eb;
   padding-bottom: 3rem;
 }
@@ -400,9 +400,9 @@ function formatDate(iso?: string | null) {
   align-items: center;
   justify-content: center;
   border-radius: 18px;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  color: #10b981;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.25);
+  color: #22d3ee;
 }
 
 .head-info {
@@ -471,7 +471,7 @@ function formatDate(iso?: string | null) {
 }
 
 .card-title svg {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .card-tip {
@@ -572,14 +572,14 @@ function formatDate(iso?: string | null) {
 }
 
 .copy-btn .ok {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .text-btn {
   flex-shrink: 0;
   background: transparent;
   border: none;
-  color: #10b981;
+  color: #22d3ee;
   font-size: 0.8125rem;
   cursor: pointer;
   padding: 0.25rem 0.5rem;
@@ -660,7 +660,7 @@ function formatDate(iso?: string | null) {
 }
 
 .stat-num.accent {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .stat-cap {
@@ -684,7 +684,7 @@ function formatDate(iso?: string | null) {
 }
 
 .recent-icon {
-  color: rgba(16, 185, 129, 0.6);
+  color: rgba(34, 211, 238, 0.6);
   flex-shrink: 0;
 }
 
@@ -709,8 +709,8 @@ function formatDate(iso?: string | null) {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.25);
   border-radius: 12px;
   padding: 0.875rem 1rem;
 }
@@ -729,8 +729,8 @@ function formatDate(iso?: string | null) {
 .sub-badge {
   font-size: 0.6875rem;
   font-weight: 600;
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.15);
+  color: #22d3ee;
+  background: rgba(34, 211, 238, 0.15);
   border-radius: 999px;
   padding: 0.1875rem 0.625rem;
   flex-shrink: 0;
@@ -770,8 +770,8 @@ function formatDate(iso?: string | null) {
 }
 
 .sub-status.ok {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.12);
+  color: #22d3ee;
+  background: rgba(34, 211, 238, 0.12);
 }
 
 .sub-status.off {
@@ -802,8 +802,8 @@ function formatDate(iso?: string | null) {
 }
 
 .link-card:hover {
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
+  border-color: rgba(34, 211, 238, 0.3);
+  color: #22d3ee;
 }
 
 /* 弹窗 */
@@ -874,7 +874,7 @@ function formatDate(iso?: string | null) {
 }
 
 .field input:focus {
-  border-color: rgba(16, 185, 129, 0.6);
+  border-color: rgba(34, 211, 238, 0.6);
 }
 
 .form-error {
@@ -915,7 +915,7 @@ function formatDate(iso?: string | null) {
 }
 
 .btn.primary {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, #22d3ee, #06b6d4);
   color: #fff;
 }
 

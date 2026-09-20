@@ -148,7 +148,7 @@ export const authApi = {
   login: (data: { username: string; password: string }) =>
     api.post<never, AuthResponse>('/api/user/auth/login', data),
 
-  register: (data: { username: string; password: string; email?: string }) =>
+  register: (data: { username: string; password: string; email?: string; invitation_code?: string; registration_code?: string }) =>
     api.post<never, AuthResponse>('/api/user/auth/register', data),
 
   getCurrentUser: () => api.get<never, AuthUser>('/api/user/auth/me'),

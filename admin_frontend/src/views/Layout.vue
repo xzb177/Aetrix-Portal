@@ -5,6 +5,7 @@ import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   LayoutDashboard, Users, Ticket, Megaphone, Film, ScrollText,
   KeyRound, MessageSquareDashed, LogOut, Menu, X,
+  Wallet, Package, TicketCheck, Gift,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 
@@ -16,6 +17,10 @@ const sidebarOpen = ref(false)
 const nav = [
   { path: '/', label: '数据概览', icon: LayoutDashboard },
   { path: '/users', label: '用户管理', icon: Users },
+  { path: '/goods', label: '商品管理', icon: Package },
+  { path: '/orders', label: '运营·订单', icon: Wallet },
+  { path: '/exchange-codes', label: '运营·兑换码', icon: TicketCheck },
+  { path: '/invitations', label: '运营·邀请积分', icon: Gift },
   { path: '/codes', label: '注册码', icon: KeyRound },
   { path: '/announcements', label: '公告管理', icon: Megaphone },
   { path: '/tickets', label: '工单管理', icon: Ticket },

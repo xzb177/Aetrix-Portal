@@ -12,32 +12,32 @@
   --brand-200: #a7f3d0;
   --brand-300: #6ee7b7;
   --brand-400: #34d399;
-  --brand-500: #10b981;        /* Emerald 500 - 主色 */
-  --brand-600: #059669;        /* Emerald 600 - Hover */
-  --brand-700: #047857;
+  --brand-500: #22d3ee;        /* Emerald 500 - 主色 */
+  --brand-600: #06b6d4;        /* Emerald 600 - Hover */
+  --brand-700: #0e7490;
   --brand-800: #065f46;
   --brand-900: #064e3b;
   --brand-950: #022c22;
 
   /* 向后兼容 */
-  --brand-primary: #10b981;
-  --brand-primary-hover: #059669;
-  --brand-primary-light: rgba(16, 185, 129, 0.15);
-  --brand-primary-lighter: rgba(16, 185, 129, 0.08);
+  --brand-primary: #22d3ee;
+  --brand-primary-hover: #06b6d4;
+  --brand-primary-light: rgba(34, 211, 238, 0.15);
+  --brand-primary-lighter: rgba(34, 211, 238, 0.08);
 
   /* V2 Profile 专用 - 强调色（小面积点缀） */
-  --accent: #10b981;
-  --accent-dim: rgba(16, 185, 129, 0.1);
-  --accent-glow: rgba(16, 185, 129, 0.4);
+  --accent: #22d3ee;
+  --accent-dim: rgba(34, 211, 238, 0.1);
+  --accent-glow: rgba(34, 211, 238, 0.4);
 
   /* 语义色 - V2 新增完整色阶 */
   --color-info: #3b82f6;
   --color-info-light: rgba(59, 130, 246, 0.15);
   --color-info-bg: rgba(59, 130, 246, 0.1);
 
-  --color-success: #10b981;
-  --color-success-light: rgba(16, 185, 129, 0.15);
-  --color-success-bg: rgba(16, 185, 129, 0.1);
+  --color-success: #22d3ee;
+  --color-success-light: rgba(34, 211, 238, 0.15);
+  --color-success-bg: rgba(34, 211, 238, 0.1);
 
   --color-warning: #f59e0b;
   --color-warning-light: rgba(245, 158, 11, 0.15);
@@ -89,7 +89,7 @@
   --border-subtle: rgba(255, 255, 255, 0.06);
   --border-default: rgba(255, 255, 255, 0.12);
   --border-strong: rgba(255, 255, 255, 0.18);
-  --border-focus: #10b981;
+  --border-focus: #22d3ee;
   --border-error: #ef4444;
 
   /* 分割线 */
@@ -166,7 +166,7 @@
   /* ==================== Focus Ring ==================== */
 
   --focus-ring-width: 2px;
-  --focus-ring-color: #10b981;
+  --focus-ring-color: #22d3ee;
   --focus-ring-offset: 2px;
 
   /* ==================== 骨架屏 ==================== */

@@ -168,11 +168,45 @@ def get_db() -> Session:
         db.close()
 
 
+def _auto_migrate():
+    """轻量自动迁移：为已有表补充新增列（SQLite/MySQL/PG 通用）
+
+    create_all 只建新表不改旧表，这里用 ALTER TABLE ADD COLUMN 补齐 v2.3.0 新增字段。
+    幂等：列已存在时跳过。
+    """
+    from sqlalchemy import text, inspect
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    migrations = {
+        "web_users": [
+            ("points", "INTEGER", "0"),
+        ],
+    }
+
+    for table, columns in migrations.items():
+        if table not in existing_tables:
+            continue
+        existing_cols = {c["name"] for c in inspector.get_columns(table)}
+        with engine.begin() as conn:
+            for col_name, col_type, default in columns:
+                if col_name not in existing_cols:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"
+                    ))
+                    print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
+
+
 def init_db():
-    """初始化数据库，创建所有表"""
+    """初始化数据库，创建所有表并执行轻量自动迁移"""
     from backend import models  # 导入所有模型
     from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
     Base.metadata.create_all(bind=engine)
+    try:
+        _auto_migrate()
+    except Exception as e:  # noqa: BLE001 — 迁移失败不阻塞启动，新库不受影响
+        print(f"⚠️ 自动迁移失败（可忽略，若为全新数据库）: {e}")
     print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
 

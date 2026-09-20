@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
-import { Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown, Popcorn } from 'lucide-vue-next'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import {
+  Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown,
+  Wallet, CalendarCheck, Gift, MessageSquareDashed,
+} from 'lucide-vue-next'
+import api from '@/api'
 
 const userStore = useUserStore()
 const router = useRouter()
@@ -11,22 +15,21 @@ const route = useRoute()
 const mobileMenuOpen = ref(false)
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
+const unreadCount = ref(0)
 
-const navItems = computed(() => [
-  { name: '首页', path: '/' },
-  { name: '媒体库', path: '/media' },
-  { name: '求片', path: '/requests' },
-  { name: '工单', path: '/tickets' },
-  { name: '消息', path: '/messages' },
-])
+const navItems = [
+  { name: '首页', path: '/', icon: Clapperboard },
+  { name: '媒体库', path: '/media', icon: Film },
+  { name: '钱包', path: '/wallet', icon: Wallet },
+  { name: '签到', path: '/checkin', icon: CalendarCheck },
+  { name: '邀请', path: '/invite', icon: Gift },
+  { name: '求片', path: '/request', icon: MessageSquareDashed },
+  { name: '工单', path: '/tickets', icon: Ticket },
+]
 
 function isActive(path: string) {
   if (path === '/') return route.path === '/'
   return route.path.startsWith(path)
-}
-
-function toggleUserMenu() {
-  userMenuOpen.value = !userMenuOpen.value
 }
 
 function closeMenus() {
@@ -46,22 +49,36 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
-onMounted(() => document.addEventListener('click', onDocClick))
+async function loadUnread() {
+  if (!userStore.isLoggedIn) return
+  try {
+    const res = await api.get<never, { unread_count: number }>('/api/user/messages/unread-count')
+    unreadCount.value = res?.unread_count || 0
+  } catch {
+    /* 静默失败 */
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  loadUnread()
+  // 每 60s 轮询未读数
+  window.setInterval(loadUnread, 60_000)
+})
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <template>
   <header class="app-header">
     <div class="header-container">
-      <!-- Logo -->
       <RouterLink to="/" class="header-logo" @click="closeMenus">
         <span class="logo-mark">
-          <Clapperboard :size="18" />
+          <Clapperboard :size="17" />
         </span>
         <span class="logo-text">Aetrix</span>
       </RouterLink>
 
-      <!-- Desktop Navigation -->
+      <!-- 桌面导航 -->
       <nav class="desktop-nav">
         <RouterLink
           v-for="item in navItems"
@@ -74,36 +91,42 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         </RouterLink>
       </nav>
 
-      <!-- User Section -->
+      <!-- 右侧用户区 -->
       <div class="user-section">
         <template v-if="userStore.isLoggedIn">
+          <RouterLink to="/messages" class="msg-btn" title="消息中心">
+            <Inbox :size="18" />
+            <span v-if="unreadCount > 0" class="msg-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+          </RouterLink>
+
           <div ref="userMenuRef" class="user-menu">
-            <button class="user-btn" @click="toggleUserMenu">
-              <User :size="16" />
+            <button class="user-btn" @click="userMenuOpen = !userMenuOpen">
+              <span class="avatar">{{ (userStore.user?.username || 'U').charAt(0).toUpperCase() }}</span>
               <span class="user-name">{{ userStore.user?.username || '用户' }}</span>
             </button>
 
-            <div v-if="userMenuOpen" class="user-dropdown">
-              <div class="dropdown-head">
-                <span class="dropdown-username">{{ userStore.user?.username }}</span>
-                <span v-if="userStore.isVIP" class="dropdown-vip">
-                  <Crown :size="11" />
-                  VIP
-                </span>
+            <Transition name="dd">
+              <div v-if="userMenuOpen" class="user-dropdown">
+                <div class="dropdown-head">
+                  <span class="dropdown-username">{{ userStore.user?.username }}</span>
+                  <span v-if="userStore.isVIP" class="dropdown-vip">
+                    <Crown :size="11" /> VIP
+                  </span>
+                </div>
+                <RouterLink to="/profile" class="dropdown-item" @click="closeMenus">
+                  <User :size="15" /> 个人中心
+                </RouterLink>
+                <RouterLink to="/wallet" class="dropdown-item" @click="closeMenus">
+                  <Wallet :size="15" /> 我的钱包
+                </RouterLink>
+                <RouterLink to="/invite" class="dropdown-item" @click="closeMenus">
+                  <Gift :size="15" /> 邀请返利
+                </RouterLink>
+                <button class="dropdown-item dropdown-logout" @click="handleLogout">
+                  <LogOut :size="15" /> 退出登录
+                </button>
               </div>
-              <RouterLink to="/profile" class="dropdown-item" @click="closeMenus">
-                <User :size="15" />
-                个人中心
-              </RouterLink>
-              <RouterLink to="/messages" class="dropdown-item" @click="closeMenus">
-                <Inbox :size="15" />
-                消息中心
-              </RouterLink>
-              <button class="dropdown-item dropdown-logout" @click="handleLogout">
-                <LogOut :size="15" />
-                退出登录
-              </button>
-            </div>
+            </Transition>
           </div>
         </template>
 
@@ -111,41 +134,43 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           <RouterLink to="/login" class="login-btn">登录</RouterLink>
         </template>
 
-        <!-- Mobile toggle -->
         <button class="mobile-toggle" @click="mobileMenuOpen = !mobileMenuOpen">
-          <X v-if="mobileMenuOpen" :size="18" />
-          <Menu v-else :size="18" />
+          <X v-if="mobileMenuOpen" :size="19" />
+          <Menu v-else :size="19" />
         </button>
       </div>
     </div>
 
-    <!-- Mobile menu -->
-    <div v-if="mobileMenuOpen" class="mobile-menu">
-      <template v-if="userStore.isLoggedIn">
-        <RouterLink v-for="item in navItems" :key="item.path" :to="item.path" class="mobile-link" @click="closeMenus">
-          <component :is="item.path === '/requests' ? Film : item.path === '/tickets' ? Ticket : Inbox" v-if="item.path !== '/'" :size="16" />
-          {{ item.name }}
-        </RouterLink>
-        <RouterLink to="/media" class="mobile-link" @click="closeMenus">
-          <Popcorn :size="16" />
-          媒体库
-        </RouterLink>
-        <RouterLink to="/profile" class="mobile-link" @click="closeMenus">
-          <User :size="16" />
-          个人中心
-        </RouterLink>
-        <button class="mobile-link logout" @click="handleLogout">
-          <LogOut :size="16" />
-          退出登录
-        </button>
-      </template>
-      <template v-else>
-        <RouterLink to="/login" class="mobile-link" @click="closeMenus">
-          <User :size="16" />
-          登录 / 注册
-        </RouterLink>
-      </template>
-    </div>
+    <!-- 移动端菜单 -->
+    <Transition name="mm">
+      <div v-if="mobileMenuOpen" class="mobile-menu">
+        <template v-if="userStore.isLoggedIn">
+          <RouterLink v-for="item in navItems" :key="item.path" :to="item.path" class="mobile-link" @click="closeMenus">
+            <component :is="item.icon" :size="17" />
+            {{ item.name }}
+          </RouterLink>
+          <RouterLink to="/messages" class="mobile-link" @click="closeMenus">
+            <Inbox :size="17" />
+            消息中心
+            <span v-if="unreadCount > 0" class="mobile-msg-badge">{{ unreadCount }}</span>
+          </RouterLink>
+          <RouterLink to="/profile" class="mobile-link" @click="closeMenus">
+            <User :size="17" />
+            个人中心
+          </RouterLink>
+          <button class="mobile-link logout" @click="handleLogout">
+            <LogOut :size="17" />
+            退出登录
+          </button>
+        </template>
+        <template v-else>
+          <RouterLink to="/login" class="mobile-link" @click="closeMenus">
+            <User :size="17" />
+            登录 / 注册
+          </RouterLink>
+        </template>
+      </div>
+    </Transition>
   </header>
 </template>
 
@@ -154,16 +179,17 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   position: sticky;
   top: 0;
   z-index: 50;
-  background: rgba(5, 7, 10, 0.85);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(7, 11, 18, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--au-border);
 }
 
 .header-container {
-  max-width: 880px;
+  max-width: 1080px;
   margin: 0 auto;
   padding: 0 1.25rem;
-  height: 60px;
+  height: 62px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -175,230 +201,274 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   align-items: center;
   gap: 0.5rem;
   text-decoration: none;
+  flex-shrink: 0;
 }
 
 .logo-mark {
-  width: 32px;
-  height: 32px;
+  width: 33px;
+  height: 33px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  color: #10b981;
+  border-radius: 11px;
+  background: var(--au-gradient);
+  color: #05141c;
+  box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
 .logo-text {
-  font-size: 1.0625rem;
-  font-weight: 700;
-  color: #fafafa;
-  letter-spacing: -0.01em;
+  font-size: 1.125rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  background: var(--au-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .desktop-nav {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.125rem;
 }
 
 .nav-link {
-  padding: 0.4375rem 0.75rem;
-  border-radius: 9px;
+  padding: 0.4688rem 0.8125rem;
+  border-radius: var(--au-r-sm);
   font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.55);
+  font-weight: 500;
+  color: var(--au-text-2);
   text-decoration: none;
-  transition: all 0.15s ease;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
 .nav-link:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--au-text);
+  background: var(--au-surface-2);
 }
 
 .nav-link-active {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.08);
+  color: var(--au-primary);
+  background: var(--au-primary-soft);
 }
 
-/* 用户区 */
 .user-section {
   display: flex;
   align-items: center;
   gap: 0.625rem;
 }
 
-.user-menu {
+/* 消息铃铛 */
+.msg-btn {
   position: relative;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--au-r-md);
+  color: var(--au-text-2);
+  transition: all var(--au-fast);
 }
+.msg-btn:hover { color: var(--au-text); background: var(--au-surface-2); }
+
+.msg-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-gradient-warm);
+  color: #fff;
+  font-size: 0.625rem;
+  font-weight: 700;
+  border-radius: var(--au-r-full);
+  box-shadow: 0 2px 6px rgba(244, 114, 182, 0.4);
+}
+
+.user-menu { position: relative; }
 
 .user-btn {
   display: flex;
   align-items: center;
-  gap: 0.4375rem;
-  height: 34px;
-  padding: 0 0.75rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 0.8125rem;
+  gap: 0.5rem;
+  padding: 0.3125rem 0.75rem 0.3125rem 0.3125rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all var(--au-fast);
+}
+.user-btn:hover { background: var(--au-surface-2); border-color: var(--au-border-strong); }
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--au-gradient);
+  color: #05141c;
+  font-size: 0.8125rem;
+  font-weight: 800;
 }
 
-.user-btn:hover {
-  background: rgba(255, 255, 255, 0.09);
-  color: #fff;
+.user-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text);
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .user-dropdown {
   position: absolute;
   right: 0;
-  top: calc(100% + 0.5rem);
-  width: 180px;
-  background: #10161d;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 13px;
-  padding: 0.375rem;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-  animation: dropIn 0.18s ease;
-}
-
-@keyframes dropIn {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: none; }
+  top: calc(100% + 8px);
+  width: 200px;
+  background: rgba(10, 16, 26, 0.97);
+  border: 1px solid var(--au-border-strong);
+  border-radius: var(--au-r-lg);
+  box-shadow: var(--au-shadow-2);
+  overflow: hidden;
+  z-index: 60;
 }
 
 .dropdown-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem 0.625rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  margin-bottom: 0.25rem;
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--au-border);
 }
 
 .dropdown-username {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #fafafa;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--au-text);
 }
 
 .dropdown-vip {
   display: inline-flex;
   align-items: center;
   gap: 0.1875rem;
-  color: #f59e0b;
-  font-size: 0.6875rem;
+  padding: 0.125rem 0.5rem;
+  background: var(--au-gradient-warm);
+  border-radius: var(--au-r-full);
+  color: #fff;
+  font-size: 0.625rem;
   font-weight: 700;
 }
 
 .dropdown-item {
   display: flex;
   align-items: center;
-  gap: 0.5625rem;
+  gap: 0.625rem;
   width: 100%;
-  padding: 0.5625rem 0.625rem;
-  background: transparent;
+  padding: 0.6875rem 1rem;
+  background: none;
   border: none;
-  border-radius: 9px;
-  color: rgba(255, 255, 255, 0.75);
+  color: var(--au-text-2);
   font-size: 0.8125rem;
   text-decoration: none;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all var(--au-fast);
+  text-align: left;
 }
-
-.dropdown-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
-}
-
-.dropdown-logout {
-  color: #f87171;
-}
-
-.dropdown-logout:hover {
-  background: rgba(239, 68, 68, 0.08);
-  color: #f87171;
-}
+.dropdown-item:hover { background: var(--au-surface-2); color: var(--au-text); }
+.dropdown-logout { color: var(--au-danger); border-top: 1px solid var(--au-border); }
+.dropdown-logout:hover { background: var(--au-danger-soft); color: var(--au-danger); }
 
 .login-btn {
   display: inline-flex;
   align-items: center;
-  height: 34px;
-  padding: 0 1rem;
-  background: linear-gradient(135deg, #10b981, #059669);
-  border-radius: 10px;
-  color: #fff;
+  height: 36px;
+  padding: 0 1.125rem;
+  background: var(--au-gradient);
+  color: #05141c;
+  border-radius: var(--au-r-md);
   font-size: 0.8125rem;
-  font-weight: 600;
+  font-weight: 700;
   text-decoration: none;
-  transition: box-shadow 0.2s ease;
+  box-shadow: 0 3px 12px var(--au-primary-glow);
+  transition: transform var(--au-fast);
 }
-
-.login-btn:hover {
-  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
-}
+.login-btn:hover { transform: translateY(-1px); }
 
 .mobile-toggle {
   display: none;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   align-items: center;
   justify-content: center;
-  background: transparent;
+  background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--au-text-2);
   cursor: pointer;
+  border-radius: var(--au-r-md);
 }
+.mobile-toggle:hover { background: var(--au-surface-2); color: var(--au-text); }
 
-/* 移动端 */
 .mobile-menu {
   display: none;
+  border-top: 1px solid var(--au-border);
+  padding: 0.5rem 1rem 0.875rem;
+  background: rgba(7, 11, 18, 0.97);
 }
 
-@media (max-width: 768px) {
-  .desktop-nav {
-    display: none;
-  }
+.mobile-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.625rem;
+  color: var(--au-text-2);
+  font-size: 0.9375rem;
+  text-decoration: none;
+  border-radius: var(--au-r-md);
+  transition: all var(--au-fast);
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+}
+.mobile-link:hover { background: var(--au-surface-2); color: var(--au-text); }
+.mobile-link.logout { color: var(--au-danger); }
 
-  .mobile-toggle {
-    display: flex;
-  }
+.mobile-msg-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-gradient-warm);
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  border-radius: var(--au-r-full);
+}
 
-  .user-name {
-    display: none;
-  }
+/* 过渡 */
+.dd-enter-active, .dd-leave-active { transition: opacity var(--au-fast), transform var(--au-fast); }
+.dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-6px); }
 
-  .mobile-menu {
-    display: flex;
-    flex-direction: column;
-    padding: 0.5rem 1.25rem 0.875rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-  }
+.mm-enter-active, .mm-leave-active { transition: opacity var(--au-med), transform var(--au-med); }
+.mm-enter-from, .mm-leave-to { opacity: 0; transform: translateY(-8px); }
 
-  .mobile-link {
-    display: flex;
-    align-items: center;
-    gap: 0.5625rem;
-    padding: 0.6875rem 0.375rem;
-    color: rgba(255, 255, 255, 0.75);
-    font-size: 0.875rem;
-    text-decoration: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  }
-
-  .mobile-link:last-child {
-    border-bottom: none;
-  }
-
-  .mobile-link.logout {
-    color: #f87171;
-  }
+@media (max-width: 900px) {
+  .desktop-nav { display: none; }
+  .mobile-toggle { display: flex; }
+  .mobile-menu { display: flex; flex-direction: column; }
+  .user-name { display: none; }
 }
 </style>

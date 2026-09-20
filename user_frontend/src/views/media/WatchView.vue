@@ -547,7 +547,7 @@ onBeforeUnmount(() => {
   left: 0;
   top: 0;
   bottom: 0;
-  background: #10b981;
+  background: #22d3ee;
   border-radius: 2px;
 }
 
@@ -557,7 +557,7 @@ onBeforeUnmount(() => {
   transform: translate(-50%, -50%);
   width: 12px;
   height: 12px;
-  background: #10b981;
+  background: #22d3ee;
   border-radius: 50%;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
@@ -595,7 +595,7 @@ onBeforeUnmount(() => {
 
 .volume-slider {
   width: 80px;
-  accent-color: #10b981;
+  accent-color: #22d3ee;
   cursor: pointer;
 }
 
@@ -608,7 +608,7 @@ onBeforeUnmount(() => {
 .method-badge {
   margin-left: auto;
   padding: 0.1875rem 0.5rem;
-  background: rgba(16, 185, 129, 0.15);
+  background: rgba(34, 211, 238, 0.15);
   border-radius: 6px;
   color: #34d399;
   font-size: 0.6875rem;

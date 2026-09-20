@@ -422,12 +422,12 @@ onMounted(() => {
 .header-icon {
   width: 48px;
   height: 48px;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.15) 100%);
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.2) 0%, rgba(5, 150, 105, 0.15) 100%);
   border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .header-left h1 {
@@ -468,14 +468,14 @@ onMounted(() => {
 }
 
 .action-btn.primary {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(135deg, #22d3ee 0%, #06b6d4 100%);
   border-color: transparent;
   color: white;
 }
 
 .action-btn.primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 12px rgba(34, 211, 238, 0.3);
 }
 
 .action-btn:disabled {
@@ -532,7 +532,7 @@ onMounted(() => {
 }
 
 .search-input:focus {
-  border-color: #10b981;
+  border-color: #22d3ee;
   background: rgba(26, 26, 26, 0.8);
 }
 
@@ -574,10 +574,10 @@ onMounted(() => {
 }
 
 .type-tab.active {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
-  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.1);
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%);
+  border-color: rgba(34, 211, 238, 0.3);
+  color: #22d3ee;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.1);
 }
 
 .filter-toggle {
@@ -600,16 +600,16 @@ onMounted(() => {
 }
 
 .filter-toggle.active {
-  background: rgba(16, 185, 129, 0.15);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
+  background: rgba(34, 211, 238, 0.15);
+  border-color: rgba(34, 211, 238, 0.3);
+  color: #22d3ee;
 }
 
 .unread-badge {
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  background: #10b981;
+  background: #22d3ee;
   border-radius: 9px;
   font-size: 0.7rem;
   font-weight: 600;
@@ -640,7 +640,7 @@ onMounted(() => {
   width: 32px;
   height: 32px;
   border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #10b981;
+  border-top-color: #22d3ee;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -679,12 +679,12 @@ onMounted(() => {
 
 .message-card:hover {
   background: rgba(38, 38, 38, 0.8);
-  border-color: rgba(16, 185, 129, 0.2);
+  border-color: rgba(34, 211, 238, 0.2);
 }
 
 .message-card.unread {
-  background: rgba(16, 185, 129, 0.04);
-  border-color: rgba(16, 185, 129, 0.15);
+  background: rgba(34, 211, 238, 0.04);
+  border-color: rgba(34, 211, 238, 0.15);
 }
 
 .message-card.unread::before {
@@ -695,7 +695,7 @@ onMounted(() => {
   transform: translateY(-50%);
   width: 3px;
   height: 60%;
-  background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+  background: linear-gradient(180deg, #22d3ee 0%, #06b6d4 100%);
   border-radius: 0 2px 2px 0;
 }
 
@@ -763,8 +763,8 @@ onMounted(() => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #10b981;
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
+  background: #22d3ee;
+  box-shadow: 0 0 6px rgba(34, 211, 238, 0.5);
   flex-shrink: 0;
 }
 
@@ -849,7 +849,7 @@ onMounted(() => {
 .modal-icon {
   width: 48px;
   height: 48px;
-  background: rgba(16, 185, 129, 0.1);
+  background: rgba(34, 211, 238, 0.1);
   border-radius: 12px;
   display: flex;
   align-items: center;

@@ -91,7 +91,12 @@ async function handleRegister() {
   error.value = ''
   loading.value = true
   try {
-    await userStore.register(f.username.trim(), f.password, f.email || undefined)
+    const inviteCode = (route.query.invite as string) || ''
+    const regCode = (route.query.code as string) || ''
+    await userStore.register(
+      f.username.trim(), f.password, f.email || undefined,
+      inviteCode || undefined, regCode || undefined,
+    )
     toast.success('注册成功，已自动开通观影账号')
     router.push((route.query.redirect as string) || '/')
   } catch (err) {
@@ -103,6 +108,11 @@ async function handleRegister() {
 
 onMounted(() => {
   if (route.query.mode === 'register') mode.value = 'register'
+  // 邀请链接 ?invite=CODE：自动切到注册页并提示
+  if (route.query.invite) {
+    mode.value = 'register'
+    toast.info(`已收到好友邀请码，注册成功后双方都得积分奖励`, 5000)
+  }
 })
 </script>
 
@@ -284,7 +294,7 @@ onMounted(() => {
   padding: 1.5rem;
   position: relative;
   overflow: hidden;
-  background: #05070a;
+  background: #070b12;
 }
 
 .auth-glow {
@@ -294,7 +304,7 @@ onMounted(() => {
   transform: translateX(-50%);
   width: 640px;
   height: 480px;
-  background: radial-gradient(ellipse at center, rgba(16, 185, 129, 0.14) 0%, transparent 65%);
+  background: radial-gradient(ellipse at center, rgba(34, 211, 238, 0.14) 0%, transparent 65%);
   filter: blur(40px);
   pointer-events: none;
 }
@@ -340,10 +350,10 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  box-shadow: 0 0 24px rgba(16, 185, 129, 0.2);
+  color: #22d3ee;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.25);
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.2);
 }
 
 .brand-title {
@@ -398,7 +408,7 @@ onMounted(() => {
   width: calc(50% - 4px);
   height: calc(100% - 8px);
   border-radius: 9px;
-  background: #10b981;
+  background: #22d3ee;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -442,8 +452,8 @@ onMounted(() => {
 }
 
 .field-box:focus-within {
-  border-color: rgba(16, 185, 129, 0.6);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12);
+  border-color: rgba(34, 211, 238, 0.6);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
 }
 
 .field-icon {
@@ -453,7 +463,7 @@ onMounted(() => {
 }
 
 .field-box:focus-within .field-icon {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .field-box input {
@@ -513,7 +523,7 @@ onMounted(() => {
 
 .strength-fill.lv-1 { width: 33%; background: #ef4444; }
 .strength-fill.lv-2 { width: 66%; background: #f59e0b; }
-.strength-fill.lv-3 { width: 100%; background: #10b981; }
+.strength-fill.lv-3 { width: 100%; background: #22d3ee; }
 
 .strength-text {
   font-size: 0.6875rem;
@@ -541,7 +551,7 @@ onMounted(() => {
   gap: 0.5rem;
   height: 46px;
   margin-top: 0.25rem;
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, #22d3ee, #06b6d4);
   border: none;
   border-radius: 12px;
   color: #ffffff;
@@ -549,11 +559,11 @@ onMounted(() => {
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 16px rgba(34, 211, 238, 0.3);
 }
 
 .submit-btn:hover:not(:disabled) {
-  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.4);
 }
 
 .submit-btn:active:not(:disabled) {

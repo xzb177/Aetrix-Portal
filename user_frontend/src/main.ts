@@ -1,3 +1,4 @@
+import './styles/aurora.css'
 import './styles/neo-noir-tokens.css'
 import './styles/index.css'
 import './styles/mobile.css'

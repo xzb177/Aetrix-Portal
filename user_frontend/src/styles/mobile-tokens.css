@@ -55,10 +55,10 @@
   /* ==================== 按钮：4 类 ==================== */
 
   /* 主按钮：主要操作 */
-  --btn-primary-bg: #10b981;
-  --btn-primary-bg-hover: #059669;
+  --btn-primary-bg: #22d3ee;
+  --btn-primary-bg-hover: #06b6d4;
   --btn-primary-text: #ffffff;
-  --btn-primary-bg-disabled: rgba(16, 185, 129, 0.3);
+  --btn-primary-bg-disabled: rgba(34, 211, 238, 0.3);
 
   /* 次按钮：次要操作 */
   --btn-secondary-bg: rgba(255, 255, 255, 0.1);
@@ -94,13 +94,13 @@
   --tabbar-height-safe: 72px; /* 带 safe area */
   --tabbar-bg: rgba(20, 20, 20, 0.9);
   --tabbar-border: rgba(255, 255, 255, 0.08);
-  --tabbar-active: #10b981;
+  --tabbar-active: #22d3ee;
   --tabbar-inactive: rgba(255, 255, 255, 0.4);
 
   /* ==================== 语义色 ==================== */
 
-  --color-success: #10b981;
-  --color-success-bg: rgba(16, 185, 129, 0.12);
+  --color-success: #22d3ee;
+  --color-success-bg: rgba(34, 211, 238, 0.12);
   --color-warning: #f59e0b;
   --color-warning-bg: rgba(245, 158, 11, 0.12);
   --color-danger: #ef4444;

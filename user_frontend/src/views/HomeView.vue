@@ -12,7 +12,8 @@ import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import {
   Play, Copy, Check, RefreshCw, Key, Server, Lock, Eye,
-  MessageSquare, Film, Shield, User, Inbox, LogOut, type LucideIcon,
+  MessageSquare, Film, Shield, User, Inbox, LogOut,
+  Wallet, CalendarCheck, Gift, type LucideIcon,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -127,7 +128,7 @@ async function handleLogout() {
                 <Play :size="16" />
                 进入媒体库
               </RouterLink>
-              <RouterLink class="btn btn-ghost" to="/requests">
+              <RouterLink class="btn btn-ghost" to="/request">
                 <Film :size="16" />
                 求片
               </RouterLink>
@@ -222,6 +223,36 @@ async function handleLogout() {
           <span v-if="unreadCount > 0" class="dot-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
         </RouterLink>
 
+        <RouterLink to="/wallet" class="quick-card">
+          <div class="quick-icon">
+            <Wallet :size="18" />
+          </div>
+          <div class="quick-body">
+            <span class="quick-title">我的钱包</span>
+            <span class="quick-desc">充值 / 兑换 / 订单</span>
+          </div>
+        </RouterLink>
+
+        <RouterLink to="/checkin" class="quick-card">
+          <div class="quick-icon">
+            <CalendarCheck :size="18" />
+          </div>
+          <div class="quick-body">
+            <span class="quick-title">每日签到</span>
+            <span class="quick-desc">连签得积分</span>
+          </div>
+        </RouterLink>
+
+        <RouterLink to="/invite" class="quick-card">
+          <div class="quick-icon">
+            <Gift :size="18" />
+          </div>
+          <div class="quick-body">
+            <span class="quick-title">邀请返利</span>
+            <span class="quick-desc">邀好友 双方得奖</span>
+          </div>
+        </RouterLink>
+
         <RouterLink to="/tickets" class="quick-card">
           <div class="quick-icon">
             <MessageSquare :size="18" />
@@ -232,7 +263,7 @@ async function handleLogout() {
           </div>
         </RouterLink>
 
-        <RouterLink to="/requests" class="quick-card">
+        <RouterLink to="/request" class="quick-card">
           <div class="quick-icon">
             <Film :size="18" />
           </div>
@@ -309,7 +340,7 @@ async function handleLogout() {
 <style scoped>
 .home-view {
   min-height: 100vh;
-  background: #05070a;
+  background: #070b12;
   color: #e5e7eb;
 }
 
@@ -332,7 +363,7 @@ async function handleLogout() {
   right: -10%;
   width: 480px;
   height: 380px;
-  background: radial-gradient(ellipse at center, rgba(16, 185, 129, 0.1) 0%, transparent 70%);
+  background: radial-gradient(ellipse at center, rgba(34, 211, 238, 0.1) 0%, transparent 70%);
   filter: blur(48px);
   pointer-events: none;
 }
@@ -347,7 +378,7 @@ async function handleLogout() {
 
 .hero-eyebrow {
   font-size: 0.8125rem;
-  color: #10b981;
+  color: #22d3ee;
   margin: 0 0 0.5rem;
 }
 
@@ -388,13 +419,13 @@ async function handleLogout() {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, #22d3ee, #06b6d4);
   color: #fff;
-  box-shadow: 0 4px 14px rgba(16, 185, 129, 0.25);
+  box-shadow: 0 4px 14px rgba(34, 211, 238, 0.25);
 }
 
 .btn-primary:hover {
-  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.35);
+  box-shadow: 0 6px 18px rgba(34, 211, 238, 0.35);
 }
 
 .btn-ghost {
@@ -428,10 +459,10 @@ async function handleLogout() {
   align-items: center;
   gap: 0.5rem;
   padding: 0.4375rem 0.75rem;
-  background: rgba(16, 185, 129, 0.06);
-  border: 1px solid rgba(16, 185, 129, 0.18);
+  background: rgba(34, 211, 238, 0.06);
+  border: 1px solid rgba(34, 211, 238, 0.18);
   border-radius: 9px;
-  color: rgba(16, 185, 129, 0.85);
+  color: rgba(34, 211, 238, 0.85);
   font-size: 0.75rem;
 }
 
@@ -470,7 +501,7 @@ async function handleLogout() {
 }
 
 .card-title svg {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .card-desc {
@@ -571,7 +602,7 @@ async function handleLogout() {
 }
 
 .copy-btn .ok {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .cred-foot {
@@ -590,7 +621,7 @@ async function handleLogout() {
 }
 
 .link {
-  color: #10b981;
+  color: #22d3ee;
   text-decoration: none;
   font-size: 0.8125rem;
   white-space: nowrap;
@@ -624,9 +655,9 @@ async function handleLogout() {
 }
 
 .scheme-btn:hover {
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #10b981;
+  background: rgba(34, 211, 238, 0.1);
+  border-color: rgba(34, 211, 238, 0.3);
+  color: #22d3ee;
 }
 
 .quick-grid {
@@ -650,8 +681,8 @@ async function handleLogout() {
 }
 
 .quick-card:hover {
-  border-color: rgba(16, 185, 129, 0.3);
-  background: rgba(16, 185, 129, 0.03);
+  border-color: rgba(34, 211, 238, 0.3);
+  background: rgba(34, 211, 238, 0.03);
   transform: translateY(-2px);
 }
 
@@ -662,10 +693,10 @@ async function handleLogout() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  background: rgba(34, 211, 238, 0.1);
+  border: 1px solid rgba(34, 211, 238, 0.2);
   border-radius: 11px;
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .quick-icon.has-unread {
@@ -733,7 +764,7 @@ async function handleLogout() {
   height: 6px;
   margin-top: 0.4375rem;
   border-radius: 50%;
-  background: #10b981;
+  background: #22d3ee;
 }
 
 .notice-body {

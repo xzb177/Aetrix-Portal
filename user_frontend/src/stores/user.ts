@@ -46,10 +46,22 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  async function register(username: string, password: string, email?: string) {
+  async function register(
+    username: string,
+    password: string,
+    email?: string,
+    invitationCode?: string,
+    registrationCode?: string,
+  ) {
     loading.value = true
     try {
-      const response = await authApi.register({ username, password, email })
+      const response = await authApi.register({
+        username,
+        password,
+        email,
+        invitation_code: invitationCode || undefined,
+        registration_code: registrationCode || undefined,
+      })
       _persist(response)
       return true
     } finally {

@@ -163,7 +163,7 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 <style scoped>
 .library-view {
   min-height: 100vh;
-  background: #05070a;
+  background: #070b12;
   color: #e5e7eb;
   padding-bottom: 3rem;
 }
@@ -238,7 +238,7 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 }
 
 .search-box:focus-within {
-  border-color: rgba(16, 185, 129, 0.5);
+  border-color: rgba(34, 211, 238, 0.5);
 }
 
 .search-icon {
@@ -311,7 +311,7 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 }
 
 .empty svg {
-  color: rgba(16, 185, 129, 0.4);
+  color: rgba(34, 211, 238, 0.4);
 }
 
 .more-loading {

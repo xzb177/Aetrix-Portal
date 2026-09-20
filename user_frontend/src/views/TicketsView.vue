@@ -401,7 +401,7 @@ onMounted(() => {
   align-items: center;
   gap: 0.5rem;
   padding: 0.625rem 1rem;
-  background: #10b981;
+  background: #22d3ee;
   border: none;
   border-radius: 0.5rem;
   color: white;
@@ -412,7 +412,7 @@ onMounted(() => {
 }
 
 .btn-create:hover {
-  background: #059669;
+  background: #06b6d4;
 }
 
 /* 工单列表 */
@@ -491,7 +491,7 @@ onMounted(() => {
   width: 32px;
   height: 32px;
   border: 2px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #10b981;
+  border-top-color: #22d3ee;
   border-radius: 50%;
   margin-bottom: 0.75rem;
   animation: spin 0.8s linear infinite;
@@ -631,7 +631,7 @@ onMounted(() => {
 .form-group select:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #10b981;
+  border-color: #22d3ee;
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -656,7 +656,7 @@ onMounted(() => {
 }
 
 .message-item.message-admin {
-  background: rgba(16, 185, 129, 0.1);
+  background: rgba(34, 211, 238, 0.1);
 }
 
 .message-avatar {
@@ -672,8 +672,8 @@ onMounted(() => {
 }
 
 .message-admin .message-avatar {
-  background: rgba(16, 185, 129, 0.2);
-  color: #10b981;
+  background: rgba(34, 211, 238, 0.2);
+  color: #22d3ee;
 }
 
 .message-content {
@@ -721,7 +721,7 @@ onMounted(() => {
 
 .reply-box input:focus {
   outline: none;
-  border-color: #10b981;
+  border-color: #22d3ee;
 }
 
 .btn-send {
@@ -732,14 +732,14 @@ onMounted(() => {
   height: 36px;
   border-radius: 0.5rem;
   border: none;
-  background: #10b981;
+  background: #22d3ee;
   color: white;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .btn-send:hover:not(:disabled) {
-  background: #059669;
+  background: #06b6d4;
 }
 
 .btn-send:disabled {
@@ -763,12 +763,12 @@ onMounted(() => {
 }
 
 .btn-primary {
-  background: #10b981;
+  background: #22d3ee;
   color: white;
 }
 
 .btn-primary:hover {
-  background: #059669;
+  background: #06b6d4;
 }
 
 .btn-secondary {

@@ -227,7 +227,7 @@ onMounted(loadItem)
 <style scoped>
 .detail-view {
   min-height: 100vh;
-  background: #05070a;
+  background: #070b12;
   color: #e5e7eb;
   padding-bottom: 3rem;
 }
@@ -253,7 +253,7 @@ onMounted(loadItem)
 .backdrop-shade {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to bottom, rgba(5, 7, 10, 0.35), rgba(5, 7, 10, 0.88) 70%, #05070a);
+  background: linear-gradient(to bottom, rgba(7, 11, 18, 0.35), rgba(7, 11, 18, 0.88) 70%, #070b12);
 }
 
 .content {
@@ -385,8 +385,8 @@ onMounted(loadItem)
 
 .genre {
   padding: 0.25rem 0.5625rem;
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.18);
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.18);
   border-radius: 8px;
   color: rgba(52, 211, 153, 0.9);
   font-size: 0.6875rem;
@@ -422,13 +422,13 @@ onMounted(loadItem)
 }
 
 .btn.primary {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, #22d3ee, #06b6d4);
   color: #fff;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+  box-shadow: 0 4px 16px rgba(34, 211, 238, 0.3);
 }
 
 .btn.primary:hover {
-  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.4);
 }
 
 .btn.primary.disabled {
@@ -540,9 +540,9 @@ onMounted(loadItem)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(16, 185, 129, 0.1);
+  background: rgba(34, 211, 238, 0.1);
   border-radius: 9px;
-  color: #10b981;
+  color: #22d3ee;
   font-size: 0.8125rem;
   font-weight: 700;
 }
@@ -577,11 +577,11 @@ onMounted(loadItem)
 }
 
 .ep-link:hover .play {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .played {
-  color: #10b981;
+  color: #22d3ee;
 }
 
 .ep-progress {
@@ -595,7 +595,7 @@ onMounted(loadItem)
 
 .ep-progress-fill {
   height: 100%;
-  background: #10b981;
+  background: #22d3ee;
 }
 
 .no-eps {
