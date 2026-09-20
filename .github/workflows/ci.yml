@@ -26,9 +26,9 @@ jobs:
       matrix:
         dir: [user_frontend, admin_frontend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -53,7 +53,7 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: tar -czf "$RUNNER_TEMP/${{ matrix.dir }}-dist.tar.gz" dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.dir }}-dist
           path: ${{ runner.temp }}/${{ matrix.dir }}-dist.tar.gz
@@ -69,9 +69,9 @@ jobs:
       DATABASE_URL: sqlite:///./ci-smoke.db
       REDIS_ENABLED: "false"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -97,9 +97,9 @@ jobs:
       DATABASE_URL: sqlite:///./ci.db
       REDIS_ENABLED: "false"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -108,18 +108,20 @@ jobs:
       - name: 安装后端依赖
         run: pip install -r backend/requirements.txt
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: "*-dist"
           merge-multiple: true
           path: ${{ runner.temp }}/dist
 
       # 自检会检查「EM 实际托管的目录」是否有构建产物，缺了就是假绿
+      # --touch：把解包时间当作 mtime，否则 tar 会保留构建时的旧 mtime，
+      # 而本 job 的 checkout 晚于构建，自检的「产物落后于源码」新鲜度检查会误报
       - name: 还原前端构建产物
         run: |
           for f in "$RUNNER_TEMP"/dist/*.tar.gz; do
             dir="$(basename "$f" -dist.tar.gz)"
-            tar -xzf "$f" -C "$dir"
+            tar -xzf "$f" -C "$dir" --touch
           done
 
       # 显式给密钥（生产也必须显式设置；不给自检会自造一个并 WARN）
@@ -132,7 +134,7 @@ jobs:
 
       - name: 失败时保留自检数据库
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deploy-check-db
           path: |
