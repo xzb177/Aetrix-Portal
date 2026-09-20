@@ -14,7 +14,7 @@ import {
   LayoutDashboard, Users, Ticket, Megaphone, Film, ScrollText,
   KeyRound, MessageSquareDashed, LogOut, Menu, X, ChevronRight,
   Wallet, Package, TicketCheck, Gift, Settings, Crown, RefreshCw,
-  MonitorSmartphone, ShieldAlert,
+  MonitorSmartphone, ShieldAlert, Link2, HardDrive,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -24,7 +24,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const sidebarOpen = ref(false)
 
-const APP_VERSION = 'v2.6.3'
+const APP_VERSION = 'v2.6.6'
 
 interface NavItem {
   path: string
@@ -66,6 +66,8 @@ const navGroups: { title: string; items: NavItem[] }[] = [
     title: '内容',
     items: [
       { path: '/emby', label: '媒体库', icon: Film },
+      { path: '/mounts', label: '存储挂载', icon: HardDrive },
+      { path: '/transfer-115', label: '115 转存', icon: Link2 },
       { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
       { path: '/announcements', label: '公告管理', icon: Megaphone },
     ],

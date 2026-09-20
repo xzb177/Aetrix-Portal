@@ -204,9 +204,49 @@ curl -X POST https://panel.example.com/api/admin/emby/libraries/1/scan \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-扫描会递归识别「电影 / 剧集 / 季 / 集」（支持 `S01E02`、`1x02`、`第N集`），ffprobe 提取编码、分辨率、音轨与字幕轨，并检测外挂字幕。
+扫描会递归识别「电影 / 剧集 / 季 / 集」（支持 `S01E02`、`1x02`、`第N集`、`EP05`，以及只有季号的 `S09` / `Season 9` / `第九季`），ffprobe 提取编码、分辨率、音轨与字幕轨，并检测外挂字幕。
 
 > 分离部署时注意：媒体文件的路径必须是 **EA 那台机器/容器能看到**的路径（EA 才负责读文件与转码）。
+
+### 刮削策略
+
+每个媒体库可单独选择刮削策略（后台媒体库卡片直接选，或 `PUT /api/admin/emby/libraries/{id}` 传 `scrape_policy`）：
+
+| 值 | 含义 |
+| --- | --- |
+| `missing_only` | 仅缺失时刮削（**默认**）：已有 TMDB 命中就不再发请求，省配额 |
+| `3m` / `6m` / `1y` | 到期重刮；缺元数据的条目不受窗口限制，总会补 |
+| `all` | 每次扫描全量重刮（仅在通网、配额充足时用） |
+
+多密钥轮询：`TMDB_API_KEYS=key1,key2,key3` 逗号分隔，某个密钥叫到配额上限时自动轮到下一个。
+
+扫描任务使用**固定配置快照**：运行中修改路径/策略不会把本次任务改成「一半旧一半新」；保存后重新触发即用新路径（旧路径不会被继续扫描）。同一媒体库同时只允许一个扫描任务，重复触发返回 `409`。
+
+### 按发行平台生成虚拟媒体库
+
+识别片名/目录里的发行组标签（`NF` / `DSNP` / `ATVP` / `AMZN` / `HMAX` / `HULU` / `PMTP` / `PCOK` / `CR` …）后，可为 Netflix / Disney+ / Apple TV+ / Prime Video / Max / Hulu / Paramount+ / Peacock / Crunchyroll 生成虚拟媒体库：
+
+```bash
+curl -X POST https://panel.example.com/api/admin/emby/libraries/virtual \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"enabled": true}'            # 不传 platforms = 按库里实际出现过的标签生成
+```
+
+虚拟库没有自己的目录，是**跨库的平台视图**（条目仍归属原媒体库）；只在总开关与单个库都开启时才出现在客户端。关闭方式：
+
+- 整个实例关闭：`ENABLE_VIRTUAL_LIBRARIES=false`（每台 EA 可独立配置）
+- 单个库关闭：后台停用该库（或 `PUT /libraries/{id}` 传 `is_enabled: false`）
+
+两种情况下客户端媒体库列表不会出现它，用 guid 直达也返回 `404`。
+
+### 图片修复队列
+
+数据库里有图片记录但取不到图（换盘 / 迁移 / 挂载掉线 / 远程图失效）时，图片接口会返回干净的 `404`（而不是 5xx——客户端会把 5xx 当成鉴权或服务器故障反复重试），并把条目排进修复队列；下一轮扫描会换成 TMDB 远程图。
+
+```bash
+curl https://panel.example.com/api/admin/emby/libraries/repair/queue -H "Authorization: Bearer $TOKEN"
+curl -X POST https://panel.example.com/api/admin/emby/libraries/repair/run -H "Authorization: Bearer $TOKEN"
+```
 
 ## 10. 运营配置
 

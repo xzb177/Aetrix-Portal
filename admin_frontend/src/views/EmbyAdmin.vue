@@ -1,32 +1,70 @@
 <script setup lang="ts">
-/** 媒体库管理：库列表/创建/扫描/删除 + 在线会话监控/强制下线 + 停止全部转码 */
+/**
+ * 媒体库管理：库列表/创建/扫描/删除 + 刮削策略 + 平台虚拟媒体库 + 图片修复队列
+ * + 在线会话监控/强制下线 + 停止全部转码
+ */
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, FolderPlus, RefreshCw, ScanSearch, Square } from 'lucide-vue-next'
+import { Delete, FolderPlus, RefreshCw, ScanSearch, Square, Wand2 } from 'lucide-vue-next'
 import {
   createLibrary,
   deleteLibrary,
   fetchLibraries,
+  fetchMounts,
+  fetchPan115Accounts,
+  fetchRepairQueue,
   fetchSessions,
+  generateVirtualLibraries,
+  runRepairQueue,
   scanLibrary,
   stopAllTranscodes,
   stopSession,
+  updateLibrary,
 } from '@/api/admin'
-import type { EmbyLibrary, EmbySessionRow } from '@/types'
+import type { EmbyLibrary, EmbySessionRow, Pan115Account, StorageMount } from '@/types'
 
 const libraries = ref<EmbyLibrary[]>([])
 const sessions = ref<EmbySessionRow[]>([])
+const panAccounts = ref<Pan115Account[]>([])
+const mounts = ref<StorageMount[]>([])
 const loading = ref(false)
+const repairCount = ref(0)
+const virtualLoading = ref(false)
 
 const createVisible = ref(false)
-const form = ref({ name: '', collection_type: 'movies', paths: '' })
+const form = ref({
+  name: '',
+  collection_type: 'movies',
+  paths: '',
+  mount_ids: [] as number[],
+  scrape_policy: 'missing_only',
+})
+
+/** 刮削策略：只补缺 / 到期重刮 / 每次全量 */
+const POLICIES = [
+  { value: 'missing_only', label: '仅缺失时刮削' },
+  { value: '3m', label: '3 个月重刮' },
+  { value: '6m', label: '半年重刮' },
+  { value: '1y', label: '一年重刮' },
+  { value: 'all', label: '全部重刮' },
+]
 
 async function load() {
   loading.value = true
   try {
-    const [l, s] = await Promise.all([fetchLibraries(), fetchSessions()])
-    libraries.value = l.libraries
+    const [l, s, r, a, m] = await Promise.all([
+      fetchLibraries(),
+      fetchSessions(),
+      fetchRepairQueue().catch(() => ({ total: 0, items: [] })),
+      fetchPan115Accounts().catch(() => ({ accounts: [], env_cookie_configured: false })),
+      fetchMounts().catch(() => ({ mounts: [], mount_types: [] })),
+    ])
+    // mount_ids 兼容旧响应（老后端没有这个字段）
+    libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
     sessions.value = s.sessions
+    repairCount.value = r.total
+    panAccounts.value = a.accounts
+    mounts.value = m.mounts
   } finally {
     loading.value = false
   }
@@ -34,16 +72,67 @@ async function load() {
 
 onMounted(load)
 
+async function savePolicy(l: EmbyLibrary) {
+  await updateLibrary(l.id, { scrape_policy: l.scrape_policy })
+  ElMessage.success(`「${l.name}」刮削策略已保存（下次扫描生效）`)
+}
+
+async function saveAccount115(l: EmbyLibrary) {
+  // 传 null 表示解绑（回退默认账号）；undefined 会被 axios 丢掉，等于不改
+  await updateLibrary(l.id, { account_115_id: l.account_115_id ?? null })
+  ElMessage.success(`「${l.name}」115 账号绑定已更新`)
+}
+
+function mountNames(ids: number[]): string {
+  return (ids || [])
+    .map((id) => mounts.value.find((m) => m.id === id)?.name || `#${id}`)
+    .join(' | ')
+}
+
+/** 绑定 / 解绑存储挂载（扫描时与「路径」一起遍历） */
+async function saveMounts(l: EmbyLibrary) {
+  await updateLibrary(l.id, { mount_ids: l.mount_ids ?? [] })
+  ElMessage.success(`「${l.name}」挂载绑定已更新（重新扫描后生效）`)
+}
+
+async function generateVirtual() {
+  virtualLoading.value = true
+  try {
+    const res = await generateVirtualLibraries({ enabled: true })
+    ElMessage.success(`虚拟媒体库：新建 ${res.created.length}、更新 ${res.updated.length}`)
+    if (res.created.length === 0 && res.updated.length === 0) {
+      ElMessage.info('当前库里还没有识别到发行平台标签（NF / DSNP / ATVP …）')
+    }
+    load()
+  } finally {
+    virtualLoading.value = false
+  }
+}
+
+async function repairNow() {
+  await runRepairQueue()
+  ElMessage.success('已开始修复缺图条目')
+  setTimeout(load, 2000)
+}
+
 async function submitCreate() {
-  if (!form.value.name.trim() || !form.value.paths.trim()) {
-    ElMessage.warning('请填写库名称和路径')
+  const paths = form.value.paths.split(/[,，\n]/).map((p) => p.trim()).filter(Boolean)
+  if (!form.value.name.trim() || (!paths.length && !form.value.mount_ids.length)) {
+    ElMessage.warning('请填写库名称，并至少配置一个路径或一个存储挂载')
     return
   }
-  const paths = form.value.paths.split(/[,，\n]/).map((p) => p.trim()).filter(Boolean)
-  await createLibrary({ name: form.value.name, collection_type: form.value.collection_type, paths })
+  await createLibrary({
+    name: form.value.name,
+    collection_type: form.value.collection_type,
+    paths,
+    mount_ids: form.value.mount_ids,
+    scrape_policy: form.value.scrape_policy,
+  })
   ElMessage.success('媒体库已创建')
   createVisible.value = false
-  form.value = { name: '', collection_type: 'movies', paths: '' }
+  form.value = {
+    name: '', collection_type: 'movies', paths: '', mount_ids: [], scrape_policy: 'missing_only',
+  }
   load()
 }
 
@@ -95,6 +184,10 @@ function progress(pos: number, dur: number): string {
         <p class="admin-page-subtitle">自建 Emby：媒体库、扫描与会话监控</p>
       </div>
       <div class="toolbar">
+        <el-button v-if="repairCount > 0" @click="repairNow">修复缺图（{{ repairCount }}）</el-button>
+        <el-button :loading="virtualLoading" @click="generateVirtual">
+          <Wand2 :size="13" style="margin-right: 4px" />生成平台虚拟库
+        </el-button>
         <el-button @click="stopAll"><Square :size="13" style="margin-right: 4px" />停止全部转码</el-button>
         <el-button type="primary" @click="createVisible = true"><FolderPlus :size="14" style="margin-right: 4px" />新建媒体库</el-button>
         <el-button @click="load"><RefreshCw :size="14" /></el-button>
@@ -106,6 +199,7 @@ function progress(pos: number, dur: number): string {
       <div v-for="l in libraries" :key="l.id" class="admin-card lib-card">
         <div class="lib-head">
           <span class="lib-name">{{ l.name }}</span>
+          <span v-if="l.is_virtual" class="mini-badge virtual">平台虚拟库</span>
           <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">{{ l.is_enabled ? '启用' : '停用' }}</span>
           <span v-if="l.is_scanning" class="mini-badge scanning">扫描中…</span>
         </div>
@@ -113,7 +207,46 @@ function progress(pos: number, dur: number): string {
           {{ { movies: '电影', tvshows: '剧集', music: '音乐', mixed: '混合' }[l.collection_type] || l.collection_type }}
           · {{ l.item_count }} 个条目
         </div>
-        <div class="lib-paths">{{ l.paths.join(' | ') || '未配置路径' }}</div>
+        <div class="lib-paths">
+          <template v-if="l.is_virtual">按发行平台「{{ l.platform || '—' }}」聚合，条目仍归属原媒体库</template>
+          <template v-else>
+            {{ [...l.paths, mountNames(l.mount_ids)].filter(Boolean).join(' | ') || '未配置来源' }}
+          </template>
+        </div>
+        <div v-if="!l.is_virtual" class="lib-policy">
+          <span class="lib-time">挂载</span>
+          <el-select
+            v-model="l.mount_ids"
+            size="small"
+            multiple
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="未绑定"
+            style="width: 200px"
+            @change="saveMounts(l)"
+          >
+            <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
+          </el-select>
+        </div>
+        <div v-if="!l.is_virtual" class="lib-policy">
+          <span class="lib-time">刮削策略</span>
+          <el-select v-model="l.scrape_policy" size="small" style="width: 150px" @change="savePolicy(l)">
+            <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
+          </el-select>
+        </div>
+        <div v-if="!l.is_virtual" class="lib-policy">
+          <span class="lib-time">115 账号</span>
+          <el-select
+            v-model="l.account_115_id"
+            size="small"
+            clearable
+            placeholder="默认账号"
+            style="width: 150px"
+            @change="saveAccount115(l)"
+          >
+            <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
+          </el-select>
+        </div>
         <div class="lib-foot">
           <span class="lib-time">上次扫描 {{ fmtDate(l.last_scan_at) }}</span>
           <div class="lib-actions">
@@ -169,6 +302,11 @@ function progress(pos: number, dur: number): string {
     <el-dialog v-model="createVisible" title="新建媒体库" width="440px">
       <el-form label-width="80px">
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：电影库 / 剧集库" /></el-form-item>
+        <el-form-item label="刮削策略">
+          <el-select v-model="form.scrape_policy" style="width: 200px">
+            <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="类型">
           <el-select v-model="form.collection_type" style="width: 160px">
             <el-option label="电影" value="movies" />
@@ -179,6 +317,19 @@ function progress(pos: number, dur: number): string {
         </el-form-item>
         <el-form-item label="路径">
           <el-input v-model="form.paths" type="textarea" :rows="3" placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies" />
+          <div class="form-hint">本机目录。也可以用下面的「存储挂载」接入 115 / WebDAV / AList 等来源。</div>
+        </el-form-item>
+        <el-form-item label="存储挂载">
+          <el-select
+            v-model="form.mount_ids"
+            multiple
+            collapse-tags
+            placeholder="不绑定（只用上面的路径）"
+            style="width: 100%"
+          >
+            <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
+          </el-select>
+          <div class="form-hint">路径与挂载可以同时用；挂载在「存储挂载」页里创建与测试。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -226,4 +377,7 @@ function progress(pos: number, dur: number): string {
 .mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
 .mini-badge.scanning { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.mini-badge.virtual { background: rgba(168, 85, 247, 0.16); color: #a855f7; }
+.lib-policy { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.form-hint { font-size: 11px; color: var(--color-text-muted, #737373); margin-top: 4px; }
 </style>

@@ -191,6 +191,23 @@ def _auto_migrate():
             ("target_username", "VARCHAR(50)", "NULL"),
             ("source", "VARCHAR(20)", "'admin'"),
         ],
+        # v2.6.4 媒体库刮削策略、虚拟媒体库与搜索增强；v2.6.5 增加 115 账号绑定
+        # v2.6.6 增加存储挂载绑定（storage_mounts）：媒体库的内容来源
+        "emby_libraries": [
+            ("scrape_policy", "VARCHAR(20)", "'missing_only'"),
+            ("is_virtual", "BOOLEAN", "0"),
+            ("platform", "VARCHAR(30)", "NULL"),
+            ("account_115_id", "INTEGER", "NULL"),
+            ("mount_ids", "TEXT", "''"),
+        ],
+        "emby_items": [
+            ("imdb_id", "VARCHAR(20)", "NULL"),
+            ("aliases", "TEXT", "''"),
+            ("platforms", "TEXT", "''"),
+            ("last_probed_at", "DATETIME", "NULL"),
+            ("last_scraped_at", "DATETIME", "NULL"),
+            ("repair_requested_at", "DATETIME", "NULL"),
+        ],
     }
 
     for table, columns in migrations.items():

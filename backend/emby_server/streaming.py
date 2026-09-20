@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 logger = logging.getLogger(__name__)
 
 TRANSCODE_DIR = os.getenv("EMBY_TRANSCODE_DIR", "/tmp/emby_transcode")
+# 远程挂载（115 / WebDAV / AList）代理转发时的 UA
+REMOTE_UA = os.getenv("MOUNT_UA", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 FFMPEG = os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
@@ -69,6 +71,74 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4") -> St
     )
 
 
+def headers_arg(headers: Optional[dict]) -> list[str]:
+    """把请求头转成 ffmpeg/ffprobe 的 ``-headers`` 参数（Cookie / 令牌不出服务器）"""
+    if not headers:
+        return []
+    joined = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    return ["-headers", joined]
+
+
+def serve_remote(
+    url: str,
+    request: Request,
+    headers: Optional[dict] = None,
+    media_type: str = "video/mp4",
+) -> StreamingResponse:
+    """远程媒体代理：把客户端的请求（含 Range）转发到远端直链并流式回传
+
+    为什么不直接 302 到第三方直链：
+
+    - **凭据不下发**：115 Cookie、WebDAV Basic、AList 令牌全部留在服务器；
+    - **地址稳定**：客户端只看到本服务器地址，换源 / 直链过期不需要客户端重新入库；
+    - **可控**：代理层可以限速、统计与统一处理 CORS / Referer / UA 白名单。
+
+    响应状态码与 ``Content-Range`` / ``Content-Length`` 原样透传，播放器的拖动与续播
+    依赖它们，不能被吞掉。
+    """
+    import httpx
+
+    forward = {k: v for k, v in (headers or {}).items()}
+    forward.setdefault("User-Agent", REMOTE_UA)
+    range_header = request.headers.get("range")
+    if range_header:
+        forward["Range"] = range_header
+
+    client = httpx.Client(timeout=httpx.Timeout(30.0, read=None), follow_redirects=True)
+    try:
+        resp = client.send(client.build_request("GET", url, headers=forward), stream=True)
+    except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
+        client.close()
+        logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
+        raise HTTPException(status_code=502, detail="源站不可达")
+
+    if resp.status_code >= 400:
+        status = resp.status_code
+        resp.close()
+        client.close()
+        logger.warning("远程媒体源站返回 %s: %s", status, url.split("?")[0])
+        raise HTTPException(status_code=502 if status >= 500 else status, detail=f"源站返回 {status}")
+
+    passthrough = {}
+    for name in ("content-range", "accept-ranges", "content-length", "last-modified", "etag"):
+        value = resp.headers.get(name)
+        if value:
+            passthrough[name.title()] = value
+    content_type = resp.headers.get("content-type") or media_type
+
+    def iter_remote():
+        try:
+            for chunk in resp.iter_bytes(CHUNK):
+                yield chunk
+        finally:
+            resp.close()
+            client.close()
+
+    return StreamingResponse(
+        iter_remote(), status_code=resp.status_code, media_type=content_type, headers=passthrough,
+    )
+
+
 def serve_image(path: Optional[str]) -> FileResponse:
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Image not found")
@@ -87,8 +157,13 @@ def build_hls_command(
     audio_bitrate: int = 128_000,
     height: Optional[int] = None,
     copy_video: bool = False,
+    input_headers: Optional[dict] = None,
 ) -> subprocess.Popen:
-    """启动 ffmpeg HLS 转码进程"""
+    """启动 ffmpeg HLS 转码进程
+
+    ``file_path`` 可以是本机文件，也可以是远程直链（挂载来源）：ffmpeg 本身支持 http(s)
+    输入，凭据通过 ``input_headers`` 传入。
+    """
     os.makedirs(out_dir, exist_ok=True)
     playlist = os.path.join(out_dir, "master.m3u8")
 
@@ -104,7 +179,7 @@ def build_hls_command(
             vcodec += ["-vf", f"scale=-2:{height}"]
     cmd = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
-        *seek, "-i", file_path,
+        *seek, *headers_arg(input_headers), "-i", file_path,
         *vcodec,
         "-c:a", "aac", "-b:a", str(audio_bitrate), "-ac", "2",
         "-f", "hls", "-hls_time", "4", "-hls_list_size", "0",
@@ -122,6 +197,7 @@ def start_transcode(
     height: Optional[int] = None,
     user_id: Optional[int] = None,
     item_guid: Optional[str] = None,
+    input_headers: Optional[dict] = None,
 ) -> str:
     """启动转码，返回播放列表 URL 路径片段 /emby/videos/{session}/master.m3u8
 
@@ -136,7 +212,8 @@ def start_transcode(
             return existing
     session_id = uuid.uuid4().hex[:16]
     out_dir = os.path.join(TRANSCODE_DIR, session_id)
-    proc = build_hls_command(file_path, out_dir, start_seconds, video_bitrate, height)
+    proc = build_hls_command(file_path, out_dir, start_seconds, video_bitrate, height,
+                             input_headers=input_headers)
     _TRANSCODE_PROCS[session_id] = {
         "proc": proc,
         "dir": out_dir,

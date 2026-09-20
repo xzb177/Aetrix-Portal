@@ -22,10 +22,13 @@ from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
 from backend.api.admin_ops import admin_ops_router
 from backend.emby_server.api import emby_router
+from backend.emby_server.mount_routes import install_mount_routes
+from backend.emby_server.search_api import search_router
 from backend.emby_server.portal import user_emby_router, admin_emby_router
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
+from backend.emby_server import transfer115
 
 # 配置日志
 logging.basicConfig(
@@ -48,6 +51,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"数据库初始化失败: {e}")
 
+    # 恢复未完成的 115 转存/下载任务：running 说明上次进程被杀，回到 pending 续跑，
+    # 已完成文件靠 done_keys 跳过，不会重复转存
+    try:
+        transfer115.resume_pending_tasks()
+    except Exception as e:  # noqa: BLE001 — 业务表异常不应阻塞面板启动
+        logger.warning(f"恢复 115 任务失败（可忽略）: {e}")
+
     logger.info("✅ RoyalBot Portal 启动完成")
 
     yield
@@ -60,7 +70,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.6.3",
+    version="2.6.6",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -198,6 +208,11 @@ _ENABLE_EMBY_GATEWAY = os.getenv("ENABLE_EMBY_GATEWAY", "true").strip().lower() 
 }
 
 if _ENABLE_EMBY_GATEWAY:
+    # 搜索接口先注册：FastAPI 按注册顺序取第一个匹配，
+    # 这样 /Search/Hints 走 search_api 的相关度排序版（api.py 里的同名历史实现会被遮蔽）
+    app.include_router(search_router)
+    # 挂载来源：把只认本机文件的 /Items/{id}/File 换成挂载感知实现（必须在 include_router 前）
+    install_mount_routes(emby_router)
     # Emby 客户端直接连接本后端：https://host:port/emby（另含裸根路径 /System/Info 等）
     app.include_router(emby_router)
     logger.info("Emby 协议网关已挂载于 EM（单进程模式）")

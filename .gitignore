@@ -36,6 +36,12 @@ build/
 *.db
 *.sqlite
 *.sqlite3
+# SQLite WAL / 共享内存（冒烟测试跑完会留下）
+*.db-shm
+*.db-wal
+# 测试覆盖率与 TS 增量构建缓存
+.coverage
+*.tsbuildinfo
 
 # Logs
 logs/
