@@ -10,6 +10,8 @@ from typing import List, Optional
 from datetime import datetime
 import logging
 
+from sqlalchemy import func
+
 from backend.database import get_db
 from backend import models
 from backend.notifications import get_notification_service, AdminEvent
@@ -311,9 +313,19 @@ async def create_ticket(
     db.add(message)
     db.commit()
 
-    # 通知管理员有新工单
-    # TODO: 获取在线管理员列表并通知
-    # await notify_admins_new_ticket(ticket.id)
+    # 通知管理员有新工单（站内消息 + 实时推送）
+    try:
+        from backend.notifications import notify_staff_users
+
+        await notify_staff_users(
+            db,
+            title="🎫 新工单待处理",
+            content=f"{current_user.username} 提交了工单《{ticket.title}》\n{request.message[:120]}",
+            message_type="ticket",
+            related_id=ticket.id,
+        )
+    except Exception as exc:  # 通知失败不应影响工单创建
+        logger.warning("工单管理员通知失败: %s", exc)
 
     return TicketCreateResponse(
         success=True,
@@ -494,6 +506,10 @@ async def get_announcements(
 
 # ==================== 求片 API ====================
 
+# 每日求片上限（防止刷单），可在系统配置中通过 media_seek_daily_limit 覆盖
+DEFAULT_DAILY_SEEK_LIMIT = 5
+
+
 class MediaSeekRequest(BaseModel):
     """求片请求"""
     movie_name: str
@@ -502,18 +518,95 @@ class MediaSeekRequest(BaseModel):
     note: Optional[str] = None
 
 
+def _seek_daily_limit(db: Session) -> int:
+    cfg = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == "media_seek_daily_limit"
+    ).first()
+    if cfg and str(cfg.value).isdigit():
+        return max(1, int(cfg.value))
+    return DEFAULT_DAILY_SEEK_LIMIT
+
+
+@user_router.get("/media-seek/lookup")
+async def lookup_media(
+    name: str,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """求片前库存检查：片名是否已在自建媒体库中
+
+    返回命中的库内条目（含海报与详页 id），用于：
+    - 已在库 → 直接引导播放，不占用求片额度
+    - 未在库 → 前端提示可提交求片
+    """
+    from backend.emby_server import models as em
+
+    keyword = (name or "").strip()
+    if len(keyword) < 1:
+        return {"in_library": False, "items": []}
+
+    items = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.name.ilike(f"%{keyword}%"))
+        .order_by(em.MediaItem.date_added.desc())
+        .limit(6)
+        .all()
+    )
+
+    return {
+        "in_library": len(items) > 0,
+        "items": [
+            {
+                "id": i.guid,
+                "name": i.name,
+                "type": i.item_type,
+                "year": i.production_year,
+                "poster_url": f"/emby/Items/{i.guid}/Images/Primary"
+                if (i.poster_path or i.primary_image_url) else None,
+            }
+            for i in items
+        ],
+    }
+
+
 @user_router.post("/media-seek")
 async def create_media_seek(
     request: MediaSeekRequest,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """创建求片请求 - 与后台求片管理联动"""
-    # TODO: 检查用户今日求片次数限制
+    """创建求片请求 - 与后台求片管理联动
+
+    校验：片名非空 / 同名未完成请求去重 / 每日额度上限。
+    """
+    name = (request.movie_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写片名")
+    if len(name) > 255:
+        raise HTTPException(status_code=400, detail="片名过长")
+
+    # 去重：同名且仍在处理中的请求不再重复提交
+    exists = db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == current_user.id,
+        func.lower(models.MovieRequest.movie_name) == name.lower(),
+        models.MovieRequest.status.in_(["pending", "approved"]),
+    ).first()
+    if exists:
+        raise HTTPException(status_code=409, detail=f"《{name}》已在处理中，请耐心等待（可在列表中看到进度）")
+
+    # 每日额度
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_count = db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == current_user.id,
+        models.MovieRequest.created_at >= today_start,
+    ).count()
+    limit = _seek_daily_limit(db)
+    if today_count >= limit:
+        raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
 
     media_request = models.MovieRequest(
         user_id=current_user.id,
-        movie_name=request.movie_name,
+        movie_name=name,
         year=request.year,
         type=request.type,
         note=request.note,
@@ -521,36 +614,84 @@ async def create_media_seek(
     )
     db.add(media_request)
     db.commit()
+    db.refresh(media_request)
 
-    # 通知管理员有新求片请求
-    # TODO: 通过 WebSocket 通知管理员
+    # 通知管理员有新求片请求（落站内消息 + WebSocket 推送）
+    try:
+        from backend.notifications import notify_staff_users
 
-    return {"success": True, "message": "求片请求已提交"}
+        await notify_staff_users(
+            db,
+            title="📥 新的求片请求",
+            content=f"{current_user.username} 请求《{name}》",
+            message_type="media_seek",
+            related_id=media_request.id,
+        )
+    except Exception as exc:  # 通知失败不应影响求片提交
+        logger.warning("求片通知发送失败: %s", exc)
+
+    return {"success": True, "request_id": media_request.id, "message": "求片请求已提交"}
+
+
+@user_router.delete("/media-seek/{request_id}")
+async def withdraw_media_seek(
+    request_id: int,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """撤回自己的求片（仅限尚未被处理的请求）"""
+    req = db.query(models.MovieRequest).filter(
+        models.MovieRequest.id == request_id,
+        models.MovieRequest.user_id == current_user.id,
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="求片记录不存在")
+    if req.status != "pending":
+        raise HTTPException(status_code=400, detail="该请求已被处理，无法撤回")
+
+    db.delete(req)
+    db.commit()
+    return {"success": True, "message": "已撤回"}
 
 
 @user_router.get("/media-seek")
 async def get_my_media_seeks(
+    status_filter: Optional[str] = None,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """获取我的求片列表"""
-    requests = db.query(models.MovieRequest).filter(
+    """获取我的求片列表（支持状态筛选），并附带今日剩余额度"""
+    query = db.query(models.MovieRequest).filter(
         models.MovieRequest.user_id == current_user.id
-    ).order_by(models.MovieRequest.created_at.desc()).all()
+    )
+    if status_filter:
+        query = query.filter(models.MovieRequest.status == status_filter)
 
-    return [
-        {
-            "id": r.id,
-            "movie_name": r.movie_name,
-            "year": r.year,
-            "type": r.type,
-            "note": r.note,
-            "status": r.status,
-            "admin_note": r.admin_note,
-            "created_at": r.created_at.isoformat()
-        }
-        for r in requests
-    ]
+    requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
+
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    used = db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == current_user.id,
+        models.MovieRequest.created_at >= today_start,
+    ).count()
+    limit = _seek_daily_limit(db)
+
+    return {
+        "requests": [
+            {
+                "id": r.id,
+                "movie_name": r.movie_name,
+                "year": r.year,
+                "type": r.type,
+                "note": r.note,
+                "status": r.status,
+                "admin_note": r.admin_note,
+                "created_at": r.created_at.isoformat()
+            }
+            for r in requests
+        ],
+        "quota": {"used_today": used, "daily_limit": limit, "remaining": max(0, limit - used)},
+    }
 
 
 # ==================== 订阅 API ====================
@@ -607,55 +748,13 @@ async def get_subscription_plans(
     ]
 
 
-# ==================== Emby 服务器 API ====================
-
-@user_router.get("/emby-servers")
-async def get_available_servers(
-    db: Session = Depends(get_db)
-):
-    """获取可用的 Emby 服务器列表 - 与后台服务器管理联动"""
-    servers = db.query(models.EmbyServer).filter(
-        models.EmbyServer.is_active == True
-    ).order_by(models.EmbyServer.priority.desc()).all()
-
-    return [
-        {
-            "id": s.id,
-            "name": s.name,
-            "status": s.status,
-            "current_users": s.current_users,
-            "max_users": s.max_users
-        }
-        for s in servers
-    ]
-
-
-@user_router.get("/emby-account")
-async def get_my_emby_account(
-    current_user: models.WebUser = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """获取我的 Emby 账号信息"""
-    account = db.query(models.UserEmbyAccount).filter(
-        models.UserEmbyAccount.user_id == current_user.id,
-        models.UserEmbyAccount.is_active == True
-    ).first()
-
-    if not account:
-        return {"has_account": False}
-
-    server = db.query(models.EmbyServer).filter(
-        models.EmbyServer.id == account.server_id
-    ).first()
-
-    return {
-        "has_account": True,
-        "username": account.username,
-        "server_name": server.name if server else "未知",
-        "server_url": server.url if server else "",
-        "expires_at": account.expires_at.isoformat() if account.expires_at else None,
-        "is_active": account.is_active
-    }
+# ==================== 已移除的遗留端点 ====================
+#
+# 以下端点已于 v2.5.0 删除，它们读取的是「外部 Emby 服务器」时代的遗留模型
+# （models.EmbyServer / models.UserEmbyAccount）：统一后端已完全自建（/api/user/emby/*），
+# 这两张表不再有任何写入方，接口只会返回空数据，容易误导调用方。
+#   - GET /api/user/emby-servers
+#   - GET /api/user/emby-account
 
 
 # ==================== 导出 ====================

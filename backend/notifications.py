@@ -478,6 +478,54 @@ async def notify_admin_event(
     )
 
 
+async def notify_staff_users(
+    db: Session,
+    title: str,
+    content: str,
+    message_type: str = "system",
+    related_id: Optional[int] = None,
+) -> int:
+    """通知全部管理员（用户 → 后台方向）
+
+    补齐此前用户侧只写了「TODO: 通知管理员」却没有实现的通知链路：
+    新工单 / 新求片提交后会落站内消息给每一位启用中的管理员，并实时推送。
+
+    返回通知到的管理员数量。
+    """
+    staff_users = db.query(models.WebUser).filter(
+        models.WebUser.is_staff == True,  # noqa: E712
+        models.WebUser.is_active == True,  # noqa: E712
+    ).all()
+    if not staff_users:
+        return 0
+
+    for staff in staff_users:
+        db.add(models.StationMessage(
+            from_user_id=None,
+            to_user_id=staff.id,
+            title=title,
+            content=content,
+            message_type=message_type,
+            related_id=related_id,
+            is_read=False,
+        ))
+    db.commit()
+
+    for staff in staff_users:
+        try:
+            await send_notification(
+                notification_type=f"station.{message_type}",
+                user_id=staff.id,
+                title=title,
+                message=content,
+                data={"related_id": related_id},
+            )
+        except Exception as exc:  # 实时推送失败不影响站内消息落库
+            logger.warning("管理员实时通知推送失败: %s", exc)
+
+    return len(staff_users)
+
+
 async def notify_all_users(
     event_type: str,
     title: str,
@@ -525,5 +573,6 @@ __all__ = [
     "get_notification_service",
     "notify_admin_event",
     "notify_all_users",
+    "notify_staff_users",
     "AdminEvent",
 ]

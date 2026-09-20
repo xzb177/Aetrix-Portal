@@ -4,7 +4,8 @@ import { useUserStore } from '@/stores/user'
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
   Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown,
-  Wallet, CalendarCheck, Gift, MessageSquareDashed, Zap,
+  Wallet, CalendarCheck, Gift, MessageSquareDashed, Zap, History,
+  Search, Heart,
 } from 'lucide-vue-next'
 import api from '@/api'
 import { pointsApi } from '@/api/economy'
@@ -21,13 +22,23 @@ const pointsBalance = ref<number | null>(null)
 
 // 导航分组：内容 → 运营 → 支持，视觉上以细分隔线区隔
 const navGroups = [
-  { items: [{ name: '首页', path: '/' }, { name: '媒体库', path: '/media' }] },
+  {
+    items: [
+      { name: '首页', path: '/' },
+      { name: '媒体库', path: '/media' },
+      { name: '收藏', path: '/favorites' },
+      { name: '观看记录', path: '/history' },
+    ],
+  },
   { items: [{ name: '钱包', path: '/wallet' }, { name: '签到', path: '/checkin' }, { name: '邀请', path: '/invite' }] },
   { items: [{ name: '求片', path: '/request' }, { name: '工单', path: '/tickets' }] },
 ]
 
 // 移动端抽屉（底部导航坞之外的长尾入口）
 const mobileLinks = [
+  { name: '搜索片名', path: '/search', icon: Search },
+  { name: '我的收藏', path: '/favorites', icon: Heart },
+  { name: '观看记录', path: '/history', icon: History },
   { name: '邀请返利', path: '/invite', icon: Gift },
   { name: '求片中心', path: '/request', icon: MessageSquareDashed },
   { name: '工单支持', path: '/tickets', icon: Ticket },
@@ -131,6 +142,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
       <!-- 右侧用户区 -->
       <div class="user-section">
         <template v-if="userStore.isLoggedIn">
+          <!-- 全局搜索：跨库检索 -->
+          <RouterLink to="/search" class="icon-btn" title="搜索片名">
+            <Search :size="18" />
+          </RouterLink>
+
           <!-- 积分徽章：点击进入钱包 -->
           <RouterLink to="/wallet" class="points-chip" title="积分余额 · 进入钱包">
             <Zap :size="13" />
@@ -330,6 +346,19 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 图标按钮（搜索） */
+.icon-btn {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--au-r-md);
+  color: var(--au-text-2);
+  transition: all var(--au-fast);
+}
+.icon-btn:hover { color: var(--au-primary); background: var(--au-surface-2); }
 
 /* 消息铃铛 */
 .msg-btn {

@@ -11,7 +11,7 @@ import { authApi, embyApi, subscriptionApi, type AuthUser, type AccountCard, typ
 import { useToast } from '@/composables/useToast'
 import {
   User, Lock, KeyRound, LogOut, ShieldCheck, RefreshCw, Eye, EyeOff, Copy, Check, Film,
-  Play, History, Crown,
+  Play, History, Crown, Heart,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -314,6 +314,14 @@ function formatDate(iso?: string | null) {
 
       <!-- 关联入口 -->
       <section class="links-row">
+        <RouterLink to="/favorites" class="link-card">
+          <Heart :size="16" />
+          我的收藏
+        </RouterLink>
+        <RouterLink to="/history" class="link-card">
+          <History :size="16" />
+          观看记录
+        </RouterLink>
         <RouterLink to="/request" class="link-card">
           <Film :size="16" />
           我的求片

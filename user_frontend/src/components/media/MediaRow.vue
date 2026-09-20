@@ -7,7 +7,8 @@ import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import MediaCard from './MediaCard.vue'
 import type { EmbyItem } from '@/api/emby'
 
-defineProps<{ title: string; items: EmbyItem[] }>()
+/** moreTo：右上角「查看全部」跳转目标（不传则不显示） */
+defineProps<{ title: string; items: EmbyItem[]; moreTo?: string }>()
 
 const scroller = ref<HTMLElement | null>(null)
 
@@ -21,6 +22,10 @@ function scrollBy(dir: 1 | -1) {
     <header class="row-head">
       <h2 class="row-title">{{ title }}</h2>
       <div class="row-nav">
+        <RouterLink v-if="moreTo" class="more-link" :to="moreTo">
+          查看全部
+          <ChevronRight :size="13" />
+        </RouterLink>
         <button class="nav-btn" @click="scrollBy(-1)">
           <ChevronLeft :size="16" />
         </button>
@@ -51,13 +56,27 @@ function scrollBy(dir: 1 | -1) {
   margin: 0;
   font-size: 1.0625rem;
   font-weight: 600;
-  color: #fafafa;
+  color: var(--au-text);
 }
 
 .row-nav {
   display: flex;
+  align-items: center;
   gap: 0.375rem;
 }
+
+.more-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  margin-right: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+  text-decoration: none;
+  transition: color var(--au-fast) ease;
+}
+
+.more-link:hover { color: var(--au-primary); }
 
 .nav-btn {
   width: 28px;
@@ -65,17 +84,18 @@ function scrollBy(dir: 1 | -1) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
   border-radius: 8px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--au-text-2);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .nav-btn:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.09);
+  color: var(--au-text);
+  background: var(--au-surface-2);
+  border-color: var(--au-border-strong);
 }
 
 .row-scroller {

@@ -339,28 +339,23 @@
   }
 }
 
-/* ==================== 暗色模式（使用 Neo-Noir tokens） ==================== */
+/* ==================== 暗色模式（兼容变量统一指向 Aurora 令牌） ==================== */
 @media (prefers-color-scheme: dark) {
   :root {
-    /* 背景使用 Neo-Noir tokens */
-    --bg-primary: var(--neo-bg-base, #0B0F14);
-    --bg-secondary: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
-    --bg-elevated: var(--neo-bg-surface-2, rgba(255, 255, 255, 0.06));
-    --bg-elevated-hover: var(--neo-bg-surface-hover, rgba(255, 255, 255, 0.08));
+    /* 背景层：沿用 Aurora 背景层级（不再覆盖 body，保留全站氛围渐变） */
+    --bg-primary: var(--au-bg);
+    --bg-secondary: var(--au-bg-soft);
+    --bg-elevated: var(--au-surface-2);
+    --bg-elevated-hover: var(--au-surface-3);
 
-    /* 文字使用 Neo-Noir tokens */
-    --text-primary: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
-    --text-secondary: var(--neo-text-secondary, rgba(255, 255, 255, 0.68));
-    --text-tertiary: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
+    /* 文字：沿用 Aurora 文字层级 */
+    --text-primary: var(--au-text);
+    --text-secondary: var(--au-text-2);
+    --text-tertiary: var(--au-text-3);
 
-    /* 边框使用 Neo-Noir tokens */
-    --border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
-    --border-glass: var(--neo-border-default, rgba(255, 255, 255, 0.08));
-  }
-
-  body {
-    background: var(--neo-bg-base, #0B0F14);
-    color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
+    /* 边框：沿用 Aurora 边框令牌 */
+    --border-color: var(--au-border);
+    --border-glass: var(--au-border);
   }
 
   .card,

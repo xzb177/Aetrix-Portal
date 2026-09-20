@@ -11,7 +11,7 @@ import { embyApi, backdropUrl, ticksToSeconds, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
 import {
-  Play, Library, FolderOpen, RefreshCw, Info,
+  Play, Library, FolderOpen, RefreshCw, Info, Search,
 } from 'lucide-vue-next'
 
 const toast = useToast()
@@ -106,10 +106,17 @@ onMounted(() => {
       </div>
 
       <template v-else>
-        <MediaRow title="继续观看" :items="resume.slice(0, 12)" />
+        <!-- 搜索入口：跨库检索 -->
+        <RouterLink to="/search" class="search-entry au-anim-up">
+          <Search :size="17" />
+          <span>搜索电影、剧集、单集…</span>
+          <span class="search-kbd">全局</span>
+        </RouterLink>
+
+        <MediaRow title="继续观看" :items="resume.slice(0, 12)" more-to="/history" />
         <MediaRow title="最新添加" :items="latest" />
         <MediaRow title="接下来看" :items="nextUp.slice(0, 12)" />
-        <MediaRow title="我的收藏" :items="favorites.slice(0, 12)" />
+        <MediaRow title="我的收藏" :items="favorites.slice(0, 12)" more-to="/favorites" />
 
         <!-- 媒体库入口 -->
         <section v-if="views.length" class="views">
@@ -137,8 +144,8 @@ onMounted(() => {
 <style scoped>
 .lib-home {
   min-height: 100vh;
-  background: #070b12;
-  color: #e5e7eb;
+  background: var(--au-bg);
+  color: var(--au-text);
   padding-bottom: 3rem;
 }
 
@@ -156,7 +163,7 @@ onMounted(() => {
   align-items: flex-end;
   background-size: cover;
   background-position: center 20%;
-  background-color: #0a1210;
+  background-color: #0a101a;
 }
 
 .hero-shade {
@@ -180,7 +187,7 @@ onMounted(() => {
   background: rgba(34, 211, 238, 0.15);
   border: 1px solid rgba(34, 211, 238, 0.3);
   border-radius: 8px;
-  color: #34d399;
+  color: var(--au-primary);
   font-size: 0.75rem;
   font-weight: 600;
   margin-bottom: 0.75rem;
@@ -190,7 +197,7 @@ onMounted(() => {
   margin: 0 0 0.875rem;
   font-size: 2rem;
   font-weight: 700;
-  color: #fafafa;
+  color: var(--au-text);
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
 }
 
@@ -205,7 +212,7 @@ onMounted(() => {
 
 .hero-progress-fill {
   height: 100%;
-  background: #22d3ee;
+  background: var(--au-gradient);
 }
 
 .hero-actions {
@@ -229,8 +236,8 @@ onMounted(() => {
 }
 
 .btn.primary {
-  background: linear-gradient(135deg, #22d3ee, #06b6d4);
-  color: #fff;
+  background: var(--au-gradient);
+  color: #05141c;
   box-shadow: 0 4px 16px rgba(34, 211, 238, 0.3);
 }
 
@@ -259,11 +266,11 @@ onMounted(() => {
   margin: 0 0 0.75rem;
   font-size: 1.0625rem;
   font-weight: 600;
-  color: #fafafa;
+  color: var(--au-text);
 }
 
 .row-title svg {
-  color: #22d3ee;
+  color: var(--au-primary);
 }
 
 /* 加载与空态 */
@@ -285,7 +292,7 @@ onMounted(() => {
 .empty h2 {
   margin: 0.375rem 0 0;
   font-size: 1.0625rem;
-  color: rgba(255, 255, 255, 0.75);
+  color: var(--au-text-2);
 }
 
 .empty p {
@@ -301,6 +308,42 @@ onMounted(() => {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* 搜索入口 */
+.search-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  height: 46px;
+  padding: 0 1rem;
+  margin-bottom: 1.5rem;
+  background: rgba(148, 180, 220, 0.05);
+  border: 1px solid var(--au-border);
+  border-radius: 14px;
+  color: rgba(234, 242, 251, 0.45);
+  font-size: 0.875rem;
+  text-decoration: none;
+  transition: all 0.18s ease;
+}
+
+.search-entry:hover {
+  border-color: var(--au-primary-border);
+  background: rgba(34, 211, 238, 0.06);
+  color: rgba(234, 242, 251, 0.7);
+}
+
+.search-entry svg { color: var(--au-primary); }
+
+.search-kbd {
+  margin-left: auto;
+  padding: 0.125rem 0.5rem;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  border-radius: 999px;
+  color: var(--au-primary);
+  font-size: 0.6875rem;
+  font-weight: 600;
 }
 
 /* 媒体库入口 */
@@ -319,15 +362,15 @@ onMounted(() => {
   align-items: center;
   gap: 0.75rem;
   padding: 1rem;
-  background: rgba(13, 18, 24, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(10, 16, 26, 0.7);
+  border: 1px solid var(--au-border);
   border-radius: 14px;
   text-decoration: none;
   transition: all 0.2s ease;
 }
 
 .view-card:hover {
-  border-color: rgba(34, 211, 238, 0.3);
+  border-color: var(--au-primary-border);
   transform: translateY(-2px);
 }
 
@@ -340,7 +383,7 @@ onMounted(() => {
   background: rgba(34, 211, 238, 0.1);
   border: 1px solid rgba(34, 211, 238, 0.2);
   border-radius: 12px;
-  color: #22d3ee;
+  color: var(--au-primary);
 }
 
 .view-body {
@@ -351,11 +394,11 @@ onMounted(() => {
 .view-name {
   font-size: 0.9375rem;
   font-weight: 600;
-  color: #fafafa;
+  color: var(--au-text);
 }
 
 .view-count {
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--au-text-3);
 }
 </style>

@@ -1,389 +1,289 @@
 <script setup lang="ts">
 /**
- * 消息列表页面
- * 展示所有来自后台管理员的站内消息
- * 前后台联动核心页面
+ * 消息中心
+ *
+ * v2.5.0 重构：
+ * - 统一 Aurora 视觉（此前是残留的灰度主题，与全站割裂）
+ * - 按日期分组（今天 / 昨天 / 更早），长列表更好读
+ * - 按消息类型给出对应入口（工单 → 工单中心、求片 → 求片中心、订阅/兑换 → 钱包）
+ * - 保留：类型筛选、只看未读、关键字搜索、单条/全部已读
  */
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import {
-  Bell,
-  Check,
-  CheckCheck,
-  MessageSquare,
-  Ticket,
-  Megaphone,
-  Gift,
-  AlertCircle,
-  Clock,
-  RefreshCw,
-  Search,
-  Filter,
-  X,
-  ExternalLink
+  Bell, CheckCheck, MessageSquare, Ticket, Megaphone, Gift, AlertCircle,
+  Clock, RefreshCw, Search, Inbox, X, ChevronRight, Filter,
 } from 'lucide-vue-next'
-import { messageApi } from '@/api'
+import { messageApi, type StationMessage } from '@/api'
+import { useToast } from '@/composables/useToast'
 
-// 消息类型
-interface Message {
-  id: number
-  title: string
-  content: string
-  message_type: string
-  related_id?: number
-  is_read: boolean
-  created_at: string
-  from_user?: string
-}
+const toast = useToast()
 
-// 状态
-const messages = ref<Message[]>([])
+const messages = ref<StationMessage[]>([])
 const loading = ref(false)
 const refreshing = ref(false)
-const filterUnreadOnly = ref(false)
-const searchQuery = ref('')
+const unreadOnly = ref(false)
+const keyword = ref('')
 const selectedType = ref<string>('all')
-const selectedMessage = ref<Message | null>(null)
-const showDetailModal = ref(false)
+const detail = ref<StationMessage | null>(null)
 
-// 通知类型配置
-const typeConfigs: Record<string, { label: string; icon: any; color: string }> = {
-  all: { label: '全部', icon: MessageSquare, color: 'text-gray-400' },
-  system: { label: '系统通知', icon: AlertCircle, color: 'text-blue-400' },
-  ticket: { label: '工单消息', icon: Ticket, color: 'text-orange-400' },
-  announcement: { label: '公告', icon: Megaphone, color: 'text-purple-400' },
-  subscription: { label: '订阅', icon: Gift, color: 'text-green-400' },
-  media_seek: { label: '求片', icon: Clock, color: 'text-cyan-400' },
-  exchange_code: { label: '兑换', icon: Gift, color: 'text-yellow-400' },
+const typeConfigs: Record<string, { label: string; icon: unknown; tone: string }> = {
+  all: { label: '全部', icon: MessageSquare, tone: 'cyan' },
+  system: { label: '系统', icon: AlertCircle, tone: 'cyan' },
+  ticket: { label: '工单', icon: Ticket, tone: 'amber' },
+  announcement: { label: '公告', icon: Megaphone, tone: 'violet' },
+  subscription: { label: '订阅', icon: Gift, tone: 'green' },
+  media_seek: { label: '求片', icon: Clock, tone: 'cyan' },
+  exchange_code: { label: '兑换', icon: Gift, tone: 'amber' },
 }
 
-// 计算属性
-const filteredMessages = computed(() => {
-  let result = messages.value
+/** 消息类型 → 站内跳转（把通知和操作连起来） */
+const DEEP_LINKS: Record<string, { to: string; label: string }> = {
+  ticket: { to: '/tickets', label: '查看工单' },
+  media_seek: { to: '/request', label: '查看求片进度' },
+  subscription: { to: '/wallet', label: '查看我的订阅' },
+  exchange_code: { to: '/wallet', label: '前往钱包' },
+  announcement: { to: '/messages', label: '消息中心' },
+}
 
-  // 类型过滤
-  if (selectedType.value !== 'all') {
-    result = result.filter(m => m.message_type === selectedType.value)
-  }
-
-  // 未读过滤
-  if (filterUnreadOnly.value) {
-    result = result.filter(m => !m.is_read)
-  }
-
-  // 搜索过滤
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase()
-    result = result.filter(m =>
-      m.title.toLowerCase().includes(query) ||
-      m.content.toLowerCase().includes(query)
+const filtered = computed(() => {
+  let list = messages.value
+  if (selectedType.value !== 'all') list = list.filter((m) => m.message_type === selectedType.value)
+  if (unreadOnly.value) list = list.filter((m) => !m.is_read)
+  const kw = keyword.value.trim().toLowerCase()
+  if (kw) {
+    list = list.filter(
+      (m) => m.title.toLowerCase().includes(kw) || m.content.toLowerCase().includes(kw),
     )
   }
-
-  return result
+  return list
 })
 
-const unreadCount = computed(() => {
-  return messages.value.filter(m => !m.is_read).length
+/** 分组：今天 / 昨天 / 更早 */
+const grouped = computed(() => {
+  const today: StationMessage[] = []
+  const yesterday: StationMessage[] = []
+  const earlier: StationMessage[] = []
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const startOfYesterday = startOfToday - 86_400_000
+
+  for (const m of filtered.value) {
+    const t = new Date(m.created_at).getTime()
+    if (t >= startOfToday) today.push(m)
+    else if (t >= startOfYesterday) yesterday.push(m)
+    else earlier.push(m)
+  }
+
+  return [
+    { key: 'today', label: '今天', items: today },
+    { key: 'yesterday', label: '昨天', items: yesterday },
+    { key: 'earlier', label: '更早', items: earlier },
+  ].filter((g) => g.items.length)
 })
 
-// 加载消息
-async function loadMessages() {
-  loading.value = true
+const unreadCount = computed(() => messages.value.filter((m) => !m.is_read).length)
+
+const typeCounts = computed(() => {
+  const map: Record<string, number> = {}
+  for (const m of messages.value) {
+    map[m.message_type] = (map[m.message_type] || 0) + 1
+  }
+  return map
+})
+
+function typeOf(type: string) {
+  return typeConfigs[type] || typeConfigs.system
+}
+
+async function load(showSpinner = true) {
+  if (showSpinner) loading.value = true
   try {
-    const response = await messageApi.getMessages({
-      unread_only: false,
-      limit: 100
-    })
-    // API 返回格式: { data: [...], total: number, unread_count: number }
-    messages.value = (response as any) || []
-  } catch (error) {
-    console.error('加载消息失败:', error)
+    messages.value = (await messageApi.getMessages({ unread_only: false, limit: 100 })) || []
+  } catch {
+    messages.value = []
   } finally {
     loading.value = false
   }
 }
 
-// 刷新消息
-async function refreshMessages() {
+async function refresh() {
   refreshing.value = true
   try {
-    const response = await messageApi.getMessages({
-      unread_only: false,
-      limit: 100
-    })
-    // API 返回格式: { data: [...], total: number, unread_count: number }
-    messages.value = (response as any) || []
-  } catch (error) {
-    console.error('刷新消息失败:', error)
+    await load(false)
   } finally {
     refreshing.value = false
   }
 }
 
-// 打开消息详情
-async function openDetail(message: Message) {
-  selectedMessage.value = message
-  showDetailModal.value = true
-
-  // 如果未读，标记为已读
-  if (!message.is_read) {
+async function openDetail(msg: StationMessage) {
+  detail.value = msg
+  if (!msg.is_read) {
     try {
-      await messageApi.markAsRead(message.id)
-      message.is_read = true
-    } catch (error) {
-      console.error('标记已读失败:', error)
+      await messageApi.markAsRead(msg.id)
+      msg.is_read = true
+    } catch {
+      /* 静默 */
     }
   }
 }
 
-// 关闭详情弹窗
-function closeDetail() {
-  showDetailModal.value = false
-  selectedMessage.value = null
-}
-
-
-
-// 标记为已读
-async function markAsRead(message: Message) {
-  if (message.is_read) return
-
-  try {
-    await messageApi.markAsRead(message.id)
-    message.is_read = true
-  } catch (error) {
-    console.error('标记已读失败:', error)
-  }
-}
-
-// 标记所有为已读
-async function markAllAsRead() {
+async function markAllRead() {
   try {
     await messageApi.markAllRead()
-    messages.value.forEach(m => m.is_read = true)
-  } catch (error) {
-    console.error('标记全部已读失败:', error)
+    messages.value.forEach((m) => { m.is_read = true })
+    toast.success('已全部标为已读')
+  } catch {
+    toast.error('操作失败，请稍后重试')
   }
 }
 
-// 获取类型配置
-function getTypeConfig(type: string) {
-  return typeConfigs[type] || typeConfigs.all
+function fmtFull(iso: string) {
+  return new Date(iso).toLocaleString('zh-CN', {
+    month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
 }
 
-// 格式化时间
-function formatTime(timestamp: string) {
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-
+function fmtRelative(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
   const minutes = Math.floor(diff / 60000)
-  const hours = Math.floor(diff / 3600000)
-  const days = Math.floor(diff / 86400000)
-
   if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
-  if (hours < 24) return `${hours}小时前`
-  if (days < 7) return `${days}天前`
-
-  return date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  })
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  return fmtFull(iso)
 }
 
-// 格式化完整时间
-function formatFullTime(timestamp: string) {
-  const date = new Date(timestamp)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
-}
-
-onMounted(() => {
-  loadMessages()
-})
+onMounted(() => load())
 </script>
 
 <template>
-  <div class="messages-page">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <div class="header-content">
-        <div class="header-left">
-          <div class="header-icon">
-            <MessageSquare :size="24" />
-          </div>
-          <div>
-            <h1>消息中心</h1>
-            <p class="header-subtitle">来自管理后台的通知和公告</p>
-          </div>
+  <div class="messages-view">
+    <div class="au-page">
+      <!-- 头部 -->
+      <header class="page-head au-anim-up">
+        <div>
+          <h1 class="page-title">
+            <Inbox :size="20" />
+            消息中心
+            <span v-if="unreadCount" class="au-badge au-badge-cyan">{{ unreadCount }} 条未读</span>
+          </h1>
+          <p class="page-sub">系统通知、工单回复、订阅与求片进度都会汇总到这里</p>
         </div>
-        <div class="header-actions">
-          <button
-            class="action-btn"
-            @click="refreshMessages"
-            :disabled="refreshing"
-            title="刷新"
-          >
-            <RefreshCw :size="18" :class="{ spinning: refreshing }" />
+        <div class="head-actions">
+          <button class="au-btn au-btn-ghost au-btn-sm" @click="refresh">
+            <RefreshCw :size="14" :class="{ spinning: refreshing }" />
+            刷新
           </button>
-          <button
-            v-if="unreadCount > 0"
-            class="action-btn primary"
-            @click="markAllAsRead"
-            title="全部标为已读"
-          >
-            <CheckCheck :size="18" />
-            <span>全部已读</span>
+          <button v-if="unreadCount" class="au-btn au-btn-primary au-btn-sm" @click="markAllRead">
+            <CheckCheck :size="14" />
+            全部已读
           </button>
         </div>
-      </div>
-    </div>
+      </header>
 
-    <!-- 筛选栏 -->
-    <div class="filter-bar">
-      <div class="search-box">
-        <Search :size="18" class="search-icon" />
-        <input
-          v-model="searchQuery"
-          type="text"
-          placeholder="搜索消息..."
-          class="search-input"
-        />
-      </div>
-
-      <div class="filter-actions">
-        <button
-          class="filter-toggle"
-          :class="{ active: filterUnreadOnly }"
-          @click="filterUnreadOnly = !filterUnreadOnly"
-        >
-          <Filter :size="16" />
-          <span>只看未读</span>
-          <span v-if="unreadCount > 0" class="unread-badge">{{ unreadCount }}</span>
+      <!-- 筛选 -->
+      <div class="filters au-anim-up">
+        <div class="search-wrap">
+          <Search :size="15" class="search-icon" />
+          <input v-model="keyword" class="au-input search-input" type="text" placeholder="搜索标题或内容…" />
+        </div>
+        <button class="filter-toggle" :class="{ active: unreadOnly }" @click="unreadOnly = !unreadOnly">
+          <Filter :size="14" />
+          只看未读
+          <span v-if="unreadCount" class="filter-count">{{ unreadCount }}</span>
         </button>
       </div>
 
-      <!-- 类型标签单独一行 -->
-      <div class="type-tabs">
+      <div class="type-tabs au-anim-up">
         <button
-          v-for="(config, key) in typeConfigs"
+          v-for="(cfg, key) in typeConfigs"
           :key="key"
           class="type-tab"
           :class="{ active: selectedType === key }"
           @click="selectedType = key"
         >
-          <component :is="config.icon" :size="15" />
-          <span>{{ config.label }}</span>
+          <component :is="cfg.icon" :size="13" />
+          <span>{{ cfg.label }}</span>
+          <span v-if="key !== 'all' && typeCounts[key]" class="tab-count">{{ typeCounts[key] }}</span>
         </button>
       </div>
+
+      <!-- 内容 -->
+      <div v-if="loading" class="skeleton-list">
+        <div v-for="i in 4" :key="i" class="au-skeleton skel" />
+      </div>
+
+      <div v-else-if="filtered.length === 0" class="au-empty">
+        <Bell :size="30" />
+        <h3>{{ messages.length ? '没有符合条件的消息' : '暂时没有消息' }}</h3>
+        <p>{{ messages.length ? '试试换个类型或清空搜索' : '管理员的操作通知会出现在这里' }}</p>
+      </div>
+
+      <template v-else>
+        <section v-for="group in grouped" :key="group.key" class="msg-group">
+          <div class="group-label">{{ group.label }}<span>（{{ group.items.length }}）</span></div>
+
+          <button
+            v-for="msg in group.items"
+            :key="msg.id"
+            class="au-card msg-card"
+            :class="{ unread: !msg.is_read }"
+            @click="openDetail(msg)"
+          >
+            <span class="msg-icon">
+              <component :is="typeOf(msg.message_type).icon" :size="17" />
+            </span>
+
+            <span class="msg-body">
+              <span class="msg-top">
+                <span class="au-badge" :class="`au-badge-${typeOf(msg.message_type).tone}`">
+                  {{ typeOf(msg.message_type).label }}
+                </span>
+                <span v-if="!msg.is_read" class="unread-dot" />
+                <span class="msg-time">{{ fmtRelative(msg.created_at) }}</span>
+              </span>
+              <span class="msg-title">{{ msg.title }}</span>
+              <span class="msg-text">{{ msg.content }}</span>
+            </span>
+
+            <ChevronRight :size="15" class="msg-arrow" />
+          </button>
+        </section>
+      </template>
     </div>
 
-    <!-- 消息列表 -->
-    <div class="messages-container">
-      <div v-if="loading" class="loading-state">
-        <div class="spinner"></div>
-        <p>加载中...</p>
-      </div>
-
-      <div v-else-if="filteredMessages.length === 0" class="empty-state">
-        <MessageSquare :size="48" />
-        <h3>暂无消息</h3>
-        <p>{{ searchQuery || filterUnreadOnly || selectedType !== 'all' ? '没有符合条件的消息' : '您的消息列表为空' }}</p>
-      </div>
-
-      <div v-else class="messages-list">
-        <div
-          v-for="message in filteredMessages"
-          :key="message.id"
-          class="message-card"
-          :class="{ unread: !message.is_read }"
-          @click="openDetail(message)"
-        >
-          <div class="message-icon">
-            <component
-              :is="getTypeConfig(message.message_type)!.icon"
-              :size="20"
-              :class="getTypeConfig(message.message_type)!.color"
-            />
-          </div>
-
-          <div class="message-content">
-            <div class="message-header">
-              <div class="message-title-row">
-                <span class="message-type-badge">
-                  {{ getTypeConfig(message.message_type)!.label }}
-                </span>
-                <span class="message-time">{{ formatTime(message.created_at) }}</span>
-              </div>
-              <h3 class="message-title">
-                <span v-if="!message.is_read" class="unread-indicator"></span>
-                {{ message.title }}
-              </h3>
-            </div>
-            <p class="message-text">{{ message.content }}</p>
-
-            <div v-if="message.from_user" class="message-sender">
-              来自：{{ message.from_user }}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 消息详情弹窗 -->
-    <Transition name="modal">
-      <div v-if="showDetailModal && selectedMessage" class="modal-overlay" @click="closeDetail">
-        <div class="modal-content" @click.stop>
-          <div class="modal-header">
-            <div class="modal-title-row">
-              <div class="modal-icon">
-                <component
-                  :is="getTypeConfig(selectedMessage.message_type)!.icon"
-                  :size="24"
-                  :class="getTypeConfig(selectedMessage.message_type)!.color"
-                />
-              </div>
-              <div>
-                <span class="modal-type-badge">
-                  {{ getTypeConfig(selectedMessage.message_type)!.label }}
-                </span>
-                <h2 class="modal-title">{{ selectedMessage.title }}</h2>
-              </div>
-            </div>
-            <button class="modal-close" @click="closeDetail">
-              <X :size="20" />
-            </button>
-          </div>
-
-          <div class="modal-body">
-            <div class="modal-meta">
-              <span class="modal-time">
-                <Clock :size="14" />
-                {{ formatFullTime(selectedMessage.created_at) }}
+    <!-- 详情 -->
+    <Transition name="fade">
+      <div v-if="detail" class="modal-mask" @click.self="detail = null">
+        <div class="modal au-card">
+          <header class="modal-head">
+            <span class="modal-icon" :class="`tone-${typeOf(detail.message_type).tone}`">
+              <component :is="typeOf(detail.message_type).icon" :size="18" />
+            </span>
+            <div class="modal-head-main">
+              <span class="au-badge" :class="`au-badge-${typeOf(detail.message_type).tone}`">
+                {{ typeOf(detail.message_type).label }}
               </span>
-              <span v-if="selectedMessage.from_user" class="modal-sender">
-                来自：{{ selectedMessage.from_user }}
-              </span>
+              <h2>{{ detail.title }}</h2>
+              <span class="modal-time">{{ fmtFull(detail.created_at) }}</span>
             </div>
+            <button class="modal-close" @click="detail = null"><X :size="18" /></button>
+          </header>
 
-            <div class="modal-message">
-              {{ selectedMessage.content }}
-            </div>
-          </div>
+          <div class="modal-body">{{ detail.content }}</div>
 
-          <div class="modal-footer">
-            <button class="btn btn-secondary" @click="closeDetail">
-              关闭
-            </button>
-          </div>
+          <footer class="modal-foot">
+            <RouterLink
+              v-if="DEEP_LINKS[detail.message_type]"
+              class="au-btn au-btn-primary au-btn-sm"
+              :to="DEEP_LINKS[detail.message_type].to"
+              @click="detail = null"
+            >
+              {{ DEEP_LINKS[detail.message_type].label }}
+            </RouterLink>
+            <button class="au-btn au-btn-ghost au-btn-sm" @click="detail = null">关闭</button>
+          </footer>
         </div>
       </div>
     </Transition>
@@ -391,691 +291,303 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.messages-page {
-  min-height: 100vh;
-  background: #0a0a0a;
-  padding-bottom: 2rem;
-}
-
-/* 页面头部 */
-.page-header {
-  padding: 1.5rem 1.5rem 1rem;
-  background: rgba(20, 20, 20, 0.8);
-  backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.header-content {
+.page-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  max-width: 900px;
-  margin: 0 auto;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
   gap: 1rem;
+  margin-bottom: 1.125rem;
+  flex-wrap: wrap;
 }
 
-.header-icon {
-  width: 48px;
-  height: 48px;
-  background: linear-gradient(135deg, rgba(34, 211, 238, 0.2) 0%, rgba(5, 150, 105, 0.15) 100%);
-  border-radius: 12px;
+.page-title {
   display: flex;
   align-items: center;
-  justify-content: center;
-  color: #22d3ee;
-}
-
-.header-left h1 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: #ffffff;
-  margin: 0 0 0.25rem 0;
-}
-
-.header-subtitle {
-  font-size: 0.875rem;
-  color: #737373;
+  gap: 0.5rem;
   margin: 0;
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--au-text);
+  flex-wrap: wrap;
 }
 
-.header-actions {
-  display: flex;
-  gap: 0.5rem;
+.page-title svg { color: var(--au-primary); }
+
+.page-sub {
+  margin: 0.375rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
 }
 
-.action-btn {
+.head-actions { display: flex; gap: 0.5rem; }
+
+/* 筛选 */
+.filters {
   display: flex;
+  gap: 0.625rem;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-  color: #a3a3a3;
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
 }
 
-.action-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-}
-
-.action-btn.primary {
-  background: linear-gradient(135deg, #22d3ee 0%, #06b6d4 100%);
-  border-color: transparent;
-  color: white;
-}
-
-.action-btn.primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(34, 211, 238, 0.3);
-}
-
-.action-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.spinning {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* 筛选栏 */
-.filter-bar {
-  padding: 1rem 1.5rem;
-  max-width: 900px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.filter-bar > .search-box {
-  width: 100%;
-  max-width: 100%;
-}
-
-.search-box {
-  position: relative;
-}
-
+.search-wrap { position: relative; flex: 1 1 260px; }
 .search-icon {
   position: absolute;
   left: 0.75rem;
   top: 50%;
   transform: translateY(-50%);
-  color: #737373;
+  color: var(--au-text-4);
   pointer-events: none;
 }
+.search-input { padding-left: 2.25rem; }
 
-.search-input {
-  width: 100%;
-  padding: 0.625rem 0.75rem 0.625rem 2.25rem;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.03);
-  color: #ffffff;
-  font-size: 0.875rem;
-  outline: none;
-  transition: all 0.2s ease;
+.filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 42px;
+  padding: 0 0.875rem;
+  border-radius: var(--au-r-md);
+  border: 1px solid var(--au-border);
+  background: transparent;
+  color: var(--au-text-3);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
-.search-input:focus {
-  border-color: #22d3ee;
-  background: rgba(26, 26, 26, 0.8);
+.filter-toggle:hover { color: var(--au-text); border-color: var(--au-border-strong); }
+.filter-toggle.active {
+  color: var(--au-primary);
+  border-color: var(--au-primary-border);
+  background: var(--au-primary-soft);
 }
 
-.search-input::placeholder {
-  color: #737373;
-}
-
-.filter-actions {
-  display: flex;
-  justify-content: flex-end;
+.filter-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--au-r-full);
+  background: var(--au-primary);
+  color: #05141c;
+  font-size: 0.625rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .type-tabs {
   display: flex;
-  flex-wrap: wrap;
   gap: 0.375rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.125rem;
 }
 
 .type-tab {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.5rem 0.875rem;
-  border-radius: 9999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.03);
-  color: #737373;
-  font-size: 0.8rem;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
-}
-
-.type-tab:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #a3a3a3;
-  border-color: rgba(255, 255, 255, 0.15);
-}
-
-.type-tab.active {
-  background: linear-gradient(135deg, rgba(34, 211, 238, 0.15) 0%, rgba(5, 150, 105, 0.1) 100%);
-  border-color: rgba(34, 211, 238, 0.3);
-  color: #22d3ee;
-  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.1);
-}
-
-.filter-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.875rem;
-  border-radius: 9999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.03);
-  color: #737373;
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.filter-toggle:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #a3a3a3;
-}
-
-.filter-toggle.active {
-  background: rgba(34, 211, 238, 0.15);
-  border-color: rgba(34, 211, 238, 0.3);
-  color: #22d3ee;
-}
-
-.unread-badge {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  background: #22d3ee;
-  border-radius: 9px;
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* 消息列表 */
-.messages-container {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 0 1.5rem;
-}
-
-.loading-state,
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 4rem 2rem;
-  color: #525252;
-}
-
-.spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #22d3ee;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-.empty-state h3 {
-  font-size: 1rem;
-  font-weight: 500;
-  color: #a3a3a3;
-  margin: 0.75rem 0 0.25rem;
-}
-
-.empty-state p {
-  font-size: 0.875rem;
-  color: #525252;
-  margin: 0;
-}
-
-.messages-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.message-card {
-  display: flex;
-  align-items: flex-start;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
-  background: rgba(26, 26, 26, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  position: relative;
-}
-
-.message-card:hover {
-  background: rgba(38, 38, 38, 0.8);
-  border-color: rgba(34, 211, 238, 0.2);
-}
-
-.message-card.unread {
-  background: rgba(34, 211, 238, 0.04);
-  border-color: rgba(34, 211, 238, 0.15);
-}
-
-.message-card.unread::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 60%;
-  background: linear-gradient(180deg, #22d3ee 0%, #06b6d4 100%);
-  border-radius: 0 2px 2px 0;
-}
-
-.message-icon {
-  width: 40px;
-  height: 40px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.message-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.message-header {
-  margin-bottom: 0.5rem;
-}
-
-.message-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
-  flex-wrap: wrap;
-}
-
-.message-type-badge {
   display: inline-flex;
-  padding: 0.125rem 0.5rem;
-  border-radius: 6px;
-  font-size: 0.7rem;
-  font-weight: 500;
-  background: rgba(255, 255, 255, 0.05);
-  color: #737373;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  flex-shrink: 0;
-}
-
-.message-time {
+  align-items: center;
+  gap: 0.3125rem;
+  height: 30px;
+  padding: 0 0.6875rem;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: transparent;
+  color: var(--au-text-3);
   font-size: 0.75rem;
-  color: #525252;
-  flex-shrink: 0;
-  margin-left: auto;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
-.message-title {
-  font-size: 1rem;
-  font-weight: 500;
-  color: #ffffff;
-  margin: 0;
+.type-tab:hover { color: var(--au-text); border-color: var(--au-border-strong); }
+.type-tab.active {
+  color: var(--au-primary);
+  border-color: var(--au-primary-border);
+  background: var(--au-primary-soft);
+}
+
+.tab-count { opacity: 0.65; font-size: 0.6875rem; }
+
+/* 列表 */
+.msg-group { margin-bottom: 1.25rem; }
+
+.group-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--au-text-3);
+  margin-bottom: 0.5rem;
+  letter-spacing: 0.02em;
+}
+
+.group-label span { color: var(--au-text-4); font-weight: 400; }
+
+.msg-card {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.75rem;
   width: 100%;
+  padding: 0.75rem 0.875rem;
+  margin-bottom: 0.4375rem;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
-.unread-indicator {
+.msg-card:hover { border-color: var(--au-primary-border); transform: translateX(2px); }
+.msg-card.unread { border-color: var(--au-primary-border); background: var(--au-surface-2); }
+
+.msg-icon {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--au-r-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-surface-2);
+  color: var(--au-text-2);
+}
+
+.msg-card.unread .msg-icon { background: var(--au-primary-soft); color: var(--au-primary); }
+
+.msg-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1875rem; }
+
+.msg-top { display: flex; align-items: center; gap: 0.375rem; }
+
+.unread-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #22d3ee;
-  box-shadow: 0 0 6px rgba(34, 211, 238, 0.5);
+  background: var(--au-primary);
+  box-shadow: 0 0 6px var(--au-primary-glow);
   flex-shrink: 0;
 }
 
-.message-text {
+.msg-time { margin-left: auto; font-size: 0.6875rem; color: var(--au-text-4); white-space: nowrap; }
+
+.msg-title {
   font-size: 0.875rem;
-  color: #a3a3a3;
+  font-weight: 600;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-text {
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   line-height: 1.5;
-  margin: 0 0 0.5rem 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  white-space: pre-wrap;
 }
 
-.message-sender {
-  font-size: 0.75rem;
-  color: #525252;
-}
+.msg-arrow { color: var(--au-text-4); flex-shrink: 0; }
 
-.delete-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: transparent;
-  color: #737373;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
-}
+/* 骨架 */
+.skeleton-list { display: flex; flex-direction: column; gap: 0.4375rem; }
+.skel { height: 74px; }
 
-.delete-btn:hover {
-  background: rgba(239, 68, 68, 0.15);
-  border-color: rgba(239, 68, 68, 0.3);
-  color: #ef4444;
-}
+.spinning { animation: au-spin 0.9s linear infinite; }
 
-/* 模态框 */
-.modal-overlay {
+/* 详情弹层 */
+.modal-mask {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(4px);
+  inset: 0;
+  z-index: 1200;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
   padding: 1rem;
+  background: var(--au-overlay);
+  backdrop-filter: blur(6px);
 }
 
-.modal-content {
-  background: #1a1a1a;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
+.modal {
   width: 100%;
-  max-width: 500px;
-  max-height: 80vh;
+  max-width: 520px;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
-.modal-header {
+.modal-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1.5rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.modal-title-row {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1.125rem 1.25rem;
+  border-bottom: 1px solid var(--au-border);
 }
 
 .modal-icon {
-  width: 48px;
-  height: 48px;
-  background: rgba(34, 211, 238, 0.1);
-  border-radius: 12px;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: var(--au-r-sm);
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
 }
 
-.modal-type-badge {
-  display: inline-block;
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
-  font-size: 0.7rem;
-  font-weight: 500;
-  background: rgba(255, 255, 255, 0.05);
-  color: #737373;
-  text-transform: uppercase;
-  margin-bottom: 0.25rem;
-}
+.modal-icon.tone-amber { background: var(--au-warning-soft); color: var(--au-warning); }
+.modal-icon.tone-green { background: var(--au-success-soft); color: var(--au-success); }
+.modal-icon.tone-violet { background: rgba(167, 139, 250, 0.12); color: var(--au-violet); }
 
-.modal-title {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: #ffffff;
+.modal-head-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+
+.modal-head-main h2 {
   margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--au-text);
+  line-height: 1.35;
 }
+
+.modal-time { font-size: 0.6875rem; color: var(--au-text-4); }
 
 .modal-close {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
   border: none;
-  background: rgba(255, 255, 255, 0.05);
-  color: #a3a3a3;
+  border-radius: var(--au-r-sm);
+  background: var(--au-surface-2);
+  color: var(--au-text-2);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
-.modal-close:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-}
+.modal-close:hover { background: var(--au-surface-3); color: var(--au-text); }
 
 .modal-body {
-  padding: 1.5rem;
+  padding: 1.25rem;
   overflow-y: auto;
-  max-height: calc(80vh - 180px);
-}
-
-.modal-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin-bottom: 1rem;
-  font-size: 0.8rem;
-  color: #737373;
-}
-
-.modal-time,
-.modal-sender {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.modal-message {
-  font-size: 1rem;
-  line-height: 1.8;
-  color: #d4d4d4;
+  font-size: 0.875rem;
+  line-height: 1.75;
+  color: var(--au-text-2);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.modal-footer {
+.modal-foot {
   display: flex;
   justify-content: flex-end;
-  gap: 0.75rem;
-  padding: 1rem 1.5rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.btn {
-  display: flex;
-  align-items: center;
   gap: 0.5rem;
-  padding: 0.625rem 1.25rem;
-  border-radius: 10px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: none;
+  padding: 0.875rem 1.25rem;
+  border-top: 1px solid var(--au-border);
 }
 
-.btn-secondary {
-  background: rgba(255, 255, 255, 0.05);
-  color: #a3a3a3;
-}
-
-.btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-}
-
-.btn-danger {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
-}
-
-.btn-danger:hover {
-  background: rgba(239, 68, 68, 0.25);
-}
-
-/* 模态框过渡 */
-.modal-enter-active,
-.modal-leave-active {
-  transition: all 0.2s ease;
-}
-
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-
-.modal-enter-from .modal-content,
-.modal-leave-to .modal-content {
-  transform: scale(0.95);
-}
-
-.modal-enter-active .modal-content,
-.modal-leave-active .modal-content {
-  transition: transform 0.2s ease;
-}
-
-/* 响应式 */
-@media (max-width: 640px) {
-  .page-header {
-    padding: 1rem 1rem 0.75rem;
-  }
-
-  .header-content {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.75rem;
-  }
-
-  .header-left h1 {
-    font-size: 1.125rem;
-  }
-
-  .header-subtitle {
-    font-size: 0.75rem;
-  }
-
-  .header-icon {
-    width: 40px;
-    height: 40px;
-  }
-
-  .header-actions .action-btn span {
-    display: none;
-  }
-
-  .filter-bar {
-    padding: 0.75rem 1rem;
-  }
-
-  .type-tab {
-    padding: 0.375rem 0.625rem;
-    font-size: 0.75rem;
-    flex-grow: 0;
-  }
-
-  .type-tab span {
-    display: none;
-  }
-
-  .type-tab.active span {
-    display: inline;
-  }
-
-  .filter-toggle span {
-    font-size: 0.75rem;
-  }
-
-  .message-card {
-    padding: 0.75rem 0.875rem;
-  }
-
-  .message-icon {
-    width: 32px;
-    height: 32px;
-  }
-
-  .message-title {
-    font-size: 0.9rem;
-  }
-
-  .message-text {
-    font-size: 0.8rem;
-    -webkit-line-clamp: 2;
-  }
-
-  .modal-content {
-    max-width: 100%;
-    margin: 1rem;
-  }
-
-  .modal-header,
-  .modal-body,
-  .modal-footer {
-    padding: 1rem;
-  }
-
-  .modal-title {
-    font-size: 1rem;
-  }
-
-  .modal-footer {
-    flex-direction: column-reverse;
-  }
-
-  .modal-footer .btn {
-    width: 100%;
-    justify-content: center;
-  }
-}
+.fade-enter-active, .fade-leave-active { transition: opacity var(--au-med) var(--au-ease); }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>
