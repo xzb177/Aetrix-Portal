@@ -9,29 +9,25 @@
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { embyApi, messageApi, announcementApi, subscriptionApi, type AccountCard, type Announcement, type MySubscription } from '@/api'
+import { messageApi, announcementApi, subscriptionApi, type Announcement, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  Play, Copy, Check, Key, Lock, ChevronRight, Crown, Megaphone,
+  Play, ChevronRight, Crown, Megaphone,
   Wallet, CalendarCheck, Gift, Sparkles, Tv,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
 const toast = useToast()
 
-const serverOrigin = window.location.origin
-
 const loading = ref(true)
-const account = ref<AccountCard | null>(null)
 const notices = ref<Announcement[]>([])
 const unreadCount = ref(0)
 const resumeItems = ref<EmbyItem[]>([])
 const latestItems = ref<EmbyItem[]>([])
 const subscriptions = ref<MySubscription[]>([])
-const copiedField = ref('')
 
 // 经济速览（账号速览条数据）
 const quickStats = ref({
@@ -51,11 +47,6 @@ const greeting = computed(() => {
 })
 
 const user = computed(() => userStore.user)
-const embyUsername = computed(() => account.value?.emby_username || user.value?.username || '—')
-const serverUrl = computed(() => account.value?.base_url || serverOrigin)
-const hasPassword = computed(() => !!account.value?.has_password)
-const importSchemes = computed(() => account.value?.import_schemes || {})
-const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
 
 const activeSub = computed(
   () => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null,
@@ -113,35 +104,9 @@ const accountCells = computed(() => [
   },
 ])
 
-async function copyText(text: string, field: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    copiedField.value = field
-    toast.success('已复制')
-    setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1600)
-  } catch {
-    toast.error('复制失败')
-  }
-}
-
-const copyAll = () => {
-  const lines = [
-    `服务器: ${serverUrl.value}`,
-    `用户名: ${embyUsername.value}`,
-    '密码: 与门户登录密码相同',
-  ]
-  copyText(lines.join('\n'), 'all')
-}
-
-// 播放器一键导入
-const openScheme = (url: string) => {
-  window.location.href = url
-}
-
 onMounted(async () => {
   try {
-    const [card, unread, anns, resume, latest, pointsRes, checkinRes, inviteRes, subs] = await Promise.all([
-      embyApi.getAccountCard(),
+    const [unread, anns, resume, latest, pointsRes, checkinRes, inviteRes, subs] = await Promise.all([
       messageApi.getUnreadCount().catch((): { unread_count: number } => ({ unread_count: 0 })),
       announcementApi.getAnnouncements().catch((): Announcement[] => []),
       protocolApi.getResume(12).catch((): EmbyItem[] => []),
@@ -151,7 +116,6 @@ onMounted(async () => {
       inviteApi.myCode().catch((): null => null),
       subscriptionApi.getMine().catch((): MySubscription[] => []),
     ])
-    account.value = card
     unreadCount.value = (unread as any)?.unread_count ?? 0
     notices.value = Array.isArray(anns) ? anns : []
     resumeItems.value = resume
@@ -267,9 +231,10 @@ onMounted(async () => {
         <p>媒体库还没有内容，稍后再来看看</p>
       </div>
 
-      <!-- 分组二：站点与设备 -->
+      <!-- 分组二：站点与账号 -->
       <div class="section-label">
-        <span class="section-title">站点与设备</span>
+        <span class="section-title">站点与账号</span>
+        <RouterLink to="/profile" class="section-more">个人中心 <ChevronRight :size="12" /></RouterLink>
       </div>
 
       <!-- 站点动态：单行细条 -->
@@ -285,53 +250,17 @@ onMounted(async () => {
         <ChevronRight :size="15" class="news-arrow" />
       </RouterLink>
 
-      <!-- 连接播放器：凭据 + 一键导入，合并为一张卡 -->
-      <section class="connect-card au-card">
-        <header class="connect-head">
-          <span class="connect-title">
-            <Tv :size="16" />
-            连接播放器
-          </span>
-          <p class="connect-desc">在 Infuse、Forward 等 Emby 客户端中用以下凭据登录，或一键导入</p>
-        </header>
-
-        <div class="cred-strip">
-          <button
-            v-for="row in [
-              { key: 'server', label: '服务器', value: serverUrl, mono: true },
-              { key: 'user', label: '用户名', value: embyUsername, mono: true },
-              { key: 'pwd', label: '密码', value: hasPassword ? '与门户密码相同' : '未设置', mono: false },
-            ]"
-            :key="row.key"
-            class="cred-chip"
-            :title="`点击复制${row.label}`"
-            @click="row.key !== 'pwd' && copyText(row.value, row.key)"
-          >
-            <span class="cred-chip-label">{{ row.label }}</span>
-            <span class="cred-chip-value mono" :class="{ dim: row.key === 'pwd' }">{{ row.value }}</span>
-            <Check v-if="copiedField === row.key" :size="13" class="chip-ok" />
-            <Copy v-else-if="row.key !== 'pwd'" :size="13" class="chip-copy" />
-            <Lock v-else :size="13" class="chip-copy" />
-          </button>
-        </div>
-        <p class="cred-hint">
-          <Key :size="12" />
-          凭据与门户账号一致，可在个人中心管理 ·
-          <button class="hint-link" @click="copyAll">复制全部</button>
-        </p>
-
-        <div v-if="hasSchemes" class="scheme-row">
-          <button
-            v-for="(url, name) in importSchemes"
-            :key="name"
-            class="scheme-btn"
-            @click="openScheme(url)"
-          >
-            <Sparkles :size="14" />
-            {{ name }}
-          </button>
-        </div>
-      </section>
+      <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
+      <RouterLink to="/profile" class="connect-row au-card">
+        <span class="connect-row-icon">
+          <Tv :size="17" />
+        </span>
+        <span class="connect-row-body">
+          <strong>连接播放器</strong>
+          <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入都在个人中心</em>
+        </span>
+        <ChevronRight :size="16" class="connect-row-arrow" />
+      </RouterLink>
     </main>
   </div>
 </template>
@@ -729,143 +658,64 @@ onMounted(async () => {
   color: var(--au-primary);
 }
 
-/* ==================== 连接播放器 ==================== */
+/* ==================== 播放器入口（单行，详情在个人中心） ==================== */
 
-.connect-card {
-  padding: 1.125rem 1.25rem 1.25rem;
-}
-
-.connect-head {
-  margin-bottom: 0.875rem;
-}
-
-.connect-title {
+.connect-row {
   display: flex;
   align-items: center;
-  gap: 0.4375rem;
+  gap: 0.75rem;
+  padding: 0.875rem 1.125rem;
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease);
+}
+
+.connect-row:hover {
+  border-color: var(--au-primary-border);
+}
+
+.connect-row-icon {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: 10px;
+  color: var(--au-primary);
+}
+
+.connect-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.connect-row-body strong {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--au-text);
 }
 
-.connect-title svg {
-  color: var(--au-primary);
-}
-
-.connect-desc {
-  margin: 0.25rem 0 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.cred-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.cred-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  max-width: 100%;
-  height: 36px;
-  padding: 0 0.75rem;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
-}
-
-.cred-chip:hover {
-  border-color: var(--au-primary-border);
-  background: var(--au-primary-soft);
-}
-
-.cred-chip-label {
-  flex-shrink: 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.cred-chip-value {
+.connect-row-body em {
+  font-style: normal;
   font-size: 0.75rem;
-  color: var(--au-text-2);
-  max-width: 210px;
+  color: var(--au-text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.cred-chip-value.dim {
-  letter-spacing: 0.12em;
-}
-
-.chip-copy,
-.chip-ok {
+.connect-row-arrow {
   flex-shrink: 0;
   color: var(--au-text-4);
+  transition: color var(--au-fast) var(--au-ease);
 }
 
-.cred-chip:hover .chip-copy {
-  color: var(--au-primary);
-}
-
-.chip-ok {
-  color: var(--au-primary);
-}
-
-.cred-hint {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  margin: 0.625rem 0 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.hint-link {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: inherit;
-  color: var(--au-primary);
-  cursor: pointer;
-}
-
-.hint-link:hover {
-  text-decoration: underline;
-}
-
-.scheme-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.875rem;
-  padding-top: 0.875rem;
-  border-top: 1px dashed var(--au-border);
-}
-
-.scheme-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4375rem;
-  height: 34px;
-  padding: 0 0.875rem;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-sm);
-  color: var(--au-text-2);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.scheme-btn:hover {
-  background: var(--au-primary-soft);
-  border-color: var(--au-primary-border);
+.connect-row:hover .connect-row-arrow {
   color: var(--au-primary);
 }
 
