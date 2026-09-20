@@ -59,6 +59,13 @@ const router = createRouter({
       component: () => import('@/views/InviteView.vue'),
       meta: { title: '邀请返利', requiresAuth: true },
     },
+    // ==================== 观看记录（v2.5.0） ====================
+    {
+      path: '/history',
+      name: 'history',
+      component: () => import('@/views/HistoryView.vue'),
+      meta: { title: '观看记录', requiresAuth: true },
+    },
     // ==================== 媒体库（Emby 协议端点） ====================
     {
       path: '/media',
@@ -71,6 +78,19 @@ const router = createRouter({
       name: 'library',
       component: () => import('@/views/media/LibraryView.vue'),
       meta: { title: '浏览媒体库', requiresAuth: true },
+    },
+    // ==================== 搜索与收藏（v2.5.0） ====================
+    {
+      path: '/search',
+      name: 'search',
+      component: () => import('@/views/media/SearchView.vue'),
+      meta: { title: '搜索', requiresAuth: true },
+    },
+    {
+      path: '/favorites',
+      name: 'favorites',
+      component: () => import('@/views/media/FavoritesView.vue'),
+      meta: { title: '我的收藏', requiresAuth: true },
     },
     {
       path: '/media/:id',

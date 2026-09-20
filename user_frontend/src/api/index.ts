@@ -190,6 +190,48 @@ export interface PortalMediaItem {
   poster_url?: string | null
 }
 
+/** 观看历史条目 */
+export interface WatchHistoryItem {
+  id: string
+  name: string
+  type: string
+  year?: string | number | null
+  poster_url?: string | null
+  duration_ticks?: number | null
+  position_ticks?: number | null
+  played: boolean
+  is_favorite: boolean
+  play_count: number
+  device?: string | null
+  client?: string | null
+  play_method?: string | null
+  watched_at?: string | null
+}
+
+export interface WatchHistory {
+  total: number
+  unique_total: number
+  items: WatchHistoryItem[]
+}
+
+/** 我的播放会话 */
+export interface MyPlaybackSession {
+  session_key: string
+  item_id: string
+  item: string
+  item_type: string
+  device?: string | null
+  client?: string | null
+  remote_addr?: string | null
+  play_method?: string | null
+  is_paused: boolean
+  position_ticks?: number | null
+  duration_ticks?: number | null
+  progress: number
+  started_at?: string | null
+  updated_at?: string | null
+}
+
 export const embyApi = {
   // 账号卡（服务器地址 / Emby 用户名 / 播放器一键导入 scheme）
   getAccountCard: () => api.get<never, AccountCard>('/api/user/emby/server'),
@@ -208,6 +250,16 @@ export const embyApi = {
 
   // 观看统计
   getStats: () => api.get<never, WatchStats>('/api/user/emby/stats'),
+
+  // 观看历史（按条目去重，含设备 / 客户端）
+  getHistory: (params?: { limit?: number; offset?: number; item_type?: string }) =>
+    api.get<never, WatchHistory>('/api/user/emby/history', { params }),
+
+  // 我的正在播放会话
+  getSessions: () => api.get<never, { sessions: MyPlaybackSession[] }>('/api/user/emby/sessions'),
+
+  // 结束某个播放会话
+  stopSession: (sessionKey: string) => api.delete(`/api/user/emby/sessions/${sessionKey}`),
 }
 
 // ==================== 站内消息 API（backend/api/user.py + admin 联动） ====================
@@ -297,11 +349,36 @@ export interface MediaSeekRequest {
   created_at: string
 }
 
+export interface MediaSeekQuota {
+  used_today: number
+  daily_limit: number
+  remaining: number
+}
+
+/** 库存检查命中项（在自建媒体库中已存在） */
+export interface MediaLookupItem {
+  id: string
+  name: string
+  type: string
+  year?: string | number | null
+  poster_url?: string | null
+}
+
 export const mediaSeekApi = {
-  getMyRequests: () => api.get<never, MediaSeekRequest[]>('/api/user/media-seek'),
+  getMyRequests: (params?: { status_filter?: string }) =>
+    api.get<never, { requests: MediaSeekRequest[]; quota: MediaSeekQuota }>('/api/user/media-seek', { params }),
+
+  /** 求片前库存检查：片名是否已在库中 */
+  lookup: (name: string) =>
+    api.get<never, { in_library: boolean; items: MediaLookupItem[] }>('/api/user/media-seek/lookup', {
+      params: { name },
+    }),
 
   create: (data: { movie_name: string; year?: string; type?: string; note?: string }) =>
-    api.post('/api/user/media-seek', data),
+    api.post<never, { success: boolean; request_id: number; message: string }>('/api/user/media-seek', data),
+
+  /** 撤回尚未处理的求片 */
+  withdraw: (requestId: number) => api.delete(`/api/user/media-seek/${requestId}`),
 }
 
 // ==================== 订阅 API（backend/api/user.py，管理员在后台授予） ====================

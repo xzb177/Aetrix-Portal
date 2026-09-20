@@ -197,7 +197,7 @@ onMounted(async () => {
       </section>
 
       <!-- 内容区：继续观看 -->
-      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" class="row" />
+      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" more-to="/history" class="row" />
 
       <!-- 内容区：最近入库 -->
       <MediaRow v-if="latestItems.length" title="最近入库" :items="latestItems.slice(0, 16)" class="row" />

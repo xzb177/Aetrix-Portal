@@ -1,24 +1,45 @@
 <script setup lang="ts">
 /**
- * 求片页 — 简化版
+ * 求片中心
  *
- * 功能：提交求片请求（片名/年份/类型/备注）+ 我的求片列表（含管理员回复）。
+ * v2.5.0 重构（借鉴 twilight-kotomi 的求片库存检查）：
+ * - 提交前自动查库：已在库 → 直接给出播放入口，不占用求片额度
+ * - 支持撤回尚未处理的求片（此前提交后无法取消）
+ * - 展示今日求片额度（后端限制每日条数）
+ * - 状态筛选 + 统一 Aurora 视觉
  */
-import { ref, computed, onMounted } from 'vue'
-import { mediaSeekApi, type MediaSeekRequest } from '@/api'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
+import {
+  Film, Plus, Send, RefreshCw, CheckCircle2, Clock, XCircle, Ban, Search,
+  CircleCheck, Loader2, Play, Ticket, Undo2, Info,
+} from 'lucide-vue-next'
+import {
+  mediaSeekApi,
+  type MediaSeekRequest, type MediaSeekQuota, type MediaLookupItem,
+} from '@/api'
 import { useToast } from '@/composables/useToast'
-import { Film, Plus, Send, RefreshCw, CheckCircle2, Clock, XCircle } from 'lucide-vue-next'
 
 const toast = useToast()
+const route = useRoute()
 
-// ===== 状态 =====
+// ===== 列表 =====
 const loading = ref(true)
-const submitting = ref(false)
 const requests = ref<MediaSeekRequest[]>([])
-const showForm = ref(false)
+const quota = ref<MediaSeekQuota | null>(null)
+const statusFilter = ref<'all' | 'pending' | 'approved' | 'completed' | 'rejected'>('all')
+const withdrawing = ref<number | null>(null)
 
-// 表单
+// ===== 表单 =====
+const showForm = ref(false)
+const submitting = ref(false)
 const form = ref({ movie_name: '', year: '', type: 'movie', note: '' })
+
+// ===== 库存检查 =====
+const lookupLoading = ref(false)
+const lookupDone = ref(false)
+const lookupHits = ref<MediaLookupItem[]>([])
+let lookupTimer: number | undefined
 
 const typeOptions = [
   { value: 'movie', label: '电影' },
@@ -32,48 +53,107 @@ const typeLabels: Record<string, string> = {
   movie: '电影', series: '剧集', anime: '动漫', documentary: '纪录片', other: '其他',
 }
 
-const statusConfig: Record<string, { label: string; cls: string }> = {
-  pending: { label: '待处理', cls: 'pending' },
-  approved: { label: '处理中', cls: 'approved' },
-  rejected: { label: '已拒绝', cls: 'rejected' },
-  completed: { label: '已完成', cls: 'completed' },
+const statusConfig: Record<string, { label: string; cls: string; icon: unknown }> = {
+  pending: { label: '待处理', cls: 'amber', icon: Clock },
+  approved: { label: '处理中', cls: 'cyan', icon: Loader2 },
+  rejected: { label: '已拒绝', cls: 'rose', icon: XCircle },
+  completed: { label: '已完成', cls: 'green', icon: CheckCircle2 },
 }
 
-const statusIcon = (s: string) => {
-  if (s === 'completed') return CheckCircle2
-  if (s === 'rejected') return XCircle
-  return Clock
-}
+const STATUS_TABS: { value: typeof statusFilter.value; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'pending', label: '待处理' },
+  { value: 'approved', label: '处理中' },
+  { value: 'completed', label: '已完成' },
+  { value: 'rejected', label: '已拒绝' },
+]
 
-const pendingCount = computed(() => requests.value.filter(r => r.status === 'pending').length)
+const filtered = computed(() =>
+  statusFilter.value === 'all'
+    ? requests.value
+    : requests.value.filter((r) => r.status === statusFilter.value),
+)
 
-// ===== 数据加载 =====
+const counts = computed(() => ({
+  pending: requests.value.filter((r) => r.status === 'pending').length,
+  processing: requests.value.filter((r) => r.status === 'approved').length,
+}))
+
+const quotaLeft = computed(() => quota.value?.remaining ?? 0)
+const quotaExhausted = computed(() => quota.value != null && quota.value.remaining <= 0)
+const inLibrary = computed(() => lookupDone.value && lookupHits.value.length > 0)
+
+// ===== 数据 =====
 async function loadRequests() {
   loading.value = true
   try {
-    requests.value = (await mediaSeekApi.getMyRequests()) || []
+    const res = await mediaSeekApi.getMyRequests()
+    requests.value = res.requests || []
+    quota.value = res.quota || null
   } catch {
-    // 401 已由拦截器处理
+    requests.value = []
   } finally {
     loading.value = false
   }
 }
 
+async function runLookup() {
+  const name = form.value.movie_name.trim()
+  if (name.length < 2) {
+    lookupDone.value = false
+    lookupHits.value = []
+    return
+  }
+  lookupLoading.value = true
+  try {
+    const res = await mediaSeekApi.lookup(name)
+    lookupHits.value = res.items || []
+    lookupDone.value = true
+  } catch {
+    lookupDone.value = false
+    lookupHits.value = []
+  } finally {
+    lookupLoading.value = false
+  }
+}
+
+// 片名输入防抖查库
+watch(() => form.value.movie_name, () => {
+  window.clearTimeout(lookupTimer)
+  lookupDone.value = false
+  if (form.value.movie_name.trim().length < 2) {
+    lookupHits.value = []
+    return
+  }
+  lookupTimer = window.setTimeout(runLookup, 420)
+})
+
+function openForm() {
+  showForm.value = !showForm.value
+  if (!showForm.value) {
+    lookupHits.value = []
+    lookupDone.value = false
+  }
+}
+
 async function handleSubmit() {
-  if (!form.value.movie_name.trim()) {
+  const name = form.value.movie_name.trim()
+  if (!name) {
     toast.error('请填写片名')
     return
   }
   submitting.value = true
   try {
     await mediaSeekApi.create({
-      movie_name: form.value.movie_name.trim(),
+      movie_name: name,
       year: form.value.year || undefined,
       type: form.value.type,
       note: form.value.note || undefined,
     })
-    toast.success('求片请求已提交，管理员会尽快处理')
+    toast.success('求片已提交，管理员会尽快处理')
     form.value = { movie_name: '', year: '', type: 'movie', note: '' }
+    lookupHits.value = []
+    lookupDone.value = false
     showForm.value = false
     await loadRequests()
   } catch (err: any) {
@@ -84,7 +164,22 @@ async function handleSubmit() {
   }
 }
 
-function formatDate(iso: string) {
+async function withdraw(req: MediaSeekRequest) {
+  withdrawing.value = req.id
+  try {
+    await mediaSeekApi.withdraw(req.id)
+    toast.success('已撤回该求片')
+    requests.value = requests.value.filter((r) => r.id !== req.id)
+    await loadRequests()
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '撤回失败')
+  } finally {
+    withdrawing.value = null
+  }
+}
+
+function fmtDate(iso: string) {
   try {
     return new Date(iso).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
   } catch {
@@ -92,331 +187,409 @@ function formatDate(iso: string) {
   }
 }
 
-onMounted(loadRequests)
+onMounted(async () => {
+  await loadRequests()
+  // 从搜索页/首页带入片名（/request?name=xxx）：直接展开表单并查库
+  const prefill = ((route.query.name as string) || '').trim()
+  if (prefill) {
+    form.value.movie_name = prefill
+    showForm.value = true
+    runLookup()
+  }
+})
 </script>
 
 <template>
   <div class="request-view">
-    <div class="container">
+    <div class="au-page">
       <!-- 头部 -->
-      <header class="page-head">
+      <header class="page-head au-anim-up">
         <div>
           <h1 class="page-title">
             <Film :size="20" />
-            求片
+            求片中心
           </h1>
           <p class="page-sub">
             <template v-if="requests.length">
-              共 {{ requests.length }} 条 · {{ pendingCount }} 条待处理
+              共 {{ requests.length }} 条 · {{ counts.pending }} 条待处理 · {{ counts.processing }} 条处理中
             </template>
-            <template v-else>告诉我们你想看的影视作品</template>
+            <template v-else>告诉我们你想看的影视作品，管理员会尽快入库</template>
           </p>
         </div>
         <div class="head-actions">
-          <button class="icon-btn" title="刷新" @click="loadRequests">
-            <RefreshCw :size="15" :class="{ spinning: loading }" />
+          <button class="au-btn au-btn-ghost au-btn-sm" @click="loadRequests">
+            <RefreshCw :size="14" :class="{ spinning: loading }" />
+            刷新
           </button>
-          <button class="btn primary" @click="showForm = !showForm">
-            <Plus :size="15" />
-            求片
+          <button
+            class="au-btn au-btn-primary au-btn-sm"
+            :disabled="quotaExhausted && !showForm"
+            @click="openForm"
+          >
+            <component :is="showForm ? XCircle : Plus" :size="14" />
+            {{ showForm ? '收起' : '我要求片' }}
           </button>
         </div>
       </header>
 
+      <!-- 今日额度 -->
+      <div v-if="quota" class="quota-bar au-anim-up" :class="{ empty: quotaExhausted }">
+        <Ticket :size="14" />
+        <span>
+          今日额度：已提交 <strong>{{ quota.used_today }}</strong> / {{ quota.daily_limit }}，
+          剩余 <strong>{{ quota.remaining }}</strong> 条
+        </span>
+        <span v-if="quotaExhausted" class="quota-tip">今日额度已用完，明天再来</span>
+      </div>
+
       <!-- 提交表单 -->
-      <section v-if="showForm" class="card form-card">
+      <section v-if="showForm" class="au-card au-card-pad form-card au-anim-up">
         <div class="form-row">
           <div class="field grow">
-            <label class="field-label">片名 *</label>
-            <input v-model="form.movie_name" type="text" placeholder="影视作品名称" @keyup.enter="handleSubmit" />
+            <label class="au-label">片名 *</label>
+            <input
+              v-model="form.movie_name"
+              class="au-input"
+              type="text"
+              placeholder="影视作品名称（输入后自动检查是否已在库）"
+              @keyup.enter="handleSubmit"
+            />
           </div>
           <div class="field year-field">
-            <label class="field-label">年份</label>
-            <input v-model="form.year" type="text" placeholder="如 2024" @keyup.enter="handleSubmit" />
+            <label class="au-label">年份</label>
+            <input v-model="form.year" class="au-input" type="text" placeholder="如 2024" />
           </div>
           <div class="field type-field">
-            <label class="field-label">类型</label>
-            <select v-model="form.type">
+            <label class="au-label">类型</label>
+            <select v-model="form.type" class="au-input">
               <option v-for="opt in typeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
             </select>
           </div>
         </div>
-        <div class="field">
-          <label class="field-label">备注</label>
-          <textarea v-model="form.note" rows="2" placeholder="补充说明（选填）：季数、字幕偏好等"></textarea>
+
+        <!-- 库存检查结果 -->
+        <div v-if="lookupLoading" class="lookup-box checking">
+          <Loader2 :size="14" class="spinning" />
+          <span>正在检查媒体库…</span>
         </div>
+
+        <div v-else-if="inLibrary" class="lookup-box hit">
+          <div class="lookup-head">
+            <CircleCheck :size="15" />
+            <span>媒体库中已有相关影片，无需排队，直接看吧</span>
+          </div>
+          <div class="hit-list">
+            <RouterLink
+              v-for="hit in lookupHits.slice(0, 4)"
+              :key="hit.id"
+              class="hit-item"
+              :to="`/media/${hit.id}`"
+            >
+              <div class="hit-poster">
+                <img v-if="hit.poster_url" :src="hit.poster_url" :alt="hit.name" loading="lazy" />
+                <Film v-else :size="14" />
+              </div>
+              <div class="hit-body">
+                <span class="hit-name">{{ hit.name }}</span>
+                <span class="hit-meta">{{ hit.year || '—' }}</span>
+              </div>
+              <Play :size="13" class="hit-play" />
+            </RouterLink>
+          </div>
+          <p class="lookup-note">
+            <Info :size="12" />
+            如果上面的版本不满足需求（画质/字幕等），仍可继续提交求片
+          </p>
+        </div>
+
+        <div v-else-if="lookupDone" class="lookup-box miss">
+          <Search :size="14" />
+          <span>媒体库中未找到该片，可以提交求片，管理员会尽快处理</span>
+        </div>
+
+        <div class="field">
+          <label class="au-label">备注</label>
+          <textarea
+            v-model="form.note"
+            class="au-input textarea"
+            rows="2"
+            placeholder="补充说明（选填）：季数、字幕偏好、画质要求等"
+          ></textarea>
+        </div>
+
         <div class="form-actions">
-          <button class="btn ghost" @click="showForm = false">取消</button>
-          <button class="btn primary" :disabled="submitting || !form.movie_name.trim()" @click="handleSubmit">
+          <button class="au-btn au-btn-ghost" @click="showForm = false">取消</button>
+          <button
+            class="au-btn au-btn-primary"
+            :disabled="submitting || !form.movie_name.trim() || quotaExhausted"
+            @click="handleSubmit"
+          >
             <Send :size="14" />
-            {{ submitting ? '提交中…' : '提交' }}
+            {{ submitting ? '提交中…' : '提交求片' }}
           </button>
         </div>
       </section>
 
+      <!-- 状态筛选 -->
+      <div v-if="requests.length" class="status-tabs au-anim-up">
+        <button
+          v-for="t in STATUS_TABS"
+          :key="t.value"
+          class="status-tab"
+          :class="{ active: statusFilter === t.value }"
+          @click="statusFilter = t.value"
+        >
+          {{ t.label }}
+        </button>
+      </div>
+
       <!-- 加载中 -->
-      <div v-if="loading && requests.length === 0" class="loading-state">
-        <RefreshCw :size="22" class="spinning" />
-        <p>加载中…</p>
+      <div v-if="loading && requests.length === 0" class="skeleton-list">
+        <div v-for="i in 3" :key="i" class="au-skeleton skel" />
       </div>
 
       <!-- 空状态 -->
-      <div v-else-if="requests.length === 0" class="empty-state">
-        <Film :size="32" />
-        <h3>还没有求片记录</h3>
-        <p>点击右上角「求片」按钮提交第一个请求</p>
+      <div v-else-if="filtered.length === 0" class="au-empty">
+        <Film :size="30" />
+        <h3>{{ requests.length ? '该状态下没有记录' : '还没有求片记录' }}</h3>
+        <p>{{ requests.length ? '换个状态看看' : '点击右上角「我要求片」提交第一个请求' }}</p>
       </div>
 
-      <!-- 求片列表 -->
+      <!-- 列表 -->
       <ul v-else class="request-list">
-        <li v-for="req in requests" :key="req.id" class="request-item">
+        <li v-for="req in filtered" :key="req.id" class="au-card request-item au-anim-up">
           <div class="item-head">
             <div class="item-title-wrap">
               <h3 class="item-title">{{ req.movie_name }}</h3>
               <div class="item-meta">
                 <span v-if="req.year">{{ req.year }}</span>
-                <span v-if="typeLabels[req.type || '']" class="type-tag">{{ typeLabels[req.type || ''] }}</span>
+                <span v-if="req.year && typeLabels[req.type || '']" class="meta-sep">·</span>
+                <span v-if="typeLabels[req.type || '']">{{ typeLabels[req.type || ''] }}</span>
+                <span class="meta-sep">·</span>
+                <span>{{ fmtDate(req.created_at) }}</span>
               </div>
             </div>
-            <span class="status" :class="statusConfig[req.status]?.cls || 'pending'">
-              <component :is="statusIcon(req.status)" :size="13" />
+            <span class="au-badge" :class="`au-badge-${statusConfig[req.status]?.cls || 'cyan'}`">
+              <component :is="statusConfig[req.status]?.icon || Clock" :size="11" />
               {{ statusConfig[req.status]?.label || req.status }}
             </span>
           </div>
+
           <p v-if="req.note" class="item-note">{{ req.note }}</p>
+
           <p v-if="req.admin_note" class="item-reply">
             <span class="reply-label">管理员回复</span>{{ req.admin_note }}
           </p>
-          <p class="item-date">{{ formatDate(req.created_at) }}</p>
+
+          <div v-if="req.status === 'pending'" class="item-actions">
+            <button
+              class="au-btn au-btn-ghost au-btn-sm"
+              :disabled="withdrawing === req.id"
+              @click="withdraw(req)"
+            >
+              <Undo2 :size="12" />
+              {{ withdrawing === req.id ? '撤回中…' : '撤回' }}
+            </button>
+          </div>
         </li>
       </ul>
+
+      <div v-if="!loading && requests.length && filtered.length === 0" class="au-empty">
+        <Ban :size="26" />
+        <p>没有符合筛选条件的记录</p>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.request-view {
-  min-height: 100vh;
-  background: #070b12;
-  color: #e5e7eb;
-  padding-bottom: 3rem;
-}
-
-.container {
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 0 1.25rem;
-}
-
-/* 头部 */
 .page-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 1rem;
-  padding: 2.25rem 0 1.5rem;
+  margin-bottom: 1.125rem;
+  flex-wrap: wrap;
 }
 
 .page-title {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  margin: 0;
   font-size: 1.375rem;
   font-weight: 700;
-  color: #fafafa;
-  margin: 0;
+  color: var(--au-text);
 }
 
-.page-title svg {
-  color: #22d3ee;
-}
+.page-title svg { color: var(--au-primary); }
 
 .page-sub {
   margin: 0.375rem 0 0;
   font-size: 0.8125rem;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--au-text-3);
 }
 
-.head-actions {
+.head-actions { display: flex; gap: 0.5rem; }
+
+/* 额度条 */
+.quota-bar {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.625rem 0.875rem;
+  margin-bottom: 1rem;
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
 }
 
-/* 卡片 */
-.card {
-  background: rgba(13, 18, 24, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 16px;
-  padding: 1.25rem;
-  margin-bottom: 1.25rem;
+.quota-bar svg { color: var(--au-primary); }
+.quota-bar strong { color: var(--au-primary); }
+.quota-bar.empty {
+  background: var(--au-warning-soft);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+.quota-bar.empty svg,
+.quota-bar.empty strong { color: var(--au-warning); }
+.quota-tip { margin-left: auto; color: var(--au-warning); font-size: 0.75rem; }
+
+/* 表单 */
+.form-card { margin-bottom: 1.25rem; }
+
+.form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+
+.field { margin-bottom: 0.875rem; display: flex; flex-direction: column; }
+.grow { flex: 1 1 260px; }
+.year-field { flex: 0 1 120px; }
+.type-field { flex: 0 1 140px; }
+
+.textarea {
+  height: auto;
+  padding: 0.625rem 0.875rem;
+  resize: vertical;
+  min-height: 58px;
+  font-family: inherit;
+  line-height: 1.5;
 }
 
-.form-card {
-  animation: cardIn 0.3s cubic-bezier(0.22, 1, 0.36, 1);
-}
+select.au-input { appearance: none; cursor: pointer; }
+select.au-input option { background: #0d1420; }
 
-@keyframes cardIn {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: none; }
-}
-
-.form-row {
+/* 库存检查 */
+.lookup-box {
   display: flex;
-  gap: 0.75rem;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  margin-bottom: 0.875rem;
+  border-radius: var(--au-r-md);
+  font-size: 0.8125rem;
+  line-height: 1.5;
   flex-wrap: wrap;
 }
 
-.field {
-  margin-bottom: 0.75rem;
-  display: flex;
+.lookup-box.checking,
+.lookup-box.miss {
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  color: var(--au-text-2);
+}
+
+.lookup-box.hit {
+  background: var(--au-success-soft);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  color: var(--au-success);
   flex-direction: column;
 }
 
-.grow { flex: 1 1 240px; }
-.year-field { flex: 0 1 110px; }
-.type-field { flex: 0 1 130px; }
+.lookup-head { display: flex; align-items: center; gap: 0.4375rem; font-weight: 600; }
 
-.field-label {
-  font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.5);
-  margin-bottom: 0.375rem;
-}
-
-.field input,
-.field select,
-.field textarea {
+.hit-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.5rem;
   width: 100%;
-  padding: 0.5625rem 0.75rem;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  color: #fafafa;
-  font-size: 0.875rem;
-  outline: none;
-  transition: border-color 0.2s ease;
-  box-sizing: border-box;
-  font-family: inherit;
+  margin-top: 0.5rem;
 }
 
-.field textarea {
-  resize: vertical;
-  min-height: 56px;
-}
-
-.field input:focus,
-.field select:focus,
-.field textarea:focus {
-  border-color: rgba(34, 211, 238, 0.6);
-}
-
-.field select option {
-  background: #10161d;
-}
-
-.form-actions {
+.hit-item {
   display: flex;
-  justify-content: flex-end;
-  gap: 0.625rem;
-  margin-top: 0.25rem;
-}
-
-/* 按钮 */
-.btn {
-  display: inline-flex;
   align-items: center;
-  gap: 0.4375rem;
-  height: 38px;
-  padding: 0 1rem;
-  border-radius: 10px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s ease;
+  gap: 0.5rem;
+  padding: 0.4375rem 0.5rem;
+  border-radius: var(--au-r-sm);
+  background: rgba(7, 11, 18, 0.45);
+  border: 1px solid var(--au-border);
   text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease);
 }
 
-.btn.primary {
-  background: linear-gradient(135deg, #22d3ee, #06b6d4);
-  color: #fff;
-  box-shadow: 0 4px 14px rgba(34, 211, 238, 0.22);
-}
+.hit-item:hover { border-color: var(--au-primary-border); }
 
-.btn.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn.ghost {
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.75);
-}
-
-.btn.ghost:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.icon-btn {
-  width: 36px;
-  height: 36px;
+.hit-poster {
+  width: 30px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--au-surface-3);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  color: rgba(255, 255, 255, 0.6);
-  cursor: pointer;
-  transition: all 0.2s ease;
+  color: var(--au-text-4);
 }
 
-.icon-btn:hover {
-  color: #fff;
-}
+.hit-poster img { width: 100%; height: 100%; object-fit: cover; }
 
-.spinning {
-  animation: spin 0.9s linear infinite;
-}
+.hit-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* 状态 */
-.loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 3.5rem 0;
-  color: rgba(255, 255, 255, 0.4);
+.hit-name {
   font-size: 0.8125rem;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 4rem 1rem;
-  text-align: center;
-  color: rgba(255, 255, 255, 0.35);
-}
-
-.empty-state svg {
-  color: rgba(34, 211, 238, 0.4);
-}
-
-.empty-state h3 {
-  margin: 0.375rem 0 0;
-  font-size: 0.9375rem;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.empty-state p {
-  margin: 0;
-  font-size: 0.8125rem;
+.hit-meta { font-size: 0.6875rem; color: var(--au-text-4); }
+.hit-play { color: var(--au-primary); flex-shrink: 0; }
+
+.lookup-note {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0.375rem 0 0;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+}
+
+.form-actions { display: flex; justify-content: flex-end; gap: 0.625rem; }
+
+/* 筛选 */
+.status-tabs { display: flex; gap: 0.375rem; margin-bottom: 0.875rem; flex-wrap: wrap; }
+
+.status-tab {
+  height: 30px;
+  padding: 0 0.75rem;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: transparent;
+  color: var(--au-text-3);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
+}
+
+.status-tab:hover { color: var(--au-text); border-color: var(--au-border-strong); }
+.status-tab.active {
+  color: var(--au-primary);
+  border-color: var(--au-primary-border);
+  background: var(--au-primary-soft);
 }
 
 /* 列表 */
@@ -426,20 +599,11 @@ onMounted(loadRequests)
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.625rem;
 }
 
-.request-item {
-  background: rgba(13, 18, 24, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 14px;
-  padding: 1rem 1.125rem;
-  transition: border-color 0.2s ease;
-}
-
-.request-item:hover {
-  border-color: rgba(34, 211, 238, 0.2);
-}
+.request-item { padding: 0.875rem 1rem; transition: border-color var(--au-fast) var(--au-ease); }
+.request-item:hover { border-color: var(--au-primary-border); }
 
 .item-head {
   display: flex;
@@ -448,102 +612,62 @@ onMounted(loadRequests)
   gap: 0.75rem;
 }
 
-.item-title-wrap {
-  min-width: 0;
-}
+.item-title-wrap { min-width: 0; }
 
 .item-title {
   margin: 0;
   font-size: 0.9375rem;
   font-weight: 600;
-  color: #fafafa;
+  color: var(--au-text);
 }
 
 .item-meta {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.375rem;
   margin-top: 0.25rem;
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--au-text-3);
+  flex-wrap: wrap;
 }
 
-.type-tag {
-  padding: 0.0625rem 0.4375rem;
-  background: rgba(34, 211, 238, 0.08);
-  border-radius: 6px;
-  color: rgba(34, 211, 238, 0.8);
-}
-
-.status {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3125rem;
-  padding: 0.25rem 0.5625rem;
-  border-radius: 8px;
-  font-size: 0.6875rem;
-  font-weight: 600;
-}
-
-.status.pending {
-  background: rgba(245, 158, 11, 0.1);
-  color: #f59e0b;
-}
-
-.status.approved {
-  background: rgba(59, 130, 246, 0.1);
-  color: #60a5fa;
-}
-
-.status.rejected {
-  background: rgba(239, 68, 68, 0.1);
-  color: #f87171;
-}
-
-.status.completed {
-  background: rgba(34, 211, 238, 0.1);
-  color: #34d399;
-}
+.meta-sep { opacity: 0.5; }
 
 .item-note {
   margin: 0.625rem 0 0;
   font-size: 0.8125rem;
-  color: rgba(255, 255, 255, 0.55);
-  line-height: 1.5;
+  color: var(--au-text-2);
+  line-height: 1.55;
 }
 
 .item-reply {
   margin: 0.625rem 0 0;
   padding: 0.5rem 0.75rem;
-  background: rgba(34, 211, 238, 0.05);
-  border: 1px solid rgba(34, 211, 238, 0.15);
-  border-radius: 9px;
+  border-radius: var(--au-r-sm);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
   font-size: 0.8125rem;
-  color: rgba(255, 255, 255, 0.75);
-  line-height: 1.5;
+  color: var(--au-text);
+  line-height: 1.55;
 }
 
 .reply-label {
-  color: #22d3ee;
+  color: var(--au-primary);
   font-weight: 600;
   margin-right: 0.4375rem;
   font-size: 0.75rem;
 }
 
-.item-date {
-  margin: 0.5rem 0 0;
-  font-size: 0.6875rem;
-  color: rgba(255, 255, 255, 0.28);
-}
+.item-actions { display: flex; justify-content: flex-end; margin-top: 0.625rem; }
+
+/* 骨架 */
+.skeleton-list { display: flex; flex-direction: column; gap: 0.625rem; }
+.skel { height: 92px; }
+
+.spinning { animation: au-spin 0.9s linear infinite; }
 
 @media (max-width: 640px) {
-  .page-head {
-    padding: 1.75rem 0 1.25rem;
-  }
-
-  .year-field {
-    flex: 1 1 110px;
-  }
+  .quota-tip { margin-left: 0; }
+  .item-head { flex-direction: column; }
 }
 </style>

@@ -206,6 +206,131 @@ async def get_watch_stats(request_user: models.WebUser = Depends(get_admin_or_em
     }
 
 
+@user_emby_router.get("/sessions")
+async def get_my_sessions(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+                          db: Session = Depends(get_db)):
+    """我的正在播放会话（设备 / 客户端 / 进度），与管理员会话监控同源"""
+    rows = (
+        db.query(em.PlaybackSession, em.MediaItem)
+        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
+        .filter(
+            em.PlaybackSession.user_id == request_user.id,
+            em.PlaybackSession.ended_at.is_(None),
+        )
+        .order_by(em.PlaybackSession.last_update_at.desc())
+        .all()
+    )
+    return {
+        "sessions": [
+            {
+                "session_key": s.session_key,
+                "item_id": i.guid,
+                "item": i.name,
+                "item_type": i.item_type,
+                "device": s.device_name,
+                "client": s.client_name,
+                "remote_addr": s.remote_addr,
+                "play_method": s.play_method,
+                "is_paused": bool(s.is_paused),
+                "position_ticks": s.position_ticks,
+                "duration_ticks": i.duration_ticks,
+                "progress": round((s.position_ticks or 0) / (i.duration_ticks or 1) * 100, 1),
+                "started_at": s.start_time.isoformat() if s.start_time else None,
+                "updated_at": s.last_update_at.isoformat() if s.last_update_at else None,
+            }
+            for s, i in rows
+        ]
+    }
+
+
+@user_emby_router.delete("/sessions/{session_key}")
+async def stop_my_session(session_key: str,
+                          request_user: models.WebUser = Depends(get_admin_or_emby_user),
+                          db: Session = Depends(get_db)):
+    """结束自己的播放会话（同时释放转码进程）"""
+    session = (
+        db.query(em.PlaybackSession)
+        .filter(
+            em.PlaybackSession.session_key == session_key,
+            em.PlaybackSession.user_id == request_user.id,
+        )
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="播放会话不存在")
+    session.ended_at = datetime.now()
+    db.commit()
+    stop_transcode(session_key)
+    return {"success": True}
+
+
+@user_emby_router.get("/history")
+async def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+                           db: Session = Depends(get_db),
+                           limit: int = 30,
+                           offset: int = 0,
+                           item_type: str = ""):
+    """观看历史：按条目去重，取最近一次播放的设备/客户端/进度
+
+    直接读本地会话与用户媒体数据（不触发媒体库扫描），与第三方客户端记录同源。
+    """
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    query = (
+        db.query(em.PlaybackSession, em.MediaItem)
+        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
+        .filter(em.PlaybackSession.user_id == request_user.id)
+    )
+    if item_type:
+        query = query.filter(em.MediaItem.item_type == item_type)
+
+    total = query.count()
+    rows = query.order_by(em.PlaybackSession.last_update_at.desc()).all()
+
+    # 按条目去重（保留最近一次会话），再按 offset/limit 切片
+    seen: set[int] = set()
+    deduped: list[tuple] = []
+    for session, item in rows:
+        if item.id in seen:
+            continue
+        seen.add(item.id)
+        deduped.append((session, item))
+    page = deduped[offset:offset + limit]
+
+    item_ids = [item.id for _s, item in page]
+    umd_map: dict[int, em.UserMediaData] = {}
+    if item_ids:
+        for umd in db.query(em.UserMediaData).filter(
+            em.UserMediaData.user_id == request_user.id,
+            em.UserMediaData.item_id.in_(item_ids),
+        ).all():
+            umd_map[umd.item_id] = umd
+
+    items = []
+    for session, item in page:
+        umd = umd_map.get(item.id)
+        items.append({
+            "id": item.guid,
+            "name": item.name,
+            "type": item.item_type,
+            "year": item.production_year,
+            "poster_url": f"/emby/Items/{item.guid}/Images/Primary"
+            if (item.poster_path or item.primary_image_url) else None,
+            "duration_ticks": item.duration_ticks,
+            "position_ticks": (umd.playback_position_ticks if umd else session.position_ticks),
+            "played": bool(umd.played) if umd else False,
+            "is_favorite": bool(umd.is_favorite) if umd else False,
+            "play_count": int(umd.play_count or 0) if umd else 0,
+            "device": session.device_name,
+            "client": session.client_name,
+            "play_method": session.play_method,
+            "watched_at": session.last_update_at.isoformat() if session.last_update_at else None,
+        })
+
+    return {"total": total, "unique_total": len(deduped), "items": items}
+
+
 # ==================== 管理端 ====================
 
 class LibraryCreate(BaseModel):

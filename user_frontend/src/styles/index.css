@@ -5,7 +5,7 @@
 
 /* ========================================
    RoyalBot 用户门户 - 统一设计系统
-   主色：绿色 #22d3ee
+   主色：电光青 #22d3ee（Aurora 主题）
    ======================================== */
 
 /* 向后兼容的旧变量映射 */
@@ -40,17 +40,15 @@
   box-sizing: border-box;
 }
 
+/* 注意：background / color 交由 Aurora 主题（aurora.css）定义，
+   这里不再覆盖，否则会盖掉全站氛围渐变 */
 body {
   margin: 0;
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg-primary);
-  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
-  /* 主题切换过渡动画 */
-  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* 主题切换时所有元素都有过渡效果 */

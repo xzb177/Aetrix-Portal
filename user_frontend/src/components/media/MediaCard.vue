@@ -76,14 +76,14 @@ function open() {
   aspect-ratio: 2 / 3;
   border-radius: 12px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
   transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
 .media-card:hover .poster-wrap {
   transform: translateY(-4px);
-  border-color: rgba(16, 185, 129, 0.35);
+  border-color: var(--au-primary-border);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
 }
 
@@ -100,8 +100,8 @@ function open() {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.15);
-  background: linear-gradient(160deg, rgba(16, 185, 129, 0.06), rgba(0, 0, 0, 0.3));
+  color: var(--au-text-4);
+  background: linear-gradient(160deg, rgba(34, 211, 238, 0.06), rgba(0, 0, 0, 0.3));
 }
 
 .hover-play {
@@ -124,8 +124,11 @@ function open() {
   width: 52px;
   height: 52px;
   padding: 14px;
-  background: rgba(16, 185, 129, 0.9);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
   border-radius: 50%;
+  color: var(--au-primary);
+  backdrop-filter: blur(6px);
   filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
 }
 
@@ -140,7 +143,7 @@ function open() {
 
 .progress-fill {
   height: 100%;
-  background: #22d3ee;
+  background: var(--au-gradient);
 }
 
 .played-badge {
@@ -152,9 +155,9 @@ function open() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(16, 185, 129, 0.9);
+  background: var(--au-success);
   border-radius: 50%;
-  color: #04110b;
+  color: #05141c;
 }
 
 .card-body {
@@ -165,7 +168,7 @@ function open() {
   margin: 0;
   font-size: 0.8125rem;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.88);
+  color: var(--au-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -177,14 +180,14 @@ function open() {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.6875rem;
-  color: rgba(255, 255, 255, 0.38);
+  color: var(--au-text-3);
 }
 
 .rating {
   display: inline-flex;
   align-items: center;
   gap: 0.1875rem;
-  color: rgba(245, 158, 11, 0.85);
+  color: var(--au-warning);
 }
 
 .star {
