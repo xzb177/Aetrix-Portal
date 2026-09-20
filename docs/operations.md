@@ -8,13 +8,15 @@
 
 **基础**
 
-- [ ] `GET /api/health` 返回 200，`GET /emby/system/info/public` 返回服务器信息
-- [ ] `GET /` 是门户页面且有样式；`GET /admin/` 是后台登录页
-- [ ] 刷新门户子路由（`/wallet`、`/history` 等）不 404（SPA 兜底生效）
+- [ ] EM：`GET /api/health` 返回 200，`GET /` 是门户页面且有样式，`GET /admin/` 是后台登录页
+- [ ] EM：刷新门户子路由（`/wallet`、`/history` 等）不 404（SPA 兜底生效）
+- [ ] EA（分离部署）：`GET /api/health` 返回 `service=ea` 且 `paired_with_em=true`
+- [ ] EA（分离部署）：`GET /emby/system/info/public` 与 `GET /System/Info/Public`（裸根）都返回服务器信息
 
 **安全（详见下节）**
 
-- [ ] `SECRET_KEY` 已设置为固定随机值，不是留空
+- [ ] `SECRET_KEY` 已设置为固定随机值，不是留空（EM 与 EA **必须相同**）
+- [ ] `DATABASE_URL` 在 EM 与 EA 上指向同一个库（跨机分离部署必须用 PostgreSQL）
 - [ ] `CORS_ORIGINS` 已填具体域名，不是留空
 - [ ] `EMBY_ALLOW_LEGACY_TOKENS` 为 `false`
 - [ ] 全站 HTTPS 已生效，HTTP 自动跳转
@@ -32,13 +34,13 @@
 
 **运维**
 
-- [ ] 后端已用 systemd 常驻并设为开机自启
-- [ ] 有定时备份任务，且**实际恢复演练过一次**
-- [ ] 磁盘告警已配（转码切片与媒体库都吃空间）
+- [ ] EM（与 EA）都已用 systemd 常驻并设为开机自启
+- [ ] 有定时备份任务，且**实际恢复演练过一次**（数据库 + `.env` 里的 `SECRET_KEY` 一起备）
+- [ ] 磁盘告警已配（转码切片与媒体库都吃空间；转码在 EA 那台）
 
 ## 安全基线
 
-后端已内置这些防护（无需你配置）：
+EM / EA 已内置这些防护（无需你配置）：
 
 | 项 | 行为 |
 | --- | --- |
@@ -124,7 +126,7 @@ gunzip -c /backups/royalbot_2026-09-20_1200.sql.gz | psql -U royalbot royalbot
 | 仓库根目录**没有** `package.json`（主体是 Python 后端） | 需要根 `package.json` 中有受支持的框架 |
 | 后端是 **Python FastAPI**，依赖数据库、Redis、ffmpeg，并自带 Emby 协议端点与 WebSocket | 构建镜像仅 Node.js，Python 只能以 `api/*.py` 无状态函数运行 |
 
-即使硬把前端改成能通过框架识别的形态，部署出来也只是连不上 API 的空壳——播放、登录、支付、Emby 协议端点全部不可用。**请走本文档的服务器部署路径**（[服务端](./deploy-server.md) + [门户与后台](./deploy-web.md)）。沙箱里的 `Preview`（`*.daytonaproxy01.net`）只用于开发预览，不是生产部署。
+即使硬把前端改成能通过框架识别的形态，部署出来也只是连不上 API 的空壳——播放、登录、支付、Emby 协议端点全部不可用。**请走本文档的服务器部署路径**（[EM 面板](./deploy-em.md) + [EA 网关](./deploy-ea.md)）。沙箱里的 `Preview`（`*.daytonaproxy01.net`）只用于开发预览，不是生产部署。
 
 ### `/admin/` 404 或白屏
 
@@ -145,20 +147,32 @@ gunzip -c /backups/royalbot_2026-09-20_1200.sql.gz | psql -U royalbot royalbot
 ### HLS 转码 503 或首片一直转圈
 
 - **503 且日志提示找不到 ffmpeg**：装 ffmpeg，或把 `EMBY_FFMPEG_PATH` 指向真实路径。直连播放不需要 ffmpeg。
-- **首片慢**：首片需要先编码出若干秒内容，属正常。Nginx 默认 60s 读超时会提前断流，请把 `proxy_read_timeout` 调到 300s 并关闭 `proxy_buffering`（见[门户部署](./deploy-web.md#4-nginx--https)）。
+- **首片慢**：首片需要先编码出若干秒内容，属正常。Nginx 默认 60s 读超时会提前断流，请把 `proxy_read_timeout` 调到 300s 并关闭 `proxy_buffering`（EA 侧配置见[EA 网关部署](./deploy-ea.md)的 Nginx 一节）。
 - **切片 404**：客户端请求早于 ffmpeg 写出，后端会短暂等待；若 ffmpeg 已退出则明确返回 503，去看 `journalctl -u aetrix` 里的 ffmpeg 报错（常见原因是源文件不可读或磁盘满）。
 
 ### 数据库报 `database is locked`
 
 v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出现：确认没有别的东西在用同一个库文件（比如旧栈的容器也在读写同一个 `royalbot_unified.db`），并检查是否有残留的 `-wal` / `-shm` 属于其他进程。
 
+### EA 启动即退出，日志提示与 EM 未配对
+
+这是**有意设计**，不是 bug。EA 的硬依赖是共享密钥与共享库，不满足就拒绝启动，避免出现"服务起得来、但谁都认证不了"的假健康：
+
+| 日志 | 原因 | 处理 |
+| --- | --- | --- |
+| `SECRET_KEY 未设置` | 客户端 token 由 EM 签发、EA 校验 | 让 EA 与 EM 用同一份 `.env`（值必须一致） |
+| `共享数据库缺少 EM 的表：…` | EA 指向的库不是那套，或 EM 还没初始化过 | 先跑 EM（`python serve.py`）并至少建一个媒体库；跨机部署改用同一个 PostgreSQL |
+
+另有一条**软警告** `EM 面板当前不可达`：只是探测，不阻断——EM 短暂重启不应该掐断正在播放的会话。
+
 ### 每次重启后所有人被登出
 
-`SECRET_KEY` 没设。补一个固定值后重启：
+`SECRET_KEY` 没设（分离部署时还可能被 EA 与 EM 设成了不同的值）。补一个固定值后重启：
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-# 写入 .env 的 SECRET_KEY=，然后 systemctl restart aetrix
+# 写入 .env 的 SECRET_KEY=（EM 与 EA 共用同一份 .env），然后：
+# systemctl restart aetrix-em aetrix-ea
 ```
 
 ### 客户端连不上服务器

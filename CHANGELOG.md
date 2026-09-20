@@ -2,13 +2,31 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.3] - 2026-09-20
+
+### 新增 (Added)
+- **EM / EA 分离部署**：把「运营面板」与「Emby API 后端」拆成两个可独立部署的服务
+  - **EA（新增 `emby_api/` + `serve_emby.py`）**：独立的 Emby 协议网关，客户端直连它。协议面同时提供 `/emby/*` 与**裸根路径**（`/System/Info`、`/Users/AuthenticateByName` …），因此 EA 独占一个地址；直连流 / HLS 转码 / 字幕投递 / 图片 / 进度上报全在 EA 侧，`/metrics` 与 `/api/health` 独立可观测
+  - **EA 不能脱离 EM 单独运行**：启动时硬校验「共享 `SECRET_KEY`」与「共享库里存在 EM 建的表（`web_users` / `emby_libraries` / `emby_api_tokens`）」，不满足即拒绝启动并给出可执行提示；配了 `EM_PANEL_URL` 则额外探测 EM 可达性（仅告警——EM 重启不应禁断正在播放的会话）
+  - **EM 仍是唯一事实来源**（用户 / 套餐 / 订阅 / 邀请 / 卡码 / 风控 / 媒体库），新增 `ENABLE_EMBY_GATEWAY` 开关：置 `false` 时 EM 不再提供协议面，并对误连的客户端返回明确的「请连 EA」404 指引（按 `emby_router` 实际声明的全部裸根路径注册，以后新增协议路由不会漏）
+  - 分离部署下**前端无需改动**：网页播放器仍走同源 `/emby/*`，由 EM 的 Nginx 反代到 EA，不引入跳域
+- `env.example` 新增分离部署配置段：`ENABLE_EMBY_GATEWAY` / `EMBY_API_PORT` / `EMBY_API_PUBLIC_URL` / `EM_PANEL_URL`
+- 新增冒烟测试 `scripts/smoke_test_ea_split.py`：15 项断言覆盖配对闸门、EA 协议面（含裸根路径）、EA 健康上报、EM 默认模式行为不变、EM 分离模式的客户端指引与 SPA 不受影响
+
+### 变更 (Changed)
+- 文档中心按 EM / EA 重编排：新增 `docs/deploy-em.md`（面板：域名、前端构建、运营配置）与 `docs/deploy-ea.md`（网关：配对硬依赖、独立地址、客户端接入、限流与设备控制）；原 `deploy-server.md` / `deploy-web.md` 的内容并入这两篇（故不再单独存在）
+- 版本号：后端 2.6.3（本版未改前端代码，用户端 / 管理端保持 2.6.1）
+
+### 修复 (Fixed)
+- `backend/main.py` 的 FastAPI `version` 字段此前停留在 2.6.0、与 CHANGELOG 不一致，现同步
+
 ## [2.6.2] - 2026-09-20
 
 ### 文档 (Docs)
-- **新增文档中心 `docs/`**（对标成熟媒体站项目的文档中心结构），共 4 篇：
+- **新增文档中心 `docs/`**（对标成熟媒体站项目的文档中心结构），共 4 篇（其中 `deploy-server.md` / `deploy-web.md` 已在 2.6.3 并入 EM / EA 两篇）：
   - [`docs/README.md`](docs/README.md)：文档中心索引——架构一图、按场景的阅读路径、为什么统一后端必须单进程
-  - [`docs/deploy-server.md`](docs/deploy-server.md)：服务端部署——环境要求、`env.example` 逐项说明、启动与 systemd 常驻、媒体库创建与扫描、Emby 客户端接入、转码与直连、监控
-  - [`docs/deploy-web.md`](docs/deploy-web.md)：门户与管理后台部署——两个前端的构建与固定产物路径、静态托管、同源约束、Nginx + HTTPS 最小可用配置、首次登录与验证清单
+  - `docs/deploy-server.md`：服务端部署——环境要求、`env.example` 逐项说明、启动与 systemd 常驻、媒体库创建与扫描、Emby 客户端接入、转码与直连、监控
+  - `docs/deploy-web.md`：门户与管理后台部署——两个前端的构建与固定产物路径、静态托管、同源约束、Nginx + HTTPS 最小可用配置、首次登录与验证清单
   - [`docs/operations.md`](docs/operations.md)：上线检查清单、安全基线（含风险最高的三项配置）、SQLite / PostgreSQL 备份与恢复、常见问题排错
 - README「部署」章节改为指向文档中心并保留最短部署路径；同步修正原描述——自带的一键脚本（`deploy.sh` / `docker-compose.yml`）面向 v2.0 之前的拆分栈，统一后端的部署入口是 `serve.py` 单进程
 - 文档中明确 Freebuff Hosting 只构建 React（Vite + React / Next.js / CRA），与本项目 Vue + Python 的形态不兼容，替代路径为服务器部署；并提示仓库内提交的 `nginx/ssl/` 证书不要直接用于生产
