@@ -1116,9 +1116,8 @@ subtitles.register_mount_resolver(mount_source_resolver)
 
 
 # ==================== 扩展挂载类型 ====================
-# s3 / aliyun / quark / onedrive 等云端类型定义在 mount_cloud.py（避免本文件继续膨胀）。
-# 它在导入时调用 register_mount_types + register_providers，因此类型元数据与提供者
-# 在应用启动时就已经齐了，后面的代码无需知道有哪些扩展类型。
-from backend.emby_server import mount_cloud  # noqa: E402
-
-mount_cloud.register()
+# s3 / aliyun / quark / onedrive（mount_cloud.py）与 rclone（mount_rclone.py）定义在
+# 单独模块里（避免本文件继续膨胀）。它们导入时调用 register_mount_types +
+# register_providers，因此类型元数据与提供者在应用启动时就已经齐了，后面的代码
+# 无需知道有哪些扩展类型。
+from backend.emby_server import mount_cloud, mount_rclone  # noqa: E402,F401  (导入即注册)

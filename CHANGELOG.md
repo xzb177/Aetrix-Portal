@@ -2,6 +2,41 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.7] - 2026-09-20
+
+本次在存储挂载里新增 **rclone 挂载**：直接复用 rclone 的 remote，把 rclone 支持的
+所有后端（Google Drive / OneDrive / S3 / 115 / 夸克 / WebDAV / SFTP …）接进媒体库，
+**不需要把网盘挂到本机**，配置也不用在面板里再抄一遍密钥。
+
+### 新增 (Added)
+- **`rclone` 挂载类型**（第十种），两种模式：
+  - **`rc`（推荐）**：连正在运行的 `rclone rcd --rc-serve`——列目录 / 测试走 RC API
+    （`/operations/list`、`/config/listremotes`），播放地址直接用 rc-serve 暴露的
+    `http://<RC 地址>/<remote:path>`，rclone 自己处理 Range，EA 照旧代理转发；
+    RC 密码（`rc_user` / `rc_pass`）与 rc 地址都不下发客户端，并支持 Basic 认证
+  - **`cli`（兜底）**：直接调 rclone 命令（`lsjson` 列目录、`cat` 读 `.strm` 与字幕、
+    `link` 取公开直链）；后端不支持公开链接时给出可操作提示，而不是默默播不了
+- **后台「获取 remote 列表」**：用表单里尚未保存的 RC 地址 / 路径去问远端有哪些 remote，
+  选完可继续补子目录（如 `gdrive:Movies`）；新增 `GET /api/admin/emby/mounts/rclone/remotes`
+- 类型元数据新增 `remotes` 标记与 `rclone_fs` 字段类型，前端据此渲染 remote 选择器
+- 新增配置项：`MOUNT_RCLONE_BIN` / `MOUNT_RCLONE_CONFIG` / `MOUNT_RCLONE_RC_URL`
+
+### 变更 (Changed)
+- 扩展挂载类型改为**模块导入即注册**（`mount_cloud` / `mount_rclone`）：无论先导入哪个模块，
+  类型表与提供者都是完整的；新增类型只需一个模块 + 一次导入
+- 命令模式下的 rclone 路径 / 配置文件（含「获取 remote 列表」接口）会从表单值完整透传，
+  支持非 PATH 安装（如 `/opt/rclone/rclone`）
+- 挂载冒烟测试扩到 170 项（新增 rclone 的 rc / cli 两组）
+- 版本号：后端 / EA / 用户端 / 管理端 / 后台顶栏 2.6.7
+
+### 修复 (Fixed)
+- **115 任务状态目录不再残留临时文件**：原子落盘（临时文件 + `os.replace`）在进程被强杀时会
+  留下 `.tmp`；现在 EM 启动时与后续落盘会清理超过 `PAN115_STALE_TMP_SECONDS`（默认 900 秒）的残留，
+  正在写入的文件不受影响
+- 冒烟测试不再误报：挂载测试开跑前先清掉上一轮崩溃留下的残留，「同一目录不重复入库」
+  改为按本测试的媒体库计数（全局计数会被其它测试遗留的孤儿行干扰）；115 测试只断言
+  「超过清理阈值」的临时文件，不再把原子写入的瞬时文件当成残留
+
 ## [2.6.6] - 2026-09-20
 
 本次落地「存储挂载」：**挂载就是把内容接进媒体库的一种方式**。媒体库通过「绑定挂载」引用它，

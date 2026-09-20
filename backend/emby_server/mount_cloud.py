@@ -885,3 +885,7 @@ def register() -> None:
     mount_lib.register_mount_types(MOUNT_TYPE_ENTRIES)
     mount_lib.register_providers(PROVIDERS)
     logger.debug("已注册云端挂载类型: %s", ", ".join(PROVIDERS))
+
+
+# 模块导入即注册：无论谁先被导入（mounts 或本模块），类型表都是齐的
+register()

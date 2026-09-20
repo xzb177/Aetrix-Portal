@@ -308,6 +308,10 @@ export const testMountConfig = (data: { mount_type: string; path?: string; confi
 export const browseMount = (id: number, rel = '/') =>
   get<{ rel: string; entries: MountDirEntry[]; total: number }>(`${E}/mounts/${id}/browse`, { rel })
 
+/** rclone：列出远端已配置的 remote（可用表单里尚未保存的 RC 地址 / 密码） */
+export const fetchRcloneRemotes = (params: Record<string, string>) =>
+  get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/remotes`, params)
+
 // ==================== 115 下载与转存（/api/admin/emby/115/*） ====================
 
 export const fetchPan115Accounts = () =>

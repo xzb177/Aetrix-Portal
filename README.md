@@ -67,7 +67,7 @@ Emby 客户端 ──HTTP──▶ backend/main.py（单进程单端口）
 - ⚙️ **系统设置** - 注册策略（开放/注册码/关闭）与签到、兑换、支付网关、邀请返利规则在线配置
 - 🔑 **注册码** - 批量生成、次数/过期管理、使用审计
 - 📚 **媒体库管理** - 库/路径/扫描/条目管理
-- 🗂️ **存储挂载** - 把内容接进媒体库：本地目录 / STRM / 115 / WebDAV / AList / S3 / 阿里云盘 / 夸克 / OneDrive（远程来源代理播放，凭据不下发）
+- 🗂️ **存储挂载** - 把内容接进媒体库：本地目录 / STRM / 115 / WebDAV / AList / S3 / 阿里云盘 / 夸克 / OneDrive / rclone（远程来源代理播放，凭据不下发）
 - 📺 **会话监控** - 在线用户、强制下线
 - 🎫 **工单处理** - 工单会话、状态/优先级流转、回复与关闭
 - 📣 **公告管理** - 发布/编辑/置顶/停用，联动全站推送
@@ -259,6 +259,13 @@ python serve_emby.py                   # EA 网关 :8001（客户端连它，分
 > ⚠️ **Freebuff Hosting 无法部署本项目**：该平台只构建 React 项目（Vite + React / Next.js / CRA），而本项目是 Vue 3 + Python FastAPI。原因与替代路径见 [运维 · 排错](./docs/operations.md#freebuff-hosting-报找不到受支持的框架)。
 
 ## 📝 更新日志
+
+### v2.6.7 (2026-09-20) — rclone 挂载：一套配置接住 rclone 的所有后端
+- ✅ **第十种挂载类型 `rclone`**：复用 rclone 的 remote，Google Drive / OneDrive / S3 / 115 / 夸克 / SFTP 等**都不用挂到本机**
+- ✅ **推荐 `rc` 模式**：连 `rclone rcd --rc-serve`，列目录走 RC API，播放地址直接用 rc-serve（rclone 自己处理 Range，EA 照旧代理转发），支持 RC Basic 认证
+- ✅ **`cli` 兜底模式**：直接调 rclone 命令（`lsjson` / `cat` / `link`）；后端不支持公开链接时给出可操作提示
+- ✅ **后台「获取 remote 列表」**：用表单里还没保存的 RC 地址去问远端有哪些 remote，选完可补子目录（如 `gdrive:Movies`）
+- ✅ 新增配置项 `MOUNT_RCLONE_BIN` / `MOUNT_RCLONE_CONFIG` / `MOUNT_RCLONE_RC_URL`；挂载冒烟测试扩到 170 项
 
 ### v2.6.6 (2026-09-20) — 存储挂载：把内容接进媒体库
 - ✅ **挂载就是媒体库的内容来源**：媒体库可以绑定多个挂载（也可与本地路径混用），同一个挂载可被多个库共用

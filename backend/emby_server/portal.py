@@ -41,6 +41,7 @@ from backend.emby_server.scanner import (
     scan_library_sync,
 )
 from backend.emby_server.streaming import stop_all_transcodes, stop_transcode
+from backend.emby_server import mount_rclone
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import transfer115
 
@@ -865,6 +866,28 @@ async def list_mounts(staff: models.WebUser = Depends(require_staff), db: Sessio
         # 类型元数据（标签 / 说明 / 需要哪些字段）由后端下发，前端不再自己维护一份
         "mount_types": [dict(t) for t in mount_lib.MOUNT_TYPES],
     }
+
+
+@admin_emby_router.get("/mounts/rclone/remotes")
+async def list_rclone_remotes(mode: str = "rc", rc_url: str = "", rc_user: str = "",
+                              rc_pass: str = "", rclone_bin: str = "",
+                              rclone_config: str = "",
+                              staff: models.WebUser = Depends(require_staff)):
+    """列出 rclone 已配置的 remote（给 rclone 挂载的「remote」选择器用）
+
+    即使用表单里还没保存的 RC 地址 / 密码也能查，方便先连上再看有哪些 remote。
+    """
+    try:
+        remotes = await run_in_threadpool(
+            mount_rclone.list_remotes, rc_url,
+            username=rc_user, password=rc_pass,
+            bin_path=rclone_bin, config=rclone_config, mode=mode,
+        )
+    except mount_lib.MountAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except mount_lib.MountError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"remotes": remotes, "total": len(remotes)}
 
 
 @admin_emby_router.post("/mounts")

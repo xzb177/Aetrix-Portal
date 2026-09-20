@@ -24,9 +24,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Optional
@@ -449,6 +451,36 @@ def _state_path(uid: str) -> str:
     return os.path.join(_state_dir(), f"{uid}.json")
 
 
+# 超过这个时长还没被替换掉的临时文件，一定是上次进程被杀时留下的
+STALE_TMP_SECONDS = int(os.getenv("PAN115_STALE_TMP_SECONDS", "900"))
+
+
+def cleanup_stale_tmp() -> int:
+    """清掉上次进程被强杀留下的临时文件（原子写入的正常副作用）
+
+    不能删“正在写”的文件：只清超过 ``PAN115_STALE_TMP_SECONDS`` 的，避开并发写。
+    """
+    removed = 0
+    try:
+        now = time.time()
+        for name in os.listdir(_state_dir()):
+            if not name.endswith(".tmp"):
+                continue
+            full = os.path.join(_state_dir(), name)
+            try:
+                if now - os.path.getmtime(full) < STALE_TMP_SECONDS:
+                    continue
+                os.remove(full)
+                removed += 1
+            except OSError:
+                continue
+    except OSError:
+        return removed
+    if removed:
+        logger.info("已清理 %s 个残留的 115 任务临时文件", removed)
+    return removed
+
+
 def persist_payload(uid: str, payload: dict) -> None:
     """原子落盘：写临时文件 → fsync → os.replace
 
@@ -462,6 +494,9 @@ def persist_payload(uid: str, payload: dict) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        # 顺手清理上次进程被杀留下的临时文件（低频，不拖慢落盘）
+        if random.random() < 0.05:
+            cleanup_stale_tmp()
     except Exception as exc:  # noqa: BLE001 — 落盘失败不影响数据库里的副本
         logger.warning("115 任务 %s 状态落盘失败: %s", uid, exc)
         try:

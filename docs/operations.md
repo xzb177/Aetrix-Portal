@@ -178,6 +178,25 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 
 > 远程挂载的条目入库为 `mount://<挂载 id>/<相对路径>`，播放时才解析成真实直链并由服务器按 Range 代理转发。所以**客户端拿不到你的 Cookie / 令牌 / 预签名地址**，也不会因为直链过期而播放失败。
 
+### rclone 挂载怎么选模式
+
+rclone 挂载是唯一一种「一种类型接住所有后端」的来源（Google Drive / OneDrive / S3 / 115 / 夸克 / SFTP …），它复用你机器上已有的 rclone remote，面板里不用重填密钥。两种模式：
+
+- **rc（推荐）**：宿主机上先起一个 rc 服务，rclone 挂载里选 rc 模式并填地址（支持用户名 / 密码）：
+  ```bash
+  rclone rcd --rc-serve --rc-addr 127.0.0.1:5572
+  # 带认证（生产建议）：--rc-user=user --rc-pass=pass
+  ```
+  列目录 / 测试走 RC API，播放地址直接取自 rc-serve（rclone 自己处理 Range）。容器部署时注意 `127.0.0.1` 指向的是容器自己，要改成宿主机地址（如 `http://host.docker.internal:5572`）并让 rc 监听 `0.0.0.0`。
+- **cli（兜底）**：直接调用 rclone 可执行文件（`lsjson` / `cat` / `link`）。适合「机器上有 rclone 但不想常驻 rc」；EM / EA 进程必须能找到 rclone（不在 PATH 就用 `MOUNT_RCLONE_BIN` 或配置里的绝对路径）。
+
+两个容易踩的点：
+
+1. **列目录正常但一播就 404** → `--rc-serve` 没开。后台测试连接会提示「rc-serve 似乎未开启」。
+2. **`cli` 模式报「rclone 未返回公开直链」** → 该后端不支持 `rclone link`（比如部分网盘）。改用 rc 模式，或把网盘 `rclone mount` 到本机后用 `local` 挂载。
+
+> 已经 `rclone mount` 到本机目录的场景，直接用 `local` 挂载那个目录更直接（走本机文件，没有代理开销）。
+
 ### 115 转存任务一直停在「等待 Cookie」
 
 这是**有意设计**：Cookie 失效或没配置时任务不会被丢弃，而是保留下来，修好账号后点「重试」从断点继续（已转存的文件不会重复处理）。排查顺序：
