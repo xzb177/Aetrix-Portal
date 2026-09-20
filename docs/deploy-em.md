@@ -183,7 +183,18 @@ server {
 
 ## 8. 首次登录与管理
 
-1. **先造管理员**：新库里没有任何账号。注册第一个用户（门户注册页，或 `POST /api/user/auth/register`），然后把它设为管理员——直接改库 `web_users.is_staff = True`，或用 `scripts/reset_admin_password.py` 辅助。
+1. **先造管理员**：新库里没有任何账号，而且**第一个注册的用户不会被自动提升为管理员**（有意的安全设计）。用仓库自带脚本一步到位：
+
+   ```bash
+   python3 scripts/create_admin.py                          # 创建/升级 admin，随机强密码并打印
+   python3 scripts/create_admin.py -u boss -p '你的强密码'    # 指定账号与密码
+   python3 scripts/create_admin.py -u boss --no-password      # 只把已有账号升级为管理员，不改密码
+   ```
+
+   它写的是当前 `DATABASE_URL` 指向的那个库（`web_users.is_staff = True`），并补齐 Emby 客户端凭据（门户密码即播放密码）；幂等，可重复执行。
+   不带 `-p` 时，账号已存在会**重置为新的随机密码**并打印（忘了密码时正好用它），只升级权限请加 `--no-password`。
+
+   > `scripts/reset_admin_password.py` 面向 v2.0 之前的**旧拆分栈**（改的是 `admin_backend` 的 `admin_users` 表），在 EM / EA 这套架构下用不了。
 2. 门户：`https://panel.example.com/`
 3. 管理后台：`https://panel.example.com/admin/`（同一套账号，非 `is_staff` 会被拒）
 
