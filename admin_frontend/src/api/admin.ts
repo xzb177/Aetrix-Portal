@@ -10,6 +10,12 @@ import type {
   LoginLogsResponse,
   EmbyLibrary,
   EmbySessionRow,
+  Pan115Account,
+  Pan115DirEntry,
+  Pan115Task,
+  StorageMount,
+  MountTypeMeta,
+  MountDirEntry,
   LoginResponse,
   MediaSeekRow,
   OverviewStats,
@@ -211,8 +217,49 @@ export const fetchEmbyOverview = () => get<{ total_items: number; total_librarie
 
 export const fetchLibraries = () => get<{ libraries: EmbyLibrary[] }>(`${E}/libraries`)
 
-export const createLibrary = (data: { name: string; collection_type: string; paths: string[] }) =>
-  post<{ success: boolean }>(`${E}/libraries`, data)
+export const createLibrary = (data: {
+  name: string
+  collection_type: string
+  paths: string[]
+  /** 绑定的存储挂载（本机目录 / STRM / 115 / WebDAV / AList） */
+  mount_ids?: number[]
+  /** 刮削策略：missing_only（仅缺失时）/ 3m / 6m / 1y / all（全部重刮） */
+  scrape_policy?: string
+}) => post<{ success: boolean }>(`${E}/libraries`, data)
+
+export const updateLibrary = (
+  id: number,
+  data: {
+    name?: string
+    collection_type?: string
+    paths?: string[]
+    /** 存储挂载绑定：传 [] 表示解绑全部，省略则不修改 */
+    mount_ids?: number[]
+    is_enabled?: boolean
+    scrape_policy?: string
+    /** 115 账号配置档：传 null 表示解绑（回退默认账号），省略则不修改 */
+    account_115_id?: number | null
+  }
+) => put<{ success: boolean; rescan_required?: boolean }>(`${E}/libraries/${id}`, data)
+
+/** 按发行平台自动生成虚拟媒体库（Netflix / Disney+ / Apple TV+ …） */
+export const generateVirtualLibraries = (data: { platforms?: string[]; enabled?: boolean; prune?: boolean } = {}) =>
+  post<{
+    success: boolean
+    created: { id: number; platform: string; name: string }[]
+    updated: { id: number; platform: string; name: string }[]
+    pruned: { id: number; platform: string; name: string }[]
+    available_platforms: { platform: string; name: string }[]
+  }>(`${E}/libraries/virtual`, data)
+
+/** 待修复条目：数据库里有图片记录但取不到图（本地文件丢失 / 远程图失效） */
+export const fetchRepairQueue = () =>
+  get<{ total: number; items: { id: string; name: string; type: string; requested_at: string | null }[] }>(
+    `${E}/libraries/repair/queue`
+  )
+
+export const runRepairQueue = () =>
+  post<{ success: boolean; libraries: number[] }>(`${E}/libraries/repair/run`)
 
 export const scanLibrary = (id: number) => post<{ success: boolean }>(`${E}/libraries/${id}/scan`)
 
@@ -223,3 +270,104 @@ export const fetchSessions = () => get<{ sessions: EmbySessionRow[] }>(`${E}/ses
 export const stopSession = (sessionKey: string) => del<{ success: boolean }>(`${E}/sessions/${sessionKey}`)
 
 export const stopAllTranscodes = () => post<{ stopped: number }>(`${E}/transcodes/stop-all`)
+
+// ==================== 存储挂载（/api/admin/emby/mounts） ====================
+// 挂载 = 媒体库的内容来源：local / strm 是本机目录，115 / webdav / alist 是远程来源。
+// 远程挂载的条目在库里存 mount:// 路径，播放时由 EA 代理转发（凭据不下发）。
+
+export const fetchMounts = () =>
+  get<{ mounts: StorageMount[]; mount_types: MountTypeMeta[] }>(`${E}/mounts`)
+
+export interface MountPayload {
+  name?: string
+  mount_type?: string
+  path?: string
+  /** 配置项；密钥类字段（password / token / cookie）留空表示不修改 */
+  config?: Record<string, string>
+  is_enabled?: boolean
+  remark?: string
+}
+
+export const createMount = (data: MountPayload) =>
+  post<{ success: boolean; mount: StorageMount }>(`${E}/mounts`, data)
+
+export const updateMount = (id: number, data: MountPayload) =>
+  put<{ success: boolean; mount: StorageMount; rescan_required?: boolean }>(`${E}/mounts/${id}`, data)
+
+export const deleteMount = (id: number) =>
+  del<{ success: boolean; unbound_libraries: number }>(`${E}/mounts/${id}`)
+
+export const testSavedMount = (id: number) =>
+  post<{ success: boolean; result: { ok: boolean; message: string }; mount: StorageMount }>(
+    `${E}/mounts/${id}/test`
+  )
+
+export const testMountConfig = (data: { mount_type: string; path?: string; config?: Record<string, string> }) =>
+  post<{ success: boolean; result: { ok: boolean; message: string } }>(`${E}/mounts/test`, data)
+
+export const browseMount = (id: number, rel = '/') =>
+  get<{ rel: string; entries: MountDirEntry[]; total: number }>(`${E}/mounts/${id}/browse`, { rel })
+
+// ==================== 115 下载与转存（/api/admin/emby/115/*） ====================
+
+export const fetchPan115Accounts = () =>
+  get<{ accounts: Pan115Account[]; env_cookie_configured: boolean }>(`${E}/115/accounts`)
+
+export const createPan115Account = (data: {
+  name: string
+  cookie: string
+  is_default?: boolean
+  is_enabled?: boolean
+  remark?: string
+}) => post<{ success: boolean; account: Pan115Account }>(`${E}/115/accounts`, data)
+
+export const updatePan115Account = (
+  id: number,
+  data: { name?: string; cookie?: string; is_default?: boolean; is_enabled?: boolean; remark?: string }
+) => put<{ success: boolean; account: Pan115Account }>(`${E}/115/accounts/${id}`, data)
+
+export const deletePan115Account = (id: number) => del<{ success: boolean }>(`${E}/115/accounts/${id}`)
+
+export const verifyPan115Account = (id: number) =>
+  post<{ success: boolean; result: { ok: boolean; message?: string }; account: Pan115Account }>(
+    `${E}/115/accounts/${id}/verify`
+  )
+
+export const verifyPan115Cookie = (cookie: string) =>
+  post<{ success: boolean; result: { ok: boolean; message?: string } }>(`${E}/115/verify`, { cookie })
+
+export const parsePan115Share = (shareUrl: string) =>
+  post<{ success: boolean; parsed: { share_code: string; receive_code: string; url: string } }>(
+    `${E}/115/parse`, { share_url: shareUrl }
+  )
+
+/** 浏览 115 目录（目标路径选择器）：表单 Cookie 优先，其次账号配置档，最后已保存 Cookie */
+export const browsePan115 = (params: { cid?: string; account_id?: number; cookie?: string }) =>
+  get<{ cid: string; cookie_source: string; entries: Pan115DirEntry[]; total: number }>(
+    `${E}/115/browse`, params
+  )
+
+export const fetchPan115Tasks = (params: { status?: string; limit?: number } = {}) =>
+  get<{
+    tasks: Pan115Task[]
+    active_count: number
+    waiting_auth_count: number
+    modes: { value: string; label: string }[]
+    statuses: { value: string; label: string }[]
+  }>(`${E}/115/tasks`, params)
+
+export const createPan115Task = (data: {
+  share_url: string
+  target_cid?: string
+  target_path?: string
+  account_id?: number | null
+  library_id?: number | null
+  mode?: string
+  cookie?: string
+}) => post<{ success: boolean; task: Pan115Task }>(`${E}/115/tasks`, data)
+
+export const retryPan115Task = (id: number) =>
+  post<{ success: boolean; task: Pan115Task }>(`${E}/115/tasks/${id}/retry`)
+
+export const cancelPan115Task = (id: number) =>
+  post<{ success: boolean; task: Pan115Task }>(`${E}/115/tasks/${id}/cancel`)

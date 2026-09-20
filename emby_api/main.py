@@ -31,8 +31,10 @@ from backend import models  # noqa: F401 — 注册全部模型，保证 ORM 关
 from backend.emby_server import models as _emby_models  # noqa: F401
 from backend.download_guard import DownloadGuardMiddleware
 from backend.emby_server.api import emby_router
+from backend.emby_server.mount_routes import install_mount_routes
+from backend.emby_server.search_api import search_router
 
-EA_VERSION = "2.6.3"
+EA_VERSION = "2.6.6"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
@@ -193,6 +195,10 @@ async def service_root():
 # ==================== Emby 协议面 ====================
 # 注意：emby_router 同时声明了 /emby/* 与裸根路径（/System/Info、/Users/AuthenticateByName …），
 # 因此 EA 必须独占一个地址，不能与 EM 的 SPA 兜底路由共用一个根路径。
+# 搜索接口先注册（FastAPI 按注册顺序取第一个匹配）：/Search/Hints 走相关度排序版。
+app.include_router(search_router)
+# 挂载来源：把只认本机文件的 /Items/{id}/File 换成挂载感知实现（必须在 include_router 前）
+install_mount_routes(emby_router)
 app.include_router(emby_router)
 
 

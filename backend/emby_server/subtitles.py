@@ -133,20 +133,74 @@ def _cache_path(item_guid: str, stream_index: int) -> str:
     return os.path.join(SUB_CACHE_DIR, f"{item_guid}_{stream_index}.vtt")
 
 
-def extract_embedded(media_path: str, item_guid: str, stream_index: int, subtitle_ordinal: int) -> str:
-    """用 ffmpeg 把内封字幕轨抽取为 WebVTT，结果按条目+轨道缓存到磁盘"""
+# ==================== 挂载来源解析钩子 ====================
+# 条目的 file_path 可能是存储挂载的虚拟路径（mount://<挂载 id>/<相对路径>）。
+# 本模块只认路径字符串，因此由 mounts 模块注册一个解析器，把虚拟路径换成
+# 「直链 + 鉴权头」；字幕端点不需要认识挂载，也不需要碰 Cookie / 令牌。
+_MOUNT_RESOLVER = None
+
+
+def register_mount_resolver(resolver) -> None:
+    """注册挂载解析器：``callable(path) -> (url, headers) | None``（非挂载路径返回 None）"""
+    global _MOUNT_RESOLVER
+    _MOUNT_RESOLVER = resolver
+
+
+def resolve_mount_source(path: Optional[str]):
+    if not path or _MOUNT_RESOLVER is None:
+        return None
+    try:
+        return _MOUNT_RESOLVER(path)
+    except Exception as exc:  # noqa: BLE001 — 解析失败不应变成 500，交给上层 404
+        logger.warning("挂载来源解析失败 %s: %s", path, exc)
+        return None
+
+
+def is_remote_source(path: Optional[str]) -> bool:
+    """是否为远程直链（挂载来源）：ffmpeg 能直接读 http(s)，但不能按本地文件检查"""
+    return bool(path) and str(path).startswith(("http://", "https://"))
+
+
+def fetch_remote_bytes(url: str, headers: Optional[dict] = None, timeout: float = 30.0) -> bytes:
+    """取远程小文件（外挂字幕）；失败给 404 / 504，与本地文件缺失的语义一致"""
+    import httpx
+
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            resp = client.get(url, headers=headers or {})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=504, detail=f"远程字幕取回失败: {exc}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=404, detail=f"远程字幕取不到（HTTP {resp.status_code}）")
+    return resp.content
+
+
+def extract_embedded(media_path: str, item_guid: str, stream_index: int, subtitle_ordinal: int,
+                     input_headers: Optional[dict] = None) -> str:
+    """用 ffmpeg 把内封字幕轨抽取为 WebVTT，结果按条目+轨道缓存到磁盘
+
+    ``media_path`` 可以是本机文件，也可以是远程直链（挂载来源），后者凭据经
+    ``input_headers`` 传入。
+    """
     cached = _cache_path(item_guid, stream_index)
     if os.path.isfile(cached) and os.path.getsize(cached) > 0:
         return cached
-    if not media_path or not os.path.isfile(media_path):
+    # 挂载来源：把 mount://<id>/<rel> 换成真实直链（凭据只在本机使用）
+    resolved = resolve_mount_source(media_path)
+    if resolved:
+        media_path, input_headers = resolved
+    if not media_path or not (is_remote_source(media_path) or os.path.isfile(media_path)):
         raise HTTPException(status_code=404, detail="Media file not found")
     if not shutil.which(FFMPEG):
         raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法抽取内封字幕")
     os.makedirs(SUB_CACHE_DIR, exist_ok=True)
     tmp = cached + ".part"
+    head: list = []
+    if input_headers:
+        head = ["-headers", "".join(f"{k}: {v}\r\n" for k, v in input_headers.items())]
     cmd = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", media_path, "-map", f"0:s:{subtitle_ordinal}", "-c:s", "webvtt", tmp,
+        *head, "-i", media_path, "-map", f"0:s:{subtitle_ordinal}", "-c:s", "webvtt", tmp,
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=180)
@@ -161,6 +215,40 @@ def extract_embedded(media_path: str, item_guid: str, stream_index: int, subtitl
     return cached
 
 
+def render_external_text(text: str, ext: str, fmt: str) -> Response:
+    """投递外挂字幕文本（本机读取与远程挂载读取共用同一套格式处理）"""
+    ext = (ext or "").lower()
+    if ext and not ext.startswith("."):
+        ext = "." + ext
+    if ext not in TEXT_EXTS:
+        raise HTTPException(status_code=415, detail="该外挂字幕不是文本字幕")
+    # 源格式与请求格式一致时原样返回，避免无意义转换
+    if ext in RAW_OK.get(fmt, set()):
+        return Response(content=text, media_type=MIME.get(fmt, DEFAULT_MIME))
+    vtt = to_vtt(text)
+    if fmt == "vtt":
+        return Response(content=vtt, media_type=MIME["vtt"])
+    if fmt == "srt":
+        return Response(content=vtt_to_srt(vtt), media_type=MIME["srt"])
+    return Response(content=vtt, media_type=DEFAULT_MIME)
+
+
+def render_external_source(path: str, fmt: str, external_text: Optional[str] = None,
+                           external_ext: str = "") -> Response:
+    """外挂字幕三种来源：本机文件 / 调用方取好的文本 / 挂载来源（自己取回）"""
+    ext = external_ext or os.path.splitext(path)[1]
+    if os.path.isfile(path):
+        with open(path, "rb") as f:
+            return render_external_text(decode_text(f.read()), ext, fmt)
+    if external_text is not None:
+        return render_external_text(external_text, ext, fmt)
+    resolved = resolve_mount_source(path)
+    if resolved:
+        url, headers = resolved
+        return render_external_text(decode_text(fetch_remote_bytes(url, headers)), ext, fmt)
+    raise HTTPException(status_code=404, detail="Subtitle file not found")
+
+
 def render_subtitle(
     *,
     item_guid: str,
@@ -168,35 +256,30 @@ def render_subtitle(
     stream,
     fmt: str,
     subtitle_ordinal: int,
+    external_text: Optional[str] = None,
+    external_ext: str = "",
+    media_headers: Optional[dict] = None,
 ) -> Response:
     """产出字幕响应体
 
     stream: em.MediaStream 行（需有 codec / is_external / external_path / stream_index）
+
+    外挂字幕有两种来源：本机文件（``external_path`` 是本机路径）与远程挂载
+    （``external_path`` 是 ``mount://…``，由调用方取回文本后通过 ``external_text`` 传入）。
     """
     fmt = (fmt or "vtt").lower().lstrip(".")
     if fmt not in RAW_OK:
         fmt = "vtt"
 
     external = (stream.external_path or "").strip() if stream.is_external else ""
-    if external and os.path.isfile(external):
-        ext = os.path.splitext(external)[1].lower()
-        if ext not in TEXT_EXTS:
-            raise HTTPException(status_code=415, detail="该外挂字幕不是文本字幕")
-        with open(external, "rb") as f:
-            text = decode_text(f.read())
-        # 源格式与请求格式一致时原样返回，避免无意义转换
-        if ext in RAW_OK.get(fmt, set()):
-            return Response(content=text, media_type=MIME.get(fmt, DEFAULT_MIME))
-        vtt = to_vtt(text)
-        if fmt == "vtt":
-            return Response(content=vtt, media_type=MIME["vtt"])
-        if fmt == "srt":
-            return Response(content=vtt_to_srt(vtt), media_type=MIME["srt"])
-        return Response(content=vtt, media_type=DEFAULT_MIME)
+    if external:
+        return render_external_source(external, fmt, external_text, external_ext)
 
     if not is_text_track(stream.codec):
         raise HTTPException(status_code=415, detail="图片类字幕（PGS/VobSub）不支持直接投递")
-    path = extract_embedded(media_path or "", item_guid, stream.stream_index, subtitle_ordinal)
+    path = extract_embedded(
+        media_path or "", item_guid, stream.stream_index, subtitle_ordinal, media_headers,
+    )
     with open(path, "rb") as f:
         vtt = decode_text(f.read())
     if fmt == "srt":

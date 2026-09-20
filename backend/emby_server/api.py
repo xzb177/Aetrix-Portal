@@ -28,17 +28,29 @@ from sqlalchemy.orm import Session, joinedload
 from backend import models
 from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
+from backend.emby_server import mounts as mount_lib
 from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
     get_emby_user,
     parse_emby_authorization,
     resolve_token,
 )
-from backend.emby_server.scanner import item_guid, parse_media_filename, scan_library_sync
+from backend.emby_server.scanner import (
+    item_guid,
+    parse_media_filename,
+    scan_library_sync,
+    count_virtual_items,
+)
+from backend.emby_server.search import (
+    CANDIDATE_LIMIT as SEARCH_CANDIDATE_LIMIT,
+    rank_items,
+    search_variants,
+)
 from backend.emby_server.streaming import (
     get_transcode,
     serve_file,
     serve_image,
+    serve_remote,
     start_transcode,
     stop_all_transcodes,
     stop_transcode,
@@ -63,6 +75,60 @@ def _iso(dt) -> str:
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
+    """图片回退链：条目自身 → 季 → 剧集海报
+
+    季与集常常没有自己的图片；不回退就会整库空白图。
+    """
+    def srcs(it: em.MediaItem) -> list[str]:
+        if kind == "Primary":
+            return [it.primary_image_url or "", it.poster_path or ""]
+        return [it.backdrop_image_url or "", it.backdrop_path or ""]
+
+    chain = srcs(item)
+    if item.item_type in ("episode", "season"):
+        parents: list[em.MediaItem] = []
+        if item.parent_id:
+            parent = db.query(em.MediaItem).filter(em.MediaItem.id == item.parent_id).first()
+            if parent:
+                parents.append(parent)
+        series = item.series
+        if series is not None and series not in parents:
+            parents.append(series)
+        for parent in parents:
+            chain.extend(srcs(parent))
+    return [s for s in chain if s]
+
+
+def _first_image(item: em.MediaItem, kind: str, db: Session) -> str | None:
+    chain = _image_chain(item, kind, db)
+    return chain[0] if chain else None
+
+
+def _queue_image_repair(db: Session, item: em.MediaItem, stale_src: str) -> None:
+    """把“数据库有图、取不到图”的条目排进修复队列
+
+    重新刮削时会换成 TMDB 远程图；同时把失效的本地路径清掉，避免每次请求都白读一次磁盘。
+    """
+    try:
+        changed = False
+        if stale_src and not stale_src.startswith("http"):
+            if item.poster_path == stale_src:
+                item.poster_path = None
+                changed = True
+            if item.backdrop_path == stale_src:
+                item.backdrop_path = None
+                changed = True
+        if item.repair_requested_at is None:
+            item.repair_requested_at = datetime.now()
+            changed = True
+        if changed:
+            db.commit()
+    except Exception as e:  # noqa: BLE001 — 修复排队失败不能影响图片接口本身
+        logger.warning("图片修复排队失败 item=%s: %s", item.guid, e)
+        db.rollback()
 
 
 def _image_url(base: str, item: em.MediaItem, kind: str = "Primary") -> str | None:
@@ -136,7 +202,11 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "Container": item.container,
         "Bitrate": item.bitrate or None,
         "IsHD": bool((item.height or 0) >= 720),
-        "ProviderIds": {"Tmdb": item.tmdb_id} if item.tmdb_id else {},
+        "OriginalTitle": item.original_title or None,
+        # 客户端会用 ProviderIds 展示/跳转元数据源；补上 IMDb
+        "ProviderIds": {
+            k: v for k, v in (("Tmdb", item.tmdb_id), ("Imdb", item.imdb_id)) if v
+        },
         "ImageTags": {"Primary": "1"} if _image_url(base, item) else {},
         "BackdropImageTags": ["1"] if _image_url(base, item, "Backdrop") else {},
         "UserData": _user_data_dto(umd),
@@ -446,6 +516,45 @@ def _guid_of(kind: str, name: str) -> str:
     return hashlib.md5(f"{kind}:{name}".encode("utf-8")).hexdigest()
 
 
+def _virtual_libraries_enabled() -> bool:
+    """虚拟媒体库总开关（按 EA 实例生效）
+
+    关闭时虚拟媒体库既不出现在客户端视图里，直接用 guid 访问也会 404，
+    与“未开启时不会出现在客户端或直达接口”一致。
+    """
+    return os.getenv("ENABLE_VIRTUAL_LIBRARIES", "true").strip().lower() not in ("0", "false", "no")
+
+
+def _synthetic_map(db: Session) -> dict[str, tuple[str, str]]:
+    """{合成 Id: (类型, 名称)} 反查表（类型 / 工作室 / 年份 右键筛选用）
+
+    客户端点开「类型 / 制作公司 / 年份」后会带着我们生成的 Id 再请求 /Items。
+    旧实现找不到条目就退回按 guid 匹配，等于返回空（或整库）——点进去白点。
+    """
+    buckets: dict[str, set[str]] = {"Genre": set(), "Studio": set(), "Year": set()}
+    for genres, studios, year in db.query(
+        em.MediaItem.genres, em.MediaItem.studios, em.MediaItem.production_year
+    ).all():
+        buckets["Genre"].update(g for g in (genres or "").split(",") if g)
+        buckets["Studio"].update(s for s in (studios or "").split(",") if s)
+        if year:
+            buckets["Year"].add(str(year))
+    return {
+        _guid_of(kind, name): (kind, name)
+        for kind, names in buckets.items()
+        for name in names
+    }
+
+
+def _synthetic_lookup(db: Session) -> dict[str, tuple[str, str]]:
+    """按请求缓存反查表，列表接口里不会重复扫描全库"""
+    cached = db.info.get("_royalbot_synthetic_ids")
+    if cached is None:
+        cached = _synthetic_map(db)
+        db.info["_royalbot_synthetic_ids"] = cached
+    return cached
+
+
 def _empty_items() -> dict:
     return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
 
@@ -553,17 +662,23 @@ async def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
 async def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
+    virtual_on = _virtual_libraries_enabled()
     items = []
     for lib in libs:
+        is_virtual = bool(getattr(lib, "is_virtual", False))
+        # 虚拟媒体库（按发行平台生成）：只在总开关 + 该库开启时才出现在客户端
+        if is_virtual and not virtual_on:
+            continue
         items.append({
             "Name": lib.name,
             "Id": lib.guid,
             "Type": "CollectionFolder",
-            "CollectionType": lib.collection_type,
+            # 虚拟库跨电影/剧集聚合，统一按 mixed 上报，客户端才能正常当普通文件夹浏览
+            "CollectionType": "mixed" if is_virtual else lib.collection_type,
             "IsFolder": True,
             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False, "IsFavorite": False},
             "ImageTags": {"Primary": "1"},
-            "ChildCount": lib.item_count,
+            "ChildCount": count_virtual_items(db, lib) if is_virtual else lib.item_count,
         })
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
@@ -595,6 +710,23 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     random_sort = any(c.strip().lower() == "random" for c in sort_by)
     ids = [x.strip() for value in q.getlist("Ids") for x in value.split(",") if x.strip()]
 
+    def _synthetic_names(kind: str, param: str) -> list[str]:
+        """把客户端回传的 类型/工作室/年份 Id 还原成名称
+
+        Emby 客户端点「类型/制作公司/年份」时，会用我们给出的**合成 Id**
+        再请求 /Items（ParentId 或 GenreIds/StudioIds 参数）。
+        """
+        raw = [x.strip() for value in q.getlist(param) for x in value.split(",") if x.strip()]
+        if not raw:
+            return []
+        lookup = _synthetic_lookup(db)
+        out: list[str] = []
+        for rid in raw:
+            hit = lookup.get(rid)
+            if hit and hit[0] == kind and hit[1] not in out:
+                out.append(hit[1])
+        return out
+
     # Filters / IsFavorite 等筛选：客户端“只看收藏 / 已看 / 未看 / 继续观看”依赖它，
     # 旧实现忽略这些参数，导致筛选后返回全量。
     filters = {f.strip().lower() for f in (q.get("Filters") or "").split(",") if f.strip()}
@@ -623,9 +755,28 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             # 可能是媒体库
             lib = db.query(em.Library).filter(em.Library.guid == parent_id).first()
             if lib:
-                query = query.filter(em.MediaItem.library_id == lib.id)
+                if getattr(lib, "is_virtual", False):
+                    # 虚拟媒体库：跨库的发行平台视图；未开启时直达也 404
+                    if not (_virtual_libraries_enabled() and lib.is_enabled):
+                        raise HTTPException(status_code=404, detail="Not found")
+                    platform = (lib.platform or "").strip()
+                    query = (
+                        query.filter(em.MediaItem.platforms.ilike(f"%{platform}%"))
+                        if platform else query.filter(em.MediaItem.id == -1)
+                    )
+                else:
+                    query = query.filter(em.MediaItem.library_id == lib.id)
             else:
-                query = query.filter(em.MediaItem.guid == parent_id)
+                # 类型 / 工作室 / 年份的合成 Id：点进去要得到真实筛选结果
+                hit = _synthetic_lookup(db).get(parent_id)
+                if hit and hit[0] == "Genre":
+                    query = query.filter(em.MediaItem.genres.ilike(f"%{hit[1]}%"))
+                elif hit and hit[0] == "Studio":
+                    query = query.filter(em.MediaItem.studios.ilike(f"%{hit[1]}%"))
+                elif hit and hit[0] == "Year" and str(hit[1]).isdigit():
+                    query = query.filter(em.MediaItem.production_year == int(hit[1]))
+                else:
+                    query = query.filter(em.MediaItem.guid == parent_id)
     elif not recursive:
         # 非递归默认返回顶层
         query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
@@ -643,19 +794,37 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             query = query.filter(~em.MediaItem.item_type.in_(mapped))
 
     if search:
-        like = f"%{search}%"
-        query = query.filter(or_(em.MediaItem.name.ilike(like), em.MediaItem.original_title.ilike(like)))
+        # SQL 预筛：标题族 + 别名族，并把繁简/发布标签变体一起放进来，
+        # 精排交给 rank_items（完全匹配 > 前缀 > 别名 > 分类 > 模糊）。
+        clauses = []
+        for variant in search_variants(search):
+            like = f"%{variant}%"
+            clauses.extend([
+                em.MediaItem.name.ilike(like),
+                em.MediaItem.original_title.ilike(like),
+                em.MediaItem.sort_name.ilike(like),
+                em.MediaItem.aliases.ilike(like),
+            ])
+        if clauses:
+            query = query.filter(or_(*clauses))
 
-    if genres and genres[0]:
-        query = query.filter(or_(*[em.MediaItem.genres.ilike(f"%{g}%") for g in genres if g]))
+    genre_names = [g for g in genres if g] or _synthetic_names("Genre", "GenreIds")
+    if genre_names:
+        query = query.filter(or_(*[em.MediaItem.genres.ilike(f"%{g}%") for g in genre_names]))
 
-    if years and years[0]:
-        try:
-            year_list = [int(y) for y in years if y]
-            if year_list:
-                query = query.filter(em.MediaItem.production_year.in_(year_list))
-        except ValueError:
-            pass
+    studio_names = _synthetic_names("Studio", "StudioIds")
+    if studio_names:
+        query = query.filter(or_(*[em.MediaItem.studios.ilike(f"%{s}%") for s in studio_names]))
+
+    year_values: list[int] = []
+    for y in years:
+        if y and y.strip().isdigit():
+            year_values.append(int(y))
+    for name in _synthetic_names("Year", "Years"):
+        if name.isdigit() and int(name) not in year_values:
+            year_values.append(int(name))
+    if year_values:
+        query = query.filter(em.MediaItem.production_year.in_(year_values))
 
     if filters & {"isfavorite", "isplayed", "isunplayed", "isresumable"}:
         query = query.outerjoin(
@@ -687,6 +856,20 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         order_cols.append(c.desc() if sort_order and sort_order[0].lower().startswith("desc") else c.asc())
     if not order_cols:
         order_cols = [em.MediaItem.sort_name.asc()]
+
+    if search and not random_sort:
+        # 搜索时按相关度排版。旧实现只用 SQL LIKE 过滤 + 按名称排序，
+        # 于是精确命中的标题会被“名字里恰好也含这几个字”的条目挤到后面。
+        candidates = (
+            query.order_by(em.MediaItem.sort_name.asc()).limit(SEARCH_CANDIDATE_LIMIT).all()
+        )
+        ranked = rank_items(candidates, search)  # 相关度排序（完全匹配 > 前缀 > 别名 > 模糊）
+        page = ranked[start:start + limit]
+        return {
+            "Items": [_item_dto(i, base, user.id, db) for i in page],
+            "TotalRecordCount": len(ranked),
+            "StartIndex": start,
+        }
 
     total = query.count()
     data_query = query.order_by(func.random()) if random_sort else query.order_by(*order_cols)
@@ -971,6 +1154,22 @@ async def mark_unplayed(item_id: str, user_id: str,
 
 # ==================== 播放 ====================
 
+def _play_target(db: Session, item: em.MediaItem):
+    """把条目的 ``file_path`` 解析成播放目标（本机文件 或 挂载直链）
+
+    挂载来源（115 / WebDAV / AList / STRM）解析失败时给出明确状态码，不抛 500：
+
+    - 挂载被删除 / 停用 → 404（该条目需要重新扫描或重新绑定挂载）
+    - 凭据失效（Cookie / 令牌 / 密码）→ 503（可修，修好后重试即可）
+    """
+    try:
+        return mount_lib.resolve_play_target(item.file_path, db, item.library)
+    except mount_lib.MountAuthError as exc:
+        raise HTTPException(status_code=503, detail=f"媒体来源凭据失效：{exc}")
+    except mount_lib.MountError as exc:
+        raise HTTPException(status_code=404, detail=f"媒体来源不可用：{exc}")
+
+
 @emby_router.post("/emby/Items/{item_id}/PlaybackInfo")
 @emby_router.post("/Items/{item_id}/PlaybackInfo")
 @emby_router.get("/emby/Items/{item_id}/PlaybackInfo")
@@ -1030,7 +1229,12 @@ async def video_stream(
     # 授权已由 get_emby_user 依赖完成（Emby token 或 JWT 均可）
     ensure_playback_allowed(db, user)
     media_type = f"video/{item.container}" if item.container else "video/mp4"
-    return serve_file(item.file_path, request, media_type)
+    target = _play_target(db, item)
+    if target.kind == "url":
+        # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
+        # Range 与状态码透传，凭据不下发。
+        return serve_remote(target.value, request, target.headers, media_type)
+    return serve_file(target.value, request, media_type)
 
 
 @emby_router.get("/emby/videos/{item_id}/{transcode_path:path}")
@@ -1078,9 +1282,10 @@ async def video_hls(
     height = int(q.get("Height") or 0) or None
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS
+    target = _play_target(db, item)
     session_id = start_transcode(
-        item.file_path, start_seconds, video_bitrate, height,
-        user_id=user.id, item_guid=item.guid,
+        target.value, start_seconds, video_bitrate, height,
+        user_id=user.id, item_guid=item.guid, input_headers=target.headers,
     )
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
     # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
@@ -1094,7 +1299,7 @@ async def video_hls(
     )
 
 
-def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,
+def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,  # noqa: D401
                      api_key: str = "") -> str:
     """重写 ffmpeg 播放列表：切片指向本服务，并带上 session 票据与 api_key
 
@@ -1134,36 +1339,59 @@ async def download_item(item_id: str, request: Request,
     ensure_playback_allowed(db, user)
     # 站点级下载开关：第三方播放器触发的下载同样拦下
     ensure_download_allowed(db, user)
-    if not item.file_path or not os.path.isfile(item.file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(item.file_path, filename=os.path.basename(item.file_path))
+    target = _play_target(db, item)
+    if target.kind == "url":
+        return serve_remote(
+            target.value, request, target.headers,
+            media_type="application/octet-stream",
+        )
+    return FileResponse(target.value, filename=os.path.basename(target.value))
 
 
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}")
 @emby_router.get("/Items/{item_id}/Images/{image_type}")
 async def item_image(item_id: str, image_type: str, request: Request,
                      db: Session = Depends(get_db)):
+    """条目图片
+
+    三处修正：
+
+    1. **季/集回退**：季与集经常没有自己的图片，按「条目 → 季 → 剧集海报」回退；
+    2. **数据库有记录但文件丢失**：不再把 FileNotFoundError 抛成 5xx（客户端会当成
+       鉴权/服务器故障反复重试），而是干净地 404，同时把条目排进修复队列，
+       下一轮扫描换成 TMDB 远程图；
+    3. **远程图取不到**（404/超时）同样 404 并排队修复，而不是 500。
+    """
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    if image_type == "Primary":
-        src = item.poster_path or item.primary_image_url
-    elif image_type in ("Backdrop", "Art", "Thumb", "Logo"):
-        src = item.backdrop_path or item.backdrop_image_url
-    else:
-        src = None
+    if image_type not in ("Primary", "Backdrop", "Art", "Thumb", "Logo"):
+        raise HTTPException(status_code=404, detail="Image not found")
+    kind = "Primary" if image_type == "Primary" else "Backdrop"
+    src = _first_image(item, kind, db)
     if not src:
         raise HTTPException(status_code=404, detail="Image not found")
     if src.startswith("http://") or src.startswith("https://"):
         # 仅允许代理 http(s) 远程图片（防 SSRF）
         import httpx
 
-        r = httpx.get(src, timeout=10, follow_redirects=True)
+        try:
+            r = httpx.get(src, timeout=10, follow_redirects=True)
+            r.raise_for_status()
+        except Exception as e:  # noqa: BLE001 — 远程图失效不能让图片接口 5xx
+            logger.warning("远程图片获取失败 %s: %s", src, e)
+            _queue_image_repair(db, item, src)
+            raise HTTPException(status_code=404, detail="Image not found") from e
         return Response(
             content=r.content,
             media_type=r.headers.get("content-type", "image/jpeg"),
             headers={"Cache-Control": "public, max-age=86400"},
         )
+    if not os.path.isfile(src):
+        # 数据库有图、本地文件已丢（换盘/迁移/挂载掉线）
+        logger.warning("本地图片文件缺失，已排队修复：%s", src)
+        _queue_image_repair(db, item, src)
+        raise HTTPException(status_code=404, detail="Image not found")
     return serve_image(src)
 
 
@@ -1374,42 +1602,9 @@ async def set_user_policy(user_id: str, user: models.WebUser = Depends(get_emby_
 
 
 # ---- 搜索 ----
+# 搜索接口已迁到 backend/emby_server/search_api.py（相关度排序版），
+# 并在 main.py / emby_api/main.py 中**先于本路由**注册。
 
-@emby_router.get("/emby/Search/Hints")
-@emby_router.get("/Search/Hints")
-async def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user),
-                       db: Session = Depends(get_db)):
-    q = request.query_params
-    term = (q.get("SearchTerm") or "").strip()
-    limit = int(q.get("Limit") or 20)
-    include = [t.strip().lower() for t in (q.get("IncludeItemTypes") or "").split(",") if t.strip()]
-    base = _base_url(request)
-
-    query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False)  # noqa: E712
-    if term:
-        like = f"%{term}%"
-        query = query.filter(or_(em.MediaItem.name.ilike(like), em.MediaItem.original_title.ilike(like)))
-    if include:
-        type_map = {"movie": "movie", "series": "series", "episode": "episode", "season": "season"}
-        query = query.filter(em.MediaItem.item_type.in_([type_map.get(t, t) for t in include]))
-
-    hints = [
-        {
-            "ItemId": it.guid,
-            "Id": it.guid,
-            "Name": it.name,
-            "Type": _emby_type(it.item_type),
-            "MediaType": "Video" if it.item_type in ("movie", "episode") else None,
-            "ProductionYear": it.production_year,
-            "RunTimeTicks": it.duration_ticks or None,
-            "IndexNumber": it.episode_number,
-            "ParentIndexNumber": it.season_number,
-            "SeriesId": it.series.guid if it.series else None,
-            "PrimaryImageTag": "1" if _image_url(base, it) else None,
-        }
-        for it in query.limit(limit).all()
-    ]
-    return {"SearchHints": hints, "TotalRecordCount": len(hints)}
 
 
 # ---- 收藏的规范路由（客户端除 Rating 外还会直接调 FavoriteItems）----
