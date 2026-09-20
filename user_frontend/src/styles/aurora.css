@@ -277,6 +277,13 @@ body {
   .au-page { padding: 1.125rem 1rem 5rem; }
 }
 
+/* 底部导航坞占位（移动端），避免页面尾部内容被遮挡 */
+@media (max-width: 900px) {
+  body {
+    padding-bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 /* 空状态 */
 .au-empty {
   display: flex;

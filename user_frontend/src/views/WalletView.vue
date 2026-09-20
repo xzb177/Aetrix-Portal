@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
  * 钱包 — 余额总览 / 积分充值（支付下单）/ 兑换码 / 订单记录 / 积分流水
+ * 布局：余额卡左右分区（左余额+签到态，右兑换面板）；套餐卡横向结构化行
  */
 import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, RouterLink } from 'vue-router'
 import {
-  Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap,
-  Copy, Check, ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert,
+  Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame,
+  ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi,
@@ -14,11 +15,9 @@ import {
   type OrderRow, type PaymentMethod, type CheckinStatus,
 } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
-import { useUserStore } from '@/stores/user'
 
 const toast = useToast()
 const route = useRoute()
-const userStore = useUserStore()
 
 // ===== 状态 =====
 const loading = ref(true)
@@ -164,9 +163,9 @@ onMounted(async () => {
 
 <template>
   <div class="au-page wallet-view">
-    <!-- 余额 + 兑换：合并为一个主区，减少卡片割裂 -->
+    <!-- 余额主卡：左右分区 — 左侧余额与签到态，右侧兑换面板 -->
     <section class="balance-hero au-anim-up">
-      <div class="balance-left">
+      <div class="bh-main">
         <span class="balance-label">
           <Wallet :size="15" />
           积分余额
@@ -175,40 +174,45 @@ onMounted(async () => {
           <span class="num">{{ balance }}</span>
           <span class="unit">积分</span>
         </div>
-        <div v-if="checkin" class="balance-sub">
-          <Zap :size="13" />
-          今日{{ checkin.checked_today ? '已' : '未' }}签到 · 连签 {{ checkin.streak }} 天 ·
-          <RouterLink to="/checkin" class="link">去签到 →</RouterLink>
-        </div>
+
+        <!-- 签到态：紧凑胶囊 -->
+        <RouterLink v-if="checkin" to="/checkin" class="checkin-pill" :class="{ done: checkin.checked_today }">
+          <Flame :size="13" />
+          <span>连签 <strong>{{ checkin.streak }}</strong> 天</span>
+          <span class="pill-divider" />
+          <span>{{ checkin.checked_today ? '今日已签' : '今日未签' }}</span>
+          <ChevronRight :size="12" class="pill-arrow" />
+        </RouterLink>
       </div>
 
-      <div class="balance-right">
-        <form class="redeem-inline" @submit.prevent="handleRedeem">
-          <span class="redeem-label">
-            <TicketCheck :size="14" />
-            兑换码
-          </span>
-          <div class="redeem-row">
-            <input
-              v-model="redeemCode"
-              class="au-input redeem-input"
-              placeholder="输入兑换码"
-              maxlength="32"
-              autocomplete="off"
-            >
-            <button type="submit" class="au-btn au-btn-primary au-btn-sm" :disabled="redeemLoading || !redeemCode.trim()">
-              <Sparkles v-if="!redeemLoading" :size="14" />
-              <span v-if="redeemLoading" class="au-spinner spinner-sm" />
-              兑换
-            </button>
-          </div>
-          <p class="redeem-hint">积分或订阅时长即时到账</p>
-        </form>
-        <button class="au-btn au-btn-ghost au-btn-sm refresh" @click="loadAll">
-          <RefreshCw :size="14" :class="{ spinning: loading }" />
-          刷新
-        </button>
-      </div>
+      <div class="bh-divider" aria-hidden="true" />
+
+      <!-- 兑换面板 -->
+      <form class="bh-redeem" @submit.prevent="handleRedeem">
+        <span class="redeem-label">
+          <TicketCheck :size="14" />
+          兑换码
+        </span>
+        <div class="redeem-row">
+          <input
+            v-model="redeemCode"
+            class="au-input redeem-input"
+            placeholder="输入兑换码"
+            maxlength="32"
+            autocomplete="off"
+          >
+          <button type="submit" class="au-btn au-btn-primary" :disabled="redeemLoading || !redeemCode.trim()">
+            <Sparkles v-if="!redeemLoading" :size="15" />
+            <span v-if="redeemLoading" class="au-spinner spinner-sm" />
+            兑换
+          </button>
+        </div>
+        <p class="redeem-hint">积分或订阅时长即时到账</p>
+      </form>
+
+      <button class="au-btn au-btn-ghost au-btn-sm refresh" title="刷新" @click="loadAll">
+        <RefreshCw :size="14" :class="{ spinning: loading }" />
+      </button>
     </section>
 
     <!-- 选项卡 -->
@@ -241,38 +245,49 @@ onMounted(async () => {
       </button>
     </div>
 
-    <!-- 充值积分 -->
+    <!-- 充值积分：横向行卡 — 左侧点数信息，右侧价格与购买 -->
     <section v-if="tab === 'recharge'" class="tab-body au-anim-up">
       <div v-if="!packages.length" class="au-empty">
         <Coins :size="30" />
         <p>暂无可用充值套餐</p>
       </div>
-      <div v-else class="pkg-grid">
+      <div v-else class="pkg-list">
         <button
           v-for="p in packages"
           :key="p.id"
-          class="pkg-card"
+          class="pkg-row"
           :class="{ popular: p.is_popular }"
           :disabled="orderLoading === p.id"
           @click="handleOrder('recharge', p.id)"
         >
-          <span v-if="p.is_popular" class="pkg-pop-tag">超值</span>
-          <span class="pkg-name">{{ p.name }}</span>
-          <span class="pkg-points">
-            <strong>{{ p.total_points }}</strong>
-            <em>积分</em>
+          <span class="pkg-points-wrap">
+            <span class="pkg-points">
+              <strong>{{ p.total_points }}</strong>
+              <em>积分</em>
+            </span>
+            <span class="pkg-name">{{ p.name }}</span>
+            <span v-if="p.bonus > 0" class="pkg-bonus">
+              <Sparkles :size="11" />
+              含赠送 {{ p.bonus }} 积分
+            </span>
           </span>
-          <span v-if="p.bonus > 0" class="pkg-bonus">含赠送 {{ p.bonus }} 积分</span>
-          <span class="pkg-price">¥ {{ p.price.toFixed(2) }}</span>
-          <span class="pkg-cta">
-            <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
-            <template v-else>立即购买 <ExternalLink :size="12" /></template>
+
+          <span class="pkg-buy">
+            <span v-if="p.is_popular" class="pkg-pop-tag">超值</span>
+            <span class="pkg-price">¥{{ p.price.toFixed(2) }}</span>
+            <span class="pkg-cta">
+              <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
+              <template v-else>
+                购买
+                <ExternalLink :size="12" />
+              </template>
+            </span>
           </span>
         </button>
       </div>
     </section>
 
-    <!-- 购买订阅 -->
+    <!-- 购买订阅：头部价格区 + 权益列表 -->
     <section v-if="tab === 'plans'" class="tab-body au-anim-up">
       <div v-if="!plans.length" class="au-empty">
         <Zap :size="30" />
@@ -281,24 +296,31 @@ onMounted(async () => {
       <div v-else class="plan-grid">
         <div v-for="p in plans" :key="p.id" class="plan-card" :class="{ popular: p.is_popular }">
           <span v-if="p.is_popular" class="pkg-pop-tag">推荐</span>
-          <h4 class="plan-name">{{ p.name }}</h4>
+
+          <div class="plan-head">
+            <h4 class="plan-name">{{ p.name }}</h4>
+            <span class="plan-price">
+              ¥{{ p.price.toFixed(2) }}
+              <em>/ {{ p.duration_days }} 天</em>
+            </span>
+          </div>
           <p class="plan-desc">{{ p.description || '会员专属权益' }}</p>
+
           <ul v-if="p.features && p.features.length" class="plan-features">
             <li v-for="(f, i) in p.features" :key="i">
               <CircleCheck :size="13" /> {{ f }}
             </li>
           </ul>
-          <div class="plan-foot">
-            <span class="plan-price">¥ {{ p.price.toFixed(2) }} <em>/ {{ p.duration_days }} 天</em></span>
-            <button
-              class="au-btn au-btn-primary au-btn-sm"
-              :disabled="orderLoading === p.id"
-              @click="handleOrder('subscription', p.id)"
-            >
-              <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
-              <template v-else>立即开通</template>
-            </button>
-          </div>
+
+          <button
+            class="au-btn plan-btn"
+            :class="p.is_popular ? 'au-btn-primary' : 'au-btn-ghost'"
+            :disabled="orderLoading === p.id"
+            @click="handleOrder('subscription', p.id)"
+          >
+            <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
+            <template v-else>立即开通</template>
+          </button>
         </div>
       </div>
     </section>
@@ -309,21 +331,24 @@ onMounted(async () => {
         <Receipt :size="30" />
         <p>还没有订单记录</p>
       </div>
-      <div v-else class="order-list">
-        <div v-for="o in orders" :key="o.order_id" class="order-item au-card">
+      <div v-else class="order-list au-card">
+        <div v-for="o in orders" :key="o.order_id" class="order-item">
+          <span class="order-icon" :class="{ pending: o.status === 'pending' }">
+            <Clock v-if="o.status === 'pending'" :size="14" />
+            <CircleCheck v-else-if="o.status === 'paid'" :size="14" />
+            <CircleAlert v-else :size="14" />
+          </span>
           <div class="order-main">
             <span class="order-name">{{ o.item_name }}</span>
-            <span class="order-id mono">{{ o.order_id }}</span>
-            <span class="order-time">{{ fmtTime(o.created_at) }}</span>
+            <span class="order-sub">
+              <span class="order-id mono">{{ o.order_id }}</span>
+              <span class="order-sep">·</span>
+              <span>{{ fmtTime(o.created_at) }}</span>
+            </span>
           </div>
           <div class="order-side">
-            <span class="order-amount">¥ {{ o.amount.toFixed(2) }}</span>
-            <span :class="orderStatusMeta(o.status).cls">
-              <Clock v-if="o.status === 'pending'" :size="11" />
-              <CircleCheck v-else-if="o.status === 'paid'" :size="11" />
-              <CircleAlert v-else :size="11" />
-              {{ orderStatusMeta(o.status).label }}
-            </span>
+            <span class="order-amount">¥{{ o.amount.toFixed(2) }}</span>
+            <span :class="orderStatusMeta(o.status).cls">{{ orderStatusMeta(o.status).label }}</span>
           </div>
         </div>
       </div>
@@ -357,20 +382,19 @@ onMounted(async () => {
 <style scoped>
 .wallet-view { display: flex; flex-direction: column; gap: 1.125rem; }
 
-/* ===== 余额主区（含兑换） ===== */
+/* ==================== 余额主卡（左右分区） ==================== */
 .balance-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 2rem;
-  padding: 1.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1.1fr) auto;
+  align-items: stretch;
+  gap: 1.5rem;
+  padding: 1.5rem 1.625rem;
   border-radius: var(--au-r-xl);
   background: linear-gradient(135deg, rgba(34, 211, 238, 0.14), rgba(167, 139, 250, 0.14) 55%, rgba(7, 11, 18, 0.2));
   border: 1px solid var(--au-primary-border);
   backdrop-filter: blur(14px);
   position: relative;
   overflow: hidden;
-  flex-wrap: wrap;
 }
 .balance-hero::after {
   content: '';
@@ -384,36 +408,13 @@ onMounted(async () => {
   pointer-events: none;
 }
 
-.balance-right {
+.bh-main {
   display: flex;
-  align-items: flex-start;
-  gap: 0.625rem;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.375rem;
   min-width: 0;
 }
-
-.redeem-inline { min-width: 0; }
-
-.redeem-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--au-text-2);
-  margin-bottom: 0.4375rem;
-}
-
-.redeem-row { display: flex; gap: 0.5rem; }
-.redeem-input { flex: 1; min-width: 200px; height: 36px; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.8125rem; }
-
-.redeem-hint {
-  margin: 0.375rem 0 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.refresh { flex-shrink: 0; }
-.spinning { animation: au-spin 0.9s linear infinite; }
 
 .balance-label {
   display: inline-flex;
@@ -427,10 +428,9 @@ onMounted(async () => {
   display: flex;
   align-items: baseline;
   gap: 0.375rem;
-  margin-top: 0.5rem;
 }
 .balance-num .num {
-  font-size: 2.5rem;
+  font-size: 2.75rem;
   font-weight: 800;
   letter-spacing: -0.02em;
   background: var(--au-gradient);
@@ -438,35 +438,81 @@ onMounted(async () => {
   background-clip: text;
   color: transparent;
   font-variant-numeric: tabular-nums;
+  line-height: 1.1;
 }
 .balance-num .unit { font-size: 0.875rem; color: var(--au-text-3); }
 
-.balance-sub {
-  display: flex;
+/* 签到态胶囊 */
+.checkin-pill {
+  display: inline-flex;
   align-items: center;
-  gap: 0.3125rem;
-  margin-top: 0.5rem;
+  gap: 0.4375rem;
+  width: fit-content;
+  margin-top: 0.375rem;
+  padding: 0.3125rem 0.6875rem;
+  background: var(--au-warning-soft);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: var(--au-r-full);
+  color: var(--au-warning);
   font-size: 0.75rem;
-  color: var(--au-text-3);
+  text-decoration: none;
+  transition: all var(--au-fast) var(--au-ease);
 }
-.balance-sub .link { color: var(--au-primary); text-decoration: none; font-weight: 600; }
-.balance-sub .link:hover { text-decoration: underline; }
+.checkin-pill strong { font-weight: 700; }
+.checkin-pill.done {
+  background: var(--au-success-soft);
+  border-color: rgba(52, 211, 153, 0.28);
+  color: var(--au-success);
+}
+.checkin-pill:hover {
+  transform: translateY(-1px);
+  border-color: var(--au-primary-border);
+  color: var(--au-primary);
+}
+.pill-divider {
+  width: 1px;
+  height: 11px;
+  background: currentColor;
+  opacity: 0.35;
+}
+.pill-arrow { opacity: 0.6; }
 
-.refresh { flex-shrink: 0; }
+.bh-divider {
+  background: var(--au-border);
+  margin: 0.25rem 0;
+}
+
+/* 兑换面板 */
+.bh-redeem {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.4375rem;
+  min-width: 0;
+}
+
+.redeem-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text-2);
+}
+
+.redeem-row { display: flex; gap: 0.5rem; }
+.redeem-input { flex: 1; min-width: 0; height: 40px; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.8125rem; }
+
+.redeem-hint {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+}
+
+.refresh { align-self: flex-start; margin-top: 0.25rem; }
 .spinning { animation: au-spin 0.9s linear infinite; }
 
-/* ===== 兑换卡 ===== */
-.redeem-card { display: flex; flex-direction: column; gap: 0.875rem; }
-
-.redeem-head { display: flex; align-items: center; gap: 0.625rem; }
-.redeem-icon { color: var(--au-violet); flex-shrink: 0; }
-.redeem-head h3 { margin: 0; font-size: 0.9375rem; font-weight: 700; color: var(--au-text); }
-.redeem-head p { margin: 0.125rem 0 0; font-size: 0.75rem; color: var(--au-text-3); }
-
-.redeem-form { display: flex; gap: 0.625rem; }
-.redeem-input { flex: 1; text-transform: uppercase; letter-spacing: 0.04em; }
-
-/* ===== 选项卡 ===== */
+/* ==================== 选项卡 ==================== */
 .tabs {
   display: flex;
   gap: 0.375rem;
@@ -504,7 +550,7 @@ onMounted(async () => {
   box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
-/* ===== 支付方式（选项卡下统一一条） ===== */
+/* ==================== 支付方式 ==================== */
 .pay-methods { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .pay-methods-label { font-size: 0.8125rem; color: var(--au-text-3); }
 .pay-method {
@@ -526,41 +572,75 @@ onMounted(async () => {
   font-weight: 600;
 }
 
-/* ===== 充值套餐 ===== */
-.pkg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 0.875rem;
-}
-
-.pkg-card {
-  position: relative;
+/* ==================== 充值套餐：横向行卡 ==================== */
+.pkg-list {
   display: flex;
   flex-direction: column;
+  gap: 0.625rem;
+}
+
+.pkg-row {
+  display: flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 1.375rem 1rem 1rem;
+  justify-content: space-between;
+  gap: 1.25rem;
+  padding: 0.9375rem 1.25rem;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
   cursor: pointer;
   transition: all var(--au-fast) var(--au-ease);
-  text-align: center;
+  text-align: left;
+  position: relative;
 }
-.pkg-card:hover:not(:disabled) {
+.pkg-row:hover:not(:disabled) {
   border-color: var(--au-primary-border);
   background: var(--au-primary-soft);
-  transform: translateY(-3px);
-  box-shadow: 0 8px 24px rgba(34, 211, 238, 0.15);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.12);
 }
-.pkg-card.popular { border-color: var(--au-primary-border); }
-.pkg-card:disabled { opacity: 0.6; cursor: wait; }
+.pkg-row.popular { border-color: var(--au-primary-border); }
+.pkg-row:disabled { opacity: 0.6; cursor: wait; }
+
+.pkg-points-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  min-width: 0;
+}
+
+.pkg-points { display: flex; align-items: baseline; gap: 0.3125rem; }
+.pkg-points strong {
+  font-size: 1.5rem;
+  font-weight: 800;
+  background: var(--au-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+.pkg-points em { font-style: normal; font-size: 0.75rem; color: var(--au-text-3); }
+
+.pkg-name { font-size: 0.75rem; color: var(--au-text-4); }
+
+.pkg-bonus {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6875rem;
+  color: var(--au-success);
+}
+
+.pkg-buy {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  flex-shrink: 0;
+}
 
 .pkg-pop-tag {
-  position: absolute;
-  top: -9px;
-  right: 12px;
-  padding: 0.125rem 0.5625rem;
+  padding: 0.125rem 0.5rem;
   background: var(--au-gradient-warm);
   color: #fff;
   font-size: 0.625rem;
@@ -568,41 +648,41 @@ onMounted(async () => {
   border-radius: var(--au-r-full);
 }
 
-.pkg-name { font-size: 0.8125rem; color: var(--au-text-2); font-weight: 600; }
-.pkg-points strong {
-  font-size: 1.75rem;
+.pkg-price {
+  font-size: 1.125rem;
   font-weight: 800;
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--au-text);
   font-variant-numeric: tabular-nums;
 }
-.pkg-points em { font-style: normal; font-size: 0.75rem; color: var(--au-text-3); margin-left: 0.25rem; }
-.pkg-bonus { font-size: 0.6875rem; color: var(--au-success); }
-.pkg-price { font-size: 1.0625rem; font-weight: 700; color: var(--au-text); margin-top: 0.25rem; }
 
 .pkg-cta {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.3125rem;
-  margin-top: 0.5rem;
-  height: 30px;
-  padding: 0 0.875rem;
+  height: 34px;
+  min-width: 76px;
+  padding: 0 1rem;
   background: var(--au-surface-2);
-  border-radius: var(--au-r-full);
-  font-size: 0.75rem;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--au-text-2);
+  transition: all var(--au-fast) var(--au-ease);
 }
-.pkg-card:hover:not(:disabled) .pkg-cta { background: var(--au-gradient); color: #05141c; }
+.pkg-row:hover:not(:disabled) .pkg-cta {
+  background: var(--au-gradient);
+  border-color: transparent;
+  color: #05141c;
+}
 
 .spinner-sm { width: 14px; height: 14px; border-width: 2px; }
 
-/* ===== 订阅套餐 ===== */
+/* ==================== 订阅套餐 ==================== */
 .plan-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 0.875rem;
 }
 
@@ -610,8 +690,8 @@ onMounted(async () => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.625rem;
-  padding: 1.375rem;
+  gap: 0.5rem;
+  padding: 1.25rem;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
@@ -619,12 +699,21 @@ onMounted(async () => {
 }
 .plan-card.popular { border-color: var(--au-primary-border); box-shadow: 0 0 24px rgba(34, 211, 238, 0.08); }
 
-.plan-name { margin: 0; font-size: 1.0625rem; font-weight: 700; color: var(--au-text); }
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.plan-name { margin: 0; font-size: 1rem; font-weight: 700; color: var(--au-text); }
+.plan-price { font-size: 1.125rem; font-weight: 800; color: var(--au-text); white-space: nowrap; }
+.plan-price em { font-style: normal; font-size: 0.6875rem; font-weight: 400; color: var(--au-text-3); }
+
 .plan-desc { margin: 0; font-size: 0.8125rem; color: var(--au-text-3); line-height: 1.5; }
 
 .plan-features {
   list-style: none;
-  margin: 0.25rem 0 0;
+  margin: 0.125rem 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -639,37 +728,53 @@ onMounted(async () => {
 }
 .plan-features svg { color: var(--au-success); flex-shrink: 0; }
 
-.plan-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: auto;
-  padding-top: 0.875rem;
-  border-top: 1px dashed var(--au-border);
-}
-.plan-price { font-size: 1.125rem; font-weight: 800; color: var(--au-text); }
-.plan-price em { font-style: normal; font-size: 0.75rem; font-weight: 400; color: var(--au-text-3); }
+.plan-btn { margin-top: auto; width: 100%; }
 
-/* ===== 订单 ===== */
-.order-list { display: flex; flex-direction: column; gap: 0.625rem; }
+/* ==================== 订单 ==================== */
+.order-list { overflow: hidden; }
 
 .order-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.125rem;
+  gap: 0.875rem;
+  padding: 0.9375rem 1.125rem;
+  border-bottom: 1px solid var(--au-border);
+}
+.order-item:last-child { border-bottom: none; }
+
+.order-icon {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--au-r-md);
+  background: var(--au-success-soft);
+  color: var(--au-success);
+  flex-shrink: 0;
+}
+.order-icon.pending {
+  background: var(--au-warning-soft);
+  color: var(--au-warning);
 }
 
-.order-main { display: flex; flex-direction: column; gap: 0.1875rem; min-width: 0; }
-.order-name { font-size: 0.875rem; font-weight: 600; color: var(--au-text); }
-.order-id { font-size: 0.6875rem; color: var(--au-text-4); }
-.order-time { font-size: 0.6875rem; color: var(--au-text-4); }
+.order-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1875rem; }
+.order-name { font-size: 0.875rem; font-weight: 600; color: var(--au-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-sub {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+  overflow: hidden;
+}
+.order-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-sep { opacity: 0.5; }
 
 .order-side { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3125rem; flex-shrink: 0; }
 .order-amount { font-size: 0.9375rem; font-weight: 700; color: var(--au-text); }
 
-/* ===== 流水 ===== */
+/* ==================== 流水 ==================== */
 .log-list { overflow: hidden; }
 
 .log-item {
@@ -703,12 +808,17 @@ onMounted(async () => {
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-@media (max-width: 640px) {
-  .balance-hero { flex-direction: column; gap: 1.25rem; }
-  .balance-right { width: 100%; flex-direction: column; gap: 0.75rem; }
-  .redeem-input { min-width: 0; flex: 1; }
-  .order-item { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
-  .order-side { flex-direction: row; align-items: center; gap: 0.625rem; }
-  .balance-num .num { font-size: 2rem; }
+@media (max-width: 720px) {
+  .balance-hero {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+    padding: 1.375rem 1.25rem;
+  }
+  .bh-divider { height: 1px; width: 100%; margin: 0; }
+  .refresh { position: absolute; top: 1.125rem; right: 1.125rem; margin: 0; }
+  .balance-num .num { font-size: 2.25rem; }
+  .pkg-row { flex-direction: column; align-items: stretch; gap: 0.875rem; }
+  .pkg-buy { justify-content: space-between; }
+  .order-item { flex-wrap: wrap; }
 }
 </style>

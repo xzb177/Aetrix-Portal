@@ -1,22 +1,23 @@
 <script setup lang="ts">
 /**
- * 首页 — 用户中心
- * 信息架构：媒体内容（续看）→ 账号速览 → 服务入口 → 公告/播放器导入（次要）
+ * 首页 — 内容优先的个人门户
+ *
+ * 信息架构：问候 → 账号速览（数据条）→ 继续观看 → 最近入库 → 站点动态 → 连接播放器
+ * 功能入口交给顶部导航 / 底部导航坞，首页只展示「内容」与「状态」，不再堆功能按钮。
  */
 import { ref, computed, onMounted } from 'vue'
-import { useRouter, RouterLink } from 'vue-router'
+import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { embyApi, messageApi, announcementApi, type AccountCard, type Announcement } from '@/api'
+import { embyApi, messageApi, announcementApi, subscriptionApi, type AccountCard, type Announcement, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
+import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  Play, Copy, Check, RefreshCw, Key, Server, Lock, Eye,
-  MessageSquare, Film, Shield, User, Inbox, LogOut, ChevronRight,
-  Wallet, CalendarCheck, Gift, Sparkles, Megaphone, Tv, type LucideIcon,
+  Play, Copy, Check, Key, Lock, ChevronRight, Crown, Megaphone,
+  Wallet, CalendarCheck, Gift, Sparkles, Tv,
 } from 'lucide-vue-next'
 
-const router = useRouter()
 const userStore = useUserStore()
 const toast = useToast()
 
@@ -27,9 +28,17 @@ const account = ref<AccountCard | null>(null)
 const notices = ref<Announcement[]>([])
 const unreadCount = ref(0)
 const resumeItems = ref<EmbyItem[]>([])
-
+const latestItems = ref<EmbyItem[]>([])
+const subscriptions = ref<MySubscription[]>([])
 const copiedField = ref('')
-const showPassword = ref(false)
+
+// 经济速览（账号速览条数据）
+const quickStats = ref({
+  balance: null as number | null,
+  streak: null as number | null,
+  checkedToday: false,
+  invited: null as number | null,
+})
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -46,6 +55,46 @@ const serverUrl = computed(() => account.value?.base_url || serverOrigin)
 const hasPassword = computed(() => !!account.value?.has_password)
 const importSchemes = computed(() => account.value?.import_schemes || {})
 const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
+
+const activeSub = computed(
+  () => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null,
+)
+
+// 账号速览条：四格数据（非按钮），点击进入对应页面
+const accountCells = computed(() => [
+  {
+    to: '/wallet?tab=plans',
+    icon: Crown,
+    label: '订阅',
+    value: activeSub.value ? activeSub.value.plan_name : '未订阅',
+    sub: activeSub.value ? `剩 ${activeSub.value.days_left} 天到期` : '去开通会员',
+    hot: !activeSub.value,
+  },
+  {
+    to: '/wallet',
+    icon: Wallet,
+    label: '积分余额',
+    value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
+    sub: '签到 · 兑换 · 充值',
+    hot: false,
+  },
+  {
+    to: '/checkin',
+    icon: CalendarCheck,
+    label: '每日签到',
+    value: quickStats.value.streak !== null ? `${quickStats.value.streak} 天` : '—',
+    sub: quickStats.value.checkedToday ? '今日已签' : '今日未签',
+    hot: quickStats.value.streak !== null && !quickStats.value.checkedToday,
+  },
+  {
+    to: '/invite',
+    icon: Gift,
+    label: '邀请返利',
+    value: quickStats.value.invited !== null ? String(quickStats.value.invited) : '—',
+    sub: '位好友已加入',
+    hot: false,
+  },
+])
 
 async function copyText(text: string, field: string) {
   try {
@@ -68,23 +117,35 @@ const copyAll = () => {
 }
 
 // 播放器一键导入
-const schemeIcons: Record<string, LucideIcon> = {}
 const openScheme = (url: string) => {
   window.location.href = url
 }
 
 onMounted(async () => {
   try {
-    const [card, unread, anns, resume] = await Promise.all([
+    const [card, unread, anns, resume, latest, pointsRes, checkinRes, inviteRes, subs] = await Promise.all([
       embyApi.getAccountCard(),
       messageApi.getUnreadCount().catch((): { unread_count: number } => ({ unread_count: 0 })),
       announcementApi.getAnnouncements().catch((): Announcement[] => []),
       protocolApi.getResume(12).catch((): EmbyItem[] => []),
+      protocolApi.getLatest(16).catch((): EmbyItem[] => []),
+      pointsApi.log({ limit: 1 }).catch((): null => null),
+      checkinApi.status().catch((): null => null),
+      inviteApi.myCode().catch((): null => null),
+      subscriptionApi.getMine().catch((): MySubscription[] => []),
     ])
     account.value = card
     unreadCount.value = (unread as any)?.unread_count ?? 0
     notices.value = Array.isArray(anns) ? anns : []
     resumeItems.value = resume
+    latestItems.value = latest
+    if (pointsRes) quickStats.value.balance = pointsRes.balance
+    if (checkinRes) {
+      quickStats.value.streak = checkinRes.streak
+      quickStats.value.checkedToday = checkinRes.checked_today
+    }
+    if (inviteRes) quickStats.value.invited = inviteRes.invited_count
+    subscriptions.value = Array.isArray(subs) ? subs : []
   } catch (err: any) {
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')
@@ -93,159 +154,103 @@ onMounted(async () => {
     loading.value = false
   }
 })
-
-async function refreshProfile() {
-  loading.value = true
-  try {
-    account.value = await embyApi.getAccountCard()
-  } catch {
-    // 401 已由拦截器处理
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleLogout() {
-  await userStore.logout()
-  router.push('/login')
-}
-
-const fmtDate = (iso: string | null | undefined) => {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
-}
 </script>
 
 <template>
   <div class="home-view">
-    <!-- Hero：问候 + 主行动 + 账号速览（合并原 hero 与连接信息卡） -->
+    <!-- Hero：问候 + 身份 + 主行动 -->
     <section class="hero">
       <div class="hero-glow" aria-hidden="true"></div>
-      <div class="container hero-grid">
-        <div class="hero-left">
-          <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
+      <div class="container hero-inner">
+        <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
+        <div class="hero-title-row">
           <h1 class="hero-title">{{ user?.username || '观影用户' }}</h1>
-          <p class="hero-sub">
-            门户账号即 Emby 账号 — 用同一组凭据登录任意客户端即可开始观影。
-          </p>
-          <div class="hero-actions">
-            <RouterLink class="btn btn-primary" to="/media">
-              <Play :size="16" />
-              进入媒体库
-            </RouterLink>
-            <RouterLink class="btn btn-ghost" to="/request">
-              <Film :size="16" />
-              求片
-            </RouterLink>
-          </div>
-
-          <!-- 账号速览行（连接信息压缩为三个可复制 chip） -->
-          <div class="cred-strip" :class="{ loading }">
-            <button
-              v-for="row in [
-                { key: 'server', label: '服务器', value: serverUrl, mono: true },
-                { key: 'user', label: '用户名', value: embyUsername, mono: true },
-                { key: 'pwd', label: '密码', value: hasPassword ? '与门户密码相同' : '未设置', mono: false },
-              ]"
-              :key="row.key"
-              class="cred-chip"
-              :title="`点击复制${row.label}`"
-              @click="row.key !== 'pwd' && copyText(row.value, row.key)"
-            >
-              <span class="cred-chip-label">{{ row.label }}</span>
-              <span class="cred-chip-value mono" :class="{ dim: row.key === 'pwd' }">{{ row.value }}</span>
-              <Check v-if="copiedField === row.key" :size="13" class="chip-ok" />
-              <Copy v-else-if="row.key !== 'pwd'" :size="13" class="chip-copy" />
-              <Lock v-else :size="13" class="chip-copy" />
-            </button>
-          </div>
-          <p class="cred-hint">
-            <Key :size="12" />
-            三个凭据均可在「个人中心」管理 ·
-            <button class="hint-link" @click="copyAll">复制全部</button>
-            <span v-if="hasPassword" class="hint-eye" @click="showPassword = !showPassword">
-              <Eye v-if="showPassword" :size="12" />
-              <Lock v-else :size="12" />
-            </span>
-          </p>
+          <span v-if="activeSub" class="hero-vip">
+            <Crown :size="12" />
+            {{ activeSub.plan_name }}
+          </span>
         </div>
-
-        <!-- 右侧：公告卡片（合并原公告与消息） -->
-        <aside v-if="notices.length || unreadCount > 0" class="hero-aside au-card">
-          <header class="aside-head">
-            <h2 class="aside-title">
-              <Megaphone :size="15" />
-              站点动态
-            </h2>
-            <RouterLink to="/messages" class="aside-link">
-              全部
-              <ChevronRight :size="13" />
-            </RouterLink>
-          </header>
-          <ul class="notice-list">
-            <li v-for="n in notices.slice(0, 3)" :key="n.id" class="notice-item">
-              <span class="notice-dot"></span>
-              <div class="notice-body">
-                <p class="notice-title">{{ n.title }}</p>
-                <p class="notice-meta">{{ fmtDate(n.created_at) }}</p>
-              </div>
-            </li>
-          </ul>
-          <RouterLink to="/messages" class="unread-row">
-            <Inbox :size="15" />
-            <span>消息中心</span>
-            <span class="unread-pill" :class="{ hot: unreadCount > 0 }">
-              {{ unreadCount > 0 ? `${unreadCount} 条未读` : '暂无未读' }}
-            </span>
-          </RouterLink>
-        </aside>
+        <p class="hero-sub">门户账号即 Emby 账号 — 同一凭据登录任意客户端开始观影。</p>
+        <RouterLink class="btn btn-primary" to="/media">
+          <Play :size="16" />
+          进入媒体库
+        </RouterLink>
       </div>
     </section>
 
     <main class="container main">
-      <!-- 继续观看：绝对主视觉 -->
-      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" class="resume-row" />
-
-      <!-- 服务网格：统一规格的入口卡（替代原先 7 张零散 quick-card + 独立公告卡） -->
-      <section class="svc-section">
-        <header class="svc-head">
-          <h2 class="svc-title">我的服务</h2>
-          <p class="svc-desc">签到赚积分 · 充值订阅 · 邀请返利 · 工单求片，都在这里</p>
-        </header>
-        <div class="svc-grid">
-          <RouterLink v-for="svc in [
-            { to: '/wallet', icon: Wallet, title: '我的钱包', desc: '余额 · 充值 · 订单', badge: '' },
-            { to: '/checkin', icon: CalendarCheck, title: '每日签到', desc: '连签加成得积分', badge: '' },
-            { to: '/invite', icon: Gift, title: '邀请返利', desc: '邀好友双方得奖', badge: '' },
-            { to: '/messages', icon: Inbox, title: '消息通知', desc: '公告与私信', badge: unreadCount > 0 ? String(unreadCount > 99 ? '99+' : unreadCount) : '' },
-            { to: '/tickets', icon: MessageSquare, title: '工单支持', desc: '遇到问题提交工单', badge: '' },
-            { to: '/request', icon: Film, title: '求片', desc: '想看的片子告诉我们', badge: '' },
-            { to: '/profile', icon: User, title: '个人中心', desc: '资料与安全设置', badge: '' },
-          ]" :key="svc.to" :to="svc.to" class="svc-card">
-            <div class="svc-icon">
-              <component :is="svc.icon" :size="18" />
-              <span v-if="svc.badge" class="svc-badge">{{ svc.badge }}</span>
-            </div>
-            <div class="svc-body">
-              <span class="svc-name">{{ svc.title }}</span>
-              <span class="svc-sub">{{ svc.desc }}</span>
-            </div>
-            <ChevronRight :size="15" class="svc-arrow" />
-          </RouterLink>
-        </div>
+      <!-- 账号速览条：订阅 / 积分 / 签到 / 邀请（数据展示，非按钮堆） -->
+      <section class="acct-strip au-card au-anim-up" :class="{ loading }">
+        <RouterLink
+          v-for="c in accountCells"
+          :key="c.to"
+          :to="c.to"
+          class="acct-cell"
+        >
+          <span class="cell-label">
+            <component :is="c.icon" :size="13" />
+            {{ c.label }}
+          </span>
+          <span class="cell-value">{{ c.value }}</span>
+          <span class="cell-sub" :class="{ hot: c.hot }">{{ c.sub }}</span>
+        </RouterLink>
       </section>
 
-      <!-- 次要区：播放器导入 + 退出（合并为一行，弱化视觉重量） -->
-      <section v-if="hasSchemes" class="scheme-bar au-card">
-        <div class="scheme-info">
-          <Tv :size="16" />
-          <div>
-            <p class="scheme-title">一键导入播放器</p>
-            <p class="scheme-desc">点击自动填充服务器与账号到客户端</p>
-          </div>
+      <!-- 内容区：继续观看 -->
+      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" class="row" />
+
+      <!-- 内容区：最近入库 -->
+      <MediaRow v-if="latestItems.length" title="最近入库" :items="latestItems.slice(0, 16)" class="row" />
+
+      <!-- 站点动态：单行细条 -->
+      <RouterLink v-if="notices.length || unreadCount > 0" to="/messages" class="news-strip au-card">
+        <Megaphone :size="15" class="news-icon" />
+        <span class="news-text">
+          <template v-if="notices.length">
+            {{ notices[0].title }}<template v-if="notices.length > 1"> 等 {{ notices.length }} 条公告</template>
+          </template>
+          <template v-else>查看站点动态与私信</template>
+        </span>
+        <span v-if="unreadCount > 0" class="news-badge">{{ unreadCount }} 条未读</span>
+        <ChevronRight :size="15" class="news-arrow" />
+      </RouterLink>
+
+      <!-- 连接播放器：凭据 + 一键导入，合并为一张卡 -->
+      <section class="connect-card au-card">
+        <header class="connect-head">
+          <span class="connect-title">
+            <Tv :size="16" />
+            连接播放器
+          </span>
+          <p class="connect-desc">在 Infuse、Forward 等 Emby 客户端中用以下凭据登录，或一键导入</p>
+        </header>
+
+        <div class="cred-strip">
+          <button
+            v-for="row in [
+              { key: 'server', label: '服务器', value: serverUrl, mono: true },
+              { key: 'user', label: '用户名', value: embyUsername, mono: true },
+              { key: 'pwd', label: '密码', value: hasPassword ? '与门户密码相同' : '未设置', mono: false },
+            ]"
+            :key="row.key"
+            class="cred-chip"
+            :title="`点击复制${row.label}`"
+            @click="row.key !== 'pwd' && copyText(row.value, row.key)"
+          >
+            <span class="cred-chip-label">{{ row.label }}</span>
+            <span class="cred-chip-value mono" :class="{ dim: row.key === 'pwd' }">{{ row.value }}</span>
+            <Check v-if="copiedField === row.key" :size="13" class="chip-ok" />
+            <Copy v-else-if="row.key !== 'pwd'" :size="13" class="chip-copy" />
+            <Lock v-else :size="13" class="chip-copy" />
+          </button>
         </div>
-        <div class="scheme-grid">
+        <p class="cred-hint">
+          <Key :size="12" />
+          凭据与门户账号一致，可在个人中心管理 ·
+          <button class="hint-link" @click="copyAll">复制全部</button>
+        </p>
+
+        <div v-if="hasSchemes" class="scheme-row">
           <button
             v-for="(url, name) in importSchemes"
             :key="name"
@@ -256,13 +261,6 @@ const fmtDate = (iso: string | null | undefined) => {
             {{ name }}
           </button>
         </div>
-      </section>
-
-      <section class="footer-actions">
-        <button class="btn btn-ghost danger" @click="handleLogout">
-          <LogOut :size="15" />
-          退出登录
-        </button>
       </section>
     </main>
   </div>
@@ -284,57 +282,64 @@ const fmtDate = (iso: string | null | undefined) => {
 
 .hero {
   position: relative;
-  padding: 3rem 0 2.25rem;
+  padding: 2.75rem 0 2rem;
   border-bottom: 1px solid var(--au-border);
   overflow: hidden;
 }
 
 .hero-glow {
   position: absolute;
-  top: -30%;
-  right: -10%;
-  width: 520px;
-  height: 400px;
+  top: -40%;
+  right: -8%;
+  width: 480px;
+  height: 360px;
   background: radial-gradient(ellipse at center, rgba(34, 211, 238, 0.1) 0%, transparent 70%);
   filter: blur(52px);
   pointer-events: none;
 }
 
-.hero-grid {
+.hero-inner {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 2.5rem;
-  align-items: start;
 }
 
 .hero-eyebrow {
   font-size: 0.8125rem;
   color: var(--au-primary);
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.4375rem;
+}
+
+.hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
 }
 
 .hero-title {
-  font-size: 1.875rem;
+  font-size: 1.75rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--au-text);
-  margin: 0 0 0.625rem;
+  margin: 0;
+}
+
+.hero-vip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1875rem 0.5625rem;
+  background: var(--au-gradient-warm);
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  border-radius: var(--au-r-full);
 }
 
 .hero-sub {
   font-size: 0.875rem;
   color: var(--au-text-3);
-  max-width: 480px;
-  line-height: 1.65;
-  margin: 0 0 1.375rem;
-}
-
-.hero-actions {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1.75rem;
+  margin: 0 0 1.125rem;
 }
 
 .btn {
@@ -364,37 +369,170 @@ const fmtDate = (iso: string | null | undefined) => {
   transform: translateY(-1px);
 }
 
-.btn-ghost {
-  background: var(--au-surface-2);
-  color: var(--au-text-2);
-  border: 1px solid var(--au-border);
+/* ==================== 账号速览条 ==================== */
+
+.acct-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: 2rem;
+  transition: opacity var(--au-fast) var(--au-ease);
 }
 
-.btn-ghost:hover {
-  background: var(--au-surface-3);
+.acct-strip.loading {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.acct-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  padding: 1rem 1.25rem;
+  min-width: 0;
+  text-decoration: none;
+  border-right: 1px solid var(--au-border);
+  transition: background var(--au-fast) var(--au-ease);
+}
+
+.acct-cell:nth-child(4n) {
+  border-right: none;
+}
+
+.acct-cell:hover {
+  background: var(--au-surface-2);
+}
+
+.cell-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+}
+
+.cell-label svg {
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.cell-value {
+  font-size: 1.1875rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--au-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.cell-sub {
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cell-sub.hot {
+  color: var(--au-warning);
+  font-weight: 600;
+}
+
+/* ==================== 内容行 ==================== */
+
+.main {
+  padding: 2rem 1.25rem 3.5rem;
+}
+
+.row {
+  margin-bottom: 2.25rem;
+}
+
+/* ==================== 站点动态条 ==================== */
+
+.news-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.8125rem 1.125rem;
+  margin-bottom: 1.25rem;
+  text-decoration: none;
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
+  transition: border-color var(--au-fast) var(--au-ease);
+}
+
+.news-strip:hover {
+  border-color: var(--au-primary-border);
+}
+
+.news-icon {
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.news-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.news-badge {
+  padding: 0.125rem 0.5rem;
+  background: var(--au-warning-soft);
+  color: var(--au-warning);
+  border-radius: var(--au-r-full);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.news-arrow {
+  color: var(--au-text-4);
+  flex-shrink: 0;
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.news-strip:hover .news-arrow {
+  color: var(--au-primary);
+}
+
+/* ==================== 连接播放器 ==================== */
+
+.connect-card {
+  padding: 1.125rem 1.25rem 1.25rem;
+}
+
+.connect-head {
+  margin-bottom: 0.875rem;
+}
+
+.connect-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
   color: var(--au-text);
 }
 
-.btn-ghost.danger {
-  color: var(--au-danger);
+.connect-title svg {
+  color: var(--au-primary);
 }
 
-.btn-ghost.danger:hover {
-  background: var(--au-danger-soft);
-  border-color: rgba(251, 113, 133, 0.3);
+.connect-desc {
+  margin: 0.25rem 0 0;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
 }
 
-/* 账号速览 chip 行 */
 .cred-strip {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
-  transition: opacity var(--au-fast) var(--au-ease);
-}
-
-.cred-strip.loading {
-  opacity: 0.45;
-  pointer-events: none;
 }
 
 .cred-chip {
@@ -404,7 +542,7 @@ const fmtDate = (iso: string | null | undefined) => {
   max-width: 100%;
   height: 36px;
   padding: 0 0.75rem;
-  background: var(--au-surface);
+  background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   border-radius: 10px;
   cursor: pointer;
@@ -453,7 +591,7 @@ const fmtDate = (iso: string | null | undefined) => {
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  margin: 0.75rem 0 0;
+  margin: 0.625rem 0 0;
   font-size: 0.6875rem;
   color: var(--au-text-4);
 }
@@ -471,295 +609,13 @@ const fmtDate = (iso: string | null | undefined) => {
   text-decoration: underline;
 }
 
-.hint-eye {
-  display: inline-flex;
-  color: var(--au-text-4);
-  cursor: pointer;
-}
-
-.hint-eye:hover {
-  color: var(--au-primary);
-}
-
-/* ==================== Hero 侧栏（站点动态） ==================== */
-
-.hero-aside {
-  padding: 1.125rem 1.125rem 0.875rem;
-}
-
-.aside-head {
+.scheme-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.875rem;
-}
-
-.aside-title {
-  display: flex;
-  align-items: center;
-  gap: 0.4375rem;
-  margin: 0;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.aside-title svg {
-  color: var(--au-primary);
-}
-
-.aside-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.125rem;
-  font-size: 0.75rem;
-  color: var(--au-text-4);
-  text-decoration: none;
-  transition: color var(--au-fast) var(--au-ease);
-}
-
-.aside-link:hover {
-  color: var(--au-primary);
-}
-
-.notice-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.notice-item {
-  display: flex;
-  gap: 0.625rem;
-  align-items: flex-start;
-}
-
-.notice-dot {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  margin-top: 0.4375rem;
-  border-radius: 50%;
-  background: var(--au-primary);
-}
-
-.notice-body {
-  min-width: 0;
-}
-
-.notice-title {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--au-text-2);
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.notice-meta {
-  margin: 0.125rem 0 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.unread-row {
-  display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.875rem;
-  padding: 0.625rem 0.75rem;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: 10px;
-  color: var(--au-text-2);
-  font-size: 0.8125rem;
-  text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease);
-}
-
-.unread-row:hover {
-  border-color: var(--au-primary-border);
-}
-
-.unread-pill {
-  margin-left: auto;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.unread-pill.hot {
-  padding: 0.125rem 0.5rem;
-  background: var(--au-warning-soft);
-  color: var(--au-warning);
-  border-radius: var(--au-r-full);
-  font-weight: 600;
-}
-
-/* ==================== 主体 ==================== */
-
-.main {
-  padding: 2rem 1.25rem 3rem;
-}
-
-.resume-row {
-  margin-bottom: 2.25rem;
-}
-
-/* 服务网格 */
-
-.svc-section {
-  margin-bottom: 2rem;
-}
-
-.svc-head {
-  margin-bottom: 1rem;
-}
-
-.svc-title {
-  margin: 0 0 0.25rem;
-  font-size: 1.0625rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.svc-desc {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--au-text-4);
-}
-
-.svc-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.75rem;
-}
-
-.svc-card {
-  display: flex;
-  align-items: center;
-  gap: 0.6875rem;
-  padding: 0.9375rem;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
-  text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
-}
-
-.svc-card:hover {
-  border-color: var(--au-primary-border);
-  background: var(--au-primary-soft);
-  transform: translateY(-2px);
-}
-
-.svc-icon {
-  position: relative;
-  flex-shrink: 0;
-  width: 38px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: 10px;
-  color: var(--au-primary);
-}
-
-.svc-badge {
-  position: absolute;
-  top: -6px;
-  right: -6px;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-warning);
-  color: #1c1917;
-  font-size: 0.5625rem;
-  font-weight: 700;
-  border-radius: var(--au-r-full);
-}
-
-.svc-body {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.svc-name {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.svc-sub {
-  margin-top: 0.125rem;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.svc-arrow {
-  flex-shrink: 0;
-  margin-left: auto;
-  color: var(--au-text-4);
-  opacity: 0;
-  transform: translateX(-3px);
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.svc-card:hover .svc-arrow {
-  opacity: 1;
-  transform: translateX(0);
-  color: var(--au-primary);
-}
-
-/* ==================== 播放器导入条 ==================== */
-
-.scheme-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.25rem;
-  padding: 1rem 1.25rem;
-  margin-bottom: 1.5rem;
-  flex-wrap: wrap;
-}
-
-.scheme-info {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  color: var(--au-primary);
-}
-
-.scheme-title {
-  margin: 0;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.scheme-desc {
-  margin: 0.125rem 0 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.scheme-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
+  padding-top: 0.875rem;
+  border-top: 1px dashed var(--au-border);
 }
 
 .scheme-btn {
@@ -784,47 +640,39 @@ const fmtDate = (iso: string | null | undefined) => {
   color: var(--au-primary);
 }
 
-/* ==================== 底部 ==================== */
+/* ==================== 响应式 ==================== */
 
-.footer-actions {
-  display: flex;
-  justify-content: center;
-  padding: 0.5rem 0 0;
-}
-
-@media (max-width: 960px) {
-  .hero-grid {
-    grid-template-columns: 1fr;
-    gap: 2rem;
-  }
-
-  .hero-aside {
-    max-width: 480px;
+@media (max-width: 900px) {
+  .main {
+    padding-bottom: 7rem;
   }
 }
 
 @media (max-width: 760px) {
-  .svc-grid {
+  .acct-strip {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .acct-cell:nth-child(4n) {
+    border-right: 1px solid var(--au-border);
+  }
+
+  .acct-cell:nth-child(2n) {
+    border-right: none;
+  }
+
+  .acct-cell:nth-child(-n+2) {
+    border-bottom: 1px solid var(--au-border);
   }
 }
 
 @media (max-width: 640px) {
   .hero {
-    padding: 2.25rem 0 1.875rem;
+    padding: 2.25rem 0 1.75rem;
   }
 
   .hero-title {
     font-size: 1.5rem;
-  }
-
-  .svc-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .scheme-bar {
-    flex-direction: column;
-    align-items: stretch;
   }
 }
 </style>

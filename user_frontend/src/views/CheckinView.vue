@@ -103,59 +103,70 @@ onMounted(load)
 
 <template>
   <div class="au-page checkin-view">
-    <!-- 主打卡卡 -->
+    <!-- 主打卡卡：左文右数据的横向布局 -->
     <section class="sign-card au-anim-up" :class="{ signed: status?.checked_today }">
       <div class="sign-glow" aria-hidden="true" />
 
       <div class="sign-body">
-        <div class="sign-icon-wrap" :class="{ pulsing: !status?.checked_today && !loading }">
-          <PartyPopper v-if="justSigned || status?.checked_today" :size="30" />
-          <CalendarCheck v-else :size="30" />
-        </div>
-
-        <h1 class="sign-title">
-          <template v-if="loading">加载中…</template>
-          <template v-else-if="justSigned">签到成功！</template>
-          <template v-else-if="status?.checked_today">今日已签到</template>
-          <template v-else>今日还没签到</template>
-        </h1>
-        <p class="sign-sub">
-          <template v-if="!loading && status">
-            连续签到 <strong>{{ status.streak }}</strong> 天 · 今日可得
-            <strong class="reward-num">+{{ justSigned ? status.base_points : rewardPreview }}</strong> 积分
-          </template>
-          <template v-else>…</template>
-        </p>
-
-        <button
-          class="au-btn sign-btn"
-          :class="{ done: status?.checked_today || justSigned }"
-          :disabled="loading || signing || status?.checked_today"
-          @click="handleSign"
-        >
-          <span v-if="signing" class="au-spinner spinner-sm" />
-          <template v-else-if="justSigned">+{{ rewardPreview }} 积分到账 🎉</template>
-          <template v-else-if="status?.checked_today">明日再来</template>
-          <template v-else>立即签到 +{{ rewardPreview }}</template>
-        </button>
-
-        <!-- 连签进度 -->
-        <div v-if="status" class="streak-track">
-          <div
-            v-for="i in 7"
-            :key="i"
-            class="streak-dot"
-            :class="{ lit: i <= Math.min(status.streak, 7) }"
-            :title="`连续第 ${i} 天`"
-          >
-            <Flame v-if="i <= Math.min(status.streak, 7)" :size="13" />
-            <span v-else>{{ i }}</span>
+        <!-- 左：打卡主区 -->
+        <div class="sign-main">
+          <div class="sign-icon-row">
+            <div class="sign-icon-wrap" :class="{ pulsing: !status?.checked_today && !loading }">
+              <PartyPopper v-if="justSigned || status?.checked_today" :size="26" />
+              <CalendarCheck v-else :size="26" />
+            </div>
+            <div>
+              <h1 class="sign-title">
+                <template v-if="loading">加载中…</template>
+                <template v-else-if="justSigned">签到成功！</template>
+                <template v-else-if="status?.checked_today">今日已签到</template>
+                <template v-else>今日还没签到</template>
+              </h1>
+              <p class="sign-sub">
+                <template v-if="!loading && status">
+                  连续签到 <strong>{{ status.streak }}</strong> 天
+                </template>
+                <template v-else>…</template>
+              </p>
+            </div>
           </div>
+
+          <button
+            class="au-btn sign-btn"
+            :class="{ done: status?.checked_today || justSigned }"
+            :disabled="loading || signing || status?.checked_today"
+            @click="handleSign"
+          >
+            <span v-if="signing" class="au-spinner spinner-sm" />
+            <template v-else-if="justSigned">+{{ rewardPreview }} 积分到账 🎉</template>
+            <template v-else-if="status?.checked_today">明日再来</template>
+            <template v-else>立即签到 +{{ rewardPreview }}</template>
+          </button>
         </div>
-        <p class="streak-hint">
-          每日基础 +{{ status?.base_points ?? '—' }} 分，
-          连签每天多 +{{ status?.streak_bonus ?? '—' }} 分（最高加成 +{{ status?.streak_max_bonus ?? '—' }}）
-        </p>
+
+        <div class="sign-divider" aria-hidden="true" />
+
+        <!-- 右：连签进度与奖励规则 -->
+        <div v-if="status" class="sign-side">
+          <div class="streak-row">
+            <div
+              v-for="i in 7"
+              :key="i"
+              class="streak-dot"
+              :class="{ lit: i <= Math.min(status.streak, 7) }"
+              :title="`连续第 ${i} 天`"
+            >
+              <Flame v-if="i <= Math.min(status.streak, 7)" :size="12" />
+              <span v-else>{{ i }}</span>
+            </div>
+          </div>
+          <p class="streak-hint">
+            今日可得 <strong class="reward-num">+{{ justSigned ? status.base_points : rewardPreview }}</strong> 积分
+          </p>
+          <p class="streak-rule">
+            基础 +{{ status.base_points }} / 天 · 连签每天多 +{{ status.streak_bonus }}（封顶 +{{ status.streak_max_bonus }}）
+          </p>
+        </div>
       </div>
     </section>
 
@@ -210,7 +221,7 @@ onMounted(load)
 <style scoped>
 .checkin-view { display: flex; flex-direction: column; gap: 1.125rem; }
 
-/* ===== 主卡 ===== */
+/* ===== 主卡（左文右数据） ===== */
 .sign-card {
   position: relative;
   overflow: hidden;
@@ -218,8 +229,7 @@ onMounted(load)
   border: 1px solid var(--au-primary-border);
   background: linear-gradient(160deg, rgba(34, 211, 238, 0.12), rgba(167, 139, 250, 0.1) 60%, rgba(10, 16, 26, 0.4));
   backdrop-filter: blur(14px);
-  padding: 2.5rem 1.5rem 2rem;
-  text-align: center;
+  padding: 1.625rem 1.75rem;
 }
 .sign-card.signed { border-color: rgba(52, 211, 153, 0.35); }
 
@@ -235,36 +245,49 @@ onMounted(load)
   pointer-events: none;
 }
 
-.sign-body { position: relative; display: flex; flex-direction: column; align-items: center; gap: 0.625rem; }
+.sign-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+  gap: 1.75rem;
+  align-items: center;
+}
+
+.sign-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.sign-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+}
 
 .sign-icon-wrap {
-  width: 68px;
-  height: 68px;
+  width: 54px;
+  height: 54px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 22px;
+  border-radius: 16px;
   background: var(--au-gradient);
   color: #05141c;
   box-shadow: 0 8px 28px var(--au-primary-glow);
+  flex-shrink: 0;
 }
 .sign-icon-wrap.pulsing { animation: au-pulse-soft 1.8s ease-in-out infinite; }
 
-.sign-title { margin: 0.375rem 0 0; font-size: 1.5rem; font-weight: 800; color: var(--au-text); letter-spacing: -0.01em; }
-.sign-sub { margin: 0; font-size: 0.875rem; color: var(--au-text-2); }
+.sign-title { margin: 0; font-size: 1.3125rem; font-weight: 800; color: var(--au-text); letter-spacing: -0.01em; }
+.sign-sub { margin: 0.1875rem 0 0; font-size: 0.8125rem; color: var(--au-text-2); }
 .sign-sub strong { color: var(--au-text); font-weight: 700; }
-.reward-num {
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent !important;
-  font-size: 1.0625rem;
-}
 
 .sign-btn {
-  margin-top: 0.875rem;
-  height: 46px;
-  padding: 0 2rem;
+  height: 44px;
+  padding: 0 1.75rem;
   font-size: 0.9375rem;
 }
 .sign-btn.done {
@@ -274,15 +297,29 @@ onMounted(load)
   cursor: default;
 }
 
-.streak-track {
+.sign-divider {
+  background: var(--au-border);
+  height: 100%;
+  min-height: 72px;
+}
+
+/* 右侧：进度与规则 */
+.sign-side {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 1rem;
+  flex-direction: column;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.streak-row {
+  display: flex;
+  gap: 0.4375rem;
+  flex-wrap: wrap;
 }
 
 .streak-dot {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -290,7 +327,7 @@ onMounted(load)
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   color: var(--au-text-4);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   transition: all var(--au-med);
 }
@@ -301,7 +338,16 @@ onMounted(load)
   box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
-.streak-hint { margin: 0.625rem 0 0; font-size: 0.75rem; color: var(--au-text-3); }
+.streak-hint { margin: 0.125rem 0 0; font-size: 0.8125rem; color: var(--au-text-2); }
+.reward-num {
+  background: var(--au-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+  font-weight: 800;
+  font-size: 0.9375rem;
+}
+.streak-rule { margin: 0; font-size: 0.6875rem; color: var(--au-text-4); }
 
 .spinner-sm { width: 15px; height: 15px; border-width: 2px; }
 
@@ -417,6 +463,8 @@ onMounted(load)
 
 @media (max-width: 720px) {
   .bottom-grid { grid-template-columns: 1fr; }
-  .sign-card { padding: 2rem 1.125rem 1.5rem; }
+  .sign-card { padding: 1.375rem 1.25rem; }
+  .sign-body { grid-template-columns: 1fr; gap: 1.25rem; }
+  .sign-divider { height: 1px; width: 100%; min-height: 0; }
 }
 </style>
