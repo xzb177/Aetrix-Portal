@@ -3,23 +3,37 @@
   <head>
     <meta charset="UTF-8">
     <link rel="icon" href="/vite.svg">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#070b12">
+    <meta name="color-scheme" content="dark">
     <title>RoyalBot Admin</title>
     <style>
-      /* 初始加载中样式 - 通过 .loading 类控制 */
+      /*
+       * 应用根节点只负责占满视口。
+       * 这里不要写 display:flex + 居中：
+       * 1. 根节点是 flex 容器时，下面的 ::before 会变成与界面并排的一个 flex 项，
+       *    首屏加载提示会一直挂在界面上（.loading 类不会自己消失）；
+       * 2. justify-content: center 会把超宽内容（宽表格）向两侧顶，左边直接不可见。
+       * 背景保持透明，让 body 上的极光渐变透上来。
+       */
       #app {
         min-height: 100vh;
+        min-height: 100dvh;
+      }
+
+      /* 首屏加载提示：固定定位盖满全屏，JS 挂载完成后由 main.ts 去掉 .loading 类 */
+      #app.loading::before {
+        content: '加载中...';
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: #0a0a0a;
-        color: #fff;
-        font-family: system-ui, -apple-system, sans-serif;
-      }
-      /* 只有在 app 有 loading 类时才显示加载中 */
-      #app.loading::before {
-        content: '加载中...';
-        font-size: 14px;
+        background: #070b12;
+        color: #7f93ad;
+        font-size: 13px;
+        letter-spacing: 0.08em;
       }
     </style>
   </head>

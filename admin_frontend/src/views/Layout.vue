@@ -2,12 +2,14 @@
 /**
  * 管理后台布局：分组侧边栏 + 面包屑顶栏 + 管理员菜单
  *
- * v2.4.0 调整：
- * - 导航按业务域分组（概览 / 用户与订阅 / 运营 / 内容 / 支持 / 系统），12 项不再平铺
- * - 顶栏改为面包屑，长页面也能知道自己在哪一层
- * - 管理员菜单接上「修改密码」（此前后端已实现、前端无处调用）
+ * v2.4.0：导航按业务域分组、顶栏改面包屑、接上「修改密码」
+ * v2.6.10：移动端重新适配——
+ * - 侧边栏在 ≤1024px 变成抽屉（此前只在 <768px 变抽屉，平板仍是挤压的桌面布局）
+ * - 汉堡按钮只在需要时出现（此前桌面端顶栏一直挂着一个没用的按钮）
+ * - 抽屉打开时锁背景滚动、Esc / 点遮罩 / 切换路由都能关
+ * - 顶栏右侧成一簇（版本号在窄屏隐藏），内容区左右留白与底部安全区随屏幕变化
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -24,7 +26,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const sidebarOpen = ref(false)
 
-const APP_VERSION = 'v2.6.9'
+const APP_VERSION = 'v2.6.10'
 
 interface NavItem {
   path: string
@@ -85,7 +87,7 @@ const navGroups: { title: string; items: NavItem[] }[] = [
   },
 ]
 
-/** 面包屑：分组名 + 页面名 */
+/** 面包屑：分组名 + 页面名（窄屏只显示页面名，见样式） */
 const breadcrumb = computed(() => {
   for (const group of navGroups) {
     const hit = group.items.find((i) => i.path === route.path)
@@ -106,6 +108,22 @@ function logout() {
   auth.logout()
   router.push('/login')
 }
+
+function closeSidebar() {
+  sidebarOpen.value = false
+}
+
+// 抽屉打开时锁住背景滚动（否则手机上滚的是底下的内容），Esc 也能关
+watch(sidebarOpen, (open) => {
+  document.body.style.overflow = open ? 'hidden' : ''
+})
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeSidebar()
+}
+
+// 路由变化（含浏览器前进后退）一律收起抽屉
+watch(() => route.path, closeSidebar)
 
 // ==================== 修改密码 ====================
 
@@ -150,6 +168,7 @@ function onAdminCommand(cmd: string) {
 
 /** 进入后台时校正一次管理员身份（令牌失效 / 权限被回收时会被拦截器送回登录页） */
 onMounted(async () => {
+  window.addEventListener('keydown', onKeydown)
   try {
     const me = await fetchMe()
     if (auth.token) auth.setSession(auth.token, me)
@@ -157,14 +176,19 @@ onMounted(async () => {
     // 拦截器已处理
   }
 })
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  document.body.style.overflow = ''
+})
 </script>
 
 <template>
   <div class="admin-layout">
-    <!-- 移动端遮罩 -->
-    <div v-if="sidebarOpen" class="sidebar-mask" @click="sidebarOpen = false" />
+    <!-- 抽屉遮罩（窄屏点它关闭菜单） -->
+    <div v-if="sidebarOpen" class="sidebar-mask" @click="closeSidebar" />
 
-    <!-- 侧边栏 -->
+    <!-- 侧边栏：宽屏常驻，窄屏变抽屉 -->
     <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="sidebar-brand">
         <span class="brand-mark" />
@@ -172,7 +196,7 @@ onMounted(async () => {
           <strong>RoyalBot</strong>
           <span>{{ APP_VERSION }} 控制台</span>
         </div>
-        <button class="icon-btn sidebar-close" @click="sidebarOpen = false" aria-label="关闭菜单">
+        <button class="icon-btn sidebar-close" @click="closeSidebar" aria-label="关闭菜单">
           <X :size="18" />
         </button>
       </div>
@@ -186,7 +210,7 @@ onMounted(async () => {
             :to="item.path"
             class="nav-item"
             :class="{ active: route.path === item.path }"
-            @click="sidebarOpen = false"
+            @click="closeSidebar"
           >
             <component :is="item.icon" :size="17" />
             <span>{{ item.label }}</span>
@@ -221,28 +245,30 @@ onMounted(async () => {
           <span class="crumb-page">{{ breadcrumb.page }}</span>
         </nav>
 
-        <span class="topbar-version">{{ APP_VERSION }}</span>
+        <div class="topbar-right">
+          <span class="topbar-version">{{ APP_VERSION }}</span>
 
-        <button class="icon-btn" title="刷新当前页" @click="refreshPage">
-          <RefreshCw :size="16" />
-        </button>
-
-        <el-dropdown trigger="click" @command="onAdminCommand">
-          <button class="admin-chip">
-            <span class="chip-avatar">{{ auth.admin?.username?.charAt(0).toUpperCase() || 'A' }}</span>
-            <span class="chip-name">{{ auth.admin?.username || '管理员' }}</span>
+          <button class="icon-btn" title="刷新当前页" aria-label="刷新当前页" @click="refreshPage">
+            <RefreshCw :size="16" />
           </button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="password">
-                <KeyRound :size="14" style="margin-right: 6px" />修改密码
-              </el-dropdown-item>
-              <el-dropdown-item command="logout" divided>
-                <LogOut :size="14" style="margin-right: 6px" />退出登录
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+
+          <el-dropdown trigger="click" @command="onAdminCommand">
+            <button class="admin-chip" aria-label="管理员菜单">
+              <span class="chip-avatar">{{ auth.admin?.username?.charAt(0).toUpperCase() || 'A' }}</span>
+              <span class="chip-name">{{ auth.admin?.username || '管理员' }}</span>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="password">
+                  <KeyRound :size="14" style="margin-right: 6px" />修改密码
+                </el-dropdown-item>
+                <el-dropdown-item command="logout" divided>
+                  <LogOut :size="14" style="margin-right: 6px" />退出登录
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
       </header>
 
       <main class="admin-content">
@@ -274,6 +300,7 @@ onMounted(async () => {
 .admin-layout {
   display: flex;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .icon-btn {
@@ -282,6 +309,7 @@ onMounted(async () => {
   justify-content: center;
   width: 32px;
   height: 32px;
+  flex-shrink: 0;
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   background: transparent;
@@ -307,6 +335,7 @@ onMounted(async () => {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
 }
 
 .sidebar-brand {
@@ -335,6 +364,7 @@ onMounted(async () => {
   flex: 1;
   padding: 12px 10px 18px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .nav-group + .nav-group { margin-top: 14px; }
@@ -375,6 +405,7 @@ onMounted(async () => {
 .sidebar-footer {
   padding: 12px;
   border-top: 1px solid var(--border-subtle);
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 
 .admin-who { display: flex; align-items: center; gap: 10px; }
@@ -417,19 +448,35 @@ onMounted(async () => {
   z-index: 10;
 }
 
+/* 汉堡只在窄屏出现：桌面端固定 236px 侧边栏，不需要它 */
+.menu-btn { display: none; }
+
 .crumb { display: flex; align-items: center; gap: 7px; font-size: 13.5px; min-width: 0; }
 .crumb-group { color: var(--text-muted); }
 .crumb-sep { color: var(--text-muted); flex-shrink: 0; }
-.crumb-page { font-weight: 600; }
+.crumb-page {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 
 .topbar-version {
-  margin-left: auto;
   font-size: 11px;
   color: var(--primary);
   background: var(--primary-bg);
   border: 1px solid var(--primary-border);
   padding: 3px 10px;
   border-radius: var(--radius-full);
+  white-space: nowrap;
 }
 
 .admin-chip {
@@ -457,27 +504,67 @@ onMounted(async () => {
   margin: 0 auto;
 }
 
-/* ===== 响应式 ===== */
-@media (max-width: 768px) {
+/* ==================== 响应式 ==================== */
+
+/* 平板及以下：侧边栏收成抽屉（桌面布局在 768-1024 这段宽度上会被挤扁，所以提前收） */
+@media (max-width: 1024px) {
   .sidebar {
     position: fixed;
     left: 0;
     top: 0;
-    z-index: 50;
+    bottom: 0;
+    width: min(288px, 84vw);
+    height: 100dvh;
+    z-index: 60;
     transform: translateX(-100%);
-    transition: transform var(--transition-base);
+    /* 收起时同时隐藏，避免焦点落到屏幕外的菜单项上 */
+    visibility: hidden;
+    transition: transform var(--transition-base), visibility var(--transition-base);
+    box-shadow: 0 0 48px rgba(0, 0, 0, 0.5);
+    will-change: transform;
   }
-  .sidebar.open { transform: translateX(0); }
+  .sidebar.open { transform: translateX(0); visibility: visible; }
   .sidebar-close { display: inline-flex; }
+
   .sidebar-mask {
     position: fixed;
     inset: 0;
     background: var(--bg-overlay);
-    z-index: 40;
+    backdrop-filter: blur(2px);
+    z-index: 55;
   }
+
   .menu-btn { display: inline-flex; }
-  .crumb-group, .crumb-sep { display: none; }
+
+  .admin-content { padding: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
+}
+
+/* 宽屏下侧边栏常驻，不需要 visibility 过渡 */
+@media (min-width: 1025px) {
+  .sidebar { visibility: visible; }
+}
+
+/* 手机：顶栏与内容区收紧，触控目标放大 */
+@media (max-width: 768px) {
+  .admin-topbar { padding: 8px 12px; gap: 8px; }
+  .admin-content {
+    padding: 12px 12px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  .crumb-group,
+  .crumb-sep { display: none; }
+  .crumb { font-size: 14px; }
+
+  .topbar-version { display: none; }
   .chip-name { display: none; }
-  .admin-content { padding: 14px; }
+  .admin-chip { padding: 3px; border-radius: 50%; }
+
+  .icon-btn { width: 36px; height: 36px; }
+  .nav-item { padding: 11px 12px; }
+  .sidebar-brand { padding: 16px 14px; }
 }
 </style>
