@@ -7,7 +7,10 @@
 
 ## 🎯 完全自建架构（v2.0）
 
-本项目后端**内置完整的 Emby 协议兼容媒体服务器**，无需安装官方 Emby/EmbyServer，Emby 客户端（Infuse、Forward、Hills、SenPlayer、官方 App）可直接连接本后端：
+本项目后端**内置完整的 Emby 协议兼容媒体服务器**，无需安装官方 Emby/EmbyServer，Emby 客户端（Infuse、Forward、Hills、SenPlayer、官方 App）可直接连接：
+
+- **EM（面板）** 与 **EA（Emby API 网关）** 可分开部署：客户端直连 EA，面板跑 EM，两者共用同一个数据库与 `SECRET_KEY`（见 [docs/](docs/README.md)）
+- 也可以只跑一个进程（`ENABLE_EMBY_GATEWAY=true`，默认），由 `backend/main.py` 一并提供以下全部端点：
 
 ```
 Emby 客户端 ──HTTP──▶ backend/main.py（单进程单端口）
@@ -138,7 +141,10 @@ curl -X POST http://localhost:8000/api/user/auth/refresh \
 
 ```
 RoyalBot-Portal/
-├── serve.py                    # 统一后端启动器（单进程单端口）
+├── serve.py                    # EM（面板）启动器
+├── serve_emby.py               # EA（Emby API 网关）启动器（分离部署用）
+├── emby_api/
+│   └── main.py                 # EA 应用：只含 Emby 协议面 + 配对硬校验
 ├── backend/
 │   ├── main.py                 # FastAPI 主入口
 │   ├── security.py             # ★ JWT 签发/校验 + bcrypt 密码哈希
@@ -215,13 +221,23 @@ python main.py
 
 ## 🚢 部署
 
-完整部署文档在 [`docs/`](./docs/README.md)：
+整套系统可拆成两个独立部署的服务：
+
+| | **EM · Emby Manager（面板）** | **EA · Emby API（网关）** |
+| --- | --- | --- |
+| 面向 | 浏览器（用户 / 管理员） | 播放器客户端（Infuse / Fileball / Forward+ / SenPlayer / 官方 App） |
+| 管什么 | 注册 / 登录 / 套餐 / 续费 / 充值 / 邀请 / 卡码 / 签到 / 工单 / 风控 + 管理后台 | 只兑现协议：认证、媒体库浏览、拉流、转码、字幕、进度上报 |
+| 入口 | `python serve.py`（默认 :8000） | `python serve_emby.py`（默认 :8001） |
+
+**EM 是唯一事实来源**，EA 的用户 / 媒体库 / 策略全部来自 EM 写入的共享数据库，所以 **EA 不能脱离 EM 单独运行**（缺共享密钥或共享库时启动即被拒）。也可以只跑 EM 一个进程，由它一并提供协议面（`ENABLE_EMBY_GATEWAY=true`，默认）。
+
+完整文档在 [`docs/`](./docs/README.md)：
 
 | 文档 | 内容 |
 | --- | --- |
-| [文档中心](./docs/README.md) | 架构一图、该看哪一篇、为什么是单进程 |
-| [服务端部署](./docs/deploy-server.md) | 环境要求、`.env` 逐项说明、启动与 systemd 常驻、媒体库创建与扫描、播放器接入、监控 |
-| [门户与管理后台部署](./docs/deploy-web.md) | 两个前端构建、静态托管路径、Nginx + HTTPS、首次登录、验证清单 |
+| [文档中心](./docs/README.md) | EM / EA 架构一图、该看哪一篇、为什么两者都必须单进程 |
+| [EM 面板部署](./docs/deploy-em.md) | 环境要求、`.env` 逐项说明、前端构建与静态托管、Nginx + HTTPS、首次登录、媒体库扫描、运营配置 |
+| [EA 网关部署](./docs/deploy-ea.md) | 与 EM 的配对硬依赖、独立地址规划、systemd、客户端接入、付费墙 / 限流 / 踢设备、转码排错 |
 | [运维 · 备份 · 排错](./docs/operations.md) | 上线检查清单、安全基线、备份恢复、常见问题 |
 
 最短路径（单机裸部署）：
@@ -233,14 +249,22 @@ cp env.example .env                    # 至少设置 SECRET_KEY 与 EMBY_PUBLIC
 cd user_frontend  && npm ci && npm run build-only && cd ..
 cd admin_frontend && npm ci && npm run build      && cd ..
 
-python serve.py                        # 0.0.0.0:8000
+python serve.py                        # EM 面板 :8000（门户 / 管理后台 / API）
+python serve_emby.py                   # EA 网关 :8001（客户端连它，分离部署时才需要）
 ```
 
-启动后门户（`/`）、管理后台（`/admin`）、门户 API（`/api/*`）、Emby 协议网关（`/emby/*`）由同一端口对外服务；再用 Nginx 终结 TLS 即可，Emby / Infuse / SenPlayer 等客户端直接连该域名（详见上方文档）。
+再用 Nginx 终结 TLS 并将两个域名分别指向它们即可（含网页播放器所需的 `/emby/*` 反代，见文档）。
 
 > ⚠️ **Freebuff Hosting 无法部署本项目**：该平台只构建 React 项目（Vite + React / Next.js / CRA），而本项目是 Vue 3 + Python FastAPI。原因与替代路径见 [运维 · 排错](./docs/operations.md#freebuff-hosting-报找不到受支持的框架)。
 
 ## 📝 更新日志
+
+### v2.6.3 (2026-09-20) — EM / EA 分离部署
+- ✅ **面板与协议后端拆成两个服务**：新增 `emby_api/` + `serve_emby.py` 作为 EA（Emby API 网关），客户端直连它；EM 仍是唯一事实来源，业务策略（付费墙 / 下载开关 / 设备上限 / 限流）由 EM 下发、由 EA 在客户端侧强制执行
+- ✅ **EA 不能脱离 EM 单独运行**：启动时硬校验共享 `SECRET_KEY` 与共享库中 EM 建的表，不满足即拒绝启动；`EM_PANEL_URL` 可达性探测仅告警，不让 EM 重启禁断正在播放的会话
+- ✅ `ENABLE_EMBY_GATEWAY=false` 时 EM 不再提供协议面，并对误连的客户端返回「请连 EA」的明确指引
+- ✅ 新增 `scripts/smoke_test_ea_split.py`（15 项断言）：配对闸门、EA 协议面（含裸根路径）、健康上报、EM 两种模式行为与 SPA 不受影响
+- 📚 文档中心按 EM / EA 重编排（`docs/deploy-em.md` / `docs/deploy-ea.md`）
 
 ### v2.6.2 (2026-09-20) — 文档中心（部署指南）
 - 📚 **新增 `docs/` 文档中心**：服务端部署、门户与管理后台部署、运维与排错三篇指南，加上索引页；README「部署」章节改为指向它（本版仅文档，应用版本号仍为 2.6.1）

@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.6.0",
+    version="2.6.3",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -190,8 +190,43 @@ app.include_router(user_router)
 app.include_router(admin_router)
 app.include_router(admin_ops_router)
 
-# 自建 Emby 服务器（Emby 客户端直接连接本后端：https://host:port/emby）
-app.include_router(emby_router)
+# ==================== 自建 Emby 协议网关 ====================
+# 默认由 EM 一并提供（单进程模式，现有部署行为不变）；
+# 分离部署时置 ENABLE_EMBY_GATEWAY=false，协议面交给独立的 EA 服务，见 docs/deploy-ea.md
+_ENABLE_EMBY_GATEWAY = os.getenv("ENABLE_EMBY_GATEWAY", "true").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+
+if _ENABLE_EMBY_GATEWAY:
+    # Emby 客户端直接连接本后端：https://host:port/emby（另含裸根路径 /System/Info 等）
+    app.include_router(emby_router)
+    logger.info("Emby 协议网关已挂载于 EM（单进程模式）")
+else:
+    logger.info("Emby 协议网关未在 EM 启用（分离部署）；客户端请连接 EA")
+
+    _EA_HINT = os.getenv("EMBY_API_PUBLIC_URL", "").strip().rstrip("/") or "EA 服务地址"
+
+    async def _ea_pointer():
+        """分离部署下，客户端误连面板时给出明确指引，而不是返回 SPA 的 HTML"""
+        raise HTTPException(
+            status_code=404,
+            detail=f"本地址（EM 面板）不提供 Emby 协议面，请把客户端指向 EA：{_EA_HINT}",
+        )
+
+    # 裸根协议路径（/System/Info、/Users/AuthenticateByName …）与 /emby/* 各注册一份指引
+    for _route in emby_router.routes:
+        _route_path = getattr(_route, "path", "")
+        if _route_path and not _route_path.startswith("/emby"):
+            app.api_route(
+                _route_path,
+                methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+                include_in_schema=False,
+            )(_ea_pointer)
+    app.api_route(
+        "/emby/{rest:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+        include_in_schema=False,
+    )(_ea_pointer)
 
 # 自建 Emby 门户 API（用户端账号卡/续看/收藏 + 管理端媒体库管理）
 app.include_router(user_emby_router)

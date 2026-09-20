@@ -1,55 +1,71 @@
 # Aetrix Portal 文档中心
 
-本项目的部署形态是「**一个 Python 进程 + 两个前端构建产物**」：统一后端同时提供门户 API、自建 Emby 协议网关，以及用户端与管理后台的静态页面。没有独立的数据库容器、没有必须安装的官方 Emby。
+整套系统由两个可分别部署的部分组成：
+
+| | **EM · Emby Manager** | **EA · Emby API** |
+| --- | --- | --- |
+| 角色 | 运营面板 | Emby 协议网关 |
+| 面向谁 | 浏览器（用户 / 管理员） | 播放器客户端（Infuse / Fileball / Forward+ / Hills / SenPlayer / 官方 App） |
+| 管什么 | 注册 / 登录 / 套餐 / 续费 / 充值 / 邀请 / 卡码 / 签到 / 工单 / 风控 + 管理后台 | 只兑现协议：认证、媒体库浏览、拉流、转码、字幕、进度上报 |
+| 入口 | `python serve.py` | `python serve_emby.py` |
+| 部署文档 | [deploy-em.md](./deploy-em.md) | [deploy-ea.md](./deploy-ea.md) |
+
+**EM 是唯一事实来源**：用户、媒体库、套餐与订阅、设备上限、下载开关、限流口径都由 EM 写入共享数据库，EA 只读+回写播放态。因此 **EA 不能脱离 EM 单独运行**（缺共享密钥或共享库时会拒绝启动）。
+
+也可以只跑 EM 一个进程（`ENABLE_EMBY_GATEWAY=true`，默认），由 EM 一并提供协议面——单机小站够用，上量后再拆。
 
 ## 我该看哪一篇？
 
 | 你的情况 | 看这篇 |
 | --- | --- |
-| 要把媒体服务跑起来：后端、Emby 网关、媒体库、播放器接入 | [服务端部署](./deploy-server.md) |
-| 要把门户网站和管理后台发布出去：前端构建、域名、HTTPS、反向代理 | [门户与管理后台部署](./deploy-web.md) |
-| 上线前检查、备份与恢复、出问题了怎么查 | [运维 · 备份 · 排错](./operations.md) |
+| 把面板跑起来：域名、前端构建、用户与销售相关的一切、后台运营配置 | [EM 面板部署](./deploy-em.md) |
+| 让客户端连上来：协议网关、独立地址、转码、限流与踢设备 | [EA 网关部署](./deploy-ea.md) |
+| 上线检查、安全基线、备份恢复、出问题了怎么查 | [运维 · 备份 · 排错](./operations.md) |
 | 想用 Freebuff Hosting 部署 | 做不到，原因见 [运维 · 排错](./operations.md#freebuff-hosting-报找不到受支持的框架) |
 
 ## 架构一图
 
 ```
-   Emby / Infuse /        ┌────────────────────────────────┐
-   Forward / Hills /      │        Nginx (443, HTTPS)      │
-   SenPlayer 等客户端 ───► │  /        → 门户 SPA（静态）    │
-                          │  /admin   → 管理后台（静态）    │
-                          │  /api/*   → 门户 / 管理 API     │
-                          │  /emby/*  → Emby 协议网关       │
-                          └───────────────┬────────────────┘
-                                          │ 反向代理
-                                          ▼
-                          ┌────────────────────────────────┐
-                          │  backend（统一后端，默认 :8000） │
-                          │  FastAPI 单进程                 │
-                          │  ├─ /api/user/*    用户门户 API │
-                          │  ├─ /api/admin/*   管理后台 API │
-                          │  ├─ /emby/*        Emby 协议面  │
-                          │  ├─ /              门户静态托管  │
-                          │  ├─ /admin         后台静态托管  │
-                          │  ├─ /api/health    健康检查     │
-                          │  └─ /metrics       Prometheus   │
-                          └───────────────┬────────────────┘
-                                          ▼
-             SQLite（默认）/ PostgreSQL · Redis（可选）· ffmpeg（转码，可选）
+   浏览器                                            播放器客户端
+   (用户 / 管理员)                    (Infuse / Fileball / Forward+ / Hills /
+        │                             SenPlayer / 官方 App)
+        │                                        │
+        ▼                                        ▼
+  ┌──────────────────┐                  ┌──────────────────────┐
+  │  panel.example   │  /emby/* 反代    │   emby.example.com   │
+  │   Nginx + TLS    │ ───────────────► │    Nginx + TLS       │
+  └────────┬─────────┘                  └──────────┬───────────┘
+           │                                       │
+           ▼                                       ▼
+  ┌──────────────────────────┐          ┌──────────────────────────┐
+  │  EM · 面板 (:8000)        │          │  EA · 协议网关 (:8001)    │
+  │  FastAPI 单进程           │          │  FastAPI 单进程           │
+  │  ├─ /api/user/*  门户 API │          │  ├─ /emby/*     协议面    │
+  │  ├─ /api/admin/* 管理 API │          │  ├─ /System/Info 裸根路径 │
+  │  ├─ /             门户 SPA│          │  ├─ /Videos/...  直连/HLS│
+  │  ├─ /admin        后台 SPA│          │  ├─ /Items/...   图片/详情│
+  │  ├─ /ws          实时通知│          │  └─ /api/health  配对状态 │
+  │  └─ /api/health           │          └──────────┬───────────┘
+  └────────┬─────────────────┘                     │
+           │        共享数据库（唯一事实来源）        │
+           └────────────────┬──────────────────────┘
+                            ▼
+        SQLite（同一台机器）或 PostgreSQL（可跨机）
+        · Redis（可选）· ffmpeg（转码，装在 EA 那台）
 ```
 
-## 为什么是单进程
+## 为什么两个服务都必须是单进程
 
-`serve.py` 固定 `workers=1`。HLS 转码的 ffmpeg 子进程管理与内存态会话都在进程内闭环，多 worker 会让「谁在转码、谁的会话还有效」分散到不同进程，出现重复 fork 与进程泄漏。**不要给统一后端开多 worker**，横向扩展请靠给不同用户分站点。
+`serve.py` 与 `serve_emby.py` 都固定 `workers=1`。HLS 转码的 ffmpeg 子进程管理与内存态会话都在进程内闭环，多 worker 会让"谁在转码、谁的会话还有效"分散到不同进程，出现重复 fork 与进程泄漏。**不要给任一个服务开多 worker**，横向扩展请按站点拆分。
 
 ## 与旧版拆分架构的关系
 
-仓库里同时留着 v2.0 之前的**拆分式**部署配置：`docker-compose.yml`（`admin_frontend` / `admin_backend` / `user_frontend` 三个容器）、`deploy.sh`、`update.sh`、`user_backend/`、`admin_backend/`。当前主线是**统一后端**（`backend/` + `serve.py`），部署请以本目录文档为准；旧栈仅在你需要接管一套历史部署时才用，且它与统一后端**不共享数据库结构**，不要混用（详见 [运维 · 排错](./operations.md#旧版-compose-栈能直接用吗)）。
+仓库里同时留着 v2.0 之前的**旧拆分式**部署配置：`docker-compose.yml`（`admin_frontend` / `admin_backend` / `user_frontend` 三个容器）、`deploy.sh`、`update.sh`、`user_backend/`、`admin_backend/`。它们与当前的 EM/EA 架构**不共享数据库结构**，不要混用（详见 [运维 · 排错](./operations.md#旧版-compose-栈能直接用吗)）。
 
 ## 文档清单
 
 | 文档 | 内容 |
 | --- | --- |
-| [deploy-server.md](./deploy-server.md) | 环境要求、依赖安装、`.env` 配置、启动与 systemd 常驻、媒体库创建与扫描、播放器接入、监控 |
-| [deploy-web.md](./deploy-web.md) | 两个前端的构建、静态托管路径、Nginx + HTTPS 反代、首登初始化、验证 |
+| [deploy-em.md](./deploy-em.md) | 环境要求、`.env` 逐项说明、前端构建与静态托管、Nginx + HTTPS、首次登录、媒体库扫描、运营配置、验证与备份 |
+| [deploy-ea.md](./deploy-ea.md) | 与 EM 的配对硬依赖、独立地址规划、systemd、客户端接入、付费墙/限流/设备控制、转码排错、单进程回退 |
 | [operations.md](./operations.md) | 上线检查清单、安全基线、备份与恢复、常见问题与排错 |
