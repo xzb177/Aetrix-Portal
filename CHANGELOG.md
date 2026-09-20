@@ -15,7 +15,7 @@
 
 ### 变更 (Changed)
 - 文档中心按 EM / EA 重编排：新增 `docs/deploy-em.md`（面板：域名、前端构建、运营配置）与 `docs/deploy-ea.md`（网关：配对硬依赖、独立地址、客户端接入、限流与设备控制）；原 `deploy-server.md` / `deploy-web.md` 的内容并入这两篇（故不再单独存在）
-- 版本号：后端 2.6.3（本版未改前端代码，用户端 / 管理端保持 2.6.1）
+- 版本号：后端 / 用户端 / 管理端 / EA 2.6.3（`backend/main.py`、`emby_api/main.py`、`user_frontend/package.json`、`admin_frontend/package.json` 与后台顶栏 `APP_VERSION` 四处同步）
 
 ### 修复 (Fixed)
 - `backend/main.py` 的 FastAPI `version` 字段此前停留在 2.6.0、与 CHANGELOG 不一致，现同步
