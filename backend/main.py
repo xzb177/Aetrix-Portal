@@ -17,8 +17,10 @@ from prometheus_client import make_asgi_app
 
 from backend.database import engine, get_db, init_db, cache, DATABASE_TYPE
 from backend import models  # 导入所有模型
+from backend.download_guard import DownloadGuardMiddleware
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
+from backend.api.admin_ops import admin_ops_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.portal import user_emby_router, admin_emby_router
 from backend.api.emby_portal import auth_router
@@ -58,7 +60,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.5.5",
+    version="2.6.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -94,6 +96,9 @@ async def security_headers(request: Request, call_next):
 
 # GZip 压缩
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）
+app.add_middleware(DownloadGuardMiddleware)
 
 
 # ==================== 异常处理 ====================
@@ -183,6 +188,7 @@ app.include_router(user_router)
 
 # 管理后台 API 路由
 app.include_router(admin_router)
+app.include_router(admin_ops_router)
 
 # 自建 Emby 服务器（Emby 客户端直接连接本后端：https://host:port/emby）
 app.include_router(emby_router)

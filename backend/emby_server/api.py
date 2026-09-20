@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -45,7 +46,7 @@ from backend.emby_server.streaming import (
     transcode_alive,
     wait_for_file,
 )
-from backend.subscriptions import ensure_playback_allowed
+from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +95,19 @@ def _ticks_to_pos(ticks: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _download_ok(db: Session) -> bool:
+    """站点是否允许下载（按 Session 缓存，避免列表里每个条目都查一次配置）"""
+    cache = db.info.setdefault("_royalbot_download_ok", {})
+    if "value" not in cache:
+        from backend.subscriptions import download_allowed
+
+        cache["value"] = download_allowed(db)
+    return cache["value"]
+
+
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
               api_key: str = "") -> dict:
+    download_ok = _download_ok(db)
     umd = (
         db.query(em.UserMediaData)
         .filter(em.UserMediaData.user_id == user_id, em.UserMediaData.item_id == item.id)
@@ -128,8 +140,9 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "ImageTags": {"Primary": "1"} if _image_url(base, item) else {},
         "BackdropImageTags": ["1"] if _image_url(base, item, "Backdrop") else {},
         "UserData": _user_data_dto(umd),
-        "CanDownload": True,
-        "SupportsContentDownloading": True,
+        # 下载能力随站点配置变化（关闭下载后客户端不再展示下载入口）
+        "CanDownload": download_ok,
+        "SupportsContentDownloading": download_ok,
     }
     if item.item_type == "episode":
         dto.update({
@@ -354,7 +367,14 @@ async def authenticate_by_name(
 
     from backend.emby_server.auth import ensure_emby_credentials, issue_token, verify_emby_password
 
-    def _auth_fail():
+    def _auth_fail(detail: str = "用户名或密码错误"):
+        from backend.authlog import record_event
+
+        record_event(
+            db, username=username, user_id=user.id if user else None, ip=ip,
+            agent=request.headers.get("user-agent"), success=False,
+            reason="emby_login_failed", detail=detail,
+        )
         return Response(
             content='{"error": "InvalidUsernameOrPassword"}',
             status_code=401, media_type="application/json",
@@ -371,9 +391,31 @@ async def authenticate_by_name(
         ensure_emby_credentials(db, user, password=password)
 
     ensure_emby_credentials(db, user)
-    token_value, token_row = issue_token(db, user, request)
+
+    # 设备数上限：超限时拒绝签发（管理员不受限），并落安全日志
+    from backend.authlog import record_event
+    from backend.devices import DeviceLimitExceeded
+
+    try:
+        token_value, token_row = issue_token(db, user, request)
+    except DeviceLimitExceeded as exc:
+        record_event(
+            db, username=user.username, user_id=user.id, ip=ip,
+            agent=request.headers.get("user-agent"), success=False,
+            reason="device_limit", detail=exc.message,
+        )
+        return Response(
+            content=json.dumps({"error": "DeviceLimitExceeded", "message": exc.message},
+                               ensure_ascii=False),
+            status_code=403, media_type="application/json; charset=utf-8",
+        )
 
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
+    record_event(
+        db, username=user.username, user_id=user.id, ip=ip,
+        agent=request.headers.get("user-agent"), success=True, reason="emby_login",
+        detail=f"{auth.get('Client') or 'Emby Client'} / {token_row.device_id}",
+    )
     access_token = token_value
     server_id = SERVER_ID
     user_dto = _user_dto(user, db)
@@ -1090,6 +1132,8 @@ async def download_item(item_id: str, request: Request,
     item = _require_item(db, item_id)
     # 付费墙：下载与在线播放同一门槛，避免绕过
     ensure_playback_allowed(db, user)
+    # 站点级下载开关：第三方播放器触发的下载同样拦下
+    ensure_download_allowed(db, user)
     if not item.file_path or not os.path.isfile(item.file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(item.file_path, filename=os.path.basename(item.file_path))

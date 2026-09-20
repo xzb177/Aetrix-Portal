@@ -19,10 +19,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import codes, models
+from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend.database import get_db
+from backend.devices import device_limit
 from backend.emby_server.auth import ensure_emby_credentials
-from backend.subscriptions import has_active_subscription, subscription_required
+from backend.subscriptions import download_allowed, has_active_subscription, subscription_required
 from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -76,6 +78,9 @@ class UserOut(BaseModel):
     is_active: bool = True
     # 付费墙是否开启（开启且非会员时播放会被拦截）
     subscription_required: bool = False
+    # 站点是否允许下载 + 每用户设备上限（0 表示不限）
+    download_allowed: bool = True
+    device_limit: int = 0
     created_at: str | None = None
 
 
@@ -103,6 +108,8 @@ def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
         is_vip=is_vip,
         is_active=user.is_active,
         subscription_required=subscription_required(db) if db is not None else False,
+        download_allowed=download_allowed(db) if db is not None else True,
+        device_limit=device_limit(db) if db is not None else 0,
         created_at=user.created_at.isoformat() if user.created_at else None,
     )
 
@@ -205,21 +212,23 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     if reg_mode == "code":
         if not req.registration_code:
             raise HTTPException(status_code=400, detail="当前注册需要注册码")
-        reg_code = (
-            db.query(models.RegistrationCode)
-            .filter(
-                models.RegistrationCode.code == req.registration_code.strip().upper(),
-                models.RegistrationCode.is_active == True,  # noqa: E712
+        reg_code = codes.find_reg_code(db, req.registration_code)
+        error = codes.reg_code_error(reg_code) if reg_code else "卡码无效"
+        if not error and reg_code and reg_code.code_type == codes.CODE_TYPE_RENEW:
+            # 与参考实现口径一致：续期码只能由已登录用户使用
+            error = "该卡码为续期码，请登录后在个人中心使用"
+        if not error and reg_code and reg_code.target_username:
+            if reg_code.target_username.strip().lower() != username.lower():
+                error = "该卡码限指定账号使用"
+        if not error and reg_code and reg_code.is_decoy:
+            # 诱饵码：只应出现在盗版/破解渠道，注册即拒绝并落安全日志
+            record_event(
+                db, username=username, ip=log_ip(request), agent=user_agent(request),
+                success=False, reason="decoy_code", detail=f"注册使用了诱饵码 {reg_code.code}",
             )
-            .first()
-        )
-        now = datetime.now()
-        if (
-            reg_code is None
-            or (reg_code.expires_at and reg_code.expires_at < now)
-            or reg_code.use_count >= reg_code.max_uses
-        ):
-            raise HTTPException(status_code=400, detail="注册码无效或已过期")
+            error = "注册码无效或已过期"
+        if error:
+            raise HTTPException(status_code=400, detail=error)
 
     if req.email:
         email = req.email.strip()
@@ -239,15 +248,10 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     db.commit()
     db.refresh(user)
 
-    # 注册码消耗审计：记录使用者，用满自动失效
+    # 卡码消耗 + 按卡码类型授予会员天数（注册码开通、白名单码置为长期有效）
     if reg_code is not None:
-        reg_code.use_count = (reg_code.use_count or 0) + 1
-        used = [i for i in str(reg_code.used_by or "").split(",") if i.strip()]
-        used.append(str(user.id))
-        reg_code.used_by = ",".join(used)
-        if reg_code.use_count >= reg_code.max_uses:
-            reg_code.is_active = False
-        db.commit()
+        codes.consume(db, reg_code, user.id)
+        codes.grant_membership_days(db, user, codes.grant_days_for(reg_code))
 
     # 邀请返利：注册时应用邀请码（双向发奖，失败静默不阻塞注册）
     if req.invitation_code:
@@ -276,12 +280,26 @@ async def login(request: Request, req: LoginRequest, db: Session = Depends(get_d
         .first()
     )
     if not user or not verify_password(req.password, user.password_hash):
+        record_event(
+            db, username=req.username.strip(), user_id=user.id if user else None,
+            ip=log_ip(request), agent=user_agent(request), success=False,
+            reason="portal_login_failed", detail="用户名或密码错误",
+        )
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     if not user.is_active:
+        record_event(
+            db, username=user.username, user_id=user.id, ip=log_ip(request),
+            agent=user_agent(request), success=False, reason="portal_login_failed",
+            detail="账户已被禁用",
+        )
         raise HTTPException(status_code=403, detail="账户已被禁用")
 
     user.last_login_at = datetime.now()
     db.commit()
+    record_event(
+        db, username=user.username, user_id=user.id, ip=log_ip(request),
+        agent=user_agent(request), success=True, reason="portal_login",
+    )
     # 旧数据迁移：emby_password 为空的老用户，登录成功后用已验证的门户密码补齐 Emby 凭据
     return _issue_auth_response(user, db, plain_password=req.password)
 

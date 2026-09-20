@@ -8,10 +8,11 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { authApi, embyApi, subscriptionApi, type AuthUser, type AccountCard, type MySubscription, type WatchStats } from '@/api'
+import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 import {
   User, Lock, KeyRound, LogOut, ShieldCheck, RefreshCw, Eye, EyeOff, Copy, Check, Film,
-  Play, History, Crown, Heart, Sparkles,
+  Play, History, Crown, Heart, Sparkles, MonitorSmartphone,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -129,6 +130,61 @@ async function handleLogout() {
   router.push('/login')
 }
 
+// ===== 我的设备（第三方播放器登录设备）=====
+// 设备上限由管理端配置；这里让用户自助查看与清理，避免顶到上限后无法登录
+const devices = ref<MyDevice[]>([])
+const deviceInfo = ref<MyDevicesResponse | null>(null)
+const deviceLoading = ref(false)
+const removingDevice = ref('')
+const pendingRemove = ref('')
+
+async function loadDevices() {
+  deviceLoading.value = true
+  try {
+    const res = await deviceApi.mine()
+    devices.value = res.devices
+    deviceInfo.value = res
+  } catch {
+    // 静默：设备卡加载失败不影响页面
+  } finally {
+    deviceLoading.value = false
+  }
+}
+
+async function handleRemoveDevice(device: MyDevice) {
+  if (pendingRemove.value !== device.device_id) {
+    pendingRemove.value = device.device_id
+    window.setTimeout(() => {
+      if (pendingRemove.value === device.device_id) pendingRemove.value = ''
+    }, 4000)
+    return
+  }
+  pendingRemove.value = ''
+  removingDevice.value = device.device_id
+  try {
+    const res = await deviceApi.remove(device.device_id)
+    toast.success(res.message || '设备已移除')
+    await loadDevices()
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '移除失败，请稍后重试')
+  } finally {
+    removingDevice.value = ''
+  }
+}
+
+function deviceAgo(iso?: string | null, isBlocked = false) {
+  if (isBlocked) return '已禁用'
+  if (!iso) return '—'
+  const diff = Date.now() - new Date(iso).getTime()
+  if (Number.isNaN(diff) || diff < 0) return '刚刚'
+  const mins = Math.floor(diff / 60000)
+  if (mins < 60) return `${mins} 分钟前`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} 小时前`
+  return `${Math.floor(hours / 24)} 天前`
+}
+
 // ===== 初始化 =====
 onMounted(async () => {
   try {
@@ -146,6 +202,7 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  loadDevices()
 })
 
 function formatDate(iso?: string | null) {
@@ -243,6 +300,58 @@ function formatDate(iso?: string | null) {
 
         <p class="card-tip">
           播放密码用于 Emby 客户端登录，与门户密码相互独立；也可用上方按钮一键导入。
+        </p>
+      </section>
+
+      <!-- 我的设备：第三方播放器登录设备自助管理 -->
+      <section class="card">
+        <header class="card-head">
+          <h2 class="card-title">
+            <MonitorSmartphone :size="17" />
+            我的设备
+            <span v-if="deviceInfo && deviceInfo.limit" class="dev-count">
+              {{ deviceInfo.active_count }} / {{ deviceInfo.limit }}
+            </span>
+          </h2>
+          <button class="icon-btn" title="刷新" @click="loadDevices">
+            <RefreshCw :size="15" :class="{ spinning: deviceLoading }" />
+          </button>
+        </header>
+
+        <div v-if="devices.length === 0" class="dev-empty">
+          还没有客户端登录记录。用 Emby 客户端（Infuse / Forward 等）登录后会出现在这里。
+        </div>
+        <template v-else>
+          <div v-for="d in devices" :key="d.device_id" class="dev-row">
+            <div class="dev-main">
+              <span class="dev-name">{{ d.name || '未命名设备' }}</span>
+              <span class="dev-meta">
+                {{ d.client || '未知客户端' }}
+                <template v-if="d.app_version"> v{{ d.app_version }}</template>
+                · {{ deviceAgo(d.last_seen_at, d.is_blocked) }}
+                <template v-if="d.ip"> · {{ d.ip }}</template>
+              </span>
+            </div>
+            <span v-if="d.is_blocked" class="dev-badge off">已禁用</span>
+            <span v-else-if="!d.is_online_recent" class="dev-badge idle">已闲置</span>
+            <span v-else class="dev-badge ok">活跃</span>
+            <button
+              class="text-btn danger"
+              :class="{ confirming: pendingRemove === d.device_id }"
+              :disabled="removingDevice === d.device_id"
+              @click="handleRemoveDevice(d)"
+            >
+              {{ pendingRemove === d.device_id ? '确认移除' : '移除' }}
+            </button>
+          </div>
+        </template>
+
+        <p class="card-tip">
+          <template v-if="deviceInfo && deviceInfo.limit">
+            账号最多同时使用 {{ deviceInfo.limit }} 台设备（近 {{ deviceInfo.active_days }} 天内登录过）。
+            {{ deviceInfo.auto_evict ? '超限时会自动停用最久未用的设备。' : '超限时请先移除不再使用的设备。' }}
+          </template>
+          <template v-else>移除后该设备登录状态立即失效，需重新输入账号密码。</template>
         </p>
       </section>
 
@@ -511,6 +620,88 @@ function formatDate(iso?: string | null) {
   font-size: 0.75rem;
   color: rgba(255, 255, 255, 0.35);
   line-height: 1.5;
+}
+
+/* 我的设备 */
+.dev-count {
+  margin-left: 0.5rem;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.dev-empty {
+  font-size: 0.8125rem;
+  color: rgba(255, 255, 255, 0.45);
+  line-height: 1.6;
+}
+
+.dev-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0;
+}
+
+.dev-row + .dev-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dev-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.dev-name {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-meta {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.dev-badge {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.dev-badge.ok {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+}
+
+.dev-badge.idle {
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.dev-badge.off {
+  background: rgba(244, 63, 94, 0.12);
+  color: #fb7185;
+}
+
+.text-btn.danger {
+  color: rgba(251, 113, 133, 0.85);
+}
+
+.text-btn.danger.confirming {
+  color: #fb7185;
+  font-weight: 600;
 }
 
 /* 一键导入到客户端 */

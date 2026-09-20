@@ -183,6 +183,14 @@ def _auto_migrate():
         "web_users": [
             ("points", "INTEGER", "0"),
         ],
+        # v2.5.6 卡码体系：注册码 → 注册/续期/白名单/诱饵/指名
+        "registration_codes": [
+            ("code_type", "INTEGER", "1"),
+            ("days", "INTEGER", "30"),
+            ("is_decoy", "BOOLEAN", "0"),
+            ("target_username", "VARCHAR(50)", "NULL"),
+            ("source", "VARCHAR(20)", "'admin'"),
+        ],
     }
 
     for table, columns in migrations.items():
@@ -196,6 +204,30 @@ def _auto_migrate():
                         f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"
                     ))
                     print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
+
+    _widen_code_column(existing_tables, inspector)
+
+
+def _widen_code_column(existing_tables: set, inspector) -> None:
+    """卡码格式支持占位符后可能超过 20 字符，PG/MySQL 需要显式扩宽列宽
+
+    SQLite 不校验 VARCHAR 长度，无需处理。语句幂等，已扩宽时直接跳过。
+    """
+    from sqlalchemy import text
+
+    if "registration_codes" not in existing_tables:
+        return
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+    for col in inspector.get_columns("registration_codes"):
+        if col["name"] == "code" and (col.get("type") is None or getattr(col["type"], "length", 64) < 64):
+            with engine.begin() as conn:
+                if dialect == "postgresql":
+                    conn.execute(text("ALTER TABLE registration_codes ALTER COLUMN code TYPE VARCHAR(64)"))
+                else:
+                    conn.execute(text("ALTER TABLE registration_codes MODIFY COLUMN code VARCHAR(64) NOT NULL"))
+            print("  🔧 已迁移: registration_codes.code 宽度 → 64")
 
 
 def init_db():

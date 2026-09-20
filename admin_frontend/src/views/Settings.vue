@@ -6,6 +6,7 @@
  * - 注册策略（开放 / 注册码 / 关闭 + 关闭提示文案）
  * - 经济与支付配置（签到、兑换、充值、支付网关、邀请返利）按域分组保存
  * v2.5.2 新增：付费墙分组（要求有效订阅 + 拦截提示文案）
+ * v2.6.0 新增：下载与设备风控分组（下载开关 / 设备上限 / 自动踢人 / 日志保留）
  *
  * 说明：支付密钥等敏感项由后端以 ****** 掩码返回，留空即保持原值不变。
  */
@@ -97,6 +98,40 @@ const GROUPS: Group[] = [
         label: '拦截提示文案',
         type: 'str',
         hint: '留空使用默认：需要有效的会员订阅才能播放，请先开通会员',
+      },
+    ],
+  },
+  {
+    id: 'risk',
+    title: '下载与设备风控',
+    desc: '下载开关、设备上限与安全日志保留策略',
+    icon: ShieldAlert,
+    fields: [
+      {
+        key: 'allow_download',
+        label: '允许下载',
+        type: 'bool',
+        hint: '关闭后客户端下载（含 /Items/{id}/File）一并拦截，管理员不受限',
+      },
+      {
+        key: 'device_limit_per_user',
+        label: '设备上限',
+        type: 'int',
+        suffix: '台/人',
+        hint: '0 或不填表示不限；只统计近 30 天活跃设备',
+      },
+      {
+        key: 'device_limit_auto_evict',
+        label: '超限自动踢人',
+        type: 'bool',
+        hint: '开启则自动移除最久未使用的设备；关闭则直接拒绝新设备',
+      },
+      {
+        key: 'login_log_retention_days',
+        label: '日志保留',
+        type: 'int',
+        suffix: '天',
+        hint: '登录与安全日志的保留期，未设置时默认 90 天',
       },
     ],
   },
