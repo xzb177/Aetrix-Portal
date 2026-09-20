@@ -336,6 +336,8 @@ export interface MountTypeMeta {
   browse?: boolean
   /** 「根目录标识」字段名，浏览时点目录会写回它 */
   root_key?: string
+  /** 是否可以从远端拉取「已配置的 remote 列表」（rclone） */
+  remotes?: boolean
   fields: MountTypeField[]
 }
 

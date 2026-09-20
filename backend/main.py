@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
     # 恢复未完成的 115 转存/下载任务：running 说明上次进程被杀，回到 pending 续跑，
     # 已完成文件靠 done_keys 跳过，不会重复转存
     try:
+        transfer115.cleanup_stale_tmp()  # 上次被强杀留下的临时文件
         transfer115.resume_pending_tasks()
     except Exception as e:  # noqa: BLE001 — 业务表异常不应阻塞面板启动
         logger.warning(f"恢复 115 任务失败（可忽略）: {e}")
@@ -70,7 +71,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.6.6",
+    version="2.6.7",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",

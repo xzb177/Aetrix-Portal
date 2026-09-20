@@ -22,6 +22,7 @@ import {
   deleteMount,
   fetchMounts,
   fetchPan115Accounts,
+  fetchRcloneRemotes,
   testMountConfig,
   testSavedMount,
   updateMount,
@@ -46,6 +47,10 @@ const form = ref({
   is_enabled: true,
   remark: '',
 })
+
+/** rclone：远端已配置的 remote（点「获取 remote 列表」才拉） */
+const rcloneRemotes = ref<string[]>([])
+const remotesLoading = ref(false)
 
 const browseVisible = ref(false)
 const browseTarget = ref<StorageMount | null>(null)
@@ -255,6 +260,31 @@ function entryIdLabel(entry: MountDirEntry): string {
   return browseRootKey.value === 'prefix' ? entry.entry_id : `ID ${entry.entry_id}`
 }
 
+/** rclone：用当前表单里的 RC 地址 / 路径去问远端有哪些 remote（未保存的配置也能查） */
+async function loadRcloneRemotes() {
+  remotesLoading.value = true
+  try {
+    const params: Record<string, string> = {
+      mode: form.value.config.mode || 'rc',
+      rc_url: form.value.config.rc_url || '',
+      rc_user: form.value.config.rc_user || '',
+      rc_pass: form.value.config.rc_pass || '',
+      rclone_bin: form.value.config.rclone_bin || '',
+      rclone_config: form.value.config.rclone_config || '',
+    }
+    const res = await fetchRcloneRemotes(params)
+    rcloneRemotes.value = res.remotes
+    ElMessage.success(
+      res.remotes.length ? `已获取 ${res.remotes.length} 个 remote` : '远端没有配置任何 remote'
+    )
+  } catch (e: unknown) {
+    const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    ElMessage.error(detail || '获取 remote 列表失败')
+  } finally {
+    remotesLoading.value = false
+  }
+}
+
 /** 目录选择：点目录即把「根目录标识」写回表单（没有这个概念的挂载就是进入目录） */
 function pickEntry(entry: MountDirEntry) {
   if (!entry.is_dir) return
@@ -285,7 +315,7 @@ function fmtDate(s: string | null): string {
       <div>
         <h1 class="admin-page-title">存储挂载</h1>
         <p class="admin-page-subtitle">
-          媒体库的内容来源：本机目录 / STRM 直链 / 115 / 阿里云盘 / 夸克 / OneDrive / S3 / WebDAV / AList
+          媒体库的内容来源：本机目录 / STRM 直链 / 115 / 阿里云盘 / 夸克 / OneDrive / S3 / WebDAV / AList / rclone
         </p>
       </div>
       <div class="toolbar">
@@ -384,6 +414,24 @@ function fmtDate(s: string | null): string {
           >
             <el-option v-for="a in accounts" :key="a.id" :label="a.name" :value="String(a.id)" />
           </el-select>
+          <div v-else-if="f.type === 'rclone_fs'" class="fs-row">
+            <el-select
+              v-model="form.config[f.key]"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="gdrive:Movies"
+              style="width: 260px"
+            >
+              <el-option v-for="r in rcloneRemotes" :key="r" :label="r" :value="r" />
+            </el-select>
+            <el-button :loading="remotesLoading" size="small" @click="loadRcloneRemotes">
+              获取 remote 列表
+            </el-button>
+            <div class="form-hint">
+              列表来自远端的 rclone 配置；选一个 remote 后可以继续补子目录（如 gdrive:Movies）。
+            </div>
+          </div>
           <el-select
             v-else-if="f.type === 'select'"
             v-model="form.config[f.key]"
@@ -456,6 +504,7 @@ function fmtDate(s: string | null): string {
 
 <style scoped>
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+.fs-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .type-grid {
   display: grid;

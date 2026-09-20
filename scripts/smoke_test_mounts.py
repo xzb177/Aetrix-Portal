@@ -35,6 +35,7 @@ from starlette.responses import FileResponse, PlainTextResponse
 from backend import models
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
+from backend.emby_server import mount_rclone
 from backend.emby_server import mounts as mnt
 from backend.emby_server import scanner as sc
 from backend.emby_server import streaming as st
@@ -141,6 +142,22 @@ class FakeWeb:
                        "folder": None, "file": {"mimeType": "video/x-matroska"}, "size": 4096}],
         }
         self.graph_token_calls = 0
+        # rclone rc：fs → 子项（rclone /operations/list 风格字段）
+        self.rclone = {
+            "gdrive:Movies": [
+                {"Path": "A.Movie.2024.mkv", "Name": "A.Movie.2024.mkv", "Size": 4096, "IsDir": False},
+                {"Path": "Link.strm", "Name": "Link.strm", "Size": 64, "IsDir": False},
+                {"Path": "Sub", "Name": "Sub", "Size": 0, "IsDir": True},
+            ],
+            "gdrive:Movies/Sub": [
+                {"Path": "Sub/B.mkv", "Name": "B.mkv", "Size": 2048, "IsDir": False},
+            ],
+        }
+        self.rclone_remotes = ["gdrive:", "onedrive:", "s3:"]
+        self.rclone_strm_body = "https://cdn.example.com/strm/from-rclone.mkv"
+        self.rc_serve = True       # False = 没开 --rc-serve（列目录正常，播放 404）
+        self.rc_auth = ""           # "user:pass" = 需要 Basic 认证
+        self.rc_calls: list[str] = []
 
     # ---- httpx.Client 接口 ----
 
@@ -150,15 +167,27 @@ class FakeWeb:
     def send(self, request, stream: bool = False):
         return self.handle(request["method"], request["url"], headers=request["headers"])
 
+    @staticmethod
+    def _with_basic_auth(headers: dict, auth) -> dict:
+        """httpx 传 auth=(user, pass) 时会加 Basic 头；假服务照做，便于断言"""
+        import base64
+
+        headers = dict(headers or {})
+        if auth:
+            user, password = (auth if isinstance(auth, (tuple, list)) else (auth, ""))
+            token = base64.b64encode(f"{user}:{password}".encode()).decode()
+            headers.setdefault("Authorization", f"Basic {token}")
+        return headers
+
     def request(self, method, url, headers=None, params=None, data=None, json=None, auth=None):
-        return self.handle(method, str(url), headers=headers or {},
+        return self.handle(method, str(url), headers=self._with_basic_auth(headers, auth),
                            params=params, data=data, body=json)
 
     def get(self, url, headers=None, **kwargs):
         return self.handle("GET", str(url), headers=headers or {})
 
-    def post(self, url, headers=None, json=None, **kwargs):
-        return self.handle("POST", str(url), headers=headers or {}, body=json)
+    def post(self, url, headers=None, json=None, auth=None, **kwargs):
+        return self.handle("POST", str(url), headers=self._with_basic_auth(headers, auth), body=json)
 
     def close(self) -> None:
         pass
@@ -195,6 +224,8 @@ class FakeWeb:
             return self._graph_token(headers, body, data)
         if url.startswith("https://graph.microsoft.com"):
             return self._onedrive(url, headers)
+        if url.startswith("http://127.0.0.1:5572"):
+            return self._rclone_rc(method, url, headers, body)
         return FakeResponse(404, b"not found")
 
     def _media(self, headers) -> FakeResponse:
@@ -412,9 +443,88 @@ class FakeWeb:
         return FakeResponse(404, b"")
 
 
+    # ---- rclone（rc 模式 + rc-serve）----
+
+    def _rclone_rc(self, method, url, headers, body) -> FakeResponse:
+        import base64
+
+        self.rc_calls.append(url)
+        if self.rc_auth:
+            expected = "Basic " + base64.b64encode(self.rc_auth.encode()).decode()
+            if (headers.get("Authorization") or "") != expected:
+                return FakeResponse(401, b"")
+        path = url.split("127.0.0.1:5572", 1)[-1]
+        if path.startswith("/operations/list"):
+            payload = body or {}
+            fs = str(payload.get("fs") or "")
+            remote = str(payload.get("remote") or "").strip("/")
+            key = f"{fs.rstrip('/')}/{remote}" if remote else fs
+            items = self.rclone.get(key)
+            if items is None:
+                return FakeResponse(200, body={"error": f"directory not found: {key}"})
+            return FakeResponse(200, body={"list": items})
+        if path.startswith("/config/listremotes"):
+            return FakeResponse(200, body={"remotes": self.rclone_remotes})
+        if not self.rc_serve:
+            return FakeResponse(404, b"")
+        if path.endswith(".strm"):
+            return FakeResponse(200, self.rclone_strm_body.encode())
+        return self._media(headers)
+
+
 FAKE = FakeWeb()
 _real_httpx_client = httpx.Client
 httpx.Client = lambda *a, **kw: FAKE  # type: ignore[assignment]
+
+
+class FakeCompleted:
+    """假的 subprocess 结果"""
+
+    def __init__(self, returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class FakeRcloneCLI:
+    """假的 rclone 可执行文件：只实现本功能用到的子命令"""
+
+    RCLONE_PATH = "/opt/rclone/rclone"
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.mode = "ok"          # ok / auth_fail
+
+    def __call__(self, command, **kwargs) -> FakeCompleted:
+        import json
+
+        args = [str(a) for a in command]
+        self.calls.append(args)
+        sub = args[1] if len(args) > 1 else ""
+        target = args[2] if len(args) > 2 else ""
+        if self.mode == "auth_fail":
+            return FakeCompleted(1, b"", b"Failed to create file system: Unauthorized: 401 invalid_grant")
+        if sub == "listremotes":
+            return FakeCompleted(0, ("\n".join(FAKE.rclone_remotes) + "\n").encode())
+        if sub == "lsjson":
+            items = FAKE.rclone.get(target)
+            if items is None:
+                return FakeCompleted(3, b"", b"directory not found")
+            return FakeCompleted(0, json.dumps(items).encode())
+        if sub == "link":
+            if "nolink" in target:
+                return FakeCompleted(1, b"", b"FS link: not supported by this backend")
+            return FakeCompleted(0, b"https://cdn.example.com/rclone/linked\n")
+        if sub == "cat" and target.endswith(".strm"):
+            return FakeCompleted(0, FAKE.rclone_strm_body.encode())
+        return FakeCompleted(1, b"", b"unknown command")
+
+
+import subprocess  # noqa: E402
+
+RCLONE_CLI = FakeRcloneCLI()
+_real_subprocess_run = subprocess.run
+subprocess.run = RCLONE_CLI  # type: ignore[assignment]
 
 
 def _mount(name: str, mount_type: str, *, path: str = "", config: dict | None = None,
@@ -429,8 +539,9 @@ def _mount(name: str, mount_type: str, *, path: str = "", config: dict | None = 
 
 print("=== 类型注册表与虚拟路径 ===")
 registered = {t["value"] for t in mnt.MOUNT_TYPES}
-check("九种挂载类型都在注册表",
-      registered == {"local", "strm", "115", "webdav", "alist", "s3", "aliyun", "quark", "onedrive"},
+check("十种挂载类型都在注册表",
+      registered == {"local", "strm", "115", "webdav", "alist", "s3", "aliyun", "quark",
+                    "onedrive", "rclone"},
       str(sorted(registered)))
 check("每种类型都有标签 / 说明 / 字段定义",
       all(t.get("label") and t.get("hint") and "fields" in t for t in mnt.MOUNT_TYPES))
@@ -612,6 +723,47 @@ os.environ["PAN115_COOKIE"] = PAN_COOKIE
 
 print("\n=== 扫描集成 ===")
 db = SessionLocal()
+
+
+def _purge_previous_runs() -> int:
+    """清掉上次崩溃时留下的同名残留（本测试失败退出时不会走到收尾）
+
+    开发库是共用的：残留的媒体库/条目会干扰 media_search 那类全局计数断言，
+    所以每次开跑先把上一轮的残留收干净。
+    """
+    import re as _re
+
+    pattern = _re.compile(
+        r"^(本机挂载库|115 挂载库|STRM 挂载库|路径加挂载库|API 挂载库|云盘挂载库|"
+        r"rclone 挂载库|空来源库|绑定停用库)\d+$"
+    )
+    stale = [l for l in db.query(em.Library).all() if pattern.match(l.name or "")]
+    ids = [l.id for l in stale]
+    rows = db.query(em.MediaItem).filter(em.MediaItem.library_id.in_(ids)).all() if ids else []
+    rows += db.query(em.MediaItem).filter(em.MediaItem.file_path.like("mount://%")).all()
+    seen: set[int] = set()
+    for row in rows:
+        if row.id in seen:
+            continue
+        seen.add(row.id)
+        db.query(em.MediaStream).filter(em.MediaStream.item_id == row.id).delete(
+            synchronize_session=False)
+        db.query(em.UserMediaData).filter(em.UserMediaData.item_id == row.id).delete(
+            synchronize_session=False)
+        db.delete(row)
+    if ids:
+        db.query(em.Library).filter(em.Library.id.in_(ids)).delete(synchronize_session=False)
+    db.query(em.StorageMount).delete()
+    for lib in db.query(em.Library).all():
+        if lib.mount_ids:
+            lib.mount_ids = ""
+    db.commit()
+    return len(ids) + len(seen)
+
+
+purged = _purge_previous_runs()
+check("开跑前清理上一轮残留", True, f"媒体库 {purged} 项（正常情况下为 0）")
+
 staff = models.WebUser(username=f"mount_stf{suf}", password_hash=hash_password("pass12345"),
                        is_staff=True)
 db.add(staff)
@@ -703,10 +855,17 @@ pan_row.is_enabled = True
 db.commit()
 
 # 条目 guid 由路径决定：同一目录被路径与挂载同时引用时，不会再产生第二份条目
-before_rows = db.query(em.MediaItem).count()
+# 只统计这两个库的条目：全局计数会被其它冒烟测试留下的孤儿行干扰（开发库共用一个 SQLite）
+def _dual_scope_count() -> int:
+    return db.query(em.MediaItem).filter(
+        em.MediaItem.library_id.in_([lib_local.id, lib_dual.id])
+    ).count()
+
+
+before_rows = _dual_scope_count()
 stats_dual = sc.scan_library_sync(db, lib_dual, sc.LibrarySnapshot.of(lib_dual))
 check("路径与挂载指向同一目录时不重复入库", stats_dual["added"] == 0, str(stats_dual))
-check("同一目录不会产生重复条目", db.query(em.MediaItem).count() == before_rows,
+check("同一目录不会产生重复条目", _dual_scope_count() == before_rows,
       f"{before_rows} → {db.query(em.MediaItem).count()}")
 
 stats_strm = sc.scan_library_sync(db, lib_strm, sc.LibrarySnapshot.of(lib_strm))
@@ -918,7 +1077,93 @@ check("OneDrive 换票失败识别为凭据问题", mnt.test_mount(od_mount).get
 FAKE.auth_fail = False
 
 
-# ==================== 七、管理端 API ====================
+# ==================== 七、rclone 挂载（rc / cli）====================
+
+print("\n=== rclone 挂载（rc / cli）===")
+
+RC_CONFIG = {"mode": "rc", "fs": "gdrive:Movies", "rc_url": "http://127.0.0.1:5572"}
+rc_mount = _mount("rclone rc", "rclone", config=RC_CONFIG)
+rc = mnt.build_provider(rc_mount)
+check("rclone 类型可浏览 / 支持 remote 列表 / 必填 remote",
+      mnt.supports_browse("rclone") and mnt.type_meta("rclone").get("remotes") is True
+      and mnt.root_key("rclone") == "fs"
+      and [f["key"] for f in mnt.required_fields("rclone")] == ["fs"])
+check("rclone RC 测试连接", mnt.test_mount(rc_mount)["ok"], str(mnt.test_mount(rc_mount)))
+check("rclone RC 列目录走 RC API", any("/operations/list" in call for call in FAKE.rc_calls))
+check("rclone RC 递归枚举媒体",
+      sorted(f.rel for f in rc.walk_media()) == ["/A.Movie.2024.mkv", "/Link.strm", "/Sub/B.mkv"],
+      str(sorted(f.rel for f in rc.walk_media())))
+check("rclone RC 播放地址走 rc-serve",
+      rc.resolve("/A.Movie.2024.mkv").value
+      == "http://127.0.0.1:5572/gdrive:Movies/A.Movie.2024.mkv",
+      rc.resolve("/A.Movie.2024.mkv").value)
+check(".strm 在 rclone 挂载里也按内容解析",
+      rc.resolve_final("/Link.strm").value == FAKE.rclone_strm_body,
+      rc.resolve_final("/Link.strm").value)
+check("rclone 可列出已配置的 remote",
+      mount_rclone.list_remotes("http://127.0.0.1:5572") == ["gdrive:", "onedrive:", "s3:"],
+      str(mount_rclone.list_remotes("http://127.0.0.1:5572")))
+FAKE.rc_serve = False
+msg = mnt.test_mount(rc_mount)["message"]
+check("rclone RC 未开 rc-serve 时给出提示", "rc-serve" in msg, msg)
+FAKE.rc_serve = True
+
+FAKE.rc_auth = "u:secret-rc"
+auth_mount = _mount("rclone rc 认证", "rclone",
+                    config={**RC_CONFIG, "rc_user": "u", "rc_pass": "secret-rc"})
+check("rclone RC 带认证可访问", mnt.test_mount(auth_mount)["ok"], str(mnt.test_mount(auth_mount)))
+check("rclone RC 播放地址带 Basic 认证头",
+      mnt.build_provider(auth_mount).resolve("/A.Movie.2024.mkv")
+      .headers.get("Authorization", "").startswith("Basic "))
+check("rclone RC 认证失败识别为凭据问题",
+      mnt.test_mount(rc_mount).get("auth_error") is True)
+FAKE.rc_auth = ""
+
+CLI_CONFIG = {"mode": "cli", "fs": "gdrive:Movies",
+              "rclone_bin": FakeRcloneCLI.RCLONE_PATH}
+cli_mount = _mount("rclone cli", "rclone", config=CLI_CONFIG)
+cli = mnt.build_provider(cli_mount)
+check("rclone CLI 测试连接", mnt.test_mount(cli_mount)["ok"], str(mnt.test_mount(cli_mount)))
+check("rclone CLI 递归枚举媒体",
+      sorted(f.rel for f in cli.walk_media()) == ["/A.Movie.2024.mkv", "/Link.strm", "/Sub/B.mkv"],
+      str(sorted(f.rel for f in cli.walk_media())))
+check("rclone CLI 用 link 取直链",
+      cli.resolve("/A.Movie.2024.mkv").value == "https://cdn.example.com/rclone/linked",
+      cli.resolve("/A.Movie.2024.mkv").value)
+check("rclone CLI 读 .strm 用 cat",
+      cli.resolve_final("/Link.strm").value == FAKE.rclone_strm_body,
+      cli.resolve_final("/Link.strm").value)
+check("rclone CLI 也能列出 remote",
+      mount_rclone.list_remotes(mode="cli", bin_path=FakeRcloneCLI.RCLONE_PATH)
+      == ["gdrive:", "onedrive:", "s3:"])
+try:
+    cli.resolve("/nolink.mkv")
+    check("rclone CLI 后端不支持公开链接时提示改用 rc 模式", False)
+except mnt.MountError as exc:
+    check("rclone CLI 后端不支持公开链接时提示改用 rc 模式", "rc 模式" in str(exc), str(exc))
+try:
+    cli.list_dir("/Nope")
+    check("rclone CLI 路径不存在时报错", False)
+except mnt.MountError as exc:
+    check("rclone CLI 路径不存在时报错", "路径不存在" in str(exc), str(exc))
+RCLONE_CLI.mode = "auth_fail"
+check("rclone CLI 凭据失效识别为凭据问题", mnt.test_mount(cli_mount).get("auth_error") is True)
+RCLONE_CLI.mode = "ok"
+try:
+    mnt.build_provider(_mount("rclone 未安装", "rclone",
+                              config={"mode": "cli", "fs": "gdrive:",
+                                      "rclone_bin": "rclone-not-installed"})).test()
+    check("rclone 未安装时报可操作错误", False)
+except mnt.MountError as exc:
+    check("rclone 未安装时报可操作错误", "找不到 rclone" in str(exc), str(exc))
+try:
+    mnt.build_provider(_mount("rclone 无 remote", "rclone", config={"mode": "rc"})).test()
+    check("rclone 缺 remote 时报配置错误", False)
+except mnt.MountError as exc:
+    check("rclone 缺 remote 时报配置错误", "remote" in str(exc), str(exc))
+
+
+# ==================== 八、管理端 API ====================
 
 print("\n=== 管理端 API ===")
 r = client.post("/api/user/auth/login", json={"username": staff_name, "password": "pass12345"})
@@ -1075,6 +1320,40 @@ r = client.get(f"/api/admin/emby/mounts/{s3_api['id']}/browse", params={"rel": "
 check("浏览对象存储目录（前缀也可当挂载根）",
       r.status_code == 200 and [e["name"] for e in r.json()["entries"]] == ["Movies"], r.text[:140])
 
+r = client.get("/api/admin/emby/mounts/rclone/remotes",
+               params={"mode": "rc", "rc_url": "http://127.0.0.1:5572"}, headers=sh)
+check("后台可拉取 rclone remote 列表",
+      r.status_code == 200 and r.json()["remotes"] == ["gdrive:", "onedrive:", "s3:"], r.text[:140])
+
+r = client.get("/api/admin/emby/mounts/rclone/remotes",
+               params={"mode": "cli", "rclone_bin": FakeRcloneCLI.RCLONE_PATH}, headers=sh)
+check("rclone remote 列表也支持命令模式",
+      r.status_code == 200 and len(r.json()["remotes"]) == 3, r.text[:140])
+
+r = client.post("/api/admin/emby/mounts",
+                json={"name": f"缺 remote 的 rclone{suf}", "mount_type": "rclone",
+                      "config": {"mode": "rc"}}, headers=sh)
+check("rclone 缺 remote 被拒绝",
+      r.status_code == 400 and "remote" in r.json()["detail"], r.text[:160])
+
+r = client.post("/api/admin/emby/mounts",
+                json={"name": f"API rclone{suf}", "mount_type": "rclone",
+                      "config": {**RC_CONFIG, "rc_pass": "secret-rc-pass"}}, headers=sh)
+check("创建 rclone 挂载", r.status_code == 200, r.text[:160])
+rclone_api = r.json()["mount"]
+check("rclone 的 RC 密码同样脱敏",
+      "secret-rc-pass" not in r.text and "rc_pass" in rclone_api["secret_keys"],
+      str(rclone_api["secret_keys"]))
+r = client.post(f"/api/admin/emby/mounts/{rclone_api['id']}/test", headers=sh)
+check("测试已保存的 rclone 挂载",
+      r.status_code == 200 and r.json()["success"] is True, r.text[:160])
+
+r = client.post("/api/admin/emby/libraries",
+                json={"name": f"rclone 挂载库{suf}", "collection_type": "movies", "paths": [],
+                      "mount_ids": [rclone_api["id"]]}, headers=sh)
+check("媒体库可绑定 rclone 挂载", r.status_code == 200, r.text[:160])
+rclone_lib_id = r.json()["id"]
+
 r = client.post("/api/admin/emby/mounts/test",
                 json={"mount_type": "quark", "config": {"cookie": QUARK_COOKIE}}, headers=sh)
 check("未保存的夸克配置也能测试", r.status_code == 200 and r.json()["success"] is True, r.text[:140])
@@ -1111,7 +1390,7 @@ check("播放入口统一走 resolve_final（远程条目）",
 # 冒烟测试共用同一个数据库：远程挂载条目按 mount://<id>/<rel> 生成 guid，
 # 每次运行的挂载 id 都不同，不清理会持续累积（并影响其它测试的全局统计断言）。
 cleanup_lib_ids = [x for x in (lib_local.id, lib_remote.id, lib_strm.id, lib_dual.id,
-                              api_lib_id, cloud_lib_id) if x]
+                              api_lib_id, cloud_lib_id, rclone_lib_id) if x]
 cleanup_rows = db.query(em.MediaItem).filter(em.MediaItem.library_id.in_(cleanup_lib_ids)).all()
 for row in cleanup_rows:
     db.query(em.MediaStream).filter(em.MediaStream.item_id == row.id).delete(synchronize_session=False)
@@ -1127,6 +1406,7 @@ check("收尾：本次测试的媒体库与挂载已清理",
       f"条目 {removed_items} / 媒体库 {len(cleanup_lib_ids)}")
 
 httpx.Client = _real_httpx_client  # type: ignore[assignment]
+subprocess.run = _real_subprocess_run  # type: ignore[assignment]
 db.close()
 
 print("\n" + "=" * 60)

@@ -333,8 +333,24 @@ state_path = t115._state_path(task.uid)
 check("状态文件原子落盘", os.path.isfile(state_path), state_path)
 with open(state_path, encoding="utf-8") as fh:
     check("状态文件是完整 JSON", len(json.load(fh).get("done_keys", [])) == 3)
-leftovers = [f for f in os.listdir(os.path.dirname(state_path)) if f.endswith(".tmp")]
-check("没有残留临时文件", not leftovers, str(leftovers))
+# 临时文件只在「原子写入进行中」或「进程被强杀」时存在：
+# - 正在写的不能算残留（后台线程可能刚好在落盘），
+# - 超过清理阈值（STALE_TMP_SECONDS）的才是真残留，产品会在下次落盘 / 启动时清掉。
+state_dir = os.path.dirname(state_path)
+now = time.time()
+stale_file = os.path.join(state_dir, f"{CODE_MAIN}-stale.json.999999.1.tmp")
+with open(stale_file, "w", encoding="utf-8") as fh:
+    fh.write("{}")
+old_ts = now - t115.STALE_TMP_SECONDS - 60
+os.utime(stale_file, (old_ts, old_ts))
+removed = t115.cleanup_stale_tmp()
+check("上次强杀留下的过期临时文件会被清理",
+      not os.path.exists(stale_file) and removed >= 1, f"removed={removed}")
+leftovers = [
+    f for f in os.listdir(state_dir)
+    if f.endswith(".tmp") and now - os.path.getmtime(os.path.join(state_dir, f)) > t115.STALE_TMP_SECONDS
+]
+check("没有超过清理阈值的残留临时文件", not leftovers, str(leftovers))
 
 serialized = t115.serialize_task(task)
 check("serialize 的 items 是列表且非空", isinstance(serialized["items"], list) and len(serialized["items"]) == 3)

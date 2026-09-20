@@ -24,7 +24,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const sidebarOpen = ref(false)
 
-const APP_VERSION = 'v2.6.6'
+const APP_VERSION = 'v2.6.7'
 
 interface NavItem {
   path: string
