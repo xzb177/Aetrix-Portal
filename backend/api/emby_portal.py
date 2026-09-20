@@ -49,6 +49,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=6, max_length=64)
     email: str | None = None
     invitation_code: str | None = None
+    registration_code: str | None = None  # 注册模式下必填
 
 
 class LoginRequest(BaseModel):
@@ -175,6 +176,42 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     if existing:
         raise HTTPException(status_code=409, detail="用户名已被注册")
 
+    # ===== 注册模式开关（借鉴 twilight-kotomi 的卡码体系）=====
+    # open: 开放注册 / code: 必须携带有效注册码 / closed: 关闭注册
+    mode_config = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == "registration_mode"
+    ).first()
+    reg_mode = mode_config.value if mode_config else "open"
+
+    reg_code = None  # 命中的注册码（延迟到用户创建成功后再消耗）
+    if reg_mode == "closed":
+        closed_msg_config = db.query(models.SystemConfig).filter(
+            models.SystemConfig.key == "registration_closed_message"
+        ).first()
+        raise HTTPException(
+            status_code=403,
+            detail=(closed_msg_config.value if closed_msg_config and closed_msg_config.value
+                    else "当前未开放注册"),
+        )
+    if reg_mode == "code":
+        if not req.registration_code:
+            raise HTTPException(status_code=400, detail="当前注册需要注册码")
+        reg_code = (
+            db.query(models.RegistrationCode)
+            .filter(
+                models.RegistrationCode.code == req.registration_code.strip().upper(),
+                models.RegistrationCode.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        now = datetime.now()
+        if (
+            reg_code is None
+            or (reg_code.expires_at and reg_code.expires_at < now)
+            or reg_code.use_count >= reg_code.max_uses
+        ):
+            raise HTTPException(status_code=400, detail="注册码无效或已过期")
+
     if req.email:
         email = req.email.strip()
         if "@" not in email:
@@ -193,7 +230,17 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     db.commit()
     db.refresh(user)
 
-    logger.info("新用户注册: %s (id=%s)", username, user.id)
+    # 注册码消耗审计：记录使用者，用满自动失效
+    if reg_code is not None:
+        reg_code.use_count = (reg_code.use_count or 0) + 1
+        used = [i for i in str(reg_code.used_by or "").split(",") if i.strip()]
+        used.append(str(user.id))
+        reg_code.used_by = ",".join(used)
+        if reg_code.use_count >= reg_code.max_uses:
+            reg_code.is_active = False
+        db.commit()
+
+    logger.info("新用户注册: %s (id=%s, mode=%s)", username, user.id, reg_mode)
     return _issue_auth_response(user, db, plain_password=req.password)
 
 

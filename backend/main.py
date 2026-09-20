@@ -7,7 +7,7 @@ import os
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
@@ -203,7 +203,7 @@ async def root():
         return FileResponse(index_file)
     return {
         "name": "RoyalBot Portal",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "status": "running",
         "timestamp": datetime.now().isoformat(),
         "docs": "/api/docs",
@@ -220,6 +220,34 @@ _FRONTEND_DIST = Path(
         os.path.join(os.path.dirname(os.path.dirname(__file__)), "user_frontend", "dist"),
     )
 )
+
+# 管理后台静态资源（/admin/*，Vite base=/admin/，构建产物在 admin_frontend/dist）
+_ADMIN_DIST = Path(
+    os.getenv(
+        "ADMIN_DIST",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "admin_frontend", "dist"),
+    )
+)
+
+if _ADMIN_DIST.is_dir():
+    app.mount("/admin/assets", StaticFiles(directory=str(_ADMIN_DIST / "assets")), name="admin-assets")
+
+    @app.get("/admin", include_in_schema=False)
+    async def admin_root():
+        """管理后台根路径（重定向到带斜杠的 SPA 入口）"""
+        return RedirectResponse(url="/admin/")
+
+    @app.get("/admin/{full_path:path}", include_in_schema=False)
+    async def admin_spa_fallback(full_path: str):
+        """管理后台 SPA 兜底路由：/admin/* 返回 admin index.html"""
+        candidate = (_ADMIN_DIST / full_path).resolve()
+        if candidate.is_file() and str(candidate).startswith(str(_ADMIN_DIST.resolve())):
+            return FileResponse(candidate)
+        return FileResponse(_ADMIN_DIST / "index.html")
+
+    logger.info("管理后台静态资源已挂载: %s", _ADMIN_DIST)
+else:
+    logger.warning("管理后台构建产物不存在（%s），/admin 不可用", _ADMIN_DIST)
 
 if _FRONTEND_DIST.is_dir():
     # 注意：/assets 由 StaticFiles 直接服务（构建产物固定输出到 assets/）

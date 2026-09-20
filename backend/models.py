@@ -544,6 +544,30 @@ class ThemeActivityProgress(Base):
 
 # ==================== 邀请系统 ====================
 
+class RegistrationCode(Base):
+    """注册码表（卡码体系：生成/消耗/审计）
+
+    借鉴 twilight-kotomi：注册码支持次数限制、过期时间、
+    停用状态和使用审计（used_by 记录消耗者 WebUser.id）。
+    """
+    __tablename__ = 'registration_codes'
+
+    __table_args__ = (
+        Index('idx_reg_code', 'code'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(20), unique=True, nullable=False, index=True)
+    max_uses = Column(Integer, default=1)
+    use_count = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    note = Column(String(255))
+    used_by = Column(String(500))  # 逗号分隔的 WebUser.id 审计
+    expires_at = Column(DateTime)
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class InvitationCode(Base):
     """邀请码表"""
     __tablename__ = 'invitation_codes'

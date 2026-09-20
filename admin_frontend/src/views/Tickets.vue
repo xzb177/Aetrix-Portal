@@ -1,306 +1,172 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
-import { Ticket, Clock, CheckCircle, AlertCircle, XCircle, Filter } from 'lucide-vue-next'
-import GlassCard from '@/components/glass/GlassCard.vue'
-import StatCard from '@/components/glass/StatCard.vue'
-import SectionHeader from '@/components/glass/SectionHeader.vue'
-import ListRow from '@/components/glass/ListRow.vue'
-import FilterDrawer, { type FilterItem } from '@/components/glass/FilterDrawer.vue'
-import LoadingState from '@/components/feedback/LoadingState.vue'
-import EmptyState from '@/components/feedback/EmptyState.vue'
-import ErrorState from '@/components/feedback/ErrorState.vue'
+/** 工单管理：列表筛选/回复/关闭，回复联动站内通知 */
+import { onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { RefreshCw, Send } from 'lucide-vue-next'
+import { closeTicket, fetchTicketMessages, fetchTickets, replyTicket } from '@/api/admin'
+import type { TicketMessageRow, TicketRow } from '@/types'
 
-const router = useRouter()
-
-interface Ticket {
-  id: number
-  title: string
-  status: 'open' | 'pending' | 'resolved' | 'closed'
-  priority: 'low' | 'medium' | 'high'
-  created_at: string
-  user_name: string
-  description?: string
-}
-
-const tickets = ref<Ticket[]>([])
+const list = ref<TicketRow[]>([])
 const loading = ref(false)
-const error = ref<string | null>(null)
-const showFilterDrawer = ref(false)
+const statusFilter = ref('')
 
-// 统计数据
-const ticketStats = computed(() => {
-  const total = tickets.value.length
-  const open = tickets.value.filter(t => t.status === 'open').length
-  const pending = tickets.value.filter(t => t.status === 'pending').length
-  const resolved = tickets.value.filter(t => t.status === 'resolved').length
-  const closed = tickets.value.filter(t => t.status === 'closed').length
-  return { total, open, pending, resolved, closed }
-})
+const drawerVisible = ref(false)
+const current = ref<TicketRow | null>(null)
+const messages = ref<TicketMessageRow[]>([])
+const replyText = ref('')
+const sending = ref(false)
 
-// 筛选项
-const filterItems: FilterItem[] = [
-  {
-    key: 'status',
-    label: '状态',
-    type: 'select',
-    placeholder: '全部状态',
-    options: [
-      { label: '待处理', value: 'open' },
-      { label: '处理中', value: 'pending' },
-      { label: '已解决', value: 'resolved' },
-      { label: '已关闭', value: 'closed' },
-    ],
-  },
-  {
-    key: 'priority',
-    label: '优先级',
-    type: 'select',
-    placeholder: '全部优先级',
-    options: [
-      { label: '高', value: 'high' },
-      { label: '中', value: 'medium' },
-      { label: '低', value: 'low' },
-    ],
-  },
-]
-
-// 状态配置
-const getStatusConfig = (status: string) => {
-  const configs = {
-    open: { label: '待处理', class: 'text-danger', icon: AlertCircle },
-    pending: { label: '处理中', class: 'text-warning', icon: Clock },
-    resolved: { label: '已解决', class: 'text-success', icon: CheckCircle },
-    closed: { label: '已关闭', class: 'text-tertiary', icon: XCircle },
-  }
-  return configs[status as keyof typeof configs] || configs.open
-}
-
-// 优先级配置
-const getPriorityConfig = (priority: string) => {
-  const configs = {
-    high: { label: '高', class: 'bg-danger-bg text-danger' },
-    medium: { label: '中', class: 'bg-warning-bg text-warning' },
-    low: { label: '低', class: 'bg-info-bg text-info' },
-  }
-  return configs[priority as keyof typeof configs] || configs.low
-}
-
-// 格式化时间
-const formatTime = (dateStr: string) => {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = Math.floor((now.getTime() - date.getTime()) / 1000)
-
-  if (diff < 60) return '刚刚'
-  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
-  if (diff < 604800) return `${Math.floor(diff / 86400)}天前`
-
-  return date.toLocaleDateString('zh-CN')
-}
-
-// 加载工单列表
-const loadTickets = async () => {
+async function load() {
   loading.value = true
-  error.value = null
   try {
-    // TODO: 实际 API 调用
-    // const response = await api.get('/api/admin/tickets')
-    // tickets.value = response.data
-
-    // 模拟数据
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    tickets.value = []
-  } catch (err: any) {
-    console.error('加载工单失败:', err)
-    error.value = '加载工单列表失败，请稍后重试'
+    list.value = await fetchTickets(statusFilter.value ? { status_filter: statusFilter.value } : {})
   } finally {
     loading.value = false
   }
 }
 
-// 工单点击
-const handleTicketClick = (ticket: Ticket) => {
-  router.push(`/tickets/${ticket.id}`)
+onMounted(load)
+
+async function openDetail(t: TicketRow) {
+  current.value = t
+  messages.value = await fetchTicketMessages(t.id)
+  replyText.value = ''
+  drawerVisible.value = true
 }
 
-// 筛选处理
-const handleFilter = (data: Record<string, any>) => {
-  console.log('筛选条件:', data)
-  // TODO: 应用筛选
-  loadTickets()
-}
-
-// 重置筛选
-const handleResetFilter = () => {
-  loadTickets()
-}
-
-onMounted(() => {
-  loadTickets()
-})
-</script>
-
-<template>
-  <PageContainer class="tickets-page">
-    <!-- 筛选按钮 -->
-    <div class="filter-actions">
-      <button class="btn-filter" @click="showFilterDrawer = true">
-        <Filter :size="16" />
-        <span>筛选</span>
-      </button>
-    </div>
-
-    <!-- 加载状态 -->
-    <LoadingState v-if="loading && !error" type="skeleton" :rows="5" />
-
-    <!-- 错误状态 -->
-    <ErrorState
-      v-else-if="error"
-      title="加载失败"
-      :message="error"
-      show-retry
-      @retry="loadTickets"
-    />
-
-    <!-- 正常内容 -->
-    <template v-else>
-      <!-- 统计卡片 -->
-      <div class="stats-grid">
-        <StatCard
-          :value="ticketStats.total"
-          label="总工单"
-          :icon="Ticket"
-          icon-color="primary"
-        />
-        <StatCard
-          :value="ticketStats.open"
-          label="待处理"
-          :icon="AlertCircle"
-          icon-color="danger"
-        />
-        <StatCard
-          :value="ticketStats.pending"
-          label="处理中"
-          :icon="Clock"
-          icon-color="warning"
-        />
-        <StatCard
-          :value="ticketStats.resolved"
-          label="已解决"
-          :icon="CheckCircle"
-          icon-color="success"
-        />
-      </div>
-
-      <!-- 工单列表 -->
-      <GlassCard padding="none">
-        <SectionHeader
-          title="工单列表"
-          :badge="ticketStats.total"
-          badge-type="primary"
-        />
-
-        <!-- 空状态 -->
-        <EmptyState
-          v-if="tickets.length === 0"
-          :icon="Ticket"
-          title="暂无工单"
-          description="当前没有需要处理的工单"
-        />
-
-        <!-- 列表 -->
-        <div v-else class="ticket-list">
-          <ListRow
-            v-for="ticket in tickets"
-            :key="ticket.id"
-            :title="ticket.title"
-            :subtitle="ticket.user_name + ' · ' + formatTime(ticket.created_at)"
-            :icon="getStatusConfig(ticket.status).icon"
-            :badge="getPriorityConfig(ticket.priority).label"
-            :badge-type="ticket.priority === 'high' ? 'danger' : ticket.priority === 'medium' ? 'warning' : 'info'"
-            @click="handleTicketClick(ticket)"
-          >
-            <template #right>
-              <span :class="['status-badge', getStatusConfig(ticket.status).class]">
-                {{ getStatusConfig(ticket.status).label }}
-              </span>
-            </template>
-          </ListRow>
-        </div>
-      </GlassCard>
-    </template>
-
-    <!-- 筛选抽屉 -->
-    <FilterDrawer
-      v-model="showFilterDrawer"
-      title="筛选工单"
-      :items="filterItems"
-      @filter="handleFilter"
-      @reset="handleResetFilter"
-    />
-  </PageContainer>
-</template>
-
-<style scoped>
-.tickets-page {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-/* 筛选操作区 */
-.filter-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 0.75rem;
-}
-
-.btn-filter {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1rem;
-  background: var(--bg-input);
-  border: 1px solid var(--border-base);
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 150ms ease;
-}
-
-.btn-filter:active {
-  background: var(--bg-card-hover);
-  transform: scale(0.97);
-}
-
-/* 统计卡片网格 */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.75rem;
-}
-
-@media (min-width: 640px) {
-  .stats-grid {
-    grid-template-columns: repeat(4, 1fr);
+async function send(closeAfter: boolean) {
+  if (!current.value || !replyText.value.trim()) return
+  sending.value = true
+  try {
+    await replyTicket(current.value.id, { message: replyText.value, close_ticket: closeAfter })
+    ElMessage.success(closeAfter ? '已回复并关闭工单' : '回复成功')
+    drawerVisible.value = false
+    load()
+  } finally {
+    sending.value = false
   }
 }
 
-/* 工单列表 */
-.ticket-list {
-  display: flex;
-  flex-direction: column;
+async function close(t: TicketRow) {
+  await closeTicket(t.id)
+  ElMessage.success('工单已关闭')
+  load()
 }
 
-.status-badge {
-  padding: 0.25rem 0.625rem;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
+function fmtDate(s: string): string {
+  return s.slice(0, 16).replace('T', ' ')
 }
+
+function statusLabel(status: string): string {
+  const map: Record<string, string> = { open: '进行中', pending: '待处理', closed: '已关闭' }
+  return map[status] || status
+}
+
+function statusBadge(status: string): string {
+  const map: Record<string, string> = { open: 'ok', pending: 'warn', closed: 'off' }
+  return map[status] || 'off'
+}
+</script>
+
+<template>
+  <div class="admin-page">
+    <div class="admin-page-header">
+      <div>
+        <h1 class="admin-page-title">工单管理</h1>
+        <p class="admin-page-subtitle">回复会以站内消息通知用户</p>
+      </div>
+      <div class="toolbar">
+        <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 120px" @change="load">
+          <el-option label="进行中" value="open" />
+          <el-option label="已关闭" value="closed" />
+        </el-select>
+        <el-button @click="load"><RefreshCw :size="14" /></el-button>
+      </div>
+    </div>
+
+    <div class="admin-card">
+      <el-table :data="list" v-loading="loading" style="width: 100%" :header-cell-style="{ background: 'transparent', color: '#a3a3a3' }">
+        <el-table-column label="工单" min-width="240">
+          <template #default="{ row }">
+            <button class="ticket-title" @click="openDetail(row)">{{ row.title }}</button>
+            <div class="ticket-preview">{{ row.latest_message || '—' }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="用户" width="120">
+          <template #default="{ row }">{{ row.user_name }}</template>
+        </el-table-column>
+        <el-table-column label="分类" width="90">
+          <template #default="{ row }">{{ row.category }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="更新时间" width="150">
+          <template #default="{ row }">{{ fmtDate(row.updated_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="row.status !== 'closed'" size="small" text type="danger" @click="close(row)">关闭</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <el-drawer v-model="drawerVisible" :title="current?.title || '工单详情'" size="420px">
+      <div class="msg-list">
+        <div v-for="m in messages" :key="m.id" class="msg" :class="{ admin: m.is_admin }">
+          <div class="msg-meta">
+            {{ m.is_admin ? (m.admin_name || '管理员') : current?.user_name }} · {{ fmtDate(m.created_at) }}
+          </div>
+          <div class="msg-body">{{ m.message }}</div>
+        </div>
+      </div>
+
+      <div class="reply-box" v-if="current && current.status !== 'closed'">
+        <el-input v-model="replyText" type="textarea" :rows="3" placeholder="输入回复内容…" />
+        <div class="reply-actions">
+          <el-button :disabled="sending || !replyText.trim()" @click="send(false)">
+            <Send :size="14" style="margin-right: 4px" />回复
+          </el-button>
+          <el-button type="primary" :disabled="sending || !replyText.trim()" @click="send(true)">回复并关闭</el-button>
+        </div>
+      </div>
+      <div v-else class="closed-hint">工单已关闭</div>
+    </el-drawer>
+  </div>
+</template>
+
+<style scoped>
+.toolbar { display: flex; gap: 8px; }
+.ticket-title { background: none; border: none; color: inherit; font-weight: 600; font-size: 14px; cursor: pointer; padding: 0; text-align: left; }
+.ticket-title:hover { color: #10b981; }
+.ticket-preview {
+  font-size: 12px;
+  color: var(--color-text-muted, #737373);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
+.mini-badge.ok { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.mini-badge.warn { background: rgba(234, 179, 8, 0.15); color: #eab308; }
+.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
+
+.msg-list { display: flex; flex-direction: column; gap: 12px; }
+.msg {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.msg.admin { background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); }
+.msg-meta { font-size: 11px; color: var(--color-text-muted, #737373); margin-bottom: 4px; }
+.msg-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+
+.reply-box { margin-top: 16px; }
+.reply-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.closed-hint { margin-top: 16px; text-align: center; color: var(--color-text-muted, #737373); font-size: 13px; }
 </style>
