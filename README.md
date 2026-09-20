@@ -14,10 +14,13 @@ Emby 客户端 ──HTTP──▶ backend/main.py（单进程单端口）
                         ├── /emby/*                 Emby 协议兼容 API
                         │   ├── /Users/AuthenticateByName   用户名密码认证
                         │   ├── /Users/{uid}/Items          媒体库浏览/搜索/筛选
-                        │   ├── /Items/{id}/PlaybackInfo    播放信息
+                        │   ├── /Items/{id}/PlaybackInfo    播放信息（GET/POST）
                         │   ├── /Videos/{id}/stream         直连流（Range 分段）
-                        │   ├── /videos/{id}/master.m3u8    HLS 转码（ffmpeg）
-                        │   ├── /Items/{id}/Images/*        海报/背景图
+                        │   ├── /videos/{id}/master.m3u8    HLS 转码（ffmpeg，切片自带 api_key）
+                        │   ├── /Videos/{id}/{mid}/Subtitles/{i}/Stream.{fmt}  字幕投递
+                        │   ├── /Search/Hints               全局搜索
+                        │   ├── /Items/{id}/Images/{Type}/{Index}  海报/背景图
+                        │   ├── /Genres /Studios /Items/Counts /Items/Filters  分类与统计
                         │   └── /Sessions/Playing/*         播放进度上报
                         ├── /api/user/*             用户门户 API
                         └── /api/admin/*            管理后台 API
@@ -149,14 +152,16 @@ RoyalBot-Portal/
 │       ├── models.py           #   媒体库/条目/轨道/会话/Token 模型
 │       ├── auth.py             #   Emby 协议认证 + Token 管理
 │       ├── scanner.py          #   媒体库扫描 + ffprobe/TMDB 刮削
-│       ├── streaming.py        #   直连流/Range/HLS 转码
-│       ├── api.py              #   Emby 协议兼容 API（/emby/*）
+│       ├── streaming.py        #   直连流/Range/HLS 转码（会话复用 + 失效回收）
+│       ├── subtitles.py        #   字幕投递（外挂直出 / 内封 ffmpeg 抽取 → VTT）
+│       ├── api.py              #   Emby 协议兼容 API（/emby/*，含客户端兼容补齐）
 │       └── portal.py           #   门户集成 API（账号卡/收藏/统计/管理）
 ├── user_frontend/              # 用户前端 (Vue 3)
 ├── admin_frontend/             # 管理前端 (Vue 3)
 └── scripts/
-    ├── smoke_test_emby.py      # 自建 Emby 端到端冒烟测试
-    └── smoke_test_auth.py      # 门户认证（JWT）端到端测试
+    ├── smoke_test_emby.py            # 自建 Emby 端到端冒烟测试
+    ├── smoke_test_emby_gateway.py    # Emby 网关兼容面 + 路由优先级回归
+    └── smoke_test_auth.py            # 门户认证（JWT）端到端测试
 ```
 
 ## 🔧 配置说明
@@ -209,6 +214,17 @@ python main.py
 ```
 
 ## 📝 更新日志
+
+### v2.5.5 (2026-09-20) — Emby 网关客户端兼容补齐
+- ✅ **端点面补齐**：对照 Emby 4.7 官方 API 补齐 40+ 端点（`Search/Hints`、`Genres`/`Studios`/`Persons`、`Items/Counts`/`Filters`、`FavoriteItems` POST/DELETE、`Similar`、`Ancestors`、`Users/Public`·`Me`·`Policy`、`Sessions/Logout`、`System/Endpoint`、`Library/MediaFolders`、`UserViews`、`Videos/ActiveEncodings`、`Library/Refresh`、`PlaybackInfo` GET/用户维度变体）；无对应概念的（预告片/主题曲/片头/插件）返回空集合而非 404
+- ✅ **字幕真正可用**：新增 `Subtitles/{Index}/Stream.{Format}` 全路径族 + `backend/emby_server/subtitles.py`（外挂字幕直出、中文编码嗅探 UTF-8/GB18030/Big5、内封文本字幕 ffmpeg 抽取并缓存、图片字幕明确 415）；用户端播放器自动挂载默认文本字幕
+- ✅ **修复网页端 HLS 不可用**：变体与切片地址此前只带 `session`，hls.js 子请求不带认证头 → 全部 401；现派生地址自带 `api_key`
+- ✅ **修复外挂字幕无法拉取**：扫描器未给外挂字幕轨分配 `stream_index`（`None` → `Subtitles/None`）
+- ✅ **修复 `/Images/Backdrop/0` 404**：图片路由仅注册了 `Primary/{index}`，现为通用 `{Type}/{Index}`
+- ✅ **筛选与排序生效**：`Filters`（IsFavorite/IsPlayed/IsUnplayed/IsResumable）、`Ids` 批量、`SortBy=Random` 此前被忽略
+- ✅ **播放稳态**：HLS 播放列表/切片等待（15s/12s）而非立即 404；ffmpeg 退出返回 503；同用户重复请求复用转码会话；回收失效/超龄会话与临时目录
+- ✅ **详情补字段**：`RunTimeTicks`/`Container`/`Bitrate` 等，客户端时长与进度条可用；`SupportsSynchronization` 如实改为 `false`
+- ✅ **隐私**：`/Users/Public` 返回空列表（Jellyfin 默认策略），未认证不泄露全站账号
 
 ### v2.5.4 (2026-09-20) — 首页 Hero 与会员卡 CTA 收敛
 - ✅ **主次分明**：Hero 的通栏「进入媒体库」按钮降级为文字级快捷入口（`进入媒体库 ›` ｜ `继续观看《片名》›`），不再与会员开通按钮抢视觉；媒体库入口仍保留在顶栏与底部导航

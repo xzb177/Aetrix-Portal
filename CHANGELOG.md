@@ -2,6 +2,27 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.5.5] - 2026-09-20
+
+### 新增 (Added)
+- **Emby 网关客户端兼容补齐**（对照 Emby 4.7 官方 API 面，新增 40+ 端点）：`Search/Hints` 全局搜索、`Genres`/`Studios`/`Persons` 分类元数据、`Items/Counts` 与 `Items/Filters` 统计筛选、`FavoriteItems` POST/DELETE 规范收藏路由、`Items/{id}/Similar` 相似推荐、`Items/{id}/Ancestors` 祖先链路、`Users/Public`·`Users/Me`·`Users/{id}/Policy` 用户面、`Sessions/Logout`、`System/Endpoint`、`Library/MediaFolders`、`UserViews`、`Videos/ActiveEncodings` 释放转码、`Library/Refresh` 库刷新、`PlaybackInfo` 的 GET 与用户维度变体
+- **字幕投递**（新增 `backend/emby_server/subtitles.py`）：`/Videos/{id}/{MediaSourceId}/Subtitles/{Index}/Stream.{Format}` 全路径族（含 `{StartPositionTicks}` 变体）；外挂字幕直出并做中文编码嗅探（UTF-8/GB18030/Big5），内封文本字幕用 ffmpeg 抽取为 WebVTT 并按「条目+轨道」缓存；图片类字幕（PGS/VobSub）明确返回 415
+- 用户端网页播放器接入字幕轨：自动挂载服务端标记的默认文本字幕
+
+### 修复 (Fixed)
+- **网页端 HLS 播放实际不可用**：master playlist 派生的变体与切片地址只带 `session` 票据、不带 `api_key`，而 hls.js 不会给子请求附加认证头，导致变体与切片全部 401。现变体与切片地址自带 `api_key`
+- **外挂字幕永远拉不到**：扫描器写入外挂字幕轨时未设置 `stream_index`（为 `None`），客户端据此拼出 `Subtitles/None`；现按已探测轨道序号顺延分配
+- **`/Items/{id}/Images/Backdrop/0` 直接 404**：图片路由只注册了 `Primary/{index}`，其它类型带序号地址无路由；现改为通用 `{Type}/{Index}`
+- **列表筛选参数被忽略**：`Filters=IsFavorite|IsPlayed|IsUnplayed|IsResumable`、`Ids` 批量查询、`SortBy=Random` 此前不生效（筛选后返回全量），现已支持
+- **条目详情缺 `RunTimeTicks` / `Container`**：客户端无法展示时长与进度条，现已补齐
+- **HLS 切片过早 404**：客户端请求切片往往早于 ffmpeg 写出，现短暂等待（播放列表 15s / 切片 12s）并在 ffmpeg 已退出时明确返回 503 而非空列表
+- **转码进程与目录泄漏**：同一用户重复请求同一影片会反复 fork ffmpeg，且客户端异常断开不会回收；现复用进行中的会话并回收失效/超龄会话
+- **同步能力如实上报**：`SupportsSynchronization` 由 `true` 改为 `false`（未实现 `/Sync/*`），避免客户端发起无法完成的离线同步
+- **`/Users/Public` 不泄露账号**：未认证请求返回空列表（Jellyfin 默认隐私策略），强制客户端手动输入用户名
+
+### 变更 (Changed)
+- 版本号：后端 / 用户端 2.5.5
+
 ## [2.5.4] - 2026-09-20
 
 ### 变更 (Changed)

@@ -379,11 +379,21 @@ def scan_library_sync(db: Session, library: emby_models.Library) -> dict:
                             if k in {"stream_index", "stream_type", "codec", "language",
                                      "display_title", "title", "channels", "bit_rate"}
                         }))
-                    for lang, sub_path in find_external_subtitles(full_path):
+                    # 外挂字幕需要合成 stream_index：客户端靠它拼
+                    # /Videos/{id}/{mid}/Subtitles/{Index}/Stream.{Format}，
+                    # 旧实现不写 stream_index（None），字幕地址会变成 Subtitles/None 无法拉取。
+                    next_index = max(
+                        [s.get("stream_index") or 0 for s in probe["streams"]] + [0]
+                    )
+                    for offset, (lang, sub_path) in enumerate(
+                        find_external_subtitles(full_path), start=1
+                    ):
                         db.add(emby_models.MediaStream(
-                            item_id=item.id, stream_type="Subtitle",
+                            item_id=item.id, stream_index=next_index + offset,
+                            stream_type="Subtitle",
                             codec=os.path.splitext(sub_path)[1].lstrip("."),
                             language=lang, display_title=os.path.basename(sub_path),
+                            is_default=(offset == 1),
                             is_external=True, external_path=sub_path,
                         ))
                     db.commit()
