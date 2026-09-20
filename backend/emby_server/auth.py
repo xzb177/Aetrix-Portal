@@ -28,8 +28,14 @@ def parse_emby_authorization(header_value: Optional[str]) -> dict:
         part = part.strip()
         if "=" in part:
             key, _, value = part.partition("=")
+            key = key.strip()
+            # 首个字段带着认证方案前缀，例如 "MediaBrowser Client=\"Infuse\""；
+            # 不剥掉前缀就取不到 Client，设备审查里所有客户端都会显示成默认名。
+            if " " in key:
+                key = key.split(" ", 1)[1].strip()
             value = value.strip().strip('"')
-            result[key.strip()] = value
+            if key:
+                result[key] = value
     return result
 
 
@@ -58,11 +64,27 @@ def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optiona
 
 
 def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[str, emby_models.EmbyApiToken]:
-    """为用户签发 Emby 客户端 Token（幂等：同设备复用）"""
+    """为用户签发 Emby 客户端 Token（幂等：同设备复用）
+
+    签发前先做设备登记与设备数上限校验；超限时抛 ``DeviceLimitExceeded``
+    （由 AuthenticateByName 转成可读响应），避免在函数内部直接返回 HTTP 错误。
+    """
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
     device_id = auth.get("DeviceId") or request.headers.get("X-Device-Id") or "unknown-device"
     app_name = auth.get("Client") or "Emby Client"
     app_version = auth.get("Version") or "1.0"
+
+    from backend.authlog import client_ip
+    from backend.devices import register_device
+
+    register_device(
+        db, user,
+        device_id=device_id,
+        name=auth.get("Device") or app_name,
+        client=app_name,
+        app_version=app_version,
+        ip=client_ip(request),
+    )
 
     token_value = secrets.token_hex(20)
 
@@ -72,7 +94,7 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
         device_id=device_id,
         app_name=app_name,
         app_version=app_version,
-        last_ip=request.client.host if request.client else None,
+        last_ip=client_ip(request),
     )
     db.add(row)
     db.commit()
@@ -112,7 +134,42 @@ def resolve_token(db: Session, request: Request) -> Optional[tuple[models.WebUse
     user = db.query(models.WebUser).filter(models.WebUser.id == row.user_id).first()
     if not user or not user.is_active:
         return None
+    # 令牌被使用即视为设备在线（带节流，避免每个请求都写库）
+    from backend.authlog import client_ip
+    from backend.devices import touch_device
+
+    touch_device(db, user, row.device_id, client_ip(request))
     return user, row
+
+
+def resolve_request_user(db: Session, request: Request) -> Optional[models.WebUser]:
+    """解析请求对应的用户：Emby 客户端 token 优先，回退门户 JWT
+
+    与 ``get_emby_user`` 同一口径，但不抛异常、可用于依赖注入之外的位置
+    （例如下载策略的网关级中间件）。解析不到用户时返回 None。
+    """
+    from backend.security import resolve_jwt_user_id
+
+    resolved = resolve_token(db, request)
+    if resolved is not None:
+        return resolved[0]
+
+    raw = (
+        request.headers.get("X-Emby-Token")
+        or request.headers.get("X-MediaBrowser-Token")
+        or request.query_params.get("api_key", "")
+    )
+    auth = request.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        raw = auth[7:].strip() or raw
+    if not raw:
+        return None
+
+    user_id = resolve_jwt_user_id(raw)
+    if user_id is None:
+        return None
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    return user if user and user.is_active else None
 
 
 def get_emby_user(

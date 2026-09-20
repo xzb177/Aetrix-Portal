@@ -119,6 +119,62 @@ export const exchangeApi = {
     api.post<never, { success: boolean; reward_type?: string; points?: number; balance?: number; plan_name?: string; days?: number; message: string }>('/api/user/economy/exchange/redeem', { code }),
 }
 
+// ==================== 会员卡码（注册码 / 续期码 / 白名单码） ====================
+
+export interface CodePreview {
+  valid: boolean
+  kind: 'code' | 'invite' | 'exchange' | 'unknown'
+  code_type?: number
+  type_name?: string
+  days?: number
+  days_text?: string
+  is_named?: boolean
+  target_username?: string | null
+  remaining_uses?: number
+  message: string
+}
+
+export const membershipApi = {
+  /** 预检卡码：仅识别类型与天数，不核销（POST 以免卡码进访问日志） */
+  preview: (code: string) =>
+    api.post<never, CodePreview>('/api/user/membership/redeem/preview', { code }),
+  /** 核销卡码：成功后直接开通或叠加会员 */
+  redeem: (code: string) =>
+    api.post<never, { success: boolean; message: string; code_type?: number; days?: number; end_date?: string }>(
+      '/api/user/membership/redeem', { code }),
+}
+
+// ==================== 我的设备（第三方播放器登录设备） ====================
+
+export interface MyDevice {
+  device_id: string
+  name: string | null
+  client: string | null
+  app_version: string | null
+  ip: string | null
+  is_blocked: boolean
+  first_seen_at: string | null
+  last_seen_at: string | null
+  is_online_recent: boolean
+}
+
+export interface MyDevicesResponse {
+  limit: number
+  count: number
+  active_count: number
+  remaining: number | null
+  auto_evict: boolean
+  active_days: number
+  devices: MyDevice[]
+}
+
+export const deviceApi = {
+  mine: () => api.get<never, MyDevicesResponse>('/api/user/emby/devices'),
+  remove: (deviceId: string) =>
+    api.delete<never, { success: boolean; message: string }>(
+      `/api/user/emby/devices/${encodeURIComponent(deviceId)}`),
+}
+
 // ==================== 支付 ====================
 
 export const paymentApi = {

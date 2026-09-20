@@ -14,6 +14,7 @@ import {
   LayoutDashboard, Users, Ticket, Megaphone, Film, ScrollText,
   KeyRound, MessageSquareDashed, LogOut, Menu, X, ChevronRight,
   Wallet, Package, TicketCheck, Gift, Settings, Crown, RefreshCw,
+  MonitorSmartphone, ShieldAlert,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -23,7 +24,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const sidebarOpen = ref(false)
 
-const APP_VERSION = 'v2.4.0'
+const APP_VERSION = 'v2.6.0'
 
 interface NavItem {
   path: string
@@ -51,7 +52,14 @@ const navGroups: { title: string; items: NavItem[] }[] = [
       { path: '/orders', label: '订单管理', icon: Wallet },
       { path: '/exchange-codes', label: '兑换码', icon: TicketCheck },
       { path: '/invitations', label: '邀请与积分', icon: Gift },
-      { path: '/codes', label: '注册码', icon: KeyRound },
+      { path: '/codes', label: '卡码管理', icon: KeyRound },
+    ],
+  },
+  {
+    title: '风控',
+    items: [
+      { path: '/devices', label: '设备管理', icon: MonitorSmartphone },
+      { path: '/login-logs', label: '登录与安全日志', icon: ShieldAlert },
     ],
   },
   {

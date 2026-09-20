@@ -1749,6 +1749,10 @@ ECONOMY_CONFIG_KEYS = {
     "site_url": "str",
     # 付费墙：是否要求有效订阅才能播放 + 自定义拦截文案
     "subscription_required": "bool", "subscription_gate_message": "str",
+    # 下载开关与设备/日志风控（借鉴 twilight-kotomi 的运营策略）
+    "allow_download": "bool",
+    "device_limit_per_user": "int", "device_limit_auto_evict": "bool",
+    "login_log_retention_days": "int",
     "invitation_enabled": "bool", "invitation_reward_points": "int",
     "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
 }

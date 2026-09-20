@@ -7,14 +7,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 from sqlalchemy import func
 
 from backend.database import get_db
-from backend import models
+from backend import codes, devices, models
 from backend.notifications import get_notification_service, AdminEvent
+from backend.ratelimit import check_rate_limit
 from backend.security import resolve_jwt_user_id
 
 logger = logging.getLogger(__name__)
@@ -782,6 +783,99 @@ async def get_subscription_plans(
         }
         for p in plans
     ]
+
+
+# ==================== 会员卡码核销 ====================
+
+
+class RedeemCodeRequest(BaseModel):
+    code: str
+
+
+@user_router.post("/membership/redeem/preview")
+async def preview_membership_code(
+    req: RedeemCodeRequest,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """预检卡码：不核销，仅告知类型与天数
+
+    用 POST 而非 GET，避免卡码出现在访问日志与浏览器历史中；
+    限速与核销同口径，防止靠枚举探测卡码。
+    """
+    allowed, _ = check_rate_limit(f"code_preview:{current_user.id}", 20, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
+
+    return codes.preview_code(db, req.code, current_user.username)
+
+
+@user_router.post("/membership/redeem")
+async def redeem_membership_code(
+    req: RedeemCodeRequest,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """核销会员卡码：注册码 / 续期码 / 白名单码"""
+    allowed, _ = check_rate_limit(f"code_redeem:{current_user.id}", 10, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
+
+    if not current_user.is_active:
+        raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员")
+
+    result = codes.redeem_code(db, current_user, req.code)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message") or "卡码无效")
+    return result
+
+
+# ==================== 我的设备（播放器） ====================
+
+
+@user_router.get("/emby/devices")
+async def get_my_devices(
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """我的播放设备：用于查看已在哪些客户端登录，并清理不再使用的设备"""
+    now = datetime.now()
+    cutoff = now - timedelta(days=devices.ACTIVE_DEVICE_DAYS)
+    rows = devices.list_devices(db, current_user.id)
+
+    items = []
+    for device in rows:
+        dto = devices.device_dto(device)
+        dto["is_online_recent"] = bool(
+            not device.is_blocked
+            and (device.last_seen_at is None or device.last_seen_at >= cutoff)
+        )
+        items.append(dto)
+
+    limit = devices.device_limit(db)
+    active_count = sum(1 for d in items if d["is_online_recent"])
+    return {
+        "limit": limit,
+        "count": len(items),
+        "active_count": active_count,
+        "remaining": max(0, limit - active_count) if limit else None,
+        "auto_evict": devices.device_auto_evict(db),
+        "active_days": devices.ACTIVE_DEVICE_DAYS,
+        "devices": items,
+    }
+
+
+@user_router.delete("/emby/devices/{device_id}")
+async def remove_my_device(
+    device_id: str,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """移除设备并吊销其令牌（对应客户端需重新登录）"""
+    ok = devices.remove_device(db, current_user.id, device_id, revoke_tokens=True)
+    if not ok:
+        raise HTTPException(status_code=404, detail="设备不存在")
+    return {"success": True, "message": "设备已移除，对应客户端需重新登录"}
 
 
 # ==================== 已移除的遗留端点 ====================

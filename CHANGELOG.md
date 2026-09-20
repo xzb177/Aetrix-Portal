@@ -2,6 +2,25 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.0] - 2026-09-20
+
+### 新增 (Added)
+- **卡码体系**（新增 `backend/codes.py`）：注册码 / 续期码 / 白名单码三类卡码，含**诱饵码**（蜜罐：在盗版渠道流通，使用即自动封禁账号并落安全日志）与**指名码**（仅限指定账号使用）；核销入口 `POST /api/user/membership/redeem`（含预检 `preview`，前端先确认类型与天数再核销），注册页凭码注册同样支持类型化授予
+- **卡码管理台**：`POST /api/admin/registration-codes/generate`（类型/天数/次数/有效期/随机算法/诱饵/指名）、`GET /registration-codes/stats`（按类型统计 + 诱饵命中 + 累计授予天数）、`GET /registration-codes/list`（类型/状态/关键字筛选）、`PATCH`（停用/备注）与 `DELETE`（未使用的可回收，已核销的保留审计）
+- **设备风控**（新增 `backend/devices.py`）：客户端 `AuthenticateByName` 登录即登记设备（名称/客户端/版本/IP/首末次出现），支持**每用户设备上限**（`device_limit_per_user`）与**超限自动踢最久未使用设备**（`device_limit_auto_evict`）；管理端 `GET /api/admin/devices`·`/devices/stats`、`PUT /devices/{id}`（封禁/解封，封禁同时吊销令牌）、`DELETE /devices/{id}`（踢下线）；用户端 `GET /api/user/emby/devices` 与 `DELETE /api/user/emby/devices/{id}` 自助清理
+- **登录与安全日志**（新增 `backend/authlog.py` + `LoginLog` 表）：记录门户/客户端登录成功与失败、设备超限被拒、诱饵码触发封禁等事件；管理端 `GET /api/admin/login-logs`（用户名/IP/事件/结果筛选 + 24h 汇总）与 `POST /login-logs/purge`（按保留天数清理，`login_log_retention_days` 可配）
+- **下载策略**：站点级 `allow_download` 开关，关闭后客户端下载与拉取一致被拦（管理员不受限）
+- 管理端新增「卡码管理 / 设备管理 / 登录与安全日志」页面与侧栏分组；用户端新增钱包「会员卡码」核销面板与个人中心「我的设备」卡
+
+### 修复 (Fixed)
+- **`X-Emby-Authorization` 解析丢失客户端名**：首个字段带着认证方案前缀（`MediaBrowser Client="Infuse"`），原实现把 `MediaBrowser Client` 整体当作键名，导致 `Client` 永远取不到、设备审查里所有客户端都显示成默认名。现剥离方案前缀
+- **`/Items/{id}/File` 可绕过下载开关**：该路径与 `/Download` 等价但只校验会员身份，站点关闭下载仍能直接拉文件；现由网关级中间件按路径兜底（覆盖 `/Download`、`/Items/{id}/File` 及未来新增的下载类路径）
+- **白名单卡码天数语义不一致**：生成时写入 36500 天而展示/授予口径认 `-1` 为永久，导致前端显示「36500 天」；现统一为 `-1`
+- **设备封禁未被强制执行**：管理端封禁设备后该设备仍可登录，现于设备登记阶段直接拒绝并提示
+
+### 变更 (Changed)
+- 版本号：后端 / 用户端 / 管理端 2.6.0
+
 ## [2.5.5] - 2026-09-20
 
 ### 新增 (Added)

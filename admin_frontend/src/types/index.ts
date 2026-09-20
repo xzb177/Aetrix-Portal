@@ -33,16 +33,96 @@ export interface UsersResponse {
   users: AdminUserRow[]
 }
 
+export type CodeType = 1 | 2 | 3
+
+/** 卡码状态：可用 / 已停用 / 已过期 / 已用尽 */
+export type CodeState = 'active' | 'disabled' | 'expired' | 'used_up'
+
 export interface RegistrationCode {
   id: number
   code: string
+  code_type: CodeType
+  code_type_name: string
+  days: number
+  days_text: string
+  is_permanent: boolean
+  is_decoy: boolean
+  target_username: string
+  source: string
   max_uses: number
   use_count: number
   is_active: boolean
+  state: CodeState
   note: string | null
   expires_at: string | null
   used_by: { id: number; username: string }[]
   created_at: string
+}
+
+export interface CodeTypeStat {
+  code_type: CodeType
+  code_type_name: string
+  total: number
+  used: number
+  available: number
+}
+
+export interface CodeStats {
+  total: number
+  active: number
+  disabled: number
+  expired: number
+  used_up: number
+  decoy: { total: number; triggered: number }
+  days_granted: number
+  by_type: CodeTypeStat[]
+}
+
+/** 播放设备（用户第三方客户端登录设备） */
+export interface DeviceRow {
+  device_id: string
+  name: string | null
+  client: string | null
+  app_version: string | null
+  ip: string | null
+  is_blocked: boolean
+  first_seen_at: string | null
+  last_seen_at: string | null
+  user_id: number
+  username: string
+  is_user_active: boolean
+  is_online_recent: boolean
+}
+
+export interface DeviceStats {
+  total: number
+  active_30d: number
+  blocked: number
+  users: number
+  limit_per_user: number
+  auto_evict: boolean
+  active_days: number
+}
+
+/** 登录 / 安全事件日志 */
+export interface LoginLogRow {
+  id: number
+  user_id: number | null
+  username: string | null
+  ip: string | null
+  user_agent: string | null
+  success: boolean
+  reason: string | null
+  reason_label: string
+  detail: string | null
+  created_at: string | null
+}
+
+export interface LoginLogsResponse {
+  total: number
+  summary: { failed_24h: number; risk_24h: number }
+  reasons: { value: string; label: string }[]
+  logs: LoginLogRow[]
 }
 
 export interface RegistrationSettings {

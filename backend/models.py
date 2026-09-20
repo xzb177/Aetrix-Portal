@@ -3,7 +3,7 @@
 整合用户端、管理后台和主项目的所有数据模型
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, Index, ForeignKey, JSON, Float
+from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, Index, ForeignKey, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -615,19 +615,22 @@ class ExchangeCode(Base):
 # ==================== 邀请系统 ====================
 
 class RegistrationCode(Base):
-    """注册码表（卡码体系：生成/消耗/审计）
+    """卡码表（注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码）
 
-    借鉴 twilight-kotomi：注册码支持次数限制、过期时间、
-    停用状态和使用审计（used_by 记录消耗者 WebUser.id）。
+    借鉴 twilight-kotomi 的 RegCode：一份数据结构靠 code_type 区分用途，
+    days 表示授予或叠加的会员天数，is_decoy 为蜜罐码，target_username 为指名码。
+    本项目的会员口径以 UserSubscription(end_date) 为单一事实来源，
+    因此卡码的「天数」最终落到订阅上（无生效订阅则新建，有则叠加）。
     """
     __tablename__ = 'registration_codes'
 
     __table_args__ = (
         Index('idx_reg_code', 'code'),
+        Index('idx_reg_code_type', 'code_type'),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(20), unique=True, nullable=False, index=True)
+    code = Column(String(64), unique=True, nullable=False, index=True)
     max_uses = Column(Integer, default=1)
     use_count = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
@@ -635,6 +638,65 @@ class RegistrationCode(Base):
     used_by = Column(String(500))  # 逗号分隔的 WebUser.id 审计
     expires_at = Column(DateTime)
     created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    # ===== 卡码体系（借鉴 twilight-kotomi 的 RegCode）=====
+    code_type = Column(Integer, default=1)  # 1 注册码 / 2 续期码 / 3 白名单码
+    days = Column(Integer, default=30)  # 授予或叠加的会员天数；-1 表示永久
+    is_decoy = Column(Boolean, default=False)  # 诱饵码（蜜罐：使用即封禁账号）
+    target_username = Column(String(50))  # 指名码：非空时仅限该用户名使用
+    source = Column(String(20), default='admin')  # admin 管理员发放 / invite 邀请体系生成
+
+
+class UserDevice(Base):
+    """用户设备（第三方播放器登录设备，用于设备上限与设备审查）
+
+    借鉴 twilight-kotomi 的设备限制：按 user_id + device_id 唯一，
+    记录客户端名称/版本/IP 与首末次出现时间，超限时可拒绝新设备或踢最久未使用者。
+    """
+    __tablename__ = 'user_devices'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'device_id', name='uq_device_user_device'),
+        Index('idx_device_user', 'user_id'),
+        Index('idx_device_last_seen', 'last_seen_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    device_id = Column(String(128), nullable=False)
+    name = Column(String(100))  # 设备名（X-Emby-Authorization Device）
+    client = Column(String(100))  # 客户端（Infuse / Forward / SenPlayer ...）
+    app_version = Column(String(50))
+    ip = Column(String(64))
+    first_seen_at = Column(DateTime, default=datetime.now)
+    last_seen_at = Column(DateTime, default=datetime.now)
+    is_blocked = Column(Boolean, default=False)
+
+    user = relationship("WebUser")
+
+
+class LoginLog(Base):
+    """登录与账号安全日志
+
+    记录登录成功/失败、设备超限被拒、诱饵码触发封禁等事件，
+    供管理后台风控审查（reason 区分事件类型）。
+    """
+    __tablename__ = 'login_logs'
+
+    __table_args__ = (
+        Index('idx_loginlog_user', 'user_id'),
+        Index('idx_loginlog_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    username = Column(String(64))
+    ip = Column(String(64))
+    user_agent = Column(String(300))
+    success = Column(Boolean, default=True)
+    reason = Column(String(100))  # portal_login / emby_login / device_limit / decoy_code ...
+    detail = Column(String(255))
     created_at = Column(DateTime, default=datetime.now)
 
 
