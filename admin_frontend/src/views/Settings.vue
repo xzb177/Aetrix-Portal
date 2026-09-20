@@ -50,10 +50,19 @@ const GROUPS: Group[] = [
   },
   {
     id: 'exchange',
-    title: '兑换码',
-    desc: '控制用户端是否允许兑换',
+    title: '兑换码 · 求片',
+    desc: '兑换开关与用户每日求片上限',
     icon: TicketCheck,
-    fields: [{ key: 'exchange_enabled', label: '启用兑换', type: 'bool' }],
+    fields: [
+      { key: 'exchange_enabled', label: '启用兑换', type: 'bool' },
+      {
+        key: 'media_seek_daily_limit',
+        label: '每日求片上限',
+        type: 'int',
+        suffix: '条/天',
+        hint: '用户端提交求片时的硬性限额，未设置时默认 5 条',
+      },
+    ],
   },
   {
     id: 'payment',

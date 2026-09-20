@@ -86,13 +86,28 @@ class AuthResponse(BaseModel):
 
 # ==================== Helpers ====================
 
-def _user_out(user: models.WebUser) -> UserOut:
+def has_active_subscription(db: Session, user_id: int) -> bool:
+    """是否持有「生效中且未到期」的订阅
+
+    订阅行的 status 字段不会随时间自动翻转为 expired，因此这里按 end_date 现算，
+    与后台订阅总览（admin/economy/subscriptions）使用同一套判定口径。
+    """
+    return db.query(models.UserSubscription).filter(
+        models.UserSubscription.user_id == user_id,
+        models.UserSubscription.status == "active",
+        models.UserSubscription.end_date > datetime.now(),
+    ).first() is not None
+
+
+def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
+    """用户信息出参：is_vip 由生效中的订阅派生（无 db 时回退到库内标记）"""
+    is_vip = has_active_subscription(db, user.id) if db is not None else bool(user.is_vip)
     return UserOut(
         id=user.id,
         username=user.username,
         email=user.email,
         emby_username=user.emby_username,
-        is_vip=False,  # VIP 状态由订阅系统维护，此处仅展示基础字段
+        is_vip=is_vip,
         is_active=user.is_active,
         created_at=user.created_at.isoformat() if user.created_at else None,
     )
@@ -117,7 +132,7 @@ def _issue_auth_response(
         access_token=access,
         refresh_token=refresh,
         expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=_user_out(user),
+        user=_user_out(user, db),
     )
 
 
@@ -297,14 +312,17 @@ async def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
         "refresh_token": create_refresh_token(user.id),  # 轮换
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        "user": _user_out(user),
+        "user": _user_out(user, db),
     }
 
 
 @auth_router.get("/me", response_model=UserOut)
-async def me(current_user: models.WebUser = Depends(get_current_user_jwt)):
-    """当前登录用户信息"""
-    return _user_out(current_user)
+async def me(
+    current_user: models.WebUser = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db),
+):
+    """当前登录用户信息（含派生的 VIP 状态）"""
+    return _user_out(current_user, db)
 
 
 @auth_router.post("/logout")

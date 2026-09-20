@@ -331,7 +331,7 @@ export const ticketApi = {
   getMessages: (ticketId: number) => api.get<never, TicketMessage[]>(`/api/user/tickets/${ticketId}/messages`),
 
   reply: (ticketId: number, message: string) =>
-    api.post(`/api/user/tickets/${ticketId}/messages`, { title: 'reply', message, category: 'other' }),
+    api.post(`/api/user/tickets/${ticketId}/messages`, { message }),
 
   close: (ticketId: number) => api.post(`/api/user/tickets/${ticketId}/close`),
 }
