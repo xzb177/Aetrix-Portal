@@ -1747,6 +1747,8 @@ ECONOMY_CONFIG_KEYS = {
     "payment_gateway_url": "str", "payment_partner_id": "str",
     "payment_partner_key": "secret", "payment_qqpay_enabled": "bool",
     "site_url": "str",
+    # 付费墙：是否要求有效订阅才能播放 + 自定义拦截文案
+    "subscription_required": "bool", "subscription_gate_message": "str",
     "invitation_enabled": "bool", "invitation_reward_points": "int",
     "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
 }

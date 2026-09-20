@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.emby_server.auth import ensure_emby_credentials
+from backend.subscriptions import has_active_subscription, subscription_required
 from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -73,6 +74,8 @@ class UserOut(BaseModel):
     emby_username: str | None = None
     is_vip: bool = False
     is_active: bool = True
+    # 付费墙是否开启（开启且非会员时播放会被拦截）
+    subscription_required: bool = False
     created_at: str | None = None
 
 
@@ -86,21 +89,11 @@ class AuthResponse(BaseModel):
 
 # ==================== Helpers ====================
 
-def has_active_subscription(db: Session, user_id: int) -> bool:
-    """是否持有「生效中且未到期」的订阅
-
-    订阅行的 status 字段不会随时间自动翻转为 expired，因此这里按 end_date 现算，
-    与后台订阅总览（admin/economy/subscriptions）使用同一套判定口径。
-    """
-    return db.query(models.UserSubscription).filter(
-        models.UserSubscription.user_id == user_id,
-        models.UserSubscription.status == "active",
-        models.UserSubscription.end_date > datetime.now(),
-    ).first() is not None
-
-
 def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
-    """用户信息出参：is_vip 由生效中的订阅派生（无 db 时回退到库内标记）"""
+    """用户信息出参：is_vip 由生效中的订阅派生（无 db 时回退到库内标记）
+
+    subscription_required 告知前端「付费墙是否开启」，用于在详情页提前展示开通引导。
+    """
     is_vip = has_active_subscription(db, user.id) if db is not None else bool(user.is_vip)
     return UserOut(
         id=user.id,
@@ -109,6 +102,7 @@ def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
         emby_username=user.emby_username,
         is_vip=is_vip,
         is_active=user.is_active,
+        subscription_required=subscription_required(db) if db is not None else False,
         created_at=user.created_at.isoformat() if user.created_at else None,
     )
 

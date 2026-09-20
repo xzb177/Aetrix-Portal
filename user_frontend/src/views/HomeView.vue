@@ -2,8 +2,9 @@
 /**
  * 首页 — 内容优先的个人门户
  *
- * 信息架构：问候 → 账号速览（数据条）→ 继续观看 → 最近入库 → 站点动态 → 连接播放器
- * 功能入口交给顶部导航 / 底部导航坞，首页只展示「内容」与「状态」，不再堆功能按钮。
+ * 布局（v2.5.2 优化）：Hero 双栏（左：问候与主行动；右：会员状态卡）
+ * 账号速览数据条 → 「我的内容」（继续观看 / 最近入库）→ 「站点与设备」（动态 / 连接播放器）
+ * 功能入口交给顶部导航 / 底部导航坞，首页只展示「内容」与「状态」。
  */
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -60,14 +61,30 @@ const activeSub = computed(
   () => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null,
 )
 
+// 会员状态卡：订阅中显示套餐与剩余天数；未订阅时展示付费墙引导
+const isMember = computed(() => !!activeSub.value)
+const gateOn = computed(() => !!userStore.user?.subscription_required)
+const gateMessage = computed(() =>
+  gateOn.value && !isMember.value
+    ? '当前账号没有生效中的订阅，开通后即可播放全库内容'
+    : '',
+)
+const memberProgress = computed(() => {
+  const sub = activeSub.value
+  if (!sub) return 0
+  // 以「已用天数 / 总天数」估算套餐消耗进度（仅用于视觉提示）
+  const total = Math.max(sub.days_left, 1)
+  return Math.max(6, Math.min(100, Math.round((sub.days_left / (total + 30)) * 100)))
+})
+
 // 账号速览条：四格数据（非按钮），点击进入对应页面
 const accountCells = computed(() => [
   {
     to: '/wallet?tab=plans',
     icon: Crown,
-    label: '订阅',
-    value: activeSub.value ? activeSub.value.plan_name : '未订阅',
-    sub: activeSub.value ? `剩 ${activeSub.value.days_left} 天到期` : '去开通会员',
+    label: '会员订阅',
+    value: activeSub.value ? activeSub.value.plan_name : '未开通',
+    sub: activeSub.value ? `${activeSub.value.end_date?.slice(0, 10)} 到期` : '开通后可播放全库',
     hot: !activeSub.value,
   },
   {
@@ -158,23 +175,63 @@ onMounted(async () => {
 
 <template>
   <div class="home-view">
-    <!-- Hero：问候 + 身份 + 主行动 -->
+    <!-- Hero：左问候与主行动，右会员状态卡（双栏） -->
     <section class="hero">
       <div class="hero-glow" aria-hidden="true"></div>
-      <div class="container hero-inner">
-        <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
-        <div class="hero-title-row">
-          <h1 class="hero-title">{{ user?.username || '观影用户' }}</h1>
-          <span v-if="activeSub" class="hero-vip">
-            <Crown :size="12" />
-            {{ activeSub.plan_name }}
-          </span>
+      <div class="container hero-grid">
+        <div class="hero-inner">
+          <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
+          <div class="hero-title-row">
+            <h1 class="hero-title">{{ user?.username || '观影用户' }}</h1>
+            <span v-if="isMember" class="hero-vip">
+              <Crown :size="12" />
+              会员
+            </span>
+          </div>
+          <p class="hero-sub">门户账号即 Emby 账号 — 同一凭据登录任意客户端开始观影。</p>
+          <div class="hero-actions">
+            <RouterLink class="btn btn-primary" to="/media">
+              <Play :size="16" />
+              进入媒体库
+            </RouterLink>
+            <RouterLink v-if="resumeItems.length" class="btn btn-ghost" :to="`/media/${resumeItems[0].Id}`">
+              继续观看
+            </RouterLink>
+          </div>
         </div>
-        <p class="hero-sub">门户账号即 Emby 账号 — 同一凭据登录任意客户端开始观影。</p>
-        <RouterLink class="btn btn-primary" to="/media">
-          <Play :size="16" />
-          进入媒体库
-        </RouterLink>
+
+        <!-- 会员状态卡 -->
+        <aside class="member-card" :class="{ inactive: !isMember }">
+          <div class="member-head">
+            <span class="member-badge">
+              <Crown :size="13" />
+              {{ isMember ? '会员生效中' : '会员专享' }}
+            </span>
+            <RouterLink to="/wallet?tab=plans" class="member-link">
+              {{ isMember ? '续费' : '开通' }}
+              <ChevronRight :size="13" />
+            </RouterLink>
+          </div>
+
+          <template v-if="isMember && activeSub">
+            <p class="member-plan">{{ activeSub.plan_name }}</p>
+            <div class="member-progress">
+              <div class="member-progress-fill" :style="{ width: memberProgress + '%' }"></div>
+            </div>
+            <p class="member-meta">
+              剩 <strong>{{ activeSub.days_left }}</strong> 天 · {{ activeSub.end_date?.slice(0, 10) }} 到期
+            </p>
+          </template>
+
+          <template v-else>
+            <p class="member-plan">解锁全库影视</p>
+            <p class="member-meta">{{ gateMessage || '开通会员后可无限观看全部影视内容' }}</p>
+            <RouterLink to="/wallet?tab=plans" class="au-btn au-btn-primary au-btn-sm member-cta">
+              <Crown :size="14" />
+              立即开通会员
+            </RouterLink>
+          </template>
+        </aside>
       </div>
     </section>
 
@@ -196,11 +253,24 @@ onMounted(async () => {
         </RouterLink>
       </section>
 
-      <!-- 内容区：继续观看 -->
-      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" more-to="/history" class="row" />
+      <!-- 分组一：我的内容 -->
+      <div class="section-label">
+        <span class="section-title">我的内容</span>
+        <RouterLink to="/favorites" class="section-more">我的收藏 <ChevronRight :size="12" /></RouterLink>
+      </div>
 
-      <!-- 内容区：最近入库 -->
+      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" more-to="/history" class="row" />
       <MediaRow v-if="latestItems.length" title="最近入库" :items="latestItems.slice(0, 16)" class="row" />
+
+      <div v-if="!resumeItems.length && !latestItems.length" class="au-empty content-empty">
+        <Sparkles :size="28" />
+        <p>媒体库还没有内容，稍后再来看看</p>
+      </div>
+
+      <!-- 分组二：站点与设备 -->
+      <div class="section-label">
+        <span class="section-title">站点与设备</span>
+      </div>
 
       <!-- 站点动态：单行细条 -->
       <RouterLink v-if="notices.length || unreadCount > 0" to="/messages" class="news-strip au-card">
@@ -298,8 +368,167 @@ onMounted(async () => {
   pointer-events: none;
 }
 
+.hero-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+  gap: 1.75rem;
+  align-items: center;
+}
+
 .hero-inner {
   position: relative;
+  min-width: 0;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+}
+
+.btn-ghost {
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  color: var(--au-text);
+}
+
+.btn-ghost:hover {
+  background: var(--au-surface-3);
+  border-color: var(--au-border-strong);
+}
+
+/* ==================== 会员状态卡 ==================== */
+
+.member-card {
+  min-width: 0;
+  padding: 1.125rem 1.25rem 1.25rem;
+  background: linear-gradient(150deg, rgba(34, 211, 238, 0.1), rgba(167, 139, 250, 0.08));
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-lg);
+  backdrop-filter: blur(12px);
+}
+
+.member-card.inactive {
+  background: linear-gradient(150deg, rgba(251, 191, 36, 0.1), rgba(167, 139, 250, 0.06));
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.member-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.member-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.5625rem;
+  background: rgba(7, 11, 18, 0.45);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.member-card.inactive .member-badge {
+  color: var(--au-warning);
+}
+
+.member-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.member-link:hover {
+  color: var(--au-primary);
+}
+
+.member-plan {
+  margin: 0 0 0.5rem;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.member-progress {
+  height: 5px;
+  margin-bottom: 0.5rem;
+  background: rgba(7, 11, 18, 0.5);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.member-progress-fill {
+  height: 100%;
+  background: var(--au-gradient);
+  border-radius: 3px;
+}
+
+.member-meta {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--au-text-3);
+}
+
+.member-meta strong {
+  color: var(--au-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.member-cta {
+  margin-top: 0.75rem;
+  width: 100%;
+}
+
+/* ==================== 分组标签 ==================== */
+
+.section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--au-border);
+}
+
+.section-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--au-text-4);
+}
+
+.section-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.section-more:hover {
+  color: var(--au-primary);
+}
+
+.content-empty {
+  padding: 2rem 1rem;
 }
 
 .hero-eyebrow {
@@ -648,6 +877,17 @@ onMounted(async () => {
   }
 }
 
+@media (max-width: 860px) {
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+  }
+
+  .member-card {
+    padding: 1rem 1.125rem 1.125rem;
+  }
+}
+
 @media (max-width: 760px) {
   .acct-strip {
     grid-template-columns: repeat(2, 1fr);
@@ -668,11 +908,24 @@ onMounted(async () => {
 
 @media (max-width: 640px) {
   .hero {
-    padding: 2.25rem 0 1.75rem;
+    padding: 1.75rem 0 1.5rem;
   }
 
   .hero-title {
     font-size: 1.5rem;
+  }
+
+  .hero-sub {
+    font-size: 0.8125rem;
+    margin-bottom: 1rem;
+  }
+
+  .acct-cell {
+    padding: 0.875rem 1rem;
+  }
+
+  .cell-value {
+    font-size: 1.0625rem;
   }
 }
 </style>

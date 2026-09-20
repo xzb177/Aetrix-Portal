@@ -2,6 +2,26 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.5.2] - 2026-09-20
+
+### 新增 (Added)
+- **付费墙（会员门禁）**
+  - 新增 `backend/subscriptions.py` 作为订阅判定与门禁的单一事实来源：`has_active_subscription` / `subscription_required` / `can_play` / `ensure_playback_allowed`
+  - 开关于 `SystemConfig`：`subscription_required`（布尔，默认开启）、`subscription_gate_message`（自定义拦截文案）
+  - 门禁覆盖：`PlaybackInfo`（不发放播放地址）、`/emby/Videos/{id}/stream`（直连拉流）、HLS 转码会话创建（`master.m3u8` / `hls1`，先于 ffmpeg 检查）、`/emby/Items/{id}/Download`（下载）—— 网页端与 Infuse 等外部客户端同一门槛，无法绕过
+  - 管理员（`is_staff`）始终放行；关闭开关后全员放行
+- **用户端付费墙体验**
+  - 播放页在 403 拦截时展示付费墙卡片（权益说明 + 「开通会员」CTA + 返回详情），而不是抛一个播放错误
+  - 详情页在付费墙开启且非会员时提前展示会员提示条（可直达订阅页），不再等用户点了播放才知道
+  - `/api/user/auth/me` 新增 `subscription_required` 字段，前端 store 暴露 `subscriptionRequired` / `needsSubscription`
+- **钱包到账确认**：支付回跳（`?order=` 兼容 `?paid=1`）后自动轮询订单状态（3s × 10 次），到账即刷新积分与会员身份并提示，无需手动刷新
+- **钱包订阅页新增当前会员状态行**（套餐 / 剩余天数 / 到期日，未开通时提示付费墙）
+
+### 变更 (Changed)
+- **首页布局优化**：Hero 改为双栏（左：问候与主行动；右：会员状态卡——已开通显示套餐与到期进度，未开通显示付费墙引导）；内容区新增「我的内容」「站点与设备」分组标签与节奏；移动端 Hero 自动堆叠，数据条与字距/间距重新校准
+- **管理端系统设置新增「付费墙（会员门禁）」分组**：要求有效订阅开关 + 拦截提示文案（配置白名单同步扩充）
+- 版本号：后端 / 用户端 2.5.2
+
 ## [2.5.1] - 2026-09-20
 
 ### 修复 (Fixed)
