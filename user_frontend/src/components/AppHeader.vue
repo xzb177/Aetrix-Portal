@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
   Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown,
-  Wallet, CalendarCheck, Gift, MessageSquareDashed,
+  Wallet, CalendarCheck, Gift, MessageSquareDashed, Zap,
 } from 'lucide-vue-next'
 import api from '@/api'
+import { pointsApi } from '@/api/economy'
 
 const userStore = useUserStore()
 const router = useRouter()
@@ -16,15 +17,22 @@ const mobileMenuOpen = ref(false)
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
+const pointsBalance = ref<number | null>(null)
 
-const navItems = [
-  { name: '首页', path: '/', icon: Clapperboard },
-  { name: '媒体库', path: '/media', icon: Film },
-  { name: '钱包', path: '/wallet', icon: Wallet },
-  { name: '签到', path: '/checkin', icon: CalendarCheck },
-  { name: '邀请', path: '/invite', icon: Gift },
-  { name: '求片', path: '/request', icon: MessageSquareDashed },
-  { name: '工单', path: '/tickets', icon: Ticket },
+// 导航分组：内容 → 运营 → 支持，视觉上以细分隔线区隔
+const navGroups = [
+  { items: [{ name: '首页', path: '/' }, { name: '媒体库', path: '/media' }] },
+  { items: [{ name: '钱包', path: '/wallet' }, { name: '签到', path: '/checkin' }, { name: '邀请', path: '/invite' }] },
+  { items: [{ name: '求片', path: '/request' }, { name: '工单', path: '/tickets' }] },
+]
+
+// 移动端抽屉（底部导航坞之外的长尾入口）
+const mobileLinks = [
+  { name: '邀请返利', path: '/invite', icon: Gift },
+  { name: '求片中心', path: '/request', icon: MessageSquareDashed },
+  { name: '工单支持', path: '/tickets', icon: Ticket },
+  { name: '消息中心', path: '/messages', icon: Inbox },
+  { name: '个人中心', path: '/profile', icon: User },
 ]
 
 function isActive(path: string) {
@@ -49,7 +57,17 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
-async function loadUnread() {
+async function refreshPoints() {
+  if (!userStore.isLoggedIn) return
+  try {
+    const log = await pointsApi.log({ limit: 1 })
+    pointsBalance.value = log.balance
+  } catch {
+    /* 静默 */
+  }
+}
+
+async function poll() {
   if (!userStore.isLoggedIn) return
   try {
     const res = await api.get<never, { unread_count: number }>('/api/user/messages/unread-count')
@@ -57,13 +75,29 @@ async function loadUnread() {
   } catch {
     /* 静默失败 */
   }
+  refreshPoints()
 }
+
+// 签到 / 钱包操作后回到顶栏时，积分徽章即时刷新
+watch(() => route.path, (p, old) => {
+  const economyPaths = ['/wallet', '/checkin']
+  if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
+    refreshPoints()
+  }
+})
+
+watch(() => userStore.isLoggedIn, (loggedIn) => {
+  if (loggedIn) poll()
+  else {
+    unreadCount.value = 0
+    pointsBalance.value = null
+  }
+})
 
 onMounted(() => {
   document.addEventListener('click', onDocClick)
-  loadUnread()
-  // 每 60s 轮询未读数
-  window.setInterval(loadUnread, 60_000)
+  poll()
+  window.setInterval(poll, 60_000)
 })
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
@@ -78,22 +112,31 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         <span class="logo-text">Aetrix</span>
       </RouterLink>
 
-      <!-- 桌面导航 -->
+      <!-- 桌面导航：内容 / 运营 / 支持 三组 -->
       <nav class="desktop-nav">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.path"
-          :to="item.path"
-          class="nav-link"
-          :class="{ 'nav-link-active': isActive(item.path) }"
-        >
-          {{ item.name }}
-        </RouterLink>
+        <template v-for="(group, gi) in navGroups" :key="gi">
+          <span v-if="gi > 0" class="nav-divider" aria-hidden="true" />
+          <RouterLink
+            v-for="item in group.items"
+            :key="item.path"
+            :to="item.path"
+            class="nav-link"
+            :class="{ 'nav-link-active': isActive(item.path) }"
+          >
+            {{ item.name }}
+          </RouterLink>
+        </template>
       </nav>
 
       <!-- 右侧用户区 -->
       <div class="user-section">
         <template v-if="userStore.isLoggedIn">
+          <!-- 积分徽章：点击进入钱包 -->
+          <RouterLink to="/wallet" class="points-chip" title="积分余额 · 进入钱包">
+            <Zap :size="13" />
+            <span class="points-num">{{ pointsBalance === null ? '—' : pointsBalance.toLocaleString() }}</span>
+          </RouterLink>
+
           <RouterLink to="/messages" class="msg-btn" title="消息中心">
             <Inbox :size="18" />
             <span v-if="unreadCount > 0" class="msg-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
@@ -141,22 +184,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
       </div>
     </div>
 
-    <!-- 移动端菜单 -->
+    <!-- 移动端抽屉：长尾入口（主导航在底部导航坞） -->
     <Transition name="mm">
       <div v-if="mobileMenuOpen" class="mobile-menu">
         <template v-if="userStore.isLoggedIn">
-          <RouterLink v-for="item in navItems" :key="item.path" :to="item.path" class="mobile-link" @click="closeMenus">
+          <RouterLink v-for="item in mobileLinks" :key="item.path" :to="item.path" class="mobile-link" @click="closeMenus">
             <component :is="item.icon" :size="17" />
             {{ item.name }}
-          </RouterLink>
-          <RouterLink to="/messages" class="mobile-link" @click="closeMenus">
-            <Inbox :size="17" />
-            消息中心
-            <span v-if="unreadCount > 0" class="mobile-msg-badge">{{ unreadCount }}</span>
-          </RouterLink>
-          <RouterLink to="/profile" class="mobile-link" @click="closeMenus">
-            <User :size="17" />
-            个人中心
+            <span v-if="item.path === '/messages' && unreadCount > 0" class="mobile-msg-badge">{{ unreadCount }}</span>
           </RouterLink>
           <button class="mobile-link logout" @click="handleLogout">
             <LogOut :size="17" />
@@ -232,6 +267,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   gap: 0.125rem;
 }
 
+.nav-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 0.5rem;
+  background: var(--au-border-strong);
+  flex-shrink: 0;
+}
+
 .nav-link {
   padding: 0.4688rem 0.8125rem;
   border-radius: var(--au-r-sm);
@@ -256,6 +299,36 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: flex;
   align-items: center;
   gap: 0.625rem;
+}
+
+/* 积分徽章 */
+.points-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  height: 30px;
+  padding: 0 0.6875rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  text-decoration: none;
+  transition: all var(--au-fast) var(--au-ease);
+}
+
+.points-chip:hover {
+  background: rgba(34, 211, 238, 0.2);
+  box-shadow: 0 0 14px var(--au-primary-glow);
+}
+
+.points-num {
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 消息铃铛 */
@@ -467,6 +540,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 @media (max-width: 900px) {
   .desktop-nav { display: none; }
+  .points-chip { display: none; }
   .mobile-toggle { display: flex; }
   .mobile-menu { display: flex; flex-direction: column; }
   .user-name { display: none; }

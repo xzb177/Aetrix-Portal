@@ -70,20 +70,24 @@ onMounted(load)
 
 <template>
   <div class="au-page invite-view">
-    <!-- 邀请主卡 -->
+    <!-- 邀请主卡：左文案右码框的双栏布局 -->
     <section class="invite-hero au-anim-up">
       <div class="hero-glow" aria-hidden="true" />
-      <div class="hero-content">
-        <span class="hero-badge"><Gift :size="14" /> 邀请返利计划</span>
-        <h1>邀请好友 <span class="au-gradient-text">双向得奖励</span></h1>
-        <p class="hero-desc">
-          分享你的专属邀请码，好友注册成功后：
-          <template v-if="info">
-            你得 <strong>+{{ info.config.reward_points }}</strong> 积分，
-            好友得 <strong>+{{ info.config.invitee_reward_points }}</strong> 积分；
-            好友每笔充值你还能拿 <strong>{{ info.config.rebate_percent }}%</strong> 返利。
-          </template>
-        </p>
+      <div class="hero-body">
+        <div class="hero-left">
+          <span class="hero-badge"><Gift :size="14" /> 邀请返利计划</span>
+          <h1>邀请好友 <span class="au-gradient-text">双向得奖励</span></h1>
+          <p class="hero-desc">
+            分享你的专属邀请码，好友注册成功后：
+            <template v-if="info">
+              你得 <strong>+{{ info.config.reward_points }}</strong> 积分，
+              好友得 <strong>+{{ info.config.invitee_reward_points }}</strong> 积分；
+              好友每笔充值你还能拿 <strong>{{ info.config.rebate_percent }}%</strong> 返利。
+            </template>
+          </p>
+        </div>
+
+        <div class="hero-divider" aria-hidden="true" />
 
         <div class="code-box">
           <div class="code-label">
@@ -99,7 +103,7 @@ onMounted(load)
             >
               <Check v-if="copiedField === 'code'" :size="14" />
               <Copy v-else :size="14" />
-              复制邀请码
+              复制
             </button>
           </div>
           <div class="code-row link-row">
@@ -225,7 +229,7 @@ onMounted(load)
   border: 1px solid var(--au-primary-border);
   background: linear-gradient(150deg, rgba(167, 139, 250, 0.14), rgba(34, 211, 238, 0.1) 55%, rgba(10, 16, 26, 0.4));
   backdrop-filter: blur(14px);
-  padding: 2rem 1.5rem;
+  padding: 1.75rem 1.625rem;
 }
 
 .hero-glow {
@@ -239,7 +243,27 @@ onMounted(load)
   pointer-events: none;
 }
 
-.hero-content { position: relative; display: flex; flex-direction: column; gap: 0.75rem; }
+/* 左右双栏 */
+.hero-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1.05fr);
+  gap: 1.75rem;
+  align-items: center;
+}
+
+.hero-divider {
+  background: var(--au-border);
+  height: 100%;
+  min-height: 96px;
+}
+
+.hero-left {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
 
 .hero-badge {
   display: inline-flex;
@@ -254,21 +278,20 @@ onMounted(load)
   border-radius: var(--au-r-full);
 }
 
-.hero-content h1 { margin: 0; font-size: 1.625rem; font-weight: 800; letter-spacing: -0.02em; }
+.hero-left h1 { margin: 0; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
 
-.hero-desc { margin: 0; font-size: 0.875rem; color: var(--au-text-2); line-height: 1.7; max-width: 560px; }
+.hero-desc { margin: 0; font-size: 0.875rem; color: var(--au-text-2); line-height: 1.7; }
 .hero-desc strong { color: var(--au-primary); font-weight: 700; }
 
 .code-box {
-  margin-top: 0.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
-  padding: 1rem;
+  padding: 1.125rem;
   background: rgba(7, 11, 18, 0.5);
   border: 1px dashed var(--au-border-strong);
   border-radius: var(--au-r-lg);
-  max-width: 560px;
+  min-width: 0;
 }
 
 .code-label {
@@ -444,6 +467,8 @@ onMounted(load)
   .stat-bar { justify-content: flex-start; gap: 1rem; }
   .hide-sm { display: none; }
   .list-grid { grid-template-columns: 1fr; }
+  .hero-body { grid-template-columns: 1fr; gap: 1.25rem; }
+  .hero-divider { height: 1px; width: 100%; min-height: 0; }
   .code-row { flex-wrap: wrap; }
   .code-value { font-size: 1.25rem; }
 }
