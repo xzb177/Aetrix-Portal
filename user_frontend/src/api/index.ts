@@ -171,6 +171,13 @@ export interface AccountCard {
   import_schemes: Record<string, string>
 }
 
+export interface WatchStats {
+  total_plays: number
+  watched_items: number
+  total_seconds: number
+  recent: Array<{ item: string; type: string; device?: string; client?: string; at?: string | null }>
+}
+
 export interface PortalMediaItem {
   id: string
   name: string
@@ -200,12 +207,7 @@ export const embyApi = {
   toggleFavorite: (itemId: string) => api.post<never, { is_favorite: boolean }>(`/api/user/emby/favorites/${itemId}`),
 
   // 观看统计
-  getStats: () => api.get<never, {
-    total_plays: number
-    watched_items: number
-    total_seconds: number
-    recent: Array<{ item: string; type: string; device?: string; client?: string; at?: string | null }>
-  }>('/api/user/emby/stats'),
+  getStats: () => api.get<never, WatchStats>('/api/user/emby/stats'),
 }
 
 // ==================== 站内消息 API（backend/api/user.py + admin 联动） ====================
@@ -300,4 +302,21 @@ export const mediaSeekApi = {
 
   create: (data: { movie_name: string; year?: string; type?: string; note?: string }) =>
     api.post('/api/user/media-seek', data),
+}
+
+// ==================== 订阅 API（backend/api/user.py，管理员在后台授予） ====================
+
+export interface MySubscription {
+  id: number
+  plan_name: string
+  start_date: string
+  end_date: string
+  status: string
+  auto_renew: boolean
+  days_left: number
+}
+
+export const subscriptionApi = {
+  // 我的订阅列表（含剩余天数）
+  getMine: () => api.get<never, MySubscription[]>('/api/user/subscriptions'),
 }

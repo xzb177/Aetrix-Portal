@@ -7,10 +7,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { authApi, embyApi, type AuthUser, type AccountCard } from '@/api'
+import { authApi, embyApi, subscriptionApi, type AuthUser, type AccountCard, type MySubscription, type WatchStats } from '@/api'
 import { useToast } from '@/composables/useToast'
 import {
   User, Lock, KeyRound, LogOut, ShieldCheck, RefreshCw, Eye, EyeOff, Copy, Check, Film,
+  Play, History, Crown,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -22,6 +23,20 @@ const user = computed(() => userStore.user as AuthUser | null)
 // ===== 数据 =====
 const loading = ref(true)
 const account = ref<AccountCard | null>(null)
+const stats = ref<WatchStats | null>(null)
+const subscriptions = ref<MySubscription[]>([])
+
+const activeSub = computed(() => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null)
+const watchHours = computed(() => {
+  if (!stats.value) return '0'
+  const h = Math.floor(stats.value.total_seconds / 3600)
+  return h >= 1 ? `${h} 小时` : `${Math.floor(stats.value.total_seconds / 60)} 分钟`
+})
+
+function fmtWatchTime(iso?: string | null) {
+  if (!iso) return '—'
+  return iso.slice(0, 16).replace('T', ' ')
+}
 
 const copiedField = ref('')
 const showPlayPassword = ref(false)
@@ -110,7 +125,15 @@ async function handleLogout() {
 // ===== 初始化 =====
 onMounted(async () => {
   try {
-    account.value = await embyApi.getAccountCard()
+    // 观看统计与订阅加载失败不阻塞页面（新用户可能无数据）
+    const [accountCard, watchStats, subs] = await Promise.all([
+      embyApi.getAccountCard(),
+      embyApi.getStats().catch((): WatchStats | null => null),
+      subscriptionApi.getMine().catch((): MySubscription[] => []),
+    ])
+    account.value = accountCard
+    stats.value = watchStats
+    subscriptions.value = subs
   } catch {
     // 401 已由拦截器处理
   } finally {
@@ -199,6 +222,71 @@ function formatDate(iso?: string | null) {
         <p class="card-tip">
           播放密码用于 Emby 客户端登录，与门户密码相互独立。
         </p>
+      </section>
+
+      <!-- 观看统计 -->
+      <section v-if="stats" class="card">
+        <header class="card-head">
+          <h2 class="card-title">
+            <History :size="17" />
+            观看统计
+          </h2>
+        </header>
+
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-num accent">{{ watchHours }}</div>
+            <div class="stat-cap">累计观看</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num">{{ stats.total_plays }}</div>
+            <div class="stat-cap">播放次数</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num">{{ stats.watched_items }}</div>
+            <div class="stat-cap">看过影片</div>
+          </div>
+        </div>
+
+        <template v-if="stats.recent.length > 0">
+          <div class="recent-head">最近观看</div>
+          <div v-for="r in stats.recent.slice(0, 5)" :key="r.item + (r.at || '')" class="recent-row">
+            <Play :size="13" class="recent-icon" />
+            <span class="recent-name">{{ r.item }}</span>
+            <span class="recent-time">{{ fmtWatchTime(r.at) }}</span>
+          </div>
+        </template>
+      </section>
+
+      <!-- 我的订阅 -->
+      <section class="card">
+        <header class="card-head">
+          <h2 class="card-title">
+            <Crown :size="17" />
+            我的订阅
+          </h2>
+        </header>
+
+        <div v-if="activeSub" class="sub-active">
+          <div class="sub-info">
+            <div class="sub-plan">{{ activeSub.plan_name }}</div>
+            <div class="sub-end">{{ activeSub.end_date.slice(0, 10) }} 到期 · 剩余 {{ activeSub.days_left }} 天</div>
+          </div>
+          <span class="sub-badge">生效中</span>
+        </div>
+        <p v-else class="sub-empty">
+          暂无生效中的订阅。如需开通，请联系管理员。
+        </p>
+
+        <ul v-if="subscriptions.length > 1" class="sub-history">
+          <li v-for="s in subscriptions.slice(0, 4)" :key="s.id" class="sub-history-item">
+            <span>{{ s.plan_name }}</span>
+            <span class="sub-history-date">{{ s.start_date.slice(0, 10) }} ~ {{ s.end_date.slice(0, 10) }}</span>
+            <span class="sub-status" :class="s.status === 'active' ? 'ok' : 'off'">
+              {{ s.status === 'active' ? '生效中' : '已结束' }}
+            </span>
+          </li>
+        </ul>
       </section>
 
       <!-- 安全设置 -->
@@ -548,6 +636,147 @@ function formatDate(iso?: string | null) {
 .list-arrow {
   color: rgba(255, 255, 255, 0.2);
   font-size: 1.125rem;
+}
+
+/* 观看统计 */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.625rem;
+}
+
+.stat-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 0.75rem 0.5rem;
+  text-align: center;
+}
+
+.stat-num {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #fafafa;
+}
+
+.stat-num.accent {
+  color: #10b981;
+}
+
+.stat-cap {
+  margin-top: 0.25rem;
+  font-size: 0.6875rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.recent-head {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+  font-size: 0.8125rem;
+}
+
+.recent-icon {
+  color: rgba(16, 185, 129, 0.6);
+  flex-shrink: 0;
+}
+
+.recent-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.recent-time {
+  font-size: 0.6875rem;
+  color: rgba(255, 255, 255, 0.35);
+  flex-shrink: 0;
+}
+
+/* 我的订阅 */
+.sub-active {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 12px;
+  padding: 0.875rem 1rem;
+}
+
+.sub-plan {
+  font-weight: 600;
+  color: #fafafa;
+}
+
+.sub-end {
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.sub-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.15);
+  border-radius: 999px;
+  padding: 0.1875rem 0.625rem;
+  flex-shrink: 0;
+}
+
+.sub-empty {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: rgba(255, 255, 255, 0.45);
+  line-height: 1.6;
+}
+
+.sub-history {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+}
+
+.sub-history-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.sub-history-date {
+  flex: 1;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.sub-status {
+  font-size: 0.625rem;
+  border-radius: 999px;
+  padding: 0.0625rem 0.5rem;
+}
+
+.sub-status.ok {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.sub-status.off {
+  color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 /* 链接卡 */
