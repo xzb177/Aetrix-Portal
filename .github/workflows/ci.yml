@@ -1,0 +1,145 @@
+name: CI
+
+# 门禁口径与本地一致：能跑通这套检查，就是能部署的一套
+#   - 两个前端：npm ci（锁文件必须同步）→ vue-tsc 类型检查 → vite build 出 dist
+#   - 冒烟测试：TestClient 进程内跑认证 / 管理端接口（快，不需要构建产物）
+#   - 部署自检：scripts/deploy_check.py 真起 uvicorn、真发 HTTP，并托管上一步的 dist
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支上的新推送取消上一次还没跑完的检查
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: 前端 · ${{ matrix.dir }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [user_frontend, admin_frontend]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      # package.json 与 package-lock.json 不同步时这里会直接失败（是有意的门禁）
+      - name: 安装依赖
+        working-directory: ${{ matrix.dir }}
+        run: npm ci --no-audit --no-fund
+
+      - name: 类型检查（vue-tsc）
+        working-directory: ${{ matrix.dir }}
+        run: npm run type-check
+
+      # EM 托管的就是这个目录，构建失败 = 部署上去是旧界面或空白页
+      - name: 构建
+        working-directory: ${{ matrix.dir }}
+        run: npm run build
+
+      # 打成 tar 再上传：dist/ 在 .gitignore 里，直接上传目录可能被忽略规则过滤掉
+      - name: 打包构建产物
+        working-directory: ${{ matrix.dir }}
+        run: tar -czf "$RUNNER_TEMP/${{ matrix.dir }}-dist.tar.gz" dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.dir }}-dist
+          path: ${{ runner.temp }}/${{ matrix.dir }}-dist.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  smoke:
+    name: 后端 · 冒烟测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_TYPE: sqlite
+      DATABASE_URL: sqlite:///./ci-smoke.db
+      REDIS_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: 安装后端依赖
+        run: pip install -r backend/requirements.txt
+
+      # 不依赖前端构建产物，所以单独一个 job，改后端时能更快拿到反馈
+      - name: 门户认证端到端（注册 → 登录 → me → refresh → 改密）
+        run: python scripts/smoke_test_auth.py
+
+      - name: 管理端接口冒烟（含后台免登 / 非管理员被拒）
+        run: python scripts/smoke_test_admin_v240.py
+
+  deploy-check:
+    name: 后端 · 部署自检（真起服务 + 真发 HTTP）
+    needs: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_TYPE: sqlite
+      DATABASE_URL: sqlite:///./ci.db
+      REDIS_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: 安装后端依赖
+        run: pip install -r backend/requirements.txt
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*-dist"
+          merge-multiple: true
+          path: ${{ runner.temp }}/dist
+
+      # 自检会检查「EM 实际托管的目录」是否有构建产物，缺了就是假绿
+      # --touch：把解包时间当作 mtime，否则 tar 会保留构建时的旧 mtime，
+      # 而本 job 的 checkout 晚于构建，自检的「产物落后于源码」新鲜度检查会误报
+      - name: 还原前端构建产物
+        run: |
+          for f in "$RUNNER_TEMP"/dist/*.tar.gz; do
+            dir="$(basename "$f" -dist.tar.gz)"
+            tar -xzf "$f" -C "$dir" --touch
+          done
+
+      # 显式给密钥（生产也必须显式设置；不给自检会自造一个并 WARN）
+      - name: 生成自检用 SECRET_KEY
+        run: echo "SECRET_KEY=$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> "$GITHUB_ENV"
+
+      # 真起 uvicorn（单进程 + EM/EA 分离两套）跑完整链路，退出码 0 = 通过
+      - name: 部署自检
+        run: python scripts/deploy_check.py
+
+      - name: 失败时保留自检数据库
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-check-db
+          path: |
+            ci.db
+            ci.db-wal
+            ci.db-shm
+          if-no-files-found: ignore
+          retention-days: 3

@@ -2,6 +2,22 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [未发布]
+
+本次为**工具链变更**（持续集成），不改动任何运行时行为，应用版本号保持 2.6.9。
+
+### 工具链 (CI)
+- 新增 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)：push 到 `main` / PR / 手动触发时跑三组检查——
+  - **前端 · user_frontend 与 admin_frontend**（矩阵）：`npm ci`（锁文件与 `package.json` 不同步即失败）→ `npm run type-check`（vue-tsc）→ `npm run build`；构建产物打成 tar 传给自检（`dist/` 在 `.gitignore` 里，直接上传目录可能被忽略规则过滤成空产物）
+  - **后端 · 冒烟测试**：`scripts/smoke_test_auth.py`（门户认证端到端）与 `scripts/smoke_test_admin_v240.py`（管理端接口，含后台免登 / 非管理员被拒）。不依赖构建产物，所以单独成 job，改后端时更快拿到反馈
+  - **后端 · 部署自检**：把上一步的 `dist` 还原到 EM **实际托管**的位置后跑 `scripts/deploy_check.py`——真起 uvicorn、真发 HTTP，覆盖单进程与 EM/EA 分离两套形态；自检用独立数据库（`ci.db`）与显式 `SECRET_KEY`，即一次「从零部署」
+- 至此 PR 有了真正的状态检查：此前仓库没有任何 CI，`gh pr checks` 永远是「no checks reported」，门禁只能靠本地手跑
+- `admin_frontend` 补上 `type-check` 脚本（`vue-tsc --noEmit -p tsconfig.json`），与用户端口径一致
+- README 补 CI 徽章与「持续集成（CI）」小节（含与 CI 同序的本地复现命令）
+
+### 修复 (Fixed)
+- **`user_frontend/package-lock.json` 与 `package.json` 不同步**（锁文件里缺 `hls.js`、自身版本还停在 `0.0.0`）：`npm ci` 会直接报 `Missing: hls.js@1.7.3 from lock file` 而失败，CI 的锁文件门禁要求两者一致；现按 `package.json` 重新生成
+
 ## [2.6.9] - 2026-09-20
 
 本次解决「管理员进了后台还要再输一遍账号」的重复动作：把门户与管理后台打通为**单点登录**。

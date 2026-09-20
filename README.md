@@ -4,6 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-latest-blue.svg)]()
+[![CI](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml)
 
 ## 🎯 完全自建架构（v2.0）
 
@@ -218,6 +219,27 @@ npm run dev
 cd user_backend  # 或 admin_backend
 pip install -r requirements.txt
 python main.py
+```
+
+### 持续集成（CI）
+
+[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) 在 push 到 `main`、开 PR 与手动触发时跑三组检查，口径与本地一致：
+
+| 任务 | 内容 |
+| --- | --- |
+| 前端 · `user_frontend` / `admin_frontend` | `npm ci`（锁文件与 `package.json` 不同步即失败）→ `npm run type-check`（vue-tsc）→ `npm run build` |
+| 后端 · 冒烟测试 | `scripts/smoke_test_auth.py`、`scripts/smoke_test_admin_v240.py`（TestClient 进程内，不需要构建产物） |
+| 后端 · 部署自检 | 还原前一个任务产出的 `dist` 后跑 `scripts/deploy_check.py`：**真起 uvicorn、真发 HTTP**，覆盖单进程与 EM/EA 分离两套形态 |
+
+本地复现（与 CI 同序）：
+
+```bash
+cd user_frontend  && npm ci && npm run type-check && npm run build && cd ..
+cd admin_frontend && npm ci && npm run type-check && npm run build && cd ..
+
+DATABASE_TYPE=sqlite DATABASE_URL=sqlite:///./ci.db REDIS_ENABLED=false \
+  SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  python3 scripts/deploy_check.py
 ```
 
 ## 🚢 部署
