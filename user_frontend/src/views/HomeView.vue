@@ -15,7 +15,7 @@ import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  Play, ChevronRight, Crown, Megaphone,
+  ChevronRight, Crown, Megaphone,
   Wallet, CalendarCheck, Gift, Sparkles, Tv,
 } from 'lucide-vue-next'
 
@@ -153,14 +153,20 @@ onMounted(async () => {
             </span>
           </div>
           <p class="hero-sub">门户账号即 Emby 账号 — 同一凭据登录任意客户端开始观影。</p>
-          <div class="hero-actions">
-            <RouterLink class="btn btn-primary" to="/media">
-              <Play :size="16" />
+
+          <!-- 轻量快捷入口：媒体库已在顶栏与底部导航，这里只做文字级入口，不与会员 CTA 抢视觉 -->
+          <div class="hero-quick">
+            <RouterLink to="/media" class="quick-link">
               进入媒体库
+              <ChevronRight :size="13" />
             </RouterLink>
-            <RouterLink v-if="resumeItems.length" class="btn btn-ghost" :to="`/media/${resumeItems[0].Id}`">
-              继续观看
-            </RouterLink>
+            <template v-if="resumeItems.length">
+              <span class="quick-sep" aria-hidden="true"></span>
+              <RouterLink :to="`/media/${resumeItems[0].Id}`" class="quick-link">
+                继续观看《{{ resumeItems[0].Name }}》
+                <ChevronRight :size="13" />
+              </RouterLink>
+            </template>
           </div>
         </div>
 
@@ -171,8 +177,9 @@ onMounted(async () => {
               <Crown :size="13" />
               {{ isMember ? '会员生效中' : '会员专享' }}
             </span>
-            <RouterLink to="/wallet?tab=plans" class="member-link">
-              {{ isMember ? '续费' : '开通' }}
+            <!-- 已开通时给续费入口；未开通时卡内只留一个 CTA，避免同时出现两个开通按钮 -->
+            <RouterLink v-if="isMember" to="/wallet?tab=plans" class="member-link">
+              续费
               <ChevronRight :size="13" />
             </RouterLink>
           </div>
@@ -310,21 +317,42 @@ onMounted(async () => {
   min-width: 0;
 }
 
-.hero-actions {
+/* 轻量快捷入口（文字级，不抢 CTA） */
+.hero-quick {
   display: flex;
-  gap: 0.625rem;
+  align-items: center;
   flex-wrap: wrap;
+  gap: 0.625rem;
 }
 
-.btn-ghost {
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  color: var(--au-text);
+.quick-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  font-size: 0.8125rem;
+  color: var(--au-text-2);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
 }
 
-.btn-ghost:hover {
-  background: var(--au-surface-3);
-  border-color: var(--au-border-strong);
+.quick-link:hover {
+  color: var(--au-primary);
+}
+
+.quick-link svg {
+  color: var(--au-text-4);
+  transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
+}
+
+.quick-link:hover svg {
+  color: var(--au-primary);
+  transform: translateX(2px);
+}
+
+.quick-sep {
+  width: 1px;
+  height: 12px;
+  background: var(--au-border-strong);
 }
 
 /* ==================== 会员状态卡 ==================== */
@@ -498,33 +526,6 @@ onMounted(async () => {
   font-size: 0.875rem;
   color: var(--au-text-3);
   margin: 0 0 1.125rem;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  height: 40px;
-  padding: 0 1.125rem;
-  border-radius: 10px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  text-decoration: none;
-  cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
-  border: none;
-}
-
-.btn-primary {
-  background: linear-gradient(135deg, var(--au-primary), var(--au-primary-strong));
-  color: #05141c;
-  font-weight: 600;
-  box-shadow: 0 4px 14px var(--au-primary-glow);
-}
-
-.btn-primary:hover {
-  box-shadow: 0 6px 18px var(--au-primary-glow);
-  transform: translateY(-1px);
 }
 
 /* ==================== 账号速览条 ==================== */
