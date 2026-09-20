@@ -1741,6 +1741,7 @@ async def economy_adjust_points(
 ECONOMY_CONFIG_KEYS = {
     "checkin_enabled": "bool", "checkin_base_points": "int", "checkin_streak_bonus": "int",
     "checkin_streak_max_bonus": "int",
+    "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
     "exchange_enabled": "bool",
     "recharge_enabled": "bool", "subscription_purchase_enabled": "bool",
     "payment_gateway_url": "str", "payment_partner_id": "str",

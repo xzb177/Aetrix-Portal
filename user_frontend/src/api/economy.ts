@@ -112,6 +112,9 @@ export const pointsApi = {
 // ==================== 兑换码 ====================
 
 export const exchangeApi = {
+  /** 兑换规则与开关（关闭时用户端隐藏核销入口，避免提交后报错） */
+  config: () =>
+    api.get<never, { enabled: boolean; invitee_note?: string }>('/api/user/economy/exchange/config'),
   redeem: (code: string) =>
     api.post<never, { success: boolean; reward_type?: string; points?: number; balance?: number; plan_name?: string; days?: number; message: string }>('/api/user/economy/exchange/redeem', { code }),
 }

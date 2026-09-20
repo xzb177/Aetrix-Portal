@@ -81,8 +81,10 @@ async function load() {
   }
 }
 
+const checkinEnabled = computed(() => status.value?.enabled !== false)
+
 async function handleSign() {
-  if (signing.value || status.value?.checked_today) return
+  if (signing.value || status.value?.checked_today || !checkinEnabled.value) return
   signing.value = true
   try {
     const res = await checkinApi.doCheckin()
@@ -118,6 +120,7 @@ onMounted(load)
             <div>
               <h1 class="sign-title">
                 <template v-if="loading">加载中…</template>
+                <template v-else-if="!checkinEnabled">签到功能未开启</template>
                 <template v-else-if="justSigned">签到成功！</template>
                 <template v-else-if="status?.checked_today">今日已签到</template>
                 <template v-else>今日还没签到</template>
@@ -133,15 +136,17 @@ onMounted(load)
 
           <button
             class="au-btn sign-btn"
-            :class="{ done: status?.checked_today || justSigned }"
-            :disabled="loading || signing || status?.checked_today"
+            :class="{ done: status?.checked_today || justSigned || !checkinEnabled }"
+            :disabled="loading || signing || status?.checked_today || !checkinEnabled"
             @click="handleSign"
           >
             <span v-if="signing" class="au-spinner spinner-sm" />
+            <template v-else-if="!checkinEnabled">暂未开放</template>
             <template v-else-if="justSigned">+{{ rewardPreview }} 积分到账 🎉</template>
             <template v-else-if="status?.checked_today">明日再来</template>
             <template v-else>立即签到 +{{ rewardPreview }}</template>
           </button>
+          <p v-if="!checkinEnabled" class="sign-off-tip">管理员已关闭签到，开启后即可继续累计连签</p>
         </div>
 
         <div class="sign-divider" aria-hidden="true" />
@@ -295,6 +300,12 @@ onMounted(load)
   color: var(--au-success);
   box-shadow: none;
   cursor: default;
+}
+
+.sign-off-tip {
+  margin: 0.625rem 0 0;
+  font-size: 0.75rem;
+  color: var(--au-warning);
 }
 
 .sign-divider {

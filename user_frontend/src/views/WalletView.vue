@@ -33,6 +33,11 @@ const tab = ref<'recharge' | 'plans' | 'orders' | 'log'>('recharge')
 const payMethod = ref('alipay')
 const orderLoading = ref<number | null>(null)
 
+// ===== 功能开关（管理端可关；关闭时给出提示，不让用户白提交）=====
+const rechargeEnabled = ref(true)
+const plansEnabled = ref(true)
+const exchangeEnabled = ref(true)
+
 // ===== 兑换码 =====
 const redeemCode = ref('')
 const redeemLoading = ref(false)
@@ -99,13 +104,15 @@ async function loadAll() {
     const emptyLogs = { total: 0, balance: 0, logs: [] as PointsLogEntry[] }
 
     const statusFallback: CheckinStatus | null = null
-    const [pkgRes, planRes, methodRes, orderRes, logRes, statusRes] = await Promise.all([
+    const exchangeFallback = { enabled: true }
+    const [pkgRes, planRes, methodRes, orderRes, logRes, statusRes, exchangeRes] = await Promise.all([
       paymentApi.packages().catch(() => emptyPkgs),
       paymentApi.plans().catch(() => emptyPlans),
       paymentApi.methods().catch(() => emptyMethods),
       paymentApi.orders({ limit: 20 }).catch(() => emptyOrders),
       pointsApi.log({ limit: 30 }).catch(() => emptyLogs),
       checkinApi.status().catch(() => statusFallback),
+      exchangeApi.config().catch(() => exchangeFallback),
     ])
     packages.value = pkgRes.packages || []
     plans.value = planRes.plans || []
@@ -114,6 +121,9 @@ async function loadAll() {
     logs.value = logRes.logs || []
     balance.value = logRes.balance
     checkin.value = statusRes
+    rechargeEnabled.value = pkgRes.enabled !== false
+    plansEnabled.value = planRes.enabled !== false
+    exchangeEnabled.value = exchangeRes.enabled !== false
   } finally {
     loading.value = false
   }
@@ -197,17 +207,24 @@ onMounted(async () => {
           <input
             v-model="redeemCode"
             class="au-input redeem-input"
-            placeholder="输入兑换码"
+            :placeholder="exchangeEnabled ? '输入兑换码' : '兑换功能暂未开启'"
             maxlength="32"
             autocomplete="off"
+            :disabled="!exchangeEnabled"
           >
-          <button type="submit" class="au-btn au-btn-primary" :disabled="redeemLoading || !redeemCode.trim()">
+          <button
+            type="submit"
+            class="au-btn au-btn-primary"
+            :disabled="redeemLoading || !redeemCode.trim() || !exchangeEnabled"
+          >
             <Sparkles v-if="!redeemLoading" :size="15" />
             <span v-if="redeemLoading" class="au-spinner spinner-sm" />
             兑换
           </button>
         </div>
-        <p class="redeem-hint">积分或订阅时长即时到账</p>
+        <p class="redeem-hint">
+          {{ exchangeEnabled ? '积分或订阅时长即时到账' : '管理员已关闭兑换，如有兑换码请稍后再试' }}
+        </p>
       </form>
 
       <button class="au-btn au-btn-ghost au-btn-sm refresh" title="刷新" @click="loadAll">
@@ -247,7 +264,11 @@ onMounted(async () => {
 
     <!-- 充值积分：横向行卡 — 左侧点数信息，右侧价格与购买 -->
     <section v-if="tab === 'recharge'" class="tab-body au-anim-up">
-      <div v-if="!packages.length" class="au-empty">
+      <div v-if="!rechargeEnabled" class="au-empty">
+        <CircleAlert :size="30" />
+        <p>充值通道暂未开启，可先通过签到、邀请或兑换获取积分</p>
+      </div>
+      <div v-else-if="!packages.length" class="au-empty">
         <Coins :size="30" />
         <p>暂无可用充值套餐</p>
       </div>
@@ -289,7 +310,11 @@ onMounted(async () => {
 
     <!-- 购买订阅：头部价格区 + 权益列表 -->
     <section v-if="tab === 'plans'" class="tab-body au-anim-up">
-      <div v-if="!plans.length" class="au-empty">
+      <div v-if="!plansEnabled" class="au-empty">
+        <CircleAlert :size="30" />
+        <p>订阅购买暂未开启，可联系管理员开通</p>
+      </div>
+      <div v-else-if="!plans.length" class="au-empty">
         <Zap :size="30" />
         <p>暂无可购买套餐，请联系管理员开通</p>
       </div>

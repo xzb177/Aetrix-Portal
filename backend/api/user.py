@@ -91,6 +91,11 @@ class TicketCreateRequest(BaseModel):
     message: str
 
 
+class TicketReplyRequest(BaseModel):
+    """工单回复请求（回复无需标题，此前误用创建模型，前端不得不塞占位 title）"""
+    message: str
+
+
 class TicketCreateResponse(BaseModel):
     """工单创建响应"""
     success: bool
@@ -405,7 +410,7 @@ async def get_ticket_messages(
 @user_router.post("/tickets/{ticket_id}/messages")
 async def reply_ticket(
     ticket_id: int,
-    request: TicketCreateRequest,
+    request: TicketReplyRequest,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -427,11 +432,17 @@ async def reply_ticket(
             detail="工单已关闭，无法回复"
         )
 
+    content = (request.message or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="回复内容不能为空")
+    if len(content) > 2000:
+        raise HTTPException(status_code=400, detail="回复内容过长（最多 2000 字）")
+
     # 创建消息
     message = models.TicketMessage(
         ticket_id=ticket.id,
         user_id=current_user.id,
-        message=request.message,
+        message=content,
         is_admin=False
     )
     db.add(message)
@@ -442,8 +453,21 @@ async def reply_ticket(
 
     db.commit()
 
-    # 通知管理员工单有新回复
-    # TODO: 通过 WebSocket 通知管理员
+    # 通知管理员（站内消息 + WebSocket 实时推送），与新建工单走同一链路
+    try:
+        from backend.notifications import notify_staff_users
+
+        await notify_staff_users(
+            db,
+            title="💬 工单有新回复",
+            content=f"{current_user.username} 在「{ticket.title}」中回复：{content[:60]}",
+            message_type="ticket",
+            related_id=ticket.id,
+        )
+        ticket.updated_at = datetime.now()
+        db.commit()
+    except Exception as exc:  # 通知失败不应影响回复本身
+        logger.warning("工单回复通知发送失败: %s", exc)
 
     return {"success": True, "message": "回复成功"}
 
@@ -701,25 +725,37 @@ async def get_my_subscriptions(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """获取我的订阅列表 - 与后台订阅管理联动"""
+    """获取我的订阅列表 - 与后台订阅管理联动
+
+    生效状态按 end_date 现算（status 字段不会随时间自动翻转），
+    与后台订阅总览 / 用户 VIP 派生使用同一口径。
+    """
     subscriptions = db.query(models.UserSubscription).filter(
         models.UserSubscription.user_id == current_user.id
     ).order_by(models.UserSubscription.created_at.desc()).all()
 
+    now = datetime.now()
+    plans = {
+        p.id: p for p in db.query(models.SubscriptionPlan).filter(
+            models.SubscriptionPlan.id.in_([s.plan_id for s in subscriptions if s.plan_id])
+        ).all()
+    } if subscriptions else {}
+
     result = []
     for sub in subscriptions:
-        plan = db.query(models.SubscriptionPlan).filter(
-            models.SubscriptionPlan.id == sub.plan_id
-        ).first()
-
+        plan = plans.get(sub.plan_id)
+        is_current = bool(
+            sub.status == "active" and sub.end_date and sub.end_date > now
+        )
         result.append({
             "id": sub.id,
             "plan_name": plan.name if plan else "未知套餐",
-            "start_date": sub.start_date.isoformat(),
-            "end_date": sub.end_date.isoformat(),
-            "status": sub.status,
+            "start_date": sub.start_date.isoformat() if sub.start_date else None,
+            "end_date": sub.end_date.isoformat() if sub.end_date else None,
+            "status": "active" if is_current else "expired",
+            "is_current": is_current,
             "auto_renew": sub.auto_renew,
-            "days_left": (sub.end_date - datetime.now()).days if sub.end_date > datetime.now() else 0
+            "days_left": max(0, (sub.end_date - now).days) if sub.end_date else 0,
         })
 
     return result
