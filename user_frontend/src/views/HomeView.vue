@@ -139,8 +139,10 @@ const accountCells = computed(() => [
     icon: Gift,
     label: '邀请返利',
     value: quickStats.value.invited !== null ? String(quickStats.value.invited) : '—',
-    sub: '位好友已加入',
-    hot: false,
+    // 一位好友都还没邀请时，“0 位好友已加入”读起来像一条数据，
+    // 看不出这里能点、后面有奖励；换成一句可执行的说明，邀请才找得到入口
+    sub: quickStats.value.invited ? '位好友已加入' : '邀请好友得积分',
+    hot: quickStats.value.invited === 0,
     alert: false,
   },
 ])
@@ -333,12 +335,6 @@ onMounted(async () => {
 .home-view {
   min-height: 100vh;
   color: var(--au-text);
-}
-
-.container {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 0 1.25rem;
 }
 
 /* ==================== Hero ==================== */

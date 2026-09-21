@@ -8,8 +8,8 @@
  * - 按消息类型给出对应入口（工单 → 工单中心、求片 → 求片中心、订阅/兑换 → 钱包）
  * - 保留：类型筛选、只看未读、关键字搜索、单条/全部已读
  */
-import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import {
   Bell, CheckCheck, MessageSquare, Ticket, Megaphone, Gift, AlertCircle,
   Clock, RefreshCw, Search, Inbox, X, ChevronRight, Filter,
@@ -18,6 +18,7 @@ import { messageApi, type StationMessage } from '@/api'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
+const route = useRoute()
 
 const messages = ref<StationMessage[]>([])
 const loading = ref(false)
@@ -154,7 +155,21 @@ function fmtRelative(iso: string) {
   return fmtFull(iso)
 }
 
-onMounted(() => load())
+/**
+ * 分类可由链接直接指定（顶栏铃铛点公告预览会走 /messages?tab=announcement）。
+ * 没有这一步，用户从顶栏点了公告却落在「全部」分类，还得自己再找一遍。
+ */
+function applyTabFromQuery() {
+  const t = route.query.tab
+  if (typeof t === 'string' && t in typeConfigs) selectedType.value = t
+}
+
+watch(() => route.query.tab, applyTabFromQuery)
+
+onMounted(() => {
+  applyTabFromQuery()
+  load()
+})
 </script>
 
 <template>
@@ -216,8 +231,16 @@ onMounted(() => load())
 
       <div v-else-if="filtered.length === 0" class="au-empty">
         <Bell :size="30" />
-        <h3>{{ messages.length ? '没有符合条件的消息' : '暂时没有消息' }}</h3>
-        <p>{{ messages.length ? '试试换个类型或清空搜索' : '管理员的操作通知会出现在这里' }}</p>
+        <h3>
+          {{ selectedType === 'announcement' && !keyword
+            ? '暂时没有公告'
+            : messages.length ? '没有符合条件的消息' : '暂时没有消息' }}
+        </h3>
+        <p>
+          {{ selectedType === 'announcement' && !keyword
+            ? '站点公告会同时出现在这里与消息列表里'
+            : messages.length ? '试试换个类型或清空搜索' : '管理员的操作通知会出现在这里' }}
+        </p>
       </div>
 
       <template v-else>
@@ -291,35 +314,8 @@ onMounted(() => load())
 </template>
 
 <style scoped>
-.page-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.125rem;
-  flex-wrap: wrap;
-}
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0;
-  font-size: 1.375rem;
-  font-weight: 700;
-  color: var(--au-text);
-  flex-wrap: wrap;
-}
-
-.page-title svg { color: var(--au-primary); }
-
-.page-sub {
-  margin: 0.375rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-}
-
-.head-actions { display: flex; gap: 0.5rem; }
+/* 页头（.page-head / .page-title / .page-sub / .head-actions）与页面骨架都在全局样式里，
+   这里不再重复定义——见 styles/aurora.css 的「页面骨架」一节。 */
 
 /* 筛选 */
 .filters {

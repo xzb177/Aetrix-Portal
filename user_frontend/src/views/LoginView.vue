@@ -12,7 +12,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
-import { User, Lock, Mail, Eye, EyeOff, Clapperboard } from 'lucide-vue-next'
+import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Ticket, Gift } from 'lucide-vue-next'
 
 const router = useRouter()
 const route = useRoute()
@@ -22,7 +22,13 @@ const toast = useToast()
 const mode = ref<'login' | 'register'>('login')
 
 const loginForm = reactive({ username: '', password: '' })
-const registerForm = reactive({ username: '', password: '', confirmPassword: '', email: '' })
+// 注册码 / 邀请码：此前只有从带参链接进来（?code= / ?invite=）才拿得到，表单里
+// 根本没有输入框——站点开成「卡码注册」时，从首页点进来的用户只会看到
+// 「当前注册需要注册码」却无处可填。现在两个都能手填，链接进来自动预填。
+const registerForm = reactive({
+  username: '', password: '', confirmPassword: '', email: '',
+  registrationCode: '', inviteCode: '',
+})
 
 const showLoginPassword = ref(false)
 const showRegisterPassword = ref(false)
@@ -91,8 +97,9 @@ async function handleRegister() {
   error.value = ''
   loading.value = true
   try {
-    const inviteCode = (route.query.invite as string) || ''
-    const regCode = (route.query.code as string) || ''
+    // 表单里填的优先；没填时沿用链接带来的
+    const inviteCode = f.inviteCode.trim() || (route.query.invite as string) || ''
+    const regCode = f.registrationCode.trim() || (route.query.code as string) || ''
     await userStore.register(
       f.username.trim(), f.password, f.email || undefined,
       inviteCode || undefined, regCode || undefined,
@@ -108,10 +115,16 @@ async function handleRegister() {
 
 onMounted(() => {
   if (route.query.mode === 'register') mode.value = 'register'
-  // 邀请链接 ?invite=CODE：自动切到注册页并提示
+  // 邀请链接 ?invite=CODE：自动切到注册页、预填邀请码并提示
   if (route.query.invite) {
     mode.value = 'register'
+    registerForm.inviteCode = String(route.query.invite)
     toast.info(`已收到好友邀请码，注册成功后双方都得积分奖励`, 5000)
+  }
+  // 卡码链接 ?code=XXX：同样预填，用户不用再手抄一遍
+  if (route.query.code) {
+    mode.value = 'register'
+    registerForm.registrationCode = String(route.query.code)
   }
 })
 </script>
@@ -265,6 +278,34 @@ onMounted(() => {
               name="email"
               autocomplete="email"
               placeholder="用于找回密码"
+              @keyup.enter="handleRegister"
+            />
+          </div>
+        </label>
+
+        <label class="field">
+          <span class="field-label">注册码 <em class="optional">站点要求时填写</em></span>
+          <div class="field-box">
+            <Ticket :size="16" class="field-icon" />
+            <input
+              v-model="registerForm.registrationCode"
+              type="text"
+              name="registration-code"
+              placeholder="开放注册时可留空"
+              @keyup.enter="handleRegister"
+            />
+          </div>
+        </label>
+
+        <label class="field">
+          <span class="field-label">邀请码 <em class="optional">选填，双方得积分</em></span>
+          <div class="field-box">
+            <Gift :size="16" class="field-icon" />
+            <input
+              v-model="registerForm.inviteCode"
+              type="text"
+              name="invite-code"
+              placeholder="好友的邀请码"
               @keyup.enter="handleRegister"
             />
           </div>

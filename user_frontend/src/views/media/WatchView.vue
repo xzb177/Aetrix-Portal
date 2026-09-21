@@ -768,6 +768,8 @@ onBeforeUnmount(() => {
 }
 
 /* 播放器下方信息 */
+/* 播放器下方的信息区：宽度与左右留白来自全局 .container（页面骨架），
+   这里只管垂直节奏与文字层级 */
 .below {
   padding-top: 1.25rem;
 }
@@ -776,7 +778,7 @@ onBeforeUnmount(() => {
   margin: 0 0 0.375rem;
   font-size: 1.25rem;
   font-weight: 700;
-  color: #fafafa;
+  color: var(--au-text);
 }
 
 .below-meta {
@@ -784,14 +786,14 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 0.875rem;
   font-size: 0.8125rem;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--au-text-3);
 }
 
 .below-overview {
   margin: 0;
   font-size: 0.875rem;
   line-height: 1.7;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--au-text-2);
   max-width: 720px;
   padding-bottom: 2.5rem;
 }

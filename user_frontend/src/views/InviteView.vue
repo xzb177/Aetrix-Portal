@@ -5,6 +5,7 @@
 import { ref, computed, onMounted } from 'vue'
 import {
   Gift, Users, Coins, Percent, Copy, Check, Share2, UserPlus, Link2, Handshake, ChevronDown,
+  RefreshCw,
 } from 'lucide-vue-next'
 import {
   inviteApi,
@@ -15,6 +16,7 @@ import { useToast } from '@/composables/useToast'
 const toast = useToast()
 
 const loading = ref(true)
+const failed = ref(false)
 const info = ref<MyInviteInfo | null>(null)
 const records = ref<InvitationRecordRow[]>([])
 const rebates = ref<RebateRow[]>([])
@@ -46,8 +48,16 @@ function fmtTime(iso?: string | null) {
   return iso.slice(0, 16).replace('T', ' ')
 }
 
+/**
+ * 邀请是否由管理员开启（来自 /my-code 的 config）。
+ * 关掉时后端仍会生成邀请码、但 apply_invitation 直接返回未应用——
+ * 页面上必须说清楚，否则用户会拿着一个看着能用、实际不发奖励的码去邀请朋友。
+ */
+const disabled = computed(() => info.value?.config?.enabled === false)
+
 async function load() {
   loading.value = true
+  failed.value = false
   try {
     const emptyRecords = { total: 0, records: [] as InvitationRecordRow[] }
     const emptyRebates = { total_rebate: 0, rebates: [] as RebateRow[] }
@@ -60,6 +70,10 @@ async function load() {
     records.value = rec.records
     rebates.value = reb.rebates
     totalRebate.value = reb.total_rebate
+  } catch {
+    // 邀请码拿不到（网络 / 接口异常）要跟「没邀请记录」区分开：
+    // 旧实现会留一页 '···' 和 '—'，看上去就像功能没做
+    failed.value = true
   } finally {
     loading.value = false
   }
@@ -89,7 +103,17 @@ onMounted(load)
 
         <div class="hero-divider" aria-hidden="true" />
 
-        <div class="code-box">
+        <div v-if="disabled" class="code-box off">
+          <div class="code-label">
+            <Link2 :size="14" />
+            邀请返利当前未开启
+          </div>
+          <p class="off-note">
+            管理员可以在后台「系统设置 → 邀请与返利」开启本项目；开启后这里会显示你的专属邀请码。
+          </p>
+        </div>
+
+        <div v-else class="code-box">
           <div class="code-label">
             <Link2 :size="14" />
             我的专属邀请码
@@ -121,8 +145,18 @@ onMounted(load)
       </div>
     </section>
 
+    <!-- 邀请信息没拿到：给一条明确的出路，而不是一页 “···” 和 “—” -->
+    <section v-if="failed" class="au-card au-card-pad failed-state au-anim-up">
+      <Gift :size="26" />
+      <p>邀请信息暂时读取失败，可能是网络波动</p>
+      <button class="au-btn au-btn-ghost au-btn-sm" :disabled="loading" @click="load">
+        <RefreshCw :size="14" />
+        重新加载
+      </button>
+    </section>
+
     <!-- 统计：与主卡合并为单行数据条，减少碎片卡片 -->
-    <section class="stat-bar au-card au-anim-up" style="animation-delay: 70ms">
+    <section v-if="!failed" class="stat-bar au-card au-anim-up" style="animation-delay: 70ms">
       <div class="stat-cell">
         <span class="stat-icon c1"><Users :size="17" /></span>
         <div class="stat-body">
@@ -157,7 +191,7 @@ onMounted(load)
     </section>
 
     <!-- 邀请记录 / 返利台账 -->
-    <div class="list-grid au-anim-up" style="animation-delay: 120ms">
+    <div v-if="!failed" class="list-grid au-anim-up" style="animation-delay: 120ms">
       <section class="au-card au-card-pad">
         <header class="list-head">
           <h3><UserPlus :size="16" /> 邀请记录</h3>
@@ -202,7 +236,7 @@ onMounted(load)
     </div>
 
     <!-- 规则说明：折叠式，避免占视觉主体 -->
-    <details class="rules au-card au-card-pad au-anim-up" style="animation-delay: 170ms">
+    <details v-if="!failed" class="rules au-card au-card-pad au-anim-up" style="animation-delay: 170ms">
       <summary>
         <Gift :size="16" />
         活动规则

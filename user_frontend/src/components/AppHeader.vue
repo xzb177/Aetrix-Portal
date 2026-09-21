@@ -96,7 +96,9 @@ async function loadMsgPreview() {
         key: `a${a.id}`,
         title: a.title,
         meta: `公告 · ${relTime(a.created_at)}`,
-        to: '/messages',
+        // 直接落到消息中心的「公告」分类：此前只丢到消息中心首页，
+        // 用户还得自己在分类里再找一遍这条公告
+        to: '/messages?tab=announcement',
         icon: Megaphone,
         unread: false,
       })),
@@ -127,15 +129,37 @@ const navGroups = [
 ]
 
 // 移动端抽屉（底部导航坞之外的长尾入口）
-const mobileLinks = [
-  { name: '搜索片名', path: '/search', icon: Search },
-  { name: '我的收藏', path: '/favorites', icon: Heart },
-  { name: '观看记录', path: '/history', icon: History },
-  { name: '邀请返利', path: '/invite', icon: Gift },
-  { name: '求片中心', path: '/request', icon: MessageSquareDashed },
-  { name: '工单支持', path: '/tickets', icon: Ticket },
-  { name: '消息中心', path: '/messages', icon: Inbox },
-  { name: '个人中心', path: '/profile', icon: User },
+// 移动端抽屉：底部导航坞只放 5 个高频入口，其余在这里按用途分组
+// （一条竖着的扁平列表越长越难扫，分组标题相当于一张小地图；邀请这类低頻功能
+//  此前就藏在列表中间，容易被当成“没做”）
+const mobileGroups = [
+  {
+    title: '内容',
+    items: [
+      { name: '搜索片名', path: '/search', icon: Search },
+      { name: '我的收藏', path: '/favorites', icon: Heart },
+      { name: '观看记录', path: '/history', icon: History },
+    ],
+  },
+  {
+    title: '经济与奖励',
+    items: [
+      { name: '邀请返利', path: '/invite', icon: Gift },
+      { name: '积分流水', path: '/wallet?tab=log', icon: Zap },
+    ],
+  },
+  {
+    title: '互动与支持',
+    items: [
+      { name: '求片中心', path: '/request', icon: MessageSquareDashed },
+      { name: '工单支持', path: '/tickets', icon: Ticket },
+      { name: '消息中心', path: '/messages', icon: Inbox },
+    ],
+  },
+  {
+    title: '账号',
+    items: [{ name: '个人中心', path: '/profile', icon: User }],
+  },
 ]
 
 function isActive(path: string) {
@@ -349,11 +373,31 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     <Transition name="mm">
       <div v-if="mobileMenuOpen" class="mobile-menu">
         <template v-if="userStore.isLoggedIn">
-          <RouterLink v-for="item in mobileLinks" :key="item.path" :to="item.path" class="mobile-link" @click="closeMenus">
-            <component :is="item.icon" :size="17" />
-            {{ item.name }}
-            <span v-if="item.path === '/messages' && unreadCount > 0" class="mobile-msg-badge">{{ unreadCount }}</span>
+          <!-- 邀请返利：抽屉里的首屏卡片。这一项此前只是扁列表中间的一行，
+               移动端用户打开抽屉也容易滑过去，被当成「没做这个功能」。 -->
+          <RouterLink to="/invite" class="mobile-feature" @click="closeMenus">
+            <span class="mobile-feature-ic"><Gift :size="17" /></span>
+            <span class="mobile-feature-body">
+              <strong>邀请返利</strong>
+              <em>邀请好友注册，双方都得积分</em>
+            </span>
+            <ChevronRight :size="15" class="mobile-feature-arrow" />
           </RouterLink>
+
+          <template v-for="group in mobileGroups" :key="group.title">
+            <p class="mobile-group-title">{{ group.title }}</p>
+            <RouterLink
+              v-for="item in group.items"
+              :key="item.path"
+              :to="item.path"
+              class="mobile-link"
+              @click="closeMenus"
+            >
+              <component :is="item.icon" :size="17" />
+              {{ item.name }}
+              <span v-if="item.path === '/messages' && unreadCount > 0" class="mobile-msg-badge">{{ unreadCount }}</span>
+            </RouterLink>
+          </template>
           <button class="mobile-link logout" @click="handleLogout">
             <LogOut :size="17" />
             退出登录
@@ -788,7 +832,77 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: none;
   border-top: 1px solid var(--au-border);
   padding: 0.5rem 1rem 0.875rem;
-  background: rgba(7, 11, 18, 0.97);
+  background: var(--au-overlay);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  /* 分组之后抽屉变长：小屏（如 667×375）会超出可视区，这里让它自己滚，
+     并限制在顶栏以下（否则最后两项点不到） */
+  max-height: calc(100vh - 62px - env(safe-area-inset-top, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 抽屉首屏的功能卡（目前是邀请返利）：有图标、标题、一句说明，
+   和下面的扁平列表区分开，免得又被当成普通一行滑过去 */
+.mobile-feature {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0.375rem 0 0.5rem;
+  padding: 0.6875rem 0.75rem;
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
+  text-decoration: none;
+}
+
+.mobile-feature:active { transform: none; }
+
+.mobile-feature-ic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--au-r-sm);
+  background: var(--au-surface);
+  color: var(--au-primary);
+}
+
+.mobile-feature-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.mobile-feature-body strong {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.mobile-feature-body em {
+  font-size: 0.6875rem;
+  font-style: normal;
+  color: var(--au-text-3);
+}
+
+.mobile-feature-arrow {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--au-text-4);
+}
+
+/* 分组标题：抽屉里的小地图 */
+.mobile-group-title {
+  margin: 0.5rem 0 0.125rem;
+  padding: 0 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--au-text-4);
 }
 
 .mobile-link {
