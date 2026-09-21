@@ -84,6 +84,7 @@ const navGroups: NavGroup[] = [
       { path: '/settings', label: '系统设置' },
       { path: '/logs', label: '操作日志' },
       { path: '/health', label: '服务健康' },
+      { path: '/emby-servers', label: 'Emby 服务入口' },
     ],
   },
 ]

@@ -48,14 +48,41 @@ from backend.emby_server import transfer115
 logger = logging.getLogger(__name__)
 
 
-def require_staff(user: models.WebUser = Depends(get_admin_or_emby_user)) -> models.WebUser:
+def ensure_emby_backend_available(db: Session = Depends(get_db)) -> None:
+    """自建 Emby 的统一闸门。
+
+    不配置服务地址时代表单进程模式，继续使用 EM 内置网关；配置了分离 EA
+    后则必须通过面板的连接测试。切到“已有 Emby”时，本项目自建媒体库/扫描
+    功能明确停用，避免用户误以为它能管理另一台服务器。
+    """
+    def config(key: str, default: str = "") -> str:
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+        return (row.value if row and row.value is not None else default).strip().lower()
+
+    mode = config("emby_active_mode", "managed_ea")
+    if mode == "external":
+        raise HTTPException(status_code=503, detail="当前已接入已有 Emby 服，本项目自建媒体库功能已停用")
+
+    managed_url = config("emby_managed_url")
+    if managed_url and (config("emby_managed_enabled") != "true" or config("emby_managed_reachable") != "true"):
+        raise HTTPException(status_code=503, detail="分离部署的 EA 尚未连接成功，请先部署 EA 并在“Emby 服务入口”测试连接")
+
+
+def require_staff(
+    user: models.WebUser = Depends(get_admin_or_emby_user),
+    _: None = Depends(ensure_emby_backend_available),
+) -> models.WebUser:
     """管理端鉴权：仅 is_staff 用户可访问（/api/admin/emby/* 全部端点）"""
     if not user.is_staff:
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return user
 
 
-user_emby_router = APIRouter(prefix="/api/user/emby", tags=["用户端-自建Emby"])
+user_emby_router = APIRouter(
+    prefix="/api/user/emby",
+    tags=["用户端-自建Emby"],
+    dependencies=[Depends(ensure_emby_backend_available)],
+)
 admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自建Emby"], dependencies=[Depends(require_staff)])
 
 
