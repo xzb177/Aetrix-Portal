@@ -30,11 +30,14 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
 
+# **强制**用自己的库（不是 setdefault）：本脚本断言的是全局状态——「清单初始为空」
+# 以及「被拒时旧配置没被切走」。CI 里所有冒烟脚本共用一个 DATABASE_URL（ci-smoke.db），
+# 前面某个脚本（如 Emby 服务入口 / 挂载体检）留下的配置会把这些断言弄脏。
 DB = tempfile.mktemp(suffix=".db")
-os.environ.setdefault("DATABASE_URL", f"sqlite:///{DB}")
+os.environ["DATABASE_TYPE"] = "sqlite"
+os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
 
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402
