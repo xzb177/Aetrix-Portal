@@ -70,9 +70,11 @@ function onRefreshFailed(error: unknown) {
 
 function forceLogout() {
   tokenStore.clear()
-  const isLoginPage = window.location.pathname === '/login' || window.location.pathname.startsWith('/login')
+  const loginPath = '/m/login'
+  const currentPath = window.location.pathname
+  const isLoginPage = currentPath === '/login' || currentPath === '/m/login' || currentPath.startsWith('/m/')
   if (!isLoginPage) {
-    window.location.href = '/login'
+    window.location.href = loginPath
   }
 }
 
@@ -110,7 +112,9 @@ api.interceptors.response.use(
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           subscribeTokenRefresh((newToken: string) => {
-            originalRequest.headers.Authorization = `Bearer ${newToken}`
+            if (originalRequest.headers) {
+              originalRequest.headers.Authorization = `Bearer ${newToken}`
+            }
             resolve(api(originalRequest))
           })
           subscribeTokenRefreshFailure((refreshError) => {
@@ -130,7 +134,9 @@ api.interceptors.response.use(
         }
         tokenStore.set(data.access_token, data.refresh_token)
         onRefreshed(data.access_token)
-        originalRequest.headers.Authorization = `Bearer ${data.access_token}`
+        if (originalRequest.headers) {
+          originalRequest.headers.Authorization = `Bearer ${data.access_token}`
+        }
         return api(originalRequest)
       } catch (refreshError) {
         onRefreshFailed(refreshError)
