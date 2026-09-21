@@ -52,7 +52,7 @@ python3 scripts/deploy_check.py --keep      # 自检完不杀进程（会打印 
 - [ ] `SECRET_KEY` 已设置为固定随机值，不是留空（EM 与 EA **必须相同**）
 - [ ] `DATABASE_URL` 在 EM 与 EA 上指向同一个库（跨机分离部署必须用 PostgreSQL）
 - [ ] `CORS_ORIGINS` 已填具体域名，不是留空
-- [ ] `EMBY_ALLOW_LEGACY_TOKENS` 为 `false`
+- [ ] `EMBY_ALLOW_LEGACY_TOKENS` 已废弃（旧数字 token 兼容代码已移除，无需再配）
 - [ ] 全站 HTTPS 已生效，HTTP 自动跳转
 - [ ] `nginx/ssl/` 的占位自签证书已换成自己的
 - [ ] `/metrics` 未暴露到公网（在 Nginx 层限制来源）
@@ -93,7 +93,7 @@ EM / EA 已内置这些防护（无需你配置）：
 
 1. **`SECRET_KEY` 留空** → 每次重启密钥变更，所有登录态失效。这是最常见的「上线后大家莫名被登出」。
 2. **`CORS_ORIGINS` 留空** → 等于允许所有来源请求 API。同源部署下不会有功能问题，但等于少了一道边界。
-3. **开启 `EMBY_ALLOW_LEGACY_TOKENS`** → `Bearer <user_id>` 即可冒充任意用户。只在历史客户端 token 迁移的过渡期临时打开，**迁完立刻关掉**。
+3. ~~开启 `EMBY_ALLOW_LEGACY_TOKENS`~~ → 该开关与背后的数字 token 兼容分支已删除，`Bearer <user_id>` 无法再冒充用户；只需保证 `SECRET_KEY` 固定且不泄露。
 
 建议顺手开启的运营项：
 

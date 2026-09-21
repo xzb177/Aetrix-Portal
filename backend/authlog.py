@@ -16,6 +16,8 @@ from backend import models
 REASONS = {
     "portal_login": "门户登录",
     "portal_login_failed": "门户登录失败",
+    "admin_login": "管理员登录",
+    "admin_login_failed": "管理员登录失败",
     "emby_login": "客户端登录",
     "emby_login_failed": "客户端登录失败",
     "device_limit": "设备数超限",

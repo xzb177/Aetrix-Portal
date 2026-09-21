@@ -17,7 +17,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -48,7 +48,66 @@ from backend.emby_server import transfer115
 logger = logging.getLogger(__name__)
 
 
-def ensure_emby_backend_available(db: Session = Depends(get_db)) -> None:
+def _config_value(db: Session | None, key: str) -> str:
+    """读取 SystemConfig 原始值（不做大小写转换——URL 路径区分大小写）"""
+    if db is None:
+        return ""
+    try:
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+    except Exception:  # noqa: BLE001 — 读配置失败不应影响接口返回
+        return ""
+    return ((row.value if row else "") or "").strip()
+
+
+def emby_active_mode(db: Session | None) -> str:
+    """当前生效的 Emby 服务入口模式：managed_ea（自建/单进程）或 external（已有 Emby 服）"""
+    return (_config_value(db, "emby_active_mode") or "managed_ea").lower()
+
+
+def configured_emby_url(db: Session | None = None) -> str:
+    """只返回后台「Emby 服务入口」里配置的地址（未配置返回空串）
+
+    1. 已有 Emby 服（external）→ emby_external_url
+    2. 分离部署 EA（managed_ea 且已填地址）→ emby_managed_url
+    另外修复了旧实现把配置值整体 `.lower()` 的问题：URL 路径区分大小写，
+    之前保存 `https://Host/Media` 会被降成 `https://host/media`。
+    db 传 None 时自建一个短连接，便于非请求上下文（如 EM 的客户端指引）复用。
+    """
+    own_session = db is None
+    if own_session:
+        try:
+            db = SessionLocal()
+        except Exception:  # noqa: BLE001
+            db = None
+    try:
+        if emby_active_mode(db) == "external":
+            return _config_value(db, "emby_external_url").rstrip("/")
+        return _config_value(db, "emby_managed_url").rstrip("/")
+    finally:
+        if own_session and db is not None:
+            db.close()
+
+
+def resolve_emby_base_url(db: Session | None = None) -> str:
+    """解析「用户应该连接的 Emby 服务器地址」
+
+    必须与后台「Emby 服务入口」保存的配置一致，否则会出现“后台填了 EA 地址、
+    用户个人中心却仍显示旧的环境变量地址”这种配置不生效的问题。
+    配置优先；都没配（单进程自建模式）才回退环境变量 EMBY_PUBLIC_URL。
+    """
+    url = configured_emby_url(db)
+    if url:
+        return url
+    return os.getenv("EMBY_PUBLIC_URL", "").rstrip("/") or "http://localhost:8000"
+
+
+def _is_account_card_request(request: Request | None) -> bool:
+    """是否为只读的账号卡请求（仅用户端 GET /api/user/emby/server）"""
+    path = (getattr(getattr(request, "url", None), "path", "") or "").rstrip("/")
+    return path.endswith("/api/user/emby/server")
+
+
+def ensure_emby_backend_available(request: Request, db: Session = Depends(get_db)) -> None:
     """自建 Emby 的统一闸门。
 
     不配置服务地址时代表单进程模式，继续使用 EM 内置网关；配置了分离 EA
@@ -61,6 +120,10 @@ def ensure_emby_backend_available(db: Session = Depends(get_db)) -> None:
 
     mode = config("emby_active_mode", "managed_ea")
     if mode == "external":
+        # 账号卡只是只读信息（告诉用户该连哪台服务器、账号归谁管），
+        # 外部模式也必须能返回，否则用户在个人中心既看不到地址也不知道找谁开号
+        if _is_account_card_request(request):
+            return
         raise HTTPException(status_code=503, detail="当前已接入已有 Emby 服，本项目自建媒体库功能已停用")
 
     managed_url = config("emby_managed_url")
@@ -89,23 +152,31 @@ admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自�
 # ==================== 用户端 ====================
 
 def _account_card(user: models.WebUser, db: Session) -> dict:
-    """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）"""
+    """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）
+
+    服务器地址来自后台「Emby 服务入口」配置（见 resolve_emby_base_url），
+    接入已有 Emby 服时不再提供本项目的一键导入 scheme——那台服务器上的账号
+    由对方管理，本项目的用户名/密码对它无效。
+    """
+    url = resolve_emby_base_url(db)
+    mode = emby_active_mode(db)
+    external = mode == "external"
+    host = url.split("//")[-1]
     return {
         "server_id": SERVER_ID,
         "server_name": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
-        "base_url": base_url(),
+        "base_url": url,
+        "mode": mode,
+        "external": external,
+        "account_managed_by": "external" if external else "portal",
         "emby_username": user.emby_username,
         "emby_password": None,
         "has_password": bool(user.emby_password),
-        "import_schemes": {
-            "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={base_url().split('//')[-1]}&username={user.emby_username}",
-            "senplayer": f"senplayer://importserver?type=emby&name=RoyalBot&address={base_url()}&username={user.emby_username}",
+        "import_schemes": {} if external else {
+            "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
+            "senplayer": f"senplayer://importserver?type=emby&name=RoyalBot&address={url}&username={user.emby_username}",
         },
     }
-
-
-def base_url() -> str:
-    return os.getenv("EMBY_PUBLIC_URL", "").rstrip("/") or "http://localhost:8000"
 
 
 @user_emby_router.get("/server")

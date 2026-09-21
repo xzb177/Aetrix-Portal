@@ -128,7 +128,7 @@ curl -X POST http://localhost:8000/api/user/auth/refresh \
 
 - JWT：HS256，`SECRET_KEY` 签名，access 2 小时 / refresh 30 天，类型隔离（refresh 不能访问业务端点）
 - 密码 bcrypt 存储（门户密码与 Emby 播放密码均为哈希存储）；注册自动生成自建 Emby 凭据，改密自动同步 Emby 播放密码
-- 兼容：`/api/user/emby/*` 等门户端点接受 JWT 与 Emby 客户端 token；旧版数字 token 默认禁用（可用 `EMBY_ALLOW_LEGACY_TOKENS=true` 临时开启）
+- 兼容：`/api/user/emby/*` 等门户端点接受 JWT 与 Emby 客户端 token；旧版「纯数字即 user_id」的 token 已**彻底移除**（不再有任何环境变量可以开启）
 
 ### 安全机制
 

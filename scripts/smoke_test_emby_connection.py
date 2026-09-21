@@ -34,6 +34,15 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         failures.append(name)
 
 
+class _FakeRequest:
+    """最小 Request 替身：闸门只读 request.url.path 判断是否为只读账号卡接口"""
+
+    class _URL:
+        path = "/api/admin/emby/libraries"
+
+    url = _URL()
+
+
 path = os.path.join(tempfile.mkdtemp(), "emby-connection.db")
 engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
 Base.metadata.create_all(bind=engine)
@@ -108,7 +117,7 @@ try:
         managed.value = "false"
         db.commit()
         try:
-            portal.ensure_emby_backend_available(db)
+            portal.ensure_emby_backend_available(_FakeRequest(), db)
             check("EA 不可用时拦截自建功能", False, "未返回 503")
         except HTTPException as exc:
             check("EA 不可用时拦截自建功能", exc.status_code == 503, str(exc.status_code))
@@ -134,7 +143,7 @@ try:
             check("当前模式已落库为 external", active is not None and active.value == "external")
 
             try:
-                portal.ensure_emby_backend_available(db)
+                portal.ensure_emby_backend_available(_FakeRequest(), db)
                 check("外部 Emby 模式拦截自建功能", False, "未返回 503")
             except HTTPException as exc:
                 check("外部 Emby 模式拦截自建功能", exc.status_code == 503, str(exc.status_code))

@@ -2,6 +2,39 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.13] - 2026-09-21
+
+本次是**上线前的安全加固**：把匿名可用的 WebSocket 与通知入口关掉、修掉健康检查里两处恒错的假警报，
+并把「Emby 服务入口」的配置真正接到用户侧，同时清掉两处数字 token 兜底、给管理员登录补上审计与限流。
+
+### 安全 (Security)
+- **WebSocket 不再允许匿名冒充**：`/ws/{user_id}` 现在必须携带 `?token=<access_token>`（或 `Authorization` 头），
+  且 token 所属用户必须与路径中的 `user_id` 一致、账号为启用状态；不满足一律以 1008 关闭。
+  此前任何人执行 `ws://host/ws/1` 就能接收 1 号用户的全部实时推送。
+- **通知管理接口不再匿名可用**：`/api/notifications/send`、`/broadcast`、`/online-users` 现在仅管理员（is_staff）可访问。
+  此前任何人都能向全站用户广播「系统通知」做站内钓鱼。
+- **彻底移除两处数字 token 兜底**：删除门户端未被引用的 `get_current_user_compat`（`Bearer <user_id>` 即冒充用户），
+  并移除 `EMBY_ALLOW_LEGACY_TOKENS` 开关与其背后的兼容分支。该环境变量自此不再有任何效果。
+
+### 修复 (Fixed)
+- **`/api/health/detailed` 不再恒报数据库故障**：`db.execute("SELECT 1")` 在 SQLAlchemy 2.0 下必须用 `text()` 包装，
+  之前恒抛异常导致线上监控永远是红的（真挂了反而看不出来）。
+- **健康检查不再恒报 Redis 故障**：改为读取 `backend.database` 的模块级 `redis_client`——
+  `CacheManager` 上并没有该属性，之前每次检查都抛 `AttributeError`，导致整体状态永远是 `degraded`。
+- **「Emby 服务入口」配置真正生效**：用户账号卡的服务器地址与一键导入 scheme 改为优先读配置
+  （外部 Emby → `emby_external_url`，分离 EA → `emby_managed_url`，都没配才回退 `EMBY_PUBLIC_URL`），
+  EM 的「请去连 EA」指引同样跟随配置；顺带修掉配置 URL 被整体 `.lower()` 导致路径大小写被改写的问题。
+- **外部 Emby 模式下账号卡仍可读**：只读的 `GET /api/user/emby/server` 不再被 503 拦截，
+  而是明确返回外部服务器地址、`external` 标记与「账号由对方管理」（不再提供本项目的一键导入 scheme），
+  自建媒体库 / 扫描 / 挂载等写操作仍然一律 503。
+
+### 新增 (Added)
+- **管理员登录审计与限流**：后台登录失败、越权尝试、成功登录与触发限流一并写入登录日志
+  （新增事件类型 `admin_login` / `admin_login_failed`，后台「登录与安全日志」可直接筛选），
+  并按 IP 限流（1 分钟 8 次），与用户端登录同一口径。
+- 新增 `scripts/smoke_test_security_hardening.py`（43 项断言）并接入 CI，覆盖 WebSocket 鉴权、通知接口鉴权、
+  健康检查、入口配置驱动 `base_url`、数字 token 已失效、后台登录审计与限流。
+
 ## [2.6.12] - 2026-09-21
 
 本次修复自建 Emby 播放会话端点的鉴权与会话隔离。

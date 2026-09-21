@@ -14,8 +14,9 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from prometheus_client import make_asgi_app
+from sqlalchemy import text
 
-from backend.database import engine, get_db, init_db, cache, DATABASE_TYPE
+from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
 from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
 from backend.websocket import websocket_router, notification_router, manager
@@ -26,7 +27,7 @@ from backend.emby_server.api import emby_router
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
-from backend.emby_server.portal import user_emby_router, admin_emby_router
+from backend.emby_server.portal import user_emby_router, admin_emby_router, configured_emby_url
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
@@ -73,7 +74,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.6.12",
+    version="2.6.13",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -162,18 +163,26 @@ async def detailed_health_check():
 
     # 检查数据库
     try:
-        db = next(get_db())
-        db.execute("SELECT 1")
-        health_status["services"]["database"] = {"status": "healthy"}
-        db.close()
+        db = SessionLocal()
+        try:
+            # 必须用 text() 包装：SQLAlchemy 2.0 不再接受裸字符串，
+            # 之前这里恒抛异常导致数据库永远报 unhealthy（狼来了）
+            db.execute(text("SELECT 1"))
+            health_status["services"]["database"] = {"status": "healthy"}
+        finally:
+            db.close()
     except Exception as e:
         health_status["services"]["database"] = {"status": "unhealthy", "error": str(e)}
         health_status["status"] = "unhealthy"
 
     # 检查 Redis
+    # 必须读 backend.database 的模块级 redis_client：CacheManager 上并没有
+    # redis_client 属性，之前这里恒抛 AttributeError，导致整体状态永远是 degraded
     try:
-        if cache.redis_client:
-            cache.redis_client.ping()
+        from backend import database as _db_module
+
+        if _db_module.redis_client:
+            _db_module.redis_client.ping()
             health_status["services"]["redis"] = {"status": "healthy"}
         else:
             health_status["services"]["redis"] = {"status": "disabled"}
@@ -225,13 +234,21 @@ if _ENABLE_EMBY_GATEWAY:
 else:
     logger.info("Emby 协议网关未在 EM 启用（分离部署）；客户端请连接 EA")
 
-    _EA_HINT = os.getenv("EMBY_API_PUBLIC_URL", "").strip().rstrip("/") or "EA 服务地址"
-
     async def _ea_pointer():
-        """分离部署下，客户端误连面板时给出明确指引，而不是返回 SPA 的 HTML"""
+        """分离部署下，客户端误连面板时给出明确指引，而不是返回 SPA 的 HTML
+
+        地址优先取管理后台「Emby 服务入口」里保存的分离部署地址（每次请求实时解析），
+        没有再回退到环境变量，保证管理员在面板上改完地址后这里的指引也跟着变。
+        """
+        hint = (
+            configured_emby_url()
+            or os.getenv("EMBY_API_PUBLIC_URL", "").strip().rstrip("/")
+            or os.getenv("EMBY_PUBLIC_URL", "").strip().rstrip("/")
+            or "EA 服务地址"
+        )
         raise HTTPException(
             status_code=404,
-            detail=f"本地址（EM 面板）不提供 Emby 协议面，请把客户端指向 EA：{_EA_HINT}",
+            detail=f"本地址（EM 面板）不提供 Emby 协议面，请把客户端指向 EA：{hint}",
         )
 
     # 裸根协议路径（/System/Info、/Users/AuthenticateByName …）与 /emby/* 各注册一份指引
