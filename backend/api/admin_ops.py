@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import authlog, codes, devices, models
+from backend import authlog, codes, devices, models, realms
 from backend.api.admin import _audit, get_current_admin
 from backend.database import get_db
 
@@ -51,13 +51,19 @@ def _code_usernames(db: Session, code: models.RegistrationCode) -> list:
     return [{"id": r[0], "username": r[1]} for r in rows]
 
 
-def code_dto(db: Session, code: models.RegistrationCode, now: Optional[datetime] = None) -> dict:
+def code_dto(db: Session, code: models.RegistrationCode, now: Optional[datetime] = None,
+             realm_names: Optional[dict] = None) -> dict:
     now = now or datetime.now()
     code_type = int(code.code_type or codes.CODE_TYPE_REGISTER)
     days = code.days if code.days is not None else codes.DEFAULT_DAYS
+    if realm_names is None:
+        realm_names = {r.id: r.name for r in realms.list_realms(db)}
     return {
         "id": code.id,
         "code": code.code,
+        # 卡码是一个服一个的：它开的是哪个服的会员，列表里得看得出来
+        "realm_id": code.realm_id,
+        "realm_name": realm_names.get(code.realm_id, "") if code.realm_id else "",
         "code_type": code_type,
         "code_type_name": codes.CODE_TYPE_NAMES.get(code_type, "卡码"),
         "days": days,
@@ -84,11 +90,17 @@ async def list_codes(
     code_type: Optional[int] = None,
     state: str = "",
     keyword: str = "",
+    realm_id: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
 ):
-    """卡码列表（类型 / 状态 / 关键字筛选 + 分页）"""
-    query = db.query(models.RegistrationCode)
+    """卡码列表（类型 / 状态 / 关键字 / 归属服筛选 + 分页）
+
+    卡码是一个服一个的：``realm_id=0`` 看全部服，不传看当前服。
+    """
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope(db.query(models.RegistrationCode),
+                         models.RegistrationCode.realm_id, scope_id)
     if code_type:
         query = query.filter(models.RegistrationCode.code_type == code_type)
     kw = (keyword or "").strip()
@@ -106,16 +118,26 @@ async def list_codes(
         rows = [r for r in rows if _code_state(r, now) == state]
     total = len(rows)
     page = rows[max(offset, 0):max(offset, 0) + min(max(limit, 1), 300)]
-    return {"total": total, "codes": [code_dto(db, c, now) for c in page]}
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    return {
+        "total": total,
+        "realm_id": scope_id,
+        "realm_name": realms.get_realm(db, scope_id).name if scope_id else "全部服",
+        "realms": [{"id": r.id, "name": r.name} for r in realms.list_realms(db)],
+        "codes": [code_dto(db, c, now, realm_names) for c in page],
+    }
 
 
 @admin_ops_router.get("/registration-codes/stats")
 async def code_stats(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    realm_id: Optional[int] = None,
 ):
-    """卡码总览：按类型统计 + 诱饵命中 + 累计授予天数"""
-    rows = db.query(models.RegistrationCode).all()
+    """卡码总览：按类型统计 + 诱饵命中 + 累计授予天数（按服；``realm_id=0`` 为全部服）"""
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    rows = realms.scope(db.query(models.RegistrationCode),
+                        models.RegistrationCode.realm_id, scope_id).all()
     now = datetime.now()
     by_type: dict = {}
     counters = {"active": 0, "disabled": 0, "expired": 0, "used_up": 0}
@@ -155,6 +177,8 @@ async def code_stats(
         "used_up": counters["used_up"],
         "decoy": {"total": decoy_total, "triggered": decoy_triggered},
         "days_granted": days_granted,
+        "realm_id": scope_id,
+        "realm_name": realms.get_realm(db, scope_id).name if scope_id else "全部服",
         "by_type": sorted(by_type.values(), key=lambda x: x["code_type"]),
     }
 
@@ -170,6 +194,8 @@ class CodeGenerateRequest(BaseModel):
     is_decoy: bool = False
     target_username: str = ""
     note: str = ""
+    # 这张卡码开通哪个服的会员（留空 = 当前服）
+    realm_id: Optional[int] = None
 
 
 @admin_ops_router.post("/registration-codes/generate")
@@ -193,6 +219,10 @@ async def generate_codes(
         ).first()
         if not exists:
             raise HTTPException(status_code=400, detail=f"指名账号不存在：{target_username}")
+
+    target_realm = realms.claim(db, request.realm_id)
+    if not realms.get_realm(db, target_realm):
+        raise HTTPException(status_code=400, detail=f"服不存在: #{target_realm}")
 
     expires_at = datetime.now() + timedelta(days=request.expires_days)
     created = []
@@ -223,6 +253,7 @@ async def generate_codes(
             is_decoy=bool(request.is_decoy),
             target_username=target_username or None,
             source="admin",
+            realm_id=target_realm,
         )
         db.add(code)
         created.append(code)
@@ -232,15 +263,19 @@ async def generate_codes(
         db.refresh(c)
 
     type_name = codes.CODE_TYPE_NAMES.get(request.code_type, "卡码")
+    realm_name = codes.realm_label(db, target_realm)
     _audit(db, current_admin, "generate_registration_codes", "registration_code",
            created[0].id if created else None,
            {"count": request.count, "code_type": request.code_type, "days": days,
-            "is_decoy": request.is_decoy, "target_username": target_username or None})
+            "is_decoy": request.is_decoy, "target_username": target_username or None,
+            "realm_id": target_realm})
     db.commit()
 
     return {
         "success": True,
-        "message": f"已生成 {len(created)} 个{type_name}",
+        "message": f"已生成 {len(created)} 个{type_name}（「{realm_name}」的会员）",
+        "realm_id": target_realm,
+        "realm_name": realm_name,
         "codes": [
             {"id": c.id, "code": c.code, "days_text": codes.format_days(days),
              "expires_at": c.expires_at.isoformat()}
@@ -252,6 +287,8 @@ async def generate_codes(
 class CodeUpdateRequest(BaseModel):
     is_active: Optional[bool] = None
     note: Optional[str] = None
+    # 改归属服：改之前先确认（这张码还没被用过才安全）
+    realm_id: Optional[int] = None
 
 
 @admin_ops_router.patch("/registration-codes/{code_id}")
@@ -272,10 +309,17 @@ async def update_code(
         code.is_active = request.is_active
     if request.note is not None:
         code.note = request.note or None
+    if request.realm_id is not None and int(request.realm_id) != int(code.realm_id or 0):
+        if not realms.get_realm(db, request.realm_id):
+            raise HTTPException(status_code=400, detail=f"服不存在: #{request.realm_id}")
+        if code.use_count:
+            # 已核销的卡码换服会让「开通的是哪个服的会员」对不上账
+            raise HTTPException(status_code=400, detail="该卡码已被使用，不能改归属服")
+        code.realm_id = int(request.realm_id)
     db.commit()
 
     _audit(db, current_admin, "update_registration_code", "registration_code", code.id,
-           {"is_active": code.is_active, "note": code.note})
+           {"is_active": code.is_active, "note": code.note, "realm_id": code.realm_id})
     db.commit()
     return {"success": True, "code": code_dto(db, code)}
 

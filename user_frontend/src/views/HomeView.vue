@@ -143,34 +143,29 @@ onMounted(async () => {
 
 <template>
   <div class="home-view">
-    <!-- 站内消息：置顶常驻（Hero 之上）——未读时光是颜色就能看出来，不用往下找 -->
-    <div class="container msg-slot">
-      <RouterLink to="/messages" class="msg-bar" :class="{ unread: unreadCount > 0, loading }">
-        <span class="msg-dot" :class="{ on: unreadCount > 0 }" aria-hidden="true"></span>
-        <Inbox :size="16" class="msg-icon" />
-        <span class="msg-text">
-          <strong>
-            <template v-if="unreadCount > 0">你有 {{ unreadCount }} 条未读消息</template>
-            <template v-else-if="notices.length">站点公告：{{ notices[0].title }}</template>
-            <template v-else>站内消息</template>
-          </strong>
-          <em>
-            <template v-if="unreadCount > 0">私信 / 工单回复 / 求片进度 / 会员提醒都在消息中心</template>
-            <template v-else-if="notices.length">共 {{ notices.length }} 条公告</template>
-            <template v-else>工单回复、求片进度与会员到期都会在这里提醒你</template>
-          </em>
-        </span>
-        <span v-if="unreadCount > 0" class="msg-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-        <span class="msg-cta">去查看<ChevronRight :size="13" /></span>
-      </RouterLink>
-    </div>
-
     <!-- Hero：左问候与主行动，右会员状态卡（双栏） -->
     <section class="hero">
       <div class="hero-glow" aria-hidden="true"></div>
       <div class="container hero-grid">
         <div class="hero-inner">
-          <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
+          <!-- 站内消息：不占通栏，也不藏到页尾——就挂在问候语旁边，未读时自己亮 -->
+          <div class="hero-top">
+            <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
+            <RouterLink
+              to="/messages"
+              class="msg-chip"
+              :class="{ alert: unreadCount > 0, loading }"
+            >
+              <span class="msg-chip-ping" aria-hidden="true"></span>
+              <Inbox :size="13" />
+              <span class="msg-chip-text">
+                <template v-if="unreadCount > 0">你有 {{ unreadCount }} 条未读消息</template>
+                <template v-else-if="notices.length">公告 · {{ notices[0].title }}</template>
+                <template v-else>站内消息</template>
+              </span>
+              <ChevronRight :size="12" class="msg-chip-go" />
+            </RouterLink>
+          </div>
           <div class="hero-title-row">
             <h1 class="hero-title">{{ user?.username || '观影用户' }}</h1>
             <span v-if="isMember" class="hero-vip">
@@ -621,116 +616,88 @@ onMounted(async () => {
   margin-bottom: 2.25rem;
 }
 
-/* ==================== 站内消息条（置顶，Hero 之上）==================== */
+/* ==================== 站内消息：问候语旁的胶囊（不占通栏）==================== */
 
-.msg-slot {
-  padding-top: 1.25rem;
-}
-
-.msg-bar {
+.hero-top {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-lg);
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4375rem;
+}
+
+.hero-top .hero-eyebrow {
+  margin: 0;
+}
+
+.msg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  padding: 0.3125rem 0.6875rem;
   background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-text-2);
+  font-size: 0.75rem;
+  font-weight: 600;
   text-decoration: none;
   transition: border-color var(--au-fast) var(--au-ease),
-    background var(--au-fast) var(--au-ease), opacity var(--au-fast) var(--au-ease);
+    color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
 }
 
-.msg-bar.loading {
-  opacity: 0.45;
-  pointer-events: none;
+.msg-chip.loading {
+  opacity: 0.5;
 }
 
-.msg-bar:hover {
-  border-color: var(--au-primary-border);
+.msg-chip:hover {
+  color: var(--au-text);
+  border-color: var(--au-border-strong);
 }
 
-/* 有未读：整条就用警示色，扫一眼就知道要点开 */
-.msg-bar.unread {
-  border-color: rgba(251, 191, 36, 0.42);
-  background: linear-gradient(180deg, rgba(251, 191, 36, 0.14), rgba(251, 191, 36, 0.05));
+.msg-chip.alert {
+  color: var(--au-warning);
+  border-color: rgba(251, 191, 36, 0.34);
+  background: rgba(251, 191, 36, 0.1);
 }
 
-.msg-bar.unread:hover {
+.msg-chip.alert:hover {
   border-color: var(--au-warning);
+  background: rgba(251, 191, 36, 0.16);
 }
 
-.msg-dot {
-  width: 7px;
-  height: 7px;
+.msg-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-chip-ping {
+  width: 6px;
+  height: 6px;
   flex-shrink: 0;
   border-radius: 50%;
   background: var(--au-border-strong);
+  transition: background var(--au-fast) var(--au-ease);
 }
 
-.msg-dot.on {
+.msg-chip.alert .msg-chip-ping {
   background: var(--au-warning);
-  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.18);
+  animation: chip-ping 2.6s ease-out infinite;
 }
 
-.msg-icon {
+.msg-chip-go {
   flex-shrink: 0;
-  color: var(--au-text-3);
+  opacity: 0.65;
 }
 
-.msg-bar.unread .msg-icon {
-  color: var(--au-warning);
-}
-
-.msg-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.0625rem;
-}
-
-.msg-text strong {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--au-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.msg-text em {
-  font-style: normal;
-  font-size: 0.75rem;
-  color: var(--au-text-4);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.msg-badge {
-  min-width: 22px;
-  padding: 0.125rem 0.4375rem;
-  text-align: center;
-  background: var(--au-warning);
-  color: #1a1205;
-  border-radius: var(--au-r-full);
-  font-size: 0.6875rem;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.msg-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.0625rem;
-  flex-shrink: 0;
-  font-size: 0.75rem;
-  color: var(--au-text-4);
-  transition: color var(--au-fast) var(--au-ease);
-}
-
-.msg-bar:hover .msg-cta {
-  color: var(--au-primary);
+@keyframes chip-ping {
+  0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
 }
 
 /* ==================== 播放器入口（单行，详情在个人中心） ==================== */
@@ -832,9 +799,13 @@ onMounted(async () => {
 }
 
 @media (max-width: 640px) {
-  /* 窄屏先保消息本身，把「去查看」收掉省空间 */
-  .msg-cta {
-    display: none;
+  /* 窄屏：胶囊只留「几条未读」，标题不再往右挤 */
+  .hero-top .hero-eyebrow {
+    width: 100%;
+  }
+
+  .msg-chip-text {
+    max-width: 15ch;
   }
 
   .hero {

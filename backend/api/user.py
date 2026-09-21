@@ -541,6 +541,37 @@ class MediaSeekRequest(BaseModel):
     year: Optional[str] = None
     type: Optional[str] = None
     note: Optional[str] = None
+    # 这部片要进哪个服的库（用户端会让他选/自动带出）；留空时后端自己推导
+    realm_id: Optional[int] = None
+
+
+def _resolve_seek_realm(db: Session, user: models.WebUser,
+                        requested: Optional[int] = None) -> Optional[int]:
+    """求片登记给哪个服
+
+    - 用户明确选了服：校验存在后用它；
+    - 没选：只看得到一个服的会员就默认这个服（大多数用户不用做选择）；
+    - 持有多个服或多个都看不清：留空（``NULL``）——「未标注」是诚实的结果，
+      不替用户猜一个服，后台也看得出来这条没定。
+    """
+    if requested is not None:
+        if not realms.get_realm(db, requested):
+            raise HTTPException(status_code=400, detail=f"服不存在: #{requested}")
+        return int(requested)
+
+    now = datetime.now()
+    rows = (db.query(models.UserSubscription.realm_id)
+            .filter(
+                models.UserSubscription.user_id == user.id,
+                models.UserSubscription.status == "active",
+                models.UserSubscription.end_date > now,
+                models.UserSubscription.realm_id.isnot(None),
+            )
+            .all())
+    realms_held = {int(r[0]) for r in rows if r[0]}
+    if len(realms_held) == 1:
+        return realms_held.pop()
+    return None
 
 
 def _seek_daily_limit(db: Session) -> int:
@@ -635,7 +666,9 @@ async def create_media_seek(
         year=request.year,
         type=request.type,
         note=request.note,
-        status="pending"
+        status="pending",
+        # 求片是「给哪个服求」的：用户选/单服自动带出，读不出就未标注
+        realm_id=_resolve_seek_realm(db, current_user, request.realm_id),
     )
     db.add(media_request)
     db.commit()
@@ -693,6 +726,7 @@ async def get_my_media_seeks(
         query = query.filter(models.MovieRequest.status == status_filter)
 
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     used = db.query(models.MovieRequest).filter(
@@ -711,6 +745,9 @@ async def get_my_media_seeks(
                 "note": r.note,
                 "status": r.status,
                 "admin_note": r.admin_note,
+                # 这部片求给哪个服（用户自己就能看到，不用问管理员）
+                "realm_id": r.realm_id,
+                "realm_name": realm_names.get(r.realm_id, "") if r.realm_id else "",
                 "created_at": r.created_at.isoformat()
             }
             for r in requests

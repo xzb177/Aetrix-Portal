@@ -104,12 +104,38 @@ def render_code(
 # ==================== 会员天数授予 ====================
 
 
-def _resolve_plan(db: Session):
+def code_realm_id(db: Session, code: Optional[models.RegistrationCode] = None) -> int:
+    """这张卡码开通/续期的是**哪个服**的会员
+
+    卡码是一个服一个的：乙服的注册码只能开通乙服的会员，不能在甲服播放。
+    老数据（升级前生成、``realm_id`` 未标注）落到当前服——与全站 ``claim()``
+    的口径一致，单服部署下就是那个唯一的服，行为与以前完全相同。
+    """
+    from backend import realms
+
+    if code is not None and getattr(code, "realm_id", None):
+        return int(code.realm_id)
+    return realms.claim(db, None)
+
+
+def realm_label(db: Session, realm_id: Optional[int]) -> str:
+    """服名（给提示文案用；查不到时给个能指认的写法）"""
+    from backend import realms
+
+    realm = realms.get_realm(db, realm_id)
+    return realm.name if realm else f"#{realm_id}"
+
+
+def _resolve_plan(db: Session, realm_id: Optional[int] = None):
     """卡码授予天数所用套餐
 
-    优先配置 ``code_default_plan_id``，其次任何启用中的套餐，
-    最后回落到一个隐藏的「卡码开通」套餐（is_active=False，不在商店出现）。
+    优先配置 ``code_default_plan_id``（只在该套餐确实属于这个服时采用，
+    否则乙服的卡码会拿甲服的套餐开会员），其次**这个服**启用中的套餐，
+    最后回落到该服隐藏的「卡码开通」套餐（is_active=False，不在商店出现）。
     """
+    from backend import realms
+
+    target = realms.claim(db, realm_id)
     config = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == "code_default_plan_id"
     ).first()
@@ -117,11 +143,11 @@ def _resolve_plan(db: Session):
         plan = db.query(models.SubscriptionPlan).filter(
             models.SubscriptionPlan.id == int(str(config.value).strip())
         ).first()
-        if plan:
+        if plan and (plan.realm_id is None or int(plan.realm_id) == target):
             return plan
 
     plan = (
-        db.query(models.SubscriptionPlan)
+        realms.scope(db.query(models.SubscriptionPlan), models.SubscriptionPlan.realm_id, target)
         .filter(models.SubscriptionPlan.is_active == True)  # noqa: E712
         .order_by(models.SubscriptionPlan.sort_order)
         .first()
@@ -130,12 +156,14 @@ def _resolve_plan(db: Session):
         return plan
 
     plan = db.query(models.SubscriptionPlan).filter(
-        models.SubscriptionPlan.name == "卡码开通"
+        models.SubscriptionPlan.name == "卡码开通",
+        models.SubscriptionPlan.realm_id == target,
     ).first()
     if not plan:
         plan = models.SubscriptionPlan(
             name="卡码开通", description="卡码开通/续期自动创建（不在商店展示）",
             price=0, duration_days=DEFAULT_DAYS, is_active=False, sort_order=999,
+            realm_id=target,
         )
         db.add(plan)
         db.commit()
@@ -143,18 +171,29 @@ def _resolve_plan(db: Session):
     return plan
 
 
-def grant_membership_days(db: Session, user: models.WebUser, days: int) -> models.UserSubscription:
-    """按天数开通或延长会员，返回生效中的订阅
+def grant_membership_days(db: Session, user: models.WebUser, days: int,
+                          realm_id: Optional[int] = None) -> models.UserSubscription:
+    """按天数开通或延长**某个服**的会员，返回生效中的订阅
+
+    会员是一个服一个：续期只在**同一个服**里叠加（乙服的续期码不该延长甲服的会员），
+    新建时把归属服写进 ``UserSubscription.realm_id``——付费墙是按服严格匹配的，
+    写空的话这张卡码开的会员在 EA 上根本放不了。
+
+    ``realm_id`` 为空时归当前服（``realms.claim``）：单服部署下就是原来那个唯一的服。
 
     `with_for_update()` 在 PostgreSQL 下锁住该订阅行，避免同一用户并发叠加天数时
     两边读到同一到期时间、后提交的覆盖前者（丢天数）；SQLite 忽略该子句。
     """
+    from backend import realms
+
     total = PERMANENT_DAYS if days < 0 else max(int(days), 1)
     now = datetime.now()
+    target = realms.claim(db, realm_id)
     sub = (
         db.query(models.UserSubscription)
         .filter(
             models.UserSubscription.user_id == user.id,
+            models.UserSubscription.realm_id == target,
             models.UserSubscription.status == "active",
             models.UserSubscription.end_date > now,
         )
@@ -163,14 +202,15 @@ def grant_membership_days(db: Session, user: models.WebUser, days: int) -> model
         .first()
     )
     if sub:
-        # 已有生效订阅：叠加（续期语义），而非覆盖
+        # 同服已有生效订阅：叠加（续期语义），而非覆盖
         sub.end_date = sub.end_date + timedelta(days=total)
         sub.status = "active"
     else:
-        plan = _resolve_plan(db)
+        plan = _resolve_plan(db, target)
         sub = models.UserSubscription(
             user_id=user.id, plan_id=plan.id, start_date=now,
             end_date=now + timedelta(days=total), status="active",
+            realm_id=target,
         )
         db.add(sub)
     db.commit()
@@ -178,18 +218,15 @@ def grant_membership_days(db: Session, user: models.WebUser, days: int) -> model
     return sub
 
 
-def has_active_membership(db: Session, user: models.WebUser) -> bool:
-    now = datetime.now()
-    return (
-        db.query(models.UserSubscription)
-        .filter(
-            models.UserSubscription.user_id == user.id,
-            models.UserSubscription.status == "active",
-            models.UserSubscription.end_date > now,
-        )
-        .first()
-        is not None
-    )
+def has_active_membership(db: Session, user: models.WebUser, realm_id: Optional[int] = None) -> bool:
+    """用户**在这个服**是否已有生效会员
+
+    口径与付费墙完全一致（``subscriptions.has_active_subscription``）：甲服的会员
+    不算乙服的会员，否则乙服的注册码会被误判成「已有会员」而拒绝。
+    """
+    from backend import subscriptions
+
+    return subscriptions.has_active_subscription(db, user.id, realm_id)
 
 
 # ==================== 卡码识别与核销 ====================
@@ -249,6 +286,7 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         named_ok = True
         if code.target_username:
             named_ok = bool(username) and code.target_username.strip().lower() == username.strip().lower()
+        realm_id = code_realm_id(db, code)
         return {
             "valid": error is None and named_ok,
             "kind": "code",
@@ -259,6 +297,9 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
             "is_named": bool(code.target_username),
             "target_username": code.target_username,
             "remaining_uses": max((code.max_uses or 0) - (code.use_count or 0), 0),
+            # 卡码是一个服一个的：用户有权在核销前就知道这开的是哪个服的会员
+            "realm_id": realm_id,
+            "realm_name": realm_label(db, realm_id),
             "message": error or ("该卡码限指定账号使用" if not named_ok else "卡码有效"),
         }
 
@@ -322,17 +363,24 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         return {"success": False, "message": "该卡码限指定账号使用"}
 
     days = grant_days_for(code)
-    if code.code_type == CODE_TYPE_REGISTER and has_active_membership(db, user):
-        return {"success": False, "message": "账号已有生效中的会员，请使用续期码"}
+    # 这张卡码属于哪个服，就判定/开通哪个服的会员（甲服的会员不算乙服的）
+    target = code_realm_id(db, code)
+    target_name = realm_label(db, target)
+    if code.code_type == CODE_TYPE_REGISTER and has_active_membership(db, user, target):
+        return {"success": False,
+                "message": f"你在「{target_name}」已有生效中的会员，请使用续期码（本卡码只能开通新会员）"}
 
-    sub = grant_membership_days(db, user, days)
+    sub = grant_membership_days(db, user, days, target)
     consume(db, code, user.id)
 
     type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
     return {
         "success": True,
-        "message": f"{type_name}核销成功，会员到期时间 {sub.end_date.strftime('%Y-%m-%d %H:%M')}",
+        "message": (f"{type_name}核销成功，「{target_name}」会员到期时间 "
+                    f"{sub.end_date.strftime('%Y-%m-%d %H:%M')}"),
         "code_type": code.code_type,
         "days": days,
+        "realm_id": target,
+        "realm_name": target_name,
         "end_date": sub.end_date.isoformat(),
     }

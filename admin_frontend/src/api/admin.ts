@@ -111,6 +111,8 @@ export const createRegistrationCodes = (data: {
   max_uses: number
   expires_days: number
   note?: string
+  /** 这批码开通哪个服的会员（留空 = 当前服） */
+  realm_id?: number
 }) => post<{ codes: { code: string }[] }>('/registration-codes', data)
 
 export const updateRegistrationCode = (id: number, is_active: boolean) =>
@@ -132,20 +134,37 @@ export const generateCodes = (data: {
   is_decoy?: boolean
   target_username?: string
   note?: string
-}) => post<{ success: boolean; message: string; codes: { id: number; code: string; days_text: string; expires_at: string }[] }>(
+  /** 这批码开通哪个服的会员（留空 = 当前服） */
+  realm_id?: number
+}) => post<{
+  success: boolean
+  message: string
+  realm_id: number
+  realm_name: string
+  codes: { id: number; code: string; days_text: string; expires_at: string }[]
+}>(
   '/registration-codes/generate', data)
 
+/** 卡码清单（按服；`realm_id=0` = 全部服，不传 = 当前服） */
 export const fetchCodeList = (params: {
   code_type?: number
   state?: string
   keyword?: string
+  realm_id?: number
   limit?: number
   offset?: number
-} = {}) => get<{ total: number; codes: RegistrationCode[] }>('/registration-codes/list', params)
+} = {}) => get<{
+  total: number
+  realm_id: number | null
+  realm_name: string
+  realms: { id: number; name: string }[]
+  codes: RegistrationCode[]
+}>('/registration-codes/list', params)
 
-export const fetchCodeStats = () => get<CodeStats>('/registration-codes/stats')
+export const fetchCodeStats = (realm_id?: number) =>
+  get<CodeStats>('/registration-codes/stats', realm_id === undefined ? undefined : { realm_id })
 
-export const patchRegistrationCode = (id: number, data: { is_active?: boolean; note?: string }) =>
+export const patchRegistrationCode = (id: number, data: { is_active?: boolean; note?: string; realm_id?: number }) =>
   patch<{ success: boolean; code: RegistrationCode }>(`/registration-codes/${id}`, data)
 
 export const deleteRegistrationCode = (id: number) =>
@@ -216,7 +235,8 @@ export const closeTicket = (id: number) => post<{ success: boolean }>(`/tickets/
 
 // ==================== 求片 ====================
 
-export const fetchMediaSeeks = (params: { status_filter?: string } = {}) =>
+/** 求片清单；`realm_id=0` = 全部服，不传 = 当前服 */
+export const fetchMediaSeeks = (params: { status_filter?: string; realm_id?: number } = {}) =>
   get<MediaSeekRow[]>('/media-seek', params)
 
 export const updateMediaSeek = (id: number, data: { status: string; admin_note?: string }) =>
@@ -458,14 +478,17 @@ export const stopAllTranscodes = () => post<{ stopped: number }>(`${E}/transcode
 // 挂载 = 媒体库的内容来源：local / strm 是本机目录，115 / webdav / alist 是远程来源。
 // 远程挂载的条目在库里存 mount:// 路径，播放时由 EA 代理转发（凭据不下发）。
 
-export const fetchMounts = () =>
+/** 挂载清单；`realm_id=0` = 全部服，不传 = 当前服（挂载是一个服一个的） */
+export const fetchMounts = (realm_id?: number) =>
   get<{
     mounts: StorageMount[]
     mount_types: MountTypeMeta[]
     /** 当前出流的节点：只有它是 ea 时，「EA 不可达」才是阻断性告警 */
     playback_node: PlaybackNode
     ea_health: EaMountHealth
-  }>(`${E}/mounts`)
+    realm_id: number | null
+    realm_names: Record<string, string>
+  }>(`${E}/mounts`, realm_id === undefined ? undefined : { realm_id })
 
 /** 本机（EM）体检：逐条跑一遍与「测试连接」相同的探测并落库 */
 export const probeMountsHealth = () =>
@@ -488,6 +511,8 @@ export interface MountPayload {
   config?: Record<string, string>
   is_enabled?: boolean
   remark?: string
+  /** 归属服（留空 = 当前服）；换服时引用它的媒体库会跟着走 */
+  realm_id?: number
 }
 
 export const createMount = (data: MountPayload) =>

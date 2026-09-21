@@ -235,9 +235,11 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
     db.refresh(user)
 
     # 卡码消耗 + 按卡码类型授予会员天数（注册码开通、白名单码置为长期有效）
+    # 开的是**卡码所属服**的会员：多服下用乙服的注册码注册，就该拿到乙服的会员
     if reg_code is not None:
         codes.consume(db, reg_code, user.id)
-        codes.grant_membership_days(db, user, codes.grant_days_for(reg_code))
+        codes.grant_membership_days(db, user, codes.grant_days_for(reg_code),
+                                    codes.code_realm_id(db, reg_code))
 
     # 邀请返利：注册时应用邀请码（双向发奖，失败静默不阻塞注册）
     if req.invitation_code:

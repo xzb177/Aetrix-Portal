@@ -5,9 +5,12 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
   Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown,
   Wallet, CalendarCheck, Gift, MessageSquareDashed, Zap, History,
-  Search, Heart,
+  Search, Heart, Bell, Megaphone, AlertCircle, Clock, ChevronRight,
 } from 'lucide-vue-next'
-import api from '@/api'
+import api, {
+  messageApi, announcementApi,
+  type StationMessage, type Announcement,
+} from '@/api'
 import { pointsApi } from '@/api/economy'
 
 const userStore = useUserStore()
@@ -19,6 +22,95 @@ const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
 const pointsBalance = ref<number | null>(null)
+
+// 顶栏消息入口：既显示「几条未读」，点开还能先看预览再决定要不要进消息中心
+const msgMenuOpen = ref(false)
+const msgMenuRef = ref<HTMLElement | null>(null)
+const msgPreview = ref<MsgPreviewItem[]>([])
+const msgLoading = ref(false)
+
+interface MsgPreviewItem {
+  key: string
+  title: string
+  meta: string
+  to: string
+  icon: unknown
+  unread: boolean
+}
+
+// 消息类型 → 图标（与消息中心的分类保持一致；只取预览需要的几种）
+const MSG_ICONS: Record<string, unknown> = {
+  system: AlertCircle,
+  ticket: Ticket,
+  announcement: Megaphone,
+  subscription: Gift,
+  media_seek: Clock,
+  exchange_code: Gift,
+}
+
+const MSG_LABELS: Record<string, string> = {
+  system: '系统',
+  ticket: '工单',
+  announcement: '公告',
+  subscription: '订阅',
+  media_seek: '求片',
+  exchange_code: '兑换',
+}
+
+function relTime(iso?: string): string {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const mins = Math.floor((Date.now() - t) / 60_000)
+  if (mins < 1) return '刚刚'
+  if (mins < 60) return `${mins} 分钟前`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days} 天前`
+  return iso.slice(0, 10)
+}
+
+async function loadMsgPreview() {
+  msgLoading.value = true
+  try {
+    // 只拉未读：预览要回答的是「有什么在等我」，而不是「最近收到了什么」
+    const [msgs, notices] = await Promise.all([
+      messageApi.getMessages({ unread_only: true, limit: 3 }).catch((): StationMessage[] => []),
+      announcementApi.getAnnouncements().catch((): Announcement[] => []),
+    ])
+    const unread = (msgs || []).filter((m) => !m.is_read).slice(0, 3)
+    const pinned = [...(notices || [])]
+      .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned))
+      .slice(0, 2)
+    msgPreview.value = [
+      ...unread.map((m) => ({
+        key: `m${m.id}`,
+        title: m.title,
+        meta: `${MSG_LABELS[m.message_type] || '通知'} · ${relTime(m.created_at)}`,
+        to: '/messages',
+        icon: MSG_ICONS[m.message_type] || Bell,
+        unread: true,
+      })),
+      ...pinned.map((a) => ({
+        key: `a${a.id}`,
+        title: a.title,
+        meta: `公告 · ${relTime(a.created_at)}`,
+        to: '/messages',
+        icon: Megaphone,
+        unread: false,
+      })),
+    ]
+  } finally {
+    msgLoading.value = false
+  }
+}
+
+function toggleMsgMenu() {
+  userMenuOpen.value = false
+  msgMenuOpen.value = !msgMenuOpen.value
+  if (msgMenuOpen.value) loadMsgPreview()
+}
 
 // 导航分组：内容 → 运营 → 支持，视觉上以细分隔线区隔
 const navGroups = [
@@ -54,6 +146,7 @@ function isActive(path: string) {
 function closeMenus() {
   mobileMenuOpen.value = false
   userMenuOpen.value = false
+  msgMenuOpen.value = false
 }
 
 async function handleLogout() {
@@ -63,8 +156,12 @@ async function handleLogout() {
 }
 
 function onDocClick(e: MouseEvent) {
-  if (userMenuRef.value && !userMenuRef.value.contains(e.target as Node)) {
+  const target = e.target as Node
+  if (userMenuRef.value && !userMenuRef.value.contains(target)) {
     userMenuOpen.value = false
+  }
+  if (msgMenuRef.value && !msgMenuRef.value.contains(target)) {
+    msgMenuOpen.value = false
   }
 }
 
@@ -102,6 +199,8 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
   else {
     unreadCount.value = 0
     pointsBalance.value = null
+    msgPreview.value = []
+    msgMenuOpen.value = false
   }
 })
 
@@ -153,10 +252,57 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
             <span class="points-num">{{ pointsBalance === null ? '—' : pointsBalance.toLocaleString() }}</span>
           </RouterLink>
 
-          <RouterLink to="/messages" class="msg-btn" title="消息中心">
-            <Inbox :size="18" />
-            <span v-if="unreadCount > 0" class="msg-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-          </RouterLink>
+          <!-- 消息：未读时把入口撑成带数字的胶囊并轻微呼吸，点开先给预览 -->
+          <div ref="msgMenuRef" class="msg-menu">
+            <button
+              class="msg-btn"
+              :class="{ alert: unreadCount > 0, open: msgMenuOpen }"
+              :title="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
+              @click="toggleMsgMenu"
+            >
+              <span v-if="unreadCount > 0" class="msg-ping" aria-hidden="true"></span>
+              <Inbox :size="17" />
+              <span v-if="unreadCount > 0" class="msg-count">
+                {{ unreadCount > 99 ? '99+' : unreadCount }} 条未读
+              </span>
+            </button>
+
+            <Transition name="dd">
+              <div v-if="msgMenuOpen" class="msg-dropdown">
+                <div class="msg-drop-head">
+                  <span class="msg-drop-title">消息中心</span>
+                  <span v-if="unreadCount > 0" class="msg-drop-unread">{{ unreadCount > 99 ? '99+' : unreadCount }} 条未读</span>
+                  <span v-else class="msg-drop-clear">已全部读完</span>
+                </div>
+
+                <p v-if="msgLoading" class="msg-drop-hint">加载中…</p>
+                <template v-else-if="msgPreview.length">
+                  <RouterLink
+                    v-for="p in msgPreview"
+                    :key="p.key"
+                    :to="p.to"
+                    class="msg-drop-item"
+                    @click="closeMenus"
+                  >
+                    <span class="msg-drop-ic" :class="{ hot: p.unread }">
+                      <component :is="p.icon" :size="14" />
+                    </span>
+                    <span class="msg-drop-body">
+                      <span class="msg-drop-item-title">{{ p.title }}</span>
+                      <span class="msg-drop-meta">{{ p.meta }}</span>
+                    </span>
+                    <span v-if="p.unread" class="msg-drop-dot" aria-hidden="true"></span>
+                  </RouterLink>
+                </template>
+                <p v-else class="msg-drop-hint">暂时没有新消息</p>
+
+                <RouterLink to="/messages" class="msg-drop-foot" @click="closeMenus">
+                  查看全部消息
+                  <ChevronRight :size="13" />
+                </RouterLink>
+              </div>
+            </Transition>
+          </div>
 
           <div ref="userMenuRef" class="user-menu">
             <button class="user-btn" @click="userMenuOpen = !userMenuOpen">
@@ -361,36 +507,166 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .icon-btn:hover { color: var(--au-primary); background: var(--au-surface-2); }
 
 /* 消息铃铛 */
+/* 消息入口：未读时是一枚会呼吸的胶囊，读完回退成安静图标 */
+.msg-menu { position: relative; }
+
 .msg-btn {
   position: relative;
-  width: 38px;
-  height: 38px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 0.375rem;
+  height: 38px;
+  padding: 0 0.625rem;
+  background: none;
+  border: 1px solid transparent;
   border-radius: var(--au-r-md);
   color: var(--au-text-2);
-  transition: all var(--au-fast);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
 }
 .msg-btn:hover { color: var(--au-text); background: var(--au-surface-2); }
+.msg-btn.open { color: var(--au-text); background: var(--au-surface-2); }
 
-.msg-badge {
+.msg-btn.alert {
+  color: var(--au-warning);
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.34);
+}
+.msg-btn.alert:hover { border-color: var(--au-warning); background: rgba(251, 191, 36, 0.18); }
+
+.msg-count { letter-spacing: -0.01em; white-space: nowrap; }
+
+.msg-ping {
   position: absolute;
-  top: 3px;
-  right: 3px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+  top: 7px;
+  left: 9px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--au-warning);
+  animation: msg-ping 2.6s ease-out infinite;
+}
+
+@keyframes msg-ping {
+  0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.45); }
+  70% { box-shadow: 0 0 0 7px rgba(251, 191, 36, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+.msg-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 292px;
+  background: rgba(10, 16, 26, 0.97);
+  border: 1px solid var(--au-border-strong);
+  border-radius: var(--au-r-lg);
+  box-shadow: var(--au-shadow-2);
+  overflow: hidden;
+  z-index: 60;
+}
+
+.msg-drop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8125rem 1rem;
+  border-bottom: 1px solid var(--au-border);
+}
+
+.msg-drop-title { font-size: 0.875rem; font-weight: 700; color: var(--au-text); }
+
+.msg-drop-unread {
+  padding: 0.125rem 0.5rem;
+  background: rgba(251, 191, 36, 0.16);
+  border-radius: var(--au-r-full);
+  color: var(--au-warning);
+  font-size: 0.625rem;
+  font-weight: 700;
+}
+
+.msg-drop-clear { font-size: 0.625rem; color: var(--au-text-4); }
+
+.msg-drop-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.6875rem 1rem;
+  text-decoration: none;
+  border-bottom: 1px solid var(--au-border);
+  transition: background var(--au-fast) var(--au-ease);
+}
+.msg-drop-item:hover { background: var(--au-surface-2); }
+
+.msg-drop-ic {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--au-gradient-warm);
-  color: #fff;
-  font-size: 0.625rem;
-  font-weight: 700;
-  border-radius: var(--au-r-full);
-  box-shadow: 0 2px 6px rgba(244, 114, 182, 0.4);
+  border-radius: 8px;
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
 }
+
+.msg-drop-ic.hot {
+  background: rgba(251, 191, 36, 0.14);
+  color: var(--au-warning);
+}
+
+.msg-drop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.msg-drop-item-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-drop-meta { font-size: 0.6875rem; color: var(--au-text-4); }
+
+.msg-drop-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 0.5rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--au-warning);
+}
+
+.msg-drop-hint {
+  margin: 0;
+  padding: 1.125rem 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--au-text-4);
+  border-bottom: 1px solid var(--au-border);
+}
+
+.msg-drop-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1875rem;
+  padding: 0.6875rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--au-primary);
+  text-decoration: none;
+  transition: background var(--au-fast) var(--au-ease);
+}
+.msg-drop-foot:hover { background: var(--au-surface-2); }
 
 .user-menu { position: relative; }
 
@@ -573,5 +849,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   .mobile-toggle { display: flex; }
   .mobile-menu { display: flex; flex-direction: column; }
   .user-name { display: none; }
+  /* 小屏收起文字，只留呼吸的点与图标 */
+  .msg-count { display: none; }
+  .msg-btn.alert { padding: 0 0.5rem; }
+  .msg-dropdown { width: min(292px, calc(100vw - 2rem)); }
 }
 </style>

@@ -23,6 +23,7 @@ import os
 import random
 import sys
 import tempfile
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
@@ -35,7 +36,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backend import models, realms  # noqa: E402
+from backend import codes, models, realms  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.main import app as em_app  # noqa: E402
 from backend.security import hash_password  # noqa: E402
@@ -406,6 +407,251 @@ try:
           f"libraries={data['stats']['libraries']} nodes={len(data['nodes'])}")
 finally:
     db.close()
+
+# ==================== 7.5 卡码 / 求片 / 挂载：补齐按服 ====================
+
+print("\n--- 卡码（一个服一个：开的就是归属服的会员）---")
+r = client.post("/api/admin/registration-codes/generate", headers=H,
+                json={"code_type": 1, "count": 1, "days": 30, "expires_days": 30,
+                      "realm_id": realm_b})
+body = r.json() if r.status_code == 200 else {}
+code_b = (body.get("codes") or [{}])[0].get("code")
+check("生成卡码时可以指定归属服",
+      r.status_code == 200 and body.get("realm_id") == realm_b and bool(code_b),
+      f"HTTP {r.status_code} {body.get('message')}")
+
+r = client.get("/api/admin/registration-codes/list", headers=H,
+               params={"code_type": 1, "realm_id": realm_b})
+codes_b = {c["code"]: c for c in r.json().get("codes", [])}
+check("卡码清单按服过滤，且带归属服名称",
+      code_b in codes_b and codes_b[code_b].get("realm_name") == f"二服改名{suf}",
+      str([(c['code'], c.get('realm_name')) for c in codes_b.values()][:3]))
+check("清单同时下发可选服（生成弹窗要用）",
+      len(r.json().get("realms") or []) >= 2, str(r.json().get("realms")))
+
+r = client.get("/api/admin/registration-codes/list", headers=H, params={"code_type": 1})
+codes_default = {c["code"] for c in r.json().get("codes", [])}
+check("默认只看当前服（A）的卡码，B 服的不会混进来",
+      code_b not in codes_default, f"当前服={r.json().get('realm_name')}")
+
+r = client.get("/api/admin/registration-codes/list", headers=H, params={"code_type": 1, "realm_id": 0})
+check("realm_id=0 才跨服汇总卡码",
+      code_b in {c["code"] for c in r.json().get("codes", [])}, str(r.status_code))
+
+r = client.get("/api/admin/registration-codes/stats", headers=H, params={"realm_id": realm_b})
+stat_b = r.json() if r.status_code == 200 else {}
+check("卡码统计按服（B 服的统计只算 B 服的码）",
+      stat_b.get("realm_id") == realm_b and stat_b.get("total") == 1,
+      f"total={stat_b.get('total')} realm={stat_b.get('realm_name')}")
+
+# 一个「只有 A 服会员」的用户来核销 B 服的注册码：旧实现在这里会误报「已有会员」
+db = SessionLocal()
+try:
+    solo = models.WebUser(username=f"code_user{suf}", password_hash=hash_password(PASSWORD),
+                          is_staff=False, is_active=True)
+    db.add(solo)
+    db.commit()
+    solo_id = solo.id
+finally:
+    db.close()
+
+r = client.post(f"/api/admin/users/{solo_id}/subscriptions", headers=H,
+                json={"plan_id": plan_a, "duration_days": 30})
+check("先给这个用户开 A 服会员", r.status_code == 200, f"HTTP {r.status_code}")
+
+db = SessionLocal()
+try:
+    sub_a = (db.query(models.UserSubscription)
+             .filter(models.UserSubscription.user_id == solo_id).first())
+    sub_a_end = sub_a.end_date
+    check("A 服会员落在 A 服", sub_a.realm_id == default_id, f"realm_id={sub_a.realm_id}")
+finally:
+    db.close()
+
+r = client.post("/api/user/auth/login", json={"username": f"code_user{suf}", "password": PASSWORD})
+solo_token = r.json()["access_token"] if r.status_code == 200 else ""
+SH = {"Authorization": f"Bearer {solo_token}"}
+
+# 只有 A 服会员：求片不选服也该自动归 A（这一步必须在核销 B 服卡码之前做，
+# 否则这个用户就变成「持有两个服的会员」了，正确的行为反而是不猜）
+r = client.post("/api/user/media-seek", headers=SH,
+                json={"movie_name": f"单服默认片{suf}", "type": "movie"})
+check("只有一个服的会员时，求片自动归到那个服", r.status_code == 200, f"HTTP {r.status_code}")
+seek_solo_id = r.json().get("request_id")
+
+db = SessionLocal()
+try:
+    req = db.query(models.MovieRequest).filter(models.MovieRequest.id == seek_solo_id).first()
+    check("自动归属落库为 A 服", req is not None and req.realm_id == default_id,
+          f"realm_id={getattr(req, 'realm_id', None)}")
+finally:
+    db.close()
+
+r = client.post("/api/user/membership/redeem/preview", headers=SH, json={"code": code_b})
+check("卡码预检就告诉用户开的是哪个服的会员",
+      r.status_code == 200 and r.json().get("realm_name") == f"二服改名{suf}",
+      str(r.json().get("realm_name")))
+
+r = client.post("/api/user/membership/redeem", headers=SH, json={"code": code_b})
+check("A 服会员可以核销 B 服的注册码（不再被误判为「已有会员」）",
+      r.status_code == 200, f"HTTP {r.status_code} {(r.text or '')[:80]}")
+
+db = SessionLocal()
+try:
+    rows = (db.query(models.UserSubscription)
+            .filter(models.UserSubscription.user_id == solo_id).all())
+    by_realm = {s.realm_id: s for s in rows}
+    check("B 服的注册码开的是 B 服的会员",
+          realm_b in by_realm, str(sorted(r for r in by_realm if r is not None)))
+    check("A 服的会员没有被那张 B 服的注册码改变",
+          by_realm[default_id].end_date == sub_a_end,
+          f"{sub_a_end} → {by_realm[default_id].end_date}")
+    from backend import subscriptions as subs_lib
+
+    check("付费墙口径成立：B 服是会员、A 服仍是会员",
+          subs_lib.has_active_subscription(db, solo_id, realm_b)
+          and subs_lib.has_active_subscription(db, solo_id, default_id))
+finally:
+    db.close()
+
+# 续期码 / 白名单码：只在同一个服里叠加，不能去延长别服的会员
+r = client.post("/api/admin/registration-codes/generate", headers=H,
+                json={"code_type": 2, "count": 1, "days": 7, "expires_days": 30,
+                      "realm_id": realm_b})
+renew_b = (r.json().get("codes") or [{}])[0].get("code")
+r = client.post("/api/user/membership/redeem", headers=SH, json={"code": renew_b})
+check("B 服的续期码可以核销（叠加到 B 服的会员上）", r.status_code == 200,
+      f"HTTP {r.status_code} {(r.text or '')[:80]}")
+
+db = SessionLocal()
+try:
+    b_after = (db.query(models.UserSubscription)
+               .filter(models.UserSubscription.user_id == solo_id,
+                       models.UserSubscription.realm_id == realm_b).first())
+    a_after = (db.query(models.UserSubscription)
+               .filter(models.UserSubscription.user_id == solo_id,
+                       models.UserSubscription.realm_id == default_id).first())
+    check("B 服的续期码只延长 B 服的会员",
+          b_after is not None and a_after is not None and a_after.end_date == sub_a_end,
+          f"A={a_after.end_date} B={b_after.end_date}")
+finally:
+    db.close()
+
+# 老数据（升级前生成、没有归属服）的卡码：按当前服算，单服部署行为不变
+db = SessionLocal()
+try:
+    legacy = models.RegistrationCode(
+        code=f"LEGACY{suf}", max_uses=1, use_count=0, is_active=True,
+        code_type=1, days=30, expires_at=datetime.now() + timedelta(days=30),
+        realm_id=None, source="admin",
+    )
+    db.add(legacy)
+    db.commit()
+    check("未标注归属的老卡码按当前服解释（不报错、不消失）",
+          codes.code_realm_id(db, legacy) == realms.active_realm_id(db),
+          f"code_realm={codes.code_realm_id(db, legacy)} active={realms.active_realm_id(db)}")
+finally:
+    db.close()
+
+print("\n--- 求片（说清楚给哪个服求）---")
+# 单服用户的「自动归属」已在上一节验证（必须在给他开第二个服的会员之前）
+
+# 两个服都有会员的用户：必须自己选一个（不选就未标注，不替他猜）
+db = SessionLocal()
+try:
+    dual = models.WebUser(username=f"dual_user{suf}", password_hash=hash_password(PASSWORD),
+                          is_staff=False, is_active=True)
+    db.add(dual)
+    db.commit()
+    dual_id = dual.id
+finally:
+    db.close()
+
+for plan in (plan_a, plan_b):
+    r = client.post(f"/api/admin/users/{dual_id}/subscriptions", headers=H,
+                    json={"plan_id": plan, "duration_days": 30})
+    check(f"给双服用户开会员（plan={plan}）", r.status_code == 200, f"HTTP {r.status_code}")
+
+r = client.post("/api/user/auth/login", json={"username": f"dual_user{suf}", "password": PASSWORD})
+dual_token = r.json()["access_token"] if r.status_code == 200 else ""
+DH = {"Authorization": f"Bearer {dual_token}"}
+
+r = client.get("/api/user/subscriptions", headers=DH)
+dual_realms = {s.get("realm_id") for s in (r.json() if r.status_code == 200 else [])
+               if s.get("status") == "active"}
+check("双服用户的会员分得清两个服（前端据此给选择器）",
+      {default_id, realm_b} <= dual_realms, str(dual_realms))
+
+r = client.post("/api/user/media-seek", headers=DH,
+                json={"movie_name": f"未选服片{suf}", "type": "movie"})
+check("两个服都有会员又不选服时提交成功", r.status_code == 200, f"HTTP {r.status_code}")
+db = SessionLocal()
+try:
+    req = db.query(models.MovieRequest).filter(
+        models.MovieRequest.id == r.json().get("request_id")).first()
+    check("没选就记成未标注（不替用户猜一个服）", req is not None and req.realm_id is None,
+          f"realm_id={getattr(req, 'realm_id', None)}")
+finally:
+    db.close()
+
+r = client.post("/api/user/media-seek", headers=DH,
+                json={"movie_name": f"指定 B 服片{suf}", "type": "movie", "realm_id": realm_b})
+seek_b_id = r.json().get("request_id") if r.status_code == 200 else None
+check("用户明确选了服就按他选的记", r.status_code == 200, f"HTTP {r.status_code}")
+
+db = SessionLocal()
+try:
+    req = db.query(models.MovieRequest).filter(models.MovieRequest.id == seek_b_id).first()
+    check("指定 B 服的求片落在 B 服", req is not None and req.realm_id == realm_b,
+          f"realm_id={getattr(req, 'realm_id', None)}")
+finally:
+    db.close()
+
+r = client.post("/api/user/media-seek", headers=DH,
+                json={"movie_name": f"坏服片{suf}", "realm_id": 99999})
+check("指定不存在的服被拒", r.status_code == 400, f"HTTP {r.status_code}")
+
+r = client.get("/api/user/media-seek", headers=DH)
+rows = {x["id"]: x for x in r.json().get("requests", [])}
+check("用户自己就能看到这条求片是给哪个服的",
+      rows.get(seek_b_id, {}).get("realm_name") == f"二服改名{suf}",
+      str(rows.get(seek_b_id, {}).get("realm_name")))
+
+r = client.get("/api/admin/media-seek", headers=H, params={"realm_id": realm_b})
+admin_b = {x["id"]: x for x in (r.json() if r.status_code == 200 else [])}
+check("后台求片清单按服过滤，并带归属服",
+      seek_b_id in admin_b and admin_b[seek_b_id].get("realm_name") == f"二服改名{suf}",
+      f"HTTP {r.status_code}")
+
+r = client.get("/api/admin/media-seek", headers=H, params={"realm_id": default_id})
+admin_a = {x["id"] for x in (r.json() if r.status_code == 200 else [])}
+check("B 服的求片不会出现在 A 服的清单里",
+      seek_b_id not in admin_a and seek_solo_id in admin_a, str(sorted(admin_a)[:5]))
+
+r = client.get("/api/admin/media-seek", headers=H, params={"realm_id": 0})
+all_seek = {x["id"] for x in (r.json() if r.status_code == 200 else [])}
+check("realm_id=0 跨服汇总求片", {seek_b_id, seek_solo_id} <= all_seek, str(len(all_seek)))
+
+print("\n--- 存储挂载（按服列出与归属）---")
+r = client.get("/api/admin/emby/mounts", headers=H, params={"realm_id": realm_b})
+mounts_b = {m["id"]: m for m in r.json().get("mounts", [])}
+check("挂载清单按服过滤", mount_b in mounts_b, f"HTTP {r.status_code} {sorted(mounts_b)}")
+check("挂载响应带归属服名映射（列表要显示“归属服”）",
+      str(realm_b) in {str(k) for k in (r.json().get("realm_names") or {})},
+      str(r.json().get("realm_names")))
+
+r = client.get("/api/admin/emby/mounts", headers=H, params={"realm_id": default_id})
+mounts_a = {m["id"] for m in r.json().get("mounts", [])}
+check("B 服的挂载不会出现在 A 服的清单里", mount_b not in mounts_a, str(sorted(mounts_a)))
+
+r = client.post("/api/admin/emby/mounts", headers=H, json={
+    "name": f"坏归属挂载{suf}", "mount_type": "local", "path": media_dir, "realm_id": 99999,
+})
+check("挂载归属不存在的服被拒", r.status_code == 400, f"HTTP {r.status_code}")
+
+r = client.get("/api/admin/emby/mounts", headers=H, params={"realm_id": 0})
+check("realm_id=0 跨服汇总挂载",
+      mount_b in {m["id"] for m in r.json().get("mounts", [])}, str(r.status_code))
 
 # ==================== 8. 删服：必须移交 ====================
 

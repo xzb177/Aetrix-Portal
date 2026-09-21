@@ -12,6 +12,10 @@
  * 所以后端新增一种挂载类型时，这个页面不用改。
  *
  * 挂载本身不拥有条目：媒体库通过「绑定挂载」引用它，同一个挂载可被多个库共用。
+ *
+ * v2.6.24：挂载是**一个服一个**的（存储是主机相对资源：乙服的 EA 未必碰得到甲服挂的盘）。
+ * 默认只看当前服的挂载，顶部可切到「全部服」做跨服汇总；新建 / 编辑时可以指定归属服，
+ * 换归属服时引用它的媒体库会跟着走（避免库跨服引用存储）。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -37,19 +41,35 @@ import type {
   PlaybackNode,
   StorageMount,
 } from '@/types'
+import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
+const realm = useRealmStore()
+/** 统计范围：当前服（默认）或全部服 */
+const scope = ref<'realm' | 'all'>('realm')
+/** 后端给的挂载 id → 服名映射（跨服汇总时用） */
+const realmNames = ref<Record<string, string>>({})
+
 /** 挂载列表：手机端挂载名做标题，来源与可达性仍保留 */
-const columns: DataColumn[] = [
+const columns = computed<DataColumn[]>(() => [
   { key: 'name', label: '挂载', minWidth: 170, mobile: 'title' },
   { key: 'mount_type_label', label: '类型', width: 110 },
+  ...(scope.value === 'all'
+    ? [{ key: 'realm', label: '归属服', minWidth: 120 } as DataColumn]
+    : []),
   { key: 'source', label: '来源', minWidth: 200 },
   { key: 'libraries', label: '绑定媒体库', width: 110 },
   { key: 'reach', label: 'EM / EA 可达', width: 200 },
   { key: 'is_enabled', label: '状态', width: 90 },
   { key: 'actions', label: '操作', width: 200, fixed: 'right', align: 'right' },
-]
+])
+
+/** 归属服展示名：未标注 = 所有服可见的内容来源（老数据就是这个口径） */
+function realmLabel(m: StorageMount): string {
+  if (!m.realm_id) return '未标注'
+  return realmNames.value[String(m.realm_id)] || realm.realms.find((r) => r.id === m.realm_id)?.name || `#${m.realm_id}`
+}
 
 const mounts = ref<StorageMount[]>([])
 const types = ref<MountTypeMeta[]>([])
@@ -73,6 +93,8 @@ const form = ref({
   config: {} as Record<string, string>,
   is_enabled: true,
   remark: '',
+  /** 归属服：新建时默认当前服 */
+  realm_id: null as number | null,
 })
 
 /** rclone：远端已配置的 remote（点「获取 remote 列表」才拉） */
@@ -181,7 +203,8 @@ async function load() {
   loading.value = true
   try {
     const [res, acc] = await Promise.all([
-      fetchMounts(),
+      // realm_id=0 → 全部服；其余按服过滤（后端以当前服作为兜底）
+      fetchMounts(scope.value === 'all' ? 0 : realm.activeId ?? 0),
       fetchPan115Accounts().catch(() => ({ accounts: [], env_cookie_configured: false })),
     ])
     mounts.value = res.mounts
@@ -189,6 +212,7 @@ async function load() {
     accounts.value = acc.accounts
     playbackNode.value = res.playback_node || 'panel'
     eaHealth.value = res.ea_health || { ok: false, checked_at: null, error: '' }
+    realmNames.value = res.realm_names || {}
   } finally {
     loading.value = false
   }
@@ -204,6 +228,7 @@ function resetForm() {
     config: {},
     is_enabled: true,
     remark: '',
+    realm_id: realm.activeId ?? null,
   }
   testMessage.value = ''
 }
@@ -223,6 +248,7 @@ function openEdit(m: StorageMount) {
     config: { ...(m.config || {}) },
     is_enabled: m.is_enabled,
     remark: m.remark,
+    realm_id: m.realm_id ?? realm.activeId ?? null,
   }
   testMessage.value = ''
   dialogVisible.value = true
@@ -255,6 +281,8 @@ async function submit() {
       config: form.value.config,
       is_enabled: form.value.is_enabled,
       remark: form.value.remark,
+      // 归属服：留空交给后端按当前服归（老代码路径也就能继续用）
+      realm_id: form.value.realm_id ?? undefined,
     }
     if (editing.value) {
       const res = await updateMount(editing.value.id, payload)
@@ -405,6 +433,10 @@ function fmtDate(s: string | null): string {
         </p>
       </div>
       <div class="toolbar">
+        <el-radio-group v-model="scope" size="small" @change="load">
+          <el-radio-button value="realm">当前服</el-radio-button>
+          <el-radio-button value="all">全部服</el-radio-button>
+        </el-radio-group>
         <el-button type="primary" @click="openCreate">
           <Plus :size="14" style="margin-right: 4px" />新建挂载
         </el-button>
@@ -483,6 +515,10 @@ function fmtDate(s: string | null): string {
           <span class="mini-badge">{{ row.mount_type_label }}</span>
         </template>
 
+        <template #cell-realm="{ row }">
+          <span class="mini-badge" :class="row.realm_id ? '' : 'muted'">{{ realmLabel(row) }}</span>
+        </template>
+
         <template #cell-source="{ row }">
           <span class="mount-path">{{ sourceSummary(row) }}</span>
         </template>
@@ -549,6 +585,15 @@ function fmtDate(s: string | null): string {
       <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="如：115 影库 / 本地电影盘" maxlength="60" />
+        </el-form-item>
+        <!-- 挂载是主机相对资源：乙服的 EA 未必碰得到甲服挂的盘，所以要能指定归属 -->
+        <el-form-item label="归属服">
+          <el-select v-model="form.realm_id" placeholder="选择归属服" style="width: 220px">
+            <el-option v-for="r in realm.realms" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+          <div class="form-hint">
+            只有归属服的播放节点会用它；换归属服时，引用它的媒体库会一起跟过去。
+          </div>
         </el-form-item>
         <el-form-item label="类型">
           <el-select v-model="form.mount_type" :disabled="!!editing" style="width: 220px">

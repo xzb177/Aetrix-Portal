@@ -401,6 +401,9 @@ export interface MediaSeekRequest {
   note?: string | null
   status: string
   admin_note?: string | null
+  /** 这部片求给哪个服（多服运营时由用户选择 / 单服自动带出） */
+  realm_id?: number | null
+  realm_name?: string
   created_at: string
 }
 
@@ -429,7 +432,14 @@ export const mediaSeekApi = {
       params: { name },
     }),
 
-  create: (data: { movie_name: string; year?: string; type?: string; note?: string }) =>
+  create: (data: {
+    movie_name: string
+    year?: string
+    type?: string
+    note?: string
+    /** 求给哪个服；多个服都买了会员时需要用户选一个 */
+    realm_id?: number
+  }) =>
     api.post<never, { success: boolean; request_id: number; message: string }>('/api/user/media-seek', data),
 
   /** 撤回尚未处理的求片 */
