@@ -25,7 +25,7 @@ const auth = useAuthStore()
 const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.6.22'
+const APP_VERSION = 'v2.6.23'
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)
@@ -57,7 +57,8 @@ const navGroups: NavGroup[] = [
     icon: RealmIcon,
     items: [
       { path: '/realms', label: '服管理' },
-      { path: '/servers', label: '服务器' },
+      // 这一页是 Emby 相关功能的唯一入口（入口 / 节点 / 挂载体检 / 库归属 + 增删改）
+      { path: '/servers', label: '服务器 · Emby 总览' },
     ],
   },
   {

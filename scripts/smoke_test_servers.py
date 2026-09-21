@@ -18,6 +18,9 @@
 - EA 激活 → 旧页面（`GET /api/admin/emby/servers`）看到同一台；旧页面保存 → 清单里出现同一台
 - 删除当前使用的 EA → 收回旧配置，回到「面板自己出流」
 - 密钥永不出接口（API_TOKEN / 密码都不在响应里）
+- Emby 总览（`GET /api/admin/servers/overview`）：只列 EA / Emby 出流入口、按服给出当前入口与
+  地址、带上挂载体检与媒体库归属计数；`live=1` 时真去问那台 EA「你是谁、属于哪个服」
+  （没配 NODE_KEY 不误报成告警，探不到就如实报错）；空服给出可操作提示；密钥不外泄
 - 求片推送：MoviePilot 收到 name/year/type；qB 没链接时明确拒绝、有磁力时真的加种；
   失败原因落库到求片记录；没有可用服务时提示去「服务器」页
 """
@@ -45,7 +48,7 @@ from fastapi import FastAPI, Form, HTTPException, Request  # noqa: E402
 from fastapi.responses import PlainTextResponse  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from backend import models  # noqa: E402
+from backend import models, realms  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.main import app as em_app  # noqa: E402
 from backend.security import hash_password  # noqa: E402
@@ -389,6 +392,88 @@ try:
           str({k: (v["total"], v["reachable"]) for k, v in summary["kinds"].items()}))
     check("求片可用目标只算「已启用且体检通过」的",
           set(summary["push_ready"]) == {"moviepilot", "qbittorrent"}, str(summary["push_ready"]))
+
+    # ==================== 4.5 Emby 总览（唯一的入口页） ====================
+    print("\n--- Emby 总览 ---")
+    r = client.get("/api/admin/servers/overview", headers=H)
+    ov = r.json() if r.status_code == 200 else {}
+    check("总览接口可用", r.status_code == 200, f"HTTP {r.status_code}")
+    entry_rows = [x for x in (ov.get("rows") or []) if x.get("is_entry")]
+    other_rows = [x for x in (ov.get("rows") or []) if not x.get("is_entry")]
+    check("总览只把 EA / Emby 当「出流入口」列出来（内容自动化不混进来）",
+          len(entry_rows) == 3 and not other_rows,
+          str([(x["name"], x["kind"]) for x in ov.get("rows") or []]))
+    check("每行都带归属服与服标识（多服下要能分清）",
+          all(x.get("realm_id") and x.get("realm_slug") for x in entry_rows),
+          str([(x.get("realm_id"), x.get("realm_slug")) for x in entry_rows]))
+    check("外部 Emby 那行标出了「这就是当前入口」",
+          len([x for x in entry_rows if x["kind"] == "emby" and x["is_current_entry"]]) == 1,
+          str([(x["kind"], x["is_current_entry"]) for x in entry_rows]))
+
+    ea_overview = next(x for x in entry_rows if x["kind"] == "ea" and x["last_check_ok"] is True)
+    check("EA 行带上了 EA 视角的挂载体检结论",
+          (ea_overview.get("mounts") or {}).get("ok") is True
+          and (ea_overview["mounts"].get("total") or 0) >= 0,
+          str(ea_overview.get("mounts"))[:100])
+    check("EA 行带上了媒体库归属计数（归它的 / 未分配的）",
+          "libraries_assigned" in ea_overview and "libraries_unassigned" in ea_overview,
+          str({k: ea_overview.get(k) for k in ("libraries_assigned", "libraries_unassigned")}))
+    check("连不上的 EA 在总览里被标成告警",
+          any("连接失败" in w for x in entry_rows if x["kind"] == "ea" for w in (x.get("warnings") or [])),
+          str([x.get("warnings") for x in entry_rows if x["kind"] == "ea"])[:120])
+
+    realm_card = next((x for x in (ov.get("realms") or []) if x["id"] == ov.get("realm_id")), {})
+    check("按服给出「当前用哪个入口出流」与它的地址",
+          (realm_card.get("entry") or {}).get("mode") == "external"
+          and (realm_card["entry"].get("url") or "") == fake_url,
+          str(realm_card.get("entry"))[:120])
+    check("总览也带上类型统计（供顶部卡片用）",
+          (ov.get("summary") or {}).get("kinds", {}).get("ea", {}).get("total") == 2,
+          str((ov.get("summary") or {}).get("total")))
+
+    # live：真的去问那台 EA「你是谁、属于哪个服、负责哪些库」
+    r = client.get("/api/admin/servers/overview?live=1", headers=H)
+    live_ov = r.json() if r.status_code == 200 else {}
+    live_ea = next((x for x in (live_ov.get("rows") or [])
+                    if x["kind"] == "ea" and x["last_check_ok"] is True), {})
+    check("live 模式拉回了 EA 的节点身份",
+          (live_ea.get("identity") or {}).get("ok") is True,
+          str(live_ea.get("identity"))[:120])
+    check("这台 EA 没配 NODE_KEY，总览如实显示「未认领」而不是编一个",
+          (live_ea.get("identity") or {}).get("claimed") is False
+          and (live_ea.get("identity") or {}).get("node_key") == "",
+          str(live_ea.get("identity"))[:120])
+    check("没配 NODE_KEY 时不会误报「认领不到 / 不一致」（压根没报的 key 不该拿来对账）",
+          not any(("认领不到" in w or "不一致" in w) for w in (live_ea.get("warnings") or [])),
+          str(live_ea.get("warnings"))[:120])
+    check("但同一个服有多台 EA 却没配 NODE_KEY 时，明确提示要配",
+          any("没配 NODE_KEY" in w for w in (live_ea.get("warnings") or [])),
+          str(live_ea.get("warnings"))[:120])
+    dead_ea_live = next((x for x in (live_ov.get("rows") or [])
+                         if x["kind"] == "ea" and x["last_check_ok"] is not True), {})
+    check("连不上的那台在 live 模式下如实报「探不到身份」",
+          (dead_ea_live.get("identity") or {}).get("ok") is False
+          and any("探测失败" in w for w in (dead_ea_live.get("warnings") or [])),
+          str(dead_ea_live.get("identity"))[:120])
+
+    check("总览响应里没有 MoviePilot / qB / Emby 的密钥",
+          MP_TOKEN not in r.text and QB_PASSWORD not in r.text and "emby-key-x" not in r.text)
+    check("匿名访问总览被拒",
+          client.get("/api/admin/servers/overview").status_code in (401, 403))
+
+    # 一个入口都没有的服：总览要明确告诉用户「这里还空着」
+    realm_db = SessionLocal()
+    try:
+        new_realm_id = realms.create_realm(realm_db, name=f"空服{suf}", slug=f"empty-{suf}").id
+    finally:
+        realm_db.close()
+    r = client.get(f"/api/admin/servers/overview?realm_id={new_realm_id}", headers=H)
+    empty_ov = r.json() if r.status_code == 200 else {}
+    empty_card = (empty_ov.get("realms") or [{}])[0]
+    check("没加入口的服给出可操作提示",
+          any("还没有添加任何 Emby 入口" in w for w in (empty_card.get("warnings") or [])),
+          str(empty_card.get("warnings"))[:120])
+    check("那个服的入口行是空的（不会串到别的服）", empty_ov.get("rows") == [], str(empty_ov.get("rows"))[:80])
 
     # ==================== 5. 密钥不出接口 ====================
     print("\n--- 密钥不外泄 ---")
