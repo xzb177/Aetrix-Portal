@@ -207,6 +207,17 @@ export const fetchLogs = (params: { limit?: number; action_filter?: string } = {
 
 export const fetchOverview = () => get<OverviewStats>('/stats/overview')
 
+export interface PanelHealth {
+  status: string
+  timestamp: string
+  database: string
+  online_users: number
+  emby_server: string
+}
+
+/** EM 面板健康状态；不暴露密钥与连接串，仅返回可运营的信息。 */
+export const fetchPanelHealth = () => get<PanelHealth>('/../health')
+
 export const fetchPlaybackStats = () => get<PlaybackStats>('/stats/playback')
 
 // ==================== 自建 Emby 管理（/api/admin/emby/*） ====================

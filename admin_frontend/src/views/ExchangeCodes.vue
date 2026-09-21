@@ -5,6 +5,21 @@
 import { onMounted, ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus, RefreshCw } from 'lucide-vue-next'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+/** 手机卡片：兑换码为标题，奖励/使用/状态/有效期做键值行 */
+const columns: DataColumn[] = [
+  { key: 'code', label: '兑换码', width: 180, mobile: 'title' },
+  { key: 'type', label: '类型', width: 90 },
+  { key: 'reward', label: '奖励内容', minWidth: 150 },
+  { key: 'use_count', label: '使用', width: 90 },
+  { key: 'expires_at', label: '有效期至', width: 120 },
+  { key: 'note', label: '备注', minWidth: 120, mobile: 'hide' },
+  { key: 'is_active', label: '状态', width: 90 },
+  { key: 'used_by', label: '核销记录', minWidth: 160, mobile: 'hide' },
+  { key: 'actions', label: '操作', width: 110, fixed: 'right', align: 'right' },
+]
 import {
   fetchExchangeCodes,
   createExchangeCodes,
@@ -119,54 +134,56 @@ onMounted(load)
       </div>
     </div>
 
-    <el-table :data="codes" v-loading="loading">
-      <el-table-column prop="code" label="兑换码" width="170">
-        <template #default="{ row }">
+    <div class="admin-card">
+      <DataTable :rows="codes" :columns="columns" :loading="loading" empty="暂无兑换码">
+        <template #cell-code="{ row }">
           <span class="mono code">{{ row.code }}</span>
         </template>
-      </el-table-column>
-      <el-table-column label="类型" width="90">
-        <template #default="{ row }">
+
+        <template #cell-type="{ row }">
           <el-tag :type="row.type === 'points' ? 'success' : 'primary'" size="small">
             {{ row.type === 'points' ? '积分' : '订阅' }}
           </el-tag>
         </template>
-      </el-table-column>
-      <el-table-column label="奖励内容" min-width="150">
-        <template #default="{ row }">{{ rewardText(row) }}</template>
-      </el-table-column>
-      <el-table-column label="使用" width="80">
-        <template #default="{ row }">{{ row.use_count }}/{{ row.max_uses }}</template>
-      </el-table-column>
-      <el-table-column label="有效期至" width="110">
-        <template #default="{ row }">{{ fmtTime(row.expires_at) }}</template>
-      </el-table-column>
-      <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }">
+
+        <template #cell-reward="{ row }">{{ rewardText(row) }}</template>
+
+        <template #cell-use_count="{ row }">{{ row.use_count }}/{{ row.max_uses }}</template>
+
+        <template #cell-expires_at="{ row }">{{ fmtTime(row.expires_at) }}</template>
+
+        <template #cell-note="{ row }">
+          <span v-if="!row.note" class="muted">—</span>
+          <span v-else>{{ row.note }}</span>
+        </template>
+
+        <template #cell-is_active="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
             {{ row.is_active ? '启用' : '停用' }}
           </el-tag>
         </template>
-      </el-table-column>
-      <el-table-column label="核销记录" min-width="160">
-        <template #default="{ row }">
+
+        <template #cell-used_by="{ row }">
           <span v-if="!row.used_by?.length" class="muted">—</span>
           <span v-else class="muted">{{ usedNames(row) }}</span>
         </template>
-      </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" :type="row.is_active ? 'warning' : 'success'" @click="toggleCode(row)">
+
+        <template #cell-actions="{ row }">
+          <el-button
+            size="small"
+            :type="row.is_active ? 'warning' : 'success'"
+            plain
+            @click="toggleCode(row)"
+          >
             {{ row.is_active ? '停用' : '启用' }}
           </el-button>
         </template>
-      </el-table-column>
-    </el-table>
+      </DataTable>
+    </div>
 
     <!-- 生成对话框 -->
-    <el-dialog v-model="genVisible" title="批量生成兑换码" width="480">
-      <el-form label-width="90px">
+    <el-dialog v-model="genVisible" title="批量生成兑换码" width="480px">
+      <el-form label-position="top">
         <el-form-item label="类型">
           <el-radio-group v-model="genForm.type">
             <el-radio-button value="points">积分</el-radio-button>
@@ -206,7 +223,7 @@ onMounted(load)
     </el-dialog>
 
     <!-- 生成结果 -->
-    <el-dialog v-model="resultVisible" title="生成结果（请保存）" width="420">
+    <el-dialog v-model="resultVisible" title="生成结果（请保存）" width="420px">
       <el-input
         :model-value="genResult.join('\n')"
         type="textarea"

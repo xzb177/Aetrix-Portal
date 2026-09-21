@@ -24,6 +24,8 @@ export interface DataColumn {
   align?: 'left' | 'center' | 'right'
   fixed?: boolean | 'left' | 'right'
   className?: string
+  /** 桌面端表头可点排序（客户端排序；手机卡片不排序） */
+  sortable?: boolean
   /** 手机端行为：title（标题行，建议每表一个）· hide（手机上不显示）· 默认显示为键值行 */
   mobile?: 'title' | 'hide'
 }
@@ -49,6 +51,8 @@ defineSlots<{
   [name: `cell-${string}`]: (props: { row: T; index: number }) => unknown
   /** 手机卡片底部补充内容（桌面端不渲染，例如展开行里的明细） */
   'card-extra'?: (props: { row: T; index: number }) => unknown
+  /** 空状态（桌面表格的 #empty 与手机端共用一套内容） */
+  empty?: () => unknown
 }>()
 
 const { isPhone } = useBreakpoint()
@@ -105,6 +109,7 @@ function onRowClick(row: T) {
       :width="col.width"
       :min-width="col.minWidth"
       :align="col.align"
+      :sortable="col.sortable"
       :fixed="col.fixed"
       :class-name="col.className"
       show-overflow-tooltip
@@ -115,6 +120,12 @@ function onRowClick(row: T) {
         </slot>
       </template>
     </el-table-column>
+
+    <template #empty>
+      <slot name="empty">
+        <span class="dt-empty-text">{{ empty }}</span>
+      </slot>
+    </template>
   </el-table>
 
   <!-- 手机：卡片列表 -->
@@ -162,7 +173,9 @@ function onRowClick(row: T) {
       </article>
     </template>
 
-    <p v-else class="empty-hint">{{ empty }}</p>
+    <div v-else class="dt-empty">
+      <slot name="empty">{{ empty }}</slot>
+    </div>
   </div>
 </template>
 
@@ -172,6 +185,15 @@ function onRowClick(row: T) {
   flex-direction: column;
   gap: 10px;
 }
+
+.dt-empty {
+  padding: 32px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.dt-empty-text { color: var(--text-muted); font-size: var(--font-size-sm); }
 
 .dt-loading {
   padding: 28px 0;

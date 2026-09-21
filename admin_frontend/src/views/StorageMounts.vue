@@ -15,7 +15,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Cloud, FolderOpen, HardDrive, Network, Pencil, Plug, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Cloud, FolderOpen, HardDrive, Info, Network, Pencil, Plug, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import {
   browseMount,
   createMount,
@@ -28,6 +28,19 @@ import {
   updateMount,
 } from '@/api/admin'
 import type { MountDirEntry, MountTypeMeta, Pan115Account, StorageMount } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+/** 挂载列表：手机端挂载名做标题，来源与测试结果仍保留 */
+const columns: DataColumn[] = [
+  { key: 'name', label: '挂载', minWidth: 170, mobile: 'title' },
+  { key: 'mount_type_label', label: '类型', width: 110 },
+  { key: 'source', label: '来源', minWidth: 220 },
+  { key: 'libraries', label: '绑定媒体库', width: 120 },
+  { key: 'last_check', label: '上次测试', width: 190 },
+  { key: 'is_enabled', label: '状态', width: 100 },
+  { key: 'actions', label: '操作', width: 200, fixed: 'right', align: 'right' },
+]
 
 const mounts = ref<StorageMount[]>([])
 const types = ref<MountTypeMeta[]>([])
@@ -341,45 +354,58 @@ function fmtDate(s: string | null): string {
     </div>
 
     <!-- 挂载列表 -->
-    <div class="mount-grid">
-      <div v-for="m in mounts" :key="m.id" class="admin-card mount-card">
-        <div class="mount-head">
-          <component :is="iconOf(m.mount_type)" :size="15" />
-          <span class="mount-name">{{ m.name }}</span>
-          <span class="mini-badge">{{ m.mount_type_label }}</span>
-          <span class="mini-badge" :class="m.is_enabled ? 'ok' : 'off'">
-            {{ m.is_enabled ? '启用' : '停用' }}
+    <div class="admin-card">
+      <DataTable
+        :rows="mounts"
+        :columns="columns"
+        :loading="loading"
+        empty="还没有挂载。建一个挂载，再到「媒体库管理」把它绑定到库上即可扫描。"
+      >
+        <template #cell-name="{ row }">
+          <span class="mount-head">
+            <component :is="iconOf(row.mount_type)" :size="15" />
+            <span class="mount-name">{{ row.name }}</span>
           </span>
-        </div>
-        <div class="mount-path">{{ sourceSummary(m) }}</div>
-        <div class="mount-meta">
-          绑定 {{ m.library_ids.length }} 个媒体库
-          <template v-if="m.last_checked_at">
-            · 上次测试 {{ fmtDate(m.last_checked_at) }}
-            <span :class="m.last_check_ok ? 'ok-text' : 'err-text'">
-              {{ m.last_check_ok ? '正常' : '失败' }}
+        </template>
+
+        <template #cell-mount_type_label="{ row }">
+          <span class="mini-badge">{{ row.mount_type_label }}</span>
+        </template>
+
+        <template #cell-source="{ row }">
+          <span class="mount-path">{{ sourceSummary(row) }}</span>
+        </template>
+
+        <template #cell-libraries="{ row }">绑定 {{ row.library_ids.length }} 个</template>
+
+        <template #cell-last_check="{ row }">
+          <span v-if="!row.last_checked_at" class="muted">未测试</span>
+          <span v-else class="check-state">
+            <span :class="row.last_check_ok ? 'ok-text' : 'err-text'">
+              {{ row.last_check_ok ? '正常' : '失败' }}
             </span>
-          </template>
-          <template v-else> · 未测试</template>
-        </div>
-        <div v-if="m.last_check_message" class="mount-msg">{{ m.last_check_message }}</div>
-        <div class="mount-foot">
-          <el-switch v-model="m.is_enabled" size="small" @change="toggleEnabled(m)" />
-          <div class="mount-actions">
-            <el-button v-if="canBrowseSaved(m)" size="small" text @click="openBrowse(m)">
-              <FolderOpen :size="13" style="margin-right: 2px" />浏览
-            </el-button>
-            <el-button size="small" text @click="testSaved(m)">
-              <Plug :size="13" style="margin-right: 2px" />测试
-            </el-button>
-            <el-button size="small" text @click="openEdit(m)"><Pencil :size="13" /></el-button>
-            <el-button size="small" text type="danger" @click="remove(m)"><Trash2 :size="13" /></el-button>
-          </div>
-        </div>
-      </div>
-      <div v-if="mounts.length === 0 && !loading" class="admin-card empty-card">
-        还没有挂载。建一个挂载，再到「媒体库管理」把它绑定到库上即可扫描。
-      </div>
+            <em class="muted">{{ fmtDate(row.last_checked_at) }}</em>
+          </span>
+          <el-tooltip v-if="row.last_check_message" :content="row.last_check_message" placement="top">
+            <Info :size="13" class="check-info" />
+          </el-tooltip>
+        </template>
+
+        <template #cell-is_enabled="{ row }">
+          <el-switch v-model="row.is_enabled" size="small" @change="toggleEnabled(row)" />
+        </template>
+
+        <template #cell-actions="{ row }">
+          <el-button v-if="canBrowseSaved(row)" size="small" text @click="openBrowse(row)">
+            <FolderOpen :size="13" style="margin-right: 2px" />浏览
+          </el-button>
+          <el-button size="small" text @click="testSaved(row)">
+            <Plug :size="13" style="margin-right: 2px" />测试
+          </el-button>
+          <el-button size="small" text @click="openEdit(row)"><Pencil :size="13" /></el-button>
+          <el-button size="small" text type="danger" @click="remove(row)"><Trash2 :size="13" /></el-button>
+        </template>
+      </DataTable>
     </div>
 
     <!-- 新建 / 编辑 -->
@@ -388,7 +414,7 @@ function fmtDate(s: string | null): string {
       :title="editing ? `编辑挂载：${editing.name}` : '新建挂载'"
       width="520px"
     >
-      <el-form label-width="96px">
+      <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="如：115 影库 / 本地电影盘" maxlength="60" />
         </el-form-item>
@@ -518,34 +544,19 @@ function fmtDate(s: string | null): string {
 .type-name { font-weight: 600; font-size: 13px; }
 .type-hint { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--color-text-secondary, #a3a3a3); }
 
-.mount-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
-}
-
-.mount-card { display: flex; flex-direction: column; gap: 6px; }
-.mount-head { display: flex; align-items: center; gap: 8px; }
-.mount-name { font-weight: 700; font-size: 15px; }
+.mount-head { display: inline-flex; align-items: center; gap: 8px; }
+.mount-name { font-weight: 600; font-size: var(--font-size-md); }
 .mount-path {
-  font-size: 11.5px;
-  font-family: ui-monospace, monospace;
-  color: var(--color-text-muted, #737373);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.mount-meta { font-size: 11.5px; color: var(--color-text-secondary, #a3a3a3); }
-.mount-msg {
-  font-size: 11px;
-  color: var(--color-text-muted, #737373);
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 6px;
-  padding: 4px 8px;
-}
-.mount-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
-.mount-actions { display: flex; align-items: center; }
-.empty-card { text-align: center; color: var(--color-text-muted, #737373); padding: 40px 0; }
+.check-state { display: inline-flex; align-items: center; gap: 6px; }
+.check-state em { font-style: normal; font-size: var(--font-size-xs); }
+.check-info { color: var(--text-muted); margin-left: 4px; vertical-align: -2px; }
 
 .form-hint { font-size: 11px; color: var(--color-text-muted, #737373); margin-top: 4px; }
 .ok-text { color: var(--success, #22c55e); }

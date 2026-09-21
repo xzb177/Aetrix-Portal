@@ -5,6 +5,19 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, RefreshCw, X } from 'lucide-vue-next'
 import { fetchMediaSeeks, updateMediaSeek } from '@/api/admin'
 import type { MediaSeekRow } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+/** 手机卡片只留片名 / 类型 / 用户 / 状态 / 时间，管理备注在桌面表格里看 */
+const columns: DataColumn[] = [
+  { key: 'movie_name', label: '片名', minWidth: 200, mobile: 'title' },
+  { key: 'type', label: '类型', width: 80 },
+  { key: 'user_name', label: '用户', width: 110 },
+  { key: 'status', label: '状态', width: 100 },
+  { key: 'admin_note', label: '管理备注', minWidth: 140, mobile: 'hide' },
+  { key: 'created_at', label: '提交时间', width: 150 },
+  { key: 'actions', label: '操作', width: 200, fixed: 'right', align: 'right' },
+]
 
 const list = ref<MediaSeekRow[]>([])
 const loading = ref(false)
@@ -74,56 +87,53 @@ function statusLabel(status: string): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="list" v-loading="loading" style="width: 100%">
-        <el-table-column label="片名" min-width="200">
-          <template #default="{ row }">
-            <span class="movie-name">《{{ row.movie_name }}》</span>
-            <span v-if="row.year" class="movie-year">{{ row.year }}</span>
-            <div v-if="row.note" class="movie-note">用户备注：{{ row.note }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="80">
-          <template #default="{ row }">{{ row.type === 'movie' ? '电影' : row.type === 'tv' ? '剧集' : (row.type || '—') }}</template>
-        </el-table-column>
-        <el-table-column label="用户" width="110">
-          <template #default="{ row }">{{ row.user_name }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="管理备注" min-width="140">
-          <template #default="{ row }">{{ row.admin_note || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="提交时间" width="150">
-          <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="row.status === 'pending'" size="small" text type="success" @click="review(row, 'approved')">
-              <Check :size="13" style="margin-right: 2px" />批准
-            </el-button>
-            <el-button v-if="row.status === 'pending'" size="small" text type="danger" @click="review(row, 'rejected')">
-              <X :size="13" style="margin-right: 2px" />拒绝
-            </el-button>
-            <el-button v-if="row.status === 'approved'" size="small" text type="primary" @click="review(row, 'completed')">
-              标记上架
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="list" :columns="columns" :loading="loading" empty="暂无求片记录">
+        <template #cell-movie_name="{ row }">
+          <span class="movie-name">《{{ row.movie_name }}》</span>
+          <span v-if="row.year" class="movie-year">{{ row.year }}</span>
+          <div v-if="row.note" class="movie-note">用户备注：{{ row.note }}</div>
+        </template>
+
+        <template #cell-type="{ row }">
+          {{ row.type === 'movie' ? '电影' : row.type === 'tv' ? '剧集' : (row.type || '—') }}
+        </template>
+
+        <template #cell-user_name="{ row }">{{ row.user_name }}</template>
+
+        <template #cell-status="{ row }">
+          <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
+        </template>
+
+        <template #cell-admin_note="{ row }">
+          <span v-if="!row.admin_note" class="muted">—</span>
+          <span v-else>{{ row.admin_note }}</span>
+        </template>
+
+        <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+
+        <template #cell-actions="{ row }">
+          <el-button v-if="row.status === 'pending'" size="small" type="success" plain @click="review(row, 'approved')">
+            <Check :size="13" style="margin-right: 3px" />批准
+          </el-button>
+          <el-button v-if="row.status === 'pending'" size="small" type="danger" plain @click="review(row, 'rejected')">
+            <X :size="13" style="margin-right: 3px" />拒绝
+          </el-button>
+          <el-button v-if="row.status === 'approved'" size="small" type="primary" plain @click="review(row, 'completed')">
+            标记上架
+          </el-button>
+          <span v-if="row.status === 'completed' || row.status === 'rejected'" class="muted done-hint">
+            已处理
+          </span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; }
-.movie-name { font-weight: 600; }
-.movie-year { font-size: 12px; color: var(--color-text-muted, #737373); margin-left: 6px; }
-.movie-note { font-size: 12px; color: var(--color-text-muted, #737373); margin-top: 2px; }
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.warn { background: rgba(234, 179, 8, 0.15); color: #eab308; }
-.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
+/* 工具条、徽标、muted 等技术样式已收到全局原语（styles/index.css），页面只留专有样式 */
+.movie-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
+.movie-year { font-size: var(--font-size-xs); color: var(--text-muted); margin-left: 6px; }
+.movie-note { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 3px; }
+.done-hint { font-size: var(--font-size-xs); }
 </style>
