@@ -31,6 +31,7 @@ onMounted(() => {
 <style scoped>
 .app-shell {
   min-height: 100vh;
-  background: #070b12;
+  min-height: 100dvh;   /* 移动端地址栏收放时高度不跳 */
+  background: var(--au-bg);
 }
 </style>

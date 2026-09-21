@@ -43,48 +43,48 @@ withDefaults(defineProps<Props>(), {
 .ui-tag {
   display: inline-flex;
   align-items: center;
-  border-radius: var(--radius-sm);
-  font-weight: 500;
+  border-radius: var(--neo-radius-xs);
+  font-weight: var(--neo-font-weight-medium);
   white-space: nowrap;
 }
 
 /* 尺寸变体 */
 .ui-tag--sm {
-  font-size: 11px;
+  font-size: var(--neo-font-size-xs);
   padding: 2px 8px;
-  line-height: 1.4;
+  line-height: var(--neo-line-height-tight);
 }
 
 .ui-tag--md {
-  font-size: var(--text-caption-size);
+  font-size: var(--neo-font-size-sm);
   padding: 4px 10px;
-  line-height: 1.4;
+  line-height: var(--neo-line-height-tight);
 }
 
-/* 颜色变体 */
+/* 颜色变体（与页面上其它徽标同一支语义色） */
 .ui-tag--success {
-  background: var(--color-success-bg);
-  color: var(--color-success);
+  background: var(--neo-success-bg);
+  color: var(--neo-success);
 }
 
 .ui-tag--warning {
-  background: var(--color-warning-bg);
-  color: var(--color-warning);
+  background: var(--neo-warning-bg);
+  color: var(--neo-warning);
 }
 
 .ui-tag--danger {
-  background: var(--color-danger-bg);
-  color: var(--color-danger);
+  background: var(--neo-danger-bg);
+  color: var(--neo-danger);
 }
 
 .ui-tag--info {
-  background: var(--color-info-bg);
-  color: var(--color-info);
+  background: var(--neo-info-bg);
+  color: var(--neo-info);
 }
 
 .ui-tag--default {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-caption-color);
+  background: var(--neo-bg-surface-3);
+  color: var(--neo-text-tertiary);
 }
 
 /* 圆点 */

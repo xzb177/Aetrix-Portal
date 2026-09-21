@@ -743,7 +743,7 @@ onBeforeUnmount(() => {
 
 .volume-slider {
   width: 80px;
-  accent-color: #22d3ee;
+  accent-color: var(--au-primary);
   cursor: pointer;
 }
 
@@ -756,9 +756,9 @@ onBeforeUnmount(() => {
 .method-badge {
   margin-left: auto;
   padding: 0.1875rem 0.5rem;
-  background: rgba(34, 211, 238, 0.15);
-  border-radius: 6px;
-  color: #34d399;
+  background: var(--au-primary-soft);
+  border-radius: var(--au-r-sm);
+  color: var(--au-primary);
   font-size: 0.6875rem;
   font-weight: 600;
 }

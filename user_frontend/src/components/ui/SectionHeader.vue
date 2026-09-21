@@ -36,7 +36,7 @@ defineProps<Props>()
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--space-md);
+  margin-bottom: var(--neo-space-4);
 }
 
 .ui-section-header__main {
@@ -44,33 +44,33 @@ defineProps<Props>()
 }
 
 .ui-section-header__title {
-  font-size: var(--text-subtitle-size);
-  font-weight: var(--text-subtitle-weight);
-  line-height: var(--text-subtitle-line);
-  color: var(--text-subtitle-color);
+  font-size: var(--neo-font-size-lg);
+  font-weight: var(--neo-font-weight-medium);
+  line-height: var(--neo-line-height-normal);
+  color: var(--neo-text-primary);
   margin: 0;
 }
 
 .ui-section-header__subtitle {
-  font-size: var(--text-caption-size);
-  font-weight: var(--text-caption-weight);
-  line-height: var(--text-caption-line);
-  color: var(--text-caption-color);
+  font-size: var(--neo-font-size-sm);
+  font-weight: var(--neo-font-weight-normal);
+  line-height: var(--neo-line-height-normal);
+  color: var(--neo-text-tertiary);
   margin: 4px 0 0 0;
 }
 
 .ui-section-header__action {
   flex-shrink: 0;
-  margin-left: var(--space-sm);
+  margin-left: var(--neo-space-3);
 }
 
 /* 尺寸变体 */
 .ui-section-header--sm .ui-section-header__title {
-  font-size: var(--text-body-size);
+  font-size: var(--neo-font-size-md);
 }
 
 .ui-section-header--lg .ui-section-header__title {
-  font-size: var(--text-title-size);
-  font-weight: var(--text-title-weight);
+  font-size: var(--neo-font-size-2xl);
+  font-weight: var(--neo-font-weight-semibold);
 }
 </style>

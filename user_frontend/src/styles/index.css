@@ -8,31 +8,36 @@
    主色：电光青 #22d3ee（Aurora 主题）
    ======================================== */
 
-/* 向后兼容的旧变量映射 */
+/* 向后兼容的旧变量映射
+   历史页面还在用这批名字（--bg-glass / --text-primary / --border-glass …）。
+   这里只做「改名」——全部指向 Aurora 令牌，绝不再定义第二套颜色：
+   一旦在兼容层里写死颜色（曾经的 `--bg-glass: rgba(20,20,20,.8)`），
+   主题换了、这两个值却留在旧色上，页面之间就会出现两种灰。 */
 :root {
   /* 背景 */
-  --bg-primary: #0a0a0a;
-  --bg-glass: rgba(20, 20, 20, 0.8);
-  --bg-glass-light: rgba(20, 20, 20, 0.6);
-  --bg-glass-hover: var(--bg-elevated-hover);
+  --bg-primary: var(--au-bg);
+  --bg-glass: var(--au-surface);
+  --bg-glass-light: var(--au-surface-2);
+  --bg-glass-hover: var(--au-surface-3);
 
   /* 文字 */
-  --text-primary: var(--text-primary);
-  --text-secondary: var(--text-secondary);
-  --text-muted: var(--text-tertiary);
+  --text-primary: var(--au-text);
+  --text-secondary: var(--au-text-2);
+  --text-muted: var(--au-text-3);
 
   /* 边框 */
-  --border-glass: var(--border-default);
-  --border-glass-light: var(--border-subtle);
+  --border-glass: var(--au-border);
+  --border-glass-light: var(--au-border);
 
-  /* 强调色 - 统一为绿色 */
-  --accent-primary: var(--brand-primary);
-  --accent-primary-hover: var(--brand-primary-hover);
-  --accent-blue: #3b82f6;      /* 仅用于信息提示，不用于主操作 */
-  --accent-blue-hover: #2563eb;
-  --accent-green: var(--brand-primary);  /* 向后兼容 */
-  --accent-red: var(--color-error);
-  --accent-yellow: var(--color-warning);
+  /* 强调色：主色统一电光青，语义色各自独立
+     （旧版把「成功」也写成主色，成功提示和主按钮一个颜色，等于没有语义） */
+  --accent-primary: var(--au-primary);
+  --accent-primary-hover: var(--au-primary-strong);
+  --accent-blue: var(--au-info);        /* 仅用于信息提示，不用于主操作 */
+  --accent-blue-hover: #3b82f6;
+  --accent-green: var(--au-primary);    /* 旧名，历史上就是主色 */
+  --accent-red: var(--au-danger);
+  --accent-yellow: var(--au-warning);
 }
 
 /* 全局重置 */
@@ -40,15 +45,35 @@
   box-sizing: border-box;
 }
 
+/* 原生控件跟随暗色：不加这一行，复选框 / 下拉 / 日期选择器 / 滚动条
+   在深色页面上会是系统浅色皮肤（白底黑字），是「页面里有几块不是自己的」的主要来源 */
+html {
+  color-scheme: dark;
+  -webkit-text-size-adjust: 100%;   /* iOS 横屏不放大字号 */
+  scroll-padding-top: calc(62px + env(safe-area-inset-top, 0px));  /* 锚点跳转不被吸顶导航盖住 */
+}
+
 /* 注意：background / color 交由 Aurora 主题（aurora.css）定义，
    这里不再覆盖，否则会盖掉全站氛围渐变 */
 body {
   margin: 0;
   padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
+  min-height: 100dvh;               /* 移动端地址栏收放时高度不跳 */
+  /* 这里不加 overflow-x: hidden：单轴 hidden 会让另一轴变成 auto，
+     body 变成滚动容器后，吸顶导航（position: sticky）会挂到这个不滚动的祖先上。 */
+  text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;  /* 点击高亮交给自己的按下态 */
+}
+
+/* 图片永远不撑破容器（海报 / 图标都是外链，尺寸不可控） */
+img,
+svg,
+video {
+  max-width: 100%;
 }
 
 /* 主题切换时所有元素都有过渡效果 */
@@ -73,34 +98,29 @@ body.theme-transition *::after {
    玻璃态效果（Glassmorphism）
    ======================================== */
 
-/* 基础玻璃态 */
-.glass {
-  background: var(--bg-glass);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid var(--border-glass);
-}
-
-/* 玻璃态导航 */
+/* 基础玻璃态 / 玻璃态导航（同一套外观，合成一条规则） */
+.glass,
 .glass-nav {
-  background: var(--bg-glass);
+  background: var(--au-surface);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid var(--border-glass);
+  border: 1px solid var(--au-border);
 }
 
 /* 玻璃态卡片 */
 .glass-card {
-  background: var(--bg-glass);
+  background: var(--au-surface);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid var(--border-glass);
-  border-radius: 0.75rem;
-  transition: background 0.2s ease;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  transition: background-color var(--au-fast) var(--au-ease),
+              border-color var(--au-fast) var(--au-ease);
 }
 
 .glass-card:hover {
-  background: var(--bg-glass-hover);
+  background: var(--au-surface-2);
+  border-color: var(--au-border-strong);
 }
 
 /* ========================================
@@ -113,68 +133,93 @@ body.theme-transition *::after {
   justify-content: center;
   gap: 0.5rem;
   padding: 0.75rem 1.5rem;
-  border-radius: 0.5rem;
-  font-weight: 500;
+  border-radius: var(--au-r-md);
+  font-weight: 600;
   font-size: 0.875rem;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color var(--au-fast) var(--au-ease),
+              border-color var(--au-fast) var(--au-ease),
+              box-shadow var(--au-fast) var(--au-ease),
+              transform var(--au-fast) var(--au-ease);
   border: none;
-  outline: none;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
-/* 主按钮 - 绿色 */
+/* 主按钮 —— 与 .au-btn-primary 同一套外观
+   旧版是「青色底 + 白字」，对比度只有 1.9:1（远低于 AA 的 4.5:1）；
+   Aurora 的口径是高亮底配深墨色文字，顺带用渐变与主色发光 */
 .btn-primary {
-  background: var(--brand-primary);
-  color: white;
+  background: var(--au-gradient);
+  color: #05141c;
+  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
 .btn-primary:hover {
-  background: var(--brand-primary-hover);
+  box-shadow: 0 6px 22px var(--au-primary-glow);
+  transform: translateY(-1px);
 }
 
 /* 主按钮按下态 */
 .btn-primary:active {
-  transform: scale(0.98);
-  opacity: 0.9;
+  transform: translateY(0) scale(0.98);
 }
 
 /* 次要按钮 - 玻璃态 */
 .btn-secondary {
-  background: var(--bg-glass);
+  background: var(--au-surface-2);
   backdrop-filter: blur(8px);
-  border: 1px solid var(--border-glass);
-  color: var(--text-primary);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--au-border);
+  color: var(--au-text);
 }
 
 .btn-secondary:hover {
-  background: var(--bg-glass-hover);
+  background: var(--au-surface-3);
+  border-color: var(--au-border-strong);
 }
 
 /* 幽灵按钮 */
 .btn-ghost {
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--au-text-2);
 }
 
 .btn-ghost:hover {
-  background: var(--bg-glass-hover);
-  color: var(--text-primary);
+  background: var(--au-surface-2);
+  color: var(--au-text);
 }
 
-/* 危险按钮 */
+/* 危险按钮 - 底色 / 文字用同一支语义色，不再出现两套红 */
 .btn-danger {
-  background: var(--accent-red);
-  color: white;
+  background: var(--au-danger-soft);
+  border: 1px solid rgba(251, 113, 133, 0.3);
+  color: var(--au-danger);
 }
 
 .btn-danger:hover {
-  background: #dc2626;
+  background: rgba(251, 113, 133, 0.2);
+}
+
+/* 键盘焦点：统一走品牌色环（鼠标点击不会出现轮廓） */
+.btn:focus-visible {
+  outline: 2px solid var(--au-primary);
+  outline-offset: 2px;
 }
 
 /* 按钮禁用状态 */
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* 按下时不要在触屏上留下“粘住”的悬停样式 */
+@media (hover: none) {
+  .btn-primary:hover,
+  .btn-secondary:hover,
+  .btn-ghost:hover {
+    transform: none;
+  }
 }
 
 /* ========================================
@@ -182,21 +227,23 @@ body.theme-transition *::after {
    ======================================== */
 
 .card {
-  background: var(--bg-glass);
+  background: var(--au-surface);
   backdrop-filter: blur(8px);
-  border: 1px solid var(--border-glass);
-  border-radius: 0.75rem;
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
   padding: 1.5rem;
 }
 
 .card-hoverable {
-  transition: all 0.2s ease;
+  transition: background-color var(--au-fast) var(--au-ease),
+              border-color var(--au-fast) var(--au-ease);
   cursor: pointer;
 }
 
 .card-hoverable:hover {
-  background: var(--bg-glass-hover);
-  border-color: rgba(255, 255, 255, 0.3);
+  background: var(--au-surface-2);
+  border-color: var(--au-border-strong);
 }
 
 /* ========================================
@@ -206,22 +253,24 @@ body.theme-transition *::after {
 .input {
   width: 100%;
   padding: 0.75rem 1rem;
-  background: var(--bg-glass);
-  border: 1px solid var(--border-glass);
-  border-radius: 0.5rem;
-  color: var(--text-primary);
+  background: rgba(7, 11, 18, 0.55);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  color: var(--au-text);
+  font-family: inherit;
   font-size: 0.875rem;
-  transition: all 0.2s ease;
+  transition: border-color var(--au-fast) var(--au-ease),
+              box-shadow var(--au-fast) var(--au-ease);
   outline: none;
 }
 
 .input::placeholder {
-  color: var(--text-muted);
+  color: var(--au-text-4);
 }
 
 .input:focus {
-  border-color: var(--brand-primary);
-  box-shadow: 0 0 0 2px var(--brand-primary-light);
+  border-color: var(--au-border-focus);
+  box-shadow: 0 0 0 3px var(--au-primary-soft);
 }
 
 .input:disabled {
@@ -503,7 +552,12 @@ body.theme-transition *::after {
   display: none;
 }
 
-/* 自定义滚动条 */
+/* 自定义滚动条（WebKit + Firefox 同一口径） */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--au-border-strong) transparent;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -514,24 +568,71 @@ body.theme-transition *::after {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-glass);
+  background: var(--au-border-strong);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(148, 180, 220, 0.32);
 }
 
 /* 选择文本样式 */
 ::selection {
-  background: var(--brand-primary-light);
-  color: inherit;
+  background: var(--au-primary-soft);
+  color: var(--au-text);
 }
 
-/* 焦点样式 */
+/* 键盘焦点（鼠标点击不触发轮廓） */
 :focus-visible {
-  outline: 2px solid var(--brand-primary);
+  outline: 2px solid var(--au-primary);
   outline-offset: 2px;
+}
+
+/* ========================================
+   动效降级
+   “减少动态效果”是系统级无障碍开关：轮播/入场动画/悬停位移都得停下来，
+   但信息不能跟着一起消失——这就是 stagger 类必须补 opacity: 1 的原因
+   （它们默认 opacity: 0，靠动画入场；只关动画会让整段内容直接看不见）。
+   ======================================== */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .animate-fadeIn,
+  .animate-fadeInUp,
+  .animate-fadeInDown,
+  .animate-fadeInLeft,
+  .animate-fadeInRight,
+  .animate-scaleIn,
+  .animate-slideInUp,
+  .animate-slideInDown,
+  .animate-bounce,
+  .animate-shake,
+  .stagger-item,
+  .stagger-container > * {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .animate-spin,
+  .animate-pulse {
+    animation-duration: 2.4s;   /* 保留最小反馈，同时去掉频闪感 */
+  }
+
+  .hover-lift:hover,
+  .hover-scale:hover {
+    transform: none;
+  }
+
+  .page-enter-active,
+  .page-leave-active,
+  body.theme-transition *,
+  body.theme-transition *::before,
+  body.theme-transition *::after {
+    transition: none !important;
+  }
 }
 
 /* ========================================

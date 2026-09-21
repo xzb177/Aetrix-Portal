@@ -68,14 +68,14 @@ defineProps<Props>()
 .ui-list-item {
   display: flex;
   align-items: center;
-  padding: var(--space-md) 0;
+  padding: var(--neo-space-4) 0;
   position: relative;
 }
 
 .ui-list-item--clickable {
   cursor: pointer;
   user-select: none;
-  transition: background-color var(--duration-fast) var(--ease-out);
+  transition: background-color var(--neo-duration-fast) var(--neo-ease-default);
 }
 
 .ui-list-item--clickable:active {
@@ -85,13 +85,13 @@ defineProps<Props>()
 .ui-list-item__icon {
   width: 40px;
   height: 40px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--neo-radius-xs);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  margin-right: var(--space-sm);
-  background: rgba(255, 255, 255, 0.05);
+  margin-right: var(--neo-space-3);
+  background: var(--neo-bg-surface-1);
 }
 
 .ui-list-item__icon-img {
@@ -105,31 +105,31 @@ defineProps<Props>()
 }
 
 .ui-list-item__title {
-  font-size: var(--text-body-size);
-  font-weight: 500;
-  line-height: 1.4;
-  color: var(--text-subtitle-color);
+  font-size: var(--neo-font-size-md);
+  font-weight: var(--neo-font-weight-medium);
+  line-height: var(--neo-line-height-normal);
+  color: var(--neo-text-primary);
 }
 
 .ui-list-item__description {
-  font-size: var(--text-caption-size);
-  font-weight: var(--text-caption-weight);
-  line-height: var(--text-caption-line);
-  color: var(--text-caption-color);
+  font-size: var(--neo-font-size-sm);
+  font-weight: var(--neo-font-weight-normal);
+  line-height: var(--neo-line-height-normal);
+  color: var(--neo-text-tertiary);
   margin-top: 2px;
 }
 
 .ui-list-item__value {
-  font-size: var(--text-body-size);
-  font-weight: 400;
-  color: var(--text-caption-color);
-  margin-right: var(--space-xs);
+  font-size: var(--neo-font-size-md);
+  font-weight: var(--neo-font-weight-normal);
+  color: var(--neo-text-tertiary);
+  margin-right: var(--neo-space-2);
   flex-shrink: 0;
 }
 
 .ui-list-item__arrow {
-  color: var(--text-caption-color);
-  margin-left: var(--space-xs);
+  color: var(--neo-text-tertiary);
+  margin-left: var(--neo-space-2);
   flex-shrink: 0;
 }
 
@@ -139,10 +139,10 @@ defineProps<Props>()
   left: 56px;
   right: 0;
   height: 1px;
-  background: var(--divider-color);
+  background: var(--neo-divider);
 }
 
 .ui-list-item--active .ui-list-item__title {
-  color: var(--tabbar-active);
+  color: var(--neo-primary);
 }
 </style>
