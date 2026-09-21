@@ -30,6 +30,9 @@ from backend import models, realms
 from backend import servers as registry
 from backend.api.admin import _audit, get_current_admin
 from backend.database import get_db
+from backend.emby_server import models as em
+from backend.emby_server import mount_health
+from backend.emby_server import nodes as node_lib
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,245 @@ async def list_servers(_: models.WebUser = Depends(get_current_admin), db: Sessi
         "realm_id": scope_id,
         "active_realm_id": realms.active_realm_id(db),
         "realms": [{"id": r.id, "name": r.name, "slug": r.slug} for r in realms.list_realms(db)],
+    }
+
+
+# Emby 入口模式 → 人话（面板、网关闸门与用户端账号卡读的是同一个键）
+ENTRY_LABELS = {
+    "managed_ea": "后端服（EA）出流",
+    "external": "已有 Emby 服出流",
+    "panel": "面板自己出流",
+}
+
+
+def _realm_entry(db: Session, realm_id: int) -> dict:
+    """这个服当前用哪个入口出流（按服的 ``emby_active_mode``）"""
+    mode = realms.realm_config(db, "emby_active_mode", realm_id, "managed_ea") or "managed_ea"
+    if mode == "external":
+        url = realms.realm_config(db, "emby_external_url", realm_id)
+    else:
+        url = realms.realm_config(db, "emby_managed_url", realm_id)
+    return {"mode": mode, "label": ENTRY_LABELS.get(mode, mode), "url": url}
+
+
+def _mount_summary(db: Session, realm_id: int) -> dict:
+    """EA 视角的挂载体检快照（按服保存）：挂载里的本机路径是主机相对的，只有那台机器说了算"""
+    health = mount_health.read_ea_health(db, realm_id)
+    mounts = [m for m in (health.get("mounts") or []) if isinstance(m, dict)]
+    failed = [m for m in mounts if m.get("ok") is False]
+    return {
+        "ok": bool(health.get("ok")),
+        "checked_at": health.get("checked_at"),
+        "error": health.get("error") or "",
+        "total": len(mounts),
+        "failed_count": len(failed),
+        "unreachable": [m.get("name") or f"#{m.get('id')}" for m in failed],
+        # 从没查过：不是错误，但面板上要提示「还不知道」
+        "never_checked": not mounts and not health.get("checked_at") and not health.get("error"),
+    }
+
+
+def _library_counts(db: Session, realm_id: Optional[int]) -> dict:
+    """媒体库归属：已分配给某台节点的 / 还没分配（未分配 = 所有节点可见、由面板扫描）"""
+    query = realms.scope_inclusive(db.query(em.Library), em.Library.realm_id, realm_id)
+    rows = query.all()
+    unassigned = [lib for lib in rows if not getattr(lib, "node_id", None)]
+    return {
+        "total": len(rows),
+        "unassigned": len(unassigned),
+        "by_node": {
+            node_id: len([lib for lib in rows if getattr(lib, "node_id", None) == node_id])
+            for node_id in {getattr(lib, "node_id", None) for lib in rows if getattr(lib, "node_id", None)}
+        },
+    }
+
+
+@router.get("/overview")
+async def emby_overview(
+    _: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    realm_id: Optional[int] = None,
+    live: bool = False,
+):
+    """**Emby 总览**：一行一台出流入口（EA / 已有 Emby），把散落各处的事实汇到一页
+
+    以前这些信息分布在三个页面：「Emby 服务入口」看入口、「存储挂载」看 EA 的可达性、
+    「媒体库」看库归谁扫——想知道「这台 EA 到底在不在服务这个服」得来回跳着拼。这里按服
+    给出每台入口的：连接体检、节点认领（``NODE_KEY``）、归属节点与媒体库、EA 视角的挂载
+    体检，并把不一致直接标成告警。
+
+    ``live=True`` 会真的去问每台已启用的 EA「你是谁、属于哪个服、负责哪些库」
+    （``GET /api/admin/nodes/me``，共享 SECRET_KEY 鉴权）并重拉一次当前出流 EA 的挂载体检；
+    默认只读已落库的结论，避免打开页面就被慢节点拖住。
+    """
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    realm_rows = (
+        [realms.get_realm(db, scope_id)] if scope_id else realms.list_realms(db)
+    )
+    realm_rows = [r for r in realm_rows if r is not None]
+
+    servers = (registry.realm_scope(db.query(models.RemoteServer), scope_id)
+               .order_by(models.RemoteServer.kind, models.RemoteServer.id).all())
+    entry_rows = [s for s in servers if s.kind in registry.LEGACY_PREFIX]
+
+    # live：先问节点身份（认领 / 自称的服 / 负责哪些库），再重拉当前出流 EA 的挂载体检。
+    # 两者都有超时上限：一台掉线的机器不应该让整个总览转圈。
+    identities: dict[int, dict] = {}
+    if live:
+        for row in entry_rows:
+            if row.kind != "ea" or not row.is_enabled:
+                continue
+            try:
+                probe = await node_lib.fetch_node_identity(row.url, timeout=8.0)
+            except Exception as exc:  # noqa: BLE001 — 单台失败不影响整页
+                probe = {"ok": False, "error": str(exc)[:200]}
+            identities[row.id] = probe
+
+        from backend.api.emby_servers import refresh_mount_health
+
+        for realm in realm_rows:
+            active = registry.active_server(db, "ea", realm.id)
+            if active and active.is_enabled:
+                try:
+                    await refresh_mount_health(db, active.url, realm.id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("服 #%s 的 EA 挂载体检没能完成: %s", realm.id, exc)
+
+    rows: list[dict] = []
+    totals = {"entry": 0, "online": 0, "warnings": 0, "libraries": 0, "libraries_unassigned": 0}
+    for realm in realm_rows:
+        realm_libraries = _library_counts(db, realm.id)
+        realm_nodes = [s for s in entry_rows if s.realm_id == realm.id]
+        realm_ea_count = len([s for s in realm_nodes if s.kind == "ea"])
+        realm_mounts = _mount_summary(db, realm.id)
+
+        for server in realm_nodes:
+            data = registry.serialize(db, server)
+            warnings: list[str] = []
+            label = data["name"]
+
+            identity: dict = {}
+            probe = identities.get(server.id)
+            if probe is not None:
+                if probe.get("ok"):
+                    payload = probe.get("data") or {}
+                    node_info = payload.get("node") or {}
+                    identity = {
+                        "ok": True,
+                        "claimed": bool(payload.get("claimed")),
+                        "node_key": node_info.get("node_key") or "",
+                        "node_name": node_info.get("node_name") or "",
+                        "realm_slug": payload.get("realm_slug") or "",
+                        "realm_name": node_info.get("realm_name") or "",
+                        "libraries": len(payload.get("libraries") or []),
+                        "filtering": bool(node_info.get("filtering")),
+                    }
+                    # 多节点下最容易配错、又最难看出来的一件事：EA 自称的服与面板登记的不一致
+                    reported = (identity["realm_slug"] or "").strip()
+                    if reported and realm.slug and reported != realm.slug:
+                        warnings.append(
+                            f"这台 EA 自称属于「{identity['realm_name'] or reported}」（{reported}），"
+                            f"但面板把它登记在「{realm.name}」——两边不一致，请核对 EA 的 REALM 或面板的归属服"
+                        )
+                    # 认领关系两边都要能对上：一边有一边没有，说明是「换了一台机器」或「忘了配」
+                    reported_key = (identity["node_key"] or "").strip()
+                    if reported_key and not identity["claimed"]:
+                        warnings.append(
+                            f"EA 上报的 NODE_KEY「{reported_key}」在面板的服务器清单里认领不到对应记录"
+                        )
+                    elif reported_key and data["node_key"] and reported_key != data["node_key"]:
+                        warnings.append(
+                            f"EA 上报的 NODE_KEY「{reported_key}」与面板登记的「{data['node_key']}」不一致"
+                        )
+                    elif not reported_key and data["node_key"]:
+                        warnings.append("面板给这台入口登记了 NODE_KEY，但它自己没配——请核对 EA 的 NODE_KEY")
+                else:
+                    identity = {"ok": False, "error": str(probe.get("error") or "节点身份探测失败")}
+                    warnings.append(f"节点身份探测失败：{identity['error']}")
+
+            if server.kind == "ea":
+                # 单台 EA 不需要 NODE_KEY（面板自己扫就行）；多台才必须认得出来谁是谁
+                if not data["node_key"] and realm_ea_count > 1:
+                    warnings.append("这个服有多台 EA，但这台没配 NODE_KEY：面板无法把媒体库分配给它")
+                assigned = realm_libraries["by_node"].get(server.id, 0)
+                if realm_mounts["never_checked"]:
+                    warnings.append("还没做过这台 EA 视角的挂载体检，无法说明它能不能碰到面板里配的存储")
+                elif realm_mounts["failed_count"]:
+                    warnings.append(
+                        f"有 {realm_mounts['failed_count']} / {realm_mounts['total']} 条挂载从这台 EA 不可达："
+                        + "、".join(realm_mounts["unreachable"][:5])
+                    )
+                elif realm_mounts["error"]:
+                    warnings.append(f"挂载体检失败：{realm_mounts['error']}")
+            else:
+                assigned = 0
+
+            if data["last_check_ok"] is False:
+                warnings.append(f"最近一次连接失败：{data['last_check_message'] or '未知原因'}")
+            elif data["last_check_ok"] is None:
+                warnings.append("还没有体检过这台入口（点「测试」或「体检」）")
+
+            payload_row = {
+                **data,
+                "realm_slug": realm.slug,
+                "realm_is_default": realm.id == realms.legacy_realm_id(db),
+                "is_entry": server.kind in registry.LEGACY_PREFIX,
+                "is_current_entry": bool(data["is_active"]) and data["is_enabled"],
+                "identity": identity,
+                "mounts": realm_mounts if server.kind == "ea" else None,
+                "libraries_assigned": assigned,
+                "libraries_unassigned": realm_libraries["unassigned"] if server.kind == "ea" else 0,
+                "warnings": warnings,
+            }
+            rows.append(payload_row)
+            totals["entry"] += 1
+            totals["warnings"] += len(warnings)
+            if data["last_check_ok"] is True:
+                totals["online"] += 1
+
+        realm_libraries_total = realm_libraries["total"]
+        totals["libraries"] += realm_libraries_total
+        totals["libraries_unassigned"] += realm_libraries["unassigned"]
+
+    realm_payloads = []
+    for realm in realm_rows:
+        data = realms.serialize(db, realm, with_stats=False)
+        entry = _realm_entry(db, realm.id)
+        realm_servers = [s for s in entry_rows if s.realm_id == realm.id]
+        active = next((s for s in realm_servers if s.is_active and s.is_enabled), None)
+        libraries = _library_counts(db, realm.id)
+        warnings: list[str] = []
+        if realm_servers and active is None:
+            warnings.append("这个服还没有「当前使用」的入口：去下面那一行点「设为当前」")
+        if not realm_servers:
+            # 「面板自己出流」是单进程部署的正常冬态，不当成错误来吓人
+            hint = (
+                "；当前由面板自己出流，单机单服部署可以保持这样"
+                if entry["mode"] == "panel"
+                else "；请添加一台后端服（EA）或已有的 Emby 服"
+            )
+            warnings.append("这个服还没有添加任何 Emby 入口（EA 或已有 Emby 服）" + hint)
+        realm_payloads.append({
+            **data,
+            "entry": {
+                **entry,
+                "server_id": active.id if active else None,
+                "server_name": active.name if active else "",
+            },
+            "libraries": libraries,
+            "mounts": _mount_summary(db, realm.id),
+            "warnings": warnings,
+        })
+
+    return {
+        "realm_id": scope_id,
+        "active_realm_id": realms.active_realm_id(db),
+        "live": bool(live),
+        "realms": realm_payloads,
+        "rows": rows,
+        "totals": totals,
+        "summary": registry.summary(db, scope_id),
+        "kinds": registry.SERVER_KINDS,
     }
 
 

@@ -352,6 +352,89 @@ export interface ServerSummary {
   push_ready: ServerKind[]
 }
 
+/** EA 自称的身份（`live` 模式下真去问那台 EA：你是谁、属于哪个服、负责哪些库） */
+export interface ServerOverviewIdentity {
+  ok: boolean
+  error?: string
+  claimed?: boolean
+  node_key?: string
+  node_name?: string
+  realm_slug?: string
+  realm_name?: string
+  libraries?: number
+  /** 这台进程是否真的在按服 / 节点过滤内容 */
+  filtering?: boolean
+}
+
+/** EA 视角的挂载体检（按服保存）：挂载里的本机路径是主机相对的，只有那台机器说了算 */
+export interface ServerOverviewMounts {
+  ok: boolean
+  checked_at: string | null
+  error: string
+  total: number
+  failed_count: number
+  unreachable: string[]
+  /** 从没查过（不是错误，但面板要提示「还不知道」） */
+  never_checked: boolean
+}
+
+/** Emby 总览的一行 = 一台出流入口（EA / 已有 Emby） */
+export interface ServerOverviewRow extends RemoteServerRow {
+  realm_slug: string
+  realm_is_default: boolean
+  is_entry: boolean
+  is_current_entry: boolean
+  identity: ServerOverviewIdentity
+  mounts: ServerOverviewMounts | null
+  /** 归这台节点扫描 / 出流的媒体库数 */
+  libraries_assigned: number
+  /** 同服里还没分配给任何节点的库数（未分配 = 所有节点可见、由面板扫描） */
+  libraries_unassigned: number
+  warnings: string[]
+}
+
+/** 总览里的一张服卡片：这个服到底用哪个入口出流、库归谁 */
+export interface ServerOverviewRealm {
+  id: number
+  name: string
+  slug: string
+  url: string
+  description: string
+  is_active: boolean
+  is_default: boolean
+  public_url: string
+  sort_order: number
+  entry: {
+    mode: string
+    label: string
+    url: string
+    server_id: number | null
+    server_name: string
+  }
+  libraries: { total: number; unassigned: number; by_node: Record<string, number> }
+  mounts: ServerOverviewMounts
+  warnings: string[]
+}
+
+/** Emby 总览（`/api/admin/servers/overview`）：一行一台入口，把散在各页的事实汇到一起 */
+export interface ServerOverview {
+  /** null / 0 = 全部服；数字 = 只看这个服 */
+  realm_id: number | null
+  active_realm_id: number
+  live: boolean
+  realms: ServerOverviewRealm[]
+  rows: ServerOverviewRow[]
+  totals: {
+    entry: number
+    online: number
+    warnings: number
+    libraries: number
+    libraries_unassigned: number
+  }
+  summary: ServerSummary
+  kinds: ServerKindMeta[]
+}
+
 export interface ServerProbeResult {
   ok: boolean
   message?: string

@@ -21,6 +21,7 @@ import type {
   RemoteServerRow,
   ServerKind,
   ServerKindMeta,
+  ServerOverview,
   ServerProbeResult,
   ServerSummary,
   LoginResponse,
@@ -285,7 +286,7 @@ export const fetchRealmSubscriptions = (
 
 const S = '/servers'
 
-export const fetchServers = () =>
+export const fetchServers = (params: { realm_id?: number } = {}) =>
   get<{
     servers: RemoteServerRow[]
     kinds: ServerKindMeta[]
@@ -293,7 +294,17 @@ export const fetchServers = () =>
     realm_id: number | null
     active_realm_id: number
     realms: { id: number; name: string; slug: string }[]
-  }>(S)
+  }>(S, params)
+
+/**
+ * Emby 总览：一行一台出流入口（EA / 已有 Emby），带归属服、连接、节点认领、
+ * 挂载体检与媒体库归属。
+ *
+ * `live=true` 才会真的去问每台已启用的 EA「你是谁、属于哪个服」并重拉挂载体检；
+ * 默认只读已落库的结论，不拖慢打开页面。
+ */
+export const fetchServersOverview = (params: { realm_id?: number; live?: boolean } = {}) =>
+  get<ServerOverview>(`${S}/overview`, params)
 
 export const fetchServersSummary = () => get<ServerSummary>(`${S}/summary`)
 
