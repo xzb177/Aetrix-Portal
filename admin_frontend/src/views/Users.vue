@@ -17,16 +17,45 @@ import {
   MoreHorizontal, RefreshCw, Search, ShieldCheck, Wallet,
 } from 'lucide-vue-next'
 import {
-  broadcastMessage, extendSubscription, fetchPlans, fetchUserDetail, fetchUsers,
-  grantSubscription, resetUserPassword, sendUserMessage, updateUser, type PlanRow,
+  broadcastMessage, extendSubscription, fetchDevices, fetchPlans, fetchUserDetail, fetchUsers,
+  grantSubscription, removeDevice, resetUserPassword, sendUserMessage, setDeviceBlocked,
+  updateUser, type PlanRow,
 } from '@/api/admin'
 import { adjustUserPoints } from '@/api/economy'
-import type { AdminUserRow, UserDetail } from '@/types'
+import type { AdminUserRow, DeviceRow, UserDetail } from '@/types'
 import { useAuthStore } from '@/stores/auth'
-import { useBreakpoint } from '@/composables/useBreakpoint'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
 
 const auth = useAuthStore()
-const { isPhone } = useBreakpoint()
+
+/** 用户列表：手机端用户名做标题，注册时间隐藏（详情抽屉里有） */
+const columns: DataColumn[] = [
+  { key: 'username', label: '用户', minWidth: 200, mobile: 'title' },
+  { key: 'emby_username', label: 'Emby 账号', minWidth: 130 },
+  { key: 'subscription', label: '订阅', minWidth: 160 },
+  { key: 'last_login_at', label: '最近登录', width: 150 },
+  { key: 'created_at', label: '注册时间', width: 150, mobile: 'hide' },
+  { key: 'actions', label: '操作', width: 180, fixed: 'right', align: 'right' },
+]
+
+/** 抽屉里的订阅记录（抽屉在手机上接近全宽，也用卡片形态） */
+const historyColumns: DataColumn[] = [
+  { key: 'plan_name', label: '套餐', minWidth: 120, mobile: 'title' },
+  { key: 'period', label: '有效期', minWidth: 180 },
+  { key: 'days_left', label: '剩余', width: 80 },
+  { key: 'status', label: '状态', width: 90 },
+]
+
+/** 对照 Jellyfin 的用户详情：把设备审查放进用户上下文，不必跳到全局风控页再搜索用户 */
+const deviceColumns: DataColumn[] = [
+  { key: 'name', label: '设备', minWidth: 150, mobile: 'title' },
+  { key: 'client', label: '客户端', minWidth: 120 },
+  { key: 'ip', label: 'IP', width: 130 },
+  { key: 'last_seen_at', label: '最近活跃', width: 150 },
+  { key: 'is_blocked', label: '状态', width: 90 },
+  { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
+]
 
 const users = ref<AdminUserRow[]>([])
 const total = ref(0)
@@ -88,6 +117,8 @@ async function loadPlans() {
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<UserDetail | null>(null)
+const userDevices = ref<DeviceRow[]>([])
+const deviceLoading = ref(false)
 const detailTab = ref('overview')
 const detailUser = ref<AdminUserRow | null>(null)
 
@@ -98,7 +129,12 @@ async function openDetail(u: AdminUserRow) {
   detailVisible.value = true
   detailLoading.value = true
   try {
-    detail.value = await fetchUserDetail(u.id)
+    const [userDetail, deviceResult] = await Promise.all([
+      fetchUserDetail(u.id),
+      fetchDevices({ user_id: u.id, limit: 100 }),
+    ])
+    detail.value = userDetail
+    userDevices.value = deviceResult.devices
   } catch {
     // 错误提示由 HTTP 拦截器统一弹出，这里只需收尾
   } finally {
@@ -109,6 +145,38 @@ async function openDetail(u: AdminUserRow) {
 /** 详情里的快捷操作后刷新两侧数据 */
 async function refreshDetail() {
   if (detailUser.value) await openDetail(detailUser.value)
+}
+
+function fmtDeviceDate(value: string | null): string {
+  return value ? value.slice(0, 16).replace('T', ' ') : '—'
+}
+
+async function toggleUserDevice(device: DeviceRow) {
+  deviceLoading.value = true
+  try {
+    const nextBlocked = !device.is_blocked
+    const res = await setDeviceBlocked(device.user_id, device.device_id, nextBlocked)
+    ElMessage.success(res.message)
+    userDevices.value = (await fetchDevices({ user_id: device.user_id, limit: 100 })).devices
+  } finally {
+    deviceLoading.value = false
+  }
+}
+
+async function removeUserDevice(device: DeviceRow) {
+  await ElMessageBox.confirm(
+    `移除「${device.name || device.device_id}」后客户端需要重新登录，确定吗？`,
+    '移除设备',
+    { type: 'warning' },
+  )
+  deviceLoading.value = true
+  try {
+    const res = await removeDevice(device.user_id, device.device_id)
+    ElMessage.success(res.message)
+    userDevices.value = (await fetchDevices({ user_id: device.user_id, limit: 100 })).devices
+  } finally {
+    deviceLoading.value = false
+  }
 }
 
 // ==================== 授予 / 延长订阅 ====================
@@ -347,17 +415,16 @@ function logTypeLabel(type: string): string {
           v-model="search"
           placeholder="搜索用户名 / 邮箱"
           clearable
-          style="width: 220px"
           @keyup.enter="page = 0; load()"
           @clear="page = 0; load()"
         >
           <template #prefix><Search :size="14" /></template>
         </el-input>
-        <el-select v-model="activeFilter" placeholder="账号状态" clearable style="width: 120px" @change="page = 0; load()">
+        <el-select v-model="activeFilter" placeholder="账号状态" clearable @change="page = 0; load()">
           <el-option label="正常" value="true" />
           <el-option label="已禁用" value="false" />
         </el-select>
-        <el-select v-model="subFilter" placeholder="订阅状态" clearable style="width: 120px">
+        <el-select v-model="subFilter" placeholder="订阅状态" clearable>
           <el-option label="订阅中" value="has" />
           <el-option label="未订阅" value="none" />
         </el-select>
@@ -367,64 +434,56 @@ function logTypeLabel(type: string): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="visibleUsers" v-loading="loading" style="width: 100%">
-        <el-table-column label="用户" :min-width="isPhone ? 140 : 200">
-          <template #default="{ row }">
-            <div class="user-cell">
-              <button class="user-link" @click="openDetail(row)">{{ row.username }}</button>
-              <span v-if="row.is_staff" class="mini-badge staff">管理员</span>
-              <span v-if="!row.is_active" class="mini-badge disabled">已禁用</span>
-            </div>
-            <div class="user-sub">{{ row.email || '未绑定邮箱' }}</div>
+      <DataTable :rows="visibleUsers" :columns="columns" :loading="loading" empty="没有匹配的用户">
+        <template #cell-username="{ row }">
+          <div class="user-cell">
+            <button class="user-link" @click="openDetail(row)">{{ row.username }}</button>
+            <span v-if="row.is_staff" class="mini-badge staff">管理员</span>
+            <span v-if="!row.is_active" class="mini-badge disabled">已禁用</span>
+          </div>
+          <div class="user-sub">{{ row.email || '未绑定邮箱' }}</div>
+        </template>
+
+        <template #cell-emby_username="{ row }">{{ row.emby_username || '—' }}</template>
+
+        <template #cell-subscription="{ row }">
+          <template v-if="row.has_subscription">
+            <span class="mini-badge vip">生效中</span>
+            <div class="user-sub">至 {{ fmtDay(row.subscription_end) }}</div>
           </template>
-        </el-table-column>
-        <el-table-column label="Emby 账号" :min-width="isPhone ? 110 : 130">
-          <template #default="{ row }">{{ row.emby_username || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="订阅" :min-width="isPhone ? 118 : 160">
-          <template #default="{ row }">
-            <template v-if="row.has_subscription">
-              <span class="mini-badge vip">生效中</span>
-              <div class="user-sub">至 {{ fmtDay(row.subscription_end) }}</div>
-            </template>
-            <span v-else class="user-sub">未订阅</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="最近登录" :width="isPhone ? 112 : 150">
-          <template #default="{ row }">{{ fmtDate(row.last_login_at) }}</template>
-        </el-table-column>
-        <!-- 手机上藏掉注册时间：抽屉里有，保留它反而把操作列挤到屏幕外 -->
-        <el-table-column v-if="!isPhone" label="注册时间" width="150">
-          <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" :width="isPhone ? 116 : 180" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="openDetail(row)">
-              <Eye :size="14" style="margin-right: 2px" />详情
+          <span v-else class="user-sub">未订阅</span>
+        </template>
+
+        <template #cell-last_login_at="{ row }">{{ fmtDate(row.last_login_at) }}</template>
+
+        <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+
+        <template #cell-actions="{ row }">
+          <el-button size="small" text type="primary" @click="openDetail(row)">
+            <Eye :size="14" style="margin-right: 2px" />详情
+          </el-button>
+          <el-dropdown trigger="click" @command="(cmd: string) => onRowCommand(cmd, row)">
+            <el-button size="small" text>
+              <MoreHorizontal :size="16" />
             </el-button>
-            <el-dropdown trigger="click" @command="(cmd: string) => onRowCommand(cmd, row)">
-              <el-button size="small" text>
-                <MoreHorizontal :size="16" />
-              </el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="grant">授予订阅</el-dropdown-item>
-                  <el-dropdown-item v-if="row.subscription_id" command="extend">延长订阅</el-dropdown-item>
-                  <el-dropdown-item command="points">调整积分</el-dropdown-item>
-                  <el-dropdown-item command="password" divided>重置密码</el-dropdown-item>
-                  <el-dropdown-item command="message">发送消息</el-dropdown-item>
-                  <el-dropdown-item command="active" divided>
-                    {{ row.is_active ? '禁用账号' : '启用账号' }}
-                  </el-dropdown-item>
-                  <el-dropdown-item command="staff">
-                    {{ row.is_staff ? '移除管理员' : '设为管理员' }}
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-          </template>
-        </el-table-column>
-      </el-table>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="grant">授予订阅</el-dropdown-item>
+                <el-dropdown-item v-if="row.subscription_id" command="extend">延长订阅</el-dropdown-item>
+                <el-dropdown-item command="points">调整积分</el-dropdown-item>
+                <el-dropdown-item command="password" divided>重置密码</el-dropdown-item>
+                <el-dropdown-item command="message">发送消息</el-dropdown-item>
+                <el-dropdown-item command="active" divided>
+                  {{ row.is_active ? '禁用账号' : '启用账号' }}
+                </el-dropdown-item>
+                <el-dropdown-item command="staff">
+                  {{ row.is_staff ? '移除管理员' : '设为管理员' }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
+      </DataTable>
 
       <div class="pager" v-if="total > PAGE_SIZE">
         <el-pagination
@@ -511,22 +570,26 @@ function logTypeLabel(type: string): string {
           <el-tabs v-model="detailTab" class="detail-tabs">
             <el-tab-pane label="订阅记录" name="overview">
               <div v-if="detail.subscription.history.length === 0" class="empty-hint">暂无订阅记录</div>
-              <el-table v-else :data="detail.subscription.history" size="small">
-                <el-table-column prop="plan_name" label="套餐" min-width="120" />
-                <el-table-column label="有效期" min-width="180">
-                  <template #default="{ row }">{{ fmtDay(row.start_date) }} → {{ fmtDay(row.end_date) }}</template>
-                </el-table-column>
-                <el-table-column label="剩余" width="80">
-                  <template #default="{ row }">{{ row.days_left }} 天</template>
-                </el-table-column>
-                <el-table-column label="状态" width="90">
-                  <template #default="{ row }">
-                    <span class="mini-badge" :class="row.status === 'active' && row.days_left > 0 ? 'vip' : 'off'">
-                      {{ row.status === 'active' && row.days_left > 0 ? '生效中' : '已结束' }}
-                    </span>
-                  </template>
-                </el-table-column>
-              </el-table>
+              <DataTable
+                v-else
+                :rows="detail.subscription.history"
+                :columns="historyColumns"
+                empty="暂无订阅记录"
+              >
+                <template #cell-plan_name="{ row }">{{ row.plan_name }}</template>
+
+                <template #cell-period="{ row }">
+                  {{ fmtDay(row.start_date) }} → {{ fmtDay(row.end_date) }}
+                </template>
+
+                <template #cell-days_left="{ row }">{{ row.days_left }} 天</template>
+
+                <template #cell-status="{ row }">
+                  <span class="mini-badge" :class="row.status === 'active' && row.days_left > 0 ? 'vip' : 'off'">
+                    {{ row.status === 'active' && row.days_left > 0 ? '生效中' : '已结束' }}
+                  </span>
+                </template>
+              </DataTable>
             </el-tab-pane>
 
             <el-tab-pane label="积分流水" name="points">
@@ -570,6 +633,31 @@ function logTypeLabel(type: string): string {
                 <span class="line-amount ok">+{{ i.reward_points }}</span>
                 <span class="line-date">{{ fmtDate(i.created_at) }}</span>
               </div>
+            </el-tab-pane>
+
+            <el-tab-pane label="设备" name="devices">
+              <div class="mini-summary">共 {{ userDevices.length }} 台设备 · 可直接封禁异常设备或踢下线</div>
+              <DataTable
+                :rows="userDevices"
+                :columns="deviceColumns"
+                :loading="deviceLoading || detailLoading"
+                row-key="device_id"
+                empty="该用户还没有登录设备"
+              >
+                <template #cell-name="{ row }">{{ row.name || row.device_id }}</template>
+                <template #cell-client="{ row }">{{ row.client || '—' }}</template>
+                <template #cell-ip="{ row }"><span class="mono">{{ row.ip || '—' }}</span></template>
+                <template #cell-last_seen_at="{ row }">{{ fmtDeviceDate(row.last_seen_at) }}</template>
+                <template #cell-is_blocked="{ row }">
+                  <span class="mini-badge" :class="row.is_blocked ? 'danger' : 'ok'">{{ row.is_blocked ? '已封禁' : '正常' }}</span>
+                </template>
+                <template #cell-actions="{ row }">
+                  <el-button size="small" text :type="row.is_blocked ? 'success' : 'warning'" @click="toggleUserDevice(row)">
+                    {{ row.is_blocked ? '解封' : '封禁' }}
+                  </el-button>
+                  <el-button size="small" text type="danger" @click="removeUserDevice(row)">踢下线</el-button>
+                </template>
+              </DataTable>
             </el-tab-pane>
           </el-tabs>
         </template>
@@ -782,6 +870,7 @@ function logTypeLabel(type: string): string {
 .line-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .line-amount { font-weight: 600; }
 .line-date { font-size: 11.5px; color: var(--text-muted); flex-shrink: 0; }
+.mono { font-family: var(--font-mono); }
 
 .empty-hint { font-size: 13px; color: var(--text-muted); padding: 14px 0; text-align: center; }
 .dialog-user { font-weight: 600; }

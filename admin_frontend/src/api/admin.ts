@@ -207,6 +207,34 @@ export const fetchLogs = (params: { limit?: number; action_filter?: string } = {
 
 export const fetchOverview = () => get<OverviewStats>('/stats/overview')
 
+export interface PanelHealth {
+  status: string
+  timestamp: string
+  database: string
+  online_users: number
+  emby_server: string
+}
+
+/** EM 面板健康状态；不暴露密钥与连接串，仅返回可运营的信息。 */
+export const fetchPanelHealth = () => get<PanelHealth>('/../health')
+
+export interface EmbyConnection {
+  url: string
+  enabled: boolean
+  reachable?: boolean
+  has_api_key?: boolean
+}
+export interface EmbyConnections {
+  managed_ea: EmbyConnection
+  external: EmbyConnection
+  active_mode: 'managed_ea' | 'external'
+}
+export const fetchEmbyConnections = () => get<EmbyConnections>('/emby/servers')
+export const testEmbyConnection = (data: { mode: 'managed_ea' | 'external'; url: string; api_key?: string; enabled?: boolean }) =>
+  post<{ ok: boolean; status_code?: number; message?: string; server_name?: string; version?: string }>('/emby/servers/test', data)
+export const saveEmbyConnection = (data: { mode: 'managed_ea' | 'external'; url: string; api_key?: string; enabled: boolean }) =>
+  put<{ success: boolean; probe: { ok: boolean; message?: string; server_name?: string } }>('/emby/servers', data)
+
 export const fetchPlaybackStats = () => get<PlaybackStats>('/stats/playback')
 
 // ==================== 自建 Emby 管理（/api/admin/emby/*） ====================

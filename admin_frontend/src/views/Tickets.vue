@@ -5,6 +5,18 @@ import { ElMessage } from 'element-plus'
 import { RefreshCw, Send } from 'lucide-vue-next'
 import { closeTicket, fetchTicketMessages, fetchTickets, replyTicket, updateTicket } from '@/api/admin'
 import type { TicketMessageRow, TicketRow } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+const columns: DataColumn[] = [
+  { key: 'title', label: '工单', minWidth: 240, mobile: 'title' },
+  { key: 'user_name', label: '用户', width: 120 },
+  { key: 'category', label: '分类', width: 90, mobile: 'hide' },
+  { key: 'priority', label: '优先级', width: 90 },
+  { key: 'status', label: '状态', width: 100 },
+  { key: 'updated_at', label: '更新时间', width: 150 },
+  { key: 'actions', label: '操作', width: 110, fixed: 'right', align: 'right' },
+]
 
 const list = ref<TicketRow[]>([])
 const loading = ref(false)
@@ -105,38 +117,33 @@ function statusBadge(status: string): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="list" v-loading="loading" style="width: 100%">
-        <el-table-column label="工单" min-width="240">
-          <template #default="{ row }">
-            <button class="ticket-title" @click="openDetail(row)">{{ row.title }}</button>
-            <div class="ticket-preview">{{ row.latest_message || '—' }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="用户" width="120">
-          <template #default="{ row }">{{ row.user_name }}</template>
-        </el-table-column>
-        <el-table-column label="分类" width="90">
-          <template #default="{ row }">{{ row.category }}</template>
-        </el-table-column>
-        <el-table-column label="优先级" width="90">
-          <template #default="{ row }">
-            <span class="prio" :class="row.priority">{{ PRIORITY_LABELS[row.priority] || row.priority }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="更新时间" width="150">
-          <template #default="{ row }">{{ fmtDate(row.updated_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="row.status !== 'closed'" size="small" text type="danger" @click="close(row)">关闭</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="list" :columns="columns" :loading="loading" empty="暂无工单">
+        <template #cell-title="{ row }">
+          <button class="ticket-title" @click="openDetail(row)">{{ row.title }}</button>
+          <div class="ticket-preview">{{ row.latest_message || '—' }}</div>
+        </template>
+
+        <template #cell-user_name="{ row }">{{ row.user_name }}</template>
+
+        <template #cell-category="{ row }">{{ row.category }}</template>
+
+        <template #cell-priority="{ row }">
+          <span class="prio" :class="row.priority">{{ PRIORITY_LABELS[row.priority] || row.priority }}</span>
+        </template>
+
+        <template #cell-status="{ row }">
+          <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
+        </template>
+
+        <template #cell-updated_at="{ row }">{{ fmtDate(row.updated_at) }}</template>
+
+        <template #cell-actions="{ row }">
+          <el-button v-if="row.status !== 'closed'" size="small" type="danger" plain @click="close(row)">
+            关闭
+          </el-button>
+          <span v-else class="muted done-hint">已关闭</span>
+        </template>
+      </DataTable>
     </div>
 
     <el-drawer v-model="drawerVisible" :title="current?.title || '工单详情'" size="460px">

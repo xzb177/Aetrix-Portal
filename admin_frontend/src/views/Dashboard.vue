@@ -14,14 +14,16 @@ import {
   Film, MessageSquareDashed, Play, Radio, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
 } from 'lucide-vue-next'
-import { fetchOverview, fetchPlaybackStats, fetchStatsTrend } from '@/api/admin'
+import { fetchLibraries, fetchOverview, fetchPlaybackStats, fetchSessions, fetchStatsTrend } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
-import type { OverviewStats, PlaybackStats, TrendStats } from '@/types'
+import type { EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, TrendStats } from '@/types'
 
 const overview = ref<OverviewStats | null>(null)
 const playback = ref<PlaybackStats | null>(null)
 const economy = ref<EconomyStats | null>(null)
 const trend = ref<TrendStats | null>(null)
+const libraries = ref<EmbyLibrary[]>([])
+const sessions = ref<EmbySessionRow[]>([])
 const loading = ref(true)
 const trendLoading = ref(false)
 
@@ -46,10 +48,18 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e] = await Promise.all([fetchOverview(), fetchPlaybackStats(), fetchEconomyStats()])
+    const [o, p, e, libraryData, sessionData] = await Promise.all([
+      fetchOverview(),
+      fetchPlaybackStats(),
+      fetchEconomyStats(),
+      fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
+      fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
+    ])
     overview.value = o
     playback.value = p
     economy.value = e
+    libraries.value = libraryData.libraries
+    sessions.value = sessionData.sessions
     await loadTrend()
   } finally {
     loading.value = false
@@ -118,6 +128,17 @@ const axisLabels = computed(() => {
 
 function fmtMoney(v: number): string {
   return `¥${v.toFixed(2)}`
+}
+
+function libraryStatus(library: EmbyLibrary): string {
+  if (library.is_scanning) return '扫描中'
+  if (!library.is_enabled) return '已停用'
+  return '正常'
+}
+
+function sessionProgress(session: EmbySessionRow): number {
+  if (!session.duration_ticks) return 0
+  return Math.min(100, Math.round((session.position_ticks / session.duration_ticks) * 100))
 }
 </script>
 
@@ -258,6 +279,43 @@ function fmtMoney(v: number): string {
         </div>
       </section>
 
+      <!-- 媒体服务运行态：把媒体库、扫描与在线播放放到首页，而不是让管理员逐页排查 -->
+      <section v-if="libraries.length || sessions.length" class="ops-grid">
+        <div class="admin-card ops-card">
+          <div class="card-header">
+            <h2><Film :size="15" /> 媒体服务</h2>
+            <RouterLink to="/emby" class="card-link">管理媒体库 <ArrowRight :size="13" /></RouterLink>
+          </div>
+          <div v-if="libraries.length" class="ops-list">
+            <div v-for="library in libraries.slice(0, 5)" :key="library.id" class="ops-row">
+              <div class="ops-main">
+                <strong>{{ library.name }}</strong>
+                <span>{{ library.item_count }} 个条目 · {{ libraryStatus(library) }}</span>
+              </div>
+              <span class="status-dot" :class="{ warning: library.is_scanning, danger: !library.is_enabled }" />
+            </div>
+          </div>
+          <div v-else class="empty-hint">暂无媒体库</div>
+        </div>
+
+        <div class="admin-card ops-card">
+          <div class="card-header">
+            <h2><Radio :size="15" /> 实时播放 <span class="range-hint">{{ sessions.length }} 路</span></h2>
+            <RouterLink to="/emby" class="card-link">查看会话 <ArrowRight :size="13" /></RouterLink>
+          </div>
+          <div v-if="sessions.length" class="ops-list">
+            <div v-for="session in sessions.slice(0, 5)" :key="session.session_key" class="ops-row">
+              <div class="ops-main">
+                <strong>{{ session.username }} · {{ session.item }}</strong>
+                <span>{{ session.client || '未知客户端' }} · {{ sessionProgress(session) }}% · {{ session.play_method === 'Transcode' ? '转码' : '直连' }}</span>
+              </div>
+              <span class="play-dot" :class="{ paused: session.is_paused }" />
+            </div>
+          </div>
+          <div v-else class="empty-hint">当前没有播放会话</div>
+        </div>
+      </section>
+
       <!-- 排行榜 -->
       <section class="stats-two-col" v-if="playback">
         <div class="admin-card">
@@ -293,6 +351,21 @@ function fmtMoney(v: number): string {
 
 <style scoped>
 .page-loading { text-align: center; color: var(--text-secondary); padding: 60px 0; }
+
+.ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.ops-card { min-width: 0; }
+.ops-list { display: flex; flex-direction: column; }
+.ops-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+.ops-row:last-child { border-bottom: none; }
+.ops-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ops-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-primary); }
+.ops-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-muted); }
+.status-dot, .play-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px var(--success-bg); }
+.status-dot.warning { background: var(--warning); box-shadow: 0 0 0 4px var(--warning-bg); }
+.status-dot.danger { background: var(--danger); box-shadow: 0 0 0 4px var(--danger-bg); }
+.play-dot.paused { background: var(--warning); box-shadow: 0 0 0 4px var(--warning-bg); }
+.card-link { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); font-size: 11.5px; text-decoration: none; }
+.card-link:hover { color: var(--text-primary); }
 .stat-sub { font-size: 15px; color: var(--text-secondary); font-weight: 500; }
 .stat-label { display: flex; align-items: center; gap: 6px; }
 .stat-foot { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
@@ -426,5 +499,8 @@ function fmtMoney(v: number): string {
   .trend-total-value { font-size: 18px; }
   .stat-sub { font-size: 13px; }
   .stats-two-col { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .ops-grid { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

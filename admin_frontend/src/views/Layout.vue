@@ -78,13 +78,13 @@ const navGroups: NavGroup[] = [
       { path: '/announcements', label: '公告管理' },
     ],
   },
-  { title: '支持', icon: Ticket, items: [{ path: '/tickets', label: '工单管理' }] },
-  {
-    title: '系统',
+  { title: '支持', icon: Ticket, items: [{ path: '/tickets', label: '工单管理' }] },  { title: '系统',
     icon: Settings,
     items: [
       { path: '/settings', label: '系统设置' },
       { path: '/logs', label: '操作日志' },
+      { path: '/health', label: '服务健康' },
+      { path: '/emby-servers', label: 'Emby 服务入口' },
     ],
   },
 ]
@@ -225,7 +225,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell admin-layout">
     <!-- 抽屉遮罩（窄屏点它关闭） -->
     <transition name="mask">
       <div v-if="drawerOpen" class="shell-mask" @click="closeDrawer" />
@@ -342,7 +342,7 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <main class="content">
+      <main class="content admin-content">
         <RouterView />
       </main>
     </div>

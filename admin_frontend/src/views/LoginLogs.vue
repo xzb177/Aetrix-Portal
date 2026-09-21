@@ -10,6 +10,20 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshCw, Search, Trash2, ShieldAlert } from 'lucide-vue-next'
 import { fetchLoginLogs, purgeLoginLogs } from '@/api/admin'
 import type { LoginLogRow, LoginLogsResponse } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+/** 手机卡片：用户为标题，事件/结果/风险/IP/详情/时间做键值行，客户端 UA 太长故隐藏 */
+const columns: DataColumn[] = [
+  { key: 'username', label: '用户', width: 140, mobile: 'title' },
+  { key: 'created_at', label: '时间', width: 170 },
+  { key: 'reason_label', label: '事件', width: 140 },
+  { key: 'success', label: '结果', width: 96 },
+  { key: 'risk', label: '风险', width: 90 },
+  { key: 'ip', label: 'IP', width: 130 },
+  { key: 'detail', label: '详情', minWidth: 200 },
+  { key: 'user_agent', label: '客户端', minWidth: 180, mobile: 'hide' },
+]
 
 const data = ref<LoginLogsResponse | null>(null)
 const loading = ref(false)
@@ -73,17 +87,17 @@ function riskLevel(row: LoginLogRow): string {
     </div>
 
     <div class="stat-grid">
-      <div class="stat-card">
+      <div class="stat-tile">
         <div class="stat-label">日志总数</div>
         <div class="stat-value">{{ data?.total ?? 0 }}</div>
         <div class="stat-hint">按保留天数自动清理</div>
       </div>
-      <div class="stat-card" :class="{ warn: (data?.summary.failed_24h ?? 0) > 0 }">
+      <div class="stat-tile" :class="{ 'is-warn': (data?.summary.failed_24h ?? 0) > 0 }">
         <div class="stat-label">24h 登录失败</div>
         <div class="stat-value">{{ data?.summary.failed_24h ?? 0 }}</div>
         <div class="stat-hint">含客户端与门户登录失败</div>
       </div>
-      <div class="stat-card" :class="{ danger: (data?.summary.risk_24h ?? 0) > 0 }">
+      <div class="stat-tile" :class="{ 'is-danger': (data?.summary.risk_24h ?? 0) > 0 }">
         <div class="stat-label">24h 风控拦截</div>
         <div class="stat-value">{{ data?.summary.risk_24h ?? 0 }}</div>
         <div class="stat-hint">
@@ -127,92 +141,62 @@ function riskLevel(row: LoginLogRow): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="data?.logs || []" v-loading="loading" style="width: 100%">
-        <el-table-column label="时间" width="170">
-          <template #default="{ row }">{{ fmt(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="用户" width="140">
-          <template #default="{ row }">{{ row.username || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="事件" width="140">
-          <template #default="{ row }">{{ row.reason_label }}</template>
-        </el-table-column>
-        <el-table-column label="结果" width="96">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="row.success ? 'ok' : 'off'">
-              {{ row.success ? '成功' : '失败' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="风险" width="90">
-          <template #default="{ row }">
-            <span
-              class="mini-badge"
-              :class="riskLevel(row) === '高风险' ? 'danger' : riskLevel(row) === '注意' ? 'warn' : 'ok'"
-            >
-              {{ riskLevel(row) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="IP" width="130">
-          <template #default="{ row }">{{ row.ip || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="详情" min-width="200">
-          <template #default="{ row }">{{ row.detail || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="客户端" min-width="180">
-          <template #default="{ row }">
-            <span class="ua">{{ row.user_agent || '—' }}</span>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable
+        :rows="data?.logs || []"
+        :columns="columns"
+        :loading="loading"
+        empty="暂无登录日志"
+      >
+        <template #cell-username="{ row }">
+          <span class="user-name">{{ row.username || '—' }}</span>
+        </template>
+
+        <template #cell-created_at="{ row }">{{ fmt(row.created_at) }}</template>
+
+        <template #cell-reason_label="{ row }">{{ row.reason_label }}</template>
+
+        <template #cell-success="{ row }">
+          <span class="mini-badge" :class="row.success ? 'ok' : 'off'">
+            {{ row.success ? '成功' : '失败' }}
+          </span>
+        </template>
+
+        <template #cell-risk="{ row }">
+          <span
+            class="mini-badge"
+            :class="riskLevel(row) === '高风险' ? 'danger' : riskLevel(row) === '注意' ? 'warn' : 'ok'"
+          >
+            {{ riskLevel(row) }}
+          </span>
+        </template>
+
+        <template #cell-ip="{ row }">
+          <span class="mono">{{ row.ip || '—' }}</span>
+        </template>
+
+        <template #cell-detail="{ row }">
+          <span v-if="!row.detail" class="muted">—</span>
+          <span v-else>{{ row.detail }}</span>
+        </template>
+
+        <template #cell-user_agent="{ row }">
+          <span class="ua">{{ row.user_agent || '—' }}</span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; }
+/* 统计瓦片、工具条、徽标都走全局原语，页面只补两种状态描边 */
+.stat-tile.is-warn { border-color: var(--warning-border); }
+.stat-tile.is-danger { border-color: var(--danger-border); }
 
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.stat-card {
-  background: var(--card-bg, #171717);
-  border: 1px solid var(--border-color, #262626);
-  border-radius: 12px;
-  padding: 14px 16px;
-}
-.stat-card.warn { border-color: rgba(250, 204, 21, 0.4); }
-.stat-card.danger { border-color: rgba(239, 68, 68, 0.45); }
-.stat-label { font-size: 12px; color: var(--color-text-secondary, #a3a3a3); }
-.stat-value { font-size: 22px; font-weight: 600; margin: 4px 0 2px; }
-.stat-hint {
-  font-size: 11px;
-  color: var(--color-text-muted, #737373);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
+.user-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
 
-.filter-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-
-.mini-badge {
-  display: inline-block;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  background: var(--border-color, #262626);
-  color: var(--color-text-secondary, #a3a3a3);
-}
-.mini-badge.ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
-.mini-badge.warn { background: rgba(250, 204, 21, 0.15); color: #facc15; }
-.mini-badge.danger { background: rgba(239, 68, 68, 0.15); color: #f87171; }
 .ua {
-  font-size: 11px;
-  color: var(--color-text-muted, #737373);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
   display: inline-block;
   max-width: 320px;
   overflow: hidden;

@@ -13,6 +13,18 @@ import {
   extendUserSubscription, fetchSubscriptions, grantUserSubscription,
 } from '@/api/economy'
 import type { SubscriptionOverviewRow } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+/** 订阅列表：手机端用户名做标题，「剩余」保留桌面端排序 */
+const columns: DataColumn[] = [
+  { key: 'username', label: '用户', minWidth: 140, mobile: 'title' },
+  { key: 'plan_name', label: '套餐', minWidth: 140 },
+  { key: 'period', label: '有效期', minWidth: 200 },
+  { key: 'days_left', label: '剩余', width: 110, sortable: true },
+  { key: 'status', label: '状态', width: 110 },
+  { key: 'actions', label: '操作', width: 170, fixed: 'right', align: 'right' },
+]
 
 const loading = ref(false)
 const rows = ref<SubscriptionOverviewRow[]>([])
@@ -133,13 +145,12 @@ async function submit() {
           v-model="search"
           placeholder="搜索用户名"
           clearable
-          style="width: 180px"
           @keyup.enter="load"
           @clear="load"
         >
           <template #prefix><Search :size="14" /></template>
         </el-input>
-        <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width: 140px" @change="load">
+        <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="load">
           <el-option label="生效中" value="active" />
           <el-option label="7 天内到期" value="expiring" />
           <el-option label="已过期" value="expired" />
@@ -168,43 +179,34 @@ async function submit() {
     </section>
 
     <div class="admin-card">
-      <el-table :data="rows" v-loading="loading" style="width: 100%">
-        <el-table-column label="用户" min-width="140">
-          <template #default="{ row }">
-            <span class="user-name">{{ row.username }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="套餐" min-width="140">
-          <template #default="{ row }">{{ row.plan_name }}</template>
-        </el-table-column>
-        <el-table-column label="有效期" min-width="200">
-          <template #default="{ row }">{{ fmtDay(row.start_date) }} → {{ fmtDay(row.end_date) }}</template>
-        </el-table-column>
-        <el-table-column label="剩余" width="110" sortable :sort-by="(r: SubscriptionOverviewRow) => r.days_left">
-          <template #default="{ row }">
-            <span :class="row.days_left <= 7 ? 'days-warn' : 'days-ok'">{{ row.days_left }} 天</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="daysTone(row)">{{ statusText(row) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              v-if="row.days_left > 0"
-              size="small"
-              text
-              type="primary"
-              @click="openExtend(row)"
-            >延长</el-button>
-            <el-button v-else size="small" text type="primary" @click="openGrant(row)">续订</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="rows" :columns="columns" :loading="loading" empty="没有符合条件的订阅记录">
+        <template #cell-username="{ row }">
+          <span class="user-name">{{ row.username }}</span>
+        </template>
 
-      <div v-if="!loading && rows.length === 0" class="empty-hint">没有符合条件的订阅记录</div>
+        <template #cell-plan_name="{ row }">{{ row.plan_name }}</template>
+
+        <template #cell-period="{ row }">{{ fmtDay(row.start_date) }} → {{ fmtDay(row.end_date) }}</template>
+
+        <template #cell-days_left="{ row }">
+          <span :class="row.days_left <= 7 ? 'days-warn' : 'days-ok'">{{ row.days_left }} 天</span>
+        </template>
+
+        <template #cell-status="{ row }">
+          <span class="mini-badge" :class="daysTone(row)">{{ statusText(row) }}</span>
+        </template>
+
+        <template #cell-actions="{ row }">
+          <el-button
+            v-if="row.days_left > 0"
+            size="small"
+            text
+            type="primary"
+            @click="openExtend(row)"
+          >延长</el-button>
+          <el-button v-else size="small" text type="primary" @click="openGrant(row)">续订</el-button>
+        </template>
+      </DataTable>
     </div>
 
     <el-dialog
@@ -212,7 +214,7 @@ async function submit() {
       :title="dialog.mode === 'extend' ? '延长订阅' : '续订 / 授予订阅'"
       width="440px"
     >
-      <el-form label-width="80px">
+      <el-form label-position="top">
         <el-form-item label="用户">
           <span class="dialog-user">{{ dialog.row?.username }}</span>
         </el-form-item>

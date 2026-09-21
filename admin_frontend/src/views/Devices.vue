@@ -10,6 +10,20 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshCw, Ban, CircleCheck, LogOut, Search } from 'lucide-vue-next'
 import { fetchDeviceStats, fetchDevices, removeDevice, setDeviceBlocked } from '@/api/admin'
 import type { DeviceRow, DeviceStats } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+/** 手机卡片：用户为标题，设备/客户端/IP/首次/最近活跃做键值行 */
+const columns: DataColumn[] = [
+  { key: 'username', label: '用户', width: 150, mobile: 'title' },
+  { key: 'name', label: '设备', minWidth: 170 },
+  { key: 'client', label: '客户端', width: 150 },
+  { key: 'ip', label: 'IP', width: 130 },
+  { key: 'first_seen_at', label: '首次', width: 150, mobile: 'hide' },
+  { key: 'last_seen_at', label: '最近活跃', width: 130 },
+  { key: 'is_blocked', label: '状态', width: 90 },
+  { key: 'actions', label: '操作', width: 180, fixed: 'right', align: 'right' },
+]
 
 const devices = ref<DeviceRow[]>([])
 const stats = ref<DeviceStats | null>(null)
@@ -95,22 +109,22 @@ function ago(s: string | null): string {
     </div>
 
     <div v-if="stats" class="stat-grid">
-      <div class="stat-card">
+      <div class="stat-tile">
         <div class="stat-label">设备总数</div>
         <div class="stat-value">{{ stats.total }}</div>
         <div class="stat-hint">来自 {{ stats.users }} 位用户</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-tile">
         <div class="stat-label">近 {{ stats.active_days }} 天活跃</div>
         <div class="stat-value">{{ stats.active_30d }}</div>
         <div class="stat-hint">长期未活跃的设备不计入上限</div>
       </div>
-      <div class="stat-card" :class="{ danger: stats.blocked > 0 }">
+      <div class="stat-tile" :class="{ 'is-danger': stats.blocked > 0 }">
         <div class="stat-label">已封禁</div>
         <div class="stat-value">{{ stats.blocked }}</div>
         <div class="stat-hint">封禁设备无法再次登录</div>
       </div>
-      <div class="stat-card">
+      <div class="stat-tile">
         <div class="stat-label">每用户上限</div>
         <div class="stat-value">{{ stats.limit_per_user || '不限' }}</div>
         <div class="stat-hint">
@@ -136,60 +150,53 @@ function ago(s: string | null): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="devices" v-loading="loading" style="width: 100%">
-        <el-table-column label="用户" width="150">
-          <template #default="{ row }">
-            {{ row.username }}
-            <span v-if="!row.is_user_active" class="mini-badge danger">已禁用</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="设备" min-width="170">
-          <template #default="{ row }">
-            <div class="dev-name">{{ row.name || '未命名设备' }}</div>
-            <div class="dev-id">{{ row.device_id }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="客户端" width="150">
-          <template #default="{ row }">
-            <div>{{ row.client || '—' }}</div>
-            <div class="dev-id">v{{ row.app_version || '-' }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="IP" width="130">
-          <template #default="{ row }">{{ row.ip || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="首次" width="150">
-          <template #default="{ row }">{{ fmt(row.first_seen_at) }}</template>
-        </el-table-column>
-        <el-table-column label="最近活跃" width="130">
-          <template #default="{ row }">
-            <span :class="{ muted: !row.is_online_recent }">{{ ago(row.last_seen_at) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="row.is_blocked ? 'danger' : 'ok'">
-              {{ row.is_blocked ? '已封禁' : '正常' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              text
-              :type="row.is_blocked ? 'success' : 'danger'"
-              @click="toggleBlock(row)"
-            >
-              <component :is="row.is_blocked ? CircleCheck : Ban" :size="13" />
-              {{ row.is_blocked ? '解封' : '封禁' }}
-            </el-button>
-            <el-button size="small" text type="warning" @click="kick(row)">
-              <LogOut :size="13" />移除
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="devices" :columns="columns" :loading="loading" empty="暂无设备记录">
+        <template #cell-username="{ row }">
+          <span class="user-name">{{ row.username }}</span>
+          <span v-if="!row.is_user_active" class="mini-badge danger">已禁用</span>
+        </template>
+
+        <template #cell-name="{ row }">
+          <div class="dev-name">{{ row.name || '未命名设备' }}</div>
+          <div class="dev-id">{{ row.device_id }}</div>
+        </template>
+
+        <template #cell-client="{ row }">
+          <div>{{ row.client || '—' }}</div>
+          <div class="dev-id">v{{ row.app_version || '-' }}</div>
+        </template>
+
+        <template #cell-ip="{ row }">
+          <span class="mono">{{ row.ip || '—' }}</span>
+        </template>
+
+        <template #cell-first_seen_at="{ row }">{{ fmt(row.first_seen_at) }}</template>
+
+        <template #cell-last_seen_at="{ row }">
+          <span :class="{ muted: !row.is_online_recent }">{{ ago(row.last_seen_at) }}</span>
+        </template>
+
+        <template #cell-is_blocked="{ row }">
+          <span class="mini-badge" :class="row.is_blocked ? 'danger' : 'ok'">
+            {{ row.is_blocked ? '已封禁' : '正常' }}
+          </span>
+        </template>
+
+        <template #cell-actions="{ row }">
+          <el-button
+            size="small"
+            :type="row.is_blocked ? 'success' : 'danger'"
+            plain
+            @click="toggleBlock(row)"
+          >
+            <component :is="row.is_blocked ? CircleCheck : Ban" :size="13" style="margin-right: 3px" />
+            {{ row.is_blocked ? '解封' : '封禁' }}
+          </el-button>
+          <el-button size="small" type="warning" plain @click="kick(row)">
+            <LogOut :size="13" style="margin-right: 3px" />移除
+          </el-button>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>

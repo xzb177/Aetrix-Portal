@@ -5,6 +5,16 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshCw } from 'lucide-vue-next'
 import { createAnnouncement, deleteAnnouncement, fetchAnnouncements, updateAnnouncement } from '@/api/admin'
 import type { Announcement } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+const columns: DataColumn[] = [
+  { key: 'title', label: '公告', minWidth: 260, mobile: 'title' },
+  { key: 'type', label: '类型', width: 90 },
+  { key: 'is_active', label: '状态', width: 90 },
+  { key: 'created_at', label: '发布时间', width: 150 },
+  { key: 'actions', label: '操作', width: 250, fixed: 'right', align: 'right' },
+]
 
 const list = ref<Announcement[]>([])
 const loading = ref(false)
@@ -97,42 +107,36 @@ function fmtDate(s: string): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="visibleList" v-loading="loading" style="width: 100%">
-        <el-table-column label="公告" min-width="260">
-          <template #default="{ row }">
-            <div class="ann-title">
-              <span v-if="row.is_pinned" class="mini-badge pin">置顶</span>
-              {{ row.title }}
-            </div>
-            <div class="ann-content">{{ row.content }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="90">
-          <template #default="{ row }">
-            <span class="mini-badge type">{{ row.type === 'system' ? '系统' : row.type }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <span class="mini-badge" :class="row.is_active === false ? 'off' : 'on'">
-              {{ row.is_active === false ? '已停用' : '展示中' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="发布时间" width="150">
-          <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="230" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" text @click="togglePin(row)">{{ row.is_pinned ? '取消置顶' : '置顶' }}</el-button>
-            <el-button size="small" text @click="toggleActive(row)">
-              {{ row.is_active === false ? '启用' : '停用' }}
-            </el-button>
-            <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="remove(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="visibleList" :columns="columns" :loading="loading" empty="暂无公告">
+        <template #cell-title="{ row }">
+          <div class="ann-title">
+            <span v-if="row.is_pinned" class="mini-badge pin">置顶</span>
+            <span class="ann-name">{{ row.title }}</span>
+          </div>
+          <div class="ann-content">{{ row.content }}</div>
+        </template>
+
+        <template #cell-type="{ row }">
+          <span class="mini-badge type">{{ row.type === 'system' ? '系统' : row.type }}</span>
+        </template>
+
+        <template #cell-is_active="{ row }">
+          <span class="mini-badge" :class="row.is_active === false ? 'off' : 'ok'">
+            {{ row.is_active === false ? '已停用' : '展示中' }}
+          </span>
+        </template>
+
+        <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+
+        <template #cell-actions="{ row }">
+          <el-button size="small" @click="togglePin(row)">{{ row.is_pinned ? '取消置顶' : '置顶' }}</el-button>
+          <el-button size="small" @click="toggleActive(row)">
+            {{ row.is_active === false ? '启用' : '停用' }}
+          </el-button>
+          <el-button size="small" type="primary" plain @click="openEdit(row)">编辑</el-button>
+          <el-button size="small" type="danger" plain @click="remove(row)">删除</el-button>
+        </template>
+      </DataTable>
     </div>
 
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑公告' : '发布公告'" width="480px">
@@ -159,20 +163,17 @@ function fmtDate(s: string): string {
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; }
-.ann-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.ann-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ann-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
+
 .ann-content {
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
-  margin-top: 2px;
+  margin-top: 4px;
+  line-height: var(--line-height-normal);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; flex-shrink: 0; }
-.mini-badge.pin { background: var(--warning-bg); color: var(--warning); }
-.mini-badge.type { background: var(--bg-hover); color: var(--text-secondary); }
-.mini-badge.on { background: var(--success-bg); color: var(--success); }
-.mini-badge.off { background: var(--bg-hover); color: var(--text-muted); }
 </style>

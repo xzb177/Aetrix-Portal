@@ -32,6 +32,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'transfer-115', name: 'Transfer115', component: () => import('@/views/Transfer115.vue'), meta: { title: '115 转存' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '操作日志' } },
+      { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '服务健康' } },
+      { path: 'emby-servers', name: 'EmbyServers', component: () => import('@/views/EmbyServers.vue'), meta: { title: 'Emby 服务入口' } },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },

@@ -4,6 +4,18 @@ import { computed, onMounted, ref } from 'vue'
 import { RefreshCw, Search } from 'lucide-vue-next'
 import { fetchLogs } from '@/api/admin'
 import type { AdminLogRow } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+/** 手机卡片以「操作」为标题，时间/目标/IP 作为键值行；详情本来就是长文本 */
+const columns: DataColumn[] = [
+  { key: 'action', label: '操作', width: 140, mobile: 'title' },
+  { key: 'admin_name', label: '操作人', width: 120 },
+  { key: 'target_type', label: '目标', width: 130, mobile: 'hide' },
+  { key: 'detail', label: '详情', minWidth: 260 },
+  { key: 'ip_address', label: 'IP', width: 130, mobile: 'hide' },
+  { key: 'created_at', label: '时间', width: 170 },
+]
 
 const logs = ref<AdminLogRow[]>([])
 const loading = ref(false)
@@ -124,47 +136,46 @@ function detailText(log: AdminLogRow): string {
     </div>
 
     <div class="admin-card">
-      <el-table :data="visibleLogs" v-loading="loading" style="width: 100%">
-        <el-table-column label="时间" width="170">
-          <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作人" prop="admin_name" width="120" />
-        <el-table-column label="操作" width="140">
-          <template #default="{ row }">
-            <span class="action-chip">{{ ACTION_LABELS[row.action] || row.action }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="目标" width="120">
-          <template #default="{ row }">
-            <span v-if="row.target_type">{{ row.target_type }}#{{ row.target_id }}</span>
-            <span v-else>—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="详情" min-width="260">
-          <template #default="{ row }">
-            <span class="log-detail">{{ detailText(row) || '—' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="IP" prop="ip_address" width="130">
-          <template #default="{ row }">{{ row.ip_address || '—' }}</template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="visibleLogs" :columns="columns" :loading="loading" empty="暂无操作日志">
+        <template #cell-action="{ row }">
+          <span class="action-chip">{{ ACTION_LABELS[row.action] || row.action }}</span>
+        </template>
+
+        <template #cell-admin_name="{ row }">{{ row.admin_name }}</template>
+
+        <template #cell-target_type="{ row }">
+          <span v-if="row.target_type">{{ row.target_type }}#{{ row.target_id }}</span>
+          <span v-else class="muted">—</span>
+        </template>
+
+        <template #cell-detail="{ row }">
+          <span class="log-detail">{{ detailText(row) || '—' }}</span>
+        </template>
+
+        <template #cell-ip_address="{ row }">
+          <span class="mono">{{ row.ip_address || '—' }}</span>
+        </template>
+
+        <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+      </DataTable>
     </div>
   </div>
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; }
 .action-chip {
-  font-size: 11px;
-  background: var(--primary-bg);
-  color: var(--primary);
-  border-radius: 6px;
-  padding: 2px 8px;
+  font-size: var(--font-size-xs);
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-border);
+  color: #7fe6f6;
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  white-space: nowrap;
 }
+
 .log-detail {
-  font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
   color: var(--text-secondary);
   word-break: break-all;
 }
@@ -172,20 +183,23 @@ function detailText(log: AdminLogRow): string {
 .quick-filters { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .quick-chip {
-  padding: 4px 12px;
+  padding: 6px 13px;
   border-radius: var(--radius-full);
   border: 1px solid var(--border-default);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: color var(--transition-fast), border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .quick-chip:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
 .quick-chip.active {
-  color: var(--primary);
+  color: #7fe6f6;
   border-color: var(--primary-border);
   background: var(--primary-bg);
+  font-weight: var(--font-weight-semibold);
 }
 </style>

@@ -5,6 +5,30 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshCw } from 'lucide-vue-next'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
+
+const planColumns: DataColumn[] = [
+  { key: 'name', label: '名称', width: 170, mobile: 'title' },
+  { key: 'description', label: '描述', minWidth: 170, mobile: 'hide' },
+  { key: 'price', label: '价格', width: 100 },
+  { key: 'duration_days', label: '时长', width: 90 },
+  { key: 'is_popular', label: '推荐', width: 80, mobile: 'hide' },
+  { key: 'is_active', label: '状态', width: 90 },
+  { key: 'sort_order', label: '排序', width: 80, mobile: 'hide' },
+  { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
+]
+
+const pkgColumns: DataColumn[] = [
+  { key: 'name', label: '名称', width: 170, mobile: 'title' },
+  { key: 'amount', label: '积分', width: 110 },
+  { key: 'total', label: '合计', width: 100 },
+  { key: 'price', label: '价格', width: 100 },
+  { key: 'is_popular', label: '推荐', width: 80, mobile: 'hide' },
+  { key: 'is_active', label: '状态', width: 90 },
+  { key: 'sort_order', label: '排序', width: 80, mobile: 'hide' },
+  { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
+]
 import {
   fetchEconomyPlans,
   createEconomyPlan,
@@ -170,34 +194,40 @@ onMounted(load)
         <h3>订阅套餐</h3>
         <el-button type="primary" size="small" :icon="Plus" @click="openPlanCreate">新增套餐</el-button>
       </header>
-      <el-table :data="plans" v-loading="loading" size="default">
-        <el-table-column prop="name" label="名称" width="160" />
-        <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip />
-        <el-table-column label="价格" width="100">
-          <template #default="{ row }">¥ {{ Number(row.price).toFixed(2) }}</template>
-        </el-table-column>
-        <el-table-column label="时长" width="90">
-          <template #default="{ row }">{{ row.duration_days }} 天</template>
-        </el-table-column>
-        <el-table-column label="推荐" width="80">
-          <template #default="{ row }">
-            <el-tag v-if="row.is_popular" type="warning" size="small">推荐</el-tag>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '上架' : '下架' }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="sort_order" label="排序" width="70" />
-        <el-table-column label="操作" width="140" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" @click="openPlanEdit(row)">编辑</el-button>
-            <el-button size="small" type="danger" plain @click="removePlan(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="plans" :columns="planColumns" :loading="loading" empty="还没有订阅套餐">
+        <template #cell-name="{ row }">
+          <span class="item-name">{{ row.name }}</span>
+        </template>
+
+        <template #cell-description="{ row }">
+          <span v-if="!row.description" class="muted">—</span>
+          <span v-else>{{ row.description }}</span>
+        </template>
+
+        <template #cell-price="{ row }">
+          <span class="price">¥ {{ Number(row.price).toFixed(2) }}</span>
+        </template>
+
+        <template #cell-duration_days="{ row }">{{ row.duration_days }} 天</template>
+
+        <template #cell-is_popular="{ row }">
+          <el-tag v-if="row.is_popular" type="warning" size="small">推荐</el-tag>
+          <span v-else class="muted">—</span>
+        </template>
+
+        <template #cell-is_active="{ row }">
+          <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
+            {{ row.is_active ? '上架' : '下架' }}
+          </el-tag>
+        </template>
+
+        <template #cell-sort_order="{ row }">{{ row.sort_order }}</template>
+
+        <template #cell-actions="{ row }">
+          <el-button size="small" @click="openPlanEdit(row)">编辑</el-button>
+          <el-button size="small" type="danger" plain @click="removePlan(row)">删除</el-button>
+        </template>
+      </DataTable>
     </section>
 
     <!-- 充值套餐 -->
@@ -206,41 +236,44 @@ onMounted(load)
         <h3>积分充值套餐</h3>
         <el-button type="primary" size="small" :icon="Plus" @click="openPkgCreate">新增套餐</el-button>
       </header>
-      <el-table :data="packages" v-loading="loading" stripe>
-        <el-table-column prop="name" label="名称" width="160" />
-        <el-table-column label="积分" width="100">
-          <template #default="{ row }">{{ row.amount }} + {{ row.bonus }}</template>
-        </el-table-column>
-        <el-table-column label="合计" width="100">
-          <template #default="{ row }"><strong>{{ row.amount + row.bonus }}</strong></template>
-        </el-table-column>
-        <el-table-column label="价格" width="100">
-          <template #default="{ row }">¥ {{ Number(row.price).toFixed(2) }}</template>
-        </el-table-column>
-        <el-table-column label="推荐" width="80">
-          <template #default="{ row }">
-            <el-tag v-if="row.is_popular" type="warning" size="small">超值</el-tag>
-            <span v-else class="muted">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '上架' : '下架' }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="sort_order" label="排序" width="70" />
-        <el-table-column label="操作" width="140" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" @click="openPkgEdit(row)">编辑</el-button>
-            <el-button size="small" type="danger" plain @click="removePkg(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <DataTable :rows="packages" :columns="pkgColumns" :loading="loading" empty="还没有充值套餐">
+        <template #cell-name="{ row }">
+          <span class="item-name">{{ row.name }}</span>
+        </template>
+
+        <template #cell-amount="{ row }">{{ row.amount }} + {{ row.bonus }}</template>
+
+        <template #cell-total="{ row }">
+          <span class="price">{{ row.amount + row.bonus }}</span>
+        </template>
+
+        <template #cell-price="{ row }">
+          <span class="price">¥ {{ Number(row.price).toFixed(2) }}</span>
+        </template>
+
+        <template #cell-is_popular="{ row }">
+          <el-tag v-if="row.is_popular" type="warning" size="small">超值</el-tag>
+          <span v-else class="muted">—</span>
+        </template>
+
+        <template #cell-is_active="{ row }">
+          <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
+            {{ row.is_active ? '上架' : '下架' }}
+          </el-tag>
+        </template>
+
+        <template #cell-sort_order="{ row }">{{ row.sort_order }}</template>
+
+        <template #cell-actions="{ row }">
+          <el-button size="small" @click="openPkgEdit(row)">编辑</el-button>
+          <el-button size="small" type="danger" plain @click="removePkg(row)">删除</el-button>
+        </template>
+      </DataTable>
     </section>
 
     <!-- 订阅套餐对话框 -->
-    <el-dialog v-model="planVisible" :title="planEditing ? '编辑订阅套餐' : '新增订阅套餐'" width="520">
-      <el-form label-width="90px">
+    <el-dialog v-model="planVisible" :title="planEditing ? '编辑订阅套餐' : '新增订阅套餐'" width="520px">
+      <el-form label-position="top">
         <el-form-item label="名称"><el-input v-model="planForm.name" maxlength="50" /></el-form-item>
         <el-form-item label="描述"><el-input v-model="planForm.description" maxlength="200" /></el-form-item>
         <el-form-item label="价格 (¥)"><el-input-number v-model="planForm.price" :min="0" :precision="2" style="width: 100%" /></el-form-item>
@@ -261,8 +294,8 @@ onMounted(load)
     </el-dialog>
 
     <!-- 充值套餐对话框 -->
-    <el-dialog v-model="pkgVisible" :title="pkgEditing ? '编辑充值套餐' : '新增充值套餐'" width="480">
-      <el-form label-width="100px">
+    <el-dialog v-model="pkgVisible" :title="pkgEditing ? '编辑充值套餐' : '新增充值套餐'" width="480px">
+      <el-form label-position="top">
         <el-form-item label="名称"><el-input v-model="pkgForm.name" maxlength="50" /></el-form-item>
         <el-form-item label="积分数"><el-input-number v-model="pkgForm.amount" :min="1" style="width: 100%" /></el-form-item>
         <el-form-item label="赠送积分"><el-input-number v-model="pkgForm.bonus" :min="0" style="width: 100%" /></el-form-item>

@@ -20,6 +20,7 @@ from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
+from backend.api.emby_servers import router as emby_servers_router
 from backend.api.admin_ops import admin_ops_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_routes import install_mount_routes
@@ -200,6 +201,7 @@ app.include_router(user_router)
 # 管理后台 API 路由
 app.include_router(admin_router)
 app.include_router(admin_ops_router)
+app.include_router(emby_servers_router)
 
 # ==================== 自建 Emby 协议网关 ====================
 # 默认由 EM 一并提供（单进程模式，现有部署行为不变）；
