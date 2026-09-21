@@ -24,6 +24,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend import qbittorrent
+from backend import servers
 from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend.database import get_db
 from backend.ratelimit import check_rate_limit, client_ip
@@ -264,6 +266,16 @@ class TicketReplyRequest(BaseModel):
 class MediaSeekUpdateRequest(BaseModel):
     status: str  # approved, rejected, completed
     admin_note: Optional[str] = None
+
+
+class MediaSeekPushRequest(BaseModel):
+    """把求片转交给外部服务
+
+    - ``target``：``moviepilot``（提交订阅）/ ``qbittorrent``（加种）/ ``auto``（优先 MoviePilot）
+    - ``link``：qB 需要磁力 / 种子链接（它自己不会去找片子；MoviePilot 不需要）
+    """
+    target: str = "auto"
+    link: Optional[str] = Field(default=None, max_length=2000)
 
 
 class UserMessageSendRequest(BaseModel):
@@ -1037,8 +1049,60 @@ async def get_media_seeks(
             "admin_note": req.admin_note,
             "user_name": user.username if user else "未知",
             "created_at": _log_out(req),
+            # 转交外部服务的结果：让面板能看出「批了但还没真的去下载」
+            "push_target": req.push_target,
+            "push_status": req.push_status,
+            "push_message": req.push_message,
+            "pushed_at": req.pushed_at.isoformat() if req.pushed_at else None,
         })
     return result
+
+
+@admin_router.post("/media-seek/{request_id}/push")
+async def push_media_seek(
+    request_id: int,
+    payload: MediaSeekPushRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """把一条求片交给 MoviePilot（订阅）或 qBittorrent（加种）
+
+    以前求片只能改状态，批了之后得管理员自己去别处搜片子——这个端点把那一步接上。
+    失败原因（连不上 / 凭据不对 / 没填链接）原样回给面板，不假装成功。
+    """
+    media_request = db.query(models.MovieRequest).filter(
+        models.MovieRequest.id == request_id
+    ).first()
+    if not media_request:
+        raise HTTPException(status_code=404, detail="求片请求不存在")
+
+    # qB 要链接：直接给磁力最好；只贴了整段分享文本也能从中挑出一条
+    link = qbittorrent.pick_link(payload.link or "") or (payload.link or "").strip()
+    result = await servers.push_media_seek(db, media_request, payload.target, link=link)
+
+    target = str(result.get("target") or payload.target)
+    media_request.push_target = target
+    media_request.push_status = "ok" if result.get("ok") else "failed"
+    media_request.push_message = str(result.get("message") or "")[:300]
+    media_request.pushed_at = datetime.now()
+    # 交出去了就代表处理过了：批过的求片推成功时顺手标成已批准，省得管理员再点一次
+    if result.get("ok") and media_request.status == "pending":
+        media_request.status = "approved"
+    db.commit()
+
+    _audit(db, current_admin, "push_media_seek", "media_seek", request_id,
+           {"target": target, "ok": bool(result.get("ok")),
+            "server": result.get("server")})
+    db.commit()
+
+    return {
+        "success": bool(result.get("ok")),
+        "target": target,
+        "server": result.get("server"),
+        "message": str(result.get("message") or ""),
+        "request_id": request_id,
+        "status": media_request.status,
+    }
 
 
 @admin_router.put("/media-seek/{request_id}")

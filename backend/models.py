@@ -79,6 +79,45 @@ class SystemConfig(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class RemoteServer(Base):
+    """已添加的服务器（面板可以加多台，每类里挑一台作为「当前使用」）
+
+    四类：
+
+    - ``ea``：本项目自带的 Emby API（EA，分离部署的后端服）。激活后同步写回
+      ``emby_managed_*`` 配置，现有的网关闸门 / 挂载体检 / 客户端指引全部照旧生效。
+    - ``emby``：已有的第三方 Emby / Jellyfin。激活后同步写回 ``emby_external_*``。
+    - ``moviepilot``：MoviePilot。求片批准后可一键提交为它的订阅（它自己去搜索与下载）。
+    - ``qbittorrent``：qBittorrent。有磁力/种子链接时可直接交给它下载。
+
+    ``config`` 存类型相关字段（JSON 文本），密钥类字段永不出接口（见 ``servers.mask_config``）。
+    同一类型只能有一行 ``is_active``：由激活接口保证，避免出现「谁是当前入口」的歧义。
+    """
+
+    __tablename__ = 'remote_servers'
+
+    __table_args__ = (
+        Index('idx_remote_server_kind', 'kind'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(80), unique=True, nullable=False)
+    kind = Column(String(20), nullable=False)  # ea / emby / moviepilot / qbittorrent
+    url = Column(String(500), nullable=False)
+    # 类型相关配置（JSON 文本）：api_key / username / password / savepath 等
+    config = Column(Text, default='{}')
+    is_enabled = Column(Boolean, default=True)
+    # 同一类型里的「当前使用」：EA / Emby 会同步到 emby_active_mode 等旧配置键
+    is_active = Column(Boolean, default=False)
+    remark = Column(String(300), default='')
+    # 最近一次连接测试结果（仅展示，不参与鉴权判断）
+    last_checked_at = Column(DateTime)
+    last_check_ok = Column(Boolean)
+    last_check_message = Column(String(300))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class NotificationHistory(Base):
     """通知历史表"""
     __tablename__ = 'notification_history'
@@ -765,6 +804,11 @@ class MovieRequest(Base):
     status = Column(String(20), default='pending')
     admin_note = Column(Text)
     emby_item_id = Column(String(100))
+    # 转交外部服务的结果：moviepilot（已提交订阅）/ qbittorrent（已交给下载器加种）
+    push_target = Column(String(20))
+    push_status = Column(String(20))  # ok / failed
+    push_message = Column(String(300))
+    pushed_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

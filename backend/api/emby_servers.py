@@ -8,12 +8,12 @@ import logging
 from typing import Optional
 from urllib.parse import urlparse
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend import servers as registry
 from backend.api.admin import _audit, get_current_admin
 from backend.database import get_db
 from backend.emby_server import mount_health
@@ -95,30 +95,15 @@ async def refresh_mount_health(db: Session, url: str) -> dict:
 
 
 async def probe(mode: str, url: str, api_key: str = "") -> dict:
-    """检查服务是否真的可用，而不是只检查端口是否能打开。"""
+    """检查服务是否真的可用，而不是只检查端口是否能打开。
+
+    实现落在 ``backend.servers``（``probe_ea`` / ``probe_emby``）：服务器清单页与这里
+    用的是同一套探测，避免两处对「连得上」的口径出现分岐。
+    """
     target = _validate_url(url)
-    endpoint = f"{target}/api/health" if mode == "managed_ea" else f"{target}/System/Info/Public"
-    headers = {} if mode == "managed_ea" else ({"X-Emby-Token": api_key} if api_key else {})
-    try:
-        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-            response = await client.get(endpoint, headers=headers)
-        if response.status_code >= 400:
-            return {"ok": False, "status_code": response.status_code, "message": f"服务返回 HTTP {response.status_code}"}
-        body = response.json() if response.content else {}
-        if mode == "managed_ea" and (
-            body.get("service") != "ea"
-            or body.get("status") != "healthy"
-            or not body.get("paired_with_em")
-        ):
-            return {"ok": False, "status_code": response.status_code, "message": "EA 已响应，但还没有和面板配对；请确认共享数据库与 SECRET_KEY 一致"}
-        return {
-            "ok": True,
-            "status_code": response.status_code,
-            "server_name": body.get("emby_server_name") or body.get("ServerName") or body.get("Product") or "Emby 服务",
-            "version": body.get("version") or body.get("Version") or "",
-        }
-    except (httpx.RequestError, ValueError):
-        return {"ok": False, "status_code": None, "message": "无法连接或返回格式不正确"}
+    if mode == "managed_ea":
+        return await registry.probe_ea(target)
+    return await registry.probe_emby(target, api_key)
 
 
 @router.get("/servers")
@@ -172,6 +157,14 @@ async def save_server(
     if request.enabled and result.get("ok"):
         save_value(db, "emby_active_mode", request.mode, "当前 Emby 服务模式")
     db.commit()
+
+    # 同步进「服务器」清单：两个页面（旧的两个格子 / 新的清单）操作的是同一件事，
+    # 收敛到一条真相，旧页保存后新页面就能看到它是「当前使用」。
+    registry.upsert_legacy(
+        db, "ea" if request.mode == "managed_ea" else "emby", url,
+        api_key=(request.api_key or "") if request.mode == "external" else "",
+        enabled=request.enabled, reachable=bool(result.get("ok")),
+    )
 
     # 挂载是主机相对的：EA 能连通不等于它能碰到面板里配的存储。
     # 所以保存 EA 服务入口时顺带做一次 EA 视角的挂载体检，把结果落到面板上。

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /** 求片管理：审核批准/拒绝/标记完成，联动用户通知 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, RefreshCw, X } from 'lucide-vue-next'
-import { fetchMediaSeeks, updateMediaSeek } from '@/api/admin'
-import type { MediaSeekRow } from '@/types'
+import { Check, CloudDownload, Download, RefreshCw, X } from 'lucide-vue-next'
+import { fetchMediaSeeks, fetchServersSummary, pushMediaSeek, updateMediaSeek } from '@/api/admin'
+import type { MediaSeekRow, ServerKind } from '@/types'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
@@ -14,22 +14,75 @@ const columns: DataColumn[] = [
   { key: 'type', label: '类型', width: 80 },
   { key: 'user_name', label: '用户', width: 110 },
   { key: 'status', label: '状态', width: 100 },
+  { key: 'push', label: '转交外部服务', width: 170 },
   { key: 'admin_note', label: '管理备注', minWidth: 140, mobile: 'hide' },
   { key: 'created_at', label: '提交时间', width: 150 },
-  { key: 'actions', label: '操作', width: 200, fixed: 'right', align: 'right' },
+  // 批准 / 拒绝 / 转交 / 标记上架可能同时出现，给足宽度免得按钮被挤成两行
+  { key: 'actions', label: '操作', width: 330, fixed: 'right', align: 'right' },
 ]
 
 const list = ref<MediaSeekRow[]>([])
 const loading = ref(false)
 const statusFilter = ref('')
+const busyId = ref<number | null>(null)
+/** 哪几类外部服务已经接好（用于决定显示哪些推送按钮） */
+const pushReady = ref<ServerKind[]>([])
+
+const canMoviePilot = computed(() => pushReady.value.includes('moviepilot'))
+const canQbittorrent = computed(() => pushReady.value.includes('qbittorrent'))
+/** 一个能推的都没有：直接把入口指去「服务器」页，而不是发一个点了也不动的按钮 */
+const noPushTarget = computed(() => !canMoviePilot.value && !canQbittorrent.value)
 
 async function load() {
   loading.value = true
   try {
     list.value = await fetchMediaSeeks(statusFilter.value ? { status_filter: statusFilter.value } : {})
+    // 服务器没接好时按钮点了也只会失败，所以这里如实反映当前可用目标
+    const summary = await fetchServersSummary()
+    pushReady.value = summary.push_ready || []
   } finally {
     loading.value = false
   }
+}
+
+/** 推给 MoviePilot：它自己去搜索、下载、整理入库 */
+async function pushToMoviePilot(r: MediaSeekRow) {
+  busyId.value = r.id
+  try {
+    const res = await pushMediaSeek(r.id, { target: 'moviepilot' })
+    res.success ? ElMessage.success(res.message || '已提交给 MoviePilot') : ElMessage.warning(res.message)
+    await load()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    busyId.value = null
+  }
+}
+
+/** 交给 qBittorrent：qB 自己不会找片子，所以必须提供磁力 / 种子链接 */
+async function pushToQbittorrent(r: MediaSeekRow) {
+  const { value } = await ElMessageBox.prompt(
+    `把《${r.movie_name}》的下载链接交给 qBittorrent`,
+    '交给下载器',
+    { inputPlaceholder: 'magnet:?xt=… 或 .torrent 的 http 地址', inputType: 'textarea' }
+  )
+  if (!value) return
+  busyId.value = r.id
+  try {
+    const res = await pushMediaSeek(r.id, { target: 'qbittorrent', link: value })
+    res.success ? ElMessage.success(res.message || '已交给下载器') : ElMessage.warning(res.message)
+    await load()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    busyId.value = null
+  }
+}
+
+function pushLabel(target: string | null): string {
+  if (target === 'moviepilot') return 'MoviePilot'
+  if (target === 'qbittorrent') return 'qBittorrent'
+  return target || '—'
 }
 
 onMounted(load)
@@ -86,6 +139,14 @@ function statusLabel(status: string): string {
       </div>
     </div>
 
+    <!-- 没接好 MoviePilot / qB 时，求片批了也没法真的把片子弄进来：如实说明并给出入口 -->
+    <el-alert v-if="noPushTarget" type="warning" :closable="false" show-icon class="push-guide">
+      <template #default>
+        还没有可以接收求片的服务：请在「服务器」页添加 <b>MoviePilot</b>（搜片下载与整理）或
+        <b>qBittorrent</b>（下载器），测试连接通过后这里就会出现转交按钮。
+      </template>
+    </el-alert>
+
     <div class="admin-card">
       <DataTable :rows="list" :columns="columns" :loading="loading" empty="暂无求片记录">
         <template #cell-movie_name="{ row }">
@@ -109,6 +170,18 @@ function statusLabel(status: string): string {
           <span v-else>{{ row.admin_note }}</span>
         </template>
 
+        <template #cell-push="{ row }">
+          <div v-if="!row.push_target" class="muted">未转交</div>
+          <div v-else class="push-cell">
+            <span class="mini-badge" :class="row.push_status === 'ok' ? 'ok' : 'danger'">
+              {{ pushLabel(row.push_target) }}{{ row.push_status === 'ok' ? ' 已提交' : ' 失败' }}
+            </span>
+            <el-tooltip v-if="row.push_message" :content="row.push_message" placement="top">
+              <span class="muted push-msg">{{ row.push_message }}</span>
+            </el-tooltip>
+          </div>
+        </template>
+
         <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
 
         <template #cell-actions="{ row }">
@@ -117,6 +190,25 @@ function statusLabel(status: string): string {
           </el-button>
           <el-button v-if="row.status === 'pending'" size="small" type="danger" plain @click="review(row, 'rejected')">
             <X :size="13" style="margin-right: 3px" />拒绝
+          </el-button>
+          <el-button
+            v-if="canMoviePilot && (row.status === 'pending' || row.status === 'approved')"
+            size="small"
+            type="primary"
+            plain
+            :loading="busyId === row.id"
+            @click="pushToMoviePilot(row)"
+          >
+            <CloudDownload :size="13" style="margin-right: 3px" />交 MoviePilot
+          </el-button>
+          <el-button
+            v-if="canQbittorrent && (row.status === 'pending' || row.status === 'approved')"
+            size="small"
+            plain
+            :loading="busyId === row.id"
+            @click="pushToQbittorrent(row)"
+          >
+            <Download :size="13" style="margin-right: 3px" />交给 qB
           </el-button>
           <el-button v-if="row.status === 'approved'" size="small" type="primary" plain @click="review(row, 'completed')">
             标记上架
@@ -136,4 +228,8 @@ function statusLabel(status: string): string {
 .movie-year { font-size: var(--font-size-xs); color: var(--text-muted); margin-left: 6px; }
 .movie-note { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 3px; }
 .done-hint { font-size: var(--font-size-xs); }
+.push-guide { margin-bottom: 14px; line-height: 1.7; }
+.push-cell { display: flex; flex-direction: column; gap: 3px; }
+.push-cell .mini-badge { align-self: flex-start; }
+.push-msg { display: block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-xs); }
 </style>

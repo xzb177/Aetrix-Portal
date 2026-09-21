@@ -13,10 +13,13 @@ import { RouterLink } from 'vue-router'
 import {
   Film, MessageSquareDashed, Play, Radio, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
+  Server, HardDrive, CloudDownload, Download,
 } from 'lucide-vue-next'
-import { fetchLibraries, fetchOverview, fetchPlaybackStats, fetchSessions, fetchStatsTrend } from '@/api/admin'
+import {
+  fetchLibraries, fetchOverview, fetchPlaybackStats, fetchServersSummary, fetchSessions, fetchStatsTrend,
+} from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
-import type { EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, TrendStats } from '@/types'
+import type { EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, ServerSummary, TrendStats } from '@/types'
 
 const overview = ref<OverviewStats | null>(null)
 const playback = ref<PlaybackStats | null>(null)
@@ -24,6 +27,8 @@ const economy = ref<EconomyStats | null>(null)
 const trend = ref<TrendStats | null>(null)
 const libraries = ref<EmbyLibrary[]>([])
 const sessions = ref<EmbySessionRow[]>([])
+/** 服务器接入情况：面板到底接了几台后端服 / 几台 Emby 服 / 有没有接下载器 */
+const servers = ref<ServerSummary | null>(null)
 const loading = ref(true)
 const trendLoading = ref(false)
 
@@ -48,22 +53,41 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e, libraryData, sessionData] = await Promise.all([
+    const [o, p, e, libraryData, sessionData, serverData] = await Promise.all([
       fetchOverview(),
       fetchPlaybackStats(),
       fetchEconomyStats(),
       fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
       fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
+      fetchServersSummary().catch(() => null),
     ])
     overview.value = o
     playback.value = p
     economy.value = e
     libraries.value = libraryData.libraries
     sessions.value = sessionData.sessions
+    servers.value = serverData
     await loadTrend()
   } finally {
     loading.value = false
   }
+})
+
+// ==================== 服务器接入（信息展示）====================
+
+const SERVER_ICONS: Record<string, unknown> = {
+  ea: Server,
+  emby: HardDrive,
+  moviepilot: CloudDownload,
+  qbittorrent: Download,
+}
+
+const serverTiles = computed(() => {
+  const kinds = servers.value?.kinds || {}
+  return Object.values(kinds).map((stat) => ({
+    stat,
+    icon: SERVER_ICONS[stat.kind] || Server,
+  }))
 })
 
 watch(days, loadTrend)
@@ -189,6 +213,35 @@ function sessionProgress(session: EmbySessionRow): number {
           <div class="stat-label"><Play :size="13" /> 今日播放</div>
           <div class="stat-value">{{ playback?.today.plays ?? 0 }}<span class="stat-sub"> 次 / {{ playback?.today.users ?? 0 }} 人</span></div>
         </div>
+      </section>
+
+      <!--
+        服务器接入：接了什么、几台能用、当前用哪台。以前这些只能去「Emby 服务入口」
+        猜，接入 MoviePilot / qB 之后更需要一个一眼能看完的地方。
+      -->
+      <section v-if="serverTiles.length" class="stat-grid">
+        <RouterLink
+          v-for="tile in serverTiles"
+          :key="tile.stat.kind"
+          to="/servers"
+          class="stat-tile server-tile"
+        >
+          <div class="stat-label">
+            <component :is="tile.icon" :size="13" /> {{ tile.stat.short }}
+            <span v-if="tile.stat.active_name" class="server-current">当前</span>
+          </div>
+          <div class="stat-value" :class="{ 'stat-accent': tile.stat.reachable > 0 }">
+            {{ tile.stat.total }}<span class="stat-sub"> 台 · 可用 {{ tile.stat.reachable }}</span>
+          </div>
+          <div class="stat-foot">
+            <template v-if="tile.stat.activatable">
+              {{ tile.stat.active_name || '未设置当前使用' }}
+            </template>
+            <template v-else>
+              {{ tile.stat.reachable > 0 ? '可用于求片' : '未连接' }}
+            </template>
+          </div>
+        </RouterLink>
       </section>
 
       <!-- 交易概览 -->
@@ -369,6 +422,14 @@ function sessionProgress(session: EmbySessionRow): number {
 .stat-sub { font-size: 15px; color: var(--text-secondary); font-weight: 500; }
 .stat-label { display: flex; align-items: center; gap: 6px; }
 .stat-foot { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+
+/* ===== 服务器接入卡（一点直达「服务器」页）===== */
+.server-tile { text-decoration: none; display: block; }
+.server-tile:hover { border-color: var(--primary); }
+.server-current {
+  margin-left: 4px; padding: 0 6px; border-radius: 999px;
+  background: var(--primary-bg); color: var(--primary); font-size: 10px; font-weight: 700;
+}
 
 /* ===== 待办条 ===== */
 .todo-bar {

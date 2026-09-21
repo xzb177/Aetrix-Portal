@@ -171,6 +171,92 @@ export interface MediaSeekRow {
   admin_note: string | null
   user_name: string
   created_at: string
+  /** 已转交的外部服务：moviepilot（已提交订阅）/ qbittorrent（已交给下载器） */
+  push_target: string | null
+  push_status: string | null
+  push_message: string | null
+  pushed_at: string | null
+}
+
+// ==================== 服务器清单 ====================
+
+/** 服务器类型：ea（后端服）/ emby（已有 Emby）/ moviepilot / qbittorrent */
+export type ServerKind = 'ea' | 'emby' | 'moviepilot' | 'qbittorrent'
+
+/** 类型声明的一个配置字段（由后端类型元数据下发，前端不再维护一份） */
+export interface ServerFieldMeta {
+  key: string
+  label: string
+  type?: 'text' | 'password' | 'number'
+  secret?: boolean
+  placeholder?: string
+  help?: string
+}
+
+export interface ServerKindMeta {
+  value: ServerKind
+  label: string
+  short: string
+  desc: string
+  group: string
+  /** 只有 EA / Emby 有「当前使用」的概念 */
+  activatable: boolean
+  fields: ServerFieldMeta[]
+}
+
+export interface RemoteServerRow {
+  id: number
+  name: string
+  kind: ServerKind
+  kind_label: string
+  kind_group: string
+  url: string
+  config: Record<string, string>
+  /** 已配置密钥的字段名（密钥明文永不下发） */
+  secret_keys: string[]
+  is_enabled: boolean
+  is_active: boolean
+  remark: string
+  last_checked_at: string | null
+  last_check_ok: boolean | null
+  last_check_message: string
+  activatable: boolean
+  can_push_media_seek: boolean
+}
+
+export interface ServerKindSummary {
+  kind: ServerKind
+  label: string
+  short: string
+  group: string
+  activatable: boolean
+  total: number
+  enabled: number
+  reachable: number
+  active_id: number | null
+  active_name: string
+  active_url: string
+}
+
+export interface ServerSummary {
+  kinds: Record<string, ServerKindSummary>
+  total: number
+  reachable: number
+  unchecked: number
+  /** 可以用来接收求片推送的类型（已启用且体检通过） */
+  push_ready: ServerKind[]
+}
+
+export interface ServerProbeResult {
+  ok: boolean
+  message?: string
+  status_code?: number | null
+  server_name?: string
+  version?: string
+  can_query?: boolean
+  can_subscribe?: boolean
+  subscribe_count?: number | null
+  torrent_count?: number | null
 }
 
 export interface AdminLogRow {

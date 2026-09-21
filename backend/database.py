@@ -205,6 +205,14 @@ def _auto_migrate():
             ("account_115_id", "INTEGER", "NULL"),
             ("mount_ids", "TEXT", "''"),
         ],
+        # v2.6.19 求片可以转交外部服务（MoviePilot 订阅 / qBittorrent 加种）：
+        # 把「交给谁、成没成、为什么没成」落库，否则面板只能显示一句模糊的失败
+        "movie_requests": [
+            ("push_target", "VARCHAR(20)", "NULL"),
+            ("push_status", "VARCHAR(20)", "NULL"),
+            ("push_message", "VARCHAR(300)", "NULL"),
+            ("pushed_at", "DATETIME", "NULL"),
+        ],
         "emby_items": [
             ("imdb_id", "VARCHAR(20)", "NULL"),
             ("aliases", "TEXT", "''"),
