@@ -48,7 +48,7 @@ function isActive(path: string) {
   bottom: 0;
   z-index: 55;
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
-  background: rgba(7, 11, 18, 0.92);
+  background: var(--au-overlay);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   border-top: 1px solid var(--au-border);

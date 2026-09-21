@@ -206,20 +206,23 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="tickets-page">
-    <!-- 页面头部 -->
-    <div class="page-header">
-      <div class="header-content">
+  <div class="au-page is-narrow tickets-page">
+    <!-- 页面头部：改用全局页头，与消息 / 求片 / 观看记录同一套排版 -->
+    <header class="page-head au-anim-up">
+      <div>
         <h1 class="page-title">
-          <Ticket :size="24" />
+          <Ticket :size="20" />
           工单中心
         </h1>
+        <p class="page-sub">遇到问题在这里提单，客服回复会推送到消息中心</p>
+      </div>
+      <div class="head-actions">
         <button @click="openCreateModal" class="btn-create">
-          <Plus :size="18" />
+          <Plus :size="16" />
           新建工单
         </button>
       </div>
-    </div>
+    </header>
 
     <!-- 工单列表 -->
     <div class="tickets-content">
@@ -368,33 +371,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.tickets-page {
-  max-width: 600px;
-  margin: 0 auto;
-  padding: 1.5rem 1rem;
-}
-
-/* 页面头部 */
-.page-header {
-  margin-bottom: 1.5rem;
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: #fafafa;
-  margin: 0;
-}
+/* 页面骨架与页头都在全局样式里（styles/aurora.css「页面骨架」）；
+   这里原先自己写了一套 600px 宽的容器和一份 #fafafa 标题色，
+   结果工单页比别的页面窄一截、标题也偏粗白。 */
 
 .btn-create {
   display: flex;
@@ -783,13 +762,8 @@ onMounted(() => {
 
 /* 响应式 */
 @media (max-width: 480px) {
-  .tickets-page {
-    padding: 1rem 0.75rem;
-  }
-
-  .header-content {
-    flex-direction: column;
-    align-items: stretch;
+  .head-actions {
+    width: 100%;
   }
 
   .btn-create {

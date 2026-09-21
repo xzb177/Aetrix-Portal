@@ -248,12 +248,6 @@ onMounted(loadItem)
   padding-bottom: 3rem;
 }
 
-.container {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 0 1.25rem;
-}
-
 .backdrop {
   position: absolute;
   top: 0;

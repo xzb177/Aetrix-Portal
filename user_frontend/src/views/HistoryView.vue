@@ -300,31 +300,7 @@ onMounted(refreshAll)
 </template>
 
 <style scoped>
-.page-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.25rem;
-}
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0;
-  font-size: 1.375rem;
-  font-weight: 700;
-  color: var(--au-text);
-}
-
-.page-title svg { color: var(--au-primary); }
-
-.page-sub {
-  margin: 0.375rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-}
+/* 页头与页面骨架见 styles/aurora.css「页面骨架」一节（原先这里写了一份同样的） */
 
 .block { margin-bottom: 1.25rem; }
 

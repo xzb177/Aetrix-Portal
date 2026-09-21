@@ -7,12 +7,19 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { authApi, embyApi, subscriptionApi, type AuthUser, type AccountCard, type MySubscription, type WatchStats } from '@/api'
-import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
+import {
+  authApi, embyApi, messageApi, subscriptionApi,
+  type AuthUser, type AccountCard, type MySubscription, type WatchStats,
+} from '@/api'
+import {
+  deviceApi, inviteApi,
+  type MyDevice, type MyDevicesResponse, type MyInviteInfo,
+} from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 import {
   User, Lock, KeyRound, LogOut, ShieldCheck, RefreshCw, Eye, EyeOff, Copy, Check, Film,
   Play, History, Crown, Heart, Sparkles, MonitorSmartphone,
+  Clapperboard, Search, Wallet, CalendarCheck, Gift, Inbox, Ticket,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -26,6 +33,62 @@ const loading = ref(true)
 const account = ref<AccountCard | null>(null)
 const stats = ref<WatchStats | null>(null)
 const subscriptions = ref<MySubscription[]>([])
+// 功能入口里的“状态”字样：未读条数 / 邀请开关与已邀请人数
+const unreadCount = ref(0)
+const inviteEnabled = ref<boolean | null>(null)
+const invitedCount = ref(0)
+
+/**
+ * 功能入口（个人中心同时是「功能地图」）
+ *
+ * 用户端的页面已经不少（媒体库 / 搜索 / 收藏 / 观看记录 / 钱包 / 签到 / 邀请 /
+ * 消息 / 求片 / 工单），此前只在顶栏分组（桌面）与 ☰ 抽屉（移动端）里各有一次入口，
+ * 个人中心只列了四个，结果就是「邀请返利明明做了，用户却在用户端找不到」。
+ * 这里按用途分三组列全，每个入口带一句说明，点一次就到。
+ */
+const featureGroups = computed(() => [
+  {
+    title: '内容',
+    items: [
+      { to: '/media', icon: Clapperboard, label: '媒体库', hint: '全部影片与剧集' },
+      { to: '/search', icon: Search, label: '搜索片名', hint: '跨库检索' },
+      { to: '/favorites', icon: Heart, label: '我的收藏', hint: '收藏过的条目' },
+      { to: '/history', icon: History, label: '观看记录', hint: '进度与正在播放' },
+    ],
+  },
+  {
+    title: '经济与奖励',
+    items: [
+      { to: '/wallet', icon: Wallet, label: '钱包与订阅', hint: '积分 · 兑换 · 订单' },
+      { to: '/checkin', icon: CalendarCheck, label: '每日签到', hint: '签到领积分' },
+      {
+        to: '/invite',
+        icon: Gift,
+        label: '邀请返利',
+        hint: inviteEnabled.value === false
+          ? '管理员暂未开启'
+          : invitedCount.value > 0
+            ? `已邀请 ${invitedCount.value} 位好友`
+            : '邀请好友双向得积分',
+        alert: inviteEnabled.value === false,
+      },
+    ],
+  },
+  {
+    title: '互动与支持',
+    items: [
+      {
+        to: '/messages',
+        icon: Inbox,
+        label: '消息中心',
+        hint: unreadCount.value > 0 ? `${unreadCount.value} 条未读` : '工单 / 求片 / 会员提醒',
+        alert: unreadCount.value > 0,
+      },
+      { to: '/request', icon: Film, label: '求片中心', hint: '想看什么就在这提' },
+      { to: '/tickets', icon: Ticket, label: '工单支持', hint: '问题与回复记录' },
+    ],
+  },
+])
 
 const activeSub = computed(() => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null)
 const watchHours = computed(() => {
@@ -212,7 +275,21 @@ onMounted(async () => {
     loading.value = false
   }
   loadDevices()
+  loadHubHints()
 })
+
+/** 功能入口上的状态字样（未读数 / 邀请开关）——单独发，失败不影响页面 */
+async function loadHubHints() {
+  const [unread, invite] = await Promise.all([
+    messageApi.getUnreadCount().catch((): { unread_count: number } | null => null),
+    inviteApi.myCode().catch((): MyInviteInfo | null => null),
+  ])
+  if (unread) unreadCount.value = unread.unread_count ?? 0
+  if (invite) {
+    inviteEnabled.value = invite.config?.enabled !== false
+    invitedCount.value = invite.invited_count ?? 0
+  }
+}
 
 function formatDate(iso?: string | null) {
   if (!iso) return '—'
@@ -226,7 +303,7 @@ function formatDate(iso?: string | null) {
 
 <template>
   <div class="profile-view">
-    <div class="container">
+    <div class="container is-narrow">
       <!-- 头部 -->
       <section class="head">
         <div class="avatar">
@@ -244,6 +321,28 @@ function formatDate(iso?: string | null) {
         <div v-if="user?.is_vip" class="vip-badge">
           <ShieldCheck :size="14" />
           VIP
+        </div>
+      </section>
+
+      <!-- 功能入口：用户端全部页面的地图（按用途分组） -->
+      <section class="hub">
+        <div v-for="group in featureGroups" :key="group.title" class="hub-group">
+          <h2 class="hub-group-title">{{ group.title }}</h2>
+          <div class="hub-grid">
+            <RouterLink
+              v-for="item in group.items"
+              :key="item.to"
+              :to="item.to"
+              class="hub-tile"
+              :class="{ alert: item.alert }"
+            >
+              <span class="hub-ic"><component :is="item.icon" :size="17" /></span>
+              <span class="hub-text">
+                <span class="hub-label">{{ item.label }}</span>
+                <span class="hub-hint">{{ item.hint }}</span>
+              </span>
+            </RouterLink>
+          </div>
         </div>
       </section>
 
@@ -483,25 +582,6 @@ function formatDate(iso?: string | null) {
         </div>
       </section>
 
-      <!-- 关联入口 -->
-      <section class="links-row">
-        <RouterLink to="/favorites" class="link-card">
-          <Heart :size="16" />
-          我的收藏
-        </RouterLink>
-        <RouterLink to="/history" class="link-card">
-          <History :size="16" />
-          观看记录
-        </RouterLink>
-        <RouterLink to="/request" class="link-card">
-          <Film :size="16" />
-          我的求片
-        </RouterLink>
-        <RouterLink to="/tickets" class="link-card">
-          <User :size="16" />
-          我的工单
-        </RouterLink>
-      </section>
     </div>
 
     <!-- 修改密码弹窗 -->
@@ -556,12 +636,6 @@ function formatDate(iso?: string | null) {
   background: #070b12;
   color: #e5e7eb;
   padding-bottom: 3rem;
-}
-
-.container {
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 0 1.25rem;
 }
 
 /* 头部 */
@@ -1135,30 +1209,111 @@ function formatDate(iso?: string | null) {
 }
 
 /* 链接卡 */
-.links-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
+/* 功能入口：分组标题 + 自适应磁贴（窄屏两列，宽屏自动铺开） */
+.hub {
+  display: flex;
+  flex-direction: column;
+  gap: 1.125rem;
+  margin-bottom: 1.25rem;
 }
 
-.link-card {
+.hub-group-title {
+  margin: 0 0 0.5rem 0.125rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--au-text-4);
+}
+
+.hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.5rem;
+}
+
+.hub-tile {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.6875rem 0.75rem;
+  min-width: 0;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  text-decoration: none;
+  transition: background-color var(--au-fast) var(--au-ease),
+              border-color var(--au-fast) var(--au-ease),
+              transform var(--au-fast) var(--au-ease);
+}
+
+.hub-tile:hover {
+  background: var(--au-surface-2);
+  border-color: var(--au-border-strong);
+  transform: translateY(-1px);
+}
+
+.hub-tile:active {
+  transform: none;
+}
+
+.hub-tile:focus-visible {
+  outline: 2px solid var(--au-primary);
+  outline-offset: 2px;
+}
+
+.hub-ic {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  height: 52px;
-  background: rgba(13, 18, 24, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 14px;
-  color: rgba(255, 255, 255, 0.75);
-  font-size: 0.875rem;
-  text-decoration: none;
-  transition: all 0.2s ease;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--au-r-sm);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
 }
 
-.link-card:hover {
-  border-color: rgba(34, 211, 238, 0.3);
-  color: #22d3ee;
+.hub-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.hub-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.hub-hint {
+  font-size: 0.6875rem;
+  color: var(--au-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 未读 / 未开启：图标底色退到中性，不抢主色 */
+.hub-tile.alert .hub-ic {
+  background: var(--au-surface-3);
+  color: var(--au-text-3);
+}
+
+.hub-tile.alert .hub-hint {
+  color: var(--au-warning);
+}
+
+@media (hover: none) {
+  .hub-tile:hover {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-tile {
+    transition: none;
+  }
 }
 
 /* 弹窗 */
@@ -1270,8 +1425,8 @@ function formatDate(iso?: string | null) {
 }
 
 .btn.primary {
-  background: linear-gradient(135deg, #22d3ee, #06b6d4);
-  color: #fff;
+  background: var(--au-gradient);
+  color: #05141c;   /* 青底配白字只有 1.9:1，与全站主按钮统一为深墨色文字 */
 }
 
 .btn.primary:disabled {

@@ -168,12 +168,6 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   padding-bottom: 3rem;
 }
 
-.container {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 0 1.25rem;
-}
-
 .page-head {
   display: flex;
   align-items: center;
