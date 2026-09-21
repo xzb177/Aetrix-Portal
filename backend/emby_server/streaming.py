@@ -305,12 +305,17 @@ def get_transcode(session_id: str):
 
 
 def transcode_alive(session_id: str) -> bool:
-    """转码进程是否仍在运行"""
+    """转码进程是否仍在运行（会话登记在册且进程还活着）"""
     info = _TRANSCODE_PROCS.get(session_id)
     if not info:
         return False
     proc = info.get("proc")
     return proc is not None and proc.poll() is None
+
+
+def active_transcode_ids() -> list:
+    """当前登记在册的转码会话 id（维护/健康检查用；不要在遍历中改字典）"""
+    return list(_TRANSCODE_PROCS.keys())
 
 
 _TRANSCODE_PROCS: dict[str, dict] = {}

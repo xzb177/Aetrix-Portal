@@ -31,6 +31,7 @@ from backend import models  # noqa: F401 — 注册全部模型，保证 ORM 关
 from backend.emby_server import models as _emby_models  # noqa: F401
 from backend.download_guard import DownloadGuardMiddleware
 from backend.emby_server import nodes as node_lib
+from backend.emby_server import maintenance
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_health import panel_router as mount_health_router
 from backend.emby_server.mount_routes import install_mount_routes
@@ -39,7 +40,7 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.6.25"
+EA_VERSION = "2.6.26"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
@@ -109,9 +110,22 @@ async def lifespan(app: FastAPI):
     _claim_identity()
     await _probe_panel()
 
+    # 崩溃残留的收尾 + 长期运行的后台维护（扫描标志 / 过期会话 / 转码目录 / 字幕缓存）。
+    # 同一套库可能同时被 EM 与多台 EA 打开，这里做的是幂等且带阈值判断的清理。
+    try:
+        maintenance.run_startup_maintenance()
+        maintenance.start_janitor()
+    except Exception as exc:  # noqa: BLE001 — 维护失败不影响出流
+        logger.warning("启动维护失败（可忽略）: %s", exc)
+
     logger.info("✅ %s 启动完成", SERVICE_NAME)
     yield
+    # 关闭时：收掉 ffmpeg 子进程与临时分片，不留孤儿进程占着 CPU/磁盘
     logger.info("👋 %s 正在关闭...", SERVICE_NAME)
+    try:
+        maintenance.shutdown_cleanup()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("退出收尾失败（可忽略）: %s", exc)
 
 
 def _claim_identity() -> None:
@@ -231,7 +245,20 @@ async def health_check():
         "emby_server_name": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
         # 多机 / 多服部署的关键信息：这台 EA 是谁、属于哪个服、只提供什么内容
         "node": _node_info(),
+        # 长期运行的体检口径：正在扫描的库 / 转码会话 / 临时目录占用 / 磁盘余量
+        "runtime": _runtime_report(),
     }
+
+
+def _runtime_report() -> dict:
+    """运行期资源快照（健康检查用；任何异常都不该让健康检查变 500）"""
+    try:
+        report = maintenance.resource_report()
+        report["active_scans"] = maintenance.active_scan_count()
+        return report
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("读取运行期资源失败: %s", exc)
+        return {}
 
 
 def _node_info() -> dict:

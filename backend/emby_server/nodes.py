@@ -423,6 +423,8 @@ def start_local_scan(db: Session, lib) -> dict:
                 scan_library_sync(scan_db, target, snapshot)
         except ScanInProgress:
             pass
+        except Exception:  # noqa: BLE001 — 后台线程的异常要落日志，否则“扫失败”无人知晓
+            logger.exception("媒体库 %s 扫描失败", library_id)
         finally:
             scan_db.close()
 

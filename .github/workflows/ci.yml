@@ -138,6 +138,11 @@ jobs:
       - name: 扫描资源预算冒烟（批次化 / 并行探测与刮削 / 目录只列一次）
         run: python scripts/smoke_test_scan_budget.py
 
+      # “能跑很久”这件事也要有门禁：崩溃残留的收尾、过期会话回收、临时文件与
+      # 孤儿子进程、健康检查是常数级、扫描清理不整库载入内存也不留孤儿行
+      - name: 长期运行稳定性冒烟（维护看护 / 临时文件 / 清理阶段资源与数据完整性）
+        run: python scripts/smoke_test_maintenance.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend

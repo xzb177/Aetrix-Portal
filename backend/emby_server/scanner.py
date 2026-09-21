@@ -654,7 +654,7 @@ class TmdbClient:
             item.genres = ",".join(mapping.get(g, str(g)) for g in genre_ids[:4])
 
 
-tmdb_client = TmdbClient()
+tmdb_client = TmdbClient()  # 进程级单例：一次扫描里的预热与写库共用同一份缓存与连接池
 
 
 def find_local_images_in(entries, dir_path: str, base_name: str) -> tuple[Optional[str], Optional[str]]:
@@ -1013,7 +1013,7 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
 
 
 # 同一媒体库同时只允许一个扫描任务（进程内互斥；EM/EA 都是单进程部署）
-_ACTIVE_SCANS: dict[int, datetime] = {}
+_ACTIVE_SCANS: dict[int, datetime] = {}  # 库 id → 开始时间（本进程内）
 _ACTIVE_SCANS_LOCK = threading.Lock()
 
 
@@ -1095,6 +1095,13 @@ def _series_guid_of(scan_file: "ScanFile") -> str:
     dirpath = scan_file.local_dir
     series_dir = os.path.dirname(dirpath.rstrip("/")) if dirpath else ""
     return item_guid(series_dir or (os.path.dirname(scan_file.stored_path) or scan_file.stored_path))
+
+
+def _library_exists(db: Session, lib_id: int) -> bool:
+    """媒体库是否还在（扫描可能跑很久，期间库可能被删）"""
+    return db.query(emby_models.Library.id).filter(
+        emby_models.Library.id == lib_id
+    ).first() is not None
 
 
 def _load_items(db: Session, guids: list) -> dict:
@@ -1254,6 +1261,10 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
             batch.append(scan_file)
             if len(batch) < SCAN_BATCH:
                 continue
+            # 批次边界检查库还在不在：被删了就停手，不再往已删库插条目
+            if not _library_exists(db, ctx.lib_id):
+                logger.warning("媒体库 %s 在扫描期间被删除，扫描提前结束", ctx.lib_id)
+                return
             yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool))
             batch = []
             real_commit()  # 一批一次提交：几百个文件才一次 fsync
@@ -1265,6 +1276,85 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
         db.commit = real_commit
         # 线程池是进程级的（_scan_pool）：扫描结束不销毁，也不影响后面的扫描
 
+
+
+def _purge_items(db: Session, item_ids: list) -> None:
+    """批量删条目与从属数据（用批量语句：不逐条加载 ORM 对象，也不触发级联查询）
+
+    `MediaStream` 在 ORM 上有级联会被一起带走，但 `UserMediaData`
+    （播放进度 / 收藏）**没有级联**——只 `db.delete(item)` 会留下永远指向不存在条目的
+    孤儿行；这类行只增不减，追新久了就是几十万条垃圾，也是「跑久了变慢」的来源之一。
+    """
+    ids = list(item_ids)
+    db.query(emby_models.UserMediaData).filter(
+        emby_models.UserMediaData.item_id.in_(ids)
+    ).delete(synchronize_session=False)
+    db.query(emby_models.MediaStream).filter(
+        emby_models.MediaStream.item_id.in_(ids)
+    ).delete(synchronize_session=False)
+    db.query(emby_models.MediaItem).filter(
+        emby_models.MediaItem.id.in_(ids)
+    ).delete(synchronize_session=False)
+
+
+def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
+    """清理「来源里已经没有」的条目，返回删除条数
+
+    两个刻意的选择：
+
+    - **游标分批**：老实现 `db.query(...).all()` 把整库条目一次性读进内存——十万级库
+      就是几十万个 ORM 对象，正是「扫描把机器拖垮」的主因。按 id 递增读取，
+      删除不会让游标卡住（每批只往后走）。
+    - **显式删从属数据**：见 `_purge_items`。
+    """
+    removed = 0
+    last_id = 0
+    while True:
+        rows = (
+            db.query(
+                emby_models.MediaItem.id,
+                emby_models.MediaItem.guid,
+                emby_models.MediaItem.item_type,
+                emby_models.MediaItem.file_path,
+            )
+            .filter(
+                emby_models.MediaItem.library_id == library.id,
+                emby_models.MediaItem.id > last_id,
+            )
+            .order_by(emby_models.MediaItem.id)
+            .limit(SCAN_BATCH)
+            .all()
+        )
+        if not rows:
+            break
+        last_id = rows[-1][0]
+        doomed: list[int] = []
+        for item_id, guid, item_type, file_path in rows:
+            if guid in seen_guids:
+                continue
+            if item_type in ("movie", "episode"):
+                # 本机路径与远程挂载都查：命中的说明是别的来源的文件，保留；
+                # 查不到（挂载已删/已停用）才当删除处理。
+                if file_path and mount_lib.media_exists(file_path, db, library):
+                    continue  # 其他来源（路径 / 挂载）的文件
+                doomed.append(item_id)
+            elif item_type == "season":
+                has_children = db.query(emby_models.MediaItem.id).filter(
+                    emby_models.MediaItem.parent_id == item_id
+                ).first()
+                if not has_children:
+                    doomed.append(item_id)
+            elif item_type == "series":
+                has_children = db.query(emby_models.MediaItem.id).filter(
+                    emby_models.MediaItem.series_id == item_id
+                ).first()
+                if not has_children:
+                    doomed.append(item_id)
+        if doomed:
+            _purge_items(db, doomed)
+            removed += len(doomed)
+            db.commit()  # 一批一次提交：与扫描主体同一套资源口径
+    return removed
 
 
 def scan_library_sync(db: Session, library: emby_models.Library,
@@ -1503,34 +1593,7 @@ def scan_library_sync(db: Session, library: emby_models.Library,
         )
     else:
         # 移除已不存在的文件条目（电影/集）；series/season 无实体文件，仅在没有子条目时清理
-        existing = db.query(emby_models.MediaItem).filter(
-            emby_models.MediaItem.library_id == library.id
-        ).all()
-        for it in existing:
-            if it.guid in seen_guids:
-                continue
-            if it.item_type in ("movie", "episode"):
-                # 本机路径与远程挂载都查：命中的说明是别的来源的文件，保留；
-                # 查不到（挂载已删/已停用）才当删除处理。
-                if it.file_path and mount_lib.media_exists(it.file_path, db, library):
-                    continue  # 其他来源（路径 / 挂载）的文件
-                db.delete(it)
-                stats["removed"] += 1
-            elif it.item_type == "season":
-                has_children = db.query(emby_models.MediaItem).filter(
-                    emby_models.MediaItem.parent_id == it.id
-                ).count()
-                if not has_children:
-                    db.delete(it)
-                    stats["removed"] += 1
-            elif it.item_type == "series":
-                has_children = db.query(emby_models.MediaItem).filter(
-                    emby_models.MediaItem.series_id == it.id
-                ).count()
-                if not has_children:
-                    db.delete(it)
-                    stats["removed"] += 1
-        db.commit()
+        stats["removed"] += _remove_missing_items(db, library, seen_guids)
 
     library.item_count = db.query(emby_models.MediaItem).filter(
         emby_models.MediaItem.library_id == library.id,

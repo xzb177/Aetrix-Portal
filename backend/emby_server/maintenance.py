@@ -1,0 +1,423 @@
+"""运行期维护（janitor）：把「跑久了会积累」的东西定期收掉
+
+自建后端要能长期稳定跑在小机器上，除了扫描器的资源预算，还有三类**会随运行时间累积**的东西：
+
+1. **崩溃残留的状态标志**：进程被 kill 后 `emby_libraries.is_scanning` 会停在 True，
+   于是「刷新全部」永远跳过这台库、界面一直显示“扫描中”。启动时复位。
+2. **崩溃残留的播放会话**：客户端异常退出不会上报 Stopped，`ended_at IS NULL` 的行会一直
+   算作“正在播放”（后台首页、我的会话里的数字就永远是错的）。按心跳时间收掉。
+3. **临时文件**：HLS 转码目录（默认 `/tmp/emby_transcode`，很多机器上 `/tmp` 是 tmpfs＝内存）
+   与字幕缓存。重启后注册表是空的，旧会话目录再也没人管；字幕缓存则是只增不减。
+
+外加一个**关闭时不留孤儿进程**的收尾：ffmpeg 是子进程，父进程被 SIGTERM 时不会自动带走它。
+
+这些都不改变任何用户可见功能，只是让「稳定」这件事可验证：`/api/health` 会报告
+转码会话数、正在扫描的库数、临时目录占用与磁盘余量。
+"""
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import threading
+from datetime import datetime, timedelta
+from typing import Optional
+
+from sqlalchemy.orm import Session
+
+from backend.emby_server import models as em
+
+logger = logging.getLogger(__name__)
+
+# 扫描标志超过这个时间还挂着 True，就认为是崩溃残留（正常扫描不会跑这么久）
+STALE_SCAN_HOURS = float(os.getenv("SCAN_STALE_HOURS", "6") or 6)
+# 播放会话心跳超过这个时间没更新，就当作已经结束
+STALE_SESSION_MINUTES = int(os.getenv("SESSION_STALE_MINUTES", "10") or 10)
+# 播放会话保留天数：0 = 永久保留（默认，与历史统计口径一致）。
+# 这张表每播一次多一行，机器小、跑得久会明显变大；设成比如 90 就会自动裁掉更早的记录，
+# 代价是后台的「总播放次数 / 按日趋势」只剩保留期内的数据。
+SESSION_RETENTION_DAYS = float(os.getenv("SESSION_RETENTION_DAYS", "0") or 0)
+# 字幕缓存上限（文件数与天数），超过就按最旧先删
+SUB_CACHE_MAX_FILES = int(os.getenv("SUB_CACHE_MAX_FILES", "2000") or 2000)
+SUB_CACHE_MAX_DAYS = float(os.getenv("SUB_CACHE_MAX_DAYS", "7") or 7)
+# 维护周期（秒）：转码回收 / 会话过期 / 字幕缓存
+MAINTENANCE_INTERVAL = max(60, int(os.getenv("MAINTENANCE_INTERVAL", "600") or 600))
+
+# 转码根目录下这些子目录是**共享缓存**，不属于某个会话，清理时要留下
+_SHARED_DIRS = {"subs", "pan115"}
+
+
+# ==================== 数据库侧 ====================
+
+def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> int:
+    """复位崩溃残留的「扫描中」标志
+
+    判定依据必须是「这次扫描是什么时候开始的」，**不能用 `last_scan_at`**：它记的是
+    上一次扫描**结束**的时间，于是「第一次扫大库」时它是 NULL、「几天前扫过」时它是旧的，
+    两种情况下都指向“很久没动”，会把**正在跑的扫描**一句话清掉（多机部署时另一台
+    EA 正在扫的库更危险：清掉标志后就会允许第二个扫描并发跑，而并发扫描会互相
+    把对方刚扫到的条目当“已删除”清理）。
+
+    所以：
+
+    1. 本进程注册表里正在扫的库，直接跳过；
+    2. 其余用 `updated_at`（写入 `is_scanning=True` 时 ORM 会同时刷新它，
+       它就是这次扫描的起始时间）与阈值比较，超过阈值（默认 6 小时）才当崩溃残留。
+    """
+    from backend.emby_server import scanner
+
+    hours = STALE_SCAN_HOURS if stale_hours is None else stale_hours
+    cutoff = datetime.now() - timedelta(hours=hours)
+    rows = (
+        db.query(em.Library)
+        .filter(em.Library.is_scanning == True)  # noqa: E712
+        .all()
+    )
+    reset: list = []
+    for lib in rows:
+        if scanner.is_scan_active(lib.id):  # 本进程真的在扫：绝不碰
+            continue
+        started = lib.updated_at or lib.last_scan_at
+        if started is not None and started >= cutoff:
+            continue  # 刚开始不久：可能正在另一台机器上扫
+        lib.is_scanning = False
+        reset.append(lib)
+    if reset:
+        db.commit()
+        logger.warning("复位 %d 个残留的“扫描中”标志（崩溃/强杀遗留）: %s",
+                       len(reset), ", ".join(str(lib.id) for lib in reset))
+    return len(reset)
+
+
+def reap_stale_playback_sessions(db: Session, stale_minutes: Optional[int] = None) -> int:
+    """把心跳过期的播放会话标记为已结束（客户端异常断开不会上报 Stopped）"""
+    minutes = STALE_SESSION_MINUTES if stale_minutes is None else stale_minutes
+    cutoff = datetime.now() - timedelta(minutes=minutes)
+    now = datetime.now()
+    rows = (
+        db.query(em.PlaybackSession)
+        .filter(
+            em.PlaybackSession.ended_at.is_(None),
+            (em.PlaybackSession.last_update_at.is_(None))
+            | (em.PlaybackSession.last_update_at < cutoff),
+        )
+        .all()
+    )
+    for session in rows:
+        # ended_at 用心跳时间更贴近事实（否则“结束时间”会是收尾那一刻）
+        session.ended_at = session.last_update_at or now
+    if rows:
+        db.commit()
+        logger.info("回收 %d 个心跳过期的播放会话（停在上次心跳时间）", len(rows))
+    return len(rows)
+
+
+def prune_playback_sessions(db: Session, retention_days: Optional[float] = None) -> int:
+    """裁掉超出保留期的已结束播放会话（默认关闭：`SESSION_RETENTION_DAYS=0`）
+
+    只在显式设了保留期时才动手，且只删**已经结束**的会话：正在播的那条永远不碰。
+    没设保留期就是老行为（历史全留），小机器想控制库体量再打开。
+    """
+    days = SESSION_RETENTION_DAYS if retention_days is None else retention_days
+    if not days or days <= 0:
+        return 0
+    cutoff = datetime.now() - timedelta(days=days)
+    deleted = (
+        db.query(em.PlaybackSession)
+        .filter(
+            em.PlaybackSession.ended_at.isnot(None),
+            em.PlaybackSession.start_time.isnot(None),
+            em.PlaybackSession.start_time < cutoff,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted:
+        db.commit()
+        logger.info("裁掉 %d 条超出 %s 天的播放会话", deleted, days)
+    return deleted
+
+
+# ==================== 文件侧 ====================
+
+def _transcode_root() -> str:
+    from backend.emby_server import streaming
+
+    return streaming.TRANSCODE_DIR
+
+
+def cleanup_transcode_orphans(min_age_seconds: float = 0) -> int:
+    """清掉转码根目录下不属于任何「在跑的会话」的遗留目录
+
+    重启后注册表为空，上一进程留下的 HLS 目录再也没人清理；`/tmp` 是 tmpfs 的机器上
+    这些分片就是内存占用。`subs` / `pan115` 这类共享缓存在这里不动（字幕缓存另有淘汰）。
+    """
+    from backend.emby_server import streaming
+
+    root = _transcode_root()
+    if not root or not os.path.isdir(root):
+        return 0
+    live = set(streaming.active_transcode_ids())
+    removed = 0
+    for entry in os.scandir(root):
+        if not entry.is_dir() or entry.name in _SHARED_DIRS:
+            continue
+        if entry.name in live:
+            continue
+        if min_age_seconds > 0:
+            age = datetime.now().timestamp() - entry.stat().st_mtime
+            if age < min_age_seconds:
+                continue
+        shutil.rmtree(entry.path, ignore_errors=True)
+        removed += 1
+    if removed:
+        logger.info("清理 %d 个遗留的 HLS 转码目录", removed)
+    return removed
+
+
+def prune_subtitle_cache(max_files: Optional[int] = None,
+                         max_age_days: Optional[float] = None) -> int:
+    """字幕缓存淘汰：先按天数删过期的，再按数量删最旧的
+
+    字幕缓存（外挂/内封字幕转 VTT）是只增不减的：每个条目一份文件，
+    追新久了就是几万个文件躺在磁盘上。
+    """
+    from backend.emby_server import subtitles
+
+    cache_dir = getattr(subtitles, "SUB_CACHE_DIR", "")
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return 0
+
+    keep_files = SUB_CACHE_MAX_FILES if max_files is None else max_files
+    days = SUB_CACHE_MAX_DAYS if max_age_days is None else max_age_days
+    cutoff = datetime.now().timestamp() - days * 86400
+    removed = 0
+    entries: list[tuple[float, str]] = []
+    for entry in os.scandir(cache_dir):
+        try:
+            if not entry.is_file():
+                continue
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            if _unlink(entry.path):
+                removed += 1
+            continue
+        entries.append((mtime, entry.path))
+
+    if len(entries) > keep_files:
+        entries.sort()  # 最旧在前
+        for _mtime, path in entries[: len(entries) - keep_files]:
+            if _unlink(path):
+                removed += 1
+
+    if removed:
+        logger.info("字幕缓存淘汰 %d 个文件（上限 %d 个 / %.0f 天）",
+                    removed, keep_files, days)
+    return removed
+
+
+def _unlink(path: str) -> bool:
+    try:
+        os.unlink(path)
+        return True
+    except OSError:
+        return False
+
+
+# ==================== 可观测性（/api/health 用） ====================
+
+# 健康检查里的目录统计上限：健康检查会被容器探针频繁打到，
+# 不能让它在「残留了几百个会话目录、每个几千个分片」时越走越慢。
+REPORT_MAX_FILES = 5000
+
+
+def resource_report() -> dict:
+    """轻量的运行期资源快照：转码会话 / 临时目录占用 / 磁盘余量
+
+    刻意只统计顶层与在跑的会话目录，且**有上限**：健康检查必须是常数级的，
+    统计到这里就停（数字是下界，但探针的响应时间不会随残留目录增长）。
+    """
+    from backend.emby_server import streaming
+
+    root = _transcode_root()
+    report: dict = {
+        "transcode_sessions": len(streaming.active_transcode_ids()),
+        "transcode_dir": root,
+        "transcode_dir_bytes": 0,
+        "transcode_dir_files": 0,
+        "subtitle_cache_files": 0,
+        "transcode_scan_truncated": False,
+        "disk_free_bytes": None,
+        "disk_free_percent": None,
+    }
+    if root and os.path.isdir(root):
+        try:
+            for entry in os.scandir(root):
+                if report["transcode_dir_files"] >= REPORT_MAX_FILES:
+                    report["transcode_scan_truncated"] = True
+                    break
+                if entry.is_file():
+                    report["transcode_dir_files"] += 1
+                    report["transcode_dir_bytes"] += entry.stat().st_size
+                elif entry.is_dir() and entry.name not in _SHARED_DIRS:
+                    for dirpath, _dirs, files in os.walk(entry.path):
+                        for name in files:
+                            if report["transcode_dir_files"] >= REPORT_MAX_FILES:
+                                report["transcode_scan_truncated"] = True
+                                break
+                            try:
+                                report["transcode_dir_bytes"] += os.stat(
+                                    os.path.join(dirpath, name)
+                                ).st_size
+                                report["transcode_dir_files"] += 1
+                            except OSError:
+                                continue
+                        if report["transcode_scan_truncated"]:
+                            break
+        except OSError as exc:  # noqa: BLE001 — 健康检查不能被统计拖垮
+            logger.debug("统计转码目录失败: %s", exc)
+        try:
+            usage = shutil.disk_usage(root)
+            report["disk_free_bytes"] = usage.free
+            report["disk_free_percent"] = round(usage.free / usage.total * 100, 1)
+        except OSError:
+            pass
+    from backend.emby_server import subtitles
+
+    cache_dir = getattr(subtitles, "SUB_CACHE_DIR", "")
+    if cache_dir and os.path.isdir(cache_dir):
+        try:
+            count = 0
+            for entry in os.scandir(cache_dir):
+                if entry.is_file():
+                    count += 1
+                    if count >= REPORT_MAX_FILES:
+                        break
+            report["subtitle_cache_files"] = count
+        except OSError:
+            pass
+    return report
+
+
+def active_scan_count() -> int:
+    """本进程正在扫描的媒体库数"""
+    from backend.emby_server import scanner
+
+    return len(scanner._ACTIVE_SCANS)  # noqa: SLF001 — 只读计数，给健康检查用
+
+
+# ==================== 调度 ====================
+
+_JANITOR_STARTED = False
+_JANITOR_LOCK = threading.Lock()
+
+
+def run_startup_maintenance() -> dict:
+    """启动时的一次性维护（必须在 init_db 之后调用）
+
+    不抛异常：任何一项失败都只记日志，绝不阻塞服务启动——「带病启动」在这里是**对的**，
+    因为维护没做完不会让服务不可用，而启动失败会让整个站点挂掉。
+    """
+    from backend.database import SessionLocal
+
+    result = {"scan_flags_reset": 0, "sessions_reaped": 0,
+              "transcode_orphans": 0, "subtitle_cache_pruned": 0}
+    db = SessionLocal()
+    try:
+        result["scan_flags_reset"] = reset_stale_scan_flags(db)
+        result["sessions_reaped"] = reap_stale_playback_sessions(db, stale_minutes=1)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("启动维护（数据库部分）失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 启动时把上一进程留下的转码目录全部清掉（此刻还没有任何“在跑的会话”）
+    try:
+        result["transcode_orphans"] = cleanup_transcode_orphans()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("启动维护（转码目录）失败: %s", exc)
+    try:
+        result["subtitle_cache_pruned"] = prune_subtitle_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("启动维护（字幕缓存）失败: %s", exc)
+
+    logger.info("启动维护完成: %s", result)
+    return result
+
+
+def janitor_tick() -> dict:
+    """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）"""
+    from backend.database import SessionLocal
+    from backend.emby_server import streaming
+
+    result = {"sessions_reaped": 0, "sessions_pruned": 0, "transcodes_reaped": 0,
+              "transcode_orphans": 0, "subtitle_cache_pruned": 0}
+    try:
+        result["transcodes_reaped"] = streaming.reap_stale_transcodes()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("回收转码会话失败: %s", exc)
+
+    db = SessionLocal()
+    try:
+        result["sessions_reaped"] = reap_stale_playback_sessions(db)
+        result["sessions_pruned"] = prune_playback_sessions(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("回收过期播放会话失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    try:
+        # 只清「已经不活跃」的目录：给刚启动、还没登记进注册表的会话留出余量
+        result["transcode_orphans"] = cleanup_transcode_orphans(min_age_seconds=300)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理遗留转码目录失败: %s", exc)
+    try:
+        result["subtitle_cache_pruned"] = prune_subtitle_cache()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("字幕缓存淘汰失败: %s", exc)
+    return result
+
+
+def start_janitor(interval_seconds: Optional[int] = None) -> bool:
+    """启动后台维护线程（同一进程只启动一次；daemon，随进程退出）"""
+    global _JANITOR_STARTED
+    interval = MAINTENANCE_INTERVAL if interval_seconds is None else max(30, interval_seconds)
+    with _JANITOR_LOCK:
+        if _JANITOR_STARTED:
+            return False
+        _JANITOR_STARTED = True
+
+    def _loop() -> None:
+        while True:
+            threading.Event().wait(interval)
+            try:
+                summary = janitor_tick()
+                if any(summary.values()):
+                    logger.info("维护周期完成: %s", summary)
+            except Exception as exc:  # noqa: BLE001 — 维护线程绝不能因为一次失败而退出
+                logger.warning("维护周期异常: %s", exc)
+
+    threading.Thread(target=_loop, daemon=True, name="maintenance-janitor").start()
+    logger.info("后台维护已启动（每 %s 秒）", interval)
+    return True
+
+
+def shutdown_cleanup() -> dict:
+    """进程退出前的收尾：不留孤儿 ffmpeg、不留半截临时目录"""
+    from backend.emby_server import streaming
+
+    result = {"transcodes_stopped": 0, "transcode_dirs_removed": 0}
+    try:
+        result["transcodes_stopped"] = streaming.stop_all_transcodes()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("停止转码会话失败: %s", exc)
+    try:
+        result["transcode_dirs_removed"] = cleanup_transcode_orphans()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理转码目录失败: %s", exc)
+    if any(result.values()):
+        logger.info("退出收尾完成: %s", result)
+    return result

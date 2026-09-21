@@ -26,6 +26,7 @@ from backend.api.realms import router as realms_router
 from backend.api.servers import router as servers_router
 from backend import realms
 from backend.emby_server import nodes as node_lib
+from backend.emby_server import maintenance
 from backend.api.admin_ops import admin_ops_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_routes import install_mount_routes
@@ -73,19 +74,31 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — 业务表异常不应阻塞面板启动
         logger.warning(f"恢复 115 任务失败（可忽略）: {e}")
 
+    # 崩溃残留的收尾 + 长期运行的后台维护（扫描标志 / 过期会话 / 转码目录 / 字幕缓存），
+    # 见 backend/emby_server/maintenance.py。维护失败不影响启动。
+    try:
+        maintenance.run_startup_maintenance()
+        maintenance.start_janitor()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"启动维护失败（可忽略）: {e}")
+
     logger.info("✅ RoyalBot Portal 启动完成")
 
     yield
 
-    # 关闭时
+    # 关闭时：先收掉子进程与临时文件，避免 ffmpeg 变成孤儿继续吃 CPU/磁盘
     logger.info("👋 RoyalBot Portal 正在关闭...")
+    try:
+        maintenance.shutdown_cleanup()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"退出收尾失败（可忽略）: {e}")
 
 
 # 创建 FastAPI 应用
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.6.25",
+    version="2.6.26",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -163,7 +176,20 @@ async def health_check():
         "service": "em",
         "version": app.version,
         "emby_gateway": _ENABLE_EMBY_GATEWAY,
+        # 长期运行的体检口径：正在扫描的库 / 转码会话 / 临时目录占用 / 磁盘余量
+        "runtime": _runtime_report(),
     }
+
+
+def _runtime_report() -> dict:
+    """运行期资源快照（健康检查用；任何异常都不该让健康检查变 500）"""
+    try:
+        report = maintenance.resource_report()
+        report["active_scans"] = maintenance.active_scan_count()
+        return report
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"读取运行期资源失败: {e}")
+        return {}
 
 
 @app.get("/api/health/detailed")
