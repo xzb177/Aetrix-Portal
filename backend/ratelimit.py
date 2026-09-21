@@ -14,14 +14,20 @@ from typing import Optional
 class SlidingWindowLimiter:
     """滑动窗口计数限流：window 秒内最多 max_events 次"""
 
+    # 超过这个 key 数就先做一次清理（清理是 O(keys)，别每次请求都做）
+    _PURGE_THRESHOLD = 5000
+
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
+        self._max_window = 0.0
 
     def check(self, key: str, max_events: int, window_seconds: float) -> tuple[bool, int]:
         """返回 (是否放行, 剩余需等待秒数)"""
         now = time.monotonic()
         with self._lock:
+            if window_seconds > self._max_window:
+                self._max_window = window_seconds
             q = self._hits[key]
             cutoff = now - window_seconds
             while q and q[0] < cutoff:
@@ -30,11 +36,25 @@ class SlidingWindowLimiter:
                 retry_after = int(window_seconds - (now - q[0])) + 1
                 return False, max(retry_after, 1)
             q.append(now)
-            # 防止 key 无限增长：超过阈值时清理空队列
-            if len(self._hits) > 10_000:
-                for k in [k for k, v in self._hits.items() if not v]:
-                    self._hits.pop(k, None)
+            # 防止 key 无限增长：超阈值时清掉「已经不可能再命中」的桶。
+            # 不能只看空队列——某个 IP 打过一次之后再没出现，队列里那条时间戳会永远留着。
+            if len(self._hits) > self._PURGE_THRESHOLD:
+                self._purge(now)
             return True, 0
+
+    def _purge(self, now: float) -> int:
+        """丢掉所有已过期的桶（调用方持锁）
+
+        判定用**见过的最大窗口**：比任何还在生效的窗口都老的桶，留着也不会有用。
+        """
+        span = self._max_window or 60.0
+        dead = [
+            k for k, v in self._hits.items()
+            if not v or v[-1] < now - span
+        ]
+        for k in dead:
+            self._hits.pop(k, None)
+        return len(dead)
 
     def reset(self, key: str) -> None:
         with self._lock:

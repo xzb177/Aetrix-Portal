@@ -745,14 +745,36 @@ async def delete_library(lib_id: int, staff: models.WebUser = Depends(require_st
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
-    items = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).all()
-    for it in items:
-        db.query(em.MediaStream).filter(em.MediaStream.item_id == it.id).delete()
-        db.query(em.UserMediaData).filter(em.UserMediaData.item_id == it.id).delete()
-        db.delete(it)
+    # 扫描中的库先不删：边扫边删会给已删库继续插条目，而 SQLite 会复用 rowid，
+    # 新建一个库撞上同一个 id 时那些孤儿条目会「复活」。
+    if is_scan_active(lib.id):
+        raise HTTPException(status_code=409, detail="该媒体库正在扫描，请等扫描结束后再删除")
+
+    # 分批删除：老实现把整库条目一次载入内存再逐条删（十万级库会直接把面板拖死）
+    removed = 0
+    while True:
+        chunk = [
+            row[0] for row in db.query(em.MediaItem.id)
+            .filter(em.MediaItem.library_id == lib.id)
+            .limit(500)
+            .all()
+        ]
+        if not chunk:
+            break
+        db.query(em.MediaStream).filter(
+            em.MediaStream.item_id.in_(chunk)
+        ).delete(synchronize_session=False)
+        db.query(em.UserMediaData).filter(
+            em.UserMediaData.item_id.in_(chunk)
+        ).delete(synchronize_session=False)
+        db.query(em.MediaItem).filter(
+            em.MediaItem.id.in_(chunk)
+        ).delete(synchronize_session=False)
+        db.commit()
+        removed += len(chunk)
     db.delete(lib)
     db.commit()
-    return {"success": True}
+    return {"success": True, "items_removed": removed}
 
 
 @admin_emby_router.post("/libraries/{lib_id}/scan")
@@ -794,6 +816,8 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
                 scan_library_sync(scan_db, scan_lib, snapshot)
         except ScanInProgress:
             pass  # 已有任务在跑：重复请求直接被拒
+        except Exception:  # noqa: BLE001 — 后台线程的异常不能只留在 stderr，否则“扫失败了”无人知晓
+            logger.exception("媒体库 %s 扫描失败", lib_id_value)
         finally:
             scan_db.close()
 

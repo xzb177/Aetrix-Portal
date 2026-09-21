@@ -36,6 +36,7 @@ from backend.emby_server.auth import (
     resolve_token,
 )
 from backend.emby_server.scanner import (
+    ScanInProgress,
     item_guid,
     parse_media_filename,
     scan_library_sync,
@@ -1882,8 +1883,16 @@ async def library_refresh(user: models.WebUser = Depends(get_emby_user),
         try:
             for lib_id in lib_ids:
                 library = scan_db.query(em.Library).filter(em.Library.id == lib_id).first()
-                if library:
+                if not library:
+                    continue
+                # 单个库失败不能带走整批「刷新全部」：否则后面的库永远没被扫到，
+                # 而界面上只会看到“刷新了但没变化”，连原因都没有。
+                try:
                     scan_library_sync(scan_db, library)
+                except ScanInProgress:
+                    continue  # 已有任务在跑：跳过，不是错误
+                except Exception:  # noqa: BLE001
+                    logger.exception("媒体库 %s 扫描失败", lib_id)
         finally:
             scan_db.close()
 
