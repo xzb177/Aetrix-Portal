@@ -55,11 +55,26 @@ onMounted(async () => {
 const dialogVisible = ref(false)
 const editing = ref<RealmRow | null>(null)
 const saving = ref(false)
-const form = reactive({ name: '', slug: '', url: '', description: '', is_active: true })
+// access_mode：paid（付费服，需要订阅）/ free（公益服，免费开放）
+// download_policy：follow（跟随全局，公益服默认禁止下载）/ allow / deny
+const form = reactive({
+  name: '', slug: '', url: '', description: '', is_active: true,
+  access_mode: 'paid' as 'paid' | 'free',
+  access_note: '',
+  download_policy: 'follow' as 'follow' | 'allow' | 'deny',
+})
+
+function policyOf(row: RealmRow): 'follow' | 'allow' | 'deny' {
+  if (row.allow_download === null || row.allow_download === undefined) return 'follow'
+  return row.allow_download ? 'allow' : 'deny'
+}
 
 function openCreate() {
   editing.value = null
-  Object.assign(form, { name: '', slug: '', url: '', description: '', is_active: true })
+  Object.assign(form, {
+    name: '', slug: '', url: '', description: '', is_active: true,
+    access_mode: 'paid', access_note: '', download_policy: 'follow',
+  })
   dialogVisible.value = true
 }
 
@@ -68,6 +83,9 @@ function openEdit(row: RealmRow) {
   Object.assign(form, {
     name: row.name, slug: row.slug, url: row.url,
     description: row.description, is_active: row.is_active,
+    access_mode: row.access_mode === 'free' ? 'free' : 'paid',
+    access_note: row.access_note || '',
+    download_policy: policyOf(row),
   })
   dialogVisible.value = true
 }
@@ -82,6 +100,9 @@ async function save() {
         url: form.url.trim(),
         description: form.description.trim(),
         is_active: form.is_active,
+        access_mode: form.access_mode,
+        access_note: form.access_note.trim(),
+        download_policy: form.download_policy,
       })
       ElMessage.success('已保存')
     } else {
@@ -91,6 +112,9 @@ async function save() {
         url: form.url.trim(),
         description: form.description.trim(),
         is_active: form.is_active,
+        access_mode: form.access_mode,
+        access_note: form.access_note.trim(),
+        allow_download: form.download_policy === 'follow' ? null : form.download_policy === 'allow',
       })
       ElMessage.success('已新建，接下来去「媒体库 / 存储挂载 / 商品与套餐」里往里填内容')
     }
@@ -290,10 +314,16 @@ function shortDate(s: string | null): string {
           </div>
           <span v-if="row.id === activeId" class="mini-badge ok">当前服</span>
           <span v-if="row.is_default" class="mini-badge info">默认服</span>
+          <!-- 接入方式：公益服免费开放（不需要订阅），付费服按订阅闸门 -->
+          <span v-if="row.is_free" class="mini-badge free">公益服</span>
+          <span v-else class="mini-badge paid">付费服</span>
           <span v-if="!row.is_active" class="mini-badge off">已停用</span>
         </header>
 
         <p v-if="row.description" class="realm-desc">{{ row.description }}</p>
+        <p v-if="row.is_free" class="realm-desc realm-free">
+          免费开放（无需订阅）· 下载{{ policyOf(row) === 'allow' ? '允许' : '禁止' }}
+        </p>
         <p class="realm-url">
           <template v-if="row.public_url">用户端地址：<code>{{ row.public_url }}</code></template>
           <template v-else>还没填对外地址：用户端拿不到这个服的连接地址</template>
@@ -372,6 +402,32 @@ function shortDate(s: string | null): string {
         <el-form-item label="对外地址（用户端拿到的 Emby 地址）">
           <el-input v-model="form.url" placeholder="https://media.example.com，留空则用「服务器」页里那台 EA 的地址" />
           <p class="field-help">多服部署时每个服各自的地址，用户端账号卡会用它。</p>
+        </el-form-item>
+        <el-form-item label="接入方式">
+          <el-radio-group v-model="form.access_mode">
+            <el-radio-button value="paid">付费服（需要订阅）</el-radio-button>
+            <el-radio-button value="free">公益服（免费开放）</el-radio-button>
+          </el-radio-group>
+          <p class="field-help">
+            付费服：用户要有生效中的订阅才能播放（原来的口径）。
+            公益服：不需要订阅就能看全库，用于免费引流；默认禁止下载，可用下面的下载策略覆盖。
+          </p>
+        </el-form-item>
+        <el-form-item v-if="form.access_mode === 'free'" label="公益规则（用户端展示）">
+          <el-input
+            v-model="form.access_note"
+            type="textarea"
+            :rows="3"
+            placeholder="留空则用默认文案：本服为公益服 · 免费开放：无需开通会员即可观看全库内容。资源请勿下载、转卖或外传，账号仅限本人使用。"
+          />
+          <p class="field-help">写清免费开放的边界（限设备 / 禁下载 / 禁止转卖），会展示在用户端首页与个人中心。</p>
+        </el-form-item>
+        <el-form-item label="下载策略">
+          <el-select v-model="form.download_policy" style="width: 100%">
+            <el-option value="follow" label="跟随全局（公益服默认禁止下载）" />
+            <el-option value="allow" label="允许下载" />
+            <el-option value="deny" label="禁止下载" />
+          </el-select>
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" placeholder="可选，例如面向哪些用户" />
@@ -479,6 +535,8 @@ function shortDate(s: string | null): string {
 .realm-slug { color: var(--text-muted); font-size: var(--font-size-xs); }
 
 .realm-desc { color: var(--text-tertiary); font-size: var(--font-size-sm); margin: 0; line-height: 1.6; }
+/* 公益服：免费开放与下载口径，一眼能看出这个服不靠会员收费 */
+.realm-free { color: var(--primary); font-size: var(--font-size-xs); margin-top: 2px; }
 .realm-url { color: var(--text-muted); font-size: var(--font-size-xs); margin: 0; word-break: break-all; }
 .realm-url code { color: var(--text-secondary); }
 

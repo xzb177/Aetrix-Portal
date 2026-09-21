@@ -268,15 +268,31 @@ export interface RealmPayload {
   url?: string
   description?: string
   is_active?: boolean
+  /** paid（付费服，需要订阅）/ free（公益服，免费开放） */
+  access_mode?: 'paid' | 'free'
+  /** 公益服规则文案（用户端展示） */
+  access_note?: string
+  /** 下载策略：不传 = 跟随全局（公益服默认禁止下载） */
+  allow_download?: boolean | null
 }
 
 export const createRealm = (data: RealmPayload) =>
   post<{ success: boolean; realm: RealmRow; summary: RealmSummary }>(R, data)
 
-export const updateRealm = (
-  id: number,
-  data: { name?: string; url?: string; description?: string; is_active?: boolean; sort_order?: number }
-) => put<{ success: boolean; realm: RealmRow; summary: RealmSummary }>(`${R}/${id}`, data)
+export interface RealmUpdateData {
+  name?: string
+  url?: string
+  description?: string
+  is_active?: boolean
+  sort_order?: number
+  access_mode?: 'paid' | 'free'
+  access_note?: string
+  /** 三态：follow = 跟随全局 / allow / deny */
+  download_policy?: 'follow' | 'allow' | 'deny'
+}
+
+export const updateRealm = (id: number, data: RealmUpdateData) =>
+  put<{ success: boolean; realm: RealmRow; summary: RealmSummary }>(`${R}/${id}`, data)
 
 /** 切换面板当前操作的服：后台各页的作用域跟着切（服务端落库，多管理员一致） */
 export const activateRealm = (id: number) =>

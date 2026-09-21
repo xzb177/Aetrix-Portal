@@ -92,6 +92,17 @@ class ServerRealm(Base):
 
     面板顶部的「当前服」决定后台各页默认在看哪个服（``SystemConfig["active_realm_id"]``）。
     升级上来的老部署会自动回填出一个默认服（``slug='main'``），行为与单服时完全一致。
+
+    **接入方式（``access_mode``）**：一个面板可以同时运营两种服——
+
+    - ``paid``（付费服，缺省）：需要生效中的订阅才能播放，卖套餐、走付费墙；
+    - ``free``（公益服）：免费开放，**不需要订阅**即可播放全库内容。公益服一般靠
+      注册/邀请引流，用 ``access_note`` 写清规则（限设备、禁止下载、禁止转卖…），
+      并用 ``allow_download`` 关掉下载以保护资源与带宽。
+
+    两种服的判定统一收口在 ``backend/subscriptions.py``（``can_play`` /
+    ``ensure_download_allowed``）：升级上来的老服没有这个字段值时按 ``paid`` 处理，
+    行为与升级前完全一致。
     """
 
     __tablename__ = 'server_realms'
@@ -107,6 +118,12 @@ class ServerRealm(Base):
     # 该服对外的 Emby 地址（用户端账号卡用；留空则回退全局 EMBY_PUBLIC_URL）
     url = Column(String(500), default='')
     description = Column(String(300), default='')
+    # v2.7.0 公益服：paid（需要订阅）/ free（免费开放）；空值按 paid 处理
+    access_mode = Column(String(10), default='paid')
+    # 公益服规则/说明（用户端展示，也作为付费墙与下载拦截的提示文案）
+    access_note = Column(String(500), default='')
+    # 该服下载策略：None=跟随全局（公益服默认禁止）/ True=允许 / False=禁止
+    allow_download = Column(Boolean, nullable=True, default=None)
     is_active = Column(Boolean, default=True)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)

@@ -247,6 +247,9 @@
 .mini-badge.warning,
 .mini-badge.scanning { background: var(--warning-bg); color: #fcd34d; border-color: var(--warning-border); }
 
+/* 公益服（v2.7.0）：免费开放，用主色区分于付费服与状态类徽标 */
+.mini-badge.free { background: var(--primary-bg); color: #67e8f9; border-color: var(--primary-border); }
+
 .mini-badge.danger,
 .mini-badge.disabled,
 .mini-badge.off { background: var(--danger-bg); color: #fda4af; border-color: var(--danger-border); }

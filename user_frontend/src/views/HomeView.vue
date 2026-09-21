@@ -101,6 +101,11 @@ const gateMessage = computed(() =>
     ? '当前账号没有生效中的订阅，开通后即可播放全库内容'
     : '',
 )
+// 公益服（v2.7.0）：这个服免费开放，不需要会员，首屏不再推销会员
+const isFreeRealm = computed(() => userStore.isFreeRealm)
+const realmNote = computed(
+  () => userStore.realmNote || '本服为公益服 · 免费开放：无需开通会员即可观看全库内容。',
+)
 const memberProgress = computed(() => {
   const sub = activeSub.value
   if (!sub) return 0
@@ -194,6 +199,10 @@ onMounted(async () => {
               <Crown :size="12" />
               会员
             </span>
+            <span v-else-if="isFreeRealm" class="hero-vip hero-free">
+              <Sparkles :size="12" />
+              公益服 · 免费开放
+            </span>
           </div>
           <p class="hero-sub">门户账号即 Emby 账号 — 同一凭据登录任意客户端开始观影。</p>
 
@@ -213,8 +222,23 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- 会员状态卡 -->
-        <aside class="member-card" :class="{ inactive: !isMember }">
+        <!-- 会员状态卡；公益服换成「免费开放」的说明卡，不出现任何购买引导 -->
+        <aside v-if="isFreeRealm" class="member-card free-card">
+          <div class="member-head">
+            <span class="member-badge free">
+              <Sparkles :size="13" />
+              公益服 · 免费开放
+            </span>
+          </div>
+          <p class="member-plan">无需会员，直接看</p>
+          <p class="member-meta">{{ realmNote }}</p>
+          <RouterLink to="/media" class="au-btn au-btn-primary au-btn-sm member-cta">
+            <Tv :size="14" />
+            进入媒体库
+          </RouterLink>
+        </aside>
+
+        <aside v-else class="member-card" :class="{ inactive: !isMember }">
           <div class="member-head">
             <span class="member-badge">
               <Crown :size="13" />
@@ -561,6 +585,21 @@ onMounted(async () => {
   font-size: 0.6875rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
+}
+
+/* 公益服（v2.7.0）：免费开放用站点主色，不跟会员的金色混在一起 */
+.hero-free {
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+}
+
+.free-card {
+  background: linear-gradient(150deg, rgba(34, 211, 238, 0.12), rgba(34, 211, 238, 0.04));
+}
+
+.free-card .member-badge.free {
+  color: var(--au-primary);
 }
 
 .hero-sub {

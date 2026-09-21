@@ -45,6 +45,48 @@ logger = logging.getLogger(__name__)
 DEFAULT_SLUG = "main"
 CONFIG_ACTIVE_REALM = "active_realm_id"
 
+# 接入方式：付费服（需要订阅）与公益服（免费开放，不需要订阅）
+ACCESS_PAID = "paid"
+ACCESS_FREE = "free"
+ACCESS_MODES = (ACCESS_PAID, ACCESS_FREE)
+# 公益服没写规则文案时的缺省提示（用户端展示；也作为拦截提示）
+DEFAULT_FREE_NOTE = "本服为公益服 · 免费开放：无需开通会员即可观看全库内容。资源请勿下载、转卖或外传，账号仅限本人使用。"
+DEFAULT_FREE_DOWNLOAD_NOTE = "公益服只提供在线观看，不提供下载"
+
+
+def normalize_access_mode(mode: Optional[str]) -> str:
+    """把外部传进来的接入方式收敛成 paid / free（非法值一律当作 paid）"""
+    value = (mode or "").strip().lower()
+    return ACCESS_FREE if value == ACCESS_FREE else ACCESS_PAID
+
+
+def access_mode_of(db: Session, realm_id: Optional[int]) -> str:
+    """某个服的接入方式（查不到这个服时按 paid 处理，即升级前的行为）"""
+    realm = get_realm(db, realm_id)
+    return normalize_access_mode(realm.access_mode if realm else None)
+
+
+def is_free_realm(db: Session, realm_id: Optional[int]) -> bool:
+    """这个服是不是公益服（免费开放）"""
+    return access_mode_of(db, realm_id) == ACCESS_FREE
+
+
+def access_note_of(db: Session, realm_id: Optional[int]) -> str:
+    """该服的规则文案：公益服没写时给一条缺省提示，付费服返回空串"""
+    realm = get_realm(db, realm_id)
+    if realm is None:
+        return ""
+    note = (realm.access_note or "").strip()
+    if note:
+        return note
+    return DEFAULT_FREE_NOTE if normalize_access_mode(realm.access_mode) == ACCESS_FREE else ""
+
+
+def download_policy_of(db: Session, realm_id: Optional[int]) -> Optional[bool]:
+    """该服的下载策略：None=跟随全局（公益服默认禁止）/ True=允许 / False=禁止"""
+    realm = get_realm(db, realm_id)
+    return None if realm is None else realm.allow_download
+
 # 这些配置键是「一个服一个」的：默认服用原键名，其它服加 __r<id> 后缀
 REALM_CONFIG_BASES = (
     "emby_active_mode",
@@ -318,12 +360,18 @@ def stats(db: Session, realm_id: int) -> dict:
 
 
 def serialize(db: Session, realm: models.ServerRealm, with_stats: bool = True) -> dict:
+    mode = normalize_access_mode(realm.access_mode)
     data = {
         "id": realm.id,
         "name": realm.name,
         "slug": realm.slug,
         "url": realm.url or "",
         "description": realm.description or "",
+        # 接入方式与公益设置：面板列表/卡片直接展示，用户端也读同一口径
+        "access_mode": mode,
+        "is_free": mode == ACCESS_FREE,
+        "access_note": access_note_of(db, realm.id),
+        "allow_download": realm.allow_download,
         "is_active": bool(realm.is_active),
         "sort_order": realm.sort_order or 0,
         "is_default": realm.id == legacy_realm_id(db),
@@ -356,7 +404,9 @@ def validate_slug(slug: str) -> str:
 
 
 def create_realm(db: Session, *, name: str, slug: str = "", url: str = "",
-                 description: str = "", is_active: bool = True) -> models.ServerRealm:
+                 description: str = "", is_active: bool = True,
+                 access_mode: str = ACCESS_PAID, access_note: str = "",
+                 allow_download: Optional[bool] = None) -> models.ServerRealm:
     name = (name or "").strip()
     if not name:
         raise ValueError("请填写服的名称")
@@ -368,6 +418,9 @@ def create_realm(db: Session, *, name: str, slug: str = "", url: str = "",
     realm = models.ServerRealm(
         name=name, slug=slug, url=(url or "").strip().rstrip("/"),
         description=(description or "").strip(), is_active=bool(is_active),
+        access_mode=normalize_access_mode(access_mode),
+        access_note=(access_note or "").strip(),
+        allow_download=allow_download,
         sort_order=(db.query(models.ServerRealm).count() + 1),
     )
     db.add(realm)
@@ -391,7 +444,16 @@ def _auto_slug(db: Session, name: str) -> str:
 
 def update_realm(db: Session, realm: models.ServerRealm, *, name: Optional[str] = None,
                  url: Optional[str] = None, description: Optional[str] = None,
-                 is_active: Optional[bool] = None, sort_order: Optional[int] = None) -> models.ServerRealm:
+                 is_active: Optional[bool] = None, sort_order: Optional[int] = None,
+                 access_mode: Optional[str] = None, access_note: Optional[str] = None,
+                 allow_download: Optional[bool] = None,
+                 download_policy: Optional[str] = None) -> models.ServerRealm:
+    """改服
+
+    ``access_mode`` / ``access_note`` / ``allow_download`` 是 v2.7.0 的公益服字段。
+    下载策略用三态表达：``download_policy`` 取 ``"follow"`` / ``"allow"`` / ``"deny"``
+    （``allow_download`` 直接传 bool 也可以，等价于 allow / deny）。
+    """
     if name is not None:
         name = name.strip()
         if not name:
@@ -410,6 +472,18 @@ def update_realm(db: Session, realm: models.ServerRealm, *, name: Optional[str] 
         realm.sort_order = int(sort_order)
     if is_active is not None:
         realm.is_active = bool(is_active)
+    if access_mode is not None:
+        realm.access_mode = normalize_access_mode(access_mode)
+    if access_note is not None:
+        realm.access_note = access_note.strip()
+    if download_policy is not None:
+        policy = download_policy.strip().lower()
+        if policy == "follow":
+            realm.allow_download = None
+        elif policy in ("allow", "deny"):
+            realm.allow_download = policy == "allow"
+    if allow_download is not None:
+        realm.allow_download = bool(allow_download)
     db.commit()
     db.refresh(realm)
     return realm
@@ -471,12 +545,22 @@ def claim(db: Session, realm_id: Optional[int]) -> int:
 
 
 __all__ = [
+    "ACCESS_FREE",
+    "ACCESS_MODES",
+    "ACCESS_PAID",
     "CONFIG_ACTIVE_REALM",
+    "DEFAULT_FREE_DOWNLOAD_NOTE",
+    "DEFAULT_FREE_NOTE",
     "DEFAULT_SLUG",
     "REALM_CONFIG_BASES",
+    "access_mode_of",
+    "access_note_of",
     "active_realm",
     "active_realm_id",
     "claim",
+    "download_policy_of",
+    "is_free_realm",
+    "normalize_access_mode",
     "create_realm",
     "delete_realm",
     "ensure_default_realm",

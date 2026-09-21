@@ -9,7 +9,7 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound,
+  KeyRound, Film,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi,
@@ -41,6 +41,12 @@ const orderLoading = ref<number | null>(null)
 const rechargeEnabled = ref(true)
 const plansEnabled = ref(true)
 const exchangeEnabled = ref(true)
+
+// ===== 公益服（v2.7.0）：这个服免费开放，不需要买会员 =====
+// 后端 /payment/plans 会下发当前服的接入方式；公益服一律不展示套餐与购买引导，
+// 否则用户会以为“不买就看不了”，而实际上他本来就能看。
+const isFreeRealm = ref(false)
+const realmNote = ref('')
 
 // ===== 当前会员（订阅 tab 顶部状态行）=====
 const subscriptions = ref<MySubscription[]>([])
@@ -173,7 +179,14 @@ async function loadAll() {
   loading.value = true
   try {
     const emptyPkgs = { enabled: false, packages: [] as RechargePackage[] }
-    const emptyPlans = { enabled: false, plans: [] as SubscriptionPlan[] }
+    // 兜底也要带上接入方式字段：公益服下接口失败时不能退回“付费服”的口径
+    const emptyPlans = {
+      enabled: false,
+      plans: [] as SubscriptionPlan[],
+      access_mode: 'paid' as 'paid' | 'free',
+      is_free: false,
+      access_note: '',
+    }
     const emptyMethods: PaymentMethod[] = []
     const emptyOrders = { orders: [] as OrderRow[] }
     const emptyLogs = { total: 0, balance: 0, logs: [] as PointsLogEntry[] }
@@ -193,6 +206,8 @@ async function loadAll() {
     ])
     packages.value = pkgRes.packages || []
     plans.value = planRes.plans || []
+    isFreeRealm.value = planRes.is_free === true || planRes.access_mode === 'free'
+    realmNote.value = planRes.access_note || ''
     methods.value = Array.isArray(methodRes) ? methodRes : []
     orders.value = orderRes.orders || []
     logs.value = logRes.logs || []
@@ -465,10 +480,24 @@ onBeforeUnmount(stopPayPoll)
       </div>
     </section>
 
-    <!-- 购买订阅：头部价格区 + 权益列表 -->
+    <!-- 购买订阅：公益服换成「免费开放」说明，其余按原样卖套餐 -->
     <section v-if="tab === 'plans'" class="tab-body au-anim-up">
+      <!-- 公益服：没有付费墙，也没有要卖的东西 -->
+      <div v-if="isFreeRealm" class="free-callout au-card">
+        <span class="free-badge">
+          <Sparkles :size="13" />
+          公益服 · 免费开放
+        </span>
+        <p class="free-lead">本服无需开通会员，登录后即可播放全库内容。</p>
+        <p class="free-note">{{ realmNote || '资源请勿下载、转卖或外传，账号仅限本人使用。' }}</p>
+        <RouterLink to="/media" class="au-btn au-btn-primary au-btn-sm">
+          <Film :size="14" />
+          进入媒体库
+        </RouterLink>
+      </div>
+
       <!-- 当前会员状态：已开通显示套餐与到期，未开通提示付费墙 -->
-      <div v-if="plansEnabled" class="member-status" :class="{ inactive: !currentSub }" >
+      <div v-else-if="plansEnabled" class="member-status" :class="{ inactive: !currentSub }" >
         <Crown :size="15" />
         <template v-if="currentSub">
           <span>当前会员：<strong>{{ currentSub.plan_name }}</strong></span>
@@ -479,21 +508,21 @@ onBeforeUnmount(stopPayPoll)
       </div>
 
       <!-- 卡码核销入口已收归顶部面板，这里只留一行指引，避免两个输入框让用户猜该填哪个 -->
-      <button v-if="plansEnabled" type="button" class="code-tip" @click="focusRedeem">
+      <button v-if="plansEnabled && !isFreeRealm" type="button" class="code-tip" @click="focusRedeem">
         <KeyRound :size="14" />
         <span>已有卡码 / 兑换码？用顶部「卡码 · 兑换码」入口，注册码 / 续期码 / 白名单码自动识别</span>
         <ChevronRight :size="14" class="ct-arrow" />
       </button>
 
-      <div v-if="!plansEnabled" class="au-empty">
+      <div v-if="!isFreeRealm && !plansEnabled" class="au-empty">
         <CircleAlert :size="30" />
         <p>订阅购买暂未开启，可联系管理员换用卡码开通</p>
       </div>
-      <div v-else-if="!plans.length" class="au-empty">
+      <div v-else-if="!isFreeRealm && !plans.length" class="au-empty">
         <Zap :size="30" />
         <p>暂无可购买套餐，请联系管理员开通</p>
       </div>
-      <div v-else class="plan-grid">
+      <div v-else-if="!isFreeRealm" class="plan-grid">
         <div v-for="p in plans" :key="p.id" class="plan-card" :class="{ popular: p.is_popular }">
           <span v-if="p.is_popular" class="pkg-pop-tag">推荐</span>
 
@@ -903,6 +932,31 @@ onBeforeUnmount(stopPayPoll)
   font-size: 0.8125rem;
   color: var(--au-text-2);
 }
+
+/* 公益服（v2.7.0）：免费开放说明卡，替代套餐区 */
+.free-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 1rem 1.125rem;
+}
+
+.free-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.5625rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.free-lead { margin: 0; font-size: 0.875rem; color: var(--au-text); }
+.free-note { margin: 0; font-size: 0.8125rem; line-height: 1.6; color: var(--au-text-3); }
 
 /* 卡码预检通过后的确认行（内联在核销面板里） */
 .redeem-preview {

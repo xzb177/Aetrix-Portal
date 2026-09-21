@@ -38,6 +38,12 @@ class RealmPayload(BaseModel):
     url: str = Field(default="", max_length=500)
     description: str = Field(default="", max_length=300)
     is_active: bool = True
+    # 接入方式：paid（付费服，需要订阅）/ free（公益服，免费开放）
+    access_mode: str = Field(default=realms.ACCESS_PAID, max_length=10)
+    # 公益服规则文案（用户端展示）
+    access_note: str = Field(default="", max_length=500)
+    # 下载策略：不传 = 跟随全局（公益服默认禁止下载）
+    allow_download: Optional[bool] = None
 
 
 class RealmUpdatePayload(BaseModel):
@@ -46,6 +52,10 @@ class RealmUpdatePayload(BaseModel):
     description: Optional[str] = Field(default=None, max_length=300)
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
+    access_mode: Optional[str] = Field(default=None, max_length=10)
+    access_note: Optional[str] = Field(default=None, max_length=500)
+    # 三态下载策略：follow（跟随全局）/ allow / deny；不传 = 不改
+    download_policy: Optional[str] = Field(default=None, max_length=10)
 
 
 def _summary(db: Session) -> dict:
@@ -53,9 +63,13 @@ def _summary(db: Session) -> dict:
     rows = realms.list_realms(db)
     all_stats = {r.id: realms.stats(db, r.id) for r in rows}
     total_active_subs = sum(s["active_subscriptions"] for s in all_stats.values())
+    free_realms = [r for r in rows if realms.normalize_access_mode(r.access_mode) == realms.ACCESS_FREE]
     return {
         "total_realms": len(rows),
         "enabled_realms": len([r for r in rows if r.is_active]),
+        # 公益服（免费开放）的服数：面板顶部与概览页用
+        "free_realms": len(free_realms),
+        "paid_realms": len(rows) - len(free_realms),
         "libraries": sum(s["libraries"] for s in all_stats.values()),
         "items": sum(s["items"] for s in all_stats.values()),
         "plans": sum(s["plans"] for s in all_stats.values()),
@@ -89,6 +103,8 @@ async def realms_overview(_: models.WebUser = Depends(get_current_admin), db: Se
                 "id": r.id, "name": r.name, "slug": r.slug, "url": r.url or "",
                 "is_active": bool(r.is_active),
                 "is_default": r.id == realms.legacy_realm_id(db),
+                "access_mode": realms.normalize_access_mode(r.access_mode),
+                "is_free": realms.is_free_realm(db, r.id),
                 "public_url": realms.realm_public_url(db, r.id),
                 "stats": realms.stats(db, r.id),
             }
@@ -109,11 +125,14 @@ async def create_realm(
         realm = realms.create_realm(
             db, name=payload.name, slug=payload.slug, url=payload.url,
             description=payload.description, is_active=payload.is_active,
+            access_mode=payload.access_mode, access_note=payload.access_note,
+            allow_download=payload.allow_download,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     _audit(db, admin, "create_realm", "realm", realm.id,
-           {"name": realm.name, "slug": realm.slug})
+           {"name": realm.name, "slug": realm.slug,
+            "access_mode": realms.normalize_access_mode(realm.access_mode)})
     db.commit()
     return {"success": True, "realm": realms.serialize(db, realm), "summary": _summary(db)}
 
@@ -225,11 +244,14 @@ async def update_realm(
             db, realm, name=payload.name, url=payload.url,
             description=payload.description, is_active=payload.is_active,
             sort_order=payload.sort_order,
+            access_mode=payload.access_mode, access_note=payload.access_note,
+            download_policy=payload.download_policy,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     _audit(db, admin, "update_realm", "realm", realm.id,
-           {"name": realm.name, "is_active": bool(realm.is_active)})
+           {"name": realm.name, "is_active": bool(realm.is_active),
+            "access_mode": realms.normalize_access_mode(realm.access_mode)})
     db.commit()
     return {"success": True, "realm": realms.serialize(db, realm), "summary": _summary(db)}
 

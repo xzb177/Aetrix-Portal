@@ -14,7 +14,7 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
   authApi, embyApi, subscriptionApi,
-  type AuthUser, type AccountCard, type MySubscription, type WatchStats,
+  type AuthUser, type AccountCard, type AccountRealmCard, type MySubscription, type WatchStats,
 } from '@/api'
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
@@ -58,6 +58,17 @@ const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
 
 // ===== 多服：我在这几个服各自的地址与会员（一个服一个会员）=====
 const realmCards = computed(() => account.value?.realms || [])
+
+// ===== 公益服（v2.7.0）：本服免费开放，不需要会员 =====
+const isFreeRealm = computed(() => !!account.value?.is_free || userStore.isFreeRealm)
+const realmNote = computed(
+  () => account.value?.access_note || userStore.realmNote || '本服为公益服 · 免费开放：无需开通会员即可观看全库内容。',
+)
+// 公益服：没订阅也算“能看”，卡片不该写成「未开通」把用户吓回去
+function realmState(r: AccountRealmCard) {
+  if (r.is_free) return '公益服 · 免费开放'
+  return r.subscribed ? `会员剩 ${daysLeft(r.end_date)} 天` : '未开通'
+}
 
 function daysLeft(end?: string | null): number {
   if (!end) return 0
@@ -287,6 +298,20 @@ function formatDate(iso?: string | null) {
           </button>
         </header>
 
+        <!-- 公益服：一进来就说清这个服不要钱、规则是什么，别让用户去找开通入口 -->
+        <div v-if="isFreeRealm" class="rows">
+          <div class="row">
+            <span class="row-label">接入方式</span>
+            <span class="row-value">
+              <span class="badge free">公益服 · 免费开放</span>
+            </span>
+          </div>
+          <div class="row">
+            <span class="row-label">规则</span>
+            <span class="row-value wrap">{{ realmNote }}</span>
+          </div>
+        </div>
+
         <div class="rows" :class="{ loading }">
           <div class="row">
             <span class="row-label">服务器</span>
@@ -327,7 +352,8 @@ function formatDate(iso?: string | null) {
             <div v-for="r in realmCards" :key="r.id" class="realm-item">
               <div class="realm-head">
                 <strong>{{ r.name }}</strong>
-                <span v-if="r.subscribed" class="badge ok">会员剩 {{ daysLeft(r.end_date) }} 天</span>
+                <span v-if="r.is_free" class="badge free">公益服 · 免费开放</span>
+                <span v-else-if="r.subscribed" class="badge ok">会员剩 {{ daysLeft(r.end_date) }} 天</span>
                 <span v-else class="badge off">未开通</span>
               </div>
               <div class="realm-url">
@@ -377,6 +403,11 @@ function formatDate(iso?: string | null) {
               <div class="sub-end">{{ activeSub.end_date.slice(0, 10) }} 到期 · 剩余 {{ activeSub.days_left }} 天</div>
             </div>
             <span class="badge ok">生效中</span>
+          </div>
+          <!-- 公益服：没有订阅是正常的，不是“未开通”，也不能引导去购买 -->
+          <div v-else-if="isFreeRealm" class="sub-free">
+            <span class="badge free">公益服 · 免费开放</span>
+            <p class="pane-empty">{{ realmNote }}</p>
           </div>
           <p v-else class="pane-empty">暂无生效中的订阅。如需开通，请联系管理员。</p>
 
@@ -719,6 +750,10 @@ function formatDate(iso?: string | null) {
 .badge.ok { background: var(--au-success-soft); color: var(--au-success); }
 .badge.idle { background: var(--au-surface-2); color: var(--au-text-3); }
 .badge.off { background: var(--au-danger-soft); color: var(--au-danger); }
+/* 公益服：免费开放不是“未开通”，用站点主色单独区分 */
+.badge.free { background: var(--au-primary-soft); color: var(--au-primary); }
+
+.sub-free { display: flex; flex-direction: column; gap: 0.375rem; align-items: flex-start; }
 
 .count-chip {
   margin-left: 0.125rem;
@@ -795,6 +830,9 @@ function formatDate(iso?: string | null) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 公益规则这类长文本要换行，不能像地址那样截断 */
+.row-value.wrap { overflow: visible; white-space: normal; line-height: 1.6; }
 
 .mono {
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;

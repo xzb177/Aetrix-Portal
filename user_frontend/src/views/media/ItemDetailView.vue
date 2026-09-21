@@ -12,7 +12,7 @@ import { useToast } from '@/composables/useToast'
 import { useUserStore } from '@/stores/user'
 import {
   Play, Star, Heart, Eye, EyeOff, Clock, Layers, ChevronLeft, ChevronDown, Film,
-  Crown,
+  Crown, Sparkles,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -29,6 +29,11 @@ const togglingFavorite = ref(false)
 
 // 付费墙：开启且当前账号不是会员时，提前给出开通引导
 const needsSubscription = computed(() => userStore.needsSubscription)
+// 公益服（v2.7.0）：免费开放，不放开通入口，只把规则说清楚
+const isFreeRealm = computed(() => userStore.isFreeRealm)
+const realmNote = computed(
+  () => userStore.realmNote || '本服为公益服 · 免费开放：无需开通会员即可观看全库内容。',
+)
 
 const itemId = computed(() => route.params.id as string)
 
@@ -180,6 +185,15 @@ onMounted(loadItem)
               </span>
               <span class="notice-cta">开通会员</span>
             </RouterLink>
+
+            <!-- 公益服：这里不是营销位，只告诉用户“不用买也能看” -->
+            <div v-else-if="isFreeRealm" class="free-notice">
+              <Sparkles :size="15" class="notice-icon" />
+              <span class="notice-body">
+                <strong>公益服 · 免费开放</strong>
+                <em>{{ realmNote }}</em>
+              </span>
+            </div>
 
             <!-- 操作区 -->
             <div class="actions">
@@ -434,6 +448,21 @@ onMounted(loadItem)
   flex-shrink: 0;
   color: var(--au-primary);
 }
+
+/* 公益服（v2.7.0）：静态说明，不做成可点的营销位 */
+.free-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  max-width: 560px;
+  padding: 0.6875rem 0.875rem;
+  margin-bottom: 1rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
+}
+
+.free-notice .notice-body em { white-space: normal; line-height: 1.6; }
 
 .notice-body {
   display: flex;

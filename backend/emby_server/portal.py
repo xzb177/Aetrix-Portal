@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend import models, realms
+from backend import models, realms, subscriptions
 from backend.database import get_db, SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
@@ -199,6 +199,11 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "has_password": bool(user.emby_password),
         "realm_id": realm.id if realm else None,
         "realm_name": realm.name if realm else "",
+        # 接入方式：free = 公益服（免费开放，不需要订阅）；用户端据此换一套文案
+        "access_mode": realms.normalize_access_mode(realm.access_mode) if realm else "paid",
+        "is_free": realms.is_free_realm(db, realm_id),
+        "access_note": realms.access_note_of(db, realm_id),
+        "allow_download": subscriptions.download_allowed(db, realm_id),
         "import_schemes": {} if external else {
             "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
             "senplayer": f"senplayer://importserver?type=emby&name=RoyalBot&address={url}&username={user.emby_username}",
@@ -209,7 +214,11 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
 
 
 def _user_realm_cards(user: models.WebUser, db: Session) -> list[dict]:
-    """用户在各服的地址与订阅状态（多服时前端按卡片列出）"""
+    """用户在各服的地址与订阅状态（多服时前端按卡片列出）
+
+    **公益服不管有没有订阅都下发**：免费开放本身就是这个服对用户的承诺，
+    没订阅不等于“不能看”（见 ``backend/subscriptions.py``）。
+    """
     now = datetime.now()
     subs = (db.query(models.UserSubscription)
             .filter(models.UserSubscription.user_id == user.id,
@@ -224,8 +233,9 @@ def _user_realm_cards(user: models.WebUser, db: Session) -> list[dict]:
     cards: list[dict] = []
     for realm in realms.list_realms(db, include_disabled=False):
         sub = by_realm.get(realm.id)
-        if sub is None and realm.id != realms.legacy_realm_id(db):
-            continue  # 没订阅的服不往用户面前推（默认服保留，兼容老前端）
+        free = realms.is_free_realm(db, realm.id)
+        if sub is None and not free and realm.id != realms.legacy_realm_id(db):
+            continue  # 没订阅的付费服不往用户面前推（默认服保留，兼容老前端）
         mode = emby_active_mode(db, realm.id)
         cards.append({
             "id": realm.id,
@@ -235,6 +245,10 @@ def _user_realm_cards(user: models.WebUser, db: Session) -> list[dict]:
             "mode": mode,
             "external": mode == "external",
             "subscribed": sub is not None,
+            # free = 公益服：不需要订阅也能看；"access" 是给前端的一句话口径
+            "access_mode": realms.normalize_access_mode(realm.access_mode),
+            "is_free": free,
+            "access_note": realms.access_note_of(db, realm.id),
             "end_date": sub.end_date.isoformat() if sub and sub.end_date else None,
             "plan_name": (sub.plan.name if sub and sub.plan else ""),
             "is_default": realm.id == realms.legacy_realm_id(db),
