@@ -39,6 +39,8 @@ async function save(mode: 'managed_ea' | 'external') {
     if (response.probe.ok) state.active_mode = mode
     response.probe.ok ? ElMessage.success('已保存并连接成功') : ElMessage.warning('已保存，但当前服务连接失败；自建功能不会被启用')
     if (mode === 'external') apiKey.value = ''
+    // 重新拉一次：当前模式、可达状态与已保存密钥都由后端决定，不靠前端猜测
+    await load()
   } catch { ElMessage.error('保存失败，请检查地址') } finally { saving.value = null }
 }
 onMounted(load)
