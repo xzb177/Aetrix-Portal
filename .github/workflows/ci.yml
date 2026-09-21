@@ -102,6 +102,9 @@ jobs:
       - name: 并发与经济链冒烟（兑换码/签到防重、积分不丢更新、邀请幂等、限流 IP）
         run: python scripts/smoke_test_concurrency.py
 
+      - name: 播放入口链路冒烟（付费墙 / PlaybackInfo / 直连流与 Range / 无路径条目）
+        run: python scripts/smoke_test_playback_chain.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend

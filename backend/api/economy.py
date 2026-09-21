@@ -621,8 +621,17 @@ def _verify_yipay_notify(params: dict, key: str) -> bool:
     return sign.lower() == expected.lower()
 
 
-async def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) -> None:
-    """订单履约：充值发积分 / 订阅发放，幂等（重复回调不重复发货）"""
+async def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) -> list:
+    """订单履约：充值发积分 / 订阅发放，幂等（重复回调不重复发货）
+
+    **返回待发送的通知列表，不要在这里就发出去。**
+
+    履约事务（积分 / 订阅 / 订单状态）还没 ``commit`` 时，通知服务会另开一个 session 写站内信，
+    在 SQLite 上这属于「读事务升级为写事务」，会被直接判为 ``database is locked``（不会等锁），
+    结果是「充值成功」这类站内信被静默丢弃（只留一行日志），而钱已经收了。
+    所以通知由调用方在 ``db.commit()`` 之后统一发：见 ``send_fulfill_notifications``。
+    """
+    pending: list = []
     if recharge_order and recharge_order.status != "paid":
         user = db.query(models.WebUser).filter(
             models.WebUser.id == recharge_order.user_id
@@ -640,12 +649,12 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
                              recharge_order.order_id)
             except Exception:  # noqa: BLE001 — 返利失败不阻塞充值履约
                 logger.exception("充值返利计算失败: %s", recharge_order.order_id)
-            await notify_admin_event(
+            pending.append(dict(
                 event_type="economy.recharge_success",
                 user_id=user.id,
                 title=f"💰 充值成功 +{recharge_order.amount} 积分",
                 content=f"订单 {recharge_order.order_id} 已到账，当前余额 {user.points} 积分。",
-            )
+            ))
         recharge_order.status = "paid"
         recharge_order.paid_at = datetime.now()
 
@@ -661,16 +670,27 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
                 db, user, plan,
                 plan.duration_days, "purchase", subscription_order.order_id,
             )
-            await notify_admin_event(
+            pending.append(dict(
                 event_type="economy.subscription_success",
                 user_id=user.id,
-                title=f"🎉 订阅购买成功",
+                title="🎉 订阅购买成功",
                 content=(f"「{plan.name}」已开通，"
                          f"到期时间 {subscription.end_date.strftime('%Y-%m-%d')}。"),
                 related_id=subscription.id,
-            )
+            ))
         subscription_order.status = "paid"
         subscription_order.paid_at = datetime.now()
+
+    return pending
+
+
+async def send_fulfill_notifications(pending: list) -> None:
+    """履约事务提交之后发送站内信（失败只记日志，不影响已到账的订单）"""
+    for item in pending or []:
+        try:
+            await notify_admin_event(**item)
+        except Exception as exc:  # noqa: BLE001 — 通知失败不能影响支付结果
+            logger.warning("履约通知发送失败（用户 %s）: %s", item.get("user_id"), exc)
 
 
 @router.api_route("/payment/notify", methods=["GET", "POST"], response_class=PlainTextResponse)
@@ -709,14 +729,16 @@ async def payment_notify(request: Request, db: Session = Depends(get_db)):
         return "fail"
 
     try:
-        await _fulfill_order(db, recharge_order=recharge_order,
-                             subscription_order=subscription_order)
+        pending = await _fulfill_order(db, recharge_order=recharge_order,
+                                       subscription_order=subscription_order)
         db.commit()
     except Exception:  # noqa: BLE001
         db.rollback()
         logger.exception("订单履约失败: %s", out_trade_no)
         return "fail"
 
+    # 先提交再发通知：见 _fulfill_order 的说明（履约中另开会话写站内信会撞 SQLite 写锁）
+    await send_fulfill_notifications(pending)
     return "success"
 
 

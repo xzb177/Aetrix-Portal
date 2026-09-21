@@ -122,8 +122,8 @@ def preflight(media_dir: str) -> tuple[int, str, str]:
         check("数据库可连接并初始化", False, str(exc))
         raise SystemExit(1)
 
-    # 必须看 EM **真正托管**的那两个目录（可被 FRONTEND_DIST / ADMIN_DIST 覆盖）；
-    # 仓库里另有一份旧的 user_frontend_dist/，EM 不会读它，拿它当依据就是假绿。
+    # 必须看 EM **真正托管**的那两个目录（可被 FRONTEND_DIST / ADMIN_DIST 覆盖）——
+    # 不能拿别的目录当依据，否则会出现“构建产物其实是旧的”这种假绿。
     for label, dist_env, default in (
         ("用户端", "FRONTEND_DIST", os.path.join(ROOT, "user_frontend", "dist")),
         ("管理端", "ADMIN_DIST", os.path.join(ROOT, "admin_frontend", "dist")),

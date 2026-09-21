@@ -102,29 +102,29 @@ case "${1:-help}" in
         backup_env
         rotate_jwt_secret
         echo ""
-        echo -e "${YELLOW}请重启后端服务使更改生效：${NC}"
-        echo "  docker compose restart admin_backend user_backend"
+        echo -e "${YELLOW}请重启 EM / EA 使更改生效：${NC}"
+        echo "  sudo systemctl restart royalbot-em royalbot-ea   # 或你的进程管理方式"
         ;;
     user)
         backup_env
         rotate_user_secret
         echo ""
-        echo -e "${YELLOW}请重启用户端后端服务：${NC}"
-        echo "  docker compose restart user_backend"
+        echo -e "${YELLOW}请重启 EM / EA（两边必须用同一个 SECRET_KEY）：${NC}"
+        echo "  sudo systemctl restart royalbot-em royalbot-ea"
         ;;
     postgres)
         backup_env
         rotate_postgres_password
         echo ""
-        echo -e "${YELLOW}请重启所有服务：${NC}"
-        echo "  docker compose restart"
+        echo -e "${YELLOW}请重启所有服务（PostgreSQL + EM + EA）：${NC}"
+        echo "  sudo systemctl restart postgresql royalbot-em royalbot-ea"
         ;;
     redis)
         backup_env
         rotate_redis_password
         echo ""
         echo -e "${YELLOW}请重启相关服务：${NC}"
-        echo "  docker compose restart admin_backend user_backend redis"
+        echo "  sudo systemctl restart redis royalbot-em royalbot-ea"
         ;;
     crypto)
         backup_env

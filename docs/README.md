@@ -60,7 +60,7 @@
 
 ## 与旧版拆分架构的关系
 
-仓库里同时留着 v2.0 之前的**旧拆分式**部署配置：`docker-compose.yml`（`admin_frontend` / `admin_backend` / `user_frontend` 三个容器）、`deploy.sh`、`update.sh`、`user_backend/`、`admin_backend/`。它们与当前的 EM/EA 架构**不共享数据库结构**，不要混用（详见 [运维 · 排错](./operations.md#旧版-compose-栈能直接用吗)）。
+v2.0 之前的**旧拆分式**部署配置（`docker-compose.yml`、`deploy.sh`、`update.sh`、`user_backend/`、`admin_backend/` 等）**已从仓库删除**。它们与当前的 EM/EA 架构不共享数据库结构，留着只会让人误用；需要时从 git 历史取回（详见 [运维 · 排错](./operations.md#旧版拆分栈还在吗)）。
 
 ## 文档清单
 

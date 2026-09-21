@@ -54,7 +54,7 @@ python3 scripts/deploy_check.py --keep      # 自检完不杀进程（会打印 
 - [ ] `CORS_ORIGINS` 已填具体域名，不是留空
 - [ ] `EMBY_ALLOW_LEGACY_TOKENS` 已废弃（旧数字 token 兼容代码已移除，无需再配）
 - [ ] 全站 HTTPS 已生效，HTTP 自动跳转
-- [ ] `nginx/ssl/` 的占位自签证书已换成自己的
+- [ ] Nginx 使用的证书是**你自己的**（仓库里那份旧证书与私钥已删除；若你曾用过 `nginx/ssl/privkey.pem`，视为已泄露并重新签发）
 - [ ] `/metrics` 未暴露到公网（在 Nginx 层限制来源）
 - [ ] 已改掉所有默认口令（数据库、管理员账号），无弱密码
 
@@ -135,7 +135,7 @@ gunzip -c /backups/royalbot_2026-09-20_1200.sql.gz | psql -U royalbot royalbot
 ### 还要一起备份的东西
 
 - `.env`（含 `SECRET_KEY`，丢了等于所有人重新登录）
-- `nginx/ssl/` 证书，以及续期/cron 配置
+- 你服务器上 Nginx 的证书与续期/cron 配置（**不在仓库里**，仓库那份已删除）
 
 > `scripts/backup.sh` / `backup_db.sh` / `restore.sh` 等是**旧版拆分栈（PostgreSQL + 容器）**的脚本：其 `BACKUP_DIR` 默认 `/backups`、产出 `royalbot_*.sql.gz`。如果你跑的是统一后端的 PostgreSQL，可以直接复用其 `pg_dump` 部分，但别指望它认识 SQLite 单文件部署。
 
@@ -258,21 +258,27 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 3. HTTPS 证书必须被客户端信任（自签证书在部分播放器上会被直接拒绝）；
 4. `EMBY_SERVER_ID` 若中途变过，客户端会把同一台服务器当成新服务器，需要重新添加。
 
-### 旧版 compose 栈能直接用吗
+### 旧版拆分栈还在吗
 
-`docker-compose.yml` 是 v2.0 之前的**拆分式**栈（`admin_frontend` / `admin_backend` / `user_frontend` 三个容器），有两个要注意的点：
+**不在了。** v2.0 之前的拆分式部署栈（`admin_backend/`、`user_backend/`、`docker-compose.yml`、`deploy.sh`、`update.sh`、`dev.sh`、旧 `.env` 模板、旧 `nginx.conf` 与 `user_frontend_dist/`）**已从仓库删除**。它们与当前 EM/EA 架构不共享数据库结构，留着只会让人误用。
 
-1. 它依赖两个**外部**网络（`royalbot-portal_royalbot_network`、`royalbot-emby-deploy_royalbot_network`）和一个**外部**卷（`royalbot_user_data`），首次使用必须先手动创建：
-   ```bash
-   docker network create royalbot-portal_royalbot_network
-   docker network create royalbot-emby-deploy_royalbot_network
-   docker volume create royalbot_user_data
-   ```
-2. 它**不包含统一后端**（`backend/`）。`backend/Dockerfile` 虽然能把统一后端容器化（`EXPOSE 8000`、健康检查打 `/api/health`），但当前 compose 并未引用它。
-3. 数据库口令改为**必须从环境注入**：旧版 compose / `admin_backend/admin_database_user.py` 里曾经硬编码过生产库口令，已移除。现在启动前需要：
-   ```bash
-   export POSTGRES_PASSWORD='你的数据库口令'   # 未设置时 compose 直接报错退出
-   ```
-   > 如果你用过旧版拆分栈，请**立即更换 PostgreSQL 与 Redis 口令**——旧口令曾以明文提交进仓库历史。
+连带清掉的还有一批“留着就会误导”的残留：三个 `Dockerfile` 与两个前端 `nginx.conf`
+（没有任何文档在用它们，且 `admin_frontend/nginx.conf` 反向代理指向的是已删除的 `admin_backend:8080`）、
+根目录的两份一次性报告（`FIX_REPORT.md`、`FRONTEND_BACKEND_LINKAGE.md`）、
+`admin_frontend/docs/navigation-architecture.md`（描述的是未实现的导航重构，
+它提到的组件与配置文件在代码里都不存在）、走开发库的旧 `pytest.ini` + `tests/`，
+以及跑不通的 `telegram_login_bot/`（它调用的 `{WEB_URL}/api/user/auth/telegram-login` 从来不存在）。
 
-统一后端 + 前后端静态托管的组合已经不需要三个容器，**新部署请直接按本文档走**；只有要接管一套既有拆分部署时才继续用 `deploy.sh`（`--build` / `--status` / `--logs` / `--update` / `--rollback` / `--backup` / `--restore` 等）。
+需要当年那套文件时从 git 历史取回即可：
+
+```bash
+git log --oneline -- docker-compose.yml      # 找到删除前的最后一个提交
+git show <那个提交>:docker-compose.yml > /tmp/docker-compose.yml
+```
+
+> ⚠️ 那套栈里曾经**硬编码过生产库口令**，`nginx/ssl/privkey.pem` 还是一把**真实域名（login.laodaemby.xyz）的 EC 私钥**。如果你用过旧栈：
+> 1. **立即更换 PostgreSQL 与 Redis 口令**；
+> 2. 那把 TLS 私钥视为已泄露，**吊销并重签**证书；
+> 3. 仓库历史里仍有旧口令（git 历史没有重写），必要时用 `git filter-repo` 清理或直接轮换。
+
+新部署请直接按本文档走：EM（`serve.py`）一个进程同时托管门户、后台与 API，静态产物由 EM 自己托管，不再需要三个容器。

@@ -215,10 +215,12 @@ npm run dev
 
 ### 后端开发
 
+只有一个后端：仓库根目录的 `backend/`（EM 面板 + 自建 Emby），依赖在 `backend/requirements.txt`。
+
 ```bash
-cd user_backend  # 或 admin_backend
-pip install -r requirements.txt
-python main.py
+pip install -r backend/requirements.txt
+python serve.py          # EM 面板 :8000
+python serve_emby.py     # EA 协议网关 :8001（分离部署时才需要）
 ```
 
 ### 持续集成（CI）

@@ -1193,6 +1193,15 @@ async def playback_info(
     item = _require_item(db, item_id)
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
     ensure_playback_allowed(db, user)
+    if not item.file_path:
+        # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
+        # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
+        # 返回空 MediaSources 是 Emby 客户端认可的「无可播放源」。
+        return {
+            "MediaSources": [],
+            "PlaySessionId": secrets.token_hex(8),
+            "ErrorCode": None,
+        }
     base = _base_url(request)
     body = {}
     try:

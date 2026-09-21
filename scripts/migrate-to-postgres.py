@@ -8,7 +8,7 @@ RoyalBot Portal 数据库迁移脚本
 
 示例:
     python migrate-to-postgres.py \\
-        --source /root/RoyalBot-Portal/user_backend/royalbot.db \\
+        --source ./royalbot_unified.db \\
         --target postgresql://royalbot:password@localhost:5432/royalbot
 """
 
@@ -450,8 +450,8 @@ class DatabaseMigrator:
 
 def main():
     parser = argparse.ArgumentParser(description='从 SQLite 迁移到 PostgreSQL')
-    parser.add_argument('--source', default='/root/RoyalBot-Portal/user_backend/royalbot.db',
-                        help='SQLite 数据库路径')
+    parser.add_argument('--source', default='./royalbot_unified.db',
+                        help='SQLite 数据库路径（默认当前 EM 的库）')
     parser.add_argument('--target', default='postgresql://royalbot:royalbot_change_me@localhost:5432/royalbot',
                         help='PostgreSQL 连接 URL')
 

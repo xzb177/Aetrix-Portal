@@ -133,6 +133,36 @@ check("用户端额度随配置变化",
 client.put("/api/admin/economy/settings",
            json={"settings": {"media_seek_daily_limit": "5"}}, headers=staff_h)
 
+# ---------- 求片：用户提交 → 管理端列表/审批 → 用户收到通知 ----------
+seek_name = f"求片链路{suf}"
+r = client.post("/api/user/media-seek", json={"movie_name": seek_name, "year": "2022"},
+                headers=plain_h)
+check("用户提交求片", r.status_code == 200 and r.json().get("request_id"), r.text[:120])
+seek_id = r.json()["request_id"]
+
+r = client.get("/api/admin/media-seek", headers=staff_h)
+rows = r.json() if r.status_code == 200 else {}
+rows = rows.get("requests", rows) if isinstance(rows, dict) else rows
+check("管理端能列出这条求片",
+      r.status_code == 200 and any(x.get("id") == seek_id for x in (rows or [])),
+      f"HTTP {r.status_code} rows={len(rows or [])}")
+
+r = client.put(f"/api/admin/media-seek/{seek_id}",
+               json={"status": "approved", "admin_note": "已安排下载"}, headers=staff_h)
+check("管理端审批求片", r.status_code == 200, r.text[:120])
+
+r = client.get("/api/user/media-seek", headers=plain_h)
+rows = (r.json() or {}).get("requests", []) if r.status_code == 200 else []
+row = next((x for x in rows if x.get("id") == seek_id), None)
+check("用户端看到审批后的状态", row is not None and row.get("status") == "approved",
+      str(row.get("status") if row else None))
+
+r = client.get("/api/user/messages", headers=plain_h)
+inbox = r.json() if isinstance(r.json(), list) else (r.json() or {}).get("messages", [])
+check("用户收到求片审批站内信",
+      r.status_code == 200 and any("求片" in (m.get("title") or "") for m in inbox),
+      str([m.get("title") for m in inbox][:3]))
+
 print()
 if failures:
     print(f"❌ {len(failures)} 项失败：" + "、".join(failures))

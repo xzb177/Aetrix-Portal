@@ -557,7 +557,10 @@ async def broadcast_message(
         title=request.title,
         content=request.content,
     )
-    return {"success": True, "message": f"广播已发送，预计接收 {count} 位在线用户"}
+    # count = 真正落了站内消息的用户数（全部启用账号；在线的那部分同时做了实时推送），
+    # 旧文案写成「在线用户」与现在的行为不符
+    return {"success": True, "notified_users": count,
+            "message": f"广播已发送，已为 {count} 位用户生成站内消息"}
 
 
 # ==================== 卡码体系 API ====================
@@ -768,14 +771,17 @@ async def create_announcement(
            announcement.id, {"title": request.title})
     db.commit()
 
-    await notify_all_users(
+    # notify_all_users 现在给**每个启用中的用户**落站内消息（不只当时在线的人），
+    # 返回值就是实际收到的用户数，文案跟着这个数字走，不再无条件宣称"已推送给所有用户"
+    notified = await notify_all_users(
         event_type=AdminEvent.ANNOUNCEMENT_PUBLISHED,
         title=f"📢 {request.title}",
         content=request.content,
         data={"announcement_id": announcement.id, "type": request.type},
     )
     return {"success": True, "announcement_id": announcement.id,
-            "message": "公告创建成功并已推送给所有用户"}
+            "notified_users": notified,
+            "message": f"公告创建成功，已为 {notified} 位用户生成站内消息"}
 
 
 @admin_router.put("/announcements/{announcement_id}")
@@ -1632,7 +1638,7 @@ async def economy_mark_order_paid(
     db: Session = Depends(get_db),
 ):
     """人工补单（标记已支付并履约）— 用于线下收款/支付回调丢失"""
-    from backend.api.economy import _fulfill_order
+    from backend.api.economy import _fulfill_order, send_fulfill_notifications
 
     recharge_order = db.query(models.RechargeOrder).filter(
         models.RechargeOrder.order_id == order_id
@@ -1650,9 +1656,12 @@ async def economy_mark_order_paid(
     ):
         raise HTTPException(status_code=400, detail="订单已是已支付状态")
 
-    await _fulfill_order(db, recharge_order=recharge_order,
-                         subscription_order=subscription_order)
+    pending = await _fulfill_order(db, recharge_order=recharge_order,
+                                   subscription_order=subscription_order)
     db.commit()
+
+    # 先提交再发通知：履约事务里另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
+    await send_fulfill_notifications(pending)
 
     _audit(db, current_admin, "economy_mark_order_paid", "order", None,
            {"order_id": order_id})
