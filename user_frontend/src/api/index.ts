@@ -46,19 +46,32 @@ api.interceptors.request.use(
 
 let isRefreshing = false
 let refreshSubscribers: Array<(token: string) => void> = []
+let refreshRejectSubscribers: Array<(error: unknown) => void> = []
 
 function subscribeTokenRefresh(cb: (token: string) => void) {
   refreshSubscribers.push(cb)
 }
 
+function subscribeTokenRefreshFailure(cb: (error: unknown) => void) {
+  refreshRejectSubscribers.push(cb)
+}
+
 function onRefreshed(newToken: string) {
   refreshSubscribers.forEach((cb) => cb(newToken))
   refreshSubscribers = []
+  refreshRejectSubscribers = []
+}
+
+function onRefreshFailed(error: unknown) {
+  refreshRejectSubscribers.forEach((cb) => cb(error))
+  refreshSubscribers = []
+  refreshRejectSubscribers = []
 }
 
 function forceLogout() {
   tokenStore.clear()
-  if (!window.location.pathname.startsWith('/login')) {
+  const isLoginPage = window.location.pathname === '/login' || window.location.pathname.startsWith('/login')
+  if (!isLoginPage) {
     window.location.href = '/login'
   }
 }
@@ -73,7 +86,10 @@ api.interceptors.response.use(
     return res
   },
   async (error) => {
-    const originalRequest = error.config
+    const originalRequest = error?.config
+    if (!originalRequest) {
+      return Promise.reject(error)
+    }
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       const isAuthRequest =
@@ -92,10 +108,13 @@ api.interceptors.response.use(
       }
 
       if (isRefreshing) {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
           subscribeTokenRefresh((newToken: string) => {
             originalRequest.headers.Authorization = `Bearer ${newToken}`
             resolve(api(originalRequest))
+          })
+          subscribeTokenRefreshFailure((refreshError) => {
+            reject(refreshError)
           })
         })
       }
@@ -106,11 +125,15 @@ api.interceptors.response.use(
       try {
         const res = await axios.post('/api/user/auth/refresh', { refresh_token: refreshToken })
         const data = res.data
+        if (!data?.access_token) {
+          throw new Error('refresh token response missing access_token')
+        }
         tokenStore.set(data.access_token, data.refresh_token)
         onRefreshed(data.access_token)
         originalRequest.headers.Authorization = `Bearer ${data.access_token}`
         return api(originalRequest)
       } catch (refreshError) {
+        onRefreshFailed(refreshError)
         forceLogout()
         return Promise.reject(refreshError)
       } finally {
