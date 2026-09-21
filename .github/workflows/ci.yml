@@ -39,6 +39,12 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: npm ci --no-audit --no-fund
 
+      # 纯文本契约检查：所有 window.location 跳转与 router.push 必须指向本前端已声明的路由。
+      # 曾经有两次改动把跳转写成别的项目的 /m/login，类型检查看不出来（字符串就是字符串），
+      # 用户会被送到 catch-all 的 404 页。
+      - name: 路由契约检查（跳转目标必须存在）
+        run: python3 scripts/check_frontend_routes.py
+
       - name: 类型检查（vue-tsc）
         working-directory: ${{ matrix.dir }}
         run: npm run type-check
