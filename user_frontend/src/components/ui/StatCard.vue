@@ -47,34 +47,34 @@ const props = withDefaults(defineProps<Props>(), {
 .ui-stat-card {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-md);
-  box-shadow: var(--card-shadow);
-  transition: background-color var(--duration-fast) var(--ease-out);
+  gap: var(--neo-space-3);
+  background: var(--neo-bg-surface-1);
+  border: 1px solid var(--neo-border-default);
+  border-radius: var(--neo-radius-lg);
+  padding: var(--neo-space-4);
+  box-shadow: var(--neo-shadow-sm);
+  transition: background-color var(--neo-duration-fast) var(--neo-ease-default);
 }
 
 .ui-stat-card:active {
-  background: var(--card-bg-hover);
+  background: var(--neo-bg-surface-hover);
 }
 
 /* 图标容器 */
 .ui-stat-card__icon {
   width: 40px;
   height: 40px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--neo-radius-xs);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 
-.ui-stat-card__icon--success { background: var(--color-success-bg); }
-.ui-stat-card__icon--warning { background: var(--color-warning-bg); }
-.ui-stat-card__icon--danger { background: var(--color-danger-bg); }
-.ui-stat-card__icon--info { background: var(--color-info-bg); }
+.ui-stat-card__icon--success { background: var(--neo-success-bg); }
+.ui-stat-card__icon--warning { background: var(--neo-warning-bg); }
+.ui-stat-card__icon--danger { background: var(--neo-danger-bg); }
+.ui-stat-card__icon--info { background: var(--neo-info-bg); }
 
 .ui-stat-card__icon-img {
   width: 24px;
@@ -88,29 +88,29 @@ const props = withDefaults(defineProps<Props>(), {
 }
 
 .ui-stat-card__value {
-  font-size: 24px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--text-title-color);
+  font-size: var(--neo-font-size-3xl);
+  font-weight: var(--neo-font-weight-semibold);
+  line-height: var(--neo-line-height-tight);
+  color: var(--neo-text-primary);
 }
 
 .ui-stat-card__label {
-  font-size: var(--text-caption-size);
-  font-weight: var(--text-caption-weight);
-  line-height: var(--text-caption-line);
-  color: var(--text-caption-color);
+  font-size: var(--neo-font-size-sm);
+  font-weight: var(--neo-font-weight-normal);
+  line-height: var(--neo-line-height-normal);
+  color: var(--neo-text-tertiary);
   margin-top: 2px;
 }
 
 /* 趋势 */
 .ui-stat-card__trend {
-  font-size: var(--text-caption-size);
-  font-weight: 500;
-  color: var(--color-danger);
+  font-size: var(--neo-font-size-sm);
+  font-weight: var(--neo-font-weight-medium);
+  color: var(--neo-danger);
   flex-shrink: 0;
 }
 
 .ui-stat-card__trend--up {
-  color: var(--color-success);
+  color: var(--neo-success);
 }
 </style>

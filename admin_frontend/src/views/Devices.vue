@@ -211,7 +211,7 @@ function ago(s: string | null): string {
   margin-bottom: 14px;
 }
 .stat-card {
-  background: var(--card-bg, #171717);
+  background: var(--bg-card);
   border: 1px solid var(--border-color, #262626);
   border-radius: 12px;
   padding: 14px 16px;

@@ -53,7 +53,7 @@ const getToastClass = (type: string) => {
 
 <template>
   <Teleport to="body">
-    <div class="toast-container">
+    <div class="toast-container" role="status" aria-live="polite">
       <TransitionGroup name="toast">
         <div
           v-for="msg in messages"
@@ -61,9 +61,14 @@ const getToastClass = (type: string) => {
           class="toast"
           :class="getToastClass(msg.type)"
         >
-          <span class="toast-icon">{{ getIcon(msg.type) }}</span>
+          <span class="toast-icon" aria-hidden="true">{{ getIcon(msg.type) }}</span>
           <span class="toast-message">{{ msg.message }}</span>
-          <button @click="emit('remove', msg.id)" class="toast-close">
+          <button
+            type="button"
+            class="toast-close"
+            aria-label="关闭提示"
+            @click="emit('remove', msg.id)"
+          >
             ×
           </button>
         </div>
@@ -75,7 +80,8 @@ const getToastClass = (type: string) => {
 <style scoped>
 .toast-container {
   position: fixed;
-  top: 80px;
+  /* 贴在吸顶导航下方，并让开刘海区 */
+  top: calc(74px + env(safe-area-inset-top, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: var(--z-tooltip, 700);
@@ -93,11 +99,13 @@ const getToastClass = (type: string) => {
   padding: 0.875rem 1rem;
   min-width: 280px;
   max-width: 90vw;
-  background: var(--bg-elevated, #141414);
-  border: 1px solid var(--border-default, rgba(255, 255, 255, 0.15));
-  border-radius: var(--radius-md, 10px);
-  box-shadow: var(--shadow-lg, 0 12px 24px rgba(0, 0, 0, 0.5));
-  backdrop-filter: blur(8px);
+  /* 与页面其它浮层同一套表面：半透明 + 毛玻璃 + 强边框，不再是一块中性灰 */
+  background: var(--au-surface-3);
+  border: 1px solid var(--au-border-strong);
+  border-radius: var(--au-r-md);
+  box-shadow: var(--au-shadow-2);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .toast-icon {
@@ -115,7 +123,9 @@ const getToastClass = (type: string) => {
 .toast-message {
   flex: 1;
   font-size: 0.875rem;
-  color: var(--text-primary, #fafafa);
+  line-height: 1.5;
+  color: var(--au-text);
+  word-break: break-word;
 }
 
 .toast-close {
@@ -126,90 +136,91 @@ const getToastClass = (type: string) => {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--text-tertiary, rgba(250, 250, 250, 0.5));
-  border-radius: 4px;
+  color: var(--au-text-3);
+  border-radius: var(--au-r-sm);
   cursor: pointer;
   font-size: 18px;
   line-height: 1;
-  transition: all 0.2s ease;
+  transition: background-color var(--au-fast) var(--au-ease),
+              color var(--au-fast) var(--au-ease),
+              transform var(--au-fast) var(--au-ease);
+  flex-shrink: 0;
 }
 
 .toast-close:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-primary, #fafafa);
+  background: var(--au-surface-2);
+  color: var(--au-text);
 }
 
 .toast-close:active {
   transform: scale(0.9);
 }
 
-/* 成功状态 */
-.toast-success {
-  border-color: var(--brand-primary-light, rgba(34, 211, 238, 0.3));
+.toast-close:focus-visible {
+  outline: 2px solid var(--au-primary);
+  outline-offset: 1px;
 }
+
+/* 四种状态 = 四支语义色（底色与图标取同一支，不再手写 rgba） */
+.toast-success { border-color: var(--au-primary-border); }
 
 .toast-success .toast-icon {
-  background: var(--brand-primary-light, rgba(34, 211, 238, 0.2));
-  color: var(--brand-primary, #22d3ee);
+  background: var(--au-success-soft);
+  color: var(--au-success);
 }
 
-/* 错误状态 */
-.toast-error {
-  border-color: rgba(239, 68, 68, 0.3);
-}
+.toast-error { border-color: rgba(251, 113, 133, 0.35); }
 
 .toast-error .toast-icon {
-  background: rgba(239, 68, 68, 0.2);
-  color: var(--color-error, #ef4444);
+  background: var(--au-danger-soft);
+  color: var(--au-danger);
 }
 
-/* 警告状态 */
-.toast-warning {
-  border-color: rgba(245, 158, 11, 0.3);
-}
+.toast-warning { border-color: rgba(251, 191, 36, 0.35); }
 
 .toast-warning .toast-icon {
-  background: rgba(245, 158, 11, 0.2);
-  color: var(--color-warning, #f59e0b);
+  background: var(--au-warning-soft);
+  color: var(--au-warning);
 }
 
-/* 信息状态 */
-.toast-info {
-  border-color: rgba(59, 130, 246, 0.3);
-}
+.toast-info { border-color: rgba(96, 165, 250, 0.35); }
 
 .toast-info .toast-icon {
-  background: rgba(59, 130, 246, 0.2);
-  color: var(--color-info, #3b82f6);
+  background: var(--au-info-soft);
+  color: var(--au-info);
 }
 
-/* 过渡动画 */
+/* 过渡动画
+   只做「淡入 + 轻微下移」，不碰水平位移：容器已经用 translateX(-50%) 居中了，
+   子项再写一次 translateX(-50%) 会让每条通知先从左侧半个身位滑回来。 */
 .toast-enter-active {
-  transition: all 0.3s ease;
+  transition: opacity var(--au-med) var(--au-ease),
+              transform var(--au-med) var(--au-ease);
 }
 
 .toast-leave-active {
-  transition: all 0.2s ease;
+  transition: opacity var(--au-fast) var(--au-ease),
+              transform var(--au-fast) var(--au-ease);
 }
 
 .toast-enter-from {
   opacity: 0;
-  transform: translateY(-20px) translateX(-50%);
+  transform: translateY(-12px);
 }
 
 .toast-leave-to {
   opacity: 0;
-  transform: translateY(-10px) translateX(-50%);
+  transform: translateY(-8px);
 }
 
 .toast-move {
-  transition: transform 0.3s ease;
+  transition: transform var(--au-med) var(--au-ease);
 }
 
 /* 移动端适配 */
 @media (max-width: 640px) {
   .toast-container {
-    top: 70px;
+    top: calc(66px + env(safe-area-inset-top, 0px));
     left: 1rem;
     right: 1rem;
     transform: none;
@@ -219,10 +230,17 @@ const getToastClass = (type: string) => {
     min-width: auto;
     width: 100%;
   }
+}
 
+/* 减少动态效果：只保留透明度变化 */
+@media (prefers-reduced-motion: reduce) {
   .toast-enter-from,
   .toast-leave-to {
-    transform: translateY(-10px);
+    transform: none;
+  }
+
+  .toast-close:active {
+    transform: none;
   }
 }
 </style>

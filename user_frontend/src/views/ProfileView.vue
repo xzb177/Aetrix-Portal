@@ -721,8 +721,8 @@ function formatDate(iso?: string | null) {
 }
 
 .dev-badge.ok {
-  background: rgba(52, 211, 153, 0.12);
-  color: #6ee7b7;
+  background: var(--au-success-soft);
+  color: var(--au-success);
 }
 
 .dev-badge.idle {
@@ -731,8 +731,8 @@ function formatDate(iso?: string | null) {
 }
 
 .dev-badge.off {
-  background: rgba(244, 63, 94, 0.12);
-  color: #fb7185;
+  background: var(--au-danger-soft);
+  color: var(--au-danger);
 }
 
 .text-btn.danger {
@@ -740,7 +740,7 @@ function formatDate(iso?: string | null) {
 }
 
 .text-btn.danger.confirming {
-  color: #fb7185;
+  color: var(--au-danger);
   font-weight: 600;
 }
 
@@ -768,7 +768,7 @@ function formatDate(iso?: string | null) {
   color: var(--au-text-2);
 }
 
-.realm-head strong { color: var(--au-text-1); }
+.realm-head strong { color: var(--au-text); }
 
 .realm-badge {
   font-size: 0.625rem;
@@ -776,7 +776,7 @@ function formatDate(iso?: string | null) {
   padding: 0.0625rem 0.5rem;
 }
 
-.realm-badge.ok { background: rgba(34, 211, 238, 0.12); color: #22d3ee; }
+.realm-badge.ok { background: var(--au-primary-soft); color: var(--au-primary); }
 .realm-badge.off { background: rgba(255, 255, 255, 0.06); color: var(--au-text-4); }
 
 .realm-url {

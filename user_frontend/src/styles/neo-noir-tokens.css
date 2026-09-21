@@ -22,15 +22,16 @@
   --neo-primary-dim: rgba(34, 211, 238, 0.08);
   --neo-primary-glow: rgba(34, 211, 238, 0.25);
 
-  /* 语义色 */
-  --neo-success: #22d3ee;
-  --neo-success-bg: rgba(34, 211, 238, 0.12);
-  --neo-warning: #F59E0B;
-  --neo-warning-bg: rgba(245, 158, 11, 0.12);
-  --neo-danger: #EF4444;
-  --neo-danger-bg: rgba(239, 68, 68, 0.12);
-  --neo-info: #3B82F6;
-  --neo-info-bg: rgba(59, 130, 246, 0.12);
+  /* 语义色 —— 指向 Aurora 令牌，全站同一个「成功 / 警告 / 错误 / 信息」一个颜色
+     （旧版这里又是另一套：成功=主色、错误=正红 #EF4444，而页面上用的是玫瑰红） */
+  --neo-success: var(--au-success);
+  --neo-success-bg: var(--au-success-soft);
+  --neo-warning: var(--au-warning);
+  --neo-warning-bg: var(--au-warning-soft);
+  --neo-danger: var(--au-danger);
+  --neo-danger-bg: var(--au-danger-soft);
+  --neo-info: var(--au-info);
+  --neo-info-bg: var(--au-info-soft);
 
   /* 中性色 - 灰阶 */
   --neo-gray-50: #FAFAFA;
@@ -72,8 +73,8 @@
   --neo-text-inverse: #0B0F14;
 
   /* 链接文字 */
-  --neo-text-link: #22d3ee;
-  --neo-text-link-hover: #34D399;
+  --neo-text-link: var(--au-primary);
+  --neo-text-link-hover: #67e8f9;
 
   /* ==================== 边框系统 ==================== */
 

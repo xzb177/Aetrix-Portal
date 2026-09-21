@@ -375,7 +375,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   position: sticky;
   top: 0;
   z-index: 50;
-  background: rgba(7, 11, 18, 0.78);
+  background: var(--au-overlay);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--au-border);

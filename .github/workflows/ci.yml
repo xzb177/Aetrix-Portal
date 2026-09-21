@@ -45,6 +45,13 @@ jobs:
       - name: 路由契约检查（跳转目标必须存在）
         run: python3 scripts/check_frontend_routes.py
 
+      # 纯文本契约检查：var(--x) 必须在**被引入**的样式表里定义过、令牌不能自引用 /
+      # 循环引用、src 下不能有谁都没引入的样式表。曾经 mobile-tokens.css 从未被引入，
+      # 而三个组件一直在用它的 --space-md/--card-bg：声明整条作废，卡片没有背景，
+      # 构建和类型检查都不会报错。
+      - name: 设计令牌契约检查（引用的令牌必须有定义）
+        run: python3 scripts/check_frontend_tokens.py
+
       - name: 类型检查（vue-tsc）
         working-directory: ${{ matrix.dir }}
         run: npm run type-check

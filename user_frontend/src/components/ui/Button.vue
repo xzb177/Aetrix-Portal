@@ -99,7 +99,7 @@ const props = withDefaults(defineProps<Props>(), {
   font-size: var(--neo-font-size-lg);
 }
 
-/* 主按钮 - 绿色，主角感 */
+/* 主按钮 - 电光青，主角感 */
 .neo-btn--primary {
   background: var(--neo-primary);
   color: var(--neo-text-inverse);
@@ -155,12 +155,12 @@ const props = withDefaults(defineProps<Props>(), {
 }
 
 .neo-btn--danger:hover:not(.neo-btn--disabled) {
-  background: rgba(239, 68, 68, 0.2);
+  background: rgba(251, 113, 133, 0.2);
 }
 
 .neo-btn--danger:active:not(.neo-btn--disabled) {
   transform: scale(var(--neo-scale-press));
-  background: rgba(239, 68, 68, 0.25);
+  background: rgba(251, 113, 133, 0.25);
 }
 
 /* 禁用状态 */
