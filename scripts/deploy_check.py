@@ -68,10 +68,11 @@ def warn(name: str, detail: str = "") -> None:
 # ==================== HTTP 小工具 ====================
 
 def request(method: str, url: str, *, token: str = "", body=None, timeout: float = 20,
-            emby_token: str = ""):
+            emby_token: str = "", extra_headers: dict | None = None):
     """返回 (状态码, 文本, 响应头)；非 2xx 不抛异常，由调用方断言
 
-    `token` 走门户的 Bearer；`emby_token` 走 Emby 客户端的两套头（客户端两种都用）。
+    `token` 走门户的 Bearer；`emby_token` 走 Emby 客户端的两套头（客户端两种都用）；
+    `extra_headers` 给内部调用用（例如 EM → EA 的挂载体检要带 X-Panel-Key）。
     """
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -82,6 +83,8 @@ def request(method: str, url: str, *, token: str = "", body=None, timeout: float
     if emby_token:
         req.add_header("X-Emby-Token", emby_token)
         req.add_header("X-MediaBrowser-Token", emby_token)
+    for name, value in (extra_headers or {}).items():
+        req.add_header(name, value)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read().decode("utf-8", "ignore"), dict(resp.headers)
@@ -342,7 +345,8 @@ def expect_startup_refused(script: str, port: int, *, label: str, extra_env: dic
 
 # ==================== 六、分离部署（EM + EA）====================
 
-def run_split_checks(em_base: str, ea_base: str, username: str, password: str) -> None:
+def run_split_checks(em_base: str, ea_base: str, username: str, password: str,
+                     panel_key: str = "") -> None:
     """分离部署（文档推荐的产线形态）：EM 只跑面板，EA 独占协议面
 
     这一步关掉 EM 的网关再起一个 EA，验证的是**跨服务配对**：客户端在 EA 上认证，
@@ -372,6 +376,42 @@ def run_split_checks(em_base: str, ea_base: str, username: str, password: str) -
     status, text, _ = request("GET", f"{ea_base}/")
     check("EA 根路径不托管页面（只给运维一个识别点）",
           status == 200 and "service" in (as_json(text) or {}), f"HTTP {status}")
+
+    # ---- 挂载体检：分离部署下「EM 能碰到的存储」不等于「EA 能碰到的存储」 ----
+    status, text, _ = request("GET", f"{ea_base}/api/admin/mounts/health")
+    check("EA 挂载体检端点：无面板密钥时被拒", status == 401, f"HTTP {status}")
+
+    status, text, _ = request("GET", f"{ea_base}/api/admin/mounts/health",
+                              extra_headers={"X-Panel-Key": panel_key})
+    ea_health = as_json(text) or {}
+    check("EA 挂载体检端点：带共享密钥时可用（真跑 resolve + 路径检查）",
+          status == 200 and ea_health.get("service") == "ea"
+          and isinstance(ea_health.get("mounts"), list),
+          f"HTTP {status} mounts={len(ea_health.get('mounts') or [])}")
+
+    status, text, _ = request("POST", f"{em_base}/api/admin/auth/login",
+                              body={"username": username, "password": password})
+    split_token = str((as_json(text) or {}).get("access_token") or "")
+    check("分离部署的 EM 管理员登录成功", status == 200 and bool(split_token), f"HTTP {status}")
+
+    status, text, _ = request("PUT", f"{em_base}/api/admin/emby/servers", token=split_token,
+                              body={"mode": "managed_ea", "url": ea_base, "enabled": True})
+    body = as_json(text) or {}
+    pulled = body.get("mounts_health") or {}
+    check("EM 保存 EA 服务入口时拉到了 EA 视角的挂载体检",
+          status == 200 and (body.get("probe") or {}).get("ok") is True and pulled.get("ok") is True,
+          f"HTTP {status} {json.dumps(pulled, ensure_ascii=False)[:90]}")
+
+    status, text, _ = request("GET", f"{em_base}/api/admin/emby/mounts", token=split_token)
+    listing = as_json(text) or {}
+    rows = listing.get("mounts") or []
+    check("挂载列表同时给出 EM / EA 两个视角的可达性",
+          status == 200 and listing.get("playback_node") == "ea" and bool(rows)
+          and all("em_reachable" in row and "ea_reachable" in row for row in rows),
+          f"HTTP {status} node={listing.get('playback_node')} n={len(rows)}")
+    check("EA 的逐条结论真的落到了列表上",
+          any(row.get("ea_reachable") is not None for row in rows),
+          str([(row.get("name"), row.get("ea_reachable")) for row in rows][:3]))
 
     for path in ("/emby/System/Info/Public", "/System/Info/Public", "/emby/system/info/public"):
         status, text, _ = request("GET", f"{ea_base}{path}")
@@ -503,7 +543,7 @@ def main() -> int:
             "serve_emby.py", ea_port, args.timeout, label="EA（Emby 协议网关）",
             extra_env={"SECRET_KEY": secret, "EM_PANEL_URL": em_split_base})
         procs.append(ea_proc)
-        run_split_checks(em_split_base, ea_base, username, password)
+        run_split_checks(em_split_base, ea_base, username, password, panel_key=secret)
     finally:
         teardown(procs, base, user_id, args.keep)
         shutil.rmtree(media_dir, ignore_errors=True)

@@ -120,6 +120,9 @@ jobs:
       - name: 用户端查漏补缺冒烟（VIP 派生 / 工单通知 / 求片链路）
         run: python scripts/smoke_test_v251.py
 
+      - name: 挂载体检冒烟（EA 视角可达性 / 面板体检落库 / EM 拉取 EA）
+        run: python scripts/smoke_test_mount_health.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend

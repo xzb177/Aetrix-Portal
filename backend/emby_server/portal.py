@@ -41,6 +41,7 @@ from backend.emby_server.scanner import (
     scan_library_sync,
 )
 from backend.emby_server.streaming import stop_all_transcodes, stop_transcode
+from backend.emby_server import mount_health
 from backend.emby_server import mount_rclone
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import transfer115
@@ -904,16 +905,28 @@ def _validate_mount_fields(mount_type: str, path: str, config: dict) -> None:
             raise HTTPException(status_code=400, detail=f"{field.get('label') or field['key']} 必须以 http:// 或 https:// 开头")
 
 
-def _serialize_mount(db: Session, mount: em.StorageMount) -> dict:
+def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = None) -> dict:
     config, secrets = _mask_mount_config(mount_lib.parse_config(mount))
     meta = mount_lib.MOUNT_TYPE_MAP.get(mount.mount_type, {})
+    kind = meta.get("kind", "local")
+    path = (mount.path or "").strip()
+    # EM 视角 = 后台「测试连接」的结果（跑在 EM 进程里）
+    em_result = {
+        "ok": mount.last_check_ok,
+        "message": mount.last_check_message or "",
+        "checked_at": mount.last_checked_at.isoformat() if mount.last_checked_at else None,
+    }
+    # EA 视角 = 保存 EA 服务入口 / 手动刷新时拉到的那份快照
+    if ea_map is None:
+        ea_map = mount_health.ea_mount_map(db)
+    ea_item = ea_map.get(mount.id) or {}
     return {
         "id": mount.id,
         "name": mount.name,
         "mount_type": mount.mount_type,
         "mount_type_label": mount_lib.MOUNT_TYPE_LABELS.get(mount.mount_type, mount.mount_type),
-        "kind": meta.get("kind", "local"),
-        "path": mount.path or "",
+        "kind": kind,
+        "path": path,
         "config": config,
         "secret_keys": secrets,
         "is_enabled": bool(mount.is_enabled),
@@ -921,6 +934,14 @@ def _serialize_mount(db: Session, mount: em.StorageMount) -> dict:
         "last_checked_at": mount.last_checked_at.isoformat() if mount.last_checked_at else None,
         "last_check_ok": mount.last_check_ok,
         "last_check_message": mount.last_check_message,
+        # local / strm 的路径是本机相对资源（远程类型为 None）
+        "path_exists": os.path.isdir(path) if kind == "local" and path else None,
+        # 两个播放节点各自能不能用它（EA 缺失快照时为 None，表示「未体检」）
+        "em_reachable": em_result["ok"],
+        "em_message": em_result["message"],
+        "em_checked_at": em_result["checked_at"],
+        "ea_reachable": ea_item.get("ok"),
+        "ea_message": ea_item.get("message") or "",
         "library_ids": [
             lib.id for lib in db.query(em.Library).all()
             if mount.id in mount_lib.parse_mount_ids(lib)
@@ -959,11 +980,43 @@ class MountBrowseParams(BaseModel):
 @admin_emby_router.get("/mounts")
 async def list_mounts(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     mounts = db.query(em.StorageMount).order_by(em.StorageMount.id).all()
+    ea_map = mount_health.ea_mount_map(db)
+    snapshot = mount_health.read_ea_health(db)
     return {
-        "mounts": [_serialize_mount(db, m) for m in mounts],
+        "mounts": [_serialize_mount(db, m, ea_map) for m in mounts],
         # 类型元数据（标签 / 说明 / 需要哪些字段）由后端下发，前端不再自己维护一份
         "mount_types": [dict(t) for t in mount_lib.MOUNT_TYPES],
+        # 当前谁在出流：EA 分离部署 / 外部 Emby / 面板自己。
+        # 「被媒体库引用却 EA 不可达」只有 EA 才是阻断性问题，前端据此决定要不要报红。
+        "playback_node": mount_health.playback_node(db),
+        "ea_health": {
+            "ok": bool(snapshot.get("ok")),
+            "checked_at": snapshot.get("checked_at"),
+            "error": snapshot.get("error") or "",
+        },
     }
+
+
+@admin_emby_router.post("/mounts/health")
+async def check_all_mounts(staff: models.WebUser = Depends(require_staff),
+                          db: Session = Depends(get_db)):
+    """一键体检（EM 视角）：逐条跑与「测试连接」相同的探测并落库
+
+    只解决「这台面板自己能不能碰到存储」；EA 那一侧要看 ``/mounts`` 响应里的
+    ``ea_reachable``（由 EA 服务入口拉取）。"""
+    health = await run_in_threadpool(mount_health.mounts_health, db, "panel")
+    checked_at = datetime.now()
+    for item in health.get("mounts", []):
+        if item.get("ok") is None:
+            continue  # 停用的挂载不写测试结果
+        mount = db.query(em.StorageMount).filter(em.StorageMount.id == item["id"]).first()
+        if not mount:
+            continue
+        mount.last_checked_at = checked_at
+        mount.last_check_ok = bool(item.get("ok"))
+        mount.last_check_message = str(item.get("message") or "")[:300]
+    db.commit()
+    return health
 
 
 @admin_emby_router.get("/mounts/rclone/remotes")
