@@ -194,7 +194,11 @@ export const deviceApi = {
 export const paymentApi = {
   methods: () => api.get<never, PaymentMethod[]>('/api/user/economy/payment/methods'),
   packages: () => api.get<never, { enabled: boolean; packages: RechargePackage[] }>('/api/user/economy/payment/packages'),
-  plans: () => api.get<never, { enabled: boolean; plans: SubscriptionPlan[] }>('/api/user/economy/payment/plans'),
+  // is_free / access_mode = 当前服是公益服（免费开放）：此时不展示套餐与购买引导
+  plans: () =>
+    api.get<never, { enabled: boolean; plans: SubscriptionPlan[]; access_mode?: 'paid' | 'free'; is_free?: boolean; access_note?: string }>(
+      '/api/user/economy/payment/plans',
+    ),
   createOrder: (data: { kind: 'recharge' | 'subscription'; item_id: number; payment_method: string }) =>
     api.post<never, { success: boolean; order_id: string; amount: number; pay_url: string; message: string }>('/api/user/economy/payment/order', data),
   orders: (params?: { kind?: string; limit?: number }) =>

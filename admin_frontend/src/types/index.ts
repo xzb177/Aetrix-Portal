@@ -229,6 +229,14 @@ export interface RealmRow {
   sort_order: number
   /** 默认服：沿用历史配置键名，不能删除 */
   is_default: boolean
+  /** 接入方式（v2.7.0）：paid = 付费服（需要订阅）/ free = 公益服（免费开放） */
+  access_mode: 'paid' | 'free'
+  /** 是不是公益服（= access_mode === 'free'，前后端同一口径） */
+  is_free: boolean
+  /** 公益服规则文案（用户端展示；付费服为空串） */
+  access_note: string
+  /** 下载策略：null = 跟随全局（公益服默认禁止）/ true = 允许 / false = 禁止 */
+  allow_download: boolean | null
   /** 用户端该连的地址（服自己的地址 → 该服 Emby 入口 → 全局环境变量） */
   public_url: string
   nodes: RealmNode[]
@@ -239,6 +247,9 @@ export interface RealmRow {
 export interface RealmSummary {
   total_realms: number
   enabled_realms: number
+  /** 公益服 / 付费服的服数（面板顶部与概览页展示） */
+  free_realms: number
+  paid_realms: number
   libraries: number
   items: number
   plans: number
@@ -264,6 +275,9 @@ export interface RealmOverview {
     url: string
     is_active: boolean
     is_default: boolean
+    /** 接入方式（v2.7.0）：free = 公益服（免费开放） */
+    access_mode: 'paid' | 'free'
+    is_free: boolean
     public_url: string
     stats: RealmStats
   }[]

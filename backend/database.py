@@ -220,6 +220,13 @@ def _auto_migrate():
             ("node_key", "VARCHAR(60)", "NULL"),
             ("realm_id", "INTEGER", "NULL"),
         ]),
+        # v2.7.0 公益服：一个服可以免费开放（access_mode=free，不需要订阅就能看），
+        # 并带上自己的规则文案与下载策略。老库补列时默认 paid/允许下载 → 行为不变。
+        ("server_realms", [
+            ("access_mode", "VARCHAR(10)", "'paid'"),
+            ("access_note", "VARCHAR(500)", "''"),
+            ("allow_download", "BOOLEAN", "NULL"),
+        ]),
         # v2.6.20 多服运营：订阅、套餐、卡码、求片、挂载都归属到某个服
         ("subscription_plans", [
             ("realm_id", "INTEGER", "NULL"),

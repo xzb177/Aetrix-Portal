@@ -9,7 +9,16 @@
 - 显式参数（EM 管理端 / 用户端按具体服查询时）；
 - 否则用**本进程的服**（EA 的进程级解析器，启动时按节点身份安装，见
   ``emby_server/nodes.py`` 与 ``emby_api/main.py``）；
-- 都没有时不做服过滤（单服部署、以及 EM 侧的跨服查询，行为与以前完全一致）。
+- 都没有时用**当前服**（EM 面板上的门户请求；解析不到服时才退回「不做服过滤」）。
+
+**接入方式（v2.7.0 公益服）**：一个服可以是
+
+- ``paid``（付费服，缺省）：按下面的付费墙判定；
+- ``free``（公益服）：**免费开放**，不需要订阅就能看（会员与否不影响播放），
+  但默认禁止下载（可用该服的下载策略覆盖）。
+
+做任何与「能不能看」相关的判断都走 ``can_play`` / ``ensure_playback_allowed``，
+不要在业务代码里自己写 ``has_active_subscription``——否则公益服会到处漏出付费墙。
 
 付费墙开关：
 - SystemConfig["subscription_required"]（布尔，默认 true）是否要求有效订阅才能播放
@@ -24,7 +33,7 @@ from typing import Callable, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import models, realms
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +61,44 @@ def process_realm_id() -> Optional[int]:
 def resolve_realm_id(realm_id: Optional[int] = None) -> Optional[int]:
     return realm_id if realm_id is not None else process_realm_id()
 
+
+def _scoped_realm_id(db: Session, realm_id: Optional[int] = None) -> Optional[int]:
+    """把「没指定服」解析成具体服：本进程的服 → 面板当前服
+
+    EM（面板）上的用户端请求没有进程级服，此时按面板当前服判定，
+    否则公益服/付费墙会因“解析不到服”而退回跨服口径。
+    """
+    target = resolve_realm_id(realm_id)
+    if target is not None:
+        return target
+    try:
+        return realms.active_realm_id(db)
+    except Exception as exc:  # noqa: BLE001 — 解析不到服时退回旧口径（不阻断播放）
+        logger.warning("解析当前服失败（按不过滤处理）: %s", exc)
+        return None
+
+
+def realm_access_mode(db: Session, realm_id: Optional[int] = None) -> str:
+    """该服（默认本进程/当前服）的接入方式：paid / free"""
+    return realms.access_mode_of(db, _scoped_realm_id(db, realm_id))
+
+
+def is_free_realm(db: Session, realm_id: Optional[int] = None) -> bool:
+    """这个服是不是公益服（免费开放，不需要订阅）"""
+    return realm_access_mode(db, realm_id) == realms.ACCESS_FREE
+
+
+def realm_access_note(db: Session, realm_id: Optional[int] = None) -> str:
+    """该服的规则文案（公益服没写时给缺省提示；付费服为空串）"""
+    return realms.access_note_of(db, _scoped_realm_id(db, realm_id))
+
 CONFIG_REQUIRED = "subscription_required"
 CONFIG_MESSAGE = "subscription_gate_message"
 CONFIG_ALLOW_DOWNLOAD = "allow_download"
 
 DEFAULT_GATE_MESSAGE = "需要有效的会员订阅才能播放，请先开通会员"
 DOWNLOAD_GATE_MESSAGE = "当前站点已关闭下载，仅支持在线观看"
+FREE_REALM_DOWNLOAD_MESSAGE = realms.DEFAULT_FREE_DOWNLOAD_NOTE
 
 
 def has_active_subscription(db: Session, user_id: int, realm_id: Optional[int] = None) -> bool:
@@ -99,6 +140,13 @@ def subscription_required(db: Session) -> bool:
     return str(raw).strip().lower() == "true"
 
 
+def realm_requires_subscription(db: Session, realm_id: Optional[int] = None) -> bool:
+    """这个服是否要会员才能看：公益服永远不要（即使全局付费墙开着）"""
+    if is_free_realm(db, realm_id):
+        return False
+    return subscription_required(db)
+
+
 def gate_message(db: Session) -> str:
     raw = _config_value(db, CONFIG_MESSAGE)
     text = (raw or "").strip()
@@ -106,12 +154,20 @@ def gate_message(db: Session) -> str:
 
 
 def can_play(db: Session, user: models.WebUser, realm_id: Optional[int] = None) -> bool:
-    """是否放行播放：管理员始终放行；付费墙关闭时全员放行"""
+    """是否放行播放：管理员始终放行；公益服免费开放；付费墙关闭时全员放行
+
+    订阅判定保持原有口径（显式服 / 本进程的服，不拿面板当前服去做回退），
+    所以付费服的行为与升级前完全一致；公益服是新增的一层判断。
+    """
     if getattr(user, "is_staff", False):
+        return True
+    target = _scoped_realm_id(db, realm_id)
+    if realms.access_mode_of(db, target) == realms.ACCESS_FREE:
+        # 公益服：免费开放，不是「白票」——这是这个服自己选的运营方式
         return True
     if not subscription_required(db):
         return True
-    return has_active_subscription(db, user.id, realm_id)
+    return has_active_subscription(db, user.id, resolve_realm_id(realm_id))
 
 
 def ensure_playback_allowed(db: Session, user: models.WebUser,
@@ -124,20 +180,40 @@ def ensure_playback_allowed(db: Session, user: models.WebUser,
         raise HTTPException(status_code=403, detail=gate_message(db))
 
 
-def download_allowed(db: Session) -> bool:
-    """站点是否允许下载（缺省允许；关闭后第三方播放器触发的下载一并拦下）"""
+def download_allowed(db: Session, realm_id: Optional[int] = None) -> bool:
+    """本站点是否允许下载（缺省允许；关闭后第三方播放器触发的下载一并拦下）
+
+    两层：全局开关（``allow_download`` 配置）与**该服的下载策略**——
+    公益服没单独配策略时默认禁止下载（公益服靠免费开放引流，不能让整库被拖走）；
+    付费服没单独配策略时跟随全局开关（与升级前完全一致）。
+    """
     raw = _config_value(db, CONFIG_ALLOW_DOWNLOAD)
-    if raw is None or str(raw).strip() == "":
-        return True
-    return str(raw).strip().lower() == "true"
+    global_allowed = True if raw is None or str(raw).strip() == "" else str(raw).strip().lower() == "true"
+    if not global_allowed:
+        return False
+    target = _scoped_realm_id(db, realm_id)
+    policy = realms.download_policy_of(db, target)
+    if policy is not None:
+        return bool(policy)
+    return not realms.is_free_realm(db, target)
 
 
-def ensure_download_allowed(db: Session, user: models.WebUser) -> None:
-    """下载前校验：站点关闭下载时抛 403（管理员依然放行，便于排查）"""
+def ensure_download_allowed(db: Session, user: models.WebUser,
+                            realm_id: Optional[int] = None) -> None:
+    """下载前校验：站点/该服关闭下载时抛 403（管理员依然放行，便于排查）"""
     if getattr(user, "is_staff", False):
         return
-    if not download_allowed(db):
-        raise HTTPException(status_code=403, detail=DOWNLOAD_GATE_MESSAGE)
+    if download_allowed(db, realm_id):
+        return
+    raise HTTPException(status_code=403, detail=download_gate_message(db, realm_id))
+
+
+def download_gate_message(db: Session, realm_id: Optional[int] = None) -> str:
+    """下载被拦时的提示：公益服说清「只提供在线观看」，其余沿用站点文案"""
+    target = _scoped_realm_id(db, realm_id)
+    if realms.is_free_realm(db, target) and realms.download_policy_of(db, target) is None:
+        return FREE_REALM_DOWNLOAD_MESSAGE
+    return DOWNLOAD_GATE_MESSAGE
 
 
 __all__ = [
@@ -146,9 +222,14 @@ __all__ = [
     "CONFIG_ALLOW_DOWNLOAD",
     "DEFAULT_GATE_MESSAGE",
     "DOWNLOAD_GATE_MESSAGE",
+    "FREE_REALM_DOWNLOAD_MESSAGE",
     "active_subscription",
     "has_active_subscription",
+    "is_free_realm",
     "process_realm_id",
+    "realm_access_mode",
+    "realm_access_note",
+    "realm_requires_subscription",
     "resolve_realm_id",
     "set_process_realm_resolver",
     "subscription_required",
@@ -156,5 +237,6 @@ __all__ = [
     "can_play",
     "ensure_playback_allowed",
     "download_allowed",
+    "download_gate_message",
     "ensure_download_allowed",
 ]

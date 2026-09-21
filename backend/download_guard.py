@@ -59,7 +59,7 @@ class DownloadGuardMiddleware:
         try:
             from backend.database import SessionLocal
             from backend.emby_server.auth import resolve_request_user
-            from backend.subscriptions import DOWNLOAD_GATE_MESSAGE, download_allowed
+            from backend.subscriptions import download_allowed, download_gate_message
         except Exception:  # pragma: no cover - 导入失败时不影响主流程
             logger.exception("下载策略兜底初始化失败，已放行")
             return None
@@ -78,7 +78,8 @@ class DownloadGuardMiddleware:
 
             if _is_privileged(user):
                 return None
-            return DOWNLOAD_GATE_MESSAGE
+            # 文案按「本机这个服」取：公益服要说清只提供在线观看（见 subscriptions）
+            return download_gate_message(db)
         except Exception:  # pragma: no cover
             logger.exception("下载策略兜底判定失败，已放行")
             return None

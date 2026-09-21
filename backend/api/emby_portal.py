@@ -24,7 +24,13 @@ from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend.database import get_db
 from backend.devices import device_limit
 from backend.emby_server.auth import ensure_emby_credentials
-from backend.subscriptions import download_allowed, has_active_subscription, subscription_required
+from backend.subscriptions import (
+    download_allowed,
+    has_active_subscription,
+    is_free_realm,
+    realm_access_note,
+    realm_requires_subscription,
+)
 from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -78,11 +84,16 @@ class UserOut(BaseModel):
     is_active: bool = True
     # 是否管理员：用户端据此显示「管理后台」入口（管理后台与门户同一套 JWT）
     is_staff: bool = False
-    # 付费墙是否开启（开启且非会员时播放会被拦截）
+    # 付费墙是否开启（开启且非会员时播放会被拦截）；公益服恒为 false
     subscription_required: bool = False
     # 站点是否允许下载 + 每用户设备上限（0 表示不限）
     download_allowed: bool = True
     device_limit: int = 0
+    # 接入方式（v2.7.0 公益服）：free = 本服免费开放，不需要订阅
+    realm_access_mode: str = "paid"
+    is_free_realm: bool = False
+    # 公益服规则文案（用户端展示；付费服为空串）
+    realm_access_note: str = ""
     created_at: str | None = None
 
 
@@ -99,9 +110,13 @@ class AuthResponse(BaseModel):
 def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
     """用户信息出参：is_vip 由生效中的订阅派生（无 db 时回退到库内标记）
 
-    subscription_required 告知前端「付费墙是否开启」，用于在详情页提前展示开通引导。
+    ``subscription_required`` 告知前端「这个服要不要会员才能看」，用于提前展示开通引导——
+    公益服（``realm_access_mode='free'``）恒为 false，前端据此换一套「免费开放」的文案，
+    而不是把一个不需要付费的服宣传成付费墙。
     """
     is_vip = has_active_subscription(db, user.id) if db is not None else bool(user.is_vip)
+    requires_sub = realm_requires_subscription(db) if db is not None else False
+    free_realm = is_free_realm(db) if db is not None else False
     return UserOut(
         id=user.id,
         username=user.username,
@@ -110,9 +125,12 @@ def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
         is_vip=is_vip,
         is_active=user.is_active,
         is_staff=bool(user.is_staff),
-        subscription_required=subscription_required(db) if db is not None else False,
+        subscription_required=requires_sub,
         download_allowed=download_allowed(db) if db is not None else True,
         device_limit=device_limit(db) if db is not None else 0,
+        realm_access_mode="free" if free_realm else "paid",
+        is_free_realm=free_realm,
+        realm_access_note=realm_access_note(db) if db is not None else "",
         created_at=user.created_at.isoformat() if user.created_at else None,
     )
 

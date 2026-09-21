@@ -167,8 +167,13 @@ export interface AuthUser {
   is_active: boolean
   /** 管理员：用户端据此显示「管理后台」入口（两端同源同 JWT，无需二次登录） */
   is_staff?: boolean
-  /** 付费墙是否开启：开启且非会员时播放会被拦截 */
+  /** 付费墙是否开启：开启且非会员时播放会被拦截；公益服恒为 false */
   subscription_required?: boolean
+  /** 接入方式：free = 本服是公益服（免费开放，不需要会员） */
+  realm_access_mode?: 'paid' | 'free'
+  is_free_realm?: boolean
+  /** 公益服规则文案（付费服为空串） */
+  realm_access_note?: string
   created_at?: string | null
 }
 
@@ -206,6 +211,10 @@ export interface AccountRealmCard {
   mode: string
   external: boolean
   subscribed: boolean
+  /** 公益服：不需要订阅也能看（没订阅也会下发这张卡） */
+  access_mode?: 'paid' | 'free'
+  is_free?: boolean
+  access_note?: string
   end_date: string | null
   plan_name: string
   is_default: boolean
@@ -222,6 +231,13 @@ export interface AccountCard {
   /** 当前卡片对应的服（顶层字段是它的口径，兼容老前端） */
   realm_id?: number | null
   realm_name?: string
+  /** 接入方式：free = 公益服（免费开放，不需要会员） */
+  access_mode?: 'paid' | 'free'
+  is_free?: boolean
+  /** 公益服规则文案 */
+  access_note?: string
+  /** 该服是否允许下载（公益服默认不允许） */
+  allow_download?: boolean
   /** 我在这几个服各自的地址与会员（多服时客户端该连哪台一目了然） */
   realms?: AccountRealmCard[]
 }
