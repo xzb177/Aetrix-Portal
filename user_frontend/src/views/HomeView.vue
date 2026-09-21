@@ -2,9 +2,13 @@
 /**
  * 首页 — 内容优先的个人门户
  *
- * 布局：Hero 双栏（左：问候与主行动；右：会员状态卡）→ 账号速览条
- * → 「我的内容」（继续观看 / 最近入库）→ 「站点与账号」（连接播放器）
- * 功能入口交给顶部导航 / 底部导航坞，首页只展示「内容」与「状态」。
+ * 布局（v2.6.30 重排）：Hero 双栏（左：问候与主行动；右：会员状态卡）
+ * → 账号速览条（积分 / 签到 / 邀请）→ 最近入库 → 求片提示 → 继续观看
+ * → 「账号与支持」（消息中心 / 连接播放器）。
+ *
+ * 排序口径：客户端（Infuse / Forward …）已经做得很好的事（继续观看、收藏、
+ * 完整片库浏览）在首页只保留一条、且排在后面；门户独有的价值——跟着更新追新、
+ * 库里没有就求片、账号与经济状态——放在前面。功能入口统一由顶栏导航承担。
  *
  * v2.6.26：站内消息既不置顶、也不挤进账号速览条（挤进去会把「数据条」变成混合体，
  * 而且仍在首屏最显眼处）。改为：
@@ -25,7 +29,7 @@ import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  ChevronRight, Crown, Inbox, Megaphone,
+  ChevronRight, Crown, Inbox, Megaphone, MessageSquareDashed,
   Wallet, CalendarCheck, Gift, Sparkles, Tv,
 } from 'lucide-vue-next'
 
@@ -105,17 +109,10 @@ const memberProgress = computed(() => {
   return Math.max(6, Math.min(100, Math.round((sub.days_left / (total + 30)) * 100)))
 })
 
-// 账号速览条：四格数据（非按钮），点击进入对应页面
+// 账号速览条：三格经济数据（非按钮），点击进入对应页面。
+// 会员状态不进这一条：首屏的会员卡已经在讲同一件事（套餐 / 剩余天数 / 开通或续费），
+// 再来一格只是把“会员”在一屏里说两遍。
 const accountCells = computed(() => [
-  {
-    to: '/wallet?tab=plans',
-    icon: Crown,
-    label: '会员订阅',
-    value: activeSub.value ? activeSub.value.plan_name : '未开通',
-    sub: activeSub.value ? `${activeSub.value.end_date?.slice(0, 10)} 到期` : '开通后可播放全库',
-    hot: !activeSub.value,
-    alert: false,
-  },
   {
     to: '/wallet',
     icon: Wallet,
@@ -253,7 +250,7 @@ onMounted(async () => {
     </section>
 
     <main class="container main">
-      <!-- 账号速览条：会员 / 积分 / 签到 / 邀请（纯账号与经济数据；消息不在其中，见下方消息卡） -->
+      <!-- 账号速览条：积分 / 签到 / 邀请（纯经济数据；会员在首屏会员卡，消息在下方消息卡） -->
       <section class="acct-strip au-card au-anim-up" :class="{ loading }">
         <RouterLink
           v-for="c in accountCells"
@@ -272,27 +269,32 @@ onMounted(async () => {
         </RouterLink>
       </section>
 
-      <!-- 分组一：我的内容 -->
-      <div class="section-label">
-        <span class="section-title">我的内容</span>
-        <RouterLink to="/favorites" class="section-more">我的收藏 <ChevronRight :size="12" /></RouterLink>
-      </div>
+      <!-- 片库动态：追新在前。
+           「最近入库」是门户做、客户端不做的部分（跟着更新追剧），所以放在第一条；
+           「继续观看」是客户端已经替我们做了的，保留但排在后面，只做一条。
+           收藏 / 观看记录的完整入口交给顶栏导航，这里不再重复一遍链接。 -->
+      <MediaRow v-if="latestItems.length" title="最近入库" :items="latestItems.slice(0, 16)" more-to="/media" class="row" />
+
+      <!-- 求片：库里没有的内容，用户在这里能做的事（客户端给不了） -->
+      <RouterLink to="/request" class="req-hint">
+        <MessageSquareDashed :size="15" class="req-hint-ic" />
+        <span class="req-hint-text">没找到想看的？发个求片，入库后在消息中心通知你</span>
+        <ChevronRight :size="14" class="req-hint-arrow" />
+      </RouterLink>
 
       <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" more-to="/history" class="row" />
-      <MediaRow v-if="latestItems.length" title="最近入库" :items="latestItems.slice(0, 16)" class="row" />
 
       <div v-if="!resumeItems.length && !latestItems.length" class="au-empty content-empty">
         <Sparkles :size="28" />
         <p>媒体库还没有内容，稍后再来看看</p>
       </div>
 
-      <!-- 分组二：站点与账号 -->
+      <!-- 分组：账号与支持（个人中心入口在顶栏导航里，这里不再重复） -->
       <div class="section-label">
-        <span class="section-title">站点与账号</span>
-        <RouterLink to="/profile" class="section-more">个人中心 <ChevronRight :size="12" /></RouterLink>
+        <span class="section-title">账号与支持</span>
       </div>
 
-      <!-- 消息中心：不占首屏头条，但总是在“站点与账号”区的第一眼看得到；随时可进的是顶栏音铃 -->
+      <!-- 消息中心：不占首屏头条，但总是在「账号与支持」区第一眼看得到；随时可进的是顶栏音铃 -->
       <RouterLink to="/messages" class="inbox-card au-card" :class="{ alert: unreadCount > 0 }">
         <span class="inbox-ic">
           <Inbox :size="17" />
@@ -523,20 +525,6 @@ onMounted(async () => {
   color: var(--au-text-4);
 }
 
-.section-more {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.125rem;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  text-decoration: none;
-  transition: color var(--au-fast) var(--au-ease);
-}
-
-.section-more:hover {
-  color: var(--au-primary);
-}
-
 .content-empty {
   padding: 2rem 1rem;
 }
@@ -584,12 +572,12 @@ onMounted(async () => {
 /* ==================== 账号速览条 ==================== */
 
 /*
- * 数据条：固定四格（会员 / 积分 / 签到 / 邀请），分隔线用「容器底色 + 1px gap + 格子自身底色」，
- * 格子增减或列数变化都不会错位。
+ * 数据条：三格（积分 / 签到 / 邀请），分隔线用「容器底色 + 1px gap + 格子自身底色」，
+ * 格子增减或列数变化都不会错位。（会员那一格已去掉，详见脚本里的口径）
  */
 .acct-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   background: var(--au-border);
   margin-bottom: 2rem;
@@ -686,6 +674,55 @@ onMounted(async () => {
 
 .row {
   margin-bottom: 2.25rem;
+}
+
+/* 第一条内容行（最近入库）之后紧跟一条求片提示，行距收到半个身位 */
+.row + .req-hint {
+  margin-top: -1.125rem;
+}
+
+/* ==================== 求片提示（细描边，不做成卡片） ==================== */
+
+.req-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.875rem;
+  margin-bottom: 2.25rem;
+  border: 1px dashed var(--au-border-strong);
+  border-radius: var(--au-r-md);
+  background: var(--au-surface);
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
+}
+
+.req-hint:hover {
+  border-color: var(--au-primary-border);
+  color: var(--au-text);
+}
+
+.req-hint-ic {
+  flex-shrink: 0;
+  color: var(--au-primary);
+}
+
+.req-hint-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.req-hint-arrow {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--au-text-4);
+}
+
+.req-hint:hover .req-hint-arrow {
+  color: var(--au-primary);
 }
 
 /* ==================== 消息中心卡 ==================== */
@@ -910,8 +947,9 @@ onMounted(async () => {
 /* ==================== 响应式 ==================== */
 
 @media (max-width: 900px) {
-  .main {
-    padding-bottom: 7rem;
+  /* 这里曾为底部导航坞留 7rem 底部留白；导航坞去掉后，页面尾部不再需要避开任何东西 */
+  .acct-cell {
+    padding: 0.875rem 0.875rem;
   }
 }
 
@@ -923,13 +961,6 @@ onMounted(async () => {
 
   .member-card {
     padding: 1rem 1.125rem 1.125rem;
-  }
-}
-
-@media (max-width: 760px) {
-  /* 2 列：分隔线由 gap 自动产生，不需要按格数算 nth-child */
-  .acct-strip {
-    grid-template-columns: repeat(2, 1fr);
   }
 }
 
@@ -947,12 +978,24 @@ onMounted(async () => {
     margin-bottom: 1rem;
   }
 
+  /* 三格的横向留白要比原来四格紧一档，否则窄屏上数字会被挤成省略号 */
   .acct-cell {
-    padding: 0.875rem 1rem;
+    padding: 0.75rem 0.75rem;
   }
 
   .cell-value {
     font-size: 1.0625rem;
+  }
+}
+
+/* 最窄的手机（≤380px）：三个格子仍保持一行 —— 换成两行会在数据条中间留一道空白缝 */
+@media (max-width: 380px) {
+  .acct-cell {
+    padding: 0.6875rem 0.5rem;
+  }
+
+  .cell-value {
+    font-size: 1rem;
   }
 }
 </style>

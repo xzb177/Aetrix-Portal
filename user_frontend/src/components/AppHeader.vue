@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown,
   Gift, Zap, Search, Megaphone, AlertCircle, Clock,
@@ -20,6 +20,7 @@ const route = useRoute()
 
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
+const navRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
 const pointsBalance = ref<number | null>(null)
 
@@ -170,6 +171,33 @@ async function poll() {
   refreshPoints()
 }
 
+/**
+ * 窄屏的主导航是横向滑动的选项卡：保证当前项始终看得见。
+ *
+ * - center=true（切换页面）：把当前项滑到中间，点完立刻能看到高亮；
+ * - center=false（首次挂载）：只保证看得见（深链直接落在第 5 个入口时不用手动滑）。
+ * 用 scrollBy 只滚这一条，不会带着整页横向滑动；宽屏下整条都能放下，直接返回。
+ */
+async function focusActiveTab(center: boolean) {
+  await nextTick()
+  const box = navRef.value
+  const el = box?.querySelector<HTMLElement>('.nav-link-active')
+  if (!box || !el) return
+  if (box.scrollWidth <= box.clientWidth) return
+
+  const boxRect = box.getBoundingClientRect()
+  const elRect = el.getBoundingClientRect()
+
+  if (center) {
+    const delta = elRect.left - boxRect.left - (boxRect.width - elRect.width) / 2
+    box.scrollBy({ left: delta, behavior: 'smooth' })
+    return
+  }
+  if (elRect.left < boxRect.left || elRect.right > boxRect.right) {
+    box.scrollBy({ left: elRect.left - boxRect.left - 12, behavior: 'auto' })
+  }
+}
+
 // 签到 / 钱包操作后回到顶栏时，积分徽章即时刷新
 watch(() => route.path, (p, old) => {
   const economyPaths = ['/wallet', '/checkin']
@@ -188,10 +216,14 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
   }
 })
 
+// 换页后把当前选项卡滑到中间（宽屏下是空操作）
+watch(() => route.path, () => focusActiveTab(true))
+
 onMounted(() => {
   document.addEventListener('click', onDocClick)
   poll()
   window.setInterval(poll, 60_000)
+  focusActiveTab(false)
 })
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
@@ -206,8 +238,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         <span class="logo-text">Aetrix</span>
       </RouterLink>
 
-      <!-- 主导航（≥900px）：与移动端底部坞同一份定义，只是横向铺开 -->
-      <nav class="desktop-nav">
+      <!-- 主导航（全断点唯一一套）：≥900px 横排在品牌与账号操作之间，
+           ≤900px 落到第二行、变成可横向滑动的选项卡（见样式里的 .main-nav） -->
+      <nav ref="navRef" class="main-nav" aria-label="主导航">
         <RouterLink
           v-for="item in primaryNav"
           :key="item.path"
@@ -361,7 +394,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   max-width: 1080px;
   margin: 0 auto;
   padding: 0 1.25rem;
-  height: 62px;
+  min-height: 62px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -398,7 +431,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   color: transparent;
 }
 
-.desktop-nav {
+.main-nav {
   display: flex;
   align-items: center;
   gap: 0.25rem;
@@ -774,23 +807,56 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .dd-enter-active, .dd-leave-active { transition: opacity var(--au-fast), transform var(--au-fast); }
 .dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-6px); }
 
-/* 窄屏：导航条目收窄，先让出用户名的宽度，再让出积分徽章 */
+/* 窄屏：导航条目收窄，先让出用户名的宽度 */
 @media (max-width: 1080px) {
   .user-name { display: none; }
   .nav-link { padding: 0.4688rem 0.625rem; }
 }
 
-@media (max-width: 980px) {
+/* 900~980px：五个入口挤在一行时先去掉图标（比换行更像一根导航条） */
+@media (max-width: 980px) and (min-width: 901px) {
   .nav-link { gap: 0; }
   .nav-link svg { display: none; }
 }
 
-/* ≤900px：主导航交给底部导航坞，顶栏只留品牌 + 搜索 / 消息 / 账号 */
+/* ≤900px：顶栏变两行 —— 第一行品牌与账号操作，第二行是可横向滑动的主导航选项卡。
+   5 个入口在 375px 上放不下，硬挤会变成两三个字的碎片；滑动 + 左右渐隐
+   既保留了全部入口，也不用再在页面底部另开一条导航。 */
 @media (max-width: 900px) {
-  .desktop-nav { display: none; }
+  .header-container {
+    flex-wrap: wrap;
+    min-height: 0;
+    padding: 0.5625rem 1rem 0;
+    gap: 0.5rem;
+  }
+
+  .main-nav {
+    order: 3;
+    flex: 1 1 100%;
+    margin-top: 0.125rem;
+    padding: 0.5rem 0 0.5625rem;
+    border-top: 1px solid var(--au-border);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+    /* 左右各留 14px 渐隐：提示「这一条还能继续滑」 */
+    mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  }
+
+  .main-nav::-webkit-scrollbar { display: none; }
+
+  .nav-link {
+    flex: 0 0 auto;
+    padding: 0.4375rem 0.6875rem;
+    border-radius: var(--au-r-full);
+    font-size: 0.8125rem;
+  }
+
   .points-chip { display: none; }
-  .user-name { display: none; }
-  .msg-dropdown { width: min(292px, calc(100vw - 2rem)); }
-  .user-dropdown { width: min(240px, calc(100vw - 2rem)); }
+  .msg-dropdown { width: min(292px, calc(100vw - 1.5rem)); }
+  .user-dropdown { width: min(240px, calc(100vw - 1.5rem)); }
 }
 </style>

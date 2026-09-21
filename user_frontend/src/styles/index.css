@@ -53,6 +53,14 @@ html {
   scroll-padding-top: calc(62px + env(safe-area-inset-top, 0px));  /* 锚点跳转不被吸顶导航盖住 */
 }
 
+/* 窄屏顶栏是两行（品牌 + 滑动选项卡），锚点偏移按两行算，
+   否则跳转后的标题会被压在新多出来的那一行下面 */
+@media (max-width: 900px) {
+  html {
+    scroll-padding-top: calc(104px + env(safe-area-inset-top, 0px));
+  }
+}
+
 /* 注意：background / color 交由 Aurora 主题（aurora.css）定义，
    这里不再覆盖，否则会盖掉全站氛围渐变 */
 body {

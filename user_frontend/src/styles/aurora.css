@@ -338,13 +338,6 @@ body {
   flex-wrap: wrap;
 }
 
-/* 底部导航坞占位（移动端），避免页面尾部内容被遮挡。
-   只有导航坞真的在页面上时才留（App.vue 按登录态切 body.has-dock）：
-   以前是无条件留白，登录页、全屏播放页底部会永远空出一条。 */
-body.has-dock {
-  padding-bottom: calc(66px + env(safe-area-inset-bottom, 0px));
-}
-
 /* 空状态 */
 .au-empty {
   display: flex;
