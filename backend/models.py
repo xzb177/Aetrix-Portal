@@ -367,6 +367,30 @@ class UserSubscription(Base):
     realm = relationship("ServerRealm")
 
 
+class SubscriptionReminder(Base):
+    """订阅到期提醒的发送记录（去重表）
+
+    「到期前 7/3/1 天提醒续费」这个任务会周期性重复执行，**没有这张表就会反复提醒同一个人**。
+    每条（订阅 × 档位）只允许一行：``kind`` 是 ``7d`` / ``3d`` / ``1d``，
+    以及到期那一刻的一次 ``expired``。写入成功即代表已发过，不再重发。
+    """
+    __tablename__ = 'subscription_reminders'
+
+    __table_args__ = (
+        UniqueConstraint('subscription_id', 'kind', name='uq_sub_reminder_kind'),
+        Index('idx_sub_reminder_sub', 'subscription_id'),
+        Index('idx_sub_reminder_time', 'sent_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    subscription_id = Column(Integer, ForeignKey('user_subscriptions.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    # 冗余存一份归属服：结算/排查时不必再回查订阅行
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
+    kind = Column(String(20), nullable=False)  # 7d / 3d / 1d / expired
+    sent_at = Column(DateTime, default=datetime.now)
+
+
 class RechargePackage(Base):
     """充值套餐表"""
     __tablename__ = 'recharge_packages'
@@ -949,7 +973,8 @@ __all__ = [
     # 用户
     "WebUser", "TelegramUser",
     # 订阅和支付
-    "SubscriptionPlan", "UserSubscription", "RechargePackage", "RechargeOrder", "SubscriptionOrder",
+    "SubscriptionPlan", "UserSubscription", "SubscriptionReminder",
+    "RechargePackage", "RechargeOrder", "SubscriptionOrder",
     # Emby
     "EmbyServer", "PlanServerRelation", "UserEmbyAccount", "EmbySession", "MovieBookmark",
     # 工单

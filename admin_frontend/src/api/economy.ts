@@ -189,3 +189,51 @@ export const fetchEconomySettings = () => get<{ settings: EconomySettings }>('/e
 
 export const updateEconomySettings = (settings: EconomySettings) =>
   put<{ success: boolean; changed: string[] }>('/economy/settings', { settings })
+
+// ==================== 到期续费提醒（v2.8.0） ====================
+// 后端：backend/api/reminders_admin.py + backend/reminders.py
+
+/** 一次提醒动作的对象（面板预览用） */
+export interface ReminderDue {
+  user_id: number
+  subscription_id: number
+  /** 7d / 3d / 1d / expired */
+  kind: string
+  days_left: number
+}
+
+export interface ReminderStatus {
+  enabled: boolean
+  /** 提前几天提醒（默认 7/3/1） */
+  thresholds: number[]
+  interval_seconds: number
+  /** 当前待发：临期 / 已到期 */
+  pending_reminders: number
+  pending_expired: number
+  total_sent: number
+  recent: { id: number; username: string; kind: string; sent_at: string | null }[]
+}
+
+export interface ReminderRunSummary {
+  enabled: boolean
+  dry_run: boolean
+  thresholds: number[]
+  reminded: number
+  expired_notified: number
+  skipped: number
+  failed: number
+  due: ReminderDue[]
+}
+
+export const fetchReminderStatus = () => get<ReminderStatus>('/economy/expiry-reminders')
+
+export const updateReminderSettings = (
+  settings: { expiry_reminder_enabled?: boolean; expiry_reminder_days?: string }
+) =>
+  put<{ success: boolean; settings: Record<string, unknown>; status: ReminderStatus }>(
+    '/economy/expiry-reminders/settings', { settings }
+  )
+
+/** 立即执行一轮；dryRun=true 只预览会发给谁（不落库、不发消息） */
+export const runReminders = (dryRun = false) =>
+  post<ReminderRunSummary>(`/economy/expiry-reminders/run${dryRun ? '?dry_run=true' : ''}`)

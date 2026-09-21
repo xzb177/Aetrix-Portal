@@ -27,7 +27,9 @@ from backend.api.servers import router as servers_router
 from backend import realms
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import maintenance
+from backend import reminders
 from backend.api.admin_ops import admin_ops_router
+from backend.api.reminders_admin import admin_reminders_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
@@ -82,6 +84,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"启动维护失败（可忽略）: {e}")
 
+    # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
+    # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
+    try:
+        reminders.start_reminder_scheduler()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"启动到期提醒失败（可忽略）: {e}")
+
     logger.info("✅ RoyalBot Portal 启动完成")
 
     yield
@@ -98,7 +107,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.7.0",
+    version="2.8.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -251,6 +260,8 @@ app.include_router(user_router)
 # 管理后台 API 路由
 app.include_router(admin_router)
 app.include_router(admin_ops_router)
+# 订阅到期提醒的面板口径与手动执行（见 backend/api/reminders_admin.py）
+app.include_router(admin_reminders_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

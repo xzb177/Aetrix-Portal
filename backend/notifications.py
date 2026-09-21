@@ -473,6 +473,8 @@ class AdminEvent:
     SUBSCRIPTION_MANUAL = "subscription.manual"
     SUBSCRIPTION_EXTENDED = "subscription.extended"
     SUBSCRIPTION_EXPIRED = "subscription.expired"
+    # 到期前提醒（后台周期任务发出，见 backend/reminders.py）
+    SUBSCRIPTION_REMINDER = "subscription.reminder"
 
     # 求片事件
     MEDIA_SEEK_APPROVED = "media_seek.approved"

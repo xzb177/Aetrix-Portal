@@ -21,7 +21,7 @@ import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
-  messageApi, announcementApi, subscriptionApi,
+  messageApi, announcementApi, subscriptionApi, isExpiringSoon,
   type Announcement, type MySubscription, type StationMessage,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -30,7 +30,7 @@ import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
   ChevronRight, Crown, Inbox, Megaphone, MessageSquareDashed,
-  Wallet, CalendarCheck, Gift, Sparkles, Tv,
+  Wallet, CalendarCheck, Gift, Sparkles, Tv, TriangleAlert,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
@@ -95,6 +95,9 @@ const activeSub = computed(
 
 // 会员状态卡：订阅中显示套餐与剩余天数；未订阅时展示付费墙引导
 const isMember = computed(() => !!activeSub.value)
+// 临期提醒：与后台「到期前 7 天提醒」同一口径（见 backend/reminders.py），
+// 让收到站内信的同一刻在首屏也能看到，续费入口就在旁边
+const expiringSoon = computed(() => isExpiringSoon(activeSub.value))
 const gateOn = computed(() => !!userStore.user?.subscription_required)
 const gateMessage = computed(() =>
   gateOn.value && !isMember.value
@@ -240,9 +243,9 @@ onMounted(async () => {
 
         <aside v-else class="member-card" :class="{ inactive: !isMember }">
           <div class="member-head">
-            <span class="member-badge">
+            <span class="member-badge" :class="{ warn: expiringSoon }">
               <Crown :size="13" />
-              {{ isMember ? '会员生效中' : '会员专享' }}
+              {{ expiringSoon ? '即将到期' : (isMember ? '会员生效中' : '会员专享') }}
             </span>
             <!-- 已开通时给续费入口；未开通时卡内只留一个 CTA，避免同时出现两个开通按钮 -->
             <RouterLink v-if="isMember" to="/wallet?tab=plans" class="member-link">
@@ -258,6 +261,10 @@ onMounted(async () => {
             </div>
             <p class="member-meta">
               剩 <strong>{{ activeSub.days_left }}</strong> 天 · {{ activeSub.end_date?.slice(0, 10) }} 到期
+            </p>
+            <p v-if="expiringSoon" class="member-warn">
+              <TriangleAlert :size="13" />
+              即将到期，续费后新时长在当前到期日之后叠加
             </p>
           </template>
 
@@ -468,6 +475,22 @@ onMounted(async () => {
   color: var(--au-primary);
   font-size: 0.6875rem;
   font-weight: 700;
+}
+
+/* 临期：与后台到期提醒同色系，一眼能看出“该续费了” */
+.member-badge.warn {
+  background: var(--au-warning-soft);
+  color: var(--au-warning);
+}
+
+.member-warn {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--au-warning);
 }
 
 .member-card.inactive .member-badge {

@@ -13,14 +13,14 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
-  authApi, embyApi, subscriptionApi,
+  authApi, embyApi, subscriptionApi, isExpiringSoon,
   type AuthUser, type AccountCard, type AccountRealmCard, type MySubscription, type WatchStats,
 } from '@/api'
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
-  Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight,
+  Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -39,6 +39,8 @@ const stats = ref<WatchStats | null>(null)
 const subscriptions = ref<MySubscription[]>([])
 
 const activeSub = computed(() => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null)
+// 临期：与后台到期提醒同口径（默认 7 天），续费入口就在钱包页
+const expiringSoon = computed(() => isExpiringSoon(activeSub.value))
 const watchHours = computed(() => {
   if (!stats.value) return '—'
   const h = Math.floor(stats.value.total_seconds / 3600)
@@ -397,12 +399,18 @@ function formatDate(iso?: string | null) {
             </h2>
           </header>
 
-          <div v-if="activeSub" class="sub-active">
+          <div v-if="activeSub" class="sub-active" :class="{ warn: expiringSoon }">
             <div class="sub-info">
               <div class="sub-plan">{{ activeSub.plan_name }}</div>
               <div class="sub-end">{{ activeSub.end_date.slice(0, 10) }} 到期 · 剩余 {{ activeSub.days_left }} 天</div>
+              <p v-if="expiringSoon" class="sub-warn">
+                <TriangleAlert :size="13" />
+                即将到期，前往「钱包」续费后可无缝接续
+              </p>
             </div>
-            <span class="badge ok">生效中</span>
+            <span class="badge" :class="expiringSoon ? 'warn' : 'ok'">
+              {{ expiringSoon ? '即将到期' : '生效中' }}
+            </span>
           </div>
           <!-- 公益服：没有订阅是正常的，不是“未开通”，也不能引导去购买 -->
           <div v-else-if="isFreeRealm" class="sub-free">
@@ -750,6 +758,8 @@ function formatDate(iso?: string | null) {
 .badge.ok { background: var(--au-success-soft); color: var(--au-success); }
 .badge.idle { background: var(--au-surface-2); color: var(--au-text-3); }
 .badge.off { background: var(--au-danger-soft); color: var(--au-danger); }
+/* 临期：与后台「到期前提醒」同色系 */
+.badge.warn { background: var(--au-warning-soft); color: var(--au-warning); }
 /* 公益服：免费开放不是“未开通”，用站点主色单独区分 */
 .badge.free { background: var(--au-primary-soft); color: var(--au-primary); }
 
@@ -1011,6 +1021,21 @@ function formatDate(iso?: string | null) {
   margin-top: 0.125rem;
   font-size: 0.75rem;
   color: var(--au-text-3);
+}
+
+/* 临期状态：整块底色换成警示色，避免“还剩 3 天”淹没在常规配色里 */
+.sub-active.warn {
+  background: var(--au-warning-soft);
+  border-color: var(--au-warning-soft);
+}
+
+.sub-warn {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  margin: 0.375rem 0 0;
+  font-size: 0.75rem;
+  color: var(--au-warning);
 }
 
 .sub-history {
