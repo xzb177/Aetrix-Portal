@@ -103,6 +103,8 @@ export const useAuthStore = defineStore('auth', () => {
   const ssoChecked = ref(false)
   /** 免登没成功的原因，用于登录页给出可操作提示 */
   const ssoNotice = ref('')
+  /** 本次页面加载是否已把会话与服务端核对过（核对前本地票据不算「可信」） */
+  const verified = ref(false)
 
   // 会话可能在页面开着的时候过期：每次判定都重新看 exp，过期即视为未登录（路由守卫会走免登）
   const isAuthenticated = computed(() => !!token.value && !tokenExpired(token.value))
@@ -119,6 +121,8 @@ export const useAuthStore = defineStore('auth', () => {
   function setSession(newToken: string, info: AdminInfo) {
     token.value = newToken
     admin.value = info
+    // 票据要么来自刚通过的探测、要么来自刚成功的登录，都已经是服务端认可过的
+    verified.value = true
     localStorage.setItem(TOKEN_KEY, newToken)
     localStorage.setItem(ADMIN_KEY, JSON.stringify(info))
   }
@@ -126,6 +130,7 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     token.value = null
     admin.value = null
+    verified.value = false
     localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(ADMIN_KEY)
     // 主动退出后必须真的退出：本标签页内不再用门户会话自动免登（否则会被立刻「登回去」）
@@ -179,6 +184,38 @@ export const useAuthStore = defineStore('auth', () => {
     return false
   }
 
+  /**
+   * 进入后台前把会话**一次性敲定**：本地票据 → 服务端核对 → 门户免登
+   *
+   * 为什么不能只看「本地有没有 token」：本地那张票可能是上一轮留下来的（换了 SECRET_KEY、
+   * 账号被回收、或干脆是另一个会话的），它没过期但服务端已经不认。以前这种票会被当成
+   * 「已登录」：页面先渲染一遍 → 8 个请求一起 401 → 弹错 + 重载 → 才免登回来，
+   * 用户看到的就是「点进后台刷新了两次」。现在把核对放在首屏渲染之前，代价只有一次
+   * `/api/admin/auth/me`，换来进入后台只有**一次**跳转、不再闪错。
+   */
+  async function ensureSession(): Promise<boolean> {
+    if (verified.value) return isAuthenticated.value
+
+    if (token.value && !tokenExpired(token.value)) {
+      const probe = await probeAdmin(token.value)
+      if (probe.info) {
+        setSession(probe.token, probe.info)
+        return true
+      }
+      // 过期 / 被回收 / 换了密钥：本地这份不再可信，清掉后走门户免登
+      clearStoredSession()
+      token.value = null
+      admin.value = null
+      if (probe.status === 403) {
+        // 身份已经确认、但不具备管理员权限：这张票就是当前登录人本人，再探一次只会得到同样结果
+        ssoNotice.value = '当前账号没有管理员权限，请使用管理员账号登录'
+        return false
+      }
+    }
+
+    return ssoFromPortal()
+  }
+
   return {
     token,
     admin,
@@ -186,6 +223,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     setSession,
     logout,
+    ensureSession,
     ssoFromPortal,
   }
 })

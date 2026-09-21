@@ -2,12 +2,13 @@
 /**
  * 首页 — 内容优先的个人门户
  *
- * 布局：Hero 双栏（左：问候与主行动；右：会员状态卡）
- * 账号速览条 → **站内消息卡** → 「我的内容」（继续观看 / 最近入库）→ 「站点与账号」（连接播放器）
+ * 布局：**站内消息条（置顶）** → Hero 双栏（左：问候与主行动；右：会员状态卡）
+ * → 账号速览条 → 「我的内容」（继续观看 / 最近入库）→ 「站点与账号」（连接播放器）
  * 功能入口交给顶部导航 / 底部导航坞，首页只展示「内容」与「状态」。
  *
- * v2.6.21：站内消息卡从页面最底部上移到速览条之后。以前它排在「最近入库」下面，
- * 内容一多就被顶出首屏，用户根本看不到未读；现在未读直接出现在首屏，空消息时也在。
+ * v2.6.22：站内消息**置顶常驻**——它是页面上第一个可点的东西。
+ * 先前它排在「最近入库」下面，内容一多就被顶出屏幕；后来挪到速览条之后仍然要往下看，
+ * 所以现在直接放到 Hero 之上：未读时整条高亮 + 数字徽标，没有新消息时也是一条安静的入口。
  */
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -18,7 +19,7 @@ import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  ChevronRight, Crown, Inbox, Megaphone,
+  ChevronRight, Crown, Inbox,
   Wallet, CalendarCheck, Gift, Sparkles, Tv,
 } from 'lucide-vue-next'
 
@@ -142,6 +143,28 @@ onMounted(async () => {
 
 <template>
   <div class="home-view">
+    <!-- 站内消息：置顶常驻（Hero 之上）——未读时光是颜色就能看出来，不用往下找 -->
+    <div class="container msg-slot">
+      <RouterLink to="/messages" class="msg-bar" :class="{ unread: unreadCount > 0, loading }">
+        <span class="msg-dot" :class="{ on: unreadCount > 0 }" aria-hidden="true"></span>
+        <Inbox :size="16" class="msg-icon" />
+        <span class="msg-text">
+          <strong>
+            <template v-if="unreadCount > 0">你有 {{ unreadCount }} 条未读消息</template>
+            <template v-else-if="notices.length">站点公告：{{ notices[0].title }}</template>
+            <template v-else>站内消息</template>
+          </strong>
+          <em>
+            <template v-if="unreadCount > 0">私信 / 工单回复 / 求片进度 / 会员提醒都在消息中心</template>
+            <template v-else-if="notices.length">共 {{ notices.length }} 条公告</template>
+            <template v-else>工单回复、求片进度与会员到期都会在这里提醒你</template>
+          </em>
+        </span>
+        <span v-if="unreadCount > 0" class="msg-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+        <span class="msg-cta">去查看<ChevronRight :size="13" /></span>
+      </RouterLink>
+    </div>
+
     <!-- Hero：左问候与主行动，右会员状态卡（双栏） -->
     <section class="hero">
       <div class="hero-glow" aria-hidden="true"></div>
@@ -226,29 +249,6 @@ onMounted(async () => {
           <span class="cell-sub" :class="{ hot: c.hot }">{{ c.sub }}</span>
         </RouterLink>
       </section>
-
-      <!-- 站内消息：紧跟速览条，未读直接出现在首屏（旧位置在「最近入库」之后，内容一多就被顶出屏幕） -->
-      <RouterLink to="/messages" class="msg-card au-card au-anim-up" :class="{ loading }">
-        <span class="msg-icon" :class="{ unread: unreadCount > 0 }">
-          <Inbox :size="18" />
-        </span>
-        <span class="msg-body">
-          <strong class="msg-title">
-            <template v-if="unreadCount > 0">你有 {{ unreadCount }} 条未读消息</template>
-            <template v-else-if="notices.length">站点公告：{{ notices[0].title }}</template>
-            <template v-else>站内消息与公告</template>
-          </strong>
-          <em class="msg-sub">
-            <template v-if="unreadCount > 0">私信、工单回复、求片进度与会员提醒都在消息中心</template>
-            <template v-else-if="notices.length">
-              <Megaphone :size="11" /> 共 {{ notices.length }} 条公告
-            </template>
-            <template v-else>没有新消息。工单回复、求片进度与会员到期会在这里提醒你</template>
-          </em>
-        </span>
-        <span v-if="unreadCount > 0" class="msg-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-        <ChevronRight :size="16" class="msg-arrow" />
-      </RouterLink>
 
       <!-- 分组一：我的内容 -->
       <div class="section-label">
@@ -621,53 +621,75 @@ onMounted(async () => {
   margin-bottom: 2.25rem;
 }
 
-/* ==================== 站内消息卡（首屏，紧跟速览条）==================== */
+/* ==================== 站内消息条（置顶，Hero 之上）==================== */
 
-.msg-card {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 1.125rem;
-  margin-bottom: 2rem;
-  text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease), opacity var(--au-fast) var(--au-ease);
+.msg-slot {
+  padding-top: 1.25rem;
 }
 
-.msg-card.loading {
+.msg-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  background: var(--au-surface);
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease),
+    background var(--au-fast) var(--au-ease), opacity var(--au-fast) var(--au-ease);
+}
+
+.msg-bar.loading {
   opacity: 0.45;
   pointer-events: none;
 }
 
-.msg-card:hover {
+.msg-bar:hover {
   border-color: var(--au-primary-border);
 }
 
-.msg-icon {
-  width: 36px;
-  height: 36px;
+/* 有未读：整条就用警示色，扫一眼就知道要点开 */
+.msg-bar.unread {
+  border-color: rgba(251, 191, 36, 0.42);
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.14), rgba(251, 191, 36, 0.05));
+}
+
+.msg-bar.unread:hover {
+  border-color: var(--au-warning);
+}
+
+.msg-dot {
+  width: 7px;
+  height: 7px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 11px;
-  background: var(--au-surface-2);
+  border-radius: 50%;
+  background: var(--au-border-strong);
+}
+
+.msg-dot.on {
+  background: var(--au-warning);
+  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.18);
+}
+
+.msg-icon {
+  flex-shrink: 0;
   color: var(--au-text-3);
 }
 
-.msg-icon.unread {
-  background: var(--au-warning-soft);
+.msg-bar.unread .msg-icon {
   color: var(--au-warning);
 }
 
-.msg-body {
+.msg-text {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: 0.0625rem;
 }
 
-.msg-title {
+.msg-text strong {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--au-text);
@@ -676,10 +698,7 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
-.msg-sub {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
+.msg-text em {
   font-style: normal;
   font-size: 0.75rem;
   color: var(--au-text-4);
@@ -700,13 +719,17 @@ onMounted(async () => {
   flex-shrink: 0;
 }
 
-.msg-arrow {
-  color: var(--au-text-4);
+.msg-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.0625rem;
   flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--au-text-4);
   transition: color var(--au-fast) var(--au-ease);
 }
 
-.msg-card:hover .msg-arrow {
+.msg-bar:hover .msg-cta {
   color: var(--au-primary);
 }
 
@@ -809,6 +832,11 @@ onMounted(async () => {
 }
 
 @media (max-width: 640px) {
+  /* 窄屏先保消息本身，把「去查看」收掉省空间 */
+  .msg-cta {
+    display: none;
+  }
+
   .hero {
     padding: 1.75rem 0 1.5rem;
   }
