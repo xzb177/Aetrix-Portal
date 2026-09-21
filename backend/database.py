@@ -204,6 +204,31 @@ def _auto_migrate():
             ("platform", "VARCHAR(30)", "NULL"),
             ("account_115_id", "INTEGER", "NULL"),
             ("mount_ids", "TEXT", "''"),
+            # v2.6.20 多节点：指定由哪台 EA 负责这个库（NULL = 所有节点可见、由面板扫描）
+            ("node_id", "INTEGER", "NULL"),
+            # v2.6.20 多服运营：这个库属于哪个服（见 backend/realms.py）
+            ("realm_id", "INTEGER", "NULL"),
+        ],
+        # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录
+        "remote_servers": [
+            ("node_key", "VARCHAR(60)", "NULL"),
+            ("realm_id", "INTEGER", "NULL"),
+        ],
+        # v2.6.20 多服运营：订阅、套餐、卡码、求片、挂载都归属到某个服
+        "subscription_plans": [
+            ("realm_id", "INTEGER", "NULL"),
+        ],
+        "user_subscriptions": [
+            ("realm_id", "INTEGER", "NULL"),
+        ],
+        "registration_codes": [
+            ("realm_id", "INTEGER", "NULL"),
+        ],
+        "movie_requests": [
+            ("realm_id", "INTEGER", "NULL"),
+        ],
+        "storage_mounts": [
+            ("realm_id", "INTEGER", "NULL"),
         ],
         # v2.6.19 求片可以转交外部服务（MoviePilot 订阅 / qBittorrent 加种）：
         # 把「交给谁、成没成、为什么没成」落库，否则面板只能显示一句模糊的失败
@@ -236,6 +261,71 @@ def _auto_migrate():
                     print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
 
     _widen_code_column(existing_tables, inspector)
+    _ensure_default_realm()
+
+
+def _ensure_default_realm() -> None:
+    """把「服」这套新结构补齐到可用状态（幂等，可反复执行）
+
+    升级上来的单服部署不应该因为多了「多服运营」而行为变化，所以：
+
+    1. 没有任何服时，建一个默认服（``slug='main'``）——它就是以前那套部署；
+    2. 把所有 ``realm_id`` 为空的旧数据（套餐/订阅/卡码/求片/媒体库/挂载/服务器）
+       回填到默认服；
+    3. 默认服写进 ``SystemConfig['active_realm_id']``（面板顶部的「当前服」）。
+
+    只在表已存在时执行；全新库由 create_all 建表，随后首次业务写入时自然落到默认服。
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "server_realms" not in tables:
+        return
+
+    realm_tables = {
+        "subscription_plans": "realm_id",
+        "user_subscriptions": "realm_id",
+        "registration_codes": "realm_id",
+        "movie_requests": "realm_id",
+        "remote_servers": "realm_id",
+        "emby_libraries": "realm_id",
+        "storage_mounts": "realm_id",
+    }
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT id, name FROM server_realms ORDER BY id LIMIT 1")).first()
+        if row is None:
+            conn.execute(text(
+                "INSERT INTO server_realms (name, slug, url, description, is_active, sort_order, created_at) "
+                "VALUES (:name, :slug, '', :desc, :active, 0, :now)"
+            ), {
+                "name": "默认服", "slug": "main",
+                "desc": "升级自动创建：原有数据全部归到这个服，可改名或直接拆成多个服",
+                "active": True, "now": datetime.now(),
+            })
+            row = conn.execute(text("SELECT id FROM server_realms ORDER BY id LIMIT 1")).first()
+            print(f"  🏠 已创建默认服 server_realms.id={row[0]}（原有数据将归入该服）")
+        default_id = row[0]
+        for table, column in realm_tables.items():
+            if table not in tables:
+                continue
+            cols = {c["name"] for c in inspector.get_columns(table)}
+            if column not in cols:
+                continue
+            result = conn.execute(text(
+                f"UPDATE {table} SET {column} = :rid WHERE {column} IS NULL"
+            ), {"rid": default_id})
+            if result.rowcount:
+                print(f"  🔧 已回填: {table}.{column} → 服 #{default_id}（{result.rowcount} 行）")
+        active = conn.execute(text(
+            "SELECT value FROM system_configs WHERE key = 'active_realm_id'"
+        )).first()
+        if active is None:
+            conn.execute(text(
+                "INSERT INTO system_configs (key, value, description, updated_at) "
+                "VALUES ('active_realm_id', :value, :desc, :now)"
+            ), {"value": str(default_id), "desc": "面板当前操作的服（多服运营）", "now": datetime.now()})
+            print(f"  🔧 已设置当前服: active_realm_id={default_id}")
 
 
 def _widen_code_column(existing_tables: set, inspector) -> None:

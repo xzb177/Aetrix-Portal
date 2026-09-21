@@ -31,7 +31,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import models, realms
 from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
@@ -263,19 +263,26 @@ async def points_log(
 # ==================== 兑换码 ====================
 
 def _grant_subscription(db: Session, user: models.WebUser, plan: models.SubscriptionPlan,
-                        days: int, source: str, ref_id: str) -> models.UserSubscription:
-    """发放订阅：已有有效订阅则顺延，否则新建
+                        days: int, source: str, ref_id: str,
+                        realm_id: int | None = None) -> models.UserSubscription:
+    """发放订阅：**同一个服**已有有效订阅则顺延，否则新建
+
+    订阅是一个服一个的：甲服的兑换码只能顺延甲服的会员，不能给乙服的会员加天数。
 
     `with_for_update()` 在 PostgreSQL 下是真正的行锁，避免同一用户并发发放
     （同时核销两张码 / 码与支付回调撞车）时两边都读到同一到期时间、互相覆盖；
     SQLite 会忽略它，但 SQLite 写入本身是库级串行的。
     """
     now = datetime.now()
-    active = db.query(models.UserSubscription).filter(
+    target_realm = realm_id if realm_id is not None else plan.realm_id
+    query = db.query(models.UserSubscription).filter(
         models.UserSubscription.user_id == user.id,
         models.UserSubscription.status == "active",
         models.UserSubscription.end_date > now,
-    ).order_by(models.UserSubscription.end_date.desc()).with_for_update().first()
+    )
+    if target_realm is not None:
+        query = query.filter(models.UserSubscription.realm_id == target_realm)
+    active = query.order_by(models.UserSubscription.end_date.desc()).with_for_update().first()
 
     if active:
         active.end_date = active.end_date + timedelta(days=days)
@@ -285,6 +292,7 @@ def _grant_subscription(db: Session, user: models.WebUser, plan: models.Subscrip
         subscription = models.UserSubscription(
             user_id=user.id,
             plan_id=plan.id,
+            realm_id=target_realm if target_realm is not None else realms.active_realm_id(db),
             start_date=now,
             end_date=now + timedelta(days=days),
             status="active",
@@ -381,7 +389,9 @@ async def redeem_exchange_code(
             db.rollback()
             raise HTTPException(status_code=400, detail="兑换码关联套餐不存在")
         subscription = _grant_subscription(
-            db, current_user, plan, code.duration_days, "exchange", code_str
+            db, current_user, plan, code.duration_days, "exchange", code_str,
+            # 兑换码按它自己所属的服发会员（未标注时回退到套餐的服）
+            realm_id=getattr(code, "realm_id", None) or plan.realm_id,
         )
         result.update(reward_type="subscription", plan_name=plan.name,
                       days=code.duration_days,
@@ -451,20 +461,30 @@ async def payment_packages(db: Session = Depends(get_db)):
 
 
 @router.get("/payment/plans")
-async def payment_plans(db: Session = Depends(get_db)):
-    """订阅套餐（购买订阅）"""
+async def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """订阅套餐（购买订阅）
+
+    套餐是一个服一个的：默认只展示**当前服**的可购套餐（``realm_id=0`` 看全部服）。
+    用户买哪一份，会员就开在哪个服。
+    """
     if not _get_bool_config(db, "subscription_purchase_enabled", True):
         return {"enabled": False, "plans": []}
-    plans = db.query(models.SubscriptionPlan).filter(
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope(db.query(models.SubscriptionPlan),
+                         models.SubscriptionPlan.realm_id, scope_id)
+    plans = query.filter(
         models.SubscriptionPlan.is_active == True  # noqa: E712
     ).order_by(models.SubscriptionPlan.sort_order).all()
     return {
         "enabled": True,
+        "realm_id": scope_id,
         "plans": [
             {
                 "id": p.id, "name": p.name, "description": p.description,
                 "price": float(p.price), "duration_days": p.duration_days,
                 "features": p.features, "is_popular": p.is_popular,
+                "realm_id": p.realm_id,
+                "realm_name": (p.realm.name if p.realm else ""),
             }
             for p in plans
         ],
@@ -669,6 +689,7 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
             subscription = _grant_subscription(
                 db, user, plan,
                 plan.duration_days, "purchase", subscription_order.order_id,
+                realm_id=plan.realm_id,
             )
             pending.append(dict(
                 event_type="economy.subscription_success",

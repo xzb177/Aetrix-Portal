@@ -13,13 +13,16 @@ import { RouterLink } from 'vue-router'
 import {
   Film, MessageSquareDashed, Play, Radio, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
-  Server, HardDrive, CloudDownload, Download,
+  Server, HardDrive, CloudDownload, Download, Route as RealmIcon,
 } from 'lucide-vue-next'
 import {
-  fetchLibraries, fetchOverview, fetchPlaybackStats, fetchServersSummary, fetchSessions, fetchStatsTrend,
+  fetchLibraries, fetchOverview, fetchPlaybackStats, fetchRealmOverview, fetchServersSummary,
+  fetchSessions, fetchStatsTrend,
 } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
-import type { EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, ServerSummary, TrendStats } from '@/types'
+import type {
+  EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, RealmOverview, ServerSummary, TrendStats,
+} from '@/types'
 
 const overview = ref<OverviewStats | null>(null)
 const playback = ref<PlaybackStats | null>(null)
@@ -29,6 +32,8 @@ const libraries = ref<EmbyLibrary[]>([])
 const sessions = ref<EmbySessionRow[]>([])
 /** 服务器接入情况：面板到底接了几台后端服 / 几台 Emby 服 / 有没有接下载器 */
 const servers = ref<ServerSummary | null>(null)
+/** 多服运营：每个服的会员 / 内容 / 节点，一个面板同时管几个服一眼看完 */
+const realms = ref<RealmOverview | null>(null)
 const loading = ref(true)
 const trendLoading = ref(false)
 
@@ -53,13 +58,14 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e, libraryData, sessionData, serverData] = await Promise.all([
+    const [o, p, e, libraryData, sessionData, serverData, realmData] = await Promise.all([
       fetchOverview(),
       fetchPlaybackStats(),
       fetchEconomyStats(),
       fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
       fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
       fetchServersSummary().catch(() => null),
+      fetchRealmOverview().catch(() => null),
     ])
     overview.value = o
     playback.value = p
@@ -67,6 +73,7 @@ onMounted(async () => {
     libraries.value = libraryData.libraries
     sessions.value = sessionData.sessions
     servers.value = serverData
+    realms.value = realmData
     await loadTrend()
   } finally {
     loading.value = false
@@ -242,6 +249,52 @@ function sessionProgress(session: EmbySessionRow): number {
             </template>
           </div>
         </RouterLink>
+      </section>
+
+      <!--
+        多服运营：一个面板可以同时运营多个服，每个服的会员 / 内容 / 播放节点都在这里，
+        不用一个个切过去看（切当前服在顶栏，管服去「服管理」页）。
+      -->
+      <section v-if="realms?.realms.length" class="admin-card realm-block">
+        <div class="card-header">
+          <h2><RealmIcon :size="15" /> 多服运营</h2>
+          <span class="realm-sum">
+            {{ realms.summary.total_realms }} 个服 · 有效订阅 {{ realms.summary.active_subscriptions }} ·
+            播放节点在线 {{ realms.summary.nodes_online }}/{{ realms.summary.nodes }}
+          </span>
+          <RouterLink class="realm-manage" to="/realms">
+            服管理<ArrowRight :size="13" />
+          </RouterLink>
+        </div>
+        <div class="realm-rows">
+          <RouterLink
+            v-for="r in realms.realms"
+            :key="r.id"
+            to="/realms"
+            class="realm-row"
+            :class="{ current: r.id === realms.active_realm_id, off: !r.is_active }"
+          >
+            <div class="realm-name">
+              <strong>{{ r.name }}</strong>
+              <span class="mini-badge muted">{{ r.slug }}</span>
+              <span v-if="r.id === realms.active_realm_id" class="mini-badge ok">当前服</span>
+              <span v-if="r.is_default" class="mini-badge info">默认服</span>
+            </div>
+            <div class="realm-stats">
+              <span>媒体库 <b>{{ r.stats.libraries }}</b></span>
+              <span>条目 <b>{{ r.stats.items }}</b></span>
+              <span>挂载 <b>{{ r.stats.mounts }}</b></span>
+              <span>套餐 <b>{{ r.stats.plans }}</b></span>
+              <span>有效订阅 <b>{{ r.stats.active_subscriptions }}</b></span>
+              <span :class="{ warn: r.stats.nodes_online < r.stats.nodes }">
+                节点 <b>{{ r.stats.nodes_online }}/{{ r.stats.nodes }}</b>
+              </span>
+              <span :class="{ warn: r.stats.pending_requests > 0 }">
+                待审求片 <b>{{ r.stats.pending_requests }}</b>
+              </span>
+            </div>
+          </RouterLink>
+        </div>
       </section>
 
       <!-- 交易概览 -->
@@ -430,6 +483,28 @@ function sessionProgress(session: EmbySessionRow): number {
   margin-left: 4px; padding: 0 6px; border-radius: 999px;
   background: var(--primary-bg); color: var(--primary); font-size: 10px; font-weight: 700;
 }
+
+/* ===== 多服运营卡（每个服一行，切服在顶栏）===== */
+.realm-block { margin-bottom: 14px; }
+.realm-sum { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+.realm-manage { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); font-size: 11.5px; text-decoration: none; }
+.realm-manage:hover { color: var(--text-primary); }
+.realm-rows { display: flex; flex-direction: column; gap: 6px; }
+.realm-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px; border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle); background: var(--bg-glass);
+  text-decoration: none; transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.realm-row:hover { border-color: var(--primary); }
+.realm-row.current { border-color: var(--primary-border); background: var(--primary-bg); }
+.realm-row.off { opacity: 0.7; }
+.realm-name { display: flex; align-items: center; gap: 7px; min-width: 190px; }
+.realm-name strong { color: var(--text-primary); font-size: 13px; }
+.realm-stats { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
+.realm-stats span { color: var(--text-muted); font-size: 11.5px; }
+.realm-stats b { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.realm-stats span.warn b { color: var(--warning); }
 
 /* ===== 待办条 ===== */
 .todo-bar {

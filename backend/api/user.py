@@ -13,7 +13,7 @@ import logging
 from sqlalchemy import func
 
 from backend.database import get_db
-from backend import codes, devices, models
+from backend import codes, devices, models, realms
 from backend.notifications import get_notification_service, AdminEvent
 from backend.ratelimit import check_rate_limit
 from backend.security import resolve_jwt_user_id
@@ -741,6 +741,7 @@ async def get_my_subscriptions(
             models.SubscriptionPlan.id.in_([s.plan_id for s in subscriptions if s.plan_id])
         ).all()
     } if subscriptions else {}
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
     result = []
     for sub in subscriptions:
@@ -751,6 +752,9 @@ async def get_my_subscriptions(
         result.append({
             "id": sub.id,
             "plan_name": plan.name if plan else "未知套餐",
+            # 会员属于哪个服：多服运营下用户会同时持有多个服的会员，必须分开看
+            "realm_id": sub.realm_id,
+            "realm_name": realm_names.get(sub.realm_id, "") if sub.realm_id else "",
             "start_date": sub.start_date.isoformat() if sub.start_date else None,
             "end_date": sub.end_date.isoformat() if sub.end_date else None,
             "status": "active" if is_current else "expired",
@@ -764,10 +768,18 @@ async def get_my_subscriptions(
 
 @user_router.get("/subscription-plans")
 async def get_subscription_plans(
+    realm_id: int | None = None,
     db: Session = Depends(get_db)
 ):
-    """获取可用订阅套餐 - 与后台套餐管理联动"""
-    plans = db.query(models.SubscriptionPlan).filter(
+    """获取可用订阅套餐 - 与后台套餐管理联动
+
+    套餐是一个服一个的：默认只列当前服（``realm_id=0`` 列全部服），
+    带着所属服的名称，用户端才能说清“这是哪个服的会员”。
+    """
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope(db.query(models.SubscriptionPlan),
+                         models.SubscriptionPlan.realm_id, scope_id)
+    plans = query.filter(
         models.SubscriptionPlan.is_active == True
     ).order_by(models.SubscriptionPlan.sort_order).all()
 
@@ -779,7 +791,9 @@ async def get_subscription_plans(
             "price": float(p.price),
             "duration_days": p.duration_days,
             "features": p.features,
-            "is_popular": p.is_popular
+            "is_popular": p.is_popular,
+            "realm_id": p.realm_id,
+            "realm_name": (p.realm.name if p.realm else ""),
         }
         for p in plans
     ]

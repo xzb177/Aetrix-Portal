@@ -2,6 +2,65 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.20] - 2026-09-21
+
+本次把面板从「一套服务」变成**一个可以同时运营多个服的管理平台**，并让**一个后端服能部署到多台
+机器上同时出流**：以前的隐含前提是「一套库、一份套餐、一台 EA、一个入口」，多服多机都做不到。
+
+### 新增 (Added)
+- **「服」= 一套可独立运营的播放服务**（`server_realms` 表 + `/api/admin/realms`）：内容（媒体库 /
+  存储挂载）、卖什么（套餐）、卖给谁（订阅）、谁来放（播放节点）、卡码与求片全部归属到某个服。
+  服的清单 / 新建 / 改名 / 停用 / 启用 / 删除（有数据时必须 `move_to` 移交）/ 切换当前服 / 节点体检，
+  全部落管理审计；没有服时自动建默认服 `slug='main'`，并把旧数据回填给它。
+- **升级不改变行为**（这是整块设计的约束）：默认服沿用**历史配置键名**（`emby_active_mode` /
+  `emby_managed_url` / `emby_external_api_key` / 挂载体检快照），其它服用 `<键名>__r<服 id>` 后缀。
+  单服部署读到的键一字未变，外部脚本与运维文档不受影响。
+- **管理后台「服管理」页**：每服一张卡——运营数据（媒体库 / 条目 / 挂载 / 套餐 / 有效订阅 / 待审
+  求片）、该服的播放节点与在线状态、对外地址（用户端账号卡用）；支持新建 / 编辑 / 切换 /
+  「节点体检」/ 删除（含数据移交选择）。导航新增「多服运营」分组，含「服管理」与「服务器」。
+- **顶栏「当前服」切换器**：服务端 `SystemConfig['active_realm_id']` 是权威来源（多管理员一致），
+  切服后各页作用域跟着变；切换完自动重载页面，避免停在旧服数据上。
+- **多台 EA 同时出流**（`backend/emby_server/nodes.py`）：
+  - EA 用 `NODE_KEY` 认领面板「服务器」里属于自己的那条记录（找不到就自动登记一条）；
+  - `REALM`（或在面板里给这台服务器指定的归属服）划定**内容边界**：只提供本服的媒体库、只认本服的订阅；
+  - 媒体库新增 `node_id`：**NULL = 未分配**（所有节点可见、由面板扫描），已分配则只有归属节点
+    向客户端展示、只有它扫描（面板点「扫描」会转发给它，走共享 `SECRET_KEY` 鉴权）；
+  - 可见性用 SQLAlchemy `do_orm_execute` + `with_loader_criteria` 挂在 `Library` / `MediaItem`
+    的所有 ORM 查询上，不逐个端点改（漏一个就是内容泄漏）；写入路径不受影响；
+  - 两者都没配置时**完全不过滤**：单服单机部署零影响。
+- **会员一个服一个**：`user_subscriptions.realm_id`，付费墙按服判定（甲服的会员不能在乙服的 EA 上
+  播放）。EA 启动时装进程级「本进程的服」解析器（`subscriptions.set_process_realm_resolver`），
+  没装解析器或解析不到时按原来的不分服口径放行。
+- **EA 侧新增内部端点**（`X-Panel-Key` 鉴权，与挂载体检同一套）：`GET /api/admin/nodes/me`
+  （这台节点是谁、属于哪个服、负责哪些库）、`GET /api/admin/nodes/libraries`、
+  `POST /api/admin/nodes/libraries/{id}/scan`（由归属节点执行扫描）。`/api/health` 与
+  `GET /api/admin/realms/{id}/sync` 会把节点自称的 `realm_slug` 带回来，配错会当场报警。
+- **服务器归属与共用**：服务器新增 `realm_id` 与 `node_key`；EA / Emby 是一个服一个的
+  （新增时要选归属服），MoviePilot / qBittorrent 可以声明**「全服共用」**（归属留空，每个服都能用它求片）。
+- **用户端**：账号卡按服列出地址与会员（`realms` 数组，顶层字段保持默认服口径），个人中心显示
+  「我的服」与会员归属服，钱包里的套餐带归属服名——多服部署下用户能分清该连哪台。
+- 新增冒烟测试 `scripts/smoke_test_realms.py`（67 项断言，已接入 CI）：真管理端接口走完整链路
+  （默认服与历史键名兼容、套餐/订阅/清单按服、会员按服判定、共用内容自动化、
+  媒体库归属服与节点的分配/拒跨服、多节点内容边界、删服必须先移交、默认服不能删）。
+
+### 修复 (Fixed)
+- **用户端账号卡读取服参数时引用了不存在的 `request`**：`GET /api/user/emby/server` 在加入
+  `?realm_id=` 支持时漏掉了 `Request` 参数，请求会 500（`NameError: name 'request' is not defined`）。
+  已补回参数（`scripts/smoke_test_auth.py` 覆盖这条链路）。
+- **内容查询的服口径**：媒体库与存储挂载改按 `realms.scope_inclusive` 过滤——`realm_id` 为空的历史
+  数据 / 直接入库的内容算「所有服可见」，而不是被严格相等过滤藏起来（与节点可见性同一口径）。
+- **订阅清单的搜索框真的能用了**：`GET /api/admin/realms/{id}/subscriptions` 支持 `search`
+  （用户名 / 邮箱模糊匹配）；用户端订阅列表补上 `realm_name`。
+
+### 变更 (Changed)
+- **订阅 / 套餐 / Emby 服务入口 / 挂载体检快照全部按服读写**：`backend/subscriptions.py`、
+  `backend/servers.py`、`backend/api/{admin,economy,user,emby_servers,servers}.py`、
+  `backend/emby_server/{portal,mount_health}.py` 的入口都带上了服（默认服沿用历史键名）。
+- **面板自带的 Emby 网关只服务一个服**（默认服，可用 `EM_GATEWAY_REALM` 指定）：一体化部署
+  升级上来行为不变，多服的内容由各自的 EA 出流。
+- 版本号 2.6.19 → 2.6.20；`env.example` 补上 `NODE_KEY` / `REALM` / `EM_GATEWAY_REALM`；
+  `docs/deploy-ea.md` 新增「多台 EA 与多个服」章节，`docs/operations.md` 补多服排错条目。
+
 ## [2.6.19] - 2026-09-21
 
 本次把「服务器」变成一份可增删改的清单（面板能加多台、能一眼看出接了什么），并把

@@ -1,15 +1,24 @@
 <script setup lang="ts">
 /**
  * 商品管理：订阅套餐 CRUD + 充值套餐 CRUD
+ *
+ * v2.6.20：订阅套餐是**一个服一个**的（买哪份就开哪个服的会员），所以套餐表里显示归属服，
+ * 新建 / 编辑时也能改归属（把套餐从一个服搬到另一个服）。积分充值套餐是全服共用的。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshCw } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import { useRealmStore } from '@/stores/realm'
+
+const realm = useRealmStore()
+/** 套餐统计范围：当前服（默认）或全部服 */
+const scope = ref<'realm' | 'all'>('realm')
 
 const planColumns: DataColumn[] = [
   { key: 'name', label: '名称', width: 170, mobile: 'title' },
+  { key: 'realm_name', label: '归属服', width: 130 },
   { key: 'description', label: '描述', minWidth: 170, mobile: 'hide' },
   { key: 'price', label: '价格', width: 100 },
   { key: 'duration_days', label: '时长', width: 90 },
@@ -52,11 +61,19 @@ const planEditing = ref<PlanRowFull | null>(null)
 const planForm = ref({
   name: '', description: '', price: 19.9, duration_days: 30,
   features: '', is_active: true, is_popular: false, sort_order: 0,
+  realm_id: null as number | null,
 })
+
+/** 可选的归属服：默认取面板当前服 */
+const realmOptions = computed(() => realm.realms)
 
 function openPlanCreate() {
   planEditing.value = null
-  planForm.value = { name: '', description: '', price: 19.9, duration_days: 30, features: '', is_active: true, is_popular: false, sort_order: 0 }
+  planForm.value = {
+    name: '', description: '', price: 19.9, duration_days: 30, features: '',
+    is_active: true, is_popular: false, sort_order: 0,
+    realm_id: realm.activeId,
+  }
   planVisible.value = true
 }
 
@@ -71,6 +88,7 @@ function openPlanEdit(row: PlanRowFull) {
     is_active: row.is_active,
     is_popular: row.is_popular,
     sort_order: row.sort_order,
+    realm_id: row.realm_id ?? realm.activeId,
   }
   planVisible.value = true
 }
@@ -87,6 +105,8 @@ async function savePlan() {
     is_active: f.is_active,
     is_popular: f.is_popular,
     sort_order: f.sort_order,
+    // 一个服一个：留空时后端归到面板当前服
+    realm_id: f.realm_id ?? undefined,
   }
   try {
     if (planEditing.value) {
@@ -167,7 +187,10 @@ async function removePkg(row: PackageRow) {
 async function load() {
   loading.value = true
   try {
-    const [p, k] = await Promise.all([fetchEconomyPlans(), fetchEconomyPackages()])
+    const [p, k] = await Promise.all([
+      fetchEconomyPlans(scope.value === 'all' ? 0 : undefined),
+      fetchEconomyPackages(),
+    ])
     plans.value = p.plans
     packages.value = k.packages
   } finally {
@@ -183,9 +206,17 @@ onMounted(load)
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">商品与套餐</h1>
-        <p class="admin-page-subtitle">订阅套餐与积分充值套餐配置</p>
+        <p class="admin-page-subtitle">
+          订阅套餐与积分充值套餐配置 · 订阅套餐一个服一个，充值套餐全服共用
+        </p>
       </div>
-      <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
+      <div class="page-actions">
+        <el-radio-group v-model="scope" size="small" @change="load">
+          <el-radio-button value="realm">当前服套餐</el-radio-button>
+          <el-radio-button value="all">全部服套餐</el-radio-button>
+        </el-radio-group>
+        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
+      </div>
     </div>
 
     <!-- 订阅套餐 -->
@@ -197,6 +228,12 @@ onMounted(load)
       <DataTable :rows="plans" :columns="planColumns" :loading="loading" empty="还没有订阅套餐">
         <template #cell-name="{ row }">
           <span class="item-name">{{ row.name }}</span>
+        </template>
+
+        <template #cell-realm_name="{ row }">
+          <el-tag size="small" :type="row.realm_name ? 'info' : 'warning'">
+            {{ row.realm_name || '未标注' }}
+          </el-tag>
         </template>
 
         <template #cell-description="{ row }">
@@ -275,6 +312,14 @@ onMounted(load)
     <el-dialog v-model="planVisible" :title="planEditing ? '编辑订阅套餐' : '新增订阅套餐'" width="520px">
       <el-form label-position="top">
         <el-form-item label="名称"><el-input v-model="planForm.name" maxlength="50" /></el-form-item>
+        <el-form-item label="归属服">
+          <el-select v-model="planForm.realm_id" placeholder="选择这个套餐属于哪个服" style="width: 100%">
+            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+          <p class="field-help">
+            用户在哪个服买这份套餐，会员就开在那个服（不同服的会员互不影响）。
+          </p>
+        </el-form-item>
         <el-form-item label="描述"><el-input v-model="planForm.description" maxlength="200" /></el-form-item>
         <el-form-item label="价格 (¥)"><el-input-number v-model="planForm.price" :min="0" :precision="2" style="width: 100%" /></el-form-item>
         <el-form-item label="时长 (天)"><el-input-number v-model="planForm.duration_days" :min="1" :max="3650" style="width: 100%" /></el-form-item>
@@ -326,4 +371,7 @@ onMounted(load)
 .block-head h3 { margin: 0; font-size: 14.5px; font-weight: 600; }
 
 .muted { color: var(--text-muted); }
+
+.page-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.field-help { color: var(--text-muted); font-size: var(--font-size-xs); margin: 5px 0 0; line-height: 1.6; }
 </style>

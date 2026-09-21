@@ -22,7 +22,10 @@ from backend.download_guard import DownloadGuardMiddleware
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
 from backend.api.emby_servers import router as emby_servers_router
+from backend.api.realms import router as realms_router
 from backend.api.servers import router as servers_router
+from backend import realms
+from backend.emby_server import nodes as node_lib
 from backend.api.admin_ops import admin_ops_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_routes import install_mount_routes
@@ -55,6 +58,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"数据库初始化失败: {e}")
 
+    # 内容可见性：面板自带的网关按「服」过滤（默认服 → 与单服部署完全一致）。
+    # 多服部署时各服的 EA 各自提供本服内容，这里只保证面板不会把别的服的内容也端出去。
+    try:
+        node_lib.install_scope("em")
+    except Exception as e:  # noqa: BLE001 — 过滤装不上也不能阻止面板启动
+        logger.warning(f"内容可见性未生效（按不过滤处理）: {e}")
+
     # 恢复未完成的 115 转存/下载任务：running 说明上次进程被杀，回到 pending 续跑，
     # 已完成文件靠 done_keys 跳过，不会重复转存
     try:
@@ -75,7 +85,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.6.19",
+    version="2.6.20",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -150,6 +160,9 @@ async def health_check():
         "database": DATABASE_TYPE,
         "online_users": manager.get_online_count(),
         "emby_server": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
+        "service": "em",
+        "version": app.version,
+        "emby_gateway": _ENABLE_EMBY_GATEWAY,
     }
 
 
@@ -212,6 +225,8 @@ app.include_router(user_router)
 # 管理后台 API 路由
 app.include_router(admin_router)
 app.include_router(admin_ops_router)
+# 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
+app.include_router(realms_router)
 app.include_router(emby_servers_router)
 app.include_router(servers_router)
 
@@ -290,7 +305,7 @@ async def root():
         return FileResponse(index_file)
     return {
         "name": "RoyalBot Portal",
-        "version": "2.5.4",
+        "version": app.version,
         "status": "running",
         "timestamp": datetime.now().isoformat(),
         "docs": "/api/docs",

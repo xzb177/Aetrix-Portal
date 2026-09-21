@@ -22,6 +22,9 @@ export interface PlanRowFull {
   is_active: boolean
   is_popular: boolean
   sort_order: number
+  /** 一个服一个：留空时后端归到面板当前服 */
+  realm_id?: number | null
+  realm_name?: string
 }
 
 export interface PackageRow {
@@ -98,15 +101,24 @@ export const fetchSubscriptions = (params: { status_filter?: string; search?: st
   get<SubscriptionOverview>('/economy/subscriptions', params)
 
 /** 按用户直接授予订阅（与用户管理页共享后端逻辑） */
-export const grantUserSubscription = (userId: number, data: { plan_id: number; duration_days: number }) =>
-  post<{ success: boolean }>(`/users/${userId}/subscriptions`, data)
+export const grantUserSubscription = (
+  userId: number,
+  data: { plan_id: number; duration_days: number; realm_id?: number }
+) => post<{ success: boolean }>(`/users/${userId}/subscriptions`, data)
 
 export const extendUserSubscription = (subscriptionId: number, days: number) =>
   post<{ success: boolean }>(`/subscriptions/${subscriptionId}/extend`, { days })
 
 // ==================== 订阅套餐 ====================
 
-export const fetchEconomyPlans = () => get<{ plans: PlanRowFull[] }>('/economy/plans')
+/** 套餐清单；`realm_id=0` = 全部服，不传 = 当前服 */
+export const fetchEconomyPlans = (realm_id?: number) =>
+  get<{
+    plans: PlanRowFull[]
+    realm_id: number | null
+    active_realm_id: number
+    realms: { id: number; name: string }[]
+  }>('/economy/plans', realm_id === undefined ? undefined : { realm_id })
 
 export const createEconomyPlan = (data: Omit<PlanRowFull, 'id'>) => post<{ success: boolean }>('/economy/plans', data)
 

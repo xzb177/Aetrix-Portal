@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import models, realms
 from backend import qbittorrent
 from backend import servers
 from backend.authlog import client_ip as log_ip, record_event, user_agent
@@ -294,6 +294,8 @@ class SubscriptionGrantRequest(BaseModel):
     """授予订阅请求"""
     plan_id: int
     duration_days: int
+    # 开哪个服的会员：留空时按套餐所属的服（再回退到面板当前服）
+    realm_id: Optional[int] = None
 
 
 class SubscriptionExtendRequest(BaseModel):
@@ -305,11 +307,17 @@ class SubscriptionExtendRequest(BaseModel):
 
 @admin_router.get("/plans")
 async def list_plans(
+    realm_id: Optional[int] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """订阅套餐列表（授予订阅时选择用）"""
-    plans = db.query(models.SubscriptionPlan).filter(
+    """订阅套餐列表（授予订阅时选择用）—— 默认只列当前服的套餐
+
+    ``realm_id=0`` 表示全部服（跨服汇总时用）。
+    """
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope(db.query(models.SubscriptionPlan), models.SubscriptionPlan.realm_id, scope_id)
+    plans = query.filter(
         models.SubscriptionPlan.is_active == True  # noqa: E712
     ).order_by(models.SubscriptionPlan.sort_order).all()
     return {"plans": [
@@ -317,9 +325,13 @@ async def list_plans(
             "id": p.id, "name": p.name, "description": p.description,
             "price": float(p.price), "duration_days": p.duration_days,
             "is_popular": p.is_popular,
+            "realm_id": p.realm_id,
+            "realm_name": (p.realm.name if p.realm else ""),
         }
         for p in plans
-    ]}
+    ],
+        "realm_id": scope_id,
+        "active_realm_id": realms.active_realm_id(db)}
 
 
 @admin_router.post("/users/{user_id}/subscriptions")
@@ -341,9 +353,13 @@ async def grant_subscription(
         raise HTTPException(status_code=404, detail="套餐不存在")
 
     end_date = datetime.now() + timedelta(days=request.duration_days)
+    # 会员开在哪个服：显式指定 > 套餐所属的服 > 面板当前服。
+    # 决定了这份会员能在哪台 EA 上播放（见 backend/subscriptions.py）。
+    realm_id = request.realm_id or plan.realm_id or realms.active_realm_id(db)
     subscription = models.UserSubscription(
         user_id=user_id,
         plan_id=request.plan_id,
+        realm_id=realm_id,
         start_date=datetime.now(),
         end_date=end_date,
         status="active",
@@ -354,7 +370,8 @@ async def grant_subscription(
 
     _audit(db, current_admin, "grant_subscription", "subscription",
            subscription.id, {"user_id": user_id, "plan_id": request.plan_id,
-                             "duration_days": request.duration_days})
+                             "duration_days": request.duration_days,
+                             "realm_id": realm_id})
     db.commit()
 
     await notify_admin_event(
@@ -1299,15 +1316,20 @@ class PlanUpsertRequest(BaseModel):
     is_active: bool = True
     is_popular: bool = False
     sort_order: int = 0
+    # 套餐一个服一个：留空时归到面板当前服
+    realm_id: Optional[int] = None
 
 
 @admin_router.get("/economy/plans")
 async def economy_list_plans(
+    realm_id: Optional[int] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """全部订阅套餐（含停用）"""
-    plans = db.query(models.SubscriptionPlan).order_by(
+    """订阅套餐（含停用）—— 默认只列当前服；``realm_id=0`` 列全部服"""
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope(db.query(models.SubscriptionPlan), models.SubscriptionPlan.realm_id, scope_id)
+    plans = query.order_by(
         models.SubscriptionPlan.sort_order, models.SubscriptionPlan.id
     ).all()
     return {"plans": [
@@ -1316,9 +1338,14 @@ async def economy_list_plans(
             "price": float(p.price), "duration_days": p.duration_days,
             "features": p.features, "is_active": p.is_active,
             "is_popular": p.is_popular, "sort_order": p.sort_order,
+            "realm_id": p.realm_id,
+            "realm_name": (p.realm.name if p.realm else ""),
         }
         for p in plans
-    ]}
+    ],
+        "realm_id": scope_id,
+        "active_realm_id": realms.active_realm_id(db),
+        "realms": [{"id": r.id, "name": r.name} for r in realms.list_realms(db)]}
 
 
 @admin_router.post("/economy/plans")
@@ -1327,17 +1354,21 @@ async def economy_create_plan(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
+    realm_id = request.realm_id or realms.active_realm_id(db)
+    if not realms.get_realm(db, realm_id):
+        raise HTTPException(status_code=400, detail=f"服不存在: #{realm_id}")
     plan = models.SubscriptionPlan(
         name=request.name, description=request.description,
         price=Decimal(str(request.price)), duration_days=request.duration_days,
         features=request.features, is_active=request.is_active,
         is_popular=request.is_popular, sort_order=request.sort_order,
+        realm_id=realm_id,
     )
     db.add(plan)
     db.commit()
     db.refresh(plan)
     _audit(db, current_admin, "economy_create_plan", "plan", plan.id,
-           {"name": plan.name, "price": float(plan.price)})
+           {"name": plan.name, "price": float(plan.price), "realm_id": realm_id})
     db.commit()
     return {"success": True, "id": plan.id}
 
@@ -1363,6 +1394,12 @@ async def economy_update_plan(
     plan.is_active = request.is_active
     plan.is_popular = request.is_popular
     plan.sort_order = request.sort_order
+    if request.realm_id:
+        if not realms.get_realm(db, request.realm_id):
+            raise HTTPException(status_code=400, detail=f"服不存在: #{request.realm_id}")
+        plan.realm_id = request.realm_id
+    elif plan.realm_id is None:
+        plan.realm_id = realms.active_realm_id(db)
     plan.updated_at = datetime.now()
     db.commit()
 

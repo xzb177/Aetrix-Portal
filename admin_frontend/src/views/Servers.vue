@@ -7,7 +7,9 @@
  *
  * 1. **能加多台**：每类都可以加多台，EA / Emby 里挑一台作为「当前使用」；
  * 2. **告诉你有几台**：顶部四张统计卡（已添加 / 可用 / 当前使用），答「我到底接了什么」；
- * 3. **接上求片**：MoviePilot 负责搜索下载，qBittorrent 负责下载，求片页直接就能转交。
+ * 3. **接上求片**：MoviePilot 负责搜索下载，qBittorrent 负责下载，求片页直接就能转交；
+ * 4. **归到某个服**（v2.6.20）：EA / Emby 是一个服一个的，加的时候就要选归属服；
+ *    MoviePilot / qB 可以让多台服务器共用（归属留空 = 每个服都能用它求片）。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -35,12 +37,20 @@ import {
   updateServer,
 } from '@/api/admin'
 import type { RemoteServerRow, ServerKind, ServerKindMeta, ServerSummary, ServerProbeResult } from '@/types'
+import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+
+const realm = useRealmStore()
+/** 可选的归属服（面板当前服的选项一定在里面） */
+const realmOptions = computed(() => realm.realms)
+/** 内容自动化（MoviePilot / qB）可以「全服共用」，不需要归属某个服 */
+const isSharedKind = computed(() => form.kind === 'moviepilot' || form.kind === 'qbittorrent')
 
 const columns: DataColumn[] = [
   { key: 'name', label: '名称', minWidth: 160, mobile: 'title' },
   { key: 'kind_label', label: '类型', width: 130 },
+  { key: 'realm_name', label: '归属服', width: 130 },
   { key: 'url', label: '地址', minWidth: 200 },
   { key: 'state', label: '状态', width: 190 },
   { key: 'actions', label: '操作', width: 250, fixed: 'right', align: 'right' },
@@ -72,6 +82,9 @@ const form = reactive({
   remark: '',
   is_enabled: true,
   config: {} as Record<string, string>,
+  /** 归属服：EA / Emby 一个服一个；MoviePilot / qB 可留空（全服共用） */
+  realm_id: null as number | null,
+  shared: false,
 })
 
 const currentKind = computed(() => kinds.value.find((k) => k.value === form.kind))
@@ -104,6 +117,8 @@ function stateText(s: RemoteServerRow): string {
 async function load() {
   loading.value = true
   try {
+    // 归属服下拉要用到服的清单（Layout 已加载过就不重复请求）
+    if (!realm.loaded) realm.load().catch(() => undefined)
     const res = await fetchServers()
     servers.value = res.servers
     kinds.value = res.kinds
@@ -124,6 +139,8 @@ function resetForm(kind: ServerKind = 'ea') {
   form.remark = ''
   form.is_enabled = true
   form.config = {}
+  form.realm_id = realm.activeId
+  form.shared = false
 }
 
 function openCreate(kind: ServerKind = 'ea') {
@@ -138,6 +155,8 @@ function openEdit(row: RemoteServerRow) {
   form.url = row.url
   form.remark = row.remark
   form.is_enabled = row.is_enabled
+  form.realm_id = row.realm_id ?? realm.activeId
+  form.shared = !!row.shared
   // 密钥不回明文：留空即「不改」，所以这里只回填非密钥字段
   const config: Record<string, string> = {}
   for (const [key, value] of Object.entries(row.config || {})) config[key] = value ?? ''
@@ -182,6 +201,9 @@ async function save() {
     config: form.config,
     is_enabled: form.is_enabled,
     remark: form.remark,
+    // 一个服一个：EA / Emby 必须选一个归属服；内容自动化可以选「全服共用」
+    realm_id: form.shared ? null : form.realm_id,
+    shared: isSharedKind.value && form.shared,
   }
   try {
     const res = editingId.value
@@ -353,6 +375,12 @@ async function remove(row: RemoteServerRow) {
           </span>
         </template>
 
+        <template #cell-realm_name="{ row }">
+          <span v-if="row.shared" class="mini-badge info">全服共用</span>
+          <span v-else-if="row.realm_name" class="mini-badge muted">{{ row.realm_name }}</span>
+          <span v-else class="mini-badge warn">未归服</span>
+        </template>
+
         <template #cell-url="{ row }">
           <span class="url">{{ row.url }}</span>
         </template>
@@ -408,6 +436,26 @@ async function remove(row: RemoteServerRow) {
         </el-form-item>
         <el-form-item label="地址">
           <el-input v-model="form.url" placeholder="必须以 http:// 或 https:// 开头" />
+        </el-form-item>
+        <el-form-item label="归属服">
+          <el-select
+            v-model="form.realm_id"
+            :disabled="isSharedKind && form.shared"
+            style="width: 100%"
+            placeholder="选择这台服务器属于哪个服"
+          >
+            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+          <p class="field-help">
+            EA / Emby 是「一个服一个」的入口：用户看到的地址、能播的内容都按归属服判定。
+          </p>
+          <template v-if="isSharedKind">
+            <el-checkbox v-model="form.shared" label="全服共用（不属于某个服）" border style="margin-top: 8px" />
+            <p class="field-help">
+              MoviePilot / qBittorrent 属于内容自动化：勾上以后每个服都能用它求片，
+              多服运营通常只需要接一套。
+            </p>
+          </template>
         </el-form-item>
         <el-form-item v-for="field in currentKind?.fields || []" :key="field.key" :label="field.label">
           <el-input

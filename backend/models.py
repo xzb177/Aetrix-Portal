@@ -79,6 +79,40 @@ class SystemConfig(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class ServerRealm(Base):
+    """服（一个可独立运营的服务单元）—— 面板可以同时运营多个服
+
+    一个服 = 一套独立对外提供播放的服务：
+
+    - **内容**：该服的媒体库（``emby_libraries.realm_id``）与存储挂载（``storage_mounts.realm_id``）；
+    - **卖什么**：该服的套餐（``subscription_plans.realm_id``）；
+    - **卖给谁**：该服的订阅（``user_subscriptions.realm_id``）——同一个用户可以在多个服各有一份订阅；
+    - **谁来放**：该服的服务器记录（``remote_servers.realm_id``，kind=ea）。
+      同一个服可以部署到多台机器上（每台一个 EA，各有自己的 ``node_key``）同时出流。
+
+    面板顶部的「当前服」决定后台各页默认在看哪个服（``SystemConfig["active_realm_id"]``）。
+    升级上来的老部署会自动回填出一个默认服（``slug='main'``），行为与单服时完全一致。
+    """
+
+    __tablename__ = 'server_realms'
+
+    __table_args__ = (
+        Index('idx_realm_slug', 'slug'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(80), unique=True, nullable=False)
+    # 稳定标识：写进 EA 的 REALM 环境变量、也用于排查（改名不影响它）
+    slug = Column(String(40), unique=True, nullable=False)
+    # 该服对外的 Emby 地址（用户端账号卡用；留空则回退全局 EMBY_PUBLIC_URL）
+    url = Column(String(500), default='')
+    description = Column(String(300), default='')
+    is_active = Column(Boolean, default=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class RemoteServer(Base):
     """已添加的服务器（面板可以加多台，每类里挑一台作为「当前使用」）
 
@@ -92,17 +126,24 @@ class RemoteServer(Base):
 
     ``config`` 存类型相关字段（JSON 文本），密钥类字段永不出接口（见 ``servers.mask_config``）。
     同一类型只能有一行 ``is_active``：由激活接口保证，避免出现「谁是当前入口」的歧义。
+    **同一类型 + 同一个服** 只能有一行 ``is_active``（见 ``servers.activate``）。
     """
 
     __tablename__ = 'remote_servers'
 
     __table_args__ = (
         Index('idx_remote_server_kind', 'kind'),
+        Index('idx_remote_server_realm', 'realm_id'),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(80), unique=True, nullable=False)
     kind = Column(String(20), nullable=False)  # ea / emby / moviepilot / qbittorrent
+    # 属于哪个服：每台 EA 只服务它所属服的内容与订阅（见 backend/realms.py）
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
+    # 节点标识：EA 启动时用环境变量 NODE_KEY 认领这条记录（见 emby_server/nodes.py）。
+    # 只有 EA 需要它——它决定「这台机器负责哪些媒体库、只提供哪些内容」。
+    node_key = Column(String(60), unique=True, nullable=True)
     url = Column(String(500), nullable=False)
     # 类型相关配置（JSON 文本）：api_key / username / password / savepath 等
     config = Column(Text, default='{}')
@@ -270,11 +311,15 @@ class SubscriptionPlan(Base):
     price = Column(Numeric(10, 2), nullable=False)
     duration_days = Column(Integer, nullable=False)
     features = Column(JSON)  # 特性列表
+    # 属于哪个服：套餐一个服一个（见 ServerRealm）。同一套餐只卖给该服的用户。
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
     is_active = Column(Boolean, default=True)
     is_popular = Column(Boolean, default=False)
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    realm = relationship("ServerRealm")
 
 
 class UserSubscription(Base):
@@ -290,6 +335,9 @@ class UserSubscription(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
     plan_id = Column(Integer, ForeignKey('subscription_plans.id'), nullable=False)
+    # 订阅属于哪个服：决定它能在哪个服的 EA 上播放（见 backend/subscriptions.py）。
+    # 同一个用户可以在多个服各有一份互不影响的订阅。
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
     start_date = Column(DateTime, default=datetime.now)
     end_date = Column(DateTime, nullable=False)
     status = Column(String(20), default='active')  # active, expired, cancelled
@@ -299,6 +347,7 @@ class UserSubscription(Base):
 
     plan = relationship("SubscriptionPlan")
     user = relationship("WebUser")
+    realm = relationship("ServerRealm")
 
 
 class RechargePackage(Base):
@@ -679,6 +728,8 @@ class RegistrationCode(Base):
     created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
+    # 属于哪个服：这张卡码开出来的是那个服的会员（见 economy.redeem_registration_code）
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
     # ===== 卡码体系（借鉴 twilight-kotomi 的 RegCode）=====
     code_type = Column(Integer, default=1)  # 1 注册码 / 2 续期码 / 3 白名单码
     days = Column(Integer, default=30)  # 授予或叠加的会员天数；-1 表示永久
@@ -804,6 +855,8 @@ class MovieRequest(Base):
     status = Column(String(20), default='pending')
     admin_note = Column(Text)
     emby_item_id = Column(String(100))
+    # 求的是哪个服的片：入库后进的是该服的媒体库
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
     # 转交外部服务的结果：moviepilot（已提交订阅）/ qbittorrent（已交给下载器加种）
     push_target = Column(String(20))
     push_status = Column(String(20))  # ok / failed
@@ -874,6 +927,8 @@ class Alert(Base):
 __all__ = [
     # 系统管理
     "AdminUser", "AdminRole", "AdminLog", "SystemConfig", "NotificationHistory", "StationMessage",
+    # 多服运营
+    "ServerRealm",
     # 用户
     "WebUser", "TelegramUser",
     # 订阅和支付

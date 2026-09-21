@@ -495,7 +495,10 @@ onBeforeUnmount(stopPayPoll)
           <span v-if="p.is_popular" class="pkg-pop-tag">推荐</span>
 
           <div class="plan-head">
-            <h4 class="plan-name">{{ p.name }}</h4>
+            <h4 class="plan-name">
+              {{ p.name }}
+              <em v-if="p.realm_name" class="plan-realm">{{ p.realm_name }}</em>
+            </h4>
             <span class="plan-price">
               ¥{{ p.price.toFixed(2) }}
               <em>/ {{ p.duration_days }} 天</em>
@@ -987,6 +990,21 @@ onBeforeUnmount(stopPayPoll)
   gap: 0.75rem;
 }
 .plan-name { margin: 0; font-size: 1rem; font-weight: 700; color: var(--au-text); }
+/* 归属服：多服运营下同一页会列出几个服的套餐，买哪份要看得清 */
+.plan-realm {
+  display: inline-block;
+  margin-left: 0.375rem;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 999px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  color: var(--au-text-3);
+  font-size: 0.625rem;
+  font-weight: 500;
+  font-style: normal;
+  vertical-align: middle;
+}
+
 .plan-price { font-size: 1.125rem; font-weight: 800; color: var(--au-text); white-space: nowrap; }
 .plan-price em { font-style: normal; font-size: 0.6875rem; font-weight: 400; color: var(--au-text-3); }
 

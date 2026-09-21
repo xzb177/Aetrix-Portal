@@ -25,8 +25,10 @@ from typing import Optional
 import httpx
 from sqlalchemy.orm import Session
 
+from sqlalchemy import and_, or_
+
 from backend import models
-from backend import moviepilot, qbittorrent
+from backend import moviepilot, qbittorrent, realms
 
 logger = logging.getLogger(__name__)
 
@@ -275,11 +277,30 @@ async def probe_server(kind: str, url: str, config: Optional[dict] = None) -> di
 
 
 async def probe_and_store(db: Session, server) -> dict:
-    """体检并落库最近一次结果（供列表展示）"""
+    """体检并落库最近一次结果（供列表展示）
+
+    对 EA 额外做一件事：拉一次 ``/api/admin/nodes/me``，把「这台 EA 认领的是哪个服、
+    负责哪些库」当场查出来。多服 / 多节点部署下，配错 REALM 或 NODE_KEY 就会表现成
+    「客户端看不到任何库」——放在添加服务器这一步报出来，比之后猜要省事得多。
+    """
     result = await probe_server(server.kind, server.url, parse_config(server))
     server.last_checked_at = datetime.now()
     server.last_check_ok = bool(result.get("ok"))
     server.last_check_message = redact(str(result.get("message") or ""), server)
+    if server.kind == "ea" and result.get("ok"):
+        from backend.emby_server import nodes as node_lib
+
+        identity = await node_lib.fetch_node_identity(server.url)
+        result["node"] = identity
+        if identity.get("ok"):
+            node_key = str((identity.get("data") or {}).get("node_key") or "").strip()
+            if node_key and not (server.node_key or "").strip():
+                server.node_key = node_key
+            realm_slug = str((identity.get("data") or {}).get("realm_slug") or "").strip()
+            if realm_slug and not server.realm_id:
+                realm = realms.realm_by_slug(db, realm_slug)
+                if realm:
+                    server.realm_id = realm.id
     db.commit()
     return result
 
@@ -289,16 +310,40 @@ async def probe_and_store(db: Session, server) -> dict:
 LEGACY_PREFIX = {"ea": "emby_managed", "emby": "emby_external"}
 
 
+def realm_scope(query, realm_id: Optional[int]):
+    """按服过滤服务器清单
+
+    - ``ea`` / ``emby``：**一个服一个**——只有归属这个服的那几台算数；
+    - ``moviepilot`` / ``qbittorrent``：内容自动化，多服共用一套下载与整理即可，
+      所以归属服留空（``realm_id IS NULL``）的那几台在**每个服**里都算数；
+    - ``realm_id is None``：不过滤（跨服汇总 / 数据概览的「全部服」视图）。
+    """
+    if realm_id is None:
+        return query
+    return query.filter(or_(
+        models.RemoteServer.realm_id == int(realm_id),
+        and_(models.RemoteServer.realm_id.is_(None),
+             models.RemoteServer.kind.in_(PUSH_TARGETS)),
+    ))
+
+
 def _config_row(db: Session, key: str):
     return db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
 
 
-def config_value(db: Session, key: str, default: str = "") -> str:
+def config_value(db: Session, key: str, default: str = "", realm_id: Optional[int] = None) -> str:
+    """读配置；Emby 入口那几个键是**一个服一个**的（默认服沿用历史键名）"""
+    if key in realms.REALM_CONFIG_BASES:
+        return realms.realm_config(db, key, realm_id, default)
     row = _config_row(db, key)
     return ((row.value if row and row.value is not None else default) or "").strip()
 
 
-def set_config(db: Session, key: str, new_value: str, description: str = "") -> None:
+def set_config(db: Session, key: str, new_value: str, description: str = "",
+               realm_id: Optional[int] = None) -> None:
+    if key in realms.REALM_CONFIG_BASES:
+        realms.set_realm_config(db, key, new_value, realm_id, description)
+        return
     row = _config_row(db, key)
     if row:
         row.value = new_value
@@ -308,44 +353,51 @@ def set_config(db: Session, key: str, new_value: str, description: str = "") -> 
 
 def sync_legacy(db: Session, server, *, reachable: Optional[bool] = None,
                 activate_mode: bool = True) -> None:
-    """把激活结果写回既有的 Emby 配置键
+    """把激活结果写回既有的 Emby 配置键（**按服写入**）
 
     这些键是网关闸门、客户端指引、用户端账号卡**唯一**读取的地方
     （``emby_active_mode`` / ``emby_managed_*`` / ``emby_external_*``），
     所以「多服务器」是叠在它们之上的一层管理面，而不是另起一套真相。
+    多服部署下每个服各有一套：默认服沿用历史键名，其它服用 ``<键>__r<服 id>``。
     """
     prefix = LEGACY_PREFIX.get(server.kind)
     if not prefix:
         return
+    realm_id = server.realm_id or realms.active_realm_id(db)
     config = parse_config(server)
-    set_config(db, f"{prefix}_url", server.url, "Emby 服务地址")
-    set_config(db, f"{prefix}_enabled", "true" if server.is_enabled else "false", "Emby 服务是否启用")
+    set_config(db, f"{prefix}_url", server.url, "Emby 服务地址", realm_id)
+    set_config(db, f"{prefix}_enabled", "true" if server.is_enabled else "false", "Emby 服务是否启用", realm_id)
     if reachable is None:
         reachable = bool(server.last_check_ok)
-    set_config(db, f"{prefix}_reachable", "true" if reachable else "false", "Emby 服务最近一次连接结果")
+    set_config(db, f"{prefix}_reachable", "true" if reachable else "false", "Emby 服务最近一次连接结果", realm_id)
     if server.kind == "emby" and config.get("api_key"):
-        set_config(db, "emby_external_api_key", str(config["api_key"]), "外部 Emby API 密钥")
+        set_config(db, "emby_external_api_key", str(config["api_key"]), "外部 Emby API 密钥", realm_id)
     if activate_mode and server.is_enabled and reachable:
-        set_config(db, "emby_active_mode", KIND_MAP[server.kind]["writes_active_mode"], "当前 Emby 服务模式")
+        set_config(db, "emby_active_mode", KIND_MAP[server.kind]["writes_active_mode"],
+                   "当前 Emby 服务模式", realm_id)
 
 
-def deactivate_legacy(db: Session, kind: str) -> None:
-    """某类已经没有激活的服务器了：把旧键收回，回到「面板自己出流」或「未接入」"""
+def deactivate_legacy(db: Session, kind: str, realm_id: Optional[int] = None) -> None:
+    """某类在某个服已经没有激活的服务器了：把那个服的键收回，回到「面板自己出流」或「未接入」"""
     prefix = LEGACY_PREFIX.get(kind)
     if not prefix:
         return
-    set_config(db, f"{prefix}_enabled", "false", "Emby 服务是否启用")
-    set_config(db, f"{prefix}_reachable", "false", "Emby 服务最近一次连接结果")
-    # 另一类还有激活的服务器就交给它（比如删了 EA 但还接着外部 Emby），否则回到面板自己出流
+    if realm_id is None:
+        realm_id = realms.active_realm_id(db)
+    set_config(db, f"{prefix}_enabled", "false", "Emby 服务是否启用", realm_id)
+    set_config(db, f"{prefix}_reachable", "false", "Emby 服务最近一次连接结果", realm_id)
+    # 另一类在**同一个服**还有激活的服务器就交给它（比如删了 EA 但还接着外部 Emby），
+    # 否则这个服回到「面板自己出流」
     other_kind = "emby" if kind == "ea" else "ea"
     still_active = (db.query(models.RemoteServer)
                     .filter(models.RemoteServer.kind == other_kind,
+                            models.RemoteServer.realm_id == realm_id,
                             models.RemoteServer.is_active.is_(True),
                             models.RemoteServer.is_enabled.is_(True))
                     .first())
     set_config(db, "emby_active_mode",
                KIND_MAP[other_kind]["writes_active_mode"] if still_active else "panel",
-               "当前 Emby 服务模式")
+               "当前 Emby 服务模式", realm_id)
 
 
 # ==================== 激活 ====================
@@ -354,19 +406,20 @@ def get_server(db: Session, server_id: int) -> Optional[models.RemoteServer]:
     return db.query(models.RemoteServer).filter(models.RemoteServer.id == server_id).first()
 
 
-def active_server(db: Session, kind: str) -> Optional[models.RemoteServer]:
-    return (db.query(models.RemoteServer)
-            .filter(models.RemoteServer.kind == kind,
-                    models.RemoteServer.is_active.is_(True),
-                    models.RemoteServer.is_enabled.is_(True))
-            .order_by(models.RemoteServer.id)
-            .first())
+def active_server(db: Session, kind: str, realm_id: Optional[int] = None) -> Optional[models.RemoteServer]:
+    query = (db.query(models.RemoteServer)
+             .filter(models.RemoteServer.kind == kind,
+                     models.RemoteServer.is_active.is_(True),
+                     models.RemoteServer.is_enabled.is_(True)))
+    query = realm_scope(query, realm_id)
+    return query.order_by(models.RemoteServer.id).first()
 
 
 def activate(db: Session, server, *, reachable: Optional[bool] = None) -> dict:
-    """把某台服务器设为它那一类的「当前使用」
+    """把某台服务器设为**它那个服**里这一类的「当前使用」
 
     只有通过连接体检的服务器才能被激活（避免出现「后台指着一台连不上的服务跑」）。
+    切换只影响同一个服：甲服换成外部 Emby 不会动到乙服的 EA 入口。
     """
     meta = kind_meta(server.kind)
     if not meta:
@@ -379,9 +432,12 @@ def activate(db: Session, server, *, reachable: Optional[bool] = None) -> dict:
         # MoviePilot / qBittorrent 没有「当前入口」的概念：多台一起用是正常的
         return {"ok": True, "message": f"{meta['label']} 无需设为当前使用（多台可以同时用于求片）",
                 "activatable": False}
+    if not server.realm_id:
+        server.realm_id = realms.active_realm_id(db)
 
     same_kind = (db.query(models.RemoteServer)
                  .filter(models.RemoteServer.kind == server.kind,
+                         models.RemoteServer.realm_id == server.realm_id,
                          models.RemoteServer.id != server.id)
                  .all())
     for other in same_kind:
@@ -414,7 +470,7 @@ def unique_name(db: Session, base: str, exclude_id: Optional[int] = None) -> str
 
 def upsert_legacy(db: Session, kind: str, url: str, *, api_key: str = "",
                   enabled: bool = True, reachable: Optional[bool] = None,
-                  name: str = "") -> models.RemoteServer:
+                  name: str = "", realm_id: Optional[int] = None) -> models.RemoteServer:
     """旧「Emby 服务入口」页保存时，把结果同步进服务器清单
 
     两张入口（旧页面的两个格子 / 新页面的清单）操作的是同一件事，必须收敛到一条真相：
@@ -426,12 +482,16 @@ def upsert_legacy(db: Session, kind: str, url: str, *, api_key: str = "",
         raise ValueError(f"未知的服务器类型：{kind}")
     url = _validate_url(url)
 
+    if realm_id is None:
+        realm_id = realms.active_realm_id(db)
     row = (db.query(models.RemoteServer)
-           .filter(models.RemoteServer.kind == kind)
+           .filter(models.RemoteServer.kind == kind,
+                   models.RemoteServer.realm_id == realm_id)
            .order_by(models.RemoteServer.is_active.desc(), models.RemoteServer.id)
            .first())
     if row is None:
-        row = models.RemoteServer(name=unique_name(db, name or meta["label"]), kind=kind, url=url)
+        row = models.RemoteServer(name=unique_name(db, name or meta["label"]), kind=kind,
+                                  url=url, realm_id=realm_id)
         db.add(row)
         db.flush()
 
@@ -450,6 +510,7 @@ def upsert_legacy(db: Session, kind: str, url: str, *, api_key: str = "",
     if reachable is True:
         for other in (db.query(models.RemoteServer)
                       .filter(models.RemoteServer.kind == kind,
+                              models.RemoteServer.realm_id == realm_id,
                               models.RemoteServer.id != row.id)
                       .all()):
             other.is_active = False
@@ -459,9 +520,12 @@ def upsert_legacy(db: Session, kind: str, url: str, *, api_key: str = "",
     return row
 
 
-def summary(db: Session) -> dict:
-    """按类型统计：加了几台、几台可用、当前用的是哪台（面板顶部与数据概览都用它）"""
-    rows = db.query(models.RemoteServer).order_by(models.RemoteServer.id).all()
+def summary(db: Session, realm_id: Optional[int] = None) -> dict:
+    """按类型统计：加了几台、几台可用、当前用的是哪台（面板顶部与数据概览都用它）
+
+    ``realm_id=None`` 表示跨服汇总（数据概览的「全部服」视图）。
+    """
+    rows = realm_scope(db.query(models.RemoteServer), realm_id).order_by(models.RemoteServer.id).all()
     by_kind: dict[str, dict] = {}
     for kind in KINDS:
         meta = KIND_MAP[kind]
@@ -485,6 +549,7 @@ def summary(db: Session) -> dict:
         "total": len(rows),
         "reachable": len([r for r in rows if r.last_check_ok is True]),
         "unchecked": len([r for r in rows if r.last_check_ok is None]),
+        "realm_id": realm_id,
         # 求片能用的目标：给「求片管理」与数据概览用
         "push_ready": [k for k in PUSH_TARGETS
                        if any(r.kind == k and r.is_enabled and r.last_check_ok is True for r in rows)],
@@ -493,11 +558,17 @@ def summary(db: Session) -> dict:
 
 def serialize(db: Session, server) -> dict:
     config, secrets = mask_config(server)
+    realm = realms.get_realm(db, server.realm_id)
     return {
         "id": server.id,
         "name": server.name,
         "kind": server.kind,
         "kind_label": kind_label(server.kind),
+        "realm_id": server.realm_id,
+        "realm_name": realm.name if realm else "",
+        # 内容自动化（MoviePilot / qB）可以「全服共用」：归属服留空，每个服都能用它求片
+        "shared": server.realm_id is None and server.kind in PUSH_TARGETS,
+        "node_key": server.node_key or "",
         "kind_group": kind_meta(server.kind).get("group", ""),
         "url": server.url,
         "config": config,
@@ -514,13 +585,17 @@ def serialize(db: Session, server) -> dict:
     }
 
 
-def active_config(db: Session, kind: str) -> Optional[dict]:
+def active_config(db: Session, kind: str, realm_id: Optional[int] = None) -> Optional[dict]:
     """取某类当前可用的服务器配置（含明文密钥，仅供服务端内部调用）
 
     - ``ea`` / ``emby``：优先取「当前使用」的那台，没标就取最近一台已启用的；
     - ``moviepilot`` / ``qbittorrent``：取第一台已启用且体检通过的（多台一起用没问题）。
+
+    ``realm_id=None`` 表示跨服挑一台（求片推送这类没有服概念的场景用）；传服 id 时
+    只在那个服里挑（EA / Emby 的入口一定属于某个服）。
     """
     query = db.query(models.RemoteServer).filter(models.RemoteServer.kind == kind)
+    query = realm_scope(query, realm_id)
     if kind in LEGACY_PREFIX:
         row = (query.filter(models.RemoteServer.is_active.is_(True))
                .order_by(models.RemoteServer.id).first())
@@ -532,23 +607,28 @@ def active_config(db: Session, kind: str) -> Optional[dict]:
                .order_by(models.RemoteServer.id).first())
     if not row:
         return None
-    return {"id": row.id, "name": row.name, "url": row.url, "config": parse_config(row)}
+    return {"id": row.id, "name": row.name, "url": row.url, "realm_id": row.realm_id,
+            "config": parse_config(row)}
 
 
-async def push_media_seek(db: Session, request, target: str, link: str = "") -> dict:
+async def push_media_seek(db: Session, request, target: str, link: str = "",
+                          realm_id: Optional[int] = None) -> dict:
     """把一条求片转交给外部服务
 
     - ``moviepilot``：用它的订阅接口（需要用户名 / 密码换 JWT）；
     - ``qbittorrent``：加种（需要磁力 / 种子链接，因为 qB 自己不会去找片子）。
+
+    MoviePilot / qB 这类「内容自动化」服务是全局共享的（多服共用一套下载与整理即可），
+    所以默认跨服挑选；但求片本身记的是**哪个服**要这部片（``MovieRequest.realm_id``）。
     """
     target = (target or "").strip().lower()
     if target == "auto":
-        target = "moviepilot" if active_config(db, "moviepilot") else "qbittorrent"
+        target = "moviepilot" if active_config(db, "moviepilot", realm_id) else "qbittorrent"
     if target not in PUSH_TARGETS:
         return {"ok": False, "target": target,
                 "message": "只能推送到 MoviePilot 或 qBittorrent；请先在「服务器」里添加并测试连接"}
 
-    server = active_config(db, target)
+    server = active_config(db, target, realm_id)
     if not server:
         label = kind_label(target)
         return {"ok": False, "target": target,
@@ -602,6 +682,7 @@ __all__ = [
     "probe_emby",
     "probe_server",
     "push_media_seek",
+    "realm_scope",
     "redact",
     "secret_keys",
     "serialize",
