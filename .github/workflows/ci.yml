@@ -105,6 +105,15 @@ jobs:
       - name: 播放入口链路冒烟（付费墙 / PlaybackInfo / 直连流与 Range / 无路径条目）
         run: python scripts/smoke_test_playback_chain.py
 
+      - name: 运营能力冒烟（卡码 / 设备风控 / 登录日志 / 公告与广播送审）
+        run: python scripts/smoke_test_ops_v260.py
+
+      - name: 经济系统端到端冒烟（签到 / 兑换 / 邀请 / 支付回调 / 履约通知）
+        run: python scripts/smoke_test_economy.py
+
+      - name: 用户端查漏补缺冒烟（VIP 派生 / 工单通知 / 求片链路）
+        run: python scripts/smoke_test_v251.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
