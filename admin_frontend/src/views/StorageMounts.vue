@@ -15,7 +15,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Cloud, FolderOpen, HardDrive, Info, Network, Pencil, Plug, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { AlertTriangle, Cloud, FolderOpen, HardDrive, Info, Network, Pencil, Plug, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import {
   browseMount,
   createMount,
@@ -23,22 +23,31 @@ import {
   fetchMounts,
   fetchPan115Accounts,
   fetchRcloneRemotes,
+  probeMountsHealth,
+  refreshEaMountHealth,
   testMountConfig,
   testSavedMount,
   updateMount,
 } from '@/api/admin'
-import type { MountDirEntry, MountTypeMeta, Pan115Account, StorageMount } from '@/types'
+import type {
+  EaMountHealth,
+  MountDirEntry,
+  MountTypeMeta,
+  Pan115Account,
+  PlaybackNode,
+  StorageMount,
+} from '@/types'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
-/** 挂载列表：手机端挂载名做标题，来源与测试结果仍保留 */
+/** 挂载列表：手机端挂载名做标题，来源与可达性仍保留 */
 const columns: DataColumn[] = [
   { key: 'name', label: '挂载', minWidth: 170, mobile: 'title' },
   { key: 'mount_type_label', label: '类型', width: 110 },
-  { key: 'source', label: '来源', minWidth: 220 },
-  { key: 'libraries', label: '绑定媒体库', width: 120 },
-  { key: 'last_check', label: '上次测试', width: 190 },
-  { key: 'is_enabled', label: '状态', width: 100 },
+  { key: 'source', label: '来源', minWidth: 200 },
+  { key: 'libraries', label: '绑定媒体库', width: 110 },
+  { key: 'reach', label: 'EM / EA 可达', width: 200 },
+  { key: 'is_enabled', label: '状态', width: 90 },
   { key: 'actions', label: '操作', width: 200, fixed: 'right', align: 'right' },
 ]
 
@@ -46,6 +55,11 @@ const mounts = ref<StorageMount[]>([])
 const types = ref<MountTypeMeta[]>([])
 const accounts = ref<Pan115Account[]>([])
 const loading = ref(false)
+/** 当前出流的节点 + EA 体检快照（快照缺失时 ea_reachable 为 null） */
+const playbackNode = ref<PlaybackNode>('panel')
+const eaHealth = ref<EaMountHealth>({ ok: false, checked_at: null, error: '' })
+const checkingPanel = ref(false)
+const checkingEa = ref(false)
 
 const dialogVisible = ref(false)
 const editing = ref<StorageMount | null>(null)
@@ -105,6 +119,64 @@ function sourceSummary(m: StorageMount): string {
   return m.path || '未配置'
 }
 
+/** 可达性徽标：true=可达 / false=不可达 / null=未体检（或已停用） */
+function reachText(v: boolean | null | undefined): string {
+  if (v === true) return '可达'
+  if (v === false) return '不可达'
+  return '未体检'
+}
+
+function reachClass(v: boolean | null | undefined): string {
+  if (v === true) return 'ok'
+  if (v === false) return 'danger'
+  return 'off'
+}
+
+/** 谁在出流：只有 EA 时，「EA 不可达」才会真的导致播放失败 */
+const playbackNodeLabel = computed(() => ({
+  ea: 'EA（分离部署的网关）',
+  external: '外部 Emby',
+  panel: '面板自身（一体化）',
+}[playbackNode.value] || playbackNode.value))
+
+/** 被媒体库引用、却在当前播放节点（EA）上不可达的挂载：会「扫得到、播不了」 */
+const eaBlockedMounts = computed(() => {
+  if (playbackNode.value !== 'ea') return []
+  return mounts.value.filter(
+    (m) => m.is_enabled && m.library_ids.length > 0 && m.ea_reachable === false
+  )
+})
+
+/** EA 快照本身失效时，逐条「 EA 可达」其实是旧结论 */
+const eaSnapshotStale = computed(() => playbackNode.value === 'ea' && !!eaHealth.value.error)
+
+async function runPanelHealth() {
+  checkingPanel.value = true
+  try {
+    const res = await probeMountsHealth()
+    ElMessage.success(`本机体检完成：${res.ok_count}/${res.total} 条可达`)
+    await load()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    checkingPanel.value = false
+  }
+}
+
+async function runEaHealth() {
+  checkingEa.value = true
+  try {
+    const res = await refreshEaMountHealth()
+    if (res.success) ElMessage.success('EA 体检完成：已刷新每条挂载在 EA 上的可达性')
+    else ElMessage.error(res.health?.error || 'EA 体检失败')
+    await load()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    checkingEa.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -115,6 +187,8 @@ async function load() {
     mounts.value = res.mounts
     types.value = res.mount_types
     accounts.value = acc.accounts
+    playbackNode.value = res.playback_node || 'panel'
+    eaHealth.value = res.ea_health || { ok: false, checked_at: null, error: '' }
   } finally {
     loading.value = false
   }
@@ -334,9 +408,47 @@ function fmtDate(s: string | null): string {
         <el-button type="primary" @click="openCreate">
           <Plus :size="14" style="margin-right: 4px" />新建挂载
         </el-button>
+        <el-button :loading="checkingPanel" @click="runPanelHealth">
+          <Plug :size="14" style="margin-right: 4px" />本机体检
+        </el-button>
+        <el-button :loading="checkingEa" @click="runEaHealth">
+          <Plug :size="14" style="margin-right: 4px" />EA 体检
+        </el-button>
         <el-button @click="load"><RefreshCw :size="14" /></el-button>
       </div>
     </div>
+
+    <!--
+      挂载里的本机路径、rclone RC 地址这类配置是「跟着服务器走」的：
+      后台测试跑在 EM 里，通过不代表那台 EA 能播。被媒体库引用却在 EA 上不可达的
+      挂载会「扫得到、播不了」，所以单独报红。
+    -->
+    <el-alert
+      v-if="eaBlockedMounts.length"
+      class="ea-warning"
+      type="error"
+      :closable="false"
+      show-icon
+    >
+      <template #title>
+        <AlertTriangle :size="14" style="margin-right: 5px" />
+        {{ eaBlockedMounts.length }} 条被媒体库引用的挂载在 {{ playbackNodeLabel }} 上不可达
+      </template>
+      <div class="ea-warning-body">
+        这些库会扫得到、播不了：{{ eaBlockedMounts.map((m) => m.name).join('、') }}。<br />
+        「本机 / 已挂载目录」「STRM 直链目录」的路径与 rclone 的 RC 地址都是那台机器上的
+        资源，要在 EA 所在机器上配好（或把它们改成网络型来源：115 / WebDAV / AList / S3）。
+      </div>
+    </el-alert>
+
+    <el-alert
+      v-else-if="eaSnapshotStale"
+      class="ea-warning"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="`EA 体检未完成：${eaHealth.error}（下面的 EA 可达性可能不是最新的，可点「EA 体检」重试）`"
+    />
 
     <!-- 类型说明 -->
     <div class="type-grid">
@@ -377,17 +489,38 @@ function fmtDate(s: string | null): string {
 
         <template #cell-libraries="{ row }">绑定 {{ row.library_ids.length }} 个</template>
 
-        <template #cell-last_check="{ row }">
-          <span v-if="!row.last_checked_at" class="muted">未测试</span>
-          <span v-else class="check-state">
-            <span :class="row.last_check_ok ? 'ok-text' : 'err-text'">
-              {{ row.last_check_ok ? '正常' : '失败' }}
+        <template #cell-reach="{ row }">
+          <div class="reach-cell">
+            <span class="reach-line">
+              <span class="reach-tag">EM</span>
+              <span class="mini-badge" :class="reachClass(row.em_reachable)">
+                {{ reachText(row.em_reachable) }}
+              </span>
+              <el-tooltip
+                v-if="row.em_message"
+                :content="row.em_message"
+                placement="top"
+              >
+                <Info :size="12" class="check-info" />
+              </el-tooltip>
             </span>
-            <em class="muted">{{ fmtDate(row.last_checked_at) }}</em>
-          </span>
-          <el-tooltip v-if="row.last_check_message" :content="row.last_check_message" placement="top">
-            <Info :size="13" class="check-info" />
-          </el-tooltip>
+            <span class="reach-line">
+              <span class="reach-tag">EA</span>
+              <span class="mini-badge" :class="reachClass(row.ea_reachable)">
+                {{ reachText(row.ea_reachable) }}
+              </span>
+              <el-tooltip
+                v-if="row.ea_message"
+                :content="row.ea_message"
+                placement="top"
+              >
+                <Info :size="12" class="check-info" />
+              </el-tooltip>
+            </span>
+            <em v-if="row.em_checked_at" class="muted reach-time">
+              测于 {{ fmtDate(row.em_checked_at) }}
+            </em>
+          </div>
         </template>
 
         <template #cell-is_enabled="{ row }">
@@ -591,4 +724,13 @@ function fmtDate(s: string | null): string {
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
 .mini-badge.remote { background: rgba(59, 130, 246, 0.16); color: #3b82f6; }
 .mini-badge.local { background: rgba(16, 185, 129, 0.16); color: #10b981; }
+
+/* EM / EA 可达性：两个播放节点各自能不能碰到这条挂载 */
+.reach-cell { display: flex; flex-direction: column; gap: 3px; }
+.reach-line { display: inline-flex; align-items: center; gap: 5px; }
+.reach-tag { font-size: 10px; font-weight: 700; color: var(--text-muted); letter-spacing: 0.4px; }
+.reach-time { font-style: normal; font-size: var(--font-size-xs); }
+
+.ea-warning { margin-bottom: 12px; }
+.ea-warning-body { margin-top: 4px; font-size: var(--font-size-sm); line-height: 1.7; }
 </style>

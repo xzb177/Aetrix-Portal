@@ -16,6 +16,8 @@ import type {
   StorageMount,
   MountTypeMeta,
   MountDirEntry,
+  PlaybackNode,
+  EaMountHealth,
   LoginResponse,
   MediaSeekRow,
   OverviewStats,
@@ -304,7 +306,26 @@ export const stopAllTranscodes = () => post<{ stopped: number }>(`${E}/transcode
 // 远程挂载的条目在库里存 mount:// 路径，播放时由 EA 代理转发（凭据不下发）。
 
 export const fetchMounts = () =>
-  get<{ mounts: StorageMount[]; mount_types: MountTypeMeta[] }>(`${E}/mounts`)
+  get<{
+    mounts: StorageMount[]
+    mount_types: MountTypeMeta[]
+    /** 当前出流的节点：只有它是 ea 时，「EA 不可达」才是阻断性告警 */
+    playback_node: PlaybackNode
+    ea_health: EaMountHealth
+  }>(`${E}/mounts`)
+
+/** 本机（EM）体检：逐条跑一遍与「测试连接」相同的探测并落库 */
+export const probeMountsHealth = () =>
+  post<{ mounts: StorageMount[]; total: number; ok_count: number; failed_count: number }>(
+    `${E}/mounts/health`
+  )
+
+/** EA 体检：让 EM 向 EA 拉一次「以 EA 视角」的挂载体检并落库 */
+export const refreshEaMountHealth = () =>
+  post<{
+    success: boolean
+    health: { ok: boolean; error?: string; checked_at?: string | null; failed_count?: number }
+  }>('/emby/servers/mounts/refresh')
 
 export interface MountPayload {
   name?: string

@@ -358,6 +358,25 @@ export interface StorageMount {
   last_check_ok: boolean | null
   last_check_message: string | null
   library_ids: number[]
+  /** local / strm 的路径是否存在（远程类型为 null） */
+  path_exists: boolean | null
+  /** EM（面板进程）能不能用它：等于后台「测试连接」的结果 */
+  em_reachable: boolean | null
+  em_message: string
+  em_checked_at: string | null
+  /** EA（分离部署的播放节点）能不能用它；null 表示还没体检过 */
+  ea_reachable: boolean | null
+  ea_message: string
+}
+
+/** 当前真正出流的是谁：EA 分离部署 / 外部 Emby / 面板自己（一体化） */
+export type PlaybackNode = 'ea' | 'external' | 'panel'
+
+/** EA 视角挂载体检快照的汇总（逐条结果在 StorageMount 上） */
+export interface EaMountHealth {
+  ok: boolean
+  checked_at: string | null
+  error: string
 }
 
 export interface MountDirEntry {

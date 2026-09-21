@@ -2,6 +2,36 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.18] - 2026-09-21
+
+本次把「这条挂载在哪台机器上真的能用」变成面板上可查的事实，让分离部署的存储问题在
+**添加 EA 服务入口那一步**就暴露出来，而不是等到扫描 `failed_roots` 或播放 502。
+
+### 新增 (Added)
+- **EA 挂载体检端点 `GET /api/admin/mounts/health`**：在 EA 进程里对每条启用中的挂载
+  跑一遍与后台「测试连接」相同的探测（`resolve` + 路径/目录可读性），返回逐条结论、
+  统计、当前播放节点。鉴权走两端本来就共享的 `SECRET_KEY`（请求头 `X-Panel-Key`，
+  常量时间比较）；密钥缺失或错误一律 **401** —— 漏配 `SECRET_KEY` 也绝不会变成公开端点。
+- **EM 保存/启用 managed EA 时顺带体检**：`PUT /api/admin/emby/servers` 在连接探测通过后
+  向 EA 拉一次体检，结果写入 `SystemConfig`（`emby_managed_mounts_health`）；
+  `GET /api/admin/emby/servers` 会回一份摘要。新增 `POST /api/admin/emby/servers/mounts/refresh`
+  供随时重拉。拉取失败（EA 连不上 / 密钥不一致 / 地址指向别的服务）时**保留上一次逐条结果**，
+  只把快照标记为失效，避免一次网络抖动把面板上的结论全抹成未知。
+- **「存储挂载」页新增「EM / EA 可达」两列徽标**（可达 / 不可达 / 未体检），逐条给出原因
+  与最近体检时间；被媒体库引用、却在当前播放节点（EA）上不可达的挂载会单独报红，
+  并说明「本机 / 已挂载目录」「STRM 目录」的路径与 rclone 的 RC 地址都是那台机器上的资源。
+  只有当前出流节点是 EA 时才算阻断性告警（一体化与外部 Emby 模式不会误报）。
+- `GET /api/admin/emby/mounts` 现在同时返回 `playback_node`、`ea_health` 摘要，以及每条挂载的
+  `path_exists` / `em_reachable` / `ea_reachable`（含原因与时间）。
+- 新增 `POST /api/admin/emby/mounts/health`：**EM 视角**一键体检，逐条跑探测并把结果写回
+  挂载记录的「上次测试」字段（此前后台只能一条一条点「测试连接」）。
+- 新增 `scripts/smoke_test_mount_health.py` 并接入 CI：覆盖端点鉴权（无/错密钥 401）、
+  结论如实（目录可读→可达、目录不存在→不可达、停用→跳过不体检）、结果不泄露挂载密钥、
+  EM 上不存在该端点、面板体检落库、「被库引用却 EA 不可达」可被判出，以及**真起一个 EA 发 HTTP**
+  验证 EM 保存服务入口时会拉到 EA 视角的体检并落库。
+- `scripts/deploy_check.py` 的分离部署环节补了端到端断言：EA 端点鉴权、EM 保存 EA 时真的
+  以 EA 视角体检成功、挂载列表同时给出两个视角的可达性。
+
 ## [2.6.17] - 2026-09-21
 
 本次并入 `fix/security-auth-and-deploy` 的用户端会话修复，并修正其登录跳转目标。

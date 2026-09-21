@@ -1,4 +1,10 @@
-"""管理员配置：分离部署的 EA，或已有的外部 Emby。"""
+"""管理员配置：分离部署的 EA，或已有的外部 Emby。
+
+保存 / 启用 EA 时会顺带拉一次**EA 视角的挂载体检**并落库（见
+``backend/emby_server/mount_health``）：挂载里的本机路径、rclone RC 地址这类配置是
+主机相对的，「面板测试通过」不代表那台 EA 能播，必须在添加服务入口时就把它查出来。
+"""
+import logging
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -10,6 +16,9 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.api.admin import _audit, get_current_admin
 from backend.database import get_db
+from backend.emby_server import mount_health
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/emby", tags=["Emby 服务连接"])
 
@@ -46,6 +55,45 @@ def save_value(db: Session, key: str, new_value: str, description: str) -> None:
         db.add(models.SystemConfig(key=key, value=new_value, description=description))
 
 
+async def refresh_mount_health(db: Session, url: str) -> dict:
+    """拉一次 EA 视角的挂载体检并落库
+
+    失败时**保留上一次的逐条结果**（只标记快照失效），避免一次网络抖动就把面板上的
+    「EA 可达」全部抹成未知。
+    """
+    previous = mount_health.read_ea_health(db)
+    result = await mount_health.fetch_ea_health(url)
+
+    if result.get("ok"):
+        data = result.get("data") or {}
+        mount_health.write_ea_health(db, {
+            "ok": True,
+            "checked_at": data.get("checked_at"),
+            "error": "",
+            "playback_node": data.get("playback_node"),
+            "mounts": data.get("mounts") or [],
+        })
+        db.commit()
+        return {
+            "ok": True,
+            "checked_at": data.get("checked_at"),
+            "total": data.get("total"),
+            "failed_count": data.get("failed_count"),
+            "unreachable": data.get("unreachable") or [],
+        }
+
+    error = str(result.get("error") or "EA 体检失败")[:300]
+    mount_health.write_ea_health(db, {
+        "ok": False,
+        "checked_at": previous.get("checked_at"),
+        "error": error,
+        "playback_node": previous.get("playback_node"),
+        "mounts": previous.get("mounts") or [],
+    })
+    db.commit()
+    return {"ok": False, "error": error, "checked_at": previous.get("checked_at")}
+
+
 async def probe(mode: str, url: str, api_key: str = "") -> dict:
     """检查服务是否真的可用，而不是只检查端口是否能打开。"""
     target = _validate_url(url)
@@ -75,6 +123,8 @@ async def probe(mode: str, url: str, api_key: str = "") -> dict:
 
 @router.get("/servers")
 async def get_servers(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    health = mount_health.read_ea_health(db)
+    mounts = health.get("mounts") or []
     return {
         "managed_ea": {
             "url": value(db, "emby_managed_url"),
@@ -88,6 +138,15 @@ async def get_servers(_: models.WebUser = Depends(get_current_admin), db: Sessio
             "reachable": value(db, "emby_external_reachable", "").lower() == "true",
         },
         "active_mode": value(db, "emby_active_mode", "managed_ea"),
+        # EA 视角的挂载体检快照（汇总；逐条结果在「存储挂载」页）
+        "mounts_health": {
+            "ok": bool(health.get("ok")),
+            "checked_at": health.get("checked_at"),
+            "error": health.get("error") or "",
+            "total": len(mounts),
+            "failed_count": len([m for m in mounts if isinstance(m, dict) and m.get("ok") is False]),
+            "unreachable": health.get("unreachable") or [],
+        },
     }
 
 
@@ -113,9 +172,41 @@ async def save_server(
     if request.enabled and result.get("ok"):
         save_value(db, "emby_active_mode", request.mode, "当前 Emby 服务模式")
     db.commit()
-    _audit(db, admin, "save_emby_server_connection", "system", None, {"mode": request.mode, "ok": result.get("ok")})
+
+    # 挂载是主机相对的：EA 能连通不等于它能碰到面板里配的存储。
+    # 所以保存 EA 服务入口时顺带做一次 EA 视角的挂载体检，把结果落到面板上。
+    health: dict | None = None
+    if request.mode == "managed_ea" and result.get("ok"):
+        health = await refresh_mount_health(db, url)
+
+    _audit(db, admin, "save_emby_server_connection", "system", None,
+           {"mode": request.mode, "ok": result.get("ok"),
+            "mount_health_ok": None if health is None else health.get("ok")})
     db.commit()
-    return {"success": True, "mode": request.mode, "probe": result}
+    return {"success": True, "mode": request.mode, "probe": result, "mounts_health": health}
+
+
+@router.post("/servers/mounts/refresh")
+async def refresh_server_mounts(
+    admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """重新拉一次 EA 视角的挂载体检（「存储挂载」页的「EA 体检」按钮）
+
+    只对 managed EA 有意义：一体化（EM 自己出流）与外部 Emby 都不存在这台 EA。
+    """
+    url = value(db, "emby_managed_url")
+    if not url:
+        raise HTTPException(400, "还没有配置 EA 服务地址：请先在「Emby 服务入口」里保存一次")
+    mode = value(db, "emby_active_mode", "managed_ea")
+    if mode != "managed_ea":
+        # 不阻断：切回 EA 之前也想先把那台机器的存储情况看清楚
+        logger.info("当前模式是 %s，仍按 EA 地址体检挂载", mode)
+    health = await refresh_mount_health(db, url)
+    _audit(db, admin, "refresh_ea_mounts_health", "system", None,
+           {"ok": health.get("ok")})
+    db.commit()
+    return {"success": bool(health.get("ok")), "health": health}
 
 
 @router.post("/servers/test")
