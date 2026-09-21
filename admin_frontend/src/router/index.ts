@@ -52,11 +52,11 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
 
-  // 门户免登：管理员在用户端已登录时，进后台直接接管该会话，不再要求二次登录。
-  // 只在没有后台会话时探测一次（ssoFromPortal 内部做了幂等与失败短路）。
-  if (!auth.isAuthenticated) {
-    await auth.ssoFromPortal()
-  }
+  // 进入后台前先把会话敲定：本地票据也要向服务端核对一次（幂等，一次页面加载只做一次），
+  // 再决定放行还是去登录页。门户免登（管理员在用户端已登录时直接接管会话）也在这一步。
+  // 以前是「本地有 token 就放行」：过期/失效的票据会让页面先渲染一遍、再 401 重载，
+  // 表现就是「点进后台刷新两次」。
+  await auth.ensureSession()
 
   if (to.meta.requiresAuth !== false && !auth.isAuthenticated) {
     return { name: 'Login', query: { redirect: to.fullPath } }
