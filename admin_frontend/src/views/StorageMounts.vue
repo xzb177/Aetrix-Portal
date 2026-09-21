@@ -76,7 +76,6 @@ const currentType = computed<MountTypeMeta | undefined>(
 )
 /** 当前类型下需要渲染的配置项（115 的账号用下拉框，其它按文本输入） */
 const currentFields = computed(() => currentType.value?.fields ?? [])
-const isRemote = computed(() => currentType.value?.kind === 'remote')
 /** 保存过的挂载能不能浏览目录：类型元数据说了算（本机类型有路径也行） */
 const canBrowseSaved = (m: StorageMount) => !!typeMeta(m.mount_type)?.browse || !!m.path
 
