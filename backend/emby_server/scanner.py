@@ -7,9 +7,10 @@ import os
 import re
 import subprocess
 import threading
-from dataclasses import dataclass
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,6 +19,23 @@ from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 
 logger = logging.getLogger(__name__)
+
+# ==================== 资源预算（这个后端要能在小机器上跑完整库）（这个后端要能在 1C1G 的小机器上跑完整库）====================
+# 老实现每处理一个文件就：2~5 次数据库查询 + 1 次 ffprobe + 1~2 次目录列举 + 1 次 commit，
+# 而且清理阶段会把整库 MediaItem 一次性载入内存。大库（十万级）下既慢又吃内存。
+# 现在按「批次」处理：
+#   SCAN_BATCH  一批多少个文件（批量查库 / 批量提交 / 批后清空会话）
+#   SCAN_WORKERS 并行 IO 线程数（ffprobe、目录列举、TMDB 搜索都是“等网络/等磁盘”，不是吃 CPU）
+SCAN_BATCH = max(20, int(os.getenv("SCAN_BATCH", "400") or 400))
+SCAN_WORKERS = max(1, min(16, int(os.getenv("SCAN_WORKERS", "4") or 4)))
+# SQLite 的绑定变量上限是 999，IN 查询按这个分片（片内元素个数）
+SQL_IN_CHUNK = 200
+
+
+def _chunks(seq, size: int):
+    """把序列切成固定大小的块（避免一次性构造巨大的 IN 查询 / 巨大的列表）"""
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
 
 # `.strm` 不是视频文件，而是「内容为播放直链的文本文件」；是否把 strm 当媒体由调用方决定
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm"}
@@ -402,12 +420,54 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
     return info
 
 
+# 缓存未命中的哨兵：TMDB 的“没搜到”也是合法结果，必须与“没查过”区分开
+_MISS = object()
+
+# ==================== 本机目录列表缓存 ====================
+# 扫描一个目录下十几个文件时，旧实现每个文件都会 os.listdir 两次（找图 + 找字幕），
+# 大目录（整季集数）下这就是几千次多余的目录读。缓存在每次扫描开始时清空。
+_DIR_LIST_CACHE: dict = {}
+_DIR_LIST_MAX = 20000
+_DIR_LIST_LOCK = threading.Lock()
+
+
+def clear_dir_cache() -> None:
+    """开始一次扫描前调用：保证不拿上一次扫描的目录列表"""
+    with _DIR_LIST_LOCK:
+        _DIR_LIST_CACHE.clear()
+
+
+def _list_dir_cached(dir_path: str) -> list:
+    """本机目录列表（同一次扫描里同一目录只读一次；缓存有上限，不会无限长大）"""
+    with _DIR_LIST_LOCK:
+        hit = _DIR_LIST_CACHE.get(dir_path)
+    if hit is not None:
+        return hit
+    try:
+        entries = os.listdir(dir_path)
+    except OSError:
+        entries = []
+    with _DIR_LIST_LOCK:
+        if len(_DIR_LIST_CACHE) >= _DIR_LIST_MAX:
+            _DIR_LIST_CACHE.clear()
+        _DIR_LIST_CACHE[dir_path] = entries
+    return entries
+
+
 class TmdbClient:
     """轻量 TMDB 客户端（未配置 key 时静默跳过）
 
     支持多密钥轮询：`TMDB_API_KEYS=key1,key2,key3`（或 `TMDB_API_KEY` 单键）。
     单个密钥超出配额（429）或报 401 时自动轮到下一个，整库刮削不会因为一个 key 限额就停滞。
+
+    带短 TTL 缓存：扫库时引擎会先在后台线程把「搜索 + 详情」预热，写库线程随后
+    调用的同一请求直接命中缓存——既能并行，又不会重复消耗 TMDB 配额。
     """
+
+    _CACHE_TTL = 300        # 秒；一次扫描的预热结果在这个窗口内有效
+    _CACHE_MAX = 20000      # 缓存条数上限，超过就整表清空（内存优先）
+    _cache: dict = {}
+    _cache_lock = threading.Lock()
 
     def __init__(self) -> None:
         raw = os.getenv("TMDB_API_KEYS", "") or os.getenv("TMDB_API_KEY", "")
@@ -459,10 +519,31 @@ class TmdbClient:
     def configured(self) -> bool:
         return bool(self.api_keys)
 
+    def _cache_get(self, key):
+        """取缓存（未命中返回 _MISS；过期视为未命中）"""
+        with TmdbClient._cache_lock:
+            hit = TmdbClient._cache.get(key)
+        if hit is None:
+            return _MISS
+        ts, value = hit
+        if (datetime.now() - ts).total_seconds() > self._CACHE_TTL:
+            return _MISS
+        return value
+
+    def _cache_put(self, key, value) -> None:
+        with TmdbClient._cache_lock:
+            if len(TmdbClient._cache) >= self._CACHE_MAX:
+                TmdbClient._cache.clear()
+            TmdbClient._cache[key] = (datetime.now(), value)
+
     def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
         if not self.session:
             return None
         endpoint = "tv" if kind == "series" else "movie"
+        key = ("search", endpoint, name, year or 0)
+        cached = self._cache_get(key)
+        if cached is not _MISS:
+            return cached
         params: dict = {"language": TMDB_LANG, "query": name}
         if year:
             if endpoint == "tv":
@@ -471,19 +552,33 @@ class TmdbClient:
                 params["year"] = year
         data = self._get(f"/search/{endpoint}", params)
         results = (data or {}).get("results") or []
-        return results[0] if results else None
+        hit = results[0] if results else None
+        self._cache_put(key, hit)
+        return hit
 
     def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
         """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用"""
         endpoint = "tv" if kind == "series" else "movie"
-        return self._get(f"/{endpoint}/{tmdb_id}", {"language": TMDB_LANG,
+        key = ("details", endpoint, str(tmdb_id))
+        cached = self._cache_get(key)
+        if cached is not _MISS:
+            return cached
+        data = self._get(f"/{endpoint}/{tmdb_id}", {"language": TMDB_LANG,
                                                      "append_to_response": "alternative_titles,external_ids"})
+        self._cache_put(key, data)
+        return data
 
     def enrich(self, item: emby_models.MediaItem, kind: str) -> None:
         """补齐 imdb_id 与 aliases（中英文/繁简多别名搜索的基础）"""
         if not item.tmdb_id or (item.imdb_id and item.aliases):
             return
         data = self.details(str(item.tmdb_id), kind)
+        if not data:
+            return
+        self.apply_details(item, data)
+
+    def apply_details(self, item: emby_models.MediaItem, data: dict) -> None:
+        """把详情接口的返回落到条目上（与 enrich 同口径，供批量扫描预先取回后套用）"""
         if not data:
             return
         imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
@@ -510,6 +605,10 @@ class TmdbClient:
         if not item.tmdb_id:
             return False
         data = self.details(str(item.tmdb_id), kind)
+        return self.apply_images(item, data)
+
+    def apply_images(self, item: emby_models.MediaItem, data: dict) -> bool:
+        """把详情接口里的图片落到条目上（返回是否拿到图）"""
         if not data:
             return False
         poster = data.get("poster_path")
@@ -558,13 +657,13 @@ class TmdbClient:
 tmdb_client = TmdbClient()
 
 
-def find_local_images(dir_path: str, base_name: str) -> tuple[Optional[str], Optional[str]]:
-    """查找同目录的 poster/fanart 本地图片"""
+def find_local_images_in(entries, dir_path: str, base_name: str) -> tuple[Optional[str], Optional[str]]:
+    """在已经拿到的目录列表里查 poster/fanart
+
+    扫描时同一目录下的文件很多，目录只需列一次（老实现每个文件列两次），因此把
+    “取列表”和“在列表里找”拆开：找的部分是纯计算，可以复用同一份列表。
+    """
     poster = fanart = None
-    try:
-        entries = os.listdir(dir_path)
-    except OSError:
-        return None, None
     for f in entries:
         low = f.lower()
         stem, ext = os.path.splitext(low)
@@ -575,6 +674,11 @@ def find_local_images(dir_path: str, base_name: str) -> tuple[Optional[str], Opt
         if stem in {"fanart", "backdrop", "background"}:
             fanart = fanart or os.path.join(dir_path, f)
     return poster, fanart
+
+
+def find_local_images(dir_path: str, base_name: str) -> tuple[Optional[str], Optional[str]]:
+    """查找同目录的 poster/fanart 本地图片（目录列表走本次扫描的缓存）"""
+    return find_local_images_in(_list_dir_cached(dir_path), dir_path, base_name)
 
 
 # 语言标签 → Emby 三字码（客户端按这个选字幕轨）
@@ -702,17 +806,19 @@ def match_subtitle_names(base_name: str, names) -> list[str]:
     return found
 
 
-def find_external_subtitles(file_path: str) -> list[tuple[str, str]]:
-    """本机文件的外挂字幕：返回 [(lang, 绝对路径)]"""
+def find_external_subtitles_in(names, file_path: str) -> list[tuple[str, str]]:
+    """在已经拿到的目录列表里挑外挂字幕（同 find_local_images_in 的理由）"""
     d = os.path.dirname(file_path)
-    try:
-        names = os.listdir(d)
-    except OSError:
-        return []
     return [
         (subtitle_language(os.path.splitext(f)[0]), os.path.join(d, f))
         for f in match_subtitle_names(os.path.basename(file_path), names)
     ]
+
+
+def find_external_subtitles(file_path: str) -> list[tuple[str, str]]:
+    """本机文件的外挂字幕：返回 [(lang, 绝对路径)]（目录列表走本次扫描的缓存）"""
+    d = os.path.dirname(file_path)
+    return find_external_subtitles_in(_list_dir_cached(d), file_path)
 
 
 def find_external_subtitles_remote(base_name: str, entries, mount_id: int,
@@ -953,6 +1059,214 @@ def count_virtual_items(db: Session, library) -> int:
     )
 
 
+@dataclass
+class _Pending:
+    """一批里待处理的一个文件：解析结果 + 预取到的 IO 结果"""
+
+    scan_file: Any
+    guid: str
+    parsed: dict
+    item_type: str
+    series_guid: Optional[str] = None
+    season_guid: Optional[str] = None
+    item: Any = None
+    series: Any = None
+    season: Any = None
+    probe: Any = None   # Future[dict] | None
+    side: Any = None    # Future[(poster, fanart, subtitles)] | None
+    tmdb: Any = None    # Future[(hit, details)] | None
+
+
+@dataclass
+class _ScanContext:
+    """一次扫描里跨批次复用的状态（内存里只留 guid 集合与目录列表缓存）"""
+
+    snap: LibrarySnapshot
+    lib_id: int
+    stats: dict
+    seen_guids: set = field(default_factory=set)
+    dir_cache: dict = field(default_factory=dict)          # 本机目录列表
+    mount_dir_cache: dict = field(default_factory=dict)    # 远程挂载目录列表
+
+
+
+def _series_guid_of(scan_file: "ScanFile") -> str:
+    """剧集条目的 guid（由剧集目录推导，与旧实现完全一致）"""
+    dirpath = scan_file.local_dir
+    series_dir = os.path.dirname(dirpath.rstrip("/")) if dirpath else ""
+    return item_guid(series_dir or (os.path.dirname(scan_file.stored_path) or scan_file.stored_path))
+
+
+def _load_items(db: Session, guids: list) -> dict:
+    """按 guid 批量取条目（分片，避免超出数据库的绑定变量上限）
+
+    老实现每个文件查 1~3 次（条目、剧集、季），十万个文件就是几十万次往返；
+    现在一批只查（guids / 200）次。
+    """
+    found: dict = {}
+    unique = list(dict.fromkeys(g for g in guids if g))
+    for chunk in _chunks(unique, SQL_IN_CHUNK):
+        for row in db.query(emby_models.MediaItem).filter(emby_models.MediaItem.guid.in_(chunk)):
+            found[row.guid] = row
+    return found
+
+
+def _local_names(ctx: "_ScanContext", dirpath: str) -> list:
+    """本机目录列表（与写库线程共用同一份缓存，预热之后不会重复读目录）"""
+    return _list_dir_cached(dirpath)
+
+
+def _mount_names(ctx: "_ScanContext", scan_file: "ScanFile") -> list:
+    """远程挂载目录列表（同一个目录只请求一次；大目录下这一项能省掉九成网络往返）"""
+    key = (scan_file.mount_id, scan_file.dir_rel)
+    if key not in ctx.mount_dir_cache:
+        try:
+            entries = scan_file.provider.list_dir(scan_file.dir_rel)
+        except mount_lib.MountError as exc:
+            logger.warning("读取挂载目录失败，跳过外挂字幕：%s（%s）", scan_file.dir_rel, exc)
+            entries = []
+        except Exception as exc:  # noqa: BLE001 — 目录读不到不该中断扫描
+            logger.warning("读取挂载目录异常，跳过外挂字幕：%s（%s）", scan_file.dir_rel, exc)
+            entries = []
+        ctx.mount_dir_cache[key] = entries
+    return ctx.mount_dir_cache[key]
+
+
+def _side_info(ctx: "_ScanContext", scan_file: "ScanFile") -> tuple:
+    """本地图片与外挂字幕（IO 密集，放在线程池里跑）"""
+    if scan_file.local_dir:
+        names = _local_names(ctx, scan_file.local_dir)
+        poster, fanart = find_local_images_in(
+            names, scan_file.local_dir, os.path.splitext(scan_file.name)[0],
+        )
+        return poster, fanart, find_external_subtitles_in(names, scan_file.stored_path)
+    if scan_file.mount_id is not None:
+        entries = _mount_names(ctx, scan_file)
+        return None, None, find_external_subtitles_remote(
+            scan_file.name, entries, scan_file.mount_id, scan_file.dir_rel,
+        )
+    return None, None, []
+
+
+def _tmdb_work(need_search: bool, name: str, year, kind: str,
+               existing_id, need_details: bool) -> tuple:
+    """在**同一个工作线程**里跑完这个条目需要的 TMDB 调用（搜索 → 详情）
+
+    搜索与详情有先后依赖，所以不能拆到两个批次里；但条目之间可以并行——
+    老实现是逐条串行等网络，追新时最卡的就是这里。多个条目共用同一个 httpx 客户端，
+    它的连接池是线程安全的；密钥轮询只在配额报错时发生。
+    """
+    hit = tmdb_client.search(name, year, kind) if need_search else None
+    details = None
+    if hit:
+        details = tmdb_client.details(str(hit.get("id")), kind)
+    elif existing_id and need_details:
+        details = tmdb_client.details(str(existing_id), kind)
+    return hit, details
+
+
+def _result(handle, default=None):
+    """取出预取结果（None 表示没提交任务；任务异常不影响整次扫描）"""
+    if handle is None:
+        return default
+    if isinstance(handle, Future):
+        try:
+            return handle.result()
+        except Exception as exc:  # noqa: BLE001 — 单个文件的探测/刮削失败不该拖垮整库
+            logger.warning("扫描预取任务失败：%s", exc)
+            return default
+    return handle
+
+
+# 扫描用的进程级线程池：同一进程里可能连续扫多个媒体库（多来源、多库批量扫描），
+# 反复建池/销池反而更贵。池子只在第一次真正提交任务时才会创建线程，空闲时几乎不吃资源，
+# 进程退出时由解释器统一回收。
+_SCAN_POOL: Optional[ThreadPoolExecutor] = None
+_SCAN_POOL_LOCK = threading.Lock()
+
+
+def _scan_pool() -> ThreadPoolExecutor:
+    global _SCAN_POOL
+    with _SCAN_POOL_LOCK:
+        if _SCAN_POOL is None or getattr(_SCAN_POOL, "_shutdown", False):
+            _SCAN_POOL = ThreadPoolExecutor(max_workers=SCAN_WORKERS, thread_name_prefix="scan-io")
+        return _SCAN_POOL
+
+
+def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -> list:
+    """把一批文件变成「可直接写库」的任务：一次查库 + 并行预取"""
+    prepared: list = []
+    guids: list = []
+    for scan_file in batch:
+        guid = item_guid(scan_file.stored_path)
+        ctx.seen_guids.add(guid)
+        parsed = parse_media_filename(scan_file.stored_path, ctx.snap.collection_type)
+        item_type = (
+            "episode" if parsed["season"] is not None
+            else ("series" if ctx.snap.collection_type == "tvshows" else "movie")
+        )
+        pending = _Pending(scan_file=scan_file, guid=guid, parsed=parsed, item_type=item_type)
+        if item_type == "episode":
+            pending.series_guid = _series_guid_of(scan_file)
+            pending.season_guid = item_guid(f"{pending.series_guid}:S{parsed['season']:02d}")
+        prepared.append(pending)
+        guids.append(guid)
+
+    known = _load_items(db, guids)
+    policy = ctx.snap.scrape_policy
+    for pending in prepared:
+        item = known.get(pending.guid)
+        pending.item = item
+        scan_file = pending.scan_file
+        is_new = item is None
+        if is_new or needs_probe(item, scan_file.stored_path, scan_file.size):
+            pending.probe = pool.submit(probe_metadata, *scan_file.probe_input(), size=scan_file.size)
+        pending.side = pool.submit(_side_info, ctx, scan_file)
+        if pending.item_type in ("series", "movie"):
+            kind = "series" if pending.item_type == "series" else "movie"
+            needs_repair = bool(getattr(item, "repair_requested_at", None))
+            need_search = is_new or needs_repair or should_scrape(item, policy)
+            existing_id = getattr(item, "tmdb_id", None)
+            need_details = bool(existing_id) and bool(
+                needs_repair or not (item.imdb_id and item.aliases)
+            )
+            if need_search or need_details:
+                pending.tmdb = pool.submit(
+                    _tmdb_work, need_search, pending.parsed["name"], pending.parsed["year"],
+                    kind, existing_id, need_details,
+                )
+    return prepared
+
+
+def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
+    """按批次把文件流变成待写库的任务（顺序与调用方看到的一致）
+
+    - 每批 SCAN_BATCH 个文件只查一次库，不再“每个文件查一两次”；
+    - 探测 / 目录列举 / TMDB 在同一批内并行预热，写库线程随后取用不再等网络；
+    - 每批结束只提交一次：几百个文件一次 fsync，会话也不会随库变大而堆积对象。
+    """
+    pool = _scan_pool()  # 用进程级线程池（参数里的 pool 只作兼容，不再单独建池）
+    batch: list = []
+    real_commit = db.commit
+    db.commit = db.flush  # 只改本 Session 实例：主体里的“每文件一次提交”退化成 flush
+    try:
+        for scan_file in files:
+            batch.append(scan_file)
+            if len(batch) < SCAN_BATCH:
+                continue
+            yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool))
+            batch = []
+            real_commit()  # 一批一次提交：几百个文件才一次 fsync
+        if batch:
+            yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool))
+            real_commit()
+    finally:
+        # 正常结束、中途报错、生成器被提前关闭：都要恢复真实提交
+        db.commit = real_commit
+        # 线程池是进程级的（_scan_pool）：扫描结束不销毁，也不影响后面的扫描
+
+
+
 def scan_library_sync(db: Session, library: emby_models.Library,
                       snapshot: Optional[LibrarySnapshot] = None) -> dict:
     """扫描单个媒体库（同步实现，可在后台线程运行）
@@ -976,8 +1290,11 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     library.is_scanning = True
     db.commit()
 
-    seen_guids: set[str] = set()
+    clear_dir_cache()  # 新的一轮扫描不复用上一轮的目录列表
+    ctx = _ScanContext(snap=snap, lib_id=library.id, stats=stats)
+    seen_guids = ctx.seen_guids  # 清理阶段用它判断“文件还在不在”（与旧变量同名）
     failed_roots: list[str] = []
+    pool: Optional[ThreadPoolExecutor] = None
     try:
         if getattr(library, "is_virtual", False):
             # 虚拟媒体库没有自己的文件：只按发行平台回算计数
@@ -985,41 +1302,35 @@ def scan_library_sync(db: Session, library: emby_models.Library,
             db.commit()
             return stats
 
+        # 并行 IO 线程池：ffprobe / 目录列举 / TMDB 搜索都在这里跑，写库仍在当前线程按顺序进行
+        pool = ThreadPoolExecutor(max_workers=SCAN_WORKERS, thread_name_prefix="scan-io")
         for source_files in iter_scan_sources(snap, library, db, failed_roots):
-            for scan_file in source_files:
+            for scan_file, _pending in _iter_prepared(ctx, source_files, pool, db):
                     full_path = scan_file.stored_path
                     fname = scan_file.name
                     dirpath = scan_file.local_dir
-                    guid = item_guid(full_path)
-                    seen_guids.add(guid)
-                    parsed = parse_media_filename(full_path, snap.collection_type)
+                    guid = _pending.guid
+                    parsed = _pending.parsed
 
-                    item = db.query(emby_models.MediaItem).filter(
-                        emby_models.MediaItem.guid == guid
-                    ).first()
+                    # 条目（以及所属剧集/季）在批次开头已经一次查齐，这里直接用
+                    item = _pending.item
                     is_new = item is None
                     if is_new:
-                        item = emby_models.MediaItem(guid=guid, library_id=library.id)
+                        item = emby_models.MediaItem(guid=guid, library_id=ctx.lib_id)
                         db.add(item)
+                        _pending.item = item
                         stats["added"] += 1
                     else:
                         stats["updated"] += 1
 
                     # 文件信息已获取过就不再重复探测（ffprobe 是扫描里最贵的一步）；
                     # 远程挂载的探测输入是解析出来的直链（带鉴权头，只在本机使用）。
-                    probe = (
-                        probe_metadata(*scan_file.probe_input(), size=scan_file.size)
-                        if (is_new or needs_probe(item, full_path, scan_file.size))
-                        else None
-                    )
+                    # 探测已在批次开头并行发起，这里只是取回结果（通常已经跑完）。
+                    probe = _result(_pending.probe)
                     if probe is not None:
                         stats["probed"] += 1
 
-                    item_type = (
-                        "episode"
-                        if parsed["season"] is not None
-                        else ("series" if snap.collection_type == "tvshows" else "movie")
-                    )
+                    item_type = _pending.item_type  # 解析与查库在批次开头完成
                     item.item_type = item_type
                     item.name = parsed["name"]
                     item.original_title = parsed["name"]
@@ -1027,7 +1338,7 @@ def scan_library_sync(db: Session, library: emby_models.Library,
                     item.production_year = parsed["year"]
                     item.file_path = full_path
                     item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
-                    platforms = detect_platforms(full_path)
+                    platforms = detect_platforms(full_path)  # 发行平台标签（虚拟媒体库用）
                     if platforms:
                         item.platforms = ",".join(platforms)
                     if probe is not None:

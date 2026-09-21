@@ -25,7 +25,7 @@ const auth = useAuthStore()
 const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.6.24'
+const APP_VERSION = 'v2.6.25'
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)

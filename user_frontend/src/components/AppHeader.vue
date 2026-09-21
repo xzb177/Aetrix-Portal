@@ -252,7 +252,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
             <span class="points-num">{{ pointsBalance === null ? '—' : pointsBalance.toLocaleString() }}</span>
           </RouterLink>
 
-          <!-- 消息：未读时把入口撑成带数字的胶囊并轻微呼吸，点开先给预览 -->
+          <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
           <div ref="msgMenuRef" class="msg-menu">
             <button
               class="msg-btn"
@@ -260,10 +260,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
               :title="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
               @click="toggleMsgMenu"
             >
-              <span v-if="unreadCount > 0" class="msg-ping" aria-hidden="true"></span>
-              <Inbox :size="17" />
-              <span v-if="unreadCount > 0" class="msg-count">
-                {{ unreadCount > 99 ? '99+' : unreadCount }} 条未读
+              <Inbox :size="18" />
+              <span v-if="unreadCount > 0" class="msg-badge">
+                {{ unreadCount > 99 ? '99+' : unreadCount }}
               </span>
             </button>
 
@@ -507,52 +506,43 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .icon-btn:hover { color: var(--au-primary); background: var(--au-surface-2); }
 
 /* 消息铃铛 */
-/* 消息入口：未读时是一枚会呼吸的胶囊，读完回退成安静图标 */
+/* 消息入口：读完后是一个安静的音铃，有未读时才点一颗小数字 */
 .msg-menu { position: relative; }
 
 .msg-btn {
   position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
+  width: 38px;
   height: 38px;
-  padding: 0 0.625rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
-  border: 1px solid transparent;
+  border: none;
   border-radius: var(--au-r-md);
   color: var(--au-text-2);
-  font-size: 0.75rem;
-  font-weight: 700;
   cursor: pointer;
   transition: all var(--au-fast) var(--au-ease);
 }
 .msg-btn:hover { color: var(--au-text); background: var(--au-surface-2); }
 .msg-btn.open { color: var(--au-text); background: var(--au-surface-2); }
+.msg-btn.alert { color: var(--au-warning); }
 
-.msg-btn.alert {
-  color: var(--au-warning);
-  background: rgba(251, 191, 36, 0.12);
-  border-color: rgba(251, 191, 36, 0.34);
-}
-.msg-btn.alert:hover { border-color: var(--au-warning); background: rgba(251, 191, 36, 0.18); }
-
-.msg-count { letter-spacing: -0.01em; white-space: nowrap; }
-
-.msg-ping {
+.msg-badge {
   position: absolute;
-  top: 7px;
-  left: 9px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--au-warning);
-  animation: msg-ping 2.6s ease-out infinite;
-}
-
-@keyframes msg-ping {
-  0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.45); }
-  70% { box-shadow: 0 0 0 7px rgba(251, 191, 36, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+  color: #1a1205;
+  font-size: 0.625rem;
+  font-weight: 800;
+  border-radius: var(--au-r-full);
+  box-shadow: 0 0 0 2px rgba(7, 11, 18, 0.9);
 }
 
 .msg-dropdown {
@@ -849,9 +839,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   .mobile-toggle { display: flex; }
   .mobile-menu { display: flex; flex-direction: column; }
   .user-name { display: none; }
-  /* 小屏收起文字，只留呼吸的点与图标 */
-  .msg-count { display: none; }
-  .msg-btn.alert { padding: 0 0.5rem; }
   .msg-dropdown { width: min(292px, calc(100vw - 2rem)); }
 }
 </style>

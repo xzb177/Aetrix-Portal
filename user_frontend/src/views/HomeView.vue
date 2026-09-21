@@ -2,24 +2,30 @@
 /**
  * 首页 — 内容优先的个人门户
  *
- * 布局：**站内消息条（置顶）** → Hero 双栏（左：问候与主行动；右：会员状态卡）
- * → 账号速览条 → 「我的内容」（继续观看 / 最近入库）→ 「站点与账号」（连接播放器）
+ * 布局：Hero 双栏（左：问候与主行动；右：会员状态卡）→ 账号速览条
+ * → 「我的内容」（继续观看 / 最近入库）→ 「站点与账号」（连接播放器）
  * 功能入口交给顶部导航 / 底部导航坞，首页只展示「内容」与「状态」。
  *
- * v2.6.22：站内消息**置顶常驻**——它是页面上第一个可点的东西。
- * 先前它排在「最近入库」下面，内容一多就被顶出屏幕；后来挪到速览条之后仍然要往下看，
- * 所以现在直接放到 Hero 之上：未读时整条高亮 + 数字徽标，没有新消息时也是一条安静的入口。
+ * v2.6.26：站内消息既不置顶、也不挤进账号速览条（挤进去会把「数据条」变成混合体，
+ * 而且仍在首屏最显眼处）。改为：
+ *   - 账号速览条只留「账号与经济」四格（会员 / 积分 / 签到 / 邀请），语义干净；
+ *   - 消息中心做成「站点与账号」区的第一张卡：一行标题 + 最多两条最新内容（未读优先，
+ *     没未读时显示最新公告）+ 未读胶囊，永远在页面上，但不抢会员 CTA 的视觉；
+ *   - 随时随地可进的地方是顶栏那个带角标的音铃（点开先看预览）。
  */
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { messageApi, announcementApi, subscriptionApi, type Announcement, type MySubscription } from '@/api'
+import {
+  messageApi, announcementApi, subscriptionApi,
+  type Announcement, type MySubscription, type StationMessage,
+} from '@/api'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  ChevronRight, Crown, Inbox,
+  ChevronRight, Crown, Inbox, Megaphone,
   Wallet, CalendarCheck, Gift, Sparkles, Tv,
 } from 'lucide-vue-next'
 
@@ -28,7 +34,34 @@ const toast = useToast()
 
 const loading = ref(true)
 const notices = ref<Announcement[]>([])
+const recentMessages = ref<StationMessage[]>([])
 const unreadCount = ref(0)
+
+// 消息卡里的时间：只给相对时间，避免首页出现一串精确到秒的时间戳
+function relTime(iso?: string): string {
+  if (!iso) return ''
+  const at = new Date(iso).getTime()
+  if (!at) return ''
+  const diff = Date.now() - at
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+  return iso.slice(0, 10)
+}
+
+// 消息卡的两行：未读优先，名额不满时补一条最新公告（没有未读时就是纯公告）
+const inboxItems = computed(() => {
+  const rows: { key: string; title: string; time: string; icon: unknown; unread: boolean }[] = []
+  for (const m of recentMessages.value.filter((x) => !x.is_read).slice(0, 2)) {
+    rows.push({ key: `m${m.id}`, title: m.title, time: relTime(m.created_at), icon: Inbox, unread: true })
+  }
+  if (rows.length < 2 && notices.value.length) {
+    const a = notices.value[0]
+    rows.push({ key: `a${a.id}`, title: a.title, time: relTime(a.created_at), icon: Megaphone, unread: false })
+  }
+  return rows.slice(0, 2)
+})
 const resumeItems = ref<EmbyItem[]>([])
 const latestItems = ref<EmbyItem[]>([])
 const subscriptions = ref<MySubscription[]>([])
@@ -81,6 +114,7 @@ const accountCells = computed(() => [
     value: activeSub.value ? activeSub.value.plan_name : '未开通',
     sub: activeSub.value ? `${activeSub.value.end_date?.slice(0, 10)} 到期` : '开通后可播放全库',
     hot: !activeSub.value,
+    alert: false,
   },
   {
     to: '/wallet',
@@ -89,6 +123,7 @@ const accountCells = computed(() => [
     value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
     sub: '签到 · 兑换 · 充值',
     hot: false,
+    alert: false,
   },
   {
     to: '/checkin',
@@ -97,6 +132,7 @@ const accountCells = computed(() => [
     value: quickStats.value.streak !== null ? `${quickStats.value.streak} 天` : '—',
     sub: quickStats.value.checkedToday ? '今日已签' : '今日未签',
     hot: quickStats.value.streak !== null && !quickStats.value.checkedToday,
+    alert: false,
   },
   {
     to: '/invite',
@@ -105,6 +141,7 @@ const accountCells = computed(() => [
     value: quickStats.value.invited !== null ? String(quickStats.value.invited) : '—',
     sub: '位好友已加入',
     hot: false,
+    alert: false,
   },
 ])
 
@@ -122,6 +159,9 @@ onMounted(async () => {
     ])
     unreadCount.value = (unread as any)?.unread_count ?? 0
     notices.value = Array.isArray(anns) ? anns : []
+    recentMessages.value = await messageApi
+      .getMessages({ limit: 3 })
+      .catch((): StationMessage[] => [])
     resumeItems.value = resume
     latestItems.value = latest
     if (pointsRes) quickStats.value.balance = pointsRes.balance
@@ -148,24 +188,7 @@ onMounted(async () => {
       <div class="hero-glow" aria-hidden="true"></div>
       <div class="container hero-grid">
         <div class="hero-inner">
-          <!-- 站内消息：不占通栏，也不藏到页尾——就挂在问候语旁边，未读时自己亮 -->
-          <div class="hero-top">
-            <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
-            <RouterLink
-              to="/messages"
-              class="msg-chip"
-              :class="{ alert: unreadCount > 0, loading }"
-            >
-              <span class="msg-chip-ping" aria-hidden="true"></span>
-              <Inbox :size="13" />
-              <span class="msg-chip-text">
-                <template v-if="unreadCount > 0">你有 {{ unreadCount }} 条未读消息</template>
-                <template v-else-if="notices.length">公告 · {{ notices[0].title }}</template>
-                <template v-else>站内消息</template>
-              </span>
-              <ChevronRight :size="12" class="msg-chip-go" />
-            </RouterLink>
-          </div>
+          <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
           <div class="hero-title-row">
             <h1 class="hero-title">{{ user?.username || '观影用户' }}</h1>
             <span v-if="isMember" class="hero-vip">
@@ -228,17 +251,19 @@ onMounted(async () => {
     </section>
 
     <main class="container main">
-      <!-- 账号速览条：订阅 / 积分 / 签到 / 邀请（数据展示，非按钮堆） -->
+      <!-- 账号速览条：会员 / 积分 / 签到 / 邀请（纯账号与经济数据；消息不在其中，见下方消息卡） -->
       <section class="acct-strip au-card au-anim-up" :class="{ loading }">
         <RouterLink
           v-for="c in accountCells"
           :key="c.to"
           :to="c.to"
           class="acct-cell"
+          :class="{ alert: c.alert }"
         >
           <span class="cell-label">
             <component :is="c.icon" :size="13" />
             {{ c.label }}
+            <span v-if="c.alert" class="cell-dot" aria-hidden="true"></span>
           </span>
           <span class="cell-value">{{ c.value }}</span>
           <span class="cell-sub" :class="{ hot: c.hot }">{{ c.sub }}</span>
@@ -264,6 +289,30 @@ onMounted(async () => {
         <span class="section-title">站点与账号</span>
         <RouterLink to="/profile" class="section-more">个人中心 <ChevronRight :size="12" /></RouterLink>
       </div>
+
+      <!-- 消息中心：不占首屏头条，但总是在“站点与账号”区的第一眼看得到；随时可进的是顶栏音铃 -->
+      <RouterLink to="/messages" class="inbox-card au-card" :class="{ alert: unreadCount > 0 }">
+        <span class="inbox-ic">
+          <Inbox :size="17" />
+          <span v-if="unreadCount > 0" class="inbox-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+        </span>
+        <span class="inbox-main">
+          <span class="inbox-head">
+            <strong>消息中心</strong>
+            <em v-if="unreadCount > 0" class="inbox-state unread">{{ unreadCount }} 条未读</em>
+            <em v-else class="inbox-state">已全部读完</em>
+          </span>
+          <span v-if="inboxItems.length" class="inbox-list">
+            <span v-for="row in inboxItems" :key="row.key" class="inbox-item">
+              <component :is="row.icon" :size="12" class="inbox-item-ic" :class="{ hot: row.unread }" />
+              <span class="inbox-item-title">{{ row.title }}</span>
+              <span class="inbox-item-time">{{ row.time }}</span>
+            </span>
+          </span>
+          <span v-else class="inbox-empty">工单回复、求片进度与会员提醒都会出现在这里</span>
+        </span>
+        <ChevronRight :size="16" class="inbox-arrow" />
+      </RouterLink>
 
       <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
       <RouterLink to="/profile" class="connect-row au-card">
@@ -538,10 +587,17 @@ onMounted(async () => {
 
 /* ==================== 账号速览条 ==================== */
 
+/*
+ * 数据条：固定四格（会员 / 积分 / 签到 / 邀请），分隔线用「容器底色 + 1px gap + 格子自身底色」，
+ * 格子增减或列数变化都不会错位。
+ */
 .acct-strip {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--au-border);
   margin-bottom: 2rem;
+  overflow: hidden;
   transition: opacity var(--au-fast) var(--au-ease);
 }
 
@@ -554,19 +610,24 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 0.1875rem;
-  padding: 1rem 1.25rem;
+  padding: 1rem 1.125rem;
   min-width: 0;
+  background: var(--au-surface);
   text-decoration: none;
-  border-right: 1px solid var(--au-border);
   transition: background var(--au-fast) var(--au-ease);
-}
-
-.acct-cell:nth-child(4n) {
-  border-right: none;
 }
 
 .acct-cell:hover {
   background: var(--au-surface-2);
+}
+
+/* 有未读：只用左侧一道细亮线与一个呼吸点提示，不做整格高亮（不与会员 CTA 抢视觉） */
+.acct-cell.alert {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.07), transparent 70%);
+}
+
+.acct-cell.alert .cell-value {
+  color: var(--au-warning);
 }
 
 .cell-label {
@@ -575,6 +636,21 @@ onMounted(async () => {
   gap: 0.3125rem;
   font-size: 0.6875rem;
   color: var(--au-text-4);
+}
+
+.cell-dot {
+  width: 5px;
+  height: 5px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--au-warning);
+  animation: cell-dot 2.6s ease-out infinite;
+}
+
+@keyframes cell-dot {
+  0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.5); }
+  70% { box-shadow: 0 0 0 5px rgba(251, 191, 36, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
 }
 
 .cell-label svg {
@@ -616,88 +692,162 @@ onMounted(async () => {
   margin-bottom: 2.25rem;
 }
 
-/* ==================== 站内消息：问候语旁的胶囊（不占通栏）==================== */
-
-.hero-top {
+/* ==================== 消息中心卡 ==================== */
+/*
+ * 一行标题 + 最多两条内容：信息密度和「连接播放器」卡一致，所以放同一区看起来是一套。
+ * 不做整卡高亮，只在有未读时给左侧一道细亮线与暖色值标签——注意力归会员 CTA。
+ */
+.inbox-card {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.4375rem;
+  padding: 0.875rem 1.125rem;
+  margin-bottom: 0.75rem;
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
 }
 
-.hero-top .hero-eyebrow {
-  margin: 0;
+.inbox-card:hover {
+  border-color: var(--au-primary-border);
+  transform: translateY(-1px);
 }
 
-.msg-chip {
+.inbox-card.alert::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12%;
+  bottom: 12%;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--au-warning);
+}
+
+.inbox-ic {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: 10px;
+  color: var(--au-primary);
+}
+
+.inbox-card.alert .inbox-ic {
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.32);
+  color: var(--au-warning);
+}
+
+.inbox-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
-  max-width: 100%;
-  padding: 0.3125rem 0.6875rem;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
-  color: var(--au-text-2);
-  font-size: 0.75rem;
+  justify-content: center;
+  background: var(--au-warning);
+  color: #1a1206;
+  font-size: 0.625rem;
+  font-weight: 800;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.inbox-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.inbox-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.inbox-head strong {
+  font-size: 0.875rem;
   font-weight: 600;
-  text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease),
-    color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
-}
-
-.msg-chip.loading {
-  opacity: 0.5;
-}
-
-.msg-chip:hover {
   color: var(--au-text);
-  border-color: var(--au-border-strong);
 }
 
-.msg-chip.alert {
+.inbox-state {
+  font-style: normal;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+}
+
+.inbox-state.unread {
   color: var(--au-warning);
-  border-color: rgba(251, 191, 36, 0.34);
-  background: rgba(251, 191, 36, 0.1);
+  font-weight: 700;
 }
 
-.msg-chip.alert:hover {
-  border-color: var(--au-warning);
-  background: rgba(251, 191, 36, 0.16);
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  min-width: 0;
 }
 
-.msg-chip-text {
+.inbox-item {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+}
+
+.inbox-item-ic {
+  flex-shrink: 0;
+  color: var(--au-text-4);
+}
+
+.inbox-item-ic.hot {
+  color: var(--au-warning);
+}
+
+.inbox-item-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--au-text-2);
 }
 
-.msg-chip-ping {
-  width: 6px;
-  height: 6px;
+.inbox-item-time {
   flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--au-border-strong);
-  transition: background var(--au-fast) var(--au-ease);
+  margin-left: auto;
+  color: var(--au-text-4);
+  font-variant-numeric: tabular-nums;
 }
 
-.msg-chip.alert .msg-chip-ping {
-  background: var(--au-warning);
-  animation: chip-ping 2.6s ease-out infinite;
+.inbox-empty {
+  font-size: 0.75rem;
+  color: var(--au-text-4);
 }
 
-.msg-chip-go {
+.inbox-arrow {
   flex-shrink: 0;
-  opacity: 0.65;
+  color: var(--au-text-4);
+  transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
 }
 
-@keyframes chip-ping {
-  0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.45); }
-  70% { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+.inbox-card:hover .inbox-arrow {
+  color: var(--au-primary);
+  transform: translateX(2px);
 }
 
 /* ==================== 播放器入口（单行，详情在个人中心） ==================== */
@@ -781,33 +931,13 @@ onMounted(async () => {
 }
 
 @media (max-width: 760px) {
+  /* 2 列：分隔线由 gap 自动产生，不需要按格数算 nth-child */
   .acct-strip {
     grid-template-columns: repeat(2, 1fr);
-  }
-
-  .acct-cell:nth-child(4n) {
-    border-right: 1px solid var(--au-border);
-  }
-
-  .acct-cell:nth-child(2n) {
-    border-right: none;
-  }
-
-  .acct-cell:nth-child(-n+2) {
-    border-bottom: 1px solid var(--au-border);
   }
 }
 
 @media (max-width: 640px) {
-  /* 窄屏：胶囊只留「几条未读」，标题不再往右挤 */
-  .hero-top .hero-eyebrow {
-    width: 100%;
-  }
-
-  .msg-chip-text {
-    max-width: 15ch;
-  }
-
   .hero {
     padding: 1.75rem 0 1.5rem;
   }

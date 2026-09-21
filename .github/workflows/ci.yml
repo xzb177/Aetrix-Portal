@@ -134,6 +134,10 @@ jobs:
       - name: 升级路径冒烟（老库补列 / 迁移幂等 / 后台首页不再 500）
         run: python scripts/smoke_test_schema_migration.py
 
+      # 扫描器是自建后端的资源大户：这条只守“资源行为”（批量查库 / 批量落盘 / 并行 IO / 目录与 TMDB 缓存）
+      - name: 扫描资源预算冒烟（批次化 / 并行探测与刮削 / 目录只列一次）
+        run: python scripts/smoke_test_scan_budget.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
