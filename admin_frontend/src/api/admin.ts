@@ -25,6 +25,12 @@ import type {
   ServerSummary,
   LoginResponse,
   MediaSeekRow,
+  RealmNodeSync,
+  RealmOverview,
+  RealmRow,
+  RealmSubscriptionsResponse,
+  RealmSummary,
+  RealmsResponse,
   OverviewStats,
   PlaybackStats,
   RegistrationCode,
@@ -64,9 +70,17 @@ export interface PlanRow {
   price: number
   duration_days: number
   is_popular: boolean
+  /** 套餐属于哪个服（一个服一个）：授予订阅时按它开会员 */
+  realm_id?: number | null
+  realm_name?: string
 }
 
-export const fetchPlans = () => get<{ plans: PlanRow[] }>('/plans')
+/** 套餐清单；`realm_id=0` = 全部服，不传 = 当前服 */
+export const fetchPlans = (realm_id?: number) =>
+  get<{ plans: PlanRow[]; realm_id: number | null; active_realm_id: number }>(
+    '/plans',
+    realm_id === undefined ? undefined : { realm_id }
+  )
 
 export const grantSubscription = (userId: number, data: { plan_id: number; duration_days: number }) =>
   post<{ success: boolean }>(`/users/${userId}/subscriptions`, data)
@@ -217,12 +231,69 @@ export const pushMediaSeek = (id: number, data: { target?: string; link?: string
     data
   )
 
+// ==================== 多服运营（/api/admin/realms） ====================
+
+const R = '/realms'
+
+/** 服清单（含每服的运营数据）+ 当前服 + 跨服汇总 */
+export const fetchRealms = () => get<RealmsResponse>(R)
+
+/** 只取各服的运营数据：给「数据概览」的服卡片用 */
+export const fetchRealmOverview = () => get<RealmOverview>(`${R}/overview`)
+
+export interface RealmPayload {
+  name: string
+  slug?: string
+  url?: string
+  description?: string
+  is_active?: boolean
+}
+
+export const createRealm = (data: RealmPayload) =>
+  post<{ success: boolean; realm: RealmRow; summary: RealmSummary }>(R, data)
+
+export const updateRealm = (
+  id: number,
+  data: { name?: string; url?: string; description?: string; is_active?: boolean; sort_order?: number }
+) => put<{ success: boolean; realm: RealmRow; summary: RealmSummary }>(`${R}/${id}`, data)
+
+/** 切换面板当前操作的服：后台各页的作用域跟着切（服务端落库，多管理员一致） */
+export const activateRealm = (id: number) =>
+  post<{ success: boolean; active_realm_id: number; realm: RealmRow; summary: RealmSummary }>(
+    `${R}/${id}/activate`
+  )
+
+/** 重新体检该服的所有播放节点（顺便带回节点自称的服与负责的库） */
+export const syncRealmNodes = (id: number) =>
+  post<{ success: boolean; nodes: RealmNodeSync[]; realm: RealmRow }>(`${R}/${id}/sync`)
+
+/** 删除服；服里还有数据时必须传 move_to 指定数据移交给谁 */
+export const deleteRealm = (id: number, moveTo?: number | null) =>
+  del<{ success: boolean; deleted: number; moved_to: number | null; summary: RealmSummary }>(
+    `${R}/${id}`,
+    moveTo ? { move_to: moveTo } : undefined
+  )
+
+/** 某个服的订阅清单（`realmId=0` = 全部服）—— 订阅一个服一个，默认只看当前服 */
+export const fetchRealmSubscriptions = (
+  realmId: number,
+  params: { status_filter?: string; search?: string; limit?: number; offset?: number } = {}
+) =>
+  get<RealmSubscriptionsResponse>(`${R}/${realmId}/subscriptions`, params)
+
 // ==================== 服务器管理 ====================
 
 const S = '/servers'
 
 export const fetchServers = () =>
-  get<{ servers: RemoteServerRow[]; kinds: ServerKindMeta[]; summary: ServerSummary }>(S)
+  get<{
+    servers: RemoteServerRow[]
+    kinds: ServerKindMeta[]
+    summary: ServerSummary
+    realm_id: number | null
+    active_realm_id: number
+    realms: { id: number; name: string; slug: string }[]
+  }>(S)
 
 export const fetchServersSummary = () => get<ServerSummary>(`${S}/summary`)
 
@@ -233,6 +304,8 @@ export interface ServerPayload {
   config?: Record<string, string>
   is_enabled?: boolean
   remark?: string
+  /** 属于哪个服（留空 = 新增时归当前服，修改时不改归属） */
+  realm_id?: number | null
 }
 
 export const createServer = (data: ServerPayload) =>
@@ -329,7 +402,11 @@ export const createLibrary = (data: {
   mount_ids?: number[]
   /** 刮削策略：missing_only（仅缺失时）/ 3m / 6m / 1y / all（全部重刮） */
   scrape_policy?: string
-}) => post<{ success: boolean }>(`${E}/libraries`, data)
+  /** 归属服（留空 = 面板当前服）：内容隔离的边界 */
+  realm_id?: number
+  /** 归属播放节点（留空 = 未分配：所有节点可见、由面板扫描） */
+  node_id?: number
+}) => post<{ success: boolean; id: number; guid: string }>(`${E}/libraries`, data)
 
 export const updateLibrary = (
   id: number,
@@ -343,6 +420,10 @@ export const updateLibrary = (
     scrape_policy?: string
     /** 115 账号配置档：传 null 表示解绑（回退默认账号），省略则不修改 */
     account_115_id?: number | null
+    /** 归属服：传 null 表示不标注（所有服可见），省略则不修改 */
+    realm_id?: number | null
+    /** 归属播放节点：传 null 表示不分配（所有节点可见），省略则不修改 */
+    node_id?: number | null
   }
 ) => put<{ success: boolean; rescan_required?: boolean }>(`${E}/libraries/${id}`, data)
 

@@ -197,6 +197,20 @@ export const authApi = {
 
 // ==================== 自建 Emby 门户 API（backend/emby_server/portal.py） ====================
 
+/** 一个「服」的连接信息与会员状态（多服运营：同一个面板下可以有几个独立的服） */
+export interface AccountRealmCard {
+  id: number
+  name: string
+  slug: string
+  base_url: string
+  mode: string
+  external: boolean
+  subscribed: boolean
+  end_date: string | null
+  plan_name: string
+  is_default: boolean
+}
+
 export interface AccountCard {
   server_id: string
   server_name: string
@@ -205,6 +219,11 @@ export interface AccountCard {
   emby_password: null
   has_password: boolean
   import_schemes: Record<string, string>
+  /** 当前卡片对应的服（顶层字段是它的口径，兼容老前端） */
+  realm_id?: number | null
+  realm_name?: string
+  /** 我在这几个服各自的地址与会员（多服时客户端该连哪台一目了然） */
+  realms?: AccountRealmCard[]
 }
 
 export interface WatchStats {
@@ -422,6 +441,9 @@ export const mediaSeekApi = {
 export interface MySubscription {
   id: number
   plan_name: string
+  /** 会员属于哪个服（一个服一个，多服会员分开看） */
+  realm_id?: number | null
+  realm_name?: string
   start_date: string
   end_date: string
   status: string

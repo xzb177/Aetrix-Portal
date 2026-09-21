@@ -49,6 +49,9 @@ export interface SubscriptionPlan {
   duration_days: number
   features: string[] | null
   is_popular: boolean
+  /** 套餐属于哪个服（一个服一个）：买哪份就开哪个服的会员 */
+  realm_id?: number | null
+  realm_name?: string
 }
 
 export interface PaymentMethod {

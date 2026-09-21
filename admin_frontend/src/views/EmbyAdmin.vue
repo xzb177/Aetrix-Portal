@@ -6,8 +6,11 @@
  * v2.6.11：会话表改用 DataTable（手机卡片）；媒体库卡片的「挂载 / 刮削策略 / 115 账号」
  * 在窄屏改为「标签在上、控件在下」，不再把中文标签挤成竖排两行；页面里的硬编码灰度
  * 全部换成主题令牌。
+ *
+ * v2.6.20：多服 / 多机部署——每个库都能指定「归属服」与「归属播放节点」（未指定 = 所有服、
+ * 所有节点可见，由面板扫描）；已分配的库只有那台 EA 向客户端展示、也只有它会扫描。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, FolderPlus, RefreshCw, ScanSearch, Square, Wand2 } from 'lucide-vue-next'
 import {
@@ -17,6 +20,7 @@ import {
   fetchMounts,
   fetchPan115Accounts,
   fetchRepairQueue,
+  fetchServers,
   fetchSessions,
   generateVirtualLibraries,
   runRepairQueue,
@@ -25,17 +29,29 @@ import {
   stopSession,
   updateLibrary,
 } from '@/api/admin'
-import type { EmbyLibrary, EmbySessionRow, Pan115Account, StorageMount } from '@/types'
+import type { EmbyLibrary, EmbySessionRow, Pan115Account, RemoteServerRow, StorageMount } from '@/types'
+import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
+const realm = useRealmStore()
 const libraries = ref<EmbyLibrary[]>([])
 const sessions = ref<EmbySessionRow[]>([])
 const panAccounts = ref<Pan115Account[]>([])
 const mounts = ref<StorageMount[]>([])
+/** 可分配的播放节点（面板里 kind=ea 的服务器）：一个服可以有多台 */
+const nodes = ref<RemoteServerRow[]>([])
 const loading = ref(false)
 const repairCount = ref(0)
 const virtualLoading = ref(false)
+
+/** 归属服选项：默认服 + 已建的其他服 */
+const realmOptions = computed(() => realm.realms)
+
+function nodeLabel(n: RemoteServerRow): string {
+  const state = n.last_check_ok === true ? '在线' : n.last_check_ok === false ? '未通过' : '未体检'
+  return `${n.name}（${state}）`
+}
 
 const sessionColumns: DataColumn[] = [
   { key: 'username', label: '用户', width: 130, mobile: 'title' },
@@ -54,6 +70,9 @@ const form = ref({
   paths: '',
   mount_ids: [] as number[],
   scrape_policy: 'missing_only',
+  // 多服 / 多机：留空 = 当前服 / 未分配节点
+  realm_id: null as number | null,
+  node_id: null as number | null,
 })
 
 /** 刮削策略：只补缺 / 到期重刮 / 每次全量 */
@@ -68,12 +87,15 @@ const POLICIES = [
 async function load() {
   loading.value = true
   try {
-    const [l, s, r, a, m] = await Promise.all([
+    // 归属服下拉要用服的清单（Layout 已加载过就不重复请求）
+    if (!realm.loaded) realm.load().catch(() => undefined)
+    const [l, s, r, a, m, srv] = await Promise.all([
       fetchLibraries(),
       fetchSessions(),
       fetchRepairQueue().catch(() => ({ total: 0, items: [] })),
       fetchPan115Accounts().catch(() => ({ accounts: [], env_cookie_configured: false })),
       fetchMounts().catch(() => ({ mounts: [], mount_types: [] })),
+      fetchServers().catch(() => null),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -81,6 +103,7 @@ async function load() {
     repairCount.value = r.total
     panAccounts.value = a.accounts
     mounts.value = m.mounts
+    nodes.value = (srv?.servers || []).filter((x) => x.kind === 'ea')
   } finally {
     loading.value = false
   }
@@ -109,6 +132,23 @@ function mountNames(ids: number[]): string {
 async function saveMounts(l: EmbyLibrary) {
   await updateLibrary(l.id, { mount_ids: l.mount_ids ?? [] })
   ElMessage.success(`「${l.name}」挂载绑定已更新（重新扫描后生效）`)
+}
+
+/** 归属节点：决定了「谁向客户端展示这个库、谁来扫描它」 */
+async function saveNode(l: EmbyLibrary) {
+  await updateLibrary(l.id, { node_id: l.node_id ?? null })
+  const node = nodes.value.find((n) => n.id === l.node_id)
+  ElMessage.success(node
+    ? `「${l.name}」改由「${node.name}」负责（那台机器看不到这个库的条目时检查它的存储）`
+    : `「${l.name}」已改为未分配：所有节点可见、由面板扫描`)
+  load()
+}
+
+/** 归属服：内容隔离的边界，跨服移动等于把内容交给另一个服 */
+async function saveRealm(l: EmbyLibrary) {
+  await updateLibrary(l.id, { realm_id: l.realm_id ?? null })
+  ElMessage.success(`「${l.name}」归属服已更新`)
+  load()
 }
 
 async function generateVirtual() {
@@ -143,11 +183,14 @@ async function submitCreate() {
     paths,
     mount_ids: form.value.mount_ids,
     scrape_policy: form.value.scrape_policy,
+    realm_id: form.value.realm_id ?? undefined,
+    node_id: form.value.node_id ?? undefined,
   })
   ElMessage.success('媒体库已创建')
   createVisible.value = false
   form.value = {
     name: '', collection_type: 'movies', paths: '', mount_ids: [], scrape_policy: 'missing_only',
+    realm_id: null, node_id: null,
   }
   load()
 }
@@ -243,6 +286,32 @@ function typeLabel(t: string): string {
           <template v-else>
             {{ [...l.paths, mountNames(l.mount_ids)].filter(Boolean).join(' | ') || '未配置来源' }}
           </template>
+        </div>
+
+        <div class="lib-policy">
+          <span class="policy-label">归属服</span>
+          <el-select
+            v-model="l.realm_id"
+            size="small"
+            clearable
+            placeholder="未标注（所有服可见）"
+            @change="saveRealm(l)"
+          >
+            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+        </div>
+
+        <div v-if="!l.is_virtual" class="lib-policy">
+          <span class="policy-label">归属节点</span>
+          <el-select
+            v-model="l.node_id"
+            size="small"
+            clearable
+            placeholder="未分配（所有节点可见）"
+            @change="saveNode(l)"
+          >
+            <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
+          </el-select>
         </div>
 
         <div v-if="!l.is_virtual" class="lib-policy">
@@ -371,6 +440,25 @@ function typeLabel(t: string): string {
             placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies"
           />
           <div class="form-hint">本机目录。也可以用下面的「存储挂载」接入 115 / WebDAV / AList 等来源。</div>
+        </el-form-item>
+        <el-form-item label="归属服">
+          <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
+            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+          <p class="field-help">一个服一个：只有这个服的 EA 会向客户端提供这个库。</p>
+        </el-form-item>
+        <el-form-item label="归属播放节点">
+          <el-select
+            v-model="form.node_id"
+            clearable
+            placeholder="留空 = 未分配（所有节点可见、由面板扫描）"
+            style="width: 100%"
+          >
+            <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
+          </el-select>
+          <p class="field-help">
+            如果这个库的内容只在那台机器上（本机目录 / 只在那里配了的 rclone），就把库分配给那台节点。
+          </p>
         </el-form-item>
         <el-form-item label="存储挂载">
           <el-select

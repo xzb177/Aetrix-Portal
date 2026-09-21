@@ -36,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import models, realms
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
@@ -79,25 +79,36 @@ def require_panel_key(request: Request) -> None:
 
 # ==================== 体检（EM / EA 共用）====================
 
-def _config_value(db: Session, key: str, default: str = "") -> str:
+def _config_value(db: Session, key: str, default: str = "", realm_id: Optional[int] = None) -> str:
+    """读配置（Emby 入口那几个键按服读：默认服沿用历史键名）"""
+    if key in realms.REALM_CONFIG_BASES:
+        return realms.realm_config(db, key, realm_id, default)
     row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     return (row.value if row and row.value is not None else default).strip()
 
 
-def playback_node(db: Session) -> str:
-    """当前真正出流的是谁：EA（分离部署）/ 外部 Emby / 面板自己（一体化）"""
-    mode = _config_value(db, "emby_active_mode", "")
-    if mode == "managed_ea" and _config_value(db, "emby_managed_enabled", "false").lower() == "true":
+def playback_node(db: Session, realm_id: Optional[int] = None) -> str:
+    """某个服当前真正出流的是谁：EA（分离部署）/ 外部 Emby / 面板自己（一体化）
+
+    多服部署下每个服的入口是各自配的（``emby_active_mode`` 按服存），
+    所以必须按服判断，否则乙服的告警会按甲服的入口来算。
+    """
+    if realm_id is None:
+        realm_id = realms.active_realm_id(db)
+    mode = _config_value(db, "emby_active_mode", "", realm_id)
+    if mode == "managed_ea" and _config_value(db, "emby_managed_enabled", "false", realm_id).lower() == "true":
         return PLAYBACK_NODE_EA
-    if mode == "external" and _config_value(db, "emby_external_enabled", "false").lower() == "true":
+    if mode == "external" and _config_value(db, "emby_external_enabled", "false", realm_id).lower() == "true":
         return PLAYBACK_NODE_EXTERNAL
     return PLAYBACK_NODE_PANEL
 
 
-def _mount_library_map(db: Session) -> dict[int, list[int]]:
+def _mount_library_map(db: Session, realm_id: Optional[int] = None) -> dict[int, list[int]]:
     """挂载 id → 引用它的媒体库 id 列表（用于「被库引用却不可用」的告警）"""
+    # 内容按「NULL = 所有服」处理（见 realms.scope_inclusive），否则未标注服的老库会被藏起来
+    query = realms.scope_inclusive(db.query(em.Library), em.Library.realm_id, realm_id)
     usage: dict[int, list[int]] = {}
-    for lib in db.query(em.Library).all():
+    for lib in query.all():
         for mount_id in mount_lib.parse_mount_ids(lib):
             usage.setdefault(mount_id, []).append(lib.id)
     return usage
@@ -123,7 +134,7 @@ def redact(message: str, mount) -> str:
 
 
 def probe_one_mount(db: Session, mount, usage: Optional[dict[int, list[int]]] = None) -> dict:
-    """单条挂载体检：跑一次与「测试连接」相同的探测（resolve / 目录可读）"""
+    """单条挂载体检：跑一次与「测试连接」相同的探测（resolve / 目录可读）"""  # noqa: D401
     meta = mount_lib.MOUNT_TYPE_MAP.get(mount.mount_type, {})
     kind = meta.get("kind", "local")
     path = (mount.path or "").strip()
@@ -155,21 +166,30 @@ def probe_one_mount(db: Session, mount, usage: Optional[dict[int, list[int]]] = 
     return item
 
 
-def probe_mounts(db: Session, include_disabled: bool = True) -> list[dict]:
-    """逐条体检（停用的挂载标记 skipped，不发请求）"""
-    usage = _mount_library_map(db)
-    mounts = db.query(em.StorageMount).order_by(em.StorageMount.id).all()
+def probe_mounts(db: Session, include_disabled: bool = True,
+                 realm_id: Optional[int] = None) -> list[dict]:
+    """逐条体检（停用的挂载标记 skipped，不发请求）
+
+    ``realm_id=None`` 表示这个进程的全部挂载（EA 就是这样：它服务哪个服由节点决定，
+    而它能碰到的存储就是本机的那几条）；EM 侧传具体服，避免把别的服的挂载也算进来。
+    """
+    usage = _mount_library_map(db, realm_id)
+    query = realms.scope_inclusive(db.query(em.StorageMount), em.StorageMount.realm_id, realm_id)
+    mounts = query.order_by(em.StorageMount.id).all()
     if not include_disabled:
         mounts = [m for m in mounts if m.is_enabled]
     return [probe_one_mount(db, m, usage) for m in mounts]
 
 
-def mounts_health(db: Session, service: str) -> dict:
+def mounts_health(db: Session, service: str, realm_id: Optional[int] = None) -> dict:
     """体检汇总：[挂载] + 统计 + 当前播放节点"""
-    mounts = probe_mounts(db)
+    if service == "em" and realm_id is None:
+        realm_id = realms.active_realm_id(db)
+    mounts = probe_mounts(db, realm_id=realm_id)
     probed = [m for m in mounts if m.get("ok") is not None]
     failed = [m for m in probed if not m["ok"]]
-    node = playback_node(db)
+    node = playback_node(db, realm_id)
+    realm = realms.get_realm(db, realm_id) if realm_id is not None else None
     return {
         "service": service,
         "checked_at": datetime.now().isoformat(),
@@ -180,6 +200,8 @@ def mounts_health(db: Session, service: str) -> dict:
         "failed_count": len(failed),
         # 面板最需要知道的两件事：谁在出流、哪些挂载过不去
         "playback_node": node,
+        "realm_id": realm_id,
+        "realm_slug": realm.slug if realm else "",
         "unreachable": [
             m["id"] for m in failed if node == PLAYBACK_NODE_EA and m["used_by_library"]
         ],
@@ -197,8 +219,10 @@ async def mounts_health_endpoint(db: Session = Depends(get_db)):
 
     鉴权走 ``X-Panel-Key``（= 共享的 SECRET_KEY），不是管理员 JWT：
     EA 上不存在后台会话，而这条端点只该由 EM 调用。
+
+    体检范围是本机能碰到的那几条挂载（不按服过滤）：这台机器上的存储就是它的能力。
     """
-    return await run_in_threadpool(mounts_health, db, "ea")
+    return await run_in_threadpool(mounts_health, db, "ea", None)
 
 
 # ==================== EM 侧：拉取与落库 ====================
@@ -234,20 +258,15 @@ async def fetch_ea_health(base_url: str, timeout: float = EA_FETCH_TIMEOUT) -> d
     return {"ok": True, "data": data}
 
 
-def write_ea_health(db: Session, payload: dict) -> None:
-    """把拉取结果存进 SystemConfig（EM 侧，供挂载页展示）"""
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == EA_HEALTH_KEY).first()
-    text = json.dumps(payload, ensure_ascii=False)
-    if row:
-        row.value = text
-    else:
-        db.add(models.SystemConfig(key=EA_HEALTH_KEY, value=text,
-                                   description="EA 视角的挂载体检结果"))
+def write_ea_health(db: Session, payload: dict, realm_id: Optional[int] = None) -> None:
+    """把拉取结果存进 SystemConfig（EM 侧，供挂载页展示）—— 一个服一份快照"""
+    realms.set_realm_config(db, EA_HEALTH_KEY, json.dumps(payload, ensure_ascii=False),
+                            realm_id, "EA 视角的挂载体检结果")
 
 
-def read_ea_health(db: Session) -> dict:
-    """读回 EA 体检快照；没有记录时返回空结构（不是错误）"""
-    raw = _config_value(db, EA_HEALTH_KEY)
+def read_ea_health(db: Session, realm_id: Optional[int] = None) -> dict:
+    """读回某个服的 EA 体检快照；没有记录时返回空结构（不是错误）"""
+    raw = _config_value(db, EA_HEALTH_KEY, "", realm_id)
     if not raw:
         return {"ok": False, "checked_at": None, "error": "", "mounts": []}
     try:
@@ -261,9 +280,9 @@ def read_ea_health(db: Session) -> dict:
     return data
 
 
-def ea_mount_map(db: Session) -> dict[int, dict]:
+def ea_mount_map(db: Session, realm_id: Optional[int] = None) -> dict[int, dict]:
     """EA 体检快照按挂载 id 索引，供挂载列表逐条附加 ``ea_reachable``"""
-    snapshot = read_ea_health(db)
+    snapshot = read_ea_health(db, realm_id)
     out: dict[int, dict] = {}
     for item in snapshot.get("mounts") or []:
         if not isinstance(item, dict):

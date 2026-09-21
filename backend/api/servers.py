@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import models, realms
 from backend import servers as registry
 from backend.api.admin import _audit, get_current_admin
 from backend.database import get_db
@@ -43,6 +43,10 @@ class ServerPayload(BaseModel):
     config: dict = Field(default_factory=dict)
     is_enabled: bool = True
     remark: str = Field(default="", max_length=300)
+    # 属于哪个服（留空 = 新增时归当前服，修改时不改归属）
+    realm_id: Optional[int] = None
+    # MoviePilot / qBittorrent 专用：声明「全服共用」（realm_id 置空，每个服都看得到）
+    shared: bool = False
 
 
 class ProbePayload(BaseModel):
@@ -99,13 +103,25 @@ def _missing_required(kind: str, url: str, config: dict) -> Optional[str]:
 
 
 @router.get("")
-async def list_servers(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    rows = db.query(models.RemoteServer).order_by(models.RemoteServer.kind, models.RemoteServer.id).all()
+async def list_servers(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db),
+                      realm_id: Optional[int] = None):
+    """服务器清单（按服；``realm_id=0`` 看全部服）
+
+    ``ea`` / ``emby`` 这两类属于某个服（一个服一个入口）；MoviePilot / qBittorrent
+    是内容自动化，多服可以共用，所以“全部服”视图里它们也一并列出。
+    """
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    # EA / Emby 按归属服；MoviePilot / qB 共用的（realm_id 为空）在每个服里都列出
+    rows = (registry.realm_scope(db.query(models.RemoteServer), scope_id)
+            .order_by(models.RemoteServer.kind, models.RemoteServer.id).all())
     return {
         "servers": [registry.serialize(db, r) for r in rows],
         # 类型元数据由后端下发，前端不再自己维护一份字段表
         "kinds": registry.SERVER_KINDS,
-        "summary": registry.summary(db),
+        "summary": registry.summary(db, scope_id),
+        "realm_id": scope_id,
+        "active_realm_id": realms.active_realm_id(db),
+        "realms": [{"id": r.id, "name": r.name, "slug": r.slug} for r in realms.list_realms(db)],
     }
 
 
@@ -130,10 +146,13 @@ async def create_server(
     if required_error:
         raise HTTPException(400, required_error)
 
+    # 内容自动化（MoviePilot / qB）可以选择「全服共用」：归属服留空，多服一起用一套
+    shared = bool(payload.shared) and kind in registry.PUSH_TARGETS
     server = models.RemoteServer(
         name=name, kind=kind, url=url,
         config=registry.json_dumps(registry.only_known(kind, payload.config or {})),
         is_enabled=payload.is_enabled, remark=payload.remark or "",
+        realm_id=None if shared else (payload.realm_id or realms.active_realm_id(db)),
     )
     db.add(server)
     db.commit()
@@ -168,6 +187,13 @@ async def update_server(
     server.url = url
     server.is_enabled = payload.is_enabled
     server.remark = payload.remark or ""
+    if payload.shared and kind in registry.PUSH_TARGETS:
+        # 内容自动化改成「全服共用」
+        server.realm_id = None
+    elif payload.realm_id:
+        if not realms.get_realm(db, payload.realm_id):
+            raise HTTPException(400, f"服不存在: #{payload.realm_id}")
+        server.realm_id = payload.realm_id
     # 换类型时旧类型的字段不再适用，直接以新配置为准
     server.config = registry.json_dumps(
         registry.only_known(kind, payload.config or {})
@@ -250,7 +276,7 @@ async def activate_server(
     if server.kind == "ea":
         from backend.api.emby_servers import refresh_mount_health
 
-        mounts_health = await refresh_mount_health(db, server.url)
+        mounts_health = await refresh_mount_health(db, server.url, server.realm_id)
 
     _audit(db, admin, "activate_server", "server", server.id,
            {"kind": server.kind, "mode": result.get("mode"),
@@ -318,13 +344,14 @@ async def refresh_mount_health_now(
     admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """手动重拉一次「EA 视角的挂载体检」（服务器页的「EA 体检」按钮）"""
-    ea = registry.active_config(db, "ea")
+    """手动重拉一次当前服的「EA 视角的挂载体检」（服务器页的「EA 体检」按钮）"""
+    realm_id = realms.active_realm_id(db)
+    ea = registry.active_config(db, "ea", realm_id)
     if not ea:
-        raise HTTPException(400, "还没有可用的后端服（EA）：请先添加并测试连接")
+        raise HTTPException(400, "当前服还没有可用的后端服（EA）：请先添加并测试连接")
     from backend.api.emby_servers import refresh_mount_health
 
-    health = await refresh_mount_health(db, ea["url"])
+    health = await refresh_mount_health(db, ea["url"], realm_id)
     _audit(db, admin, "refresh_ea_mounts_health", "server", ea["id"],
            {"ok": health.get("ok")})
     db.commit()

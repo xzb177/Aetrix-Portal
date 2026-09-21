@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import models, realms
 from backend import servers as registry
 from backend.api.admin import _audit, get_current_admin
 from backend.database import get_db
@@ -42,12 +42,19 @@ def _validate_url(raw_url: str) -> str:
     return url
 
 
-def value(db: Session, key: str, default: str = "") -> str:
+def value(db: Session, key: str, default: str = "", realm_id: Optional[int] = None) -> str:
+    """读配置：Emby 入口那几个键是**一个服一个**的（默认服沿用历史键名）"""
+    if key in realms.REALM_CONFIG_BASES:
+        return realms.realm_config(db, key, realm_id, default)
     row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     return (row.value if row and row.value is not None else default).strip()
 
 
-def save_value(db: Session, key: str, new_value: str, description: str) -> None:
+def save_value(db: Session, key: str, new_value: str, description: str,
+               realm_id: Optional[int] = None) -> None:
+    if key in realms.REALM_CONFIG_BASES:
+        realms.set_realm_config(db, key, new_value, realm_id, description)
+        return
     row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     if row:
         row.value = new_value
@@ -55,13 +62,15 @@ def save_value(db: Session, key: str, new_value: str, description: str) -> None:
         db.add(models.SystemConfig(key=key, value=new_value, description=description))
 
 
-async def refresh_mount_health(db: Session, url: str) -> dict:
-    """拉一次 EA 视角的挂载体检并落库
+async def refresh_mount_health(db: Session, url: str, realm_id: Optional[int] = None) -> dict:
+    """拉一次 EA 视角的挂载体检并落库（按服保存：挂载跟着服走）
 
     失败时**保留上一次的逐条结果**（只标记快照失效），避免一次网络抖动就把面板上的
     「EA 可达」全部抹成未知。
     """
-    previous = mount_health.read_ea_health(db)
+    if realm_id is None:
+        realm_id = realms.active_realm_id(db)
+    previous = mount_health.read_ea_health(db, realm_id)
     result = await mount_health.fetch_ea_health(url)
 
     if result.get("ok"):
@@ -72,7 +81,7 @@ async def refresh_mount_health(db: Session, url: str) -> dict:
             "error": "",
             "playback_node": data.get("playback_node"),
             "mounts": data.get("mounts") or [],
-        })
+        }, realm_id)
         db.commit()
         return {
             "ok": True,
@@ -89,7 +98,7 @@ async def refresh_mount_health(db: Session, url: str) -> dict:
         "error": error,
         "playback_node": previous.get("playback_node"),
         "mounts": previous.get("mounts") or [],
-    })
+    }, realm_id)
     db.commit()
     return {"ok": False, "error": error, "checked_at": previous.get("checked_at")}
 
@@ -107,22 +116,31 @@ async def probe(mode: str, url: str, api_key: str = "") -> dict:
 
 
 @router.get("/servers")
-async def get_servers(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    health = mount_health.read_ea_health(db)
+async def get_servers(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db),
+                      realm_id: Optional[int] = None):
+    """当前服的 Emby 服务入口（两个格子：自建 EA / 已有 Emby）
+
+    入口是**一个服一个**的：多服部署下每个服各自填自己的地址，默认服沿用历史配置键。
+    """
+    scope_id = realm_id or realms.active_realm_id(db)
+    realm = realms.get_realm(db, scope_id)
+    health = mount_health.read_ea_health(db, scope_id)
     mounts = health.get("mounts") or []
     return {
+        "realm_id": scope_id,
+        "realm_name": realm.name if realm else "",
         "managed_ea": {
-            "url": value(db, "emby_managed_url"),
-            "enabled": value(db, "emby_managed_enabled", "false").lower() == "true",
-            "reachable": value(db, "emby_managed_reachable", "").lower() == "true",
+            "url": value(db, "emby_managed_url", realm_id=scope_id),
+            "enabled": value(db, "emby_managed_enabled", "false", scope_id).lower() == "true",
+            "reachable": value(db, "emby_managed_reachable", "", scope_id).lower() == "true",
         },
         "external": {
-            "url": value(db, "emby_external_url"),
-            "enabled": value(db, "emby_external_enabled", "false").lower() == "true",
-            "has_api_key": bool(value(db, "emby_external_api_key")),
-            "reachable": value(db, "emby_external_reachable", "").lower() == "true",
+            "url": value(db, "emby_external_url", realm_id=scope_id),
+            "enabled": value(db, "emby_external_enabled", "false", scope_id).lower() == "true",
+            "has_api_key": bool(value(db, "emby_external_api_key", realm_id=scope_id)),
+            "reachable": value(db, "emby_external_reachable", "", scope_id).lower() == "true",
         },
-        "active_mode": value(db, "emby_active_mode", "managed_ea"),
+        "active_mode": value(db, "emby_active_mode", "managed_ea", scope_id),
         # EA 视角的挂载体检快照（汇总；逐条结果在「存储挂载」页）
         "mounts_health": {
             "ok": bool(health.get("ok")),
@@ -143,19 +161,24 @@ async def save_server(
 ):
     if request.mode not in ("managed_ea", "external"):
         raise HTTPException(400, "mode 必须是 managed_ea 或 external")
+    scope_id = realms.active_realm_id(db)
     url = _validate_url(request.url)
     prefix = "emby_managed" if request.mode == "managed_ea" else "emby_external"
-    save_value(db, f"{prefix}_url", url, "Emby 服务地址")
-    save_value(db, f"{prefix}_enabled", "true" if request.enabled else "false", "Emby 服务是否启用")
+    save_value(db, f"{prefix}_url", url, "Emby 服务地址", scope_id)
+    save_value(db, f"{prefix}_enabled", "true" if request.enabled else "false",
+               "Emby 服务是否启用", scope_id)
     if request.mode == "external" and request.api_key and request.api_key.strip():
-        save_value(db, "emby_external_api_key", request.api_key.strip(), "外部 Emby API 密钥")
+        save_value(db, "emby_external_api_key", request.api_key.strip(),
+                   "外部 Emby API 密钥", scope_id)
     db.commit()
 
-    result = await probe(request.mode, url, request.api_key or value(db, "emby_external_api_key"))
-    save_value(db, f"{prefix}_reachable", "true" if result.get("ok") else "false", "Emby 服务最近一次连接结果")
+    result = await probe(request.mode, url,
+                         request.api_key or value(db, "emby_external_api_key", realm_id=scope_id))
+    save_value(db, f"{prefix}_reachable", "true" if result.get("ok") else "false",
+               "Emby 服务最近一次连接结果", scope_id)
     # 只有真正探测成功且勾选启用，才切换当前入口；避免保存一个不存在的服务后全站假运行。
     if request.enabled and result.get("ok"):
-        save_value(db, "emby_active_mode", request.mode, "当前 Emby 服务模式")
+        save_value(db, "emby_active_mode", request.mode, "当前 Emby 服务模式", scope_id)
     db.commit()
 
     # 同步进「服务器」清单：两个页面（旧的两个格子 / 新的清单）操作的是同一件事，
@@ -163,20 +186,21 @@ async def save_server(
     registry.upsert_legacy(
         db, "ea" if request.mode == "managed_ea" else "emby", url,
         api_key=(request.api_key or "") if request.mode == "external" else "",
-        enabled=request.enabled, reachable=bool(result.get("ok")),
+        enabled=request.enabled, reachable=bool(result.get("ok")), realm_id=scope_id,
     )
 
     # 挂载是主机相对的：EA 能连通不等于它能碰到面板里配的存储。
     # 所以保存 EA 服务入口时顺带做一次 EA 视角的挂载体检，把结果落到面板上。
     health: dict | None = None
     if request.mode == "managed_ea" and result.get("ok"):
-        health = await refresh_mount_health(db, url)
+        health = await refresh_mount_health(db, url, scope_id)
 
     _audit(db, admin, "save_emby_server_connection", "system", None,
-           {"mode": request.mode, "ok": result.get("ok"),
+           {"mode": request.mode, "ok": result.get("ok"), "realm_id": scope_id,
             "mount_health_ok": None if health is None else health.get("ok")})
     db.commit()
-    return {"success": True, "mode": request.mode, "probe": result, "mounts_health": health}
+    return {"success": True, "mode": request.mode, "probe": result,
+            "mounts_health": health, "realm_id": scope_id}
 
 
 @router.post("/servers/mounts/refresh")
@@ -188,14 +212,15 @@ async def refresh_server_mounts(
 
     只对 managed EA 有意义：一体化（EM 自己出流）与外部 Emby 都不存在这台 EA。
     """
-    url = value(db, "emby_managed_url")
+    scope_id = realms.active_realm_id(db)
+    url = value(db, "emby_managed_url", realm_id=scope_id)
     if not url:
-        raise HTTPException(400, "还没有配置 EA 服务地址：请先在「Emby 服务入口」里保存一次")
-    mode = value(db, "emby_active_mode", "managed_ea")
+        raise HTTPException(400, "这个服还没有配置 EA 服务地址：请先在「Emby 服务入口」里保存一次")
+    mode = value(db, "emby_active_mode", "managed_ea", scope_id)
     if mode != "managed_ea":
         # 不阻断：切回 EA 之前也想先把那台机器的存储情况看清楚
         logger.info("当前模式是 %s，仍按 EA 地址体检挂载", mode)
-    health = await refresh_mount_health(db, url)
+    health = await refresh_mount_health(db, url, scope_id)
     _audit(db, admin, "refresh_ea_mounts_health", "system", None,
            {"ok": health.get("ok")})
     db.commit()
@@ -211,9 +236,12 @@ async def test_server(
     if request.mode not in ("managed_ea", "external"):
         raise HTTPException(400, "mode 必须是 managed_ea 或 external")
     # 先校验地址再探测：校验不能只挂在 probe 里，否则替换探测器时就绕过了
+    scope_id = realms.active_realm_id(db)
     url = _validate_url(request.url)
-    result = await probe(request.mode, url, request.api_key or value(db, "emby_external_api_key"))
+    result = await probe(request.mode, url,
+                         request.api_key or value(db, "emby_external_api_key", realm_id=scope_id))
     prefix = "emby_managed" if request.mode == "managed_ea" else "emby_external"
-    save_value(db, f"{prefix}_reachable", "true" if result.get("ok") else "false", "Emby 服务最近一次连接结果")
+    save_value(db, f"{prefix}_reachable", "true" if result.get("ok") else "false",
+               "Emby 服务最近一次连接结果", scope_id)
     db.commit()
     return result

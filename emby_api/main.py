@@ -26,17 +26,20 @@ from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 from sqlalchemy import inspect
 
-from backend.database import DATABASE_TYPE, engine
+from backend.database import DATABASE_TYPE, SessionLocal, engine
 from backend import models  # noqa: F401 — 注册全部模型，保证 ORM 关系可解析
 from backend.emby_server import models as _emby_models  # noqa: F401
 from backend.download_guard import DownloadGuardMiddleware
+from backend.emby_server import nodes as node_lib
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_health import panel_router as mount_health_router
 from backend.emby_server.mount_routes import install_mount_routes
+from backend.emby_server.nodes import node_router
 from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
+from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.6.19"
+EA_VERSION = "2.6.20"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
@@ -103,11 +106,57 @@ async def lifespan(app: FastAPI):
     ensure_paired_with_em()
     logger.info("✅ 已确认与 EM 配对（共享密钥 + 共享库）")
 
+    _claim_identity()
     await _probe_panel()
 
     logger.info("✅ %s 启动完成", SERVICE_NAME)
     yield
     logger.info("👋 %s 正在关闭...", SERVICE_NAME)
+
+
+def _claim_identity() -> None:
+    """认领本机的节点 / 服身份，并装好内容可见性与订阅闸门
+
+    多台 EA 同时出流靠这三件事：
+
+    1. ``NODE_KEY`` 认领面板里的一条服务器记录（认领不到就自动登记一条，方便分配媒体库）；
+    2. ``REALM``（或在面板里给这台服务器指定的服）决定**只提供哪个服的内容**；
+    3. 订阅闸门按本机的服判定——甲服的会员不能在乙服的 EA 上白瞟。
+
+    两件都没配时什么都不做：单机单服部署行为与以前完全一致。
+    """
+    db = SessionLocal()
+    try:
+        if node_lib.configured_key():
+            node_lib.register_self(db, url=_public_url())
+        scope = node_lib.install_scope("ea")
+        if scope.get("active"):
+            logger.info("本节点只提供：服 #%s 的内容（来自 REALM/节点归属）", scope.get("realm_id"))
+    except Exception as exc:  # noqa: BLE001 — 认领失败不能阻止 EA 提供服务
+        logger.warning("认领节点身份失败（按不过滤处理）: %s", exc)
+    finally:
+        db.close()
+
+    # 订阅闸门：把「本进程的服」传给 backend.subscriptions，播放时按服校验会员
+    def _realm():
+        session = SessionLocal()
+        try:
+            return node_lib.self_realm_id(session)
+        finally:
+            session.close()
+
+    set_process_realm_resolver(_realm)
+
+
+def _public_url() -> str:
+    """本节点对外地址（面板登记时用）：优先环境变量，其次拼端口"""
+    explicit = os.getenv("EMBY_API_PUBLIC_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    host = os.getenv("HOST", "0.0.0.0")
+    if host in ("0.0.0.0", "::"):
+        return ""
+    return f"http://{host}:{os.getenv('EMBY_API_PORT', '8001')}"
 
 
 app = FastAPI(
@@ -180,7 +229,21 @@ async def health_check():
         "missing_em_tables": missing,
         "em_panel_url": _panel_url() or None,
         "emby_server_name": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
+        # 多机 / 多服部署的关键信息：这台 EA 是谁、属于哪个服、只提供什么内容
+        "node": _node_info(),
     }
+
+
+def _node_info() -> dict:
+    """本进程的节点 / 服身份（探活与排查用；查不到库时返回空结构）"""
+    db = SessionLocal()
+    try:
+        return node_lib.describe(db)
+    except Exception as exc:  # noqa: BLE001 — 健康检查不能被身份解析拖垮
+        logger.debug("读取节点身份失败: %s", exc)
+        return {}
+    finally:
+        db.close()
 
 
 @app.get("/", include_in_schema=False)
@@ -202,6 +265,8 @@ app.include_router(search_router)
 # 挂载体检（EM 保存服务入口 / 手动刷新时调用）：EA 视角跑一遍 resolve 与路径检查，
 # 让面板能显示「这台 EA 到底碰不碰得到你配的存储」。用共享 SECRET_KEY 鉴权，不是管理员 JWT。
 app.include_router(mount_health_router)
+# 节点身份 / 由归属节点扫描媒体库：面板在保存服务器与分配媒体库时调用，同样是共享 SECRET_KEY 鉴权。
+app.include_router(node_router)
 # 挂载来源：把只认本机文件的 /Items/{id}/File 换成挂载感知实现（必须在 include_router 前）
 install_mount_routes(emby_router)
 # 会话端点：补鉴权（普通用户只看/只能停自己）并把会话键改为随机（必须在 include_router 前）

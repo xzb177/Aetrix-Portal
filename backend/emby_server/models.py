@@ -26,6 +26,9 @@ class Library(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     guid = Column(String(64), unique=True, nullable=False, index=True)
     name = Column(String(200), nullable=False)
+    # 属于哪个服（server_realms.id）。服之间内容隔离：某个服的 EA 只提供本服的库。
+    # 老部署由迁移统一回填到默认服，行为不变。
+    realm_id = Column(Integer)
     collection_type = Column(String(30), default="movies")  # movies / tvshows / mixed
     paths = Column(Text, default="")  # 逗号分隔的扫描根目录；虚拟媒体库为空
     is_enabled = Column(Boolean, default=True)
@@ -38,6 +41,11 @@ class Library(Base):
     # 绑定 115 账号配置档（pan115_accounts.id）：不同媒体库可用不同 115 账号转存/下载。
     # 未绑定时回退到默认账号，再回退到服务器级 PAN115_COOKIE（兼容旧部署）。
     account_115_id = Column(Integer)
+    # 负责这台库的播放节点（remote_servers.id，kind=ea 的那条）。
+    # **NULL = 未分配**：任何节点都能看到它、由面板（EM）扫描——单节点部署与
+    # 「刚加完节点还没来得及分配」的过渡期都靠这个语义保持与以前完全一致。
+    # 已分配时：只有那台节点会向客户端展示它、只有它会扫描它（见 emby_server/nodes.py）。
+    node_id = Column(Integer)
     # 绑定的存储挂载（storage_mounts.id，逗号分隔）：媒体库的内容来源之一。
     # `paths` 是**本机目录**（rclone / CloudDrive2 / SMB 挂载盘最终也是本机目录），
     # `mount_ids` 则是显式声明的挂载来源（本地目录 / STRM / 115 直挂 / WebDAV / AList），
@@ -219,6 +227,8 @@ class StorageMount(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), unique=True, nullable=False)
+    # 属于哪个服（server_realms.id）：挂载是主机相对的资源，跟着服走
+    realm_id = Column(Integer)
     # local / strm / 115 / webdav / alist
     mount_type = Column(String(20), nullable=False, default="local")
     # 本机目录（local / strm）：远程挂载留空

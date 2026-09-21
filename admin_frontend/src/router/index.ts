@@ -33,6 +33,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '操作日志' } },
       { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '服务健康' } },
+      // 服管理以绝对路径声明：跳转契约检查要求跳转目标与声明的 path 完全一致
+      { path: '/realms', name: 'Realms', component: () => import('@/views/Realms.vue'), meta: { title: '服管理' } },
       { path: 'servers', name: 'Servers', component: () => import('@/views/Servers.vue'), meta: { title: '服务器管理' } },
       { path: 'emby-servers', name: 'EmbyServers', component: () => import('@/views/EmbyServers.vue'), meta: { title: 'Emby 服务入口' } },
     ],

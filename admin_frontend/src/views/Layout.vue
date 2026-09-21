@@ -12,17 +12,20 @@ import { ElMessage } from 'element-plus'
 import {
   LayoutDashboard, Users, Package, ShieldAlert, Film, Ticket, Settings,
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Tv,
+  CheckCircle2, Route as RealmIcon,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
+import { useRealmStore } from '@/stores/realm'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.6.19'
+const APP_VERSION = 'v2.6.20'
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)
@@ -46,6 +49,15 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/users', label: '用户管理' },
       { path: '/subscriptions', label: '订阅管理' },
+    ],
+  },
+  {
+    // 服的增删改查 + 归属它的服务器（EA / Emby 一个服一个）
+    title: '多服运营',
+    icon: RealmIcon,
+    items: [
+      { path: '/realms', label: '服管理' },
+      { path: '/servers', label: '服务器' },
     ],
   },
   {
@@ -81,8 +93,7 @@ const navGroups: NavGroup[] = [
   { title: '支持', icon: Ticket, items: [{ path: '/tickets', label: '工单管理' }] },  { title: '系统',
     icon: Settings,
     items: [
-      // 「服务器」是清单（能加多台、含 MoviePilot / qB），「Emby 服务入口」是快速切换两个格子的旧页面
-      { path: '/servers', label: '服务器' },
+      // 「Emby 服务入口」是快速切换两个格子的旧页面（入口也是一个服一个的）
       { path: '/emby-servers', label: 'Emby 服务入口' },
       { path: '/settings', label: '系统设置' },
       { path: '/logs', label: '操作日志' },
@@ -207,10 +218,31 @@ function onAdminCommand(cmd: string) {
   else if (cmd === 'logout') logout()
 }
 
+// ==================== 当前服（多服运营）====================
+
+/** 切换当前服：各页的作用域跟着切，所以切完整页重载一次，避免停在旧服的数据上 */
+async function onRealmCommand(cmd: number | string) {
+  if (cmd === '__manage') {
+    router.push('/realms')
+    return
+  }
+  const id = Number(cmd)
+  if (!id || id === realm.activeId) return
+  try {
+    await realm.switchTo(id)
+    ElMessage.success(`已切换到「${realm.activeName() || id}」`)
+    window.setTimeout(() => window.location.reload(), 400)
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
 const initial = computed(() => (auth.admin?.username || 'A').charAt(0).toUpperCase())
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
+  // 当前服（服务端 active_realm_id 是权威来源）；失败不阻断后台，只是顶栏不显示服名
+  realm.load().catch(() => undefined)
   // 进入后台时校正一次管理员身份（令牌失效 / 权限被回收时会被拦截器送回登录页）
   try {
     const me = await fetchMe()
@@ -321,6 +353,34 @@ onUnmounted(() => {
         </div>
 
         <div class="topbar-actions">
+          <!-- 当前服：面板可以同时运营多个服，切完各页的作用域跟着走 -->
+          <el-dropdown v-if="realm.realms.length" trigger="click" @command="onRealmCommand">
+            <button class="realm-chip" aria-label="切换当前服">
+              <RealmIcon :size="15" />
+              <span class="realm-chip-name">{{ realm.activeName() || '当前服' }}</span>
+              <ChevronDown :size="14" class="chip-chev" />
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="r in realm.realms"
+                  :key="r.id"
+                  :command="r.id"
+                  :disabled="!r.is_active && r.id !== realm.activeId"
+                >
+                  <CheckCircle2
+                    v-if="r.id === realm.activeId"
+                    :size="14"
+                    style="margin-right: 6px"
+                  />
+                  <span v-else style="display: inline-block; width: 20px" />
+                  {{ r.name }}
+                  <span v-if="!r.is_active" class="realm-off">（已停用）</span>
+                </el-dropdown-item>
+                <el-dropdown-item divided command="__manage">管理服…</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <button class="icon-btn" title="刷新当前页" aria-label="刷新当前页" @click="refreshPage">
             <RefreshCw :size="17" />
           </button>
@@ -600,6 +660,24 @@ onUnmounted(() => {
 .chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-chev { color: var(--text-faint); }
 
+/* 当前服：一眼看出“现在运营的是哪个服”，点开就能切 */
+.realm-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.realm-chip:hover { border-color: var(--primary); color: var(--text-primary); }
+.realm-chip-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.realm-off { color: var(--text-faint); font-size: var(--font-size-xs); }
+
 .content {
   flex: 1;
   width: 100%;
@@ -653,6 +731,7 @@ onUnmounted(() => {
   .topbar-crumb { display: none; }
   .chip-name,
   .chip-chev { display: none; }
+  .realm-chip-name { max-width: 84px; }
   .admin-chip { padding: 4px; border-radius: var(--radius-full); }
   .chip-avatar { width: 28px; height: 28px; font-size: 12px; }
   .content { padding: 12px 12px calc(28px + env(safe-area-inset-bottom)); }

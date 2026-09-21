@@ -4,27 +4,40 @@
  *
  * v2.4.0 新增：此前订阅只能靠数据库查看——用户管理页只显示「生效中/未订阅」两态。
  * 本页提供订阅总览：生效中 / 即将到期 / 已过期，支持搜索、状态筛选、延长与授予。
+ *
+ * v2.6.20：订阅是**一个服一个**的。默认只看面板当前服（会员开在哪个服、能在哪台 EA 上播
+ * 都由它决定），顶部可以切到「全部服」做跨服汇总——这时列表会多一列归属服。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CalendarClock, Crown, RefreshCw, Search, TimerOff, Users } from 'lucide-vue-next'
-import { fetchPlans, type PlanRow } from '@/api/admin'
+import { fetchPlans, fetchRealmSubscriptions, type PlanRow } from '@/api/admin'
 import {
-  extendUserSubscription, fetchSubscriptions, grantUserSubscription,
+  extendUserSubscription, grantUserSubscription,
 } from '@/api/economy'
 import type { SubscriptionOverviewRow } from '@/types'
+import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
+const realm = useRealmStore()
+/** 统计范围：当前服（默认）或全部服 */
+const scope = ref<'realm' | 'all'>('realm')
+const scopeRealmName = ref('')
+
 /** 订阅列表：手机端用户名做标题，「剩余」保留桌面端排序 */
-const columns: DataColumn[] = [
+const columns = computed<DataColumn[]>(() => [
   { key: 'username', label: '用户', minWidth: 140, mobile: 'title' },
   { key: 'plan_name', label: '套餐', minWidth: 140 },
+  // 只有跨服汇总时才需要归属服这一列
+  ...(scope.value === 'all'
+    ? [{ key: 'realm_name', label: '归属服', minWidth: 130 } as DataColumn]
+    : []),
   { key: 'period', label: '有效期', minWidth: 200 },
   { key: 'days_left', label: '剩余', width: 110, sortable: true },
   { key: 'status', label: '状态', width: 110 },
   { key: 'actions', label: '操作', width: 170, fixed: 'right', align: 'right' },
-]
+])
 
 const loading = ref(false)
 const rows = ref<SubscriptionOverviewRow[]>([])
@@ -39,9 +52,11 @@ async function load() {
     const params: Record<string, unknown> = { limit: 200 }
     if (statusFilter.value) params.status_filter = statusFilter.value
     if (search.value.trim()) params.search = search.value.trim()
-    const res = await fetchSubscriptions(params)
+    // realm_id=0 → 全部服；其余按服过滤（后端 `active_realm_id` 作为兜底）
+    const res = await fetchRealmSubscriptions(scope.value === 'all' ? 0 : realm.activeId ?? 0, params)
     rows.value = res.subscriptions
     summary.value = res.summary
+    scopeRealmName.value = res.realm_name
   } catch {
     // 错误提示由 HTTP 拦截器统一处理
   } finally {
@@ -49,14 +64,24 @@ async function load() {
   }
 }
 
-onMounted(async () => {
-  await load()
+/** 可授予的套餐：跨服汇总时列出全部服的套餐（授予时按套餐所属的服开会员） */
+async function loadPlans() {
   try {
-    plans.value = (await fetchPlans()).plans
+    plans.value = (await fetchPlans(scope.value === 'all' ? 0 : undefined)).plans
   } catch {
     plans.value = []
   }
+}
+
+onMounted(async () => {
+  await load()
+  await loadPlans()
 })
+
+function onScopeChange() {
+  load()
+  loadPlans()
+}
 
 const activeCount = computed(() => summary.value.active)
 
@@ -120,7 +145,13 @@ async function submit() {
         ElMessage.warning('请选择套餐')
         return
       }
-      await grantUserSubscription(row.user_id, { plan_id: dialog.planId, duration_days: dialog.days })
+      const plan = plans.value.find((p) => p.id === dialog.planId)
+      await grantUserSubscription(row.user_id, {
+        plan_id: dialog.planId,
+        duration_days: dialog.days,
+        // 会员开在哪个服：优先跟随所选套餐，避免在多服面板里开错服
+        ...(plan?.realm_id ? { realm_id: plan.realm_id } : {}),
+      })
       ElMessage.success('订阅已授予并通知用户')
     }
     dialog.visible = false
@@ -138,9 +169,16 @@ async function submit() {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">订阅管理</h1>
-        <p class="admin-page-subtitle">共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位用户处于订阅中</p>
+        <p class="admin-page-subtitle">
+          共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位用户处于订阅中
+          <template v-if="scopeRealmName">· 范围：{{ scopeRealmName }}</template>
+        </p>
       </div>
       <div class="toolbar">
+        <el-radio-group v-model="scope" size="small" @change="onScopeChange">
+          <el-radio-button value="realm">当前服</el-radio-button>
+          <el-radio-button value="all">全部服</el-radio-button>
+        </el-radio-group>
         <el-input
           v-model="search"
           placeholder="搜索用户名"
@@ -185,6 +223,10 @@ async function submit() {
         </template>
 
         <template #cell-plan_name="{ row }">{{ row.plan_name }}</template>
+
+        <template #cell-realm_name="{ row }">
+          <span class="mini-badge muted">{{ row.realm_name || '未标注' }}</span>
+        </template>
 
         <template #cell-period="{ row }">{{ fmtDay(row.start_date) }} → {{ fmtDay(row.end_date) }}</template>
 
@@ -257,7 +299,8 @@ async function submit() {
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: var(--radius-full); font-weight: 600; }
 .mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.warn { background: var(--warning-bg); color: var(--warning); }
-.mini-badge.off { background: var(--bg-hover); color: var(--text-muted); }
+.mini-badge.off,
+.mini-badge.muted { background: var(--bg-hover); color: var(--text-muted); }
 
 .empty-hint { font-size: 13px; color: var(--text-muted); padding: 16px 0; text-align: center; }
 .dialog-user { font-weight: 600; }

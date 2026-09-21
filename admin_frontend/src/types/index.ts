@@ -180,6 +180,102 @@ export interface MediaSeekRow {
 
 // ==================== 服务器清单 ====================
 
+// ==================== 多服运营（server_realms） ====================
+
+/** 一个服 = 一套可以独立运营的播放服务：自己的套餐/订阅/媒体库/播放节点 */
+export interface RealmNode {
+  id: number
+  name: string
+  url: string
+  /** AE 用 NODE_KEY 认领这条记录；空串表示还没认领 */
+  node_key: string
+  is_enabled: boolean
+  is_active: boolean
+  online: boolean
+  last_checked_at: string | null
+  last_check_message: string
+}
+
+export interface RealmStats {
+  libraries: number
+  enabled_libraries: number
+  items: number
+  mounts: number
+  plans: number
+  active_subscriptions: number
+  expiring_subscriptions: number
+  subscribers: number
+  nodes: number
+  nodes_online: number
+  pending_requests: number
+}
+
+export interface RealmRow {
+  id: number
+  name: string
+  slug: string
+  url: string
+  description: string
+  is_active: boolean
+  sort_order: number
+  /** 默认服：沿用历史配置键名，不能删除 */
+  is_default: boolean
+  /** 用户端该连的地址（服自己的地址 → 该服 Emby 入口 → 全局环境变量） */
+  public_url: string
+  nodes: RealmNode[]
+  stats: RealmStats
+  created_at: string | null
+}
+
+export interface RealmSummary {
+  total_realms: number
+  enabled_realms: number
+  libraries: number
+  items: number
+  plans: number
+  active_subscriptions: number
+  subscribers: number
+  nodes: number
+  nodes_online: number
+  pending_requests: number
+}
+
+export interface RealmsResponse {
+  realms: RealmRow[]
+  active_realm_id: number
+  active_realm_name: string
+  summary: RealmSummary
+}
+
+export interface RealmOverview {
+  realms: {
+    id: number
+    name: string
+    slug: string
+    url: string
+    is_active: boolean
+    is_default: boolean
+    public_url: string
+    stats: RealmStats
+  }[]
+  active_realm_id: number
+  summary: RealmSummary
+}
+
+/** 同步（体检）一个服的所有播放节点后的逐台结果 */
+export interface RealmNodeSync {
+  id: number
+  name: string
+  url: string
+  ok: boolean
+  message: string
+  node_key_claimed: string
+  realm_slug_reported: string
+  libraries: number
+  /** 节点自称的服与面板记录不一致：REALM / NODE_KEY 配错了 */
+  realm_mismatch: boolean
+}
+
 /** 服务器类型：ea（后端服）/ emby（已有 Emby）/ moviepilot / qbittorrent */
 export type ServerKind = 'ea' | 'emby' | 'moviepilot' | 'qbittorrent'
 
@@ -211,6 +307,13 @@ export interface RemoteServerRow {
   kind_label: string
   kind_group: string
   url: string
+  /** 属于哪个服（多服运营）：EA / Emby 一定属于某个服 */
+  realm_id: number | null
+  realm_name: string
+  /** 内容自动化（MoviePilot / qB）声明了「全服共用」：不属于某个服，每个服都能用 */
+  shared?: boolean
+  /** EA 认领用的节点标识（面板在这里填，EA 用同名 NODE_KEY 启动） */
+  node_key: string
   config: Record<string, string>
   /** 已配置密钥的字段名（密钥明文永不下发） */
   secret_keys: string[]
@@ -243,6 +346,8 @@ export interface ServerSummary {
   total: number
   reachable: number
   unchecked: number
+  /** 当前统计范围（服）；null = 全部服 */
+  realm_id?: number | null
   /** 可以用来接收求片推送的类型（已启用且体检通过） */
   push_ready: ServerKind[]
 }
@@ -352,12 +457,15 @@ export interface TrendStats {
   totals: { new_users: number; plays: number; revenue: number; checkins: number }
 }
 
-/** 订阅总览（GET /api/admin/economy/subscriptions） */
+/** 订阅总览（GET /api/admin/realms/{id}/subscriptions，`realm_id=0` = 全部服） */
 export interface SubscriptionOverviewRow {
   id: number
   user_id: number
   username: string
   plan_name: string
+  /** 会员属于哪个服：一个服一个，多服下必须分开看 */
+  realm_id?: number | null
+  realm_name?: string
   start_date: string | null
   end_date: string | null
   days_left: number
@@ -367,6 +475,15 @@ export interface SubscriptionOverviewRow {
 export interface SubscriptionOverview {
   summary: { total: number; active: number; expiring_7d: number; expired: number }
   subscriptions: SubscriptionOverviewRow[]
+}
+
+/** 按服订阅清单（GET /api/admin/realms/{id}/subscriptions） */
+export interface RealmSubscriptionsResponse extends SubscriptionOverview {
+  total: number
+  /** 本次统计范围：null = 全部服 */
+  realm_id: number | null
+  realm_name: string
+  active_realm_id: number
 }
 
 export interface EconomyOverview {
@@ -382,6 +499,13 @@ export interface EmbyLibrary {
   guid: string
   name: string
   collection_type: string
+  /** 归属服与播放节点：多服 / 多机部署下“这个库归谁”一眼可见 */
+  realm_id?: number | null
+  realm_name?: string
+  node_id?: number | null
+  node_name?: string
+  /** 归属节点最近一次体检是否通过；null = 未体检 */
+  node_online?: boolean | null
   paths: string[]
   /** 绑定的存储挂载（storage_mounts.id）：本机目录 / STRM / 115 / WebDAV / AList */
   mount_ids: number[]
@@ -431,6 +555,8 @@ export interface MountTypeMeta {
 export interface StorageMount {
   id: number
   name: string
+  /** 属于哪个服（storage_mounts.realm_id） */
+  realm_id?: number | null
   mount_type: string
   mount_type_label: string
   kind: 'local' | 'remote'

@@ -49,6 +49,15 @@ const hasPlayPassword = computed(() => !!account.value?.has_password)
 // 播放器一键导入（服务器地址 / 账号 信息集中在本页，首页不再重复）
 const importSchemes = computed(() => account.value?.import_schemes || {})
 const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
+
+// ===== 多服：我在这几个服各自的地址与会员（一个服一个会员）=====
+const realmCards = computed(() => account.value?.realms || [])
+
+function daysLeft(end?: string | null): number {
+  if (!end) return 0
+  const diff = new Date(end).getTime() - Date.now()
+  return diff > 0 ? Math.ceil(diff / 86400000) : 0
+}
 function openScheme(url: string) {
   window.location.href = url
 }
@@ -283,6 +292,30 @@ function formatDate(iso?: string | null) {
           </div>
         </div>
 
+        <!-- 多服：每个服一个地址与一份会员（没订阅的服后端不下发） -->
+        <div v-if="realmCards.length > 1" class="realm-row">
+          <span class="scheme-label">我的服</span>
+          <div class="realm-list">
+            <div v-for="r in realmCards" :key="r.id" class="realm-item">
+              <div class="realm-head">
+                <strong>{{ r.name }}</strong>
+                <span v-if="r.subscribed" class="realm-badge ok">会员剩 {{ daysLeft(r.end_date) }} 天</span>
+                <span v-else class="realm-badge off">未开通</span>
+              </div>
+              <div class="realm-url">
+                <span class="mono">{{ r.base_url || '管理员还没填这个服的地址' }}</span>
+                <button v-if="r.base_url" class="copy-btn" @click="copyText(r.base_url, `realm-${r.id}`)">
+                  <Check v-if="copiedField === `realm-${r.id}`" :size="13" class="ok" />
+                  <Copy v-else :size="13" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <p class="card-tip">
+            一个面板下可以同时有几个「服」：会员一个服一个，在哪个服开的会员就连哪个服的地址播放。
+          </p>
+        </div>
+
         <div v-if="hasSchemes" class="scheme-row">
           <span class="scheme-label">一键导入到客户端</span>
           <div class="scheme-btns">
@@ -411,7 +444,7 @@ function formatDate(iso?: string | null) {
 
         <ul v-if="subscriptions.length > 1" class="sub-history">
           <li v-for="s in subscriptions.slice(0, 4)" :key="s.id" class="sub-history-item">
-            <span>{{ s.plan_name }}</span>
+            <span>{{ s.plan_name }}<em v-if="s.realm_name" class="sub-realm">（{{ s.realm_name }}）</em></span>
             <span class="sub-history-date">{{ s.start_date.slice(0, 10) }} ~ {{ s.end_date.slice(0, 10) }}</span>
             <span class="sub-status" :class="s.status === 'active' ? 'ok' : 'off'">
               {{ s.status === 'active' ? '生效中' : '已结束' }}
@@ -710,6 +743,55 @@ function formatDate(iso?: string | null) {
   color: #fb7185;
   font-weight: 600;
 }
+
+/* 多服：一个服一个地址与会员 */
+.realm-row {
+  margin-top: 0.875rem;
+  padding-top: 0.875rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.realm-list { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.realm-item {
+  padding: 0.5rem 0.6875rem;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-sm);
+}
+
+.realm-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--au-text-2);
+}
+
+.realm-head strong { color: var(--au-text-1); }
+
+.realm-badge {
+  font-size: 0.625rem;
+  border-radius: 999px;
+  padding: 0.0625rem 0.5rem;
+}
+
+.realm-badge.ok { background: rgba(34, 211, 238, 0.12); color: #22d3ee; }
+.realm-badge.off { background: rgba(255, 255, 255, 0.06); color: var(--au-text-4); }
+
+.realm-url {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.25rem;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+  word-break: break-all;
+}
+
+.realm-url .mono { flex: 1; }
+
+.sub-realm { font-style: normal; color: var(--au-text-4); font-size: 0.6875rem; }
 
 /* 一键导入到客户端 */
 .scheme-row {

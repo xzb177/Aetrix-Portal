@@ -23,9 +23,10 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import models, realms
 from backend.database import get_db, SessionLocal
 from backend.emby_server import models as em
+from backend.emby_server import nodes as node_lib
 from backend.emby_server.api import TICKS, SERVER_ID
 from backend.emby_server.auth import (
     ensure_emby_credentials,
@@ -49,24 +50,29 @@ from backend.emby_server import transfer115
 logger = logging.getLogger(__name__)
 
 
-def _config_value(db: Session | None, key: str) -> str:
-    """读取 SystemConfig 原始值（不做大小写转换——URL 路径区分大小写）"""
+def _config_value(db: Session | None, key: str, realm_id: int | None = None) -> str:
+    """读取 SystemConfig 原始值（不做大小写转换——URL 路径区分大小写）
+
+    Emby 入口那几个键是**一个服一个**的（默认服沿用历史键名），见 ``backend/realms.py``。
+    """
     if db is None:
         return ""
     try:
+        if key in realms.REALM_CONFIG_BASES:
+            return realms.realm_config(db, key, realm_id)
         row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     except Exception:  # noqa: BLE001 — 读配置失败不应影响接口返回
         return ""
     return ((row.value if row else "") or "").strip()
 
 
-def emby_active_mode(db: Session | None) -> str:
-    """当前生效的 Emby 服务入口模式：managed_ea（自建/单进程）或 external（已有 Emby 服）"""
-    return (_config_value(db, "emby_active_mode") or "managed_ea").lower()
+def emby_active_mode(db: Session | None, realm_id: int | None = None) -> str:
+    """某个服生效的 Emby 服务入口模式：managed_ea（自建/单进程）或 external（已有 Emby 服）"""
+    return (_config_value(db, "emby_active_mode", realm_id) or "managed_ea").lower()
 
 
-def configured_emby_url(db: Session | None = None) -> str:
-    """只返回后台「Emby 服务入口」里配置的地址（未配置返回空串）
+def configured_emby_url(db: Session | None = None, realm_id: int | None = None) -> str:
+    """只返回该服「Emby 服务入口」里配置的地址（未配置返回空串）
 
     1. 已有 Emby 服（external）→ emby_external_url
     2. 分离部署 EA（managed_ea 且已填地址）→ emby_managed_url
@@ -78,27 +84,35 @@ def configured_emby_url(db: Session | None = None) -> str:
     if own_session:
         try:
             db = SessionLocal()
+
         except Exception:  # noqa: BLE001
             db = None
     try:
-        if emby_active_mode(db) == "external":
-            return _config_value(db, "emby_external_url").rstrip("/")
-        return _config_value(db, "emby_managed_url").rstrip("/")
+        if emby_active_mode(db, realm_id) == "external":
+            return _config_value(db, "emby_external_url", realm_id).rstrip("/")
+        return _config_value(db, "emby_managed_url", realm_id).rstrip("/")
     finally:
         if own_session and db is not None:
             db.close()
 
 
-def resolve_emby_base_url(db: Session | None = None) -> str:
-    """解析「用户应该连接的 Emby 服务器地址」
+def resolve_emby_base_url(db: Session | None = None, realm_id: int | None = None) -> str:
+    """解析「用户应该连接的 Emby 服务器地址」（某个服的）
 
     必须与后台「Emby 服务入口」保存的配置一致，否则会出现“后台填了 EA 地址、
     用户个人中心却仍显示旧的环境变量地址”这种配置不生效的问题。
-    配置优先；都没配（单进程自建模式）才回退环境变量 EMBY_PUBLIC_URL。
+    优先级：服自己填的对外地址 → 该服的服务入口配置 → 环境变量 EMBY_PUBLIC_URL。
     """
-    url = configured_emby_url(db)
+    if realm_id is not None and db is not None:
+        realm = realms.get_realm(db, realm_id)
+        if realm and (realm.url or "").strip():
+            return realm.url.strip().rstrip("/")
+    url = configured_emby_url(db, realm_id)
     if url:
         return url
+    if realm_id is not None and db is not None and realm_id != realms.legacy_realm_id(db):
+        # 非默认服还没配自己的地址：不能回退到默认服的地址（那会把用户导到别的服）
+        return ""
     return os.getenv("EMBY_PUBLIC_URL", "").rstrip("/") or "http://localhost:8000"
 
 
@@ -115,7 +129,11 @@ def ensure_emby_backend_available(request: Request, db: Session = Depends(get_db
     后则必须通过面板的连接测试。切到“已有 Emby”时，本项目自建媒体库/扫描
     功能明确停用，避免用户误以为它能管理另一台服务器。
     """
+    realm_id = realms.active_realm_id(db)
+
     def config(key: str, default: str = "") -> str:
+        if key in realms.REALM_CONFIG_BASES:
+            return realms.realm_config(db, key, realm_id, default).strip().lower()
         row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
         return (row.value if row and row.value is not None else default).strip().lower()
 
@@ -152,18 +170,24 @@ admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自�
 
 # ==================== 用户端 ====================
 
-def _account_card(user: models.WebUser, db: Session) -> dict:
+def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None) -> dict:
     """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）
 
-    服务器地址来自后台「Emby 服务入口」配置（见 resolve_emby_base_url），
+    服务器地址来自该服的「Emby 服务入口」配置（见 ``resolve_emby_base_url``），
     接入已有 Emby 服时不再提供本项目的一键导入 scheme——那台服务器上的账号
     由对方管理，本项目的用户名/密码对它无效。
+
+    多服部署下同一个用户可能在多个服都有订阅，所以账号卡会带上 **每个服的地址与订阅**
+    （``realms``），让客户端知道该连哪一台；顶层字段保持默认服的口径不变。
     """
-    url = resolve_emby_base_url(db)
-    mode = emby_active_mode(db)
+    if realm_id is None:
+        realm_id = realms.active_realm_id(db)
+    url = resolve_emby_base_url(db, realm_id)
+    mode = emby_active_mode(db, realm_id)
     external = mode == "external"
     host = url.split("//")[-1]
-    return {
+    realm = realms.get_realm(db, realm_id)
+    card = {
         "server_id": SERVER_ID,
         "server_name": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
         "base_url": url,
@@ -173,23 +197,69 @@ def _account_card(user: models.WebUser, db: Session) -> dict:
         "emby_username": user.emby_username,
         "emby_password": None,
         "has_password": bool(user.emby_password),
+        "realm_id": realm.id if realm else None,
+        "realm_name": realm.name if realm else "",
         "import_schemes": {} if external else {
             "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
             "senplayer": f"senplayer://importserver?type=emby&name=RoyalBot&address={url}&username={user.emby_username}",
         },
     }
+    card["realms"] = _user_realm_cards(user, db)
+    return card
+
+
+def _user_realm_cards(user: models.WebUser, db: Session) -> list[dict]:
+    """用户在各服的地址与订阅状态（多服时前端按卡片列出）"""
+    now = datetime.now()
+    subs = (db.query(models.UserSubscription)
+            .filter(models.UserSubscription.user_id == user.id,
+                    models.UserSubscription.status == "active",
+                    models.UserSubscription.end_date > now)
+            .order_by(models.UserSubscription.end_date.desc())
+            .all())
+    by_realm: dict[int, models.UserSubscription] = {}
+    for sub in subs:
+        if sub.realm_id and sub.realm_id not in by_realm:
+            by_realm[sub.realm_id] = sub
+    cards: list[dict] = []
+    for realm in realms.list_realms(db, include_disabled=False):
+        sub = by_realm.get(realm.id)
+        if sub is None and realm.id != realms.legacy_realm_id(db):
+            continue  # 没订阅的服不往用户面前推（默认服保留，兼容老前端）
+        mode = emby_active_mode(db, realm.id)
+        cards.append({
+            "id": realm.id,
+            "name": realm.name,
+            "slug": realm.slug,
+            "base_url": resolve_emby_base_url(db, realm.id),
+            "mode": mode,
+            "external": mode == "external",
+            "subscribed": sub is not None,
+            "end_date": sub.end_date.isoformat() if sub and sub.end_date else None,
+            "plan_name": (sub.plan.name if sub and sub.plan else ""),
+            "is_default": realm.id == realms.legacy_realm_id(db),
+        })
+    return cards
 
 
 @user_emby_router.get("/server")
-async def get_server_info(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+async def get_server_info(request: Request,
+                          request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
     """返回账号卡信息：服务器地址 + 自建 Emby 用户名 + 播放器导入 scheme
+
+    ``?realm_id=`` 可以指定要哪个服的地址（多服部署下同一个用户可能持有几个服的会员），
+    不传则用面板当前服。
 
     安全：不返回密码明文。密码仅注册/重置时一次性返回。
     """
     user = request_user
     ensure_emby_credentials(db, user)
-    return _account_card(user, db)
+    realm_id = None
+    raw = request.query_params.get("realm_id")
+    if raw and str(raw).strip().isdigit():
+        realm_id = int(raw)
+    return _account_card(user, db, realm_id)
 
 
 class SetPasswordRequest(BaseModel):
@@ -455,6 +525,9 @@ class LibraryCreate(BaseModel):
     scrape_policy: str = "missing_only"
     # 绑定 115 账号配置档（不同媒体库可用不同账号转存/下载）
     account_115_id: int | None = None
+    # 归属：服（多服运营）与播放节点（多机同时出流）；留空 = 当前服 / 未分配节点
+    realm_id: int | None = None
+    node_id: int | None = None
 
 
 class LibraryUpdate(BaseModel):
@@ -465,6 +538,9 @@ class LibraryUpdate(BaseModel):
     is_enabled: bool | None = None
     scrape_policy: str | None = None
     account_115_id: int | None = None
+    # 归属：服（多服运营）与播放节点（多机同时出流）。显式传 null 表示「不分配」
+    realm_id: int | None = None
+    node_id: int | None = None
 
 
 def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int]) -> None:
@@ -503,25 +579,43 @@ class VirtualLibraryRequest(BaseModel):
 
 
 @admin_emby_router.get("/overview")
-async def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    total_items = db.query(em.MediaItem).count()
-    total_libraries = db.query(em.Library).count()
+async def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
+                         realm_id: int | None = None):
+    """媒体库概览：默认只统计当前服（“全部服”传 realm_id=0）"""
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    # 内容按「NULL = 所有服」处理（见 realms.scope_inclusive）：未标注服的老库不会被藏起来
+    lib_query = realms.scope_inclusive(db.query(em.Library), em.Library.realm_id, scope_id)
+    total_libraries = lib_query.count()
+    lib_ids = [row[0] for row in realms.scope_inclusive(
+        db.query(em.Library.id), em.Library.realm_id, scope_id).all()]
+    total_items = (db.query(em.MediaItem).filter(em.MediaItem.library_id.in_(lib_ids)).count()
+                   if lib_ids else 0)
     active_sessions = (
         db.query(em.PlaybackSession).filter(em.PlaybackSession.ended_at.is_(None)).count()
     )
     total_users = db.query(models.WebUser).count()
+    realm = realms.get_realm(db, scope_id) if scope_id else None
     return {
         "total_items": total_items,
         "total_libraries": total_libraries,
         "active_sessions": active_sessions,
         "total_users": total_users,
         "server_id": SERVER_ID,
+        "realm_id": scope_id,
+        "realm_name": realm.name if realm else "全部服",
     }
 
 
 @admin_emby_router.get("/libraries")
-async def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    libs = db.query(em.Library).order_by(em.Library.id).all()
+async def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
+                         realm_id: int | None = None):
+    """媒体库清单（按服；realm_id=0 表示全部服）"""
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope_inclusive(db.query(em.Library), em.Library.realm_id, scope_id)
+    libs = query.order_by(em.Library.id).all()
+    nodes = {n.id: n for n in db.query(models.RemoteServer)
+             .filter(models.RemoteServer.kind == "ea").all()}
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
     return {"libraries": [
         {
             "id": lib.id, "guid": lib.guid, "name": lib.name,
@@ -537,9 +631,17 @@ async def list_libraries(staff: models.WebUser = Depends(require_staff), db: Ses
             "account_115_id": getattr(lib, "account_115_id", None),
             "last_scan_at": lib.last_scan_at.isoformat() if lib.last_scan_at else None,
             "item_count": lib.item_count,
+            # 服与播放节点：多服 / 多机部署下“这个库归谁”必须一眼可见
+            "realm_id": lib.realm_id,
+            "realm_name": realm_names.get(lib.realm_id, "") if lib.realm_id else "",
+            "node_id": lib.node_id,
+            "node_name": (nodes[lib.node_id].name if lib.node_id in nodes else ""),
+            "node_online": (nodes[lib.node_id].last_check_ok is True) if lib.node_id in nodes else None,
         }
         for lib in libs
     ],
+        "realm_id": scope_id,
+        "active_realm_id": realms.active_realm_id(db),
         "scrape_policies": [
             {"value": "missing_only", "label": "仅缺失时刮削"},
             {"value": "3m", "label": "3 个月重刮"},
@@ -557,12 +659,23 @@ async def create_library(req: LibraryCreate, staff: models.WebUser = Depends(req
         raise HTTPException(status_code=400, detail="请至少配置一个路径或一个存储挂载")
     _validate_library_sources(db, req.paths, req.mount_ids)
     guid = uuid.uuid4().hex[:32]
+    realm_id = req.realm_id or realms.active_realm_id(db)
+    if not realms.get_realm(db, realm_id):
+        raise HTTPException(status_code=400, detail=f"服不存在: #{realm_id}")
+    node_id = req.node_id
+    if node_id is not None:
+        node = db.query(models.RemoteServer).filter(models.RemoteServer.id == node_id).first()
+        if not node or node.kind != "ea":
+            raise HTTPException(status_code=400, detail="只能把媒体库分配给一台后端服（EA）")
+        if node.realm_id and node.realm_id != realm_id:
+            raise HTTPException(status_code=400, detail="这台节点属于另一个服，不能分配本服的媒体库")
     lib = em.Library(
         guid=guid, name=req.name, collection_type=req.collection_type,
         paths=",".join(req.paths), mount_ids=_mount_ids_field(db, req.mount_ids),
         is_enabled=req.is_enabled,
         scrape_policy=normalize_scrape_policy(req.scrape_policy),
         account_115_id=req.account_115_id,
+        realm_id=realm_id, node_id=node_id,
     )
     db.add(lib)
     db.commit()
@@ -594,6 +707,33 @@ async def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser 
     if "account_115_id" in req.model_fields_set:
         # 允许显式解绑（传 null）
         lib.account_115_id = req.account_115_id
+    if "realm_id" in req.model_fields_set:
+        if req.realm_id is None:
+            # 显式解绑：未标注服 = 所有服可见（与老数据、未分配节点的口径一致）
+            lib.realm_id = None
+        else:
+            if not realms.get_realm(db, req.realm_id):
+                raise HTTPException(status_code=400, detail=f"服不存在: #{req.realm_id}")
+            # 换服时把绑定的挂载一起带过去，否则库会引用到别的服的存储
+            lib.realm_id = req.realm_id
+            for mount_id in mount_lib.parse_mount_ids(lib):
+                mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
+                if mount and mount.realm_id != req.realm_id:
+                    mount.realm_id = req.realm_id
+            if lib.node_id:
+                node = db.query(models.RemoteServer).filter(models.RemoteServer.id == lib.node_id).first()
+                if node and node.realm_id != req.realm_id:
+                    lib.node_id = None  # 节点属于别的服，解绑避免跨服出流
+    if "node_id" in req.model_fields_set:
+        if req.node_id is None:
+            lib.node_id = None
+        else:
+            node = db.query(models.RemoteServer).filter(models.RemoteServer.id == req.node_id).first()
+            if not node or node.kind != "ea":
+                raise HTTPException(status_code=400, detail="只能把媒体库分配给一台后端服（EA）")
+            if node.realm_id and lib.realm_id and node.realm_id != lib.realm_id:
+                raise HTTPException(status_code=400, detail="这台节点属于另一个服，不能分配本服的媒体库")
+            lib.node_id = node.id
     db.commit()
     # 配置变更后需重新触发扫描才生效：扫描任务使用固定配置快照，
     # 所以旧路径不会被正在跑的任务继续扫描，新路径也不会被旧快照漏掉
@@ -620,6 +760,22 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
+
+    # 已分配给某台节点的库，只有那台机器碰得到文件（本机路径 / rclone / 挂载）——
+    # 由面板本地扫描只会得到一堆 failed_roots，所以转发过去让归属节点扫。
+    owner = node_lib.library_owner(db, lib)
+    if owner is not None and owner.id != node_lib.self_node_id(db):
+        forward = await node_lib.push_scan(owner.url, lib.id)
+        if not forward.get("ok"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"这个库归「{owner.name}」扫描，但转发失败了：{forward.get('error')}"
+                "（请检查该节点的地址与两端 SECRET_KEY）",
+            )
+        return {"success": True, "message": f"已让节点「{owner.name}」开始扫描",
+                "forwarded_to": {"id": owner.id, "name": owner.name, "url": owner.url},
+                "library_id": lib.id}
+
     if is_scan_active(lib.id):
         raise HTTPException(status_code=409, detail="该媒体库正在扫描中")
     import threading
@@ -923,6 +1079,7 @@ def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = 
     return {
         "id": mount.id,
         "name": mount.name,
+        "realm_id": mount.realm_id,
         "mount_type": mount.mount_type,
         "mount_type_label": mount_lib.MOUNT_TYPE_LABELS.get(mount.mount_type, mount.mount_type),
         "kind": kind,
@@ -956,6 +1113,8 @@ class MountCreate(BaseModel):
     config: dict = {}
     is_enabled: bool = True
     remark: str = ""
+    # 归属哪个服（留空 = 当前服）：存储是主机相对资源，跟着服走
+    realm_id: int | None = None
 
 
 class MountUpdate(BaseModel):
@@ -964,6 +1123,7 @@ class MountUpdate(BaseModel):
     config: dict | None = None
     is_enabled: bool | None = None
     remark: str | None = None
+    realm_id: int | None = None
 
 
 class MountTestRequest(BaseModel):
@@ -978,17 +1138,24 @@ class MountBrowseParams(BaseModel):
 
 
 @admin_emby_router.get("/mounts")
-async def list_mounts(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    mounts = db.query(em.StorageMount).order_by(em.StorageMount.id).all()
-    ea_map = mount_health.ea_mount_map(db)
-    snapshot = mount_health.read_ea_health(db)
+async def list_mounts(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
+                     realm_id: int | None = None):
+    """存储挂载清单（按服；realm_id=0 表示全部服）"""
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope_inclusive(db.query(em.StorageMount), em.StorageMount.realm_id, scope_id)
+    mounts = query.order_by(em.StorageMount.id).all()
+    ea_map = mount_health.ea_mount_map(db, scope_id)
+    snapshot = mount_health.read_ea_health(db, scope_id)
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
     return {
         "mounts": [_serialize_mount(db, m, ea_map) for m in mounts],
         # 类型元数据（标签 / 说明 / 需要哪些字段）由后端下发，前端不再自己维护一份
         "mount_types": [dict(t) for t in mount_lib.MOUNT_TYPES],
         # 当前谁在出流：EA 分离部署 / 外部 Emby / 面板自己。
         # 「被媒体库引用却 EA 不可达」只有 EA 才是阻断性问题，前端据此决定要不要报红。
-        "playback_node": mount_health.playback_node(db),
+        "playback_node": mount_health.playback_node(db, scope_id),
+        "realm_id": scope_id,
+        "realm_names": realm_names,
         "ea_health": {
             "ok": bool(snapshot.get("ok")),
             "checked_at": snapshot.get("checked_at"),
@@ -1004,7 +1171,8 @@ async def check_all_mounts(staff: models.WebUser = Depends(require_staff),
 
     只解决「这台面板自己能不能碰到存储」；EA 那一侧要看 ``/mounts`` 响应里的
     ``ea_reachable``（由 EA 服务入口拉取）。"""
-    health = await run_in_threadpool(mount_health.mounts_health, db, "panel")
+    health = await run_in_threadpool(mount_health.mounts_health, db, "panel",
+                                     realms.active_realm_id(db))
     checked_at = datetime.now()
     for item in health.get("mounts", []):
         if item.get("ok") is None:
@@ -1051,10 +1219,13 @@ async def create_mount(req: MountCreate, staff: models.WebUser = Depends(require
         raise HTTPException(status_code=400, detail=f"挂载名称已存在: {name}")
     config = _merge_mount_config({}, req.config)
     _validate_mount_fields(req.mount_type, req.path, config)
+    realm_id = req.realm_id or realms.active_realm_id(db)
+    if not realms.get_realm(db, realm_id):
+        raise HTTPException(status_code=400, detail=f"服不存在: #{realm_id}")
     mount = em.StorageMount(
         name=name, mount_type=req.mount_type, path=(req.path or "").strip(),
         config=mount_lib.dump_config(config), is_enabled=req.is_enabled,
-        remark=(req.remark or "")[:300],
+        remark=(req.remark or "")[:300], realm_id=realm_id,
     )
     db.add(mount)
     db.commit()
@@ -1089,6 +1260,15 @@ async def update_mount(mount_id: int, req: MountUpdate,
         mount.is_enabled = req.is_enabled
     if req.remark is not None:
         mount.remark = req.remark[:300]
+    if "realm_id" in req.model_fields_set and req.realm_id is not None:
+        if not realms.get_realm(db, req.realm_id):
+            raise HTTPException(status_code=400, detail=f"服不存在: #{req.realm_id}")
+        mount.realm_id = req.realm_id
+        # 引用本挂载的媒体库跟着走，否则库会跨服引用存储
+        for lib in db.query(em.Library).filter(
+                em.Library.mount_ids.ilike(f"%{mount.id}%")).all():
+            if str(mount.id) in [x.strip() for x in (lib.mount_ids or "").split(",") if x.strip()]:
+                lib.realm_id = req.realm_id
     db.commit()
     db.refresh(mount)
     # 路径/配置变更后需要重新扫描才生效（扫描任务使用固定配置快照）
