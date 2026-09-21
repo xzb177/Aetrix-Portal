@@ -144,7 +144,11 @@ def _resolve_plan(db: Session):
 
 
 def grant_membership_days(db: Session, user: models.WebUser, days: int) -> models.UserSubscription:
-    """按天数开通或延长会员，返回生效中的订阅"""
+    """按天数开通或延长会员，返回生效中的订阅
+
+    `with_for_update()` 在 PostgreSQL 下锁住该订阅行，避免同一用户并发叠加天数时
+    两边读到同一到期时间、后提交的覆盖前者（丢天数）；SQLite 忽略该子句。
+    """
     total = PERMANENT_DAYS if days < 0 else max(int(days), 1)
     now = datetime.now()
     sub = (
@@ -155,6 +159,7 @@ def grant_membership_days(db: Session, user: models.WebUser, days: int) -> model
             models.UserSubscription.end_date > now,
         )
         .order_by(models.UserSubscription.end_date.desc())
+        .with_for_update()
         .first()
     )
     if sub:

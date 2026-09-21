@@ -10,10 +10,14 @@ from sqlalchemy.orm import sessionmaker, Session, relationship
 import os
 
 # 用户端数据库 - 使用 PostgreSQL
-USER_DB_URL = os.getenv(
-    "DB_URL",
-    "postgresql+psycopg2://royalbot:royalbot_prod_2026_secure@royalbot_postgres:5432/royalbot"
-)
+# 安全：这里曾经硬编码过生产库口令（已随仓库泄露，务必更换）。现在必须显式注入
+# DB_URL，不再提供任何内置的兜底口令。
+USER_DB_URL = os.getenv("DB_URL")
+if not USER_DB_URL:
+    raise RuntimeError(
+        "缺少 DB_URL 环境变量：旧版拆分栈需要显式指定 PostgreSQL 连接串，"
+        "例如 DB_URL=postgresql+psycopg2://user:密码@host:5432/db"
+    )
 
 # 创建引擎
 user_engine = create_engine(

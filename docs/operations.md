@@ -269,5 +269,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
    docker volume create royalbot_user_data
    ```
 2. 它**不包含统一后端**（`backend/`）。`backend/Dockerfile` 虽然能把统一后端容器化（`EXPOSE 8000`、健康检查打 `/api/health`），但当前 compose 并未引用它。
+3. 数据库口令改为**必须从环境注入**：旧版 compose / `admin_backend/admin_database_user.py` 里曾经硬编码过生产库口令，已移除。现在启动前需要：
+   ```bash
+   export POSTGRES_PASSWORD='你的数据库口令'   # 未设置时 compose 直接报错退出
+   ```
+   > 如果你用过旧版拆分栈，请**立即更换 PostgreSQL 与 Redis 口令**——旧口令曾以明文提交进仓库历史。
 
 统一后端 + 前后端静态托管的组合已经不需要三个容器，**新部署请直接按本文档走**；只有要接管一套既有拆分部署时才继续用 `deploy.sh`（`--build` / `--status` / `--logs` / `--update` / `--rollback` / `--backup` / `--restore` 等）。

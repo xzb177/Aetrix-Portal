@@ -99,6 +99,9 @@ jobs:
       - name: 安全加固冒烟（WS 鉴权 / 通知鉴权 / 健康检查 / 入口地址 / 后台登录审计）
         run: python scripts/smoke_test_security_hardening.py
 
+      - name: 并发与经济链冒烟（兑换码/签到防重、积分不丢更新、邀请幂等、限流 IP）
+        run: python scripts/smoke_test_concurrency.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend

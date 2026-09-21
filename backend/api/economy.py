@@ -27,6 +27,8 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -71,17 +73,28 @@ def _add_points(
     db: Session, user: models.WebUser, amount: int,
     type_: str, description: str, ref_id: str | None = None,
 ) -> int:
-    """加积分并写台账（amount 可为负）"""
-    user.points = (user.points or 0) + amount
+    """加积分并写台账（amount 可为负）
+
+    用 SQL 级自增（`points = coalesce(points,0) + amount`）而不是 Python 读改写：
+    后者在并发下会丢更新（两个请求各自读到同一旧余额，后提交的覆盖前者）。
+    返回写入后的真实余额。
+    """
+    db.query(models.WebUser).filter(models.WebUser.id == user.id).update(
+        {models.WebUser.points: func.coalesce(models.WebUser.points, 0) + amount},
+        synchronize_session="fetch",
+    )
+    balance = int(
+        db.query(models.WebUser.points).filter(models.WebUser.id == user.id).scalar() or 0
+    )
     db.add(models.PointsLog(
         user_id=user.id,
         amount=amount,
-        balance_after=user.points,
+        balance_after=balance,
         type=type_,
         description=description,
         ref_id=ref_id,
     ))
-    return user.points
+    return balance
 
 
 def _checkin_rules(db: Session) -> dict:
@@ -178,6 +191,17 @@ async def do_checkin(
         streak=streak,
     )
     db.add(record)
+    try:
+        # 唯一索引 (user_id, checkin_date) 是并发防重的最后一道门：
+        # 先 flush 让冲突在此处暴露，避免「先发积分、后落库失败」或直接 500
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="今天已经签到过啦")
+    except OperationalError:
+        # 数据库写锁竞争：没发奖也没落库，让客户端重试
+        db.rollback()
+        raise HTTPException(status_code=409, detail="签到请求冲突，请稍后重试")
     balance = _add_points(
         db, current_user, reward, "checkin",
         f"每日签到（连续 {streak} 天）", f"checkin:{today.strftime('%Y%m%d')}",
@@ -240,13 +264,18 @@ async def points_log(
 
 def _grant_subscription(db: Session, user: models.WebUser, plan: models.SubscriptionPlan,
                         days: int, source: str, ref_id: str) -> models.UserSubscription:
-    """发放订阅：已有有效订阅则顺延，否则新建"""
+    """发放订阅：已有有效订阅则顺延，否则新建
+
+    `with_for_update()` 在 PostgreSQL 下是真正的行锁，避免同一用户并发发放
+    （同时核销两张码 / 码与支付回调撞车）时两边都读到同一到期时间、互相覆盖；
+    SQLite 会忽略它，但 SQLite 写入本身是库级串行的。
+    """
     now = datetime.now()
     active = db.query(models.UserSubscription).filter(
         models.UserSubscription.user_id == user.id,
         models.UserSubscription.status == "active",
         models.UserSubscription.end_date > now,
-    ).order_by(models.UserSubscription.end_date.desc()).first()
+    ).order_by(models.UserSubscription.end_date.desc()).with_for_update().first()
 
     if active:
         active.end_date = active.end_date + timedelta(days=days)
@@ -298,13 +327,42 @@ async def redeem_exchange_code(
     ).first()
 
     now = datetime.now()
-    if (
-        code is None
-        or not code.is_active
-        or (code.expires_at and code.expires_at < now)
-        or code.use_count >= code.max_uses
-    ):
+    if code is None or not code.is_active or (code.expires_at and code.expires_at < now):
         raise HTTPException(status_code=400, detail="兑换码无效或已过期")
+
+    # 先原子占位再去发奖：只有仍可用的兑换码才会被 +1，并发下第二个请求 rowcount=0，
+    # 因此不会出现「同一张单次码被同时核销两次、发两份奖励」。
+    try:
+        claimed = (
+            db.query(models.ExchangeCode)
+            .filter(
+                models.ExchangeCode.id == code.id,
+                models.ExchangeCode.is_active.is_(True),
+                or_(
+                    models.ExchangeCode.expires_at.is_(None),
+                    models.ExchangeCode.expires_at > now,
+                ),
+                or_(
+                    models.ExchangeCode.max_uses.is_(None),
+                    models.ExchangeCode.use_count < models.ExchangeCode.max_uses,
+                ),
+            )
+            .update(
+                {models.ExchangeCode.use_count: func.coalesce(models.ExchangeCode.use_count, 0) + 1},
+                synchronize_session=False,
+            )
+        )
+    except OperationalError:
+        # SQLite 下读写事务升级失败（并发写入）：没发奖也没占位，让客户端重试
+        db.rollback()
+        raise HTTPException(status_code=409, detail="兑换码正在核销中，请稍后重试")
+    if not claimed:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="兑换码已用尽或已过期")
+
+    # 占位成功后才读回详情：use_count 是 SQL 级自增，身份映射里的旧实例要 refresh，
+    # 否则下面判断「用满停用」会拿到过期的 0
+    db.refresh(code)
 
     result: dict = {"success": True}
     if code.type == "points":
@@ -319,6 +377,8 @@ async def redeem_exchange_code(
             models.SubscriptionPlan.id == code.plan_id
         ).first() if code.plan_id else None
         if not plan:
+            # 已原子占位但无法履约：回滚，别白白吃掉一次使用次数
+            db.rollback()
             raise HTTPException(status_code=400, detail="兑换码关联套餐不存在")
         subscription = _grant_subscription(
             db, current_user, plan, code.duration_days, "exchange", code_str
@@ -328,14 +388,15 @@ async def redeem_exchange_code(
                       end_date=subscription.end_date.isoformat(),
                       message=f"兑换成功，「{plan.name}」× {code.duration_days} 天")
     else:
+        db.rollback()
         raise HTTPException(status_code=400, detail="兑换码类型不支持")
 
-    # 核销审计
-    code.use_count = (code.use_count or 0) + 1
+    # 核销审计（use_count 已在上面原子 +1，这里只补使用者并处理用满停用）
     used = [i for i in str(code.used_by or "").split(",") if i.strip()]
-    used.append(str(current_user.id))
-    code.used_by = ",".join(used)
-    if code.use_count >= code.max_uses:
+    if str(current_user.id) not in used:
+        used.append(str(current_user.id))
+    code.used_by = ",".join(used)[:500]
+    if code.max_uses and (code.use_count or 0) >= code.max_uses:
         code.is_active = False
     db.commit()
 

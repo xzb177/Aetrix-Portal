@@ -32,7 +32,8 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - USER_BACKEND_DB_PATH=/shared/user_backend/user_backend/royalbot.db
-      - DB_URL=postgresql://royalbot:royalbot_prod_2026_secure@royalbot_postgres:5432/royalbot
+      # 口令必须从环境注入（不再硬编码）：POSTGRES_PASSWORD 未设置时 compose 会直接报错退出
+      - DB_URL=postgresql://royalbot:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@royalbot_postgres:5432/royalbot
     volumes:
       - royalbot_user_data:/shared/user_backend
     healthcheck:

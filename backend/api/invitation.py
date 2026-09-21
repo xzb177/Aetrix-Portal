@@ -17,6 +17,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -93,6 +94,14 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     if not inviter:
         return {"applied": False}
 
+    # 幂等：同一个被邀请人只能建立一次关系（重试/重复调用不得重复发奖）
+    existing = db.query(models.InvitationRecord).filter(
+        models.InvitationRecord.invitee_id == user.id
+    ).first()
+    if existing:
+        logger.info("邀请关系已存在，跳过重复发奖: invitee=%s", user.id)
+        return {"applied": False}
+
     # 记录邀请关系
     record = models.InvitationRecord(
         inviter_id=inviter.id,
@@ -114,6 +123,19 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     )
 
     code.use_count = (code.use_count or 0) + 1
+    try:
+        # 唯一索引 invitee_id 兜底：并发重复调用时让冲突在此暴露并整体回滚，
+        # 不会出现「发了奖但没有关系记录」
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        logger.info("邀请关系并发重复，已回滚: invitee=%s", user.id)
+        return {"applied": False}
+    except OperationalError:
+        # 数据库写锁竞争（SQLite 读写事务升级失败）：整体回滚，不留下半截发奖
+        db.rollback()
+        logger.warning("邀请发奖遇到写锁竞争，已回滚: invitee=%s", user.id)
+        return {"applied": False}
 
     logger.info("邀请关系建立: inviter=%s invitee=%s code=%s",
                 inviter.id, user.id, code_str)

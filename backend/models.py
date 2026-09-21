@@ -728,7 +728,8 @@ class InvitationRecord(Base):
 
     __table_args__ = (
         Index('idx_inv_inviter', 'inviter_id'),
-        Index('idx_inv_invitee', 'invitee_id'),
+        # 一个被邀请人只能有一条关系记录：并发重复发奖的最后一道门
+        Index('idx_inv_invitee', 'invitee_id', unique=True),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
