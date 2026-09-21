@@ -140,7 +140,7 @@ journalctl -u aetrix-em -f
 
 ## 7. Nginx + HTTPS（按域名授权）
 
-EM 建议放在**面板域名**上，例如 `panel.example.com`。仓库给了完整示例 `nginx/nginx.conf`（Cloudflare 真实 IP、gzip、TLS、安全头），下面是站点级最小配置：
+EM 建议放在**面板域名**上，例如 `panel.example.com`。下面是站点级最小配置（仓库里那份面向旧拆分栈的 `nginx.conf` 已随旧栈一起删除，请按下面的模板写自己的）：
 
 ```nginx
 server {
@@ -188,7 +188,7 @@ server {
 
 单进程模式（`ENABLE_EMBY_GATEWAY=true`）不需要 `/emby/` 那段，全部转给 `127.0.0.1:8000` 即可。
 
-> ⚠️ 仓库里提交了 `nginx/ssl/fullchain.pem` 与 `nginx/ssl/privkey.pem`。**不要直接用于生产**，请换成你自己的证书；若那两个文件里其实是可用的真实私钥，请立即吊销重签。
+> ⚠️ 仓库里曾经提交过一份真实域名（`login.laodaemby.xyz`）的证书与 **EC 私钥**（`nginx/ssl/`），已随旧栈删除。如果你用过它，**视为私钥已泄露：立即吊销并重签**。
 
 ## 8. 首次登录与管理
 
@@ -203,7 +203,7 @@ server {
    它写的是当前 `DATABASE_URL` 指向的那个库（`web_users.is_staff = True`），并补齐 Emby 客户端凭据（门户密码即播放密码）；幂等，可重复执行。
    不带 `-p` 时，账号已存在会**重置为新的随机密码**并打印（忘了密码时正好用它），只升级权限请加 `--no-password`。
 
-   > `scripts/reset_admin_password.py` 面向 v2.0 之前的**旧拆分栈**（改的是 `admin_backend` 的 `admin_users` 表），在 EM / EA 这套架构下用不了。
+   > 旧拆分栈用的 `scripts/reset_admin_password.py` 已随旧栈删除；在 EM / EA 这套架构下请一律使用上面的 `scripts/create_admin.py`。
 2. 门户：`https://panel.example.com/`
 3. 管理后台：`https://panel.example.com/admin/`（同一套账号，非 `is_staff` 会被拒）
 
@@ -283,7 +283,13 @@ curl -X POST https://panel.example.com/api/admin/emby/libraries/repair/run -H "A
 | 卡码体系 | 注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码的生成、筛选、停用与回收 |
 | 经济设置 | 支付网关（易支付兼容）、签到奖励、邀请返利比例 |
 
-**可选组件**：`telegram_login_bot/` 是一个独立的轻量 Telegram 登录 Bot，需要 `TELEGRAM_LOGIN_BOT_TOKEN`（以及 `WEB_URL` 指向面板地址），单独一个进程运行，不影响 EM 主服务。
+**已移除的组件**：`telegram_login_bot/` 已从仓库删除。它调用的是 `{WEB_URL}/api/user/auth/telegram-login`，
+而 EM 从来没有实现过这个端点（也没有任何前端入口），也就是说这个 Bot 的登录链接必然是 404，
+属于「看起来能用、实际跑不通」的残留，连同旧栈一起清掉了。
+
+> 如果你确实要 Telegram 免密登录，需要新做一套带签名校验的链路（Bot 与 EM 共享一个密钥，
+> EM 只接受 Bot 签名的登录请求），不能做成「传 telegram_id 就登录」——那等于任何人知道对方 ID
+> 就能登进别人账号。需要时告诉开发这边，再单独实现。
 
 ## 11. 验证清单
 

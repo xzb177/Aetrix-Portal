@@ -2,6 +2,45 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.15] - 2026-09-21
+
+本次清掉旧架构残留，并重审全部功能链：修掉三条「看着能用、实际不对」的链路
+（公告广播、通知投递回执、支付履约后的站内信）。
+
+### 修复 (Fixed)
+- **公告只发给当时在线的用户**：`POST/PUT /api/admin/announcements` 走的是
+  `NotificationService.broadcast`，而它只遍历「当前 WebSocket 在线用户」，
+  于是离线用户**永远收不到这条公告的站内消息**，接口却回了一句「已推送给所有用户」。
+  现在 `notify_all_users` 会给**每个启用中的用户**落站内消息（禁用账号不投），
+  再对其中在线的人做实时推送，接口返回真实送达人数（`notified_users`）。
+- **支付/补单履约后的站内信被静默丢弃**：`_fulfill_order` 在履约事务**提交之前**就调通知，
+  通知服务另开 session 写站内信，在 SQLite 上属于「读事务升级为写事务」，会被直接判为
+  `database is locked`（不会等锁，`busy_timeout` 无效），结果是**钱收了、用户的「充值成功」站内信没了**。
+  现在履约只返回「待发通知」列表，由调用方在 `db.commit()` 之后统一发（`send_fulfill_notifications`）。
+- **邮件 / Telegram 通知「假成功」**：两个渠道的发送主体此前是 TODO 注释，
+  却一律往通知历史里写 `status="sent"`——后台看起来「已发送」，实际一条都没出去。
+  现在真正投递（SMTP / Bot API），失败如实记 `failed` 并写入 `error_message`（新增同名自动迁移列）。
+
+### 变更 (Changed)
+- **删除旧拆分栈的全部残留**：`admin_backend/`、`user_backend/`、`docker-compose.yml`、
+  `deploy.sh` / `update.sh` / `dev.sh`、旧 `.env` 模板、旧 `nginx.conf`、`user_frontend_dist/`，
+  以及从未被文档使用、且 `nginx.conf` 指向已删除服务的三个 `Dockerfile` 与两个前端 `nginx.conf`。
+- **删除跑不通的 Telegram 登录 Bot**：`telegram_login_bot/` 调用的是
+  `{WEB_URL}/api/user/auth/telegram-login`，而 EM 从未实现该端点、前端也没有入口，
+  登录链接必然是 404；连同它在部署文档里的说明一起移除（要做请另做带签名校验的链路）。
+- **删除过时文档**：根目录的 `FIX_REPORT.md`、`FRONTEND_BACKEND_LINKAGE.md`
+  与 `admin_frontend/docs/navigation-architecture.md`（描述的是未实现的导航重构，
+  其组件与配置文件在代码里都不存在），以及 `docs/route-admin-design.md`、
+  `pytest.ini` 与走开发库的旧 `tests/`。
+
+### 新增 (Added)
+- `scripts/smoke_test_ops_v260.py` 增加公告广播与通知渠道断言：离线用户也收到公告、
+  禁用账号不投递、SMTP/TG 失败必须记 `failed` 而不是 `sent`。
+- `scripts/smoke_test_economy.py` 增加履约通知断言：待发通知列表 + 提交后站内信真落库 + 重复回调不重复通知。
+- `scripts/smoke_test_admin_account.py` 增加门户免登（SSO）断言：升级前后同一个门户 token
+  都能直接进后台，管理员从门户登录同样免登。
+- `scripts/smoke_test_v251.py` 增加求片链路的端到端断言：用户提交 → 管理端列表/审批 → 用户看到状态并收到站内信。
+
 ## [2.6.14] - 2026-09-21
 
 本次修复上一轮审查里剩下的两类问题：**经济链的并发竞态**与**限流可被伪造头绕过**，

@@ -22,7 +22,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.6.14'
+const APP_VERSION = 'v2.6.15'
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)

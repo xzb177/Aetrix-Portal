@@ -91,6 +91,28 @@ check("普通账号被升级为管理员",
       created3 is False and bool(promoted.is_staff) and applied3 is None)
 check("升级后可用原密码登录后台", admin_login("member", "member1234").status_code == 200)
 
+# ==================== 4b. 门户免登（SSO）：用户端 token 直接接管后台会话 ====================
+# 后台前端在未持后台会话时会拿 localStorage 里的门户 access_token 调 /api/admin/auth/me。
+# 这里是这条链的后端侧的硬保证：同一个 token、同一个人，登录过一次就不该再输一遍密码。
+r = client.get("/api/admin/auth/me", headers={"Authorization": f"Bearer {member_token}"})
+check("升级后，升级前的门户 token 直接免登后台",
+      r.status_code == 200 and r.json().get("username") == "member", f"HTTP {r.status_code}")
+
+r = client.post("/api/user/auth/login", json={"username": "member", "password": "member1234"})
+fresh_portal = (r.json() or {}).get("access_token")
+check("门户重新登录拿得到 token", r.status_code == 200 and bool(fresh_portal), f"HTTP {r.status_code}")
+r = client.get("/api/admin/auth/me", headers={"Authorization": f"Bearer {fresh_portal}"})
+check("门户重新登录的 token 同样免登后台", r.status_code == 200, f"HTTP {r.status_code}")
+
+r = client.post("/api/user/auth/login", json={"username": "boss", "password": PASSWORD})
+boss_portal = (r.json() or {}).get("access_token")
+r = client.get("/api/admin/auth/me", headers={"Authorization": f"Bearer {boss_portal}"})
+check("管理员从门户登录后也能免登后台",
+      r.status_code == 200 and r.json().get("is_staff") is True, f"HTTP {r.status_code}")
+
+r = client.get("/api/health/detailed")
+check("免登链不影响公开健康检查", r.status_code == 200, f"HTTP {r.status_code}")
+
 # ==================== 5. 重置密码 ====================
 old_hash = db.query(models.WebUser).filter(models.WebUser.username == "boss").first().password_hash
 user3, created4, applied4 = create_admin.upsert_admin(db, "boss", reset_password=True)

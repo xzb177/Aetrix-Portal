@@ -109,35 +109,61 @@ class EmailChannel(NotificationChannel):
                 logger.warning(f"用户 {user_id} 没有邮箱地址")
                 return False
 
-            # TODO: 实现邮件发送逻辑
-            # import smtplib
-            # from email.mime.text import MIMEText
-            # msg = MIMEText(content, 'plain', 'utf-8')
-            # msg['Subject'] = title
-            # msg['From'] = self.smtp_user
-            # msg['To'] = user.email
-            # ...
+            # 真正投递：SMTP 发送失败必须如实上报，不能记录成 sent
+            # （此前这里只写了一条 status="sent" 的历史记录，邮件从未发出）
+            ok, error = await asyncio.to_thread(self._deliver, user.email, title, content)
 
-            # 记录通知历史
             history = models.NotificationHistory(
                 notification_type="email",
                 target=user.email,
                 title=title,
                 content=content,
-                status="sent",
-                sent_at=datetime.now()
+                status="sent" if ok else "failed",
+                error_message=error,
+                sent_at=datetime.now() if ok else None,
             )
             db.add(history)
             db.commit()
 
-            logger.info(f"邮件已发送给用户 {user_id}: {title}")
-            return True
+            if ok:
+                logger.info(f"邮件已发送给用户 {user_id}: {title}")
+            else:
+                logger.error(f"邮件发送失败（用户 {user_id}）: {error}")
+            return ok
 
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
             if db:
                 db.rollback()
             return False
+
+    def _deliver(self, to_email: str, title: str, content: str) -> tuple[bool, Optional[str]]:
+        """同步 SMTP 投递（放在线程里跑，避免阻塞事件循环）"""
+        import smtplib
+        from email.mime.text import MIMEText
+
+        try:
+            msg = MIMEText(content, "plain", "utf-8")
+            msg["Subject"] = title
+            msg["From"] = self.smtp_user
+            msg["To"] = to_email
+
+            port = int(self.smtp_port or 587)
+            if port == 465:
+                server = smtplib.SMTP_SSL(self.smtp_host, port, timeout=15)
+            else:
+                server = smtplib.SMTP(self.smtp_host, port, timeout=15)
+            try:
+                if port != 465:
+                    server.starttls()
+                if self.smtp_user:
+                    server.login(self.smtp_user, self.smtp_password or "")
+                server.sendmail(self.smtp_user, [to_email], msg.as_string())
+            finally:
+                server.quit()
+            return True, None
+        except Exception as exc:  # noqa: BLE001 — 投递失败原因要原样记下来
+            return False, f"{type(exc).__name__}: {exc}"
 
 
 class TelegramChannel(NotificationChannel):
@@ -169,34 +195,49 @@ class TelegramChannel(NotificationChannel):
                 logger.warning(f"用户 {user_id} 没有关联 Telegram 账号")
                 return False
 
-            # TODO: 实现 Telegram 发送逻辑
-            # import httpx
-            # async with httpx.AsyncClient() as client:
-            #     await client.post(
-            #         f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
-            #         json={"chat_id": tg_user.id, "text": f"*{title}*\n\n{content}", "parse_mode": "Markdown"}
-            #     )
+            # 真正投递：此前只有一条 status="sent" 的历史记录，消息从未发出
+            ok, error = await self._deliver(tg_user.id, title, content)
 
-            # 记录通知历史
             history = models.NotificationHistory(
                 notification_type="telegram",
                 target=str(tg_user.id),
                 title=title,
                 content=content,
-                status="sent",
-                sent_at=datetime.now()
+                status="sent" if ok else "failed",
+                error_message=error,
+                sent_at=datetime.now() if ok else None,
             )
             db.add(history)
             db.commit()
 
-            logger.info(f"Telegram 消息已发送给用户 {user_id}")
-            return True
+            if ok:
+                logger.info(f"Telegram 消息已发送给用户 {user_id}")
+            else:
+                logger.error(f"Telegram 消息发送失败（用户 {user_id}）: {error}")
+            return ok
 
         except Exception as e:
             logger.error(f"发送 Telegram 消息失败: {e}")
             if db:
                 db.rollback()
             return False
+
+    async def _deliver(self, chat_id: int, title: str, content: str) -> tuple[bool, Optional[str]]:
+        """调用 Telegram Bot API 投递"""
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+                    json={"chat_id": chat_id, "text": f"*{title}*\n\n{content}",
+                          "parse_mode": "Markdown"},
+                )
+            if resp.status_code != 200:
+                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return True, None
+        except Exception as exc:  # noqa: BLE001 — 投递失败原因要原样记下来
+            return False, f"{type(exc).__name__}: {exc}"
 
 
 # ==================== 多渠道通知管理器 ====================
@@ -532,22 +573,67 @@ async def notify_all_users(
     content: str,
     data: Optional[dict] = None
 ) -> int:
-    """
-    广播通知给所有用户
+    """广播通知给**全部启用中的用户**（不只是当时在线的人）
 
     用于：
     - 系统公告发布
     - 系统维护通知
     - 重要系统更新
-    """
-    notification_service = get_notification_service()
 
-    return await notification_service.broadcast(
-        title=title,
-        content=content,
-        channels=["in_app"],
-        data=data or {"event_type": event_type}
-    )
+    此前这里走的是 ``NotificationService.broadcast``，而它只遍历"当前 WebSocket 在线用户"：
+    公告发布时不在线的用户**永远收不到这条站内消息**，但接口返回的文案是"已推送给所有用户"。
+    现在按站内信语义落库给每个启用中的用户，再对其中在线的人做实时推送，
+    返回值是实际收到站内消息的用户数。
+    """
+    message_type = event_type.split(".")[0]
+    related_id = (data or {}).get("announcement_id")
+    db = next(get_db())
+    try:
+        user_ids = [
+            row[0] for row in db.query(models.WebUser.id).filter(
+                models.WebUser.is_active == True  # noqa: E712
+            ).all()
+        ]
+        if not user_ids:
+            return 0
+
+        db.bulk_save_objects([
+            models.StationMessage(
+                from_user_id=None,
+                to_user_id=uid,
+                title=title,
+                content=content,
+                message_type=message_type,
+                related_id=related_id,
+                is_read=False,
+            )
+            for uid in user_ids
+        ])
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — 落库失败要让调用方知道
+        db.rollback()
+        logger.error("广播站内消息落库失败: %s", exc)
+        return 0
+    finally:
+        db.close()
+
+    # 在线用户的实时推送（失败不影响已落库的站内消息）
+    online = set(manager.get_online_users())
+    for uid in user_ids:
+        if uid not in online:
+            continue
+        try:
+            await send_notification(
+                notification_type=f"station.{message_type}",
+                user_id=uid,
+                title=title,
+                message=content,
+                data=data or {"event_type": event_type},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("广播实时推送失败（用户 %s）: %s", uid, exc)
+
+    return len(user_ids)
 
 
 # ==================== 全局单例 ====================

@@ -183,6 +183,11 @@ def _auto_migrate():
         "web_users": [
             ("points", "INTEGER", "0"),
         ],
+        # v2.6.15 通知历史记录真实投递结果：邮件/TG 发送失败必须留下原因，
+        # 而不是像以前那样一律写成 status="sent"
+        "notification_history": [
+            ("error_message", "TEXT", "NULL"),
+        ],
         # v2.5.6 卡码体系：注册码 → 注册/续期/白名单/诱饵/指名
         "registration_codes": [
             ("code_type", "INTEGER", "1"),

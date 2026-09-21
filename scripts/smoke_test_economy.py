@@ -139,7 +139,7 @@ def main():
 
     # ---- 6. 订单履约幂等 ----
     print("\n[6] 订单履约")
-    from backend.api.economy import _fulfill_order
+    from backend.api.economy import _fulfill_order, send_fulfill_notifications
     import asyncio
 
     pkg = models.RechargePackage(name=f"smoke_pkg_{suffix}", amount=500, price=Decimal("25.00"))
@@ -153,16 +153,29 @@ def main():
     db.commit()
 
     before_points = u2.points or 0
-    asyncio.get_event_loop().run_until_complete(_fulfill_order(db, recharge_order=order))
+    loop = asyncio.get_event_loop()
+    pending = loop.run_until_complete(_fulfill_order(db, recharge_order=order))
     db.commit()
     db.refresh(u2)
     check("充值履约发积分", order.status == "paid" and (u2.points or 0) == before_points + 500)
+    check("履约返回待发通知（而不是在事务里就写站内信）",
+          isinstance(pending, list) and len(pending) == 1
+          and pending[0].get("event_type") == "economy.recharge_success")
+
+    # 提交之后再发：此时另开会话写站内信不会撞 SQLite 写锁
+    loop.run_until_complete(send_fulfill_notifications(pending))
+    msg = db.query(models.StationMessage).filter(
+        models.StationMessage.to_user_id == u2.id,
+        models.StationMessage.title.like("%充值成功%"),
+    ).first()
+    check("充值成功站内信真的落库（此前会被写锁静默丢掉）", msg is not None)
 
     before_points = u2.points or 0
-    asyncio.get_event_loop().run_until_complete(_fulfill_order(db, recharge_order=order))
+    pending2 = loop.run_until_complete(_fulfill_order(db, recharge_order=order))
     db.commit()
     db.refresh(u2)
     check("重复回调幂等（不重复发货）", (u2.points or 0) == before_points)
+    check("重复回调不再重复通知", pending2 == [])
 
     # ---- 清理测试数据 ----
     uids = [u1.id, u2.id]

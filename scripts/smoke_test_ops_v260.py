@@ -468,6 +468,148 @@ check("诱饵码注册不落用户，但落风控日志",
 
 set_config("registration_mode", None)
 
+# ==================== 七、公告广播与通知渠道的"真投递" ====================
+
+# 7.1 公告必须给**每个启用中的用户**落站内消息（不只是当时在线的人）。
+# 这里两个用户都没有建立 WebSocket 连接，正是「离线用户」。
+db = SessionLocal()
+offline = models.WebUser(
+    username=f"ops_off{suf}", password_hash=hash_password("pass12345"), is_active=True
+)
+disabled = models.WebUser(
+    username=f"ops_dis{suf}", password_hash=hash_password("pass12345"), is_active=False
+)
+db.add_all([offline, disabled])
+db.commit()
+offline_id, disabled_id = offline.id, disabled.id
+db.close()
+
+title = f"运营公告{suf}"
+r = client.post("/api/admin/announcements",
+                json={"title": title, "content": "本节用于验证公告真的送达全部用户", "type": "system"},
+                headers=staff_h)
+body = r.json() if r.status_code == 200 else {}
+ann_id = body.get("announcement_id")
+check("发布公告成功", r.status_code == 200 and bool(ann_id), r.text[:120])
+check("公告返回真实送达人数（而非无条件宣称全部用户）",
+      isinstance(body.get("notified_users"), int) and body["notified_users"] >= 3,
+      f"notified_users={body.get('notified_users')}")
+
+db = SessionLocal()
+messages = db.query(models.StationMessage).filter(models.StationMessage.title == f"📢 {title}").all()
+recipients = {m.to_user_id for m in messages}
+check("没连 WebSocket 的用户（离线）也收到公告站内消息",
+      offline_id in recipients, f"offline_id={offline_id} recipients={sorted(recipients)}")
+check("禁用账号不会被投递", disabled_id not in recipients, f"disabled_in={disabled_id in recipients}")
+check("公告关联到具体公告 id",
+      any(m.related_id == ann_id for m in messages),
+      f"related={sorted({m.related_id for m in messages})[:4]}")
+db.close()
+
+r = client.get("/api/user/messages", headers=a_h)
+inbox = r.json() if isinstance(r.json(), list) else (r.json() or {}).get("messages", [])
+check("用户能在收件箱里读到公告消息",
+      r.status_code == 200 and any((m.get("title") or "").endswith(title) for m in inbox),
+      f"HTTP {r.status_code} inbox={len(inbox)}")
+
+# 7.1b 后台「站内消息 → 广播」走的是同一条链路（/api/admin/messages/broadcast）
+bcast_title = f"全员广播{suf}"
+r = client.post("/api/admin/messages/broadcast",
+                json={"title": bcast_title, "content": "广播正文", "message_type": "system"},
+                headers=staff_h)
+body = r.json() if r.status_code == 200 else {}
+check("管理端广播接口可用且回报真实人数",
+      r.status_code == 200 and isinstance(body.get("notified_users"), int)
+      and body["notified_users"] >= 2, r.text[:120])
+
+db = SessionLocal()
+bcast_to = {m.to_user_id for m in db.query(models.StationMessage).filter(
+    models.StationMessage.title == bcast_title).all()}
+check("广播同样落到离线用户", offline_id in bcast_to, f"recipients={sorted(bcast_to)}")
+check("广播不投递禁用账号", disabled_id not in bcast_to)
+db.query(models.StationMessage).filter(models.StationMessage.title == bcast_title).delete()
+db.commit()
+db.close()
+
+db = SessionLocal()
+db.query(models.StationMessage).filter(models.StationMessage.title == f"📢 {title}").delete()
+db.query(models.WebUser).filter(models.WebUser.id.in_([offline_id, disabled_id])).delete()
+db.commit()
+db.close()
+
+# 7.2 邮件 / Telegram 渠道不能再"假成功"：投递失败必须如实记 failed + 原因
+import asyncio  # noqa: E402
+
+from backend import notifications as notif  # noqa: E402
+
+mail_channel = notif.EmailChannel(
+    smtp_host="127.0.0.1", smtp_port=9,  # 必然被拒的本地端口：不发外网、也不挂起
+    smtp_user="nobody@example.invalid", smtp_password="x",
+)
+db = SessionLocal()
+mail_user = db.query(models.WebUser).filter(models.WebUser.username == a_name).first()
+mail_user.email = f"{a_name}@example.invalid"
+db.commit()
+mail_ok = asyncio.get_event_loop().run_until_complete(
+    mail_channel.send(mail_user.id, "投递失败用例", "正文", db=db))
+mail_row = db.query(models.NotificationHistory).filter(
+    models.NotificationHistory.target == mail_user.email
+).order_by(models.NotificationHistory.id.desc()).first()
+check("SMTP 投递失败时 send() 返回 False", mail_ok is False, f"returned={mail_ok}")
+check("SMTP 失败记 failed + 原因，而不是记 sent",
+      mail_row is not None and mail_row.status == "failed" and bool(mail_row.error_message),
+      f"status={getattr(mail_row, 'status', None)} err={getattr(mail_row, 'error_message', None)}")
+
+import httpx  # noqa: E402
+
+
+class _FakeResp:
+    status_code = 500
+    text = "internal error"
+
+
+class _FakeClient:
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, *a, **kw):
+        return _FakeResp()
+
+
+real_client = httpx.AsyncClient
+httpx.AsyncClient = _FakeClient  # 拦下真实请求，只验证失败路径的状态码判定
+tg_channel = notif.TelegramChannel(bot_token="123:FAKE")
+tg_user_exists = db.query(models.TelegramUser).filter(
+    models.TelegramUser.web_user_id == mail_user.id).first() is None
+if tg_user_exists:
+    # TelegramUser.id 就是 Telegram 侧的 chat/id，web_user_id 才是门户账号关联
+    db.add(models.TelegramUser(id=987654321, web_user_id=mail_user.id, username="smoke_tg"))
+    db.commit()
+tg_ok = asyncio.get_event_loop().run_until_complete(
+    tg_channel.send(mail_user.id, "TG 失败用例", "正文", db=db))
+httpx.AsyncClient = real_client
+tg_row = db.query(models.NotificationHistory).filter(
+    models.NotificationHistory.notification_type == "telegram"
+).order_by(models.NotificationHistory.id.desc()).first()
+check("Telegram 返回非 200 时 send() 返回 False", tg_ok is False, f"returned={tg_ok}")
+check("Telegram 失败记 failed + 原因，而不是记 sent",
+      tg_row is not None and tg_row.status == "failed" and bool(tg_row.error_message),
+      f"status={getattr(tg_row, 'status', None)}")
+
+db.query(models.NotificationHistory).filter(
+    models.NotificationHistory.target.in_([mail_user.email, "987654321"])
+).delete(synchronize_session=False)
+db.query(models.TelegramUser).filter(models.TelegramUser.web_user_id == mail_user.id).delete()
+mail_user.email = None
+db.commit()
+db.close()
+
 # ==================== 结果 ====================
 
 print()

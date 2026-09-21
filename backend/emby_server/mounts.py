@@ -302,8 +302,9 @@ def mount_label(mount) -> str:
     return f"{getattr(mount, 'name', '挂载')}（{kind}）"
 
 
-def _is_strm_name(name: str) -> bool:
-    return name.lower().endswith(STRM_EXT)
+def _is_strm_name(name: Optional[str]) -> bool:
+    """文件名是否为 ``.strm``（容忍 None：条目可能没有本地路径）"""
+    return bool(name) and str(name).lower().endswith(STRM_EXT)
 
 
 def strm_url(content: str) -> str:
@@ -1055,12 +1056,17 @@ def load_mount(db: Session, mount_id: int):
     return db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
 
 
-def resolve_play_target(file_path: str, db: Session, library=None) -> PlayTarget:
+def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> PlayTarget:
     """把条目的 ``file_path`` 解析成播放/探测目标
 
     - 本机路径（含 ``.strm``）→ 直接读文件，strm 读内容是直链；
     - ``mount://<id>/<rel>`` → 由提供者解析成远程直链（带鉴权头，只在本机使用）。
+
+    条目没有路径时（虚拟库聚合条目、容器类型、源文件被删后重扫前的残留行）
+    明确报 MountError → 上层转成 404，而不是让 ``.lower()`` 抛 500。
     """
+    if not file_path:
+        raise MountError("该条目没有可播放的媒体路径（虚拟库聚合条目或源文件已丢失）")
     parsed = parse_mount_path(file_path)
     if parsed is None:
         return local_play_target(file_path)
