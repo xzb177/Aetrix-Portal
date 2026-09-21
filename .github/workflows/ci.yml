@@ -93,6 +93,9 @@ jobs:
       - name: Emby 双模式联动冒烟（EA / 已有 Emby 与自建功能闸门）
         run: python scripts/smoke_test_emby_connection.py
 
+      - name: Emby 会话端点鉴权冒烟（匿名 401 / 越权 403 / 随机会话键）
+        run: python scripts/smoke_test_emby_sessions.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
