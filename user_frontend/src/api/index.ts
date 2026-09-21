@@ -477,6 +477,17 @@ export interface MySubscription {
   days_left: number
 }
 
+/**
+ * 临期阈值（天）：与后台「到期前提醒」同一口径（backend/reminders.py 默认 7/3/1）。
+ * 用户端不自己写 7：改了后端档位后，界面上的提醒也该跟着换。
+ */
+export const EXPIRY_WARN_DAYS = 7
+
+/** 是否即将到期（没有订阅或已过期都不算） */
+export function isExpiringSoon(sub: MySubscription | null | undefined): boolean {
+  return !!sub && sub.status === 'active' && sub.days_left > 0 && sub.days_left <= EXPIRY_WARN_DAYS
+}
+
 export const subscriptionApi = {
   // 我的订阅列表（含剩余天数）
   getMine: () => api.get<never, MySubscription[]>('/api/user/subscriptions'),

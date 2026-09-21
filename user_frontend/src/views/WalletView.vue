@@ -9,14 +9,14 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, Film,
+  KeyRound, Film, TriangleAlert,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi,
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview,
 } from '@/api/economy'
-import { subscriptionApi, type MySubscription } from '@/api'
+import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
@@ -53,6 +53,9 @@ const subscriptions = ref<MySubscription[]>([])
 const currentSub = computed(
   () => subscriptions.value.find((s) => s.status === 'active' && s.days_left > 0) || null,
 )
+// 临期：与后台到期提醒同口径（默认 7 天）——套餐页本来就是续费的地方，
+// 剩余天数不多时直接把状态行染成警示色，别再让用户自己数天数
+const subExpiringSoon = computed(() => isExpiringSoon(currentSub.value))
 
 // ===== 统一核销入口（卡码 / 兑换码 / 邀请码自动识别）=====
 // 卡码（会员时长）与兑换码（积分/订阅）原本是两个输入框，用户得自己判断该填哪个。
@@ -497,12 +500,17 @@ onBeforeUnmount(stopPayPoll)
       </div>
 
       <!-- 当前会员状态：已开通显示套餐与到期，未开通提示付费墙 -->
-      <div v-else-if="plansEnabled" class="member-status" :class="{ inactive: !currentSub }" >
+      <div v-else-if="plansEnabled" class="member-status"
+        :class="{ inactive: !currentSub, warn: subExpiringSoon }">
         <Crown :size="15" />
         <template v-if="currentSub">
           <span>当前会员：<strong>{{ currentSub.plan_name }}</strong></span>
           <span class="ms-sep">·</span>
           <span>剩 <strong>{{ currentSub.days_left }}</strong> 天（{{ currentSub.end_date?.slice(0, 10) }} 到期）</span>
+          <span v-if="subExpiringSoon" class="ms-warn">
+            <TriangleAlert :size="13" />
+            即将到期，现在续费可无缝接续
+          </span>
         </template>
         <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
       </div>
@@ -1002,6 +1010,23 @@ onBeforeUnmount(stopPayPoll)
   border-color: var(--au-primary-border);
   color: var(--au-text-2);
   transform: translateY(-1px);
+}
+
+.member-status.warn {
+  background: var(--au-warning-soft);
+  border-color: var(--au-warning-soft);
+}
+
+.member-status.warn svg,
+.member-status.warn .ms-warn {
+  color: var(--au-warning);
+}
+
+.ms-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
 }
 
 .member-status svg {
