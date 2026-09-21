@@ -2,6 +2,33 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.16] - 2026-09-21
+
+本次修复管理后台在 `1f9fc5b` 之后无法运行的问题，并补上让这类破坏再也进不来的门禁。
+
+### 修复 (Fixed)
+- **管理后台打不开、也登不进去**：`admin_frontend/src/stores/auth.ts` 被换成了
+  另一套架构的实现（httpOnly Cookie 会话 + CSRF + `role/permissions`），而本项目的后台
+  是 Bearer JWT + `is_staff`，后端既没有 Cookie 会话也没有 CSRF 端点。该实现同时
+  - 引入了不存在的模块 `@/types/auth`；
+  - 删掉了 `token` / `admin` / `setSession` / `ssoFromPortal` / `ssoNotice`，
+    而 `router/index.ts`（每次跳转都会 `await auth.ssoFromPortal()`）、`Login.vue`、
+    `Layout.vue`、`Users.vue` 仍在调用它们——路由守卫必然抛 `TypeError`，后台进不去，
+    登录提交也会抛错。
+  现已还原为与本后端（同一套 JWT + 门户免登）一致的可用实现；那套尚未接线的
+  `hasPermission` / `isSuperAdmin` / CSRF 接口全仓 0 引用，故一并移除。
+- **管理端类型检查形同虚设**：`type-check` 原先执行 `vue-tsc --noEmit -p tsconfig.json`，
+  而该 `tsconfig.json` 是 solution 式的（`"files": []` + references），**一个文件都不检查**；
+  `vite build` 不做类型检查，`import type` 在构建时又会被擦除——于是上面那类破坏
+  CI 全绿也照样合进主干。现改为直接检查 `tsconfig.app.json` 与 `tsconfig.node.json`，
+  并用故意写错的探针文件验证过「改前静默通过、改后如实报错」。
+- 暴露出来的两个既有类型错误一并修掉：`DataTable.vue` 手机卡片操作区的 `<slot v-for>`
+  不能挂 `:key`（改为 `<template v-for>` 包裹）、`StorageMounts.vue` 未使用的 `isRemote`。
+
+### 变更 (Changed)
+- **用户端 401 刷新**：排队的重放请求现在也会置 `_retry = true`，避免新票据仍被拒时
+  陷入无限循环刷新（保留 `75f5474` 修复「刷新失败导致排队请求永久挂起」的逻辑）。
+
 ## [2.6.15] - 2026-09-21
 
 本次清掉旧架构残留，并重审全部功能链：修掉三条「看着能用、实际不对」的链路

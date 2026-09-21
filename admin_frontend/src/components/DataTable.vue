@@ -162,13 +162,9 @@ function onRowClick(row: T) {
         </div>
 
         <div v-if="actionColumns.length" class="dt-actions">
-          <slot
-            v-for="col in actionColumns"
-            :key="col.key"
-            :name="`cell-${col.key}`"
-            :row="row"
-            :index="index"
-          />
+          <template v-for="col in actionColumns" :key="col.key">
+            <slot :name="`cell-${col.key}`" :row="row" :index="index" />
+          </template>
         </div>
       </article>
     </template>

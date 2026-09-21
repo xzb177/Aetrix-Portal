@@ -111,6 +111,8 @@ api.interceptors.response.use(
         return new Promise((resolve, reject) => {
           subscribeTokenRefresh((newToken: string) => {
             originalRequest.headers.Authorization = `Bearer ${newToken}`
+            // 排队重放也只许重试一次：否则新票据若仍被拒会无限循环刷新
+            originalRequest._retry = true
             resolve(api(originalRequest))
           })
           subscribeTokenRefreshFailure((refreshError) => {

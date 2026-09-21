@@ -35,7 +35,7 @@ from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 
-EA_VERSION = "2.6.15"
+EA_VERSION = "2.6.16"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
