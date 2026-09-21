@@ -70,7 +70,10 @@ function onRefreshFailed(error: unknown) {
 
 function forceLogout() {
   tokenStore.clear()
-  const isLoginPage = window.location.pathname === '/login' || window.location.pathname.startsWith('/login')
+  // 用户端只有 /login 一个登录页（没有 /m/* 这套移动端路由），
+  // 所以已过期会话必须送到 /login，否则会落到 catch-all 的 404 页
+  const currentPath = window.location.pathname
+  const isLoginPage = currentPath === '/login'
   if (!isLoginPage) {
     window.location.href = '/login'
   }
@@ -110,7 +113,9 @@ api.interceptors.response.use(
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           subscribeTokenRefresh((newToken: string) => {
-            originalRequest.headers.Authorization = `Bearer ${newToken}`
+            if (originalRequest.headers) {
+              originalRequest.headers.Authorization = `Bearer ${newToken}`
+            }
             // 排队重放也只许重试一次：否则新票据若仍被拒会无限循环刷新
             originalRequest._retry = true
             resolve(api(originalRequest))
@@ -132,7 +137,9 @@ api.interceptors.response.use(
         }
         tokenStore.set(data.access_token, data.refresh_token)
         onRefreshed(data.access_token)
-        originalRequest.headers.Authorization = `Bearer ${data.access_token}`
+        if (originalRequest.headers) {
+          originalRequest.headers.Authorization = `Bearer ${data.access_token}`
+        }
         return api(originalRequest)
       } catch (refreshError) {
         onRefreshFailed(refreshError)
