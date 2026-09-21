@@ -367,22 +367,9 @@ export interface PanelHealth {
 /** EM 面板健康状态；不暴露密钥与连接串，仅返回可运营的信息。 */
 export const fetchPanelHealth = () => get<PanelHealth>('/../health')
 
-export interface EmbyConnection {
-  url: string
-  enabled: boolean
-  reachable?: boolean
-  has_api_key?: boolean
-}
-export interface EmbyConnections {
-  managed_ea: EmbyConnection
-  external: EmbyConnection
-  active_mode: 'managed_ea' | 'external'
-}
-export const fetchEmbyConnections = () => get<EmbyConnections>('/emby/servers')
-export const testEmbyConnection = (data: { mode: 'managed_ea' | 'external'; url: string; api_key?: string; enabled?: boolean }) =>
-  post<{ ok: boolean; status_code?: number; message?: string; server_name?: string; version?: string }>('/emby/servers/test', data)
-export const saveEmbyConnection = (data: { mode: 'managed_ea' | 'external'; url: string; api_key?: string; enabled: boolean }) =>
-  put<{ success: boolean; probe: { ok: boolean; message?: string; server_name?: string } }>('/emby/servers', data)
+// 注：「Emby 服务入口」那两个格子的页面（及它的读写接口封装）已下线，
+// EA / Emby 入口统一在「服务器」页维护（见 views/Servers.vue）。
+// 后端 /api/admin/emby/servers 仍在（挂载体检与列表页要用），但前端不再直连。
 
 export const fetchPlaybackStats = () => get<PlaybackStats>('/stats/playback')
 

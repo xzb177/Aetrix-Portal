@@ -171,84 +171,86 @@ def get_db() -> Session:
 def _auto_migrate():
     """轻量自动迁移：为已有表补充新增列（SQLite/MySQL/PG 通用）
 
-    create_all 只建新表不改旧表，这里用 ALTER TABLE ADD COLUMN 补齐 v2.3.0 新增字段。
+    create_all 只建新表不改旧表，这里用 ALTER TABLE ADD COLUMN 补齐新增字段。
     幂等：列已存在时跳过。
+
+    **必须用列表，不能用 {表名: 列} 的字典**：同一张表在不同版本各自加过列
+    （``registration_codes`` 有 v2.5.6 与 v2.6.20 两批），字典字面量里后一个键会
+    静默覆盖前一个，历史列就永远补不上——升级上来的库会在查询时报
+    ``no such column``（全站 500）。列表则按出现顺序逐条追加，重复表名不会互相吞掉。
     """
     from sqlalchemy import text, inspect
 
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
 
-    migrations = {
-        "web_users": [
+    migrations: list[tuple[str, list[tuple[str, str, str]]]] = [
+        ("web_users", [
             ("points", "INTEGER", "0"),
-        ],
+        ]),
         # v2.6.15 通知历史记录真实投递结果：邮件/TG 发送失败必须留下原因，
         # 而不是像以前那样一律写成 status="sent"
-        "notification_history": [
+        ("notification_history", [
             ("error_message", "TEXT", "NULL"),
-        ],
+        ]),
         # v2.5.6 卡码体系：注册码 → 注册/续期/白名单/诱饵/指名
-        "registration_codes": [
+        # v2.6.20 多服运营：卡码归属到某个服（见 backend/realms.py）
+        ("registration_codes", [
             ("code_type", "INTEGER", "1"),
             ("days", "INTEGER", "30"),
             ("is_decoy", "BOOLEAN", "0"),
             ("target_username", "VARCHAR(50)", "NULL"),
             ("source", "VARCHAR(20)", "'admin'"),
-        ],
+            ("realm_id", "INTEGER", "NULL"),
+        ]),
         # v2.6.4 媒体库刮削策略、虚拟媒体库与搜索增强；v2.6.5 增加 115 账号绑定
         # v2.6.6 增加存储挂载绑定（storage_mounts）：媒体库的内容来源
-        "emby_libraries": [
+        # v2.6.20 多节点：node_id 指定由哪台 EA 负责这个库（NULL = 所有节点可见）
+        ("emby_libraries", [
             ("scrape_policy", "VARCHAR(20)", "'missing_only'"),
             ("is_virtual", "BOOLEAN", "0"),
             ("platform", "VARCHAR(30)", "NULL"),
             ("account_115_id", "INTEGER", "NULL"),
             ("mount_ids", "TEXT", "''"),
-            # v2.6.20 多节点：指定由哪台 EA 负责这个库（NULL = 所有节点可见、由面板扫描）
             ("node_id", "INTEGER", "NULL"),
-            # v2.6.20 多服运营：这个库属于哪个服（见 backend/realms.py）
             ("realm_id", "INTEGER", "NULL"),
-        ],
-        # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录
-        "remote_servers": [
+        ]),
+        # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
+        ("remote_servers", [
             ("node_key", "VARCHAR(60)", "NULL"),
             ("realm_id", "INTEGER", "NULL"),
-        ],
+        ]),
         # v2.6.20 多服运营：订阅、套餐、卡码、求片、挂载都归属到某个服
-        "subscription_plans": [
+        ("subscription_plans", [
             ("realm_id", "INTEGER", "NULL"),
-        ],
-        "user_subscriptions": [
+        ]),
+        ("user_subscriptions", [
             ("realm_id", "INTEGER", "NULL"),
-        ],
-        "registration_codes": [
+        ]),
+        ("storage_mounts", [
             ("realm_id", "INTEGER", "NULL"),
-        ],
-        "movie_requests": [
-            ("realm_id", "INTEGER", "NULL"),
-        ],
-        "storage_mounts": [
-            ("realm_id", "INTEGER", "NULL"),
-        ],
+        ]),
         # v2.6.19 求片可以转交外部服务（MoviePilot 订阅 / qBittorrent 加种）：
         # 把「交给谁、成没成、为什么没成」落库，否则面板只能显示一句模糊的失败
-        "movie_requests": [
+        # v2.6.20 多服运营：求片也归属到某个服
+        ("movie_requests", [
+            ("realm_id", "INTEGER", "NULL"),
             ("push_target", "VARCHAR(20)", "NULL"),
             ("push_status", "VARCHAR(20)", "NULL"),
             ("push_message", "VARCHAR(300)", "NULL"),
             ("pushed_at", "DATETIME", "NULL"),
-        ],
-        "emby_items": [
+        ]),
+        ("emby_items", [
             ("imdb_id", "VARCHAR(20)", "NULL"),
             ("aliases", "TEXT", "''"),
             ("platforms", "TEXT", "''"),
             ("last_probed_at", "DATETIME", "NULL"),
             ("last_scraped_at", "DATETIME", "NULL"),
             ("repair_requested_at", "DATETIME", "NULL"),
-        ],
-    }
+        ]),
+    ]
 
-    for table, columns in migrations.items():
+    for table, columns in migrations:
         if table not in existing_tables:
             continue
         existing_cols = {c["name"] for c in inspector.get_columns(table)}
@@ -261,7 +263,50 @@ def _auto_migrate():
                     print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
 
     _widen_code_column(existing_tables, inspector)
+    _backfill_orm_columns(existing_tables)
     _ensure_default_realm()
+
+
+def _backfill_orm_columns(existing_tables: set) -> None:
+    """兜底：ORM 声明了、库里却没有的列，在这里补上（幂等）
+
+    上面的清单靠人维护，漏一条就会让某个页面在**升级过的库**上莫名其妙 500
+    （历史上真发生过：``movie_requests.realm_id`` 被同名键覆盖，管理后台首页直接 500）。
+    这里以 ``Base.metadata`` 为准做一次对账，只补列、不删列、不改类型：
+    新库不受影响，老库不会再出现「模型有这个字段、库里没有」的错位。
+    """
+    from sqlalchemy import text, inspect
+
+    # 每次重新 inspect：上面的清单已经改过表结构，缓存的列信息会过时
+    inspector = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
+        missing = [c for c in table.columns if c.name not in existing_cols and not c.primary_key]
+        if not missing:
+            continue
+        with engine.begin() as conn:
+            for col in missing:
+                conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {_column_ddl(col)}"))
+                print(f"  🔧 已迁移: {table.name}.{col.name}（按模型补齐）")
+
+
+def _column_ddl(col) -> str:
+    """把 ORM 列编译成 ALTER TABLE 片段：类型 + 字面量默认值（没有就留空 = 可空）"""
+    ddl = f"{col.name} {col.type.compile(engine.dialect)}"
+    arg = getattr(getattr(col, "default", None), "arg", None)
+    if arg is None or callable(arg):
+        return ddl
+    if isinstance(arg, bool):
+        literal = "1" if arg else "0"
+    elif isinstance(arg, (int, float)):
+        literal = str(arg)
+    elif isinstance(arg, str):
+        literal = "'" + arg.replace("'", "''") + "'"
+    else:
+        return ddl
+    return f"{ddl} DEFAULT {literal}"
 
 
 def _ensure_default_realm() -> None:

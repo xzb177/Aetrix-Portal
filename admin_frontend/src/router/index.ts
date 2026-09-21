@@ -36,7 +36,9 @@ const routes: RouteRecordRaw[] = [
       // 服管理以绝对路径声明：跳转契约检查要求跳转目标与声明的 path 完全一致
       { path: '/realms', name: 'Realms', component: () => import('@/views/Realms.vue'), meta: { title: '服管理' } },
       { path: 'servers', name: 'Servers', component: () => import('@/views/Servers.vue'), meta: { title: '服务器管理' } },
-      { path: 'emby-servers', name: 'EmbyServers', component: () => import('@/views/EmbyServers.vue'), meta: { title: 'Emby 服务入口' } },
+      // 「Emby 服务入口」已并入「服务器」页（同一个清单里就能加 EA / Emby 并设为当前使用），
+      // 旧地址保留为跳转，收藏与外部链接不会落到 404
+      { path: 'emby-servers', redirect: '/servers' },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },

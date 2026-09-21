@@ -223,8 +223,8 @@ function sessionProgress(session: EmbySessionRow): number {
       </section>
 
       <!--
-        服务器接入：接了什么、几台能用、当前用哪台。以前这些只能去「Emby 服务入口」
-        猜，接入 MoviePilot / qB 之后更需要一个一眼能看完的地方。
+        服务器接入：接了什么、几台能用、当前用哪台。以前只能靠「服务入口」那一页猜，
+        接入 MoviePilot / qB 之后更需要一个一眼能看完的地方（明细在「服务器」页）。
       -->
       <section v-if="serverTiles.length" class="stat-grid">
         <RouterLink

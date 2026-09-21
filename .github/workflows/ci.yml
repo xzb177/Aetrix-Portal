@@ -129,6 +129,11 @@ jobs:
       - name: 多服运营冒烟（默认服兼容 / 套餐与会员按服 / 共用内容自动化 / 多节点内容边界）
         run: python scripts/smoke_test_realms.py
 
+      # 只测「升级上来的老库」：自动迁移漏列时全新库一切正常、老库直接 500，
+      # 只有拿旧形态的库跑一遍才拦得住
+      - name: 升级路径冒烟（老库补列 / 迁移幂等 / 后台首页不再 500）
+        run: python scripts/smoke_test_schema_migration.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
