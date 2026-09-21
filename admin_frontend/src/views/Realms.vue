@@ -370,7 +370,7 @@ function shortDate(s: string | null): string {
           <p class="field-help">只能用小写字母、数字、下划线或短横线，≤40 字符；建好后不可改。</p>
         </el-form-item>
         <el-form-item label="对外地址（用户端拿到的 Emby 地址）">
-          <el-input v-model="form.url" placeholder="https://media.example.com，留空则用「Emby 服务入口」里填的" />
+          <el-input v-model="form.url" placeholder="https://media.example.com，留空则用「服务器」页里那台 EA 的地址" />
           <p class="field-help">多服部署时每个服各自的地址，用户端账号卡会用它。</p>
         </el-form-item>
         <el-form-item label="描述">

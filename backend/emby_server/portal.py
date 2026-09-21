@@ -99,7 +99,7 @@ def configured_emby_url(db: Session | None = None, realm_id: int | None = None) 
 def resolve_emby_base_url(db: Session | None = None, realm_id: int | None = None) -> str:
     """解析「用户应该连接的 Emby 服务器地址」（某个服的）
 
-    必须与后台「Emby 服务入口」保存的配置一致，否则会出现“后台填了 EA 地址、
+    必须与后台「服务器」页保存的 Emby 入口一致，否则会出现“后台填了 EA 地址、
     用户个人中心却仍显示旧的环境变量地址”这种配置不生效的问题。
     优先级：服自己填的对外地址 → 该服的服务入口配置 → 环境变量 EMBY_PUBLIC_URL。
     """
@@ -147,7 +147,7 @@ def ensure_emby_backend_available(request: Request, db: Session = Depends(get_db
 
     managed_url = config("emby_managed_url")
     if managed_url and (config("emby_managed_enabled") != "true" or config("emby_managed_reachable") != "true"):
-        raise HTTPException(status_code=503, detail="分离部署的 EA 尚未连接成功，请先部署 EA 并在“Emby 服务入口”测试连接")
+        raise HTTPException(status_code=503, detail="分离部署的 EA 尚未连接成功，请先部署 EA 并在后台「服务器」页添加它为后端服")
 
 
 def require_staff(

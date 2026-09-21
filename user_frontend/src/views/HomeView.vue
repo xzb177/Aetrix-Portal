@@ -2,9 +2,12 @@
 /**
  * 首页 — 内容优先的个人门户
  *
- * 布局（v2.5.2 优化）：Hero 双栏（左：问候与主行动；右：会员状态卡）
- * 账号速览数据条 → 「我的内容」（继续观看 / 最近入库）→ 「站点与设备」（动态 / 连接播放器）
+ * 布局：Hero 双栏（左：问候与主行动；右：会员状态卡）
+ * 账号速览条 → **站内消息卡** → 「我的内容」（继续观看 / 最近入库）→ 「站点与账号」（连接播放器）
  * 功能入口交给顶部导航 / 底部导航坞，首页只展示「内容」与「状态」。
+ *
+ * v2.6.21：站内消息卡从页面最底部上移到速览条之后。以前它排在「最近入库」下面，
+ * 内容一多就被顶出首屏，用户根本看不到未读；现在未读直接出现在首屏，空消息时也在。
  */
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -15,7 +18,7 @@ import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  ChevronRight, Crown, Megaphone,
+  ChevronRight, Crown, Inbox, Megaphone,
   Wallet, CalendarCheck, Gift, Sparkles, Tv,
 } from 'lucide-vue-next'
 
@@ -224,6 +227,29 @@ onMounted(async () => {
         </RouterLink>
       </section>
 
+      <!-- 站内消息：紧跟速览条，未读直接出现在首屏（旧位置在「最近入库」之后，内容一多就被顶出屏幕） -->
+      <RouterLink to="/messages" class="msg-card au-card au-anim-up" :class="{ loading }">
+        <span class="msg-icon" :class="{ unread: unreadCount > 0 }">
+          <Inbox :size="18" />
+        </span>
+        <span class="msg-body">
+          <strong class="msg-title">
+            <template v-if="unreadCount > 0">你有 {{ unreadCount }} 条未读消息</template>
+            <template v-else-if="notices.length">站点公告：{{ notices[0].title }}</template>
+            <template v-else>站内消息与公告</template>
+          </strong>
+          <em class="msg-sub">
+            <template v-if="unreadCount > 0">私信、工单回复、求片进度与会员提醒都在消息中心</template>
+            <template v-else-if="notices.length">
+              <Megaphone :size="11" /> 共 {{ notices.length }} 条公告
+            </template>
+            <template v-else>没有新消息。工单回复、求片进度与会员到期会在这里提醒你</template>
+          </em>
+        </span>
+        <span v-if="unreadCount > 0" class="msg-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+        <ChevronRight :size="16" class="msg-arrow" />
+      </RouterLink>
+
       <!-- 分组一：我的内容 -->
       <div class="section-label">
         <span class="section-title">我的内容</span>
@@ -243,19 +269,6 @@ onMounted(async () => {
         <span class="section-title">站点与账号</span>
         <RouterLink to="/profile" class="section-more">个人中心 <ChevronRight :size="12" /></RouterLink>
       </div>
-
-      <!-- 站点动态：单行细条 -->
-      <RouterLink v-if="notices.length || unreadCount > 0" to="/messages" class="news-strip au-card">
-        <Megaphone :size="15" class="news-icon" />
-        <span class="news-text">
-          <template v-if="notices.length">
-            {{ notices[0].title }}<template v-if="notices.length > 1"> 等 {{ notices.length }} 条公告</template>
-          </template>
-          <template v-else>查看站点动态与私信</template>
-        </span>
-        <span v-if="unreadCount > 0" class="news-badge">{{ unreadCount }} 条未读</span>
-        <ChevronRight :size="15" class="news-arrow" />
-      </RouterLink>
 
       <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
       <RouterLink to="/profile" class="connect-row au-card">
@@ -608,54 +621,92 @@ onMounted(async () => {
   margin-bottom: 2.25rem;
 }
 
-/* ==================== 站点动态条 ==================== */
+/* ==================== 站内消息卡（首屏，紧跟速览条）==================== */
 
-.news-strip {
+.msg-card {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  padding: 0.8125rem 1.125rem;
-  margin-bottom: 1.25rem;
+  gap: 0.75rem;
+  padding: 0.875rem 1.125rem;
+  margin-bottom: 2rem;
   text-decoration: none;
-  color: var(--au-text-2);
-  font-size: 0.8125rem;
-  transition: border-color var(--au-fast) var(--au-ease);
+  transition: border-color var(--au-fast) var(--au-ease), opacity var(--au-fast) var(--au-ease);
 }
 
-.news-strip:hover {
+.msg-card.loading {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.msg-card:hover {
   border-color: var(--au-primary-border);
 }
 
-.news-icon {
-  color: var(--au-primary);
+.msg-icon {
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
 }
 
-.news-text {
+.msg-icon.unread {
+  background: var(--au-warning-soft);
+  color: var(--au-warning);
+}
+
+.msg-body {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.msg-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.news-badge {
-  padding: 0.125rem 0.5rem;
-  background: var(--au-warning-soft);
-  color: var(--au-warning);
+.msg-sub {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-style: normal;
+  font-size: 0.75rem;
+  color: var(--au-text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-badge {
+  min-width: 22px;
+  padding: 0.125rem 0.4375rem;
+  text-align: center;
+  background: var(--au-warning);
+  color: #1a1205;
   border-radius: var(--au-r-full);
   font-size: 0.6875rem;
-  font-weight: 600;
+  font-weight: 700;
   flex-shrink: 0;
 }
 
-.news-arrow {
+.msg-arrow {
   color: var(--au-text-4);
   flex-shrink: 0;
   transition: color var(--au-fast) var(--au-ease);
 }
 
-.news-strip:hover .news-arrow {
+.msg-card:hover .msg-arrow {
   color: var(--au-primary);
 }
 

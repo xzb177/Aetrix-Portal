@@ -215,7 +215,7 @@ async def refresh_server_mounts(
     scope_id = realms.active_realm_id(db)
     url = value(db, "emby_managed_url", realm_id=scope_id)
     if not url:
-        raise HTTPException(400, "这个服还没有配置 EA 服务地址：请先在「Emby 服务入口」里保存一次")
+        raise HTTPException(400, "这个服还没有配置 EA 服务地址：请先在「服务器」页添加一台后端服（EA）并设为当前使用")
     mode = value(db, "emby_active_mode", "managed_ea", scope_id)
     if mode != "managed_ea":
         # 不阻断：切回 EA 之前也想先把那台机器的存储情况看清楚
