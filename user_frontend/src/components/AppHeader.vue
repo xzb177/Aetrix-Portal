@@ -3,21 +3,21 @@ import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
-  Clapperboard, Menu, X, User, LogOut, Film, Ticket, Inbox, Crown,
-  Wallet, CalendarCheck, Gift, MessageSquareDashed, Zap, History,
-  Search, Heart, Bell, Megaphone, AlertCircle, Clock, ChevronRight,
+  Clapperboard, LogOut, Ticket, Inbox, Crown,
+  Gift, Zap, Search, Megaphone, AlertCircle, Clock,
+  ChevronRight, LayoutDashboard, Bell,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi,
   type StationMessage, type Announcement,
 } from '@/api'
 import { pointsApi } from '@/api/economy'
+import { primaryNav, menuSections } from '@/config/navigation'
 
 const userStore = useUserStore()
 const router = useRouter()
 const route = useRoute()
 
-const mobileMenuOpen = ref(false)
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
@@ -114,53 +114,14 @@ function toggleMsgMenu() {
   if (msgMenuOpen.value) loadMsgPreview()
 }
 
-// 导航分组：内容 → 运营 → 支持，视觉上以细分隔线区隔
-const navGroups = [
-  {
-    items: [
-      { name: '首页', path: '/' },
-      { name: '媒体库', path: '/media' },
-      { name: '收藏', path: '/favorites' },
-      { name: '观看记录', path: '/history' },
-    ],
-  },
-  { items: [{ name: '钱包', path: '/wallet' }, { name: '签到', path: '/checkin' }, { name: '邀请', path: '/invite' }] },
-  { items: [{ name: '求片', path: '/request' }, { name: '工单', path: '/tickets' }] },
-]
-
-// 移动端抽屉（底部导航坞之外的长尾入口）
-// 移动端抽屉：底部导航坞只放 5 个高频入口，其余在这里按用途分组
-// （一条竖着的扁平列表越长越难扫，分组标题相当于一张小地图；邀请这类低頻功能
-//  此前就藏在列表中间，容易被当成“没做”）
-const mobileGroups = [
-  {
-    title: '内容',
-    items: [
-      { name: '搜索片名', path: '/search', icon: Search },
-      { name: '我的收藏', path: '/favorites', icon: Heart },
-      { name: '观看记录', path: '/history', icon: History },
-    ],
-  },
-  {
-    title: '经济与奖励',
-    items: [
-      { name: '邀请返利', path: '/invite', icon: Gift },
-      { name: '积分流水', path: '/wallet?tab=log', icon: Zap },
-    ],
-  },
-  {
-    title: '互动与支持',
-    items: [
-      { name: '求片中心', path: '/request', icon: MessageSquareDashed },
-      { name: '工单支持', path: '/tickets', icon: Ticket },
-      { name: '消息中心', path: '/messages', icon: Inbox },
-    ],
-  },
-  {
-    title: '账号',
-    items: [{ name: '个人中心', path: '/profile', icon: User }],
-  },
-]
+/**
+ * 导航分工（v2.6.30）：全站只有一份导航定义，见 src/config/navigation.ts。
+ *
+ *   primaryNav   → 桌面在顶栏、移动端在底部坞，同一批条目、同一个顺序
+ *   menuSections → 低频入口统一收进头像菜单（全断点一致）
+ *
+ * 顶栏不再有第二个汉堡抽屉：同一批链接在同一屏里出现两遍，是「看着有两个导航」的根源。
+ */
 
 function isActive(path: string) {
   if (path === '/') return route.path === '/'
@@ -168,7 +129,6 @@ function isActive(path: string) {
 }
 
 function closeMenus() {
-  mobileMenuOpen.value = false
   userMenuOpen.value = false
   msgMenuOpen.value = false
 }
@@ -246,20 +206,18 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         <span class="logo-text">Aetrix</span>
       </RouterLink>
 
-      <!-- 桌面导航：内容 / 运营 / 支持 三组 -->
+      <!-- 主导航（≥900px）：与移动端底部坞同一份定义，只是横向铺开 -->
       <nav class="desktop-nav">
-        <template v-for="(group, gi) in navGroups" :key="gi">
-          <span v-if="gi > 0" class="nav-divider" aria-hidden="true" />
-          <RouterLink
-            v-for="item in group.items"
-            :key="item.path"
-            :to="item.path"
-            class="nav-link"
-            :class="{ 'nav-link-active': isActive(item.path) }"
-          >
-            {{ item.name }}
-          </RouterLink>
-        </template>
+        <RouterLink
+          v-for="item in primaryNav"
+          :key="item.path"
+          :to="item.path"
+          class="nav-link"
+          :class="{ 'nav-link-active': isActive(item.path) }"
+        >
+          <component :is="item.icon" :size="15" />
+          {{ item.name }}
+        </RouterLink>
       </nav>
 
       <!-- 右侧用户区 -->
@@ -341,15 +299,37 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                     <Crown :size="11" /> VIP
                   </span>
                 </div>
-                <RouterLink to="/profile" class="dropdown-item" @click="closeMenus">
-                  <User :size="15" /> 个人中心
-                </RouterLink>
-                <RouterLink to="/wallet" class="dropdown-item" @click="closeMenus">
-                  <Wallet :size="15" /> 我的钱包
-                </RouterLink>
-                <RouterLink to="/invite" class="dropdown-item" @click="closeMenus">
-                  <Gift :size="15" /> 邀请返利
-                </RouterLink>
+
+                <!-- 长尾入口：低频功能统一收在这里（全断点一致），
+                     主导航（顶栏 / 底部坞）只留 5 个高频目的地 -->
+                <template v-for="group in menuSections" :key="group.title">
+                  <p class="dropdown-group-title">{{ group.title }}</p>
+                  <RouterLink
+                    v-for="item in group.items"
+                    :key="item.path"
+                    :to="item.path"
+                    class="dropdown-item"
+                    @click="closeMenus"
+                  >
+                    <component :is="item.icon" :size="15" /> {{ item.name }}
+                    <span
+                      v-if="item.path === '/messages' && unreadCount > 0"
+                      class="dropdown-badge"
+                    >{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+                  </RouterLink>
+                </template>
+
+                <!-- 管理后台是另一个前端（同源 /admin/），必须用浏览器跳转：
+                     写成 RouterLink 会被用户端路由当成 404 兜底页 -->
+                <a
+                  v-if="userStore.user?.is_staff"
+                  href="/admin/"
+                  class="dropdown-item"
+                  @click="closeMenus"
+                >
+                  <LayoutDashboard :size="15" /> 管理后台
+                </a>
+
                 <button class="dropdown-item dropdown-logout" @click="handleLogout">
                   <LogOut :size="15" /> 退出登录
                 </button>
@@ -361,56 +341,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         <template v-else>
           <RouterLink to="/login" class="login-btn">登录</RouterLink>
         </template>
-
-        <button class="mobile-toggle" @click="mobileMenuOpen = !mobileMenuOpen">
-          <X v-if="mobileMenuOpen" :size="19" />
-          <Menu v-else :size="19" />
-        </button>
       </div>
     </div>
-
-    <!-- 移动端抽屉：长尾入口（主导航在底部导航坞） -->
-    <Transition name="mm">
-      <div v-if="mobileMenuOpen" class="mobile-menu">
-        <template v-if="userStore.isLoggedIn">
-          <!-- 邀请返利：抽屉里的首屏卡片。这一项此前只是扁列表中间的一行，
-               移动端用户打开抽屉也容易滑过去，被当成「没做这个功能」。 -->
-          <RouterLink to="/invite" class="mobile-feature" @click="closeMenus">
-            <span class="mobile-feature-ic"><Gift :size="17" /></span>
-            <span class="mobile-feature-body">
-              <strong>邀请返利</strong>
-              <em>邀请好友注册，双方都得积分</em>
-            </span>
-            <ChevronRight :size="15" class="mobile-feature-arrow" />
-          </RouterLink>
-
-          <template v-for="group in mobileGroups" :key="group.title">
-            <p class="mobile-group-title">{{ group.title }}</p>
-            <RouterLink
-              v-for="item in group.items"
-              :key="item.path"
-              :to="item.path"
-              class="mobile-link"
-              @click="closeMenus"
-            >
-              <component :is="item.icon" :size="17" />
-              {{ item.name }}
-              <span v-if="item.path === '/messages' && unreadCount > 0" class="mobile-msg-badge">{{ unreadCount }}</span>
-            </RouterLink>
-          </template>
-          <button class="mobile-link logout" @click="handleLogout">
-            <LogOut :size="17" />
-            退出登录
-          </button>
-        </template>
-        <template v-else>
-          <RouterLink to="/login" class="mobile-link" @click="closeMenus">
-            <User :size="17" />
-            登录 / 注册
-          </RouterLink>
-        </template>
-      </div>
-    </Transition>
   </header>
 </template>
 
@@ -469,26 +401,25 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .desktop-nav {
   display: flex;
   align-items: center;
-  gap: 0.125rem;
-}
-
-.nav-divider {
-  width: 1px;
-  height: 16px;
-  margin: 0 0.5rem;
-  background: var(--au-border-strong);
-  flex-shrink: 0;
+  gap: 0.25rem;
+  min-width: 0;
 }
 
 .nav-link {
-  padding: 0.4688rem 0.8125rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.4688rem 0.75rem;
   border-radius: var(--au-r-sm);
   font-size: 0.875rem;
   font-weight: 500;
+  white-space: nowrap;
   color: var(--au-text-2);
   text-decoration: none;
   transition: all var(--au-fast) var(--au-ease);
 }
+
+.nav-link svg { opacity: 0.75; }
 
 .nav-link:hover {
   color: var(--au-text);
@@ -767,6 +698,31 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   color: var(--au-text);
 }
 
+/* 下拉里的分组标题与未读徽标：长尾入口收进来之后需要与账号项区分 */
+.dropdown-group-title {
+  margin: 0.375rem 0 0.125rem;
+  padding: 0 1rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--au-text-4);
+}
+
+.dropdown-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-gradient-warm);
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  border-radius: var(--au-r-full);
+}
+
 .dropdown-vip {
   display: inline-flex;
   align-items: center;
@@ -814,145 +770,27 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 .login-btn:hover { transform: translateY(-1px); }
 
-.mobile-toggle {
-  display: none;
-  width: 38px;
-  height: 38px;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: var(--au-text-2);
-  cursor: pointer;
-  border-radius: var(--au-r-md);
-}
-.mobile-toggle:hover { background: var(--au-surface-2); color: var(--au-text); }
-
-.mobile-menu {
-  display: none;
-  border-top: 1px solid var(--au-border);
-  padding: 0.5rem 1rem 0.875rem;
-  background: var(--au-overlay);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  /* 分组之后抽屉变长：小屏（如 667×375）会超出可视区，这里让它自己滚，
-     并限制在顶栏以下（否则最后两项点不到） */
-  max-height: calc(100vh - 62px - env(safe-area-inset-top, 0px));
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-/* 抽屉首屏的功能卡（目前是邀请返利）：有图标、标题、一句说明，
-   和下面的扁平列表区分开，免得又被当成普通一行滑过去 */
-.mobile-feature {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin: 0.375rem 0 0.5rem;
-  padding: 0.6875rem 0.75rem;
-  border: 1px solid var(--au-primary-border);
-  border-radius: var(--au-r-md);
-  background: var(--au-primary-soft);
-  text-decoration: none;
-}
-
-.mobile-feature:active { transform: none; }
-
-.mobile-feature-ic {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border-radius: var(--au-r-sm);
-  background: var(--au-surface);
-  color: var(--au-primary);
-}
-
-.mobile-feature-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.mobile-feature-body strong {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.mobile-feature-body em {
-  font-size: 0.6875rem;
-  font-style: normal;
-  color: var(--au-text-3);
-}
-
-.mobile-feature-arrow {
-  margin-left: auto;
-  flex-shrink: 0;
-  color: var(--au-text-4);
-}
-
-/* 分组标题：抽屉里的小地图 */
-.mobile-group-title {
-  margin: 0.5rem 0 0.125rem;
-  padding: 0 0.625rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: var(--au-text-4);
-}
-
-.mobile-link {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 0.625rem;
-  color: var(--au-text-2);
-  font-size: 0.9375rem;
-  text-decoration: none;
-  border-radius: var(--au-r-md);
-  transition: all var(--au-fast);
-  width: 100%;
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  position: relative;
-}
-.mobile-link:hover { background: var(--au-surface-2); color: var(--au-text); }
-.mobile-link.logout { color: var(--au-danger); }
-
-.mobile-msg-badge {
-  margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-gradient-warm);
-  color: #fff;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  border-radius: var(--au-r-full);
-}
-
 /* 过渡 */
 .dd-enter-active, .dd-leave-active { transition: opacity var(--au-fast), transform var(--au-fast); }
 .dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-6px); }
 
-.mm-enter-active, .mm-leave-active { transition: opacity var(--au-med), transform var(--au-med); }
-.mm-enter-from, .mm-leave-to { opacity: 0; transform: translateY(-8px); }
+/* 窄屏：导航条目收窄，先让出用户名的宽度，再让出积分徽章 */
+@media (max-width: 1080px) {
+  .user-name { display: none; }
+  .nav-link { padding: 0.4688rem 0.625rem; }
+}
 
+@media (max-width: 980px) {
+  .nav-link { gap: 0; }
+  .nav-link svg { display: none; }
+}
+
+/* ≤900px：主导航交给底部导航坞，顶栏只留品牌 + 搜索 / 消息 / 账号 */
 @media (max-width: 900px) {
   .desktop-nav { display: none; }
   .points-chip { display: none; }
-  .mobile-toggle { display: flex; }
-  .mobile-menu { display: flex; flex-direction: column; }
   .user-name { display: none; }
   .msg-dropdown { width: min(292px, calc(100vw - 2rem)); }
+  .user-dropdown { width: min(240px, calc(100vw - 2rem)); }
 }
 </style>
