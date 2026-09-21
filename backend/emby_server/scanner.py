@@ -438,20 +438,24 @@ def clear_dir_cache() -> None:
 
 
 def _list_dir_cached(dir_path: str) -> list:
-    """本机目录列表（同一次扫描里同一目录只读一次；缓存有上限，不会无限长大）"""
+    """本机目录列表（同一次扫描里同一目录只读一次；缓存有上限，不会无限长大）
+
+    「查缓存 → 列目录 → 写缓存」必须整体在锁里完成：同一个目录下的多个文件会被分发到
+    不同工作线程，分成两段的实现在线程同时要同一目录时会各自真列一次（CI 上表现为
+    3 个目录列了 6 次）。列目录本身很快，串行化它换来的是「目录读次数只跟目录数有关」。
+    """
     with _DIR_LIST_LOCK:
         hit = _DIR_LIST_CACHE.get(dir_path)
-    if hit is not None:
-        return hit
-    try:
-        entries = os.listdir(dir_path)
-    except OSError:
-        entries = []
-    with _DIR_LIST_LOCK:
+        if hit is not None:
+            return hit
+        try:
+            entries = os.listdir(dir_path)
+        except OSError:
+            entries = []
         if len(_DIR_LIST_CACHE) >= _DIR_LIST_MAX:
             _DIR_LIST_CACHE.clear()
         _DIR_LIST_CACHE[dir_path] = entries
-    return entries
+        return entries
 
 
 class TmdbClient:
@@ -1087,6 +1091,8 @@ class _ScanContext:
     seen_guids: set = field(default_factory=set)
     dir_cache: dict = field(default_factory=dict)          # 本机目录列表
     mount_dir_cache: dict = field(default_factory=dict)    # 远程挂载目录列表
+    mount_lock: threading.Lock = field(default_factory=threading.Lock)
+    mount_dir_locks: dict = field(default_factory=dict)     # 每个远程目录一把单飞锁
 
 
 
@@ -1124,9 +1130,22 @@ def _local_names(ctx: "_ScanContext", dirpath: str) -> list:
 
 
 def _mount_names(ctx: "_ScanContext", scan_file: "ScanFile") -> list:
-    """远程挂载目录列表（同一个目录只请求一次；大目录下这一项能省掉九成网络往返）"""
+    """远程挂载目录列表（同一个目录只请求一次；大目录下这一项能省掉九成网络往返）
+
+    同一个目录的文件会被分发到不同工作线程，所以这里按目录单飞：线程之间只等「别人正在
+    列的这个目录」，不同目录仍然并行。分成两段的实现在并发时会各自去请求一次网盘。
+    """
     key = (scan_file.mount_id, scan_file.dir_rel)
-    if key not in ctx.mount_dir_cache:
+    with ctx.mount_lock:
+        if key in ctx.mount_dir_cache:
+            return ctx.mount_dir_cache[key]
+        lock = ctx.mount_dir_locks.get(key)
+        if lock is None:
+            lock = ctx.mount_dir_locks[key] = threading.Lock()
+    with lock:
+        with ctx.mount_lock:               # 别人可能已经列完了
+            if key in ctx.mount_dir_cache:
+                return ctx.mount_dir_cache[key]
         try:
             entries = scan_file.provider.list_dir(scan_file.dir_rel)
         except mount_lib.MountError as exc:
@@ -1135,8 +1154,10 @@ def _mount_names(ctx: "_ScanContext", scan_file: "ScanFile") -> list:
         except Exception as exc:  # noqa: BLE001 — 目录读不到不该中断扫描
             logger.warning("读取挂载目录异常，跳过外挂字幕：%s（%s）", scan_file.dir_rel, exc)
             entries = []
-        ctx.mount_dir_cache[key] = entries
-    return ctx.mount_dir_cache[key]
+        with ctx.mount_lock:
+            ctx.mount_dir_cache[key] = entries
+            ctx.mount_dir_locks.pop(key, None)  # 列完就不必再留着这把锁
+        return entries
 
 
 def _side_info(ctx: "_ScanContext", scan_file: "ScanFile") -> tuple:

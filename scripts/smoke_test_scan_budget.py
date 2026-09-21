@@ -8,7 +8,8 @@
 2. 并行探测：ffprobe 类调用同时在跑（老实现是逐条串行，一个 90 秒超时就能拖死整库）；
 3. 并行刮削 + 不重复请求：TMDB 搜索/详情并发发起，写库线程随后调用的同一请求命中缓存，
    不会因为「预热 + 写库」各调一次就双倍消耗配额；
-4. 目录只列一次：同一目录下几十个文件只 os.listdir 一次（老实现每个文件列两次：找图 + 找字幕）；
+4. 目录只列一次：同一目录下几十个文件只 os.listdir 一次（老实现每个文件列两次：找图 + 找字幕），
+   并发撞上同一目录（同目录文件分发到不同工作线程）也只列一次——单飞语义由脚本自己验证；
 5. 清理阶段仍然工作（删掉文件 → 重扫 → removed 计数正确）。
 
 用法：python scripts/smoke_test_scan_budget.py
@@ -234,6 +235,38 @@ check(tmdb.calls <= (MOVIES + SERIES) * 2 + 4, "同一片名不重复请求 TMDB
 expected_dirs = 1 + SERIES
 check(listdir_calls["n"] <= expected_dirs + 2, "同一目录只列举一次",
       f"listdir={listdir_calls['n']} 上限={expected_dirs + 2}")
+
+# 同一个目录下的多个文件会分发到不同工作线程：并发撞上同一目录时也必须只真列一次。
+# 用屏障把 8 个线程同时放进去，不靠运气（CI 上曾出现 3 个目录列了 6 次）。
+one_dir = tempfile.mkdtemp(prefix="scanbudget_shared_")
+with open(os.path.join(one_dir, "a.mkv"), "wb") as f:
+    f.write(b"\x00" * 128)
+baseline = listdir_calls["n"]
+sc.clear_dir_cache()
+gate = threading.Barrier(8)
+raced: list = []
+
+
+def _list_same_dir():
+    try:
+        gate.wait(timeout=10)
+        sc._list_dir_cached(one_dir)
+    except Exception as exc:  # noqa: BLE001 — 记下来，下方断言会暴露
+        raced.append(exc)
+
+
+os.listdir = counting_listdir  # 这一小段重新装观测装置（大扫描那段已还原）
+try:
+    workers = [threading.Thread(target=_list_same_dir) for _ in range(8)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=10)
+    delta = listdir_calls["n"] - baseline
+finally:
+    os.listdir = real_listdir
+check(not raced and delta == 1, "多线程同时要同一目录也只列一次",
+      f"listdir={delta} 期望=1" + (f" 异常={raced}" if raced else ""))
 check(subs == MOVIES, "外挂字幕按文件识别入库", f"字幕轨={subs}")
 
 # ==================== 清理阶段仍然工作 ====================
