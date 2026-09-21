@@ -159,23 +159,6 @@ def get_current_user_jwt(
     return user
 
 
-def get_current_user_compat(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
-) -> models.WebUser:
-    """兼容鉴权：JWT 优先，回退到旧数字 token（向后兼容已部署前端）"""
-    if credentials and credentials.credentials:
-        user_id = resolve_jwt_user_id(credentials.credentials)
-        if user_id is None and credentials.credentials.isdigit():
-            user_id = int(credentials.credentials)  # 旧版数字 token
-        if user_id is not None:
-            user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-            if user and user.is_active:
-                return user
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未提供认证凭证")
-
-
 # ==================== Endpoints ====================
 
 @auth_router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)

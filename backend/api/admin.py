@@ -17,14 +17,16 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend.database import get_db
+from backend.ratelimit import check_rate_limit, client_ip
 from backend.notifications import (
     AdminEvent,
     notify_admin_event,
@@ -125,23 +127,56 @@ class AdminLoginRequest(BaseModel):
 
 @admin_router.post("/auth/login")
 async def admin_login(
+    http_request: Request,
     request: AdminLoginRequest,
     db: Session = Depends(get_db),
 ):
-    """管理员登录：仅 is_staff 的 WebUser 可登录管理后台"""
+    """管理员登录：仅 is_staff 的 WebUser 可登录管理后台
+
+    安全：与用户端登录同样的限流 + 登录日志。后台登录原先既不限流也不留痕，
+    被人跑字典猜管理员密码时站点完全无感，也无法事后审计。
+    """
+    allowed, retry_after = check_rate_limit(f"admin_login:{client_ip(http_request)}", 8, 60)
+    if not allowed:
+        record_event(
+            db, username=request.username.strip(), ip=log_ip(http_request),
+            agent=user_agent(http_request), success=False, reason="admin_login_failed",
+            detail=f"尝试过于频繁，已限流（{retry_after}s）",
+        )
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
+
     user = db.query(models.WebUser).filter(
-        models.WebUser.username == request.username
+        models.WebUser.username == request.username.strip()
     ).first()
 
     if not user or not verify_password(request.password, user.password_hash):
+        record_event(
+            db, username=request.username.strip(), user_id=user.id if user else None,
+            ip=log_ip(http_request), agent=user_agent(http_request), success=False,
+            reason="admin_login_failed", detail="用户名或密码错误",
+        )
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     if not user.is_staff:
+        record_event(
+            db, username=user.username, user_id=user.id, ip=log_ip(http_request),
+            agent=user_agent(http_request), success=False, reason="admin_login_failed",
+            detail="账号没有管理员权限（尝试登录后台）",
+        )
         raise HTTPException(status_code=403, detail="该账号没有管理员权限")
     if not user.is_active:
+        record_event(
+            db, username=user.username, user_id=user.id, ip=log_ip(http_request),
+            agent=user_agent(http_request), success=False, reason="admin_login_failed",
+            detail="账号已被禁用",
+        )
         raise HTTPException(status_code=403, detail="账号已被禁用")
 
     user.last_login_at = datetime.now()
     db.commit()
+    record_event(
+        db, username=user.username, user_id=user.id, ip=log_ip(http_request),
+        agent=user_agent(http_request), success=True, reason="admin_login",
+    )
 
     access = create_access_token(user.id, {"username": user.username, "staff": True})
     refresh = create_refresh_token(user.id)

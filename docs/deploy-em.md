@@ -85,7 +85,7 @@ cp env.example .env
 | `EMBY_API_PUBLIC_URL` | 分离模式建议 | 与 `EMBY_PUBLIC_URL` 同为客户端地址，用于 EM 的"请去连 EA"指引 |
 | `EM_PANEL_URL` | 可选 | EM 自己的面板地址；EA 启动时探测它是否可达 |
 | `CORS_ORIGINS` | **生产必填** | 逗号分隔的具体域名。留空等于允许所有源 |
-| `EMBY_ALLOW_LEGACY_TOKENS` | 保持 `false` | 开启后 `Bearer <user_id>` 可冒充任意用户，仅过渡期使用 |
+| `EMBY_ALLOW_LEGACY_TOKENS` | **已移除** | 旧版「纯数字即 user_id」的兼容 token 已彻底删除，设置该变量不再有任何效果 |
 | `CORS_ORIGINS` / `DATABASE_URL` | 生产建议 | 默认 SQLite 单文件；切 PG：`DATABASE_TYPE=postgresql` + `DATABASE_URL=postgresql://…` |
 | `REDIS_ENABLED` / `REDIS_URL` | 可选 | 未启用时用内存缓存 |
 | `TMDB_API_KEY` | 可选 | 中文元数据刮削（海报/简介/评分）；不填只做本地 ffprobe 探测 |

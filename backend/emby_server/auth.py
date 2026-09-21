@@ -227,11 +227,10 @@ def get_emby_user(
 def get_admin_or_emby_user(request: Request, db: Session = Depends(get_db)) -> models.WebUser:
     """门户端鉴权：JWT 优先，回退到 Emby 客户端 token
 
-    旧版数字 token 默认已禁用（可被枚举冒充任意用户）。
-    如需临时兼容已部署前端，可设置环境变量 EMBY_ALLOW_LEGACY_TOKENS=true。
+    只接受本项目签发的 JWT 或自建 Emby 的客户端 token。
+    「纯数字即 user_id」的旧版兼容分支已彻底移除：它让任何人只要猜到一个小整数
+    就能冒充任意用户，且历史部署里曾被默认开启。
     """
-    import os
-
     raw = (
         request.headers.get("Authorization", "").replace("Bearer ", "").strip()
         or request.query_params.get("api_key", "")
@@ -240,8 +239,6 @@ def get_admin_or_emby_user(request: Request, db: Session = Depends(get_db)) -> m
         from backend.security import resolve_jwt_user_id
 
         jwt_user_id = resolve_jwt_user_id(raw)
-        if jwt_user_id is None and raw.isdigit() and os.getenv("EMBY_ALLOW_LEGACY_TOKENS", "").lower() == "true":
-            jwt_user_id = int(raw)  # 旧版数字 token 兼容（需显式开启）
         if jwt_user_id is not None:
             user = db.query(models.WebUser).filter(models.WebUser.id == jwt_user_id).first()
             if user and user.is_active:
