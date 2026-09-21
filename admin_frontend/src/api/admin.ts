@@ -18,6 +18,11 @@ import type {
   MountDirEntry,
   PlaybackNode,
   EaMountHealth,
+  RemoteServerRow,
+  ServerKind,
+  ServerKindMeta,
+  ServerProbeResult,
+  ServerSummary,
   LoginResponse,
   MediaSeekRow,
   OverviewStats,
@@ -201,6 +206,75 @@ export const fetchMediaSeeks = (params: { status_filter?: string } = {}) =>
 
 export const updateMediaSeek = (id: number, data: { status: string; admin_note?: string }) =>
   put<{ success: boolean }>(`/media-seek/${id}`, data)
+
+/**
+ * 把求片交给外部服务：MoviePilot（提交订阅）或 qBittorrent（加种）。
+ * qB 自己不会去找片子，所以选它时必须带链接（磁力或 .torrent 地址）。
+ */
+export const pushMediaSeek = (id: number, data: { target?: string; link?: string }) =>
+  post<{ success: boolean; target: string; server?: string; message: string; status: string }>(
+    `/media-seek/${id}/push`,
+    data
+  )
+
+// ==================== 服务器管理 ====================
+
+const S = '/servers'
+
+export const fetchServers = () =>
+  get<{ servers: RemoteServerRow[]; kinds: ServerKindMeta[]; summary: ServerSummary }>(S)
+
+export const fetchServersSummary = () => get<ServerSummary>(`${S}/summary`)
+
+export interface ServerPayload {
+  name: string
+  kind: ServerKind
+  url: string
+  config?: Record<string, string>
+  is_enabled?: boolean
+  remark?: string
+}
+
+export const createServer = (data: ServerPayload) =>
+  post<{ success: boolean; server: RemoteServerRow; probe: ServerProbeResult }>(S, data)
+
+export const updateServer = (id: number, data: ServerPayload) =>
+  put<{ success: boolean; server: RemoteServerRow; probe: ServerProbeResult }>(`${S}/${id}`, data)
+
+export const deleteServer = (id: number) =>
+  del<{ success: boolean; summary: ServerSummary }>(`${S}/${id}`)
+
+/** 测试「还没保存」的配置；编辑时带 server_id，密钥留空则沿用已保存的那份 */
+export const testServerConfig = (data: {
+  kind: ServerKind
+  url: string
+  config?: Record<string, string>
+  server_id?: number
+}) => post<ServerProbeResult>(`${S}/test`, data)
+
+export const testServer = (id: number) => post<ServerProbeResult>(`${S}/${id}/test`)
+
+/** 设为该类型的「当前使用」（EA / Emby）：服务端会先重新体检一次再切换 */
+export const activateServer = (id: number) =>
+  post<{
+    success: boolean
+    activated?: boolean
+    mode?: string
+    message?: string
+    probe: ServerProbeResult
+    server?: RemoteServerRow
+    /** 激活 EA 时会顺带拉一次「EA 视角的挂载体检」，失败代表那台机器碰不到你的存储 */
+    mounts_health?: { ok: boolean; error?: string; checked_at?: string | null; failed_count?: number } | null
+  }>(`${S}/${id}/activate`)
+
+export const toggleServer = (id: number) =>
+  post<{ success: boolean; server: RemoteServerRow; summary: ServerSummary }>(`${S}/${id}/toggle`)
+
+/** 重拉一次「EA 视角的挂载体检」（挂载页也有入口，这里给服务器页用） */
+export const refreshServerMounts = () =>
+  post<{ success: boolean; health: { ok: boolean; error?: string; checked_at?: string | null }; server: string }>(
+    `${S}/mounts/health`
+  )
 
 // ==================== 日志与统计 ====================
 

@@ -2,6 +2,48 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.6.19] - 2026-09-21
+
+本次把「服务器」变成一份可增删改的清单（面板能加多台、能一眼看出接了什么），并把
+**求片真的接到下游**：以前求片只能改状态，批了之后得管理员自己去别处搜片子。
+
+### 新增 (Added)
+- **服务器清单（`remote_servers` 表 + `/api/admin/servers`）**：四类服务器都能加多台——
+  `ea`（本项目自带的 Emby API）、`emby`（已有的 Emby / Jellyfin）、`moviepilot`、`qbittorrent`。
+  列表 / 统计 / 新增 / 修改 / 删除 / 启用停用 / 重新体检 / 设为当前使用，全部落管理审计。
+  类型字段与密钥声明由后端元数据下发（`SERVER_KINDS`），前端不再自己维护一份。
+- **信息展示**：`GET /api/admin/servers/summary` 按类型统计「加了几台 / 几台可用 / 当前用哪台」，
+  管理后台顶部四张统计卡与「数据概览」的">服务器接入"卡片共用这份口径；一点直达「服务器」页。
+- **新增「服务器」页**（系统分组）：统计卡（可点筛选）、小白说明、清单表格（类型 / 地址 /
+  连接状态与原因 / 当前使用）、新增与编辑对话框（字段由元数据驱动，对话框里可先「测试连接」再保存）。
+- **MoviePilot 接入**（`backend/moviepilot.py`）：同时支持两套凭据——API_TOKEN（`?token=`）
+  用于查订阅，用户名 / 密码（`/api/v1/login/access-token` 换 JWT）用于**新增订阅**。
+  体检会分别报告「能不能查」与「能不能提交订阅」，只填 API 密钥时面板会明说还不能提交订阅。
+- **qBittorrent 接入**（`backend/qbittorrent.py`）：`/api/v2/auth/login` 换 SID（qB 登录失败
+  返回的是 `Fails.` 而不是错误码，所以看响应体而不是状态码）、`/api/v2/app/version` 报版本、
+  `/api/v2/torrents/add` 加种（支持磁力 / `.torrent` 直链、保存目录、分类）。
+- **求片一键转交**（`POST /api/admin/media-seek/{id}/push`）：`target=moviepilot` 提交为它的订阅
+  （片名 / 年份 / `电影`或`电视剧`）；`target=qbittorrent` 加种（没给链接时会明确拒绝——qB 自己
+  不会去找片）；`auto` 优先 MoviePilot。结果（交给谁、成没成、为什么没成）落库到求片记录，
+  列表回传 `push_target` / `push_status` / `push_message` / `pushed_at`，推送成功后待审求片自动置为已批准。
+- 「求片管理」页新增「转交外部服务」列与「交 MoviePilot / 交给 qB」按钮；一个可用目标都没有时
+  如实说明并指向「服务器」页，而不是给一个点了只会失败的按钮。
+- 新增冒烟测试 `scripts/smoke_test_servers.py`（63 项断言，已接入 CI）：**真起三个 HTTP 服务**
+  （假 MoviePilot、假 qBittorrent、真 EA）验证新增即体检、连不上不能设为当前使用、
+  激活后旧配置键被换过去、旧页面与新清单互相同步、删除当前使用的服务后不留在悬空模式上、
+  密钥永不出接口，以及求片到 MoviePilot / qB 的完整链路。
+
+### 变更 (Changed)
+- **EA / Emby 的探测口径收敛到一处**：`backend/api/emby_servers.py` 的 `probe()` 改为调用
+  `backend.servers.probe_ea` / `probe_emby`，两个页面（旧的两个格子 / 新的清单）不会对
+  「连得上」给出不同结论。
+- **EA / Emby 被设为当前使用时**，同步写回既有的 `emby_managed_*` / `emby_external_*` /
+  `emby_active_mode`：网关闸门、客户端指引、用户端账号卡、挂载体检全部照旧生效，不需要改它们。
+  另一类还有激活的服务器时优先交给它，都没有则回到「面板自己出流」（`panel`）。
+- 旧的「Emby 服务入口」页依然可用：它的保存会同步进新清单（且只在连接测试通过时才标记为当前使用），
+  导航里「服务器」排在它前面。
+- 数据库自动迁移新增 `movie_requests.push_target / push_status / push_message / pushed_at`。
+
 ## [2.6.18] - 2026-09-21
 
 本次把「这条挂载在哪台机器上真的能用」变成面板上可查的事实，让分离部署的存储问题在

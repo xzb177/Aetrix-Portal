@@ -22,7 +22,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.6.18'
+const APP_VERSION = 'v2.6.19'
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)
@@ -81,10 +81,12 @@ const navGroups: NavGroup[] = [
   { title: '支持', icon: Ticket, items: [{ path: '/tickets', label: '工单管理' }] },  { title: '系统',
     icon: Settings,
     items: [
+      // 「服务器」是清单（能加多台、含 MoviePilot / qB），「Emby 服务入口」是快速切换两个格子的旧页面
+      { path: '/servers', label: '服务器' },
+      { path: '/emby-servers', label: 'Emby 服务入口' },
       { path: '/settings', label: '系统设置' },
       { path: '/logs', label: '操作日志' },
       { path: '/health', label: '服务健康' },
-      { path: '/emby-servers', label: 'Emby 服务入口' },
     ],
   },
 ]

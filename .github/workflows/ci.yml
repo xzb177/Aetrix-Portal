@@ -123,6 +123,9 @@ jobs:
       - name: 挂载体检冒烟（EA 视角可达性 / 面板体检落库 / EM 拉取 EA）
         run: python scripts/smoke_test_mount_health.py
 
+      - name: 服务器与求片转交冒烟（多服务器 / 当前使用切换 / MoviePilot 与 qB）
+        run: python scripts/smoke_test_servers.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
