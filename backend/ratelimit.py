@@ -50,8 +50,26 @@ def check_rate_limit(key: str, max_events: int, window_seconds: float) -> tuple[
 
 
 def client_ip(request) -> str:
-    """提取客户端 IP（优先反向代理头）"""
-    fwd = request.headers.get("x-forwarded-for") if request is not None else None
+    """提取客户端 IP（只能信任我们自己的反代重新写入的头）
+
+    安全：此值同时用于登录/注册/核销的限流键与登录日志，之前取
+    `X-Forwarded-For` 的**第一段**——而仓库里的 Nginx 用的是
+    `$proxy_add_x_forwarded_for`（把客户端自带的头追加在前面），
+    于是任何人只要每次伪造一个 `X-Forwarded-For: 1.2.3.4` 就能换一个限流桶，
+    暴力破解与刷接口形同不设限。现在的优先级：
+
+    1. `X-Real-IP`：Nginx 按 `$remote_addr` 硬写，客户端无法伪造
+    2. `X-Forwarded-For` 的**最后一段**：由最近一跳代理追加，才是真实客户端
+    3. 直连时的 `request.client.host`
+    """
+    if request is None:
+        return "unknown"
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return real
+    fwd = request.headers.get("x-forwarded-for")
     if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if (request is not None and request.client) else "unknown"
+        hops = [part.strip() for part in fwd.split(",") if part.strip()]
+        if hops:
+            return hops[-1]
+    return request.client.host if request.client else "unknown"

@@ -260,13 +260,15 @@ def login_logs() -> list[dict]:
 
 
 r = client.post("/api/admin/auth/login", json={"username": "sec-staff", "password": "wrong-pw"},
-                headers={"X-Forwarded-For": "10.9.9.1, 10.0.0.1", "User-Agent": "audit-test/1.0"})
+                headers={"X-Real-IP": "10.9.9.1", "X-Forwarded-For": "1.1.1.1, 10.0.0.1",
+                         "User-Agent": "audit-test/1.0"})
 check("后台登录：密码错误 401", r.status_code == 401, f"status={r.status_code}")
 row = login_logs()[0]
 check("后台登录：失败被记录",
       row["reason"] == "admin_login_failed" and row["success"] is False and row["username"] == "sec-staff",
       f"{row}")
-check("后台登录：记录真实客户端 IP（取 XFF 首位）", row["ip"] == "10.9.9.1", f"ip={row['ip']}")
+check("后台登录：记录真实客户端 IP（X-Real-IP，不采信可伪造的 XFF 首值）",
+      row["ip"] == "10.9.9.1", f"ip={row['ip']}")
 
 r = client.post("/api/admin/auth/login", json={"username": "sec-alice", "password": "alice-pw"},
                 headers={"X-Forwarded-For": "10.9.9.2"})
