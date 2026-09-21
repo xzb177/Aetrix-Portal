@@ -90,6 +90,9 @@ jobs:
       - name: 管理员账号工具冒烟（建号 / 升级 / 重置密码 / 真实登录）
         run: python scripts/smoke_test_admin_account.py
 
+      - name: Emby 双模式联动冒烟（EA / 已有 Emby 与自建功能闸门）
+        run: python scripts/smoke_test_emby_connection.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
