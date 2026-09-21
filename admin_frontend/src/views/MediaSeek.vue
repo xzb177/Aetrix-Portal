@@ -5,21 +5,30 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CloudDownload, Download, RefreshCw, X } from 'lucide-vue-next'
 import { fetchMediaSeeks, fetchServersSummary, pushMediaSeek, updateMediaSeek } from '@/api/admin'
 import type { MediaSeekRow, ServerKind } from '@/types'
+import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
+const realm = useRealmStore()
+/** 统计范围：当前服（默认）或全部服 */
+const scope = ref<'realm' | 'all'>('realm')
+
 /** 手机卡片只留片名 / 类型 / 用户 / 状态 / 时间，管理备注在桌面表格里看 */
-const columns: DataColumn[] = [
+const columns = computed<DataColumn[]>(() => [
   { key: 'movie_name', label: '片名', minWidth: 200, mobile: 'title' },
   { key: 'type', label: '类型', width: 80 },
   { key: 'user_name', label: '用户', width: 110 },
+  // 求片是「给哪个服求的」：跨服汇总时才需要这一列
+  ...(scope.value === 'all'
+    ? [{ key: 'realm_name', label: '求给', minWidth: 110 } as DataColumn]
+    : []),
   { key: 'status', label: '状态', width: 100 },
   { key: 'push', label: '转交外部服务', width: 170 },
   { key: 'admin_note', label: '管理备注', minWidth: 140, mobile: 'hide' },
   { key: 'created_at', label: '提交时间', width: 150 },
   // 批准 / 拒绝 / 转交 / 标记上架可能同时出现，给足宽度免得按钮被挤成两行
   { key: 'actions', label: '操作', width: 330, fixed: 'right', align: 'right' },
-]
+])
 
 const list = ref<MediaSeekRow[]>([])
 const loading = ref(false)
@@ -36,7 +45,11 @@ const noPushTarget = computed(() => !canMoviePilot.value && !canQbittorrent.valu
 async function load() {
   loading.value = true
   try {
-    list.value = await fetchMediaSeeks(statusFilter.value ? { status_filter: statusFilter.value } : {})
+    const params: { status_filter?: string; realm_id?: number } = {}
+    if (statusFilter.value) params.status_filter = statusFilter.value
+    // 求片登记的是「给哪个服求」；realm_id=0 = 全部服（后端未标注的也算进来）
+    params.realm_id = scope.value === 'all' ? 0 : (realm.activeId ?? 0)
+    list.value = await fetchMediaSeeks(params)
     // 服务器没接好时按钮点了也只会失败，所以这里如实反映当前可用目标
     const summary = await fetchServersSummary()
     pushReady.value = summary.push_ready || []
@@ -129,6 +142,10 @@ function statusLabel(status: string): string {
         <p class="admin-page-subtitle">审核结果会通知提交用户</p>
       </div>
       <div class="toolbar">
+        <el-radio-group v-model="scope" size="small" @change="load">
+          <el-radio-button value="realm">当前服</el-radio-button>
+          <el-radio-button value="all">全部服</el-radio-button>
+        </el-radio-group>
         <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 120px" @change="load">
           <el-option label="待审核" value="pending" />
           <el-option label="已批准" value="approved" />
@@ -160,6 +177,10 @@ function statusLabel(status: string): string {
         </template>
 
         <template #cell-user_name="{ row }">{{ row.user_name }}</template>
+
+        <template #cell-realm_name="{ row }">
+          <span class="mini-badge muted">{{ row.realm_name || '未标注' }}</span>
+        </template>
 
         <template #cell-status="{ row }">
           <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>

@@ -8,6 +8,9 @@
  * v2.6.11：改用 DataTable（桌面表格 / 手机卡片列表），并把页面里那套
  * `#737373`、`#a3a3a3` 之类的硬编码灰色换成主题令牌——这些写死的颜色既不符合
  * 后台主题，对比度也不达标（#737373 在深色上只有 3.4:1）。
+ *
+ * v2.6.24：卡码是**一个服一个**的——一张卡码开的是它所属服的会员（乙服的注册码
+ * 在乙服的 EA 上才生效）。默认只看当前服，可切「全部服」汇总；生成时可以指定归属服。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -23,8 +26,15 @@ import {
   updateRegistrationSettings,
 } from '@/api/admin'
 import type { CodeStats, RegistrationCode, RegistrationSettings } from '@/types'
+import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+
+const realm = useRealmStore()
+/** 统计范围：当前服（默认）或全部服 */
+const scope = ref<'realm' | 'all'>('realm')
+/** 可选归属服（后端下发，跨服汇总时也能用） */
+const realmOptions = ref<{ id: number; name: string }[]>([])
 
 const codes = ref<RegistrationCode[]>([])
 const stats = ref<CodeStats | null>(null)
@@ -45,6 +55,8 @@ const genForm = ref({
   is_decoy: false,
   target_username: '',
   note: '',
+  /** 这批码开通哪个服的会员 */
+  realm_id: null as number | null,
 })
 const generated = ref<{ code: string; days_text: string }[]>([])
 const resultVisible = ref(false)
@@ -63,9 +75,13 @@ const TYPE_META: Record<number, { label: string; desc: string }> = {
 }
 
 /** 表格列定义：手机端只保留最关键的几列，其余（用量 / 指名 / 备注 / 使用者）收进详情，避免卡片过长 */
-const columns: DataColumn[] = [
+const columns = computed<DataColumn[]>(() => [
   { key: 'code', label: '卡码', minWidth: 210, mobile: 'title' },
   { key: 'code_type', label: '类型', width: 96 },
+  // 卡码开哪个服的会员：跨服汇总时才需要这一列
+  ...(scope.value === 'all'
+    ? [{ key: 'realm', label: '归属服', minWidth: 120 } as DataColumn]
+    : []),
   { key: 'days_text', label: '授予', width: 90 },
   { key: 'use_count', label: '用量', width: 84, mobile: 'hide' },
   { key: 'state', label: '状态', width: 92 },
@@ -74,7 +90,13 @@ const columns: DataColumn[] = [
   { key: 'note', label: '备注', minWidth: 120, mobile: 'hide' },
   { key: 'used_by', label: '使用者', minWidth: 150, mobile: 'hide' },
   { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
-]
+])
+
+/** 归属服展示名（未标注 = 升级前的老卡码，按当前服算） */
+function realmLabel(row: RegistrationCode): string {
+  if (!row.realm_id) return '未标注'
+  return row.realm_name || realmOptions.value.find((r) => r.id === row.realm_id)?.name || `#${row.realm_id}`
+}
 
 const dailyDefault = computed(() =>
   genForm.value.code_type === 3 ? '永久' : `${genForm.value.days} 天`)
@@ -89,20 +111,24 @@ const STATE_LABEL: Record<string, string> = {
 async function load() {
   loading.value = true
   try {
+    // realm_id=0 → 全部服；其余按服过滤（后端以当前服作为兜底）
+    const scopeId = scope.value === 'all' ? 0 : (realm.activeId ?? 0)
     const [list, stat, setting] = await Promise.all([
       fetchCodeList({
         code_type: filters.value.code_type || undefined,
         state: filters.value.state || undefined,
         keyword: filters.value.keyword || undefined,
+        realm_id: scopeId,
         limit: 200,
       }),
-      fetchCodeStats(),
+      fetchCodeStats(scopeId),
       fetchRegistrationSettings(),
     ])
     codes.value = list.codes
     total.value = list.total
     stats.value = stat
     settings.value = setting
+    if (list.realms?.length) realmOptions.value = list.realms
   } finally {
     loading.value = false
   }
@@ -115,6 +141,8 @@ function openGenerate(codeType: 1 | 2 | 3) {
   genForm.value.days = codeType === 2 ? 7 : 30
   genForm.value.is_decoy = false
   genForm.value.target_username = ''
+  // 默认开当前服的会员（就是列表正在看的这个服）
+  genForm.value.realm_id = realm.activeId ?? null
   genVisible.value = true
 }
 
@@ -129,6 +157,7 @@ async function generate() {
     is_decoy: genForm.value.is_decoy,
     target_username: genForm.value.target_username || undefined,
     note: genForm.value.note || undefined,
+    realm_id: genForm.value.realm_id ?? undefined,
   })
   generated.value = res.codes.map((c) => ({ code: c.code, days_text: c.days_text }))
   genVisible.value = false
@@ -159,6 +188,8 @@ async function saveMode() {
 async function quickGenerate() {
   const res = await createRegistrationCodes({
     count: 5, max_uses: 1, expires_days: 30, note: '快捷生成',
+    // 快捷生成不看列表范围：永远开「当前服」的会员（要选服请用类型化生成）
+    realm_id: realm.activeId ?? undefined,
   })
   generated.value = res.codes.map((c) => ({ code: c.code, days_text: '30 天' }))
   resultVisible.value = true
@@ -270,6 +301,10 @@ function usedByNames(row: RegistrationCode): string {
 
     <!-- 筛选 -->
     <div class="admin-card filter-bar">
+      <el-radio-group v-model="scope" size="small" @change="load">
+        <el-radio-button value="realm">当前服</el-radio-button>
+        <el-radio-button value="all">全部服</el-radio-button>
+      </el-radio-group>
       <el-select v-model="filters.code_type" placeholder="全部类型" style="width: 140px" @change="load">
         <el-option :value="0" label="全部类型" />
         <el-option :value="1" label="注册码" />
@@ -292,7 +327,7 @@ function usedByNames(row: RegistrationCode): string {
         @clear="load"
       />
       <el-button @click="load">查询</el-button>
-      <span class="filter-count">共 {{ total }} 条</span>
+      <span class="filter-count">共 {{ total }} 条{{ scope === 'realm' ? '（当前服）' : '（全部服）' }}</span>
     </div>
 
     <!-- 生成弹窗 -->
@@ -305,6 +340,13 @@ function usedByNames(row: RegistrationCode): string {
             <el-radio-button :value="3">白名单码</el-radio-button>
           </el-radio-group>
           <div class="form-hint">{{ TYPE_META[genForm.code_type].desc }}</div>
+        </el-form-item>
+        <!-- 卡码开哪个服的会员：注册码决定新用户拿到哪个服的会员 -->
+        <el-form-item label="归属服">
+          <el-select v-model="genForm.realm_id" placeholder="选择归属服" style="width: 220px">
+            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+          <div class="form-hint">核销后开通的是该服的会员，也只在该服的播放节点上生效。</div>
         </el-form-item>
         <el-form-item label="数量">
           <el-input-number v-model="genForm.count" :min="1" :max="200" />
@@ -376,6 +418,10 @@ function usedByNames(row: RegistrationCode): string {
 
         <template #cell-code_type="{ row }">
           <span class="mini-badge" :class="`type-${row.code_type}`">{{ row.code_type_name }}</span>
+        </template>
+
+        <template #cell-realm="{ row }">
+          <span class="mini-badge" :class="row.realm_id ? '' : 'muted'">{{ realmLabel(row) }}</span>
         </template>
 
         <template #cell-days_text="{ row }">{{ row.days_text }}</template>

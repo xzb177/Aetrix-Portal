@@ -599,19 +599,25 @@ class RegistrationCodeBatchRequest(BaseModel):
     max_uses: int = Field(default=1, ge=1, le=1000)
     expires_days: int = Field(default=30, ge=1, le=365)
     note: str = ""
+    # 这批码开通哪个服的会员（留空 = 当前服）
+    realm_id: Optional[int] = None
 
 
 @admin_router.get("/registration-codes")
 async def list_registration_codes(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
+    realm_id: Optional[int] = None,
     limit: int = 100,
 ):
-    """注册码列表 + 使用审计"""
-    codes = db.query(models.RegistrationCode).order_by(
+    """注册码列表 + 使用审计（按服；``realm_id=0`` 为全部服）"""
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    codes = realms.scope(db.query(models.RegistrationCode),
+                         models.RegistrationCode.realm_id, scope_id).order_by(
         models.RegistrationCode.created_at.desc()
     ).limit(min(limit, 200)).all()
 
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
     items = []
     for c in codes:
         used_by = []
@@ -623,6 +629,8 @@ async def list_registration_codes(
         items.append({
             "id": c.id,
             "code": c.code,
+            "realm_id": c.realm_id,
+            "realm_name": realm_names.get(c.realm_id, "") if c.realm_id else "",
             "max_uses": c.max_uses,
             "use_count": c.use_count,
             "is_active": c.is_active,
@@ -631,7 +639,7 @@ async def list_registration_codes(
             "used_by": used_by,
             "created_at": _log_out(c),
         })
-    return {"codes": items}
+    return {"codes": items, "realm_id": scope_id}
 
 
 @admin_router.post("/registration-codes")
@@ -640,7 +648,10 @@ async def create_registration_codes(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """批量生成注册码"""
+    """批量生成注册码（默认归当前服，开的就是这个服的会员）"""
+    target_realm = realms.claim(db, request.realm_id)
+    if not realms.get_realm(db, target_realm):
+        raise HTTPException(status_code=400, detail=f"服不存在: #{target_realm}")
     expires_at = datetime.now() + timedelta(days=request.expires_days)
     created = []
     for _ in range(request.count):
@@ -652,6 +663,7 @@ async def create_registration_codes(
             note=request.note or None,
             expires_at=expires_at,
             created_by=current_admin.id,
+            realm_id=target_realm,
         )
         db.add(code)
         created.append(code)
@@ -662,12 +674,15 @@ async def create_registration_codes(
 
     _audit(db, current_admin, "create_registration_codes", "registration_code",
            created[0].id if created else None,
-           {"count": request.count, "max_uses": request.max_uses})
+           {"count": request.count, "max_uses": request.max_uses,
+            "realm_id": target_realm})
     db.commit()
 
     return {
         "success": True,
-        "codes": [{"id": c.id, "code": c.code, "max_uses": c.max_uses,
+        "realm_id": target_realm,
+        "codes": [{"id": c.id, "code": c.code, "realm_id": c.realm_id,
+                   "max_uses": c.max_uses,
                    "expires_at": c.expires_at.isoformat()} for c in created],
     }
 
@@ -1042,14 +1057,23 @@ async def close_ticket(
 @admin_router.get("/media-seek")
 async def get_media_seeks(
     status_filter: Optional[str] = None,
+    realm_id: Optional[int] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    query = db.query(models.MovieRequest)
+    """求片清单（可按归属服筛选；``realm_id=0`` = 全部服）
+
+    求片本身是"这部片要进哪个服的库"，用户提交时选的服会被记下来；
+    推送出口（MoviePilot / qB）是全局共享一套，所以推的时候不分服。
+    """
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    query = realms.scope_inclusive(db.query(models.MovieRequest),
+                                   models.MovieRequest.realm_id, scope_id)
     if status_filter:
         query = query.filter(models.MovieRequest.status == status_filter)
 
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
     result = []
     for req in requests:
@@ -1064,6 +1088,8 @@ async def get_media_seeks(
             "note": req.note,
             "status": req.status,
             "admin_note": req.admin_note,
+            "realm_id": req.realm_id,
+            "realm_name": realm_names.get(req.realm_id, "") if req.realm_id else "",
             "user_name": user.username if user else "未知",
             "created_at": _log_out(req),
             # 转交外部服务的结果：让面板能看出「批了但还没真的去下载」

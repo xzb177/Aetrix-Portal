@@ -7,16 +7,20 @@
  * - 支持撤回尚未处理的求片（此前提交后无法取消）
  * - 展示今日求片额度（后端限制每日条数）
  * - 状态筛选 + 统一 Aurora 视觉
+ *
+ * v2.6.24：求片要指明**给哪个服**（片进哪个服的库）。只有一个服的会员时自动带出，
+ * 不用用户选；两个服都有会员时才给一个选择器。推送出口（MoviePilot / qB）
+ * 仍是全局共享一套，所以这里选的只是「进哪个库」。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   Film, Plus, Send, RefreshCw, CheckCircle2, Clock, XCircle, Ban, Search,
-  CircleCheck, Loader2, Play, Ticket, Undo2, Info,
+  CircleCheck, Loader2, Play, Ticket, Undo2, Info, Layers,
 } from 'lucide-vue-next'
 import {
-  mediaSeekApi,
-  type MediaSeekRequest, type MediaSeekQuota, type MediaLookupItem,
+  mediaSeekApi, subscriptionApi,
+  type MediaSeekRequest, type MediaSeekQuota, type MediaLookupItem, type MySubscription,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
 
@@ -33,7 +37,31 @@ const withdrawing = ref<number | null>(null)
 // ===== 表单 =====
 const showForm = ref(false)
 const submitting = ref(false)
-const form = ref({ movie_name: '', year: '', type: 'movie', note: '' })
+const form = ref({ movie_name: '', year: '', type: 'movie', note: '', realm_id: null as number | null })
+
+/** 我持有会员的服（求片可以指定进哪个服的库） */
+const myRealms = ref<{ id: number; name: string }[]>([])
+/** 只有唯一一个服时不用麻烦用户选：直接带出并只展示一行说明 */
+const onlyRealm = computed(() => (myRealms.value.length === 1 ? myRealms.value[0] : null))
+
+/**
+ * 可选的“求给哪个服”：优先用持有生效会员的服；一个会员都没有时退回全部可见的服，
+ * 让用户至少能选一个（付费墙开着的站点里没会员也求不了片，但先把选择显出来更诚实）。
+ */
+async function loadMyRealms() {
+  try {
+    const subs: MySubscription[] = await subscriptionApi.getMine()
+    const seen = new Map<number, string>()
+    for (const s of subs || []) {
+      if (s.status === 'active' && s.realm_id) seen.set(s.realm_id, s.realm_name || `服 #${s.realm_id}`)
+    }
+    myRealms.value = [...seen.entries()].map(([id, name]) => ({ id, name }))
+    // 单服：默认就是它；多服：不预选，让用户自己拍（预选错会把片子放进另一个库）
+    if (onlyRealm.value) form.value.realm_id = onlyRealm.value.id
+  } catch {
+    myRealms.value = []
+  }
+}
 
 // ===== 库存检查 =====
 const lookupLoading = ref(false)
@@ -144,14 +172,23 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
+    if (!onlyRealm.value && myRealms.value.length < 1) {
+      toast.error('还没有可用的服务器：请先开通会员后再求片')
+      return
+    }
+    if (myRealms.value.length > 1 && !form.value.realm_id) {
+      toast.error('请先选择这部片要进哪个服的库')
+      return
+    }
     await mediaSeekApi.create({
       movie_name: name,
       year: form.value.year || undefined,
       type: form.value.type,
       note: form.value.note || undefined,
+      realm_id: form.value.realm_id ?? undefined,
     })
     toast.success('求片已提交，管理员会尽快处理')
-    form.value = { movie_name: '', year: '', type: 'movie', note: '' }
+    form.value = { movie_name: '', year: '', type: 'movie', note: '', realm_id: onlyRealm.value?.id ?? null }
     lookupHits.value = []
     lookupDone.value = false
     showForm.value = false
@@ -188,7 +225,7 @@ function fmtDate(iso: string) {
 }
 
 onMounted(async () => {
-  await loadRequests()
+  await Promise.all([loadRequests(), loadMyRealms()])
   // 从搜索页/首页带入片名（/request?name=xxx）：直接展开表单并查库
   const prefill = ((route.query.name as string) || '').trim()
   if (prefill) {
@@ -307,6 +344,38 @@ onMounted(async () => {
           <span>媒体库中未找到该片，可以提交求片，管理员会尽快处理</span>
         </div>
 
+        <!-- 这部片给哪个服：只有一个服的会员就一带而过，两个服才需要选 -->
+        <div v-if="myRealms.length" class="field">
+          <label class="au-label">
+            <Layers :size="12" />
+            求给哪个服务器
+            <span v-if="!onlyRealm" class="req">*</span>
+          </label>
+          <template v-if="onlyRealm">
+            <div class="realm-fixed">
+              <span class="realm-chip">{{ onlyRealm.name }}</span>
+              <span class="realm-hint">你只有一个服的会员，默认进它的库</span>
+            </div>
+          </template>
+          <template v-else>
+            <div class="realm-list">
+              <button
+                v-for="r in myRealms"
+                :key="r.id"
+                type="button"
+                class="realm-opt"
+                :class="{ on: form.realm_id === r.id }"
+                @click="form.realm_id = r.id"
+              >
+                {{ r.name }}
+              </button>
+            </div>
+            <p class="realm-hint">
+              你有多个服的会员：选一个，这部片入库后就在那个服的媒体库里播放。
+            </p>
+          </template>
+        </div>
+
         <div class="field">
           <label class="au-label">备注</label>
           <textarea
@@ -321,7 +390,7 @@ onMounted(async () => {
           <button class="au-btn au-btn-ghost" @click="showForm = false">取消</button>
           <button
             class="au-btn au-btn-primary"
-            :disabled="submitting || !form.movie_name.trim() || quotaExhausted"
+            :disabled="submitting || !form.movie_name.trim() || quotaExhausted || (myRealms.length > 1 && !form.realm_id)"
             @click="handleSubmit"
           >
             <Send :size="14" />
@@ -365,6 +434,10 @@ onMounted(async () => {
                 <span v-if="req.year">{{ req.year }}</span>
                 <span v-if="req.year && typeLabels[req.type || '']" class="meta-sep">·</span>
                 <span v-if="typeLabels[req.type || '']">{{ typeLabels[req.type || ''] }}</span>
+                <template v-if="req.realm_name">
+                  <span class="meta-sep">·</span>
+                  <span class="item-realm"><Layers :size="11" />{{ req.realm_name }}</span>
+                </template>
                 <span class="meta-sep">·</span>
                 <span>{{ fmtDate(req.created_at) }}</span>
               </div>
@@ -461,6 +534,54 @@ onMounted(async () => {
 .form-card { margin-bottom: 1.25rem; }
 
 .form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+
+/* ===== 求给哪个服 ===== */
+.field .au-label .req { color: var(--au-danger); margin-left: 0.125rem; }
+
+.realm-list { display: flex; flex-wrap: wrap; gap: 0.4375rem; }
+
+.realm-opt {
+  padding: 0.4375rem 0.8125rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
+}
+
+.realm-opt:hover { border-color: var(--au-border-strong); color: var(--au-text); }
+
+.realm-opt.on {
+  background: var(--au-primary-soft);
+  border-color: var(--au-primary-border);
+  color: var(--au-primary);
+}
+
+.realm-fixed { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+.realm-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3125rem 0.6875rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.realm-hint {
+  margin: 0.375rem 0 0;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+  line-height: 1.5;
+}
+
+.realm-fixed .realm-hint { margin: 0; }
 
 .field { margin-bottom: 0.875rem; display: flex; flex-direction: column; }
 .grow { flex: 1 1 260px; }
@@ -632,6 +753,8 @@ select.au-input option { background: #0d1420; }
 }
 
 .meta-sep { opacity: 0.5; }
+
+.item-realm { display: inline-flex; align-items: center; gap: 0.1875rem; }
 
 .item-note {
   margin: 0.625rem 0 0;

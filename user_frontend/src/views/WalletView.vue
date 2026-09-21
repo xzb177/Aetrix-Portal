@@ -317,6 +317,8 @@ onBeforeUnmount(stopPayPoll)
           <span class="num">{{ balance }}</span>
           <span class="unit">积分</span>
         </div>
+        <!-- 多服运营下这句必须写明：积分是一份通用的，会员才是一个服一个 -->
+        <p class="balance-note">积分与余额全站通用（多服共用一份）；会员是一个服一个。</p>
 
         <!-- 签到态：紧凑胶囊 -->
         <RouterLink v-if="checkin" to="/checkin" class="checkin-pill" :class="{ done: checkin.checked_today }">
@@ -363,6 +365,7 @@ onBeforeUnmount(stopPayPoll)
           <span class="rp-text">
             {{ codePreview.type_name }}
             <strong>· {{ codePreview.days_text }}</strong>
+            <template v-if="codePreview.realm_name"> · 开「{{ codePreview.realm_name }}」的会员</template>
             <template v-if="codePreview.is_named"> · 限指定账号</template>
           </span>
           <button
@@ -641,6 +644,13 @@ onBeforeUnmount(stopPayPoll)
   line-height: 1.1;
 }
 .balance-num .unit { font-size: 0.875rem; color: var(--au-text-3); }
+
+.balance-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+  line-height: 1.5;
+}
 
 /* 签到态胶囊 */
 .checkin-pill {

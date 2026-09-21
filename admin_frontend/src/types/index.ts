@@ -41,6 +41,9 @@ export type CodeState = 'active' | 'disabled' | 'expired' | 'used_up'
 export interface RegistrationCode {
   id: number
   code: string
+  /** 这张卡码开通哪个服的会员（一个服一个） */
+  realm_id?: number | null
+  realm_name?: string
   code_type: CodeType
   code_type_name: string
   days: number
@@ -75,6 +78,9 @@ export interface CodeStats {
   used_up: number
   decoy: { total: number; triggered: number }
   days_granted: number
+  /** 统计范围：当前服的名称，或「全部服」 */
+  realm_id?: number | null
+  realm_name?: string
   by_type: CodeTypeStat[]
 }
 
@@ -170,6 +176,9 @@ export interface MediaSeekRow {
   status: string
   admin_note: string | null
   user_name: string
+  /** 这部片是给哪个服求的（用户提交时选/单服自动带出）；空 = 未标注 */
+  realm_id?: number | null
+  realm_name?: string
   created_at: string
   /** 已转交的外部服务：moviepilot（已提交订阅）/ qbittorrent（已交给下载器） */
   push_target: string | null
@@ -638,7 +647,7 @@ export interface MountTypeMeta {
 export interface StorageMount {
   id: number
   name: string
-  /** 属于哪个服（storage_mounts.realm_id） */
+  /** 属于哪个服（storage_mounts.realm_id）；空 = 未标注（所有服都看得到） */
   realm_id?: number | null
   mount_type: string
   mount_type_label: string

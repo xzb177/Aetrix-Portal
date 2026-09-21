@@ -134,6 +134,9 @@ export interface CodePreview {
   is_named?: boolean
   target_username?: string | null
   remaining_uses?: number
+  /** 这张卡码开通哪个服的会员（一个服一个） */
+  realm_id?: number
+  realm_name?: string
   message: string
 }
 
@@ -143,7 +146,15 @@ export const membershipApi = {
     api.post<never, CodePreview>('/api/user/membership/redeem/preview', { code }),
   /** 核销卡码：成功后直接开通或叠加会员 */
   redeem: (code: string) =>
-    api.post<never, { success: boolean; message: string; code_type?: number; days?: number; end_date?: string }>(
+    api.post<never, {
+      success: boolean
+      message: string
+      code_type?: number
+      days?: number
+      realm_id?: number
+      realm_name?: string
+      end_date?: string
+    }>(
       '/api/user/membership/redeem', { code }),
 }
 
