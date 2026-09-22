@@ -14,6 +14,9 @@
  * （start_date → end_date）算，不再用「剩余天数猜一个分母」；「账号与支持」的两张卡
  * 宽屏并排成两列，不再一前一后各占一条高度。
  *
+ * v2.10.2：消息卡不再「看起来重复」——同名未读合并成一条并标数量；公告已作为
+ * 未读站内信在列时不再重复列公告（详见 inboxItems 上方注释）。
+ *
  * v2.6.26：站内消息既不置顶、也不挤进账号速览条（挤进去会把「数据条」变成混合体，
  * 而且仍在首屏最显眼处）。改为：
  *   - 账号速览条只留「账号与经济」四格（会员 / 积分 / 签到 / 邀请），语义干净；
@@ -45,6 +48,9 @@ const notices = ref<Announcement[]>([])
 const recentMessages = ref<StationMessage[]>([])
 const unreadCount = ref(0)
 
+/** 未读预览一次拉多少条：要够把「同名通知有几条」数准（消息很小，50 条约几十 KB） */
+const UNREAD_WINDOW = 50
+
 // 消息卡里的时间：只给相对时间，避免首页出现一串精确到秒的时间戳
 function relTime(iso?: string): string {
   if (!iso) return ''
@@ -58,17 +64,69 @@ function relTime(iso?: string): string {
   return iso.slice(0, 10)
 }
 
-// 消息卡的两行：未读优先，名额不满时补一条最新公告（没有未读时就是纯公告）
-const inboxItems = computed(() => {
-  const rows: { key: string; title: string; time: string; icon: unknown; unread: boolean }[] = []
-  for (const m of recentMessages.value.filter((x) => !x.is_read).slice(0, 2)) {
-    rows.push({ key: `m${m.id}`, title: m.title, time: relTime(m.created_at), icon: Inbox, unread: true })
+interface InboxRow {
+  key: string
+  title: string
+  time: string
+  icon: unknown
+  unread: boolean
+  /** 同名未读合并后的条数（1 = 真的只有一条） */
+  count: number
+  /** 条数是否精确（拉取窗口被占满时，最旧那一组可能还没数完，显示成 N+） */
+  exact: boolean
+}
+
+/**
+ * 消息卡的两行：未读优先（同名合并成一条并标数量），名额不满时补一条最新公告。
+ *
+ * v2.10.2：这里以前会「看起来重复」，两处都修了：
+ *   - 多条同标题的通知（如 26 条「📥 新的求片请求」，内容各不相同）并排列出来，
+ *     像同一条消息发了两遍；现在合并成一条 + 条数。预览回答的是「有什么在等我」，
+ *     不是「一共收到几条」。
+ *   - 一条公告会有两种身份：发布时广播落下的站内信（`📢 标题`，带已读状态）
+ *     与公告本身。都已经在列里的，不再重复列公告——那正是同一条公告写了两遍。
+ */
+const inboxItems = computed<InboxRow[]>(() => {
+  const rows: InboxRow[] = []
+  const byTitle = new Map<string, InboxRow>()
+  let last: InboxRow | null = null
+  for (const m of recentMessages.value.filter((x) => !x.is_read)) {
+    const groupKey = `${m.message_type}:${m.title}`
+    const hit = byTitle.get(groupKey)
+    if (hit) {
+      hit.count += 1
+      last = hit
+      continue
+    }
+    const row: InboxRow = {
+      key: `m${m.id}`, title: m.title, time: relTime(m.created_at),
+      icon: Inbox, unread: true, count: 1, exact: true,
+    }
+    byTitle.set(groupKey, row)
+    rows.push(row)
+    last = row
   }
-  if (rows.length < 2 && notices.value.length) {
-    const a = notices.value[0]
-    rows.push({ key: `a${a.id}`, title: a.title, time: relTime(a.created_at), icon: Megaphone, unread: false })
+  // 窗口被未读占满时，最旧那一组可能还有下一批没拉到，标成 N+ 而不是报一个偏小的数
+  if (last && recentMessages.value.filter((x) => !x.is_read).length >= UNREAD_WINDOW) last.exact = false
+
+  const shown = rows.slice(0, 2)
+  // 公告被当成第二条列出前，先看看它是不是已经作为未读站内信在列了
+  const broadcastIds = new Set(
+    recentMessages.value
+      .filter((m) => !m.is_read && m.message_type === 'announcement' && m.related_id != null)
+      .filter((m) => shown.some((r) => r.key === `m${m.id}`))
+      .map((m) => Number(m.related_id)),
+  )
+  if (shown.length < 2) {
+    const a = notices.value.find((n) => !broadcastIds.has(n.id))
+    if (a) {
+      shown.push({
+        key: `a${a.id}`, title: a.title, time: relTime(a.created_at),
+        icon: Megaphone, unread: false, count: 1, exact: true,
+      })
+    }
   }
-  return rows.slice(0, 2)
+  return shown
 })
 const resumeItems = ref<EmbyItem[]>([])
 const latestItems = ref<EmbyItem[]>([])
@@ -177,7 +235,7 @@ onMounted(async () => {
     unreadCount.value = (unread as any)?.unread_count ?? 0
     notices.value = Array.isArray(anns) ? anns : []
     recentMessages.value = await messageApi
-      .getMessages({ limit: 3 })
+      .getMessages({ unread_only: true, limit: UNREAD_WINDOW })
       .catch((): StationMessage[] => [])
     resumeItems.value = resume
     latestItems.value = latest
@@ -354,8 +412,9 @@ onMounted(async () => {
             <span v-if="inboxItems.length" class="inbox-list">
               <span v-for="row in inboxItems" :key="row.key" class="inbox-item">
                 <component :is="row.icon" :size="12" class="inbox-item-ic" :class="{ hot: row.unread }" />
-                <span class="inbox-item-title">{{ row.title }}</span>
-                <span class="inbox-item-time">{{ row.time }}</span>
+              <span class="inbox-item-title">{{ row.title }}</span>
+              <span v-if="row.count > 1" class="inbox-item-count">×{{ row.count }}{{ row.exact ? '' : '+' }}</span>
+              <span class="inbox-item-time">{{ row.time }}</span>
               </span>
             </span>
             <span v-else class="inbox-empty">工单回复、求片进度与会员提醒都会出现在这里</span>
@@ -952,6 +1011,18 @@ onMounted(async () => {
   flex-shrink: 0;
   margin-left: auto;
   color: var(--au-text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 同名未读合并后的条数：告诉用户「这不是发了两次，是同名通知有多少条」 */
+.inbox-item-count {
+  flex-shrink: 0;
+  padding: 0 0.3125rem;
+  border-radius: var(--au-r-full);
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
+  font-size: 0.625rem;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 

@@ -37,7 +37,16 @@ interface MsgPreviewItem {
   to: string
   icon: unknown
   unread: boolean
+  /** 同名未读合并后的条数（1 = 真的只有一条） */
+  count?: number
+  /** 条数是否精确（拉取窗口被占满时，最旧那一组可能还没数完，显示成 N+） */
+  countExact?: boolean
+  /** 这条消息对应哪条公告（公告广播自带 related_id），用于避开同一公告列两遍 */
+  announcementId?: number | null
 }
+
+/** 未读预览一次拉多少条：要够把「同名通知有几条」数准（消息很小，50 条约几十 KB） */
+const UNREAD_WINDOW = 50
 
 // 消息类型 → 图标（与消息中心的分类保持一致；只取预览需要的几种）
 const MSG_ICONS: Record<string, unknown> = {
@@ -72,27 +81,69 @@ function relTime(iso?: string): string {
   return iso.slice(0, 10)
 }
 
+/**
+ * 铃铛预览：未读优先（同名合并成一条 + 条数），再接置顶公告。
+ *
+ * v2.10.2（与首页消息卡同一口径）：
+ *   - 同标题的多条未读（如 26 条「📥 新的求片请求」，内容各不相同）并排列出来像
+ *     同一条消息发了好几遍；合并成一条并把条数写出来。
+ *   - 公告有两种身份：发布时广播落下的站内信（`📢 标题`，带已读状态）与公告本身。
+ *     已经作为未读消息在列里的公告，不再重复列一遍。
+ */
 async function loadMsgPreview() {
   msgLoading.value = true
   try {
     // 只拉未读：预览要回答的是「有什么在等我」，而不是「最近收到了什么」
     const [msgs, notices] = await Promise.all([
-      messageApi.getMessages({ unread_only: true, limit: 3 }).catch((): StationMessage[] => []),
+      messageApi.getMessages({ unread_only: true, limit: UNREAD_WINDOW }).catch((): StationMessage[] => []),
       announcementApi.getAnnouncements().catch((): Announcement[] => []),
     ])
-    const unread = (msgs || []).filter((m) => !m.is_read).slice(0, 3)
-    const pinned = [...(notices || [])]
-      .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned))
-      .slice(0, 2)
-    msgPreview.value = [
-      ...unread.map((m) => ({
+    const unreadAll = (msgs || []).filter((x) => !x.is_read)
+
+    const unreadRows: MsgPreviewItem[] = []
+    const byTitle = new Map<string, MsgPreviewItem>()
+    let last: MsgPreviewItem | null = null
+    for (const m of unreadAll) {
+      const groupKey = `${m.message_type}:${m.title}`
+      const hit = byTitle.get(groupKey)
+      if (hit) {
+        hit.count = (hit.count || 1) + 1
+        last = hit
+        continue
+      }
+      const row: MsgPreviewItem = {
         key: `m${m.id}`,
         title: m.title,
         meta: `${MSG_LABELS[m.message_type] || '通知'} · ${relTime(m.created_at)}`,
         to: '/messages',
         icon: MSG_ICONS[m.message_type] || Bell,
         unread: true,
-      })),
+        count: 1,
+        countExact: true,
+        // related_id 只有公告广播那条才指回公告（求片/工单的 related_id 是各自的业务 id，
+        // 拿来跟公告 id 比会误伤）
+        announcementId: m.message_type === 'announcement' ? (m.related_id ?? null) : null,
+      }
+      byTitle.set(groupKey, row)
+      unreadRows.push(row)
+      last = row
+    }
+    // 窗口被未读占满时，最旧那一组可能还有下一批没拉到，标成 N+ 而不是报一个偏小的数
+    if (last && unreadAll.length >= UNREAD_WINDOW) last.countExact = false
+
+    const unread = unreadRows.slice(0, 3)
+    const listedAnnouncementIds = new Set(
+      unread
+        .filter((r) => r.announcementId != null)
+        .map((r) => Number(r.announcementId)),
+    )
+    const pinned = [...(notices || [])]
+      .filter((a) => !listedAnnouncementIds.has(a.id))
+      .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned))
+      .slice(0, 2)
+
+    msgPreview.value = [
+      ...unread,
       ...pinned.map((a) => ({
         key: `a${a.id}`,
         title: a.title,
@@ -303,7 +354,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                     </span>
                     <span class="msg-drop-body">
                       <span class="msg-drop-item-title">{{ p.title }}</span>
-                      <span class="msg-drop-meta">{{ p.meta }}</span>
+                      <span class="msg-drop-meta">
+                        {{ p.meta }}<template v-if="(p.count || 1) > 1"> · 同名 {{ p.count }}{{ p.countExact === false ? '+' : '' }} 条</template>
+                      </span>
                     </span>
                     <span v-if="p.unread" class="msg-drop-dot" aria-hidden="true"></span>
                   </RouterLink>
