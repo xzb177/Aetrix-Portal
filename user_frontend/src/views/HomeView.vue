@@ -2,9 +2,13 @@
 /**
  * 首页 — 内容优先的个人门户
  *
- * 布局（v2.6.30 重排）：Hero 双栏（左：问候与主行动；右：会员状态卡）
+ * 布局（v2.10.3 收敛）：Hero 双栏（左：问候与主行动；右：会员状态卡）
  * → 账号速览条（积分 / 签到 / 邀请）→ 最近入库 → 求片提示 → 继续观看
- * → 「账号与支持」（消息中心 / 连接播放器）。
+ * → 「账号与支持」（连接播放器）。
+ *
+ * v2.10.3：底部那张「消息中心」卡去掉——它和顶栏带角标的音铃列的是同一批未读，
+ * 同一件事在首页出现两遍。站内消息统一由顶栏铃铛承担（角标 + 点开预览 + 落到消息
+ * 中心），首页不再单独占一条高度，也少一组首页请求。
  *
  * 排序口径：客户端（Infuse / Forward …）已经做得很好的事（继续观看、收藏、
  * 完整片库浏览）在首页只保留一条、且排在后面；门户独有的价值——跟着更新追新、
@@ -14,29 +18,22 @@
  * （start_date → end_date）算，不再用「剩余天数猜一个分母」；「账号与支持」的两张卡
  * 宽屏并排成两列，不再一前一后各占一条高度。
  *
- * v2.10.2：消息卡不再「看起来重复」——同名未读合并成一条并标数量；公告已作为
- * 未读站内信在列时不再重复列公告（详见 inboxItems 上方注释）。
+ * v2.10.2：预览不再「看起来重复」——同名未读合并成一条并标条数，公告已作为未读
+ * 站内信在列时不再重复列（口径在顶栏铃铛里，见 AppHeader.loadMsgPreview）。
  *
- * v2.6.26：站内消息既不置顶、也不挤进账号速览条（挤进去会把「数据条」变成混合体，
- * 而且仍在首屏最显眼处）。改为：
- *   - 账号速览条只留「账号与经济」四格（会员 / 积分 / 签到 / 邀请），语义干净；
- *   - 消息中心做成「站点与账号」区的第一张卡：一行标题 + 最多两条最新内容（未读优先，
- *     没未读时显示最新公告）+ 未读胶囊，永远在页面上，但不抢会员 CTA 的视觉；
- *   - 随时随地可进的地方是顶栏那个带角标的音铃（点开先看预览）。
+ * v2.6.26：站内消息不置顶、也不挤进账号速览条（挤进去会把「数据条」变成混合体）：
+ * 速览条只留「账号与经济」（积分 / 签到 / 邀请），消息由顶栏带角标的音铃承担。
  */
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import {
-  messageApi, announcementApi, subscriptionApi, isExpiringSoon,
-  type Announcement, type MySubscription, type StationMessage,
-} from '@/api'
+import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  ChevronRight, Crown, Inbox, Megaphone, MessageSquareDashed,
+  ChevronRight, Crown, MessageSquareDashed,
   Wallet, CalendarCheck, Gift, Sparkles, Tv, TriangleAlert,
 } from 'lucide-vue-next'
 
@@ -44,90 +41,6 @@ const userStore = useUserStore()
 const toast = useToast()
 
 const loading = ref(true)
-const notices = ref<Announcement[]>([])
-const recentMessages = ref<StationMessage[]>([])
-const unreadCount = ref(0)
-
-/** 未读预览一次拉多少条：要够把「同名通知有几条」数准（消息很小，50 条约几十 KB） */
-const UNREAD_WINDOW = 50
-
-// 消息卡里的时间：只给相对时间，避免首页出现一串精确到秒的时间戳
-function relTime(iso?: string): string {
-  if (!iso) return ''
-  const at = new Date(iso).getTime()
-  if (!at) return ''
-  const diff = Date.now() - at
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
-  return iso.slice(0, 10)
-}
-
-interface InboxRow {
-  key: string
-  title: string
-  time: string
-  icon: unknown
-  unread: boolean
-  /** 同名未读合并后的条数（1 = 真的只有一条） */
-  count: number
-  /** 条数是否精确（拉取窗口被占满时，最旧那一组可能还没数完，显示成 N+） */
-  exact: boolean
-}
-
-/**
- * 消息卡的两行：未读优先（同名合并成一条并标数量），名额不满时补一条最新公告。
- *
- * v2.10.2：这里以前会「看起来重复」，两处都修了：
- *   - 多条同标题的通知（如 26 条「📥 新的求片请求」，内容各不相同）并排列出来，
- *     像同一条消息发了两遍；现在合并成一条 + 条数。预览回答的是「有什么在等我」，
- *     不是「一共收到几条」。
- *   - 一条公告会有两种身份：发布时广播落下的站内信（`📢 标题`，带已读状态）
- *     与公告本身。都已经在列里的，不再重复列公告——那正是同一条公告写了两遍。
- */
-const inboxItems = computed<InboxRow[]>(() => {
-  const rows: InboxRow[] = []
-  const byTitle = new Map<string, InboxRow>()
-  let last: InboxRow | null = null
-  for (const m of recentMessages.value.filter((x) => !x.is_read)) {
-    const groupKey = `${m.message_type}:${m.title}`
-    const hit = byTitle.get(groupKey)
-    if (hit) {
-      hit.count += 1
-      last = hit
-      continue
-    }
-    const row: InboxRow = {
-      key: `m${m.id}`, title: m.title, time: relTime(m.created_at),
-      icon: Inbox, unread: true, count: 1, exact: true,
-    }
-    byTitle.set(groupKey, row)
-    rows.push(row)
-    last = row
-  }
-  // 窗口被未读占满时，最旧那一组可能还有下一批没拉到，标成 N+ 而不是报一个偏小的数
-  if (last && recentMessages.value.filter((x) => !x.is_read).length >= UNREAD_WINDOW) last.exact = false
-
-  const shown = rows.slice(0, 2)
-  // 公告被当成第二条列出前，先看看它是不是已经作为未读站内信在列了
-  const broadcastIds = new Set(
-    recentMessages.value
-      .filter((m) => !m.is_read && m.message_type === 'announcement' && m.related_id != null)
-      .filter((m) => shown.some((r) => r.key === `m${m.id}`))
-      .map((m) => Number(m.related_id)),
-  )
-  if (shown.length < 2) {
-    const a = notices.value.find((n) => !broadcastIds.has(n.id))
-    if (a) {
-      shown.push({
-        key: `a${a.id}`, title: a.title, time: relTime(a.created_at),
-        icon: Megaphone, unread: false, count: 1, exact: true,
-      })
-    }
-  }
-  return shown
-})
 const resumeItems = ref<EmbyItem[]>([])
 const latestItems = ref<EmbyItem[]>([])
 const subscriptions = ref<MySubscription[]>([])
@@ -196,7 +109,6 @@ const accountCells = computed(() => [
     value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
     sub: '签到 · 兑换 · 充值',
     hot: false,
-    alert: false,
   },
   {
     to: '/checkin',
@@ -205,7 +117,6 @@ const accountCells = computed(() => [
     value: quickStats.value.streak !== null ? `${quickStats.value.streak} 天` : '—',
     sub: quickStats.value.checkedToday ? '今日已签' : '今日未签',
     hot: quickStats.value.streak !== null && !quickStats.value.checkedToday,
-    alert: false,
   },
   {
     to: '/invite',
@@ -216,15 +127,14 @@ const accountCells = computed(() => [
     // 看不出这里能点、后面有奖励；换成一句可执行的说明，邀请才找得到入口
     sub: quickStats.value.invited ? '位好友已加入' : '邀请好友得积分',
     hot: quickStats.value.invited === 0,
-    alert: false,
   },
 ])
 
 onMounted(async () => {
   try {
-    const [unread, anns, resume, latest, pointsRes, checkinRes, inviteRes, subs] = await Promise.all([
-      messageApi.getUnreadCount().catch((): { unread_count: number } => ({ unread_count: 0 })),
-      announcementApi.getAnnouncements().catch((): Announcement[] => []),
+    // v2.10.3：消息与公告不再在首页拉取——那是顶栏铃铛的事（它本来就在每次轮询未读数），
+    // 首页少一组请求，也不再重复展示同一批未读
+    const [resume, latest, pointsRes, checkinRes, inviteRes, subs] = await Promise.all([
       protocolApi.getResume(12).catch((): EmbyItem[] => []),
       protocolApi.getLatest(16).catch((): EmbyItem[] => []),
       pointsApi.log({ limit: 1 }).catch((): null => null),
@@ -232,11 +142,6 @@ onMounted(async () => {
       inviteApi.myCode().catch((): null => null),
       subscriptionApi.getMine().catch((): MySubscription[] => []),
     ])
-    unreadCount.value = (unread as any)?.unread_count ?? 0
-    notices.value = Array.isArray(anns) ? anns : []
-    recentMessages.value = await messageApi
-      .getMessages({ unread_only: true, limit: UNREAD_WINDOW })
-      .catch((): StationMessage[] => [])
     resumeItems.value = resume
     latestItems.value = latest
     if (pointsRes) quickStats.value.balance = pointsRes.balance
@@ -356,12 +261,10 @@ onMounted(async () => {
           :key="c.to"
           :to="c.to"
           class="acct-cell"
-          :class="{ alert: c.alert }"
         >
           <span class="cell-label">
             <component :is="c.icon" :size="13" />
             {{ c.label }}
-            <span v-if="c.alert" class="cell-dot" aria-hidden="true"></span>
           </span>
           <span class="cell-value">{{ c.value }}</span>
           <span class="cell-sub" :class="{ hot: c.hot }">{{ c.sub }}</span>
@@ -395,45 +298,20 @@ onMounted(async () => {
         <span class="section-title">账号与支持</span>
       </div>
 
-      <!-- 账号与支持：宽屏两列（消息卡 + 播放器指引各占一栏），不再一前一后占两条高度；
-           窄屏回落成单列。消息卡不占首屏头条，但总是在这一区第一眼看得到；随时可进的是顶栏音铃 -->
-      <div class="support-grid">
-        <RouterLink to="/messages" class="inbox-card au-card" :class="{ alert: unreadCount > 0 }">
-          <span class="inbox-ic">
-            <Inbox :size="17" />
-            <span v-if="unreadCount > 0" class="inbox-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-          </span>
-          <span class="inbox-main">
-            <span class="inbox-head">
-              <strong>消息中心</strong>
-              <em v-if="unreadCount > 0" class="inbox-state unread">{{ unreadCount }} 条未读</em>
-              <em v-else class="inbox-state">已全部读完</em>
-            </span>
-            <span v-if="inboxItems.length" class="inbox-list">
-              <span v-for="row in inboxItems" :key="row.key" class="inbox-item">
-                <component :is="row.icon" :size="12" class="inbox-item-ic" :class="{ hot: row.unread }" />
-              <span class="inbox-item-title">{{ row.title }}</span>
-              <span v-if="row.count > 1" class="inbox-item-count">×{{ row.count }}{{ row.exact ? '' : '+' }}</span>
-              <span class="inbox-item-time">{{ row.time }}</span>
-              </span>
-            </span>
-            <span v-else class="inbox-empty">工单回复、求片进度与会员提醒都会出现在这里</span>
-          </span>
-          <ChevronRight :size="16" class="inbox-arrow" />
-        </RouterLink>
+      <!-- 消息入口不在首页：v2.10.3 去掉了底部那张消息卡——它和顶栏带角标的音铃
+           列的是同一批未读，同一件事在首页出现两遍。顶栏铃铛已有角标 + 点开预览 + 落到消息中心 -->
 
-        <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
-        <RouterLink to="/profile" class="connect-row au-card">
-          <span class="connect-row-icon">
-            <Tv :size="17" />
-          </span>
-          <span class="connect-row-body">
-            <strong>连接播放器</strong>
-            <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入都在个人中心</em>
-          </span>
-          <ChevronRight :size="16" class="connect-row-arrow" />
-        </RouterLink>
-      </div>
+      <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
+      <RouterLink to="/profile" class="connect-row au-card">
+        <span class="connect-row-icon">
+          <Tv :size="17" />
+        </span>
+        <span class="connect-row-body">
+          <strong>连接播放器</strong>
+          <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入都在个人中心</em>
+        </span>
+        <ChevronRight :size="16" class="connect-row-arrow" />
+      </RouterLink>
     </main>
   </div>
 </template>
@@ -741,36 +619,12 @@ onMounted(async () => {
   background: var(--au-surface-2);
 }
 
-/* 有未读：只用左侧一道细亮线与一个呼吸点提示，不做整格高亮（不与会员 CTA 抢视觉） */
-.acct-cell.alert {
-  background: linear-gradient(180deg, rgba(251, 191, 36, 0.07), transparent 70%);
-}
-
-.acct-cell.alert .cell-value {
-  color: var(--au-warning);
-}
-
 .cell-label {
   display: flex;
   align-items: center;
   gap: 0.3125rem;
   font-size: 0.6875rem;
   color: var(--au-text-4);
-}
-
-.cell-dot {
-  width: 5px;
-  height: 5px;
-  margin-left: auto;
-  border-radius: 50%;
-  background: var(--au-warning);
-  animation: cell-dot 2.6s ease-out infinite;
-}
-
-@keyframes cell-dot {
-  0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.5); }
-  70% { box-shadow: 0 0 0 5px rgba(251, 191, 36, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
 }
 
 .cell-label svg {
@@ -861,187 +715,6 @@ onMounted(async () => {
   color: var(--au-primary);
 }
 
-/* 账号与支持：宽屏两列（消息卡宽一档，播放器指引窄一档） */
-.support-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
-  gap: 0.75rem;
-  align-items: stretch;
-}
-
-/* 卡片各自的下边距交给栅格 gap，否则两列会被 0.75rem 的 margin 顶得不齐 */
-.support-grid .inbox-card { margin-bottom: 0; }
-
-/* ==================== 消息中心卡 ==================== */
-/*
- * 一行标题 + 最多两条内容：信息密度和「连接播放器」卡一致，所以放同一区看起来是一套。
- * 不做整卡高亮，只在有未读时给左侧一道细亮线与暖色值标签——注意力归会员 CTA。
- */
-.inbox-card {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 1.125rem;
-  margin-bottom: 0.75rem;
-  text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
-}
-
-.inbox-card:hover {
-  border-color: var(--au-primary-border);
-  transform: translateY(-1px);
-}
-
-.inbox-card.alert::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 12%;
-  bottom: 12%;
-  width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: var(--au-warning);
-}
-
-.inbox-ic {
-  position: relative;
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: 10px;
-  color: var(--au-primary);
-}
-
-.inbox-card.alert .inbox-ic {
-  background: rgba(251, 191, 36, 0.12);
-  border-color: rgba(251, 191, 36, 0.32);
-  color: var(--au-warning);
-}
-
-.inbox-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-warning);
-  color: #1a1206;
-  font-size: 0.625rem;
-  font-weight: 800;
-  border-radius: 999px;
-  font-variant-numeric: tabular-nums;
-}
-
-.inbox-main {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.inbox-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-.inbox-head strong {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.inbox-state {
-  font-style: normal;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
-}
-
-.inbox-state.unread {
-  color: var(--au-warning);
-  font-weight: 700;
-}
-
-.inbox-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1875rem;
-  min-width: 0;
-}
-
-.inbox-item {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-}
-
-.inbox-item-ic {
-  flex-shrink: 0;
-  color: var(--au-text-4);
-}
-
-.inbox-item-ic.hot {
-  color: var(--au-warning);
-}
-
-.inbox-item-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--au-text-2);
-}
-
-.inbox-item-time {
-  flex-shrink: 0;
-  margin-left: auto;
-  color: var(--au-text-4);
-  font-variant-numeric: tabular-nums;
-}
-
-/* 同名未读合并后的条数：告诉用户「这不是发了两次，是同名通知有多少条」 */
-.inbox-item-count {
-  flex-shrink: 0;
-  padding: 0 0.3125rem;
-  border-radius: var(--au-r-full);
-  background: var(--au-surface-2);
-  color: var(--au-text-3);
-  font-size: 0.625rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.inbox-empty {
-  font-size: 0.75rem;
-  color: var(--au-text-4);
-}
-
-.inbox-arrow {
-  flex-shrink: 0;
-  color: var(--au-text-4);
-  transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
-}
-
-.inbox-card:hover .inbox-arrow {
-  color: var(--au-primary);
-  transform: translateX(2px);
-}
-
 /* ==================== 播放器入口（单行，详情在个人中心） ==================== */
 
 .connect-row {
@@ -1121,9 +794,6 @@ onMounted(async () => {
   .member-card {
     padding: 1rem 1.125rem 1.125rem;
   }
-
-  /* 窄屏：消息卡与播放器指引上下排，各自铺满一行 */
-  .support-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {

@@ -24,7 +24,8 @@ const navRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
 const pointsBalance = ref<number | null>(null)
 
-// 顶栏消息入口：既显示「几条未读」，点开还能先看预览再决定要不要进消息中心
+// 顶栏消息入口（v2.10.3 起是全站唯一的消息入口）：既显示「几条未读」，
+// 点开还能先看预览再决定要不要进消息中心
 const msgMenuOpen = ref(false)
 const msgMenuRef = ref<HTMLElement | null>(null)
 const msgPreview = ref<MsgPreviewItem[]>([])
@@ -84,7 +85,10 @@ function relTime(iso?: string): string {
 /**
  * 铃铛预览：未读优先（同名合并成一条 + 条数），再接置顶公告。
  *
- * v2.10.2（与首页消息卡同一口径）：
+ * v2.10.3：铃铛是站内消息唯一的入口——首页底部那张消息卡已去掉（它和这里列的是
+ * 同一批未读）。所以这一份预览就是全站的消息预览。
+ *
+ * v2.10.2：
  *   - 同标题的多条未读（如 26 条「📥 新的求片请求」，内容各不相同）并排列出来像
  *     同一条消息发了好几遍；合并成一条并把条数写出来。
  *   - 公告有两种身份：发布时广播落下的站内信（`📢 标题`，带已读状态）与公告本身。
