@@ -1071,6 +1071,10 @@ async def get_media_seeks(
                                    models.MovieRequest.realm_id, scope_id)
     if status_filter:
         query = query.filter(models.MovieRequest.status == status_filter)
+    else:
+        # 用户主动撤回的条目不进待办清单（仍计入用户当天的提交额度，见 user.py）。
+        # 想看它们就显式传 status_filter=withdrawn。
+        query = query.filter(models.MovieRequest.status != "withdrawn")
 
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
     realm_names = {r.id: r.name for r in realms.list_realms(db)}

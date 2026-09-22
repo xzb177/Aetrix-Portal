@@ -159,11 +159,31 @@ titles = [m["title"] for m in r.json()] if r.status_code == 200 else []
 check("新求片已落站内消息给管理员", any("求片" in t for t in titles), str(titles[:3]))
 
 
-# ---------- 求片：撤回 ----------
+# ---------- 求片：撤回（改状态而非删行） ----------
 r = client.delete(f"/api/user/media-seek/{first_id}", headers=headers)
 check("撤回未处理求片", r.status_code == 200, str(r.status_code))
 
-r = client.post("/api/user/media-seek", json={"movie_name": f"待处理{suf}"}, headers=headers)
+# 撤回不退还当天额度：否则「提交 → 撤回 → 再提交」可以无限刷新额度，
+# 而每次提交都会给全体管理员推一条站内消息，等于一个通知刷屏器。
+r = client.post("/api/user/media-seek", json={"movie_name": f"撤回后再交{suf}"}, headers=headers)
+check("撤回不退额度 → 429", r.status_code == 429, str(r.status_code))
+
+r = client.get("/api/user/media-seek", headers=headers)
+body = r.json() if r.status_code == 200 else {}
+check("额度按今天的提交数算（含已撤回）", body.get("quota") == {
+    "used_today": 3, "daily_limit": 3, "remaining": 0,
+}, str(body.get("quota")))
+check("已撤回的条目不列在求片列表里",
+      all(x["id"] != first_id for x in body.get("requests", [])), str(body.get("requests")))
+
+db = SessionLocal()
+withdrawn = db.query(models.MovieRequest).filter(
+    models.MovieRequest.id == first_id).first()
+check("撤回是改状态，不是删行（后台仍看得到这条提交）",
+      withdrawn is not None and withdrawn.status == "withdrawn",
+      withdrawn.status if withdrawn else "None")
+db.close()
+
 db = SessionLocal()
 pending = models.MovieRequest(
     user_id=db.query(models.WebUser).filter(models.WebUser.username == user_name).first().id,

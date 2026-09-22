@@ -11,6 +11,9 @@
  * v2.6.24：求片要指明**给哪个服**（片进哪个服的库）。只有一个服的会员时自动带出，
  * 不用用户选；两个服都有会员时才给一个选择器。推送出口（MoviePilot / qB）
  * 仍是全局共享一套，所以这里选的只是「进哪个库」。
+ *
+ * v2.10.4（本次）：加载态不止出现在骨架屏里，也出现在区块级别——列表框、额度卡、
+ * 查库卡各自显示自己的加载中，宁快勿大，等一块出来的等待感少一点。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
@@ -29,6 +32,7 @@ const route = useRoute()
 
 // ===== 列表 =====
 const loading = ref(true)
+const refreshing = ref(false)
 const requests = ref<MediaSeekRequest[]>([])
 const quota = ref<MediaSeekQuota | null>(null)
 const statusFilter = ref<'all' | 'pending' | 'approved' | 'completed' | 'rejected'>('all')
@@ -112,6 +116,19 @@ const quotaExhausted = computed(() => quota.value != null && quota.value.remaini
 const inLibrary = computed(() => lookupDone.value && lookupHits.value.length > 0)
 
 // ===== 数据 =====
+async function load(showSpinner = true) {
+  if (showSpinner) loading.value = true
+  try {
+    const res = await mediaSeekApi.getMyRequests()
+    requests.value = res.requests || []
+    quota.value = res.quota || null
+  } catch {
+    requests.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
 async function loadRequests() {
   loading.value = true
   try {
@@ -192,6 +209,7 @@ async function handleSubmit() {
     lookupHits.value = []
     lookupDone.value = false
     showForm.value = false
+    await load(false)
     await loadRequests()
   } catch (err: any) {
     const detail = err?.response?.data?.detail
@@ -213,6 +231,15 @@ async function withdraw(req: MediaSeekRequest) {
     toast.error(typeof detail === 'string' ? detail : '撤回失败')
   } finally {
     withdrawing.value = null
+  }
+}
+
+async function refresh() {
+  refreshing.value = true
+  try {
+    await load(false)
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -247,20 +274,21 @@ onMounted(async () => {
             求片中心
           </h1>
           <p class="page-sub">
-            <template v-if="requests.length">
-              共 {{ requests.length }} 条 · {{ counts.pending }} 条待处理 · {{ counts.processing }} 条处理中
+            <template v-if="requests.length || loading">
+              <span v-if="loading">正在加载中，请稍候……</span>
+              <template v-else>共 {{ requests.length }} 条 · {{ counts.pending }} 条待处理 · {{ counts.processing }} 条处理中</template>
             </template>
             <template v-else>告诉我们你想看的影视作品，管理员会尽快入库</template>
           </p>
         </div>
         <div class="head-actions">
-          <button class="au-btn au-btn-ghost au-btn-sm" @click="loadRequests">
-            <RefreshCw :size="14" :class="{ spinning: loading }" />
+          <button class="au-btn au-btn-ghost au-btn-sm" :disabled="loading" @click="refresh">
+            <RefreshCw :size="14" :class="{ spinning: refreshing }" />
             刷新
           </button>
           <button
             class="au-btn au-btn-primary au-btn-sm"
-            :disabled="quotaExhausted && !showForm"
+            :disabled="quotaExhausted && !showForm || loading"
             @click="openForm"
           >
             <component :is="showForm ? XCircle : Plus" :size="14" />

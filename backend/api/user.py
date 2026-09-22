@@ -157,12 +157,16 @@ async def get_messages(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """获取站内消息列表"""
+    """获取站内消息列表
+
+    ``limit`` 收口到 1..200：这是用户可控的查询参数，不夹一下就能一次把
+    整个收件箱拉走（消息中心自己没有翻页，所以给了上限也不会有人取不到旧消息）。
+    """
     notification_service = get_notification_service()
 
     messages = await notification_service.get_messages(
         user_id=current_user.id,
-        limit=limit,
+        limit=max(1, min(limit, 200)),
         unread_only=unread_only,
         db=db
     )
@@ -534,6 +538,9 @@ async def get_announcements(
 # 每日求片上限（防止刷单），可在系统配置中通过 media_seek_daily_limit 覆盖
 DEFAULT_DAILY_SEEK_LIMIT = 5
 
+# 用户主动撤回的求片：不再展示、也不再参与去重，但仍计入当天的提交数
+WITHDRAWN_STATUS = "withdrawn"
+
 
 class MediaSeekRequest(BaseModel):
     """求片请求"""
@@ -641,7 +648,7 @@ async def create_media_seek(
     if len(name) > 255:
         raise HTTPException(status_code=400, detail="片名过长")
 
-    # 去重：同名且仍在处理中的请求不再重复提交
+    # 去重：同名且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）
     exists = db.query(models.MovieRequest).filter(
         models.MovieRequest.user_id == current_user.id,
         func.lower(models.MovieRequest.movie_name) == name.lower(),
@@ -650,7 +657,9 @@ async def create_media_seek(
     if exists:
         raise HTTPException(status_code=409, detail=f"《{name}》已在处理中，请耐心等待（可在列表中看到进度）")
 
-    # 每日额度
+    # 每日额度：统计**今天提交过多少条**（含后来撤回的）。
+    # 撤回不退还额度——否则「提交 → 撤回 → 再提交」可以无限刷新额度，
+    # 同时每次提交都会给全体管理员推一条站内消息，那就成了通知刷屏器。
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     today_count = db.query(models.MovieRequest).filter(
         models.MovieRequest.user_id == current_user.id,
@@ -697,7 +706,12 @@ async def withdraw_media_seek(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """撤回自己的求片（仅限尚未被处理的请求）"""
+    """撤回自己的求片（仅限尚未被处理的请求）
+
+    撤回是**改状态**（``withdrawn``）而不是删行：用户列表里不再出现它，
+    但今天的提交数依然算得进去（见 create_media_seek 里的额度说明）。
+    删行会让额度被无限刷新，也会让后台的审计记录凭空少一条。
+    """
     req = db.query(models.MovieRequest).filter(
         models.MovieRequest.id == request_id,
         models.MovieRequest.user_id == current_user.id,
@@ -707,7 +721,8 @@ async def withdraw_media_seek(
     if req.status != "pending":
         raise HTTPException(status_code=400, detail="该请求已被处理，无法撤回")
 
-    db.delete(req)
+    req.status = WITHDRAWN_STATUS
+    req.updated_at = datetime.now()
     db.commit()
     return {"success": True, "message": "已撤回"}
 
@@ -718,9 +733,14 @@ async def get_my_media_seeks(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """获取我的求片列表（支持状态筛选），并附带今日剩余额度"""
+    """获取我的求片列表（支持状态筛选），并附带今日剩余额度
+
+    主动撤回的条目不再列出来（用户看不到自己已经撤销的东西才符合直觉），
+    但额度仍按今天的提交总数算。
+    """
     query = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == current_user.id
+        models.MovieRequest.user_id == current_user.id,
+        models.MovieRequest.status != WITHDRAWN_STATUS,
     )
     if status_filter:
         query = query.filter(models.MovieRequest.status == status_filter)
