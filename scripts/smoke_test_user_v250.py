@@ -184,6 +184,18 @@ check("撤回是改状态，不是删行（后台仍看得到这条提交）",
       withdrawn.status if withdrawn else "None")
 db.close()
 
+# 后台待办清单默认不列已撤回的（否者管理员白点一次），但审计时查得到
+r = client.get("/api/admin/media-seek", headers=staff_headers)
+rows = r.json() if r.status_code == 200 else []
+check("后台求片清单默认不含已撤回",
+      r.status_code == 200 and all(x["id"] != first_id for x in rows), str(r.status_code))
+
+r = client.get("/api/admin/media-seek", params={"status_filter": "withdrawn"},
+               headers=staff_headers)
+rows = r.json() if r.status_code == 200 else []
+check("后台可显式筛出已撤回（审计用）",
+      r.status_code == 200 and any(x["id"] == first_id for x in rows), str(rows))
+
 db = SessionLocal()
 pending = models.MovieRequest(
     user_id=db.query(models.WebUser).filter(models.WebUser.username == user_name).first().id,

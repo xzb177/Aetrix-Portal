@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 工单管理：列表筛选/回复/关闭，回复联动站内通知 */
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshCw, Send } from 'lucide-vue-next'
 import { closeTicket, fetchTicketMessages, fetchTickets, replyTicket, updateTicket } from '@/api/admin'
 import type { TicketMessageRow, TicketRow } from '@/types'
@@ -25,6 +25,8 @@ const statusFilter = ref('')
 const drawerVisible = ref(false)
 const current = ref<TicketRow | null>(null)
 const messages = ref<TicketMessageRow[]>([])
+// 抽屉先开、消息后到：不给这个状态的话，拉取期间会先闪一下「两个管理员之间的空白」
+const detailLoading = ref(false)
 const replyText = ref('')
 const sending = ref(false)
 const metaSaving = ref(false)
@@ -42,9 +44,15 @@ onMounted(load)
 
 async function openDetail(t: TicketRow) {
   current.value = t
-  messages.value = await fetchTicketMessages(t.id)
+  messages.value = []
   replyText.value = ''
   drawerVisible.value = true
+  detailLoading.value = true
+  try {
+    messages.value = await fetchTicketMessages(t.id)
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 async function send(closeAfter: boolean) {
@@ -61,6 +69,15 @@ async function send(closeAfter: boolean) {
 }
 
 async function close(t: TicketRow) {
+  try {
+    await ElMessageBox.confirm(
+      `关闭「${t.title}」后用户不能再回复，确定吗？`,
+      '关闭工单',
+      { type: 'warning' },
+    )
+  } catch {
+    return // 用户点了取消
+  }
   await closeTicket(t.id)
   ElMessage.success('工单已关闭')
   if (current.value?.id === t.id) current.value.status = 'closed'
@@ -183,6 +200,10 @@ function statusBadge(status: string): string {
       </div>
 
       <div class="msg-list">
+        <div v-if="detailLoading" class="msg-loading">
+          <el-skeleton :rows="3" animated />
+        </div>
+        <p v-else-if="!messages.length" class="msg-empty">还没有对话内容</p>
         <div v-for="m in messages" :key="m.id" class="msg" :class="{ admin: m.is_admin }">
           <div class="msg-meta">
             {{ m.is_admin ? (m.admin_name || '管理员') : current?.user_name }} · {{ fmtDate(m.created_at) }}
@@ -242,6 +263,7 @@ function statusBadge(status: string): string {
 .meta-label { color: var(--text-muted); }
 
 .msg-list { display: flex; flex-direction: column; gap: 12px; }
+.msg-empty { text-align: center; color: var(--color-text-muted, #737373); font-size: 13px; margin: 24px 0; }
 .msg {
   background: rgba(255, 255, 255, 0.04);
   border-radius: 12px;
