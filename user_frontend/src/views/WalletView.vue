@@ -9,7 +9,7 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, Film, TriangleAlert,
+  KeyRound, Film, TriangleAlert, Undo2,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi,
@@ -248,6 +248,9 @@ function fmtTime(iso?: string | null) {
 function orderStatusMeta(s: string) {
   if (s === 'paid') return { label: '已支付', cls: 'au-badge au-badge-green' }
   if (s === 'pending') return { label: '待支付', cls: 'au-badge au-badge-amber' }
+  // 退款 / 关单（v2.9.0）：用户端要说清楚这笔钱的状态，否则只会来问客服
+  if (s === 'refunded') return { label: '已退款', cls: 'au-badge au-badge-rose' }
+  if (s === 'closed') return { label: '已关闭', cls: 'au-badge au-badge-violet' }
   return { label: s, cls: 'au-badge au-badge-rose' }
 }
 
@@ -573,9 +576,10 @@ onBeforeUnmount(stopPayPoll)
       </div>
       <div v-else class="order-list au-card">
         <div v-for="o in orders" :key="o.order_id" class="order-item">
-          <span class="order-icon" :class="{ pending: o.status === 'pending' }">
+          <span class="order-icon" :class="{ pending: o.status === 'pending', refunded: o.status === 'refunded' }">
             <Clock v-if="o.status === 'pending'" :size="14" />
             <CircleCheck v-else-if="o.status === 'paid'" :size="14" />
+            <Undo2 v-else-if="o.status === 'refunded'" :size="14" />
             <CircleAlert v-else :size="14" />
           </span>
           <div class="order-main">
@@ -584,6 +588,9 @@ onBeforeUnmount(stopPayPoll)
               <span class="order-id mono">{{ o.order_id }}</span>
               <span class="order-sep">·</span>
               <span>{{ fmtTime(o.created_at) }}</span>
+            </span>
+            <span v-if="o.status === 'refunded' && o.refund_reason" class="order-sub order-refund">
+              退款原因：{{ o.refund_reason }}
             </span>
           </div>
           <div class="order-side">
@@ -1141,6 +1148,15 @@ onBeforeUnmount(stopPayPoll)
   color: var(--au-success);
   flex-shrink: 0;
 }
+.order-icon.refunded {
+  color: var(--au-danger);
+  background: var(--au-danger-soft);
+}
+
+.order-refund {
+  color: var(--au-danger);
+}
+
 .order-icon.pending {
   background: var(--au-warning-soft);
   color: var(--au-warning);
