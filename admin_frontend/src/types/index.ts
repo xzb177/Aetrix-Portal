@@ -624,7 +624,7 @@ export interface EmbyLibrary {
   /** 按发行平台自动生成的虚拟媒体库（无自己的目录） */
   is_virtual?: boolean
   platform?: string | null
-  /** 绑定的 115 账号配置档（不同媒体库可用不同账号转存/下载） */
+  /** 绑定的 115 账号配置档（不填则回退默认账号 / 服务器级 PAN115_COOKIE） */
   account_115_id?: number | null
 }
 
@@ -719,34 +719,6 @@ export interface Pan115Account {
   last_verify_ok: boolean | null
   last_verify_message: string | null
   created_at: string | null
-}
-
-/** 115 转存 / 下载任务 */
-export interface Pan115Task {
-  id: number
-  uid: string
-  share_url: string
-  share_code: string
-  mode: string
-  mode_label: string
-  target_cid: string
-  target_path: string
-  account_id: number | null
-  library_id: number | null
-  status: string
-  status_label: string
-  total_files: number
-  done_files: number
-  failed_files: number
-  progress: number
-  error: string | null
-  /** 分享快照条目与下载地址：后端保证永远是数组，绝不为 null */
-  items: { fid: string; name: string; is_dir: boolean; size: number; pickcode: string }[]
-  urls: string[]
-  failed_keys: string[]
-  created_at: string | null
-  updated_at: string | null
-  finished_at: string | null
 }
 
 /** 115 目录项（目标路径选择器） */

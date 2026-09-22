@@ -12,7 +12,6 @@ import type {
   EmbySessionRow,
   Pan115Account,
   Pan115DirEntry,
-  Pan115Task,
   StorageMount,
   MountTypeMeta,
   MountDirEntry,
@@ -555,7 +554,7 @@ export const browseMount = (id: number, rel = '/') =>
 export const fetchRcloneRemotes = (params: Record<string, string>) =>
   get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/remotes`, params)
 
-// ==================== 115 下载与转存（/api/admin/emby/115/*） ====================
+// ==================== 115 账号与直挂（/api/admin/emby/115/*） ====================
 
 export const fetchPan115Accounts = () =>
   get<{ accounts: Pan115Account[]; env_cookie_configured: boolean }>(`${E}/115/accounts`)
@@ -583,38 +582,8 @@ export const verifyPan115Account = (id: number) =>
 export const verifyPan115Cookie = (cookie: string) =>
   post<{ success: boolean; result: { ok: boolean; message?: string } }>(`${E}/115/verify`, { cookie })
 
-export const parsePan115Share = (shareUrl: string) =>
-  post<{ success: boolean; parsed: { share_code: string; receive_code: string; url: string } }>(
-    `${E}/115/parse`, { share_url: shareUrl }
-  )
-
-/** 浏览 115 目录（目标路径选择器）：表单 Cookie 优先，其次账号配置档，最后已保存 Cookie */
+/** 浏览 115 目录（账号可用性实测 / 直挂目录结构）：账号配置档优先，表单 Cookie 次之 */
 export const browsePan115 = (params: { cid?: string; account_id?: number; cookie?: string }) =>
   get<{ cid: string; cookie_source: string; entries: Pan115DirEntry[]; total: number }>(
     `${E}/115/browse`, params
   )
-
-export const fetchPan115Tasks = (params: { status?: string; limit?: number } = {}) =>
-  get<{
-    tasks: Pan115Task[]
-    active_count: number
-    waiting_auth_count: number
-    modes: { value: string; label: string }[]
-    statuses: { value: string; label: string }[]
-  }>(`${E}/115/tasks`, params)
-
-export const createPan115Task = (data: {
-  share_url: string
-  target_cid?: string
-  target_path?: string
-  account_id?: number | null
-  library_id?: number | null
-  mode?: string
-  cookie?: string
-}) => post<{ success: boolean; task: Pan115Task }>(`${E}/115/tasks`, data)
-
-export const retryPan115Task = (id: number) =>
-  post<{ success: boolean; task: Pan115Task }>(`${E}/115/tasks/${id}/retry`)
-
-export const cancelPan115Task = (id: number) =>
-  post<{ success: boolean; task: Pan115Task }>(`${E}/115/tasks/${id}/cancel`)

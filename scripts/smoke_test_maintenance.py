@@ -188,7 +188,7 @@ try:
     check(os.path.isdir(live_dir), "正在跑的会话目录保留")
     check(not os.path.exists(orphan_dir), "重启前遗留的目录被清掉")
     check(os.path.isdir(fresh_orphan_dir), "刚生成、可能正在登记的目录留有余量")
-    check(os.path.isdir(shared_dir), "共享缓存目录（subs / pan115）不动")
+    check(os.path.isdir(shared_dir), "共享缓存目录（subs）不动")
 
     # 正常路径下（无阈值）也应保留在跑会话
     check(maint.cleanup_transcode_orphans() == 1, "无阈值时也只清不在跑的会话目录")

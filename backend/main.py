@@ -56,10 +56,12 @@ from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.emby_server.portal import user_emby_router, admin_emby_router, configured_emby_url
+# 存储挂载端点已从 portal.py 拆出（portal.py 尾部超出编辑窗口）：导入即注册到同一个
+# admin_emby_router 上，因此必须放在 app.include_router(admin_emby_router) 之前。
+from backend.emby_server import portal_mount_routes  # noqa: F401
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
-from backend.emby_server import transfer115
 
 # 配置日志
 logging.basicConfig(
@@ -88,14 +90,6 @@ async def lifespan(app: FastAPI):
         node_lib.install_scope("em")
     except Exception as e:  # noqa: BLE001 — 过滤装不上也不能阻止面板启动
         logger.warning(f"内容可见性未生效（按不过滤处理）: {e}")
-
-    # 恢复未完成的 115 转存/下载任务：running 说明上次进程被杀，回到 pending 续跑，
-    # 已完成文件靠 done_keys 跳过，不会重复转存
-    try:
-        transfer115.cleanup_stale_tmp()  # 上次被强杀留下的临时文件
-        transfer115.resume_pending_tasks()
-    except Exception as e:  # noqa: BLE001 — 业务表异常不应阻塞面板启动
-        logger.warning(f"恢复 115 任务失败（可忽略）: {e}")
 
     # 崩溃残留的收尾 + 长期运行的后台维护（扫描标志 / 过期会话 / 转码目录 / 字幕缓存），
     # 见 backend/emby_server/maintenance.py。维护失败不影响启动。
@@ -128,7 +122,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.17.0",
+    version="2.18.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",

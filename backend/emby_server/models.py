@@ -322,47 +322,6 @@ class Pan115Account(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
-class Pan115Task(Base):
-    """115 转存 / 下载任务
-
-    - **按任务原子持久化**：`payload` 列与 `PAN115_STATE_DIR` 下的 JSON 文件都保存
-      「分享快照条目 + 已完成文件键 + 下载地址」，写入走「临时文件 + os.replace」，
-      EA 重启、自更新或优雅关停都不会读到半截 JSON。
-    - **可续跑**：启动时把 `running` 拉回 `pending` 并重新入队，已完成文件靠
-      `payload.done_keys` 跳过，不会重复转存。
-    - **Cookie 失效不丢任务**：鉴权类错误置 `waiting_auth` 并保留任务，
-      修好账号后重试即可继续。
-    """
-
-    __tablename__ = "pan115_tasks"
-    __table_args__ = (Index("idx_pan115_status", "status"),)
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    # 任务稳定标识：payload 文件名与幂等键都用它
-    uid = Column(String(64), unique=True, nullable=False, index=True)
-    share_url = Column(String(1000), default="")
-    share_code = Column(String(64), index=True)
-    receive_code = Column(String(16), default="")
-    # receive = 转存到 115 网盘；download = 直接取下载地址
-    mode = Column(String(20), default="receive")
-    target_cid = Column(String(64), default="0")  # 115 目标目录 cid（"0" = 根目录）
-    target_path = Column(String(1000), default="")
-    account_id = Column(Integer)  # pan115_accounts.id（为空则按 默认账号 → 环境变量 解析）
-    library_id = Column(Integer)  # 完成后触发整理/扫描入库的媒体库
-    status = Column(String(20), default="pending", index=True)
-    total_files = Column(Integer, default=0)
-    done_files = Column(Integer, default=0)
-    failed_files = Column(Integer, default=0)
-    progress = Column(Integer, default=0)
-    error = Column(Text)
-    # 分享快照 / 已完成文件键 / 下载地址（JSON 文本，落库 + 原子落盘）
-    payload = Column(Text, default="{}")
-    created_by = Column(Integer)  # 操作管理员 id
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    finished_at = Column(DateTime)
-
-
 class EmbyApiToken(Base):
     """Emby 客户端 Access Token"""
 
@@ -388,6 +347,5 @@ __all__ = [
     "PlaybackSession",
     "StorageMount",
     "Pan115Account",
-    "Pan115Task",
     "EmbyApiToken",
 ]
