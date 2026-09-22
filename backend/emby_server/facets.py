@@ -31,7 +31,7 @@ import os
 import threading
 import time
 
-from sqlalchemy import event, false, func, insert, inspect as sa_inspect, select
+from sqlalchemy import event, false, func, insert, inspect as sa_inspect, select, text
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -311,8 +311,25 @@ def max_item_id(db: Session) -> int:
 
 
 def ready(db: Session) -> bool:
-    """关联表是否已能代表全库（老库回填到最新条目 / 库里本来就没条目）"""
-    return _watermark(db) >= max_item_id(db)
+    """关联表是否已能代表全库（老库回填到最新条目 / 库里本来就没条目）
+
+    这是每次筛选都要问一句的问题，所以刻意用**一条 Core 语句**同时取「水位」与「最新 id」：
+    走两次唯一索引 / 主键索引查找，不构造 ORM 实体（否则两次 query() 的固定开销比查询本身还大）。
+    """
+    row = db.execute(
+        text(
+            "SELECT (SELECT value FROM system_configs WHERE key = :k) AS watermark, "
+            "(SELECT MAX(id) FROM emby_items) AS max_id"
+        ),
+        {"k": BACKFILL_KEY},
+    ).first()
+    if row is None:
+        return False
+    try:
+        watermark = int(row[0]) if row[0] is not None else 0
+    except (TypeError, ValueError):
+        watermark = 0
+    return watermark >= int(row[1] or 0)
 
 
 def ensure_backfill(db: Session, batch_size: int = BACKFILL_BATCH, commit: bool = True) -> int:
@@ -395,41 +412,45 @@ def _collect_facet_targets(session) -> tuple[list, list[int]]:
 
     必须在 ``before_flush`` 里做：flush 之后属性历史会被清掉，就分不出「改过」和「没改过」。
     """
-    new_objects = list(session.new)
+    new_objects = [o for o in session.new if isinstance(o, em.MediaItem)]
     new_ids = {id(o) for o in new_objects}
-    pending: list = []
-    for obj in new_objects + list(session.dirty):
-        if not isinstance(obj, em.MediaItem):
-            continue
-        if id(obj) in new_ids:
-            pending.append(obj)  # 新建的条目：关联行要跟着建
+    # 已有条目：只有分类列真的变了才重建（否则一个「只改了文件路径」的条目也会白重建一遍）
+    dirty: list = []
+    for obj in session.dirty:
+        if not isinstance(obj, em.MediaItem) or id(obj) in new_ids:
             continue
         state = sa_inspect(obj)
         for name in _FACET_COLUMNS:
             attr = state.attrs.get(name)
             if attr is not None and attr.history.has_changes():
-                pending.append(obj)
+                dirty.append(obj)
                 break
     deleted_ids = [
         o.id for o in session.deleted if isinstance(o, em.MediaItem) and o.id is not None
     ]
-    return pending, deleted_ids
+    return new_objects, dirty, deleted_ids
 
 
 @event.listens_for(Session, "before_flush")
 def _facets_before_flush(session, flush_context, instances):  # noqa: ARG001
-    pending, deleted_ids = _collect_facet_targets(session)
-    if pending or deleted_ids:
-        session.info["_facet_pending"] = pending
+    new_items, dirty_items, deleted_ids = _collect_facet_targets(session)
+    if new_items or dirty_items or deleted_ids:
+        session.info["_facet_new"] = new_items
+        session.info["_facet_dirty"] = dirty_items
         session.info["_facet_deleted"] = deleted_ids
 
 
 @event.listens_for(Session, "after_flush")
 def _facets_after_flush(session, flush_context):  # noqa: ARG001
-    """flush 完（新条目的 id 已经拿到）就重建这些条目的关联行，同事务生效"""
-    pending = session.info.pop("_facet_pending", None)
+    """flush 完（新条目的 id 已经拿到）就写这些条目的关联行，同事务生效
+
+    新条目一定没有关联行，**跳过删除**——扫描器每批都是新条目，这一步是热路径上省下来的
+    固定开销（见 scripts/benchmark_item_facets.py 的「写入代价」一节）。
+    """
+    new_items = session.info.pop("_facet_new", None)
+    dirty_items = session.info.pop("_facet_dirty", None)
     deleted_ids = session.info.pop("_facet_deleted", None)
-    if not pending and not deleted_ids:
+    if not new_items and not dirty_items and not deleted_ids:
         return
     try:
         conn = session.connection()
@@ -438,10 +459,15 @@ def _facets_after_flush(session, flush_context):  # noqa: ARG001
                 em.ItemFacet.__table__.delete().where(em.ItemFacet.item_id.in_(deleted_ids))
             )
             invalidate_values_cache()
-        items = [o for o in (pending or []) if o.id is not None]
+        items = [o for o in (new_items or []) + (dirty_items or []) if o.id is not None]
         if items:
-            ids = [o.id for o in items]
-            conn.execute(em.ItemFacet.__table__.delete().where(em.ItemFacet.item_id.in_(ids)))
+            rebuild_ids = [o.id for o in (dirty_items or []) if o.id is not None]
+            if rebuild_ids:  # 分类值变过的老条目：先清旧行（新条目不需要）
+                conn.execute(
+                    em.ItemFacet.__table__.delete().where(
+                        em.ItemFacet.item_id.in_(rebuild_ids)
+                    )
+                )
             rows = [row for item in items for row in _rows_for(item)]
             if rows:
                 conn.execute(em.ItemFacet.__table__.insert(), rows)
