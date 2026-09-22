@@ -423,10 +423,16 @@ class RechargeOrder(Base):
     amount = Column(Integer, nullable=False)
     price = Column(Numeric(10, 2), nullable=False)
     payment_method = Column(String(50))
-    status = Column(String(20), default='pending')
+    status = Column(String(20), default='pending')  # pending / paid / refunded / closed
     payment_url = Column(String(500))
     paid_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
+    # 关单（未支付订单作废）与退款（已支付订单冲正）的留痕。
+    # 退款必须留下原因与冲正额度：客服对账、争议时这是唯一的依据。
+    closed_at = Column(DateTime)
+    refunded_at = Column(DateTime)
+    refund_reason = Column(String(255))
+    refunded_points = Column(Integer, default=0)  # 实际冲正给该用户的积分数（正数=扣回）
 
     package = relationship("RechargePackage")
     user = relationship("WebUser")
@@ -449,10 +455,17 @@ class SubscriptionOrder(Base):
     item_name = Column(String(255))
     amount = Column(Numeric(10, 2), nullable=False)
     payment_method = Column(String(50))
-    status = Column(String(20), default='pending')
+    status = Column(String(20), default='pending')  # pending / paid / refunded / closed
     payment_url = Column(String(500))
     paid_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
+    # 履约时记下「这条订单开出了哪份订阅、发了多少天」：退款要按这笔回滚天数。
+    # 不记就只能猜（用户可能同时有别的来源的天数），退款就会多扣或少扣。
+    subscription_id = Column(Integer, ForeignKey('user_subscriptions.id'), nullable=True)
+    days_granted = Column(Integer, default=0)
+    closed_at = Column(DateTime)
+    refunded_at = Column(DateTime)
+    refund_reason = Column(String(255))
 
     plan = relationship("SubscriptionPlan")
     user = relationship("WebUser")

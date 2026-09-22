@@ -4,7 +4,7 @@
  */
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, Search, CircleCheck, Wallet } from 'lucide-vue-next'
+import { RefreshCw, Search, CircleCheck, Wallet, Ban, Undo2, ReceiptText } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
@@ -18,14 +18,18 @@ const columns: DataColumn[] = [
   { key: 'status', label: '状态', width: 96 },
   { key: 'payment_method', label: '支付方式', width: 110, mobile: 'hide' },
   { key: 'created_at', label: '创建时间', width: 160 },
-  { key: 'actions', label: '操作', width: 110, fixed: 'right', align: 'right' },
+  { key: 'actions', label: '操作', width: 190, fixed: 'right', align: 'right' },
 ]
 import {
   fetchEconomyStats,
   fetchEconomyOrders,
   markOrderPaid,
+  closeOrder,
+  refundOrder,
+  fetchRefundRecords,
   type EconomyStats,
   type OrderRow,
+  type RefundRecord,
 } from '@/api/economy'
 
 const loading = ref(false)
@@ -61,6 +65,105 @@ async function load() {
   }
 }
 
+// ==================== 关单 / 退款（v2.9.0） ====================
+// 以前订单只能「标记已支付」：线下多转一笔、点错套餐都没法处理，只能去改数据库。
+// 现在：待支付 → 关闭（作废）；已支付 → 退款（默认按账本回滚积分/会员天数）。
+
+/** 状态标签：四种状态的颜色与文案集中一处，表格与筛选共用 */
+const STATUS_META: Record<string, { text: string; type: 'success' | 'warning' | 'info' | 'danger' }> = {
+  paid: { text: '已支付', type: 'success' },
+  pending: { text: '待支付', type: 'warning' },
+  refunded: { text: '已退款', type: 'danger' },
+  closed: { text: '已关闭', type: 'info' },
+}
+
+function statusText(status: string): string {
+  return STATUS_META[status]?.text || status
+}
+
+function statusType(status: string) {
+  return STATUS_META[status]?.type || 'info'
+}
+
+const records = ref<RefundRecord[]>([])
+
+async function loadRecords() {
+  try {
+    records.value = (await fetchRefundRecords(8)).records
+  } catch {
+    // 记录区加载失败不该影响订单主表
+  }
+}
+
+async function handleClose(row: OrderRow) {
+  try {
+    await ElMessageBox.confirm(
+      `确认关闭订单 ${row.order_id}？未支付的订单将被作废，用户不会收到通知（他并没有付款）。`,
+      '关闭订单',
+      { confirmButtonText: '确认关闭', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await closeOrder(row.order_id)
+    ElMessage.success('订单已关闭')
+    await Promise.all([load(), loadRecords()])
+  } catch (e: unknown) {
+    ElMessage.error((e as Error)?.message || '关单失败')
+  }
+}
+
+// 退款对话框：原因 + 两个开关。默认回滚权益（退款不退权益=白送），
+// 余额不够时后端会拒绝并回报余额，管理员可以显式勾选「允许余额为负」再退。
+const refundDialog = ref({
+  visible: false,
+  row: null as OrderRow | null,
+  reason: '',
+  revoke: true,
+  allowNegative: false,
+  reverseRebate: true,
+})
+const refundSaving = ref(false)
+
+function openRefund(row: OrderRow) {
+  refundDialog.value = {
+    visible: true, row, reason: '', revoke: true, allowNegative: false, reverseRebate: true,
+  }
+}
+
+async function submitRefund() {
+  const row = refundDialog.value.row
+  if (!row) return
+  const d = refundDialog.value
+  if (!d.reason.trim()) {
+    ElMessage.warning('请填写退款原因（对账与客服复盘都要用）')
+    return
+  }
+  refundSaving.value = true
+  try {
+    const res = await refundOrder(row.order_id, {
+      reason: d.reason.trim(),
+      revoke_entitlement: d.revoke,
+      allow_negative: d.allowNegative,
+      reverse_rebate: d.reverseRebate,
+    })
+    const bits: string[] = []
+    if (res.revoked_points) bits.push(`扣回 ${res.revoked_points} 积分`)
+    if (res.rebate_reversed) bits.push(`撤回返利 ${res.rebate_reversed} 积分`)
+    if (res.revoked_days) bits.push(`回滚 ${res.revoked_days} 天`)
+    if (res.cancelled) bits.push('该订阅已撤销')
+    ElMessage.success(`退款完成${bits.length ? '：' + bits.join('、') : ''}`)
+    refundDialog.value.visible = false
+    await Promise.all([load(), loadRecords()])
+  } catch (e: unknown) {
+    // 余额不足时后端给出可读原因，原样展示（引导勾选「允许余额为负」）
+    ElMessage.error((e as Error)?.message || '退款失败')
+  } finally {
+    refundSaving.value = false
+  }
+}
+
 async function handleMarkPaid(row: OrderRow) {
   await ElMessageBox.confirm(
     `确认将订单 ${row.order_id} 标记为已支付并履约？用于线下收款或回调丢失的补单。`,
@@ -70,7 +173,7 @@ async function handleMarkPaid(row: OrderRow) {
   try {
     await markOrderPaid(row.order_id)
     ElMessage.success('补单成功，已发货')
-    load()
+    await Promise.all([load(), loadRecords()])
   } catch (e: unknown) {
     ElMessage.error((e as Error)?.message || '补单失败')
   }
@@ -80,7 +183,10 @@ function fmtTime(iso?: string | null) {
   return iso ? iso.slice(0, 19).replace('T', ' ') : '—'
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadRecords()
+})
 </script>
 
 <template>
@@ -139,6 +245,8 @@ onMounted(load)
       <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 130px" @change="page = 1; load()">
         <el-option label="待支付" value="pending" />
         <el-option label="已支付" value="paid" />
+        <el-option label="已退款" value="refunded" />
+        <el-option label="已关闭" value="closed" />
       </el-select>
       <el-button type="primary" @click="page = 1; load()">查询</el-button>
     </div>
@@ -171,9 +279,7 @@ onMounted(load)
         <template #cell-username="{ row }">{{ row.username }}</template>
 
         <template #cell-status="{ row }">
-          <el-tag :type="row.status === 'paid' ? 'success' : 'warning'" size="small">
-            {{ row.status === 'paid' ? '已支付' : '待支付' }}
-          </el-tag>
+          <el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
         </template>
 
         <template #cell-payment_method="{ row }">{{ row.payment_method || '—' }}</template>
@@ -181,16 +287,20 @@ onMounted(load)
         <template #cell-created_at="{ row }">{{ fmtTime(row.created_at) }}</template>
 
         <template #cell-actions="{ row }">
-          <el-button
-            v-if="row.status !== 'paid'"
-            size="small"
-            type="success"
-            plain
-            @click="handleMarkPaid(row)"
-          >
-            <CircleCheck :size="13" style="margin-right: 3px" />补单
+          <!-- 待支付：补单（线下已收款 / 回调丢失）或关闭（作废） -->
+          <template v-if="row.status === 'pending'">
+            <el-button size="small" type="success" plain @click="handleMarkPaid(row)">
+              <CircleCheck :size="13" style="margin-right: 3px" />补单
+            </el-button>
+            <el-button size="small" plain @click="handleClose(row)">
+              <Ban :size="13" style="margin-right: 3px" />关闭
+            </el-button>
+          </template>
+          <!-- 已支付：只能退款（退款会按账本回滚权益） -->
+          <el-button v-else-if="row.status === 'paid'" size="small" type="danger" plain @click="openRefund(row)">
+            <Undo2 :size="13" style="margin-right: 3px" />退款
           </el-button>
-          <span v-else class="muted done-hint">已支付</span>
+          <span v-else class="muted done-hint">{{ statusText(row.status) }}</span>
         </template>
 
         <template #empty>
@@ -199,6 +309,26 @@ onMounted(load)
           </el-empty>
         </template>
       </DataTable>
+    </div>
+
+    <!-- 退款 / 关单记录：订单表只有状态标签，说不清「为什么退的」 -->
+    <div v-if="records.length" class="admin-card records-card">
+      <div class="records-head">
+        <ReceiptText :size="14" />
+        最近的退款 / 关单
+        <span class="muted records-hint">原因会同时写进操作审计</span>
+      </div>
+      <ul class="records">
+        <li v-for="r in records" :key="r.order_id + r.status" class="record">
+          <span class="mono">{{ r.order_id }}</span>
+          <span class="mini-badge" :class="r.status === 'refunded' ? 'danger' : 'muted'">
+            {{ r.status === 'refunded' ? '已退款' : '已关闭' }}
+          </span>
+          <span class="record-user">{{ r.username }}</span>
+          <span class="record-reason">{{ r.reason || '（未填原因）' }}</span>
+          <span class="muted record-time">{{ fmtTime(r.at) }}</span>
+        </li>
+      </ul>
     </div>
 
     <el-pagination
@@ -210,6 +340,45 @@ onMounted(load)
       class="pager"
       @current-change="load"
     />
+
+    <!-- 退款：默认回滚权益，余额不够时可显式允许扣成负数 -->
+    <el-dialog v-model="refundDialog.visible" title="订单退款" width="480px">
+      <el-form label-position="top">
+        <el-form-item label="订单">
+          <span class="dialog-order">
+            <span class="mono">{{ refundDialog.row?.order_id }}</span>
+            <em class="muted">（{{ refundDialog.row?.item_name }} · ¥{{ Number(refundDialog.row?.amount ?? 0).toFixed(2) }}）</em>
+          </span>
+        </el-form-item>
+        <el-form-item label="退款原因（必填，写入审计）">
+          <el-input v-model="refundDialog.reason" placeholder="例如：线下重复付款 / 用户申请退款" />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="refundDialog.revoke">
+            回滚权益（充值扣回积分 / 订阅回滚天数）
+          </el-checkbox>
+          <p class="opt-hint">
+            取消勾选则只记账、不动权益——用于客服补偿这类“钱退了但东西留着”的场景。
+          </p>
+        </el-form-item>
+        <el-form-item v-if="refundDialog.revoke && refundDialog.row?.kind === 'recharge'">
+          <el-checkbox v-model="refundDialog.reverseRebate">同时撤回邀请人返利</el-checkbox>
+          <p class="opt-hint">
+            返利是这笔订单产生的；只退买家不退返利，等于站点为一次退款付两遍钱。
+          </p>
+        </el-form-item>
+        <el-form-item v-if="refundDialog.revoke && refundDialog.row?.kind === 'recharge'">
+          <el-checkbox v-model="refundDialog.allowNegative">用户余额不足时允许扣成负数</el-checkbox>
+          <p class="opt-hint">
+            不勾选时余额不够会被拒绝（并回报当前余额），避免悄悄把账户扣成负数。
+          </p>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="refundDialog.visible = false">取消</el-button>
+        <el-button type="danger" :loading="refundSaving" @click="submitRefund">确认退款</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -217,4 +386,20 @@ onMounted(load)
 .stat-warn { color: var(--warning); }
 .amount { font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; }
 .done-hint { font-size: var(--font-size-xs); }
+.dialog-order { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dialog-order em { font-style: normal; font-size: var(--font-size-xs); }
+.opt-hint { margin: 2px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.5; }
+
+.records-card { margin-top: 16px; }
+.records-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.records-hint { font-weight: 400; }
+.records { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.record { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.record-user { color: var(--text-muted); }
+.record-reason { flex: 1 1 160px; min-width: 120px; }
+.record-time { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: var(--radius-full); font-weight: 600; }
+.mini-badge.danger { background: var(--danger-bg); color: var(--danger); }
+.mini-badge.muted { background: var(--bg-hover); color: var(--text-muted); }
 </style>

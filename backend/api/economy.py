@@ -621,6 +621,9 @@ async def my_orders(
                 "amount": float(o.price), "status": o.status,
                 "created_at": o.created_at.isoformat() if o.created_at else None,
                 "paid_at": o.paid_at.isoformat() if o.paid_at else None,
+                # 退款留痕：用户端要能看到“为什么退了/退了多少”，否则只会来问客服
+                "refunded_at": o.refunded_at.isoformat() if o.refunded_at else None,
+                "refund_reason": o.refund_reason or "",
             })
 
     if kind in (None, "subscription"):
@@ -633,6 +636,8 @@ async def my_orders(
                 "amount": float(o.amount), "status": o.status,
                 "created_at": o.created_at.isoformat() if o.created_at else None,
                 "paid_at": o.paid_at.isoformat() if o.paid_at else None,
+                "refunded_at": o.refunded_at.isoformat() if o.refunded_at else None,
+                "refund_reason": o.refund_reason or "",
             })
 
     orders.sort(key=lambda x: x["created_at"] or "", reverse=True)
@@ -658,8 +663,10 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
     结果是「充值成功」这类站内信被静默丢弃（只留一行日志），而钱已经收了。
     所以通知由调用方在 ``db.commit()`` 之后统一发：见 ``send_fulfill_notifications``。
     """
+    # 已退款 / 已关闭的订单绝不再履约：支付回调可能晚到或重放（网关重试、管理员已经
+    # 关单后又收到回调），只判 `!= "paid"` 会把退过的订单又发一遍货。
     pending: list = []
-    if recharge_order and recharge_order.status != "paid":
+    if recharge_order and recharge_order.status not in ("paid", "refunded", "closed"):
         user = db.query(models.WebUser).filter(
             models.WebUser.id == recharge_order.user_id
         ).first()
@@ -685,7 +692,7 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
         recharge_order.status = "paid"
         recharge_order.paid_at = datetime.now()
 
-    if subscription_order and subscription_order.status != "paid":
+    if subscription_order and subscription_order.status not in ("paid", "refunded", "closed"):
         plan = db.query(models.SubscriptionPlan).filter(
             models.SubscriptionPlan.id == subscription_order.plan_id
         ).first()
@@ -698,6 +705,10 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
                 plan.duration_days, "purchase", subscription_order.order_id,
                 realm_id=plan.realm_id,
             )
+            # 记下「这条订单开出的是哪份订阅、多少天」：退款按这笔精确回滚，
+            # 不靠猜用户当前那笔生效中的订阅（可能来自卡码/兑换码/别的订单）。
+            subscription_order.subscription_id = subscription.id
+            subscription_order.days_granted = plan.duration_days
             pending.append(dict(
                 event_type="economy.subscription_success",
                 user_id=user.id,

@@ -68,6 +68,9 @@ export interface OrderRow {
   status: string
   created_at: string | null
   paid_at: string | null
+  // 退款留痕（v2.9.0）：用户端要能直接看到「为什么退了」，否则只会来问客服
+  refunded_at?: string | null
+  refund_reason?: string
 }
 
 export interface MyInviteInfo {

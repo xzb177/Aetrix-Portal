@@ -30,6 +30,7 @@ from backend.emby_server import maintenance
 from backend import reminders
 from backend.api.admin_ops import admin_ops_router
 from backend.api.reminders_admin import admin_reminders_router
+from backend.api.orders_admin import admin_orders_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
@@ -107,7 +108,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.8.0",
+    version="2.9.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -262,6 +263,8 @@ app.include_router(admin_router)
 app.include_router(admin_ops_router)
 # 订阅到期提醒的面板口径与手动执行（见 backend/api/reminders_admin.py）
 app.include_router(admin_reminders_router)
+# 订单关单与退款（见 backend/api/orders_admin.py）
+app.include_router(admin_orders_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

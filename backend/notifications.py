@@ -476,6 +476,12 @@ class AdminEvent:
     # 到期前提醒（后台周期任务发出，见 backend/reminders.py）
     SUBSCRIPTION_REMINDER = "subscription.reminder"
 
+    # 订单事件（经济）
+    RECHARGE_SUCCESS = "economy.recharge_success"
+    SUBSCRIPTION_SUCCESS = "economy.subscription_success"
+    # 退款：属于“钱”的事件，不要复用 subscription.expired（那个语义是会员到期）
+    ORDER_REFUNDED = "economy.order_refunded"
+
     # 求片事件
     MEDIA_SEEK_APPROVED = "media_seek.approved"
     MEDIA_SEEK_REJECTED = "media_seek.rejected"

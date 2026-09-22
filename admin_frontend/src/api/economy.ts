@@ -172,6 +172,48 @@ export const fetchEconomyOrders = (params: {
 export const markOrderPaid = (orderId: string) =>
   post<{ success: boolean }>(`/economy/orders/${orderId}/mark-paid`)
 
+// ==================== 订单关单 / 退款（v2.9.0） ====================
+// 后端：backend/api/orders_admin.py
+
+export interface RefundResult {
+  success: boolean
+  order_id: string
+  kind: 'recharge' | 'subscription'
+  status: string
+  /** 实际扣回的积分（充值时） */
+  revoked_points: number
+  /** 实际回滚的会员天数（订阅时） */
+  revoked_days: number
+  /** 同时撤回的邀请人返利 */
+  rebate_reversed: number
+  /** 回滚后是否已撤销该订阅 */
+  cancelled: boolean
+  subscription_end?: string
+}
+
+export interface RefundRecord {
+  order_id: string
+  kind: 'recharge' | 'subscription'
+  status: 'refunded' | 'closed'
+  username: string
+  reason: string
+  at: string | null
+}
+
+/** 关闭未支付的订单（作废，不碰权益） */
+export const closeOrder = (orderId: string) =>
+  post<{ success: boolean; status: string }>(`/economy/orders/${orderId}/close`)
+
+/** 退款：默认按账本回滚权益（积分 / 会员天数） */
+export const refundOrder = (
+  orderId: string,
+  data: { reason?: string; revoke_entitlement?: boolean; allow_negative?: boolean; reverse_rebate?: boolean },
+) => post<RefundResult>(`/economy/orders/${orderId}/refund`, data)
+
+/** 最近的退款 / 关单记录（带原因，供复盘对账） */
+export const fetchRefundRecords = (limit = 20) =>
+  get<{ records: RefundRecord[] }>('/economy/refunds', { limit })
+
 // ==================== 邀请与积分 ====================
 
 export const fetchInvitations = (params: { limit?: number } = {}) =>
