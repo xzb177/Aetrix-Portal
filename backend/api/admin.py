@@ -128,7 +128,7 @@ class AdminLoginRequest(BaseModel):
 
 
 @admin_router.post("/auth/login")
-async def admin_login(
+def admin_login(
     http_request: Request,
     request: AdminLoginRequest,
     db: Session = Depends(get_db),
@@ -219,7 +219,7 @@ class AdminChangePasswordRequest(BaseModel):
 
 
 @admin_router.post("/auth/change-password")
-async def admin_change_password(
+def admin_change_password(
     request: AdminChangePasswordRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -517,7 +517,7 @@ class UserResetPasswordRequest(BaseModel):
 
 
 @admin_router.post("/users/{user_id}/reset-password")
-async def reset_user_password(
+def reset_user_password(
     user_id: int,
     request: UserResetPasswordRequest,
     current_admin: models.WebUser = Depends(get_current_admin),

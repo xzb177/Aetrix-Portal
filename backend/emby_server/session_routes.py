@@ -85,7 +85,7 @@ def resolve_session_key(db: Session, user: models.WebUser, body: dict) -> str:
 # ==================== 新实现 ====================
 
 
-async def get_sessions_scoped(
+def get_sessions_scoped(
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
@@ -120,7 +120,7 @@ async def get_sessions_scoped(
     ]
 
 
-async def stop_session_checked(
+def stop_session_checked(
     session_key: str,
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),

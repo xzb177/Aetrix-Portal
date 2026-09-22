@@ -15,12 +15,15 @@ import hashlib
 import json
 import logging
 import os
+import random
 import secrets
 import shutil
+import time
 import urllib.parse
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
@@ -52,6 +55,7 @@ from backend.emby_server.streaming import (
     serve_file,
     serve_image,
     serve_remote,
+    serve_remote_async,
     start_transcode,
     stop_all_transcodes,
     stop_transcode,
@@ -447,7 +451,7 @@ def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> d
 @emby_router.get("/emby/system/info/public")
 @emby_router.get("/System/Info")
 @emby_router.get("/System/Info/Public")
-async def system_info(request: Request):
+def system_info(request: Request):
     return {
         "Id": SERVER_ID,
         "ServerName": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
@@ -473,26 +477,26 @@ async def system_info(request: Request):
 @emby_router.get("/emby/System/Ping")
 @emby_router.get("/emby/system/ping")
 @emby_router.get("/System/Ping")
-async def system_ping():
+def system_ping():
     return PlainTextResponse("Emby Server")
 
 
 @emby_router.post("/emby/System/Ping")
 @emby_router.post("/emby/system/ping")
 @emby_router.post("/System/Ping")
-async def system_ping_post():
+def system_ping_post():
     return PlainTextResponse("Emby Server")
 
 
 @emby_router.get("/emby/Branding/Configuration")
 @emby_router.get("/emby/branding/config")
 @emby_router.get("/Branding/Configuration")
-async def branding_config():
+def branding_config():
     return {"LoginDisclaimer": "", "CustomCss": "", "SplashscreenEnabled": False}
 
 
 @emby_router.get("/emby")
-async def emby_root():
+def emby_root():
     return {"ProductName": "Emby Server", "Version": SERVER_VERSION, "Id": SERVER_ID}
 
 
@@ -500,7 +504,7 @@ async def emby_root():
 
 @emby_router.post("/emby/Users/AuthenticateByName")
 @emby_router.post("/Users/AuthenticateByName")
-async def authenticate_by_name(
+def authenticate_by_name(
     request: Request,
     credentials: dict = Body(...),
     db: Session = Depends(get_db),
@@ -688,7 +692,7 @@ def _policy_dto(user: models.WebUser) -> dict:
 
 @emby_router.get("/emby/Users/Public")
 @emby_router.get("/Users/Public")
-async def users_public():
+def users_public():
     """客户端登录页的用户列表
 
     按 Jellyfin 默认隐私策略返回空数组：本服务账号即门户账号，未认证地枚举用户列表
@@ -699,13 +703,13 @@ async def users_public():
 
 @emby_router.get("/emby/Users/Me")
 @emby_router.get("/Users/Me")
-async def users_me(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+def users_me(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     return _user_dto(user, db)
 
 
 @emby_router.get("/emby/Users")
 @emby_router.get("/Users")
-async def users_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+def users_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     if not user.is_staff:
         raise HTTPException(status_code=403, detail="Forbidden")
     rows = db.query(models.WebUser).filter(models.WebUser.is_active == True).all()  # noqa: E712
@@ -743,7 +747,7 @@ def _user_dto(user: models.WebUser, db: Session) -> dict:
 
 @emby_router.get("/emby/Users/{user_id}")
 @emby_router.get("/Users/{user_id}")
-async def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
+def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
                    db: Session = Depends(get_db)):
     if user_id not in (str(user.id), "me", user.emby_username or "", user.username):
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -778,7 +782,7 @@ async def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user)
 
 @emby_router.get("/emby/Users/{user_id}/Items")
 @emby_router.get("/Users/{user_id}/Items")
-async def get_items(
+def get_items(
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
@@ -966,8 +970,20 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         }
 
     total = query.count()
-    data_query = query.order_by(func.random()) if random_sort else query.order_by(*order_cols)
-    items = data_query.offset(start).limit(limit).all()
+    if random_sort:
+        # ``ORDER BY RANDOM()`` 会让数据库把整个结果集物化再排序（十万级库就是全表排序）。
+        # 随机排序只需要一个随机子集：先取主键、在内存里抽样，再按抽到的 id 取这一页，
+        # 成本从「全表排序 + 全行物化」降到「扫主键 + 取 N 行」。
+        id_rows = query.with_entities(em.MediaItem.id).all()
+        ids = [row[0] for row in id_rows]
+        if not ids:
+            return {"Items": [], "TotalRecordCount": 0, "StartIndex": start}
+        picked = random.sample(ids, min(len(ids), start + limit))[start:start + limit]
+        items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(picked)).all() if picked else []
+        position = {item_id: index for index, item_id in enumerate(picked)}
+        items.sort(key=lambda item: position.get(item.id, 0))
+    else:
+        items = query.order_by(*order_cols).offset(start).limit(limit).all()
     _prefetch_list_data(db, user.id, items)
 
     return {
@@ -979,7 +995,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
 
 @emby_router.get("/emby/Users/{user_id}/Items/Resume")
 @emby_router.get("/Users/{user_id}/Items/Resume")
-async def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
+def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     limit = int(request.query_params.get("Limit") or 12)
     rows = (
@@ -1002,7 +1018,7 @@ async def get_resume(request: Request, user: models.WebUser = Depends(get_emby_u
 
 @emby_router.get("/emby/Users/{user_id}/Items/Latest")
 @emby_router.get("/Users/{user_id}/Items/Latest")
-async def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
+def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     limit = int(request.query_params.get("Limit") or 16)
     items = (
@@ -1027,7 +1043,7 @@ async def get_latest(request: Request, user: models.WebUser = Depends(get_emby_u
 
 @emby_router.get("/emby/Items/Counts")
 @emby_router.get("/Items/Counts")
-async def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     def _count(item_type: str) -> int:
         return (
             db.query(em.MediaItem)
@@ -1047,35 +1063,64 @@ async def items_counts(user: models.WebUser = Depends(get_emby_user), db: Sessio
 
 @emby_router.get("/emby/Items/Intros")
 @emby_router.get("/Items/Intros")
-async def items_intros(user: models.WebUser = Depends(get_emby_user)):
+def items_intros(user: models.WebUser = Depends(get_emby_user)):
     return _empty_items()
 
 
+# 筛选菜单的取值来自全库（genres/tags/rating/year 都是逗号分隔的文本列）。
+# 旧实现每次都把整库 ORM 对象化后遍历：十万级库就是数百 MB 内存尖峰 + 数秒 CPU，
+# 而客户端会反复打开这个面板。现改为「只取需要的列 + 分批拉取 + TTL 缓存」。
+_FILTERS_CACHE: dict = {"at": 0.0, "payload": None}
+_FILTERS_CACHE_TTL = float(os.getenv("EMBY_FILTERS_CACHE_TTL", "300") or 300)
+
+
+def invalidate_filters_cache() -> None:
+    """媒体库扫描/条目变更后主动失效筛选缓存（未调用时靠 TTL 自然过期）"""
+    _FILTERS_CACHE["at"] = 0.0
+    _FILTERS_CACHE["payload"] = None
+
+
 def _filters_payload(db: Session) -> dict:
+    cached = _FILTERS_CACHE.get("payload")
+    if cached is not None and time.monotonic() - _FILTERS_CACHE["at"] < _FILTERS_CACHE_TTL:
+        return cached
     genres: set = set()
     tags: set = set()
     ratings: set = set()
     years: set = set()
-    for item in db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False).all():  # noqa: E712
-        genres.update(g for g in (item.genres or "").split(",") if g)
-        tags.update(t for t in (item.tags or "").split(",") if t)
-        if item.official_rating:
-            ratings.add(item.official_rating)
-        if item.production_year:
-            years.add(item.production_year)
-    return {
+    rows = (
+        db.query(
+            em.MediaItem.genres,
+            em.MediaItem.tags,
+            em.MediaItem.official_rating,
+            em.MediaItem.production_year,
+        )
+        .filter(em.MediaItem.is_hidden == False)  # noqa: E712
+        .yield_per(1000)
+    )
+    for item_genres, item_tags, rating, year in rows:
+        genres.update(g for g in (item_genres or "").split(",") if g)
+        tags.update(t for t in (item_tags or "").split(",") if t)
+        if rating:
+            ratings.add(rating)
+        if year:
+            years.add(year)
+    payload = {
         "Genres": sorted(genres),
         "Tags": sorted(tags),
         "OfficialRatings": sorted(ratings),
         "Years": sorted(years, reverse=True),
     }
+    _FILTERS_CACHE["at"] = time.monotonic()
+    _FILTERS_CACHE["payload"] = payload
+    return payload
 
 
 @emby_router.get("/emby/Items/Filters")
 @emby_router.get("/Items/Filters")
 @emby_router.get("/emby/Items/Filters2")
 @emby_router.get("/Items/Filters2")
-async def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     return _filters_payload(db)
 
 
@@ -1083,7 +1128,7 @@ async def items_filters(user: models.WebUser = Depends(get_emby_user), db: Sessi
 @emby_router.get("/Items/{item_id}")
 @emby_router.get("/emby/Users/{user_id}/Items/{item_id}")
 @emby_router.get("/Users/{user_id}/Items/{item_id}")
-async def get_item_detail(
+def get_item_detail(
     item_id: str,
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
@@ -1096,7 +1141,7 @@ async def get_item_detail(
 
 @emby_router.get("/emby/Shows/{item_id}/Seasons")
 @emby_router.get("/Shows/{item_id}/Seasons")
-async def get_seasons(item_id: str, request: Request,
+def get_seasons(item_id: str, request: Request,
                       user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
     item = _require_item(db, item_id)
@@ -1114,7 +1159,7 @@ async def get_seasons(item_id: str, request: Request,
 
 @emby_router.get("/emby/Shows/{item_id}/Episodes")
 @emby_router.get("/Shows/{item_id}/Episodes")
-async def get_episodes(item_id: str, request: Request,
+def get_episodes(item_id: str, request: Request,
                        user: models.WebUser = Depends(get_emby_user),
                        db: Session = Depends(get_db)):
     item = _require_item(db, item_id)
@@ -1136,7 +1181,7 @@ async def get_episodes(item_id: str, request: Request,
 
 @emby_router.get("/emby/Shows/NextUp")
 @emby_router.get("/Shows/NextUp")
-async def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
+def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
     limit = int(request.query_params.get("Limit") or 20)
     played_eps = (
@@ -1159,7 +1204,7 @@ async def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_
 
 @emby_router.get("/emby/Users/{user_id}/FavoriteItems")
 @emby_router.get("/Users/{user_id}/FavoriteItems")
-async def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user),
+def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user),
                         db: Session = Depends(get_db)):
     rows = (
         db.query(em.MediaItem)
@@ -1176,7 +1221,7 @@ async def get_favorites(request: Request, user: models.WebUser = Depends(get_emb
 
 @emby_router.get("/emby/Users/{user_id}/PlayedItems")
 @emby_router.get("/Users/{user_id}/PlayedItems")
-async def get_played_items(request: Request, user: models.WebUser = Depends(get_emby_user),
+def get_played_items(request: Request, user: models.WebUser = Depends(get_emby_user),
                            db: Session = Depends(get_db)):
     rows = (
         db.query(em.MediaItem)
@@ -1219,7 +1264,7 @@ async def rate_item(
 
 @emby_router.post("/emby/Users/{user_id}/PlayedItems/{item_id}")
 @emby_router.post("/Users/{user_id}/PlayedItems/{item_id}")
-async def mark_played(item_id: str, user_id: str,
+def mark_played(item_id: str, user_id: str,
                       user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
     item = _require_item(db, item_id)
@@ -1239,7 +1284,7 @@ async def mark_played(item_id: str, user_id: str,
 
 @emby_router.delete("/emby/Users/{user_id}/PlayedItems/{item_id}")
 @emby_router.delete("/Users/{user_id}/PlayedItems/{item_id}")
-async def mark_unplayed(item_id: str, user_id: str,
+def mark_unplayed(item_id: str, user_id: str,
                         user: models.WebUser = Depends(get_emby_user),
                         db: Session = Depends(get_db)):
     item = _require_item(db, item_id)
@@ -1344,7 +1389,9 @@ async def video_stream(
     if target.kind == "url":
         # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
         # Range 与状态码透传，凭据不下发。
-        return serve_remote(target.value, request, target.headers, media_type)
+        # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
+        # 不能让一个用户的拖动进度条把整个事件循环卡住
+        return await serve_remote_async(target.value, request, target.headers, media_type)
     return serve_file(target.value, request, media_type)
 
 
@@ -1370,7 +1417,7 @@ async def video_hls(
         if transcode_path.endswith(".m3u8"):
             playlist = os.path.join(info["dir"], "master.m3u8")
             # ffmpeg 写完首个切片才落盘播放列表；直接返回空列表会让播放器判定播放失败
-            wait_for_file(playlist, timeout=15.0)
+            await wait_for_file(playlist, timeout=15.0)
             if not os.path.isfile(playlist):
                 if not transcode_alive(existing):
                     raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
@@ -1378,7 +1425,7 @@ async def video_hls(
             content = _rewrite_playlist(info["dir"], base, item.guid, existing, api_key)
             return Response(content, media_type="application/vnd.apple.mpegurl")
         # 客户端请求切片往往早于 ffmpeg 写出，短暂等待而非立即 404
-        if not wait_for_file(file_path, timeout=12.0):
+        if not await wait_for_file(file_path, timeout=12.0):
             if not transcode_alive(existing):
                 raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
             raise HTTPException(status_code=404, detail="Segment not ready")

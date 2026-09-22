@@ -745,6 +745,35 @@ def _verify_yipay_notify(params: dict, key: str) -> bool:
     return sign.lower() == expected.lower()
 
 
+def _claim_order(db: Session, model, order) -> bool:
+    """把订单从「未支付」原子地推进到 ``paid``：并发回调 / 人工补单只有一个能拿到那一行
+
+    旧实现的判定与发货之间是读-改-写（``if status not in (paid, refunded, closed)``）：
+    网关重试回调和管理员补单撞在一起时，两个事务都读到 ``pending`` → 双倍积分 / 双份订阅。
+    SQLite 的单写锁能部分兜住，跳机器部署的 PostgreSQL 下就是实打实的资损。
+
+    现在先做条件 ``UPDATE ... WHERE status NOT IN (...)``：
+
+    - 拿到 1 行 → 由本请求发货（并发第二个请求会在行锁上等到提交，然后拿到 0 行）；
+    - 拿到 0 行 → 已被别人履约（或已退款/关单），跳过发货，幂等成立。
+
+    更新与发货在同一事务里，失败会一起回滚；``paid_at`` 不再由调用方另行赋值。
+    """
+    if order is None or order.status in ("paid", "refunded", "closed"):
+        return False
+    claimed = (
+        db.query(model)
+        .filter(model.id == order.id, model.status.notin_(("paid", "refunded", "closed")))
+        .update({"status": "paid", "paid_at": datetime.now()}, synchronize_session=False)
+    )
+    if not claimed:
+        return False
+    # 让当前事务里的 ORM 对象与刚写入的行保持一致（后续代码与提交都用它）
+    order.status = "paid"
+    order.paid_at = datetime.now()
+    return True
+
+
 async def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) -> list:
     """订单履约：充值发积分 / 订阅发放，幂等（重复回调不重复发货）
 
@@ -758,7 +787,7 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
     # 已退款 / 已关闭的订单绝不再履约：支付回调可能晚到或重放（网关重试、管理员已经
     # 关单后又收到回调），只判 `!= "paid"` 会把退过的订单又发一遍货。
     pending: list = []
-    if recharge_order and recharge_order.status not in ("paid", "refunded", "closed"):
+    if recharge_order and _claim_order(db, models.RechargeOrder, recharge_order):
         user = db.query(models.WebUser).filter(
             models.WebUser.id == recharge_order.user_id
         ).first()
@@ -781,12 +810,11 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
                 title=f"💰 充值成功 +{recharge_order.amount} 积分",
                 content=f"订单 {recharge_order.order_id} 已到账，当前余额 {user.points} 积分。",
             ))
-        recharge_order.status = "paid"
-        recharge_order.paid_at = datetime.now()
         # 优惠券预订 → 已消费（额度仍占用）；关单/退款时才释放
+        # （订单状态与 paid_at 已由 _claim_order 原子写入，见该函数的说明）
         coupons.consume(db, recharge_order.coupon_usage_id)
 
-    if subscription_order and subscription_order.status not in ("paid", "refunded", "closed"):
+    if subscription_order and _claim_order(db, models.SubscriptionOrder, subscription_order):
         plan = db.query(models.SubscriptionPlan).filter(
             models.SubscriptionPlan.id == subscription_order.plan_id
         ).first()
@@ -811,8 +839,6 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
                          f"到期时间 {subscription.end_date.strftime('%Y-%m-%d')}。"),
                 related_id=subscription.id,
             ))
-        subscription_order.status = "paid"
-        subscription_order.paid_at = datetime.now()
         coupons.consume(db, subscription_order.coupon_usage_id)
 
     return pending
@@ -864,7 +890,7 @@ async def payment_notify(request: Request, db: Session = Depends(get_db)):
 
     try:
         pending = await _fulfill_order(db, recharge_order=recharge_order,
-                                       subscription_order=subscription_order)
+                                 subscription_order=subscription_order)
         db.commit()
     except Exception:  # noqa: BLE001
         db.rollback()

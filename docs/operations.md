@@ -55,7 +55,8 @@ python3 scripts/deploy_check.py --keep      # 自检完不杀进程（会打印 
 - [ ] `EMBY_ALLOW_LEGACY_TOKENS` 已废弃（旧数字 token 兼容代码已移除，无需再配）
 - [ ] 全站 HTTPS 已生效，HTTP 自动跳转
 - [ ] Nginx 使用的证书是**你自己的**（仓库里那份旧证书与私钥已删除；若你曾用过 `nginx/ssl/privkey.pem`，视为已泄露并重新签发）
-- [ ] `/metrics` 未暴露到公网（在 Nginx 层限制来源）
+- [ ] `/metrics` 未暴露到公网：服务端已默认只放行**本机/内网**来源（公网请求直接 403，见 `backend/metrics_guard.py`），
+      确需公网采集时再设 `METRICS_ALLOW_REMOTE=true`，并继续在 Nginx 层限制来源
 - [ ] 已改掉所有默认口令（数据库、管理员账号），无弱密码
 
 **功能**

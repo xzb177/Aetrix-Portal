@@ -180,7 +180,7 @@ def get_current_user_jwt(
 # ==================== Endpoints ====================
 
 @auth_router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
+def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     """注册新用户（用户名唯一，密码 bcrypt 存储，自动生成自建 Emby 凭据）"""
     allowed, retry_after = check_rate_limit(f"register:{client_ip(request)}", 5, 3600)
     if not allowed:
@@ -275,7 +275,7 @@ async def register(request: Request, req: RegisterRequest, db: Session = Depends
 
 
 @auth_router.post("/login", response_model=AuthResponse)
-async def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
+def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
     """用户名密码登录，成功返回 JWT（同 IP 每分钟最多 8 次尝试）"""
     allowed, retry_after = check_rate_limit(f"login:{client_ip(request)}", 8, 60)
     if not allowed:
@@ -311,7 +311,7 @@ async def login(request: Request, req: LoginRequest, db: Session = Depends(get_d
 
 
 @auth_router.post("/refresh")
-async def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
+def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     """用 refresh_token 换取新的 access_token（+ 可选轮换的 refresh_token）"""
     payload = decode_token(req.refresh_token, expected_type="refresh")
     if not payload:
@@ -335,7 +335,7 @@ async def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
 
 
 @auth_router.get("/me", response_model=UserOut)
-async def me(
+def me(
     current_user: models.WebUser = Depends(get_current_user_jwt),
     db: Session = Depends(get_db),
 ):
@@ -344,13 +344,13 @@ async def me(
 
 
 @auth_router.post("/logout")
-async def logout(current_user: models.WebUser = Depends(get_current_user_jwt)):
+def logout(current_user: models.WebUser = Depends(get_current_user_jwt)):
     """登出（无状态 JWT，客户端清除 token）"""
     return {"success": True, "message": "已登出"}
 
 
 @auth_router.post("/change-password")
-async def change_password(
+def change_password(
     req: ChangePasswordRequest,
     current_user: models.WebUser = Depends(get_current_user_jwt),
     db: Session = Depends(get_db),

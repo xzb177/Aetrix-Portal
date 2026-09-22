@@ -51,7 +51,7 @@ def _search_clauses(term: str) -> list:
 
 @search_router.get("/emby/Search/Hints")
 @search_router.get("/Search/Hints")
-async def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user),
+def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user),
                        db: Session = Depends(get_db)):
     """Emby 搜索建议（客户端输入时的下拉/联想）"""
     q = request.query_params

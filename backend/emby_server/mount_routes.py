@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 SUPERSEDED_FILE_PATHS = ("/emby/Items/{item_id}/File", "/Items/{item_id}/File")
 
 
-async def mounted_item_file(
+def mounted_item_file(
     item_id: str,
     request: Request,
     user: models.WebUser = Depends(get_emby_user),

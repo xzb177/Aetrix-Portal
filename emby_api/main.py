@@ -29,6 +29,8 @@ except ImportError:  # pragma: no cover
     _GZIP_DEFAULTS = ()
 from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
+
+from backend.metrics_guard import MetricsGuard
 from sqlalchemy import inspect
 
 from backend.database import DATABASE_TYPE, SessionLocal, engine
@@ -46,7 +48,7 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.11.1"
+EA_VERSION = "2.12.0"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
@@ -239,7 +241,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ==================== 监控与健康检查 ====================
 
-app.mount("/metrics", make_asgi_app())
+# 默认只允许本机/内网采集（需要公网采集时设 METRICS_ALLOW_REMOTE=true）
+app.mount("/metrics", MetricsGuard(make_asgi_app()))
 
 
 @app.get("/api/health")
