@@ -316,6 +316,57 @@ for i in range(9):
 check("限流不可靠伪造 XFF 绕过：第 9 次被拒",
       statuses[:8] == [True] * 8 and statuses[8] is False, f"allowed={statuses}")
 
+# ==================== 6. 优惠券单人限领不可被并发绕过 ====================
+# 旧实现是「先查该人已领几张、再插入核销记录」：同一用户的两个请求同时走到这里，
+# 都会读到「还没领满」，于是各领一张，绕过每人限领。现在占名额改成条件
+# INSERT ... SELECT（该人有效核销数 < per_user_limit 才写入），并发下只可能成功一次。
+
+from decimal import Decimal  # noqa: E402
+
+from backend import coupons  # noqa: E402
+
+with SessionLocal() as db:
+    db.add(models.CouponCode(code="CC-PER-USER", kind="recharge", discount_type="fixed",
+                             value=5, max_uses=50, use_count=0, per_user_limit=1, is_active=True))
+    db.commit()
+    coupon_id = db.query(models.CouponCode).filter(
+        models.CouponCode.code == "CC-PER-USER").first().id
+
+
+def reserve_once(i: int):
+    db = SessionLocal()
+    try:
+        row = db.query(models.CouponCode).filter(models.CouponCode.id == coupon_id).first()
+        user = db.query(models.WebUser).filter(models.WebUser.id == alice_id).first()
+        usage = coupons.reserve(
+            db, coupon=row, user=user, order_id=f"CC-ORDER-{i}", kind="recharge",
+            list_price=Decimal("30.00"), discount=Decimal("5.00"), paid=Decimal("25.00"),
+        )
+        db.commit()
+        return True, usage.id
+    except HTTPException as exc:
+        db.rollback()
+        return False, exc
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return False, exc
+    finally:
+        db.close()
+
+
+results = run_parallel(reserve_once, 5)
+wins = [r for r in results if r and r[0]]
+with SessionLocal() as db:
+    usage_rows = db.query(models.CouponUsage).filter(
+        models.CouponUsage.coupon_id == coupon_id).count()
+    use_count = db.query(models.CouponCode.use_count).filter(
+        models.CouponCode.id == coupon_id).scalar()
+
+check("同一用户并发领同一张券：只成功一次", len(wins) == 1,
+      f"成功 {len(wins)} 次；拒绝原因示例 {[str(r[1])[:40] for r in results if r and not r[0]][:2]}")
+check("核销记录只留一行（没有多领）", usage_rows == 1, f"实际 {usage_rows} 行")
+check("该券总用量也只记了 1", use_count == 1, f"实际 use_count={use_count}")
+
 # ==================== 汇总 ====================
 
 print()

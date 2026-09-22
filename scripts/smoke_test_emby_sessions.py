@@ -233,6 +233,66 @@ r = client.post("/emby/Sessions/Playing/Stopped", headers=H_ALICE,
                 json={"ItemId": ITEM_GUID, "PositionTicks": 6_000_000})
 check("Stopped 上报 → 200", r.status_code == 200, f"实际 {r.status_code}")
 
+# ==================== 6. 进度上报的写库节流（v2.14.0） ====================
+# 客户端每 10s 一报（暂停、卡顿也照报），没有新信息的上报不该每次都写库；
+# 但拖动（位置跳变）与暂停切换必须立刻落库，客户端“继续观看”也不能因此丢失。
+
+import backend.emby_server.compat_routes as compat_routes  # noqa: E402
+
+THROTTLE_KEY = "alice-throttle-key"
+r = client.post("/emby/Sessions/Playing", headers=H_ALICE,
+                json={"ItemId": ITEM_GUID, "PlaySessionId": THROTTLE_KEY, "PositionTicks": 0})
+check("起播上报（新会话）→ 200", r.status_code == 200, f"实际 {r.status_code}")
+start = session_row(THROTTLE_KEY)
+check("新会话一定落库（列表里能看到）", start is not None)
+
+r = client.post("/emby/Sessions/Playing/Progress", headers=H_ALICE,
+                json={"ItemId": ITEM_GUID, "PlaySessionId": THROTTLE_KEY, "PositionTicks": 0})
+same = session_row(THROTTLE_KEY)
+check("无新信息的重复上报不写库（心跳时间不变）",
+      r.status_code == 200 and same.last_update_at == start.last_update_at,
+      f"{start.last_update_at} → {same.last_update_at}")
+
+r = client.post("/emby/Sessions/Playing/Progress", headers=H_ALICE,
+                json={"ItemId": ITEM_GUID, "PlaySessionId": THROTTLE_KEY,
+                      "PositionTicks": 300_000_000})
+seek = session_row(THROTTLE_KEY)
+check("拖动进度（跳变 ≥ 30s）立刻落库",
+      seek.position_ticks == 300_000_000 and seek.last_update_at > start.last_update_at,
+      f"pos={seek.position_ticks} at={seek.last_update_at}")
+
+r = client.post("/emby/Sessions/Playing/Progress", headers=H_ALICE,
+                json={"ItemId": ITEM_GUID, "PlaySessionId": THROTTLE_KEY,
+                      "PositionTicks": 300_000_000, "IsPaused": True})
+paused = session_row(THROTTLE_KEY)
+check("暂停切换立刻落库（面板上的暂停状态不滞后）",
+      paused.is_paused is True and paused.last_update_at > seek.last_update_at,
+      f"paused={paused.is_paused} at={paused.last_update_at}")
+
+# 观看进度（用户媒体数据）不受节流影响：被节流的那次上报也要把位置记下来
+with SessionLocal() as db:
+    umd = (
+        db.query(em.UserMediaData)
+        .filter(em.UserMediaData.user_id == alice_id, em.UserMediaData.item_id == movie_id)
+        .first()
+    )
+check("被节流的上报仍然记下了观看进度",
+      umd is not None and (umd.playback_position_ticks or 0) == 300_000_000,
+      f"实际 {getattr(umd, 'playback_position_ticks', None)}")
+
+# 关掉节流（=0）时回到旧行为：每报必写（这里用 10s 的小跳变，默认口径下会被节流）
+try:
+    compat_routes.PROGRESS_WRITE_SECONDS = 0
+    r = client.post("/emby/Sessions/Playing/Progress", headers=H_ALICE,
+                    json={"ItemId": ITEM_GUID, "PlaySessionId": THROTTLE_KEY,
+                          "PositionTicks": 310_000_000})
+    again = session_row(THROTTLE_KEY)
+    check("EMBY_PROGRESS_WRITE_SECONDS=0 时每报必写（旧行为可回退）",
+          again.position_ticks == 310_000_000 and again.last_update_at > paused.last_update_at,
+          f"pos={again.position_ticks} at={again.last_update_at}")
+finally:
+    compat_routes.PROGRESS_WRITE_SECONDS = 15
+
 print()
 if failures:
     print(f"{len(failures)}/{TOTAL} 项失败：{', '.join(failures)}")

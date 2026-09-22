@@ -1,6 +1,7 @@
 """付费墙（会员门禁）冒烟测试
 
 覆盖：
+- 下载策略网关判过的结论会被路由复用（同一请求不再查两遍策略，v2.14.0）
 - 开关开启（默认）时：非会员无法获取播放地址（PlaybackInfo 403）、无法直连拉流（stream 403）、无法下载
 - 会员可正常获取播放地址与拉流（206 分段）
 - 管理员始终放行（不打墙自己人）
@@ -152,6 +153,34 @@ check("关闭付费墙后非会员放行", r.status_code == 200, str(r.status_co
 r = client.get("/api/user/auth/me", headers=free_h)
 check("/auth/me 同步反映关闭状态", r.json().get("subscription_required") is False,
       str(r.json().get("subscription_required")))
+
+# ---------- 下载策略网关的结论被路由复用（v2.14.0） ----------
+# 下载类请求会先过 DownloadGuardMiddleware（闸站开关 + 该服策略 + 管理员放行），
+# 路由里的 ensure_download_allowed 直接复用这个结论，不再把同一件事查第二遍；
+# 网关没给出结论时（拿不到身份 / 判定异常），路由自己照旧拦。
+from starlette.requests import Request as StarletteRequest  # noqa: E402
+
+from backend.subscriptions import ensure_download_allowed  # noqa: E402
+from fastapi import HTTPException as FastAPIHTTPException  # noqa: E402
+
+set_config("allow_download", "false")
+with SessionLocal() as db:
+    free_user = db.query(models.WebUser).filter(models.WebUser.username == free_name).first()
+    guarded = StarletteRequest({"type": "http", "headers": [],
+                                "state": {"download_allowed_by_guard": True}})
+    try:
+        ensure_download_allowed(db, free_user, request=guarded)
+        reused = True
+    except FastAPIHTTPException:
+        reused = False
+    try:
+        ensure_download_allowed(db, free_user)  # 没带 request → 自然要自己判
+        blocked_without_state = False
+    except FastAPIHTTPException:
+        blocked_without_state = True
+check("网关已判「允许」时路由不再重复查下载策略", reused)
+check("网关没给结论时路由自己照旧拦下", blocked_without_state)
+set_config("allow_download", None)
 
 # 保持默认开启，避免影响其它用例
 set_config("subscription_required", "true")
