@@ -2,6 +2,31 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.11.1] - 2026-09-22
+
+把 2.11.0 里因 `emby_server/api.py` 太长而暂时搬不动的两件小事做完——做法沿用仓库既有的
+「在 `include_router` 之前精确替换路由」（与 `mount_routes.py` / `session_routes.py` 同一套路），
+业务实现仍然只有一份，没有复制粘贴。
+
+### 新增 (Added)
+- **图片端点接上条件请求（304）**：新增 `backend/emby_server/image_routes.py`。图片实现
+  （季/集回退、远程图代理与 SSRF 防护、缺图排队修复、文件丢失时干净 404）仍在 `api.py`，
+  新模块只在其外层处理 `If-None-Match` / `If-Modified-Since`：客户端缓存仍有效时返回
+  **304（空响应体）**，不再把同一张海报重传一遍；没有校验器的远程代理图与错误响应原样返回。
+  媒体库页面上图片是请求量最大的资源，滚动、返回、切页省下的就是这部分带宽。
+
+### 变更 (Changed)
+- **`/Sessions` 在线会话列表批量取关联数据**：`session_routes.py` 的实现此前逐条查条目与用户
+  （N 台设备同时播放就是 2N 次查询），现在一次性取回再组装，响应字段与口径不变。
+- 版本号：EM `version` / EA `EA_VERSION` / 两个前端 `package.json`（含锁文件）/ 后台顶栏 → 2.11.1。
+
+### 验证 (Verification)
+- `python3 -m py_compile` 改动文件通过；两个服务导入后确认 4 条图片路由已被替换为带条件请求的实现。
+- 条件请求按真实响应检查：`If-None-Match`（含 `W/` 前缀）与 `If-Modified-Since` 命中返回 304，
+  不命中或没有请求头时仍是 200；非文件响应（远程代理图 / 404）不受影响。
+- 冒烟：`smoke_test_emby_sessions.py`（37 项）、`smoke_test_media_search.py`、`smoke_test_emby.py`、
+  `smoke_test_playback_chain.py`（20/20）全绿。
+
 ## [2.11.0] - 2026-09-22
 
 这一版是**后端（EM 面板 + EA 网关）的性能与稳定性**一轮：把列表接口里最贵的 N+1 查询
@@ -45,11 +70,9 @@
   `Accept-Ranges` / 正确 `content-type` 均按预期下发；文件缺失仍是干净的 404。
 
 ### 待办 (Next)
-- 图片接口的条件请求（304）：`serve_image()` 已带上校验器，但调用点还需要把 request 透传过去，
-  而该调用点在 `emby_server/api.py`（已起 2000 行），计划随该文件拆分一起做。
+- 图片条件请求（304）与 `/Sessions` 列表批量取数已在 **2.11.1** 落地。
 - 播放进度上报（`/Sessions/Playing/Progress`）的写库节流：客户端每 10s 一报，多个并发播放时
   SQLite 写锁会有竞争，计划按「进度实质变化才落库」收敛。
-- `/Sessions` 会话列表的关联查询批量化（与列表接口同一思路，同样在 api.py 内）。
 
 ## [2.10.6] - 2026-09-22
 
