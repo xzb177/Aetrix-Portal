@@ -47,8 +47,11 @@
   - `smoke_test_ea_split.py`：两条「门户 SPA 不被 EA 指引路由吃掉」改为**有构建产物时才断言**
     （SPA 本来就只在 `user_frontend/dist` 存在时才挂载，没构建时 `/` 返回 API JSON、
     `/wallet` 返回 404 是正确行为），没构建时打印 SKIP 并说明如何覆盖。
+  - 另外 CI 显式 `pip install zhconv`：它是**可选依赖**（不在 `requirements.txt` 里，
+    未安装时搜索会自动降级为不做转换），但门禁要覆盖繁简互搜这个特性，
+    否则 `smoke_test_media_search` 里那条断言只会 SKIP，等于没测。
   - 全套 38 套已按冒烟作业的真实形态（`FRONTEND_DIST` / `ADMIN_DIST` 指向不存在的目录）
-    本地跑过一遍，全绿。
+    本地跑过一遍，全绿；并逐一核过所有冒烟测试的第三方导入都在 CI 的安装范围内。
 
 ## [2.20.2] - 2026-09-22
 
