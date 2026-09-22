@@ -84,7 +84,7 @@ function open() {
 .media-card:hover .poster-wrap {
   transform: translateY(-4px);
   border-color: var(--au-primary-border);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--au-shadow-2);
 }
 
 .poster-wrap img {
@@ -101,7 +101,7 @@ function open() {
   align-items: center;
   justify-content: center;
   color: var(--au-text-4);
-  background: linear-gradient(160deg, rgba(34, 211, 238, 0.06), rgba(0, 0, 0, 0.3));
+  background: linear-gradient(160deg, var(--au-primary-soft), var(--au-overlay-soft));
 }
 
 .hover-play {
@@ -110,8 +110,8 @@ function open() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
-  color: #fff;
+  background: var(--au-overlay-soft);
+  color: var(--au-text);
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -129,7 +129,7 @@ function open() {
   border-radius: 50%;
   color: var(--au-primary);
   backdrop-filter: blur(6px);
-  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+  filter: drop-shadow(0 4px 12px var(--au-shadow-color));
 }
 
 .progress-track {
@@ -138,7 +138,7 @@ function open() {
   right: 0;
   bottom: 0;
   height: 4px;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--au-on-image-strong);
 }
 
 .progress-fill {
@@ -157,7 +157,7 @@ function open() {
   justify-content: center;
   background: var(--au-success);
   border-radius: 50%;
-  color: #05141c;
+  color: var(--au-on-primary);
 }
 
 .card-body {

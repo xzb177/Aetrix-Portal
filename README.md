@@ -294,6 +294,29 @@ python serve_emby.py                   # EA 网关 :8001（客户端连它，分
 
 ## 📝 更新日志
 
+### v2.11.0 (2026-09-22) — 后端性能与稳定性：列表 N+1 / 图片缓存 / 转码并发保护
+- ⚡️ **媒体库翻页不再 N+1**：列表接口此前给每个条目单独查进度 / 收藏 / 已看并统计子项数，
+  一页 100 条就是 200+ 次查询；现在渲染前一次性批量取回（12 处列表端点统一接入），分页大小不再影响查询次数
+- 🖼 **图片可缓存**：海报 / 背景图带 `ETag` / `Last-Modified` / `Cache-Control: max-age=86400`，
+  浏览媒体库时反复滚动不再重复下载同一张图
+- 🗜 **大块二进制不再被压缩**：EM / EA 的 GZip 排除 `application/octet-stream` 与 `zip`，
+  远程挂载代理转发的大文件不再按 level 9 压缩白烧 CPU
+- 📦 **前端产物强缓存**：`/assets/*`（文件名带内容哈希）一年 `immutable`，SPA 入口 HTML 改 `no-cache`，
+  发新版本用户刷新即生效
+- 🧯 **转码并发上限保护**：默认按 CPU 核数（`EMBY_MAX_TRANSCODES` 可调），超限时只回收
+  「输出目录闲置超时」（`EMBY_TRANSCODE_IDLE` 默认 120s）的残留会话，绝不掐断正在播放的会话
+
+### v2.10.6 (2026-09-22) — 用户端硬编码颜色对齐 Aurora 令牌
+- 🎨 **页面不再各写一份颜色**：HistoryView / LibraryHomeView / HomeView / WalletView / TicketsView
+  / LoginView / CheckinView / InviteView / MessagesView / ProfileView / RequestView / FavoritesView
+  / ItemDetailView / LibraryView / WatchView 与 AppHeader / Toast / MediaCard 里的写死
+  `rgba(…)` / `#hex` 全部换成 Aurora 令牌——遮罩、边框、徽标、渐变按钮文字、下拉浮层同一套视觉,
+  换主题只改 `aurora.css` 一处
+- 🧱 **补齐页面级缺口令牌**：主色 hover 中间档、亮色块上的深墨文字（`--au-on-primary`）、
+  语义色描边档、叠加层四档、弹窗遮罩、进度槽等——以前「页面想要一档但令牌没有」只能写死
+- 🎯 **刻意保留的两处**：播放器容器纯黑底（与画面一致）与滑动 mask 的 `#000`（不透明度）已注释说明
+- 🧹 无人引用的 ui 组件里残留的旧 Emerald 翠绿同步对齐，重复的 `@keyframes spin` 收敛到全局 `au-spin`
+
 ### v2.10.5 (2026-09-22) — 后台收尾 · 取消对话框不再当报错
 - 🧯 **点「取消」不再抛异常**：Element Plus 的 `confirm` / `prompt` 在用户取消时会**拒绝** Promise，
   此前 13 个后台页面全部没接住，管理员每取消一次就往控制台丢一条 `Unhandled error`

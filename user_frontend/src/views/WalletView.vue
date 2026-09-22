@@ -836,7 +836,7 @@ onBeforeUnmount(stopPayPoll)
   gap: 1.5rem;
   padding: 1.5rem 1.625rem;
   border-radius: var(--au-r-xl);
-  background: linear-gradient(135deg, rgba(34, 211, 238, 0.14), rgba(167, 139, 250, 0.14) 55%, rgba(7, 11, 18, 0.2));
+  background: linear-gradient(135deg, var(--au-primary-soft), var(--au-violet-soft) 55%, var(--au-overlay-soft));
   border: 1px solid var(--au-primary-border);
   backdrop-filter: blur(14px);
   position: relative;
@@ -849,7 +849,7 @@ onBeforeUnmount(stopPayPoll)
   right: -10%;
   width: 300px;
   height: 200px;
-  background: radial-gradient(ellipse, rgba(34, 211, 238, 0.18), transparent 70%);
+  background: radial-gradient(ellipse, var(--au-primary-mid), transparent 70%);
   filter: blur(30px);
   pointer-events: none;
 }
@@ -904,7 +904,7 @@ onBeforeUnmount(stopPayPoll)
   margin-top: 0.375rem;
   padding: 0.3125rem 0.6875rem;
   background: var(--au-warning-soft);
-  border: 1px solid rgba(251, 191, 36, 0.28);
+  border: 1px solid var(--au-warning-border);
   border-radius: var(--au-r-full);
   color: var(--au-warning);
   font-size: 0.75rem;
@@ -914,7 +914,7 @@ onBeforeUnmount(stopPayPoll)
 .checkin-pill strong { font-weight: 700; }
 .checkin-pill.done {
   background: var(--au-success-soft);
-  border-color: rgba(52, 211, 153, 0.28);
+  border-color: var(--au-success-border);
   color: var(--au-success);
 }
 .checkin-pill:hover {
@@ -999,7 +999,7 @@ onBeforeUnmount(stopPayPoll)
 .tab:hover { color: var(--au-text); background: var(--au-surface-2); }
 .tab.active {
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
@@ -1066,7 +1066,7 @@ onBeforeUnmount(stopPayPoll)
   border-color: var(--au-primary-border);
   background: var(--au-primary-soft);
   transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.12);
+  box-shadow: 0 6px 20px var(--au-primary-soft);
 }
 .pkg-row.popular { border-color: var(--au-primary-border); }
 .pkg-row:disabled { opacity: 0.6; cursor: wait; }
@@ -1111,7 +1111,7 @@ onBeforeUnmount(stopPayPoll)
 .pkg-pop-tag {
   padding: 0.125rem 0.5rem;
   background: var(--au-gradient-warm);
-  color: #fff;
+  color: var(--au-on-primary);
   font-size: 0.625rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
@@ -1143,7 +1143,7 @@ onBeforeUnmount(stopPayPoll)
 .pkg-row:hover:not(:disabled) .pkg-cta {
   background: var(--au-gradient);
   border-color: transparent;
-  color: #05141c;
+  color: var(--au-on-primary);
 }
 
 .spinner-sm { width: 14px; height: 14px; border-width: 2px; }
@@ -1263,7 +1263,7 @@ onBeforeUnmount(stopPayPoll)
 
 .member-status.inactive {
   background: var(--au-warning-soft);
-  border-color: rgba(251, 191, 36, 0.28);
+  border-color: var(--au-warning-border);
 }
 
 .member-status.inactive svg {
@@ -1292,7 +1292,7 @@ onBeforeUnmount(stopPayPoll)
   border-radius: var(--au-r-lg);
   transition: all var(--au-fast);
 }
-.plan-card.popular { border-color: var(--au-primary-border); box-shadow: 0 0 24px rgba(34, 211, 238, 0.08); }
+.plan-card.popular { border-color: var(--au-primary-border); box-shadow: var(--au-shadow-glow); }
 
 .plan-head {
   display: flex;

@@ -335,7 +335,7 @@ onMounted(() => {
   padding: 1.5rem;
   position: relative;
   overflow: hidden;
-  background: #070b12;
+  background: var(--au-bg);
 }
 
 .auth-glow {
@@ -345,7 +345,7 @@ onMounted(() => {
   transform: translateX(-50%);
   width: 640px;
   height: 480px;
-  background: radial-gradient(ellipse at center, rgba(34, 211, 238, 0.14) 0%, transparent 65%);
+  background: radial-gradient(ellipse at center, var(--au-primary-soft) 0%, transparent 65%);
   filter: blur(40px);
   pointer-events: none;
 }
@@ -354,8 +354,8 @@ onMounted(() => {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    linear-gradient(var(--au-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--au-grid-line) 1px, transparent 1px);
   background-size: 48px 48px;
   mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black 30%, transparent 75%);
   pointer-events: none;
@@ -365,11 +365,11 @@ onMounted(() => {
   position: relative;
   width: 100%;
   max-width: 400px;
-  background: rgba(13, 18, 24, 0.88);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--au-overlay-menu);
+  border: 1px solid var(--au-border);
   border-radius: 20px;
   padding: 2rem 1.75rem 1.5rem;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--au-shadow-2);
   animation: cardIn 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -391,22 +391,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #22d3ee;
-  background: rgba(34, 211, 238, 0.12);
-  border: 1px solid rgba(34, 211, 238, 0.25);
-  box-shadow: 0 0 24px rgba(34, 211, 238, 0.2);
+  color: var(--au-primary);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  box-shadow: var(--au-shadow-glow);
 }
 
 .brand-title {
   font-size: 1.25rem;
   font-weight: 700;
-  color: #fafafa;
+  color: var(--au-text);
   margin: 0 0 0.375rem;
 }
 
 .brand-subtitle {
   font-size: 0.8125rem;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--au-text-3);
   margin: 0;
   line-height: 1.5;
 }
@@ -416,8 +416,8 @@ onMounted(() => {
   position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
   border-radius: 12px;
   padding: 4px;
   margin-bottom: 1.25rem;
@@ -432,13 +432,13 @@ onMounted(() => {
   border-radius: 9px;
   font-size: 0.875rem;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--au-text-3);
   cursor: pointer;
   transition: color 0.2s ease;
 }
 
 .mode-btn.active {
-  color: #0b0f14;
+  color: var(--au-on-primary);
   font-weight: 600;
 }
 
@@ -449,7 +449,7 @@ onMounted(() => {
   width: calc(50% - 4px);
   height: calc(100% - 8px);
   border-radius: 9px;
-  background: #22d3ee;
+  background: var(--au-primary);
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -473,38 +473,38 @@ onMounted(() => {
 .field-label {
   font-size: 0.75rem;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--au-text-3);
 }
 
 .optional {
   font-style: normal;
-  color: rgba(255, 255, 255, 0.3);
+  color: var(--au-text-4);
 }
 
 .field-box {
   display: flex;
   align-items: center;
   height: 44px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--au-overlay-soft);
+  border: 1px solid var(--au-border);
   border-radius: 11px;
   padding: 0 0.75rem;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .field-box:focus-within {
-  border-color: rgba(34, 211, 238, 0.6);
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+  border-color: var(--au-border-focus);
+  box-shadow: 0 0 0 3px var(--au-primary-soft);
 }
 
 .field-icon {
-  color: rgba(255, 255, 255, 0.3);
+  color: var(--au-text-4);
   margin-right: 0.5rem;
   flex-shrink: 0;
 }
 
 .field-box:focus-within .field-icon {
-  color: #22d3ee;
+  color: var(--au-primary);
 }
 
 .field-box input {
@@ -514,12 +514,12 @@ onMounted(() => {
   background: transparent;
   border: none;
   outline: none;
-  color: #fafafa;
+  color: var(--au-text);
   font-size: 0.875rem;
 }
 
 .field-box input::placeholder {
-  color: rgba(255, 255, 255, 0.25);
+  color: var(--au-text-4);
 }
 
 .eye-btn {
@@ -530,13 +530,13 @@ onMounted(() => {
   justify-content: center;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--au-text-4);
   cursor: pointer;
   border-radius: 7px;
 }
 
 .eye-btn:hover {
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--au-text-2);
 }
 
 /* 密码强度 */
@@ -550,7 +550,7 @@ onMounted(() => {
 .strength-track {
   flex: 1;
   height: 3px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--au-surface-2);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -562,13 +562,13 @@ onMounted(() => {
   width: 0;
 }
 
-.strength-fill.lv-1 { width: 33%; background: #ef4444; }
-.strength-fill.lv-2 { width: 66%; background: #f59e0b; }
-.strength-fill.lv-3 { width: 100%; background: #22d3ee; }
+.strength-fill.lv-1 { width: 33%; background: var(--au-danger); }
+.strength-fill.lv-2 { width: 66%; background: var(--au-warning); }
+.strength-fill.lv-3 { width: 100%; background: var(--au-primary); }
 
 .strength-text {
   font-size: 0.6875rem;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--au-text-3);
   min-width: 16px;
 }
 
@@ -577,9 +577,9 @@ onMounted(() => {
   margin: 0;
   padding: 0.5rem 0.75rem;
   border-radius: 9px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.25);
-  color: #f87171;
+  background: var(--au-danger-soft);
+  border: 1px solid var(--au-danger-border);
+  color: var(--au-danger);
   font-size: 0.8125rem;
   line-height: 1.4;
 }
@@ -592,19 +592,19 @@ onMounted(() => {
   gap: 0.5rem;
   height: 46px;
   margin-top: 0.25rem;
-  background: linear-gradient(135deg, #22d3ee, #06b6d4);
+  background: var(--au-gradient);
   border: none;
   border-radius: 12px;
-  color: #ffffff;
+  color: var(--au-on-primary);
   font-size: 0.9375rem;
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-  box-shadow: 0 4px 16px rgba(34, 211, 238, 0.3);
+  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
 .submit-btn:hover:not(:disabled) {
-  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.4);
+  box-shadow: 0 6px 20px var(--au-primary-glow);
 }
 
 .submit-btn:active:not(:disabled) {
@@ -619,21 +619,17 @@ onMounted(() => {
 .spinner {
   width: 15px;
   height: 15px;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #ffffff;
+  border: 2px solid var(--au-on-image-strong);
+  border-top-color: var(--au-text);
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  animation: au-spin 0.8s linear infinite;
 }
 
 .auth-footnote {
   margin: 1.25rem 0 0;
   text-align: center;
   font-size: 0.6875rem;
-  color: rgba(255, 255, 255, 0.28);
+  color: var(--au-text-4);
   line-height: 1.5;
 }
 

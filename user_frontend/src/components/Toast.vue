@@ -162,28 +162,28 @@ const getToastClass = (type: string) => {
 }
 
 /* 四种状态 = 四支语义色（底色与图标取同一支，不再手写 rgba） */
-.toast-success { border-color: var(--au-primary-border); }
+.toast-success { border-color: var(--au-success-border); }
 
 .toast-success .toast-icon {
   background: var(--au-success-soft);
   color: var(--au-success);
 }
 
-.toast-error { border-color: rgba(251, 113, 133, 0.35); }
+.toast-error { border-color: var(--au-danger-border); }
 
 .toast-error .toast-icon {
   background: var(--au-danger-soft);
   color: var(--au-danger);
 }
 
-.toast-warning { border-color: rgba(251, 191, 36, 0.35); }
+.toast-warning { border-color: var(--au-warning-border); }
 
 .toast-warning .toast-icon {
   background: var(--au-warning-soft);
   color: var(--au-warning);
 }
 
-.toast-info { border-color: rgba(96, 165, 250, 0.35); }
+.toast-info { border-color: var(--au-info-border); }
 
 .toast-info .toast-icon {
   background: var(--au-info-soft);

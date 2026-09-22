@@ -232,11 +232,11 @@ onMounted(load)
   overflow: hidden;
   border-radius: var(--au-r-xl);
   border: 1px solid var(--au-primary-border);
-  background: linear-gradient(160deg, rgba(34, 211, 238, 0.12), rgba(167, 139, 250, 0.1) 60%, rgba(10, 16, 26, 0.4));
+  background: linear-gradient(160deg, var(--au-primary-soft), var(--au-violet-soft) 60%, var(--au-overlay-soft));
   backdrop-filter: blur(14px);
   padding: 1.625rem 1.75rem;
 }
-.sign-card.signed { border-color: rgba(52, 211, 153, 0.35); }
+.sign-card.signed { border-color: var(--au-success-border); }
 
 .sign-glow {
   position: absolute;
@@ -245,7 +245,7 @@ onMounted(load)
   transform: translateX(-50%);
   width: 420px;
   height: 280px;
-  background: radial-gradient(ellipse, rgba(34, 211, 238, 0.2), transparent 70%);
+  background: radial-gradient(ellipse, var(--au-primary-mid), transparent 70%);
   filter: blur(36px);
   pointer-events: none;
 }
@@ -280,7 +280,7 @@ onMounted(load)
   justify-content: center;
   border-radius: 16px;
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   box-shadow: 0 8px 28px var(--au-primary-glow);
   flex-shrink: 0;
 }
@@ -345,7 +345,7 @@ onMounted(load)
 .streak-dot.lit {
   background: var(--au-gradient);
   border-color: transparent;
-  color: #05141c;
+  color: var(--au-on-primary);
   box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
@@ -429,7 +429,7 @@ onMounted(load)
 }
 .cal-day.today {
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   font-weight: 800;
   box-shadow: 0 3px 10px var(--au-primary-glow);
 }

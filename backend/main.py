@@ -9,6 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+
+try:  # Starlette ≥ 0.47 提供默认排除表（老版本没有该常量，行为保持原样）
+    from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_DEFAULTS
+except ImportError:  # pragma: no cover
+    _GZIP_DEFAULTS = ()
 from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
@@ -109,7 +114,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.10.5",
+    version="2.11.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -139,12 +144,25 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    if request.url.path.startswith(("/api/", "/emby/")):
+    path = request.url.path
+    if path.startswith(("/api/", "/emby/")):
         response.headers.setdefault("Cache-Control", "no-store")
+    elif response.status_code == 200 and path.startswith(("/assets/", "/admin/assets/")):
+        # Vite 产物文件名带内容哈希：内容不变则文件名不变，可以长期强缓存
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    elif "text/html" in response.headers.get("content-type", ""):
+        # SPA 入口每次都要回源校验：发了新版本用户刷新就能拿到新构建
+        response.headers.setdefault("Cache-Control", "no-cache")
     return response
 
-# GZip 压缩
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# GZip 压缩：JSON / HTML / 接口响应走压缩，已压缩或大块二进制内容不再压缩。
+# Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
+# 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
+_GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
+try:
+    app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
+except TypeError:  # pragma: no cover — 老版 Starlette 没有按内容类型排除的参数
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）
 app.add_middleware(DownloadGuardMiddleware)

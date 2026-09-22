@@ -613,7 +613,7 @@ function formatDate(iso?: string | null) {
   justify-content: center;
   border-radius: var(--au-r-lg);
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   font-size: 1.375rem;
   font-weight: 800;
   box-shadow: 0 6px 20px var(--au-primary-glow);
@@ -640,7 +640,7 @@ function formatDate(iso?: string | null) {
   padding: 0.125rem 0.5rem;
   border-radius: var(--au-r-full);
   background: var(--au-gradient-warm);
-  color: #fff;
+  color: var(--au-on-primary);
   font-size: 0.6875rem;
   font-weight: 700;
 }
@@ -1130,7 +1130,7 @@ function formatDate(iso?: string | null) {
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
-  background: rgba(0, 0, 0, 0.65);
+  background: var(--au-scrim);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   z-index: 100;
@@ -1191,7 +1191,7 @@ function formatDate(iso?: string | null) {
   margin: 0 0 0.75rem;
   padding: 0.5rem 0.75rem;
   background: var(--au-danger-soft);
-  border: 1px solid rgba(251, 113, 133, 0.25);
+  border: 1px solid var(--au-danger-border);
   border-radius: var(--au-r-sm);
   color: var(--au-danger);
   font-size: 0.8125rem;
@@ -1224,7 +1224,7 @@ function formatDate(iso?: string | null) {
 
 .btn.primary {
   background: var(--au-gradient);
-  color: #05141c;   /* 青底配白字只有 1.9:1，与全站主按钮统一为深墨色文字 */
+  color: var(--au-on-primary);   /* 青底配白字只有 1.9:1，与全站主按钮统一为深墨色文字 */
 }
 
 .btn.primary:disabled {

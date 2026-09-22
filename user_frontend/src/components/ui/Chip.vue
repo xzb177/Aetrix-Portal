@@ -102,7 +102,7 @@ defineEmits<{
 }
 
 .neo-chip--selected:hover {
-  background: rgba(16, 185, 129, 0.12);
+  background: var(--au-primary-mid);
   border-color: var(--neo-primary-hover);
   color: var(--neo-primary-hover);
 }

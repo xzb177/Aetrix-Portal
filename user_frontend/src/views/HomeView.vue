@@ -337,7 +337,7 @@ onMounted(async () => {
   right: -8%;
   width: 480px;
   height: 360px;
-  background: radial-gradient(ellipse at center, rgba(34, 211, 238, 0.1) 0%, transparent 70%);
+  background: radial-gradient(ellipse at center, var(--au-primary-soft) 0%, transparent 70%);
   filter: blur(52px);
   pointer-events: none;
 }
@@ -398,15 +398,15 @@ onMounted(async () => {
 .member-card {
   min-width: 0;
   padding: 1.125rem 1.25rem 1.25rem;
-  background: linear-gradient(150deg, rgba(34, 211, 238, 0.1), rgba(167, 139, 250, 0.08));
+  background: linear-gradient(150deg, var(--au-primary-soft), var(--au-violet-soft));
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-lg);
   backdrop-filter: blur(12px);
 }
 
 .member-card.inactive {
-  background: linear-gradient(150deg, rgba(251, 191, 36, 0.1), rgba(167, 139, 250, 0.06));
-  border-color: rgba(251, 191, 36, 0.3);
+  background: linear-gradient(150deg, var(--au-warning-soft), var(--au-violet-soft));
+  border-color: var(--au-warning-border);
 }
 
 .member-head {
@@ -422,7 +422,7 @@ onMounted(async () => {
   align-items: center;
   gap: 0.3125rem;
   padding: 0.1875rem 0.5625rem;
-  background: rgba(7, 11, 18, 0.45);
+  background: var(--au-overlay-soft);
   border-radius: var(--au-r-full);
   color: var(--au-primary);
   font-size: 0.6875rem;
@@ -476,7 +476,7 @@ onMounted(async () => {
 .member-progress {
   height: 5px;
   margin-bottom: 0.5rem;
-  background: rgba(7, 11, 18, 0.5);
+  background: var(--au-track);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -556,7 +556,7 @@ onMounted(async () => {
   gap: 0.25rem;
   padding: 0.1875rem 0.5625rem;
   background: var(--au-gradient-warm);
-  color: #fff;
+  color: var(--au-on-primary);
   font-size: 0.6875rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
@@ -570,7 +570,7 @@ onMounted(async () => {
 }
 
 .free-card {
-  background: linear-gradient(150deg, rgba(34, 211, 238, 0.12), rgba(34, 211, 238, 0.04));
+  background: linear-gradient(150deg, var(--au-primary-soft), var(--au-primary-soft));
 }
 
 .free-card .member-badge.free {

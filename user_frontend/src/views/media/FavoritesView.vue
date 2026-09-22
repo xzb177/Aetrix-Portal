@@ -318,7 +318,7 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(4, 7, 12, 0.45);
+  background: var(--au-overlay-soft);
   color: var(--au-primary);
   opacity: 0;
   transition: opacity var(--au-fast);
@@ -344,7 +344,7 @@ onMounted(load)
   right: 0;
   bottom: 0;
   height: 3px;
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--au-on-image-strong);
 }
 
 .progress-fill {
@@ -361,8 +361,8 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(4, 7, 12, 0.68);
-  border: 1px solid rgba(251, 113, 133, 0.35);
+  background: var(--au-overlay);
+  border: 1px solid var(--au-danger-border);
   border-radius: 50%;
   color: var(--au-danger);
   cursor: pointer;

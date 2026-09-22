@@ -163,8 +163,8 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 <style scoped>
 .library-view {
   min-height: 100vh;
-  background: #070b12;
-  color: #e5e7eb;
+  background: var(--au-bg);
+  color: var(--au-text);
   padding-bottom: 3rem;
 }
 
@@ -187,29 +187,29 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
   border-radius: 10px;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--au-text-2);
   text-decoration: none;
   transition: all 0.15s ease;
 }
 
 .back-btn:hover {
-  color: #fff;
+  color: var(--au-text);
 }
 
 .page-title {
   margin: 0;
   font-size: 1.375rem;
   font-weight: 700;
-  color: #fafafa;
+  color: var(--au-text);
 }
 
 .page-sub {
   margin: 0.1875rem 0 0;
   font-size: 0.8125rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--au-text-3);
 }
 
 /* 工具栏 */
@@ -226,17 +226,17 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   align-items: center;
   height: 38px;
   padding: 0 0.75rem;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--au-overlay-soft);
+  border: 1px solid var(--au-border);
   border-radius: 10px;
 }
 
 .search-box:focus-within {
-  border-color: rgba(34, 211, 238, 0.5);
+  border-color: var(--au-border-focus);
 }
 
 .search-icon {
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--au-text-4);
   margin-right: 0.5rem;
 }
 
@@ -246,28 +246,28 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   background: transparent;
   border: none;
   outline: none;
-  color: #fafafa;
+  color: var(--au-text);
   font-size: 0.875rem;
 }
 
 .search-box input::placeholder {
-  color: rgba(255, 255, 255, 0.25);
+  color: var(--au-text-4);
 }
 
 .toolbar-select {
   height: 38px;
   padding: 0 0.625rem;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--au-overlay-soft);
+  border: 1px solid var(--au-border);
   border-radius: 10px;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--au-text);
   font-size: 0.8125rem;
   outline: none;
   cursor: pointer;
 }
 
 .toolbar-select option {
-  background: #10161d;
+  background: var(--au-bg-soft);
 }
 
 /* 网格 */
@@ -286,13 +286,9 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
 .skeleton {
   aspect-ratio: 2 / 3.4;
   border-radius: 12px;
-  background: linear-gradient(100deg, rgba(255, 255, 255, 0.04) 40%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.04) 60%);
+  background: linear-gradient(100deg, var(--au-surface) 40%, var(--au-surface-2) 50%, var(--au-surface) 60%);
   background-size: 200% 100%;
-  animation: shimmer 1.4s infinite;
-}
-
-@keyframes shimmer {
-  to { background-position: -200% 0; }
+  animation: au-shimmer 1.4s infinite;
 }
 
 .empty {
@@ -301,11 +297,12 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   align-items: center;
   gap: 0.5rem;
   padding: 4rem 1rem;
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--au-text-4);
 }
 
 .empty svg {
-  color: rgba(34, 211, 238, 0.4);
+  color: var(--au-primary);
+  opacity: 0.45;
 }
 
 .more-loading {
@@ -315,14 +312,11 @@ onBeforeUnmount(() => window.removeEventListener('scroll', onScroll))
   gap: 0.5rem;
   padding: 1.5rem 0;
   font-size: 0.8125rem;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--au-text-3);
 }
 
+/* 用全站共用的 au-spin / au-shimmer，页面里不再各定义一份同效果的 keyframes */
 .spinning {
-  animation: spin 0.9s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  animation: au-spin 0.9s linear infinite;
 }
 </style>

@@ -98,9 +98,9 @@ const emit = defineEmits<{
 .neo-segment__item--active {
   background: var(--neo-primary);
   color: var(--neo-text-inverse);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15),
+  box-shadow: inset 0 0 0 1px var(--au-border-strong),
               0 0 0 1px var(--neo-primary),
-              0 0 12px rgba(16, 185, 129, 0.4);
+              0 0 12px var(--au-primary-glow);
 }
 
 .neo-segment__item--active:hover {

@@ -474,7 +474,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   justify-content: center;
   border-radius: 11px;
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
@@ -543,7 +543,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 
 .points-chip:hover {
-  background: rgba(34, 211, 238, 0.2);
+  background: var(--au-primary-mid);
   box-shadow: 0 0 14px var(--au-primary-glow);
 }
 
@@ -590,11 +590,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   align-items: center;
   justify-content: center;
   background: var(--au-warning);
-  color: #1a1205;
+  color: var(--au-on-warning);
   font-size: 0.625rem;
   font-weight: 800;
   border-radius: var(--au-r-full);
-  box-shadow: 0 0 0 2px rgba(7, 11, 18, 0.9);
+  /* 与页面底色同色的描边环，把徽章从任何背景上“抠”出来 */
+  box-shadow: 0 0 0 2px var(--au-overlay);
 }
 
 .msg-dropdown {
@@ -602,7 +603,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   right: 0;
   top: calc(100% + 8px);
   width: 292px;
-  background: rgba(10, 16, 26, 0.97);
+  background: var(--au-overlay-menu);
   border: 1px solid var(--au-border-strong);
   border-radius: var(--au-r-lg);
   box-shadow: var(--au-shadow-2);
@@ -622,7 +623,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 .msg-drop-unread {
   padding: 0.125rem 0.5rem;
-  background: rgba(251, 191, 36, 0.16);
+  background: var(--au-warning-soft);
   border-radius: var(--au-r-full);
   color: var(--au-warning);
   font-size: 0.625rem;
@@ -655,7 +656,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 
 .msg-drop-ic.hot {
-  background: rgba(251, 191, 36, 0.14);
+  background: var(--au-warning-soft);
   color: var(--au-warning);
 }
 
@@ -733,7 +734,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   justify-content: center;
   border-radius: 50%;
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   font-size: 0.8125rem;
   font-weight: 800;
 }
@@ -753,7 +754,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   right: 0;
   top: calc(100% + 8px);
   width: 200px;
-  background: rgba(10, 16, 26, 0.97);
+  background: var(--au-overlay-menu);
   border: 1px solid var(--au-border-strong);
   border-radius: var(--au-r-lg);
   box-shadow: var(--au-shadow-2);
@@ -794,7 +795,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   align-items: center;
   justify-content: center;
   background: var(--au-gradient-warm);
-  color: #fff;
+  color: var(--au-on-primary);
   font-size: 0.6875rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
@@ -807,7 +808,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   padding: 0.125rem 0.5rem;
   background: var(--au-gradient-warm);
   border-radius: var(--au-r-full);
-  color: #fff;
+  color: var(--au-on-primary);
   font-size: 0.625rem;
   font-weight: 700;
 }
@@ -837,7 +838,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   height: 36px;
   padding: 0 1.125rem;
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   border-radius: var(--au-r-md);
   font-size: 0.8125rem;
   font-weight: 700;

@@ -423,10 +423,10 @@ onMounted(() => {
   align-items: center;
   gap: 0.5rem;
   padding: 0.625rem 1rem;
-  background: #22d3ee;
+  background: var(--au-primary);
   border: none;
   border-radius: 0.5rem;
-  color: white;
+  color: var(--au-on-primary);
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
@@ -434,7 +434,7 @@ onMounted(() => {
 }
 
 .btn-create:hover {
-  background: #06b6d4;
+  background: var(--au-primary-strong);
 }
 
 /* 工单列表 */
@@ -454,7 +454,7 @@ onMounted(() => {
 }
 
 .ticket-item:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--au-surface-2);
 }
 
 .ticket-header {
@@ -472,16 +472,16 @@ onMounted(() => {
 
 .ticket-title {
   font-weight: 500;
-  color: #fafafa;
+  color: var(--au-text);
   font-size: 0.9375rem;
 }
 
 .ticket-category {
   padding: 0.125rem 0.5rem;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--au-surface-3);
   border-radius: 4px;
   font-size: 0.75rem;
-  color: rgba(250, 250, 250, 0.6);
+  color: var(--au-text-2);
 }
 
 .ticket-footer {
@@ -496,7 +496,7 @@ onMounted(() => {
 }
 
 .ticket-time {
-  color: rgba(250, 250, 250, 0.5);
+  color: var(--au-text-3);
 }
 
 /* 骨架 */
@@ -510,13 +510,13 @@ onMounted(() => {
   padding: 2rem 0;
   text-align: center;
   font-size: 0.8125rem;
-  color: rgba(250, 250, 250, 0.4);
+  color: var(--au-text-3);
 }
 
 .message-author {
   font-size: 0.6875rem;
   font-weight: 600;
-  color: #22d3ee;
+  color: var(--au-primary);
 }
 
 /* 加载状态 */
@@ -526,21 +526,17 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   padding: 3rem 1rem;
-  color: rgba(250, 250, 250, 0.6);
+  color: var(--au-text-2);
 }
 
 .spinner {
   width: 32px;
   height: 32px;
-  border: 2px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #22d3ee;
+  border: 2px solid var(--au-border);
+  border-top-color: var(--au-primary);
   border-radius: 50%;
   margin-bottom: 0.75rem;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  animation: au-spin 0.8s linear infinite;
 }
 
 /* 空状态 */
@@ -557,16 +553,16 @@ onMounted(() => {
   width: 56px;
   height: 56px;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--au-surface);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(250, 250, 250, 0.3);
+  color: var(--au-text-4);
   margin-bottom: 1rem;
 }
 
 .empty-state p {
-  color: rgba(250, 250, 250, 0.5);
+  color: var(--au-text-3);
   margin: 0;
 }
 
@@ -579,7 +575,7 @@ onMounted(() => {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--au-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -612,7 +608,7 @@ onMounted(() => {
 .modal-header h3 {
   font-size: 1.125rem;
   font-weight: 600;
-  color: #fafafa;
+  color: var(--au-text);
   margin: 0;
 }
 
@@ -625,14 +621,14 @@ onMounted(() => {
   border-radius: 6px;
   border: none;
   background: transparent;
-  color: rgba(250, 250, 250, 0.5);
+  color: var(--au-text-3);
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .btn-close:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(250, 250, 250, 0.8);
+  background: var(--au-surface-3);
+  color: var(--au-text);
 }
 
 .modal-body {
@@ -652,7 +648,7 @@ onMounted(() => {
 .form-group label {
   display: block;
   font-size: 0.875rem;
-  color: rgba(250, 250, 250, 0.7);
+  color: var(--au-text-2);
   margin-bottom: 0.5rem;
 }
 
@@ -661,10 +657,10 @@ onMounted(() => {
 .form-group textarea {
   width: 100%;
   padding: 0.75rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border-strong);
   border-radius: 0.5rem;
-  color: #fafafa;
+  color: var(--au-text);
   font-size: 0.875rem;
   transition: all 0.2s ease;
 }
@@ -673,8 +669,8 @@ onMounted(() => {
 .form-group select:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #22d3ee;
-  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--au-border-focus);
+  background: var(--au-surface-2);
 }
 
 .form-group textarea {
@@ -694,28 +690,28 @@ onMounted(() => {
   gap: 0.75rem;
   padding: 0.75rem;
   border-radius: 0.5rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--au-surface);
 }
 
 .message-item.message-admin {
-  background: rgba(34, 211, 238, 0.1);
+  background: var(--au-primary-soft);
 }
 
 .message-avatar {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--au-surface-3);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(250, 250, 250, 0.6);
+  color: var(--au-text-2);
   flex-shrink: 0;
 }
 
 .message-admin .message-avatar {
-  background: rgba(34, 211, 238, 0.2);
-  color: #22d3ee;
+  background: var(--au-primary-mid);
+  color: var(--au-primary);
 }
 
 .message-content {
@@ -726,7 +722,7 @@ onMounted(() => {
 }
 
 .message-text {
-  color: rgba(250, 250, 250, 0.9);
+  color: var(--au-text);
   font-size: 0.875rem;
   line-height: 1.5;
   word-break: break-word;
@@ -734,7 +730,7 @@ onMounted(() => {
 
 .message-time {
   font-size: 0.75rem;
-  color: rgba(250, 250, 250, 0.4);
+  color: var(--au-text-3);
 }
 
 .modal-footer {
@@ -754,16 +750,16 @@ onMounted(() => {
 .reply-box input {
   flex: 1;
   padding: 0.625rem 0.875rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border-strong);
   border-radius: 0.5rem;
-  color: #fafafa;
+  color: var(--au-text);
   font-size: 0.875rem;
 }
 
 .reply-box input:focus {
   outline: none;
-  border-color: #22d3ee;
+  border-color: var(--au-border-focus);
 }
 
 .btn-send {
@@ -774,14 +770,14 @@ onMounted(() => {
   height: 36px;
   border-radius: 0.5rem;
   border: none;
-  background: #22d3ee;
-  color: white;
+  background: var(--au-primary);
+  color: var(--au-on-primary);
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .btn-send:hover:not(:disabled) {
-  background: #06b6d4;
+  background: var(--au-primary-strong);
 }
 
 .btn-send:disabled {
@@ -805,22 +801,22 @@ onMounted(() => {
 }
 
 .btn-primary {
-  background: #22d3ee;
-  color: white;
+  background: var(--au-primary);
+  color: var(--au-on-primary);
 }
 
 .btn-primary:hover {
-  background: #06b6d4;
+  background: var(--au-primary-strong);
 }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #fafafa;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border-strong);
+  color: var(--au-text);
 }
 
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--au-surface-3);
 }
 
 /* 响应式 */

@@ -22,6 +22,11 @@ from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+
+try:  # Starlette ≥ 0.47 提供默认排除表（老版本没有该常量，行为保持原样）
+    from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_DEFAULTS
+except ImportError:  # pragma: no cover
+    _GZIP_DEFAULTS = ()
 from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 from sqlalchemy import inspect
@@ -40,7 +45,7 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.10.5"
+EA_VERSION = "2.11.0"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
@@ -212,7 +217,14 @@ async def security_headers(request: Request, call_next):
     return response
 
 
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# GZip 压缩：接口 JSON / 播放列表走压缩，已压缩或大块二进制内容不再压缩。
+# Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
+# 远程挂载的直连流经本服务代理转发，若被按 level 9 压缩会白白吃满 CPU。
+_GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
+try:
+    app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
+except TypeError:  # pragma: no cover — 老版 Starlette 没有按内容类型排除的参数
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 下载策略兜底：站点关闭下载时，/Download 与 /Items/{id}/File 等路径在网关层拦截
 app.add_middleware(DownloadGuardMiddleware)

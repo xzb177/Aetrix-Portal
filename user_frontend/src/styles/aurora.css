@@ -9,8 +9,13 @@
   --au-primary-strong: #06b6d4;
   --au-primary-deep: #0e7490;
   --au-primary-soft: rgba(34, 211, 238, 0.12);
+  /* 中间档：hover 底色与光晕点，比 soft 明显、比 border 温柔 */
+  --au-primary-mid: rgba(34, 211, 238, 0.2);
   --au-primary-border: rgba(34, 211, 238, 0.28);
   --au-primary-glow: rgba(34, 211, 238, 0.35);
+  /* 亮底上的文字：青→紫渐变底配白字只有 1.9:1 对比度，
+     全站但凡是「亮色块上的字」（渐变按钮 / 头像 / 成功徽标）都用这支深墨色 */
+  --au-on-primary: #05141c;
 
   /* 辅助色 — 极光紫粉（渐变点缀） */
   --au-violet: #a78bfa;
@@ -18,15 +23,24 @@
   --au-gradient: linear-gradient(135deg, #22d3ee 0%, #a78bfa 100%);
   --au-gradient-warm: linear-gradient(135deg, #f472b6 0%, #a78bfa 100%);
 
-  /* 语义色 */
+  /* 语义色。每种都有 soft（底色）/ border（描边）两档，
+     页面里不再各写一份 rgba(52, 211, 153, …) —— 改一处就全站生效 */
   --au-success: #34d399;
   --au-success-soft: rgba(52, 211, 153, 0.12);
+  --au-success-border: rgba(52, 211, 153, 0.28);
   --au-warning: #fbbf24;
   --au-warning-soft: rgba(251, 191, 36, 0.12);
+  --au-warning-border: rgba(251, 191, 36, 0.28);
+  /* 预警色底上的文字（同 --au-on-primary 的思路） */
+  --au-on-warning: #1a1205;
   --au-danger: #fb7185;
   --au-danger-soft: rgba(251, 113, 133, 0.12);
+  --au-danger-border: rgba(251, 113, 133, 0.28);
   --au-info: #60a5fa;
   --au-info-soft: rgba(96, 165, 250, 0.12);
+  --au-info-border: rgba(96, 165, 250, 0.28);
+  /* 极光紫的 soft 档，和上面四个语义色保持同一套用法 */
+  --au-violet-soft: rgba(167, 139, 250, 0.12);
 
   /* 背景层级 */
   --au-bg: #070b12;
@@ -35,6 +49,21 @@
   --au-surface-2: rgba(148, 180, 220, 0.08);
   --au-surface-3: rgba(148, 180, 220, 0.12);
   --au-overlay: rgba(4, 7, 12, 0.82);
+  /* 图片上方的叠加层（Hero 遮罩 / 封面进度槽）：都是 --au-bg 的透明版本，
+     页面里不再各写一份 rgba(7, 11, 18, …) —— 换主题只需改这里 */
+  --au-overlay-soft: rgba(7, 11, 18, 0.35);
+  --au-overlay-mid: rgba(7, 11, 18, 0.55);
+  --au-overlay-strong: rgba(7, 11, 18, 0.75);
+  /* 下拉菜单 / 浮层：比卡片更实，避免底下内容透出来干扰阅读 */
+  --au-overlay-menu: rgba(10, 16, 26, 0.97);
+  /* 弹窗背后的整屏遮罩 */
+  --au-scrim: rgba(0, 0, 0, 0.65);
+  /* 纯装饰网格线（登录页背景那种极淡的稿纸格），比 --au-border 再淡好几倍 */
+  --au-grid-line: rgba(148, 180, 220, 0.045);
+  /* 图片上的中性叠加与文字（不跟主题走冷暖，只保证在任意封面上可读） */
+  --au-on-image: rgba(255, 255, 255, 0.12);
+  --au-on-image-strong: rgba(255, 255, 255, 0.2);
+  --au-track: rgba(4, 7, 12, 0.6);
 
   /* 文字 */
   --au-text: #eaf2fb;
@@ -57,6 +86,10 @@
   /* 阴影 */
   --au-shadow-1: 0 2px 10px rgba(0, 0, 0, 0.35);
   --au-shadow-2: 0 10px 40px rgba(0, 0, 0, 0.45);
+  /* 只取颜色，给 filter: drop-shadow(…) 用（那里没法直接写 box-shadow） */
+  --au-shadow-color: rgba(0, 0, 0, 0.4);
+  /* 封面上的标题阴影：让白字在浅色海报上也能读 */
+  --au-shadow-text: 0 2px 12px rgba(0, 0, 0, 0.6);
   --au-shadow-glow: 0 0 24px var(--au-primary-glow);
 
   /* 动效 */
@@ -147,7 +180,7 @@ body {
 
 .au-btn-primary {
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 .au-btn-primary:hover:not(:disabled) {

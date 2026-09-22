@@ -525,7 +525,7 @@ onMounted(async () => {
 .quota-bar strong { color: var(--au-primary); }
 .quota-bar.empty {
   background: var(--au-warning-soft);
-  border-color: rgba(251, 191, 36, 0.3);
+  border-color: var(--au-warning-border);
 }
 .quota-bar.empty svg,
 .quota-bar.empty strong { color: var(--au-warning); }
@@ -599,7 +599,7 @@ onMounted(async () => {
 }
 
 select.au-input { appearance: none; cursor: pointer; }
-select.au-input option { background: #0d1420; }
+select.au-input option { background: var(--au-bg-soft); }
 
 /* 库存检查 */
 .lookup-box {
@@ -623,7 +623,7 @@ select.au-input option { background: #0d1420; }
 
 .lookup-box.hit {
   background: var(--au-success-soft);
-  border: 1px solid rgba(52, 211, 153, 0.28);
+  border: 1px solid var(--au-success-border);
   color: var(--au-success);
   flex-direction: column;
 }
@@ -644,7 +644,7 @@ select.au-input option { background: #0d1420; }
   gap: 0.5rem;
   padding: 0.4375rem 0.5rem;
   border-radius: var(--au-r-sm);
-  background: rgba(7, 11, 18, 0.45);
+  background: var(--au-overlay-soft);
   border: 1px solid var(--au-border);
   text-decoration: none;
   transition: border-color var(--au-fast) var(--au-ease);
