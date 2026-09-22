@@ -14,7 +14,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, RefreshCw, Save,
+  CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
 } from 'lucide-vue-next'
 import { fetchRegistrationSettings, updateRegistrationSettings } from '@/api/admin'
@@ -176,7 +176,7 @@ const regModeHint = computed(() => {
 
 const CAP_ICONS: Record<string, unknown> = {
   proxy: Network, captcha: ShieldCheck, mail: Mail,
-  telegram: Send, ai: Sparkles, geoip: MapPin,
+  telegram: Send, ai: Sparkles, geoip: MapPin, branding: Palette,
 }
 
 /** 少数能力测试需要额外输入（收件地址 / 要查的 IP / 探测地址） */
@@ -207,6 +207,9 @@ const drawerFields = ref<CapabilityField[]>([])
 const drawerValues = reactive<Record<string, string>>({})
 const drawerOriginal = ref<Record<string, string>>({})
 const drawerTestLabel = ref('测试连接')
+// 没有 test() 的能力（例如站点与品牌）不显示「测试」按钮——
+// 点了只会回一句「不支持测试」的按钮，本质是界面在骗人
+const drawerTestable = ref(true)
 const capSaving = ref(false)
 const capTesting = ref(false)
 const testInput = reactive({ value: '' })
@@ -244,6 +247,7 @@ async function openCapability(slug: string) {
     drawerHint.value = detail.spec.docs_hint || ''
     drawerFields.value = detail.spec.fields
     drawerTestLabel.value = detail.item.test_label || '测试连接'
+    drawerTestable.value = detail.item.testable !== false
     for (const key of Object.keys(drawerValues)) delete drawerValues[key]
     for (const f of detail.spec.fields) {
       drawerValues[f.key] = detail.values[f.key] ?? f.default ?? ''
@@ -554,13 +558,15 @@ async function saveRegistration() {
         />
 
         <div class="cap-drawer-footer">
-          <el-button :loading="capTesting" @click="runCapabilityTest">{{ drawerTestLabel }}</el-button>
+          <el-button v-if="drawerTestable" :loading="capTesting" @click="runCapabilityTest">
+            {{ drawerTestLabel }}
+          </el-button>
           <el-button type="primary" :loading="capSaving" @click="saveCurrentCapability">
             <Save :size="14" style="margin-right: 4px" />{{ drawerDirty ? '保存修改' : '保存' }}
           </el-button>
         </div>
         <p class="foot-note">
-          <ShieldCheck :size="13" />密钥字段只以掩码回显（保持 ****** 不修改，清空则删除）；测试会真实发起一次请求或投递，便于区分「密钥错」与「网络不通」。
+          <ShieldCheck :size="13" />密钥字段只以掩码回显（保持 ****** 不修改，清空则删除）<template v-if="drawerTestable">；测试会真实发起一次请求或投递，便于区分「密钥错」与「网络不通」</template>。
         </p>
       </div>
     </el-drawer>

@@ -18,6 +18,8 @@ import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import { useRealmStore } from '@/stores/realm'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+// 站名 / Logo 来自「站点与品牌」能力（改完刷新即生效，不用重新构建）
+import { APP_VERSION as APP_VERSION_BASE, branding, siteName } from '@/composables/branding'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,7 +27,7 @@ const auth = useAuthStore()
 const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.19.0'
+const APP_VERSION = APP_VERSION_BASE
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)
@@ -268,9 +270,12 @@ onUnmounted(() => {
     <!-- 侧边栏：宽屏常驻，≤1024px 变抽屉 -->
     <aside class="sidebar" :class="{ open: drawerOpen }">
       <div class="brand">
-        <span class="brand-mark"><Tv :size="18" /></span>
+        <span class="brand-mark">
+          <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+          <Tv v-else :size="18" />
+        </span>
         <div class="brand-text">
-          <strong>RoyalBot</strong>
+          <strong>{{ siteName() }}</strong>
           <span>管理控制台</span>
         </div>
         <button class="icon-btn brand-close" aria-label="关闭菜单" @click="closeDrawer">
@@ -336,7 +341,7 @@ onUnmounted(() => {
             <LogOut :size="15" />退出登录
           </button>
         </div>
-        <div class="foot-version">RoyalBot {{ APP_VERSION }}</div>
+        <div class="foot-version">{{ siteName() }} {{ APP_VERSION }}</div>
       </div>
     </aside>
 

@@ -853,6 +853,27 @@ class LoginLog(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class AiUsage(Base):
+    """AI 助手每日用量（能力：AI 模型设置）
+
+    原先是进程内字典计数：多进程部署下每个 worker 各记一份，配额会被放大到「上限 × 进程数」，
+    重启还会归零。改成落库 + 唯一约束（user_id, day），配额在多进程、多台机器上都是同一份；
+    占用额度用「条件 UPDATE + 唯一约束兼底」实现，并发下不会两个请求都读到 limit-1。
+    """
+    __tablename__ = 'ai_usage'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'day', name='uq_ai_usage_user_day'),
+        Index('idx_ai_usage_day', 'day'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    day = Column(String(10), nullable=False)   # 本地日期 YYYY-MM-DD
+    count = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class InvitationCode(Base):
     """邀请码表"""
     __tablename__ = 'invitation_codes'

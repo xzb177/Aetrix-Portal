@@ -13,6 +13,8 @@ import api, {
 } from '@/api'
 import { pointsApi } from '@/api/economy'
 import { primaryNav, menuSections } from '@/config/navigation'
+// 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
+import { branding } from '@/composables/useBranding'
 
 const userStore = useUserStore()
 const router = useRouter()
@@ -290,9 +292,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     <div class="header-container">
       <RouterLink to="/" class="header-logo" @click="closeMenus">
         <span class="logo-mark">
-          <Clapperboard :size="17" />
+          <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+          <Clapperboard v-else :size="17" />
         </span>
-        <span class="logo-text">Aetrix</span>
+        <span class="logo-text">{{ branding.site_name }}</span>
       </RouterLink>
 
       <!-- 主导航（全断点唯一一套）：≥900px 横排在品牌与账号操作之间，
@@ -476,6 +479,13 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   background: var(--au-gradient);
   color: var(--au-on-primary);
   box-shadow: 0 3px 12px var(--au-primary-glow);
+}
+
+.logo-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
 }
 
 .logo-text {

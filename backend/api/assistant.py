@@ -6,6 +6,10 @@
 
 - ``GET  /api/user/ai/status``：是否可用 + 今日剩余次数（用户端据此显示/隐藏入口）
 - ``POST /api/user/ai/ask``  ：提问（登录用户，按 ``ai_daily_limit`` 限流，默认 20 次/天）
+
+两个端点都是**同步** ``def``：模型调用是阻塞的 httpx 请求（默认超时 60 秒），放进
+``async def`` 会把整个事件循环按住——那正是 v2.12/v2.13 花大力气修掉的那类问题。
+FastAPI 会把同步端点丢进线程池，播放与协议面不受影响。
 """
 from __future__ import annotations
 
@@ -33,28 +37,21 @@ class AskRequest(BaseModel):
     history: Optional[List[dict]] = None
 
 
-def _quota(db: Session, user_id: int) -> dict:
-    """当日配额快照：limit / used / remaining（limit<=0 表示不限）"""
-    limit = ai_capability.daily_limit(db)
-    used = ai_capability.used_today(user_id)
-    remaining = None if limit <= 0 else max(0, limit - used)
-    return {"daily_limit": limit, "used": used, "remaining": remaining}
-
-
 @assistant_router.get("/status")
-async def assistant_status(
+def assistant_status(
     current_user: models.WebUser = Depends(get_current_user_jwt),
     db: Session = Depends(get_db),
 ):
     """助手是否可用 + 今日剩余次数（前端据此显示/隐藏入口与提示）"""
     if not ai_capability.available(db):
-        return {"enabled": False, "reason": "管理员尚未配置 AI 模型（在「系统设置 → AI 模型设置」里填写端点、模型与密钥）",
-                "daily_limit": 0, "remaining": None}
-    return {"enabled": True, "reason": "", **_quota(db, current_user.id)}
+        return {"enabled": False,
+                "reason": "管理员尚未配置 AI 模型（在「系统设置 → AI 模型设置」里填写端点、模型与密钥）",
+                "daily_limit": 0, "used": 0, "remaining": None}
+    return {"enabled": True, "reason": "", **ai_capability.quota(db, current_user.id)}
 
 
 @assistant_router.post("/ask")
-async def assistant_ask(
+def assistant_ask(
     req: AskRequest,
     current_user: models.WebUser = Depends(get_current_user_jwt),
     db: Session = Depends(get_db),
@@ -63,26 +60,30 @@ async def assistant_ask(
     if not ai_capability.available(db):
         raise HTTPException(status_code=503, detail="AI 助手未启用或尚未配置（系统设置 → AI 模型设置）")
 
-    quota = _quota(db, current_user.id)
-    if quota["remaining"] is not None and quota["remaining"] <= 0:
-        raise HTTPException(
-            status_code=429,
-            detail=f"今日提问次数已用完（上限 {quota['daily_limit']} 次），明天再来吧",
-        )
-
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="问题不能为空")
 
-    ai_capability.record_usage(current_user.id)
+    # 先占额度再调用：并发时靠条件 UPDATE 判定，不会两个请求都放行
+    limit = ai_capability.daily_limit(db)
+    allowed, used = ai_capability.safe_consume(db, current_user.id, limit)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"今日提问次数已用完（上限 {limit} 次），明天再来吧",
+        )
+
     result = ai_capability.ask(db, question, req.history)
     if not result.get("ok"):
         # 上游的错误信息（含模型名与 HTTP 状态）对排错很有用，原样转给用户端
         raise HTTPException(status_code=502, detail=result.get("message") or "模型调用失败")
+    remaining = None if limit <= 0 else max(0, limit - used)
     return {
         "answer": result.get("answer", ""),
         "model": result.get("model", ""),
-        **_quota(db, current_user.id),
+        "daily_limit": limit,
+        "used": used,
+        "remaining": remaining,
     }
 
 

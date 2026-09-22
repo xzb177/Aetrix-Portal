@@ -43,6 +43,8 @@ from backend.api.coupons_admin import admin_coupons_router
 # 只提供能力，密钥一律由管理员自己填。
 from backend.api.capabilities_admin import capabilities_router
 from backend.api.assistant import assistant_router
+# 站点品牌公开端点（前端启动时读一次，决定站名 / 主题色 / 标题）
+from backend.api.site import site_router
 from backend import integrations
 from backend.emby_server.api import emby_router
 
@@ -135,7 +137,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.19.0",
+    version="2.20.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -312,6 +314,8 @@ app.include_router(admin_coupons_router)
 app.include_router(capabilities_router)
 # 用户端 AI 助手（v2.19.0）：能力「AI 模型设置」的消费点，见 backend/api/assistant.py
 app.include_router(assistant_router)
+# 站点信息（v2.20.0）：能力「站点与品牌」的消费点，公开无需鉴权，见 backend/api/site.py
+app.include_router(site_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

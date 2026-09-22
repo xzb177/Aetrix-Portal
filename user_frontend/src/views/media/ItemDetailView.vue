@@ -9,6 +9,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { embyApi, posterUrl, backdropUrl, progressPercent, ticksToSeconds, formatDuration, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
+import { pageTitle } from '@/composables/useBranding'
 import { useUserStore } from '@/stores/user'
 import {
   Play, Star, Heart, Eye, EyeOff, Clock, Layers, ChevronLeft, ChevronDown, Film,
@@ -53,7 +54,7 @@ async function loadItem() {
   loading.value = true
   try {
     item.value = await embyApi.getItem(itemId.value)
-    document.title = `${item.value.Name} - Aetrix`
+    document.title = pageTitle(item.value.Name)
     if (item.value.Type === 'Series') {
       seasons.value = await embyApi.getSeasons(itemId.value)
       if (seasons.value.length) {

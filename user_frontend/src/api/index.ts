@@ -214,6 +214,22 @@ export const authApi = {
   captcha: () => api.get<never, CaptchaInfo>('/api/user/auth/captcha'),
 }
 
+// ==================== 站点品牌（能力：站点与品牌，backend/api/site.py） ====================
+
+export interface Branding {
+  site_name: string
+  logo_url: string
+  theme_color: string
+  seo_title: string
+  seo_description: string
+  seo_keywords: string
+}
+
+export const brandingApi = {
+  /** 公开端点：站名 / Logo / 主题色 / SEO（不含任何凭据） */
+  get: () => api.get<never, Branding>('/api/site/branding'),
+}
+
 // ==================== AI 助手（能力：AI 模型设置，backend/api/assistant.py） ====================
 
 export interface AiStatus {

@@ -1,7 +1,7 @@
 # 外部服务能力中心
 
-后台「系统设置」顶部是一组**能力卡片**：网络代理、人机验证、邮件与模板、Telegram 通知、
-AI 模型设置、IP 与地理位置。它们有一个共同口径：
+后台「系统设置」顶部是一组**能力卡片**：站点与品牌、网络代理、人机验证、邮件与模板、
+Telegram 通知、AI 模型设置、IP 与地理位置。它们有一个共同口径：
 
 > **面板只提供能力，凭据全部由你自己填。**
 
@@ -41,11 +41,25 @@ AI 模型设置、IP 与地理位置。它们有一个共同口径：
   否则面板连自己的上游也会绕一圈代理。
 - **测试**：默认探测 `https://www.gstatic.com/generate_204`（极小、无缓存），也可以换成你自己的地址。
 
+## 站点与品牌
+
+站点名称、Logo、主题色与 SEO。没有外部依赖，也就没有「测试」按钮——它就是一组设置。
+
+- 驱动用户端顶栏站名与 Logo、登录页标题、浏览器标题与 meta，以及后台侧边栏与页面标题。
+  公开端点 `GET /api/site/branding`（无需登录，登录页也要拿到站名）。
+- **两处值会进到页面，所以都做了校验**：主题色必须是十六进制（它会被写进 CSS 自定义属性，
+  不校验等于把一个可以写任意 CSS 的注入点交给后台表单）；Logo 只接受 `http(s)://` 或站内
+  相对路径，`javascript:` / `data:` 一律忽略并回落到内置图标。
+- 改完刷新即生效，**不需要重新构建前端**。
+
 ## 人机验证
 
-为**登录 / 注册**加一道人机验证，可选 Cloudflare Turnstile、Google reCAPTCHA、hCaptcha。
+为**用户端登录 / 注册**与**管理后台登录**加一道人机验证，可选 Cloudflare Turnstile、
+Google reCAPTCHA、hCaptcha。三个动作分别开关（字段表里的 `captcha_protect_<动作>`）。
 
 - 站点密钥是公开信息，由 `/api/user/auth/captcha` 下发给前端挂件；私钥只留在后端。
+- 三个动作共用同一个守卫（`captcha.guard`）：校验失败一律 400 + 一条带用户名的
+  `人机验证失败` 安全日志——三处各写一遍迟早有一处漏掉「失败要留痕」。
 - **没配置 = 直接放行**：不填密钥不会把站点锁在门外，后台只提示「未配置」。
 - 两个动作可以分别开关（只保护注册、或两个都保护）。
 - 校验失败一律 400，并把提供方返回的 `error-codes` 带上（例如 `invalid-input-response`），
@@ -78,8 +92,10 @@ AI 模型设置、IP 与地理位置。它们有一个共同口径：
 - **多密钥**：一行一个（逗号、分号也认），每次调用轮换；单把 key 被限流时不会整体不可用。
 - **用户侧消费点**：用户端「AI 助手」页（`/assistant`）→ `POST /api/user/ai/ask`。
   管理员没配置时，用户端**不会显示可点的入口**，页面直接说明原因。
-- **配额**：`每用户每日提问上限`（默认 20，0 = 不限）。计数在进程内按天累计（与限流器同一取舍：
-  单进程部署准确；多进程下最坏相当于配额放大到「上限 × 进程数」）。
+- **配额**：`每用户每日提问上限`（默认 20，0 = 不限）。计数**落库**（`ai_usage` 表，
+  唯一约束 `user_id + day`），多 worker / 多台机器共用同一份；占用额度走条件 UPDATE
+  （`count < limit`）+ 唯一约束兜底，并发下不会两个请求都读到 `limit-1` 而各记一次。
+  维护周期按 90 天回收历史行。
 - **上下文**：客户端传来的历史只接受 `user` / `assistant` 两种角色并截断到最近 8 轮——
   否则用户可以塞一条 `role=system` 把自己变成系统提示词，绕开你设定的人设。
 - **测试**：真实发一次极小的 completion，把模型与回复回显出来。
@@ -106,12 +122,25 @@ AI 模型设置、IP 与地理位置。它们有一个共同口径：
 | 文件 | 作用 |
 | --- | --- |
 | `backend/integrations/__init__.py` | 能力注册、字段表读取、掩码、保存与测试的调度 |
+| `backend/integrations/store.py` | 配置的批量读写（一次 IN 查询，避免一字段一次往返） |
 | `backend/integrations/<slug>.py` | 每个能力一个模块：`SPEC`（字段表）+ `apply()` + `test()` |
-| `backend/api/capabilities_admin.py` | 后台 API：`/api/admin/capabilities*` |
+| `backend/api/capabilities_admin.py` | 后台 API：`/api/admin/capabilities*`（同步路由 + 线程池） |
 | `backend/api/assistant.py` | 用户端 AI 助手：`/api/user/ai/*` |
+| `backend/api/site.py` | 站点品牌公开端点：`/api/site/branding` |
 | `admin_frontend/src/views/Settings.vue` | 能力卡片与按字段表渲染的配置抽屉 |
-| `user_frontend/src/components/ui/CaptchaChallenge.vue` | 登录/注册页的人机验证挂件 |
-| `scripts/smoke_test_capabilities.py` | 90 项断言：阀门、密钥不外泄、保存即生效、测试是真在测 |
+| `user_frontend/src/composables/useBranding.ts` | 用户端品牌落地（主题色令牌 / 标题 / meta） |
+| `admin_frontend/src/composables/branding.ts` | 管理端品牌落地（`--primary*` 令牌 / 标题） |
+| `user_frontend/src/components/ui/CaptchaChallenge.vue` | 用户端登录/注册的人机验证挂件 |
+| `admin_frontend/src/components/CaptchaChallenge.vue` | 后台登录的人机验证挂件 |
+| `scripts/smoke_test_capabilities.py` | 114 项断言：阀门、密钥不外泄、保存即生效、测试是真在测、配额并发 |
+
+### 两条实现约定（都是拿真实故障换来的）
+
+1. **端点写同步 `def`**：能力测试会真发网络请求 / SMTP 投递，AI 问答是阻塞 httpx（默认超时
+   60 秒）。这些放进 `async def` 就是把整个事件循环按住——播放会跟着卡。FastAPI 会把同步端点
+   丢进线程池，所以这里一律用 `def`（与 v2.13 把协议路由移出事件循环同一做法）。
+2. **读配置走 `store.read_values`**：人机验证挂件一次要用 5 个键、AI 问答 4 个、能力总览 29 个。
+   逐键查询意味着每个请求都有 4~29 次往返，批量之后各是 1 次。
 
 ### 加一个新能力要写什么
 

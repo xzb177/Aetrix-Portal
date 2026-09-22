@@ -32,6 +32,8 @@ from backend.subscriptions import (
     realm_requires_subscription,
 )
 from backend.ratelimit import check_rate_limit, client_ip
+# 人机验证（能力中心）：用户端登录/注册与后台登录共用同一个守卫（含安全日志）
+from backend.integrations import captcha
 from backend.security import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token,
@@ -160,24 +162,6 @@ def _issue_auth_response(
     )
 
 
-def _verify_captcha(db: Session, request: Request, action: str, token: str | None) -> None:
-    """按管理员配置校验人机验证（未配置 / 未开保护时直接放行）
-
-    校验失败一律 400 并把提供方的原因带上（便于自己排查密钥或域名配置），
-    同时落一条安全日志——暴力破解会在这里留下痕迹。
-    """
-    from backend.integrations import captcha
-
-    ok, message = captcha.verify_request(db, action, token, client_ip(request))
-    if ok:
-        return
-    record_event(
-        db, ip=log_ip(request), agent=user_agent(request), success=False,
-        reason="captcha_failed", detail=message[:255],
-    )
-    raise HTTPException(status_code=400, detail=message)
-
-
 def get_current_user_jwt(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
@@ -206,8 +190,6 @@ def captcha_config(request: Request, db: Session = Depends(get_db)):
     只下发公开的站点密钥与脚本地址；私钥永不出现在这里。未配置时 ``enabled=false``，
     前端直接不渲染挂件——不会把站点锁在门外。
     """
-    from backend.integrations import captcha
-
     return captcha.widget_info(db)
 
 
@@ -217,7 +199,8 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
     allowed, retry_after = check_rate_limit(f"register:{client_ip(request)}", 5, 3600)
     if not allowed:
         raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
-    _verify_captcha(db, request, "register", req.captcha_token)
+    # 人机验证（能力中心）：未配置 / 未开保护时直接放行；失败一律 400 + 安全日志
+    captcha.guard(db, request, "register", req.captcha_token, username=req.username.strip())
     username = req.username.strip()
     if not USERNAME_RE.match(username):
         raise HTTPException(
@@ -313,7 +296,7 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
     allowed, retry_after = check_rate_limit(f"login:{client_ip(request)}", 8, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
-    _verify_captcha(db, request, "login", req.captcha_token)
+    captcha.guard(db, request, "login", req.captcha_token, username=req.username.strip())
     user = (
         db.query(models.WebUser)
         .filter(models.WebUser.username == req.username.strip())

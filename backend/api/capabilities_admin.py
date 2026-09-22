@@ -8,8 +8,12 @@
 ``backend/integrations/<slug>.py`` 的 ``SPEC`` 里声明，前端按字段表渲染表单（不写死字段），
 保存后由模块的 ``apply()`` 落地副作用，并提供一次**真实连通性测试**。
 
-密钥字段对外只报「已配置」，提交 ``******`` 表示不修改（与经济设置同一约定）。
+密钥字段对外只报「已配置」，提交 ``******`` 表示不修改、**清空表示删除**（与经济设置同一约定）。
 审计日志只记字段名，不记值——免得密钥顺着操作日志漏出去。
+
+四个端点都是**同步** ``def``：``test`` 会真实发起网络请求 / SMTP 投递（最长 60 秒），
+``save`` 会落配置并触发副作用——放进 ``async def`` 就是拿整个事件循环去等它们（播放会卡）。
+FastAPI 会把同步端点丢进线程池，与 v2.13 把协议路由移出事件循环是同一个做法。
 """
 from __future__ import annotations
 
@@ -49,7 +53,7 @@ def _require(slug: str) -> None:
 
 
 @capabilities_router.get("")
-async def list_capabilities(
+def list_capabilities(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -58,7 +62,7 @@ async def list_capabilities(
 
 
 @capabilities_router.get("/{slug}")
-async def get_capability(
+def get_capability(
     slug: str,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -69,7 +73,7 @@ async def get_capability(
 
 
 @capabilities_router.put("/{slug}")
-async def save_capability(
+def save_capability(
     slug: str,
     request: CapabilitySaveRequest,
     http_request: Request,
@@ -89,7 +93,7 @@ async def save_capability(
 
 
 @capabilities_router.post("/{slug}/test")
-async def test_capability(
+def test_capability(
     slug: str,
     request: CapabilityTestRequest,
     current_admin: models.WebUser = Depends(get_current_admin),

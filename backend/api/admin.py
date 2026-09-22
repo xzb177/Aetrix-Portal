@@ -29,6 +29,8 @@ from backend import servers
 from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend.database import get_db
 from backend.ratelimit import check_rate_limit, client_ip
+# 人机验证（能力中心）：后台登录与用户端登录共用同一套校验与安全日志
+from backend.integrations import captcha as integrations_captcha
 from backend.notifications import (
     AdminEvent,
     notify_admin_event,
@@ -125,6 +127,9 @@ def _log_out(model) -> str:
 class AdminLoginRequest(BaseModel):
     username: str
     password: str
+    # 人机验证令牌（v2.20.0）：管理员在「系统设置 → 人机验证」里开了「保护管理后台登录」
+    # 之后必填。后台登录是最值钱的入口，此前也是唯一没有这道闸的登录路径。
+    captcha_token: str | None = None
 
 
 @admin_router.post("/auth/login")
@@ -146,6 +151,9 @@ def admin_login(
             detail=f"尝试过于频繁，已限流（{retry_after}s）",
         )
         raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
+
+    integrations_captcha.guard(db, http_request, "admin_login", request.captcha_token,
+                               username=request.username.strip())
 
     user = db.query(models.WebUser).filter(
         models.WebUser.username == request.username.strip()

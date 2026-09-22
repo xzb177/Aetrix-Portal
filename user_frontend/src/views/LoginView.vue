@@ -15,6 +15,8 @@ import { useToast } from '@/composables/useToast'
 import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Ticket, Gift } from 'lucide-vue-next'
 // 人机验证挂件（能力：人机验证）：管理员未开启时该组件自己什么都不渲染
 import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
+// 站名来自「站点与品牌」能力（未配置时用默认值）
+import { branding } from '@/composables/useBranding'
 
 const router = useRouter()
 const route = useRoute()
@@ -147,9 +149,10 @@ onMounted(() => {
     <div class="auth-card">
       <div class="auth-brand">
         <div class="brand-mark">
-          <Clapperboard :size="22" />
+          <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+          <Clapperboard v-else :size="22" />
         </div>
-        <h1 class="brand-title">Aetrix 私藏影诺</h1>
+        <h1 class="brand-title">{{ branding.site_name }}</h1>
         <p class="brand-subtitle">自建 Emby 影视服务 · 一个账号畅享所有设备</p>
       </div>
 
@@ -408,6 +411,14 @@ onMounted(() => {
   background: var(--au-primary-soft);
   border: 1px solid var(--au-primary-border);
   box-shadow: var(--au-shadow-glow);
+}
+
+/* 自定义 Logo：铺满方块并保留圆角（图片比图标宽窄不一，用 contain 不裁切） */
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
 }
 
 .brand-title {

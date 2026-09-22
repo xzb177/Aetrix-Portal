@@ -357,6 +357,24 @@ def run_startup_maintenance() -> dict:
     return result
 
 
+def prune_ai_usage(db, keep_days: int = 90) -> int:
+    """删掉过期的 AI 助手每日用量行（一个用户一天一行，不清就会一直涨）
+
+    配额只看当天（``user_id + day`` 上还有唯一索引），保留 90 天只是为了回看用量时
+    不至于查不到东西。
+    """
+    from datetime import datetime, timedelta
+
+    from backend import models
+
+    cutoff = (datetime.now() - timedelta(days=max(1, keep_days))).strftime("%Y-%m-%d")
+    pruned = db.query(models.AiUsage).filter(models.AiUsage.day < cutoff).delete(
+        synchronize_session=False)
+    if pruned:
+        db.commit()
+    return int(pruned or 0)
+
+
 def prune_scan_dir_states(db) -> int:
     """删掉媒体库已不存在的扫描目录指纹（增量扫描的副作用清理）"""
     from backend.emby_server import models as emby_models
@@ -379,7 +397,7 @@ def janitor_tick() -> dict:
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
               "scan_dir_states_pruned": 0, "images_pruned": 0,
-              "images_freed_bytes": 0}
+              "images_freed_bytes": 0, "ai_usage_pruned": 0}
     try:
         result["transcodes_reaped"] = streaming.reap_stale_transcodes()
     except Exception as exc:  # noqa: BLE001
@@ -427,6 +445,17 @@ def janitor_tick() -> dict:
         result["images_freed_bytes"] = image_result["freed_bytes"]
     except Exception as exc:  # noqa: BLE001
         logger.warning("清理图片缓存失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # AI 助手每日用量（能力：AI 模型设置）：一个用户一天一行，不清就会一直涨。
+    # 只保留近 90 天——配额看的是「今天」，历史行只在回看用量时有意义。
+    db = SessionLocal()
+    try:
+        result["ai_usage_pruned"] = prune_ai_usage(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理 AI 用量记录失败: %s", exc)
         db.rollback()
     finally:
         db.close()

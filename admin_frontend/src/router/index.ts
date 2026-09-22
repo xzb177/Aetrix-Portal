@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { adminTitle } from '@/composables/branding'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -67,7 +68,7 @@ router.beforeEach(async (to) => {
   if (to.name === 'Login' && auth.isAuthenticated) {
     return { path: '/' }
   }
-  document.title = to.meta.title ? `${to.meta.title} · RoyalBot 管理后台` : 'RoyalBot 管理后台'
+  document.title = adminTitle(to.meta.title as string | undefined)
 })
 
 export default router
