@@ -43,6 +43,8 @@ export interface CapabilityCard {
   /** 当前值（密钥为掩码） */
   fields: Record<string, string>
   test_label: string
+  /** 是否有可测的外部依赖；为 false 时后台不显示「测试」按钮（例如站点与品牌） */
+  testable: boolean
 }
 
 export interface CapabilityDetail {

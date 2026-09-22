@@ -10,17 +10,21 @@
 - ``test(db, payload)``：真实连通性测试，成功与否与失败原因原样回给管理员。
 
 配置统一落在 ``system_configs``（沿用既有配置表，多机部署共享同一套配置）。密钥类字段
-（``secret``）读回来只报「已配置」，前端提交 ``******`` 表示不修改——与经济设置的约定一致。
+（``secret``）读回来只报「已配置」，前端提交 ``******`` 表示不修改、**清空表示删除**——
+与经济设置的约定一致。
+
+读配置走 ``store.read_values``：一次 IN 查询取回一批键。原先每个能力各自按 key 查一次，
+人机验证挂件一次要 5 次往返、AI 一次问答要 4 次；现在总览整页只要 1 次。
 """
 from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +33,7 @@ FIELD_TYPES = ("str", "secret", "int", "bool", "select")
 
 # 能力清单：顺序即后台展示顺序；模块里再声明 title / desc / group
 CAPABILITY_MODULES: tuple[str, ...] = (
-    "proxy", "captcha", "mail", "telegram", "ai", "geoip",
+    "proxy", "captcha", "mail", "telegram", "ai", "geoip", "branding",
 )
 
 
@@ -62,17 +66,26 @@ def _coerce(field: dict, raw: Any) -> str:
     return text
 
 
-def _read(db: Session, field: dict) -> str:
-    row = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == field["key"]).first()
-    if row and row.value is not None:
-        return str(row.value)
-    return str(field.get("default") or "")
+def _defaults_for(fields: Iterable[dict]) -> dict[str, str]:
+    return {f["key"]: ("" if f.get("default") is None else str(f["default"])) for f in fields}
+
+
+def raw_values_many(db: Session, slugs: Iterable[str]) -> dict[str, dict]:
+    """一次查询取回多个能力的原始值（含密钥明文，仅供后端内部使用）"""
+    specs = {slug: _spec(slug) for slug in slugs}
+    defaults: dict[str, str] = {}
+    for spec in specs.values():
+        defaults.update(_defaults_for(spec["fields"]))
+    values = store.read_values(db, list(defaults), defaults)
+    return {
+        slug: {f["key"]: values[f["key"]] for f in spec["fields"]}
+        for slug, spec in specs.items()
+    }
 
 
 def raw_values(db: Session, slug: str) -> dict:
-    """读原始值（含密钥明文，仅供后端内部使用）"""
-    return {f["key"]: _read(db, f) for f in _spec(slug)["fields"]}
+    """读单个能力的原始值（含密钥明文，仅供后端内部使用）"""
+    return raw_values_many(db, [slug])[slug]
 
 
 def mask_values(slug: str, values: dict) -> dict:
@@ -120,35 +133,36 @@ def is_configured(slug: str, values: dict) -> bool:
     return True
 
 
+def _card(db: Session, slug: str, spec: dict, values: dict) -> dict:
+    module = _module(slug)
+    return {
+        "slug": slug,
+        "title": spec.get("title", slug),
+        "desc": spec.get("desc", ""),
+        "group": spec.get("group", "外部服务"),
+        "docs_hint": spec.get("docs_hint", ""),
+        "enabled": is_enabled(values, slug),
+        "configured": is_configured(slug, values),
+        "fields": mask_values(slug, values),
+        "test_label": spec.get("test_label", "测试连接"),
+        # 没有 test() 的能力（例如站点与品牌：只是一组设置，没有可测的外部依赖）
+        # 后台不显示「测试」按钮——按钮点了只会回一句「不支持测试」，那是界面在骗人
+        "testable": callable(getattr(module, "test", None)),
+    }
+
+
 def list_capabilities(db: Session) -> list[dict]:
     """能力总览（后台「系统设置」中心页用）"""
-    items = []
-    for slug in CAPABILITY_MODULES:
-        values = raw_values(db, slug)
-        spec = _spec(slug)
-        items.append({
-            "slug": slug,
-            "title": spec.get("title", slug),
-            "desc": spec.get("desc", ""),
-            "group": spec.get("group", "外部服务"),
-            "docs_hint": spec.get("docs_hint", ""),
-            "enabled": is_enabled(values, slug),
-            "configured": is_configured(slug, values),
-            "fields": mask_values(slug, values),
-            "test_label": spec.get("test_label", "测试连接"),
-        })
-    return items
+    specs = {slug: _spec(slug) for slug in CAPABILITY_MODULES}
+    all_values = raw_values_many(db, CAPABILITY_MODULES)
+    return [_card(db, slug, specs[slug], all_values[slug]) for slug in CAPABILITY_MODULES]
 
 
 def get_capability(db: Session, slug: str) -> dict:
-    values = raw_values(db, slug)
     spec = _spec(slug)
-    try:
-        items = list_capabilities(db)
-        item = next(i for i in items if i["slug"] == slug)
-    except StopIteration:  # pragma: no cover — slug 已校验过
-        item = {"slug": slug, "title": spec.get("title", slug), "desc": spec.get("desc", "")}
-    return {"spec": spec, "item": item, "values": mask_values(slug, values)}
+    values = raw_values(db, slug)
+    return {"spec": spec, "item": _card(db, slug, spec, values),
+            "values": mask_values(slug, values)}
 
 
 def save_capability(db: Session, slug: str, values: dict) -> dict:
@@ -164,23 +178,18 @@ def save_capability(db: Session, slug: str, values: dict) -> dict:
     """
     spec = _spec(slug)
     fields = {f["key"]: f for f in spec["fields"]}
+    pending: dict[str, str] = {}
+    descriptions: dict[str, str] = {}
     for key, raw in (values or {}).items():
         field = fields.get(key)
         if field is None:
             continue
         if field.get("type") == "secret" and (raw is None or str(raw) == MASK):
             continue
-        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        new_value = _coerce(field, raw)
-        if row:
-            row.value = new_value
-            if field.get("label") and not row.description:
-                row.description = f"{spec.get('title', slug)} · {field['label']}"
-        else:
-            db.add(models.SystemConfig(
-                key=key, value=new_value,
-                description=f"{spec.get('title', slug)} · {field.get('label') or ''}",
-            ))
+        pending[key] = _coerce(field, raw)
+        descriptions[key] = f"{spec.get('title', slug)} · {field.get('label') or ''}"
+    if pending:
+        store.write_values(db, pending, descriptions)
     db.commit()
     apply_capability(db, slug)
     return get_capability(db, slug)
@@ -199,7 +208,7 @@ def apply_capability(db: Session, slug: str) -> None:
 
 
 def apply_all(db: Session) -> None:
-    """启动时把所有能力落地一遍（目前只有代理需要）"""
+    """启动时把所有能力落地一遍（目前只有代理与通知渠道需要：代理要写回环境变量）"""
     for slug in CAPABILITY_MODULES:
         apply_capability(db, slug)
 

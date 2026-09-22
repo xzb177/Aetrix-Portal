@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
-from backend.database import get_db
+from backend.database import SessionLocal, get_db
 from backend import models
 from backend.websocket import manager, send_notification
 
@@ -279,8 +279,10 @@ class NotificationService:
         if self._config_loaded:
             return
 
+        # 以前用 next(get_db()) 拿会话且从不关闭：每次重建渠道都漏一个连接（同一个会话被
+        # 拿来做一次查询就丢掉了，SQLite 上表现为连接一直不释放）。这里显式开关。
+        db = SessionLocal()
         try:
-            db = next(get_db())
 
             # 获取邮件配置
             email_configs = db.query(models.SystemConfig).filter(
@@ -315,6 +317,8 @@ class NotificationService:
 
         except Exception as e:
             logger.error(f"加载通知渠道配置失败: {e}")
+        finally:
+            db.close()
 
     def reload_config(self):
         """重新加载配置"""

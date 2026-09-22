@@ -6,6 +6,9 @@ import 'element-plus/dist/index.css'
 
 import App from './App.vue'
 import router from './router'
+// 站点品牌（能力：站点与品牌）：站名 / Logo / 主题色由后台自己填，启动时读一次。
+// 先挂载再拉取，不让一次额外请求把首屏拖住；拉到后主题色与文档标题会自己更新。
+import { initBranding } from './composables/branding'
 
 import './styles/tokens.css'
 import './styles/base.css'
@@ -35,3 +38,5 @@ app.mount('#app')
 // index.html 里的首屏加载提示挂在 #app.loading::before 上，挂载完成后必须摘掉类名，
 // 否则「加载中...」会一直盖在界面上（它是一个固定定位的伪元素，不随内容变化消失）。
 document.getElementById('app')?.classList.remove('loading')
+
+void initBranding()

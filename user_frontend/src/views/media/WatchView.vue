@@ -15,6 +15,7 @@ import {
 } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
 import { useUserStore } from '@/stores/user'
+import { pageTitle } from '@/composables/useBranding'
 import {
   Play, Pause, Volume2, VolumeX, Maximize, ChevronLeft, Film,
   Crown, Sparkles, CalendarCheck, Wallet,
@@ -284,7 +285,7 @@ function showControlsTemporarily() {
 onMounted(async () => {
   try {
     item.value = await embyApi.getItem(itemId.value)
-    document.title = `播放 ${item.value.Name} - Aetrix`
+    document.title = pageTitle(`播放 ${item.value.Name}`)
   } catch {
     toast.error('加载影片信息失败')
     loading.value = false
@@ -302,7 +303,7 @@ onBeforeUnmount(() => {
   stopProgressLoop()
   destroyHls()
   if (controlsTimer) clearTimeout(controlsTimer)
-  document.title = 'Aetrix'
+  document.title = pageTitle()
 })
 </script>
 

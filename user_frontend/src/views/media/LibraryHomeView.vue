@@ -15,6 +15,7 @@ import { ref, computed, onMounted, watch, type Component } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { embyApi, backdropUrl, ticksToSeconds, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
+import { pageTitle } from '@/composables/useBranding'
 import MediaRow from '@/components/media/MediaRow.vue'
 import FavoritesView from '@/views/media/FavoritesView.vue'
 import HistoryView from '@/views/HistoryView.vue'
@@ -55,7 +56,7 @@ const TAB_TITLES: Record<MediaTab, string> = {
 
 // 路由守卫先写的是「媒体库」，分段不同标题不同，这里覆盖成对应标题
 watch(tab, (t) => {
-  document.title = `${TAB_TITLES[t]} - Aetrix`
+  document.title = pageTitle(TAB_TITLES[t])
 }, { immediate: true })
 
 const loading = ref(true)

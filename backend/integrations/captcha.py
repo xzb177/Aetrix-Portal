@@ -7,7 +7,11 @@
 
 - 没选提供方 / 没填密钥 → **直接放行**（不能把站点锁在门外），后台只提示「未配置」；
 - 打开保护的动作要求请求体带 ``captcha_token``（前端挂件生成），校验失败一律 400；
-- 校验走提供方 ``siteverify``，失败原因原样返回（便于排查密钥、域名或时效问题）。
+- 校验走提供方 ``siteverify``，失败原因原样返回（便于排查密钥、域名或时效问题）；
+- 受保护的动作清单由字段表派生（``captcha_protect_<动作>``），所以加一个动作只要加一行字段，
+  前端挂件与后台表单都会跟着出现。
+
+读配置走一次批量查询（原先挂件一次要问 5 个键 = 5 次往返）。
 """
 from __future__ import annotations
 
@@ -15,13 +19,13 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend.integrations import store
 
 SPEC = {
     "title": "人机验证",
     "desc": "为登录、注册等动作配置 Turnstile、reCAPTCHA 或 hCaptcha。",
     "group": "网络与安全",
-    "docs_hint": "保护的是用户端登录 / 注册；私钥只报「已配置」，前端挂件用站点密钥。",
+    "docs_hint": "保护的是用户端登录 / 注册与管理后台登录；私钥只报「已配置」，前端挂件用站点密钥。",
     "fields": [
         {"key": "captcha_provider", "label": "提供方", "type": "select", "default": "none",
          "options": ["none", "turnstile", "recaptcha", "hcaptcha"]},
@@ -29,6 +33,7 @@ SPEC = {
         {"key": "captcha_secret_key", "label": "私钥（Secret Key）", "type": "secret", "default": ""},
         {"key": "captcha_protect_login", "label": "保护用户端登录", "type": "bool", "default": "true"},
         {"key": "captcha_protect_register", "label": "保护用户端注册", "type": "bool", "default": "true"},
+        {"key": "captcha_protect_admin_login", "label": "保护管理后台登录", "type": "bool", "default": "false"},
     ],
     "test_label": "测试密钥",
 }
@@ -47,56 +52,71 @@ WIDGET_SCRIPTS = {
     "hcaptcha": "https://js.hcaptcha.com/1/api.js?render=explicit",
 }
 
+# 受保护的动作：与字段表里的 captcha_protect_<动作> 一一对应
+# （后台登录也走同一套，否则唯一没被保护的就剩后台那个最值钱的入口）
+ACTIONS: tuple[str, ...] = ("login", "register", "admin_login")
 
-def _value(db: Session, key: str, default: str = "") -> str:
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    if row and row.value is not None:
-        return str(row.value).strip()
-    return default
+_FIELD_DEFAULTS = {f["key"]: (f.get("default") or "") for f in SPEC["fields"]}
+_FIELD_KEYS = [f["key"] for f in SPEC["fields"]]
 
 
-def provider(db: Session) -> str:
-    name = _value(db, "captcha_provider", "none").lower()
+def _config(db: Session) -> dict:
+    """一次查询取回本能力的全部配置"""
+    return store.read_values(db, _FIELD_KEYS, _FIELD_DEFAULTS)
+
+
+def _provider_of(cfg: dict) -> str:
+    name = (cfg.get("captcha_provider") or "none").strip().lower()
     return name if name in VERIFY_URLS else "none"
 
 
+def provider(db: Session) -> str:
+    return _provider_of(_config(db))
+
+
 def secret_key(db: Session) -> str:
-    return _value(db, "captcha_secret_key")
+    return _config(db).get("captcha_secret_key") or ""
+
+
+def _protected(cfg: dict, action: str) -> bool:
+    if _provider_of(cfg) == "none" or not (cfg.get("captcha_secret_key") or ""):
+        return False
+    return str(cfg.get(f"captcha_protect_{action}") or "").strip().lower() == "true"
 
 
 def is_protected(db: Session, action: str) -> bool:
-    """某个动作（login / register）是否要校验"""
-    if provider(db) == "none" or not secret_key(db):
-        return False
-    return _value(db, f"captcha_protect_{action}", "true").lower() == "true"
+    """某个动作（login / register / admin_login）是否要校验"""
+    return _protected(_config(db), action)
 
 
 def widget_info(db: Session) -> dict:
     """给前端挂件的信息（只含公开的站点密钥；未启用时不给任何密钥）"""
-    name = provider(db)
-    site_key = _value(db, "captcha_site_key")
-    enabled = name != "none" and bool(secret_key(db)) and bool(site_key)
+    cfg = _config(db)
+    name = _provider_of(cfg)
+    site_key = cfg.get("captcha_site_key") or ""
+    enabled = name != "none" and bool(cfg.get("captcha_secret_key")) and bool(site_key)
     return {
         "enabled": enabled,
         "provider": name if enabled else "none",
         "label": PROVIDER_LABELS.get(name, "") if enabled else "",
         "site_key": site_key if enabled else "",
         "script_url": WIDGET_SCRIPTS.get(name, "") if enabled else "",
-        "actions": {a: is_protected(db, a) for a in ("login", "register")},
+        "actions": {a: _protected(cfg, a) for a in ACTIONS},
     }
 
 
-def verify_token(db: Session, token: Optional[str], ip: str = "") -> tuple[bool, str]:
+def _verify(db: Session, cfg: dict, token: Optional[str], ip: str = "") -> tuple[bool, str]:
     """调用提供方 siteverify；未配置时视为通过"""
-    name = provider(db)
-    if name == "none" or not secret_key(db):
+    name = _provider_of(cfg)
+    secret = cfg.get("captcha_secret_key") or ""
+    if name == "none" or not secret:
         return True, ""
     token = (token or "").strip()
     if not token:
         return False, "请完成人机验证"
     import httpx
 
-    data = {"secret": secret_key(db), "response": token}
+    data = {"secret": secret, "response": token}
     if ip:
         data["remoteip"] = ip
     try:
@@ -111,11 +131,38 @@ def verify_token(db: Session, token: Optional[str], ip: str = "") -> tuple[bool,
     return False, f"人机验证失败（{', '.join(str(c) for c in codes) or resp.status_code}）"
 
 
+def verify_token(db: Session, token: Optional[str], ip: str = "") -> tuple[bool, str]:
+    return _verify(db, _config(db), token, ip)
+
+
 def verify_request(db: Session, action: str, token: Optional[str], ip: str = "") -> tuple[bool, str]:
-    """端点里用的入口：没开保护直接放行"""
-    if not is_protected(db, action):
+    """端点里用的入口：没开保护直接放行（一次查询搞定）"""
+    cfg = _config(db)
+    if not _protected(cfg, action):
         return True, ""
-    return verify_token(db, token, ip)
+    return _verify(db, cfg, token, ip)
+
+
+def guard(db: Session, request, action: str, token: Optional[str],
+          username: Optional[str] = None) -> None:
+    """端点里的守卫：校验失败一律 400（并把提供方原因带上）+ 落一条安全日志
+
+    用户在用户端登录、注册与管理员在后台登录都走这一个入口——三处各写一遍校验的话，
+    迟早有一处漏掉「失败要留痕」这件事。
+    """
+    from fastapi import HTTPException
+
+    from backend.authlog import client_ip, record_event, user_agent
+
+    ip = client_ip(request)
+    ok, message = verify_request(db, action, token, ip)
+    if ok:
+        return
+    record_event(
+        db, username=username, ip=ip, agent=user_agent(request),
+        success=False, reason="captcha_failed", detail=message[:255],
+    )
+    raise HTTPException(status_code=400, detail=message)
 
 
 def is_configured(values: dict) -> bool:
@@ -137,10 +184,11 @@ def test(db: Session, payload: dict) -> dict:
     能收到 ``invalid-input-response`` 说明**密钥有效、域名可达**（如果密钥错会返回
     ``invalid-input-secret``）。这是在不依赖前端挂件的前提下，能对密钥做的最直接验证。
     """
-    name = provider(db)
+    cfg = _config(db)
+    name = _provider_of(cfg)
     if name == "none":
         return {"ok": False, "message": "未选择提供方（先在「提供方」里选一家并填密钥）"}
-    secret = secret_key(db)
+    secret = cfg.get("captcha_secret_key") or ""
     if not secret:
         return {"ok": False, "message": "未填私钥（Secret Key）"}
     import httpx

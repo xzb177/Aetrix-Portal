@@ -6,17 +6,26 @@
 - **多密钥**：一行一个（也支持逗号分隔），每次调用轮换，单把 key 被限流时不会整体不可用；
 - **用户侧消费点**：``POST /api/user/ai/ask``（登录用户，按 ``ai_daily_limit`` 限流）；
 - **测试**：真实发一次极小的 completion，把模型回显给管理员看。
+
+配额从 v2.20.0 起**落库**（``ai_usage`` 表 + 唯一约束）：进程内字典在多进程部署下会被放大成
+「上限 × 进程数」、重启还会归零；现在是同一份计数，且占用额度用的是条件 UPDATE，
+并发下不会两个请求都读到 ``limit-1`` 而各记一次。
 """
 from __future__ import annotations
 
 import itertools
+import logging
 import threading
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations import store
+
+logger = logging.getLogger(__name__)
 
 SPEC = {
     "title": "AI 模型设置",
@@ -44,58 +53,66 @@ SPEC = {
     "test_label": "测试模型",
 }
 
+_FIELD_KEYS = [f["key"] for f in SPEC["fields"]]
+_FIELD_DEFAULTS = {f["key"]: (f.get("default") or "") for f in SPEC["fields"]}
+
+# 轮换用；读取配置不再走这个锁（配置是批量查的）
 _lock = threading.Lock()
 _counter = itertools.count()
 
-# 每用户当日用量（问一句记一次）。与限流器同一取舍：进程内计数，单进程部署即准确；
-# 多进程下每个 worker 各记一份，最坏情况相当于配额放宽到「上限 × 进程数」。
-_usage_lock = threading.Lock()
-_usage: dict[int, tuple[str, int]] = {}
+
+def _settings(db: Session) -> dict:
+    """一次查询取回本能力的全部配置（原先读端点/模型/密钥/上限要 4 次往返）"""
+    return store.read_values(db, _FIELD_KEYS, _FIELD_DEFAULTS)
 
 
-def _value(db: Session, key: str, default: str = "") -> str:
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    if row and row.value is not None:
-        return str(row.value).strip()
-    return default
+def _value(settings: dict, key: str, default: str = "") -> str:
+    return str(settings.get(key, default) or default).strip()
 
 
 def enabled(db: Session) -> bool:
-    return _value(db, "ai_enabled", "true").lower() == "true"
+    return _value(_settings(db), "ai_enabled", "true").lower() == "true"
 
 
-def api_keys(db: Session) -> list[str]:
+def _keys_of(settings: dict) -> list[str]:
     """多密钥：换行 / 逗号 / 分号都认"""
-    raw = _value(db, "ai_api_keys")
+    raw = _value(settings, "ai_api_keys")
     parts = raw.replace(";", "\n").replace(",", "\n").split("\n")
     return [p.strip() for p in parts if p.strip()]
 
 
+def api_keys(db: Session) -> list[str]:
+    return _keys_of(_settings(db))
+
+
 def config(db: Session) -> dict:
+    return _config_of(_settings(db))
+
+
+def _config_of(settings: dict) -> dict:
     try:
-        temperature = float(_value(db, "ai_temperature", "0.7") or 0.7)
+        temperature = float(_value(settings, "ai_temperature", "0.7") or 0.7)
     except ValueError:
         temperature = 0.7
     try:
-        max_tokens = int(_value(db, "ai_max_tokens", "512") or 512)
+        max_tokens = int(_value(settings, "ai_max_tokens", "512") or 512)
     except ValueError:
         max_tokens = 512
     try:
-        timeout = float(_value(db, "ai_timeout", "60") or 60)
+        timeout = float(_value(settings, "ai_timeout", "60") or 60)
     except ValueError:
         timeout = 60.0
     return {
-        "base_url": (_value(db, "ai_base_url", "https://api.openai.com/v1") or "").rstrip("/"),
-        "model": _value(db, "ai_model", "gpt-4o-mini"),
-        "system_prompt": _value(db, "ai_system_prompt"),
+        "base_url": (_value(settings, "ai_base_url", "https://api.openai.com/v1") or "").rstrip("/"),
+        "model": _value(settings, "ai_model", "gpt-4o-mini"),
+        "system_prompt": _value(settings, "ai_system_prompt"),
         "temperature": temperature,
         "max_tokens": max(1, max_tokens),
         "timeout": max(1.0, timeout),
     }
 
 
-def _next_key(db: Session) -> str:
-    keys = api_keys(db)
+def _next_key(keys: list[str]) -> str:
     if not keys:
         return ""
     with _lock:
@@ -105,14 +122,15 @@ def _next_key(db: Session) -> str:
 
 def chat(db: Session, messages: list[dict], *, max_tokens: Optional[int] = None,
          use_system_prompt: bool = True) -> dict:
-    """发一次 chat/completions；返回 ``{ok, answer, model, key_index, message}``"""
-    cfg = config(db)
-    keys = api_keys(db)
+    """发一次 chat/completions；返回 ``{ok, answer, model, message}``"""
+    settings = _settings(db)
+    cfg = _config_of(settings)
+    keys = _keys_of(settings)
     if not cfg["base_url"] or not cfg["model"]:
         return {"ok": False, "message": "未配置 API 端点或模型"}
     if not keys:
         return {"ok": False, "message": "未配置 API 密钥"}
-    key = _next_key(db)
+    key = _next_key(keys)
     payload_messages = []
     if use_system_prompt and cfg["system_prompt"]:
         payload_messages.append({"role": "system", "content": cfg["system_prompt"]})
@@ -169,46 +187,106 @@ def ask(db: Session, question: str, history: Optional[list[dict]] = None) -> dic
     return chat(db, messages)
 
 
+# ==================== 每日配额（落库，多进程共用一份） ====================
+
+
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
-
-
-def used_today(user_id: int) -> int:
-    """今日已提问次数（跨天自动归零）"""
-    with _usage_lock:
-        day, count = _usage.get(user_id, ("", 0))
-        return count if day == _today() else 0
-
-
-def record_usage(user_id: int) -> int:
-    """记一次提问，返回今日累计次数"""
-    day = _today()
-    with _usage_lock:
-        if len(_usage) > 20000:  # 兜底：异常场景下不让这张表无限长大
-            _usage.clear()
-        current_day, count = _usage.get(user_id, ("", 0))
-        count = count + 1 if current_day == day else 1
-        _usage[user_id] = (day, count)
-        return count
 
 
 def daily_limit(db: Session) -> int:
     """每用户每日提问上限（0 = 不限）"""
     try:
-        return max(0, int(_value(db, "ai_daily_limit", "20") or 0))
+        return max(0, int(_value(_settings(db), "ai_daily_limit", "20") or 0))
     except ValueError:
         return 0
 
 
-def configured(db: Session) -> bool:
-    """能力是否已配齐（端点 + 模型 + 至少一把密钥）"""
-    cfg = config(db)
-    return bool(cfg["base_url"]) and bool(cfg["model"]) and bool(api_keys(db))
+def used_today(db: Session, user_id: int) -> int:
+    """今日已提问次数（跨天自动归零）"""
+    row = (
+        db.query(models.AiUsage.count)
+        .filter(models.AiUsage.user_id == user_id, models.AiUsage.day == _today())
+        .first()
+    )
+    return int(row[0]) if row and row[0] else 0
 
 
-def available(db: Session) -> bool:
-    """是否可用：启用且已配齐"""
-    return enabled(db) and configured(db)
+def quota(db: Session, user_id: int) -> dict:
+    """配额快照：``{daily_limit, used, remaining}``（remaining 为 None 表示不限）"""
+    limit = daily_limit(db)
+    used = used_today(db, user_id)
+    return {"daily_limit": limit, "used": used,
+            "remaining": None if limit <= 0 else max(0, limit - used)}
+
+
+def _insert_first(db: Session, user_id: int, day: str) -> bool:
+    """插入当天的第一行；行已存在（并发抢先）时返回 False"""
+    db.add(models.AiUsage(user_id=user_id, day=day, count=1))
+    try:
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+
+
+def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int]:
+    """占用一次配额：返回 ``(是否允许, 今日已用)``
+
+    并发下不能「先读再写」（两个请求都读到 limit-1 就都会放行），所以：
+
+    1. 条件 UPDATE ``... AND count < limit``——只有真的没到上限才会加一，``rowcount`` 说明结果；
+    2. 一行都没更新时，要么是当天还没有记录（插入 count=1），要么是已到上限——插入会因为
+       唯一约束失败，那正好就是「已到上限」的判定依据。
+
+    SQLite 与 PostgreSQL 都支持这套写法（不依赖 ``ON CONFLICT`` 方言）。
+    """
+    if limit is None:
+        limit = daily_limit(db)
+    day = _today()
+    if limit > 0:
+        condition = (models.AiUsage.user_id == user_id,
+                     models.AiUsage.day == day,
+                     models.AiUsage.count < limit)
+        updated = (
+            db.query(models.AiUsage)
+            .filter(*condition)
+            .update({models.AiUsage.count: models.AiUsage.count + 1,
+                     models.AiUsage.updated_at: datetime.now()},
+                    synchronize_session=False)
+        )
+        db.commit()
+        if updated:
+            return True, used_today(db, user_id)
+        if not _insert_first(db, user_id, day):
+            return False, used_today(db, user_id)
+        return True, 1
+    # 不限次数也记账（便于统计），不影响放行
+    updated = (
+        db.query(models.AiUsage)
+        .filter(models.AiUsage.user_id == user_id, models.AiUsage.day == day)
+        .update({models.AiUsage.count: models.AiUsage.count + 1,
+                 models.AiUsage.updated_at: datetime.now()},
+                synchronize_session=False)
+    )
+    db.commit()
+    if not updated:
+        _insert_first(db, user_id, day)
+    return True, used_today(db, user_id)
+
+
+def safe_consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int]:
+    """配额占用的「不带病拦人」包装
+
+    计数写不进去（例如库被锁、只读副本）时**放行**并记一条警告：AI 助手的价值是答问题，
+    不该因为一张统计表写失败就把用户挡在门外（真出这种故障时，日志里看得见）。
+    """
+    try:
+        return consume(db, user_id, limit)
+    except SQLAlchemyError as exc:
+        logger.warning("AI 配额计数失败，本次放行: %s", exc)
+        return True, used_today(db, user_id)
 
 
 def is_configured(values: dict) -> bool:
@@ -219,6 +297,13 @@ def is_configured(values: dict) -> bool:
 
 def is_enabled(values: dict) -> bool:
     return str(values.get("ai_enabled") or "").lower() == "true" and is_configured(values)
+
+
+def available(db: Session) -> bool:
+    """是否可用：启用且已配齐（一次查询判定）"""
+    settings = _settings(db)
+    return (str(settings.get("ai_enabled") or "").lower() == "true"
+            and is_configured(settings))
 
 
 def test(db: Session, payload: dict) -> dict:

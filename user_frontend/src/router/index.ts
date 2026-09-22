@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+// 标题里的站名来自「站点与品牌」能力（未配置时用默认值）
+import { pageTitle } from '@/composables/useBranding'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -134,7 +136,7 @@ router.beforeEach(async (to) => {
 
   // 分段页标题由 LibraryHomeView 按 ?tab= 覆写（媒体库 / 收藏 / 观看记录）
   if (to.meta.title) {
-    document.title = `${to.meta.title} - Aetrix`
+    document.title = pageTitle(to.meta.title as string | undefined)
   }
 
   // 未登录访问受保护页面 → 跳转登录页并记录回跳地址

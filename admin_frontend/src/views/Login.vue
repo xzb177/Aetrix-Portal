@@ -5,6 +5,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { Loader2, Lock, ShieldCheck, User } from 'lucide-vue-next'
 import { login } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
+// 人机验证（能力：人机验证）：管理员开了「保护管理后台登录」时才会渲染
+import CaptchaChallenge from '@/components/CaptchaChallenge.vue'
+// 站名与 Logo 来自「站点与品牌」能力（未配置时用默认值）
+import { branding, initBranding } from '@/composables/branding'
+
+void initBranding()
 
 const route = useRoute()
 const router = useRouter()
@@ -13,6 +19,8 @@ const auth = useAuthStore()
 const form = reactive({ username: '', password: '' })
 const loading = ref(false)
 const error = ref('')
+const captchaToken = ref('')
+const captchaRef = ref<InstanceType<typeof CaptchaChallenge> | null>(null)
 
 async function submit() {
   if (!form.username || !form.password) {
@@ -22,12 +30,18 @@ async function submit() {
   loading.value = true
   error.value = ''
   try {
-    const res = await login({ username: form.username, password: form.password })
+    const res = await login({
+      username: form.username,
+      password: form.password,
+      captcha_token: captchaToken.value || undefined,
+    })
     auth.setSession(res.access_token, res.user)
     const redirect = (route.query.redirect as string) || '/'
     router.push(redirect)
   } catch (e) {
     error.value = e instanceof Error ? e.message : '登录失败'
+    // 令牌一次性：失败后换一个新的，否则第二次点击会因「已使用」而失败
+    captchaRef.value?.reset()
   } finally {
     loading.value = false
   }
@@ -40,8 +54,10 @@ async function submit() {
 
     <div class="login-card">
       <div class="login-brand">
-        <span class="brand-mark" />
-        <h1>RoyalBot 控制台</h1>
+        <span class="brand-mark">
+          <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+        </span>
+        <h1>{{ branding.site_name }} 控制台</h1>
         <p>运营管理后台 · 仅限管理员账号登录</p>
       </div>
 
@@ -57,6 +73,8 @@ async function submit() {
           <span class="field-label"><Lock :size="14" /> 密码</span>
           <input v-model="form.password" type="password" autocomplete="current-password" placeholder="登录密码" />
         </label>
+
+        <CaptchaChallenge ref="captchaRef" @update:token="captchaToken = $event" />
 
         <div v-if="error" class="login-error">{{ error }}</div>
 
@@ -120,13 +138,18 @@ async function submit() {
 .login-brand p { font-size: 12.5px; color: var(--text-secondary); margin: 0; }
 
 .brand-mark {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 34px;
   height: 34px;
   border-radius: 12px;
   background: var(--gradient-brand);
   box-shadow: var(--shadow-glow);
+  overflow: hidden;
 }
+
+.brand-mark img { width: 100%; height: 100%; object-fit: contain; }
 
 .field { display: block; margin-bottom: 16px; }
 
