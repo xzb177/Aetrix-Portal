@@ -38,6 +38,7 @@ from backend.download_guard import DownloadGuardMiddleware
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import maintenance
 from backend.emby_server.api import emby_router
+from backend.emby_server.image_routes import install_image_routes
 from backend.emby_server.mount_health import panel_router as mount_health_router
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.nodes import node_router
@@ -45,7 +46,7 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.11.0"
+EA_VERSION = "2.11.1"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,8 @@ app.include_router(node_router)
 install_mount_routes(emby_router)
 # 会话端点：补鉴权（普通用户只看/只能停自己）并把会话键改为随机（必须在 include_router 前）
 install_session_routes(emby_router)
+# 图片端点：接上条件请求（客户端缓存仍有效时 304），媒体库滚动/切页不再重传同一张海报
+install_image_routes(emby_router)
 app.include_router(emby_router)
 
 

@@ -38,6 +38,7 @@ from backend.api.reminders_admin import admin_reminders_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 from backend.emby_server.api import emby_router
+from backend.emby_server.image_routes import install_image_routes
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
@@ -114,7 +115,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.11.0",
+    version="2.11.1",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -306,6 +307,8 @@ if _ENABLE_EMBY_GATEWAY:
     install_mount_routes(emby_router)
     # 会话端点：补鉴权（普通用户只看/只能停自己）并把会话键改为随机（必须在 include_router 前）
     install_session_routes(emby_router)
+    # 图片端点：接上条件请求（客户端缓存仍有效时 304），媒体库滚动/切页不再重传同一张海报
+    install_image_routes(emby_router)
     # Emby 客户端直接连接本后端：https://host:port/emby（另含裸根路径 /System/Info 等）
     app.include_router(emby_router)
     logger.info("Emby 协议网关已挂载于 EM（单进程模式）")

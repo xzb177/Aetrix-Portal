@@ -99,13 +99,25 @@ async def get_sessions_scoped(
         query = query.filter(em.PlaybackSession.user_id == user.id)
     sessions = query.order_by(em.PlaybackSession.last_update_at.desc()).all()
 
-    result = []
-    for session in sessions:
-        item = db.query(em.MediaItem).filter(em.MediaItem.id == session.item_id).first()
-        owner = db.query(models.WebUser).filter(models.WebUser.id == session.user_id).first()
-        if item and owner:
-            result.append(emby_api._now_playing_dto(session, item, owner))
-    return result
+    if not sessions:
+        return []
+    # 会话列表会被客户端周期性轮询：一次性取回关联条目与用户，
+    # 避免「每条会话各查两次」的 N+1（N 台设备同时播放就是 2N 次查询）
+    item_ids = {session.item_id for session in sessions}
+    user_ids = {session.user_id for session in sessions}
+    items = {
+        item.id: item
+        for item in db.query(em.MediaItem).filter(em.MediaItem.id.in_(item_ids)).all()
+    }
+    owners = {
+        user.id: user
+        for user in db.query(models.WebUser).filter(models.WebUser.id.in_(user_ids)).all()
+    }
+    return [
+        emby_api._now_playing_dto(session, items[session.item_id], owners[session.user_id])
+        for session in sessions
+        if session.item_id in items and session.user_id in owners
+    ]
 
 
 async def stop_session_checked(
