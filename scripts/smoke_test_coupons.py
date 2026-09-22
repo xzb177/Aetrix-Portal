@@ -613,7 +613,57 @@ check("建券 / 改券 / 删券 / 开关都写了审计",
        "economy_delete_coupon", "economy_coupon_settings"} <= set(actions),
       str(sorted(set(actions))))
 
-# ==================== 9. 鉴权 ====================
+# ==================== 9. 统一核销入口（v2.10.1） ====================
+# 钱包页此前是「卡码 · 兑换码」+「优惠码」两个入口上下并列，同一页两个
+# 「输入码 → 应用」的面板。现在只有一个入口，靠预检区分来源——这里守的就是
+# 「四种码都能被认出来」与「旧入口的过期指引不会再回来」。
+
+print("\n--- 统一核销入口：一个输入框认四种码 ---")
+
+with SessionLocal() as db:
+    db.add(models.CouponCode(code="STOPPED10", kind="all", discount_type="percent",
+                             value=90, is_active=False))
+    db.add(models.ExchangeCode(code="EXCH100", type="points", points_value=100,
+                               max_uses=1, is_active=True))
+    db.add(models.RegistrationCode(code="REG-SMOKE1", code_type=1, days=30,
+                                   max_uses=1, is_active=True))
+    db.commit()
+
+
+def preview_code(code: str) -> dict:
+    r = client.post("/api/user/membership/redeem/preview", headers=USER_H, json={"code": code})
+    assert r.status_code == 200, f"preview {code}: {r.status_code} {r.text[:120]}"
+    return r.json()
+
+
+uses_before = int(coupon_row("SAVE10").use_count)
+pv = preview_code("SAVE10")
+check("优惠券在统一入口被识别（kind=coupon）",
+      pv["kind"] == "coupon" and pv["valid"] is True, str(pv))
+check("预检只识别、不核销：券的占用数一点没动",
+      int(coupon_row("SAVE10").use_count) == uses_before,
+      f"{uses_before} → {coupon_row('SAVE10').use_count}")
+check("小写输入的券也能识别",
+      preview_code("save10")["kind"] == "coupon")
+
+pv = preview_code("STOPPED10")
+check("停用的券在预检里就说清原因",
+      pv["kind"] == "coupon" and pv["valid"] is False and "停用" in pv["message"], str(pv))
+
+pv = preview_code("EXCH100")
+check("兑换码走同一个入口（kind=exchange）", pv["kind"] == "exchange", str(pv))
+check("兑换码的指引不再指向已经收掉的「钱包 → 兑换码」",
+      "钱包" not in pv["message"] and "使用" in pv["message"], pv["message"])
+
+pv = preview_code("REG-SMOKE1")
+check("卡码仍走同一个入口（kind=code + 类型与天数）",
+      pv["kind"] == "code" and pv["valid"] is True
+      and pv["type_name"] == "注册码" and bool(pv["days_text"]), str(pv))
+
+check("不存在的码不会被误判成券",
+      preview_code("NOPE-NOT-A-CODE")["kind"] == "unknown")
+
+# ==================== 10. 鉴权 ====================
 
 print("\n--- 鉴权 ---")
 

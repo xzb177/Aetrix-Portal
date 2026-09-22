@@ -272,9 +272,13 @@ def reg_code_error(code: models.RegistrationCode) -> Optional[str]:
 
 
 def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
-    """统一识别卡码 / 邀请码 / 兑换码，供前端「使用卡码」入口预览
+    """统一识别卡码 / 邀请码 / 兑换码 / 优惠券，供前端唯一那个核销入口预览
 
     对齐参考项目的 previewCode：一个入口自动识别来源，前端无需分类调用。
+
+    v2.10.1：优惠券也并进这一个入口。此前它是钱包页上另起的一条输入框，
+    与「卡码 · 兑换码」并排成两个「输入码 → 应用」的面板——同一页两个兑换入口，
+    用户要先猜自己手里那张码该填哪边。现在由服务端判定来源，前端只渲染结果。
     """
     raw = (raw or "").strip()
     if not raw:
@@ -319,7 +323,23 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         return {
             "valid": False, "kind": "exchange", "days": exchange.duration_days or 0,
             "days_text": format_days(exchange.duration_days) if exchange.type == "subscription" else "-",
-            "message": "这是兑换码，请在「钱包 → 兑换码」中核销",
+            # 兑换码在同一个入口里直接核销，不再指向已经收掉的「钱包 → 兑换码」
+            "message": "这是兑换码，点「使用」直接核销",
+        }
+
+    # 优惠券（v2.10.0）：付费时抵扣，与卡码/兑换码同一个入口识别，
+    # 真正的额度与门槛校验在试算时由 coupons.quote 按商品给出
+    coupon = db.query(models.CouponCode).filter(
+        func.upper(models.CouponCode.code) == raw.upper()
+    ).first()
+    if coupon:
+        return {
+            "valid": bool(coupon.is_active),
+            "kind": "coupon",
+            "days": 0,
+            "days_text": "-",
+            "message": ("这是优惠券，点「使用」按当前商品试算折扣"
+                        if coupon.is_active else "该优惠券已停用"),
         }
 
     return {"valid": False, "kind": "unknown", "message": "卡码不存在"}

@@ -1,7 +1,11 @@
 <script setup lang="ts">
 /**
- * 钱包 — 余额总览 / 积分充值（支付下单）/ 卡码·兑换码核销 / 订单记录 / 积分流水
- * 布局：余额卡左右分区（左余额+签到态，右统一核销面板）；套餐卡横向结构化行
+ * 钱包 — 余额总览 / 积分充值（支付下单）/ 卡码·兑换码·优惠券核销 / 订单记录 / 积分流水
+ * 布局：余额卡左右分区（左余额+签到态，右唯一的核销面板）；套餐卡横向结构化行
+ *
+ * v2.10.1：优惠券并进顶部那一个核销面板。此前「卡码 · 兑换码」在余额卡里、
+ * 「优惠码」是分页上另起的一条输入框，同一页两个「输入码 → 应用」的面板，
+ * 既割裂又让用户猜手里那张码该填哪边；现在只有一个入口，由后端预检识别来源。
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
@@ -37,15 +41,21 @@ const tab = ref<'recharge' | 'plans' | 'orders' | 'log'>('recharge')
 const payMethod = ref('alipay')
 const orderLoading = ref<number | null>(null)
 
-// ===== 优惠券（v2.10.0）=====
+// ===== 优惠券（v2.10.0；v2.10.1 收进统一核销入口）=====
 // 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
-// 所以应用时对当前页的每个商品各试算一次，行内直接显示折后价；下单时后端会再算一遍。
+// 所以应用时对商品各试算一次，行内直接显示折后价；下单时后端会再算一遍。
 const couponEnabled = ref(true)
-const couponCode = ref('')
 const couponApplied = ref('')          // 已生效的码（空 = 没在用券）
 const couponLoading = ref(false)
 const couponError = ref('')
 const couponQuotes = ref<Record<string, CouponQuote>>({})
+
+/** 一次试算的结果：用不了的商品带上后端给的说明（满减门槛、适用范围等） */
+interface QuoteRow {
+  key: string
+  quote: CouponQuote | null
+  detail?: unknown
+}
 
 const quoteOf = (kind: 'recharge' | 'subscription', id: number) => couponQuotes.value[`${kind}:${id}`] || null
 /** 折后实付（未用券 = 原价），模板里直接取字符串，避免到处写非空断言 */
@@ -60,60 +70,99 @@ const couponSavings = computed(() => {
   return values.length ? Math.max(...values.map((q) => q.discount_amount)) : 0
 })
 
+// 核销面板下面那一行：出错（券用不了 / 邀请码指引 / 卡码无效）优先，其次才是默认口径
+const redeemNotice = computed(() => couponError.value || codeNotice.value)
+const redeemHint = computed(() => {
+  if (couponApplied.value) return '下单时按折后价支付，关单或退款后优惠次数自动退回'
+  return '会员时长 · 积分 · 订阅 · 优惠券，自动识别'
+})
+
 function clearCoupon() {
-  couponCode.value = ''
   couponApplied.value = ''
   couponError.value = ''
   couponQuotes.value = {}
 }
 
-async function applyCoupon(silent = false) {
-  const code = couponCode.value.trim()
+/** 一类商品的试算清单（券是按商品算的，所以先算用户眼前这一页） */
+function couponTargets(kind: 'recharge' | 'subscription') {
+  return kind === 'subscription'
+    ? plans.value.map((p) => ({ kind: 'subscription' as const, id: p.id }))
+    : packages.value.map((p) => ({ kind: 'recharge' as const, id: p.id }))
+}
+
+async function quoteCoupon(code: string, kind: 'recharge' | 'subscription'): Promise<QuoteRow[]> {
+  return await Promise.all(couponTargets(kind).map(async (t): Promise<QuoteRow> => {
+    try {
+      return {
+        key: `${t.kind}:${t.id}`,
+        quote: await couponApi.quote({ code, kind: t.kind, item_id: t.id }),
+      }
+    } catch (err: any) {
+      return { key: `${t.kind}:${t.id}`, quote: null, detail: err?.response?.data?.detail }
+    }
+  }))
+}
+
+/** 面板自己切了分页（券只适用于另一类商品）：这一次不要再触发一遍试算 */
+let skipRequote = false
+
+/**
+ * 试算并应用优惠券
+ *
+ * silent：不弹 toast（换分页自动重算时不打扰用户）
+ * follow：券只适用于另一类商品时，把用户带到有折后价的那一页
+ *         ——只在用户刚填完码时跟随；被动重算不动用户正在看的分页
+ */
+async function applyCoupon(code: string, { silent = false, follow = false } = {}) {
+  const text = (code || '').trim()
   couponError.value = ''
-  if (!code) {
+  if (!text) {
     clearCoupon()
     return
   }
   couponLoading.value = true
   try {
-    // 只对当前分页的商品试算（充值包 or 套餐）：换页时再重算，不做全站请求
-    const targets = tab.value === 'plans'
-      ? plans.value.map((p) => ({ kind: 'subscription' as const, id: p.id }))
-      : packages.value.map((p) => ({ kind: 'recharge' as const, id: p.id }))
-    if (!targets.length) {
-      couponError.value = '暂无可购买的商品'
-      return
+    // 一张券可能只适用于充值、或只适用于会员：先算眼前这一页，本页全用不了再试另一类
+    // （公益服没有会员可卖，就不去试订阅了。）
+    const candidates: Array<'recharge' | 'subscription'> = tab.value === 'plans' && !isFreeRealm.value
+      ? ['subscription', 'recharge']
+      : (isFreeRealm.value ? ['recharge'] : ['recharge', 'subscription'])
+
+    let used: { kind: 'recharge' | 'subscription'; rows: QuoteRow[] } | null = null
+    let failed: QuoteRow[] = []
+    for (const kind of candidates) {
+      const rows = await quoteCoupon(text, kind)
+      if (rows.some((r) => r.quote)) {
+        used = { kind, rows }
+        break
+      }
+      if (!failed.length) failed = rows   // 第一次失败的原因留着给用户看
     }
 
-    const results = await Promise.all(targets.map(async (t): Promise<{
-      key: string
-      quote: CouponQuote | null
-      detail?: unknown
-    }> => {
-      try {
-        return {
-          key: `${t.kind}:${t.id}`,
-          quote: await couponApi.quote({ code, kind: t.kind, item_id: t.id }),
-        }
-      } catch (err: any) {
-        return { key: `${t.kind}:${t.id}`, quote: null, detail: err?.response?.data?.detail }
-      }
-    }))
-
-    const valid = results.filter((r) => r.quote)
-    if (!valid.length) {
-      const detail = results.find((r) => r.detail)?.detail
+    if (!used) {
+      const detail = failed.find((r) => r.detail)?.detail
       couponApplied.value = ''
       couponQuotes.value = {}
-      couponError.value = typeof detail === 'string' ? detail : '优惠码不可用'
+      couponError.value = typeof detail === 'string'
+        ? detail
+        : (failed.length ? '优惠码不可用' : '暂无可购买的商品')
       if (!silent) toast.error(couponError.value)
       return
     }
 
+    // 折扣只长在商品上：券既然只适用于另一类商品，就把用户带到那一页，
+    // 否则「已应用」在眼前这一页看不出省在哪。
+    const target = used.kind === 'subscription' ? 'plans' : 'recharge'
+    if (follow && tab.value !== target) {
+      skipRequote = true
+      tab.value = target
+    }
+
+    const valid = used.rows.filter((r) => r.quote)
     couponQuotes.value = Object.fromEntries(valid.map((r) => [r.key, r.quote as CouponQuote]))
     couponApplied.value = valid[0].quote!.code
     // 有些商品不满足这张券（如满减门槛）：说清楚，不默默只给一部分打折
-    const skipped = results.length - valid.length
+    const skipped = used.rows.length - valid.length
     if (skipped > 0) {
       couponError.value = `已应用，但本页有 ${skipped} 个商品不满足该券条件（原价购买）`
     }
@@ -125,10 +174,11 @@ async function applyCoupon(silent = false) {
 
 // 切换分页（充值 ↔ 会员）后商品变了，已应用的券要重新试算，否则价格显示会对不上
 watch(tab, () => {
-  if (couponApplied.value) {
-    couponCode.value = couponApplied.value
-    applyCoupon(true)
+  if (skipRequote) {
+    skipRequote = false
+    return
   }
+  if (couponApplied.value) void applyCoupon(couponApplied.value, { silent: true })
 })
 
 // ===== 功能开关（管理端可关；关闭时给出提示，不让用户白提交）=====
@@ -175,7 +225,7 @@ function focusRedeem() {
 async function handleRedeem() {
   const code = redeemCode.value.trim()
   if (!code) {
-    toast.error('请输入卡码或兑换码')
+    toast.error('请输入卡码、兑换码或优惠券')
     return
   }
   redeemLoading.value = true
@@ -183,6 +233,22 @@ async function handleRedeem() {
   codeNotice.value = ''
   try {
     const preview = await membershipApi.preview(code)
+
+    if (preview.kind === 'coupon') {
+      // 优惠券不核销，是「按商品试算折扣」：同一入口，只是后续动作不同
+      if (!preview.valid) {
+        codeNotice.value = preview.message || '该优惠券已停用'
+        return
+      }
+      if (!couponEnabled.value) {
+        codeNotice.value = '管理员已关闭优惠券，如有券请稍后再试'
+        return
+      }
+      await applyCoupon(code, { follow: true })
+      // 用上了就清空输入：已应用的码就在面板里写着，不必再占着输入框
+      if (couponApplied.value) redeemCode.value = ''
+      return
+    }
 
     if (preview.kind === 'exchange') {
       // 兑换码：无预检态，直接核销（积分或订阅时长）
@@ -458,18 +524,19 @@ onBeforeUnmount(stopPayPoll)
 
       <div class="bh-divider" aria-hidden="true" />
 
-      <!-- 统一核销面板：卡码与兑换码共用同一个入口，由后端预检自动识别 -->
+      <!-- 唯一的核销面板：卡码 / 兑换码 / 优惠券 共用一个入口，由后端预检识别来源。
+           v2.10.1：「优惠码」原本是本页另一条输入框，两个入口已合成这一个。 -->
       <form class="bh-redeem" @submit.prevent="handleRedeem">
         <span class="redeem-label">
           <TicketCheck :size="14" />
-          卡码 · 兑换码
+          卡码 · 兑换码 · 优惠券
         </span>
         <div class="redeem-row">
           <input
             ref="redeemInputRef"
             v-model="redeemCode"
             class="au-input redeem-input"
-            placeholder="输入卡码或兑换码"
+            placeholder="输入卡码 / 兑换码 / 优惠券"
             maxlength="64"
             autocomplete="off"
             @input="resetCodeFeedback"
@@ -481,7 +548,7 @@ onBeforeUnmount(stopPayPoll)
           >
             <Sparkles v-if="!redeemLoading" :size="15" />
             <span v-else class="au-spinner spinner-sm" />
-            核销
+            使用
           </button>
         </div>
 
@@ -505,8 +572,20 @@ onBeforeUnmount(stopPayPoll)
           </button>
         </div>
 
-        <p v-else class="redeem-hint" :class="{ warn: !!codeNotice }">
-          {{ codeNotice || '会员时长 · 积分 · 订阅，自动识别类型' }}
+        <!-- 优惠券已应用：码与省钱额就挂在同一个面板里，商品行内另有原价删除线与折后价 -->
+        <div v-else-if="couponApplied" class="redeem-preview">
+          <Percent :size="14" />
+          <span class="rp-text">
+            优惠券 <strong>{{ couponApplied }}</strong> 已应用<template v-if="couponSavings > 0"> · 本页最高省 ¥{{ couponSavings.toFixed(2) }}</template>
+          </span>
+          <button type="button" class="au-btn au-btn-ghost au-btn-sm" :disabled="couponLoading" @click="clearCoupon">
+            <X :size="13" />
+            清除
+          </button>
+        </div>
+
+        <p class="redeem-hint" :class="{ warn: !!redeemNotice }">
+          {{ redeemNotice || redeemHint }}
         </p>
       </form>
 
@@ -545,40 +624,8 @@ onBeforeUnmount(stopPayPoll)
       </button>
     </div>
 
-    <!-- 优惠码：只对当前分页的商品试算，行内直接看到折后价（下单时后端再算一遍） -->
-    <div v-if="couponEnabled && (tab === 'recharge' || (tab === 'plans' && !isFreeRealm))"
-         class="coupon-bar au-anim-up">
-      <div class="coupon-head">
-        <Percent :size="14" />
-        <strong>优惠码</strong>
-        <span v-if="couponApplied" class="coupon-ok">
-          已应用 {{ couponApplied }}<template v-if="couponSavings > 0"> · 本页最高省 ¥{{ couponSavings.toFixed(2) }}</template>
-        </span>
-      </div>
-      <div class="coupon-row">
-        <input
-          v-model="couponCode"
-          class="coupon-input"
-          type="text"
-          maxlength="32"
-          placeholder="输入优惠码（如 SAVE10）"
-          autocomplete="off"
-          @keyup.enter="applyCoupon()"
-        />
-        <button class="au-btn au-btn-primary au-btn-sm" :disabled="couponLoading" @click="applyCoupon()">
-          <span v-if="couponLoading" class="au-spinner spinner-sm" />
-          <template v-else>{{ couponApplied ? '重新试算' : '应用' }}</template>
-        </button>
-        <button v-if="couponApplied || couponCode" class="au-btn au-btn-ghost au-btn-sm" @click="clearCoupon">
-          <X :size="13" />
-          清除
-        </button>
-      </div>
-      <p v-if="couponError" class="coupon-err">{{ couponError }}</p>
-      <p v-else-if="couponApplied" class="coupon-tip">
-        套餐列表里带删除线的原价与折后价均为本页试算；下单时按折后价支付，关单或退款后优惠次数自动退回。
-      </p>
-    </div>
+    <!-- 优惠券不再是本页独立的一条输入框（v2.10.1）：入口收进顶部那一个核销面板，
+         折后价仍留在商品行内（原价删除线 + 实付价），下单时后端再算一遍 -->
 
     <!-- 充值积分：横向行卡 — 左侧点数信息，右侧价格与购买 -->
     <section v-if="tab === 'recharge'" class="tab-body au-anim-up">
@@ -661,10 +708,11 @@ onBeforeUnmount(stopPayPoll)
         <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
       </div>
 
-      <!-- 卡码核销入口已收归顶部面板，这里只留一行指引，避免两个输入框让用户猜该填哪个 -->
+      <!-- 卡码 / 兑换码 / 优惠券的入口已收归顶部那一个面板，这里只留一行指引，
+           避免同一页出现两个输入框让用户猜该填哪个 -->
       <button v-if="plansEnabled && !isFreeRealm" type="button" class="code-tip" @click="focusRedeem">
         <KeyRound :size="14" />
-        <span>已有卡码 / 兑换码？用顶部「卡码 · 兑换码」入口，注册码 / 续期码 / 白名单码自动识别</span>
+        <span>已有卡码 / 兑换码 / 优惠券？用顶部「卡码 · 兑换码 · 优惠券」入口，注册码 / 续期码 / 白名单码自动识别</span>
         <ChevronRight :size="14" class="ct-arrow" />
       </button>
 
@@ -959,57 +1007,8 @@ onBeforeUnmount(stopPayPoll)
 .pay-methods { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .pay-methods-label { font-size: 0.8125rem; color: var(--au-text-3); }
 
-/* ==================== 优惠码（v2.10.0） ==================== */
-/* 虚线细描边而不是卡片：它是购买流程里的一步，不是又一个模块 */
-.coupon-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem 0.9375rem;
-  margin-bottom: 1rem;
-  background: var(--au-surface);
-  border: 1px dashed var(--au-primary-border);
-  border-radius: var(--au-r-md);
-}
-
-.coupon-head { display: flex; align-items: center; gap: 0.4375rem; font-size: 0.8125rem; color: var(--au-text-3); }
-.coupon-head svg { color: var(--au-primary); flex-shrink: 0; }
-.coupon-head strong { font-size: 0.8125rem; color: var(--au-text); font-weight: 600; }
-
-.coupon-ok {
-  margin-left: auto;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: var(--au-success);
-}
-
-.coupon-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-
-.coupon-input {
-  flex: 1;
-  min-width: 11rem;
-  height: 36px;
-  padding: 0 0.75rem;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-sm);
-  color: var(--au-text);
-  font-size: 0.8125rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.coupon-input:focus { outline: none; border-color: var(--au-primary-border); }
-.coupon-input::placeholder {
-  color: var(--au-text-4);
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.coupon-err { margin: 0; font-size: 0.75rem; color: var(--au-danger); }
-.coupon-tip { margin: 0; font-size: 0.75rem; color: var(--au-text-4); }
-
-/* 折后价：原价删除线 + 实付价（选择器带上父级，盖过 .plan-price em 的旧规则） */
+/* ==================== 折后价（v2.10.0；券入口已收进核销面板） ==================== */
+/* 原价删除线 + 实付价（选择器带上父级，盖过 .plan-price em 的旧规则） */
 .pkg-price .price-was,
 .plan-price .price-was,
 .order-amount .price-was {

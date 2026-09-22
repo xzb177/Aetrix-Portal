@@ -15,6 +15,11 @@
  * 同时承担着这些功能）。现在降级为媒体库页内的分段标签（`/media?tab=`），
  * 主导航只留 首页 / 媒体库 / 我的 三项，旧地址重定向过来，书签不失效。
  *
+ * v2.10.1：搜索升为一级入口（首页 / 媒体库 / 搜索 / 我的）。此前它只是右上角
+ * 一个放大镜图标、头像菜单里又写了一条同样的「搜索片名」——同一件事两个入口，
+ * 窄屏更只有一个图标可点。搜索是「找片」这个主线上的一步，跟着媒体库排。
+ * 一个语义只留一个入口：菜单里的重复条目与顶栏那个图标一并撤掉。
+ *
  * 改导航只改这里：顶栏、头像菜单两处同时生效，不会再出现
  * 「新页面只加进了一处」这种漏入口。
  */
@@ -39,10 +44,12 @@ export interface NavGroup {
 }
 
 /** 主导航：全断点共用同一份（宽屏横排、窄屏滑动选项卡）
- *  三个就够：收藏与观看记录是媒体库内的分段（见下方注释与 /media?tab=） */
+ *  四个就够：收藏与观看记录是媒体库内的分段（见上方注释与 /media?tab=），
+ *  搜索与媒体库同属「找片」主线，所以排在媒体库旁边，而不是缩在右上角当图标 */
 export const primaryNav: NavItem[] = [
   { name: '首页', path: '/', icon: Clapperboard },
   { name: '媒体库', path: '/media', icon: Film },
+  { name: '搜索', path: '/search', icon: Search },
   { name: '我的', path: '/profile', icon: User },
 ]
 
@@ -62,7 +69,7 @@ export const menuSections: NavGroup[] = [
   {
     title: '互动与支持',
     items: [
-      { name: '搜索片名', path: '/search', icon: Search },
+      // 「搜索片名」不再列在这里：搜索已是主导航的一级入口（一个语义只留一处）
       { name: '求片中心', path: '/request', icon: MessageSquareDashed },
       { name: '工单支持', path: '/tickets', icon: Ticket },
       { name: '消息中心', path: '/messages', icon: Inbox },

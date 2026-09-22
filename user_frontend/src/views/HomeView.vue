@@ -10,6 +10,10 @@
  * 完整片库浏览）在首页只保留一条、且排在后面；门户独有的价值——跟着更新追新、
  * 库里没有就求片、账号与经济状态——放在前面。功能入口统一由顶栏导航承担。
  *
+ * v2.10.1：首屏与尾部的两处布局收一收——会员卡里的进度条改成按订阅的真实周期
+ * （start_date → end_date）算，不再用「剩余天数猜一个分母」；「账号与支持」的两张卡
+ * 宽屏并排成两列，不再一前一后各占一条高度。
+ *
  * v2.6.26：站内消息既不置顶、也不挤进账号速览条（挤进去会把「数据条」变成混合体，
  * 而且仍在首屏最显眼处）。改为：
  *   - 账号速览条只留「账号与经济」四格（会员 / 积分 / 签到 / 邀请），语义干净；
@@ -109,12 +113,18 @@ const isFreeRealm = computed(() => userStore.isFreeRealm)
 const realmNote = computed(
   () => userStore.realmNote || '本服为公益服 · 免费开放：无需开通会员即可观看全库内容。',
 )
+// 套餐周期已过多少：按订阅自己的 start_date → end_date 算，不再用「剩余天数猜一个分母」——
+// 那条旧公式（days_left / (days_left + 30)）画出来的进度与真实周期无关，
+// 一个刚买的 30 天套餐会显示成 50%，反而让人以为已经消耗了一半。
 const memberProgress = computed(() => {
   const sub = activeSub.value
   if (!sub) return 0
-  // 以「已用天数 / 总天数」估算套餐消耗进度（仅用于视觉提示）
-  const total = Math.max(sub.days_left, 1)
-  return Math.max(6, Math.min(100, Math.round((sub.days_left / (total + 30)) * 100)))
+  const start = new Date(sub.start_date).getTime()
+  const end = new Date(sub.end_date).getTime()
+  if (!start || !end || end <= start) return 0   // 日期不全就不画进度
+  const total = end - start
+  const used = Math.min(Math.max(Date.now() - start, 0), total)
+  return Math.max(1, Math.min(100, Math.round((used / total) * 100)))
 })
 
 // 账号速览条：三格经济数据（非按钮），点击进入对应页面。
@@ -256,7 +266,7 @@ onMounted(async () => {
 
           <template v-if="isMember && activeSub">
             <p class="member-plan">{{ activeSub.plan_name }}</p>
-            <div class="member-progress">
+            <div v-if="memberProgress" class="member-progress" :title="`套餐周期已过 ${memberProgress}%`">
               <div class="member-progress-fill" :style="{ width: memberProgress + '%' }"></div>
             </div>
             <p class="member-meta">
@@ -327,41 +337,44 @@ onMounted(async () => {
         <span class="section-title">账号与支持</span>
       </div>
 
-      <!-- 消息中心：不占首屏头条，但总是在「账号与支持」区第一眼看得到；随时可进的是顶栏音铃 -->
-      <RouterLink to="/messages" class="inbox-card au-card" :class="{ alert: unreadCount > 0 }">
-        <span class="inbox-ic">
-          <Inbox :size="17" />
-          <span v-if="unreadCount > 0" class="inbox-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-        </span>
-        <span class="inbox-main">
-          <span class="inbox-head">
-            <strong>消息中心</strong>
-            <em v-if="unreadCount > 0" class="inbox-state unread">{{ unreadCount }} 条未读</em>
-            <em v-else class="inbox-state">已全部读完</em>
+      <!-- 账号与支持：宽屏两列（消息卡 + 播放器指引各占一栏），不再一前一后占两条高度；
+           窄屏回落成单列。消息卡不占首屏头条，但总是在这一区第一眼看得到；随时可进的是顶栏音铃 -->
+      <div class="support-grid">
+        <RouterLink to="/messages" class="inbox-card au-card" :class="{ alert: unreadCount > 0 }">
+          <span class="inbox-ic">
+            <Inbox :size="17" />
+            <span v-if="unreadCount > 0" class="inbox-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
           </span>
-          <span v-if="inboxItems.length" class="inbox-list">
-            <span v-for="row in inboxItems" :key="row.key" class="inbox-item">
-              <component :is="row.icon" :size="12" class="inbox-item-ic" :class="{ hot: row.unread }" />
-              <span class="inbox-item-title">{{ row.title }}</span>
-              <span class="inbox-item-time">{{ row.time }}</span>
+          <span class="inbox-main">
+            <span class="inbox-head">
+              <strong>消息中心</strong>
+              <em v-if="unreadCount > 0" class="inbox-state unread">{{ unreadCount }} 条未读</em>
+              <em v-else class="inbox-state">已全部读完</em>
             </span>
+            <span v-if="inboxItems.length" class="inbox-list">
+              <span v-for="row in inboxItems" :key="row.key" class="inbox-item">
+                <component :is="row.icon" :size="12" class="inbox-item-ic" :class="{ hot: row.unread }" />
+                <span class="inbox-item-title">{{ row.title }}</span>
+                <span class="inbox-item-time">{{ row.time }}</span>
+              </span>
+            </span>
+            <span v-else class="inbox-empty">工单回复、求片进度与会员提醒都会出现在这里</span>
           </span>
-          <span v-else class="inbox-empty">工单回复、求片进度与会员提醒都会出现在这里</span>
-        </span>
-        <ChevronRight :size="16" class="inbox-arrow" />
-      </RouterLink>
+          <ChevronRight :size="16" class="inbox-arrow" />
+        </RouterLink>
 
-      <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
-      <RouterLink to="/profile" class="connect-row au-card">
-        <span class="connect-row-icon">
-          <Tv :size="17" />
-        </span>
-        <span class="connect-row-body">
-          <strong>连接播放器</strong>
-          <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入都在个人中心</em>
-        </span>
-        <ChevronRight :size="16" class="connect-row-arrow" />
-      </RouterLink>
+        <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
+        <RouterLink to="/profile" class="connect-row au-card">
+          <span class="connect-row-icon">
+            <Tv :size="17" />
+          </span>
+          <span class="connect-row-body">
+            <strong>连接播放器</strong>
+            <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入都在个人中心</em>
+          </span>
+          <ChevronRight :size="16" class="connect-row-arrow" />
+        </RouterLink>
+      </div>
     </main>
   </div>
 </template>
@@ -789,6 +802,17 @@ onMounted(async () => {
   color: var(--au-primary);
 }
 
+/* 账号与支持：宽屏两列（消息卡宽一档，播放器指引窄一档） */
+.support-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+/* 卡片各自的下边距交给栅格 gap，否则两列会被 0.75rem 的 margin 顶得不齐 */
+.support-grid .inbox-card { margin-bottom: 0; }
+
 /* ==================== 消息中心卡 ==================== */
 /*
  * 一行标题 + 最多两条内容：信息密度和「连接播放器」卡一致，所以放同一区看起来是一套。
@@ -1026,6 +1050,9 @@ onMounted(async () => {
   .member-card {
     padding: 1rem 1.125rem 1.125rem;
   }
+
+  /* 窄屏：消息卡与播放器指引上下排，各自铺满一行 */
+  .support-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
