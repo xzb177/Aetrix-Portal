@@ -32,16 +32,17 @@ from backend.emby_server.auth import (
     ensure_emby_credentials,
     get_admin_or_emby_user,
 )
+from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.scanner import (
     PLATFORM_LABELS,
     LibrarySnapshot,
     ScanInProgress,
-    count_virtual_items,
     is_scan_active,
     normalize_scrape_policy,
     scan_library_sync,
 )
 from backend.emby_server.streaming import stop_all_transcodes, stop_transcode
+from backend.emby_server import facets
 from backend.emby_server import mount_health
 from backend.emby_server import mount_rclone
 from backend.emby_server import mounts as mount_lib
@@ -858,11 +859,8 @@ async def generate_virtual_libraries(
             raise HTTPException(status_code=400, detail=f"未知平台: {', '.join(unknown)}")
         targets = list(dict.fromkeys(requested))
     else:
-        # 库里实际出现过的平台标签
-        present: set[str] = set()
-        for (raw,) in db.query(em.MediaItem.platforms).all():
-            present.update(p for p in (raw or "").split(",") if p)
-        targets = sorted(present)
+        # 库里实际出现过的平台标签：走分类关联表的索引（旧实现要扫一遍全库 platforms 列）
+        targets = sorted(facets.kind_values(db, facets.KIND_PLATFORM))
 
     created: list[dict] = []
     updated: list[dict] = []

@@ -25,6 +25,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from backend.emby_server import facets
 from backend.emby_server import models as em
 
 logger = logging.getLogger(__name__)
@@ -322,11 +323,18 @@ def run_startup_maintenance() -> dict:
     from backend.database import SessionLocal
 
     result = {"scan_flags_reset": 0, "sessions_reaped": 0,
-              "transcode_orphans": 0, "subtitle_cache_pruned": 0}
+              "transcode_orphans": 0, "subtitle_cache_pruned": 0,
+              "item_facets_backfilled": 0, "item_facets_pruned": 0,
+              "item_facets_ready": False}
     db = SessionLocal()
     try:
         result["scan_flags_reset"] = reset_stale_scan_flags(db)
         result["sessions_reaped"] = reap_stale_playback_sessions(db, stale_minutes=1)
+        # 升级上来的老库：分类关联表刚建出来时是空的，这里补上（按 id 水位增量）。
+        # 补不完也不影响启动：筛选路径会退回旧的全表匹配并接着补。
+        result["item_facets_backfilled"] = facets.ensure_backfill(db)
+        result["item_facets_pruned"] = facets.prune_orphans(db)
+        result["item_facets_ready"] = facets.ready(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("启动维护（数据库部分）失败: %s", exc)
         db.rollback()
@@ -353,7 +361,8 @@ def janitor_tick() -> dict:
     from backend.emby_server import streaming
 
     result = {"sessions_reaped": 0, "sessions_pruned": 0, "transcodes_reaped": 0,
-              "transcode_orphans": 0, "subtitle_cache_pruned": 0}
+              "transcode_orphans": 0, "subtitle_cache_pruned": 0,
+              "item_facets_backfilled": 0, "item_facets_orphans": 0}
     try:
         result["transcodes_reaped"] = streaming.reap_stale_transcodes()
     except Exception as exc:  # noqa: BLE001
@@ -365,6 +374,18 @@ def janitor_tick() -> dict:
         result["sessions_pruned"] = prune_playback_sessions(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("回收过期播放会话失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 分类关联表：把老库还没回填的条目补齐（增量，按 id 水位），
+    # 并清掉指向已删除条目的孤儿行（批量删除走 Core 语句，ORM 事件看不到）
+    db = SessionLocal()
+    try:
+        result["item_facets_backfilled"] = facets.ensure_backfill(db)
+        result["item_facets_orphans"] = facets.prune_orphans(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("维护分类关联表失败: %s", exc)
         db.rollback()
     finally:
         db.close()

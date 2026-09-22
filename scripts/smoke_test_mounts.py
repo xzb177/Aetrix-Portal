@@ -16,6 +16,7 @@
 网络层整体被替换（`httpx.Client` → 假服务），因此本测试不依赖真实网盘 / WebDAV / 对象存储账号。
 """
 import asyncio
+import inspect
 import os
 import random
 import sys
@@ -915,7 +916,15 @@ def _fake_serve_remote(url, request, headers=None, media_type="video/mp4"):
 _original_serve_remote = mount_routes.serve_remote
 mount_routes.serve_remote = _fake_serve_remote
 req = Request({"type": "http", "method": "GET", "path": "/Items/x/File", "headers": []})
-resp = asyncio.run(mount_routes.mounted_item_file(alpha.guid, req, staff, db))
+
+
+def call_endpoint(value):
+    """端点可能是同步 def（由线程池执行，v2.13.0 起大部分如此），也可能仍是 async def：
+    两种都要能直接测，这里统一处理（避免端点改签名后测试静默失效）。"""
+    return asyncio.run(value) if inspect.isawaitable(value) else value
+
+
+resp = call_endpoint(mount_routes.mounted_item_file(alpha.guid, req, staff, db))
 check("挂载条目走代理转发",
       resp.status_code == 200 and str(recorded.get("url", "")).endswith("pc-alpha"),
       str(recorded.get("url")))
@@ -924,7 +933,7 @@ check("代理时带上挂载鉴权头（不下发客户端）",
       str(sorted(recorded.get("headers", {}))))
 
 local_only = next(i for i in local_items if (i.file_path or "").endswith("Local.Movie.2024.1080p.mkv"))
-local_resp = asyncio.run(mount_routes.mounted_item_file(local_only.guid, req, staff, db))
+local_resp = call_endpoint(mount_routes.mounted_item_file(local_only.guid, req, staff, db))
 check("本机条目仍直接返回文件", isinstance(local_resp, FileResponse), type(local_resp).__name__)
 mount_routes.serve_remote = _original_serve_remote
 

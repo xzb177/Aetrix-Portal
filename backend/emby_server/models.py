@@ -206,6 +206,32 @@ class PlaybackSession(Base):
     ended_at = Column(DateTime)
 
 
+class ItemFacet(Base):
+    """条目 ↔ 分类值（流派 / 工作室 / 标签 / 发行平台）关联表（v2.15.0）
+
+    这些值原先只存在 :class:`MediaItem` 的逗号分隔文本列里，筛选时只能写
+    ``genres ILIKE '%动作%'`` —— 前置通配符用不上任何索引，每次筛选都是整库扫描。
+    现在由扫描器与元数据刮削在写条目的同时维护本表，筛选改成先在
+    ``(kind, value, item_id)`` 上定位 item_id，再按 id 过滤条目（见 `facets.py`）。
+    """
+
+    __tablename__ = "emby_item_facets"
+
+    __table_args__ = (
+        # 筛选走这条：kind + value 定位候选条目
+        Index("idx_item_facet_kind_value", "kind", "value", "item_id"),
+        # 重建单个条目 / 清理孤儿行走这条
+        Index("idx_item_facet_item", "item_id", "kind"),
+        UniqueConstraint("item_id", "kind", "value", name="uq_item_facet"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False)
+    # genre / studio / tag / platform
+    kind = Column(String(16), nullable=False)
+    value = Column(String(200), nullable=False)
+
+
 class StorageMount(Base):
     """存储挂载：媒体库的内容来源
 
