@@ -268,6 +268,11 @@ check("路径浏览只返回目录",
       r.text[:160])
 check("路径浏览带 Cookie 来源", bool(body.get("cookie_source")), str(body.get("cookie_source")))
 
+# 鉴权来自 admin_emby_router 的 require_staff：未登录不该碰到任何 115 接口
+for path in ("/api/admin/emby/115/accounts", "/api/admin/emby/115/browse"):
+    r = client.get(path)
+    check(f"未登录被拒绝（{path}）", r.status_code in (401, 403), f"HTTP {r.status_code}")
+
 
 # ==================== 四、转存相关已下线（回归护栏） ====================
 
