@@ -7,11 +7,14 @@
  * - 按日期分组（今天 / 昨天 / 更早），长列表更好读
  * - 按消息类型给出对应入口（工单 → 工单中心、求片 → 求片中心、订阅/兑换 → 钱包）
  * - 保留：类型筛选、只看未读、关键字搜索、单条/全部已读
+ *
+ * v2.10.4（本次）：点开一条未读就有已读反馈；全部已读、同名合并逻辑、刷新状态
+ * 都照常保留（它们由前一条 PR 带来，这里不重造）。
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 import {
-  Bell, CheckCheck, MessageSquare, Ticket, Megaphone, Gift, AlertCircle,
+  CheckCheck, MessageSquare, Ticket, Megaphone, Gift, AlertCircle,
   Clock, RefreshCw, Search, Inbox, X, ChevronRight, Filter,
 } from 'lucide-vue-next'
 import { messageApi, type StationMessage } from '@/api'
@@ -27,6 +30,7 @@ const unreadOnly = ref(false)
 const keyword = ref('')
 const selectedType = ref<string>('all')
 const detail = ref<StationMessage | null>(null)
+const heartbeat = ref(false)
 
 const typeConfigs: Record<string, { label: string; icon: unknown; tone: string }> = {
   all: { label: '全部', icon: MessageSquare, tone: 'cyan' },
@@ -97,6 +101,14 @@ function typeOf(type: string) {
   return typeConfigs[type] || typeConfigs.system
 }
 
+async function openDetail(msg: StationMessage, { silent = false } = {}) {
+  detail.value = msg
+  if (!msg.is_read) {
+    await markRead(msg)
+    if (!silent) toast.success('已标为已读')
+  }
+}
+
 async function load(showSpinner = true) {
   if (showSpinner) loading.value = true
   try {
@@ -110,22 +122,22 @@ async function load(showSpinner = true) {
 
 async function refresh() {
   refreshing.value = true
+  heartbeat.value = true
   try {
     await load(false)
   } finally {
     refreshing.value = false
+    heartbeat.value = false
   }
 }
 
-async function openDetail(msg: StationMessage) {
-  detail.value = msg
-  if (!msg.is_read) {
-    try {
-      await messageApi.markAsRead(msg.id)
-      msg.is_read = true
-    } catch {
-      /* 静默 */
-    }
+async function markRead(msg: StationMessage) {
+  if (msg.is_read) return
+  try {
+    await messageApi.markAsRead(msg.id)
+    msg.is_read = true
+  } catch {
+    /* 静默——行内已标记，服务端结果不卡交互 */
   }
 }
 
@@ -252,7 +264,8 @@ onMounted(() => {
             :key="msg.id"
             class="au-card msg-card"
             :class="{ unread: !msg.is_read }"
-            @click="openDetail(msg)"
+            :disabled="loading || refreshing"
+            @click="openDetail(msg, { silent: true })"
           >
             <span class="msg-icon">
               <component :is="typeOf(msg.message_type).icon" :size="17" />
@@ -270,7 +283,20 @@ onMounted(() => {
               <span class="msg-text">{{ msg.content }}</span>
             </span>
 
-            <ChevronRight :size="15" class="msg-arrow" />
+            <Transition name="fade-sm" mode="out-in">
+              <ChevronRight
+                v-if="!msg.is_read"
+                :key="`arr-${msg.id}`"
+                :size="15"
+                class="msg-arrow"
+              />
+              <CheckCheck
+                v-else
+                :key="`chk-${msg.id}`"
+                :size="15"
+                class="msg-arrow msg-arrow-checked"
+              />
+            </Transition>
           </button>
         </section>
       </template>

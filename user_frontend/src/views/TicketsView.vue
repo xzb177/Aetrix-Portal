@@ -3,7 +3,7 @@
  * 工单页面
  * 用户可以创建工单、查看工单列表、回复工单
  */
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import {
   Ticket,
   Plus,
@@ -14,9 +14,13 @@ import {
   AlertCircle,
   Send,
   X,
-  ChevronRight
+  RefreshCw,
+  UserCheck,
 } from 'lucide-vue-next'
-import { ticketApi } from '@/api'
+import { ticketApi, type TicketMessage } from '@/api'
+import { useToast } from '@/composables/useToast'
+
+const toast = useToast()
 
 interface Ticket {
   id: number
@@ -28,21 +32,16 @@ interface Ticket {
   updated_at: string
 }
 
-interface TicketMessage {
-  id: number
-  message: string
-  is_admin: boolean
-  created_at: string
-}
-
 // 状态
 const tickets = ref<Ticket[]>([])
 const loading = ref(false)
+const refreshing = ref(false)
 const selectedTicket = ref<Ticket | null>(null)
 const messages = ref<TicketMessage[]>([])
 const messagesLoading = ref(false)
 const showCreateModal = ref(false)
 const showDetailModal = ref(false)
+const messagesEl = ref<HTMLElement | null>(null)
 
 // 创建工单表单
 const createForm = ref({
@@ -73,15 +72,15 @@ const categoryOptions = [
 ]
 
 // 获取工单列表
-async function fetchTickets() {
-  loading.value = true
+async function fetchTickets(showSpinner = true) {
+  if (showSpinner) loading.value = true
   try {
     const res = await ticketApi.getMyTickets()
     tickets.value = (res as any) || []
   } catch (error) {
     console.error('获取工单列表失败:', error)
   } finally {
-    loading.value = false
+    if (showSpinner) loading.value = false
   }
 }
 
@@ -95,6 +94,21 @@ function openCreateModal() {
   showCreateModal.value = true
 }
 
+// 标题与描述都填了才能提交（两个字段都是后端必填，先掣一下省一次白跑）
+const canCreate = computed(() =>
+  !!createForm.value.title.trim() && !!createForm.value.message.trim()
+)
+
+// 头部刷新：走与列表加载同一个函数，不弹骨架（只转图标）
+async function refreshTicketList() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await fetchTickets(false)
+  } finally {
+    refreshing.value = false
+  }
+}
 // 创建工单
 async function createTicket() {
   if (!createForm.value.title.trim() || !createForm.value.message.trim()) {
@@ -108,11 +122,13 @@ async function createTicket() {
       category: createForm.value.category,
       message: createForm.value.message
     })
+    toast.success('工单已提交，管理员会尽快处理')
     showCreateModal.value = false
-    fetchTickets()
-  } catch (error) {
+    await fetchTickets()
+  } catch (error: any) {
     console.error('创建工单失败:', error)
-    alert('创建工单失败，请稍后重试')
+    const detail = error?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '创建工单失败，请稍后重试')
   } finally {
     creating.value = false
   }
@@ -126,16 +142,24 @@ async function openTicketDetail(ticket: Ticket) {
 }
 
 // 获取工单消息
-async function fetchMessages(ticketId: number) {
-  messagesLoading.value = true
+async function fetchMessages(ticketId: number, showSpinner = true) {
+  if (showSpinner) messagesLoading.value = true
   try {
     const res = await ticketApi.getMessages(ticketId)
     messages.value = (res as any) || []
   } catch (error) {
     console.error('获取消息失败:', error)
   } finally {
-    messagesLoading.value = false
+    if (showSpinner) messagesLoading.value = false
   }
+  await scrollMessagesToBottom()
+}
+
+// 新回复进来后滚到底部，用户不用自己找最新的一条
+async function scrollMessagesToBottom() {
+  await nextTick()
+  const el = messagesEl.value
+  if (el) el.scrollTop = el.scrollHeight
 }
 
 // 回复工单
@@ -146,11 +170,12 @@ async function replyTicket() {
   try {
     await ticketApi.reply(selectedTicket.value.id, replyMessage.value)
     replyMessage.value = ''
-    await fetchMessages(selectedTicket.value.id)
-    await fetchTickets()
-  } catch (error) {
+    await fetchMessages(selectedTicket.value.id, false)
+    await fetchTickets(false)
+  } catch (error: any) {
     console.error('回复失败:', error)
-    alert('回复失败，请稍后重试')
+    const detail = error?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '回复失败，请稍后重试')
   } finally {
     replying.value = false
   }
@@ -163,10 +188,13 @@ async function closeTicket() {
 
   try {
     await ticketApi.close(selectedTicket.value.id)
+    toast.success('工单已关闭')
     showDetailModal.value = false
-    fetchTickets()
-  } catch (error) {
+    await fetchTickets()
+  } catch (error: any) {
     console.error('关闭工单失败:', error)
+    const detail = error?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '关闭工单失败，请稍后重试')
   }
 }
 
@@ -217,6 +245,10 @@ onMounted(() => {
         <p class="page-sub">遇到问题在这里提单，客服回复会推送到消息中心</p>
       </div>
       <div class="head-actions">
+        <button class="au-btn au-btn-ghost au-btn-sm" :disabled="refreshing" @click="refreshTicketList">
+          <RefreshCw :size="14" :class="{ spinning: refreshing }" />
+          刷新
+        </button>
         <button @click="openCreateModal" class="btn-create">
           <Plus :size="16" />
           新建工单
@@ -226,9 +258,8 @@ onMounted(() => {
 
     <!-- 工单列表 -->
     <div class="tickets-content">
-      <div v-if="loading" class="loading-state">
-        <div class="spinner"></div>
-        <p>加载中...</p>
+      <div v-if="loading" class="tickets-list">
+        <div v-for="i in 3" :key="i" class="au-skeleton skel" />
       </div>
 
       <div v-else-if="tickets.length === 0" class="empty-state">
@@ -310,7 +341,11 @@ onMounted(() => {
         </div>
         <div class="modal-footer">
           <button @click="showCreateModal = false" class="btn btn-secondary">取消</button>
-          <button @click="createTicket" :disabled="creating" class="btn btn-primary">
+          <button
+            @click="createTicket"
+            :disabled="creating || !canCreate"
+            class="btn btn-primary"
+          >
             {{ creating ? '创建中...' : '提交工单' }}
           </button>
         </div>
@@ -327,11 +362,11 @@ onMounted(() => {
           </button>
         </div>
         <div class="modal-body modal-body-messages">
-          <div v-if="messagesLoading" class="loading-state">
-            <div class="spinner"></div>
-            <p>加载中...</p>
+          <div v-if="messagesLoading" class="messages-list">
+            <div v-for="i in 3" :key="i" class="au-skeleton skel-msg" />
           </div>
-          <div v-else class="messages-list">
+          <div v-else ref="messagesEl" class="messages-list">
+            <p v-if="!messages.length" class="messages-empty">还没有对话内容</p>
             <div
               v-for="msg in messages"
               :key="msg.id"
@@ -339,9 +374,11 @@ onMounted(() => {
               :class="{ 'message-admin': msg.is_admin }"
             >
               <div class="message-avatar">
-                <MessageSquare :size="16" />
+                <UserCheck v-if="msg.is_admin" :size="16" />
+                <MessageSquare v-else :size="16" />
               </div>
               <div class="message-content">
+                <span v-if="msg.is_admin" class="message-author">{{ msg.admin_name || '客服' }}</span>
                 <span class="message-text">{{ msg.message }}</span>
                 <span class="message-time">{{ formatDate(msg.created_at) }}</span>
               </div>
@@ -353,10 +390,16 @@ onMounted(() => {
             <input
               v-model="replyMessage"
               type="text"
+              maxlength="2000"
               placeholder="输入回复内容..."
               @keyup.enter="replyTicket"
             />
-            <button @click="replyTicket" :disabled="replying || !replyMessage.trim()" class="btn-send">
+            <button
+              @click="replyTicket"
+              :disabled="replying || !replyMessage.trim()"
+              class="btn-send"
+              :title="replying ? '发送中' : '发送回复'"
+            >
               <Send :size="16" />
             </button>
           </div>
@@ -454,6 +497,26 @@ onMounted(() => {
 
 .ticket-time {
   color: rgba(250, 250, 250, 0.5);
+}
+
+/* 骨架 */
+.skel { height: 78px; }
+.skel-msg { height: 64px; }
+
+.spinning { animation: au-spin 0.9s linear infinite; }
+
+.messages-empty {
+  margin: 0;
+  padding: 2rem 0;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: rgba(250, 250, 250, 0.4);
+}
+
+.message-author {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #22d3ee;
 }
 
 /* 加载状态 */
