@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 import secrets
@@ -34,6 +35,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.emby_server import api as emby_api
+from backend.emby_server import compat_routes
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user
 from backend.emby_server.streaming import stop_transcode
@@ -46,7 +48,7 @@ SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 # 被替换的旧路由（api.py 里不带鉴权的实现）
 LIST_PATHS = ("/emby/Sessions", "/Sessions")
 STOP_PATHS = ("/emby/Sessions/{session_key}", "/Sessions/{session_key}")
-# 上报路由：路径 → api.py 里的处理函数名（只改 body，不改逻辑）
+# 上报路由：路径 → compat_routes.py 里的处理函数名（只改 body，不改逻辑）
 REPORT_PATHS = {
     "/emby/Sessions/Playing": "session_playing",
     "/Sessions/Playing": "session_playing",
@@ -165,7 +167,11 @@ def _install_report_routes(router, originals: dict) -> int:
                 # 就地改写：starlette 会缓存 Request.json() 的结果，
                 # 原处理函数随后读到的就是归一化后的 body。
                 body["PlaySessionId"] = resolve_session_key(db, user, body)
-            return await _original(request, user, db)
+            # 原处理函数是同步 def（拆分后跑在线程池）时不 await，直接取返回值
+            result = _original(request, user, db)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
 
         router.post(path)(report)
         installed += 1
@@ -197,7 +203,7 @@ def install_session_routes(router) -> dict:
     for path in STOP_PATHS:
         router.delete(path)(stop_session_checked)
     report_routes = _install_report_routes(
-        router, {name: getattr(emby_api, name) for name in set(REPORT_PATHS.values())}
+        router, {name: getattr(compat_routes, name) for name in set(REPORT_PATHS.values())}
     )
 
     logger.info(

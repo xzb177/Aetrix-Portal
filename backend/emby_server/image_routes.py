@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.emby_server import api as emby_api
+from backend.emby_server import media_routes
 
 logger = logging.getLogger(__name__)
 
@@ -93,26 +93,29 @@ def with_conditional_get(response, request: Request):
     return Response(status_code=304, headers=headers)
 
 
-async def item_image_cached(
+def item_image_cached(
     item_id: str,
     image_type: str,
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """条目图片：实现仍在 api.py，这里只补条件请求"""
-    return with_conditional_get(await emby_api.item_image(item_id, image_type, request, db), request)
+    """条目图片：实现见 media_routes（v2.13.0 拆分），这里只补条件请求
+
+    同步实现：图片是媒体库滚动时最高频的请求，读盘 / 代理远程图不能占着事件循环。
+    """
+    return with_conditional_get(media_routes.item_image(item_id, image_type, request, db), request)
 
 
-async def item_image_index_cached(
+def item_image_index_cached(
     item_id: str,
     image_type: str,
     index: str,
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """带序号的图片地址（/Images/Backdrop/0 等）：同样交给 api.py 的实现"""
+    """带序号的图片地址（/Images/Backdrop/0 等）：同样交给 media_routes 的实现（同步）"""
     return with_conditional_get(
-        await emby_api.item_image_index(item_id, image_type, index, request, db), request
+        media_routes.item_image_index(item_id, image_type, index, request, db), request
     )
 
 

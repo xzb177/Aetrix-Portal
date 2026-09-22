@@ -40,6 +40,12 @@ from backend.api.reminders_admin import admin_reminders_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 from backend.emby_server.api import emby_router
+
+# v2.13.0：api.py 拆分出来的协议路由模块。导入即把路由注册到同一个 emby_router 上，
+# 这里的顺序（media → compat → stream）与拆分前的定义顺序一致，不能调换。
+from backend.emby_server import media_routes  # noqa: F401
+from backend.emby_server import compat_routes  # noqa: F401
+from backend.emby_server import stream_routes  # noqa: F401
 from backend.emby_server.image_routes import install_image_routes
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
@@ -117,7 +123,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.12.0",
+    version="2.13.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",

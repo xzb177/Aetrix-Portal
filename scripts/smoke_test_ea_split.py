@@ -23,6 +23,7 @@ from sqlalchemy import create_engine
 
 from emby_api import main as ea
 from backend.database import init_db
+from backend.emby_server.portal import configured_emby_url
 
 failures: list[str] = []
 
@@ -145,7 +146,14 @@ with TestClient(em.app) as client:
     except Exception:  # noqa: BLE001
         detail = r.text[:60]
     check("EM 不再提供 /emby/*", r.status_code == 404, f"HTTP {r.status_code}")
-    check("并指引客户端去 EA", "EA" in detail and "emby.example.com" in detail, detail[:60])
+    # 指引地址的口径是「面板里配置的 Emby 服务入口」优先于环境变量，
+    # 所以断言接受两者之一（沙箱库往往已经配过地址，旧断言假定库是干净的）。
+    _hint_candidates = (configured_emby_url(), "https://emby.example.com")
+    check(
+        "并指引客户端去 EA",
+        "EA" in detail and any(h and h in detail for h in _hint_candidates),
+        detail[:60],
+    )
 
     r = client.get("/System/Info/Public")
     check("裸根协议路径也给出指引", r.status_code == 404, f"HTTP {r.status_code}")

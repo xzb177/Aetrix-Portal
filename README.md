@@ -294,6 +294,17 @@ python serve_emby.py                   # EA 网关 :8001（客户端连它，分
 
 ## 📝 更新日志
 
+### v2.13.0 (2026-09-22) — api.py 拆分 · 协议路由彻底退出事件循环
+- 🧩 **按关注点拆分**：2100+ 行的 `emby_server/api.py` 拆为 `api.py`（系统信息/认证/列表详情/播放核心）+
+  `media_routes.py`（图片/下载/hls1）+ `compat_routes.py`（会话上报与协议补齐）+ `stream_routes.py`
+  （容器变体流/原始文件/字幕/HLS 通配）；四者注册到同一个 `emby_router`，注册顺序与拆分前逐条一致
+  （192 条装饰器已比对），`mount_routes` / `image_routes` / `session_routes` 的替换逻辑不受影响
+- 🧵 **42 个协议端点改走线程池**：会话上报、筛选值/流派/工作室/演员、收藏、相似/花絮/主题曲、任务、
+  活动日志、库刷新、字幕投递、原始文件、下载、`hls1` 等不再把同步查询压在事件循环上；
+  图片端点（媒体库滚动最高频）与其条件请求包装也一并同步化
+- 🔎 拆分后 `api.py` 只剩 5 个必须异步的路由（要 `await request.json()` 或异步响应流）
+- 📄 `docs/performance.md` 补「协议路由的线程模型」一节，写明「同步 `def` 优先」的口径
+
 ### v2.12.0 (2026-09-22) — 事件循环不再被同步阻塞 · 并发竞态与缓存修正
 - 🧵 **协议路由改走线程池**：24 个不 await 任何东西的异步路由（Items 列表、Resume、Latest、
   Counts/Filters、详情、季/集、NextUp、收藏与已看、AuthenticateByName 等）改为同步实现，
