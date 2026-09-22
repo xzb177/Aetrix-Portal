@@ -118,7 +118,7 @@ function toggleMsgMenu() {
 /**
  * 导航分工（v2.6.30）：全站只有一份导航定义，见 src/config/navigation.ts。
  *
- *   primaryNav   → 桌面在顶栏、移动端在底部坞，同一批条目、同一个顺序
+ *   primaryNav   → 顶栏（宽屏横排、窄屏第二行滑动选项卡），全断点同一批条目、同一个顺序
  *   menuSections → 低频入口统一收进头像菜单（全断点一致）
  *
  * 顶栏不再有第二个汉堡抽屉：同一批链接在同一屏里出现两遍，是「看着有两个导航」的根源。
@@ -334,7 +334,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                 </div>
 
                 <!-- 长尾入口：低频功能统一收在这里（全断点一致），
-                     主导航（顶栏 / 底部坞）只留 5 个高频目的地 -->
+                     顶栏主导航只留 3 个高频目的地（首页 / 媒体库 / 我的） -->
                 <template v-for="group in menuSections" :key="group.title">
                   <p class="dropdown-group-title">{{ group.title }}</p>
                   <RouterLink

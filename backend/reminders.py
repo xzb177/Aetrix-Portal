@@ -324,6 +324,7 @@ def start_reminder_scheduler(interval_seconds: Optional[int] = None) -> bool:
     def _loop() -> None:
         import asyncio
 
+        from backend import coupons
         from backend.database import SessionLocal
 
         while True:
@@ -336,6 +337,16 @@ def start_reminder_scheduler(interval_seconds: Optional[int] = None) -> bool:
                         "到期提醒周期完成: 提醒 %s / 到期 %s",
                         summary["reminded"], summary["expired_notified"],
                     )
+                # 优惠券的预订额度不能被「点了下单但没付款」的订单永远占着：
+                # 超时未支付的预订在这里自动关单并还额度（口径见 coupons.sweep_stale_reservations）
+                swept = coupons.sweep_stale_reservations(db)
+                if swept["scanned"]:
+                    logger.info(
+                        "优惠券预订清理: 扫描 %s / 自动关单 %s / 补记已用 %s / 释放 %s",
+                        swept["scanned"], swept["closed_orders"],
+                        swept["consumed"], swept["released"],
+                    )
+                db.commit()
             except Exception as exc:  # noqa: BLE001 — 提醒线程绝不能因一次失败退出
                 logger.warning("到期提醒周期异常: %s", exc)
                 db.rollback()

@@ -64,6 +64,7 @@ export interface OrderRow {
   order_id: string
   kind: 'recharge' | 'subscription'
   item_name: string
+  /** 实付金额（用券后就是折后价） */
   amount: number
   status: string
   created_at: string | null
@@ -71,6 +72,10 @@ export interface OrderRow {
   // 退款留痕（v2.9.0）：用户端要能直接看到「为什么退了」，否则只会来问客服
   refunded_at?: string | null
   refund_reason?: string
+  // 优惠快照（v2.10.0）：原价 / 优惠金额 / 用的哪个码，用户要能自己对账
+  list_price?: number
+  discount_amount?: number
+  coupon_code?: string
 }
 
 export interface MyInviteInfo {
@@ -192,6 +197,30 @@ export const deviceApi = {
       `/api/user/emby/devices/${encodeURIComponent(deviceId)}`),
 }
 
+// ==================== 优惠券（v2.10.0） ====================
+
+/** 试算结果：能不能用、省多少、实付多少（与真正下单同一套口径） */
+export interface CouponQuote {
+  valid: boolean
+  code: string
+  coupon_id: number
+  item_name: string
+  list_price: number
+  discount_amount: number
+  paid_amount: number
+  discount_type: 'percent' | 'fixed'
+  value: number
+}
+
+export const couponApi = {
+  /** 功能开关：关闭时钱包页不展示优惠码输入框（不让用户白填） */
+  config: () =>
+    api.get<never, { enabled: boolean }>('/api/user/economy/payment/coupon/config'),
+  /** 试算：POST 以免优惠码进访问日志/浏览器历史 */
+  quote: (data: { code: string; kind: 'recharge' | 'subscription'; item_id: number }) =>
+    api.post<never, CouponQuote>('/api/user/economy/payment/coupon/quote', data),
+}
+
 // ==================== 支付 ====================
 
 export const paymentApi = {
@@ -202,8 +231,8 @@ export const paymentApi = {
     api.get<never, { enabled: boolean; plans: SubscriptionPlan[]; access_mode?: 'paid' | 'free'; is_free?: boolean; access_note?: string }>(
       '/api/user/economy/payment/plans',
     ),
-  createOrder: (data: { kind: 'recharge' | 'subscription'; item_id: number; payment_method: string }) =>
-    api.post<never, { success: boolean; order_id: string; amount: number; pay_url: string; message: string }>('/api/user/economy/payment/order', data),
+  createOrder: (data: { kind: 'recharge' | 'subscription'; item_id: number; payment_method: string; coupon_code?: string }) =>
+    api.post<never, { success: boolean; order_id: string; amount: number; list_price?: number; discount_amount?: number; coupon_code?: string; pay_url: string; message: string }>('/api/user/economy/payment/order', data),
   orders: (params?: { kind?: string; limit?: number }) =>
     api.get<never, { orders: OrderRow[] }>('/api/user/economy/payment/orders', { params }),
 }

@@ -10,6 +10,8 @@
 - GET  /payment/packages      充值套餐列表（公开）
 - GET  /payment/plans         订阅套餐列表（公开）
 - GET  /payment/methods       可用支付方式（按网关能力推导）
+- GET  /payment/coupon/config 优惠券开关（关闭时用户端不显示优惠码输入框）
+- POST /payment/coupon/quote  优惠码试算（能不能用、省多少、实付多少）
 - POST /payment/order         创建支付订单（充值积分 / 购买订阅），返回支付跳转 URL
 - GET  /payment/orders        我的订单列表
 """
@@ -31,7 +33,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from backend import models, realms
+from backend import coupons, models, realms
 from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
@@ -498,10 +500,41 @@ async def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(ge
     }
 
 
+@router.get("/payment/coupon/config")
+async def coupon_config(db: Session = Depends(get_db)):
+    """优惠券开关：关闭时用户端不展示优惠码输入框，避免填了才报错"""
+    return {"enabled": coupons.enabled(db)}
+
+
+class CouponQuoteRequest(BaseModel):
+    code: str = Field(..., description="用户填写的优惠码")
+    kind: str = Field(..., description="recharge / subscription")
+    item_id: int = Field(..., description="充值套餐ID 或 套餐ID")
+
+
+@router.post("/payment/coupon/quote")
+async def coupon_quote(
+    req: CouponQuoteRequest,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """优惠码试算（下单前预览）
+
+    用 POST 而不是 GET：优惠码不该进访问日志/浏览器历史（与卡码预检同一考虑）。
+    下单时走的是同一套 `coupons.quote`，不会出现「预览 8 折、实付全价」。
+    """
+    allowed, _ = check_rate_limit(f"coupon-quote:{current_user.id}", 30, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
+    return coupons.quote(db, user=current_user, code=req.code,
+                         kind=req.kind, item_id=req.item_id)
+
+
 class CreateOrderRequest(BaseModel):
     kind: str = Field(..., description="recharge=充值积分 / subscription=购买订阅")
     item_id: int = Field(..., description="充值套餐ID 或 套餐ID")
     payment_method: str = Field(default="alipay")
+    coupon_code: str = Field(default="", description="优惠码（可空）；下单时占额度，付款转已用，关单/退款自动还回")
 
 
 def _yipay_sign(params: dict, key: str) -> str:
@@ -571,7 +604,39 @@ async def create_payment_order(
     else:
         raise HTTPException(status_code=400, detail="kind 必须是 recharge 或 subscription")
 
+    # 优惠券：预览与下单共用 coupons.quote（同一套口径），下单即占额度
+    list_price = Decimal(str(amount))
+    discount_amount = Decimal("0.00")
+    paid_amount = list_price
+    preview = None
+    coupon_code = (req.coupon_code or "").strip()
+    if coupon_code:
+        preview = coupons.quote(db, user=current_user, code=coupon_code,
+                                kind=req.kind, item_id=req.item_id)
+        discount_amount = Decimal(str(preview["discount_amount"]))
+        paid_amount = Decimal(str(preview["paid_amount"]))
+        coupon_code = preview["code"]
+
+    # 订单上快照「原价 / 优惠 / 实付」，并让订单金额一律等于**实付**：
+    # 对账、邀请返利比例、退款都以用户真付的钱为准，不能按原价算。
+    order.list_price = list_price
+    order.discount_amount = discount_amount
+    if req.kind == "recharge":
+        order.price = paid_amount
+    else:
+        order.amount = paid_amount
+
     db.add(order)
+    if preview is not None:
+        coupon = db.query(models.CouponCode).filter(
+            models.CouponCode.id == preview["coupon_id"]).first()
+        if coupon is None:
+            raise HTTPException(status_code=400, detail="优惠码不存在")
+        # 占额度（条件 UPDATE，并发也超不了总限）；失败则整笔下单回滚
+        usage = coupons.reserve(db, coupon=coupon, user=current_user, order_id=order_id,
+                                kind=req.kind, list_price=list_price,
+                                discount=discount_amount, paid=paid_amount)
+        order.coupon_usage_id = usage.id
     db.commit()
 
     params = {
@@ -581,7 +646,7 @@ async def create_payment_order(
         "notify_url": notify_url,
         "return_url": return_url,
         "name": item_name,
-        "money": f"{float(amount):.2f}",
+        "money": f"{float(paid_amount):.2f}",
     }
     params["sign"] = _yipay_sign(params, key)
     params["sign_type"] = "MD5"
@@ -590,12 +655,15 @@ async def create_payment_order(
     order.payment_url = pay_url
     db.commit()
 
-    logger.info("创建支付订单: user=%s order=%s kind=%s amount=%s",
-                current_user.id, order_id, req.kind, amount)
+    logger.info("创建支付订单: user=%s order=%s kind=%s amount=%s discount=%s",
+                current_user.id, order_id, req.kind, paid_amount, discount_amount)
     return {
         "success": True,
         "order_id": order_id,
-        "amount": float(amount),
+        "amount": float(paid_amount),
+        "list_price": float(list_price),
+        "discount_amount": float(discount_amount),
+        "coupon_code": coupon_code,
         "pay_url": pay_url,
         "message": "订单已创建，正在跳转支付",
     }
@@ -608,7 +676,11 @@ async def my_orders(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """我的订单列表（充值 + 订阅合并）"""
+    """我的订单列表（充值 + 订阅合并）
+
+    带优惠快照：原价 / 优惠金额 / 实付 / 用的哪个码。用户端要能自己对账
+    （“我明明用了券，为什么订单显示全价”）。
+    """
     orders: list[dict] = []
 
     if kind in (None, "recharge"):
@@ -619,6 +691,10 @@ async def my_orders(
                 "order_id": o.order_id, "kind": "recharge",
                 "item_name": f"积分充值（+{o.amount} 积分）",
                 "amount": float(o.price), "status": o.status,
+                "list_price": float(o.list_price or 0),
+                "discount_amount": float(o.discount_amount or 0),
+                "coupon_code": "",
+                "coupon_usage_id": o.coupon_usage_id,
                 "created_at": o.created_at.isoformat() if o.created_at else None,
                 "paid_at": o.paid_at.isoformat() if o.paid_at else None,
                 # 退款留痕：用户端要能看到“为什么退了/退了多少”，否则只会来问客服
@@ -634,11 +710,27 @@ async def my_orders(
                 "order_id": o.order_id, "kind": "subscription",
                 "item_name": f"订阅 - {o.item_name}",
                 "amount": float(o.amount), "status": o.status,
+                "list_price": float(o.list_price or 0),
+                "discount_amount": float(o.discount_amount or 0),
+                "coupon_code": "",
+                "coupon_usage_id": o.coupon_usage_id,
                 "created_at": o.created_at.isoformat() if o.created_at else None,
                 "paid_at": o.paid_at.isoformat() if o.paid_at else None,
                 "refunded_at": o.refunded_at.isoformat() if o.refunded_at else None,
                 "refund_reason": o.refund_reason or "",
             })
+
+    # 优惠码回填（一次查完，不给每条订单配一个查询）
+    usage_ids = {o["coupon_usage_id"] for o in orders if o.get("coupon_usage_id")}
+    if usage_ids:
+        rows = db.query(models.CouponUsage.id, models.CouponCode.code).join(
+            models.CouponCode, models.CouponCode.id == models.CouponUsage.coupon_id
+        ).filter(models.CouponUsage.id.in_(usage_ids)).all()
+        code_map = {uid: code for uid, code in rows}
+        for o in orders:
+            o["coupon_code"] = code_map.get(o["coupon_usage_id"], "")
+    for o in orders:
+        o.pop("coupon_usage_id", None)
 
     orders.sort(key=lambda x: x["created_at"] or "", reverse=True)
     return {"orders": orders[:limit]}
@@ -691,6 +783,8 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
             ))
         recharge_order.status = "paid"
         recharge_order.paid_at = datetime.now()
+        # 优惠券预订 → 已消费（额度仍占用）；关单/退款时才释放
+        coupons.consume(db, recharge_order.coupon_usage_id)
 
     if subscription_order and subscription_order.status not in ("paid", "refunded", "closed"):
         plan = db.query(models.SubscriptionPlan).filter(
@@ -719,6 +813,7 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
             ))
         subscription_order.status = "paid"
         subscription_order.paid_at = datetime.now()
+        coupons.consume(db, subscription_order.coupon_usage_id)
 
     return pending
 

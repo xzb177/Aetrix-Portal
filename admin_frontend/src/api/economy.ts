@@ -214,6 +214,96 @@ export const refundOrder = (
 export const fetchRefundRecords = (limit = 20) =>
   get<{ records: RefundRecord[] }>('/economy/refunds', { limit })
 
+// ==================== 优惠券（v2.10.0） ====================
+// 后端：backend/api/coupons_admin.py + backend/coupons.py
+// 额度是预订制的：下单占额度（reserved）、付款转已用（consumed）、关单/退款释放（released）。
+
+export interface CouponRow {
+  id: number
+  code: string
+  kind: 'all' | 'subscription' | 'recharge'
+  discount_type: 'percent' | 'fixed'
+  /** percent: 实付百分比（90 = 九折）；fixed: 减免金额（元） */
+  value: number
+  min_amount: number
+  max_discount: number
+  realm_id: number | null
+  realm_name: string
+  /** 总次数上限，0 = 不限 */
+  max_uses: number
+  /** 已占用（预订 + 已消费） */
+  use_count: number
+  /** 每人限用，0 = 不限 */
+  per_user_limit: number
+  valid_from: string | null
+  valid_until: string | null
+  is_active: boolean
+  note: string
+  created_at: string | null
+  stats: { reserved: number; consumed: number; released: number }
+  usable: boolean
+}
+
+export interface CouponUsageRow {
+  id: number
+  coupon_id: number
+  code: string
+  user_id: number
+  username: string
+  order_id: string
+  kind: string
+  status: 'reserved' | 'consumed' | 'released'
+  list_price: number
+  discount_amount: number
+  paid_amount: number
+  created_at: string | null
+  closed_at: string | null
+}
+
+export interface CouponSettings {
+  enabled: boolean
+  /** 超时未支付的预订多久自动关单并还额度（小时，0 = 不自动清理） */
+  reserve_hours: number
+  /** 当前占用中的预订数 */
+  active_usage: number
+}
+
+export interface CouponCreatePayload {
+  count: number
+  code?: string
+  kind: 'all' | 'subscription' | 'recharge'
+  discount_type: 'percent' | 'fixed'
+  value: number
+  min_amount?: number
+  max_discount?: number
+  realm_id?: number | null
+  max_uses?: number
+  per_user_limit?: number
+  valid_until?: string
+  valid_days?: number
+  note?: string
+}
+
+export const fetchCoupons = (params: { kind?: string; active?: string; search?: string; limit?: number } = {}) =>
+  get<{ enabled: boolean; total: number; coupons: CouponRow[] }>('/economy/coupons', params)
+
+export const createCoupons = (data: CouponCreatePayload) =>
+  post<{ success: boolean; count: number; coupons: CouponRow[] }>('/economy/coupons', data)
+
+export const updateCoupon = (id: number, data: Partial<Omit<CouponCreatePayload, 'count' | 'code'>> & { is_active?: boolean; valid_from?: string }) =>
+  put<{ success: boolean; coupon: CouponRow }>(`/economy/coupons/${id}`, data)
+
+export const deleteCoupon = (id: number) =>
+  del<{ success: boolean; message: string }>(`/economy/coupons/${id}`)
+
+export const fetchCouponUsages = (params: { limit?: number; coupon_id?: number } = {}) =>
+  get<{ records: CouponUsageRow[] }>('/economy/coupons/usages', params)
+
+export const fetchCouponSettings = () => get<CouponSettings>('/economy/coupons/settings')
+
+export const updateCouponSettings = (data: { enabled: boolean; reserve_hours?: number }) =>
+  put<{ success: boolean; enabled: boolean; reserve_hours: number }>('/economy/coupons/settings', data)
+
 // ==================== 邀请与积分 ====================
 
 export const fetchInvitations = (params: { limit?: number } = {}) =>

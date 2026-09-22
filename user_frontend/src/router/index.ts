@@ -59,12 +59,13 @@ const router = createRouter({
       component: () => import('@/views/InviteView.vue'),
       meta: { title: '邀请返利', requiresAuth: true },
     },
-    // ==================== 观看记录（v2.5.0） ====================
+    // ==================== 观看记录（v2.5.0；v2.10.0 收为媒体库分段） ====================
+    // 老地址保留但不再是一级页面：收藏 / 观看记录都是媒体库的视图，
+    // 重定向到 /media?tab=… —— 书签、外部链接与站内旧链接都不会失效（方案 A）。
     {
       path: '/history',
       name: 'history',
-      component: () => import('@/views/HistoryView.vue'),
-      meta: { title: '观看记录', requiresAuth: true },
+      redirect: (to) => ({ path: '/media', query: { ...to.query, tab: 'history' } }),
     },
     // ==================== 媒体库（Emby 协议端点） ====================
     {
@@ -79,7 +80,7 @@ const router = createRouter({
       component: () => import('@/views/media/LibraryView.vue'),
       meta: { title: '浏览媒体库', requiresAuth: true },
     },
-    // ==================== 搜索与收藏（v2.5.0） ====================
+    // ==================== 搜索与收藏（v2.5.0；v2.10.0 收为媒体库分段） ====================
     {
       path: '/search',
       name: 'search',
@@ -89,8 +90,7 @@ const router = createRouter({
     {
       path: '/favorites',
       name: 'favorites',
-      component: () => import('@/views/media/FavoritesView.vue'),
-      meta: { title: '我的收藏', requiresAuth: true },
+      redirect: (to) => ({ path: '/media', query: { ...to.query, tab: 'favorites' } }),
     },
     {
       path: '/media/:id',
@@ -124,6 +124,7 @@ router.beforeEach(async (to) => {
     initialized = true
   }
 
+  // 分段页标题由 LibraryHomeView 按 ?tab= 覆写（媒体库 / 收藏 / 观看记录）
   if (to.meta.title) {
     document.title = `${to.meta.title} - Aetrix`
   }

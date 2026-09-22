@@ -1,30 +1,27 @@
 <script setup lang="ts">
 /**
- * 观看记录 — 正在播放 + 观看历史
+ * 观看记录（现在是「媒体库 · 观看记录」分段）— 只讲「我看过什么」
  *
- * v2.5.0 新增：此前用户只能看到首页「继续观看」的一小段切片，看不到完整播放记录，
- * 也无法查看/结束自己在其他设备上的播放会话。
+ * v2.5.0 新增：此前用户只能看到首页「继续观看」的一小段切片，看不到完整播放记录。
+ * v2.10.0：收藏 / 观看记录降级为媒体库内的分段（方案 A），本页在 `/media?tab=history`
+ * 下渲染，旧地址 `/history` 重定向过来。
+ * 「正在播放」（设备 / IP / 结束播放）讲的是**控制**而不是历史，已移入个人中心 → 见
+ * `components/media/PlaybackSessions.vue`。
  *
- * 数据源（均读本地播放记录与会话表，不触发媒体库扫描）：
- * - GET /api/user/emby/sessions  我的正在播放会话（设备 / 客户端 / IP / 进度）
- * - GET /api/user/emby/history   观看历史（按条目去重，取最近一次播放的设备）
+ * 数据源：GET /api/user/emby/history 观看历史（按条目去重，取最近一次播放的设备）。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
-  History, MonitorPlay, RefreshCw, Play, CircleStop, Film, Tv, MonitorSmartphone,
-  CircleCheck, Clock, ChevronRight, Wifi,
+  History, RefreshCw, Play, Film, Tv,
+  CircleCheck, Clock, ChevronRight, MonitorSmartphone, MonitorPlay,
 } from 'lucide-vue-next'
-import { embyApi, type MyPlaybackSession, type WatchHistoryItem } from '@/api'
+import { embyApi, type WatchHistoryItem } from '@/api'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
 
 const PAGE_SIZE = 20
-
-const sessions = ref<MyPlaybackSession[]>([])
-const sessionsLoading = ref(true)
-const stopping = ref<string | null>(null)
 
 const items = ref<WatchHistoryItem[]>([])
 const loading = ref(true)
@@ -77,18 +74,6 @@ function remainText(item: WatchHistoryItem, progress: number): string {
   return `已看 ${progress}%`
 }
 
-async function loadSessions() {
-  sessionsLoading.value = true
-  try {
-    const res = await embyApi.getSessions()
-    sessions.value = res.sessions || []
-  } catch {
-    sessions.value = []
-  } finally {
-    sessionsLoading.value = false
-  }
-}
-
 async function loadHistory(reset = true) {
   if (reset) {
     loading.value = true
@@ -113,22 +98,7 @@ async function loadHistory(reset = true) {
   }
 }
 
-async function stopSession(session: MyPlaybackSession) {
-  stopping.value = session.session_key
-  try {
-    await embyApi.stopSession(session.session_key)
-    toast.success(`已结束「${session.device || '未知设备'}」上的播放`)
-    sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
-  } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '结束播放失败')
-  } finally {
-    stopping.value = null
-  }
-}
-
 function refreshAll() {
-  loadSessions()
   loadHistory(true)
 }
 
@@ -153,64 +123,19 @@ onMounted(refreshAll)
           </p>
         </div>
         <button class="au-btn au-btn-ghost au-btn-sm" @click="refreshAll">
-          <RefreshCw :size="14" :class="{ spinning: loading || sessionsLoading }" />
+          <RefreshCw :size="14" :class="{ spinning: loading }" />
           刷新
         </button>
       </header>
 
-      <!-- 正在播放 -->
-      <section v-if="sessionsLoading || sessions.length" class="au-card au-card-pad block au-anim-up">
-        <div class="block-head">
-          <h2 class="block-title">
-            <MonitorPlay :size="16" />
-            正在播放
-            <span v-if="sessions.length" class="au-badge au-badge-green live">
-              <span class="dot" />{{ sessions.length }} 个会话
-            </span>
-          </h2>
-        </div>
-
-        <div v-if="sessionsLoading" class="skeleton-list">
-          <div class="au-skeleton skel-row" />
-        </div>
-
-        <div v-else class="session-list">
-          <div v-for="s in sessions" :key="s.session_key" class="session-row">
-            <div class="session-icon">
-              <MonitorSmartphone :size="17" />
-            </div>
-
-            <div class="session-main">
-              <div class="session-title">
-                <RouterLink class="session-name" :to="`/media/${s.item_id}`">{{ s.item }}</RouterLink>
-                <span class="au-badge au-badge-cyan">{{ typeLabel(s.item_type) }}</span>
-                <span v-if="s.is_paused" class="au-badge au-badge-amber">已暂停</span>
-              </div>
-              <div class="session-meta">
-                <span>{{ s.device || '未知设备' }}</span>
-                <span v-if="s.client" class="meta-sep">·</span>
-                <span v-if="s.client">{{ s.client }}</span>
-                <span v-if="s.play_method" class="meta-sep">·</span>
-                <span v-if="s.play_method" class="method">{{ s.play_method === 'Transcode' ? '转码' : '直连' }}</span>
-                <span v-if="s.remote_addr" class="meta-sep">·</span>
-                <span v-if="s.remote_addr" class="addr"><Wifi :size="11" />{{ s.remote_addr }}</span>
-              </div>
-              <div class="session-progress">
-                <div class="bar"><div class="bar-fill" :style="{ width: s.progress + '%' }" /></div>
-                <span class="bar-text">{{ s.progress }}% · {{ fmtTime(s.updated_at) }}</span>
-              </div>
-            </div>
-
-            <button
-              class="au-btn au-btn-danger au-btn-sm stop-btn"
-              :disabled="stopping === s.session_key"
-              @click="stopSession(s)"
-            >
-              <CircleStop :size="13" />
-              {{ stopping === s.session_key ? '结束中' : '结束' }}
-            </button>
-          </div>
-        </div>
+      <!-- 正在播放已移到个人中心：这块是「控制」不是「历史」 -->
+      <section class="pointer-bar au-card au-anim-up">
+        <MonitorPlay :size="15" />
+        <span>在其他设备上播放、或想远程结束播放？</span>
+        <RouterLink class="pointer-link" to="/profile">
+          个人中心 → 正在播放
+          <ChevronRight :size="13" />
+        </RouterLink>
       </section>
 
       <!-- 历史列表 -->
@@ -337,87 +262,30 @@ onMounted(refreshAll)
   animation: au-pulse-soft 1.6s ease-in-out infinite;
 }
 
-/* ===== 正在播放 ===== */
-.session-list { display: flex; flex-direction: column; gap: 0.5rem; }
-
-.session-row {
-  display: flex;
-  align-items: center;
-  gap: 0.875rem;
-  padding: 0.75rem 0.875rem;
-  border-radius: var(--au-r-md);
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-}
-
-.session-icon {
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--au-r-sm);
-  background: var(--au-primary-soft);
-  color: var(--au-primary);
-}
-
-.session-main { flex: 1; min-width: 0; }
-
-.session-title {
-  display: flex;
-  align-items: center;
-  gap: 0.4375rem;
-  flex-wrap: wrap;
-}
-
-.session-name {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--au-text);
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
-.session-name:hover { color: var(--au-primary); }
-
-.session-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.3125rem;
-  margin-top: 0.1875rem;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  flex-wrap: wrap;
-}
-
-.session-meta .addr { display: inline-flex; align-items: center; gap: 0.1875rem; }
-.session-meta .method { color: var(--au-violet); }
-.meta-sep { opacity: 0.5; }
-
-.session-progress {
+/* 正在播放的指针条（会话卡片本身在个人中心 → PlaybackSessions） */
+.pointer-bar {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-top: 0.375rem;
+  padding: 0.75rem 0.9375rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
 }
 
-.bar {
-  flex: 1;
-  max-width: 260px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--au-border-strong);
-  overflow: hidden;
+.pointer-bar svg { color: var(--au-primary); flex-shrink: 0; }
+
+.pointer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  margin-left: auto;
+  color: var(--au-primary);
+  text-decoration: none;
+  font-weight: 600;
 }
 
-.bar-fill { height: 100%; background: var(--au-gradient); }
-.bar-text { font-size: 0.6875rem; color: var(--au-text-4); white-space: nowrap; }
-
-.stop-btn { flex-shrink: 0; }
+.pointer-link:hover { text-decoration: underline; }
 
 /* ===== 类型筛选 ===== */
 .type-tabs { display: flex; gap: 0.375rem; }
