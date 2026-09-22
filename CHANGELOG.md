@@ -41,8 +41,14 @@
   `compat_routes.session_progress` / `api.user_views`）见 `docs/performance.md` 二·七。
 - 8 套此前只在开发机上跑的冒烟测试接入 CI（`emby` / `emby_gateway` / `ea_split` /
   `media_search` / `mounts` / `paywall` / `scan_cleanup` / `user_v250`），CI 里现在共 38 套。
-  `smoke_test_admin_v240.py` 里两条「某条特定订阅必须出现在第一页」的断言改成字段契约断言
-  （列表默认 `limit=50` 且按 `end_date` 升序，本机反复跑会把库撑大——CI 空库不会碰到）。
+  接入时按「CI 的后端冒烟作业**不构建前端**」这个事实修正了两处环境相关断言：
+  - `smoke_test_admin_v240.py`：两条「某条特定订阅必须出现在第一页」改成字段契约断言
+    （列表默认 `limit=50` 且按 `end_date` 升序，本机反复跑会把库撑大——CI 空库不会碰到）；
+  - `smoke_test_ea_split.py`：两条「门户 SPA 不被 EA 指引路由吃掉」改为**有构建产物时才断言**
+    （SPA 本来就只在 `user_frontend/dist` 存在时才挂载，没构建时 `/` 返回 API JSON、
+    `/wallet` 返回 404 是正确行为），没构建时打印 SKIP 并说明如何覆盖。
+  - 全套 38 套已按冒烟作业的真实形态（`FRONTEND_DIST` / `ADMIN_DIST` 指向不存在的目录）
+    本地跑过一遍，全绿。
 
 ## [2.20.2] - 2026-09-22
 

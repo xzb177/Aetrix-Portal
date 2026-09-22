@@ -11,8 +11,10 @@ import importlib
 import os
 import sys
 import tempfile
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 # 冒烟测试需要一个确定存在的密钥（真实部署请复用 EM 的 .env）
@@ -161,13 +163,26 @@ with TestClient(em.app) as client:
     r = client.get("/api/health")
     check("EM 面板自身的健康检查不受影响", r.status_code == 200, f"HTTP {r.status_code}")
 
-    # 指引路由不能把面板自己的 SPA 吃掉（这是分离模式最容易踩的回归）
-    r = client.get("/")
-    is_html = r.status_code == 200 and "text/html" in r.headers.get("content-type", "")
-    check("门户首页仍正常返回", is_html, f"HTTP {r.status_code} {r.headers.get('content-type', '')}")
+    # 指引路由不能把面板自己的 SPA 吃掉（这是分离模式最容易踩的回归）。
+    #
+    # 但 **SPA 只在构建产物存在时才挂载**（见 backend/main.py 的 _FRONTEND_DIST.is_dir()）：
+    # 没跑过前端构建的机器（例如 CI 的后端冒烟作业）根本没有 index.html，
+    # 这时 `/` 返回 API 根 JSON、`/wallet` 返回 404 是**正确行为**，不是回归。
+    # 所以这里按「有没有构建产物」如实二选一，而不是把环境差异当成断言失败。
+    _frontend_dist = Path(
+        os.getenv("FRONTEND_DIST", "") or (REPO_ROOT / "user_frontend" / "dist")
+    )
+    if (_frontend_dist / "index.html").is_file():
+        r = client.get("/")
+        is_html = r.status_code == 200 and "text/html" in r.headers.get("content-type", "")
+        check("门户首页仍正常返回", is_html,
+              f"HTTP {r.status_code} {r.headers.get('content-type', '')}")
 
-    r = client.get("/wallet")
-    check("门户子路由仍走 SPA 兜底", r.status_code == 200, f"HTTP {r.status_code}")
+        r = client.get("/wallet")
+        check("门户子路由仍走 SPA 兜底", r.status_code == 200, f"HTTP {r.status_code}")
+    else:
+        print("SKIP  门户 SPA 不被指引路由吃掉 —— 未构建 user_frontend/dist，"
+              "本机执行 `cd user_frontend && npm run build` 后再跑可覆盖")
 
 os.environ.pop("ENABLE_EMBY_GATEWAY", None)
 
