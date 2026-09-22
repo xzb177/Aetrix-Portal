@@ -25,7 +25,7 @@ const auth = useAuthStore()
 const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
 
-const APP_VERSION = 'v2.17.0'
+const APP_VERSION = 'v2.18.0'
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)
@@ -87,7 +87,7 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/emby', label: '媒体库' },
       { path: '/mounts', label: '存储挂载' },
-      { path: '/transfer-115', label: '115 转存' },
+      { path: '/pan115', label: '115 账号' },
       { path: '/media-seek', label: '求片管理' },
       { path: '/announcements', label: '公告管理' },
     ],

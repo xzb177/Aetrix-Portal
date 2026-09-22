@@ -31,7 +31,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库管理' } },
       { path: 'mounts', name: 'StorageMounts', component: () => import('@/views/StorageMounts.vue'), meta: { title: '存储挂载' } },
-      { path: 'transfer-115', name: 'Transfer115', component: () => import('@/views/Transfer115.vue'), meta: { title: '115 转存' } },
+      // v2.18.0：转存任务下线，页面只保留 115 账号；旧地址保留为跳转，收藏不会 404
+      { path: 'pan115', alias: 'transfer-115', name: 'Pan115Accounts', component: () => import('@/views/Pan115Accounts.vue'), meta: { title: '115 账号' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '操作日志' } },
       { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '服务健康' } },

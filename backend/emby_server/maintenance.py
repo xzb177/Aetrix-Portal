@@ -46,7 +46,8 @@ SUB_CACHE_MAX_DAYS = float(os.getenv("SUB_CACHE_MAX_DAYS", "7") or 7)
 MAINTENANCE_INTERVAL = max(60, int(os.getenv("MAINTENANCE_INTERVAL", "600") or 600))
 
 # 转码根目录下这些子目录是**共享缓存**，不属于某个会话，清理时要留下
-_SHARED_DIRS = {"subs", "pan115"}
+# （115 转存的状态目录 pan115 已在 v2.18.0 移除：它不再受保护，遗留的会被本清理回收）
+_SHARED_DIRS = {"subs"}
 
 
 # ==================== 数据库侧 ====================
@@ -151,7 +152,7 @@ def cleanup_transcode_orphans(min_age_seconds: float = 0) -> int:
     """清掉转码根目录下不属于任何「在跑的会话」的遗留目录
 
     重启后注册表为空，上一进程留下的 HLS 目录再也没人清理；`/tmp` 是 tmpfs 的机器上
-    这些分片就是内存占用。`subs` / `pan115` 这类共享缓存在这里不动（字幕缓存另有淘汰）。
+    这些分片就是内存占用。`subs` 这类共享缓存在这里不动（字幕缓存另有淘汰）。
     """
     from backend.emby_server import streaming
 
