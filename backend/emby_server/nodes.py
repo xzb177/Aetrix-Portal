@@ -354,7 +354,7 @@ def _node_libraries(db: Session, realm_id: Optional[int], node_id: Optional[int]
 
 
 @node_router.get("/me", dependencies=[Depends(require_panel_key)])
-async def node_me(db: Session = Depends(get_db)):
+def node_me(db: Session = Depends(get_db)):
     """这台节点是谁、属于哪个服、负责哪些库（面板用它核对 REALM / NODE_KEY 配置）
 
     鉴权走 ``X-Panel-Key``（= 两端共享的 SECRET_KEY），与挂载体检同一套：
@@ -374,13 +374,13 @@ async def node_me(db: Session = Depends(get_db)):
 
 
 @node_router.get("/libraries", dependencies=[Depends(require_panel_key)])
-async def node_libraries(db: Session = Depends(get_db)):
+def node_libraries(db: Session = Depends(get_db)):
     realm_id = self_realm_id(db)
     return {"node": describe(db), "libraries": _node_libraries(db, realm_id, self_node_id(db))}
 
 
 @node_router.post("/libraries/{library_id}/scan", dependencies=[Depends(require_panel_key)])
-async def node_scan_library(library_id: int, db: Session = Depends(get_db)):
+def node_scan_library(library_id: int, db: Session = Depends(get_db)):
     """由归属节点执行一次扫描（面板点「扫描」时转发过来）
 
     只有能碰到文件的那台机器扫得动，所以已分配的库必须走这条路径。

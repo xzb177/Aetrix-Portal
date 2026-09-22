@@ -19,6 +19,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from prometheus_client import make_asgi_app
+
+from backend.metrics_guard import MetricsGuard
 from sqlalchemy import text
 
 from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
@@ -115,7 +117,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.11.1",
+    version="2.12.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -189,7 +191,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # 挂载 Prometheus metrics 端点
 metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
+# 默认只允许本机/内网采集：指标会把全部路由与计数摊开，不该裸挂公网
+app.mount("/metrics", MetricsGuard(metrics_app))
 
 
 # ==================== 健康检查 ====================

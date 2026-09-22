@@ -61,6 +61,10 @@ if DATABASE_TYPE == "sqlite":
         # busy_timeout：写锁被占时等待而不是立刻报 "database is locked"
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA busy_timeout=30000")
+        # WAL 下 synchronous=NORMAL 是安全的：事务提交不再等 fsync 落盘，
+        # 只在 checkpoint 时同步。默认的 FULL 会让每次提交（播放进度上报、
+        # token 更新这类高频写）都付一次 fsync。
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

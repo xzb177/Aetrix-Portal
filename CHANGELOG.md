@@ -2,6 +2,65 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.12.0] - 2026-09-22
+
+针对一轮代码评审里**一直还在**的项逐条处理，主线是「不让同步阻塞与并发竞态住在事件循环上」。
+
+### 修复 (Fixed) — 事件循环不再被阻塞
+- **协议路由改同步实现，交给 Starlette 线程池**：`api.py` 里 24 个不 ``await`` 任何东西的
+  异步路由（`/Users/{uid}/Items`、`Resume`、`Latest`、`Items/Counts`、`Items/Filters`、
+  条目详情、`Shows/Seasons`、`Shows/Episodes`、`NextUp`、收藏/已看、`AuthenticateByName`、
+  `System/Info` 等）此前把同步 SQLAlchemy 查询压在事件循环上串行执行；现在它们的库查询、
+  文件遍历与远程代理都在线程池里跑；同类处理也应用在挂载文件、搜索结果、会话列表/结束、
+  节点接口上。**跨机 PostgreSQL 上每查询一次 RTT 就锁一次吞吐的问题随之缓解**。
+- **HLS 等待不再阻塞全进程**：`wait_for_file()` 改异步等待（等首片最多 15s、等切片最多 12s
+  过去是同步 `time.sleep` 轮询，一个人起播其他人全部排队）；`start_transcode` 里的失效会话
+  回收与并发上限保护改到后台线程（原本要 terminate 子进程、等它退出、删目录）。
+- **远程代理新增异步版**：`serve_remote_async()` 用 `httpx.AsyncClient`，播放路径上的
+  Range 请求不再为「连源站 + 等首字节」把整个事件循环挂住；挂载来源走同步路由进线程池，
+  效果相同（凭据不加下发、Range 与透传头口径完全对齐）。
+- **bcrypt 不再吃事件循环**：门户注册/登录/改密与管理端登录/改密/重置密码改为同步路由，
+  `bcrypt.checkpw`/`hashpw`（单次 100-300ms）在线程池里执行；登录风暴不再让服务假死。
+- **筛选菜单不再全表 ORM 物化**：`_filters_payload` 改为「只取需要的列 + ``yield_per`` 分批 +
+  TTL 缓存（``EMBY_FILTERS_CACHE_TTL``，默认 300s）」，十万级库不再因此产生数百 MB 内存尖峰；
+  扫描后可在进程内调 `invalidate_filters_cache()` 主动失效。
+- **随机排序不再全表排序**：`SortBy=Random` 改为「取主键 → 内存抽样 → 按 id 取这一页」，
+  不再让数据库把整个结果集物化后 `ORDER BY RANDOM()`。
+
+### 修复 (Fixed) — 正确性与并发
+- **后缀 Range 解析错误**：`bytes=-500`（播放器探测 MP4 尾部 moov 时会发）旧实现解析成
+  `start=0, end=500`，返回的是文件**开头** 501 字节，部分播放器因此黑屏/播放失败；
+  现按 RFC 7233 解析为末 500 字节（越界、`bytes=5-2`、非法值仍 416）。
+- **支付履约的读-改-写竞态**：回调重试与管理员补单撞车时，两个事务都读到 `pending` →
+  双倍积分 / 双份订阅（跳机器 PostgreSQL 下是实打实的资损）。新增 `_claim_order()`：先做
+  条件 `UPDATE ... WHERE status NOT IN ('paid','refunded','closed')` 领取订单，拿到 0 行就跳过发货；
+  管理员补单碰到已被别人履约的订单现在返回 **409** 并提示刷新，而不是「成功」两个字。
+- **客户端 token 不再每请求提交**：`get_emby_user` 的 `last_used_at` 改为按间隔节流写库
+  （``EMBY_TOKEN_TOUCH_SECONDS``，默认 60s，设 0 回到旧行为）；SQLite 补上
+  `PRAGMA synchronous=NORMAL`（WAL 下安全），高频写不再每次等 fsync。
+
+### 变更 (Changed)
+- **`/metrics` 默认只放行本机/内网**（新增 `backend/metrics_guard.py`）：回环与 RFC1918 正常采集，
+  公网请求直接 403 并写告警；需要公网采集时显式 `METRICS_ALLOW_REMOTE=true`。EM / EA 均已接入，
+  `docs/operations.md` 的检查项同步更新。
+- **ffmpeg 报错不再丢进 DEVNULL**：转码日志写到会话目录里的 `ffmpeg.log`（随会话目录一起清理），
+  异常退出时自动把日志尾部提升到服务日志——`deploy-ea.md` 一直让运维在服务日志找转码失败原因，
+  现在那里真的有原因。
+- 版本号：EM `version` / EA `EA_VERSION` / 两个前端 `package.json`（含锁文件）/ 后台顶栏 → 2.12.0。
+
+### 验证 (Verification)
+- 本地全部冒烟通过：`smoke_test_auth`、`smoke_test_admin_v240`、`smoke_test_economy`（19 项）、
+  `smoke_test_concurrency`（23/23）、`smoke_test_playback_chain`（20/20）、`smoke_test_emby_sessions`（37 项）、
+  `smoke_test_media_search`、`smoke_test_maintenance`、`smoke_test_security_hardening`（43/43）。
+- 定向检查：后缀/常规/越界/非法 Range 四类逐一验证；`/metrics` 对 `127.0.0.1`/内网 200、
+  公网 403；两个服务均可导入装配，`api.py` 路由由「79 异步 / 0 同步」变为「55 异步 / 24 同步」。
+
+### 待办 (Next)
+- **async ORM 这件事还只做了一半**：`api.py` 里仍有 55 个异步路由（含字幕、图片、下载、
+  收藏切换与后半段接口），它们还在事件循环上跑同步查询；该文件已超 2000 行，需先拆分再逐个处理。
+- 优惠券**单人限领 TOCTOU**（总限额已是条件更新，单人限领的「查-插」仍可并发绕过，P2）。
+- 分类筛选的 `ilike '%x%'` 用不上索引；下载类请求「中间件判一遍 + 路由再判一遍」可以合并。
+
 ## [2.11.1] - 2026-09-22
 
 把 2.11.0 里因 `emby_server/api.py` 太长而暂时搬不动的两件小事做完——做法沿用仓库既有的

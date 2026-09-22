@@ -1,11 +1,13 @@
 """自建 Emby 服务器：流媒体服务（直连流 / Range / HLS 转码）"""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -48,8 +50,18 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4") -> St
     if not m:
         raise HTTPException(status_code=416, detail="Invalid Range")
 
-    start = int(m.group(1)) if m.group(1) else 0
-    end = int(m.group(2)) if m.group(2) else min(start + CHUNK * 200, size - 1)
+    raw_start, raw_end = m.group(1), m.group(2)
+    if not raw_start:
+        # 后缀形式 ``bytes=-500``：表示「文件最后 500 字节」。旧实现当成 start=0/end=500，
+        # 返回的是文件**开头**——播放器探测 MP4 尾部 moov 时拿到错字节，部分会黑屏/ \
+        # 播放失败。这里按 RFC 7233 解析成末尾区间。
+        suffix = int(raw_end or 0)
+        if suffix <= 0:
+            raise HTTPException(status_code=416, detail="Invalid Range")
+        start, end = max(0, size - suffix), size - 1
+    else:
+        start = int(raw_start)
+        end = int(raw_end) if raw_end else min(start + CHUNK * 200, size - 1)
     end = min(end, size - 1)
     if start > end or start >= size:
         raise HTTPException(status_code=416, detail="Requested range not satisfiable")
@@ -141,6 +153,61 @@ def serve_remote(
     )
 
 
+async def serve_remote_async(
+    url: str,
+    request: Request,
+    headers: Optional[dict] = None,
+    media_type: str = "video/mp4",
+) -> StreamingResponse:
+    """远程媒体代理（异步版）：语义与 ``serve_remote`` 完全一致，但不在事件循环上等源站
+
+    播放路径上的每次 Range 请求都要等「连上源站 + 源站回首字节」，同步客户端会把这等待
+    变成整个进程的暂停（一个用户拖进度条，其他人全部卡住）。异步版的等待只挂起当前请求，
+    Range / 状态码 / 透传头的口径与同步版逐项对齐，且凭据同样不下发。
+    """
+    import httpx
+
+    forward = {k: v for k, v in (headers or {}).items()}
+    forward.setdefault("User-Agent", REMOTE_UA)
+    range_header = request.headers.get("range")
+    if range_header:
+        forward["Range"] = range_header
+
+    client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None), follow_redirects=True)
+    try:
+        resp = await client.send(client.build_request("GET", url, headers=forward), stream=True)
+    except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
+        await client.aclose()
+        logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
+        raise HTTPException(status_code=502, detail="源站不可达") from exc
+
+    if resp.status_code >= 400:
+        status = resp.status_code
+        await resp.aclose()
+        await client.aclose()
+        logger.warning("远程媒体源站返回 %s: %s", status, url.split("?")[0])
+        raise HTTPException(status_code=502 if status >= 500 else status, detail=f"源站返回 {status}")
+
+    passthrough = {}
+    for name in ("content-range", "accept-ranges", "content-length", "last-modified", "etag"):
+        value = resp.headers.get(name)
+        if value:
+            passthrough[name.title()] = value
+    content_type = resp.headers.get("content-type") or media_type
+
+    async def iter_remote():
+        try:
+            async for chunk in resp.aiter_bytes(CHUNK):
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        iter_remote(), status_code=resp.status_code, media_type=content_type, headers=passthrough,
+    )
+
+
 def _file_validators(stat: os.stat_result) -> tuple[str, str]:
     """按「mtime + 大小」生成 ETag 与 Last-Modified（内容一变校验器就变）"""
     return f'"{int(stat.st_mtime)}-{stat.st_size}"', formatdate(stat.st_mtime, usegmt=True)
@@ -211,7 +278,12 @@ def build_hls_command(
         "-hls_segment_filename", os.path.join(out_dir, "seg%05d.ts"),
         playlist,
     ]
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # ffmpeg 的报错不能丢进 DEVNULL：deploy-ea.md 让运维在服务日志里找转码失败原因，
+    # 而日志里必须真的有原因。改写到会话目录里的 ffmpeg.log（随会话目录一起清理），
+    # 异常退出时再把尾部提升到服务日志（见 _log_ffmpeg_tail）。
+    log_path = os.path.join(out_dir, "ffmpeg.log")
+    with open(log_path, "wb") as log_file:
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=log_file)
 
 
 def start_transcode(
@@ -228,14 +300,15 @@ def start_transcode(
     同一用户重复请求同一部影片时复用进行中的转码会话，避免客户端重试/多端拉起时
     反复 fork ffmpeg（旧实现每次请求 master.m3u8 都会新建一个进程）。
     """
-    reap_stale_transcodes()
+    # 失效会话回收与并发上限保护放到后台线程：它们要 terminate 子进程、等它退出、
+    # 删目录（最坏几秒），而本函数是在请求路径（事件循环）上被调用的，不该让本次播放
+    # 为别人遗留的会话等待（见 _reap_in_background）。
+    threading.Thread(target=_reap_in_background, daemon=True).start()
     if user_id is not None and item_guid:
         existing = find_active_transcode(user_id, item_guid)
         if existing:
             logger.info("复用进行中的 HLS 转码 %s", existing)
             return existing
-    # CPU 保护：并发转码超过上限时先回收已经没人看的会话（见 enforce_transcode_capacity）
-    enforce_transcode_capacity()
     session_id = uuid.uuid4().hex[:16]
     out_dir = os.path.join(TRANSCODE_DIR, session_id)
     proc = build_hls_command(file_path, out_dir, start_seconds, video_bitrate, height,
@@ -263,6 +336,19 @@ def find_active_transcode(user_id: int, item_guid: str) -> Optional[str]:
     return None
 
 
+def _reap_in_background() -> None:
+    """后台回收失效/超龄会话并执行并发上限保护（由 start_transcode 异步触发）
+
+    ``start_transcode`` 是在请求路径（事件循环）上被调用的，而回收要 terminate 子进程、
+    等它退出、删目录（最坏几秒）；放到后台线程后，本次播放不再为别人遗留的会话排队。
+    """
+    try:
+        reap_stale_transcodes()
+        enforce_transcode_capacity()
+    except Exception as exc:  # noqa: BLE001 — 后台回收失败不能影响本次播放
+        logger.warning("后台回收转码会话失败: %s", exc)
+
+
 def reap_stale_transcodes(max_age_seconds: int = 6 * 3600) -> int:
     """回收已退出 / 超龄的转码会话（含清理磁盘目录）
 
@@ -283,13 +369,17 @@ def reap_stale_transcodes(max_age_seconds: int = 6 * 3600) -> int:
     return reaped
 
 
-def wait_for_file(path: str, timeout: float = 10.0, interval: float = 0.2) -> bool:
-    """等待 ffmpeg 产出目标文件（客户端请求切片往往早于转码进度）"""
+async def wait_for_file(path: str, timeout: float = 10.0, interval: float = 0.2) -> bool:
+    """等待 ffmpeg 产出目标文件（客户端请求切片往往早于转码进度）
+
+    异步等待：旧实现用同步 ``time.sleep`` 轮询，等首片（最多 15s）或等切片（最多 12s）
+    的请求会把整个事件循环占住，同一进程里其他人正在播放的请求全部排队等待。
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if os.path.isfile(path) and os.path.getsize(path) > 0:
             return True
-        time.sleep(interval)
+        await asyncio.sleep(interval)
     return os.path.isfile(path) and os.path.getsize(path) > 0
 
 
@@ -304,7 +394,25 @@ def stop_transcode(session_id: str) -> None:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+    _log_ffmpeg_tail(info.get("dir") or "", session_id, proc.poll())
     shutil.rmtree(info["dir"], ignore_errors=True)
+
+
+def _log_ffmpeg_tail(directory: str, session_id: str, returncode) -> None:
+    """ffmpeg 异常退出时把日志尾部提升到服务日志（排查转码失败时唯一的线索）"""
+    if not directory or returncode in (0, None, -15):  # 正常结束 / 被本服务 SIGTERM
+        return
+    try:
+        with open(os.path.join(directory, "ffmpeg.log"), "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 2048))
+            tail = handle.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return
+    if tail:
+        logger.warning(
+            "HLS 转码 %s 异常退出（code=%s），ffmpeg 日志尾部：\n%s", session_id, returncode, tail,
+        )
 
 
 def stop_all_transcodes() -> int:

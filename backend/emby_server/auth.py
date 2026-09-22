@@ -1,4 +1,5 @@
 """自建 Emby 服务器：认证与 Token 管理"""
+import os
 import secrets
 import uuid
 from datetime import datetime
@@ -14,6 +15,12 @@ from backend.emby_server import models as emby_models
 from backend.security import hash_password, verify_password
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# 客户端 token 的 last_used_at 写库节流间隔（秒）
+try:
+    TOKEN_TOUCH_INTERVAL = float(os.getenv("EMBY_TOKEN_TOUCH_SECONDS", "60") or 60)
+except ValueError:
+    TOKEN_TOUCH_INTERVAL = 60.0
 
 # 请求头里的客户端信息（X-Emby-Authorization: MediaBrowser Client="...", Device="...", DeviceId="...", Version="..."）
 DEVICE_HEADERS = ["X-Emby-Authorization", "X-MediaBrowser-Token"]
@@ -219,8 +226,16 @@ def get_emby_user(
             detail="Invalid access token",
         )
     user, token_row = result
-    token_row.last_used_at = datetime.now()
-    db.commit()
+    # 每个播放请求都写一次 last_used_at = 每个请求都要等一次提交（SQLite 下是一次 fsync）。
+    # 客户端轮询进度、请求切片非常密集，而这个字段只是「最近使用时间」，
+    # 按间隔节流写库即可（EMBY_TOKEN_TOUCH_SECONDS，设为 0 回到每次请求都写）。
+    now = datetime.now()
+    if TOKEN_TOUCH_INTERVAL <= 0 or (
+        token_row.last_used_at is None
+        or (now - token_row.last_used_at).total_seconds() >= TOKEN_TOUCH_INTERVAL
+    ):
+        token_row.last_used_at = now
+        db.commit()
     return user
 
 
