@@ -150,6 +150,84 @@
 4. **读请求的补块**：一次请求把老库补完但每块不超过预算（实测每块 5/5/5/5/5/5/2 条），
    冷却窗口内的并发请求不重复抢写锁、也不改任何状态。
 
+## 二·七、管理后台按域拆分 + 阻塞路由整改（v2.21.0）
+
+### 为什么先拆 `admin.py`
+
+管理后台原先是一个两千多行的单文件：改一处审计点要在几千行里翻，也没法整体复核。
+现在拆成 `admin_core.py`（公共骨架：`admin_router` / `get_current_admin` / `_audit` /
+`_generate_code` / `_log_out`）、`admin_auth.py`（登录 / 身份 / 改密）、`admin.py`
+（订阅、用户、卡码、公告、工单、求片、操作日志、统计）、`admin_economy.py`
+（邀请返利、积分台账、经济设置与统计）。三个模块注册到**同一个** `admin_router`，
+导入顺序 = 拆分前的定义顺序（FastAPI 按注册顺序取第一个匹配，顺序变了就是错路由）。
+
+两件必须守住的事（都有验证，不是“看起来没问题”）：
+
+- **端点集合逐条不变**：拆分前后 `@router.<方法>("路径")` 声明都是 391 条，无增无减；
+- **注册顺序逐条不变**：管理路由 53 条的顺序与拆分前完全一致。
+
+顺带把「共享骨架」这件事做实：原先 `admin_ops` / `coupons_admin` / `orders_admin` /
+`servers` / `realms` / `emby_servers` / `reminders_admin` / `capabilities_admin` 八个模块
+都从**那个两千行的 `admin.py`** 里 `import _audit, get_current_admin`，现在统一指向
+`admin_core`。`admin_core` 里只留「真的有多个模块在用」的东西。
+
+### 同步 `def` 优先（把 v2.13.0 的口径推行到底）
+
+v2.13.0 已在协议面定了口径：路由体内没有 `await` 的就写同步 `def`，由 Starlette 线程池执行
+（FastAPI 对 `async def` 是在事件循环上直接跑的，同步 SQLAlchemy 查询会卡住整个进程）。
+这一版把它推行到门户 / 管理 / 经济 / 设置等各处：**一次性把 100 个「体内没有 `await`
+的 async 路由」改成同步 `def`**，业务代码一个字没动。现在全站同步 `def` 路由 92 个。
+
+### 两条静态护栏（都是“只许减少，不许增加”）
+
+这类整改有个共同的坑：把 `async def` 改成 `def` 之后，**别处可能还在 `await` 它**
+（例如 `coupons_admin.list_coupon_usages` 被 `list_coupon_usages_by_code` 复用、
+`api.user_views` 被 `compat_routes` 复用）。编译、导入、类型检查全都看不出来，
+只有真打到那个请求才会 `TypeError: object dict can't be used in 'await' expression`。
+所以两条都进了 CI：
+
+- `scripts/check_await_consistency.py`：`await f(...)` 里裸名调用的 `f` 若在 `backend/`
+  有模块级定义，就必须至少有一个 `async def` 版本。只看裸名（`await obj.f(...)`
+  无法靠文本可靠解析，宁可不报也不误报）。
+- `scripts/check_blocking_routes.py`：`async def` 路由里出现同步 DB 调用即失败。
+  存量 41 条记在脚本的 `BASELINE` 里，改好一条删一行。口径：只认路由函数体自身、
+  以及**体内定义且被直接同步调用**的嵌套函数；被 `run_in_threadpool` / `to_thread`
+  下放的嵌套函数放行（本仓库已有此写法，见 `portal_mount_routes.py`）。
+
+护栏最容易的失效方式不是报错，而是**根本不会响**。所以 `scripts/smoke_test_static_guards.py`
+（进 CI）拿合成代码树喂这两条护栏，每一条都要求「真实代码树上退出码为 0」+「合成代码树上
+必须失败并点名」：
+
+- await 契约：`async` 端点里 `await` 一个纯同步裸名函数 → 必须报；只写点号调用
+  （`await obj.f(...)`）不报（口径如此，不误报优先）；
+- 阻塞路由：真实代码树上扫描结果与基线**逐条相等**（既没有死条目、也没有漏网）；
+  合成树上 `async`+`db.commit` 要报、同步 `def` 不报、不碰库不报、直接调用的嵌套函数要报、
+  下放的嵌套函数不报。
+
+### 剩下的 41 个阻塞路由：为什么不是机械改 `def`
+
+`scripts/check_blocking_routes.py` 基线里那 41 条**都有必须 `await` 的东西**：
+`notify_admin_event` / `notify_staff_users` / `notify_all_users`（通知推送）、
+`probe_and_store` / `refresh_mount_health` / `probe`（网络探测）、`stop_transcodes_for_async`、
+`await request.json()`。也试过「只把同步那段拆出来」以外的更省事写法，但它们真正的麻烦在于：
+
+> **那些「必须 await 的东西」自己也**在 `async` 函数里跑同步 SQLAlchemy。
+
+即 `backend/notifications.py` 的 `notify_admin_event` / `notify_staff_users` / `notify_all_users`
+内部都有 `db.query` / `db.add` / `db.commit`；`backend/servers.py` 的 `probe_and_store` 同理。
+所以这不是 41 个端点的事，而是要连通知层 / 探测层一起改，**不能靠一次机械替换收尾**——
+这也是它没有被塞进这一版的原因（改错就是全站通知链路，或者后台操作返回 500）。
+
+下一步的两种修法（按「这个端点有没有必须 await 的东西」选）：
+
+1. 没有必须 `await` 的 → 改同步 `def`。优先，且**一次一个文件**地做；
+2. 有 → 拆成「同步核心 + `await run_in_threadpool(核心, db, ...)`」，同时把通知层里的
+   同步 DB 段落也拆出去（否则只是把瓶颈挪了一层）。
+
+值得优先动的是**热路径**而不是管理员偶发操作：
+`compat_routes.session_progress`（每个正在播放的客户端每 10 秒上报一次）、
+`emby_server/api.py::user_views`、`admin.py::push_media_seek`。
+
 ## 三、已知瓶颈（按收益排序的下一步）
 
 1. ~~**逐集查剧集/季**~~ → **已在 v2.16.0 做掉**（见下）。
@@ -165,6 +243,9 @@
   媒体库里这类条目多时增量扫描的收益会变小。可以给「试过且没命中」记一个时间戳，
   按策略窗口再试（需要加列）。
 - 清理阶段只在**来源可用**时遍历；目录 → guid 快照可以连那次游标读也省掉。
+- **41 个 `async` 路由里仍在跑同步 SQLAlchemy**（v2.21.0 已把它钉成 CI 门禁，
+  只减不增；清单与「为什么不是机械改 `def`」见二·七）。真正的瓶颈是通知层 / 探测层
+  自己也在 `async` 里写库——要动就得连那一层一起拆。
 
 ### 已做掉：增量扫描 / 清理候选集 / 挂载缓存 / 图片本地化 / 扫描限速（v2.17.0）
 
@@ -322,6 +403,13 @@ python scripts/benchmark_item_facets.py
 
 # 长期运行（残留标志 / 会话回收 / 临时文件 / 孤儿子进程 / 统计上限 / 清理阶段），CI 会跑
 python scripts/smoke_test_maintenance.py
+
+# 两条静态契约护栏（async 路由改成同步 def 后别处还在 await / async 路由里做同步 DB）
+python scripts/check_await_consistency.py
+python scripts/check_blocking_routes.py
+
+# 两条护栏的自检（喂合成代码树，证明它们真的会失败、且不误报），CI 会跑
+python scripts/smoke_test_static_guards.py
 
 # 功能正确性
 python scripts/smoke_test_emby.py       # 扫描 + 协议面端到端

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend import models, reminders
-from backend.api.admin import _audit, get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ async def get_expiry_reminders(
 
 
 @admin_reminders_router.put("/economy/expiry-reminders/settings")
-async def update_expiry_reminder_settings(
+def update_expiry_reminder_settings(
     request: ReminderSettingsRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),

@@ -37,7 +37,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend import coupons, models
-from backend.api.admin import _audit, get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -136,7 +136,7 @@ def _rollback_subscription(db: Session, order: models.SubscriptionOrder,
 
 
 @admin_orders_router.post("/economy/orders/{order_id}/close")
-async def close_order(
+def close_order(
     order_id: str,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -284,7 +284,7 @@ def _reverse_rebate(db: Session, order_id: str, allow_negative: bool) -> int:
 
 
 @admin_orders_router.get("/economy/refunds")
-async def list_recent_refunds(
+def list_recent_refunds(
     limit: int = 20,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),

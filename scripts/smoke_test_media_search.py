@@ -247,7 +247,14 @@ check("英文输入命中中文条目的英文别名",
       [i.guid for i in se.rank_items([cn], "Rick and Morty")] == ["cn"])
 check("中文输入命中英文条目的中文别名",
       [i.guid for i in se.rank_items([en], "瑞克和莫蒂")] == ["en"])
-check("繁体别名可命中", any(i.guid == "en" for i in se.rank_items([en], "瑞克與莫蒂")))
+# 这一条真正走的是繁简转换（别名匹配比标题匹配严，没有 zhconv 时模糊兜底不够）：
+# zhconv 是**可选依赖**（未安装时 search 会自动降级为不转换，见 backend/emby_server/search.py），
+# 所以没装时如实 SKIP，而不是把「没装可选依赖」当成回归。CI 里会显式装上它，
+# 所以这条在 CI 上是真跑的。
+if se._get_zhconv() is not None:
+    check("繁体别名可命中", any(i.guid == "en" for i in se.rank_items([en], "瑞克與莫蒂")))
+else:
+    print("SKIP  繁体别名可命中 —— 未安装可选依赖 zhconv（`pip install zhconv` 后可覆盖）")
 check("完全不相关的词不命中", se.rank_items([meta], "量子纠缠") == [])
 variants = se.search_variants("Show.2024.1080p.WEB-DL")
 check("搜索扩展包含去掉发布标签的核心词", any("Show.2024" in v for v in variants), str(variants))

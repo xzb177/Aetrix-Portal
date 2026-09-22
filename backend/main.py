@@ -137,7 +137,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.20.2",
+    version="2.21.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -246,7 +246,7 @@ def _runtime_report() -> dict:
 
 
 @app.get("/api/health/detailed")
-async def detailed_health_check():
+def detailed_health_check():
     """详细健康检查"""
     health_status = {
         "status": "healthy",

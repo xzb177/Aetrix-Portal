@@ -10,7 +10,7 @@ import { siteApi, type Branding } from '@/api/site'
 
 export const DEFAULT_SITE_NAME = 'RoyalBot'
 export const DEFAULT_THEME_COLOR = '#22d3ee'
-export const APP_VERSION = 'v2.20.2'
+export const APP_VERSION = 'v2.21.0'
 
 export const branding = reactive<Branding>({
   site_name: DEFAULT_SITE_NAME,

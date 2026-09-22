@@ -9,16 +9,21 @@
 - 操作审计：全部管理操作落 AdminLog（admin_user_id 存 WebUser.id）
 
 管理员操作会触发通知发送到用户前台，实现前后台联动。
+
+v2.21.0 起按域拆分成同目录的兄弟模块（导入即注册同一个 ``admin_router``）：
+
+- ``admin_core``：公共骨架（路由对象 / 管理员鉴权依赖 / 审计与卡码辅助）
+- ``admin_auth``：管理员登录 / 当前身份 / 改密
+- ``admin_economy``：邀请返利 / 积分台账 / 经济设置与统计 / 用户详情与趋势
+
+本模块保留订阅、用户、卡码、公告、工单、求片、操作日志、统计与经济系统管理。
+原本单文件两千多行，改一个审计点要在几千行里翻，也没法整体复核。
 """
-import logging
-import secrets
-import string
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import List, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -26,223 +31,22 @@ from sqlalchemy.orm import Session
 from backend import models, realms
 from backend import qbittorrent
 from backend import servers
-from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend.database import get_db
-from backend.ratelimit import check_rate_limit, client_ip
-# 人机验证（能力中心）：后台登录与用户端登录共用同一套校验与安全日志
-from backend.integrations import captcha as integrations_captcha
 from backend.notifications import (
     AdminEvent,
     notify_admin_event,
     notify_all_users,
 )
-from backend.security import (
-    create_access_token,
-    create_refresh_token,
-    hash_password,
-    resolve_jwt_user_id,
-    verify_password,
+from backend.security import hash_password
+
+from backend.api.admin_core import (
+    _audit,
+    _generate_code,
+    _log_out,
+    admin_router,
+    get_current_admin,
+    logger,
 )
-
-logger = logging.getLogger(__name__)
-
-admin_router = APIRouter(prefix="/api/admin", tags=["管理后台"])
-
-security = HTTPBearer(auto_error=False)
-
-CODE_ALPHABET = string.ascii_uppercase + string.digits
-
-
-def _generate_code(length: int = 12) -> str:
-    """生成人类易读的卡码（去掉易混淆的 0/O/1/I）"""
-    alphabet = "".join(c for c in CODE_ALPHABET if c not in "0O1I")
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
-# ==================== 鉴权依赖 ====================
-
-async def get_current_admin(
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
-    db: Session = Depends(get_db),
-) -> models.WebUser:
-    """管理员鉴权：JWT access token，且必须是 is_staff 的 WebUser
-
-    与用户端相同的 token 体系；权限差异仅由 is_staff 决定，
-    不再有独立的 AdminUser 账号体系。
-    """
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="未提供认证凭证",
-        )
-
-    user_id = resolve_jwt_user_id(credentials.credentials)
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效或已过期的凭证",
-        )
-
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user or not user.is_staff:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="需要管理员权限",
-        )
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="管理员已被禁用",
-        )
-
-    return user
-
-
-def _audit(
-    db: Session,
-    admin: models.WebUser,
-    action: str,
-    target_type: str | None = None,
-    target_id: int | None = None,
-    details: dict | None = None,
-    ip: str | None = None,
-) -> None:
-    """写操作审计日志（admin_user_id 存 WebUser.id）"""
-    db.add(models.AdminLog(
-        admin_user_id=admin.id,
-        action=action,
-        target_type=target_type,
-        target_id=target_id,
-        details=details,
-        ip_address=ip,
-    ))
-
-
-def _log_out(model) -> str:
-    return model.created_at.isoformat() if model.created_at else ""
-
-
-# ==================== 管理员认证 API ====================
-
-class AdminLoginRequest(BaseModel):
-    username: str
-    password: str
-    # 人机验证令牌（v2.20.0）：管理员在「系统设置 → 人机验证」里开了「保护管理后台登录」
-    # 之后必填。后台登录是最值钱的入口，此前也是唯一没有这道闸的登录路径。
-    captcha_token: str | None = None
-
-
-@admin_router.post("/auth/login")
-def admin_login(
-    http_request: Request,
-    request: AdminLoginRequest,
-    db: Session = Depends(get_db),
-):
-    """管理员登录：仅 is_staff 的 WebUser 可登录管理后台
-
-    安全：与用户端登录同样的限流 + 登录日志。后台登录原先既不限流也不留痕，
-    被人跑字典猜管理员密码时站点完全无感，也无法事后审计。
-    """
-    allowed, retry_after = check_rate_limit(f"admin_login:{client_ip(http_request)}", 8, 60)
-    if not allowed:
-        record_event(
-            db, username=request.username.strip(), ip=log_ip(http_request),
-            agent=user_agent(http_request), success=False, reason="admin_login_failed",
-            detail=f"尝试过于频繁，已限流（{retry_after}s）",
-        )
-        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
-
-    integrations_captcha.guard(db, http_request, "admin_login", request.captcha_token,
-                               username=request.username.strip())
-
-    user = db.query(models.WebUser).filter(
-        models.WebUser.username == request.username.strip()
-    ).first()
-
-    if not user or not verify_password(request.password, user.password_hash):
-        record_event(
-            db, username=request.username.strip(), user_id=user.id if user else None,
-            ip=log_ip(http_request), agent=user_agent(http_request), success=False,
-            reason="admin_login_failed", detail="用户名或密码错误",
-        )
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
-    if not user.is_staff:
-        record_event(
-            db, username=user.username, user_id=user.id, ip=log_ip(http_request),
-            agent=user_agent(http_request), success=False, reason="admin_login_failed",
-            detail="账号没有管理员权限（尝试登录后台）",
-        )
-        raise HTTPException(status_code=403, detail="该账号没有管理员权限")
-    if not user.is_active:
-        record_event(
-            db, username=user.username, user_id=user.id, ip=log_ip(http_request),
-            agent=user_agent(http_request), success=False, reason="admin_login_failed",
-            detail="账号已被禁用",
-        )
-        raise HTTPException(status_code=403, detail="账号已被禁用")
-
-    user.last_login_at = datetime.now()
-    db.commit()
-    record_event(
-        db, username=user.username, user_id=user.id, ip=log_ip(http_request),
-        agent=user_agent(http_request), success=True, reason="admin_login",
-    )
-
-    access = create_access_token(user.id, {"username": user.username, "staff": True})
-    refresh = create_refresh_token(user.id)
-    return {
-        "access_token": access,
-        "refresh_token": refresh,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "is_staff": True,
-        },
-    }
-
-
-class AdminMeResponse(BaseModel):
-    id: int
-    username: str
-    is_staff: bool
-    created_at: Optional[str] = None
-
-
-@admin_router.get("/auth/me", response_model=AdminMeResponse)
-async def admin_me(
-    current_admin: models.WebUser = Depends(get_current_admin),
-):
-    return AdminMeResponse(
-        id=current_admin.id,
-        username=current_admin.username,
-        is_staff=True,
-        created_at=_log_out(current_admin),
-    )
-
-
-class AdminChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str = Field(..., min_length=8, max_length=64)
-
-
-@admin_router.post("/auth/change-password")
-def admin_change_password(
-    request: AdminChangePasswordRequest,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """管理员修改自己的登录密码"""
-    if not verify_password(request.old_password, current_admin.password_hash):
-        raise HTTPException(status_code=400, detail="原密码错误")
-
-    current_admin.password_hash = hash_password(request.new_password)
-    db.commit()
-
-    _audit(db, current_admin, "admin_change_password", "self", current_admin.id)
-    db.commit()
-    return {"success": True, "message": "密码修改成功"}
-
 
 # ==================== 请求/响应模型 ====================
 
@@ -314,7 +118,7 @@ class SubscriptionExtendRequest(BaseModel):
 # ==================== 订阅管理 API ====================
 
 @admin_router.get("/plans")
-async def list_plans(
+def list_plans(
     realm_id: Optional[int] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -434,7 +238,7 @@ async def extend_subscription(
 # ==================== 用户管理 API ====================
 
 @admin_router.get("/users")
-async def list_users(
+def list_users(
     search: str = "",
     active: Optional[bool] = None,
     limit: int = 50,
@@ -487,7 +291,7 @@ class UserUpdateRequest(BaseModel):
 
 
 @admin_router.put("/users/{user_id}")
-async def update_user(
+def update_user(
     user_id: int,
     request: UserUpdateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -612,7 +416,7 @@ class RegistrationCodeBatchRequest(BaseModel):
 
 
 @admin_router.get("/registration-codes")
-async def list_registration_codes(
+def list_registration_codes(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
     realm_id: Optional[int] = None,
@@ -651,7 +455,7 @@ async def list_registration_codes(
 
 
 @admin_router.post("/registration-codes")
-async def create_registration_codes(
+def create_registration_codes(
     request: RegistrationCodeBatchRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -700,7 +504,7 @@ class RegistrationCodeUpdateRequest(BaseModel):
 
 
 @admin_router.put("/registration-codes/{code_id}")
-async def update_registration_code(
+def update_registration_code(
     code_id: int,
     request: RegistrationCodeUpdateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -727,7 +531,7 @@ class RegistrationModeRequest(BaseModel):
 
 
 @admin_router.put("/settings/registration")
-async def set_registration_mode(
+def set_registration_mode(
     request: RegistrationModeRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -752,7 +556,7 @@ async def set_registration_mode(
 
 
 @admin_router.get("/settings/registration")
-async def get_registration_mode(
+def get_registration_mode(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -771,7 +575,7 @@ async def get_registration_mode(
 # ==================== 公告管理 API ====================
 
 @admin_router.get("/announcements")
-async def get_announcements(
+def get_announcements(
     active_only: bool = False,
     limit: int = 100,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -869,7 +673,7 @@ async def update_announcement(
 
 
 @admin_router.delete("/announcements/{announcement_id}")
-async def delete_announcement(
+def delete_announcement(
     announcement_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -892,7 +696,7 @@ async def delete_announcement(
 # ==================== 工单管理 API ====================
 
 @admin_router.get("/tickets")
-async def get_tickets(
+def get_tickets(
     status_filter: Optional[str] = None,
     category_filter: Optional[str] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -930,7 +734,7 @@ async def get_tickets(
 
 
 @admin_router.get("/tickets/{ticket_id}/messages")
-async def get_ticket_messages(
+def get_ticket_messages(
     ticket_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -1063,7 +867,7 @@ async def close_ticket(
 # ==================== 求片管理 API ====================
 
 @admin_router.get("/media-seek")
-async def get_media_seeks(
+def get_media_seeks(
     status_filter: Optional[str] = None,
     realm_id: Optional[int] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -1207,7 +1011,7 @@ async def update_media_seek(
 # ==================== 操作日志 API ====================
 
 @admin_router.get("/logs")
-async def get_admin_logs(
+def get_admin_logs(
     action_filter: Optional[str] = None,
     target_type_filter: Optional[str] = None,
     limit: int = 100,
@@ -1245,7 +1049,7 @@ async def get_admin_logs(
 # ==================== 统计数据 API ====================
 
 @admin_router.get("/stats/overview")
-async def get_stats_overview(
+def get_stats_overview(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -1278,7 +1082,7 @@ async def get_stats_overview(
 
 
 @admin_router.get("/stats/playback")
-async def get_playback_stats(
+def get_playback_stats(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -1359,7 +1163,7 @@ class PlanUpsertRequest(BaseModel):
 
 
 @admin_router.get("/economy/plans")
-async def economy_list_plans(
+def economy_list_plans(
     realm_id: Optional[int] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -1387,7 +1191,7 @@ async def economy_list_plans(
 
 
 @admin_router.post("/economy/plans")
-async def economy_create_plan(
+def economy_create_plan(
     request: PlanUpsertRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -1412,7 +1216,7 @@ async def economy_create_plan(
 
 
 @admin_router.put("/economy/plans/{plan_id}")
-async def economy_update_plan(
+def economy_update_plan(
     plan_id: int,
     request: PlanUpsertRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -1447,7 +1251,7 @@ async def economy_update_plan(
 
 
 @admin_router.delete("/economy/plans/{plan_id}")
-async def economy_delete_plan(
+def economy_delete_plan(
     plan_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -1487,7 +1291,7 @@ class PackageUpsertRequest(BaseModel):
 
 
 @admin_router.get("/economy/packages")
-async def economy_list_packages(
+def economy_list_packages(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -1506,7 +1310,7 @@ async def economy_list_packages(
 
 
 @admin_router.post("/economy/packages")
-async def economy_create_package(
+def economy_create_package(
     request: PackageUpsertRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -1527,7 +1331,7 @@ async def economy_create_package(
 
 
 @admin_router.put("/economy/packages/{package_id}")
-async def economy_update_package(
+def economy_update_package(
     package_id: int,
     request: PackageUpsertRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -1553,7 +1357,7 @@ async def economy_update_package(
 
 
 @admin_router.delete("/economy/packages/{package_id}")
-async def economy_delete_package(
+def economy_delete_package(
     package_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -1594,7 +1398,7 @@ class ExchangeCodeBatchRequest(BaseModel):
 
 
 @admin_router.get("/economy/exchange-codes")
-async def economy_list_exchange_codes(
+def economy_list_exchange_codes(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
     limit: int = 100,
@@ -1629,7 +1433,7 @@ async def economy_list_exchange_codes(
 
 
 @admin_router.post("/economy/exchange-codes")
-async def economy_create_exchange_codes(
+def economy_create_exchange_codes(
     request: ExchangeCodeBatchRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -1678,7 +1482,7 @@ async def economy_create_exchange_codes(
 
 
 @admin_router.put("/economy/exchange-codes/{code_id}")
-async def economy_update_exchange_code(
+def economy_update_exchange_code(
     code_id: int,
     request: RegistrationCodeUpdateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -1702,7 +1506,7 @@ async def economy_update_exchange_code(
 # ---------- 订单管理 ----------
 
 @admin_router.get("/economy/orders")
-async def economy_list_orders(
+def economy_list_orders(
     status_filter: Optional[str] = None,
     kind: Optional[str] = None,
     search: str = "",
@@ -1806,578 +1610,6 @@ async def economy_mark_order_paid(
            {"order_id": order_id})
     db.commit()
     return {"success": True, "message": "订单已标记支付并发货"}
-
-
-# ---------- 邀请与返利管理 ----------
-
-@admin_router.get("/economy/invitations")
-async def economy_list_invitations(
-    limit: int = 100,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """邀请记录列表（谁邀请了谁、奖励多少）"""
-    records = db.query(models.InvitationRecord).order_by(
-        models.InvitationRecord.created_at.desc()
-    ).limit(min(limit, 200)).all()
-
-    user_ids = {r.inviter_id for r in records} | {r.invitee_id for r in records}
-    users = {u.id: u.username for u in db.query(models.WebUser).filter(
-        models.WebUser.id.in_(user_ids)).all()} if user_ids else {}
-
-    return {"records": [
-        {
-            "id": r.id,
-            "inviter": users.get(r.inviter_id, "未知"),
-            "invitee": users.get(r.invitee_id, "未知"),
-            "reward_points": r.reward_points,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        }
-        for r in records
-    ]}
-
-
-@admin_router.get("/economy/points-logs")
-async def economy_points_logs(
-    user_id: Optional[int] = None,
-    type_filter: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """全站积分流水台账"""
-    q = db.query(models.PointsLog)
-    if user_id:
-        q = q.filter(models.PointsLog.user_id == user_id)
-    if type_filter:
-        q = q.filter(models.PointsLog.type == type_filter)
-
-    total = q.count()
-    logs = q.order_by(models.PointsLog.created_at.desc()).offset(offset).limit(min(limit, 200)).all()
-
-    user_ids = {l.user_id for l in logs}
-    users = {u.id: u.username for u in db.query(models.WebUser).filter(
-        models.WebUser.id.in_(user_ids)).all()} if user_ids else {}
-
-    return {
-        "total": total,
-        "logs": [
-            {
-                "id": l.id, "user_id": l.user_id,
-                "username": users.get(l.user_id, "未知"),
-                "amount": l.amount, "balance_after": l.balance_after,
-                "type": l.type, "description": l.description,
-                "ref_id": l.ref_id,
-                "created_at": l.created_at.isoformat() if l.created_at else None,
-            }
-            for l in logs
-        ],
-    }
-
-
-class PointsAdjustRequest(BaseModel):
-    amount: int  # 正数发放 / 负数扣除
-    reason: str = ""
-
-
-@admin_router.post("/economy/users/{user_id}/points")
-async def economy_adjust_points(
-    user_id: int,
-    request: PointsAdjustRequest,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """管理员手动调整用户积分（记账，留审计）"""
-    from backend.api.economy import _add_points
-
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    if request.amount == 0:
-        raise HTTPException(status_code=400, detail="调整数量不能为 0")
-
-    balance = _add_points(
-        db, user, request.amount,
-        "admin_grant" if request.amount > 0 else "admin_deduct",
-        request.reason or f"管理员调整（{request.amount:+d}）",
-        f"admin:{current_admin.id}",
-    )
-    db.commit()
-
-    _audit(db, current_admin, "economy_adjust_points", "user", user_id,
-           {"amount": request.amount, "reason": request.reason})
-    db.commit()
-
-    await notify_admin_event(
-        event_type="economy.admin_adjust",
-        user_id=user_id,
-        title=f"💰 积分变动 {request.amount:+d}",
-        content=f"{request.reason or '管理员调整'}\n当前余额：{balance} 积分",
-        from_admin_id=current_admin.id,
-    )
-    return {"success": True, "balance": balance}
-
-
-# ---------- 经济系统设置 ----------
-
-ECONOMY_CONFIG_KEYS = {
-    "checkin_enabled": "bool", "checkin_base_points": "int", "checkin_streak_bonus": "int",
-    "checkin_streak_max_bonus": "int",
-    "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
-    "exchange_enabled": "bool",
-    "recharge_enabled": "bool", "subscription_purchase_enabled": "bool",
-    "payment_gateway_url": "str", "payment_partner_id": "str",
-    "payment_partner_key": "secret", "payment_qqpay_enabled": "bool",
-    "site_url": "str",
-    # 付费墙：是否要求有效订阅才能播放 + 自定义拦截文案
-    "subscription_required": "bool", "subscription_gate_message": "str",
-    # 下载开关与设备/日志风控（借鉴 twilight-kotomi 的运营策略）
-    "allow_download": "bool",
-    "device_limit_per_user": "int", "device_limit_auto_evict": "bool",
-    "login_log_retention_days": "int",
-    "invitation_enabled": "bool", "invitation_reward_points": "int",
-    "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
-}
-
-
-class EconomySettingsRequest(BaseModel):
-    settings: dict
-
-
-@admin_router.get("/economy/settings")
-async def economy_get_settings(
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    result = {}
-    for key, value_type in ECONOMY_CONFIG_KEYS.items():
-        config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if value_type == "secret":
-            result[key] = "******" if (config and config.value) else ""
-        else:
-            result[key] = config.value if config else ""
-    return {"settings": result}
-
-
-@admin_router.put("/economy/settings")
-async def economy_update_settings(
-    request: EconomySettingsRequest,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """更新经济系统配置（secret 值为 ****** 时保持不变）"""
-    changed = {}
-    for key, value in request.settings.items():
-        if key not in ECONOMY_CONFIG_KEYS:
-            continue
-        if ECONOMY_CONFIG_KEYS[key] == "secret" and (not value or value == "******"):
-            continue
-        config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if config:
-            config.value = str(value)
-        else:
-            db.add(models.SystemConfig(key=key, value=str(value)))
-        changed[key] = str(value) if ECONOMY_CONFIG_KEYS[key] != "secret" else "(已更新)"
-
-    db.commit()
-    _audit(db, current_admin, "economy_update_settings", "system", None, changed)
-    db.commit()
-    return {"success": True, "changed": list(changed.keys())}
-
-
-# ---------- 经济统计 ----------
-
-@admin_router.get("/economy/stats")
-async def economy_stats(
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """经济系统概览：用户/积分/订单/兑换/邀请"""
-    from sqlalchemy import func as _func
-
-    total_points = db.query(_func.coalesce(_func.sum(models.WebUser.points), 0)).scalar() or 0
-    pending_recharge = db.query(models.RechargeOrder).filter(
-        models.RechargeOrder.status == "pending").count()
-    paid_recharge = db.query(_func.coalesce(_func.sum(models.RechargeOrder.price), 0)).filter(
-        models.RechargeOrder.status == "paid").scalar() or 0
-    paid_sub = db.query(_func.coalesce(_func.sum(models.SubscriptionOrder.amount), 0)).filter(
-        models.SubscriptionOrder.status == "paid").scalar() or 0
-
-    return {
-        "total_points": int(total_points),
-        "checkins_today": db.query(models.CheckinRecord).filter(
-            models.CheckinRecord.checkin_date >= datetime.now().replace(
-                hour=0, minute=0, second=0, microsecond=0)).count(),
-        "orders": {"pending": pending_recharge,
-                   "revenue": round(float(paid_recharge) + float(paid_sub), 2)},
-        "exchange_codes": {
-            "total": db.query(models.ExchangeCode).count(),
-            "used": db.query(models.ExchangeCode).filter(
-                models.ExchangeCode.use_count > 0).count(),
-        },
-        "invitations": db.query(models.InvitationRecord).count(),
-    }
-
-
-# ==================== 用户详情 / 趋势 / 订阅总览（v2.4.0 补齐） ====================
-
-
-def _days_left(end_date: Optional[datetime], now: datetime) -> int:
-    if not end_date:
-        return 0
-    return max(0, (end_date - now).days)
-
-
-@admin_router.get("/users/{user_id}")
-async def get_user_detail(
-    user_id: int,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """用户 360° 详情：资料 / 订阅 / 积分 / 订单 / 邀请 / 签到 / 观看"""
-    from backend.emby_server import models as em
-
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-
-    now = datetime.now()
-
-    # ---------- 订阅 ----------
-    subs = (
-        db.query(models.UserSubscription)
-        .filter(models.UserSubscription.user_id == user_id)
-        .order_by(models.UserSubscription.end_date.desc())
-        .limit(10)
-        .all()
-    )
-    active_sub = next(
-        (s for s in subs if s.status == "active" and s.end_date and s.end_date > now), None
-    )
-
-    def _sub_row(s: models.UserSubscription) -> dict:
-        return {
-            "id": s.id,
-            "plan_name": s.plan.name if s.plan else f"套餐 #{s.plan_id}",
-            "start_date": s.start_date.isoformat() if s.start_date else None,
-            "end_date": s.end_date.isoformat() if s.end_date else None,
-            "days_left": _days_left(s.end_date, now),
-            "status": s.status,
-        }
-
-    # ---------- 积分 ----------
-    income = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
-        models.PointsLog.user_id == user_id, models.PointsLog.amount > 0
-    ).scalar() or 0
-    expense = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
-        models.PointsLog.user_id == user_id, models.PointsLog.amount < 0
-    ).scalar() or 0
-    recent_logs = (
-        db.query(models.PointsLog)
-        .filter(models.PointsLog.user_id == user_id)
-        .order_by(models.PointsLog.created_at.desc())
-        .limit(10)
-        .all()
-    )
-
-    # ---------- 订单 ----------
-    recharge_orders = (
-        db.query(models.RechargeOrder)
-        .filter(models.RechargeOrder.user_id == user_id)
-        .order_by(models.RechargeOrder.created_at.desc())
-        .limit(10)
-        .all()
-    )
-    sub_orders = (
-        db.query(models.SubscriptionOrder)
-        .filter(models.SubscriptionOrder.user_id == user_id)
-        .order_by(models.SubscriptionOrder.created_at.desc())
-        .limit(10)
-        .all()
-    )
-    paid_total = float(
-        db.query(func.coalesce(func.sum(models.RechargeOrder.price), 0)).filter(
-            models.RechargeOrder.user_id == user_id,
-            models.RechargeOrder.status == "paid",
-        ).scalar() or 0
-    ) + float(
-        db.query(func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)).filter(
-            models.SubscriptionOrder.user_id == user_id,
-            models.SubscriptionOrder.status == "paid",
-        ).scalar() or 0
-    )
-
-    # ---------- 邀请 ----------
-    invite_records = (
-        db.query(models.InvitationRecord)
-        .filter(models.InvitationRecord.inviter_id == user_id)
-        .order_by(models.InvitationRecord.created_at.desc())
-        .limit(10)
-        .all()
-    )
-    invitee_ids = [r.invitee_id for r in invite_records]
-    invitee_names = {
-        u.id: u.username
-        for u in db.query(models.WebUser).filter(models.WebUser.id.in_(invitee_ids)).all()
-    } if invitee_ids else {}
-    rebate_total = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
-        models.PointsLog.user_id == user_id, models.PointsLog.type == "rebate"
-    ).scalar() or 0
-
-    # ---------- 签到 ----------
-    checkin_count = db.query(models.CheckinRecord).filter(
-        models.CheckinRecord.user_id == user_id
-    ).count()
-    last_checkin = (
-        db.query(models.CheckinRecord)
-        .filter(models.CheckinRecord.user_id == user_id)
-        .order_by(models.CheckinRecord.checkin_date.desc())
-        .first()
-    )
-
-    # ---------- 观看 ----------
-    plays = db.query(em.PlaybackSession).filter(em.PlaybackSession.user_id == user_id).count()
-    watched_items = db.query(em.UserMediaData).filter(
-        em.UserMediaData.user_id == user_id,
-        em.UserMediaData.played == True,  # noqa: E712
-    ).count()
-
-    return {
-        "profile": {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "is_active": user.is_active,
-            "is_staff": user.is_staff,
-            "emby_username": user.emby_username,
-            "points": user.points or 0,
-            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-        },
-        "subscription": {
-            "active": _sub_row(active_sub) if active_sub else None,
-            "history": [_sub_row(s) for s in subs],
-        },
-        "points": {
-            "balance": user.points or 0,
-            "income": int(income),
-            "expense": abs(int(expense)),
-            "recent": [
-                {
-                    "id": l.id,
-                    "amount": l.amount,
-                    "balance_after": l.balance_after,
-                    "type": l.type,
-                    "description": l.description,
-                    "created_at": l.created_at.isoformat() if l.created_at else None,
-                }
-                for l in recent_logs
-            ],
-        },
-        "orders": {
-            "paid_total": round(paid_total, 2),
-            "recharge": [
-                {
-                    "order_id": o.order_id,
-                    "item_name": o.package.name if o.package else f"套餐 #{o.package_id}",
-                    "amount": float(o.price),
-                    "points": o.amount,
-                    "status": o.status,
-                    "created_at": o.created_at.isoformat() if o.created_at else None,
-                }
-                for o in recharge_orders
-            ],
-            "subscription": [
-                {
-                    "order_id": o.order_id,
-                    "item_name": o.item_name or (o.plan.name if o.plan else f"套餐 #{o.plan_id}"),
-                    "amount": float(o.amount),
-                    "status": o.status,
-                    "created_at": o.created_at.isoformat() if o.created_at else None,
-                }
-                for o in sub_orders
-            ],
-        },
-        "invitation": {
-            "count": db.query(models.InvitationRecord).filter(
-                models.InvitationRecord.inviter_id == user_id
-            ).count(),
-            "rebate_total": int(rebate_total),
-            "invitees": [
-                {
-                    "username": invitee_names.get(r.invitee_id, "未知"),
-                    "reward_points": r.reward_points,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                }
-                for r in invite_records
-            ],
-        },
-        "checkin": {
-            "total": checkin_count,
-            "last_date": last_checkin.checkin_date.isoformat() if last_checkin else None,
-            "streak": last_checkin.streak if last_checkin else 0,
-        },
-        "watch": {
-            "plays": plays,
-            "watched_items": watched_items,
-        },
-    }
-
-
-@admin_router.get("/stats/trend")
-async def get_stats_trend(
-    days: int = 14,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """趋势统计（默认近 14 天）：新增用户 / 播放次数 / 营收 / 签到
-
-    单次聚合查询后按日补零，保证折线图连续。
-    """
-    from backend.emby_server import models as em
-
-    days = max(1, min(days, 90))
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    start = today - timedelta(days=days - 1)
-
-    def _series(rows) -> dict:
-        out: dict = {}
-        for day, value in rows:
-            key = str(day)[:10]
-            out[key] = out.get(key, 0) + (value or 0)
-        return out
-
-    user_rows = db.query(
-        func.date(models.WebUser.created_at), func.count(models.WebUser.id)
-    ).filter(models.WebUser.created_at >= start).group_by(
-        func.date(models.WebUser.created_at)
-    ).all()
-
-    play_rows = db.query(
-        func.date(em.PlaybackSession.start_time), func.count(em.PlaybackSession.id)
-    ).filter(em.PlaybackSession.start_time >= start).group_by(
-        func.date(em.PlaybackSession.start_time)
-    ).all()
-
-    recharge_rows = db.query(
-        func.date(models.RechargeOrder.paid_at), func.coalesce(func.sum(models.RechargeOrder.price), 0)
-    ).filter(
-        models.RechargeOrder.status == "paid", models.RechargeOrder.paid_at >= start
-    ).group_by(func.date(models.RechargeOrder.paid_at)).all()
-
-    sub_rows = db.query(
-        func.date(models.SubscriptionOrder.paid_at), func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)
-    ).filter(
-        models.SubscriptionOrder.status == "paid", models.SubscriptionOrder.paid_at >= start
-    ).group_by(func.date(models.SubscriptionOrder.paid_at)).all()
-
-    checkin_rows = db.query(
-        func.date(models.CheckinRecord.checkin_date), func.count(models.CheckinRecord.id)
-    ).filter(models.CheckinRecord.checkin_date >= start).group_by(
-        func.date(models.CheckinRecord.checkin_date)
-    ).all()
-
-    users_map = _series(user_rows)
-    plays_map = _series(play_rows)
-    recharge_map = _series(recharge_rows)
-    sub_map = _series(sub_rows)
-    checkin_map = _series(checkin_rows)
-
-    series = []
-    for i in range(days):
-        day = start + timedelta(days=i)
-        key = day.strftime("%Y-%m-%d")
-        series.append({
-            "date": key,
-            "new_users": int(users_map.get(key, 0)),
-            "plays": int(plays_map.get(key, 0)),
-            "revenue": round(float(recharge_map.get(key, 0)) + float(sub_map.get(key, 0)), 2),
-            "checkins": int(checkin_map.get(key, 0)),
-        })
-
-    return {
-        "days": days,
-        "series": series,
-        "totals": {
-            "new_users": sum(p["new_users"] for p in series),
-            "plays": sum(p["plays"] for p in series),
-            "revenue": round(sum(p["revenue"] for p in series), 2),
-            "checkins": sum(p["checkins"] for p in series),
-        },
-    }
-
-
-@admin_router.get("/economy/subscriptions")
-async def economy_list_subscriptions(
-    status_filter: str = "",
-    limit: int = 50,
-    offset: int = 0,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """订阅总览：全部订阅记录 + 状态筛选 + 到期概览
-
-    status_filter: active（生效中）/ expiring（7 天内到期）/ expired（已过期）
-    """
-    now = datetime.now()
-    week_later = now + timedelta(days=7)
-
-    q = db.query(models.UserSubscription)
-    if status_filter == "active":
-        q = q.filter(models.UserSubscription.status == "active",
-                     models.UserSubscription.end_date > now)
-    elif status_filter == "expiring":
-        q = q.filter(models.UserSubscription.status == "active",
-                     models.UserSubscription.end_date > now,
-                     models.UserSubscription.end_date <= week_later)
-    elif status_filter == "expired":
-        q = q.filter(or_(models.UserSubscription.status == "expired",
-                         models.UserSubscription.end_date <= now))
-
-    total = q.count()
-    rows = q.order_by(models.UserSubscription.end_date.asc()).offset(offset).limit(min(limit, 200)).all()
-
-    user_ids = {r.user_id for r in rows}
-    users = {
-        u.id: u.username
-        for u in db.query(models.WebUser).filter(models.WebUser.id.in_(user_ids)).all()
-    } if user_ids else {}
-
-    active_count = db.query(models.UserSubscription).filter(
-        models.UserSubscription.status == "active", models.UserSubscription.end_date > now
-    ).count()
-    expiring_count = db.query(models.UserSubscription).filter(
-        models.UserSubscription.status == "active",
-        models.UserSubscription.end_date > now,
-        models.UserSubscription.end_date <= week_later,
-    ).count()
-    expired_count = db.query(models.UserSubscription).filter(
-        or_(models.UserSubscription.status == "expired",
-            models.UserSubscription.end_date <= now)
-    ).count()
-
-    return {
-        "total": total,
-        "summary": {
-            "active": active_count,
-            "expiring_7d": expiring_count,
-            "expired": expired_count,
-        },
-        "subscriptions": [
-            {
-                "id": r.id,
-                "user_id": r.user_id,
-                "username": users.get(r.user_id, "未知"),
-                "plan_name": r.plan.name if r.plan else f"套餐 #{r.plan_id}",
-                "start_date": r.start_date.isoformat() if r.start_date else None,
-                "end_date": r.end_date.isoformat() if r.end_date else None,
-                "days_left": _days_left(r.end_date, now),
-                "status": "active" if (r.status == "active" and r.end_date and r.end_date > now) else "expired",
-            }
-            for r in rows
-        ],
-    }
 
 
 # ==================== 导出 ====================

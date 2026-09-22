@@ -29,7 +29,7 @@ security = HTTPBearer(auto_error=False)
 
 # ==================== 依赖注入 ====================
 
-async def get_current_user(
+def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> models.WebUser:
@@ -266,7 +266,7 @@ async def mark_all_read(
 # ==================== 工单 API ====================
 
 @user_router.get("/tickets", response_model=List[TicketResponse])
-async def get_my_tickets(
+def get_my_tickets(
     status_filter: Optional[str] = None,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -345,7 +345,7 @@ async def create_ticket(
 
 
 @user_router.get("/tickets/{ticket_id}", response_model=TicketResponse)
-async def get_ticket_detail(
+def get_ticket_detail(
     ticket_id: int,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -374,7 +374,7 @@ async def get_ticket_detail(
 
 
 @user_router.get("/tickets/{ticket_id}/messages", response_model=List[TicketMessageResponse])
-async def get_ticket_messages(
+def get_ticket_messages(
     ticket_id: int,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -478,7 +478,7 @@ async def reply_ticket(
 
 
 @user_router.post("/tickets/{ticket_id}/close")
-async def close_ticket(
+def close_ticket(
     ticket_id: int,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -505,7 +505,7 @@ async def close_ticket(
 # ==================== 公告 API ====================
 
 @user_router.get("/announcements", response_model=List[AnnouncementResponse])
-async def get_announcements(
+def get_announcements(
     active_only: bool = True,
     db: Session = Depends(get_db)
 ):
@@ -591,7 +591,7 @@ def _seek_daily_limit(db: Session) -> int:
 
 
 @user_router.get("/media-seek/lookup")
-async def lookup_media(
+def lookup_media(
     name: str,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -701,7 +701,7 @@ async def create_media_seek(
 
 
 @user_router.delete("/media-seek/{request_id}")
-async def withdraw_media_seek(
+def withdraw_media_seek(
     request_id: int,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -728,7 +728,7 @@ async def withdraw_media_seek(
 
 
 @user_router.get("/media-seek")
-async def get_my_media_seeks(
+def get_my_media_seeks(
     status_filter: Optional[str] = None,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -779,7 +779,7 @@ async def get_my_media_seeks(
 # ==================== 订阅 API ====================
 
 @user_router.get("/subscriptions")
-async def get_my_subscriptions(
+def get_my_subscriptions(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -824,7 +824,7 @@ async def get_my_subscriptions(
 
 
 @user_router.get("/subscription-plans")
-async def get_subscription_plans(
+def get_subscription_plans(
     realm_id: int | None = None,
     db: Session = Depends(get_db)
 ):

@@ -298,7 +298,7 @@ async def set_emby_password(
 
 
 @user_emby_router.get("/resume")
-async def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db),
                           limit: int = 12):
     rows = (
@@ -329,7 +329,7 @@ async def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_em
 
 
 @user_emby_router.get("/favorites")
-async def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                             db: Session = Depends(get_db)):
     rows = (
         db.query(em.MediaItem)
@@ -348,7 +348,7 @@ async def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_
 
 
 @user_emby_router.post("/favorites/{item_id}")
-async def toggle_favorite(item_id: str, request_user: models.WebUser = Depends(get_admin_or_emby_user),
+def toggle_favorite(item_id: str, request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
@@ -365,7 +365,7 @@ async def toggle_favorite(item_id: str, request_user: models.WebUser = Depends(g
 
 
 @user_emby_router.get("/stats")
-async def get_watch_stats(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+def get_watch_stats(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
     """观看统计：总时长/次数/最近观看"""
     total_rows = db.query(
@@ -406,7 +406,7 @@ async def get_watch_stats(request_user: models.WebUser = Depends(get_admin_or_em
 
 
 @user_emby_router.get("/sessions")
-async def get_my_sessions(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+def get_my_sessions(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
     """我的正在播放会话（设备 / 客户端 / 进度），与管理员会话监控同源"""
     rows = (
@@ -467,7 +467,7 @@ async def stop_my_session(session_key: str,
 
 
 @user_emby_router.get("/history")
-async def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                            db: Session = Depends(get_db),
                            limit: int = 30,
                            offset: int = 0,
@@ -600,7 +600,7 @@ class VirtualLibraryRequest(BaseModel):
 
 
 @admin_emby_router.get("/overview")
-async def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
+def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
                          realm_id: int | None = None):
     """媒体库概览：默认只统计当前服（“全部服”传 realm_id=0）"""
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
@@ -628,7 +628,7 @@ async def admin_overview(staff: models.WebUser = Depends(require_staff), db: Ses
 
 
 @admin_emby_router.get("/libraries")
-async def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
+def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
                          realm_id: int | None = None):
     """媒体库清单（按服；realm_id=0 表示全部服）"""
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
@@ -673,7 +673,7 @@ async def list_libraries(staff: models.WebUser = Depends(require_staff), db: Ses
 
 
 @admin_emby_router.post("/libraries")
-async def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     import uuid
 
     if not req.paths and not req.mount_ids:
@@ -705,7 +705,7 @@ async def create_library(req: LibraryCreate, staff: models.WebUser = Depends(req
 
 
 @admin_emby_router.put("/libraries/{lib_id}")
-async def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
@@ -762,7 +762,7 @@ async def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser 
 
 
 @admin_emby_router.delete("/libraries/{lib_id}")
-async def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
     if not lib:
         raise HTTPException(status_code=404, detail="媒体库不存在")
@@ -848,7 +848,7 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
 
 
 @admin_emby_router.post("/libraries/virtual")
-async def generate_virtual_libraries(
+def generate_virtual_libraries(
     req: VirtualLibraryRequest,
     staff: models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
@@ -917,7 +917,7 @@ async def generate_virtual_libraries(
 
 
 @admin_emby_router.get("/libraries/repair/queue")
-async def repair_queue(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+def repair_queue(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     """待修复条目：数据库里有图片记录但取不到图（本地文件丢失 / 远程图失效）"""
     rows = (
         db.query(em.MediaItem)
@@ -938,7 +938,7 @@ async def repair_queue(staff: models.WebUser = Depends(require_staff), db: Sessi
 
 
 @admin_emby_router.post("/libraries/repair/run")
-async def run_repair_queue(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+def run_repair_queue(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     """立即处理修复队列（重新刮削取图）；不传 library_ids 则处理全部启用库"""
     lib_ids = [
         lib.id for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
@@ -970,7 +970,7 @@ async def run_repair_queue(staff: models.WebUser = Depends(require_staff), db: S
 
 
 @admin_emby_router.get("/items")
-async def admin_search_items(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
+def admin_search_items(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
                              search: str = "", type: str = "", limit: int = 50, offset: int = 0):
     query = db.query(em.MediaItem)
     if search:
@@ -989,7 +989,7 @@ async def admin_search_items(staff: models.WebUser = Depends(require_staff), db:
 
 
 @admin_emby_router.delete("/items/{item_id}")
-async def admin_delete_item(item_id: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+def admin_delete_item(item_id: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="条目不存在")
@@ -1001,7 +1001,7 @@ async def admin_delete_item(item_id: str, staff: models.WebUser = Depends(requir
 
 
 @admin_emby_router.get("/sessions")
-async def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     sessions = (
         db.query(em.PlaybackSession, models.WebUser, em.MediaItem)
         .join(models.WebUser, models.WebUser.id == em.PlaybackSession.user_id)
@@ -1096,7 +1096,7 @@ class Pan115VerifyRequest(BaseModel):
 
 
 @admin_emby_router.get("/115/accounts")
-async def list_pan115_accounts(staff: models.WebUser = Depends(require_staff),
+def list_pan115_accounts(staff: models.WebUser = Depends(require_staff),
                                db: Session = Depends(get_db)):
     accounts = db.query(em.Pan115Account).order_by(em.Pan115Account.id).all()
     env_cookie = os.getenv(transfer115.PAN115_COOKIE_ENV, "").strip()
@@ -1107,7 +1107,7 @@ async def list_pan115_accounts(staff: models.WebUser = Depends(require_staff),
 
 
 @admin_emby_router.post("/115/accounts")
-async def create_pan115_account(req: Pan115AccountCreate,
+def create_pan115_account(req: Pan115AccountCreate,
                                 staff: models.WebUser = Depends(require_staff),
                                 db: Session = Depends(get_db)):
     name = req.name.strip()
@@ -1131,7 +1131,7 @@ async def create_pan115_account(req: Pan115AccountCreate,
 
 
 @admin_emby_router.put("/115/accounts/{account_id}")
-async def update_pan115_account(account_id: int, req: Pan115AccountUpdate,
+def update_pan115_account(account_id: int, req: Pan115AccountUpdate,
                                 staff: models.WebUser = Depends(require_staff),
                                 db: Session = Depends(get_db)):
     account = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
@@ -1166,7 +1166,7 @@ async def update_pan115_account(account_id: int, req: Pan115AccountUpdate,
 
 
 @admin_emby_router.delete("/115/accounts/{account_id}")
-async def delete_pan115_account(account_id: int,
+def delete_pan115_account(account_id: int,
                                 staff: models.WebUser = Depends(require_staff),
                                 db: Session = Depends(get_db)):
     account = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
