@@ -134,7 +134,8 @@ export const exchangeApi = {
 
 export interface CodePreview {
   valid: boolean
-  kind: 'code' | 'invite' | 'exchange' | 'unknown'
+  // coupon（v2.10.1）：优惠券与卡码/兑换码共用同一个入口，由后端预检识别来源
+  kind: 'code' | 'invite' | 'exchange' | 'coupon' | 'unknown'
   code_type?: number
   type_name?: string
   days?: number

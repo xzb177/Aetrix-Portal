@@ -4,7 +4,7 @@ import { useUserStore } from '@/stores/user'
 import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown,
-  Gift, Zap, Search, Megaphone, AlertCircle, Clock,
+  Gift, Zap, Megaphone, AlertCircle, Clock,
   ChevronRight, LayoutDashboard, Bell,
 } from 'lucide-vue-next'
 import api, {
@@ -120,6 +120,8 @@ function toggleMsgMenu() {
  *
  *   primaryNav   → 顶栏（宽屏横排、窄屏第二行滑动选项卡），全断点同一批条目、同一个顺序
  *   menuSections → 低频入口统一收进头像菜单（全断点一致）
+ *
+ * v2.10.1：搜索从「右上角图标 + 菜单条目」两处重复，改成主导航里的一项。
  *
  * 顶栏不再有第二个汉堡抽屉：同一批链接在同一屏里出现两遍，是「看着有两个导航」的根源。
  */
@@ -256,10 +258,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
       <!-- 右侧用户区 -->
       <div class="user-section">
         <template v-if="userStore.isLoggedIn">
-          <!-- 全局搜索：跨库检索 -->
-          <RouterLink to="/search" class="icon-btn" title="搜索片名">
-            <Search :size="18" />
-          </RouterLink>
+          <!-- 搜索（v2.10.1）：已升为主导航的一级入口，这里不再单挂一个放大镜图标——
+               图标与菜单项都指向 /search，同一件事在顶栏出现两遍就是重复入口 -->
 
           <!-- 积分徽章：点击进入钱包 -->
           <RouterLink to="/wallet" class="points-chip" title="积分余额 · 进入钱包">
@@ -499,19 +499,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* 图标按钮（搜索） */
-.icon-btn {
-  width: 38px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--au-r-md);
-  color: var(--au-text-2);
-  transition: all var(--au-fast);
-}
-.icon-btn:hover { color: var(--au-primary); background: var(--au-surface-2); }
 
 /* 消息铃铛 */
 /* 消息入口：读完后是一个安静的音铃，有未读时才点一颗小数字 */
@@ -813,15 +800,15 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   .nav-link { padding: 0.4688rem 0.625rem; }
 }
 
-/* 900~980px：五个入口挤在一行时先去掉图标（比换行更像一根导航条） */
+/* 900~980px：品牌与账号操作都在一行时先去掉导航图标（比换行更像一根导航条） */
 @media (max-width: 980px) and (min-width: 901px) {
   .nav-link { gap: 0; }
   .nav-link svg { display: none; }
 }
 
 /* ≤900px：顶栏变两行 —— 第一行品牌与账号操作，第二行是可横向滑动的主导航选项卡。
-   5 个入口在 375px 上放不下，硬挤会变成两三个字的碎片；滑动 + 左右渐隐
-   既保留了全部入口，也不用再在页面底部另开一条导航。 */
+   四个入口在手机上基本放得下，横滑仍然保留：以后再加条目（或换成长名字的语言）时
+   入口不会被挤成两三个字的碎片，也不用再在页面底部另开一条导航。 */
 @media (max-width: 900px) {
   .header-container {
     flex-wrap: wrap;
