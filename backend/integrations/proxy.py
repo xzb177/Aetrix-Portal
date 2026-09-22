@@ -97,6 +97,16 @@ def apply(db: Session) -> None:
             os.environ.pop(key, None)
 
 
+def signature() -> str:
+    """当前进程代理环境的指纹（只读 ``os.environ``，不查库、不建连接）
+
+    给**长生命周期客户端**用的：httpx 只在构造 client 时读一遍代理环境变量，建好的
+    连接池会一直用旧出口，所以像 TMDB 刮削客户端（进程级单例）这种对象必须能察觉
+    「代理被改了」。``apply()`` 写的正是这几个变量，因此指纹变化 ⟺ 代理配置变了。
+    """
+    return "|".join(f"{key}={os.environ.get(key, '')}" for key in ENV_KEYS)
+
+
 def test(db: Session, payload: dict) -> dict:
     """真实走一次代理：拿一个极小的公共端点验证出口是否可用"""
     import httpx
