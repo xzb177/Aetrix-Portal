@@ -36,15 +36,18 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import re
+import threading
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from sqlalchemy.orm import Session
 
@@ -343,6 +346,152 @@ def local_play_target(path: str) -> PlayTarget:
 
 # ==================== 提供者（按挂载类型解析）====================
 
+# ==================== 目录列举缓存（扫描与播放共用）====================
+# 远程挂载的每一次列目录都是一次网络往返。扫描方向本来就有「本次扫描内单飞」的缓存，
+# 但**播放**方向完全裸奔，而且 ``resolve_play_target`` 是**每次请求新建一个提供者**：
+# 提供者实例上的 cid/pickcode 缓存对播放根本不存在，于是一次播放要重新逐级列目录
+# （115 的 ``/电影/2024/x.mkv`` 就是 3 次网盘往返），多个人同时播就是几十次。
+#
+# 所以把缓存**下沉到提供者层**，按（挂载、类型指纹、目录）做 TTL 缓存，扫描与播放共用：
+#   MOUNT_LIST_CACHE_SECONDS  目录列举缓存有效期（0 = 关闭，默认 5）
+#   MOUNT_LIST_CACHE_MAX      最多缓存多少个目录（满了整体清空，内存有上限）
+# 失败**不缓存**（网盘抖动不该被固化 TTL 秒），返回值是**拷贝**（调用方会排序/裁剪，
+# 共享同一个 list 对象会让它们互相污染）。
+MOUNT_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("MOUNT_LIST_CACHE_SECONDS", "5") or 0))
+MOUNT_LIST_CACHE_MAX = max(50, int(os.getenv("MOUNT_LIST_CACHE_MAX", "2000") or 2000))
+
+_LIST_CACHE: dict = {}
+_LIST_LOCKS: dict = {}
+_LIST_CACHE_LOCK = threading.Lock()
+_LIST_CACHE_STATS = {"hits": 0, "misses": 0, "expired": 0, "evictions": 0, "waits": 0}
+
+
+def list_cache_stats() -> dict:
+    """缓存命中情况（健康检查 / 测试用）"""
+    with _LIST_CACHE_LOCK:
+        return {**_LIST_CACHE_STATS, "entries": len(_LIST_CACHE),
+                "ttl_seconds": MOUNT_LIST_CACHE_SECONDS}
+
+
+def invalidate_list_cache(mount_id: Optional[int] = None) -> None:
+    """清掉目录列举缓存
+
+    扫描开始前应当清一次（``scanner.clear_dir_cache`` 已经代劳）：扫描必须看到**当下**
+    的目录，不能被播放刚填进去的缓存挡住——否则新加的文件要等下一轮扫描才入腹。
+    """
+    with _LIST_CACHE_LOCK:
+        if mount_id is None:
+            _LIST_CACHE.clear()
+            return
+        for key in [k for k in _LIST_CACHE if k[0] == mount_id]:
+            _LIST_CACHE.pop(key, None)
+
+
+def _config_fingerprint(provider) -> str:
+    """挂载配置指纹：配置改了（换目录 / 换地址）就不该命中旧缓存
+
+    只在进程内当缓存键用，不落日志、不外传（:36 里可能含密钥）。新建的临时挂载
+    （测试连接，id 为空）也靠它区分，不至于和别的临时挂载串味。
+    """
+    config = getattr(provider, "config", None)
+    if not isinstance(config, dict):
+        return ""
+    try:
+        return json.dumps(config, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001 — 指纹算不出来就退化成“不区分配置”
+        return ""
+
+
+def _list_cache_key(provider, kind: str, rel: str) -> tuple:
+    mount = getattr(provider, "mount", None)
+    return (
+        getattr(mount, "id", None),
+        (getattr(mount, "mount_type", "") or "").strip(),
+        _config_fingerprint(provider),
+        kind,
+        rel or "/",
+    )
+
+
+def _cache_get(key: tuple) -> Optional[list]:
+    """取缓存（命中返回**拷贝**；过期则删除并当未命中）"""
+    now = time.monotonic()
+    with _LIST_CACHE_LOCK:
+        row = _LIST_CACHE.get(key)
+        if row is not None and row[0] > now:
+            _LIST_CACHE_STATS["hits"] += 1
+            return list(row[1])
+        if row is not None:
+            _LIST_CACHE.pop(key, None)
+            _LIST_CACHE_STATS["expired"] += 1
+        _LIST_CACHE_STATS["misses"] += 1
+        return None
+
+
+def _cache_put(key: tuple, entries) -> None:
+    with _LIST_CACHE_LOCK:
+        if len(_LIST_CACHE) >= MOUNT_LIST_CACHE_MAX:
+            _LIST_CACHE.clear()          # 满了整体清空：换来内存有上限，不会随库变大
+            _LIST_CACHE_STATS["evictions"] += 1
+        _LIST_CACHE[key] = (time.monotonic() + MOUNT_LIST_CACHE_SECONDS, tuple(entries))
+
+
+def _single_flight_lock(key: tuple) -> threading.RLock:
+    """拿这个目录的单飞锁（已在请求中就等它，别让并发请求各自去问一遍网盘）
+
+    必须是**可重入锁**：子类的列目录实现可以包装在别的被缓存的方法上（同一提供者实例、
+    同一个键），不可重入的话同一个线程会把自己锁死在第二层上。
+    """
+    with _LIST_CACHE_LOCK:
+        lock = _LIST_LOCKS.get(key)
+        if lock is not None:
+            _LIST_CACHE_STATS["waits"] += 1
+            return lock
+        lock = threading.RLock()
+        _LIST_LOCKS[key] = lock
+        return lock
+
+
+def cached_listing(fn: Callable) -> Callable:
+    """把提供者的「列目录」实现包一层共用 TTL 缓存
+
+    用装饰器而不是在基类里转发，是为了不重命名/不改动各个子类的实现（九个子类、五种
+    协议），同时保证 ``self.list_dir`` 的任何调用点（包括基类的 ``exists`` / ``size``
+    和子类自己的 ``walk_media``）都走缓存。
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self, rel: str = "/", fresh: bool = False):
+        if fresh or MOUNT_LIST_CACHE_SECONDS <= 0:
+            return fn(self, rel)
+        key = _list_cache_key(self, fn.__name__, rel)
+        hit = _cache_get(key)
+        if hit is not None:
+            return hit
+        lock = _single_flight_lock(key)
+        with lock:
+            try:
+                hit = _cache_get(key)        # 等锁期间别人可能已经列完了
+                if hit is not None:
+                    return hit
+                entries = fn(self, rel)      # 失败就往上抛：异常不进缓存
+                _cache_put(key, entries)
+                return list(entries)
+            finally:
+                with _LIST_CACHE_LOCK:
+                    _LIST_LOCKS.pop(key, None)
+
+    return wrapper
+
+
+def list_dir_uncached(provider, rel: str = "/") -> list:
+    """绕过缓存列目录（后台目录选择器 / 管理页的「刷新」用；看当下而不是 5 秒前的）"""
+    impl = getattr(type(provider).list_dir, "__wrapped__", None)
+    if impl is None:            # 没被装饰（自定义提供者）：照常调用
+        return provider.list_dir(rel)
+    return impl(provider, rel)
+
+
 class MountProvider:
     """挂载提供者基类"""
 
@@ -462,6 +611,7 @@ class LocalMount(MountProvider):
             raise MountError(f"目录不可读: {exc}") from exc
         return {"ok": True, "message": f"目录可读（顶层 {count} 项）", "path": path}
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         root = self._require_path()
         target = os.path.join(root, (rel or "/").lstrip("/"))
@@ -571,6 +721,7 @@ class Pan115Mount(MountProvider):
             "uid": info.get("uid"),
         }
 
+    @cached_listing
     def _raw_list(self, cid: str) -> list[dict]:
         try:
             entries = self._client().list_dir(cid or "0")
@@ -580,6 +731,7 @@ class Pan115Mount(MountProvider):
             entry["cid"] = str(entry.get("cid") or "")
         return entries
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         raw = self._raw_list(self._cid_of(rel))
         prefix = ("/" + (rel or "").lstrip("/")).rstrip("/")
@@ -768,6 +920,7 @@ class WebDavMount(MountProvider):
             })
         return out
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         entries = [MountEntry(name=e["name"], rel=e["rel"], is_dir=e["is_dir"], size=e["size"])
                    for e in self._propfind(rel)]
@@ -888,6 +1041,7 @@ class AlistMount(MountProvider):
         total = len((data or {}).get("content") or []) if isinstance(data, dict) else 0
         return {"ok": True, "message": f"AList 可访问（{self.root or '/'} 下 {total} 项）"}
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         path = self._abs(rel)
         body = self._api("/api/fs/list", {

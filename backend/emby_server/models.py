@@ -232,6 +232,33 @@ class ItemFacet(Base):
     value = Column(String(200), nullable=False)
 
 
+class ScanDirState(Base):
+    """增量扫描的目录指纹（v2.17.0）
+
+    「追新」场景里绝大多数目录一个文件都没动过，但重扫会把里面每个文件重走一遍：
+    找本地图片、找外挂字幕、重建外挂字幕轨、提交事务（实测 2000 个文件的重扫 ≈ 冷扫
+    的 95%，约 4 条 SQL + 1 次 commit / 文件）。
+
+    这里按目录存一份指纹：本机是 ``目录 mtime_ns : 目录项数``，挂载是 ``目录项数 : 总字节数``。
+    指纹没变的目录直接跳过逐文件的活，只把 guid 记进 ``seen_guids`` 并确认库里那一行
+    存在且不需要重探/重刮——库中缺行、大小变了、要补图补详情都照旧完整处理，
+    所以“跳过”永远不会漏掉还没入库的文件。详见 `scanner` 的增量扫描小节。
+    """
+
+    __tablename__ = "emby_scan_dirs"
+
+    __table_args__ = (
+        UniqueConstraint("library_id", "dir_key", name="uq_scan_dir_state"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(Integer, nullable=False, index=True)
+    # 本机绝对路径，或 mount://<挂载 id>/<相对路径>
+    dir_key = Column(String(1000), nullable=False)
+    fingerprint = Column(String(128), nullable=False)
+    updated_at = Column(DateTime, default=datetime.now)
+
+
 class StorageMount(Base):
     """存储挂载：媒体库的内容来源
 

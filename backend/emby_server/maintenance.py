@@ -26,6 +26,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from backend.emby_server import facets
+from backend.emby_server import image_store
 from backend.emby_server import models as em
 
 logger = logging.getLogger(__name__)
@@ -355,6 +356,19 @@ def run_startup_maintenance() -> dict:
     return result
 
 
+def prune_scan_dir_states(db) -> int:
+    """删掉媒体库已不存在的扫描目录指纹（增量扫描的副作用清理）"""
+    from backend.emby_server import models as emby_models
+
+    alive = db.query(emby_models.Library.id)
+    pruned = db.query(emby_models.ScanDirState).filter(
+        ~emby_models.ScanDirState.library_id.in_(alive)
+    ).delete(synchronize_session=False)
+    if pruned:
+        db.commit()
+    return int(pruned or 0)
+
+
 def janitor_tick() -> dict:
     """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）"""
     from backend.database import SessionLocal
@@ -362,7 +376,9 @@ def janitor_tick() -> dict:
 
     result = {"sessions_reaped": 0, "sessions_pruned": 0, "transcodes_reaped": 0,
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
-              "item_facets_backfilled": 0, "item_facets_orphans": 0}
+              "item_facets_backfilled": 0, "item_facets_orphans": 0,
+              "scan_dir_states_pruned": 0, "images_pruned": 0,
+              "images_freed_bytes": 0}
     try:
         result["transcodes_reaped"] = streaming.reap_stale_transcodes()
     except Exception as exc:  # noqa: BLE001
@@ -386,6 +402,30 @@ def janitor_tick() -> dict:
         result["item_facets_orphans"] = facets.prune_orphans(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("维护分类关联表失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 增量扫描的目录指纹：媒体库删了之后那批行没人会再用（指纹键含库 id），
+    # 留着只会随「建库→删库」慢慢涨
+    db = SessionLocal()
+    try:
+        result["scan_dir_states_pruned"] = prune_scan_dir_states(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理扫描目录指纹失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 刮削图片本地化的缓存：换过海报的旧文件、已被删除的条目留下的图都要回收，
+    # 超出上限时再从旧到新淘汰（有引用的图一张不动）
+    db = SessionLocal()
+    try:
+        image_result = image_store.prune(db)
+        result["images_pruned"] = image_result["removed"]
+        result["images_freed_bytes"] = image_result["freed_bytes"]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理图片缓存失败: %s", exc)
         db.rollback()
     finally:
         db.close()

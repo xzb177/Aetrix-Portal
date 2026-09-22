@@ -18,6 +18,7 @@ import threading
 from datetime import datetime
 from typing import Optional
 
+from backend.emby_server import image_store
 from backend.emby_server import models as emby_models
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,26 @@ TMDB_LANG = os.getenv("TMDB_LANGUAGE", "zh-CN")
 
 # 缓存未命中的哨兵：TMDB 的“没搜到”也是合法结果，必须与“没查过”区分开
 _MISS = object()
+
+
+def _set_image(item: emby_models.MediaItem, kind: str, url: str) -> None:
+    """落一个刮削到的图片地址；开启本地化时同时把图落成本地文件
+
+    远程地址**始终**保留（唯一事实来源）：本地那份只是缓存，被清掉/被删掉都能自愈——
+    取图时若发现本地文件不在了，会按需再落一份（见 media_routes.item_image）。
+    下载失败只是“没本地化”，不影响入库。
+    """
+    if kind == "Backdrop":
+        item.backdrop_image_url = url
+    else:
+        item.primary_image_url = url
+    local = image_store.localize(url)
+    if not local:
+        return
+    if kind == "Backdrop":
+        item.backdrop_path = local
+    else:
+        item.poster_path = local
 
 
 class TmdbClient:
@@ -190,9 +211,9 @@ class TmdbClient:
         poster = data.get("poster_path")
         backdrop = data.get("backdrop_path")
         if poster:
-            item.primary_image_url = f"{TMDB_IMAGE}/w500{poster}"
+            _set_image(item, "Primary", f"{TMDB_IMAGE}/w500{poster}")
         if backdrop:
-            item.backdrop_image_url = f"{TMDB_IMAGE}/w1280{backdrop}"
+            _set_image(item, "Backdrop", f"{TMDB_IMAGE}/w1280{backdrop}")
         return bool(poster or backdrop)
 
     def apply(self, item: emby_models.MediaItem, hit: dict, kind: str) -> None:
@@ -205,9 +226,9 @@ class TmdbClient:
         poster = hit.get("poster_path")
         backdrop = hit.get("backdrop_path")
         if poster:
-            item.primary_image_url = f"{TMDB_IMAGE}/w500{poster}"
+            _set_image(item, "Primary", f"{TMDB_IMAGE}/w500{poster}")
         if backdrop:
-            item.backdrop_image_url = f"{TMDB_IMAGE}/w1280{backdrop}"
+            _set_image(item, "Backdrop", f"{TMDB_IMAGE}/w1280{backdrop}")
         if kind == "series" and hit.get("name"):
             item.name = hit.get("name")
         elif hit.get("title"):

@@ -33,6 +33,7 @@ from backend.emby_server.mounts import (
     MountProvider,
     PlayTarget,
     _is_strm_name,
+    cached_listing,
 )
 
 logger = logging.getLogger(__name__)
@@ -330,6 +331,7 @@ class S3Mount(_CloudMount):
                 break
         return files, dirs
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         base_rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
         prefix = self._key(base_rel)
@@ -477,6 +479,7 @@ class AliyunMount(_CloudMount):
                 break
         return items
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         fid = self._fid_of(rel)
         base_rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
@@ -609,6 +612,7 @@ class QuarkMount(_CloudMount):
             page += 1
         return out
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         fid = self._fid_of(rel)
         base_rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
@@ -753,6 +757,7 @@ class OneDriveMount(_CloudMount):
             url, params = nxt, None  # 后续页直接用 nextLink，不再带参数
         return out
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         base_rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
         entries: list[MountEntry] = []
