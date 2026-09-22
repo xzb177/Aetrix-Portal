@@ -356,7 +356,8 @@ onMounted(refreshAll)
   right: 0;
   bottom: 0;
   height: 3px;
-  background: rgba(0, 0, 0, 0.5);
+  /* 封面上的进度槽：用叠加层令牌，不再写死 rgba(0,0,0,.5) */
+  background: var(--au-track);
 }
 
 .poster-progress > div { height: 100%; background: var(--au-primary); }

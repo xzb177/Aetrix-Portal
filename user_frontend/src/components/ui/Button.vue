@@ -155,12 +155,12 @@ const props = withDefaults(defineProps<Props>(), {
 }
 
 .neo-btn--danger:hover:not(.neo-btn--disabled) {
-  background: rgba(251, 113, 133, 0.2);
+  background: var(--au-danger-border);
 }
 
 .neo-btn--danger:active:not(.neo-btn--disabled) {
   transform: scale(var(--neo-scale-press));
-  background: rgba(251, 113, 133, 0.25);
+  background: var(--au-danger);
 }
 
 /* 禁用状态 */

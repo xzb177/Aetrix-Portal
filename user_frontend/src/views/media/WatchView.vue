@@ -434,8 +434,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .watch-view {
   min-height: 100vh;
-  background: #000;
-  color: #e5e7eb;
+  background: var(--au-bg);
+  color: var(--au-text);
 }
 
 .watch-view.hide-cursor {
@@ -447,6 +447,8 @@ onBeforeUnmount(() => {
   width: 100%;
   aspect-ratio: 16 / 9;
   max-height: calc(100vh - 0px);
+  /* 故意不用令牌：视频上下留边必须是纯黑，和画面本身一致，
+     跟主题的蓝调背景混在一起反而会看出一条“框” */
   background: #000;
 }
 
@@ -468,13 +470,13 @@ onBeforeUnmount(() => {
 .poster-shade {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
+  background: var(--au-scrim);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--au-text-2);
   font-size: 0.875rem;
 }
 
@@ -495,14 +497,14 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 1rem;
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--au-overlay);
   padding: 1.5rem;
   text-align: center;
 }
 
 .error-layer p {
   margin: 0;
-  color: #f87171;
+  color: var(--au-danger);
   font-size: 0.9375rem;
 }
 
@@ -525,19 +527,19 @@ onBeforeUnmount(() => {
 }
 
 .btn.ghost {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--au-surface-2);
+  color: var(--au-text);
+  border: 1px solid var(--au-border);
 }
 
 .btn.ghost:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--au-surface-3);
 }
 
 .btn.primary {
   gap: 0.4375rem;
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
   font-weight: 700;
   box-shadow: 0 4px 16px var(--au-primary-glow);
 }
@@ -557,8 +559,8 @@ onBeforeUnmount(() => {
   justify-content: center;
   padding: 1.5rem;
   background:
-    radial-gradient(700px 380px at 50% 0%, rgba(167, 139, 250, 0.12), transparent 65%),
-    rgba(4, 7, 12, 0.9);
+    radial-gradient(700px 380px at 50% 0%, var(--au-violet-soft), transparent 65%),
+    var(--au-overlay);
   backdrop-filter: blur(8px);
 }
 
@@ -567,7 +569,7 @@ onBeforeUnmount(() => {
   max-width: 420px;
   padding: 1.75rem 1.5rem;
   text-align: center;
-  background: rgba(10, 16, 26, 0.9);
+  background: var(--au-overlay-menu);
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-xl);
   box-shadow: var(--au-shadow-2);
@@ -637,10 +639,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--au-overlay-mid);
+  border: 1px solid var(--au-border);
   border-radius: 10px;
-  color: #fff;
+  color: var(--au-text);
   opacity: 0;
   transition: opacity 0.2s ease;
   backdrop-filter: blur(6px);
@@ -658,7 +660,7 @@ onBeforeUnmount(() => {
   bottom: 0;
   z-index: 10;
   padding: 1.75rem 1rem 0.75rem;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), transparent);
+  background: linear-gradient(to top, var(--au-overlay-strong), transparent);
   opacity: 0;
   transform: translateY(8px);
   transition: all 0.25s ease;
@@ -674,7 +676,7 @@ onBeforeUnmount(() => {
 .seek {
   position: relative;
   height: 4px;
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--au-on-image-strong);
   border-radius: 2px;
   cursor: pointer;
   margin-bottom: 0.625rem;
@@ -695,7 +697,7 @@ onBeforeUnmount(() => {
   left: 0;
   top: 0;
   bottom: 0;
-  background: #22d3ee;
+  background: var(--au-primary);
   border-radius: 2px;
 }
 
@@ -705,9 +707,9 @@ onBeforeUnmount(() => {
   transform: translate(-50%, -50%);
   width: 12px;
   height: 12px;
-  background: #22d3ee;
+  background: var(--au-primary);
   border-radius: 50%;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 1px 4px var(--au-shadow-color);
 }
 
 .controls-row {
@@ -724,15 +726,15 @@ onBeforeUnmount(() => {
   justify-content: center;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--au-text);
   cursor: pointer;
   border-radius: 8px;
   transition: all 0.15s ease;
 }
 
 .ctrl-btn:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--au-text);
+  background: var(--au-surface-3);
 }
 
 .volume-wrap {
@@ -749,7 +751,7 @@ onBeforeUnmount(() => {
 
 .time {
   font-size: 0.75rem;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--au-text-2);
   font-variant-numeric: tabular-nums;
 }
 

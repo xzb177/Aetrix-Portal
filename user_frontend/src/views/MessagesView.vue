@@ -391,7 +391,7 @@ onMounted(() => {
   padding: 0 5px;
   border-radius: var(--au-r-full);
   background: var(--au-primary);
-  color: #05141c;
+  color: var(--au-on-primary);
   font-size: 0.625rem;
   font-weight: 700;
   display: inline-flex;
@@ -561,7 +561,7 @@ onMounted(() => {
 
 .modal-icon.tone-amber { background: var(--au-warning-soft); color: var(--au-warning); }
 .modal-icon.tone-green { background: var(--au-success-soft); color: var(--au-success); }
-.modal-icon.tone-violet { background: rgba(167, 139, 250, 0.12); color: var(--au-violet); }
+.modal-icon.tone-violet { background: var(--au-violet-soft); color: var(--au-violet); }
 
 .modal-head-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 

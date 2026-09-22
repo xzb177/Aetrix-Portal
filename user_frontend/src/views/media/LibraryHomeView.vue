@@ -227,15 +227,17 @@ onMounted(() => {
   align-items: flex-end;
   background-size: cover;
   background-position: center 20%;
-  background-color: #0a101a;
+  background-color: var(--au-bg-soft);
 }
 
+/* 遮罩用叠加层令牌，不再是页面里写死的 rgba(7, 11, 18, …)：
+   换主题色时 Hero 会跟着变，而不是留在旧颜色上。 */
 .hero-shade {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(to top, #070b12 8%, rgba(7, 11, 18, 0.55) 45%, rgba(7, 11, 18, 0.35) 100%),
-    linear-gradient(100deg, rgba(7, 11, 18, 0.75) 25%, transparent 65%);
+    linear-gradient(to top, var(--au-bg) 8%, var(--au-overlay-mid) 45%, var(--au-overlay-soft) 100%),
+    linear-gradient(100deg, var(--au-overlay-strong) 25%, transparent 65%);
 }
 
 .hero-content {
@@ -248,9 +250,9 @@ onMounted(() => {
 .hero-tag {
   display: inline-block;
   padding: 0.3125rem 0.625rem;
-  background: rgba(34, 211, 238, 0.15);
-  border: 1px solid rgba(34, 211, 238, 0.3);
-  border-radius: 8px;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-sm);
   color: var(--au-primary);
   font-size: 0.75rem;
   font-weight: 600;
@@ -262,13 +264,13 @@ onMounted(() => {
   font-size: 2rem;
   font-weight: 700;
   color: var(--au-text);
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  text-shadow: var(--au-shadow-text);
 }
 
 .hero-progress {
   max-width: 320px;
   height: 4px;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--au-on-image-strong);
   border-radius: 2px;
   overflow: hidden;
   margin-bottom: 1rem;
@@ -290,33 +292,33 @@ onMounted(() => {
   gap: 0.5rem;
   height: 42px;
   padding: 0 1.25rem;
-  border-radius: 11px;
+  border-radius: var(--au-r-md);
   font-size: 0.875rem;
   font-weight: 600;
   text-decoration: none;
   border: none;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
 .btn.primary {
   background: var(--au-gradient);
-  color: #05141c;
-  box-shadow: 0 4px 16px rgba(34, 211, 238, 0.3);
+  color: var(--au-on-primary);
+  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
 .btn.primary:hover {
-  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.4);
+  box-shadow: 0 6px 20px var(--au-primary-glow);
 }
 
 .btn.ghost {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: var(--au-on-image);
+  color: var(--au-text);
   backdrop-filter: blur(6px);
 }
 
 .btn.ghost:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--au-on-image-strong);
 }
 
 .main {
@@ -351,17 +353,17 @@ onMounted(() => {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
+  transition: background var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease);
 }
 
 .seg-tab:hover {
   color: var(--au-text);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--au-surface);
 }
 
 .seg-tab.active {
   background: var(--au-gradient);
-  color: #05141c;
+  color: var(--au-on-primary);
 }
 
 .seg-tab svg {
@@ -401,11 +403,12 @@ onMounted(() => {
   gap: 0.625rem;
   padding: 4.5rem 1rem;
   text-align: center;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--au-text-3);
 }
 
 .empty svg {
-  color: rgba(34, 211, 238, 0.4);
+  color: var(--au-primary);
+  opacity: 0.45;
 }
 
 .empty h2 {
@@ -421,12 +424,9 @@ onMounted(() => {
   line-height: 1.6;
 }
 
+/* 用全站共用的 au-spin，不再自己再定义一个同效果的 keyframes */
 .spinning {
-  animation: spin 0.9s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  animation: au-spin 0.9s linear infinite;
 }
 
 /* 搜索入口 */
@@ -437,19 +437,19 @@ onMounted(() => {
   height: 46px;
   padding: 0 1rem;
   margin-bottom: 1.5rem;
-  background: rgba(148, 180, 220, 0.05);
+  background: var(--au-surface);
   border: 1px solid var(--au-border);
-  border-radius: 14px;
-  color: rgba(234, 242, 251, 0.45);
+  border-radius: var(--au-r-lg);
+  color: var(--au-text-3);
   font-size: 0.875rem;
   text-decoration: none;
-  transition: all 0.18s ease;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
 .search-entry:hover {
   border-color: var(--au-primary-border);
-  background: rgba(34, 211, 238, 0.06);
-  color: rgba(234, 242, 251, 0.7);
+  background: var(--au-primary-soft);
+  color: var(--au-text-2);
 }
 
 .search-entry svg { color: var(--au-primary); }
@@ -457,9 +457,9 @@ onMounted(() => {
 .search-kbd {
   margin-left: auto;
   padding: 0.125rem 0.5rem;
-  background: rgba(34, 211, 238, 0.12);
-  border: 1px solid rgba(34, 211, 238, 0.28);
-  border-radius: 999px;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
   color: var(--au-primary);
   font-size: 0.6875rem;
   font-weight: 600;
@@ -481,11 +481,11 @@ onMounted(() => {
   align-items: center;
   gap: 0.75rem;
   padding: 1rem;
-  background: rgba(10, 16, 26, 0.7);
+  background: var(--au-surface-2);
   border: 1px solid var(--au-border);
-  border-radius: 14px;
+  border-radius: var(--au-r-lg);
   text-decoration: none;
-  transition: all 0.2s ease;
+  transition: all var(--au-fast) var(--au-ease);
 }
 
 .view-card:hover {
@@ -499,9 +499,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(34, 211, 238, 0.1);
-  border: 1px solid rgba(34, 211, 238, 0.2);
-  border-radius: 12px;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
   color: var(--au-primary);
 }
 
