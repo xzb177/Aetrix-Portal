@@ -120,7 +120,7 @@ class CheckinStatusResponse(BaseModel):
 
 
 @router.get("/checkin/status", response_model=CheckinStatusResponse)
-async def checkin_status(
+def checkin_status(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -229,7 +229,7 @@ async def do_checkin(
 # ==================== 积分流水 ====================
 
 @router.get("/points/log")
-async def points_log(
+def points_log(
     limit: int = 50,
     offset: int = 0,
     type_filter: Optional[str] = None,
@@ -441,7 +441,7 @@ async def payment_methods(db: Session = Depends(get_db)):
 
 
 @router.get("/payment/packages")
-async def payment_packages(db: Session = Depends(get_db)):
+def payment_packages(db: Session = Depends(get_db)):
     """充值套餐（积分）"""
     if not _get_bool_config(db, "recharge_enabled", True):
         return {"enabled": False, "packages": []}
@@ -463,7 +463,7 @@ async def payment_packages(db: Session = Depends(get_db)):
 
 
 @router.get("/payment/plans")
-async def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db)):
+def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db)):
     """订阅套餐（购买订阅）
 
     套餐是一个服一个的：默认只展示**当前服**的可购套餐（``realm_id=0`` 看全部服）。
@@ -546,7 +546,7 @@ def _yipay_sign(params: dict, key: str) -> str:
 
 
 @router.post("/payment/order")
-async def create_payment_order(
+def create_payment_order(
     request: Request,
     req: CreateOrderRequest,
     current_user: models.WebUser = Depends(get_current_user),
@@ -670,7 +670,7 @@ async def create_payment_order(
 
 
 @router.get("/payment/orders")
-async def my_orders(
+def my_orders(
     kind: Optional[str] = None,
     limit: int = 30,
     current_user: models.WebUser = Depends(get_current_user),

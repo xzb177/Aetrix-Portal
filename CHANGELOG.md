@@ -2,6 +2,48 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.21.0] - 2026-09-22
+
+### 变更 (Changed)
+- **管理后台按域拆分**：`backend/api/admin.py`（两千多行）拆成 `admin_core.py`（公共骨架：
+  `admin_router` / `get_current_admin` / `_audit` / `_generate_code` / `_log_out`）、
+  `admin_auth.py`（登录 / 身份 / 改密）、`admin.py`（订阅、用户、卡码、公告、工单、求片、
+  操作日志、统计）与 `admin_economy.py`（邀请返利、积分台账、经济设置与统计）。三个模块注册到
+  同一个路由对象，**导入顺序 = 拆分前的定义顺序**。已验证：端点声明 391 条无增无减、
+  管理路由 53 条注册顺序逐条一致。同时把八个兄弟模块原先从 `admin.py` 取的共享骨架
+  统一改为从 `admin_core` 取（拆分本来就是为了去掉这个依赖）。
+- **100 个「体内没有 `await`」的 `async` 路由改成同步 `def`**：FastAPI 对 `def` 端点会丢进
+  线程池、对 `async def` 端点在事件循环上直接跑，而本项目用的是同步 SQLAlchemy——
+  一个查询就能把全站按住。这批端点体内没有任何 `await`，所以只改签名、业务代码一个字没动。
+  现在全站同步 `def` 路由 92 个。
+
+### 新增 (Added)
+- **两条静态契约护栏（进 CI，且只减不增）**：
+  - `scripts/check_await_consistency.py`：`await f(...)` 的目标必须是协程函数。
+    把「`async` 端点改成同步 `def`、但别处还在 `await` 复用」这类编译和类型检查都看不出来、
+    只有真打到那个请求才炸（`TypeError: object dict can't be used in 'await' expression`）的改动
+    挡在门口；
+  - `scripts/check_blocking_routes.py`：`async` 路由里出现同步 DB 调用即失败。存量 41 条记在
+    脚本的 `BASELINE` 里，改好一条删一行，新增一条过不了 CI。
+- **护栏自检 `scripts/smoke_test_static_guards.py`**（进 CI）：护栏最常见的失效方式
+  不是报错而是**根本不会响**（正则写歪 / 路径找错 / 基线比实际大，于是永远返回 0）。
+  这条拿合成代码树喂两条护栏，每条都要求「真实代码树上退出码为 0」且「合成代码树上必须失败
+  并点名」：await 契约看「`async` 端点里 `await` 一个纯同步裸名函数」；阻塞路由额外钉住
+  「扫描结果与基线逐条相等」与四种口径用例（`async`+`db.commit` 要报、同步 `def` 不报、
+  不碰库不报、直接调用的嵌套函数要报、下放的嵌套函数不报）。
+
+### 说明 (Notes)
+- **已知欠账：41 个 `async` 路由仍在事件循环上跑同步 SQLAlchemy。** 它们都有必须 `await`
+  的东西（通知推送 / 网络探测 / `await request.json()`），真正麻烦的地方在于那些「必须 await
+  的东西」**自己也**在 `async` 函数里写库（`backend/notifications.py` 的三个通知函数、
+  `backend/servers.py::probe_and_store`）。所以这不是 41 个端点的事，要连通知层 / 探测层
+  一起拆，不能靠一次机械替换收尾。清单、修法与优先顺序（先动热路径
+  `compat_routes.session_progress` / `api.user_views`）见 `docs/performance.md` 二·七。
+- 8 套此前只在开发机上跑的冒烟测试接入 CI（`emby` / `emby_gateway` / `ea_split` /
+  `media_search` / `mounts` / `paywall` / `scan_cleanup` / `user_v250`），CI 里现在共 38 套。
+  `smoke_test_admin_v240.py` 里两条「某条特定订阅必须出现在第一页」的断言改成字段契约断言
+  （列表默认 `limit=50` 且按 `end_date` 升序，本机反复跑会把库撑大——CI 空库不会碰到）。
+
 ## [2.20.2] - 2026-09-22
 
 ### 修复 (Fixed)

@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from backend import models, realms
 from backend import servers as registry
-from backend.api.admin import _audit, get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server import mount_health
@@ -106,7 +106,7 @@ def _missing_required(kind: str, url: str, config: dict) -> Optional[str]:
 
 
 @router.get("")
-async def list_servers(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db),
+def list_servers(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db),
                       realm_id: Optional[int] = None):
     """服务器清单（按服；``realm_id=0`` 看全部服）
 
@@ -537,7 +537,7 @@ async def activate_server(
 
 
 @router.post("/{server_id}/toggle")
-async def toggle_server(
+def toggle_server(
     server_id: int,
     admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -559,7 +559,7 @@ async def toggle_server(
 
 
 @router.delete("/{server_id}")
-async def delete_server(
+def delete_server(
     server_id: int,
     admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),

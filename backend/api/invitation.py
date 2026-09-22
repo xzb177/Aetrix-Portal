@@ -196,7 +196,7 @@ async def invite_config(db: Session = Depends(get_db)):
 
 
 @router.get("/my-code")
-async def my_code(
+def my_code(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -229,7 +229,7 @@ async def my_code(
 
 
 @router.get("/records")
-async def my_invitation_records(
+def my_invitation_records(
     limit: int = 50,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -252,7 +252,7 @@ async def my_invitation_records(
 
 
 @router.get("/rebates")
-async def my_rebates(
+def my_rebates(
     limit: int = 50,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),

@@ -33,7 +33,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend import coupons, models
-from backend.api.admin import _audit, get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ def _validate_discount(discount_type: str, value: int) -> None:
 # 注意：这两条必须声明在 /{coupon_id} 之前，否则 "settings" 会先去尝试解析成 int
 
 @admin_coupons_router.get("/settings")
-async def get_coupon_settings(
+def get_coupon_settings(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -197,7 +197,7 @@ async def get_coupon_settings(
 
 
 @admin_coupons_router.put("/settings")
-async def update_coupon_settings(
+def update_coupon_settings(
     request: CouponSettingsRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -287,7 +287,7 @@ async def list_coupon_usages_by_code(
 # ==================== 列表 ====================
 
 @admin_coupons_router.get("")
-async def list_coupons(
+def list_coupons(
     kind: Optional[str] = None,
     active: Optional[str] = None,
     search: str = "",
@@ -318,7 +318,7 @@ async def list_coupons(
 # ==================== 建券 ====================
 
 @admin_coupons_router.post("")
-async def create_coupons(
+def create_coupons(
     request: CouponCreateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -391,7 +391,7 @@ async def create_coupons(
 # ==================== 改券 ====================
 
 @admin_coupons_router.put("/{coupon_id}")
-async def update_coupon(
+def update_coupon(
     coupon_id: int,
     request: CouponUpdateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -470,7 +470,7 @@ async def update_coupon(
 
 
 @admin_coupons_router.delete("/{coupon_id}")
-async def delete_coupon(
+def delete_coupon(
     coupon_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),

@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from backend import models, realms
 from backend import servers as registry
-from backend.api.admin import _audit, get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ async def realms_overview(_: models.WebUser = Depends(get_current_admin), db: Se
 
 
 @router.post("")
-async def create_realm(
+def create_realm(
     payload: RealmPayload,
     admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -138,7 +138,7 @@ async def create_realm(
 
 
 @router.get("/{realm_id}/subscriptions")
-async def realm_subscriptions(
+def realm_subscriptions(
     realm_id: int,
     status_filter: str = "",
     search: str = "",
@@ -230,7 +230,7 @@ async def realm_subscriptions(
 
 
 @router.put("/{realm_id}")
-async def update_realm(
+def update_realm(
     realm_id: int,
     payload: RealmUpdatePayload,
     admin: models.WebUser = Depends(get_current_admin),
@@ -257,7 +257,7 @@ async def update_realm(
 
 
 @router.post("/{realm_id}/activate")
-async def activate_realm(
+def activate_realm(
     realm_id: int,
     admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -313,7 +313,7 @@ async def sync_realm_nodes(
 
 
 @router.delete("/{realm_id}")
-async def delete_realm(
+def delete_realm(
     realm_id: int,
     move_to: Optional[int] = None,
     admin: models.WebUser = Depends(get_current_admin),

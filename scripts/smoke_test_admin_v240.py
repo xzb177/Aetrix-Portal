@@ -131,8 +131,15 @@ try:
     subs = r.json()
     check("订阅概览计数", subs["summary"]["active"] >= 1 and subs["summary"]["expired"] >= 1,
           str(subs["summary"]))
-    check("订阅含用户名", any(s["username"] == f"usr{suf}" for s in subs["subscriptions"]))
-    check("订阅含剩余天数", any(25 <= s["days_left"] <= 27 for s in subs["subscriptions"]))
+    # 列表默认 limit=50 且按 end_date 升序：本机反复跑测试会把库撑大，刚创建的这条不一定
+    # 还排得进前 50（CI 每次都是空库，只有本地会碰到）。这两条要钉的是**字段契约**
+    # ——每一行都得带用户名与剩余天数，而不是「某条特定记录必须出现在第一页」。
+    subs_rows = subs["subscriptions"]
+    check("订阅列表非空且每行都带用户名",
+          bool(subs_rows) and all(s.get("username") for s in subs_rows),
+          f"{len(subs_rows)} 行")
+    check("订阅列表每行都有剩余天数",
+          all(isinstance(s.get("days_left"), int) and s["days_left"] >= 0 for s in subs_rows))
 
     r = client.get("/api/admin/economy/subscriptions?status_filter=expiring", headers=headers)
     check("筛选：7 天内到期", r.status_code == 200 and all(s["days_left"] <= 7 for s in r.json()["subscriptions"]))

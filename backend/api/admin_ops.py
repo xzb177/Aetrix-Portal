@@ -20,7 +20,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import authlog, codes, devices, models, realms
-from backend.api.admin import _audit, get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def code_dto(db: Session, code: models.RegistrationCode, now: Optional[datetime]
 
 
 @admin_ops_router.get("/registration-codes/list")
-async def list_codes(
+def list_codes(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
     code_type: Optional[int] = None,
@@ -129,7 +129,7 @@ async def list_codes(
 
 
 @admin_ops_router.get("/registration-codes/stats")
-async def code_stats(
+def code_stats(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
     realm_id: Optional[int] = None,
@@ -199,7 +199,7 @@ class CodeGenerateRequest(BaseModel):
 
 
 @admin_ops_router.post("/registration-codes/generate")
-async def generate_codes(
+def generate_codes(
     request: CodeGenerateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -292,7 +292,7 @@ class CodeUpdateRequest(BaseModel):
 
 
 @admin_ops_router.patch("/registration-codes/{code_id}")
-async def update_code(
+def update_code(
     code_id: int,
     request: CodeUpdateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -325,7 +325,7 @@ async def update_code(
 
 
 @admin_ops_router.delete("/registration-codes/{code_id}")
-async def delete_code(
+def delete_code(
     code_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -352,7 +352,7 @@ async def delete_code(
 
 
 @admin_ops_router.get("/devices/stats")
-async def device_stats(
+def device_stats(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -378,7 +378,7 @@ async def device_stats(
 
 
 @admin_ops_router.get("/devices")
-async def list_all_devices(
+def list_all_devices(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
     user_id: Optional[int] = None,
@@ -431,7 +431,7 @@ class DeviceBlockRequest(BaseModel):
 
 
 @admin_ops_router.put("/devices/{device_id}")
-async def update_device(
+def update_device(
     device_id: str,
     request: DeviceBlockRequest,
     user_id: int,
@@ -461,7 +461,7 @@ async def update_device(
 
 
 @admin_ops_router.delete("/devices/{device_id}")
-async def delete_device(
+def delete_device(
     device_id: str,
     user_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -481,7 +481,7 @@ async def delete_device(
 
 
 @admin_ops_router.get("/login-logs")
-async def list_login_logs(
+def list_login_logs(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
     username: str = "",
@@ -547,7 +547,7 @@ class LogPurgeRequest(BaseModel):
 
 
 @admin_ops_router.post("/login-logs/purge")
-async def purge_login_logs(
+def purge_login_logs(
     request: LogPurgeRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),

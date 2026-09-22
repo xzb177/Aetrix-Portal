@@ -159,7 +159,7 @@ class MountBrowseParams(BaseModel):
 
 
 @admin_emby_router.get("/mounts")
-async def list_mounts(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
+def list_mounts(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
                      realm_id: int | None = None):
     """存储挂载清单（按服；realm_id=0 表示全部服）"""
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
@@ -231,7 +231,7 @@ async def list_rclone_remotes(mode: str = "rc", rc_url: str = "", rc_user: str =
 
 
 @admin_emby_router.post("/mounts")
-async def create_mount(req: MountCreate, staff: models.WebUser = Depends(require_staff),
+def create_mount(req: MountCreate, staff: models.WebUser = Depends(require_staff),
                        db: Session = Depends(get_db)):
     name = (req.name or "").strip()
     if not name:
@@ -255,7 +255,7 @@ async def create_mount(req: MountCreate, staff: models.WebUser = Depends(require
 
 
 @admin_emby_router.put("/mounts/{mount_id}")
-async def update_mount(mount_id: int, req: MountUpdate,
+def update_mount(mount_id: int, req: MountUpdate,
                        staff: models.WebUser = Depends(require_staff),
                        db: Session = Depends(get_db)):
     mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
@@ -297,7 +297,7 @@ async def update_mount(mount_id: int, req: MountUpdate,
 
 
 @admin_emby_router.delete("/mounts/{mount_id}")
-async def delete_mount(mount_id: int, staff: models.WebUser = Depends(require_staff),
+def delete_mount(mount_id: int, staff: models.WebUser = Depends(require_staff),
                        db: Session = Depends(get_db)):
     mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
     if not mount:

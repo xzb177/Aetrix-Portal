@@ -76,7 +76,7 @@ jobs:
   smoke:
     name: 后端 · 冒烟测试
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       DATABASE_TYPE: sqlite
       DATABASE_URL: sqlite:///./ci-smoke.db
@@ -92,6 +92,16 @@ jobs:
 
       - name: 安装后端依赖
         run: pip install -r backend/requirements.txt
+
+      # 纯文本契约检查，最先跑：把「async 端点改成同步 def、但别处还在 await 它」
+      # 这类只有真打到那个请求才炸的改动挡在门口（性能整改会反复做这类改造）。
+      - name: await 契约检查（await 的目标必须是协程函数）
+        run: python scripts/check_await_consistency.py
+
+      # 另一条同源护栏：async 路由里不许出现同步 SQLAlchemy（FastAPI 只在事件循环上跑
+      # async 端点）。存量记在脚本的 BASELINE 里，只许减少不许增加。
+      - name: 阻塞路由契约检查（async 路由里做同步 DB 只减不增）
+        run: python scripts/check_blocking_routes.py
 
       # 不依赖前端构建产物，所以单独一个 job，改后端时能更快拿到反馈
       - name: 门户认证端到端（注册 → 登录 → me → refresh → 改密）
@@ -109,6 +119,21 @@ jobs:
       - name: Emby 会话端点鉴权冒烟（匿名 401 / 越权 403 / 随机会话键）
         run: python scripts/smoke_test_emby_sessions.py
 
+      # 自建后端的完整链路（扫描入库 → 媒体库/条目 → 播放信息 → 停止会话）。
+      # 这条是 EM 的“主干道”，此前只在开发机上跑过；ffmpeg 不在时 HLS 段自动 SKIP。
+      - name: Emby 后端主链路冒烟（扫描 / 媒体库 / 条目 / 播放 / 停止）
+        run: python scripts/smoke_test_emby.py
+
+      # 网关：客户端带着 X-Emby-Token / api_key 打进来，要能落到正确的用户与权限上，
+      # 且匿名与错键不能借网关绕过鉴权。
+      - name: Emby 网关冒烟（令牌落地 / 匿名与错键不放行）
+        run: python scripts/smoke_test_emby_gateway.py
+
+      # EM/EA 分离部署：两边各自鉴权、跨服务器取流、配置缺失时的降级。
+      # 分离是我们推荐的部署形态，而这条链路此前没有门禁。
+      - name: EM/EA 分离部署冒烟（双边鉴权 / 跨服取流 / 降级）
+        run: python scripts/smoke_test_ea_split.py
+
       - name: 安全加固冒烟（WS 鉴权 / 通知鉴权 / 健康检查 / 入口地址 / 后台登录审计）
         run: python scripts/smoke_test_security_hardening.py
 
@@ -117,6 +142,10 @@ jobs:
 
       - name: 播放入口链路冒烟（付费墙 / PlaybackInfo / 直连流与 Range / 无路径条目）
         run: python scripts/smoke_test_playback_chain.py
+
+      # 付费墙单独一条：非会员可看见条目但不能播、下载被拦、有权限后立刻放行。
+      - name: 付费墙冒烟（可浏览 / 不可播 / 下载策略 / 开通即放行）
+        run: python scripts/smoke_test_paywall.py
 
       # 转码停止原先是「事件循环上等子进程退出 + 递归删分片」：停一次转码 = 全站卡住。
       # 这里用后台心跳量事件循环被占住多久（同步基线 ≥0.5s vs 异步 <0.15s），并从真实路由
@@ -133,8 +162,20 @@ jobs:
       - name: 用户端查漏补缺冒烟（VIP 派生 / 工单通知 / 求片链路）
         run: python scripts/smoke_test_v251.py
 
+      - name: 用户端 v2.5.0 冒烟（浏览 / 搜索 / 收藏 / 播放记录口径）
+        run: python scripts/smoke_test_user_v250.py
+
+      # 全站搜索：标题 / 别名 / 分类命中、分页口径、无结果不报错。
+      - name: 媒体搜索冒烟（标题与别名命中 / 分页 / 空结果）
+        run: python scripts/smoke_test_media_search.py
+
       - name: 挂载体检冒烟（EA 视角可达性 / 面板体检落库 / EM 拉取 EA）
         run: python scripts/smoke_test_mount_health.py
+
+      # 存储挂载本体（本地目录 / rclone rc / WebDAV / STRM 的列举与播放 URL 组装）。
+      # 播放取流的第一跳就是这里，错一点就是“点开没反应”。
+      - name: 存储挂载冒烟（本地 / rclone rc / WebDAV / STRM 列举与取流）
+        run: python scripts/smoke_test_mounts.py
 
       - name: 服务器与求片转交冒烟（多服务器 / 当前使用切换 / MoviePilot 与 qB）
         run: python scripts/smoke_test_servers.py
@@ -174,6 +215,16 @@ jobs:
       # 孤儿子进程、健康检查是常数级、扫描清理不整库载入内存也不留孤儿行
       - name: 长期运行稳定性冒烟（维护看护 / 临时文件 / 清理阶段资源与数据完整性）
         run: python scripts/smoke_test_maintenance.py
+
+      # 清理阶段的边界：来源目录读不到时必须**跳过**清理（不能把全库当删除），
+      # 文件回来要能复活条目。误清理是不可逆事故，得单独钉住。
+      - name: 扫描清理阶段冒烟（来源不可读则跳过 / 条目复活 / 不误删）
+        run: python scripts/smoke_test_scan_cleanup.py
+
+      # 静态护栏也要自证“它会失败”：否则正则写歪、路径找错、基线比实际大，
+      # 它会永远返回 0 而没任何人知道。这里拿合成代码树喂两条护栏，钉住口径与报错能力。
+      - name: 静态护栏自检（护栏真的会失败 / 不误报同步 def 与下放的嵌套函数）
+        run: python scripts/smoke_test_static_guards.py
 
       # 分类筛选从「逗号文本列 LIKE 全表扫」换成「条目↔分类关联表 + 索引」：
       # 写入侧自动同步（ORM 钩子）、老库自动补块、结果与旧口径逐条一致、
