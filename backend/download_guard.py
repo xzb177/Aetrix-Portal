@@ -44,7 +44,11 @@ class DownloadGuardMiddleware:
         if scope.get("type") != "http" or not is_download_path(scope.get("path", "")):
             return await self.app(scope, receive, send)
 
-        blocked = self._blocked_message(scope)
+        allowed_by_policy, blocked = self._verdict(scope)
+        if allowed_by_policy:
+            # 把「本站点允许下载」这个结论留给下游路由：路由里的 ensure_download_allowed
+            # 直接复用，同一请求不再把「全局开关 + 该服策略」重查一遍。
+            scope.setdefault("state", {})["download_allowed_by_guard"] = True
         if blocked is None:
             return await self.app(scope, receive, send)
 
@@ -54,34 +58,38 @@ class DownloadGuardMiddleware:
     # ---- 内部 ----
 
     @staticmethod
-    def _blocked_message(scope) -> str | None:
-        """返回 403 文案；None 表示放行。"""
+    def _verdict(scope) -> tuple[bool, str | None]:
+        """返回 (站点是否允许下载, 403 文案或 None)
+
+        只有「真的判过策略且结论是允许」才回 True——导入失败、拿不到身份、判定异常
+        这些「没结论」的情况一律回 False，交给下游路由自己再判（宁可多查一次，不能漏拦）。
+        """
         try:
             from backend.database import SessionLocal
             from backend.emby_server.auth import resolve_request_user
             from backend.subscriptions import download_allowed, download_gate_message
         except Exception:  # pragma: no cover - 导入失败时不影响主流程
             logger.exception("下载策略兜底初始化失败，已放行")
-            return None
+            return False, None
 
         db = SessionLocal()
         try:
             if download_allowed(db):
-                return None
+                return True, None
 
             # 只读 header / query，不消费 body，原 receive 仍交给下游路由
             request = Request(scope, receive=None)
             user = resolve_request_user(db, request)
             if user is None:
                 # 拿不到身份就交回原路由处理（通常是 401），不改错误语义
-                return None
+                return False, None
 
             if _is_privileged(user):
-                return None
+                return True, None
             # 文案按「本机这个服」取：公益服要说清只提供在线观看（见 subscriptions）
-            return download_gate_message(db)
+            return False, download_gate_message(db)
         except Exception:  # pragma: no cover
             logger.exception("下载策略兜底判定失败，已放行")
-            return None
+            return False, None
         finally:
             db.close()

@@ -63,8 +63,9 @@ def download_item(item_id: str, request: Request,
     item = _require_item(db, item_id)
     # 付费墙：下载与在线播放同一门槛，避免绕过
     ensure_playback_allowed(db, user)
-    # 站点级下载开关：第三方播放器触发的下载同样拦下
-    ensure_download_allowed(db, user)
+    # 站点级下载开关：第三方播放器触发的下载同样拦下。
+    # request 带上网关（DownloadGuardMiddleware）已判过的结论，避免同一请求查两遍。
+    ensure_download_allowed(db, user, request=request)
     target = _play_target(db, item)
     if target.kind == "url":
         return serve_remote(

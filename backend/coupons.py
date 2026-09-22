@@ -14,7 +14,8 @@
 
 只在付款成功时计数会让一串未支付订单同时绕过限额，付完款全都拿到折扣；
 而「关单/退款不还额度」又会让码被白白烧掉。总额度用**条件 UPDATE** 抢占
-（`use_count < max_uses` 才 +1），并发下单也超不了上限。
+（`use_count < max_uses` 才 +1），**单人限领**用条件 `INSERT ... SELECT` 抢占
+（该人有效核销数 < ``per_user_limit`` 才写入），并发下单两处都超不了上限。
 
 价格一律用 `Decimal` 算、最后保留两位：钱不能落进浮点数。
 """
@@ -26,6 +27,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import func, insert, literal, select
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -212,10 +214,63 @@ def quote(db: Session, *, user: models.WebUser, code: str, kind: str, item_id: i
 def reserve(db: Session, *, coupon: models.CouponCode, user: models.WebUser,
             order_id: str, kind: str, list_price: Decimal,
             discount: Decimal, paid: Decimal) -> models.CouponUsage:
-    """占额度：用**条件 UPDATE** 抢占（`use_count < max_uses` 才 +1），并发也超不了总限
+    """占额度：**总限额**与**单人限领**都用「条件写入」原子抢占，并发也超不了
 
-    成功后返回核销记录；抢不到说明已被别人用完，抛 400 提示用户。
+    旧实现只把总限额做成了条件 UPDATE，单人限领仍是「先查计数再插入」：同一用户的
+    两个请求同时走到这里都会读到「还没领满」，于是各领一张，绕过每人限领（P2 的 TOCTOU）。
+    现在先按条件 ``INSERT ... SELECT`` 占单人名额（该人有效核销数 < per_user_limit 才写入，
+    拿到 0 行就是被别人先一步领满），再按条件 UPDATE 占总额度。两步都在调用方的事务里，
+    任一步抢不到就抛 400，整笔下单一起回滚——不会留下「占了额度却没订单」的半张核销记录。
+
+    成功后返回核销记录；抢不到说明已被自己或别人用完。
     """
+    now = datetime.now()
+    per_user_limit = int(coupon.per_user_limit or 0)
+    if per_user_limit > 0:
+        mine = (
+            select(func.count())
+            .select_from(models.CouponUsage)
+            .where(
+                models.CouponUsage.coupon_id == coupon.id,
+                models.CouponUsage.user_id == user.id,
+                models.CouponUsage.status.in_(ACTIVE_STATUSES),
+            )
+            .scalar_subquery()
+        )
+        values = {
+            "coupon_id": coupon.id,
+            "user_id": user.id,
+            "order_id": order_id,
+            "kind": kind,
+            "status": RESERVED,
+            "list_price": list_price,
+            "discount_amount": discount,
+            "paid_amount": paid,
+            "created_at": now,
+        }
+        columns = list(values)
+        claimed = db.execute(
+            insert(models.CouponUsage).from_select(
+                columns,
+                select(*[literal(values[name]) for name in columns]).where(mine < per_user_limit),
+            )
+        ).rowcount
+        if not claimed:
+            raise _invalid(f"该券每人限用 {per_user_limit} 次，你已用完")
+        usage = db.query(models.CouponUsage).filter(
+            models.CouponUsage.order_id == order_id
+        ).first()
+        if usage is None:  # pragma: no cover - 插入成功却读不到：数据层异常，宁可 500
+            raise HTTPException(status_code=500, detail="优惠券核销记录写入异常，请重试")
+    else:
+        usage = models.CouponUsage(
+            coupon_id=coupon.id, user_id=user.id, order_id=order_id, kind=kind,
+            status=RESERVED, list_price=list_price, discount_amount=discount,
+            paid_amount=paid, created_at=now,
+        )
+        db.add(usage)
+        db.flush()
+
     query = db.query(models.CouponCode).filter(models.CouponCode.id == coupon.id)
     if coupon.max_uses:
         query = query.filter(models.CouponCode.use_count < int(coupon.max_uses))
@@ -223,14 +278,6 @@ def reserve(db: Session, *, coupon: models.CouponCode, user: models.WebUser,
                             models.CouponCode.use_count + 1}, synchronize_session=False)
     if not updated:
         raise _invalid("该优惠券已被领用完")
-
-    usage = models.CouponUsage(
-        coupon_id=coupon.id, user_id=user.id, order_id=order_id, kind=kind,
-        status=RESERVED, list_price=list_price, discount_amount=discount,
-        paid_amount=paid, created_at=datetime.now(),
-    )
-    db.add(usage)
-    db.flush()
     return usage
 
 

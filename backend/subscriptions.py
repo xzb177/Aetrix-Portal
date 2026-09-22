@@ -199,8 +199,17 @@ def download_allowed(db: Session, realm_id: Optional[int] = None) -> bool:
 
 
 def ensure_download_allowed(db: Session, user: models.WebUser,
-                            realm_id: Optional[int] = None) -> None:
-    """下载前校验：站点/该服关闭下载时抛 403（管理员依然放行，便于排查）"""
+                            realm_id: Optional[int] = None,
+                            request=None) -> None:
+    """下载前校验：站点/该服关闭下载时抛 403（管理员依然放行，便于排查）
+
+    ``request`` 带上下载策略网关（``DownloadGuardMiddleware``）已经判过的结论时直接复用：
+    下载类请求「中间件判一遍、路由再判一遍」查的是同一件事（全局开关 + 该服策略），
+    网关判过就不必重查。不传 ``request`` 或网关没给出结论时行为与以前完全一致。
+    """
+    state = getattr(request, "state", None) if request is not None else None
+    if realm_id is None and state is not None and getattr(state, "download_allowed_by_guard", False):
+        return
     if getattr(user, "is_staff", False):
         return
     if download_allowed(db, realm_id):

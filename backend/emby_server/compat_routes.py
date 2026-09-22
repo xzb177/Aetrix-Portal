@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from backend import models
 from backend.database import SessionLocal, get_db
@@ -57,32 +58,63 @@ from backend.emby_server.api import (
 
 logger = logging.getLogger(__name__)
 
+# ==================== 进度上报的写库节流（v2.14.0）====================
+# 客户端每 10s 上报一次进度（暂停、卡顿的客户端也会照报），多路并发播放时每次都 commit
+# 会让 SQLite 写锁排队。策略：拖动（位置跳变）与暂停切换必须立刻落库，其余上报在
+# PROGRESS_WRITE_SECONDS 内只写一次——上限远小于 maintenance 的会话回收阈值
+# （``SESSION_STALE_MINUTES``，默认 10 分钟），心跳不会掉队。
+# 设 ``EMBY_PROGRESS_WRITE_SECONDS=0`` 回到旧行为（每报必写）。
+PROGRESS_WRITE_SECONDS = float(os.getenv("EMBY_PROGRESS_WRITE_SECONDS", "15") or 0)
+PROGRESS_SEEK_TICKS = int(os.getenv("EMBY_PROGRESS_SEEK_TICKS", "300000000") or 0)  # 30s
+
 
 # ==================== 会话上报 ====================
 
 def _upsert_session(db: Session, request: Request, user: models.WebUser,
-                    item: em.MediaItem, body: dict, ended: bool = False) -> em.PlaybackSession:
+                    item: em.MediaItem, body: dict,
+                    ended: bool = False) -> tuple[em.PlaybackSession, bool]:
+    """写入/更新播放会话（带写库节流，见文件头的 PROGRESS_WRITE_* 说明）
+
+    返回 ``(会话, 本次是否真的写了库)``；没有新信息时只返回会话、不产生写事务，
+    调用方据此决定「同一次上报的其它写入（如观看进度）要不要一起跳过」。
+    """
     session_key = body.get("PlaySessionId") or f"{user.id}-{item.guid[:16]}"
     session = db.query(em.PlaybackSession).filter(
         em.PlaybackSession.session_key == session_key
     ).first()
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
-    if not session:
+    new_session = session is None
+    if new_session:
         session = em.PlaybackSession(
             session_key=session_key, user_id=user.id, item_id=item.id,
         )
         db.add(session)
+
+    position = int(body.get("PositionTicks") or 0)
+    paused = bool(body.get("IsPaused", False))
+    # 新会话 / 播放结束 / 暂停切换 / 拖动进度：立刻落库（列表与进度条要不卡顿地跟着动）
+    material = (
+        new_session
+        or ended
+        or paused != bool(session.is_paused)
+        or abs(position - int(session.position_ticks or 0)) >= PROGRESS_SEEK_TICKS
+    )
+    if not material and PROGRESS_WRITE_SECONDS:
+        last = session.last_update_at
+        if last is not None and (datetime.now() - last).total_seconds() < PROGRESS_WRITE_SECONDS:
+            return session, False
+
     session.device_name = auth.get("Device") or session.device_name
     session.client_name = auth.get("Client") or session.client_name
     session.client_version = auth.get("Version") or session.client_version
     session.remote_addr = request.client.host if request.client else session.remote_addr
-    session.position_ticks = int(body.get("PositionTicks") or 0)
-    session.is_paused = bool(body.get("IsPaused", False))
+    session.position_ticks = position
+    session.is_paused = paused
     session.play_method = body.get("PlayMethod") or session.play_method
     if ended:
         session.ended_at = datetime.now()
     db.commit()
-    return session
+    return session, True
 
 
 @emby_router.post("/emby/Sessions/Playing")
@@ -101,19 +133,30 @@ async def session_progress(request: Request, user: models.WebUser = Depends(get_
                            db: Session = Depends(get_db)):
     body = await request.json()
     item = _require_item(db, body.get("ItemId") or "")
-    session = _upsert_session(db, request, user, item, body)
+    _session, wrote = _upsert_session(db, request, user, item, body)
+
+    pos = int(body.get("PositionTicks") or 0)
+    runtime = item.duration_ticks or 0
+    finished = bool(runtime and pos >= runtime * 0.9)
 
     umd = db.query(em.UserMediaData).filter(
         em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
     ).first()
     if not umd:
+        # 第一次上报这个条目：即使会话被节流也必须落库（否则「继续观看」没有起点）
         umd = em.UserMediaData(user_id=user.id, item_id=item.id)
         db.add(umd)
-    pos = int(body.get("PositionTicks") or 0)
+    elif (
+        not wrote
+        and (umd.playback_position_ticks or 0) == pos
+        and not (finished and not umd.played)
+    ):
+        # 会话和观看进度都没有新信息：同一次上报不必再来一次写事务（见文件头的节流说明）
+        return {"success": True}
+
     umd.playback_position_ticks = pos
     umd.last_played_at = datetime.now()
-    runtime = item.duration_ticks or 0
-    if runtime and pos >= runtime * 0.9:
+    if finished:
         if not umd.played:
             umd.play_count = (umd.play_count or 0) + 1
         umd.played = True
