@@ -68,6 +68,7 @@ const navGroups: NavGroup[] = [
       { path: '/goods', label: '商品与套餐' },
       { path: '/orders', label: '订单管理' },
       { path: '/exchange-codes', label: '兑换码' },
+      { path: '/coupons', label: '优惠券' },
       { path: '/invitations', label: '邀请与积分' },
       { path: '/codes', label: '卡码管理' },
     ],

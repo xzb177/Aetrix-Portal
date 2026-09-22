@@ -303,7 +303,8 @@ onMounted(async () => {
       <!-- 片库动态：追新在前。
            「最近入库」是门户做、客户端不做的部分（跟着更新追剧），所以放在第一条；
            「继续观看」是客户端已经替我们做了的，保留但排在后面，只做一条。
-           收藏 / 观看记录的完整入口交给顶栏导航，这里不再重复一遍链接。 -->
+           收藏 / 观看记录不再是顶栏的一级入口（v2.10.0 方案 A）：它们是媒体库内的分段，
+           所以这里既不重复链接、也不另起一区，只在行的「更多」里落到对应分段。 -->
       <MediaRow v-if="latestItems.length" title="最近入库" :items="latestItems.slice(0, 16)" more-to="/media" class="row" />
 
       <!-- 求片：库里没有的内容，用户在这里能做的事（客户端给不了） -->
@@ -313,7 +314,8 @@ onMounted(async () => {
         <ChevronRight :size="14" class="req-hint-arrow" />
       </RouterLink>
 
-      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" more-to="/history" class="row" />
+      <!-- 「更多」落到媒体库的观看记录分段（旧地址 /history 会重定向过来，书签不失效） -->
+      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" more-to="/media?tab=history" class="row" />
 
       <div v-if="!resumeItems.length && !latestItems.length" class="au-empty content-empty">
         <Sparkles :size="28" />

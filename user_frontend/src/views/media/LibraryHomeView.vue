@@ -1,20 +1,62 @@
 <script setup lang="ts">
 /**
- * 媒体库首页 — 浏览内置于后端的 Emby 媒体库
+ * 媒体库 —— 一个页面三个分段：浏览 / 收藏 / 观看记录（方案 A，v2.10.0）
  *
- * 分区：继续观看 / 最新添加 / 接下来看（NextUp）/ 我的收藏 / 媒体库入口。
- * 数据来自 /emby/* 协议端点（JWT 鉴权），与 Infuse 等客户端共享同一套进度。
+ * 此前这三个目的地是顶栏上三个并列的一级入口，占掉主导航 3/5 个位置；
+ * 收藏与观看记录本质是媒体库的两种视图（后者也是本站自己的一份历史数据），
+ * 于是降级为本页的分段标签，主导航收成：首页 / 媒体库 / 我的。
+ *
+ * - 分段状态写在 `?tab=`（收藏 / 观看记录），旧地址 `/favorites`、`/history`
+ *   重定向过来，书签与外部链接都不会失效；
+ * - 只渲染当前分段（v-if），访问 /media 时不会多发两组列表请求；
+ * - 浏览分段的数据来自 /emby/* 协议端点（JWT 鉴权），与 Infuse 等客户端共享同一套进度。
  */
-import { ref, computed, onMounted } from 'vue'
-import { RouterLink } from 'vue-router'
+import { ref, computed, onMounted, watch, type Component } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { embyApi, backdropUrl, ticksToSeconds, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
+import FavoritesView from '@/views/media/FavoritesView.vue'
+import HistoryView from '@/views/HistoryView.vue'
 import {
-  Play, Library, FolderOpen, RefreshCw, Info, Search,
+  Play, Library, FolderOpen, RefreshCw, Info, Search, Heart, History, Film,
 } from 'lucide-vue-next'
 
 const toast = useToast()
+
+// ==================== 分段：浏览 / 收藏 / 观看记录 ====================
+
+type MediaTab = 'browse' | 'favorites' | 'history'
+
+const TABS: { key: MediaTab; label: string; icon: Component }[] = [
+  { key: 'browse', label: '浏览', icon: Film },
+  { key: 'favorites', label: '收藏', icon: Heart },
+  { key: 'history', label: '观看记录', icon: History },
+]
+
+const route = useRoute()
+const router = useRouter()
+
+const tab = computed<MediaTab>(() => {
+  const t = String(route.query.tab || '')
+  return t === 'favorites' || t === 'history' ? t : 'browse'
+})
+
+function goTab(key: MediaTab) {
+  // replace 而不是 push：切换分段不该在历史栈里堆一串「同一页面」的返回步骤
+  router.replace(key === 'browse' ? '/media' : `/media?tab=${key}`)
+}
+
+const TAB_TITLES: Record<MediaTab, string> = {
+  browse: '媒体库',
+  favorites: '我的收藏',
+  history: '观看记录',
+}
+
+// 路由守卫先写的是「媒体库」，分段不同标题不同，这里覆盖成对应标题
+watch(tab, (t) => {
+  document.title = `${TAB_TITLES[t]} - Aetrix`
+}, { immediate: true })
 
 const loading = ref(true)
 const views = ref<EmbyItem[]>([])
@@ -69,6 +111,26 @@ onMounted(() => {
 
 <template>
   <div class="lib-home">
+    <!-- 分段：浏览 / 收藏 / 观看记录（导航只留一项，这两个是媒体库的视图） -->
+    <div class="container tabs-bar">
+      <nav class="seg-tabs au-anim-up" role="tablist" aria-label="媒体库分段">
+        <button
+          v-for="t in TABS"
+          :key="t.key"
+          type="button"
+          role="tab"
+          class="seg-tab"
+          :class="{ active: tab === t.key }"
+          :aria-selected="tab === t.key"
+          @click="goTab(t.key)"
+        >
+          <component :is="t.icon" :size="15" />
+          {{ t.label }}
+        </button>
+      </nav>
+    </div>
+
+    <template v-if="tab === 'browse'">
     <!-- Hero -->
     <section v-if="hero" class="hero" :style="heroBackdrop ? { backgroundImage: `url(${heroBackdrop})` } : {}">
       <div class="hero-shade"></div>
@@ -113,10 +175,10 @@ onMounted(() => {
           <span class="search-kbd">全局</span>
         </RouterLink>
 
-        <MediaRow title="继续观看" :items="resume.slice(0, 12)" more-to="/history" />
+        <MediaRow title="继续观看" :items="resume.slice(0, 12)" more-to="/media?tab=history" />
         <MediaRow title="最新添加" :items="latest" />
         <MediaRow title="接下来看" :items="nextUp.slice(0, 12)" />
-        <MediaRow title="我的收藏" :items="favorites.slice(0, 12)" more-to="/favorites" />
+        <MediaRow title="我的收藏" :items="favorites.slice(0, 12)" more-to="/media?tab=favorites" />
 
         <!-- 媒体库入口 -->
         <section v-if="views.length" class="views">
@@ -137,6 +199,14 @@ onMounted(() => {
           </div>
         </section>
       </template>
+    </div>
+    </template>
+
+    <!-- 其余分段：直接嵌入各自的视图（只渲染当前分段） -->
+    <div v-else class="segments">
+      <!-- 其余分段内容由各自的视图自带页面骨架 -->
+      <FavoritesView v-if="tab === 'favorites'" />
+      <HistoryView v-else />
     </div>
   </div>
 </template>
@@ -251,6 +321,61 @@ onMounted(() => {
 
 .main {
   padding-top: 2rem;
+}
+
+/* ===== 分段标签 ===== */
+.tabs-bar {
+  padding-top: 1.25rem;
+}
+
+.seg-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: var(--au-r-full);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+}
+
+.seg-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 34px;
+  padding: 0 0.9375rem;
+  border: none;
+  border-radius: var(--au-r-full);
+  background: transparent;
+  color: var(--au-text-3);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
+}
+
+.seg-tab:hover {
+  color: var(--au-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.seg-tab.active {
+  background: var(--au-gradient);
+  color: #05141c;
+}
+
+.seg-tab svg {
+  flex-shrink: 0;
+}
+
+/* 分段内容：沿用各视图自己的页面骨架 */
+.segments {
+  padding-top: 0.5rem;
+}
+
+@media (max-width: 560px) {
+  .seg-tabs { display: flex; width: 100%; }
+  .seg-tab { flex: 1; justify-content: center; padding: 0 0.5rem; }
 }
 
 .row-title {

@@ -1,13 +1,17 @@
 <script setup lang="ts">
 /**
- * 个人中心 — 账号页（v2.6.30 重设）
+ * 个人中心 — 账号页（v2.6.30 重设；v2.10.0 加入「正在播放」）
  *
  * 这里只放「账号自身」的事：身份卡（用户名 / 邮箱 / 注册时间 / 观看数据）、
- * Emby 账号（服务器地址 / 播放密码 / 多服 / 一键导入）、我的订阅、我的设备、安全设置。
+ * Emby 账号（服务器地址 / 播放密码 / 多服 / 一键导入）、我的订阅、我的设备、
+ * 正在播放（远程控制播放会话）、安全设置。
  *
  * 页面上不再铺功能磁贴：个人中心不是功能地图。全站入口由一份导航定义承担
- * （src/config/navigation.ts）——桌面在顶栏、移动端在底部坞，低频入口在头像菜单，
+ * （src/config/navigation.ts）——桌面在顶栏，低频入口在头像菜单，
  * 「个人中心 = 一堆按钮」的观感就此结束。
+ *
+ * 「正在播放」为什么在这里：它讲的是**控制**（哪台设备在放、能不能停），
+ * 不是「我看过什么」——后者留在媒体库的观看记录分段。v2.10.0 从观看记录页迁过来。
  */
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -18,9 +22,11 @@ import {
 } from '@/api'
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
+import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
+  MonitorPlay,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -480,6 +486,19 @@ function formatDate(iso?: string | null) {
             </template>
             <template v-else>移除后该设备登录状态立即失效，需重新输入账号密码。</template>
           </p>
+        </section>
+
+        <!-- 正在播放：讲的是「控制」（哪台设备在放、能不能停），不是「我看过什么」，
+             所以它在这里，而历史留在媒体库的观看记录分段 -->
+        <section class="pane">
+          <header class="pane-head">
+            <h2 class="pane-title">
+              <MonitorPlay :size="17" />
+              正在播放
+            </h2>
+          </header>
+          <PlaybackSessions />
+          <p class="pane-tip">远程结束播放只会终止会话，不会删除观看记录。</p>
         </section>
 
         <!-- 安全设置 -->

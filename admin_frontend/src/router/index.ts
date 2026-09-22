@@ -20,6 +20,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'goods', name: 'Goods', component: () => import('@/views/Goods.vue'), meta: { title: '商品管理' } },
       { path: 'orders', name: 'Orders', component: () => import('@/views/Orders.vue'), meta: { title: '运营·订单' } },
       { path: 'exchange-codes', name: 'ExchangeCodes', component: () => import('@/views/ExchangeCodes.vue'), meta: { title: '运营·兑换码' } },
+      // 优惠券（v2.10.0）：与兑换码分工不同——兑换码不花钱拿东西，优惠券是付费时抵扣
+      { path: 'coupons', name: 'Coupons', component: () => import('@/views/Coupons.vue'), meta: { title: '运营·优惠券' } },
       { path: 'invitations', name: 'Invitations', component: () => import('@/views/Invitations.vue'), meta: { title: '运营·邀请与积分' } },
       { path: 'codes', name: 'RegistrationCodes', component: () => import('@/views/RegistrationCodes.vue'), meta: { title: '卡码管理' } },
       { path: 'devices', name: 'Devices', component: () => import('@/views/Devices.vue'), meta: { title: '设备风控' } },

@@ -433,6 +433,10 @@ class RechargeOrder(Base):
     refunded_at = Column(DateTime)
     refund_reason = Column(String(255))
     refunded_points = Column(Integer, default=0)  # 实际冲正给该用户的积分数（正数=扣回）
+    # 用优惠券时的快照：列表价、优惠金额、核销记录（退款时要把额度还回去）
+    list_price = Column(Numeric(10, 2), default=0)
+    discount_amount = Column(Numeric(10, 2), default=0)
+    coupon_usage_id = Column(Integer, ForeignKey('coupon_usages.id'), nullable=True)
 
     package = relationship("RechargePackage")
     user = relationship("WebUser")
@@ -466,6 +470,9 @@ class SubscriptionOrder(Base):
     closed_at = Column(DateTime)
     refunded_at = Column(DateTime)
     refund_reason = Column(String(255))
+    list_price = Column(Numeric(10, 2), default=0)
+    discount_amount = Column(Numeric(10, 2), default=0)
+    coupon_usage_id = Column(Integer, ForeignKey('coupon_usages.id'), nullable=True)
 
     plan = relationship("SubscriptionPlan")
     user = relationship("WebUser")
@@ -889,6 +896,82 @@ class InvitationRecord(Base):
     code = relationship("InvitationCode")
 
 
+# ==================== 优惠券 ====================
+
+class CouponCode(Base):
+    """优惠券（购买时抵扣，v2.10.0）
+
+    与兑换码（`ExchangeCode`）不是一回事：兑换码是「不花钱直接拿东西」，
+    优惠券是「付费时打折 / 减钱」——钱还是要走支付网关，只是单价变了。
+
+    **使用次数是预订制的**：下单时就占额度（`CouponUsage.status='reserved'`），
+    支付成功转 `consumed`，订单被关掉/退款则 `released` 并把额度还回去。
+    只在付款成功时计数的话，一串未支付订单会同时绕过限额，付完款全都拿到折扣。
+    """
+    __tablename__ = 'coupon_codes'
+
+    __table_args__ = (
+        UniqueConstraint('code', name='uq_coupon_code'),
+        Index('idx_coupon_kind', 'kind'),
+        Index('idx_coupon_active', 'is_active'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(32), unique=True, nullable=False, index=True)
+    # 适用范围：subscription 只能买会员 / recharge 只能充值 / all 两者皆可
+    kind = Column(String(20), default='all')
+    # percent 百分比（value=85 即 85 折、实付 85%）；fixed 直接减免（value=单位元）
+    discount_type = Column(String(20), default='percent')
+    value = Column(Integer, default=0)
+    # 满多少可用（0 = 不设门槛）；百分比券的封顶减免（0 = 不封顶）
+    min_amount = Column(Numeric(10, 2), default=0)
+    max_discount = Column(Numeric(10, 2), default=0)
+    # 只对某个服的套餐可用（多服运营下避免 A 服的券在 B 服用）
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
+    max_uses = Column(Integer, default=0)      # 总次数上限，0 = 不限
+    use_count = Column(Integer, default=0)     # 当前占用（reserved + consumed）
+    per_user_limit = Column(Integer, default=1)  # 每人最多用几次，0 = 不限
+    valid_from = Column(DateTime)
+    valid_until = Column(DateTime)
+    is_active = Column(Boolean, default=True)
+    note = Column(String(255))
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    realm = relationship("ServerRealm")
+
+
+class CouponUsage(Base):
+    """优惠券核销记录：一笔优惠订单一行（预订 → 消费 / 释放）
+
+    `paid_amount` / `list_price` 快照下来：套餐改价后，历史订单仍要能解释「当时到底按多少钱算的」。
+    """
+    __tablename__ = 'coupon_usages'
+
+    __table_args__ = (
+        UniqueConstraint('order_id', name='uq_coupon_usage_order'),
+        Index('idx_coupon_usage_user', 'user_id'),
+        Index('idx_coupon_usage_coupon', 'coupon_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coupon_id = Column(Integer, ForeignKey('coupon_codes.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    order_id = Column(String(64), nullable=False)
+    kind = Column(String(20))
+    # reserved 占了额度但还没付 / consumed 已付款 / released 订单关掉或退款、额度已还
+    status = Column(String(20), default='reserved')
+    list_price = Column(Numeric(10, 2), default=0)
+    discount_amount = Column(Numeric(10, 2), default=0)
+    paid_amount = Column(Numeric(10, 2), default=0)
+    created_at = Column(DateTime, default=datetime.now)
+    closed_at = Column(DateTime)
+
+    coupon = relationship("CouponCode")
+    user = relationship("WebUser")
+
+
 # ==================== 求片系统 ====================
 
 class MovieRequest(Base):
@@ -998,6 +1081,8 @@ __all__ = [
     "CheckinRecord", "PointsLog", "ExchangeCode",
     # 邀请
     "InvitationCode", "InvitationRecord",
+    # 优惠券
+    "CouponCode", "CouponUsage",
     # 求片
     "MovieRequest",
     # 监控

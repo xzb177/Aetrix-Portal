@@ -31,6 +31,7 @@ from backend import reminders
 from backend.api.admin_ops import admin_ops_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.orders_admin import admin_orders_router
+from backend.api.coupons_admin import admin_coupons_router
 from backend.emby_server.api import emby_router
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
@@ -265,6 +266,8 @@ app.include_router(admin_ops_router)
 app.include_router(admin_reminders_router)
 # 订单关单与退款（见 backend/api/orders_admin.py）
 app.include_router(admin_orders_router)
+# 优惠券管理（v2.10.0）：券的 CRUD / 核销记录 / 开关，见 backend/api/coupons_admin.py
+app.include_router(admin_coupons_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

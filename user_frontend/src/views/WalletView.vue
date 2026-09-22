@@ -3,18 +3,18 @@
  * 钱包 — 余额总览 / 积分充值（支付下单）/ 卡码·兑换码核销 / 订单记录 / 积分流水
  * 布局：余额卡左右分区（左余额+签到态，右统一核销面板）；套餐卡横向结构化行
  */
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, Film, TriangleAlert, Undo2,
+  KeyRound, Film, TriangleAlert, Undo2, Percent, X,
 } from 'lucide-vue-next'
 import {
-  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi,
+  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi,
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
-  type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview,
+  type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview, type CouponQuote,
 } from '@/api/economy'
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -36,6 +36,100 @@ const logs = ref<PointsLogEntry[]>([])
 const tab = ref<'recharge' | 'plans' | 'orders' | 'log'>('recharge')
 const payMethod = ref('alipay')
 const orderLoading = ref<number | null>(null)
+
+// ===== 优惠券（v2.10.0）=====
+// 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
+// 所以应用时对当前页的每个商品各试算一次，行内直接显示折后价；下单时后端会再算一遍。
+const couponEnabled = ref(true)
+const couponCode = ref('')
+const couponApplied = ref('')          // 已生效的码（空 = 没在用券）
+const couponLoading = ref(false)
+const couponError = ref('')
+const couponQuotes = ref<Record<string, CouponQuote>>({})
+
+const quoteOf = (kind: 'recharge' | 'subscription', id: number) => couponQuotes.value[`${kind}:${id}`] || null
+/** 折后实付（未用券 = 原价），模板里直接取字符串，避免到处写非空断言 */
+const paidPrice = (kind: 'recharge' | 'subscription', id: number, price: number) =>
+  (quoteOf(kind, id)?.paid_amount ?? price).toFixed(2)
+const wasPrice = (kind: 'recharge' | 'subscription', id: number) => {
+  const q = quoteOf(kind, id)
+  return q ? q.list_price.toFixed(2) : ''
+}
+const couponSavings = computed(() => {
+  const values = Object.values(couponQuotes.value)
+  return values.length ? Math.max(...values.map((q) => q.discount_amount)) : 0
+})
+
+function clearCoupon() {
+  couponCode.value = ''
+  couponApplied.value = ''
+  couponError.value = ''
+  couponQuotes.value = {}
+}
+
+async function applyCoupon(silent = false) {
+  const code = couponCode.value.trim()
+  couponError.value = ''
+  if (!code) {
+    clearCoupon()
+    return
+  }
+  couponLoading.value = true
+  try {
+    // 只对当前分页的商品试算（充值包 or 套餐）：换页时再重算，不做全站请求
+    const targets = tab.value === 'plans'
+      ? plans.value.map((p) => ({ kind: 'subscription' as const, id: p.id }))
+      : packages.value.map((p) => ({ kind: 'recharge' as const, id: p.id }))
+    if (!targets.length) {
+      couponError.value = '暂无可购买的商品'
+      return
+    }
+
+    const results = await Promise.all(targets.map(async (t): Promise<{
+      key: string
+      quote: CouponQuote | null
+      detail?: unknown
+    }> => {
+      try {
+        return {
+          key: `${t.kind}:${t.id}`,
+          quote: await couponApi.quote({ code, kind: t.kind, item_id: t.id }),
+        }
+      } catch (err: any) {
+        return { key: `${t.kind}:${t.id}`, quote: null, detail: err?.response?.data?.detail }
+      }
+    }))
+
+    const valid = results.filter((r) => r.quote)
+    if (!valid.length) {
+      const detail = results.find((r) => r.detail)?.detail
+      couponApplied.value = ''
+      couponQuotes.value = {}
+      couponError.value = typeof detail === 'string' ? detail : '优惠码不可用'
+      if (!silent) toast.error(couponError.value)
+      return
+    }
+
+    couponQuotes.value = Object.fromEntries(valid.map((r) => [r.key, r.quote as CouponQuote]))
+    couponApplied.value = valid[0].quote!.code
+    // 有些商品不满足这张券（如满减门槛）：说清楚，不默默只给一部分打折
+    const skipped = results.length - valid.length
+    if (skipped > 0) {
+      couponError.value = `已应用，但本页有 ${skipped} 个商品不满足该券条件（原价购买）`
+    }
+    if (!silent) toast.success(`已应用「${couponApplied.value}」`)
+  } finally {
+    couponLoading.value = false
+  }
+}
+
+// 切换分页（充值 ↔ 会员）后商品变了，已应用的券要重新试算，否则价格显示会对不上
+watch(tab, () => {
+  if (couponApplied.value) {
+    couponCode.value = couponApplied.value
+    applyCoupon(true)
+  }
+})
 
 // ===== 功能开关（管理端可关；关闭时给出提示，不让用户白提交）=====
 const rechargeEnabled = ref(true)
@@ -150,7 +244,14 @@ async function confirmCodeRedeem() {
 async function handleOrder(kind: 'recharge' | 'subscription', itemId: number) {
   orderLoading.value = itemId
   try {
-    const res = await paymentApi.createOrder({ kind, item_id: itemId, payment_method: payMethod.value })
+    // 优惠码在试算通过的商品上才带：后端会按同一套口径再算一遍并占额度
+    const quote = quoteOf(kind, itemId)
+    const res = await paymentApi.createOrder({
+      kind,
+      item_id: itemId,
+      payment_method: payMethod.value,
+      coupon_code: quote ? quote.code : undefined,
+    })
     if (res.pay_url) {
       toast.success('正在跳转支付…')
       window.location.href = res.pay_url
@@ -197,7 +298,8 @@ async function loadAll() {
     const statusFallback: CheckinStatus | null = null
     const emptySubs: MySubscription[] = []
     const exchangeFallback = { enabled: true }
-    const [pkgRes, planRes, methodRes, orderRes, logRes, statusRes, exchangeRes, subsRes] = await Promise.all([
+    const couponFallback = { enabled: false }
+    const [pkgRes, planRes, methodRes, orderRes, logRes, statusRes, exchangeRes, subsRes, couponRes] = await Promise.all([
       paymentApi.packages().catch(() => emptyPkgs),
       paymentApi.plans().catch(() => emptyPlans),
       paymentApi.methods().catch(() => emptyMethods),
@@ -206,7 +308,9 @@ async function loadAll() {
       checkinApi.status().catch(() => statusFallback),
       exchangeApi.config().catch(() => exchangeFallback),
       subscriptionApi.getMine().catch(() => emptySubs),
-    ])
+      // 接口失败时按「关闭」处理：宁可不展示，也不让用户填完码才报错
+      couponApi.config().catch(() => couponFallback),
+])
     packages.value = pkgRes.packages || []
     plans.value = planRes.plans || []
     isFreeRealm.value = planRes.is_free === true || planRes.access_mode === 'free'
@@ -219,6 +323,7 @@ async function loadAll() {
     rechargeEnabled.value = pkgRes.enabled !== false
     plansEnabled.value = planRes.enabled !== false
     exchangeEnabled.value = exchangeRes.enabled !== false
+    couponEnabled.value = couponRes.enabled === true
     subscriptions.value = Array.isArray(subsRes) ? subsRes : []
   } finally {
     loading.value = false
@@ -440,6 +545,41 @@ onBeforeUnmount(stopPayPoll)
       </button>
     </div>
 
+    <!-- 优惠码：只对当前分页的商品试算，行内直接看到折后价（下单时后端再算一遍） -->
+    <div v-if="couponEnabled && (tab === 'recharge' || (tab === 'plans' && !isFreeRealm))"
+         class="coupon-bar au-anim-up">
+      <div class="coupon-head">
+        <Percent :size="14" />
+        <strong>优惠码</strong>
+        <span v-if="couponApplied" class="coupon-ok">
+          已应用 {{ couponApplied }}<template v-if="couponSavings > 0"> · 本页最高省 ¥{{ couponSavings.toFixed(2) }}</template>
+        </span>
+      </div>
+      <div class="coupon-row">
+        <input
+          v-model="couponCode"
+          class="coupon-input"
+          type="text"
+          maxlength="32"
+          placeholder="输入优惠码（如 SAVE10）"
+          autocomplete="off"
+          @keyup.enter="applyCoupon()"
+        />
+        <button class="au-btn au-btn-primary au-btn-sm" :disabled="couponLoading" @click="applyCoupon()">
+          <span v-if="couponLoading" class="au-spinner spinner-sm" />
+          <template v-else>{{ couponApplied ? '重新试算' : '应用' }}</template>
+        </button>
+        <button v-if="couponApplied || couponCode" class="au-btn au-btn-ghost au-btn-sm" @click="clearCoupon">
+          <X :size="13" />
+          清除
+        </button>
+      </div>
+      <p v-if="couponError" class="coupon-err">{{ couponError }}</p>
+      <p v-else-if="couponApplied" class="coupon-tip">
+        套餐列表里带删除线的原价与折后价均为本页试算；下单时按折后价支付，关单或退款后优惠次数自动退回。
+      </p>
+    </div>
+
     <!-- 充值积分：横向行卡 — 左侧点数信息，右侧价格与购买 -->
     <section v-if="tab === 'recharge'" class="tab-body au-anim-up">
       <div v-if="!rechargeEnabled" class="au-empty">
@@ -473,7 +613,10 @@ onBeforeUnmount(stopPayPoll)
 
           <span class="pkg-buy">
             <span v-if="p.is_popular" class="pkg-pop-tag">超值</span>
-            <span class="pkg-price">¥{{ p.price.toFixed(2) }}</span>
+            <span class="pkg-price">
+              <em v-if="wasPrice('recharge', p.id)" class="price-was">¥{{ wasPrice('recharge', p.id) }}</em>
+              ¥{{ paidPrice('recharge', p.id, p.price) }}
+            </span>
             <span class="pkg-cta">
               <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
               <template v-else>
@@ -543,8 +686,9 @@ onBeforeUnmount(stopPayPoll)
               <em v-if="p.realm_name" class="plan-realm">{{ p.realm_name }}</em>
             </h4>
             <span class="plan-price">
-              ¥{{ p.price.toFixed(2) }}
-              <em>/ {{ p.duration_days }} 天</em>
+              <em v-if="wasPrice('subscription', p.id)" class="price-was">¥{{ wasPrice('subscription', p.id) }}</em>
+              ¥{{ paidPrice('subscription', p.id, p.price) }}
+              <em class="plan-days">/ {{ p.duration_days }} 天</em>
             </span>
           </div>
           <p class="plan-desc">{{ p.description || '会员专属权益' }}</p>
@@ -592,9 +736,16 @@ onBeforeUnmount(stopPayPoll)
             <span v-if="o.status === 'refunded' && o.refund_reason" class="order-sub order-refund">
               退款原因：{{ o.refund_reason }}
             </span>
+            <span v-if="(o.discount_amount || 0) > 0" class="order-sub order-coupon">
+              <Percent :size="11" />
+              优惠码 {{ o.coupon_code || '已用券' }} 已减 ¥{{ (o.discount_amount || 0).toFixed(2) }}
+            </span>
           </div>
           <div class="order-side">
-            <span class="order-amount">¥{{ o.amount.toFixed(2) }}</span>
+            <span class="order-amount">
+              <em v-if="(o.discount_amount || 0) > 0" class="price-was">¥{{ (o.list_price || 0).toFixed(2) }}</em>
+              ¥{{ o.amount.toFixed(2) }}
+            </span>
             <span :class="orderStatusMeta(o.status).cls">{{ orderStatusMeta(o.status).label }}</span>
           </div>
         </div>
@@ -807,6 +958,71 @@ onBeforeUnmount(stopPayPoll)
 /* ==================== 支付方式 ==================== */
 .pay-methods { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .pay-methods-label { font-size: 0.8125rem; color: var(--au-text-3); }
+
+/* ==================== 优惠码（v2.10.0） ==================== */
+/* 虚线细描边而不是卡片：它是购买流程里的一步，不是又一个模块 */
+.coupon-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0.9375rem;
+  margin-bottom: 1rem;
+  background: var(--au-surface);
+  border: 1px dashed var(--au-primary-border);
+  border-radius: var(--au-r-md);
+}
+
+.coupon-head { display: flex; align-items: center; gap: 0.4375rem; font-size: 0.8125rem; color: var(--au-text-3); }
+.coupon-head svg { color: var(--au-primary); flex-shrink: 0; }
+.coupon-head strong { font-size: 0.8125rem; color: var(--au-text); font-weight: 600; }
+
+.coupon-ok {
+  margin-left: auto;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--au-success);
+}
+
+.coupon-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+.coupon-input {
+  flex: 1;
+  min-width: 11rem;
+  height: 36px;
+  padding: 0 0.75rem;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-sm);
+  color: var(--au-text);
+  font-size: 0.8125rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.coupon-input:focus { outline: none; border-color: var(--au-primary-border); }
+.coupon-input::placeholder {
+  color: var(--au-text-4);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.coupon-err { margin: 0; font-size: 0.75rem; color: var(--au-danger); }
+.coupon-tip { margin: 0; font-size: 0.75rem; color: var(--au-text-4); }
+
+/* 折后价：原价删除线 + 实付价（选择器带上父级，盖过 .plan-price em 的旧规则） */
+.pkg-price .price-was,
+.plan-price .price-was,
+.order-amount .price-was {
+  margin-right: 0.375rem;
+  font-style: normal;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--au-text-4);
+  text-decoration: line-through;
+}
+
+.order-coupon { color: var(--au-primary); }
+.order-coupon svg { flex-shrink: 0; }
 .pay-method {
   height: 32px;
   padding: 0 0.875rem;

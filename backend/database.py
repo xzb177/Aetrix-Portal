@@ -247,6 +247,19 @@ def _auto_migrate():
             ("push_message", "VARCHAR(300)", "NULL"),
             ("pushed_at", "DATETIME", "NULL"),
         ]),
+        # v2.10.0 优惠券：订单上快照「原价 / 优惠金额 / 核销记录」。
+        # 退款与对账要能解释「当时到底按多少钱算的」——套餐改价之后不能按现价重算。
+        # （新表 coupon_codes / coupon_usages 由 create_all 建，不在此列）
+        ("recharge_orders", [
+            ("list_price", "NUMERIC(10, 2)", "0"),
+            ("discount_amount", "NUMERIC(10, 2)", "0"),
+            ("coupon_usage_id", "INTEGER", "NULL"),
+        ]),
+        ("subscription_orders", [
+            ("list_price", "NUMERIC(10, 2)", "0"),
+            ("discount_amount", "NUMERIC(10, 2)", "0"),
+            ("coupon_usage_id", "INTEGER", "NULL"),
+        ]),
         ("emby_items", [
             ("imdb_id", "VARCHAR(20)", "NULL"),
             ("aliases", "TEXT", "''"),

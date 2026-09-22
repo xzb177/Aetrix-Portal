@@ -22,6 +22,9 @@
 老库自动补列（`refunded_at` / `refund_reason` / `closed_at` / `subscription_id` / `days_granted`），
 没有这些列的库不会因为升级而报错。
 
+v2.10.0：关单 / 退款同时**释放优惠券预订的额度**（`coupons.release`）。
+券的额度是预订制的（下单就占），如果订单作废/退了而不还额度，码会被白白烧掉。
+
 单独成文件：`backend/api/admin.py` 已经很大，订单相关的新端点集中在这里维护。
 鉴权口径完全一致（复用 `get_current_admin` + JWT + `_audit`）。
 """
@@ -33,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import coupons, models
 from backend.api.admin import _audit, get_current_admin
 from backend.database import get_db
 
@@ -150,6 +153,8 @@ async def close_order(
 
     order.status = "closed"
     order.closed_at = datetime.now()
+    # 优惠券用的是预订制额度：订单作废了，把占用的次数还回去（不还就等于把码烧了）
+    coupons.release(db, order.coupon_usage_id)
     db.commit()
 
     _audit(db, current_admin, "economy_close_order", "order", None,
@@ -188,7 +193,7 @@ async def refund_order(
     result = {
         "success": True, "order_id": order_id, "kind": kind,
         "status": "refunded", "revoked_points": 0, "revoked_days": 0,
-        "rebate_reversed": 0, "cancelled": False,
+        "rebate_reversed": 0, "cancelled": False, "coupon_released": False,
     }
 
     if request.revoke_entitlement:
@@ -218,6 +223,9 @@ async def refund_order(
     order.refund_reason = (request.reason or "").strip()[:255]
     if kind == "recharge":
         order.refunded_points = result["revoked_points"]
+    # 退款同样释放优惠券额度（用户没付钱买成这笔，次数不该算用掉）
+    coupons.release(db, order.coupon_usage_id)
+    result["coupon_released"] = bool(order.coupon_usage_id)
     db.commit()
 
     # 先提交再通知：履约事务未提交时另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
@@ -245,6 +253,7 @@ async def refund_order(
             "revoked_points": result["revoked_points"],
             "revoked_days": result["revoked_days"],
             "rebate_reversed": result["rebate_reversed"],
+            "coupon_released": result.get("coupon_released", False),
             "allow_negative": request.allow_negative})
     db.commit()
     logger.info("订单退款完成: %s kind=%s %s", order_id, kind, result)
