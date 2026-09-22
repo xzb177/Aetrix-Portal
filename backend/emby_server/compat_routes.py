@@ -32,7 +32,7 @@ from backend.emby_server.streaming import (
     serve_remote_async,
     start_transcode,
     stop_all_transcodes,
-    stop_transcode,
+    stop_transcodes_for,
     stop_user_transcodes,
     transcode_alive,
     wait_for_file,
@@ -49,6 +49,7 @@ from backend.emby_server.api import (
     _empty_items,
     _guid_of,
     _now_playing_dto,
+    item_guid_for,
     _policy_dto,
     _query_result,
     _require_item,
@@ -208,9 +209,12 @@ def stop_session(session_key: str, db: Session = Depends(get_db)):
         em.PlaybackSession.session_key == session_key
     ).first()
     if session:
+        # 转码会话按「用户 + 条目 guid」反查：播放会话键与转码 uuid 不是一回事
+        # （旧写法 stop_transcode(session_key) 永远匹配不上，进程其实没被停）
+        user_id, item_guid = session.user_id, item_guid_for(db, session.item_id)
         session.ended_at = datetime.now()
         db.commit()
-    stop_transcode(session_key)
+        stop_transcodes_for(user_id, item_guid)
     return {"success": True}
 
 

@@ -59,9 +59,15 @@ from backend.emby_server.streaming import (
     serve_remote,
     serve_remote_async,
     start_transcode,
+    find_transcodes,
     stop_all_transcodes,
+    stop_all_transcodes_async,
     stop_transcode,
+    stop_transcode_async,
+    stop_transcodes_for,
+    stop_transcodes_for_async,
     stop_user_transcodes,
+    stop_user_transcodes_async,
     transcode_alive,
     wait_for_file,
 )
@@ -74,6 +80,19 @@ emby_router = APIRouter(tags=["EmbyServer"])
 TICKS = 10_000_000
 SERVER_VERSION = "4.8.0.0"
 SERVER_ID = os.getenv("EMBY_SERVER_ID", "royalbot-emby-server")
+
+
+def item_guid_for(db: Session, item_id) -> Optional[str]:
+    """播放会话的 ``item_id`` → 条目 guid
+
+    转码会话在 ``streaming._TRANSCODE_PROCS`` 里按 guid 记（那个 uuid 只出现在 HLS 播放列表的
+    ``?session=`` 上），而「结束播放」手上只有播放会话的 ``item_id``；两者之间需要这一座桥。
+    旧实现在那里直接拿播放会话键去 pop，键对不上，等于什么都没停到。
+    """
+    if not item_id:
+        return None
+    row = db.query(em.MediaItem.guid).filter(em.MediaItem.id == item_id).first()
+    return row[0] if row else None
 
 
 def _iso(dt) -> str:

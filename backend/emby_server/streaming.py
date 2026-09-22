@@ -318,11 +318,24 @@ def start_transcode(
         "dir": out_dir,
         "started": datetime.now(),
         "user_id": user_id,
-        "item_guid": item_guid,
+        "item_guid": item_guid,      # 「结束播放」按它反查（见 find_transcodes）
         "file_path": file_path,
     }
     logger.info("HLS 转码启动 %s -> %s", os.path.basename(file_path), session_id)
     return session_id
+
+
+def find_transcodes(user_id: int, item_guid: Optional[str] = None) -> list:
+    """按「用户 + 条目」找转码会话 id（``item_guid`` 省略时 = 该用户全部）
+
+    转码会话 id 是 ``start_transcode`` 生成的随机 uuid，只出现在 HLS 播放列表的
+    ``?session=`` 上；而客户端的 ``PlaySessionId``（播放会话键，随机 ``s…``）
+    **不是同一个东西**。所以「结束这场播放」必须从播放会话反查出该条目的 guid 再按
+    (user_id, item_guid) 找，不能拿播放会话键去 pop——旧实现就是这么写的，等于什么都没停到。
+    """
+    return [sid for sid, info in list(_TRANSCODE_PROCS.items())
+            if info.get("user_id") == user_id
+            and (item_guid is None or info.get("item_guid") == item_guid)]
 
 
 def find_active_transcode(user_id: int, item_guid: str) -> Optional[str]:
@@ -353,6 +366,9 @@ def reap_stale_transcodes(max_age_seconds: int = 6 * 3600) -> int:
     """回收已退出 / 超龄的转码会话（含清理磁盘目录）
 
     客户端异常断开时不会上报 Stopped，若不回收会长期残留 ffmpeg 进程与临时分片。
+
+    同步实现，调用方都是**线程**（``_reap_in_background`` 后台线程、维护周期 ``janitor_tick``），
+    不在事件循环上：这里会逐个 ``terminate`` + ``wait`` + 删目录，本身就是慢调用。
     """
     now = datetime.now()
     reaped = 0
@@ -383,19 +399,51 @@ async def wait_for_file(path: str, timeout: float = 10.0, interval: float = 0.2)
     return os.path.isfile(path) and os.path.getsize(path) > 0
 
 
-def stop_transcode(session_id: str) -> None:
-    info = _TRANSCODE_PROCS.pop(session_id, None)
-    if not info:
-        return
+def _terminate_and_cleanup(session_id: str, info: dict) -> None:
+    """停掉转码的**阻塞部分**：结束子进程 + 提升日志尾部 + 删会话目录
+
+    两处都是慢调用：``proc.wait(timeout=5)`` 要等 ffmpeg 响应 SIGTERM（它可能正在写
+    最后几个分片），``shutil.rmtree`` 要递归删掉整场播放的分片（上千个文件，挂载目录上更慢）。
+    只在线程 / 同步路由 / 后台回收线程里直接调；事件循环上一律走 ``stop_transcode_async``。
+    """
     proc = info["proc"]
     if proc.poll() is None:
         proc.terminate()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            proc.kill()          # SIGTERM 不理就 SIGKILL，否则进程会一直挂着
     _log_ffmpeg_tail(info.get("dir") or "", session_id, proc.poll())
     shutil.rmtree(info["dir"], ignore_errors=True)
+
+
+def stop_transcode(session_id: str) -> None:
+    """同步停止一次转码（后台回收线程 / 同步 ``def`` 路由用）
+
+    **不要在 ``async def`` 里直接调它**：它会阻塞到子进程退出与目录删完（最坏 5 秒起），
+    一次调用就把整个进程的播放卡住。事件循环上用 ``stop_transcode_async``（同文件下方），
+    ``scripts/smoke_test_transcode_stop.py`` 会静态拦住这个错误写法。
+    """
+    info = _TRANSCODE_PROCS.pop(session_id, None)
+    if not info:
+        return
+    _terminate_and_cleanup(session_id, info)
+
+
+async def stop_transcode_async(session_id: str) -> None:
+    """异步停止一次转码——阻塞部分丢线程池，事件循环不等待
+
+    v2.12/v2.13 修的就是这一类问题（阻塞调用不许出现在事件循环上），但 ``stop_transcode``
+    一直是漏网的那一个：管理员点「结束播放」、客户端上报 Stop、维护周期回收会话，
+    都会在 ``async def`` 路由里同步等上 5 秒 + 删一轮分片——全站一起顿住。
+
+    登记摘除（``pop``）仍在调用线程里同步完成，所以并发的两次停止只有一个真正拿到会话，
+    不会重复 terminate / 重复删目录。
+    """
+    info = _TRANSCODE_PROCS.pop(session_id, None)
+    if not info:
+        return
+    await asyncio.to_thread(_terminate_and_cleanup, session_id, info)
 
 
 def _log_ffmpeg_tail(directory: str, session_id: str, returncode) -> None:
@@ -430,6 +478,43 @@ def stop_user_transcodes(user_id: int) -> int:
             stop_transcode(sid)
             stopped += 1
     return stopped
+
+
+def stop_transcodes_for(user_id: int, item_guid: Optional[str] = None) -> int:
+    """同步停掉某用户某个条目的转码会话（同步 ``def`` 路由 / 线程里用）"""
+    ids = find_transcodes(user_id, item_guid)
+    for sid in ids:
+        stop_transcode(sid)
+    return len(ids)
+
+
+async def stop_transcodes_for_async(user_id: int, item_guid: Optional[str] = None) -> int:
+    """异步停掉某用户某个条目的转码会话（事件循环上用这个，见 stop_transcode_async）"""
+    ids = find_transcodes(user_id, item_guid)
+    if ids:
+        await asyncio.gather(*(stop_transcode_async(sid) for sid in ids))
+    return len(ids)
+
+
+async def stop_all_transcodes_async() -> int:
+    """异步停掉全部转码会话（管理后台「停止全部转码」用）
+
+    并发执行：``async def`` 路由里逐个 ``await`` 会让总耗时变成「会话数 × 等待时间」
+    （N 路转码同时被停就是 5×N 秒），gather 之后总耗时≈单个会话。
+    """
+    ids = list(_TRANSCODE_PROCS.keys())
+    if ids:
+        await asyncio.gather(*(stop_transcode_async(sid) for sid in ids))
+    return len(ids)
+
+
+async def stop_user_transcodes_async(user_id: int) -> int:
+    """异步停掉某用户的全部转码会话（同上，并发执行）"""
+    ids = [sid for sid, info in list(_TRANSCODE_PROCS.items())
+           if info.get("user_id") == user_id]
+    if ids:
+        await asyncio.gather(*(stop_transcode_async(sid) for sid in ids))
+    return len(ids)
 
 
 def get_transcode(session_id: str):
@@ -477,6 +562,8 @@ def _transcode_idle(info: dict) -> float:
 
 def enforce_transcode_capacity() -> None:
     """并发上限保护：CPU 被多路转码打满时，先停掉已经没人看的会话
+
+    同步实现（内部会等子进程退出 + 删目录）；调用方是后台回收线程，不在事件循环上。
 
     客户端切清晰度 / 拖进度后重新拉起、或者直接杀掉应用，都不会上报 Stopped，
     只留下一个不再增长的输出目录。这里**只回收闲置超时的会话**，不为了让新请求
