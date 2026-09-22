@@ -175,6 +175,17 @@ jobs:
       - name: 分类筛选索引冒烟（关联表同步 / 老库补块 / 结果一致 / 索引证据）
         run: python scripts/smoke_test_item_facets.py
 
+      # 升级现场：关联表回填到一半进程被杀 / 重启续跑 / 降级与索引两条路结果逐条一致 /
+      # 读请求的补块预算与冷却。这些场景在开发机上很难自然遇到，但真实老库升级必经过。
+      - name: 分类关联表升级演练（中断续跑 / 降级口径 / 补块预算）
+        run: python scripts/smoke_test_item_facets_upgrade.py
+
+      # 性能护栏：只跑 2 万条、几秒钟，判定用的是**比值**而不是耗时，所以不受 CI 机器快慢影响。
+      # 之前只有“功能正确”的门禁——把索引路径改回全表扫描、或在写入钩子里塞逐条查询，
+      # 依赖都是绿的。真差距是阈值的几十倍，只有真改坏了才会红。
+      - name: 分类筛选性能护栏（比值阈值 / 索引路径不能退化）
+        run: python scripts/benchmark_item_facets.py --guard
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
