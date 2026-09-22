@@ -250,7 +250,8 @@ check(not streaming._TRANSCODE_PROCS, "注册表清空")
 tick = maint.janitor_tick()
 check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     "transcode_orphans", "subtitle_cache_pruned",
-                    "item_facets_backfilled", "item_facets_orphans"},
+                    "item_facets_backfilled", "item_facets_orphans",
+                    "scan_dir_states_pruned", "images_pruned", "images_freed_bytes"},
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()
 check(all(v == 0 for v in second.values()), "维护周期可反复执行（干净时什么都不做）", f"{second}")
@@ -337,7 +338,9 @@ check(streams_before >= 1, "条目带媒体流（用于验证清理时一并删�
 os.remove(victim_path)
 # 批大小刻意小于待清理条目数：游标必须能跨批推进并正常收尾
 real_batch = sc.SCAN_BATCH
+real_cleanup_batch = sc.CLEANUP_BATCH
 sc.SCAN_BATCH = 4
+sc.CLEANUP_BATCH = 4        # 清理阶段的批大小也要小于待清理条目数，才能真的跨批
 try:
     db = Session()
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
@@ -345,6 +348,7 @@ try:
     db.close()
 finally:
     sc.SCAN_BATCH = real_batch
+    sc.CLEANUP_BATCH = real_cleanup_batch
 
 db = Session()
 left_item = db.query(em.MediaItem).filter(em.MediaItem.id == victim_id).first()

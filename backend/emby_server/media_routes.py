@@ -13,6 +13,7 @@ import logging
 
 from backend import models
 from backend.database import SessionLocal, get_db
+from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server.streaming import (
@@ -44,6 +45,22 @@ from backend.emby_server.api import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _remember_local_image(db: Session, item: em.MediaItem, kind: str, path: str) -> None:
+    """把本地化后的图片路径记到条目上（下一次取图直接命中本地）
+
+    写库失败只记日志：图片本身已经在磁盘上，这个函数只是让后续请求少走一步。
+    """
+    try:
+        if kind == "Primary":
+            item.poster_path = path
+        else:
+            item.backdrop_path = path
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("记录本地化图片路径失败 item=%s: %s", getattr(item, "guid", "?"), exc)
+        db.rollback()
 
 
 @emby_router.get("/emby/Videos/{item_id}/hls1")
@@ -99,6 +116,13 @@ def item_image(item_id: str, image_type: str, request: Request,
     if not src:
         raise HTTPException(status_code=404, detail="Image not found")
     if src.startswith("http://") or src.startswith("https://"):
+        # 刮削图片本地化：远程图先落一份到本机（缓存）就直接用本地发，
+        # 不必每个客户端、每次缓存穿透都去第三方拉一趟。落下就记住路径，
+        # 下次请求直接命中本地；落不下来（源站挂了/被限速）就走下面的代理，行为不变。
+        cached = image_store.localize(src)
+        if cached:
+            _remember_local_image(db, item, kind, cached)
+            return serve_image(cached)
         # 仅允许代理 http(s) 远程图片（防 SSRF）
         import httpx
 

@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend import models
 from backend.database import SessionLocal, get_db
 from backend.emby_server import facets
+from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import subtitles as subs
@@ -90,8 +91,15 @@ def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
     """
     def srcs(it: em.MediaItem) -> list[str]:
         if kind == "Primary":
-            return [it.primary_image_url or "", it.poster_path or ""]
-        return [it.backdrop_image_url or "", it.backdrop_path or ""]
+            remote, local = it.primary_image_url or "", it.poster_path or ""
+        else:
+            remote, local = it.backdrop_image_url or "", it.backdrop_path or ""
+        # 刮削图片本地化的那份缓存（在我们自己的图片目录里）优先走本地，且必须真在磁盘上：
+        # 缓存被清掉（/tmp 重启后清空、维护周期淘汰）时直接退回远程图，
+        # 取图时会按需再落一份（media_routes.item_image），行为与本地化之前完全一致。
+        if local and image_store.is_cached_path(local) and os.path.isfile(local):
+            return [local, remote]
+        return [remote, local]
 
     chain = srcs(item)
     if item.item_type in ("episode", "season"):

@@ -30,7 +30,13 @@ from typing import Optional
 
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.mount_cloud import _CloudMount
-from backend.emby_server.mounts import MountAuthError, MountEntry, MountError, PlayTarget
+from backend.emby_server.mounts import (
+    MountAuthError,
+    MountEntry,
+    MountError,
+    PlayTarget,
+    cached_listing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +225,7 @@ class RcloneMount(_CloudMount):
 
     # ---- 接口 ----
 
+    @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         base_rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
         if self.mode == MODE_CLI:
