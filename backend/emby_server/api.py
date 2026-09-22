@@ -25,11 +25,12 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from sqlalchemy import func, or_
+from sqlalchemy import false, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from backend import models
 from backend.database import SessionLocal, get_db
+from backend.emby_server import facets
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import subtitles as subs
@@ -38,12 +39,12 @@ from backend.emby_server.auth import (
     parse_emby_authorization,
     resolve_token,
 )
+from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
     parse_media_filename,
     scan_library_sync,
-    count_virtual_items,
 )
 from backend.emby_server.search import (
     CANDIDATE_LIMIT as SEARCH_CANDIDATE_LIMIT,
@@ -621,6 +622,21 @@ def _virtual_libraries_enabled() -> bool:
     return os.getenv("ENABLE_VIRTUAL_LIBRARIES", "true").strip().lower() not in ("0", "false", "no")
 
 
+def _facet_or_legacy(column, kind: str, names: list[str], db: Session):
+    """分类筛选条件：优先走关联表的索引，老库没回填完就退回全表 ILIKE
+
+    关联表命中后不再碰 `emby_items` 的文本列；两者的匹配语义一致
+    （关联表侧是「全等或取值里包含」，与 ``col ILIKE '%x%'`` 相同，含大小写不敏感），
+    所以回填过程中混用两种路径也不会出现两种结果。
+    传了库里不存在的分类名时返回“空结果”条件（与 ``ILIKE`` 匹配不到任何行一致）。
+    """
+    if not names:
+        return None
+    if facets.ensure_ready(db):
+        return facets.candidate_condition(kind, names, db)
+    return or_(*[column.ilike(f"%{name}%") for name in names])
+
+
 def _synthetic_map(db: Session) -> dict[str, tuple[str, str]]:
     """{合成 Id: (类型, 名称)} 反查表（类型 / 工作室 / 年份 右键筛选用）
 
@@ -628,13 +644,24 @@ def _synthetic_map(db: Session) -> dict[str, tuple[str, str]]:
     旧实现找不到条目就退回按 guid 匹配，等于返回空（或整库）——点进去白点。
     """
     buckets: dict[str, set[str]] = {"Genre": set(), "Studio": set(), "Year": set()}
-    for genres, studios, year in db.query(
-        em.MediaItem.genres, em.MediaItem.studios, em.MediaItem.production_year
-    ).all():
-        buckets["Genre"].update(g for g in (genres or "").split(",") if g)
-        buckets["Studio"].update(s for s in (studios or "").split(",") if s)
-        if year:
-            buckets["Year"].add(str(year))
+    if facets.ensure_ready(db):
+        # 走关联表：两次索引扫描（取值很少），不再扫全库文本列
+        buckets["Genre"].update(facets.kind_values(db, facets.KIND_GENRE))
+        buckets["Studio"].update(facets.kind_values(db, facets.KIND_STUDIO))
+    else:
+        # 老库还没回填完：沿用旧口径，宁可慢也不能少（否则客户端点类型会空）
+        for genres, studios in db.query(
+            em.MediaItem.genres, em.MediaItem.studios
+        ).all():
+            buckets["Genre"].update(g for g in (genres or "").split(",") if g)
+            buckets["Studio"].update(s for s in (studios or "").split(",") if s)
+    for (year,) in (
+        db.query(em.MediaItem.production_year)
+        .filter(em.MediaItem.production_year.isnot(None))
+        .distinct()
+        .all()
+    ):
+        buckets["Year"].add(str(year))
     return {
         _guid_of(kind, name): (kind, name)
         for kind, names in buckets.items()
@@ -643,10 +670,20 @@ def _synthetic_map(db: Session) -> dict[str, tuple[str, str]]:
 
 
 def _synthetic_lookup(db: Session) -> dict[str, tuple[str, str]]:
-    """按请求缓存反查表，列表接口里不会重复扫描全库"""
+    """两级缓存的反查表：同一请求内复用，跨请求按「关联表代际」复用
+
+    合成 Id 表只随扫描 / 回填变化（代际号会变），因此跨请求缓存不会给出过期结果；
+    以前每次带 GenreIds/StudioIds 的列表请求都要扫一遍全库。
+    """
     cached = db.info.get("_royalbot_synthetic_ids")
     if cached is None:
-        cached = _synthetic_map(db)
+        generation = facets.values_generation()
+        if _SYNTHETIC_CACHE.get("map") is not None and _SYNTHETIC_CACHE.get("gen") == generation:
+            cached = _SYNTHETIC_CACHE["map"]
+        else:
+            cached = _synthetic_map(db)
+            _SYNTHETIC_CACHE["gen"] = generation
+            _SYNTHETIC_CACHE["map"] = cached
         db.info["_royalbot_synthetic_ids"] = cached
     return cached
 
@@ -857,9 +894,12 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     if not (_virtual_libraries_enabled() and lib.is_enabled):
                         raise HTTPException(status_code=404, detail="Not found")
                     platform = (lib.platform or "").strip()
+                    platform_cond = _facet_or_legacy(
+                        em.MediaItem.platforms, facets.KIND_PLATFORM, [platform], db
+                    ) if platform else None
                     query = (
-                        query.filter(em.MediaItem.platforms.ilike(f"%{platform}%"))
-                        if platform else query.filter(em.MediaItem.id == -1)
+                        query.filter(platform_cond) if platform_cond is not None
+                        else query.filter(em.MediaItem.id == -1)
                     )
                 else:
                     query = query.filter(em.MediaItem.library_id == lib.id)
@@ -867,9 +907,11 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                 # 类型 / 工作室 / 年份的合成 Id：点进去要得到真实筛选结果
                 hit = _synthetic_lookup(db).get(parent_id)
                 if hit and hit[0] == "Genre":
-                    query = query.filter(em.MediaItem.genres.ilike(f"%{hit[1]}%"))
+                    cond = _facet_or_legacy(em.MediaItem.genres, facets.KIND_GENRE, [hit[1]], db)
+                    query = query.filter(cond) if cond is not None else query.filter(false())
                 elif hit and hit[0] == "Studio":
-                    query = query.filter(em.MediaItem.studios.ilike(f"%{hit[1]}%"))
+                    cond = _facet_or_legacy(em.MediaItem.studios, facets.KIND_STUDIO, [hit[1]], db)
+                    query = query.filter(cond) if cond is not None else query.filter(false())
                 elif hit and hit[0] == "Year" and str(hit[1]).isdigit():
                     query = query.filter(em.MediaItem.production_year == int(hit[1]))
                 else:
@@ -905,13 +947,18 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         if clauses:
             query = query.filter(or_(*clauses))
 
+    # 分类筛选：关联表命中（索引）为主，老库未回填完时自动退回文本列 ILIKE
     genre_names = [g for g in genres if g] or _synthetic_names("Genre", "GenreIds")
     if genre_names:
-        query = query.filter(or_(*[em.MediaItem.genres.ilike(f"%{g}%") for g in genre_names]))
+        cond = _facet_or_legacy(em.MediaItem.genres, facets.KIND_GENRE, genre_names, db)
+        if cond is not None:
+            query = query.filter(cond)
 
     studio_names = _synthetic_names("Studio", "StudioIds")
     if studio_names:
-        query = query.filter(or_(*[em.MediaItem.studios.ilike(f"%{s}%") for s in studio_names]))
+        cond = _facet_or_legacy(em.MediaItem.studios, facets.KIND_STUDIO, studio_names, db)
+        if cond is not None:
+            query = query.filter(cond)
 
     year_values: list[int] = []
     for y in years:
@@ -1071,6 +1118,8 @@ def items_intros(user: models.WebUser = Depends(get_emby_user)):
 # 旧实现每次都把整库 ORM 对象化后遍历：十万级库就是数百 MB 内存尖峰 + 数秒 CPU，
 # 而客户端会反复打开这个面板。现改为「只取需要的列 + 分批拉取 + TTL 缓存」。
 _FILTERS_CACHE: dict = {"at": 0.0, "payload": None}
+# 合成 Id 反查表的跨请求缓存（按关联表代际失效，见 _synthetic_lookup）
+_SYNTHETIC_CACHE: dict = {"gen": None, "map": None}
 _FILTERS_CACHE_TTL = float(os.getenv("EMBY_FILTERS_CACHE_TTL", "300") or 300)
 
 
@@ -1084,27 +1133,39 @@ def _filters_payload(db: Session) -> dict:
     cached = _FILTERS_CACHE.get("payload")
     if cached is not None and time.monotonic() - _FILTERS_CACHE["at"] < _FILTERS_CACHE_TTL:
         return cached
-    genres: set = set()
-    tags: set = set()
-    ratings: set = set()
-    years: set = set()
-    rows = (
-        db.query(
-            em.MediaItem.genres,
-            em.MediaItem.tags,
-            em.MediaItem.official_rating,
-            em.MediaItem.production_year,
-        )
-        .filter(em.MediaItem.is_hidden == False)  # noqa: E712
-        .yield_per(1000)
-    )
-    for item_genres, item_tags, rating, year in rows:
-        genres.update(g for g in (item_genres or "").split(",") if g)
-        tags.update(t for t in (item_tags or "").split(",") if t)
-        if rating:
-            ratings.add(rating)
-        if year:
-            years.add(year)
+    if facets.ensure_ready(db):
+        # 流派 / 标签走关联表：一次覆盖索引扇描拿全取值，不再扫全库文本列。
+        # （可见性差异：关联表不记 is_hidden，隐藏条目独有的分类值也会出现在菜单里；
+        #   点进去的结果集仍会过滤掉隐藏条目，所以只是菜单多一个可选项。）
+        genres: set = set(facets.kind_values(db, facets.KIND_GENRE))
+        tags: set = set(facets.kind_values(db, facets.KIND_TAG))
+    else:
+        # 老库还没回填完：沿用旧口径
+        genres, tags = set(), set()
+        for item_genres, item_tags in (
+            db.query(em.MediaItem.genres, em.MediaItem.tags)
+            .filter(em.MediaItem.is_hidden == False)  # noqa: E712
+            .yield_per(1000)
+        ):
+            genres.update(g for g in (item_genres or "").split(",") if g)
+            tags.update(t for t in (item_tags or "").split(",") if t)
+    # 分级与年份是单值列：DISTINCT 只取需要的列（不再把四个列一起读回来物化）
+    ratings = {
+        r
+        for (r,) in db.query(em.MediaItem.official_rating)
+        .filter(em.MediaItem.is_hidden == False, em.MediaItem.official_rating.isnot(None))  # noqa: E712
+        .distinct()
+        .all()
+        if r
+    }
+    years = {
+        y
+        for (y,) in db.query(em.MediaItem.production_year)
+        .filter(em.MediaItem.is_hidden == False, em.MediaItem.production_year.isnot(None))  # noqa: E712
+        .distinct()
+        .all()
+        if y
+    }
     payload = {
         "Genres": sorted(genres),
         "Tags": sorted(tags),

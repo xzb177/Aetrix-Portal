@@ -14,6 +14,8 @@
 5. **扫描清理阶段**：十万级库也不整库载入内存（游标分批，置入更小的批大小仍正确），
    删条目时连 `UserMediaData`（播放进度/收藏）一起清——它没有 ORM 级联，
    老实现留下的是永远指向不存在条目的孤儿行。
+6. **分类关联表的兜底**（v2.15.0）：关联行由 ORM flush 钩子在业务事务里同步；批量 Core 删除
+   （扫描清理就是这条路径）走不到钩子，孤儿行得靠看护周期清掉——这里验证兜底真的会发生。
 
 用法：python scripts/smoke_test_maintenance.py
 """
@@ -247,7 +249,8 @@ check(not streaming._TRANSCODE_PROCS, "注册表清空")
 
 tick = maint.janitor_tick()
 check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
-                    "transcode_orphans", "subtitle_cache_pruned"},
+                    "transcode_orphans", "subtitle_cache_pruned",
+                    "item_facets_backfilled", "item_facets_orphans"},
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()
 check(all(v == 0 for v in second.values()), "维护周期可反复执行（干净时什么都不做）", f"{second}")
@@ -363,6 +366,35 @@ check(left_progress == 0, "播放进度/收藏一并删除（不再留孤儿行�
 check(remaining == 12 + 1 + 1 + 3 - 1, "其余条目完好", f"剩余={remaining}")
 # 计数口径是「电影 + 剧集」：11 部幸存的电影 + 1 部剧
 check(item_count == 11 + 1, "库计数按电影/剧集口径更新", f"item_count={item_count}")
+
+
+# ==================== 8. 分类关联表的兜底维护（v2.15.0） ====================
+print("\n=== 分类关联表的兜底维护 ===")
+
+# 业务写入路径（改条目分类值）走 ORM flush 钩子，同一事务里把关联行建好
+db = Session()
+facet_item = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_id).first()
+facet_item.genres = f"稳定性流派{facet_item.id}"
+face_item_id = facet_item.id
+db.commit()
+hook_rows = db.query(em.ItemFacet).filter(em.ItemFacet.item_id == face_item_id).count()
+check(hook_rows == 1, "改条目分类值 → 关联行随同一事务自动建立（ORM flush 钩子）",
+      f"{hook_rows} 行")
+# 批量 Core 删除（扫描清理走的就是这条）：绕过 ORM 事件，故意留下孤儿关联行
+db.query(em.MediaItem).filter(em.MediaItem.id == face_item_id).delete(synchronize_session=False)
+db.commit()
+orphans = db.query(em.ItemFacet).filter(em.ItemFacet.item_id == face_item_id).count()
+db.close()
+check(orphans == 1, "批量删除会留下孤儿关联行（这就是需要兜底的场景）", f"{orphans} 行")
+
+# 看护周期兜底：清掉孤儿行，并给出可观测计数
+tick_facets = maint.janitor_tick()
+db = Session()
+facet_left = db.query(em.ItemFacet).filter(em.ItemFacet.item_id == face_item_id).count()
+db.close()
+check(facet_left == 0, "看护周期清掉孤儿关联行", f"剩余={facet_left}")
+check(tick_facets.get("item_facets_orphans", 0) >= 1,
+      "看护周期报告清理数量（可观测）", f"{tick_facets}")
 
 print()
 if FAILED:

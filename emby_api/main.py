@@ -41,6 +41,11 @@ from backend.emby_server import nodes as node_lib
 from backend.emby_server import maintenance
 from backend.emby_server.api import emby_router
 
+# v2.15.0：分类关联表（筛选走索引）。导入即注册 ORM flush 钩子——
+# 任何写 genres/studios/tags/platforms 的代码（扫描器、图片修复…）都会在同一个事务里
+# 把关联行同步好，不需要每个调用点各自记得调一次。
+from backend.emby_server import facets  # noqa: F401
+
 # v2.13.0：api.py 拆分出来的协议路由模块。导入即把路由注册到同一个 emby_router 上，
 # 这里的顺序（media → compat → stream）与拆分前的定义顺序一致，不能调换。
 from backend.emby_server import media_routes  # noqa: F401
@@ -54,7 +59,7 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.14.0"
+EA_VERSION = "2.15.0"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)

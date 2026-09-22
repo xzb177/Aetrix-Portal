@@ -169,6 +169,12 @@ jobs:
       - name: 长期运行稳定性冒烟（维护看护 / 临时文件 / 清理阶段资源与数据完整性）
         run: python scripts/smoke_test_maintenance.py
 
+      # 分类筛选从「逗号文本列 LIKE 全表扫」换成「条目↔分类关联表 + 索引」：
+      # 写入侧自动同步（ORM 钩子）、老库自动补块、结果与旧口径逐条一致、
+      # 索引真的被用上（EXPLAIN QUERY PLAN），3000 条规模也不退化
+      - name: 分类筛选索引冒烟（关联表同步 / 老库补块 / 结果一致 / 索引证据）
+        run: python scripts/smoke_test_item_facets.py
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend

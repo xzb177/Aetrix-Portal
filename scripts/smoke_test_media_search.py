@@ -351,7 +351,24 @@ try:
     db.refresh(virtual)
     sc.scan_library_sync(db, virtual, sc.LibrarySnapshot.of(virtual))
     db.refresh(virtual)
-    check("虚拟媒体库按平台计数", virtual.item_count == 1, f"item_count={virtual.item_count}")
+
+    # 虚拟库是**跳库**的发行平台视图，计数天然是全库口径：这里用同一谓词独立算一遍再比对。
+    # （开发机的库文件里可能留着别的用例的条目，把期望值写死成 1 会误报。）
+    def _platform_ids(platform: str) -> set:
+        return {
+            row[0]
+            for row in db.query(em.MediaItem.id).filter(
+                em.MediaItem.is_hidden == False,  # noqa: E712
+                em.MediaItem.item_type.in_(["movie", "series"]),
+                em.MediaItem.platforms.ilike(f"%{platform}%"),
+            ).all()
+        }
+
+    netflix_ids = _platform_ids("netflix")
+    expected_netflix = len(netflix_ids)
+    check("虚拟媒体库按平台计数与全库同口径一致（且至少含本用例条目）",
+          virtual.item_count == expected_netflix and virtual.item_count >= 1,
+          f"item_count={virtual.item_count} 同口径={expected_netflix}")
 
     disney = em.Library(
         guid=f"testvirt2{suffix}", name="Disney+", collection_type="movies",
@@ -362,7 +379,13 @@ try:
     db.refresh(disney)
     sc.scan_library_sync(db, disney, sc.LibrarySnapshot.of(disney))
     db.refresh(disney)
-    check("不同平台的虚拟库互不混淆", disney.item_count == 1, f"item_count={disney.item_count}")
+    disney_ids = _platform_ids("disney")
+    check("不同平台的虚拟库互不混淆（Disney+ 视图按自己的平台口径计数）",
+          disney.item_count == len(disney_ids) and disney.item_count >= 1,
+          f"disney={disney.item_count} 同口径={len(disney_ids)}")
+    check("两个平台视图命中不同的条目（不是同一套结果的别名）",
+          bool(netflix_ids) and bool(disney_ids) and netflix_ids != disney_ids,
+          f"netflix={sorted(netflix_ids)} disney={sorted(disney_ids)}")
 
     # 季/集图片回退（集无图时用剧集海报）
     tv_dir = os.path.join(tmp_root, "tvlib", "Show")
@@ -496,7 +519,13 @@ try:
     resp = client.get("/emby/Users/me/Items", params={"ParentId": virt.guid,
                                                "Recursive": "true", "Limit": "50"}, headers=headers)
     virt_names = [i["Name"] for i in resp.json().get("Items", [])]
-    check("虚拟媒体库只聚合对应平台的条目", virt_names == ["Alpha Target"], str(virt_names))
+    # 同样不写死条目数：开发机的库文件里可能已有同名条目。断言的是「聚合范围」——
+    # 本用例的 NF 条目在、DSNP 条目与无平台条目不在。
+    check("虚拟媒体库只聚合对应平台的条目（本用例 NF 条目在，DSNP 与无平台条目不在）",
+          set(virt_names) == {"Alpha Target"}
+          and "Alpha Target Extra Story" not in virt_names
+          and "Something Else" not in virt_names,
+          str(virt_names))
 
     virt.is_enabled = False
     api_db.commit()

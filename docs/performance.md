@@ -48,6 +48,25 @@
 - **为什么要拆**：文件小，单次改动的 diff 可读、可评审；后续把剩下的异步路由换异步 ORM
   或继续下沉阻塞调用时，改动面是可控的。
 
+## 二·六、分类筛选的索引（v2.15.0）
+
+分类值（流派 / 工作室 / 标签 / 发行平台）原先只存在 `emby_items` 的逗号分隔文本列里，
+客户端点「类型 / 制作公司」时服务端只能写 `genres ILIKE '%动作%'` —— **前置通配符用不上任何索引**，
+等于每次筛选都把整库扫一遍（十万级库：数秒 CPU，且随库大小线性变慢）。现在由
+`emby_item_facets(item_id, kind, value)` 承担：
+
+| 环节 | 做法 |
+| --- | --- |
+| 写入 | 挂在 SQLAlchemy Session 的 `before_flush` / `after_flush` 上：同一事务里重建这些条目的关联行（先删后插）。扫描器、图片修复、将来任何写入路径都不用手动调；批量 Core 删除走不到事件，由 `prune_orphans` 兜底 |
+| 查询 | `MediaItem.id IN (SELECT item_id FROM emby_item_facets WHERE kind=? AND value IN (...))`，走 `(kind, value, item_id)` **覆盖索引**；主查询按主键取条目，文本列上不再有 LIKE |
+| 取值菜单 | 一次索引扫描拿全 kind 的取值（几千个短字符串，带进程内缓存），分级/年份改成单列 `DISTINCT` |
+| 老库 | 启动维护按 id 水位分批回填（每块提交，可断点继续）；筛选路径也带预算补块（5s 冷却）。**没补完就先退回旧匹配**，结果一样对，不会出现「升级后筛选空白」 |
+| 语义 | 关联表侧是「全等，或取值里包含该名字（大小写不敏感）」，与旧 `ILIKE '%x%'` 一致（传 `Action` 照样命中 `Action-Adventure`） |
+
+可调环境变量：`ITEM_FACETS_FILTER_BUDGET`（筛选路径一次补多少条，默认 2000）、
+`ITEM_FACETS_BACKFILL_BATCH`（维护回填批大小，默认 2000）、
+`ITEM_FACETS_CACHE_TTL`（取值缓存 TTL，默认 600s；扫描/回填会主动失效）。
+
 ## 三、已知瓶颈（按收益排序的下一步）
 
 1. **逐集查剧集/季**：剧集层级（episode → season → series）仍在写库线程里按集查两次。
@@ -108,6 +127,9 @@
 ```bash
 # 资源行为（批次化 / 并行 / 缓存 / 清理），CI 会跑
 python scripts/smoke_test_scan_budget.py
+
+# 分类筛选索引（关联表同步 / 老库补块 / 与旧 LIKE 口径一致 / EXPLAIN 索引证据 / 3000 条不退化）
+python scripts/smoke_test_item_facets.py
 
 # 长期运行（残留标志 / 会话回收 / 临时文件 / 孤儿子进程 / 统计上限 / 清理阶段），CI 会跑
 python scripts/smoke_test_maintenance.py

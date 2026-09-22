@@ -41,6 +41,11 @@ from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 from backend.emby_server.api import emby_router
 
+# v2.15.0：分类关联表（筛选走索引）。导入即注册 ORM flush 钩子——
+# 任何写 genres/studios/tags/platforms 的代码（扫描器、图片修复…）都会在同一个事务里
+# 把关联行同步好，不需要每个调用点各自记得调一次。
+from backend.emby_server import facets  # noqa: F401
+
 # v2.13.0：api.py 拆分出来的协议路由模块。导入即把路由注册到同一个 emby_router 上，
 # 这里的顺序（media → compat → stream）与拆分前的定义顺序一致，不能调换。
 from backend.emby_server import media_routes  # noqa: F401
@@ -123,7 +128,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.14.0",
+    version="2.15.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
