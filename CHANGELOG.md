@@ -2,6 +2,46 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.13.0] - 2026-09-22
+
+把 2100+ 行的 `backend/emby_server/api.py` 按关注点拆成四个模块，并借此把**剩下的协议路由**
+从事件循环上撤下来。上一版因为「文件太大、编辑工具在 1400 行之后无法可靠匹配」而搁置的部分，
+这次先拆文件、再改代码，每一步的改动面都小到可评审、可验证。
+
+### 变更 (Changed) — 模块拆分（对外行为不变）
+- `api.py`（1480 行）保留：系统信息 / 认证 / 列表与详情 / 播放核心 / 会话基础工具。
+- 新增 `media_routes.py`：图片投递（含带序号的 Backdrop/Thumb 等）、原始文件下载、HLS 的 `hls1` 入口。
+- 新增 `compat_routes.py`：播放会话上报（`/Sessions/Playing|Progress|Stopped`）、在线会话列表的旧实现、
+  以及 Emby 4.7 协议面补齐端点（筛选值、收藏、相似、演职员、任务、活动日志、库刷新等）。
+- 新增 `stream_routes.py`：容器后缀变体流、原始文件端点、字幕投递、HLS 大小写兼容通配（必须最后注册）。
+- 四个模块注册到**同一个** `emby_router`（从 `api` 导入同一实例），导入顺序 media → compat → stream
+  与拆分前的定义顺序逐条一致——192 条装饰器的方法、路径与顺序已逐一比对。
+  因此 `mount_routes` / `image_routes` / `session_routes` 的「按路径 + 端点名替换」逻辑不受影响：
+  `image_routes` 改为引用 `media_routes` 的实现，`session_routes` 改为从 `compat_routes` 取上报处理函数，
+  并兼容「原处理函数改成同步 def」的情况（`inspect.isawaitable`）。
+
+### 性能 (Performance) — 协议路由不再占用事件循环
+- **42 个协议端点由 `async def` 改为同步 `def`**，交给 Starlette 线程池执行：会话上报与能力、
+  筛选值 / 流派 / 工作室 / 演员、收藏增删、相似 / 祖先 / 花絮 / 主题曲 / 影评、显示偏好、
+  系统端点、计划任务、活动日志、库刷新与扫描触发、字幕投递、原始文件、下载、`hls1` 等。
+  它们的同步查询、读盘与远程代理不再串行压在事件循环上（跨机 PostgreSQL 上收益更明显）。
+- **图片是媒体库滚动最高频的请求**：`item_image` / `item_image_index` 与两个条件请求包装
+  （`item_image_cached` / `item_image_index_cached`）一并同步化，读盘与远程海报代理不再卡事件循环。
+- **可转的都转了**：拆分后 `api.py` 只剩 5 个 `async def`（`user_views`、`rate_item`、`playback_info`、
+  `video_stream`、`video_hls`），且都是必须异步的——前三个要 `await request.json()`，后两个要
+  `await` 异步响应流并被其他模块复用。
+- 文档：`docs/performance.md` 新增「协议路由的线程模型」一节，写明模块边界与
+  「同步 `def` 优先、只有真的需要 `await` 才写 `async def`」的口径。
+
+### 修复 (Fixed)
+- `scripts/smoke_test_ea_split.py`：「EM 分离模式给出 EA 指引」的断言原先假定库里没配过
+  「Emby 服务入口」；面板配置优先于环境变量是产品口径，断言改为接受配置值或环境变量，
+  在已配置过地址的环境（如本地沙箱库）上不再误报。
+
+### 变更 (Changed)
+- 版本号：EM `version` / EA `EA_VERSION` / 两个前端 `package.json`（含锁文件）/ 后台顶栏 → 2.13.0。
+
+
 ## [2.12.0] - 2026-09-22
 
 针对一轮代码评审里**一直还在**的项逐条处理，主线是「不让同步阻塞与并发竞态住在事件循环上」。
