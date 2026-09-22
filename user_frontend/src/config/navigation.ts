@@ -26,7 +26,7 @@
 
 import type { Component } from 'vue'
 import {
-  ArrowDownLeft, CalendarCheck, Clapperboard, Film, Gift,
+  ArrowDownLeft, Bot, CalendarCheck, Clapperboard, Film, Gift,
   Inbox, MessageSquareDashed, Receipt, Search, Ticket, User, Wallet,
 } from 'lucide-vue-next'
 
@@ -71,6 +71,8 @@ export const menuSections: NavGroup[] = [
     items: [
       // 「搜索片名」不再列在这里：搜索已是主导航的一级入口（一个语义只留一处）
       { name: '求片中心', path: '/request', icon: MessageSquareDashed },
+      // AI 助手（v2.19.0）：是否真的能用由管理员的后台配置决定，页面里会说清楚
+      { name: 'AI 助手', path: '/assistant', icon: Bot },
       { name: '工单支持', path: '/tickets', icon: Ticket },
       { name: '消息中心', path: '/messages', icon: Inbox },
     ],

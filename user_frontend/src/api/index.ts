@@ -185,11 +185,22 @@ export interface AuthResponse {
   user: AuthUser
 }
 
+/** 人机验证挂件信息（能力：人机验证；未配置时 enabled=false，前端不渲染挂件） */
+export interface CaptchaInfo {
+  enabled: boolean
+  provider: 'none' | 'turnstile' | 'recaptcha' | 'hcaptcha'
+  label: string
+  site_key: string
+  script_url: string
+  /** 哪些动作受保护（管理员可分别开关登录 / 注册） */
+  actions: { login: boolean; register: boolean }
+}
+
 export const authApi = {
-  login: (data: { username: string; password: string }) =>
+  login: (data: { username: string; password: string; captcha_token?: string }) =>
     api.post<never, AuthResponse>('/api/user/auth/login', data),
 
-  register: (data: { username: string; password: string; email?: string; invitation_code?: string; registration_code?: string }) =>
+  register: (data: { username: string; password: string; email?: string; invitation_code?: string; registration_code?: string; captcha_token?: string }) =>
     api.post<never, AuthResponse>('/api/user/auth/register', data),
 
   getCurrentUser: () => api.get<never, AuthUser>('/api/user/auth/me'),
@@ -198,6 +209,31 @@ export const authApi = {
 
   changePassword: (data: { old_password: string; new_password: string }) =>
     api.post('/api/user/auth/change-password', data),
+
+  /** 挂件配置：站点密钥是公开信息，私钥由后端保管（永不下发） */
+  captcha: () => api.get<never, CaptchaInfo>('/api/user/auth/captcha'),
+}
+
+// ==================== AI 助手（能力：AI 模型设置，backend/api/assistant.py） ====================
+
+export interface AiStatus {
+  /** 管理员是否已配置并启用（未配置时前端不显示入口） */
+  enabled: boolean
+  reason: string
+  /** 每用户每日上限；0 表示不限 */
+  daily_limit: number
+  remaining: number | null
+}
+
+export interface AiAnswer extends AiStatus {
+  answer: string
+  model: string
+}
+
+export const aiApi = {
+  status: () => api.get<never, AiStatus>('/api/user/ai/status'),
+  ask: (question: string, history?: { role: 'user' | 'assistant'; content: string }[]) =>
+    api.post<never, AiAnswer>('/api/user/ai/ask', { question, history }),
 }
 
 // ==================== 自建 Emby 门户 API（backend/emby_server/portal.py） ====================

@@ -40,6 +40,14 @@ const router = createRouter({
       component: () => import('@/views/RequestView.vue'),
       meta: { title: '求片中心', requiresAuth: true },
     },
+    // AI 助手（v2.19.0）：能力「AI 模型设置」的用户侧消费点；
+    // 管理员没配置时页面会说明原因，不会出现「能点但报错」的入口
+    {
+      path: '/assistant',
+      name: 'assistant',
+      component: () => import('@/views/AssistantView.vue'),
+      meta: { title: 'AI 助手', requiresAuth: true },
+    },
     // ==================== 经济系统（v2.3.0） ====================
     {
       path: '/wallet',

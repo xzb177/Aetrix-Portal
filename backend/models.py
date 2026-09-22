@@ -848,6 +848,8 @@ class LoginLog(Base):
     success = Column(Boolean, default=True)
     reason = Column(String(100))  # portal_login / emby_login / device_limit / decoy_code ...
     detail = Column(String(255))
+    # IP 归属地（能力：IP 与地理位置）；未配置提供方时为空——由 authlog 在写入时填
+    region = Column(String(100))
     created_at = Column(DateTime, default=datetime.now)
 
 

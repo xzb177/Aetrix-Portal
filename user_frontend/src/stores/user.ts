@@ -43,10 +43,11 @@ export const useUserStore = defineStore('user', () => {
     localStorage.setItem('user', JSON.stringify(response.user))
   }
 
-  async function login(username: string, password: string) {
+  async function login(username: string, password: string, captchaToken?: string) {
     loading.value = true
     try {
-      const response = await authApi.login({ username, password })
+      // captcha_token：站点开启人机验证时由挂件生成（未开启时后端不校验）
+      const response = await authApi.login({ username, password, captcha_token: captchaToken || undefined })
       _persist(response)
       return true
     } finally {
@@ -60,6 +61,7 @@ export const useUserStore = defineStore('user', () => {
     email?: string,
     invitationCode?: string,
     registrationCode?: string,
+    captchaToken?: string,
   ) {
     loading.value = true
     try {
@@ -69,6 +71,7 @@ export const useUserStore = defineStore('user', () => {
         email,
         invitation_code: invitationCode || undefined,
         registration_code: registrationCode || undefined,
+        captcha_token: captchaToken || undefined,
       })
       _persist(response)
       return true

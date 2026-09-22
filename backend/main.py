@@ -39,6 +39,11 @@ from backend.api.admin_ops import admin_ops_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
+# v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
+# 只提供能力，密钥一律由管理员自己填。
+from backend.api.capabilities_admin import capabilities_router
+from backend.api.assistant import assistant_router
+from backend import integrations
 from backend.emby_server.api import emby_router
 
 # v2.15.0：分类关联表（筛选走索引）。导入即注册 ORM flush 钩子——
@@ -106,6 +111,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"启动到期提醒失败（可忽略）: {e}")
 
+    # 外部服务能力落地：管理员配过的出站代理要写回进程环境变量（否则重启后失效），
+    # 邮件 / Telegram 通知渠道也在这里按最新配置重建。没配过的能力什么都不做。
+    try:
+        with SessionLocal() as db:
+            integrations.apply_all(db)
+    except Exception as e:  # noqa: BLE001 — 能力落地失败不能拦住启动
+        logger.warning(f"外部服务能力未落地（可忽略）: {e}")
+
     logger.info("✅ RoyalBot Portal 启动完成")
 
     yield
@@ -122,7 +135,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.18.0",
+    version="2.19.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -295,6 +308,10 @@ app.include_router(admin_reminders_router)
 app.include_router(admin_orders_router)
 # 优惠券管理（v2.10.0）：券的 CRUD / 核销记录 / 开关，见 backend/api/coupons_admin.py
 app.include_router(admin_coupons_router)
+# 外部服务能力中心（v2.19.0）：能力总览 / 配置 / 测试，见 backend/api/capabilities_admin.py
+app.include_router(capabilities_router)
+# 用户端 AI 助手（v2.19.0）：能力「AI 模型设置」的消费点，见 backend/api/assistant.py
+app.include_router(assistant_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

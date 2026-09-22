@@ -116,6 +116,8 @@ export interface LoginLogRow {
   user_id: number | null
   username: string | null
   ip: string | null
+  /** IP 归属地（能力：IP 与地理位置）；未配置提供方时为空串 */
+  region: string
   user_agent: string | null
   success: boolean
   reason: string | null
