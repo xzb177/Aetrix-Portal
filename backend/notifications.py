@@ -84,12 +84,16 @@ class EmailChannel(NotificationChannel):
     """邮件通知渠道"""
 
     def __init__(self, smtp_host: str = None, smtp_port: int = 587,
-                 smtp_user: str = None, smtp_password: str = None):
+                 smtp_user: str = None, smtp_password: str = None,
+                 from_name: str = "", from_email: str = ""):
         self.name = "email"
         self.smtp_host = smtp_host
         self.smtp_port = smtp_port
         self.smtp_user = smtp_user
         self.smtp_password = smtp_password
+        # 发件人显示名 / 发件地址（留空则用 SMTP 账号），后台「邮件与模板」里配
+        self.from_name = (from_name or "").strip()
+        self.from_email = (from_email or "").strip()
         self.enabled = bool(smtp_host and smtp_user)
 
     async def send(self, user_id: int, title: str, content: str,
@@ -145,7 +149,14 @@ class EmailChannel(NotificationChannel):
         try:
             msg = MIMEText(content, "plain", "utf-8")
             msg["Subject"] = title
-            msg["From"] = self.smtp_user
+            sender = self.from_email or self.smtp_user or ""
+            if self.from_name:
+                # 非 ASCII 显示名要走 RFC 2047 编码，否则部分客户端显示成乱码
+                from email.header import Header
+
+                msg["From"] = f"{Header(self.from_name, 'utf-8').encode()} <{sender}>"
+            else:
+                msg["From"] = sender
             msg["To"] = to_email
 
             port = int(self.smtp_port or 587)
@@ -253,6 +264,16 @@ class NotificationService:
         self._config_loaded = False
         self._load_channels_from_config()
 
+    def reload_channels(self) -> None:
+        """重新从配置加载渠道
+
+        后台「邮件与模板 / Telegram 通知」改完配置要立刻生效（不必重启进程），
+        所以保存动作会调这里：站内信保留，其余渠道按最新配置重建。
+        """
+        self.channels = {"in_app": InAppChannel()}
+        self._config_loaded = False
+        self._load_channels_from_config()
+
     def _load_channels_from_config(self):
         """从系统配置加载通知渠道"""
         if self._config_loaded:
@@ -273,6 +294,8 @@ class NotificationService:
                     smtp_port=int(email_config.get('email_smtp_port', 587)),
                     smtp_user=email_config.get('email_smtp_user'),
                     smtp_password=email_config.get('email_smtp_password'),
+                    from_name=email_config.get('email_from_name') or "",
+                    from_email=email_config.get('email_from_email') or "",
                 )
                 logger.info("邮件通知渠道已启用")
 
@@ -657,6 +680,15 @@ def get_notification_service() -> NotificationService:
     return _notification_service
 
 
+def refresh_channels() -> None:
+    """配置变更后重建渠道（能力中心保存邮件 / Telegram 配置时调用）"""
+    global _notification_service
+    if _notification_service is None:
+        _notification_service = NotificationService()
+        return
+    _notification_service.reload_channels()
+
+
 # ==================== 导出 ====================
 
 __all__ = [
@@ -665,6 +697,7 @@ __all__ = [
     "EmailChannel",
     "TelegramChannel",
     "get_notification_service",
+    "refresh_channels",
     "notify_admin_event",
     "notify_all_users",
     "notify_staff_users",

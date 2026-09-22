@@ -13,6 +13,8 @@ import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Ticket, Gift } from 'lucide-vue-next'
+// 人机验证挂件（能力：人机验证）：管理员未开启时该组件自己什么都不渲染
+import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -34,6 +36,10 @@ const showLoginPassword = ref(false)
 const showRegisterPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
+
+// 人机验证令牌：由挂件回调写入；未开启保护时一直是空串（后端也不校验）
+const captchaToken = ref('')
+const captchaRef = ref<InstanceType<typeof CaptchaChallenge> | null>(null)
 
 const passwordStrength = computed(() => {
   const pwd = registerForm.password
@@ -66,11 +72,13 @@ async function handleLogin() {
   error.value = ''
   loading.value = true
   try {
-    await userStore.login(loginForm.username.trim(), loginForm.password)
+    await userStore.login(loginForm.username.trim(), loginForm.password, captchaToken.value)
     toast.success('登录成功')
     router.push((route.query.redirect as string) || '/')
   } catch (err) {
     error.value = friendlyError(err, '登录失败，请稍后重试')
+    // 令牌是一次性的：失败后换一个新的，否则第二次点击会因「已使用」而失败
+    captchaRef.value?.reset()
   } finally {
     loading.value = false
   }
@@ -102,12 +110,13 @@ async function handleRegister() {
     const regCode = f.registrationCode.trim() || (route.query.code as string) || ''
     await userStore.register(
       f.username.trim(), f.password, f.email || undefined,
-      inviteCode || undefined, regCode || undefined,
+      inviteCode || undefined, regCode || undefined, captchaToken.value,
     )
     toast.success('注册成功，已自动开通观影账号')
     router.push((route.query.redirect as string) || '/')
   } catch (err) {
     error.value = friendlyError(err, '注册失败，请稍后重试')
+    captchaRef.value?.reset()
   } finally {
     loading.value = false
   }
@@ -204,6 +213,8 @@ onMounted(() => {
         </label>
 
         <p v-if="error" class="form-error">{{ error }}</p>
+
+        <CaptchaChallenge ref="captchaRef" action="login" @update:token="captchaToken = $event" />
 
         <button type="submit" class="submit-btn" :disabled="loading">
           <span v-if="loading" class="spinner"></span>
@@ -312,6 +323,8 @@ onMounted(() => {
         </label>
 
         <p v-if="error" class="form-error">{{ error }}</p>
+
+        <CaptchaChallenge ref="captchaRef" action="register" @update:token="captchaToken = $event" />
 
         <button type="submit" class="submit-btn" :disabled="loading">
           <span v-if="loading" class="spinner"></span>

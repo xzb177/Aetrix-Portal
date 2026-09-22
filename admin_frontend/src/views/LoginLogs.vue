@@ -20,7 +20,8 @@ const columns: DataColumn[] = [
   { key: 'reason_label', label: '事件', width: 140 },
   { key: 'success', label: '结果', width: 96 },
   { key: 'risk', label: '风险', width: 90 },
-  { key: 'ip', label: 'IP', width: 130 },
+  // IP 与归属地合并成一列：配置了「IP 与地理位置」能力后，风控审查不用再去查 IP 库
+  { key: 'ip', label: 'IP / 归属地', width: 190 },
   { key: 'detail', label: '详情', minWidth: 200 },
   { key: 'user_agent', label: '客户端', minWidth: 180, mobile: 'hide' },
 ]
@@ -172,6 +173,7 @@ function riskLevel(row: LoginLogRow): string {
 
         <template #cell-ip="{ row }">
           <span class="mono">{{ row.ip || '—' }}</span>
+          <span v-if="row.region" class="region">{{ row.region }}</span>
         </template>
 
         <template #cell-detail="{ row }">
@@ -193,6 +195,12 @@ function riskLevel(row: LoginLogRow): string {
 .stat-tile.is-danger { border-color: var(--danger-border); }
 
 .user-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
+
+.region {
+  display: block;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
 
 .ua {
   font-size: var(--font-size-xs);

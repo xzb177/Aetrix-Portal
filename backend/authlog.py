@@ -22,6 +22,7 @@ REASONS = {
     "emby_login_failed": "客户端登录失败",
     "device_limit": "设备数超限",
     "decoy_code": "诱饵码触发",
+    "captcha_failed": "人机验证失败",
     "password_change": "修改密码",
 }
 DEFAULT_RETENTION_DAYS = 90  # 可由 login_log_retention_days 配置覆盖
@@ -59,6 +60,7 @@ def record_event(
     success: bool = True,
     reason: str = "",
     detail: Optional[str] = None,
+    region: Optional[str] = None,
     commit: bool = True,
 ) -> models.LoginLog:
     row = models.LoginLog(
@@ -69,11 +71,28 @@ def record_event(
         success=bool(success),
         reason=(reason or "")[:100] or None,
         detail=(detail or "")[:255] or None,
+        region=(region or resolve_region(db, ip))[:100] or None,
     )
     db.add(row)
     if commit:
         db.commit()
     return row
+
+
+def resolve_region(db: Session, ip: Optional[str]) -> str:
+    """IP 归属地（能力：IP 与地理位置）
+
+    未配置提供方时返回空串，不做任何外部请求；已配置时按能力模块自身的缓存查，
+    所以日志写入不会因为多打一个外部接口而变慢。任何异常都吞掉——日志不能写不进去。
+    """
+    if not ip:
+        return ""
+    try:
+        from backend.integrations import geoip
+
+        return geoip.region_of(db, ip)
+    except Exception:  # noqa: BLE001 — 归属地是可选的锦上添花
+        return ""
 
 
 def purge_old(db: Session, days: Optional[int] = None) -> int:

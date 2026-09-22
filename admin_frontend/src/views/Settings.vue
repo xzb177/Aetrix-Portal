@@ -2,22 +2,27 @@
 /**
  * 系统设置
  *
- * v2.4.0 新增：
- * - 注册策略（开放 / 注册码 / 关闭 + 关闭提示文案）
- * - 经济与支付配置（签到、兑换、充值、支付网关、邀请返利）按域分组保存
- * v2.5.2 新增：付费墙分组（要求有效订阅 + 拦截提示文案）
- * v2.6.0 新增：下载与设备风控分组（下载开关 / 设备上限 / 自动踢人 / 日志保留）
+ * v2.4.0 注册策略（开放 / 注册码 / 关闭 + 关闭提示文案）与经济配置分组
+ * v2.5.2 付费墙分组（要求有效订阅 + 拦截提示文案）
+ * v2.6.0 下载与设备风控分组（下载开关 / 设备上限 / 自动踢人 / 日志保留）
+ * v2.19.0 **外部服务能力中心**：代理 / 人机验证 / 邮件与模板 / Telegram / AI 模型 / IP 归属地
  *
- * 说明：支付密钥等敏感项由后端以 ****** 掩码返回，留空即保持原值不变。
+ * 能力中心的口径：**项目只提供能力，凭据一律由管理员自己填**。字段表由后端下发，
+ * 这里只按类型渲染控件，所以后端加字段不需要改这个页面，也不会出现「界面漏了字段」。
+ * 密钥字段后端只回 ******，留空即保持原值不变。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  CalendarCheck, Coins, KeyRound, RefreshCw, Save, TicketCheck,
-  UserPlus, Wallet, ShieldAlert, Lock,
+  CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, RefreshCw, Save,
+  ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
 } from 'lucide-vue-next'
 import { fetchRegistrationSettings, updateRegistrationSettings } from '@/api/admin'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
+import {
+  fetchCapabilities, fetchCapability, saveCapability, testCapability,
+  type CapabilityCard, type CapabilityField, type CapabilityTestResult,
+} from '@/api/capabilities'
 
 type FieldType = 'bool' | 'int' | 'str' | 'secret'
 
@@ -167,6 +172,122 @@ const regModeHint = computed(() => {
   return map[reg.mode] || ''
 })
 
+// ==================== 外部服务能力中心 ====================
+
+const CAP_ICONS: Record<string, unknown> = {
+  proxy: Network, captcha: ShieldCheck, mail: Mail,
+  telegram: Send, ai: Sparkles, geoip: MapPin,
+}
+
+/** 少数能力测试需要额外输入（收件地址 / 要查的 IP / 探测地址） */
+const TEST_INPUTS: Record<string, { key: string; label: string; placeholder: string }> = {
+  mail: { key: 'to', label: '收件地址', placeholder: '留空则发给发件地址' },
+  geoip: { key: 'ip', label: '要查的 IP', placeholder: '默认 8.8.8.8' },
+  proxy: { key: 'target', label: '探测地址', placeholder: '默认 https://www.gstatic.com/generate_204' },
+}
+
+const capabilities = ref<CapabilityCard[]>([])
+const capsLoading = ref(true)
+const capGroups = computed(() => {
+  const groups: { name: string; items: CapabilityCard[] }[] = []
+  for (const card of capabilities.value) {
+    const found = groups.find((g) => g.name === card.group)
+    if (found) found.items.push(card)
+    else groups.push({ name: card.group, items: [card] })
+  }
+  return groups
+})
+
+const drawerOpen = ref(false)
+const drawerSlug = ref('')
+const drawerTitle = ref('')
+const drawerDesc = ref('')
+const drawerHint = ref('')
+const drawerFields = ref<CapabilityField[]>([])
+const drawerValues = reactive<Record<string, string>>({})
+const drawerOriginal = ref<Record<string, string>>({})
+const drawerTestLabel = ref('测试连接')
+const capSaving = ref(false)
+const capTesting = ref(false)
+const testInput = reactive({ value: '' })
+const testResult = ref<CapabilityTestResult | null>(null)
+
+const drawerDirty = computed(() =>
+  drawerFields.value.some((f) => String(drawerValues[f.key] ?? '') !== String(drawerOriginal.value[f.key] ?? ''))
+)
+const drawerTestInput = computed(() => TEST_INPUTS[drawerSlug.value])
+
+function capStatus(card: CapabilityCard): { label: string; tone: 'ok' | 'warn' | 'idle' } {
+  if (card.enabled) return { label: '已启用', tone: 'ok' }
+  if (card.configured) return { label: '已配置 · 未启用', tone: 'warn' }
+  return { label: '未配置', tone: 'idle' }
+}
+
+async function loadCapabilities() {
+  capsLoading.value = true
+  try {
+    const res = await fetchCapabilities()
+    capabilities.value = res.capabilities
+  } catch {
+    // 拦截器已提示
+  } finally {
+    capsLoading.value = false
+  }
+}
+
+async function openCapability(slug: string) {
+  try {
+    const detail = await fetchCapability(slug)
+    drawerSlug.value = slug
+    drawerTitle.value = detail.spec.title
+    drawerDesc.value = detail.spec.desc
+    drawerHint.value = detail.spec.docs_hint || ''
+    drawerFields.value = detail.spec.fields
+    drawerTestLabel.value = detail.item.test_label || '测试连接'
+    for (const key of Object.keys(drawerValues)) delete drawerValues[key]
+    for (const f of detail.spec.fields) {
+      drawerValues[f.key] = detail.values[f.key] ?? f.default ?? ''
+    }
+    drawerOriginal.value = { ...drawerValues }
+    testResult.value = null
+    testInput.value = ''
+    drawerOpen.value = true
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+async function saveCurrentCapability() {
+  capSaving.value = true
+  try {
+    await saveCapability(drawerSlug.value, { ...drawerValues })
+    ElMessage.success(`「${drawerTitle.value}」已保存${drawerSlug.value === 'proxy' ? '，出站代理立即生效' : ''}`)
+    drawerOriginal.value = { ...drawerValues }
+    await Promise.all([loadCapabilities(), openCapability(drawerSlug.value)])
+    await load()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    capSaving.value = false
+  }
+}
+
+async function runCapabilityTest() {
+  capTesting.value = true
+  testResult.value = null
+  try {
+    const payload: Record<string, unknown> = {}
+    if (drawerTestInput.value && testInput.value.trim()) {
+      payload[drawerTestInput.value.key] = testInput.value.trim()
+    }
+    testResult.value = await testCapability(drawerSlug.value, payload)
+  } catch {
+    // 拦截器已提示
+  } finally {
+    capTesting.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -185,7 +306,9 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([load(), loadCapabilities()])
+})
 
 function isDirty(group: Group): boolean {
   return group.fields.some((f) => String(settings[f.key] ?? '') !== String(original.value[f.key] ?? ''))
@@ -241,9 +364,46 @@ async function saveRegistration() {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">系统设置</h1>
-        <p class="admin-page-subtitle">注册策略与运营参数；修改后立即对用户端生效</p>
+        <p class="admin-page-subtitle">外部服务能力与运营参数；修改后立即对用户端生效</p>
       </div>
-      <el-button @click="load"><RefreshCw :size="14" style="margin-right: 4px" />重新载入</el-button>
+      <el-button @click="loadCapabilities(); load()">
+        <RefreshCw :size="14" style="margin-right: 4px" />重新载入
+      </el-button>
+    </div>
+
+    <!-- ==================== 外部服务能力 ==================== -->
+    <div class="notice">
+      <Zap :size="15" />
+      <span>
+        能力由面板提供，<strong>凭据全部由你自己填</strong>：各家的 API Key / 站点密钥 / 代理地址 / Bot Token
+        都由本项目之外的账号体系签发，填进来即可用，每个能力都能当场「测试连接」。
+      </span>
+    </div>
+
+    <div v-loading="capsLoading" class="settings-body">
+      <section v-for="g in capGroups" :key="g.name" class="cap-section">
+        <h2 class="cap-group-title">{{ g.name }}</h2>
+        <div class="cap-grid">
+          <button
+            v-for="card in g.items"
+            :key="card.slug"
+            type="button"
+            class="cap-card"
+            :class="capStatus(card).tone"
+            @click="openCapability(card.slug)"
+          >
+            <div class="cap-card-top">
+              <span class="cap-icon">
+                <component :is="CAP_ICONS[card.slug] || Globe" :size="18" />
+              </span>
+              <span class="cap-badge" :class="capStatus(card).tone">{{ capStatus(card).label }}</span>
+            </div>
+            <h3>{{ card.title }}</h3>
+            <p>{{ card.desc }}</p>
+            <span class="cap-more">配置与测试 →</span>
+          </button>
+        </div>
+      </section>
     </div>
 
     <div v-loading="loading" class="settings-body">
@@ -344,6 +504,66 @@ async function saveRegistration() {
         积分、套餐与兑换码的明细请前往「商品与套餐」「兑换码」「邀请与积分」页面管理。
       </p>
     </div>
+
+    <!-- ==================== 能力配置抽屉 ==================== -->
+    <el-drawer v-model="drawerOpen" :title="drawerTitle" size="520px">
+      <div class="cap-drawer">
+        <p class="cap-drawer-desc">{{ drawerDesc }}</p>
+        <p v-if="drawerHint" class="field-hint">{{ drawerHint }}</p>
+
+        <el-form label-position="top" class="field-form">
+          <el-form-item v-for="f in drawerFields" :key="f.key" :label="f.label">
+            <el-switch
+              v-if="f.type === 'bool'"
+              v-model="drawerValues[f.key]"
+              active-value="true"
+              inactive-value="false"
+            />
+            <el-select v-else-if="f.type === 'select'" v-model="drawerValues[f.key]">
+              <el-option v-for="opt in f.options" :key="opt" :label="opt" :value="opt" />
+            </el-select>
+            <el-input
+              v-else-if="f.type === 'int'"
+              v-model="drawerValues[f.key]"
+              type="number"
+              class="num-input"
+            />
+            <el-input
+              v-else
+              v-model="drawerValues[f.key]"
+              :type="f.type === 'secret' ? 'password' : 'text'"
+              :show-password="f.type === 'secret'"
+              :placeholder="f.type === 'secret' && drawerValues[f.key] === '******'
+                ? '已配置：保持 ****** 不修改，清空则删除' : (f.placeholder || '')"
+            />
+            <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+
+          <el-form-item v-if="drawerTestInput" :label="drawerTestInput.label">
+            <el-input v-model="testInput.value" :placeholder="drawerTestInput.placeholder" />
+          </el-form-item>
+        </el-form>
+
+        <el-alert
+          v-if="testResult"
+          :type="testResult.ok ? 'success' : 'error'"
+          :title="testResult.ok ? '测试通过' : '测试未通过'"
+          :description="testResult.message"
+          :closable="false"
+          show-icon
+        />
+
+        <div class="cap-drawer-footer">
+          <el-button :loading="capTesting" @click="runCapabilityTest">{{ drawerTestLabel }}</el-button>
+          <el-button type="primary" :loading="capSaving" @click="saveCurrentCapability">
+            <Save :size="14" style="margin-right: 4px" />{{ drawerDirty ? '保存修改' : '保存' }}
+          </el-button>
+        </div>
+        <p class="foot-note">
+          <ShieldCheck :size="13" />密钥字段只以掩码回显（保持 ****** 不修改，清空则删除）；测试会真实发起一次请求或投递，便于区分「密钥错」与「网络不通」。
+        </p>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -401,6 +621,8 @@ async function saveRegistration() {
   color: #a7f3d0;
 }
 
+.notice strong { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
+
 .foot-note {
   display: flex;
   align-items: center;
@@ -410,11 +632,98 @@ async function saveRegistration() {
   padding: 4px 2px 10px;
 }
 
+/* ==================== 能力卡片 ==================== */
+
+.cap-section { display: flex; flex-direction: column; gap: 10px; }
+
+.cap-group-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-tertiary);
+  letter-spacing: var(--tracking-wide);
+  margin: 6px 0 0;
+}
+
+.cap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.cap-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  padding: var(--space-4);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color var(--transition-fast), transform var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.cap-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.cap-card.ok { border-color: var(--success-border); }
+.cap-card.warn { border-color: var(--warning-border); }
+
+.cap-card-top { display: flex; align-items: center; justify-content: space-between; }
+
+.cap-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.cap-badge {
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  background: var(--bg-inset);
+}
+
+.cap-badge.ok { color: var(--success); background: var(--success-bg); }
+.cap-badge.warn { color: var(--warning); background: var(--warning-bg); }
+
+.cap-card h3 { font-size: var(--font-size-md); margin: 2px 0 0; color: var(--text-primary); }
+.cap-card p { font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.6; margin: 0; }
+.cap-more { font-size: var(--font-size-xs); color: var(--primary); margin-top: 4px; }
+
+.cap-drawer { display: flex; flex-direction: column; gap: 10px; }
+.cap-drawer-desc { font-size: var(--font-size-sm); color: var(--text-secondary); margin: 0; line-height: 1.6; }
+.cap-drawer :deep(.el-select) { width: 100%; }
+
+.cap-drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 /* 手机：数字输入铺满、保存按钮拉满整行、提示图标不压缩 */
 @media (max-width: 640px) {
   .num-input { width: 100%; }
   .card-footer { justify-content: stretch; }
   .card-footer :deep(.el-button) { flex: 1; margin-left: 0; }
   .settings-body { gap: 12px; }
+  .cap-grid { grid-template-columns: 1fr; }
+  .cap-drawer-footer { justify-content: stretch; }
+  .cap-drawer-footer :deep(.el-button) { flex: 1; margin-left: 0; }
 }
 </style>

@@ -529,6 +529,7 @@ async def list_login_logs(
                 "user_id": r.user_id,
                 "username": r.username,
                 "ip": r.ip,
+                "region": r.region or "",
                 "user_agent": r.user_agent,
                 "success": bool(r.success),
                 "reason": r.reason,
