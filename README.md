@@ -294,6 +294,17 @@ python serve_emby.py                   # EA 网关 :8001（客户端连它，分
 
 ## 📝 更新日志
 
+### v2.16.0 (2026-09-22) — 扫描器不再逐集查剧集/季 + 验证补齐
+- ⚡ **剧集层级批次化**：写库循环原来对每一集点查两次剧集与季（十万集 = 二十万次往返），
+  现在批次开头一次 `guid IN (...)` 取回并在本次扫描内复用；扫描资源预算冒烟新增断言
+  「按 guid 的点查 = 0 次」（用 SQLAlchemy 的 `before_cursor_execute` 数 SQL）
+- 🧱 **scanner.py 拆出 `tmdb.py`（TMDB 客户端）与 `subtitle_match.py`（字幕同名判定）**：
+  1651 → 1320 行，既有引用由 scanner 重新导出，调用方无需改动
+- 🧪 **老库升级演练**（新测试，已入 CI）：回填中途被打断 → 水位停在块边界 → 重启续跑补齐，
+  全程筛选结果与升级前逐条一致（[说明](./docs/performance.md#升级现场的四项演练scripts-smoke_test_item_facets_upgradepy)）
+- 🚦 **性能护栏进 CI**：`benchmark_item_facets.py --guard` 用**比值**判定（与机器快慢无关），
+  索引路径被改回全表扫描时会在 CI 上直接报红
+
 ### v2.15.1 (2026-09-22) — 按实测把分类关联表的成本收干净
 - 📊 **新增可重复基准** `scripts/benchmark_item_facets.py`：十万条上少见取值筛选
   19.9 ms → **0.06 ms**、筛选菜单 153.7 ms → **11.5 ms**，但常见取值（命中 29% 库）

@@ -7,6 +7,11 @@
 
 跑法：python scripts/benchmark_item_facets.py [条目数]（默认 100000）
 
+**性能护栏模式**：`python scripts/benchmark_item_facets.py --guard`（CI 里跑）
+自动改用较小的条目数与采样轮次，并在最后用**很保守的比值阈值**判定：比值而不是耗时，
+所以不受 CI 机器快慢影响；真实差距是阈值的几十倍，只有真的改坏了（比如把索引路径改回
+全表扫描、或在写入钩子里塞了逐条查询）才会红。失败以非 0 退出码结束。
+
 测量项：
 
 1. 筛选（两种查询形状）：
@@ -46,12 +51,17 @@ from backend.database import SessionLocal, engine, init_db  # noqa: E402
 from backend.emby_server import facets  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 
-TOTAL = int(sys.argv[1]) if len(sys.argv) > 1 else 100_000
+# --guard：CI 的性能护栏模式（条目数与采样轮次都调小，末尾做阈值断言）
+GUARD = "--guard" in sys.argv
+_POSITIONAL = [a for a in sys.argv[1:] if not a.startswith("--")]
+TOTAL = int(_POSITIONAL[0]) if _POSITIONAL else (20_000 if GUARD else 100_000)
 GENRES = ("动作", "喜剧", "科幻", "惊悚", "爱情", "冒险", "纪录")
 STUDIOS = ("华纳", "环球", "迪士尼", "A24")
 COMMON = "动作"          # 命中约 2/7 的库
 RARE = "冷门流派"        # 每 5000 条命中 1 条
-ROUNDS = 20
+ROUNDS = 5 if GUARD else 20
+# 量到的数字统一记在这里：--guard 末尾用它们做断言（也方便今后加新指标）
+RESULTS: dict = {}
 
 init_db()
 
@@ -127,6 +137,16 @@ print(f"\n=== 1. 筛选：只计数（{ROUNDS} 次均值）===")
 for label, value in (("常见取值", COMMON), ("少见取值", RARE)):
     like_ms = timeit(f"SELECT COUNT(*) FROM emby_items WHERE is_hidden = 0 AND genres LIKE '%{value}%'")
     sub_ms = timeit(f"SELECT COUNT(*) FROM emby_items WHERE is_hidden = 0 AND {subq(value)}")
+    # 护栏还要比「条数」：两条路的结果必须一样（这里顺手当成正确性交叉检查）
+    with engine.connect() as conn:
+        RESULTS[f"like_count_{'common' if value == COMMON else 'rare'}"] = int(conn.execute(
+            text(f"SELECT COUNT(*) FROM emby_items WHERE is_hidden = 0 AND genres LIKE '%{value}%'")
+        ).scalar() or 0)
+        RESULTS[f"index_count_{'common' if value == COMMON else 'rare'}"] = int(conn.execute(
+            text(f"SELECT COUNT(*) FROM emby_items WHERE is_hidden = 0 AND {subq(value)}")
+        ).scalar() or 0)
+    RESULTS[f"{'common' if value == COMMON else 'rare'}_like_ms"] = like_ms
+    RESULTS[f"{'common' if value == COMMON else 'rare'}_sub_ms"] = sub_ms
     exists_ms = timeit(f"SELECT COUNT(*) FROM emby_items WHERE is_hidden = 0 AND {exists(value)}")
     join_ms = timeit(
         f"SELECT COUNT(*) FROM (SELECT DISTINCT i.id FROM emby_items i "
@@ -154,6 +174,8 @@ for label, value in (("常见取值", COMMON), ("少见取值", RARE)):
 print(f"\n=== 3. 筛选菜单取值（{ROUNDS} 次均值）===")
 legacy_menu = timeit("SELECT genres FROM emby_items WHERE is_hidden = 0")
 indexed_menu = timeit("SELECT DISTINCT value FROM emby_item_facets WHERE kind = 'genre'")
+RESULTS["menu_legacy_ms"] = legacy_menu
+RESULTS["menu_indexed_ms"] = indexed_menu
 print(f"  读全库文本列（旧）    : {legacy_menu:8.2f} ms")
 print(f"  覆盖索引 DISTINCT（新）: {indexed_menu:8.2f} ms"
       f"   → {legacy_menu / max(indexed_menu, 1e-6):.1f}x")
@@ -196,6 +218,7 @@ print(f"  钩子开（新行为）      : {with_hook * 1000:8.0f} ms / {WRITE_N}
       f"（{WRITE_N / max(with_hook, 1e-9):,.0f} 条/秒）")
 print(f"  → 每条多花 {(with_hook - without_hook) * 1e6 / WRITE_N:.0f} µs"
       f"（{with_hook / max(without_hook, 1e-9):.2f}x）")
+RESULTS["write_ratio"] = with_hook / max(without_hook, 1e-9)
 
 print("\n=== 5. 看护周期的兜底清理 prune_orphans（无孤儿行 = 最坏情况）===")
 samples = []
@@ -207,6 +230,9 @@ for _ in range(3):
         samples.append((time.perf_counter() - started_at) * 1000)
 print(f"  清理 {removed} 行，耗时 {statistics.median(samples):.1f} ms"
       f"（默认每 MAINTENANCE_INTERVAL=600s 一次）")
+RESULTS["prune_ms"] = statistics.median(samples)
+RESULTS["backfill_per_s"] = TOTAL / max(backfill_s, 1e-6)
+RESULTS["ready"] = bool(ready)
 
 print("\n=== 6. 稳定态：一次筛选请求多花的常数开销 ===")
 with SessionLocal() as db:
@@ -227,6 +253,8 @@ with SessionLocal() as db:
         facets.match_values(db, facets.KIND_STUDIO, ["工作室 42"])
     worst = (time.perf_counter() - started_at) * 1000 / ROUNDS
 print(f"  取值 5000 个时的名称匹配（最坏情况）: {worst:.2f} ms/次（纯内存字符串比较）")
+RESULTS["steady_ms"] = per_call
+RESULTS["worst_match_ms"] = worst
 
 print("\n=== 参考：旧口径的代价随库增长（全表扫描）===")
 _list_sql = (f"SELECT id, name FROM emby_items WHERE is_hidden = 0 "
@@ -235,3 +263,44 @@ _list_ms = timeit(_list_sql)
 for factor, label in ((1, "当前"), (2, "翻倍"), (5, "五倍")):
     print(f"  {label:>4}（约 {TOTAL * factor:,} 条）: 列表页约 {_list_ms * factor:7.1f} ms/次")
 print("\n注：关联表路径的耗时随**命中条数**增长，与库总量基本无关。")
+
+
+if GUARD:
+    print("\n=== 性能护栏（--guard）：比值阈值，与本机快慢无关 ===")
+    failed: list[str] = []
+
+    def guard(label: str, ok: bool, detail: str) -> None:
+        print(f"{'PASS' if ok else 'FAIL'}  {label} — {detail}")
+        if not ok:
+            failed.append(label)
+
+    rare_ratio = RESULTS["rare_like_ms"] / max(RESULTS["rare_sub_ms"], 1e-6)
+    menu_ratio = RESULTS["menu_legacy_ms"] / max(RESULTS["menu_indexed_ms"], 1e-6)
+    guard("少见取值筛选：关联表明显快于全表 LIKE", rare_ratio >= 5.0,
+          f"{rare_ratio:.1f}x（下限 5x）")
+    guard("筛选菜单：覆盖索引明显快于读整列", menu_ratio >= 2.0,
+          f"{menu_ratio:.1f}x（下限 2x）")
+    guard("写入钩子开销可接受", RESULTS["write_ratio"] <= 3.0,
+          f"{RESULTS['write_ratio']:.2f}x（上限 3x）")
+    guard("看护周期清理不是全表重写", RESULTS["prune_ms"] <= 2000.0,
+          f"{RESULTS['prune_ms']:.0f} ms（上限 2000）")
+    guard("筛选请求的常数开销很小", RESULTS["steady_ms"] <= 50.0,
+          f"{RESULTS['steady_ms']:.2f} ms（上限 50）")
+    guard("取值很多时的名称匹配仍是内存操作", RESULTS["worst_match_ms"] <= 20.0,
+          f"{RESULTS['worst_match_ms']:.2f} ms（上限 20）")
+    guard("回填吞吐合理", RESULTS["backfill_per_s"] >= 500,
+          f"{RESULTS['backfill_per_s']:,.0f} 条/秒（下限 500）")
+    guard("回填后关联表可代表全库", RESULTS["ready"] is True,
+          f"ready={RESULTS['ready']}")
+    for key, label in (("common", "常见取值"), ("rare", "少见取值")):
+        like_count = RESULTS[f"like_count_{key}"]
+        index_count = RESULTS[f"index_count_{key}"]
+        guard(f"{label}筛选：索引路径与旧口径的条数一致", like_count == index_count,
+              f"索引={index_count} LIKE={like_count}")
+
+    if failed:
+        print(f"\n❌ 性能护栏失败 {len(failed)} 项：")
+        for label in failed:
+            print(f"   - {label}")
+        sys.exit(1)
+    print("\n✅ 性能护栏全部通过（未检测到性能回归）")

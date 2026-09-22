@@ -18,6 +18,27 @@ from sqlalchemy.orm import Session
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 
+# TMDB 刮削客户端已拆到 tmdb.py：扫描器只管遍历与写库，网络客户端（密钥轮询 + 短 TTL 缓存）
+# 单独成模块。这里重新导出一次，`scanner.tmdb_client` / `scanner.TmdbClient` 等既有引用不变。
+from backend.emby_server.tmdb import (  # noqa: F401
+    TMDB_API,
+    TMDB_IMAGE,
+    TMDB_LANG,
+    TmdbClient,
+    tmdb_client,
+)
+
+# 外挂字幕的同名判定与语言识别已拆到 subtitle_match.py（本机与远程挂载共用同一份实现；
+# 注意别与负责字幕**投递**的 subtitles.py 搞混）。同样重新导出，
+# `scanner.match_subtitle_names` 等既有引用不需改动。
+from backend.emby_server.subtitle_match import (  # noqa: F401
+    SUBTITLE_EXTS,
+    find_external_subtitles_in,
+    find_external_subtitles_remote,
+    match_subtitle_names,
+    subtitle_language,
+)
+
 logger = logging.getLogger(__name__)
 
 # ==================== 资源预算（这个后端要能在小机器上跑完整库）（这个后端要能在 1C1G 的小机器上跑完整库）====================
@@ -39,7 +60,6 @@ def _chunks(seq, size: int):
 
 # `.strm` 不是视频文件，而是「内容为播放直链的文本文件」；是否把 strm 当媒体由调用方决定
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm"}
-SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # 集号解析: S01E02 / 1x02 / 第1集 / EP03 / E03
@@ -160,11 +180,6 @@ SCAN_POLICIES: dict[str, Optional[int]] = {
     "all": 0,
 }
 DEFAULT_SCRAPE_POLICY = "missing_only"
-
-TMDB_API = "https://api.themoviedb.org/3"
-TMDB_IMAGE = "https://image.tmdb.org/t/p"
-TMDB_LANG = os.getenv("TMDB_LANGUAGE", "zh-CN")
-
 
 def normalize_scrape_policy(value: Optional[str]) -> str:
     """归一化刮削策略（未知值回退为 missing_only，不会因为脏数据全量重刮）"""
@@ -420,9 +435,6 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
     return info
 
 
-# 缓存未命中的哨兵：TMDB 的“没搜到”也是合法结果，必须与“没查过”区分开
-_MISS = object()
-
 # ==================== 本机目录列表缓存 ====================
 # 扫描一个目录下十几个文件时，旧实现每个文件都会 os.listdir 两次（找图 + 找字幕），
 # 大目录（整季集数）下这就是几千次多余的目录读。缓存在每次扫描开始时清空。
@@ -458,209 +470,6 @@ def _list_dir_cached(dir_path: str) -> list:
         return entries
 
 
-class TmdbClient:
-    """轻量 TMDB 客户端（未配置 key 时静默跳过）
-
-    支持多密钥轮询：`TMDB_API_KEYS=key1,key2,key3`（或 `TMDB_API_KEY` 单键）。
-    单个密钥超出配额（429）或报 401 时自动轮到下一个，整库刮削不会因为一个 key 限额就停滞。
-
-    带短 TTL 缓存：扫库时引擎会先在后台线程把「搜索 + 详情」预热，写库线程随后
-    调用的同一请求直接命中缓存——既能并行，又不会重复消耗 TMDB 配额。
-    """
-
-    _CACHE_TTL = 300        # 秒；一次扫描的预热结果在这个窗口内有效
-    _CACHE_MAX = 20000      # 缓存条数上限，超过就整表清空（内存优先）
-    _cache: dict = {}
-    _cache_lock = threading.Lock()
-
-    def __init__(self) -> None:
-        raw = os.getenv("TMDB_API_KEYS", "") or os.getenv("TMDB_API_KEY", "")
-        self.api_keys = [k.strip() for k in raw.split(",") if k.strip()]
-        self.api_key = self.api_keys[0] if self.api_keys else ""
-        self._key_index = 0
-        self.session = None
-        if self.api_key:
-            import httpx
-
-            self.session = httpx.Client(timeout=8)
-
-    def _rotate(self) -> bool:
-        """轮到下一个密钥，全部用过则返回 False"""
-        if len(self.api_keys) <= 1:
-            return False
-        self._key_index = (self._key_index + 1) % len(self.api_keys)
-        self.api_key = self.api_keys[self._key_index]
-        logger.warning("TMDB 密钥轮询到第 %s 个", self._key_index + 1)
-        return True
-
-    def _get(self, path: str, params: dict) -> Optional[dict]:
-        """带密钥轮询的 GET：配额类错误自动换 key 重试"""
-        if not self.session:
-            return None
-        tried = 0
-        while tried <= len(self.api_keys) or tried == 0:
-            try:
-                r = self.session.get(f"{TMDB_API}{path}", params={**params, "api_key": self.api_key})
-            except Exception as e:  # noqa: BLE001 — 网络异常不应中断整次扫描
-                logger.warning("TMDB 请求失败 %s: %s", path, e)
-                return None
-            if r.status_code in (401, 429):
-                if self._rotate():
-                    tried += 1
-                    continue
-                logger.warning("TMDB 全部密钥不可用（HTTP %s）", r.status_code)
-                return None
-            if r.status_code >= 400:
-                logger.warning("TMDB 响应异常 %s: HTTP %s", path, r.status_code)
-                return None
-            try:
-                return r.json()
-            except Exception:  # noqa: BLE001
-                return None
-        return None
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.api_keys)
-
-    def _cache_get(self, key):
-        """取缓存（未命中返回 _MISS；过期视为未命中）"""
-        with TmdbClient._cache_lock:
-            hit = TmdbClient._cache.get(key)
-        if hit is None:
-            return _MISS
-        ts, value = hit
-        if (datetime.now() - ts).total_seconds() > self._CACHE_TTL:
-            return _MISS
-        return value
-
-    def _cache_put(self, key, value) -> None:
-        with TmdbClient._cache_lock:
-            if len(TmdbClient._cache) >= self._CACHE_MAX:
-                TmdbClient._cache.clear()
-            TmdbClient._cache[key] = (datetime.now(), value)
-
-    def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
-        if not self.session:
-            return None
-        endpoint = "tv" if kind == "series" else "movie"
-        key = ("search", endpoint, name, year or 0)
-        cached = self._cache_get(key)
-        if cached is not _MISS:
-            return cached
-        params: dict = {"language": TMDB_LANG, "query": name}
-        if year:
-            if endpoint == "tv":
-                params["first_air_date_year"] = year
-            else:
-                params["year"] = year
-        data = self._get(f"/search/{endpoint}", params)
-        results = (data or {}).get("results") or []
-        hit = results[0] if results else None
-        self._cache_put(key, hit)
-        return hit
-
-    def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
-        """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用"""
-        endpoint = "tv" if kind == "series" else "movie"
-        key = ("details", endpoint, str(tmdb_id))
-        cached = self._cache_get(key)
-        if cached is not _MISS:
-            return cached
-        data = self._get(f"/{endpoint}/{tmdb_id}", {"language": TMDB_LANG,
-                                                     "append_to_response": "alternative_titles,external_ids"})
-        self._cache_put(key, data)
-        return data
-
-    def enrich(self, item: emby_models.MediaItem, kind: str) -> None:
-        """补齐 imdb_id 与 aliases（中英文/繁简多别名搜索的基础）"""
-        if not item.tmdb_id or (item.imdb_id and item.aliases):
-            return
-        data = self.details(str(item.tmdb_id), kind)
-        if not data:
-            return
-        self.apply_details(item, data)
-
-    def apply_details(self, item: emby_models.MediaItem, data: dict) -> None:
-        """把详情接口的返回落到条目上（与 enrich 同口径，供批量扫描预先取回后套用）"""
-        if not data:
-            return
-        imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
-        if imdb:
-            item.imdb_id = imdb
-        alt = (data.get("alternative_titles") or {})
-        titles = [t.get("title") for t in (alt.get("titles") or [])]
-        titles += [t.get("title") for t in (alt.get("results") or [])]
-        names = [n for n in ([data.get("name"), data.get("original_name"),
-                              data.get("title"), data.get("original_title")] + titles) if n]
-        if names:
-            seen: list[str] = []
-            for n in names:
-                n = str(n).strip()
-                if n and n not in seen:
-                    seen.append(n)
-            item.aliases = ",".join(seen[:12])
-
-    def refresh_images(self, item: emby_models.MediaItem, kind: str) -> bool:
-        """重新取图——数据库里有图片记录但本地文件已丢失时用
-
-        （客户端取图 404 会把条目排进修复队列，下一轮扫描到这里把图换成 TMDB 远程图）
-        """
-        if not item.tmdb_id:
-            return False
-        data = self.details(str(item.tmdb_id), kind)
-        return self.apply_images(item, data)
-
-    def apply_images(self, item: emby_models.MediaItem, data: dict) -> bool:
-        """把详情接口里的图片落到条目上（返回是否拿到图）"""
-        if not data:
-            return False
-        poster = data.get("poster_path")
-        backdrop = data.get("backdrop_path")
-        if poster:
-            item.primary_image_url = f"{TMDB_IMAGE}/w500{poster}"
-        if backdrop:
-            item.backdrop_image_url = f"{TMDB_IMAGE}/w1280{backdrop}"
-        return bool(poster or backdrop)
-
-    def apply(self, item: emby_models.MediaItem, hit: dict, kind: str) -> None:
-        item.tmdb_id = str(hit.get("id"))
-        item.last_scraped_at = datetime.now()
-        item.overview = hit.get("overview") or item.overview
-        rating = hit.get("vote_average")
-        if rating:
-            item.community_rating = round(float(rating), 1)
-        poster = hit.get("poster_path")
-        backdrop = hit.get("backdrop_path")
-        if poster:
-            item.primary_image_url = f"{TMDB_IMAGE}/w500{poster}"
-        if backdrop:
-            item.backdrop_image_url = f"{TMDB_IMAGE}/w1280{backdrop}"
-        if kind == "series" and hit.get("name"):
-            item.name = hit.get("name")
-        elif hit.get("title"):
-            item.name = hit.get("title")
-        # 搜索命中里就能拿到的多别名（中英文/原名）：先落库，详情接口再补全
-        hit_aliases = [hit.get("name"), hit.get("title"),
-                       hit.get("original_name"), hit.get("original_title")]
-        existing = [a for a in (item.aliases or "").split(",") if a]
-        merged = existing + [a.strip() for a in hit_aliases if a and a.strip() not in existing]
-        if merged:
-            item.aliases = ",".join(dict.fromkeys(merged))[:2000]
-        genre_ids = hit.get("genre_ids") or []
-        if genre_ids:
-            mapping = {
-                28: "动作", 12: "冒险", 16: "动画", 35: "喜剧", 80: "犯罪",
-                99: "纪录片", 18: "剧情", 10751: "家庭", 14: "奇幻", 36: "历史",
-                27: "恐怖", 10402: "音乐", 9648: "悬疑", 10749: "爱情",
-                878: "科幻", 10770: "电视电影", 53: "惊悚", 10752: "战争", 37: "西部",
-            }
-            item.genres = ",".join(mapping.get(g, str(g)) for g in genre_ids[:4])
-
-
-tmdb_client = TmdbClient()  # 进程级单例：一次扫描里的预热与写库共用同一份缓存与连接池
-
-
 def find_local_images_in(entries, dir_path: str, base_name: str) -> tuple[Optional[str], Optional[str]]:
     """在已经拿到的目录列表里查 poster/fanart
 
@@ -685,158 +494,14 @@ def find_local_images(dir_path: str, base_name: str) -> tuple[Optional[str], Opt
     return find_local_images_in(_list_dir_cached(dir_path), dir_path, base_name)
 
 
-# 语言标签 → Emby 三字码（客户端按这个选字幕轨）
-_SUB_LANG_TAGS: tuple[tuple[str, str], ...] = (
-    ("zh-cn", "chi"), ("zh-tw", "chi"), ("zh-hans", "chi"), ("zh-hant", "chi"),
-    ("chs", "chi"), ("cht", "chi"), ("chi", "chi"), ("zho", "chi"), ("zh", "chi"),
-    ("sc", "chi"), ("tc", "chi"), ("简", "chi"), ("繁", "chi"),
-    ("中英", "chi"), ("双语", "chi"), ("中字", "chi"), ("中文", "chi"),
-    ("eng", "eng"), ("english", "eng"), ("en", "eng"), ("英文", "eng"),
-    ("jpn", "jpn"), ("japanese", "jpn"), ("jp", "jpn"), ("日", "jpn"),
-    ("kor", "kor"), ("ko", "kor"), ("韩", "kor"),
-)
-# 发布标签：比较“是不是同一条媒体”时要先去掉
-_RELEASE_TAG_RE = re.compile(
-    r"\b(2160p|1080p|720p|480p|4k|uhd|hdr10\+?|hdr|dolby|dv|web-?dl|webrip|web|bluray|"
-    r"blu-ray|bdrip|brrip|remux|hdtv|dvdrip|x264|x265|h264|h265|hevc|avc|aac|ac3|eac3|"
-    r"dts|dts-hd|flac|truehd|atmos|repack|proper|multi|internal|complete|10bit|8bit)\b",
-    re.IGNORECASE,
-)
-_EP_MARK_RE = re.compile(
-    r"([sS]\d{1,2}\s?[\s._-]*[eE]\d{1,3}|\d{1,2}x\d{1,3}|第\s*\d{1,3}\s*[集话話]|\b[eE][pP]\.?\s?\d{1,3}(?!\d))"
-)
-
-
-def _subtitle_core(text: str) -> str:
-    """字幕/视频名的“核心”形式：去发布标签与分隔符，用于同名判定"""
-    core = _RELEASE_TAG_RE.sub(" ", text or "")
-    core = re.sub(r"[\.\-_\[\]()【】]+", " ", core)
-    return re.sub(r"\s+", " ", core).strip().lower()
-
-
-_RESOLUTION_RE = re.compile(
-    r"(?<![A-Za-z0-9])(2160p|1080p|720p|480p|4k|uhd)(?![A-Za-z0-9])", re.IGNORECASE
-)
-
-
-def _resolution_of(text: str) -> str:
-    """分辨率归一（4k/uhd 都算 2160p）——用于区分同一部片子的多个版本"""
-    m = _RESOLUTION_RE.search(text or "")
-    if not m:
-        return ""
-    value = m.group(1).lower()
-    return "2160p" if value in ("4k", "uhd") else value
-
-
-def _episode_key(text: str) -> str:
-    m = _EP_MARK_RE.search(text or "")
-    if not m:
-        return ""
-    return re.sub(r"[\s._-]+", "", m.group(1)).lower()
-
-
-def subtitle_language(name: str) -> str:
-    """从字幕文件名猜语言（返回 Emby 三字码）"""
-    raw = name or ""
-    low = raw.lower()
-    for tag, lang in _SUB_LANG_TAGS:
-        if not tag:
-            continue
-        if tag.isascii():
-            if re.search(rf"(?<![a-z0-9]){re.escape(tag)}(?![a-z0-9])", low):
-                return lang
-        elif tag in raw:
-            return lang
-    return "chi" if re.search(r"[\u4e00-\u9fff]", raw) else "eng"
-
-
-def match_subtitle_names(base_name: str, names) -> list[str]:
-    """从同目录文件名里挑出与 ``base_name`` 匹配的外挂字幕文件名
-
-    覆盖实际会碰到的各种命名（旧实现只认「与视频完全同名」或「同名 + 点后缀」）：
-
-    - 标准同名：`Show.S01E01.mkv` + `Show.S01E01.chi.srt`
-    - 较短字幕名：`Show.S01E01.1080p.WEB-DL.mkv` + `Show.S01E01.ass`
-    - 发行组差异：视频 `x265-GROUP`，字幕只写 `Show.S01E01.chs.ass`
-    - 多版本媒体：`Show.S01E01.v2.mkv` / `Movie.2024.UHD.mkv` 各带自己的字幕
-    - rclone / GD sidecar：`Show.S01E01.mkv.zh.srt`（字幕名以视频全名加点开头）
-
-    不会把同目录里**别的集**的字幕认给本集（旧实现只比前缀）。
-    单独抽出来是为了让**远程挂载**（115 / WebDAV / AList）也能用同一套判定：
-    远程只有目录列表里的一串文件名，没有本机路径。
-    """
-    base_name = os.path.basename(base_name)
-    stem = os.path.splitext(base_name)[0]
-    video_core = _subtitle_core(stem)
-    video_res = _resolution_of(stem)
-    ep_key = _episode_key(stem)
-    ep_head = _subtitle_core(stem[: _EP_MARK_RE.search(stem).start()]) if ep_key else ""
-
-    def _same_media(name: str) -> bool:
-        if name == base_name or name.startswith(base_name + "."):
-            return True  # rclone/GD sidecar：字幕名 = 视频全名 + 语言后缀
-        # 多版本：字幕自己标了分辨率时，必须与视频一致
-        # （Movie.2024.2160p.srt 不应被认给 Movie.2024.1080p.mkv）
-        sub_res = _resolution_of(name)
-        if sub_res and video_res and sub_res != video_res:
-            return False
-        sub_core = _subtitle_core(name)
-        if not sub_core or not video_core:
-            return False
-        if sub_core == video_core:
-            return True
-        # 去掉发布标签后互为前缀（字幕名更短、或多一个语言/版本后缀）
-        short, long_ = sorted((sub_core, video_core), key=len)
-        if short and long_.startswith(short):
-            return True
-        # 同一集号 + 同一剧名核心：Show.S01E01.ass ↔ Show.S01E01.1080p.WEB-DL.mkv
-        if ep_key and _episode_key(name) == ep_key:
-            mark = _EP_MARK_RE.search(name)
-            head = _subtitle_core(name[: mark.start()]) if mark else ""
-            if not ep_head or not head or head.startswith(ep_head) or ep_head.startswith(head):
-                return True
-        return False
-
-    found: list[str] = []
-    for f in names:
-        base, ext = os.path.splitext(f)
-        if ext.lower() not in SUBTITLE_EXTS:
-            continue
-        probe = base
-        for _ in range(2):  # 去掉 sidecar 命名里残留的视频扩展名
-            probe = re.sub(r"\.(mkv|mp4|avi|mov|ts|m2ts|m4v|wmv|flv|webm)$", "", probe, flags=re.IGNORECASE)
-        if _same_media(probe):
-            found.append(f)
-    return found
-
-
-def find_external_subtitles_in(names, file_path: str) -> list[tuple[str, str]]:
-    """在已经拿到的目录列表里挑外挂字幕（同 find_local_images_in 的理由）"""
-    d = os.path.dirname(file_path)
-    return [
-        (subtitle_language(os.path.splitext(f)[0]), os.path.join(d, f))
-        for f in match_subtitle_names(os.path.basename(file_path), names)
-    ]
-
-
 def find_external_subtitles(file_path: str) -> list[tuple[str, str]]:
-    """本机文件的外挂字幕：返回 [(lang, 绝对路径)]（目录列表走本次扫描的缓存）"""
+    """本机文件的外挂字幕：返回 [(lang, 绝对路径)]（目录列表走本次扫描的缓存）
+
+    判定本身在 subtitles.py；这里保留包装是因为它要用**本次扫描的目录缓存**，
+    而缓存属于扫描器——反过来让 subtitles 依赖 scanner 会形成循环导入。
+    """
     d = os.path.dirname(file_path)
     return find_external_subtitles_in(_list_dir_cached(d), file_path)
-
-
-def find_external_subtitles_remote(base_name: str, entries, mount_id: int,
-                                   dir_rel: str) -> list[tuple[str, str]]:
-    """远程挂载的外挂字幕：返回 [(lang, mount://<id>/<相对路径>)]"""
-    names = [e.name for e in entries if not e.is_dir]
-    base_dir = "/" + (dir_rel or "/").strip("/")
-    return [
-        (
-            subtitle_language(os.path.splitext(f)[0]),
-            mount_lib.mount_path(mount_id, f"{base_dir.rstrip('/')}/{f}"),
-        )
-        for f in match_subtitle_names(base_name, names)
-    ]
 
 
 @dataclass(frozen=True)
@@ -1093,6 +758,11 @@ class _ScanContext:
     mount_dir_cache: dict = field(default_factory=dict)    # 远程挂载目录列表
     mount_lock: threading.Lock = field(default_factory=threading.Lock)
     mount_dir_locks: dict = field(default_factory=dict)     # 每个远程目录一把单飞锁
+    # 剧集层级：guid → 条目对象（不是 id），一次扫描内复用
+    # （同一部剧的多集只查一次、只建一次；存对象是因为写库循环后段还要用它们做
+    #  「集 → 季 → 剧」的海报回退；同一 Session 的身份映射保证对象不会有两个实例）
+    series_items: dict = field(default_factory=dict)
+    season_items: dict = field(default_factory=dict)
 
 
 
@@ -1241,6 +911,30 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         guids.append(guid)
 
     known = _load_items(db, guids)
+
+    # 剧集层级一次查齐：老实现在写库循环里对**每一集**点查剧集、再点查季（两集一次往返
+    # 各一次），十万集就是二十万次查询。这里在批次开头把这一批用到的剧集与季一次取回，
+    # 结果按 guid 缓存到本次扫描结束——同一部剧的后续批次连这次查询都省了。
+    parent_guids: list = []
+    for pending in prepared:
+        if not pending.series_guid:
+            continue
+        if pending.series_guid not in ctx.series_items:
+            parent_guids.append(pending.series_guid)
+        if pending.season_guid not in ctx.season_items:
+            parent_guids.append(pending.season_guid)
+    if parent_guids:
+        parents = _load_items(db, parent_guids)
+        for pending in prepared:
+            if not pending.series_guid:
+                continue
+            row = parents.get(pending.series_guid)
+            if row is not None:
+                ctx.series_items[pending.series_guid] = row
+            row = parents.get(pending.season_guid)
+            if row is not None:
+                ctx.season_items[pending.season_guid] = row
+
     policy = ctx.snap.scrape_policy
     for pending in prepared:
         item = known.get(pending.guid)
@@ -1472,15 +1166,17 @@ def scan_library_sync(db: Session, library: emby_models.Library,
                     item.backdrop_path = fanart or item.backdrop_path
 
                     # 剧集层级：episode -> season -> series
+                    # 剧集与季在**批次开头**已一次查齐（见 _prepare_and_prefetch），结果缓存
+                    # 在 ctx.series_items / ctx.season_items，这里只在确实没有时才新建。
+                    # 旧实现在这个循环里对每一集点查两次（先剧集、再季）：十万集就是二十万次
+                    # 往返，即使每条都走 guid 唯一索引，也要多花几秒、把写库线程压在查询上。
+                    # 两者在下面按需赋值；非剧集条目保持 None（后段的海报回退要求它们已绑定）
                     series = season_item = None
                     if item_type == "episode":
                         season_no, ep_no = parsed["season"], parsed["episode"]
-                        series_dir = os.path.dirname(dirpath.rstrip("/")) if dirpath else ""
-                        series_guid = item_guid(series_dir or (os.path.dirname(full_path) or full_path))
-                        series = db.query(emby_models.MediaItem).filter(
-                            emby_models.MediaItem.guid == series_guid
-                        ).first()
-                        if not series:
+                        series_guid = _pending.series_guid
+                        series = ctx.series_items.get(series_guid)
+                        if series is None:
                             series = emby_models.MediaItem(
                                 guid=series_guid, library_id=library.id,
                                 item_type="series", name=parsed["name"],
@@ -1491,13 +1187,12 @@ def scan_library_sync(db: Session, library: emby_models.Library,
                             )
                             db.add(series)
                             db.flush()
+                            ctx.series_items[series_guid] = series
                         item.series_id = series.id
 
-                        season_guid = item_guid(f"{series_guid}:S{season_no:02d}")
-                        season_item = db.query(emby_models.MediaItem).filter(
-                            emby_models.MediaItem.guid == season_guid
-                        ).first()
-                        if not season_item:
+                        season_guid = _pending.season_guid
+                        season_item = ctx.season_items.get(season_guid)
+                        if season_item is None:
                             season_item = emby_models.MediaItem(
                                 guid=season_guid, library_id=library.id,
                                 item_type="season", name=f"第 {season_no} 季",
@@ -1506,6 +1201,7 @@ def scan_library_sync(db: Session, library: emby_models.Library,
                             )
                             db.add(season_item)
                             db.flush()
+                            ctx.season_items[season_guid] = season_item
                         item.parent_id = season_item.id
                         item.season_number = season_no
                         item.episode_number = ep_no

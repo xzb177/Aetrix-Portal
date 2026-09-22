@@ -85,7 +85,7 @@ db.close()
 TOTAL = MOVIES + SERIES * EPISODES_PER_SERIES
 
 # ==================== 观测装置 ====================
-queries = {"n": 0, "item_selects": 0}
+queries = {"n": 0, "item_selects": 0, "guid_point": 0}
 commits = {"n": 0}
 _watching = {"on": False}
 
@@ -98,6 +98,10 @@ def _count_queries(conn, cursor, statement, parameters, context, executemany):  
     head = statement.lstrip()[:6].upper()
     if head == "SELECT" and "emby_items" in statement:
         queries["item_selects"] += 1
+        # 「剧集/季」这一类按 guid 的单条点查：批量预取之后不应该再出现
+        # （批次加载与父级扇入用的是 IN (...)，不会匹配到这里）
+        if "guid = ?" in statement:
+            queries["guid_point"] += 1
 
 
 @event.listens_for(engine, "commit")
@@ -219,10 +223,13 @@ check(counts.get("movie") == MOVIES, "电影条目数正确", str(counts.get("mo
 check(counts.get("series") == SERIES, "剧集条目数正确", str(counts.get("series")))
 check(counts.get("episode") == SERIES * EPISODES_PER_SERIES, "集条目数正确", str(counts.get("episode")))
 
-# 批量查库：老实现每个文件至少 1 次条目查询 → 至少 162 次；现在只有批次加载（每 400 个文件 1 次）
-# 加上主体里遗留的“逐集查剧集/季”（每集 2 次，待后续消灭），所以这里是宽松上限。
-check(queries["item_selects"] <= TOTAL * 0.5, "条目按批加载（不再每个文件查一次）",
-      f"SELECT emby_items={queries['item_selects']} 上限={int(TOTAL * 0.5)}（共 {TOTAL} 个文件）")
+# 批量查库：老实现每个文件至少 1 次条目查询 → 至少 162 次；现在只有批次加载（每 400 个文件 1 次）。
+check(queries["item_selects"] <= 12, "条目按批加载（不再每个文件查一次）",
+      f"SELECT emby_items={queries['item_selects']} 上限=12（共 {TOTAL} 个文件）")
+# 剧集/季：老实现在写库循环里对**每一集**点查剧集、再点查季（{SERIES*EPISODES_PER_SERIES} 集 = 24 次）。
+# 现在是批次开头一次 IN 查询 + 本次扫描内复用，循环里不再有任何按 guid 的点查。
+check(queries["guid_point"] == 0, "逐集查剧集/季已消除（循环里没有 guid 点查）",
+      f"guid 点查={queries['guid_point']} 次（旧实现≥{SERIES * EPISODES_PER_SERIES * 2} 次）")
 # 批量提交：老实现每个文件一次 → 162+ 次 fsync；批次化之后只有开跑 / 每批 / 收尾几次。
 check(commits["n"] <= 10, "按批提交（不是每个文件一次）", f"commit={commits['n']}")
 check(probe.peak >= 2, "探测（ffprobe）并行执行", f"峰值并发={probe.peak}")
