@@ -6,8 +6,10 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from datetime import datetime
+from email.utils import formatdate
 from typing import Optional
 
 from fastapi import HTTPException, Request
@@ -139,14 +141,36 @@ def serve_remote(
     )
 
 
+def _file_validators(stat: os.stat_result) -> tuple[str, str]:
+    """按「mtime + 大小」生成 ETag 与 Last-Modified（内容一变校验器就变）"""
+    return f'"{int(stat.st_mtime)}-{stat.st_size}"', formatdate(stat.st_mtime, usegmt=True)
+
+
 def serve_image(path: Optional[str]) -> FileResponse:
+    """图片响应：带 ETag / Last-Modified 与 24h 客户端强制缓存
+
+    浏览媒体库时同一张海报会被反复请求（滚动、返回、切页），旧实现每次整文件重发。
+    现在响应带 ``ETag`` / ``Last-Modified`` 与 ``Cache-Control: public, max-age=86400``，
+    浏览器与客户端在有效期内直接命中本地缓存，不再为同一张图重复付出磁盘 I/O 与带宽。
+    """
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Image not found")
     ext = os.path.splitext(path)[1].lower()
     media_type = {
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
     }.get(ext, "application/octet-stream")
-    return FileResponse(path, media_type=media_type)
+    try:
+        stat = os.stat(path)
+    except OSError:  # 判断与取属性之间文件被删 / 挂载掉线：干净 404，不要 500
+        raise HTTPException(status_code=404, detail="Image not found") from None
+    etag, last_modified = _file_validators(stat)
+    headers = {
+        "ETag": etag,
+        "Last-Modified": last_modified,
+        "Cache-Control": "public, max-age=86400",
+        "Accept-Ranges": "bytes",
+    }
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 def build_hls_command(
@@ -210,6 +234,8 @@ def start_transcode(
         if existing:
             logger.info("复用进行中的 HLS 转码 %s", existing)
             return existing
+    # CPU 保护：并发转码超过上限时先回收已经没人看的会话（见 enforce_transcode_capacity）
+    enforce_transcode_capacity()
     session_id = uuid.uuid4().hex[:16]
     out_dir = os.path.join(TRANSCODE_DIR, session_id)
     proc = build_hls_command(file_path, out_dir, start_seconds, video_bitrate, height,
@@ -259,8 +285,6 @@ def reap_stale_transcodes(max_age_seconds: int = 6 * 3600) -> int:
 
 def wait_for_file(path: str, timeout: float = 10.0, interval: float = 0.2) -> bool:
     """等待 ffmpeg 产出目标文件（客户端请求切片往往早于转码进度）"""
-    import time
-
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if os.path.isfile(path) and os.path.getsize(path) > 0:
@@ -316,6 +340,63 @@ def transcode_alive(session_id: str) -> bool:
 def active_transcode_ids() -> list:
     """当前登记在册的转码会话 id（维护/健康检查用；不要在遍历中改字典）"""
     return list(_TRANSCODE_PROCS.keys())
+
+
+def transcode_capacity() -> int:
+    """允许同时运行的转码路数（默认按 CPU 核数：veryfast 单路按一核估算）"""
+    raw = os.getenv("EMBY_MAX_TRANSCODES", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return max(1, os.cpu_count() or 2)
+
+
+def transcode_idle_seconds() -> float:
+    """输出目录多久没有新分片就认为这场播放已经没人看了（默认 120s）"""
+    try:
+        value = float(os.getenv("EMBY_TRANSCODE_IDLE", "") or 120)
+    except ValueError:
+        value = 120.0
+    return value if value > 0 else 120.0
+
+
+def _transcode_idle(info: dict) -> float:
+    """转码中 ffmpeg 会持续写分片：目录最近写入时间就是「还有人看」的信号"""
+    try:
+        return max(0.0, time.time() - os.path.getmtime(info.get("dir") or ""))
+    except OSError:
+        return float("inf")  # 目录已不在：视为空闲，优先回收
+
+
+def enforce_transcode_capacity() -> None:
+    """并发上限保护：CPU 被多路转码打满时，先停掉已经没人看的会话
+
+    客户端切清晰度 / 拖进度后重新拉起、或者直接杀掉应用，都不会上报 Stopped，
+    只留下一个不再增长的输出目录。这里**只回收闲置超时的会话**，不为了让新请求
+    进场而掉头挚掉正在播放的会话：宁可短暂超限并告警，也不能让用户正看着的片子中断
+    （上限可用 ``EMBY_MAX_TRANSCODES``、闲置判定用 ``EMBY_TRANSCODE_IDLE`` 调整）。
+    """
+    cap = transcode_capacity()
+    running = {
+        sid: info for sid, info in list(_TRANSCODE_PROCS.items())
+        if info.get("proc") is not None and info["proc"].poll() is None
+    }
+    if len(running) < cap:
+        return
+    idle_limit = transcode_idle_seconds()
+    for sid, info in sorted(running.items(), key=lambda kv: _transcode_idle(kv[1]), reverse=True):
+        if len(running) <= cap - 1:
+            break
+        idle = _transcode_idle(info)
+        if idle < idle_limit:
+            break  # 已按闲置时间降序，后面只会更活跃
+        logger.info("回收空闲 HLS 转码会话 %s（闲置 %.0fs，并发上限 %d）", sid, idle, cap)
+        stop_transcode(sid)
+        running.pop(sid, None)
+    if len(running) >= cap:
+        logger.warning(
+            "HLS 转码并发已达上限 %d，本次仍继续启动（不中断正在播放的用户）；"
+            "可用 EMBY_MAX_TRANSCODES 调整上限", cap,
+        )
 
 
 _TRANSCODE_PROCS: dict[str, dict] = {}

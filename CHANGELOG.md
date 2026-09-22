@@ -2,6 +2,84 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.11.0] - 2026-09-22
+
+这一版是**后端（EM 面板 + EA 网关）的性能与稳定性**一轮：把列表接口里最贵的 N+1 查询
+消掉、把浏览媒体库时请求量最大的图片变成可缓存可复用、把大块二进制从 GZip 里摘出去，
+并给 HLS 转码加上并发上限保护。目标是同样一套硬件下：媒体库翻页更快、并发播放更稳。
+
+### 变更 (Changed) — 性能
+- **列表接口消除 N+1 查询**：`_item_dto` 此前为每个条目单独查用户媒体数据（进度 / 收藏 / 已看）
+  并统计子项数量，一页 100 条就是 200+ 次往返。现在 `_prefetch_list_data()` 在渲染前
+  一次性把这一页的媒体数据、系列归属与子项计数全部取回（12 处列表端点——
+  `/Users/{uid}/Items`、`Resume`、`Latest`、`Shows/Seasons`、`Shows/Episodes`、`NextUp`、
+  收藏 / 筛选 / 分组等——统一接入），分页大小不再影响查询次数。
+- **图片响应可缓存**：`serve_image()` 现在带上 `ETag` / `Last-Modified` /
+  `Cache-Control: public, max-age=86400` / `Accept-Ranges`。浏览媒体库时同一张海报会被反复请求
+  （滚动、返回、切页），旧实现每次都整文件重发；现在客户端在 24h 有效期内直接命中本地缓存。
+- **大块二进制不再走 GZip**：EM 与 EA 的 `GZipMiddleware` 排除 `application/octet-stream`
+  与 `application/zip`（Starlette 默认只排除 `video/*`、`image/*` 等）。远程挂载代理转发的
+  媒体文件此前会按 level 9 压缩，白白吃满 CPU 且对已压缩容器毫无收益。
+- **前端静态产物强缓存**：`/assets/*` 与 `/admin/assets/*`（Vite 产物文件名带内容哈希）
+  返回 `Cache-Control: public, max-age=31536000, immutable`；SPA 入口 HTML 改为 `no-cache`，
+  发新版本后用户刷新即可拿到新构建，不再出现「JS 已换、HTML 还是旧的」错配。
+
+### 新增 (Added) — 稳定性
+- **HLS 转码并发上限保护**（`emby_server/streaming.py`）：`enforce_transcode_capacity()` 在每次新建
+  转码会话前执行，默认上限为 CPU 核数（`EMBY_MAX_TRANSCODES` 可显式指定）。超过上限时
+  **只回收「输出目录闲置超时」（`EMBY_TRANSCODE_IDLE`，默认 120s）的会话**——
+  即切清晰度 / 拖进度后客户端重新拉起所留下的、不会上报 `Stopped` 的残留会话；
+  若当前都在活跃播放，则宁可短暂超限并写告警，**不会为了给新请求腾位置而掐断正在播放的会话**。
+
+### 验证 (Verification)
+- `python3 -m py_compile` 覆盖全部改动文件（`backend/emby_server/api.py`、
+  `backend/emby_server/streaming.py`、`backend/main.py`、`emby_api/main.py`）通过；
+  两个服务（EM / EA）都能正常导入并完成路由与中间件装配，版本均为 2.11.0。
+- **转码上限保护**按真实逻辑跑了四组行为检查：未达上限时不动任何会话；达上限且有闲置会话时
+  只回收最久闲置的那一路（含临时分片目录）；超限但全在活跃播放时谁也不断（只告警）；
+  多路闲置时按闲置时间从旧到新回收。
+- **静态缓存**用 `TestClient` 实测：`/assets/css/*.css` 返回 `max-age=31536000, immutable`、
+  SPA 入口 `/` 返回 `no-cache`、`/api/*` 仍是 `no-store`。
+- **GZip 排除**已确认在两个 app 上生效（`exclude_content_types` 含 `application/octet-stream`）。
+- **图片响应头**实测：`ETag` / `Last-Modified` / `Cache-Control: public, max-age=86400` /
+  `Accept-Ranges` / 正确 `content-type` 均按预期下发；文件缺失仍是干净的 404。
+
+### 待办 (Next)
+- 图片接口的条件请求（304）：`serve_image()` 已带上校验器，但调用点还需要把 request 透传过去，
+  而该调用点在 `emby_server/api.py`（已起 2000 行），计划随该文件拆分一起做。
+- 播放进度上报（`/Sessions/Playing/Progress`）的写库节流：客户端每 10s 一报，多个并发播放时
+  SQLite 写锁会有竞争，计划按「进度实质变化才落库」收敛。
+- `/Sessions` 会话列表的关联查询批量化（与列表接口同一思路，同样在 api.py 内）。
+
+## [2.10.6] - 2026-09-22
+
+v2.6.27 把设计令牌收归 Aurora 单一事实来源后,用户端仍有十几个页面各自写死一批
+`rgba(34, 211, 238, …)` / `rgba(7, 11, 18, …)`。这一版把剩下的写死颜色全部换成 Aurora 令牌,
+并补齐页面里缺的中间档令牌,让「同一个语义只有一个颜色」在全站真正成立。
+
+### 变更 (Changed) — 用户端硬编码颜色对齐 Aurora 令牌
+- **新增页面级缺口令牌**(`aurora.css`):`--au-primary-mid`(hover 底色,比 soft 明显、比 border 温柔)、
+  `--au-on-primary` / `--au-on-warning`(亮色块上的深墨色文字)、语义色 `*-border` 档、
+  叠加层四档(`--au-overlay-soft/mid/strong/menu`)、`--au-scrim`、`--au-grid-line`、
+  图片上的中性叠加(`--au-on-image*`)、进度槽 `--au-track`、阴影色 `--au-shadow-color/text`。
+- **页面全部换用令牌**:`HistoryView` / `LibraryHomeView` / `HomeView` / `WalletView` / `TicketsView`
+  / `LoginView` / `CheckinView` / `InviteView` / `MessagesView` / `ProfileView` / `RequestView`
+  / `FavoritesView` / `ItemDetailView` / `LibraryView` / `WatchView`,以及
+  `AppHeader` / `Toast` / `MediaCard` 组件——遮罩、边框、徽标、渐变按钮文字、
+  下拉浮层背景不再各自为政;页面里的重复 `@keyframes spin` 收敛到全局 `au-spin`。
+- **刻意保留的写死色**:播放器容器纯黑底(与画面本身一致,混入主题蓝调反而显出「框」)、
+  横向滑动的 mask 渐变(`#000` 表示遮罩不透明度,不是视觉颜色)——均已注释说明。
+- **死代码组件对齐**:`components/ui/` 下无人引用的 Button / Chip / SegmentedControl
+  里残留的旧 Emerald 翠绿(`rgba(16, 185, 129, …)`,主色换青之前的遗留)同步换成 Aurora 令牌,
+  避免将来启用时又冒出一套旧色。
+- **版本号**全站统一升至 2.10.6(两个前端 `package.json`、EM `version`、EA `EA_VERSION`、
+  后台 `APP_VERSION`)。
+
+### 验证 (Verification)
+- 两个前端 `vue-tsc` 0 错误、`vite build` 通过;设计令牌契约检查
+  (`scripts/check_frontend_tokens.py`)通过。
+- 全站扫描确认:页面与组件里不再有主题色 / 表面色的硬编码,只剩上述两处刻意保留。
+
 ## [2.10.5] - 2026-09-22
 
 v2.10.4 修完用户侧后，这一版把**后台管理员**侧同样过了一遍：补上 2.10.4 改动的后台收尾，

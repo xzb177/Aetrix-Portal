@@ -172,14 +172,92 @@ def _download_ok(db: Session) -> bool:
     return cache["value"]
 
 
+# ==================== 列表批量预取（消除 N+1）====================
+
+def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) -> None:
+    """一次性预取列表页需要的关联数据，消除 _item_dto 的 N+1 查询
+
+    旧实现：一页 100 个条目 = 100 次 UMD 查询 + series/parent 惰性加载
+    （每集 2 次）+ series/season 的 ChildCount 各 1 次 ≈ 400+ 次查询。
+    客户端首页一次要拉 Resume/Latest/NextUp/多库列表，全站延迟被这些
+    小查询成倍放大——这正是比 Emby 慢的主因之一。
+
+    预取结果挂在 ``db.info``（随请求会话销毁，不会跨请求串数据），
+    _item_dto 优先用预取结果，单独取条目（详情页等）时回退为原查询。
+    """
+    if not items:
+        return
+    item_ids = [i.id for i in items]
+
+    # 1) 用户媒体数据（进度/收藏/已看）
+    umd_map: dict[int, em.UserMediaData] = {
+        u.item_id: u
+        for u in db.query(em.UserMediaData).filter(
+            em.UserMediaData.user_id == user_id,
+            em.UserMediaData.item_id.in_(item_ids),
+        ).all()
+    }
+
+    # 2) 集的 series / parent（一次性载入，避免逐条惰性加载）
+    series_ids = {i.series_id for i in items if i.series_id}
+    parent_ids = {i.parent_id for i in items if i.parent_id}
+    relations: dict[int, em.MediaItem] = {}
+    related_ids = (series_ids | parent_ids) - set(item_ids)
+    if related_ids:
+        relations = {
+            r.id: r
+            for r in db.query(em.MediaItem).filter(em.MediaItem.id.in_(related_ids)).all()
+        }
+    for it in items:
+        if it.series_id is not None and it.series_id not in item_ids:
+            it.series = relations.get(it.series_id)
+        if it.parent_id is not None and it.parent_id not in item_ids:
+            it.parent = relations.get(it.parent_id)
+
+    # 3) series / season 的子项计数（ChildCount）
+    counts: dict[int, int] = {}
+    series_ids_all = [i.id for i in items if i.item_type == "series"]
+    season_ids_all = [i.id for i in items if i.item_type == "season"]
+    if series_ids_all:
+        rows = (
+            db.query(em.MediaItem.series_id, func.count(em.MediaItem.id))
+            .filter(em.MediaItem.series_id.in_(series_ids_all),
+                    em.MediaItem.item_type == "episode")
+            .group_by(em.MediaItem.series_id)
+            .all()
+        )
+        counts.update({sid: n for sid, n in rows})
+    if season_ids_all:
+        rows = (
+            db.query(em.MediaItem.parent_id, func.count(em.MediaItem.id))
+            .filter(em.MediaItem.parent_id.in_(season_ids_all))
+            .group_by(em.MediaItem.parent_id)
+            .all()
+        )
+        counts.update({pid: n for pid, n in rows})
+
+    db.info["_royalbot_prefetch"] = {
+        "umd": umd_map,
+        "counts": counts,
+        "items": {i.id: i for i in items},
+    }
+
+
+def _prefetched(db: Session) -> dict:
+    return db.info.get("_royalbot_prefetch") or {}
+
+
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
               api_key: str = "") -> dict:
     download_ok = _download_ok(db)
-    umd = (
-        db.query(em.UserMediaData)
-        .filter(em.UserMediaData.user_id == user_id, em.UserMediaData.item_id == item.id)
-        .first()
-    )
+    prefetch = _prefetched(db)
+    umd = prefetch.get("umd", {}).get(item.id)
+    if umd is None and item.id not in prefetch.get("items", {}):
+        umd = (
+            db.query(em.UserMediaData)
+            .filter(em.UserMediaData.user_id == user_id, em.UserMediaData.item_id == item.id)
+            .first()
+        )
     dto = {
         "Name": item.name,
         "Id": item.guid,
@@ -240,12 +318,18 @@ def _emby_type(t: str) -> str:
 
 
 def _child_count(item: em.MediaItem, db: Session) -> int | None:
-    if item.item_type == "series":
-        return db.query(em.MediaItem).filter(em.MediaItem.series_id == item.id,
-                                             em.MediaItem.item_type == "episode").count() or None
-    if item.item_type == "season":
-        return db.query(em.MediaItem).filter(em.MediaItem.parent_id == item.id).count() or None
-    return None
+    if item.item_type not in ("series", "season"):
+        return None
+    prefetch = _prefetched(db)
+    counts = prefetch.get("counts", {})
+    if item.id in counts:
+        return counts[item.id] or None
+    return (
+        db.query(em.MediaItem).filter(em.MediaItem.series_id == item.id,
+                                      em.MediaItem.item_type == "episode").count()
+        if item.item_type == "series"
+        else db.query(em.MediaItem).filter(em.MediaItem.parent_id == item.id).count()
+    ) or None
 
 
 def _user_data_dto(umd) -> dict:
@@ -568,6 +652,7 @@ def _empty_items() -> dict:
 
 
 def _query_result(items: list, user: models.WebUser, db: Session, base: str) -> dict:
+    _prefetch_list_data(db, user.id, list(items))
     return {
         "Items": [_item_dto(i, base, user.id, db) for i in items],
         "TotalRecordCount": len(items),
@@ -873,6 +958,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         )
         ranked = rank_items(candidates, search)  # 相关度排序（完全匹配 > 前缀 > 别名 > 模糊）
         page = ranked[start:start + limit]
+        _prefetch_list_data(db, user.id, page)
         return {
             "Items": [_item_dto(i, base, user.id, db) for i in page],
             "TotalRecordCount": len(ranked),
@@ -882,6 +968,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     total = query.count()
     data_query = query.order_by(func.random()) if random_sort else query.order_by(*order_cols)
     items = data_query.offset(start).limit(limit).all()
+    _prefetch_list_data(db, user.id, items)
 
     return {
         "Items": [_item_dto(i, base, user.id, db) for i in items],
@@ -908,6 +995,7 @@ async def get_resume(request: Request, user: models.WebUser = Depends(get_emby_u
         .all()
     )
     base = _base_url(request)
+    _prefetch_list_data(db, user.id, [i for _umd, i in rows])
     return {"Items": [_item_dto(i, base, user.id, db) for _umd, i in rows],
             "TotalRecordCount": len(rows), "StartIndex": 0}
 
@@ -925,6 +1013,7 @@ async def get_latest(request: Request, user: models.WebUser = Depends(get_emby_u
         .all()
     )
     base = _base_url(request)
+    _prefetch_list_data(db, user.id, items)
     result = []
     for item in items:
         dto = _item_dto(item, base, user.id, db)
@@ -1018,6 +1107,7 @@ async def get_seasons(item_id: str, request: Request,
         .all()
     )
     base = _base_url(request)
+    _prefetch_list_data(db, user.id, seasons)
     return {"Items": [_item_dto(s, base, user.id, db) for s in seasons],
             "TotalRecordCount": len(seasons), "StartIndex": 0}
 
@@ -1039,6 +1129,7 @@ async def get_episodes(item_id: str, request: Request,
             query = query.filter(em.MediaItem.parent_id == season.id)
     episodes = query.order_by(em.MediaItem.season_number, em.MediaItem.episode_number).all()
     base = _base_url(request)
+    _prefetch_list_data(db, user.id, episodes)
     return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
             "TotalRecordCount": len(episodes), "StartIndex": 0}
 
@@ -1061,6 +1152,7 @@ async def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_
         .all()
     )
     base = _base_url(request)
+    _prefetch_list_data(db, user.id, episodes)
     return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
             "TotalRecordCount": len(episodes), "StartIndex": 0}
 
@@ -1077,6 +1169,7 @@ async def get_favorites(request: Request, user: models.WebUser = Depends(get_emb
         .all()
     )
     base = _base_url(request)
+    _prefetch_list_data(db, user.id, rows)
     return {"Items": [_item_dto(i, base, user.id, db) for i in rows],
             "TotalRecordCount": len(rows), "StartIndex": 0}
 
@@ -1093,6 +1186,7 @@ async def get_played_items(request: Request, user: models.WebUser = Depends(get_
         .all()
     )
     base = _base_url(request)
+    _prefetch_list_data(db, user.id, rows)
     return {"Items": [_item_dto(i, base, user.id, db) for i in rows],
             "TotalRecordCount": len(rows), "StartIndex": 0}
 
