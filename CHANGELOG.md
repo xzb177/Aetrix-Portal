@@ -2,6 +2,22 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.20.2] - 2026-09-22
+
+### 修复 (Fixed)
+- **停止转码堵塞事件循环**（与 v2.12/v2.13 修的是同一类问题，它是漏网的那一个）：
+  `stop_transcode()` 要 `terminate` 子进程、等它退出（最多 5 秒）、再递归删掉整场播放的分片目录，
+  而「结束自己的播放 / 管理员结束会话 / 停掉全部转码」三条 `async def` 路由直接调它——
+  一次结束播放就能把整个进程按住。现在事件循环上一律走新增的异步变体
+  （`stop_transcode_async` / `stop_transcodes_for_async` / `stop_all_transcodes_async`：
+  阻塞部分 `asyncio.to_thread`，多会话 `asyncio.gather` 并发停），同步版本只留给同步路由与
+  后台维护线程。实测同一份 0.6 秒的等待：同步调用让事件循环出现 **0.61s** 空洞，异步只 **0.01s**。
+- **「结束播放」其实没停掉转码**（实现过程中发现）：转码会话 id 是 `start_transcode` 生成的
+  uuid（只出现在 HLS 播放列表的 `?session=` 上），而这几条路由拿客户端的 `PlaySessionId`
+  （播放会话键，随机 `s…`）当 id 用 —— 键对不上，`pop` 永远拿不到东西，进程只能等维护周期
+  回收。现在按「用户 + 条目 guid」反查（新增 `find_transcodes` / `stop_transcodes_for[_async]`），
+  结束播放真的会释放对应的 ffmpeg 进程与分片目录。
+
 ## [2.20.1] - 2026-09-22
 
 ### 修复 (Fixed)

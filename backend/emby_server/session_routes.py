@@ -38,7 +38,7 @@ from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user
-from backend.emby_server.streaming import stop_transcode
+from backend.emby_server.streaming import stop_transcodes_for
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +141,12 @@ def stop_session_checked(
     if session.user_id != user.id and not _is_staff(user):
         raise HTTPException(status_code=403, detail="只能结束自己的播放会话")
 
+    # 转码会话按「用户 + 条目 guid」反查（播放会话键与转码 uuid 不是一回事，
+    # 旧写法 stop_transcode(session_key) 永远匹配不上）
+    item_guid = emby_api.item_guid_for(db, session.item_id)
     session.ended_at = datetime.now()
     db.commit()
-    stop_transcode(session_key)
+    stop_transcodes_for(session.user_id, item_guid)
     return {"success": True}
 
 

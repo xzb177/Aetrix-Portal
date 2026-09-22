@@ -27,7 +27,7 @@ from backend import models, realms, subscriptions
 from backend.database import get_db, SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
-from backend.emby_server.api import TICKS, SERVER_ID
+from backend.emby_server.api import TICKS, SERVER_ID, item_guid_for
 from backend.emby_server.auth import (
     ensure_emby_credentials,
     get_admin_or_emby_user,
@@ -41,7 +41,12 @@ from backend.emby_server.scanner import (
     normalize_scrape_policy,
     scan_library_sync,
 )
-from backend.emby_server.streaming import stop_all_transcodes, stop_transcode
+# 本文件里这几个路由都是 async def，所以必须用异步变体：同步的 stop_transcode 会
+# terminate 子进程、等它退出（最坏 5 秒）、再递归删分片目录，放在事件循环上等于把全站卡住。
+from backend.emby_server.streaming import (
+    stop_all_transcodes_async,
+    stop_transcodes_for_async,
+)
 from backend.emby_server import facets
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import transfer115
@@ -452,9 +457,12 @@ async def stop_my_session(session_key: str,
     )
     if not session:
         raise HTTPException(status_code=404, detail="播放会话不存在")
+    ended_user_id, ended_item = session.user_id, item_guid_for(db, session.item_id)
     session.ended_at = datetime.now()
     db.commit()
-    stop_transcode(session_key)
+    # 按「用户 + 条目 guid」反查转码会话：播放会话键（PlaySessionId）与转码会话 id（uuid）
+    # 不是同一个东西，旧实现拿前者去 pop 等于什么都没停到（见 streaming.find_transcodes）。
+    await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
     return {"success": True}
 
 
@@ -1024,15 +1032,16 @@ async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(r
         em.PlaybackSession.session_key == session_key
     ).first()
     if session:
+        ended_user_id, ended_item = session.user_id, item_guid_for(db, session.item_id)
         session.ended_at = datetime.now()
         db.commit()
-    stop_transcode(session_key)
+        await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
     return {"success": True}
 
 
 @admin_emby_router.post("/transcodes/stop-all")
 async def admin_stop_all_transcodes(staff: models.WebUser = Depends(require_staff)):
-    count = stop_all_transcodes()
+    count = await stop_all_transcodes_async()
     return {"success": True, "stopped": count}
 
 
