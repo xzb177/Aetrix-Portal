@@ -124,12 +124,18 @@ function fmtDate(s: string): string {
 }
 
 function statusBadge(status: string): string {
-  const map: Record<string, string> = { pending: 'warn', approved: 'ok', completed: 'ok', rejected: 'off' }
+  const map: Record<string, string> = {
+    pending: 'warn', approved: 'ok', completed: 'ok', rejected: 'off', withdrawn: 'off',
+  }
   return map[status] || 'off'
 }
 
 function statusLabel(status: string): string {
-  const map: Record<string, string> = { pending: '待审核', approved: '已批准', completed: '已上架', rejected: '已拒绝' }
+  const map: Record<string, string> = {
+    pending: '待审核', approved: '已批准', completed: '已上架', rejected: '已拒绝',
+    // 用户自己撤掉的：默认不进待办清单，只能靠状态筛选查（下面有这一项）
+    withdrawn: '已撤回',
+  }
   return map[status] || status
 }
 </script>
@@ -151,6 +157,8 @@ function statusLabel(status: string): string {
           <el-option label="已批准" value="approved" />
           <el-option label="已上架" value="completed" />
           <el-option label="已拒绝" value="rejected" />
+          <!-- 用户自己撤掉的默认不在待办里（额度仍按提交数算），需要审计时从这里查 -->
+          <el-option label="已撤回" value="withdrawn" />
         </el-select>
         <el-button @click="load"><RefreshCw :size="14" /></el-button>
       </div>

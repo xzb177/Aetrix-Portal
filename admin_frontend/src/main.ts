@@ -16,6 +16,16 @@ import './styles/responsive.css'
 
 const app = createApp(App)
 
+// 组件里 `await ElMessageBox.confirm(...)` / `prompt(...)` 在用户点「取消」「关闭」时
+// 会以 'cancel' / 'close' 拒绝——这是正常交互，不是一个错误。Element Plus 没有别的
+// 回调口子，所以统一在这里把它们咽掉：不写这一段，管理员每取消一次对话框，控制台
+// 就会多一条 "Unhandled error during execution of native event handler"，
+// 真正的异常也就淹在里面了。
+app.config.errorHandler = (err) => {
+  if (err === 'cancel' || err === 'close') return
+  console.error(err)
+}
+
 app.use(createPinia())
 app.use(router)
 app.use(ElementPlus)
