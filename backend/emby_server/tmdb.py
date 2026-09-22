@@ -72,10 +72,47 @@ class TmdbClient:
         self.api_key = self.api_keys[0] if self.api_keys else ""
         self._key_index = 0
         self.session = None
-        if self.api_key:
+        self._session_proxy_sig: Optional[str] = None
+        self._session_lock = threading.Lock()
+        self._ensure_session()
+
+    def _ensure_session(self) -> None:
+        """按需创建 / 重建 HTTP 会话——让后台改完「网络代理」立刻对刮削生效
+
+        httpx 只在**构造 client 时**读一遍代理环境变量（``trust_env``），建好之后改环境不再
+        有效；而刮削客户端是进程级单例、活得比一次扫描久得多。不重建的话，管理员填完代理
+        依然会看到「TMDB 连不上」，只能靠重启进程解决。
+
+        这里不依赖「保存代理时通知谁」，而是每次请求前比一次代理指纹：进程内任何路径改了
+        代理（``apply`` / ``apply_all``，将来别处也一样）都会被察觉，指纹没变时只是拼一次
+        字符串，不会每次请求都换连接。
+        """
+        if not self.api_keys:
+            return
+        from backend.integrations import proxy
+
+        sig = proxy.signature()
+        with self._session_lock:
+            if self.session is not None:
+                if self._session_proxy_sig is None:
+                    # 会话不是这里建的（密钥/会话后来被注入，测试也这么接）：只补记指纹，
+                    # 不在别人刚换上的会话上动手。
+                    self._session_proxy_sig = sig
+                    return
+                if sig == self._session_proxy_sig:
+                    return
             import httpx
 
-            self.session = httpx.Client(timeout=8)
+            stale, self.session = self.session, httpx.Client(timeout=8)
+            self._session_proxy_sig = sig
+        if stale is not None:
+            # 可能还有别的扫描线程正拿旧会话取数据：它会拿到一次异常，_get 按「一次失败的
+            # 网络请求」处理（条目这轮不刮削，下轮再来）。重建只发生在管理员改代理时。
+            try:
+                stale.close()
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info("TMDB 客户端已按新的代理设置重建连接")
 
     def _rotate(self) -> bool:
         """轮到下一个密钥，全部用过则返回 False"""
@@ -88,6 +125,7 @@ class TmdbClient:
 
     def _get(self, path: str, params: dict) -> Optional[dict]:
         """带密钥轮询的 GET：配额类错误自动换 key 重试"""
+        self._ensure_session()
         if not self.session:
             return None
         tried = 0
@@ -134,6 +172,7 @@ class TmdbClient:
             TmdbClient._cache[key] = (datetime.now(), value)
 
     def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
+        self._ensure_session()
         if not self.session:
             return None
         endpoint = "tv" if kind == "series" else "movie"

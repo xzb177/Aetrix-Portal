@@ -16,7 +16,10 @@ import json
 import os
 import random
 import smtplib
+import socketserver
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
@@ -784,6 +787,151 @@ db.close()
 check("未启用时启动落地不会自己装上代理",
       all(os.environ.get(k) is None for k in proxy_cap.ENV_KEYS),
       str([k for k in proxy_cap.ENV_KEYS if os.environ.get(k)]))
+
+
+# ==================== 11. 长生命周期客户端跟随代理变化（TMDB 刮削） ====================
+
+# httpx 只在**构造 client 时**读一遍代理环境变量，而刮削客户端是进程级单例、跨很多次扫描活着：
+# 后台改完代理必须立刻生效，不能让管理员靠重启进程解决（「代理填了但 TMDB 还是连不上」）。
+restore_httpx()   # 本节要真实的连接池才能看见代理，前面用的假 httpx 在此收工
+from backend.emby_server import tmdb as tmdb_mod  # noqa: E402 — 放在假 httpx 之后才安全
+
+
+def _session_proxies(session) -> set:
+    """读出一个 httpx.Client 实际生效的代理地址（``scheme://host:port`` 集合）
+
+    httpx 没有公开这个信息（代理在构造时就织进了 transport），测试里读内部结构：
+    拿不到就给空集合，由断言去暴露。
+    """
+    urls = set()
+    for transport in (getattr(session, "_mounts", None) or {}).values():
+        url = getattr(getattr(transport, "_pool", None), "_proxy_url", None)
+        if not url:
+            continue
+        dec = lambda v: v.decode() if isinstance(v, bytes) else str(v)   # noqa: E731
+        port = getattr(url, "port", None)
+        urls.add(f"{dec(url.scheme)}://{dec(url.host)}" + (f":{port}" if port else ""))
+    return urls
+
+
+class _FakeProxyHandler(socketserver.BaseRequestHandler):
+    """假代理：只把请求行记下来，然后回 502（够用来证明请求真的走了代理出口）"""
+
+    def handle(self):
+        self.request.settimeout(5)
+        data = b""
+        try:
+            while b"\r\n\r\n" not in data and len(data) < 8192:
+                chunk = self.request.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except OSError:
+            return
+        if data:
+            _FakeProxy.seen.append(data.split(b"\r\n")[0].decode("latin-1"))
+        try:
+            self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+        except OSError:
+            pass
+
+
+class _FakeProxy(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    seen: list = []
+
+
+_TMDB_ENV_BACKUP = {k: os.environ.get(k) for k in ("TMDB_API_KEY", "TMDB_API_KEYS")}
+
+# 直连状态：建好的会话不带代理，且「代理没变」时不会反复重建连接池
+client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {"proxy_enabled": False}})
+os.environ.pop("TMDB_API_KEYS", None)
+os.environ["TMDB_API_KEY"] = "smoke-tmdb-key"
+tmdb = tmdb_mod.TmdbClient()
+check("刮削客户端记下了建会话时的代理指纹",
+      tmdb.session is not None and tmdb._session_proxy_sig == proxy_cap.signature(),
+      str(tmdb._session_proxy_sig))
+check("直连时刮削会话不带代理", _session_proxies(tmdb.session) == set(), str(_session_proxies(tmdb.session)))
+
+first_session = tmdb.session
+tmdb._ensure_session()
+check("代理没变化时不重建连接（不折腾连接池）", tmdb.session is first_session)
+
+proxy_server = _FakeProxy(("127.0.0.1", 0), _FakeProxyHandler)
+proxy_port = proxy_server.server_address[1]
+threading.Thread(target=proxy_server.serve_forever, daemon=True).start()
+
+# 管理员保存代理：下一次请求前必须重建会话，并且新的连接池真的指向新代理
+client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+    "proxy_enabled": True, "proxy_scheme": "http", "proxy_host": "127.0.0.1",
+    "proxy_port": str(proxy_port), "proxy_username": "", "proxy_password": "",
+    "proxy_no_proxy": "localhost,127.0.0.1",
+}})
+tmdb._ensure_session()
+check("保存代理后刮削客户端重建了会话", tmdb.session is not first_session)
+check("新会话真的指向新代理",
+      _session_proxies(tmdb.session) == {f"http://127.0.0.1:{proxy_port}"},
+      str(_session_proxies(tmdb.session)))
+check("指纹同步到新代理", tmdb._session_proxy_sig == proxy_cap.signature())
+
+# 真发一次请求：命中假代理的 CONNECT 就是「出口真的换了」的硬证据
+_FakeProxy.seen.clear()
+check("走代理后请求失败也只当作一次失败的网络请求（不抛异常）",
+      tmdb._get("/configuration", {}) is None)
+time.sleep(0.3)
+check("刮削请求真的发到了代理（CONNECT api.themoviedb.org:443）",
+      any(line.startswith("CONNECT api.themoviedb.org:443") for line in _FakeProxy.seen),
+      str(_FakeProxy.seen[:3]))
+proxy_server.shutdown()
+proxy_server.server_close()
+
+# 启动落地路径（apply_all）改的代理同样要能被察觉：那条路径不经过保存接口
+client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+           json={"values": {"proxy_port": "18081"}})
+before_apply = tmdb.session
+db = SessionLocal()
+integrations.apply_all(db)
+db.close()
+tmdb._ensure_session()
+check("apply_all 换代理后同样重建会话", tmdb.session is not before_apply)
+check("重建后的会话跟随 apply_all 写的代理",
+      _session_proxies(tmdb.session) == {"http://127.0.0.1:18081"},
+      str(_session_proxies(tmdb.session)))
+
+# 关掉代理：下一次请求前回到直连（不能一直挂着旧代理）
+client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+           json={"values": {"proxy_enabled": False}})
+tmdb._ensure_session()
+check("关闭代理后刮削会话回到直连", _session_proxies(tmdb.session) == set(),
+      str(_session_proxies(tmdb.session)))
+
+# 进程级单例（扫描器实际用的就是它，import 时就建好了）——配了密钥的部署里它同样要跟随代理
+singleton = tmdb_mod.tmdb_client
+if singleton.session is None:
+    print("SKIP  进程级单例跟随代理 — 本进程启动时未配 TMDB 密钥")
+else:
+    client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+        "proxy_enabled": True, "proxy_scheme": "http", "proxy_host": "127.0.0.1",
+        "proxy_port": "18082", "proxy_username": "", "proxy_password": "",
+    }})
+    stale_session = singleton.session
+    singleton._ensure_session()
+    check("进程级单例也跟随代理重建会话", singleton.session is not stale_session)
+    check("单例的新会话指向新代理",
+          _session_proxies(singleton.session) == {"http://127.0.0.1:18082"},
+          str(_session_proxies(singleton.session)))
+
+# 没有密钥的客户端不建会话（未配置时刮削静默跳过，不能白建连接池）
+os.environ.pop("TMDB_API_KEY", None)
+os.environ.pop("TMDB_API_KEYS", None)
+keyless = tmdb_mod.TmdbClient()
+check("未配置 TMDB 密钥时不建会话", keyless.session is None and keyless._ensure_session() is None)
+for key, value in _TMDB_ENV_BACKUP.items():
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
 
 
 # 收尾：把测试期间改的环境变量与配置清干净
