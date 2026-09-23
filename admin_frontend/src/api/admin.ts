@@ -9,6 +9,7 @@ import type {
   DeviceStats,
   LoginLogsResponse,
   EmbyLibrary,
+  EmbyScanRun,
   EmbySessionRow,
   Pan115Account,
   Pan115DirEntry,
@@ -481,6 +482,10 @@ export const runRepairQueue = () =>
   post<{ success: boolean; libraries: number[] }>(`${E}/libraries/repair/run`)
 
 export const scanLibrary = (id: number) => post<{ success: boolean }>(`${E}/libraries/${id}/scan`)
+
+/** 某个媒体库最近的扫描流水（新的在前）；keep = 后端每库保留条数 */
+export const fetchLibraryScans = (id: number, limit = 20) =>
+  get<{ library_id: number; keep: number; runs: EmbyScanRun[] }>(`${E}/libraries/${id}/scans?limit=${limit}`)
 
 export const deleteLibrary = (id: number) => del<{ success: boolean }>(`${E}/libraries/${id}`)
 

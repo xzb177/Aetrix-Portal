@@ -35,12 +35,14 @@ from backend.emby_server.auth import (
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.scanner import (
     PLATFORM_LABELS,
+    SCAN_RUN_KEEP,
     LibrarySnapshot,
     ScanInProgress,
     is_scan_active,
     normalize_scrape_policy,
     scan_library_sync,
     scan_result_payload,
+    scan_runs_payload,
 )
 # 本文件里这几个路由都是 async def，所以必须用异步变体：同步的 stop_transcode 会
 # terminate 子进程、等它退出（最坏 5 秒）、再递归删分片目录，放在事件循环上等于把全站卡住。
@@ -801,6 +803,24 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
     return {"success": True, "items_removed": removed}
 
 
+@admin_emby_router.get("/libraries/{lib_id}/scans")
+def list_library_scans(lib_id: int, limit: int = 20,
+                       staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+    """某个媒体库最近的扫描流水（新的在前）
+
+    只看「最近一次」分不出「这个库每轮都失败」和「只是最近一轮失败」——
+    流水里带状态、触发方、耗时与同一份统计，失败原因也在。
+    """
+    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+    if not lib:
+        raise HTTPException(status_code=404, detail="媒体库不存在")
+    return {
+        "library_id": lib_id,
+        "keep": SCAN_RUN_KEEP,
+        "runs": scan_runs_payload(db, lib_id, limit=limit),
+    }
+
+
 @admin_emby_router.post("/libraries/{lib_id}/scan")
 async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
@@ -837,7 +857,7 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
         try:
             scan_lib = scan_db.query(em.Library).filter(em.Library.id == lib_id_value).first()
             if scan_lib:
-                scan_library_sync(scan_db, scan_lib, snapshot)
+                scan_library_sync(scan_db, scan_lib, snapshot, trigger="manual")
         except ScanInProgress:
             pass  # 已有任务在跑：重复请求直接被拒
         except Exception:  # noqa: BLE001 — 后台线程的异常不能只留在 stderr，否则“扫失败了”无人知晓
@@ -962,7 +982,8 @@ def run_repair_queue(staff: models.WebUser = Depends(require_staff), db: Session
                 if not library:
                     continue
                 try:
-                    scan_library_sync(scan_db, library, snapshot)
+                    # 修复队列靠重扫来补图：流水里能区分出「不是有人在点扫描」
+                    scan_library_sync(scan_db, library, snapshot, trigger="repair")
                 except ScanInProgress:
                     continue
         finally:

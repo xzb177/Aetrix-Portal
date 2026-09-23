@@ -420,7 +420,8 @@ def start_local_scan(db: Session, lib) -> dict:
         try:
             target = scan_db.query(em.Library).filter(em.Library.id == library_id).first()
             if target:
-                scan_library_sync(scan_db, target, snapshot)
+                # 这个库归本节点：面板点「扫描」时会转发到这台机器，流水里标成 node
+                scan_library_sync(scan_db, target, snapshot, trigger="node")
         except ScanInProgress:
             pass
         except Exception:  # noqa: BLE001 — 后台线程的异常要落日志，否则“扫失败”无人知晓

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""最近一次扫描结果可查询（v2.22.0）冒烟测试
+"""扫描结果与流水可查询（v2.22.0 / v2.23.0）冒烟测试
 
 扫描统计以前只在**返回值**与日志里：管理端刷新一下就没了，「上一轮到底扫到什么」只能去
-服务器日志翻。现在一轮扫描结束会把结果写回媒体库（`scan_status` / `scan_stats` / `scan_error`），
-并由 `GET /api/admin/emby/libraries` 一并带回（`last_scan`）。
+服务器日志翻。现在两层落库：
+
+- **最近一次**写回媒体库（`scan_status` / `scan_stats` / `scan_error`），由
+  `GET /api/admin/emby/libraries` 带回（`last_scan`）；
+- **最近若干轮**记进 `emby_scan_runs` 流水（含触发方），由
+  `GET /api/admin/emby/libraries/{id}/scans` 带回。
 
 这条测试钉的是**可查且诚实**：
 
@@ -14,7 +18,10 @@
 5. 来源恢复 → 回到 success、补上那一轮被跳过的清理、error 清空；
 6. 扫描抛异常 → failed + 原因落库，互斥与 is_scanning 都要复位（否则这个库再也扫不动）；
 7. 扫描中 → running（`is_scanning` 为真），收尾后复位；
-8. 虚拟库（没有自己的目录）算成功；**完全没配来源**算 partial（不是「一切正常」）。
+8. 虚拟库（没有自己的目录）算成功；**完全没配来源**算 partial（不是「一切正常」）；
+9. 流水：每轮一条（新的在前）、带触发方与耗时、失败/部分失败的记录带原因、
+   每库只留最近 N 条、`EMBY_SCAN_HISTORY=0` 可关闭、媒体库删除后由维护周期回收、
+   「最近一次」与最新一条流水口径一致。
 
 用法：python scripts/smoke_test_scan_result.py
 """
@@ -294,7 +301,7 @@ check("重扫后 last_scan 不再残留上一轮的失败",
 print("\n=== 7. 扫描中：running ===")
 with Session() as db:
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
-    sc.begin_scan(db, lib)
+    open_run = sc.begin_scan(db, lib)
 pending = snapshot()
 check("扫描中：状态 running 且 is_scanning 落库",
       pending["status"] == "running" and pending["is_scanning"] is True,
@@ -303,7 +310,7 @@ check("扫描中：last_scan 报 running（前端据此显示「未完成」）"
       pending["payload"]["status"] == "running", str(pending["payload"]))
 with Session() as db:
     lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
-    sc.finish_scan(db, lib, {"added": 0, "updated": 0, "removed": 0})
+    sc.finish_scan(db, lib, {"added": 0, "updated": 0, "removed": 0}, open_run)
 done = snapshot()
 check("收尾后：状态 success 且 is_scanning 复位",
       done["status"] == "success" and done["is_scanning"] is False,
@@ -339,6 +346,190 @@ check("完全没配来源：算 partial（清理被跳过，不能报「一切�
       epay["status"] == "partial" and epay["removal_skipped"] is True, str(epay))
 check("没有来源时的原因说清楚（不是含糊的「失败」）",
       "来源" in (epay["error"] or ""), repr(epay["error"]))
+
+# ==================== 9. 扫描流水（最近若干轮） ====================
+print("\n=== 9. 扫描流水 ===")
+
+
+def runs(limit: int = 50) -> list:
+    with Session() as db:
+        return sc.scan_runs_payload(db, lib_id, limit=limit)
+
+
+history = runs()
+check("每一轮扫描都留下一条流水", len(history) >= 6, f"{len(history)} 条")
+check("流水按时间倒序（最新在前）",
+      [r["id"] for r in history] == sorted((r["id"] for r in history), reverse=True),
+      str([r["id"] for r in history])[:80])
+check("每条流水都有开始时间，已结束的有结束时间",
+      all(r["started_at"] for r in history)
+      and all(r["finished_at"] for r in history if r["status"] != "running"),
+      str(history[0]))
+check("流水里的失败轮次带原因",
+      any(r["status"] == "failed" and "模拟扫描崩溃" in (r["error"] or "") for r in history),
+      str([(r["status"], r["error"]) for r in history if r["status"] == "failed"]))
+check("流水里的部分失败轮次带来源",
+      any(r["status"] == "partial" and r["failed_roots"] for r in history),
+      str([r["status"] for r in history]))
+check("流水记录了耗时（跑过的那几轮都有）",
+      all(isinstance(r["duration_ms"], int) and r["duration_ms"] >= 0
+          for r in history if r["status"] == "success"),
+      str([r["duration_ms"] for r in history[:3]]))
+
+newest = history[0]
+latest = snapshot()
+check("「最近一次」与最新一条流水口径一致（状态 / 新增 / 删除）",
+      newest["status"] == latest["payload"]["status"]
+      and newest["added"] == latest["payload"]["added"]
+      and newest["removed"] == latest["payload"]["removed"],
+      f"流水 {newest['status']}/{newest['added']} 最近一次 {latest['payload']['status']}/{latest['payload']['added']}")
+
+check("limit 生效（只要最近 2 条）", len(runs(limit=2)) == 2, f"{len(runs(limit=2))}")
+with Session() as db:
+    never = em.Library(guid="n" * 32, name="从未扫描过的库", collection_type="movies",
+                       paths=lib_dir)
+    db.add(never)
+    db.commit()
+    never_id = never.id
+with Session() as db:
+    empty_runs = sc.scan_runs_payload(db, never_id, limit=5)
+check("从未扫描过的库：流水是空列表（不是报错，也不是占位结构）", empty_runs == [], str(empty_runs))
+
+# 触发方：面板 / 客户端 / 节点 / 修复队列各记各的，未知值收敛成 manual
+for trig, expect in (("client", "client"), ("node", "node"), ("repair", "repair"),
+                     ("pinky", "manual"), (None, "manual")):
+    with Session() as db:
+        row = db.query(em.Library).filter(em.Library.id == lib_id).first()
+        sc.scan_library_sync(db, row, sc.LibrarySnapshot.of(row), trig)
+    check(f"触发方 {trig!r} 记录为 {expect}", runs(1)[0]["trigger"] == expect,
+          f"记录成 {runs(1)[0]['trigger']!r}")
+check("触发方枚举收敛（写错也不丢记录）",
+      (sc.normalize_scan_trigger(""), sc.normalize_scan_trigger("MANUAL"),
+       sc.normalize_scan_trigger("nonsense"), sc.normalize_scan_trigger(None)) ==
+      ("manual", "manual", "manual", "manual"),
+      str([sc.normalize_scan_trigger(v) for v in ("", "MANUAL", "nonsense", None)]))
+
+# 每库上限：超出就按库回收最旧的行
+before_keep = sc.SCAN_RUN_KEEP
+sc.SCAN_RUN_KEEP = 3
+try:
+    with Session() as db:
+        row = db.query(em.Library).filter(em.Library.id == lib_id).first()
+        sc.scan_library_sync(db, row, sc.LibrarySnapshot.of(row))
+    capped = runs(50)
+    check("每库只留最近 N 条流水（旧行就地回收）", len(capped) == 3,
+          f"上限 3 → 实际 {len(capped)} 条")
+    check("回收的是旧行（剩下的 3 条是最近的）",
+          capped[0]["id"] > capped[-1]["id"] and all(r["finished_at"] for r in capped),
+          str([r["id"] for r in capped]))
+finally:
+    sc.SCAN_RUN_KEEP = before_keep
+
+# EMBY_SCAN_HISTORY=0：不记流水，但扫描本身照常（结果仍写回媒体库）
+sc.SCAN_RUN_KEEP = 0
+try:
+    with Session() as db:
+        row = db.query(em.Library).filter(em.Library.id == lib_id).first()
+        stats_off = sc.scan_library_sync(db, row, sc.LibrarySnapshot.of(row))
+    check("EMBY_SCAN_HISTORY=0：不记流水", len(runs(50)) == 3, f"{len(runs(50))} 条")
+    check("EMBY_SCAN_HISTORY=0：扫描本身照常，结果仍写回媒体库",
+          stats_off["added"] == 0 and snapshot()["status"] == "success",
+          f"added={stats_off['added']} status={snapshot()['status']}")
+finally:
+    sc.SCAN_RUN_KEEP = before_keep
+
+# 进程被强杀：标志与流水都要收尾（否则刷新页面永远显示「扫描中」）
+from backend.emby_server import maintenance as maint  # noqa: E402
+
+with Session() as db:
+    crashed = em.Library(guid="c" * 32, name="扫描中被强杀的库", collection_type="movies",
+                         paths=lib_dir)
+    db.add(crashed)
+    db.commit()
+    crashed_id = crashed.id
+with Session() as db:
+    row = db.query(em.Library).filter(em.Library.id == crashed_id).first()
+    open_run_crash = sc.begin_scan(db, row)
+# 把开始时间推回 7 小时前：阈值（SCAN_STALE_HOURS，默认 6）之外才算崩溃残留
+from datetime import datetime, timedelta  # noqa: E402
+
+with Session() as db:
+    old = datetime.now() - timedelta(hours=7)
+    db.query(em.Library).filter(em.Library.id == crashed_id).update(
+        {"updated_at": old, "last_scan_at": old}, synchronize_session=False)
+    db.query(em.ScanRun).filter(em.ScanRun.id == open_run_crash).update(
+        {"started_at": old}, synchronize_session=False)
+    db.commit()
+with Session() as db:
+    closed = maint.close_stale_scan_runs(db)
+    reset = maint.reset_stale_scan_flags(db)
+with Session() as db:
+    crash_lib = db.query(em.Library).filter(em.Library.id == crashed_id).first()
+    crash_run = db.query(em.ScanRun).filter(em.ScanRun.id == open_run_crash).first()
+check("崩溃残留：is_scanning 复位、最近一次状态收尾成 failed",
+      reset >= 1 and crash_lib.is_scanning is False and crash_lib.scan_status == "failed",
+      f"reset={reset} is_scanning={crash_lib.is_scanning} status={crash_lib.scan_status}")
+check("崩溃残留：原因写明是进程重启（不是含糊的“失败”）",
+      "进程重启" in (crash_lib.scan_error or ""), repr(crash_lib.scan_error))
+check("崩溃残留：流水里那条「还在跑」被收尾成 failed 且有结束时间",
+      closed >= 1 and crash_run.status == "failed" and crash_run.finished_at is not None,
+      f"closed={closed} status={crash_run.status} finished={crash_run.finished_at}")
+# 阈值内的「正在跑」不能动：多机部署时另一个节点可能正在扫这个库
+with Session() as db:
+    peer = em.Library(guid="g" * 32, name="另一台节点正在扫的库", collection_type="movies",
+                      paths=lib_dir)
+    db.add(peer)
+    db.commit()
+    peer_id = peer.id
+with Session() as db:
+    row = db.query(em.Library).filter(em.Library.id == peer_id).first()
+    peer_run = sc.begin_scan(db, row)
+with Session() as db:
+    kept = maint.close_stale_scan_runs(db)
+with Session() as db:
+    peer_row = db.query(em.Library).filter(em.Library.id == peer_id).first()
+    peer_run_row = db.query(em.ScanRun).filter(em.ScanRun.id == peer_run).first()
+check("阈值内（刚开跑/别的节点正在扫）不误判",
+      kept == 0 and peer_run_row.status == "running" and peer_row.is_scanning is True,
+      f"closed={kept} status={peer_run_row.status} is_scanning={peer_row.is_scanning}")
+with Session() as db:  # 收尾：别给后面的断言留一条永久 running
+    row = db.query(em.Library).filter(em.Library.id == peer_id).first()
+    sc.fail_scan(db, row, RuntimeError("清理测试残留"), peer_run)
+
+# 媒体库删除后由维护周期回收（流水不能用外键挡住删库）
+with Session() as db:
+    fresh = em.Library(guid="h" * 32, name="建完就删的库", collection_type="movies",
+                       paths=lib_dir)
+    db.add(fresh)
+    db.commit()
+    gone_id = fresh.id
+with Session() as db:
+    row = db.query(em.Library).filter(em.Library.id == gone_id).first()
+    sc.scan_library_sync(db, row, sc.LibrarySnapshot.of(row))
+with Session() as db:
+    before_prune = db.query(em.ScanRun).filter(em.ScanRun.library_id == gone_id).count()
+with Session() as db:
+    db.query(em.Library).filter(em.Library.id == gone_id).delete(synchronize_session=False)
+    db.commit()
+with Session() as db:
+    pruned = maint.prune_scan_runs(db)
+with Session() as db:
+    after_prune = db.query(em.ScanRun).filter(em.ScanRun.library_id == gone_id).count()
+check("媒体库删除后流水被维护周期回收",
+      before_prune == 1 and pruned >= 1 and after_prune == 0,
+      f"删前 {before_prune} 条 → 回收 {pruned} → 剩 {after_prune} 条")
+check("其他库的流水不受影响",
+      all(r["status"] for r in runs(50)) and len(runs(50)) >= 3, f"{len(runs(50))} 条")
+
+# 接口形态：字段齐全（管理端抽屉直接用）
+with Session() as db:
+    payload = emby_portal.list_library_scans(lib_id, limit=5, staff=None, db=db)
+check("接口返回 library_id / keep / runs",
+      set(payload) == {"library_id", "keep", "runs"} and payload["library_id"] == lib_id,
+      str(sorted(payload)))
+check("接口的 runs 与 scanner 口径一致、带上限",
+      payload["runs"] == runs(5) and payload["keep"] == sc.SCAN_RUN_KEEP,
+      f"keep={payload['keep']}")
 
 # ==================== 汇总 ====================
 print()

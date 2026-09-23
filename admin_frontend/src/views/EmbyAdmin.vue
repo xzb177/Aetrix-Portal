@@ -12,11 +12,12 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, FolderPlus, RefreshCw, ScanSearch, Square, Wand2 } from 'lucide-vue-next'
+import { Delete, FolderPlus, History, RefreshCw, ScanSearch, Square, Wand2 } from 'lucide-vue-next'
 import {
   createLibrary,
   deleteLibrary,
   fetchLibraries,
+  fetchLibraryScans,
   fetchMounts,
   fetchPan115Accounts,
   fetchRepairQueue,
@@ -29,7 +30,16 @@ import {
   stopSession,
   updateLibrary,
 } from '@/api/admin'
-import type { EmbyLibrary, EmbyScanResult, EmbySessionRow, Pan115Account, RemoteServerRow, StorageMount } from '@/types'
+import type {
+  EmbyLibrary,
+  EmbyScanResult,
+  EmbyScanRun,
+  EmbyScanStatus,
+  EmbySessionRow,
+  Pan115Account,
+  RemoteServerRow,
+  StorageMount,
+} from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -44,6 +54,13 @@ const nodes = ref<RemoteServerRow[]>([])
 const loading = ref(false)
 const repairCount = ref(0)
 const virtualLoading = ref(false)
+
+// 扫描流水（最近若干轮）：抽屉里看「是不是每轮都在失败」
+const scanDrawer = ref(false)
+const scanLoading = ref(false)
+const scanTarget = ref<EmbyLibrary | null>(null)
+const scanRuns = ref<EmbyScanRun[]>([])
+const scanKeep = ref(0)
 
 /** 归属服选项：默认服 + 已建的其他服 */
 const realmOptions = computed(() => realm.realms)
@@ -265,6 +282,58 @@ function scanError(l: EmbyLibrary): string {
   return s.error || (s.failed_roots || []).join('；')
 }
 
+const SCAN_STATUS_META: Record<EmbyScanStatus, { text: string; cls: string }> = {
+  running: { text: '进行中', cls: 'scanning' },
+  success: { text: '正常', cls: 'ok' },
+  partial: { text: '来源不完整', cls: 'warn' },
+  failed: { text: '失败', cls: 'danger' },
+}
+
+const SCAN_TRIGGER_LABELS: Record<string, string> = {
+  manual: '面板',
+  client: '客户端',
+  node: '归属节点',
+  repair: '修复队列',
+}
+
+function statusMeta(status: EmbyScanStatus): { text: string; cls: string } {
+  return SCAN_STATUS_META[status] || { text: status, cls: 'muted' }
+}
+
+function triggerLabel(trigger: string | null): string {
+  return trigger ? SCAN_TRIGGER_LABELS[trigger] || trigger : '—'
+}
+
+/** 流水里一轮的增量摘要（与卡片上的口径一致，失败时只显示原因） */
+function runSummary(r: EmbyScanRun): string {
+  return [`+${r.added}`, `~${r.updated}`, `-${r.removed}`].join(' / ')
+}
+
+const scanColumns: DataColumn[] = [
+  { key: 'started_at', label: '开始', width: 140, mobile: 'title' },
+  { key: 'status', label: '结果', width: 110 },
+  { key: 'trigger', label: '触发', width: 90 },
+  { key: 'summary', label: '新增/更新/删除', width: 150 },
+  { key: 'duration', label: '耗时', width: 90 },
+  { key: 'error', label: '原因', minWidth: 180 },
+]
+
+async function openScans(l: EmbyLibrary) {
+  scanTarget.value = l
+  scanDrawer.value = true
+  scanLoading.value = true
+  scanRuns.value = []
+  try {
+    const res = await fetchLibraryScans(l.id)
+    scanRuns.value = res.runs
+    scanKeep.value = res.keep
+  } catch {
+    ElMessage.error('读取扫描记录失败')
+  } finally {
+    scanLoading.value = false
+  }
+}
+
 function progress(pos: number, dur: number): string {
   if (!dur) return '0%'
   return Math.min(100, Math.round((pos / dur) * 100)) + '%'
@@ -405,6 +474,9 @@ function typeLabel(t: string): string {
             <el-button size="small" type="primary" plain @click="scan(l)">
               <ScanSearch :size="13" style="margin-right: 3px" />扫描
             </el-button>
+            <el-button size="small" plain @click="openScans(l)">
+              <History :size="13" style="margin-right: 3px" />记录
+            </el-button>
             <el-button size="small" type="danger" plain @click="removeLib(l)">
               <Delete :size="13" style="margin-right: 3px" />删除
             </el-button>
@@ -528,6 +600,45 @@ function typeLabel(t: string): string {
         <el-button type="primary" @click="submitCreate">创建</el-button>
       </template>
     </el-dialog>
+
+    <!-- 扫描记录：最近若干轮（每轮的状态 / 触发方 / 增量 / 耗时 / 原因） -->
+    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="620px">
+      <p class="drawer-hint">
+        每轮扫描一行，最近的在最上面（每库最多保留 {{ scanKeep }} 条）。
+        「每轮都失败」和「只是最近一轮失败」是两件事，这里能直接看出来。
+      </p>
+      <DataTable
+        :rows="scanRuns"
+        :columns="scanColumns"
+        :loading="scanLoading"
+        empty="还没有扫描记录"
+        row-key="id"
+      >
+        <template #cell-started_at="{ row }">{{ fmtDate(row.started_at) }}</template>
+
+        <template #cell-status="{ row }">
+          <span class="mini-badge" :class="statusMeta(row.status).cls">{{ statusMeta(row.status).text }}</span>
+        </template>
+
+        <template #cell-trigger="{ row }">{{ triggerLabel(row.trigger) }}</template>
+
+        <template #cell-summary="{ row }">
+          <span class="mono">{{ runSummary(row) }}</span>
+        </template>
+
+        <template #cell-duration="{ row }">
+          {{ row.duration_ms != null ? fmtDuration(row.duration_ms) : '—' }}
+        </template>
+
+        <template #cell-error="{ row }">
+          <span v-if="row.error" class="scan-error" :title="row.error">{{ row.error }}</span>
+          <span v-else-if="row.failed_roots.length" class="scan-error" :title="row.failed_roots.join('；')">
+            {{ row.failed_roots.join('；') }}
+          </span>
+          <span v-else>—</span>
+        </template>
+      </DataTable>
+    </el-drawer>
   </div>
 </template>
 
@@ -568,6 +679,8 @@ function typeLabel(t: string): string {
   padding-top: 12px;
   border-top: 1px solid var(--border-subtle);
 }
+
+.drawer-hint { margin: 0 0 12px; font-size: var(--font-size-xs); color: var(--text-tertiary); }
 
 /* 最近一次扫描结果：摘要一行 +（失败时）原因一行 */
 .lib-scan { display: flex; flex-direction: column; gap: 3px; }

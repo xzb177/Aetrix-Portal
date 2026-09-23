@@ -251,7 +251,8 @@ tick = maint.janitor_tick()
 check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     "transcode_orphans", "subtitle_cache_pruned",
                     "item_facets_backfilled", "item_facets_orphans",
-                    "scan_dir_states_pruned", "images_pruned", "images_freed_bytes",
+                    "scan_dir_states_pruned", "scan_runs_pruned",
+                    "images_pruned", "images_freed_bytes",
                     "ai_usage_pruned"},
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()

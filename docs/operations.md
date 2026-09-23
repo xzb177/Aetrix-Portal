@@ -283,6 +283,33 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 - `failed`：扫描中途抛异常（`error` 里是异常类型与消息）。这种失败不会堵住后面的扫描：
   进程内互斥与 `is_scanning` 都会复位，直接再点一次「扫描」即可。
 
+只看「最近一次」分不出「**这个库每轮都失败**」和「只是最近一轮失败」，所以后台媒体库卡片上还有
+一个「记录」按钮，列出最近若干轮（`GET /api/admin/emby/libraries/{id}/scans`，每库最多保留
+`EMBY_SCAN_HISTORY` 条，默认 20）：
+
+```jsonc
+{
+  "library_id": 3,
+  "keep": 20,
+  "runs": [
+    {"id": 118, "status": "partial", "trigger": "client",
+     "started_at": "2026-09-23T03:00:12", "finished_at": "2026-09-23T03:00:44",
+     "duration_ms": 32150, "added": 0, "updated": 0, "removed": 0,
+     "removal_skipped": true, "failed_roots": ["/mnt/media: 目录不存在或不可读"],
+     "error": "/mnt/media: 目录不存在或不可读"},
+    {"id": 117, "status": "success", "trigger": "node", "duration_ms": 3120, "added": 0},
+    {"id": 116, "status": "failed", "trigger": "manual", "duration_ms": 812,
+     "error": "TimeoutError: TMDB …"}
+  ]
+}
+```
+
+- `trigger` 回答「谁在扫」：`manual`（面板按钮）/ `client`（Emby 客户端刷新）/ `node`（归属节点）/ `repair`（面板修复队列）；
+- 进程被强杀时那条会停在 `running`：下次启动的维护会把它收尾成 `failed`（原因「进程重启，本轮扫描未完成」），
+  同时复位 `is_scanning` 与媒体库上的 `scan_status`；开始时间在阈值内（默认 6 小时）的一律不碰
+  ——多机部署时那可能是另一台节点正在扫的库；
+- 只想看「最新的结果」就不必开抽屉：卡片上已经有徽标、增量摘要与原因。
+
 排查顺序：
 
 1. 后台「存储挂载」里点对应挂载的「测试」：能看到「Cookie / 令牌 / 密钥」字样的错误就是凭据问题，重新粘贴即可（密钥字段留空表示不修改）；
