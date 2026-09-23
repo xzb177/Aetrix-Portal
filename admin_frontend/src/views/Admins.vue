@@ -46,10 +46,48 @@ const columns = computed<DataColumn[]>(() => [
   { key: 'role', label: '角色', width: 170 },
   { key: 'last_login_at', label: '最近登录', width: 150 },
   { key: 'is_active', label: '状态', width: 110 },
-  { key: 'actions', label: '操作', width: 150 },
+  // 角色 / 启用停用 / 撤销全部收进「管理」弹窗：行里只留一个入口
+  { key: 'actions', label: '操作', width: 100 },
 ])
 
 const form = ref<{ account: string; role: AdminRole }>({ account: '', role: 'operator' })
+
+// ==================== 两个弹窗（v2.29.0） ====================
+// 以前「授予管理员」是一排永远占着版面的输入框 + 下拉 + 按钮，角色又是一个行内下拉；
+// 现在两件事各自一个入口按钮：页头「授予管理员」、行尾「管理」，细节都在弹窗里说清楚。
+const grantVisible = ref(false)
+const manage = ref({
+  visible: false,
+  row: null as AdminRow | null,
+  role: 'operator' as AdminRole,
+  active: true,
+})
+
+function openGrant() {
+  form.value = { account: '', role: 'operator' }
+  grantVisible.value = true
+}
+
+function openManage(row: AdminRow) {
+  manage.value = { visible: true, row, role: row.admin_role, active: row.is_active }
+}
+
+/** 自己那一行不能改（服务端也拦，这里只是不让人白点） */
+const manageIsSelf = computed(() => manage.value.row?.id === myId.value)
+const manageLocked = computed(() => !isSuper.value || manageIsSelf.value)
+const manageChanged = computed(() => {
+  const row = manage.value.row
+  return !!row && (row.admin_role !== manage.value.role || row.is_active !== manage.value.active)
+})
+
+/** 当前选中角色的说明（后端元数据，前端不维护第二份） */
+function roleHint(value: AdminRole): string {
+  return roles.value.find((r) => r.value === value)?.hint || ''
+}
+
+function roleLabel(value: AdminRole): string {
+  return roles.value.find((r) => r.value === value)?.label || value
+}
 
 async function load() {
   loading.value = true
@@ -77,6 +115,7 @@ async function submitGrant() {
     const res = await grantAdmin({ ...payload, role: form.value.role })
     ElMessage.success(`已把「${res.admin.username}」设为${res.admin.role_label}`)
     form.value.account = ''
+    grantVisible.value = false
     await load()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '授权失败')
@@ -85,35 +124,36 @@ async function submitGrant() {
   }
 }
 
-async function changeRole(row: AdminRow, role: AdminRole) {
-  if (role === row.admin_role) return
+/** 保存角色 / 启用状态（只提交真正变了的字段，避免白写一次审计） */
+async function saveManage() {
+  const row = manage.value.row
+  if (!row || !manageChanged.value) {
+    manage.value.visible = false
+    return
+  }
+  const payload: { role?: AdminRole; is_active?: boolean } = {}
+  if (row.admin_role !== manage.value.role) payload.role = manage.value.role
+  if (row.is_active !== manage.value.active) payload.is_active = manage.value.active
   saving.value = true
   try {
-    await updateAdmin(row.id, { role })
-    ElMessage.success(`「${row.username}」已改为${roles.value.find((r) => r.value === role)?.label || role}`)
+    await updateAdmin(row.id, payload)
+    const bits: string[] = []
+    if (payload.role) bits.push(`角色改为${roleLabel(payload.role)}`)
+    if (payload.is_active !== undefined) bits.push(payload.is_active ? '已启用' : '已停用')
+    ElMessage.success(`「${row.username}」${bits.join('、')}`)
+    manage.value.visible = false
     await load()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '修改失败')
-    await load()
   } finally {
     saving.value = false
   }
 }
 
-async function toggleActive(row: AdminRow) {
-  saving.value = true
-  try {
-    await updateAdmin(row.id, { is_active: !row.is_active })
-    ElMessage.success(row.is_active ? `已停用「${row.username}」` : `已启用「${row.username}」`)
-    await load()
-  } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '操作失败')
-  } finally {
-    saving.value = false
-  }
-}
-
-async function revoke(row: AdminRow) {
+/** 撤销管理员身份（账号、会员与订阅都不受影响） */
+async function revokeFromDialog() {
+  const row = manage.value.row
+  if (!row) return
   try {
     await ElMessageBox.confirm(
       `撤销「${row.username}」的管理员身份？账号本身、会员与订阅都不受影响。`,
@@ -126,6 +166,7 @@ async function revoke(row: AdminRow) {
   try {
     await revokeAdmin(row.id)
     ElMessage.success('已撤销')
+    manage.value.visible = false
     await load()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '撤销失败')
@@ -150,6 +191,10 @@ function fmtDate(value: string | null): string {
         </p>
       </div>
       <div class="admin-page-actions">
+        <!-- 授权收进弹窗：不用时它不再占着版面 -->
+        <el-button type="primary" :disabled="!isSuper" @click="openGrant">
+          <UserPlus :size="14" style="margin-right: 4px" />授予管理员
+        </el-button>
         <el-button :loading="loading" @click="load"><RefreshCw :size="15" /></el-button>
       </div>
     </div>
@@ -173,39 +218,13 @@ function fmtDate(value: string | null): string {
       </div>
     </section>
 
-    <!-- 授权 -->
-    <section class="admin-card">
-      <div class="card-header">
-        <h2><UserPlus :size="15" /> 授予管理员</h2>
-        <span class="hint">账号需要先在站点注册过；被停用的账号要先启用</span>
-      </div>
-      <div class="grant-row">
-        <el-input
-          v-model="form.account"
-          placeholder="用户名或邮箱"
-          clearable
-          :disabled="!isSuper"
-          @keyup.enter="submitGrant"
-        >
-          <template #prefix><Mail :size="14" /></template>
-        </el-input>
-        <el-select v-model="form.role" :disabled="!isSuper" class="role-select">
-          <el-option v-for="role in roles" :key="role.value" :label="role.label" :value="role.value" />
-        </el-select>
-        <el-button type="primary" :loading="saving" :disabled="!isSuper" @click="submitGrant">
-          授权
-        </el-button>
-      </div>
-      <p class="grant-foot">
-        当前 {{ admins.length }} 名管理员（其中超级管理员 {{ superCount }} 名）
-      </p>
-    </section>
-
     <!-- 清单 -->
     <section class="admin-card">
       <div class="card-header">
         <h2><ShieldCheck :size="15" /> 管理员清单</h2>
-        <span class="hint">不能改自己、不能没有超级管理员（服务端护栏）</span>
+        <span class="hint">
+          共 {{ admins.length }} 名（超级管理员 {{ superCount }} 名）· 不能改自己、不能没有超级管理员（服务端护栏）
+        </span>
       </div>
       <DataTable :rows="admins" :columns="columns" :loading="loading" empty="还没有管理员" row-key="id">
         <template #cell-username="{ row }">
@@ -218,15 +237,7 @@ function fmtDate(value: string | null): string {
         </template>
 
         <template #cell-role="{ row }">
-          <el-select
-            :model-value="row.admin_role"
-            size="small"
-            :disabled="!isSuper || row.id === myId"
-            class="role-inline"
-            @change="(value: AdminRole) => changeRole(row, value)"
-          >
-            <el-option v-for="role in roles" :key="role.value" :label="role.label" :value="role.value" />
-          </el-select>
+          <span class="mini-badge muted">{{ row.role_label || roleLabel(row.admin_role) }}</span>
         </template>
 
         <template #cell-last_login_at="{ row }">{{ fmtDate(row.last_login_at) }}</template>
@@ -238,27 +249,108 @@ function fmtDate(value: string | null): string {
         </template>
 
         <template #cell-actions="{ row }">
-          <div class="row-actions">
-            <el-button
-              size="small"
-              :disabled="!isSuper || row.id === myId"
-              @click="toggleActive(row)"
-            >
-              {{ row.is_active ? '停用' : '启用' }}
-            </el-button>
-            <el-button
-              size="small"
-              type="danger"
-              plain
-              :disabled="!isSuper || row.id === myId"
-              @click="revoke(row)"
-            >
-              撤销
-            </el-button>
-          </div>
+          <!-- 角色 / 启用停用 / 撤销 都在弹窗里（原来这行是一个行内下拉 + 两个按钮） -->
+          <el-button size="small" plain @click="openManage(row)">管理</el-button>
         </template>
       </DataTable>
     </section>
+
+    <!-- 授予管理员（弹窗）：账号需要先在站点注册过 -->
+    <el-dialog v-model="grantVisible" title="授予管理员" width="460px">
+      <el-form label-position="top">
+        <el-form-item label="用户名或邮箱">
+          <el-input
+            v-model="form.account"
+            placeholder="已注册的用户名或邮箱"
+            clearable
+            @keyup.enter="submitGrant"
+          >
+            <template #prefix><Mail :size="14" /></template>
+          </el-input>
+          <p class="form-hint">这里不新建账号：只把已经在站点注册过的人标记为管理员。</p>
+        </el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="form.role" style="width: 100%">
+            <el-option v-for="role in roles" :key="role.value" :label="role.label" :value="role.value">
+              <span class="opt-row">
+                <component :is="ROLE_ICONS[role.value]" :size="14" />{{ role.label }}
+              </span>
+            </el-option>
+          </el-select>
+          <p class="form-hint">{{ roleHint(form.role) }}</p>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="grantVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="submitGrant">授权</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 管理某个管理员（弹窗）：角色 + 启用状态 + 撤销，护栏也在页面上说清楚 -->
+    <el-dialog v-model="manage.visible" :title="`管理「${manage.row?.username || ''}」`" width="500px">
+      <div v-if="manage.row" class="manage-body">
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">账号</span>
+            <span class="kv-value">{{ manage.row.username }}{{ manage.row.id === myId ? '（我）' : '' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">邮箱</span><span class="kv-value">{{ manage.row.email || '—' }}</span></div>
+          <div class="kv-row"><span class="kv-key">当前角色</span><span class="kv-value">{{ manage.row.role_label }}</span></div>
+          <div class="kv-row"><span class="kv-key">最近登录</span><span class="kv-value">{{ fmtDate(manage.row.last_login_at) }}</span></div>
+          <div class="kv-row"><span class="kv-key">加入时间</span><span class="kv-value">{{ fmtDate(manage.row.created_at) }}</span></div>
+        </div>
+
+        <el-form label-position="top" class="manage-form">
+          <el-form-item label="角色">
+            <el-select v-model="manage.role" :disabled="manageLocked" style="width: 100%">
+              <el-option v-for="role in roles" :key="role.value" :label="role.label" :value="role.value" />
+            </el-select>
+            <p class="form-hint">{{ roleHint(manage.role) }}</p>
+          </el-form-item>
+          <el-form-item label="账号状态">
+            <el-switch
+              v-model="manage.active"
+              :disabled="manageLocked"
+              active-text="启用"
+              inactive-text="停用（登不进来）"
+            />
+          </el-form-item>
+        </el-form>
+
+        <el-alert v-if="manageLocked" type="warning" :closable="false" show-icon>
+          <template #title>{{ manageIsSelf ? '这是你自己的账号' : '需要超级管理员' }}</template>
+          <template #default>
+            {{ manageIsSelf
+              ? '不能把自己的角色降下去或撤销自己——那等于把自己关在门外。'
+              : '你可以查看，但改角色 / 停用 / 撤销会被服务端拒绝。' }}
+          </template>
+        </el-alert>
+      </div>
+
+      <template #footer>
+        <div class="manage-footer">
+          <el-button
+            type="danger"
+            plain
+            :disabled="manageLocked"
+            :loading="saving"
+            @click="revokeFromDialog"
+          >
+            撤销管理员
+          </el-button>
+          <div class="manage-footer-right">
+            <el-button @click="manage.visible = false">取消</el-button>
+            <el-button
+              type="primary"
+              :loading="saving"
+              :disabled="manageLocked || !manageChanged"
+              @click="saveManage"
+            >
+              保存
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
 
     <section class="admin-card tips">
       <div class="card-header"><h2><AlertTriangle :size="15" /> 三条护栏（服务端强制执行）</h2></div>
@@ -301,17 +393,17 @@ function fmtDate(value: string | null): string {
 .role-key { margin-left: auto; font-size: var(--font-size-xs); color: var(--text-faint); }
 .role-hint { margin: 0; font-size: var(--font-size-xs); color: var(--text-tertiary); line-height: 1.6; }
 
-.grant-row { display: flex; gap: 10px; flex-wrap: wrap; }
-.grant-row .el-input { flex: 1; min-width: 200px; }
-.role-select { width: 160px; }
-.grant-foot { margin: 10px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); }
-
 .who-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .who-name { font-weight: var(--font-weight-semibold); }
 .who-mail { font-size: var(--font-size-xs); color: var(--text-muted); }
 
-.role-inline { width: 140px; }
-.row-actions { display: flex; gap: 6px; }
+/* 弹窗：详情用全局 .kv-list，只补布局 */
+.manage-body { display: flex; flex-direction: column; gap: 14px; }
+.manage-body .kv-row .kv-value { text-align: left; }
+.manage-form :deep(.el-form-item) { margin-bottom: 12px; }
+.manage-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.manage-footer-right { display: flex; gap: 8px; }
+.opt-row { display: inline-flex; align-items: center; gap: 6px; }
 
 .tips ul { margin: 0; padding-left: 4px; list-style: none; display: flex; flex-direction: column; gap: 8px; }
 .tips li {

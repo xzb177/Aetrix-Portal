@@ -38,7 +38,8 @@ const accountColumns: DataColumn[] = [
   { key: 'is_enabled', label: '状态', width: 100 },
   { key: 'last_verified_at', label: '最近校验', minWidth: 190 },
   { key: 'remark', label: '备注', minWidth: 120, mobile: 'hide' },
-  { key: 'actions', label: '操作', width: 230, fixed: 'right', align: 'right' },
+  // 校验 / 浏览 / 编辑 / 删除收进「管理」弹窗：行里只留一个入口
+  { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ]
 
 async function load() {
@@ -132,23 +133,58 @@ async function testCookie() {
   }
 }
 
+// ==================== 账号管理弹窗（v2.29.0） ====================
+// 以前行尾四个按钮（编辑 / 校验 / 浏览 / 删除）把「这个账号到底能不能用」拆得到处都是：
+// 现在一个入口，弹窗里先看「Cookie 有没有、上次校验结果与原因」，再校验 / 浏览 / 改 / 删。
+const manage = ref({ visible: false, row: null as Pan115Account | null })
+
+function openManage(row: Pan115Account) {
+  manage.value = { visible: true, row }
+}
+
+/** 动作后刷新列表，并把弹窗里的账号换成最新快照（校验结果就地可见） */
+async function refreshManage(id: number) {
+  await load()
+  const fresh = accounts.value.find((a) => a.id === id)
+  if (fresh) {
+    manage.value.row = fresh
+  } else {
+    manage.value.visible = false
+  }
+}
+
+/** 从弹窗进编辑 / 浏览：先关掉这一层，避免两个弹窗叠着 */
+function editFromManage(row: Pan115Account) {
+  manage.value.visible = false
+  openAccount(row)
+}
+
+function browseFromManage(row: Pan115Account) {
+  manage.value.visible = false
+  openBrowser(row)
+}
+
 async function verify(row: Pan115Account) {
   const res = await verifyPan115Account(row.id)
   ElMessage[res.result.ok ? 'success' : 'error'](
     res.result.ok ? `「${row.name}」Cookie 有效` : res.result.message || 'Cookie 无效'
   )
-  load()
+  await refreshManage(row.id)
 }
 
 async function removeAccount(a: Pan115Account) {
-  await ElMessageBox.confirm(
-    `删除账号「${a.name}」？绑定了它的媒体库会回退到默认账号。`,
-    '确认删除',
-    { type: 'warning' }
-  )
+  try {
+    await ElMessageBox.confirm(
+      `删除账号「${a.name}」？绑定了它的媒体库会回退到默认账号。`,
+      '确认删除',
+      { type: 'warning' }
+    )
+  } catch {
+    return
+  }
   await deletePan115Account(a.id)
   ElMessage.success('已删除')
-  load()
+  await refreshManage(a.id)
 }
 
 // ==================== 目录浏览（实测一次列目录） ====================
@@ -199,10 +235,12 @@ function currentPath(): string {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-head">
+    <!-- 头部用全局的 admin-page-header / admin-page-subtitle：
+         这两个类名以前写成了 admin-page-head / admin-page-desc，从未定义过（标题与副标题都没吃到样式） -->
+    <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">115 账号</h1>
-        <p class="admin-page-desc">
+        <p class="admin-page-subtitle">
           配置 115 Cookie 以使用「存储来源 → 115」直挂：面板 / EA 直接列目录、换直链播放
         </p>
       </div>
@@ -268,16 +306,8 @@ function currentPath(): string {
         </template>
 
         <template #cell-actions="{ row }">
-          <el-button size="small" type="primary" plain @click="openAccount(row)">编辑</el-button>
-          <el-button size="small" plain @click="verify(row)">
-            <ShieldCheck :size="13" style="margin-right: 3px" />校验
-          </el-button>
-          <el-button size="small" plain @click="openBrowser(row)">
-            <FolderOpen :size="13" style="margin-right: 3px" />浏览
-          </el-button>
-          <el-button size="small" type="danger" plain @click="removeAccount(row)">
-            <Trash2 :size="13" style="margin-right: 3px" />删除
-          </el-button>
+          <!-- 一个入口：校验 / 浏览 / 编辑 / 删除 都在弹窗里（原来这行有 4 个按钮） -->
+          <el-button size="small" plain @click="openManage(row)">管理</el-button>
         </template>
       </DataTable>
     </div>
@@ -311,6 +341,73 @@ function currentPath(): string {
         <el-button :loading="accTesting" @click="testCookie">测试 Cookie</el-button>
         <el-button @click="accVisible = false">取消</el-button>
         <el-button type="primary" :loading="accSaving" @click="saveAccount">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!--
+      账号管理（弹窗）：Cookie 不落明文，但「有没有配 / 上次校验成不成」在这里一次说清；
+      校验会真去问 115，结果写回快照，弹窗不关。
+    -->
+    <el-dialog v-model="manage.visible" :title="`管理 115 账号「${manage.row?.name || ''}」`" width="520px">
+      <div v-if="manage.row" class="mg-body">
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">名称</span><span class="kv-value">{{ manage.row.name }}</span></div>
+          <div class="kv-row"><span class="kv-key">默认账号</span>
+            <span class="kv-value">{{ manage.row.is_default ? '是（媒体库未绑定时用它）' : '否' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">状态</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="manage.row.is_enabled ? 'ok' : 'off'">
+                {{ manage.row.is_enabled ? '启用' : '停用' }}
+              </span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">Cookie</span>
+            <span class="kv-value mono">{{ manage.row.cookie_preview || (manage.row.has_cookie ? '已配置' : '未配置') }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">最近校验</span>
+            <span class="kv-value">
+              <template v-if="manage.row.last_verified_at">
+                {{ fmtDate(manage.row.last_verified_at) }}
+                <span :class="manage.row.last_verify_ok ? 'ok-text' : 'bad-text'">
+                  {{ manage.row.last_verify_ok ? '有效' : '无效' }}
+                </span>
+              </template>
+              <span v-else class="muted">未校验</span>
+            </span>
+          </div>
+          <div v-if="manage.row.last_verify_message && !manage.row.last_verify_ok" class="kv-row">
+            <span class="kv-key">失败原因</span>
+            <span class="kv-value">{{ manage.row.last_verify_message }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">备注</span><span class="kv-value">{{ manage.row.remark || '—' }}</span></div>
+          <div class="kv-row"><span class="kv-key">创建时间</span><span class="kv-value">{{ fmtDate(manage.row.created_at) }}</span></div>
+        </div>
+
+        <p class="mg-hint">
+          校验会拿这份 Cookie 去问 115（失败了也不影响面板与 EA 的现有会话，只是解不开直挂）；
+          删除后绑定了它的媒体库会回退到默认账号。
+        </p>
+      </div>
+
+      <template #footer>
+        <div class="mg-footer">
+          <el-button v-if="manage.row" type="danger" plain @click="removeAccount(manage.row)">
+            <Trash2 :size="13" style="margin-right: 3px" />删除
+          </el-button>
+          <div class="mg-footer-right">
+            <el-button @click="manage.visible = false">关闭</el-button>
+            <template v-if="manage.row">
+              <el-button @click="verify(manage.row)">
+                <ShieldCheck :size="13" style="margin-right: 3px" />校验 Cookie
+              </el-button>
+              <el-button @click="browseFromManage(manage.row)">
+                <FolderOpen :size="13" style="margin-right: 3px" />浏览目录
+              </el-button>
+              <el-button type="primary" @click="editFromManage(manage.row)">编辑</el-button>
+            </template>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -404,6 +501,21 @@ function currentPath(): string {
 
 .dir-item:hover { background: var(--bg-hover); color: var(--text-primary); }
 .dir-empty { margin-top: 8px; font-size: var(--font-size-xs); }
+
+/* 账号管理弹窗：详情用全局 .kv-list，只补说明与页脚布局 */
+.mg-body { display: flex; flex-direction: column; gap: 12px; }
+.mg-body .kv-row .kv-value { text-align: left; }
+.mg-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+.mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
 
 @media (max-width: 640px) {
   .acc-head { flex-direction: column; align-items: stretch; }

@@ -22,7 +22,8 @@ const columns: DataColumn[] = [
   { key: 'first_seen_at', label: '首次', width: 150, mobile: 'hide' },
   { key: 'last_seen_at', label: '最近活跃', width: 130 },
   { key: 'is_blocked', label: '状态', width: 90 },
-  { key: 'actions', label: '操作', width: 180, fixed: 'right', align: 'right' },
+  // 封禁 / 移除收进详情弹窗：行里只留一个入口，也顺便把设备 ID / 版本 / 首末次时间看全
+  { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ]
 
 const devices = ref<DeviceRow[]>([])
@@ -52,29 +53,61 @@ async function load() {
 
 onMounted(load)
 
+// ==================== 设备详情弹窗（v2.29.0） ====================
+// 以前封禁 / 移除是行里两个按钮，点下去只有一句确认框，看不到设备 ID、客户端版本、
+// 首末次时间；现在一行一个「详情」按钮，处置动作也在弹窗里完成（理由说明就在按钮旁）。
+const detail = ref({ visible: false, row: null as DeviceRow | null })
+
+function openDetail(row: DeviceRow) {
+  detail.value = { visible: true, row }
+}
+
+/** 动作做完刷新列表，并把弹窗里的行换成最新快照（状态徽标就地变化） */
+async function afterAction(row: DeviceRow) {
+  await load()
+  const fresh = devices.value.find(
+    (d) => d.device_id === row.device_id && d.user_id === row.user_id,
+  )
+  if (fresh) {
+    detail.value.row = fresh
+  } else {
+    // 被移除了：弹窗没有可描述的对象，关掉并说明
+    detail.value.visible = false
+    ElMessage.info('设备已移除，客户端需重新登录')
+  }
+}
+
 async function toggleBlock(row: DeviceRow) {
   const action = row.is_blocked ? '解封' : '封禁'
-  await ElMessageBox.confirm(
-    row.is_blocked
-      ? `确认解封 ${row.username} 的设备「${row.name || row.device_id}」？`
-      : `封禁后该设备已签发的令牌会被吊销，且无法再次登录。确认封禁 ${row.username} 的设备「${row.name || row.device_id}」？`,
-    `${action}设备`,
-    { type: 'warning' },
-  )
+  try {
+    await ElMessageBox.confirm(
+      row.is_blocked
+        ? `确认解封 ${row.username} 的设备「${row.name || row.device_id}」？`
+        : `封禁后该设备已签发的令牌会被吊销，且无法再次登录。确认封禁 ${row.username} 的设备「${row.name || row.device_id}」？`,
+      `${action}设备`,
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
   const res = await setDeviceBlocked(row.user_id, row.device_id, !row.is_blocked)
   ElMessage.success(res.message)
-  load()
+  await afterAction(row)
 }
 
 async function kick(row: DeviceRow) {
-  await ElMessageBox.confirm(
-    `移除后该设备令牌立即失效，客户端需重新登录。确认移除 ${row.username} 的设备？`,
-    '移除设备',
-    { type: 'warning' },
-  )
+  try {
+    await ElMessageBox.confirm(
+      `移除后该设备令牌立即失效，客户端需重新登录。确认移除 ${row.username} 的设备？`,
+      '移除设备',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
   const res = await removeDevice(row.user_id, row.device_id)
   ElMessage.success(res.message)
-  load()
+  await afterAction(row)
 }
 
 function fmt(s: string | null): string {
@@ -183,21 +216,79 @@ function ago(s: string | null): string {
         </template>
 
         <template #cell-actions="{ row }">
-          <el-button
-            size="small"
-            :type="row.is_blocked ? 'success' : 'danger'"
-            plain
-            @click="toggleBlock(row)"
-          >
-            <component :is="row.is_blocked ? CircleCheck : Ban" :size="13" style="margin-right: 3px" />
-            {{ row.is_blocked ? '解封' : '封禁' }}
-          </el-button>
-          <el-button size="small" type="warning" plain @click="kick(row)">
-            <LogOut :size="13" style="margin-right: 3px" />移除
-          </el-button>
+          <!-- 一个入口：详情 + 封禁 / 解封 / 移除 都在弹窗里 -->
+          <el-button size="small" plain @click="openDetail(row)">详情</el-button>
         </template>
       </DataTable>
     </div>
+
+    <!-- 设备详情与处置（弹窗）：先把这台设备是什么说清楚，再动手 -->
+    <el-dialog v-model="detail.visible" title="设备详情与处置" width="540px">
+      <div v-if="detail.row" class="dev-detail">
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">所属用户</span>
+            <span class="kv-value">
+              {{ detail.row.username }}
+              <span v-if="!detail.row.is_user_active" class="mini-badge danger">账号已禁用</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">设备</span>
+            <span class="kv-value">{{ detail.row.name || '未命名设备' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">设备 ID</span>
+            <span class="kv-value mono">{{ detail.row.device_id }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">客户端</span>
+            <span class="kv-value">{{ detail.row.client || '—' }}<span class="dev-ver">v{{ detail.row.app_version || '-' }}</span></span>
+          </div>
+          <div class="kv-row"><span class="kv-key">IP</span>
+            <span class="kv-value mono">{{ detail.row.ip || '—' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">首次出现</span><span class="kv-value">{{ fmt(detail.row.first_seen_at) }}</span></div>
+          <div class="kv-row"><span class="kv-key">最近活跃</span>
+            <span class="kv-value">
+              {{ fmt(detail.row.last_seen_at) }}
+              <span class="dev-ago">{{ ago(detail.row.last_seen_at) }}</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">当前状态</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="detail.row.is_blocked ? 'danger' : 'ok'">
+                {{ detail.row.is_blocked ? '已封禁' : '正常' }}
+              </span>
+            </span>
+          </div>
+        </div>
+
+        <p class="dev-actions-hint">
+          封禁会同时吊销该设备已签发的令牌，且它无法再次登录；移除等于踢下线，
+          客户端需重新登录（两者都不影响用户的会员与订阅）。
+        </p>
+      </div>
+
+      <template #footer>
+        <div class="dev-footer">
+          <el-button type="warning" plain @click="detail.row && kick(detail.row)">
+            <LogOut :size="13" style="margin-right: 4px" />移除（踢下线）
+          </el-button>
+          <div class="dev-footer-right">
+            <el-button @click="detail.visible = false">关闭</el-button>
+            <el-button
+              v-if="detail.row"
+              :type="detail.row.is_blocked ? 'success' : 'danger'"
+              @click="detail.row && toggleBlock(detail.row)"
+            >
+              <component
+                :is="detail.row.is_blocked ? CircleCheck : Ban"
+                :size="13"
+                style="margin-right: 4px"
+              />
+              {{ detail.row.is_blocked ? '解封这台设备' : '封禁这台设备' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -243,4 +334,25 @@ function ago(s: string | null): string {
 .mini-badge.ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
 .mini-badge.danger { background: rgba(239, 68, 68, 0.15); color: #f87171; }
 .muted { color: var(--color-text-muted, #737373); }
+
+/* 「已封禁」那块统计立牌要能看出异常：类名写了却没定义过（对照页定义了同样的规则）*/
+.stat-tile.is-danger { border-color: var(--danger-border); }
+
+/* 设备详情弹窗：详情用全局 .kv-list，只补两处间距 */
+.dev-detail { display: flex; flex-direction: column; gap: 12px; }
+/* 弹窗里的键值行靠左：值与值之间会很长（设备 ID / 提示文案），右对齐读不动 */
+.dev-detail .kv-row .kv-value { text-align: left; }
+.dev-ver { margin-left: 6px; font-size: 11px; color: var(--color-text-muted, #737373); }
+.dev-ago { margin-left: 6px; font-size: 11px; color: var(--color-text-muted, #737373); }
+.dev-actions-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--color-text-secondary, #a3a3a3);
+  background: var(--bg-inset, rgba(255, 255, 255, 0.03));
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.dev-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.dev-footer-right { display: flex; gap: 8px; }
 </style>

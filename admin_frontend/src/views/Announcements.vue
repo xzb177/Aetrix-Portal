@@ -13,7 +13,8 @@ const columns: DataColumn[] = [
   { key: 'type', label: '类型', width: 90 },
   { key: 'is_active', label: '状态', width: 90 },
   { key: 'created_at', label: '发布时间', width: 150 },
-  { key: 'actions', label: '操作', width: 250, fixed: 'right', align: 'right' },
+  // 置顶 / 停用 / 删除收进「管理」弹窗（编辑保留为独立按钮，它是最高频动作）
+  { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
 ]
 
 const list = ref<Announcement[]>([])
@@ -68,23 +69,50 @@ async function submit() {
   load()
 }
 
+// ==================== 公告管理弹窗（v2.29.0） ====================
+// 表格里正文被截成两行、置顶/停用/删除三个按钮挤在行尾；现在行里只留「编辑 / 管理」，
+// 弹窗里能读全文，置顶 / 停用 / 删除也各有说明（停用 = 用户端不再展示，删除不可恢复）。
+const manage = ref({ visible: false, row: null as Announcement | null })
+
+function openManage(a: Announcement) {
+  manage.value = { visible: true, row: a }
+}
+
+/** 动作后刷新列表，并把弹窗里的公告换成最新快照 */
+async function afterAction(a: Announcement) {
+  await load()
+  const fresh = list.value.find((x) => x.id === a.id)
+  if (fresh) {
+    manage.value.row = fresh
+  } else {
+    manage.value.visible = false
+  }
+}
+
 async function remove(a: Announcement) {
-  await ElMessageBox.confirm(`确定删除公告「${a.title}」吗？`, '确认', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm(`确定删除公告「${a.title}」吗？删除后不可恢复。`, '确认', {
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
   await deleteAnnouncement(a.id)
   ElMessage.success('已删除')
-  load()
+  await afterAction(a)
 }
 
 async function togglePin(a: Announcement) {
   await updateAnnouncement(a.id, { is_pinned: !a.is_pinned })
-  load()
+  ElMessage.success(a.is_pinned ? '已取消置顶' : '已置顶（用户端消息中心排在最前）')
+  await afterAction(a)
 }
 
 async function toggleActive(a: Announcement) {
   const next = a.is_active === false
   await updateAnnouncement(a.id, { is_active: next })
   ElMessage.success(next ? '公告已启用' : '公告已停用（用户端不再展示）')
-  load()
+  await afterAction(a)
 }
 
 function fmtDate(s: string): string {
@@ -129,15 +157,62 @@ function fmtDate(s: string): string {
         <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
 
         <template #cell-actions="{ row }">
-          <el-button size="small" @click="togglePin(row)">{{ row.is_pinned ? '取消置顶' : '置顶' }}</el-button>
-          <el-button size="small" @click="toggleActive(row)">
-            {{ row.is_active === false ? '启用' : '停用' }}
-          </el-button>
           <el-button size="small" type="primary" plain @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" type="danger" plain @click="remove(row)">删除</el-button>
+          <!-- 置顶 / 停用 / 删除 都在弹窗里（原来这行有 4 个按钮，最宽松的那个还是不可恢复的删除） -->
+          <el-button size="small" plain @click="openManage(row)">管理</el-button>
         </template>
       </DataTable>
     </div>
+
+    <!-- 公告管理（弹窗）：全文 + 置顶 / 停用 / 删除，每个动作都写清楚影响 -->
+    <el-dialog v-model="manage.visible" title="管理公告" width="560px">
+      <div v-if="manage.row" class="manage-body">
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">标题</span><span class="kv-value">{{ manage.row.title }}</span></div>
+          <div class="kv-row"><span class="kv-key">类型</span>
+            <span class="kv-value">{{ manage.row.type === 'system' ? '系统' : manage.row.type }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">状态</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="manage.row.is_active === false ? 'off' : 'ok'">
+                {{ manage.row.is_active === false ? '已停用' : '展示中' }}
+              </span>
+              <span v-if="manage.row.is_pinned" class="mini-badge pin mg-gap">置顶</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">发布时间</span><span class="kv-value">{{ fmtDate(manage.row.created_at) }}</span></div>
+        </div>
+
+        <div class="mg-content">
+          <div class="mg-content-label">公告正文</div>
+          <div class="mg-content-body">{{ manage.row.content }}</div>
+        </div>
+
+        <ul class="mg-hints">
+          <li>置顶：用户端消息中心的排序与预览里排在最前，不改变发布状态。</li>
+          <li>停用：立即从用户端消失（历史推送不回滚），随时可以再启用。</li>
+          <li>删除：发布记录一并移除，不可恢复；只想下架用「停用」。</li>
+        </ul>
+      </div>
+
+      <template #footer>
+        <div class="mg-footer">
+          <el-button v-if="manage.row" type="danger" plain @click="remove(manage.row)">删除</el-button>
+          <div class="mg-footer-right">
+            <el-button @click="manage.visible = false">关闭</el-button>
+            <el-button v-if="manage.row" @click="togglePin(manage.row)">
+              {{ manage.row.is_pinned ? '取消置顶' : '置顶' }}
+            </el-button>
+            <el-button v-if="manage.row" type="primary" plain @click="toggleActive(manage.row)">
+              {{ manage.row.is_active === false ? '启用' : '停用' }}
+            </el-button>
+            <el-button v-if="manage.row" type="primary" @click="manage.visible = false; openEdit(manage.row)">
+              编辑内容
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑公告' : '发布公告'" width="480px">
       <el-form label-width="60px">
@@ -176,4 +251,30 @@ function fmtDate(s: string): string {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* 管理弹窗：详情用全局 .kv-list，正文单独一块便于阅读 */
+.manage-body { display: flex; flex-direction: column; gap: 12px; }
+.manage-body .kv-row .kv-value { text-align: left; }
+.mg-gap { margin-left: 6px; }
+.mg-content-label { font-size: var(--font-size-xs); color: var(--text-tertiary); margin-bottom: 6px; }
+.mg-content-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed, 1.7);
+  background: var(--bg-inset, rgba(255, 255, 255, 0.03));
+  border-radius: var(--radius-md, 10px);
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.mg-hints {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.8;
+}
+.mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
 </style>

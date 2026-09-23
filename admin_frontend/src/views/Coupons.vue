@@ -49,7 +49,8 @@ const columns: DataColumn[] = [
   { key: 'valid', label: '有效期', width: 150 },
   { key: 'note', label: '备注', minWidth: 130, mobile: 'hide' },
   { key: 'is_active', label: '状态', width: 90 },
-  { key: 'actions', label: '操作', width: 190, fixed: 'right', align: 'right' },
+  // 记录 / 编辑 / 停用 / 删除收进「管理」弹窗：行里只留一个入口
+  { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ]
 
 async function load() {
@@ -243,11 +244,45 @@ async function handleUpdate() {
   }
 }
 
+// ==================== 管理弹窗（v2.29.0） ====================
+// 以前行尾摆着「记录 / 编辑 / 停用 / 删除」四个链接式按钮，券的额度与占用情况又挤在一格里；
+// 现在一个「管理」入口，弹窗里先把这张券的折扣、额度、占用与有效期讲清楚，再动手。
+const manage = ref({ visible: false, row: null as CouponRow | null })
+
+function openManage(row: CouponRow) {
+  manage.value = { visible: true, row }
+}
+
+/** 动作后刷新列表，并把弹窗里的券换成最新快照（额度 / 状态就地变化） */
+async function refreshManage(id: number) {
+  await load()
+  const fresh = coupons.value.find((c) => c.id === id)
+  if (fresh) {
+    manage.value.row = fresh
+  } else {
+    // 已删除（或不再符合当前筛选）：弹窗没有可描述的对象了
+    manage.value.visible = false
+  }
+}
+
+/** 从弹窗进编辑：先关管理弹窗，避免两层叠着 */
+function editFromManage(row: CouponRow) {
+  manage.value.visible = false
+  openEdit(row)
+}
+
+/** 从弹窗看核销记录：同样先关掉这一层 */
+function usagesFromManage(row: CouponRow) {
+  manage.value.visible = false
+  openUsages(row)
+}
+
 async function toggleCoupon(row: CouponRow) {
   try {
     await updateCoupon(row.id, { is_active: !row.is_active })
     row.is_active = !row.is_active
     ElMessage.success(row.is_active ? '已启用' : '已停用')
+    await refreshManage(row.id)
   } catch (e: unknown) {
     ElMessage.error((e as Error)?.message || '操作失败')
   }
@@ -266,7 +301,7 @@ async function handleDelete(row: CouponRow) {
   try {
     const res = await deleteCoupon(row.id)
     ElMessage.success(res.message || '已删除')
-    load()
+    await refreshManage(row.id)
   } catch (e: unknown) {
     ElMessage.error((e as Error)?.message || '删除失败')
   }
@@ -424,12 +459,8 @@ onMounted(() => {
         </template>
 
         <template #cell-actions="{ row }">
-          <el-button size="small" link @click="openUsages(row)">记录</el-button>
-          <el-button size="small" link @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" link :type="row.is_active ? 'warning' : 'success'" @click="toggleCoupon(row)">
-            {{ row.is_active ? '停用' : '启用' }}
-          </el-button>
-          <el-button size="small" link type="danger" @click="handleDelete(row)">删除</el-button>
+          <!-- 一个入口：核销记录 / 编辑 / 停用 / 删除 都在弹窗里（原来这行有 4 个按钮） -->
+          <el-button size="small" plain @click="openManage(row)">管理</el-button>
         </template>
       </DataTable>
     </div>
@@ -617,6 +648,71 @@ onMounted(() => {
         </el-table-column>
       </el-table>
     </el-dialog>
+
+    <!--
+      优惠券管理（弹窗）：这张券到底怎么抵扣、还能不能用、为什么不能用（额度占满 / 已过期 /
+      停用）都在这里；四个动作随状态给出（有核销记录的不能删，只能停用）。
+    -->
+    <el-dialog v-model="manage.visible" :title="`管理优惠券 ${manage.row?.code || ''}`" width="540px">
+      <div v-if="manage.row" class="mg-body">
+        <div class="mg-head">
+          <span class="mg-discount">{{ discountText(manage.row) }}</span>
+          <span class="mini-badge" :class="manage.row.usable ? 'ok' : 'off'">
+            {{ manage.row.usable ? '可用' : manage.row.is_active ? '暂不可用' : '已停用' }}
+          </span>
+        </div>
+
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">优惠码</span>
+            <span class="kv-value mono">{{ manage.row.code }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">适用范围</span><span class="kv-value">{{ scopeText(manage.row) }}</span></div>
+          <div class="kv-row"><span class="kv-key">额度</span>
+            <span class="kv-value">
+              {{ usageText(manage.row) }}（每人 {{ manage.row.per_user_limit ? manage.row.per_user_limit + ' 次' : '不限' }}）
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">占用 / 已用</span>
+            <span class="kv-value">
+              占用中 {{ manage.row.stats?.reserved || 0 }} · 已用 {{ manage.row.stats?.consumed || 0 }}
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">门槛 / 封顶</span>
+            <span class="kv-value">
+              {{ manage.row.min_amount > 0 ? `满 ¥${manage.row.min_amount.toFixed(2)}` : '无门槛' }} ·
+              {{ manage.row.max_discount > 0 ? `最多省 ¥${manage.row.max_discount.toFixed(2)}` : '不封顶' }}
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">有效期</span><span class="kv-value">{{ validText(manage.row) }}</span></div>
+          <div class="kv-row"><span class="kv-key">备注</span><span class="kv-value">{{ manage.row.note || '—' }}</span></div>
+        </div>
+
+        <p class="mg-hint">
+          停用立即生效（用户端不再能使用，已下的单不受影响）；删除只能删从没用过的券，
+          有核销记录的请改用停用（否则对账对不上）。
+        </p>
+      </div>
+
+      <template #footer>
+        <div class="mg-footer">
+          <el-button v-if="manage.row" type="danger" plain @click="handleDelete(manage.row)">删除</el-button>
+          <div class="mg-footer-right">
+            <el-button @click="manage.visible = false">关闭</el-button>
+            <template v-if="manage.row">
+              <el-button @click="usagesFromManage(manage.row)">核销记录</el-button>
+              <el-button
+                :type="manage.row.is_active ? 'warning' : 'success'"
+                plain
+                @click="toggleCoupon(manage.row)"
+              >
+                {{ manage.row.is_active ? '停用' : '启用' }}
+              </el-button>
+              <el-button type="primary" @click="editFromManage(manage.row)">编辑</el-button>
+            </template>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -643,4 +739,21 @@ onMounted(() => {
 .code { letter-spacing: 0.06em; font-weight: 600; color: var(--primary); }
 .discount { font-weight: 600; }
 .muted { color: var(--text-muted); font-size: 12px; }
+
+/* 管理弹窗：详情用全局 .kv-list，只补折扣行与说明 */
+.mg-body { display: flex; flex-direction: column; gap: 12px; }
+.mg-body .kv-row .kv-value { text-align: left; }
+.mg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mg-discount { font-size: 16px; font-weight: 600; }
+.mg-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  background: var(--bg-inset, rgba(255, 255, 255, 0.03));
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
 </style>

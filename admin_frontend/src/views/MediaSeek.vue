@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 求片管理：审核批准/拒绝/标记完成，联动用户通知 */
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Check, CloudDownload, Download, RefreshCw, X } from 'lucide-vue-next'
 import { fetchMediaSeeks, fetchServersSummary, pushMediaSeek, updateMediaSeek } from '@/api/admin'
 import type { MediaSeekRow, ServerKind } from '@/types'
@@ -26,8 +26,8 @@ const columns = computed<DataColumn[]>(() => [
   { key: 'push', label: '转交外部服务', width: 170 },
   { key: 'admin_note', label: '管理备注', minWidth: 140, mobile: 'hide' },
   { key: 'created_at', label: '提交时间', width: 150 },
-  // 批准 / 拒绝 / 转交 / 标记上架可能同时出现，给足宽度免得按钮被挤成两行
-  { key: 'actions', label: '操作', width: 330, fixed: 'right', align: 'right' },
+  // 所有动作都收进「处理」弹窗：行里只留一个入口，不再挤成一排按钮
+  { key: 'actions', label: '操作', width: 110, fixed: 'right', align: 'right' },
 ])
 
 const list = ref<MediaSeekRow[]>([])
@@ -58,13 +58,55 @@ async function load() {
   }
 }
 
-/** 推给 MoviePilot：它自己去搜索、下载、整理入库 */
-async function pushToMoviePilot(r: MediaSeekRow) {
+// ==================== 处理弹窗（v2.29.0） ====================
+// 以前一行里摊着 5 个按钮（批准 / 拒绝 / 交 MoviePilot / 交给 qB / 标记上架），
+// 拒绝与批准还要再弹一次输入框——既挤又看不全上下文（用户备注、转交结果都得切页找）。
+// 现在行里只有一个「处理」按钮，弹窗里把求片详情 + 处理备注 + 全部动作放在一处。
+const handle = ref({
+  visible: false,
+  row: null as MediaSeekRow | null,
+  /** 处理备注（批准 / 拒绝时写库，拒绝会作为原因展示给用户） */
+  note: '',
+  /** qBittorrent 需要的磁力 / 种子地址（qB 自己不会找片子） */
+  link: '',
+})
+
+/** 这一行还有没有可做的动作（已上架 / 已拒绝 / 已撤回只是查看） */
+function isActionable(r: MediaSeekRow): boolean {
+  return r.status === 'pending' || r.status === 'approved'
+}
+
+function openHandle(r: MediaSeekRow) {
+  handle.value = { visible: true, row: r, note: r.admin_note || '', link: '' }
+}
+
+/** 动作做完刷新列表，并把弹窗里的行换成最新快照（转交结果、状态就地可见） */
+async function afterAction(id: number) {
+  await load()
+  const fresh = list.value.find((x) => x.id === id)
+  if (fresh) {
+    handle.value.row = fresh
+  } else {
+    // 被当前状态筛选挡掉了（例如筛「待审核」时批准了）：如实说明，别把旧快照留在弹窗里
+    handle.value.visible = false
+    ElMessage.info('已处理，该求片不再符合当前筛选条件')
+  }
+}
+
+/** 批准 / 拒绝 / 标记上架 */
+async function reviewStatus(status: string) {
+  const r = handle.value.row
+  if (!r) return
   busyId.value = r.id
   try {
-    const res = await pushMediaSeek(r.id, { target: 'moviepilot' })
-    res.success ? ElMessage.success(res.message || '已提交给 MoviePilot') : ElMessage.warning(res.message)
-    await load()
+    await updateMediaSeek(r.id, {
+      status,
+      admin_note: handle.value.note.trim() || undefined,
+    })
+    ElMessage.success(
+      { approved: '已批准', rejected: '已拒绝', completed: '已标记上架' }[status] || '已更新'
+    )
+    await afterAction(r.id)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -72,19 +114,23 @@ async function pushToMoviePilot(r: MediaSeekRow) {
   }
 }
 
-/** 交给 qBittorrent：qB 自己不会找片子，所以必须提供磁力 / 种子链接 */
-async function pushToQbittorrent(r: MediaSeekRow) {
-  const { value } = await ElMessageBox.prompt(
-    `把《${r.movie_name}》的下载链接交给 qBittorrent`,
-    '交给下载器',
-    { inputPlaceholder: 'magnet:?xt=… 或 .torrent 的 http 地址', inputType: 'textarea' }
-  )
-  if (!value) return
+/** 转交外部服务：MoviePilot（提交订阅）或 qBittorrent（加种，必须带链接） */
+async function pushTo(target: 'moviepilot' | 'qbittorrent') {
+  const r = handle.value.row
+  if (!r) return
+  const link = handle.value.link.trim()
+  if (target === 'qbittorrent' && !link) {
+    ElMessage.warning('交给 qBittorrent 需要先填磁力 / 种子地址')
+    return
+  }
   busyId.value = r.id
   try {
-    const res = await pushMediaSeek(r.id, { target: 'qbittorrent', link: value })
-    res.success ? ElMessage.success(res.message || '已交给下载器') : ElMessage.warning(res.message)
-    await load()
+    const res = await pushMediaSeek(r.id, target === 'qbittorrent' ? { target, link } : { target })
+    res.success
+      ? ElMessage.success(res.message || `已提交给 ${pushLabel(target)}`)
+      : ElMessage.warning(res.message)
+    handle.value.link = ''
+    await afterAction(r.id)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -100,25 +146,6 @@ function pushLabel(target: string | null): string {
 
 onMounted(load)
 
-async function review(r: MediaSeekRow, status: string) {
-  let adminNote = ''
-  if (status === 'rejected') {
-    const { value } = await ElMessageBox.prompt('拒绝原因（可选）', `拒绝《${r.movie_name}》`, {
-      inputPlaceholder: '如：已有同类型资源 / 片源不可得…',
-    })
-    adminNote = value || ''
-  } else if (status === 'approved') {
-    const { value } = await ElMessageBox.prompt('处理备注（可选）', `批准《${r.movie_name}》`, {
-      inputPlaceholder: '如：预计本周内上架…',
-    })
-    adminNote = value || ''
-  }
-
-  await updateMediaSeek(r.id, { status, admin_note: adminNote || undefined })
-  ElMessage.success({ approved: '已批准', rejected: '已拒绝', completed: '已标记完成' }[status] || '已更新')
-  load()
-}
-
 function fmtDate(s: string): string {
   return s.slice(0, 16).replace('T', ' ')
 }
@@ -128,6 +155,12 @@ function statusBadge(status: string): string {
     pending: 'warn', approved: 'ok', completed: 'ok', rejected: 'off', withdrawn: 'off',
   }
   return map[status] || 'off'
+}
+
+function typeLabel(type: string | null): string {
+  if (type === 'movie') return '电影'
+  if (type === 'tv') return '剧集'
+  return type || '—'
 }
 
 function statusLabel(status: string): string {
@@ -180,9 +213,7 @@ function statusLabel(status: string): string {
           <div v-if="row.note" class="movie-note">用户备注：{{ row.note }}</div>
         </template>
 
-        <template #cell-type="{ row }">
-          {{ row.type === 'movie' ? '电影' : row.type === 'tv' ? '剧集' : (row.type || '—') }}
-        </template>
+        <template #cell-type="{ row }">{{ typeLabel(row.type) }}</template>
 
         <template #cell-user_name="{ row }">{{ row.user_name }}</template>
 
@@ -214,40 +245,139 @@ function statusLabel(status: string): string {
         <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
 
         <template #cell-actions="{ row }">
-          <el-button v-if="row.status === 'pending'" size="small" type="success" plain @click="review(row, 'approved')">
-            <Check :size="13" style="margin-right: 3px" />批准
-          </el-button>
-          <el-button v-if="row.status === 'pending'" size="small" type="danger" plain @click="review(row, 'rejected')">
-            <X :size="13" style="margin-right: 3px" />拒绝
-          </el-button>
+          <!-- 一个入口：详情 + 批准 / 拒绝 / 转交 / 标记上架 都在弹窗里（原来这行有 5 个按钮） -->
           <el-button
-            v-if="canMoviePilot && (row.status === 'pending' || row.status === 'approved')"
             size="small"
-            type="primary"
-            plain
-            :loading="busyId === row.id"
-            @click="pushToMoviePilot(row)"
+            :type="isActionable(row) ? 'primary' : 'default'"
+            :plain="isActionable(row)"
+            @click="openHandle(row)"
           >
-            <CloudDownload :size="13" style="margin-right: 3px" />交 MoviePilot
+            {{ isActionable(row) ? '处理' : '查看' }}
           </el-button>
-          <el-button
-            v-if="canQbittorrent && (row.status === 'pending' || row.status === 'approved')"
-            size="small"
-            plain
-            :loading="busyId === row.id"
-            @click="pushToQbittorrent(row)"
-          >
-            <Download :size="13" style="margin-right: 3px" />交给 qB
-          </el-button>
-          <el-button v-if="row.status === 'approved'" size="small" type="primary" plain @click="review(row, 'completed')">
-            标记上架
-          </el-button>
-          <span v-if="row.status === 'completed' || row.status === 'rejected'" class="muted done-hint">
-            已处理
-          </span>
         </template>
       </DataTable>
     </div>
+
+    <!--
+      处理弹窗（v2.29.0）：求片详情 + 处理备注 + 全部动作都在这一处。
+      动作做完弹窗不关——就地换成最新快照，转交结果 / 新状态直接可见，
+      而且换行的动作（批准 → 标记上架）不用再重新找到那一行。
+    -->
+    <el-dialog
+      v-model="handle.visible"
+      :title="handle.row ? `处理求片《${handle.row.movie_name}》` : '处理求片'"
+      width="560px"
+    >
+      <div v-if="handle.row" class="handle-body">
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">片名</span><span class="kv-value">《{{ handle.row.movie_name }}》</span></div>
+          <div class="kv-row"><span class="kv-key">年份 / 类型</span>
+            <span class="kv-value">{{ handle.row.year || '—' }} · {{ typeLabel(handle.row.type) }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">提交用户</span><span class="kv-value">{{ handle.row.user_name }}</span></div>
+          <div class="kv-row"><span class="kv-key">求给</span>
+            <span class="kv-value">{{ handle.row.realm_name || '未标注' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">提交时间</span><span class="kv-value">{{ fmtDate(handle.row.created_at) }}</span></div>
+          <div class="kv-row"><span class="kv-key">当前状态</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="statusBadge(handle.row.status)">{{ statusLabel(handle.row.status) }}</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">用户备注</span>
+            <span class="kv-value">{{ handle.row.note || '—' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">转交外部服务</span>
+            <span class="kv-value">
+              <template v-if="!handle.row.push_target">未转交</template>
+              <template v-else>
+                {{ pushLabel(handle.row.push_target) }}{{ handle.row.push_status === 'ok' ? ' 已提交' : ' 失败' }}
+                <span v-if="handle.row.push_message" class="push-msg-line">{{ handle.row.push_message }}</span>
+              </template>
+            </span>
+          </div>
+        </div>
+
+        <el-form label-position="top" class="handle-form">
+          <el-form-item label="处理备注">
+            <el-input
+              v-model="handle.note"
+              type="textarea"
+              :rows="2"
+              placeholder="如：预计本周内上架 / 已有同类型资源…"
+            />
+            <p class="form-hint">拒绝时会作为原因展示给提交用户；批准时作为进度说明（可不填）。</p>
+          </el-form-item>
+
+          <!-- qBittorrent 自己不会找片子：要交给它就必须在这里把链接填上（原来是一个二次弹窗） -->
+          <el-form-item v-if="canQbittorrent && isActionable(handle.row)" label="qBittorrent 下载地址">
+            <el-input
+              v-model="handle.link"
+              type="textarea"
+              :rows="2"
+              placeholder="magnet:?xt=… 或 .torrent 的 http 地址（只在这条求片交给 qB 时使用）"
+            />
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <template #footer>
+        <div class="handle-footer">
+          <el-button @click="handle.visible = false">关闭</el-button>
+          <div class="handle-actions">
+            <el-button
+              v-if="handle.row?.status === 'pending'"
+              size="small"
+              type="danger"
+              plain
+              :loading="busyId === handle.row.id"
+              @click="reviewStatus('rejected')"
+            >
+              <X :size="13" style="margin-right: 3px" />拒绝
+            </el-button>
+            <el-button
+              v-if="handle.row?.status === 'pending'"
+              size="small"
+              type="success"
+              plain
+              :loading="busyId === handle.row.id"
+              @click="reviewStatus('approved')"
+            >
+              <Check :size="13" style="margin-right: 3px" />批准
+            </el-button>
+            <el-button
+              v-if="handle.row?.status === 'approved'"
+              size="small"
+              type="primary"
+              plain
+              :loading="busyId === handle.row.id"
+              @click="reviewStatus('completed')"
+            >
+              标记上架
+            </el-button>
+            <el-button
+              v-if="canMoviePilot && handle.row && isActionable(handle.row)"
+              size="small"
+              type="primary"
+              plain
+              :loading="busyId === handle.row.id"
+              @click="pushTo('moviepilot')"
+            >
+              <CloudDownload :size="13" style="margin-right: 3px" />交 MoviePilot
+            </el-button>
+            <el-button
+              v-if="canQbittorrent && handle.row && isActionable(handle.row)"
+              size="small"
+              plain
+              :loading="busyId === handle.row.id"
+              @click="pushTo('qbittorrent')"
+            >
+              <Download :size="13" style="margin-right: 3px" />交给 qB
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -261,4 +391,14 @@ function statusLabel(status: string): string {
 .push-cell { display: flex; flex-direction: column; gap: 3px; }
 .push-cell .mini-badge { align-self: flex-start; }
 .push-msg { display: block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-xs); }
+
+/* 处理弹窗：详情用全局 .kv-list 原语，只补两处专有间距 */
+.handle-body { display: flex; flex-direction: column; gap: 14px; }
+/* 弹窗里的键值行靠左：值是片名 / 备注 / 报错这类长文本，右对齐读不动 */
+.handle-body .kv-row .kv-value { text-align: left; }
+.handle-form { margin-top: 2px; }
+.handle-form :deep(.el-form-item) { margin-bottom: 12px; }
+.push-msg-line { display: block; font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 2px; }
+.handle-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.handle-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 </style>
