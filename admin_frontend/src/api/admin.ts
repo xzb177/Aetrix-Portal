@@ -12,7 +12,9 @@ import type {
   DeviceStats,
   LoginLogsResponse,
   EmbyLibrary,
+  EmbyScanQueue,
   EmbyScanRun,
+  EmbyScanTask,
   EmbySessionRow,
   Pan115Account,
   Pan115DirEntry,
@@ -484,9 +486,32 @@ export const fetchRepairQueue = () =>
   )
 
 export const runRepairQueue = () =>
-  post<{ success: boolean; libraries: number[] }>(`${E}/libraries/repair/run`)
+  post<{ success: boolean; libraries: number[]; already?: number[] }>(`${E}/libraries/repair/run`)
 
-export const scanLibrary = (id: number) => post<{ success: boolean }>(`${E}/libraries/${id}/scan`)
+/**
+ * 触发一个媒体库的扫描（v2.27.0 起是「入队」）
+ *
+ * - `started: true`：没被挡住，已经开扫；
+ * - `started: false` + `task.position`：排在第几位（`task.waiting_for` 写明在等哪个挂载）；
+ * - `already: true`：这个库已经在扫描 / 已在队列里（重复点击不报错），`message` 里有原因。
+ */
+export const scanLibrary = (id: number) =>
+  post<{
+    success: boolean
+    queued?: boolean
+    already?: boolean
+    started?: boolean
+    state?: string
+    message?: string
+    task?: EmbyScanTask
+  }>(`${E}/libraries/${id}/scan`)
+
+/** 扫描队列快照：正在跑 / 排队中 / 最近完成 + 远程 IO 计数（面板每几秒轮询一次） */
+export const fetchScanQueue = () => get<EmbyScanQueue>(`${E}/scan-queue`)
+
+/** 取消一个**还在排队**的扫描（正在跑的不能取消：停在中途会留下半个库的状态） */
+export const cancelQueuedScan = (id: number) =>
+  del<{ success: boolean; library_id: number }>(`${E}/scan-queue/${id}`)
 
 /** 某个媒体库最近的扫描流水（新的在前）；keep = 后端每库保留条数 */
 export const fetchLibraryScans = (id: number, limit = 20) =>

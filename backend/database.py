@@ -226,6 +226,9 @@ def _auto_migrate():
             ("scan_status", "VARCHAR(20)", "NULL"),
             ("scan_stats", "TEXT", "NULL"),
             ("scan_error", "VARCHAR(500)", "NULL"),
+            # v2.27.0 扫描进行中的进度快照：老库补列后为 NULL（= 当前没有进度可看），
+            # 不改动任何既有行为；只有真正开始扫描时才会被写入，结束即清空。
+            ("scan_progress", "TEXT", "NULL"),
         ]),
         # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
         ("remote_servers", [

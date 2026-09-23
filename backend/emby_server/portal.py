@@ -17,7 +17,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -52,6 +52,8 @@ from backend.emby_server.streaming import (
 )
 from backend.emby_server import facets
 from backend.emby_server import mounts as mount_lib
+# 扫描队列（v2.27.0）：按远程挂载串行化 + 并发上限 + 排队状态/进度，见 scan_queue.py
+from backend.emby_server import scan_queue
 from backend.emby_server import transfer115
 
 logger = logging.getLogger(__name__)
@@ -657,6 +659,9 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "is_enabled": lib.is_enabled,
             # 正在扫描以进程内任务为准：数据库标志在进程崩溃后会残留为真
             "is_scanning": is_scan_active(lib.id) or lib.is_scanning,
+            # 实时状态（v2.27.0）：排队中 / 扫描中（阶段、已发现、已处理、当前目录、本轮远程请求数）
+            # 空闲时为 null——列表刷新就能接上刚才那几秒的进度，不用另开接口轮询
+            "scan_live": scan_queue.live_payload(lib),
             "scrape_policy": normalize_scrape_policy(lib.scrape_policy),
             "is_virtual": bool(getattr(lib, "is_virtual", False)),
             "platform": lib.platform,
@@ -781,8 +786,11 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
         raise HTTPException(status_code=404, detail="媒体库不存在")
     # 扫描中的库先不删：边扫边删会给已删库继续插条目，而 SQLite 会复用 rowid，
     # 新建一个库撞上同一个 id 时那些孤儿条目会「复活」。
+    # 排队中的也算（v2.27.0）：等它排到时会发现库没了——不如在删的时候就说清楚。
     if is_scan_active(lib.id):
         raise HTTPException(status_code=409, detail="该媒体库正在扫描，请等扫描结束后再删除")
+    if scan_queue.is_busy(lib.id):
+        raise HTTPException(status_code=409, detail="该媒体库在扫描队列中，请先取消排队再删除")
 
     # 分批删除：老实现把整库条目一次载入内存再逐条删（十万级库会直接把面板拖死）
     removed = 0
@@ -850,32 +858,71 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
                 "forwarded_to": {"id": owner.id, "name": owner.name, "url": owner.url},
                 "library_id": lib.id}
 
-    if is_scan_active(lib.id):
-        raise HTTPException(status_code=409, detail="该媒体库正在扫描中")
-    import threading
+    # 入队而不是直接起线程（v2.27.0）：不同媒体库引用同一个远程挂载时排队跑，
+    # 不让四个任务同时打同一个 WebDAV；重复点击不报 409，直接告诉你「已经在队列/正在扫」。
+    # 后台线程用独立 Session（请求结束时请求级 Session 会被关闭，复用会导致
+    # "transaction is closed" 与 SQLite 写锁冲突）——那一层现在在 scan_queue 里。
+    result = scan_queue.enqueue(lib, trigger="manual")
+    task = result["task"]
+    if not result["created"]:
+        return {"success": True, "queued": False, "already": True, "state": task["state"],
+                "message": ("该媒体库正在扫描中" if task["state"] == "running"
+                            else f"该媒体库已在扫描队列中（第 {task.get('position') or '-'} 位）"),
+                "task": task}
+    if task["state"] == "running":
+        # 没被任何东西挡住：入队即开扫（就地派发），如实说「已启动」而不是「排队第 1 位」
+        return {"success": True, "queued": True, "already": False, "started": True,
+                "task": task, "message": "扫描已启动"}
+    waiting = [mount_lib.mount_label(m) for m in _waiting_mount_objects(db, task.get("waiting_for"))]
+    return {
+        "success": True, "queued": True, "already": False, "started": False, "task": task,
+        "message": (f"已加入扫描队列（第 {task.get('position') or '-'} 位）"
+                    + (f"，正在等挂载：{'、'.join(waiting)}" if waiting
+                       else "，前面还有扫描在跑")),
+    }
 
-    # 扫描在后台线程运行：必须用独立 Session（请求结束时请求级 Session 会被关闭，
-    # 复用会导致 "transaction is closed" 与 SQLite 写锁冲突）
-    lib_id_value = lib.id
-    # 配置快照在**请求线程**拍下：后台任务只认这份快照，期间改配置不影响本次任务
-    snapshot = LibrarySnapshot.of(lib)
 
-    def _run_scan():
-        scan_db = SessionLocal()
-        try:
-            scan_lib = scan_db.query(em.Library).filter(em.Library.id == lib_id_value).first()
-            if scan_lib:
-                scan_library_sync(scan_db, scan_lib, snapshot, trigger="manual")
-        except ScanInProgress:
-            pass  # 已有任务在跑：重复请求直接被拒
-        except Exception:  # noqa: BLE001 — 后台线程的异常不能只留在 stderr，否则“扫失败了”无人知晓
-            logger.exception("媒体库 %s 扫描失败", lib_id_value)
-        finally:
-            scan_db.close()
+def _waiting_mount_objects(db: Session, mount_ids) -> list:
+    """把「在等哪些挂载」变成挂载对象（消息里要写得出名字，而不是只给 id）"""
+    ids = [int(m) for m in (mount_ids or [])]
+    if not ids:
+        return []
+    return db.query(em.StorageMount).filter(em.StorageMount.id.in_(ids)).all()
 
-    thread = threading.Thread(target=_run_scan, daemon=True)
-    thread.start()
-    return {"success": True, "message": "扫描已启动", "scrape_policy": snapshot.scrape_policy}
+
+@admin_emby_router.get("/scan-queue")
+def scan_queue_snapshot(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+    """扫描队列快照：正在跑的、排队等着的、最近完成的，以及远程 IO 计数
+
+    为什么需要它：串联化之后「点了扫描却没动」变成了一件正常的事（在排队），
+    没有这个面板就只能靠日志猜「到底在等谁」。
+    """
+    data = scan_queue.snapshot()
+    names = {
+        mount.id: mount_lib.mount_label(mount)
+        for mount in _waiting_mount_objects(db, data.get("mount_owners", {}).keys())
+    }
+    # 排队中的任务再带上「在等哪个挂载」的名字：面板要能直接写出名字，
+    # 否则管理员只能看到一串 id，还得去存储来源页对号
+    waiting_ids = {
+        int(m) for task in data.get("waiting", []) for m in (task.get("waiting_for") or [])
+    } - set(names)
+    if waiting_ids:
+        names.update({mount.id: mount_lib.mount_label(mount)
+                      for mount in _waiting_mount_objects(db, waiting_ids)})
+    data["mount_names"] = {str(key): value for key, value in names.items()}
+    return data
+
+
+@admin_emby_router.delete("/scan-queue/{lib_id}")
+def cancel_queued_scan(lib_id: int, staff: models.WebUser = Depends(require_staff)):
+    """取消一个**还在排队**的扫描（正在跑的不能取消：停了会留下半个库的状态）"""
+    outcome = scan_queue.cancel(lib_id)
+    if outcome == "running":
+        raise HTTPException(status_code=409, detail="该媒体库正在扫描中，无法取消（请等它跑完）")
+    if outcome == "missing":
+        raise HTTPException(status_code=404, detail="该媒体库不在扫描队列里")
+    return {"success": True, "library_id": lib_id}
 
 
 @admin_emby_router.post("/libraries/virtual")
@@ -971,34 +1018,33 @@ def repair_queue(staff: models.WebUser = Depends(require_staff), db: Session = D
 @admin_emby_router.post("/libraries/repair/run")
 def run_repair_queue(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     """立即处理修复队列（重新刮削取图）；不传 library_ids 则处理全部启用库"""
-    lib_ids = [
-        lib.id for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
-        if not is_scan_active(lib.id)
+    # 走扫描队列（v2.27.0）：修复也要按远程挂载串行化，不然「一键修复」会把前面那批
+    # 刚从点击开始跑的库一起推到 WebDAV 上。已在队列/正在扫的库会自动合并，不重复入队。
+    libs = [
+        lib for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
     ]
-    import threading
+    queued: list[int] = []
+    already: list[int] = []
+    for lib in libs:
+        result = scan_queue.enqueue(lib, trigger="repair")
+        (queued if result["created"] else already).append(lib.id)
+    return {"success": True, "libraries": queued, "already": already}
 
-    snapshots = [
-        LibrarySnapshot.of(lib)
-        for lib in db.query(em.Library).filter(em.Library.id.in_(lib_ids)).all()
-    ] if lib_ids else []
 
-    def _run() -> None:
-        scan_db = SessionLocal()
-        try:
-            for snapshot in snapshots:
-                library = scan_db.query(em.Library).filter(em.Library.id == snapshot.library_id).first()
-                if not library:
-                    continue
-                try:
-                    # 修复队列靠重扫来补图：流水里能区分出「不是有人在点扫描」
-                    scan_library_sync(scan_db, library, snapshot, trigger="repair")
-                except ScanInProgress:
-                    continue
-        finally:
-            scan_db.close()
+@admin_emby_router.get("/libraries/{lib_id}/scan-live")
+def library_scan_live(lib_id: int, staff: models.WebUser = Depends(require_staff),
+                      db: Session = Depends(get_db)):
+    """单个媒体库的实时扫描状态（排队/进度）；空闲返回 204
 
-    threading.Thread(target=_run, daemon=True).start()
-    return {"success": True, "libraries": [s.library_id for s in snapshots]}
+    列表接口已经带了这个字段，这个端点只是给「盯着一个库看」的页面（轮询间隔更短）。
+    """
+    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+    if not lib:
+        raise HTTPException(status_code=404, detail="媒体库不存在")
+    live = scan_queue.live_payload(lib)
+    if live is None:
+        return Response(status_code=204)
+    return live
 
 
 @admin_emby_router.get("/items")

@@ -89,6 +89,9 @@ def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> 
         if getattr(lib, "scan_status", None) == scanner.SCAN_STATUS_RUNNING:
             lib.scan_status = scanner.SCAN_STATUS_FAILED
             lib.scan_error = "进程重启，本轮扫描未完成"
+        # 进度快照同时清掉（v2.27.0）：进程已经死了，那份进度永远不会再更新，
+        # 留着会让面板把一台已经重启的机器显示成「正在扫（已发现 12345）」
+        lib.scan_progress = None
         reset.append(lib)
     if reset:
         db.commit()

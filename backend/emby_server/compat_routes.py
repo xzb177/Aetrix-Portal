@@ -561,34 +561,16 @@ def library_refresh(request: Request,
         raise HTTPException(status_code=403, detail="需要管理员权限")
     # 触发全库重扫是写操作：只读角色不能通过 Emby 接口绕道（v2.26.0）
     admin_roles.ensure_admin_allowed(request, user)
-    lib_ids = [
-        lib.id for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
-        if not lib.is_scanning
-    ]
+    # 入队而不是直接起线程（v2.27.0）：客户端点「刷新媒体库」往往一次触发好几个库，
+    # 而那些库很可能指向同一个远程挂载——由队列按挂载串行化，已在队列里的会自动合并。
+    # （Emby 客户端触发的：流水里与面板按钮、节点转发区分开）
+    from backend.emby_server import scan_queue
 
-    def _run_scan() -> None:
-        # 后台线程必须用独立 Session（请求级 Session 结束即关闭）
-        scan_db = SessionLocal()
-        try:
-            for lib_id in lib_ids:
-                library = scan_db.query(em.Library).filter(em.Library.id == lib_id).first()
-                if not library:
-                    continue
-                # 单个库失败不能带走整批「刷新全部」：否则后面的库永远没被扫到，
-                # 而界面上只会看到“刷新了但没变化”，连原因都没有。
-                try:
-                    # Emby 客户端触发的「刷新媒体库」：流水里与面板按钮区分开
-                    scan_library_sync(scan_db, library, trigger="client")
-                except ScanInProgress:
-                    continue  # 已有任务在跑：跳过，不是错误
-                except Exception:  # noqa: BLE001
-                    logger.exception("媒体库 %s 扫描失败", lib_id)
-        finally:
-            scan_db.close()
-
-    import threading
-
-    threading.Thread(target=_run_scan, daemon=True).start()
-    return {"success": True, "libraries": len(lib_ids)}
+    queued: list[int] = []
+    already: list[int] = []
+    for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all():  # noqa: E712
+        result = scan_queue.enqueue(lib, trigger="client")
+        (queued if result["created"] else already).append(lib.id)
+    return {"success": True, "libraries": queued, "already": already}
 
 

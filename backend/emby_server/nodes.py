@@ -403,34 +403,20 @@ def node_scan_library(library_id: int, db: Session = Depends(get_db)):
 
 
 def start_local_scan(db: Session, lib) -> dict:
-    """在本进程里启动一次后台扫描（与面板的扫描按钮同一条路径）"""
-    from backend.emby_server.scanner import LibrarySnapshot, ScanInProgress, is_scan_active, scan_library_sync
+    """在本进程里启动一次后台扫描（与面板的扫描按钮同一条路径）
 
-    if is_scan_active(lib.id):
+    v2.27.0 起走扫描队列：多台节点上同时点、或同一个远程挂载被多个库引用时，
+    由队列按挂载串行化（节点被转发扫描的那一台，队列就是它的）。
+    """
+    from backend.emby_server import scan_queue
+
+    # 这个库归本节点：面板点「扫描」时会转发到这台机器，流水里标成 node
+    result = scan_queue.enqueue(lib, trigger="node")
+    task = result["task"]
+    if not result["created"] and task.get("state") == "running":
         raise ValueError("该媒体库正在扫描中")
-    import threading
-
-    library_id = lib.id
-    snapshot = LibrarySnapshot.of(lib)
-
-    def _run_scan() -> None:
-        from backend.database import SessionLocal
-
-        scan_db = SessionLocal()
-        try:
-            target = scan_db.query(em.Library).filter(em.Library.id == library_id).first()
-            if target:
-                # 这个库归本节点：面板点「扫描」时会转发到这台机器，流水里标成 node
-                scan_library_sync(scan_db, target, snapshot, trigger="node")
-        except ScanInProgress:
-            pass
-        except Exception:  # noqa: BLE001 — 后台线程的异常要落日志，否则“扫失败”无人知晓
-            logger.exception("媒体库 %s 扫描失败", library_id)
-        finally:
-            scan_db.close()
-
-    threading.Thread(target=_run_scan, daemon=True).start()
-    return {"library_id": library_id, "scrape_policy": snapshot.scrape_policy}
+    return {"library_id": lib.id, "scrape_policy": lib.scrape_policy or "missing_only",
+            "task": task, "queued": bool(result["created"]), "position": task.get("position")}
 
 
 # ==================== EM 侧：调用节点 ====================

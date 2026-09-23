@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
+# 实时进度与远程 IO 计数（v2.27.0）：只依赖标准库，不会与 scanner / mounts 形成循环
+from backend.emby_server import scan_progress as progress
 
 # TMDB 刮削客户端已拆到 tmdb.py：扫描器只管遍历与写库，网络客户端（密钥轮询 + 短 TTL 缓存）
 # 单独成模块。这里重新导出一次，`scanner.tmdb_client` / `scanner.TmdbClient` 等既有引用不变。

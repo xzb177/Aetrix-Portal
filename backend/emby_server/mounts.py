@@ -36,6 +36,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import logging
@@ -52,6 +53,8 @@ from typing import Any, Callable, Iterator, Optional
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
+# 远程 IO 计数与「扫描会话」标记（只依赖标准库，不会形成循环导入）
+from backend.emby_server import scan_progress as progress
 from backend.emby_server.playback_security import (
     validate_local_file_path, validate_remote_url, safe_local_path,
 )
@@ -366,10 +369,17 @@ def local_play_target(path: str) -> PlayTarget:
 # 共享同一个 list 对象会让它们互相污染）。
 MOUNT_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("MOUNT_LIST_CACHE_SECONDS", "5") or 0))
 MOUNT_LIST_CACHE_MAX = max(50, int(os.getenv("MOUNT_LIST_CACHE_MAX", "2000") or 2000))
+# 远程并发上限（v2.27.0）：同时最多几个远程请求在飞。WebDAV / rclone / 网盘代理在高并发下
+# 并不会更快——它们要么排队、要么限流，四个库同时扫一个端点时延迟被放大到十几倍。
+# 本机目录（local / strm / rclone 最终落到本机路径的用法）不吃这个名额。
+MOUNT_REMOTE_CONCURRENCY = max(1, min(16, int(os.getenv("MOUNT_REMOTE_CONCURRENCY", "2") or 2)))
 
 _LIST_CACHE: dict = {}
 _LIST_LOCKS: dict = {}
 _LIST_CACHE_LOCK = threading.Lock()
+_REMOTE_SEM: Optional[threading.BoundedSemaphore] = None
+_REMOTE_SEM_SIZE = MOUNT_REMOTE_CONCURRENCY
+_REMOTE_SEM_LOCK = threading.Lock()
 _LIST_CACHE_STATS = {"hits": 0, "misses": 0, "expired": 0, "evictions": 0, "waits": 0}
 
 
@@ -377,7 +387,9 @@ def list_cache_stats() -> dict:
     """缓存命中情况（健康检查 / 测试用）"""
     with _LIST_CACHE_LOCK:
         return {**_LIST_CACHE_STATS, "entries": len(_LIST_CACHE),
-                "ttl_seconds": MOUNT_LIST_CACHE_SECONDS}
+                "ttl_seconds": MOUNT_LIST_CACHE_SECONDS,
+                "remote_concurrency": MOUNT_REMOTE_CONCURRENCY,
+                "scan_session": progress.in_scan_session()}
 
 
 def invalidate_list_cache(mount_id: Optional[int] = None) -> None:
@@ -421,11 +433,17 @@ def _list_cache_key(provider, kind: str, rel: str) -> tuple:
 
 
 def _cache_get(key: tuple) -> Optional[list]:
-    """取缓存（命中返回**拷贝**；过期则删除并当未命中）"""
+    """取缓存（命中返回**拷贝**；过期则删除并当未命中）
+
+    扫描会话期间（``scan_progress.in_scan_session()``）**不看过期时间**：一轮扫描里同一个目录
+    会被反复问到（目录指纹、外挂字幕、播放侧预取），TTL 只有 5 秒——扫描跑几分钟就是几十次
+    多余的 PROPFIND，日志里那种「同一路径每 5 秒重复一次」正是这么来的。会话开始时
+    ``scanner.clear_dir_cache`` 已经清过一次缓存，所以这里留下的都是**本轮**的数据。
+    """
     now = time.monotonic()
     with _LIST_CACHE_LOCK:
         row = _LIST_CACHE.get(key)
-        if row is not None and row[0] > now:
+        if row is not None and (row[0] > now or progress.in_scan_session()):
             _LIST_CACHE_STATS["hits"] += 1
             return list(row[1])
         if row is not None:
@@ -459,6 +477,50 @@ def _single_flight_lock(key: tuple) -> threading.RLock:
         return lock
 
 
+def _remote_semaphore() -> threading.BoundedSemaphore:
+    """远程请求名额（上限是 MOUNT_REMOTE_CONCURRENCY；测试改了常量会重新建一个）"""
+    global _REMOTE_SEM, _REMOTE_SEM_SIZE
+    with _REMOTE_SEM_LOCK:
+        if _REMOTE_SEM is None or _REMOTE_SEM_SIZE != MOUNT_REMOTE_CONCURRENCY:
+            _REMOTE_SEM = threading.BoundedSemaphore(MOUNT_REMOTE_CONCURRENCY)
+            _REMOTE_SEM_SIZE = MOUNT_REMOTE_CONCURRENCY
+        return _REMOTE_SEM
+
+
+@contextlib.contextmanager
+def remote_io_slot():
+    """占用一个「远程请求」名额（v2.27.0 的远程限流）
+
+    只包住**真的会发出网络请求**的那一步（列目录、远程探测），缓存命中与单飞等待都不占名额——
+    否则并发请求同一个目录时，等锁的线程会把名额白白占住，反而降低吞吐。
+    """
+    sem = _remote_semaphore()
+    sem.acquire()
+    progress.note_remote_inflight(1)
+    try:
+        yield
+    finally:
+        progress.note_remote_inflight(-1)
+        sem.release()
+
+
+def _is_remote_provider(provider) -> bool:
+    """这个提供者背后是不是远程端点（按挂载类型的 kind 判定，本机目录不吃名额）"""
+    mount = getattr(provider, "mount", None)
+    meta = type_meta(getattr(mount, "mount_type", "") or "")
+    return (meta.get("kind") or "") == "remote"
+
+
+def _call_remote(provider, fn: Callable, rel: str) -> list:
+    """真的列一次目录（远程会占用名额，并记一次「远程列举」用于扫描统计）"""
+    if not _is_remote_provider(provider):
+        return fn(provider, rel)
+    with remote_io_slot():
+        entries = fn(provider, rel)
+    progress.note_remote_listing()
+    return entries
+
+
 def cached_listing(fn: Callable) -> Callable:
     """把提供者的「列目录」实现包一层共用 TTL 缓存
 
@@ -470,18 +532,20 @@ def cached_listing(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapper(self, rel: str = "/", fresh: bool = False):
         if fresh or MOUNT_LIST_CACHE_SECONDS <= 0:
-            return fn(self, rel)
+            return _call_remote(self, fn, rel)
         key = _list_cache_key(self, fn.__name__, rel)
         hit = _cache_get(key)
         if hit is not None:
+            progress.note_remote_listing(reused=True)
             return hit
         lock = _single_flight_lock(key)
         with lock:
             try:
                 hit = _cache_get(key)        # 等锁期间别人可能已经列完了
                 if hit is not None:
+                    progress.note_remote_listing(reused=True)
                     return hit
-                entries = fn(self, rel)      # 失败就往上抛：异常不进缓存
+                entries = _call_remote(self, fn, rel)   # 失败就往上抛：异常不进缓存
                 _cache_put(key, entries)
                 return list(entries)
             finally:
@@ -495,8 +559,8 @@ def list_dir_uncached(provider, rel: str = "/") -> list:
     """绕过缓存列目录（后台目录选择器 / 管理页的「刷新」用；看当下而不是 5 秒前的）"""
     impl = getattr(type(provider).list_dir, "__wrapped__", None)
     if impl is None:            # 没被装饰（自定义提供者）：照常调用
-        return provider.list_dir(rel)
-    return impl(provider, rel)
+        return _call_remote(provider, lambda prov, path: prov.list_dir(path), rel)
+    return _call_remote(provider, impl, rel)
 
 
 class MountProvider:
