@@ -171,6 +171,11 @@ def enqueue(library, *, trigger: str = "manual") -> dict:
         # 入队时就把「在等哪个挂载」算出来：接口要立刻把理由写进提示（
         # 「已加入队列，正在等挂载：MP媒体库」），不能等调度线程下一次迭代才填上
         task.waiting_for = _conflicts_locked(task)
+        # 入队/开始/结束都记一行 INFO：出问题时（“点了扫描没反应”）运维能直接从日志看出
+        # 是入队了、在等哪个挂载，还是已经跑起来了——而不是只有面板上一个“扫描中”
+        logger.info("扫描入队：库「%s」(id=%s) 触发=%s；等挂载 %s；队列长度 %s",
+                    task.name or "?", task.library_id, task.trigger,
+                    _mounts_text(task.waiting_for), len(_QUEUE))
         _ensure_scheduler_locked()
         # 就地派发一次（不等调度线程醒来）：点完扫描的响应就是**真实状态**
         # （已开扫 / 排队第几位 / 在等谁），而不是「已入队」的猜测；
@@ -194,6 +199,7 @@ def cancel(library_id: int) -> str:
                 task.result = STATE_CANCELED
                 task.finished_at = datetime.now()
                 _push_history_locked(task)
+                logger.info("取消排队：库「%s」(id=%s)", task.name or "?", task.library_id)
                 _COND.notify_all()
                 return "canceled"
         if int(library_id) in _RUNNING:
@@ -428,6 +434,9 @@ def _dispatch_locked(task: ScanTask) -> None:
     if SCAN_MOUNT_SERIAL:
         for mount_id in task.mount_ids or ():
             _MOUNT_OWNER[int(mount_id)] = task.library_id
+    logger.info("扫描开始：库「%s」(id=%s) 排队 %.1fs；占用挂载 %s；同时 %s 个在跑",
+                task.name or "?", task.library_id, (task.queued_ms or 0) / 1000,
+                _mounts_text(task.mount_ids), len(_RUNNING))
     task.owner_thread = threading.Thread(
         target=_run_task, args=(task,), name=f"scan-lib{task.library_id}", daemon=True,
     )
@@ -454,6 +463,12 @@ def _release_locked(task: ScanTask) -> None:
             _MOUNT_OWNER.pop(int(mount_id), None)
     _push_history_locked(task)
     _COND.notify_all()
+
+
+def _mounts_text(mount_ids) -> str:
+    """日志里的挂载：没有就写「无」，有就写成 [1, 3]（名字由调用方 / 面板负责）"""
+    ids = [int(m) for m in (mount_ids or ())]
+    return "[" + ", ".join(str(mid) for mid in ids) + "]" if ids else "无"
 
 
 def _push_history_locked(task: ScanTask) -> None:
@@ -506,6 +521,9 @@ def _run_task(task: ScanTask) -> None:
         # 清进度快照要在「标成已结束」之前：反过来会留下一个「队列面板已经显示跑完、
         # 库里却还挂着上一轮进度」的瞬间（面板就会显示成「完成 + 正在处理 1234」）
         clear_progress(task.library_id)
+        logger.info("扫描结束：库「%s」(id=%s) → %s；耗时 %.1fs；本轮远程列举 %s 次（复用 %s）",
+                    task.name or "?", task.library_id, task.result or task.state,
+                    (task.duration_ms or 0) / 1000, task.remote_lists, task.remote_reused)
         with _COND:
             _release_locked(task)
 
