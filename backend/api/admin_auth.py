@@ -16,7 +16,7 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import admin_roles, models
 from backend.api.admin_core import (
     _audit,
     _log_out,
@@ -103,6 +103,9 @@ def admin_login(
 
     access = create_access_token(user.id, {"username": user.username, "staff": True})
     refresh = create_refresh_token(user.id)
+    # 登录响应带上角色（与 /auth/me 同一个 payload）：进后台立刻按真实角色渲染导航与按钮，
+    # 不用先显示成「超级管理员」再等一次 /auth/me 纠正（v2.26.0）
+    perms = admin_roles.permission_payload(user)
     return {
         "access_token": access,
         "refresh_token": refresh,
@@ -111,6 +114,10 @@ def admin_login(
             "id": user.id,
             "username": user.username,
             "is_staff": True,
+            "admin_role": perms["role"],
+            "role_label": perms["role_label"],
+            "can_write": perms["can_write"],
+            "is_super": perms["is_super"],
         },
     }
 
@@ -120,17 +127,27 @@ class AdminMeResponse(BaseModel):
     username: str
     is_staff: bool
     created_at: Optional[str] = None
+    # v2.26.0 角色与权限：前端据此置灰入口（服务端仍然自己判一次，界面只是提前告知）
+    admin_role: Optional[str] = None
+    role_label: Optional[str] = None
+    can_write: bool = True
+    is_super: bool = False
 
 
 @admin_router.get("/auth/me", response_model=AdminMeResponse)
 def admin_me(
     current_admin: models.WebUser = Depends(get_current_admin),
 ):
+    perms = admin_roles.permission_payload(current_admin)
     return AdminMeResponse(
         id=current_admin.id,
         username=current_admin.username,
         is_staff=True,
         created_at=_log_out(current_admin),
+        admin_role=perms["role"],
+        role_label=perms["role_label"],
+        can_write=perms["can_write"],
+        is_super=perms["is_super"],
     )
 
 

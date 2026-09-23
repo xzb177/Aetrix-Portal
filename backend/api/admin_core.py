@@ -25,11 +25,11 @@ import logging
 import secrets
 import string
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import admin_roles, models
 from backend.database import get_db
 from backend.security import resolve_jwt_user_id
 
@@ -51,13 +51,15 @@ def _generate_code(length: int = 12) -> str:
 # ==================== 鉴权依赖 ====================
 
 def get_current_admin(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: Session = Depends(get_db),
 ) -> models.WebUser:
     """管理员鉴权：JWT access token，且必须是 is_staff 的 WebUser
 
-    与用户端相同的 token 体系；权限差异仅由 is_staff 决定，
-    不再有独立的 AdminUser 账号体系。
+    与用户端相同的 token 体系；身份仍然是 ``is_staff``，**角色**（super / operator /
+    viewer，见 backend/admin_roles.py）只决定能写什么——判定集中在这一个依赖里，
+    避免出现「某个写接口忘了判角色」的漏洞。
     """
     if credentials is None:
         raise HTTPException(
@@ -83,6 +85,9 @@ def get_current_admin(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理员已被禁用",
         )
+
+    # 角色判定：只读角色不能写；运营角色不能改系统设置 / 上游 Key / 策略 / 管理员本身
+    admin_roles.ensure_admin_allowed(request, user)
 
     return user
 

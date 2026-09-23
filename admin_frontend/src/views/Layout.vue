@@ -17,7 +17,7 @@ import { ElMessage } from 'element-plus'
 import {
   LayoutDashboard, Users, Package, Film, Ticket, Settings, Server,
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Tv,
-  CheckCircle2, Route as RealmIcon,
+  CheckCircle2, Route as RealmIcon, Lock,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -32,6 +32,13 @@ const auth = useAuthStore()
 const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
 
+/** 当前账号是不是超级管理员（角色见 backend/admin_roles.py）：只影响导航上的标记 */
+const isSuper = computed(() => auth.admin?.is_super !== false)
+/** 为什么有些入口标着锁：不是 super 时那些页面只能看、不能改 */
+const SUPER_ONLY_HINT = '需要超级管理员角色：可以查看，保存会被服务端拒绝'
+/** 侧边栏里的角色名（来自后端 /auth/me）：以前写死「超级管理员」，有角色后就不再真实了 */
+const roleLabel = computed(() => auth.admin?.role_label || '超级管理员')
+
 const APP_VERSION = APP_VERSION_BASE
 const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
@@ -40,6 +47,8 @@ const drawerOpen = ref(false)
 interface NavItem {
   path: string
   label: string
+  /** 仅超级管理员可写（v2.26.0）：其他角色能看，改不了——入口上直接标出来 */
+  superOnly?: boolean
 }
 
 interface NavGroup {
@@ -57,6 +66,8 @@ const navGroups: NavGroup[] = [
       { path: '/users', label: '用户' },
       { path: '/subscriptions', label: '订阅与权益' },
       { path: '/devices', label: '设备与安全' },
+      // 客户端能做什么（转码 / 清晰度 / 准入 / 下载与设备）：与「设备与安全」互为补充
+      { path: '/client-policy', label: '客户端策略', superOnly: true },
       { path: '/login-logs', label: '登录日志' },
     ],
   },
@@ -96,7 +107,8 @@ const navGroups: NavGroup[] = [
     title: '系统与审计',
     icon: Settings,
     items: [
-      { path: '/settings', label: '系统设置' },
+      { path: '/admins', label: '管理员与权限', superOnly: true },
+      { path: '/settings', label: '系统设置', superOnly: true },
       { path: '/logs', label: '操作日志' },
       { path: '/health', label: '服务健康' },
     ],
@@ -330,7 +342,8 @@ onUnmounted(() => {
                 class="nav-item"
                 :class="{ active: route.path === item.path }"
               >
-                {{ item.label }}
+                <span class="nav-label">{{ item.label }}</span>
+                <Lock v-if="item.superOnly && !isSuper" :size="12" class="nav-super" :title="SUPER_ONLY_HINT" />
               </RouterLink>
             </div>
           </div>
@@ -342,7 +355,7 @@ onUnmounted(() => {
           <span class="who-avatar">{{ initial }}</span>
           <div class="who-info">
             <div class="who-name">{{ auth.admin?.username || '管理员' }}</div>
-            <div class="who-role">超级管理员</div>
+            <div class="who-role">{{ roleLabel }}</div>
           </div>
         </div>
         <div class="foot-links">
@@ -550,7 +563,9 @@ onUnmounted(() => {
 .nav-items { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 6px; }
 
 .nav-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 9px 12px 9px 41px;
   border-radius: var(--radius-md);
   color: var(--text-tertiary);
@@ -560,6 +575,9 @@ onUnmounted(() => {
 }
 
 .nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.nav-label { flex: 1; min-width: 0; }
+.nav-super { color: var(--text-faint); flex-shrink: 0; }
 
 .nav-item.active {
   background: var(--primary-bg);

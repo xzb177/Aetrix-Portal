@@ -242,6 +242,9 @@ class WebUser(Base):
     telegram_id = Column(BigInteger, unique=True)
     is_active = Column(Boolean, default=True)
     is_staff = Column(Boolean, default=False)
+    # 管理员角色（v2.26.0，见 backend/admin_roles.py）：super / operator / viewer
+    # 空值 = 升级前的老管理员 → 按 super 处理（不改权、也不会「没人进得去后台」）
+    admin_role = Column(String(20), nullable=True)
     points = Column(Integer, default=0)  # 积分余额（签到/邀请返利/兑换/充值）
 
     # 自建 Emby 凭据（完全自建模式下，Emby 客户端用此账号密码登录）

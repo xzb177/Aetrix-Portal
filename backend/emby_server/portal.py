@@ -158,12 +158,20 @@ def ensure_emby_backend_available(request: Request, db: Session = Depends(get_db
 
 
 def require_staff(
+    request: Request,
     user: models.WebUser = Depends(get_admin_or_emby_user),
     _: None = Depends(ensure_emby_backend_available),
 ) -> models.WebUser:
-    """管理端鉴权：仅 is_staff 用户可访问（/api/admin/emby/* 全部端点）"""
+    """管理端鉴权：仅 is_staff 用户可访问（/api/admin/emby/* 全部端点）
+
+    与 ``/api/admin/*`` 用同一套角色判定（backend/admin_roles.py）：只读角色不能扫描 /
+    改库 / 删条目这些写操作，否则「只读」在这个路由上是假的。
+    """
+    from backend import admin_roles
+
     if not user.is_staff:
         raise HTTPException(status_code=403, detail="需要管理员权限")
+    admin_roles.ensure_admin_allowed(request, user)
     return user
 
 

@@ -29,6 +29,8 @@ from backend.download_guard import DownloadGuardMiddleware
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
 from backend.api.emby_servers import router as emby_servers_router
+from backend.api.admins_admin import router as admins_router
+from backend.api.playback_admin import router as playback_admin_router
 from backend.api.realms import router as realms_router
 from backend.api.servers import router as servers_router
 from backend import realms
@@ -137,7 +139,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RoyalBot Portal",
     description="RoyalBot 统一门户 API",
-    version="2.25.0",
+    version="2.26.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -316,6 +318,10 @@ app.include_router(capabilities_router)
 app.include_router(assistant_router)
 # 站点信息（v2.20.0）：能力「站点与品牌」的消费点，公开无需鉴权，见 backend/api/site.py
 app.include_router(site_router)
+# 管理员与权限（v2.26.0）：角色清单 / 授权 / 改角色 / 撤销，见 backend/api/admins_admin.py
+app.include_router(admins_router)
+# 播放与客户端策略（v2.26.0）：转码开关 / 并发上限 / 码率上限 / 客户端准入，见 backend/api/playback_admin.py
+app.include_router(playback_admin_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

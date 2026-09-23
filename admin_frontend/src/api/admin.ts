@@ -2,7 +2,10 @@
 import { get, post, put, patch, del } from '@/utils/request'
 import type {
   AdminInfo,
+  AdminListResponse,
   AdminLogRow,
+  AdminRole,
+  AdminRow,
   Announcement,
   CodeStats,
   DeviceRow,
@@ -17,6 +20,8 @@ import type {
   MountTypeMeta,
   MountDirEntry,
   PlaybackNode,
+  PlaybackPolicy,
+  PlaybackRuntime,
   EaMountHealth,
   RemoteServerRow,
   ServerKind,
@@ -494,6 +499,37 @@ export const fetchSessions = () => get<{ sessions: EmbySessionRow[] }>(`${E}/ses
 export const stopSession = (sessionKey: string) => del<{ success: boolean }>(`${E}/sessions/${sessionKey}`)
 
 export const stopAllTranscodes = () => post<{ stopped: number }>(`${E}/transcodes/stop-all`)
+
+// ==================== 管理员与权限（v2.26.0，/api/admin/admins） ====================
+// 角色定义在后端（backend/admin_roles.py）：super = 全部；operator = 日常运营；
+// viewer = 只读。角色判定发生在服务端鉴权依赖里，这里的函数只是调用入口。
+
+export const fetchAdmins = () => get<AdminListResponse>('/admins')
+
+/** 把已注册的用户提为管理员（只标记账号 + 定角色，不新建账号） */
+export const grantAdmin = (data: { username?: string; email?: string; role: AdminRole }) =>
+  post<{ success: boolean; admin: AdminRow }>('/admins', data)
+
+export const updateAdmin = (userId: number, data: { role?: AdminRole; is_active?: boolean }) =>
+  patch<{ success: boolean; changed: Record<string, unknown>; admin: AdminRow }>(
+    `/admins/${userId}`, data,
+  )
+
+export const revokeAdmin = (userId: number) =>
+  del<{ success: boolean }>(`/admins/${userId}`)
+
+// ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） ====================
+// 转码开关 / 并发上限 / 码率上限 / 客户端准入：改完对 EM 与 EA 同时生效（同一个库）。
+
+export const fetchPlaybackPolicy = () =>
+  get<{ policy: PlaybackPolicy; keys: Record<string, string>; runtime: PlaybackRuntime }>(
+    '/playback/policy',
+  )
+
+export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
+  put<{ success: boolean; applied: Record<string, string>; policy: PlaybackPolicy }>(
+    '/playback/policy', { policy },
+  )
 
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
 // 挂载 = 媒体库的内容来源：local / strm 是本机目录，115 / webdav / alist 是远程来源。

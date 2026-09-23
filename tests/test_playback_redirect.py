@@ -34,10 +34,19 @@ def _request(query: str = ""):
     return Request(scope)
 
 
+def _stub_gates(monkeypatch):
+    """本文件只测「重定向 / 代理」这一层：付费墙与客户端策略各自有自己的用例，
+
+    这里都按放行处理（否则每个用例都要造一个真数据库会话）。
+    """
+    monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
+    monkeypatch.setattr(api.playback_policy, "ensure_client_allowed", lambda db, user, ua: None)
+
+
 def test_video_stream_redirects_safe_url_when_direct_true(monkeypatch):
     target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
     monkeypatch.setattr(api, "_require_item", lambda db, item_id: SimpleNamespace(container="mp4"))
-    monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
+    _stub_gates(monkeypatch)
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
     monkeypatch.setattr(api, "serve_remote_async", lambda *args: None)
 
@@ -51,7 +60,7 @@ def test_video_stream_redirects_safe_url_when_direct_true(monkeypatch):
 def test_video_stream_proxies_when_direct_not_requested(monkeypatch):
     target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
     monkeypatch.setattr(api, "_require_item", lambda db, item_id: SimpleNamespace(container="mp4"))
-    monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
+    _stub_gates(monkeypatch)
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
     proxy = object()
 

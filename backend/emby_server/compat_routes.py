@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import os
 
-from backend import models
+from backend import admin_roles, models
 from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
@@ -544,18 +544,23 @@ def activity_log(user: models.WebUser = Depends(get_emby_user)):
 @emby_router.post("/Videos/ActiveEncodings/Delete")
 def delete_active_encodings(request: Request,
                             user: models.WebUser = Depends(get_emby_user)):
-    # 管理员释放全部转码，普通用户只能释放自己的（避免互相踢掉播放）
-    count = stop_all_transcodes() if user.is_staff else stop_user_transcodes(user.id)
+    # 管理员释放全部转码，普通用户只能释放自己的（避免互相踢掉播放）；
+    # 只读审计角色（v2.26.0）不算「管理员」：它只能释放自己的转码
+    is_admin = user.is_staff and admin_roles.can_write(user)
+    count = stop_all_transcodes() if is_admin else stop_user_transcodes(user.id)
     logger.info("释放转码会话 user=%s count=%s", user.id, count)
     return Response(status_code=204)
 
 
 @emby_router.post("/emby/Library/Refresh")
 @emby_router.post("/Library/Refresh")
-def library_refresh(user: models.WebUser = Depends(get_emby_user),
+def library_refresh(request: Request,
+                    user: models.WebUser = Depends(get_emby_user),
                     db: Session = Depends(get_db)):
     if not user.is_staff:
         raise HTTPException(status_code=403, detail="需要管理员权限")
+    # 触发全库重扫是写操作：只读角色不能通过 Emby 接口绕道（v2.26.0）
+    admin_roles.ensure_admin_allowed(request, user)
     lib_ids = [
         lib.id for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
         if not lib.is_scanning

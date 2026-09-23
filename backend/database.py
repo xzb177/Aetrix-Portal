@@ -191,6 +191,9 @@ def _auto_migrate():
     migrations: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("web_users", [
             ("points", "INTEGER", "0"),
+            # v2.26.0 管理员角色（super / operator / viewer）：老库补列后为 NULL，
+            # 按 super 处理 → 升级前后权限完全一致（见 backend/admin_roles.py）
+            ("admin_role", "VARCHAR(20)", "NULL"),
         ]),
         # v2.6.15 通知历史记录真实投递结果：邮件/TG 发送失败必须留下原因，
         # 而不是像以前那样一律写成 status="sent"
