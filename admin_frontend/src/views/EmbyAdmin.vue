@@ -34,6 +34,7 @@ import type {
   EmbyLibrary,
   EmbyScanResult,
   EmbyScanRun,
+  EmbyScanSource,
   EmbyScanStatus,
   EmbySessionRow,
   Pan115Account,
@@ -309,13 +310,48 @@ function runSummary(r: EmbyScanRun): string {
   return [`+${r.added}`, `~${r.updated}`, `-${r.removed}`].join(' / ')
 }
 
+// ---- 按来源拆分（哪条来源扫到了什么）----
+
+/** 悬停明细：一条来源一行（读不到 / 0 个文件 / 文件数 + 增量） */
+function sourcesDetail(list: EmbyScanSource[] | undefined): string {
+  return (list || []).map((s) => {
+    if (s.error) return `${s.label}：读取失败 —— ${s.error}`
+    if (!s.files) return `${s.label}：0 个文件`
+    const bits = [`${s.files} 个文件`, `新增 ${s.added}`, `更新 ${s.updated}`]
+    if (s.probed) bits.push(`探测 ${s.probed}`)
+    if (s.unchanged) bits.push(`未变 ${s.unchanged}`)
+    return `${s.label}：${bits.join(' / ')}`
+  }).join('\n')
+}
+
+/** 来源列：条数 + 有几条一条文件都没扫到 */
+function sourcesLabel(list: EmbyScanSource[] | undefined): string {
+  if (!list?.length) return '—'
+  const empty = emptySourceCount(list)
+  return empty ? `${list.length} 条 · ${empty} 空` : `${list.length} 条`
+}
+
+/** 有没有「别的来源有文件、这条一条都没有」的来源（全空是整库为空，另当别论） */
+function emptySourceCount(list: EmbyScanSource[] | undefined): number {
+  const sources = list || []
+  if (!sources.some((s) => s.files > 0)) return 0
+  return sources.filter((s) => !s.error && !s.files).length
+}
+
+/** 卡片上的提示：只看总体统计发现不了「某个来源是空的」 */
+function scanEmptySources(l: EmbyLibrary): string {
+  const count = emptySourceCount(l.last_scan?.sources)
+  return count ? `${count} 个来源没扫到任何文件` : ''
+}
+
 const scanColumns: DataColumn[] = [
   { key: 'started_at', label: '开始', width: 140, mobile: 'title' },
   { key: 'status', label: '结果', width: 110 },
   { key: 'trigger', label: '触发', width: 90 },
   { key: 'summary', label: '新增/更新/删除', width: 150 },
+  { key: 'sources', label: '来源', width: 110 },
   { key: 'duration', label: '耗时', width: 90 },
-  { key: 'error', label: '原因', minWidth: 180 },
+  { key: 'error', label: '原因', minWidth: 160 },
 ]
 
 async function openScans(l: EmbyLibrary) {
@@ -396,6 +432,11 @@ function typeLabel(t: string): string {
             <span>{{ scanSummary(l) }}</span>
           </div>
           <div v-if="scanError(l)" class="scan-error" :title="scanError(l)">{{ scanError(l) }}</div>
+          <div
+            v-else-if="scanEmptySources(l)"
+            class="scan-hint"
+            :title="sourcesDetail(l.last_scan?.sources)"
+          >{{ scanEmptySources(l) }}</div>
         </div>
 
         <div class="lib-paths">
@@ -606,6 +647,7 @@ function typeLabel(t: string): string {
       <p class="drawer-hint">
         每轮扫描一行，最近的在最上面（每库最多保留 {{ scanKeep }} 条）。
         「每轮都失败」和「只是最近一轮失败」是两件事，这里能直接看出来。
+        「来源」列把这一轮拆到每条路径 / 挂载上：悬停看每条扫到多少文件、哪条是空的。
       </p>
       <DataTable
         :rows="scanRuns"
@@ -624,6 +666,13 @@ function typeLabel(t: string): string {
 
         <template #cell-summary="{ row }">
           <span class="mono">{{ runSummary(row) }}</span>
+        </template>
+
+        <template #cell-sources="{ row }">
+          <span
+            :class="{ 'scan-hint': emptySourceCount(row.sources) }"
+            :title="sourcesDetail(row.sources)"
+          >{{ sourcesLabel(row.sources) }}</span>
         </template>
 
         <template #cell-duration="{ row }">
@@ -697,6 +746,13 @@ function typeLabel(t: string): string {
 .scan-dot.is-failed { background: var(--danger); }
 .scan-dot.is-running { background: var(--info); }
 .scan-error {
+  font-size: var(--font-size-xs);
+  color: var(--warning);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-hint {
   font-size: var(--font-size-xs);
   color: var(--warning);
   overflow: hidden;

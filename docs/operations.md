@@ -270,10 +270,30 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
     "failed_roots": [
       "/mnt/media/movies: 目录不存在或不可读"
     ],
+    "sources": [                       // 按来源拆开：哪条路径 / 挂载扫到了什么
+      {"label": "/mnt/media/movies", "files": 842, "added": 3, "updated": 12,
+       "probed": 0, "scraped": 3, "repaired": 0, "unchanged": 842},
+      {"label": "/mnt/media/tv", "files": 0, "added": 0, "updated": 0, "unchanged": 0},
+      {"label": "/mnt/media/movies-old", "kind": "unavailable",
+       "error": "目录不存在或不可读", "files": 0, "added": 0, "updated": 0,
+       "probed": 0, "scraped": 0, "repaired": 0, "unchanged": 0}
+    ],
     "error": "/mnt/media/movies: 目录不存在或不可读"
   }
 }
 ```
+
+`last_scan.sources` 是**按来源拆开**的那一份（顺序 = 媒体库里的配置顺序）：
+
+- `files` 是这条来源里**发现**的媒体文件数——增量扫描跳过未变化的文件也算进去，所以
+  「`files` 很大、`added`/`updated` 很小」是正常的；
+- `files: 0` 且没有 `error`：目录在、挂载也能读，**但里面一条媒体文件都没有**（挂载点被清空 /
+  账号可见范围变了 / 路径写错但目录恰好存在）。这种情况只看总体统计发现不了——
+  卡片上会提示「N 个来源没扫到任何文件」，扫描记录抽屉的「来源」列悬停能看到每条明细；
+- `kind: unavailable`：这条来源**读不到**（目录不存在 / 挂载停用 / 凭据失效），会同时出现在
+  `failed_roots` 里并让整轮变成 `partial`；
+- 某个挂载遍历到一半炸掉：错误挂在**它自己**那条明细上（`error`），同一轮别的来源照常记账；
+- 一个库最多记 50 条来源（标签 / 原因超长会截断）；单条来源数据坏掉只会丢那一条，不影响整轮统计。
 
 三种状态的读法：
 
@@ -296,6 +316,7 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
      "started_at": "2026-09-23T03:00:12", "finished_at": "2026-09-23T03:00:44",
      "duration_ms": 32150, "added": 0, "updated": 0, "removed": 0,
      "removal_skipped": true, "failed_roots": ["/mnt/media: 目录不存在或不可读"],
+     "sources": [{"label": "/mnt/media", "kind": "unavailable", "files": 0}],
      "error": "/mnt/media: 目录不存在或不可读"},
     {"id": 117, "status": "success", "trigger": "node", "duration_ms": 3120, "added": 0},
     {"id": 116, "status": "failed", "trigger": "manual", "duration_ms": 812,

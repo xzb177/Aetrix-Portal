@@ -632,6 +632,29 @@ export interface EmbyLibrary {
   account_115_id?: number | null
 }
 
+/**
+ * 一条扫描来源的明细：这条来源扫到了多少文件、这批文件的处理结果
+ *
+ * 「挂载配好了、目录也在，但里面一条文件都没有」（挂载点被清空 / 账号范围变了 / 路径写错
+ * 但目录恰好存在）只看总体统计是完全看不出来的——那是所有来源加在一起的结果。
+ */
+export interface EmbyScanSource {
+  /** 来源标签：本机路径，或「挂载名（类型）」 */
+  label: string
+  /** unavailable = 这条来源读不到（同时也计进 failed_roots）；缺省 = 正常参与了这一轮 */
+  kind?: string
+  /** 这条来源自己的失败原因（读不到 / 遍历中途出错） */
+  error?: string
+  /** 这条来源里**发现**的媒体文件数（增量扫描跳过未变化的文件也算，不是写库条数） */
+  files: number
+  added: number
+  updated: number
+  probed: number
+  scraped: number
+  repaired: number
+  unchanged: number
+}
+
 /** 一轮扫描的统计：最近一次与扫描流水共用同一份字段（后端 _scan_metrics） */
 export interface EmbyScanMetrics {
   added: number
@@ -646,6 +669,8 @@ export interface EmbyScanMetrics {
   removal_skipped: boolean
   /** 读不到的来源（路径 / 挂载 + 原因） */
   failed_roots: string[]
+  /** 按来源拆分的明细（顺序 = 媒体库里的配置顺序；虚拟库为空数组） */
+  sources: EmbyScanSource[]
 }
 
 /** 扫描状态：running = 正在跑；success = 跑完且来源都正常；partial = 有来源读不到（已跳过清理）；failed = 异常中断 */

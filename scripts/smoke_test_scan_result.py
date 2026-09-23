@@ -21,7 +21,9 @@
 8. 虚拟库（没有自己的目录）算成功；**完全没配来源**算 partial（不是「一切正常」）；
 9. 流水：每轮一条（新的在前）、带触发方与耗时、失败/部分失败的记录带原因、
    每库只留最近 N 条、`EMBY_SCAN_HISTORY=0` 可关闭、媒体库删除后由维护周期回收、
-   「最近一次」与最新一条流水口径一致。
+   「最近一次」与最新一条流水口径一致；
+10. 按来源拆分：每条来源各自记账（文件数 / 新增 / 探测），空目录不算失败，
+    读不到的来源带 `kind=unavailable` 与原因，挂载半路炸只影响它自己那条明细。
 
 用法：python scripts/smoke_test_scan_result.py
 """
@@ -530,6 +532,174 @@ check("接口返回 library_id / keep / runs",
 check("接口的 runs 与 scanner 口径一致、带上限",
       payload["runs"] == runs(5) and payload["keep"] == sc.SCAN_RUN_KEEP,
       f"keep={payload['keep']}")
+
+# ==================== 10. 按来源拆分的统计 ====================
+print("\n=== 10. 按来源拆分 ===")
+from backend.emby_server import mounts as mnt  # noqa: E402
+
+src_a = tempfile.mkdtemp(prefix="scansrc_a_")
+src_b = tempfile.mkdtemp(prefix="scansrc_b_")
+src_empty = tempfile.mkdtemp(prefix="scansrc_empty_")
+for i in range(2):
+    with open(os.path.join(src_a, f"Source A {i} (2020).mkv"), "wb") as f:
+        f.write(b"\x00" * 1024)
+with open(os.path.join(src_b, "Source B (2021).mkv"), "wb") as f:
+    f.write(b"\x00" * 1024)
+missing_src = os.path.join(src_a, "does-not-exist-either")
+
+
+def runs_for(lid: int, limit: int = 5) -> list:
+    with Session() as db:
+        return sc.scan_runs_payload(db, lid, limit=limit)
+
+
+with Session() as db:
+    slib = em.Library(guid="s" * 32, name="来源明细库", collection_type="movies",
+                      paths=f"{src_a},{src_b},{src_empty}")
+    db.add(slib)
+    db.commit()
+    sid = slib.id
+
+
+def scan_sid(trigger: str = "manual") -> dict:
+    with Session() as db:
+        row = db.query(em.Library).filter(em.Library.id == sid).first()
+        return sc.scan_library_sync(db, row, sc.LibrarySnapshot.of(row), trigger)
+
+
+def last_scan(lid: int) -> dict:
+    with Session() as db:
+        row = db.query(em.Library).filter(em.Library.id == lid).first()
+        return sc.scan_result_payload(row)
+
+
+first = scan_sid()
+check("按来源逐条记账（顺序 = 媒体库里的配置顺序）",
+      [s["label"] for s in first["sources"]] == [src_a, src_b, src_empty],
+      str([s["label"] for s in first["sources"]]))
+check("每条来源的文件数就是它自己扫到的文件数（含空目录那条 0）",
+      [s["files"] for s in first["sources"]] == [2, 1, 0],
+      str([(s["label"].rsplit("/", 1)[-1], s["files"]) for s in first["sources"]]))
+check("来源明细的新增 / 探测加起来正好是总计（不重不漏）",
+      sum(s["added"] for s in first["sources"]) == first["added"] == 3
+      and sum(s["probed"] for s in first["sources"]) == first["probed"] == 3,
+      f"详细 {[s['added'] for s in first['sources']]} 总计 {first['added']}")
+stored_latest = last_scan(sid)
+check("空目录是一条正常来源（0 个文件、没有错误），不算来源失败",
+      stored_latest["sources"][2]["files"] == 0
+      and "error" not in stored_latest["sources"][2]
+      and stored_latest["failed_roots"] == []
+      and stored_latest["status"] == "success",
+      str(stored_latest["sources"][2]))
+check("来源明细落库（换个 Session 读得到，刷新页面不丢）",
+      [s["label"] for s in stored_latest["sources"]] == [src_a, src_b, src_empty]
+      and stored_latest["sources"][0]["added"] == 2
+      and stored_latest["sources"][1]["added"] == 1,
+      str([(s["label"].rsplit("/", 1)[-1], s["added"]) for s in stored_latest["sources"]]))
+check("流水里也带当轮的来源拆解（抽屉里能看历史）",
+      [s["files"] for s in runs_for(sid)[0]["sources"]] == [2, 1, 0],
+      str([s["files"] for s in runs_for(sid)[0]["sources"]]))
+
+# 读不到的来源：明细里也要有一条（不是凭空少一条）
+with Session() as db:
+    row = db.query(em.Library).filter(em.Library.id == sid).first()
+    row.paths = f"{src_a},{missing_src},{src_empty}"
+    db.commit()
+partial_src = scan_sid()
+check("读不到的来源也在明细里：kind=unavailable + 原因 + 文件数 0",
+      [s["label"] for s in partial_src["sources"]] == [src_a, src_empty, missing_src]
+      and partial_src["sources"][2].get("kind") == "unavailable"
+      and "不存在" in (partial_src["sources"][2].get("error") or "")
+      and partial_src["sources"][2]["files"] == 0,
+      str(partial_src["sources"]))
+check("增量跳过未变文件时，来源明细报的是**发现数**不是写库数（全不变的来源也要报全）",
+      partial_src["sources"][0]["files"] == 2 and partial_src["sources"][0]["added"] == 0
+      and partial_src["sources"][1]["files"] == 0,
+      str([(s["label"].rsplit("/", 1)[-1], s["files"], s.get("added")) for s in partial_src["sources"]]))
+check("不可用来源的明细形状与可用来源一致（计数器都在，消费方不用分支）",
+      all(sc.SCAN_SOURCE_COUNTERS and set(sc.SCAN_SOURCE_COUNTERS) <= set(s)
+          for s in partial_src["sources"]),
+      str(sorted(partial_src["sources"][2])))
+check("该来源仍照旧计入 failed_roots、整轮仍是 partial（原有护栏不变）",
+      partial_src["removal_skipped"] is True
+      and any(missing_src in r for r in partial_src["failed_roots"]),
+      str(partial_src["failed_roots"]))
+
+# 挂载半路炸：只影响它自己那一条明细
+mount_dir = tempfile.mkdtemp(prefix="scansrc_mount_")
+with open(os.path.join(mount_dir, "Mounted (2022).mkv"), "wb") as f:
+    f.write(b"\x00" * 1024)
+with Session() as db:
+    mount_row = em.StorageMount(name="半路炸挂载", mount_type="local", path=mount_dir,
+                                config=mnt.dump_config({}), is_enabled=True)
+    db.add(mount_row)
+    db.commit()
+    mid = mount_row.id
+    row = db.query(em.Library).filter(em.Library.id == sid).first()
+    row.paths = src_a
+    row.mount_ids = str(mid)
+    db.commit()
+
+real_mount_files = sc._mount_files
+
+
+def boom_mount_files(src, provider, failed_roots):  # noqa: ANN001, ARG001
+    raise mnt.MountError("模拟挂载读一半炸了")
+    yield  # pragma: no cover
+
+
+sc._mount_files = boom_mount_files
+try:
+    broken = scan_sid()
+finally:
+    sc._mount_files = real_mount_files
+
+check("挂载半路炸：这条来源的明细带原因、文件数按实际算",
+      broken["sources"][1]["label"].startswith("半路炸挂载")
+      and "模拟挂载读一半炸了" in (broken["sources"][1].get("error") or "")
+      and broken["sources"][1]["files"] == 0,
+      str(broken["sources"][1]))
+check("挂载半路炸：同一轮里别的来源照常记账（一个坏掉不连坐）",
+      broken["sources"][0]["files"] == 2 and broken["sources"][0]["added"] == 0,
+      str(broken["sources"][0]))
+check("挂载半路炸：明细里的文件数归到正确的那条来源（不串到下一条头上）",
+      broken["sources"][1]["files"] == 0
+      and sum(s["files"] for s in broken["sources"]) == 2,
+      str([(s["label"][:12], s["files"]) for s in broken["sources"]]))
+
+# 恢复：明细跟着回到干净状态（不残留上一轮的错误）
+with Session() as db:
+    row = db.query(em.Library).filter(em.Library.id == sid).first()
+    row.mount_ids = ""
+    row.paths = src_a
+    db.commit()
+healed = scan_sid()
+check("来源恢复后：明细只剩可用来源，且不残留上一轮的错误",
+      [s["label"] for s in healed["sources"]] == [src_a]
+      and all("error" not in s for s in healed["sources"]),
+      str(healed["sources"]))
+
+# 纯函数：条数封顶与坏数据清洗（写进库的 JSON 不该被一条烂数据或几百条来源撑爆）
+big = [{"label": f"来源 {i}", "files": i, "added": 1} for i in range(sc.SCAN_SOURCES_MAX + 5)]
+check("来源条数封顶到 SCAN_SOURCES_MAX",
+      len(sc._encode_scan_sources(big)) == sc.SCAN_SOURCES_MAX,
+      f"{len(sc._encode_scan_sources(big))} 条")
+mixed = sc._encode_scan_sources([
+    "垃圾", None, {"label": "好的", "files": 3, "added": -2, "kind": "local",
+                   "error": "x" * 500}, {"files": 1}, {"label": "坏的", "files": "abc"},
+])
+check("坏条目只丢自己（非字典 / 没标签 / 计数不是数字都不带走整轮统计）",
+      [s["label"] for s in mixed] == ["好的"], str([s.get("label") for s in mixed]))
+check("明细清洗：负数归零、原因截断",
+      mixed[0]["added"] == 0 and mixed[0]["files"] == 3
+      and len(mixed[0]["error"]) == sc.SCAN_SOURCE_TEXT_MAX,
+      str(mixed[0]))
+check("来源明细随统计一起落库、原样读回",
+      sc.decode_scan_stats(sc.encode_scan_stats(
+          {"added": 1, "sources": mixed, "failed_roots": []}))["sources"] == mixed,
+      str(sc.decode_scan_stats(sc.encode_scan_stats({"sources": mixed}))))
+check("虚拟库没有来源 → sources 是空列表（前端不用特判 None）",
+      last_scan(vid)["sources"] == [], str(last_scan(vid)["sources"]))
 
 # ==================== 汇总 ====================
 print()
