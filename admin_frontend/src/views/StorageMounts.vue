@@ -90,7 +90,8 @@ const columns = computed<DataColumn[]>(() => [
   { key: 'libraries', label: '被哪些媒体库使用', minWidth: 170 },
   { key: 'reach', label: 'EM / EA 可达', width: 200 },
   { key: 'is_enabled', label: '状态', width: 90 },
-  { key: 'actions', label: '操作', width: 200, fixed: 'right', align: 'right' },
+  // 浏览 / 测试 / 编辑 / 删除收进「管理」弹窗：行里只留一个入口
+  { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ])
 
 /** 归属服展示名：未标注 = 所有服可见的内容来源（老数据就是这个口径） */
@@ -347,30 +348,66 @@ async function testForm() {
   }
 }
 
+// ==================== 挂载管理弹窗（v2.29.0） ====================
+// 以前行尾摆着「浏览 / 测试 / 编辑 / 删除」四个按钮，而「这条挂载到底谁能用」还得回头
+// 看那一行的小徽标；现在一个入口，弹窗里把来源、被谁用、EM/EA 两边的结论与测试结果放在一起。
+const manage = ref({ visible: false, row: null as StorageMount | null })
+
+function openManage(m: StorageMount) {
+  manage.value = { visible: true, row: m }
+}
+
+/** 动作后刷新列表，并把弹窗里的挂载换成最新快照（测试结果 / 绑定情况就地变化） */
+async function refreshManage(id: number) {
+  await load()
+  const fresh = mounts.value.find((m) => m.id === id)
+  if (fresh) {
+    manage.value.row = fresh
+  } else {
+    manage.value.visible = false
+  }
+}
+
+/** 从弹窗进编辑 / 浏览：先关掉这一层，避免两个弹窗叠着 */
+function editFromManage(m: StorageMount) {
+  manage.value.visible = false
+  openEdit(m)
+}
+
+function browseFromManage(m: StorageMount) {
+  manage.value.visible = false
+  openBrowse(m)
+}
+
 async function testSaved(m: StorageMount) {
   const res = await testSavedMount(m.id)
   if (res.success) ElMessage.success(`${m.name}：${res.result.message}`)
   else ElMessage.error(`${m.name}：${res.result.message}`)
-  load()
+  await refreshManage(m.id)
 }
 
 async function remove(m: StorageMount) {
   const bound = m.library_ids?.length || 0
-  await ElMessageBox.confirm(
-    bound
-      ? `挂载「${m.name}」已被 ${bound} 个媒体库绑定，删除会同时解绑（不删除源上的文件），确定吗？`
-      : `删除挂载「${m.name}」？不会删除源上的文件。`,
-    '确认删除',
-    { type: 'warning' }
-  )
+  try {
+    await ElMessageBox.confirm(
+      bound
+        ? `挂载「${m.name}」已被 ${bound} 个媒体库绑定，删除会同时解绑（不删除源上的文件），确定吗？`
+        : `删除挂载「${m.name}」？不会删除源上的文件。`,
+      '确认删除',
+      { type: 'warning' }
+    )
+  } catch {
+    return
+  }
   const res = await deleteMount(m.id)
   ElMessage.success(res.unbound_libraries ? `已删除，并解绑 ${res.unbound_libraries} 个媒体库` : '已删除')
-  load()
+  await refreshManage(m.id)
 }
 
 async function toggleEnabled(m: StorageMount) {
   await updateMount(m.id, { is_enabled: m.is_enabled })
   ElMessage.success(m.is_enabled ? `「${m.name}」已启用（重扫后生效）` : `「${m.name}」已停用（重扫后生效）`)
+  await refreshManage(m.id)
 }
 
 async function openBrowse(m: StorageMount) {
@@ -609,17 +646,92 @@ function fmtDate(s: string | null): string {
         </template>
 
         <template #cell-actions="{ row }">
-          <el-button v-if="canBrowseSaved(row)" size="small" text @click="openBrowse(row)">
-            <FolderOpen :size="13" style="margin-right: 2px" />浏览
-          </el-button>
-          <el-button size="small" text @click="testSaved(row)">
-            <Plug :size="13" style="margin-right: 2px" />测试
-          </el-button>
-          <el-button size="small" text @click="openEdit(row)"><Pencil :size="13" /></el-button>
-          <el-button size="small" text type="danger" @click="remove(row)"><Trash2 :size="13" /></el-button>
+          <!-- 一个入口：浏览 / 测试 / 编辑 / 停用 / 删除 都在弹窗里（原来这行有 4 个按钮） -->
+          <el-button size="small" plain @click="openManage(row)">管理</el-button>
         </template>
       </DataTable>
     </div>
+
+    <!--
+      挂载管理（弹窗）：来源、归属服、被哪些媒体库使用、EM 与 EA 两边的可达结论、上次测试结果
+      都在这里；需要改配置再进「编辑」，不用在一行小徽标里猜。
+    -->
+    <el-dialog v-model="manage.visible" :title="`管理来源：${manage.row?.name || ''}`" width="560px">
+      <div v-if="manage.row" class="mg-body">
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">名称</span><span class="kv-value">{{ manage.row.name }}</span></div>
+          <div class="kv-row"><span class="kv-key">类型 / 归属服</span>
+            <span class="kv-value">{{ manage.row.mount_type_label }} · {{ realmLabel(manage.row) }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">来源</span>
+            <span class="kv-value mono">{{ sourceSummary(manage.row) }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">被哪些媒体库使用</span>
+            <span class="kv-value">
+              <template v-if="!manage.row.library_ids.length">未被使用</template>
+              <template v-else>{{ usedByNames(manage.row).join('、') }}</template>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">EM（面板）</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="reachClass(manage.row.em_reachable)">
+                {{ reachText(manage.row.em_reachable) }}
+              </span>
+              <span v-if="manage.row.em_message" class="mg-msg">{{ manage.row.em_message }}</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">EA（播放节点）</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="reachClass(manage.row.ea_reachable)">
+                {{ reachText(manage.row.ea_reachable) }}
+              </span>
+              <span v-if="manage.row.ea_message" class="mg-msg">{{ manage.row.ea_message }}</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">上次测试</span>
+            <span class="kv-value">
+              {{ fmtDate(manage.row.last_checked_at) }}
+              <span v-if="manage.row.last_check_message" class="mg-msg">{{ manage.row.last_check_message }}</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">备注</span><span class="kv-value">{{ manage.row.remark || '—' }}</span></div>
+          <div class="kv-row"><span class="kv-key">状态</span>
+            <span class="kv-value">
+              <el-switch v-model="manage.row.is_enabled" size="small" @change="toggleEnabled(manage.row)" />
+              <span class="mg-msg">{{ manage.row.is_enabled ? '启用中' : '已停用（扫描跳过，客户端也无内容）' }}</span>
+            </span>
+          </div>
+        </div>
+
+        <p class="mg-hint">
+          停用只是让扫描与播放不再用它（源上的文件不动）；删除会同时解绑引用它的媒体库。
+          两条可达结论分别来自面板自己的「测试连接」与 EA 的挂载体检——EA 显示「未体检」时，
+          先去「服务器与线路」页拉一次体检。
+        </p>
+      </div>
+
+      <template #footer>
+        <div class="mg-footer">
+          <el-button v-if="manage.row" type="danger" plain @click="remove(manage.row)">
+            <Trash2 :size="13" style="margin-right: 3px" />删除
+          </el-button>
+          <div class="mg-footer-right">
+            <el-button @click="manage.visible = false">关闭</el-button>
+            <template v-if="manage.row">
+              <el-button v-if="canBrowseSaved(manage.row)" @click="browseFromManage(manage.row)">
+                <FolderOpen :size="13" style="margin-right: 3px" />浏览
+              </el-button>
+              <el-button @click="testSaved(manage.row)">
+                <Plug :size="13" style="margin-right: 3px" />测试连接
+              </el-button>
+              <el-button type="primary" @click="editFromManage(manage.row)">
+                <Pencil :size="13" style="margin-right: 3px" />编辑
+              </el-button>
+            </template>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
 
     <!-- 新建 / 编辑 -->
     <el-dialog
@@ -839,4 +951,20 @@ function fmtDate(s: string | null): string {
 
 .ea-warning { margin-bottom: 12px; }
 .ea-warning-body { margin-top: 4px; font-size: var(--font-size-sm); line-height: 1.7; }
+
+/* 管理弹窗：详情用全局 .kv-list，只补长文案与页脚布局 */
+.mg-body { display: flex; flex-direction: column; gap: 12px; }
+.mg-body .kv-row .kv-value { text-align: left; }
+.mg-msg { display: block; margin-top: 3px; font-size: var(--font-size-xs); color: var(--text-muted); word-break: break-word; }
+.mg-hint {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.8;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+.mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
 </style>

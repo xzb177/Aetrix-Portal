@@ -18,7 +18,8 @@ const columns: DataColumn[] = [
   { key: 'status', label: '状态', width: 96 },
   { key: 'payment_method', label: '支付方式', width: 110, mobile: 'hide' },
   { key: 'created_at', label: '创建时间', width: 160 },
-  { key: 'actions', label: '操作', width: 190, fixed: 'right', align: 'right' },
+  // 补单 / 关单 / 退款收进订单详情弹窗：行里只留一个入口（状态不同则可用动作不同）
+  { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ]
 import {
   fetchEconomyStats,
@@ -95,6 +96,28 @@ async function loadRecords() {
   }
 }
 
+// ==================== 订单详情弹窗（v2.29.0） ====================
+// 以前行尾直接摆着「补单 / 关闭」两个按钮，点下去只有一句确认框；现在一个「详情」入口，
+// 弹窗里先看全订单（订单号 / 用户 / 金额 / 支付方式 / 创建与支付时间），再决定怎么处理。
+const detail = ref({ visible: false, row: null as OrderRow | null })
+
+function openDetail(row: OrderRow) {
+  detail.value = { visible: true, row }
+}
+
+/** 动作后刷新订单与退款记录，并把弹窗里的订单换成最新快照 */
+async function afterAction(orderId: string) {
+  await Promise.all([load(), loadRecords()])
+  const fresh = orders.value.find((o) => o.order_id === orderId)
+  if (fresh) {
+    detail.value.row = fresh
+  } else {
+    // 当前筛选下已不包含它（例如只看待支付时补了单）：关掉并说明
+    detail.value.visible = false
+    ElMessage.info('已完成，该订单不再符合当前筛选条件')
+  }
+}
+
 async function handleClose(row: OrderRow) {
   try {
     await ElMessageBox.confirm(
@@ -108,7 +131,7 @@ async function handleClose(row: OrderRow) {
   try {
     await closeOrder(row.order_id)
     ElMessage.success('订单已关闭')
-    await Promise.all([load(), loadRecords()])
+    await afterAction(row.order_id)
   } catch (e: unknown) {
     ElMessage.error((e as Error)?.message || '关单失败')
   }
@@ -130,6 +153,12 @@ function openRefund(row: OrderRow) {
   refundDialog.value = {
     visible: true, row, reason: '', revoke: true, allowNegative: false, reverseRebate: true,
   }
+}
+
+/** 从详情弹窗进退款：先关详情，避免两个弹窗叠在一起 */
+function refundFromDetail(row: OrderRow) {
+  detail.value.visible = false
+  openRefund(row)
 }
 
 async function submitRefund() {
@@ -155,7 +184,7 @@ async function submitRefund() {
     if (res.cancelled) bits.push('该订阅已撤销')
     ElMessage.success(`退款完成${bits.length ? '：' + bits.join('、') : ''}`)
     refundDialog.value.visible = false
-    await Promise.all([load(), loadRecords()])
+    await afterAction(row.order_id)
   } catch (e: unknown) {
     // 余额不足时后端给出可读原因，原样展示（引导勾选「允许余额为负」）
     ElMessage.error((e as Error)?.message || '退款失败')
@@ -165,15 +194,19 @@ async function submitRefund() {
 }
 
 async function handleMarkPaid(row: OrderRow) {
-  await ElMessageBox.confirm(
-    `确认将订单 ${row.order_id} 标记为已支付并履约？用于线下收款或回调丢失的补单。`,
-    '人工补单',
-    { confirmButtonText: '确认补单', cancelButtonText: '取消', type: 'warning' },
-  )
+  try {
+    await ElMessageBox.confirm(
+      `确认将订单 ${row.order_id} 标记为已支付并履约？用于线下收款或回调丢失的补单。`,
+      '人工补单',
+      { confirmButtonText: '确认补单', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
   try {
     await markOrderPaid(row.order_id)
     ElMessage.success('补单成功，已发货')
-    await Promise.all([load(), loadRecords()])
+    await afterAction(row.order_id)
   } catch (e: unknown) {
     ElMessage.error((e as Error)?.message || '补单失败')
   }
@@ -287,20 +320,10 @@ onMounted(() => {
         <template #cell-created_at="{ row }">{{ fmtTime(row.created_at) }}</template>
 
         <template #cell-actions="{ row }">
-          <!-- 待支付：补单（线下已收款 / 回调丢失）或关闭（作废） -->
-          <template v-if="row.status === 'pending'">
-            <el-button size="small" type="success" plain @click="handleMarkPaid(row)">
-              <CircleCheck :size="13" style="margin-right: 3px" />补单
-            </el-button>
-            <el-button size="small" plain @click="handleClose(row)">
-              <Ban :size="13" style="margin-right: 3px" />关闭
-            </el-button>
-          </template>
-          <!-- 已支付：只能退款（退款会按账本回滚权益） -->
-          <el-button v-else-if="row.status === 'paid'" size="small" type="danger" plain @click="openRefund(row)">
-            <Undo2 :size="13" style="margin-right: 3px" />退款
+          <!-- 一个入口：补单 / 关单 / 退款 都在详情弹窗里（原来这行是两个动作按钮） -->
+          <el-button size="small" :type="row.status === 'pending' ? 'primary' : 'default'" plain @click="openDetail(row)">
+            {{ row.status === 'pending' ? '处理' : '详情' }}
           </el-button>
-          <span v-else class="muted done-hint">{{ statusText(row.status) }}</span>
         </template>
 
         <template #empty>
@@ -379,6 +402,68 @@ onMounted(() => {
         <el-button type="danger" :loading="refundSaving" @click="submitRefund">确认退款</el-button>
       </template>
     </el-dialog>
+
+    <!--
+      订单详情（弹窗）：订单号 / 用户 / 金额 / 支付方式 / 创建与支付时间全在这里，
+      可用的处理动作随状态变化（待支付：补单或关单；已支付：退款），退款仍走专门的退款弹窗
+      （勾选项多，放在同一层会看不清）。
+    -->
+    <el-dialog v-model="detail.visible" title="订单详情" width="520px">
+      <div v-if="detail.row" class="od-body">
+        <div class="od-head">
+          <el-tag :type="statusType(detail.row.status)" size="small">
+            {{ statusText(detail.row.status) }}
+          </el-tag>
+          <span class="od-amount">¥ {{ Number(detail.row.amount).toFixed(2) }}</span>
+        </div>
+
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">订单号</span><span class="kv-value mono">{{ detail.row.order_id }}</span></div>
+          <div class="kv-row"><span class="kv-key">商品</span><span class="kv-value">{{ detail.row.item_name }}</span></div>
+          <div class="kv-row"><span class="kv-key">类型</span>
+            <span class="kv-value">{{ detail.row.kind === 'recharge' ? '充值' : '订阅' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">用户</span><span class="kv-value">{{ detail.row.username }}</span></div>
+          <div class="kv-row"><span class="kv-key">支付方式</span>
+            <span class="kv-value">{{ detail.row.payment_method || '—' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">创建时间</span><span class="kv-value">{{ fmtTime(detail.row.created_at) }}</span></div>
+          <div class="kv-row"><span class="kv-key">支付时间</span>
+            <span class="kv-value">{{ detail.row.paid_at ? fmtTime(detail.row.paid_at) : '未支付' }}</span>
+          </div>
+        </div>
+
+        <p class="od-hint">
+          <template v-if="detail.row.status === 'pending'">
+            补单用于线下收款或支付回调丢失（会按订单内容直接履约）；关闭则作废订单，用户不会收到通知。
+          </template>
+          <template v-else-if="detail.row.status === 'paid'">
+            退款会按账本回滚权益（可逐项勾选），原因会写进操作审计与下面的退款记录。
+          </template>
+          <template v-else>该订单已{{ statusText(detail.row.status) }}，无可执行的动作。</template>
+        </p>
+      </div>
+
+      <template #footer>
+        <el-button @click="detail.visible = false">关闭</el-button>
+        <template v-if="detail.row?.status === 'pending'">
+          <el-button @click="detail.row && handleClose(detail.row)">
+            <Ban :size="13" style="margin-right: 4px" />关闭订单
+          </el-button>
+          <el-button type="success" plain @click="detail.row && handleMarkPaid(detail.row)">
+            <CircleCheck :size="13" style="margin-right: 4px" />人工补单
+          </el-button>
+        </template>
+        <el-button
+          v-else-if="detail.row?.status === 'paid'"
+          type="danger"
+          plain
+          @click="detail.row && refundFromDetail(detail.row)"
+        >
+          <Undo2 :size="13" style="margin-right: 4px" />退款
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -389,6 +474,21 @@ onMounted(() => {
 .dialog-order { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .dialog-order em { font-style: normal; font-size: var(--font-size-xs); }
 .opt-hint { margin: 2px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.5; }
+
+/* 订单详情弹窗：详情用全局 .kv-list，只补金额行与说明 */
+.od-body { display: flex; flex-direction: column; gap: 12px; }
+.od-body .kv-row .kv-value { text-align: left; }
+.od-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.od-amount { font-size: var(--font-size-lg, 18px); font-weight: 600; font-variant-numeric: tabular-nums; }
+.od-hint {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+  background: var(--bg-inset, rgba(255, 255, 255, 0.03));
+  border-radius: var(--radius-md, 10px);
+  padding: 10px 12px;
+}
 
 .records-card { margin-top: 16px; }
 .records-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }

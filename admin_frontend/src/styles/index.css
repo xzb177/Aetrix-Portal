@@ -214,6 +214,11 @@
 .admin-layout .admin-content .mono,
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
+/* 用户名：多个页面都写这个类名但一直没有定义（操作日志 / 设备 / 邀请 / 订阅 / 媒体库），
+   于是它只是个无声的标记。收敛成全局一处，别让同一个语义在不同页看起来不一样。 */
+.admin-layout .admin-content .user-name,
+.user-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
+
 /* ==================== 徽标 ==================== */
 .mini-badge,
 .admin-layout .admin-content .mini-badge,

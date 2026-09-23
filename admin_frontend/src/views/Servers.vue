@@ -149,7 +149,8 @@ const entryColumns: DataColumn[] = [
   { key: 'node', label: '节点 / 归属', minWidth: 200 },
   { key: 'mounts', label: '挂载体检', minWidth: 190 },
   { key: 'libraries', label: '媒体库', width: 130 },
-  { key: 'actions', label: '操作', width: 268, fixed: 'right', align: 'right' },
+  // 测试 / 设为当前 / 编辑 / 停用启用 / 删除 收进「管理」弹窗：行里只留一个入口
+  { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ]
 
 const contentColumns: DataColumn[] = [
@@ -158,7 +159,8 @@ const contentColumns: DataColumn[] = [
   { key: 'scope', label: '作用范围', width: 120 },
   { key: 'url', label: '地址', minWidth: 200 },
   { key: 'state', label: '状态', width: 190 },
-  { key: 'actions', label: '操作', width: 250, fixed: 'right', align: 'right' },
+  // 同上：一个「管理」入口，细节与动作都在弹窗里
+  { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ]
 
 // ==================== 加载 ====================
@@ -364,12 +366,50 @@ async function save() {
 
 // ==================== 行操作 ====================
 
+// ==================== 服务器管理弹窗（v2.29.0） ====================
+// 入口行原本摆着 5 个按钮（测试 / 设为当前 / 编辑 / 停用启用 / 删除），而连接结论、节点认领、
+// 挂载体检、媒体库归属全挤在带 tooltip 的单元格里；现在一个入口，弹窗里把一台机器的事实
+// 与能做的动作放在同一处。
+const manage = ref({ visible: false, row: null as ServerOverviewRow | RemoteServerRow | null })
+
+function isEntryRow(r: RemoteServerRow | ServerOverviewRow): r is ServerOverviewRow {
+  return 'is_current_entry' in r
+}
+
+function openManage(row: ServerOverviewRow | RemoteServerRow) {
+  manage.value = { visible: true, row }
+}
+
+/** 动作后刷新两段表，并把弹窗里的那台机器换成最新快照 */
+async function refreshManage(id: number) {
+  await load()
+  const fresh =
+    (overview.value?.rows ?? []).find((r) => r.id === id) || servers.value.find((s) => s.id === id)
+  if (fresh) {
+    manage.value.row = fresh
+  } else {
+    manage.value.visible = false
+  }
+}
+
+/** 从弹窗进编辑：先关掉这一层，避免两个弹窗叠着 */
+function editFromManage(row: RemoteServerRow) {
+  manage.value.visible = false
+  openEdit(row)
+}
+
+/** 作用范围：内容自动化（MoviePilot / qB）可以是「全服共用」 */
+function scopeText(row: RemoteServerRow): string {
+  if (row.shared) return '全服共用'
+  return row.realm_name || '未标注'
+}
+
 async function runTest(row: RemoteServerRow) {
   busyId.value = row.id
   try {
     const res = await testServer(row.id)
     res.ok ? ElMessage.success(res.message || '连接成功') : ElMessage.warning(res.message || '连接失败')
-    await load()
+    await refreshManage(row.id)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -389,7 +429,7 @@ async function runActivate(row: RemoteServerRow) {
     } else {
       ElMessage.warning(res.message || '连接没通过，已保持原来的入口')
     }
-    await load()
+    await refreshManage(row.id)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -402,7 +442,7 @@ async function runToggle(row: RemoteServerRow) {
   try {
     const res = await toggleServer(row.id)
     ElMessage.success(res.server.is_enabled ? '已启用' : '已停用')
-    await load()
+    await refreshManage(row.id)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -423,16 +463,20 @@ async function runRefreshMounts() {
 }
 
 async function remove(row: RemoteServerRow) {
-  await ElMessageBox.confirm(
-    `删除「${row.name}」？${row.is_active ? '它是当前的 Emby 服务入口，删除后会切回面板自己出流。' : ''}`,
-    '删除服务器',
-    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
-  )
+  try {
+    await ElMessageBox.confirm(
+      `删除「${row.name}」？${row.is_active ? '它是当前的 Emby 服务入口，删除后会切回面板自己出流。' : ''}`,
+      '删除服务器',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
   busyId.value = row.id
   try {
     await deleteServer(row.id)
     ElMessage.success('已删除')
-    await load()
+    await refreshManage(row.id)
   } catch {
     /* 拦截器已提示 */
   } finally {
@@ -666,24 +710,8 @@ async function remove(row: RemoteServerRow) {
             </template>
 
             <template #cell-actions="{ row }">
-              <el-button size="small" :loading="busyId === row.id" @click="runTest(row)">测试</el-button>
-              <el-button
-                v-if="row.activatable && !row.is_current_entry"
-                size="small"
-                type="primary"
-                plain
-                :loading="busyId === row.id"
-                @click="runActivate(row)"
-              >
-                <CheckCircle2 :size="13" style="margin-right: 3px" />设为当前
-              </el-button>
-              <el-button size="small" @click="openEdit(row)"><Pencil :size="13" /></el-button>
-              <el-button size="small" :loading="busyId === row.id" @click="runToggle(row)">
-                {{ row.is_enabled ? '停用' : '启用' }}
-              </el-button>
-              <el-button size="small" type="danger" plain @click="remove(row)">
-                <Trash2 :size="13" />
-              </el-button>
+              <!-- 一个入口：测试 / 设为当前 / 编辑 / 停用启用 / 删除 都在弹窗里（原来这行有 5 个按钮） -->
+              <el-button size="small" plain @click="openManage(row)">管理</el-button>
             </template>
 
           </DataTable>
@@ -735,14 +763,8 @@ async function remove(row: RemoteServerRow) {
             </div>
           </template>
           <template #cell-actions="{ row }">
-            <el-button size="small" :loading="busyId === row.id" @click="runTest(row)">测试</el-button>
-            <el-button size="small" @click="openEdit(row)"><Pencil :size="13" /></el-button>
-            <el-button size="small" :loading="busyId === row.id" @click="runToggle(row)">
-              {{ row.is_enabled ? '停用' : '启用' }}
-            </el-button>
-            <el-button size="small" type="danger" plain @click="remove(row)">
-              <Trash2 :size="13" />
-            </el-button>
+            <!-- 一个入口：测试 / 编辑 / 停用启用 / 删除 都在弹窗里 -->
+            <el-button size="small" plain @click="openManage(row)">管理</el-button>
           </template>
         </DataTable>
       </div>
@@ -820,10 +842,133 @@ async function remove(row: RemoteServerRow) {
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <!--
+      服务器管理（弹窗）：一台机器的全部事实（连接、节点认领、挂载体检、媒体库归属、告警）
+      与全部动作放在一处。以前这些分散在带 tooltip 的列里，左边是 5 个按钮。
+      动作做完弹窗不关，弹窗里的快照就地刷新。
+    -->
+    <el-dialog v-model="manage.visible" :title="`管理服务器「${manage.row?.name || ''}」`" width="580px">
+      <div v-if="manage.row" class="mg-body">
+        <div class="kv-list">
+          <div class="kv-row"><span class="kv-key">名称</span>
+            <span class="kv-value">
+              {{ manage.row.name }}
+              <span v-if="isEntryRow(manage.row) && manage.row.is_current_entry" class="mini-badge ok mg-gap">当前使用</span>
+              <span v-if="!manage.row.is_enabled" class="mini-badge off mg-gap">已停用</span>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">类型 / 归属</span>
+            <span class="kv-value">{{ manage.row.kind_label }} · {{ scopeText(manage.row) }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">地址</span>
+            <span class="kv-value mono">{{ manage.row.url || '未填写' }}</span>
+          </div>
+          <div class="kv-row"><span class="kv-key">连接</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="stateBadge(manage.row)">{{ stateText(manage.row) }}</span>
+              <span class="mg-msg">
+                {{ fmtDate(manage.row.last_checked_at) }}
+                <template v-if="manage.row.last_check_message">· {{ manage.row.last_check_message }}</template>
+              </span>
+            </span>
+          </div>
+          <div v-if="isEntryRow(manage.row)" class="kv-row"><span class="kv-key">节点认领</span>
+            <span class="kv-value">{{ nodeText(manage.row) }}</span>
+          </div>
+          <div v-if="isEntryRow(manage.row)" class="kv-row"><span class="kv-key">挂载体检（EA 视角）</span>
+            <span class="kv-value">
+              <span class="mini-badge" :class="mountBadge(manage.row.mounts)">{{ mountText(manage.row.mounts) }}</span>
+              <span v-if="manage.row.mounts?.unreachable?.length" class="mg-msg">
+                不可达：{{ manage.row.mounts.unreachable.join('、') }}
+              </span>
+            </span>
+          </div>
+          <div v-if="isEntryRow(manage.row)" class="kv-row"><span class="kv-key">媒体库归属</span>
+            <span class="kv-value">
+              归它 {{ manage.row.libraries_assigned }} 个
+              <template v-if="manage.row.kind === 'ea'">· 未分配 {{ manage.row.libraries_unassigned }} 个</template>
+            </span>
+          </div>
+          <div class="kv-row"><span class="kv-key">备注</span><span class="kv-value">{{ manage.row.remark || '—' }}</span></div>
+        </div>
+
+        <el-alert
+          v-if="isEntryRow(manage.row) && manage.row.warnings?.length"
+          type="warning"
+          :closable="false"
+          show-icon
+        >
+          <template #title>这台机器有需要处理的事项</template>
+          <template #default>
+            <ul class="mg-warn">
+              <li v-for="w in manage.row.warnings" :key="w">{{ w }}</li>
+            </ul>
+          </template>
+        </el-alert>
+
+        <p class="mg-hint">
+          <template v-if="isEntryRow(manage.row) && manage.row.is_entry">
+            「设为当前」会让这个服的客户端改连这台（连接不通过时保持原入口）；
+          </template>
+          「停用」只是不再使用它，配置与凭证都保留；删除不可恢复。改地址与密钥进「编辑」。
+        </p>
+      </div>
+
+      <template #footer>
+        <div class="mg-footer">
+          <el-button type="danger" plain :disabled="!manage.row" @click="manage.row && remove(manage.row)">
+            <Trash2 :size="13" style="margin-right: 3px" />删除
+          </el-button>
+          <div class="mg-footer-right">
+            <el-button @click="manage.visible = false">关闭</el-button>
+            <template v-if="manage.row">
+              <el-button :loading="busyId === manage.row.id" @click="runTest(manage.row)">
+                <Wifi :size="13" style="margin-right: 3px" />测试连接
+              </el-button>
+              <!-- 「设为当前」只给出流入口（EA / 已有 Emby）：内容自动化那两段原先也没有这个动作 -->
+              <el-button
+                v-if="isEntryRow(manage.row) && manage.row.is_entry && manage.row.activatable && !manage.row.is_current_entry"
+                type="primary"
+                plain
+                :loading="busyId === manage.row.id"
+                @click="runActivate(manage.row)"
+              >
+                <CheckCircle2 :size="13" style="margin-right: 3px" />设为当前
+              </el-button>
+              <el-button :loading="busyId === manage.row.id" @click="runToggle(manage.row)">
+                {{ manage.row.is_enabled ? '停用' : '启用' }}
+              </el-button>
+              <el-button type="primary" @click="editFromManage(manage.row)">
+                <Pencil :size="13" style="margin-right: 3px" />编辑
+              </el-button>
+            </template>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
+/* 管理弹窗：详情用全局 .kv-list，只补告警列表与页脚布局 */
+.mg-body { display: flex; flex-direction: column; gap: 12px; }
+.mg-body .kv-row .kv-value { text-align: left; }
+.mg-gap { margin-left: 6px; }
+.mg-msg { display: block; margin-top: 3px; font-size: var(--font-size-xs); color: var(--text-muted); }
+.mg-warn { margin: 0; padding-left: 18px; font-size: var(--font-size-xs); line-height: 1.8; }
+.mg-hint {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.8;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+.mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* ==================== 汇总条 ==================== */
 .ov-totals {
   display: flex;
