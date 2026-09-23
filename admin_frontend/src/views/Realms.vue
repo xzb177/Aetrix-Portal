@@ -116,7 +116,7 @@ async function save() {
         access_note: form.access_note.trim(),
         allow_download: form.download_policy === 'follow' ? null : form.download_policy === 'allow',
       })
-      ElMessage.success('已新建，接下来去「媒体库 / 存储挂载 / 商品与套餐」里往里填内容')
+      ElMessage.success('已新建，接下来去「媒体库 / 存储来源 / 商品与套餐」里往里填内容')
     }
     dialogVisible.value = false
     await realm.refresh()
@@ -185,7 +185,7 @@ const deleteStats = computed(() => {
   if (!s) return [] as { label: string; value: number }[]
   return [
     { label: '媒体库', value: s.libraries },
-    { label: '存储挂载', value: s.mounts },
+    { label: '存储来源', value: s.mounts },
     { label: '套餐', value: s.plans },
     { label: '有效订阅', value: s.active_subscriptions },
   ]
@@ -254,7 +254,7 @@ function shortDate(s: string | null): string {
       <div>
         <h1 class="admin-page-title">服管理</h1>
         <p class="admin-page-subtitle">
-          一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储挂载、套餐、
+          一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储来源、套餐、
           订阅、卡码与求片；同一个服可以部署到多台机器，每台机器就是一台播放节点，同时对外出流。
         </p>
       </div>
@@ -292,7 +292,7 @@ function shortDate(s: string | null): string {
     <el-alert type="info" :closable="false" show-icon class="guide">
       <template #title>「一个服一个」的东西有哪些</template>
       <template #default>
-        套餐、订阅、媒体库、存储挂载、Emby 服务入口、卡码、求片 —— 这些都属于某一个服，
+        套餐、订阅、媒体库、存储来源、服务器与线路、卡码、求片 —— 这些都属于某一个服，
         面板顶部切换「当前服」之后，各页默认只显示那个服的数据。
         <b>会员按服计算</b>：用户可以在 A 服和 B 服各有一份会员，互不影响，哪台节点能播也按服判定。
         默认服沿用历史配置，不能删除，但可以改名。
@@ -486,7 +486,7 @@ function shortDate(s: string | null): string {
           <el-option v-for="r in otherRealms" :key="r.id" :label="r.name" :value="r.id" />
         </el-select>
         <p class="field-help">
-          媒体库、存储挂载、套餐、订阅、卡码、求片与播放节点会一起移过去；对应用户的会员继续有效。
+          媒体库、存储来源、套餐、订阅、卡码、求片与播放节点会一起移过去；对应用户的会员继续有效。
         </p>
       </template>
       <template #footer>

@@ -253,6 +253,23 @@ function mountText(mounts: ServerOverviewRow['mounts']): string {
 
 // ==================== 对话框 ====================
 
+/**
+ * 切换当前服：与顶栏那个切换器同一份状态（stores/realm），切完就地刷新本页
+ *
+ * 「多服」在导航里不再是一个模块，所以作用域的选择就放在这一页——
+ * 先选服，再看这台的服务器与线路。
+ */
+async function switchRealm(id: number) {
+  if (!id || id === realm.activeId) return
+  try {
+    await realm.switchTo(id)
+    ElMessage.success(`已切换到「${realm.activeName() || id}」`)
+    await load()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
 function resetForm(kind: ServerKind = 'ea', realmId: number | null = null) {
   editingId.value = null
   unsavedResult.value = null
@@ -428,12 +445,18 @@ async function remove(row: RemoteServerRow) {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">服务器 · Emby 总览</h1>
+        <h1 class="admin-page-title">服务器与线路</h1>
         <p class="admin-page-subtitle">
-          面板接了几台后端服、几台已有 Emby、当前用哪台出流、库归谁、这台机器碰不碰得到存储 —— 都在这一页
+          接了几台后端服、几台已有 Emby、当前用哪台出流、库归谁、这台机器碰不碰得到存储 ——
+          都在这一页（范围在右上角切，不用先理解「多服」是个什么模块）
         </p>
       </div>
       <div class="toolbar">
+        <RouterLink to="/realms" class="toolbar-link">
+          <RealmIcon :size="14" />服管理
+        </RouterLink>
+        <RouterLink to="/mounts" class="toolbar-link">存储来源</RouterLink>
+        <RouterLink to="/emby" class="toolbar-link">媒体库</RouterLink>
         <el-button :loading="liveRunning" @click="runLive">
           <Wifi :size="14" style="margin-right: 4px" />一键体检
         </el-button>
@@ -468,6 +491,18 @@ async function remove(row: RemoteServerRow) {
         <em>需要处理</em>
       </span>
       <span class="ov-scope">
+        <!-- 当前服与范围都在这一页选：多服不是一个要单独学的模块，只是这里的一个筛选条件 -->
+        <span class="ov-scope-label">当前服</span>
+        <el-select
+          :model-value="realm.activeId ?? undefined"
+          size="small"
+          placeholder="当前服"
+          class="scope-realm"
+          @change="switchRealm"
+        >
+          <el-option v-for="r in realm.realms" :key="r.id" :label="r.name" :value="r.id" />
+        </el-select>
+        <span class="ov-scope-label">范围</span>
         <el-radio-group v-model="scopeAll" size="small" @change="load">
           <el-radio-button :value="true">全部服</el-radio-button>
           <el-radio-button :value="false">仅当前服</el-radio-button>
@@ -804,7 +839,24 @@ async function remove(row: RemoteServerRow) {
 .ov-item b.warn { color: var(--warning); }
 .ov-item b.danger { color: var(--danger); }
 .ov-item em { font-style: normal; font-size: var(--font-size-xs); color: var(--text-muted); }
-.ov-scope { margin-left: auto; }
+.ov-scope { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+.ov-scope-label { font-size: var(--font-size-xs); color: var(--text-muted); }
+.scope-realm { width: 150px; }
+
+/* 顶部相邻页入口：交付链上的下一站直接点过去，不用回侧边栏找 */
+.toolbar-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  text-decoration: none;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+.toolbar-link:hover { border-color: var(--primary-border); color: var(--text-primary); }
 
 /* ==================== 类型卡片 ==================== */
 .kind-grid {

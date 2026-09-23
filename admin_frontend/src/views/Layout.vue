@@ -1,16 +1,21 @@
 <script setup lang="ts">
 /**
- * 管理后台外壳（Console v5）
+ * 管理后台外壳（Console v6）
  *
  * 结构：固定侧边栏（≤1024px 变抽屉）+ 顶栏（页面标题 / 刷新 / 管理员菜单）+ 内容区。
  * 导航按业务域分组，可折叠（状态记在 localStorage），当前页所在分组自动展开；
  * 手机上抽屉打开时锁背景滚动、Esc / 点遮罩 / 切路由都能关。
+ *
+ * v2.25.0：一级导航按**交付链**重组（仪表盘 / 用户与账号 / 媒体与交付 / 求片与内容 /
+ * 运营中心 / 服务支持 / 系统与审计）——“多服”不再是要先理解的一级概念：
+ * 服与线路的归属关系在「服务器与线路」页按范围看，顶栏那个切换器只管当前作用域。
+ * 所有页面路径一个字没动（旧收藏、外部链接照旧打开），改的只是分组与名称。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  LayoutDashboard, Users, Package, ShieldAlert, Film, Ticket, Settings,
+  LayoutDashboard, Users, Package, Film, Ticket, Settings, Server,
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Tv,
   CheckCircle2, Route as RealmIcon,
 } from 'lucide-vue-next'
@@ -44,57 +49,51 @@ interface NavGroup {
 }
 
 const navGroups: NavGroup[] = [
-  { title: '概览', icon: LayoutDashboard, items: [{ path: '/', label: '数据概览' }] },
+  { title: '仪表盘', icon: LayoutDashboard, items: [{ path: '/', label: '仪表盘' }] },
   {
-    title: '用户与订阅',
+    title: '用户与账号',
     icon: Users,
     items: [
-      { path: '/users', label: '用户管理' },
-      { path: '/subscriptions', label: '订阅管理' },
+      { path: '/users', label: '用户' },
+      { path: '/subscriptions', label: '订阅与权益' },
+      { path: '/devices', label: '设备与安全' },
+      { path: '/login-logs', label: '登录日志' },
     ],
   },
   {
-    // 服的增删改查 + 归属它的服务器（EA / Emby 一个服一个）
-    title: '多服运营',
-    icon: RealmIcon,
+    // 交付链：谁在出流 → 内容从哪来 → 内容怎么组织（旧页里的 服管理 不再占一个一级入口）
+    title: '媒体与交付',
+    icon: Server,
     items: [
-      { path: '/realms', label: '服管理' },
-      // 这一页是 Emby 相关功能的唯一入口（入口 / 节点 / 挂载体检 / 库归属 + 增删改）
-      { path: '/servers', label: '服务器 · Emby 总览' },
+      { path: '/servers', label: '服务器与线路' },
+      { path: '/emby', label: '媒体库' },
+      { path: '/mounts', label: '存储来源' },
+      { path: '/pan115', label: '115 账号' },
     ],
   },
   {
-    title: '运营',
+    title: '求片与内容',
+    icon: Film,
+    items: [
+      { path: '/media-seek', label: '求片管理' },
+      { path: '/announcements', label: '公告管理' },
+    ],
+  },
+  {
+    title: '运营中心',
     icon: Package,
     items: [
       { path: '/goods', label: '商品与套餐' },
-      { path: '/orders', label: '订单管理' },
+      { path: '/orders', label: '订单' },
       { path: '/exchange-codes', label: '兑换码' },
       { path: '/coupons', label: '优惠券' },
       { path: '/invitations', label: '邀请与积分' },
       { path: '/codes', label: '卡码管理' },
     ],
   },
+  { title: '服务支持', icon: Ticket, items: [{ path: '/tickets', label: '工单' }] },
   {
-    title: '风控',
-    icon: ShieldAlert,
-    items: [
-      { path: '/devices', label: '设备管理' },
-      { path: '/login-logs', label: '登录与安全日志' },
-    ],
-  },
-  {
-    title: '内容',
-    icon: Film,
-    items: [
-      { path: '/emby', label: '媒体库' },
-      { path: '/mounts', label: '存储挂载' },
-      { path: '/pan115', label: '115 账号' },
-      { path: '/media-seek', label: '求片管理' },
-      { path: '/announcements', label: '公告管理' },
-    ],
-  },
-  { title: '支持', icon: Ticket, items: [{ path: '/tickets', label: '工单管理' }] },  { title: '系统',
+    title: '系统与审计',
     icon: Settings,
     items: [
       { path: '/settings', label: '系统设置' },
@@ -104,8 +103,24 @@ const navGroups: NavGroup[] = [
   },
 ]
 
+/**
+ * 不占导航位置、但仍要归属到某个分组的页面（服管理 = 媒体与交付里的一条支线）
+ *
+ * 放进导航就会让「多服」又变成要先理解的一级概念——它的入口在「服务器与线路」页里，
+ * 这里只负责面包屑归属与分组展开。
+ */
+const OFF_NAV_GROUP: Record<string, string> = { '/realms': '媒体与交付' }
+
+/** 某个路径归哪个分组（含不占导航位置的页面，见 OFF_NAV_GROUP） */
+function groupOf(path: string): NavGroup | undefined {
+  const group = navGroups.find((g) => g.items.some((i) => i.path === path))
+  if (group) return group
+  const title = OFF_NAV_GROUP[path]
+  return title ? navGroups.find((g) => g.title === title) : undefined
+}
+
 /** 当前路由所在分组 */
-const activeGroup = computed(() => navGroups.find((g) => g.items.some((i) => i.path === route.path)))
+const activeGroup = computed(() => groupOf(route.path))
 
 const pageTitle = computed(() => (route.meta.title as string) || '管理后台')
 const crumbGroup = computed(() => (activeGroup.value?.items.length ? activeGroup.value.title : ''))
@@ -161,7 +176,7 @@ watch(
   () => route.path,
   (path) => {
     closeDrawer()
-    const group = navGroups.find((g) => g.items.some((i) => i.path === path))
+    const group = groupOf(path)
     // 单项目分组不需要记忆；多项目分组进入时自动展开当前所在分组
     if (group && group.items.length > 1 && !openGroups[group.title]) {
       openGroups[group.title] = true

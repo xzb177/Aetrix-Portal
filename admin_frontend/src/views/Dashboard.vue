@@ -1,8 +1,11 @@
 <script setup lang="ts">
 /**
- * 数据概览 — 经营驾驶舱
+ * 仪表盘 — 经营驾驶舱
  *
- * v2.4.0 重构：
+ * v2.25.0：顶部换成**交付链数据卡**（用户总数 / 当前播放 / 待处理求片 / 待处理工单 /
+ * 扫描状态 / 存储健康）：先看「现在能不能用、有没有要处理的」，再往下才是经营与排行。
+ * 每张卡都直接点进对应页面，不用先想「这个数字在哪一页」。
+ *
  * - 顶部「待办」条：待处理工单 / 待审求片 / 待支付订单，一点直达对应页面
  * - 交易概览：今日营收、累计营收、积分存量、今日签到、兑换码核销、邀请人数
  * - 趋势图：近 7/14/30 天的新增用户 / 播放 / 营收 / 签到（纯 SVG，无额外依赖）
@@ -11,17 +14,18 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
-  Film, MessageSquareDashed, Play, Radio, Ticket, Users, Wallet,
+  Film, MessageSquareDashed, Radio, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
-  Server, HardDrive, CloudDownload, Download, Route as RealmIcon,
+  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon,
 } from 'lucide-vue-next'
 import {
-  fetchLibraries, fetchOverview, fetchPlaybackStats, fetchRealmOverview, fetchServersSummary,
-  fetchSessions, fetchStatsTrend,
+  fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
+  fetchServersSummary, fetchSessions, fetchStatsTrend,
 } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
-  EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, RealmOverview, ServerSummary, TrendStats,
+  EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, RealmOverview, ServerSummary,
+  StorageMount, TrendStats,
 } from '@/types'
 
 const overview = ref<OverviewStats | null>(null)
@@ -30,6 +34,8 @@ const economy = ref<EconomyStats | null>(null)
 const trend = ref<TrendStats | null>(null)
 const libraries = ref<EmbyLibrary[]>([])
 const sessions = ref<EmbySessionRow[]>([])
+/** 存储来源：交付链的起点——挂载断了，媒体库扫不到、也播不了 */
+const mounts = ref<StorageMount[]>([])
 /** 服务器接入情况：面板到底接了几台后端服 / 几台 Emby 服 / 有没有接下载器 */
 const servers = ref<ServerSummary | null>(null)
 /** 多服运营：每个服的会员 / 内容 / 节点，一个面板同时管几个服一眼看完 */
@@ -58,7 +64,7 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e, libraryData, sessionData, serverData, realmData] = await Promise.all([
+    const [o, p, e, libraryData, sessionData, serverData, realmData, mountData] = await Promise.all([
       fetchOverview(),
       fetchPlaybackStats(),
       fetchEconomyStats(),
@@ -66,6 +72,7 @@ onMounted(async () => {
       fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
       fetchServersSummary().catch(() => null),
       fetchRealmOverview().catch(() => null),
+      fetchMounts().catch(() => null),
     ])
     overview.value = o
     playback.value = p
@@ -74,6 +81,7 @@ onMounted(async () => {
     sessions.value = sessionData.sessions
     servers.value = serverData
     realms.value = realmData
+    mounts.value = mountData?.mounts || []
     await loadTrend()
   } finally {
     loading.value = false
@@ -114,6 +122,107 @@ const todos = computed(() => {
 })
 
 const todoTotal = computed(() => todos.value.reduce((s, t) => s + t.count, 0))
+
+// ==================== 交付链数据卡 ====================
+
+/** 正在转码的会话数：直连很轻，转码才是吃 CPU 的那种 */
+const transcodeCount = computed(
+  () => sessions.value.filter((s) => s.play_method === 'Transcode').length,
+)
+
+/** 扫描状态：正常 / 异常（partial、failed）/ 正在扫 / 从没扫过 */
+const scanSummary = computed(() => {
+  const list = libraries.value
+  const statusOf = (l: EmbyLibrary) => (l.is_scanning ? 'running' : l.last_scan?.status || '')
+  return {
+    total: list.length,
+    ok: list.filter((l) => statusOf(l) === 'success').length,
+    bad: list.filter((l) => statusOf(l) === 'partial' || statusOf(l) === 'failed').length,
+    scanning: list.filter((l) => statusOf(l) === 'running').length,
+    never: list.filter((l) => !l.last_scan && !l.is_scanning).length,
+  }
+})
+
+/**
+ * 存储健康：以 EM（面板进程）能不能碰到为准（em_reachable），没有体检结果时退回落库结果
+ *
+ * 「被媒体库绑定、但播放节点（EA）够不着」是唯一阻断播放的一种，单独点出来。
+ */
+const mountSummary = computed(() => {
+  const list = mounts.value.filter((m) => m.is_enabled)
+  const reach = (m: StorageMount) => (m.em_reachable === null ? m.last_check_ok : m.em_reachable)
+  const failed = list.filter((m) => reach(m) === false)
+  return {
+    total: mounts.value.length,
+    ok: list.filter((m) => reach(m) === true).length,
+    failed: failed.length,
+    unchecked: list.filter((m) => reach(m) === null).length,
+    blocked: list.filter((m) => m.ea_reachable === false && (m.library_ids?.length || 0) > 0).length,
+    failedNames: failed.slice(0, 3).map((m) => m.name).join('、'),
+  }
+})
+
+type KpiTone = 'plain' | 'ok' | 'info' | 'warn' | 'danger'
+
+/** 顶部六张卡：一条交付链看下来（用户 → 播放 → 待办 → 内容 → 存储） */
+const kpis = computed<{
+  key: string; label: string; value: number | string; foot: string
+  to: string; icon: unknown; tone: KpiTone; title: string
+}[]>(() => {
+  const scan = scanSummary.value
+  const mount = mountSummary.value
+  return [
+    {
+      key: 'users', label: '用户总数', value: overview.value?.users.total ?? 0,
+      foot: `活跃 ${overview.value?.users.active ?? 0} · 今日播放 ${playback.value?.today.plays ?? 0} 次`,
+      to: '/users', icon: Users, tone: 'plain', title: '用户与账号',
+    },
+    {
+      key: 'playing', label: '当前播放', value: sessions.value.length,
+      foot: sessions.value.length ? `转码 ${transcodeCount.value} 路` : '当前没有播放会话',
+      to: '/emby', icon: Radio, tone: sessions.value.length ? 'ok' : 'plain',
+      title: '实时会话（媒体库页）',
+    },
+    {
+      key: 'seeks', label: '待处理求片', value: overview.value?.media_seeks.pending ?? 0,
+      foot: (overview.value?.media_seeks.pending ?? 0) > 0 ? '点开去处理' : '没有待处理求片',
+      to: '/media-seek', icon: MessageSquareDashed,
+      tone: (overview.value?.media_seeks.pending ?? 0) > 0 ? 'warn' : 'plain',
+      title: '求片与内容',
+    },
+    {
+      key: 'tickets', label: '待处理工单', value: overview.value?.tickets.open ?? 0,
+      foot: (overview.value?.tickets.open ?? 0) > 0 ? '点开去回复' : '没有待处理工单',
+      to: '/tickets', icon: Ticket,
+      tone: (overview.value?.tickets.open ?? 0) > 0 ? 'danger' : 'plain',
+      title: '服务支持',
+    },
+    {
+      key: 'scan', label: '扫描状态', value: `${scan.ok}/${scan.total}`,
+      foot: scan.total
+        ? `正常 / 共 ${scan.total} 个库`
+          + (scan.bad ? ` · 异常 ${scan.bad}` : '')
+          + (scan.scanning ? ` · 扫描中 ${scan.scanning}` : '')
+          + (scan.never ? ` · 未扫过 ${scan.never}` : '')
+        : '还没有媒体库',
+      to: '/emby', icon: ScanSearch,
+      tone: scan.bad ? 'warn' : scan.scanning ? 'info' : scan.total ? 'ok' : 'plain',
+      title: '媒体库与扫描',
+    },
+    {
+      key: 'mounts', label: '存储健康', value: `${mount.ok}/${mount.total}`,
+      foot: mount.total
+        ? `可用 / 共 ${mount.total} 条来源`
+          + (mount.failed ? ` · 异常 ${mount.failed}${mount.failedNames ? `（${mount.failedNames}）` : ''}` : '')
+          + (mount.unchecked ? ` · 未体检 ${mount.unchecked}` : '')
+          + (mount.blocked ? ` · 播放节点够不着 ${mount.blocked}` : '')
+        : '还没有存储来源',
+      to: '/mounts', icon: HardDrive,
+      tone: mount.failed || mount.blocked ? 'warn' : mount.total ? 'ok' : 'plain',
+      title: '存储来源',
+    },
+  ]
+})
 
 // ==================== 趋势图 ====================
 
@@ -178,6 +287,28 @@ function sessionProgress(session: EmbySessionRow): number {
     <div v-if="loading" class="page-loading">加载中…</div>
 
     <template v-else>
+      <!--
+        交付链数据卡：先回答「现在能不能用、有没有要处理的」——
+        用户 → 播放 → 待办 → 内容（扫描）→ 存储，每张卡点进去就是这个数的明细页。
+      -->
+      <section class="kpi-grid">
+        <RouterLink
+          v-for="k in kpis"
+          :key="k.key"
+          :to="k.to"
+          class="kpi-card"
+          :class="`tone-${k.tone}`"
+          :title="k.title"
+        >
+          <span class="kpi-icon"><component :is="k.icon" :size="16" /></span>
+          <div class="kpi-body">
+            <div class="kpi-label">{{ k.label }}</div>
+            <div class="kpi-value">{{ k.value }}</div>
+            <div class="kpi-foot">{{ k.foot }}</div>
+          </div>
+        </RouterLink>
+      </section>
+
       <!-- 待办 -->
       <section v-if="todos.length" class="todo-bar" :class="{ clear: todoTotal === 0 }">
         <div class="todo-lead">
@@ -196,30 +327,6 @@ function sessionProgress(session: EmbySessionRow): number {
           <strong>{{ t.count }}</strong>
           <ArrowRight :size="13" class="todo-arrow" />
         </RouterLink>
-      </section>
-
-      <!-- 系统概览 -->
-      <section class="stat-grid">
-        <div class="stat-tile">
-          <div class="stat-label"><Users :size="13" /> 总用户 / 活跃</div>
-          <div class="stat-value">
-            {{ overview?.users.total ?? 0 }}<span class="stat-sub"> / {{ overview?.users.active ?? 0 }}</span>
-          </div>
-        </div>
-        <div class="stat-tile">
-          <div class="stat-label"><Film :size="13" /> 媒体条目</div>
-          <div class="stat-value stat-accent">{{ overview?.emby.total_items ?? 0 }}</div>
-        </div>
-        <div class="stat-tile">
-          <div class="stat-label"><Radio :size="13" /> 在线会话</div>
-          <div class="stat-value" :class="{ 'stat-accent': (overview?.emby.active_sessions ?? 0) > 0 }">
-            {{ overview?.emby.active_sessions ?? 0 }}
-          </div>
-        </div>
-        <div class="stat-tile">
-          <div class="stat-label"><Play :size="13" /> 今日播放</div>
-          <div class="stat-value">{{ playback?.today.plays ?? 0 }}<span class="stat-sub"> 次 / {{ playback?.today.users ?? 0 }} 人</span></div>
-        </div>
       </section>
 
       <!--
@@ -252,25 +359,31 @@ function sessionProgress(session: EmbySessionRow): number {
       </section>
 
       <!--
-        多服运营：一个面板可以同时运营多个服，每个服的会员 / 内容 / 播放节点都在这里，
-        不用一个个切过去看（切当前服在顶栏，管服去「服管理」页）。
+        各服概况：每个服的会员 / 内容 / 播放节点都在这里，不用一个个切过去看。
+        「多服」不是一个要单独学的模块：切当前作用域在顶栏，服与线路的归属在
+        「服务器与线路」页按范围看（这里的每行也直接进那一页）。
       -->
       <section v-if="realms?.realms.length" class="admin-card realm-block">
         <div class="card-header">
-          <h2><RealmIcon :size="15" /> 多服运营</h2>
+          <h2><RealmIcon :size="15" /> 各服概况</h2>
           <span class="realm-sum">
             {{ realms.summary.total_realms }} 个服 · 有效订阅 {{ realms.summary.active_subscriptions }} ·
             播放节点在线 {{ realms.summary.nodes_online }}/{{ realms.summary.nodes }}
           </span>
-          <RouterLink class="realm-manage" to="/realms">
-            服管理<ArrowRight :size="13" />
-          </RouterLink>
+          <span class="realm-links">
+            <RouterLink class="realm-manage" to="/servers">
+              服务器与线路<ArrowRight :size="13" />
+            </RouterLink>
+            <RouterLink class="realm-manage" to="/realms">
+              服管理<ArrowRight :size="13" />
+            </RouterLink>
+          </span>
         </div>
         <div class="realm-rows">
           <RouterLink
             v-for="r in realms.realms"
             :key="r.id"
-            to="/realms"
+            to="/servers"
             class="realm-row"
             :class="{ current: r.id === realms.active_realm_id, off: !r.is_active }"
           >
@@ -389,7 +502,10 @@ function sessionProgress(session: EmbySessionRow): number {
       <section v-if="libraries.length || sessions.length" class="ops-grid">
         <div class="admin-card ops-card">
           <div class="card-header">
-            <h2><Film :size="15" /> 媒体服务</h2>
+            <h2>
+              <Film :size="15" /> 媒体服务
+              <span class="range-hint">条 {{ overview?.emby.total_items ?? 0 }}</span>
+            </h2>
             <RouterLink to="/emby" class="card-link">管理媒体库 <ArrowRight :size="13" /></RouterLink>
           </div>
           <div v-if="libraries.length" class="ops-list">
@@ -406,7 +522,10 @@ function sessionProgress(session: EmbySessionRow): number {
 
         <div class="admin-card ops-card">
           <div class="card-header">
-            <h2><Radio :size="15" /> 实时播放 <span class="range-hint">{{ sessions.length }} 路</span></h2>
+            <h2>
+              <Radio :size="15" /> 实时播放
+              <span class="range-hint">{{ sessions.length }} 路 · 今日 {{ playback?.today.plays ?? 0 }} 次 / {{ playback?.today.users ?? 0 }} 人</span>
+            </h2>
             <RouterLink to="/emby" class="card-link">查看会话 <ArrowRight :size="13" /></RouterLink>
           </div>
           <div v-if="sessions.length" class="ops-list">
@@ -457,6 +576,78 @@ function sessionProgress(session: EmbySessionRow): number {
 
 <style scoped>
 .page-loading { text-align: center; color: var(--text-secondary); padding: 60px 0; }
+
+/* ===== 交付链数据卡（顶部六张，一点直达明细页）===== */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.kpi-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  text-decoration: none;
+  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.kpi-card:hover {
+  border-color: var(--primary-border);
+  background: var(--bg-elevated);
+  transform: translateY(-1px);
+}
+
+.kpi-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+}
+
+.kpi-body { min-width: 0; flex: 1; }
+.kpi-label { font-size: 12px; color: var(--text-tertiary); }
+
+.kpi-value {
+  margin-top: 3px;
+  font-size: 24px;
+  font-weight: var(--font-weight-bold);
+  line-height: 1.15;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.kpi-foot {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态包：颜色只用来提示「有没有要看的」，不当装饰 */
+.kpi-card.tone-ok .kpi-icon { background: var(--success-bg); color: var(--success); }
+.kpi-card.tone-info .kpi-icon { background: var(--info-bg); color: var(--info); }
+.kpi-card.tone-warn { border-color: rgba(251, 191, 36, 0.28); }
+.kpi-card.tone-warn .kpi-icon { background: var(--warning-bg); color: var(--warning); }
+.kpi-card.tone-warn .kpi-value { color: var(--warning); }
+.kpi-card.tone-danger { border-color: rgba(248, 113, 113, 0.28); }
+.kpi-card.tone-danger .kpi-icon { background: var(--danger-bg); color: var(--danger); }
+.kpi-card.tone-danger .kpi-value { color: var(--danger); }
+
+.realm-links { display: inline-flex; align-items: center; gap: 10px; }
 
 .ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .ops-card { min-width: 0; }
@@ -626,6 +817,10 @@ function sessionProgress(session: EmbySessionRow): number {
 
 /* ===== 手机 ===== */
 @media (max-width: 640px) {
+  .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .kpi-card { padding: 12px; gap: 10px; }
+  .kpi-value { font-size: 20px; }
+  .kpi-foot { white-space: normal; }
   .todo-bar { padding: 10px 12px; gap: 8px; }
   .todo-lead { width: 100%; padding-right: 0; }
   .metric-tabs { flex-wrap: wrap; }

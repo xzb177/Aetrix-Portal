@@ -407,7 +407,7 @@ function logTypeLabel(type: string): string {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">用户管理</h1>
+        <h1 class="admin-page-title">用户</h1>
         <p class="admin-page-subtitle">共 {{ total }} 位用户 · 点击用户名或「详情」可查看完整画像</p>
       </div>
       <div class="toolbar">

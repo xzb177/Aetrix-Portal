@@ -98,7 +98,7 @@ function ago(s: string | null): string {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">设备风控</h1>
+        <h1 class="admin-page-title">设备与安全</h1>
         <p class="admin-page-subtitle">
           第三方客户端登录设备审查 —— 封禁会同时吊销令牌，移除等于踢下线
         </p>

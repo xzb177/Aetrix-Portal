@@ -121,7 +121,7 @@ function statusBadge(status: string): string {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">工单管理</h1>
+        <h1 class="admin-page-title">工单</h1>
         <p class="admin-page-subtitle">回复会以站内消息通知用户</p>
       </div>
       <div class="toolbar">
