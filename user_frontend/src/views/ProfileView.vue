@@ -26,7 +26,7 @@ import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
-  MonitorPlay,
+  MonitorPlay, LayoutDashboard,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -516,7 +516,11 @@ function formatDate(iso?: string | null) {
               <span class="list-text">修改登录密码</span>
               <ChevronRight class="list-arrow" :size="15" />
             </button>
-            <!-- 管理员入口只在顶栏头像菜单里出现一次（同源 /admin/，后台接管当前登录态） -->
+            <a v-if="user?.is_staff" href="/admin/" class="list-item list-link">
+              <LayoutDashboard :size="16" class="list-icon" />
+              <span class="list-text">管理后台</span>
+              <ChevronRight class="list-arrow" :size="15" />
+            </a>
             <button class="list-item danger" @click="handleLogout">
               <LogOut :size="16" class="list-icon" />
               <span class="list-text">退出登录</span>

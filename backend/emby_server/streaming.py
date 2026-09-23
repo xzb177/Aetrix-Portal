@@ -28,6 +28,17 @@ RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 CHUNK = 1024 * 256
 
 
+def can_redirect_direct(target) -> bool:
+    """Only redirect when no server-side credential must be forwarded."""
+    return (
+        getattr(target, "kind", "") == "url"
+        and not any(
+            str(name).lower() in {"authorization", "cookie", "proxy-authorization"}
+            for name in (getattr(target, "headers", {}) or {})
+        )
+    )
+
+
 def _range_header(start: int, end: int, total: int) -> dict:
     return {
         "Content-Range": f"bytes {start}-{end}/{total}",

@@ -16,6 +16,7 @@ from backend import models
 from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server import subtitles as subs
+from backend.emby_server.playback_security import validate_local_file_path
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -49,9 +50,15 @@ def item_file(item_id: str, user: models.WebUser = Depends(get_emby_user),
               db: Session = Depends(get_db)):
     item = _require_item(db, item_id)
     ensure_playback_allowed(db, user)
-    if not item.file_path or not os.path.isfile(item.file_path):
+    if not item.file_path:
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(item.file_path, filename=os.path.basename(item.file_path))
+    try:
+        file_path = validate_local_file_path(item.file_path)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path, filename=os.path.basename(file_path))
 
 
 # ---- 字幕投递 ----

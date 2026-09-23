@@ -34,6 +34,7 @@ from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
     get_emby_user,
@@ -58,6 +59,7 @@ from backend.emby_server.streaming import (
     serve_image,
     serve_remote,
     serve_remote_async,
+    can_redirect_direct,
     start_transcode,
     find_transcodes,
     stop_all_transcodes,
@@ -1475,6 +1477,8 @@ async def video_stream(
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     target = _play_target(db, item)
     if target.kind == "url":
+        if request.query_params.get("direct", "").lower() == "true" and can_redirect_direct(target):
+            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": "no-store"})
         # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
         # Range 与状态码透传，凭据不下发。
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
@@ -1501,9 +1505,12 @@ async def video_hls(
     existing = q.get("session")
     if existing and get_transcode(existing):
         info = get_transcode(existing)
-        file_path = os.path.join(info["dir"], os.path.basename(transcode_path))
+        try:
+            file_path = safe_child_name(info["dir"], transcode_path)
+            playlist = safe_child_name(info["dir"], "master.m3u8")
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Invalid transcode path")
         if transcode_path.endswith(".m3u8"):
-            playlist = os.path.join(info["dir"], "master.m3u8")
             # ffmpeg 写完首个切片才落盘播放列表；直接返回空列表会让播放器判定播放失败
             await wait_for_file(playlist, timeout=15.0)
             if not os.path.isfile(playlist):

@@ -52,6 +52,9 @@ from typing import Any, Callable, Iterator, Optional
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
+from backend.emby_server.playback_security import (
+    validate_local_file_path, validate_remote_url, safe_local_path,
+)
 from backend.emby_server import subtitles, transfer115
 
 logger = logging.getLogger(__name__)
@@ -332,6 +335,10 @@ def strm_container(url: str) -> str:
 
 def local_play_target(path: str) -> PlayTarget:
     """本机文件的播放目标；``.strm`` 读内容当直链（STRM 无需挂载也能播）"""
+    try:
+        path = validate_local_file_path(path)
+    except ValueError as exc:
+        raise MountError(str(exc)) from exc
     if _is_strm_name(path):
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -339,7 +346,7 @@ def local_play_target(path: str) -> PlayTarget:
         except OSError as exc:
             raise MountError(f"读取 STRM 文件失败: {path} ({exc})") from exc
         if url:
-            return PlayTarget("url", url, {"User-Agent": MOUNT_UA})
+            return PlayTarget("url", validate_remote_url(url), {"User-Agent": MOUNT_UA})
         raise MountError(f"STRM 文件里没有可用的直链: {path}")
     return PlayTarget("local", path)
 
@@ -542,7 +549,7 @@ class MountProvider:
             url = strm_url(self.read_text(rel))
             if not url:
                 raise MountError(f"STRM 文件里没有可用的直链: {rel}")
-            return PlayTarget("url", url, {"User-Agent": MOUNT_UA})
+            return PlayTarget("url", validate_remote_url(url), {"User-Agent": MOUNT_UA})
         return self.resolve(rel)
 
     # ---- 公共实现 ----
@@ -614,7 +621,10 @@ class LocalMount(MountProvider):
     @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         root = self._require_path()
-        target = os.path.join(root, (rel or "/").lstrip("/"))
+        try:
+            target = safe_local_path(root, (rel or "/").lstrip("/"))
+        except ValueError as exc:
+            raise MountError(str(exc)) from exc
         if not os.path.isdir(target):
             raise MountError(f"目录不存在: {rel}")
         entries: list[MountEntry] = []
@@ -651,11 +661,18 @@ class LocalMount(MountProvider):
 
     def resolve(self, rel: str) -> PlayTarget:
         root = self._require_path()
-        return local_play_target(os.path.join(root, (rel or "/").lstrip("/")))
+        try:
+            path = safe_local_path(root, (rel or "/").lstrip("/"))
+        except ValueError as exc:
+            raise MountError(str(exc)) from exc
+        return local_play_target(path)
 
     def read_text(self, rel: str) -> str:
         root = self._require_path()
-        path = os.path.join(root, (rel or "/").lstrip("/"))
+        try:
+            path = safe_local_path(root, (rel or "/").lstrip("/"))
+        except ValueError as exc:
+            raise MountError(str(exc)) from exc
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 return f.read()
@@ -1230,7 +1247,10 @@ def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> 
         raise MountError(f"挂载 #{mount_id} 不存在（该条目来自已删除的挂载）")
     if not mount.is_enabled:
         raise MountError(f"挂载「{mount.name}」已停用")
-    return build_provider(mount, db, library).resolve_final(rel)
+    target = build_provider(mount, db, library).resolve_final(rel)
+    if target.kind == "url":
+        target.value = validate_remote_url(target.value)
+    return target
 
 
 def media_exists(file_path: str, db: Session, library=None) -> bool:
