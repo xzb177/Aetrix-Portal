@@ -23,6 +23,7 @@ import {
   fetchLibraryScans,
   fetchMounts,
   fetchPan115Accounts,
+  fetchReachability,
   fetchRepairQueue,
   fetchScanQueue,
   fetchServers,
@@ -36,6 +37,8 @@ import {
 } from '@/api/admin'
 import type {
   EmbyLibrary,
+  EmbyPlaybackReachability,
+  EmbyReachabilityReport,
   EmbyScanQueue,
   EmbyScanResult,
   EmbyScanRun,
@@ -75,6 +78,11 @@ const scanKeep = ref(0)
 const scanQueue = ref<EmbyScanQueue | null>(null)
 let queueTimer: number | undefined
 let queueWasBusy = false
+
+// 播放可达性（v2.28.0）：面板扫描正常 ≠ 出流的机器拿得到内容。
+// 分离部署（EM 控制面 + EA 数据面 + 共享存储）下这是最该先看的一页：
+// 本机路径 / local 挂载的库在 EA 出流时读不到，客户端只会看到条目的 404。
+const reachability = ref<EmbyReachabilityReport | null>(null)
 
 /** 归属服选项：默认服 + 已建的其他服 */
 const realmOptions = computed(() => realm.realms)
@@ -120,13 +128,14 @@ async function load() {
   try {
     // 归属服下拉要用服的清单（Layout 已加载过就不重复请求）
     if (!realm.loaded) realm.load().catch(() => undefined)
-    const [l, s, r, a, m, srv] = await Promise.all([
+    const [l, s, r, a, m, srv, reach] = await Promise.all([
       fetchLibraries(),
       fetchSessions(),
       fetchRepairQueue().catch(() => ({ total: 0, items: [] })),
       fetchPan115Accounts().catch(() => ({ accounts: [], env_cookie_configured: false })),
       fetchMounts().catch(() => ({ mounts: [], mount_types: [] })),
       fetchServers().catch(() => null),
+      fetchReachability().catch(() => null),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -135,6 +144,7 @@ async function load() {
     panAccounts.value = a.accounts
     mounts.value = m.mounts
     nodes.value = (srv?.servers || []).filter((x) => x.kind === 'ea')
+    reachability.value = reach
   } finally {
     loading.value = false
   }
@@ -469,6 +479,48 @@ function queuedSince(t: EmbyScanTask): string {
   return t.queued_ms ? `等了 ${fmtDuration(t.queued_ms)}` : ''
 }
 
+// ---- 播放可达性（v2.28.0）：面板扫描正常 ≠ 出流的那台机器拿得到内容 ----
+
+/** 一条库的可达性提示（ok 不占地方，只提示 warn / bad） */
+function libReach(l: EmbyLibrary): EmbyPlaybackReachability | null {
+  const verdict = l.playback
+  return verdict && verdict.level !== 'ok' ? verdict : null
+}
+
+const reachProblems = computed(() => (reachability.value?.libraries || []).filter((i) => i.level !== 'ok'))
+/** 顶部横幅：只有真的有问题（或有待确认项）才占版面 */
+const reachHasContent = computed(() => {
+  const r = reachability.value
+  return !!r && (r.level !== 'ok' || reachProblems.value.length > 0)
+})
+
+function reachCls(level: string): string {
+  return level === 'bad' ? 'danger' : level === 'warn' ? 'warn' : 'ok'
+}
+
+function reachText(level: string): string {
+  return { bad: '读不到', warn: '待确认', ok: '可达' }[level] || level
+}
+
+/** 卡片提示的悬停文案：原因 + 改法（卡片上只放一句，详情靠悬停） */
+function reachTitle(l: EmbyLibrary): string {
+  const verdict = libReach(l)
+  return [verdict?.message, verdict?.fix].filter(Boolean).join(' ｜ ')
+}
+
+/** 横幅第一行的事实：谁在出流、面板协议面开着吗、用户该连哪个地址、EA 体检什么时候拉的 */
+function reachFacts(): string[] {
+  const r = reachability.value
+  if (!r) return []
+  const facts = [r.playback.label]
+  facts.push(r.playback.gateway_enabled ? '面板协议面：开' : '面板协议面：关（分离部署）')
+  facts.push(`用户端地址：${r.playback.client_url || '未配置'}`)
+  facts.push(r.ea_health_at ? `EA 体检：${fmtDate(r.ea_health_at)}` : 'EA 体检：还没拉过')
+  return facts
+}
+
+
+
 // ---- 卡片facts：这个库由谁扫、内容从哪来、有多少条目（不用进库再点一层）----
 
 /** 服务：归属节点（EA）在扫；没指定就是面板自己扫 */
@@ -553,6 +605,56 @@ function typeLabel(t: string): string {
         <el-button :loading="loading" aria-label="刷新" @click="load">
           <RefreshCw :size="15" />
         </el-button>
+      </div>
+    </div>
+
+    <!--
+      播放可达性（v2.28.0）：面板扫描没问题 ≠ 出流的机器拿得到内容。
+      分离部署（EM 控制面 + EA 数据面 + 共享 WebDAV/rclone）下，内容只存在于面板那台机器
+      上时（本机目录 / local 挂载），客户端会看得到条目却播不了；这里提前说清楚。
+    -->
+    <div v-if="reachHasContent && reachability" class="admin-card reach-card">
+      <div class="card-header">
+        <h2>
+          播放可达性
+          <span class="mini-badge" :class="reachCls(reachability.level)">
+            {{ reachText(reachability.level) }}
+          </span>
+        </h2>
+        <div class="queue-facts">
+          <span v-for="f in reachFacts()" :key="f" class="fact">{{ f }}</span>
+        </div>
+      </div>
+
+      <!-- 用户端该连哪个地址（分离部署最容易配错的一处） -->
+      <div v-if="reachability.client_endpoint.level !== 'ok'" class="reach-row">
+        <span class="mini-badge" :class="reachCls(reachability.client_endpoint.level)">
+          {{ reachText(reachability.client_endpoint.level) }}
+        </span>
+        <div class="reach-row-body">
+          <div class="reach-row-title">用户端地址</div>
+          <div class="queue-row-sub" :class="{ danger: reachability.client_endpoint.level === 'bad', warn: reachability.client_endpoint.level === 'warn' }">
+            {{ reachability.client_endpoint.message }}
+          </div>
+          <div v-if="reachability.client_endpoint.fix" class="reach-row-fix">
+            {{ reachability.client_endpoint.fix }}
+          </div>
+        </div>
+      </div>
+
+      <!-- 逐库：哪个库在出流的那台机器上拿不到内容、怎么改 -->
+      <div v-for="p in reachProblems" :key="'reach-' + p.library_id" class="reach-row">
+        <span class="mini-badge" :class="reachCls(p.level)">{{ reachText(p.level) }}</span>
+        <div class="reach-row-body">
+          <div class="reach-row-title">
+            <span class="reach-name">{{ p.library_name }}</span>
+            <span class="reach-node">{{ p.targets.length ? p.targets.join('、') : p.playback_label }}</span>
+          </div>
+          <div class="queue-row-sub" :class="{ danger: p.level === 'bad', warn: p.level === 'warn' }">
+            {{ p.message }}
+          </div>
+          <div v-if="p.fix" class="reach-row-fix">{{ p.fix }}</div>
+        </div>
       </div>
     </div>
 
@@ -659,6 +761,11 @@ function typeLabel(t: string): string {
         <div v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
           <span class="scan-dot" :class="liveFor(l)?.state === 'queued' ? 'is-queued' : 'is-running'" />
           <span>{{ cardLiveHint(l) }}</span>
+        </div>
+
+        <!-- 播放可达性（v2.28.0）：扫描正常但出流节点读不到内容时，卡片直接标出来 -->
+        <div v-if="libReach(l)" class="scan-error" :title="reachTitle(l)">
+          播放风险：{{ libReach(l)?.message }}
         </div>
 
         <!-- 最近一次扫描的结果：新增/更新/删除多少、哪一步出错，刷新后仍然可查 -->
@@ -1024,6 +1131,23 @@ function typeLabel(t: string): string {
 .scan-dot.is-queued { background: var(--text-tertiary); }
 
 /* 扫描队列：正在跑 / 排队中 / 最近完成 三列（同一远程挂载串行化的可见面） */
+.reach-card { display: flex; flex-direction: column; gap: 10px; }
+.reach-card .card-header h2 { display: flex; align-items: center; gap: 8px; }
+.reach-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.reach-row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.reach-row-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.reach-name { font-weight: var(--font-weight-bold); color: var(--text-primary); }
+.reach-node { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+.reach-row-fix { font-size: var(--font-size-xs); color: var(--text-secondary); }
+
 .queue-card { display: flex; flex-direction: column; gap: 12px; }
 .queue-card .card-header {
   display: flex;
