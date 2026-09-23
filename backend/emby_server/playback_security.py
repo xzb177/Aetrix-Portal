@@ -1,13 +1,32 @@
-"""Playback URL safety checks.
+"""播放地址与媒体路径的安全校验
 
-Remote playback targets are validated before httpx or ffmpeg uses them.
+远程播放目标在交给 httpx / ffmpeg 之前必须过一遍这里。两层口径，别混：
+
+- **配置来源的直链**（本机 `paths`、存储挂载、`.strm` 文件内容）：由运维在自己的机器 /
+  自己的网盘上配置，指向内网是**正常用法**（局域网 NAS、自建 WebDAV / AList / MinIO、
+  本机回环上的转发器都是这个项目的一等场景）。所以这里只拦真正无歧义的东西——
+  协议必须是 http(s)、URL 里不许带内嵌凭据；**是否拦内网地址由
+  ``EMBY_BLOCK_PRIVATE_MEDIA_URLS`` 决定（默认关，打开后配合 ``EMBY_MEDIA_URL_ALLOWLIST``
+  放行自己的 NAS / 回环地址）**。
+- **服务器自己追出去的重定向目标**（``reject_private_url``）：源站回一个 302 指向
+  ``http://169.254.169.254/…`` 或内网运维接口，代理会带着你的凭据去取——这是真正要挡的 SSRF，
+  所以**一律拦内网 / 回环，不受上面那个开关影响**。
+
+``EMBY_MEDIA_URL_ALLOWLIST`` 两边都认：它是运维的**显式**决定（“这个主机我知道是谁”），
+而不是一个绕过的口子。
 """
 from __future__ import annotations
 
 import ipaddress
 import os
 import socket
+from typing import Optional
 from urllib.parse import urlsplit
+
+# 判定为「内部地址」的口径：内网 / 回环 / 链路本地（含云元数据 169.254.169.254）/
+# 组播 / 保留段 / 未指定地址
+_PRIVATE_FLAGS = ("is_private", "is_loopback", "is_link_local", "is_multicast",
+                  "is_reserved", "is_unspecified")
 
 
 def _allowed_hosts() -> set[str]:
@@ -15,24 +34,43 @@ def _allowed_hosts() -> set[str]:
     return {item.strip().lower().rstrip(".") for item in raw.split(",") if item.strip()}
 
 
+def block_private_urls() -> bool:
+    """是否默认拒绝指向内网 / 回环的媒体地址（``EMBY_BLOCK_PRIVATE_MEDIA_URLS``，默认关）
+
+    默认关不是「忘了开」：这个项目的媒体来源本来就大量在内网（局域网 NAS、自建 WebDAV /
+    AList / MinIO、rclone 的本地 HTTP 端点）。默认拦会把这些部署的播放全部弄坏，
+    而它们本来就得先有媒体库管理员权限才能配出来。
+    """
+    return os.getenv("EMBY_BLOCK_PRIVATE_MEDIA_URLS", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _private(host: str) -> bool:
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
         return host.rstrip(".").lower() in {"localhost", "localhost.localdomain"}
-    return any((addr.is_private, addr.is_loopback, addr.is_link_local,
-                addr.is_multicast, addr.is_reserved, addr.is_unspecified))
+    return any(getattr(addr, flag) for flag in _PRIVATE_FLAGS)
 
 
 def _resolves_private(host: str) -> bool:
+    """域名解析后落到内网地址才算内部地址
+
+    **解析失败一律当作「不是内部地址」**：名字解析不了并不代表它指向内网，而且真正的
+    请求马上会以「源站不可达」失败——曾经的写法在这里 fail-closed，
+    结果「DNS 里没有这个名字」被当成「内网地址」拒掉（离线 / 内网 DNS / 临时故障
+    都会命中，连公开 CDN 域名都播不了）。
+    """
     try:
         records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except OSError:
-        return True
+        return False
     return any(_private(record[4][0]) for record in records)
 
 
-def validate_remote_url(raw_url: str) -> str:
+def _validate_url(raw_url: str, *, reject_private: bool) -> str:
+    """统一的 URL 校验：协议 / 内嵌凭据始终检查，内网地址按需检查"""
     from .mounts import MountError
 
     value = (raw_url or "").strip()
@@ -41,10 +79,26 @@ def validate_remote_url(raw_url: str) -> str:
         raise MountError("播放地址必须是 http 或 https URL")
     if parsed.username or parsed.password:
         raise MountError("播放地址禁止携带内嵌凭据")
-    host = parsed.hostname.lower().rstrip(".")
-    if host not in _allowed_hosts() and (_private(host) or _resolves_private(host)):
-        raise MountError("播放地址指向受保护的内部地址")
+    if reject_private:
+        host = parsed.hostname.lower().rstrip(".")
+        if host not in _allowed_hosts() and (_private(host) or _resolves_private(host)):
+            raise MountError("播放地址指向受保护的内部地址")
     return value
+
+
+def validate_remote_url(raw_url: str, *, allow_private: Optional[bool] = None) -> str:
+    """校验媒体直链（配置来源用这个）
+
+    ``allow_private`` 默认跟随 ``EMBY_BLOCK_PRIVATE_MEDIA_URLS``（默认允许内网地址）。
+    """
+    if allow_private is None:
+        allow_private = not block_private_urls()
+    return _validate_url(raw_url, reject_private=not allow_private)
+
+
+def reject_private_url(raw_url: str) -> str:
+    """校验**服务器自己要追过去取**的地址（重定向目标）：一律不许指向内网 / 回环"""
+    return _validate_url(raw_url, reject_private=True)
 
 
 def safe_local_path(root: str, relative: str) -> str:
