@@ -40,6 +40,7 @@ from backend.emby_server.scanner import (
     is_scan_active,
     normalize_scrape_policy,
     scan_library_sync,
+    scan_result_payload,
 )
 # 本文件里这几个路由都是 async def，所以必须用异步变体：同步的 stop_transcode 会
 # terminate 子进程、等它退出（最坏 5 秒）、再递归删分片目录，放在事件循环上等于把全站卡住。
@@ -651,6 +652,8 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "platform": lib.platform,
             "account_115_id": getattr(lib, "account_115_id", None),
             "last_scan_at": lib.last_scan_at.isoformat() if lib.last_scan_at else None,
+            # 最近一次扫描的结果：新增/更新/删除多少、哪些来源读不到、有没有异常
+            "last_scan": scan_result_payload(lib),
             "item_count": lib.item_count,
             # 服与播放节点：多服 / 多机部署下“这个库归谁”必须一眼可见
             "realm_id": lib.realm_id,

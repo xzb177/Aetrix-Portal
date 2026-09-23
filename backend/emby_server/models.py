@@ -52,6 +52,13 @@ class Library(Base):
     # 两者可同时存在，扫描时一起遍历；远程挂载的条目 file_path 形如 mount://<id>/<相对路径>。
     mount_ids = Column(Text, default="")
     last_scan_at = Column(DateTime)
+    # 最近一次扫描的结果（v2.22.0）：只靠 is_scanning + last_scan_at 看不出「扫得怎么样」——
+    # 新增/更新/删除多少、哪些来源读不到、有没有异常都只留在日志里，扫描结束就查不到了。
+    # 这里把结果落库，管理端列表直接带回（见 scanner.begin_scan / finish_scan / scan_result_payload）。
+    # scan_status: running / success / partial / failed（partial = 有来源不可用、已跳过清理）
+    scan_status = Column(String(20))
+    scan_stats = Column(Text)          # JSON：added/updated/removed/probed/scraped/unchanged…
+    scan_error = Column(String(500))   # 异常摘要（仅 failed 时写入），来源失败原因进 stats.failed_roots
     item_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

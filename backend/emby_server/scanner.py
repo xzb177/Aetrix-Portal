@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json  # 扫描结果落库（scan_stats）需要
 import logging
 import os
 import re
@@ -749,7 +750,7 @@ class ScanInProgress(RuntimeError):
     """同一媒体库已有扫描任务在运行"""
 
 
-def is_scan_active(library_id: int) -> bool:
+def is_scan_active(library_id: int) -> bool:  # noqa: D401
     """是否有扫描任务正在跑（比数据库里的 is_scanning 标志可靠：进程崩溃不会卡死）"""
     with _ACTIVE_SCANS_LOCK:
         return library_id in _ACTIVE_SCANS
@@ -1372,6 +1373,121 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     return removed
 
 
+# ==================== 最近一次扫描结果（落库 + 对外可查）====================
+# 扫描统计以前只在返回值与日志里：管理端刷新一下就没了，「上一轮到底扫到什么」只能去
+# 服务器日志翻。这里把结果写回 Library（scan_status / scan_stats / scan_error），
+# 由 /api/admin/emby/libraries 一并带回（见 scan_result_payload）。
+SCAN_STATUS_RUNNING = "running"
+SCAN_STATUS_SUCCESS = "success"
+SCAN_STATUS_PARTIAL = "partial"   # 有来源读不到：本轮已跳过清理
+SCAN_STATUS_FAILED = "failed"
+
+# 需要长期保留的统计键：其余键本来只是内部状态，不进库
+SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "scraped", "repaired",
+                   "unchanged", "removal_skipped", "failed_roots", "duration_ms")
+
+
+def encode_scan_stats(stats: Optional[dict]) -> Optional[str]:
+    """统计字典 → JSON 文本（序列化失败一律当作没有，不影响扫描本身）"""
+    if not stats:
+        return None
+    try:
+        out = {k: stats.get(k, 0) for k in SCAN_STATS_KEYS if k in stats}
+        if "failed_roots" in out:
+            out["failed_roots"] = [str(r)[:300] for r in (out.get("failed_roots") or [])][:20]
+        return json.dumps(out, ensure_ascii=False, sort_keys=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("序列化扫描统计失败: %s", exc)
+        return None
+
+
+def decode_scan_stats(raw: Optional[str]) -> dict:
+    """JSON 文本 → 统计字典（坏数据回空字典，不向外抛）"""
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def scan_result_payload(library) -> Optional[dict]:
+    """媒体库最近一次扫描结果的对外结构（管理端列表与客户端接口共用一份口径）
+
+    从没扫过（既没有状态也没有时间）时返回 None，前端据此显示「尚未扫描」——
+    「没扫过」和「扫了但都是 0」是两件事，不能混成一个空结构。
+    """
+    status = getattr(library, "scan_status", None)
+    if not status and not getattr(library, "last_scan_at", None):
+        return None
+    stats = decode_scan_stats(getattr(library, "scan_stats", None))
+    return {
+        "status": status or SCAN_STATUS_SUCCESS,
+        "finished_at": library.last_scan_at.isoformat() if library.last_scan_at else None,
+        "duration_ms": stats.get("duration_ms"),
+        "added": int(stats.get("added") or 0),
+        "updated": int(stats.get("updated") or 0),
+        "removed": int(stats.get("removed") or 0),
+        "probed": int(stats.get("probed") or 0),
+        "scraped": int(stats.get("scraped") or 0),
+        "repaired": int(stats.get("repaired") or 0),
+        "unchanged": int(stats.get("unchanged") or 0),
+        "removal_skipped": bool(stats.get("removal_skipped")),
+        "failed_roots": list(stats.get("failed_roots") or []),
+        "error": getattr(library, "scan_error", None),
+    }
+
+
+def _write_scan_state(db: Session, library: emby_models.Library, status: str,
+                      stats: Optional[dict], error: Optional[str]) -> None:
+    """状态 / 统计 / 原因写回媒体库并提交（落盘失败只记日志，不覆盖真实异常）"""
+    library.is_scanning = False
+    library.last_scan_at = datetime.now()
+    library.scan_status = status
+    library.scan_stats = encode_scan_stats(stats)
+    library.scan_error = (error or "")[:500] or None
+    try:
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("写入扫描结果失败: %s", exc)
+        db.rollback()
+
+
+def begin_scan(db: Session, library: emby_models.Library) -> None:
+    """标记扫描开始（独立提交一次：扫描过程中崩溃也能看出「上一轮在跑」）"""
+    library.is_scanning = True
+    library.scan_status = SCAN_STATUS_RUNNING
+    library.scan_error = None
+    try:
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — 状态写不进去也要照常扫描
+        logger.warning("写入扫描开始状态失败: %s", exc)
+        db.rollback()
+
+
+def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]) -> str:
+    """写入一轮扫描的结果，返回归类后的状态
+
+    只有「来源全部可用且正常跑完」才算 success；任何来源读不到就记 partial——
+    那种情况下清理阶段被跳过，结果本身并不完整，不能对外报「一切正常」。
+    """
+    stats = stats or {}
+    status = SCAN_STATUS_PARTIAL if stats.get("removal_skipped") else SCAN_STATUS_SUCCESS
+    error = None
+    if status == SCAN_STATUS_PARTIAL:
+        error = "；".join(str(r) for r in (stats.get("failed_roots") or []))[:500] \
+            or "媒体库没有可用来源，本轮已跳过清理"
+    _write_scan_state(db, library, status, stats, error)
+    return status
+
+
+def fail_scan(db: Session, library: emby_models.Library, exc: Exception) -> None:
+    """扫描抛异常时把原因落库（管理端要能看到「为什么没扫成」）"""
+    _write_scan_state(db, library, SCAN_STATUS_FAILED, None,
+                      f"{type(exc).__name__}: {exc}")
+
+
 def scan_library_sync(db: Session, library: emby_models.Library,
                       snapshot: Optional[LibrarySnapshot] = None) -> dict:
     """扫描单个媒体库（同步实现，可在后台线程运行）
@@ -1385,16 +1501,36 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     - **探测/刮削按需**：已探测过的文件不再重复 ffprobe（除非文件大小变了），
       刮削按媒体库策略（missing_only / 3m / 6m / 1y / all）。
     - **外挂字幕与视频探测解耦**：换字幕文件不需要重探视频。
+    - **结果可查**：成功 / 部分失败 / 异常三条路都会把这一轮的统计与原因写回媒体库
+      （scan_status / scan_stats / scan_error），见 ``scan_result_payload``。
     """
     snap = snapshot or LibrarySnapshot.of(library)
+    # 先在**进程内**占位（重复任务会在这一步被拒绝，不会写库、也不会启动扫描），再写库状态
     _acquire_scan(snap.library_id)
+    try:
+        begin_scan(db, library)
+        started = time.perf_counter()
+        try:
+            stats = _scan_library_body(db, library, snap)
+        except Exception as exc:  # noqa: BLE001 — 异常要落到库里，再原样抛给调用方
+            logger.exception("媒体库「%s」扫描失败", snap.name)
+            fail_scan(db, library, exc)
+            raise
+        stats["duration_ms"] = int((time.perf_counter() - started) * 1000)
+        finish_scan(db, library, stats)
+        return stats
+    finally:
+        # 无论成功、失败还是生成器被提前关闭，都释放进程内占位，否则这个库再也扫不动
+        _release_scan(snap.library_id)
+
+
+def _scan_library_body(db: Session, library: emby_models.Library,
+                       snap: LibrarySnapshot) -> dict:
+    """一轮扫描的主体（不含进程内互斥与结果落库，见 scan_library_sync）"""
     stats: dict = {
         "added": 0, "updated": 0, "removed": 0, "probed": 0, "scraped": 0,
         "repaired": 0, "removal_skipped": False, "failed_roots": [],
     }
-    library.is_scanning = True
-    db.commit()
-
     clear_dir_cache()  # 新的一轮扫描不复用上一轮的目录列表
     ctx = _ScanContext(snap=snap, lib_id=library.id, stats=stats)
     seen_guids = ctx.seen_guids  # 清理阶段用它判断“文件还在不在”（与旧变量同名）
@@ -1591,13 +1727,11 @@ def scan_library_sync(db: Session, library: emby_models.Library,
                         ))
                     db.commit()
     finally:
-        library.is_scanning = False
-        library.last_scan_at = datetime.now()
-        _release_scan(snap.library_id)
+        # 扫描标志与结果由 scan_library_sync 统一写回（成功 / 部分失败 / 异常三条路都覆盖）
         try:
-            db.commit()  # 扫描标志必须落库，否则崩溃后 is_scanning 永久为真
+            db.commit()
         except Exception as e:  # noqa: BLE001
-            logger.warning("回写扫描状态失败: %s", e)
+            logger.warning("回写扫描中间状态失败: %s", e)
             db.rollback()
 
     stats["failed_roots"] = failed_roots

@@ -227,6 +227,11 @@ jobs:
       - name: 扫描清理阶段冒烟（来源不可读则跳过 / 条目复活 / 不误删）
         run: python scripts/smoke_test_scan_cleanup.py
 
+      # 扫描结果要能查、而且要诚实：没扫过 ≠ 扫了都是 0；有来源读不到是 partial（已跳过清理）
+      # 而不是 success；异常必须留下原因且把互斥与 is_scanning 都复位（否则这个库再也扫不动）。
+      - name: 扫描结果可查冒烟（落库 / partial 口径 / 异常不卡死）
+        run: python scripts/smoke_test_scan_result.py
+
       # 静态护栏也要自证“它会失败”：否则正则写歪、路径找错、基线比实际大，
       # 它会永远返回 0 而没任何人知道。这里拿合成代码树喂两条护栏，钉住口径与报错能力。
       - name: 静态护栏自检（护栏真的会失败 / 不误报同步 def 与下放的嵌套函数）

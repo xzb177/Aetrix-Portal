@@ -620,6 +620,8 @@ export interface EmbyLibrary {
   is_enabled: boolean
   is_scanning: boolean
   last_scan_at: string | null
+  /** 最近一次扫描的结果（null = 从未扫描过）；见后端 scan_result_payload */
+  last_scan?: EmbyScanResult | null
   item_count: number
   /** 刮削策略：missing_only / 3m / 6m / 1y / all */
   scrape_policy?: string
@@ -628,6 +630,28 @@ export interface EmbyLibrary {
   platform?: string | null
   /** 绑定的 115 账号配置档（不填则回退默认账号 / 服务器级 PAN115_COOKIE） */
   account_115_id?: number | null
+}
+
+/** 媒体库最近一次扫描的结果：管理端刷新后仍然可查（不用去翻服务器日志） */
+export interface EmbyScanResult {
+  /** running = 正在跑；success = 跑完且来源都正常；partial = 有来源读不到（已跳过清理）；failed = 异常中断 */
+  status: 'running' | 'success' | 'partial' | 'failed'
+  finished_at: string | null
+  duration_ms: number | null
+  added: number
+  updated: number
+  removed: number
+  probed: number
+  scraped: number
+  repaired: number
+  /** 增量扫描跳过的未变化条目数 */
+  unchanged: number
+  /** 来源不完整，本轮跳过了「清理已删除条目」 */
+  removal_skipped: boolean
+  /** 读不到的来源（路径 / 挂载 + 原因） */
+  failed_roots: string[]
+  /** 失败原因摘要（仅 partial / failed 时有值） */
+  error: string | null
 }
 
 /** 存储挂载的类型元数据（后端下发，前端不自己维护一份） */
