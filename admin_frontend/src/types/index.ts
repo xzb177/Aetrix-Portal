@@ -695,6 +695,66 @@ export interface EmbyLibrary {
   platform?: string | null
   /** 绑定的 115 账号配置档（不填则回退默认账号 / 服务器级 PAN115_COOKIE） */
   account_115_id?: number | null
+  /**
+   * 播放可达性（v2.28.0）：内容在「出流的那台机器」上真的拿得到吗
+   *
+   * 分离部署最容易踩的坑：面板（EM）扫描一切正常、item_count 也在涨，但内容只存在于
+   * EM 那台机器上（本机目录 / local 挂载），出流的 EA 读不到 —— 客户端点播放才 404/502。
+   * ok = 有把握；warn = 无法确认（没拉过 EA 体检 / 来源是本机路径）；bad = 有证据说明读不到。
+   */
+  playback?: EmbyPlaybackReachability | null
+}
+
+/** 一条播放可达性问题：level 分级 + 人话原因 + 改法 */
+export interface EmbyPlaybackProblem {
+  level: 'ok' | 'warn' | 'bad'
+  /** 原因码（local_path_unchecked / mount_unreachable_on_node / mount_unchecked …） */
+  code: string
+  message: string
+  fix: string
+  /** 关联的来源标签（挂载名或本机路径） */
+  source: string
+}
+
+/** 一条库（或用户端地址）的可达性判定 */
+export interface EmbyPlaybackReachability {
+  level: 'ok' | 'warn' | 'bad'
+  code: string
+  message: string
+  fix: string
+  /** 当前谁在出流：面板本机 / 后端播放节点（EA）/ 已有的 Emby */
+  playback: 'panel' | 'ea' | 'external'
+  playback_label: string
+  /** 会出流的具体机器名（EA 模式下） */
+  targets: string[]
+  /** 主机相对的来源（本机目录 / local 挂载）：只存在于扫描的那台机器上 */
+  local_sources: string[]
+  /** 共享来源（WebDAV / rclone / 115 / AList）：两台机器读同一份 */
+  shared_sources: string[]
+  problems: EmbyPlaybackProblem[]
+  /** EA 体检快照时间（null = 还没拉过） */
+  checked_at: string | null
+}
+
+/** 播放可达性报告：出流方式 + 逐库判定 + 用户端地址一致性（一条接口拿全） */
+export interface EmbyReachabilityReport {
+  realm_id: number | null
+  realm_name: string
+  playback: {
+    mode: 'panel' | 'ea' | 'external'
+    label: string
+    /** 面板自己是否还开着协议面（ENABLE_EMBY_GATEWAY） */
+    gateway_enabled: boolean
+    targets: { id: number; name: string; enabled: boolean; url: string; online: boolean | null }[]
+    /** 用户端账号卡里会显示的地址 */
+    client_url: string
+  }
+  ea_health_at: string | null
+  ea_health_ok: boolean
+  counts: { libraries: number; ok: number; warn: number; bad: number }
+  level: 'ok' | 'warn' | 'bad'
+  client_endpoint: EmbyPlaybackReachability & { url: string; gateway_enabled: boolean }
+  libraries: (EmbyPlaybackReachability & { library_id: number; library_name: string })[]
 }
 
 /**

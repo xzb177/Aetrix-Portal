@@ -53,6 +53,7 @@ from backend.emby_server.streaming import (
 from backend.emby_server import facets
 from backend.emby_server import mounts as mount_lib
 # 扫描队列（v2.27.0）：按远程挂载串行化 + 并发上限 + 排队状态/进度，见 scan_queue.py
+from backend.emby_server import reachability
 from backend.emby_server import scan_queue
 from backend.emby_server import transfer115
 
@@ -650,6 +651,17 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
     nodes = {n.id: n for n in db.query(models.RemoteServer)
              .filter(models.RemoteServer.kind == "ea").all()}
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    # 播放可达性：库的「归属节点」决定了内容要在哪台机器上真正存在（见 reachability 模块）
+    # 按服各算一份上下文：一个服一条库地混在一个列表里时，不能用甲服的节点去判乙服的库
+    reach_ctxs: dict = {}
+
+    def _reach_ctx(lib_realm):
+        key = lib_realm if lib_realm is not None else 0
+        if key not in reach_ctxs:
+            reach_ctxs[key] = reachability.build_context(
+                db, lib_realm if lib_realm is not None else scope_id)
+        return reach_ctxs[key]
+
     return {"libraries": [
         {
             "id": lib.id, "guid": lib.guid, "name": lib.name,
@@ -676,6 +688,9 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "node_id": lib.node_id,
             "node_name": (nodes[lib.node_id].name if lib.node_id in nodes else ""),
             "node_online": (nodes[lib.node_id].last_check_ok is True) if lib.node_id in nodes else None,
+            # 播放可达性（ok/warn/bad + 原因 + 改法）：面板扫描正常但出流节点读不到内容时，
+            # 这里就会是 warn/bad，而不是等客户端点播放才暴露成 404/502
+            "playback": reachability.library_reachability(db, lib, _reach_ctx(lib.realm_id)),
         }
         for lib in libs
     ],
@@ -1029,6 +1044,18 @@ def run_repair_queue(staff: models.WebUser = Depends(require_staff), db: Session
         result = scan_queue.enqueue(lib, trigger="repair")
         (queued if result["created"] else already).append(lib.id)
     return {"success": True, "libraries": queued, "already": already}
+
+
+@admin_emby_router.get("/reachability")
+def reachability_report(staff: models.WebUser = Depends(require_staff),
+                        db: Session = Depends(get_db), realm_id: int | None = None):
+    """播放可达性报告：出流方式 + 逐库判定 + 用户端地址一致性
+
+    回答的唯一问题是「控制面扫描没问题，数据面（出流的机器）能不能拿到这些内容」。
+    分离部署（EM 只跑面板、EA 出流、媒体放共享 WebDAV/rclone）时这是最该先看的一页。
+    """
+    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+    return reachability.summary(db, scope_id)
 
 
 @admin_emby_router.get("/libraries/{lib_id}/scan-live")

@@ -12,6 +12,7 @@ import type {
   DeviceStats,
   LoginLogsResponse,
   EmbyLibrary,
+  EmbyReachabilityReport,
   EmbyScanQueue,
   EmbyScanRun,
   EmbyScanTask,
@@ -508,6 +509,14 @@ export const scanLibrary = (id: number) =>
 
 /** 扫描队列快照：正在跑 / 排队中 / 最近完成 + 远程 IO 计数（面板每几秒轮询一次） */
 export const fetchScanQueue = () => get<EmbyScanQueue>(`${E}/scan-queue`)
+
+/**
+ * 播放可达性报告（v2.28.0）：出流方式 + 逐库判定 + 用户端地址一致性
+ *
+ * 「面板扫描正常、播放节点找不到媒体」这类问题在这里提前暴露：本机路径 / local 挂载的库
+ * 在 EA 出流时拿不到内容（warn = 无法确认，bad = 有证据），不用等客户端点播放才 404。
+ */
+export const fetchReachability = () => get<EmbyReachabilityReport>(`${E}/reachability`)
 
 /** 取消一个**还在排队**的扫描（正在跑的不能取消：停在中途会留下半个库的状态） */
 export const cancelQueuedScan = (id: number) =>
