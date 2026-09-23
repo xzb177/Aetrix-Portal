@@ -677,6 +677,13 @@ export interface EmbyLibrary {
   mount_ids: number[]
   is_enabled: boolean
   is_scanning: boolean
+  /**
+   * 这个库此刻在扫吗（v2.27.0）：排队中 / 扫描中（含阶段与进度）；空闲为 null
+   *
+   * 只靠 is_scanning 看不出「排在第几位、在等谁、扫到哪了」——四个库同点扫描时
+   * 界面只能显示「扫描中」，而它其实还在排队。source=other 表示由归属节点在扫。
+   */
+  scan_live?: EmbyScanLive | null
   last_scan_at: string | null
   /** 最近一次扫描的结果（null = 从未扫描过）；见后端 scan_result_payload */
   last_scan?: EmbyScanResult | null
@@ -741,6 +748,104 @@ export interface EmbyScanResult extends EmbyScanMetrics {
   duration_ms: number | null
   /** 失败原因摘要（仅 partial / failed 时有值） */
   error: string | null
+}
+
+/**
+ * 扫描任务的四个状态：
+ * queued = 排队等（等前面的扫描 / 等同一个远程挂载腾出来）；running = 正在跑；
+ * done = 跑完（结果看 result：success / partial / failed）；failed = 异常中断；canceled = 排队时被取消
+ */
+export type EmbyScanTaskState = 'queued' | 'running' | 'done' | 'failed' | 'canceled'
+
+/** 扫描进行中的实时进度：回答「扫到哪了、卡在谁身上、慢在网络吗」 */
+export interface EmbyScanProgress {
+  library_id: number
+  name?: string
+  /** enumerating（枚举文件）/ processing（处理条目）/ cleanup（清理） */
+  phase: string
+  /** 阶段的中文名（后端下发，前端不再维护一份） */
+  phase_label: string
+  /** 已发现的媒体文件数 */
+  enumerated: number
+  /** 已处理（写库）的条目数 */
+  processed: number
+  /** 当前处理的目录 / 文件 */
+  current: string
+  elapsed_ms: number
+  started_at: string | null
+  phase_changed_at?: string | null
+  updated_at?: string | null
+  /** 本轮扫描期间的远程目录列举：真实请求数 / 内存复用数 / 最近一次时间 */
+  remote_lists: number
+  remote_reused: number
+  remote_last_at: string | null
+}
+
+/** 队列里的一条扫描任务（排队中 / 正在跑 / 最近完成） */
+export interface EmbyScanTask {
+  library_id: number
+  name: string
+  /** 谁触发的：manual（面板）/ client（客户端刷新）/ node（归属节点）/ repair（修复队列） */
+  trigger: string
+  state: EmbyScanTaskState
+  /** 这个库要读的远程挂载；同一挂载同时只允许一个扫描任务 */
+  mount_ids: number[]
+  local_sources: number
+  requested_at: string
+  started_at: string | null
+  finished_at: string | null
+  /** 排队等了多久（毫秒） */
+  queued_ms: number
+  duration_ms: number | null
+  /** 正在等哪些挂载（id）：同一远程挂载被别的库占着时在这里写明 */
+  waiting_for: number[]
+  result: string | null
+  error: string | null
+  /** 连续被点了几次（合并成一条） */
+  request_count: number
+  remote_lists: number
+  remote_reused: number
+  /** 排队中的位置（第几位）；正在跑 / 已结束为 null */
+  position?: number | null
+  progress?: EmbyScanProgress | null
+}
+
+/** 一个媒体库的实时扫描状态（媒体库列表里的 scan_live） */
+export interface EmbyScanLive {
+  library_id: number
+  name?: string
+  state: EmbyScanTaskState
+  /** panel = 本进程的队列（有实时进度）；other = 由归属节点在扫（进度不在本进程） */
+  source: 'panel' | 'other'
+  message?: string
+  position?: number | null
+  waiting_for?: number[]
+  mount_ids?: number[]
+  progress?: EmbyScanProgress | null
+}
+
+/** 扫描队列快照：正在跑的、排队的、最近完成的，以及远程 IO 计数 */
+export interface EmbyScanQueue {
+  /** 队列开关（EMBY_SCAN_QUEUE=0 时回到升级前行为） */
+  enabled: boolean
+  /** 同时最多跑几个扫描 */
+  max_parallel: number
+  /** 同一个远程挂载是否串行化 */
+  mount_serial: boolean
+  running: EmbyScanTask[]
+  waiting: EmbyScanTask[]
+  history: EmbyScanTask[]
+  /** 挂载 id → 正在占着它的媒体库 id */
+  mount_owners: Record<string, number>
+  /** 挂载 id → 名字（面板直接写名字，不用去存储来源页对号） */
+  mount_names: Record<string, string>
+  remote: {
+    lists: number
+    reused: number
+    inflight: number
+    peak_inflight: number
+    last_at: string | null
+  }
 }
 
 /** 一条扫描流水（最近若干轮）：「这个库每轮都失败」和「只是最近一轮失败」是两件事 */

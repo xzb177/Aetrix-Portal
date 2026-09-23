@@ -10,12 +10,13 @@
  * v2.6.20：多服 / 多机部署——每个库都能指定「归属服」与「归属播放节点」（未指定 = 所有服、
  * 所有节点可见，由面板扫描）；已分配的库只有那台 EA 向客户端展示、也只有它会扫描。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Delete, Film, FolderPlus, HardDrive, History, RefreshCw, ScanSearch, Server, Square, Wand2,
+  Delete, Film, FolderPlus, HardDrive, History, RefreshCw, ScanSearch, Server, Square, Wand2, X,
 } from 'lucide-vue-next'
 import {
+  cancelQueuedScan,
   createLibrary,
   deleteLibrary,
   fetchLibraries,
@@ -23,6 +24,7 @@ import {
   fetchMounts,
   fetchPan115Accounts,
   fetchRepairQueue,
+  fetchScanQueue,
   fetchServers,
   fetchSessions,
   generateVirtualLibraries,
@@ -34,10 +36,12 @@ import {
 } from '@/api/admin'
 import type {
   EmbyLibrary,
+  EmbyScanQueue,
   EmbyScanResult,
   EmbyScanRun,
   EmbyScanSource,
   EmbyScanStatus,
+  EmbyScanTask,
   EmbySessionRow,
   Pan115Account,
   RemoteServerRow,
@@ -64,6 +68,13 @@ const scanLoading = ref(false)
 const scanTarget = ref<EmbyLibrary | null>(null)
 const scanRuns = ref<EmbyScanRun[]>([])
 const scanKeep = ref(0)
+
+// 扫描队列（v2.27.0）：同一远程挂载同时只跑一个扫描，其它库排队。
+// 只靠「每 1.5 秒刷一次媒体库列表」看不出排队原因（在等哪个挂载、排第几位），
+// 所以队列单独轮询一份快照。
+const scanQueue = ref<EmbyScanQueue | null>(null)
+let queueTimer: number | undefined
+let queueWasBusy = false
 
 /** 归属服选项：默认服 + 已建的其他服 */
 const realmOptions = computed(() => realm.realms)
@@ -129,7 +140,16 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  pollQueue()
+  // 队列与进度都是秒级的东西：页面开着就轮询（空闲时请求极小，且不刷整页列表）
+  queueTimer = window.setInterval(pollQueue, 3000)
+})
+
+onUnmounted(() => {
+  if (queueTimer) window.clearInterval(queueTimer)
+})
 
 async function savePolicy(l: EmbyLibrary) {
   await updateLibrary(l.id, { scrape_policy: l.scrape_policy })
@@ -186,8 +206,10 @@ async function generateVirtual() {
 }
 
 async function repairNow() {
-  await runRepairQueue()
-  ElMessage.success('已开始修复缺图条目')
+  const res = await runRepairQueue()
+  const merged = res.already?.length || 0
+  ElMessage.success(`已把 ${res.libraries.length} 个库加入扫描队列${merged ? `（另 ${merged} 个已在队列中，已合并）` : ''}`)
+  await pollQueue()
   setTimeout(load, 2000)
 }
 
@@ -216,9 +238,20 @@ async function submitCreate() {
 }
 
 async function scan(l: EmbyLibrary) {
-  await scanLibrary(l.id)
-  ElMessage.success(`「${l.name}」扫描已启动`)
+  const res = await scanLibrary(l.id)
+  // 三件事要分清（v2.27.0）：已开扫 / 排在队列第几位（在等哪个挂载）/ 重复点击被合并
+  if (res.already) ElMessage.info(`「${l.name}」${res.message || '已在扫描 / 已在队列中'}`)
+  else if (res.started === false) ElMessage.warning(`「${l.name}」${res.message || '已加入扫描队列'}`)
+  else ElMessage.success(`「${l.name}」扫描已启动`)
+  await pollQueue()
   setTimeout(load, 1500)
+}
+
+/** 取消一个还在排队的扫描（正在跑的取不了：停在中途会留下半个库的状态） */
+async function cancelQueued(t: EmbyScanTask) {
+  await cancelQueuedScan(t.library_id)
+  ElMessage.success(`已取消「${t.name}」的排队`)
+  await pollQueue()
 }
 
 async function removeLib(l: EmbyLibrary) {
@@ -346,6 +379,96 @@ function scanEmptySources(l: EmbyLibrary): string {
   return count ? `${count} 个来源没扫到任何文件` : ''
 }
 
+// ---- 扫描队列（v2.27.0）：排队中的、在跑的、刚跑完的 ----
+
+/** 轮询队列快照；从「忙」变「闲」时顺手把列表刷一遍（『最近一次结果』是落库数据，不会自己变） */
+async function pollQueue() {
+  try {
+    const q = await fetchScanQueue()
+    scanQueue.value = q
+    const busy = q.running.length > 0 || q.waiting.length > 0
+    if (queueWasBusy && !busy) load()
+    queueWasBusy = busy
+  } catch {
+    // 轮询失败不打扰（比如正在重新登录）：下一次接着来
+  }
+}
+
+const queueBusy = computed(() => {
+  const q = scanQueue.value
+  return !!q && (q.running.length > 0 || q.waiting.length > 0)
+})
+
+/** 队列里还没结束的扫描：库 id → 任务（卡片直接看这个，不用刷整页） */
+const liveTasks = computed(() => {
+  const map = new Map<number, EmbyScanTask>()
+  for (const t of [...(scanQueue.value?.running || []), ...(scanQueue.value?.waiting || [])]) {
+    map.set(t.library_id, t)
+  }
+  return map
+})
+
+const queueHistory = computed(() => (scanQueue.value?.history || []).slice(0, 5))
+const queueHasContent = computed(() => !!scanQueue.value && (queueBusy.value || queueHistory.value.length > 0))
+
+function liveFor(l: EmbyLibrary): EmbyScanTask | null {
+  return liveTasks.value.get(l.id) || null
+}
+
+/** 挂载名字：面板写得出「在等谁」，不让管理员去存储来源页对 id */
+function mountName(id: number): string {
+  return scanQueue.value?.mount_names?.[String(id)] || `挂载 #${id}`
+}
+
+/** 一条任务的状态徽标（排队中带位置，扫描中带阶段） */
+function taskBadge(t: EmbyScanTask): { text: string; cls: string } {
+  if (t.state === 'queued') return { text: `排队中（第 ${t.position ?? '-'} 位）`, cls: 'muted' }
+  if (t.state === 'running') return { text: `扫描中 · ${t.progress?.phase_label || '准备中'}`, cls: 'scanning' }
+  if (t.state === 'canceled') return { text: '已取消', cls: 'muted' }
+  if (t.state === 'failed' || t.result === 'failed') return { text: '失败', cls: 'danger' }
+  if (t.result === 'partial') return { text: '完成（来源不完整）', cls: 'warn' }
+  return { text: '完成', cls: 'ok' }
+}
+
+/** 为什么在等：同一远程挂载被别的库占着就写明是哪个 */
+function waitingText(t: EmbyScanTask): string {
+  const mounts = (t.waiting_for || []).map(mountName)
+  if (mounts.length) return `在等挂载：${mounts.join('、')}`
+  return (t.position ?? 1) > 1 ? '前面还有扫描在跑' : '等待调度'
+}
+
+/** 进度一行：已处理 / 已发现 / 耗时（扫到哪了一眼可见，不用看容器 CPU） */
+function progressLine(t: EmbyScanTask): string {
+  const p = t.progress
+  if (!p) return ''
+  const parts = [`已处理 ${p.processed}`]
+  if (p.enumerated) parts.push(`已发现 ${p.enumerated}`)
+  if (p.elapsed_ms) parts.push(fmtDuration(p.elapsed_ms))
+  if (p.remote_lists) parts.push(`远程请求 ${p.remote_lists}`)
+  return parts.join(' · ')
+}
+
+/** 卡片徽标：队列优先（排队中 / 扫描中 + 阶段）→ 归属节点在扫 → 上一次的结果 */
+function cardBadge(l: EmbyLibrary): { text: string; cls: string } | null {
+  const task = liveFor(l)
+  if (task) return taskBadge(task)
+  if (l.scan_live?.state === 'running') return { text: '扫描中（归属节点）', cls: 'scanning' }
+  if (l.is_scanning) return { text: '扫描中…', cls: 'scanning' }
+  return scanBadge(l)
+}
+
+/** 卡片的实时一行：排队原因，或「已处理 N · 当前目录」 */
+function cardLiveHint(l: EmbyLibrary): string {
+  const task = liveFor(l)
+  if (!task) return l.scan_live?.state === 'running' ? (l.scan_live.message || '') : ''
+  if (task.state === 'queued') return waitingText(task)
+  return [progressLine(task), task.progress?.current].filter(Boolean).join(' · ')
+}
+
+function queuedSince(t: EmbyScanTask): string {
+  return t.queued_ms ? `等了 ${fmtDuration(t.queued_ms)}` : ''
+}
+
 // ---- 卡片facts：这个库由谁扫、内容从哪来、有多少条目（不用进库再点一层）----
 
 /** 服务：归属节点（EA）在扫；没指定就是面板自己扫 */
@@ -433,6 +556,76 @@ function typeLabel(t: string): string {
       </div>
     </div>
 
+    <!-- 扫描队列：同一远程挂载同时只跑一个扫描，其它库在这里排队（不再让管理员自己控并发） -->
+    <div v-if="queueHasContent" class="admin-card queue-card">
+      <div class="card-header">
+        <h2>扫描队列</h2>
+        <div class="queue-facts">
+          <span class="fact">并发上限 {{ scanQueue?.max_parallel }}</span>
+          <span class="fact">{{ scanQueue?.mount_serial ? '同一远程挂载串行' : '挂载串行已关闭' }}</span>
+          <span class="fact" title="本轮真实远程请求 / 内存复用 / 在飞请求">
+            远程请求 {{ scanQueue?.remote.lists }} · 复用 {{ scanQueue?.remote.reused }}
+            · 在飞 {{ scanQueue?.remote.inflight }}
+          </span>
+        </div>
+      </div>
+
+      <div class="queue-grid">
+        <div class="queue-col">
+          <div class="queue-col-title">正在扫描（{{ scanQueue?.running.length || 0 }}）</div>
+          <div v-for="t in scanQueue?.running" :key="'run-' + t.library_id" class="queue-row">
+            <div class="queue-row-head">
+              <span class="queue-name">{{ t.name }}</span>
+              <span class="mini-badge scanning">{{ t.progress?.phase_label || '准备中' }}</span>
+            </div>
+            <div class="queue-row-sub mono">{{ progressLine(t) || '刚刚开始' }}</div>
+            <div v-if="t.progress?.current" class="queue-row-sub mono" :title="t.progress.current">
+              {{ t.progress.current }}
+            </div>
+          </div>
+          <div v-if="!scanQueue?.running.length" class="queue-empty">没有正在跑的扫描</div>
+        </div>
+
+        <div class="queue-col">
+          <div class="queue-col-title">排队中（{{ scanQueue?.waiting.length || 0 }}）</div>
+          <div v-for="t in scanQueue?.waiting" :key="'wait-' + t.library_id" class="queue-row">
+            <div class="queue-row-head">
+              <span class="queue-name">{{ t.name }}</span>
+              <span class="mini-badge muted">第 {{ t.position ?? '-' }} 位</span>
+              <el-button
+                size="small"
+                text
+                :icon="X"
+                @click="cancelQueued(t)"
+              >取消</el-button>
+            </div>
+            <div class="queue-row-sub warn">{{ waitingText(t) }}</div>
+            <div class="queue-row-sub mono">
+              {{ [queuedSince(t), triggerLabel(t.trigger)].filter(Boolean).join(' · ') }}
+            </div>
+          </div>
+          <div v-if="!scanQueue?.waiting.length" class="queue-empty">没有排队的扫描</div>
+        </div>
+
+        <div class="queue-col">
+          <div class="queue-col-title">最近完成</div>
+          <div v-for="t in queueHistory" :key="'done-' + t.library_id + t.requested_at" class="queue-row">
+            <div class="queue-row-head">
+              <span class="queue-name">{{ t.name }}</span>
+              <span class="mini-badge" :class="taskBadge(t).cls">{{ taskBadge(t).text }}</span>
+            </div>
+            <div class="queue-row-sub mono">
+              {{ [t.duration_ms != null ? `耗时 ${fmtDuration(t.duration_ms)}` : '',
+                 queuedSince(t), triggerLabel(t.trigger),
+                 t.request_count > 1 ? `被点 ${t.request_count} 次` : ''].filter(Boolean).join(' · ') }}
+            </div>
+            <div v-if="t.error" class="queue-row-sub danger" :title="t.error">{{ t.error }}</div>
+          </div>
+          <div v-if="!queueHistory.length" class="queue-empty">还没有跑完的扫描</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 媒体库列表 -->
     <div class="lib-grid">
       <div v-for="l in libraries" :key="l.id" class="admin-card lib-card">
@@ -442,12 +635,11 @@ function typeLabel(t: string): string {
           <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">
             {{ l.is_enabled ? '启用' : '停用' }}
           </span>
-          <span v-if="l.is_scanning" class="mini-badge scanning">扫描中…</span>
           <span
-            v-else-if="scanBadge(l)"
+            v-if="cardBadge(l)"
             class="mini-badge"
-            :class="scanBadge(l)?.cls"
-          >{{ scanBadge(l)?.text }}</span>
+            :class="cardBadge(l)?.cls"
+          >{{ cardBadge(l)?.text }}</span>
         </div>
 
         <div class="lib-meta">{{ typeLabel(l.collection_type) }}库</div>
@@ -461,6 +653,12 @@ function typeLabel(t: string): string {
             <HardDrive :size="12" />{{ sourceFact(l).text }}
           </span>
           <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
+        </div>
+
+        <!-- 实时状态（v2.27.0）：排队等谁 / 扫到哪个阶段、已处理多少、当前目录 -->
+        <div v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
+          <span class="scan-dot" :class="liveFor(l)?.state === 'queued' ? 'is-queued' : 'is-running'" />
+          <span>{{ cardLiveHint(l) }}</span>
         </div>
 
         <!-- 最近一次扫描的结果：新增/更新/删除多少、哪一步出错，刷新后仍然可查 -->
@@ -811,6 +1009,67 @@ function typeLabel(t: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 实时状态一行（排队原因 / 扫描进度）：与「最近一次结果」分层，后者是落库的历史 */
+.lib-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--info);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-dot.is-queued { background: var(--text-tertiary); }
+
+/* 扫描队列：正在跑 / 排队中 / 最近完成 三列（同一远程挂载串行化的可见面） */
+.queue-card { display: flex; flex-direction: column; gap: 12px; }
+.queue-card .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.queue-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+.queue-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.queue-col-title { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+.queue-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  min-width: 0;
+}
+.queue-row-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.queue-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-row-head :deep(.el-button) { margin-left: auto; padding: 0 4px; }
+.queue-row-sub {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-row-sub.warn { color: var(--warning); }
+.queue-row-sub.danger { color: var(--danger); }
+.queue-empty { font-size: var(--font-size-xs); color: var(--text-muted); }
 
 .lib-time { font-size: var(--font-size-xs); color: var(--text-muted); }
 .lib-actions { display: flex; gap: 8px; }

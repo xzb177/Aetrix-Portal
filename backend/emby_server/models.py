@@ -59,6 +59,11 @@ class Library(Base):
     scan_status = Column(String(20))
     scan_stats = Column(Text)          # JSON：added/updated/removed/probed/scraped/unchanged…
     scan_error = Column(String(500))   # 异常摘要（仅 failed 时写入），来源失败原因进 stats.failed_roots
+    # 扫描进行中的进度快照（v2.27.0）：只有 running 时有值，结束时清空。
+    # 只靠 scan_status=running 看不出「扫到哪了」——四库同点扫描时 item_count 长时间是 0，
+    # 面板只能显示「扫描中」；这里带上阶段 / 已发现 / 已处理 / 当前目录 / 本轮远程请求数，
+    # 由 scan_queue 的刷盘线程每几秒写一次。
+    scan_progress = Column(Text)       # JSON：phase/enumerated/processed/current/remote_lists…
     item_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
