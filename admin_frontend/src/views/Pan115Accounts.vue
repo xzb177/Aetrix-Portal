@@ -203,7 +203,7 @@ function currentPath(): string {
       <div>
         <h1 class="admin-page-title">115 账号</h1>
         <p class="admin-page-desc">
-          配置 115 Cookie 以使用「存储挂载 → 115」直挂：面板 / EA 直接列目录、换直链播放
+          配置 115 Cookie 以使用「存储来源 → 115」直挂：面板 / EA 直接列目录、换直链播放
         </p>
       </div>
       <div class="head-actions">

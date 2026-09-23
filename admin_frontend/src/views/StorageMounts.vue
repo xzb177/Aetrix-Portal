@@ -20,10 +20,12 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { AlertTriangle, Cloud, FolderOpen, HardDrive, Info, Network, Pencil, Plug, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { RouterLink } from 'vue-router'
 import {
   browseMount,
   createMount,
   deleteMount,
+  fetchLibraries,
   fetchMounts,
   fetchPan115Accounts,
   fetchRcloneRemotes,
@@ -35,6 +37,7 @@ import {
 } from '@/api/admin'
 import type {
   EaMountHealth,
+  EmbyLibrary,
   MountDirEntry,
   MountTypeMeta,
   Pan115Account,
@@ -50,6 +53,31 @@ const realm = useRealmStore()
 const scope = ref<'realm' | 'all'>('realm')
 /** 后端给的挂载 id → 服名映射（跨服汇总时用） */
 const realmNames = ref<Record<string, string>>({})
+/**
+ * 媒体库清单：挂载 → 「被哪些库用着」（只读，不额外发请求）
+ *
+ * 以前这一列只写「绑定 N 个」，要弄清是哪几个库就得跳到媒体库页一个个对；
+ * 在这里直接显示库名，存储与内容的关系在一页里看得完。
+ */
+const libraries = ref<EmbyLibrary[]>([])
+
+const libraryNames = computed(() => {
+  const map = new Map<number, string>()
+  for (const lib of libraries.value) map.set(lib.id, lib.name)
+  return map
+})
+
+function usedByNames(mount: StorageMount): string[] {
+  return (mount.library_ids || [])
+    .map((id) => libraryNames.value.get(id) || `已删除的库 #${id}`)
+}
+
+/** 挂载 → 引用它的媒体库（直接给链接，点一下到那个库的卡片） */
+function usedByLibraries(mount: StorageMount): { id: number; label: string }[] {
+  return (mount.library_ids || []).map((id) => ({
+    id, label: libraryNames.value.get(id) || `已删除的库 #${id}`,
+  }))
+}
 
 /** 挂载列表：手机端挂载名做标题，来源与可达性仍保留 */
 const columns = computed<DataColumn[]>(() => [
@@ -59,7 +87,7 @@ const columns = computed<DataColumn[]>(() => [
     ? [{ key: 'realm', label: '归属服', minWidth: 120 } as DataColumn]
     : []),
   { key: 'source', label: '来源', minWidth: 200 },
-  { key: 'libraries', label: '绑定媒体库', width: 110 },
+  { key: 'libraries', label: '被哪些媒体库使用', minWidth: 170 },
   { key: 'reach', label: 'EM / EA 可达', width: 200 },
   { key: 'is_enabled', label: '状态', width: 90 },
   { key: 'actions', label: '操作', width: 200, fixed: 'right', align: 'right' },
@@ -202,12 +230,15 @@ async function runEaHealth() {
 async function load() {
   loading.value = true
   try {
-    const [res, acc] = await Promise.all([
+    const [res, acc, libs] = await Promise.all([
       // realm_id=0 → 全部服；其余按服过滤（后端以当前服作为兜底）
       fetchMounts(scope.value === 'all' ? 0 : realm.activeId ?? 0),
       fetchPan115Accounts().catch(() => ({ accounts: [], env_cookie_configured: false })),
+      // 媒体库清单只为把「绑定 N 个」写成人能认的名字，拉不到不影响挂载管理
+      fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
     ])
     mounts.value = res.mounts
+    libraries.value = libs.libraries
     types.value = res.mount_types
     accounts.value = acc.accounts
     playbackNode.value = res.playback_node || 'panel'
@@ -427,9 +458,10 @@ function fmtDate(s: string | null): string {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">存储挂载</h1>
+        <h1 class="admin-page-title">存储来源</h1>
         <p class="admin-page-subtitle">
-          媒体库的内容来源：本机目录 / STRM 直链 / 115 / 阿里云盘 / 夸克 / OneDrive / S3 / WebDAV / AList / rclone
+          媒体库的内容来源：本机目录 / STRM 直链 / 115 / 阿里云盘 / 夸克 / OneDrive / S3 / WebDAV / AList / rclone；
+          每条都标明被哪些媒体库使用
         </p>
       </div>
       <div class="toolbar">
@@ -502,7 +534,7 @@ function fmtDate(s: string | null): string {
         :rows="mounts"
         :columns="columns"
         :loading="loading"
-        empty="还没有挂载。建一个挂载，再到「媒体库管理」把它绑定到库上即可扫描。"
+        empty="还没有存储来源。建一条，再到「媒体库」把它绑定到库上即可扫描。"
       >
         <template #cell-name="{ row }">
           <span class="mount-head">
@@ -523,7 +555,20 @@ function fmtDate(s: string | null): string {
           <span class="mount-path">{{ sourceSummary(row) }}</span>
         </template>
 
-        <template #cell-libraries="{ row }">绑定 {{ row.library_ids.length }} 个</template>
+        <template #cell-libraries="{ row }">
+          <div v-if="!row.library_ids.length" class="used-none">未被使用</div>
+          <div v-else class="used-cell" :title="usedByNames(row).join('、')">
+            <RouterLink
+              v-for="lib in usedByLibraries(row).slice(0, 2)"
+              :key="lib.id"
+              :to="`/emby`"
+              class="used-link"
+            >{{ lib.label }}</RouterLink>
+            <span v-if="row.library_ids.length > 2" class="used-more">
+              +{{ row.library_ids.length - 2 }} 个
+            </span>
+          </div>
+        </template>
 
         <template #cell-reach="{ row }">
           <div class="reach-cell">
@@ -772,6 +817,22 @@ function fmtDate(s: string | null): string {
 
 /* EM / EA 可达性：两个播放节点各自能不能碰到这条挂载 */
 .reach-cell { display: flex; flex-direction: column; gap: 3px; }
+
+/* 被哪些媒体库使用：直接写库名，不写「绑定 N 个」
+   （挂载与内容的关系在这一页看得完，不用去媒体库页一个个对）*/
+.used-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.used-link {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--primary);
+  font-size: var(--font-size-xs);
+  text-decoration: none;
+}
+.used-link:hover { color: var(--text-primary); text-decoration: underline; }
+.used-more { font-size: var(--font-size-xs); color: var(--text-muted); }
+.used-none { font-size: var(--font-size-xs); color: var(--text-faint); }
 .reach-line { display: inline-flex; align-items: center; gap: 5px; }
 .reach-tag { font-size: 10px; font-weight: 700; color: var(--text-muted); letter-spacing: 0.4px; }
 .reach-time { font-style: normal; font-size: var(--font-size-xs); }

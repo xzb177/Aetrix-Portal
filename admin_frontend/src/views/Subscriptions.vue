@@ -242,7 +242,7 @@ async function submit() {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">订阅管理</h1>
+        <h1 class="admin-page-title">订阅与权益</h1>
         <p class="admin-page-subtitle">
           共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位用户处于订阅中
           <template v-if="scopeRealmName">· 范围：{{ scopeRealmName }}</template>

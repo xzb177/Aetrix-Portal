@@ -76,7 +76,7 @@ function riskLevel(row: LoginLogRow): string {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">登录与安全日志</h1>
+        <h1 class="admin-page-title">登录日志</h1>
         <p class="admin-page-subtitle">登录成功/失败、设备超限、诱饵码触发等风控事件审查</p>
       </div>
       <div class="toolbar">

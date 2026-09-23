@@ -12,7 +12,9 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, FolderPlus, History, RefreshCw, ScanSearch, Square, Wand2 } from 'lucide-vue-next'
+import {
+  Delete, Film, FolderPlus, HardDrive, History, RefreshCw, ScanSearch, Server, Square, Wand2,
+} from 'lucide-vue-next'
 import {
   createLibrary,
   deleteLibrary,
@@ -344,6 +346,31 @@ function scanEmptySources(l: EmbyLibrary): string {
   return count ? `${count} 个来源没扫到任何文件` : ''
 }
 
+// ---- 卡片facts：这个库由谁扫、内容从哪来、有多少条目（不用进库再点一层）----
+
+/** 服务：归属节点（EA）在扫；没指定就是面板自己扫 */
+function serviceFact(l: EmbyLibrary): { text: string; warn: boolean } {
+  if (l.node_name) {
+    const label = l.realm_name ? `${l.node_name}（${l.realm_name}）` : l.node_name
+    return { text: label, warn: l.node_online === false }
+  }
+  if (l.realm_name) return { text: `面板 · ${l.realm_name}`, warn: false }
+  return { text: '面板扫描', warn: false }
+}
+
+/** 来源：几条路径 + 几个挂载，后面直接跟「读不到 / 为空」 */
+function sourceFact(l: EmbyLibrary): { text: string; warn: boolean } {
+  const total = (l.paths?.length || 0) + (l.mount_ids?.length || 0)
+  if (!total) return { text: l.is_virtual ? '虚拟库（无来源）' : '未配来源', warn: !l.is_virtual }
+  const sources = l.last_scan?.sources || []
+  const unavailable = sources.filter((s) => s.kind === 'unavailable').length
+  const empty = emptySourceCount(sources)
+  const parts = [`来源 ${total}`]
+  if (unavailable) parts.push(`${unavailable} 条读不到`)
+  else if (empty) parts.push(`${empty} 条为空`)
+  return { text: parts.join(' · '), warn: unavailable > 0 || empty > 0 }
+}
+
 const scanColumns: DataColumn[] = [
   { key: 'started_at', label: '开始', width: 140, mobile: 'title' },
   { key: 'status', label: '结果', width: 110 },
@@ -384,8 +411,8 @@ function typeLabel(t: string): string {
   <div class="admin-page">
     <div class="admin-page-header">
       <div>
-        <h1 class="admin-page-title">媒体库管理</h1>
-        <p class="admin-page-subtitle">自建 Emby：媒体库、扫描与在线会话</p>
+        <h1 class="admin-page-title">媒体库</h1>
+        <p class="admin-page-subtitle">每个库的来源、服务（归属节点）、扫描状态与条目数都写在卡片上</p>
       </div>
       <div class="admin-page-actions">
         <el-button v-if="repairCount > 0" @click="repairNow">
@@ -423,7 +450,18 @@ function typeLabel(t: string): string {
           >{{ scanBadge(l)?.text }}</span>
         </div>
 
-        <div class="lib-meta">{{ typeLabel(l.collection_type) }} · {{ l.item_count }} 个条目</div>
+        <div class="lib-meta">{{ typeLabel(l.collection_type) }}库</div>
+
+        <!-- 服务 / 来源 / 数量：三件事写在一行，不用来回跳页拼 -->
+        <div class="lib-facts">
+          <span class="fact" :class="{ warn: serviceFact(l).warn }" :title="'服务：' + serviceFact(l).text">
+            <Server :size="12" />{{ serviceFact(l).text }}
+          </span>
+          <span class="fact" :class="{ warn: sourceFact(l).warn }" :title="'来源：' + sourceFact(l).text">
+            <HardDrive :size="12" />{{ sourceFact(l).text }}
+          </span>
+          <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
+        </div>
 
         <!-- 最近一次扫描的结果：新增/更新/删除多少、哪一步出错，刷新后仍然可查 -->
         <div v-if="l.last_scan" class="lib-scan">
@@ -475,7 +513,7 @@ function typeLabel(t: string): string {
         </div>
 
         <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="policy-label">存储挂载</span>
+          <span class="policy-label">存储来源</span>
           <el-select
             v-model="l.mount_ids"
             size="small"
@@ -704,6 +742,20 @@ function typeLabel(t: string): string {
 .lib-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .lib-name { font-weight: var(--font-weight-bold); font-size: var(--font-size-lg); color: var(--text-primary); }
 .lib-meta { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+
+.lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fact.warn { color: var(--warning); }
 
 .lib-paths {
   font-size: var(--font-size-xs);
