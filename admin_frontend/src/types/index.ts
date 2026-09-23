@@ -632,12 +632,8 @@ export interface EmbyLibrary {
   account_115_id?: number | null
 }
 
-/** 媒体库最近一次扫描的结果：管理端刷新后仍然可查（不用去翻服务器日志） */
-export interface EmbyScanResult {
-  /** running = 正在跑；success = 跑完且来源都正常；partial = 有来源读不到（已跳过清理）；failed = 异常中断 */
-  status: 'running' | 'success' | 'partial' | 'failed'
-  finished_at: string | null
-  duration_ms: number | null
+/** 一轮扫描的统计：最近一次与扫描流水共用同一份字段（后端 _scan_metrics） */
+export interface EmbyScanMetrics {
   added: number
   updated: number
   removed: number
@@ -650,7 +646,29 @@ export interface EmbyScanResult {
   removal_skipped: boolean
   /** 读不到的来源（路径 / 挂载 + 原因） */
   failed_roots: string[]
+}
+
+/** 扫描状态：running = 正在跑；success = 跑完且来源都正常；partial = 有来源读不到（已跳过清理）；failed = 异常中断 */
+export type EmbyScanStatus = 'running' | 'success' | 'partial' | 'failed'
+
+/** 媒体库最近一次扫描的结果：管理端刷新后仍然可查（不用去翻服务器日志） */
+export interface EmbyScanResult extends EmbyScanMetrics {
+  status: EmbyScanStatus
+  finished_at: string | null
+  duration_ms: number | null
   /** 失败原因摘要（仅 partial / failed 时有值） */
+  error: string | null
+}
+
+/** 一条扫描流水（最近若干轮）：「这个库每轮都失败」和「只是最近一轮失败」是两件事 */
+export interface EmbyScanRun extends EmbyScanMetrics {
+  id: number
+  status: EmbyScanStatus
+  /** 谁触发的：manual（面板）/ client（客户端刷新）/ node（归属节点）/ repair（修复队列） */
+  trigger: string | null
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
   error: string | null
 }
 

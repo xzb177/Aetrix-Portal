@@ -1373,18 +1373,37 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     return removed
 
 
-# ==================== 最近一次扫描结果（落库 + 对外可查）====================
+# ==================== 扫描结果与流水（落库 + 对外可查）====================
 # 扫描统计以前只在返回值与日志里：管理端刷新一下就没了，「上一轮到底扫到什么」只能去
-# 服务器日志翻。这里把结果写回 Library（scan_status / scan_stats / scan_error），
-# 由 /api/admin/emby/libraries 一并带回（见 scan_result_payload）。
+# 服务器日志翻。这里做两层：
+#
+# - **最近一次**写回 Library（scan_status / scan_stats / scan_error），由
+#   /api/admin/emby/libraries 一并带回（见 scan_result_payload）——刷新页面就能看；
+# - **最近若干轮**记进 ScanRun 流水（状态 / 触发方 / 耗时 / 同一份统计 / 失败原因），
+#   由 /api/admin/emby/libraries/{id}/scans 提供（见 scan_runs_payload）——
+#   「这个库每轮都失败」和「只是最近一轮失败」是两件事，只看最后一次分不出来。
 SCAN_STATUS_RUNNING = "running"
 SCAN_STATUS_SUCCESS = "success"
 SCAN_STATUS_PARTIAL = "partial"   # 有来源读不到：本轮已跳过清理
 SCAN_STATUS_FAILED = "failed"
 
+# 谁触发的扫描（写进流水：回答「半夜三点是谁在扫」）：
+# manual = 面板按钮 · client = Emby 客户端刷新 · node = 归属节点 · repair = 面板修复队列
+SCAN_TRIGGERS = ("manual", "client", "node", "repair")
+
+# 每个媒体库保留多少轮扫描流水（0 = 不记流水）。一轮一行，超过就按库回收最旧的行——
+# 量很小，但没人清就会随「建库→删库」和长期运行一直涨。
+SCAN_RUN_KEEP = int(os.getenv("EMBY_SCAN_HISTORY", "20"))
+
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "scraped", "repaired",
                    "unchanged", "removal_skipped", "failed_roots", "duration_ms")
+
+
+def normalize_scan_trigger(trigger: Optional[str]) -> str:
+    """把触发方收敛到枚举内（未知值当作 manual，不因为调用方写错就丢记录）"""
+    value = (trigger or "").strip().lower()
+    return value if value in SCAN_TRIGGERS else "manual"
 
 
 def encode_scan_stats(stats: Optional[dict]) -> Optional[str]:
@@ -1412,6 +1431,21 @@ def decode_scan_stats(raw: Optional[str]) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _scan_metrics(stats: dict) -> dict:
+    """统计字典 → 对外字段（「最近一次」与「扫描流水」共用同一份口径）"""
+    return {
+        "added": int(stats.get("added") or 0),
+        "updated": int(stats.get("updated") or 0),
+        "removed": int(stats.get("removed") or 0),
+        "probed": int(stats.get("probed") or 0),
+        "scraped": int(stats.get("scraped") or 0),
+        "repaired": int(stats.get("repaired") or 0),
+        "unchanged": int(stats.get("unchanged") or 0),
+        "removal_skipped": bool(stats.get("removal_skipped")),
+        "failed_roots": list(stats.get("failed_roots") or []),
+    }
+
+
 def scan_result_payload(library) -> Optional[dict]:
     """媒体库最近一次扫描结果的对外结构（管理端列表与客户端接口共用一份口径）
 
@@ -1426,17 +1460,87 @@ def scan_result_payload(library) -> Optional[dict]:
         "status": status or SCAN_STATUS_SUCCESS,
         "finished_at": library.last_scan_at.isoformat() if library.last_scan_at else None,
         "duration_ms": stats.get("duration_ms"),
-        "added": int(stats.get("added") or 0),
-        "updated": int(stats.get("updated") or 0),
-        "removed": int(stats.get("removed") or 0),
-        "probed": int(stats.get("probed") or 0),
-        "scraped": int(stats.get("scraped") or 0),
-        "repaired": int(stats.get("repaired") or 0),
-        "unchanged": int(stats.get("unchanged") or 0),
-        "removal_skipped": bool(stats.get("removal_skipped")),
-        "failed_roots": list(stats.get("failed_roots") or []),
+        **_scan_metrics(stats),
         "error": getattr(library, "scan_error", None),
     }
+
+
+def _scan_run_payload(run) -> dict:
+    """一条扫描流水的对外结构（与 scan_result_payload 同一套字段口径）"""
+    stats = decode_scan_stats(getattr(run, "stats", None))
+    duration = run.duration_ms if run.duration_ms is not None else stats.get("duration_ms")
+    return {
+        "id": run.id,
+        "status": run.status,
+        "trigger": run.trigger,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "duration_ms": duration,
+        **_scan_metrics(stats),
+        "error": run.error,
+    }
+
+
+def scan_runs_payload(db: Session, library_id: int, limit: int = 20) -> list:
+    """某个媒体库最近的扫描流水（新的在前；上限钳到 200，避免有人拉全表）"""
+    hits = max(0, min(int(limit or 0), 200))
+    if not hits:
+        return []
+    rows = (
+        db.query(emby_models.ScanRun)
+        .filter(emby_models.ScanRun.library_id == library_id)
+        .order_by(emby_models.ScanRun.id.desc())
+        .limit(hits)
+        .all()
+    )
+    return [_scan_run_payload(run) for run in rows]
+
+
+def prune_library_scan_runs(db: Session, library_id: int,
+                            keep: Optional[int] = None) -> int:
+    """只留某个媒体库最近 ``keep`` 轮流水（不提交：由调用方与本次写入一起提交）"""
+    limit = SCAN_RUN_KEEP if keep is None else max(0, int(keep))
+    if limit <= 0:
+        return 0
+    stale_ids = [
+        row[0] for row in db.query(emby_models.ScanRun.id)
+        .filter(emby_models.ScanRun.library_id == library_id)
+        .order_by(emby_models.ScanRun.id.desc())
+        .offset(limit)
+        .all()
+    ]
+    if not stale_ids:
+        return 0
+    deleted = db.query(emby_models.ScanRun).filter(
+        emby_models.ScanRun.id.in_(stale_ids)
+    ).delete(synchronize_session=False)
+    return int(deleted or 0)
+
+
+def _finish_scan_run(db: Session, run_id: Optional[int], status: str,
+                     stats: Optional[dict], error: Optional[str]) -> None:
+    """收尾这一轮的扫描流水，并就地回收过旧的行（写失败只记日志，不影响扫描本身）"""
+    if not run_id:
+        return
+    try:
+        run = db.query(emby_models.ScanRun).filter(emby_models.ScanRun.id == run_id).first()
+        if run is None:
+            return
+        run.status = status
+        run.finished_at = datetime.now()
+        duration = (stats or {}).get("duration_ms")
+        if duration is None and run.started_at is not None:
+            # 调用方没给耗时（直接调 begin/finish 的路径）也能量出来：
+            # 收尾过的流水必须有耗时，否则「扫了多久」这条信息就丢了
+            duration = int((run.finished_at - run.started_at).total_seconds() * 1000)
+        run.duration_ms = duration
+        run.stats = encode_scan_stats(stats)
+        run.error = (error or "")[:500] or None
+        prune_library_scan_runs(db, run.library_id)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("写入扫描流水失败: %s", exc)
+        db.rollback()
 
 
 def _write_scan_state(db: Session, library: emby_models.Library, status: str,
@@ -1454,19 +1558,33 @@ def _write_scan_state(db: Session, library: emby_models.Library, status: str,
         db.rollback()
 
 
-def begin_scan(db: Session, library: emby_models.Library) -> None:
-    """标记扫描开始（独立提交一次：扫描过程中崩溃也能看出「上一轮在跑」）"""
+def begin_scan(db: Session, library: emby_models.Library,
+               trigger: str = "manual") -> Optional[int]:
+    """标记扫描开始，并开一条扫描流水，返回它 id
+
+    独立提交一次：扫描过程中进程被杀，库里也能看出「上一轮在跑」以及是谁触发的。
+    状态写不进去不影响扫描本身（只是这次没有流水）。
+    """
     library.is_scanning = True
     library.scan_status = SCAN_STATUS_RUNNING
     library.scan_error = None
+    run = None
+    if SCAN_RUN_KEEP > 0:
+        run = emby_models.ScanRun(library_id=library.id, status=SCAN_STATUS_RUNNING,
+                                  trigger=normalize_scan_trigger(trigger),
+                                  started_at=datetime.now())
+        db.add(run)
     try:
         db.commit()
     except Exception as exc:  # noqa: BLE001 — 状态写不进去也要照常扫描
         logger.warning("写入扫描开始状态失败: %s", exc)
         db.rollback()
+        return None
+    return int(run.id) if run is not None and run.id is not None else None
 
 
-def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]) -> str:
+def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict],
+                run_id: Optional[int] = None) -> str:
     """写入一轮扫描的结果，返回归类后的状态
 
     只有「来源全部可用且正常跑完」才算 success；任何来源读不到就记 partial——
@@ -1479,17 +1597,25 @@ def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]
         error = "；".join(str(r) for r in (stats.get("failed_roots") or []))[:500] \
             or "媒体库没有可用来源，本轮已跳过清理"
     _write_scan_state(db, library, status, stats, error)
+    # 与媒体库状态分开两次提交：流水写不进去不该影响「上一轮扫得怎么样」这条主状态
+    _finish_scan_run(db, run_id, status, stats, error)
     return status
 
 
-def fail_scan(db: Session, library: emby_models.Library, exc: Exception) -> None:
+def fail_scan(db: Session, library: emby_models.Library, exc: Exception,
+              run_id: Optional[int] = None,
+              duration_ms: Optional[int] = None) -> None:
     """扫描抛异常时把原因落库（管理端要能看到「为什么没扫成」）"""
-    _write_scan_state(db, library, SCAN_STATUS_FAILED, None,
-                      f"{type(exc).__name__}: {exc}")
+    error = f"{type(exc).__name__}: {exc}"
+    _write_scan_state(db, library, SCAN_STATUS_FAILED, None, error)
+    # 失败也要记耗时：扫了四十分钟才炸和刚开就炸不是一回事
+    stats = {"duration_ms": duration_ms} if duration_ms is not None else None
+    _finish_scan_run(db, run_id, SCAN_STATUS_FAILED, stats, error)
 
 
 def scan_library_sync(db: Session, library: emby_models.Library,
-                      snapshot: Optional[LibrarySnapshot] = None) -> dict:
+                      snapshot: Optional[LibrarySnapshot] = None,
+                      trigger: str = "manual") -> dict:
     """扫描单个媒体库（同步实现，可在后台线程运行）
 
     约定：
@@ -1502,22 +1628,24 @@ def scan_library_sync(db: Session, library: emby_models.Library,
       刮削按媒体库策略（missing_only / 3m / 6m / 1y / all）。
     - **外挂字幕与视频探测解耦**：换字幕文件不需要重探视频。
     - **结果可查**：成功 / 部分失败 / 异常三条路都会把这一轮的统计与原因写回媒体库
-      （scan_status / scan_stats / scan_error），见 ``scan_result_payload``。
+      （scan_status / scan_stats / scan_error），见 ``scan_result_payload``；
+      同时记一条扫描流水（含 ``trigger``），见 ``scan_runs_payload``。
     """
     snap = snapshot or LibrarySnapshot.of(library)
     # 先在**进程内**占位（重复任务会在这一步被拒绝，不会写库、也不会启动扫描），再写库状态
     _acquire_scan(snap.library_id)
     try:
-        begin_scan(db, library)
+        run_id = begin_scan(db, library, trigger)
         started = time.perf_counter()
         try:
             stats = _scan_library_body(db, library, snap)
         except Exception as exc:  # noqa: BLE001 — 异常要落到库里，再原样抛给调用方
             logger.exception("媒体库「%s」扫描失败", snap.name)
-            fail_scan(db, library, exc)
+            fail_scan(db, library, exc, run_id,
+                      duration_ms=int((time.perf_counter() - started) * 1000))
             raise
         stats["duration_ms"] = int((time.perf_counter() - started) * 1000)
-        finish_scan(db, library, stats)
+        finish_scan(db, library, stats, run_id)
         return stats
     finally:
         # 无论成功、失败还是生成器被提前关闭，都释放进程内占位，否则这个库再也扫不动

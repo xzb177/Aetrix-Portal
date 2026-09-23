@@ -84,12 +84,46 @@ def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> 
         if started is not None and started >= cutoff:
             continue  # 刚开始不久：可能正在另一台机器上扫
         lib.is_scanning = False
+        # 最近一次的结果也要收尾：扫描被强杀时它停在 running，而那个进程再也不会回来
+        # 写终态，刷新页面就会永远显示「扫描中/未完成」，连失败原因都没有。
+        if getattr(lib, "scan_status", None) == scanner.SCAN_STATUS_RUNNING:
+            lib.scan_status = scanner.SCAN_STATUS_FAILED
+            lib.scan_error = "进程重启，本轮扫描未完成"
         reset.append(lib)
     if reset:
         db.commit()
         logger.warning("复位 %d 个残留的“扫描中”标志（崩溃/强杀遗留）: %s",
                        len(reset), ", ".join(str(lib.id) for lib in reset))
     return len(reset)
+
+
+def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> int:
+    """把崩溃残留的「还在跑」扫描流水收尾成 failed
+
+    与 ``reset_stale_scan_flags`` 同一套判定（先跳过本进程真的在扫的库，再看开始时间），
+    只是对象换成流水行：进程被强杀时那行会永远停在 ``running``——历史里挂着一条“扫描中”，
+    而且永远没有结果。
+    """
+    from backend.emby_server import scanner
+
+    hours = STALE_SCAN_HOURS if stale_hours is None else stale_hours
+    cutoff = datetime.now() - timedelta(hours=hours)
+    now = datetime.now()
+    stuck: list = []
+    for run in db.query(em.ScanRun).filter(em.ScanRun.status == scanner.SCAN_STATUS_RUNNING).all():
+        if run.library_id is not None and scanner.is_scan_active(run.library_id):
+            continue  # 本进程真的在扫：绝不碰
+        if run.started_at is not None and run.started_at >= cutoff:
+            continue  # 刚开始不久：可能正在另一台机器上扫
+        run.status = scanner.SCAN_STATUS_FAILED
+        run.finished_at = now
+        run.error = (run.error or "进程重启，本轮扫描未完成")[:500]
+        stuck.append(run)
+    if stuck:
+        db.commit()
+        logger.warning("收尾 %d 条中断的扫描流水（崩溃/强杀遗留）: %s",
+                       len(stuck), ", ".join(str(run.id) for run in stuck))
+    return len(stuck)
 
 
 def reap_stale_playback_sessions(db: Session, stale_minutes: Optional[int] = None) -> int:
@@ -324,13 +358,14 @@ def run_startup_maintenance() -> dict:
     """
     from backend.database import SessionLocal
 
-    result = {"scan_flags_reset": 0, "sessions_reaped": 0,
+    result = {"scan_flags_reset": 0, "scan_runs_closed": 0, "sessions_reaped": 0,
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_pruned": 0,
               "item_facets_ready": False}
     db = SessionLocal()
     try:
         result["scan_flags_reset"] = reset_stale_scan_flags(db)
+        result["scan_runs_closed"] = close_stale_scan_runs(db)
         result["sessions_reaped"] = reap_stale_playback_sessions(db, stale_minutes=1)
         # 升级上来的老库：分类关联表刚建出来时是空的，这里补上（按 id 水位增量）。
         # 补不完也不影响启动：筛选路径会退回旧的全表匹配并接着补。
@@ -388,6 +423,47 @@ def prune_scan_dir_states(db) -> int:
     return int(pruned or 0)
 
 
+def prune_scan_runs(db, keep: Optional[int] = None) -> int:
+    """回收扫描流水：媒体库已不存在的行 + 每库超出上限的旧行
+
+    每轮扫描结束时已经就地回收过一次（见 ``scanner.prune_library_scan_runs``），
+    这里是兼底：历史上限调小过、媒体库被删除（不可逆，所以不能用外键挡删除），
+    以及建库→删库反复造成的残留。
+    """
+    from backend.emby_server import models as emby_models
+    from backend.emby_server import scanner as scanner_lib
+
+    limit = scanner_lib.SCAN_RUN_KEEP if keep is None else max(0, int(keep))
+    pruned = 0
+    alive = db.query(emby_models.Library.id)
+    orphans = db.query(emby_models.ScanRun).filter(
+        ~emby_models.ScanRun.library_id.in_(alive)
+    ).delete(synchronize_session=False)
+    pruned += int(orphans or 0)
+
+    if limit > 0:
+        # 每个库只留最近 limit 行：用「按库取第 limit 行之后的 id」实现，
+        # SQLite / MySQL / PG 通用（窗口函数各家语法与版本要求不一）。
+        # 有流水的库只有十几到几十个，一次每库一查，代价可忽略。
+        stale: list[int] = []
+        for (lib_id,) in db.query(emby_models.ScanRun.library_id).distinct().all():
+            stale.extend(
+                row[0] for row in db.query(emby_models.ScanRun.id)
+                .filter(emby_models.ScanRun.library_id == lib_id)
+                .order_by(emby_models.ScanRun.id.desc())
+                .offset(limit)
+                .all()
+            )
+        if stale:
+            pruned += int(db.query(emby_models.ScanRun)
+                          .filter(emby_models.ScanRun.id.in_(stale))
+                          .delete(synchronize_session=False) or 0)
+
+    if pruned:
+        db.commit()
+    return int(pruned)
+
+
 def janitor_tick() -> dict:
     """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）"""
     from backend.database import SessionLocal
@@ -396,7 +472,8 @@ def janitor_tick() -> dict:
     result = {"sessions_reaped": 0, "sessions_pruned": 0, "transcodes_reaped": 0,
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
-              "scan_dir_states_pruned": 0, "images_pruned": 0,
+              "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
+              "images_pruned": 0,
               "images_freed_bytes": 0, "ai_usage_pruned": 0}
     try:
         result["transcodes_reaped"] = streaming.reap_stale_transcodes()
@@ -432,6 +509,16 @@ def janitor_tick() -> dict:
         result["scan_dir_states_pruned"] = prune_scan_dir_states(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("清理扫描目录指纹失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 扫描流水：同一个原因（媒体库删了没人再看），+ 每个库超出上限的旧行兜底
+    db = SessionLocal()
+    try:
+        result["scan_runs_pruned"] = prune_scan_runs(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理扫描流水失败: %s", exc)
         db.rollback()
     finally:
         db.close()

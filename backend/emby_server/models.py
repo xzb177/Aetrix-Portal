@@ -266,6 +266,34 @@ class ScanDirState(Base):
     updated_at = Column(DateTime, default=datetime.now)
 
 
+class ScanRun(Base):
+    """一次媒体库扫描的记录（v2.23.0）
+
+    只留「最近一次」不够解释「为什么这个库的内容一直没更新」：一个库每轮都失败、
+    或只是最近一轮失败，处理方式完全不同。这里按库留最近若干轮的流水
+    （状态 / 触发方 / 耗时 / 同一份统计 / 失败原因），管理端可查。
+
+    保留条数由 ``scanner.SCAN_RUN_KEEP`` 控制（``EMBY_SCAN_HISTORY=0`` 关闭记录），
+    每轮扫描结束后就地回收旧行；媒体库删掉后剩下的行由维护周期回收。
+    """
+
+    __tablename__ = "emby_scan_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 不加外键：媒体库删除后这些行要能被维护周期清掉（而不是阻断删除）
+    library_id = Column(Integer, nullable=False, index=True)
+    # running / success / partial / failed（与 Library.scan_status 同一套取值）
+    status = Column(String(20), nullable=False)
+    # 谁触发的：manual（面板按钮）/ client（Emby 客户端刷新）/ node（归属节点）/ repair（修复队列）。
+    # 列名不叫 trigger：它在 MySQL / PG 里是保留字，裸写要处处加引号（属性名照旧叫 trigger）
+    trigger = Column("trigger_kind", String(20))
+    started_at = Column(DateTime, default=datetime.now)
+    finished_at = Column(DateTime)
+    duration_ms = Column(Integer)
+    stats = Column(Text)          # JSON，与 Library.scan_stats 同一份编码
+    error = Column(String(500))   # partial / failed 的原因摘要
+
+
 class StorageMount(Base):
     """存储挂载：媒体库的内容来源
 
@@ -348,6 +376,7 @@ class EmbyApiToken(Base):
 
 __all__ = [
     "Library",
+    "ScanRun",
     "MediaItem",
     "MediaStream",
     "UserMediaData",

@@ -572,7 +572,8 @@ def library_refresh(user: models.WebUser = Depends(get_emby_user),
                 # 单个库失败不能带走整批「刷新全部」：否则后面的库永远没被扫到，
                 # 而界面上只会看到“刷新了但没变化”，连原因都没有。
                 try:
-                    scan_library_sync(scan_db, library)
+                    # Emby 客户端触发的「刷新媒体库」：流水里与面板按钮区分开
+                    scan_library_sync(scan_db, library, trigger="client")
                 except ScanInProgress:
                     continue  # 已有任务在跑：跳过，不是错误
                 except Exception:  # noqa: BLE001
