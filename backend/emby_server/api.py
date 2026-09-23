@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import false, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from backend import models
+from backend import models, playback_policy
 from backend.database import SessionLocal, get_db
 from backend.emby_server import facets
 from backend.emby_server import image_store
@@ -54,7 +54,9 @@ from backend.emby_server.search import (
     search_variants,
 )
 from backend.emby_server.streaming import (
+    active_transcode_ids,
     get_transcode,
+    transcode_capacity,
     serve_file,
     serve_image,
     serve_remote,
@@ -1423,6 +1425,8 @@ async def playback_info(
     item = _require_item(db, item_id)
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
     ensure_playback_allowed(db, user)
+    # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
+    playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
     if not item.file_path:
         # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
         # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
@@ -1442,6 +1446,10 @@ async def playback_info(
     max_bitrate = int(body.get("MaxStreamingBitrate") or 0) or int(
         (device_profile.get("MaxStreamingBitrate") or 0)
     ) or 120_000_000
+    # 码率上限（v2.26.0）：客户端要 40Mbps 也只按上限给，直连/直传的判定跟着一起收紧
+    max_bitrate = playback_policy.clamp_bitrate_kbps(db, max_bitrate // 1000) * 1000
+    # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
+    allow_transcode = playback_policy.transcode_enabled(db) or bool(user.is_staff)
 
     media_source = _media_source(item, base)
     direct = item.bitrate and item.bitrate <= max_bitrate
@@ -1451,10 +1459,13 @@ async def playback_info(
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
-        "SupportsTranscoding": True,
+        "SupportsTranscoding": allow_transcode,
         "DirectStreamUrl": f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}",
-        "TranscodingUrl": f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}",
     })
+    if allow_transcode:
+        media_source["TranscodingUrl"] = (
+            f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}"
+        )
 
     return {
         "MediaSources": [media_source],
@@ -1474,6 +1485,7 @@ async def video_stream(
     item = _require_item(db, item_id)
     # 授权已由 get_emby_user 依赖完成（Emby token 或 JWT 均可）
     ensure_playback_allowed(db, user)
+    playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     target = _play_target(db, item)
     if target.kind == "url":
@@ -1527,11 +1539,19 @@ async def video_hls(
         media_type = "video/mp2t" if transcode_path.endswith(".ts") else "application/octet-stream"
         return FileResponse(file_path, media_type=media_type)
 
-    # 新转码请求（付费墙：建立转码会话前校验）
+    # 新转码请求（付费墙 + 客户端与转码策略：建立会话前校验）
     ensure_playback_allowed(db, user)
+    playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
+    # 并发上限按**本机**正在跑的转码数判定：分离部署时 EA 就是那台播放节点
+    playback_policy.ensure_transcode_allowed(
+        db, user, running=len(active_transcode_ids()), capacity=transcode_capacity(),
+    )
     if not shutil.which(os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")):
         raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法转码；请使用直连播放")
-    video_bitrate = int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000)
+    # 码率上限：客户端要多少都压到策略上限内（0 = 不限）
+    video_bitrate = playback_policy.clamp_bitrate_kbps(
+        db, int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000) // 1000,
+    ) * 1000
     height = int(q.get("Height") or 0) or None
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS

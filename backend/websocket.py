@@ -6,7 +6,7 @@ import json
 import asyncio
 from typing import Dict, Set, Optional, Any
 from datetime import datetime
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import Request, WebSocket, WebSocketDisconnect
 from redis import asyncio as aioredis
 import logging
 
@@ -303,6 +303,7 @@ _staff_scheme = HTTPBearer(auto_error=False)
 
 
 def require_staff_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_staff_scheme),
     db: Session = Depends(get_db),
 ):
@@ -311,8 +312,12 @@ def require_staff_user(
     这几个接口原先是完全匿名的，任何人都能向全站广播「系统通知」做站内钓鱼；
     现改为仅管理员可用。用户端的实时通知走站内通知表 / 内部 manager 推送，
     不依赖这些 HTTP 接口。
+
+    角色（v2.26.0）：发送 / 广播是写操作，与 ``/api/admin/*`` 用同一处判定
+    （``backend/admin_roles.py``）——只读审计角色不能从这条侧门绕道发全站通知。
     """
     from fastapi import HTTPException
+    from backend import admin_roles
     from backend.security import resolve_jwt_user_id
 
     if credentials is None or not credentials.credentials:
@@ -327,6 +332,7 @@ def require_staff_user(
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
     if not user.is_staff:
         raise HTTPException(status_code=403, detail="需要管理员权限")
+    admin_roles.ensure_admin_allowed(request, user)
     return user
 
 

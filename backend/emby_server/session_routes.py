@@ -32,7 +32,7 @@ from datetime import datetime
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import admin_roles, models
 from backend.database import get_db
 from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
@@ -124,12 +124,17 @@ def get_sessions_scoped(
 
 def stop_session_checked(
     session_key: str,
+    request: Request,
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
     """结束播放会话：只能结束自己的，管理员（is_staff）可结束任意会话
 
     旧实现既没有鉴权，会话键又能从「用户 id + 条目 id」直接算出来。
+
+    角色（v2.26.0）：管理员身份之上的只读角色**踢不掉别人**——否则「只读审计」能
+    通过 Emby 接口绕道写（踢人下线、顺带停转码），后台那层角色就等于没做。
+    停自己的会话不受影响（客户端自己的行为）。
     """
     session = (
         db.query(em.PlaybackSession)
@@ -138,8 +143,10 @@ def stop_session_checked(
     )
     if session is None:
         raise HTTPException(status_code=404, detail="播放会话不存在")
-    if session.user_id != user.id and not _is_staff(user):
-        raise HTTPException(status_code=403, detail="只能结束自己的播放会话")
+    if session.user_id != user.id:
+        if not _is_staff(user):
+            raise HTTPException(status_code=403, detail="只能结束自己的播放会话")
+        admin_roles.ensure_admin_allowed(request, user)
 
     # 转码会话按「用户 + 条目 guid」反查（播放会话键与转码 uuid 不是一回事，
     # 旧写法 stop_transcode(session_key) 永远匹配不上）

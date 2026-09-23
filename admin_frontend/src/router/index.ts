@@ -36,6 +36,9 @@ const routes: RouteRecordRaw[] = [
       // v2.18.0：转存任务下线，页面只保留 115 账号；旧地址保留为跳转，收藏不会 404
       { path: 'pan115', alias: 'transfer-115', name: 'Pan115Accounts', component: () => import('@/views/Pan115Accounts.vue'), meta: { title: '115 账号' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
+      // v2.26.0：管理员与权限（角色 super / operator / viewer）与播放、客户端策略
+      { path: 'admins', name: 'Admins', component: () => import('@/views/Admins.vue'), meta: { title: '管理员与权限' } },
+      { path: 'client-policy', name: 'ClientPolicy', component: () => import('@/views/ClientPolicy.vue'), meta: { title: '客户端策略' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '操作日志' } },
       { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '服务健康' } },
       // 服管理以绝对路径声明：跳转契约检查要求跳转目标与声明的 path 完全一致

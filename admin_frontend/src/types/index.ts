@@ -5,6 +5,64 @@ export interface AdminInfo {
   username: string
   is_staff: boolean
   created_at?: string | null
+  /** 角色（v2.26.0，见 backend/admin_roles.py）：super / operator / viewer */
+  admin_role?: AdminRole
+  role_label?: string
+  /** 能不能做写操作（只读角色为 false）：界面据此置灰，服务端仍会自己判一次 */
+  can_write?: boolean
+  is_super?: boolean
+}
+
+/** 管理员角色：super = 全部；operator = 日常运营；viewer = 只读审计 */
+export type AdminRole = 'super' | 'operator' | 'viewer'
+
+export interface AdminRoleMeta {
+  value: AdminRole
+  label: string
+  hint: string
+}
+
+export interface AdminRow {
+  id: number
+  username: string
+  email: string
+  is_active: boolean
+  admin_role: AdminRole
+  role_label: string
+  last_login_at: string | null
+  created_at: string | null
+}
+
+export interface AdminListResponse {
+  admins: AdminRow[]
+  roles: AdminRoleMeta[]
+  me: { id: number; admin_role: AdminRole }
+  super_count: number
+  limit: number
+}
+
+/** 播放与客户端策略（后端 playback_policy.py，EM / EA 共用同一个库） */
+export interface PlaybackPolicy {
+  /** 是否允许服务端转码（关掉只放直连） */
+  transcode_enabled: boolean
+  /** 并发转码上限；0 = 用进程内置上限（EMBY_MAX_TRANSCODES / CPU 核数） */
+  max_concurrent_transcodes: number
+  /** 码率上限（kbps）；0 = 不限 */
+  max_bitrate_kbps: number
+  /** 客户端 UA 黑名单（子串，逗号分隔） */
+  blocked_agents: string
+  /** 客户端 UA 白名单（填了就只放列表内的客户端） */
+  allowed_agents: string
+}
+
+/** 策略的运行态：只反映**本进程**（分离部署时转码跑在 EA 上） */
+export interface PlaybackRuntime {
+  active_transcodes: number
+  capacity: number
+  idle_timeout_seconds: number
+  playback_node: string
+  ffmpeg_available: boolean
+  max_transcodes_env: string
 }
 
 export interface LoginResponse {
