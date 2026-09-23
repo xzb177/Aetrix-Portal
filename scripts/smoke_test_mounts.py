@@ -38,6 +38,7 @@ from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.emby_server import mount_rclone
 from backend.emby_server import mounts as mnt
+from backend.emby_server import playback_security as pb_sec
 from backend.emby_server import scanner as sc
 from backend.emby_server import streaming as st
 from backend.emby_server import subtitles as subs
@@ -633,6 +634,67 @@ except mnt.MountError as exc:
     check("没有直链的 STRM 报错", "没有可用的直链" in str(exc), str(exc))
 check("本机目录里的 .strm 也认（无需挂载）",
       mnt.local_play_target(os.path.join(strm_root, "Strm.Movie.2022.1080p.strm")).kind == "url")
+
+
+# ---- 直链安全口径（v2.23.1）----
+# 配置来源的直链默认允许指向内网：局域网 NAS、自建 WebDAV / AList / MinIO、rclone 的本地
+# HTTP 端点都是这个项目的一等场景（能配媒体来源的人本来就有管理权限）。
+# 真正要挡的是「服务器自己追出去的重定向目标」——那是可以被第三方直接利用的 SSRF 面。
+lan_root = tempfile.mkdtemp(prefix="mount_lan_")
+with open(os.path.join(lan_root, "Lan.strm"), "w", encoding="utf-8") as f:
+    f.write("http://192.168.1.10:8096/media/movie.mkv\n")
+lan_target = mnt.local_play_target(os.path.join(lan_root, "Lan.strm"))
+check("本机 .strm 指向内网地址仍可播放（局域网 NAS / 自建网盘是正常用法）",
+      lan_target.kind == "url" and lan_target.value.startswith("http://192.168.1.10"),
+      str(lan_target.value))
+check("解析不了的主机名不再被当成内网地址（离线 / 内网 DNS 不该弄坏公开直链）",
+      pb_sec.validate_remote_url("https://no-such-host.invalid/x.mkv").endswith("x.mkv"),
+      pb_sec.validate_remote_url("https://no-such-host.invalid/x.mkv"))
+for bad, why in (("file:///etc/passwd", "非 http(s)"),
+                 ("http://u:p@93.184.216.34/x.mkv", "内嵌凭据")):
+    try:
+        pb_sec.validate_remote_url(bad)
+        check(f"直链校验拦下{why}", False, bad)
+    except mnt.MountError as exc:
+        check(f"直链校验拦下{why}", True, str(exc))
+
+os.environ["EMBY_BLOCK_PRIVATE_MEDIA_URLS"] = "1"
+try:
+    try:
+        mnt.local_play_target(os.path.join(lan_root, "Lan.strm"))
+        check("EMBY_BLOCK_PRIVATE_MEDIA_URLS=1 时内网直链被拒", False, "没有拦")
+    except mnt.MountError as exc:
+        check("EMBY_BLOCK_PRIVATE_MEDIA_URLS=1 时内网直链被拒", "内部地址" in str(exc), str(exc))
+    os.environ["EMBY_MEDIA_URL_ALLOWLIST"] = "192.168.1.10"
+    allowed = mnt.local_play_target(os.path.join(lan_root, "Lan.strm"))
+    check("EMBY_MEDIA_URL_ALLOWLIST 能放行自己的 NAS 地址",
+          allowed.kind == "url" and allowed.value.startswith("http://192.168.1.10"),
+          str(allowed.value))
+finally:
+    os.environ.pop("EMBY_BLOCK_PRIVATE_MEDIA_URLS", None)
+    os.environ.pop("EMBY_MEDIA_URL_ALLOWLIST", None)
+
+# 重定向目标：服务器自己会跟过去取，所以**一律**拒绝内网 / 回环（不受上面开关影响）
+for target, why in (("http://10.0.0.5/secret", "内网"),
+                    ("http://169.254.169.254/latest/meta-data/", "云元数据链路本地"),
+                    ("http://localhost:8096/System/Info", "回环主机名")):
+    try:
+        st._next_redirect("https://93.184.216.34/movie.mkv", target)
+        check(f"重定向目标指向{why}被拒（SSRF）", False, target)
+    except mnt.MountError as exc:
+        check(f"重定向目标指向{why}被拒（SSRF）", "内部地址" in str(exc), str(exc))
+check("重定向到公开地址照常放行（相对 Location 按当前主机解析）",
+      st._next_redirect("https://93.184.216.34/movie.mkv", "/other.mkv")
+      == "https://93.184.216.34/other.mkv",
+      st._next_redirect("https://93.184.216.34/movie.mkv", "/other.mkv"))
+cross = st._redirect_headers({"Authorization": "Basic x", "Cookie": "c", "User-Agent": "u"},
+                             "https://a.example.com/1.mkv", "https://b.example.com/2.mkv")
+check("跨主机重定向丢掉凭据头（不把 Basic / Cookie 交给重定向目标）",
+      cross == {"User-Agent": "u"}, str(cross))
+same = st._redirect_headers({"Authorization": "Basic x", "User-Agent": "u"},
+                            "https://a.example.com/1.mkv", "https://a.example.com/2.mkv")
+check("同主机重定向保留凭据头（WebDAV 的鉴权要跟着走）",
+      same == {"Authorization": "Basic x", "User-Agent": "u"}, str(same))
 
 
 # ==================== 三、远程挂载（115 / WebDAV / AList）====================

@@ -16,6 +16,9 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
+from urllib.parse import urljoin, urlsplit
+
+from backend.emby_server.mounts import MountError
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,32 @@ FFMPEG = os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 CHUNK = 1024 * 256
+
+
+# 远程代理最多自己追几次重定向（与 httpx 的默认上限一致）
+MAX_REDIRECTS = 5
+_REDIRECT_CODES = {301, 302, 303, 307, 308}
+_CREDENTIAL_HEADERS = {"authorization", "cookie", "proxy-authorization"}
+
+
+def _redirect_headers(forward: dict, from_url: str, to_url: str) -> dict:
+    """跨主机重定向时丢掉凭据头
+
+    WebDAV 的 Basic / 115 的 Cookie 是发给**源站**的；源站回一个 302 指向第三方主机时
+    httpx 会把同样的头带过去——等于把凭据交给重定向目标。同主机（含换端口以外的同站）
+    保留，跨主机一律剥掉。
+    """
+    same_host = urlsplit(from_url).hostname == urlsplit(to_url).hostname
+    if same_host:
+        return forward
+    return {k: v for k, v in forward.items() if k.lower() not in _CREDENTIAL_HEADERS}
+
+
+def _next_redirect(url: str, location: str) -> str:
+    """解析重定向目标并做安全校验（内网 / 回环 / 非法协议一律拒绝）"""
+    from backend.emby_server.playback_security import reject_private_url
+
+    return reject_private_url(urljoin(url, location or ""))
 
 
 def can_redirect_direct(target) -> bool:
@@ -129,9 +158,35 @@ def serve_remote(
     if range_header:
         forward["Range"] = range_header
 
-    client = httpx.Client(timeout=httpx.Timeout(30.0, read=None), follow_redirects=True)
+    # 重定向自己追（不用 httpx 的 follow_redirects）：每一跳都要校验目标是不是内网，
+    # 并在跨主机时剥掉凭据头——否则一个公开直链就能把服务器（带着你的 Cookie / Basic）
+    # 引到内网运维接口上。
+    client = httpx.Client(timeout=httpx.Timeout(30.0, read=None), follow_redirects=False)
     try:
-        resp = client.send(client.build_request("GET", url, headers=forward), stream=True)
+        current = url
+        for _hop in range(MAX_REDIRECTS + 1):
+            resp = client.send(client.build_request("GET", current, headers=forward), stream=True)
+            if resp.status_code not in _REDIRECT_CODES:
+                break
+            location = resp.headers.get("location")
+            if not location:
+                break  # 3xx 却没给 Location：当作最终响应原样透传
+            try:
+                target = _next_redirect(current, location)
+            except MountError as exc:
+                resp.close()
+                client.close()
+                logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            resp.close()  # 确认要跟着走，这一跳的响应就不要再占着连接了
+            forward = _redirect_headers(forward, current, target)
+            current = target
+        else:
+            resp.close()
+            client.close()
+            raise HTTPException(status_code=502, detail="源站重定向次数过多")
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
         client.close()
         logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
@@ -184,9 +239,33 @@ async def serve_remote_async(
     if range_header:
         forward["Range"] = range_header
 
-    client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None), follow_redirects=True)
+    # 与同步版同一套口径：重定向自己追，逐跳校验目标、跨主机剥凭据（见 serve_remote）
+    client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None), follow_redirects=False)
     try:
-        resp = await client.send(client.build_request("GET", url, headers=forward), stream=True)
+        current = url
+        for _hop in range(MAX_REDIRECTS + 1):
+            resp = await client.send(client.build_request("GET", current, headers=forward), stream=True)
+            if resp.status_code not in _REDIRECT_CODES:
+                break
+            location = resp.headers.get("location")
+            if not location:
+                break  # 3xx 却没给 Location：当作最终响应原样透传
+            try:
+                target = _next_redirect(current, location)
+            except MountError as exc:
+                await resp.aclose()
+                await client.aclose()
+                logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            await resp.aclose()  # 确认要跟着走，这一跳的响应就不要再占着连接了
+            forward = _redirect_headers(forward, current, target)
+            current = target
+        else:
+            await resp.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=502, detail="源站重定向次数过多")
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
         await client.aclose()
         logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
