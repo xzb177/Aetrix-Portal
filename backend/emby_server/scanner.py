@@ -639,7 +639,8 @@ def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
     """本机目录：与历史行为一致，直接 os.walk 真实文件"""
     for dirpath, _dirnames, filenames in os.walk(
         root,
-        onerror=lambda e: failed_roots.append(getattr(e, "filename", "") or str(e)),
+        # 带上来源根目录：失败原因要能归到具体某条来源上（见 _source_entry 的前缀匹配）
+        onerror=lambda e: failed_roots.append(f"{root}: {getattr(e, 'strerror', '') or e}"),
     ):
         for fname in filenames:
             ext = os.path.splitext(fname)[1].lower()
@@ -712,33 +713,47 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
 
 
 def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
-                      failed_roots: list) -> Iterator[Iterator[ScanFile]]:
-    """遍历一个媒体库的全部扫描来源（本机路径 + 挂载），每个来源一个迭代器
+                      failed_roots: list,
+                      report: Optional[list] = None) -> Iterator[tuple]:
+    """遍历一个媒体库的全部扫描来源（本机路径 + 挂载），产出 ``(来源标签, 文件迭代器)``
 
     来源不可用（目录不存在 / 挂载停用 / 账号失效 / 网络不通）时**不会**抛出去中断整个扫描，
     而是记进 ``failed_roots``：扫描器据此跳过清理阶段，避免把「读不到」当成「文件已删除」。
+    传了 ``report`` 时，不可用的来源也记一条 ``kind="unavailable"`` 的明细进去——
+    「这轮一共几个来源、哪个一条都没扫到」在后台要能一眼看见（见 scan_result_payload）。
+    明细在生成器收尾时补写：调用方中途退出也拿得到。
     """
     sources, failed = mount_lib.library_sources(library, db)
+    unavailable = []
     for item in failed:
         logger.warning("媒体库「%s」来源不可用：%s（%s）", snap.name, item["label"], item["reason"])
         failed_roots.append(f"{item['label']}: {item['reason']}")
+        unavailable.append({
+            "label": item["label"], "kind": "unavailable", "error": item["reason"],
+            # 形状与可用来源保持一致（计数器都在，只是全 0）：消费方不用为「读不到的来源」分支
+            **{key: 0 for key in SCAN_SOURCE_COUNTERS},
+        })
 
-    for src in sources:
-        if src.kind == "local":
-            yield _local_dir_files(src.path, failed_roots)
-            continue
+    try:
+        for src in sources:
+            if src.kind == "local":
+                yield src.label, _local_dir_files(src.path, failed_roots)
+                continue
 
-        def _guarded(src=src):
-            try:
-                yield from _mount_files(src, src.provider, failed_roots)
-            except mount_lib.MountError as exc:
-                logger.warning("媒体库「%s」的挂载「%s」不可用：%s", snap.name, src.label, exc)
-                failed_roots.append(f"{src.label}: {exc}")
-            except Exception as exc:  # noqa: BLE001 — 一个挂载坏掉不该拖垮整次扫描
-                logger.warning("媒体库「%s」的挂载「%s」异常：%s", snap.name, src.label, exc)
-                failed_roots.append(f"{src.label}: {exc}")
+            def _guarded(src=src):
+                try:
+                    yield from _mount_files(src, src.provider, failed_roots)
+                except mount_lib.MountError as exc:
+                    logger.warning("媒体库「%s」的挂载「%s」不可用：%s", snap.name, src.label, exc)
+                    failed_roots.append(f"{src.label}: {exc}")
+                except Exception as exc:  # noqa: BLE001 — 一个挂载坏掉不该拖垮整次扫描
+                    logger.warning("媒体库「%s」的挂载「%s」异常：%s", snap.name, src.label, exc)
+                    failed_roots.append(f"{src.label}: {exc}")
 
-        yield _guarded()
+            yield src.label, _guarded()
+    finally:
+        if report is not None:
+            report.extend(unavailable)
 
 
 # 同一媒体库同时只允许一个扫描任务（进程内互斥；EM/EA 都是单进程部署）
@@ -1397,13 +1412,98 @@ SCAN_RUN_KEEP = int(os.getenv("EMBY_SCAN_HISTORY", "20"))
 
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "scraped", "repaired",
-                   "unchanged", "removal_skipped", "failed_roots", "duration_ms")
+                   "unchanged", "removal_skipped", "failed_roots", "duration_ms",
+                   "sources")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
     """把触发方收敛到枚举内（未知值当作 manual，不因为调用方写错就丢记录）"""
     value = (trigger or "").strip().lower()
     return value if value in SCAN_TRIGGERS else "manual"
+
+
+# 需要跟着一轮扫描一起落库的来源计数器
+SCAN_SOURCE_COUNTERS = ("files", "added", "updated", "probed", "scraped", "repaired", "unchanged")
+SCAN_SOURCES_MAX = 50              # 一个库的来源（路径 + 挂载）远小于这个量级；超了只留前 N 条
+SCAN_SOURCE_LABEL_MAX = 200
+SCAN_SOURCE_TEXT_MAX = 300
+
+
+class _FileCounter:
+    """数一条来源里**发现**了多少媒体文件
+
+    必须放在来源流的最外层：``_iter_prepared`` 会跳过增量扫描命中的文件（未变化，不交给
+    写库循环），按「写库条数」计的话，一个全都没变的来源会显示成 0 个文件——那是假象。
+    """
+
+    def __init__(self, files):
+        self.total = 0
+        self._files = files
+
+    def __iter__(self):
+        for item in self._files:
+            self.total += 1
+            yield item
+
+
+def _attribute_source(label: str, counted: "_FileCounter", prepared,
+                      stats: dict, failed_roots: list) -> Iterator[tuple]:
+    """把一条来源的发现数与它在处理期间对总计的改动记到它名下
+
+    两件事各归各位：
+
+    - **发现数**来自 ``counted``（来源流最外层），见 _FileCounter；
+    - **各计数器增量**在这一层收尾时算差值——不在扫描循环里逐条累加，循环体一个字都不用改
+      （那是最容易被改坏的地方），而且中途抛错时记下的也是真实的**部分**结果。
+      放在里层（来源流上）会提前收尾，最后一批的改动会被算到下一条来源头上。
+    """
+    sink = stats.setdefault("sources", [])
+    before = {key: stats.get(key) or 0 for key in SCAN_SOURCE_COUNTERS}
+    try:
+        yield from prepared
+    finally:
+        sink.append(_source_entry(label, before, stats, counted.total, failed_roots))
+
+
+def _source_entry(label: str, before: dict, stats: dict, seen: int,
+                  failed_roots: list) -> dict:
+    """一条来源的明细：文件数 + 各计数器增量 + 该来源自己的失败原因（若有）"""
+    entry: dict = {"label": label, "files": seen}
+    for key in SCAN_SOURCE_COUNTERS:
+        if key == "files":
+            continue
+        current = stats.get(key)
+        entry[key] = max(0, int(current or 0) - int(before.get(key) or 0)) if current is not None else 0
+    prefix = f"{label}: "
+    errors = [str(r)[len(prefix):] for r in failed_roots if str(r).startswith(prefix)]
+    if errors:
+        entry["error"] = "；".join(dict.fromkeys(errors))
+    return entry
+
+
+def _encode_scan_sources(entries) -> list:
+    """来源明细 → 可落库结构（条数、标签与原因都封顶：库里的 JSON 不该无限长）
+
+    单条坏数据只丢它自己，不影响整轮统计（统计里带着扫描结论，不能因为一条来源烂掉全没）。
+    """
+    out = []
+    for entry in list(entries or [])[:SCAN_SOURCES_MAX]:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            label = str(entry.get("label") or "").strip()[:SCAN_SOURCE_LABEL_MAX]
+            if not label:
+                continue  # 连来源都说不清的明细没有意义，别让它在面板上占一行
+            item = {"label": label}
+            for key in ("kind", "error"):
+                if entry.get(key):
+                    item[key] = str(entry[key])[:SCAN_SOURCE_TEXT_MAX]
+            for key in SCAN_SOURCE_COUNTERS:
+                item[key] = max(0, int(entry.get(key) or 0))
+        except Exception:  # noqa: BLE001 — 一条坏来源不该带走整轮统计
+            continue
+        out.append(item)
+    return out
 
 
 def encode_scan_stats(stats: Optional[dict]) -> Optional[str]:
@@ -1413,7 +1513,10 @@ def encode_scan_stats(stats: Optional[dict]) -> Optional[str]:
     try:
         out = {k: stats.get(k, 0) for k in SCAN_STATS_KEYS if k in stats}
         if "failed_roots" in out:
-            out["failed_roots"] = [str(r)[:300] for r in (out.get("failed_roots") or [])][:20]
+            out["failed_roots"] = [str(r)[:SCAN_SOURCE_TEXT_MAX]
+                                   for r in (out.get("failed_roots") or [])][:20]
+        if "sources" in out:
+            out["sources"] = _encode_scan_sources(out.get("sources"))
         return json.dumps(out, ensure_ascii=False, sort_keys=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("序列化扫描统计失败: %s", exc)
@@ -1443,6 +1546,9 @@ def _scan_metrics(stats: dict) -> dict:
         "unchanged": int(stats.get("unchanged") or 0),
         "removal_skipped": bool(stats.get("removal_skipped")),
         "failed_roots": list(stats.get("failed_roots") or []),
+        # 按来源拆分的明细：只记失败来源的话，「挂载在、但一条文件都没有」这种
+        # （挂载点被清空 / 账号范围变了 / 路径写错了但目录存在）根本看不出来
+        "sources": [s for s in (stats.get("sources") or []) if isinstance(s, dict)],
     }
 
 
@@ -1658,6 +1764,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
     stats: dict = {
         "added": 0, "updated": 0, "removed": 0, "probed": 0, "scraped": 0,
         "repaired": 0, "removal_skipped": False, "failed_roots": [],
+        "sources": [],  # 按来源记账（虚拟库没有来源，保持空列表）
     }
     clear_dir_cache()  # 新的一轮扫描不复用上一轮的目录列表
     ctx = _ScanContext(snap=snap, lib_id=library.id, stats=stats)
@@ -1673,8 +1780,12 @@ def _scan_library_body(db: Session, library: emby_models.Library,
 
         # 并行 IO 线程池：ffprobe / 目录列举 / TMDB 搜索都在这里跑，写库仍在当前线程按顺序进行
         pool = ThreadPoolExecutor(max_workers=SCAN_WORKERS, thread_name_prefix="scan-io")
-        for source_files in iter_scan_sources(snap, library, db, failed_roots):
-            for scan_file, _pending in _iter_prepared(ctx, source_files, pool, db):
+        for label, source_files in iter_scan_sources(snap, library, db, failed_roots,
+                                                     report=stats["sources"]):
+            counted = _FileCounter(source_files)
+            for scan_file, _pending in _attribute_source(
+                    label, counted, _iter_prepared(ctx, counted, pool, db),
+                    stats, failed_roots):
                     full_path = scan_file.stored_path
                     fname = scan_file.name
                     dirpath = scan_file.local_dir
