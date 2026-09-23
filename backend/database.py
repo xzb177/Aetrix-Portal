@@ -218,6 +218,11 @@ def _auto_migrate():
             ("mount_ids", "TEXT", "''"),
             ("node_id", "INTEGER", "NULL"),
             ("realm_id", "INTEGER", "NULL"),
+            # v2.22.0 最近一次扫描结果：老库补列后为 NULL，等价于「尚未扫描」，
+            # 不改变原有「只看 is_scanning / last_scan_at」的行为。
+            ("scan_status", "VARCHAR(20)", "NULL"),
+            ("scan_stats", "TEXT", "NULL"),
+            ("scan_error", "VARCHAR(500)", "NULL"),
         ]),
         # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
         ("remote_servers", [

@@ -29,7 +29,7 @@ import {
   stopSession,
   updateLibrary,
 } from '@/api/admin'
-import type { EmbyLibrary, EmbySessionRow, Pan115Account, RemoteServerRow, StorageMount } from '@/types'
+import type { EmbyLibrary, EmbyScanResult, EmbySessionRow, Pan115Account, RemoteServerRow, StorageMount } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -229,6 +229,42 @@ function fmtDate(s: string | null): string {
   return s.slice(0, 16).replace('T', ' ')
 }
 
+// ---- 最近一次扫描的结果（后端已落库，刷新页面也还在）----
+
+/** 扫描结果徽标：没扫过返回 null（不占位） */
+function scanBadge(l: EmbyLibrary): { text: string; cls: string } | null {
+  const s: EmbyScanResult | null | undefined = l.last_scan
+  if (!s) return null
+  if (s.status === 'running') return { text: '上次扫描未完成', cls: 'scanning' }
+  if (s.status === 'failed') return { text: '扫描失败', cls: 'danger' }
+  if (s.status === 'partial') return { text: '来源不完整', cls: 'warn' }
+  return { text: '扫描正常', cls: 'ok' }
+}
+
+/** 增量摘要：新增/更新/删除（+ 未变、修复、耗时），扫了什么一眼看清 */
+function scanSummary(l: EmbyLibrary): string {
+  const s = l.last_scan
+  if (!s) return ''
+  const parts = [`新增 ${s.added}`, `更新 ${s.updated}`, `删除 ${s.removed}`]
+  if (s.unchanged) parts.push(`未变 ${s.unchanged}`)
+  if (s.repaired) parts.push(`修复 ${s.repaired}`)
+  if (s.duration_ms != null) parts.push(`耗时 ${fmtDuration(s.duration_ms)}`)
+  return parts.join(' · ')
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`
+}
+
+/** 部分失败 / 异常的原因（来源读不到时的 path + 原因） */
+function scanError(l: EmbyLibrary): string {
+  const s = l.last_scan
+  if (!s || (s.status !== 'failed' && s.status !== 'partial')) return ''
+  return s.error || (s.failed_roots || []).join('；')
+}
+
 function progress(pos: number, dur: number): string {
   if (!dur) return '0%'
   return Math.min(100, Math.round((pos / dur) * 100)) + '%'
@@ -275,9 +311,23 @@ function typeLabel(t: string): string {
             {{ l.is_enabled ? '启用' : '停用' }}
           </span>
           <span v-if="l.is_scanning" class="mini-badge scanning">扫描中…</span>
+          <span
+            v-else-if="scanBadge(l)"
+            class="mini-badge"
+            :class="scanBadge(l)?.cls"
+          >{{ scanBadge(l)?.text }}</span>
         </div>
 
         <div class="lib-meta">{{ typeLabel(l.collection_type) }} · {{ l.item_count }} 个条目</div>
+
+        <!-- 最近一次扫描的结果：新增/更新/删除多少、哪一步出错，刷新后仍然可查 -->
+        <div v-if="l.last_scan" class="lib-scan">
+          <div class="scan-line">
+            <span class="scan-dot" :class="`is-${l.last_scan.status}`" />
+            <span>{{ scanSummary(l) }}</span>
+          </div>
+          <div v-if="scanError(l)" class="scan-error" :title="scanError(l)">{{ scanError(l) }}</div>
+        </div>
 
         <div class="lib-paths">
           <template v-if="l.is_virtual">
@@ -517,6 +567,28 @@ function typeLabel(t: string): string {
   margin-top: 4px;
   padding-top: 12px;
   border-top: 1px solid var(--border-subtle);
+}
+
+/* 最近一次扫描结果：摘要一行 +（失败时）原因一行 */
+.lib-scan { display: flex; flex-direction: column; gap: 3px; }
+.scan-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+.scan-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+.scan-dot.is-success { background: var(--success); }
+.scan-dot.is-partial { background: var(--warning); }
+.scan-dot.is-failed { background: var(--danger); }
+.scan-dot.is-running { background: var(--info); }
+.scan-error {
+  font-size: var(--font-size-xs);
+  color: var(--warning);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lib-time { font-size: var(--font-size-xs); color: var(--text-muted); }
