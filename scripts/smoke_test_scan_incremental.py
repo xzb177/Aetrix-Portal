@@ -14,6 +14,9 @@
 - **该重刮时不跳过**：补图标记、到期重刮策略（3m）、TMDB 详情没补齐
 - **没配 TMDB 的部署也照样增量**：刮削不可能成功，不该因此让整库每轮重做
 - **开关**：`SCAN_INCREMENTAL=0` 回到每次全量处理
+- **配了 TMDB 的剧集库也照样增量**（v2.31.0）：集根本不参与刮削（写库循环只刮
+  series / movie），所以「缺 tmdb_id → 要刮」这条对每一集恒成立；此前它落在跳过判定里，
+  等于把剧集库的增量整个关掉
 - **远程挂载**：参与增量，且不额外增加目录列举次数（拿不到列表的目录不当作「没变」）
 
 用法：python scripts/smoke_test_scan_incremental.py
@@ -98,13 +101,17 @@ sc._side_info = counting_side_info
 sc.probe_metadata = counting_probe
 
 
-def scan(label: str) -> dict:
+def scan_library(library, label: str) -> dict:
     counters.update(sql=0, probe=0, side=0)
-    stats = sc.scan_library_sync(db, lib)
+    stats = sc.scan_library_sync(db, library)
     print(f"    · {label}: SQL={counters['sql']} probe={counters['probe']} side={counters['side']} "
           f"added={stats['added']} updated={stats['updated']} removed={stats['removed']} "
           f"unchanged={stats.get('unchanged', 0)}")
     return stats
+
+
+def scan(label: str) -> dict:
+    return scan_library(lib, label)
 
 
 def item_count() -> int:
@@ -276,7 +283,65 @@ back = scan("重新打开增量")
 check("重新打开后立刻恢复跳过（指纹还在）", back.get("unchanged") == item_count(),
       f"unchanged={back.get('unchanged')} 期望={item_count()}")
 
-# ==================== 10. 远程挂载：参与增量且不多列目录 ====================
+# ==================== 10. 剧集库 + 配了 TMDB：集也必须能跳过（v2.31.0）====================
+# 这是「最常见的库型等于没有增量」的漏洞：`should_scrape` 对没有 tmdb_id 的条目恒为 True，
+# 而集**不参与刮削**（写库循环里的口径是 item_type in ("series", "movie")），所以只要配了
+# TMDB，剧集库每轮重扫都得完整处理每一集——追新（重扫未变动内容）正是最简单的场景。
+# 这里把这一段单独钉住：既证明集能跳过，也证明目录真的变了时整目录照旧重做。
+tv_root = tempfile.mkdtemp(prefix="scandelta_tv_")
+tv_season = os.path.join(tv_root, "Delta TV Show", "Season 1")
+os.makedirs(tv_season, exist_ok=True)
+TV_EPS = 6
+for e in range(1, TV_EPS + 1):
+    with open(os.path.join(tv_season, f"Delta TV Show S01E{e:02d}.mkv"), "wb") as f:
+        f.write(b"\x00" * 1024)
+
+tv_lib = em.Library(guid="v" * 32, name="剧集增量库", collection_type="tvshows", paths=tv_root)
+db.add(tv_lib)
+db.commit()
+
+sc.tmdb_client = FakeTmdb()          # configured = True：正是会踩到这个漏洞的部署
+
+tv_cold = scan_library(tv_lib, "剧集库冷扫（配了 TMDB）")
+tv_types: dict = {}
+for row in db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id):
+    tv_types[row.item_type] = tv_types.get(row.item_type, 0) + 1
+# `added` 只计文件（集），剧集与季是随集隐式建立的
+check("剧集库冷扫入库（1 剧 + 1 季 + N 集）",
+      tv_cold["added"] == TV_EPS and tv_types == {"episode": TV_EPS, "series": 1, "season": 1},
+      f"added={tv_cold['added']} 条目={tv_types}")
+
+tv_warm = scan_library(tv_lib, "剧集库未变动重扫（配了 TMDB）")
+check("配了 TMDB 的剧集库，未变动重扫时每一集都被跳过",
+      tv_warm.get("unchanged") == TV_EPS and counters["side"] == 0 and counters["probe"] == 0,
+      f"unchanged={tv_warm.get('unchanged')} 期望={TV_EPS} "
+      f"side={counters['side']} probe={counters['probe']}")
+check("剧集库重扫不重复入库、也不误删",
+      tv_warm["added"] == 0 and tv_warm["removed"] == 0,
+      f"added={tv_warm['added']} removed={tv_warm['removed']}")
+
+# 机制复核：集没有 tmdb_id，「缺元数据 → 要刮」对每一集恒成立。
+# 旧口径把这个条件用在**所有**条目上，所以只要 TMDB 配好了就永远拦下跳过——
+# 上面那条 PASS 只有在集被排除在刮削条件之外时才成立。
+episode_sample = db.query(em.MediaItem).filter(
+    em.MediaItem.library_id == tv_lib.id, em.MediaItem.item_type == "episode").first()
+check("机制复核：集没有 tmdb_id，should_scrape 对它恒为「要刮」",
+      episode_sample is not None and not episode_sample.tmdb_id
+      and sc.should_scrape(episode_sample, "missing_only") is True,
+      f"tmdb_id={getattr(episode_sample, 'tmdb_id', None)}")
+
+with open(os.path.join(tv_season, "Delta TV Show S01E07.mkv"), "wb") as f:
+    f.write(b"\x00" * 1024)
+tv_added = scan_library(tv_lib, "剧集库里新增一集")
+check("目录变了就整目录重做（新增的那一集入库，其余集安全地重建）",
+      tv_added["added"] == 1 and not tv_added.get("unchanged")
+      and counters["side"] == TV_EPS + 1,
+      f"added={tv_added['added']} unchanged={tv_added.get('unchanged', 0)} "
+      f"side={counters['side']} 期望={TV_EPS + 1}")
+
+sc.tmdb_client = real_tmdb
+
+# ==================== 11. 远程挂载：参与增量且不多列目录 ====================
 REMOTE_DIRS = 3
 REMOTE_PER_DIR = 4
 
@@ -415,7 +480,7 @@ check("恢复后目录内容真没变 → 重新回到跳过",
       recovered.get("unchanged") == REMOTE_DIRS * REMOTE_PER_DIR and counters["side"] == 0,
       f"unchanged={recovered.get('unchanged')} side={counters['side']} added={recovered['added']}")
 
-# ==================== 11. 清理：删掉媒体库后指纹行由维护周期回收 ====================
+# ==================== 12. 清理：删掉媒体库后指纹行由维护周期回收 ====================
 from backend.emby_server import maintenance as maint  # noqa: E402
 
 remote_lib_id = remote_lib.id          # 先取出来：行删掉后再读属性会拿不到（对象已失效）
