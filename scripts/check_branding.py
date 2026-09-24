@@ -15,8 +15,12 @@
 「这里为什么还留着旧名」成为一个需要解释的决定。目前只有一处真的需要：
 老部署的 SQLite 库文件名（改品牌不该让人丢数据，见 ``backend/database.py``）。
 
-**整文件豁免**：发布说明与历史（``README.md``、``README-old.md``、``CHANGELOG.md``）
-本来就该写着「以前叫什么」，它们是记录而不是残留；本脚本自身也豁免（它包含这个旧名）。
+**整文件豁免**：发布说明与历史（``README.md``、``CHANGELOG.md``）本来就该写着
+「以前叫什么」，它们是记录而不是残留；本脚本自身也豁免（它包含这个旧名）。
+
+豁免按「整文件」给是**有代价的**：被豁免的文件里任何一处旧名都不会再被看见，
+所以名单要尽量短——曾经豁免过一份 ``README-old.md``（被 README 瘦身时留下的历史快照），
+但它与 ``CHANGELOG.md`` 重复、又没人引用，删除后少一个需要解释的例外。
 
 用法：python3 scripts/check_branding.py
 """
@@ -45,7 +49,7 @@ SKIP_SUFFIXES = frozenset({
 
 # 发布说明与历史：这里出现旧名是记录，不是残留
 SKIP_FILES = frozenset({
-    "README.md", "README-old.md", "CHANGELOG.md",
+    "README.md", "CHANGELOG.md",
     "scripts/check_branding.py",  # 本脚本（旧名是它的判定条件）
 })
 

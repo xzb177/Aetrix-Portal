@@ -849,8 +849,13 @@ async def close_ticket(
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
 
+    was_closed = ticket.status == "closed"
     ticket.status = "closed"
     ticket.updated_at = datetime.now()
+    # 关单与「回复并关单」是同一件事的两条入口，但这条一直没写审计：
+    # 用户收到「工单已被关闭」的通知，运营在操作日志里却查不到是谁关的（v2.30.0 补上）。
+    _audit(db, current_admin, "close_ticket", "ticket", ticket_id,
+           {"already_closed": was_closed})
     db.commit()
 
     await notify_admin_event(

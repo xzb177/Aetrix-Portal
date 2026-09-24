@@ -17,6 +17,12 @@
 顺带钉住「端点覆盖」这件结构性事实：把应用里所有 ``/api/admin/emby`` 的写端点枚举一遍，
 每个都必须能被 ``lookup()`` 解析出动作名（具体动作或回落动作），否则新增端点就会静默丢失审计。
 
+**另一半是中间件管不到的**：``/api/admin/*`` 的其它域靠端点自己调 ``_audit(...)``，
+而「记得」不是一种机制。第 9 节就盯这条容易漏的路——``POST /api/admin/tickets/{id}/close``
+关单并推送用户却一条审计都不写（两个兄弟端点都写了）。这条路的**静态**覆盖由
+``scripts/check_admin_audit_coverage.py`` 守，本文件证明它**真的落库**（含重复关单要能看出
+是谁又点了一次、能力测试的 payload 不得进日志）。
+
 用法：python scripts/smoke_test_admin_audit.py
 """
 import os
@@ -76,7 +82,8 @@ def admin_logs() -> list[dict]:
         rows = db.query(models.AdminLog).order_by(models.AdminLog.id).all()
         return [
             {"id": r.id, "admin_user_id": r.admin_user_id, "action": r.action,
-             "target_type": r.target_type, "details": r.details or {}, "ip": r.ip_address}
+             "target_type": r.target_type, "target_id": r.target_id,
+             "details": r.details or {}, "ip": r.ip_address}
             for r in rows
         ]
 
@@ -319,6 +326,67 @@ with SessionLocal() as db:
     gone = db.query(models.AdminLog).filter(
         models.AdminLog.action == "emby_delete_library").count()
 check("审计落库了（不是只打了日志）", gone == 1, f"{gone} 条")
+
+# ==================== 9. 非 emby 域：端点自己写 _audit 的那条路 ====================
+# 中间件只管 `/api/admin/emby/*`；其它管理域靠端点自己调用 `_audit(...)`。
+# 这一节盯住的就是那条容易漏的路：`POST /api/admin/tickets/{id}/close` 关单并推送用户，
+# 此前一条审计都不写（两个兄弟端点都写了）——用户收到通知，运营查不到是谁关的。
+# 静态覆盖由 `scripts/check_admin_audit_coverage.py` 守，这里证明**真的落库**。
+print("\n=== 9. 其它管理域（手动 _audit）===")
+
+with SessionLocal() as db:
+    ticket = models.Ticket(user_id=plain_id, title="审计测试工单", status="open")
+    db.add(ticket)
+    db.commit()
+    ticket_id = ticket.id
+
+r = client.post(f"/api/admin/tickets/{ticket_id}/close", headers=H_ADMIN)
+check("关工单 → 200", r.status_code == 200, f"HTTP {r.status_code} {r.text[:100]}")
+row = latest()
+check("关工单留下审计（此前查不到是谁关的）",
+      (row or {}).get("action") == "close_ticket" and (row or {}).get("target_type") == "ticket",
+      str(row and (row["action"], row["target_type"])))
+check("审计指向关单的人与那张工单",
+      bool(row) and row["admin_user_id"] == admin_id and row["target_id"] == ticket_id,
+      str(row and (row["admin_user_id"], row["target_id"])))
+check("首次关单标记 already_closed=False",
+      (row or {}).get("details", {}).get("already_closed") is False,
+      str(row and row["details"]))
+
+r = client.post(f"/api/admin/tickets/{ticket_id}/close", headers=H_ADMIN)
+check("重复关单也留审计（能看出是谁又点了一次）",
+      (latest() or {}).get("action") == "close_ticket", str((latest() or {}).get("action")))
+check("重复关单标记 already_closed=True",
+      (latest() or {}).get("details", {}).get("already_closed") is True,
+      str((latest() or {}).get("details")))
+
+# 能力测试不改配置，但**真的会发出去东西**（邮件 / Telegram 真实投递），
+# 所以同样留审计，但只记能力名与结果——payload 里可能带收件人与凭据。
+PROBE_VALUE = "aetrix-audit-probe-value"
+r = client.post("/api/admin/capabilities/proxy/test", headers=H_ADMIN,
+                json={"payload": {"probe_secret": PROBE_VALUE}})
+check("能力测试 → 200（未配置时如实报未启用）", r.status_code == 200,
+      f"HTTP {r.status_code} {r.text[:120]}")
+row = latest()
+check("能力测试留下审计（真实投递要能在日志里对上人）",
+      (row or {}).get("action") == "capability_test"
+      and (row or {}).get("details", {}).get("slug") == "proxy",
+      str(row))
+check("能力测试的审计不记 payload（收件人 / 凭据不外泄）",
+      PROBE_VALUE not in str(row and row["details"])
+      and "probe_secret" not in str(row and row["details"]),
+      str(row and row["details"]))
+
+# 静态覆盖护栏与这条行为验证是同一件事的两面：一个端点既不写 _audit 也不在中间件前缀下，
+# 静态检查就会红。这里顺手把它跑一遍，确保两边的口径没有分叉。
+import subprocess  # noqa: E402
+
+coverage = subprocess.run(
+    [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "check_admin_audit_coverage.py")],
+    capture_output=True, text=True)
+check("静态覆盖护栏与本文件口径一致（写端点都留审计）", coverage.returncode == 0,
+      (coverage.stdout or coverage.stderr).strip().splitlines()[-1][:120])
 
 print("\n" + "=" * 60)
 print(f"通过 {TOTAL - len(FAILED)}/{TOTAL} 项")

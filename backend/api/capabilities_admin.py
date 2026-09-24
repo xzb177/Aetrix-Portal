@@ -96,16 +96,28 @@ def save_capability(
 def test_capability(
     slug: str,
     request: CapabilityTestRequest,
+    http_request: Request,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """真实连通性测试（走真实网络 / 真实投递；不写配置）
 
     失败原因原样返回，便于管理员区分「密钥填错了」还是「网络到不了」。
+
+    它虽然不改配置，但**真的会发出去东西**（邮件 / Telegram 用运营自己填的凭据真实投递），
+    所以同样留审计——「为什么我们的 SMTP 往这个地址发过邮件」要能在操作日志里对上人；
+    只记能力名与结果，**不记 payload**（里面可能带收件人与凭据）。
     """
     _require(slug)
     payload: Optional[dict] = request.payload or {}
-    return integrations.test_capability(db, slug, payload)
+    result = integrations.test_capability(db, slug, payload)
+    _audit(
+        db, current_admin, "capability_test", "capability", None,
+        {"slug": slug, "ok": bool((result or {}).get("ok"))},
+        client_ip(http_request),
+    )
+    db.commit()
+    return result
 
 
 __all__ = ["capabilities_router"]

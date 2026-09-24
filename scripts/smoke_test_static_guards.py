@@ -24,8 +24,22 @@
     出现两台同名服务器）。所以这里也钉住：**喂它一个还写着旧名的文件，它必须失败**，
     同时占位值 / 行内放行注释不能误报。
 
+`scripts/check_admin_audit_coverage.py`（每个管理端写端点都要留审计）
+    这条不扫文件，而是看**真实路由**：``/api/admin/emby/*`` 由中间件覆盖，其余域靠每个
+    端点自己调 ``_audit(...)``。真实起因为 ``POST /api/admin/tickets/{id}/close`` 关单
+    并推送用户，却一条审计都不写（两个兄弟端点都写了）。所以这里喂它一份**合成端点表**：
+    没写审计的写端点必须被点名，写了的不报，``emby`` 前缀不误报，例外机制生效，
+    例外名单里的死条目也要被拓出来。
+
+`scripts/check_auth_coverage.py`（每个 `/api/admin`、`/api/user` 写端点都要有鉴权）
+    漏掉一个 `Depends(get_current_user)` 不会让任何检查变红：路由照常注册、类型检查照常通过，
+    已有的冒烟也不会去点那个新端点——结果就是一个**既没登录也能写**的接口。
+    当前口径是干净的（112 个写端点里只有 5 个没鉴权，全是注册 / 登录 / 刷新 / 网关回调 /
+    管理员登录），但那份干净只靠「每个人都记得写」。所以同样喂合成路由证明它会响，
+    并钉住两种合法写法（端点签名里的依赖、路由级 `dependencies`）不被误报。
+
 护栏最常见的失效方式不是报错，而是**根本不会响**：正则写歪、路径找错、基线比实际大，
-于是它永远返回 0，谁也不知道。所以四条都要证明「喂它一个违规样本，它必须失败」。
+于是它永远返回 0，谁也不知道。所以每条都要证明「喂它一个违规样本，它必须失败」。
 """
 import ast
 import contextlib
@@ -44,6 +58,8 @@ AWAIT_GUARD = ROOT / "scripts" / "check_await_consistency.py"
 BLOCKING_GUARD = ROOT / "scripts" / "check_blocking_routes.py"
 SECRET_GUARD = ROOT / "scripts" / "check_hardcoded_secrets.py"
 BRAND_GUARD = ROOT / "scripts" / "check_branding.py"
+ADMIN_AUDIT_GUARD = ROOT / "scripts" / "check_admin_audit_coverage.py"
+AUTH_COVERAGE_GUARD = ROOT / "scripts" / "check_auth_coverage.py"
 
 failures: list[str] = []
 TOTAL = 0
@@ -322,7 +338,185 @@ with contextlib.redirect_stdout(buf):
 check("品牌契约：新名 / 放行注释 / 发布说明不误报", brand_good_code == 0,
       buf.getvalue().strip().splitlines()[-1][:120] if buf.getvalue().strip() else "(无输出)")
 
-# ==================== 汇总 ====================
+# ==========================================================================
+# 五、管理端写端点审计覆盖
+# ==========================================================================
+# 这条和前四条不一样：它不扫文件，而是**看真实路由**（端点自己有没有调用 _audit）。
+# 所以自检也不喂文件，而是喂一份合成端点表——证明「没写审计的写端点会失败」。
+
+proc = subprocess.run([sys.executable, str(ADMIN_AUDIT_GUARD)], capture_output=True, text=True,
+                      cwd=str(ROOT))
+check("审计覆盖：真实代码树上退出码为 0", proc.returncode == 0,
+      (proc.stdout or proc.stderr).strip().splitlines()[-1][:120])
+
+audit_guard = load(ADMIN_AUDIT_GUARD, "_check_admin_audit_coverage")
+
+_real_missing, _real_stale, _real_total = audit_guard.scan()
+check("审计覆盖：真实端点上既无缺口也无死例外",
+      _real_missing == [] and _real_stale == [],
+      f"缺口={_real_missing} 死例外={_real_stale}")
+check("审计覆盖：确实扫到了端点（不是空跑）", _real_total >= 40, f"{_real_total} 个")
+
+_real_exceptions = audit_guard.EXCEPTIONS
+_real_modules = audit_guard.ROUTER_MODULES
+
+# 合成一个**真模块**（这条检查是读源码判定的，所以端点必须真的存在于某个文件里）：
+#   - /bare    忘了写审计的写端点      → 必须被点名
+#   - /covered 写了 _audit 的写端点    → 不报
+#   - /readonly 只读端点（GET）          → 根本不是写端点，不进判定
+synthetic_dir = pathlib.Path(tempfile.mkdtemp(prefix="audit-coverage-"))
+synthetic_dir.joinpath("synthetic_admin.py").write_text(
+    "from fastapi import APIRouter\n"
+    "\n"
+    "router = APIRouter(prefix=\"/api/admin/synthetic\")\n"
+    "\n"
+    "\n"
+    "@router.post(\"/bare\")\n"
+    "def bare_write(db=None, admin=None):\n"
+    "    return {\"success\": True}\n"
+    "\n"
+    "\n"
+    "@router.put(\"/covered/{item_id}\")\n"
+    "def covered_write(item_id, db=None, admin=None):\n"
+    "    _audit(db, admin, \"synthetic_action\", \"thing\", item_id, {})\n"
+    "    db.commit()\n"
+    "    return {\"success\": True}\n"
+    "\n"
+    "\n"
+    "@router.get(\"/readonly\")\n"
+    "def readonly(db=None):\n"
+    "    return {\"items\": []}\n",
+    encoding="utf-8")
+
+sys.path.insert(0, str(synthetic_dir))
+importlib.invalidate_caches()
+audit_guard.ROUTER_MODULES = ("synthetic_admin",)
+audit_guard.EXCEPTIONS = {}
+
+missing, stale, total = audit_guard.scan()
+check("审计覆盖：没写审计的写端点会被点名（护栏真的会响）",
+      len(missing) == 1 and "synthetic/bare" in missing[0], str(missing))
+check("审计覆盖：写了 _audit 的端点不报",
+      all("covered" not in item for item in missing), str(missing))
+check("审计覆盖：只读端点不进判定（GET 不是写操作）",
+      all("readonly" not in item for item in missing) and total == 2, f"total={total}")
+
+# 中间件覆盖的前缀：端点自己不写 _audit 也不算缺口
+sys.path.insert(0, str(synthetic_dir))
+synthetic_dir.joinpath("synthetic_emby.py").write_text(
+    "from fastapi import APIRouter\n"
+    "\n"
+    "router = APIRouter(prefix=\"/api/admin/emby/synthetic\")\n"
+    "\n"
+    "\n"
+    "@router.post(\"/thing\")\n"
+    "def bare_write(db=None, admin=None):\n"
+    "    return {\"success\": True}\n",
+    encoding="utf-8")
+importlib.invalidate_caches()
+audit_guard.ROUTER_MODULES = ("synthetic_emby",)
+missing, _stale, _total = audit_guard.scan()
+check("审计覆盖：emby 前缀交给中间件（不误报）", missing == [], str(missing))
+
+# 例外机制：登记过的端点放行，且不会同时被当成死条目
+audit_guard.ROUTER_MODULES = ("synthetic_admin",)
+audit_guard.EXCEPTIONS = {("POST", "/api/admin/synthetic/bare"): "合成用纯探测端点"}
+missing, stale, _total = audit_guard.scan()
+check("审计覆盖：显式登记的例外被放行", missing == [] and stale == [],
+      f"缺口={missing} 死例外={stale}")
+
+# 例外名单腐坏（登记的端点已经不存在）必须报出来，否则名单会一直长
+missing, stale, _total = audit_guard.scan()
+audit_guard.EXCEPTIONS = {("POST", "/api/admin/synthetic/gone"): "已经不存在的端点"}
+_gone_missing, gone_stale, _total = audit_guard.scan()
+check("审计覆盖：例外名单里的死条目会被抓出来", len(gone_stale) == 1, str(gone_stale))
+
+sys.path.remove(str(synthetic_dir))
+audit_guard.ROUTER_MODULES = _real_modules
+audit_guard.EXCEPTIONS = _real_exceptions
+
+# ==========================================================================
+# 六、写端点鉴权覆盖
+# ==========================================================================
+# 同上：看真实路由。喂一个**没写鉴权**的合成写端点，它必须被点名。
+
+proc = subprocess.run([sys.executable, str(AUTH_COVERAGE_GUARD)], capture_output=True, text=True,
+                      cwd=str(ROOT))
+check("鉴权覆盖：真实代码树上退出码为 0", proc.returncode == 0,
+      (proc.stdout or proc.stderr).strip().splitlines()[-1][:120])
+
+auth_guard = load(AUTH_COVERAGE_GUARD, "_check_auth_coverage")
+_real_auth_missing, _real_auth_stale, _real_auth_total = auth_guard.scan()
+check("鉴权覆盖：真实端点上既无缺口也无死免鉴权条目",
+      _real_auth_missing == [] and _real_auth_stale == [],
+      f"缺口={_real_auth_missing} 死条目={_real_auth_stale}")
+check("鉴权覆盖：确实扫到了端点（不是空跑）", _real_auth_total >= 100, f"{_real_auth_total} 个")
+
+_real_pre_auth = auth_guard.PRE_AUTH
+_real_auth_modules = auth_guard.ROUTER_MODULES
+
+auth_dir = pathlib.Path(tempfile.mkdtemp(prefix="auth-coverage-"))
+auth_dir.joinpath("synthetic_auth.py").write_text(
+    "from fastapi import APIRouter, Depends\n"
+    "\n"
+    "def get_current_user():\n"
+    "    return None\n"
+    "\n"
+    "def require_staff():\n"
+    "    return None\n"
+    "\n"
+    "bare_router = APIRouter(prefix=\"/api/user/synthetic\")\n"
+    "guarded_router = APIRouter(prefix=\"/api/admin/synthetic\",\n"
+    "                           dependencies=[Depends(require_staff)])\n"
+    "\n"
+    "\n"
+    "@bare_router.post(\"/bare\")\n"
+    "def bare_write(db=None):\n"
+    "    return {\"success\": True}\n"
+    "\n"
+    "\n"
+    "@bare_router.put(\"/with-dep\")\n"
+    "def inline_guarded(user=Depends(get_current_user)):\n"
+    "    return {\"success\": True}\n"
+    "\n"
+    "\n"
+    "@guarded_router.delete(\"/router-level\")\n"
+    "def router_level_guarded(db=None):\n"
+    "    return {\"success\": True}\n"
+    "\n"
+    "\n"
+    "@bare_router.get(\"/readonly\")\n"
+    "def readonly():\n"
+    "    return {\"items\": []}\n",
+    encoding="utf-8")
+
+sys.path.insert(0, str(auth_dir))
+importlib.invalidate_caches()
+auth_guard.ROUTER_MODULES = ("synthetic_auth",)
+auth_guard.PRE_AUTH = {}
+
+missing, stale, total = auth_guard.scan()
+check("鉴权覆盖：没写鉴权的写端点会被点名（护栏真的会响）",
+      len(missing) == 1 and "synthetic/bare" in missing[0], str(missing))
+check("鉴权覆盖：端点签名里的鉴权依赖算覆盖",
+      all("with-dep" not in item for item in missing), str(missing))
+check("鉴权覆盖：路由级 dependencies 算覆盖",
+      all("router-level" not in item for item in missing), str(missing))
+check("鉴权覆盖：只读端点不进判定（GET 不是写操作）", total == 3, f"total={total}")
+
+# 免鉴权登记：登记过的放行，死条目要报
+auth_guard.PRE_AUTH = {("POST", "/api/user/synthetic/bare"): "合成用免鉴权端点"}
+missing, stale, _total = auth_guard.scan()
+check("鉴权覆盖：显式登记的免鉴权端点被放行", missing == [] and stale == [],
+      f"缺口={missing} 死条目={stale}")
+
+auth_guard.PRE_AUTH = {("POST", "/api/user/synthetic/gone"): "已经不存在的端点"}
+_gone_missing, gone_stale, _total = auth_guard.scan()
+check("鉴权覆盖：免鉴权名单里的死条目会被抓出来", len(gone_stale) == 1, str(gone_stale))
+
+sys.path.remove(str(auth_dir))
+auth_guard.ROUTER_MODULES = _real_auth_modules
+auth_guard.PRE_AUTH = _real_pre_auth
 
 print()
 if failures:

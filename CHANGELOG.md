@@ -24,6 +24,10 @@
 - **脚本不再写死库文件名**：`create_admin.py` / `deploy_check.py` / 各冒烟测试原先各自写死
   `sqlite:///./royalbot_unified.db`，改品牌后会「在错的库里建管理员」——现在统一交给
   `backend.database` 解析（`default_sqlite_url()`），升级上来的部署继续用原库文件。
+- **README 瘦身**：内联的 700 行版本历史与 `CHANGELOG.md` 重复（还把 README 撑到 97 KB），
+  改为「最近两个版本 + 指向 CHANGELOG.md」；瘦身时顺手留下的 `README-old.md` 快照已删除
+  （内容与 CHANGELOG 重复、仓库里没有任何地方引用它，留着只会让品牌检查多一个整文件豁免，
+  而整文件豁免意味着那份文件里的旧名永远不再被看见）。
 
 #### 安全与护栏
 
@@ -34,6 +38,11 @@
 - **回调验签改用 `hmac.compare_digest`**，不再逐字节短路比较。
 - **挂载路径越界**：`exists()` / `size()` 与 `list_dir` / `resolve` / `read_text` 统一口径，
   `../` 或符号链接不再探到挂载根之外（越界按「不存在 / 拿不到大小」处理，不是 500）。
+- **关工单此前不写审计**：`POST /api/admin/tickets/{id}/close` 关单并推送用户，但两个兄弟端点
+  （`PUT /tickets/{id}`、`POST /tickets/{id}/reply`）都写了审计、它没写——用户收到「工单已被关闭」，
+  运营在操作日志里查不到是谁关的。现在补上（重复关单也留记录，并标明 `already_closed`）。
+- **能力测试的「真实投递」也留审计**：能力测试不改配置，但会用管理员自己填的凭据**真的发出去东西**
+  （邮件 / Telegram），所以同样留审计——只记能力名与结果，**不记 payload**（里面可能带收件人与凭据）。
 - **管理后台写操作审计中间件**（`backend/emby_server/audit.py`）：`/api/admin/emby/*` 的成功
   写操作落进操作日志——删媒体库 / 删条目 / 删 115 账号 / 停全站转码以前在「操作日志」里查不到。
   写这条的护栏（`scripts/smoke_test_admin_audit.py`）时又抓出三个真 bug，一并修了：
@@ -48,6 +57,17 @@
 
 #### 新增护栏（CI 门禁）
 
+- `scripts/check_auth_coverage.py`（新）：**`/api/admin` 与 `/api/user` 下每个写端点都必须有鉴权**。
+  漏掉一个 `Depends(get_current_user)` 不会让任何检查变红（路由照常注册、类型检查照常通过、
+  已有冒烟也不会去点那个新端点），结果就是一个「既没登录也能写」的接口。排摸结果是干净的：
+  112 个写端点里只有 5 个没鉴权依赖，全是注册 / 登录 / 刷新令牌 / 支付网关回调（靠验签）/
+  管理员登录（靠限流 + 验证码 + 登录日志）——但这五条现在是**显式登记**的，
+  而不是靠没人发现；免鉴权登记必须写清替代机制，名单里出现死条目也会报错。
+- `scripts/check_admin_audit_coverage.py`（新）：**每个 `/api/admin` 写端点都必须留下审计**。
+  `/api/admin/emby/*` 由中间件覆盖，其余域必须自己调 `_audit(...)`；例外（纯探测端点与登录本身，
+  后者已落在登录日志里）要显式登记并写清原因，名单里出现死条目同样报错。它看的是**真实路由**
+  而不是文件，所以新增端点不需要谁记得改清单——检查会自己发现；
+  `smoke_test_static_guards.py` 喂它一个合成模块，证明它会响、且不误报只读端点与中间件前缀。
 - `scripts/check_branding.py`：仓库里不许再出现旧品牌名（`brand-scan: allow` 显式放行）。
 - `scripts/check_hardcoded_secrets.py`：仓库里不许出现像真的密钥（`secret-scan: allow` 显式放行）。
 - 三条静态护栏都进了 CI；`scripts/smoke_test_static_guards.py` 会喂它们违规样本，
