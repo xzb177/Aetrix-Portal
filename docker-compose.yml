@@ -1,0 +1,50 @@
+services:
+  aetrix:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aetrix-portal:latest
+    container_name: aetrix
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_TYPE: ${DATABASE_TYPE:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/aetrix_unified.db}
+      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      EMBY_TRANSCODE_DIR: /data/transcode
+      EMBY_IMAGE_DIR: /data/images
+      FRONTEND_DIST: /app/user_frontend/dist
+      ADMIN_DIST: /app/admin_frontend/dist
+    ports:
+      - "${AETRIX_PORT:-8000}:8000"
+    volumes:
+      - aetrix_data:/data
+      - ${MEDIA_ROOT:-./media}:/media:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: aetrix-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  aetrix_data:
+  redis_data:
