@@ -755,7 +755,7 @@ function fmtDate(s: string | null): string {
       :title="editing ? `编辑挂载：${editing.name}` : '新建挂载'"
       width="520px"
     >
-      <el-form label-position="top">
+      <el-form label-position="top" @submit.prevent>
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="如：115 影库 / 本地电影盘" maxlength="60" />
         </el-form-item>
@@ -801,7 +801,7 @@ function fmtDate(s: string | null): string {
             >
               <el-option v-for="r in rcloneRemotes" :key="r" :label="r" :value="r" />
             </el-select>
-            <el-button :loading="remotesLoading" size="small" @click="loadRcloneRemotes">
+            <el-button native-type="button" :loading="remotesLoading" size="small" @click="loadRcloneRemotes">
               获取 remote 列表
             </el-button>
             <div class="form-hint">
@@ -840,9 +840,9 @@ function fmtDate(s: string | null): string {
         <el-alert v-if="testMessage" :title="testMessage" type="info" :closable="false" />
       </el-form>
       <template #footer>
-        <el-button :loading="testing" @click="testForm">测试连接</el-button>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
+        <el-button native-type="button" :loading="testing" @click="testForm">测试连接</el-button>
+        <el-button native-type="button" @click="dialogVisible = false">取消</el-button>
+        <el-button native-type="button" type="primary" :loading="saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
 
