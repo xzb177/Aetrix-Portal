@@ -736,6 +736,14 @@ export interface EmbyPlaybackReachability {
   checked_at: string | null
 }
 
+/**
+ * 用户端地址是从哪来的（v2.32.0）
+ *
+ * realm / config / env 都是人配的（服地址、服务入口、环境变量）；none = 还没配，
+ * 用户端账号卡按**当前访问用的地址**下发（见后端 resolve_emby_base_url_with_source）。
+ */
+export type EmbyClientUrlSource = 'realm' | 'config' | 'env' | 'none'
+
 /** 播放可达性报告：出流方式 + 逐库判定 + 用户端地址一致性（一条接口拿全） */
 export interface EmbyReachabilityReport {
   realm_id: number | null
@@ -746,14 +754,19 @@ export interface EmbyReachabilityReport {
     /** 面板自己是否还开着协议面（ENABLE_EMBY_GATEWAY） */
     gateway_enabled: boolean
     targets: { id: number; name: string; enabled: boolean; url: string; online: boolean | null }[]
-    /** 用户端账号卡里会显示的地址 */
+    /** 用户端账号卡里会显示的地址；none 时为空串（未配，面板按当前访问地址显示） */
     client_url: string
+    client_url_source: EmbyClientUrlSource
   }
   ea_health_at: string | null
   ea_health_ok: boolean
   counts: { libraries: number; ok: number; warn: number; bad: number }
   level: 'ok' | 'warn' | 'bad'
-  client_endpoint: EmbyPlaybackReachability & { url: string; gateway_enabled: boolean }
+  client_endpoint: EmbyPlaybackReachability & {
+    url: string
+    url_source: EmbyClientUrlSource
+    gateway_enabled: boolean
+  }
   libraries: (EmbyPlaybackReachability & { library_id: number; library_name: string })[]
 }
 

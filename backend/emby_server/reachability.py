@@ -351,6 +351,13 @@ def client_endpoint_check(db: Session, realm_id: Optional[int] = None,
 
     分离部署最容易踩的两个坑都在这里：面板已关协议面却仍把入口写成面板地址
     （客户端会拿到 404 指引页），以及地址解析成 ``localhost``（只有本机能连）。
+
+    **什么都没配时不再报红**（v2.32.0）：以前 ``resolve_emby_base_url`` 会回退到写死的
+    ``http://localhost:8000``，于是一台刚装好的服务器（还没配任何入口地址）第一眼就是一条红证据：
+    「用户端账号卡显示的地址是 http://localhost:8000：只有这台机器自己能连」——那个地址从来
+    不是配置，只是占位。现在这种情况报 ``url_source = none`` 且 ``url`` 留空，面板按管理员
+    **当前访问用的地址**显示（页面与接口同源，所以它就是用户该连的那个地址）；
+    只有真的把 localhost 填进配置 / 环境变量里（人写的）才报红。
     """
     from backend.emby_server import portal  # 延迟导入：portal 会反向用本模块，避免循环
 
@@ -360,10 +367,15 @@ def client_endpoint_check(db: Session, realm_id: Optional[int] = None,
         ctx = build_context(db, realm_id)
 
     url = ""
+    source = portal.URL_SOURCE_NONE
     try:
-        url = portal.resolve_emby_base_url(db, realm_id) or ""
+        url, source = portal.resolve_emby_base_url_with_source(db, realm_id)
+        url = url or ""
     except Exception as exc:  # noqa: BLE001 — 地址解析失败按未配置处理
         logger.warning("解析用户端地址失败：%s", exc)
+        url, source = "", portal.URL_SOURCE_NONE
+    if source == portal.URL_SOURCE_NONE:
+        url = ""          # 占位地址不是配置：面板按当前访问地址显示，不拿它当证据
     gateway = gateway_enabled()
     problems: list[dict] = []
 
@@ -402,6 +414,8 @@ def client_endpoint_check(db: Session, realm_id: Optional[int] = None,
         "message": primary["message"] if primary else "用户端地址与当前出流方式一致",
         "fix": primary["fix"] if primary else "",
         "url": url,
+        # 地址是从哪来的：面板要能分清「配好的」与「按当前访问地址推的/没配」（见上面 docstring）
+        "url_source": source,
         "gateway_enabled": gateway,
         "playback": ctx.playback,
         "playback_label": ctx.playback_label,
@@ -410,11 +424,17 @@ def client_endpoint_check(db: Session, realm_id: Optional[int] = None,
 
 
 def _is_local_only(url: str) -> bool:
+    """这个地址是不是「只有这台机器自己能连」（环回 / 未指定地址）
+
+    IPv6 字面量是带方括号的（``http://[::1]:8000``）：按 ``:`` 切会把主机名切成 ``[``，
+    于是环回地址被当成正常地址、这条提示永远不报——先剥括号再比。
+    """
     text = (url or "").strip().lower()
     if not text:
         return False
-    host = text.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
-    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or text.startswith("http://localhost")
+    host = text.split("//", 1)[-1].split("/", 1)[0]
+    host = host.split("]", 1)[0].lstrip("[") if host.startswith("[") else host.split(":", 1)[0]
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1", "::"} or text.startswith("http://localhost")
 
 
 def summary(db: Session, realm_id: Optional[int] = None) -> dict:
@@ -437,6 +457,8 @@ def summary(db: Session, realm_id: Optional[int] = None) -> dict:
                          "url": n.url, "online": n.last_check_ok}
                         for n in ctx.nodes],
             "client_url": client["url"],
+            # realm / config / env（都是人配的）或 none（没配，面板按当前访问地址显示）
+            "client_url_source": client["url_source"],
         },
         "ea_health_at": ctx.ea_health_at,
         "ea_health_ok": ctx.ea_health_ok,

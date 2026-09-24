@@ -38,7 +38,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import models, realms  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
-from backend.emby_server import mount_health, reachability  # noqa: E402
+from backend.emby_server import mount_health, portal as portal_mod, reachability  # noqa: E402
 from backend.main import app  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
 
@@ -337,6 +337,70 @@ check("  停用的库仍在清单里（有 playback 字段）",
 
 resp = client.get("/api/admin/emby/reachability")
 check("未登录 → 401/403", resp.status_code in (401, 403), str(resp.status_code))
+
+# ==================== 8. 什么都没配：按「当前访问用的地址」下发（v2.32.0）====================
+# 真实起因：一台刚装好的测试服务器（还没配任何入口地址）上，媒体库页第一眼就是一条红提示
+# 「用户端账号卡显示的地址是 http://localhost:8000：只有这台机器自己能连」。那个地址从来不是
+# 配置，只是写死的占位——而面板与接口同源，管理员正在用的这个地址就是用户该连的地址。
+# 这一节把两件事都钉住：面板不再拿占位地址报红，用户端账号卡下发的是真实地址。
+print("\n--- 8. 一体化 + 什么都没配（测试机第一眼那条红提示）---")
+set_mode("", enabled=False)          # 面板自己出流（一体化），没有 EA / 没有已有 Emby
+set_url("")
+os.environ.pop("EMBY_PUBLIC_URL", None)   # 环境变量也没配
+os.environ["ENABLE_EMBY_GATEWAY"] = "true"
+
+# 管理员实际是从这个地址访问面板的：请求自己带着它
+probe = TestClient(app, base_url="http://panel.example:8000")
+resp = probe.get("/api/admin/emby/reachability", params={"realm_id": 0}, headers=headers)
+api = resp.json() if resp.status_code == 200 else {}
+endpoint = api.get("client_endpoint", {})
+check("没配地址时：用户端地址留空 + url_source=none（不拿占位 localhost 当配置）",
+      endpoint.get("url") == "" and endpoint.get("url_source") == "none", str(endpoint))
+check("一体化 + 没配地址：不再报 client_url_localhost（测试机第一眼那条红提示）",
+      endpoint.get("level") == "ok"
+      and not any(p["code"] == "client_url_localhost" for p in endpoint.get("problems", [])),
+      str(endpoint.get("problems")))
+check("  汇总里同样标成 none（面板据此按当前访问地址显示）",
+      api.get("playback", {}).get("client_url") == ""
+      and api.get("playback", {}).get("client_url_source") == "none",
+      str(api.get("playback")))
+
+# 用户端账号卡：下发的必须是用户连得上的那个地址（照抄进播放器就能用）
+with SessionLocal() as db:
+    viewer = models.WebUser(username="reach_viewer", password_hash=hash_password("pass12345"),
+                            is_active=True)
+    db.add(viewer)
+    db.commit()
+    viewer_token = create_access_token(viewer.id)
+resp = probe.get("/api/user/emby/server", headers={"Authorization": f"Bearer {viewer_token}"})
+card = resp.json() if resp.status_code == 200 else {}
+check("用户端账号卡下发当前访问地址（不再是写死的 localhost）",
+      card.get("base_url") == "http://panel.example:8000", f"base_url={card.get('base_url')}")
+cross = [c.get("base_url") for c in card.get("realms", [])]
+check("  账号卡的「我的服」里也是同一个地址",
+      bool(cross) and all(u == "http://panel.example:8000" for u in cross), str(cross))
+
+# 配过的地址永远赢过「推出来的」：多服 / 反代 / 换域名都靠这条
+set_mode("managed_ea", url="https://emby.example.com")
+resp = probe.get("/api/admin/emby/reachability", params={"realm_id": 0}, headers=headers)
+api = resp.json() if resp.status_code == 200 else {}
+check("配好地址后以配置为准（url_source=config）",
+      api.get("client_endpoint", {}).get("url") == "https://emby.example.com"
+      and api.get("client_endpoint", {}).get("url_source") == "config",
+      str(api.get("client_endpoint")))
+resp = probe.get("/api/user/emby/server", headers={"Authorization": f"Bearer {viewer_token}"})
+check("  用户端账号卡也跟着走配置（不被请求地址顶替）",
+      (resp.json() if resp.status_code == 200 else {}).get("base_url") == "https://emby.example.com",
+      str(resp.status_code))
+
+# 环境变量优先于请求地址（老部署靠 EMBY_PUBLIC_URL）
+set_url("")
+os.environ["EMBY_PUBLIC_URL"] = "https://env-fallback.example.com"
+with SessionLocal() as db:
+    url, source = portal_mod.resolve_emby_base_url_with_source(db)
+check("环境变量优先于请求地址（EMBY_PUBLIC_URL）",
+      url == "https://env-fallback.example.com" and source == "env", f"{url}/{source}")
+os.environ.pop("EMBY_PUBLIC_URL", None)
 
 print("\n" + "=" * 60)
 if failures:

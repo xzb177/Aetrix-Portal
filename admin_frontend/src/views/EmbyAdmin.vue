@@ -514,9 +514,22 @@ function reachFacts(): string[] {
   if (!r) return []
   const facts = [r.playback.label]
   facts.push(r.playback.gateway_enabled ? '面板协议面：开' : '面板协议面：关（分离部署）')
-  facts.push(`用户端地址：${r.playback.client_url || '未配置'}`)
+  facts.push(clientUrlFact(r))
   facts.push(r.ea_health_at ? `EA 体检：${fmtDate(r.ea_health_at)}` : 'EA 体检：还没拉过')
   return facts
+}
+
+/**
+ * 用户该连哪个地址（v2.32.0）
+ *
+ * 还没配任何入口地址时（client_url_source = none）后端给的是空串：这时候用户该连的就是
+ * **管理员此刻访问面板的这个地址**（面板与接口同源），所以直接报浏览器自己的 origin，
+ * 而不是把写死的 localhost 摆在用户端地址上、再报一条红。
+ * 配过地址（服地址 / 服务入口 / 环境变量）就照配置显示。
+ */
+function clientUrlFact(r: EmbyReachabilityReport): string {
+  if (r.playback.client_url) return `用户端地址：${r.playback.client_url}`
+  return `用户端地址：${window.location.origin}（按当前访问地址）`
 }
 
 
