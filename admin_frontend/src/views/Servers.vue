@@ -23,7 +23,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, CheckCircle2, CloudDownload, Download, HardDrive, Pencil, Plus,
+  AlertTriangle, CheckCircle2, CloudDownload, Download, HardDrive, Info, Pencil, Plus,
   RefreshCw, Route as RealmIcon, Server, Trash2, Wifi,
 } from 'lucide-vue-next'
 import {
@@ -45,6 +45,7 @@ import type {
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import NoticePanel from '@/components/NoticePanel.vue'
 
 const realm = useRealmStore()
 
@@ -580,17 +581,22 @@ async function remove(row: RemoteServerRow) {
       </button>
     </div>
 
-    <el-alert type="info" :closable="false" show-icon class="guide">
-      <template #title>每一类分别是干什么的</template>
-      <template #default>
+    <NoticePanel
+      title="每一类分别是干什么的"
+      summary="后端服 / 已有 Emby / MoviePilot / qBittorrent 的职责"
+      :icon="Info"
+      storage-key="servers-kinds"
+      class="guide-panel"
+    >
+      <div class="guide">
         <b>后端服（EA）</b>＝本项目自带的 Emby API，播放和媒体库都靠它；必须和面板用同一个数据库与
         SECRET_KEY。<b>已有 Emby 服</b>＝你已经在跑的那台 Emby / Jellyfin，接入后本项目的自建媒体库会停用。
         <b>MoviePilot</b>＝负责搜索下载与整理，求片批准后一键提交成它的订阅。
         <b>qBittorrent</b>＝下载器，拿到磁力 / 种子链接就能直接下载（它自己不会去找片子）。
         EA / Emby 可以加多台，但**同一个服同一时间只有一台是「当前使用」**；MoviePilot 与 qB 可以多台一起接。
         <b>入口只有一个</b>：以前那页「Emby 服务入口」已并入这里，加完点「设为当前」即可生效。
-      </template>
-    </el-alert>
+      </div>
+    </NoticePanel>
 
     <!-- ==================== Emby 总览（按服） ==================== -->
     <template v-if="showEntries">
@@ -1029,7 +1035,8 @@ async function remove(row: RemoteServerRow) {
 .kind-count { margin-left: auto; font-size: 22px; font-weight: var(--font-weight-semibold); color: var(--text-primary); }
 .kind-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .kind-current { color: var(--text-muted); font-size: var(--font-size-xs); }
-.guide { margin-bottom: 14px; line-height: 1.75; }
+.guide-panel { margin-bottom: 14px; }
+.guide { line-height: 1.75; }
 
 /* ==================== 按服的入口卡片 ==================== */
 .realm-stack { display: flex; flex-direction: column; gap: 14px; }

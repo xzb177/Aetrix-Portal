@@ -13,12 +13,13 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, CheckCircle2, Crown, Film, Network, Pencil, Plus,
+  AlertTriangle, CheckCircle2, Crown, Film, Info, Network, Pencil, Plus,
   RefreshCw, Route, Server, Trash2, Wifi,
 } from 'lucide-vue-next'
 import { createRealm, deleteRealm, syncRealmNodes, updateRealm } from '@/api/admin'
 import { useRealmStore } from '@/stores/realm'
 import type { RealmNodeSync, RealmRow } from '@/types'
+import NoticePanel from '@/components/NoticePanel.vue'
 
 const realm = useRealmStore()
 
@@ -289,15 +290,20 @@ function shortDate(s: string | null): string {
       </div>
     </section>
 
-    <el-alert type="info" :closable="false" show-icon class="guide">
-      <template #title>「一个服一个」的东西有哪些</template>
-      <template #default>
+    <NoticePanel
+      title="「一个服一个」的东西有哪些"
+      summary="套餐、订阅、媒体库、存储与卡码都按当前服隔离"
+      :icon="Info"
+      storage-key="realms-scope"
+      class="guide-panel"
+    >
+      <div class="guide">
         套餐、订阅、媒体库、存储来源、服务器与线路、卡码、求片 —— 这些都属于某一个服，
         面板顶部切换「当前服」之后，各页默认只显示那个服的数据。
         <b>会员按服计算</b>：用户可以在 A 服和 B 服各有一份会员，互不影响，哪台节点能播也按服判定。
         默认服沿用历史配置，不能删除，但可以改名。
-      </template>
-    </el-alert>
+      </div>
+    </NoticePanel>
 
     <div v-loading="loading" class="realm-grid">
       <article
@@ -505,7 +511,8 @@ function shortDate(s: string | null): string {
 </template>
 
 <style scoped>
-.guide { margin-bottom: 14px; line-height: 1.75; }
+.guide-panel { margin-bottom: 14px; }
+.guide { line-height: 1.75; }
 
 .realm-grid {
   display: grid;

@@ -23,6 +23,7 @@ import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
   type CapabilityCard, type CapabilityField, type CapabilityTestResult,
 } from '@/api/capabilities'
+import NoticePanel from '@/components/NoticePanel.vue'
 
 type FieldType = 'bool' | 'int' | 'str' | 'secret'
 
@@ -376,13 +377,17 @@ async function saveRegistration() {
     </div>
 
     <!-- ==================== 外部服务能力 ==================== -->
-    <div class="notice">
-      <Zap :size="15" />
-      <span>
+    <NoticePanel
+      title="外部服务能力说明"
+      summary="凭据由管理员自行填写，填入后即可测试连接"
+      :icon="Zap"
+      storage-key="settings-capabilities"
+    >
+      <p class="capability-note">
         能力由面板提供，<strong>凭据全部由你自己填</strong>：各家的 API Key / 站点密钥 / 代理地址 / Bot Token
         都由本项目之外的账号体系签发，填进来即可用，每个能力都能当场「测试连接」。
-      </span>
-    </div>
+      </p>
+    </NoticePanel>
 
     <div v-loading="capsLoading" class="settings-body">
       <section v-for="g in capGroups" :key="g.name" class="cap-section">
@@ -627,7 +632,10 @@ async function saveRegistration() {
   color: #a7f3d0;
 }
 
-.notice strong { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
+.notice strong,
+.capability-note strong { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
+
+.capability-note { margin: 0; line-height: 1.7; }
 
 .foot-note {
   display: flex;
