@@ -19,6 +19,9 @@ services:
       EMBY_IMAGE_DIR: /data/images
       FRONTEND_DIST: /app/user_frontend/dist
       ADMIN_DIST: /app/admin_frontend/dist
+      # 存储挂载 · rclone RC：指向同网络的 rclone 容器，容器名即服务名
+      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
     ports:
       - "${AETRIX_PORT:-8000}:8000"
     volumes:
@@ -27,6 +30,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      rclone:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
       interval: 30s
@@ -46,6 +51,26 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+  # rclone RC：把 remote 定义接进 Aetrix「存储挂载」，凭据只放在挂载卷里
+  rclone:
+    image: rclone/rclone:1.71.1
+    container_name: aetrix-rclone
+    restart: unless-stopped
+    command:
+      - rcd
+      - --rc-serve
+      - --rc-addr=0.0.0.0:5572
+      - --rc-user=${RCLONE_RC_USER:?请在 .env 设置 RCLONE_RC_USER}
+      - --rc-pass=${RCLONE_RC_PASS:?请在 .env 设置 RCLONE_RC_PASS}
+    volumes:
+      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5572 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   aetrix_data:
