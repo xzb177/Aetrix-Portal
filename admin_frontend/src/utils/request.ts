@@ -35,21 +35,36 @@ request.interceptors.response.use(
     const detail = error.response?.data?.detail
 
     if (status === 401) {
-      localStorage.removeItem(TOKEN_KEY)
-      localStorage.removeItem(ADMIN_KEY)
-      // 避免登录页自身的 401（密码输错）循环重载
-      if (!window.location.pathname.endsWith('/login')) {
-        if (canAutoRecover()) {
-          // 整页重载后路由守卫会拿门户会话静默接管：成功即原地恢复，失败才会去登录页
-          markAutoRecover()
-          window.location.reload()
-        } else {
-          // 刚恢复过又失效：不再循环，直接交给登录页
-          window.location.href = '/admin/login'
+      // 「会话过期」与「业务接口自己回的 401」必须分开处理：
+      // 后者（如挂载表单里 RC 账号密码填错）不是登录态问题，整页重载会把用户
+      // 正在填的表单整个清掉。
+      // 判据：这次请求**带了**后台凭证却仍被拒 → 会话失效；**没带**凭证 → 登录页自身
+      // 的 401（密码输错）或业务接口的鉴权 401，都不该触发重载。
+      const sentAuth = Boolean(error.config?.headers?.Authorization)
+      const isSession401 = sentAuth
+      const message = detail || '登录状态已失效'
+
+      if (isSession401) {
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem(ADMIN_KEY)
+        // 避免登录页自身的 401（密码输错）循环重载
+        if (!window.location.pathname.endsWith('/login')) {
+          if (canAutoRecover()) {
+            // 整页重载后路由守卫会拿门户会话静默接管：成功即原地恢复，失败才会去登录页
+            markAutoRecover()
+            window.location.reload()
+          } else {
+            // 刚恢复过又失效：不再循环，直接交给登录页
+            window.location.href = '/admin/login'
+          }
         }
+        // 401 不做全局报错：这是一次可自愈的会话过期，提示交给登录页的说明文案
+        return Promise.reject(new Error(message))
       }
-      // 401 不做全局报错：这是一次可自愈的会话过期，提示交给登录页的说明文案
-      return Promise.reject(new Error(detail || '登录状态已失效'))
+
+      // 业务性 401：只提示，不动登录态、不重载
+      ElMessage.error(message)
+      return Promise.reject(new Error(message))
     }
 
     const message = detail || error.message || '请求失败'

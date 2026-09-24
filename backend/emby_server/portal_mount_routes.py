@@ -224,7 +224,9 @@ async def list_rclone_remotes(mode: str = "rc", rc_url: str = "", rc_user: str =
             bin_path=rclone_bin, config=rclone_config, mode=mode,
         )
     except mount_lib.MountAuthError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        # 这是「RC 地址/账号密码不对」，属于挂载表单的填写错误，不是后台会话过期。
+        # 回 401 会让前端 401 拦截器整页重载，用户刚填的表单全丢，所以这里回 400。
+        raise HTTPException(status_code=400, detail=str(exc))
     except mount_lib.MountError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"remotes": remotes, "total": len(remotes)}
