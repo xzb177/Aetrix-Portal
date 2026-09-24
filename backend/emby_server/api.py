@@ -873,6 +873,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     search = (q.get("SearchTerm") or "").strip()
     genres = (q.get("Genres") or "").split("|")
     years = (q.get("Years") or "").split(",")
+    # 分级与标签：/Items/Filters 一直把它们列进筛选菜单，但列表端点此前完全忽略——
+    # 客户端（含本站用户端）照着菜单选了却拿到全量结果，看着像「筛选没生效」。
+    ratings = (q.get("OfficialRatings") or "").split(",")
+    tags = (q.get("Tags") or "").split("|")
     start = int(q.get("StartIndex") or 0)
     limit = int(q.get("Limit") or 100)
     recursive = (q.get("Recursive") or "false").lower() == "true"
@@ -1005,6 +1009,18 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             year_values.append(int(name))
     if year_values:
         query = query.filter(em.MediaItem.production_year.in_(year_values))
+
+    # 分级是单值列，直接比较（与年份同一类，不需要关联表）
+    rating_values = [r.strip() for r in ratings if r.strip()]
+    if rating_values:
+        query = query.filter(em.MediaItem.official_rating.in_(rating_values))
+
+    # 标签与「类型」一样是多值列，走同一条关联表路径（老库未回填完时退回 ILIKE）
+    tag_names = [t for t in tags if t]
+    if tag_names:
+        cond = _facet_or_legacy(em.MediaItem.tags, facets.KIND_TAG, tag_names, db)
+        if cond is not None:
+            query = query.filter(cond)
 
     if filters & {"isfavorite", "isplayed", "isunplayed", "isresumable"}:
         query = query.outerjoin(
