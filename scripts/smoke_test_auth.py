@@ -148,7 +148,7 @@ import sqlite3  # noqa: E402
 db = sqlite3.connect(DB)
 row = db.execute("SELECT emby_password FROM web_users WHERE username='newuser'").fetchone()
 db.close()
-assert row and row[0].startswith("$2"), f"Emby 密码应为 bcrypt 哈希, got {row}"
+assert row and row[0].startswith(("$2", "$bcrypt-sha256$")), f"Emby 密码应为 bcrypt 哈希, got {row}"
 print("OK emby play password stored as bcrypt hash")
 
 # 账号卡不再返回明文密码

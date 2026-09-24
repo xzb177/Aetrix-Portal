@@ -431,14 +431,16 @@ def _widen_code_column(existing_tables: set, inspector) -> None:
 
 
 def init_db():
-    """初始化数据库，创建所有表并执行轻量自动迁移"""
+    """初始化数据库，创建所有表并执行轻量自动迁移。
+
+    迁移失败必须让调用方感知：继续启动会把“模型已升级、数据库仍是旧结构”的
+    半可用服务暴露出去，首个业务请求才 500，且可能在不完整 schema 上继续写数据。
+    部署探针 / lifespan 会据此 fail-closed；一次性 CLI 也能拿到真实异常。
+    """
     from backend import models  # 导入所有模型
     from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
     Base.metadata.create_all(bind=engine)
-    try:
-        _auto_migrate()
-    except Exception as e:  # noqa: BLE001 — 迁移失败不阻塞启动，新库不受影响
-        print(f"⚠️ 自动迁移失败（可忽略，若为全新数据库）: {e}")
+    _auto_migrate()
     print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
 

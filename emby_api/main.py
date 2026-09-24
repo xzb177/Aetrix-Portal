@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import inspect as _inspect
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -34,6 +35,7 @@ from backend.metrics_guard import MetricsGuard
 from sqlalchemy import inspect
 
 from backend.database import DATABASE_TYPE, SessionLocal, engine
+from backend.security import validate_secret_key
 from backend import models  # noqa: F401 — 注册全部模型，保证 ORM 关系可解析
 from backend.emby_server import models as _emby_models  # noqa: F401
 from backend.download_guard import DownloadGuardMiddleware
@@ -79,11 +81,10 @@ def _missing_em_tables() -> list[str]:
 
 def ensure_paired_with_em() -> None:
     """启动前校验：EA 必须有 EM 签发的凭据与 EM 建好的共享库"""
-    if not os.getenv("SECRET_KEY", "").strip():
-        raise PanelDependencyError(
-            "SECRET_KEY 未设置。EA 与 EM 必须使用同一个 SECRET_KEY"
-            "（客户端 token 由 EM 签发、由 EA 校验），请复用 EM 的 .env。"
-        )
+    try:
+        validate_secret_key()
+    except RuntimeError as exc:
+        raise PanelDependencyError(str(exc)) from exc
 
     missing = _missing_em_tables()
     if missing:
@@ -235,9 +236,10 @@ async def security_headers(request: Request, call_next):
 # Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
 # 远程挂载的直连流经本服务代理转发，若被按 level 9 压缩会白白吃满 CPU。
 _GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
-try:
+# FastAPI 延迟到首个请求才实例化中间件；注册时 try/except 抓不到参数不兼容。
+if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
     app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
-except TypeError:  # pragma: no cover — 老版 Starlette 没有按内容类型排除的参数
+else:  # pragma: no cover — 旧版 Starlette 没有按内容类型排除的参数
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 下载策略兜底：站点关闭下载时，/Download 与 /Items/{id}/File 等路径在网关层拦截

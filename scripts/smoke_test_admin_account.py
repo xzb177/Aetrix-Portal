@@ -57,7 +57,7 @@ user, created, applied = create_admin.upsert_admin(db, "boss", password=PASSWORD
 check("新建管理员账号", created and applied == PASSWORD, f"created={created}")
 check("新账号 is_staff / is_active", bool(user.is_staff) and bool(user.is_active))
 check("自动补齐 Emby 客户端凭据",
-      bool(user.emby_username) and (user.emby_password or "").startswith("$2"),
+      bool(user.emby_username) and (user.emby_password or "").startswith(("$2", "$bcrypt-sha256$")),
       f"emby_username={user.emby_username}")
 
 # ==================== 2. 真实登录管理后台 ====================

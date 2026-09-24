@@ -2,6 +2,9 @@
 RoyalBot Portal - 统一后端主入口
 整合用户端和管理后台的所有 API，并托管用户前端（Vue SPA）静态资源
 """
+from pathlib import Path
+
+import inspect as _inspect
 import os
 
 from fastapi import FastAPI, Request, status, HTTPException
@@ -17,13 +20,13 @@ except ImportError:  # pragma: no cover
 from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
-from pathlib import Path
 from prometheus_client import make_asgi_app
 
 from backend.metrics_guard import MetricsGuard
 from sqlalchemy import text
 
 from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
+from backend.security import validate_secret_key
 from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
 from backend.websocket import websocket_router, notification_router, manager
@@ -86,6 +89,10 @@ async def lifespan(app: FastAPI):
     # 启动时
     logger.info("🚀 RoyalBot Portal 正在启动...")
     logger.info(f"📊 数据库类型: {DATABASE_TYPE}")
+
+    # JWT 密钥是 EM/EA 认证与节点配对的根信任。未配置或过短时必须 fail-closed，
+    # 不能让服务用导入期随机值带病上线。
+    validate_secret_key()
 
     # 初始化数据库
     try:
@@ -184,9 +191,11 @@ async def security_headers(request: Request, call_next):
 # Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
 # 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
 _GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
-try:
+# ``add_middleware`` 只是把类和参数存起来，真正实例化发生在首个请求；
+# 不能用 try/except 包住 add_middleware 来探测参数，否则旧版 Starlette 会在首请求才 500。
+if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
     app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
-except TypeError:  # pragma: no cover — 老版 Starlette 没有按内容类型排除的参数
+else:  # pragma: no cover — 旧版 Starlette 没有按内容类型排除的参数
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）

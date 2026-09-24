@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["REDIS_ENABLED"] = "false"
-os.environ["SECRET_KEY"] = "transcode-stop-smoke-secret-key"
+os.environ["SECRET_KEY"] = "transcode-stop-smoke-secret-key-32"
 DB = os.path.join(tempfile.mkdtemp(), "transcode-stop.db")
 os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
 

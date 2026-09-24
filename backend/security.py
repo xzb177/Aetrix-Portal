@@ -1,6 +1,7 @@
 """认证安全工具：密码哈希 + JWT 签发/校验"""
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import secrets
@@ -12,47 +13,100 @@ from jose import JWTError, jwt
 
 logger = logging.getLogger(__name__)
 
-# JWT 配置：优先环境变量 SECRET_KEY；未设置时使用临时随机密钥（重启后 token 失效）
-SECRET_KEY = os.getenv("SECRET_KEY") or secrets.token_urlsafe(48)
+# JWT 配置。
+#
+# 重要：模块导入阶段仍保留一个临时值，让 CLI / 测试可以先导入模型；真正启动
+# EM/EA 时由 validate_secret_key() fail-closed。这样不会把“随机密钥能启动”误当成
+# 生产安全配置，也不会让导入期异常吞掉清晰的启动错误。
+_RAW_SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
+_ALLOW_EPHEMERAL_SECRET = os.getenv("ALLOW_EPHEMERAL_SECRET", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+SECRET_KEY = _RAW_SECRET_KEY or secrets.token_urlsafe(48)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
 
-if os.getenv("SECRET_KEY") and len(os.getenv("SECRET_KEY", "")) < 32:
-    logger.warning(
-        "SECRET_KEY 长度过短（<32 字符），建议使用 48+ 字节随机密钥。"
-        "生成方式: python3 -c \"import secrets; print(secrets.token_urlsafe(48))\""
-    )
-elif not os.getenv("SECRET_KEY"):
-    logger.warning(
-        "SECRET_KEY 未设置，使用临时随机密钥；重启后已签发的 token 将失效。"
-        "生产环境请在环境变量中设置 SECRET_KEY。"
-    )
+
+def validate_secret_key() -> str:
+    """验证服务启动所需的固定 JWT 密钥，并返回实际密钥。
+
+    生产默认拒绝未配置或过短的密钥。临时随机密钥只能通过显式的
+    ``ALLOW_EPHEMERAL_SECRET=true`` 开启，适合一次性本地测试，不应写进生产环境。
+    """
+    # JWT 签名密钥在导入时固定；运行中改环境变量不能悄悄造成“校验通过但
+    # 签名仍用旧值”。同时允许配对检查在测试中临时移除环境变量验证拒绝行为。
+    if os.getenv("SECRET_KEY", "").strip() != _RAW_SECRET_KEY:
+        raise RuntimeError("SECRET_KEY 在模块导入后发生变化；请使用同一固定密钥重启服务。")
+    if not _RAW_SECRET_KEY:
+        if _ALLOW_EPHEMERAL_SECRET:
+            logger.warning(
+                "ALLOW_EPHEMERAL_SECRET 已开启：当前使用临时 JWT 密钥，重启后所有 token 将失效；"
+                "仅适用于一次性开发/测试。"
+            )
+            return SECRET_KEY
+        raise RuntimeError(
+            "SECRET_KEY 未设置。为避免 JWT 在重启后更换、或使用不可控的临时密钥，"
+            "服务拒绝启动。请设置至少 32 字符的随机 SECRET_KEY；"
+            "一次性本地测试可显式设置 ALLOW_EPHEMERAL_SECRET=true。"
+        )
+    if len(_RAW_SECRET_KEY) < 32:
+        raise RuntimeError(
+            "SECRET_KEY 长度不足 32 字符，服务拒绝启动。"
+            "请使用 python3 -c \"import secrets; print(secrets.token_urlsafe(48))\" 生成随机密钥。"
+        )
+    return _RAW_SECRET_KEY
+
+
+if _RAW_SECRET_KEY and len(_RAW_SECRET_KEY) < 32:
+    logger.warning("SECRET_KEY 长度不足 32 字符；服务启动时将拒绝该配置。")
+elif not _RAW_SECRET_KEY and not _ALLOW_EPHEMERAL_SECRET:
+    logger.warning("SECRET_KEY 未设置；EM/EA 在启动生命周期阶段将拒绝启动。")
+
+
+_BCRYPT_SHA256_PREFIX = "$bcrypt-sha256$"
+
+
+def _bcrypt_input(password: str) -> bytes:
+    """把任意长度 UTF-8 密码压到固定长度摘要，再交给 bcrypt。
+
+    bcrypt 原生只看前 72 **字节**；直接截断会让两个不同的长密码变成同一个凭据。
+    新哈希使用显式前缀，旧 `$2b$...` 哈希仍按旧规则校验并可在成功登录时升级。
+    """
+    return hashlib.sha256(password.encode("utf-8")).hexdigest().encode("ascii")
 
 
 def hash_password(password: str) -> str:
-    """生成 bcrypt 密码哈希（72 字节限制内截断与 bcrypt 规范一致）"""
-    pwd = password.encode("utf-8")[:72]
-    return bcrypt.hashpw(pwd, bcrypt.gensalt()).decode("utf-8")
+    """生成不会因 bcrypt 72 字节限制而碰撞的 bcrypt 哈希"""
+    digest = bcrypt.hashpw(_bcrypt_input(password), bcrypt.gensalt()).decode("ascii")
+    return f"{_BCRYPT_SHA256_PREFIX}{digest}"
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """校验密码"""
+    """校验新摘要 bcrypt、旧 bcrypt 与历史错误格式；异常一律失败"""
     if not hashed_password:
         return False
     try:
-        return bcrypt.checkpw(
-            plain_password.encode("utf-8")[:72], hashed_password.encode("utf-8")
-        )
-    except ValueError:
+        encoded = hashed_password.encode("ascii")
+        if hashed_password.startswith(_BCRYPT_SHA256_PREFIX):
+            encoded = hashed_password[len(_BCRYPT_SHA256_PREFIX):].encode("ascii")
+            return bcrypt.checkpw(_bcrypt_input(plain_password), encoded)
+        # 历史版本将密码按 72 字节截断，必须保留兼容登录路径；成功后由调用方可升级。
+        return bcrypt.checkpw(plain_password.encode("utf-8")[:72], encoded)
+    except (ValueError, TypeError, UnicodeEncodeError):
         return False
+
+
+def needs_password_rehash(hashed_password: str) -> bool:
+    """是否仍是旧 bcrypt/明文格式，需要在成功认证后升级"""
+    return bool(hashed_password) and not hashed_password.startswith(_BCRYPT_SHA256_PREFIX)
 
 
 def _create_token(data: dict, expires_delta: timedelta, token_type: str) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + expires_delta
-    # jti 保证同秒签发的 token 唯一（刷新轮换语义）
-    to_encode.update({"exp": expire, "type": token_type, "jti": secrets.token_hex(8)})
+    # 每个 JWT 都带随机 jti，便于日志关联与排查。
+    to_encode.update({"exp": expire, "type": token_type, "jti": secrets.token_hex(16)})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 

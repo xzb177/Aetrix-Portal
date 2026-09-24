@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.emby_server import models as emby_models
-from backend.security import hash_password, verify_password
+from backend.security import hash_password, needs_password_rehash, verify_password
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -47,27 +47,33 @@ def parse_emby_authorization(header_value: Optional[str]) -> dict:
 
 
 def verify_emby_password(plain: str, stored: str) -> bool:
-    """校验 Emby 播放密码：支持 bcrypt 哈希与旧明文（明文仅作兼容）"""
+    """校验 Emby 播放密码：新 bcrypt 摘要、旧 bcrypt 与历史明文均兼容。"""
     if not stored:
         return False
-    if stored.startswith("$2"):
-        from backend.security import verify_password
-
+    if stored.startswith(("$2", "$bcrypt-sha256$")):
         return verify_password(plain, stored)
-    return secrets.compare_digest(plain.encode(), stored.encode())
+    try:
+        return secrets.compare_digest(plain.encode("utf-8"), stored.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
 
 
 def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None) -> Optional[str]:
-    """确保用户拥有自建 Emby 登录凭据；设置密码时返回哈希值"""
+    """确保用户拥有自建 Emby 登录凭据；只在缺失/不匹配/旧格式时更新。"""
+    changed = False
     if not user.emby_username:
         user.emby_username = f"emby_{user.id}_{uuid.uuid4().hex[:6]}"
-    if password:
-        hashed = hash_password(password)
-        user.emby_password = hashed
+        changed = True
+    if password is not None:
+        # 门户登录会频繁调用本函数：相同的新格式哈希不应每次都重新 bcrypt，
+        # 否则登录一次就产生一次昂贵哈希并迫使所有旧客户端重新走同步。
+        same = bool(user.emby_password) and verify_emby_password(password, user.emby_password)
+        if not same or needs_password_rehash(user.emby_password or ""):
+            user.emby_password = hash_password(password)
+            changed = True
+    if changed:
         db.commit()
-        return hashed
-    db.commit()
-    return None
+    return user.emby_password if password is not None else None
 
 
 def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[str, emby_models.EmbyApiToken]:

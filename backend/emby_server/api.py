@@ -584,8 +584,11 @@ def authenticate_by_name(
     # 密码校验：支持哈希与明文（明文用于兼容旧数据，校验后自动升级为哈希）
     if not verify_emby_password(password, user.emby_password or ""):
         return _auth_fail()
-    if user.emby_password and not user.emby_password.startswith("$2"):
-        # 透明升级：明文 -> bcrypt
+    if user.emby_password and not user.emby_password.startswith(("$2", "$bcrypt-sha256$")):
+        # 透明升级：历史明文 -> 新的 bcrypt-sha256 格式
+        ensure_emby_credentials(db, user, password=password)
+    elif user.emby_password and user.emby_password.startswith("$2"):
+        # 透明升级：旧 bcrypt 的 72 字节截断格式也在成功登录后替换。
         ensure_emby_credentials(db, user, password=password)
 
     ensure_emby_credentials(db, user)

@@ -38,6 +38,7 @@ for suffix in ("", "-wal", "-shm"):
 os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["DATABASE_URL"] = f"sqlite:///{DB_FILE}"
 os.environ.setdefault("REDIS_ENABLED", "false")
+os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
 
 # 老版本的建表语句（故意缺列）：create_all 不会改已有的表，所以这些表就停留在旧形态
 LEGACY_DDL = [
