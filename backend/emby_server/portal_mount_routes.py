@@ -82,6 +82,43 @@ def _validate_mount_fields(mount_type: str, path: str, config: dict) -> None:
             raise HTTPException(status_code=400, detail=f"{field.get('label') or field['key']} 必须以 http:// 或 https:// 开头")
 
 
+def _fix_rclone_root(mount_type: str, config: dict) -> None:
+    """rclone 的 remote 名必须带冒号（漏了会被 rclone 当成本机目录）
+
+    只在**首段没有冒号**时介入，正常写法（``gdrive:Movies``）不受影响：
+
+    - 首段就是远端已配置的 remote → 直接补上冒号（``paul_emby/电影`` → ``paul_emby:电影``）；
+    - 查得到 remote 列表却没有这个名字 → 400，给出正确写法与可用的 remote；
+    - 查不到（EM 这台机器没 rclone / RC 连不上）→ 按文本规则兜底。
+
+    不拦明确的本地写法（``/media``、``./media``）：rclone 本来就支持本机路径，
+    只是本机目录应该用「本地 / 已挂载目录」类型，提示里也这么写。
+    """
+    if mount_type != mount_rclone.MOUNT_RCLONE:
+        return
+    fs = str(config.get("fs") or config.get("remote") or "").strip()
+    if not fs or mount_rclone.fs_remote_name(fs) or mount_rclone.looks_like_local_path(fs):
+        return
+    remotes: list[str] | None = None
+    try:
+        remotes = mount_rclone.list_remotes(
+            str(config.get("rc_url") or ""), username=str(config.get("rc_user") or ""),
+            password=config.get("rc_pass") or "",
+            bin_path=str(config.get("rclone_bin") or ""),
+            config=str(config.get("rclone_config") or ""),
+            mode=str(config.get("mode") or mount_rclone.MODE_RC),
+        )
+    except mount_lib.MountError:
+        remotes = None  # EM 侧查不到不影响保存：退回文本规则
+    fixed = mount_rclone.normalize_fs(fs, remotes)
+    if fixed != fs:
+        config["fs"] = fixed
+        return
+    hint = mount_rclone.fs_missing_colon_hint(fs, remotes)
+    if hint:
+        raise HTTPException(status_code=400, detail=hint)
+
+
 def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = None) -> dict:
     config, secrets = _mask_mount_config(mount_lib.parse_config(mount))
     meta = mount_lib.MOUNT_TYPE_MAP.get(mount.mount_type, {})
@@ -242,6 +279,7 @@ def create_mount(req: MountCreate, staff: models.WebUser = Depends(require_staff
         raise HTTPException(status_code=400, detail=f"挂载名称已存在: {name}")
     config = _merge_mount_config({}, req.config)
     _validate_mount_fields(req.mount_type, req.path, config)
+    _fix_rclone_root(req.mount_type, config)
     realm_id = req.realm_id or realms.active_realm_id(db)
     if not realms.get_realm(db, realm_id):
         raise HTTPException(status_code=400, detail=f"服不存在: #{realm_id}")
@@ -277,6 +315,7 @@ def update_mount(mount_id: int, req: MountUpdate,
     path = (req.path if req.path is not None else mount.path or "").strip()
     # 换类型不允许（条目路径按挂载 id + 类型解析），只允许改配置与路径
     _validate_mount_fields(mount.mount_type, path, config)
+    _fix_rclone_root(mount.mount_type, config)
     mount.path = path
     mount.config = mount_lib.dump_config(config)
     if req.is_enabled is not None:

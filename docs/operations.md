@@ -382,10 +382,16 @@ rclone 挂载是唯一一种「一种类型接住所有后端」的来源（Goog
   列目录 / 测试走 RC API，播放地址直接取自 rc-serve（rclone 自己处理 Range）。容器部署时注意 `127.0.0.1` 指向的是容器自己，要改成宿主机地址（如 `http://host.docker.internal:5572`）并让 rc 监听 `0.0.0.0`。
 - **cli（兜底）**：直接调用 rclone 可执行文件（`lsjson` / `cat` / `link`）。适合「机器上有 rclone 但不想常驻 rc」；EM / EA 进程必须能找到 rclone（不在 PATH 就用 `MOUNT_RCLONE_BIN` 或配置里的绝对路径）。
 
-两个容易踩的点：
+> **remote 名后面必须带冒号**：`gdrive:` / `gdrive:Movies` 才是 remote，`gdrive` 或 `gdrive/Movies`
+> 在 rclone 眼里都是**它自己的本机目录**（报 `refers to a local folder, use "gdrive:" to refer to your remote`，
+> 后面还跟一句 `directory not found`，很容易被误读成「目录不存在」）。保存挂载时面板会直接处理：
+> 远端已配置的 remote 自动补上冒号，查不到这个名字就当场拦下并写清正确写法。
+
+三个容易踩的点：
 
 1. **列目录正常但一播就 404** → `--rc-serve` 没开。后台测试连接会提示「rc-serve 似乎未开启」。
 2. **`cli` 模式报「rclone 未返回公开直链」** → 该后端不支持 `rclone link`（比如部分网盘）。改用 rc 模式，或把网盘 `rclone mount` 到本机后用 `local` 挂载。
+3. **报「目录不存在」但目录明明在** → 检查 remote 是不是漏了冒号（见上）：rclone 把没有冒号的路径当本机目录，所以永远找不到。
 
 > 已经 `rclone mount` 到本机目录的场景，直接用 `local` 挂载那个目录更直接（走本机文件，没有代理开销）。
 

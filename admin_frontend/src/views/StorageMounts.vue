@@ -136,6 +136,50 @@ const form = ref({
 const rcloneRemotes = ref<string[]>([])
 const remotesLoading = ref(false)
 
+/**
+ * rclone 的规则：没有冒号的路径是**本机路径**。
+ *
+ * 所以 remote 名漏冒号（`paul_emby`）时，rclone 报的是
+ * `NOTICE: "paul_emby" refers to a local folder, use "paul_emby:" ...` 加
+ * `ERROR : error listing: directory not found`——看起来像「目录不存在」，实际是写法问题。
+ * 这里在表单里就把它当成常态提示，不再让这行原始输出跑到测试 / 浏览 / 扫描里。
+ */
+function rcloneRemoteName(value: string): string {
+  const head = (value || '').trim().split('/')[0]
+  const cut = head.indexOf(':')
+  return cut > 0 ? head.slice(0, cut) : ''
+}
+
+/** 远端返回的 remote 名统一补上尾冒号（CLI 与 RC 两种模式返回格式不一定一致） */
+function rcloneWithColon(name: string): string {
+  const trimmed = (name || '').trim()
+  return trimmed && !trimmed.endsWith(':') ? `${trimmed}:` : trimmed
+}
+
+/** 表单里的 remote 漏冒号时给出可操作的提示（保存时后端也会拦/纠正） */
+const rcloneFsHint = computed(() => {
+  const key = currentType.value?.root_key
+  if (!key) return ''
+  const raw = (form.value.config[key] || '').trim()
+  if (!raw || rcloneRemoteName(raw)) return ''
+  if (raw.startsWith('/') || raw.startsWith('.') || raw.startsWith('~')) return ''
+  const head = raw.split('/')[0].trim()
+  if (!head) return ''
+  return `remote 名后面要带冒号：「${head}」会被 rclone 当成它自己的本机目录。`
+    + `正确写法：${head}: 或 ${head}:子目录。`
+})
+
+/** 选中 / 输入 remote 后补冒号：`paul_emby` → `paul_emby:`（只认远端已配置的 remote） */
+function fixRcloneFs(key: string) {
+  const raw = (form.value.config[key] || '').trim()
+  if (!raw || rcloneRemoteName(raw)) return
+  const [head, ...rest] = raw.split('/')
+  const known = rcloneRemotes.value.map((r) => r.replace(/:$/, ''))
+  if (!known.includes(head.trim())) return
+  const tail = rest.join('/').replace(/^\/+|\/+$/g, '')
+  form.value.config[key] = tail ? `${head.trim()}:${tail}` : `${head.trim()}:`
+}
+
 const browseVisible = ref(false)
 const browseTarget = ref<StorageMount | null>(null)
 const browseRel = ref('/')
@@ -461,7 +505,8 @@ async function loadRcloneRemotes() {
       rclone_config: form.value.config.rclone_config || '',
     }
     const res = await fetchRcloneRemotes(params)
-    rcloneRemotes.value = res.remotes
+    // 统一带上冒号：选项直接当 remote 根用时（`gdrive:`）不会被 rclone 当成本机目录
+    rcloneRemotes.value = res.remotes.map(rcloneWithColon)
     ElMessage.success(
       res.remotes.length ? `已获取 ${res.remotes.length} 个 remote` : '远端没有配置任何 remote'
     )
@@ -798,6 +843,7 @@ function fmtDate(s: string | null): string {
               default-first-option
               placeholder="gdrive:Movies"
               style="width: 260px"
+              @change="fixRcloneFs(f.key)"
             >
               <el-option v-for="r in rcloneRemotes" :key="r" :label="r" :value="r" />
             </el-select>
@@ -807,6 +853,7 @@ function fmtDate(s: string | null): string {
             <div class="form-hint">
               列表来自远端的 rclone 配置；选一个 remote 后可以继续补子目录（如 gdrive:Movies）。
             </div>
+            <div v-if="rcloneFsHint" class="form-hint hint-warn">{{ rcloneFsHint }}</div>
           </div>
           <el-select
             v-else-if="f.type === 'select'"
@@ -908,6 +955,7 @@ function fmtDate(s: string | null): string {
 .check-info { color: var(--text-muted); margin-left: 4px; vertical-align: -2px; }
 
 .form-hint { font-size: 11px; color: var(--color-text-muted, #737373); margin-top: 4px; }
+.form-hint.hint-warn { color: var(--color-warning, #fbbf24); }
 .ok-text { color: var(--success, #22c55e); }
 .err-text { color: var(--danger, #ef4444); }
 
