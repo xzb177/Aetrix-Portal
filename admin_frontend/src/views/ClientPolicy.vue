@@ -15,13 +15,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  AlertTriangle, Download, Gauge, RefreshCw, Save, ShieldBan, Smartphone, Tv,
+  AlertTriangle, Download, Gauge, Info, RefreshCw, Save, ShieldBan, Smartphone, Tv,
 } from 'lucide-vue-next'
 import { fetchPlaybackPolicy, updatePlaybackPolicy } from '@/api/admin'
 // 下载与设备风控落在经济设置里（同一批 SystemConfig 键），这里只是换个更顺手的入口
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type { PlaybackPolicy, PlaybackRuntime } from '@/types'
 import { useAuthStore } from '@/stores/auth'
+import NoticePanel from '@/components/NoticePanel.vue'
 
 const auth = useAuthStore()
 // 这两组策略都由服务端限定为超级管理员（见 backend/admin_roles.py 的前缀规则），
@@ -302,13 +303,18 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       </p>
     </section>
 
-    <el-alert type="info" :closable="false" show-icon class="warn">
-      <template #title>为什么这些策略在这里，而系统设置在别处</template>
-      <template #default>
+    <NoticePanel
+      title="为什么这些策略在这里，而系统设置在别处"
+      summary="客户端能力与站点运营设置各归其位"
+      :icon="Info"
+      storage-key="client-policy-scope"
+      class="guide-panel"
+    >
+      <div class="policy-guide">
         这里只放「客户端能做什么」（转码、清晰度、准入、下载与设备）；
         「站点怎么运营」（注册、支付、付费墙、邀请返利）仍然在系统设置里。
-      </template>
-    </el-alert>
+      </div>
+    </NoticePanel>
 
     <p v-if="!isSuper" class="readonly-foot">
       <AlertTriangle :size="13" />
@@ -319,6 +325,8 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
 
 <style scoped>
 .warn { margin-top: 14px; }
+.guide-panel { margin-top: 14px; }
+.policy-guide { line-height: 1.7; }
 .hint, .badge-hint { font-size: var(--font-size-xs); color: var(--text-muted); }
 .range-hint { font-size: var(--font-size-xs); color: var(--text-muted); font-weight: 400; }
 

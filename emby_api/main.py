@@ -61,7 +61,7 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.32.0"
+EA_VERSION = "2.33.0"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
