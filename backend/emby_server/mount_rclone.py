@@ -102,8 +102,10 @@ def run_rclone(args: list[str], *, bin_path: str = "", config: str = "",
 
 
 def rc_call(rc_url: str, path: str, payload: Optional[dict] = None, *,
-            username: str = "", password: str = "", timeout: float = 0) -> dict:
+            username: str = "", password: str = "", timeout: float = 0):
     """调用 rclone RC API（未开启 RC 时给出可操作的提示）
+
+    返回 RC 的原始 JSON：多数接口是 dict，``/operations/listfile`` 这类直接返回数组。
 
     凭据优先级：调用方传入的 → 服务器 .env 里统一配置的。传入的若被 RC 拒绝（401/403），
     自动回退到服务器配置再试一次：挂载表单里填错密码不该让整条挂载永远用不了，
@@ -142,7 +144,7 @@ def rc_call(rc_url: str, path: str, payload: Optional[dict] = None, *,
     if resp.status_code in (401, 403):
         raise MountAuthError("rclone RC 拒绝访问（HTTP %s），请检查 RC 用户名 / 密码" % resp.status_code)
     if resp.status_code == 404:
-        raise MountError(f"rclone RC 没有这个接口: {path}（rclone 版本过旧？）")
+        raise MountError(f"rclone RC 没有这个接口: {path}（该 rclone 版本不提供）")
     if resp.status_code >= 400:
         raise MountError(f"rclone RC 返回 HTTP {resp.status_code}")
     try:
@@ -154,7 +156,7 @@ def rc_call(rc_url: str, path: str, payload: Optional[dict] = None, *,
         if any(hint in message.lower() for hint in _AUTH_HINTS):
             raise MountAuthError(f"rclone: {message}")
         raise MountError(f"rclone: {message}")
-    return body if isinstance(body, dict) else {}
+    return body if isinstance(body, (dict, list)) else {}
 
 
 def list_remotes(rc_url: str = "", *, username: str = "", password: str = "",
@@ -164,8 +166,31 @@ def list_remotes(rc_url: str = "", *, username: str = "", password: str = "",
         out = run_rclone(["listremotes"], bin_path=bin_path, config=config)
         return [line.strip() for line in out.decode("utf-8", "ignore").splitlines() if line.strip()]
     body = rc_call(rc_url, "/config/listremotes", {}, username=username, password=password)
-    remotes = body.get("remotes")
+    remotes = body.get("remotes") if isinstance(body, dict) else None
     return sorted(str(r) for r in (remotes or []))
+
+
+def _rc_list_items(rc_url: str, fs: str, remote: str, *, username: str = "",
+                    password: str = "") -> list[dict]:
+    """列目录：同时兼容 rclone 新旧两套 RC 接口。
+
+    - 旧版 rclone：``/operations/list``，返回 ``{"list": [FileInfo, ...]}``；
+    - 新版 rclone（≥ 1.65 起逐步替换，1.71 已移除旧接口）：
+      ``/operations/listfile``，直接返回 ``[FileInfo, ...]`` 数组。
+
+    先试旧的（老部署零影响），404 再落到新的 —— 否则只把 rclone 升个版本，挂载就全废。
+    """
+    try:
+        body = rc_call(rc_url, "/operations/list", {"fs": fs, "remote": remote},
+                       username=username, password=password)
+    except MountError as exc:
+        if "没有这个接口" not in str(exc):
+            raise
+        body = rc_call(rc_url, "/operations/listfile", {"fs": fs, "remote": remote},
+                       username=username, password=password)
+        logger.info("rclone RC 使用新接口 /operations/listfile 列目录 %s", fs)
+        return [i for i in (body if isinstance(body, list) else []) if isinstance(i, dict)]
+    return [i for i in ((body or {}).get("list") or []) if isinstance(i, dict)]
 
 
 class RcloneMount(_CloudMount):
@@ -259,13 +284,11 @@ class RcloneMount(_CloudMount):
                 for i in self._cli_lsjson(rel)
             ]
         else:
-            body = rc_call(self.rc_url, "/operations/list",
-                           {"fs": self._require_fs(), "remote": self._rel_remote(rel)},
-                           username=self.rc_user, password=self.rc_pass)
             raw = [
                 {"Path": str(i.get("Path") or ""), "Name": str(i.get("Name") or ""),
                  "Size": int(i.get("Size") or 0), "IsDir": bool(i.get("IsDir"))}
-                for i in (body.get("list") or []) if isinstance(i, dict)
+                for i in _rc_list_items(self.rc_url, self._require_fs(), self._rel_remote(rel),
+                                        username=self.rc_user, password=self.rc_pass)
             ]
         entries: list[MountEntry] = []
         for item in raw:
@@ -285,10 +308,8 @@ class RcloneMount(_CloudMount):
             items = self._cli_lsjson("/")
             how = "rclone 命令"
         else:
-            body = rc_call(self.rc_url, "/operations/list",
-                           {"fs": self._require_fs(), "remote": ""},
-                           username=self.rc_user, password=self.rc_pass)
-            items = [i for i in (body.get("list") or []) if isinstance(i, dict)]
+            items = _rc_list_items(self.rc_url, self._require_fs(), "",
+                                   username=self.rc_user, password=self.rc_pass)
             how = f"rclone RC（{self.rc_url}）"
         hint = ""
         if self.mode == MODE_RC:
