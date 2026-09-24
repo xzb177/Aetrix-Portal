@@ -62,7 +62,10 @@ class TmdbClient:
     """
 
     _CACHE_TTL = 300        # 秒；一次扫描的预热结果在这个窗口内有效
-    _CACHE_MAX = 20000      # 缓存条数上限，超过就整表清空（内存优先）
+    _CACHE_MAX = 20000      # 缓存条数上限，满时按写入顺序淘汰最旧的一批（保留大部分预热结果）
+    # 淘汰到只剩这个比例：一万部片子的库刚好是两万条，整表清空会顺手扔掉刚预热好的条目，
+    # 写库线程接着取同一个片名就变成一次真的网络请求（见 _cache_put 的说明）
+    _CACHE_KEEP_RATIO = 0.75
     _cache: dict = {}
     _cache_lock = threading.Lock()
 
@@ -155,21 +158,37 @@ class TmdbClient:
         return bool(self.api_keys)
 
     def _cache_get(self, key):
-        """取缓存（未命中返回 _MISS；过期视为未命中）"""
+        """取缓存（未命中返回 _MISS；过期视为未命中，顺手删掉）"""
         with TmdbClient._cache_lock:
             hit = TmdbClient._cache.get(key)
-        if hit is None:
-            return _MISS
-        ts, value = hit
-        if (datetime.now() - ts).total_seconds() > self._CACHE_TTL:
-            return _MISS
-        return value
+            if hit is None:
+                return _MISS
+            ts, value = hit
+            if (datetime.now() - ts).total_seconds() > self._CACHE_TTL:
+                # 过期条目留着只会占名额：满载时它会把还在窗口内的预热结果一起挤出去
+                TmdbClient._cache.pop(key, None)
+                return _MISS
+            return value
 
     def _cache_put(self, key, value) -> None:
+        """写缓存：满了先清过期，再按写入顺序淘汰最旧的一批（不再是整表清空）
+
+        整表清空看似简单，代价却是「把自己刚预热好的结果扔掉」：写库线程随后要取同一个
+        片名，缓存已经空了，于是同一个请求又发一次。扫描规模越接近上限越容易撞上
+        （一万部片子的库：搜索 + 详情刚好两万条），配额也就跟着白花。
+        """
+        now = datetime.now()
         with TmdbClient._cache_lock:
-            if len(TmdbClient._cache) >= self._CACHE_MAX:
-                TmdbClient._cache.clear()
-            TmdbClient._cache[key] = (datetime.now(), value)
+            cache = TmdbClient._cache
+            if key not in cache and len(cache) >= self._CACHE_MAX:
+                for stale in [k for k, (ts, _) in cache.items()
+                              if (now - ts).total_seconds() > self._CACHE_TTL]:
+                    cache.pop(stale, None)
+                keep = max(1, int(self._CACHE_MAX * self._CACHE_KEEP_RATIO))
+                # 多淘汰一条：给正在写的这个新条目腾位置（否则下一次写入又会触发一轮淘汰）
+                for old in list(cache)[:max(0, len(cache) - keep + 1)]:
+                    cache.pop(old, None)
+            cache[key] = (now, value)
 
     def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
         self._ensure_session()

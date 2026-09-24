@@ -954,7 +954,10 @@ def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: 
         return False
     # 刮削相关的条件只在「真的可能刮到东西」时才拦：没配 TMDB 的部署重试一万次也不会有结果，
     # 没道理因此让整库每轮都重做一遍（配好密钥的下一次扫描自然会重新处理这些条目）。
-    if tmdb_client.configured:
+    # 另外只有**电影 / 剧集**参与刮削（写库循环里是 item_type in ("series", "movie")）：
+    # 集与季根本没有 tmdb_id，`should_scrape` 对它们恒等于「缺元数据 → 要刮」，落到这里就是
+    # 「配了 TMDB 的剧集库每轮重扫都得完整处理每一集」——增量扫描对这个最常见的库型等于关掉。
+    if tmdb_client.configured and pending.item_type in ("series", "movie"):
         if should_scrape(item, ctx.snap.scrape_policy):
             return False                 # 到期重刮 / all 策略 / 缺元数据
         if item.tmdb_id and not (item.imdb_id and item.aliases):
@@ -1072,18 +1075,22 @@ def _side_info(ctx: "_ScanContext", scan_file: "ScanFile") -> tuple:
 
 
 def _tmdb_work(need_search: bool, name: str, year, kind: str,
-               existing_id, need_details: bool) -> tuple:
+               existing_id, want_details: bool) -> tuple:
     """在**同一个工作线程**里跑完这个条目需要的 TMDB 调用（搜索 → 详情）
 
     搜索与详情有先后依赖，所以不能拆到两个批次里；但条目之间可以并行——
     老实现是逐条串行等网络，追新时最卡的就是这里。多个条目共用同一个 httpx 客户端，
     它的连接池是线程安全的；密钥轮询只在配额报错时发生。
+
+    ``want_details`` 由调用方按「写库那一步会不会用详情」算好（新条目要补 IMDb Id 与别名、
+    带补图标记的条目要重取图）；这里不再对每个命中都无条件拉一次详情。
     """
     hit = tmdb_client.search(name, year, kind) if need_search else None
     details = None
     if hit:
-        details = tmdb_client.details(str(hit.get("id")), kind)
-    elif existing_id and need_details:
+        if want_details:
+            details = tmdb_client.details(str(hit.get("id")), kind)
+    elif existing_id and want_details:
         details = tmdb_client.details(str(existing_id), kind)
     return hit, details
 
@@ -1197,10 +1204,13 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             need_details = bool(existing_id) and bool(
                 needs_repair or not (item.imdb_id and item.aliases)
             )
+            # 详情预取的口径要与写库那一步一致：新条目（补 IMDb / 别名）与带补图标记的
+            # 条目一定会用到详情，而「到期重刮且信息已齐」的条目不会（见 _tmdb_work）
+            want_details = is_new or needs_repair or need_details
             if need_search or need_details:
                 pending.tmdb = pool.submit(
                     _tmdb_work, need_search, pending.parsed["name"], pending.parsed["year"],
-                    kind, existing_id, need_details,
+                    kind, existing_id, want_details,
                 )
     return prepared
 
@@ -1934,18 +1944,9 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                          "display_title", "title", "channels", "bit_rate"}
                             }))
 
-                    # 外挂字幕总是刷新（与视频探测无关），
-                    # 并且需要合成 stream_index：客户端靠它拼
-                    # /Videos/{id}/{mid}/Subtitles/{Index}/Stream.{Format}，
-                    # 旧实现不写 stream_index（None），字幕地址会变成 Subtitles/None 无法拉取。
-                    db.flush()
-                    db.query(emby_models.MediaStream).filter(
-                        emby_models.MediaStream.item_id == item.id,
-                        emby_models.MediaStream.is_external.is_(True),
-                    ).delete(synchronize_session=False)
-                    next_index = db.query(func.max(emby_models.MediaStream.stream_index)).filter(
-                        emby_models.MediaStream.item_id == item.id
-                    ).scalar() or 0
+                    # 先算外挂字幕（只读目录、不碰数据库）：绝大多数条目根本没有外挂字幕，
+                    # 那样就不必为「给新字幕轨分配 stream_index」再查一次 max()——
+                    # 十万条目的库就是十万次多余的 SELECT。
                     if scan_file.mount_id is not None and dirpath is None:
                         try:
                             siblings = scan_file.provider.list_dir(scan_file.dir_rel)
@@ -1957,6 +1958,20 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         )
                     else:
                         external = find_external_subtitles(full_path)
+                    # 外挂字幕总是刷新（与视频探测无关），
+                    # 并且需要合成 stream_index：客户端靠它拼
+                    # /Videos/{id}/{mid}/Subtitles/{Index}/Stream.{Format}，
+                    # 旧实现不写 stream_index（None），字幕地址会变成 Subtitles/None 无法拉取。
+                    db.flush()
+                    db.query(emby_models.MediaStream).filter(
+                        emby_models.MediaStream.item_id == item.id,
+                        emby_models.MediaStream.is_external.is_(True),
+                    ).delete(synchronize_session=False)
+                    next_index = 0
+                    if external:
+                        next_index = db.query(func.max(emby_models.MediaStream.stream_index)).filter(
+                            emby_models.MediaStream.item_id == item.id
+                        ).scalar() or 0
                     for offset, (lang, sub_path) in enumerate(external, start=1):
                         db.add(emby_models.MediaStream(
                             item_id=item.id, stream_index=next_index + offset,
