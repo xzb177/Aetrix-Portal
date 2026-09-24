@@ -35,6 +35,8 @@ class Library(Base):
     is_scanning = Column(Boolean, default=False)
     # 刮削策略：missing_only / 3m / 6m / 1y / all（见 scanner.SCAN_POLICIES）
     scrape_policy = Column(String(20), default="missing_only")
+    # 管理员上传的媒体库封面；保存为图片目录下的相对路径，扫描/刮削不会覆盖它。
+    cover_path = Column(String(500))
     # 虚拟媒体库：按发行平台（Netflix / Disney+ …）自动生成，没有自己的文件与路径
     is_virtual = Column(Boolean, default=False)
     platform = Column(String(30))  # 虚拟库对应的平台 id（见 scanner.PLATFORM_LABELS）

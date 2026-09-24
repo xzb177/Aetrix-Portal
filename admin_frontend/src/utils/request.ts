@@ -80,6 +80,15 @@ export function post<T = any>(url: string, data?: unknown): Promise<T> {
   return request.post(url, data) as Promise<T>
 }
 
+/** multipart 直传；不要手动设置 boundary，交给浏览器 / Axios 生成。 */
+export function upload<T = any>(url: string, data: FormData): Promise<T> {
+  return request.post(url, data, { headers: { 'Content-Type': 'multipart/form-data' } }) as Promise<T>
+}
+
+export function getBlob(url: string): Promise<Blob> {
+  return request.get(url, { responseType: 'blob' }) as Promise<Blob>
+}
+
 export function put<T = any>(
   url: string, data?: unknown, params?: Record<string, unknown>
 ): Promise<T> {

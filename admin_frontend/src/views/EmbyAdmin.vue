@@ -12,14 +12,17 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { UploadRequestOptions } from 'element-plus'
 import {
-  Delete, Film, FolderPlus, HardDrive, History, RefreshCw, ScanSearch, Server, Square, Wand2, X,
+  Delete, Film, FolderPlus, HardDrive, History, ImagePlus, RefreshCw, ScanSearch, Server,
+  Settings2, Square, Wand2, X,
 } from 'lucide-vue-next'
 import {
   cancelQueuedScan,
   createLibrary,
   deleteLibrary,
   fetchLibraries,
+  fetchLibraryCover,
   fetchLibraryScans,
   fetchMounts,
   fetchPan115Accounts,
@@ -29,11 +32,13 @@ import {
   fetchServers,
   fetchSessions,
   generateVirtualLibraries,
+  removeLibraryCover,
   runRepairQueue,
   scanLibrary,
   stopAllTranscodes,
   stopSession,
   updateLibrary,
+  uploadLibraryCover,
 } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -52,6 +57,7 @@ import type {
 } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
+import './EmbyAdmin.css'
 import type { DataColumn } from '@/components/DataTable.vue'
 
 const realm = useRealmStore()
@@ -64,6 +70,12 @@ const nodes = ref<RemoteServerRow[]>([])
 const loading = ref(false)
 const repairCount = ref(0)
 const virtualLoading = ref(false)
+const coverUrls = ref<Record<number, string>>({})
+const coverUploading = ref<Record<number, boolean>>({})
+let coverLoadVersion = 0
+
+const settingsVisible = ref(false)
+const settingsTarget = ref<EmbyLibrary | null>(null)
 
 // 扫描流水（最近若干轮）：抽屉里看「是不是每轮都在失败」
 const scanDrawer = ref(false)
@@ -139,6 +151,7 @@ async function load() {
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
+    void loadCoverImages(libraries.value)
     sessions.value = s.sessions
     repairCount.value = r.total
     panAccounts.value = a.accounts
@@ -159,7 +172,70 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (queueTimer) window.clearInterval(queueTimer)
+  Object.values(coverUrls.value).forEach((url) => URL.revokeObjectURL(url))
 })
+
+async function loadCoverImages(rows: EmbyLibrary[]) {
+  const version = ++coverLoadVersion
+  Object.values(coverUrls.value).forEach((url) => URL.revokeObjectURL(url))
+  coverUrls.value = {}
+  await Promise.all(rows.filter((lib) => lib.cover_url).map(async (lib) => {
+    try {
+      const blob = await fetchLibraryCover(lib.id)
+      if (version !== coverLoadVersion) {
+        URL.revokeObjectURL(URL.createObjectURL(blob))
+        return
+      }
+      coverUrls.value[lib.id] = URL.createObjectURL(blob)
+    } catch {
+      // 封面是可选增强；读取失败不影响媒体库卡片其余信息
+    }
+  }))
+}
+
+function replaceCoverImage(id: number, blob: Blob) {
+  const old = coverUrls.value[id]
+  if (old) URL.revokeObjectURL(old)
+  coverUrls.value[id] = URL.createObjectURL(blob)
+}
+
+async function uploadCover(l: EmbyLibrary, file: File) {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    ElMessage.warning('封面仅支持 JPG、PNG 或 WebP 图片')
+    return
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    ElMessage.warning('封面图片不能超过 8 MB')
+    return
+  }
+  coverUploading.value[l.id] = true
+  try {
+    const result = await uploadLibraryCover(l.id, file)
+    replaceCoverImage(l.id, await fetchLibraryCover(l.id))
+    l.cover_url = result.cover_url
+    ElMessage.success('媒体库封面已更新')
+  } finally {
+    coverUploading.value[l.id] = false
+  }
+}
+
+function requestCoverUpload(l: EmbyLibrary, options: UploadRequestOptions) {
+  return uploadCover(l, options.file)
+}
+
+async function removeCover(l: EmbyLibrary) {
+  await removeLibraryCover(l.id)
+  const old = coverUrls.value[l.id]
+  if (old) URL.revokeObjectURL(old)
+  delete coverUrls.value[l.id]
+  l.cover_url = null
+  ElMessage.success('媒体库封面已移除')
+}
+
+function openSettings(l: EmbyLibrary) {
+  settingsTarget.value = l
+  settingsVisible.value = true
+}
 
 async function savePolicy(l: EmbyLibrary) {
   await updateLibrary(l.id, { scrape_policy: l.scrape_policy })
@@ -170,12 +246,6 @@ async function saveAccount115(l: EmbyLibrary) {
   // 传 null 表示解绑（回退默认账号）；undefined 会被 axios 丢掉，等于不改
   await updateLibrary(l.id, { account_115_id: l.account_115_id ?? null })
   ElMessage.success(`「${l.name}」115 账号绑定已更新`)
-}
-
-function mountNames(ids: number[]): string {
-  return (ids || [])
-    .map((id) => mounts.value.find((m) => m.id === id)?.name || `#${id}`)
-    .join(' | ')
 }
 
 /** 绑定 / 解绑存储挂载（扫描时与「路径」一起遍历） */
@@ -271,6 +341,14 @@ async function removeLib(l: EmbyLibrary) {
     { type: 'warning' }
   )
   await deleteLibrary(l.id)
+  if (settingsTarget.value?.id === l.id) {
+    settingsVisible.value = false
+    settingsTarget.value = null
+  }
+  if (coverUrls.value[l.id]) {
+    URL.revokeObjectURL(coverUrls.value[l.id])
+    delete coverUrls.value[l.id]
+  }
   ElMessage.success('已删除')
   load()
 }
@@ -302,17 +380,6 @@ function scanBadge(l: EmbyLibrary): { text: string; cls: string } | null {
   if (s.status === 'failed') return { text: '扫描失败', cls: 'danger' }
   if (s.status === 'partial') return { text: '来源不完整', cls: 'warn' }
   return { text: '扫描正常', cls: 'ok' }
-}
-
-/** 增量摘要：新增/更新/删除（+ 未变、修复、耗时），扫了什么一眼看清 */
-function scanSummary(l: EmbyLibrary): string {
-  const s = l.last_scan
-  if (!s) return ''
-  const parts = [`新增 ${s.added}`, `更新 ${s.updated}`, `删除 ${s.removed}`]
-  if (s.unchanged) parts.push(`未变 ${s.unchanged}`)
-  if (s.repaired) parts.push(`修复 ${s.repaired}`)
-  if (s.duration_ms != null) parts.push(`耗时 ${fmtDuration(s.duration_ms)}`)
-  return parts.join(' · ')
 }
 
 function fmtDuration(ms: number): string {
@@ -381,12 +448,6 @@ function emptySourceCount(list: EmbyScanSource[] | undefined): number {
   const sources = list || []
   if (!sources.some((s) => s.files > 0)) return 0
   return sources.filter((s) => !s.error && !s.files).length
-}
-
-/** 卡片上的提示：只看总体统计发现不了「某个来源是空的」 */
-function scanEmptySources(l: EmbyLibrary): string {
-  const count = emptySourceCount(l.last_scan?.sources)
-  return count ? `${count} 个来源没扫到任何文件` : ''
 }
 
 // ---- 扫描队列（v2.27.0）：排队中的、在跑的、刚跑完的 ----
@@ -600,7 +661,7 @@ function typeLabel(t: string): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">媒体库</h1>
-        <p class="admin-page-subtitle">每个库的来源、服务（归属节点）、扫描状态与条目数都写在卡片上</p>
+        <p class="admin-page-subtitle">上传封面，快速识别媒体库；来源与节点设置集中到「设置」中维护</p>
       </div>
       <div class="admin-page-actions">
         <el-button v-if="repairCount > 0" @click="repairNow">
@@ -741,145 +802,104 @@ function typeLabel(t: string): string {
       </div>
     </div>
 
-    <!-- 媒体库列表 -->
+    <!-- 媒体库列表：卡片只保留识别信息、关键状态和高频操作，其余设置收进抽屉 -->
     <div class="lib-grid">
-      <div v-for="l in libraries" :key="l.id" class="admin-card lib-card">
-        <div class="lib-head">
-          <span class="lib-name">{{ l.name }}</span>
-          <span v-if="l.is_virtual" class="mini-badge pin">虚拟库</span>
-          <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">
-            {{ l.is_enabled ? '启用' : '停用' }}
-          </span>
-          <span
-            v-if="cardBadge(l)"
-            class="mini-badge"
-            :class="cardBadge(l)?.cls"
-          >{{ cardBadge(l)?.text }}</span>
-        </div>
-
-        <div class="lib-meta">{{ typeLabel(l.collection_type) }}库</div>
-
-        <!-- 服务 / 来源 / 数量：三件事写在一行，不用来回跳页拼 -->
-        <div class="lib-facts">
-          <span class="fact" :class="{ warn: serviceFact(l).warn }" :title="'服务：' + serviceFact(l).text">
-            <Server :size="12" />{{ serviceFact(l).text }}
-          </span>
-          <span class="fact" :class="{ warn: sourceFact(l).warn }" :title="'来源：' + sourceFact(l).text">
-            <HardDrive :size="12" />{{ sourceFact(l).text }}
-          </span>
-          <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
-        </div>
-
-        <!-- 实时状态（v2.27.0）：排队等谁 / 扫到哪个阶段、已处理多少、当前目录 -->
-        <div v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
-          <span class="scan-dot" :class="liveFor(l)?.state === 'queued' ? 'is-queued' : 'is-running'" />
-          <span>{{ cardLiveHint(l) }}</span>
-        </div>
-
-        <!-- 播放可达性（v2.28.0）：扫描正常但出流节点读不到内容时，卡片直接标出来 -->
-        <div v-if="libReach(l)" class="scan-error" :title="reachTitle(l)">
-          播放风险：{{ libReach(l)?.message }}
-        </div>
-
-        <!-- 最近一次扫描的结果：新增/更新/删除多少、哪一步出错，刷新后仍然可查 -->
-        <div v-if="l.last_scan" class="lib-scan">
-          <div class="scan-line">
-            <span class="scan-dot" :class="`is-${l.last_scan.status}`" />
-            <span>{{ scanSummary(l) }}</span>
+      <article v-for="l in libraries" :key="l.id" class="admin-card lib-card">
+        <div class="lib-cover">
+          <img v-if="coverUrls[l.id]" :src="coverUrls[l.id]" :alt="`${l.name} 封面`" />
+          <div v-else class="lib-cover-empty">
+            <Film :size="32" />
+            <span>{{ typeLabel(l.collection_type) }}库</span>
           </div>
+          <div class="lib-cover-shade" />
+          <div class="lib-cover-badges">
+            <span v-if="l.is_virtual" class="mini-badge pin">虚拟库</span>
+            <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">
+              {{ l.is_enabled ? '启用' : '停用' }}
+            </span>
+            <span v-if="cardBadge(l)" class="mini-badge" :class="cardBadge(l)?.cls">
+              {{ cardBadge(l)?.text }}
+            </span>
+          </div>
+          <div class="lib-cover-actions">
+            <el-upload
+              :accept="'image/jpeg,image/png,image/webp'"
+              :show-file-list="false"
+              :disabled="coverUploading[l.id]"
+              :http-request="(options: UploadRequestOptions) => requestCoverUpload(l, options)"
+            >
+              <el-button
+                class="cover-button"
+                circle
+                text
+                :loading="coverUploading[l.id]"
+                :title="l.cover_url ? '更换封面' : '上传封面'"
+                aria-label="上传媒体库封面"
+              >
+                <ImagePlus :size="18" />
+              </el-button>
+            </el-upload>
+            <el-button
+              v-if="l.cover_url"
+              class="cover-button"
+              circle
+              text
+              title="移除封面"
+              aria-label="移除媒体库封面"
+              @click="removeCover(l)"
+            >
+              <X :size="17" />
+            </el-button>
+          </div>
+        </div>
+
+        <div class="lib-body">
+          <div class="lib-head">
+            <span class="lib-name">{{ l.name }}</span>
+            <span class="lib-meta">{{ typeLabel(l.collection_type) }}库</span>
+          </div>
+
+          <div class="lib-facts">
+            <span class="fact" :class="{ warn: serviceFact(l).warn }" :title="'服务：' + serviceFact(l).text">
+              <Server :size="12" />{{ serviceFact(l).text }}
+            </span>
+            <span class="fact" :class="{ warn: sourceFact(l).warn }" :title="'来源：' + sourceFact(l).text">
+              <HardDrive :size="12" />{{ sourceFact(l).text }}
+            </span>
+            <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
+          </div>
+
+          <div class="lib-state">
+            <span v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
+              <span class="scan-dot" :class="liveFor(l)?.state === 'queued' ? 'is-queued' : 'is-running'" />
+              {{ cardLiveHint(l) }}
+            </span>
+            <span v-else class="lib-time">
+              {{ l.last_scan_at ? `上次扫描 ${fmtDate(l.last_scan_at)}` : '尚未扫描' }}
+            </span>
+          </div>
+
           <div v-if="scanError(l)" class="scan-error" :title="scanError(l)">{{ scanError(l) }}</div>
-          <div
-            v-else-if="scanEmptySources(l)"
-            class="scan-hint"
-            :title="sourcesDetail(l.last_scan?.sources)"
-          >{{ scanEmptySources(l) }}</div>
-        </div>
-
-        <div class="lib-paths">
-          <template v-if="l.is_virtual">
-            按发行平台「{{ l.platform || '—' }}」聚合，条目仍归属原媒体库
-          </template>
-          <template v-else>
-            {{ [...l.paths, mountNames(l.mount_ids)].filter(Boolean).join(' | ') || '未配置来源' }}
-          </template>
-        </div>
-
-        <div class="lib-policy">
-          <span class="policy-label">归属服</span>
-          <el-select
-            v-model="l.realm_id"
-            size="small"
-            clearable
-            placeholder="未标注（所有服可见）"
-            @change="saveRealm(l)"
-          >
-            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
-          </el-select>
-        </div>
-
-        <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="policy-label">归属节点</span>
-          <el-select
-            v-model="l.node_id"
-            size="small"
-            clearable
-            placeholder="未分配（所有节点可见）"
-            @change="saveNode(l)"
-          >
-            <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
-          </el-select>
-        </div>
-
-        <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="policy-label">存储来源</span>
-          <el-select
-            v-model="l.mount_ids"
-            size="small"
-            multiple
-            collapse-tags
-            collapse-tags-tooltip
-            placeholder="未绑定"
-            @change="saveMounts(l)"
-          >
-            <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
-          </el-select>
-        </div>
-
-        <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="policy-label">刮削策略</span>
-          <el-select v-model="l.scrape_policy" size="small" @change="savePolicy(l)">
-            <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
-          </el-select>
-        </div>
-
-        <div v-if="!l.is_virtual" class="lib-policy">
-          <span class="policy-label">115 账号</span>
-          <el-select
-            v-model="l.account_115_id"
-            size="small"
-            clearable
-            placeholder="默认账号"
-            @change="saveAccount115(l)"
-          >
-            <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
-          </el-select>
+          <div v-else-if="libReach(l)?.level === 'bad'" class="scan-error" :title="reachTitle(l)">
+            播放风险：{{ libReach(l)?.message }}
+          </div>
         </div>
 
         <div class="lib-foot">
-          <span class="lib-time">上次扫描 {{ fmtDate(l.last_scan_at) }}</span>
-          <div class="lib-actions">
-            <el-button size="small" type="primary" plain @click="scan(l)">
-              <ScanSearch :size="13" style="margin-right: 3px" />扫描
-            </el-button>
-            <el-button size="small" plain @click="openScans(l)">
-              <History :size="13" style="margin-right: 3px" />记录
-            </el-button>
-            <el-button size="small" type="danger" plain @click="removeLib(l)">
-              <Delete :size="13" style="margin-right: 3px" />删除
-            </el-button>
-          </div>
+          <el-button size="small" type="primary" plain @click="scan(l)">
+            <ScanSearch :size="13" />扫描
+          </el-button>
+          <el-button size="small" plain @click="openSettings(l)">
+            <Settings2 :size="13" />设置
+          </el-button>
+          <el-button size="small" plain title="扫描记录" @click="openScans(l)">
+            <History :size="13" />
+          </el-button>
+          <el-button size="small" type="danger" plain title="删除媒体库" @click="removeLib(l)">
+            <Delete :size="13" />
+          </el-button>
         </div>
-      </div>
+      </article>
 
       <div v-if="libraries.length === 0 && !loading" class="admin-card empty-card">
         暂无媒体库，点击右上角「新建媒体库」开始
@@ -998,6 +1018,78 @@ function typeLabel(t: string): string {
       </template>
     </el-dialog>
 
+    <!-- 媒体库设置：从卡片移出低频配置，保持卡片可快速扫读 -->
+    <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="430px">
+      <div v-if="settingsTarget" class="library-settings">
+        <div class="settings-section">
+          <div class="settings-section-title">归属与来源</div>
+          <div class="lib-policy">
+            <span class="policy-label">归属服</span>
+            <el-select
+              v-model="settingsTarget.realm_id"
+              clearable
+              placeholder="未标注（所有服可见）"
+              @change="saveRealm(settingsTarget)"
+            >
+              <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+            </el-select>
+          </div>
+          <div v-if="!settingsTarget.is_virtual" class="lib-policy">
+            <span class="policy-label">归属节点</span>
+            <el-select
+              v-model="settingsTarget.node_id"
+              clearable
+              placeholder="未分配（所有节点可见）"
+              @change="saveNode(settingsTarget)"
+            >
+              <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
+            </el-select>
+          </div>
+          <div v-if="!settingsTarget.is_virtual" class="lib-policy">
+            <span class="policy-label">存储来源</span>
+            <el-select
+              v-model="settingsTarget.mount_ids"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="未绑定"
+              @change="saveMounts(settingsTarget)"
+            >
+              <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
+            </el-select>
+          </div>
+          <div class="settings-paths">
+            <span>当前路径</span>
+            <p v-if="settingsTarget.is_virtual">
+              按发行平台「{{ settingsTarget.platform || '—' }}」聚合，条目仍归属原媒体库
+            </p>
+            <p v-else>{{ settingsTarget.paths.join(' · ') || '未配置本机路径' }}</p>
+          </div>
+        </div>
+
+        <div v-if="!settingsTarget.is_virtual" class="settings-section">
+          <div class="settings-section-title">扫描与账号</div>
+          <div class="lib-policy">
+            <span class="policy-label">刮削策略</span>
+            <el-select v-model="settingsTarget.scrape_policy" @change="savePolicy(settingsTarget)">
+              <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
+            </el-select>
+          </div>
+          <div class="lib-policy">
+            <span class="policy-label">115 账号</span>
+            <el-select
+              v-model="settingsTarget.account_115_id"
+              clearable
+              placeholder="默认账号"
+              @change="saveAccount115(settingsTarget)"
+            >
+              <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
+            </el-select>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
+
     <!-- 扫描记录：最近若干轮（每轮的状态 / 触发方 / 增量 / 耗时 / 原因） -->
     <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="620px">
       <p class="drawer-hint">
@@ -1052,16 +1144,38 @@ function typeLabel(t: string): string {
 
 .lib-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 16px;
 }
 
-.lib-card { display: flex; flex-direction: column; gap: 8px; }
-.lib-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.lib-name { font-weight: var(--font-weight-bold); font-size: var(--font-size-lg); color: var(--text-primary); }
-.lib-meta { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+.lib-card { display: flex; flex-direction: column; gap: 0; overflow: hidden; min-width: 0; }
+.lib-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: nowrap; }
+.lib-name {
+  font-weight: var(--font-weight-bold); font-size: var(--font-size-lg); color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-meta { flex-shrink: 0; font-size: var(--font-size-xs); color: var(--text-tertiary); }
+lib-state { min-height: 18px; }
 
-.lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.lib-cover { position: relative; aspect-ratio: 16 / 8.5; overflow: hidden; background: var(--bg-inset); }
+lib-cover > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+lib-cover-empty {
+  width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 8px; color: var(--text-muted); font-size: var(--font-size-xs);
+}
+lib-cover-shade {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to bottom, rgb(0 0 0 / 0.32), transparent 45%, rgb(0 0 0 / 0.18));
+}
+lib-cover-badges { position: absolute; top: 10px; left: 10px; right: 58px; display: flex; gap: 6px; flex-wrap: wrap; }
+lib-cover-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
+cover-button {
+  color: #fff !important; background: rgb(0 0 0 / 0.48) !important;
+  border: 1px solid rgb(255 255 255 / 0.22) !important;
+}
+cover-button:hover { background: rgb(0 0 0 / 0.72) !important; }
+lib-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 14px 12px; flex: 1; }
+lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 .fact {
   display: inline-flex;
   align-items: center;

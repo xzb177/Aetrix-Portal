@@ -17,8 +17,9 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -51,6 +52,7 @@ from backend.emby_server.streaming import (
     stop_transcodes_for_async,
 )
 from backend.emby_server import facets
+from backend.emby_server import image_store
 from backend.emby_server import mounts as mount_lib
 # 扫描队列（v2.27.0）：按远程挂载串行化 + 并发上限 + 排队状态/进度，见 scan_queue.py
 from backend.emby_server import reachability
@@ -601,6 +603,57 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
 
 # ==================== 管理端 ====================
 
+_LIBRARY_COVER_MAX_BYTES = 8 * 1024 * 1024
+_LIBRARY_COVER_TYPES = {
+    ".jpg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".jpeg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".png": ("image/png", b"\x89PNG\r\n\x1a\n"),
+    ".webp": ("image/webp", b"RIFF"),
+}
+
+
+def _validate_library_cover(filename: str, content_type: str | None, data: bytes) -> tuple[str, str]:
+    """校验直传封面，只接受扩展名、声明类型与文件头都一致的 JPEG / PNG / WebP。"""
+    if not data:
+        raise HTTPException(status_code=400, detail="封面图片不能为空")
+    if len(data) > _LIBRARY_COVER_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="封面图片不能超过 8 MB")
+    extension = os.path.splitext(filename or "")[1].lower()
+    expected = _LIBRARY_COVER_TYPES.get(extension)
+    if not expected:
+        raise HTTPException(status_code=400, detail="封面仅支持 JPG、PNG 或 WebP 图片")
+    media_type, signature = expected
+    if (content_type or media_type).split(";", 1)[0].lower() != media_type:
+        raise HTTPException(status_code=400, detail="图片文件类型与扩展名不一致")
+    valid_signature = data.startswith(signature)
+    if media_type == "image/webp":
+        valid_signature = valid_signature and data[8:12] == b"WEBP"
+    if not valid_signature:
+        raise HTTPException(status_code=400, detail="图片内容不是有效的 JPG、PNG 或 WebP")
+    return extension, media_type
+
+
+def _library_cover_file(relative_path: str | None) -> str | None:
+    """把库里的相对路径解析到图片目录内；越界或文件不存在都返回 None。"""
+    if not relative_path:
+        return None
+    root = os.path.abspath(image_store.image_dir())
+    path = os.path.abspath(os.path.join(root, relative_path))
+    if not path.startswith(root + os.sep) or not os.path.isfile(path):
+        return None
+    return path
+
+
+def _remove_library_cover(relative_path: str | None) -> None:
+    path = _library_cover_file(relative_path)
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError as exc:
+        logger.warning("删除媒体库封面失败 %s: %s", path, exc)
+
+
 class LibraryCreate(BaseModel):
     name: str
     collection_type: str = "movies"
@@ -729,6 +782,7 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "scrape_policy": normalize_scrape_policy(lib.scrape_policy),
             "is_virtual": bool(getattr(lib, "is_virtual", False)),
             "platform": lib.platform,
+            "cover_url": f"/api/admin/emby/libraries/{lib.id}/cover" if lib.cover_path else None,
             "account_115_id": getattr(lib, "account_115_id", None),
             "last_scan_at": lib.last_scan_at.isoformat() if lib.last_scan_at else None,
             # 最近一次扫描的结果：新增/更新/删除多少、哪些来源读不到、有没有异常
@@ -787,6 +841,82 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
     db.commit()
     db.refresh(lib)
     return {"success": True, "id": lib.id, "guid": lib.guid}
+
+
+@admin_emby_router.post("/libraries/{lib_id}/cover")
+def upload_library_cover(
+    lib_id: int,
+    file: UploadFile = File(...),
+    staff: models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """直接上传媒体库封面；先校验图片并原子落盘，再更新数据库引用。"""
+    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+    if not lib:
+        raise HTTPException(status_code=404, detail="媒体库不存在")
+    data = file.file.read(_LIBRARY_COVER_MAX_BYTES + 1)
+    extension, media_type = _validate_library_cover(file.filename or "", file.content_type, data)
+    relative_path = os.path.join("library-covers", f"{lib.guid}{extension}")
+    target = _library_cover_file(relative_path)
+    if target is None:
+        target = os.path.abspath(os.path.join(image_store.image_dir(), relative_path))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+    temporary = f"{target}.{os.getpid()}.uploading"
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        old_cover = lib.cover_path
+        lib.cover_path = relative_path
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
+    if old_cover and old_cover != relative_path:
+        _remove_library_cover(old_cover)
+    return {
+        "success": True,
+        "cover_url": f"/api/admin/emby/libraries/{lib.id}/cover",
+        "content_type": media_type,
+    }
+
+
+@admin_emby_router.get("/libraries/{lib_id}/cover")
+def get_library_cover(
+    lib_id: int,
+    staff: models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+    if not lib:
+        raise HTTPException(status_code=404, detail="媒体库不存在")
+    path = _library_cover_file(lib.cover_path)
+    if not path:
+        raise HTTPException(status_code=404, detail="媒体库尚未设置封面")
+    media_type = _LIBRARY_COVER_TYPES.get(os.path.splitext(path)[1].lower(), ("application/octet-stream", b""))[0]
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
+
+
+@admin_emby_router.delete("/libraries/{lib_id}/cover")
+def remove_library_cover(
+    lib_id: int,
+    staff: models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+    if not lib:
+        raise HTTPException(status_code=404, detail="媒体库不存在")
+    old_cover = lib.cover_path
+    lib.cover_path = None
+    db.commit()
+    _remove_library_cover(old_cover)
+    return {"success": True}
 
 
 @admin_emby_router.put("/libraries/{lib_id}")
@@ -881,8 +1011,10 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
         ).delete(synchronize_session=False)
         db.commit()
         removed += len(chunk)
+    old_cover = lib.cover_path
     db.delete(lib)
     db.commit()
+    _remove_library_cover(old_cover)
     return {"success": True, "items_removed": removed}
 
 

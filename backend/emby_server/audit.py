@@ -47,6 +47,8 @@ ACTION_TABLE: dict[tuple[str, str], tuple[str, str]] = {
     ("PUT", "/libraries/{}"): ("emby_update_library", "library"),
     ("DELETE", "/libraries/{}"): ("emby_delete_library", "library"),
     ("POST", "/libraries/{}/scan"): ("emby_scan_library", "library"),
+    ("POST", "/libraries/{}/cover"): ("emby_upload_library_cover", "library"),
+    ("DELETE", "/libraries/{}/cover"): ("emby_remove_library_cover", "library"),
     ("POST", "/libraries/virtual"): ("emby_generate_virtual_libraries", "library"),
     ("POST", "/libraries/repair/run"): ("emby_run_repair", "library"),
     ("DELETE", "/scan-queue/{}"): ("emby_scan_cancel", "library"),
