@@ -1,4 +1,4 @@
-"""RoyalBot 统一后端启动器
+"""Aetrix Portal 统一后端启动器
 
 一体化启动：门户 API + 自建 Emby 服务器（单进程单端口）
 

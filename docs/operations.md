@@ -4,7 +4,7 @@
 
 ## 部署自检（推荐每次上线前跑一遍）
 
-> 自检不需要数据库以外的任何依赖，但**它跑的是真实的库**（默认开发库 `royalbot_unified.db`），
+> 自检不需要数据库以外的任何依赖，但**它跑的是真实的库**（默认开发库 `aetrix_unified.db`），
 > 会在结束时删掉自己建的那一份数据；如果只想看界面，用 `--keep` 保留进程。
 
 冒烟测试用的是进程内 TestClient（网络层被假服务替换），验证业务逻辑；**部署自检**验证的是
@@ -111,31 +111,34 @@ EM / EA 已内置这些防护（无需你配置）：
 
 ### SQLite（默认）
 
-数据库就是仓库根目录下的 `royalbot_unified.db`（伴随 `-wal` / `-shm` 两个文件）。**不要直接 `cp` 正在被写入的库**，用 SQLite 自己的备份命令：
+数据库就是仓库根目录下的 `aetrix_unified.db`（伴随 `-wal` / `-shm` 两个文件）。**不要直接 `cp` 正在被写入的库**，用 SQLite 自己的备份命令：
+
+> 改品牌**不会重命名你已有的库文件**：升级上来的部署继续沿用原来的文件名（启动时自动识别），
+> 只有全新部署才会建 `aetrix_unified.db`。下面命令里的文件名请按自己那台机器上的实际文件名替换。
 
 ```bash
 # 热备份（不锁写，推荐）
-sqlite3 royalbot_unified.db ".backup '/backups/royalbot_$(date +%F_%H%M).db'"
+sqlite3 aetrix_unified.db ".backup '/backups/aetrix_$(date +%F_%H%M).db'"
 
 # 验证备份可读
-sqlite3 /backups/royalbot_2026-09-20_1200.db "PRAGMA integrity_check;"
+sqlite3 /backups/aetrix_2026-09-20_1200.db "PRAGMA integrity_check;"
 ```
 
 恢复：
 
 ```bash
 sudo systemctl stop aetrix
-cp /backups/royalbot_2026-09-20_1200.db royalbot_unified.db
-rm -f royalbot_unified.db-wal royalbot_unified.db-shm   # 清掉旧 WAL，避免与新库不一致
+cp /backups/aetrix_2026-09-20_1200.db aetrix_unified.db
+rm -f aetrix_unified.db-wal aetrix_unified.db-shm   # 清掉旧 WAL，避免与新库不一致
 sudo systemctl start aetrix
 ```
 
 ### PostgreSQL
 
 ```bash
-pg_dump -U royalbot royalbot | gzip > /backups/royalbot_$(date +%F_%H%M).sql.gz
+pg_dump -U aetrix aetrix | gzip > /backups/aetrix_$(date +%F_%H%M).sql.gz
 # 恢复
-gunzip -c /backups/royalbot_2026-09-20_1200.sql.gz | psql -U royalbot royalbot
+gunzip -c /backups/aetrix_2026-09-20_1200.sql.gz | psql -U aetrix aetrix
 ```
 
 ### 还要一起备份的东西
@@ -143,12 +146,12 @@ gunzip -c /backups/royalbot_2026-09-20_1200.sql.gz | psql -U royalbot royalbot
 - `.env`（含 `SECRET_KEY`，丢了等于所有人重新登录）
 - 你服务器上 Nginx 的证书与续期/cron 配置（**不在仓库里**，仓库那份已删除）
 
-> `scripts/backup.sh` / `backup_db.sh` / `restore.sh` 等是**旧版拆分栈（PostgreSQL + 容器）**的脚本：其 `BACKUP_DIR` 默认 `/backups`、产出 `royalbot_*.sql.gz`。如果你跑的是统一后端的 PostgreSQL，可以直接复用其 `pg_dump` 部分，但别指望它认识 SQLite 单文件部署。
+> `scripts/backup.sh` / `backup_db.sh` / `restore.sh` 等是**旧版拆分栈（PostgreSQL + 容器）**的脚本：其 `BACKUP_DIR` 默认 `/backups`、产出 `aetrix_*.sql.gz`。如果你跑的是统一后端的 PostgreSQL，可以直接复用其 `pg_dump` 部分，但别指望它认识 SQLite 单文件部署。
 
 定时任务示例（每天 3:10）：
 
 ```cron
-10 3 * * * sqlite3 /opt/Aetrix-Portal/royalbot_unified.db ".backup '/backups/aetrix_$(date +\%F).db'" && find /backups -name 'aetrix_*.db' -mtime +14 -delete
+10 3 * * * sqlite3 /opt/Aetrix-Portal/aetrix_unified.db ".backup '/backups/aetrix_$(date +\%F).db'" && find /backups -name 'aetrix_*.db' -mtime +14 -delete
 ```
 
 ## 常见问题
@@ -199,7 +202,7 @@ gunzip -c /backups/royalbot_2026-09-20_1200.sql.gz | psql -U royalbot royalbot
 
 ### 数据库报 `database is locked`
 
-v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出现：确认没有别的东西在用同一个库文件（比如旧栈的容器也在读写同一个 `royalbot_unified.db`），并检查是否有残留的 `-wal` / `-shm` 属于其他进程。
+v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出现：确认没有别的东西在用同一个库文件（比如旧栈的容器也在读写同一个 `aetrix_unified.db`），并检查是否有残留的 `-wal` / `-shm` 属于其他进程。
 
 ### EA 启动即退出，日志提示与 EM 未配对
 

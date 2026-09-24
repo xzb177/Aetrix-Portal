@@ -15,19 +15,34 @@ from typing import Optional
 # 支持环境变量切换数据库类型
 DATABASE_TYPE = os.getenv("DATABASE_TYPE", "sqlite")  # sqlite, postgresql, mysql
 
+# SQLite 默认库文件名（v2.30.0 品牌统一）。
+SQLITE_DB_FILENAME = "aetrix_unified.db"
+LEGACY_SQLITE_DB_FILENAME = "royalbot_unified.db"  # brand-scan: allow — 老部署的库文件名，只用于兼容
+
+
+def default_sqlite_url(cwd: str = ".") -> str:
+    """没有显式 ``DATABASE_URL`` 时的 SQLite 默认连接串
+
+    改品牌**不该让任何人「换了个文件名就丢整站数据」**：只有新文件名不存在、
+    老文件名还在时才继续沿用老文件名。两者都在（或都不在）时用新名——
+    也就是说，一个正常升级上来的部署会一直用老库，直到有人真的把新名建出来。
+    显式设了 ``DATABASE_URL`` 的部署完全不受这段逻辑影响。
+    """
+    base = os.path.abspath(cwd or ".")
+    if not os.path.exists(os.path.join(base, SQLITE_DB_FILENAME)) and os.path.exists(
+        os.path.join(base, LEGACY_SQLITE_DB_FILENAME)
+    ):
+        return f"sqlite:///./{LEGACY_SQLITE_DB_FILENAME}"
+    return f"sqlite:///./{SQLITE_DB_FILENAME}"
+
+
 if DATABASE_TYPE == "postgresql":
-    DATABASE_URL = os.getenv(
-        "DATABASE_URL",
-        "postgresql://royalbot:password@localhost:5432/royalbot"
-    )
+    DATABASE_URL = os.getenv("DATABASE_URL") or "postgresql://aetrix:password@localhost:5432/aetrix"
 elif DATABASE_TYPE == "mysql":
-    DATABASE_URL = os.getenv(
-        "DATABASE_URL",
-        "mysql+pymysql://royalbot:password@localhost:3306/royalbot"
-    )
+    DATABASE_URL = os.getenv("DATABASE_URL") or "mysql+pymysql://aetrix:password@localhost:3306/aetrix"
 else:
     # SQLite 默认路径（相对工作目录，可通过 DATABASE_URL 覆盖）
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./royalbot_unified.db")
+    DATABASE_URL = os.getenv("DATABASE_URL") or default_sqlite_url()
 
 # Redis 配置
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

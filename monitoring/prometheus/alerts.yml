@@ -1,18 +1,18 @@
 # Prometheus 告警规则
 groups:
-  - name: royalbot_alerts
+  - name: aetrix_alerts
     interval: 30s
     rules:
       # API 服务可用性
       - alert: APIServiceDown
-        expr: up{job="royalbot-backend"} == 0
+        expr: up{job="aetrix-backend"} == 0
         for: 1m
         labels:
           severity: critical
           service: backend-api
         annotations:
           summary: "API 服务宕机"
-          description: "RoyalBot API 服务已宕机超过1分钟"
+          description: "Aetrix API 服务已宕机超过1分钟"
 
       # HTTP 错误率过高
       - alert: HighErrorRate
@@ -71,7 +71,7 @@ groups:
 
       # 数据库连接数过高
       - alert: PostgresHighConnections
-        expr: pg_stat_database_numbackends{datname="royalbot"} / pg_settings_max_connections > 0.8
+        expr: pg_stat_database_numbackends{datname="aetrix"} / pg_settings_max_connections > 0.8
         for: 5m
         labels:
           severity: warning

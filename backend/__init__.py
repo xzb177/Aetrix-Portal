@@ -1,4 +1,4 @@
-"""RoyalBot Portal backend package bootstrap."""
+"""Aetrix Portal backend package bootstrap."""
 from pathlib import Path
 
 from dotenv import load_dotenv

@@ -2,6 +2,11 @@
 ################################################################################
 # Emby 账号同步检查脚本
 # 用于检查数据库中的 Emby 账号是否正确同步到 Emby 服务器
+#
+# 需要两个环境变量（本脚本原先把它们写死在文件里——公开仓库等于已泄露）：
+#   EMBY_URL      Emby 服务地址，例如 https://emby.example.com
+#   EMBY_API_KEY  Emby 管理 API Key（X-Emby-Token）
+# 二者都读自环境（Freebuff 工作区会自动带上 .env / .env.local）。
 ################################################################################
 
 set -e
@@ -12,14 +17,20 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# 数据库连接
-DB_CONTAINER="royalbot_postgres"
-DB_USER="royalbot"
-DB_NAME="royalbot"
+# 数据库连接（可用环境变量覆盖）
+DB_CONTAINER="${DB_CONTAINER:-aetrix_postgres}"
+DB_USER="${DB_USER:-aetrix}"
+DB_NAME="${DB_NAME:-aetrix}"
 
-# Emby 服务器配置
-EMBY_URL="https://emby.oceancloud.asia"
-EMBY_API_KEY="af3fd5f8bb4247f696db24d9471d40d9"
+# Emby 服务器配置：只从环境读，不在仓库里落凭据
+EMBY_URL="${EMBY_URL:-}"
+EMBY_API_KEY="${EMBY_API_KEY:-}"
+if [ -z "$EMBY_URL" ] || [ -z "$EMBY_API_KEY" ]; then
+    echo "❌ 缺少 EMBY_URL / EMBY_API_KEY（读自环境变量或 .env）。" >&2
+    echo "   例：EMBY_URL=https://emby.example.com EMBY_API_KEY=xxxx sh scripts/check_emby_sync.sh" >&2
+    echo "   旧版本把这两项写死在本脚本里；不要再把真实凭据提交回仓库。" >&2
+    exit 2
+fi
 
 echo "========================================"
 echo "Emby 账号同步检查"

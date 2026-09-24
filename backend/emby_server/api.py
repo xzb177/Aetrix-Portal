@@ -83,7 +83,9 @@ emby_router = APIRouter(tags=["EmbyServer"])
 
 TICKS = 10_000_000
 SERVER_VERSION = "4.8.0.0"
-SERVER_ID = os.getenv("EMBY_SERVER_ID", "royalbot-emby-server")
+# v2.30.0：媒体服务器身份默认值跟着品牌统一。改品牌后没有显式设置 EMBY_SERVER_ID 的
+# 部署，客户端会把服务器认成新的一台（重登一次即可）；想避免就在 .env 里保留旧值。
+SERVER_ID = os.getenv("EMBY_SERVER_ID", "aetrix-emby-server")
 
 
 def item_guid_for(db: Session, item_id) -> Optional[str]:
@@ -200,7 +202,7 @@ def _ticks_to_pos(ticks: int) -> str:
 
 def _download_ok(db: Session) -> bool:
     """站点是否允许下载（按 Session 缓存，避免列表里每个条目都查一次配置）"""
-    cache = db.info.setdefault("_royalbot_download_ok", {})
+    cache = db.info.setdefault("_aetrix_download_ok", {})
     if "value" not in cache:
         from backend.subscriptions import download_allowed
 
@@ -272,7 +274,7 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
         )
         counts.update({pid: n for pid, n in rows})
 
-    db.info["_royalbot_prefetch"] = {
+    db.info["_aetrix_prefetch"] = {
         "umd": umd_map,
         "counts": counts,
         "items": {i.id: i for i in items},
@@ -280,7 +282,7 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
 
 
 def _prefetched(db: Session) -> dict:
-    return db.info.get("_royalbot_prefetch") or {}
+    return db.info.get("_aetrix_prefetch") or {}
 
 
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
@@ -486,7 +488,7 @@ def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> d
 def system_info(request: Request):
     return {
         "Id": SERVER_ID,
-        "ServerName": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
+        "ServerName": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
         "Version": SERVER_VERSION,
         "ProductName": "Emby Server",
         "OperatingSystem": "Linux",
@@ -709,7 +711,7 @@ def _synthetic_lookup(db: Session) -> dict[str, tuple[str, str]]:
     合成 Id 表只随扫描 / 回填变化（代际号会变），因此跨请求缓存不会给出过期结果；
     以前每次带 GenreIds/StudioIds 的列表请求都要扫一遍全库。
     """
-    cached = db.info.get("_royalbot_synthetic_ids")
+    cached = db.info.get("_aetrix_synthetic_ids")
     if cached is None:
         generation = facets.values_generation()
         if _SYNTHETIC_CACHE.get("map") is not None and _SYNTHETIC_CACHE.get("gen") == generation:
@@ -718,7 +720,7 @@ def _synthetic_lookup(db: Session) -> dict[str, tuple[str, str]]:
             cached = _synthetic_map(db)
             _SYNTHETIC_CACHE["gen"] = generation
             _SYNTHETIC_CACHE["map"] = cached
-        db.info["_royalbot_synthetic_ids"] = cached
+        db.info["_aetrix_synthetic_ids"] = cached
     return cached
 
 
