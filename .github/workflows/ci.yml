@@ -115,6 +115,18 @@ jobs:
       - name: 品牌契约检查（仓库里不许再出现旧品牌名）
         run: python scripts/check_branding.py
 
+      # 管理端写端点审计覆盖：`/api/admin/emby/*` 由中间件记，其余域靠端点自己调 `_audit()`——
+      # 而「记得」不是一种机制。真实起因为 POST /api/admin/tickets/{id}/close 关单并推送用户，
+      # 却一条审计都不写（两个兄弟端点都写了）。这条看的是**真实路由**而不是文件。
+      - name: 管理端写端点审计覆盖（每个写端点都要留审计）
+        run: python scripts/check_admin_audit_coverage.py
+
+      # 写端点鉴权覆盖：漏掉一个 `Depends(get_current_user)` 不会让任何检查变红——
+      # 路由照常注册、类型检查照常通过、已有冒烟也不会去点那个新端点。
+      # 免鉴权端点（注册 / 登录 / 网关回调）必须显式登记并写明替代机制。
+      - name: 写端点鉴权覆盖（每个写端点都要有鉴权）
+        run: python scripts/check_auth_coverage.py
+
       # 另一条同源护栏：async 路由里不许出现同步 SQLAlchemy（FastAPI 只在事件循环上跑
       # async 端点）。存量记在脚本的 BASELINE 里，只许减少不许增加。
       - name: 阻塞路由契约检查（async 路由里做同步 DB 只减不增）
@@ -268,8 +280,9 @@ jobs:
           python -m pytest tests/ -q
 
       # 静态护栏也要自证“它会失败”：否则正则写歪、路径找错、基线比实际大，
-      # 它会永远返回 0 而没任何人知道。这里拿合成代码树喂两条护栏，钉住口径与报错能力。
-      - name: 静态护栏自检（护栏真的会失败 / 不误报同步 def 与下放的嵌套函数）
+      # 它会永远返回 0 而没任何人知道。这里给**每条**护栏喂违规样本（合成代码树 / 合成模块），
+      # 钉住口径与报错能力，同时钉住它们不误报（合规样本必须返回 0）。
+      - name: 静态护栏自检（每条护栏喂违规样本都会失败、合规样本不误报）
         run: python scripts/smoke_test_static_guards.py
 
       # 分类筛选从「逗号文本列 LIKE 全表扫」换成「条目↔分类关联表 + 索引」：
