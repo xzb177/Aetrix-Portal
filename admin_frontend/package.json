@@ -1,6 +1,6 @@
 {
-  "name": "royalbot-admin-frontend",
-  "version": "2.29.0",
+  "name": "aetrix-admin-frontend",
+  "version": "2.30.0",
   "private": true,
   "type": "module",
   "scripts": {

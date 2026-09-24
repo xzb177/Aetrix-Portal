@@ -46,8 +46,8 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# 不写死库文件名：交给 backend.database 解析，升级上来的老部署继续用原库文件
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 
 MEDIA_NAME = "Deploy.Check.2024.1080p.mkv"
 failures: list[str] = []

@@ -104,6 +104,17 @@ jobs:
       - name: await 契约检查（await 的目标必须是协程函数）
         run: python scripts/check_await_consistency.py
 
+      # 硬编码凭据检查：公开仓库里写死密钥 = 已泄露，只能作废重发。
+      # 真实起因为 scripts/check_emby_sync.sh 里写死的 Emby API Key（v2.30.0 移出）。
+      - name: 硬编码密钥检查（仓库里不许出现像真的密钥）
+        run: python scripts/check_hardcoded_secrets.py
+
+      # 品牌契约检查：改品牌（统一到 Aetrix）后残留的旧名，类型检查 / 导入 / 冒烟全绿
+      # 也看不出来（它只是一段字符串），但漏改的 EMBY_SERVER_ID 默认值会真的改变行为。
+      # 确实需要旧名（老部署的库文件名等）就在同一行写 `brand-scan: allow` 并说明原因。
+      - name: 品牌契约检查（仓库里不许再出现旧品牌名）
+        run: python scripts/check_branding.py
+
       # 另一条同源护栏：async 路由里不许出现同步 SQLAlchemy（FastAPI 只在事件循环上跑
       # async 端点）。存量记在脚本的 BASELINE 里，只许减少不许增加。
       - name: 阻塞路由契约检查（async 路由里做同步 DB 只减不增）
@@ -134,6 +145,13 @@ jobs:
       # 缺省必须与升级前完全一致（允许转码、不限并发、不限码率、不拦客户端）。
       - name: 客户端策略冒烟（转码开关 / 并发与码率上限 / 客户端准入）
         run: python scripts/smoke_test_client_policy.py
+
+      # 媒体与交付域的写操作审计（v2.30.0）：/api/admin/emby/* 的成功写操作要落进「操作日志」。
+      # 这条同时证明中间件的三条口径：只记成功的写、不记匿名管理员、绝不记请求体（115 Cookie）。
+      # 写这条护栏时真的抓到三个 bug：`115` 被当成 id（4 条动作名全成死条目）、
+      # 会话键正则不认 base64url（「结束会话」没有名字）、子动作被记成父动作（测试挂载 → 创建挂载）。
+      - name: 后台写操作审计冒烟（落库 / 只记成功 / 不记密钥 / 端点覆盖）
+        run: python scripts/smoke_test_admin_audit.py
 
       # 自建后端的完整链路（扫描入库 → 媒体库/条目 → 播放信息 → 停止会话）。
       # 这条是 EM 的“主干道”，此前只在开发机上跑过；ffmpeg 不在时 HLS 段自动 SKIP。

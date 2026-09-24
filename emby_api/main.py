@@ -59,7 +59,7 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.29.0"
+EA_VERSION = "2.30.0"
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
@@ -269,7 +269,7 @@ async def health_check():
         "paired_with_em": not missing,
         "missing_em_tables": missing,
         "em_panel_url": _panel_url() or None,
-        "emby_server_name": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
+        "emby_server_name": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
         # 多机 / 多服部署的关键信息：这台 EA 是谁、属于哪个服、只提供什么内容
         "node": _node_info(),
         # 长期运行的体检口径：正在扫描的库 / 转码会话 / 临时目录占用 / 磁盘余量

@@ -1,2 +1,2 @@
-# RoyalBot Portal Backend
+# Aetrix Portal Backend
 __version__ = "2.2.0"

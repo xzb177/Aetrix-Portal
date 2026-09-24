@@ -15,8 +15,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+# 不写死库文件名：交给 backend.database 解析（新装 aetrix_unified.db，老部署沿用原库）
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 # 冒烟测试需要一个确定存在的密钥（真实部署请复用 EM 的 .env）
 os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
 

@@ -5,8 +5,8 @@
 登录入口是 `POST /api/admin/auth/login`（也可以先在门户登录，再从 `/admin/` 免登进去）。
 
 新库里一个账号都没有，而且**第一个注册的用户不会被自动提升为管理员**（有意的安全设计），
-所以自建部署的「第一个管理员」用它来造。库由 `DATABASE_URL` 决定
-（默认 `sqlite:///./royalbot_unified.db`）。
+所以自建部署的「第一个管理员」用它来造。库由 `DATABASE_URL` 决定；不设时用仓库根目录下的
+SQLite 库（新装为 `aetrix_unified.db`，升级上来的部署沿用原来那个库文件——改品牌不会换名字）。
 
 用法::
 
@@ -30,8 +30,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 # 不在 .env 里也要能跑：默认单机 SQLite（与 serve.py / deploy_check.py 同口径）
+# 这里**不写死库文件名**：交给 backend.database 解析，升级上来的老部署会继续用原库文件，
+# 否则「建管理员」会静悄悄建出一个空库，人在错的库里找不到自己刚建的账号。
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 
 # 与门户注册口径一致（backend/api/emby_portal.py）
 PASSWORD_MIN_LENGTH = 6
@@ -128,7 +129,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="创建 / 升级管理后台账号（web_users.is_staff = true）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="库由环境变量 DATABASE_URL 决定，默认 sqlite:///./royalbot_unified.db",
+        epilog="库由环境变量 DATABASE_URL 决定；不设时用仓库根目录下的 SQLite 库（默认 aetrix_unified.db，老部署沿用原文件名）",
     )
     parser.add_argument("-u", "--username", default="admin", help="账号名（默认 admin）")
     parser.add_argument("-p", "--password", default=None,

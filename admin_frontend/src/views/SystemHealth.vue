@@ -77,7 +77,7 @@ onMounted(load)
     <section class="admin-card">
       <div class="card-header"><h2><Radio :size="15" />运行态</h2><span class="muted">最近检查 {{ lastChecked || '—' }}</span></div>
       <div class="runtime-grid">
-        <div><span>服务名称</span><strong>{{ health?.emby_server || 'RoyalBot Media Server' }}</strong></div>
+        <div><span>服务名称</span><strong>{{ health?.emby_server || 'Aetrix Media Server' }}</strong></div>
         <div><span>在线用户</span><strong>{{ health?.online_users ?? 0 }}</strong></div>
         <div><span>在线会话</span><strong>{{ overview?.active_sessions ?? sessions.length }}</strong></div>
         <div><span>媒体条目</span><strong>{{ overview?.total_items ?? 0 }}</strong></div>

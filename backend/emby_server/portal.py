@@ -207,7 +207,7 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
     realm = realms.get_realm(db, realm_id)
     card = {
         "server_id": SERVER_ID,
-        "server_name": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
+        "server_name": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
         "base_url": url,
         "mode": mode,
         "external": external,
@@ -224,7 +224,7 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "allow_download": subscriptions.download_allowed(db, realm_id),
         "import_schemes": {} if external else {
             "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
-            "senplayer": f"senplayer://importserver?type=emby&name=RoyalBot&address={url}&username={user.emby_username}",
+            "senplayer": f"senplayer://importserver?type=emby&name=Aetrix&address={url}&username={user.emby_username}",
         },
     }
     card["realms"] = _user_realm_cards(user, db)
@@ -931,7 +931,11 @@ def scan_queue_snapshot(staff: models.WebUser = Depends(require_staff), db: Sess
 
 @admin_emby_router.delete("/scan-queue/{lib_id}")
 def cancel_queued_scan(lib_id: int, staff: models.WebUser = Depends(require_staff)):
-    """取消一个**还在排队**的扫描（正在跑的不能取消：停了会留下半个库的状态）"""
+    """取消一个**还在排队**的扫描（正在跑的不能取消：停了会留下半个库的状态）
+
+    写操作审计（v2.30.0）由 `emby_server/audit.py` 的中间件统一记录，
+    这里不再各自写一行 `_audit(...)`：端点会新增，而「记得补审计」不是一种机制。
+    """
     outcome = scan_queue.cancel(lib_id)
     if outcome == "running":
         raise HTTPException(status_code=409, detail="该媒体库正在扫描中，无法取消（请等它跑完）")

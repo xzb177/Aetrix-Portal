@@ -21,8 +21,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 不写死库文件名：交给 backend.database 解析（新装 aetrix_unified.db，老部署沿用原库）
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
 IMAGE_DIR = tempfile.mkdtemp(prefix="imgcache_")
 os.environ["EMBY_IMAGE_DIR"] = IMAGE_DIR

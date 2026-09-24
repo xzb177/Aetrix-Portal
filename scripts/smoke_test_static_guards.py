@@ -13,8 +13,19 @@
     FastAPI 对 ``async def`` 端点是在事件循环上直接跑的，而本项目用的是同步 SQLAlchemy，
     一个查询就能把全站按住。存量 41 条记在脚本的 `BASELINE` 里，只减不增。
 
+`scripts/check_hardcoded_secrets.py`（仓库里不许出现像真的密钥）
+    真实发生过：`scripts/check_emby_sync.sh` 在**公开**仓库里写死了 Emby API Key 与
+    生产域名。这类「边角文件」不进主流程，代码评审最容易跳过，而一旦提交就等于泄露。
+    这条护栏认厂商前缀密钥与「变量名 + 随机值」的赋值，并要求假值必须写行内放行注释。
+
+`scripts/check_branding.py`（仓库里不许再出现旧品牌名）
+    项目改名后，一半代码叫新名、一半叫旧名是最难用的状态：类型检查、导入、冒烟测试
+    全绿，因为它只是一段字符串——只有漏改的那处默认值会真的改变行为（客户端列表里
+    出现两台同名服务器）。所以这里也钉住：**喂它一个还写着旧名的文件，它必须失败**，
+    同时占位值 / 行内放行注释不能误报。
+
 护栏最常见的失效方式不是报错，而是**根本不会响**：正则写歪、路径找错、基线比实际大，
-于是它永远返回 0，谁也不知道。所以两条都要证明「喂它一个违规样本，它必须失败」。
+于是它永远返回 0，谁也不知道。所以四条都要证明「喂它一个违规样本，它必须失败」。
 """
 import ast
 import contextlib
@@ -31,6 +42,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AWAIT_GUARD = ROOT / "scripts" / "check_await_consistency.py"
 BLOCKING_GUARD = ROOT / "scripts" / "check_blocking_routes.py"
+SECRET_GUARD = ROOT / "scripts" / "check_hardcoded_secrets.py"
+BRAND_GUARD = ROOT / "scripts" / "check_branding.py"
 
 failures: list[str] = []
 TOTAL = 0
@@ -195,6 +208,119 @@ for unexpected in ("api/blocking.py::clean_sync",
                    "api/blocking.py::clean_async",
                    "api/blocking.py::nested_offloaded"):
     check(f"阻塞路由：没有误报 {unexpected}", unexpected not in blocking_out, summary)
+
+# ==========================================================================
+# 三、硬编码密钥护栏
+# ==========================================================================
+
+proc = subprocess.run([sys.executable, str(SECRET_GUARD)], capture_output=True, text=True,
+                      cwd=str(ROOT))
+check("硬编码密钥：真实代码树上退出码为 0", proc.returncode == 0,
+      (proc.stdout or proc.stderr).strip().splitlines()[-1][:120])
+
+secret_guard = load(SECRET_GUARD, "_check_hardcoded_secrets")
+
+# 违规样本：一个写死的 Emby API Key（就是事故里那个形状）+ 一个厂商前缀密钥
+# 下面两处合成样本自带行内放行注释，否则扫描**本文件**时会先被自己报出来。
+bad_tmp = pathlib.Path(tempfile.mkdtemp(prefix="secret-guard-bad-"))
+(bad_tmp / "scripts").mkdir(parents=True, exist_ok=True)
+(bad_tmp / "scripts" / "check_emby_sync.sh").write_text(
+    "EMBY_URL=\"https://emby.example.com\"\n"
+    "EMBY_API_KEY=\"9f4c1d7a2b8e3506c1a4d9f2b7e0c358\"\n", encoding="utf-8")  # secret-scan: allow — 合成样本
+(bad_tmp / "backend").mkdir(parents=True, exist_ok=True)
+(bad_tmp / "backend" / "integration.py").write_text(
+    "OPENAI_KEY = \"sk-hz8Kq2Lm4Np6Rt0Vw1Xy3Zb5Cd7Ef9G\"\n", encoding="utf-8")  # secret-scan: allow — 合成样本
+
+secret_guard.ROOT = bad_tmp
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    bad_code = secret_guard.main()
+bad_out = buf.getvalue()
+
+check("硬编码密钥：合成代码树上失败（退出码 1）", bad_code == 1,
+      (bad_out.strip().splitlines() or ["(无输出)"])[0][:120])
+check("硬编码密钥：两处都点了出来",
+      bad_out.count("疑似硬编码密钥") + bad_out.count("[OpenAI / Stripe 密钥]") == 3,
+      " | ".join(bad_out.strip().splitlines()[1:4])[:200])
+check("硬编码密钥：点名了写死密钥的脚本",
+      "scripts/check_emby_sync.sh:2" in bad_out, "")
+check("硬编码密钥：认得出厂商前缀密钥",
+      "backend/integration.py:1" in bad_out and "OpenAI" in bad_out, "")
+
+# 合规样本：占位值 / 行内放行注释 / 纯单词夹具都不该报
+good_tmp = pathlib.Path(tempfile.mkdtemp(prefix="secret-guard-good-"))
+(good_tmp / "config").mkdir(parents=True, exist_ok=True)
+(good_tmp / "config" / "template.py").write_text(
+    "API_KEY = \"your-api-key-here\"\n"
+    "SECRET_KEY = \"${SECRET_KEY}\"\n"
+    "NODE_KEY = os.getenv(\"NODE_KEY\", \"\")\n"
+    "EMBY_TOKEN = \"emby-client-token-alice\"\n", encoding="utf-8")
+(good_tmp / "scripts").mkdir(parents=True, exist_ok=True)
+(good_tmp / "scripts" / "allow.py").write_text(
+    "FAKE = \"0123456789abcdef0123456789abcdef\"  # secret-scan: allow — 自检用的假值\n",
+    encoding="utf-8")  # secret-scan: allow — 合成样本
+
+secret_guard.ROOT = good_tmp
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    good_code = secret_guard.main()
+check("硬编码密钥：占位值与放行注释不误报", good_code == 0,
+      buf.getvalue().strip().splitlines()[-1][:120] if buf.getvalue().strip() else "(无输出)")
+
+# ==========================================================================
+# 四、品牌契约护栏
+# ==========================================================================
+
+proc = subprocess.run([sys.executable, str(BRAND_GUARD)], capture_output=True, text=True,
+                      cwd=str(ROOT))
+check("品牌契约：真实代码树上退出码为 0", proc.returncode == 0,
+      (proc.stdout or proc.stderr).strip().splitlines()[-1][:120])
+
+brand_guard = load(BRAND_GUARD, "_check_branding")
+
+# 违规样本：一处旧名（一行代码、一行文档）
+bad_tmp = pathlib.Path(tempfile.mkdtemp(prefix="brand-guard-bad-"))
+(bad_tmp / "backend").mkdir(parents=True, exist_ok=True)
+# 下面两行是「违规内容」的合成样本（自带放行注释，否则护栏会先报出本文件自己）。
+(bad_tmp / "backend" / "api.py").write_text(
+    "SERVER_NAME = os.getenv(\"EMBY_SERVER_NAME\", \"RoyalBot Media Server\")\n",  # brand-scan: allow — 合成样本
+    encoding="utf-8")
+(bad_tmp / "docs").mkdir(parents=True, exist_ok=True)
+(bad_tmp / "docs" / "operations.md").write_text(
+    "# 运维\n\n备份目录是 /root/RoyalBot-Portal/backups\n",  # brand-scan: allow — 合成样本
+    encoding="utf-8")
+
+brand_guard.ROOT = bad_tmp
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    brand_bad_code = brand_guard.main()
+brand_bad_out = buf.getvalue()
+
+check("品牌契约：合成代码树上失败（退出码 1）", brand_bad_code == 1,
+      (brand_bad_out.strip().splitlines() or ["(无输出)"])[0][:120])
+check("品牌契约：两处旧名都点了出来", "发现 2 处" in brand_bad_out,
+      brand_bad_out.strip().splitlines()[0][:120])
+check("品牌契约：点名了残留文件与行号",
+      "backend/api.py:1" in brand_bad_out and "docs/operations.md:3" in brand_bad_out, "")
+
+# 合规样本：新名 / 行内放行注释 / 发布说明豁免都不该报
+good_tmp = pathlib.Path(tempfile.mkdtemp(prefix="brand-guard-good-"))
+(good_tmp / "backend").mkdir(parents=True, exist_ok=True)
+(good_tmp / "backend" / "api.py").write_text(
+    "SERVER_NAME = os.getenv(\"EMBY_SERVER_NAME\", \"Aetrix Media Server\")\n", encoding="utf-8")
+(good_tmp / "backend" / "compat.py").write_text(
+    "LEGACY_DB = \"RoyalBot_unified.db\"  # brand-scan: allow — 老部署的库文件名，只用于兼容\n",
+    encoding="utf-8")
+(good_tmp / "CHANGELOG.md").write_text(
+    "## v2.30 - 改名 RoyalBot → Aetrix\n",  # brand-scan: allow — 合成样本（发布说明本就该写着旧名）
+    encoding="utf-8")
+
+brand_guard.ROOT = good_tmp
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    brand_good_code = brand_guard.main()
+check("品牌契约：新名 / 放行注释 / 发布说明不误报", brand_good_code == 0,
+      buf.getvalue().strip().splitlines()[-1][:120] if buf.getvalue().strip() else "(无输出)")
 
 # ==================== 汇总 ====================
 

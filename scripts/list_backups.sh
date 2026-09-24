@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# RoyalBot Portal Backup Listing Script
+# Aetrix Portal Backup Listing Script
 #
 # This script lists all available database backups
 #
 
-BACKUP_DIR="${BACKUP_DIR:-/root/RoyalBot-Portal/backups}"
+BACKUP_DIR="${BACKUP_DIR:-/root/Aetrix-Portal/backups}"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}RoyalBot Portal Database Backups${NC}"
+echo -e "${GREEN}Aetrix Portal Database Backups${NC}"
 echo -e "${GREEN}=========================================${NC}"
 echo ""
 

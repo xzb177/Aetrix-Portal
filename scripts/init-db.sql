@@ -1,4 +1,4 @@
--- RoyalBot Portal PostgreSQL 初始化脚本
+-- Aetrix Portal PostgreSQL 初始化脚本
 -- 此脚本在 PostgreSQL 容器首次启动时自动执行
 
 -- 创建枚举类型

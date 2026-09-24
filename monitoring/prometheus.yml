@@ -3,7 +3,7 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: 'royalbot-portal'
+    cluster: 'aetrix-portal'
     environment: 'production'
 
 # 告警规则
@@ -17,8 +17,8 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # RoyalBot 后端 API
-  - job_name: 'royalbot-backend'
+  # Aetrix 后端 API
+  - job_name: 'aetrix-backend'
     static_configs:
       - targets: ['backend:8000']
         labels:

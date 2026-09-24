@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# RoyalBot Portal Database Backup Script
+# Aetrix Portal Database Backup Script
 #
 # This script backs up PostgreSQL databases and can be run via cron
 #
@@ -10,7 +10,7 @@
 set -e
 
 # Configuration
-BACKUP_DIR="${BACKUP_DIR:-/root/RoyalBot-Portal/backups}"
+BACKUP_DIR="${BACKUP_DIR:-/root/Aetrix-Portal/backups}"
 RETENTION_DAYS=${RETENTION_DAYS:-7}
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 DATE_ONLY=$(date +"%Y%m%d")

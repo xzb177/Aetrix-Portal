@@ -39,6 +39,7 @@ WORK = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = f"sqlite:///{os.path.join(WORK, 'refunds.db')}"
 
 from datetime import datetime, timedelta  # noqa: E402
+from decimal import Decimal  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -367,6 +368,82 @@ check("普通用户不能退款",
                   json={"reason": "x"}).status_code in (401, 403))
 check("普通用户看不到退款记录",
       client.get("/api/admin/economy/refunds", headers=USER_H).status_code in (401, 403))
+
+# ==================== 7. 支付回调：金额必须与订单对得上 ====================
+
+# 验签只证明「这条通知来自网关」，不证明钱数对不对。
+# 旧实现只看验签 + 订单号，回调报 0.01 元也照样发 100 积分。
+# 这里用**独立的买家**，不动上面那些积分断言。
+
+print("\n--- 支付回调：金额核对 ---")
+
+from backend.api.economy import _yipay_sign  # noqa: E402
+
+GATEWAY_KEY = "refund-notify-key"
+with SessionLocal() as db:
+    for key, value in (("payment_partner_key", GATEWAY_KEY), ("payment_partner_id", "1001")):
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+        if row:
+            row.value = value
+        else:
+            db.add(models.SystemConfig(key=key, value=value))
+    notify_buyer = models.WebUser(username="refund_notify_buyer",
+                                  password_hash=hash_password("notifypass123"),
+                                  is_active=True, points=0)
+    db.add(notify_buyer)
+    db.commit()
+    notify_buyer_id = notify_buyer.id
+
+
+def make_notify_order(order_id: str, price: str = "100.00") -> None:
+    with SessionLocal() as db:
+        db.add(models.RechargeOrder(order_id=order_id, user_id=notify_buyer_id, package_id=pkg_id,
+                                    amount=100, price=Decimal(price), payment_method="alipay",
+                                    status="pending"))
+        db.commit()
+
+
+def notify_call(order_id: str, money: str | None, key: str = GATEWAY_KEY):
+    params = {
+        "pid": "1001", "trade_no": "T-NOTIFY", "out_trade_no": order_id,
+        "type": "alipay", "name": "积分充值", "trade_status": "TRADE_SUCCESS",
+    }
+    if money is not None:
+        params["money"] = money
+    params["sign"] = _yipay_sign(params, key)
+    params["sign_type"] = "MD5"
+    return client.get("/api/user/economy/payment/notify", params=params)
+
+
+make_notify_order("RC-NOTIFY-LOW")
+r = notify_call("RC-NOTIFY-LOW", "0.01")
+check("少付钱的回调被拒（fail）", r.text.strip() == "fail", f"{r.status_code} {r.text[:60]}")
+check("被拒后订单仍未支付", order_row("RC-NOTIFY-LOW").status == "pending",
+      order_row("RC-NOTIFY-LOW").status)
+check("被拒后不发货（积分没动）", points_of(notify_buyer_id) == 0, str(points_of(notify_buyer_id)))
+
+make_notify_order("RC-NOTIFY-HIGH")
+r = notify_call("RC-NOTIFY-HIGH", "100.01")
+check("多付/报错金额也不放行（必须精确相等）", r.text.strip() == "fail", f"{r.text[:60]}")
+check("依然未发货", points_of(notify_buyer_id) == 0, str(points_of(notify_buyer_id)))
+
+make_notify_order("RC-NOTIFY-EXACT")
+r = notify_call("RC-NOTIFY-EXACT", "100.00")
+check("金额对得上就发货", r.text.strip() == "success", f"{r.text[:60]}")
+check("订单已支付且积分到账", order_row("RC-NOTIFY-EXACT").status == "paid"
+      and points_of(notify_buyer_id) == 100, f"{points_of(notify_buyer_id)}")
+
+# 网关没带 money 的旧口径：只记日志，不能把正常付款卡死
+make_notify_order("RC-NOTIFY-NOMONEY")
+r = notify_call("RC-NOTIFY-NOMONEY", None)
+check("回调未带金额时仍按订单发货（兼容旧网关）",
+      r.text.strip() == "success" and points_of(notify_buyer_id) == 200,
+      f"{r.text[:60]} / {points_of(notify_buyer_id)}")
+
+make_notify_order("RC-NOTIFY-BADSIGN")
+r = notify_call("RC-NOTIFY-BADSIGN", "100.00", key="wrong-key")
+check("错密钥的回调仍被拦（验签之前）", r.text.strip() == "fail" and points_of(notify_buyer_id) == 200,
+      str(points_of(notify_buyer_id)))
 
 print("\n" + "=" * 60)
 if failures:
