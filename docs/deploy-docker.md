@@ -24,7 +24,27 @@ curl http://127.0.0.1:8000/api/health
 
 媒体目录由 `MEDIA_ROOT` 映射到容器 `/media`，默认只读。媒体挂载配置若使用主机路径，必须改成容器内可见的路径。
 
-## 更新
+## 一键更新
+
+项目根目录提供了一键更新脚本，默认会检查依赖与 Git 工作区、尝试备份容器内 SQLite，然后拉取代码、
+重新构建镜像并更新 Compose 服务：
+
+```bash
+bash scripts/update.sh
+```
+
+脚本会在工作区有未提交改动时停止，不会用远端代码覆盖本地现场；容器正在运行且 `/data` 下有 SQLite
+数据库时，会使用容器内置的 Python `sqlite3` 模块把备份写到 `/data/aetrix-update-时间.db`。备份失败会
+停止更新；找不到数据库时会明确告警并继续代码更新。
+
+常用选项：
+
+```bash
+bash scripts/update.sh --dry-run       # 只打印流程，不实际拉取、备份、构建或重启
+bash scripts/update.sh --skip-backup   # 明确跳过数据库备份
+```
+
+手动等价流程：
 
 ```bash
 git pull --ff-only
