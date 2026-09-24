@@ -9,8 +9,22 @@ cp env.example .env
 # 至少填写固定随机 SECRET_KEY；生产不要使用临时密钥
 # 可按需修改 AETRIX_PORT、MEDIA_ROOT
 
+bash scripts/deploy.sh
+```
+
+`scripts/deploy.sh` 会校验 Compose 配置、构建镜像、启动服务，并等待 `aetrix` 容器的健康检查通过；
+它不会拉取远端代码。首次部署前只执行一次上面的 `cp` 并填写 `.env`，之后重复部署直接运行脚本即可。
+想先看将要执行的命令，可以使用：
+
+```bash
+bash scripts/deploy.sh --dry-run
+```
+
+手动等价流程：
+
+```bash
 docker compose build --pull
-docker compose up -d
+docker compose up -d --remove-orphans
 docker compose ps
 curl http://127.0.0.1:8000/api/health
 ```
