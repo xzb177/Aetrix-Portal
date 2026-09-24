@@ -248,3 +248,41 @@ def test_a_missing_rc_serve_does_not_hide_the_missing_colon_notice(monkeypatch):
     result = RcloneMount(_mount({"mode": "rc", "fs": "paul_emby"})).test()
     assert "漏冒号" in result["message"]
     assert "rc-serve" in result["message"]
+
+
+# ==================== rc-serve 出流 URL ====================
+#
+# rclone 的 rc-serve 根目录页面上给出的链接是 ``./[paul_emby:]/``：remote 名要用
+# **方括号**包起来，才能和普通目录区分。写成 ``/paul_emby:/x.mkv`` 会被当成一个叫
+# ``paul_emby:`` 的本机目录而 404 —— 而列目录走 ``/operations/list`` 完全正常，
+# 于是「能浏览、不能播」，很容易被误判成 rc-serve 没开。
+
+
+def _rc_mount(config: dict) -> RcloneMount:
+    return RcloneMount(_mount(config))
+
+
+def test_play_url_wraps_remote_in_brackets():
+    m = _rc_mount({"mode": "rc", "fs": "paul_emby:", "rc_url": "http://rclone:5572"})
+    assert m._rc_play_url("/") == "http://rclone:5572/[paul_emby:]/"
+    assert m._rc_play_url("video/影库") == "http://rclone:5572/[paul_emby:]/video/%E5%BD%B1%E5%BA%93"
+
+
+def test_play_url_keeps_subpath_inside_remote():
+    m = _rc_mount({"mode": "rc", "fs": "gdrive:Movies", "rc_url": "http://127.0.0.1:5572"})
+    assert m._rc_play_url("2024/a.mkv") == "http://127.0.0.1:5572/[gdrive:Movies]/2024/a.mkv"
+
+
+def test_play_url_never_leaves_a_bare_colon_path():
+    """回归钉住：URL 路径里不允许出现裸的 ``remote:``（那会被 rclone 当本机目录）"""
+    m = _rc_mount({"mode": "rc", "fs": "paul_emby:", "rc_url": "http://rclone:5572"})
+    url = m._rc_play_url("video/a.mkv")
+    assert "/paul_emby:/" not in url
+    assert url.startswith("http://rclone:5572/[paul_emby:]/")
+
+
+def test_play_url_percent_encodes_each_segment():
+    m = _rc_mount({"mode": "rc", "fs": "paul_emby:", "rc_url": "http://rclone:5572"})
+    url = m._rc_play_url("剧集/某 片 (2024).mkv")
+    # 斜杠分段编码，空格与中文不裸露
+    assert url == "http://rclone:5572/[paul_emby:]/%E5%89%A7%E9%9B%86/%E6%9F%90%20%E7%89%87%20%282024%29.mkv"

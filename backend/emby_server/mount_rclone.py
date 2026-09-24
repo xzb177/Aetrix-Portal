@@ -348,9 +348,22 @@ class RcloneMount(_CloudMount):
     # ---- rc 模式 ----
 
     def _rc_play_url(self, rel: str) -> str:
-        """rc-serve 暴露的地址：``http://<rc>/<remote:path>``"""
-        target = self._target(rel)
-        return f"{self.rc_url}/{urllib.parse.quote(target, safe='/:')}"
+        """rc-serve 出流地址：``http://<rc>/[remote:]/path``
+
+        rclone 的 rc-serve 用**方括号**把 remote 名和普通目录区分开（它根目录页面上给
+        的链接就是 ``./[paul_emby:]/``）。写成 ``/paul_emby:/x.mkv`` 会被当成叫
+        ``paul_emby:`` 的本机目录而 404 —— 列目录走 ``/operations/list`` 一切正常，
+        只有真正取流时才炸，很容易被误判成「rc-serve 没开」。
+        """
+        fs = self._require_fs().rstrip("/")
+        rel = (rel or "").lstrip("/").replace("\\", "/")
+        # 根（remote 自身）与子路径：都要先给 remote 套上 [ ]
+        base = f"{self.rc_url}/[{fs}]"
+        if not rel:
+            return base + "/"
+        return base + "/" + "/".join(
+            urllib.parse.quote(seg, safe="") for seg in rel.split("/") if seg
+        )
 
     def _rc_headers(self) -> dict:
         headers = {"User-Agent": mount_lib.MOUNT_UA}
@@ -450,13 +463,13 @@ class RcloneMount(_CloudMount):
             hint += (f"；配置里写的是 {self.healed_from}（漏冒号，rclone 会当成本机目录），"
                      f"已按 {self.fs} 访问，建议把配置改成 {self.fs}")
         if self.mode == MODE_RC:
-            # rc-serve 没开时列目录正常但播放会 404，提前给出提示。
-            # 这里是**追加**：探测失败/404 只说明 rc-serve 这一件事，
-            # 不能把上面「配置里的 remote 漏冒号」那条顺带抹掉——那正是要提醒管理员改的。
+            # 探测 rc-serve 出流面：取 remote 根的目录页（rclone 会给 HTML 列表）。
+            # 之前这里拿「旧写法的播放 URL」去探，那个 URL 本来就是错的（没套 []），
+            # 于是无论 rc-serve 开没开都 404，提示成了误报。
             try:
                 resp = self._request("GET", self._rc_play_url("/"), headers=self._rc_headers())
                 if resp.status_code == 404:
-                    hint += "；注意：rc-serve 似乎未开启（--rc-serve），播放可能不可用"
+                    hint += "；注意：rc-serve 可能未开启（rclone rcd 需带 --rc-serve），播放会 404"
             except MountError:
                 pass
         return {
