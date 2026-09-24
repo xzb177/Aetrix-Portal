@@ -83,3 +83,5 @@ docker compose exec aetrix sh -c 'sqlite3 /data/aetrix_unified.db ".backup /data
 - 转码目录与数据库使用持久卷；
 - 部署后验证 `/api/health`、`/admin/`、`/emby/System/Info/Public`；
 - root 密码部署完成后应立即轮换，改用 SSH key 并关闭密码登录。
+
+> 更新脚本不会修改宿主机配置、数据库卷或媒体目录。
