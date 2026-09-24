@@ -261,22 +261,27 @@ try:
         scan_queue.enqueue(row, trigger="manual")
 
     # 采样：直接问队列的实时状态（与面板同一个入口），并在拿到「处理中」时手动刷一次盘，
-    # 读回数据库里那一行——那是「刷新页面也能看到进度」的保证
+    # 读回数据库里那一行——那是「刷新页面也能看到进度」的保证。
+    #
+    # 两条口径不能省（CI 上真的偶发失败过一次，失败详情是 `[{'raw': None}]`）：
+    #   1. **以 `flush_once()` 的返回值判断这次刷盘是不是真的写了东西**。扫描一结束
+    #      `clear_progress` 就会把进度清成 None，而「上一条查询」与「刷盘」之间有个窗口——
+    #      快照可能已经空了，那就是「刷了 0 条」，不是「进度没落盘」。
+    #   2. **读回必须另开一个会话**：在同一条查询身上 refresh，拿到的可能是刷新前的快照。
+    # 所以：刷到 0 条就下一轮再试，只把真正写进去过的那次记下来。
     deadline = time.monotonic() + 20
-    flushed = False
     while time.monotonic() < deadline:
         with SessionLocal() as db:
             lib = db.query(em.Library).filter(em.Library.id == lib_p).first()
             payload = scan_queue.live_payload(lib)
-            progress_part = (payload or {}).get("progress") or {}
-            if payload and payload.get("state") == "running":
+            running = bool(payload) and payload.get("state") == "running"
+            if running:
                 seen_progress.append(payload)
-            if not flushed and progress_part.get("processed", 0) >= 1:
-                scan_queue.flush_once()
+        if running and not persisted_row and scan_queue.flush_once():
+            with SessionLocal() as db:  # 新会话：读的是刷盘之后的值
                 row = db.query(em.Library).filter(em.Library.id == lib_p).first()
-                db.refresh(row)
-                persisted_row.append({"raw": row.scan_progress})
-                flushed = True
+                if row.scan_progress:
+                    persisted_row.append({"raw": row.scan_progress})
         if scan_queue.snapshot()["history"]:
             break
         time.sleep(0.01)
@@ -301,8 +306,8 @@ try:
     with SessionLocal() as db:
         lib = db.query(em.Library).filter(em.Library.id == lib_p).first()
     check("进度快照落进库里（不是只在内存里）",
-          bool(persisted_row) and persisted_row[0]["raw"] and "processed" in persisted_row[0]["raw"],
-          str(persisted_row)[:160])
+          bool(persisted_row) and "processed" in (persisted_row[0]["raw"] or {}),
+          str(persisted_row)[:160] or "一次都没刷进库（flush 始终刷到 0 条：扫描太快或清空抢在前面）")
     check("扫描结束后清掉了进度快照，且 scan_live 为空",
           lib.scan_progress is None and scan_queue.live_payload(lib) is None,
           f"scan_progress={lib.scan_progress!r}")
