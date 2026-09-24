@@ -48,6 +48,11 @@ MODE_CLI = "cli"
 RCLONE_BIN = os.getenv("MOUNT_RCLONE_BIN", "rclone")
 RCLONE_CONFIG = os.getenv("MOUNT_RCLONE_CONFIG", "")
 RC_URL = os.getenv("MOUNT_RCLONE_RC_URL", "http://127.0.0.1:5572")
+# 服务器侧统一配置的 RC 凭据（见 docker-compose.yml 的 .env）：
+# 同一台机器上的 rclone RC 属于本机基础设施，挂载表单不必（也不应该）每条都存一份密码。
+# 表单留空 → 直接用这里；表单填错 → 先按填的试，失败自动回退到这里并记一条日志。
+RC_USER = os.getenv("MOUNT_RCLONE_RC_USER", "").strip()
+RC_PASS = os.getenv("MOUNT_RCLONE_RC_PASS", "")
 
 # CLI 输出里这些字样说明是凭据问题而不是网络/路径问题
 _AUTH_HINTS = ("unauthorized", "401", "403", "invalid_grant", "token", "credentials",
@@ -98,19 +103,37 @@ def run_rclone(args: list[str], *, bin_path: str = "", config: str = "",
 
 def rc_call(rc_url: str, path: str, payload: Optional[dict] = None, *,
             username: str = "", password: str = "", timeout: float = 0) -> dict:
-    """调用 rclone RC API（未开启 RC 时给出可操作的提示）"""
+    """调用 rclone RC API（未开启 RC 时给出可操作的提示）
+
+    凭据优先级：调用方传入的 → 服务器 .env 里统一配置的。传入的若被 RC 拒绝（401/403），
+    自动回退到服务器配置再试一次：挂载表单里填错密码不该让整条挂载永远用不了，
+    而这台机器上的 RC 本来就是本站自己管的。回退命中会记一条日志，便于发现表单填错。
+    """
     import httpx
 
     base = (rc_url or RC_URL).strip().rstrip("/")
     if not base.startswith(("http://", "https://")):
         raise MountError("RC 地址必须以 http:// 或 https:// 开头（如 http://127.0.0.1:5572）")
     headers = {"Content-Type": "application/json"}
-    auth = (username, password) if username else None
-    try:
+
+    def _try(user: str, secret: str) -> httpx.Response:
+        auth = (user, secret) if user else None
         with httpx.Client(timeout=timeout or mount_lib.MOUNT_TIMEOUT,
                           follow_redirects=True) as client:
-            resp = client.post(f"{base}/{path.lstrip('/')}", json=payload or {},
+            return client.post(f"{base}/{path.lstrip('/')}", json=payload or {},
                                headers=headers, auth=auth)
+
+    username = (username or "").strip()
+    password = password or ""
+    try:
+        resp = _try(username, password)
+        if resp.status_code in (401, 403) and RC_USER and (
+            username != RC_USER or password != RC_PASS
+        ):
+            logger.info(
+                "rclone RC 拒绝表单里的凭据（%s），回退到服务器统一配置的 RC 账号", username or "空",
+            )
+            resp = _try(RC_USER, RC_PASS)
     except Exception as exc:  # noqa: BLE001 — 网络层异常统一成可读提示
         raise MountError(
             f"连接 rclone RC 失败: {exc}（确认已启动 rclone rcd --rc-serve，"
@@ -160,8 +183,9 @@ class RcloneMount(_CloudMount):
         # fs 就是 rclone 的「remote:路径」，例如 gdrive:Movies
         self.fs = (cfg.get("fs") or cfg.get("remote") or "").strip()
         self.rc_url = (cfg.get("rc_url") or RC_URL).strip().rstrip("/") or RC_URL
-        self.rc_user = (cfg.get("rc_user") or "").strip()
-        self.rc_pass = cfg.get("rc_pass") or ""
+        # 留空即用服务器 .env 里统一配置的 RC 账号：挂载记录不存 RC 密码
+        self.rc_user = (cfg.get("rc_user") or RC_USER).strip()
+        self.rc_pass = cfg.get("rc_pass") or RC_PASS
         self.bin_path = (cfg.get("rclone_bin") or "").strip()
         self.config_path = (cfg.get("rclone_config") or "").strip()
 
