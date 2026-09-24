@@ -23,18 +23,30 @@
  *
  * v2.6.26：站内消息不置顶、也不挤进账号速览条（挤进去会把「数据条」变成混合体）：
  * 速览条只留「账号与经济」（积分 / 签到 / 邀请），消息由顶栏带角标的音铃承担。
+ *
+ * v2.34.0：速览条下面补上「我的面板」——观影数据（累计时长 / 播放次数 / 看过影片）、
+ * 进行中的事项（我的求片 / 我的工单，带数量与入口）、以及**只有本账号真在播时才出现**的
+ * 「正在播放」（带一键结束）。这三件都是门户独有、客户端给不了的：客户端只知道「这台机器在放
+ * 什么」，不知道账号名下还有哪些设备在放、求片处理到哪一步、工单有没有人回。
+ *
+ * 面板只做「一眼看到状态 + 点进去办事」：完整的会话清单与设备管理仍在个人中心（控制面板），
+ * 与顶栏铃铛 / 消息中心的分工一致——同一个语义，摘要在一处、全量在另一处，不会两处都铺全。
  */
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
+import {
+  subscriptionApi, isExpiringSoon, embyApi, mediaSeekApi, ticketApi,
+  type MySubscription, type WatchStats, type MyPlaybackSession,
+} from '@/api'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  ChevronRight, Crown, MessageSquareDashed,
+  ChevronRight, Crown, MessageSquareDashed, LayoutDashboard, Inbox,
   Wallet, CalendarCheck, Gift, Sparkles, Tv, TriangleAlert,
+  Clock, Clapperboard, Film, Ticket, MonitorSmartphone, CircleStop,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
@@ -52,6 +64,14 @@ const quickStats = ref({
   checkedToday: false,
   invited: null as number | null,
 })
+
+// ===== 我的面板（v2.34.0）：观影数据 / 进行中的事项 / 正在播放 =====
+// 「正在播放」在这里只是**状态**（有会话才渲染），不是管理清单——完整会话列表在个人中心。
+const stats = ref<WatchStats | null>(null)
+const seekCounts = ref<{ active: number; completed: number } | null>(null)
+const ticketCounts = ref<{ active: number; settled: number } | null>(null)
+const sessions = ref<MyPlaybackSession[]>([])
+const stoppingSession = ref('')
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -130,17 +150,92 @@ const accountCells = computed(() => [
   },
 ])
 
+/** 累计观看时长：不足 1 小时按分钟显示，别让新用户一上来就看到「0 小时」 */
+function formatWatchTime(seconds?: number | null) {
+  if (!seconds || seconds <= 0) return '—'
+  const hours = Math.floor(seconds / 3600)
+  if (hours >= 1) return `${hours} 小时`
+  return `${Math.max(1, Math.round(seconds / 60))} 分钟`
+}
+
+const watchCells = computed(() => [
+  { key: 'time', icon: Clock, label: '累计观看', value: formatWatchTime(stats.value?.total_seconds) },
+  { key: 'plays', icon: Clapperboard, label: '播放次数', value: stats.value ? String(stats.value.total_plays) : '—' },
+  { key: 'items', icon: Film, label: '看过影片', value: stats.value ? String(stats.value.watched_items) : '—' },
+])
+
+// 进行中的事项：只列「自己提交的东西处理到哪了」。数量为 0 时显示「—」而不显示 0，
+// sub 再说清下一步会发生什么——一个孤零零的 0 读起来像「功能坏了」，不像「没事可做」。
+const todoRows = computed(() => {
+  const seek = seekCounts.value
+  const seekActive = seek?.active ?? 0
+  const ticket = ticketCounts.value
+  const ticketActive = ticket?.active ?? 0
+  return [
+    {
+      key: 'seek',
+      to: '/request',
+      icon: MessageSquareDashed,
+      label: '我的求片',
+      value: seekActive > 0 ? String(seekActive) : '—',
+      sub: !seek
+        ? '查看求片进度'
+        : seekActive > 0
+          ? '入库后会在消息中心通知你'
+          : seek.completed > 0
+            ? `已入库 ${seek.completed} 部`
+            : '还没提交过求片',
+      hot: seekActive > 0,
+    },
+    {
+      key: 'ticket',
+      to: '/tickets',
+      icon: Ticket,
+      label: '我的工单',
+      value: ticketActive > 0 ? String(ticketActive) : '—',
+      sub: !ticket
+        ? '查看工单状态'
+        : ticketActive > 0
+          ? '客服回复会推送到消息中心'
+          : ticket.settled > 0
+            ? `已处理 ${ticket.settled} 个`
+            : '遇到问题可以提交工单',
+      hot: ticketActive > 0,
+    },
+  ]
+})
+
+async function stopSession(session: MyPlaybackSession) {
+  stoppingSession.value = session.session_key
+  try {
+    await embyApi.stopSession(session.session_key)
+    toast.success(`已结束「${session.device || '未知设备'}」上的播放`)
+    sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '结束播放失败')
+  } finally {
+    stoppingSession.value = ''
+  }
+}
+
 onMounted(async () => {
   try {
     // v2.10.3：消息与公告不再在首页拉取——那是顶栏铃铛的事（它本来就在每次轮询未读数），
     // 首页少一组请求，也不再重复展示同一批未读
-    const [resume, latest, pointsRes, checkinRes, inviteRes, subs] = await Promise.all([
+    const [resume, latest, pointsRes, checkinRes, inviteRes, subs,
+      statsRes, seekRes, ticketsRes, sessionsRes] = await Promise.all([
       protocolApi.getResume(12).catch((): EmbyItem[] => []),
       protocolApi.getLatest(16).catch((): EmbyItem[] => []),
       pointsApi.log({ limit: 1 }).catch((): null => null),
       checkinApi.status().catch((): null => null),
       inviteApi.myCode().catch((): null => null),
       subscriptionApi.getMine().catch((): MySubscription[] => []),
+      // 面板数据：任一项失败都各归各的（catch 成 null），不会连带整页报错
+      embyApi.getStats().catch((): WatchStats | null => null),
+      mediaSeekApi.getMyRequests().catch((): null => null),
+      ticketApi.getMyTickets().catch((): null => null),
+      embyApi.getSessions().catch((): { sessions: MyPlaybackSession[] } | null => null),
     ])
     resumeItems.value = resume
     latestItems.value = latest
@@ -151,6 +246,22 @@ onMounted(async () => {
     }
     if (inviteRes) quickStats.value.invited = inviteRes.invited_count
     subscriptions.value = Array.isArray(subs) ? subs : []
+
+    stats.value = statsRes
+    if (seekRes) {
+      const rows = seekRes.requests || []
+      seekCounts.value = {
+        active: rows.filter((r) => r.status === 'pending' || r.status === 'approved').length,
+        completed: rows.filter((r) => r.status === 'completed').length,
+      }
+    }
+    if (Array.isArray(ticketsRes)) {
+      ticketCounts.value = {
+        active: ticketsRes.filter((t) => t.status === 'open' || t.status === 'pending').length,
+        settled: ticketsRes.filter((t) => t.status === 'closed' || t.status === 'resolved').length,
+      }
+    }
+    sessions.value = sessionsRes?.sessions || []
   } catch (err: any) {
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')
@@ -269,6 +380,98 @@ onMounted(async () => {
           <span class="cell-value">{{ c.value }}</span>
           <span class="cell-sub" :class="{ hot: c.hot }">{{ c.sub }}</span>
         </RouterLink>
+      </section>
+
+      <!-- 我的面板（v2.34.0）：观影数据 / 进行中的事项 / 正在播放（只在本账号真在播时出现）。
+           口径：这些是门户独有、客户端给不了的——账号名下的求片与工单状态、跨设备在播概况。
+           完整会话清单与设备管理仍在个人中心，这里只给「一眼看到 + 一键处理」。 -->
+      <section class="panel-grid au-anim-up" :class="{ loading }">
+        <div class="panel-card">
+          <header class="panel-head">
+            <span class="panel-title">
+              <LayoutDashboard :size="15" />
+              我的观影
+            </span>
+            <RouterLink to="/media?tab=history" class="panel-more">
+              观看记录
+              <ChevronRight :size="13" />
+            </RouterLink>
+          </header>
+          <div class="panel-stats">
+            <div v-for="c in watchCells" :key="c.key" class="panel-stat">
+              <strong>{{ c.value }}</strong>
+              <span class="panel-stat-label">
+                <component :is="c.icon" :size="12" />
+                {{ c.label }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <header class="panel-head">
+            <span class="panel-title">
+              <Inbox :size="15" />
+              进行中的事项
+            </span>
+          </header>
+          <div class="todo-list">
+            <RouterLink v-for="t in todoRows" :key="t.key" :to="t.to" class="todo-row">
+              <span class="todo-icon">
+                <component :is="t.icon" :size="15" />
+              </span>
+              <span class="todo-body">
+                <span class="todo-label">{{ t.label }}</span>
+                <span class="todo-sub">{{ t.sub }}</span>
+              </span>
+              <span class="todo-value" :class="{ hot: t.hot }">{{ t.value }}</span>
+              <ChevronRight :size="14" class="todo-arrow" />
+            </RouterLink>
+          </div>
+        </div>
+      </section>
+
+      <!-- 正在播放：有会话才出现（一条状态，不是管理清单）；完整清单在个人中心 -->
+      <section v-if="sessions.length" class="panel-card playing-card au-anim-up">
+        <header class="panel-head">
+          <span class="panel-title">
+            <MonitorSmartphone :size="15" />
+            正在播放
+          </span>
+          <span class="panel-hint">{{ sessions.length }} 个会话</span>
+        </header>
+        <div class="playing-list">
+          <div v-for="s in sessions" :key="s.session_key" class="playing-row">
+            <div class="playing-main">
+              <div class="playing-title">
+                <RouterLink :to="`/media/${s.item_id}`">{{ s.item }}</RouterLink>
+                <span v-if="s.is_paused" class="playing-tag">已暂停</span>
+              </div>
+              <div class="playing-meta">
+                <span>{{ s.device || '未知设备' }}</span>
+                <template v-if="s.client">
+                  <span class="dot">·</span>
+                  <span>{{ s.client }}</span>
+                </template>
+                <template v-if="s.play_method">
+                  <span class="dot">·</span>
+                  <span>{{ s.play_method === 'Transcode' ? '转码' : '直连' }}</span>
+                </template>
+              </div>
+              <div class="playing-bar">
+                <div class="playing-fill" :style="{ width: s.progress + '%' }"></div>
+              </div>
+            </div>
+            <button
+              class="au-btn au-btn-danger au-btn-sm"
+              :disabled="stoppingSession === s.session_key"
+              @click="stopSession(s)"
+            >
+              <CircleStop :size="13" />
+              {{ stoppingSession === s.session_key ? '结束中' : '结束' }}
+            </button>
+          </div>
+        </div>
       </section>
 
       <!-- 片库动态：追新在前。
@@ -656,6 +859,273 @@ onMounted(async () => {
   font-weight: 600;
 }
 
+/* ==================== 我的面板（v2.34.0） ==================== */
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  margin-bottom: 2rem;
+  transition: opacity var(--au-fast) var(--au-ease);
+}
+
+/* 与账号速览条同一口径：加载中先压暗，避免一闪而过的「—」被读成「没有数据」 */
+.panel-grid.loading {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.panel-card {
+  padding: 1rem 1.125rem 1.125rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.875rem;
+}
+
+.panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--au-text);
+}
+
+.panel-title svg {
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.panel-hint {
+  font-size: 0.75rem;
+  color: var(--au-text-4);
+  white-space: nowrap;
+}
+
+.panel-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.panel-more:hover {
+  color: var(--au-primary);
+}
+
+.panel-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.panel-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.panel-stat strong {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-stat-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+}
+
+.panel-stat-label svg {
+  flex-shrink: 0;
+}
+
+/* 进行中的事项：两行（求片 / 工单），每行一条真实状态 */
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.todo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
+}
+
+.todo-row:hover {
+  border-color: var(--au-primary-border);
+  background: var(--au-surface-3);
+}
+
+.todo-icon {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--au-r-sm);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
+}
+
+.todo-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.todo-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.todo-sub {
+  font-size: 0.6875rem;
+  color: var(--au-text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.todo-value {
+  flex-shrink: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--au-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-value.hot {
+  color: var(--au-warning);
+}
+
+.todo-arrow {
+  flex-shrink: 0;
+  color: var(--au-text-4);
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.todo-row:hover .todo-arrow {
+  color: var(--au-primary);
+}
+
+/* 正在播放：跨整行的一条状态卡 */
+.playing-card {
+  margin-bottom: 2rem;
+}
+
+.playing-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.playing-row {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+}
+
+.playing-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.playing-title {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.playing-title a {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playing-title a:hover {
+  color: var(--au-primary);
+}
+
+.playing-tag {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.375rem;
+  border-radius: var(--au-r-full);
+  background: var(--au-warning-soft);
+  color: var(--au-warning);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.playing-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+  min-width: 0;
+}
+
+.playing-meta .dot {
+  color: var(--au-text-4);
+}
+
+.playing-bar {
+  height: 4px;
+  background: var(--au-track);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.playing-fill {
+  height: 100%;
+  background: var(--au-gradient);
+  border-radius: 2px;
+}
+
 /* ==================== 内容行 ==================== */
 
 .main {
@@ -789,6 +1259,11 @@ onMounted(async () => {
   .hero-grid {
     grid-template-columns: 1fr;
     gap: 1.25rem;
+  }
+
+  /* 窄屏：两块面板竖排（观影数据在上、进行中的事项在下） */
+  .panel-grid {
+    grid-template-columns: 1fr;
   }
 
   .member-card {
