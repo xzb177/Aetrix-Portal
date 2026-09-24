@@ -3,8 +3,8 @@ global:
   resolve_timeout: 5m
   # 默认接收器配置
   smtp_smarthost: 'smtp.example.com:587'
-  smtp_from: 'alertmanager@royalbot.com'
-  smtp_auth_username: 'alertmanager@royalbot.com'
+  smtp_from: 'alertmanager@aetrix.com'
+  smtp_auth_username: 'alertmanager@aetrix.com'
   smtp_auth_password: 'password'
 
 # 路由配置
@@ -33,9 +33,9 @@ receivers:
     webhook_configs:
       - url: 'http://backend:8000/api/alerts/webhook'
     email_configs:
-      - to: 'admin@royalbot.com'
+      - to: 'admin@aetrix.com'
         headers:
-          Subject: '[CRITICAL] RoyalBot Alert'
+          Subject: '[CRITICAL] Aetrix Alert'
 
   - name: 'warning'
     webhook_configs:

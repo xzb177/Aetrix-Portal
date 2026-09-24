@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RoyalBot Portal 数据库迁移脚本
+Aetrix Portal 数据库迁移脚本
 从 SQLite 迁移到 PostgreSQL
 
 用法:
@@ -8,8 +8,8 @@ RoyalBot Portal 数据库迁移脚本
 
 示例:
     python migrate-to-postgres.py \\
-        --source ./royalbot_unified.db \\
-        --target postgresql://royalbot:password@localhost:5432/royalbot
+        --source ./aetrix_unified.db \\
+        --target postgresql://aetrix:password@localhost:5432/aetrix
 """
 
 import argparse
@@ -450,15 +450,15 @@ class DatabaseMigrator:
 
 def main():
     parser = argparse.ArgumentParser(description='从 SQLite 迁移到 PostgreSQL')
-    parser.add_argument('--source', default='./royalbot_unified.db',
+    parser.add_argument('--source', default='./aetrix_unified.db',
                         help='SQLite 数据库路径（默认当前 EM 的库）')
-    parser.add_argument('--target', default='postgresql://royalbot:royalbot_change_me@localhost:5432/royalbot',
+    parser.add_argument('--target', default='postgresql://aetrix:aetrix_change_me@localhost:5432/aetrix',
                         help='PostgreSQL 连接 URL')
 
     args = parser.parse_args()
 
     print("=" * 50)
-    print("RoyalBot Portal 数据库迁移工具")
+    print("Aetrix Portal 数据库迁移工具")
     print("=" * 50)
 
     try:

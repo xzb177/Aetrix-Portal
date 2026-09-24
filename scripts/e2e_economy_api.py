@@ -4,8 +4,8 @@ import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 不写死库文件名：交给 backend.database 解析，升级上来的老部署继续用原库文件
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 
 from fastapi.testclient import TestClient
 

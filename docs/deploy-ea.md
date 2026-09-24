@@ -137,7 +137,7 @@ EA 与 EM 必须共用**同一个数据库**与**同一个 `SECRET_KEY`**（客�
 
 | 场景 | 是否可行 |
 | --- | --- |
-| SQLite，EM 与 EA **在同一台机器**（同一份 `royalbot_unified.db`） | ✅ 可行（WAL 下多进程读写正常） |
+| SQLite，EM 与 EA **在同一台机器**（同一份 `aetrix_unified.db`） | ✅ 可行（WAL 下多进程读写正常） |
 | SQLite，EM 与 EA 在**不同机器** | ❌ 不可行——SQLite 是单机文件，无法通过网络安全共享 |
 | PostgreSQL，任意部署位置 | ✅ 推荐 |
 

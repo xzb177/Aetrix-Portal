@@ -621,7 +621,15 @@ class MountProvider:
     def exists(self, rel: str) -> bool:
         root = self.local_root
         if root is not None:
-            return os.path.exists(os.path.join(root, rel.lstrip("/")))
+            # 与 list_dir / resolve / read_text 同一套越界口径（v2.30.0）：
+            # 这里以前直接 os.path.join(root, rel)，``../`` 或符号链接能探到挂载根之外。
+            # 越界的 rel 一律当作「不存在」，不是 500。
+            try:
+                return os.path.exists(safe_local_path(root, rel.lstrip("/")))
+            except ValueError:
+                logger.warning("挂载路径越界，按不存在处理: mount=%s rel=%s",
+                               getattr(self.mount, "id", "?"), rel)
+                return False
         try:
             parent, _, name = rel.rstrip("/").rpartition("/")
             return any(e.name == name for e in self.list_dir(parent or "/"))
@@ -632,8 +640,9 @@ class MountProvider:
         root = self.local_root
         if root is not None:
             try:
-                return os.path.getsize(os.path.join(root, rel.lstrip("/")))
-            except OSError:
+                return os.path.getsize(safe_local_path(root, rel.lstrip("/")))
+            except (OSError, ValueError):
+                # 越界与读不到都返回 0：调用方（扫描 / 播放信息）只需知道「拿不到大小」
                 return 0
         try:
             parent, _, name = rel.rstrip("/").rpartition("/")

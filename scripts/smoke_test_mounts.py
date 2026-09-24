@@ -23,8 +23,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 不写死库文件名：交给 backend.database 解析（新装 aetrix_unified.db，老部署沿用原库）
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("DATABASE_URL", "sqlite:///./royalbot_unified.db")
 os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
 os.environ.pop("PAN115_COOKIE", None)
 
@@ -606,6 +606,38 @@ check("本机挂载解析成本机文件",
       target.kind == "local" and target.value.endswith("Local.Movie.2024.1080p.mkv"))
 check("本机挂载存在性判断",
       local_provider.exists("/Sub/Local.EP01.mkv") and not local_provider.exists("/nope.mkv"))
+
+# 路径越界（v2.30.0）：``exists()`` / ``size()`` 与 ``list_dir`` / ``resolve`` / ``read_text``
+# 统一口径。以前这里直接 ``os.path.join(root, rel)``，于是 ``../`` 能探到挂载根之外——
+# 一个目录里放个 ``../../etc/passwd``，面板就能把「这个文件存不存在 / 多大」问出来。
+# 越界一律当作「不存在 / 拿不到大小」，不是 500。
+SECRET_OUTSIDE = os.path.join(os.path.dirname(local_root), "outside_secret.mkv")
+with open(SECRET_OUTSIDE, "wb") as f:
+    f.write(b"z" * 4096)
+rel_escape = os.path.relpath(SECRET_OUTSIDE, local_root).replace(os.sep, "/")
+check("挂载根之外的文件：exists() 报不存在（不被 ../ 探到）",
+      local_provider.exists("/../" + os.path.basename(SECRET_OUTSIDE)) is False
+      and local_provider.exists(rel_escape) is False,
+      f"rel={rel_escape}")
+check("挂载根之外的文件：size() 报 0（不是真实大小）",
+      local_provider.size("/../" + os.path.basename(SECRET_OUTSIDE)) == 0
+      and local_provider.size(rel_escape) == 0)
+check("越界不会把挂载内的正常文件一起挡掉",
+      local_provider.exists("/Local.Movie.2024.1080p.mkv") and local_provider.size("/Sub/Local.EP01.mkv") == 2048)
+
+# 符号链接指向挂载根之外：与越界同一口径（安全边界看的是**真实路径**）
+link_outside = os.path.join(local_root, "escape_link")
+try:
+    os.symlink(os.path.dirname(local_root), link_outside)
+except (OSError, NotImplementedError):  # 平台不支持符号链接时跳过，不算失败
+    link_supported = False
+else:
+    link_supported = True
+if link_supported:
+    check("符号链接指向挂载根之外：exists() 报不存在",
+          local_provider.exists("/escape_link/" + os.path.basename(SECRET_OUTSIDE)) is False)
+    check("符号链接指向挂载根之外：size() 报 0",
+          local_provider.size("/escape_link/" + os.path.basename(SECRET_OUTSIDE)) == 0)
 
 missing = mnt.build_provider(_mount("坏盘", "local", path="/does/not/exist"))
 try:

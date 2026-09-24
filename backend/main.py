@@ -1,5 +1,5 @@
 """
-RoyalBot Portal - 统一后端主入口
+Aetrix Portal - 统一后端主入口
 整合用户端和管理后台的所有 API，并托管用户前端（Vue SPA）静态资源
 """
 import os
@@ -26,6 +26,7 @@ from sqlalchemy import text
 from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
 from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
+from backend.emby_server.audit import AdminWriteAuditMiddleware
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
 from backend.api.emby_servers import router as emby_servers_router
@@ -84,7 +85,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
-    logger.info("🚀 RoyalBot Portal 正在启动...")
+    logger.info("🚀 Aetrix Portal 正在启动...")
     logger.info(f"📊 数据库类型: {DATABASE_TYPE}")
 
     # 初始化数据库
@@ -123,12 +124,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — 能力落地失败不能拦住启动
         logger.warning(f"外部服务能力未落地（可忽略）: {e}")
 
-    logger.info("✅ RoyalBot Portal 启动完成")
+    logger.info("✅ Aetrix Portal 启动完成")
 
     yield
 
     # 关闭时：先收掉子进程与临时文件，避免 ffmpeg 变成孤儿继续吃 CPU/磁盘
-    logger.info("👋 RoyalBot Portal 正在关闭...")
+    logger.info("👋 Aetrix Portal 正在关闭...")
     try:
         maintenance.shutdown_cleanup()
     except Exception as e:  # noqa: BLE001
@@ -137,9 +138,9 @@ async def lifespan(app: FastAPI):
 
 # 创建 FastAPI 应用
 app = FastAPI(
-    title="RoyalBot Portal",
-    description="RoyalBot 统一门户 API",
-    version="2.29.0",
+    title="Aetrix Portal",
+    description="Aetrix 统一门户 API",
+    version="2.30.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -192,6 +193,12 @@ except TypeError:  # pragma: no cover — 老版 Starlette 没有按内容类型
 # 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）
 app.add_middleware(DownloadGuardMiddleware)
 
+# 媒体与交付域的写操作审计（v2.30.0）：``/api/admin/emby/*`` 的成功写操作落进操作日志。
+# 这一域长期不写审计：删媒体库 / 删条目 / 删 115 账号 / 停全站转码，在「操作日志」里
+# 都查不到是谁干的。做成中间件而不是逐端点调用，是因为端点会新增，
+# 而「记得补审计」不是一种机制（详见 backend/emby_server/audit.py）。
+app.add_middleware(AdminWriteAuditMiddleware)
+
 
 # ==================== 异常处理 ====================
 
@@ -227,7 +234,7 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "database": DATABASE_TYPE,
         "online_users": manager.get_online_count(),
-        "emby_server": os.getenv("EMBY_SERVER_NAME", "RoyalBot Media Server"),
+        "emby_server": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
         "service": "em",
         "version": app.version,
         "emby_gateway": _ENABLE_EMBY_GATEWAY,
@@ -403,7 +410,7 @@ async def root():
     if index_file.is_file():
         return FileResponse(index_file)
     return {
-        "name": "RoyalBot Portal",
+        "name": "Aetrix Portal",
         "version": app.version,
         "status": "running",
         "timestamp": datetime.now().isoformat(),

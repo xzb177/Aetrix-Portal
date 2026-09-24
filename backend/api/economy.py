@@ -18,11 +18,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import time
 import uuid
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -739,10 +740,64 @@ def my_orders(
 # ==================== 支付回调 ====================
 
 def _verify_yipay_notify(params: dict, key: str) -> bool:
-    """易支付回调验签（MD5）"""
-    sign = params.get("sign", "")
+    """易支付回调验签（MD5）
+
+    比较用 ``hmac.compare_digest``：签名是回调方给的字符串，逐字节短路比较
+    会把「对了几位」变成可测量的时间差（v2.30.0）。
+    """
+    sign = str(params.get("sign") or "")
     expected = _yipay_sign(params, key)
-    return sign.lower() == expected.lower()
+    return hmac.compare_digest(sign.lower(), expected.lower())
+
+
+def _order_paid_amount(recharge_order=None, subscription_order=None) -> Optional[Decimal]:
+    """订单**应付金额**（实付口径）
+
+    下单时把订单金额统一写成实付（原价 / 优惠 / 实付三个快照见 ``create_payment_order``），
+    所以这里读的就是用户真正该付的钱。
+    """
+    order = recharge_order if recharge_order is not None else subscription_order
+    if order is None:
+        return None
+    raw = order.price if recharge_order is not None else order.amount
+    if raw is None:
+        return None
+    try:
+        return Decimal(str(raw)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _notify_amount(value) -> Optional[Decimal]:
+    """回调里报的金额（解析不了返回 None，不是 0）"""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return Decimal(str(value).strip()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _amount_mismatch(recharge_order, subscription_order, raw: dict) -> Optional[str]:
+    """回调金额与订单是否对不上（对不上时返回给人看的说明）
+
+    验签只证明「这条通知来自网关」；它不证明**钱数对不对**。网关配错价、订单号被复用、
+    上游按别的金额收款时，旧实现照样发货（积分 / 会员都按订单发货），而钱只收了一部分。
+
+    所以回调里报了金额就逐笔核对：对不上 **不发货**（返回 fail，让网关重试并让运维看见）。
+    回调没带金额时只能记一行日志按原逻辑发货——不能因为「读不到 money」把正常付款卡死。
+    """
+    expected = _order_paid_amount(recharge_order, subscription_order)
+    reported = _notify_amount(raw.get("money"))
+    if expected is None:
+        return None
+    if reported is None:
+        logger.warning("支付回调未带金额，无法核对（按订单实付 %s 发货）: order=%s",
+                       expected, raw.get("out_trade_no"))
+        return None
+    if reported != expected:
+        return f"金额不符：订单应付 {expected}，回调报 {reported}"
+    return None
 
 
 def _claim_order(db: Session, model, order) -> bool:
@@ -886,6 +941,11 @@ async def payment_notify(request: Request, db: Session = Depends(get_db)):
 
     if not recharge_order and not subscription_order:
         logger.warning("支付回调订单不存在: %s", out_trade_no)
+        return "fail"
+
+    mismatch = _amount_mismatch(recharge_order, subscription_order, raw)
+    if mismatch:
+        logger.error("支付回调被拒（%s）: order=%s", mismatch, out_trade_no)
         return "fail"
 
     try:

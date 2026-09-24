@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# RoyalBot Portal Database Restore Script
+# Aetrix Portal Database Restore Script
 #
 # This script restores a PostgreSQL database from a backup file
 #
@@ -31,7 +31,7 @@ log_error() {
 if [ $# -ne 2 ]; then
     log_error "Usage: $0 <database_name> <backup_file>"
     echo ""
-    echo "Example: $0 portal_user /root/RoyalBot-Portal/backups/daily/portal_user_daily_20240101_020000.sql.gz"
+    echo "Example: $0 portal_user /root/Aetrix-Portal/backups/daily/portal_user_daily_20240101_020000.sql.gz"
     exit 1
 fi
 

@@ -2,6 +2,68 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.30.0] - 2026-09-24
+
+### 统一品牌与命名：RoyalBot → Aetrix
+
+仓库里一半叫新名、一半叫旧名的阶段最难用：改个站名要在两种叫法之间猜，客户端列表里会
+出现两台同名服务器。这一版把所有面向人与面向部署的名字收敛到同一个：**Aetrix**（仓库
+`Aetrix-Portal`，控制面 EM / 数据面 EA 的代号不变）。
+
+#### 改动
+
+- **仓库与文档统一**：README 标题与许可证署名、两份部署文档、监控配置、运维脚本抬头
+  全部改到同一个名字。
+- **前端**：管理端标题 `RoyalBot Admin` → `Aetrix Admin`、包名与站点默认名 `RoyalBot`
+  → `Aetrix`、设计令牌注释；两者与用户端 manifest 一致。
+- **数据库默认文件名** `royalbot_unified.db` → `aetrix_unified.db`，并带**不改动老部署**的兼容：
+  新名不存在而老文件还在时继续沿用老文件（见下）。
+- **运维标识跟着走**：PostgreSQL 默认库 / 账号、容器名 `aetrix_postgres`、systemd 单元
+  `aetrix-em` / `aetrix-ea`、备份目录 `/root/Aetrix-Portal/backups`、备份产物 `aetrix_*.sql.gz`、
+  Prometheus 作业名与告警文案。
+- **脚本不再写死库文件名**：`create_admin.py` / `deploy_check.py` / 各冒烟测试原先各自写死
+  `sqlite:///./royalbot_unified.db`，改品牌后会「在错的库里建管理员」——现在统一交给
+  `backend.database` 解析（`default_sqlite_url()`），升级上来的部署继续用原库文件。
+
+#### 安全与护栏
+
+- **`scripts/check_emby_sync.sh` 里写死的 Emby API Key 与生产域名移出**：公开仓库里写死
+  凭据等于已泄露。现在 `EMBY_URL` / `EMBY_API_KEY` 只从环境读，缺失时明确报错退出（退出码 2）。
+- **支付回调金额核对**：验签只证明「通知来自网关」，不证明钱数；回调报了金额就与订单实付
+  逐笔核对，对不上不发货（返回 `fail`），没带金额则记一行日志按原逻辑发货。
+- **回调验签改用 `hmac.compare_digest`**，不再逐字节短路比较。
+- **挂载路径越界**：`exists()` / `size()` 与 `list_dir` / `resolve` / `read_text` 统一口径，
+  `../` 或符号链接不再探到挂载根之外（越界按「不存在 / 拿不到大小」处理，不是 500）。
+- **管理后台写操作审计中间件**（`backend/emby_server/audit.py`）：`/api/admin/emby/*` 的成功
+  写操作落进操作日志——删媒体库 / 删条目 / 删 115 账号 / 停全站转码以前在「操作日志」里查不到。
+  写这条的护栏（`scripts/smoke_test_admin_audit.py`）时又抓出三个真 bug，一并修了：
+  - **`/115/*` 的动作名全是死条目**：路径段 `115` 是字面量命名空间，不是 id，
+    但「全数字就当 id」的口径把它换成 `{}`，于是删 / 改 / 验 115 账号在日志里只剩
+    一句没有语义的 `emby_admin_write`。现在表里出现过的字面量段永不当作 id。
+  - **会话键正则不认真实会话键**：`session_routes` 用 `secrets.token_urlsafe(16)` 生成
+    （含 `-` / `_` / 大写），而正则只认小写字母与数字 → 「结束会话」在多数情况下没有动作名。
+  - **子动作被记成父动作的名字**：「只差一段就退一级」的回退对字面量段也生效，
+    `/mounts/test`（测一个还没保存的挂载）会被记成「创建存储挂载」——运维会看到一条并不存在的操作。
+    现在回退只对 id 占位符 `{}` 生效。
+
+#### 新增护栏（CI 门禁）
+
+- `scripts/check_branding.py`：仓库里不许再出现旧品牌名（`brand-scan: allow` 显式放行）。
+- `scripts/check_hardcoded_secrets.py`：仓库里不许出现像真的密钥（`secret-scan: allow` 显式放行）。
+- 三条静态护栏都进了 CI；`scripts/smoke_test_static_guards.py` 会喂它们违规样本，
+  证明「护栏真的会响」而不只是永远返回 0。
+- `scripts/smoke_test_admin_audit.py`（新）：后台写操作审计的行为护栏，含两个结构性断言——
+  **应用里每个写端点都必须能解析出动作名**，以及 **`ACTION_TABLE` 里不许有死条目**。
+  这两条正是「写了但没生效」的捕手（`/115/*` 四条规则曾全部匹配不上）。
+
+#### ⚠️ 升级需要留意
+
+- `EMBY_SERVER_ID` 默认值改为 `aetrix-emby-server`。若 `.env` 没显式设过它，升级后客户端会
+  把服务器认成新的一台（重登一次即可）；想避免就在 `.env` 里保留旧值。
+- 用旧栈脚本（容器名 `royalbot_postgres`、PostgreSQL 库 / 账号 `royalbot`）的部署：默认值
+  变了，请用环境变量覆盖（`DB_CONTAINER` / `DB_USER` / `DB_NAME`）或沿用你自己的配置。
+- **数据库文件不会被自动改名**：老部署继续用原来的库文件，新装才是 `aetrix_unified.db`。
+
 ## [2.29.0] - 2026-09-23
 
 ### 后台：把「一排按钮直接做事」收成「一个按钮 + 弹窗里详细操作」

@@ -1,12 +1,17 @@
 #!/bin/bash
 # ==============================================================================
-# RoyalBot Portal 密钥轮换脚本
+# Aetrix Portal 密钥轮换脚本
 # ==============================================================================
 # 用途: 轮换敏感密钥（JWT、数据库密码等）
 # 使用: ./rotate-secrets.sh [jwt|postgres|redis|crypto|all]
 # ==============================================================================
 
 set -e
+
+# 容器 / 库 / 账号名跟着项目品牌统一，但**全部可用环境变量覆盖**：
+# 沿用旧栈命名（改名前的容器 / 库 / 账号）的部署，设一下这三个就能继续用。
+DB_CONTAINER="${DB_CONTAINER:-aetrix_postgres}"
+DB_USER="${DB_USER:-aetrix}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -52,8 +57,8 @@ rotate_postgres_password() {
     sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$NEW_PASSWORD/" .env
 
     # 尝试更新 PostgreSQL (需要 Docker 容器运行)
-    if docker ps | grep -q royalbot_postgres; then
-        docker exec -i royalbot_postgres psql -U royalbot -c "ALTER USER royalbot WITH PASSWORD '$NEW_PASSWORD';" 2>/dev/null || true
+    if docker ps | grep -q "$DB_CONTAINER"; then
+        docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -c "ALTER USER $DB_USER WITH PASSWORD '$NEW_PASSWORD';" 2>/dev/null || true
         echo -e "${GREEN}✓ PostgreSQL 密码已轮换${NC}"
     else
         echo -e "${YELLOW}⚠️  PostgreSQL 容器未运行，请手动更新数据库密码${NC}"
@@ -103,28 +108,28 @@ case "${1:-help}" in
         rotate_jwt_secret
         echo ""
         echo -e "${YELLOW}请重启 EM / EA 使更改生效：${NC}"
-        echo "  sudo systemctl restart royalbot-em royalbot-ea   # 或你的进程管理方式"
+        echo "  sudo systemctl restart aetrix-em aetrix-ea   # 或你的进程管理方式"
         ;;
     user)
         backup_env
         rotate_user_secret
         echo ""
         echo -e "${YELLOW}请重启 EM / EA（两边必须用同一个 SECRET_KEY）：${NC}"
-        echo "  sudo systemctl restart royalbot-em royalbot-ea"
+        echo "  sudo systemctl restart aetrix-em aetrix-ea"
         ;;
     postgres)
         backup_env
         rotate_postgres_password
         echo ""
         echo -e "${YELLOW}请重启所有服务（PostgreSQL + EM + EA）：${NC}"
-        echo "  sudo systemctl restart postgresql royalbot-em royalbot-ea"
+        echo "  sudo systemctl restart postgresql aetrix-em aetrix-ea"
         ;;
     redis)
         backup_env
         rotate_redis_password
         echo ""
         echo -e "${YELLOW}请重启相关服务：${NC}"
-        echo "  sudo systemctl restart redis royalbot-em royalbot-ea"
+        echo "  sudo systemctl restart redis aetrix-em aetrix-ea"
         ;;
     crypto)
         backup_env
