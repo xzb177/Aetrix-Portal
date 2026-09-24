@@ -148,7 +148,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Aetrix Portal",
     description="Aetrix 统一门户 API",
-    version="2.30.0",
+    version="2.31.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
