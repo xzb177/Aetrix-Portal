@@ -33,7 +33,7 @@ from backend import models  # noqa: E402
 from backend.database import SessionLocal, engine, init_db  # noqa: E402
 from backend.emby_server import facets  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
-from backend.emby_server.api import _guid_of  # noqa: E402
+from backend.emby_server.api import _guid_of, invalidate_filters_cache  # noqa: E402
 
 init_db()
 
@@ -427,6 +427,60 @@ page_is_action_only = bool(big_name_page) and all(
 )
 check("规模库下按流派筛出的页内条目全部命中（i % 3 == 0），无错漏",
       page_is_action_only, f"页内 {len(big_name_page)} 条，示例 {sorted(big_name_page)[:3]}")
+
+# ==================== 5. 分级与标签筛选 ====================
+# 真实起因：`/Items/Filters` 一直把 OfficialRatings 与 Tags 列进筛选菜单（那正是客户端
+# 渲染筛选面板的依据），但列表端点完全忽略这两个参数——照着菜单选了，拿到的还是全量结果，
+# 看着像「筛选没生效」。这里把「菜单里列出来的维度都真的能筛」钉住。
+#
+# 播在这一节而不是文件开头：上面的断言多处是精确计数（动作 4 条等），
+# 中途加条目会把它们全部打偏。
+print("\n=== 分级与标签筛选（菜单里列出来的维度必须真的能筛）===")
+
+with SessionLocal() as db:
+    db.add_all([
+        em.MediaItem(
+            guid=f"g-{suffix}-rate", library_id=lib_id, item_type="movie",
+            name="分级片 K", sort_name="分级片 k", genres="", studios="",
+            tags="中字,4K", official_rating="PG-13", production_year=2024,
+        ),
+        em.MediaItem(
+            guid=f"g-{suffix}-rate2", library_id=lib_id, item_type="movie",
+            name="分级片 L", sort_name="分级片 l", genres="", studios="",
+            tags="中字", official_rating="R", production_year=2021,
+        ),
+    ])
+    db.commit()
+
+# 筛选菜单自己有一份 TTL 缓存（默认 5 分钟），扫描 / 条目变更时才失效；这里直接造条目、
+# 没走扫描路径，所以手工失效一次（与 smoke_test_item_facets_upgrade 同一套做法）。
+invalidate_filters_cache()
+menu = client.get("/emby/Items/Filters", headers=H).json()
+check("筛选菜单里有分级与标签两个维度（客户端据此渲染筛选面板）",
+      "PG-13" in (menu.get("OfficialRatings") or [])
+      and "4K" in (menu.get("Tags") or []),
+      f"分级={menu.get('OfficialRatings')} 标签={menu.get('Tags')}")
+
+check("OfficialRatings=PG-13 只回该分级的条目",
+      query_names(OfficialRatings="PG-13") == {"分级片 K"},
+      f"{sorted(query_names(OfficialRatings='PG-13'))}")
+check("OfficialRatings 多个值取并集",
+      query_names(OfficialRatings="PG-13,R") == {"分级片 K", "分级片 L"},
+      f"{sorted(query_names(OfficialRatings='PG-13,R'))}")
+check("分级里不存在的值回空集（而不是退回全量）",
+      query_names(OfficialRatings="这个分级不存在") == set(),
+      f"{sorted(query_names(OfficialRatings='这个分级不存在'))}")
+
+check("Tags=4K 只回带该标签的条目",
+      query_names(Tags="4K") == {"分级片 K"},
+      f"{sorted(query_names(Tags='4K'))}")
+check("Tags 与旧 LIKE 口径一致（'中字' 命中两条）",
+      len(query_names(Tags="中字")) == legacy_count("tags", "中字") == 2,
+      f"新={len(query_names(Tags='中字'))} 旧={legacy_count('tags', '中字')}")
+check("标签与分级可以叠加（两个条件同时生效）",
+      query_names(Tags="中字", OfficialRatings="R") == {"分级片 L"},
+      f"{sorted(query_names(Tags='中字', OfficialRatings='R'))}")
+
 
 # ==================== 汇总 ====================
 print()

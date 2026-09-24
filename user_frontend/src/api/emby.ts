@@ -80,11 +80,23 @@ export interface EmbyQuery {
   searchTerm?: string
   genres?: string[]
   years?: number[]
+  officialRatings?: string[]
+  tags?: string[]
+  /** 观看状态：IsFavorite / IsPlayed / IsUnplayed / IsResumable */
+  filters?: string[]
   sortBy?: string
   sortOrder?: 'Ascending' | 'Descending'
   startIndex?: number
   limit?: number
   recursive?: boolean
+}
+
+/** 筛选菜单的可选值（后端 /Items/Filters 给出，取值来自全库） */
+export interface EmbyFilters {
+  Genres: string[]
+  Tags: string[]
+  OfficialRatings: string[]
+  Years: number[]
 }
 
 // 1 tick = 100ns；1000 万 tick = 1 秒
@@ -130,7 +142,21 @@ export const embyApi = {
     if (q.searchTerm) params.SearchTerm = q.searchTerm
     if (q.genres?.length) params.Genres = q.genres.join('|')
     if (q.years?.length) params.Years = q.years.join(',')
+    if (q.officialRatings?.length) params.OfficialRatings = q.officialRatings.join(',')
+    if (q.tags?.length) params.Tags = q.tags.join('|')
+    if (q.filters?.length) params.Filters = q.filters.join(',')
     return api.get<never, { Items: EmbyItem[]; TotalRecordCount: number }>(USER_ITEMS, { params })
+  },
+
+  /** 筛选菜单的可选值（分类 / 标签 / 分级 / 年份） */
+  async getFilters(): Promise<EmbyFilters> {
+    const res = await api.get<never, Partial<EmbyFilters>>('/emby/Items/Filters')
+    return {
+      Genres: res?.Genres || [],
+      Tags: res?.Tags || [],
+      OfficialRatings: res?.OfficialRatings || [],
+      Years: res?.Years || [],
+    }
   },
 
   /** 续看列表（有播放进度未看完） */
