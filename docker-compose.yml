@@ -1,3 +1,5 @@
+name: aetrix-portal
+
 services:
   aetrix:
     build:
