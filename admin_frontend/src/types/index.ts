@@ -690,6 +690,8 @@ export interface EmbyLibrary {
   item_count: number
   /** 刮削策略：missing_only / 3m / 6m / 1y / all */
   scrape_policy?: string
+  /** 管理员直传的媒体库封面；由后端鉴权后返回二进制 */
+  cover_url?: string | null
   /** 按发行平台自动生成的虚拟媒体库（无自己的目录） */
   is_virtual?: boolean
   platform?: string | null

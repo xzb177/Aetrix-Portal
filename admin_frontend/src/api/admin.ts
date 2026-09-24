@@ -1,5 +1,5 @@
 /** v2.2.0 管理端 API（全部走 /api/admin/*，详见 backend/api/admin.py 与 emby_server/portal.py） */
-import { get, post, put, patch, del } from '@/utils/request'
+import { get, getBlob, post, put, patch, del, upload } from '@/utils/request'
 import type {
   AdminInfo,
   AdminListResponse,
@@ -436,6 +436,20 @@ const E = '/emby'
 export const fetchEmbyOverview = () => get<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number }>(`${E}/overview`)
 
 export const fetchLibraries = () => get<{ libraries: EmbyLibrary[] }>(`${E}/libraries`)
+
+/** 拉取封面二进制；管理端图片请求也带 JWT，不把令牌拼进 URL。 */
+export const fetchLibraryCover = (id: number) => getBlob(`${E}/libraries/${id}/cover`)
+
+export const uploadLibraryCover = (id: number, file: File) => {
+  const data = new FormData()
+  data.append('file', file)
+  return upload<{ success: boolean; cover_url: string; content_type: string }>(
+    `${E}/libraries/${id}/cover`, data
+  )
+}
+
+export const removeLibraryCover = (id: number) =>
+  del<{ success: boolean }>(`${E}/libraries/${id}/cover`)
 
 export const createLibrary = (data: {
   name: string
