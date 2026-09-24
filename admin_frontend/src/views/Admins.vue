@@ -22,6 +22,7 @@ import type { AdminListResponse, AdminRole, AdminRoleMeta, AdminRow } from '@/ty
 import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import NoticePanel from '@/components/NoticePanel.vue'
 
 const auth = useAuthStore()
 
@@ -206,17 +207,27 @@ function fmtDate(value: string | null): string {
       </template>
     </el-alert>
 
-    <!-- 角色说明：来自后端元数据，前端不维护第二份 -->
-    <section class="role-grid">
-      <div v-for="role in roles" :key="role.value" class="role-card admin-card">
-        <div class="role-head">
-          <span class="role-icon"><component :is="ROLE_ICONS[role.value]" :size="16" /></span>
-          <strong>{{ role.label }}</strong>
-          <span class="role-key">{{ role.value }}</span>
+    <!--
+      角色说明：来自后端元数据，前端不维护第二份。
+      默认收起（v2.32.0）：三张说明卡常驻时占掉整屏，手机上一次滑动都到不了管理员清单。
+    -->
+    <NoticePanel
+      title="角色说明"
+      :summary="`${roles.length} 个角色：各能做什么、不能做什么`"
+      :icon="ShieldCheck"
+      storage-key="admins-roles"
+    >
+      <section class="role-grid">
+        <div v-for="role in roles" :key="role.value" class="role-card admin-card">
+          <div class="role-head">
+            <span class="role-icon"><component :is="ROLE_ICONS[role.value]" :size="16" /></span>
+            <strong>{{ role.label }}</strong>
+            <span class="role-key">{{ role.value }}</span>
+          </div>
+          <p class="role-hint">{{ role.hint }}</p>
         </div>
-        <p class="role-hint">{{ role.hint }}</p>
-      </div>
-    </section>
+      </section>
+    </NoticePanel>
 
     <!-- 清单 -->
     <section class="admin-card">
@@ -352,17 +363,24 @@ function fmtDate(value: string | null): string {
       </template>
     </el-dialog>
 
-    <section class="admin-card tips">
-      <div class="card-header"><h2><AlertTriangle :size="15" /> 三条护栏（服务端强制执行）</h2></div>
-      <ul>
-        <li><CheckCircle2 :size="13" /> <b>不能改自己</b>：把自己的角色降下去或撤销自己，等于把自己关在门外。</li>
-        <li><CheckCircle2 :size="13" /> <b>不能没有超级管理员</b>：最后一名 super 既不能降级也不能撤销。</li>
-        <li><CheckCircle2 :size="13" /> <b>停用账号不能当管理员</b>：那种号永远登不进来，先启用再说。</li>
-      </ul>
-      <p class="tips-foot">
-        只读角色在服务端拦截一切写操作（包括扫描、扫描与挂载体检），不是「界面置灰」而已。
-      </p>
-    </section>
+    <!-- 三条护栏：默认收起（v2.32.0）——它是解释，不是这一页要操作的东西 -->
+    <NoticePanel
+      title="三条护栏（服务端强制执行）"
+      summary="不能改自己 · 不能没有超级管理员 · 停用账号不能当管理员"
+      :icon="AlertTriangle"
+      storage-key="admins-guards"
+    >
+      <div class="tips">
+        <ul>
+          <li><CheckCircle2 :size="13" /> <b>不能改自己</b>：把自己的角色降下去或撤销自己，等于把自己关在门外。</li>
+          <li><CheckCircle2 :size="13" /> <b>不能没有超级管理员</b>：最后一名 super 既不能降级也不能撤销。</li>
+          <li><CheckCircle2 :size="13" /> <b>停用账号不能当管理员</b>：那种号永远登不进来，先启用再说。</li>
+        </ul>
+        <p class="tips-foot">
+          只读角色在服务端拦截一切写操作（包括扫描、扫描与挂载体检），不是「界面置灰」而已。
+        </p>
+      </div>
+    </NoticePanel>
   </div>
 </template>
 
@@ -373,7 +391,6 @@ function fmtDate(value: string | null): string {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
-  margin-bottom: 14px;
 }
 
 .role-card { display: flex; flex-direction: column; gap: 8px; }

@@ -106,24 +106,73 @@ def configured_emby_url(db: Session | None = None, realm_id: int | None = None) 
             db.close()
 
 
-def resolve_emby_base_url(db: Session | None = None, realm_id: int | None = None) -> str:
-    """解析「用户应该连接的 Emby 服务器地址」（某个服的）
+# 用户端地址是从哪来的：面板要把「配好的」与「按当前访问地址推出来的」分开说
+URL_SOURCE_REALM = "realm"      # 服自己填的对外地址
+URL_SOURCE_CONFIG = "config"    # 「服务器」页的 Emby 服务入口
+URL_SOURCE_ENV = "env"          # 环境变量 EMBY_PUBLIC_URL
+URL_SOURCE_REQUEST = "request"  # 当前请求用的地址（什么都没配时的兜底）
+URL_SOURCE_NONE = "none"
 
-    必须与后台「服务器」页保存的 Emby 入口一致，否则会出现“后台填了 EA 地址、
-    用户个人中心却仍显示旧的环境变量地址”这种配置不生效的问题。
-    优先级：服自己填的对外地址 → 该服的服务入口配置 → 环境变量 EMBY_PUBLIC_URL。
+
+def _request_base_url(request: Request | None) -> str:
+    """当前请求自己用的对外地址（形如 ``http://192.0.2.10:8000``；拿不到返回空串）
+
+    这是「什么都没配」时的兜底口径。以前这里写死 ``http://localhost:8000``，于是：
+
+    - 一台刚装好的服务器（管理员正用 ``http://<服务器IP>:8000`` 访问面板，协议面也开在
+      面板上）会被判成「只有这台机器自己能连」而报红——测试部署第一眼看到的就是它；
+    - 用户端账号卡真的把 localhost 下发下去，用户照抄进播放器就连不上。
+
+    取请求自己的 scheme + Host（uvicorn 默认信任本机反向代理的
+    ``X-Forwarded-Proto`` / ``X-Forwarded-Host``，所以反代后面拿到的也是对外那一个）。
+    """
+    if request is None:
+        return ""
+    try:
+        base = str(request.base_url).rstrip("/")
+    except Exception:  # noqa: BLE001 — 拿不到地址就当作没推断出来
+        return ""
+    return base if base.startswith(("http://", "https://")) else ""
+
+
+def resolve_emby_base_url_with_source(
+    db: Session | None = None, realm_id: int | None = None,
+    request: Request | None = None,
+) -> tuple[str, str]:
+    """同上，同时告诉调用方这个地址是「配出来的」还是「推出来的」
+
+    面板上必须分得清：按当前访问地址推出来的地址能直接照抄使用，但它不是一条落库的配置
+    （换域名 / 上反代后就变了），所以界面上要写明「自动推断」。
     """
     if realm_id is not None and db is not None:
         realm = realms.get_realm(db, realm_id)
         if realm and (realm.url or "").strip():
-            return realm.url.strip().rstrip("/")
+            return realm.url.strip().rstrip("/"), URL_SOURCE_REALM
     url = configured_emby_url(db, realm_id)
     if url:
-        return url
+        return url, URL_SOURCE_CONFIG
     if realm_id is not None and db is not None and realm_id != realms.legacy_realm_id(db):
         # 非默认服还没配自己的地址：不能回退到默认服的地址（那会把用户导到别的服）
-        return ""
-    return os.getenv("EMBY_PUBLIC_URL", "").rstrip("/") or "http://localhost:8000"
+        return "", URL_SOURCE_NONE
+    env = os.getenv("EMBY_PUBLIC_URL", "").rstrip("/")
+    if env:
+        return env, URL_SOURCE_ENV
+    inferred = _request_base_url(request)
+    if inferred:
+        return inferred, URL_SOURCE_REQUEST
+    return "http://localhost:8000", URL_SOURCE_NONE
+
+
+def resolve_emby_base_url(db: Session | None = None, realm_id: int | None = None,
+                          request: Request | None = None) -> str:
+    """解析「用户应该连接的 Emby 服务器地址」（某个服的）
+
+    必须与后台「服务器」页保存的 Emby 入口一致，否则会出现“后台填了 EA 地址、
+    用户个人中心却仍显示旧的环境变量地址”这种配置不生效的问题。
+    优先级：服自己填的对外地址 → 该服的服务入口配置 → 环境变量 EMBY_PUBLIC_URL
+    → 当前请求用的地址（什么都没配时用它，而不是写死 localhost）。
+    """
+    return resolve_emby_base_url_with_source(db, realm_id, request)[0]
 
 
 def _is_account_card_request(request: Request | None) -> bool:
@@ -188,10 +237,12 @@ admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自�
 
 # ==================== 用户端 ====================
 
-def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None) -> dict:
+def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None,
+                  request: Request | None = None) -> dict:
     """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）
 
     服务器地址来自该服的「Emby 服务入口」配置（见 ``resolve_emby_base_url``），
+    什么都没配时按**用户当前访问用的地址**兜底（不再下发 localhost），
     接入已有 Emby 服时不再提供本项目的一键导入 scheme——那台服务器上的账号
     由对方管理，本项目的用户名/密码对它无效。
 
@@ -200,7 +251,7 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
     """
     if realm_id is None:
         realm_id = realms.active_realm_id(db)
-    url = resolve_emby_base_url(db, realm_id)
+    url = resolve_emby_base_url(db, realm_id, request)
     mode = emby_active_mode(db, realm_id)
     external = mode == "external"
     host = url.split("//")[-1]
@@ -227,11 +278,12 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
             "senplayer": f"senplayer://importserver?type=emby&name=Aetrix&address={url}&username={user.emby_username}",
         },
     }
-    card["realms"] = _user_realm_cards(user, db)
+    card["realms"] = _user_realm_cards(user, db, request)
     return card
 
 
-def _user_realm_cards(user: models.WebUser, db: Session) -> list[dict]:
+def _user_realm_cards(user: models.WebUser, db: Session,
+                      request: Request | None = None) -> list[dict]:
     """用户在各服的地址与订阅状态（多服时前端按卡片列出）
 
     **公益服不管有没有订阅都下发**：免费开放本身就是这个服对用户的承诺，
@@ -259,7 +311,7 @@ def _user_realm_cards(user: models.WebUser, db: Session) -> list[dict]:
             "id": realm.id,
             "name": realm.name,
             "slug": realm.slug,
-            "base_url": resolve_emby_base_url(db, realm.id),
+            "base_url": resolve_emby_base_url(db, realm.id, request),
             "mode": mode,
             "external": mode == "external",
             "subscribed": sub is not None,
@@ -291,7 +343,7 @@ async def get_server_info(request: Request,
     raw = request.query_params.get("realm_id")
     if raw and str(raw).strip().isdigit():
         realm_id = int(raw)
-    return _account_card(user, db, realm_id)
+    return _account_card(user, db, realm_id, request)
 
 
 class SetPasswordRequest(BaseModel):

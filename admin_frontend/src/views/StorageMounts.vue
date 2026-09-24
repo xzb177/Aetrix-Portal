@@ -47,6 +47,7 @@ import type {
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import NoticePanel from '@/components/NoticePanel.vue'
 
 const realm = useRealmStore()
 /** 统计范围：当前服（默认）或全部服 */
@@ -102,6 +103,11 @@ function realmLabel(m: StorageMount): string {
 
 const mounts = ref<StorageMount[]>([])
 const types = ref<MountTypeMeta[]>([])
+/** 类型说明收起时的一句话：各几种（不写死类型名，后端加一种这里不用改） */
+const typeSummary = computed(() => {
+  const remote = types.value.filter((t) => t.kind === 'remote').length
+  return `${types.value.length} 种：本机 ${types.value.length - remote} 种 · 远程 ${remote} 种`
+})
 const accounts = ref<Pan115Account[]>([])
 const loading = ref(false)
 /** 当前出流的节点 + EA 体检快照（快照缺失时 ea_reachable 为 null） */
@@ -551,19 +557,29 @@ function fmtDate(s: string | null): string {
       :title="`EA 体检未完成：${eaHealth.error}（下面的 EA 可达性可能不是最新的，可点「EA 体检」重试）`"
     />
 
-    <!-- 类型说明 -->
-    <div class="type-grid">
-      <div v-for="t in types" :key="t.value" class="admin-card type-card">
-        <div class="type-head">
-          <component :is="iconOf(t.value)" :size="15" />
-          <span class="type-name">{{ t.label }}</span>
-          <span class="mini-badge" :class="t.kind === 'remote' ? 'remote' : 'local'">
-            {{ t.kind === 'remote' ? '远程' : '本机' }}
-          </span>
+    <!--
+      类型说明：默认收起（v2.32.0）
+      八张说明卡常驻时把挂载清单挤到下一屏，要新建来源的人在表单里就能选到这些类型。
+    -->
+    <NoticePanel
+      title="支持的来源类型"
+      :summary="typeSummary"
+      :icon="Info"
+      storage-key="mounts-types"
+    >
+      <div class="type-grid">
+        <div v-for="t in types" :key="t.value" class="admin-card type-card">
+          <div class="type-head">
+            <component :is="iconOf(t.value)" :size="15" />
+            <span class="type-name">{{ t.label }}</span>
+            <span class="mini-badge" :class="t.kind === 'remote' ? 'remote' : 'local'">
+              {{ t.kind === 'remote' ? '远程' : '本机' }}
+            </span>
+          </div>
+          <p class="type-hint">{{ t.hint }}</p>
         </div>
-        <p class="type-hint">{{ t.hint }}</p>
       </div>
-    </div>
+    </NoticePanel>
 
     <!-- 挂载列表 -->
     <div class="admin-card">
@@ -870,7 +886,6 @@ function fmtDate(s: string | null): string {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 12px;
-  margin-bottom: 16px;
 }
 
 .type-card { padding: 12px 14px; }
