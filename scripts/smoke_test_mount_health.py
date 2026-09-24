@@ -255,6 +255,30 @@ try:
     check("EA 侧带原因（前端 tooltip 用）", bool(rows.get(bad_id, {}).get("ea_message")),
           str(rows.get(bad_id, {}).get("ea_message"))[:60])
 
+    # ==================== 6.5 rclone 的 remote 名漏冒号 ====================
+    # rclone 把没有冒号的路径当**它自己的本机目录**，报的是
+    # `NOTICE: "paul_emby" refers to a local folder, use "paul_emby:" ...` 加
+    # `ERROR : error listing: directory not found`——看起来像「目录不存在」，其实是写法问题。
+    # 保存时就要拦下并说清怎么改，不能存进去等扫描/播放时才炸。
+    print("\n--- rclone remote 名漏冒号 ---")
+    r = em_client.post("/api/admin/emby/mounts",
+                       json={"name": f"带冒号 rclone{suf}", "mount_type": "rclone",
+                             "config": {"mode": "rc", "fs": "gdrive:Movies"}}, headers=staff_h)
+    check("remote 写法正常（带冒号）照旧能存",
+          r.status_code == 200 and r.json()["mount"]["config"]["fs"] == "gdrive:Movies",
+          f"HTTP {r.status_code} {r.text[:120]}")
+
+    # 随机名字：不管本机能否列到 remote 列表，结论都一样是「拦下 + 说清写法」
+    typo = f"漏冒号{suf}"
+    r = em_client.post("/api/admin/emby/mounts",
+                       json={"name": f"漏冒号 rclone{suf}", "mount_type": "rclone",
+                             "config": {"mode": "rc", "fs": typo}}, headers=staff_h)
+    detail = r.json().get("detail", "") if r.status_code == 400 else ""
+    check("remote 名漏冒号被拦下（不是等扫描才报「目录不存在」）",
+          r.status_code == 400 and "冒号" in detail and typo in detail,
+          f"HTTP {r.status_code} {r.text[:160]}")
+    check("提示里不说「目录不存在」（那会让人去查错方向）", "目录不存在" not in detail, detail[:120])
+
     # ==================== 7. 手动「EA 体检」按钮 ====================
     print("\n--- 手动刷新 EA 体检 ---")
     r = em_client.post("/api/admin/emby/servers/mounts/refresh", headers=staff_h)

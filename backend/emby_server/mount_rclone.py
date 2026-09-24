@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import urllib.parse
@@ -59,6 +60,88 @@ _AUTH_HINTS = ("unauthorized", "401", "403", "invalid_grant", "token", "credenti
                "authentication", "not authorized", "permission denied")
 _NOT_FOUND_HINTS = ("not found", "doesn't exist", "no such file", "directory not found")
 
+# remote 名漏冒号时 rclone 的输出：
+#   NOTICE: "paul_emby" refers to a local folder, use "paul_emby:" to refer to your remote
+#   ERROR : error listing: directory not found
+# 后半句看起来像「目录不存在」，前半句才是原因，所以这两行要当成**写法问题**翻译。
+_LOCAL_FOLDER_HINT = "refers to a local folder"
+_REMOTE_SUGGEST_RE = re.compile(r'use\s+"([^"]+)"\s+to refer to your remote', re.I)
+
+
+def fs_remote_name(value: str) -> str:
+    """``gdrive`` ← ``gdrive:Movies``；没有冒号（rclone 当本机路径）时返回空串"""
+    head = (value or "").strip().split("/", 1)[0]
+    name, sep, _rest = head.partition(":")
+    return name if sep and name else ""
+
+
+def looks_like_local_path(value: str) -> bool:
+    """``/media/movies`` / ``./media`` / ``~/media``：rclone 确实支持的本地写法
+
+    这种写法不该被当成「remote 漏冒号」去纠正，也不拦（本机目录应该用「本地 /
+    已挂载目录」类型，提示里写明了）。
+    """
+    return (value or "").strip().startswith(("/", ".", "~", "\\"))
+
+
+def remote_name_list(remotes: Optional[list[str]]) -> list[str]:
+    """remote 列表统一成不带尾冒号的名字（CLI 与 RC 两种返回格式都能对齐）"""
+    names: list[str] = []
+    for item in remotes or []:
+        name = str(item or "").strip().rstrip(":")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def normalize_fs(value: str, remotes: Optional[list[str]] = None) -> str:
+    """把漏冒号的 remote 写法补成 rclone 语法（**只认已配置的 remote 才改写**）
+
+    ``paul_emby`` / ``paul_emby/电影`` 在 rclone 眼里是本机路径，报出来的是
+    「refers to a local folder, use "paul_emby:" to refer to your remote」。
+    这里在确认首段就是远端已配置的 remote 时补上冒号；其余原样返回——
+    是不是写法错误交给 `fs_missing_colon_hint` 判断。
+    """
+    raw = (value or "").strip()
+    if not raw or fs_remote_name(raw) or looks_like_local_path(raw):
+        return raw
+    head, _sep, tail = raw.partition("/")
+    head = head.strip()
+    if head not in remote_name_list(remotes):
+        return raw
+    tail = tail.strip("/")
+    return f"{head}:{tail}" if tail else f"{head}:"
+
+
+def fs_missing_colon_hint(value: str, remotes: Optional[list[str]] = None) -> str:
+    """看起来是「remote 漏了冒号」时返回可操作的提示，否则空串
+
+    明确的本地写法（``/media/movies``、``./media``、``~/media``）不拦：rclone 本来就支持
+    本机路径，只是 rclone 挂载类型不该这么用（本机目录请用「本地 / 已挂载目录」类型）。
+    """
+    raw = (value or "").strip()
+    if not raw or fs_remote_name(raw) or looks_like_local_path(raw):
+        return ""
+    head = raw.split("/", 1)[0].strip()
+    if not head:
+        return ""
+    hint = (f"remote 名后面要带冒号：「{head}」会被 rclone 当成本机目录"
+            f"（报 refers to a local folder）。正确写法：{head}: 或 {head}:子目录。")
+    names = remote_name_list(remotes)
+    if names:
+        hint += f" 远端已配置的 remote：{', '.join(names)}。"
+    return hint
+
+
+def _missing_colon_error(raw: str) -> MountError:
+    """把 rclone 的「refers to a local folder」翻译成可操作的错误"""
+    match = _REMOTE_SUGGEST_RE.search(raw or "")
+    remote = (match.group(1).strip() if match else "") or "你的 remote 名（如 paul_emby:）"
+    return MountError(
+        f"rclone: {remote} 是本机目录，不是 remote——remote 名后面必须带冒号。"
+        f"正确写法：{remote} 或 {remote}子目录（例如 {remote}Movies）。"
+    )
+
 
 def _cli_error(exc: "subprocess.CalledProcessError") -> MountError:
     """把 rclone 的 stderr 翻译成可读错误（凭据问题单独识别）"""
@@ -69,6 +152,8 @@ def _cli_error(exc: "subprocess.CalledProcessError") -> MountError:
     lowered = message.lower()
     if any(hint in lowered for hint in _AUTH_HINTS):
         return MountAuthError(f"rclone: {message}")
+    if _LOCAL_FOLDER_HINT in lowered:
+        return _missing_colon_error(message)
     if any(hint in lowered for hint in _NOT_FOUND_HINTS):
         return MountError(f"rclone: 路径不存在（{message}）")
     return MountError(f"rclone: {message}")
@@ -213,6 +298,8 @@ class RcloneMount(_CloudMount):
         self.rc_pass = cfg.get("rc_pass") or RC_PASS
         self.bin_path = (cfg.get("rclone_bin") or "").strip()
         self.config_path = (cfg.get("rclone_config") or "").strip()
+        # remote 名漏冒号时的原始写法（自愈后留在 test 提示里，好让管理员把配置改过来）
+        self.healed_from = ""
 
     # ---- 目标路径 ----
 
@@ -220,6 +307,31 @@ class RcloneMount(_CloudMount):
         if not self.fs:
             raise MountError("请填写 remote（例如 gdrive:Movies）")
         return self.fs
+
+    def _heal_fs(self) -> bool:
+        """remote 名漏冒号时按远端已配置的 remote 自愈（只在列目录 / 测试这类网络入口做）
+
+        老配置里存成 ``paul_emby``（漏冒号）时 rclone 会把它当本机目录，报
+        「refers to a local folder」。这里问一次远端有哪些 remote，首段能对上就补冒号，
+        不必先让管理员手改配置、重扫一遍才恢复。
+        """
+        if not self.fs or fs_remote_name(self.fs) or looks_like_local_path(self.fs):
+            return False
+        try:
+            remotes = list_remotes(
+                self.rc_url, username=self.rc_user, password=self.rc_pass,
+                bin_path=self.bin_path, config=self.config_path, mode=self.mode,
+            )
+        except MountError as exc:
+            logger.info("rclone remote 列表读取失败（不自动纠正 %s）: %s", self.fs, exc)
+            return False
+        fixed = normalize_fs(self.fs, remotes)
+        if fixed == self.fs:
+            return False
+        logger.warning("rclone remote 名漏冒号：%s → %s（建议在挂载配置里改成带冒号的写法）",
+                       self.fs, fixed)
+        self.healed_from, self.fs = self.fs, fixed
+        return True
 
     def _target(self, rel: str) -> str:
         """挂载根 + 相对路径 → rclone 目标（`gdrive:Movies/2024/a.mkv`）"""
@@ -274,22 +386,42 @@ class RcloneMount(_CloudMount):
 
     # ---- 接口 ----
 
+    def _raw_listing(self, rel: str) -> list[dict]:
+        """列目录并统一成 ``{Path, Name, Size, IsDir}``（rc / cli 两种模式各自的字段都要对齐）"""
+        if self.mode == MODE_CLI:
+            items = self._cli_lsjson(rel)
+        else:
+            # 新老 rclone 的 RC 列目录接口差异（/operations/list → /operations/listfile）
+            # 统一由 _rc_list_items 兜住，这里只管字段对齐
+            items = _rc_list_items(self.rc_url, self._require_fs(), self._rel_remote(rel),
+                                   username=self.rc_user, password=self.rc_pass)
+        return [
+            {"Path": str(i.get("Path") or ""), "Name": str(i.get("Name") or ""),
+             "Size": int(i.get("Size") or 0), "IsDir": bool(i.get("IsDir"))}
+            for i in items
+        ]
+
+    def _explain_colonless(self, exc: MountError) -> MountError:
+        """写法可疑时把「目录不存在」补成完整解释
+
+        rc 模式只拿得到一句 ``directory not found``（rclone 的 NOTICE 不会出现在 RC 响应里），
+        和 cli 模式一样容易让人去查错方向。
+        """
+        if fs_remote_name(self.fs) or looks_like_local_path(self.fs):
+            return exc
+        hint = fs_missing_colon_hint(self.fs)
+        if not hint:
+            return exc
+        return MountError(f"{exc}；{hint}")
+
     @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
+        self._heal_fs()
         base_rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
-        if self.mode == MODE_CLI:
-            raw = [
-                {"Path": str(i.get("Path") or ""), "Name": str(i.get("Name") or ""),
-                 "Size": int(i.get("Size") or 0), "IsDir": bool(i.get("IsDir"))}
-                for i in self._cli_lsjson(rel)
-            ]
-        else:
-            raw = [
-                {"Path": str(i.get("Path") or ""), "Name": str(i.get("Name") or ""),
-                 "Size": int(i.get("Size") or 0), "IsDir": bool(i.get("IsDir"))}
-                for i in _rc_list_items(self.rc_url, self._require_fs(), self._rel_remote(rel),
-                                        username=self.rc_user, password=self.rc_pass)
-            ]
+        try:
+            raw = self._raw_listing(rel)
+        except MountError as exc:
+            raise self._explain_colonless(exc) from exc
         entries: list[MountEntry] = []
         for item in raw:
             name = item["Name"] or os.path.basename(item["Path"])
@@ -304,6 +436,7 @@ class RcloneMount(_CloudMount):
         return entries
 
     def test(self) -> dict:
+        self._heal_fs()
         if self.mode == MODE_CLI:
             items = self._cli_lsjson("/")
             how = "rclone 命令"
@@ -312,14 +445,20 @@ class RcloneMount(_CloudMount):
                                    username=self.rc_user, password=self.rc_pass)
             how = f"rclone RC（{self.rc_url}）"
         hint = ""
+        if self.healed_from:
+            # 自愈只是让访问先恢复：存进库的仍是漏冒号的写法，得提醒改
+            hint += (f"；配置里写的是 {self.healed_from}（漏冒号，rclone 会当成本机目录），"
+                     f"已按 {self.fs} 访问，建议把配置改成 {self.fs}")
         if self.mode == MODE_RC:
-            # rc-serve 没开时列目录正常但播放会 404，提前给出提示
+            # rc-serve 没开时列目录正常但播放会 404，提前给出提示。
+            # 这里是**追加**：探测失败/404 只说明 rc-serve 这一件事，
+            # 不能把上面「配置里的 remote 漏冒号」那条顺带抹掉——那正是要提醒管理员改的。
             try:
                 resp = self._request("GET", self._rc_play_url("/"), headers=self._rc_headers())
                 if resp.status_code == 404:
-                    hint = "；注意：rc-serve 似乎未开启（--rc-serve），播放可能不可用"
+                    hint += "；注意：rc-serve 似乎未开启（--rc-serve），播放可能不可用"
             except MountError:
-                hint = ""
+                pass
         return {
             "ok": True,
             "message": f"{how} 可访问（{self.fs} 下 {len(items)} 项）{hint}",
