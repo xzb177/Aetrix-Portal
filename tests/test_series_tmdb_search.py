@@ -2,7 +2,11 @@
 
 回归：标准命名（S01E01）的文件被判为 episode，series 在写库循环里隐式创建，
 以前完全走不到 TMDB 搜索分支（scraped=0，全库系列无 tmdb_id/海报/简介）。
-现在：预取里按剧名搜一次（去重），写库时命中落到 series，NFO 文本随后覆盖。
+
+设计约束（与 v2.31.0 共存）：
+- 只给“从没走过 TMDB”的剧（无 tmdb_id 且无 last_scraped_at）搜一次；
+- 干净落地后（命中与否）记 last_scraped_at，之后不再拦、不再搜——
+  否则配了 TMDB 的剧集库每轮重扫都得完整处理每一集（v2.31.0 钉住的行为）。
 """
 import os
 
@@ -36,10 +40,11 @@ def _ctx_with_series(series_item, policy="missing_only"):
     return ctx
 
 
-def _series_row(tmdb_id=None, repair=False):
+def _series_row(tmdb_id=None, last_scraped_at=None):
     return SimpleNamespace(
         tmdb_id=tmdb_id,
-        repair_requested_at="x" if repair else None,
+        last_scraped_at=last_scraped_at,
+        repair_requested_at=None,
         poster_path=None,
         primary_image_url=None,
     )
@@ -66,40 +71,47 @@ def _full_item(**kw):
     return SimpleNamespace(**base)
 
 
-# ---------- _can_skip_file：父 series 缺 TMDB 时 episode 不能跳过 ----------
+# ---------- _can_skip_file ----------
 
-def test_skip_blocked_when_series_missing_tmdb(monkeypatch):
+def test_skip_blocked_when_series_never_scraped(monkeypatch):
+    """从没走过 TMDB 的剧：集不能跳过（否则这部剧永远刮不到）。"""
     _set_configured(monkeypatch, True)
-    ctx = _ctx_with_series(_series_row(tmdb_id=None))
-    pending = _pending_episode()
+    ctx = _ctx_with_series(_series_row(tmdb_id=None, last_scraped_at=None))
     with mock.patch.object(scanner, "SCAN_INCREMENTAL", True):
         assert scanner._can_skip_file(
-            ctx, _full_item(), pending, "fp", "fp") is False
+            ctx, _full_item(), _pending_episode(), "fp", "fp") is False
 
 
 def test_skip_allowed_when_series_has_tmdb(monkeypatch):
     _set_configured(monkeypatch, True)
     ctx = _ctx_with_series(_series_row(tmdb_id="100565"))
-    pending = _pending_episode()
     with mock.patch.object(scanner, "SCAN_INCREMENTAL", True):
         assert scanner._can_skip_file(
             ctx, _full_item(tmdb_id="100565", imdb_id="tt1", aliases="a"),
-            pending, "fp", "fp") is True
+            _pending_episode(), "fp", "fp") is True
+
+
+def test_skip_allowed_when_series_attempted_but_missed(monkeypatch):
+    """搜过但没命中（有 last_scraped_at、无 tmdb_id）：v2.31.0，集必须能跳过。"""
+    from datetime import datetime
+    _set_configured(monkeypatch, True)
+    ctx = _ctx_with_series(_series_row(tmdb_id=None, last_scraped_at=datetime.now()))
+    with mock.patch.object(scanner, "SCAN_INCREMENTAL", True):
+        assert scanner._can_skip_file(
+            ctx, _full_item(), _pending_episode(), "fp", "fp") is True
 
 
 def test_skip_not_blocked_when_tmdb_unconfigured(monkeypatch):
-    # 没配 TMDB 时不因 series 缺元数据而拦（配好密钥的下一次扫描自然处理）
     _set_configured(monkeypatch, False)
     ctx = _ctx_with_series(_series_row(tmdb_id=None))
-    pending = _pending_episode()
     with mock.patch.object(scanner, "SCAN_INCREMENTAL", True):
         assert scanner._can_skip_file(
-            ctx, _full_item(), pending, "fp", "fp") is True
+            ctx, _full_item(), _pending_episode(), "fp", "fp") is True
 
 
-# ---------- 预取：为隐式 series 提交搜索（去重） ----------
+# ---------- 预取：只给“从没走过 TMDB”的剧提交搜索（去重） ----------
 
-def _maybe_submit_series_search(ctx, pending, series_nfo_data, policy):
+def _maybe_submit_series_search(ctx, pending, series_nfo_data):
     """复刻 _prepare_and_prefetch 里 episode 分支的提交判定。"""
     series_id = (series_nfo_data or {}).get("tmdb_id")
     if series_id and pending.series_guid not in ctx.nfo_series_imaged:
@@ -107,9 +119,7 @@ def _maybe_submit_series_search(ctx, pending, series_nfo_data, policy):
     if (not series_id and TmdbClient.configured.fget(scanner.tmdb_client)
             and pending.series_guid not in ctx.series_tmdb_searched):
         s_item = ctx.series_items.get(pending.series_guid)
-        if (s_item is None
-                or bool(getattr(s_item, "repair_requested_at", None))
-                or scanner.should_scrape(s_item, policy)):
+        if s_item is None or (not s_item.tmdb_id and not s_item.last_scraped_at):
             ctx.series_tmdb_searched.add(pending.series_guid)
             return ("search", pending.parsed["name"], pending.parsed["year"])
     return None
@@ -117,22 +127,29 @@ def _maybe_submit_series_search(ctx, pending, series_nfo_data, policy):
 
 def test_prefetch_submits_series_search_once(monkeypatch):
     _set_configured(monkeypatch, True)
-    ctx = _ctx_with_series(_series_row(tmdb_id=None))
-    r1 = _maybe_submit_series_search(ctx, _pending_episode(), {}, "missing_only")
+    ctx = _ctx_with_series(_series_row(tmdb_id=None, last_scraped_at=None))
+    r1 = _maybe_submit_series_search(ctx, _pending_episode(), {})
     assert r1 == ("search", "86 不存在的战区", 2021)
     # 同一部剧第二次不再提交
-    r2 = _maybe_submit_series_search(ctx, _pending_episode(), {}, "missing_only")
+    r2 = _maybe_submit_series_search(ctx, _pending_episode(), {})
     assert r2 is None
 
 
 def test_prefetch_skips_search_when_series_has_tmdb(monkeypatch):
     _set_configured(monkeypatch, True)
     ctx = _ctx_with_series(_series_row(tmdb_id="100565"))
-    assert _maybe_submit_series_search(
-        ctx, _pending_episode(), {}, "missing_only") is None
+    assert _maybe_submit_series_search(ctx, _pending_episode(), {}) is None
 
 
-# ---------- 写库：命中落到 series，NFO 随后覆盖 ----------
+def test_prefetch_skips_search_when_series_attempted(monkeypatch):
+    """搜过没命中：不再重复提交（v2.31.0）。"""
+    from datetime import datetime
+    _set_configured(monkeypatch, True)
+    ctx = _ctx_with_series(_series_row(tmdb_id=None, last_scraped_at=datetime.now()))
+    assert _maybe_submit_series_search(ctx, _pending_episode(), {}) is None
+
+
+# ---------- 写库：命中落到 series（NFO 随后覆盖）；没命中记一笔尝试 ----------
 
 def test_apply_hit_then_nfo_overlay():
     hit = {"id": 100565, "name": "TMDB 名", "overview": "TMDB 简介",
@@ -142,24 +159,44 @@ def test_apply_hit_then_nfo_overlay():
         tmdb_id=None, overview=None, poster_path=None, primary_image_url=None,
         backdrop_path=None, backdrop_image_url=None, community_rating=None,
         name="文件名", aliases=None, genres=None, imdb_id=None,
-        repair_requested_at=None,
+        last_scraped_at=None, repair_requested_at=None,
     )
-    ctx = SimpleNamespace(series_tmdb_results={"sg1": (hit, None)})
+    ctx = SimpleNamespace(
+        series_tmdb_results={"sg1": (hit, None)},
+        series_tmdb_searched={"sg1"},
+    )
     stats = {"scraped": 0}
     # 复刻写库循环片段
     series_tmdb_applied = False
-    if not series.tmdb_id or getattr(series, "repair_requested_at", None):
-        tmdb_res = ctx.series_tmdb_results.get("sg1")
-        if tmdb_res:
-            h, d = tmdb_res
-            if h:
-                scanner.tmdb_client.apply(series, h, "series")
-                stats["scraped"] += 1
-                series_tmdb_applied = True
+    tmdb_res = ctx.series_tmdb_results.get("sg1")
+    if tmdb_res and not series.tmdb_id:
+        h, d = tmdb_res
+        if h:
+            scanner.tmdb_client.apply(series, h, "series")
+            stats["scraped"] += 1
+            series_tmdb_applied = True
+    if ("sg1" in ctx.series_tmdb_searched
+            and not series.tmdb_id and not series.last_scraped_at):
+        from datetime import datetime
+        series.last_scraped_at = datetime.now()
     assert series.tmdb_id == "100565"
     assert stats["scraped"] == 1
     assert series_tmdb_applied is True
+    assert series.last_scraped_at is not None  # apply() 顺带记了
     # NFO 随后覆盖（B 方案 NFO 优先）
     scanner.nfo_lib.apply_nfo(series, {"title": "NFO 标题", "plot": "NFO 简介"},
                               "series")
     assert series.name == "NFO 标题"
+
+
+def test_miss_marks_attempted():
+    """干净搜过但没命中：记 last_scraped_at，下次不再拦/不再搜。"""
+    from datetime import datetime
+    series = SimpleNamespace(tmdb_id=None, last_scraped_at=None)
+    ctx = SimpleNamespace(series_tmdb_results={}, series_tmdb_searched={"sg1"})
+    # 复刻写库循环的标记片段
+    if ("sg1" in ctx.series_tmdb_searched
+            and not series.tmdb_id and not series.last_scraped_at):
+        series.last_scraped_at = datetime.now()
+    assert series.last_scraped_at is not None
+    assert series.tmdb_id is None
