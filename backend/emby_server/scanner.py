@@ -401,6 +401,24 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     return {"name": name_part or stem, "year": year, "season": season, "episode": episode}
 
 
+def _episode_display_name(name: str, season_no: Optional[int], ep_no: Optional[int]) -> str:
+    """一集的标准展示名：``片名 S01E02``
+
+    **只解析出季号、没有集号**时（``片名 Season 2.mkv``、季包整季文件）不能硬套
+    ``E{ep_no:02d}``：``None`` 做 ``:02d`` 会抛
+    ``TypeError: unsupported format string passed to NoneType.__format__``，
+    整个媒体库的扫描会在这一行崩掉、前面已扫的批次全部白跑。
+
+    这类文件按 ``片名 S02`` 命名，集号留空（后续人工补），不猜、不填 0。
+    """
+    base = (name or "").strip()
+    if ep_no is None:
+        return f"{base} S{season_no:02d}" if season_no is not None else base
+    if season_no is None:
+        return f"{base} E{ep_no:02d}"
+    return f"{base} S{season_no:02d}E{ep_no:02d}"
+
+
 def _ffprobe(path: str, headers: Optional[dict] = None) -> Optional[dict]:
     """ffprobe 提取媒体信息（无 ffprobe 时优雅降级）
 
@@ -1892,7 +1910,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         item.parent_id = season_item.id
                         item.season_number = season_no
                         item.episode_number = ep_no
-                        item.name = f'{parsed["name"]} S{season_no:02d}E{ep_no:02d}'
+                        item.name = _episode_display_name(parsed["name"], season_no, ep_no)
 
                     # TMDB 刮削：只刮剧集/电影这类顶层条目。
                     # 旧实现对**每一集**也发搜索请求，不但浪费配额，还会把电影元数据
