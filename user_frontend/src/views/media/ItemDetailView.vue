@@ -43,7 +43,7 @@ const backdrop = computed(() => (item.value ? backdropUrl(item.value) : ''))
 const isFavorite = computed(() => !!item.value?.UserData?.IsFavorite)
 const isPlayed = computed(() => !!item.value?.UserData?.Played)
 const progress = computed(() => (item.value ? progressPercent(item.value) : 0))
-const runtime = computed(() => (item.value?.RunTimeTicks ? formatDuration(ticksToSeconds(item.value.RunTimeTicks)) : ''))
+const runtime = computed(() => (item.value?.RunTimeTicks ? formatDuration(ticksToSeconds(item.value.RunTimeTicks)) : '—'))
 
 const currentSeasonName = computed(() => {
   const s = seasons.value.find(x => x.Id === selectedSeasonId.value)
@@ -235,7 +235,7 @@ onMounted(loadItem)
                 <div class="ep-body">
                   <span class="ep-name">{{ ep.Name }}</span>
                   <span class="ep-meta">
-                    {{ ep.RunTimeTicks ? formatDuration(ticksToSeconds(ep.RunTimeTicks)) : '' }}
+                    {{ ep.RunTimeTicks ? formatDuration(ticksToSeconds(ep.RunTimeTicks)) : '—' }}
                   </span>
                 </div>
                 <div class="ep-state">

@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 #   SCAN_WORKERS 并行 IO 线程数（ffprobe、目录列举、TMDB 搜索都是“等网络/等磁盘”，不是吃 CPU）
 SCAN_BATCH = max(20, int(os.getenv("SCAN_BATCH", "400") or 400))
 SCAN_WORKERS = max(1, min(16, int(os.getenv("SCAN_WORKERS", "4") or 4)))
+# 两阶段扫描（v2.39.0）：
+#   inline（默认）：与旧行为完全一致，扫描时直接 ffprobe；
+#   background：Phase 1 只入库结构（路径解析/NFO/TMDB 图），不做 ffprobe，
+#     需要探测的条目标 probe_status='pending'，由 probe_worker 后台按优先级探测。
+# 回滚：改回 inline 并重启，行为即回到从前。
+SCAN_PROBE_MODE = (os.getenv("SCAN_PROBE_MODE", "inline") or "inline").strip().lower()
+PROBE_BACKGROUND = SCAN_PROBE_MODE == "background"
 # SQLite 的绑定变量上限是 999，IN 查询按这个分片（片内元素个数）
 SQL_IN_CHUNK = 200
 # 清理阶段每批读多少条：这一步不碰 IO（只读 4 个列），批越大越省往返。
@@ -842,6 +849,8 @@ class _Pending:
     series: Any = None
     season: Any = None
     probe: Any = None   # Future[dict] | None
+    probe_deferred: bool = False  # 两阶段 background 模式：本次不探测，写库时标 pending
+    probe_needed: bool = False  # 本次是否需要探测（提交点按 needs_probe 语义算好）
     side: Any = None    # Future[(poster, fanart, subtitles)] | None
     tmdb: Any = None    # Future[(hit, details)] | None
     nfo: Any = None     # Future[(nfo_data, series_nfo_data, season_nfo_data)] | None
@@ -1356,8 +1365,15 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             continue
         if fingerprint:
             ctx.dirty_dirs[dir_key] = fingerprint   # 这个目录这批真处理了 → 提交时写回指纹
-        if is_new or needs_probe(item, scan_file.stored_path, scan_file.size):
-            pending.probe = pool.submit(probe_metadata, *scan_file.probe_input(), size=scan_file.size)
+        pending.probe_needed = bool(is_new or needs_probe(item, scan_file.stored_path,
+                                                             scan_file.size))
+        if pending.probe_needed:
+            if PROBE_BACKGROUND:
+                # Phase 1：不提交 ffprobe（连 probe_input 的直链解析都省了），
+                # 写库时把条目标 probe_status='pending' 交给后台 worker。
+                pending.probe_deferred = True
+            else:
+                pending.probe = pool.submit(probe_metadata, *scan_file.probe_input(), size=scan_file.size)
         pending.side = pool.submit(_side_info, ctx, scan_file)
         # NFO 发现与解析（与 probe / side / TMDB 并行；结果在下面先取回，
         # TMDB 预取口径按 NFO 有无决定：有 tmdb_id 就不调搜索）
@@ -1659,9 +1675,9 @@ SCAN_TRIGGERS = ("manual", "client", "node", "repair")
 SCAN_RUN_KEEP = int(os.getenv("EMBY_SCAN_HISTORY", "20"))
 
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
-SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "scraped", "repaired",
-                   "unchanged", "removal_skipped", "failed_roots", "duration_ms",
-                   "sources")
+SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scraped",
+                   "repaired", "unchanged", "removal_skipped", "failed_roots",
+                   "duration_ms", "sources")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
@@ -2081,6 +2097,26 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         item.audio_languages = probe["audio_languages"]
                         item.subtitle_languages = probe["subtitle_languages"]
                         item.last_probed_at = datetime.now()
+                        item.probe_status = "done"
+                        item.probe_attempts = 0
+                        item.probe_next_retry_at = None
+                    elif _pending.probe_deferred:
+                        # 两阶段 background 模式：Phase 1 不探测，交给后台 worker。
+                        # 新文件（或换源：大小变了）优先探测；其余按默认优先级排队。
+                        size_changed = (not is_new and bool(item.size)
+                                        and bool(scan_file.size)
+                                        and scan_file.size != item.size)
+                        item.probe_status = "pending"
+                        item.probe_priority = 100 if (is_new or size_changed) else 0
+                        item.probe_attempts = 0
+                        item.probe_next_retry_at = None
+                        stats["probe_queued"] = stats.get("probe_queued", 0) + 1
+                    elif (not _pending.probe_needed
+                            and getattr(item, "probe_status", None) != "done"):
+                        # 提交点判定为不需要探测 → 数据已有效，明确标 done。
+                        # 作用：迁移来的 'pending' 默认值在这里被纠正，worker 不会空跑；
+                        # 从 background 回滚到 inline 时，残留的 pending 也会被顺手纠正。
+                        item.probe_status = "done"
 
                     # 本地图片 / 外挂字幕都在批次开头算好了（_side_info 在 IO 线程池里跑）：
                     # 远程挂载的目录列举因此只发生一次，且不在写事务里
@@ -2106,6 +2142,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                 production_year=parsed["year"],
                                 platforms=item.platforms or "",
                                 date_added=datetime.now(),
+                                # 剧集/季没有文件可探测：直接 done，不进探测队列
+                                probe_status="done",
                             )
                             db.add(series)
                             db.flush()
@@ -2132,6 +2170,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                 item_type="season", name=f"第 {season_no} 季",
                                 parent_id=series.id, series_id=series.id,
                                 season_number=season_no, date_added=datetime.now(),
+                                probe_status="done",  # 同上：无文件可探测
                             )
                             db.add(season_item)
                             db.flush()
