@@ -70,6 +70,14 @@ const views = ref<EmbyItem[]>([])
  */
 const continueItems = ref<EmbyItem[]>([])
 const resumeMap = ref<Record<string, ResumeInfo>>({})
+/**
+ * 按库分区海报轨：key 为库 Id。完全数据驱动——用户建几个库、叫什么名，
+ * 这里就渲染几个分区，不写死任何库名；有内容的库才出分区。
+ */
+const libraryRails = ref<Record<string, EmbyItem[]>>({})
+const railsLoading = ref(false)
+/** 有内容的库（ChildCount > 0）：出海报分区；0 条目的库只出现在顶部横滑卡里 */
+const viewsWithContent = computed(() => views.value.filter((v) => (v.ChildCount || 0) > 0))
 const latest = ref<EmbyItem[]>([])
 const favorites = ref<EmbyItem[]>([])
 
@@ -150,6 +158,37 @@ async function loadAll() {
     await loadContinue().catch(() => {})
   } finally {
     loading.value = false
+  }
+  // 按库海报轨随后流式载入：单个库失败不影响整页
+  void loadRails()
+}
+
+/** 每个有内容的库取最新 12 个（电影/剧集），做横滑海报轨 */
+async function loadRails() {
+  railsLoading.value = true
+  try {
+    const targets = viewsWithContent.value
+    const results = await Promise.all(
+      targets.map(async (v) => {
+        try {
+          const res = await embyApi.getItems({
+            parentId: v.Id,
+            limit: 12,
+            sortBy: 'DateCreated',
+            sortOrder: 'Descending',
+            includeTypes: ['Movie', 'Series'],
+          })
+          return [v.Id, res.Items] as const
+        } catch {
+          return [v.Id, [] as EmbyItem[]] as const
+        }
+      }),
+    )
+    const map: Record<string, EmbyItem[]> = {}
+    for (const [id, items] of results) map[id] = items
+    libraryRails.value = map
+  } finally {
+    railsLoading.value = false
   }
 }
 
@@ -292,36 +331,53 @@ onMounted(() => {
         <MediaRow title="最新添加" :items="latest" />
         <MediaRow title="我的收藏" :items="topLevelFavorites" more-to="/media?tab=favorites" />
 
-        <!-- 媒体库入口（Emby 风横向大卡） -->
-        <section v-if="views.length" class="views">
+        <!-- 我的媒体：横向滑动的库卡片（数据驱动：用户建几个库、叫什么名，就显示几个） -->
+        <section v-if="views.length" class="my-media">
           <h2 class="row-title">
             <Library :size="18" />
-            媒体库
+            我的媒体
           </h2>
-          <div class="views-grid">
+          <div class="lib-carousel" role="list" aria-label="媒体库分类">
             <RouterLink
               v-for="v in views"
               :key="v.Id"
               :to="{ path: `/library/${v.Id}`, query: { name: v.Name } }"
-              class="view-card"
+              class="lib-card au-anim-up"
+              :class="{ 'is-empty': !(v.ChildCount || 0) }"
+              role="listitem"
             >
               <div
-                class="view-thumb"
+                class="lib-card-bg"
                 :style="viewBackdrop(v) ? { backgroundImage: `url(${viewBackdrop(v)})` } : {}"
               >
-                <span v-if="!viewBackdrop(v)" class="view-char">{{
+                <span v-if="!viewBackdrop(v)" class="lib-card-char">{{
                   (v.Name || '?').trim().charAt(0) || '?'
                 }}</span>
-                <div class="view-thumb-shade"></div>
+                <div class="lib-card-shade"></div>
               </div>
-              <div class="view-body">
-                <span class="view-name">{{ v.Name }}</span>
-                <span class="view-count"><template v-if="viewTypeLabel(v)">{{ viewTypeLabel(v) }} · </template>{{ v.ChildCount || 0 }} 个条目</span>
+              <div class="lib-card-body">
+                <span class="lib-card-name">{{ v.Name }}</span>
+                <span class="lib-card-count"><template v-if="viewTypeLabel(v)">{{ viewTypeLabel(v) }} · </template>{{ v.ChildCount || 0 }} 个条目</span>
               </div>
-              <ChevronRight :size="18" class="view-go" />
+              <ChevronRight :size="20" class="lib-card-go" />
             </RouterLink>
           </div>
         </section>
+
+        <!-- 按库分区：有内容的库出横滑海报轨（数据驱动）；加载中显示骨架 -->
+        <section v-if="railsLoading && !Object.keys(libraryRails).length && viewsWithContent.length" class="rail-skeleton" aria-hidden="true">
+          <div class="sk-title"></div>
+          <div class="sk-row">
+            <div v-for="i in 4" :key="i" class="sk-card"></div>
+          </div>
+        </section>
+        <MediaRow
+          v-for="v in viewsWithContent"
+          :key="v.Id"
+          :title="v.Name || '媒体库'"
+          :items="libraryRails[v.Id] || []"
+          :more-to="`/library/${v.Id}?name=${encodeURIComponent(v.Name || '')}`"
+        />
       </template>
     </div>
     </template>
@@ -589,98 +645,140 @@ onMounted(() => {
   font-weight: 600;
 }
 
-/* 媒体库入口（Emby 风横向大卡） */
-.views {
+/* ===== 我的媒体：横向滑动的库卡片（宽卡 ~72% 屏宽，大圆角，深色） ===== */
+.my-media {
   margin-bottom: 2rem;
 }
 
-.views-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+.lib-carousel {
+  display: flex;
   gap: 0.75rem;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  margin: 0 -1.25rem;
+  padding: 0.25rem 1.25rem 0.5rem;
 }
 
-.view-card {
+.lib-carousel::-webkit-scrollbar {
+  display: none;
+}
+
+.lib-card {
+  position: relative;
+  flex: 0 0 72%;
+  max-width: 400px;
+  min-height: 132px;
   display: flex;
   align-items: center;
   gap: 0.875rem;
-  padding: 0.625rem;
-  background: var(--au-surface);
+  padding: 1rem 1rem 1rem 1.25rem;
+  border-radius: var(--au-r-xl);
   border: 1px solid var(--au-border);
-  border-radius: var(--au-r-lg);
-  text-decoration: none;
   overflow: hidden;
-  transition: all var(--au-fast) var(--au-ease);
+  text-decoration: none;
+  scroll-snap-align: center;
+  background: linear-gradient(135deg, var(--au-primary-soft), var(--au-bg-soft));
+  transition: transform var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease);
 }
 
-.view-card:hover {
-  border-color: var(--au-primary-border);
+.lib-card:hover {
   transform: translateY(-2px);
+  border-color: var(--au-primary-border);
   box-shadow: var(--au-shadow-2);
 }
 
-.view-thumb {
-  position: relative;
-  width: 132px;
-  height: 74px;
-  flex-shrink: 0;
+/* 0 条目的库：只出现在横滑卡里，置淡，点进去是空状态页 */
+.lib-card.is-empty {
+  opacity: 0.62;
+}
+
+.lib-card-bg {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  overflow: hidden;
-  background: linear-gradient(135deg, var(--au-primary-soft), var(--au-overlay-soft));
+  padding-left: 1.25rem;
   background-size: cover;
   background-position: center;
 }
 
-.view-thumb-shade {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.28), transparent 60%);
-  pointer-events: none;
-}
-
-.view-char {
-  position: relative;
-  font-size: 2rem;
+.lib-card-char {
+  font-size: 4.5rem;
   font-weight: 800;
   line-height: 1;
   color: var(--au-primary);
-  opacity: 0.8;
+  opacity: 0.35;
   user-select: none;
 }
 
-.view-body {
+.lib-card-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, var(--au-overlay-strong) 25%, var(--au-overlay-mid) 60%, var(--au-overlay-soft));
+  pointer-events: none;
+}
+
+.lib-card-body {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.1875rem;
+  gap: 0.25rem;
 }
 
-.view-name {
-  font-size: 1rem;
-  font-weight: 700;
+.lib-card-name {
+  font-size: 1.25rem;
+  font-weight: 800;
   color: var(--au-text);
+  text-shadow: var(--au-shadow-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.view-count {
+.lib-card-count {
   font-size: 0.75rem;
   color: var(--au-text-3);
+  text-shadow: var(--au-shadow-text);
 }
 
-.view-go {
+.lib-card-go {
+  position: relative;
   flex-shrink: 0;
-  margin-right: 0.25rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   transition: color var(--au-fast) var(--au-ease);
 }
 
-.view-card:hover .view-go {
+.lib-card:hover .lib-card-go {
   color: var(--au-primary);
+}
+
+/* 按库海报轨加载中的骨架（深色，无白块） */
+.rail-skeleton {
+  margin-bottom: 2rem;
+}
+
+.sk-title {
+  width: 120px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--au-surface-2);
+  margin-bottom: 0.75rem;
+  animation: au-pulse-soft 1.2s ease-in-out infinite;
+}
+
+.sk-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.sk-card {
+  flex: 0 0 132px;
+  aspect-ratio: 2 / 3;
+  border-radius: 12px;
+  background: var(--au-surface-2);
+  animation: au-pulse-soft 1.2s ease-in-out infinite;
 }
 </style>
