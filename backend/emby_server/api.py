@@ -829,7 +829,7 @@ def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
 
 @emby_router.get("/emby/Users/{user_id}/Views")
 @emby_router.get("/Users/{user_id}/Views")
-async def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
+def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
     virtual_on = _virtual_libraries_enabled()
@@ -1143,18 +1143,20 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
 @emby_router.get("/emby/Items/Counts")
 @emby_router.get("/Items/Counts")
 def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
-    def _count(item_type: str) -> int:
-        return (
-            db.query(em.MediaItem)
-            .filter(em.MediaItem.item_type == item_type, em.MediaItem.is_hidden == False)  # noqa: E712
-            .count()
-        )
+    # 一次 GROUP BY 顶掉三个 item_type 计数（客户端启动时就会问这个端点），
+    # 总数也走 Core 的 COUNT(*)（不再让 ORM 把实体包一层子查询）
+    by_type = dict(
+        db.query(em.MediaItem.item_type, func.count())
+        .filter(em.MediaItem.is_hidden == False)  # noqa: E712
+        .group_by(em.MediaItem.item_type)
+        .all()
+    )
 
     return {
-        "MovieCount": _count("movie"),
-        "SeriesCount": _count("series"),
-        "EpisodeCount": _count("episode"),
-        "ItemCount": db.query(em.MediaItem).count(),
+        "MovieCount": int(by_type.get("movie", 0)),
+        "SeriesCount": int(by_type.get("series", 0)),
+        "EpisodeCount": int(by_type.get("episode", 0)),
+        "ItemCount": int(db.query(func.count()).select_from(em.MediaItem).scalar() or 0),
         "AlbumCount": 0, "SongCount": 0, "ArtistCount": 0, "AlbumArtistCount": 0,
         "MusicVideoCount": 0, "TrailerCount": 0, "BoxSetCount": 0, "BookCount": 0,
     }
@@ -1169,22 +1171,57 @@ def items_intros(user: models.WebUser = Depends(get_emby_user)):
 # 筛选菜单的取值来自全库（genres/tags/rating/year 都是逗号分隔的文本列）。
 # 旧实现每次都把整库 ORM 对象化后遍历：十万级库就是数百 MB 内存尖峰 + 数秒 CPU，
 # 而客户端会反复打开这个面板。现改为「只取需要的列 + 分批拉取 + TTL 缓存」。
-_FILTERS_CACHE: dict = {"at": 0.0, "payload": None}
+#
+# v2.35.0：缓存不再只是「自己过期」。分类值一变（扫描、图片修复、删条目的同一个
+# flush 钩子）就会把这份缓存标成陈旧，下一次请求重建——否则刚扫完的片子在客户端
+# 的「类型 / 制片公司」里最长 5 分钟看不到（见 facets.add_change_listener）。
+# 重建带最小间隔：扫描期间每个批次都会触发失效，十万级库重建一次约 80ms，
+# 不能让它变成「扫描时每请求一次」。
+_FILTERS_CACHE: dict = {"at": 0.0, "payload": None, "stale_at": 0.0}
 # 合成 Id 反查表的跨请求缓存（按关联表代际失效，见 _synthetic_lookup）
 _SYNTHETIC_CACHE: dict = {"gen": None, "map": None}
 _FILTERS_CACHE_TTL = float(os.getenv("EMBY_FILTERS_CACHE_TTL", "300") or 300)
+# 被标记陈旧后，最快多久重建一次（0 = 只要有变化就立刻重建）
+_FILTERS_MIN_REFRESH = float(os.getenv("EMBY_FILTERS_MIN_REFRESH", "5") or 0)
 
 
 def invalidate_filters_cache() -> None:
-    """媒体库扫描/条目变更后主动失效筛选缓存（未调用时靠 TTL 自然过期）"""
+    """显式失效筛选菜单缓存：下一次请求必须重建（不等 TTL、不受最小重建间隔约束）
+
+    这个入口是给「明确知道分类值变了」的调用方用的（后台改元数据、测试直接写库）。
+    扫描 / 图片修复 / 删条目不经过它：那些挂在 facets 的变更回调上
+    （_mark_filters_menu_stale），带最小重建间隔，免得扫描期间每批条目都把菜单重建一次。
+    """
     _FILTERS_CACHE["at"] = 0.0
+    _FILTERS_CACHE["stale_at"] = 0.0
     _FILTERS_CACHE["payload"] = None
+
+
+def _mark_filters_menu_stale() -> None:
+    """分类值变了（扫描 / 图片修复 / 删条目的同一个 flush 钩子）：把菜单标记成陈旧
+
+    下一次请求会重建，但重建带最小间隔（EMBY_FILTERS_MIN_REFRESH，默认 5 秒）：
+    扫描期间每批条目都会触发一次，十万级库重建一次约 80 ms，不能让它变成
+    「扫描时每请求一次」。回调本身是纯内存操作，直接挂在写入事务的 flush 钩子上。
+    """
+    if _FILTERS_CACHE.get("payload") is not None and not _FILTERS_CACHE.get("stale_at"):
+        _FILTERS_CACHE["stale_at"] = time.monotonic()
+
+
+facets.add_change_listener(_mark_filters_menu_stale)
 
 
 def _filters_payload(db: Session) -> dict:
     cached = _FILTERS_CACHE.get("payload")
-    if cached is not None and time.monotonic() - _FILTERS_CACHE["at"] < _FILTERS_CACHE_TTL:
-        return cached
+    now = time.monotonic()
+    if cached is not None:
+        stale = bool(_FILTERS_CACHE.get("stale_at"))
+        if not stale and now - _FILTERS_CACHE["at"] < _FILTERS_CACHE_TTL:
+            return cached
+        # 刚被标成陈旧（典型：正在扫描，每批条目都会触发一次）：先给出上一份，
+        # 免得扫描期间客户端每点一次筛选面板就重建一次菜单
+        if stale and now - _FILTERS_CACHE["stale_at"] < _FILTERS_MIN_REFRESH:
+            return cached
     if facets.ensure_ready(db):
         # 流派 / 标签走关联表：一次覆盖索引扇描拿全取值，不再扫全库文本列。
         # （可见性差异：关联表不记 is_hidden，隐藏条目独有的分类值也会出现在菜单里；

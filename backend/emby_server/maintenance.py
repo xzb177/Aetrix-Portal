@@ -23,6 +23,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend.emby_server import facets
@@ -467,6 +468,29 @@ def prune_scan_runs(db, keep: Optional[int] = None) -> int:
     return int(pruned)
 
 
+def optimize_query_plans(db: Session) -> bool:
+    """让 SQLite 按需更新统计信息（``PRAGMA optimize``）；非 SQLite 直接跳过
+
+    长期运行的第二类退化：库从小长到大、数据分布也变了（扫描增删几万条），
+    而查询计划还是按很久以前的统计信息估行数——估错就是全表扫。SQLite 官方
+    推荐的做法就是周期性 ``PRAGMA optimize``：绝大多数时候它什么都不做
+    （毫秒级），只在某张表确实该 ANALYZE 时才动手。
+
+    返回是否执行过（非 SQLite / 失败都是 False：维护里一项失败不该影响别的项）。
+    """
+    from backend.database import DATABASE_TYPE
+
+    if DATABASE_TYPE != "sqlite":
+        return False
+    try:
+        db.execute(text("PRAGMA optimize"))
+        return True
+    except Exception as exc:  # noqa: BLE001 — 优化查询计划失败不影响服务
+        logger.warning("PRAGMA optimize 失败: %s", exc)
+        db.rollback()
+        return False
+
+
 def janitor_tick() -> dict:
     """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）"""
     from backend.database import SessionLocal
@@ -477,7 +501,8 @@ def janitor_tick() -> dict:
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
               "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
               "images_pruned": 0,
-              "images_freed_bytes": 0, "ai_usage_pruned": 0}
+              "images_freed_bytes": 0, "ai_usage_pruned": 0,
+              "query_plans_optimized": False}
     try:
         result["transcodes_reaped"] = streaming.reap_stale_transcodes()
     except Exception as exc:  # noqa: BLE001
@@ -546,6 +571,17 @@ def janitor_tick() -> dict:
         result["ai_usage_pruned"] = prune_ai_usage(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("清理 AI 用量记录失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 查询计划：库长到几十万行之后，SQLite 可能还在按老统计信息估行数（选错索引就是
+    # 全表扫描）。官方建议周期性跑 `PRAGMA optimize`，成本几乎为零，见 optimize_query_plans。
+    db = SessionLocal()
+    try:
+        result["query_plans_optimized"] = optimize_query_plans(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("优化查询计划失败: %s", exc)
         db.rollback()
     finally:
         db.close()

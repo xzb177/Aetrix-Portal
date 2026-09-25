@@ -253,10 +253,15 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     "item_facets_backfilled", "item_facets_orphans",
                     "scan_dir_states_pruned", "scan_runs_pruned",
                     "images_pruned", "images_freed_bytes",
-                    "ai_usage_pruned"},
+                    "ai_usage_pruned",
+                    # v2.35.0：SQLite 上周期性 PRAGMA optimize（查询计划不随库增长退化，见
+                    # maintenance.optimize_query_plans）。它是一个布尔，所以不参与下面
+                    # 「干净时什么都不做」的全零断言：SQLite 上跑了就是 True，非 SQLite 是 False。
+                    "query_plans_optimized"},
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()
-check(all(v == 0 for v in second.values()), "维护周期可反复执行（干净时什么都不做）", f"{second}")
+check(all(v == 0 for key, v in second.items() if key != "query_plans_optimized"),
+      "维护周期可反复执行（干净时什么都不做）", f"{second}")
 
 
 # ==================== 6. EM 启动维护与健康检查 ====================

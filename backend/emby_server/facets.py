@@ -60,6 +60,11 @@ FILTER_BACKFILL_COOLDOWN = 5.0
 _values_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 # 关联表的代际号：每次同步/回填/清理 +1，调用方据此失效自己的缓存
 _values_generation = 0
+# 「分类取值变了」的回调（如 api.py 的筛选菜单缓存）
+#
+# 关联表是分类值的唯一真相，所以失效统一从这里发出去，而不是让每条写入路径
+# （扫描、图片修复、将来任何改元数据的入口）各自记得调一次——多一处就是漏一处。
+_change_listeners: list = []
 _backfill_lock = threading.Lock()
 _last_filter_attempt = 0.0
 _FACET_COLUMNS = ("genres", "studios", "tags", "platforms")
@@ -177,15 +182,34 @@ def orphan_count(db: Session) -> int:
 # ==================== 查询侧 ====================
 
 
+def add_change_listener(callback) -> None:
+    """注册「分类取值已变」回调（幂等：同一个回调只挂一次）
+
+    回调必须是**纯内存操作**：它在写入事务的 flush 钩子上同步执行，
+    慢一点就直接拖慢扫描。真正的重活（回查数据库）留给下一次请求。
+    """
+    if callback not in _change_listeners:
+        _change_listeners.append(callback)
+
+
+def _notify_change_listeners() -> None:
+    for callback in list(_change_listeners):
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 — 派生缓存失效失败不该影响业务写入
+            logger.exception("分类取值变更回调失败")
+
+
 def invalidate_values_cache() -> None:
     """关联表变了（扫描 / 回填 / 删条目）→ 丢掉取值缓存，并推进代际号
 
     代际号给调用方（如合成 Id 反查表）做跨请求缓存的失效依据：只要它没变，
-    缓存的结果就一定还是对的。
+    缓存的结果就一定还是对的。挂上来的回调也在这一步被通知。
     """
     global _values_generation
     _values_generation += 1
     _values_cache.clear()
+    _notify_change_listeners()
 
 
 def values_generation() -> int:
