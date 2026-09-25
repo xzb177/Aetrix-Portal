@@ -47,10 +47,12 @@ from sqlalchemy import event as sa_event  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from backend import models  # noqa: E402
+from backend import notifications as notif_mod  # noqa: E402
 from backend.database import SessionLocal, engine, init_db  # noqa: E402
 from backend.emby_server import api as emby_api  # noqa: E402
 from backend.emby_server import compat_routes, facets  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.security import create_access_token, hash_password  # noqa: E402
 
 init_db()
 
@@ -105,6 +107,15 @@ with SessionLocal() as db:
     db.refresh(user)
     user_id = user.id          # 会话一关实体就过期，后面只认这个裸 id
 
+    # 站内消息要发给「启用中的管理员」：通知层没人可发时不会落库，验证也就没意义
+    staff = models.WebUser(username=f"hot-staff-{suffix}",
+                           password_hash=hash_password("hot-paths"),
+                           is_active=True, is_staff=True)
+    db.add(staff)
+    db.commit()
+    db.refresh(staff)
+    staff_id = staff.id
+
     library = em.Library(guid=f"lib-hot-{suffix}", name="热路径测试库",
                          collection_type="movies", paths="/tmp")
     db.add(library)
@@ -132,6 +143,9 @@ with SessionLocal() as db:
     library_id = library.id
 
 H = {"X-Emby-Token": token}
+
+# 门户侧（/api/user/*）用的是登录 JWT，不是 Emby token
+PORTAL_H = {"Authorization": f"Bearer {create_access_token(user_id)}"}
 
 client = TestClient(app)
 
@@ -373,7 +387,100 @@ async def section_hot_path():
         check("结束上报把会话标成已结束", session is not None and session.ended_at is not None)
 
 
-asyncio.run(section_hot_path())
+
+
+# ==================== 4. 求片提交：通知层落库不占事件循环 ====================
+print("\n=== 4. 求片提交（全体管理员的站内消息落库不在事件循环上）===")
+
+SEEK_NAME = f"热路径求片 {suffix}"
+
+
+async def section_seek_notify():
+    # 4.1 基线自证：同样的同步落库直接跑在事件循环上
+    gap = await blocking_baseline()
+    check("基线自证：站内信落库跑在事件循环上会卡住全站（心跳空洞 ≥0.3s）",
+          gap >= SLOW_WRITE * 0.8, f"心跳空洞={gap:.3f}s")
+
+    # 4.2 让「这台机器写站内信就是慢」，再走真实路由提交求片
+    real_persist = notif_mod._persist_staff_messages          # noqa: SLF001
+
+    def slow_persist(db, title, content, message_type, related_id):
+        """真实的落库照做，只是先慢 0.35 秒（模拟慢盘 / 跨机 PostgreSQL）"""
+        time.sleep(SLOW_WRITE)
+        return real_persist(db, title, content, message_type, related_id)
+
+    notif_mod._persist_staff_messages = slow_persist          # noqa: SLF001
+    box: dict = {}
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as api:
+            async def submit():
+                box["resp"] = await api.post(
+                    "/api/user/media-seek", headers=PORTAL_H,
+                    json={"movie_name": SEEK_NAME, "type": "movie"},
+                )
+
+            elapsed, gap = await measure(submit)
+    finally:
+        notif_mod._persist_staff_messages = real_persist      # noqa: SLF001
+
+    resp = box.get("resp")
+    check("求片提交 → 200", resp is not None and resp.status_code == 200,
+          f"HTTP {getattr(resp, 'status_code', '—')} {getattr(resp, 'text', '')[:120]}")
+    check("慢落库确实发生了（0.35s 的通知活儿没被跳过）", elapsed >= SLOW_WRITE * 0.8,
+          f"耗时={elapsed:.3f}s")
+    check("这 0.35s 里事件循环保持响应（心跳空洞 < 0.15s）", gap < 0.15,
+          f"心跳空洞={gap:.3f}s（改动前 ≈ {SLOW_WRITE:.2f}s）")
+
+    with SessionLocal() as db:
+        row = (db.query(models.MovieRequest)
+               .filter(models.MovieRequest.user_id == user_id,
+                       models.MovieRequest.movie_name == SEEK_NAME).first())
+        check("求片真的落库了（下放线程池没耽误写）", row is not None,
+              f"request_id={getattr(row, 'id', None)}")
+        request_id = row.id if row is not None else -1
+        msgs = (db.query(models.StationMessage)
+                .filter(models.StationMessage.to_user_id == staff_id,
+                        models.StationMessage.related_id == request_id).count())
+        check("启用中的管理员收到了站内消息（通知层的落库也没被跳过）", msgs >= 1, f"{msgs} 条")
+
+    # 4.3 后台推送那一侧：取件 / 记录结果 / 审计同样不在事件循环上。
+    #     这里不发真网络（没有配 qB），走的是「没有可用服务器」的失败分支——
+    #     正好验证「失败也要如实记录 + 落审计」这条路径。
+    with SessionLocal() as db:
+        admin = (db.query(models.WebUser).filter(models.WebUser.id == staff_id).first())
+        admin_name, admin_staff_flag = admin.username, admin.is_staff
+    box.clear()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://testserver") as api:
+        login = await api.post("/api/user/auth/login",
+                               json={"username": admin_name, "password": "hot-paths"})
+        check("管理员账号可用于推送端点（造号时写死了口令）",
+              login.status_code == 200 and admin_staff_flag, f"HTTP {login.status_code}")
+        if login.status_code == 200:
+            admin_h = {"Authorization": f"Bearer {login.json()['access_token']}"}
+            push = await api.post(f"/api/admin/media-seek/{request_id}/push",
+                                  headers=admin_h, json={"target": "qbittorrent"})
+            check("推送端点可用（没有可用 qB 时如实返回失败）",
+                  push.status_code == 200 and push.json().get("success") is False,
+                  f"HTTP {push.status_code} {push.text[:160]}")
+    with SessionLocal() as db:
+        row = (db.query(models.MovieRequest)
+               .filter(models.MovieRequest.id == request_id).first())
+        check("推送结果如实落库（失败也记 push_status / pushed_at）",
+              row is not None and row.push_status == "failed" and row.pushed_at is not None,
+              f"push_status={getattr(row, 'push_status', None)}")
+        audits = (db.query(models.AdminLog)
+                  .filter(models.AdminLog.action == "push_media_seek").count())
+        check("推送写了审计（记录结果那一批也没漏）", audits >= 1, f"{audits} 条")
+
+async def _run_sections():
+    """按标题顺序跑：3（会话上报）→ 4（求片 / 通知层），输出顺序与章节一致"""
+    await section_hot_path()
+    await section_seek_notify()
+
+
+asyncio.run(_run_sections())
 
 
 # ==================== 收尾 ====================
@@ -387,7 +494,11 @@ with SessionLocal() as db:
     db.flush()
     db.query(em.Library).filter(em.Library.id == library_id).delete()
     db.query(em.EmbyApiToken).filter(em.EmbyApiToken.token == token).delete()
+    db.query(models.StationMessage).filter(models.StationMessage.to_user_id == staff_id).delete()
+    db.query(models.MovieRequest).filter(models.MovieRequest.user_id == user_id).delete()
+    db.query(models.AdminLog).filter(models.AdminLog.target_type == "media_seek").delete()
     db.query(models.WebUser).filter(models.WebUser.id == user_id).delete()
+    db.query(models.WebUser).filter(models.WebUser.id == staff_id).delete()
     db.commit()
 
 for path in (DB, DB + "-wal", DB + "-shm"):

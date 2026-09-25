@@ -2,6 +2,41 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.36.0] - 2026-09-25
+
+### 求片链路与通知层：写库下放线程池（阻塞路由基线 39 → 37）
+
+上一版把两条最热的协议面路径（会话上报、分类菜单）从事件循环上挪开了，也把
+「真正的瓶颈是通知层自己也在 `async` 里写库」写进了文档。这一版就来拆这一层。
+
+**通知层（影响面最大的一处）**
+
+`notify_staff_users` / `notify_all_users` 原先在 `async` 函数里查人、逐条写站内消息再提交：
+调用它们的**每一个**功能（求片、工单、公告、订阅、经济）都因此把全站请求按在这次写事务后面。
+现在落库段各自拆成同步函数（`_persist_staff_messages` / `_persist_broadcast_messages`）下放线程池，
+WebSocket 实时推送仍是 await——对外行为、返回的管理员/用户数量都没变。广播给几万个用户
+写站内消息这种「一次写几万行」的活儿，是最不该占着事件循环的写。
+
+**求片两条链路（文档清单上剩下的两条热路径）**
+
+- 用户提交求片（`POST /api/user/media-seek`）：去重 / 每日额度 / 落库拆成 `_create_media_seek_sync`
+  下放线程池；400 / 409 / 429 的语义与文案不变（异常从线程里原样抛给客户端）；
+- 后台推送求片（`POST /api/admin/media-seek/{id}/push`）：取件与「记录结果 + 审计」各拆成同步函数
+  下放线程池；提交后**返回面板要的纯值**，避免回到事件循环上再触发一次隐式回查。
+  推送失败仍然如实记 `push_status=failed` / `pushed_at` 并写审计（不假装成功）；
+- `servers.push_media_seek` 里两次挑服务器的同步查库（`active_config`）同样下放线程池。
+
+**验证**
+
+- `scripts/smoke_test_backend_hot_paths.py` 新增第 4 节（进 CI）：先自证方法有效——把站内信落库
+  直接跑在事件循环上，心跳空洞 **0.36s**；再让「这台机器写站内信慢 0.35 秒」的真实请求进来提交
+  求片，空洞只有 **0.012s**，同时求片记录与管理员站内消息都真的落库；后台推送在没有可用 qB 时
+  如实返回失败并留下 `push_status=failed` 与一条审计；
+- `scripts/smoke_test_servers.py`（推送端点 5 个分支）、`smoke_test_user_v250.py`（求片提交 /
+  去重 409 / 额度 429 / 撤回）、`smoke_test_realms.py`、`smoke_test_admin_v240.py`：全部通过；
+- `scripts/check_blocking_routes.py`：阻塞型 async 路由 **37 个**（基线 37，无新增）；
+  `pytest tests/ -q`、`check_version` / `check_await_consistency` / `check_auth_coverage` 通过。
+
 ## [2.35.0] - 2026-09-25
 
 ### 后端提速与稳定性：热路径不再占事件循环、分类菜单走索引、库长到后面也不退化

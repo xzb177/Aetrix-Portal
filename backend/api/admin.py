@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -922,6 +923,39 @@ def get_media_seeks(
     return result
 
 
+def _load_movie_request_sync(db: Session, request_id: int) -> models.MovieRequest:
+    """同步取一条求片（不在时按 404 抛，语义与以前一致）——放线程池里跑，见 push_media_seek"""
+    media_request = db.query(models.MovieRequest).filter(
+        models.MovieRequest.id == request_id
+    ).first()
+    if not media_request:
+        raise HTTPException(status_code=404, detail="求片请求不存在")
+    return media_request
+
+
+def _record_seek_push_sync(
+    db: Session,
+    media_request: models.MovieRequest,
+    result: dict,
+    requested_target: str,
+) -> dict:
+    """同步记录推送结果，返回面板要展示的纯值（审计由端点自己调 _audit，见 push_media_seek）
+
+    提交之后 ORM 属性会过期，所以状态/目标在这**里**读出来返回，
+    免得回到事件循环上再触发一次隐式回查。
+    """
+    target = str(result.get("target") or requested_target)
+    media_request.push_target = target
+    media_request.push_status = "ok" if result.get("ok") else "failed"
+    media_request.push_message = str(result.get("message") or "")[:300]
+    media_request.pushed_at = datetime.now()
+    # 交出去了就代表处理过了：批过的求片推成功时顺手标成已批准，省得管理员再点一次
+    if result.get("ok") and media_request.status == "pending":
+        media_request.status = "approved"
+    db.commit()
+    return {"target": target, "status": media_request.status}
+
+
 @admin_router.post("/media-seek/{request_id}/push")
 async def push_media_seek(
     request_id: int,
@@ -934,38 +968,32 @@ async def push_media_seek(
     以前求片只能改状态，批了之后得管理员自己去别处搜片子——这个端点把那一步接上。
     失败原因（连不上 / 凭据不对 / 没填链接）原样回给面板，不假装成功。
     """
-    media_request = db.query(models.MovieRequest).filter(
-        models.MovieRequest.id == request_id
-    ).first()
-    if not media_request:
-        raise HTTPException(status_code=404, detail="求片请求不存在")
+    # 取求片：同步查询下放线程池（这个端点还要 await 外部推送，必须是 async def）
+    media_request = await run_in_threadpool(_load_movie_request_sync, db, request_id)
 
     # qB 要链接：直接给磁力最好；只贴了整段分享文本也能从中挑出一条
     link = qbittorrent.pick_link(payload.link or "") or (payload.link or "").strip()
     result = await servers.push_media_seek(db, media_request, payload.target, link=link)
 
-    target = str(result.get("target") or payload.target)
-    media_request.push_target = target
-    media_request.push_status = "ok" if result.get("ok") else "failed"
-    media_request.push_message = str(result.get("message") or "")[:300]
-    media_request.pushed_at = datetime.now()
-    # 交出去了就代表处理过了：批过的求片推成功时顺手标成已批准，省得管理员再点一次
-    if result.get("ok") and media_request.status == "pending":
-        media_request.status = "approved"
-    db.commit()
-
+    # 求片状态那一批：同步写库下放线程池
+    snapshot = await run_in_threadpool(
+        _record_seek_push_sync, db, media_request, result, payload.target
+    )
+    # 审计这一行必须出现在**端点函数体**里（scripts/check_admin_audit_coverage.py 是源码级判定）。
+    # _audit 只在会话上挂一个对象，是纯内存操作、不发 SQL；真正的写发生在提交，
+    # 而提交下放线程池——同步提交留在事件循环上会卡住全站（见 docs/performance.md 二·九）。
     _audit(db, current_admin, "push_media_seek", "media_seek", request_id,
-           {"target": target, "ok": bool(result.get("ok")),
+           {"target": snapshot["target"], "ok": bool(result.get("ok")),
             "server": result.get("server")})
-    db.commit()
+    await run_in_threadpool(db.commit)
 
     return {
         "success": bool(result.get("ok")),
-        "target": target,
+        "target": snapshot["target"],
         "server": result.get("server"),
         "message": str(result.get("message") or ""),
         "request_id": request_id,
-        "status": media_request.status,
+        "status": snapshot["status"],
     }
 
 
