@@ -897,6 +897,10 @@ class _ScanContext:
     nfo_series_details: dict = field(default_factory=dict)
     # 本轮已处理过补图的 series_guid（去重，避免同剧多集/多批次重复调详情接口）
     nfo_series_imaged: set = field(default_factory=set)
+    # episode 隐式 series 的 TMDB 搜索结果：series_guid → (hit, details)
+    series_tmdb_results: dict = field(default_factory=dict)
+    # 本轮已为隐式 series 提交过 TMDB 搜索的 series_guid（去重，避免同剧多集/多批次重复搜）
+    series_tmdb_searched: set = field(default_factory=set)
 
 
 
@@ -1012,6 +1016,16 @@ def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: 
             return False                 # 到期重刮 / all 策略 / 缺元数据
         if item.tmdb_id and not (item.imdb_id and item.aliases):
             return False                 # 与循环里的 need_details 一致：详情还没补齐
+    if (pending.item_type == "episode" and tmdb_client.configured
+            and pending.series_guid):
+        # B 方案补全：父 series 缺 TMDB 元数据时不能跳过——episode 隐式创建的
+        # series 平时不走 TMDB 搜索分支，跳过了就永远刮不到（与预取里的提交条件一致）
+        s = ctx.series_items.get(pending.series_guid)
+        if s is not None and (
+            bool(getattr(s, "repair_requested_at", None))
+            or should_scrape(s, ctx.snap.scrape_policy)
+        ):
+            return False
     if pending.item_type == "episode" and not (item.series_id and item.parent_id):
         return False                     # 剧集/季层级没挂全，走完整处理补齐
     return True
@@ -1450,6 +1464,20 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
                     pending.series_tmdb = pool.submit(
                         _tmdb_work, False, "", None, "series", str(series_id), True,
                     )
+            elif (not series_id and tmdb_client.configured
+                    and pending.series_guid not in ctx.series_tmdb_searched):
+                # B 方案补全：episode 隐式创建的 series 平时走不到 TMDB 搜索，
+                # NFO 里又没有 tmdb_id 时，按剧名搜一次（TMDB 只补图与缺的字段，
+                # NFO 文本随后在写库循环里覆盖，口径与顶层 series 分支一致）
+                s_item = ctx.series_items.get(pending.series_guid)
+                if (s_item is None
+                        or bool(getattr(s_item, "repair_requested_at", None))
+                        or should_scrape(s_item, policy)):
+                    ctx.series_tmdb_searched.add(pending.series_guid)  # 占位去重：跨批次不重复搜
+                    pending.series_tmdb = pool.submit(
+                        _tmdb_work, True, pending.parsed["name"],
+                        pending.parsed["year"], "series", None, True,
+                    )
 
     # 把这一批的 IO 结果**全部取回**，然后才把写库交给调用方。
     # 这是「事务只包纯 DB 写」的关键一步：ffprobe / rclone 列目录 / TMDB 搜索都可能在
@@ -1463,9 +1491,12 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         pending.side_data = _result(pending.side)
         hit, details = _result(pending.tmdb, default=(None, None)) or (None, None)
         pending.tmdb_hit, pending.tmdb_details = hit, details
-        _, series_details = _result(pending.series_tmdb, default=(None, None)) or (None, None)
+        series_hit, series_details = _result(pending.series_tmdb, default=(None, None)) or (None, None)
         if series_details is not None:
             ctx.nfo_series_details[pending.series_guid] = series_details
+        if series_hit is not None:
+            # episode 分支为隐式 series 做的 TMDB 搜索命中，留给写库循环落到 series 上
+            ctx.series_tmdb_results[pending.series_guid] = (series_hit, series_details)
     return prepared
 
 
@@ -2159,8 +2190,25 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             db.flush()
                             ctx.series_items[series_guid] = series
                         item.series_id = series.id
+                        # B 方案补全：本批为隐式 series 预取的 TMDB 搜索命中先落库
+                        # （补 tmdb_id/简介/海报/评分/别名；NFO 文本随后覆盖，保证 NFO 优先）
+                        series_tmdb_applied = False
+                        if not series.tmdb_id or getattr(series, "repair_requested_at", None):
+                            tmdb_res = ctx.series_tmdb_results.get(series_guid)
+                            if tmdb_res:
+                                series_hit, series_details = tmdb_res
+                                if series_hit:
+                                    tmdb_client.apply(series, series_hit, "series")
+                                    stats["scraped"] += 1
+                                    series_tmdb_applied = True
+                                if series_details:
+                                    tmdb_client.apply_details(series, series_details)
+                                if getattr(series, "repair_requested_at", None):
+                                    series.repair_requested_at = None
+                                    stats["repaired"] = stats.get("repaired", 0) + 1
                         series_nfo = _pending.series_nfo_data
-                        if series_nfo and (not series.tmdb_id or not series.overview):
+                        if series_nfo and (not series.tmdb_id or not series.overview
+                                           or series_tmdb_applied):
                             # 剧集级 NFO（tvshow.nfo）：这类 series 平时不走 TMDB，
                             # 远端有刮削就直接用；B 方案下 TMDB 只补图
                             if series_nfo.get("tmdb_id") and not (
