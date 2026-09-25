@@ -211,7 +211,34 @@ jwt_token = create_access_token(alice_id, {"username": "alice"})
 r = client.get("/api/user/emby/server", headers={"Authorization": f"Bearer {jwt_token}"})
 assert r.status_code == 200, r.text
 server_info = r.json()
+# 查看权限 gating：bob 无订阅、默认服为付费服 → 敏感字段必须置空不下发
+assert not server_info["emby_username"], server_info
+assert not server_info["base_url"], server_info
+assert server_info["import_schemes"] == {}, server_info
+assert server_info["view_permission"]["granted"] is False, server_info
+print("OK portal /server hides account without view permission")
+
+# 给 bob 一个有效订阅 → 查看权限恢复，账号卡完整下发
+from datetime import datetime, timedelta  # noqa: E402
+from backend import realms as realm_lib  # noqa: E402
+
+db3 = Session()
+realm_id = realm_lib.active_realm_id(db3)
+plan = models.SubscriptionPlan(name="测试月卡", price=9.99, duration_days=31, realm_id=realm_id)
+db3.add(plan)
+db3.flush()
+db3.add(models.UserSubscription(user_id=bob_id, plan_id=plan.id, realm_id=realm_id,
+                                status="active",
+                                end_date=datetime.now() + timedelta(days=30)))
+db3.commit()
+db3.close()
+
+r = client.get("/api/user/emby/server", headers={"Authorization": f"Bearer {jwt_token}"})
+assert r.status_code == 200, r.text
+server_info = r.json()
 assert server_info["emby_username"], server_info
+assert server_info["base_url"], server_info
+assert server_info["view_permission"]["granted"] is True, server_info
 assert not server_info.get("emby_password"), "账号卡不应返回明文密码"
 print("OK portal /server:", server_info["server_name"], server_info["base_url"])
 
