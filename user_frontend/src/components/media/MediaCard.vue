@@ -7,11 +7,39 @@ import { useRouter } from 'vue-router'
 import { Play, Star, Eye } from 'lucide-vue-next'
 import { posterUrl, progressPercent, type EmbyItem } from '@/api/emby'
 
-const props = defineProps<{ item: EmbyItem }>()
+/**
+ * 剧集卡的续播信息：顶层「继续观看」用剧集卡承载断点续播，
+ * 不再把单集卡片平铺到顶层（单集只活在剧集详情页内）。
+ */
+export interface ResumeInfo {
+  episodeId: string
+  seasonNumber?: number | null
+  episodeNumber?: number | null
+  /** 0-100；>0 表示「看到一半」，=0 表示「下一集」 */
+  progress: number
+  totalEpisodes?: number | null
+}
+
+const props = defineProps<{ item: EmbyItem; resume?: ResumeInfo | null }>()
 const router = useRouter()
 
 const poster = computed(() => posterUrl(props.item, 342))
-const progress = computed(() => progressPercent(props.item))
+const hasResume = computed(() => props.item.Type === 'Series' && !!props.resume)
+const progress = computed(() =>
+  hasResume.value && props.resume ? props.resume.progress : progressPercent(props.item),
+)
+/** 续播副标题：看到第X季第X集 · 共Y集 / 下一集：第X季第X集 */
+const resumeLabel = computed(() => {
+  const r = props.resume
+  if (!r) return ''
+  const ep = r.seasonNumber != null && r.episodeNumber != null
+    ? `第${r.seasonNumber}季第${r.episodeNumber}集`
+    : r.episodeNumber != null
+      ? `第${r.episodeNumber}集`
+      : ''
+  const total = r.totalEpisodes ? ` · 共${r.totalEpisodes}集` : ''
+  return r.progress > 0 ? `看到${ep}${total}` : `下一集：${ep}${total}`
+})
 /** 画质徽标：Emby 风右上/左上小徽章，高度来自后端 Width/Height */
 const quality = computed(() => {
   const h = props.item.Height || 0
@@ -31,9 +59,12 @@ const typeLabel = computed(() =>
   ({ Movie: '电影', Series: '剧集', Episode: '剧集', Season: '季' }[props.item.Type] || '影片'),
 )
 const targetRoute = computed(() =>
-  props.item.Type === 'Episode' && props.item.SeriesId
-    ? `/media/${props.item.SeriesId}`
-    : `/media/${props.item.Id}`,
+  // 续播剧集卡：点进详情页并直达该集（详情页读 ?ep= 自动定位）
+  hasResume.value && props.resume
+    ? `/media/${props.item.Id}?ep=${props.resume.episodeId}`
+    : props.item.Type === 'Episode' && props.item.SeriesId
+      ? `/media/${props.item.SeriesId}`
+      : `/media/${props.item.Id}`,
 )
 
 function open() {
@@ -72,6 +103,8 @@ function open() {
     <div class="card-body">
       <p class="card-title" :title="item.Name">{{ item.Name }}</p>
       <p class="card-meta">
+        <span v-if="hasResume" class="resume-text">{{ resumeLabel }}</span>
+        <template v-else>
         <span v-if="item.ProductionYear">{{ item.ProductionYear }}</span>
         <span v-if="item.Type === 'Episode' && item.IndexNumber != null">第 {{ item.IndexNumber }} 集</span>
         <span v-else-if="item.Type !== 'Episode'">{{ typeLabel }}</span>
@@ -79,6 +112,7 @@ function open() {
           <Star :size="10" class="star" />
           {{ item.CommunityRating.toFixed(1) }}
         </span>
+        </template>
       </p>
     </div>
   </div>
@@ -247,6 +281,15 @@ function open() {
   align-items: center;
   gap: 0.1875rem;
   color: var(--au-warning);
+}
+
+/* 续播副标题：单行截断，不把卡片撑高 */
+.resume-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--au-primary);
+  font-weight: 600;
 }
 
 .star {

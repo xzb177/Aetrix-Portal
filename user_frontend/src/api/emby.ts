@@ -85,6 +85,8 @@ export interface EmbyMediaSource {
 export interface EmbyQuery {
   parentId?: string
   includeTypes?: string[]
+  /** 按条目 Id 批量取（逗号分隔传给后端 Ids） */
+  ids?: string[]
   searchTerm?: string
   genres?: string[]
   years?: number[]
@@ -147,6 +149,7 @@ export const embyApi = {
     if (q.parentId) params.ParentId = q.parentId
     if (q.recursive !== false) params.Recursive = 'true'
     if (q.includeTypes?.length) params.IncludeItemTypes = q.includeTypes.join(',')
+    if (q.ids?.length) params.Ids = q.ids.join(',')
     if (q.searchTerm) params.SearchTerm = q.searchTerm
     if (q.genres?.length) params.Genres = q.genres.join('|')
     if (q.years?.length) params.Years = q.years.join(',')

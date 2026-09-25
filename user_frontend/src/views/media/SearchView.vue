@@ -1,6 +1,9 @@
 <script setup lang="ts">
 /**
- * 全局搜索 — 跨整个媒体库检索（电影 / 剧集 / 单集）
+ * 全局搜索 — 跨整个媒体库检索（电影 / 剧集）
+ *
+ * 顶层搜索结果只允许 series/movie 级别：季/单集收进剧集详情页，
+ * 不再平铺到搜索结果里（后端 _query_items 亦有默认保护）。
  *
  * - 此前只能在进入某个媒体库后搜索，这里提供全局入口（顶栏搜索图标直达）
  * - 结果按类型分组展示；无结果时引导到「求片」
@@ -34,7 +37,6 @@ const groups = computed(() => {
   return [
     { title: '电影', items: bucket('Movie') },
     { title: '剧集', items: bucket('Series') },
-    { title: '单集', items: bucket('Episode') },
   ].filter((g) => g.items.length > 0)
 })
 
@@ -81,6 +83,8 @@ async function runSearch(word: string) {
       searchTerm: w,
       limit: PAGE_LIMIT,
       recursive: true,
+      // 顶层只搜电影/剧集：季/单集卡片只出现在剧集详情页内
+      includeTypes: ['Movie', 'Series'],
       sortBy: 'SortName',
       sortOrder: 'Ascending',
     })

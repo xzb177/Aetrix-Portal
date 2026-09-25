@@ -24,8 +24,15 @@ const filters = [
   { value: 'Series', label: '剧集' },
 ]
 
+/**
+ * 收藏页是顶层页面：只显示 Movie/Series。
+ * 收藏的是单集时，类型筛选只有 电影/剧集 两档，
+ * 「全部」也不把单集卡平铺出来（通过详情页收藏的季/单集不会污染顶层）。
+ */
 const shown = computed(() =>
-  typeFilter.value ? items.value.filter((i) => i.Type === typeFilter.value) : items.value,
+  typeFilter.value
+    ? items.value.filter((i) => i.Type === typeFilter.value)
+    : items.value.filter((i) => i.Type === 'Movie' || i.Type === 'Series'),
 )
 
 const typeLabel = (t?: string) =>
