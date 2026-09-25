@@ -274,9 +274,26 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
         )
         counts.update({pid: n for pid, n in rows})
 
+    # 3b) series 未播放集数（卡片「未看 N 集」角标用，一条分组 SQL，不逐卡查询）
+    unplayed: dict[int, int] = {}
+    if series_ids_all:
+        rows = (
+            db.query(em.MediaItem.series_id, func.count(em.MediaItem.id))
+            .filter(em.MediaItem.series_id.in_(series_ids_all),
+                    em.MediaItem.item_type == "episode")
+            .outerjoin(em.UserMediaData,
+                       (em.UserMediaData.item_id == em.MediaItem.id)
+                       & (em.UserMediaData.user_id == user_id))
+            .filter(em.UserMediaData.played.isnot(True))
+            .group_by(em.MediaItem.series_id)
+            .all()
+        )
+        unplayed = {sid: n for sid, n in rows}
+
     db.info["_aetrix_prefetch"] = {
         "umd": umd_map,
         "counts": counts,
+        "unplayed": unplayed,
         "items": {i.id: i for i in items},
     }
 
@@ -319,6 +336,8 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "Container": item.container,
         "Bitrate": item.bitrate or None,
         "IsHD": bool((item.height or 0) >= 720),
+        "Width": item.width or None,
+        "Height": item.height or None,
         "OriginalTitle": item.original_title or None,
         # 客户端会用 ProviderIds 展示/跳转元数据源；补上 IMDb
         "ProviderIds": {
@@ -331,6 +350,21 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "CanDownload": download_ok,
         "SupportsContentDownloading": download_ok,
     }
+    if item.item_type == "series":
+        # 剧集卡片「未看 N 集」角标：列表页走上面的批量预取，单个详情回退为单条查询
+        unp = prefetch.get("unplayed", {}).get(item.id)
+        if unp is None and item.id not in prefetch.get("items", {}):
+            unp = (
+                db.query(func.count(em.MediaItem.id))
+                .filter(em.MediaItem.series_id == item.id,
+                        em.MediaItem.item_type == "episode")
+                .outerjoin(em.UserMediaData,
+                           (em.UserMediaData.item_id == em.MediaItem.id)
+                           & (em.UserMediaData.user_id == user_id))
+                .filter(em.UserMediaData.played.isnot(True))
+                .scalar()
+            ) or 0
+        dto["UserData"]["UnplayedItemCount"] = unp or 0
     if item.item_type == "episode":
         dto.update({
             "SeriesId": item.series.guid if item.series else None,
@@ -1132,7 +1166,6 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
     result = []
     for item in items:
         dto = _item_dto(item, base, user.id, db)
-        dto["UserData"]["UnplayedItemCount"] = 1
         result.append(dto)
     return result
 

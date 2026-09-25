@@ -20,7 +20,7 @@ import MediaRow from '@/components/media/MediaRow.vue'
 import FavoritesView from '@/views/media/FavoritesView.vue'
 import HistoryView from '@/views/HistoryView.vue'
 import {
-  Play, Library, FolderOpen, RefreshCw, Info, Search, Heart, History, Film,
+  Play, Library, FolderOpen, RefreshCw, Info, Search, Heart, History, Film, ChevronRight,
 } from 'lucide-vue-next'
 
 const toast = useToast()
@@ -84,6 +84,9 @@ const heroLeft = computed(() => {
 
 const typeLabel = (t?: string) =>
   ({ Movie: '电影', Series: '剧集', Episode: '剧集' }[t || ''] || '影片')
+
+/** 媒体库入口缩略图：有 backdrop 用图，没有用渐变 + 首字 */
+const viewBackdrop = (v: EmbyItem) => backdropUrl(v, 640)
 
 async function loadAll() {
   loading.value = true
@@ -181,21 +184,33 @@ onMounted(() => {
         <MediaRow title="接下来看" :items="nextUp.slice(0, 12)" />
         <MediaRow title="我的收藏" :items="favorites.slice(0, 12)" more-to="/media?tab=favorites" />
 
-        <!-- 媒体库入口 -->
+        <!-- 媒体库入口（Emby 风横向大卡） -->
         <section v-if="views.length" class="views">
           <h2 class="row-title">
             <Library :size="18" />
             媒体库
           </h2>
           <div class="views-grid">
-            <RouterLink v-for="v in views" :key="v.Id" :to="`/library/${v.Id}`" class="view-card">
-              <div class="view-icon">
-                <FolderOpen :size="20" />
+            <RouterLink
+              v-for="v in views"
+              :key="v.Id"
+              :to="{ path: `/library/${v.Id}`, query: { name: v.Name } }"
+              class="view-card"
+            >
+              <div
+                class="view-thumb"
+                :style="viewBackdrop(v) ? { backgroundImage: `url(${viewBackdrop(v)})` } : {}"
+              >
+                <span v-if="!viewBackdrop(v)" class="view-char">{{
+                  (v.Name || '?').trim().charAt(0) || '?'
+                }}</span>
+                <div class="view-thumb-shade"></div>
               </div>
               <div class="view-body">
                 <span class="view-name">{{ v.Name }}</span>
-                <span class="view-count">{{ v.ChildCount || 0 }} 项</span>
+                <span class="view-count">{{ v.ChildCount || 0 }} 个条目</span>
               </div>
+              <ChevronRight :size="18" class="view-go" />
             </RouterLink>
           </div>
         </section>
@@ -466,59 +481,98 @@ onMounted(() => {
   font-weight: 600;
 }
 
-/* 媒体库入口 */
+/* 媒体库入口（Emby 风横向大卡） */
 .views {
   margin-bottom: 2rem;
 }
 
 .views-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 0.75rem;
 }
 
 .view-card {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 1rem;
-  background: var(--au-surface-2);
+  gap: 0.875rem;
+  padding: 0.625rem;
+  background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
   text-decoration: none;
+  overflow: hidden;
   transition: all var(--au-fast) var(--au-ease);
 }
 
 .view-card:hover {
   border-color: var(--au-primary-border);
   transform: translateY(-2px);
+  box-shadow: var(--au-shadow-2);
 }
 
-.view-icon {
-  width: 42px;
-  height: 42px;
+.view-thumb {
+  position: relative;
+  width: 132px;
+  height: 74px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: var(--au-r-md);
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--au-primary-soft), var(--au-overlay-soft));
+  background-size: cover;
+  background-position: center;
+}
+
+.view-thumb-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.28), transparent 60%);
+  pointer-events: none;
+}
+
+.view-char {
+  position: relative;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
   color: var(--au-primary);
+  opacity: 0.8;
+  user-select: none;
 }
 
 .view-body {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 0.1875rem;
 }
 
 .view-name {
-  font-size: 0.9375rem;
-  font-weight: 600;
+  font-size: 1rem;
+  font-weight: 700;
   color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .view-count {
   font-size: 0.75rem;
   color: var(--au-text-3);
+}
+
+.view-go {
+  flex-shrink: 0;
+  margin-right: 0.25rem;
+  color: var(--au-text-4);
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.view-card:hover .view-go {
+  color: var(--au-primary);
 }
 </style>

@@ -44,6 +44,17 @@ const isFavorite = computed(() => !!item.value?.UserData?.IsFavorite)
 const isPlayed = computed(() => !!item.value?.UserData?.Played)
 const progress = computed(() => (item.value ? progressPercent(item.value) : 0))
 const runtime = computed(() => (item.value?.RunTimeTicks ? formatDuration(ticksToSeconds(item.value.RunTimeTicks)) : '—'))
+/** 无海报时首字占位 */
+const titleChar = computed(() => (item.value?.Name || '?').trim().charAt(0) || '?')
+/** 画质徽标（与 MediaCard 同口径） */
+const quality = computed(() => {
+  const h = item.value?.Height || 0
+  if (h >= 2160) return '4K'
+  if (h >= 1080) return '1080p'
+  if (h >= 720) return '720p'
+  if (item.value?.IsHD) return 'HD'
+  return ''
+})
 
 const currentSeasonName = computed(() => {
   const s = seasons.value.find(x => x.Id === selectedSeasonId.value)
@@ -148,7 +159,7 @@ onMounted(loadItem)
           <div class="poster-col">
             <img v-if="poster" :src="poster" :alt="item.Name" class="poster" />
             <div v-else class="poster placeholder">
-              <Film :size="36" />
+              <span class="placeholder-char">{{ titleChar }}</span>
             </div>
           </div>
 
@@ -160,6 +171,7 @@ onMounted(loadItem)
                 <Clock :size="12" />
                 {{ runtime }}
               </span>
+              <span v-if="quality" class="quality">{{ quality }}</span>
               <span v-if="item.OfficialRating" class="cert">{{ item.OfficialRating }}</span>
               <span v-if="item.CommunityRating" class="rating">
                 <Star :size="12" class="star" />
@@ -347,8 +359,17 @@ onMounted(loadItem)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--au-surface);
+  background: linear-gradient(160deg, var(--au-primary-soft), var(--au-surface));
   color: var(--au-text-4);
+}
+
+.placeholder-char {
+  font-size: 4.5rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--au-primary);
+  opacity: 0.75;
+  user-select: none;
 }
 
 .info-col {
@@ -373,6 +394,25 @@ onMounted(loadItem)
   font-size: 0.8125rem;
   color: var(--au-text-3);
   margin-bottom: 0.75rem;
+}
+
+/* Emby 风：元数据项之间用 · 分隔 */
+.meta-row > span + span {
+  position: relative;
+}
+
+.meta-row > span + span::before {
+  content: '·';
+  position: absolute;
+  left: -0.5625rem;
+  color: var(--au-text-4);
+}
+
+.meta-row .quality {
+  color: #ffd75e;
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
 }
 
 .meta-item {
