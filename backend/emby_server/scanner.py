@@ -1301,6 +1301,16 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     guids: list = []
     for scan_file in batch:
         guid = item_guid(scan_file.stored_path)
+        if guid in ctx.seen_guids:
+            # 同一文件在本轮扫描里已经处理过：遍历器偶发产出重复
+            # （rclone lsjson 网盘侧重复条目 / 分页异常，见 _CloudMount.walk_media
+            # 的注释），第二次不再建任务。否则两个 _Pending 的 item 都为 None，
+            # 写库循环里两次 db.add 同 guid，flush 时撞 emby_items.guid 唯一键、
+            # 整批回滚、整库扫描 abort（2026-09-25 生产事故）。
+            # seen_guids 里已有它，清理阶段不受影响；计数进统计方便事后排查。
+            ctx.stats["duplicate_files"] = ctx.stats.get("duplicate_files", 0) + 1
+            logger.debug("扫描跳过重复文件：%s", scan_file.stored_path)
+            continue
         ctx.seen_guids.add(guid)
         parsed = parse_media_filename(scan_file.stored_path, ctx.snap.collection_type)
         item_type = (
@@ -1677,7 +1687,7 @@ SCAN_RUN_KEEP = int(os.getenv("EMBY_SCAN_HISTORY", "20"))
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scraped",
                    "repaired", "unchanged", "removal_skipped", "failed_roots",
-                   "duration_ms", "sources")
+                   "duplicate_files", "duration_ms", "sources")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
