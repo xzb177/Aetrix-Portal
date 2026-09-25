@@ -1951,6 +1951,12 @@ def _scan_library_body(db: Session, library: emby_models.Library,
 
                     # 内封轨道：仅在真正探测过时重建（未探测则保留旧轨道）
                     if probe is not None:
+                        # 新建条目此时还没落库，item.id 是 None：直接拿它写轨道的
+                        # item_id 会在 flush 时撞 NOT NULL 约束，把**整库**扫描带崩
+                        # （任何一批里的任何一个新条目都能触发，旧条目有 id 所以不炸）。
+                        # 这里先把 item 落库拿到主键，再建轨道。
+                        if item.id is None:
+                            db.flush()
                         db.query(emby_models.MediaStream).filter(
                             emby_models.MediaStream.item_id == item.id,
                             emby_models.MediaStream.is_external.isnot(True),
