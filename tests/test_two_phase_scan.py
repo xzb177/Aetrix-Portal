@@ -184,15 +184,22 @@ def test_phase1_tvshow_episode_pending_series_done(tmp_path, monkeypatch):
 # ---------- Phase 2 worker ----------
 
 def test_worker_claims_by_priority_desc(db):
+    # 注意：CI 里 pytest 之前会先跑一堆 smoke 脚本，共用同一个测试 DB，
+    # 它们创建的 MediaItem 也会是 probe_status='pending'。断言只看“自己这 3 条
+    # 在抢单结果里的相对顺序”，不假设库里没有残留数据。
     libs_items = [_make_item(db, priority=p) for p in (0, 50, 100)]
     db.commit()
+    mine = {item.id for _, item in libs_items}
     try:
-        ids = probe_worker._claim_batch(db, 10)
+        ids = probe_worker._claim_batch(db, 100)
+        mine_in_order = [i for i in ids if i in mine]
+        assert len(mine_in_order) == 3, "自己的 3 条都应被抢到"
         prios = [db.query(em.MediaItem.probe_priority).filter(
-            em.MediaItem.id == i).scalar() for i in ids]
+            em.MediaItem.id == i).scalar() for i in mine_in_order]
         assert prios == [100, 50, 0]
-        # 抢占后状态为 probing，再抢一次抢不到
-        assert probe_worker._claim_batch(db, 10) == []
+        # 自己这 3 条已是 probing：再抢一次，不应再出现它们
+        ids2 = probe_worker._claim_batch(db, 100)
+        assert not (set(ids2) & mine), "已抢占的不应重复抢到"
     finally:
         for lib, _ in libs_items:
             _cleanup(db, lib)
