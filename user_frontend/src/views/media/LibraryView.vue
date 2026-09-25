@@ -16,10 +16,11 @@
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { embyApi, type EmbyItem, type EmbyFilters } from '@/api/emby'
+import { embyApi, posterUrl, progressPercent, type EmbyItem, type EmbyFilters } from '@/api/emby'
 import MediaCard from '@/components/media/MediaCard.vue'
 import {
   Search, X, ArrowUpDown, FolderOpen, SlidersHorizontal, Check, RotateCcw,
+  LayoutGrid, List as ListIcon, ChevronRight,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -36,6 +37,53 @@ const search = ref('')
 const typeFilter = ref('')
 const DEFAULT_SORT = 'SortName:Ascending'
 const sort = ref(DEFAULT_SORT)
+
+// ==================== 网格 / 列表视图 ====================
+
+type ViewMode = 'grid' | 'list'
+const VIEW_KEY = 'aetrix-library-view'
+const viewMode = ref<ViewMode>(
+  ((): ViewMode => {
+    try {
+      return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'grid'
+    } catch {
+      return 'grid'
+    }
+  })(),
+)
+
+function setViewMode(m: ViewMode) {
+  viewMode.value = m
+  try {
+    localStorage.setItem(VIEW_KEY, m)
+  } catch {
+    /* 无痕模式等写不进就下次再说 */
+  }
+}
+
+/** 列表行点击：与 MediaCard 同口径（单集跳到所属剧集） */
+function openItem(item: EmbyItem) {
+  const target =
+    item.Type === 'Episode' && item.SeriesId ? `/media/${item.SeriesId}` : `/media/${item.Id}`
+  router.push(target)
+}
+
+// ==================== A-Z 快跳 ====================
+
+const LETTERS = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '#']
+
+/** 在已加载的卡片里找首个首字母匹配项并滚动定位（无限滚动只搜已加载部分） */
+function jumpToLetter(letter: string) {
+  const els = Array.from(document.querySelectorAll<HTMLElement>('[data-sortkey]'))
+  for (const el of els) {
+    const c = (el.dataset.sortkey || '').trim().charAt(0).toUpperCase()
+    const key = c >= 'A' && c <= 'Z' ? c : '#'
+    if (key === letter) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      break
+    }
+  }
+}
 
 // ==================== 高级筛选 ====================
 
@@ -297,6 +345,26 @@ onBeforeUnmount(() => {
         <select v-model="sort" class="toolbar-select">
           <option v-for="o in sortOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
+        <div class="view-toggle" role="group" aria-label="视图切换">
+          <button
+            type="button"
+            class="vt-btn"
+            :class="{ on: viewMode === 'grid' }"
+            title="网格视图"
+            @click="setViewMode('grid')"
+          >
+            <LayoutGrid :size="15" />
+          </button>
+          <button
+            type="button"
+            class="vt-btn"
+            :class="{ on: viewMode === 'list' }"
+            title="列表视图"
+            @click="setViewMode('list')"
+          >
+            <ListIcon :size="15" />
+          </button>
+        </div>
         <button
           type="button"
           class="filter-toggle"
@@ -493,9 +561,58 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 网格 -->
-      <div v-else class="grid">
-        <MediaCard v-for="item in items" :key="item.Id" :item="item" />
+      <div v-else-if="viewMode === 'grid'" class="grid">
+        <div v-for="item in items" :key="item.Id" class="grid-cell" :data-sortkey="item.Name">
+          <MediaCard :item="item" />
+        </div>
       </div>
+
+      <!-- 列表（Emby 风：小海报 + 标题 + 元数据 + 进度） -->
+      <div v-else class="list">
+        <button
+          v-for="item in items"
+          :key="item.Id"
+          type="button"
+          class="list-row"
+          :data-sortkey="item.Name"
+          @click="openItem(item)"
+        >
+          <div class="lr-poster">
+            <img v-if="posterUrl(item, 160)" :src="posterUrl(item, 160)" :alt="item.Name" loading="lazy" />
+            <span v-else class="lr-char">{{ (item.Name || '?').trim().charAt(0) || '?' }}</span>
+          </div>
+          <div class="lr-body">
+            <p class="lr-title">{{ item.Name }}</p>
+            <p class="lr-meta">
+              <span v-if="item.ProductionYear">{{ item.ProductionYear }}</span>
+              <span>{{ item.Type === 'Movie' ? '电影' : item.Type === 'Series' ? '剧集' : '影片' }}</span>
+              <span v-if="item.CommunityRating" class="lr-rating">
+                ★ {{ item.CommunityRating.toFixed(1) }}
+              </span>
+              <span v-if="item.Type === 'Series' && (item.UserData?.UnplayedItemCount || 0) > 0" class="lr-unplayed">
+                {{ item.UserData.UnplayedItemCount }}集未看
+              </span>
+            </p>
+            <div v-if="progressPercent(item) > 0 && progressPercent(item) < 96" class="lr-progress">
+              <div class="lr-progress-fill" :style="{ width: progressPercent(item) + '%' }"></div>
+            </div>
+          </div>
+          <ChevronRight :size="16" class="lr-go" />
+        </button>
+      </div>
+
+      <!-- A-Z 快跳 -->
+      <nav v-if="items.length" class="az-rail" aria-label="按字母跳转">
+        <button
+          v-for="L in LETTERS"
+          :key="L"
+          type="button"
+          class="az-key"
+          @click="jumpToLetter(L)"
+        >
+          {{ L }}
+        </button>
+      </nav>
 
       <!-- 加载更多 -->
       <div v-if="loadingMore" class="more-loading">
@@ -790,11 +907,194 @@ onBeforeUnmount(() => {
   color: var(--au-text-2);
 }
 
+/* 视图切换 */
+.view-toggle {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--au-overlay-soft);
+  border: 1px solid var(--au-border);
+  border-radius: 10px;
+  height: 38px;
+  align-items: center;
+}
+
+.vt-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 30px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--au-text-3);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.vt-btn:hover {
+  color: var(--au-text);
+}
+
+.vt-btn.on {
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
+}
+
 /* 网格 */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: 0.875rem;
+}
+
+.grid-cell {
+  min-width: 0;
+}
+
+/* 列表视图 */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem 0.5rem 0.5rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.list-row:hover {
+  border-color: var(--au-primary-border);
+  transform: translateX(2px);
+}
+
+.lr-poster {
+  width: 46px;
+  height: 69px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(160deg, var(--au-primary-soft), var(--au-overlay-soft));
+}
+
+.lr-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lr-char {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--au-primary);
+  opacity: 0.75;
+}
+
+.lr-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.lr-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lr-meta {
+  margin: 0.25rem 0 0;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+}
+
+.lr-rating {
+  color: var(--au-warning);
+}
+
+.lr-unplayed {
+  color: var(--au-primary);
+  font-weight: 600;
+}
+
+.lr-progress {
+  margin-top: 0.375rem;
+  height: 3px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--au-surface-2);
+}
+
+.lr-progress-fill {
+  height: 100%;
+  background: var(--au-gradient);
+}
+
+.lr-go {
+  flex-shrink: 0;
+  color: var(--au-text-4);
+}
+
+/* A-Z 快跳 */
+.az-rail {
+  position: fixed;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 30;
+}
+
+.az-key {
+  width: 22px;
+  height: 19px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--au-text-3);
+  font-size: 0.625rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.12s ease;
+}
+
+.az-key:hover {
+  color: var(--au-primary);
+}
+
+@media (max-width: 640px) {
+  .az-rail {
+    right: 2px;
+  }
+  .az-key {
+    width: 15px;
+    height: 17px;
+    font-size: 0.5625rem;
+  }
 }
 
 @media (min-width: 768px) {

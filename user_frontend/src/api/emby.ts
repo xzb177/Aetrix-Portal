@@ -20,6 +20,8 @@ export interface EmbyUserData {
   Played: boolean
   IsFavorite: boolean
   LastPlayedDate?: string | null
+  /** 剧集未看集数（后端批量计算，电影/单集不看这个值） */
+  UnplayedItemCount?: number | null
 }
 
 export interface EmbyItem {
@@ -47,6 +49,10 @@ export interface EmbyItem {
   UserData: EmbyUserData
   RunTimeTicks?: number | null
   MediaSources?: EmbyMediaSource[]
+  /** 画质徽标用（后端 _item_dto 下发） */
+  Width?: number | null
+  Height?: number | null
+  IsHD?: boolean
 }
 
 export interface EmbyMediaSource {
