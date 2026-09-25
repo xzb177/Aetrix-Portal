@@ -41,6 +41,18 @@
 统计信息估行数（估错就是全表扫）。绝大多数时候它什么都不做（毫秒级），只在某张表确实该 `ANALYZE`
 时才动手；非 SQLite 直接跳过。维护周期返回里多一个 `query_plans_optimized` 布尔，便于观测。
 
+**同版本一并带上（此前只进了代码、没进日志）**
+
+- **rclone 挂载的播放地址按 rc-serve 的 `[remote:]` 语法拼接**：旧写法 `/remote:path/x.mkv` 会被
+  rc-serve 当成叫 `remote:path` 的本机目录而 404——列目录一切正常，只有真正取流时才炸，很容易被
+  误判成「rc-serve 没开」；同时「rc-serve 可能未开启」的探测改成打 remote 根目录页，不再拿一个本来
+  就错的 URL 去探（那会误报）。`scripts/smoke_test_mounts.py` 里那条 rc-serve 断言此前与实现不一致
+  （CI 一直红着），已按新语法更新；
+- **版本号改为单一来源**：根目录 `VERSION` 为准，后端 `/api/health` 与两个前端 `package.json` 都读它，
+  `scripts/check_version.py` 进 CI 核对漂移；本版 `VERSION` 与两个前端一并升到 `2.35.0`；
+- **部署**：`docker-compose.yml` 里 rclone 配置目录改为可写——只读挂载下 rclone 刷新 OAuth token
+  落盘会失败（`read-only file system`），表面能读，token 一过期就再也续不回来。
+
 #### 验证
 
 - `pytest tests/ -q`：97 项通过；
@@ -50,7 +62,8 @@
   `scripts/smoke_test_media_search.py`、`scripts/smoke_test_emby_sessions.py`（44 项）、
   `scripts/smoke_test_maintenance.py`：全部通过；
 - `scripts/check_blocking_routes.py`：阻塞型 async 路由 39 个（基线 39，无新增）；
-  `check_await_consistency.py` / `check_auth_coverage.py`：通过；
+  `check_await_consistency.py` / `check_auth_coverage.py` / `check_version.py`：通过；
+- `scripts/smoke_test_mounts.py`（含更新后的 rc-serve 断言）、`smoke_test_mount_cache.py`：通过；
 - `scripts/benchmark_item_facets.py --guard`：性能护栏全部通过（无回归）。
 
 ## [2.34.0] - 2026-09-24
