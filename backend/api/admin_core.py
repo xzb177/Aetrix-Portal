@@ -94,16 +94,22 @@ def get_current_admin(
 
 def _audit(
     db: Session,
-    admin: models.WebUser,
+    admin: models.WebUser | int,
     action: str,
     target_type: str | None = None,
     target_id: int | None = None,
     details: dict | None = None,
     ip: str | None = None,
 ) -> None:
-    """写操作审计日志（admin_user_id 存 WebUser.id）"""
+    """写操作审计日志（admin_user_id 存 WebUser.id）
+
+    ``admin`` 既可以是当前管理员对象，也可以直接给**主键整数**。async 端点里只要发生过
+    一次提交（下放线程池的写也一样），ORM 属性就会过期，此时再读 ``admin.id`` 会在
+    事件循环上触发一次隐式回查；提前把 id 取成纯值传进来就能避开这一点，
+    也让审计和其它写一起在同一个线程池任务里落盘（见 docs/performance.md 二·一〇）。
+    """
     db.add(models.AdminLog(
-        admin_user_id=admin.id,
+        admin_user_id=admin if isinstance(admin, int) else admin.id,
         action=action,
         target_type=target_type,
         target_id=target_id,

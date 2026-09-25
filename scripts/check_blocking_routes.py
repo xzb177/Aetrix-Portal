@@ -64,9 +64,29 @@ SESSIONISH = re.compile(r"(?i)^(_?[a-z0-9]*(db|session|sess|conn))$")
 #   backend/api/admin.py::push_media_seek —— 后台把求片交给 MoviePilot / qB：取件与「记录结果 +
 #     审计」两段同步写库下放线程池，推送本身仍是 await（因此这个端点保持 async def）。
 #
-# 它们**不是**机械改 `def` 就能解决的：函数体里都有必须 await 的东西，而那个「必须 await
-# 的东西」（通知推送 backend/notifications.py、网络探测 backend/servers.py）**自己也**
-# 在 async 函数里跑同步 SQLAlchemy——也就是说这不是 41 个端点的问题，而是这一层要一起改。
+# v2.37.0 删掉的 13 条（**探测 / 体检层**）：
+#   backend/servers.py::probe_and_store 是这一层的根：它被「保存服务器 / 体检 / 激活 /
+#     节点同步」共用，而它自己「读这一行 + 落库」两段同步 SQLAlchemy 就压在事件循环上——
+#     一次探测 = 全站（含别人的播放）排在网络 RTT 后面。这一轮把它的读写都下放线程池，
+#     再把 13 个走它的端点按同一手法改完：
+#     * backend/api/servers.py 的 create_server / update_server / activate_server ——
+#       校验 + 落库、切换旧配置键、序列化各拆成一个嵌套同步函数交给 run_in_threadpool；
+#     * backend/api/servers.py 的 emby_overview —— 整页读几十次库（live 还要逐台探测）并按服汇总，
+#       现在「读范围与探测目标」与「组装」两段同步活儿都在工作线程，只有节点身份探测留在事件循环上；
+#     * backend/api/servers.py 的 refresh_mount_health_now 与 backend/api/emby_servers.py 的
+#       save_server / refresh_server_mounts / test_server —— 读写 Emby 入口配置 + EA 挂载体检快照
+#       全部下放线程池；backend/api/emby_servers.py 的 get_servers 与 servers.py 的 servers_summary
+#       体内一个 await 都没有，直接改同步 `def`（FastAPI 自己丢线程池）；
+#     * backend/emby_server/portal_mount_routes.py 的 check_all_mounts / test_saved_mount / browse_mount、
+#       backend/api/realms.py 的 sync_realm_nodes、backend/emby_server/portal.py 的
+#       verify_pan115_account —— 探测（网络）仍然 await，「取这一行 / 写回结论 / 序列化」在工作线程。
+#   另外 backend/api/admin_core.py 的 _audit 现在也接受**管理员主键整数**：async 端点里只要
+#   发生过一次提交，ORM 属性就过期，再去读 admin.id 会在事件循环上触发一次隐式回查。
+#
+# 剩下的 24 条**不是**机械改 `def` 就能解决的：函数体里都有必须 await 的东西，
+# 而那个「必须 await 的东西」自己也在这条链路上写同步 SQLAlchemy——所以这不是
+# 端点数量的问题，而是逐层把「必须 await 的那一层」拆开（通知层 backend/notifications.py
+# 与探测层 backend/servers.py 已在 v2.36.0 / v2.37.0 拆完，见 docs/performance.md 二·九、二·一〇）。
 # 按 docs/performance.md 里「先量、再改、最后固化成门禁」的做法记在这里：
 # 改好一个就删一行，新增一个就过不了 CI。
 BASELINE: set[str] = set(
@@ -86,17 +106,8 @@ backend/api/admin_economy.py::economy_adjust_points
 backend/api/coupons_admin.py::list_coupon_usages
 backend/api/economy.py::do_checkin
 backend/api/economy.py::redeem_exchange_code
-backend/api/emby_servers.py::save_server
-backend/api/emby_servers.py::refresh_server_mounts
-backend/api/emby_servers.py::test_server
 backend/api/orders_admin.py::refund_order
-backend/api/realms.py::sync_realm_nodes
 backend/api/reminders_admin.py::run_expiry_reminders
-backend/api/servers.py::emby_overview
-backend/api/servers.py::create_server
-backend/api/servers.py::update_server
-backend/api/servers.py::activate_server
-backend/api/servers.py::refresh_mount_health_now
 backend/api/user.py::mark_all_read
 backend/api/user.py::create_ticket
 backend/api/user.py::reply_ticket
@@ -104,10 +115,6 @@ backend/emby_server/api.py::rate_item
 backend/emby_server/portal.py::stop_my_session
 backend/emby_server/portal.py::scan_library_endpoint
 backend/emby_server/portal.py::admin_stop_session
-backend/emby_server/portal.py::verify_pan115_account
-backend/emby_server/portal_mount_routes.py::check_all_mounts
-backend/emby_server/portal_mount_routes.py::test_saved_mount
-backend/emby_server/portal_mount_routes.py::browse_mount
 """.split()
 )
 

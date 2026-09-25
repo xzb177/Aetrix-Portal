@@ -283,26 +283,44 @@ async def probe_and_store(db: Session, server) -> dict:
     对 EA 额外做一件事：拉一次 ``/api/admin/nodes/me``，把「这台 EA 认领的是哪个服、
     负责哪些库」当场查出来。多服 / 多节点部署下，配错 REALM 或 NODE_KEY 就会表现成
     「客户端看不到任何库」——放在添加服务器这一步报出来，比之后猜要省事得多。
+
+    探测本身必须 await（网络），而「读这一行」与「落库」两段同步 SQLAlchemy 都下放线程池：
+    这个函数被「保存服务器 / 体检 / 激活 / 节点同步」共用，同步读写在事件循环上等于
+    一次探测就把全站（包括别人的播放）按在网络 RTT 后面（见 docs/performance.md 二·一〇）。
     """
-    result = await probe_server(server.kind, server.url, parse_config(server))
-    server.last_checked_at = datetime.now()
-    server.last_check_ok = bool(result.get("ok"))
-    server.last_check_message = redact(str(result.get("message") or ""), server)
-    if server.kind == "ea" and result.get("ok"):
+
+    def load() -> tuple[str, str, dict]:
+        """体检要用的纯值（同步；下放线程池——调用方可能刚提交过，属性是过期的）"""
+        return server.kind, server.url, parse_config(server)
+
+    kind, url, config = await run_in_threadpool(load)
+    result = await probe_server(kind, url, config)
+
+    identity: Optional[dict] = None
+    if kind == "ea" and result.get("ok"):
         from backend.emby_server import nodes as node_lib
 
-        identity = await node_lib.fetch_node_identity(server.url)
+        identity = await node_lib.fetch_node_identity(url)
         result["node"] = identity
-        if identity.get("ok"):
-            node_key = str((identity.get("data") or {}).get("node_key") or "").strip()
+
+    def store() -> None:
+        """把结论写回这一行（同步；下放线程池）"""
+        server.last_checked_at = datetime.now()
+        server.last_check_ok = bool(result.get("ok"))
+        server.last_check_message = redact(str(result.get("message") or ""), server)
+        if identity and identity.get("ok"):
+            data = identity.get("data") or {}
+            node_key = str(data.get("node_key") or "").strip()
             if node_key and not (server.node_key or "").strip():
                 server.node_key = node_key
-            realm_slug = str((identity.get("data") or {}).get("realm_slug") or "").strip()
+            realm_slug = str(data.get("realm_slug") or "").strip()
             if realm_slug and not server.realm_id:
                 realm = realms.realm_by_slug(db, realm_slug)
                 if realm:
                     server.realm_id = realm.id
-    db.commit()
+        db.commit()
+
+    await run_in_threadpool(store)
     return result
 
 

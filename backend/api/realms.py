@@ -18,6 +18,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -286,30 +287,48 @@ async def sync_realm_nodes(
     顺便把每台节点**自称**的服与负责的库带回来：配错 ``REALM`` / ``NODE_KEY``
     会表现成「客户端看不到任何库」，在这里当场就能看出来。
     """
-    realm = realms.get_realm(db, realm_id)
-    if not realm:
+    admin_id = admin.id          # 纯值：下面有提交，之后再读 ORM 属性会在事件循环上回查
+
+    def load() -> tuple[Optional[models.ServerRealm], list, str]:
+        """取服与本服下的节点（同步；下放线程池）"""
+        realm = realms.get_realm(db, realm_id)
+        if realm is None:
+            return None, [], ""
+        return realm, realms.nodes_of_realm(db, realm.id), realm.slug
+
+    realm, nodes, realm_slug = await run_in_threadpool(load)
+    if realm is None:
         raise HTTPException(404, "服不存在")
+
+    def node_facts(node) -> dict:
+        """体检之后要展示的纯值（同步；下放线程池——提交会让 ORM 属性过期）"""
+        return {"id": node.id, "name": node.name, "url": node.url,
+                "message": node.last_check_message or "",
+                "node_key": node.node_key or ""}
+
     results = []
-    for node in realms.nodes_of_realm(db, realm.id):
+    for node in nodes:
         probe = await registry.probe_and_store(db, node)
         identity = (probe.get("node") or {}).get("data") or {}
+        facts = await run_in_threadpool(node_facts, node)
         results.append({
-            "id": node.id,
-            "name": node.name,
-            "url": node.url,
+            "id": facts["id"],
+            "name": facts["name"],
+            "url": facts["url"],
             "ok": bool(probe.get("ok")),
-            "message": node.last_check_message or "",
-            "node_key_claimed": identity.get("node_key") or node.node_key or "",
+            "message": facts["message"],
+            "node_key_claimed": identity.get("node_key") or facts["node_key"],
             "realm_slug_reported": identity.get("realm_slug") or "",
             "libraries": len(identity.get("libraries") or []),
             # 节点自称的服与面板记录不一致时给出明确提示（配置错了）
             "realm_mismatch": bool(identity.get("realm_slug")
-                                   and identity.get("realm_slug") != realm.slug),
+                                   and identity.get("realm_slug") != realm_slug),
         })
-    _audit(db, admin, "sync_realm_nodes", "realm", realm.id,
+    _audit(db, admin_id, "sync_realm_nodes", "realm", realm_id,
            {"nodes": len(results), "online": len([r for r in results if r["ok"]])})
-    db.commit()
-    return {"success": True, "nodes": results, "realm": realms.serialize(db, realm)}
+    await run_in_threadpool(db.commit)
+    return {"success": True, "nodes": results,
+            "realm": await run_in_threadpool(realms.serialize, db, realm)}
 
 
 @router.delete("/{realm_id}")
