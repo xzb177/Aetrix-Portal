@@ -2,6 +2,54 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.37.0] - 2026-09-25
+
+### 探测 / 体检层：写库下放线程池（阻塞路由基线 37 → 24）
+
+上一版拆掉了通知层，并在文档里写明「下一个批次按探测层收口」。这一版就是它。
+
+**根在 `backend/servers.py::probe_and_store`**
+
+它是「保存服务器 / 体检 / 激活 / 节点同步」四条业务共用的那一段：先 `await probe_server(...)`
+（真发 HTTP，8 秒超时都可能），然后**在同一个 `async` 函数里**读这一行、写结论、提交。
+也就是说后台点一次「测试连接」，全站（包括别人的播放）就排在那次探测后面；多服部署里
+「Emby 总览」开着 `live=True` 更是一次串起好几台机器。现在探测仍 await，
+「读这一行」与「落库」两段同步 SQLAlchemy 整段下放 `run_in_threadpool`。
+
+**同一手法改完 13 个端点**
+
+- `api/servers.py`：`create_server` / `update_server`（唯一性检查 + 落库 + 切换旧配置键）、
+  `activate_server`（体检 + 激活 + 审计）、`refresh_mount_health_now`（取当前 EA + 重拉体检）、
+  `emby_overview`（整页读几十次库并按服汇总 → `load()` + `build()` 两段下放）；
+- `api/emby_servers.py`：`refresh_mount_health`（读写 EA 体检快照夹在 HTTP 两侧）、
+  `save_server` / `test_server` / `refresh_server_mounts`；体内没有 await 的 `get_servers`
+  与 `api/servers.py::servers_summary` 直接改同步 `def`（FastAPI 自己丢线程池）；
+- `emby_server/portal_mount_routes.py`：`check_all_mounts` / `test_saved_mount` / `browse_mount`；
+- `api/realms.py::sync_realm_nodes`、`emby_server/portal.py::verify_pan115_account`。
+
+**一个专门的坑：提交之后不能再回读 ORM**
+
+`Session.commit()` 默认过期所有实例，之后哪怕只读 `server.url` 也会在**事件循环**上发一条
+SELECT。这类隐式回查 `check_blocking_routes.py` 抓不到（它只认函数体里的 `db.xxx(`），
+但真机上就是「后台点一下、别人卡一下」。所以这次统一的做法是：**要用的值在工作线程里
+取成纯值再带回来**（`server_id` / `kind` / `url` / `realm_id`），并且让
+`admin_core._audit` 也能直接收**管理员主键整数**，async 端点提前把 id 取好，
+审计与其它写落进同一个线程池任务。
+
+**验证**
+
+- `scripts/smoke_test_backend_hot_paths.py` 新增第 5 节（进 CI）：给「这台机器写库就是慢」
+  建模（命中 `remote_servers` 的 UPDATE 先睡 0.35 秒），先自证方法有效——同样的 UPDATE 直接跑在
+  事件循环上，心跳空洞 **0.365s**；再走真实路由：`POST /api/admin/servers/{id}/test` 空洞
+  **0.075s**、`POST /api/admin/emby/servers/mounts/refresh`（慢快照）空洞 **0.011s**，
+  同时体检结论、EA 体检快照都真的落库；`activate` 之后服务器真被设为当前使用，
+  且审计里记的正是这位管理员（走通 `_audit` 收整数那条路）；
+- `scripts/check_blocking_routes.py`：阻塞型 async 路由 **24 个**（基线 24，无新增）；
+- `pytest tests/ -q`、`check_await_consistency` / `check_auth_coverage` /
+  `check_admin_audit_coverage` / `check_version` / `check_hardcoded_secrets` 全部通过；
+  `smoke_test_servers.py` 81/81（含激活 / 重名 409 / 测试连接各分支）、`smoke_test_mount_health.py`
+  40/40、`smoke_test_realms.py`、`smoke_test_mounts.py`、`smoke_test_emby_connection.py` 通过。
+
 ## [2.36.0] - 2026-09-25
 
 ### 求片链路与通知层：写库下放线程池（阻塞路由基线 39 → 37）

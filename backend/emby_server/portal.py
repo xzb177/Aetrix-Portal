@@ -1477,16 +1477,29 @@ def delete_pan115_account(account_id: int,
 async def verify_pan115_account(account_id: int,
                                 staff: models.WebUser = Depends(require_staff),
                                 db: Session = Depends(get_db)):
-    account = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
+    def load() -> tuple[em.Pan115Account | None, str]:
+        """取配置档与 Cookie（同步；下放线程池——路由是 async，不能占事件循环）"""
+        row = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
+        return row, (row.cookie if row is not None else "")
+
+    account, cookie = await run_in_threadpool(load)
     if not account:
         raise HTTPException(status_code=404, detail="账号配置档不存在")
     # 校验要真的发一次请求：放到线程池执行，避免阻塞整个事件循环
-    result = await run_in_threadpool(transfer115.verify_account, account.cookie)
-    account.last_verified_at = datetime.now()
-    account.last_verify_ok = bool(result.get("ok"))
-    account.last_verify_message = str(result.get("message") or ("有效" if result.get("ok") else ""))[:300]
-    db.commit()
-    return {"success": True, "result": result, "account": _serialize_account(account)}
+    result = await run_in_threadpool(transfer115.verify_account, cookie)
+
+    def record() -> dict:
+        """写回校验结果并序列化（同步；下放线程池）"""
+        account.last_verified_at = datetime.now()
+        account.last_verify_ok = bool(result.get("ok"))
+        account.last_verify_message = str(
+            result.get("message") or ("有效" if result.get("ok") else "")
+        )[:300]
+        db.commit()
+        return _serialize_account(account)
+
+    return {"success": True, "result": result,
+            "account": await run_in_threadpool(record)}
 
 
 @admin_emby_router.post("/115/verify")

@@ -23,6 +23,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -196,179 +197,194 @@ async def emby_overview(
     （``GET /api/admin/nodes/me``，共享 SECRET_KEY 鉴权）并重拉一次当前出流 EA 的挂载体检；
     默认只读已落库的结论，避免打开页面就被慢节点拖住。
     """
-    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
-    realm_rows = (
-        [realms.get_realm(db, scope_id)] if scope_id else realms.list_realms(db)
-    )
-    realm_rows = [r for r in realm_rows if r is not None]
+    def load() -> tuple[Optional[int], list, list, list, list]:
+        """读范围 / 服清单 / 入口清单，并把要探测的目标取成纯值（同步；下放线程池）
 
-    servers = (registry.realm_scope(db.query(models.RemoteServer), scope_id)
-               .order_by(models.RemoteServer.kind, models.RemoteServer.id).all())
-    entry_rows = [s for s in servers if s.kind in registry.LEGACY_PREFIX]
+        **必须在任何 await 之前**把这些读出来：探测会提交，提交之后这一行的 ORM 属性
+        全部过期，再去读 ``row.url`` 就会在事件循环上触发一次隐式回查。
+        """
+        scope = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
+        rows_ = [realms.get_realm(db, scope)] if scope else realms.list_realms(db)
+        rows_ = [r for r in rows_ if r is not None]
+        servers_ = (registry.realm_scope(db.query(models.RemoteServer), scope)
+                    .order_by(models.RemoteServer.kind, models.RemoteServer.id).all())
+        entries = [s for s in servers_ if s.kind in registry.LEGACY_PREFIX]
+        identity_targets = [(s.id, s.url) for s in entries if s.kind == "ea" and s.is_enabled]
+        mount_targets = [
+            (r.id, active.url)
+            for r in rows_
+            for active in [registry.active_server(db, "ea", r.id)]
+            if active and active.is_enabled
+        ]
+        return scope, rows_, entries, identity_targets, mount_targets
+
+    scope_id, realm_rows, entry_rows, identity_targets, mount_targets = (
+        await run_in_threadpool(load)
+    )
 
     # live：先问节点身份（认领 / 自称的服 / 负责哪些库），再重拉当前出流 EA 的挂载体检。
     # 两者都有超时上限：一台掉线的机器不应该让整个总览转圈。
     identities: dict[int, dict] = {}
     if live:
-        for row in entry_rows:
-            if row.kind != "ea" or not row.is_enabled:
-                continue
+        for target_id, target_url in identity_targets:
             try:
-                probe = await node_lib.fetch_node_identity(row.url, timeout=8.0)
+                probe = await node_lib.fetch_node_identity(target_url, timeout=8.0)
             except Exception as exc:  # noqa: BLE001 — 单台失败不影响整页
                 probe = {"ok": False, "error": str(exc)[:200]}
-            identities[row.id] = probe
+            identities[target_id] = probe
 
         from backend.api.emby_servers import refresh_mount_health
 
+        for target_realm, target_url in mount_targets:
+            try:
+                await refresh_mount_health(db, target_url, target_realm)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("服 #%s 的 EA 挂载体检没能完成: %s", target_realm, exc)
+
+    def build() -> dict:
+        """组装总览（同步；下放线程池）——整页要读几十次库，不能占事件循环"""
+        rows: list[dict] = []
+        totals = {"entry": 0, "online": 0, "warnings": 0, "libraries": 0, "libraries_unassigned": 0}
         for realm in realm_rows:
-            active = registry.active_server(db, "ea", realm.id)
-            if active and active.is_enabled:
-                try:
-                    await refresh_mount_health(db, active.url, realm.id)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("服 #%s 的 EA 挂载体检没能完成: %s", realm.id, exc)
+            realm_libraries = _library_counts(db, realm.id)
+            realm_nodes = [s for s in entry_rows if s.realm_id == realm.id]
+            realm_ea_count = len([s for s in realm_nodes if s.kind == "ea"])
+            realm_mounts = _mount_summary(db, realm.id)
 
-    rows: list[dict] = []
-    totals = {"entry": 0, "online": 0, "warnings": 0, "libraries": 0, "libraries_unassigned": 0}
-    for realm in realm_rows:
-        realm_libraries = _library_counts(db, realm.id)
-        realm_nodes = [s for s in entry_rows if s.realm_id == realm.id]
-        realm_ea_count = len([s for s in realm_nodes if s.kind == "ea"])
-        realm_mounts = _mount_summary(db, realm.id)
+            for server in realm_nodes:
+                data = registry.serialize(db, server)
+                warnings: list[str] = []
+                label = data["name"]
 
-        for server in realm_nodes:
-            data = registry.serialize(db, server)
-            warnings: list[str] = []
-            label = data["name"]
+                identity: dict = {}
+                probe = identities.get(server.id)
+                if probe is not None:
+                    if probe.get("ok"):
+                        payload = probe.get("data") or {}
+                        node_info = payload.get("node") or {}
+                        identity = {
+                            "ok": True,
+                            "claimed": bool(payload.get("claimed")),
+                            "node_key": node_info.get("node_key") or "",
+                            "node_name": node_info.get("node_name") or "",
+                            "realm_slug": payload.get("realm_slug") or "",
+                            "realm_name": node_info.get("realm_name") or "",
+                            "libraries": len(payload.get("libraries") or []),
+                            "filtering": bool(node_info.get("filtering")),
+                        }
+                        # 多节点下最容易配错、又最难看出来的一件事：EA 自称的服与面板登记的不一致
+                        reported = (identity["realm_slug"] or "").strip()
+                        if reported and realm.slug and reported != realm.slug:
+                            warnings.append(
+                                f"这台 EA 自称属于「{identity['realm_name'] or reported}」（{reported}），"
+                                f"但面板把它登记在「{realm.name}」——两边不一致，请核对 EA 的 REALM 或面板的归属服"
+                            )
+                        # 认领关系两边都要能对上：一边有一边没有，说明是「换了一台机器」或「忘了配」
+                        reported_key = (identity["node_key"] or "").strip()
+                        if reported_key and not identity["claimed"]:
+                            warnings.append(
+                                f"EA 上报的 NODE_KEY「{reported_key}」在面板的服务器清单里认领不到对应记录"
+                            )
+                        elif reported_key and data["node_key"] and reported_key != data["node_key"]:
+                            warnings.append(
+                                f"EA 上报的 NODE_KEY「{reported_key}」与面板登记的「{data['node_key']}」不一致"
+                            )
+                        elif not reported_key and data["node_key"]:
+                            warnings.append("面板给这台入口登记了 NODE_KEY，但它自己没配——请核对 EA 的 NODE_KEY")
+                    else:
+                        identity = {"ok": False, "error": str(probe.get("error") or "节点身份探测失败")}
+                        warnings.append(f"节点身份探测失败：{identity['error']}")
 
-            identity: dict = {}
-            probe = identities.get(server.id)
-            if probe is not None:
-                if probe.get("ok"):
-                    payload = probe.get("data") or {}
-                    node_info = payload.get("node") or {}
-                    identity = {
-                        "ok": True,
-                        "claimed": bool(payload.get("claimed")),
-                        "node_key": node_info.get("node_key") or "",
-                        "node_name": node_info.get("node_name") or "",
-                        "realm_slug": payload.get("realm_slug") or "",
-                        "realm_name": node_info.get("realm_name") or "",
-                        "libraries": len(payload.get("libraries") or []),
-                        "filtering": bool(node_info.get("filtering")),
-                    }
-                    # 多节点下最容易配错、又最难看出来的一件事：EA 自称的服与面板登记的不一致
-                    reported = (identity["realm_slug"] or "").strip()
-                    if reported and realm.slug and reported != realm.slug:
+                if server.kind == "ea":
+                    # 单台 EA 不需要 NODE_KEY（面板自己扫就行）；多台才必须认得出来谁是谁
+                    if not data["node_key"] and realm_ea_count > 1:
+                        warnings.append("这个服有多台 EA，但这台没配 NODE_KEY：面板无法把媒体库分配给它")
+                    assigned = realm_libraries["by_node"].get(server.id, 0)
+                    if realm_mounts["never_checked"]:
+                        warnings.append("还没做过这台 EA 视角的挂载体检，无法说明它能不能碰到面板里配的存储")
+                    elif realm_mounts["failed_count"]:
                         warnings.append(
-                            f"这台 EA 自称属于「{identity['realm_name'] or reported}」（{reported}），"
-                            f"但面板把它登记在「{realm.name}」——两边不一致，请核对 EA 的 REALM 或面板的归属服"
+                            f"有 {realm_mounts['failed_count']} / {realm_mounts['total']} 条挂载从这台 EA 不可达："
+                            + "、".join(realm_mounts["unreachable"][:5])
                         )
-                    # 认领关系两边都要能对上：一边有一边没有，说明是「换了一台机器」或「忘了配」
-                    reported_key = (identity["node_key"] or "").strip()
-                    if reported_key and not identity["claimed"]:
-                        warnings.append(
-                            f"EA 上报的 NODE_KEY「{reported_key}」在面板的服务器清单里认领不到对应记录"
-                        )
-                    elif reported_key and data["node_key"] and reported_key != data["node_key"]:
-                        warnings.append(
-                            f"EA 上报的 NODE_KEY「{reported_key}」与面板登记的「{data['node_key']}」不一致"
-                        )
-                    elif not reported_key and data["node_key"]:
-                        warnings.append("面板给这台入口登记了 NODE_KEY，但它自己没配——请核对 EA 的 NODE_KEY")
+                    elif realm_mounts["error"]:
+                        warnings.append(f"挂载体检失败：{realm_mounts['error']}")
                 else:
-                    identity = {"ok": False, "error": str(probe.get("error") or "节点身份探测失败")}
-                    warnings.append(f"节点身份探测失败：{identity['error']}")
+                    assigned = 0
 
-            if server.kind == "ea":
-                # 单台 EA 不需要 NODE_KEY（面板自己扫就行）；多台才必须认得出来谁是谁
-                if not data["node_key"] and realm_ea_count > 1:
-                    warnings.append("这个服有多台 EA，但这台没配 NODE_KEY：面板无法把媒体库分配给它")
-                assigned = realm_libraries["by_node"].get(server.id, 0)
-                if realm_mounts["never_checked"]:
-                    warnings.append("还没做过这台 EA 视角的挂载体检，无法说明它能不能碰到面板里配的存储")
-                elif realm_mounts["failed_count"]:
-                    warnings.append(
-                        f"有 {realm_mounts['failed_count']} / {realm_mounts['total']} 条挂载从这台 EA 不可达："
-                        + "、".join(realm_mounts["unreachable"][:5])
-                    )
-                elif realm_mounts["error"]:
-                    warnings.append(f"挂载体检失败：{realm_mounts['error']}")
-            else:
-                assigned = 0
+                if data["last_check_ok"] is False:
+                    warnings.append(f"最近一次连接失败：{data['last_check_message'] or '未知原因'}")
+                elif data["last_check_ok"] is None:
+                    warnings.append("还没有体检过这台入口（点「测试」或「体检」）")
 
-            if data["last_check_ok"] is False:
-                warnings.append(f"最近一次连接失败：{data['last_check_message'] or '未知原因'}")
-            elif data["last_check_ok"] is None:
-                warnings.append("还没有体检过这台入口（点「测试」或「体检」）")
+                payload_row = {
+                    **data,
+                    "realm_slug": realm.slug,
+                    "realm_is_default": realm.id == realms.legacy_realm_id(db),
+                    "is_entry": server.kind in registry.LEGACY_PREFIX,
+                    "is_current_entry": bool(data["is_active"]) and data["is_enabled"],
+                    "identity": identity,
+                    "mounts": realm_mounts if server.kind == "ea" else None,
+                    "libraries_assigned": assigned,
+                    "libraries_unassigned": realm_libraries["unassigned"] if server.kind == "ea" else 0,
+                    "warnings": warnings,
+                }
+                rows.append(payload_row)
+                totals["entry"] += 1
+                totals["warnings"] += len(warnings)
+                if data["last_check_ok"] is True:
+                    totals["online"] += 1
 
-            payload_row = {
+            realm_libraries_total = realm_libraries["total"]
+            totals["libraries"] += realm_libraries_total
+            totals["libraries_unassigned"] += realm_libraries["unassigned"]
+
+        realm_payloads = []
+        for realm in realm_rows:
+            data = realms.serialize(db, realm, with_stats=False)
+            entry = _realm_entry(db, realm.id)
+            realm_servers = [s for s in entry_rows if s.realm_id == realm.id]
+            active = next((s for s in realm_servers if s.is_active and s.is_enabled), None)
+            libraries = _library_counts(db, realm.id)
+            warnings: list[str] = []
+            if realm_servers and active is None:
+                warnings.append("这个服还没有「当前使用」的入口：去下面那一行点「设为当前」")
+            if not realm_servers:
+                # 「面板自己出流」是单进程部署的正常冬态，不当成错误来吓人
+                hint = (
+                    "；当前由面板自己出流，单机单服部署可以保持这样"
+                    if entry["mode"] == "panel"
+                    else "；请添加一台后端服（EA）或已有的 Emby 服"
+                )
+                warnings.append("这个服还没有添加任何 Emby 入口（EA 或已有 Emby 服）" + hint)
+            realm_payloads.append({
                 **data,
-                "realm_slug": realm.slug,
-                "realm_is_default": realm.id == realms.legacy_realm_id(db),
-                "is_entry": server.kind in registry.LEGACY_PREFIX,
-                "is_current_entry": bool(data["is_active"]) and data["is_enabled"],
-                "identity": identity,
-                "mounts": realm_mounts if server.kind == "ea" else None,
-                "libraries_assigned": assigned,
-                "libraries_unassigned": realm_libraries["unassigned"] if server.kind == "ea" else 0,
+                "entry": {
+                    **entry,
+                    "server_id": active.id if active else None,
+                    "server_name": active.name if active else "",
+                },
+                "libraries": libraries,
+                "mounts": _mount_summary(db, realm.id),
                 "warnings": warnings,
-            }
-            rows.append(payload_row)
-            totals["entry"] += 1
-            totals["warnings"] += len(warnings)
-            if data["last_check_ok"] is True:
-                totals["online"] += 1
+            })
 
-        realm_libraries_total = realm_libraries["total"]
-        totals["libraries"] += realm_libraries_total
-        totals["libraries_unassigned"] += realm_libraries["unassigned"]
+        return {
+            "realm_id": scope_id,
+            "active_realm_id": realms.active_realm_id(db),
+            "live": bool(live),
+            "realms": realm_payloads,
+            "rows": rows,
+            "totals": totals,
+            "summary": registry.summary(db, scope_id),
+            "kinds": registry.SERVER_KINDS,
+        }
 
-    realm_payloads = []
-    for realm in realm_rows:
-        data = realms.serialize(db, realm, with_stats=False)
-        entry = _realm_entry(db, realm.id)
-        realm_servers = [s for s in entry_rows if s.realm_id == realm.id]
-        active = next((s for s in realm_servers if s.is_active and s.is_enabled), None)
-        libraries = _library_counts(db, realm.id)
-        warnings: list[str] = []
-        if realm_servers and active is None:
-            warnings.append("这个服还没有「当前使用」的入口：去下面那一行点「设为当前」")
-        if not realm_servers:
-            # 「面板自己出流」是单进程部署的正常冬态，不当成错误来吓人
-            hint = (
-                "；当前由面板自己出流，单机单服部署可以保持这样"
-                if entry["mode"] == "panel"
-                else "；请添加一台后端服（EA）或已有的 Emby 服"
-            )
-            warnings.append("这个服还没有添加任何 Emby 入口（EA 或已有 Emby 服）" + hint)
-        realm_payloads.append({
-            **data,
-            "entry": {
-                **entry,
-                "server_id": active.id if active else None,
-                "server_name": active.name if active else "",
-            },
-            "libraries": libraries,
-            "mounts": _mount_summary(db, realm.id),
-            "warnings": warnings,
-        })
-
-    return {
-        "realm_id": scope_id,
-        "active_realm_id": realms.active_realm_id(db),
-        "live": bool(live),
-        "realms": realm_payloads,
-        "rows": rows,
-        "totals": totals,
-        "summary": registry.summary(db, scope_id),
-        "kinds": registry.SERVER_KINDS,
-    }
+    return await run_in_threadpool(build)
 
 
 @router.get("/summary")
-async def servers_summary(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+def servers_summary(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     """只有统计结果：给「数据概览」的信息展示卡用"""
     return registry.summary(db)
 
@@ -382,29 +398,41 @@ async def create_server(
     kind = _check_kind(payload.kind)
     url = _check_url(payload.url)
     name = payload.name.strip()
-    if _name_conflict(db, name):
-        raise HTTPException(409, "已经有同名服务器了，换个名字吧")
-    required_error = _missing_required(kind, url, payload.config or {})
-    if required_error:
-        raise HTTPException(400, required_error)
+    admin_id = admin.id          # 纯值：下面有提交，之后再读 ORM 属性会在事件循环上回查
 
     # 内容自动化（MoviePilot / qB）可以选择「全服共用」：归属服留空，多服一起用一套
     shared = bool(payload.shared) and kind in registry.PUSH_TARGETS
-    server = models.RemoteServer(
-        name=name, kind=kind, url=url,
-        config=registry.json_dumps(registry.only_known(kind, payload.config or {})),
-        is_enabled=payload.is_enabled, remark=payload.remark or "",
-        realm_id=None if shared else (payload.realm_id or realms.active_realm_id(db)),
-    )
-    db.add(server)
-    db.commit()
-    db.refresh(server)
+
+    def insert() -> tuple[models.RemoteServer, int]:
+        """唯一性检查 + 必填校验 + 落库（同步；下放线程池）
+
+        顺序与拆分前一致：重名（409）先于「凭据没填全」（400）——两个都不满足时
+        面板要看到的是「这个名字被占了」，而不是去补一台本来就不该新建的服务的凭据。
+        """
+        if _name_conflict(db, name):
+            raise HTTPException(409, "已经有同名服务器了，换个名字吧")
+        required_error = _missing_required(kind, url, payload.config or {})
+        if required_error:
+            raise HTTPException(400, required_error)
+        server = models.RemoteServer(
+            name=name, kind=kind, url=url,
+            config=registry.json_dumps(registry.only_known(kind, payload.config or {})),
+            is_enabled=payload.is_enabled, remark=payload.remark or "",
+            realm_id=None if shared else (payload.realm_id or realms.active_realm_id(db)),
+        )
+        db.add(server)
+        db.commit()
+        db.refresh(server)
+        return server, int(server.id)
+
+    server, server_id = await run_in_threadpool(insert)
 
     result = await registry.probe_and_store(db, server)
-    _audit(db, admin, "create_server", "server", server.id,
+    _audit(db, admin_id, "create_server", "server", server_id,
            {"kind": kind, "ok": result.get("ok"), "url": url})
-    db.commit()
-    return {"success": True, "server": registry.serialize(db, server), "probe": result}
+    await run_in_threadpool(db.commit)
+    data = await run_in_threadpool(registry.serialize, db, server)
+    return {"success": True, "server": data, "probe": result}
 
 
 @router.put("/{server_id}")
@@ -414,49 +442,64 @@ async def update_server(
     admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    server = registry.get_server(db, server_id)
-    if not server:
-        raise HTTPException(404, "服务器不存在")
     kind = _check_kind(payload.kind)
     url = _check_url(payload.url)
     name = payload.name.strip()
-    if _name_conflict(db, name, exclude_id=server_id):
-        raise HTTPException(409, "已经有同名服务器了，换个名字吧")
+    admin_id = admin.id          # 纯值：下面有提交，之后再读 ORM 属性会在事件循环上回查
 
-    kind_changed = kind != server.kind
-    server.name = name
-    server.kind = kind
-    server.url = url
-    server.is_enabled = payload.is_enabled
-    server.remark = payload.remark or ""
-    if payload.shared and kind in registry.PUSH_TARGETS:
-        # 内容自动化改成「全服共用」
-        server.realm_id = None
-    elif payload.realm_id:
-        if not realms.get_realm(db, payload.realm_id):
-            raise HTTPException(400, f"服不存在: #{payload.realm_id}")
-        server.realm_id = payload.realm_id
-    # 换类型时旧类型的字段不再适用，直接以新配置为准
-    server.config = registry.json_dumps(
-        registry.only_known(kind, payload.config or {})
-        if kind_changed else registry.merge_config(server, payload.config or {})
-    )
-    db.commit()
+    def apply() -> models.RemoteServer:
+        """校验 + 落库（同步；下放线程池）"""
+        server = registry.get_server(db, server_id)
+        if not server:
+            raise HTTPException(404, "服务器不存在")
+        if _name_conflict(db, name, exclude_id=server_id):
+            raise HTTPException(409, "已经有同名服务器了，换个名字吧")
+
+        kind_changed = kind != server.kind
+        server.name = name
+        server.kind = kind
+        server.url = url
+        server.is_enabled = payload.is_enabled
+        server.remark = payload.remark or ""
+        if payload.shared and kind in registry.PUSH_TARGETS:
+            # 内容自动化改成「全服共用」
+            server.realm_id = None
+        elif payload.realm_id:
+            if not realms.get_realm(db, payload.realm_id):
+                raise HTTPException(400, f"服不存在: #{payload.realm_id}")
+            server.realm_id = payload.realm_id
+        # 换类型时旧类型的字段不再适用，直接以新配置为准
+        server.config = registry.json_dumps(
+            registry.only_known(kind, payload.config or {})
+            if kind_changed else registry.merge_config(server, payload.config or {})
+        )
+        db.commit()
+        return server
+
+    server = await run_in_threadpool(apply)
 
     result = await registry.probe_and_store(db, server)
-    # 停用 / 类型变更后，旧配置键要跟着收回，否则会出现「面板说没接入、网关却还在跑」
-    if not server.is_enabled and server.is_active and server.kind in registry.LEGACY_PREFIX:
-        server.is_active = False
-        registry.deactivate_legacy(db, server.kind)
-        db.commit()
-    elif server.is_active and server.kind in registry.LEGACY_PREFIX:
-        registry.sync_legacy(db, server, reachable=bool(result.get("ok")))
-        db.commit()
 
-    _audit(db, admin, "update_server", "server", server.id,
+    def sync_entry() -> None:
+        """收回 / 同步旧配置键（同步；下放线程池）
+
+        停用 / 类型变更后旧配置键要跟着收回，否则会出现「面板说没接入、网关却还在跑」。
+        """
+        if not server.is_enabled and server.is_active and server.kind in registry.LEGACY_PREFIX:
+            server.is_active = False
+            registry.deactivate_legacy(db, server.kind)
+            db.commit()
+        elif server.is_active and server.kind in registry.LEGACY_PREFIX:
+            registry.sync_legacy(db, server, reachable=bool(result.get("ok")))
+            db.commit()
+
+    await run_in_threadpool(sync_entry)
+
+    _audit(db, admin_id, "update_server", "server", server_id,
            {"kind": kind, "ok": result.get("ok")})
-    db.commit()
-    return {"success": True, "server": registry.serialize(db, server), "probe": result}
+    await run_in_threadpool(db.commit)
+    data = await run_in_threadpool(registry.serialize, db, server)
+    return {"success": True, "server": data, "probe": result}
 
 
 @router.post("/test")
@@ -467,7 +510,8 @@ async def test_unsaved(
 ):
     kind = _check_kind(payload.kind)
     url = _check_url(payload.url)
-    config = _effective_config(kind, payload.config or {}, payload.server_id, db)
+    config = await run_in_threadpool(
+        _effective_config, kind, payload.config or {}, payload.server_id, db)
     required_error = _missing_required(kind, url, config)
     if required_error:
         return {"ok": False, "message": required_error}
@@ -480,7 +524,7 @@ async def test_server(
     _: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    server = registry.get_server(db, server_id)
+    server = await run_in_threadpool(registry.get_server, db, server_id)
     if not server:
         raise HTTPException(404, "服务器不存在")
     return await registry.probe_and_store(db, server)
@@ -496,18 +540,28 @@ async def activate_server(
 
     激活前会**重新体检一次**：面板不能拿一份几小时前的结论去切换全站入口。
     """
-    server = registry.get_server(db, server_id)
-    if not server:
+    admin_id = admin.id          # 纯值：下面有提交，之后再读 ORM 属性会在事件循环上回查
+
+    def load() -> tuple[Optional[models.RemoteServer], str, str, Optional[int]]:
+        """取这一行，并顺手读出后面要用的纯值（同步；下放线程池）"""
+        row = registry.get_server(db, server_id)
+        if row is None:
+            return None, "", "", None
+        return row, row.kind, row.url, row.realm_id
+
+    server, kind, url, realm_id = await run_in_threadpool(load)
+    if server is None:
         raise HTTPException(404, "服务器不存在")
+
     probe = await registry.probe_and_store(db, server)
     if not probe.get("ok"):
-        _audit(db, admin, "activate_server_failed", "server", server.id,
-               {"kind": server.kind, "message": str(probe.get("message") or "")[:200]})
-        db.commit()
+        _audit(db, admin_id, "activate_server_failed", "server", server_id,
+               {"kind": kind, "message": str(probe.get("message") or "")[:200]})
+        await run_in_threadpool(db.commit)
         return {"success": False, "activated": False, "probe": probe,
                 "message": str(probe.get("message") or "连接测试未通过")}
 
-    result = registry.activate(db, server, reachable=True)
+    result = await run_in_threadpool(registry.activate, db, server, reachable=True)
     if not result.get("ok"):
         return {"success": False, "activated": False, "probe": probe,
                 "message": str(result.get("message") or "无法设为当前使用")}
@@ -515,15 +569,15 @@ async def activate_server(
     # EA 一旦成为出流节点，就顺手把「EA 视角的挂载体检」拉一次：
     # 挂载里的本机路径 / rclone 地址是跟着那台机器走的，这里不查就得等播放 502 才发现。
     mounts_health = None
-    if server.kind == "ea":
+    if kind == "ea":
         from backend.api.emby_servers import refresh_mount_health
 
-        mounts_health = await refresh_mount_health(db, server.url, server.realm_id)
+        mounts_health = await refresh_mount_health(db, url, realm_id)
 
-    _audit(db, admin, "activate_server", "server", server.id,
-           {"kind": server.kind, "mode": result.get("mode"),
+    _audit(db, admin_id, "activate_server", "server", server_id,
+           {"kind": kind, "mode": result.get("mode"),
             "mount_health_ok": None if mounts_health is None else mounts_health.get("ok")})
-    db.commit()
+    await run_in_threadpool(db.commit)
     return {
         "success": True,
         "activated": bool(result.get("activatable")),
@@ -532,7 +586,7 @@ async def activate_server(
         "message": result.get("message"),
         "probe": probe,
         "mounts_health": mounts_health,
-        "server": registry.serialize(db, server),
+        "server": await run_in_threadpool(registry.serialize, db, server),
     }
 
 
@@ -587,16 +641,23 @@ async def refresh_mount_health_now(
     db: Session = Depends(get_db),
 ):
     """手动重拉一次当前服的「EA 视角的挂载体检」（服务器页的「EA 体检」按钮）"""
-    realm_id = realms.active_realm_id(db)
-    ea = registry.active_config(db, "ea", realm_id)
+    admin_id = admin.id          # 纯值：下面有提交，之后再读 ORM 属性会在事件循环上回查
+
+    def current_ea() -> Optional[dict]:
+        """当前服的 EA 入口配置（同步；下放线程池）"""
+        realm_id = realms.active_realm_id(db)
+        cfg = registry.active_config(db, "ea", realm_id)
+        return None if not cfg else {**cfg, "realm_id": realm_id}
+
+    ea = await run_in_threadpool(current_ea)
     if not ea:
         raise HTTPException(400, "当前服还没有可用的后端服（EA）：请先添加并测试连接")
     from backend.api.emby_servers import refresh_mount_health
 
-    health = await refresh_mount_health(db, ea["url"], realm_id)
-    _audit(db, admin, "refresh_ea_mounts_health", "server", ea["id"],
+    health = await refresh_mount_health(db, ea["url"], ea["realm_id"])
+    _audit(db, admin_id, "refresh_ea_mounts_health", "server", ea["id"],
            {"ok": health.get("ok")})
-    db.commit()
+    await run_in_threadpool(db.commit)
     return {"success": bool(health.get("ok")), "health": health, "server": ea["name"]}
 
 
