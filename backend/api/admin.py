@@ -937,14 +937,13 @@ def _record_seek_push_sync(
     db: Session,
     media_request: models.MovieRequest,
     result: dict,
-    requested_target: str,
+    target: str,
 ) -> dict:
-    """同步记录推送结果，返回面板要展示的纯值（审计由端点自己调 _audit，见 push_media_seek）
+    """同步记录推送结果并提交（连同端点挂上的那条审计），返回面板要展示的纯值
 
-    提交之后 ORM 属性会过期，所以状态/目标在这**里**读出来返回，
+    提交之后 ORM 属性会过期，所以状态在这**里**读出来返回，
     免得回到事件循环上再触发一次隐式回查。
     """
-    target = str(result.get("target") or requested_target)
     media_request.push_target = target
     media_request.push_status = "ok" if result.get("ok") else "failed"
     media_request.push_message = str(result.get("message") or "")[:300]
@@ -975,17 +974,18 @@ async def push_media_seek(
     link = qbittorrent.pick_link(payload.link or "") or (payload.link or "").strip()
     result = await servers.push_media_seek(db, media_request, payload.target, link=link)
 
-    # 求片状态那一批：同步写库下放线程池
-    snapshot = await run_in_threadpool(
-        _record_seek_push_sync, db, media_request, result, payload.target
-    )
-    # 审计这一行必须出现在**端点函数体**里（scripts/check_admin_audit_coverage.py 是源码级判定）。
-    # _audit 只在会话上挂一个对象，是纯内存操作、不发 SQL；真正的写发生在提交，
-    # 而提交下放线程池——同步提交留在事件循环上会卡住全站（见 docs/performance.md 二·九）。
+    target = str(result.get("target") or payload.target)
+    # 审计这一行必须在**端点函数体**里（scripts/check_admin_audit_coverage.py 是源码级判定）。
+    # 刻意放在提交之前：提交会让 ORM 属性过期，之后再读 current_admin.id 就会在事件循环上
+    # 触发一次隐式回查。_audit 本身只往会话挂对象、不发 SQL——两批写由下面那次提交一起落盘，
+    # 而提交（真正产生 IO 的地方）下放线程池。
     _audit(db, current_admin, "push_media_seek", "media_seek", request_id,
-           {"target": snapshot["target"], "ok": bool(result.get("ok")),
+           {"target": target, "ok": bool(result.get("ok")),
             "server": result.get("server")})
-    await run_in_threadpool(db.commit)
+
+    snapshot = await run_in_threadpool(
+        _record_seek_push_sync, db, media_request, result, target
+    )
 
     return {
         "success": bool(result.get("ok")),
