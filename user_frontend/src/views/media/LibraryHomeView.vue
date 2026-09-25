@@ -88,6 +88,21 @@ const typeLabel = (t?: string) =>
 /** 媒体库入口缩略图：有 backdrop 用图，没有用渐变 + 首字 */
 const viewBackdrop = (v: EmbyItem) => backdropUrl(v, 640)
 
+/** Emby CollectionType → 中文类型标签 */
+const VIEW_TYPE_LABELS: Record<string, string> = {
+  movies: '电影',
+  tvshows: '剧集',
+  mixed: '混合',
+  music: '音乐',
+  musicvideos: '音乐视频',
+  books: '图书',
+  games: '游戏',
+  photos: '图片',
+  homevideos: '家庭视频',
+}
+const viewTypeLabel = (v: EmbyItem) =>
+  VIEW_TYPE_LABELS[(v.CollectionType || '').toLowerCase()] || ''
+
 async function loadAll() {
   loading.value = true
   try {
@@ -208,7 +223,7 @@ onMounted(() => {
               </div>
               <div class="view-body">
                 <span class="view-name">{{ v.Name }}</span>
-                <span class="view-count">{{ v.ChildCount || 0 }} 个条目</span>
+                <span class="view-count"><template v-if="viewTypeLabel(v)">{{ viewTypeLabel(v) }} · </template>{{ v.ChildCount || 0 }} 个条目</span>
               </div>
               <ChevronRight :size="18" class="view-go" />
             </RouterLink>

@@ -48,6 +48,8 @@ export interface EmbyItem {
   BackdropImageTags?: string[]
   UserData: EmbyUserData
   RunTimeTicks?: number | null
+  /** 媒体库类型：movies / tvshows / mixed …（Views 接口返回） */
+  CollectionType?: string | null
   MediaSources?: EmbyMediaSource[]
   /** 画质徽标用（后端 _item_dto 下发） */
   Width?: number | null
