@@ -376,9 +376,9 @@ class FakeRemoteProvider(mnt.MountProvider):
                        for i in range(REMOTE_PER_DIR)]
         return entries
 
-    def walk_media(self):
+    def walk_media(self, root: str = "/"):
         # 像真实提供者一样靠 list_dir 逐层遍历（这样“每目录只列一次”才量得准）
-        for entry in self.list_dir("/"):
+        for entry in self.list_dir(root or "/"):
             for sub in self.list_dir(entry.rel):
                 yield mnt.MountFile(rel=sub.rel, name=sub.name, size=sub.size)
 

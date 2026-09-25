@@ -5,6 +5,7 @@ import hashlib
 import json  # 扫描结果落库（scan_stats）需要
 import logging
 import os
+import posixpath
 import re
 import subprocess
 import threading
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend.db_retry import commit_with_retry, retry_write
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import nfo as nfo_lib
 # 实时进度与远程 IO 计数（v2.27.0）：只依赖标准库，不会与 scanner / mounts 形成循环
 from backend.emby_server import scan_progress as progress
 
@@ -703,7 +705,9 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
     """
     root = provider.local_root
     mount_id = src.mount.id
-    for mount_file in provider.walk_media():
+    # src.subpath：库配置为 mount://<id>/<子目录> 时只扫描该子目录（默认为 "/" 即整个挂载）
+    subpath = getattr(src, "subpath", "/") or "/"
+    for mount_file in provider.walk_media(root=subpath):
         rel = mount_file.rel
         dir_rel = os.path.dirname(rel) or "/"
         if root is not None:
@@ -840,6 +844,8 @@ class _Pending:
     probe: Any = None   # Future[dict] | None
     side: Any = None    # Future[(poster, fanart, subtitles)] | None
     tmdb: Any = None    # Future[(hit, details)] | None
+    nfo: Any = None     # Future[(nfo_data, series_nfo_data, season_nfo_data)] | None
+    series_tmdb: Any = None  # Future[(hit, details)] | None（剧集级 NFO 只补图用）
     # 上面三个是「排队中的 IO」，下面四个是**已经取回**的纯值。
     # 取回动作统一发生在批次开头（那时还没有任何写事务），写库循环里只读纯值——
     # 一旦在写事务里等网络，SQLite 的写锁就被按在网络 RTT 后面（见 docs/performance.md）。
@@ -847,6 +853,9 @@ class _Pending:
     side_data: Any = None           # (poster, fanart, subtitles) | None
     tmdb_hit: Any = None
     tmdb_details: Any = None
+    nfo_data: Any = None            # 本文件/电影的 NFO 解析结果
+    series_nfo_data: Any = None     # tvshow.nfo 解析结果（episode 用）
+    season_nfo_data: Any = None     # season.nfo 解析结果（episode 用）
     skipped: bool = False  # 增量扫描：目录没变且库里已是最新 → 本次不做任何写库工作
 
 
@@ -873,6 +882,12 @@ class _ScanContext:
     dirty_dirs: dict = field(default_factory=dict)
     # 列举失败的远程目录（读不到就别拿空列表当“目录没变”）
     dir_list_failed: set = field(default_factory=set)
+    # NFO：已解析的 NFO 缓存（含阴性缓存），key 见 _read_nfo_cached
+    nfo_cache: dict = field(default_factory=dict)
+    # 剧集级 NFO 补图：series_guid → TMDB 详情（本轮已取过的不重复取）
+    nfo_series_details: dict = field(default_factory=dict)
+    # 本轮已处理过补图的 series_guid（去重，避免同剧多集/多批次重复调详情接口）
+    nfo_series_imaged: set = field(default_factory=set)
 
 
 
@@ -1018,11 +1033,29 @@ def _prefetch_remote_listings(ctx: "_ScanContext", prepared: list, pool) -> None
         _result(fut)                     # 读不到时 _mount_names 自己兜住（记进 dir_list_failed）
 
 
+# 季目录名（远端挂载的剧集分组用）：Season 01 / S01 / 第1季 / 第一季
+_SEASON_DIR_RE = re.compile(
+    r"^(?:season\s*\.?\s*\d{1,2}|s\d{1,2}|第\s*(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*季)$",
+    re.IGNORECASE,
+)
+
+
 def _series_guid_of(scan_file: "ScanFile") -> str:
-    """剧集条目的 guid（由剧集目录推导，与旧实现完全一致）"""
+    """剧集条目的 guid（由剧集目录推导）
+
+    - 本机：文件目录的父目录（Season 子目录结构；与旧实现一致）
+    - 远端：dir_rel 本身是季目录（Season 01 / S01 / 第1季）时取其父目录，
+      否则取 dir_rel 本身——与本机分支同口径。旧实现对远端直接取文件目录，
+      会把同一部剧的各季拆成多个剧集条目。
+    """
     dirpath = scan_file.local_dir
-    series_dir = os.path.dirname(dirpath.rstrip("/")) if dirpath else ""
-    return item_guid(series_dir or (os.path.dirname(scan_file.stored_path) or scan_file.stored_path))
+    if dirpath:
+        series_dir = os.path.dirname(dirpath.rstrip("/")) if dirpath else ""
+        return item_guid(series_dir or (os.path.dirname(scan_file.stored_path) or scan_file.stored_path))
+    d = (scan_file.dir_rel or "/").rstrip("/") or "/"
+    if _SEASON_DIR_RE.match(os.path.basename(d)):
+        d = posixpath.dirname(d) or "/"
+    return item_guid(mount_lib.mount_path(scan_file.mount_id, d))
 
 
 def _library_exists(db: Session, lib_id: int) -> bool:
@@ -1051,13 +1084,15 @@ def _local_names(ctx: "_ScanContext", dirpath: str) -> list:
     return _list_dir_cached(dirpath)
 
 
-def _mount_names(ctx: "_ScanContext", scan_file: "ScanFile") -> list:
+def _mount_dir_entries(ctx: "_ScanContext", scan_file: "ScanFile", dir_rel: str) -> list:
     """远程挂载目录列表（同一个目录只请求一次；大目录下这一项能省掉九成网络往返）
 
     同一个目录的文件会被分发到不同工作线程，所以这里按目录单飞：线程之间只等「别人正在
     列的这个目录」，不同目录仍然并行。分成两段的实现在并发时会各自去请求一次网盘。
+    比旧 _mount_names 多一个 dir_rel 参数：NFO 发现要查父目录（tvshow.nfo），
+    复用同一份缓存与单飞锁，不会多一次网络往返。
     """
-    key = (scan_file.mount_id, scan_file.dir_rel)
+    key = (scan_file.mount_id, dir_rel)
     with ctx.mount_lock:
         if key in ctx.mount_dir_cache:
             return ctx.mount_dir_cache[key]
@@ -1069,19 +1104,24 @@ def _mount_names(ctx: "_ScanContext", scan_file: "ScanFile") -> list:
             if key in ctx.mount_dir_cache:
                 return ctx.mount_dir_cache[key]
         try:
-            entries = scan_file.provider.list_dir(scan_file.dir_rel)
+            entries = scan_file.provider.list_dir(dir_rel)
         except mount_lib.MountError as exc:
-            logger.warning("读取挂载目录失败，跳过外挂字幕：%s（%s）", scan_file.dir_rel, exc)
+            logger.warning("读取挂载目录失败，跳过：%s（%s）", dir_rel, exc)
             entries = []
             ctx.dir_list_failed.add(_dir_key_of(scan_file))
         except Exception as exc:  # noqa: BLE001 — 目录读不到不该中断扫描
-            logger.warning("读取挂载目录异常，跳过外挂字幕：%s（%s）", scan_file.dir_rel, exc)
+            logger.warning("读取挂载目录异常，跳过：%s（%s）", dir_rel, exc)
             entries = []
             ctx.dir_list_failed.add(_dir_key_of(scan_file))
         with ctx.mount_lock:
             ctx.mount_dir_cache[key] = entries
             ctx.mount_dir_locks.pop(key, None)  # 列完就不必再留着这把锁
         return entries
+
+
+def _mount_names(ctx: "_ScanContext", scan_file: "ScanFile") -> list:
+    """文件所在目录的远程列举（_mount_dir_entries 的便捷包装）"""
+    return _mount_dir_entries(ctx, scan_file, scan_file.dir_rel)
 
 
 def _side_info(ctx: "_ScanContext", scan_file: "ScanFile") -> tuple:
@@ -1098,6 +1138,103 @@ def _side_info(ctx: "_ScanContext", scan_file: "ScanFile") -> tuple:
             scan_file.name, entries, scan_file.mount_id, scan_file.dir_rel,
         )
     return None, None, []
+
+
+def _nfo_candidates(kind: str, name: str) -> list:
+    """按 Kodi 约定给出 NFO 候选文件名（按优先级）"""
+    stem = os.path.splitext(name)[0]
+    if kind == "movie":
+        return [f"{stem}.nfo", f"{name}.nfo", "movie.nfo"]
+    if kind == "series":
+        return ["tvshow.nfo"]
+    # episode：实测远端形如 xxx.1080p.mp4.nfo（全名 + .nfo），也兼容去扩展名写法
+    return [f"{name}.nfo", f"{stem}.nfo"]
+
+
+def _read_nfo_cached(ctx: "_ScanContext", scan_file: "ScanFile",
+                     local_path: Optional[str] = None,
+                     mount_rel: Optional[str] = None):
+    """读 + 解析一个 NFO（ctx 级缓存，含阴性缓存；异常当没有 NFO）"""
+    key = ("local", local_path) if local_path else ("mount", scan_file.mount_id, mount_rel)
+    if key not in ctx.nfo_cache:
+        try:
+            if local_path:
+                with open(local_path, "r", encoding="utf-8-sig", errors="ignore") as f:
+                    text = f.read()
+            else:
+                text = scan_file.provider.read_text(mount_rel)
+            ctx.nfo_cache[key] = nfo_lib.parse_nfo(text)
+        except Exception:  # noqa: BLE001 — 单个 NFO 读不到就当没有
+            ctx.nfo_cache[key] = None
+    return ctx.nfo_cache[key]
+
+
+def _locate_series_dir(ctx: "_ScanContext", scan_file: "ScanFile", dirpath: str) -> Optional[str]:
+    """episode 的剧集目录：本目录或父目录中含 tvshow.nfo 的那个（都没有返回 None）"""
+    if scan_file.local_dir is not None:
+        if "tvshow.nfo" in _list_dir_cached(dirpath):
+            return dirpath
+        parent = os.path.dirname(dirpath.rstrip("/"))
+        if parent and parent != dirpath and "tvshow.nfo" in _list_dir_cached(parent):
+            return parent
+        return None
+    if "tvshow.nfo" in {e.name for e in _mount_dir_entries(ctx, scan_file, dirpath)}:
+        return dirpath
+    parent = posixpath.dirname(dirpath.rstrip("/")) or "/"
+    if parent != dirpath and "tvshow.nfo" in {
+        e.name for e in _mount_dir_entries(ctx, scan_file, parent)
+    }:
+        return parent
+    return None
+
+
+def _find_nfos(ctx: "_ScanContext", scan_file: "ScanFile", kind: str) -> tuple:
+    """发现并解析 NFO → (nfo_data, series_nfo_data, season_nfo_data)
+
+    - movie：同目录 `<片名>.nfo` / `movie.nfo`
+    - series（剧集库单文件）：同目录 `tvshow.nfo`
+    - episode：同目录 `<集文件名>.nfo`；同目录 `season.nfo`；剧集目录 `tvshow.nfo`
+    """
+    is_local = scan_file.local_dir is not None
+    if not is_local and not (scan_file.mount_id is not None and scan_file.provider is not None):
+        return None, None, None
+    dirpath = scan_file.local_dir if is_local else (scan_file.dir_rel or "/")
+
+    def read_nfo(d: str, fname: str):
+        if is_local:
+            return _read_nfo_cached(ctx, scan_file, local_path=os.path.join(d, fname))
+        return _read_nfo_cached(ctx, scan_file, mount_rel=posixpath.join(d, fname))
+
+    if is_local:
+        names = set(_list_dir_cached(dirpath))
+    else:
+        names = {e.name for e in _mount_dir_entries(ctx, scan_file, dirpath)}
+
+    nfo_data = series_nfo_data = season_nfo_data = None
+    if kind in ("movie", "episode"):
+        for cand in _nfo_candidates(kind, scan_file.name):
+            if cand in names:
+                nfo_data = read_nfo(dirpath, cand)
+                if nfo_data:
+                    break
+    elif kind == "series" and "tvshow.nfo" in names:
+        nfo_data = read_nfo(dirpath, "tvshow.nfo")
+    if kind == "episode":
+        if "season.nfo" in names:
+            season_nfo_data = read_nfo(dirpath, "season.nfo")
+        series_dir = _locate_series_dir(ctx, scan_file, dirpath)
+        if series_dir:
+            series_nfo_data = read_nfo(series_dir, "tvshow.nfo")
+    return nfo_data, series_nfo_data, season_nfo_data
+
+
+def _nfo_work(ctx: "_ScanContext", scan_file: "ScanFile", kind: str) -> tuple:
+    """NFO 发现与解析（IO 线程池里跑；单个失败不影响整批）"""
+    try:
+        return _find_nfos(ctx, scan_file, kind)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("NFO 发现失败 %s：%s", scan_file.stored_path, exc)
+        return None, None, None
 
 
 def _tmdb_work(need_search: bool, name: str, year, kind: str,
@@ -1222,28 +1359,71 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         if is_new or needs_probe(item, scan_file.stored_path, scan_file.size):
             pending.probe = pool.submit(probe_metadata, *scan_file.probe_input(), size=scan_file.size)
         pending.side = pool.submit(_side_info, ctx, scan_file)
+        # NFO 发现与解析（与 probe / side / TMDB 并行；结果在下面先取回，
+        # TMDB 预取口径按 NFO 有无决定：有 tmdb_id 就不调搜索）
+        if pending.item_type in ("series", "movie", "episode"):
+            pending.nfo = pool.submit(_nfo_work, ctx, scan_file, pending.item_type)
+
+    # NFO 先取回（小文件 IO），再决定 TMDB 预取口径——搜索是扫描里最贵的网络调用，
+    # 远端已有 NFO 刮削的条目直接跳过它（B 方案：TMDB 只在缺图/缺详情时调详情接口）。
+    for pending in prepared:
+        if pending.skipped:
+            continue
+        nfo_data, series_nfo_data, season_nfo_data = (
+            _result(pending.nfo, default=(None, None, None)) or (None, None, None)
+        )
+        pending.nfo_data = nfo_data
+        pending.series_nfo_data = series_nfo_data
+        pending.season_nfo_data = season_nfo_data
+        if pending.item_type not in ("series", "movie", "episode"):
+            continue
+        item = pending.item
+        is_new = item is None
+        needs_repair = bool(getattr(item, "repair_requested_at", None))
         if pending.item_type in ("series", "movie"):
             kind = "series" if pending.item_type == "series" else "movie"
-            needs_repair = bool(getattr(item, "repair_requested_at", None))
-            need_search = is_new or needs_repair or should_scrape(item, policy)
-            existing_id = getattr(item, "tmdb_id", None)
-            need_details = bool(existing_id) and bool(
-                needs_repair or not (item.imdb_id and item.aliases)
-            )
-            # 详情预取的口径必须**覆盖**写库那一步可能用到的所有情况：新条目（补 IMDb /
-            # 别名）、带补图标记的条目、已有 tmdb_id 但缺 IMDb Id / 多别名的条目，
-            # 以及「这一轮会重刮、而库里还缺这两项」的条目——后者 apply() 之后
-            # tmdb_id 才被写上，写库那一步就会去要详情。
-            # 少预取一次，写库那一步就会在事务里发一次网络请求（见 _tmdb_work）。
-            want_details = bool(
-                is_new or needs_repair or need_details
-                or (should_scrape(item, policy) and not (item.imdb_id and item.aliases))
-            )
+            nfo_id = (nfo_data or {}).get("tmdb_id")
+            if nfo_id:
+                # NFO 命中且有 tmdb_id：不调 TMDB 搜索；只在缺图/缺 imdb/别名/
+                # 带补图标记时取详情（补图用）
+                need_search = False
+                existing_id = str(nfo_id)
+                want_details = bool(
+                    needs_repair
+                    or not ((item.poster_path if item else None)
+                            or (item.primary_image_url if item else None))
+                    or not ((item.imdb_id if item else None)
+                            and (item.aliases if item else None))
+                )
+            else:
+                need_search = is_new or needs_repair or should_scrape(item, policy)
+                existing_id = getattr(item, "tmdb_id", None)
+                need_details = bool(existing_id) and bool(
+                    needs_repair or not (item.imdb_id and item.aliases)
+                )
+                # 详情预取的口径必须**覆盖**写库那一步可能用到的所有情况：新条目（补 IMDb /
+                # 别名）、带补图标记的条目、已有 tmdb_id 但缺 IMDb Id / 多别名的条目，
+                # 以及「这一轮会重刮、而库里还缺这两项」的条目——后者 apply() 之后
+                # tmdb_id 才被写上，写库那一步就会去要详情。
+                # 少预取一次，写库那一步就会在事务里发一次网络请求（见 _tmdb_work）。
+                want_details = bool(
+                    is_new or needs_repair or need_details
+                    or (should_scrape(item, policy) and not (item.imdb_id and item.aliases))
+                )
             if need_search or want_details:
                 pending.tmdb = pool.submit(
                     _tmdb_work, need_search, pending.parsed["name"], pending.parsed["year"],
                     kind, existing_id, want_details,
                 )
+        else:  # episode：剧集级 NFO 的 TMDB 详情只补图，同一部剧一批只取一次
+            series_id = (series_nfo_data or {}).get("tmdb_id")
+            if series_id and pending.series_guid not in ctx.nfo_series_imaged:
+                ctx.nfo_series_imaged.add(pending.series_guid)  # 占位去重：跨批次不重复取
+                s_item = ctx.series_items.get(pending.series_guid)
+                if s_item is None or not (s_item.poster_path or s_item.primary_image_url):
+                    pending.series_tmdb = pool.submit(
+                        _tmdb_work, False, "", None, "series", str(series_id), True,
+                    )
 
     # 把这一批的 IO 结果**全部取回**，然后才把写库交给调用方。
     # 这是「事务只包纯 DB 写」的关键一步：ffprobe / rclone 列目录 / TMDB 搜索都可能在
@@ -1257,6 +1437,9 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         pending.side_data = _result(pending.side)
         hit, details = _result(pending.tmdb, default=(None, None)) or (None, None)
         pending.tmdb_hit, pending.tmdb_details = hit, details
+        _, series_details = _result(pending.series_tmdb, default=(None, None)) or (None, None)
+        if series_details is not None:
+            ctx.nfo_series_details[pending.series_guid] = series_details
     return prepared
 
 
@@ -1928,6 +2111,18 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             db.flush()
                             ctx.series_items[series_guid] = series
                         item.series_id = series.id
+                        series_nfo = _pending.series_nfo_data
+                        if series_nfo and (not series.tmdb_id or not series.overview):
+                            # 剧集级 NFO（tvshow.nfo）：这类 series 平时不走 TMDB，
+                            # 远端有刮削就直接用；B 方案下 TMDB 只补图
+                            if series_nfo.get("tmdb_id") and not (
+                                series.poster_path or series.primary_image_url
+                            ):
+                                details = ctx.nfo_series_details.get(series_guid)
+                                if details is not None:
+                                    tmdb_client.apply_images(series, details)
+                            nfo_lib.apply_nfo(series, series_nfo, "series")
+                            stats["nfo"] = stats.get("nfo", 0) + 1
 
                         season_guid = _pending.season_guid
                         season_item = ctx.season_items.get(season_guid)
@@ -1941,10 +2136,19 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             db.add(season_item)
                             db.flush()
                             ctx.season_items[season_guid] = season_item
+                        if _pending.season_nfo_data and not season_item.overview:
+                            # 季 NFO（season.nfo）：只补简介与评分
+                            nfo_lib.apply_nfo(season_item, _pending.season_nfo_data, "season")
                         item.parent_id = season_item.id
                         item.season_number = season_no
                         item.episode_number = ep_no
-                        item.name = _episode_display_name(parsed["name"], season_no, ep_no)
+                        ep_nfo = _pending.nfo_data
+                        ep_title = (ep_nfo or {}).get("title")
+                        item.name = _episode_display_name(ep_title or parsed["name"], season_no, ep_no)
+                        if ep_nfo:
+                            # 单集 NFO：简介与评分（标题已用于展示名）
+                            nfo_lib.apply_nfo(item, ep_nfo, "episode")
+                            stats["nfo"] = stats.get("nfo", 0) + 1
 
                     # TMDB 刮削：只刮剧集/电影这类顶层条目。
                     # 旧实现对**每一集**也发搜索请求，不但浪费配额，还会把电影元数据
@@ -1953,22 +2157,47 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         kind = "series" if item_type == "series" else "movie"
                         # 图片丢失的条目（repair_requested_at）无论策略如何都要重取图
                         needs_repair = bool(item.repair_requested_at)
-                        if needs_repair or should_scrape(item, snap.scrape_policy):
-                            # 搜索结果在批次开头就取回了（写事务里不发网络请求）
-                            hit = _pending.tmdb_hit
-                            if hit:
-                                tmdb_client.apply(item, hit, kind)
-                                stats["scraped"] += 1
-                        # 已有 TMDB 命中但缺 IMDb Id / 多别名 → 用详情接口补齐
-                        # （中英文、繁简、多别名搜索依赖 aliases）
-                        # 详情同样是预取的：apply_details / apply_images 只把已取回的
-                        # 数据落到条目上，不会在这里发请求（与 enrich / refresh_images 同口径）
-                        if item.tmdb_id and (needs_repair or not (item.imdb_id and item.aliases)):
-                            if not needs_repair or tmdb_client.apply_images(item, _pending.tmdb_details):
+                        nfo_data = _pending.nfo_data
+                        if nfo_data and nfo_data.get("tmdb_id"):
+                            # —— NFO 优先（B 方案）：远端已有刮削，不调 TMDB 搜索 ——
+                            # TMDB 只补图；NFO 里没给 imdb_id 时才用详情补 imdb/别名缺项，
+                            # 最后 NFO 文本覆盖（用户整理的标题/简介/评分优先于 TMDB）。
+                            if not nfo_data.get("imdb_id") and (
+                                needs_repair or not (item.imdb_id and item.aliases)
+                            ):
                                 tmdb_client.apply_details(item, _pending.tmdb_details)
+                            if needs_repair or not (item.poster_path or item.primary_image_url):
+                                tmdb_client.apply_images(item, _pending.tmdb_details)
+                            nfo_lib.apply_nfo(item, nfo_data, kind)
+                            stats["nfo"] = stats.get("nfo", 0) + 1
                             if needs_repair:
                                 item.repair_requested_at = None
                                 stats["repaired"] = stats.get("repaired", 0) + 1
+                        else:
+                            if needs_repair or should_scrape(item, snap.scrape_policy):
+                                # 搜索结果在批次开头就取回了（写事务里不发网络请求）
+                                hit = _pending.tmdb_hit
+                                if hit:
+                                    tmdb_client.apply(item, hit, kind)
+                                    stats["scraped"] += 1
+                                if nfo_data:
+                                    # 有 NFO 但无 tmdb_id：TMDB 打底，NFO 文本优先
+                                    nfo_lib.apply_nfo(item, nfo_data, kind)
+                                    stats["nfo"] = stats.get("nfo", 0) + 1
+                            elif nfo_data and not item.overview:
+                                # 策略不要求重刮、但条目缺简介且远端有 NFO：补上（幂等，不调 TMDB）
+                                nfo_lib.apply_nfo(item, nfo_data, kind)
+                                stats["nfo"] = stats.get("nfo", 0) + 1
+                            # 已有 TMDB 命中但缺 IMDb Id / 多别名 → 用详情接口补齐
+                            # （中英文、繁简、多别名搜索依赖 aliases）
+                            # 详情同样是预取的：apply_details / apply_images 只把已取回的
+                            # 数据落到条目上，不会在这里发请求（与 enrich / refresh_images 同口径）
+                            if item.tmdb_id and (needs_repair or not (item.imdb_id and item.aliases)):
+                                if not needs_repair or tmdb_client.apply_images(item, _pending.tmdb_details):
+                                    tmdb_client.apply_details(item, _pending.tmdb_details)
+                                if needs_repair:
+                                    item.repair_requested_at = None
+                                    stats["repaired"] = stats.get("repaired", 0) + 1
 
                     # 剧集海报回退：集 → 季 → 剧集（避免整库集图空白）
                     if item_type == "episode" and series is not None:

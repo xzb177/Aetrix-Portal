@@ -976,9 +976,9 @@ function typeLabel(t: string): string {
             v-model="form.paths"
             type="textarea"
             :rows="3"
-            placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies"
+            placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
           />
-          <div class="form-hint">本机目录。也可以用下面的「存储挂载」接入 115 / WebDAV / AList 等来源。</div>
+          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。</div>
         </el-form-item>
         <el-form-item label="归属服">
           <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
