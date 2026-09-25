@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from datetime import datetime
 from typing import Optional
@@ -26,6 +27,42 @@ logger = logging.getLogger(__name__)
 TMDB_API = "https://api.themoviedb.org/3"
 TMDB_IMAGE = "https://image.tmdb.org/t/p"
 TMDB_LANG = os.getenv("TMDB_LANGUAGE", "zh-CN")
+
+# TMDB API Key 在 SystemConfig 里的键：管理后台「元数据与刮削」填写，保存即热生效
+TMDB_KEYS_CONFIG_KEY = "tmdb_api_keys"
+
+
+def _split_keys(raw: str) -> list[str]:
+    """多 key 切分：逗号 / 换行 / 空白分隔，去重保序"""
+    parts = re.split(r"[\s,;，；]+", str(raw or ""))
+    return list(dict.fromkeys(p.strip() for p in parts if p.strip()))
+
+
+def _env_keys() -> list[str]:
+    """环境变量里的 key（TMDB_API_KEYS 优先，兼容单键 TMDB_API_KEY）"""
+    return _split_keys(os.getenv("TMDB_API_KEYS", "") or os.getenv("TMDB_API_KEY", ""))
+
+
+def _read_config_value(db) -> str:
+    from backend.integrations import store
+    return store.read_values(db, [TMDB_KEYS_CONFIG_KEY], {TMDB_KEYS_CONFIG_KEY: ""})[TMDB_KEYS_CONFIG_KEY]
+
+
+def _db_keys(db=None) -> list[str]:
+    """SystemConfig 里的 key。db 未给时自己开短会话；读不到返回空（不抛异常）"""
+    try:
+        if db is None:
+            from backend.database import SessionLocal
+            session = SessionLocal()
+            try:
+                raw = _read_config_value(session)
+            finally:
+                session.close()
+        else:
+            raw = _read_config_value(db)
+    except Exception:  # noqa: BLE001 — DB 没建好 / 表不存在时当没配
+        return []
+    return _split_keys(raw)
 
 # 缓存未命中的哨兵：TMDB 的“没搜到”也是合法结果，必须与“没查过”区分开
 _MISS = object()
@@ -55,6 +92,8 @@ class TmdbClient:
     """轻量 TMDB 客户端（未配置 key 时静默跳过）
 
     支持多密钥轮询：`TMDB_API_KEYS=key1,key2,key3`（或 `TMDB_API_KEY` 单键）。
+    密钥来源：环境变量优先，为空时回落 SystemConfig（管理后台「元数据与刮削」填写，
+    保存后调 `refresh_keys()` 即时生效，无需重启）。
     单个密钥超出配额（429）或报 401 时自动轮到下一个，整库刮削不会因为一个 key 限额就停滞。
 
     带短 TTL 缓存：扫库时引擎会先在后台线程把「搜索 + 详情」预热，写库线程随后
@@ -70,14 +109,43 @@ class TmdbClient:
     _cache_lock = threading.Lock()
 
     def __init__(self) -> None:
-        raw = os.getenv("TMDB_API_KEYS", "") or os.getenv("TMDB_API_KEY", "")
-        self.api_keys = [k.strip() for k in raw.split(",") if k.strip()]
-        self.api_key = self.api_keys[0] if self.api_keys else ""
+        self._keys_lock = threading.Lock()
+        # 当前 key 来源：env（环境变量）/ db（后台填写）/ none（未配置），界面展示用
+        self.key_source = "none"
+        self.api_keys: list[str] = []
+        self.api_key = ""
         self._key_index = 0
         self.session = None
         self._session_proxy_sig: Optional[str] = None
         self._session_lock = threading.Lock()
+        self.refresh_keys()  # 环境变量优先，为空则回落 SystemConfig
         self._ensure_session()
+
+    def _set_keys(self, keys: list[str], source: str) -> None:
+        with self._keys_lock:
+            self.api_keys = list(keys)
+            self.api_key = self.api_keys[0] if self.api_keys else ""
+            self._key_index = 0
+            self.key_source = source if keys else "none"
+
+    def refresh_keys(self, db=None) -> dict:
+        """重算有效密钥：后台保存与进程启动都走这里，无需重启进程。
+
+        优先级：环境变量 ``TMDB_API_KEYS``（非空即用）> SystemConfig ``tmdb_api_keys``。
+        返回来源与数量（不含原文，可直接给界面）。
+        """
+        keys = _env_keys()
+        source = "env"
+        if not keys:
+            keys = _db_keys(db)
+            source = "db" if keys else "none"
+        self._set_keys(keys, source)
+        self._ensure_session()
+        return {"source": self.key_source, "count": len(self.api_keys)}
+
+    def masked_keys(self) -> list[str]:
+        """界面展示用：只露后 4 位"""
+        return [f"****{k[-4:]}" if len(k) > 4 else "****" for k in self.api_keys]
 
     def _ensure_session(self) -> None:
         """按需创建 / 重建 HTTP 会话——让后台改完「网络代理」立刻对刮削生效

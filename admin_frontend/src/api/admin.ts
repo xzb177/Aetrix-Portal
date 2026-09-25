@@ -524,6 +524,54 @@ export const scanLibrary = (id: number) =>
 /** 扫描队列快照：正在跑 / 排队中 / 最近完成 + 远程 IO 计数（面板每几秒轮询一次） */
 export const fetchScanQueue = () => get<EmbyScanQueue>(`${E}/scan-queue`)
 
+// ==================== 元数据与刮削（EmbyAdmin.vue「元数据与刮削」分组） ====================
+
+export interface TmdbKeysStatus {
+  configured: boolean
+  source: 'env' | 'db' | 'none'
+  count: number
+  masked: string[]
+  env_present: boolean
+}
+
+/** TMDB Key 状态（只返回掩码与数量） */
+export const fetchTmdbKeys = () => get<TmdbKeysStatus>(`${E}/scrape/tmdb-keys`)
+
+/** 保存 TMDB API Keys（逗号/换行/空白分隔）：落库后立即热生效 */
+export const saveTmdbKeys = (keys: string) =>
+  put<{ success: boolean; saved: number; source: string; count: number }>(`${E}/scrape/tmdb-keys`, { keys })
+
+export interface TmdbTestResult {
+  index: number
+  masked: string
+  ok: boolean
+  message: string
+}
+
+/** 测试 TMDB 连接：keys 为空则测当前生效的 key，否则测这批候选 key */
+export const testTmdbKeys = (keys?: string) =>
+  post<{ results: TmdbTestResult[] }>(`${E}/scrape/tmdb-test`, { keys: keys || '' })
+
+export interface RescrapeSummary {
+  notes: string[]
+  changed: Record<string, string>
+  nfo_found: boolean
+}
+
+/** 条目级手动刮削（同步）：电影/剧集优先，季/集按 NFO 能力处理 */
+export const rescrapeItem = (id: number) =>
+  post<{ success: boolean; item: { id: number; name: string; item_type: string }; summary: RescrapeSummary }>(
+    `${E}/scrape/items/${id}/rescrape`,
+    {},
+  )
+
+/** 库级手动刮削：触发一次该库扫描，policy 只覆盖本轮快照（missing_only | all） */
+export const rescrapeLibrary = (id: number, policy: 'missing_only' | 'all' = 'missing_only') =>
+  post<{ success: boolean; started: boolean; already?: boolean; message: string }>(
+    `${E}/scrape/libraries/${id}/rescrape`,
+    { policy },
+  )
+
 /**
  * 播放可达性报告（v2.28.0）：出流方式 + 逐库判定 + 用户端地址一致性
  *
