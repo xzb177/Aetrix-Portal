@@ -109,6 +109,11 @@ jobs:
       - name: 硬编码密钥检查（仓库里不许出现像真的密钥）
         run: python scripts/check_hardcoded_secrets.py
 
+      # 版本号单一来源：根目录 VERSION 为准，后端与两个前端不许各写一份。
+      # 曾经 /api/health 报 2.33、CHANGELOG 已经 2.34，谁也说不清线上跑的是哪个。
+      - name: 版本号一致性检查（VERSION / 前端 package / 后端不许漂移）
+        run: python scripts/check_version.py
+
       # 品牌契约检查：改品牌（统一到 Aetrix）后残留的旧名，类型检查 / 导入 / 冒烟全绿
       # 也看不出来（它只是一段字符串），但漏改的 EMBY_SERVER_ID 默认值会真的改变行为。
       # 确实需要旧名（老部署的库文件名等）就在同一行写 `brand-scan: allow` 并说明原因。

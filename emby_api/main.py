@@ -36,6 +36,7 @@ from sqlalchemy import inspect
 
 from backend.database import DATABASE_TYPE, SessionLocal, engine
 from backend.security import validate_secret_key
+from backend.version import app_version
 from backend import models  # noqa: F401 — 注册全部模型，保证 ORM 关系可解析
 from backend.emby_server import models as _emby_models  # noqa: F401
 from backend.download_guard import DownloadGuardMiddleware
@@ -61,7 +62,8 @@ from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
 from backend.subscriptions import set_process_realm_resolver
 
-EA_VERSION = "2.33.0"
+# 版本号单一来源：根目录 VERSION（与 EM 面板读的是同一份）
+EA_VERSION = app_version()
 SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
