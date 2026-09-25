@@ -21,7 +21,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models, realms, subscriptions
@@ -239,6 +240,49 @@ admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自�
 
 # ==================== 用户端 ====================
 
+def _get_int_config(db: Session, key: str, default: int) -> int:
+    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+    try:
+        return int(row.value) if row and row.value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _view_unlock_pricing(db: Session) -> tuple[int, int]:
+    """公益服查看权限的积分价格与有效期（天，0=永久），后台 SystemConfig 可调。"""
+    points = _get_int_config(db, "emby_view_unlock_points", 50)
+    days = _get_int_config(db, "emby_view_unlock_days", 365)
+    return max(points, 0), max(days, 0)
+
+
+def _realm_view_granted(db: Session, user: models.WebUser, realm_id: int | None
+                        ) -> tuple[bool, models.EmbyViewUnlock | None]:
+    """用户是否有权查看某服的 Emby 账号/线路。
+
+    规则：付费服 = 有效订阅即权限；公益服 = 花积分解锁即权限
+    （见 unlock_emby_view）。没权限时账号卡不下发地址，前端也不展示。
+    """
+    if realm_id is None:
+        realm_id = realms.active_realm_id(db)
+    if realms.is_free_realm(db, realm_id):
+        now = datetime.now()
+        unlock = (db.query(models.EmbyViewUnlock)
+                    .filter(models.EmbyViewUnlock.user_id == user.id,
+                            models.EmbyViewUnlock.realm_id == realm_id,
+                            or_(models.EmbyViewUnlock.expires_at.is_(None),
+                                models.EmbyViewUnlock.expires_at > now))
+                    .order_by(models.EmbyViewUnlock.unlocked_at.desc())
+                    .first())
+        return (unlock is not None), unlock
+    sub = (db.query(models.UserSubscription)
+             .filter(models.UserSubscription.user_id == user.id,
+                     models.UserSubscription.realm_id == realm_id,
+                     models.UserSubscription.status == "active",
+                     models.UserSubscription.end_date > datetime.now())
+             .first())
+    return (sub is not None), None
+
+
 def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None,
                   request: Request | None = None) -> dict:
     """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）
@@ -250,6 +294,10 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
 
     多服部署下同一个用户可能在多个服都有订阅，所以账号卡会带上 **每个服的地址与订阅**
     （``realms``），让客户端知道该连哪一台；顶层字段保持默认服的口径不变。
+
+    查看权限：付费服要求有效订阅，公益服要求积分解锁（见 ``_realm_view_granted``）。
+    没权限时 ``base_url`` / ``import_schemes`` / ``emby_username`` 置空不下发，
+    前端据 ``view_permission`` 展示解锁入口。
     """
     if realm_id is None:
         realm_id = realms.active_realm_id(db)
@@ -258,16 +306,18 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
     external = mode == "external"
     host = url.split("//")[-1]
     realm = realms.get_realm(db, realm_id)
+    granted, unlock = _realm_view_granted(db, user, realm_id)
+    price_points, price_days = _view_unlock_pricing(db)
     card = {
         "server_id": SERVER_ID,
         "server_name": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
-        "base_url": url,
+        "base_url": url if granted else "",
         "mode": mode,
         "external": external,
         "account_managed_by": "external" if external else "portal",
-        "emby_username": user.emby_username,
+        "emby_username": user.emby_username if granted else "",
         "emby_password": None,
-        "has_password": bool(user.emby_password),
+        "has_password": bool(user.emby_password) and granted,
         "realm_id": realm.id if realm else None,
         "realm_name": realm.name if realm else "",
         # 接入方式：free = 公益服（免费开放，不需要订阅）；用户端据此换一套文案
@@ -275,9 +325,17 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "is_free": realms.is_free_realm(db, realm_id),
         "access_note": realms.access_note_of(db, realm_id),
         "allow_download": subscriptions.download_allowed(db, realm_id),
-        "import_schemes": {} if external else {
+        "import_schemes": {} if (external or not granted) else {
             "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
             "senplayer": f"senplayer://importserver?type=emby&name=Aetrix&address={url}&username={user.emby_username}",
+        },
+        "view_permission": {
+            "granted": granted,
+            "realm_free": realms.is_free_realm(db, realm_id),
+            "unlock_points": price_points,
+            "unlock_days": price_days,
+            "points_balance": int(user.points or 0),
+            "expires_at": unlock.expires_at.isoformat() if unlock and unlock.expires_at else None,
         },
     }
     card["realms"] = _user_realm_cards(user, db, request)
@@ -309,11 +367,14 @@ def _user_realm_cards(user: models.WebUser, db: Session,
         if sub is None and not free and realm.id != realms.legacy_realm_id(db):
             continue  # 没订阅的付费服不往用户面前推（默认服保留，兼容老前端）
         mode = emby_active_mode(db, realm.id)
+        granted, _ = _realm_view_granted(db, user, realm.id)
         cards.append({
             "id": realm.id,
             "name": realm.name,
             "slug": realm.slug,
-            "base_url": resolve_emby_base_url(db, realm.id, request),
+            # 没查看权限不下发地址（默认服保留卡片结构，兼容老前端）
+            "base_url": resolve_emby_base_url(db, realm.id, request) if granted else "",
+            "view_granted": granted,
             "mode": mode,
             "external": mode == "external",
             "subscribed": sub is not None,
@@ -346,6 +407,79 @@ async def get_server_info(request: Request,
     if raw and str(raw).strip().isdigit():
         realm_id = int(raw)
     return _account_card(user, db, realm_id, request)
+
+
+class UnlockViewRequest(BaseModel):
+    realm_id: int | None = None
+
+
+@user_emby_router.post("/unlock-view")
+def unlock_emby_view(
+    req: UnlockViewRequest,
+    request_user: models.WebUser = Depends(get_admin_or_emby_user),
+    db: Session = Depends(get_db),
+):
+    """公益服：花积分解锁 Emby 账号/线路查看权限。
+
+    幂等：已解锁且未过期直接返回成功，不重复扣费。扣费是 SQL 级原子
+    更新（余额检查写在 WHERE 里），并发下不会扣成负数；解锁记录有
+    (user_id, realm_id) 唯一约束，建记录冲突时回滚重读走幂等路径。
+    付费服不走这里——查看权限来自有效订阅。
+    """
+    realm_id = req.realm_id or realms.active_realm_id(db)
+    realm = realms.get_realm(db, realm_id)
+    if realm is None:
+        raise HTTPException(status_code=404, detail="服不存在")
+    if not realms.is_free_realm(db, realm_id):
+        raise HTTPException(status_code=400, detail="当前服为付费服，查看权限来自有效订阅，无需积分解锁")
+    now = datetime.now()
+    existing = (db.query(models.EmbyViewUnlock)
+                  .filter(models.EmbyViewUnlock.user_id == request_user.id,
+                          models.EmbyViewUnlock.realm_id == realm_id,
+                          or_(models.EmbyViewUnlock.expires_at.is_(None),
+                              models.EmbyViewUnlock.expires_at > now))
+                  .first())
+    if existing:
+        return {"success": True, "already": True,
+                "expires_at": existing.expires_at.isoformat() if existing.expires_at else None}
+    price_points, price_days = _view_unlock_pricing(db)
+    if price_points <= 0:
+        raise HTTPException(status_code=400, detail="当前无需积分即可查看")
+    # 原子扣费：余额检查写进 WHERE，并发下至多一个成功
+    rows = (db.query(models.WebUser)
+              .filter(models.WebUser.id == request_user.id,
+                      func.coalesce(models.WebUser.points, 0) >= price_points)
+              .update({models.WebUser.points: func.coalesce(models.WebUser.points, 0) - price_points},
+                      synchronize_session="fetch"))
+    if not rows:
+        raise HTTPException(status_code=409, detail="积分不足")
+    db.flush()
+    balance = int(db.query(models.WebUser.points)
+                    .filter(models.WebUser.id == request_user.id).scalar() or 0)
+    db.add(models.PointsLog(user_id=request_user.id, amount=-price_points,
+                            balance_after=balance, type="view_unlock",
+                            description=f"解锁{realm.name}查看权限",
+                            ref_id=f"emby-view:{realm_id}"))
+    expires_at = None if price_days <= 0 else now + timedelta(days=price_days)
+    db.add(models.EmbyViewUnlock(user_id=request_user.id, realm_id=realm_id,
+                                 unlocked_at=now, expires_at=expires_at,
+                                 points_spent=price_points))
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发下另一请求已建记录：回滚后走幂等路径（对方那次扣费有效）
+        db.rollback()
+        existing = (db.query(models.EmbyViewUnlock)
+                      .filter(models.EmbyViewUnlock.user_id == request_user.id,
+                              models.EmbyViewUnlock.realm_id == realm_id)
+                      .first())
+        if existing:
+            return {"success": True, "already": True,
+                    "expires_at": existing.expires_at.isoformat() if existing.expires_at else None}
+        raise HTTPException(status_code=409, detail="解锁冲突，请重试")
+    return {"success": True, "already": False,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "points_spent": price_points, "balance": balance}
 
 
 class SetPasswordRequest(BaseModel):
