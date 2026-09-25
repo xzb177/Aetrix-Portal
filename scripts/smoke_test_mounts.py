@@ -1207,9 +1207,11 @@ check("rclone RC 列目录走 RC API", any("/operations/list" in call for call i
 check("rclone RC 递归枚举媒体",
       sorted(f.rel for f in rc.walk_media()) == ["/A.Movie.2024.mkv", "/Link.strm", "/Sub/B.mkv"],
       str(sorted(f.rel for f in rc.walk_media())))
-check("rclone RC 播放地址走 rc-serve",
+# rc-serve 用方括号把 remote 名与本机目录区分开（见 mount_rclone._rc_play_url）：
+# 写成 /gdrive:Movies/x 会被当成叫「gdrive:Movies」的本机目录而 404。
+check("rclone RC 播放地址走 rc-serve（remote 名要套方括号）",
       rc.resolve("/A.Movie.2024.mkv").value
-      == "http://127.0.0.1:5572/gdrive:Movies/A.Movie.2024.mkv",
+      == "http://127.0.0.1:5572/[gdrive:Movies]/A.Movie.2024.mkv",
       rc.resolve("/A.Movie.2024.mkv").value)
 check(".strm 在 rclone 挂载里也按内容解析",
       rc.resolve_final("/Link.strm").value == FAKE.rclone_strm_body,

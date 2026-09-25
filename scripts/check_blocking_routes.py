@@ -50,7 +50,12 @@ SESSIONISH = re.compile(r"(?i)^(_?[a-z0-9]*(db|session|sess|conn))$")
 
 # 已知欠账：file::函数名。这些是「async 路由里仍有同步 DB 访问」的存量，
 # 按 docs/performance.md「先量、再改、最后固化成门禁」的做法记在这里。
-# 已知欠账：`文件::函数名`（v2.21.0 时点共 41 条）。
+# 已知欠账：`文件::函数名`（v2.21.0 时点 41 条；v2.35.0 把两条热路径改好 → 39 条）。
+#
+# v2.35.0 删掉的两条：
+#   backend/emby_server/compat_routes.py::session_progress —— 每 10 秒 × 每个在播客户端上报一次，
+#     是全站最热的写路径（详见 docs/performance.md）；
+#   backend/emby_server/api.py::user_views —— 客户端每次打开媒体库都问，改同步 `def`。
 #
 # 它们**不是**机械改 `def` 就能解决的：函数体里都有必须 await 的东西，而那个「必须 await
 # 的东西」（通知推送 backend/notifications.py、网络探测 backend/servers.py）**自己也**
@@ -91,8 +96,6 @@ backend/api/user.py::create_ticket
 backend/api/user.py::reply_ticket
 backend/api/user.py::create_media_seek
 backend/emby_server/api.py::rate_item
-backend/emby_server/api.py::user_views
-backend/emby_server/compat_routes.py::session_progress
 backend/emby_server/portal.py::stop_my_session
 backend/emby_server/portal.py::scan_library_endpoint
 backend/emby_server/portal.py::admin_stop_session

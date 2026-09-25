@@ -17,6 +17,7 @@ from backend import admin_roles, models
 from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
+from backend.emby_server import facets
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.scanner import (
     ScanInProgress,
@@ -39,6 +40,7 @@ from backend.emby_server.streaming import (
 )
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -118,21 +120,18 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
     return session, True
 
 
-@emby_router.post("/emby/Sessions/Playing")
-@emby_router.post("/Sessions/Playing")
-async def session_playing(request: Request, user: models.WebUser = Depends(get_emby_user),
-                          db: Session = Depends(get_db)):
-    body = await request.json()
+# 三个会话上报端点的同步实现（路由只负责解析 JSON + 丢线程池，见下面各路由的说明）。
+# 会话上报是**全站最热**的写路径：每个正在播放的客户端每 10 秒上报一次进度，
+# 一次上报要读会话 / 写位置 / 写观看进度（2~3 条 SQL + 1 次提交）。这些 SQL 以前
+# 跑在事件循环上：多路并发播放时，所有人的其它请求都得排在这几次写事务后面。
+
+
+def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_item(db, body.get("ItemId") or "")
     _upsert_session(db, request, user, item, body)
-    return {"success": True}
 
 
-@emby_router.post("/emby/Sessions/Playing/Progress")
-@emby_router.post("/Sessions/Playing/Progress")
-async def session_progress(request: Request, user: models.WebUser = Depends(get_emby_user),
-                           db: Session = Depends(get_db)):
-    body = await request.json()
+def _record_progress(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_item(db, body.get("ItemId") or "")
     _session, wrote = _upsert_session(db, request, user, item, body)
 
@@ -153,7 +152,7 @@ async def session_progress(request: Request, user: models.WebUser = Depends(get_
         and not (finished and not umd.played)
     ):
         # 会话和观看进度都没有新信息：同一次上报不必再来一次写事务（见文件头的节流说明）
-        return {"success": True}
+        return
 
     umd.playback_position_ticks = pos
     umd.last_played_at = datetime.now()
@@ -163,6 +162,29 @@ async def session_progress(request: Request, user: models.WebUser = Depends(get_
         umd.played = True
         umd.playback_position_ticks = 0
     db.commit()
+
+
+def _record_stopped(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
+    item = _require_item(db, body.get("ItemId") or "")
+    _upsert_session(db, request, user, item, body, ended=True)
+
+
+@emby_router.post("/emby/Sessions/Playing")
+@emby_router.post("/Sessions/Playing")
+async def session_playing(request: Request, user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    body = await request.json()
+    # 同步数据库段落一律下放到线程池：它跑在事件循环上时，卡住的是**所有人的请求**
+    await run_in_threadpool(_record_playing, request, user, db, body)
+    return {"success": True}
+
+
+@emby_router.post("/emby/Sessions/Playing/Progress")
+@emby_router.post("/Sessions/Playing/Progress")
+async def session_progress(request: Request, user: models.WebUser = Depends(get_emby_user),
+                           db: Session = Depends(get_db)):
+    body = await request.json()
+    await run_in_threadpool(_record_progress, request, user, db, body)
     return {"success": True}
 
 
@@ -171,8 +193,7 @@ async def session_progress(request: Request, user: models.WebUser = Depends(get_
 async def session_stopped(request: Request, user: models.WebUser = Depends(get_emby_user),
                           db: Session = Depends(get_db)):
     body = await request.json()
-    item = _require_item(db, body.get("ItemId") or "")
-    _upsert_session(db, request, user, item, body, ended=True)
+    await run_in_threadpool(_record_stopped, request, user, db, body)
     return {"success": True}
 
 
@@ -357,13 +378,19 @@ def similar_items(item_id: str, request: Request,
     if not genres:
         return _empty_items()
     limit = int(request.query_params.get("Limit") or 12)
+    # 流派匹配走关联表索引（与筛选路径同一个口径）：旧写法是 genres ILIKE '%…%'，
+    # 前置通配符用不上索引，等于每打开一个详情页就扫一遍全库文本列。
+    if facets.ensure_ready(db):
+        genre_cond = facets.candidate_condition(facets.KIND_GENRE, genres, db)
+    else:  # 老库还没回填完：退回旧口径，结果一致
+        genre_cond = or_(*[em.MediaItem.genres.ilike(f"%{g}%") for g in genres])
     rows = (
         db.query(em.MediaItem)
         .filter(
             em.MediaItem.item_type == item.item_type,
             em.MediaItem.id != item.id,
             em.MediaItem.is_hidden == False,  # noqa: E712
-            or_(*[em.MediaItem.genres.ilike(f"%{g}%") for g in genres]),
+            genre_cond,
         )
         .order_by(func.coalesce(em.MediaItem.community_rating, 0).desc())
         .limit(limit)
@@ -448,12 +475,29 @@ def _named_items(kind: str, names: list) -> dict:
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
 
+def _menu_names(db: Session, kind: str, column) -> list[str]:
+    """分类菜单取值（/Genres、/Studios）：优先关联表，老库没回填完才读整列
+
+    旧实现每个请求都把整库的 genres/studios 列读回来再切分（十万级库约 190ms 的
+    全表扫描，而且随库线性增长）——客户端每打开一次就付一次。关联表路径走
+    ``(kind, value, item_id)`` 覆盖索引上的 DISTINCT，并且带进程内取值缓存
+    （扫描 / 删条目后由 facets 主动失效），量到的对比见
+    scripts/benchmark_item_facets.py 第 3 节。
+    """
+    if facets.ensure_ready(db):
+        return sorted(facets.kind_values(db, kind))
+    return sorted({
+        value
+        for (raw,) in db.query(column).all()
+        for value in (raw or "").split(",")
+        if value
+    })
+
+
 @emby_router.get("/emby/Genres")
 @emby_router.get("/Genres")
 def genres_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
-    names = sorted({g for row in db.query(em.MediaItem.genres).all()
-                    for g in (row[0] or "").split(",") if g})
-    return _named_items("Genre", names)
+    return _named_items("Genre", _menu_names(db, facets.KIND_GENRE, em.MediaItem.genres))
 
 
 @emby_router.get("/emby/Genres/{name}")
@@ -466,9 +510,7 @@ def genre_by_name(name: str, user: models.WebUser = Depends(get_emby_user)):
 @emby_router.get("/emby/Studios")
 @emby_router.get("/Studios")
 def studios_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
-    names = sorted({s for row in db.query(em.MediaItem.studios).all()
-                    for s in (row[0] or "").split(",") if s})
-    return _named_items("Studio", names)
+    return _named_items("Studio", _menu_names(db, facets.KIND_STUDIO, em.MediaItem.studios))
 
 
 @emby_router.get("/emby/Persons")
@@ -479,18 +521,22 @@ def persons_list(user: models.WebUser = Depends(get_emby_user)):
 
 # ---- 媒体库视图别名 ----
 
+# user_views 自己已经是同步 `def`（体内没有 await），这里跟着改成同步路由：
+# 异步路由里 await 一个同步函数，同步查询就还是跑在事件循环上，改了等于没改。
+
+
 @emby_router.get("/emby/Library/MediaFolders")
 @emby_router.get("/Library/MediaFolders")
-async def library_media_folders(user: models.WebUser = Depends(get_emby_user),
-                                db: Session = Depends(get_db)):
-    return await user_views("me", user, db)
+def library_media_folders(user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    return user_views("me", user, db)
 
 
 @emby_router.get("/emby/UserViews")
 @emby_router.get("/UserViews")
-async def user_views_alias(user: models.WebUser = Depends(get_emby_user),
-                           db: Session = Depends(get_db)):
-    return await user_views("me", user, db)
+def user_views_alias(user: models.WebUser = Depends(get_emby_user),
+                     db: Session = Depends(get_db)):
+    return user_views("me", user, db)
 
 
 # ---- 系统 / 诊断 ----

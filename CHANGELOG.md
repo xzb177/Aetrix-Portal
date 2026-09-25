@@ -2,6 +2,70 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.35.0] - 2026-09-25
+
+### 后端提速与稳定性：热路径不再占事件循环、分类菜单走索引、库长到后面也不退化
+
+这一版不加功能，只处理「用户能感觉到的卡」与「跑久了会慢慢变差」的四件事。每条都在
+`scripts/smoke_test_backend_hot_paths.py` 里量出数字或数出 SQL（进 CI），不靠“看起来没问题”。
+
+**并发播放不再互相卡（会话进度上报下放线程池）**
+
+`POST /Sessions/Playing/Progress` 是全站最热的写路径：每个正在播放的客户端每 10 秒上报一次，
+一次上报要读会话 / 写位置 / 写观看进度（2~3 条 SQL + 1 次提交）。它必须 `await request.json()`，
+原先这几条同步 SQL 就跟着跑在**事件循环**上——多路并发播放时，所有人的其它请求都得排在这些
+写事务后面。现在三个会话上报端点（`Playing` / `Progress` / `Stopped`）只负责解析 JSON，整段
+同步写库下放线程池。脚本用后台心跳量出结果：把同样 0.35s 的慢写跑在循环上，心跳空洞 0.36s；
+走真实路由后空洞 **0.011s**，而且会话与观看进度确实写进去了（活儿照做，只是不在循环上）。
+
+**分类菜单端点不再读整列（`/Genres`、`/Studios`、相似推荐）**
+
+`/Genres`、`/Studios` 原先每个请求都把整库的 `genres` / `studios` 文本列读回来再切分——十万级库
+约 190ms，而且随库**线性增长**（客户端每打开一次筛选面板就付一次）。现在走
+`emby_item_facets` 的覆盖索引（带取值缓存）；老库没回填完才退回旧口径，取值逐条一致。
+同理「相似推荐」的流派匹配从 `genres ILIKE '%…%'` 换成关联表条件（每开一个详情页少一次全库扫描），
+`/Items/Counts` 的三次计数合并成一次 `GROUP BY`，`user_views` 等三条没有 `await` 的异步路由
+改回同步 `def`（阻塞路由基线 41 → 39，只减不增）。
+
+**刚扫完的片子立刻能在筛选面板看到（筛选菜单变更后刷新）**
+
+筛选菜单取值来自全库，原先只能等 TTL（默认 300 秒）自然过期——刚扫完的片子最长 5 分钟看不到。
+现在分类值一变（扫描 / 图片修复 / 删条目的**同一个 flush 钩子**）就把缓存标记成陈旧，下一次
+请求重建；重建带最小间隔（`EMBY_FILTERS_MIN_REFRESH`，默认 5 秒），扫描期间每批条目都会触发，
+不能让它退化成「扫描时每请求一次」（脚本用 SQL 计数钉住：连续 5 次改动 + 5 次请求，至多重建一次）。
+显式调用 `invalidate_filters_cache()`（后台改元数据 / 测试直接写库）则清空缓存、下次请求必然重建。
+
+**库长到几十万行后查询计划不跟着退化（周期 `PRAGMA optimize`）**
+
+看护周期里加了一条 SQLite `PRAGMA optimize`：数据分布变了之后，查询计划不能还按很久以前的
+统计信息估行数（估错就是全表扫）。绝大多数时候它什么都不做（毫秒级），只在某张表确实该 `ANALYZE`
+时才动手；非 SQLite 直接跳过。维护周期返回里多一个 `query_plans_optimized` 布尔，便于观测。
+
+**同版本一并带上（此前只进了代码、没进日志）**
+
+- **rclone 挂载的播放地址按 rc-serve 的 `[remote:]` 语法拼接**：旧写法 `/remote:path/x.mkv` 会被
+  rc-serve 当成叫 `remote:path` 的本机目录而 404——列目录一切正常，只有真正取流时才炸，很容易被
+  误判成「rc-serve 没开」；同时「rc-serve 可能未开启」的探测改成打 remote 根目录页，不再拿一个本来
+  就错的 URL 去探（那会误报）。`scripts/smoke_test_mounts.py` 里那条 rc-serve 断言此前与实现不一致
+  （CI 一直红着），已按新语法更新；
+- **版本号改为单一来源**：根目录 `VERSION` 为准，后端 `/api/health` 与两个前端 `package.json` 都读它，
+  `scripts/check_version.py` 进 CI 核对漂移；本版 `VERSION` 与两个前端一并升到 `2.35.0`；
+- **部署**：`docker-compose.yml` 里 rclone 配置目录改为可写——只读挂载下 rclone 刷新 OAuth token
+  落盘会失败（`read-only file system`），表面能读，token 一过期就再也续不回来。
+
+#### 验证
+
+- `pytest tests/ -q`：97 项通过；
+- `scripts/smoke_test_backend_hot_paths.py`（新增，进 CI）：21 项全通过（事件循环空洞、菜单 SQL、
+  缓存刷新节奏、计数口径）；
+- `scripts/smoke_test_item_facets.py`（55 项）、`scripts/smoke_test_item_facets_upgrade.py`、
+  `scripts/smoke_test_media_search.py`、`scripts/smoke_test_emby_sessions.py`（44 项）、
+  `scripts/smoke_test_maintenance.py`：全部通过；
+- `scripts/check_blocking_routes.py`：阻塞型 async 路由 39 个（基线 39，无新增）；
+  `check_await_consistency.py` / `check_auth_coverage.py` / `check_version.py`：通过；
+- `scripts/smoke_test_mounts.py`（含更新后的 rc-serve 断言）、`smoke_test_mount_cache.py`：通过；
+- `scripts/benchmark_item_facets.py --guard`：性能护栏全部通过（无回归）。
+
 ## [2.34.0] - 2026-09-24
 
 ### 用户端首页补上「我的面板」：观影数据 / 进行中的事项 / 正在播放
