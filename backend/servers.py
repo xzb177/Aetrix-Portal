@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from sqlalchemy import and_, or_
@@ -623,12 +624,15 @@ async def push_media_seek(db: Session, request, target: str, link: str = "",
     """
     target = (target or "").strip().lower()
     if target == "auto":
-        target = "moviepilot" if active_config(db, "moviepilot", realm_id) else "qbittorrent"
+        # 挑哪台是同步查库：这个函数是 async（要 await 外部订阅/加种接口），
+        # 查询绝不能留在事件循环上（跨机 PostgreSQL 每个查询一个 RTT）。
+        has_moviepilot = await run_in_threadpool(active_config, db, "moviepilot", realm_id)
+        target = "moviepilot" if has_moviepilot else "qbittorrent"
     if target not in PUSH_TARGETS:
         return {"ok": False, "target": target,
                 "message": "只能推送到 MoviePilot 或 qBittorrent；请先在「服务器」里添加并测试连接"}
 
-    server = active_config(db, target, realm_id)
+    server = await run_in_threadpool(active_config, db, target, realm_id)
     if not server:
         label = kind_label(target)
         return {"ok": False, "target": target,

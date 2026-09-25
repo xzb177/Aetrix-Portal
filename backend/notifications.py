@@ -7,6 +7,7 @@ import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
@@ -554,6 +555,39 @@ async def notify_admin_event(
     )
 
 
+def _persist_staff_messages(
+    db: Session,
+    title: str,
+    content: str,
+    message_type: str,
+    related_id: Optional[int],
+) -> List[int]:
+    """同步落库：给每位启用中的管理员写一条站内消息，返回管理员 id 列表
+
+    这一步整段跑在**线程池**里（见 notify_staff_users）：同步 SQLAlchemy 跑在事件循环上会
+    把全站请求按在这次写事务后面（SQLite 是亚毫秒，跨机 PostgreSQL 每查询一个 RTT）。
+    """
+    staff_users = db.query(models.WebUser).filter(
+        models.WebUser.is_staff == True,  # noqa: E712
+        models.WebUser.is_active == True,  # noqa: E712
+    ).all()
+    if not staff_users:
+        return []
+
+    for staff in staff_users:
+        db.add(models.StationMessage(
+            from_user_id=None,
+            to_user_id=staff.id,
+            title=title,
+            content=content,
+            message_type=message_type,
+            related_id=related_id,
+            is_read=False,
+        ))
+    db.commit()
+    return [staff.id for staff in staff_users]
+
+
 async def notify_staff_users(
     db: Session,
     title: str,
@@ -568,30 +602,15 @@ async def notify_staff_users(
 
     返回通知到的管理员数量。
     """
-    staff_users = db.query(models.WebUser).filter(
-        models.WebUser.is_staff == True,  # noqa: E712
-        models.WebUser.is_active == True,  # noqa: E712
-    ).all()
-    if not staff_users:
-        return 0
+    staff_ids = await run_in_threadpool(
+        _persist_staff_messages, db, title, content, message_type, related_id
+    )
 
-    for staff in staff_users:
-        db.add(models.StationMessage(
-            from_user_id=None,
-            to_user_id=staff.id,
-            title=title,
-            content=content,
-            message_type=message_type,
-            related_id=related_id,
-            is_read=False,
-        ))
-    db.commit()
-
-    for staff in staff_users:
+    for staff_id in staff_ids:
         try:
             await send_notification(
                 notification_type=f"station.{message_type}",
-                user_id=staff.id,
+                user_id=staff_id,
                 title=title,
                 message=content,
                 data={"related_id": related_id},
@@ -599,7 +618,50 @@ async def notify_staff_users(
         except Exception as exc:  # 实时推送失败不影响站内消息落库
             logger.warning("管理员实时通知推送失败: %s", exc)
 
-    return len(staff_users)
+    return len(staff_ids)
+
+
+def _persist_broadcast_messages(
+    title: str,
+    content: str,
+    message_type: str,
+    related_id: Optional[int],
+) -> List[int]:
+    """同步落库：给每个启用中的用户写一条站内消息，返回用户 id 列表（失败返回空）
+
+    自己开一个会话（不在路由的会话上跑），整段放进线程池——广播要一次写几万行，
+    正是最不能占着事件循环的写。失败按「没通知到」处理，由调用方决定怎么回。
+    """
+    db = next(get_db())
+    try:
+        user_ids = [
+            row[0] for row in db.query(models.WebUser.id).filter(
+                models.WebUser.is_active == True  # noqa: E712
+            ).all()
+        ]
+        if not user_ids:
+            return []
+
+        db.bulk_save_objects([
+            models.StationMessage(
+                from_user_id=None,
+                to_user_id=uid,
+                title=title,
+                content=content,
+                message_type=message_type,
+                related_id=related_id,
+                is_read=False,
+            )
+            for uid in user_ids
+        ])
+        db.commit()
+        return user_ids
+    except Exception as exc:  # noqa: BLE001 — 落库失败要让调用方知道
+        db.rollback()
+        logger.error("广播站内消息落库失败: %s", exc)
+        return []
+    finally:
+        db.close()
 
 
 async def notify_all_users(
@@ -622,35 +684,11 @@ async def notify_all_users(
     """
     message_type = event_type.split(".")[0]
     related_id = (data or {}).get("announcement_id")
-    db = next(get_db())
-    try:
-        user_ids = [
-            row[0] for row in db.query(models.WebUser.id).filter(
-                models.WebUser.is_active == True  # noqa: E712
-            ).all()
-        ]
-        if not user_ids:
-            return 0
-
-        db.bulk_save_objects([
-            models.StationMessage(
-                from_user_id=None,
-                to_user_id=uid,
-                title=title,
-                content=content,
-                message_type=message_type,
-                related_id=related_id,
-                is_read=False,
-            )
-            for uid in user_ids
-        ])
-        db.commit()
-    except Exception as exc:  # noqa: BLE001 — 落库失败要让调用方知道
-        db.rollback()
-        logger.error("广播站内消息落库失败: %s", exc)
+    user_ids = await run_in_threadpool(
+        _persist_broadcast_messages, title, content, message_type, related_id
+    )
+    if not user_ids:
         return 0
-    finally:
-        db.close()
 
     # 在线用户的实时推送（失败不影响已落库的站内消息）
     online = set(manager.get_online_users())

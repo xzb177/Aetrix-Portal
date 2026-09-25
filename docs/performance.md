@@ -224,7 +224,8 @@ v2.13.0 已在协议面定了口径：路由体内没有 `await` 的就写同步
   有模块级定义，就必须至少有一个 `async def` 版本。只看裸名（`await obj.f(...)`
   无法靠文本可靠解析，宁可不报也不误报）。
 - `scripts/check_blocking_routes.py`：`async def` 路由里出现同步 DB 调用即失败。
-  存量 41 条记在脚本的 `BASELINE` 里（v2.35.0 做掉两条热路径 → 39 条），改好一条删一行。口径：只认路由函数体自身、
+  存量 41 条记在脚本的 `BASELINE` 里（v2.35.0 做掉两条热路径 → 39 条；
+  v2.36.0 两条求片链路 + 通知层下放线程池 → 37 条），改好一条删一行。口径：只认路由函数体自身、
   以及**体内定义且被直接同步调用**的嵌套函数；被 `run_in_threadpool` / `to_thread`
   下放的嵌套函数放行（本仓库已有此写法，见 `portal_mount_routes.py`）。
 
@@ -238,9 +239,9 @@ v2.13.0 已在协议面定了口径：路由体内没有 `await` 的就写同步
   合成树上 `async`+`db.commit` 要报、同步 `def` 不报、不碰库不报、直接调用的嵌套函数要报、
   下放的嵌套函数不报。
 
-### 剩下的 39 个阻塞路由：为什么不是机械改 `def`
+### 剩下的 37 个阻塞路由：为什么不是机械改 `def`
 
-`scripts/check_blocking_routes.py` 基线里那 39 条**都有必须 `await` 的东西**：
+`scripts/check_blocking_routes.py` 基线里那 37 条**都有必须 `await` 的东西**：
 `notify_admin_event` / `notify_staff_users` / `notify_all_users`（通知推送）、
 `probe_and_store` / `refresh_mount_health` / `probe`（网络探测）、`stop_transcodes_for_async`、
 `await request.json()`。也试过「只把同步那段拆出来」以外的更省事写法，但它们真正的麻烦在于：
@@ -252,16 +253,20 @@ v2.13.0 已在协议面定了口径：路由体内没有 `await` 的就写同步
 所以这不是 41 个端点的事，而是要连通知层 / 探测层一起改，**不能靠一次机械替换收尾**——
 这也是它没有被塞进这一版的原因（改错就是全站通知链路，或者后台操作返回 500）。
 
+v2.36.0 已经把**通知层**那一半拆掉了：`notify_staff_users` / `notify_all_users` 的落库段
+（查人 + 写站内消息 + 提交）整段下放线程池，两个求片端点自己的写库段也一样
+（见二·九）。`backend/servers.py` 的网络探测层仍然在 `async` 里查库，还没动。
+
 下一步的两种修法（按「这个端点有没有必须 await 的东西」选）：
 
 1. 没有必须 `await` 的 → 改同步 `def`。优先，且**一次一个文件**地做；
 2. 有 → 拆成「同步核心 + `await run_in_threadpool(核心, db, ...)`」，同时把通知层里的
    同步 DB 段落也拆出去（否则只是把瓶颈挪了一层）。
 
-值得优先动的是**热路径**而不是管理员偶发操作：
-`compat_routes.session_progress`（每个正在播放的客户端每 10 秒上报一次）、
-`emby_server/api.py::user_views` 两条**已在 v2.35.0 做掉**（见二·八），
-`admin.py::push_media_seek` 还在清单上。
+值得优先动的是**热路径**而不是管理员偶发操作：`compat_routes.session_progress`
+（每个正在播放的客户端每 10 秒上报一次）与 `emby_server/api.py::user_views` 两条
+**已在 v2.35.0 做掉**（见二·八）；`user.py::create_media_seek` 与
+`admin.py::push_media_seek` 两条求片链路**已在 v2.36.0 做掉**（见二·九）。
 
 ## 二·八、后端热路径与稳定性（v2.35.0）
 
@@ -311,9 +316,29 @@ flush 钩子**，见 `facets.add_change_listener`）就把缓存标成陈旧，�
 可调环境变量：`EMBY_FILTERS_CACHE_TTL`（筛选菜单 TTL，默认 300s）、
 `EMBY_FILTERS_MIN_REFRESH`（被标陈旧后的最小重建间隔，默认 5s）。
 
-验证：`python scripts/smoke_test_backend_hot_paths.py`（CI 会跑）——量出会话上报的事件循环空洞
+验证：`python scripts/smoke_test_backend_hot_paths.py`（CI 会跑；v2.36.0 起还覆盖求片 / 通知层）——量出会话上报的事件循环空洞
 （基线 0.36s vs 现在 0.011s）、数出菜单请求的 SQL（冷读只有覆盖索引上的 DISTINCT，不读整列）、
 并用 SQL 计数证明筛选菜单「改动看得见、但不会每请求重建」。
+
+## 二·九、求片链路与通知层：写库下放线程池（v2.36.0）
+
+二·七 里写过「真正的瓶颈是通知层自己也在 `async` 里写库」。这一版先拆掉通知层，
+并把清单上剩下的两条**求片链路**（用户提交 / 后台推送）一起做掉。
+
+| 位置 | 原先 | 现在 |
+| --- | --- | --- |
+| `notifications.notify_staff_users` | `async` 里查管理员 + 逐条 `db.add` + `commit`，全跑在事件循环上 | 落库段拆成 `_persist_staff_messages`，`await run_in_threadpool(...)`；WebSocket 实时推送仍 await |
+| `notifications.notify_all_users` | 同上，且是一次给所有启用用户写几万行 | 拆成 `_persist_broadcast_messages`（自开会话）下放线程池 |
+| `user.py::create_media_seek` | 去重 / 额度 / 落库都在 `async` 路由体里 | 拆成 `_create_media_seek_sync` 下放线程池（400 / 409 / 429 语义未变） |
+| `admin.py::push_media_seek` | 取件 + 记录结果 + 两次提交 + 审计都在 `async` 路由体里 | 取件与「记录结果 + 审计」各拆成同步函数下放线程池；提交后**返回纯值**，避免回到循环上触发隐式回查 |
+| `servers.push_media_seek` | `active_config()` 同步查库留在 `async` 里 | 两次查库改成 `await run_in_threadpool(active_config, ...)` |
+
+验证（`scripts/smoke_test_backend_hot_paths.py` 第 4 节，进 CI）：先自证方法有效
+（把站内信落库直接跑在事件循环上 → 心跳空洞 **0.36s**），再让「写站内信慢 0.35 秒」的
+真实路由进来提交求片 → 空洞 **0.012s**，同时求片记录与管理员站内消息都真的落库；
+后台推送在没有可用 qB 时如实记 `push_status=failed` 并写审计。
+
+阻塞路由基线：39 → **37**（`scripts/check_blocking_routes.py`）。
 
 ## 三、已知瓶颈（按收益排序的下一步）
 
@@ -330,9 +355,11 @@ flush 钩子**，见 `facets.add_change_listener`）就把缓存标成陈旧，�
   媒体库里这类条目多时增量扫描的收益会变小。可以给「试过且没命中」记一个时间戳，
   按策略窗口再试（需要加列）。
 - 清理阶段只在**来源可用**时遍历；目录 → guid 快照可以连那次游标读也省掉。
-- **39 个 `async` 路由里仍在跑同步 SQLAlchemy**（v2.21.0 已把它钉成 CI 门禁，
-  只减不增；v2.35.0 做掉两条热路径，见二·八；清单与「为什么不是机械改 `def`」见二·七）。
-  真正的瓶颈是通知层 / 探测层自己也在 `async` 里写库——要动就得连那一层一起拆。
+- **37 个 `async` 路由里仍在跑同步 SQLAlchemy**（v2.21.0 已把它钉成 CI 门禁，
+  只减不增；v2.35.0 做掉两条热路径见二·八，v2.36.0 做掉两条求片链路 + 通知层见二·九；
+  清单与「为什么不是机械改 `def`」见二·七）。剩下的主要卡在**探测层**
+  （`backend/servers.py` 的 `probe_*` / `refresh_mount_health` 自己在 `async` 里查库）——
+  要动就得连那一层一起拆。
 - **筛选菜单缓存只在进程内**：`_FILTERS_CACHE` / 取值缓存都是每进程一份，多进程部署
   （当前是单 worker，见 `serve.py`）才会各自重建一次；单进程下不是问题。
 

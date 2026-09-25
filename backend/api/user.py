@@ -3,6 +3,7 @@
 与管理后台联动，用户可接收管理员操作的通知
 """
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -632,6 +633,54 @@ def lookup_media(
     }
 
 
+def _create_media_seek_sync(
+    db: Session,
+    user: models.WebUser,
+    name: str,
+    request: "MediaSeekRequest",
+) -> int:
+    """同步落库：去重 / 每日额度 / 写入求片（整段放在线程池里跑，见 create_media_seek）
+
+    校验失败照原样抛 HTTPException——线程里抛出的异常会由 await 处原样抛给客户端，
+    状态码与文案和以前一致（400 / 409 / 429 的语义没有变）。
+    """
+    # 去重：同名且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）
+    exists = db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == user.id,
+        func.lower(models.MovieRequest.movie_name) == name.lower(),
+        models.MovieRequest.status.in_(["pending", "approved"]),
+    ).first()
+    if exists:
+        raise HTTPException(status_code=409, detail=f"《{name}》已在处理中，请耐心等待（可在列表中看到进度）")
+
+    # 每日额度：统计**今天提交过多少条**（含后来撤回的）。
+    # 撤回不退还额度——否则「提交 → 撤回 → 再提交」可以无限刷新额度，
+    # 同时每次提交都会给全体管理员推一条站内消息，那就成了通知刷屏器。
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_count = db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == user.id,
+        models.MovieRequest.created_at >= today_start,
+    ).count()
+    limit = _seek_daily_limit(db)
+    if today_count >= limit:
+        raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
+
+    media_request = models.MovieRequest(
+        user_id=user.id,
+        movie_name=name,
+        year=request.year,
+        type=request.type,
+        note=request.note,
+        status="pending",
+        # 求片是「给哪个服求」的：用户选/单服自动带出，读不出就未标注
+        realm_id=_resolve_seek_realm(db, user, request.realm_id),
+    )
+    db.add(media_request)
+    db.commit()
+    db.refresh(media_request)
+    return media_request.id
+
+
 @user_router.post("/media-seek")
 async def create_media_seek(
     request: MediaSeekRequest,
@@ -648,40 +697,11 @@ async def create_media_seek(
     if len(name) > 255:
         raise HTTPException(status_code=400, detail="片名过长")
 
-    # 去重：同名且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）
-    exists = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == current_user.id,
-        func.lower(models.MovieRequest.movie_name) == name.lower(),
-        models.MovieRequest.status.in_(["pending", "approved"]),
-    ).first()
-    if exists:
-        raise HTTPException(status_code=409, detail=f"《{name}》已在处理中，请耐心等待（可在列表中看到进度）")
-
-    # 每日额度：统计**今天提交过多少条**（含后来撤回的）。
-    # 撤回不退还额度——否则「提交 → 撤回 → 再提交」可以无限刷新额度，
-    # 同时每次提交都会给全体管理员推一条站内消息，那就成了通知刷屏器。
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == current_user.id,
-        models.MovieRequest.created_at >= today_start,
-    ).count()
-    limit = _seek_daily_limit(db)
-    if today_count >= limit:
-        raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
-
-    media_request = models.MovieRequest(
-        user_id=current_user.id,
-        movie_name=name,
-        year=request.year,
-        type=request.type,
-        note=request.note,
-        status="pending",
-        # 求片是「给哪个服求」的：用户选/单服自动带出，读不出就未标注
-        realm_id=_resolve_seek_realm(db, current_user, request.realm_id),
+    # 去重 / 额度 / 落库整段下放线程池：同步 SQLAlchemy 跑在事件循环上时，
+    # 卡住的是**所有人**的请求（求片页是用户会连着点的地方）。
+    request_id = await run_in_threadpool(
+        _create_media_seek_sync, db, current_user, name, request
     )
-    db.add(media_request)
-    db.commit()
-    db.refresh(media_request)
 
     # 通知管理员有新求片请求（落站内消息 + WebSocket 推送）
     try:
@@ -692,12 +712,12 @@ async def create_media_seek(
             title="📥 新的求片请求",
             content=f"{current_user.username} 请求《{name}》",
             message_type="media_seek",
-            related_id=media_request.id,
+            related_id=request_id,
         )
     except Exception as exc:  # 通知失败不应影响求片提交
         logger.warning("求片通知发送失败: %s", exc)
 
-    return {"success": True, "request_id": media_request.id, "message": "求片请求已提交"}
+    return {"success": True, "request_id": request_id, "message": "求片请求已提交"}
 
 
 @user_router.delete("/media-seek/{request_id}")

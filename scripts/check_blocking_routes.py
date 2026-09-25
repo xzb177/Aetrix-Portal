@@ -50,12 +50,19 @@ SESSIONISH = re.compile(r"(?i)^(_?[a-z0-9]*(db|session|sess|conn))$")
 
 # 已知欠账：file::函数名。这些是「async 路由里仍有同步 DB 访问」的存量，
 # 按 docs/performance.md「先量、再改、最后固化成门禁」的做法记在这里。
-# 已知欠账：`文件::函数名`（v2.21.0 时点 41 条；v2.35.0 把两条热路径改好 → 39 条）。
+# 已知欠账：`文件::函数名`（v2.21.0 时点 41 条；v2.35.0 两条热路径 → 39 条；
+# v2.36.0 两条求片链路 + 通知层下放线程池 → 37 条）。
 #
 # v2.35.0 删掉的两条：
 #   backend/emby_server/compat_routes.py::session_progress —— 每 10 秒 × 每个在播客户端上报一次，
 #     是全站最热的写路径（详见 docs/performance.md）；
 #   backend/emby_server/api.py::user_views —— 客户端每次打开媒体库都问，改同步 `def`。
+#
+# v2.36.0 删掉的两条（求片链路）：
+#   backend/api/user.py::create_media_seek —— 用户提交求片：去重 / 额度 / 落库整段下放线程池，
+#     并给全体管理员发站内消息（通知层那一段也一起下放了，见 backend/notifications.py）；
+#   backend/api/admin.py::push_media_seek —— 后台把求片交给 MoviePilot / qB：取件与「记录结果 +
+#     审计」两段同步写库下放线程池，推送本身仍是 await（因此这个端点保持 async def）。
 #
 # 它们**不是**机械改 `def` 就能解决的：函数体里都有必须 await 的东西，而那个「必须 await
 # 的东西」（通知推送 backend/notifications.py、网络探测 backend/servers.py）**自己也**
@@ -73,7 +80,6 @@ backend/api/admin.py::update_announcement
 backend/api/admin.py::update_ticket
 backend/api/admin.py::reply_ticket
 backend/api/admin.py::close_ticket
-backend/api/admin.py::push_media_seek
 backend/api/admin.py::update_media_seek
 backend/api/admin.py::economy_mark_order_paid
 backend/api/admin_economy.py::economy_adjust_points
@@ -94,7 +100,6 @@ backend/api/servers.py::refresh_mount_health_now
 backend/api/user.py::mark_all_read
 backend/api/user.py::create_ticket
 backend/api/user.py::reply_ticket
-backend/api/user.py::create_media_seek
 backend/emby_server/api.py::rate_item
 backend/emby_server/portal.py::stop_my_session
 backend/emby_server/portal.py::scan_library_endpoint
