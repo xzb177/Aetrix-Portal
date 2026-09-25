@@ -228,13 +228,8 @@ def update_coupon_settings(
 
 # ==================== 核销记录 ====================
 
-@admin_coupons_router.get("/usages")
-async def list_coupon_usages(
-    limit: int = 30,
-    coupon_id: Optional[int] = None,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
+def coupon_usages_payload(db: Session, limit: int = 30,
+                          coupon_id: Optional[int] = None) -> dict:
     """最近的核销记录（跨券）：预订 / 已消费 / 已释放都列出来
 
     用户端只会看到「优惠了多少钱」，运营要能回答「这张券到底被谁用了、用在哪张订单、
@@ -273,15 +268,26 @@ async def list_coupon_usages(
     ]}
 
 
+@admin_coupons_router.get("/usages")
+def list_coupon_usages(
+    limit: int = 30,
+    coupon_id: Optional[int] = None,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """最近的核销记录（跨券）—— 同步 `def` 路由由 FastAPI 丢线程池执行"""
+    return coupon_usages_payload(db, limit=limit, coupon_id=coupon_id)
+
+
 @admin_coupons_router.get("/{coupon_id}/usages")
-async def list_coupon_usages_by_code(
+def list_coupon_usages_by_code(
     coupon_id: int,
     limit: int = 100,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    return await list_coupon_usages(limit=limit, coupon_id=coupon_id,
-                                    current_admin=current_admin, db=db)
+    """单张券的核销记录（与跨券口径共用同一段查询）"""
+    return coupon_usages_payload(db, limit=limit, coupon_id=coupon_id)
 
 
 # ==================== 列表 ====================

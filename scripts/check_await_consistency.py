@@ -5,9 +5,11 @@
 --------------
 性能整改里最常见的一步是把 ``async def`` 端点改成同步 ``def``（FastAPI 会把 ``def``
 端点丢进线程池，不再把同步 SQLAlchemy 查询压在事件循环上）。**但同一个函数可能被
-别的 ``async`` 端点 ``await`` 着复用**（例如
-``coupons_admin.list_coupon_usages_by_code`` 复用了 ``list_coupon_usages``、
-``compat_routes.library_media_folders`` 复用了 ``api.user_views``）。
+别的 ``async`` 端点 ``await`` 着复用**——写这条门禁时真实存在两处：
+``coupons_admin.list_coupon_usages_by_code`` 复用 ``list_coupon_usages``、
+``compat_routes.library_media_folders`` 复用 ``api.user_views``（两边后来都改成了
+同步 ``def``：v2.35.0 改 ``user_views``，v2.39.0 把核销记录两个端点一起同步化、
+查询抽成 ``coupon_usages_payload``——这条门禁就是为那次（以及以后的）改造守着的）。
 这时把它改成 ``def``，编译、类型检查、导入统统看不出来，
 只有真打到那个请求才会：
 

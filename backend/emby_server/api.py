@@ -1393,23 +1393,28 @@ async def rate_item(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    item = _require_item(db, item_id)
-    body = await request.json()
-    umd = db.query(em.UserMediaData).filter(
-        em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
-    ).first()
-    if not umd:
-        umd = em.UserMediaData(user_id=user.id, item_id=item.id)
-        db.add(umd)
-    if "IsFavorite" in body:
-        umd.is_favorite = bool(body["IsFavorite"])
-    if "Played" in body:
-        umd.played = bool(body["Played"])
-        if umd.played:
-            umd.play_count = (umd.play_count or 0) + 1
-            umd.last_played_at = datetime.now()
-    db.commit()
-    return _user_data_dto(umd)
+    body = await request.json()      # 唯一必须 await 的东西，读完就离开事件循环
+
+    def _rate() -> dict:
+        """收藏 / 标记已看：读条目、读写 UserMediaData、序列化都不在循环上"""
+        item = _require_item(db, item_id)
+        umd = db.query(em.UserMediaData).filter(
+            em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
+        ).first()
+        if not umd:
+            umd = em.UserMediaData(user_id=user.id, item_id=item.id)
+            db.add(umd)
+        if "IsFavorite" in body:
+            umd.is_favorite = bool(body["IsFavorite"])
+        if "Played" in body:
+            umd.played = bool(body["Played"])
+            if umd.played:
+                umd.play_count = (umd.play_count or 0) + 1
+                umd.last_played_at = datetime.now()
+        db.commit()
+        return _user_data_dto(umd)
+
+    return await run_in_threadpool(_rate)
 
 
 @emby_router.post("/emby/Users/{user_id}/PlayedItems/{item_id}")

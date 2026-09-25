@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -171,112 +172,130 @@ async def refund_order(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """退款：冲正订单并按账本回滚权益（充值扣回积分 / 订阅回滚天数）"""
+    """退款：冲正订单并按账本回滚权益（充值扣回积分 / 订阅回滚天数）
+
+    查单 / 原子占位 / 冲正 / 审计整段是同步 SQLAlchemy，下放线程池执行；
+    通知要走 WebSocket，必须留在事件循环上 await。
+    """
     from backend.api.economy import _add_points  # noqa: F401 — 保持与履约同一套账本写入
     from backend.notifications import AdminEvent, notify_admin_event
 
-    order, kind = _find_order(db, order_id)
-    if order is None:
-        raise HTTPException(status_code=404, detail="订单不存在")
-    if order.status == "refunded":
-        raise HTTPException(status_code=400, detail="该订单已经退款，不能重复退款")
-    if order.status not in REFUNDABLE_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"只有已支付订单可以退款（当前状态：{order.status}）；未支付订单请用关闭。",
-        )
+    admin_id = current_admin.id
 
-    now = datetime.now()
-    user = db.query(models.WebUser).filter(models.WebUser.id == order.user_id).first()
-    if user is None:
-        raise HTTPException(status_code=404, detail="订单用户不存在")
-
-    result = {
-        "success": True, "order_id": order_id, "kind": kind,
-        "status": "refunded", "revoked_points": 0, "revoked_days": 0,
-        "rebate_reversed": 0, "cancelled": False, "coupon_released": False,
-    }
-
-    # 原子占位：并发点两次「退款」时只有一个请求能拿到这一单。
-    # 上面两句状态检查与这里之间隔着整段冲正（扣回积分 / 回滚会员天数，都**不是幂等**的）：
-    # 读-改-写会让两个请求都读到 paid，于是各扣一次（双重回滚）。
-    # 条件 UPDATE 的 rowcount 就是判据（与 economy._claim_order 同一套写法）——
-    # 抢不到的那一边什么都不做，直接告诉前端「已处理」。
-    model = models.RechargeOrder if kind == "recharge" else models.SubscriptionOrder
-    claimed = (
-        db.query(model)
-        .filter(model.id == order.id, model.status.in_(tuple(REFUNDABLE_STATUSES)))
-        .update({"status": "refunded", "refunded_at": now}, synchronize_session=False)
-    )
-    if not claimed:
-        db.rollback()
-        logger.info("退款请求被并发的那一次抢先（订单 %s，%s）", order_id, kind)
-        return {**result, "already_processed": True,
-                "message": "该订单已处理（并发退款只有一次生效）"}
-
-    if request.revoke_entitlement:
-        if kind == "recharge":
-            entry = _ledger_entry(db, user.id, f"recharge:{order_id}", "recharge")
-            granted = int(entry.amount) if entry else int(order.amount or 0)
-            result["revoked_points"] = _reverse_points(
-                db, user, granted,
-                f"订单退款冲正（订单 {order_id}）", f"refund:{order_id}",
-                request.allow_negative,
+    def _refund() -> dict:
+        order, kind = _find_order(db, order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="订单不存在")
+        if order.status == "refunded":
+            raise HTTPException(status_code=400, detail="该订单已经退款，不能重复退款")
+        if order.status not in REFUNDABLE_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"只有已支付订单可以退款（当前状态：{order.status}）；未支付订单请用关闭。",
             )
-            if request.reverse_rebate:
-                result["rebate_reversed"] = _reverse_rebate(db, order_id, request.allow_negative)
-        else:
-            plan = db.query(models.SubscriptionPlan).filter(
-                models.SubscriptionPlan.id == order.plan_id).first()
-            subscription, days, cancelled = _rollback_subscription(db, order, plan, now)
-            result["revoked_days"] = days
-            result["cancelled"] = cancelled
-            if subscription is not None and days > 0:
-                result["subscription_end"] = (
-                    subscription.end_date.isoformat() if subscription.end_date else None
-                )
 
-    # 状态与时间已由上面那次条件 UPDATE 原子写入，这里让当前事务里的 ORM 对象跟上
-    order.status = "refunded"
-    order.refunded_at = now
-    order.refund_reason = (request.reason or "").strip()[:255]
-    if kind == "recharge":
-        order.refunded_points = result["revoked_points"]
-    # 退款同样释放优惠券额度（用户没付钱买成这笔，次数不该算用掉）
-    coupons.release(db, order.coupon_usage_id)
-    result["coupon_released"] = bool(order.coupon_usage_id)
-    commit_with_retry(db, label="订单退款")
+        now = datetime.now()
+        user = db.query(models.WebUser).filter(models.WebUser.id == order.user_id).first()
+        if user is None:
+            raise HTTPException(status_code=404, detail="订单用户不存在")
+
+        result = {
+            "success": True, "order_id": order_id, "kind": kind,
+            "status": "refunded", "revoked_points": 0, "revoked_days": 0,
+            "rebate_reversed": 0, "cancelled": False, "coupon_released": False,
+        }
+
+        # 原子占位：并发点两次「退款」时只有一个请求能拿到这一单。
+        # 上面两句状态检查与这里之间隔着整段冲正（扣回积分 / 回滚会员天数，都**不是幂等**的）：
+        # 读-改-写会让两个请求都读到 paid，于是各扣一次（双重回滚）。
+        # 条件 UPDATE 的 rowcount 就是判据（与 economy._claim_order 同一套写法）——
+        # 抢不到的那一边什么都不做，直接告诉前端「已处理」。
+        model = models.RechargeOrder if kind == "recharge" else models.SubscriptionOrder
+        claimed = (
+            db.query(model)
+            .filter(model.id == order.id, model.status.in_(tuple(REFUNDABLE_STATUSES)))
+            .update({"status": "refunded", "refunded_at": now}, synchronize_session=False)
+        )
+        if not claimed:
+            db.rollback()
+            logger.info("退款请求被并发的那一次抢先（订单 %s，%s）", order_id, kind)
+            return {**result, "already_processed": True,
+                    "message": "该订单已处理（并发退款只有一次生效）"}
+
+        if request.revoke_entitlement:
+            if kind == "recharge":
+                entry = _ledger_entry(db, user.id, f"recharge:{order_id}", "recharge")
+                granted = int(entry.amount) if entry else int(order.amount or 0)
+                result["revoked_points"] = _reverse_points(
+                    db, user, granted,
+                    f"订单退款冲正（订单 {order_id}）", f"refund:{order_id}",
+                    request.allow_negative,
+                )
+                if request.reverse_rebate:
+                    result["rebate_reversed"] = _reverse_rebate(db, order_id, request.allow_negative)
+            else:
+                plan = db.query(models.SubscriptionPlan).filter(
+                    models.SubscriptionPlan.id == order.plan_id).first()
+                subscription, days, cancelled = _rollback_subscription(db, order, plan, now)
+                result["revoked_days"] = days
+                result["cancelled"] = cancelled
+                if subscription is not None and days > 0:
+                    result["subscription_end"] = (
+                        subscription.end_date.isoformat() if subscription.end_date else None
+                    )
+
+        # 状态与时间已由上面那次条件 UPDATE 原子写入，这里让当前事务里的 ORM 对象跟上
+        order.status = "refunded"
+        order.refunded_at = now
+        order.refund_reason = (request.reason or "").strip()[:255]
+        if kind == "recharge":
+            order.refunded_points = result["revoked_points"]
+        # 退款同样释放优惠券额度（用户没付钱买成这笔，次数不该算用掉）
+        coupons.release(db, order.coupon_usage_id)
+        result["coupon_released"] = bool(order.coupon_usage_id)
+        commit_with_retry(db, label="订单退款")
+
+        _audit(db, admin_id, "economy_refund_order", "order", None,
+               {"order_id": order_id, "kind": kind, "reason": order.refund_reason,
+                "revoked_points": result["revoked_points"],
+                "revoked_days": result["revoked_days"],
+                "rebate_reversed": result["rebate_reversed"],
+                "coupon_released": result.get("coupon_released", False),
+                "allow_negative": request.allow_negative})
+        db.commit()
+        logger.info("订单退款完成: %s kind=%s %s", order_id, kind, result)
+
+        # 通知要用到的都取成纯值：上面提交过，回读 ORM 属性 = 一次隐式回查
+        detail_bits = []
+        if result["revoked_points"]:
+            detail_bits.append(f"已扣回 {result['revoked_points']} 积分")
+        if result["revoked_days"]:
+            detail_bits.append(f"已回滚 {result['revoked_days']} 天会员")
+        result["_notify"] = {"user_id": user.id, "reason": order.refund_reason or "",
+                             "details": detail_bits}
+        return result
+
+    info = await run_in_threadpool(_refund)
+    notify_ctx = info.pop("_notify", None)
+    if notify_ctx is None:
+        return info      # 并发抢不到的那一次：订单已被处理，不重复通知
 
     # 先提交再通知：履约事务未提交时另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
-    detail_bits = []
-    if result["revoked_points"]:
-        detail_bits.append(f"已扣回 {result['revoked_points']} 积分")
-    if result["revoked_days"]:
-        detail_bits.append(f"已回滚 {result['revoked_days']} 天会员")
-    reason_text = f"\n原因：{order.refund_reason}" if order.refund_reason else ""
+    reason_text = f"\n原因：{notify_ctx['reason']}" if notify_ctx["reason"] else ""
     try:
         await notify_admin_event(
             event_type=AdminEvent.ORDER_REFUNDED,
-            user_id=user.id,
+            user_id=notify_ctx["user_id"],
             title="↩️ 订单已退款",
             content=(f"订单 {order_id} 已退款。"
-                     + ("；".join(detail_bits) + "。" if detail_bits else "")
+                     + ("；".join(notify_ctx["details"]) + "。" if notify_ctx["details"] else "")
                      + reason_text),
             related_id=None,
         )
     except Exception as exc:  # noqa: BLE001 — 通知失败不影响已完成的退款
         logger.warning("退款通知发送失败（订单 %s）: %s", order_id, exc)
 
-    _audit(db, current_admin, "economy_refund_order", "order", None,
-           {"order_id": order_id, "kind": kind, "reason": order.refund_reason,
-            "revoked_points": result["revoked_points"],
-            "revoked_days": result["revoked_days"],
-            "rebate_reversed": result["rebate_reversed"],
-            "coupon_released": result.get("coupon_released", False),
-            "allow_negative": request.allow_negative})
-    db.commit()
-    logger.info("订单退款完成: %s kind=%s %s", order_id, kind, result)
-    return result
+    return info
 
 
 def _reverse_rebate(db: Session, order_id: str, allow_negative: bool) -> int:

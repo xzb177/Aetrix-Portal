@@ -154,7 +154,8 @@ def main():
 
     before_points = u2.points or 0
     loop = asyncio.get_event_loop()
-    pending = loop.run_until_complete(_fulfill_order(db, recharge_order=order))
+    # _fulfill_order 是同步函数（async 路由用 run_in_threadpool 调它），这里直接调
+    pending = _fulfill_order(db, recharge_order=order)
     db.commit()
     db.refresh(u2)
     check("充值履约发积分", order.status == "paid" and (u2.points or 0) == before_points + 500)
@@ -171,7 +172,7 @@ def main():
     check("充值成功站内信真的落库（此前会被写锁静默丢掉）", msg is not None)
 
     before_points = u2.points or 0
-    pending2 = loop.run_until_complete(_fulfill_order(db, recharge_order=order))
+    pending2 = _fulfill_order(db, recharge_order=order)
     db.commit()
     db.refresh(u2)
     check("重复回调幂等（不重复发货）", (u2.points or 0) == before_points)

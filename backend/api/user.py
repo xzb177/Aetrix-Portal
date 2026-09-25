@@ -238,23 +238,27 @@ async def mark_all_read(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """标记所有消息为已读"""
-    # 批量更新未读消息
-    db.query(models.StationMessage).filter(
-        models.StationMessage.to_user_id == current_user.id,
-        models.StationMessage.is_read == False
-    ).update({
-        "is_read": True,
-        "read_at": datetime.now()
-    })
+    """标记所有消息为已读（批量 UPDATE 下放线程池，实时推送仍 await）"""
+    user_id = current_user.id
 
-    db.commit()
+    def _mark_all() -> None:
+        # 批量更新未读消息
+        db.query(models.StationMessage).filter(
+            models.StationMessage.to_user_id == user_id,
+            models.StationMessage.is_read == False
+        ).update({
+            "is_read": True,
+            "read_at": datetime.now()
+        })
+        db.commit()
+
+    await run_in_threadpool(_mark_all)
 
     # 通知 WebSocket
     from backend.websocket import send_notification
     await send_notification(
         notification_type="station.unread_count",
-        user_id=current_user.id,
+        user_id=user_id,
         title="",
         message="",
         data={"unread_count": 0}
@@ -303,27 +307,35 @@ async def create_ticket(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """创建新工单 - 与后台工单系统联动"""
-    ticket = models.Ticket(
-        user_id=current_user.id,
-        title=request.title,
-        category=request.category,
-        status="open",
-        priority="medium"
-    )
-    db.add(ticket)
-    db.commit()
-    db.refresh(ticket)
+    """创建新工单 - 与后台工单系统联动（落库下放线程池，通知仍 await）"""
+    user_id = current_user.id
+    username = current_user.username   # 提交后回读属性=隐式回查，先在循环上取成纯值
 
-    # 创建工单消息
-    message = models.TicketMessage(
-        ticket_id=ticket.id,
-        user_id=current_user.id,
-        message=request.message,
-        is_admin=False
-    )
-    db.add(message)
-    db.commit()
+    def _create() -> int:
+        ticket = models.Ticket(
+            user_id=user_id,
+            title=request.title,
+            category=request.category,
+            status="open",
+            priority="medium"
+        )
+        db.add(ticket)
+        db.commit()
+        db.refresh(ticket)
+        ticket_id = ticket.id
+
+        # 创建工单消息
+        message = models.TicketMessage(
+            ticket_id=ticket_id,
+            user_id=user_id,
+            message=request.message,
+            is_admin=False
+        )
+        db.add(message)
+        db.commit()
+        return ticket_id
+
+    ticket_id = await run_in_threadpool(_create)
 
     # 通知管理员有新工单（站内消息 + 实时推送）
     try:
@@ -332,16 +344,16 @@ async def create_ticket(
         await notify_staff_users(
             db,
             title="🎫 新工单待处理",
-            content=f"{current_user.username} 提交了工单《{ticket.title}》\n{request.message[:120]}",
+            content=f"{username} 提交了工单《{request.title}》\n{request.message[:120]}",
             message_type="ticket",
-            related_id=ticket.id,
+            related_id=ticket_id,
         )
     except Exception as exc:  # 通知失败不应影响工单创建
         logger.warning("工单管理员通知失败: %s", exc)
 
     return TicketCreateResponse(
         success=True,
-        ticket_id=ticket.id,
+        ticket_id=ticket_id,
         message="工单创建成功"
     )
 
@@ -421,44 +433,58 @@ async def reply_ticket(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """回复工单"""
-    ticket = db.query(models.Ticket).filter(
-        models.Ticket.id == ticket_id,
-        models.Ticket.user_id == current_user.id
-    ).first()
-
-    if not ticket:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="工单不存在"
-        )
-
-    if ticket.status == "closed":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="工单已关闭，无法回复"
-        )
-
+    """回复工单（落库下放线程池；通知与刷新时间戳仍走原来的顺序）"""
+    user_id = current_user.id
+    username = current_user.username
     content = (request.message or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="回复内容不能为空")
-    if len(content) > 2000:
-        raise HTTPException(status_code=400, detail="回复内容过长（最多 2000 字）")
 
-    # 创建消息
-    message = models.TicketMessage(
-        ticket_id=ticket.id,
-        user_id=current_user.id,
-        message=content,
-        is_admin=False
-    )
-    db.add(message)
+    def _reply() -> dict:
+        ticket = db.query(models.Ticket).filter(
+            models.Ticket.id == ticket_id,
+            models.Ticket.user_id == user_id
+        ).first()
 
-    # 更新工单状态和时间
-    ticket.status = "open"
-    ticket.updated_at = datetime.now()
+        if not ticket:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="工单不存在"
+            )
 
-    db.commit()
+        if ticket.status == "closed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="工单已关闭，无法回复"
+            )
+
+        if not content:
+            raise HTTPException(status_code=400, detail="回复内容不能为空")
+        if len(content) > 2000:
+            raise HTTPException(status_code=400, detail="回复内容过长（最多 2000 字）")
+
+        # 创建消息
+        message = models.TicketMessage(
+            ticket_id=ticket.id,
+            user_id=user_id,
+            message=content,
+            is_admin=False
+        )
+        db.add(message)
+
+        # 更新工单状态和时间
+        ticket.status = "open"
+        ticket.updated_at = datetime.now()
+
+        db.commit()
+        return {"ticket_id": ticket.id, "title": ticket.title}
+
+    info = await run_in_threadpool(_reply)
+
+    def _touch() -> None:
+        """通知之后刷新一次时间戳（原来是拿同一个会话直接写，现在也在工作线程）"""
+        row = db.query(models.Ticket).filter(models.Ticket.id == info["ticket_id"]).first()
+        if row is not None:
+            row.updated_at = datetime.now()
+            db.commit()
 
     # 通知管理员（站内消息 + WebSocket 实时推送），与新建工单走同一链路
     try:
@@ -467,12 +493,11 @@ async def reply_ticket(
         await notify_staff_users(
             db,
             title="💬 工单有新回复",
-            content=f"{current_user.username} 在「{ticket.title}」中回复：{content[:60]}",
+            content=f"{username} 在「{info['title']}」中回复：{content[:60]}",
             message_type="ticket",
-            related_id=ticket.id,
+            related_id=info["ticket_id"],
         )
-        ticket.updated_at = datetime.now()
-        db.commit()
+        await run_in_threadpool(_touch)
     except Exception as exc:  # 通知失败不应影响回复本身
         logger.warning("工单回复通知发送失败: %s", exc)
 
