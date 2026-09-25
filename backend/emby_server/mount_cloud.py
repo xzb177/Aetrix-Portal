@@ -207,9 +207,17 @@ class _CloudMount(MountProvider):
             logger.warning("%s 子目录读取失败，跳过: %s (%s)", self.what, rel, exc)
             return []
 
-    def walk_media(self, max_depth: int = 32) -> Iterator[MountFile]:
-        """远程挂载的通用遍历：靠 ``list_dir`` 递归，自动跳过过深目录"""
-        stack: list[tuple[str, int]] = [("/", 0)]
+    def walk_media(self, max_depth: int = 32, root: str = "/") -> Iterator[MountFile]:
+        """远程挂载的通用遍历：靠 ``list_dir`` 递归，自动跳过过深目录
+
+        ``root`` 为挂载内的起始子目录（"/" = 整个挂载）；产出的 ``rel`` 始终是
+        挂载根相对路径，与 ``root`` 无关。
+
+        起始目录读不到时直接抛错（不吞掉）：上层按「来源不可用」处理并跳过清理，
+        避免把「读不到」当成「文件已删除」而误删条目。
+        """
+        self.list_dir(root)
+        stack: list[tuple[str, int]] = [(root, 0)]
         seen: set[str] = set()
         while stack:
             rel, depth = stack.pop()

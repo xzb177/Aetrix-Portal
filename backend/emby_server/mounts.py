@@ -593,7 +593,11 @@ class MountProvider:
     def list_dir(self, rel: str = "/") -> list[MountEntry]:  # pragma: no cover - 由子类实现
         raise NotImplementedError
 
-    def walk_media(self) -> Iterator[MountFile]:  # pragma: no cover - 由子类实现
+    def walk_media(self, root: str = "/") -> Iterator[MountFile]:  # pragma: no cover - 由子类实现
+        """遍历媒体文件；``root`` 为挂载内的起始子目录（"/" = 整个挂载）。
+
+        产出的 ``MountFile.rel`` 始终是挂载根相对路径（以 ``/`` 开头），与 ``root`` 无关。
+        """
         raise NotImplementedError
 
     def resolve(self, rel: str) -> PlayTarget:  # pragma: no cover - 由子类实现
@@ -714,9 +718,11 @@ class LocalMount(MountProvider):
             ))
         return entries
 
-    def walk_media(self) -> Iterator[MountFile]:
-        root = self._require_path()
-        for dirpath, _dirnames, filenames in os.walk(root):
+    def walk_media(self, root: str = "/") -> Iterator[MountFile]:
+        fs_root = self._require_path()
+        # rel 始终按挂载根计算（入库路径不变），只把遍历起点挪到子目录
+        walk_root = os.path.join(fs_root, root.lstrip("/")) if root.strip("/") else fs_root
+        for dirpath, _dirnames, filenames in os.walk(walk_root):
             for fname in filenames:
                 ext = os.path.splitext(fname)[1].lower()
                 if ext not in REMOTE_MEDIA_EXTS:
@@ -725,7 +731,7 @@ class LocalMount(MountProvider):
                 # 播放时统一由 local_play_target 读文件内容取直链。
                 is_strm = _is_strm_name(fname)
                 full = os.path.join(dirpath, fname)
-                rel = "/" + os.path.relpath(full, root).replace(os.sep, "/")
+                rel = "/" + os.path.relpath(full, fs_root).replace(os.sep, "/")
                 try:
                     size = os.path.getsize(full)
                 except OSError:
@@ -839,8 +845,9 @@ class Pan115Mount(MountProvider):
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
 
-    def walk_media(self) -> Iterator[MountFile]:
-        stack: list[tuple[str, str]] = [("/", self.root_cid)]
+    def walk_media(self, root: str = "/") -> Iterator[MountFile]:
+        # 子目录不存在时 _cid_of 直接抛 MountError（上层按来源不可用处理）
+        stack: list[tuple[str, str]] = [(root, self._cid_of(root))]
         seen: set[str] = set()
         while stack:
             rel, cid = stack.pop()
@@ -1017,8 +1024,8 @@ class WebDavMount(MountProvider):
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
 
-    def walk_media(self) -> Iterator[MountFile]:
-        stack = ["/"]
+    def walk_media(self, root: str = "/") -> Iterator[MountFile]:
+        stack = [root]
         while stack:
             rel = stack.pop()
             for entry in self.list_dir(rel):
@@ -1152,8 +1159,8 @@ class AlistMount(MountProvider):
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
 
-    def walk_media(self) -> Iterator[MountFile]:
-        stack = ["/"]
+    def walk_media(self, root: str = "/") -> Iterator[MountFile]:
+        stack = [root]
         while stack:
             rel = stack.pop()
             for entry in self.list_dir(rel):
@@ -1242,6 +1249,7 @@ class LibrarySource:
     path: str = ""                 # 本机目录（kind=local）
     mount: Any = None              # StorageMount（kind=mount）
     provider: Optional[MountProvider] = None
+    subpath: str = "/"             # kind=mount 时只扫描挂载下的这个子目录（"/" = 整个挂载）
 
 
 def parse_mount_ids(library) -> list[int]:
@@ -1257,43 +1265,84 @@ def parse_mount_ids(library) -> list[int]:
 def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dict]]:
     """把媒体库的 ``paths`` + 挂载解析成扫描来源
 
+    ``paths`` 里除了本机目录，还可以写 ``mount://<挂载 id>/<子目录>``（例如
+    ``mount://2/video/剧集/动漫剧``），表示只扫描该挂载下的这个子目录。
+
     返回 ``(可用来源, 不可用来源)``：不可用来源（路径不存在 / 账号失效 / 网络不通）
     会记进 ``failed``，扫描器据此**跳过清理阶段**，避免把「读不到」当成「文件已删除」。
     """
     sources: list[LibrarySource] = []
     failed: list[dict] = []
 
+    # 先把 paths 拆成「本机目录」和「mount:// 子目录」两类
+    local_paths: list[str] = []
+    mount_subpaths: list[tuple[str, int, str]] = []  # (原文, 挂载 id, 子目录)
     for raw in (getattr(library, "paths", "") or "").split(","):
         path = raw.strip()
         if not path:
             continue
+        parsed = parse_mount_path(path)
+        if parsed is not None:
+            mount_subpaths.append((path, parsed[0], parsed[1]))
+        else:
+            local_paths.append(path)
+
+    for path in local_paths:
         if not os.path.isdir(path):
             failed.append({"label": path, "reason": "目录不存在或不可读"})
             continue
         sources.append(LibrarySource(label=path, kind="local", path=path))
 
     mount_ids = parse_mount_ids(library)
-    if mount_ids:
-        mounts = {
-            m.id: m for m in db.query(em.StorageMount).filter(em.StorageMount.id.in_(mount_ids)).all()
-        }
-        for mount_id in mount_ids:
-            mount = mounts.get(mount_id)
-            if mount is None:
-                failed.append({"label": f"挂载 #{mount_id}", "reason": "挂载不存在（可能已被删除）"})
-                continue
-            if not mount.is_enabled:
-                failed.append({"label": mount_label(mount), "reason": "挂载已停用"})
-                continue
-            try:
-                provider = build_provider(mount, db, library)
-            except MountError as exc:
-                failed.append({"label": mount_label(mount), "reason": str(exc)})
-                continue
-            sources.append(LibrarySource(
-                label=mount_label(mount), kind="mount", mount=mount, provider=provider,
-            ))
+    needed_ids = set(mount_ids) | {mid for _, mid, _ in mount_subpaths}
+    mounts = (
+        {m.id: m for m in db.query(em.StorageMount).filter(em.StorageMount.id.in_(needed_ids)).all()}
+        if needed_ids
+        else {}
+    )
+
+    def _mount_source(label: str, mount_id: int, subpath: str) -> None:
+        mount = mounts.get(mount_id)
+        if mount is None:
+            failed.append({"label": label, "reason": f"挂载 #{mount_id} 不存在（可能已被删除）"})
+            return
+        if not mount.is_enabled:
+            failed.append({"label": label, "reason": f"挂载「{mount.name}」已停用"})
+            return
+        try:
+            provider = build_provider(mount, db, library)
+            if subpath.strip("/"):
+                # 子目录必须真实存在，否则这个来源不可用（扫描器会跳过清理，避免误删条目）
+                provider.list_dir(subpath)
+        except MountError as exc:
+            reason = f"子目录不可读: {exc}" if subpath.strip("/") else str(exc)
+            failed.append({"label": label, "reason": reason})
+            return
+        sources.append(LibrarySource(
+            label=label, kind="mount", mount=mount, provider=provider, subpath=subpath,
+        ))
+
+    for path, mount_id, rel in mount_subpaths:
+        _mount_source(path, mount_id, rel)
+    for mount_id in mount_ids:
+        _mount_source(mount_label(mounts.get(mount_id)) if mounts.get(mount_id) else f"挂载 #{mount_id}",
+                      mount_id, "/")
     return sources, failed
+
+
+def check_mount_subpath(db: Session, mount_id: int, rel: str) -> None:
+    """校验 ``mount://<挂载 id>/<子目录>`` 可用：挂载存在、启用、子目录可读。
+
+    不满足时抛 ``MountError``（说明原因），满足时静默返回。给后台保存媒体库时校验用。
+    """
+    mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
+    if mount is None:
+        raise MountError(f"挂载 #{mount_id} 不存在（可能已被删除）")
+    if not mount.is_enabled:
+        raise MountError(f"挂载「{mount.name}」已停用")
+    provider = build_provider(mount, db)
+    if (rel or "/").strip("/"):
+        provider.list_dir(rel)  # 子目录不存在/不可读时抛 MountError
 
 
 def load_mount(db: Session, mount_id: int):

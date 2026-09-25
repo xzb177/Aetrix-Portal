@@ -820,8 +820,20 @@ class LibraryUpdate(BaseModel):
 
 
 def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int]) -> None:
-    """校验媒体库来源：本机路径必须存在，挂载必须存在且启用"""
+    """校验媒体库来源：本机路径必须存在，挂载必须存在且启用。
+
+    ``paths`` 里还可以写 ``mount://<挂载 id>/<子目录>``（只扫描该挂载下的子目录），
+    此时校验挂载存在、启用且子目录可读。
+    """
     for path in paths:
+        parsed = mount_lib.parse_mount_path(path)
+        if parsed is not None:
+            mount_id, rel = parsed
+            try:
+                mount_lib.check_mount_subpath(db, mount_id, rel)
+            except mount_lib.MountError as exc:
+                raise HTTPException(status_code=400, detail=f"挂载子目录不可用 {path}: {exc}")
+            continue
         if not os.path.isdir(path):
             raise HTTPException(status_code=400, detail=f"路径不存在: {path}")
     if not mount_ids:
@@ -1065,9 +1077,7 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
     if req.collection_type is not None:
         lib.collection_type = req.collection_type
     if req.paths is not None:
-        for p in req.paths:
-            if not os.path.isdir(p):
-                raise HTTPException(status_code=400, detail=f"路径不存在: {p}")
+        _validate_library_sources(db, req.paths, [])
         lib.paths = ",".join(req.paths)
     if req.mount_ids is not None:
         _validate_library_sources(db, [], req.mount_ids)
