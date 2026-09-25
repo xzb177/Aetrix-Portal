@@ -241,7 +241,9 @@ async function load(reset = true) {
     const [sortBy, sortOrder] = sort.value.split(':')
     const res = await embyApi.getItems({
       parentId: libId.value || undefined,
-      includeTypes: typeFilter.value ? [typeFilter.value] : undefined,
+      // 未选类型时默认只取顶层（电影/剧集）：季和单集应进详情页按季浏览，
+      // 不能和剧集平铺在同一网格里。
+      includeTypes: typeFilter.value ? [typeFilter.value] : ['Movie', 'Series'],
       searchTerm: search.value || undefined,
       genres: genres.value.length ? genres.value : undefined,
       years: years.value.length ? years.value : undefined,

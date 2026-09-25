@@ -1414,19 +1414,67 @@ def get_episodes(item_id: str, request: Request,
 @emby_router.get("/Shows/NextUp")
 def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
+    """接下来看：每部「已开看」的剧集只返回下一集未看的单集。
+
+    旧实现直接返回全库未播放单集（按季/集号排序），导致首页把每部剧的
+    第 1 集平铺展示。正确口径对齐 Emby NextUp：只收录用户已开看
+    （看过至少一集 / 有播放进度 / 有播放次数）的剧集，每部取第一集
+    未看的单集，按该剧最近播放时间倒序。
+    """
     limit = int(request.query_params.get("Limit") or 20)
-    played_eps = (
-        db.query(em.UserMediaData.item_id)
-        .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.played == True)  # noqa: E712
-    )
-    episodes = (
-        db.query(em.MediaItem)
-        .filter(em.MediaItem.item_type == "episode")
-        .filter(~em.MediaItem.id.in_(played_eps))
-        .order_by(em.MediaItem.season_number, em.MediaItem.episode_number)
-        .limit(limit)
+    watched = (
+        db.query(em.UserMediaData.item_id, em.UserMediaData.last_played_at)
+        .filter(
+            em.UserMediaData.user_id == user.id,
+            or_(
+                em.UserMediaData.played == True,  # noqa: E712
+                em.UserMediaData.playback_position_ticks > 0,
+                em.UserMediaData.play_count > 0,
+            ),
+        )
         .all()
     )
+    if not watched:
+        return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+    watched_ids = {w.item_id for w in watched}
+    last_played = {}
+    for w in watched:
+        if w.last_played_at and w.item_id not in last_played:
+            last_played[w.item_id] = w.last_played_at
+    ep_series = (
+        db.query(em.MediaItem.id, em.MediaItem.series_id)
+        .filter(em.MediaItem.id.in_(watched_ids), em.MediaItem.series_id.isnot(None))
+        .all()
+    )
+    series_ids = sorted({r.series_id for r in ep_series})
+    if not series_ids:
+        return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+    series_recent = {}
+    for eid, sid in ep_series:
+        ts = last_played.get(eid)
+        if ts and (sid not in series_recent or ts > series_recent[sid]):
+            series_recent[sid] = ts
+    ranked = []
+    for sid in series_ids:
+        nxt = (
+            db.query(em.MediaItem)
+            .filter(
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.series_id == sid,
+                em.MediaItem.is_hidden == False,  # noqa: E712
+                ~em.MediaItem.id.in_(watched_ids),
+            )
+            .order_by(
+                em.MediaItem.season_number.asc().nullslast(),
+                em.MediaItem.episode_number.asc().nullslast(),
+                em.MediaItem.id.asc(),
+            )
+            .first()
+        )
+        if nxt is not None:
+            ranked.append((series_recent.get(sid), nxt))
+    ranked.sort(key=lambda x: x[0] or datetime.min, reverse=True)
+    episodes = [e for _, e in ranked[:limit]]
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
     return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
