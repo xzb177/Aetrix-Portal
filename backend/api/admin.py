@@ -40,6 +40,7 @@ from backend.notifications import (
 )
 from backend.security import hash_password
 
+from backend.db_retry import commit_with_retry
 from backend.api.admin_core import (
     _audit,
     _generate_code,
@@ -1614,7 +1615,7 @@ async def economy_mark_order_paid(
     db: Session = Depends(get_db),
 ):
     """人工补单（标记已支付并履约）— 用于线下收款/支付回调丢失"""
-    from backend.api.economy import _fulfill_order, send_fulfill_notifications
+    from backend.api.economy import FulfillmentError, _fulfill_order, send_fulfill_notifications
 
     recharge_order = db.query(models.RechargeOrder).filter(
         models.RechargeOrder.order_id == order_id
@@ -1632,9 +1633,15 @@ async def economy_mark_order_paid(
     ):
         raise HTTPException(status_code=400, detail="订单已是已支付状态")
 
-    pending = await _fulfill_order(db, recharge_order=recharge_order,
-                                   subscription_order=subscription_order)
-    db.commit()
+    try:
+        pending = await _fulfill_order(db, recharge_order=recharge_order,
+                                       subscription_order=subscription_order)
+        commit_with_retry(db, label="人工补单")
+    except FulfillmentError as exc:
+        # 缺料（套餐 / 用户已不存在）：订单保持未支付，管理员先修好再补单，
+        # 不能出现「标了已支付、权益没发」
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"履约失败：{exc}") from exc
 
     # 先提交再发通知：履约事务里另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
     await send_fulfill_notifications(pending)

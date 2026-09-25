@@ -18,6 +18,7 @@ from typing import Any, Iterator, Optional
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from backend.db_retry import commit_with_retry, retry_write
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 # 实时进度与远程 IO 计数（v2.27.0）：只依赖标准库，不会与 scanner / mounts 形成循环
@@ -839,6 +840,13 @@ class _Pending:
     probe: Any = None   # Future[dict] | None
     side: Any = None    # Future[(poster, fanart, subtitles)] | None
     tmdb: Any = None    # Future[(hit, details)] | None
+    # 上面三个是「排队中的 IO」，下面四个是**已经取回**的纯值。
+    # 取回动作统一发生在批次开头（那时还没有任何写事务），写库循环里只读纯值——
+    # 一旦在写事务里等网络，SQLite 的写锁就被按在网络 RTT 后面（见 docs/performance.md）。
+    probe_data: Optional[dict] = None
+    side_data: Any = None           # (poster, fanart, subtitles) | None
+    tmdb_hit: Any = None
+    tmdb_details: Any = None
     skipped: bool = False  # 增量扫描：目录没变且库里已是最新 → 本次不做任何写库工作
 
 
@@ -1222,14 +1230,33 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             need_details = bool(existing_id) and bool(
                 needs_repair or not (item.imdb_id and item.aliases)
             )
-            # 详情预取的口径要与写库那一步一致：新条目（补 IMDb / 别名）与带补图标记的
-            # 条目一定会用到详情，而「到期重刮且信息已齐」的条目不会（见 _tmdb_work）
-            want_details = is_new or needs_repair or need_details
-            if need_search or need_details:
+            # 详情预取的口径必须**覆盖**写库那一步可能用到的所有情况：新条目（补 IMDb /
+            # 别名）、带补图标记的条目、已有 tmdb_id 但缺 IMDb Id / 多别名的条目，
+            # 以及「这一轮会重刮、而库里还缺这两项」的条目——后者 apply() 之后
+            # tmdb_id 才被写上，写库那一步就会去要详情。
+            # 少预取一次，写库那一步就会在事务里发一次网络请求（见 _tmdb_work）。
+            want_details = bool(
+                is_new or needs_repair or need_details
+                or (should_scrape(item, policy) and not (item.imdb_id and item.aliases))
+            )
+            if need_search or want_details:
                 pending.tmdb = pool.submit(
                     _tmdb_work, need_search, pending.parsed["name"], pending.parsed["year"],
                     kind, existing_id, want_details,
                 )
+
+    # 把这一批的 IO 结果**全部取回**，然后才把写库交给调用方。
+    # 这是「事务只包纯 DB 写」的关键一步：ffprobe / rclone 列目录 / TMDB 搜索都可能在
+    # 这里等上几秒（远程挂载与刮削都是网络），而调用方拿到任务后立刻开始写库——
+    # 如果等到写库循环里再取结果，SQLite 的写锁就要陪着一起等（超过 busy_timeout=30s
+    # 就是那句 database is locked，前端表现是 30 秒超时）。
+    for pending in prepared:
+        if pending.skipped:
+            continue
+        pending.probe_data = _result(pending.probe)
+        pending.side_data = _result(pending.side)
+        hit, details = _result(pending.tmdb, default=(None, None)) or (None, None)
+        pending.tmdb_hit, pending.tmdb_details = hit, details
     return prepared
 
 
@@ -1246,6 +1273,14 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
     batch: list = []
     real_commit = db.commit
     db.commit = db.flush  # 只改本 Session 实例：主体里的“每文件一次提交”退化成 flush
+
+    def commit_batch() -> None:
+        """批次提交：撞上别人占着写锁（另一台 EA / 备份 / checkpoint）时退避重试三次
+
+        主体里之所以敢把「每文件一次提交」退化成 flush，是因为这里一批只提交一次；
+        代价是这一批的写事务期间不能有任何 IO（见 _prepare_and_prefetch 的说明）。
+        """
+        retry_write(real_commit, label="扫描批次提交")
     try:
         for scan_file in files:
             batch.append(scan_file)
@@ -1259,12 +1294,12 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
                         if not p.skipped)
             _store_dir_states(db, ctx)   # 增量扫描：这批真处理过的目录指纹随本次提交写回
             batch = []
-            real_commit()  # 一批一次提交：几百个文件才一次 fsync
+            commit_batch()  # 一批一次提交：几百个文件才一次 fsync
         if batch:
             yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool)
                         if not p.skipped)
             _store_dir_states(db, ctx)
-            real_commit()
+            commit_batch()
     finally:
         # 正常结束、中途报错、生成器被提前关闭：都要恢复真实提交
         db.commit = real_commit
@@ -1673,7 +1708,7 @@ def _finish_scan_run(db: Session, run_id: Optional[int], status: str,
         run.stats = encode_scan_stats(stats)
         run.error = (error or "")[:500] or None
         prune_library_scan_runs(db, run.library_id)
-        db.commit()
+        commit_with_retry(db, label="扫描流水收尾")
     except Exception as exc:  # noqa: BLE001
         logger.warning("写入扫描流水失败: %s", exc)
         db.rollback()
@@ -1688,7 +1723,7 @@ def _write_scan_state(db: Session, library: emby_models.Library, status: str,
     library.scan_stats = encode_scan_stats(stats)
     library.scan_error = (error or "")[:500] or None
     try:
-        db.commit()
+        commit_with_retry(db, label="扫描结果写回")
     except Exception as exc:  # noqa: BLE001
         logger.warning("写入扫描结果失败: %s", exc)
         db.rollback()
@@ -1711,7 +1746,7 @@ def begin_scan(db: Session, library: emby_models.Library,
                                   started_at=datetime.now())
         db.add(run)
     try:
-        db.commit()
+        commit_with_retry(db, label="扫描开始状态")
     except Exception as exc:  # noqa: BLE001 — 状态写不进去也要照常扫描
         logger.warning("写入扫描开始状态失败: %s", exc)
         db.rollback()
@@ -1833,12 +1868,13 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     else:
                         stats["updated"] += 1
 
-                    # 文件信息已获取过就不再重复探测（ffprobe 是扫描里最贵的一步）；
-                    # 远程挂载的探测输入是解析出来的直链（带鉴权头，只在本机使用）。
-                    # 探测已在批次开头并行发起，这里只是取回结果（通常已经跑完）。
-                    probe = _result(_pending.probe)
+                    # 探测 / 目录列举 / TMDB 的结果都在批次开头取回了（见 _prepare_and_prefetch）：
+                    # 这里只读纯值，本循环里**不许再出现任何网络或磁盘 IO**——
+                    # 从这一行往下到 db.commit() 之间，事务里只包纯 DB 写。
+                    probe = _pending.probe_data
                     if probe is not None:
                         stats["probed"] += 1
+                    side_poster, side_fanart, external = _pending.side_data or (None, None, [])
 
                     item_type = _pending.item_type  # 解析与查库在批次开头完成
                     item.item_type = item_type
@@ -1863,12 +1899,10 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         item.subtitle_languages = probe["subtitle_languages"]
                         item.last_probed_at = datetime.now()
 
-                    # 本地图片（远程挂载没有本机目录，交给 TMDB 远程图）
-                    poster = fanart = None
-                    if dirpath:
-                        poster, fanart = find_local_images(dirpath, os.path.splitext(fname)[0])
-                    item.poster_path = poster or item.poster_path
-                    item.backdrop_path = fanart or item.backdrop_path
+                    # 本地图片 / 外挂字幕都在批次开头算好了（_side_info 在 IO 线程池里跑）：
+                    # 远程挂载的目录列举因此只发生一次，且不在写事务里
+                    item.poster_path = side_poster or item.poster_path
+                    item.backdrop_path = side_fanart or item.backdrop_path
 
                     # 剧集层级：episode -> season -> series
                     # 剧集与季在**批次开头**已一次查齐（见 _prepare_and_prefetch），结果缓存
@@ -1920,15 +1954,18 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         # 图片丢失的条目（repair_requested_at）无论策略如何都要重取图
                         needs_repair = bool(item.repair_requested_at)
                         if needs_repair or should_scrape(item, snap.scrape_policy):
-                            hit = tmdb_client.search(parsed["name"], parsed["year"], kind)
+                            # 搜索结果在批次开头就取回了（写事务里不发网络请求）
+                            hit = _pending.tmdb_hit
                             if hit:
                                 tmdb_client.apply(item, hit, kind)
                                 stats["scraped"] += 1
                         # 已有 TMDB 命中但缺 IMDb Id / 多别名 → 用详情接口补齐
                         # （中英文、繁简、多别名搜索依赖 aliases）
+                        # 详情同样是预取的：apply_details / apply_images 只把已取回的
+                        # 数据落到条目上，不会在这里发请求（与 enrich / refresh_images 同口径）
                         if item.tmdb_id and (needs_repair or not (item.imdb_id and item.aliases)):
-                            if not needs_repair or tmdb_client.refresh_images(item, kind):
-                                tmdb_client.enrich(item, kind)
+                            if not needs_repair or tmdb_client.apply_images(item, _pending.tmdb_details):
+                                tmdb_client.apply_details(item, _pending.tmdb_details)
                             if needs_repair:
                                 item.repair_requested_at = None
                                 stats["repaired"] = stats.get("repaired", 0) + 1
@@ -1968,20 +2005,9 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                          "display_title", "title", "channels", "bit_rate"}
                             }))
 
-                    # 先算外挂字幕（只读目录、不碰数据库）：绝大多数条目根本没有外挂字幕，
-                    # 那样就不必为「给新字幕轨分配 stream_index」再查一次 max()——
-                    # 十万条目的库就是十万次多余的 SELECT。
-                    if scan_file.mount_id is not None and dirpath is None:
-                        try:
-                            siblings = scan_file.provider.list_dir(scan_file.dir_rel)
-                        except mount_lib.MountError as exc:
-                            logger.warning("读取挂载目录失败，跳过外挂字幕：%s（%s）", scan_file.dir_rel, exc)
-                            siblings = []
-                        external = find_external_subtitles_remote(
-                            fname, siblings, scan_file.mount_id, scan_file.dir_rel,
-                        )
-                    else:
-                        external = find_external_subtitles(full_path)
+                    # 外挂字幕在批次开头就找好了（本地目录 / 挂载目录都在 IO 线程池里列过），
+                    # 这里只剩纯 DB 写：绝大多数条目根本没有外挂字幕，也就不必为「给新字幕轨
+                    # 分配 stream_index」再查一次 max()——十万条目的库就是十万次多余的 SELECT。
                     # 外挂字幕总是刷新（与视频探测无关），
                     # 并且需要合成 stream_index：客户端靠它拼
                     # /Videos/{id}/{mid}/Subtitles/{Index}/Stream.{Format}，
@@ -2009,7 +2035,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
     finally:
         # 扫描标志与结果由 scan_library_sync 统一写回（成功 / 部分失败 / 异常三条路都覆盖）
         try:
-            db.commit()
+            commit_with_retry(db, label="扫描中间状态")
         except Exception as e:  # noqa: BLE001
             logger.warning("回写扫描中间状态失败: %s", e)
             db.rollback()

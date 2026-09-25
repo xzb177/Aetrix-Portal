@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 from backend import coupons, models
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
+from backend.db_retry import commit_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,23 @@ async def refund_order(
         "rebate_reversed": 0, "cancelled": False, "coupon_released": False,
     }
 
+    # 原子占位：并发点两次「退款」时只有一个请求能拿到这一单。
+    # 上面两句状态检查与这里之间隔着整段冲正（扣回积分 / 回滚会员天数，都**不是幂等**的）：
+    # 读-改-写会让两个请求都读到 paid，于是各扣一次（双重回滚）。
+    # 条件 UPDATE 的 rowcount 就是判据（与 economy._claim_order 同一套写法）——
+    # 抢不到的那一边什么都不做，直接告诉前端「已处理」。
+    model = models.RechargeOrder if kind == "recharge" else models.SubscriptionOrder
+    claimed = (
+        db.query(model)
+        .filter(model.id == order.id, model.status.in_(tuple(REFUNDABLE_STATUSES)))
+        .update({"status": "refunded", "refunded_at": now}, synchronize_session=False)
+    )
+    if not claimed:
+        db.rollback()
+        logger.info("退款请求被并发的那一次抢先（订单 %s，%s）", order_id, kind)
+        return {**result, "already_processed": True,
+                "message": "该订单已处理（并发退款只有一次生效）"}
+
     if request.revoke_entitlement:
         if kind == "recharge":
             entry = _ledger_entry(db, user.id, f"recharge:{order_id}", "recharge")
@@ -218,6 +236,7 @@ async def refund_order(
                     subscription.end_date.isoformat() if subscription.end_date else None
                 )
 
+    # 状态与时间已由上面那次条件 UPDATE 原子写入，这里让当前事务里的 ORM 对象跟上
     order.status = "refunded"
     order.refunded_at = now
     order.refund_reason = (request.reason or "").strip()[:255]
@@ -226,7 +245,7 @@ async def refund_order(
     # 退款同样释放优惠券额度（用户没付钱买成这笔，次数不该算用掉）
     coupons.release(db, order.coupon_usage_id)
     result["coupon_released"] = bool(order.coupon_usage_id)
-    db.commit()
+    commit_with_retry(db, label="订单退款")
 
     # 先提交再通知：履约事务未提交时另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
     detail_bits = []

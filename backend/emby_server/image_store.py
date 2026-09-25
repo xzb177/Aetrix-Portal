@@ -185,6 +185,11 @@ def prune(db) -> dict:
     if not os.path.isdir(root):
         return result
     referenced = referenced_basenames(db)
+    # 读事务到此为止：下面要删的是磁盘文件（可能几万个 os.remove，走网络挂载更慢），
+    # 不能让一次长事务陪着它挂着——SQLite 的 WAL 检查点会被挂着的事务挡住，
+    # 表现就是 WAL 文件长期不收敛（见 docs/performance.md 的「事务范围」）。
+    # 这里没有待提交的改动（只有上面那次查询），所以 rollback 与 commit 等价，语义更明确。
+    db.rollback()
     grace = _env_int("EMBY_IMAGE_GRACE_SECONDS", 3600, 0)
     now = time.time()
     kept: list[tuple[str, int, float]] = []

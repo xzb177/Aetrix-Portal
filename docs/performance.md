@@ -3,6 +3,16 @@
 这套自建后端的目标不是「功能对齐 Emby」，而是**在 1~2 核、1~2G 内存的机器上稳定出流**：
 扫描不把内存吃满、不把磁盘喂满 fsync、刮削不逐条串行等网络。
 
+> **v2.38.0 追加**：这一版解决的是反方向的同一件事——「写事务里等网络」。扫描 / 维护 / 图片清理
+> 的网络与磁盘 IO 全部移出事务，写路径加写锁退避重试（`backend/db_retry.py`），
+> 并顺手修掉 4 个资金链路的读-改-写（卡码并发核销 / 退款并发 / 履约缺料 / 两阶段提交）。
+> **细节、实测数字与验证命令见 [`docs/performance-transactions.md`](performance-transactions.md)。**
+>
+> 验证：`python scripts/smoke_test_scan_write_concurrency.py`（CI 会跑）——给扫描器的 IO 出口
+> 装上「有没有落在未提交的写事务里」的探针（探针先自证有效），一边全量扫描一边循环打真实的
+> 写接口 `POST /api/admin/economy/plans`：写事务里的 IO **0 次**、最长写事务 **约 150ms**、
+> 并发写接口中位 **14ms** / 最大 **0.18s**、`database is locked` **0 条**。
+
 数字口径以 `scripts/smoke_test_scan_budget.py` 为准（CI 每次都会跑），
 下面引用的是 162 个文件（150 部电影 + 2 部剧 12 集）的实测值。
 
