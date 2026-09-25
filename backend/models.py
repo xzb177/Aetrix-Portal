@@ -738,6 +738,30 @@ class PointsLog(Base):
     user = relationship("WebUser")
 
 
+class EmbyViewUnlock(Base):
+    """Emby 账号/线路查看权限（公益服花积分解锁）
+
+    付费服的查看权限来自有效订阅，不走这张表；公益服没有订阅概念，
+    用户花积分购买后在这里留一条记录。同一用户同一服只保留一条
+    （续费/重购直接更新该行），靠唯一约束防并发重复扣费。
+    """
+    __tablename__ = 'emby_view_unlocks'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'realm_id', name='uq_emby_view_unlock_user_realm'),
+        Index('idx_emby_view_unlock_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=False)
+    unlocked_at = Column(DateTime, default=datetime.now)
+    expires_at = Column(DateTime, nullable=True)  # NULL = 永久有效
+    points_spent = Column(Integer, default=0)  # 本次解锁花费的积分
+
+    user = relationship("WebUser")
+
+
 class ExchangeCode(Base):
     """兑换码表（积分兑换 / 订阅兑换）"""
     __tablename__ = 'exchange_codes'

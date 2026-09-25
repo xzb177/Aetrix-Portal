@@ -371,6 +371,18 @@ with SessionLocal() as db:
                             is_active=True)
     db.add(viewer)
     db.commit()
+    # 查看权限 gating：账号卡用例需要 viewer 能看到 base_url，给一个有效订阅
+    from datetime import datetime, timedelta  # noqa: E402
+    from backend import realms as realm_lib  # noqa: E402
+
+    _rid = realm_lib.active_realm_id(db)
+    _plan = models.SubscriptionPlan(name="冒烟测试套餐", price=1, duration_days=30, realm_id=_rid)
+    db.add(_plan)
+    db.flush()
+    db.add(models.UserSubscription(user_id=viewer.id, plan_id=_plan.id, realm_id=_rid,
+                                   status="active",
+                                   end_date=datetime.now() + timedelta(days=30)))
+    db.commit()
     viewer_token = create_access_token(viewer.id)
 resp = probe.get("/api/user/emby/server", headers={"Authorization": f"Bearer {viewer_token}"})
 card = resp.json() if resp.status_code == 200 else {}
