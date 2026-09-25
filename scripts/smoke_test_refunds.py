@@ -135,6 +135,15 @@ def station_titles(user_id: int) -> list[str]:
             models.StationMessage.to_user_id == user_id).order_by(models.StationMessage.id).all()]
 
 
+def subscriptions_of(user_id: int) -> int:
+    """该用户**生效中**的订阅条数（套餐被删 / 用户被删时不该变多）"""
+    with SessionLocal() as db:
+        return db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == user_id,
+            models.UserSubscription.status == "active",
+        ).count()
+
+
 def ledger(user_id: int, type_: str) -> list:
     with SessionLocal() as db:
         return db.query(models.PointsLog).filter(
@@ -444,6 +453,129 @@ make_notify_order("RC-NOTIFY-BADSIGN")
 r = notify_call("RC-NOTIFY-BADSIGN", "100.00", key="wrong-key")
 check("错密钥的回调仍被拦（验签之前）", r.text.strip() == "fail" and points_of(notify_buyer_id) == 200,
       str(points_of(notify_buyer_id)))
+
+
+# ==================== 7. 履约缺料：套餐/用户被删时必须 fail（不能静默 success）====================
+
+print("\n--- 履约缺料：下单后套餐被删 ---")
+
+# 旧实现：`_fulfill_order` 里 `if user and plan:` 不成立就什么都不做，
+# 但订单已经被 `_claim_order` 原子标成 paid、优惠券还会被 consume——
+# 用户付了钱、订单显示已支付、权益一点没到，还没有任何报错。
+# 现在抛 FulfillmentError → 回调回滚并返回 fail（网关会重试 / 转人工）。
+
+from datetime import datetime as _dt  # noqa: E402
+
+from backend import coupons as coupons_mod  # noqa: E402
+
+
+def make_coupon_usage(order_id: str, user_id: int) -> int:
+    """造一条「已预订」的优惠券额度（真实链路由 coupons.reserve 产生）"""
+    with SessionLocal() as db:
+        coupon = models.CouponCode(code=f"COUP-{order_id}", kind="subscription",
+                                   discount_type="fixed", value=5, max_uses=10,
+                                   use_count=1, is_active=True)
+        db.add(coupon)
+        db.flush()
+        usage = models.CouponUsage(coupon_id=coupon.id, user_id=user_id, order_id=order_id,
+                                   kind="subscription", status=coupons_mod.RESERVED,
+                                   list_price=Decimal("30.00"), discount_amount=Decimal("5.00"),
+                                   paid_amount=Decimal("25.00"))
+        db.add(usage)
+        db.commit()
+        return usage.id
+
+
+def make_doomed_subscription_order(order_id: str, *, user_id: int, plan_id_) -> int:
+    usage_id = make_coupon_usage(order_id, user_id)
+    with SessionLocal() as db:
+        db.add(models.SubscriptionOrder(
+            order_id=order_id, user_id=user_id, plan_id=plan_id_, item_name="限时套餐",
+            amount=Decimal("25.00"), payment_method="alipay", status="pending",
+            coupon_usage_id=usage_id,
+        ))
+        db.commit()
+    return usage_id
+
+
+# 7.1 套餐在下单之后被删掉
+with SessionLocal() as db:
+    doomed_plan = models.SubscriptionPlan(name="即将下架的套餐", price=30, duration_days=30,
+                                         is_active=True, realm_id=realm_id)
+    db.add(doomed_plan)
+    db.commit()
+    doomed_plan_id = doomed_plan.id
+
+doomed_order = "SO-NOTIFY-NOPLAN"
+make_doomed_subscription_order(doomed_order, user_id=notify_buyer_id, plan_id_=doomed_plan_id)
+before_subs = subscriptions_of(notify_buyer_id)
+
+with SessionLocal() as db:
+    db.query(models.SubscriptionPlan).filter(
+        models.SubscriptionPlan.id == doomed_plan_id).delete(synchronize_session=False)
+    db.commit()
+
+r = notify_call(doomed_order, "25.00")
+check("套餐被删后回调返回 fail（不再静默 success）", r.text.strip() == "fail",
+      f"{r.status_code} {r.text[:80]}")
+check("缺料时订单保持未支付（没有被标成 paid）",
+      order_row(doomed_order).status == "pending", str(order_row(doomed_order).status))
+check("缺料时不给用户发订阅", subscriptions_of(notify_buyer_id) == before_subs,
+      f"{before_subs} -> {subscriptions_of(notify_buyer_id)}")
+with SessionLocal() as db:
+    usage = db.query(models.CouponUsage).filter(
+        models.CouponUsage.order_id == doomed_order).first()
+check("缺料时优惠券额度没有被 consume（还留在 reserved）",
+      usage is not None and usage.status == coupons_mod.RESERVED,
+      f"status={getattr(usage, 'status', None)}")
+
+# 7.2 用户在下单之后被删（订阅订单指向一个不存在的用户）
+orphan_order = "SO-NOTIFY-NOUSER"
+with SessionLocal() as db:
+    ghost = models.WebUser(username="refund_ghost", password_hash="x", is_active=True)
+    db.add(ghost)
+    db.commit()
+    ghost_id = ghost.id
+    db.add(models.SubscriptionOrder(
+        order_id=orphan_order, user_id=ghost_id, plan_id=plan_id, item_name="月卡",
+        amount=Decimal("30.00"), payment_method="alipay", status="pending",
+    ))
+    db.commit()
+    db.query(models.WebUser).filter(models.WebUser.id == ghost_id).delete(
+        synchronize_session=False)
+    db.commit()
+
+r = notify_call(orphan_order, "30.00")
+check("用户被删后回调返回 fail", r.text.strip() == "fail", f"{r.status_code} {r.text[:80]}")
+check("用户被删时订单保持未支付", order_row(orphan_order).status == "pending",
+      str(order_row(orphan_order).status))
+
+# 7.3 同一笔缺料订单：人工补单（后台）也要给出可读的 400，而不是 500
+r = client.post(f"/api/admin/economy/orders/{doomed_order}/mark-paid", headers=ADMIN_H,
+                json={})
+check("人工补单遇到缺料返回 400 + 说明（不是 500）",
+      r.status_code == 400 and "履约失败" in r.text, f"{r.status_code} {r.text[:120]}")
+check("补单失败后订单仍未支付", order_row(doomed_order).status == "pending",
+      str(order_row(doomed_order).status))
+
+# 7.4 修好之后（套餐重建 + 补单）履约应当恢复正常：这一条保证上面的改动没有把正常路径挡掉
+with SessionLocal() as db:
+    fixed_plan = models.SubscriptionPlan(name="恢复的套餐", price=25, duration_days=30,
+                                         is_active=True, realm_id=realm_id)
+    db.add(fixed_plan)
+    db.commit()
+    db.query(models.SubscriptionOrder).filter(
+        models.SubscriptionOrder.order_id == doomed_order
+    ).update({"plan_id": fixed_plan.id}, synchronize_session=False)
+    db.commit()
+
+r = notify_call(doomed_order, "25.00")
+check("缺料修好后回调恢复正常（success）", r.text.strip() == "success",
+      f"{r.status_code} {r.text[:80]}")
+check("修好后订单支付并发出订阅",
+      order_row(doomed_order).status == "paid"
+      and subscriptions_of(notify_buyer_id) == before_subs + 1,
+      f"{order_row(doomed_order).status} / {subscriptions_of(notify_buyer_id)}")
 
 print("\n" + "=" * 60)
 if failures:

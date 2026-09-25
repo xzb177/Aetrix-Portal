@@ -26,6 +26,8 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from backend.db_retry import commit_with_retry
+
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import models as em
@@ -95,7 +97,7 @@ def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> 
         lib.scan_progress = None
         reset.append(lib)
     if reset:
-        db.commit()
+        commit_with_retry(db, label="复位残留扫描标志")
         logger.warning("复位 %d 个残留的“扫描中”标志（崩溃/强杀遗留）: %s",
                        len(reset), ", ".join(str(lib.id) for lib in reset))
     return len(reset)
@@ -124,7 +126,7 @@ def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> i
         run.error = (run.error or "进程重启，本轮扫描未完成")[:500]
         stuck.append(run)
     if stuck:
-        db.commit()
+        commit_with_retry(db, label="收尾中断扫描流水")
         logger.warning("收尾 %d 条中断的扫描流水（崩溃/强杀遗留）: %s",
                        len(stuck), ", ".join(str(run.id) for run in stuck))
     return len(stuck)
@@ -148,7 +150,7 @@ def reap_stale_playback_sessions(db: Session, stale_minutes: Optional[int] = Non
         # ended_at 用心跳时间更贴近事实（否则“结束时间”会是收尾那一刻）
         session.ended_at = session.last_update_at or now
     if rows:
-        db.commit()
+        commit_with_retry(db, label="回收过期播放会话")
         logger.info("回收 %d 个心跳过期的播放会话（停在上次心跳时间）", len(rows))
     return len(rows)
 
@@ -173,7 +175,7 @@ def prune_playback_sessions(db: Session, retention_days: Optional[float] = None)
         .delete(synchronize_session=False)
     )
     if deleted:
-        db.commit()
+        commit_with_retry(db, label="裁剪历史播放会话")
         logger.info("裁掉 %d 条超出 %s 天的播放会话", deleted, days)
     return deleted
 
@@ -410,7 +412,7 @@ def prune_ai_usage(db, keep_days: int = 90) -> int:
     pruned = db.query(models.AiUsage).filter(models.AiUsage.day < cutoff).delete(
         synchronize_session=False)
     if pruned:
-        db.commit()
+        commit_with_retry(db, label="清理 AI 用量")
     return int(pruned or 0)
 
 
@@ -423,7 +425,7 @@ def prune_scan_dir_states(db) -> int:
         ~emby_models.ScanDirState.library_id.in_(alive)
     ).delete(synchronize_session=False)
     if pruned:
-        db.commit()
+        commit_with_retry(db, label="清理扫描目录指纹")
     return int(pruned or 0)
 
 
@@ -439,17 +441,17 @@ def prune_scan_runs(db, keep: Optional[int] = None) -> int:
 
     limit = scanner_lib.SCAN_RUN_KEEP if keep is None else max(0, int(keep))
     pruned = 0
-    alive = db.query(emby_models.Library.id)
-    orphans = db.query(emby_models.ScanRun).filter(
-        ~emby_models.ScanRun.library_id.in_(alive)
-    ).delete(synchronize_session=False)
-    pruned += int(orphans or 0)
 
+    # 先把要删的 id 全查出来（此时还没有任何写），再一次性删 + 提交。
+    # 旧实现是「先删孤儿行（写事务由此打开）→ 再循环查每个库的第 N 行之后 → 才提交」：
+    # 那段查询全程占着写锁，别的写请求只能等（见 docs/performance.md 的「事务范围」）。
+    alive = db.query(emby_models.Library.id)
+    stale: list[int] = [row[0] for row in db.query(emby_models.ScanRun.id)
+                        .filter(~emby_models.ScanRun.library_id.in_(alive)).all()]
     if limit > 0:
         # 每个库只留最近 limit 行：用「按库取第 limit 行之后的 id」实现，
         # SQLite / MySQL / PG 通用（窗口函数各家语法与版本要求不一）。
         # 有流水的库只有十几到几十个，一次每库一查，代价可忽略。
-        stale: list[int] = []
         for (lib_id,) in db.query(emby_models.ScanRun.library_id).distinct().all():
             stale.extend(
                 row[0] for row in db.query(emby_models.ScanRun.id)
@@ -458,13 +460,13 @@ def prune_scan_runs(db, keep: Optional[int] = None) -> int:
                 .offset(limit)
                 .all()
             )
-        if stale:
-            pruned += int(db.query(emby_models.ScanRun)
-                          .filter(emby_models.ScanRun.id.in_(stale))
-                          .delete(synchronize_session=False) or 0)
+    if stale:
+        pruned = int(db.query(emby_models.ScanRun)
+                     .filter(emby_models.ScanRun.id.in_(stale))
+                     .delete(synchronize_session=False) or 0)
 
     if pruned:
-        db.commit()
+        commit_with_retry(db, label="清理扫描流水")
     return int(pruned)
 
 

@@ -15,6 +15,7 @@ from sqlalchemy import func
 
 from backend.database import get_db
 from backend import codes, devices, models, realms
+from backend.db_retry import commit_with_retry
 from backend.notifications import get_notification_service, AdminEvent
 from backend.ratelimit import check_rate_limit
 from backend.security import resolve_jwt_user_id
@@ -902,12 +903,17 @@ async def preview_membership_code(
 
 
 @user_router.post("/membership/redeem")
-async def redeem_membership_code(
+def redeem_membership_code(
     req: RedeemCodeRequest,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """核销会员卡码：注册码 / 续期码 / 白名单码"""
+    """核销会员卡码：注册码 / 续期码 / 白名单码
+
+    同步 `def`：整条链路（限速 / 查码 / 原子占位 / 发天数 / 提交）都是同步 SQLAlchemy，
+    没有一个 await。留成 `async def` 就是让占位与发天数的那段写库压在事件循环上
+    （见 docs/performance.md 的「事务范围」与 check_blocking_routes 的说明）。
+    """
     allowed, _ = check_rate_limit(f"code_redeem:{current_user.id}", 10, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
@@ -917,7 +923,13 @@ async def redeem_membership_code(
 
     result = codes.redeem_code(db, current_user, req.code)
     if not result.get("success"):
+        # 失败路径要把事务收干净：redeem_code 里可能已经动过会话（占位 / 封禁），
+        # 不回滚就交给 get_db 的 close() 会让错误更难查
+        db.rollback()
         raise HTTPException(status_code=400, detail=result.get("message") or "卡码无效")
+    # 卡码消耗与会员天数由这里统一提交（codes 里不再自己 commit）：
+    # 两阶段提交不一致会导致「码烧了、会员没到账」或反过来（见 backend/codes.py 的说明）
+    commit_with_retry(db, label="卡码核销")
     return result
 
 

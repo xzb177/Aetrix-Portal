@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import codes, models
+from backend.db_retry import commit_with_retry
 from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend.database import get_db
 from backend.devices import device_limit
@@ -265,15 +266,23 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
         is_active=True,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    db.flush()   # 先拿主键；**不提交**：用户 + 卡码消耗 + 会员天数要么全成、要么全不留痕
 
     # 卡码消耗 + 按卡码类型授予会员天数（注册码开通、白名单码置为长期有效）
     # 开的是**卡码所属服**的会员：多服下用乙服的注册码注册，就该拿到乙服的会员
     if reg_code is not None:
-        codes.consume(db, reg_code, user.id)
+        # 先原子占位（见 codes.claim_code）：并发用同一张单次注册码注册时只有一个能成功。
+        # 抢不到就直接回滚整条注册——不能出现「码只够一次，却开了两个号的会员」
+        if not codes.claim_code(db, reg_code, user.id):
+            db.rollback()
+            raise HTTPException(status_code=400, detail="注册码已被使用")
         codes.grant_membership_days(db, user, codes.grant_days_for(reg_code),
                                     codes.code_realm_id(db, reg_code))
+
+    # 一次提交落盘：用户、卡码消耗、会员订阅同一个事务（旧实现是两次提交，
+    # 中间崩一次就成了「码烧了、会员没到账」，见 docs/performance.md）
+    commit_with_retry(db, label="注册落库")
+    db.refresh(user)
 
     # 邀请返利：注册时应用邀请码（双向发奖，失败静默不阻塞注册）
     if req.invitation_code:

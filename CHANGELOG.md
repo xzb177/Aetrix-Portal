@@ -2,6 +2,88 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.38.0] - 2026-09-25
+
+### 事务范围：写事务里绝不出现 IO（根治 `database is locked` 与 30 秒超时）
+
+线上现场：后台点一次媒体库**全量扫描**，2 分钟内 9 次
+`sqlite3.OperationalError: database is locked`，`royalbot_unified.db-wal` 长期 4.3MB 不 checkpoint，
+前端 axios 30 秒超时。WAL 与 `busy_timeout`（30 秒）本身都没问题——**问题在事务范围**：
+SQLite 只有一个写者，写锁从第一次写一直握到 `COMMIT`，而扫描器把网络 IO 夹在了这两个点之间。
+
+**根因（旧实现把 IO 放在写事务里）**
+
+- `scanner._scan_library_body` 外挂字幕段：先 `db.flush()` 写入，再
+  `scan_file.provider.list_dir()`（rclone 网络 IO）、`find_external_subtitles*()`，然后才随批次 `commit`；
+- 同一函数的刮削段：`tmdb_client.search` / `enrich` / `refresh_images` 的网络调用与 session 写操作交错；
+- 同一函数的探测段：`_result(pending.probe)` 在写库循环里等 ffprobe 子进程；
+- `maintenance.prune_scan_runs`：先删孤儿行（写事务由此打开）→ 再逐库查询第 N 行之后 → 才提交；
+- `image_store.prune`：读引用之后事务一直挂着，中间去删几万个磁盘文件。
+
+于是所有其它写请求（后台改设置 / 用户注册 / 卡码核销）都排在一段「等 rclone 的写事务」后面，
+等到 `busy_timeout` 耗尽报错——正好也是前端 30 秒超时。
+
+**改法：预取在事务外，事务只包纯 DB 写**
+
+- `scanner._prepare_and_prefetch` 在批次开头把这一批的 IO（ffprobe / 目录列举 / TMDB 搜索与详情）
+  **全部提交并取回**，结果存成纯值挂在 `_Pending` 上（`probe_data` / `side_data` / `tmdb_hit` / `tmdb_details`）；
+- 写库循环只读纯值；详情改走新增的 `tmdb.apply_details` / `apply_images`（只套用已取回的数据，不发请求），
+  详情预取口径同时改成「覆盖写库那一步所有可能用到的分支」；
+- `maintenance.prune_scan_runs` 先把要删的 id 全查出来（此时还没有任何写），再一次性删 + 提交；
+- `image_store.prune` 引用读完就结束读事务，之后再删磁盘文件。
+
+**兜底：写锁退避重试（不是解法）——`backend/db_retry.py`**
+
+事务范围干净之后，仍会有别人短暂占着写锁（另一台 EA / 另一个进程 / 备份 / `VACUUM` / checkpoint）。
+写路径统一走 `retry_write` / `commit_with_retry`：指数退避（0.25 → 0.5 → 1 秒）最多 3 次，
+**只对写锁类错误重试**（其它 `OperationalError` 原样抛出），重试到底仍失败才报错——
+不吞错误、不假装成功。已覆盖扫描批次提交与状态写回、维护周期清理、卡码核销 / 注册落库 /
+订单退款 / 人工补单。
+
+**业务语义未变**：扫描结果、外挂字幕 `stream_index` 合成规则、`Subtitles/{Index}` 拼地址逻辑不变。
+
+### 四个资金链路 bug（读-改-写 → 条件 UPDATE / 单一事务）
+
+- **卡码并发重复核销（高危）**：`codes.redeem_code` / `consume` 先读 `use_count` 再 +1，
+  并发提交同一张 `max_uses=1` 的卡码会各发一份会员天数。现在发奖前用条件
+  `UPDATE ... WHERE 仍可用` 原子占位（`codes.claim_code`，与 `economy.redeem_exchange_code` 同一写法），
+  `rowcount=0` 直接拒绝；`api/emby_portal.register` 抢不到占位就回滚整条注册。
+- **退款并发导致双重回滚（中高）**：`orders_admin.refund_order` 的「状态检查 → 冲正积分 / 回滚会员天数 →
+  写回 `refunded`」不是幂等的，并发退两次会各扣一次。现在用条件 `UPDATE` 把 `paid` 原子推进到
+  `refunded`（`economy._claim_order` 的写法），抢不到的那一边直接返回「已处理」。
+- **履约缺料被静默吞单（中高）**：`economy._fulfill_order` 里 `if user and plan:` 不成立就什么都不做，
+  订单却被标成 `paid`、优惠券照常 `consume`。现在抛 `FulfillmentError` → 回调回滚并返回 `fail`
+  （网关会重试 / 转人工），订单保持未支付；后台「人工补单」遇到同样情况返回可读的 400。
+- **卡码核销两阶段提交不一致（中低）**：`codes.grant_membership_days` / `consume` 各自 `commit`，
+  中间崩一次就是「码烧了、会员没到账」或反过来。现在去掉内部 `commit`（改 `flush` 拿主键），
+  由调用方一个事务提交（与 `economy._grant_subscription` 的无 commit 设计一致）；
+  `api/user.py::redeem_membership_code` 同时从 `async def` 改为同步 `def`（整条链路无 await，
+  正好不再把占位与发天数压在事件循环上）。
+
+### 验证
+
+- `scripts/smoke_test_scan_write_concurrency.py`（新增，进 CI）：给扫描器真正会走的 IO 出口
+  （`os.listdir` / ffprobe / TMDB 会话）装上「有没有落在未提交的写事务里」的探针，**探针先自证有效**
+  （人为在写事务里做一次同样的 IO，必须记到 1 次违规），再跑真实全量扫描；另一个线程循环打真实的
+  写接口 `POST /api/admin/economy/plans`。实测（132 个文件 / 多批次）：写事务里的 IO **0 次**、
+  扫描期间最长写事务 **约 150 ms**、92~96 次并发写请求中位 **14 ms** / 最大 **0.18 s**、
+  `database is locked` **0 条**、写锁兜底重试 **0 次**（旧形态会等于那一批的网络 IO 时长，
+  远程挂载上直接超过 30 秒）。
+- `scripts/smoke_test_concurrency.py` 新增两节（39/39 通过）：4 个线程并发核销同一张 `max_uses=1`
+  的卡码 → 只有 1 个成功、`use_count` 恰好 1、用满自动停用、会员天数只多发 30 天、`used_by` 只记一个账号，
+  用尽后再核销被拒且不再发天数；4 个线程并发退款同一笔已支付订单 → 只有 1 次真正冲正、积分只扣回一次、
+  冲正流水只记一笔。
+- `scripts/smoke_test_refunds.py` 新增第 7 节（76 项通过）：套餐下单后被删 / 用户下单后被删时回调返回 `fail`、
+  订单保持 `pending`、不发订阅、优惠券额度不被 `consume`；后台人工补单返回 400 + 说明而不是 500；
+  套餐修好后回调恢复正常并真的发出订阅（保证正常路径没被挡掉）。
+- `pytest tests/ -q` 112 项通过；`check_await_consistency` / `check_blocking_routes`（阻塞路由 24/24，无新增）
+  / `check_version` / `check_branding` / `check_auth_coverage` / `check_admin_audit_coverage` /
+  `check_hardcoded_secrets` 全部通过；`smoke_test_scan_budget` / `smoke_test_scan_incremental` /
+  `smoke_test_maintenance` / `smoke_test_scan_cleanup` / `smoke_test_scan_result` /
+  `smoke_test_playback_chain` / `smoke_test_economy` 全部通过。
+- 文档：新增 [`docs/performance-transactions.md`](docs/performance-transactions.md)（事务范围 / 写锁兜底 /
+  四个资金链路 bug 的根因与实测数字），并在 `docs/performance.md` 顶部加了导引。
+
 ## [2.37.0] - 2026-09-25
 
 ### 探测 / 体检层：写库下放线程池（阻塞路由基线 37 → 24）

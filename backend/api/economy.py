@@ -829,6 +829,15 @@ def _claim_order(db: Session, model, order) -> bool:
     return True
 
 
+class FulfillmentError(RuntimeError):
+    """履约缺料：订单该发的东西已经不存在了（套餐被删 / 用户被删等）
+
+    这类情况**必须**让调用方回滚并把回调判成失败（网关会重试，或者转人工补单），
+    不能静默返回 success——「钱收了、订单标了 paid、用户什么都没拿到」是最坏的结果，
+    而且优惠券还会被照常 ``consume`` 掉。
+    """
+
+
 async def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) -> list:
     """订单履约：充值发积分 / 订阅发放，幂等（重复回调不重复发货）
 
@@ -846,6 +855,12 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
         user = db.query(models.WebUser).filter(
             models.WebUser.id == recharge_order.user_id
         ).first()
+        if user is None:
+            # 用户被删了：订单不能就这么标成 paid 又什么都不发（见 FulfillmentError）
+            raise FulfillmentError(
+                f"充值履约缺料：订单 {recharge_order.order_id} 的用户 "
+                f"#{recharge_order.user_id} 已不存在"
+            )
         if user:
             _add_points(
                 db, user, recharge_order.amount, "recharge",
@@ -876,6 +891,15 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
         user = db.query(models.WebUser).filter(
             models.WebUser.id == subscription_order.user_id
         ).first()
+        if user is None or plan is None:
+            # 下单之后、支付回调之前套餐被删（或用户被删）：订单会被标成 paid 但用户
+            # 什么都拿不到，优惠券还会被 consume 掉——旧实现就是在这里静静地什么都不做，
+            # 然后回调返回 success。现在抛出去：调用方回滚 + 返回 fail，转人工处理。
+            raise FulfillmentError(
+                f"订阅履约缺料：订单 {subscription_order.order_id}"
+                f"（套餐 {'已删除' if plan is None else '正常'}、"
+                f"用户 {'已删除' if user is None else '正常'}）"
+            )
         if user and plan:
             subscription = _grant_subscription(
                 db, user, plan,

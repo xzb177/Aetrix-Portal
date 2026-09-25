@@ -367,6 +367,185 @@ check("同一用户并发领同一张券：只成功一次", len(wins) == 1,
 check("核销记录只留一行（没有多领）", usage_rows == 1, f"实际 {usage_rows} 行")
 check("该券总用量也只记了 1", use_count == 1, f"实际 use_count={use_count}")
 
+
+# ==================== 7. 卡码并发核销：只能发一份会员 ====================
+# 旧实现是「先读 use_count 判断可用，再写 use_count + 1」（`codes.consume`）：
+# 同一张 max_uses=1 的卡码被两个请求同时提交时，两边都读到 use_count=0，
+# 于是各发一份会员天数（重复核销）。现在发奖前先用条件 UPDATE 原子占位
+# （`codes.claim_code`），抢不到的一边直接拒绝。
+
+print("\n--- 卡码并发核销 ---")
+
+from backend import codes  # noqa: E402
+
+with SessionLocal() as db:
+    db.add(models.RegistrationCode(
+        code="CC-REG-ONE", code_type=codes.CODE_TYPE_REGISTER, days=30,
+        max_uses=1, use_count=0, is_active=True, note="并发回归用",
+    ))
+    db.commit()
+    reg_code_id = db.query(models.RegistrationCode).filter(
+        models.RegistrationCode.code == "CC-REG-ONE").first().id
+
+
+def membership_days_total() -> int:
+    """全库按订阅到期时间算出的「总天数」（不依赖哪个用户拿到）"""
+    with SessionLocal() as db:
+        rows = db.query(models.UserSubscription).all()
+        total = 0
+        for row in rows:
+            if row.end_date and row.start_date:
+                total += int((row.end_date - row.start_date).days)
+        return total
+
+
+before_days = membership_days_total()
+
+
+def redeem_reg_code(i: int):
+    """4 个线程同时核销同一张单次卡码（两个用户各两次，覆盖同码 + 同用户两种竞争）"""
+    uid = alice_id if i % 2 == 0 else bob_id
+    db = SessionLocal()
+    try:
+        user = db.query(models.WebUser).filter(models.WebUser.id == uid).first()
+        result = codes.redeem_code(db, user, "CC-REG-ONE")
+        if result.get("success"):
+            # codes 里不再自己提交：调用方提交（与 api/user.py 的核销端点同一口径）
+            db.commit()
+        else:
+            db.rollback()
+        return True, result
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return False, exc
+    finally:
+        db.close()
+
+
+results = run_parallel(redeem_reg_code, 4)
+wins = [r for r in results if r and r[0] and r[1].get("success")]
+errors = [r for r in results if r and not r[0]]
+
+with SessionLocal() as db:
+    code_row = db.query(models.RegistrationCode).filter(
+        models.RegistrationCode.id == reg_code_id).first()
+    use_count = code_row.use_count
+    still_active = code_row.is_active
+    used_by = code_row.used_by or ""
+
+check("卡码并发核销：只有 1 个请求成功", len(wins) == 1,
+      f"成功 {len(wins)} 次；失败原因 {[r[1].get('message') for r in results if r and r[0] and not r[1].get('success')][:3]}")
+check("卡码并发核销：没有未处理异常（不 500）", not errors, f"{[str(r[1])[:60] for r in errors]}")
+check("卡码并发核销：use_count 恰好 1", use_count == 1, f"use_count={use_count}")
+check("卡码并发核销：用满后自动停用", still_active is False, f"is_active={still_active}")
+check("卡码并发核销：只发了一份会员天数（30 天）",
+      membership_days_total() - before_days == 30,
+      f"新增 {membership_days_total() - before_days} 天")
+check("卡码并发核销：使用者审计只记了一个账号",
+      len([x for x in used_by.split(",") if x.strip()]) == 1, f"used_by={used_by!r}")
+
+# 用尽的码再核销一次：必须被拒，且不再发天数
+after_once = membership_days_total()
+db = SessionLocal()
+try:
+    user = db.query(models.WebUser).filter(models.WebUser.id == invitee_id).first()
+    again = codes.redeem_code(db, user, "CC-REG-ONE")
+    db.rollback()
+finally:
+    db.close()
+check("卡码并发核销：用尽后再核销被拒", again.get("success") is False,
+      str(again.get("message")))
+check("卡码并发核销：拒绝时没有再发会员", membership_days_total() == after_once,
+      f"{membership_days_total()} vs {after_once}")
+
+# ==================== 8. 订单退款并发：只能冲正一次 ====================
+# 旧实现是「读状态 → 判断是不是 paid → 冲正积分 → 写回 refunded」：
+# 同一笔已支付订单被并发退两次时，两边都读到 paid，于是各扣一次积分
+# （`_reverse_points` 不是幂等的）→ 双重回滚。现在先做条件 UPDATE
+# 把 paid 原子推进到 refunded（rowcount=0 的那一边直接返回「已处理」）。
+
+print("\n--- 订单退款并发 ---")
+
+from decimal import Decimal  # noqa: E402
+
+from backend.api.orders_admin import RefundRequest, refund_order  # noqa: E402
+
+REFUND_ORDER = "CC-REFUND-ONE"
+REFUND_POINTS = 200
+
+with SessionLocal() as db:
+    buyer = models.WebUser(username="cc-refund-buyer", password_hash="not-used",
+                           is_active=True, points=REFUND_POINTS)
+    staff = models.WebUser(username="cc-refund-staff", password_hash="not-used",
+                           is_active=True, is_staff=True)
+    db.add_all([buyer, staff])
+    db.commit()
+    buyer_id, staff_id = buyer.id, staff.id
+    pkg = models.RechargePackage(name="并发退款用积分包", amount=REFUND_POINTS,
+                                 price=10, bonus=0, is_active=True)
+    db.add(pkg)
+    db.flush()
+    db.add(models.RechargeOrder(
+        order_id=REFUND_ORDER, user_id=buyer_id, package_id=pkg.id, amount=REFUND_POINTS,
+        price=Decimal("10.00"), payment_method="alipay", status="paid",
+    ))
+    # 履约时留下的账本记录：退款按它精确冲正（与真实充值链路一致）
+    db.add(models.PointsLog(
+        user_id=buyer_id, amount=REFUND_POINTS, balance_after=REFUND_POINTS,
+        type="recharge", description="并发退款回归", ref_id=f"recharge:{REFUND_ORDER}",
+    ))
+    db.commit()
+
+
+def refund_once(i: int):
+    db = SessionLocal()
+    try:
+        order = db.query(models.RechargeOrder).filter(
+            models.RechargeOrder.order_id == REFUND_ORDER).first()
+        admin_user = db.query(models.WebUser).filter(models.WebUser.id == staff_id).first()
+        out = run_async_endpoint(refund_order, REFUND_ORDER, RefundRequest(reason=f"并发 {i}"),
+                                admin_user, db)
+        if out[0] and isinstance(out[1], dict):
+            db.commit()
+        else:
+            db.rollback()
+        return out
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        return False, exc
+    finally:
+        db.close()
+
+
+results = run_parallel(refund_once, 4)
+ok_bodies = [r[1] for r in results if r and r[0] and isinstance(r[1], dict)]
+real_refunds = [b for b in ok_bodies if not b.get("already_processed")]
+already = [b for b in ok_bodies if b.get("already_processed")]
+rejected = [r for r in results if r and not r[0]]
+bad_rejected = [getattr(exc, "status_code", 500) for _, exc in rejected
+                if not (isinstance(exc, HTTPException) and exc.status_code in (400, 409))]
+
+with SessionLocal() as db:
+    order = db.query(models.RechargeOrder).filter(
+        models.RechargeOrder.order_id == REFUND_ORDER).first()
+    points = int(db.query(models.WebUser.points).filter(
+        models.WebUser.id == buyer_id).scalar() or 0)
+    refund_logs = db.query(models.PointsLog).filter(
+        models.PointsLog.ref_id == f"refund:{REFUND_ORDER}",
+        models.PointsLog.type == "refund").count()
+    order_status = order.status
+    refunded_at = order.refunded_at
+
+check("并发退款：只有 1 个请求真正执行了冲正", len(real_refunds) == 1,
+      f"真实退款 {len(real_refunds)} 次 / 已处理 {len(already)} 次 / 被拒 {len(rejected)} 次")
+check("并发退款：其余请求返回「已处理」或被拒（不是 500）",
+      not bad_rejected and len(already) + len(rejected) == 3,
+      f"已处理 {len(already)} / 被拒状态码 {[getattr(e, 'status_code', None) for _, e in rejected]}")
+check("并发退款：积分只扣回一次（没有双重回滚）", points == 0, f"余额={points}")
+check("并发退款：冲正流水只记一笔", refund_logs == 1, f"台账条数={refund_logs}")
+check("并发退款：订单落成已退款并留时间", order_status == "refunded" and refunded_at is not None,
+      f"status={order_status} refunded_at={refunded_at}")
+
 # ==================== 汇总 ====================
 
 print()

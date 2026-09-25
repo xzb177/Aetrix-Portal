@@ -312,6 +312,13 @@ jobs:
       - name: 增量扫描冒烟（目录指纹 / 跳过与安全的边界 / 远程挂载）
         run: python scripts/smoke_test_scan_incremental.py
 
+      # 扫描 × 写接口并发（v2.38.0）：线上现场是「后台扫一次库，前端点什么都要转 30 秒」，
+      # 根因是写事务里等网络（rclone 列目录 / TMDB / ffprobe），写锁被按在网络 RTT 上。
+      # 这里给真实的 IO 出口装探针，检查「IO 有没有落在未提交的写事务里」（探针先自证有效），
+      # 同时一边全量扫描一边循环打真实写接口，量延迟并抓 database is locked。
+      - name: 扫描 × 写接口并发冒烟（写事务里零 IO / 前端不再超时）
+        run: python scripts/smoke_test_scan_write_concurrency.py
+
       # 扫描队列（v2.27.0）：一次线上日志审计的结论——四个库同一分钟里点扫描，四个任务
       # 同时打同一个 WebDAV（同一路径每 5 秒重复 PROPFIND），CPU 打满而进度不动。
       # 这条盯住根因修复：按远程挂载串行化、全局并发上限、排队不报错可取消、
