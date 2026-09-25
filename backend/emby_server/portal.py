@@ -684,6 +684,9 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
     """观看历史：按条目去重，取最近一次播放的设备/客户端/进度
 
     直接读本地会话与用户媒体数据（不触发媒体库扫描），与第三方客户端记录同源。
+
+    顶层口径：单集观看记录按剧聚合（每部剧只保留最近看的那集，行上标注
+    "第X季第X集 · 集名"，点行进剧集详情并定位到该集）；季/单集不出现在顶层。
     """
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
@@ -693,13 +696,18 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
         .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
         .filter(em.PlaybackSession.user_id == request_user.id)
     )
-    if item_type:
-        query = query.filter(em.MediaItem.item_type == item_type)
+    # 前端传 Movie/Series（Emby 惯例首字母大写），库里存小写；此前直接 == 比对，
+    # 在 SQLite 下筛选恒为空。归一化后再比；筛"剧集"时把单集也带上（后面按剧聚合）。
+    type_norm = (item_type or "").strip().lower()
+    if type_norm == "series":
+        query = query.filter(em.MediaItem.item_type.in_(["series", "episode"]))
+    elif type_norm:
+        query = query.filter(em.MediaItem.item_type == type_norm)
 
     total = query.count()
     rows = query.order_by(em.PlaybackSession.last_update_at.desc()).all()
 
-    # 按条目去重（保留最近一次会话），再按 offset/limit 切片
+    # 按条目去重（保留最近一次会话）
     seen: set[int] = set()
     deduped: list[tuple] = []
     for session, item in rows:
@@ -707,28 +715,51 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             continue
         seen.add(item.id)
         deduped.append((session, item))
-    page = deduped[offset:offset + limit]
 
-    item_ids = [item.id for _s, item in page]
+    # 单集 → 父剧集聚合（保持最近在看的顺序，每部剧只留一行）
+    series_cache: dict[int, em.MediaItem] = {}
+    aggregated: list[tuple] = []  # (session, 展示条目, 单集|None)
+    seen_series: set[int] = set()
+    for session, item in deduped:
+        ep = None
+        if item.item_type == "episode" and item.series_id:
+            series = series_cache.get(item.series_id)
+            if series is None:
+                series = db.query(em.MediaItem).filter(
+                    em.MediaItem.id == item.series_id).first()
+                series_cache[item.series_id] = series
+            if series is None:
+                continue  # 孤儿单集：归属丢失，不展示
+            if series.id in seen_series:
+                continue
+            seen_series.add(series.id)
+            ep = item
+            item = series
+        aggregated.append((session, item, ep))
+    page = aggregated[offset:offset + limit]
+
+    # 进度取"实际播放的那集"的用户数据（聚合行取单集的，电影行取自身的）
+    lookup_ids = [it.id for _s, it, _e in page]
+    lookup_ids += [e.id for _s, _i, e in page if e is not None]
     umd_map: dict[int, em.UserMediaData] = {}
-    if item_ids:
+    if lookup_ids:
         for umd in db.query(em.UserMediaData).filter(
             em.UserMediaData.user_id == request_user.id,
-            em.UserMediaData.item_id.in_(item_ids),
+            em.UserMediaData.item_id.in_(lookup_ids),
         ).all():
             umd_map[umd.item_id] = umd
 
     items = []
-    for session, item in page:
-        umd = umd_map.get(item.id)
-        items.append({
+    for session, item, ep in page:
+        umd = umd_map.get(ep.id if ep is not None else item.id)
+        entry = {
             "id": item.guid,
             "name": item.name,
             "type": item.item_type,
             "year": item.production_year,
             "poster_url": f"/emby/Items/{item.guid}/Images/Primary"
             if (item.poster_path or item.primary_image_url) else None,
-            "duration_ticks": item.duration_ticks,
+            "duration_ticks": (ep or item).duration_ticks,
             "position_ticks": (umd.playback_position_ticks if umd else session.position_ticks),
             "played": bool(umd.played) if umd else False,
             "is_favorite": bool(umd.is_favorite) if umd else False,
@@ -737,9 +768,17 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             "client": session.client_name,
             "play_method": session.play_method,
             "watched_at": session.last_update_at.isoformat() if session.last_update_at else None,
-        })
+        }
+        if ep is not None:
+            entry.update({
+                "episode_id": ep.guid,
+                "episode_name": ep.name,
+                "season_number": ep.season_number,
+                "episode_number": ep.episode_number,
+            })
+        items.append(entry)
 
-    return {"total": total, "unique_total": len(deduped), "items": items}
+    return {"total": total, "unique_total": len(aggregated), "items": items}
 
 
 # ==================== 管理端 ====================

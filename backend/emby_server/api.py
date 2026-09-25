@@ -912,6 +912,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     q = request.query_params
     parent_id = q.get("ParentId")
     include_types = (q.get("IncludeItemTypes") or "").split(",")
+    # 是否显式指定了条目类型：顶层浏览/搜索默认只返回 series/movie，
+    # 季/单集只允许出现在剧集详情页（显式 IncludeItemTypes 或专用端点）。
+    explicit_types = bool(include_types and include_types[0])
     exclude_types = (q.get("ExcludeItemTypes") or "").split(",")
     sort_by = (q.get("SortBy") or "SortName").split(",")
     sort_order = (q.get("SortOrder") or "Ascending").split(",")
@@ -988,6 +991,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     )
                 else:
                     query = query.filter(em.MediaItem.library_id == lib.id)
+                if not explicit_types:
+                    # 媒体库顶层浏览默认只看 series/movie：
+                    # 季/单集卡片只出现在剧集详情页内，不平铺到顶层。
+                    query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
             else:
                 # 类型 / 工作室 / 年份的合成 Id：点进去要得到真实筛选结果
                 hit = _synthetic_lookup(db).get(parent_id)
@@ -1003,6 +1010,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     query = query.filter(em.MediaItem.guid == parent_id)
     elif not recursive:
         # 非递归默认返回顶层
+        query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
+
+    if search and not parent_id and not explicit_types:
+        # 全局搜索默认只返回顶层（series/movie）：季/单集不出现在顶层搜索结果里。
         query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
 
     if include_types and include_types[0]:

@@ -42,6 +42,23 @@ function typeLabel(t?: string | null) {
   return ({ Movie: '电影', Series: '剧集', Episode: '剧集' } as Record<string, string>)[t || ''] || '影片'
 }
 
+/** 聚合行的单集副标题：看到第X季第X集 · 集名 */
+function episodeLabel(item: WatchHistoryItem): string {
+  const pos =
+    item.season_number != null && item.episode_number != null
+      ? `第${item.season_number}季第${item.episode_number}集`
+      : item.episode_number != null
+        ? `第${item.episode_number}集`
+        : ''
+  const name = (item.episode_name || '').trim()
+  return [pos, name].filter(Boolean).join(' · ')
+}
+
+/** 聚合行点进剧集详情并定位到该集；电影照常进详情页 */
+function itemTo(item: WatchHistoryItem): string {
+  return item.episode_id ? `/media/${item.id}?ep=${item.episode_id}` : `/media/${item.id}`
+}
+
 function fmtTime(iso?: string | null) {
   if (!iso) return '—'
   const date = new Date(iso)
@@ -178,7 +195,7 @@ onMounted(refreshAll)
             v-for="item in items"
             :key="item.id + (item.watched_at || '')"
             class="history-item au-card"
-            :to="`/media/${item.id}`"
+            :to="itemTo(item)"
           >
             <div class="poster">
               <img v-if="item.poster_url" :src="item.poster_url" :alt="item.name" loading="lazy" />
@@ -197,6 +214,9 @@ onMounted(refreshAll)
               </div>
               <div class="item-meta">
                 <span>{{ typeLabel(item.type) }}</span>
+                <template v-if="item.episode_id">
+                  <span class="meta-sep">·</span><span class="ep-label">{{ episodeLabel(item) }}</span>
+                </template>
                 <template v-if="item.year"><span class="meta-sep">·</span><span>{{ item.year }}</span></template>
                 <span class="meta-sep">·</span>
                 <span>{{ remainText(item, progressOf(item)) }}</span>
@@ -322,6 +342,11 @@ onMounted(refreshAll)
   padding: 0.625rem 0.875rem 0.625rem 0.625rem;
   text-decoration: none;
   transition: all var(--au-fast) var(--au-ease);
+}
+
+.ep-label {
+  color: var(--au-primary);
+  font-weight: 600;
 }
 
 .history-item:hover {

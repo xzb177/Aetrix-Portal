@@ -4,11 +4,12 @@
  */
 import { ref } from 'vue'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
-import MediaCard from './MediaCard.vue'
+import MediaCard, { type ResumeInfo } from './MediaCard.vue'
 import type { EmbyItem } from '@/api/emby'
 
-/** moreTo：右上角「查看全部」跳转目标（不传则不显示） */
-defineProps<{ title: string; items: EmbyItem[]; moreTo?: string }>()
+/** moreTo：右上角「查看全部」跳转目标（不传则不显示）
+ *  resumeMap：剧集卡的续播信息（key 为条目 Id），「继续观看」行使用 */
+defineProps<{ title: string; items: EmbyItem[]; moreTo?: string; resumeMap?: Record<string, ResumeInfo> }>()
 
 const scroller = ref<HTMLElement | null>(null)
 
@@ -35,7 +36,7 @@ function scrollBy(dir: 1 | -1) {
       </div>
     </header>
     <div ref="scroller" class="row-scroller">
-      <MediaCard v-for="item in items" :key="item.Id" :item="item" class="row-card" />
+      <MediaCard v-for="item in items" :key="item.Id" :item="item" :resume="resumeMap?.[item.Id]" class="row-card" />
     </div>
   </section>
 </template>

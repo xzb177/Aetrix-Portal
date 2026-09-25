@@ -348,6 +348,14 @@ export interface WatchHistoryItem {
   client?: string | null
   play_method?: string | null
   watched_at?: string | null
+  /**
+   * 单集观看记录按剧聚合后才有：点行进剧集详情并定位到该集。
+   * 顶层只放 movie/series，单集只活在详情页内。
+   */
+  episode_id?: string | null
+  episode_name?: string | null
+  season_number?: number | null
+  episode_number?: number | null
 }
 
 export interface WatchHistory {
