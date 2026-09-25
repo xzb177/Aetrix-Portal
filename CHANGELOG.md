@@ -2,6 +2,69 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.39.0] - 2026-09-25
+
+### 后端：`async` 路由里的同步 DB 清零（阻塞路由基线 24 → 0）
+
+`scripts/check_blocking_routes.py` 盯的是「`async def` 路由里做同步 SQLAlchemy」：
+FastAPI 只在事件循环上跑 `async` 端点，一次查询 / 提交就能让全站（包括别人的播放）排队。
+这一版把清单上**剩下的 24 条全部做掉**，基线现在是空集（`BASELINE = set()`）。
+背景与「为什么不能一次机械替换」见 [`docs/performance.md`](docs/performance.md) 二·七、
+二·八、二·九、二·一〇；这一版的逐域改动与口径写在
+[`docs/performance-blocking-routes.md`](docs/performance-blocking-routes.md)。
+
+修法两种，按「这个端点有没有必须 await 的东西」选：体内没有 await 的**直接改同步 `def`**
+（FastAPI 自动丢线程池，业务代码一个字不用动）；确实要 await（WebSocket 通知 / 读表单 /
+子进程与磁盘 / 外部推送）的，把同步写库那段拆成同步函数交给 `await run_in_threadpool(...)`。
+
+**管理域（`backend/api/admin.py` / `admin_economy.py` / `reminders_admin.py`）**
+
+- 订阅授予 / 延长、站内消息、广播、公告增改、工单回复与关闭、求片状态更新：校验 + 落库 + 审计
+  各拆一个同步函数下放线程池；通知（`notify_admin_event` / `notify_all_users`）仍 await。
+  提交后要用的值（套餐名 / 到期时间 / 工单标题 / 用户 id）一律先取成纯值，避免回到循环上
+  触发一次隐式回查（`Session.commit()` 会过期所有实例）。
+- 人工补单 `economy_mark_order_paid`：整段（查单 → 反幂等 → 履约 → 审计）移进模块级
+  `_mark_order_paid()`，由路由用 `run_in_threadpool` 调用。
+- 手动调账（`economy_adjust_points`）、到期提醒（`run_expiry_reminders`）的落库与审计同样下放。
+
+**用户 / 经济域（`backend/api/user.py` / `economy.py` / `coupons_admin.py`）**
+
+- 签到、兑换码核销、支付回调：验签 / 查单 / 金额核对 / 原子占位 / 发奖 / 履约 / 审计整段下放；
+  只有 `await request.form()` / `await request.json()` 与发通知留在事件循环上。
+- `economy._fulfill_order` 本来就是 `async def`，但**体内一个 await 都没有**（回调与人工补单
+  都被迫在循环上跑它），现在改回同步函数，两个调用方都用 `run_in_threadpool` 调它。
+- 核销记录两个端点（`list_coupon_usages` / `list_coupon_usages_by_code`）体内没有任何 await，
+  直接改同步 `def`，并把查询抽成 `coupon_usages_payload` 共用。
+- 消息「全部标已读」的批量 UPDATE、新建 / 回复工单的落库同样下放。
+
+**协议面（`backend/emby_server/api.py` / `portal.py`）**
+
+- `rate_item`（收藏 / 标记已看）：只有 `await request.json()` 留在循环上，读条目 + 写
+  `UserMediaData` + 序列化整段进工作线程。
+- 结束播放会话（自己停 / 管理员停）与媒体库扫描入队：查库与写回下放；停转码
+  （`stop_transcodes_for_async`）与「转发给归属节点」（`push_scan`）仍是 await。
+
+**两条护栏跟着收口**
+
+- `scripts/check_admin_audit_coverage.py` 现在跟一层委托：端点用
+  `await run_in_threadpool(_helper, ...)` 把整段写库（**含审计**）交给本模块函数时不再误报
+  ——但被调用函数里也没写 `_audit(...)` 的照旧点名；审计判定同时改成语边界匹配，
+  名字以 `_audit` 结尾的普通函数（`_worker_without_audit(`）不再被当成「写了审计」。
+- `scripts/smoke_test_static_guards.py` 的自检跟着更新：阻塞路由那条从「基线非空」改成
+  「真实代码树上一条都没有」（防作弊靠与独立重扫**逐条相等** + 合成样本必须失败），
+  并新增「委托写法」的正反两个样本。
+
+### 验证
+
+- `python -m pytest tests/ -q`：112 项通过。
+- `python scripts/check_blocking_routes.py`：真实代码树 **0 条**、基线 **0 条**；
+  `check_await_consistency` / `check_admin_audit_coverage` / `check_auth_coverage` /
+  `check_version` / `check_branding` / `check_hardcoded_secrets` 全部通过。
+- `python scripts/smoke_test_static_guards.py`：47 项全过（含阻塞路由 0 条与委托正反样本）。
+- 与改动直接相关的冒烟（实测）：经济 19 项、退款/关单 76 项、并发 39 项、优惠券 109 项、
+  到期提醒 50 项、后端热路径 44 项、后台写操作审计 59 项、Emby 主链路与会话 44 项、
+  播放链路 20 项、转码停止 38 项、后台 v2.4.0 与运营 v2.6.0、用户端查漏补缺全部通过。
+
 ## [2.38.0] - 2026-09-25
 
 ### 事务范围：写事务里绝不出现 IO（根治 `database is locked` 与 30 秒超时）

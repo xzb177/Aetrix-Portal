@@ -155,49 +155,61 @@ async def grant_subscription(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """授予用户订阅 - 联动：通知用户"""
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
+    """授予用户订阅 - 联动：通知用户
 
-    plan = db.query(models.SubscriptionPlan).filter(
-        models.SubscriptionPlan.id == request.plan_id
-    ).first()
-    if not plan:
-        raise HTTPException(status_code=404, detail="套餐不存在")
+    校验 / 落库 / 审计整段是同步 SQLAlchemy，压在事件循环上时一次提交就能让全站
+    （包括别人的播放）排队，所以下放线程池；通知要走 WebSocket，必须留在循环上 await。
+    """
+    admin_id = current_admin.id      # 提交会让 ORM 属性过期，先在循环上取成纯值
 
-    end_date = datetime.now() + timedelta(days=request.duration_days)
-    # 会员开在哪个服：显式指定 > 套餐所属的服 > 面板当前服。
-    # 决定了这份会员能在哪台 EA 上播放（见 backend/subscriptions.py）。
-    realm_id = request.realm_id or plan.realm_id or realms.active_realm_id(db)
-    subscription = models.UserSubscription(
-        user_id=user_id,
-        plan_id=request.plan_id,
-        realm_id=realm_id,
-        start_date=datetime.now(),
-        end_date=end_date,
-        status="active",
-    )
-    db.add(subscription)
-    db.commit()
-    db.refresh(subscription)
+    def _grant() -> dict:
+        user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
 
-    _audit(db, current_admin, "grant_subscription", "subscription",
-           subscription.id, {"user_id": user_id, "plan_id": request.plan_id,
-                             "duration_days": request.duration_days,
-                             "realm_id": realm_id})
-    db.commit()
+        plan = db.query(models.SubscriptionPlan).filter(
+            models.SubscriptionPlan.id == request.plan_id
+        ).first()
+        if not plan:
+            raise HTTPException(status_code=404, detail="套餐不存在")
+        plan_name = plan.name    # 提交后回读属性=一次隐式回查，先取成纯值
+
+        end_date = datetime.now() + timedelta(days=request.duration_days)
+        # 会员开在哪个服：显式指定 > 套餐所属的服 > 面板当前服。
+        # 决定了这份会员能在哪台 EA 上播放（见 backend/subscriptions.py）。
+        realm_id = request.realm_id or plan.realm_id or realms.active_realm_id(db)
+        subscription = models.UserSubscription(
+            user_id=user_id,
+            plan_id=request.plan_id,
+            realm_id=realm_id,
+            start_date=datetime.now(),
+            end_date=end_date,
+            status="active",
+        )
+        db.add(subscription)
+        db.commit()
+        db.refresh(subscription)
+
+        _audit(db, admin_id, "grant_subscription", "subscription",
+               subscription.id, {"user_id": user_id, "plan_id": request.plan_id,
+                                 "duration_days": request.duration_days,
+                                 "realm_id": realm_id})
+        db.commit()
+        return {"subscription_id": subscription.id, "plan_name": plan_name,
+                "end_date": end_date}
+
+    info = await run_in_threadpool(_grant)
 
     await notify_admin_event(
         event_type=AdminEvent.SUBSCRIPTION_MANUAL,
         user_id=user_id,
         title="🎉 恭喜获得订阅",
-        content=(f"管理员已为您开通「{plan.name}」订阅，有效期 {request.duration_days} 天"
-                 f"\n到期时间：{end_date.strftime('%Y-%m-%d')}"),
-        related_id=subscription.id,
-        from_admin_id=current_admin.id,
+        content=(f"管理员已为您开通「{info['plan_name']}」订阅，有效期 {request.duration_days} 天"
+                 f"\n到期时间：{info['end_date'].strftime('%Y-%m-%d')}"),
+        related_id=info["subscription_id"],
+        from_admin_id=admin_id,
     )
-    return {"success": True, "subscription_id": subscription.id,
+    return {"success": True, "subscription_id": info["subscription_id"],
             "message": "订阅授予成功并已通知用户"}
 
 
@@ -208,31 +220,38 @@ async def extend_subscription(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """延长订阅有效期 - 联动：通知用户"""
-    subscription = db.query(models.UserSubscription).filter(
-        models.UserSubscription.id == subscription_id
-    ).first()
-    if not subscription:
-        raise HTTPException(status_code=404, detail="订阅不存在")
+    """延长订阅有效期 - 联动：通知用户（同步写库整段下放线程池，通知仍 await）"""
+    admin_id = current_admin.id
 
-    subscription.end_date = max(
-        subscription.end_date or datetime.now(), datetime.now()
-    ) + timedelta(days=request.days)
-    subscription.updated_at = datetime.now()
-    db.commit()
+    def _extend() -> dict:
+        subscription = db.query(models.UserSubscription).filter(
+            models.UserSubscription.id == subscription_id
+        ).first()
+        if not subscription:
+            raise HTTPException(status_code=404, detail="订阅不存在")
 
-    _audit(db, current_admin, "extend_subscription", "subscription",
-           subscription.id, {"days": request.days})
-    db.commit()
+        subscription.end_date = max(
+            subscription.end_date or datetime.now(), datetime.now()
+        ) + timedelta(days=request.days)
+        subscription.updated_at = datetime.now()
+        db.commit()
+
+        _audit(db, admin_id, "extend_subscription", "subscription",
+               subscription.id, {"days": request.days})
+        db.commit()
+        return {"subscription_id": subscription.id, "user_id": subscription.user_id,
+                "end_date": subscription.end_date}
+
+    info = await run_in_threadpool(_extend)
 
     await notify_admin_event(
         event_type=AdminEvent.SUBSCRIPTION_EXTENDED,
-        user_id=subscription.user_id,
+        user_id=info["user_id"],
         title="订阅已延长",
         content=(f"您的订阅已延长 {request.days} 天，"
-                 f"新到期时间：{subscription.end_date.strftime('%Y-%m-%d')}"),
-        related_id=subscription.id,
-        from_admin_id=current_admin.id,
+                 f"新到期时间：{info['end_date'].strftime('%Y-%m-%d')}"),
+        related_id=info["subscription_id"],
+        from_admin_id=admin_id,
     )
     return {"success": True, "message": "订阅延长成功"}
 
@@ -365,14 +384,19 @@ async def send_user_message(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """给指定用户发送站内消息"""
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
+    """给指定用户发送站内消息（校验 + 审计下放线程池）"""
+    admin_id = current_admin.id
 
-    _audit(db, current_admin, "send_user_message", "user", user_id,
-           {"title": request.title})
-    db.commit()
+    def _prepare() -> None:
+        user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+
+        _audit(db, admin_id, "send_user_message", "user", user_id,
+               {"title": request.title})
+        db.commit()
+
+    await run_in_threadpool(_prepare)
 
     await notify_admin_event(
         event_type=f"station.{request.message_type}",
@@ -390,10 +414,15 @@ async def broadcast_message(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """广播消息给所有用户"""
-    _audit(db, current_admin, "broadcast_message", "all_users", None,
-           {"title": request.title})
-    db.commit()
+    """广播消息给所有用户（审计下放线程池；广播本身要给每个用户落站内信 + 实时推送）"""
+    admin_id = current_admin.id
+
+    def _audit_broadcast() -> None:
+        _audit(db, admin_id, "broadcast_message", "all_users", None,
+               {"title": request.title})
+        db.commit()
+
+    await run_in_threadpool(_audit_broadcast)
 
     count = await notify_all_users(
         event_type="system.broadcast",
@@ -613,21 +642,28 @@ async def create_announcement(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """创建公告 - 联动：广播通知所有用户"""
-    announcement = models.Announcement(
-        title=request.title,
-        content=request.content,
-        type=request.type,
-        is_pinned=request.is_pinned,
-        is_active=True,
-    )
-    db.add(announcement)
-    db.commit()
-    db.refresh(announcement)
+    """创建公告 - 联动：广播通知所有用户（落库 + 审计下放线程池）"""
+    admin_id = current_admin.id
 
-    _audit(db, current_admin, "create_announcement", "announcement",
-           announcement.id, {"title": request.title})
-    db.commit()
+    def _create() -> int:
+        announcement = models.Announcement(
+            title=request.title,
+            content=request.content,
+            type=request.type,
+            is_pinned=request.is_pinned,
+            is_active=True,
+        )
+        db.add(announcement)
+        db.commit()
+        db.refresh(announcement)
+        announcement_id = announcement.id
+
+        _audit(db, admin_id, "create_announcement", "announcement",
+               announcement_id, {"title": request.title})
+        db.commit()
+        return announcement_id
+
+    announcement_id = await run_in_threadpool(_create)
 
     # notify_all_users 现在给**每个启用中的用户**落站内消息（不只当时在线的人），
     # 返回值就是实际收到的用户数，文案跟着这个数字走，不再无条件宣称"已推送给所有用户"
@@ -635,9 +671,9 @@ async def create_announcement(
         event_type=AdminEvent.ANNOUNCEMENT_PUBLISHED,
         title=f"📢 {request.title}",
         content=request.content,
-        data={"announcement_id": announcement.id, "type": request.type},
+        data={"announcement_id": announcement_id, "type": request.type},
     )
-    return {"success": True, "announcement_id": announcement.id,
+    return {"success": True, "announcement_id": announcement_id,
             "notified_users": notified,
             "message": f"公告创建成功，已为 {notified} 位用户生成站内消息"}
 
@@ -649,26 +685,33 @@ async def update_announcement(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    announcement = db.query(models.Announcement).filter(
-        models.Announcement.id == announcement_id
-    ).first()
-    if not announcement:
-        raise HTTPException(status_code=404, detail="公告不存在")
+    admin_id = current_admin.id
 
-    update_data = request.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(announcement, key, value)
-    announcement.updated_at = datetime.now()
-    db.commit()
+    def _update() -> str:
+        announcement = db.query(models.Announcement).filter(
+            models.Announcement.id == announcement_id
+        ).first()
+        if not announcement:
+            raise HTTPException(status_code=404, detail="公告不存在")
 
-    _audit(db, current_admin, "update_announcement", "announcement",
-           announcement_id, update_data)
-    db.commit()
+        update_data = request.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(announcement, key, value)
+        announcement.updated_at = datetime.now()
+        title = announcement.title or ""    # 提交后回读会隐式回查，先取成纯值
+        db.commit()
+
+        _audit(db, admin_id, "update_announcement", "announcement",
+               announcement_id, update_data)
+        db.commit()
+        return title
+
+    title = await run_in_threadpool(_update)
 
     await notify_all_users(
         event_type=AdminEvent.ANNOUNCEMENT_UPDATED,
         title="公告已更新",
-        content=f"公告「{announcement.title}」已更新，请查看",
+        content=f"公告「{title}」已更新，请查看",
         data={"announcement_id": announcement_id},
     )
     return {"success": True, "message": "公告更新成功"}
@@ -778,26 +821,33 @@ async def update_ticket(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    ticket = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="工单不存在")
+    admin_id = current_admin.id
 
-    update_data = request.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(ticket, key, value)
-    ticket.updated_at = datetime.now()
-    db.commit()
+    def _update() -> dict:
+        ticket = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="工单不存在")
 
-    _audit(db, current_admin, "update_ticket", "ticket", ticket_id, update_data)
-    db.commit()
+        update_data = request.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(ticket, key, value)
+        ticket.updated_at = datetime.now()
+        db.commit()
+
+        _audit(db, admin_id, "update_ticket", "ticket", ticket_id, update_data)
+        db.commit()
+        return {"user_id": ticket.user_id, "title": ticket.title,
+                "status": ticket.status}
+
+    info = await run_in_threadpool(_update)
 
     await notify_admin_event(
         event_type=AdminEvent.TICKET_REPLIED,
-        user_id=ticket.user_id,
+        user_id=info["user_id"],
         title="工单状态已更新",
-        content=f"您的工单「{ticket.title}」状态已变更为：{ticket.status}",
+        content=f"您的工单「{info['title']}」状态已变更为：{info['status']}",
         related_id=ticket_id,
-        from_admin_id=current_admin.id,
+        from_admin_id=admin_id,
     )
     return {"success": True, "message": "工单更新成功"}
 
@@ -809,34 +859,40 @@ async def reply_ticket(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """回复工单 - 联动：通知用户"""
-    ticket = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="工单不存在")
+    """回复工单 - 联动：通知用户（落库 + 审计下放线程池，通知仍 await）"""
+    admin_id = current_admin.id
 
-    message = models.TicketMessage(
-        ticket_id=ticket.id,
-        user_id=current_admin.id,  # 统一账号体系：staff 回复记 WebUser.id
-        message=request.message,
-        is_admin=True,
-    )
-    db.add(message)
+    def _reply() -> dict:
+        ticket = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="工单不存在")
 
-    ticket.status = "closed" if request.close_ticket else "open"
-    ticket.updated_at = datetime.now()
-    db.commit()
+        message = models.TicketMessage(
+            ticket_id=ticket.id,
+            user_id=admin_id,      # 统一账号体系：staff 回复记 WebUser.id
+            message=request.message,
+            is_admin=True,
+        )
+        db.add(message)
 
-    _audit(db, current_admin, "reply_ticket", "ticket", ticket_id,
-           {"closed": request.close_ticket})
-    db.commit()
+        ticket.status = "closed" if request.close_ticket else "open"
+        ticket.updated_at = datetime.now()
+        db.commit()
+
+        _audit(db, admin_id, "reply_ticket", "ticket", ticket_id,
+               {"closed": request.close_ticket})
+        db.commit()
+        return {"user_id": ticket.user_id}
+
+    info = await run_in_threadpool(_reply)
 
     await notify_admin_event(
         event_type=AdminEvent.TICKET_REPLIED if not request.close_ticket else AdminEvent.TICKET_CLOSED,
-        user_id=ticket.user_id,
+        user_id=info["user_id"],
         title="工单有新回复" if not request.close_ticket else "工单已关闭",
         content=request.message,
         related_id=ticket_id,
-        from_admin_id=current_admin.id,
+        from_admin_id=admin_id,
     )
     return {"success": True, "message": "回复成功"}
 
@@ -847,26 +903,32 @@ async def close_ticket(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    ticket = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="工单不存在")
+    admin_id = current_admin.id
 
-    was_closed = ticket.status == "closed"
-    ticket.status = "closed"
-    ticket.updated_at = datetime.now()
-    # 关单与「回复并关单」是同一件事的两条入口，但这条一直没写审计：
-    # 用户收到「工单已被关闭」的通知，运营在操作日志里却查不到是谁关的（v2.30.0 补上）。
-    _audit(db, current_admin, "close_ticket", "ticket", ticket_id,
-           {"already_closed": was_closed})
-    db.commit()
+    def _close() -> dict:
+        ticket = db.query(models.Ticket).filter(models.Ticket.id == ticket_id).first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="工单不存在")
+
+        was_closed = ticket.status == "closed"
+        ticket.status = "closed"
+        ticket.updated_at = datetime.now()
+        # 关单与「回复并关单」是同一件事的两条入口，但这条一直没写审计：
+        # 用户收到「工单已被关闭」的通知，运营在操作日志里却查不到是谁关的（v2.30.0 补上）。
+        _audit(db, admin_id, "close_ticket", "ticket", ticket_id,
+               {"already_closed": was_closed})
+        db.commit()
+        return {"user_id": ticket.user_id, "title": ticket.title}
+
+    info = await run_in_threadpool(_close)
 
     await notify_admin_event(
         event_type=AdminEvent.TICKET_CLOSED,
-        user_id=ticket.user_id,
+        user_id=info["user_id"],
         title="工单已关闭",
-        content=f"您的工单「{ticket.title}」已被管理员关闭",
+        content=f"您的工单「{info['title']}」已被管理员关闭",
         related_id=ticket_id,
-        from_admin_id=current_admin.id,
+        from_admin_id=admin_id,
     )
     return {"success": True, "message": "工单已关闭"}
 
@@ -1005,20 +1067,27 @@ async def update_media_seek(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    media_request = db.query(models.MovieRequest).filter(
-        models.MovieRequest.id == request_id
-    ).first()
-    if not media_request:
-        raise HTTPException(status_code=404, detail="求片请求不存在")
+    admin_id = current_admin.id
 
-    media_request.status = request.status
-    media_request.admin_note = request.admin_note
-    media_request.updated_at = datetime.now()
-    db.commit()
+    def _update() -> dict:
+        media_request = db.query(models.MovieRequest).filter(
+            models.MovieRequest.id == request_id
+        ).first()
+        if not media_request:
+            raise HTTPException(status_code=404, detail="求片请求不存在")
 
-    _audit(db, current_admin, "update_media_seek", "media_seek", request_id,
-           {"status": request.status})
-    db.commit()
+        media_request.status = request.status
+        media_request.admin_note = request.admin_note
+        media_request.updated_at = datetime.now()
+        db.commit()
+
+        _audit(db, admin_id, "update_media_seek", "media_seek", request_id,
+               {"status": request.status})
+        db.commit()
+        return {"user_id": media_request.user_id,
+                "movie_name": media_request.movie_name}
+
+    info = await run_in_threadpool(_update)
 
     event_map = {
         "approved": AdminEvent.MEDIA_SEEK_APPROVED,
@@ -1032,12 +1101,12 @@ async def update_media_seek(
     }
     await notify_admin_event(
         event_type=event_map.get(request.status, "media_seek.updated"),
-        user_id=media_request.user_id,
+        user_id=info["user_id"],
         title=title_map.get(request.status, "求片状态已更新"),
-        content=(f"您的求片《{media_request.movie_name}》状态已更新为：{request.status}"
+        content=(f"您的求片《{info['movie_name']}》状态已更新为：{request.status}"
                  + (f"\n备注：{request.admin_note}" if request.admin_note else "")),
         related_id=request_id,
-        from_admin_id=current_admin.id,
+        from_admin_id=admin_id,
     )
     return {"success": True, "message": "求片状态更新成功"}
 
@@ -1608,14 +1677,13 @@ def economy_list_orders(
     return {"total": total, "orders": items[:limit]}
 
 
-@admin_router.post("/economy/orders/{order_id}/mark-paid")
-async def economy_mark_order_paid(
-    order_id: str,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """人工补单（标记已支付并履约）— 用于线下收款/支付回调丢失"""
-    from backend.api.economy import FulfillmentError, _fulfill_order, send_fulfill_notifications
+def _mark_order_paid(db: Session, order_id: str, admin_id: int) -> list:
+    """人工补单的同步核心：查单 → 反幂等 → 履约 → 审计（由路由下放线程池执行）
+
+    独立成模块级函数（而不是嵌在路由里）是因为整段都是同步 SQLAlchemy：
+    ``economy._fulfill_order`` 内部一个 await 都没有，一次提交就能把事件循环按住。
+    """
+    from backend.api.economy import FulfillmentError, _fulfill_order
 
     recharge_order = db.query(models.RechargeOrder).filter(
         models.RechargeOrder.order_id == order_id
@@ -1634,8 +1702,8 @@ async def economy_mark_order_paid(
         raise HTTPException(status_code=400, detail="订单已是已支付状态")
 
     try:
-        pending = await _fulfill_order(db, recharge_order=recharge_order,
-                                       subscription_order=subscription_order)
+        pending = _fulfill_order(db, recharge_order=recharge_order,
+                                 subscription_order=subscription_order)
         commit_with_retry(db, label="人工补单")
     except FulfillmentError as exc:
         # 缺料（套餐 / 用户已不存在）：订单保持未支付，管理员先修好再补单，
@@ -1643,12 +1711,29 @@ async def economy_mark_order_paid(
         db.rollback()
         raise HTTPException(status_code=400, detail=f"履约失败：{exc}") from exc
 
-    # 先提交再发通知：履约事务里另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
-    await send_fulfill_notifications(pending)
-
-    _audit(db, current_admin, "economy_mark_order_paid", "order", None,
+    _audit(db, admin_id, "economy_mark_order_paid", "order", None,
            {"order_id": order_id})
     db.commit()
+    return pending
+
+
+@admin_router.post("/economy/orders/{order_id}/mark-paid")
+async def economy_mark_order_paid(
+    order_id: str,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """人工补单（标记已支付并履约）— 用于线下收款/支付回调丢失
+
+    履约（``_mark_order_paid``）整段是同步 SQLAlchemy，下放线程池执行；
+    通知要走 WebSocket，必须留在事件循环上 await。
+    """
+    from backend.api.economy import send_fulfill_notifications
+
+    pending = await run_in_threadpool(_mark_order_paid, db, order_id, current_admin.id)
+
+    # 先提交再发通知：履约事务里另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
+    await send_fulfill_notifications(pending)
     return {"success": True, "message": "订单已标记支付并发货"}
 
 

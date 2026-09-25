@@ -13,6 +13,15 @@
 > 写接口 `POST /api/admin/economy/plans`：写事务里的 IO **0 次**、最长写事务 **约 150ms**、
 > 并发写接口中位 **14ms** / 最大 **0.18s**、`database is locked` **0 条**。
 
+> **v2.39.0 追加**：这一版把「`async` 路由里做同步 DB」的**存量清零**——
+> `scripts/check_blocking_routes.py` 的基线从 24 条清到 **0 条**（管理 / 用户 / 经济三域的写库
+> 整段下放线程池，必须 await 的通知与网络留在事件循环上；人工补单与支付回调共用的
+> `economy._fulfill_order` 一并改回同步函数）。
+> **逐域改动、口径与验证见 [`docs/performance-blocking-routes.md`](performance-blocking-routes.md)。**
+>
+> 注意：本文件后面的「二·七」小节与「三、已知瓶颈」里还留着「存量还有 24 / 37 条」的旧说法，
+> 它们描述的是当时的状态；**最新状态一律以本节与那份专门文档为准**。
+
 数字口径以 `scripts/smoke_test_scan_budget.py` 为准（CI 每次都会跑），
 下面引用的是 162 个文件（150 部电影 + 2 部剧 12 集）的实测值。
 
@@ -234,8 +243,9 @@ v2.13.0 已在协议面定了口径：路由体内没有 `await` 的就写同步
   有模块级定义，就必须至少有一个 `async def` 版本。只看裸名（`await obj.f(...)`
   无法靠文本可靠解析，宁可不报也不误报）。
 - `scripts/check_blocking_routes.py`：`async def` 路由里出现同步 DB 调用即失败。
-  存量 41 条记在脚本的 `BASELINE` 里（v2.35.0 做掉两条热路径 → 39 条；
-  v2.36.0 两条求片链路 + 通知层下放线程池 → 37 条），改好一条删一行。口径：只认路由函数体自身、
+  存量记在脚本的 `BASELINE` 里，只减不增：v2.35.0 做掉两条热路径 → 39 条；
+  v2.36.0 两条求片链路 + 通知层下放线程池 → 37 条；v2.37.0 探测 / 体检层 13 条 → 24 条；
+  **v2.39.0 把剩下的 24 条全部做掉 → 0 条（基线现在是空的）**。口径：只认路由函数体自身、
   以及**体内定义且被直接同步调用**的嵌套函数；被 `run_in_threadpool` / `to_thread`
   下放的嵌套函数放行（本仓库已有此写法，见 `portal_mount_routes.py`）。
 
@@ -249,7 +259,7 @@ v2.13.0 已在协议面定了口径：路由体内没有 `await` 的就写同步
   合成树上 `async`+`db.commit` 要报、同步 `def` 不报、不碰库不报、直接调用的嵌套函数要报、
   下放的嵌套函数不报。
 
-### 剩下的阻塞路由：为什么不是机械改 `def`（v2.21.0 时点 41 条 → v2.37.0 时点 24 条）
+### 剩下的阻塞路由：为什么不是机械改 `def`（v2.21.0 时点 41 条 → v2.37.0 时点 24 条 → **v2.39.0 清零**）
 
 `scripts/check_blocking_routes.py` 基线里那 41 条**都有必须 `await` 的东西**：
 `notify_admin_event` / `notify_staff_users` / `notify_all_users`（通知推送）、
@@ -280,6 +290,8 @@ v2.37.0 再把**探测 / 体检层**那一半拆掉：`servers.probe_and_store` 
 `admin.py::push_media_seek` 两条求片链路**已在 v2.36.0 做掉**（见二·九）；
 整条**探测 / 体检链路**（13 条）**已在 v2.37.0 做掉**（见二·一〇）。
 
+（下面这些在 v2.39.0 已全部做掉——逐域改动见 [`docs/performance-blocking-routes.md`](performance-blocking-routes.md)，
+这里保留原描述，因为「为什么不是机械改 `def`」这个判断仍然成立。）
 剩下 24 条的分布（`scripts/check_blocking_routes.py` 里可读）：`admin.py` 11 条
 （公告 / 工单 / 消息 / 订阅与订单，都是管理员偶发操作，且都要 `await` 通知或结算）、
 `user.py` 3 条（工单 / 已读）、`emby_server/*` 6 条（115 账号与扫描相关的长任务）、

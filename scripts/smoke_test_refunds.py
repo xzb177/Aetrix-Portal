@@ -24,7 +24,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -230,7 +229,8 @@ with SessionLocal() as db:
     from backend.api.economy import _fulfill_order
     order = db.query(models.RechargeOrder).filter(
         models.RechargeOrder.order_id == "RC-REFUND-1").first()
-    asyncio.run(_fulfill_order(db, recharge_order=order))
+    # _fulfill_order 是同步函数（async 路由用 run_in_threadpool 调它），这里直接调
+    _fulfill_order(db, recharge_order=order)
     db.commit()
 check("回调重放也不会二次发货", points_of(buyer_id) == 0, str(points_of(buyer_id)))
 

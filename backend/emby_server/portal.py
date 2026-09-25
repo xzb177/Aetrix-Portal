@@ -651,19 +651,24 @@ async def stop_my_session(session_key: str,
                           request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
     """结束自己的播放会话（同时释放转码进程）"""
-    session = (
-        db.query(em.PlaybackSession)
-        .filter(
-            em.PlaybackSession.session_key == session_key,
-            em.PlaybackSession.user_id == request_user.id,
+    def _end_session() -> tuple:
+        "结束会话的同步段：查会话 / 取条目 guid / 写结束时间（下放线程池）"
+        session = (
+            db.query(em.PlaybackSession)
+            .filter(
+                em.PlaybackSession.session_key == session_key,
+                em.PlaybackSession.user_id == request_user.id,
+            )
+            .first()
         )
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="播放会话不存在")
-    ended_user_id, ended_item = session.user_id, item_guid_for(db, session.item_id)
-    session.ended_at = datetime.now()
-    db.commit()
+        if not session:
+            raise HTTPException(status_code=404, detail="播放会话不存在")
+        ended = (session.user_id, item_guid_for(db, session.item_id))
+        session.ended_at = datetime.now()
+        db.commit()
+        return ended
+
+    ended_user_id, ended_item = await run_in_threadpool(_end_session)
     # 按「用户 + 条目 guid」反查转码会话：播放会话键（PlaySessionId）与转码会话 id（uuid）
     # 不是同一个东西，旧实现拿前者去 pop 等于什么都没停到（见 streaming.find_transcodes）。
     await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
@@ -1184,47 +1189,61 @@ def list_library_scans(lib_id: int, limit: int = 20,
 
 @admin_emby_router.post("/libraries/{lib_id}/scan")
 async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
-    if not lib:
-        raise HTTPException(status_code=404, detail="媒体库不存在")
+    def _enqueue() -> dict:
+        """查库 + 归属节点判定 + 入队：整段同步 SQLAlchemy，下放线程池执行
 
-    # 已分配给某台节点的库，只有那台机器碰得到文件（本机路径 / rclone / 挂载）——
-    # 由面板本地扫描只会得到一堆 failed_roots，所以转发过去让归属节点扫。
-    owner = node_lib.library_owner(db, lib)
-    if owner is not None and owner.id != node_lib.self_node_id(db):
-        forward = await node_lib.push_scan(owner.url, lib.id)
+        只有「转发给归属节点」这一步要 await 网络（push_scan），所以它留在事件循环上。
+        """
+        lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+        if not lib:
+            raise HTTPException(status_code=404, detail="媒体库不存在")
+
+        # 已分配给某台节点的库，只有那台机器碰得到文件（本机路径 / rclone / 挂载）——
+        # 由面板本地扫描只会得到一堆 failed_roots，所以转发过去让归属节点扫。
+        owner = node_lib.library_owner(db, lib)
+        if owner is not None and owner.id != node_lib.self_node_id(db):
+            return {"forward_to": {"id": owner.id, "name": owner.name, "url": owner.url}}
+
+        # 入队而不是直接起线程（v2.27.0）：不同媒体库引用同一个远程挂载时排队跑，
+        # 不让四个任务同时打同一个 WebDAV；重复点击不报 409，直接告诉你「已经在队列/正在扫」。
+        # 后台线程用独立 Session（请求结束时请求级 Session 会被关闭，复用会导致
+        # "transaction is closed" 与 SQLite 写锁冲突）——那一层现在在 scan_queue 里。
+        result = scan_queue.enqueue(lib, trigger="manual")
+        task = result["task"]
+        if not result["created"]:
+            return {"response": {
+                "success": True, "queued": False, "already": True, "state": task["state"],
+                "message": ("该媒体库正在扫描中" if task["state"] == "running"
+                            else f"该媒体库已在扫描队列中（第 {task.get('position') or '-'} 位）"),
+                "task": task}}
+        if task["state"] == "running":
+            # 没被任何东西挡住：入队即开扫（就地派发），如实说「已启动」而不是「排队第 1 位」
+            return {"response": {
+                "success": True, "queued": True, "already": False, "started": True,
+                "task": task, "message": "扫描已启动"}}
+        waiting = [mount_lib.mount_label(m)
+                   for m in _waiting_mount_objects(db, task.get("waiting_for"))]
+        return {"response": {
+            "success": True, "queued": True, "already": False, "started": False, "task": task,
+            "message": (f"已加入扫描队列（第 {task.get('position') or '-'} 位）"
+                        + (f"，正在等挂载：{'、'.join(waiting)}" if waiting
+                           else "，前面还有扫描在跑")),
+        }}
+
+    prepared = await run_in_threadpool(_enqueue)
+
+    target = prepared.get("forward_to")
+    if target:
+        forward = await node_lib.push_scan(target["url"], lib_id)
         if not forward.get("ok"):
             raise HTTPException(
                 status_code=502,
-                detail=f"这个库归「{owner.name}」扫描，但转发失败了：{forward.get('error')}"
+                detail=f"这个库归「{target['name']}」扫描，但转发失败了：{forward.get('error')}"
                 "（请检查该节点的地址与两端 SECRET_KEY）",
             )
-        return {"success": True, "message": f"已让节点「{owner.name}」开始扫描",
-                "forwarded_to": {"id": owner.id, "name": owner.name, "url": owner.url},
-                "library_id": lib.id}
-
-    # 入队而不是直接起线程（v2.27.0）：不同媒体库引用同一个远程挂载时排队跑，
-    # 不让四个任务同时打同一个 WebDAV；重复点击不报 409，直接告诉你「已经在队列/正在扫」。
-    # 后台线程用独立 Session（请求结束时请求级 Session 会被关闭，复用会导致
-    # "transaction is closed" 与 SQLite 写锁冲突）——那一层现在在 scan_queue 里。
-    result = scan_queue.enqueue(lib, trigger="manual")
-    task = result["task"]
-    if not result["created"]:
-        return {"success": True, "queued": False, "already": True, "state": task["state"],
-                "message": ("该媒体库正在扫描中" if task["state"] == "running"
-                            else f"该媒体库已在扫描队列中（第 {task.get('position') or '-'} 位）"),
-                "task": task}
-    if task["state"] == "running":
-        # 没被任何东西挡住：入队即开扫（就地派发），如实说「已启动」而不是「排队第 1 位」
-        return {"success": True, "queued": True, "already": False, "started": True,
-                "task": task, "message": "扫描已启动"}
-    waiting = [mount_lib.mount_label(m) for m in _waiting_mount_objects(db, task.get("waiting_for"))]
-    return {
-        "success": True, "queued": True, "already": False, "started": False, "task": task,
-        "message": (f"已加入扫描队列（第 {task.get('position') or '-'} 位）"
-                    + (f"，正在等挂载：{'、'.join(waiting)}" if waiting
-                       else "，前面还有扫描在跑")),
-    }
+        return {"success": True, "message": f"已让节点「{target['name']}」开始扫描",
+                "forwarded_to": target, "library_id": lib_id}
+    return prepared["response"]
 
 
 def _waiting_mount_objects(db: Session, mount_ids) -> list:
@@ -1467,14 +1486,21 @@ def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session =
 
 @admin_emby_router.delete("/sessions/{session_key}")
 async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    session = db.query(em.PlaybackSession).filter(
-        em.PlaybackSession.session_key == session_key
-    ).first()
-    if session:
-        ended_user_id, ended_item = session.user_id, item_guid_for(db, session.item_id)
+    def _end_session() -> tuple | None:
+        """查会话 / 写结束时间（同步段下放线程池），返回要停的转码定位信息"""
+        session = db.query(em.PlaybackSession).filter(
+            em.PlaybackSession.session_key == session_key
+        ).first()
+        if not session:
+            return None
+        ended = (session.user_id, item_guid_for(db, session.item_id))
         session.ended_at = datetime.now()
         db.commit()
-        await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
+        return ended
+
+    ended = await run_in_threadpool(_end_session)
+    if ended:
+        await stop_transcodes_for_async(ended[0], item_guid=ended[1])
     return {"success": True}
 
 
