@@ -79,6 +79,8 @@ class MediaItem(Base):
         Index("idx_item_lib_type", "library_id", "item_type"),
         Index("idx_item_parent", "parent_id"),
         Index("idx_item_series", "series_id"),
+        # 两阶段扫描 Phase 2：后台探测按（状态，优先级）取待探测条目
+        Index("idx_item_probe", "probe_status", "probe_priority", "id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -133,6 +135,12 @@ class MediaItem(Base):
 
     # 状态
     last_probed_at = Column(DateTime)  # 上次 ffprobe 时间，供刮削策略判断是否重探
+    # 两阶段扫描（v2.39.0）：Phase 1 只入库结构不做 ffprobe，需要探测的条目由
+    # 后台 worker 按优先级探测。pending=待探测 probing=探测中 done=已探测 failed=放弃。
+    probe_status = Column(String(20), default="pending")
+    probe_priority = Column(Integer, default=0)  # 越大越先探；新文件 100，按需插队 1000
+    probe_attempts = Column(Integer, default=0)  # 已尝试次数，超限转 failed
+    probe_next_retry_at = Column(DateTime)  # 下次可重试时间（退避）
     last_scraped_at = Column(DateTime)  # 上次刮削时间，供 3m/6m/1y 策略判断是否到期
     # 数据库里有图片记录但本地文件丢失时置位，等待后台重新刮削修复
     repair_requested_at = Column(DateTime)

@@ -118,6 +118,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"启动维护失败（可忽略）: {e}")
 
+    # 两阶段扫描 Phase 2（v2.39.0）：SCAN_PROBE_MODE=background 时启动后台探测
+    # worker，按优先级把 Phase 1 落下的待探测条目慢慢探完。inline 模式（默认）
+    # 下什么都不做。失败不影响启动。
+    try:
+        from backend.emby_server import probe_worker
+        if probe_worker.start_probe_worker():
+            logger.info("后台探测 worker 已启动（两阶段扫描）")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
+
     # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
     # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
     try:
