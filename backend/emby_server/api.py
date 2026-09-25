@@ -861,6 +861,17 @@ def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
     return _user_dto(user, db)
 
 
+def _library_item_count(db, lib) -> int:
+    """媒体库条目数：优先用扫描结束时写入的缓存；为 None（扫描未完成/失败过）
+    时实时计数，口径与扫描器一致（只计 movie/series）。"""
+    if lib.item_count is not None:
+        return lib.item_count
+    return db.query(em.MediaItem).filter(
+        em.MediaItem.library_id == lib.id,
+        em.MediaItem.item_type.in_(["movie", "series"]),
+    ).count()
+
+
 @emby_router.get("/emby/Users/{user_id}/Views")
 @emby_router.get("/Users/{user_id}/Views")
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
@@ -882,7 +893,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             "IsFolder": True,
             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False, "IsFavorite": False},
             "ImageTags": {"Primary": "1"},
-            "ChildCount": count_virtual_items(db, lib) if is_virtual else lib.item_count,
+            "ChildCount": count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib),
         })
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
