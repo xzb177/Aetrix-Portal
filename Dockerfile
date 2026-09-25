@@ -24,6 +24,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+# 版本号单一来源：显式先放一份，避免将来 .dockerignore 调整时漏掉它
+COPY VERSION /app/VERSION
 COPY . /app
 COPY --from=user-build /src/user_frontend/dist /app/user_frontend/dist
 COPY --from=admin-build /src/admin_frontend/dist /app/admin_frontend/dist

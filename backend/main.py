@@ -27,6 +27,7 @@ from sqlalchemy import text
 
 from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
 from backend.security import validate_secret_key
+from backend.version import app_version
 from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
 from backend.emby_server.audit import AdminWriteAuditMiddleware
@@ -148,7 +149,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Aetrix Portal",
     description="Aetrix 统一门户 API",
-    version="2.33.0",
+    # 版本号单一来源：根目录 VERSION（改版本只改那一个文件）
+    version=app_version(),
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",

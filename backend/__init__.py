@@ -7,4 +7,7 @@ from dotenv import load_dotenv
 # 根目录 .env，且不覆盖 systemd / 容器已经注入的环境变量。
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
-__version__ = "2.2.0"
+# 版本号单一来源：根目录 VERSION（别再在这里另写一份）
+from backend.version import app_version  # noqa: E402
+
+__version__ = app_version()
