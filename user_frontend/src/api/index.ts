@@ -270,6 +270,23 @@ export interface AccountRealmCard {
   end_date: string | null
   plan_name: string
   is_default: boolean
+  /** 该服的查看权限（没权限时 base_url 置空） */
+  view_granted?: boolean
+}
+
+/** Emby 账号/线路查看权限（没权限时地址类字段置空不下发） */
+export interface ViewPermission {
+  granted: boolean
+  /** 当前服是否为公益服（公益服用积分解锁，付费服用订阅） */
+  realm_free: boolean
+  /** 解锁需要的积分 */
+  unlock_points: number
+  /** 解锁有效期天数（0=永久） */
+  unlock_days: number
+  /** 用户当前积分余额 */
+  points_balance: number
+  /** 已解锁的到期时间（ISO，未解锁/永久为 null） */
+  expires_at: string | null
 }
 
 export interface AccountCard {
@@ -280,6 +297,8 @@ export interface AccountCard {
   emby_password: null
   has_password: boolean
   import_schemes: Record<string, string>
+  /** 查看权限（没权限时 base_url/import_schemes/emby_username 置空） */
+  view_permission?: ViewPermission
   /** 当前卡片对应的服（顶层字段是它的口径，兼容老前端） */
   realm_id?: number | null
   realm_name?: string
@@ -358,6 +377,11 @@ export interface MyPlaybackSession {
 export const embyApi = {
   // 账号卡（服务器地址 / Emby 用户名 / 播放器一键导入 scheme）
   getAccountCard: () => api.get<never, AccountCard>('/api/user/emby/server'),
+
+  // 公益服：花积分解锁 Emby 账号/线路查看权限（幂等）
+  unlockView: (realmId?: number) =>
+    api.post<never, { success: boolean; already: boolean; expires_at: string | null; points_spent?: number; balance?: number }>(
+      '/api/user/emby/unlock-view', { realm_id: realmId ?? null }),
 
   // 设置/修改 Emby 播放密码
   setPassword: (password: string) => api.post('/api/user/emby/password', { password }),

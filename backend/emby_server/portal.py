@@ -317,7 +317,9 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "account_managed_by": "external" if external else "portal",
         "emby_username": user.emby_username if granted else "",
         "emby_password": None,
-        "has_password": bool(user.emby_password) and granted,
+        # has_password 不 gate：它只是用户自己的密码设置状态，不泄露服务器信息；
+        # 冒烟测试也依赖它（set-password 后断言为 True）
+        "has_password": bool(user.emby_password),
         "realm_id": realm.id if realm else None,
         "realm_name": realm.name if realm else "",
         # 接入方式：free = 公益服（免费开放，不需要订阅）；用户端据此换一套文案
