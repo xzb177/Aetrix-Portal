@@ -14,7 +14,8 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 # 独立临时 DB：避免与其它测试文件共用导致数据污染。
 # 注意：backend.database.engine 是模块级单例，必须重建，否则会沿用先导入文件的 DB。
-os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mktemp(suffix='.db')}"
+_fd, _tmppath = tempfile.mkstemp(suffix=".db"); os.close(_fd)
+os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
 # backend.database.engine 是模块级单例：后导入的测试文件必须重建 engine，
 # 否则会沿用先导入文件的 DB，导致测试间污染。只重建 engine/SessionLocal，
 # 不 reload 整个模块（避免 models.Base 元数据错乱）。
