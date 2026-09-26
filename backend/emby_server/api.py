@@ -102,7 +102,17 @@ def item_guid_for(db: Session, item_id) -> Optional[str]:
 
 
 def _iso(dt) -> str:
-    return dt.isoformat() if dt else None
+    """ISO8601 with timezone suffix for iOS strict parsing.
+    iOS JSONDecoder requires 'Z' or offset; naive datetime gets 'Z'."""
+    if not dt:
+        return None
+    s = dt.isoformat()
+    # 如果没有时区信息，补 Z（按 UTC 处理）
+    if s[-1] not in ("Z", "+", "-") or (s[-1] in ("+", "-") and "T" not in s):
+        # 检查是否已有时区偏移（如 +08:00）
+        if "+" not in s[10:] and s.count("-") <= 2:
+            s += "Z"
+    return s
 
 
 def _base_url(request: Request) -> str:
@@ -383,43 +393,76 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
             .filter(em.UserMediaData.user_id == user_id, em.UserMediaData.item_id == item.id)
             .first()
         )
+    # 对标 FakEmby/官方 Emby：数组/map 字段必须发 []/{}, 不能省略也不能 null。
+    # 三方客户端（SenPlayer/Lenna）对这些字段裸调 .length/.filter，null 直接崩。
     dto = {
-        "Name": item.name,
+        "Name": item.name or "",
         "Id": item.guid,
         "ServerId": SERVER_ID,
         "Type": _emby_type(item.item_type),
         "IsFolder": item.item_type in ("series", "season"),
-        "ChildCount": _child_count(item, db),
-        "MediaType": "Video" if item.item_type in ("movie", "episode") else None,
+        "MediaType": "Video",
         "LocationType": "FileSystem",
-        "ProductionYear": item.production_year,
-        "CommunityRating": item.community_rating,
-        "OfficialRating": item.official_rating,
-        "Overview": item.overview if full else (item.overview or "")[:300] or None,
+        "IsHidden": False,
+        "CanDelete": False,
+        "CanDownload": download_ok,
+        "SupportsSync": False,
+        "SupportsContentDownloading": download_ok,
+        "LockData": False,
+        "LockedFields": [],
+        # 数组类：必须 []，不能 null/省略
         "Genres": [g for g in (item.genres or "").split(",") if g],
+        "GenreItems": [],
         "Tags": [t for t in (item.tags or "").split(",") if t],
-        "Studios": [s for s in (item.studios or "").split(",") if s],
-        "PremiereDate": _iso(item.premiere_date),
-        "DateCreated": _iso(item.date_added),
-        # 客户端靠 RunTimeTicks 展示时长/进度条，缺失会导致进度条不可用
-        "RunTimeTicks": item.duration_ticks or None,
-        "Container": item.container,
-        "Bitrate": item.bitrate or None,
-        "IsHD": bool((item.height or 0) >= 720),
-        "Width": item.width or None,
-        "Height": item.height or None,
-        "OriginalTitle": item.original_title or None,
-        # 客户端会用 ProviderIds 展示/跳转元数据源；补上 IMDb
+        "Taglines": [],
+        "Studios": [{"Name": s, "Id": s} for s in (item.studios or "").split(",") if s],
+        "Countries": [],
+        "Languages": [],
+        "People": [],
+        "RemoteTrailers": [],
+        "ExternalUrls": [],
+        "Subviews": [],
+        "BackdropImageTags": [],
+        "ImageTags": {"Primary": "1"} if (item.poster_path or item.primary_image_url) else {},
         "ProviderIds": {
             k: v for k, v in (("Tmdb", item.tmdb_id), ("Imdb", item.imdb_id)) if v
         },
-        "ImageTags": {"Primary": "1"} if _image_url(base, item) else {},
-        "BackdropImageTags": ["1"] if _image_url(base, item, "Backdrop") else {},
         "UserData": _user_data_dto(umd),
-        # 下载能力随站点配置变化（关闭下载后客户端不再展示下载入口）
-        "CanDownload": download_ok,
-        "SupportsContentDownloading": download_ok,
+        "MediaSources": [],
+        # 三方客户端 Fields 参数常要的字段
+        "Status": "Continuing",
+        "PrimaryImageAspectRatio": 0.6666667,
+        "SyncStatus": "Synced",
     }
+    # 可选字段：有值才加
+    if item.production_year:
+        dto["ProductionYear"] = item.production_year
+    if item.community_rating:
+        dto["CommunityRating"] = item.community_rating
+    if item.official_rating:
+        dto["OfficialRating"] = item.official_rating
+    ov = (item.overview or "")[:300] if not full else (item.overview or "")
+    if ov:
+        dto["Overview"] = ov
+    if item.premiere_date:
+        dto["PremiereDate"] = _iso(item.premiere_date)
+    if item.date_added:
+        dto["DateCreated"] = _iso(item.date_added)
+    # 冒烟测试要求详情接口必返这两个字段；无值时给默认值
+    dto["RunTimeTicks"] = item.duration_ticks or 0
+    dto["Container"] = item.container or ""
+    if item.bitrate:
+        dto["Bitrate"] = item.bitrate
+    if item.width:
+        dto["Width"] = item.width
+    if item.height:
+        dto["Height"] = item.height
+    dto["IsHD"] = bool((item.height or 0) >= 720)
+    if item.original_title:
+        dto["OriginalTitle"] = item.original_title
+    cc = _child_count(item, db)
+    if cc is not None:
+        dto["ChildCount"] = cc
     if item.item_type == "series":
         # 剧集卡片「未看 N 集」角标：列表页走上面的批量预取，单个详情回退为单条查询
         unp = prefetch.get("unplayed", {}).get(item.id)
@@ -493,16 +536,20 @@ def _child_count(item: em.MediaItem, db: Session) -> int | None:
 
 
 def _user_data_dto(umd) -> dict:
+    # 对标 FakEmby：UserData 永不为 null，必填字段全给默认值
     if not umd:
         return {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False,
-                "IsFavorite": False, "Key": "", "UnplayedItemCount": 1}
-    return {
+                "IsFavorite": False, "PlayedPercentage": 0.0}
+    d = {
         "PlaybackPositionTicks": umd.playback_position_ticks or 0,
         "PlayCount": umd.play_count or 0,
         "Played": bool(umd.played),
         "IsFavorite": bool(umd.is_favorite),
-        "LastPlayedDate": _iso(umd.last_played_at),
+        "PlayedPercentage": 0.0,
     }
+    if umd.last_played_at:
+        d["LastPlayedDate"] = _iso(umd.last_played_at)
+    return d
 
 
 def _bearer_raw(request: Request) -> str:
@@ -635,6 +682,13 @@ def system_info(request: Request):
 @emby_router.get("/System/Ping")
 def system_ping():
     return PlainTextResponse("Emby Server")
+
+
+# 三方客户端（SenPlayer 等）启动时会请求，用于服务器发现；返回空列表即可
+@emby_router.get("/emby/System/Ext/ServerDomains")
+@emby_router.get("/System/Ext/ServerDomains")
+def system_ext_server_domains():
+    return []
 
 
 @emby_router.post("/emby/System/Ping")
@@ -981,7 +1035,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             "CollectionType": "mixed" if is_virtual else lib.collection_type,
             "IsFolder": True,
             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False, "IsFavorite": False},
-            "ImageTags": {"Primary": "1"},
+            "ImageTags": {},
             "ChildCount": count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib),
         })
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}

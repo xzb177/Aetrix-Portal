@@ -222,12 +222,16 @@ async def security_headers(request: Request, call_next):
 # Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
 # 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
 _GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
-# ``add_middleware`` 只是把类和参数存起来，真正实例化发生在首个请求；
-# 不能用 try/except 包住 add_middleware 来探测参数，否则旧版 Starlette 会在首请求才 500。
-if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
-    app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
-else:  # pragma: no cover — 旧版 Starlette 没有按内容类型排除的参数
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
+# GZip 压缩：JSON / HTML / 接口响应走压缩，已压缩或大块二进制内容不再压缩。
+# Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
+# 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
+# 注意：/emby/* 曾因三方 iOS 客户端 gzip+chunked 解压 bug 而跳过，但条件中间件实现有缺陷，
+# 暂时全局禁用 gzip 保稳定，后续如需压缩再针对非 /emby 路径单独加。
+# _GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
+# if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
+#     app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
+# else:
+#     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）
 app.add_middleware(DownloadGuardMiddleware)
