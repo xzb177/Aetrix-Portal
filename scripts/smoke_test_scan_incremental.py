@@ -30,9 +30,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["REDIS_ENABLED"] = "false"
-# 关掉文件指纹秒跳：本测试验证的是旧的目录指纹增量逻辑，fast-skip 会绕过
-# 目录可读性检查（如 FlakyProvider 场景），干扰测试意图。
-os.environ["SCAN_FAST_SKIP"] = "0"
 DB = tempfile.mktemp(suffix=".db")
 os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
 
@@ -124,9 +121,14 @@ def item_count() -> int:
 
 cold = scan("冷扫")
 check("冷扫入库全部文件", cold["added"] == TOTAL and item_count() == TOTAL,
-      f"added={cold['added']} 条目={item_count()}")
-# 模拟后台 worker 已完成（分层 L1 之后的状态），否则 _can_skip_file 的 needs_probe
-# 会永远返回 True（last_probed_at=None），导致跳过逻辑不工作。
+      f"added={cold['added']} 期望={TOTAL}")
+check("冷扫没有跳过任何文件", cold.get("unchanged", 0) == 0, f"unchanged={cold.get('unchanged')}")
+check("冷扫为每个目录留下指纹",
+      db.query(em.ScanDirState).filter(em.ScanDirState.library_id == lib.id).count() == DIRS,
+      f"指纹行 {db.query(em.ScanDirState).count()} / 目录 {DIRS}")
+
+# 模拟 enrich_worker 已完成：分层 L1 后条目是 pending，会导致 needs_probe 恒为 True，
+# 增量跳过逻辑无法工作。这里标 done 代表后台已补完。
 db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
     {em.MediaItem.enrich_status: "done",
      em.MediaItem.last_probed_at: datetime.now(),
@@ -134,11 +136,6 @@ db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
     synchronize_session=False)
 db.commit()
 db.expire_all()
-
-check("冷扫没有跳过任何文件", cold.get("unchanged", 0) == 0, f"unchanged={cold.get('unchanged')}")
-check("冷扫为每个目录留下指纹",
-      db.query(em.ScanDirState).filter(em.ScanDirState.library_id == lib.id).count() == DIRS,
-      f"指纹行 {db.query(em.ScanDirState).count()} / 目录 {DIRS}")
 
 # ==================== 2. 未变动重扫：跳过逐文件工作，但条目一条都不能少 ====================
 warm = scan("未变动重扫")
@@ -324,13 +321,9 @@ for row in db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id):
 check("剧集库冷扫入库（1 剧 + 1 季 + N 集）",
       tv_cold["added"] == TV_EPS and tv_types == {"episode": TV_EPS, "series": 1, "season": 1},
       f"added={tv_cold['added']} 条目={tv_types}")
-# B 方案（PR #112）：父 series 没走过 TMDB 时 episode 不能跳过。这里模拟已尝试刮削，
-# 否则重扫永远跳不过（测试里没配真 TMDB）。
-db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id,
-    em.MediaItem.item_type == "series").update(
-    {em.MediaItem.last_scraped_at: datetime.now()}, synchronize_session=False)
-db.commit()
-# episodes 也要标记 probe 完成，否则 needs_probe 拦住跳过
+
+# B 方案（PR #112）：父 series 没走过 TMDB 时 episode 不能跳过。模拟已尝试刮削。
+# 同时标 done + probe 完成，否则 needs_probe 拦住跳过。
 db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id).update(
     {em.MediaItem.enrich_status: "done",
      em.MediaItem.last_probed_at: datetime.now(),
@@ -432,6 +425,7 @@ mnt.register_mount_types([{"value": "faketest", "label": "假远程", "kind": "r
 mnt.register_providers({"faketest": FakeRemoteProvider})
 
 remote_provider = FakeRemoteProvider(remote_mount, db)
+os.environ["SCAN_FAST_SKIP"] = "1"
 mnt._PROVIDERS["faketest"] = lambda mount, db=None, library=None: remote_provider
 
 r_first = sc.scan_library_sync(db, remote_lib)
@@ -439,8 +433,10 @@ listed_first = len(remote_provider.listed)
 check("远程挂载库首次扫描入库",
       r_first["added"] == REMOTE_DIRS * REMOTE_PER_DIR,
       f"added={r_first['added']} 期望={REMOTE_DIRS * REMOTE_PER_DIR}")
-# 模拟后台 worker 已完成：enrich_status=done + last_probed_at + last_scraped_at，
-# 否则分层 L1 的 pending 状态会导致 _can_skip_file 永远返回 False（needs_probe）。
+check("远程库每个目录只列举一次（指纹复用遍历用过的那一份）",
+      listed_first == REMOTE_DIRS + 1, f"列举了 {len(remote_provider.listed)} 次: {remote_provider.listed}")
+
+# 远程库同样模拟 worker 完成（分层 L1 远程文件 probe 是 deferred 的）
 db.query(em.MediaItem).filter(em.MediaItem.library_id == remote_lib.id).update(
     {em.MediaItem.enrich_status: "done",
      em.MediaItem.last_probed_at: datetime.now(),
@@ -448,9 +444,6 @@ db.query(em.MediaItem).filter(em.MediaItem.library_id == remote_lib.id).update(
     synchronize_session=False)
 db.commit()
 db.expire_all()
-
-check("远程库每个目录只列举一次（指纹复用遍历用过的那一份）",
-      listed_first == REMOTE_DIRS + 1, f"列举了 {len(remote_provider.listed)} 次: {remote_provider.listed}")
 
 remote_provider.listed.clear()
 counters.update(sql=0, probe=0, side=0)
@@ -492,6 +485,8 @@ class FlakyProvider(FakeRemoteProvider):
 # “扫描中途读不到目录”这个场景根本不会发生（那本身也是好事，这里要测的是坏情况）
 mnt.MOUNT_LIST_CACHE_SECONDS = 0
 mnt.invalidate_list_cache()
+# Flaky 场景：目录读不到时 fast-skip 必须让路（文件指纹不能代替目录可读性检查）
+os.environ["SCAN_FAST_SKIP"] = "0"
 mnt._PROVIDERS["faketest"] = lambda mount, db=None, library=None: FlakyProvider(mount, db)
 counters.update(sql=0, probe=0, side=0)
 failing = sc.scan_library_sync(db, remote_lib)
@@ -510,6 +505,7 @@ mnt.invalidate_list_cache()
 check("整个来源都读不到时禁止清理（宁肯多留，不能误删）",
       broken["removal_skipped"] is True and remote_items() == 12,
       f"removal_skipped={broken['removal_skipped']} 条目={remote_items()}")
+os.environ["SCAN_FAST_SKIP"] = "1"
 mnt._PROVIDERS["faketest"] = lambda mount, db=None, library=None: remote_provider
 remote_provider.listed.clear()
 counters.update(sql=0, probe=0, side=0)

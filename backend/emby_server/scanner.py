@@ -961,10 +961,11 @@ SCAN_LAYERED = (os.getenv("SCAN_LAYERED", "1") or "1").strip().lower() \
     not in {"0", "false", "no", "off"}
 
 
-# 文件指纹秒跳总开关（v2.40.0）：1=开（默认）。关掉后回到纯目录指纹增量逻辑，
-# 供 smoke_test_scan_incremental.py 这类验证旧行为的测试使用。
-SCAN_FAST_SKIP = (os.getenv("SCAN_FAST_SKIP", "1") or "1").strip().lower() \
-    not in {"0", "false", "no", "off"}
+def _fast_skip_enabled() -> bool:
+    """文件指纹秒跳总开关（v2.40.0）：1=开（默认）。运行时读环境变量，
+    供 smoke_test_scan_incremental.py 这类测试中途开关。"""
+    return (os.getenv("SCAN_FAST_SKIP", "1") or "1").strip().lower() \
+        not in {"0", "false", "no", "off"}
 
 
 def _dir_key_of(scan_file: "ScanFile") -> str:
@@ -1423,7 +1424,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         # 文件指纹是纯内存计算。旧 _can_skip_file 保留做兜底（指纹缺失的老数据）。
         file_fp = _file_fingerprint(scan_file)
         pending.file_fingerprint = file_fp
-        if (SCAN_FAST_SKIP
+        if (_fast_skip_enabled()
                 and not is_new
                 and (getattr(item, "file_fingerprint", None) or None) == file_fp
                 and (getattr(item, "enrich_status", None) or "pending") == "done"
