@@ -294,6 +294,13 @@ check("关掉增量后每个文件都照常处理",
       off.get("unchanged", 0) == 0 and counters["side"] == item_count(),
       f"unchanged={off.get('unchanged')} side={counters['side']} 期望 side={item_count()}")
 sc.SCAN_INCREMENTAL = True
+# OFF 轮是分层 L1 全量处理，条目被标回 pending；模拟后台 worker 已补完，
+# 否则文件级秒跳（要求 enrich_status=done）无法工作。
+db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
+    {em.MediaItem.enrich_status: "done"},
+    synchronize_session=False)
+db.commit()
+db.expire_all()
 back = scan("重新打开增量")
 check("重新打开后立刻恢复跳过（指纹还在）", back.get("unchanged") == item_count(),
       f"unchanged={back.get('unchanged')} 期望={item_count()}")
