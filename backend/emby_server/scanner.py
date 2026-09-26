@@ -472,10 +472,14 @@ def _episode_display_name(name: str, season_no: Optional[int], ep_no: Optional[i
 
 # 远程 ffprobe 的有限 Range 上限：rclone rc-serve 不接受默认的开放式
 # ``Range: bytes=0-``，但媒体头（尤其 Matroska 的 EBML/Info）通常在前段即可拿到。
+#
+# 窗口不能开太大：ffprobe 会把 206 响应当成**整个文件**，窗口一大就等于喂了半个文件，
+# 它读到截断处判定 "File ended prematurely" 反而失败。实测 1 MiB 稳定拿到 mkv 时长，
+# 8 MiB 就会触发该错误，所以默认按 1 MiB 走（256 KiB～4 MiB 均可，按需用环境变量调）。
 try:
-    PROBE_REMOTE_RANGE_BYTES = max(1 << 20, int(os.getenv("PROBE_REMOTE_RANGE_BYTES", "33554432")))
+    PROBE_REMOTE_RANGE_BYTES = max(1 << 18, int(os.getenv("PROBE_REMOTE_RANGE_BYTES", "1048576")))
 except ValueError:
-    PROBE_REMOTE_RANGE_BYTES = 32 << 20
+    PROBE_REMOTE_RANGE_BYTES = 1 << 20
 
 
 def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0) -> Optional[dict]:
