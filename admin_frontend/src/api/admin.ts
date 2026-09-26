@@ -595,6 +595,22 @@ export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`$
 export const saveChaseNew = (enabled: boolean, interval: number, libraries: string) =>
   put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, libraries })
 
+// rclone remote 管理
+export interface RcloneRemote {
+  id: number; name: string; remote_type: string
+  team_drive: string; chunk_size: string
+  is_enabled: boolean; is_probe_remote: boolean
+  has_sa: boolean; has_oauth: boolean; remark: string
+  last_check_ok: boolean | null; last_check_message: string
+}
+export const fetchRcloneRemotes = () => get<{ success: boolean; remotes: RcloneRemote[] }>(`${E}/rclone/remotes`)
+export const createRcloneRemote = (data: any) => post<{ success: boolean; id: number }>(`${E}/rclone/remotes`, data)
+export const updateRcloneRemote = (id: number, data: any) => put<{ success: boolean }>(`${E}/rclone/remotes/${id}`, data)
+export const deleteRcloneRemote = (id: number) => del<{ success: boolean }>(`${E}/rclone/remotes/${id}`)
+export const setProbeRemote = (id: number) => post<{ success: boolean }>(`${E}/rclone/remotes/${id}/probe`, {})
+export const regenerateRcloneConf = () => post<{ success: boolean; path: string }>(`${E}/rclone/regenerate`, {})
+export interface SaFile { id: number; filename: string; client_email: string; project_id: string; is_enabled: boolean }
+export const fetchSaFiles = () => get<{ success: boolean; files: SaFile[] }>(`${E}/rclone/sa-files`)
 export const saveAutoScan = (enabled: boolean, time: string) =>
   put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
 
@@ -715,7 +731,7 @@ export const browseMount = (id: number, rel = '/') =>
   get<{ rel: string; entries: MountDirEntry[]; total: number }>(`${E}/mounts/${id}/browse`, { rel })
 
 /** rclone：列出远端已配置的 remote（可用表单里尚未保存的 RC 地址 / 密码） */
-export const fetchRcloneRemotes = (params: Record<string, string>) =>
+export const fetchMountRcloneRemotes = (params: Record<string, string>) =>
   get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/remotes`, params)
 
 // ==================== 115 账号与直挂（/api/admin/emby/115/*） ====================

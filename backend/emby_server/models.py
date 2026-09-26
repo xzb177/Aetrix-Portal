@@ -360,6 +360,57 @@ class StorageMount(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class RcloneRemote(Base):
+    """rclone remote 配置（数据驱动，不写 rclone.conf 文件）
+
+    一个 remote = 一种访问云盘的方式。支持：
+    - drive (OAuth 个人盘)：client_id/secret/token
+    - drive (服务账号)：service_account_file + team_drive
+    - 可扩展其它 type
+
+    系统从本表生成 rclone.conf，探测 worker 按 ``probe_remote`` 选择用哪个。
+    """
+
+    __tablename__ = "rclone_remotes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False)  # remote 名，如 paul_emby / MP
+    remote_type = Column(String(30), nullable=False, default="drive")  # drive / s3 / ...
+    # OAuth 方式
+    client_id = Column(String(300), default="")
+    client_secret = Column(String(300), default="")
+    token_json = Column(Text, default="")  # OAuth token JSON
+    scope = Column(String(100), default="drive")
+    # 服务账号方式
+    sa_file_id = Column(Integer, default=None)  # 关联 service_account_files.id
+    team_drive = Column(String(100), default="")  # 团队盘 ID，空=个人盘
+    # 通用
+    chunk_size = Column(String(20), default="64M")
+    is_enabled = Column(Boolean, default=True)
+    is_probe_remote = Column(Boolean, default=False)  # 是否为探测用 remote（全局唯一）
+    remark = Column(String(300), default="")
+    last_checked_at = Column(DateTime)
+    last_check_ok = Column(Boolean)
+    last_check_message = Column(String(300))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ServiceAccountFile(Base):
+    """服务账号 JSON 文件（元数据，文件本体存安全目录）"""
+
+    __tablename__ = "service_account_files"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    filename = Column(String(200), nullable=False)  # 原始文件名
+    stored_path = Column(String(1024), nullable=False)  # 服务器上的安全路径
+    client_email = Column(String(300), default="")  # 从 JSON 解析，方便识别
+    project_id = Column(String(200), default="")
+    is_enabled = Column(Boolean, default=True)
+    remark = Column(String(300), default="")
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class Pan115Account(Base):
     """115 账号配置档（Cookie 型，不依赖 115 OpenAPI）
 

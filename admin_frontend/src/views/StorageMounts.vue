@@ -28,7 +28,7 @@ import {
   fetchLibraries,
   fetchMounts,
   fetchPan115Accounts,
-  fetchRcloneRemotes,
+  fetchMountRcloneRemotes,
   probeMountsHealth,
   refreshEaMountHealth,
   testMountConfig,
@@ -504,7 +504,7 @@ async function loadRcloneRemotes() {
       rclone_bin: form.value.config.rclone_bin || '',
       rclone_config: form.value.config.rclone_config || '',
     }
-    const res = await fetchRcloneRemotes(params)
+    const res = await fetchMountRcloneRemotes(params)
     // 统一带上冒号：选项直接当 remote 根用时（`gdrive:`）不会被 rclone 当成本机目录
     rcloneRemotes.value = res.remotes.map(rcloneWithColon)
     ElMessage.success(
