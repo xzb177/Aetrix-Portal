@@ -124,8 +124,9 @@ def item_count() -> int:
 
 cold = scan("冷扫")
 check("冷扫入库全部文件", cold["added"] == TOTAL and item_count() == TOTAL,
-# 模拟后台 worker 已完成：enrich_status=done + last_probed_at + last_scraped_at，
-# 否则分层 L1 的 pending 状态会导致 _can_skip_file 永远返回 False（needs_probe）。
+      f"added={cold['added']} 条目={item_count()}")
+# 模拟后台 worker 已完成（分层 L1 之后的状态），否则 _can_skip_file 的 needs_probe
+# 会永远返回 True（last_probed_at=None），导致跳过逻辑不工作。
 db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
     {em.MediaItem.enrich_status: "done",
      em.MediaItem.last_probed_at: datetime.now(),
@@ -134,7 +135,6 @@ db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
 db.commit()
 db.expire_all()
 
-      f"added={cold['added']} 期望={TOTAL}")
 check("冷扫没有跳过任何文件", cold.get("unchanged", 0) == 0, f"unchanged={cold.get('unchanged')}")
 check("冷扫为每个目录留下指纹",
       db.query(em.ScanDirState).filter(em.ScanDirState.library_id == lib.id).count() == DIRS,
