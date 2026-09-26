@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException
+from fastapi import Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,7 @@ from backend.emby_server import nfo as nfo_lib
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import auto_scan
 from backend.emby_server import change_watcher
+from backend.emby_server import rclone_manager
 from backend.emby_server import scan_queue
 from backend.emby_server.portal import admin_emby_router, require_staff
 from backend.emby_server.tmdb import (
@@ -369,6 +370,168 @@ def get_chase_new(
 ):
     """追新当前配置（开关 / 间隔 / 监听库 / 上次检查）"""
     return {"success": True, **change_watcher.get_config(db)}
+
+
+# ---------- rclone remote 管理（数据驱动） ----------
+
+@admin_emby_router.get("/rclone/remotes")
+def list_rclone_remotes(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """列出所有 rclone remote"""
+    from backend.emby_server import models as em
+    remotes = db.query(em.RcloneRemote).order_by(em.RcloneRemote.name).all()
+    return {"success": True, "remotes": [
+        {
+            "id": r.id, "name": r.name, "remote_type": r.remote_type,
+            "team_drive": r.team_drive or "", "chunk_size": r.chunk_size or "64M",
+            "is_enabled": r.is_enabled, "is_probe_remote": r.is_probe_remote,
+            "has_sa": bool(r.sa_file_id), "has_oauth": bool(r.token_json),
+            "remark": r.remark or "",
+            "last_check_ok": r.last_check_ok,
+            "last_check_message": r.last_check_message or "",
+        }
+        for r in remotes
+    ]}
+
+
+@admin_emby_router.post("/rclone/remotes")
+def create_rclone_remote(
+    req: dict,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """新建 rclone remote"""
+    from backend.emby_server import models as em
+    r = em.RcloneRemote(
+        name=req.get("name", ""),
+        remote_type=req.get("remote_type", "drive"),
+        client_id=req.get("client_id", ""),
+        client_secret=req.get("client_secret", ""),
+        token_json=req.get("token_json", ""),
+        scope=req.get("scope", "drive"),
+        sa_file_id=req.get("sa_file_id"),
+        team_drive=req.get("team_drive", ""),
+        chunk_size=req.get("chunk_size", "64M"),
+        remark=req.get("remark", ""),
+    )
+    db.add(r)
+    db.commit()
+    return {"success": True, "id": r.id}
+
+
+@admin_emby_router.put("/rclone/remotes/{remote_id}")
+def update_rclone_remote(
+    remote_id: int,
+    req: dict,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """更新 rclone remote"""
+    from backend.emby_server import models as em
+    r = db.query(em.RcloneRemote).filter(em.RcloneRemote.id == remote_id).first()
+    if not r:
+        return {"success": False, "message": "remote 不存在"}
+    for k in ("remote_type", "client_id", "client_secret", "token_json", "scope",
+              "sa_file_id", "team_drive", "chunk_size", "remark", "is_enabled"):
+        if k in req:
+            setattr(r, k, req[k])
+    db.commit()
+    return {"success": True}
+
+
+@admin_emby_router.delete("/rclone/remotes/{remote_id}")
+def delete_rclone_remote(
+    remote_id: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """删除 rclone remote"""
+    from backend.emby_server import models as em
+    r = db.query(em.RcloneRemote).filter(em.RcloneRemote.id == remote_id).first()
+    if not r:
+        return {"success": False, "message": "remote 不存在"}
+    db.delete(r)
+    db.commit()
+    return {"success": True}
+
+
+@admin_emby_router.post("/rclone/remotes/{remote_id}/probe")
+def set_probe_remote_api(
+    remote_id: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """设置探测用 remote（全局唯一，立即生效）"""
+    ok = rclone_manager.set_probe_remote(db, remote_id)
+    return {"success": ok}
+
+
+@admin_emby_router.post("/rclone/regenerate")
+def regenerate_rclone_conf(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """从数据库重新生成 rclone.conf"""
+    path = rclone_manager.write_rclone_conf(db)
+    return {"success": True, "path": path}
+
+
+@admin_emby_router.get("/rclone/sa-files")
+def list_sa_files(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """列出服务账号文件"""
+    from backend.emby_server import models as em
+    files = db.query(em.ServiceAccountFile).order_by(em.ServiceAccountFile.filename).all()
+    return {"success": True, "files": [
+        {
+            "id": f.id, "filename": f.filename,
+            "client_email": f.client_email or "",
+            "project_id": f.project_id or "",
+            "is_enabled": f.is_enabled,
+        }
+        for f in files
+    ]}
+
+
+@admin_emby_router.post("/rclone/sa-files/upload")
+async def upload_sa_file(
+    file: UploadFile = File(...),
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """上传服务账号 JSON 文件"""
+    from backend.emby_server import models as em
+    import json as json_lib
+
+    content = await file.read()
+    try:
+        sa_data = json_lib.loads(content)
+        client_email = sa_data.get("client_email", "")
+        project_id = sa_data.get("project_id", "")
+    except Exception:
+        return {"success": False, "message": "不是有效的 JSON 文件"}
+
+    # 存到安全目录
+    sa_dir = "/opt/aetrix-portal/sa"
+    os.makedirs(sa_dir, exist_ok=True)
+    stored_path = os.path.join(sa_dir, file.filename)
+    with open(stored_path, "wb") as f:
+        f.write(content)
+    os.chmod(stored_path, 0o600)
+
+    rec = em.ServiceAccountFile(
+        filename=file.filename,
+        stored_path=stored_path,
+        client_email=client_email,
+        project_id=project_id,
+    )
+    db.add(rec)
+    db.commit()
+    return {"success": True, "id": rec.id, "client_email": client_email}
 
 
 @admin_emby_router.put("/scrape/chase-new")

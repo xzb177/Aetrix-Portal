@@ -42,6 +42,13 @@ import {
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
+  fetchRcloneRemotes,
+  createRcloneRemote,
+  updateRcloneRemote,
+  deleteRcloneRemote,
+  setProbeRemote,
+  regenerateRcloneConf,
+  fetchSaFiles,
   saveTmdbKeys,
   testTmdbKeys,
   stopAllTranscodes,
@@ -178,6 +185,7 @@ async function load() {
 
 onMounted(() => {
   load()
+  loadRcloneRemotes()
   pollQueue()
   // 队列与进度都是秒级的东西：页面开着就轮询（空闲时请求极小，且不刷整页列表）
   queueTimer = window.setInterval(pollQueue, 3000)
@@ -358,6 +366,14 @@ async function loadAutoScanConfig() {
 const chaseNew = ref<ChaseNewConfig | null>(null)
 const chaseNewSaving = ref(false)
 
+// rclone remote 管理
+const rcloneRemotes = ref<RcloneRemote[]>([])
+const saFiles = ref<SaFile[]>([])
+const rcloneLoading = ref(false)
+const showRemoteDialog = ref(false)
+const editingRemote = ref<any>(null)
+const remoteForm = ref({ name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', scope: 'drive', sa_file_id: null as number | null, team_drive: '', chunk_size: '64M', remark: '' })
+
 async function loadChaseNewConfig() {
   try {
     const res = await fetchChaseNew()
@@ -367,6 +383,60 @@ async function loadChaseNewConfig() {
   }
 }
 
+async function loadRcloneRemotes() {
+  rcloneLoading.value = true
+  try {
+    const res = await fetchRcloneRemotes()
+    rcloneRemotes.value = res.remotes || []
+    const saRes = await fetchSaFiles()
+    saFiles.value = saRes.files || []
+  } catch { rcloneRemotes.value = [] }
+  rcloneLoading.value = false
+}
+function openRemoteDialog(r?: RcloneRemote) {
+  if (r) {
+    editingRemote.value = r
+    remoteForm.value = { name: r.name, remote_type: r.remote_type, client_id: '', client_secret: '', token_json: '', scope: 'drive', sa_file_id: null, team_drive: r.team_drive, chunk_size: r.chunk_size, remark: r.remark }
+  } else {
+    editingRemote.value = null
+    remoteForm.value = { name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', scope: 'drive', sa_file_id: null, team_drive: '', chunk_size: '64M', remark: '' }
+  }
+  showRemoteDialog.value = true
+}
+async function saveRemoteAction() {
+  if (!remoteForm.value.name) { ElMessage.warning('请填写 remote 名称'); return }
+  try {
+    if (editingRemote.value) {
+      await updateRcloneRemote(editingRemote.value.id, remoteForm.value)
+    } else {
+      await createRcloneRemote(remoteForm.value)
+    }
+    ElMessage.success('已保存')
+    showRemoteDialog.value = false
+    loadRcloneRemotes()
+  } catch (e: any) { ElMessage.error(e?.message || '保存失败') }
+}
+async function deleteRemoteAction(r: RcloneRemote) {
+  try {
+    await ElMessageBox.confirm(`确定删除 remote「${r.name}」吗？`, '确认', { type: 'warning' })
+    await deleteRcloneRemote(r.id)
+    ElMessage.success('已删除')
+    loadRcloneRemotes()
+  } catch {}
+}
+async function setProbeRemoteAction(r: RcloneRemote) {
+  try {
+    await setProbeRemote(r.id)
+    ElMessage.success(`探测已切换到「${r.name}」`)
+    loadRcloneRemotes()
+  } catch (e: any) { ElMessage.error(e?.message || '切换失败') }
+}
+async function regenerateConfAction() {
+  try {
+    const res = await regenerateRcloneConf()
+    ElMessage.success('rclone.conf 已重新生成：' + res.path)
+  } catch (e: any) { ElMessage.error(e?.message || '生成失败') }
+}
 async function saveChaseNewAction() {
   if (!chaseNew.value) return
   chaseNewSaving.value = true
@@ -1068,6 +1138,34 @@ function typeLabel(t: string): string {
           </div>
         </div>
         <div class="scrape-block">
+          <h3>云盘挂载（rclone）</h3>
+          <p class="drawer-hint">
+            管理 rclone remote 配置：个人盘（OAuth）或服务账号 + 团队盘。
+            配置存数据库，一键生成 rclone.conf。可指定哪个 remote 用于后台探测。
+          </p>
+          <div class="scrape-actions" style="margin-bottom: 8px">
+            <el-button size="small" type="primary" @click="openRemoteDialog()">新增 remote</el-button>
+            <el-button size="small" :loading="rcloneLoading" @click="loadRcloneRemotes">刷新</el-button>
+            <el-button size="small" @click="regenerateConfAction">重新生成 rclone.conf</el-button>
+          </div>
+          <div v-if="rcloneLoading" class="drawer-hint">加载中…</div>
+          <div v-else-if="!rcloneRemotes.length" class="drawer-hint">还没有配置 remote，点"新增"添加</div>
+          <div v-else>
+            <div v-for="r in rcloneRemotes" :key="r.id" class="scrape-actions" style="margin-bottom: 6px; align-items: center">
+              <el-tag :type="r.is_probe_remote ? 'success' : 'info'" size="small">{{ r.name }}</el-tag>
+              <span class="drawer-hint">{{ r.remote_type }}<span v-if="r.team_drive"> · 团队盘</span><span v-if="r.has_sa"> · 服务账号</span><span v-if="r.has_oauth"> · OAuth</span></span>
+              <el-button v-if="!r.is_probe_remote" size="small" @click="setProbeRemoteAction(r)">设为探测用</el-button>
+              <el-tag v-else type="success" size="small">探测中</el-tag>
+              <el-button size="small" @click="openRemoteDialog(r)">编辑</el-button>
+              <el-button size="small" type="danger" @click="deleteRemoteAction(r)">删除</el-button>
+            </div>
+          </div>
+          <div class="drawer-hint" style="margin-top: 8px">
+            服务账号文件：{{ saFiles.length }} 个
+            <span v-if="saFiles.length">（{{ saFiles.map(f => f.client_email || f.filename).join('、') }}）</span>
+          </div>
+        </div>
+        <div class="scrape-block">
           <h3>条目元数据刷新</h3>
           <p class="drawer-hint">
             按条目 ID 立即重刮一条：有 NFO 就重读 NFO（文字以 NFO 为准），
@@ -1442,6 +1540,43 @@ function typeLabel(t: string): string {
       </DataTable>
     </el-drawer>
   </div>
+  <el-dialog v-model="showRemoteDialog" :title="editingRemote ? '编辑 remote' : '新增 remote'" width="500px">
+    <el-form :model="remoteForm" label-width="110px" size="small">
+      <el-form-item label="名称">
+        <el-input v-model="remoteForm.name" placeholder="如 MP" :disabled="!!editingRemote" />
+      </el-form-item>
+      <el-form-item label="类型">
+        <el-select v-model="remoteForm.remote_type">
+          <el-option label="Google Drive" value="drive" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="团队盘 ID">
+        <el-input v-model="remoteForm.team_drive" placeholder="空=个人盘" />
+      </el-form-item>
+      <el-form-item label="服务账号">
+        <el-select v-model="remoteForm.sa_file_id" placeholder="选择已上传的 SA 文件" clearable>
+          <el-option v-for="f in saFiles" :key="f.id" :label="f.client_email || f.filename" :value="f.id" />
+        </el-select>
+        <span class="drawer-hint">先在下面上传 SA JSON 文件</span>
+      </el-form-item>
+      <el-form-item label="OAuth Client ID">
+        <el-input v-model="remoteForm.client_id" placeholder="个人盘 OAuth 用" />
+      </el-form-item>
+      <el-form-item label="OAuth Secret">
+        <el-input v-model="remoteForm.client_secret" type="password" placeholder="个人盘 OAuth 用" />
+      </el-form-item>
+      <el-form-item label="OAuth Token">
+        <el-input v-model="remoteForm.token_json" type="textarea" :rows="2" placeholder='{"access_token":"..."}' />
+      </el-form-item>
+      <el-form-item label="备注">
+        <el-input v-model="remoteForm.remark" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="showRemoteDialog = false">取消</el-button>
+      <el-button type="primary" @click="saveRemoteAction">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
