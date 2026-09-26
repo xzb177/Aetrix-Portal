@@ -31,6 +31,8 @@ const selectedSeasonId = ref('')
 const togglingFavorite = ref(false)
 /** 季选择底部弹窗 */
 const sheetOpen = ref(false)
+/** 多版本：当前选中的版本 Id（默认主版本） */
+const selectedVersionId = ref('')
 /** 从顶层续播卡点进来时高亮直达的单集 */
 const highlightEpId = ref('')
 let pendingScrollEp = ''
@@ -53,6 +55,12 @@ const progress = computed(() => (item.value ? progressPercent(item.value) : 0))
 const runtime = computed(() => (item.value?.RunTimeTicks ? formatDuration(ticksToSeconds(item.value.RunTimeTicks)) : '—'))
 /** 无海报时首字占位 */
 const titleChar = computed(() => (item.value?.Name || '?').trim().charAt(0) || '?')
+/** 多版本列表（电影去重后，详情页展示所有版本） */
+const versions = computed(() => item.value?.Versions || [])
+const hasVersions = computed(() => versions.value.length > 1)
+const selectedVersion = computed(() =>
+  versions.value.find((v) => v.Id === selectedVersionId.value) || versions.value.find((v) => v.IsPrimary) || versions.value[0]
+)
 /** 画质徽标（与 MediaCard 同口径） */
 const quality = computed(() => {
   const h = item.value?.Height || 0
@@ -228,6 +236,10 @@ function playTarget(): string {
   if (item.value?.Type === 'Series') {
     return resumeEpisode.value ? `/watch/${resumeEpisode.value.Id}` : ''
   }
+  // 多版本：用选中的版本 Id
+  if (hasVersions.value && selectedVersion.value) {
+    return `/watch/${selectedVersion.value.Id}`
+  }
   return `/watch/${item.value?.Id}`
 }
 
@@ -321,6 +333,23 @@ onMounted(loadItem)
                 <Eye v-else :size="16" />
                 {{ isPlayed ? '标记未看' : '看过' }}
               </button>
+            </div>
+
+            <!-- 多版本切换器：同一电影有多个版本时显示 -->
+            <div v-if="hasVersions" class="version-picker">
+              <span class="version-label">版本</span>
+              <div class="version-options">
+                <button
+                  v-for="v in versions"
+                  :key="v.Id"
+                  type="button"
+                  class="version-btn"
+                  :class="{ active: (selectedVersionId || selectedVersion?.Id) === v.Id }"
+                  @click="selectedVersionId = v.Id"
+                >
+                  {{ v.Name }}
+                </button>
+              </div>
             </div>
 
             <!-- 上次看到：有实际播放进度时出现，一键续播 -->
@@ -1119,5 +1148,39 @@ onMounted(loadItem)
   .resume-banner {
     max-width: none;
   }
+}
+/* 多版本切换器 */
+.version-picker {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.version-label {
+  font-size: 13px;
+  color: var(--au-text-2, #999);
+  flex-shrink: 0;
+}
+.version-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.version-btn {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--au-border, #333);
+  background: transparent;
+  color: var(--au-text, #fff);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.version-btn.active {
+  background: var(--au-primary, #00d4ff);
+  border-color: var(--au-primary, #00d4ff);
+  color: #000;
+  font-weight: 600;
 }
 </style>

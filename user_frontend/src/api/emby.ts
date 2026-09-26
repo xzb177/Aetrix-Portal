@@ -55,6 +55,20 @@ export interface EmbyItem {
   Width?: number | null
   Height?: number | null
   IsHD?: boolean
+  /** 多版本（后端 _item_dto 下发；同目录同名 movie 才有） */
+  Versions?: EmbyItemVersion[]
+}
+
+/** 电影多版本条目 */
+export interface EmbyItemVersion {
+  Id: string
+  Name: string
+  Width?: number | null
+  Height?: number | null
+  SizeBytes?: number | null
+  Container?: string | null
+  VersionLabel: string
+  IsPrimary: boolean
 }
 
 export interface EmbyMediaSource {
