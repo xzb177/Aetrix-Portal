@@ -5,9 +5,13 @@
 - L1：新文件/指纹变化 → 极简入库，enrich_status='pending'，等后台补全。
 """
 import os
+import tempfile
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
+# 测试用独立临时 DB：避免与其它测试文件共用默认 DB 导致数据污染，
+# 也避免在容器里误连 /data 生产库。
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{tempfile.mktemp(suffix='.db')}")
 
 import uuid
 from types import SimpleNamespace
