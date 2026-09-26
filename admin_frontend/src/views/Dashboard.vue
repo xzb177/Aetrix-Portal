@@ -20,8 +20,8 @@ import {
 } from 'lucide-vue-next'
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
-  fetchServersSummary, fetchSessions, fetchStatsTrend,
-} from '@/api/admin'
+  fetchServersSummary, fetchSessions, fetchStatsTrend, fetchBackendServices,
+, type BackendServiceStatus } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
   EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, RealmOverview, ServerSummary,
@@ -38,6 +38,8 @@ const sessions = ref<EmbySessionRow[]>([])
 const mounts = ref<StorageMount[]>([])
 /** 服务器接入情况：面板到底接了几台后端服 / 几台 Emby 服 / 有没有接下载器 */
 const servers = ref<ServerSummary | null>(null)
+/** 后端服务：aetrix-api + aetrix-worker 的运行状态 */
+const backendServices = ref<BackendServiceStatus[]>([])
 /** 多服运营：每个服的会员 / 内容 / 节点，一个面板同时管几个服一眼看完 */
 const realms = ref<RealmOverview | null>(null)
 const loading = ref(true)
@@ -64,7 +66,7 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e, libraryData, sessionData, serverData, realmData, mountData] = await Promise.all([
+    const [o, p, e, libraryData, sessionData, serverData, realmData, mountData, backendData] = await Promise.all([
       fetchOverview(),
       fetchPlaybackStats(),
       fetchEconomyStats(),
@@ -73,6 +75,7 @@ onMounted(async () => {
       fetchServersSummary().catch(() => null),
       fetchRealmOverview().catch(() => null),
       fetchMounts().catch(() => null),
+      fetchBackendServices().catch(() => ({ services: [] as BackendServiceStatus[] })),
     ])
     overview.value = o
     playback.value = p
@@ -82,6 +85,7 @@ onMounted(async () => {
     servers.value = serverData
     realms.value = realmData
     mounts.value = mountData?.mounts || []
+    backendServices.value = (backendData as any)?.services || []
     await loadTrend()
   } finally {
     loading.value = false
@@ -356,6 +360,32 @@ function sessionProgress(session: EmbySessionRow): number {
             </template>
           </div>
         </RouterLink>
+      </section>
+
+      <!-- 后端服务：aetrix-api + aetrix-worker 运行状态 -->
+      <section v-if="backendServices.length" class="stat-grid">
+        <div
+          v-for="svc in backendServices"
+          :key="svc.name"
+          class="stat-tile server-tile"
+        >
+          <div class="stat-label">
+            <Server :size="13" /> {{ svc.name }}
+            <span class="server-current">{{ svc.role }}</span>
+          </div>
+          <div class="stat-value" :class="{ 'stat-accent': svc.status === 'healthy' }">
+            {{ svc.status === 'healthy' ? '运行中' : svc.status }}
+            <span v-if="svc.lag_seconds != null" class="stat-sub"> · 心跳 {{ svc.lag_seconds }}s 前</span>
+          </div>
+          <div class="stat-foot">
+            <template v-if="svc.role === 'worker' && svc.pid">
+              PID {{ svc.pid }}
+            </template>
+            <template v-else>
+              API 服务
+            </template>
+          </div>
+        </div>
       </section>
 
       <!--
