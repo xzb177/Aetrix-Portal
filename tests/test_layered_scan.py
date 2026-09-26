@@ -51,9 +51,14 @@ def _guid():
 
 
 def _mkfile(path="/v/x.mp4", size=100, mtime_ns=123):
+    # 本机文件：local_target 给一个假的播放目标，避免 probe_input() 走
+    # provider.resolve_final（测试里没有 provider）。用 SimpleNamespace
+    # 模拟 target 的 .value/.headers 接口。
+    from types import SimpleNamespace as _SN
     return scanner.ScanFile(
         stored_path=path, name=os.path.basename(path),
         local_dir=os.path.dirname(path), size=size, mtime_ns=mtime_ns,
+        local_target=_SN(value=path, headers={}),
     )
 
 
