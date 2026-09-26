@@ -302,6 +302,69 @@ def _prefetched(db: Session) -> dict:
     return db.info.get("_aetrix_prefetch") or {}
 
 
+def _parent_dir(file_path):
+    """取文件所在目录（多版本分组键）。"""
+    if not file_path or "/" not in file_path:
+        return None
+    return file_path.rsplit("/", 1)[0]
+
+
+def _version_siblings(item, db):
+    """找同一电影的所有版本：同库、同目录下的 movie 条目。
+
+    只对 movie 类型生效（剧集的单集即便同目录也是不同集，不合并）。
+    """
+    if item.item_type != "movie":
+        return []
+    pdir = _parent_dir(item.file_path)
+    if not pdir:
+        return []
+    return (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.library_id == item.library_id,
+            em.MediaItem.item_type == "movie",
+            em.MediaItem.is_hidden == False,
+            em.MediaItem.file_path.like(pdir + "/%"),
+        )
+        .order_by(em.MediaItem.id)
+        .all()
+    )
+
+
+def _is_primary_version(item, db):
+    """是否为该版本组的主版本（id 最小的那个）。"""
+    sibs = _version_siblings(item, db)
+    if len(sibs) <= 1:
+        return True
+    return sibs[0].id == item.id
+
+
+def _version_label(item):
+    """版本显示名：从文件名提取版本特征（如 1080p、原盘）。"""
+    fp = item.file_path or ""
+    name = fp.rsplit("/", 1)[-1] if "/" in fp else fp
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    if " - " in name:
+        label = name.split(" - ", 1)[1]
+    else:
+        h = item.height or 0
+        if h >= 2160:
+            label = "4K"
+        elif h >= 1080:
+            label = "1080p"
+        elif h >= 720:
+            label = "720p"
+        else:
+            label = "标清"
+    size = item.size or 0
+    if size > 0:
+        gb = size / (1024 ** 3)
+        label += " · %.1fGB" % gb
+    return label
+
+
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
               api_key: str = "") -> dict:
     download_ok = _download_ok(db)
@@ -382,6 +445,24 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         dto["MediaSources"] = [_media_source(item, base, api_key)]
         dto["MediaSourceCount"] = 1
         dto["Chapters"] = []
+        # 多版本：同一目录下的其他版本，供详情页版本切换器使用
+        if item.item_type == "movie":
+            sibs = _version_siblings(item, db)
+            if len(sibs) > 1:
+                dto["Versions"] = [
+                    {
+                        "Id": s.guid,
+                        "Name": _version_label(s),
+                        "Height": s.height or 0,
+                        "Width": s.width or 0,
+                        "Size": s.size or 0,
+                        "Container": s.container or "",
+                        "IsPrimary": s.id == sibs[0].id,
+                    }
+                    for s in sibs
+                ]
+            else:
+                dto["Versions"] = []
     return dto
 
 
@@ -1140,6 +1221,23 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         items.sort(key=lambda item: position.get(item.id, 0))
     else:
         items = query.order_by(*order_cols).offset(start).limit(limit).all()
+    # 多版本去重：movie 类型按目录分组，只保留主版本（id 最小）
+    # 详情页通过 Versions 数组展示所有版本
+    deduped = []
+    seen_dirs = set()
+    for it in items:
+        if it.item_type == "movie":
+            pdir = _parent_dir(it.file_path)
+            if pdir and pdir in seen_dirs:
+                continue
+            # 检查是否为该目录的主版本
+            if pdir and not _is_primary_version(it, db):
+                seen_dirs.add(pdir)
+                continue
+            if pdir:
+                seen_dirs.add(pdir)
+        deduped.append(it)
+    items = deduped
     _prefetch_list_data(db, user.id, items)
 
     return {
