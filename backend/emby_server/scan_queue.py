@@ -25,6 +25,8 @@ CPU 打满而进度一动不动。
 """
 from __future__ import annotations
 
+import os
+
 # 后端拆分（v2.41.0）：AETRIX_ROLE 环境变量
 # - "api"：API 进程，enqueue() 走 Redis 桥接推给 worker
 # - "worker"：Worker 进程，走原有进程内队列
