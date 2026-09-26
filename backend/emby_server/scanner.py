@@ -889,7 +889,8 @@ class _Pending:
     skipped: bool = False  # 增量扫描：目录没变且库里已是最新 → 本次不做任何写库工作
     fast_skipped: bool = False  # 分层 L1 秒跳：文件指纹命中且已补全 → 连目录指纹都不算
     file_fingerprint: Optional[str] = None  # 本批算出的文件指纹，写库时落库
-    layered: bool = False  # 分层 L1：本文件只做极简入库，IO 全留给后台
+    layered: bool = False  # 分层 L1：本文件只做极简入库，慢 IO 留给后台
+    layered_local_fast: bool = False  # 分层 L1 本机文件：side/NFO 照常做（本地 IO 快）
 
 
 @dataclass
@@ -1438,24 +1439,28 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         pending.probe_needed = bool(is_new or needs_probe(item, scan_file.stored_path,
                                                              scan_file.size))
         if SCAN_LAYERED and not pending.fast_skipped:
-            # 分层 L1：本文件只做极简入库，side/NFO/TMDB 全跳过（后台 enrich_worker 补）。
-            # 写库循环里这些 Future 都是 None，天然只写基础字段；enrich_status='pending'。
+            # 分层 L1：本机文件只跳过 TMDB（side/NFO 是本地磁盘 IO，很快，照常做，
+            # 保证本地海报扫描完立即可见）；远程文件跳过全部 IO（网络慢，后台补）。
+            # 写库时 enrich_status='pending'，enrich_worker 随后补完剩下的。
             pending.layered = True
+            pending.layered_local_fast = bool(scan_file.local_dir)
         if pending.probe_needed:
             if PROBE_BACKGROUND:
                 # Phase 1：不提交 ffprobe（连 probe_input 的直链解析都省了），
                 # 写库时把条目标 probe_status='pending' 交给后台 worker。
                 pending.probe_deferred = True
-            elif not pending.layered:
-                # 非分层旧行为：inline 模式当场探测
+            elif not pending.layered or getattr(pending, "layered_local_fast", False):
+                # inline 模式当场探测：分层下本机文件也探（本地 ffprobe 很快），
+                # 只有远程文件才推迟（直链解析要走网络）。
                 pending.probe = pool.submit(probe_metadata, *scan_file.probe_input(), size=scan_file.size)
-            # 分层 + inline：L1 不探（避免远程直链拖慢秒级入库），
-            # enrich_worker 补全时把 probe_status 置 pending，probe_worker 接手
-        if not pending.layered:
+            # 分层 + inline + 远程：L1 不探，enrich_worker 补全时把 probe_status
+            # 置 pending，probe_worker 接手
+        if not pending.layered or getattr(pending, "layered_local_fast", False):
             pending.side = pool.submit(_side_info, ctx, scan_file)
         # NFO 发现与解析（与 probe / side / TMDB 并行；结果在下面先取回，
         # TMDB 预取口径按 NFO 有无决定：有 tmdb_id 就不调搜索）
-        if pending.item_type in ("series", "movie", "episode") and not pending.layered:
+        if pending.item_type in ("series", "movie", "episode") and (
+            not pending.layered or getattr(pending, "layered_local_fast", False)):
             pending.nfo = pool.submit(_nfo_work, ctx, scan_file, pending.item_type)
 
     # NFO 先取回（小文件 IO），再决定 TMDB 预取口径——搜索是扫描里最贵的网络调用，
@@ -1540,10 +1545,14 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     # 如果等到写库循环里再取结果，SQLite 的写锁就要陪着一起等（超过 busy_timeout=30s
     # 就是那句 database is locked，前端表现是 30 秒超时）。
     for pending in prepared:
-        if pending.skipped or pending.fast_skipped or pending.layered:
+        if pending.skipped or pending.fast_skipped:
             continue
         pending.probe_data = _result(pending.probe)
         pending.side_data = _result(pending.side)
+        if pending.layered:
+            # 分层 L1：side/probe 结果已取回（本机文件的 side 在上面提交了），
+            # TMDB 等慢活跳过，等 enrich_worker。
+            continue
         hit, details = _result(pending.tmdb, default=(None, None)) or (None, None)
         pending.tmdb_hit, pending.tmdb_details = hit, details
         series_hit, series_details = _result(pending.series_tmdb, default=(None, None)) or (None, None)
