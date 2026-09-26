@@ -30,6 +30,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["REDIS_ENABLED"] = "false"
+# 关掉文件指纹秒跳：本测试验证的是旧的目录指纹增量逻辑，fast-skip 会绕过
+# 目录可读性检查（如 FlakyProvider 场景），干扰测试意图。
+os.environ["SCAN_FAST_SKIP"] = "0"
 DB = tempfile.mktemp(suffix=".db")
 os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
 
