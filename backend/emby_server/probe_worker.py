@@ -40,6 +40,8 @@ _QUOTA_BREAKER_THRESHOLD = 10
 _QUOTA_BREAKER_REDIS_KEY = "aetrix:quota_breaker:state"
 _QUOTA_BREAKER_BACKOFF_SEC = 300  # 熔断后每次退避 5 分钟
 _quota_lock = threading.Lock()
+# Redis 不可用时的内存降级状态（进程内，重启丢失；Redis 恢复后以 Redis 为准）
+_quota_mem_state = {"consecutive_403": 0, "tripped": False, "tripped_at": None}
 
 
 def _quota_redis():
@@ -52,10 +54,12 @@ def _quota_redis():
 
 
 def _quota_state_get():
-    """从 Redis 读熔断状态，返回 (consecutive_403, tripped, tripped_at)"""
+    """读熔断状态，返回 (consecutive_403, tripped, tripped_at)。
+    Redis 可用时从 Redis 读；不可用时用进程内存（降级模式）。"""
     r = _quota_redis()
     if r is None:
-        return (0, False, None)
+        s = _quota_mem_state
+        return (s["consecutive_403"], s["tripped"], s["tripped_at"])
     try:
         import json
         raw = r.get(_QUOTA_BREAKER_REDIS_KEY)
@@ -72,9 +76,13 @@ def _quota_state_get():
 
 
 def _quota_state_set(consecutive_403: int, tripped: bool, tripped_at=None):
-    """写熔断状态到 Redis（持久化）"""
+    """写熔断状态。Redis 可用时持久化；不可用时写进程内存（降级模式）。"""
+    import time as _time
     r = _quota_redis()
     if r is None:
+        _quota_mem_state["consecutive_403"] = int(consecutive_403)
+        _quota_mem_state["tripped"] = bool(tripped)
+        _quota_mem_state["tripped_at"] = tripped_at or (_time.time() if tripped else None)
         return
     try:
         import json, time
@@ -84,7 +92,8 @@ def _quota_state_set(consecutive_403: int, tripped: bool, tripped_at=None):
             "tripped_at": tripped_at or (time.time() if tripped else None),
             "updated_at": time.time(),
         }
-        # 24 小时过期：配额通常 24 小时恢复，过期后自动解除
+        # 24 小时过期是兜底：防止手动恢复被遗忘导致永久熔断。
+        # 主要恢复方式是在管理后台手动重置（确认配额已恢复后）。
         r.setex(_QUOTA_BREAKER_REDIS_KEY, 86400, json.dumps(data))
     except Exception as e:
         logger.warning(f"[probe] 熔断状态持久化失败：{e}")
@@ -97,7 +106,9 @@ def breaker_is_tripped() -> bool:
 
 
 def breaker_record_success() -> None:
-    """成功时调用：重置连续 403 计数（熔断已触发则不自动解除，需手动恢复）"""
+    """成功时调用：重置连续 403 计数。
+    注意：熔断已触发时，单个成功不会自动解除（需在管理后台手动恢复，
+    或等 24 小时兜底过期）。这是为了防止配额抖动导致反复触发/解除。"""
     with _quota_lock:
         consecutive, tripped, tripped_at = _quota_state_get()
         if consecutive > 0 and not tripped:
@@ -116,7 +127,8 @@ def breaker_record_quota_error() -> bool:
             _quota_state_set(consecutive, True, time.time())
             logger.error(
                 "[probe] 熔断器触发：连续 %d 个 HTTP 403（远端配额耗尽），"
-                "worker 已暂停退避。请等配额恢复（通常 24 小时）后在管理后台手动恢复。",
+                "worker 已暂停退避。配额恢复后请在管理后台手动恢复；"
+                "若忘记手动恢复，24 小时后自动解除（兜底）。",
                 consecutive,
             )
             return True
