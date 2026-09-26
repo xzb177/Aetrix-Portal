@@ -281,7 +281,22 @@ async def health_check():
         "node": _node_info(),
         # 长期运行的体检口径：正在扫描的库 / 转码会话 / 临时目录占用 / 磁盘余量
         "runtime": _runtime_report(),
+        # Redis 状态：队列/熔断器/分布式锁都依赖它
+        "redis": _redis_status(),
     }
+
+
+def _redis_status() -> dict:
+    """Redis 连通性（健康检查用；异常不抛，只报告）"""
+    try:
+        from backend import database as db
+        r = db.redis_client
+        if r is None:
+            return {"ok": False, "reason": "not_configured"}
+        r.ping()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)[:100]}
 
 
 def _runtime_report() -> dict:
