@@ -16,11 +16,12 @@ import { RouterLink } from 'vue-router'
 import {
   Film, MessageSquareDashed, Radio, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
-  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon,
+  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, ShieldAlert,
 } from 'lucide-vue-next'
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
   fetchServersSummary, fetchSessions, fetchStatsTrend, fetchBackendServices,
+  fetchQuotaBreakerStatus, resetQuotaBreaker,
   type BackendServiceStatus } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
@@ -40,6 +41,9 @@ const mounts = ref<StorageMount[]>([])
 const servers = ref<ServerSummary | null>(null)
 /** 后端服务：aetrix-api + aetrix-worker 的运行状态 */
 const backendServices = ref<BackendServiceStatus[]>([])
+/** 配额熔断器状态 */
+const quotaBreaker = ref<{ tripped: boolean; consecutive_403: number; threshold: number; tripped_at: number | null; backoff_sec: number } | null>(null)
+const resettingBreaker = ref(false)
 /** 多服运营：每个服的会员 / 内容 / 节点，一个面板同时管几个服一眼看完 */
 const realms = ref<RealmOverview | null>(null)
 const loading = ref(true)
@@ -66,7 +70,7 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e, libraryData, sessionData, serverData, realmData, mountData, backendData] = await Promise.all([
+    const [o, p, e, libraryData, sessionData, serverData, realmData, mountData, backendData, breakerData] = await Promise.all([
       fetchOverview(),
       fetchPlaybackStats(),
       fetchEconomyStats(),
@@ -76,6 +80,7 @@ onMounted(async () => {
       fetchRealmOverview().catch(() => null),
       fetchMounts().catch(() => null),
       fetchBackendServices().catch(() => ({ services: [] as BackendServiceStatus[] })),
+      fetchQuotaBreakerStatus().catch(() => null),
     ])
     overview.value = o
     playback.value = p
@@ -86,11 +91,27 @@ onMounted(async () => {
     realms.value = realmData
     mounts.value = mountData?.mounts || []
     backendServices.value = (backendData as any)?.services || []
+    quotaBreaker.value = (breakerData as any)?.breaker || null
     await loadTrend()
   } finally {
     loading.value = false
   }
 })
+
+async function handleResetBreaker() {
+  if (!confirm('确定要手动重置配额熔断器吗？请确认 Google Drive 配额已恢复。')) return
+  resettingBreaker.value = true
+  try {
+    await resetQuotaBreaker()
+    const data = await fetchQuotaBreakerStatus().catch(() => null)
+    quotaBreaker.value = (data as any)?.breaker || null
+    alert('熔断器已重置，worker 恢复工作')
+  } catch (e) {
+    alert('重置失败，请稍后重试')
+  } finally {
+    resettingBreaker.value = false
+  }
+}
 
 // ==================== 服务器接入（信息展示）====================
 
@@ -388,6 +409,35 @@ function sessionProgress(session: EmbySessionRow): number {
         </div>
       </section>
 
+      <!-- 配额熔断器：连续 403 触发，保护 Google Drive 配额 -->
+      <section v-if="quotaBreaker" class="stat-grid">
+        <div class="stat-tile server-tile" :class="{ 'breaker-tripped': quotaBreaker.tripped }">
+          <div class="stat-label">
+            <ShieldAlert :size="13" /> 配额熔断器
+            <span class="server-current">{{ quotaBreaker.tripped ? '已触发' : '正常' }}</span>
+          </div>
+          <div class="stat-value" :class="{ 'stat-accent': !quotaBreaker.tripped, 'breaker-danger': quotaBreaker.tripped }">
+            {{ quotaBreaker.tripped ? '已熔断' : '运行中' }}
+            <span class="stat-sub"> · 连续 403: {{ quotaBreaker.consecutive_403 }}/{{ quotaBreaker.threshold }}</span>
+          </div>
+          <div class="stat-foot">
+            <template v-if="quotaBreaker.tripped">
+              <span>配额耗尽，worker 已暂停</span>
+              <button
+                class="breaker-reset-btn"
+                :disabled="resettingBreaker"
+                @click="handleResetBreaker"
+              >
+                {{ resettingBreaker ? '重置中...' : '手动恢复' }}
+              </button>
+            </template>
+            <template v-else>
+              Google Drive 配额保护
+            </template>
+          </div>
+        </div>
+      </section>
+
       <!--
         各服概况：每个服的会员 / 内容 / 播放节点都在这里，不用一个个切过去看。
         「多服」不是一个要单独学的模块：切当前作用域在顶栏，服与线路的归属在
@@ -605,6 +655,31 @@ function sessionProgress(session: EmbySessionRow): number {
 </template>
 
 <style scoped>
+/* 配额熔断器 */
+.breaker-tripped {
+  border-color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.08) !important;
+}
+.breaker-danger {
+  color: #ef4444 !important;
+}
+.breaker-reset-btn {
+  margin-left: 8px;
+  padding: 4px 12px;
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.breaker-reset-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.breaker-reset-btn:hover:not(:disabled) {
+  background: #dc2626;
+}
 .page-loading { text-align: center; color: var(--text-secondary); padding: 60px 0; }
 
 /* ===== 交付链数据卡（顶部六张，一点直达明细页）===== */

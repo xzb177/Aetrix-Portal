@@ -83,4 +83,21 @@ def get_services_status(admin=Depends(get_current_admin), db: Session = Depends(
     }
 
 
+@services_router.get("/quota-breaker/status")
+def get_quota_breaker_status(admin=Depends(get_current_admin)):
+    """熔断器状态（供管理后台展示）"""
+    from backend.emby_server.probe_worker import quota_breaker_status
+    st = quota_breaker_status()
+    return {"success": True, "breaker": st}
+
+
+@services_router.post("/quota-breaker/reset")
+def reset_quota_breaker(admin=Depends(get_current_admin)):
+    """手动重置熔断器（配额恢复后调用）"""
+    from backend.emby_server.probe_worker import quota_breaker_reset
+    quota_breaker_reset()
+    logger.info("管理员手动重置了配额熔断器")
+    return {"success": True, "message": "熔断器已重置，worker 恢复工作"}
+
+
 __all__ = ["services_router"]
