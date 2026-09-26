@@ -215,34 +215,49 @@ class _CloudMount(MountProvider):
 
         起始目录读不到时直接抛错（不吞掉）：上层按「来源不可用」处理并跳过清理，
         避免把「读不到」当成「文件已删除」而误删条目。
+
+        分层并行：同一层级的目录用 16 线程并发列举（网盘 API 延迟是瓶颈）。
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         self.list_dir(root)
-        stack: list[tuple[str, int]] = [(root, 0)]
         seen: set[str] = set()
+        seen.add(root)
+        current = [(root, 0)]
         # 文件级去重：rclone lsjson 偶发在单次列举里返回同一文件两次（网盘侧重复
         # 条目 / 分页异常；2026-09-25 生产事故：同一 mkv 被产出两次，扫描器在同一
         # 事务内两次 INSERT 撞 emby_items.guid 唯一键、整库扫描 abort）。扫描器在
         # _prepare_and_prefetch 按 guid 去重兜底，这里在源头先拦一道，也省掉重复
         # 的 ffprobe 与 TMDB 预取。rel 全局唯一，误杀不了正常文件。
         seen_files: set[str] = set()
-        while stack:
-            rel, depth = stack.pop()
-            if rel in seen:
-                continue
-            seen.add(rel)
-            for entry in self._entries(rel):
-                if entry.is_dir:
-                    if depth < max_depth:
-                        stack.append((entry.rel, depth + 1))
-                    continue
-                if os.path.splitext(entry.name)[1].lower() not in REMOTE_MEDIA_EXTS:
-                    continue
-                if entry.rel in seen_files:
-                    logger.debug("%s 遍历跳过重复文件条目：%s", self.what, entry.rel)
-                    continue
-                seen_files.add(entry.rel)
-                yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
-                                is_strm=_is_strm_name(entry.name))
+        # 分层 BFS：每层目录并发列举
+        with ThreadPoolExecutor(max_workers=16, thread_name_prefix="walk") as pool:
+            while current:
+                fut_to_dir = {
+                    pool.submit(self._entries, rel): (rel, depth)
+                    for rel, depth in current
+                }
+                current = []
+                for fut in as_completed(fut_to_dir):
+                    rel, depth = fut_to_dir[fut]
+                    try:
+                        entries = fut.result()
+                    except Exception as e:
+                        logger.warning("%s 并行列目录失败 %s: %s", self.what, rel, e)
+                        continue
+                    for entry in entries:
+                        if entry.is_dir:
+                            if depth < max_depth and entry.rel not in seen:
+                                seen.add(entry.rel)
+                                current.append((entry.rel, depth + 1))
+                            continue
+                        if os.path.splitext(entry.name)[1].lower() not in REMOTE_MEDIA_EXTS:
+                            continue
+                        if entry.rel in seen_files:
+                            logger.debug("%s 遍历跳过重复文件条目：%s", self.what, entry.rel)
+                            continue
+                        seen_files.add(entry.rel)
+                        yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
+                                        is_strm=_is_strm_name(entry.name))
 
     def read_text(self, rel: str) -> str:
         """默认实现：解析成直链后把内容当文本读（用于 .strm 与字幕）"""
