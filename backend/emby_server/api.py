@@ -609,10 +609,11 @@ def authenticate_by_name(
             agent=request.headers.get("user-agent"), success=False,
             reason="emby_login_failed", detail=detail,
         )
-        return Response(
-            content='{"error": "InvalidUsernameOrPassword"}',
-            status_code=401, media_type="application/json",
-        )
+        # 对齐官方 Emby：认证失败返回 401 空 body。
+        # 曾返回 {"error": "InvalidUsernameOrPassword"} JSON，官方 iOS 客户端会尝试
+        # 按认证成功结构解析该 body，报"数据解析错误"；真 Emby 是空 body，客户端则
+        # 正常提示用户名或密码不正确（2026-09-26 线上实测）。
+        return Response(status_code=401)
 
     if not user or not user.is_active or not password:
         return _auth_fail()
