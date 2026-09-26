@@ -325,6 +325,60 @@ def _version_base_name(file_path):
     return fname.strip() or None
 
 
+def _series_source_dir(item, db):
+    if item.item_type != "series":
+        return None
+    row = (
+        db.query(em.MediaItem.file_path)
+        .filter(
+            em.MediaItem.parent_id.in_(
+                db.query(em.MediaItem.id).filter(
+                    em.MediaItem.parent_id == item.id,
+                    em.MediaItem.item_type == "season",
+                )
+            ),
+            em.MediaItem.item_type == "episode",
+            em.MediaItem.file_path.isnot(None),
+        )
+        .first()
+    )
+    if not row or not row[0]:
+        return None
+    fp = row[0]
+    parts = fp.split("/")
+    for i, p in enumerate(parts):
+        if p.startswith("Season"):
+            return "/".join(parts[:i])
+    return _parent_dir(fp)
+
+def _series_siblings(item, db):
+    if item.item_type != "series":
+        return []
+    src = _series_source_dir(item, db)
+    if not src:
+        return []
+    cands = (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.library_id == item.library_id,
+            em.MediaItem.item_type == "series",
+            em.MediaItem.name == item.name,
+            em.MediaItem.is_hidden == False,
+        )
+        .order_by(em.MediaItem.id)
+        .all()
+    )
+    return [s for s in cands if _series_source_dir(s, db) == src]
+
+def _is_primary_series(item, db):
+    try:
+        sibs = _series_siblings(item, db)
+    except Exception:
+        return True
+    if len(sibs) <= 1:
+        return True
+    return sibs[0].id == item.id
+
 def _version_siblings(item, db):
     """找同一电影的所有版本：同库、同目录、**同主文件名**的 movie 条目。
 
@@ -1252,6 +1306,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     deduped = []
     seen_dirs = set()
     for it in items:
+        if it.item_type == "series":
+            if not _is_primary_series(it, db):
+                continue
         if it.item_type == "movie":
             pdir = _parent_dir(it.file_path)
             if pdir and pdir in seen_dirs:
