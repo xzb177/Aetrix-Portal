@@ -93,6 +93,20 @@ async function locateEpisode(epId: string) {
   }
 }
 
+/** 默认选中的季：优先集数最多的非第 0 季。
+ * 第 0 季是特别篇/花絮，直接取 seasons[0] 会导致点进详情页只看到 1 集
+ *（如《颤抖的真相》共 7 集，第 0 季只有 1 集，2026-09-26 用户反馈）。
+ * 第 0 季仍可通过季选择器手动切换查看。 */
+function defaultSeasonId(list: EmbyItem[]): string {
+  const nonZero = list.filter((s) => (s.IndexNumber ?? 0) !== 0)
+  const pool = nonZero.length ? nonZero : list
+  let best = pool[0]
+  for (const s of pool) {
+    if ((s.ChildCount ?? 0) > (best.ChildCount ?? 0)) best = s
+  }
+  return best.Id
+}
+
 async function loadItem() {
   loading.value = true
   highlightEpId.value = ''
@@ -108,7 +122,7 @@ async function loadItem() {
       if (targetEp && seasons.value.length) {
         await locateEpisode(targetEp)
       } else if (seasons.value.length) {
-        selectedSeasonId.value = seasons.value[0].Id
+        selectedSeasonId.value = defaultSeasonId(seasons.value)
       } else {
         episodes.value = await embyApi.getEpisodes(itemId.value)
       }
