@@ -31,6 +31,7 @@ import {
   fetchScanQueue,
   fetchServers,
   fetchSessions,
+  fetchAutoScan,
   fetchTmdbKeys,
   generateVirtualLibraries,
   removeLibraryCover,
@@ -38,6 +39,7 @@ import {
   rescrapeLibrary,
   runRepairQueue,
   scanLibrary,
+  saveAutoScan,
   saveTmdbKeys,
   testTmdbKeys,
   stopAllTranscodes,
@@ -45,7 +47,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { TmdbKeysStatus, TmdbTestResult } from '@/api/admin'
+import type { AutoScanConfig, TmdbKeysStatus, TmdbTestResult } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -155,6 +157,7 @@ async function load() {
       fetchServers().catch(() => null),
       fetchReachability().catch(() => null),
       loadTmdbStatus().catch(() => undefined),
+      loadAutoScanConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -335,6 +338,33 @@ async function scan(l: EmbyLibrary) {
 }
 
 // ==================== 元数据与刮削 ====================
+// 定时扫描：开关 + 每天几点扫，全部由用户在后台决定（默认关闭）
+const autoScan = ref<AutoScanConfig | null>(null)
+const autoScanSaving = ref(false)
+
+async function loadAutoScanConfig() {
+  try {
+    const res = await fetchAutoScan()
+    autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
+  } catch {
+    autoScan.value = null // 出错不挡页面其它内容
+  }
+}
+
+async function saveAutoScanAction() {
+  if (!autoScan.value) return
+  autoScanSaving.value = true
+  try {
+    const res = await saveAutoScan(autoScan.value.enabled, autoScan.value.time)
+    autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
+    ElMessage.success(`定时扫描已${res.enabled ? `开启（每天 ${res.time}）` : '关闭'}`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    autoScanSaving.value = false
+  }
+}
+
 const tmdbStatus = ref<TmdbKeysStatus | null>(null)
 const tmdbKeysInput = ref('')
 const tmdbSaving = ref(false)
@@ -951,6 +981,33 @@ function typeLabel(t: string): string {
               <span class="mono">{{ r.masked }}</span>
               <span>{{ r.message }}</span>
             </div>
+          </div>
+        </div>
+        <div class="scrape-block">
+          <h3>定时扫描</h3>
+          <p class="drawer-hint">
+            打开后，每天到点自动把所有本机负责的启用库入队扫描（增量：没变化的目录跳过）。
+            有扫描正在跑 / 排队时会跳过，不打断手工扫描。时间是服务器本地时间。
+          </p>
+          <div v-if="autoScan" class="scrape-actions" style="align-items: center">
+            <el-switch v-model="autoScan.enabled" active-text="开启" inactive-text="关闭" />
+            <el-time-picker
+              v-model="autoScan.time"
+              format="HH:mm"
+              value-format="HH:mm"
+              placeholder="每天几点"
+              style="width: 130px"
+              :disabled="!autoScan.enabled"
+            />
+            <el-button type="primary" size="small" :loading="autoScanSaving" @click="saveAutoScanAction">
+              保存
+            </el-button>
+          </div>
+          <div v-if="autoScan?.last_run" class="drawer-hint" style="margin-top: 6px">
+            上次执行：{{ autoScan.last_run }}
+          </div>
+          <div v-else-if="autoScan" class="drawer-hint" style="margin-top: 6px">
+            还没有执行过
           </div>
         </div>
         <div class="scrape-block">

@@ -572,6 +572,21 @@ export const rescrapeLibrary = (id: number, policy: 'missing_only' | 'all' = 'mi
     { policy },
   )
 
+export interface AutoScanConfig {
+  enabled: boolean
+  /** 每天执行时间，"HH:MM"（服务器本地时间） */
+  time: string
+  /** 上次执行日期 "YYYY-MM-DD"，没跑过为空 */
+  last_run: string
+}
+
+/** 定时扫描当前配置（开关 / 时间 / 上次执行） */
+export const fetchAutoScan = () => get<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`)
+
+/** 保存定时扫描配置：立即生效，无需重启；时间格式非法时后端 400 */
+export const saveAutoScan = (enabled: boolean, time: string) =>
+  put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
+
 /**
  * 播放可达性报告（v2.28.0）：出流方式 + 逐库判定 + 用户端地址一致性
  *

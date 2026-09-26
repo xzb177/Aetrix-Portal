@@ -29,6 +29,7 @@ from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import nfo as nfo_lib
 from backend.emby_server import nodes as node_lib
+from backend.emby_server import auto_scan
 from backend.emby_server import scan_queue
 from backend.emby_server.portal import admin_emby_router, require_staff
 from backend.emby_server.tmdb import (
@@ -345,3 +346,33 @@ def rescrape_library(
         "policy": policy,
         "message": f"已触发重新刮削（{policy}），后台运行中",
     }
+
+
+# ==================== 定时扫描（用户可控的自动扫描计划） ====================
+
+class AutoScanSaveRequest(BaseModel):
+    enabled: bool = Field(default=False, description="总开关")
+    time: str = Field(default="03:00", description="每天执行时间，HH:MM（24 小时制，服务器本地时间）")
+
+
+@admin_emby_router.get("/scrape/auto-scan")
+def get_auto_scan(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """定时扫描当前配置（开关 / 时间 / 上次执行日期）"""
+    return {"success": True, **auto_scan.get_config(db)}
+
+
+@admin_emby_router.put("/scrape/auto-scan")
+def save_auto_scan(
+    req: AutoScanSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存定时扫描配置：立即生效，无需重启；时间格式非法返回 400"""
+    try:
+        cfg = auto_scan.save_config(db, req.enabled, req.time)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, **cfg}
