@@ -1159,7 +1159,7 @@ onMounted(loadItem)
 }
 .version-label {
   font-size: 13px;
-  color: var(--text-2, #999);
+  color: var(--au-text-2, #999);
   flex-shrink: 0;
 }
 .version-options {
@@ -1170,16 +1170,16 @@ onMounted(loadItem)
 .version-btn {
   padding: 6px 14px;
   border-radius: 20px;
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--au-border, #333);
   background: transparent;
-  color: var(--text-1, #fff);
+  color: var(--au-text, #fff);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.2s;
 }
 .version-btn.active {
-  background: var(--primary, #00d4ff);
-  border-color: var(--primary, #00d4ff);
+  background: var(--au-primary, #00d4ff);
+  border-color: var(--au-primary, #00d4ff);
   color: #000;
   font-weight: 600;
 }

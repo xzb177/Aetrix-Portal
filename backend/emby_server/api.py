@@ -310,9 +310,10 @@ def _parent_dir(file_path):
 
 
 def _version_siblings(item, db):
-    """找同一电影的所有版本：同库、同目录下的 movie 条目。
+    """找同一电影的所有版本：同库、同目录、**同名**的 movie 条目。
 
     只对 movie 类型生效（剧集的单集即便同目录也是不同集，不合并）。
+    同名是关键：避免把同一目录下不同电影误判为版本（测试残留等场景）。
     """
     if item.item_type != "movie":
         return []
@@ -324,6 +325,7 @@ def _version_siblings(item, db):
         .filter(
             em.MediaItem.library_id == item.library_id,
             em.MediaItem.item_type == "movie",
+            em.MediaItem.name == item.name,
             em.MediaItem.is_hidden == False,
             em.MediaItem.file_path.like(pdir + "/%"),
         )
@@ -333,8 +335,13 @@ def _version_siblings(item, db):
 
 
 def _is_primary_version(item, db):
-    """是否为该版本组的主版本（id 最小的那个）。"""
-    sibs = _version_siblings(item, db)
+    """是否为该版本组的主版本（id 最小的那个）。
+    查不到兄弟版本时视为 primary（不去重），避免误伤虚拟库等特殊场景。
+    """
+    try:
+        sibs = _version_siblings(item, db)
+    except Exception:
+        return True
     if len(sibs) <= 1:
         return True
     return sibs[0].id == item.id
