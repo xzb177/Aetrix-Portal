@@ -584,6 +584,17 @@ export interface AutoScanConfig {
 export const fetchAutoScan = () => get<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`)
 
 /** 保存定时扫描配置：立即生效，无需重启；时间格式非法时后端 400 */
+export interface ChaseNewConfig {
+  enabled: boolean
+  interval: number
+  libraries: string
+  last_check: string
+  last_found: number
+}
+export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
+export const saveChaseNew = (enabled: boolean, interval: number, libraries: string) =>
+  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, libraries })
+
 export const saveAutoScan = (enabled: boolean, time: string) =>
   put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
 
