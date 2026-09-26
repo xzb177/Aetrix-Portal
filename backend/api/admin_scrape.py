@@ -400,6 +400,25 @@ def get_enrich_progress(
     return {"success": True, **enrich_worker.get_progress()}
 
 
+@admin_emby_router.get("/scrape/quota-breaker")
+def get_quota_breaker(
+    staff: base_models.WebUser = Depends(require_staff),
+):
+    """查询 403 熔断器状态：是否触发、连续 403 数、阈值、触发时间"""
+    from backend.emby_server import probe_worker
+    return {"success": True, **probe_worker.quota_breaker_status()}
+
+
+@admin_emby_router.post("/scrape/quota-breaker/reset")
+def reset_quota_breaker(
+    staff: base_models.WebUser = Depends(require_staff),
+):
+    """手动重置 403 熔断器（配额恢复后调用，worker 恢复工作）"""
+    from backend.emby_server import probe_worker
+    probe_worker.quota_breaker_reset()
+    return {"success": True, "message": "熔断器已重置，worker 恢复"}
+
+
 @admin_emby_router.put("/scrape/auto-scan")
 def save_auto_scan(
     req: AutoScanSaveRequest,

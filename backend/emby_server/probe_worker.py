@@ -35,39 +35,125 @@ logger = logging.getLogger(__name__)
 
 # ---- 403 熔断器 ----
 # 连续 N 个 403（配额耗尽）就暂停 worker，避免空跑烧配额
+# 状态存 Redis（持久化，重启不丢）；三个函数语义分离，杜绝"只读检查误清零"
 _QUOTA_BREAKER_THRESHOLD = 10
-_quota_consecutive_403 = 0
-_quota_breaker_tripped = False
+_QUOTA_BREAKER_REDIS_KEY = "aetrix:quota_breaker:state"
+_QUOTA_BREAKER_BACKOFF_SEC = 300  # 熔断后每次退避 5 分钟
 _quota_lock = threading.Lock()
 
 
-def _quota_breaker_check(is_403: bool) -> bool:
-    """返回 True 表示熔断器已触发，worker 应暂停"""
-    global _quota_consecutive_403, _quota_breaker_tripped
+def _quota_redis():
+    """拿 Redis 客户端（不可用返回 None，降级为内存模式）"""
+    try:
+        from backend.database import redis_client
+        return redis_client
+    except Exception:
+        return None
+
+
+def _quota_state_get():
+    """从 Redis 读熔断状态，返回 (consecutive_403, tripped, tripped_at)"""
+    r = _quota_redis()
+    if r is None:
+        return (0, False, None)
+    try:
+        import json
+        raw = r.get(_QUOTA_BREAKER_REDIS_KEY)
+        if not raw:
+            return (0, False, None)
+        data = json.loads(raw)
+        return (
+            int(data.get("consecutive_403", 0)),
+            bool(data.get("tripped", False)),
+            data.get("tripped_at"),
+        )
+    except Exception:
+        return (0, False, None)
+
+
+def _quota_state_set(consecutive_403: int, tripped: bool, tripped_at=None):
+    """写熔断状态到 Redis（持久化）"""
+    r = _quota_redis()
+    if r is None:
+        return
+    try:
+        import json, time
+        data = {
+            "consecutive_403": int(consecutive_403),
+            "tripped": bool(tripped),
+            "tripped_at": tripped_at or (time.time() if tripped else None),
+            "updated_at": time.time(),
+        }
+        # 24 小时过期：配额通常 24 小时恢复，过期后自动解除
+        r.setex(_QUOTA_BREAKER_REDIS_KEY, 86400, json.dumps(data))
+    except Exception as e:
+        logger.warning(f"[probe] 熔断状态持久化失败：{e}")
+
+
+def breaker_is_tripped() -> bool:
+    """纯只读：熔断器是否已触发（不修改任何状态）"""
+    _, tripped, _ = _quota_state_get()
+    return tripped
+
+
+def breaker_record_success() -> None:
+    """成功时调用：重置连续 403 计数（熔断已触发则不自动解除，需手动恢复）"""
     with _quota_lock:
-        if is_403:
-            _quota_consecutive_403 += 1
-            if _quota_consecutive_403 >= _QUOTA_BREAKER_THRESHOLD and not _quota_breaker_tripped:
-                _quota_breaker_tripped = True
-                logger.error(
-                    "[probe] 熔断器触发：连续 %d 个 HTTP 403（远端配额耗尽），"
-                    "worker 已暂停。请等配额恢复（通常 24 小时）后手动重启 worker。",
-                    _quota_consecutive_403,
-                )
+        consecutive, tripped, tripped_at = _quota_state_get()
+        if consecutive > 0 and not tripped:
+            _quota_state_set(0, False)
+
+
+def breaker_record_quota_error() -> bool:
+    """遇到 403 配额错误时调用：计数+1，返回 True 表示刚刚触发熔断"""
+    with _quota_lock:
+        consecutive, tripped, tripped_at = _quota_state_get()
+        if tripped:
+            return False  # 已经熔断了，不重复触发
+        consecutive += 1
+        if consecutive >= _QUOTA_BREAKER_THRESHOLD:
+            import time
+            _quota_state_set(consecutive, True, time.time())
+            logger.error(
+                "[probe] 熔断器触发：连续 %d 个 HTTP 403（远端配额耗尽），"
+                "worker 已暂停退避。请等配额恢复（通常 24 小时）后在管理后台手动恢复。",
+                consecutive,
+            )
+            return True
         else:
-            # 非 403 成功或其它错误，重置计数（只有连续 403 才熔断）
-            if _quota_consecutive_403 > 0:
-                _quota_consecutive_403 = 0
-        return _quota_breaker_tripped
+            _quota_state_set(consecutive, False)
+            return False
 
 
 def quota_breaker_reset() -> None:
     """手动重置熔断器（配额恢复后调用）"""
-    global _quota_consecutive_403, _quota_breaker_tripped
     with _quota_lock:
-        _quota_consecutive_403 = 0
-        _quota_breaker_tripped = False
+        _quota_state_set(0, False)
     logger.info("[probe] 熔断器已手动重置，worker 恢复")
+
+
+def quota_breaker_status() -> dict:
+    """查询熔断器状态（供管理后台展示）"""
+    consecutive, tripped, tripped_at = _quota_state_get()
+    return {
+        "tripped": tripped,
+        "consecutive_403": consecutive,
+        "threshold": _QUOTA_BREAKER_THRESHOLD,
+        "tripped_at": tripped_at,
+        "backoff_sec": _QUOTA_BREAKER_BACKOFF_SEC,
+    }
+
+
+# 向后兼容：旧的 _quota_breaker_check 保留但标记废弃
+def _quota_breaker_check(is_403: bool) -> bool:
+    """已废弃：用 breaker_is_tripped / breaker_record_* 代替"""
+    import warnings
+    warnings.warn("_quota_breaker_check 已废弃", DeprecationWarning, stacklevel=2)
+    if is_403:
+        breaker_record_quota_error()
+    else:
+        breaker_record_success()
+    return breaker_is_tripped()
 
 # ---- 可调参数（环境变量） ----
 PROBE_WORKERS = max(1, min(32, int(os.getenv("PROBE_WORKERS", "8") or 8)))
@@ -223,15 +309,21 @@ def _probe_one(item_id: int) -> str:
                 item.probe_next_retry_at = None
                 db.commit()
                 return "skipped"
-            # 熔断器：已触发则直接跳过，不烧配额
-            if _quota_breaker_check(False):  # 只读状态，不计数
+            # 熔断器：已触发则直接跳过，不烧配额（纯只读，不碰计数器）
+            if breaker_is_tripped():
                 return "paused_quota"
             target = resolve_play_target(item.file_path, db)
             info = probe_metadata(target.value, target.headers, size=item.size or 0)
-            # 检查是否 403，更新熔断器
+            # 检查是否 403，更新熔断器（语义分离：记录 vs 只读检查）
             is_403 = bool(info and info.get("_error") == "quota")
-            if _quota_breaker_check(is_403) and is_403:
-                # 刚触发熔断，把当前条目打回 pending（不是它的错，是配额问题）
+            if is_403:
+                breaker_record_quota_error()
+            else:
+                # 非 403（成功或其它错误）：重置连续计数
+                breaker_record_success()
+            if is_403 and breaker_is_tripped():
+                # 熔断中，把当前条目打回 pending（不是它的错，是配额问题）
+                # 配额 403 不增加普通文件失败次数，attempts 清零
                 db.rollback()
                 item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
                 if item is not None:
@@ -319,6 +411,14 @@ def _worker_loop() -> None:
                 PROBE_WORKERS, PROBE_RATE_PER_SEC, PROBE_MAX_ATTEMPTS)
     while not _stop_event.is_set():
         try:
+            # 熔断中：退避睡眠，不空转烧 CPU/DB
+            if breaker_is_tripped():
+                logger.warning(
+                    "[probe] 熔断器已触发，worker 退避 %d 秒（配额恢复后手动重置）",
+                    _QUOTA_BREAKER_BACKOFF_SEC,
+                )
+                _stop_event.wait(_QUOTA_BREAKER_BACKOFF_SEC)
+                continue
             counts = run_once()
             if counts["claimed"] == 0:
                 _stop_event.wait(PROBE_IDLE_POLL_SEC)
