@@ -26,6 +26,12 @@ const showChrome = computed(
 
 onMounted(() => {
   userStore.init()
+  // 有登录 token 时后台刷新一次用户信息：购买订阅后 localStorage 里缓存的
+  // is_vip 会过期，不刷新则媒体库详情页一直显示"没有生效中的订阅"
+  //（2026-09-26 线上实测）。401 时拦截器会自动用 refresh token 续期。
+  if (userStore.isLoggedIn) {
+    userStore.fetchUser().catch(() => {})
+  }
 })
 </script>
 
