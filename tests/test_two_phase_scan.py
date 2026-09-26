@@ -8,9 +8,13 @@
 - 迁移兜底：已有有效探测数据的旧行直接标 done，不发网络请求。
 """
 import os
+import tempfile
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
+# 独立临时 DB：避免与其它测试文件共用导致数据污染
+# （用直接赋值而非 setdefault，确保本文件一定用自己的库）。
+os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mktemp(suffix='.db')}"
 
 import uuid
 from datetime import datetime, timedelta
