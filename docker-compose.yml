@@ -1,19 +1,20 @@
 name: aetrix-portal
 
 services:
-  aetrix:
+  aetrix-api:
     build:
       context: .
       dockerfile: Dockerfile
     image: aetrix-portal:latest
-    container_name: aetrix
+    container_name: aetrix-api
     restart: unless-stopped
     env_file:
       - .env
     environment:
+      AETRIX_ROLE: api
       DATABASE_TYPE: ${DATABASE_TYPE:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/aetrix_unified.db}
-      REDIS_ENABLED: ${REDIS_ENABLED:-false}
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       EMBY_TRANSCODE_DIR: /data/transcode
       EMBY_IMAGE_DIR: /data/images
@@ -38,6 +39,45 @@ services:
       timeout: 5s
       start_period: 45s
       retries: 5
+
+  # 后台任务进程（v2.41.0 后端拆分）：扫描/探测/补全/定时/提醒/追新，不监听 HTTP。
+  # 与 aetrix-api 共享数据库、Redis、数据卷；单实例由 Redis 分布式锁保证。
+  aetrix-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aetrix-portal:latest
+    container_name: aetrix-worker
+    restart: unless-stopped
+    command: ["python3", "-m", "backend.worker"]
+    env_file:
+      - .env
+    environment:
+      AETRIX_ROLE: worker
+      DATABASE_TYPE: ${DATABASE_TYPE:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/aetrix_unified.db}
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      EMBY_TRANSCODE_DIR: /data/transcode
+      EMBY_IMAGE_DIR: /data/images
+      # 存储挂载 · rclone RC：指向同网络的 rclone 容器，容器名即服务名
+      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
+    volumes:
+      - aetrix_data:/data
+      - ${MEDIA_ROOT:-./media}:/media:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      rclone:
+        condition: service_started
+    # 健康检查：worker 心跳写在 Redis 里（aetrix:worker:heartbeat），60 秒内有心跳即健康
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import redis,os,json; r=redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'), decode_responses=True); h=r.get('aetrix:worker:heartbeat'); assert h and (__import__('time').time()-json.loads(h)['updated_at'])<90, 'no heartbeat'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
 
   redis:
     image: redis:7-alpine
