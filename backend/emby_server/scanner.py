@@ -314,12 +314,12 @@ def _file_fingerprint(scan_file: "ScanFile") -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def _external_subtitles_changed(ctx: "_ScanContext", db, item, scan_file: "ScanFile") -> bool:
+def _external_subtitles_changed(ctx: "_ScanContext", item, scan_file: "ScanFile") -> bool:
     """视频指纹未变时，检查外挂字幕有无增减。
 
-    用扫描器已缓存的目录列表（零额外 IO），与 DB 里已登记的外挂字幕比对。
-    返回 True 表示字幕变了 → 不能秒跳，要走正常流程重做 side（probe 会因
-    视频文件未变而自动跳过，只重登记字幕）。
+    当前字幕用扫描器已缓存的目录列表（零额外 IO）；已登记字幕用本批预加载的
+    ctx.ext_subtitles（零额外 SQL）。返回 True 表示字幕变了 → 不能秒跳，
+    要走正常流程重做 side（probe 会因视频文件未变而自动跳过，只重登记字幕）。
     """
     try:
         if scan_file.local_dir:
@@ -333,12 +333,7 @@ def _external_subtitles_changed(ctx: "_ScanContext", db, item, scan_file: "ScanF
             current_paths = {p for _, p in current}
         else:
             return False
-        db_paths = {
-            r[0] for r in db.query(emby_models.MediaStream.external_path).filter(
-                emby_models.MediaStream.item_id == item.id,
-                emby_models.MediaStream.is_external.is_(True),
-            ).all() if r[0]
-        }
+        db_paths = ctx.ext_subtitles.get(getattr(item, "id", None), set())
         return current_paths != db_paths
     except Exception:
         # 查不到就保守一点：不秒跳，走正常流程（安全优先）
@@ -957,6 +952,9 @@ class _ScanContext:
     series_tmdb_results: dict = field(default_factory=dict)
     # 本轮已为隐式 series 提交过 TMDB 搜索的 series_guid（去重，避免同剧多集/多批次重复搜）
     series_tmdb_searched: set = field(default_factory=set)
+    ext_subtitles: dict = field(default_factory=dict)
+    # 本批条目的外挂字幕：item_id → {external_path}（秒跳时比对用，一批只查一次 DB，
+    # 不能每个文件查一次，否则 202 个文件就是 202 条 SQL，直接撑爆 SQL 预算）
 
 
 
@@ -1171,6 +1169,24 @@ def _load_items(db: Session, guids: list) -> dict:
         for row in db.query(emby_models.MediaItem).filter(emby_models.MediaItem.guid.in_(chunk)):
             found[row.guid] = row
     return found
+
+
+def _load_external_subtitles(db, item_ids: list) -> dict:
+    """批量取本批条目的外挂字幕路径：item_id → {external_path}。
+
+    秒跳时要比对字幕有无变化，一批只查一次（分片），不能每个文件查一次。
+    """
+    result: dict = {}
+    unique = list(dict.fromkeys(i for i in item_ids if i))
+    for chunk in _chunks(unique, SQL_IN_CHUNK):
+        for item_id, ext_path in db.query(
+                emby_models.MediaStream.item_id,
+                emby_models.MediaStream.external_path).filter(
+                emby_models.MediaStream.item_id.in_(chunk),
+                emby_models.MediaStream.is_external.is_(True)):
+            if ext_path:
+                result.setdefault(item_id, set()).add(ext_path)
+    return result
 
 
 def _local_names(ctx: "_ScanContext", dirpath: str) -> list:
@@ -1411,6 +1427,10 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
 
     known = _load_items(db, guids)
 
+    # 外挂字幕一批查齐：秒跳时每个文件都要比对字幕有无变化，不能逐文件查 DB
+    ctx.ext_subtitles = _load_external_subtitles(
+        db, [it.id for it in known.values() if getattr(it, "id", None)])
+
     # 剧集层级一次查齐：老实现在写库循环里对**每一集**点查剧集、再点查季（两集一次往返
     # 各一次），十万集就是二十万次查询。这里在批次开头把这一批用到的剧集与季一次取回，
     # 结果按 guid 缓存到本次扫描结束——同一部剧的后续批次连这次查询都省了。
@@ -1463,7 +1483,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
                 and not getattr(item, "repair_requested_at", None)):
             # 外挂字幕是独立于视频的 sidecar：视频没变但字幕增减时不能秒跳，
             # 否则新字幕永远登记不上。用缓存目录列表检查，零额外 IO。
-            if _external_subtitles_changed(ctx, db, item, scan_file):
+            if _external_subtitles_changed(ctx, item, scan_file):
                 # 字幕变了 → 走正常流程；probe 会因视频未变自动跳过，只重做 side
                 pass
             else:
