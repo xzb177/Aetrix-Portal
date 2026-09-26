@@ -208,19 +208,22 @@ app = FastAPI(
 
 # ==================== 中间件 ====================
 # Emby 客户端不走浏览器 CORS，但网页播放器与第三方 Web 播放页会；沿用 EM 的口径
+# 安全：CORS_ORIGINS 为空时不添加中间件（同源请求不需要 CORS），绝不回退到 ["*"]
 _cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins_env.split(",") if o.strip()] or ["*"],
-    allow_credentials=bool(_cors_origins_env),
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=[
-        "Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
-        "X-MediaBrowser-Token", "X-Device-Id", "Range",
-    ],
-    # 直连流与 HLS 依赖这些响应头能被前端读取
-    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
-)
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=[
+            "Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
+            "X-MediaBrowser-Token", "X-Device-Id", "Range",
+        ],
+        # 直连流与 HLS 依赖这些响应头能被前端读取
+        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
+    )
 
 
 @app.middleware("http")
