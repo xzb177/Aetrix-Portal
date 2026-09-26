@@ -593,6 +593,7 @@ export interface ChaseNewConfig {
 }
 export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
 export const saveChaseNew = (enabled: boolean, interval: number, libraries: string) =>
+  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, libraries })
 
 // rclone remote 管理
 export interface RcloneRemote {

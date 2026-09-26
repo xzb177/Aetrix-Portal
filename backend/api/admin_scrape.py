@@ -498,7 +498,7 @@ def list_sa_files(
 
 
 @admin_emby_router.post("/rclone/sa-files/upload")
-async def upload_sa_file(
+def upload_sa_file(
     file: UploadFile = File(...),
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
@@ -507,7 +507,7 @@ async def upload_sa_file(
     from backend.emby_server import models as em
     import json as json_lib
 
-    content = await file.read()
+    content = file.file.read()
     try:
         sa_data = json_lib.loads(content)
         client_email = sa_data.get("client_email", "")
