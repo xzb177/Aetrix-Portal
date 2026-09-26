@@ -24,6 +24,7 @@
 import os
 import sys
 import tempfile
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -310,6 +311,13 @@ for row in db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id):
 check("剧集库冷扫入库（1 剧 + 1 季 + N 集）",
       tv_cold["added"] == TV_EPS and tv_types == {"episode": TV_EPS, "series": 1, "season": 1},
       f"added={tv_cold['added']} 条目={tv_types}")
+# B 方案（PR #112）：父 series 没走过 TMDB 时 episode 不能跳过。这里模拟已尝试刮削，
+# 否则重扫永远跳不过（测试里没配真 TMDB）。
+db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id,
+    em.MediaItem.item_type == "series").update(
+    {em.MediaItem.last_scraped_at: datetime.now()}, synchronize_session=False)
+db.commit()
+db.expire_all()
 
 tv_warm = scan_library(tv_lib, "剧集库未变动重扫（配了 TMDB）")
 check("配了 TMDB 的剧集库，未变动重扫时每一集都被跳过",
