@@ -25,6 +25,14 @@ CPU 打满而进度一动不动。
 """
 from __future__ import annotations
 
+import os
+
+# 后端拆分（v2.41.0）：AETRIX_ROLE 环境变量
+# - "api"：API 进程，enqueue() 走 Redis 桥接推给 worker
+# - "worker"：Worker 进程，走原有进程内队列
+# - 未设置：单体模式，走原有进程内队列（向后兼容）
+AETRIX_ROLE = os.getenv("AETRIX_ROLE", "").strip().lower()
+
 import json
 import logging
 import os
@@ -142,6 +150,34 @@ _FLUSHER: Optional[threading.Thread] = None
 # ==================== 入队 / 取消 ====================
 
 def enqueue(library, *, trigger: str = "manual") -> dict:
+    """把一个媒体库的扫描放进队列（角色分发版）
+
+    - API 进程（AETRIX_ROLE=api 且 Redis 可用）：推入 Redis 队列，由 worker 消费执行
+    - 其他：走进程内队列（enqueue_local，原有逻辑）
+    """
+    if AETRIX_ROLE == "api":
+        try:
+            from backend.emby_server import scan_queue_redis as _rq
+            if _rq.is_redis_mode():
+                return _rq.push_scan_request(int(library.id), trigger=trigger)
+        except Exception as e:
+            logger.warning(f"Redis 入队失败，回退进程内队列：{e}")
+    return enqueue_local(library, trigger=trigger)
+
+
+def start_redis_consumer() -> bool:
+    """Worker 进程：启动 Redis 扫描队列消费（backend/worker.py 调用）"""
+    from backend.emby_server import scan_queue_redis as _rq
+    return _rq.start_redis_consumer()
+
+
+def stop_redis_consumer(timeout: float = 5.0) -> None:
+    """停止 Redis 扫描队列消费"""
+    from backend.emby_server import scan_queue_redis as _rq
+    _rq.stop_redis_consumer(timeout=timeout)
+
+
+def enqueue_local(library, *, trigger: str = "manual") -> dict:
     """把一个媒体库的扫描放进队列（已在队列里 / 正在跑就返回那一条，不报错）
 
     快照在这一刻拍下（``LibrarySnapshot.of``）：排队期间管理员改了路径 / 策略，
@@ -191,6 +227,14 @@ def cancel(library_id: int) -> str:
     返回 ``canceled`` / ``running`` / ``missing``：正在跑的不能取消——中途停下会留下
     「扫了一半的库」（条目已入库、清理没做），比让它跑完更糟；要停就等它跑完或重启进程。
     """
+    # 后端拆分：API 进程走 Redis 取消
+    if AETRIX_ROLE == "api":
+        try:
+            from backend.emby_server import scan_queue_redis as _rq
+            if _rq.is_redis_mode():
+                return _rq.cancel_scan_request(int(library_id))
+        except Exception as e:
+            logger.warning(f"Redis 取消失败，回退进程内取消：{e}")
     with _LOCK:
         for index, task in enumerate(_QUEUE):
             if task.library_id == int(library_id):
@@ -209,6 +253,21 @@ def cancel(library_id: int) -> str:
 
 def state_of(library_id: int) -> Optional[dict]:
     """某个库当前在队列里的状态（空闲返回 None）"""
+    # 后端拆分：API 进程查 Redis 里的排队位置
+    if AETRIX_ROLE == "api":
+        try:
+            from backend.emby_server import scan_queue_redis as _rq
+            if _rq.is_redis_mode():
+                pos = _rq._position_of(int(library_id))
+                if pos is not None:
+                    return {
+                        "library_id": int(library_id),
+                        "state": "queued",
+                        "position": pos,
+                        "via": "redis",
+                    }
+        except Exception:
+            pass
     with _LOCK:
         task = _task_of_locked(library_id)
         if task is None:
@@ -217,17 +276,51 @@ def state_of(library_id: int) -> Optional[dict]:
 
 
 def is_busy(library_id: int) -> bool:
+    # 后端拆分：API 进程查 Redis 去重集合
+    if AETRIX_ROLE == "api":
+        try:
+            from backend.emby_server import scan_queue_redis as _rq
+            r = _rq._redis()
+            if r is not None and r.sismember(_rq.REDIS_SCAN_DEDUP_KEY, int(library_id)):
+                return True
+        except Exception:
+            pass
     with _LOCK:
         return _task_of_locked(library_id) is not None
 
 
 def snapshot() -> dict:
     """整个队列的快照（管理端「扫描队列」面板）"""
+    # 后端拆分：API 进程的排队列表从 Redis 读（进程内队列是空的）
+    redis_waiting = None
+    if AETRIX_ROLE == "api":
+        try:
+            from backend.emby_server import scan_queue_redis as _rq
+            import json as _json
+            r = _rq._redis()
+            if r is not None:
+                redis_waiting = []
+                for idx, raw in enumerate(r.lrange(_rq.REDIS_SCAN_QUEUE_KEY, 0, -1)):
+                    try:
+                        data = _json.loads(raw)
+                    except Exception:
+                        continue
+                    redis_waiting.append({
+                        "library_id": int(data.get("library_id", 0)),
+                        "trigger": data.get("trigger", "manual"),
+                        "state": "queued",
+                        "position": idx + 1,
+                        "via": "redis",
+                    })
+        except Exception:
+            redis_waiting = None
     with _LOCK:
         waiting = [
             task.as_dict(position=index + 1)
             for index, task in enumerate(_QUEUE)
         ]
+        if redis_waiting is not None:
+            waiting = redis_waiting
         running = [task.as_dict() for task in _RUNNING.values()]
         history = [task.as_dict() for task in reversed(_HISTORY)][:SCAN_QUEUE_HISTORY]
         mounts = {str(mount_id): library_id for mount_id, library_id in _MOUNT_OWNER.items()}

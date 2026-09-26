@@ -90,6 +90,17 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
     logger.info("🚀 Aetrix Portal 正在启动...")
+    # 后端拆分（v2.41.0）：AETRIX_ROLE 环境变量
+    # - "api"：只跑 HTTP，不启动任何后台任务（后台任务由 aetrix-worker 进程负责）
+    # - "worker"：不应走 main.py（用 backend/worker.py），这里做保护性提示
+    # - 未设置：单体模式，保持原有行为（向后兼容）
+    _role = os.getenv("AETRIX_ROLE", "").strip().lower()
+    _is_api_role = (_role == "api")
+    if _role == "worker":
+        logger.warning("AETRIX_ROLE=worker 但走了 main.py 入口：后台任务不会在这里启动，请用 backend/worker.py")
+    if _is_api_role:
+        logger.info("AETRIX_ROLE=api：API 模式，后台任务由 worker 进程负责，这里跳过启动")
+
     logger.info(f"📊 数据库类型: {DATABASE_TYPE}")
 
     # JWT 密钥是 EM/EA 认证与节点配对的根信任。未配置或过短时必须 fail-closed，
@@ -112,54 +123,60 @@ async def lifespan(app: FastAPI):
 
     # 崩溃残留的收尾 + 长期运行的后台维护（扫描标志 / 过期会话 / 转码目录 / 字幕缓存），
     # 见 backend/emby_server/maintenance.py。维护失败不影响启动。
-    try:
-        maintenance.run_startup_maintenance()
-        maintenance.start_janitor()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"启动维护失败（可忽略）: {e}")
+    if not _is_api_role:
+        try:
+            maintenance.run_startup_maintenance()
+            maintenance.start_janitor()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动维护失败（可忽略）: {e}")
 
-    # 两阶段扫描 Phase 2（v2.39.0）：SCAN_PROBE_MODE=background 时启动后台探测
-    # worker，按优先级把 Phase 1 落下的待探测条目慢慢探完。inline 模式（默认）
-    # 下什么都不做。失败不影响启动。
-    try:
-        from backend.emby_server import probe_worker
-        if probe_worker.start_probe_worker():
-            logger.info("后台探测 worker 已启动（两阶段扫描）")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
+        # 两阶段扫描 Phase 2（v2.39.0）：SCAN_PROBE_MODE=background 时启动后台探测
+        # worker，按优先级把 Phase 1 落下的待探测条目慢慢探完。inline 模式（默认）
+        # 下什么都不做。失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import probe_worker
+            if probe_worker.start_probe_worker():
+                logger.info("后台探测 worker 已启动（两阶段扫描）")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
 
-    # 分层扫描 L2/L3（v2.40.0）：SCAN_LAYERED=1 时启动后台补全 worker，
-    # 把 L1 落下的待补全条目（side 图片/NFO/TMDB）慢慢补完。失败不影响启动。
-    try:
-        from backend.emby_server import enrich_worker
-        enrich_worker.start()
-        logger.info("后台补全 worker 已启动（分层扫描 L2/L3）")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"启动补全 worker 失败（可忽略）: {e}")
+        # 分层扫描 L2/L3（v2.40.0）：SCAN_LAYERED=1 时启动后台补全 worker，
+        # 把 L1 落下的待补全条目（side 图片/NFO/TMDB）慢慢补完。失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import enrich_worker
+            enrich_worker.start()
+            logger.info("后台补全 worker 已启动（分层扫描 L2/L3）")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动补全 worker 失败（可忽略）: {e}")
 
-    # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
-    # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
-    try:
-        reminders.start_reminder_scheduler()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"启动到期提醒失败（可忽略）: {e}")
+        # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
+        # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
+    if not _is_api_role:
+        try:
+            reminders.start_reminder_scheduler()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动到期提醒失败（可忽略）: {e}")
 
-    # 定时扫描：用户在后台「元数据与刮削」里自己决定开不开、几点扫；
-    # 默认关闭，不打扰任何现有行为。失败不影响启动。
-    try:
-        from backend.emby_server import auto_scan
-        auto_scan.start_auto_scan_scheduler()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"启动定时扫描调度失败（可忽略）: {e}")
-    # 追新：默认关闭，不打扰任何现有行为。失败不影响启动。
-    try:
-        from backend.emby_server import change_watcher
-        change_watcher.start_chase_new_watcher()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"启动追新线程失败（可忽略）: {e}")
+        # 定时扫描：用户在后台「元数据与刮削」里自己决定开不开、几点扫；
+        # 默认关闭，不打扰任何现有行为。失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import auto_scan
+            auto_scan.start_auto_scan_scheduler()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动定时扫描调度失败（可忽略）: {e}")
+        # 追新：默认关闭，不打扰任何现有行为。失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import change_watcher
+            change_watcher.start_chase_new_watcher()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动追新线程失败（可忽略）: {e}")
 
-    # 外部服务能力落地：管理员配过的出站代理要写回进程环境变量（否则重启后失效），
-    # 邮件 / Telegram 通知渠道也在这里按最新配置重建。没配过的能力什么都不做。
+        # 外部服务能力落地：管理员配过的出站代理要写回进程环境变量（否则重启后失效），
+        # 邮件 / Telegram 通知渠道也在这里按最新配置重建。没配过的能力什么都不做。
     try:
         with SessionLocal() as db:
             integrations.apply_all(db)
