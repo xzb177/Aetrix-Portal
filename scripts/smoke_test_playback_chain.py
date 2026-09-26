@@ -96,6 +96,8 @@ check("非会员直连流也被拦截 403", r.status_code == 403, f"status={r.st
 with SessionLocal() as db:
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     codes.grant_membership_days(db, user, 30)
+    # v2.38.0 起 grant_membership_days 不再自己提交：消耗与发奖同一个事务，由调用方提交
+    db.commit()
 
 r = client.get("/api/user/auth/me", headers=H)
 check("开通后 me.is_vip 为 True（由订阅派生）", r.json().get("is_vip") is True, f"{r.json().get('is_vip')}")

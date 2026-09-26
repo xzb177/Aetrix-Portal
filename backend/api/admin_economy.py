@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -110,33 +111,43 @@ async def economy_adjust_points(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """管理员手动调整用户积分（记账，留审计）"""
+    """管理员手动调整用户积分（记账，留审计）—— 写库整段下放线程池
+
+    同步 SQLAlchemy 跑在事件循环上时，一次提交 = 全站排队；这里只需要等通知（WebSocket）。
+    """
     from backend.api.economy import _add_points
 
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    if request.amount == 0:
-        raise HTTPException(status_code=400, detail="调整数量不能为 0")
+    admin_id = current_admin.id
+    reason = request.reason
 
-    balance = _add_points(
-        db, user, request.amount,
-        "admin_grant" if request.amount > 0 else "admin_deduct",
-        request.reason or f"管理员调整（{request.amount:+d}）",
-        f"admin:{current_admin.id}",
-    )
-    db.commit()
+    def _adjust() -> int:
+        user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        if request.amount == 0:
+            raise HTTPException(status_code=400, detail="调整数量不能为 0")
 
-    _audit(db, current_admin, "economy_adjust_points", "user", user_id,
-           {"amount": request.amount, "reason": request.reason})
-    db.commit()
+        balance = _add_points(
+            db, user, request.amount,
+            "admin_grant" if request.amount > 0 else "admin_deduct",
+            reason or f"管理员调整（{request.amount:+d}）",
+            f"admin:{admin_id}",
+        )
+        db.commit()
+
+        _audit(db, admin_id, "economy_adjust_points", "user", user_id,
+               {"amount": request.amount, "reason": reason})
+        db.commit()
+        return balance
+
+    balance = await run_in_threadpool(_adjust)
 
     await notify_admin_event(
         event_type="economy.admin_adjust",
         user_id=user_id,
         title=f"💰 积分变动 {request.amount:+d}",
-        content=f"{request.reason or '管理员调整'}\n当前余额：{balance} 积分",
-        from_admin_id=current_admin.id,
+        content=f"{reason or '管理员调整'}\n当前余额：{balance} 积分",
+        from_admin_id=admin_id,
     )
     return {"success": True, "balance": balance}
 

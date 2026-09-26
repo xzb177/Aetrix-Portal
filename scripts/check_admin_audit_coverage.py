@@ -18,6 +18,14 @@
 判定方式是源码级的：取每个写端点的函数源码，找 ``_audit(`` 调用。
 这样新增端点时不需要谁记得改一份清单，检查会自己发现。
 
+**一种等价写法也算**（v2.39.0）：端点把整段同步写库交给**同一模块里的函数**，
+自己只负责 ``await run_in_threadpool(那段函数)``——审计写在那个函数里，与那次写库
+在同一个事务、同一个工作线程里执行（语义与写在路由里完全一样）。性能整改反复
+做这件事（v2.36.0 求片链路、v2.37.0 探测层、v2.38.0/2.39.0 资金链路），所以这里
+跟一层：端点直接调用的模块级函数里写了 ``_audit(`` 就算数。
+只看一层、只认本模块的定义，不做完整调用图分析——宁可少报，也不把真缺口放过：
+一个既不在自己函数体、也不在被调用函数里的写端点，依然会被点名。
+
 **例外要显式登记**（``EXCEPTIONS``）：纯探测端点（不改配置、不动权限、不发消息、
 不花钱，只是问一句「这个地址通不通」）与登录本身。例外必须写清原因，
 而且如果它哪天开始写库 / 发消息了，就应该把它从名单里删掉——名单太长就说明这条规则
@@ -28,9 +36,11 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -42,6 +52,13 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# 「把整段同步写库交给模块级函数」的下放调用（与 check_blocking_routes 同一份口径）
+OFFLOAD_CALLS = frozenset({"run_in_threadpool", "to_thread", "run_in_executor", "run_sync"})
+
+# 真的调用了 ``_audit``：词边界是必要的——名字以 ``_audit`` 结尾的普通函数
+#（``_worker_without_audit(``）不该被当成写了审计。
+AUDIT_CALL = re.compile(r"\b_audit\(")
 
 # 管理端路由所在的模块（含拆出去的域模块；新增域模块要登记在这里）
 ROUTER_MODULES = (
@@ -104,14 +121,58 @@ def collect_admin_write_endpoints() -> dict[tuple[str, str], object]:
 
 
 def audited(endpoint) -> bool:
-    """端点自己的函数体里是否调用了 ``_audit(...)``"""
+    """端点自己（或它直接调用的本模块函数）是否写了 ``_audit(...)``
+
+    嵌套函数天然算数：``inspect.getsource`` 给的是整段源码，端点里定义的
+    ``def _work(): ... _audit(...)`` 就在这份源码里。
+    """
     if endpoint is None:
         return False
     try:
         source = inspect.getsource(endpoint)
     except (OSError, TypeError):
         return False
-    return "_audit(" in source
+    return bool(AUDIT_CALL.search(source)) or _audited_in_callees(endpoint, source)
+
+
+def _audited_in_callees(endpoint, source: str) -> bool:
+    """端点直接调用的**本模块函数**里写了 ``_audit(...)``（只跟一层）
+
+    对应这种写法（见 ``backend/api/admin.py`` 的 ``_mark_order_paid``）：
+    端点只做 ``await run_in_threadpool(_helper, ...)``，落库 + 审计整段在
+    ``_helper`` 里——下放线程池之后 ORM 属性都过期了，审计本来就得跟写库同一段。
+    """
+    module = inspect.getmodule(endpoint)
+    if module is None:
+        return False
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:  # 同步源码必然可解析；解析不了就按「未覆盖」处理
+        return False
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        fname = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if isinstance(func, ast.Name):
+            called.add(func.id)
+        # ``await run_in_threadpool(_helper, db, ...)``：下线目标是实参而不是被调用方
+        if fname in OFFLOAD_CALLS:
+            for arg in list(node.args) + [kw.value for kw in node.keywords]:
+                if isinstance(arg, ast.Name):
+                    called.add(arg.id)
+    for name in sorted(called):
+        helper = getattr(module, name, None)
+        if helper is None or helper is endpoint or not callable(helper):
+            continue
+        try:
+            helper_source = inspect.getsource(helper)
+        except (OSError, TypeError):
+            continue
+        if AUDIT_CALL.search(helper_source):
+            return True
+    return False
 
 
 def scan(endpoints: dict | None = None) -> tuple[list[str], list[str], int]:

@@ -15,6 +15,7 @@
 import logging
 
 from fastapi import APIRouter, Depends
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -87,13 +88,22 @@ async def run_expiry_reminders(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """立即执行一轮到期提醒（dry_run=true 只看会发给谁）"""
-    summary = await reminders.run_expiry_reminders(db, dry_run=dry_run)
-    if not dry_run and (summary["reminded"] or summary["expired_notified"]):
-        _audit(db, current_admin, "run_expiry_reminders", "subscription", None,
+    """立即执行一轮到期提醒（dry_run=true 只看会发给谁）
+
+    提醒本体（`reminders.run_expiry_reminders`）要 await 通知推送，留在事件循环上；
+    它之后的审计是同步写库，单独下放线程池。
+    """
+    admin_id = current_admin.id
+
+    def _audit_run() -> None:
+        _audit(db, admin_id, "run_expiry_reminders", "subscription", None,
                {"reminded": summary["reminded"],
                 "expired_notified": summary["expired_notified"]})
         db.commit()
+
+    summary = await reminders.run_expiry_reminders(db, dry_run=dry_run)
+    if not dry_run and (summary["reminded"] or summary["expired_notified"]):
+        await run_in_threadpool(_audit_run)
     return summary
 
 

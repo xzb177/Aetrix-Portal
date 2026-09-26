@@ -274,15 +274,102 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
         )
         counts.update({pid: n for pid, n in rows})
 
+    # 3b) series 未播放集数（卡片「未看 N 集」角标用，一条分组 SQL，不逐卡查询）
+    unplayed: dict[int, int] = {}
+    if series_ids_all:
+        rows = (
+            db.query(em.MediaItem.series_id, func.count(em.MediaItem.id))
+            .filter(em.MediaItem.series_id.in_(series_ids_all),
+                    em.MediaItem.item_type == "episode")
+            .outerjoin(em.UserMediaData,
+                       (em.UserMediaData.item_id == em.MediaItem.id)
+                       & (em.UserMediaData.user_id == user_id))
+            .filter(em.UserMediaData.played.isnot(True))
+            .group_by(em.MediaItem.series_id)
+            .all()
+        )
+        unplayed = {sid: n for sid, n in rows}
+
     db.info["_aetrix_prefetch"] = {
         "umd": umd_map,
         "counts": counts,
+        "unplayed": unplayed,
         "items": {i.id: i for i in items},
     }
 
 
 def _prefetched(db: Session) -> dict:
     return db.info.get("_aetrix_prefetch") or {}
+
+
+def _parent_dir(file_path):
+    """取文件所在目录（多版本分组键）。"""
+    if not file_path or "/" not in file_path:
+        return None
+    return file_path.rsplit("/", 1)[0]
+
+
+def _version_siblings(item, db):
+    """找同一电影的所有版本：同库、同目录、**同名**的 movie 条目。
+
+    只对 movie 类型生效（剧集的单集即便同目录也是不同集，不合并）。
+    同名是关键：避免把同一目录下不同电影误判为版本（测试残留等场景）。
+    """
+    if item.item_type != "movie":
+        return []
+    pdir = _parent_dir(item.file_path)
+    if not pdir:
+        return []
+    return (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.library_id == item.library_id,
+            em.MediaItem.item_type == "movie",
+            em.MediaItem.name == item.name,
+            em.MediaItem.is_hidden == False,
+            em.MediaItem.file_path.like(pdir + "/%"),
+        )
+        .order_by(em.MediaItem.id)
+        .all()
+    )
+
+
+def _is_primary_version(item, db):
+    """是否为该版本组的主版本（id 最小的那个）。
+    查不到兄弟版本时视为 primary（不去重），避免误伤虚拟库等特殊场景。
+    """
+    try:
+        sibs = _version_siblings(item, db)
+    except Exception:
+        return True
+    if len(sibs) <= 1:
+        return True
+    return sibs[0].id == item.id
+
+
+def _version_label(item):
+    """版本显示名：从文件名提取版本特征（如 1080p、原盘）。"""
+    fp = item.file_path or ""
+    name = fp.rsplit("/", 1)[-1] if "/" in fp else fp
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    if " - " in name:
+        label = name.split(" - ", 1)[1]
+    else:
+        h = item.height or 0
+        if h >= 2160:
+            label = "4K"
+        elif h >= 1080:
+            label = "1080p"
+        elif h >= 720:
+            label = "720p"
+        else:
+            label = "标清"
+    size = item.size or 0
+    if size > 0:
+        gb = size / (1024 ** 3)
+        label += " · %.1fGB" % gb
+    return label
 
 
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
@@ -319,6 +406,8 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "Container": item.container,
         "Bitrate": item.bitrate or None,
         "IsHD": bool((item.height or 0) >= 720),
+        "Width": item.width or None,
+        "Height": item.height or None,
         "OriginalTitle": item.original_title or None,
         # 客户端会用 ProviderIds 展示/跳转元数据源；补上 IMDb
         "ProviderIds": {
@@ -331,6 +420,21 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "CanDownload": download_ok,
         "SupportsContentDownloading": download_ok,
     }
+    if item.item_type == "series":
+        # 剧集卡片「未看 N 集」角标：列表页走上面的批量预取，单个详情回退为单条查询
+        unp = prefetch.get("unplayed", {}).get(item.id)
+        if unp is None and item.id not in prefetch.get("items", {}):
+            unp = (
+                db.query(func.count(em.MediaItem.id))
+                .filter(em.MediaItem.series_id == item.id,
+                        em.MediaItem.item_type == "episode")
+                .outerjoin(em.UserMediaData,
+                           (em.UserMediaData.item_id == em.MediaItem.id)
+                           & (em.UserMediaData.user_id == user_id))
+                .filter(em.UserMediaData.played.isnot(True))
+                .scalar()
+            ) or 0
+        dto["UserData"]["UnplayedItemCount"] = unp or 0
     if item.item_type == "episode":
         dto.update({
             "SeriesId": item.series.guid if item.series else None,
@@ -348,6 +452,24 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         dto["MediaSources"] = [_media_source(item, base, api_key)]
         dto["MediaSourceCount"] = 1
         dto["Chapters"] = []
+        # 多版本：同一目录下的其他版本，供详情页版本切换器使用
+        if item.item_type == "movie":
+            sibs = _version_siblings(item, db)
+            if len(sibs) > 1:
+                dto["Versions"] = [
+                    {
+                        "Id": s.guid,
+                        "Name": _version_label(s),
+                        "Height": s.height or 0,
+                        "Width": s.width or 0,
+                        "Size": s.size or 0,
+                        "Container": s.container or "",
+                        "IsPrimary": s.id == sibs[0].id,
+                    }
+                    for s in sibs
+                ]
+            else:
+                dto["Versions"] = []
     return dto
 
 
@@ -575,10 +697,11 @@ def authenticate_by_name(
             agent=request.headers.get("user-agent"), success=False,
             reason="emby_login_failed", detail=detail,
         )
-        return Response(
-            content='{"error": "InvalidUsernameOrPassword"}',
-            status_code=401, media_type="application/json",
-        )
+        # 对齐官方 Emby：认证失败返回 401 空 body。
+        # 曾返回 {"error": "InvalidUsernameOrPassword"} JSON，官方 iOS 客户端会尝试
+        # 按认证成功结构解析该 body，报"数据解析错误"；真 Emby 是空 body，客户端则
+        # 正常提示用户名或密码不正确（2026-09-26 线上实测）。
+        return Response(status_code=401)
 
     if not user or not user.is_active or not password:
         return _auth_fail()
@@ -827,6 +950,17 @@ def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
     return _user_dto(user, db)
 
 
+def _library_item_count(db, lib) -> int:
+    """媒体库条目数：优先用扫描结束时写入的缓存；为 None（扫描未完成/失败过）
+    时实时计数，口径与扫描器一致（只计 movie/series）。"""
+    if lib.item_count is not None:
+        return lib.item_count
+    return db.query(em.MediaItem).filter(
+        em.MediaItem.library_id == lib.id,
+        em.MediaItem.item_type.in_(["movie", "series"]),
+    ).count()
+
+
 @emby_router.get("/emby/Users/{user_id}/Views")
 @emby_router.get("/Users/{user_id}/Views")
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
@@ -848,7 +982,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             "IsFolder": True,
             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False, "IsFavorite": False},
             "ImageTags": {"Primary": "1"},
-            "ChildCount": count_virtual_items(db, lib) if is_virtual else lib.item_count,
+            "ChildCount": count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib),
         })
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
@@ -867,6 +1001,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     q = request.query_params
     parent_id = q.get("ParentId")
     include_types = (q.get("IncludeItemTypes") or "").split(",")
+    # 是否显式指定了条目类型：顶层浏览/搜索默认只返回 series/movie，
+    # 季/单集只允许出现在剧集详情页（显式 IncludeItemTypes 或专用端点）。
+    explicit_types = bool(include_types and include_types[0])
     exclude_types = (q.get("ExcludeItemTypes") or "").split(",")
     sort_by = (q.get("SortBy") or "SortName").split(",")
     sort_order = (q.get("SortOrder") or "Ascending").split(",")
@@ -943,6 +1080,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     )
                 else:
                     query = query.filter(em.MediaItem.library_id == lib.id)
+                if not explicit_types:
+                    # 媒体库顶层浏览默认只看 series/movie：
+                    # 季/单集卡片只出现在剧集详情页内，不平铺到顶层。
+                    query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
             else:
                 # 类型 / 工作室 / 年份的合成 Id：点进去要得到真实筛选结果
                 hit = _synthetic_lookup(db).get(parent_id)
@@ -958,6 +1099,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     query = query.filter(em.MediaItem.guid == parent_id)
     elif not recursive:
         # 非递归默认返回顶层
+        query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
+
+    if search and not parent_id and not explicit_types:
+        # 全局搜索默认只返回顶层（series/movie）：季/单集不出现在顶层搜索结果里。
         query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
 
     if include_types and include_types[0]:
@@ -1083,6 +1228,23 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         items.sort(key=lambda item: position.get(item.id, 0))
     else:
         items = query.order_by(*order_cols).offset(start).limit(limit).all()
+    # 多版本去重：movie 类型按目录分组，只保留主版本（id 最小）
+    # 详情页通过 Versions 数组展示所有版本
+    deduped = []
+    seen_dirs = set()
+    for it in items:
+        if it.item_type == "movie":
+            pdir = _parent_dir(it.file_path)
+            if pdir and pdir in seen_dirs:
+                continue
+            # 检查是否为该目录的主版本
+            if pdir and not _is_primary_version(it, db):
+                seen_dirs.add(pdir)
+                continue
+            if pdir:
+                seen_dirs.add(pdir)
+        deduped.append(it)
+    items = deduped
     _prefetch_list_data(db, user.id, items)
 
     return {
@@ -1132,7 +1294,6 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
     result = []
     for item in items:
         dto = _item_dto(item, base, user.id, db)
-        dto["UserData"]["UnplayedItemCount"] = 1
         result.append(dto)
     return result
 
@@ -1274,6 +1435,42 @@ def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = D
     return _filters_payload(db)
 
 
+def _maybe_boost_probe(db: Session, item) -> None:
+    """两阶段扫描（v2.39.0）：详情被打开时，待探测条目顺手插队。
+
+    fire-and-forget：只是一条 UPDATE，失败只记日志，绝不影响详情响应。
+    """
+    try:
+        from backend.emby_server import probe_worker
+        if not probe_worker.enabled():
+            return
+        if (getattr(item, "probe_status", None) or "") != "pending":
+            return
+        probe_worker.boost_probe(db, item)
+    except Exception:  # noqa: BLE001
+        logger.warning("探测插队失败 item=%s（可忽略）", getattr(item, "id", "?"),
+                       exc_info=True)
+
+
+@emby_router.post("/api/items/{item_id}/probe-boost")
+def probe_boost(item_id: str,
+                user: models.WebUser = Depends(get_emby_user),
+                db: Session = Depends(get_db)):
+    """两阶段扫描（v2.39.0）：手动把条目的探测插到队首。
+
+    播放页/详情页在时长未知时可调这个接口；详情接口本身也会对 pending 条目
+    自动插队，这里是给客户端显式触发用的。
+    """
+    from backend.emby_server import probe_worker
+
+    item = _require_item(db, item_id)
+    if not probe_worker.enabled():
+        return {"ok": False, "reason": "后台探测未启用（SCAN_PROBE_MODE=background）",
+                "probe_status": getattr(item, "probe_status", None)}
+    queued = probe_worker.boost_probe(db, item)
+    return {"ok": True, "queued": queued, "probe_status": item.probe_status}
+
+
 @emby_router.get("/emby/Items/{item_id}")
 @emby_router.get("/Items/{item_id}")
 @emby_router.get("/emby/Users/{user_id}/Items/{item_id}")
@@ -1285,6 +1482,7 @@ def get_item_detail(
     db: Session = Depends(get_db),
 ):
     item = _require_item(db, item_id)
+    _maybe_boost_probe(db, item)
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      api_key=_api_key_for(db, request))
 
@@ -1393,23 +1591,28 @@ async def rate_item(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    item = _require_item(db, item_id)
-    body = await request.json()
-    umd = db.query(em.UserMediaData).filter(
-        em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
-    ).first()
-    if not umd:
-        umd = em.UserMediaData(user_id=user.id, item_id=item.id)
-        db.add(umd)
-    if "IsFavorite" in body:
-        umd.is_favorite = bool(body["IsFavorite"])
-    if "Played" in body:
-        umd.played = bool(body["Played"])
-        if umd.played:
-            umd.play_count = (umd.play_count or 0) + 1
-            umd.last_played_at = datetime.now()
-    db.commit()
-    return _user_data_dto(umd)
+    body = await request.json()      # 唯一必须 await 的东西，读完就离开事件循环
+
+    def _rate() -> dict:
+        """收藏 / 标记已看：读条目、读写 UserMediaData、序列化都不在循环上"""
+        item = _require_item(db, item_id)
+        umd = db.query(em.UserMediaData).filter(
+            em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
+        ).first()
+        if not umd:
+            umd = em.UserMediaData(user_id=user.id, item_id=item.id)
+            db.add(umd)
+        if "IsFavorite" in body:
+            umd.is_favorite = bool(body["IsFavorite"])
+        if "Played" in body:
+            umd.played = bool(body["Played"])
+            if umd.played:
+                umd.play_count = (umd.play_count or 0) + 1
+                umd.last_played_at = datetime.now()
+        db.commit()
+        return _user_data_dto(umd)
+
+    return await run_in_threadpool(_rate)
 
 
 @emby_router.post("/emby/Users/{user_id}/PlayedItems/{item_id}")

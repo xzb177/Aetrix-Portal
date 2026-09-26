@@ -67,6 +67,30 @@ const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
 // ===== 多服：我在这几个服各自的地址与会员（一个服一个会员）=====
 const realmCards = computed(() => account.value?.realms || [])
 
+// ===== 查看权限：服务器地址 / Emby 账号 / 线路只给有权限的人看 =====
+// 付费服 = 有效订阅；公益服 = 花积分解锁。没权限时后端不下发地址，前端展示解锁入口
+const viewPermission = computed(() => account.value?.view_permission || null)
+const viewGranted = computed(() => !!viewPermission.value?.granted)
+const unlocking = ref(false)
+const showUnlockConfirm = ref(false)
+
+async function handleUnlockView() {
+  const vp = viewPermission.value
+  if (!vp || unlocking.value) return
+  unlocking.value = true
+  try {
+    const res = await embyApi.unlockView(account.value?.realm_id ?? undefined)
+    toast.success(res.already ? '已经解锁过了' : '解锁成功')
+    showUnlockConfirm.value = false
+    account.value = await embyApi.getAccountCard()
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '解锁失败')
+  } finally {
+    unlocking.value = false
+  }
+}
+
 // ===== 公益服（v2.7.0）：本服免费开放，不需要会员 =====
 const isFreeRealm = computed(() => !!account.value?.is_free || userStore.isFreeRealm)
 const realmNote = computed(
@@ -320,6 +344,8 @@ function formatDate(iso?: string | null) {
           </div>
         </div>
 
+        <!-- 有查看权限才展示服务器地址 / 账号 / 密码：没权限时后端也不下发 -->
+        <template v-if="viewGranted">
         <div class="rows" :class="{ loading }">
           <div class="row">
             <span class="row-label">服务器</span>
@@ -352,6 +378,32 @@ function formatDate(iso?: string | null) {
             </button>
           </div>
         </div>
+        </template>
+
+        <!-- 没查看权限：解锁入口（付费服用订阅，公益服用积分） -->
+        <div v-else-if="viewPermission" class="unlock-card">
+          <template v-if="viewPermission.realm_free">
+            <p class="unlock-title">查看 Emby 账号与线路需要解锁</p>
+            <p class="unlock-desc">
+              花 <strong>{{ viewPermission.unlock_points }}</strong> 积分解锁查看权限，
+              有效期 {{ viewPermission.unlock_days > 0 ? viewPermission.unlock_days + ' 天' : '永久' }}。
+              你当前有 <strong>{{ viewPermission.points_balance }}</strong> 积分。
+            </p>
+            <button
+              class="btn primary"
+              :disabled="unlocking || viewPermission.points_balance < viewPermission.unlock_points"
+              @click="showUnlockConfirm = true"
+            >
+              {{ viewPermission.points_balance < viewPermission.unlock_points ? '积分不足' : `花 ${viewPermission.unlock_points} 积分解锁` }}
+            </button>
+            <p class="unlock-hint">积分可通过每日签到、邀请好友等方式获得</p>
+          </template>
+          <template v-else>
+            <p class="unlock-title">开通会员后可见</p>
+            <p class="unlock-desc">服务器地址、Emby 账号与一键导入只向会员开放。</p>
+            <button class="btn primary" @click="router.push('/wallet')">去开通会员</button>
+          </template>
+        </div>
 
         <!-- 多服：每个服一个地址与一份会员（没订阅的服后端不下发） -->
         <div v-if="realmCards.length > 1" class="sub-block">
@@ -364,18 +416,21 @@ function formatDate(iso?: string | null) {
                 <span v-else-if="r.subscribed" class="badge ok">会员剩 {{ daysLeft(r.end_date) }} 天</span>
                 <span v-else class="badge off">未开通</span>
               </div>
-              <div class="realm-url">
+              <div v-if="r.view_granted" class="realm-url">
                 <span class="mono">{{ r.base_url || '管理员还没填这个服的地址' }}</span>
                 <button v-if="r.base_url" class="copy-btn" title="复制" @click="copyText(r.base_url, `realm-${r.id}`)">
                   <Check v-if="copiedField === `realm-${r.id}`" :size="13" class="ok" />
                   <Copy v-else :size="13" />
                 </button>
               </div>
+              <div v-else class="realm-url muted">
+                <span>{{ r.is_free ? '花积分解锁后可见' : '开通会员后可见' }}</span>
+              </div>
             </div>
           </div>
         </div>
 
-        <div v-if="hasSchemes" class="sub-block">
+        <div v-if="viewGranted && hasSchemes" class="sub-block">
           <span class="block-label">一键导入到客户端</span>
           <div class="scheme-btns">
             <button
@@ -390,8 +445,11 @@ function formatDate(iso?: string | null) {
           </div>
         </div>
 
-        <p class="pane-tip">
+        <p v-if="viewGranted" class="pane-tip">
           播放密码用于 Emby 客户端登录，与门户密码相互独立；也可以用上面的按钮一键导入。
+        </p>
+        <p v-else-if="viewPermission?.expires_at" class="pane-tip">
+          查看权限有效期至 {{ formatDate(viewPermission.expires_at) }}。
         </p>
       </section>
 
@@ -558,6 +616,22 @@ function formatDate(iso?: string | null) {
     </div>
 
     <!-- 设置播放密码弹窗 -->
+    <div v-if="showUnlockConfirm && viewPermission?.realm_free" class="modal-mask" @click.self="showUnlockConfirm = false">
+      <div class="modal">
+        <h3 class="modal-title">确认解锁查看权限</h3>
+        <p class="modal-desc">
+          将花费 <strong>{{ viewPermission.unlock_points }}</strong> 积分（当前 {{ viewPermission.points_balance }}），
+          有效期 {{ viewPermission.unlock_days > 0 ? viewPermission.unlock_days + ' 天' : '永久' }}。
+          解锁后可查看服务器地址、Emby 账号与线路。
+        </p>
+        <div class="modal-actions">
+          <button class="btn ghost" @click="showUnlockConfirm = false">取消</button>
+          <button class="btn primary" :disabled="unlocking" @click="handleUnlockView">
+            {{ unlocking ? '解锁中…' : '确认解锁' }}
+          </button>
+        </div>
+      </div>
+    </div>
     <div v-if="showSetPlayPwd" class="modal-mask" @click.self="showSetPlayPwd = false">
       <div class="modal">
         <h3 class="modal-title">设置 Emby 播放密码</h3>
@@ -963,6 +1037,42 @@ function formatDate(iso?: string | null) {
 }
 
 .realm-url .mono { flex: 1; }
+
+.realm-url.muted { color: var(--au-text-4); font-style: normal; }
+
+/* 没查看权限时的解锁卡 */
+.unlock-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 1rem 1.125rem;
+  border: 1px dashed var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+}
+
+.unlock-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.unlock-desc {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--au-text-3);
+}
+
+.unlock-desc strong { color: var(--au-text); }
+
+.unlock-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--au-text-4);
+}
 
 .scheme-btns {
   display: flex;

@@ -31,15 +31,23 @@ import {
   fetchScanQueue,
   fetchServers,
   fetchSessions,
+  fetchAutoScan,
+  fetchTmdbKeys,
   generateVirtualLibraries,
   removeLibraryCover,
+  rescrapeItem,
+  rescrapeLibrary,
   runRepairQueue,
   scanLibrary,
+  saveAutoScan,
+  saveTmdbKeys,
+  testTmdbKeys,
   stopAllTranscodes,
   stopSession,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
+import type { AutoScanConfig, TmdbKeysStatus, TmdbTestResult } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -148,6 +156,8 @@ async function load() {
       fetchMounts().catch(() => ({ mounts: [], mount_types: [] })),
       fetchServers().catch(() => null),
       fetchReachability().catch(() => null),
+      loadTmdbStatus().catch(() => undefined),
+      loadAutoScanConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -325,6 +335,132 @@ async function scan(l: EmbyLibrary) {
   else ElMessage.success(`「${l.name}」扫描已启动`)
   await pollQueue()
   setTimeout(load, 1500)
+}
+
+// ==================== 元数据与刮削 ====================
+// 定时扫描：开关 + 每天几点扫，全部由用户在后台决定（默认关闭）
+const autoScan = ref<AutoScanConfig | null>(null)
+const autoScanSaving = ref(false)
+
+async function loadAutoScanConfig() {
+  try {
+    const res = await fetchAutoScan()
+    autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
+  } catch {
+    autoScan.value = null // 出错不挡页面其它内容
+  }
+}
+
+async function saveAutoScanAction() {
+  if (!autoScan.value) return
+  autoScanSaving.value = true
+  try {
+    const res = await saveAutoScan(autoScan.value.enabled, autoScan.value.time)
+    autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
+    ElMessage.success(`定时扫描已${res.enabled ? `开启（每天 ${res.time}）` : '关闭'}`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    autoScanSaving.value = false
+  }
+}
+
+const tmdbStatus = ref<TmdbKeysStatus | null>(null)
+const tmdbKeysInput = ref('')
+const tmdbSaving = ref(false)
+const tmdbTesting = ref(false)
+const tmdbTestResults = ref<TmdbTestResult[]>([])
+const rescrapeItemId = ref('')
+const rescrapeItemLoading = ref(false)
+const rescrapeItemNotes = ref<string[]>([])
+const rescrapeVisible = ref(false)
+const rescrapeTarget = ref<EmbyLibrary | null>(null)
+const rescrapePolicy = ref<'missing_only' | 'all'>('missing_only')
+const rescrapeLoading = ref(false)
+
+const tmdbStatusText = computed(() => {
+  if (!tmdbStatus.value) return '加载中…'
+  if (!tmdbStatus.value.configured) return '未配置'
+  return `已配置 ${tmdbStatus.value.count} 个（${tmdbStatus.value.source === 'env' ? '环境变量' : '后台填写'}）`
+})
+
+async function loadTmdbStatus() {
+  try {
+    tmdbStatus.value = await fetchTmdbKeys()
+  } catch {
+    tmdbStatus.value = null // 出错不挡页面其它内容
+  }
+}
+
+async function saveTmdbKeysAction() {
+  if (!tmdbKeysInput.value.trim()) {
+    ElMessage.warning('请先填写 Key')
+    return
+  }
+  tmdbSaving.value = true
+  try {
+    const res = await saveTmdbKeys(tmdbKeysInput.value)
+    tmdbKeysInput.value = ''
+    tmdbTestResults.value = []
+    ElMessage.success(`已保存 ${res.saved} 个 Key，${res.source === 'env' ? '当前生效的仍是环境变量' : '已立即生效'}`)
+    await loadTmdbStatus()
+  } finally {
+    tmdbSaving.value = false
+  }
+}
+
+async function testTmdbKeysAction() {
+  tmdbTesting.value = true
+  try {
+    // 输入框有内容就测候选 key，否则测当前生效的 key
+    const res = await testTmdbKeys(tmdbKeysInput.value.trim() || undefined)
+    tmdbTestResults.value = res.results
+    const ok = res.results.filter((r) => r.ok).length
+    if (ok === res.results.length && res.results.length) ElMessage.success('全部 Key 有效')
+    else if (!res.results.length) ElMessage.warning('没有可测试的 Key')
+  } finally {
+    tmdbTesting.value = false
+  }
+}
+
+async function doRescrapeItem() {
+  const id = Number(rescrapeItemId.value)
+  if (!id) {
+    ElMessage.warning('请填写条目 ID')
+    return
+  }
+  rescrapeItemLoading.value = true
+  try {
+    const res = await rescrapeItem(id)
+    const changed = Object.keys(res.summary.changed)
+    rescrapeItemNotes.value = [
+      `「${res.item.name}」：${res.summary.notes.join('；')}`,
+      ...(changed.length ? [`变更字段：${changed.join('、')}`] : ['无字段变更']),
+    ]
+    ElMessage.success('已刷新')
+  } finally {
+    rescrapeItemLoading.value = false
+  }
+}
+
+function openRescrape(l: EmbyLibrary) {
+  rescrapeTarget.value = l
+  rescrapePolicy.value = 'missing_only'
+  rescrapeVisible.value = true
+}
+
+async function confirmRescrape() {
+  if (!rescrapeTarget.value) return
+  rescrapeLoading.value = true
+  try {
+    const res = await rescrapeLibrary(rescrapeTarget.value.id, rescrapePolicy.value)
+    rescrapeVisible.value = false
+    if (res.already) ElMessage.info(`「${rescrapeTarget.value.name}」${res.message}`)
+    else ElMessage.success(`「${rescrapeTarget.value.name}」${res.message}`)
+    await pollQueue()
+  } finally {
+    rescrapeLoading.value = false
+  }
 }
 
 /** 取消一个还在排队的扫描（正在跑的取不了：停在中途会留下半个库的状态） */
@@ -802,6 +938,97 @@ function typeLabel(t: string): string {
       </div>
     </div>
 
+    <!-- 元数据与刮削：TMDB Key 填写与手动刮削收拢在这里（不放在通用系统设置页） -->
+    <div class="admin-card scrape-card">
+      <div class="card-header">
+        <h2>元数据与刮削</h2>
+        <div class="queue-facts">
+          <span class="fact" :class="{ warn: tmdbStatus !== null && !tmdbStatus.configured }">
+            TMDB：{{ tmdbStatusText }}
+          </span>
+        </div>
+      </div>
+      <div class="scrape-grid">
+        <div class="scrape-block">
+          <h3>TMDB API Keys</h3>
+          <p class="drawer-hint">
+            每行一个，也可用逗号分隔；多个 key 在 401 / 429 时自动轮询。
+            保存后立即生效，无需重启。<span
+              v-if="tmdbStatus?.env_present"
+              class="text-danger"
+            >环境变量里已配置 TMDB Key，后台填写暂不生效（环境变量优先）。</span>
+          </p>
+          <el-input
+            v-model="tmdbKeysInput"
+            type="textarea"
+            :rows="3"
+            placeholder="粘贴 TMDB API Key，每行一个或用逗号分隔"
+          />
+          <div class="scrape-actions">
+            <el-button type="primary" size="small" :loading="tmdbSaving" @click="saveTmdbKeysAction">
+              保存
+            </el-button>
+            <el-button size="small" :loading="tmdbTesting" @click="testTmdbKeysAction">
+              测试连接
+            </el-button>
+            <span v-if="tmdbStatus && tmdbStatus.masked.length" class="mono scrape-masked">
+              已配置 {{ tmdbStatus.count }} 个（{{ tmdbStatus.masked.join(' · ') }}）
+            </span>
+          </div>
+          <div v-if="tmdbTestResults.length" class="scrape-results">
+            <div v-for="r in tmdbTestResults" :key="r.index" class="scrape-result">
+              <span class="mini-badge" :class="r.ok ? 'ok' : 'danger'">{{ r.ok ? '有效' : '失败' }}</span>
+              <span class="mono">{{ r.masked }}</span>
+              <span>{{ r.message }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="scrape-block">
+          <h3>定时扫描</h3>
+          <p class="drawer-hint">
+            打开后，每天到点自动把所有本机负责的启用库入队扫描（增量：没变化的目录跳过）。
+            有扫描正在跑 / 排队时会跳过，不打断手工扫描。时间是服务器本地时间。
+          </p>
+          <div v-if="autoScan" class="scrape-actions" style="align-items: center">
+            <el-switch v-model="autoScan.enabled" active-text="开启" inactive-text="关闭" />
+            <el-time-picker
+              v-model="autoScan.time"
+              format="HH:mm"
+              value-format="HH:mm"
+              placeholder="每天几点"
+              style="width: 130px"
+              :disabled="!autoScan.enabled"
+            />
+            <el-button type="primary" size="small" :loading="autoScanSaving" @click="saveAutoScanAction">
+              保存
+            </el-button>
+          </div>
+          <div v-if="autoScan?.last_run" class="drawer-hint" style="margin-top: 6px">
+            上次执行：{{ autoScan.last_run }}
+          </div>
+          <div v-else-if="autoScan" class="drawer-hint" style="margin-top: 6px">
+            还没有执行过
+          </div>
+        </div>
+        <div class="scrape-block">
+          <h3>条目元数据刷新</h3>
+          <p class="drawer-hint">
+            按条目 ID 立即重刮一条：有 NFO 就重读 NFO（文字以 NFO 为准），
+            再用 TMDB 补缺失的图片 / IMDb / 别名。电影 / 剧集优先，季 / 集按 NFO 能力处理。
+          </p>
+          <div class="scrape-actions">
+            <el-input v-model="rescrapeItemId" placeholder="条目 ID" style="width: 160px" clearable />
+            <el-button size="small" :loading="rescrapeItemLoading" @click="doRescrapeItem">
+              刷新元数据
+            </el-button>
+          </div>
+          <div v-if="rescrapeItemNotes.length" class="scrape-results">
+            <div v-for="(n, i) in rescrapeItemNotes" :key="i" class="scrape-result">{{ n }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 媒体库列表：卡片只保留识别信息、关键状态和高频操作，其余设置收进抽屉 -->
     <div class="lib-grid">
       <article v-for="l in libraries" :key="l.id" class="admin-card lib-card">
@@ -888,6 +1115,9 @@ function typeLabel(t: string): string {
         <div class="lib-foot">
           <el-button size="small" type="primary" plain @click="scan(l)">
             <ScanSearch :size="13" />扫描
+          </el-button>
+          <el-button size="small" plain title="重新刮削元数据" @click="openRescrape(l)">
+            <RefreshCw :size="13" />重新刮削
           </el-button>
           <el-button size="small" plain @click="openSettings(l)">
             <Settings2 :size="13" />设置
@@ -976,9 +1206,9 @@ function typeLabel(t: string): string {
             v-model="form.paths"
             type="textarea"
             :rows="3"
-            placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies"
+            placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
           />
-          <div class="form-hint">本机目录。也可以用下面的「存储挂载」接入 115 / WebDAV / AList 等来源。</div>
+          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。</div>
         </el-form-item>
         <el-form-item label="归属服">
           <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
@@ -1089,6 +1319,24 @@ function typeLabel(t: string): string {
         </div>
       </div>
     </el-drawer>
+
+    <!-- 重新刮削：选策略；all 二次确认并提示配额消耗 -->
+    <el-dialog v-model="rescrapeVisible" title="重新刮削" width="420px">
+      <p class="drawer-hint">
+        对「{{ rescrapeTarget?.name }}」触发一次重新刮削扫描，策略只覆盖本轮，不改库配置。
+      </p>
+      <el-radio-group v-model="rescrapePolicy">
+        <el-radio-button value="missing_only">仅补缺失</el-radio-button>
+        <el-radio-button value="all">全量重刮</el-radio-button>
+      </el-radio-group>
+      <p v-if="rescrapePolicy === 'all'" class="drawer-hint text-danger" style="margin-top: 8px">
+        全量重刮会对该库所有条目重新请求 TMDB，会消耗大量配额，确定要继续吗？
+      </p>
+      <template #footer>
+        <el-button @click="rescrapeVisible = false">取消</el-button>
+        <el-button type="primary" :loading="rescrapeLoading" @click="confirmRescrape">开始</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 扫描记录：最近若干轮（每轮的状态 / 触发方 / 增量 / 耗时 / 原因） -->
     <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="620px">
@@ -1214,6 +1462,16 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 }
 
 .drawer-hint { margin: 0 0 12px; font-size: var(--font-size-xs); color: var(--text-tertiary); }
+
+.text-danger { color: var(--danger); }
+.scrape-card { margin-bottom: 16px; }
+.scrape-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.scrape-block h3 { margin: 0 0 8px; font-size: var(--font-size-sm); font-weight: 600; }
+.scrape-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.scrape-masked { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+.scrape-results { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.scrape-result { display: flex; align-items: center; gap: 8px; font-size: var(--font-size-xs); }
+@media (max-width: 900px) { .scrape-grid { grid-template-columns: 1fr; } }
 
 /* 最近一次扫描结果：摘要一行 +（失败时）原因一行 */
 .lib-scan { display: flex; flex-direction: column; gap: 3px; }

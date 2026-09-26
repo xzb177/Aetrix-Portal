@@ -20,6 +20,8 @@ export interface EmbyUserData {
   Played: boolean
   IsFavorite: boolean
   LastPlayedDate?: string | null
+  /** 剧集未看集数（后端批量计算，电影/单集不看这个值） */
+  UnplayedItemCount?: number | null
 }
 
 export interface EmbyItem {
@@ -46,7 +48,27 @@ export interface EmbyItem {
   BackdropImageTags?: string[]
   UserData: EmbyUserData
   RunTimeTicks?: number | null
+  /** 媒体库类型：movies / tvshows / mixed …（Views 接口返回） */
+  CollectionType?: string | null
   MediaSources?: EmbyMediaSource[]
+  /** 画质徽标用（后端 _item_dto 下发） */
+  Width?: number | null
+  Height?: number | null
+  IsHD?: boolean
+  /** 多版本（后端 _item_dto 下发；同目录同名 movie 才有） */
+  Versions?: EmbyItemVersion[]
+}
+
+/** 电影多版本条目 */
+export interface EmbyItemVersion {
+  Id: string
+  Name: string
+  Width?: number | null
+  Height?: number | null
+  SizeBytes?: number | null
+  Container?: string | null
+  VersionLabel: string
+  IsPrimary: boolean
 }
 
 export interface EmbyMediaSource {
@@ -77,6 +99,8 @@ export interface EmbyMediaSource {
 export interface EmbyQuery {
   parentId?: string
   includeTypes?: string[]
+  /** 按条目 Id 批量取（逗号分隔传给后端 Ids） */
+  ids?: string[]
   searchTerm?: string
   genres?: string[]
   years?: number[]
@@ -139,6 +163,7 @@ export const embyApi = {
     if (q.parentId) params.ParentId = q.parentId
     if (q.recursive !== false) params.Recursive = 'true'
     if (q.includeTypes?.length) params.IncludeItemTypes = q.includeTypes.join(',')
+    if (q.ids?.length) params.Ids = q.ids.join(',')
     if (q.searchTerm) params.SearchTerm = q.searchTerm
     if (q.genres?.length) params.Genres = q.genres.join('|')
     if (q.years?.length) params.Years = q.years.join(',')

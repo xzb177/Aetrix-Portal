@@ -154,8 +154,11 @@ check("阻塞路由：基线里的每一条都真实存在（没有死条目）"
       not (baseline - real), f"死条目：{sorted(baseline - real)[:5]}")
 check("阻塞路由：真实存在的每一条都在基线里（没有漏网）",
       not (real - baseline), f"漏网：{sorted(real - baseline)[:5]}")
-check("阻塞路由：基线非空（不是把基线清空来骗过检查）", len(baseline) > 0,
-      f"{len(baseline)} 条")
+# v2.39.0 起基线是空的（24 → 0 就是这个目标的终点），所以不再要求「基线非空」。
+# 防作弊靠的是上面两条**双向相等**（这里用独立重扫一遍，一条对不上就红），
+# 以及下面喂违规样本时必须失败——空基线藏不住任何东西。
+check("阻塞路由：真实代码树上一条阻塞路由都没有（v2.39.0 的目标态）",
+      not real, f"还剩：{sorted(real)[:5]}")
 
 proc = subprocess.run([sys.executable, str(BLOCKING_GUARD)], capture_output=True, text=True,
                       cwd=str(ROOT))
@@ -432,6 +435,56 @@ _gone_missing, gone_stale, _total = audit_guard.scan()
 check("审计覆盖：例外名单里的死条目会被抓出来", len(gone_stale) == 1, str(gone_stale))
 
 sys.path.remove(str(synthetic_dir))
+audit_guard.ROUTER_MODULES = _real_modules
+audit_guard.EXCEPTIONS = _real_exceptions
+
+# v2.39.0：一种等价写法——端点把整段同步写库交给**本模块的函数**（自己只负责
+# `await run_in_threadpool(...)`），审计写在那段函数里，与那次写库同一个事务。
+# 护栏跟一层：带审计的不报，被调用函数里也没有审计的照旧报出来。
+DELEGATED_SAMPLE = '''
+from fastapi import APIRouter
+
+router = APIRouter(prefix='/api/admin/delegated')
+
+
+def _worker_with_audit(db, admin, item_id):
+    _audit(db, admin, 'synthetic_delegated', 'thing', item_id, {})
+    db.commit()
+    return {'success': True}
+
+
+def _worker_without_audit(db):
+    db.commit()
+    return {'success': True}
+
+
+@router.post('/via-helper')
+def via_helper(item_id, db=None, admin=None):
+    return _worker_with_audit(db, admin, item_id)
+
+
+@router.post('/via-helper-bare')
+def via_helper_bare(db=None):
+    return _worker_without_audit(db)
+'''
+
+deleg_dir = pathlib.Path(tempfile.mkdtemp(prefix="audit-coverage-deleg-"))
+deleg_dir.joinpath("synthetic_delegated.py").write_text(DELEGATED_SAMPLE, encoding="utf-8")
+
+sys.path.insert(0, str(deleg_dir))
+importlib.invalidate_caches()
+audit_guard.ROUTER_MODULES = ("synthetic_delegated",)
+audit_guard.EXCEPTIONS = {}
+
+deleg_missing, _deleg_stale, deleg_total = audit_guard.scan()
+check("审计覆盖：端点只下放、审计写在被调用的同步函数里 → 不报（run_in_threadpool 的写法）",
+      not [item for item in deleg_missing if "via-helper" in item and "bare" not in item],
+      str(deleg_missing))
+check("审计覆盖：被调用的同步函数里也没有审计 → 照旧报出来（只跟一层不等于放行）",
+      any("via-helper-bare" in item for item in deleg_missing), str(deleg_missing))
+check("审计覆盖：委托样本两个写端点都进了判定", deleg_total == 2, f"total={deleg_total}")
+
+sys.path.remove(str(deleg_dir))
 audit_guard.ROUTER_MODULES = _real_modules
 audit_guard.EXCEPTIONS = _real_exceptions
 

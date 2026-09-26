@@ -21,7 +21,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models, realms, subscriptions
@@ -239,6 +240,49 @@ admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自�
 
 # ==================== 用户端 ====================
 
+def _get_int_config(db: Session, key: str, default: int) -> int:
+    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+    try:
+        return int(row.value) if row and row.value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _view_unlock_pricing(db: Session) -> tuple[int, int]:
+    """公益服查看权限的积分价格与有效期（天，0=永久），后台 SystemConfig 可调。"""
+    points = _get_int_config(db, "emby_view_unlock_points", 50)
+    days = _get_int_config(db, "emby_view_unlock_days", 365)
+    return max(points, 0), max(days, 0)
+
+
+def _realm_view_granted(db: Session, user: models.WebUser, realm_id: int | None
+                        ) -> tuple[bool, models.EmbyViewUnlock | None]:
+    """用户是否有权查看某服的 Emby 账号/线路。
+
+    规则：付费服 = 有效订阅即权限；公益服 = 花积分解锁即权限
+    （见 unlock_emby_view）。没权限时账号卡不下发地址，前端也不展示。
+    """
+    if realm_id is None:
+        realm_id = realms.active_realm_id(db)
+    if realms.is_free_realm(db, realm_id):
+        now = datetime.now()
+        unlock = (db.query(models.EmbyViewUnlock)
+                    .filter(models.EmbyViewUnlock.user_id == user.id,
+                            models.EmbyViewUnlock.realm_id == realm_id,
+                            or_(models.EmbyViewUnlock.expires_at.is_(None),
+                                models.EmbyViewUnlock.expires_at > now))
+                    .order_by(models.EmbyViewUnlock.unlocked_at.desc())
+                    .first())
+        return (unlock is not None), unlock
+    sub = (db.query(models.UserSubscription)
+             .filter(models.UserSubscription.user_id == user.id,
+                     models.UserSubscription.realm_id == realm_id,
+                     models.UserSubscription.status == "active",
+                     models.UserSubscription.end_date > datetime.now())
+             .first())
+    return (sub is not None), None
+
+
 def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None,
                   request: Request | None = None) -> dict:
     """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）
@@ -250,6 +294,10 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
 
     多服部署下同一个用户可能在多个服都有订阅，所以账号卡会带上 **每个服的地址与订阅**
     （``realms``），让客户端知道该连哪一台；顶层字段保持默认服的口径不变。
+
+    查看权限：付费服要求有效订阅，公益服要求积分解锁（见 ``_realm_view_granted``）。
+    没权限时 ``base_url`` / ``import_schemes`` / ``emby_username`` 置空不下发，
+    前端据 ``view_permission`` 展示解锁入口。
     """
     if realm_id is None:
         realm_id = realms.active_realm_id(db)
@@ -258,15 +306,19 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
     external = mode == "external"
     host = url.split("//")[-1]
     realm = realms.get_realm(db, realm_id)
+    granted, unlock = _realm_view_granted(db, user, realm_id)
+    price_points, price_days = _view_unlock_pricing(db)
     card = {
         "server_id": SERVER_ID,
         "server_name": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
-        "base_url": url,
+        "base_url": url if granted else "",
         "mode": mode,
         "external": external,
         "account_managed_by": "external" if external else "portal",
-        "emby_username": user.emby_username,
+        "emby_username": user.emby_username if granted else "",
         "emby_password": None,
+        # has_password 不 gate：它只是用户自己的密码设置状态，不泄露服务器信息；
+        # 冒烟测试也依赖它（set-password 后断言为 True）
         "has_password": bool(user.emby_password),
         "realm_id": realm.id if realm else None,
         "realm_name": realm.name if realm else "",
@@ -275,9 +327,17 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "is_free": realms.is_free_realm(db, realm_id),
         "access_note": realms.access_note_of(db, realm_id),
         "allow_download": subscriptions.download_allowed(db, realm_id),
-        "import_schemes": {} if external else {
+        "import_schemes": {} if (external or not granted) else {
             "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
             "senplayer": f"senplayer://importserver?type=emby&name=Aetrix&address={url}&username={user.emby_username}",
+        },
+        "view_permission": {
+            "granted": granted,
+            "realm_free": realms.is_free_realm(db, realm_id),
+            "unlock_points": price_points,
+            "unlock_days": price_days,
+            "points_balance": int(user.points or 0),
+            "expires_at": unlock.expires_at.isoformat() if unlock and unlock.expires_at else None,
         },
     }
     card["realms"] = _user_realm_cards(user, db, request)
@@ -309,11 +369,14 @@ def _user_realm_cards(user: models.WebUser, db: Session,
         if sub is None and not free and realm.id != realms.legacy_realm_id(db):
             continue  # 没订阅的付费服不往用户面前推（默认服保留，兼容老前端）
         mode = emby_active_mode(db, realm.id)
+        granted, _ = _realm_view_granted(db, user, realm.id)
         cards.append({
             "id": realm.id,
             "name": realm.name,
             "slug": realm.slug,
-            "base_url": resolve_emby_base_url(db, realm.id, request),
+            # 没查看权限不下发地址（默认服保留卡片结构，兼容老前端）
+            "base_url": resolve_emby_base_url(db, realm.id, request) if granted else "",
+            "view_granted": granted,
             "mode": mode,
             "external": mode == "external",
             "subscribed": sub is not None,
@@ -346,6 +409,79 @@ async def get_server_info(request: Request,
     if raw and str(raw).strip().isdigit():
         realm_id = int(raw)
     return _account_card(user, db, realm_id, request)
+
+
+class UnlockViewRequest(BaseModel):
+    realm_id: int | None = None
+
+
+@user_emby_router.post("/unlock-view")
+def unlock_emby_view(
+    req: UnlockViewRequest,
+    request_user: models.WebUser = Depends(get_admin_or_emby_user),
+    db: Session = Depends(get_db),
+):
+    """公益服：花积分解锁 Emby 账号/线路查看权限。
+
+    幂等：已解锁且未过期直接返回成功，不重复扣费。扣费是 SQL 级原子
+    更新（余额检查写在 WHERE 里），并发下不会扣成负数；解锁记录有
+    (user_id, realm_id) 唯一约束，建记录冲突时回滚重读走幂等路径。
+    付费服不走这里——查看权限来自有效订阅。
+    """
+    realm_id = req.realm_id or realms.active_realm_id(db)
+    realm = realms.get_realm(db, realm_id)
+    if realm is None:
+        raise HTTPException(status_code=404, detail="服不存在")
+    if not realms.is_free_realm(db, realm_id):
+        raise HTTPException(status_code=400, detail="当前服为付费服，查看权限来自有效订阅，无需积分解锁")
+    now = datetime.now()
+    existing = (db.query(models.EmbyViewUnlock)
+                  .filter(models.EmbyViewUnlock.user_id == request_user.id,
+                          models.EmbyViewUnlock.realm_id == realm_id,
+                          or_(models.EmbyViewUnlock.expires_at.is_(None),
+                              models.EmbyViewUnlock.expires_at > now))
+                  .first())
+    if existing:
+        return {"success": True, "already": True,
+                "expires_at": existing.expires_at.isoformat() if existing.expires_at else None}
+    price_points, price_days = _view_unlock_pricing(db)
+    if price_points <= 0:
+        raise HTTPException(status_code=400, detail="当前无需积分即可查看")
+    # 原子扣费：余额检查写进 WHERE，并发下至多一个成功
+    rows = (db.query(models.WebUser)
+              .filter(models.WebUser.id == request_user.id,
+                      func.coalesce(models.WebUser.points, 0) >= price_points)
+              .update({models.WebUser.points: func.coalesce(models.WebUser.points, 0) - price_points},
+                      synchronize_session="fetch"))
+    if not rows:
+        raise HTTPException(status_code=409, detail="积分不足")
+    db.flush()
+    balance = int(db.query(models.WebUser.points)
+                    .filter(models.WebUser.id == request_user.id).scalar() or 0)
+    db.add(models.PointsLog(user_id=request_user.id, amount=-price_points,
+                            balance_after=balance, type="view_unlock",
+                            description=f"解锁{realm.name}查看权限",
+                            ref_id=f"emby-view:{realm_id}"))
+    expires_at = None if price_days <= 0 else now + timedelta(days=price_days)
+    db.add(models.EmbyViewUnlock(user_id=request_user.id, realm_id=realm_id,
+                                 unlocked_at=now, expires_at=expires_at,
+                                 points_spent=price_points))
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发下另一请求已建记录：回滚后走幂等路径（对方那次扣费有效）
+        db.rollback()
+        existing = (db.query(models.EmbyViewUnlock)
+                      .filter(models.EmbyViewUnlock.user_id == request_user.id,
+                              models.EmbyViewUnlock.realm_id == realm_id)
+                      .first())
+        if existing:
+            return {"success": True, "already": True,
+                    "expires_at": existing.expires_at.isoformat() if existing.expires_at else None}
+        raise HTTPException(status_code=409, detail="解锁冲突，请重试")
+    return {"success": True, "already": False,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "points_spent": price_points, "balance": balance}
 
 
 class SetPasswordRequest(BaseModel):
@@ -515,19 +651,24 @@ async def stop_my_session(session_key: str,
                           request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
     """结束自己的播放会话（同时释放转码进程）"""
-    session = (
-        db.query(em.PlaybackSession)
-        .filter(
-            em.PlaybackSession.session_key == session_key,
-            em.PlaybackSession.user_id == request_user.id,
+    def _end_session() -> tuple:
+        "结束会话的同步段：查会话 / 取条目 guid / 写结束时间（下放线程池）"
+        session = (
+            db.query(em.PlaybackSession)
+            .filter(
+                em.PlaybackSession.session_key == session_key,
+                em.PlaybackSession.user_id == request_user.id,
+            )
+            .first()
         )
-        .first()
-    )
-    if not session:
-        raise HTTPException(status_code=404, detail="播放会话不存在")
-    ended_user_id, ended_item = session.user_id, item_guid_for(db, session.item_id)
-    session.ended_at = datetime.now()
-    db.commit()
+        if not session:
+            raise HTTPException(status_code=404, detail="播放会话不存在")
+        ended = (session.user_id, item_guid_for(db, session.item_id))
+        session.ended_at = datetime.now()
+        db.commit()
+        return ended
+
+    ended_user_id, ended_item = await run_in_threadpool(_end_session)
     # 按「用户 + 条目 guid」反查转码会话：播放会话键（PlaySessionId）与转码会话 id（uuid）
     # 不是同一个东西，旧实现拿前者去 pop 等于什么都没停到（见 streaming.find_transcodes）。
     await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
@@ -543,6 +684,9 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
     """观看历史：按条目去重，取最近一次播放的设备/客户端/进度
 
     直接读本地会话与用户媒体数据（不触发媒体库扫描），与第三方客户端记录同源。
+
+    顶层口径：单集观看记录按剧聚合（每部剧只保留最近看的那集，行上标注
+    "第X季第X集 · 集名"，点行进剧集详情并定位到该集）；季/单集不出现在顶层。
     """
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
@@ -552,13 +696,18 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
         .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
         .filter(em.PlaybackSession.user_id == request_user.id)
     )
-    if item_type:
-        query = query.filter(em.MediaItem.item_type == item_type)
+    # 前端传 Movie/Series（Emby 惯例首字母大写），库里存小写；此前直接 == 比对，
+    # 在 SQLite 下筛选恒为空。归一化后再比；筛"剧集"时把单集也带上（后面按剧聚合）。
+    type_norm = (item_type or "").strip().lower()
+    if type_norm == "series":
+        query = query.filter(em.MediaItem.item_type.in_(["series", "episode"]))
+    elif type_norm:
+        query = query.filter(em.MediaItem.item_type == type_norm)
 
     total = query.count()
     rows = query.order_by(em.PlaybackSession.last_update_at.desc()).all()
 
-    # 按条目去重（保留最近一次会话），再按 offset/limit 切片
+    # 按条目去重（保留最近一次会话）
     seen: set[int] = set()
     deduped: list[tuple] = []
     for session, item in rows:
@@ -566,28 +715,51 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             continue
         seen.add(item.id)
         deduped.append((session, item))
-    page = deduped[offset:offset + limit]
 
-    item_ids = [item.id for _s, item in page]
+    # 单集 → 父剧集聚合（保持最近在看的顺序，每部剧只留一行）
+    series_cache: dict[int, em.MediaItem] = {}
+    aggregated: list[tuple] = []  # (session, 展示条目, 单集|None)
+    seen_series: set[int] = set()
+    for session, item in deduped:
+        ep = None
+        if item.item_type == "episode" and item.series_id:
+            series = series_cache.get(item.series_id)
+            if series is None:
+                series = db.query(em.MediaItem).filter(
+                    em.MediaItem.id == item.series_id).first()
+                series_cache[item.series_id] = series
+            if series is None:
+                continue  # 孤儿单集：归属丢失，不展示
+            if series.id in seen_series:
+                continue
+            seen_series.add(series.id)
+            ep = item
+            item = series
+        aggregated.append((session, item, ep))
+    page = aggregated[offset:offset + limit]
+
+    # 进度取"实际播放的那集"的用户数据（聚合行取单集的，电影行取自身的）
+    lookup_ids = [it.id for _s, it, _e in page]
+    lookup_ids += [e.id for _s, _i, e in page if e is not None]
     umd_map: dict[int, em.UserMediaData] = {}
-    if item_ids:
+    if lookup_ids:
         for umd in db.query(em.UserMediaData).filter(
             em.UserMediaData.user_id == request_user.id,
-            em.UserMediaData.item_id.in_(item_ids),
+            em.UserMediaData.item_id.in_(lookup_ids),
         ).all():
             umd_map[umd.item_id] = umd
 
     items = []
-    for session, item in page:
-        umd = umd_map.get(item.id)
-        items.append({
+    for session, item, ep in page:
+        umd = umd_map.get(ep.id if ep is not None else item.id)
+        entry = {
             "id": item.guid,
             "name": item.name,
             "type": item.item_type,
             "year": item.production_year,
             "poster_url": f"/emby/Items/{item.guid}/Images/Primary"
             if (item.poster_path or item.primary_image_url) else None,
-            "duration_ticks": item.duration_ticks,
+            "duration_ticks": (ep or item).duration_ticks,
             "position_ticks": (umd.playback_position_ticks if umd else session.position_ticks),
             "played": bool(umd.played) if umd else False,
             "is_favorite": bool(umd.is_favorite) if umd else False,
@@ -596,9 +768,17 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             "client": session.client_name,
             "play_method": session.play_method,
             "watched_at": session.last_update_at.isoformat() if session.last_update_at else None,
-        })
+        }
+        if ep is not None:
+            entry.update({
+                "episode_id": ep.guid,
+                "episode_name": ep.name,
+                "season_number": ep.season_number,
+                "episode_number": ep.episode_number,
+            })
+        items.append(entry)
 
-    return {"total": total, "unique_total": len(deduped), "items": items}
+    return {"total": total, "unique_total": len(aggregated), "items": items}
 
 
 # ==================== 管理端 ====================
@@ -684,8 +864,20 @@ class LibraryUpdate(BaseModel):
 
 
 def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int]) -> None:
-    """校验媒体库来源：本机路径必须存在，挂载必须存在且启用"""
+    """校验媒体库来源：本机路径必须存在，挂载必须存在且启用。
+
+    ``paths`` 里还可以写 ``mount://<挂载 id>/<子目录>``（只扫描该挂载下的子目录），
+    此时校验挂载存在、启用且子目录可读。
+    """
     for path in paths:
+        parsed = mount_lib.parse_mount_path(path)
+        if parsed is not None:
+            mount_id, rel = parsed
+            try:
+                mount_lib.check_mount_subpath(db, mount_id, rel)
+            except mount_lib.MountError as exc:
+                raise HTTPException(status_code=400, detail=f"挂载子目录不可用 {path}: {exc}")
+            continue
         if not os.path.isdir(path):
             raise HTTPException(status_code=400, detail=f"路径不存在: {path}")
     if not mount_ids:
@@ -929,9 +1121,7 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
     if req.collection_type is not None:
         lib.collection_type = req.collection_type
     if req.paths is not None:
-        for p in req.paths:
-            if not os.path.isdir(p):
-                raise HTTPException(status_code=400, detail=f"路径不存在: {p}")
+        _validate_library_sources(db, req.paths, [])
         lib.paths = ",".join(req.paths)
     if req.mount_ids is not None:
         _validate_library_sources(db, [], req.mount_ids)
@@ -1038,47 +1228,61 @@ def list_library_scans(lib_id: int, limit: int = 20,
 
 @admin_emby_router.post("/libraries/{lib_id}/scan")
 async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
-    if not lib:
-        raise HTTPException(status_code=404, detail="媒体库不存在")
+    def _enqueue() -> dict:
+        """查库 + 归属节点判定 + 入队：整段同步 SQLAlchemy，下放线程池执行
 
-    # 已分配给某台节点的库，只有那台机器碰得到文件（本机路径 / rclone / 挂载）——
-    # 由面板本地扫描只会得到一堆 failed_roots，所以转发过去让归属节点扫。
-    owner = node_lib.library_owner(db, lib)
-    if owner is not None and owner.id != node_lib.self_node_id(db):
-        forward = await node_lib.push_scan(owner.url, lib.id)
+        只有「转发给归属节点」这一步要 await 网络（push_scan），所以它留在事件循环上。
+        """
+        lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+        if not lib:
+            raise HTTPException(status_code=404, detail="媒体库不存在")
+
+        # 已分配给某台节点的库，只有那台机器碰得到文件（本机路径 / rclone / 挂载）——
+        # 由面板本地扫描只会得到一堆 failed_roots，所以转发过去让归属节点扫。
+        owner = node_lib.library_owner(db, lib)
+        if owner is not None and owner.id != node_lib.self_node_id(db):
+            return {"forward_to": {"id": owner.id, "name": owner.name, "url": owner.url}}
+
+        # 入队而不是直接起线程（v2.27.0）：不同媒体库引用同一个远程挂载时排队跑，
+        # 不让四个任务同时打同一个 WebDAV；重复点击不报 409，直接告诉你「已经在队列/正在扫」。
+        # 后台线程用独立 Session（请求结束时请求级 Session 会被关闭，复用会导致
+        # "transaction is closed" 与 SQLite 写锁冲突）——那一层现在在 scan_queue 里。
+        result = scan_queue.enqueue(lib, trigger="manual")
+        task = result["task"]
+        if not result["created"]:
+            return {"response": {
+                "success": True, "queued": False, "already": True, "state": task["state"],
+                "message": ("该媒体库正在扫描中" if task["state"] == "running"
+                            else f"该媒体库已在扫描队列中（第 {task.get('position') or '-'} 位）"),
+                "task": task}}
+        if task["state"] == "running":
+            # 没被任何东西挡住：入队即开扫（就地派发），如实说「已启动」而不是「排队第 1 位」
+            return {"response": {
+                "success": True, "queued": True, "already": False, "started": True,
+                "task": task, "message": "扫描已启动"}}
+        waiting = [mount_lib.mount_label(m)
+                   for m in _waiting_mount_objects(db, task.get("waiting_for"))]
+        return {"response": {
+            "success": True, "queued": True, "already": False, "started": False, "task": task,
+            "message": (f"已加入扫描队列（第 {task.get('position') or '-'} 位）"
+                        + (f"，正在等挂载：{'、'.join(waiting)}" if waiting
+                           else "，前面还有扫描在跑")),
+        }}
+
+    prepared = await run_in_threadpool(_enqueue)
+
+    target = prepared.get("forward_to")
+    if target:
+        forward = await node_lib.push_scan(target["url"], lib_id)
         if not forward.get("ok"):
             raise HTTPException(
                 status_code=502,
-                detail=f"这个库归「{owner.name}」扫描，但转发失败了：{forward.get('error')}"
+                detail=f"这个库归「{target['name']}」扫描，但转发失败了：{forward.get('error')}"
                 "（请检查该节点的地址与两端 SECRET_KEY）",
             )
-        return {"success": True, "message": f"已让节点「{owner.name}」开始扫描",
-                "forwarded_to": {"id": owner.id, "name": owner.name, "url": owner.url},
-                "library_id": lib.id}
-
-    # 入队而不是直接起线程（v2.27.0）：不同媒体库引用同一个远程挂载时排队跑，
-    # 不让四个任务同时打同一个 WebDAV；重复点击不报 409，直接告诉你「已经在队列/正在扫」。
-    # 后台线程用独立 Session（请求结束时请求级 Session 会被关闭，复用会导致
-    # "transaction is closed" 与 SQLite 写锁冲突）——那一层现在在 scan_queue 里。
-    result = scan_queue.enqueue(lib, trigger="manual")
-    task = result["task"]
-    if not result["created"]:
-        return {"success": True, "queued": False, "already": True, "state": task["state"],
-                "message": ("该媒体库正在扫描中" if task["state"] == "running"
-                            else f"该媒体库已在扫描队列中（第 {task.get('position') or '-'} 位）"),
-                "task": task}
-    if task["state"] == "running":
-        # 没被任何东西挡住：入队即开扫（就地派发），如实说「已启动」而不是「排队第 1 位」
-        return {"success": True, "queued": True, "already": False, "started": True,
-                "task": task, "message": "扫描已启动"}
-    waiting = [mount_lib.mount_label(m) for m in _waiting_mount_objects(db, task.get("waiting_for"))]
-    return {
-        "success": True, "queued": True, "already": False, "started": False, "task": task,
-        "message": (f"已加入扫描队列（第 {task.get('position') or '-'} 位）"
-                    + (f"，正在等挂载：{'、'.join(waiting)}" if waiting
-                       else "，前面还有扫描在跑")),
-    }
+        return {"success": True, "message": f"已让节点「{target['name']}」开始扫描",
+                "forwarded_to": target, "library_id": lib_id}
+    return prepared["response"]
 
 
 def _waiting_mount_objects(db: Session, mount_ids) -> list:
@@ -1321,14 +1525,21 @@ def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session =
 
 @admin_emby_router.delete("/sessions/{session_key}")
 async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    session = db.query(em.PlaybackSession).filter(
-        em.PlaybackSession.session_key == session_key
-    ).first()
-    if session:
-        ended_user_id, ended_item = session.user_id, item_guid_for(db, session.item_id)
+    def _end_session() -> tuple | None:
+        """查会话 / 写结束时间（同步段下放线程池），返回要停的转码定位信息"""
+        session = db.query(em.PlaybackSession).filter(
+            em.PlaybackSession.session_key == session_key
+        ).first()
+        if not session:
+            return None
+        ended = (session.user_id, item_guid_for(db, session.item_id))
         session.ended_at = datetime.now()
         db.commit()
-        await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
+        return ended
+
+    ended = await run_in_threadpool(_end_session)
+    if ended:
+        await stop_transcodes_for_async(ended[0], item_guid=ended[1])
     return {"success": True}
 
 
@@ -1477,16 +1688,29 @@ def delete_pan115_account(account_id: int,
 async def verify_pan115_account(account_id: int,
                                 staff: models.WebUser = Depends(require_staff),
                                 db: Session = Depends(get_db)):
-    account = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
+    def load() -> tuple[em.Pan115Account | None, str]:
+        """取配置档与 Cookie（同步；下放线程池——路由是 async，不能占事件循环）"""
+        row = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
+        return row, (row.cookie if row is not None else "")
+
+    account, cookie = await run_in_threadpool(load)
     if not account:
         raise HTTPException(status_code=404, detail="账号配置档不存在")
     # 校验要真的发一次请求：放到线程池执行，避免阻塞整个事件循环
-    result = await run_in_threadpool(transfer115.verify_account, account.cookie)
-    account.last_verified_at = datetime.now()
-    account.last_verify_ok = bool(result.get("ok"))
-    account.last_verify_message = str(result.get("message") or ("有效" if result.get("ok") else ""))[:300]
-    db.commit()
-    return {"success": True, "result": result, "account": _serialize_account(account)}
+    result = await run_in_threadpool(transfer115.verify_account, cookie)
+
+    def record() -> dict:
+        """写回校验结果并序列化（同步；下放线程池）"""
+        account.last_verified_at = datetime.now()
+        account.last_verify_ok = bool(result.get("ok"))
+        account.last_verify_message = str(
+            result.get("message") or ("有效" if result.get("ok") else "")
+        )[:300]
+        db.commit()
+        return _serialize_account(account)
+
+    return {"success": True, "result": result,
+            "account": await run_in_threadpool(record)}
 
 
 @admin_emby_router.post("/115/verify")

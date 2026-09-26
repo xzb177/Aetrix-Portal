@@ -207,10 +207,24 @@ class _CloudMount(MountProvider):
             logger.warning("%s 子目录读取失败，跳过: %s (%s)", self.what, rel, exc)
             return []
 
-    def walk_media(self, max_depth: int = 32) -> Iterator[MountFile]:
-        """远程挂载的通用遍历：靠 ``list_dir`` 递归，自动跳过过深目录"""
-        stack: list[tuple[str, int]] = [("/", 0)]
+    def walk_media(self, max_depth: int = 32, root: str = "/") -> Iterator[MountFile]:
+        """远程挂载的通用遍历：靠 ``list_dir`` 递归，自动跳过过深目录
+
+        ``root`` 为挂载内的起始子目录（"/" = 整个挂载）；产出的 ``rel`` 始终是
+        挂载根相对路径，与 ``root`` 无关。
+
+        起始目录读不到时直接抛错（不吞掉）：上层按「来源不可用」处理并跳过清理，
+        避免把「读不到」当成「文件已删除」而误删条目。
+        """
+        self.list_dir(root)
+        stack: list[tuple[str, int]] = [(root, 0)]
         seen: set[str] = set()
+        # 文件级去重：rclone lsjson 偶发在单次列举里返回同一文件两次（网盘侧重复
+        # 条目 / 分页异常；2026-09-25 生产事故：同一 mkv 被产出两次，扫描器在同一
+        # 事务内两次 INSERT 撞 emby_items.guid 唯一键、整库扫描 abort）。扫描器在
+        # _prepare_and_prefetch 按 guid 去重兜底，这里在源头先拦一道，也省掉重复
+        # 的 ffprobe 与 TMDB 预取。rel 全局唯一，误杀不了正常文件。
+        seen_files: set[str] = set()
         while stack:
             rel, depth = stack.pop()
             if rel in seen:
@@ -223,6 +237,10 @@ class _CloudMount(MountProvider):
                     continue
                 if os.path.splitext(entry.name)[1].lower() not in REMOTE_MEDIA_EXTS:
                     continue
+                if entry.rel in seen_files:
+                    logger.debug("%s 遍历跳过重复文件条目：%s", self.what, entry.rel)
+                    continue
+                seen_files.add(entry.rel)
                 yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
                                 is_strm=_is_strm_name(entry.name))
 

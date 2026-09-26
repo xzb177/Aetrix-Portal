@@ -71,6 +71,19 @@ with SessionLocal() as db:
 
     alice_id, bob_id, staff_id, disabled_id = alice.id, bob.id, staff.id, disabled.id
 
+    # 查看权限 gating：入口测试断言 alice 能看到 base_url，给她一个有效订阅
+    from datetime import datetime, timedelta  # noqa: E402
+    from backend import realms as realm_lib  # noqa: E402
+
+    _rid = realm_lib.active_realm_id(db)
+    _plan = models.SubscriptionPlan(name="冒烟测试套餐", price=1, duration_days=30, realm_id=_rid)
+    db.add(_plan)
+    db.flush()
+    db.add(models.UserSubscription(user_id=alice_id, plan_id=_plan.id, realm_id=_rid,
+                                   status="active",
+                                   end_date=datetime.now() + timedelta(days=30)))
+    db.commit()
+
     emby_token = em.EmbyApiToken(token="emby-client-token-alice", user_id=alice_id, device_id="dev-1")
     db.add(emby_token)
     db.commit()

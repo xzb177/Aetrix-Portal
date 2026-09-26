@@ -24,9 +24,9 @@
   宁可少报，也不误报：误报会让人干脆把这条检查关掉。
 * 会话对象按名字识别（`db` / `session` / `sess` / `conn` 及 `xxx_db` 这类），
   方法名取 SQLAlchemy 的常见读写口（query / add / commit / execute / flush …）。
-* 基线：已经存在的这些先记在下面的集合里（它们是已知欠账，见 docs/performance.md）。
-  **把基线里的名字删掉**（因为你把它改好了）随时欢迎；**往基线里加新名字**
-  要么说明理由，要么就该改成同步 `def`。
+* 基线（`BASELINE`）：存量欠账的名单，见 docs/performance.md。v2.39.0 起**它是空的**
+  ——真实代码树上一条阻塞路由都没有了。**把基线里的名字删掉**（因为你把它改好了）
+  随时欢迎；**往基线里加新名字**要么说明理由，要么就该改成同步 `def`。
 
 退出码 0 = 通过；1 = 有新增的阻塞路由（或基线里写了不存在的名字）。
 """
@@ -40,7 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "backend"
 
-HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace", "api_route"}
 DB_METHODS = {
     "query", "add", "add_all", "commit", "refresh", "delete", "execute",
     "flush", "rollback", "scalar", "scalars", "bulk_save_objects", "merge",
@@ -48,63 +48,29 @@ DB_METHODS = {
 }
 SESSIONISH = re.compile(r"(?i)^(_?[a-z0-9]*(db|session|sess|conn))$")
 
-# 已知欠账：file::函数名。这些是「async 路由里仍有同步 DB 访问」的存量，
-# 按 docs/performance.md「先量、再改、最后固化成门禁」的做法记在这里。
-# 已知欠账：`文件::函数名`（v2.21.0 时点 41 条；v2.35.0 把两条热路径改好 → 39 条）。
+# 已知欠账：`文件::函数名`。v2.21.0 时点 41 条，之后一路只减不增：
+# v2.35.0 两条热路径 → 39 条；v2.36.0 两条求片链路 + 通知层下放线程池 → 37 条；
+# v2.37.0 探测 / 体检层 13 条 → 24 条；**v2.39.0 把剩下 24 条全部做掉 → 0 条**。
+# 每一轮的手法与原因记在 docs/performance.md 二·八 / 二·九 / 二·一〇 / 二·一一。
 #
-# v2.35.0 删掉的两条：
-#   backend/emby_server/compat_routes.py::session_progress —— 每 10 秒 × 每个在播客户端上报一次，
-#     是全站最热的写路径（详见 docs/performance.md）；
-#   backend/emby_server/api.py::user_views —— 客户端每次打开媒体库都问，改同步 `def`。
+# 为什么这 24 条不是「机械改 def」：它们体内都有必须 await 的东西（WebSocket 通知 /
+# 文件读写 / 外部推送），所以只能把同步写库那几段拆成同步函数、用
+# `await run_in_threadpool(...)` 下放线程池（仓库先例见 backend/emby_server/portal_mount_routes.py），
+# 通知与网络那一段留在事件循环上。v2.39.0 逐域做完：
 #
-# 它们**不是**机械改 `def` 就能解决的：函数体里都有必须 await 的东西，而那个「必须 await
-# 的东西」（通知推送 backend/notifications.py、网络探测 backend/servers.py）**自己也**
-# 在 async 函数里跑同步 SQLAlchemy——也就是说这不是 41 个端点的问题，而是这一层要一起改。
-# 按 docs/performance.md 里「先量、再改、最后固化成门禁」的做法记在这里：
-# 改好一个就删一行，新增一个就过不了 CI。
-BASELINE: set[str] = set(
-    """\
-backend/api/admin.py::grant_subscription
-backend/api/admin.py::extend_subscription
-backend/api/admin.py::send_user_message
-backend/api/admin.py::broadcast_message
-backend/api/admin.py::create_announcement
-backend/api/admin.py::update_announcement
-backend/api/admin.py::update_ticket
-backend/api/admin.py::reply_ticket
-backend/api/admin.py::close_ticket
-backend/api/admin.py::push_media_seek
-backend/api/admin.py::update_media_seek
-backend/api/admin.py::economy_mark_order_paid
-backend/api/admin_economy.py::economy_adjust_points
-backend/api/coupons_admin.py::list_coupon_usages
-backend/api/economy.py::do_checkin
-backend/api/economy.py::redeem_exchange_code
-backend/api/emby_servers.py::save_server
-backend/api/emby_servers.py::refresh_server_mounts
-backend/api/emby_servers.py::test_server
-backend/api/orders_admin.py::refund_order
-backend/api/realms.py::sync_realm_nodes
-backend/api/reminders_admin.py::run_expiry_reminders
-backend/api/servers.py::emby_overview
-backend/api/servers.py::create_server
-backend/api/servers.py::update_server
-backend/api/servers.py::activate_server
-backend/api/servers.py::refresh_mount_health_now
-backend/api/user.py::mark_all_read
-backend/api/user.py::create_ticket
-backend/api/user.py::reply_ticket
-backend/api/user.py::create_media_seek
-backend/emby_server/api.py::rate_item
-backend/emby_server/portal.py::stop_my_session
-backend/emby_server/portal.py::scan_library_endpoint
-backend/emby_server/portal.py::admin_stop_session
-backend/emby_server/portal.py::verify_pan115_account
-backend/emby_server/portal_mount_routes.py::check_all_mounts
-backend/emby_server/portal_mount_routes.py::test_saved_mount
-backend/emby_server/portal_mount_routes.py::browse_mount
-""".split()
-)
+#   * backend/api/admin.py —— 订阅授予 / 延长、站内消息、广播、公告增改、工单回复与关闭、
+#     求片状态更新、人工补单：读-改-写 + 审计整段交给线程池，通知仍 await；
+#   * backend/api/admin_economy.py / reminders_admin.py —— 手动调账、到期提醒的落库与审计同样下放；
+#   * backend/api/coupons_admin.py —— 核销记录两个端点体内没有任何 await，直接改同步 `def`
+#     （查询抽成 `coupon_usages_payload`，两个端点共用同一段）；
+#   * backend/api/economy.py —— 签到、兑换码核销、支付回调：验签 / 占位 / 发奖 / 履约整段同步，
+#     `_fulfill_order` 一并同步化（它体内本来就一个 await 都没有），读表单与发通知留在循环上；
+#   * backend/api/user.py —— 消息全部标已读、创建与回复工单；
+#   * backend/emby_server/api.py / portal.py —— 收藏与已看标记、结束自己的播放会话、结束指定会话、
+#     媒体库扫描入队（只有「转发给归属节点」那一次网络推送留在循环上）。
+#
+# 口径不变：只认路由函数体自身的同步 DB 调用。做掉一个就删一行；新增一个就过不了 CI。
+BASELINE: set[str] = set()
 
 
 def router_names(tree: ast.Module) -> set[str]:

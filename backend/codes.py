@@ -13,7 +13,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -166,8 +166,9 @@ def _resolve_plan(db: Session, realm_id: Optional[int] = None):
             realm_id=target,
         )
         db.add(plan)
-        db.commit()
-        db.refresh(plan)
+        # 不提交：这一段的调用方（卡码核销 / 注册）稍后与「发天数 + 记消耗」一起提交，
+        # 建计划与开会员必须同一个事务，否则会出现「计划建好了、会员没开成」的中间态
+        db.flush()
     return plan
 
 
@@ -183,6 +184,11 @@ def grant_membership_days(db: Session, user: models.WebUser, days: int,
 
     `with_for_update()` 在 PostgreSQL 下锁住该订阅行，避免同一用户并发叠加天数时
     两边读到同一到期时间、后提交的覆盖前者（丢天数）；SQLite 忽略该子句。
+
+    **不提交**：调用方必须把「记卡码消耗」和「发天数」放在同一个事务里提交。
+    旧实现在这里就 commit（``consume`` 里再 commit 一次），于是注册流程里两次提交之间
+    崩一次就成了「码已经烧掉、会员没到账」，反过来顺序则可能是「会员到账、码还能再用」
+    ——两阶段提交不一致（见 docs/performance.md）。
     """
     from backend import realms
 
@@ -213,8 +219,7 @@ def grant_membership_days(db: Session, user: models.WebUser, days: int,
             realm_id=target,
         )
         db.add(sub)
-    db.commit()
-    db.refresh(sub)
+    db.flush()   # 拿主键；提交由调用方负责（与 economy._grant_subscription 同一口径）
     return sub
 
 
@@ -242,15 +247,44 @@ def find_reg_code(db: Session, raw: str) -> Optional[models.RegistrationCode]:
     )
 
 
-def consume(db: Session, code: models.RegistrationCode, user_id: int) -> None:
-    """记录一次卡码消耗（使用次数、使用者审计、用满自动停用）"""
+def claim_code(db: Session, code: models.RegistrationCode, user_id: int) -> bool:
+    """**原子占位**一次卡码消耗：抢不到（已停用 / 过期 / 用尽）返回 False
+
+    「先读 use_count 判断、再写 use_count + 1」是读-改-写：同一张 ``max_uses=1`` 的卡码
+    被两个请求同时提交时，两边都读到 ``use_count=0``，于是各发一份会员天数（重复核销）。
+    这里改成条件 ``UPDATE``：只有「仍然可用」的那一行会被 +1，并发下的第二个请求拿到
+    ``rowcount=0``，直接拒绝（与 ``economy.redeem_exchange_code`` 同一套写法）。
+
+    条件里把「是否可用」表达完整，所以它同时也是可用性判定：
+    停用 / 过期 / 用尽的卡码都进不了 WHERE。**不提交**——消耗与发奖必须同一个事务
+    （见 ``grant_membership_days``），调用方提交前崩溃时两者一起回滚，
+    不会留下「码烧了、会员没到账」或「会员到账、码还能再用」。
+    """
+    now = datetime.now()
+    claimed = (
+        db.query(models.RegistrationCode)
+        .filter(
+            models.RegistrationCode.id == code.id,
+            models.RegistrationCode.is_active.is_(True),
+            or_(models.RegistrationCode.expires_at.is_(None),
+                models.RegistrationCode.expires_at > now),
+            or_(models.RegistrationCode.max_uses.is_(None),
+                models.RegistrationCode.use_count < models.RegistrationCode.max_uses),
+        )
+        .update({models.RegistrationCode.use_count:
+                 func.coalesce(models.RegistrationCode.use_count, 0) + 1},
+                synchronize_session=False)
+    )
+    if not claimed:
+        return False
+    # 同一事务里补上审计字段与「用满自动停用」；读的是本事务刚 +1 后的值
     code.use_count = (code.use_count or 0) + 1
     used = [i for i in str(code.used_by or "").split(",") if i.strip()]
     used.append(str(user_id))
     code.used_by = ",".join(dict.fromkeys(used))[:500]
     if code.max_uses and code.use_count >= code.max_uses:
         code.is_active = False
-    db.commit()
+    return True
 
 
 def grant_days_for(code: models.RegistrationCode) -> int:
@@ -390,8 +424,14 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         return {"success": False,
                 "message": f"你在「{target_name}」已有生效中的会员，请使用续期码（本卡码只能开通新会员）"}
 
+    # 先原子占位再发奖：并发提交同一张卡码时只有一个请求能拿到那一行（见 claim_code）。
+    # 抢不到 = 这张码在这次请求之前已经被用掉，如实告诉用户，不发天数。
+    if not claim_code(db, code, user.id):
+        return {"success": False, "message": "卡码已被使用"}
+
+    # 占位与发奖在同一个事务里（本函数不提交，由调用方提交）；
+    # 中间崩溃会一起回滚，不会出现「码烧了、会员没到账」
     sub = grant_membership_days(db, user, days, target)
-    consume(db, code, user.id)
 
     type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
     return {

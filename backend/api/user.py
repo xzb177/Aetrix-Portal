@@ -3,6 +3,7 @@
 与管理后台联动，用户可接收管理员操作的通知
 """
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ from sqlalchemy import func
 
 from backend.database import get_db
 from backend import codes, devices, models, realms
+from backend.db_retry import commit_with_retry
 from backend.notifications import get_notification_service, AdminEvent
 from backend.ratelimit import check_rate_limit
 from backend.security import resolve_jwt_user_id
@@ -236,23 +238,27 @@ async def mark_all_read(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """标记所有消息为已读"""
-    # 批量更新未读消息
-    db.query(models.StationMessage).filter(
-        models.StationMessage.to_user_id == current_user.id,
-        models.StationMessage.is_read == False
-    ).update({
-        "is_read": True,
-        "read_at": datetime.now()
-    })
+    """标记所有消息为已读（批量 UPDATE 下放线程池，实时推送仍 await）"""
+    user_id = current_user.id
 
-    db.commit()
+    def _mark_all() -> None:
+        # 批量更新未读消息
+        db.query(models.StationMessage).filter(
+            models.StationMessage.to_user_id == user_id,
+            models.StationMessage.is_read == False
+        ).update({
+            "is_read": True,
+            "read_at": datetime.now()
+        })
+        db.commit()
+
+    await run_in_threadpool(_mark_all)
 
     # 通知 WebSocket
     from backend.websocket import send_notification
     await send_notification(
         notification_type="station.unread_count",
-        user_id=current_user.id,
+        user_id=user_id,
         title="",
         message="",
         data={"unread_count": 0}
@@ -301,27 +307,35 @@ async def create_ticket(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """创建新工单 - 与后台工单系统联动"""
-    ticket = models.Ticket(
-        user_id=current_user.id,
-        title=request.title,
-        category=request.category,
-        status="open",
-        priority="medium"
-    )
-    db.add(ticket)
-    db.commit()
-    db.refresh(ticket)
+    """创建新工单 - 与后台工单系统联动（落库下放线程池，通知仍 await）"""
+    user_id = current_user.id
+    username = current_user.username   # 提交后回读属性=隐式回查，先在循环上取成纯值
 
-    # 创建工单消息
-    message = models.TicketMessage(
-        ticket_id=ticket.id,
-        user_id=current_user.id,
-        message=request.message,
-        is_admin=False
-    )
-    db.add(message)
-    db.commit()
+    def _create() -> int:
+        ticket = models.Ticket(
+            user_id=user_id,
+            title=request.title,
+            category=request.category,
+            status="open",
+            priority="medium"
+        )
+        db.add(ticket)
+        db.commit()
+        db.refresh(ticket)
+        ticket_id = ticket.id
+
+        # 创建工单消息
+        message = models.TicketMessage(
+            ticket_id=ticket_id,
+            user_id=user_id,
+            message=request.message,
+            is_admin=False
+        )
+        db.add(message)
+        db.commit()
+        return ticket_id
+
+    ticket_id = await run_in_threadpool(_create)
 
     # 通知管理员有新工单（站内消息 + 实时推送）
     try:
@@ -330,16 +344,16 @@ async def create_ticket(
         await notify_staff_users(
             db,
             title="🎫 新工单待处理",
-            content=f"{current_user.username} 提交了工单《{ticket.title}》\n{request.message[:120]}",
+            content=f"{username} 提交了工单《{request.title}》\n{request.message[:120]}",
             message_type="ticket",
-            related_id=ticket.id,
+            related_id=ticket_id,
         )
     except Exception as exc:  # 通知失败不应影响工单创建
         logger.warning("工单管理员通知失败: %s", exc)
 
     return TicketCreateResponse(
         success=True,
-        ticket_id=ticket.id,
+        ticket_id=ticket_id,
         message="工单创建成功"
     )
 
@@ -419,44 +433,58 @@ async def reply_ticket(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """回复工单"""
-    ticket = db.query(models.Ticket).filter(
-        models.Ticket.id == ticket_id,
-        models.Ticket.user_id == current_user.id
-    ).first()
-
-    if not ticket:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="工单不存在"
-        )
-
-    if ticket.status == "closed":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="工单已关闭，无法回复"
-        )
-
+    """回复工单（落库下放线程池；通知与刷新时间戳仍走原来的顺序）"""
+    user_id = current_user.id
+    username = current_user.username
     content = (request.message or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="回复内容不能为空")
-    if len(content) > 2000:
-        raise HTTPException(status_code=400, detail="回复内容过长（最多 2000 字）")
 
-    # 创建消息
-    message = models.TicketMessage(
-        ticket_id=ticket.id,
-        user_id=current_user.id,
-        message=content,
-        is_admin=False
-    )
-    db.add(message)
+    def _reply() -> dict:
+        ticket = db.query(models.Ticket).filter(
+            models.Ticket.id == ticket_id,
+            models.Ticket.user_id == user_id
+        ).first()
 
-    # 更新工单状态和时间
-    ticket.status = "open"
-    ticket.updated_at = datetime.now()
+        if not ticket:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="工单不存在"
+            )
 
-    db.commit()
+        if ticket.status == "closed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="工单已关闭，无法回复"
+            )
+
+        if not content:
+            raise HTTPException(status_code=400, detail="回复内容不能为空")
+        if len(content) > 2000:
+            raise HTTPException(status_code=400, detail="回复内容过长（最多 2000 字）")
+
+        # 创建消息
+        message = models.TicketMessage(
+            ticket_id=ticket.id,
+            user_id=user_id,
+            message=content,
+            is_admin=False
+        )
+        db.add(message)
+
+        # 更新工单状态和时间
+        ticket.status = "open"
+        ticket.updated_at = datetime.now()
+
+        db.commit()
+        return {"ticket_id": ticket.id, "title": ticket.title}
+
+    info = await run_in_threadpool(_reply)
+
+    def _touch() -> None:
+        """通知之后刷新一次时间戳（原来是拿同一个会话直接写，现在也在工作线程）"""
+        row = db.query(models.Ticket).filter(models.Ticket.id == info["ticket_id"]).first()
+        if row is not None:
+            row.updated_at = datetime.now()
+            db.commit()
 
     # 通知管理员（站内消息 + WebSocket 实时推送），与新建工单走同一链路
     try:
@@ -465,12 +493,11 @@ async def reply_ticket(
         await notify_staff_users(
             db,
             title="💬 工单有新回复",
-            content=f"{current_user.username} 在「{ticket.title}」中回复：{content[:60]}",
+            content=f"{username} 在「{info['title']}」中回复：{content[:60]}",
             message_type="ticket",
-            related_id=ticket.id,
+            related_id=info["ticket_id"],
         )
-        ticket.updated_at = datetime.now()
-        db.commit()
+        await run_in_threadpool(_touch)
     except Exception as exc:  # 通知失败不应影响回复本身
         logger.warning("工单回复通知发送失败: %s", exc)
 
@@ -632,6 +659,54 @@ def lookup_media(
     }
 
 
+def _create_media_seek_sync(
+    db: Session,
+    user: models.WebUser,
+    name: str,
+    request: "MediaSeekRequest",
+) -> int:
+    """同步落库：去重 / 每日额度 / 写入求片（整段放在线程池里跑，见 create_media_seek）
+
+    校验失败照原样抛 HTTPException——线程里抛出的异常会由 await 处原样抛给客户端，
+    状态码与文案和以前一致（400 / 409 / 429 的语义没有变）。
+    """
+    # 去重：同名且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）
+    exists = db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == user.id,
+        func.lower(models.MovieRequest.movie_name) == name.lower(),
+        models.MovieRequest.status.in_(["pending", "approved"]),
+    ).first()
+    if exists:
+        raise HTTPException(status_code=409, detail=f"《{name}》已在处理中，请耐心等待（可在列表中看到进度）")
+
+    # 每日额度：统计**今天提交过多少条**（含后来撤回的）。
+    # 撤回不退还额度——否则「提交 → 撤回 → 再提交」可以无限刷新额度，
+    # 同时每次提交都会给全体管理员推一条站内消息，那就成了通知刷屏器。
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_count = db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == user.id,
+        models.MovieRequest.created_at >= today_start,
+    ).count()
+    limit = _seek_daily_limit(db)
+    if today_count >= limit:
+        raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
+
+    media_request = models.MovieRequest(
+        user_id=user.id,
+        movie_name=name,
+        year=request.year,
+        type=request.type,
+        note=request.note,
+        status="pending",
+        # 求片是「给哪个服求」的：用户选/单服自动带出，读不出就未标注
+        realm_id=_resolve_seek_realm(db, user, request.realm_id),
+    )
+    db.add(media_request)
+    db.commit()
+    db.refresh(media_request)
+    return media_request.id
+
+
 @user_router.post("/media-seek")
 async def create_media_seek(
     request: MediaSeekRequest,
@@ -648,40 +723,11 @@ async def create_media_seek(
     if len(name) > 255:
         raise HTTPException(status_code=400, detail="片名过长")
 
-    # 去重：同名且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）
-    exists = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == current_user.id,
-        func.lower(models.MovieRequest.movie_name) == name.lower(),
-        models.MovieRequest.status.in_(["pending", "approved"]),
-    ).first()
-    if exists:
-        raise HTTPException(status_code=409, detail=f"《{name}》已在处理中，请耐心等待（可在列表中看到进度）")
-
-    # 每日额度：统计**今天提交过多少条**（含后来撤回的）。
-    # 撤回不退还额度——否则「提交 → 撤回 → 再提交」可以无限刷新额度，
-    # 同时每次提交都会给全体管理员推一条站内消息，那就成了通知刷屏器。
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == current_user.id,
-        models.MovieRequest.created_at >= today_start,
-    ).count()
-    limit = _seek_daily_limit(db)
-    if today_count >= limit:
-        raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
-
-    media_request = models.MovieRequest(
-        user_id=current_user.id,
-        movie_name=name,
-        year=request.year,
-        type=request.type,
-        note=request.note,
-        status="pending",
-        # 求片是「给哪个服求」的：用户选/单服自动带出，读不出就未标注
-        realm_id=_resolve_seek_realm(db, current_user, request.realm_id),
+    # 去重 / 额度 / 落库整段下放线程池：同步 SQLAlchemy 跑在事件循环上时，
+    # 卡住的是**所有人**的请求（求片页是用户会连着点的地方）。
+    request_id = await run_in_threadpool(
+        _create_media_seek_sync, db, current_user, name, request
     )
-    db.add(media_request)
-    db.commit()
-    db.refresh(media_request)
 
     # 通知管理员有新求片请求（落站内消息 + WebSocket 推送）
     try:
@@ -692,12 +738,12 @@ async def create_media_seek(
             title="📥 新的求片请求",
             content=f"{current_user.username} 请求《{name}》",
             message_type="media_seek",
-            related_id=media_request.id,
+            related_id=request_id,
         )
     except Exception as exc:  # 通知失败不应影响求片提交
         logger.warning("求片通知发送失败: %s", exc)
 
-    return {"success": True, "request_id": media_request.id, "message": "求片请求已提交"}
+    return {"success": True, "request_id": request_id, "message": "求片请求已提交"}
 
 
 @user_router.delete("/media-seek/{request_id}")
@@ -882,12 +928,17 @@ async def preview_membership_code(
 
 
 @user_router.post("/membership/redeem")
-async def redeem_membership_code(
+def redeem_membership_code(
     req: RedeemCodeRequest,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """核销会员卡码：注册码 / 续期码 / 白名单码"""
+    """核销会员卡码：注册码 / 续期码 / 白名单码
+
+    同步 `def`：整条链路（限速 / 查码 / 原子占位 / 发天数 / 提交）都是同步 SQLAlchemy，
+    没有一个 await。留成 `async def` 就是让占位与发天数的那段写库压在事件循环上
+    （见 docs/performance.md 的「事务范围」与 check_blocking_routes 的说明）。
+    """
     allowed, _ = check_rate_limit(f"code_redeem:{current_user.id}", 10, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
@@ -897,7 +948,13 @@ async def redeem_membership_code(
 
     result = codes.redeem_code(db, current_user, req.code)
     if not result.get("success"):
+        # 失败路径要把事务收干净：redeem_code 里可能已经动过会话（占位 / 封禁），
+        # 不回滚就交给 get_db 的 close() 会让错误更难查
+        db.rollback()
         raise HTTPException(status_code=400, detail=result.get("message") or "卡码无效")
+    # 卡码消耗与会员天数由这里统一提交（codes 里不再自己 commit）：
+    # 两阶段提交不一致会导致「码烧了、会员没到账」或反过来（见 backend/codes.py 的说明）
+    commit_with_retry(db, label="卡码核销")
     return result
 
 

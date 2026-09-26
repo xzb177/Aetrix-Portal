@@ -119,6 +119,11 @@ def _fix_rclone_root(mount_type: str, config: dict) -> None:
         raise HTTPException(status_code=400, detail=hint)
 
 
+def _load_mount(db: Session, mount_id: int) -> em.StorageMount | None:
+    """取一条挂载（同步；只许从工作线程调用——路由都是 async，不能占事件循环）"""
+    return db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
+
+
 def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = None) -> dict:
     config, secrets = _mask_mount_config(mount_lib.parse_config(mount))
     meta = mount_lib.MOUNT_TYPE_MAP.get(mount.mount_type, {})
@@ -229,19 +234,27 @@ async def check_all_mounts(staff: models.WebUser = Depends(require_staff),
 
     只解决「这台面板自己能不能碰到存储」；EA 那一侧要看 ``/mounts`` 响应里的
     ``ea_reachable``（由 EA 服务入口拉取）。"""
-    health = await run_in_threadpool(mount_health.mounts_health, db, "panel",
-                                     realms.active_realm_id(db))
-    checked_at = datetime.now()
-    for item in health.get("mounts", []):
-        if item.get("ok") is None:
-            continue  # 停用的挂载不写测试结果
-        mount = db.query(em.StorageMount).filter(em.StorageMount.id == item["id"]).first()
-        if not mount:
-            continue
-        mount.last_checked_at = checked_at
-        mount.last_check_ok = bool(item.get("ok"))
-        mount.last_check_message = str(item.get("message") or "")[:300]
-    db.commit()
+    def probe_all() -> dict:
+        """逐条探测（同步；下放线程池——每条都要发一次网络请求）"""
+        return mount_health.mounts_health(db, "panel", realms.active_realm_id(db))
+
+    health = await run_in_threadpool(probe_all)
+
+    def record() -> None:
+        """把每条的最近结果写回挂载行（同步；下放线程池）"""
+        checked_at = datetime.now()
+        for item in health.get("mounts", []):
+            if item.get("ok") is None:
+                continue  # 停用的挂载不写测试结果
+            mount = _load_mount(db, item["id"])
+            if not mount:
+                continue
+            mount.last_checked_at = checked_at
+            mount.last_check_ok = bool(item.get("ok"))
+            mount.last_check_message = str(item.get("message") or "")[:300]
+        db.commit()
+
+    await run_in_threadpool(record)
     return health
 
 
@@ -358,18 +371,25 @@ def delete_mount(mount_id: int, staff: models.WebUser = Depends(require_staff),
 @admin_emby_router.post("/mounts/{mount_id}/test")
 async def test_saved_mount(mount_id: int, staff: models.WebUser = Depends(require_staff),
                            db: Session = Depends(get_db)):
-    mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
+    mount = await run_in_threadpool(_load_mount, db, mount_id)
     if not mount:
         raise HTTPException(status_code=404, detail="挂载不存在")
     result = await run_in_threadpool(mount_lib.test_mount, mount, db)
-    # 测试结果只作展示，不影响扫描（扫描自己会报错）
-    mount.last_checked_at = datetime.now()
-    mount.last_check_ok = bool(result.get("ok"))
-    mount.last_check_message = str(result.get("message") or "")[:300]
-    db.commit()
-    db.refresh(mount)
+
+    def record() -> dict:
+        """写回测试结果并序列化（同步；下放线程池）
+
+        测试结果只作展示，不影响扫描（扫描自己会报错）。
+        """
+        mount.last_checked_at = datetime.now()
+        mount.last_check_ok = bool(result.get("ok"))
+        mount.last_check_message = str(result.get("message") or "")[:300]
+        db.commit()
+        db.refresh(mount)
+        return _serialize_mount(db, mount)
+
     return {"success": bool(result.get("ok")), "result": result,
-            "mount": _serialize_mount(db, mount)}
+            "mount": await run_in_threadpool(record)}
 
 
 @admin_emby_router.post("/mounts/test")
@@ -389,11 +409,12 @@ async def browse_mount(mount_id: int, rel: str = "/",
                        staff: models.WebUser = Depends(require_staff),
                        db: Session = Depends(get_db)):
     """浏览挂载目录（给「目标目录 / 目录 ID」选择器用）"""
-    mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
+    mount = await run_in_threadpool(_load_mount, db, mount_id)
     if not mount:
         raise HTTPException(status_code=404, detail="挂载不存在")
     try:
-        provider = mount_lib.build_provider(mount, db)
+        # 建 provider 要读挂载配置 / 账号档（同步 DB）——和列目录一起放在工作线程
+        provider = await run_in_threadpool(mount_lib.build_provider, mount, db)
         entries = await run_in_threadpool(provider.list_dir, rel)
     except mount_lib.MountAuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc))

@@ -299,6 +299,16 @@ def _auto_migrate():
             ("last_probed_at", "DATETIME", "NULL"),
             ("last_scraped_at", "DATETIME", "NULL"),
             ("repair_requested_at", "DATETIME", "NULL"),
+            # v2.39.0 两阶段扫描：老库补列后 probe_status='pending'，但已有探测数据的
+            # 条目会被后台 worker 按 needs_probe() 语义直接标 done，不会重复探测。
+            ("probe_status", "VARCHAR(20)", "'pending'"),
+            ("probe_priority", "INTEGER", "0"),
+            ("probe_attempts", "INTEGER", "0"),
+            ("probe_next_retry_at", "DATETIME", "NULL"),
+            # v2.40.0 补全 worker 重试：老库补列后 enrich_attempts=0，
+            # enrich_next_retry_at=NULL（可立即重试，由 worker 按退避调度）。
+            ("enrich_attempts", "INTEGER", "0"),
+            ("enrich_next_retry_at", "DATETIME", "NULL"),
         ]),
     ]
 
@@ -316,7 +326,30 @@ def _auto_migrate():
 
     _widen_code_column(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
+    _ensure_probe_index(existing_tables)
     _ensure_default_realm()
+
+
+def _ensure_probe_index(existing_tables: set) -> None:
+    """两阶段扫描（v2.39.0）：给老库补探测队列表索引（幂等）
+
+    create_all 只在建新表时建索引；升级上来的库 emby_items 表已存在，
+    这里按 inspector 显式补上 ``idx_item_probe``，worker 取待探测条目时走索引。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_items" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
+    if "idx_item_probe" in names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX idx_item_probe "
+            "ON emby_items (probe_status, probe_priority, id)"
+        ))
+        print("  🔧 已迁移: emby_items.idx_item_probe（探测队列索引）")
 
 
 def _backfill_orm_columns(existing_tables: set) -> None:

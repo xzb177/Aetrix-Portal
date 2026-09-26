@@ -1,10 +1,18 @@
 <script setup lang="ts">
 /**
- * 首页 — 内容优先的个人门户
+ * 首页 — 服务台口径的个人门户（不再是"内容货架"）
  *
- * 布局（v2.10.3 收敛）：Hero 双栏（左：问候与主行动；右：会员状态卡）
- * → 账号速览条（积分 / 签到 / 邀请）→ 最近入库 → 求片提示 → 继续观看
- * → 「账号与支持」（连接播放器）。
+ * 背景：用户实际在 Infuse / Forward 等第三方客户端里看片，web 端首页的任务不是
+ * "让人找片"，而是"让人看上片"——新用户引导、会员状态、求片、帮助。
+ *
+ * 布局：Hero 双栏（左：按用户状态分三种形态；右：会员状态卡）
+ * → 新手任务（有未完成步骤时才出现）→ 账号速览条（积分 / 签到 / 邀请）
+ * → 我的面板（观影数据 / 进行中的事项 / 正在播放）→ 最近上新（上新公告）
+ * → 帮助中心（连接播放器 / 求片 / 联系客服）。
+ *
+ * Hero 左栏三形态：未开通显示"三步看片"指引（开通→下载客户端→一键导入），
+ * 已开通/公益服显示服务台快捷入口（求片/连接播放器）。看片在客户端完成，
+ * 首页不再造"继续观看"（观看记录保留在媒体库的 tab 里）。
  *
  * v2.10.3：底部那张「消息中心」卡去掉——它和顶栏带角标的音铃列的是同一批未读，
  * 同一件事在首页出现两遍。站内消息统一由顶栏铃铛承担（角标 + 点开预览 + 落到消息
@@ -47,13 +55,13 @@ import {
   ChevronRight, Crown, MessageSquareDashed, LayoutDashboard, Inbox,
   Wallet, CalendarCheck, Gift, Sparkles, Tv, TriangleAlert,
   Clock, Clapperboard, Film, Ticket, MonitorSmartphone, CircleStop,
+  Rocket, Check,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
 const toast = useToast()
 
 const loading = ref(true)
-const resumeItems = ref<EmbyItem[]>([])
 const latestItems = ref<EmbyItem[]>([])
 const subscriptions = ref<MySubscription[]>([])
 
@@ -205,6 +213,34 @@ const todoRows = computed(() => {
   ]
 })
 
+// 新手任务：门户是"服务台"不是"内容货架"，新用户的核心 friction 是
+// "付了钱不会配置客户端"。步骤能自动判定的自动判定（开通看订阅、
+// 有过播放记录视为已连接播放器），全部完成后整段隐藏，老用户不被打扰。
+const onboardingTasks = computed(() => [
+  {
+    key: 'member',
+    title: '开通会员',
+    desc: '解锁全库影视资源',
+    done: isMember.value || isFreeRealm.value,
+    to: '/wallet?tab=plans',
+  },
+  {
+    key: 'connect',
+    title: '连接播放器',
+    desc: '在个人中心一键导入服务器地址与账号',
+    done: (stats.value?.total_plays || 0) > 0,
+    to: '/profile',
+  },
+  {
+    key: 'watch',
+    title: '看第一部片',
+    desc: '在 Infuse 等客户端开始播放',
+    done: (stats.value?.watched_items || 0) > 0,
+    to: '/media',
+  },
+])
+const onboardingDoneCount = computed(() => onboardingTasks.value.filter(t => t.done).length)
+
 async function stopSession(session: MyPlaybackSession) {
   stoppingSession.value = session.session_key
   try {
@@ -223,9 +259,8 @@ onMounted(async () => {
   try {
     // v2.10.3：消息与公告不再在首页拉取——那是顶栏铃铛的事（它本来就在每次轮询未读数），
     // 首页少一组请求，也不再重复展示同一批未读
-    const [resume, latest, pointsRes, checkinRes, inviteRes, subs,
+    const [latest, pointsRes, checkinRes, inviteRes, subs,
       statsRes, seekRes, ticketsRes, sessionsRes] = await Promise.all([
-      protocolApi.getResume(12).catch((): EmbyItem[] => []),
       protocolApi.getLatest(16).catch((): EmbyItem[] => []),
       pointsApi.log({ limit: 1 }).catch((): null => null),
       checkinApi.status().catch((): null => null),
@@ -237,7 +272,6 @@ onMounted(async () => {
       ticketApi.getMyTickets().catch((): null => null),
       embyApi.getSessions().catch((): { sessions: MyPlaybackSession[] } | null => null),
     ])
-    resumeItems.value = resume
     latestItems.value = latest
     if (pointsRes) quickStats.value.balance = pointsRes.balance
     if (checkinRes) {
@@ -291,22 +325,48 @@ onMounted(async () => {
               公益服 · 免费开放
             </span>
           </div>
-          <p class="hero-sub">门户账号即 Emby 账号 — 同一凭据登录任意客户端开始观影。</p>
+          <!-- 未开通：三步看片指引。门户最大的 friction 是"付了钱不会配置客户端"，
+               所以首屏不讲会员权益、讲"怎么看上片"；开通 CTA 在右侧会员卡里只留一个，
+               这里不再重复，避免同一屏出现两个开通按钮 -->
+          <template v-if="!isMember && !isFreeRealm">
+            <p class="hero-sub">三步开始观影：</p>
+            <ol class="hero-steps">
+              <li>
+                <span class="step-num">1</span>
+                <span class="step-body"><strong>开通会员</strong><em>解锁全库影视资源</em></span>
+              </li>
+              <li>
+                <span class="step-num">2</span>
+                <span class="step-body"><strong>下载播放器</strong><em>Infuse / Forward 等 Emby 客户端</em></span>
+              </li>
+              <li>
+                <span class="step-num">3</span>
+                <span class="step-body"><strong>一键导入</strong><em>在个人中心导入服务器地址与账号</em></span>
+              </li>
+            </ol>
+            <div class="hero-cta">
+              <RouterLink to="/profile" class="au-btn au-btn-ghost au-btn-sm">
+                查看连接教程
+              </RouterLink>
+            </div>
+          </template>
 
-          <!-- 轻量快捷入口：媒体库已在顶栏与底部导航，这里只做文字级入口，不与会员 CTA 抢视觉 -->
-          <div class="hero-quick">
-            <RouterLink to="/media" class="quick-link">
-              进入媒体库
-              <ChevronRight :size="13" />
-            </RouterLink>
-            <template v-if="resumeItems.length">
-              <span class="quick-sep" aria-hidden="true"></span>
-              <RouterLink :to="`/media/${resumeItems[0].Id}`" class="quick-link">
-                继续观看《{{ resumeItems[0].Name }}》
+          <!-- 已开通 / 公益服：服务台口径。看片在第三方客户端完成，
+               首页只给办事入口，不再造一个"继续观看"（那是客户端的事） -->
+          <template v-else>
+            <p class="hero-sub">门户账号即 Emby 账号 — 在 Infuse 等客户端登录即可观影。</p>
+            <div class="hero-quick">
+              <RouterLink to="/request" class="quick-link">
+                求片
                 <ChevronRight :size="13" />
               </RouterLink>
-            </template>
-          </div>
+              <span class="quick-sep" aria-hidden="true"></span>
+              <RouterLink to="/profile" class="quick-link">
+                连接播放器
+                <ChevronRight :size="13" />
+              </RouterLink>
+            </div>
+          </template>
         </div>
 
         <!-- 会员状态卡；公益服换成「免费开放」的说明卡，不出现任何购买引导 -->
@@ -365,6 +425,33 @@ onMounted(async () => {
     </section>
 
     <main class="container main">
+      <!-- 新手任务：只在还有未完成步骤时出现，全部完成后整段隐藏。
+           首页是服务台，新用户的第一件事是"连上播放器看上片"，不是"浏览内容" -->
+      <section v-if="!loading && onboardingTasks.some(t => !t.done)" class="onboard-card au-card au-anim-up">
+        <header class="panel-head">
+          <span class="panel-title">
+            <Rocket :size="15" />
+            新手任务
+          </span>
+          <span class="panel-hint">{{ onboardingDoneCount }}/{{ onboardingTasks.length }}</span>
+        </header>
+        <div class="onboard-list">
+          <div v-for="t in onboardingTasks" :key="t.key" class="onboard-row" :class="{ done: t.done }">
+            <span class="onboard-check">
+              <Check v-if="t.done" :size="14" />
+            </span>
+            <span class="onboard-body">
+              <strong>{{ t.title }}</strong>
+              <em>{{ t.desc }}</em>
+            </span>
+            <RouterLink v-if="!t.done" :to="t.to" class="au-btn au-btn-primary au-btn-sm">
+              去完成
+            </RouterLink>
+            <span v-else class="onboard-done-text">已完成</span>
+          </div>
+        </div>
+      </section>
+
       <!-- 账号速览条：积分 / 签到 / 邀请（纯经济数据；会员在首屏会员卡，消息在下方消息卡） -->
       <section class="acct-strip au-card au-anim-up" :class="{ loading }">
         <RouterLink
@@ -474,47 +561,53 @@ onMounted(async () => {
         </div>
       </section>
 
-      <!-- 片库动态：追新在前。
-           「最近入库」是门户做、客户端不做的部分（跟着更新追剧），所以放在第一条；
-           「继续观看」是客户端已经替我们做了的，保留但排在后面，只做一条。
-           收藏 / 观看记录不再是顶栏的一级入口（v2.10.0 方案 A）：它们是媒体库内的分段，
-           所以这里既不重复链接、也不另起一区，只在行的「更多」里落到对应分段。 -->
-      <MediaRow v-if="latestItems.length" title="最近入库" :items="latestItems.slice(0, 16)" more-to="/media" class="row" />
+      <!-- 片库动态：「最近上新」是上新公告（告诉用户片库在持续更新），不是浏览入口——
+           浏览与继续观看是第三方客户端的事，观看记录在媒体库的 tab 里保留 -->
+      <MediaRow v-if="latestItems.length" title="最近上新" :items="latestItems.slice(0, 16)" more-to="/media" class="row" />
 
-      <!-- 求片：库里没有的内容，用户在这里能做的事（客户端给不了） -->
-      <RouterLink to="/request" class="req-hint">
-        <MessageSquareDashed :size="15" class="req-hint-ic" />
-        <span class="req-hint-text">没找到想看的？发个求片，入库后在消息中心通知你</span>
-        <ChevronRight :size="14" class="req-hint-arrow" />
-      </RouterLink>
-
-      <!-- 「更多」落到媒体库的观看记录分段（旧地址 /history 会重定向过来，书签不失效） -->
-      <MediaRow v-if="resumeItems.length" title="继续观看" :items="resumeItems.slice(0, 12)" more-to="/media?tab=history" class="row" />
-
-      <div v-if="!resumeItems.length && !latestItems.length" class="au-empty content-empty">
+      <div v-if="!latestItems.length" class="au-empty content-empty">
         <Sparkles :size="28" />
         <p>媒体库还没有内容，稍后再来看看</p>
       </div>
 
-      <!-- 分组：账号与支持（个人中心入口在顶栏导航里，这里不再重复） -->
+      <!-- 分组：帮助中心。首页是服务台，底部给办事入口；
+           账号类入口（订阅/设备/安全）在顶栏「我的」里，这里不重复 -->
       <div class="section-label">
-        <span class="section-title">账号与支持</span>
+        <span class="section-title">帮助中心</span>
       </div>
 
-      <!-- 消息入口不在首页：v2.10.3 去掉了底部那张消息卡——它和顶栏带角标的音铃
-           列的是同一批未读，同一件事在首页出现两遍。顶栏铃铛已有角标 + 点开预览 + 落到消息中心 -->
-
-      <!-- 播放器入口：凭据与一键导入都在个人中心，首页只留一行指引避免重复 -->
-      <RouterLink to="/profile" class="connect-row au-card">
-        <span class="connect-row-icon">
-          <Tv :size="17" />
-        </span>
-        <span class="connect-row-body">
-          <strong>连接播放器</strong>
-          <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入都在个人中心</em>
-        </span>
-        <ChevronRight :size="16" class="connect-row-arrow" />
-      </RouterLink>
+      <div class="help-list au-card">
+        <RouterLink to="/profile" class="help-row">
+          <span class="help-row-icon">
+            <Tv :size="17" />
+          </span>
+          <span class="help-row-body">
+            <strong>连接播放器</strong>
+            <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入</em>
+          </span>
+          <ChevronRight :size="16" class="help-row-arrow" />
+        </RouterLink>
+        <RouterLink to="/request" class="help-row">
+          <span class="help-row-icon">
+            <MessageSquareDashed :size="17" />
+          </span>
+          <span class="help-row-body">
+            <strong>求片</strong>
+            <em>库里没有想看的？提交求片，入库后在消息中心通知你</em>
+          </span>
+          <ChevronRight :size="16" class="help-row-arrow" />
+        </RouterLink>
+        <RouterLink to="/tickets" class="help-row">
+          <span class="help-row-icon">
+            <Ticket :size="17" />
+          </span>
+          <span class="help-row-body">
+            <strong>联系客服</strong>
+            <em>遇到问题提交工单，客服会尽快回复</em>
+          </span>
+          <ChevronRight :size="16" class="help-row-arrow" />
+        </RouterLink>
+      </div>
     </main>
   </div>
 </template>
@@ -784,6 +877,138 @@ onMounted(async () => {
   font-size: 0.875rem;
   color: var(--au-text-3);
   margin: 0 0 1.125rem;
+}
+
+/* 三步看片指引（未开通用户首屏）：数字序号 + 两行文字，移动端不挤 */
+.hero-steps {
+  list-style: none;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.hero-steps li {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.step-num {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+}
+
+.step-body strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.step-body em {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+}
+
+.hero-cta {
+  display: flex;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+}
+
+/* ==================== 新手任务 ==================== */
+
+.onboard-card {
+  margin-bottom: 1.5rem;
+  padding: 1.125rem 1.25rem;
+}
+
+.onboard-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.onboard-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0;
+}
+
+.onboard-row + .onboard-row {
+  border-top: 1px dashed var(--au-border);
+}
+
+.onboard-row.done {
+  opacity: 0.75;
+}
+
+.onboard-check {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--au-border-strong);
+  color: transparent;
+}
+
+.onboard-row.done .onboard-check {
+  background: var(--au-primary-soft);
+  border-color: var(--au-primary-border);
+  color: var(--au-primary);
+}
+
+.onboard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.onboard-body strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.onboard-row.done .onboard-body strong {
+  text-decoration: line-through;
+  text-decoration-color: var(--au-text-4);
+}
+
+.onboard-body em {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+}
+
+.onboard-done-text {
+  font-size: 0.75rem;
+  color: var(--au-text-4);
+  flex-shrink: 0;
 }
 
 /* ==================== 账号速览条 ==================== */
@@ -1136,71 +1361,30 @@ onMounted(async () => {
   margin-bottom: 2.25rem;
 }
 
-/* 第一条内容行（最近入库）之后紧跟一条求片提示，行距收到半个身位 */
-.row + .req-hint {
-  margin-top: -1.125rem;
-}
+/* ==================== 帮助中心（三行入口，行间虚线分隔） ==================== */
 
-/* ==================== 求片提示（细描边，不做成卡片） ==================== */
-
-.req-hint {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.625rem 0.875rem;
-  margin-bottom: 2.25rem;
-  border: 1px dashed var(--au-border-strong);
-  border-radius: var(--au-r-md);
-  background: var(--au-surface);
-  color: var(--au-text-2);
-  font-size: 0.8125rem;
-  text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
-}
-
-.req-hint:hover {
-  border-color: var(--au-primary-border);
-  color: var(--au-text);
-}
-
-.req-hint-ic {
-  flex-shrink: 0;
-  color: var(--au-primary);
-}
-
-.req-hint-text {
-  min-width: 0;
+.help-list {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.req-hint-arrow {
-  flex-shrink: 0;
-  margin-left: auto;
-  color: var(--au-text-4);
-}
-
-.req-hint:hover .req-hint-arrow {
-  color: var(--au-primary);
-}
-
-/* ==================== 播放器入口（单行，详情在个人中心） ==================== */
-
-.connect-row {
+.help-row {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   padding: 0.875rem 1.125rem;
   text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease);
+  transition: background var(--au-fast) var(--au-ease);
 }
 
-.connect-row:hover {
-  border-color: var(--au-primary-border);
+.help-row + .help-row {
+  border-top: 1px dashed var(--au-border);
 }
 
-.connect-row-icon {
+.help-row:hover {
+  background: var(--au-surface-2);
+}
+
+.help-row-icon {
   width: 34px;
   height: 34px;
   flex-shrink: 0;
@@ -1213,7 +1397,7 @@ onMounted(async () => {
   color: var(--au-primary);
 }
 
-.connect-row-body {
+.help-row-body {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
@@ -1221,13 +1405,13 @@ onMounted(async () => {
   flex: 1;
 }
 
-.connect-row-body strong {
+.help-row-body strong {
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--au-text);
 }
 
-.connect-row-body em {
+.help-row-body em {
   font-style: normal;
   font-size: 0.75rem;
   color: var(--au-text-3);
@@ -1236,14 +1420,15 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
-.connect-row-arrow {
+.help-row-arrow {
   flex-shrink: 0;
   color: var(--au-text-4);
-  transition: color var(--au-fast) var(--au-ease);
+  transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
 }
 
-.connect-row:hover .connect-row-arrow {
+.help-row:hover .help-row-arrow {
   color: var(--au-primary);
+  transform: translateX(2px);
 }
 
 /* ==================== 响应式 ==================== */

@@ -28,6 +28,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
@@ -160,70 +161,79 @@ async def do_checkin(
     db: Session = Depends(get_db),
 ):
     """每日签到：基础积分 + 连签加成（封顶）"""
-    allowed, _ = check_rate_limit(f"checkin:{current_user.id}", 5, 60)
+    user_id = current_user.id
+
+    allowed, _ = check_rate_limit(f"checkin:{user_id}", 5, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
 
-    rules = _checkin_rules(db)
-    if not rules["enabled"]:
-        raise HTTPException(status_code=403, detail="签到功能未开启")
+    def _checkin() -> dict:
+        """签到整段（读规则 / 防重 / 连签 / 发积分 / 落库）同步执行，由路由下放线程池
 
-    today = _today_start()
-    exists = db.query(models.CheckinRecord).filter(
-        models.CheckinRecord.user_id == current_user.id,
-        models.CheckinRecord.checkin_date >= today,
-    ).first()
-    if exists:
-        raise HTTPException(status_code=400, detail="今天已经签到过啦")
+        唯一索引 (user_id, checkin_date) 是并发防重的最后一道门：先 flush 让冲突在提交前
+        暴露，避免「先发积分、后落库失败」或直接 500。
+        """
+        rules = _checkin_rules(db)
+        if not rules["enabled"]:
+            raise HTTPException(status_code=403, detail="签到功能未开启")
 
-    # 连签：昨天有记录则 +1，否则重置为 1
-    yesterday_record = db.query(models.CheckinRecord).filter(
-        models.CheckinRecord.user_id == current_user.id,
-        models.CheckinRecord.checkin_date >= today - timedelta(days=1),
-        models.CheckinRecord.checkin_date < today,
-    ).order_by(models.CheckinRecord.checkin_date.desc()).first()
-    streak = (yesterday_record.streak + 1) if yesterday_record else 1
+        today = _today_start()
+        exists = db.query(models.CheckinRecord).filter(
+            models.CheckinRecord.user_id == user_id,
+            models.CheckinRecord.checkin_date >= today,
+        ).first()
+        if exists:
+            raise HTTPException(status_code=400, detail="今天已经签到过啦")
 
-    bonus = min(rules["streak_bonus"] * (streak - 1), rules["streak_max_bonus"])
-    reward = rules["base_points"] + bonus
+        # 连签：昨天有记录则 +1，否则重置为 1
+        yesterday_record = db.query(models.CheckinRecord).filter(
+            models.CheckinRecord.user_id == user_id,
+            models.CheckinRecord.checkin_date >= today - timedelta(days=1),
+            models.CheckinRecord.checkin_date < today,
+        ).order_by(models.CheckinRecord.checkin_date.desc()).first()
+        streak = (yesterday_record.streak + 1) if yesterday_record else 1
 
-    record = models.CheckinRecord(
-        user_id=current_user.id,
-        checkin_date=today,
-        points_awarded=reward,
-        streak=streak,
-    )
-    db.add(record)
-    try:
-        # 唯一索引 (user_id, checkin_date) 是并发防重的最后一道门：
-        # 先 flush 让冲突在此处暴露，避免「先发积分、后落库失败」或直接 500
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="今天已经签到过啦")
-    except OperationalError:
-        # 数据库写锁竞争：没发奖也没落库，让客户端重试
-        db.rollback()
-        raise HTTPException(status_code=409, detail="签到请求冲突，请稍后重试")
-    balance = _add_points(
-        db, current_user, reward, "checkin",
-        f"每日签到（连续 {streak} 天）", f"checkin:{today.strftime('%Y%m%d')}",
-    )
-    db.commit()
+        bonus = min(rules["streak_bonus"] * (streak - 1), rules["streak_max_bonus"])
+        reward = rules["base_points"] + bonus
+
+        record = models.CheckinRecord(
+            user_id=user_id,
+            checkin_date=today,
+            points_awarded=reward,
+            streak=streak,
+        )
+        db.add(record)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="今天已经签到过啦")
+        except OperationalError:
+            # 数据库写锁竞争：没发奖也没落库，让客户端重试
+            db.rollback()
+            raise HTTPException(status_code=409, detail="签到请求冲突，请稍后重试")
+        balance = _add_points(
+            db, current_user, reward, "checkin",
+            f"每日签到（连续 {streak} 天）", f"checkin:{today.strftime('%Y%m%d')}",
+        )
+        db.commit()
+        return {"points_awarded": reward, "streak": streak, "balance": balance}
+
+    award = await run_in_threadpool(_checkin)
 
     await notify_admin_event(
         event_type="economy.checkin",
-        user_id=current_user.id,
-        title=f"📅 签到成功 +{reward} 积分",
-        content=(f"已连续签到 {streak} 天，当前余额 {balance} 积分。"
+        user_id=user_id,
+        title=f"📅 签到成功 +{award['points_awarded']} 积分",
+        content=(f"已连续签到 {award['streak']} 天，当前余额 {award['balance']} 积分。"
                  f"\n明日再来看看，连签奖励更高！"),
     )
     return {
         "success": True,
-        "points_awarded": reward,
-        "streak": streak,
-        "balance": balance,
-        "message": f"签到成功，+{reward} 积分（连续 {streak} 天）",
+        "points_awarded": award["points_awarded"],
+        "streak": award["streak"],
+        "balance": award["balance"],
+        "message": f"签到成功，+{award['points_awarded']} 积分（连续 {award['streak']} 天）",
     }
 
 
@@ -324,98 +334,107 @@ async def redeem_exchange_code(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """兑换码核销：points 型发积分；subscription 型发订阅"""
-    allowed, _ = check_rate_limit(f"redeem:{current_user.id}", 10, 60)
+    """兑换码核销：points 型发积分；subscription 型发订阅
+
+    占位 / 发奖 / 审计整段是同步 SQLAlchemy（体内一个 await 都没有），下放线程池执行；
+    通知要走 WebSocket，必须留在事件循环上 await。
+    """
+    user_id = current_user.id
+    allowed, _ = check_rate_limit(f"redeem:{user_id}", 10, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
 
-    if not _get_bool_config(db, "exchange_enabled", True):
-        raise HTTPException(status_code=403, detail="兑换功能未开启")
+    def _redeem() -> dict:
+        if not _get_bool_config(db, "exchange_enabled", True):
+            raise HTTPException(status_code=403, detail="兑换功能未开启")
 
-    code_str = req.code.strip().upper()
-    code = db.query(models.ExchangeCode).filter(
-        models.ExchangeCode.code == code_str
-    ).first()
+        code_str = req.code.strip().upper()
+        code = db.query(models.ExchangeCode).filter(
+            models.ExchangeCode.code == code_str
+        ).first()
 
-    now = datetime.now()
-    if code is None or not code.is_active or (code.expires_at and code.expires_at < now):
-        raise HTTPException(status_code=400, detail="兑换码无效或已过期")
+        now = datetime.now()
+        if code is None or not code.is_active or (code.expires_at and code.expires_at < now):
+            raise HTTPException(status_code=400, detail="兑换码无效或已过期")
 
-    # 先原子占位再去发奖：只有仍可用的兑换码才会被 +1，并发下第二个请求 rowcount=0，
-    # 因此不会出现「同一张单次码被同时核销两次、发两份奖励」。
-    try:
-        claimed = (
-            db.query(models.ExchangeCode)
-            .filter(
-                models.ExchangeCode.id == code.id,
-                models.ExchangeCode.is_active.is_(True),
-                or_(
-                    models.ExchangeCode.expires_at.is_(None),
-                    models.ExchangeCode.expires_at > now,
-                ),
-                or_(
-                    models.ExchangeCode.max_uses.is_(None),
-                    models.ExchangeCode.use_count < models.ExchangeCode.max_uses,
-                ),
+        # 先原子占位再去发奖：只有仍可用的兑换码才会被 +1，并发下第二个请求 rowcount=0，
+        # 因此不会出现「同一张单次码被同时核销两次、发两份奖励」。
+        try:
+            claimed = (
+                db.query(models.ExchangeCode)
+                .filter(
+                    models.ExchangeCode.id == code.id,
+                    models.ExchangeCode.is_active.is_(True),
+                    or_(
+                        models.ExchangeCode.expires_at.is_(None),
+                        models.ExchangeCode.expires_at > now,
+                    ),
+                    or_(
+                        models.ExchangeCode.max_uses.is_(None),
+                        models.ExchangeCode.use_count < models.ExchangeCode.max_uses,
+                    ),
+                )
+                .update(
+                    {models.ExchangeCode.use_count: func.coalesce(models.ExchangeCode.use_count, 0) + 1},
+                    synchronize_session=False,
+                )
             )
-            .update(
-                {models.ExchangeCode.use_count: func.coalesce(models.ExchangeCode.use_count, 0) + 1},
-                synchronize_session=False,
-            )
-        )
-    except OperationalError:
-        # SQLite 下读写事务升级失败（并发写入）：没发奖也没占位，让客户端重试
-        db.rollback()
-        raise HTTPException(status_code=409, detail="兑换码正在核销中，请稍后重试")
-    if not claimed:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="兑换码已用尽或已过期")
-
-    # 占位成功后才读回详情：use_count 是 SQL 级自增，身份映射里的旧实例要 refresh，
-    # 否则下面判断「用满停用」会拿到过期的 0
-    db.refresh(code)
-
-    result: dict = {"success": True}
-    if code.type == "points":
-        balance = _add_points(
-            db, current_user, code.points_value, "exchange",
-            f"兑换码 {code_str}", f"exchange:{code_str}",
-        )
-        result.update(reward_type="points", points=code.points_value, balance=balance,
-                      message=f"兑换成功，+{code.points_value} 积分")
-    elif code.type == "subscription":
-        plan = db.query(models.SubscriptionPlan).filter(
-            models.SubscriptionPlan.id == code.plan_id
-        ).first() if code.plan_id else None
-        if not plan:
-            # 已原子占位但无法履约：回滚，别白白吃掉一次使用次数
+        except OperationalError:
+            # SQLite 下读写事务升级失败（并发写入）：没发奖也没占位，让客户端重试
             db.rollback()
-            raise HTTPException(status_code=400, detail="兑换码关联套餐不存在")
-        subscription = _grant_subscription(
-            db, current_user, plan, code.duration_days, "exchange", code_str,
-            # 兑换码按它自己所属的服发会员（未标注时回退到套餐的服）
-            realm_id=getattr(code, "realm_id", None) or plan.realm_id,
-        )
-        result.update(reward_type="subscription", plan_name=plan.name,
-                      days=code.duration_days,
-                      end_date=subscription.end_date.isoformat(),
-                      message=f"兑换成功，「{plan.name}」× {code.duration_days} 天")
-    else:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="兑换码类型不支持")
+            raise HTTPException(status_code=409, detail="兑换码正在核销中，请稍后重试")
+        if not claimed:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="兑换码已用尽或已过期")
 
-    # 核销审计（use_count 已在上面原子 +1，这里只补使用者并处理用满停用）
-    used = [i for i in str(code.used_by or "").split(",") if i.strip()]
-    if str(current_user.id) not in used:
-        used.append(str(current_user.id))
-    code.used_by = ",".join(used)[:500]
-    if code.max_uses and (code.use_count or 0) >= code.max_uses:
-        code.is_active = False
-    db.commit()
+        # 占位成功后才读回详情：use_count 是 SQL 级自增，身份映射里的旧实例要 refresh，
+        # 否则下面判断「用满停用」会拿到过期的 0
+        db.refresh(code)
+
+        result: dict = {"success": True}
+        if code.type == "points":
+            balance = _add_points(
+                db, current_user, code.points_value, "exchange",
+                f"兑换码 {code_str}", f"exchange:{code_str}",
+            )
+            result.update(reward_type="points", points=code.points_value, balance=balance,
+                          message=f"兑换成功，+{code.points_value} 积分")
+        elif code.type == "subscription":
+            plan = db.query(models.SubscriptionPlan).filter(
+                models.SubscriptionPlan.id == code.plan_id
+            ).first() if code.plan_id else None
+            if not plan:
+                # 已原子占位但无法履约：回滚，别白白吃掉一次使用次数
+                db.rollback()
+                raise HTTPException(status_code=400, detail="兑换码关联套餐不存在")
+            subscription = _grant_subscription(
+                db, current_user, plan, code.duration_days, "exchange", code_str,
+                # 兑换码按它自己所属的服发会员（未标注时回退到套餐的服）
+                realm_id=getattr(code, "realm_id", None) or plan.realm_id,
+            )
+            result.update(reward_type="subscription", plan_name=plan.name,
+                          days=code.duration_days,
+                          end_date=subscription.end_date.isoformat(),
+                          message=f"兑换成功，「{plan.name}」× {code.duration_days} 天")
+        else:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="兑换码类型不支持")
+
+        # 核销审计（use_count 已在上面原子 +1，这里只补使用者并处理用满停用）
+        used = [i for i in str(code.used_by or "").split(",") if i.strip()]
+        if str(user_id) not in used:
+            used.append(str(user_id))
+        code.used_by = ",".join(used)[:500]
+        if code.max_uses and (code.use_count or 0) >= code.max_uses:
+            code.is_active = False
+        db.commit()
+        return result
+
+    result = await run_in_threadpool(_redeem)
 
     await notify_admin_event(
         event_type="economy.redeem",
-        user_id=current_user.id,
+        user_id=user_id,
         title="🎁 兑换成功",
         content=result["message"],
     )
@@ -829,8 +848,20 @@ def _claim_order(db: Session, model, order) -> bool:
     return True
 
 
-async def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) -> list:
+class FulfillmentError(RuntimeError):
+    """履约缺料：订单该发的东西已经不存在了（套餐被删 / 用户被删等）
+
+    这类情况**必须**让调用方回滚并把回调判成失败（网关会重试，或者转人工补单），
+    不能静默返回 success——「钱收了、订单标了 paid、用户什么都没拿到」是最坏的结果，
+    而且优惠券还会被照常 ``consume`` 掉。
+    """
+
+
+def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) -> list:
     """订单履约：充值发积分 / 订阅发放，幂等（重复回调不重复发货）
+
+    **同步函数**（体内一个 await 都没有）：async 路由调用它时必须用
+    ``await run_in_threadpool(...)`` 下放线程池，别把一次提交压在事件循环上。
 
     **返回待发送的通知列表，不要在这里就发出去。**
 
@@ -846,6 +877,12 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
         user = db.query(models.WebUser).filter(
             models.WebUser.id == recharge_order.user_id
         ).first()
+        if user is None:
+            # 用户被删了：订单不能就这么标成 paid 又什么都不发（见 FulfillmentError）
+            raise FulfillmentError(
+                f"充值履约缺料：订单 {recharge_order.order_id} 的用户 "
+                f"#{recharge_order.user_id} 已不存在"
+            )
         if user:
             _add_points(
                 db, user, recharge_order.amount, "recharge",
@@ -876,6 +913,15 @@ async def _fulfill_order(db: Session, recharge_order=None, subscription_order=No
         user = db.query(models.WebUser).filter(
             models.WebUser.id == subscription_order.user_id
         ).first()
+        if user is None or plan is None:
+            # 下单之后、支付回调之前套餐被删（或用户被删）：订单会被标成 paid 但用户
+            # 什么都拿不到，优惠券还会被 consume 掉——旧实现就是在这里静静地什么都不做，
+            # 然后回调返回 success。现在抛出去：调用方回滚 + 返回 fail，转人工处理。
+            raise FulfillmentError(
+                f"订阅履约缺料：订单 {subscription_order.order_id}"
+                f"（套餐 {'已删除' if plan is None else '正常'}、"
+                f"用户 {'已删除' if user is None else '正常'}）"
+            )
         if user and plan:
             subscription = _grant_subscription(
                 db, user, plan,
@@ -910,7 +956,11 @@ async def send_fulfill_notifications(pending: list) -> None:
 
 @router.api_route("/payment/notify", methods=["GET", "POST"], response_class=PlainTextResponse)
 async def payment_notify(request: Request, db: Session = Depends(get_db)):
-    """易支付异步回调：验签 → 履约 → 返回 success"""
+    """易支付异步回调：验签 → 履约 → 返回 success
+
+    唯一必须 await 的是读表单与发通知（网关回调最忌讳全站压在事件循环上等一次提交）；
+    验签 / 查单 / 履约整段是同步 SQLAlchemy，下放线程池执行。
+    """
     raw = dict(request.query_params)
     if request.method == "POST":
         try:
@@ -923,43 +973,53 @@ async def payment_notify(request: Request, db: Session = Depends(get_db)):
     trade_status = raw.get("trade_status", "")
     logger.info("支付回调: order=%s status=%s", out_trade_no, trade_status)
 
-    key = _get_config(db, "payment_partner_key", "").strip()
-    if not key:
-        return "fail"
-    if not _verify_yipay_notify(raw, key):
-        logger.warning("支付回调验签失败: order=%s", out_trade_no)
-        return "fail"
-    if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
-        return "success"  # 非成功状态直接确认，避免重复通知
+    def _notify() -> tuple:
+        """验签 / 查单 / 金额核对 / 履约 → (应答文本, 待发通知)
 
-    recharge_order = db.query(models.RechargeOrder).filter(
-        models.RechargeOrder.order_id == out_trade_no
-    ).first()
-    subscription_order = db.query(models.SubscriptionOrder).filter(
-        models.SubscriptionOrder.order_id == out_trade_no
-    ).first()
+        履约失败一律返回 "fail"（网关会重试，或者转人工补单），只有真的发出货
+        才返回 "success"——不能出现「钱收了、订单标了 paid、用户什么都没拿到」。
+        """
+        key = _get_config(db, "payment_partner_key", "").strip()
+        if not key:
+            return "fail", []
+        if not _verify_yipay_notify(raw, key):
+            logger.warning("支付回调验签失败: order=%s", out_trade_no)
+            return "fail", []
+        if trade_status not in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+            return "success", []  # 非成功状态直接确认，避免重复通知
 
-    if not recharge_order and not subscription_order:
-        logger.warning("支付回调订单不存在: %s", out_trade_no)
-        return "fail"
+        recharge_order = db.query(models.RechargeOrder).filter(
+            models.RechargeOrder.order_id == out_trade_no
+        ).first()
+        subscription_order = db.query(models.SubscriptionOrder).filter(
+            models.SubscriptionOrder.order_id == out_trade_no
+        ).first()
 
-    mismatch = _amount_mismatch(recharge_order, subscription_order, raw)
-    if mismatch:
-        logger.error("支付回调被拒（%s）: order=%s", mismatch, out_trade_no)
-        return "fail"
+        if not recharge_order and not subscription_order:
+            logger.warning("支付回调订单不存在: %s", out_trade_no)
+            return "fail", []
 
-    try:
-        pending = await _fulfill_order(db, recharge_order=recharge_order,
-                                 subscription_order=subscription_order)
-        db.commit()
-    except Exception:  # noqa: BLE001
-        db.rollback()
-        logger.exception("订单履约失败: %s", out_trade_no)
-        return "fail"
+        mismatch = _amount_mismatch(recharge_order, subscription_order, raw)
+        if mismatch:
+            logger.error("支付回调被拒（%s）: order=%s", mismatch, out_trade_no)
+            return "fail", []
+
+        try:
+            pending = _fulfill_order(db, recharge_order=recharge_order,
+                                     subscription_order=subscription_order)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("订单履约失败: %s", out_trade_no)
+            return "fail", []
+        return "success", pending
+
+    reply, pending = await run_in_threadpool(_notify)
 
     # 先提交再发通知：见 _fulfill_order 的说明（履约中另开会话写站内信会撞 SQLite 写锁）
-    await send_fulfill_notifications(pending)
-    return "success"
+    if pending:
+        await send_fulfill_notifications(pending)
+    return reply
 
 
 @router.api_route("/payment/return", methods=["GET"], response_class=JSONResponse)
