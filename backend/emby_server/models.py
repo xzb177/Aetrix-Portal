@@ -156,6 +156,10 @@ class MediaItem(Base):
     #   配了 TMDB 的剧集库每轮都全量重做，增量形同虚设，这是根因。
     file_fingerprint = Column(String(64), index=True)
     enrich_status = Column(String(20), default='pending', index=True)
+    # v2.40.0 补全 worker 重试：attempts=已尝试次数，超限转 failed；
+    # next_retry_at=下次可重试时间（指数退避）。老库补列后默认 0/NULL。
+    enrich_attempts = Column(Integer, default=0)
+    enrich_next_retry_at = Column(DateTime)
 
 
 from sqlalchemy.orm import relationship  # noqa: E402

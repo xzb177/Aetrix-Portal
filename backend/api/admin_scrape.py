@@ -364,6 +364,15 @@ def get_auto_scan(
     return {"success": True, **auto_scan.get_config(db)}
 
 
+@admin_emby_router.get("/scrape/enrich-progress")
+def get_enrich_progress(
+    staff: base_models.WebUser = Depends(require_staff),
+):
+    """补全 worker 进度：enrich 待处理/进行中/成功/失败/重试中 + probe 队列 + 线程数"""
+    from backend.emby_server import enrich_worker
+    return {"success": True, **enrich_worker.get_progress()}
+
+
 @admin_emby_router.put("/scrape/auto-scan")
 def save_auto_scan(
     req: AutoScanSaveRequest,

@@ -305,6 +305,10 @@ def _auto_migrate():
             ("probe_priority", "INTEGER", "0"),
             ("probe_attempts", "INTEGER", "0"),
             ("probe_next_retry_at", "DATETIME", "NULL"),
+            # v2.40.0 补全 worker 重试：老库补列后 enrich_attempts=0，
+            # enrich_next_retry_at=NULL（可立即重试，由 worker 按退避调度）。
+            ("enrich_attempts", "INTEGER", "0"),
+            ("enrich_next_retry_at", "DATETIME", "NULL"),
         ]),
     ]
 
