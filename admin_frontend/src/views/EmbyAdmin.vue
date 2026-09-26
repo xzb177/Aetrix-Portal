@@ -56,7 +56,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, RcloneRemote, SaFile } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
