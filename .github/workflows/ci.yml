@@ -305,7 +305,16 @@ body += chr(10) + '### 尾部输出' + chr(10) + '\`\`\`' + chr(10) + chr(10).jo
 open('/tmp/pytest_comment.md', 'w', encoding='utf-8').write(body);
 print('comment len=%d' % len(body))
 "
-            gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/pytest_comment.md || echo 'gh comment failed'
+            python3 -c "
+import urllib.request, json, os;
+body = open('/tmp/pytest_comment.md', encoding='utf-8').read();
+req = urllib.request.Request('https://api.github.com/repos/${{ github.repository }}/issues/121/comments', data=json.dumps({'body': body}).encode(), headers={'Authorization': 'Bearer ${{ secrets.GITHUB_TOKEN }}', 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json'});
+try:
+    r = urllib.request.urlopen(req, timeout=30);
+    print('comment posted: %s' % r.status);
+except Exception as e:
+    print('comment failed: %s' % e);
+"
           fi
           exit $PYTEST_EXIT
 
