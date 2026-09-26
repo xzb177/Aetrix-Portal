@@ -121,6 +121,16 @@ def item_count() -> int:
 
 cold = scan("冷扫")
 check("冷扫入库全部文件", cold["added"] == TOTAL and item_count() == TOTAL,
+# 模拟后台 worker 已完成：enrich_status=done + last_probed_at + last_scraped_at，
+# 否则分层 L1 的 pending 状态会导致 _can_skip_file 永远返回 False（needs_probe）。
+db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
+    {em.MediaItem.enrich_status: "done",
+     em.MediaItem.last_probed_at: datetime.now(),
+     em.MediaItem.last_scraped_at: datetime.now()},
+    synchronize_session=False)
+db.commit()
+db.expire_all()
+
       f"added={cold['added']} 期望={TOTAL}")
 check("冷扫没有跳过任何文件", cold.get("unchanged", 0) == 0, f"unchanged={cold.get('unchanged')}")
 check("冷扫为每个目录留下指纹",
@@ -317,6 +327,13 @@ db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id,
     em.MediaItem.item_type == "series").update(
     {em.MediaItem.last_scraped_at: datetime.now()}, synchronize_session=False)
 db.commit()
+# episodes 也要标记 probe 完成，否则 needs_probe 拦住跳过
+db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id).update(
+    {em.MediaItem.enrich_status: "done",
+     em.MediaItem.last_probed_at: datetime.now(),
+     em.MediaItem.last_scraped_at: datetime.now()},
+    synchronize_session=False)
+db.commit()
 db.expire_all()
 
 tv_warm = scan_library(tv_lib, "剧集库未变动重扫（配了 TMDB）")
@@ -419,6 +436,16 @@ listed_first = len(remote_provider.listed)
 check("远程挂载库首次扫描入库",
       r_first["added"] == REMOTE_DIRS * REMOTE_PER_DIR,
       f"added={r_first['added']} 期望={REMOTE_DIRS * REMOTE_PER_DIR}")
+# 模拟后台 worker 已完成：enrich_status=done + last_probed_at + last_scraped_at，
+# 否则分层 L1 的 pending 状态会导致 _can_skip_file 永远返回 False（needs_probe）。
+db.query(em.MediaItem).filter(em.MediaItem.library_id == remote_lib.id).update(
+    {em.MediaItem.enrich_status: "done",
+     em.MediaItem.last_probed_at: datetime.now(),
+     em.MediaItem.last_scraped_at: datetime.now()},
+    synchronize_session=False)
+db.commit()
+db.expire_all()
+
 check("远程库每个目录只列举一次（指纹复用遍历用过的那一份）",
       listed_first == REMOTE_DIRS + 1, f"列举了 {len(remote_provider.listed)} 次: {remote_provider.listed}")
 
