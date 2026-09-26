@@ -314,6 +314,37 @@ def _file_fingerprint(scan_file: "ScanFile") -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
+def _external_subtitles_changed(ctx: "_ScanContext", db, item, scan_file: "ScanFile") -> bool:
+    """视频指纹未变时，检查外挂字幕有无增减。
+
+    用扫描器已缓存的目录列表（零额外 IO），与 DB 里已登记的外挂字幕比对。
+    返回 True 表示字幕变了 → 不能秒跳，要走正常流程重做 side（probe 会因
+    视频文件未变而自动跳过，只重登记字幕）。
+    """
+    try:
+        if scan_file.local_dir:
+            names = _local_names(ctx, scan_file.local_dir)
+            current = find_external_subtitles_in(names, scan_file.stored_path)
+            current_paths = {p for _, p in current}
+        elif scan_file.mount_id is not None:
+            entries = _mount_names(ctx, scan_file)
+            current = find_external_subtitles_remote(
+                scan_file.name, entries, scan_file.mount_id, scan_file.dir_rel)
+            current_paths = {p for _, p in current}
+        else:
+            return False
+        db_paths = {
+            r[0] for r in db.query(emby_models.MediaStream.external_path).filter(
+                emby_models.MediaStream.item_id == item.id,
+                emby_models.MediaStream.is_external.is_(True),
+            ).all() if r[0]
+        }
+        return current_paths != db_paths
+    except Exception:
+        # 查不到就保守一点：不秒跳，走正常流程（安全优先）
+        return True
+
+
 def _tidy_name(raw: str) -> str:
     """清洗片名；结果只剩分隔符时返回空（供回退到目录名用）"""
     out = clean_name(raw or "")
@@ -1430,9 +1461,15 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
                 and (getattr(item, "file_fingerprint", None) or None) == file_fp
                 and (getattr(item, "enrich_status", None) or "pending") == "done"
                 and not getattr(item, "repair_requested_at", None)):
-            pending.fast_skipped = True
-            ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
-            continue
+            # 外挂字幕是独立于视频的 sidecar：视频没变但字幕增减时不能秒跳，
+            # 否则新字幕永远登记不上。用缓存目录列表检查，零额外 IO。
+            if _external_subtitles_changed(ctx, db, item, scan_file):
+                # 字幕变了 → 走正常流程；probe 会因视频未变自动跳过，只重做 side
+                pass
+            else:
+                pending.fast_skipped = True
+                ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
+                continue
         # 目录没变、库里这一行也是最新的 → 不做任何逐文件工作（guid 已在上面记进 seen_guids）
         dir_key = _dir_key_of(scan_file)
         fingerprint = _dir_fingerprint(ctx, scan_file) if SCAN_INCREMENTAL else None

@@ -221,11 +221,11 @@ sub_item = db.query(em.MediaItem).filter(
     em.MediaItem.file_path == os.path.join(dir_paths[3], "Delta Movie 03-00 (2020).mkv")).first()
 sub_rows = db.query(em.MediaStream).filter(
     em.MediaStream.item_id == sub_item.id, em.MediaStream.is_external.is_(True)).all()
-# TODO: 文件级 fast-skip 下新增字幕时视频被秒跳，字幕关联需单独处理（后续优化）
-# 当前验证：新增字幕不会导致误删或崩溃
+# 文件级秒跳下，视频指纹未变但新增外挂字幕时，字幕必须被登记
+# （生产逻辑：_external_subtitles_changed 检出变化 → 不秒跳 → 只重做 side）
 check("目录变过 → 外挂字幕被登记（跳过不会漏掉字幕）",
-      True,
-      f"字幕轨 {[(r.language, r.display_title) for r in sub_rows]}（待优化）")
+      len(sub_rows) == 1 and sub_rows[0].language == "chi",
+      f"字幕轨 {[(r.language, r.display_title) for r in sub_rows]}")
 
 # ==================== 8. 该处理的绝不能被跳过 ====================
 # 8a. 补图标记
