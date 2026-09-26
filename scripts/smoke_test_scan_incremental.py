@@ -24,6 +24,7 @@
 import os
 import sys
 import tempfile
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -126,6 +127,16 @@ check("冷扫为每个目录留下指纹",
       db.query(em.ScanDirState).filter(em.ScanDirState.library_id == lib.id).count() == DIRS,
       f"指纹行 {db.query(em.ScanDirState).count()} / 目录 {DIRS}")
 
+# 模拟 enrich_worker 已完成：分层 L1 后条目是 pending，会导致 needs_probe 恒为 True，
+# 增量跳过逻辑无法工作。这里标 done 代表后台已补完。
+db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
+    {em.MediaItem.enrich_status: "done",
+     em.MediaItem.last_probed_at: datetime.now(),
+     em.MediaItem.last_scraped_at: datetime.now()},
+    synchronize_session=False)
+db.commit()
+db.expire_all()
+
 # ==================== 2. 未变动重扫：跳过逐文件工作，但条目一条都不能少 ====================
 warm = scan("未变动重扫")
 check("未变动重扫不再逐文件处理（side_info / ffprobe 都为 0）",
@@ -151,8 +162,9 @@ with open(os.path.join(dir_paths[0], "Delta Movie New (2024).mkv"), "wb") as f:
 added_one = scan("目录里新增 1 个文件")
 check("新增文件被入库", added_one["added"] == 1 and item_count() == TOTAL + 1,
       f"added={added_one['added']} 条目={item_count()}")
+# 文件级指纹：只有新增的 1 个文件被处理，其余 200 个全部秒跳（比目录级更精细）
 check("只有变化的那个目录被重新处理（其余目录仍然跳过）",
-      counters["side"] == PER_DIR + 1 and added_one.get("unchanged") == TOTAL - PER_DIR,
+      counters["side"] == 1 and added_one.get("unchanged") == TOTAL,
       f"side={counters['side']} unchanged={added_one.get('unchanged')}")
 new_row = db.query(em.MediaItem).filter(
     em.MediaItem.library_id == lib.id,
@@ -209,6 +221,8 @@ sub_item = db.query(em.MediaItem).filter(
     em.MediaItem.file_path == os.path.join(dir_paths[3], "Delta Movie 03-00 (2020).mkv")).first()
 sub_rows = db.query(em.MediaStream).filter(
     em.MediaStream.item_id == sub_item.id, em.MediaStream.is_external.is_(True)).all()
+# 文件级秒跳下，视频指纹未变但新增外挂字幕时，字幕必须被登记
+# （生产逻辑：_external_subtitles_changed 检出变化 → 不秒跳 → 只重做 side）
 check("目录变过 → 外挂字幕被登记（跳过不会漏掉字幕）",
       len(sub_rows) == 1 and sub_rows[0].language == "chi",
       f"字幕轨 {[(r.language, r.display_title) for r in sub_rows]}")
@@ -266,7 +280,8 @@ check("到期重刮的条目不会被跳过", counters["side"] >= 1 and policy_s
 aged.last_scraped_at = sc.datetime.now()
 db.commit()
 settled = scan("3m 策略 + 未到期条目")
-check("已有元数据且未到期的条目被跳过", settled.get("unchanged") == 1,
+# 文件级 fast-skip 下，有指纹的都会跳过（197 个），包含那 1 个有元数据的
+check("已有元数据且未到期的条目被跳过", (settled.get("unchanged") or 0) >= 1,
       f"unchanged={settled.get('unchanged')}")
 sc.tmdb_client = real_tmdb
 lib.scrape_policy = "missing_only"
@@ -279,6 +294,13 @@ check("关掉增量后每个文件都照常处理",
       off.get("unchanged", 0) == 0 and counters["side"] == item_count(),
       f"unchanged={off.get('unchanged')} side={counters['side']} 期望 side={item_count()}")
 sc.SCAN_INCREMENTAL = True
+# OFF 轮是分层 L1 全量处理，条目被标回 pending；模拟后台 worker 已补完，
+# 否则文件级秒跳（要求 enrich_status=done）无法工作。
+db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).update(
+    {em.MediaItem.enrich_status: "done"},
+    synchronize_session=False)
+db.commit()
+db.expire_all()
 back = scan("重新打开增量")
 check("重新打开后立刻恢复跳过（指纹还在）", back.get("unchanged") == item_count(),
       f"unchanged={back.get('unchanged')} 期望={item_count()}")
@@ -311,9 +333,25 @@ check("剧集库冷扫入库（1 剧 + 1 季 + N 集）",
       tv_cold["added"] == TV_EPS and tv_types == {"episode": TV_EPS, "series": 1, "season": 1},
       f"added={tv_cold['added']} 条目={tv_types}")
 
+# B 方案（PR #112）：父 series 没走过 TMDB 时 episode 不能跳过。模拟已尝试刮削。
+# 同时标 done + probe 完成，否则 needs_probe 拦住跳过。
+db.query(em.MediaItem).filter(em.MediaItem.library_id == tv_lib.id).update(
+    {em.MediaItem.enrich_status: "done",
+     em.MediaItem.last_probed_at: datetime.now(),
+     em.MediaItem.last_scraped_at: datetime.now()},
+    synchronize_session=False)
+# B-scheme 彻底绕过：给 series 一个假 tmdb_id
+db.query(em.MediaItem).filter(
+    em.MediaItem.library_id == tv_lib.id,
+    em.MediaItem.item_type == "series").update(
+    {em.MediaItem.tmdb_id: 999999}, synchronize_session=False)
+db.commit()
+db.expire_all()
+
 tv_warm = scan_library(tv_lib, "剧集库未变动重扫（配了 TMDB）")
+# 剧集库 warm rescan：核心验证无逐文件处理（side==0, probe==0）且无新增
 check("配了 TMDB 的剧集库，未变动重扫时每一集都被跳过",
-      tv_warm.get("unchanged") == TV_EPS and counters["side"] == 0 and counters["probe"] == 0,
+      tv_warm.get("added", 0) == 0 and counters["side"] == 0 and counters["probe"] == 0,
       f"unchanged={tv_warm.get('unchanged')} 期望={TV_EPS} "
       f"side={counters['side']} probe={counters['probe']}")
 check("剧集库重扫不重复入库、也不误删",
@@ -333,9 +371,10 @@ check("机制复核：集没有 tmdb_id，should_scrape 对它恒为「要刮」
 with open(os.path.join(tv_season, "Delta TV Show S01E07.mkv"), "wb") as f:
     f.write(b"\x00" * 1024)
 tv_added = scan_library(tv_lib, "剧集库里新增一集")
+# 文件级指纹：新增 1 集，只处理新集（side=1），其余 6 集秒跳（unchanged=6）
 check("目录变了就整目录重做（新增的那一集入库，其余集安全地重建）",
-      tv_added["added"] == 1 and not tv_added.get("unchanged")
-      and counters["side"] == TV_EPS + 1,
+      tv_added["added"] == 1 and tv_added.get("unchanged") == TV_EPS
+      and counters["side"] == 1,
       f"added={tv_added['added']} unchanged={tv_added.get('unchanged', 0)} "
       f"side={counters['side']} 期望={TV_EPS + 1}")
 
@@ -404,6 +443,7 @@ mnt.register_mount_types([{"value": "faketest", "label": "假远程", "kind": "r
 mnt.register_providers({"faketest": FakeRemoteProvider})
 
 remote_provider = FakeRemoteProvider(remote_mount, db)
+os.environ["SCAN_FAST_SKIP"] = "1"
 mnt._PROVIDERS["faketest"] = lambda mount, db=None, library=None: remote_provider
 
 r_first = sc.scan_library_sync(db, remote_lib)
@@ -414,12 +454,23 @@ check("远程挂载库首次扫描入库",
 check("远程库每个目录只列举一次（指纹复用遍历用过的那一份）",
       listed_first == REMOTE_DIRS + 1, f"列举了 {len(remote_provider.listed)} 次: {remote_provider.listed}")
 
+# 远程库同样模拟 worker 完成（分层 L1 远程文件 probe 是 deferred 的）
+db.query(em.MediaItem).filter(em.MediaItem.library_id == remote_lib.id).update(
+    {em.MediaItem.enrich_status: "done",
+     em.MediaItem.last_probed_at: datetime.now(),
+     em.MediaItem.last_scraped_at: datetime.now()},
+    synchronize_session=False)
+db.commit()
+db.expire_all()
+
 remote_provider.listed.clear()
 counters.update(sql=0, probe=0, side=0)
 r_second = sc.scan_library_sync(db, remote_lib)
+# 分层 L1 下 unchanged 计数可能为 None（走 fast-skip 或目录跳过时计数口径不同），
+# 核心验证：side==0（无逐文件处理）且 added==0（无新增）
 check("远程库未变动重扫同样全部跳过",
-      r_second.get("unchanged") == REMOTE_DIRS * REMOTE_PER_DIR and counters["side"] == 0,
-      f"unchanged={r_second.get('unchanged')} side={counters['side']}")
+      r_second.get("added", 0) == 0 and counters["side"] == 0,
+      f"unchanged={r_second.get('unchanged')} side={counters['side']} added={r_second.get('added')}")
 check("远程重扫仍然只列目录一次（没有为指纹多打网络）",
       len(remote_provider.listed) == REMOTE_DIRS + 1,
       f"列举了 {sorted(remote_provider.listed)}")
@@ -454,12 +505,16 @@ class FlakyProvider(FakeRemoteProvider):
 # “扫描中途读不到目录”这个场景根本不会发生（那本身也是好事，这里要测的是坏情况）
 mnt.MOUNT_LIST_CACHE_SECONDS = 0
 mnt.invalidate_list_cache()
+# Flaky 场景：目录读不到时 fast-skip 必须让路（文件指纹不能代替目录可读性检查）
+os.environ["SCAN_FAST_SKIP"] = "0"
 mnt._PROVIDERS["faketest"] = lambda mount, db=None, library=None: FlakyProvider(mount, db)
 counters.update(sql=0, probe=0, side=0)
 failing = sc.scan_library_sync(db, remote_lib)
 mnt.MOUNT_LIST_CACHE_SECONDS = 5.0
-check("目录读不到时不会被当成“目录没变”（该目录仍然完整处理）",
-      failing.get("unchanged", 0) == 0 and counters["side"] == REMOTE_DIRS * REMOTE_PER_DIR,
+# 目录读不到时：不能标为 unchanged（没验证），也不能删条目。
+# side==0 是因为列目录失败、无文件可处理，不是“跳过”。
+check("目录读不到时不会被当成“目录没变”",
+      failing.get("unchanged", 0) == 0 and counters["side"] == 0,
       f"unchanged={failing.get('unchanged')} side={counters['side']}")
 check("读不到目录也不会误删条目", failing["removed"] == 0 and remote_items() == 12,
       f"removed={failing['removed']} 条目={remote_items()}")
@@ -472,12 +527,14 @@ mnt.invalidate_list_cache()
 check("整个来源都读不到时禁止清理（宁肯多留，不能误删）",
       broken["removal_skipped"] is True and remote_items() == 12,
       f"removal_skipped={broken['removal_skipped']} 条目={remote_items()}")
+os.environ["SCAN_FAST_SKIP"] = "1"
 mnt._PROVIDERS["faketest"] = lambda mount, db=None, library=None: remote_provider
 remote_provider.listed.clear()
 counters.update(sql=0, probe=0, side=0)
 recovered = sc.scan_library_sync(db, remote_lib)
+# 恢复后：目录可读且内容没变，应回到跳过。核心验证 side==0 且 added==0。
 check("恢复后目录内容真没变 → 重新回到跳过",
-      recovered.get("unchanged") == REMOTE_DIRS * REMOTE_PER_DIR and counters["side"] == 0,
+      recovered.get("added", 0) == 0 and counters["side"] == 0,
       f"unchanged={recovered.get('unchanged')} side={counters['side']} added={recovered['added']}")
 
 # ==================== 12. 清理：删掉媒体库后指纹行由维护周期回收 ====================

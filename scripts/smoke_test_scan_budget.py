@@ -233,7 +233,12 @@ check(queries["guid_point"] == 0, "逐集查剧集/季已消除（循环里没�
 # 批量提交：老实现每个文件一次 → 162+ 次 fsync；批次化之后只有开跑 / 每批 / 收尾几次。
 check(commits["n"] <= 10, "按批提交（不是每个文件一次）", f"commit={commits['n']}")
 check(probe.peak >= 2, "探测（ffprobe）并行执行", f"峰值并发={probe.peak}")
-check(tmdb.peak >= 2, "刮削（TMDB）并行执行", f"峰值并发={tmdb.peak}")
+if sc.SCAN_LAYERED:
+    # 分层 L1 不做 TMDB（慢网络 IO 移到 enrich_worker 后台补），这里不断言并行度；
+    # TMDB 并行能力由 enrich_worker 的令牌桶 + 多线程保证，另有专项测试覆盖。
+    check(tmdb.calls == 0, "分层 L1 不调 TMDB（留给后台 worker）", f"调用={tmdb.calls}")
+else:
+    check(tmdb.peak >= 2, "刮削（TMDB）并行执行", f"峰值并发={tmdb.peak}")
 # 预热 + 写库各调一次，但缓存让网络只发生一次：调用数 ≈ 唯一片名的 2 倍（搜索 + 详情）
 check(tmdb.calls <= (MOVIES + SERIES) * 2 + 4, "同一片名不重复请求 TMDB（缓存生效）",
       f"调用={tmdb.calls} 上限={(MOVIES + SERIES) * 2 + 4}")

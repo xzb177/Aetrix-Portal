@@ -8,9 +8,22 @@
 - 迁移兜底：已有有效探测数据的旧行直接标 done，不发网络请求。
 """
 import os
+import tempfile
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
+# 独立临时 DB：避免与其它测试文件共用导致数据污染。
+# 注意：backend.database.engine 是模块级单例，必须重建，否则会沿用先导入文件的 DB。
+_fd, _tmppath = tempfile.mkstemp(suffix=".db"); os.close(_fd)
+os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
+# backend.database.engine 是模块级单例：后导入的测试文件必须重建 engine，
+# 否则会沿用先导入文件的 DB，导致测试间污染。只重建 engine/SessionLocal，
+# 不 reload 整个模块（避免 models.Base 元数据错乱）。
+from backend import database as _dbmod
+from sqlalchemy import create_engine as _ce
+from sqlalchemy.orm import sessionmaker as _sm
+_dbmod.engine = _ce(os.environ["DATABASE_URL"])
+_dbmod.SessionLocal = _sm(bind=_dbmod.engine)
 
 import uuid
 from datetime import datetime, timedelta
@@ -114,6 +127,8 @@ def _scan_one_file(tmp_path, monkeypatch, background: bool, probe_impl):
             return dict(probe_impl)
         monkeypatch.setattr(scanner, "probe_metadata", fake_probe)
     monkeypatch.setattr(scanner, "PROBE_BACKGROUND", background)
+    # v2.40 分层扫描默认开启，会推迟探测；这里测的是 v2.39 两阶段契约，显式关闭分层
+    monkeypatch.setattr(scanner, "SCAN_LAYERED", False)
 
     movie = tmp_path / "Test Movie (2024).mp4"
     movie.write_bytes(b"\x00" * 64)

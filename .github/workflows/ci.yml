@@ -290,9 +290,6 @@ jobs:
           pip install pytest
           python -m pytest tests/ -q
 
-      # 静态护栏也要自证“它会失败”：否则正则写歪、路径找错、基线比实际大，
-      # 它会永远返回 0 而没任何人知道。这里给**每条**护栏喂违规样本（合成代码树 / 合成模块），
-      # 钉住口径与报错能力，同时钉住它们不误报（合规样本必须返回 0）。
       - name: 静态护栏自检（每条护栏喂违规样本都会失败、合规样本不误报）
         run: python scripts/smoke_test_static_guards.py
 
