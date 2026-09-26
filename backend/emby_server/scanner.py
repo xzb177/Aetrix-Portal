@@ -1449,17 +1449,17 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
                 # Phase 1：不提交 ffprobe（连 probe_input 的直链解析都省了），
                 # 写库时把条目标 probe_status='pending' 交给后台 worker。
                 pending.probe_deferred = True
-            elif not pending.layered or getattr(pending, "layered_local_fast", False):
+            elif pool is not None and (not pending.layered or getattr(pending, "layered_local_fast", False)):
                 # inline 模式当场探测：分层下本机文件也探（本地 ffprobe 很快），
                 # 只有远程文件才推迟（直链解析要走网络）。
                 pending.probe = pool.submit(probe_metadata, *scan_file.probe_input(), size=scan_file.size)
             # 分层 + inline + 远程：L1 不探，enrich_worker 补全时把 probe_status
             # 置 pending，probe_worker 接手
-        if not pending.layered or getattr(pending, "layered_local_fast", False):
+        if pool is not None and (not pending.layered or getattr(pending, "layered_local_fast", False)):
             pending.side = pool.submit(_side_info, ctx, scan_file)
         # NFO 发现与解析（与 probe / side / TMDB 并行；结果在下面先取回，
         # TMDB 预取口径按 NFO 有无决定：有 tmdb_id 就不调搜索）
-        if pending.item_type in ("series", "movie", "episode") and (
+        if pool is not None and pending.item_type in ("series", "movie", "episode") and (
             not pending.layered or getattr(pending, "layered_local_fast", False)):
             pending.nfo = pool.submit(_nfo_work, ctx, scan_file, pending.item_type)
 
@@ -1509,7 +1509,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
                     is_new or needs_repair or need_details
                     or (should_scrape(item, policy) and not (item.imdb_id and item.aliases))
                 )
-            if need_search or want_details:
+            if pool is not None and (need_search or want_details):
                 pending.tmdb = pool.submit(
                     _tmdb_work, need_search, pending.parsed["name"], pending.parsed["year"],
                     kind, existing_id, want_details,
@@ -1519,7 +1519,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             if series_id and pending.series_guid not in ctx.nfo_series_imaged:
                 ctx.nfo_series_imaged.add(pending.series_guid)  # 占位去重：跨批次不重复取
                 s_item = ctx.series_items.get(pending.series_guid)
-                if s_item is None or not (s_item.poster_path or s_item.primary_image_url):
+                if pool is not None and (s_item is None or not (s_item.poster_path or s_item.primary_image_url)):
                     pending.series_tmdb = pool.submit(
                         _tmdb_work, False, "", None, "series", str(series_id), True,
                     )

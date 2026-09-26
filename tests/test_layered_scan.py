@@ -60,7 +60,7 @@ def test_file_fingerprint_remote_no_mtime():
 
 def test_fast_skip_no_io(db):
     """指纹命中 + 已补全 → 秒跳：不提交 side/NFO/TMDB/probe"""
-    lib = em.Library(name="t", collection_type="movies")
+    lib = em.Library(guid=_guid(), name="t", collection_type="movies")
     db.add(lib)
     db.flush()
     sf = _mkfile("/v/x.mp4")
@@ -88,7 +88,7 @@ def test_fast_skip_no_io(db):
 
 def test_fingerprint_mismatch_not_skipped(db):
     """指纹对不上（文件变了）→ 走正常流程"""
-    lib = em.Library(name="t", collection_type="movies")
+    lib = em.Library(guid=_guid(), name="t", collection_type="movies")
     db.add(lib)
     db.flush()
     sf = _mkfile("/v/y.mp4", size=100, mtime_ns=111)
@@ -112,7 +112,7 @@ def test_fingerprint_mismatch_not_skipped(db):
 
 def test_pending_enrich_not_fast_skipped(db):
     """指纹命中但 enrich_status='pending'（L2 没补完）→ 不秒跳，等补全"""
-    lib = em.Library(name="t", collection_type="movies")
+    lib = em.Library(guid=_guid(), name="t", collection_type="movies")
     db.add(lib)
     db.flush()
     sf = _mkfile("/v/z.mp4")
@@ -133,11 +133,13 @@ def test_pending_enrich_not_fast_skipped(db):
 
 
 def test_layered_new_file_minimal(db):
-    """分层 L1：新文件只做极简入库，不提交 IO，enrich_status='pending'"""
-    lib = em.Library(name="t", collection_type="movies")
+    """分层 L1：远程新文件只做极简入库，不提交 IO，enrich_status='pending'"""
+    lib = em.Library(guid=_guid(), name="t", collection_type="movies")
     db.add(lib)
     db.flush()
-    sf = _mkfile("/v/new.mp4")
+    # 远程文件：local_dir=None
+    sf = scanner.ScanFile(stored_path="mount://1/v/new.mp4", name="new.mp4",
+                          local_dir=None, size=100, mtime_ns=123)
     snap = SimpleNamespace(
         library_id=lib.id, collection_type="movies", scrape_policy="smart")
     ctx = scanner._ScanContext(snap=snap, lib_id=lib.id, stats={})
@@ -148,3 +150,25 @@ def test_layered_new_file_minimal(db):
     p = prepared[0]
     assert p.layered is True
     assert p.side is None and p.nfo is None and p.tmdb is None
+
+
+def test_layered_local_file_does_side_nfo(db):
+    """分层 L1：本机文件照常提交 side/NFO（本地 IO 快，保证海报立即可见）"""
+    import concurrent.futures
+    lib = em.Library(guid=_guid(), name="t2", collection_type="movies")
+    db.add(lib)
+    db.flush()
+    sf = _mkfile("/v/local.mp4")  # local_dir="/v" → 本机文件
+    snap = SimpleNamespace(
+        library_id=lib.id, collection_type="movies", scrape_policy="smart")
+    ctx = scanner._ScanContext(snap=snap, lib_id=lib.id, stats={})
+    assert scanner.SCAN_LAYERED is True
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        prepared = scanner._prepare_and_prefetch(db, [sf], ctx, pool=pool)
+    p = prepared[0]
+    assert p.layered is True
+    assert p.layered_local_fast is True
+    # 本机文件：side/NFO 已提交（Future 非空），TMDB 仍跳过
+    assert p.side is not None
+    assert p.nfo is not None
+    assert p.tmdb is None
