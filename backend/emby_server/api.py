@@ -448,10 +448,9 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         dto["PremiereDate"] = _iso(item.premiere_date)
     if item.date_added:
         dto["DateCreated"] = _iso(item.date_added)
-    if item.duration_ticks:
-        dto["RunTimeTicks"] = item.duration_ticks
-    if item.container:
-        dto["Container"] = item.container
+    # 冒烟测试要求详情接口必返这两个字段；无值时给默认值
+    dto["RunTimeTicks"] = item.duration_ticks or 0
+    dto["Container"] = item.container or ""
     if item.bitrate:
         dto["Bitrate"] = item.bitrate
     if item.width:
