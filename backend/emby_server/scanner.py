@@ -1424,7 +1424,8 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         # 文件指纹是纯内存计算。旧 _can_skip_file 保留做兜底（指纹缺失的老数据）。
         file_fp = _file_fingerprint(scan_file)
         pending.file_fingerprint = file_fp
-        if (_fast_skip_enabled()
+        if (SCAN_INCREMENTAL
+                and _fast_skip_enabled()
                 and not is_new
                 and (getattr(item, "file_fingerprint", None) or None) == file_fp
                 and (getattr(item, "enrich_status", None) or "pending") == "done"
