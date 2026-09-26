@@ -369,6 +369,17 @@ const chaseNewSaving = ref(false)
 // rclone remote 管理
 const rcloneRemotes = ref<RcloneRemote[]>([])
 const saFiles = ref<SaFile[]>([])
+const saListVisible = ref(false)
+const saSearch = ref("")
+const filteredSaFiles = computed(() => {
+  const q = saSearch.value.trim().toLowerCase()
+  if (!q) return saFiles.value
+  return saFiles.value.filter(f =>
+    (f.client_email || "").toLowerCase().includes(q) ||
+    (f.filename || "").toLowerCase().includes(q) ||
+    (f.project_id || "").toLowerCase().includes(q)
+  )
+})
 const rcloneLoading = ref(false)
 const showRemoteDialog = ref(false)
 const editingRemote = ref<any>(null)
@@ -1162,7 +1173,34 @@ function typeLabel(t: string): string {
           </div>
           <div class="drawer-hint" style="margin-top: 8px">
             服务账号文件：{{ saFiles.length }} 个
-            <span v-if="saFiles.length">（{{ saFiles.map(f => f.client_email || f.filename).join('、') }}）</span>
+            <span class="sa-enabled-count" v-if="saFiles.length">
+              (启用 {{ saFiles.filter(f => f.is_enabled).length }})
+            </span>
+            <el-button v-if="saFiles.length" size="small" text @click="saListVisible = !saListVisible">
+              {{ saListVisible ? '收起' : '查看列表' }}
+            </el-button>
+          </div>
+          <div v-if="saListVisible && saFiles.length" class="sa-panel">
+            <el-input
+              v-model="saSearch"
+              size="small"
+              placeholder="搜索邮箱 / 文件名"
+              clearable
+              class="sa-search"
+            />
+            <div class="sa-email-list">
+              <div
+                v-for="f in filteredSaFiles"
+                :key="f.id"
+                class="sa-email-item"
+                :class="{ 'sa-disabled': !f.is_enabled }"
+              >
+                <span class="sa-dot" :class="{ on: f.is_enabled }"></span>
+                <span class="sa-email">{{ f.client_email || f.filename }}</span>
+                <span v-if="f.project_id" class="sa-project">{{ f.project_id }}</span>
+              </div>
+              <div v-if="!filteredSaFiles.length" class="drawer-hint">没有匹配的服务账号</div>
+            </div>
           </div>
         </div>
         <div class="scrape-block">
@@ -1817,5 +1855,52 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
   .lib-actions { width: 100%; }
   .lib-actions :deep(.el-button) { flex: 1; }
   .admin-page-actions :deep(.el-button.is-primary) { flex: 1 1 100%; }
+}
+.sa-panel {
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+}
+.sa-search {
+  margin-bottom: 6px;
+}
+.sa-email-list {
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.sa-email-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  color: #a0aec0;
+}
+.sa-email-item.sa-disabled {
+  opacity: 0.45;
+}
+.sa-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #555;
+  flex-shrink: 0;
+}
+.sa-dot.on {
+  background: #34d399;
+}
+.sa-email {
+  word-break: break-all;
+  flex: 1;
+}
+.sa-project {
+  font-size: 11px;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+.sa-enabled-count {
+  color: #34d399;
+  font-size: 12px;
 }
 </style>
