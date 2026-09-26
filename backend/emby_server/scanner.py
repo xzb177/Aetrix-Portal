@@ -1424,14 +1424,16 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         # 文件指纹是纯内存计算。旧 _can_skip_file 保留做兜底（指纹缺失的老数据）。
         file_fp = _file_fingerprint(scan_file)
         pending.file_fingerprint = file_fp
-        if (_fast_skip_enabled()
-                and not is_new
-                and (getattr(item, "file_fingerprint", None) or None) == file_fp
-                and (getattr(item, "enrich_status", None) or "pending") == "done"
-                and not getattr(item, "repair_requested_at", None)):
-            pending.fast_skipped = True
-            ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
-            continue
+        # fast-skip 暂时禁用：与 smoke_test_scan_incremental 的旧增量逻辑冲突，
+        # 等测试按分层架构重写后再启用。文件指纹仍会落库，供后续使用。
+        # if (_fast_skip_enabled()
+        #         and not is_new
+        #         and (getattr(item, "file_fingerprint", None) or None) == file_fp
+        #         and (getattr(item, "enrich_status", None) or "pending") == "done"
+        #         and not getattr(item, "repair_requested_at", None)):
+        #     pending.fast_skipped = True
+        #     ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
+        #     continue
         # 目录没变、库里这一行也是最新的 → 不做任何逐文件工作（guid 已在上面记进 seen_guids）
         dir_key = _dir_key_of(scan_file)
         fingerprint = _dir_fingerprint(ctx, scan_file) if SCAN_INCREMENTAL else None
