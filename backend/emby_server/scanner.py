@@ -470,17 +470,31 @@ def _episode_display_name(name: str, season_no: Optional[int], ep_no: Optional[i
     return f"{base} S{season_no:02d}E{ep_no:02d}"
 
 
-def _ffprobe(path: str, headers: Optional[dict] = None) -> Optional[dict]:
-    """ffprobe 提取媒体信息（无 ffprobe 时优雅降级）
+# 远程 ffprobe 的有限 Range 上限：rclone rc-serve 不接受默认的开放式
+# ``Range: bytes=0-``，但媒体头（尤其 Matroska 的 EBML/Info）通常在前段即可拿到。
+try:
+    PROBE_REMOTE_RANGE_BYTES = max(1 << 20, int(os.getenv("PROBE_REMOTE_RANGE_BYTES", "33554432")))
+except ValueError:
+    PROBE_REMOTE_RANGE_BYTES = 32 << 20
 
-    ``path`` 可以是本机文件，也可以是远程直链（挂载）：ffprobe 本身支持 http(s) 输入，
-    鉴权头通过 ``-headers`` 传入（Cookie / Authorization 只在本机使用）。
+
+def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0) -> Optional[dict]:
+    """ffprobe 提取媒体信息（无 ffprobe 时优雅降级）。
+
+    远程直链补一个有限 Range，兼容 rclone rc-serve；本机文件不改变行为。
     """
     if not shutil_which("ffprobe"):
         return None
     cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"]
-    if headers:
-        joined = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    probe_headers = dict(headers or {})
+    if path.startswith(("http://", "https://")) and not any(
+        str(k).lower() == "range" for k in probe_headers
+    ):
+        total = int(size or 0)
+        end = min(total - 1, PROBE_REMOTE_RANGE_BYTES - 1) if total > 0 else PROBE_REMOTE_RANGE_BYTES - 1
+        probe_headers["Range"] = f"bytes=0-{max(0, end)}"
+    if probe_headers:
+        joined = "".join(f"{k}: {v}\r\n" for k, v in probe_headers.items())
         cmd += ["-headers", joined]
     cmd.append(path)
     # 扫描探测让路给播放（见文件头「扫描限速」）：只降这一条子命令，不碰本进程
