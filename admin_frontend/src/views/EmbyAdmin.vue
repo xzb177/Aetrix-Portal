@@ -157,7 +157,8 @@ async function load() {
       fetchServers().catch(() => null),
       fetchReachability().catch(() => null),
       loadTmdbStatus().catch(() => undefined),
-      loadAutoScanConfig().catch(() => undefined),
+      loadAutoScanConfig(),
+      loadChaseNewConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -348,6 +349,33 @@ async function loadAutoScanConfig() {
     autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
   } catch {
     autoScan.value = null // 出错不挡页面其它内容
+  }
+}
+
+// 追新：开关 + 轮询间隔（分钟），默认关闭
+const chaseNew = ref<ChaseNewConfig | null>(null)
+const chaseNewSaving = ref(false)
+
+async function loadChaseNewConfig() {
+  try {
+    const res = await fetchChaseNew()
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
+  } catch {
+    chaseNew.value = null
+  }
+}
+
+async function saveChaseNewAction() {
+  if (!chaseNew.value) return
+  chaseNewSaving.value = true
+  try {
+    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.libraries)
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
+    ElMessage.success(res.enabled ? '追新已开启（每 ' + res.interval + ' 分钟）' : '追新已关闭')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    chaseNewSaving.value = false
   }
 }
 
@@ -1008,6 +1036,33 @@ function typeLabel(t: string): string {
           </div>
           <div v-else-if="autoScan" class="drawer-hint" style="margin-top: 6px">
             还没有执行过
+          </div>
+        </div>
+        <div class="scrape-block">
+          <h3>追新</h3>
+          <p class="drawer-hint">
+            打开后，每隔 N 分钟检查挂载上的新视频文件，发现即自动触发扫描 +
+            刮削（NFO 优先 → TMDB → 豆瓣）。只支持本机可读的挂载（含 rclone 挂载的网盘）。
+          </p>
+          <div v-if="chaseNew" class="scrape-actions" style="align-items: center">
+            <el-switch v-model="chaseNew.enabled" active-text="开启" inactive-text="关闭" />
+            <el-input-number
+              v-model="chaseNew.interval"
+              :min="5" :max="120" :step="5"
+              placeholder="分钟"
+              style="width: 130px"
+              :disabled="!chaseNew.enabled"
+            />
+            <span class="drawer-hint">分钟</span>
+            <el-button type="primary" size="small" :loading="chaseNewSaving" @click="saveChaseNewAction">
+              保存
+            </el-button>
+          </div>
+          <div v-if="chaseNew?.last_check" class="drawer-hint" style="margin-top: 6px">
+            上次检查：{{ chaseNew.last_check }} ｜ 上轮发现 {{ chaseNew.last_found }} 个新文件
+          </div>
+          <div v-else-if="chaseNew" class="drawer-hint" style="margin-top: 6px">
+            还没有检查过
           </div>
         </div>
         <div class="scrape-block">

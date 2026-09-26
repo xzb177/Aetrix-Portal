@@ -151,6 +151,12 @@ async def lifespan(app: FastAPI):
         auto_scan.start_auto_scan_scheduler()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"启动定时扫描调度失败（可忽略）: {e}")
+    # 追新：默认关闭，不打扰任何现有行为。失败不影响启动。
+    try:
+        from backend.emby_server import change_watcher
+        change_watcher.start_chase_new_watcher()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"启动追新线程失败（可忽略）: {e}")
 
     # 外部服务能力落地：管理员配过的出站代理要写回进程环境变量（否则重启后失效），
     # 邮件 / Telegram 通知渠道也在这里按最新配置重建。没配过的能力什么都不做。
