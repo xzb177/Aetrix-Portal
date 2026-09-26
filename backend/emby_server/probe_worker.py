@@ -33,6 +33,42 @@ from backend.emby_server.scanner import needs_probe, probe_metadata
 
 logger = logging.getLogger(__name__)
 
+# ---- 403 熔断器 ----
+# 连续 N 个 403（配额耗尽）就暂停 worker，避免空跑烧配额
+_QUOTA_BREAKER_THRESHOLD = 10
+_quota_consecutive_403 = 0
+_quota_breaker_tripped = False
+_quota_lock = threading.Lock()
+
+
+def _quota_breaker_check(is_403: bool) -> bool:
+    """返回 True 表示熔断器已触发，worker 应暂停"""
+    global _quota_consecutive_403, _quota_breaker_tripped
+    with _quota_lock:
+        if is_403:
+            _quota_consecutive_403 += 1
+            if _quota_consecutive_403 >= _QUOTA_BREAKER_THRESHOLD and not _quota_breaker_tripped:
+                _quota_breaker_tripped = True
+                logger.error(
+                    "[probe] 熔断器触发：连续 %d 个 HTTP 403（远端配额耗尽），"
+                    "worker 已暂停。请等配额恢复（通常 24 小时）后手动重启 worker。",
+                    _quota_consecutive_403,
+                )
+        else:
+            # 非 403 成功或其它错误，重置计数（只有连续 403 才熔断）
+            if _quota_consecutive_403 > 0:
+                _quota_consecutive_403 = 0
+        return _quota_breaker_tripped
+
+
+def quota_breaker_reset() -> None:
+    """手动重置熔断器（配额恢复后调用）"""
+    global _quota_consecutive_403, _quota_breaker_tripped
+    with _quota_lock:
+        _quota_consecutive_403 = 0
+        _quota_breaker_tripped = False
+    logger.info("[probe] 熔断器已手动重置，worker 恢复")
+
 # ---- 可调参数（环境变量） ----
 PROBE_WORKERS = max(1, min(32, int(os.getenv("PROBE_WORKERS", "8") or 8)))
 PROBE_BATCH = max(10, int(os.getenv("PROBE_BATCH", "200") or 200))
@@ -187,8 +223,22 @@ def _probe_one(item_id: int) -> str:
                 item.probe_next_retry_at = None
                 db.commit()
                 return "skipped"
+            # 熔断器：已触发则直接跳过，不烧配额
+            if _quota_breaker_check(False):  # 只读状态，不计数
+                return "paused_quota"
             target = resolve_play_target(item.file_path, db)
             info = probe_metadata(target.value, target.headers, size=item.size or 0)
+            # 检查是否 403，更新熔断器
+            is_403 = bool(info and info.get("_error") == "quota")
+            if _quota_breaker_check(is_403) and is_403:
+                # 刚触发熔断，把当前条目打回 pending（不是它的错，是配额问题）
+                db.rollback()
+                item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+                if item is not None:
+                    item.probe_status = "pending"
+                    item.probe_attempts = 0
+                    db.commit()
+                return "paused_quota"
         except MountError as exc:
             db.rollback()
             item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
@@ -207,7 +257,9 @@ def _probe_one(item_id: int) -> str:
             _apply_probe_result(db, item, info)
             db.commit()
             return "done"
-        _fail(db, item, "ffprobe 未返回有效时长")
+        # 用翻译后的错误文案（403 配额问题不再含糊报"未返回有效时长"）
+        err_detail = (info or {}).get("_error_detail") if info else None
+        _fail(db, item, err_detail or "ffprobe 未返回有效时长")
         db.commit()
         return "failed"
     finally:

@@ -482,14 +482,47 @@ except ValueError:
     PROBE_REMOTE_RANGE_BYTES = 1 << 20
 
 
+# ffprobe 错误码翻译：把含糊的底层错误转成可行动的信息
+_FFPROBE_HTTP_ERRORS = {
+    403: "远端配额/权限受限 (HTTP 403)——可能是 Google Drive 每日下载配额耗尽，24 小时后自动恢复；或检查 rclone 账号权限",
+    401: "远端认证失败 (HTTP 401)——检查 rclone 账号/Token 是否过期",
+    404: "远端文件不存在 (HTTP 404)——文件可能已被删除或路径变更",
+    429: "远端限流 (HTTP 429)——请求过快，稍后重试",
+}
+
+
+def _parse_ffprobe_http_error(stderr: str) -> Optional[int]:
+    """从 ffprobe stderr 解析 HTTP 状态码。
+
+    ffprobe 的 http 层对非 200 一律报 404（误导人），实际需从
+    "Server returned 403 Forbidden" 这类信息里提取真实状态码。
+    """
+    import re
+    # 匹配 "Server returned 403 Forbidden" 或 "HTTP error 403" 等
+    for pat in (r"Server returned (\d{3})", r"HTTP error (\d{3})", r"HTTP (\d{3})"):
+        m = re.search(pat, stderr)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+    return None
+
+
 def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0) -> Optional[dict]:
     """ffprobe 提取媒体信息（无 ffprobe 时优雅降级）。
 
     远程直链补一个有限 Range，兼容 rclone rc-serve；本机文件不改变行为。
+
+    返回的 dict 可能含 `_error` 字段：
+    - `_error="quota"`：HTTP 403，远端配额/权限受限
+    - `_error="not_found"`：HTTP 404，文件不存在
+    - `_error="auth"`：HTTP 401，认证失败
     """
     if not shutil_which("ffprobe"):
         return None
-    cmd = ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"]
+    # -v error：只输出错误（不用 quiet，否则 403/404 的真实原因被吞掉）
+    cmd = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams"]
     probe_headers = dict(headers or {})
     if path.startswith(("http://", "https://")) and not any(
         str(k).lower() == "range" for k in probe_headers
@@ -507,7 +540,24 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0) -> Option
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         import json
 
-        return json.loads(out.stdout or "{}")
+        data = json.loads(out.stdout or "{}")
+        # 检查 stderr 里的 HTTP 错误（ffprobe 把 403 也报成 404，需提取真实码）
+        if not data.get("format"):
+            http_code = _parse_ffprobe_http_error(out.stderr or "")
+            if http_code:
+                data["_http_code"] = http_code
+                detail = _FFPROBE_HTTP_ERRORS.get(http_code, f"远端 HTTP 错误 ({http_code})")
+                data["_error_detail"] = detail
+                if http_code == 403:
+                    data["_error"] = "quota"
+                    logger.warning("ffprobe 探测 %s: %s", path, detail)
+                elif http_code == 404:
+                    data["_error"] = "not_found"
+                elif http_code == 401:
+                    data["_error"] = "auth"
+                else:
+                    data["_error"] = f"http_{http_code}"
+        return data
     except Exception as e:  # noqa: BLE001
         logger.warning("ffprobe 失败 %s: %s", path, e)
         return None
@@ -536,6 +586,11 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
         except OSError:
             info["size"] = size
         return info
+    # 透出 ffprobe 的 HTTP 错误（供熔断器和日志使用）
+    if data.get("_error"):
+        info["_error"] = data["_error"]
+        info["_http_code"] = data.get("_http_code")
+        info["_error_detail"] = data.get("_error_detail", "")
 
     fmt = data.get("format", {})
     duration = float(fmt.get("duration") or 0)
