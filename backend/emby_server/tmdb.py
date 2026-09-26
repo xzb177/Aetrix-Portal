@@ -32,6 +32,161 @@ TMDB_LANG = os.getenv("TMDB_LANGUAGE", "zh-CN")
 TMDB_KEYS_CONFIG_KEY = "tmdb_api_keys"
 
 
+# ---------------------------------------------------------------------------
+# 查询清洗与置信度校验（2026-09-26）
+#
+# 通用 bug：文件名解析出的剧名常带发行标签（DUAL/DD5.1/H264/BdC/集数标记/中字等），
+# 直接拿去调 TMDB search 命中率极低；而 TMDB 的 results[0] 对短查询经常张冠李戴
+# （如"虎子"→"老虎和兔子"、"骑士与魔法"→"魔法使的新娘"）。
+# search() 因此改为：清洗查询 → 多候选 → 对多个返回结果做置信度校验，
+# 只返回高置信命中；否则返回 None（调用方记 last_scraped_at，名字保持原样，
+# 绝不写错名字）。
+
+# 发行/压制/碟片/字幕类标签：只出现在文件名里，不属于标题
+_QUERY_JUNK_RE = re.compile(r"""(?ix)
+      \b(dual|ddp?\s?5\s?1|dd\s?5\s?1|dts\s?hd|dtshd|atmos|truehd|dts(?:-hd)?|ac3|aac|flac|[234]audios?)\b
+    | \b([hx]?\s?264|[hx]?\s?265|hevc|avc|bdc|bluray|blu-ray|web-?dl|webrip|hdtv|dvdrip|bdrip|bdmv|remux)\b
+    | \b(1080[ip]|720p|480p|2160p|4k|8k|10bit)\b
+    | \b(s\d{1,2}e\d{1,3}|e\d{1,3}|ep\d{1,3}|d[12]|disc\s?\d|cd[12])\b
+    | (原盘|中字|简繁\w{0,3}|繁中|简中|粤语|国语|双语|高码率|重制版|蓝光|特效|花絮|熟肉|生肉)
+""")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ffー]+")
+# 归一化：小写、去全部空白与标点（保留中日韩文字与字母数字）
+_NORM_STRIP_RE = re.compile(
+    r"[\s\u3000・·･—\-–_.,;:!?()（）【】《》\"'’‘“”/\\|&+*~^$#@%…‰「」『』〈〉＜＞★☆×″′©®™‖§]+"
+)
+_YEAR_RE = re.compile(r"(19\d{2}|20\d{2})")
+
+
+def _norm_text(s):
+    return _NORM_STRIP_RE.sub("", s.lower()) if s else ""
+
+
+def _clean_query(name):
+    """去发行标签与分隔符，返回可用于搜索的干净查询。"""
+    s = _QUERY_JUNK_RE.sub(" ", name or "")
+    s = re.sub(r"[._\-+]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _first_run(query):
+    """首个"标题式"词段：连续的中日韩/拉丁/数字（如"机动战士高达0079"、"X战警"）。
+
+    文件名里标题通常在最前面，后面跟的是集标题/发行信息；取首段能保住
+    "0079"这类数字后缀（纯中日韩提取会把它弄丢）。只取含中日韩的首段：
+    纯拉丁单词（如 Blossom / 2gether）精确撞上同名不相干条目的概率太高。
+    """
+    for m in re.finditer(r"[\u4e00-\u9fff\u3040-\u30ffーa-zA-Z0-9]+", query or ""):
+        w = m.group(0)
+        if len(w) >= 2 and _CJK_RE.search(w):
+            return w
+    return ""
+
+
+def _search_candidates(name):
+    """按优先级返回 (候选查询, 是否允许模糊接受)。
+
+    顺序：清洗后全名 → 原名 → 首个标题词段 → 中日韩部分。
+    只有"中日韩部分"是信息有损的（丢了拉丁关键词，如演唱会的艺人名），
+    它只允许 Tier 2 精确接受，不做模糊——否则"容祖儿 演唱会"会配到
+    "容祖儿1314演唱会"（原文件名是 My Secret Live）。
+    """
+    raw = (name or "").strip()
+    cleaned = _clean_query(name)
+    cands = []
+    for c, fuzzy in ((cleaned, True), (raw, True), (_first_run(cleaned), True)):
+        if c and c not in [x[0] for x in cands]:
+            cands.append((c, fuzzy))
+    cjk = " ".join(_CJK_RE.findall(cleaned))
+    if cjk and cjk not in [x[0] for x in cands]:
+        cands.append((cjk, False))
+    return cands
+
+
+def _query_variants(query):
+    """一个候选查询的归一化变体：全串、中日韩部分。"""
+    out = []
+    nq = _norm_text(query)
+    if nq:
+        out.append(nq)
+    cjk = _norm_text(" ".join(_CJK_RE.findall(query)))
+    if cjk and cjk not in out:
+        out.append(cjk)
+    return out
+
+
+def _lcs_len(a, b):
+    """最长公共子串长度（短串优化的 DP）。"""
+    if not a or not b:
+        return 0
+    if len(a) > len(b):
+        a, b = b, a
+    prev = [0] * (len(a) + 1)
+    best = 0
+    for cb in b:
+        cur = [0] * (len(a) + 1)
+        for i, ca in enumerate(a, 1):
+            if ca == cb:
+                cur[i] = prev[i - 1] + 1
+                if cur[i] > best:
+                    best = cur[i]
+        prev = cur
+    return best
+
+
+def _latin_words(query):
+    """查询里的拉丁单词（长度≥4）：艺人/专辑等关键信息，不能丢。"""
+    return [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", query or "")]
+
+
+def _hit_score(raw_name, query, hit, fuzzy_ok=True):
+    """置信度打分：返回 (tier, rank)，tier 大者优先，同 tier 比 rank；None 表拒绝。
+
+    Tier 2（精确）：任一归一化变体与任一标题字段（name/title/原名）精确相等。
+    Tier 1（模糊）：纯中日韩变体与标题有足够长的公共子串（防"虎子"→"老虎和兔子"
+    类错配）；此时查询里的拉丁关键词必须在标题里出现过（防"S.H.E 安可场"配到
+    "蔡依林 安可场"），同 tier 内用"全查询与标题的最长公共子串"排名消歧
+    （如"高达0079"应在 SEED 之前选中 0079）。
+    另：文件名里有年份而 TMDB 条目年份对不上，直接否决。
+    """
+    variants = _query_variants(query)
+    names = [_norm_text(hit.get(k)) for k in ("name", "title", "original_name", "original_title")]
+    names = [n for n in names if n]
+    if not variants or not names:
+        return None
+    for v in variants:
+        if v in names:
+            return (2, len(v))
+    if not fuzzy_ok:
+        return None
+    latin_ok = all(any(w in hn for hn in names) for w in _latin_words(query))
+    if not latin_ok:
+        return None
+    raw_norm = _norm_text(raw_name)
+    best = None
+    for v in variants:
+        if re.search(r"[a-z]", v):
+            continue
+        for hn in names:
+            lcs = _lcs_len(v, hn)
+            short = min(len(v), len(hn))
+            if lcs >= 6 and short > 0 and lcs / short >= 0.5:
+                rank = _lcs_len(raw_norm, hn)
+                if best is None or rank > best:
+                    best = rank
+    if best is None:
+        return None
+    m = _YEAR_RE.search(raw_name or "")
+    if m:
+        qy = m.group(1)
+        hy = (hit.get("first_air_date") or hit.get("release_date") or "")[:4]
+        if hy and hy != qy:
+            return None
+    return (1, best)
+
+
+
 def _split_keys(raw: str) -> list[str]:
     """多 key 切分：逗号 / 换行 / 空白分隔，去重保序"""
     parts = re.split(r"[\s,;，；]+", str(raw or ""))
@@ -258,16 +413,17 @@ class TmdbClient:
                     cache.pop(old, None)
             cache[key] = (now, value)
 
-    def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
+    def _search_raw(self, query: str, year: Optional[int], kind: str) -> list:
+        """原始搜索（带缓存），返回 results 列表。"""
         self._ensure_session()
         if not self.session:
-            return None
+            return []
         endpoint = "tv" if kind == "series" else "movie"
-        key = ("search", endpoint, name, year or 0)
+        key = ("search", endpoint, query, year or 0)
         cached = self._cache_get(key)
         if cached is not _MISS:
-            return cached
-        params: dict = {"language": TMDB_LANG, "query": name}
+            return cached or []
+        params: dict = {"language": TMDB_LANG, "query": query}
         if year:
             if endpoint == "tv":
                 params["first_air_date_year"] = year
@@ -275,9 +431,26 @@ class TmdbClient:
                 params["year"] = year
         data = self._get(f"/search/{endpoint}", params)
         results = (data or {}).get("results") or []
-        hit = results[0] if results else None
-        self._cache_put(key, hit)
-        return hit
+        self._cache_put(key, results)
+        return results
+
+    def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
+        """智能搜索：清洗查询 → 多候选 → 置信度校验，只返回高置信命中。
+
+        无高置信命中时返回 None（调用方按既有口径记 last_scraped_at，
+        条目名字保持原样，绝不写错）。
+        """
+        best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
+        for query, fuzzy_ok in _search_candidates(name):
+            try:
+                results = self._search_raw(query, year, kind)
+            except Exception:  # noqa: BLE001 — 单个候选失败换下一个
+                continue
+            for hit in results[:10]:
+                sc = _hit_score(name, query, hit, fuzzy_ok)
+                if sc and (best is None or sc > best[:2]):
+                    best = (sc[0], sc[1], hit)
+        return best[2] if best else None
 
     def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
         """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用"""
