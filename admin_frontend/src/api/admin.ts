@@ -353,6 +353,14 @@ export const fetchServersOverview = (params: { realm_id?: number; live?: boolean
 
 export const fetchServersSummary = () => get<ServerSummary>(`${S}/summary`)
 
+export interface BackendServiceStatus {
+  name: string; role: string; status: string
+  last_heartbeat?: number | null; lag_seconds?: number | null
+  pid?: number; started_at?: number; timestamp?: number
+}
+export const fetchBackendServices = () =>
+  get<{ success: boolean; services: BackendServiceStatus[] }>(`${E}/services/status`)
+
 export interface ServerPayload {
   name: string
   kind: ServerKind

@@ -43,6 +43,7 @@ from backend.emby_server import nodes as node_lib
 from backend.emby_server import maintenance
 from backend import reminders
 from backend.api.admin_ops import admin_ops_router
+from backend.api.admin_services import services_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
@@ -379,6 +380,7 @@ app.include_router(user_router)
 # 管理后台 API 路由
 app.include_router(admin_router)
 app.include_router(admin_ops_router)
+app.include_router(services_router)
 # 订阅到期提醒的面板口径与手动执行（见 backend/api/reminders_admin.py）
 app.include_router(admin_reminders_router)
 # 订单关单与退款（见 backend/api/orders_admin.py）
