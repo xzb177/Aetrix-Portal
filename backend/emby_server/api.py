@@ -319,29 +319,102 @@ def _parent_dir(file_path):
     return file_path.rsplit("/", 1)[0]
 
 
+def _version_base_name(file_path):
+    """文件名去掉扩展名和" - 版本后缀"后的主名。
+
+    例如 "1314容祖儿演唱会 (2014) - 1080p.mkv" -> "1314容祖儿演唱会 (2014)"。
+    同一资源的不同版本通常只有" - "后面的版本描述不同。
+    """
+    if not file_path or "/" not in file_path:
+        return None
+    fname = file_path.rsplit("/", 1)[1]
+    if "." in fname:
+        fname = fname.rsplit(".", 1)[0]
+    if " - " in fname:
+        fname = fname.split(" - ", 1)[0]
+    return fname.strip() or None
+
+
+def _series_source_dir(item, db):
+    if item.item_type != "series":
+        return None
+    row = (
+        db.query(em.MediaItem.file_path)
+        .filter(
+            em.MediaItem.parent_id.in_(
+                db.query(em.MediaItem.id).filter(
+                    em.MediaItem.parent_id == item.id,
+                    em.MediaItem.item_type == "season",
+                )
+            ),
+            em.MediaItem.item_type == "episode",
+            em.MediaItem.file_path.isnot(None),
+        )
+        .first()
+    )
+    if not row or not row[0]:
+        return None
+    fp = row[0]
+    parts = fp.split("/")
+    for i, p in enumerate(parts):
+        if p.startswith("Season"):
+            return "/".join(parts[:i])
+    return _parent_dir(fp)
+
+def _series_siblings(item, db):
+    if item.item_type != "series":
+        return []
+    src = _series_source_dir(item, db)
+    if not src:
+        return []
+    cands = (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.library_id == item.library_id,
+            em.MediaItem.item_type == "series",
+            em.MediaItem.name == item.name,
+            em.MediaItem.is_hidden == False,
+        )
+        .order_by(em.MediaItem.id)
+        .all()
+    )
+    return [s for s in cands if _series_source_dir(s, db) == src]
+
+def _is_primary_series(item, db):
+    try:
+        sibs = _series_siblings(item, db)
+    except Exception:
+        return True
+    if len(sibs) <= 1:
+        return True
+    return sibs[0].id == item.id
+
 def _version_siblings(item, db):
-    """找同一电影的所有版本：同库、同目录、**同名**的 movie 条目。
+    """找同一电影的所有版本：同库、同目录、**同主文件名**的 movie 条目。
 
     只对 movie 类型生效（剧集的单集即便同目录也是不同集，不合并）。
-    同名是关键：避免把同一目录下不同电影误判为版本（测试残留等场景）。
+    用文件名（而非数据库 name 字段）分组：name 字段常带"576p""DIY中字"等版本后缀，
+    导致同一资源的不同版本 name 不同，无法合并；文件名去掉" - 版本"后缀后才是真同名。
     """
     if item.item_type != "movie":
         return []
     pdir = _parent_dir(item.file_path)
-    if not pdir:
+    base = _version_base_name(item.file_path)
+    if not pdir or not base:
         return []
-    return (
+    cands = (
         db.query(em.MediaItem)
         .filter(
             em.MediaItem.library_id == item.library_id,
             em.MediaItem.item_type == "movie",
-            em.MediaItem.name == item.name,
             em.MediaItem.is_hidden == False,
             em.MediaItem.file_path.like(pdir + "/%"),
         )
         .order_by(em.MediaItem.id)
         .all()
     )
+    # 二次过滤：主文件名相同才算同一版本组（避免同目录下不同电影误合并）
+    return [s for s in cands if _version_base_name(s.file_path) == base]
 
 
 def _is_primary_version(item, db):
@@ -1287,6 +1360,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     deduped = []
     seen_dirs = set()
     for it in items:
+        if it.item_type == "series":
+            if not _is_primary_series(it, db):
+                continue
         if it.item_type == "movie":
             pdir = _parent_dir(it.file_path)
             if pdir and pdir in seen_dirs:
