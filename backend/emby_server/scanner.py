@@ -299,6 +299,21 @@ def item_guid(path: str) -> str:
     return hashlib.md5(("rb:item:" + path.lower()).encode("utf-8")).hexdigest()
 
 
+def _file_fingerprint(scan_file: "ScanFile") -> str:
+    """文件指纹：秒跳未变更文件的唯一依据。
+
+    本机文件用 path|size|mtime_ns（一次 os.stat，多一个系统调用）；
+    远程挂载拿不到 mtime（多一次 API 太贵），用 path|size。
+    大小变了一定命中不了；同名替换但大小时间都一样是玄学，接受。
+    """
+    if scan_file.mtime_ns is not None:
+        raw = "|".join((scan_file.stored_path, str(scan_file.size),
+                        str(scan_file.mtime_ns)))
+    else:
+        raw = "|".join((scan_file.stored_path, str(scan_file.size)))
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
 def _tidy_name(raw: str) -> str:
     """清洗片名；结果只剩分隔符时返回空（供回退到目录名用）"""
     out = clean_name(raw or "")
@@ -641,6 +656,7 @@ class ScanFile:
     container: str = ""           # 已知容器（strm 取直链里的真实容器）
     mount_id: Optional[int] = None
     rel: str = ""
+    mtime_ns: Optional[int] = None  # 本机文件=st_mtime_ns；远程挂载无mtime，记None""
     provider: Any = None
     local_target: Any = None      # 本机可读来源的播放目标（strm 的直链在这里）
     _target: Any = None
@@ -685,9 +701,14 @@ def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
             container = ext.lstrip(".")
             if container == "strm":
                 container = mount_lib.strm_container(target.value)
+            try:
+                _mtime_ns = os.stat(full_path).st_mtime_ns
+            except OSError:
+                _mtime_ns = None
             yield ScanFile(
                 stored_path=full_path, name=fname, local_dir=dirpath,
                 size=_safe_size(full_path), container=container, local_target=target,
+                mtime_ns=_mtime_ns,
             )
 
 
@@ -866,6 +887,9 @@ class _Pending:
     series_nfo_data: Any = None     # tvshow.nfo 解析结果（episode 用）
     season_nfo_data: Any = None     # season.nfo 解析结果（episode 用）
     skipped: bool = False  # 增量扫描：目录没变且库里已是最新 → 本次不做任何写库工作
+    fast_skipped: bool = False  # 分层 L1 秒跳：文件指纹命中且已补全 → 连目录指纹都不算
+    file_fingerprint: Optional[str] = None  # 本批算出的文件指纹，写库时落库
+    layered: bool = False  # 分层 L1：本文件只做极简入库，IO 全留给后台
 
 
 @dataclass
@@ -924,6 +948,15 @@ class _ScanContext:
 # 远程挂载同样参与：目录列举本来就要做（图片/字幕判定用同一份列表），指纹只是复用
 # 那份列表，不额外增加任何网络往返。SCAN_INCREMENTAL=0 可整体关掉（回到每次全量处理）。
 SCAN_INCREMENTAL = (os.getenv("SCAN_INCREMENTAL", "1") or "1").strip().lower() \
+    not in {"0", "false", "no", "off"}
+
+
+# 分层扫描 L1/L2 总开关（v2.40.0）：1=开（默认）。
+# 开：Phase 1 只做文件发现+指纹+极简入库（秒级可见），side/NFO/TMDB 全部
+#     交给后台 enrich_worker 补全；关：回到旧行为（Phase 1 内联做完所有事）。
+# 探测：background 模式走 probe_worker（不变）；inline 模式在分层下也推迟到
+#     enrich_worker 排队（避免远程直链拖慢秒级入库），关分层则恢复当场探测。
+SCAN_LAYERED = (os.getenv("SCAN_LAYERED", "1") or "1").strip().lower() \
     not in {"0", "false", "no", "off"}
 
 
@@ -1376,6 +1409,20 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         pending.item = item
         scan_file = pending.scan_file
         is_new = item is None
+        # 分层扫描 L1 秒跳：文件指纹是「文件本身变没变」的唯一依据，一次哈希比较。
+        # 命中（且 L2/L3 已补全、没被标记重修）→ 本文件本轮零 IO：不算目录指纹、
+        # 不提交 probe/side/NFO/TMDB，写库循环里只记 unchanged。
+        # 注意顺序：这个检查必须在目录指纹之前——目录指纹要列目录（远程=网络 IO），
+        # 文件指纹是纯内存计算。旧 _can_skip_file 保留做兜底（指纹缺失的老数据）。
+        file_fp = _file_fingerprint(scan_file)
+        pending.file_fingerprint = file_fp
+        if (not is_new
+                and (getattr(item, "file_fingerprint", None) or None) == file_fp
+                and (getattr(item, "enrich_status", None) or "pending") == "done"
+                and not getattr(item, "repair_requested_at", None)):
+            pending.fast_skipped = True
+            ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
+            continue
         # 目录没变、库里这一行也是最新的 → 不做任何逐文件工作（guid 已在上面记进 seen_guids）
         dir_key = _dir_key_of(scan_file)
         fingerprint = _dir_fingerprint(ctx, scan_file) if SCAN_INCREMENTAL else None
@@ -1390,23 +1437,31 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             ctx.dirty_dirs[dir_key] = fingerprint   # 这个目录这批真处理了 → 提交时写回指纹
         pending.probe_needed = bool(is_new or needs_probe(item, scan_file.stored_path,
                                                              scan_file.size))
+        if SCAN_LAYERED and not pending.fast_skipped:
+            # 分层 L1：本文件只做极简入库，side/NFO/TMDB 全跳过（后台 enrich_worker 补）。
+            # 写库循环里这些 Future 都是 None，天然只写基础字段；enrich_status='pending'。
+            pending.layered = True
         if pending.probe_needed:
             if PROBE_BACKGROUND:
                 # Phase 1：不提交 ffprobe（连 probe_input 的直链解析都省了），
                 # 写库时把条目标 probe_status='pending' 交给后台 worker。
                 pending.probe_deferred = True
-            else:
+            elif not pending.layered:
+                # 非分层旧行为：inline 模式当场探测
                 pending.probe = pool.submit(probe_metadata, *scan_file.probe_input(), size=scan_file.size)
-        pending.side = pool.submit(_side_info, ctx, scan_file)
+            # 分层 + inline：L1 不探（避免远程直链拖慢秒级入库），
+            # enrich_worker 补全时把 probe_status 置 pending，probe_worker 接手
+        if not pending.layered:
+            pending.side = pool.submit(_side_info, ctx, scan_file)
         # NFO 发现与解析（与 probe / side / TMDB 并行；结果在下面先取回，
         # TMDB 预取口径按 NFO 有无决定：有 tmdb_id 就不调搜索）
-        if pending.item_type in ("series", "movie", "episode"):
+        if pending.item_type in ("series", "movie", "episode") and not pending.layered:
             pending.nfo = pool.submit(_nfo_work, ctx, scan_file, pending.item_type)
 
     # NFO 先取回（小文件 IO），再决定 TMDB 预取口径——搜索是扫描里最贵的网络调用，
     # 远端已有 NFO 刮削的条目直接跳过它（B 方案：TMDB 只在缺图/缺详情时调详情接口）。
     for pending in prepared:
-        if pending.skipped:
+        if pending.skipped or pending.fast_skipped or pending.layered:
             continue
         nfo_data, series_nfo_data, season_nfo_data = (
             _result(pending.nfo, default=(None, None, None)) or (None, None, None)
@@ -1485,7 +1540,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     # 如果等到写库循环里再取结果，SQLite 的写锁就要陪着一起等（超过 busy_timeout=30s
     # 就是那句 database is locked，前端表现是 30 秒超时）。
     for pending in prepared:
-        if pending.skipped:
+        if pending.skipped or pending.fast_skipped or pending.layered:
             continue
         pending.probe_data = _result(pending.probe)
         pending.side_data = _result(pending.side)
@@ -1536,13 +1591,13 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
                 logger.warning("媒体库 %s 在扫描期间被删除，扫描提前结束", ctx.lib_id)
                 return
             yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool)
-                        if not p.skipped)
+                        if not p.skipped and not p.fast_skipped)
             _store_dir_states(db, ctx)   # 增量扫描：这批真处理过的目录指纹随本次提交写回
             batch = []
             commit_batch()  # 一批一次提交：几百个文件才一次 fsync
         if batch:
             yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool)
-                        if not p.skipped)
+                        if not p.skipped and not p.fast_skipped)
             _store_dir_states(db, ctx)
             commit_batch()
     finally:
@@ -2129,6 +2184,19 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item.production_year = parsed["year"]
                     item.file_path = full_path
                     item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
+                    # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
+                    # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；
+                    # 非 layered=旧行为（本轮已做完所有补全）→ done。
+                    if _pending.file_fingerprint:
+                        item.file_fingerprint = _pending.file_fingerprint
+                    if _pending.layered:
+                        item.enrich_status = "pending"
+                    elif (getattr(item, "enrich_status", None) or "pending") == "pending":
+                        # 非分层路径本轮已做完补全（side/NFO/TMDB 都在上面处理了），标 done。
+                        # 注意：series/season 骨架行由 episode 分支创建，它们走 L2 补全，
+                        # 这里不抢标（它们的 enrich_status 由 enrich_worker 负责）。
+                        if _pending.item_type in ("movie", "episode"):
+                            item.enrich_status = "done"
                     platforms = detect_platforms(full_path)  # 发行平台标签（虚拟媒体库用）
                     if platforms:
                         item.platforms = ",".join(platforms)

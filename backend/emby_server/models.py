@@ -148,6 +148,14 @@ class MediaItem(Base):
     date_added = Column(DateTime, default=datetime.now)
     premiere_date = Column(DateTime)
     date_modified = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    # 分层扫描（v2.40.0）：L1 只做文件发现与秒跳，L2/L3 后台补全元数据。
+    # file_fingerprint: 文件指纹（本地=path|size|mtime_ns，远程=path|size 的 md5）。
+    #   指纹命中且 enrich_status='done' 时整文件秒跳，不做任何 IO。
+    # enrich_status: 补全状态 pending=待补全（L2/L3 排队中） done=已补全。
+    #   「文件变没变」与「元数据全不全」解耦——旧 _can_skip_file 把条件绞在一起，
+    #   配了 TMDB 的剧集库每轮都全量重做，增量形同虚设，这是根因。
+    file_fingerprint = Column(String(64), index=True)
+    enrich_status = Column(String(20), default='pending', index=True)
 
 
 from sqlalchemy.orm import relationship  # noqa: E402

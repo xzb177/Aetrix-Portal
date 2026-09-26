@@ -128,6 +128,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
 
+    # 分层扫描 L2/L3（v2.40.0）：SCAN_LAYERED=1 时启动后台补全 worker，
+    # 把 L1 落下的待补全条目（side 图片/NFO/TMDB）慢慢补完。失败不影响启动。
+    try:
+        from backend.emby_server import enrich_worker
+        enrich_worker.start()
+        logger.info("后台补全 worker 已启动（分层扫描 L2/L3）")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"启动补全 worker 失败（可忽略）: {e}")
+
     # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
     # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
     try:

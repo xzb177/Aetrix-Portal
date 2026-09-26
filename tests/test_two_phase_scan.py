@@ -114,6 +114,8 @@ def _scan_one_file(tmp_path, monkeypatch, background: bool, probe_impl):
             return dict(probe_impl)
         monkeypatch.setattr(scanner, "probe_metadata", fake_probe)
     monkeypatch.setattr(scanner, "PROBE_BACKGROUND", background)
+    # v2.40 分层扫描默认开启，会推迟探测；这里测的是 v2.39 两阶段契约，显式关闭分层
+    monkeypatch.setattr(scanner, "SCAN_LAYERED", False)
 
     movie = tmp_path / "Test Movie (2024).mp4"
     movie.write_bytes(b"\x00" * 64)
