@@ -32,6 +32,7 @@ import {
   fetchServers,
   fetchSessions,
   fetchAutoScan,
+  fetchChaseNew,
   fetchTmdbKeys,
   generateVirtualLibraries,
   removeLibraryCover,
@@ -40,6 +41,7 @@ import {
   runRepairQueue,
   scanLibrary,
   saveAutoScan,
+  saveChaseNew,
   saveTmdbKeys,
   testTmdbKeys,
   stopAllTranscodes,
@@ -47,7 +49,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, TmdbKeysStatus, TmdbTestResult } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
