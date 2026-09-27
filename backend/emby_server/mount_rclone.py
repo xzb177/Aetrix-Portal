@@ -186,11 +186,39 @@ def run_rclone(args: list[str], *, bin_path: str = "", config: str = "",
     return proc.stdout or b""
 
 
+def _classify_404(path: str, resp) -> mount_lib.MountError:
+    """把 rclone RC 的 404 分成两类：方法不存在 vs 路径不存在。
+
+    rclone 对两者都用 404，响应体里的 ``error`` 字段是唯一能区分的东西：
+
+    - ``couldn't find method "operations/listfile"`` → 方法不存在
+      （此时回退到别的接口才是合理的）
+    - ``error in ListJSON: directory not found`` → 路径写错了
+      （这时再回退只是把真实原因藏起来，用户永远不知道为什么）
+
+    响应体读不出来时按「方法不存在」处理：宁可多试一次，也不要吞掉真实报错。
+    """
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        return mount_lib.MountMethodMissing(
+            f"rclone RC 没有这个接口: {path}（该 rclone 版本不提供）")
+    detail = ""
+    if isinstance(body, dict):
+        detail = str(body.get("error") or "").strip()
+    if detail and "couldn't find method" in detail.lower():
+        return mount_lib.MountMethodMissing(
+            f"rclone RC 没有这个接口: {path}（该 rclone 版本不提供）")
+    if detail:
+        return mount_lib.MountError(f"rclone: {detail}")
+    return mount_lib.MountError(f"rclone RC 未找到: {path}（HTTP 404，未带原因）")
+
+
 def rc_call(rc_url: str, path: str, payload: Optional[dict] = None, *,
             username: str = "", password: str = "", timeout: float = 0):
     """调用 rclone RC API（未开启 RC 时给出可操作的提示）
 
-    返回 RC 的原始 JSON：多数接口是 dict，``/operations/listfile`` 这类直接返回数组。
+    返回 RC 的原始 JSON。
 
     凭据优先级：调用方传入的 → 服务器 .env 里统一配置的。传入的若被 RC 拒绝（401/403），
     自动回退到服务器配置再试一次：挂载表单里填错密码不该让整条挂载永远用不了，
@@ -229,7 +257,12 @@ def rc_call(rc_url: str, path: str, payload: Optional[dict] = None, *,
     if resp.status_code in (401, 403):
         raise MountAuthError("rclone RC 拒绝访问（HTTP %s），请检查 RC 用户名 / 密码" % resp.status_code)
     if resp.status_code == 404:
-        raise MountError(f"rclone RC 没有这个接口: {path}（该 rclone 版本不提供）")
+        # rclone 对「方法不存在」和「目录/文件不存在」都返 404，靠响应体区分：
+        #   couldn't find method "operations/xxx"   -> 方法不存在
+        #   error in ListJSON: directory not found  -> 路径不存在
+        # 以前把 404 一律当「方法不存在」，于是配错目录的人看到的是
+        # 「该 rclone 版本不提供这个接口」，被指去了完全错误的方向。
+        raise _classify_404(path, resp)
     if resp.status_code >= 400:
         raise MountError(f"rclone RC 返回 HTTP {resp.status_code}")
     try:
@@ -257,24 +290,24 @@ def list_remotes(rc_url: str = "", *, username: str = "", password: str = "",
 
 def _rc_list_items(rc_url: str, fs: str, remote: str, *, username: str = "",
                     password: str = "") -> list[dict]:
-    """列目录：同时兼容 rclone 新旧两套 RC 接口。
+    """列目录：只用 ``/operations/list``。
 
-    - 旧版 rclone：``/operations/list``，返回 ``{"list": [FileInfo, ...]}``；
-    - 新版 rclone（≥ 1.65 起逐步替换，1.71 已移除旧接口）：
-      ``/operations/listfile``，直接返回 ``[FileInfo, ...]`` 数组。
+    原先这里有一段「404 就回退到 ``/operations/listfile``」的兼容分支，注释说
+    rclone ≥1.65 用新接口替换、1.71 已移除旧接口。**那个前提是错的**：
 
-    先试旧的（老部署零影响），404 再落到新的 —— 否则只把 rclone 升个版本，挂载就全废。
+    - rclone master 的 ``fs/operations/rc.go`` 注册的 11 个方法里没有 ``listfile``；
+    - 仓库里也不存在任何名为 listfile 的文件；
+    - 实测 rclone 1.71.1：``/operations/list`` → 200，
+      ``/operations/listfile`` → 404 ``couldn't find method``。
+
+    所以主路径一直是对的，回退分支是**指向不存在接口的死代码**。它真正的害处
+    是把「目录不存在」也吞了：rclone 对两者都返 404，落到这个分支后用户看到的是
+    「该 rclone 版本不提供这个接口」，被指去了完全错误的方向。
+
+    404 的两种含义现在由 ``_classify_404`` 区分，真实原因会原样抛给调用方。
     """
-    try:
-        body = rc_call(rc_url, "/operations/list", {"fs": fs, "remote": remote},
-                       username=username, password=password)
-    except MountError as exc:
-        if "没有这个接口" not in str(exc):
-            raise
-        body = rc_call(rc_url, "/operations/listfile", {"fs": fs, "remote": remote},
-                       username=username, password=password)
-        logger.info("rclone RC 使用新接口 /operations/listfile 列目录 %s", fs)
-        return [i for i in (body if isinstance(body, list) else []) if isinstance(i, dict)]
+    body = rc_call(rc_url, "/operations/list", {"fs": fs, "remote": remote},
+                   username=username, password=password)
     return [i for i in ((body or {}).get("list") or []) if isinstance(i, dict)]
 
 
@@ -404,8 +437,7 @@ class RcloneMount(_CloudMount):
         if self.mode == MODE_CLI:
             items = self._cli_lsjson(rel)
         else:
-            # 新老 rclone 的 RC 列目录接口差异（/operations/list → /operations/listfile）
-            # 统一由 _rc_list_items 兜住，这里只管字段对齐
+            # rc 模式统一由 _rc_list_items 调 /operations/list，这里只管字段对齐
             items = _rc_list_items(self.rc_url, self._require_fs(), self._rel_remote(rel),
                                    username=self.rc_user, password=self.rc_pass)
         return [
