@@ -81,6 +81,58 @@ services:
       start_period: 60s
       retries: 3
 
+  # Emby 协议网关（EA）。第三方播放器直连这个端口 —— 它不在 aetrix-api 进程里，
+  # 但要读同一份数据库、同一份 rclone.conf（直链要现取 Google file ID 与 access token）。
+  #
+  # 曾经是手工 docker run 起的孤儿容器（没有 compose 标签），带来三个问题：
+  #   1. `docker compose up -d` 不会重建它，镜像更新后 EA 还跑在旧代码上；
+  #      `docker compose down` 也不会收它；
+  #   2. 健康检查探的是 8000，而 emby_api 实际监听 8001，于是永远 unhealthy；
+  #   3. 没有 ports 映射，EA 只在 docker 网络内可达，面板里登记的对外地址连不上。
+  ea:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aetrix-portal:latest
+    container_name: aetrix-ea
+    restart: unless-stopped
+    command: ["python", "-m", "emby_api.main"]
+    env_file:
+      - .env
+    environment:
+      AETRIX_ROLE: ea
+      # emby_api 真正读的是 EMBY_API_PORT（默认 8001）；AETRIX_PORT 仅为排障时对齐日志。
+      AETRIX_PORT: 8001
+      EMBY_API_PORT: 8001
+      DATABASE_TYPE: ${DATABASE_TYPE:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/aetrix_unified.db}
+      # 直链（302）：文件 ID 走 rclone RC，access token 从 rclone.conf 现读现刷。
+      ENABLE_DIRECT_URL: ${ENABLE_DIRECT_URL:-true}
+      RCLONE_CONF_PATH: /config/rclone/rclone.conf
+      RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+    ports:
+      # 面板里 EMBY_API_PUBLIC_URL 登记的就是这个端口，必须真的映射出去。
+      - "${EA_PORT:-8001}:8001"
+    volumes:
+      - aetrix_data:/data
+      # 与 rclone 服务挂同一份配置：直链要读 token，服务账号 remote 也要能解析到路径。
+      # 之前这里写的是 /opt/aetrix-portal/rclone.conf，那个文件已随仓库清理被删除，
+      # 容器一旦重启就会挂成空目录，直链随之失效。
+      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
+      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts:ro
+    depends_on:
+      rclone:
+        condition: service_started
+    # 必须探 EA 真正监听的端口（8001）。探 8000 会让健康检查永远失败，
+    # 而 update.sh 之后按容器健康度判断，误报会掩盖真实故障。
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     container_name: aetrix-redis
