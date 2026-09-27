@@ -217,7 +217,10 @@ def enabled() -> bool:
     """后台探测是否启用（读 scanner 的统一开关）"""
     from backend.emby_server import scanner as _sc
 
-    return bool(_sc.PROBE_BACKGROUND)
+    # background 模式：扫描器延迟探测，必须跑 worker。
+    # layered+inline：enrich_worker 会把远程文件的探测置为 pending，也需要 worker 消费，
+    # 否则 pending 任务成孤儿，元数据永远填不上（P0-5）。
+    return bool(_sc.PROBE_BACKGROUND or _sc.SCAN_LAYERED)
 
 
 def reset_stale_probing(db=None) -> int:
