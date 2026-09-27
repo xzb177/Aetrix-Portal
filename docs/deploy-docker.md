@@ -89,6 +89,49 @@ docker compose exec aetrix sh -c 'sqlite3 /data/aetrix_unified.db ".backup /data
 
 当前 Compose 直接暴露 `AETRIX_PORT`。接入 Nginx/Caddy 时只反代到 `127.0.0.1:8000`，外部 HTTPS 终止在反代层；不要把 Redis 端口暴露公网。
 
+### 反代下的限流 IP（`TRUSTED_PROXIES`）
+
+**接了 Nginx / Caddy 就必须配这一项，否则全站用户共用一个限流桶。**
+
+`backend/ratelimit.py` 只在「TCP 直连方是可信代理」时才采信 `X-Real-IP` / `X-Forwarded-For`
+（防伪造：这两个头客户端可以随便写，无条件采信等于限流形同虚设）。
+默认只信回环 `127.0.0.0/8`。
+
+问题在于 Compose 部署下，请求的路径是「Nginx（宿主机）→ 宿主机端口 → docker-proxy → 容器」，
+容器看到的直连方是 **docker 网关**（实测 `172.18.0.1`），不是回环 → 判定为不可信 →
+nginx 写好的 `X-Real-IP` 被忽略 → **每个用户的 IP 都变成网关地址**。
+
+登录限流是每分钟 10 次，于是所有人共用这一个桶，任意一个人多试几次就会把全站 429 锁在门外。
+
+先查网段（不要照抄 `172.18`，不同机器不同）：
+
+```bash
+docker network inspect aetrix-portal_default --format '{{range .IPAM.Config}}subnet={{.Subnet}} gw={{.Gateway}}{{end}}'
+# 例：subnet=172.18.0.0/16 gw=172.18.0.1
+```
+
+再写进 `.env`：
+
+```bash
+TRUSTED_PROXIES=172.18.0.0/16
+```
+
+配置生效后应同时成立：
+
+- 真实用户经反代访问 → 拿到**各自**的真实 IP（限流各算各的）；
+- 直连并伪造 `X-Real-IP` / `XFF` → 被忽略，用直连 IP（防伪生效）。
+
+部署后可以在容器内验证这两条：
+
+```bash
+docker exec aetrix-api python3 -c "
+import os; from backend.ratelimit import _is_trusted_proxy
+print('TRUSTED_PROXIES =', os.getenv('TRUSTED_PROXIES'))
+print('网关可信 =', _is_trusted_proxy('172.18.0.1'))"
+```
+
+容器直连（`request.client.host` 是 `127.0.0.1`）时不需要配，回环默认可信。
+
 ## 安全要求
 
 - `SECRET_KEY` 至少 32 字符，EM/EA 必须一致；
