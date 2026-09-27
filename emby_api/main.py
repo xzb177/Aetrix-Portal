@@ -247,6 +247,70 @@ if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
 else:  # pragma: no cover — 旧版 Starlette 没有按内容类型排除的参数
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+
+# ============ API 限流（Redis 固定窗口）============
+# EA 公网暴露，需防滥用；健康检查不限流
+_EA_RATE_LIMITS = [
+    ("/api/health", 0, 0),              # 健康检查：不限流
+    ("/api/admin/emby/login", 10, 10),  # 登录：防暴力破解
+    ("/api/user/login", 10, 10),
+    ("/api/", 120, 600),               # 普通 API
+]
+
+def _ea_get_ip(request) -> str:
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    xri = request.headers.get("x-real-ip", "").strip()
+    if xri:
+        return xri
+    return request.client.host if request.client else "unknown"
+
+def _ea_is_auth(request) -> bool:
+    auth = request.headers.get("authorization", "")
+    token = request.headers.get("x-emby-token", "") or request.headers.get("x-mediabrowser-token", "")
+    return bool(auth or token)
+
+def _ea_check_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, str]:
+    for prefix, limit_anon, limit_auth in _EA_RATE_LIMITS:
+        if path.startswith(prefix):
+            limit = limit_auth if authenticated else limit_anon
+            if limit == 0:
+                return True, ""
+            try:
+                from backend import database as db
+                r = db.redis_client
+                if r is None:
+                    return True, ""
+                import time
+                window = int(time.time() // 60)
+                auth_tag = "auth" if authenticated else "anon"
+                key = f"ratelimit:ea:{ip}:{prefix}:{auth_tag}:{window}"
+                count = r.incr(key)
+                if count == 1:
+                    r.expire(key, 70)
+                if count > limit:
+                    return False, f"每分钟最多 {limit} 次"
+            except Exception:
+                return True, ""
+            return True, ""
+    return True, ""
+
+@app.middleware("http")
+async def ea_rate_limit_middleware(request, call_next):
+    if request.url.path.startswith("/api/"):
+        ip = _ea_get_ip(request)
+        authenticated = _ea_is_auth(request)
+        allowed, reason = _ea_check_limit(ip, request.url.path, authenticated)
+        if not allowed:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"error": "请求太频繁，请稍后再试", "reason": reason},
+                headers={"Retry-After": "60"},
+            )
+    return await call_next(request)
+
 # 下载策略兜底：站点关闭下载时，/Download 与 /Items/{id}/File 等路径在网关层拦截
 app.add_middleware(DownloadGuardMiddleware)
 
@@ -263,6 +327,19 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.mount("/metrics", MetricsGuard(make_asgi_app()))
 
 
+def _redis_status() -> dict:
+    """Redis 连通性（健康检查用；异常不抛，只报告）"""
+    try:
+        from backend import database as db
+        r = db.redis_client
+        if r is None:
+            return {"ok": False, "reason": "not_configured"}
+        r.ping()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)[:100]}
+
+
 @app.get("/api/health")
 async def health_check():
     """EA 健康检查：同时报告与 EM 的配对状态"""
@@ -277,6 +354,7 @@ async def health_check():
         "missing_em_tables": missing,
         "em_panel_url": _panel_url() or None,
         "emby_server_name": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
+        "redis": _redis_status(),
         # 多机 / 多服部署的关键信息：这台 EA 是谁、属于哪个服、只提供什么内容
         "node": _node_info(),
         # 长期运行的体检口径：正在扫描的库 / 转码会话 / 临时目录占用 / 磁盘余量
