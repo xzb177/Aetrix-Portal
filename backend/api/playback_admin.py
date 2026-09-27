@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from backend import playback_policy
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
+from backend.ratelimit import get_client_ip
 from backend.emby_server import mount_health
 from backend.emby_server.streaming import (
     active_transcode_ids,
@@ -83,7 +84,5 @@ def update_playback_policy(
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for") or ""
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    # 统一用防伪造的 IP 获取（可信代理校验），保留函数名做兼容
+    return get_client_ip(request)

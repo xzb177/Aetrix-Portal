@@ -23,6 +23,7 @@ from datetime import datetime
 from prometheus_client import make_asgi_app
 
 from backend.metrics_guard import MetricsGuard
+from backend.ratelimit import get_client_ip
 from sqlalchemy import text
 
 from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
@@ -240,16 +241,14 @@ RATE_LIMITS = [
 ]
 
 def _get_client_ip(request) -> str:
-    """获取真实客户端 IP（支持 nginx 代理）"""
-    # X-Forwarded-For 可能包含多个 IP，取第一个（最原始的客户端）
-    xff = request.headers.get("x-forwarded-for", "").strip()
-    if xff:
-        return xff.split(",")[0].strip()
-    # 备用：X-Real-IP
-    xri = request.headers.get("x-real-ip", "").strip()
-    if xri:
-        return xri
-    return request.client.host if request.client else "unknown"
+    """获取真实客户端 IP（防伪造）。
+
+    已统一使用 backend.ratelimit.get_client_ip：
+    只有直连方是可信代理（TRUSTED_PROXIES）时才信任 XFF/X-Real-IP，
+    否则用直连 IP，防止伪造头绕过限流。
+    保留此函数名做兼容。
+    """
+    return get_client_ip(request)
 
 def _is_authenticated(request) -> bool:
     """检查是否有认证头（简单判断，不验证有效性）"""

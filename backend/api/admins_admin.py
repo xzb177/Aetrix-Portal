@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from backend import admin_roles, models
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
+from backend.ratelimit import get_client_ip
 
 router = APIRouter(prefix="/api/admin/admins", tags=["管理后台·管理员与权限"])
 
@@ -220,8 +221,5 @@ def revoke_admin(
 
 
 def _client_ip(request: Request) -> str:
-    """审计日志里的来源 IP（反向代理后面取真实地址）"""
-    forwarded = request.headers.get("x-forwarded-for") or ""
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    """审计日志里的来源 IP（反向代理后面取真实地址，防伪造）"""
+    return get_client_ip(request)
