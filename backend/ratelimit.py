@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import ipaddress
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -69,6 +71,89 @@ def check_rate_limit(key: str, max_events: int, window_seconds: float) -> tuple[
     return _limiter.check(key, max_events, window_seconds)
 
 
+def _trusted_proxies() -> list:
+    """从环境变量 TRUSTED_PROXIES 解析可信代理列表。
+
+    格式：逗号分隔的 IP 或 CIDR，如 "127.0.0.1,172.18.0.0/16"
+    默认信任本地回环（127.0.0.0/8, ::1）。
+    """
+    raw = os.getenv("TRUSTED_PROXIES", "").strip()
+    nets = []
+    # 默认始终信任回环地址
+    for default in ("127.0.0.0/8", "::1/128"):
+        try:
+            nets.append(ipaddress.ip_network(default))
+        except ValueError:
+            pass
+    if raw:
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                # 单个 IP 自动转为 /32 或 /128
+                if "/" not in part:
+                    nets.append(ipaddress.ip_network(part + ("/128" if ":" in part else "/32")))
+                else:
+                    nets.append(ipaddress.ip_network(part))
+            except ValueError:
+                # 配置写错了就忽略，不让服务起不来
+                continue
+    return nets
+
+
+def _is_trusted_proxy(ip: str) -> bool:
+    """直连 IP 是否在可信代理列表里"""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for net in _trusted_proxies():
+        try:
+            if addr in net:
+                return True
+        except TypeError:
+            # IPv4 vs IPv6 不匹配就跳过
+            continue
+    return False
+
+
+def get_client_ip(request) -> str:
+    """获取真实客户端 IP（防伪造）。
+
+    只有当直连方是可信代理（TRUSTED_PROXIES）时，才信任
+    X-Forwarded-For / X-Real-IP 头；否则直接用 request.client.host。
+
+    原理：XFF 和 X-Real-IP 都是客户端可伪造的请求头。只有当请求
+    确实经过我们自己的反代（nginx）时，这些头才可信——而判断依据
+    是 TCP 直连的对端 IP 是否在可信代理列表里（这个伪造不了）。
+
+    可信代理场景下的优先级：
+    1. X-Real-IP：nginx 按 $remote_addr 硬写
+    2. X-Forwarded-For 最后一段：最近一跳代理追加的
+    3. 直连 IP
+    """
+    if request is None:
+        return "unknown"
+    direct_ip = request.client.host if request.client else "unknown"
+
+    # 直连方不是可信代理：所有转发头都不可信，直接用直连 IP
+    if not _is_trusted_proxy(direct_ip):
+        return direct_ip
+
+    # 可信代理：X-Real-IP 优先（nginx 硬写，客户端伪造的会被覆盖）
+    real = (request.headers.get("x-real-ip") or "").strip()
+    if real:
+        return real
+    # 其次取 XFF 最后一段（最近一跳追加的才是真实客户端）
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        hops = [part.strip() for part in fwd.split(",") if part.strip()]
+        if hops:
+            return hops[-1]
+    return direct_ip
+
+
 def client_ip(request) -> str:
     """提取客户端 IP（只能信任我们自己的反代重新写入的头）
 
@@ -81,15 +166,7 @@ def client_ip(request) -> str:
     1. `X-Real-IP`：Nginx 按 `$remote_addr` 硬写，客户端无法伪造
     2. `X-Forwarded-For` 的**最后一段**：由最近一跳代理追加，才是真实客户端
     3. 直连时的 `request.client.host`
+
+    注意：已升级为可信代理校验版本（get_client_ip），保留此函数名做兼容。
     """
-    if request is None:
-        return "unknown"
-    real = (request.headers.get("x-real-ip") or "").strip()
-    if real:
-        return real
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        hops = [part.strip() for part in fwd.split(",") if part.strip()]
-        if hops:
-            return hops[-1]
-    return request.client.host if request.client else "unknown"
+    return get_client_ip(request)
