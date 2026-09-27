@@ -835,7 +835,6 @@ export const submitRcloneOAuthCode = (id: number, data: { code: string; redirect
 export const uploadRcloneServiceAccount = (id: number, file: File) => {
   const fd = new FormData()
   fd.append('file', file)
-  return post<{ success: boolean; filename: string; client_email: string; project_id: string }>(
-    `${E}/rclone/remotes/${id}/upload-sa`, fd,
-    { headers: { 'Content-Type': 'multipart/form-data' } })
+  return upload<{ success: boolean; filename: string; client_email: string; project_id: string }>(
+    `${E}/rclone/remotes/${id}/upload-sa`, fd)
 }
