@@ -225,6 +225,16 @@ class MountError(RuntimeError):
     """挂载不可用（配置错误、网络错误、路径不存在）"""
 
 
+class MountMethodMissing(MountError):
+    """rclone RC **没有这个方法**。
+
+    必须与「目录/文件不存在」分开：rclone 对两者都返 HTTP 404，只有响应体里的
+    ``error`` 字段能区分（``couldn't find method "x"`` vs ``directory not found``）。
+    以前一律当 404 = 方法缺失，于是配错目录的人看到的是「该 rclone 版本不提供
+    这个接口」——完全指错方向。
+    """
+
+
 class MountAuthError(MountError):
     """挂载的凭据失效（Cookie / 令牌 / 密码）——调用方应提示重新配置"""
 
