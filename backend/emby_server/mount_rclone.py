@@ -392,21 +392,19 @@ class RcloneMount(_CloudMount):
         只有真正取流时才炸，很容易被误判成「rc-serve 没开」。
         """
         fs = self._require_fs().rstrip("/")
-        # 配的 remote 名通常带尾冒号（"MP:"），rc-serve 的方括号形态要保留它
-        # （[MP:]/），但 serve http 是把 remote 挂在站点根上，路径里不能带冒号，
-        # 否则拼出来的 /MP:/x.mkv 会 404。
-        fs_serve = fs[:-1] if fs.endswith(":") else fs
         rel = (rel or "").lstrip("/").replace("\\", "/")
         tail = "/".join(
             urllib.parse.quote(seg, safe="") for seg in rel.split("/") if seg
         )
         if self.serve_url:
-            # `rclone serve http MP:` 把 remote 直接挂在站点根上，**不带**方括号：
-            #   http://rclone:8080/MoviePilot/xxx.mkv
-            # 而 rc-serve 要写成 http://rclone:5572/[MP:]/MoviePilot/xxx.mkv
+            # `rclone serve http MP:` 已经把 remote 挂在站点**根**上了，所以路径里
+            # **不能**再出现 remote 名（实测：带 /MP/ 前缀 404，直接用 / 才是 206）：
+            #   对：http://rclone:8080/MoviePilot/x.mkv
+            #   错：http://rclone:8080/MP/MoviePilot/x.mkv
+            # 而 rc-serve 的形态完全不同，要用方括号且保留尾冒号：
+            #   http://rclone:5572/[MP:]/MoviePilot/x.mkv
             # 两种形态不能混用，写错就是 404 且很难看出原因。
-            return (f"{self.serve_url}/{fs_serve}/{tail}" if tail
-                    else f"{self.serve_url}/{fs_serve}/")
+            return f"{self.serve_url}/{tail}" if tail else f"{self.serve_url}/"
         # 根（remote 自身）与子路径：都要先给 remote 套上 [ ]
         base = f"{self.rc_url}/[{fs}]"
         if not rel:

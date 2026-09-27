@@ -66,17 +66,28 @@ class TestServeHttpUrl:
     def test_no_bracket_in_serve_url(self):
         m = _mount(serve_url="http://rclone:8080")
         url = m._rc_play_url("MoviePilot/音乐片/a.mkv")
-        assert url == "http://rclone:8080/MP/MoviePilot/%E9%9F%B3%E4%B9%90%E7%89%87/a.mkv"
+        assert url == "http://rclone:8080/MoviePilot/%E9%9F%B3%E4%B9%90%E7%89%87/a.mkv"
         assert "[MP:]" not in url, "serve http 的 URL 不能带方括号，否则 404"
 
     def test_trailing_slash_normalised(self):
         m = _mount(serve_url="http://rclone:8080/")
-        assert m._rc_play_url("a.mkv") == "http://rclone:8080/MP/a.mkv"
-        assert "//MP/" not in m._rc_play_url("a.mkv")
+        assert m._rc_play_url("a.mkv") == "http://rclone:8080/a.mkv"
+        assert "//" not in m._rc_play_url("a.mkv").replace("://", "")
 
     def test_remote_root(self):
         m = _mount(serve_url="http://rclone:8080")
-        assert m._rc_play_url("") == "http://rclone:8080/MP/"
+        assert m._rc_play_url("") == "http://rclone:8080/"
+
+    def test_no_remote_name_in_path(self):
+        """`serve http MP:` 把 remote 挂在**站点根**，路径里不能再出现 remote 名。
+
+        带 /MP/ 前缀会 404（线上实测），不带才是 206。这条钉住最容易写错的点。
+        """
+        m = _mount(serve_url="http://rclone-serve:8080")
+        url = m._rc_play_url("MoviePilot/音乐片/a.mkv")
+        assert url == "http://rclone-serve:8080/MoviePilot/%E9%9F%B3%E4%B9%90%E7%89%87/a.mkv"
+        assert "/MP/" not in url, "serve http 已经把 remote 挂在根上，再加 /MP/ 就 404"
+        assert "MP:" not in url, "路径里不能带 remote 的尾冒号"
 
     def test_unicode_path_is_percent_encoded(self):
         m = _mount(serve_url="http://rclone:8080")

@@ -178,9 +178,15 @@ Compose 已配好 `rclone-serve` 服务，跑 `rclone serve http` 并开启 VFS 
 
 `serve_url` 留空则沿用旧的 rc-serve 取流（向后兼容）。
 
-> **两种端点的 URL 形态不一样**，混用就是 404 且极难定位：
-> rc-serve 写 `http://rclone:5572/[MP:]/MoviePilot/x.mkv`（remote 套方括号、**保留尾冒号**）；
-> serve http 写 `http://rclone-serve:8080/MP/MoviePilot/x.mkv`（**不带方括号、不带尾冒号**）。
+> **两种端点的 URL 形态完全不同**，混用就是 404 且极难定位：
+>
+> | 端点 | 正确形态 | 说明 |
+> |---|---|---|
+> | rc-serve（5572） | `http://rclone:5572/[MP:]/MoviePilot/x.mkv` | remote 套**方括号**，**保留尾冒号** |
+> | serve http（8080） | `http://rclone-serve:8080/MoviePilot/x.mkv` | remote 已挂在**站点根**，路径里**不出现** remote 名 |
+>
+> 换句话说：serve http 的 URL **既没有方括号、也没有 `MP/` 前缀**。
+> 多写一个 `/MP/` 实测就是 404（而缓存目录照样在长，很容易误判成「缓存生效了」）。
 
 ### 缓存限额必须给死
 
