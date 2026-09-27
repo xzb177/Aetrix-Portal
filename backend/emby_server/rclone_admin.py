@@ -238,13 +238,32 @@ def _write_conf_to_target(content: str, conf_path: str) -> dict:
             logger.error("写入 rclone.conf 失败: %s", err)
             return {"success": False, "message": f"写入失败: {err}", "backup": backup}
         return {"success": True, "message": f"已写入 rclone 容器 {conf_path}", "backup": backup}
+    except FileNotFoundError:
+        # 拆分部署里 API 容器通常既没挂配置目录、也没有 docker CLI。
+        # 以前这里被笼统吞成「写入异常」，运维完全看不出该改哪里。
+        logger.error("无法写入 rclone.conf：既没有可写目录，也没有 docker CLI")
+        return {
+            "success": False,
+            "message": f"无法写入 {conf_path}：本进程既没有可写的配置目录，也没有 docker 命令。"
+                       f"请确认 compose 给该服务挂载了 RCLONE_CONFIG_DIR（rw）。",
+            "backup": backup,
+        }
     except Exception as e:
         logger.error("写入 rclone.conf 异常: %s", type(e).__name__)
-        return {"success": False, "message": "写入异常", "backup": backup}
+        return {"success": False, "message": f"写入异常：{type(e).__name__}", "backup": backup}
 
 
 def _reload_rclone() -> dict:
     rclone_container = os.getenv("RCLONE_CONTAINER", "aetrix-rclone")
+    if shutil.which("docker") is None:
+        # 配置可能已经写成功，只是没人去重启 rclone 把它读进去。
+        # 绝不能在这里报「成功」——那会让面板显示已生效，实际还是旧配置。
+        logger.warning("没有 docker CLI，无法自动重启 %s", rclone_container)
+        return {
+            "success": False,
+            "message": f"配置已写入，但没有 docker 命令，无法自动重启 {rclone_container}；"
+                       f"需要手动重启该容器后生效。",
+        }
     try:
         proc = subprocess.run(
             ["docker", "restart", rclone_container],
@@ -427,7 +446,14 @@ def oauth_callback(
 
 # ---------------- 服务账号上传 ----------------
 
-SA_DIR = "/sa-accounts"
+def _sa_dir() -> str:
+    """服务账号目录：跟随 compose 挂载，**不要**写死。
+
+    旧实现写死 ``/sa-accounts``，那是「rclone 容器视角」的挂载点。API/EA 容器
+    把同一份宿主目录挂在 ``/root/sa-accounts``，于是文件被写进 API 容器的可写层：
+    接口返回成功，rclone 容器却永远看不到（那边是另一份文件），容器一重建文件就没了。
+    """
+    return os.getenv("RCLONE_SA_DIR", "/root/sa-accounts").strip() or "/root/sa-accounts"
 
 
 @admin_emby_router.post("/rclone/remotes/{remote_id}/upload-sa")
@@ -454,9 +480,22 @@ def upload_service_account(
     client_email = sa_data.get("client_email", "")
     project_id = sa_data.get("project_id", "")
     filename = f"{r.name}.json"
-    sa_path = os.path.join(SA_DIR, filename)
+    sa_dir = _sa_dir()
+    sa_path = os.path.join(sa_dir, filename)
+    # 目录不存在时**不**建：容器本地新建出来的目录 rclone 容器看不到，
+    # 建了等于写进黑洞（写成功、用不了、容器一重建就没）。宁可直接报错。
+    if not os.path.isdir(sa_dir):
+        raise HTTPException(
+            status_code=500,
+            detail=f"服务账号目录 {sa_dir} 不存在：请确认该目录已挂载进本容器"
+                   f"（compose 里 RCLONE_SA_DIR 需指向与 rclone 容器相同的宿主目录）",
+        )
+    if not os.access(sa_dir, os.W_OK):
+        raise HTTPException(
+            status_code=500,
+            detail=f"服务账号目录 {sa_dir} 只读：compose 里该挂载不能带 :ro",
+        )
     try:
-        os.makedirs(SA_DIR, exist_ok=True)
         with open(sa_path, "w") as f:
             f.write(content.decode("utf-8"))
         os.chmod(sa_path, 0o600)
