@@ -226,6 +226,80 @@ if _cors_origins:
     )
 
 
+# ============ API 限流（Redis 固定窗口）============
+# 保护 API 不被滥用；健康检查不限流；认证用户限额更高
+# 注意：这是固定窗口（每分钟重置），不是滑动窗口
+RATE_LIMITS = [
+    # (路径前缀, 未认证限额/分钟, 认证用户限额/分钟)
+    ("/api/health", 0, 0),              # 健康检查：不限流
+    ("/api/admin/emby/login", 10, 10),  # 登录：每分钟 10 次（防暴力破解）
+    ("/api/user/login", 10, 10),
+    ("/api/admin/", 60, 300),           # 管理接口：未认证 60，认证 300
+    ("/api/", 120, 600),               # 普通 API：未认证 120，认证 600
+]
+
+def _get_client_ip(request) -> str:
+    """获取真实客户端 IP（支持 nginx 代理）"""
+    # X-Forwarded-For 可能包含多个 IP，取第一个（最原始的客户端）
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    # 备用：X-Real-IP
+    xri = request.headers.get("x-real-ip", "").strip()
+    if xri:
+        return xri
+    return request.client.host if request.client else "unknown"
+
+def _is_authenticated(request) -> bool:
+    """检查是否有认证头（简单判断，不验证有效性）"""
+    auth = request.headers.get("authorization", "")
+    token = request.headers.get("x-emby-token", "") or request.headers.get("x-mediabrowser-token", "")
+    return bool(auth or token)
+
+def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, str]:
+    """返回 (是否允许, 原因)"""
+    for prefix, limit_anon, limit_auth in RATE_LIMITS:
+        if path.startswith(prefix):
+            limit = limit_auth if authenticated else limit_anon
+            if limit == 0:
+                return True, ""
+            try:
+                from backend import database as db
+                r = db.redis_client
+                if r is None:
+                    return True, ""  # Redis 不可用时不限流（降级，保证可用性）
+                import time
+                window = int(time.time() // 60)
+                # 区分认证/未认证的 key，避免互相影响
+                auth_tag = "auth" if authenticated else "anon"
+                key = f"ratelimit:{ip}:{prefix}:{auth_tag}:{window}"
+                count = r.incr(key)
+                if count == 1:
+                    r.expire(key, 70)  # 窗口 60 秒 + 10 秒缓冲
+                if count > limit:
+                    return False, f"每分钟最多 {limit} 次"
+            except Exception:
+                return True, ""  # 异常时不限流（降级）
+            return True, ""
+    return True, ""
+
+@app.middleware("http")
+async def rate_limit_middleware(request, call_next):
+    # 只限流 API 路径
+    if request.url.path.startswith("/api/"):
+        ip = _get_client_ip(request)
+        authenticated = _is_authenticated(request)
+        allowed, reason = _check_rate_limit(ip, request.url.path, authenticated)
+        if not allowed:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"error": "请求太频繁，请稍后再试", "reason": reason},
+                headers={"Retry-After": "60"},
+            )
+    return await call_next(request)
+
+
 # 安全响应头
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
