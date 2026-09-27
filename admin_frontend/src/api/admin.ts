@@ -787,3 +787,55 @@ export const browsePan115 = (params: { cid?: string; account_id?: number; cookie
   get<{ cid: string; cookie_source: string; entries: Pan115DirEntry[]; total: number }>(
     `${E}/115/browse`, params
   )
+
+
+// ==================== rclone remote 配置（/api/admin/emby/rclone/*） ====================
+
+export const fetchRcloneRemotes = () =>
+  get<{ remotes: RcloneRemote[] }>(`${E}/rclone/remotes`)
+
+export const createRcloneRemote = (data: {
+  name: string
+  remote_type?: string
+  drive_type?: string
+  client_id?: string
+  client_secret?: string
+  team_drive_id?: string
+  is_enabled?: boolean
+  remark?: string
+}) => post<{ success: boolean; remote: RcloneRemote }>(`${E}/rclone/remotes`, data)
+
+export const updateRcloneRemote = (
+  id: number,
+  data: { name?: string; client_id?: string; client_secret?: string; team_drive_id?: string; is_enabled?: boolean; remark?: string }
+) => put<{ success: boolean; remote: RcloneRemote }>(`${E}/rclone/remotes/${id}`, data)
+
+export const deleteRcloneRemote = (id: number) =>
+  del<{ success: boolean }>(`${E}/rclone/remotes/${id}`)
+
+export const generateRcloneConf = () =>
+  post<{ success: boolean; message: string; backup: string; reload: { success: boolean; message: string } }>(
+    `${E}/rclone/remotes/generate-conf`, {})
+
+export const previewRcloneConf = () =>
+  get<{ preview: string }>(`${E}/rclone/remotes/conf-preview`)
+
+export const setProbeRcloneRemote = (id: number) =>
+  post<{ success: boolean; probe_remote: string }>(`${E}/rclone/remotes/${id}/set-probe`, {})
+
+export const fetchProbeRcloneRemote = () =>
+  get<{ probe_remote: string | null }>(`${E}/rclone/probe-remote`)
+
+export const fetchRcloneOAuthUrl = (id: number) =>
+  get<{ oauth_url: string; redirect_uri: string }>(`${E}/rclone/remotes/${id}/oauth-url`)
+
+export const submitRcloneOAuthCode = (id: number, data: { code: string; redirect_uri: string }) =>
+  post<{ success: boolean; has_token: boolean }>(`${E}/rclone/remotes/${id}/oauth-callback`, data)
+
+export const uploadRcloneServiceAccount = (id: number, file: File) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return post<{ success: boolean; filename: string; client_email: string; project_id: string }>(
+    `${E}/rclone/remotes/${id}/upload-sa`, fd,
+    { headers: { 'Content-Type': 'multipart/form-data' } })
+}
