@@ -623,10 +623,6 @@ export interface RcloneRemote {
   has_sa: boolean; has_oauth: boolean; remark: string
   last_check_ok: boolean | null; last_check_message: string
 }
-export const fetchRcloneRemotes = () => get<{ success: boolean; remotes: RcloneRemote[] }>(`${E}/rclone/remotes`)
-export const createRcloneRemote = (data: any) => post<{ success: boolean; id: number }>(`${E}/rclone/remotes`, data)
-export const updateRcloneRemote = (id: number, data: any) => put<{ success: boolean }>(`${E}/rclone/remotes/${id}`, data)
-export const deleteRcloneRemote = (id: number) => del<{ success: boolean }>(`${E}/rclone/remotes/${id}`)
 export const setProbeRemote = (id: number) => post<{ success: boolean }>(`${E}/rclone/remotes/${id}/probe`, {})
 export const regenerateRcloneConf = () => post<{ success: boolean; path: string }>(`${E}/rclone/regenerate`, {})
 export interface SaFile { id: number; filename: string; client_email: string; project_id: string; is_enabled: boolean }
