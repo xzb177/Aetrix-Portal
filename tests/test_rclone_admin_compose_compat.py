@@ -80,8 +80,19 @@ def _raise_upload(monkeypatch, sa_dir):
 # ---------------- 写配置失败提示 ----------------
 
 def test_no_docker_cli_gives_actionable_message(monkeypatch):
-    """没有可写目录、又没有 docker CLI 时，提示要指向 compose 挂载"""
+    """没有可写目录、又没有 docker CLI 时，提示要指向 compose 挂载。
+
+    必须**同时**把 ``docker`` 从 PATH 里摘掉并让 subprocess 抛 FileNotFoundError：
+    只 monkeypatch ``shutil.which`` 是不够的——``_write_conf_to_target`` 是直接
+    调 ``subprocess.run(["docker", ...])`` 的，PATH 里真有 docker 时（CI 机器上就有）
+    它会真的去执行，连不上容器时报的是「No such container」，
+    于是这条测试在本地过、到 CI 挂——它测的其实是 docker 守护进程的状态。
+    """
     monkeypatch.setattr(rclone_admin.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(
+        rclone_admin.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("docker")),
+    )
     with tempfile.TemporaryDirectory() as tmp:
         conf = os.path.join(tmp, "no-such-dir", "rclone.conf")
         result = rclone_admin._write_conf_to_target("[x]\ntype = drive\n", conf)
@@ -106,6 +117,11 @@ def test_writable_local_path_wins_over_docker(monkeypatch):
 def test_reload_without_docker_does_not_claim_success(monkeypatch):
     """没有 docker CLI 时，重启必须报失败——不能显示「已生效」而实际还是旧配置"""
     monkeypatch.setattr(rclone_admin.shutil, "which", lambda _n: None)
+    # 同上：_reload_rclone 也走 subprocess.run，必须一并堵住
+    monkeypatch.setattr(
+        rclone_admin.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("docker")),
+    )
     result = rclone_admin._reload_rclone()
     assert result["success"] is False
     assert "手动重启" in result["message"]
