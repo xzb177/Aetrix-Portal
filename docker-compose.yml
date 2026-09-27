@@ -233,7 +233,10 @@ services:
       # 预读块：决定一次回源拉多少。32M 对 4K 码率够用，又不至于让小文件浪费。
       - --vfs-read-chunk-size=32M
       - --vfs-read-chunk-size-limit=256M
-      - --vfs-cache-dir=/config/rclone/vfs
+      # 缓存目录：rclone **没有** --vfs-cache-dir 这个 flag，VFS 缓存放在
+      # 全局 --cache-dir 下的 vfs/ 子目录。写成 --vfs-cache-dir 会直接
+      # Fatal error: unknown flag，容器起不来（已实测）。
+      - --cache-dir=/config/rclone
       - --dir-cache-time=24h
       # 纯只读用途，关掉这两项省掉一次目录 stat
       - --no-modtime
