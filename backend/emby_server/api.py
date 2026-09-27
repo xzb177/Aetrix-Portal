@@ -634,6 +634,24 @@ def _bearer_raw(request: Request) -> str:
     return request.query_params.get("api_key", "")
 
 
+def _strip_nulls(obj):
+    """递归移除 dict 中的 None 值（iOS 客户端对 null 敏感）。
+
+    - dict：去掉值为 None 的键，递归处理剩余值
+    - list：递归处理每个元素（保留 None 元素，避免打乱数组索引语义；
+      如需去掉数组中的 None，调用方自行处理）
+    - 其他：原样返回
+
+    用于 PlaybackInfo / MediaSource / MediaStream 等播放相关 DTO，
+    对标 _item_dto 的 null 处理（数组给 []、字符串给 ""，可选字段有值才加）。
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_nulls(v) for v in obj]
+    return obj
+
+
 def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
     dto = {
         "Index": s.stream_index, "Type": s.stream_type, "Codec": s.codec,
@@ -653,7 +671,8 @@ def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
                 f"{base}/emby/Videos/{item.guid}/{item.guid}"
                 f"/Subtitles/{s.stream_index}/Stream.vtt?api_key={api_key}"
             )
-    return dto
+    # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
+    return _strip_nulls(dto)
 
 
 def _default_subtitle_index(item: em.MediaItem):
@@ -664,7 +683,7 @@ def _default_subtitle_index(item: em.MediaItem):
 
 
 def _media_source(item: em.MediaItem, base: str, api_key: str = "") -> dict:
-    return {
+    dto = {
         "Id": item.guid,
         "Name": item.name,
         "Path": item.file_path,
@@ -681,6 +700,8 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "") -> dict:
         "DefaultSubtitleStreamIndex": _default_subtitle_index(item),
         "MediaStreams": [_stream_dto(s, base, item, api_key) for s in item.streams],
     }
+    # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
+    return _strip_nulls(dto)
 
 
 def _require_item(db: Session, item_id: str) -> em.MediaItem:
@@ -1871,11 +1892,11 @@ async def playback_info(
         # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
         # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
         # 返回空 MediaSources 是 Emby 客户端认可的「无可播放源」。
-        return {
+        return _strip_nulls({
             "MediaSources": [],
             "PlaySessionId": secrets.token_hex(8),
             "ErrorCode": None,
-        }
+        })
     base = _base_url(request)
     body = {}
     try:
@@ -1907,12 +1928,12 @@ async def playback_info(
             f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}"
         )
 
-    return {
+    return _strip_nulls({
         "MediaSources": [media_source],
         # 每次播放会话一个独立票据，客户端据此上报进度
         "PlaySessionId": secrets.token_hex(8),
         "ErrorCode": None,
-    }
+    })
 
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
