@@ -245,8 +245,12 @@ services:
       # 与 rcd 同一份 rclone.conf（服务账号路径、team_drive 都在里面）
       - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
       - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts:ro
+    # 探 TCP 端口，不要探 HTTP 路径：serve http 配了 --user/--pass，
+    # 无凭据请求一律 401（那是**期望行为**，不是故障），拿它当健康标准会永远
+    # unhealthy。也刻意不去 poll Drive 列目录——每 30 秒一次纯属烧配额。
+    # 与上面 rclone 服务的探针保持一致。
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
       interval: 30s
       timeout: 5s
       start_period: 20s
