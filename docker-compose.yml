@@ -197,6 +197,61 @@ services:
       start_period: 10s
       retries: 3
 
+  # rclone 取流服务（数据面）：与上面的 rcd（控制面）配套，**必须**开 VFS 缓存。
+  #
+  # 为什么不用 rcd 取流：rcd --rc-serve 走 operations.OpenFile，**不经过 VFS 层**，
+  # 而 VFS 缓存只挂在 VFS 上。rclone 1.71.1 的 rcd 连 --vfs-cache-mode 这个 flag
+  # 都没有（实测 `rcd --help | grep -c vfs-cache-mode` → 0），
+  # 所以经 rcd 取的每一个 Range 请求都是冷读。
+  #
+  # 为什么要分两个容器而不是在一个容器里跑两个进程：各自独立健康检查与重启策略，
+  # 不用 supervisor/后台化那套（信号处理、僵尸进程都会出问题），配置也更清楚。
+  rclone-serve:
+    image: rclone/rclone:1.71.1
+    container_name: aetrix-rclone-serve
+    restart: unless-stopped
+    # remote 名硬编码为 MP：面板里那个 rclone 挂载用的就是它。
+    # 换 remote 时这里与挂载配置里的 fs 要一起改。
+    command:
+      - serve
+      - http
+      - ${RCLONE_SERVE_REMOTE:-MP:}
+      - --addr=0.0.0.0:8080
+      # 与 rcd 用同一套 RC 凭据；Aetrix 取流时带同样的 Basic 认证
+      - --user=${RCLONE_RC_USER:?请在 .env 设置 RCLONE_RC_USER}
+      - --pass=${RCLONE_RC_PASS:?请在 .env 设置 RCLONE_RC_PASS}
+      # ---- 关键：VFS 缓存 ----
+      # full：读写都缓存。Drive 每次 Range 读有约 1.2 秒固定往返
+      # （实测 1MB=1.3s、32MB=1.9s，带宽本身有 17MB/s 不差），
+      # 播放器的探测与续读全是小 Range，每次都吃这段延迟。
+      # 开缓存后读过的区间落本地，重复读从 1.2s 降到毫秒级（实测 2ms）。
+      - --vfs-cache-mode=full
+      # 限额必须给死：这台机器磁盘有限，而单个 4K 电影就 17GB。
+      # min-free-space 是兜底：剩余低于它就停止继续写入缓存（宁可不缓存也不能撑爆盘）。
+      - --vfs-cache-max-size=${RCLONE_VFS_CACHE_MAX_SIZE:-8G}
+      - --vfs-cache-min-free-space=${RCLONE_VFS_CACHE_MIN_FREE:-5G}
+      # 预读块：决定一次回源拉多少。32M 对 4K 码率够用，又不至于让小文件浪费。
+      - --vfs-read-chunk-size=32M
+      - --vfs-read-chunk-size-limit=256M
+      - --vfs-cache-dir=/config/rclone/vfs
+      - --dir-cache-time=24h
+      # 纯只读用途，关掉这两项省掉一次目录 stat
+      - --no-modtime
+      - --no-check-certificate
+    volumes:
+      # 与 rcd 同一份 rclone.conf（服务账号路径、team_drive 都在里面）
+      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
+      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    depends_on:
+      rclone:
+        condition: service_started
+
 volumes:
   aetrix_data:
   redis_data:

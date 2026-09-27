@@ -326,6 +326,9 @@ class RcloneMount(_CloudMount):
         # fs 就是 rclone 的「remote:路径」，例如 gdrive:Movies
         self.fs = (cfg.get("fs") or cfg.get("remote") or "").strip()
         self.rc_url = (cfg.get("rc_url") or RC_URL).strip().rstrip("/") or RC_URL
+        # 数据面（真正取媒体字节）与控制面（列目录/查状态）可以走不同的端点。
+        # 留空 = 沿用 rc-serve 取流（旧行为，完全兼容）；填了就走该地址。
+        self.serve_url = (cfg.get("serve_url") or "").strip().rstrip("/")
         # 留空即用服务器 .env 里统一配置的 RC 账号：挂载记录不存 RC 密码
         self.rc_user = (cfg.get("rc_user") or RC_USER).strip()
         self.rc_pass = cfg.get("rc_pass") or RC_PASS
@@ -389,14 +392,26 @@ class RcloneMount(_CloudMount):
         只有真正取流时才炸，很容易被误判成「rc-serve 没开」。
         """
         fs = self._require_fs().rstrip("/")
+        # 配的 remote 名通常带尾冒号（"MP:"），rc-serve 的方括号形态要保留它
+        # （[MP:]/），但 serve http 是把 remote 挂在站点根上，路径里不能带冒号，
+        # 否则拼出来的 /MP:/x.mkv 会 404。
+        fs_serve = fs[:-1] if fs.endswith(":") else fs
         rel = (rel or "").lstrip("/").replace("\\", "/")
+        tail = "/".join(
+            urllib.parse.quote(seg, safe="") for seg in rel.split("/") if seg
+        )
+        if self.serve_url:
+            # `rclone serve http MP:` 把 remote 直接挂在站点根上，**不带**方括号：
+            #   http://rclone:8080/MoviePilot/xxx.mkv
+            # 而 rc-serve 要写成 http://rclone:5572/[MP:]/MoviePilot/xxx.mkv
+            # 两种形态不能混用，写错就是 404 且很难看出原因。
+            return (f"{self.serve_url}/{fs_serve}/{tail}" if tail
+                    else f"{self.serve_url}/{fs_serve}/")
         # 根（remote 自身）与子路径：都要先给 remote 套上 [ ]
         base = f"{self.rc_url}/[{fs}]"
         if not rel:
             return base + "/"
-        return base + "/" + "/".join(
-            urllib.parse.quote(seg, safe="") for seg in rel.split("/") if seg
-        )
+        return base + "/" + tail
 
     def _rc_headers(self) -> dict:
         headers = {"User-Agent": mount_lib.MOUNT_UA}
@@ -550,6 +565,10 @@ MOUNT_TYPE_ENTRIES = [
             {"key": "rc_url", "label": "RC 地址", "placeholder": "http://127.0.0.1:5572"},
             {"key": "rc_user", "label": "RC 用户名（可选）"},
             {"key": "rc_pass", "label": "RC 密码（可选）", "secret": True},
+            {"key": "serve_url", "label": "取流地址（可选）",
+             "placeholder": "http://127.0.0.1:8080",
+             "hint": "留空则用 RC 地址取流（旧行为）；填了则媒体字节走该端点。"
+                     "配 rclone serve http（带 VFS 缓存）时填这里，重复读取可命中缓存。"},
             {"key": "rclone_bin", "label": "rclone 路径（可选）", "placeholder": "默认从 PATH 找 rclone"},
             {"key": "rclone_config", "label": "rclone.conf 路径（可选）",
              "placeholder": "默认 ~/.config/rclone/rclone.conf"},
