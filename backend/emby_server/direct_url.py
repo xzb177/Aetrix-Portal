@@ -17,7 +17,10 @@ HTTP 层，客户端直接从 ``www.googleapis.com`` 取文件。
 - ``ENABLE_DIRECT_URL``：总开关，默认 ``true``，设为 ``false`` 关闭直链；
 - ``RCLONE_RC_URL``：rclone RC 地址，默认 ``http://rclone:5572``；
 - ``RCLONE_RC_USER`` / ``RCLONE_RC_PASS``：rclone RC 认证；
-- ``RCLONE_CONF_PATH``：rclone.conf 路径，默认 ``/config/rclone/rclone.conf``。
+- ``RCLONE_CONF_PATH``：rclone.conf 路径，默认 ``/config/rclone/rclone.conf``；
+- ``DIRECT_URL_CACHE_TTL``：直链解析结果的缓存秒数，默认 ``5``，设 ``0`` 关闭。
+  播放时拖一次进度条就是几十上百个 Range 请求，没有缓存等于每个请求都重新
+  调一次 ``operations/stat``（一次网络往返）去问同一个文件的 file ID。
 """
 from __future__ import annotations
 
@@ -36,6 +39,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# 区分「没进过缓存」与「缓存过一次失败」——两者都拿 None 返回，但后者不该
+# 每次都再去 stat 一遍、每次都打一条 warning。
+_MISS = object()
+
 # rclone --rc-serve 的 URL 形如 http://host:port/[fs:]/remote/path（path 为 URL 编码）
 _RCLONE_SERVE_RE = re.compile(r"^https?://[^/]+/\[([^/\]]+)\]/(.*)$", re.DOTALL)
 
@@ -44,6 +51,51 @@ _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # token 缓存（进程级）：{"expiry": float, "token": str}
 _token_cache: dict = {"expiry": 0.0, "token": ""}
 _token_lock = threading.Lock()
+
+# 解析结果缓存（进程级）：{"<fs>\n<remote_path>": {"url": str | None, "expires": float}}
+#
+# 借鉴 go-emby 的 cdnLinks 思路：直链解析结果按极短 TTL 复用，避免拖进度条时
+# 每个 Range 请求都重新 stat 一次。TTL 刻意压到 5 秒 —— 够覆盖一次连续 seek
+# 的那一串请求，又短到文件被删/改名后几乎立刻失效。
+#
+# 同时缓存「失败」：服务账号型 remote 没有 OAuth token，每次都会走到
+# "rclone.conf 里没有 [X] section" 这条 warning，播放器一路 seek 就刷一屏日志。
+_url_cache: dict = {}
+_url_lock = threading.Lock()
+
+_URL_CACHE_MAX = 512
+
+
+def _url_cache_ttl() -> float:
+    try:
+        return max(0.0, float(os.getenv("DIRECT_URL_CACHE_TTL", "5")))
+    except ValueError:
+        return 5.0
+
+
+def _url_cache_get(key: str):
+    with _url_lock:
+        hit = _url_cache.get(key)
+        if hit is not None and hit["expires"] > time.time():
+            return hit["url"]
+        if hit is not None:
+            _url_cache.pop(key, None)
+    return _MISS
+
+
+def _url_cache_put(key: str, url: Optional[str]) -> None:
+    ttl = _url_cache_ttl()
+    if ttl <= 0:
+        return
+    now = time.time()
+    with _url_lock:
+        # 顺手清掉过期的，别让只播放不 seek 的场景把表撑大
+        for k in [k for k, v in _url_cache.items() if v["expires"] <= now]:
+            _url_cache.pop(k, None)
+        if len(_url_cache) >= _URL_CACHE_MAX and key not in _url_cache:
+            oldest = min(_url_cache.items(), key=lambda kv: kv[1]["expires"])[0]
+            _url_cache.pop(oldest, None)
+        _url_cache[key] = {"url": url, "expires": now + ttl}
 
 
 def direct_url_enabled() -> bool:
@@ -265,14 +317,26 @@ def build_direct_url(file_id: str, access_token: str) -> str:
 
 
 async def get_direct_url(fs: str, remote_path: str) -> Optional[str]:
-    """路径 -> Google Drive 直链。任一步失败返回 None（调用方回退到代理）。"""
+    """路径 -> Google Drive 直链。任一步失败返回 None（调用方回退到代理）。
+
+    结果按 ``DIRECT_URL_CACHE_TTL`` 短缓存，成功与失败都缓存。
+    """
+    key = f"{fs}\n{remote_path}"
+    hit = _url_cache_get(key)
+    if hit is not _MISS:
+        return hit
+
     file_id = await get_file_id(fs, remote_path)
     if not file_id:
+        _url_cache_put(key, None)
         return None
     token = await get_access_token(fs)
     if not token:
+        _url_cache_put(key, None)
         return None
-    return build_direct_url(file_id, token)
+    url = build_direct_url(file_id, token)
+    _url_cache_put(key, url)
+    return url
 
 
 async def try_google_direct_url(rclone_url: str) -> Optional[str]:

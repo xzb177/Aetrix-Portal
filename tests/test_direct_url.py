@@ -6,6 +6,7 @@
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -28,10 +29,12 @@ def run(coro):
 
 @pytest.fixture(autouse=True)
 def _clear_token_cache():
-    """token 缓存是进程级的，每个测试前清空，避免相互污染。"""
+    """token 缓存与直链缓存都是进程级的，每个测试前清空，避免相互污染。"""
     direct_url._token_cache.clear()
+    direct_url._url_cache.clear()
     yield
     direct_url._token_cache.clear()
+    direct_url._url_cache.clear()
 
 
 # ---------------- parse_rclone_url ----------------
@@ -382,3 +385,96 @@ def test_video_stream_falls_back_to_proxy_when_no_direct_url(monkeypatch):
     monkeypatch.setattr(api, "serve_remote_async", fake_proxy)
     response = run(api.video_stream("item", _video_stream_request(), object(), object()))
     assert response is proxy
+
+
+# ---------------- 直链缓存（DIRECT_URL_CACHE_TTL）----------------
+
+def test_get_direct_url_caches_success(monkeypatch):
+    """同一个路径连续两次请求，只应该 stat 一次。"""
+    calls = []
+
+    async def _file_id(fs, path):
+        calls.append((fs, path))
+        return "FILEID123"
+
+    monkeypatch.setattr(direct_url, "get_file_id", _file_id)
+    monkeypatch.setattr(direct_url, "get_access_token", lambda fs: _coro("TOKEN456"))
+
+    first = run(get_direct_url("paul_emby:", "video/a.mkv"))
+    second = run(get_direct_url("paul_emby:", "video/a.mkv"))
+    assert first == second
+    assert first == ("https://www.googleapis.com/drive/v3/files/FILEID123"
+                     "?alt=media&access_token=TOKEN456")
+    assert len(calls) == 1, f"第二次应命中缓存，实际 stat 了 {len(calls)} 次"
+
+
+def test_get_direct_url_caches_failure(monkeypatch):
+    """失败也要缓存：否则播放器一路 seek 就会刷一屏 warning。"""
+    calls = []
+
+    async def _file_id(fs, path):
+        calls.append(path)
+        return None
+
+    monkeypatch.setattr(direct_url, "get_file_id", _file_id)
+    assert run(get_direct_url("MP:", "video/a.mkv")) is None
+    assert run(get_direct_url("MP:", "video/a.mkv")) is None
+    assert len(calls) == 1, "失败结果没有进缓存，仍在重复 stat"
+
+
+def test_get_direct_url_cache_key_includes_path(monkeypatch):
+    """不同路径不能共用同一条缓存。"""
+    seen = []
+
+    async def _file_id(fs, path):
+        seen.append(path)
+        return "ID_" + path.split("/")[-1]
+
+    monkeypatch.setattr(direct_url, "get_file_id", _file_id)
+    monkeypatch.setattr(direct_url, "get_access_token", lambda fs: _coro("T"))
+    run(get_direct_url("paul_emby:", "video/a.mkv"))
+    run(get_direct_url("paul_emby:", "video/b.mkv"))
+    assert seen == ["video/a.mkv", "video/b.mkv"]
+
+
+def test_get_direct_url_cache_ttl_zero_disables(monkeypatch):
+    """TTL 设为 0 时缓存关闭，每次都重新解析。"""
+    monkeypatch.setenv("DIRECT_URL_CACHE_TTL", "0")
+    calls = []
+
+    async def _file_id(fs, path):
+        calls.append(path)
+        return "ID"
+
+    monkeypatch.setattr(direct_url, "get_file_id", _file_id)
+    monkeypatch.setattr(direct_url, "get_access_token", lambda fs: _coro("T"))
+    run(get_direct_url("paul_emby:", "video/a.mkv"))
+    run(get_direct_url("paul_emby:", "video/a.mkv"))
+    assert len(calls) == 2, "TTL=0 时不应该缓存"
+
+
+def test_get_direct_url_cache_expires(monkeypatch):
+    """TTL 到期后重新解析。"""
+    monkeypatch.setenv("DIRECT_URL_CACHE_TTL", "0.05")
+    calls = []
+
+    async def _file_id(fs, path):
+        calls.append(path)
+        return "ID"
+
+    monkeypatch.setattr(direct_url, "get_file_id", _file_id)
+    monkeypatch.setattr(direct_url, "get_access_token", lambda fs: _coro("T"))
+    run(get_direct_url("paul_emby:", "video/a.mkv"))
+    time.sleep(0.12)
+    run(get_direct_url("paul_emby:", "video/a.mkv"))
+    assert len(calls) == 2, "TTL 到期后应重新 stat"
+
+
+def test_get_direct_url_cache_bounded(monkeypatch):
+    """缓存表有上限，不会被大量不同路径撑爆。"""
+    monkeypatch.setattr(direct_url, "get_file_id",
+                        lambda fs, path: _coro("ID_" + path))
+    monkeypatch.setattr(direct_url, "get_access_token", lambda fs: _coro("T"))
+    for i in range(direct_url._URL_CACHE_MAX + 50):
+        run(get_direct_url("paul_emby:", f"video/{i}.mkv"))
+    assert len(direct_url._url_cache) <= direct_url._URL_CACHE_MAX
