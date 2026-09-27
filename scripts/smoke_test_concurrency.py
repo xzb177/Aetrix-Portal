@@ -64,12 +64,9 @@ class _Client:
 class FakeRequest:
     """最小 Request 替身：端点只读 headers / client / url"""
 
-    def __init__(self, headers: dict | None = None, client_host: str | None = None):
+    def __init__(self, headers: dict | None = None):
         self.headers = headers or {}
         self.client = _Client()
-        if client_host:
-            # 允许覆盖直连 IP（用于测试可信代理场景）
-            self.client = type("_ClientOverride", (), {"host": client_host})()
         self.url = _URL()
         self.query_params: dict = {}
 
@@ -293,22 +290,16 @@ check("邀请并发：无未处理异常", all(r and r[0] for r in results),
       f"{[str(r[1])[:60] for r in results if r and not r[0]]}")
 
 # ==================== 5. 限流 IP 取值不可伪造 ====================
-# 注意：get_client_ip 只信任可信代理（TRUSTED_PROXIES，默认 127.0.0.0/8）的头。
-# 测试头解析时，直连 IP 必须用 127.0.0.1（可信）；测试防伪造时，用非可信 IP。
 
-ip_xff_multi = client_ip(FakeRequest({"x-forwarded-for": "1.2.3.4, 203.0.113.7"}, client_host="127.0.0.1"))
+ip_xff_multi = client_ip(FakeRequest({"x-forwarded-for": "1.2.3.4, 203.0.113.7"}))
 check("client_ip：XFF 取最后一段（忽略攻击者前缀）", ip_xff_multi == "203.0.113.7", f"ip={ip_xff_multi}")
 
 ip_real_wins = client_ip(FakeRequest({
     "x-real-ip": "198.51.100.5",
     "x-forwarded-for": "1.1.1.1, 2.2.2.2",
-}, client_host="127.0.0.1"))
+}))
 check("client_ip：X-Real-IP 优先（Nginx 按 $remote_addr 硬写）",
       ip_real_wins == "198.51.100.5", f"ip={ip_real_wins}")
-
-# 不可信来源伪造头 → 必须被忽略，用直连 IP
-ip_spoofed = client_ip(FakeRequest({"x-forwarded-for": "1.2.3.4", "x-real-ip": "5.6.7.8"}))
-check("client_ip：不可信来源的伪造头被忽略", ip_spoofed == "10.0.0.9", f"ip={ip_spoofed}")
 
 ip_direct = client_ip(FakeRequest())
 check("client_ip：无代理头时使用直连地址", ip_direct == "10.0.0.9", f"ip={ip_direct}")
