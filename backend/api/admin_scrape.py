@@ -373,88 +373,9 @@ def get_chase_new(
 
 
 # ---------- rclone remote 管理（数据驱动） ----------
-
-@admin_emby_router.get("/rclone/remotes")
-def list_rclone_remotes(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """列出所有 rclone remote"""
-    from backend.emby_server import models as em
-    remotes = db.query(em.RcloneRemote).order_by(em.RcloneRemote.name).all()
-    return {"success": True, "remotes": [
-        {
-            "id": r.id, "name": r.name, "remote_type": r.remote_type,
-            "team_drive": r.team_drive or "", "chunk_size": r.chunk_size or "64M",
-            "is_enabled": r.is_enabled, "is_probe_remote": r.is_probe_remote,
-            "has_sa": bool(r.sa_file_id), "has_oauth": bool(r.token_json),
-            "remark": r.remark or "",
-            "last_check_ok": r.last_check_ok,
-            "last_check_message": r.last_check_message or "",
-        }
-        for r in remotes
-    ]}
-
-
-@admin_emby_router.post("/rclone/remotes")
-def create_rclone_remote(
-    req: dict,
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """新建 rclone remote"""
-    from backend.emby_server import models as em
-    r = em.RcloneRemote(
-        name=req.get("name", ""),
-        remote_type=req.get("remote_type", "drive"),
-        client_id=req.get("client_id", ""),
-        client_secret=req.get("client_secret", ""),
-        token_json=req.get("token_json", ""),
-        scope=req.get("scope", "drive"),
-        sa_file_id=req.get("sa_file_id"),
-        team_drive=req.get("team_drive", ""),
-        chunk_size=req.get("chunk_size", "64M"),
-        remark=req.get("remark", ""),
-    )
-    db.add(r)
-    db.commit()
-    return {"success": True, "id": r.id}
-
-
-@admin_emby_router.put("/rclone/remotes/{remote_id}")
-def update_rclone_remote(
-    remote_id: int,
-    req: dict,
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """更新 rclone remote"""
-    from backend.emby_server import models as em
-    r = db.query(em.RcloneRemote).filter(em.RcloneRemote.id == remote_id).first()
-    if not r:
-        return {"success": False, "message": "remote 不存在"}
-    for k in ("remote_type", "client_id", "client_secret", "token_json", "scope",
-              "sa_file_id", "team_drive", "chunk_size", "remark", "is_enabled"):
-        if k in req:
-            setattr(r, k, req[k])
-    db.commit()
-    return {"success": True}
-
-
-@admin_emby_router.delete("/rclone/remotes/{remote_id}")
-def delete_rclone_remote(
-    remote_id: int,
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """删除 rclone remote"""
-    from backend.emby_server import models as em
-    r = db.query(em.RcloneRemote).filter(em.RcloneRemote.id == remote_id).first()
-    if not r:
-        return {"success": False, "message": "remote 不存在"}
-    db.delete(r)
-    db.commit()
-    return {"success": True}
+# 注：CRUD（GET/POST/PUT/DELETE /rclone/remotes*）已迁移到
+# backend/emby_server/rclone_admin.py（字段脱敏 + 探测保护 + OAuth/SA 流程）。
+# 此处仅保留仍被 EmbyAdmin 旧版 UI 调用的 probe / regenerate / sa-files 端点。
 
 
 @admin_emby_router.post("/rclone/remotes/{remote_id}/probe")

@@ -431,7 +431,7 @@ SA_DIR = "/sa-accounts"
 
 
 @admin_emby_router.post("/rclone/remotes/{remote_id}/upload-sa")
-async def upload_service_account(
+def upload_service_account(
     remote_id: int,
     file: UploadFile = File(...),
     staff: models.WebUser = Depends(require_staff),
@@ -441,7 +441,7 @@ async def upload_service_account(
     if not r:
         raise HTTPException(status_code=404, detail="Remote 不存在")
 
-    content = await file.read()
+    content = file.file.read()
     if len(content) > 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件太大（最大 1MB）")
     try:

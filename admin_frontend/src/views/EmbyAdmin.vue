@@ -383,7 +383,7 @@ const filteredSaFiles = computed(() => {
 const rcloneLoading = ref(false)
 const showRemoteDialog = ref(false)
 const editingRemote = ref<any>(null)
-const remoteForm = ref({ name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', scope: 'drive', sa_file_id: null as number | null, team_drive: '', chunk_size: '64M', remark: '' })
+const remoteForm = ref({ name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', sa_file_id: null as number | null, team_drive_id: '', remark: '' })
 
 async function loadChaseNewConfig() {
   try {
@@ -407,10 +407,10 @@ async function loadRcloneRemotes() {
 function openRemoteDialog(r?: RcloneRemote) {
   if (r) {
     editingRemote.value = r
-    remoteForm.value = { name: r.name, remote_type: r.remote_type, client_id: '', client_secret: '', token_json: '', scope: 'drive', sa_file_id: null, team_drive: r.team_drive, chunk_size: r.chunk_size, remark: r.remark }
+    remoteForm.value = { name: r.name, remote_type: r.remote_type, client_id: '', client_secret: '', token_json: '', sa_file_id: null, team_drive_id: r.team_drive_id, remark: r.remark }
   } else {
     editingRemote.value = null
-    remoteForm.value = { name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', scope: 'drive', sa_file_id: null, team_drive: '', chunk_size: '64M', remark: '' }
+    remoteForm.value = { name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', sa_file_id: null, team_drive_id: '', remark: '' }
   }
   showRemoteDialog.value = true
 }
@@ -1164,7 +1164,7 @@ function typeLabel(t: string): string {
           <div v-else>
             <div v-for="r in rcloneRemotes" :key="r.id" class="scrape-actions" style="margin-bottom: 6px; align-items: center">
               <el-tag :type="r.is_probe_remote ? 'success' : 'info'" size="small">{{ r.name }}</el-tag>
-              <span class="drawer-hint">{{ r.remote_type }}<span v-if="r.team_drive"> · 团队盘</span><span v-if="r.has_sa"> · 服务账号</span><span v-if="r.has_oauth"> · OAuth</span></span>
+              <span class="drawer-hint">{{ r.remote_type }}<span v-if="r.team_drive_id"> · 团队盘</span><span v-if="r.has_service_account"> · 服务账号</span><span v-if="r.has_token"> · OAuth</span></span>
               <el-button v-if="!r.is_probe_remote" size="small" @click="setProbeRemoteAction(r)">设为探测用</el-button>
               <el-tag v-else type="success" size="small">探测中</el-tag>
               <el-button size="small" @click="openRemoteDialog(r)">编辑</el-button>
@@ -1589,7 +1589,7 @@ function typeLabel(t: string): string {
         </el-select>
       </el-form-item>
       <el-form-item label="团队盘 ID">
-        <el-input v-model="remoteForm.team_drive" placeholder="空=个人盘" />
+        <el-input v-model="remoteForm.team_drive_id" placeholder="空=个人盘" />
       </el-form-item>
       <el-form-item label="服务账号">
         <el-select v-model="remoteForm.sa_file_id" placeholder="选择已上传的 SA 文件" clearable>

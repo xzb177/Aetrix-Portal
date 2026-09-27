@@ -44,6 +44,7 @@ import type {
   PlaybackStats,
   RegistrationCode,
   RegistrationSettings,
+  RcloneRemote,
   TicketMessageRow,
   TicketRow,
   TrendStats,
@@ -615,14 +616,8 @@ export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`$
 export const saveChaseNew = (enabled: boolean, interval: number, libraries: string) =>
   put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, libraries })
 
-// rclone remote 管理
-export interface RcloneRemote {
-  id: number; name: string; remote_type: string
-  team_drive: string; chunk_size: string
-  is_enabled: boolean; is_probe_remote: boolean
-  has_sa: boolean; has_oauth: boolean; remark: string
-  last_check_ok: boolean | null; last_check_message: string
-}
+// rclone remote 管理（类型统一在 @/types，与后端 _serialize_remote 对齐）
+export type { RcloneRemote } from '@/types'
 export const setProbeRemote = (id: number) => post<{ success: boolean }>(`${E}/rclone/remotes/${id}/probe`, {})
 export const regenerateRcloneConf = () => post<{ success: boolean; path: string }>(`${E}/rclone/regenerate`, {})
 export interface SaFile { id: number; filename: string; client_email: string; project_id: string; is_enabled: boolean }
