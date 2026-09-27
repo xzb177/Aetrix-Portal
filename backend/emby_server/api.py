@@ -42,6 +42,7 @@ from backend.emby_server.auth import (
     resolve_token,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
+from backend.emby_server.direct_url import try_google_direct_url
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
@@ -1928,6 +1929,11 @@ async def video_stream(
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     target = _play_target(db, item)
     if target.kind == "url":
+        # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
+        # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。
+        google_direct = await try_google_direct_url(target.value)
+        if google_direct:
+            return Response(status_code=302, headers={"Location": google_direct, "Cache-Control": "no-store"})
         if request.query_params.get("direct", "").lower() == "true" and can_redirect_direct(target):
             return Response(status_code=302, headers={"Location": target.value, "Cache-Control": "no-store"})
         # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
