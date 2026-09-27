@@ -1944,6 +1944,20 @@ async def video_stream(
     return serve_file(target.value, request, media_type)
 
 
+@emby_router.get("/emby/videos/{item_id}/stream.mkv")
+@emby_router.get("/emby/videos/{item_id}/stream.mp4")
+@emby_router.get("/emby/Videos/{item_id}/stream.mkv")
+@emby_router.get("/emby/Videos/{item_id}/stream.mp4")
+async def video_stream_ext(
+    item_id: str,
+    request: Request,
+    user: models.WebUser = Depends(get_emby_user),
+    db: Session = Depends(get_db),
+):
+    """带扩展名的直接流路由（iOS 客户端用 .mkv/.mp4 后缀请求）"""
+    return await video_stream(item_id, request, user, db)
+
+
 @emby_router.get("/emby/videos/{item_id}/{transcode_path:path}")
 @emby_router.get("/videos/{item_id}/{transcode_path:path}")
 async def video_hls(
