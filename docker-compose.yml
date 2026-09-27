@@ -81,14 +81,26 @@ services:
       start_period: 60s
       retries: 3
 
-  # Emby 协议网关（EA）。第三方播放器直连这个端口 —— 它不在 aetrix-api 进程里，
-  # 但要读同一份数据库、同一份 rclone.conf（直链要现取 Google file ID 与 access token）。
+  # Emby 协议网关（EA）。第三方播放器经**宿主机 nginx** 的 8001 进来。
   #
   # 曾经是手工 docker run 起的孤儿容器（没有 compose 标签），带来三个问题：
   #   1. `docker compose up -d` 不会重建它，镜像更新后 EA 还跑在旧代码上；
   #      `docker compose down` 也不会收它；
   #   2. 健康检查探的是 8000，而 emby_api 实际监听 8001，于是永远 unhealthy；
-  #   3. 没有 ports 映射，EA 只在 docker 网络内可达，面板里登记的对外地址连不上。
+  #   3. 挂的是 /opt/aetrix-portal/rclone.conf —— 那份文件已随仓库清理被删除，
+  #      容器一旦重启就会挂成空目录，直链（302）随之失效。
+  #
+  # 端口安排：宿主 8001 归 nginx，EA 另开一个**内部端口**给 nginx 反代。
+  #
+  # 为什么不让 EA 直接占宿主 8001：面板容器要回连本机公网 IP，命中 docker-proxy
+  # 会踩 hairpin NAT 超时；改由宿主机 nginx 监听 8001 反代进网络，绕开该问题。
+  #
+  # 为什么 nginx 指向 127.0.0.1:8002 而不是容器 IP：
+  #   - 写死容器 IP 会在容器重建后失效（实测 IP 从 172.18.0.10 变成 172.18.0.7，
+  #     nginx 还指着旧地址 → 502，且没有任何告警）；
+  #   - 想在 nginx 里用容器名解析也不行：nginx 跑在**宿主机**上，
+  #     而 Docker 内嵌 DNS 127.0.0.11 只存在于容器网络命名空间里，宿主机不可用。
+  # 走 127.0.0.1:<固定端口> 既不依赖 IP，也保留 nginx 这一跳。
   ea:
     build:
       context: .
@@ -112,8 +124,8 @@ services:
       RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
       MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
     ports:
-      # 面板里 EMBY_API_PUBLIC_URL 登记的就是这个端口，必须真的映射出去。
-      - "${EA_PORT:-8001}:8001"
+      # 仅供宿主机 nginx 反代。外部访问请走 8001（nginx），不要直接用这个端口。
+      - "${EA_INTERNAL_PORT:-8002}:8001"
     volumes:
       - aetrix_data:/data
       # 与 rclone 服务挂同一份配置：直链要读 token，服务账号 remote 也要能解析到路径。
