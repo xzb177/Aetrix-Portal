@@ -7,8 +7,12 @@ API 进程与 Worker 进程分离后，扫描触发必须跨进程：
   拿到 library_id 后查 DB 取 library 对象，再走 scan_queue 原有的进程内入队逻辑
 
 Redis key：
-- aetrix:scan:queue      扫描请求队列（list，FIFO：RPUSH 入队 / BLPOP 消费）
+- aetrix:scan:queue      扫描请求队列（list，FIFO：RPUSH 入队 / BLMOVE 原子转移）
+- aetrix:scan:processing 处理中队列（list，worker 崩溃时任务在此，可恢复）
 - aetrix:scan:dedup      去重集合（set，library_id，防止重复入队）
+
+可靠性：BLMOVE 原子地把任务从 queue 移到 processing，worker 崩溃后
+任务仍在 processing 中；worker 启动时自动把 processing 的任务移回 queue。
 
 单体模式（不设 AETRIX_ROLE）下本模块不启用，走原有进程内队列。
 """
@@ -25,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 REDIS_SCAN_QUEUE_KEY = "aetrix:scan:queue"
 REDIS_SCAN_DEDUP_KEY = "aetrix:scan:dedup"
+REDIS_SCAN_PROCESSING_KEY = "aetrix:scan:processing"
 # 去重集合的过期时间（秒）：防止 worker 崩溃后 dedup 残留导致永远入队失败
 DEDUP_TTL_SECONDS = 3600
 
@@ -158,26 +163,82 @@ def cancel_scan_request(library_id: int) -> str:
 
 
 def pop_scan_request(timeout: int = 5) -> Optional[dict]:
-    """Worker 进程：阻塞取出一个扫描请求（BLPOP）
+    """Worker 进程：原子取出一个扫描请求（BLMOVE）
 
-    返回 {"library_id": int, "trigger": str}，超时返回 None。
-    取出后自动从 dedup 集合删除（取消去重标记）。
+    用 BLMOVE 原子地把任务从 queue 移到 processing，worker 崩溃后
+    任务仍在 processing 中，重启时可恢复，不丢任务。
+
+    返回 {"library_id": int, "trigger": str, "_raw": str}，超时返回 None。
+    _raw 用于 ack 时从 processing 队列删除。
     """
     r = _redis()
     if r is None:
         return None
     try:
-        result = r.blpop(REDIS_SCAN_QUEUE_KEY, timeout=timeout)
-        if not result:
+        # BLMOVE 原子操作：queue -> processing，超时返回 None
+        # Redis 6.2+ 支持 BLMOVE，旧版用 brpoplpush
+        try:
+            raw = r.blmove(REDIS_SCAN_QUEUE_KEY, REDIS_SCAN_PROCESSING_KEY, timeout=timeout)
+        except AttributeError:
+            raw = r.brpoplpush(REDIS_SCAN_QUEUE_KEY, REDIS_SCAN_PROCESSING_KEY, timeout=timeout)
+        if not raw:
             return None
-        _, raw = result
+        # raw 可能是 bytes 或 str（取决于 redis client 配置），保持原样用于 ack
         data = json.loads(raw)
         library_id = int(data["library_id"])
-        r.srem(REDIS_SCAN_DEDUP_KEY, library_id)
-        return {"library_id": library_id, "trigger": data.get("trigger", "manual")}
+        return {
+            "library_id": library_id,
+            "trigger": data.get("trigger", "manual"),
+            "_raw": raw,
+        }
     except Exception as e:
         logger.warning(f"从 Redis 取扫描请求失败：{e}")
         return None
+
+
+def ack_scan_request(raw) -> None:
+    """确认任务完成：从 processing 队列删除，并清除 dedup 标记
+    
+    raw: pop_scan_request 返回的 _raw（bytes 或 str，保持原样传入）
+    """
+    r = _redis()
+    if r is None:
+        return
+    try:
+        # 从 processing 删除（只删一个）；lrem 能处理 bytes/str
+        r.lrem(REDIS_SCAN_PROCESSING_KEY, 1, raw)
+        # 清除去重标记，允许再次入队
+        try:
+            data = json.loads(raw)
+            r.srem(REDIS_SCAN_DEDUP_KEY, int(data["library_id"]))
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"确认扫描请求失败：{e}")
+
+
+def recover_processing_queue() -> int:
+    """Worker 启动时：把 processing 中的未完成任务移回 queue
+
+    返回恢复的任务数。
+    """
+    r = _redis()
+    if r is None:
+        return 0
+    try:
+        count = 0
+        # 把 processing 的任务逐个移回 queue（RPUSH 保持顺序）
+        while True:
+            raw = r.rpoplpush(REDIS_SCAN_PROCESSING_KEY, REDIS_SCAN_QUEUE_KEY)
+            if not raw:
+                break
+            count += 1
+        if count > 0:
+            logger.info(f"从 processing 队列恢复 {count} 个未完成扫描任务")
+        return count
+    except Exception as e:
+        logger.warning(f"恢复 processing 队列失败：{e}")
+        return 0
 
 
 def start_redis_consumer() -> bool:
@@ -194,6 +255,13 @@ def start_redis_consumer() -> bool:
         logger.error("Redis 不可用，无法启动扫描队列消费")
         return False
     _consumer_stop.clear()
+    # 启动时恢复未完成的任务（worker 崩溃后残留）
+    try:
+        recovered = recover_processing_queue()
+        if recovered > 0:
+            logger.info(f"Worker 启动：恢复 {recovered} 个未完成任务")
+    except Exception as e:
+        logger.warning(f"恢复 processing 队列失败：{e}")
     _consumer_thread = threading.Thread(
         target=_consume_loop, daemon=True, name="scan-redis-consumer"
     )
@@ -228,11 +296,15 @@ def _consume_loop():
             continue
         library_id = req["library_id"]
         trigger = req["trigger"]
+        raw = req.get("_raw", "")
         try:
             with SessionLocal() as db:
                 lib = db.get(em.EmbyLibrary, library_id)
                 if lib is None:
                     logger.warning(f"Redis 扫描请求：库 id={library_id} 不存在，跳过")
+                    # 库不存在也要 ACK，否则会一直残留在 processing
+                    if raw:
+                        ack_scan_request(raw)
                     continue
                 # 走进程内入队（worker 进程内的 scan_queue 完整逻辑：串行化/并发上限）
                 result = scan_queue.enqueue_local(lib, trigger=trigger)
@@ -240,6 +312,9 @@ def _consume_loop():
                             f"触发={trigger} created={result.get('created')}")
                 # expunge：enqueue_local 内部会拍快照，lib 不能随 session 关闭失效
                 db.expunge(lib)
+            # 转入进程内队列成功，确认 Redis 任务完成
+            if raw:
+                ack_scan_request(raw)
         except Exception:
             logger.exception(f"处理 Redis 扫描请求失败：库 id={library_id}")
     logger.info("扫描队列消费循环结束")
