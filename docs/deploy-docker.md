@@ -191,11 +191,15 @@ Compose 已配好 `rclone-serve` 服务，跑 `rclone serve http` 并开启 VFS 
 | `RCLONE_VFS_CACHE_MAX_SIZE` | `8G` | 缓存总上限 |
 | `RCLONE_VFS_CACHE_MIN_FREE` | `5G` | 剩余低于它就停止写入（宁可不缓存也不撑爆盘） |
 
-缓存落在 `${RCLONE_CONFIG_DIR}/vfs`（宿主 `/opt/aetrix-rclone/vfs`），可直接查看：
+缓存落在 `${RCLONE_CONFIG_DIR}/vfs/<remote>`（宿主 `/opt/aetrix-rclone/vfs/MP`），可直接查看：
 
 ```bash
 du -sh /opt/aetrix-rclone/vfs
 ```
+
+> 注意：rclone **没有** `--vfs-cache-dir` 这个 flag，VFS 缓存固定放在
+> 全局 `--cache-dir` 下的 `vfs/` 子目录。写成 `--vfs-cache-dir` 会让容器直接
+> `Fatal error: unknown flag` 起不来（已实测）。
 
 ## 安全要求
 
