@@ -46,12 +46,15 @@ import type {
 } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
+import RcloneRemotes from './RcloneRemotes.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import NoticePanel from '@/components/NoticePanel.vue'
 
 const realm = useRealmStore()
 /** 统计范围：当前服（默认）或全部服 */
 const scope = ref<'realm' | 'all'>('realm')
+/** 标签页：mounts = 存储挂载，rclone = Rclone 配置 */
+const activeTab = ref<'mounts' | 'rclone'>('mounts')
 /** 后端给的挂载 id → 服名映射（跨服汇总时用） */
 const realmNames = ref<Record<string, string>>({})
 /**
@@ -570,6 +573,12 @@ function fmtDate(s: string | null): string {
       </div>
     </div>
 
+    <el-tabs v-model="activeTab" style="margin-bottom: 16px">
+      <el-tab-pane label="存储挂载" name="mounts" />
+      <el-tab-pane label="Rclone 配置" name="rclone" />
+    </el-tabs>
+
+    <template v-if="activeTab === 'mounts'">
     <!--
       挂载里的本机路径、rclone RC 地址这类配置是「跟着服务器走」的：
       后台测试跑在 EM 里，通过不代表那台 EA 能播。被媒体库引用却在 EA 上不可达的
@@ -717,7 +726,15 @@ function fmtDate(s: string | null): string {
       挂载管理（弹窗）：来源、归属服、被哪些媒体库使用、EM 与 EA 两边的可达结论、上次测试结果
       都在这里；需要改配置再进「编辑」，不用在一行小徽标里猜。
     -->
-    <el-dialog v-model="manage.visible" :title="`管理来源：${manage.row?.name || ''}`" width="560px">
+        </template>
+
+    <template v-if="activeTab === 'rclone'">
+      <div class="admin-card">
+        <RcloneRemotes />
+      </div>
+    </template>
+
+<el-dialog v-model="manage.visible" :title="`管理来源：${manage.row?.name || ''}`" width="560px">
       <div v-if="manage.row" class="mg-body">
         <div class="kv-list">
           <div class="kv-row"><span class="kv-key">名称</span><span class="kv-value">{{ manage.row.name }}</span></div>

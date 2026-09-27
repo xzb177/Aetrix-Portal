@@ -1052,3 +1052,26 @@ export interface EmbySessionRow {
   is_paused: boolean
   started_at: string | null
 }
+
+/** rclone remote 配置（密钥类字段不回传明文） */
+export interface RcloneRemote {
+  id: number
+  name: string
+  remote_type: string
+  drive_type: 'personal' | 'service_account'
+  client_id: string
+  client_id_masked: string
+  has_client_secret: boolean
+  has_token: boolean
+  team_drive_id: string
+  service_account_file: string
+  has_service_account: boolean
+  is_enabled: boolean
+  is_probe_remote: boolean
+  remark: string
+  last_checked_at: string | null
+  last_check_ok: boolean | null
+  last_check_message: string | null
+  created_at: string | null
+  updated_at: string | null
+}

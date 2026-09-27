@@ -44,6 +44,7 @@ import type {
   PlaybackStats,
   RegistrationCode,
   RegistrationSettings,
+  RcloneRemote,
   TicketMessageRow,
   TicketRow,
   TrendStats,
@@ -615,18 +616,8 @@ export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`$
 export const saveChaseNew = (enabled: boolean, interval: number, libraries: string) =>
   put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, libraries })
 
-// rclone remote 管理
-export interface RcloneRemote {
-  id: number; name: string; remote_type: string
-  team_drive: string; chunk_size: string
-  is_enabled: boolean; is_probe_remote: boolean
-  has_sa: boolean; has_oauth: boolean; remark: string
-  last_check_ok: boolean | null; last_check_message: string
-}
-export const fetchRcloneRemotes = () => get<{ success: boolean; remotes: RcloneRemote[] }>(`${E}/rclone/remotes`)
-export const createRcloneRemote = (data: any) => post<{ success: boolean; id: number }>(`${E}/rclone/remotes`, data)
-export const updateRcloneRemote = (id: number, data: any) => put<{ success: boolean }>(`${E}/rclone/remotes/${id}`, data)
-export const deleteRcloneRemote = (id: number) => del<{ success: boolean }>(`${E}/rclone/remotes/${id}`)
+// rclone remote 管理（类型统一在 @/types，与后端 _serialize_remote 对齐）
+export type { RcloneRemote } from '@/types'
 export const setProbeRemote = (id: number) => post<{ success: boolean }>(`${E}/rclone/remotes/${id}/probe`, {})
 export const regenerateRcloneConf = () => post<{ success: boolean; path: string }>(`${E}/rclone/regenerate`, {})
 export interface SaFile { id: number; filename: string; client_email: string; project_id: string; is_enabled: boolean }
@@ -787,3 +778,54 @@ export const browsePan115 = (params: { cid?: string; account_id?: number; cookie
   get<{ cid: string; cookie_source: string; entries: Pan115DirEntry[]; total: number }>(
     `${E}/115/browse`, params
   )
+
+
+// ==================== rclone remote 配置（/api/admin/emby/rclone/*） ====================
+
+export const fetchRcloneRemotes = () =>
+  get<{ remotes: RcloneRemote[] }>(`${E}/rclone/remotes`)
+
+export const createRcloneRemote = (data: {
+  name: string
+  remote_type?: string
+  drive_type?: string
+  client_id?: string
+  client_secret?: string
+  team_drive_id?: string
+  is_enabled?: boolean
+  remark?: string
+}) => post<{ success: boolean; remote: RcloneRemote }>(`${E}/rclone/remotes`, data)
+
+export const updateRcloneRemote = (
+  id: number,
+  data: { name?: string; client_id?: string; client_secret?: string; team_drive_id?: string; is_enabled?: boolean; remark?: string }
+) => put<{ success: boolean; remote: RcloneRemote }>(`${E}/rclone/remotes/${id}`, data)
+
+export const deleteRcloneRemote = (id: number) =>
+  del<{ success: boolean }>(`${E}/rclone/remotes/${id}`)
+
+export const generateRcloneConf = () =>
+  post<{ success: boolean; message: string; backup: string; reload: { success: boolean; message: string } }>(
+    `${E}/rclone/remotes/generate-conf`, {})
+
+export const previewRcloneConf = () =>
+  get<{ preview: string }>(`${E}/rclone/remotes/conf-preview`)
+
+export const setProbeRcloneRemote = (id: number) =>
+  post<{ success: boolean; probe_remote: string }>(`${E}/rclone/remotes/${id}/set-probe`, {})
+
+export const fetchProbeRcloneRemote = () =>
+  get<{ probe_remote: string | null }>(`${E}/rclone/probe-remote`)
+
+export const fetchRcloneOAuthUrl = (id: number) =>
+  get<{ oauth_url: string; redirect_uri: string }>(`${E}/rclone/remotes/${id}/oauth-url`)
+
+export const submitRcloneOAuthCode = (id: number, data: { code: string; redirect_uri: string }) =>
+  post<{ success: boolean; has_token: boolean }>(`${E}/rclone/remotes/${id}/oauth-callback`, data)
+
+export const uploadRcloneServiceAccount = (id: number, file: File) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return upload<{ success: boolean; filename: string; client_email: string; project_id: string }>(
+    `${E}/rclone/remotes/${id}/upload-sa`, fd)
+}
