@@ -1304,7 +1304,14 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
         sources.append(LibrarySource(label=path, kind="local", path=path))
 
     mount_ids = parse_mount_ids(library)
-    needed_ids = set(mount_ids) | {mid for _, mid, _ in mount_subpaths}
+    # 一个库可能同时留下旧字段：paths 写了 mount://<id>/<子目录>，
+    # mount_ids 又保留了同一个挂载 id。子目录来源已经代表这个挂载，
+    # 再追加 mount_ids 的根来源会把整个云盘也扫进去（严重时把别的库内容
+    # 写进当前库）。子路径优先，过滤掉重复的整挂载来源；没有 paths 子路径
+    # 的库仍按 mount_ids 扫整个挂载，保持旧行为。
+    subpath_mount_ids = {mount_id for _, mount_id, _ in mount_subpaths}
+    mount_ids = [mount_id for mount_id in mount_ids if mount_id not in subpath_mount_ids]
+    needed_ids = set(mount_ids) | subpath_mount_ids
     mounts = (
         {m.id: m for m in db.query(em.StorageMount).filter(em.StorageMount.id.in_(needed_ids)).all()}
         if needed_ids

@@ -1410,6 +1410,13 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
 @emby_router.get("/Users/{user_id}/Items/Resume")
 def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
+    """继续观看：只看电影/剧集，单集不单独出现在首页。
+
+    Emby 客户端首页的「继续观看」按电影/剧集聚合续播；单集属于剧集详情页的内容。
+    这里原先只看「有进度且未播完」，没按 item_type 过滤——于是**任何一条**有
+    播放进度的单集都会作为一个独立条目混进首页，主人那边就看到了「第 1 集」这种卡片。
+    与 ``/Items/Latest`` 同一口径：只保留 movie / series。
+    """
     limit = int(request.query_params.get("Limit") or 12)
     rows = (
         db.query(em.UserMediaData, em.MediaItem)
@@ -1418,6 +1425,8 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
             em.UserMediaData.user_id == user.id,
             em.UserMediaData.playback_position_ticks > 0,
             em.UserMediaData.played == False,  # noqa: E712
+            em.MediaItem.item_type.in_(["movie", "series"]),
+            em.MediaItem.is_hidden == False,  # noqa: E712
         )
         .order_by(em.UserMediaData.last_played_at.desc())
         .limit(limit)

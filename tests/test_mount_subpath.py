@@ -149,6 +149,37 @@ def test_whole_mount_source_keeps_subpath_root(tmp_path):
     assert rels == ["/video/剧集/动漫剧/a.mkv", "/video/影库/b.mkv"]
 
 
+def test_subpath_wins_over_same_mount_root_source(tmp_path):
+    """同一挂载同时出现在 paths 与 mount_ids 时，只扫 paths 的子目录。
+
+    这正是线上细分类媒体库踩中的事故：paths 是
+    mount://2/video/剧集/动漫剧，mount_ids 又是 2；旧代码返回两个来源，
+    一个扫子目录、一个扫整个挂载，把别的目录内容混进当前库。
+    """
+    _tree(tmp_path)
+    mount = _local_mount(2, str(tmp_path))
+    lib = SimpleNamespace(paths="mount://2/video/剧集/动漫剧", mount_ids="2")
+
+    sources, failed = mnt.library_sources(lib, _FakeDB([mount]))
+
+    assert failed == []
+    assert len(sources) == 1
+    assert sources[0].subpath == "/video/剧集/动漫剧"
+
+
+def test_different_mount_root_still_added(tmp_path):
+    """子路径只屏蔽同 id 的根来源，不影响另一个挂载的整盘来源。"""
+    _tree(tmp_path)
+    mount2 = _local_mount(2, str(tmp_path))
+    mount3 = _local_mount(3, str(tmp_path))
+    lib = SimpleNamespace(paths="mount://2/video/剧集/动漫剧", mount_ids="2,3")
+
+    sources, failed = mnt.library_sources(lib, _FakeDB([mount2, mount3]))
+
+    assert failed == []
+    assert [(s.mount.id, s.subpath) for s in sources] == [(2, "/video/剧集/动漫剧"), (3, "/")]
+
+
 def test_check_mount_subpath(tmp_path):
     """后台保存校验：挂载不存在/子目录不存在时抛 MountError"""
     _tree(tmp_path)
