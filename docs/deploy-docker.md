@@ -132,6 +132,71 @@ print('网关可信 =', _is_trusted_proxy('172.18.0.1'))"
 
 容器直连（`request.client.host` 是 `127.0.0.1`）时不需要配，回环默认可信。
 
+### 播放延迟与 rclone 取流（VFS 缓存）
+
+`rclone rcd --rc-serve` 取流**不经过 VFS 层**，而 VFS 缓存只挂在 VFS 上。
+rclone 1.71.1 的 `rcd` 连 `--vfs-cache-mode` 这个 flag 都没有：
+
+```bash
+docker exec aetrix-rclone rcd --help | grep -c vfs-cache-mode   # → 0
+```
+
+所以经 rcd 取的每一个 Range 请求都是冷读。而 Google Drive 每次 Range 读有
+**约 1.2 秒固定往返**（与大小、位置无关）：
+
+| 请求 | 耗时 | 吞吐 |
+|---|---|---|
+| 1MB | 1220-1560 ms | 0.78 MB/s |
+| 8MB | 1470 ms | 5.44 MB/s |
+| 32MB | 1900 ms | 16.84 MB/s |
+
+带宽本身并不差（17 MB/s），慢在**请求次数**——播放器起播时探测、缓冲不足时续读，
+全是小 Range 请求，每次都吃这段延迟。实测起播三步累计约 **4.1 秒**。
+
+## 用 serve http 做数据面（推荐）
+
+Compose 已配好 `rclone-serve` 服务，跑 `rclone serve http` 并开启 VFS 缓存，
+与 `rcd`（控制面）并行：
+
+| | 端点 | 用途 |
+|---|---|---|
+| 控制面 | `aetrix-rclone:5572`（`rcd`） | 列目录、查状态（`/operations/list` 等） |
+| 数据面 | `aetrix-rclone-serve:8080`（`serve http`） | 媒体字节，**带 VFS 缓存** |
+
+实测同一文件起播三步：
+
+| | 现状（rcd） | serve http + 缓存 |
+|---|---|---|
+| 起播累计 | 4100 ms | 1962 ms（冷）→ 35 ms（热） |
+| 32MB 吞吐 | 12.67 MB/s | 19.43 MB/s |
+
+要让面板的 rclone 挂载走缓存，在挂载配置里填上**取流地址**：
+
+```json
+{"mode":"rc","rc_url":"http://rclone:5572","serve_url":"http://rclone-serve:8080","fs":"MP:"}
+```
+
+`serve_url` 留空则沿用旧的 rc-serve 取流（向后兼容）。
+
+> **两种端点的 URL 形态不一样**，混用就是 404 且极难定位：
+> rc-serve 写 `http://rclone:5572/[MP:]/MoviePilot/x.mkv`（remote 套方括号、**保留尾冒号**）；
+> serve http 写 `http://rclone-serve:8080/MP/MoviePilot/x.mkv`（**不带方括号、不带尾冒号**）。
+
+### 缓存限额必须给死
+
+单个 4K 电影就 17GB，缓存不给上限会撑爆磁盘。compose 默认：
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `RCLONE_VFS_CACHE_MAX_SIZE` | `8G` | 缓存总上限 |
+| `RCLONE_VFS_CACHE_MIN_FREE` | `5G` | 剩余低于它就停止写入（宁可不缓存也不撑爆盘） |
+
+缓存落在 `${RCLONE_CONFIG_DIR}/vfs`（宿主 `/opt/aetrix-rclone/vfs`），可直接查看：
+
+```bash
+du -sh /opt/aetrix-rclone/vfs
+```
+
 ## 安全要求
 
 - `SECRET_KEY` 至少 32 字符，EM/EA 必须一致；
