@@ -102,6 +102,10 @@ class ScanTask:
     remote_lists: int = 0
     remote_reused: int = 0
     owner_thread: Optional[threading.Thread] = None
+    # Redis 桥接携带的原始任务 payload（bytes/str，BLMOVE 时的 _raw）：
+    # P0-0c 修复——必须在扫描真正完成后才 ACK，提前确认会导致进程崩溃时任务无声丢失。
+    # 单体模式（非 Redis 桥接）下为空列表。
+    redis_raws: list = field(default_factory=list)
 
     def as_dict(self, *, position: Optional[int] = None) -> dict:
         data = {
@@ -177,12 +181,16 @@ def stop_redis_consumer(timeout: float = 5.0) -> None:
     _rq.stop_redis_consumer(timeout=timeout)
 
 
-def enqueue_local(library, *, trigger: str = "manual") -> dict:
+def enqueue_local(library, *, trigger: str = "manual", redis_raw=None) -> dict:
     """把一个媒体库的扫描放进队列（已在队列里 / 正在跑就返回那一条，不报错）
 
     快照在这一刻拍下（``LibrarySnapshot.of``）：排队期间管理员改了路径 / 策略，
     这一轮仍按点击那一刻的配置跑——与「点了就开扫」的语义一致，不会出现
     「排了十分钟，跑的是十分钟后改过的配置」。
+
+    ``redis_raw``：Redis 桥接模式下 ``pop_scan_request`` 取出的原始 payload。
+    随 ``ScanTask`` 携带，**扫描真正完成后才 ACK**（P0-0c：提前确认会导致
+    worker 崩溃时任务无声丢失）。单体模式传 ``None``。
 
     返回 ``{"created": bool, "task": {...}}``：``created=False`` 表示这次点击被合并到已有任务。
     """
@@ -194,6 +202,10 @@ def enqueue_local(library, *, trigger: str = "manual") -> dict:
         existing = _task_of_locked(library.id)
         if existing is not None:
             existing.request_count += 1
+            if redis_raw is not None:
+                # 合并进已有任务：这个 Redis 任务同样要等已有任务跑完才 ACK，
+                # 不能在这里提前确认，否则崩溃会丢任务。
+                existing.redis_raws.append(redis_raw)
             return {"created": False, "task": existing.as_dict(position=_position_locked(existing))}
         task = ScanTask(
             library_id=int(library.id),
@@ -202,6 +214,7 @@ def enqueue_local(library, *, trigger: str = "manual") -> dict:
             mount_ids=tuple(int(m) for m in (snapshot.mount_ids or ())),
             local_paths=tuple(snapshot.paths or ()),
             snapshot=snapshot,
+            redis_raws=[redis_raw] if redis_raw is not None else [],
         )
         _QUEUE.append(task)
         # 入队时就把「在等哪个挂载」算出来：接口要立刻把理由写进提示（
@@ -235,6 +248,7 @@ def cancel(library_id: int) -> str:
                 return _rq.cancel_scan_request(int(library_id))
         except Exception as e:
             logger.warning(f"Redis 取消失败，回退进程内取消：{e}")
+    canceled_task = None
     with _LOCK:
         for index, task in enumerate(_QUEUE):
             if task.library_id == int(library_id):
@@ -245,10 +259,17 @@ def cancel(library_id: int) -> str:
                 _push_history_locked(task)
                 logger.info("取消排队：库「%s」(id=%s)", task.name or "?", task.library_id)
                 _COND.notify_all()
-                return "canceled"
-        if int(library_id) in _RUNNING:
-            return "running"
-        return "missing"
+                canceled_task = task
+                break
+        else:
+            if int(library_id) in _RUNNING:
+                return "running"
+            return "missing"
+    # 锁外 ACK：被取消的任务不会再跑，必须把 Redis 侧的任务确认掉；
+    # 否则它一直占着 processing，worker 重启后会被捞回来重新扫描——用户明明取消了。
+    if canceled_task is not None:
+        _ack_redis_raws(canceled_task)
+    return "canceled"
 
 
 def state_of(library_id: int) -> Optional[dict]:
@@ -572,6 +593,33 @@ def _push_history_locked(task: ScanTask) -> None:
         _HISTORY.pop(0)
 
 
+def _ack_redis_raws(task: ScanTask) -> None:
+    """把任务携带的 Redis 原始 payload 全部 ACK（确认完成）
+
+    P0-0c 修复的核心：ACK 只能发生在扫描真正完成后（``_run_task`` 的 finally、
+    或 ``cancel()`` 取消排队时），绝不能在「转入内存队列」时就确认——
+    否则 worker 进程在扫描完成前崩溃，任务会无声丢失。
+
+    在锁外调用：Redis I/O 不可预测，绝不能在持有 ``_LOCK``/``_COND`` 时做。
+    所有异常内部消化：ACK 失败时任务仍留在 Redis ``processing`` 里，
+    worker 重启后 ``recover_processing_queue`` 会把它捞回来重扫（at-least-once），
+    不会丢，只会多扫一次。
+    """
+    raws = list(task.redis_raws or [])
+    task.redis_raws.clear()
+    if not raws:
+        return
+    try:
+        from backend.emby_server import scan_queue_redis as _rq
+        for _raw in raws:
+            _rq.ack_scan_request(_raw)
+        logger.info("Redis 扫描任务已 ACK（扫描完成）：库 id=%s，确认 %d 个",
+                    task.library_id, len(raws))
+    except Exception:
+        logger.exception("Redis 扫描任务 ACK 失败：库 id=%s（任务仍在 processing，重启后会恢复）",
+                         task.library_id)
+
+
 def _run_task(task: ScanTask) -> None:
     """在工作线程里真正跑一轮扫描（独立 Session，与升级前的后台线程一致）"""
     from backend.emby_server.scanner import scan_library_sync  # 延迟导入，见模块 docstring
@@ -619,6 +667,9 @@ def _run_task(task: ScanTask) -> None:
                     (task.duration_ms or 0) / 1000, task.remote_lists, task.remote_reused)
         with _COND:
             _release_locked(task)
+        # P0-0c：Redis 桥接的任务在这里才 ACK——扫描真正完成了。
+        # 注意在 _COND 锁之外做（Redis I/O 不可预测），_ack_redis_raws 内部清掉已携带的 raw。
+        _ack_redis_raws(task)
 
 
 def _flusher_loop() -> None:
