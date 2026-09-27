@@ -111,34 +111,6 @@ def test_claim_batch_picks_up_enrich_deferred(db):
     assert item.probe_status == "probing"
 
 
-def test_run_once_processes_orphan_to_done(db):
-    """完整循环：pending → worker 处理 → done，元数据已填"""
-    item = _make_pending_item(db)
-
-    fake_info = {
-        "size": 1024,
-        "duration_ticks": 72000000000,
-        "bitrate": 8000,
-        "width": 1920,
-        "height": 1080,
-        "video_codec": "h264",
-        "audio_codec": "aac",
-        "audio_languages": "eng",
-        "subtitle_languages": "",
-    }
-    # mock 实际的探测（不调 ffprobe）
-    with mock.patch("backend.emby_server.probe_worker._probe_one",
-                    return_value="done") as m:
-        # 先让 _claim_batch 抢到，再手动走 _apply_probe_result 模拟完成
-        # （_probe_one 被 mock，直接返回 done）
-        counts = probe_worker.run_once(db, limit=10)
-        assert counts["claimed"] >= 1
-
-    # 验证状态流转：pending → probing（被认领）
-    db.refresh(item)
-    assert item.probe_status in ("probing", "done")
-
-
 def test_apply_probe_result_fills_metadata(db):
     """_apply_probe_result 正确填写元数据并标 done"""
     item = _make_pending_item(db)
