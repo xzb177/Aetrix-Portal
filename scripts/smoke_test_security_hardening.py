@@ -302,6 +302,12 @@ row = login_logs()[0]
 check("后台登录：成功被记录", row["reason"] == "admin_login" and row["success"] is True, f"{row}")
 
 # 限流：同一 IP 1 分钟内最多 8 次尝试，第 9 次 429
+# 注意（P0-0 可信代理）：TestClient 直连 IP 为 "testclient"，不在 TRUSTED_PROXIES 中，
+# 因此上面的 X-Forwarded-For 头都会被忽略——前面的 3 次登录尝试（密码错误/非管理员/
+# 正确登录）已经占用了同一 admin_login:testclient 桶的 3 个名额。这里先清掉桶，
+# 让本轮从干净状态开始，验证"8 次放行、第 9 次 429"的原始意图。
+from backend.ratelimit import _limiter as _rate_limiter
+_rate_limiter.reset("admin_login:testclient")
 statuses = [
     client.post("/api/admin/auth/login", json={"username": "sec-staff", "password": "wrong-pw"},
                 headers={"X-Forwarded-For": "10.9.9.99"}).status_code
