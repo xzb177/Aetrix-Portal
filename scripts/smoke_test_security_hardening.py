@@ -280,8 +280,10 @@ row = login_logs()[0]
 check("后台登录：失败被记录",
       row["reason"] == "admin_login_failed" and row["success"] is False and row["username"] == "sec-staff",
       f"{row}")
-check("后台登录：记录真实客户端 IP（X-Real-IP，不采信可伪造的 XFF 首值）",
-      row["ip"] == "10.9.9.1", f"ip={row['ip']}")
+# 安全加固：TestClient 直连 IP（testclient）不在 TRUSTED_PROXIES 里，
+# 伪造的 X-Real-IP / XFF 必须被忽略，用直连 IP 记录（防限流绕过和日志伪造）
+check("后台登录：不可信来源的伪造头被忽略（记录直连 IP）",
+      row["ip"] == "testclient", f"ip={row['ip']}")
 
 r = client.post("/api/admin/auth/login", json={"username": "sec-alice", "password": "alice-pw"},
                 headers={"X-Forwarded-For": "10.9.9.2"})
