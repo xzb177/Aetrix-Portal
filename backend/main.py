@@ -211,17 +211,19 @@ app = FastAPI(
 
 # ==================== 中间件配置 ====================
 
-# CORS 中间件（生产环境请设置 CORS_ORIGINS 环境变量限制具体域名）
+# CORS 中间件：CORS_ORIGINS 为空时不添加（同源不需要），绝不回退到 ["*"]
 _cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins_env.split(",") if o.strip()] or ["*"],
-    allow_credentials=bool(_cors_origins_env),  # 通配源时禁用 credentials（避免无效组合）
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
-                   "X-MediaBrowser-Token", "X-Device-Id"],
-    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
-)
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
+                       "X-MediaBrowser-Token", "X-Device-Id"],
+        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
+    )
 
 
 # 安全响应头
@@ -307,7 +309,22 @@ async def health_check():
         "emby_gateway": _ENABLE_EMBY_GATEWAY,
         # 长期运行的体检口径：正在扫描的库 / 转码会话 / 临时目录占用 / 磁盘余量
         "runtime": _runtime_report(),
+        # Redis 状态：队列/熔断器/分布式锁都依赖它
+        "redis": _redis_status(),
     }
+
+
+def _redis_status() -> dict:
+    """Redis 连通性（健康检查用；异常不抛，只报告）"""
+    try:
+        from backend import database as db
+        r = db.redis_client
+        if r is None:
+            return {"ok": False, "reason": "not_configured"}
+        r.ping()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)[:100]}
 
 
 def _runtime_report() -> dict:
