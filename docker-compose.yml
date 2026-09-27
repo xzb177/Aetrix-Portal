@@ -68,6 +68,10 @@ services:
     # 表面能读，实际 token 一过期就再也续不回来。
     volumes:
       - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
+      # 服务账号（Google Drive 团队盘常用）：remote 里写
+      # ``service_account_file = /sa-accounts/<name>.json``，这里把宿主机目录挂进去。
+      # 未配置时用同一个默认目录；目录不存在也不影响启动（rclone 不会主动去读）。
+      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts:ro
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 5572 || exit 1"]
       interval: 30s
