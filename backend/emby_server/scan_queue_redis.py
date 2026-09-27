@@ -278,7 +278,12 @@ def stop_redis_consumer(timeout: float = 5.0) -> None:
 
 
 def _consume_loop():
-    """消费循环：BLPOP → 查库 → 进程内入队"""
+    """消费循环：BLPOP → 查库 → 进程内入队
+
+    P0-0c：这里**不再**提前 ACK。raw 随任务传给 ``enqueue_local``，
+    由 ``scan_queue`` 在扫描真正完成后（或取消）才确认——worker 在扫描完成前
+    崩溃时，任务仍在 Redis ``processing`` 里，重启后自动恢复重扫，不丢任务。
+    """
     logger.info("扫描队列消费循环开始")
     # 延迟导入：避免循环导入
     from backend.database import SessionLocal
@@ -306,15 +311,13 @@ def _consume_loop():
                     if raw:
                         ack_scan_request(raw)
                     continue
-                # 走进程内入队（worker 进程内的 scan_queue 完整逻辑：串行化/并发上限）
-                result = scan_queue.enqueue_local(lib, trigger=trigger)
+                # 走进程内入队（worker 进程内的 scan_queue 完整逻辑：串行化/并发上限）。
+                # raw 随任务携带，扫描真正完成后才 ACK（见 _ack_redis_raws）。
+                result = scan_queue.enqueue_local(lib, trigger=trigger, redis_raw=raw or None)
                 logger.info(f"Redis 扫描请求已转进程内队列：库「{lib.name}」(id={library_id}) "
                             f"触发={trigger} created={result.get('created')}")
                 # expunge：enqueue_local 内部会拍快照，lib 不能随 session 关闭失效
                 db.expunge(lib)
-            # 转入进程内队列成功，确认 Redis 任务完成
-            if raw:
-                ack_scan_request(raw)
         except Exception:
             logger.exception(f"处理 Redis 扫描请求失败：库 id={library_id}")
     logger.info("扫描队列消费循环结束")
