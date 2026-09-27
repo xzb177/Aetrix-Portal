@@ -304,7 +304,7 @@ def _consume_loop():
         raw = req.get("_raw", "")
         try:
             with SessionLocal() as db:
-                lib = db.get(em.EmbyLibrary, library_id)
+                lib = db.get(em.Library, library_id)
                 if lib is None:
                     logger.warning(f"Redis 扫描请求：库 id={library_id} 不存在，跳过")
                     # 库不存在也要 ACK，否则会一直残留在 processing
