@@ -320,7 +320,17 @@ def library_reachability(db: Session, library, ctx: Optional[Context] = None,
 
 
 def _mount_for_source(ctx: Context, library, label: str):
-    """把来源标签还原成挂载行（本机路径来源没有挂载行 → None）"""
+    """把来源标签还原成挂载行（本机路径来源没有挂载行 → None）
+
+    支持 ``mount://<id>/<子目录>`` 格式：直接解析挂载 ID。
+    """
+    # mount:// 格式：直接解析 ID
+    parsed = mount_lib.parse_mount_path(label)
+    if parsed is not None:
+        mount = ctx.mounts.get(parsed[0])
+        if mount is not None:
+            return mount
+    # 旧格式：按展示名匹配
     for mount_id in mount_lib.parse_mount_ids(library):
         mount = ctx.mounts.get(mount_id)
         if mount is not None and mount_lib.mount_label(mount) == label:
