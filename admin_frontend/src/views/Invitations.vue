@@ -303,15 +303,15 @@ onMounted(load)
 }
 
 .user-name { font-weight: 600; color: var(--text-primary); }
-.amt-in { color: #6ee7b7; font-weight: 600; font-variant-numeric: tabular-nums; }
-.amt-out { color: #fda4af; font-weight: 600; font-variant-numeric: tabular-nums; }
+.amt-in { color: var(--success); font-weight: 600; font-variant-numeric: tabular-nums; }
+.amt-out { color: var(--danger); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .adjust-preview {
   padding: 10px 12px;
   border-radius: var(--radius-md);
   background: var(--primary-soft);
   border: 1px solid var(--primary-border);
-  color: #a5eefb;
+  color: var(--primary);
   font-size: var(--font-size-xs);
 }
 

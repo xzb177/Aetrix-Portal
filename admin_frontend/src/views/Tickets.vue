@@ -241,7 +241,7 @@ function statusBadge(status: string): string {
 }
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 .mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.warn { background: rgba(234, 179, 8, 0.15); color: #eab308; }
+.mini-badge.warn { background: var(--warning-bg); color: var(--warning-strong); }
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
 
 .prio { font-size: 11px; color: var(--text-secondary); }

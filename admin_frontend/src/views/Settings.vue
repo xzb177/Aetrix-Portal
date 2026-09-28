@@ -621,7 +621,7 @@ async function saveRegistration() {
   line-height: 1.6;
   border: 1px solid var(--warning-border);
   background: var(--warning-bg);
-  color: #fde68a;
+  color: var(--warning);
 }
 
 .notice :deep(svg) { flex-shrink: 0; }
@@ -629,7 +629,7 @@ async function saveRegistration() {
 .notice.ok {
   border-color: var(--success-border);
   background: var(--success-bg);
-  color: #a7f3d0;
+  color: var(--success);
 }
 
 .notice strong,

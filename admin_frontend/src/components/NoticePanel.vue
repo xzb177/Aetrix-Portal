@@ -32,6 +32,8 @@ const props = withDefaults(defineProps<{
 
 const STORAGE_PREFIX = 'admin.notice.'
 const open = ref(false)
+/** 折叠面板的无障碍 id：aria-controls / region 配对 */
+const panelId = `notice-panel-${Math.random().toString(36).slice(2, 9)}`
 
 function lsKey(): string {
   return props.storageKey ? `${STORAGE_PREFIX}${props.storageKey}` : ''
@@ -62,7 +64,13 @@ function toggle() {
 
 <template>
   <section class="notice-panel">
-    <button type="button" class="notice-head" :aria-expanded="open" @click="toggle">
+    <button
+      type="button"
+      class="notice-head"
+      :aria-expanded="open"
+      :aria-controls="panelId"
+      @click="toggle"
+    >
       <span class="notice-title">
         <component :is="icon" v-if="icon" :size="15" />
         {{ title }}
@@ -71,7 +79,7 @@ function toggle() {
       <ChevronDown :size="15" class="notice-caret" :class="{ open }" />
     </button>
     <el-collapse-transition>
-      <div v-show="open" class="notice-body">
+      <div v-show="open" :id="panelId" class="notice-body" role="region">
         <slot />
       </div>
     </el-collapse-transition>

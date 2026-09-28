@@ -128,6 +128,17 @@
   --info-bg: rgba(96, 165, 250, 0.14);
   --info-border: rgba(96, 165, 250, 0.3);
   --info-on: #ffffff;
+  --violet: #a78bfa;
+  --violet-strong: #8b5cf6;
+  --violet-bg: rgba(167, 139, 250, 0.14);
+  --violet-border: rgba(167, 139, 250, 0.3);
+  --violet-on: #ffffff;
+
+  /* 趋势图 / 数据可视化序列色（与语义色对齐，暗色主题可读） */
+  --chart-1: var(--primary);
+  --chart-2: var(--violet);
+  --chart-3: var(--success);
+  --chart-4: var(--warning);
 
   /* 兼容旧命名 */
   --color-success: var(--success);
