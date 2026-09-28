@@ -46,6 +46,11 @@ MAX_INTERVAL = 120
 # 视频扩展名白名单
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm"}
 
+# 追新远端列举的超时（秒）。通用挂载默认 20s（MOUNT_TIMEOUT），
+# 递归列举上万个文件的库会超时——生产实测国产剧 1.4 万文件。追新是低频后台任务，
+# 给足时间换取不漏检。
+CHASE_NEW_RC_TIMEOUT = float(os.getenv("CHASE_NEW_RC_TIMEOUT", "180"))
+
 _WATCHER_STARTED = False
 _WATCHER_LOCK = threading.Lock()
 
@@ -151,6 +156,8 @@ def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
         cfg["rc_url"], "/operations/list",
         {"fs": fs, "remote": remote, "opt": {"recurse": True, "filesOnly": True}},
         username=cfg.get("rc_user", "") or "", password=cfg.get("rc_pass", "") or "",
+        # 通用挂载超时（默认 20s）对递归列举大库不够：国产剧 1.4 万个文件会超时。
+        timeout=CHASE_NEW_RC_TIMEOUT,
     )
     items = (body or {}).get("list") or []
     found: list[str] = []
