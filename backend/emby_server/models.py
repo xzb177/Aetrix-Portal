@@ -199,6 +199,17 @@ class MediaStream(Base):
     external_path = Column(String(1024))
     channels = Column(Integer)
     bit_rate = Column(Integer)
+    # ffprobe 的逐流细节：客户端「媒体信息」页会直接显示这些，缺了就只剩编码/码率几行
+    frame_rate = Column(String(20))        # 帧率（"29.970003" 这类原始值）
+    video_range = Column(String(20))       # 动态范围：SDR / HDR10 / HLG / DolbyVision
+    profile = Column(String(30))           # 编码 Profile：High / Main 10
+    level = Column(String(30))             # 编码 Level：40 / 51
+    pixel_format = Column(String(30))      # 像素格式：yuv420p10le
+    aspect_ratio = Column(String(20))      # 画面比例：16:9
+    bit_depth = Column(Integer)            # 位深：8 / 10 / 12
+    sample_rate = Column(Integer)          # 音频采样率：48000
+    channel_layout = Column(String(30))    # 声道布局：5.1
+    sample_format = Column(String(20))     # 音频格式：fltp
     created_at = Column(DateTime, default=datetime.now)
 
 

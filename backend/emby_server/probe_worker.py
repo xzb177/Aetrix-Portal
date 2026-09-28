@@ -177,8 +177,13 @@ PROBE_IDLE_POLL_SEC = max(5, int(os.getenv("PROBE_IDLE_POLL_SEC", "30") or 30))
 BOOST_PRIORITY = 1000   # 按需插队的优先级（新文件 100，普通 0）
 NEW_FILE_PRIORITY = 100
 
-_STREAM_COLS = {"stream_index", "stream_type", "codec", "language",
-                "display_title", "title", "channels", "bit_rate"}
+# 逐流字段：ffprobe 能拿到多少就存多少，客户端「媒体信息」页直接显示这些
+_STREAM_COLS = {
+    "stream_index", "stream_type", "codec", "language", "display_title", "title",
+    "channels", "bit_rate", "frame_rate", "video_range", "profile", "level",
+    "pixel_format", "aspect_ratio", "bit_depth", "sample_rate",
+    "channel_layout", "sample_format",
+}
 
 
 class _RateLimiter:

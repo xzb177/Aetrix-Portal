@@ -494,7 +494,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "Languages": [],
         "People": [],
         "RemoteTrailers": [],
-        "ExternalUrls": [],
+        "ExternalUrls": _external_urls(item),
         "Subviews": [],
         "BackdropImageTags": (["1"] if (
             item.backdrop_path or item.backdrop_image_url
@@ -510,7 +510,12 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                or (item.item_type in ("episode", "season")
                    and _first_image(item, "Primary", db))) else {},
         "ProviderIds": {
-            k: v for k, v in (("Tmdb", item.tmdb_id), ("Imdb", item.imdb_id)) if v
+            k: v for k, v in (
+                ("Tmdb", item.tmdb_id),
+                ("Imdb", item.imdb_id),
+                ("Douban", getattr(item, "douban_id", None)),
+                ("Bangumi", getattr(item, "bangumi_id", None)),
+            ) if v
         },
         "UserData": _user_data_dto(umd),
         "MediaSources": [],
@@ -663,6 +668,54 @@ def _strip_nulls(obj):
     return obj
 
 
+def _url_quote(text: str) -> str:
+    return urllib.parse.quote(text or "", safe="")
+
+
+def _external_urls(item: em.MediaItem) -> list:
+    """按条目已有的 TMDB/IMDb/豆瓣 等 id 生成外部链接（客户端详情页「链接」区）
+
+    以前这里写死 ``[]``，客户端拿不到任何链接来源，只能自己按 ProviderIds 猜一个
+    （于是详情页常常只剩一个来源）。Emby 协议里这组字段就是给客户端展示用的。
+    """
+    urls = []
+    name = (item.name or "").strip()
+    year = item.production_year
+    is_series = item.item_type in ("series", "season", "episode")
+    if item.tmdb_id:
+        path = "tv" if is_series else "movie"
+        urls.append({
+            "Name": "TMDB",
+            "Url": f"https://www.themoviedb.org/{path}/{item.tmdb_id}",
+        })
+    if item.imdb_id:
+        urls.append({
+            "Name": "IMDb",
+            "Url": f"https://www.imdb.com/title/{item.imdb_id}/",
+        })
+    douban = getattr(item, "douban_id", None)
+    if douban:
+        kind = "tv" if is_series else "movie"
+        urls.append({
+            "Name": "豆瓣",
+            "Url": f"https://movie.douban.com/{kind}/{douban}/",
+        })
+    bangumi = getattr(item, "bangumi_id", None)
+    if bangumi:
+        urls.append({
+            "Name": "Bangumi",
+            "Url": f"https://bgm.tv/subject/{bangumi}",
+        })
+    # 豆瓣/Bangumi 没有内建 id 时，按片名给出搜索入口——比什么都没有好
+    if not douban and name and (is_series or item.metadata_source == "douban"):
+        urls.append({
+            "Name": "豆瓣",
+            "Url": "https://search.douban.com/movie/subject_search?search_text="
+                    + _url_quote(name),
+        })
+    return urls
+
+
 def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
     # ffprobe 的 video stream 经常不单独给 bitrate（尤其是远程 HEVC 文件），
     # 但条目级 probe 已经有可靠的总 bitrate / 分辨率。不能把 0 映射成客户端的
@@ -676,6 +729,28 @@ def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
         "Channels": s.channels,
         "BitRate": (s.bit_rate or item.bitrate or None) if is_video else s.bit_rate,
     }
+    # 客户端「媒体信息」页逐行显示的字段（Emby 协议标准命名），有值才发
+    for attr, key in (
+        ("frame_rate", "FrameRate"),
+        ("video_range", "VideoRange"),
+        ("profile", "Profile"),
+        ("level", "Level"),
+        ("pixel_format", "PixelFormat"),
+        ("aspect_ratio", "AspectRatio"),
+        ("bit_depth", "BitDepth"),
+        ("sample_rate", "SampleRate"),
+        ("channel_layout", "ChannelLayout"),
+        ("sample_format", "SampleFormat"),
+    ):
+        val = getattr(s, attr, None)
+        if val not in (None, ""):
+            dto[key] = val
+    if is_video and item.width and item.height:
+        # 没有 stream 里的画面比例时，用分辨率算一个（客户端要显示这一行）
+        if not getattr(s, "aspect_ratio", None):
+            from math import gcd
+            g = gcd(int(item.width), int(item.height)) or 1
+            dto.setdefault("AspectRatio", f"{int(item.width) // g}:{int(item.height) // g}")
     if is_video:
         if item.width:
             dto["Width"] = item.width
