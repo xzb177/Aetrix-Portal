@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 
+from backend.emby_server import disc_filter
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.mounts import (
     REMOTE_MEDIA_EXTS,
@@ -246,6 +247,10 @@ class _CloudMount(MountProvider):
                         continue
                     for entry in entries:
                         if entry.is_dir:
+                            # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵跳过，
+                            # 否则每条 .m2ts 都会被当成一部电影
+                            if disc_filter.is_disc_subtree_dir(entry.name):
+                                continue
                             if depth < max_depth and entry.rel not in seen:
                                 seen.add(entry.rel)
                                 current.append((entry.rel, depth + 1))
