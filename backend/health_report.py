@@ -149,9 +149,11 @@ def collect(db) -> dict:
     # ---- 媒体探测失败率 ----
     try:
         done = _count(db, "movie", "done") + _count(db, "episode", "done")
+        degraded = _count(db, "movie", "degraded") + _count(db, "episode", "degraded")
         failed = _count(db, "movie", "failed") + _count(db, "episode", "failed")
-        total = done + failed
+        total = done + degraded + failed
         ratio = (failed / total) if total else 0.0
+        metrics["probe_degraded"] = degraded
         metrics["probe_failed"] = failed
         metrics["probe_ratio"] = round(ratio, 4)
         # 样本太少时不算数（刚开机的库会误报）
