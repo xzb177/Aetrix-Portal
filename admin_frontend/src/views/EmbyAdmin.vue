@@ -38,6 +38,8 @@ import {
   removeLibraryCover,
   rescrapeItem,
   rescrapeLibrary,
+  previewTmdbId,
+  bindTmdbId,
   runRepairQueue,
   scanLibrary,
   saveAutoScan,
@@ -56,7 +58,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, RcloneRemote, SaFile } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, TmdbPreview, RcloneRemote, SaFile } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -551,6 +553,60 @@ async function doRescrapeItem() {
     ElMessage.success('已刷新')
   } finally {
     rescrapeItemLoading.value = false
+  }
+}
+
+// 手动绑定 TMDB ID：TMDB 对中文剧集/综艺收录偏少，有些条目怎么搜都搜不到。
+// 与其反复重试，不如让管理员直接指定权威 ID（思路同 go-emby 的 {tmdb-123} 目录标记）。
+const bindItemId = ref('')
+const bindTmdbInput = ref('')
+const bindLoading = ref(false)
+const bindPreview = ref<TmdbPreview | null>(null)
+const bindVisible = ref(false)
+
+async function doPreviewTmdb() {
+  const id = Number(bindItemId.value)
+  const tid = bindTmdbInput.value.trim()
+  if (!id) return ElMessage.warning('请填写条目 ID')
+  if (!/^\d+$/.test(tid)) return ElMessage.warning('TMDB ID 必须是数字')
+  bindLoading.value = true
+  try {
+    bindPreview.value = await previewTmdbId(id, tid)
+  } catch {
+    bindPreview.value = null
+  } finally {
+    bindLoading.value = false
+  }
+}
+
+async function doBindTmdb() {
+  const id = Number(bindItemId.value)
+  const tid = bindTmdbInput.value.trim()
+  if (!id) return ElMessage.warning('请填写条目 ID')
+  if (!/^\d+$/.test(tid)) return ElMessage.warning('TMDB ID 必须是数字')
+  bindLoading.value = true
+  try {
+    const res = await bindTmdbId(id, tid, true)
+    ElMessage.success(res.unbound ? '已解绑并重新排队' : `已绑定并补全：${res.notes.join('；')}`)
+    bindPreview.value = null
+    bindTmdbInput.value = ''
+    await load()
+  } finally {
+    bindLoading.value = false
+  }
+}
+
+async function doUnbindTmdb() {
+  const id = Number(bindItemId.value)
+  if (!id) return ElMessage.warning('请填写条目 ID')
+  bindLoading.value = true
+  try {
+    await bindTmdbId(id, '', false)
+    ElMessage.success('已解绑，条目重新进入补全队列')
+    bindPreview.value = null
+    await load()
+  } finally {
+    bindLoading.value = false
   }
 }
 
@@ -1218,6 +1274,12 @@ function typeLabel(t: string): string {
           <div v-if="rescrapeItemNotes.length" class="scrape-results">
             <div v-for="(n, i) in rescrapeItemNotes" :key="i" class="scrape-result">{{ n }}</div>
           </div>
+          <div class="scrape-actions" style="margin-top: 10px">
+            <el-button size="small" plain @click="bindVisible = true">手动绑定 TMDB ID…</el-button>
+            <span class="drawer-hint" style="margin-left: 8px">
+              自动刮削一直搜不到的条目，可直接指定 TMDB 上的 ID
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -1528,6 +1590,45 @@ function typeLabel(t: string): string {
       <template #footer>
         <el-button @click="rescrapeVisible = false">取消</el-button>
         <el-button type="primary" :loading="rescrapeLoading" @click="confirmRescrape">开始</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 手动绑定 TMDB ID：给「怎么搜都搜不到」的条目一个出口 -->
+    <el-dialog v-model="bindVisible" title="手动绑定 TMDB ID" width="520px">
+      <p class="drawer-hint">
+        有些剧集 TMDB 确实没有收录（尤其中文剧集、综艺），自动刮削会一直失败。
+        可以在这里直接指定 TMDB 上的条目 ID，绑定后会立刻按该 ID 补全元数据与海报。
+      </p>
+      <div style="display: flex; gap: 8px; align-items: center; margin-top: 12px">
+        <el-input v-model="bindItemId" placeholder="条目 ID（在条目详情页可见）" style="width: 180px" />
+        <el-input v-model="bindTmdbInput" placeholder="TMDB ID（纯数字，如 1399）" style="flex: 1" />
+        <el-button :loading="bindLoading" @click="doPreviewTmdb">预览</el-button>
+      </div>
+
+      <template v-if="bindPreview">
+        <el-alert
+          :type="bindPreview.matches_current ? 'success' : 'warning'"
+          :closable="false"
+          style="margin-top: 12px"
+        >
+          <div>TMDB 标题：<b>{{ bindPreview.title }}</b><span v-if="bindPreview.year">（{{ bindPreview.year }}）</span></div>
+          <div>当前条目名：{{ bindPreview.current_name }}</div>
+          <div v-if="!bindPreview.matches_current" style="margin-top: 6px">
+            两者不一致——确认这就是同一部剧再绑定，否则会写错片名。
+          </div>
+        </el-alert>
+        <img
+          v-if="bindPreview.poster"
+          :src="bindPreview.poster"
+          alt="poster"
+          style="width: 90px; margin-top: 10px; border-radius: 4px"
+        />
+      </template>
+
+      <template #footer>
+        <el-button @click="doUnbindTmdb">解绑并重新排队</el-button>
+        <el-button @click="bindVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="bindLoading" @click="doBindTmdb">绑定并补全</el-button>
       </template>
     </el-dialog>
 

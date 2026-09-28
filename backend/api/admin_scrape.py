@@ -515,3 +515,129 @@ def save_auto_scan(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, **cfg}
+
+
+# ==================== 手动绑定 TMDB ID ====================
+
+class TmdbBindRequest(BaseModel):
+    tmdb_id: str = Field(default="", description="要绑定的 TMDB ID；留空表示解绑")
+    verify: bool = Field(default=True, description="绑定前先向 TMDB 校验该 ID 确实存在")
+
+
+@admin_emby_router.get("/scrape/items/{item_id}/tmdb-preview")
+def preview_tmdb_id(
+    item_id: int,
+    tmdb_id: str,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """输入 TMDB ID 时实时预览：管理员要先看清「这到底是哪部片」再决定绑不绑。
+
+    预览只读，不写库。返回的 title/year 会显示在确认框里，避免手滑绑错。
+    """
+    item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    tid = (tmdb_id or "").strip()
+    if not tid.isdigit():
+        raise HTTPException(status_code=400, detail="TMDB ID 必须是数字")
+    if not tmdb_client.configured:
+        raise HTTPException(status_code=400, detail="未配置 TMDB Key，无法校验")
+    kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
+    data = tmdb_client.details(tid, kind)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"TMDB 上找不到 ID {tid}")
+    title = data.get("name") or data.get("title") or ""
+    year = (data.get("first_air_date") or data.get("release_date") or "")[:4]
+    return {
+        "tmdb_id": tid,
+        "title": title,
+        "year": year or None,
+        "poster": data.get("poster_path"),
+        "current_name": item.name,
+        "current_tmdb_id": item.tmdb_id,
+        "matches_current": bool(title) and _norm_name(title) == _norm_name(item.name or ""),
+    }
+
+
+def _norm_name(s: str) -> str:
+    """归一化片名用于「是否就是当前这条」的提示（不参与任何写库判断）"""
+    import re as _re
+    return _re.sub(r"[\s:：·\-—_、,，!！?？~～'\"“”‘’()（）]+", "", (s or "").lower())
+
+
+@admin_emby_router.post("/scrape/items/{item_id}/bind-tmdb")
+def bind_tmdb_id(
+    item_id: int,
+    req: TmdbBindRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """手动指定 TMDB ID（或解绑）。
+
+    背景：TMDB 对中文剧集/综艺收录偏少，少数条目自动刮削怎么搜都搜不到，
+    反复重试也是白试。给管理员一个**手动出口**——比再接第四个数据源更治本。
+
+    绑定后立刻取详情补全（图/简介/评分/别名），省得还要再点一次重刮。
+    """
+    item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    if item.item_type not in ("movie", "series", "season", "episode"):
+        raise HTTPException(status_code=400, detail=f"不支持的条目类型：{item.item_type}")
+
+    tid = (req.tmdb_id or "").strip()
+    notes: list[str] = []
+
+    if not tid:
+        # 解绑
+        before = item.tmdb_id
+        item.tmdb_id = None
+        item.last_scraped_at = None
+        item.metadata_source = None
+        item.enrich_status = "pending"
+        item.enrich_attempts = 0
+        item.enrich_next_retry_at = None
+        db.commit()
+        return {
+            "success": True, "unbound": True,
+            "item": {"id": item.id, "name": item.name, "item_type": item.item_type},
+            "notes": [f"已解绑（原 TMDB {before}）并重新排入补全队列"],
+        }
+
+    if not tid.isdigit():
+        raise HTTPException(status_code=400, detail="TMDB ID 必须是数字")
+
+    if req.verify:
+        if not tmdb_client.configured:
+            raise HTTPException(status_code=400, detail="未配置 TMDB Key，无法校验")
+        kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
+        data = tmdb_client.details(tid, kind)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"TMDB 上找不到 ID {tid}，未绑定")
+        notes.append(f"已校验：{data.get('name') or data.get('title')}")
+
+    item.tmdb_id = tid
+    item.last_scraped_at = datetime.now()
+    item.metadata_source = "tmdb"
+    # 绑定了权威 ID 就补齐缺失项（不覆盖 NFO 已提供的文字）
+    if req.verify and tmdb_client.configured:
+        kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
+        data = tmdb_client.details(tid, kind)
+        if data:
+            if not (item.imdb_id and item.aliases):
+                tmdb_client.apply_details(item, data)
+                notes.append("补齐 IMDb/别名")
+            if not (item.poster_path or item.primary_image_url):
+                if tmdb_client.apply_images(item, data):
+                    notes.append("补齐海报")
+    item.enrich_status = "done"
+    item.enrich_attempts = 0
+    item.enrich_next_retry_at = None
+    db.commit()
+    return {
+        "success": True, "unbound": False,
+        "item": {"id": item.id, "name": item.name, "item_type": item.item_type,
+                 "tmdb_id": item.tmdb_id},
+        "notes": notes,
+    }

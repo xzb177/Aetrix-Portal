@@ -829,3 +829,32 @@ export const uploadRcloneServiceAccount = (id: number, file: File) => {
   return upload<{ success: boolean; filename: string; client_email: string; project_id: string }>(
     `${E}/rclone/remotes/${id}/upload-sa`, fd)
 }
+
+// ==================== 手动绑定 TMDB ID ====================
+
+export interface TmdbPreview {
+  tmdb_id: string
+  title: string
+  year: number | null
+  poster: string | null
+  current_name: string
+  current_tmdb_id: string | null
+  /** 预览到的片名与当前条目名是否一致——不一致时管理员要多看一眼再确认 */
+  matches_current: boolean
+}
+
+export const previewTmdbId = (itemId: number, tmdbId: string) =>
+  get<TmdbPreview>(`${E}/scrape/items/${itemId}/tmdb-preview?tmdb_id=${encodeURIComponent(tmdbId)}`)
+
+export interface BindTmdbResult {
+  success: boolean
+  unbound: boolean
+  item: { id: number; name: string; item_type: string; tmdb_id?: string | null }
+  notes: string[]
+}
+
+export const bindTmdbId = (itemId: number, tmdbId: string, verify = true) =>
+  post<BindTmdbResult>(`${E}/scrape/items/${itemId}/bind-tmdb`, {
+    tmdb_id: tmdbId,
+    verify,
+  })
