@@ -45,12 +45,6 @@ import {
   saveAutoScan,
   saveChaseNew,
   fetchRcloneRemotes,
-  createRcloneRemote,
-  updateRcloneRemote,
-  deleteRcloneRemote,
-  setProbeRemote,
-  regenerateRcloneConf,
-  fetchSaFiles,
   saveTmdbKeys,
   testTmdbKeys,
   stopAllTranscodes,
@@ -58,7 +52,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, TmdbPreview, RcloneRemote, SaFile } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, TmdbPreview, RcloneRemote } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -75,6 +69,7 @@ import type {
   StorageMount,
 } from '@/types'
 import { useRealmStore } from '@/stores/realm'
+import { useRouter } from 'vue-router'
 import DataTable from '@/components/DataTable.vue'
 import './EmbyAdmin.css'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -368,25 +363,25 @@ async function loadAutoScanConfig() {
 const chaseNew = ref<ChaseNewConfig | null>(null)
 const chaseNewSaving = ref(false)
 
-// rclone remote 管理
+// rclone remote 管理已收拢到「挂载管理」页（StorageMounts 的 rclone 标签页），
+// 此处只保留摘要（remote 数量 + 探测 remote 名）与跳转入口
 const rcloneRemotes = ref<RcloneRemote[]>([])
-const saFiles = ref<SaFile[]>([])
-const saListVisible = ref(false)
-const saSearch = ref("")
-const filteredSaFiles = computed(() => {
-  const q = saSearch.value.trim().toLowerCase()
-  if (!q) return saFiles.value
-  return saFiles.value.filter(f =>
-    (f.client_email || "").toLowerCase().includes(q) ||
-    (f.filename || "").toLowerCase().includes(q) ||
-    (f.project_id || "").toLowerCase().includes(q)
-  )
-})
 const rcloneLoading = ref(false)
-const showRemoteDialog = ref(false)
-const editingRemote = ref<any>(null)
-const remoteForm = ref({ name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', sa_file_id: null as number | null, team_drive_id: '', remark: '' })
+const probeRemoteName = computed(() => rcloneRemotes.value.find(r => r.is_probe_remote)?.name || '')
 
+async function loadRcloneRemotes() {
+  rcloneLoading.value = true
+  try {
+    const res = await fetchRcloneRemotes()
+    rcloneRemotes.value = res.remotes || []
+  } catch { rcloneRemotes.value = [] }
+  rcloneLoading.value = false
+}
+
+const router = useRouter()
+function goRcloneTab() {
+  router.push({ name: 'StorageMounts', query: { tab: 'rclone' } })
+}
 async function loadChaseNewConfig() {
   try {
     const res = await fetchChaseNew()
@@ -394,61 +389,6 @@ async function loadChaseNewConfig() {
   } catch {
     chaseNew.value = null
   }
-}
-
-async function loadRcloneRemotes() {
-  rcloneLoading.value = true
-  try {
-    const res = await fetchRcloneRemotes()
-    rcloneRemotes.value = res.remotes || []
-    const saRes = await fetchSaFiles()
-    saFiles.value = saRes.files || []
-  } catch { rcloneRemotes.value = [] }
-  rcloneLoading.value = false
-}
-function openRemoteDialog(r?: RcloneRemote) {
-  if (r) {
-    editingRemote.value = r
-    remoteForm.value = { name: r.name, remote_type: r.remote_type, client_id: '', client_secret: '', token_json: '', sa_file_id: null, team_drive_id: r.team_drive_id, remark: r.remark }
-  } else {
-    editingRemote.value = null
-    remoteForm.value = { name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', sa_file_id: null, team_drive_id: '', remark: '' }
-  }
-  showRemoteDialog.value = true
-}
-async function saveRemoteAction() {
-  if (!remoteForm.value.name) { ElMessage.warning('请填写 remote 名称'); return }
-  try {
-    if (editingRemote.value) {
-      await updateRcloneRemote(editingRemote.value.id, remoteForm.value)
-    } else {
-      await createRcloneRemote(remoteForm.value)
-    }
-    ElMessage.success('已保存')
-    showRemoteDialog.value = false
-    loadRcloneRemotes()
-  } catch (e: any) { ElMessage.error(e?.message || '保存失败') }
-}
-async function deleteRemoteAction(r: RcloneRemote) {
-  try {
-    await ElMessageBox.confirm(`确定删除 remote「${r.name}」吗？`, '确认', { type: 'warning' })
-    await deleteRcloneRemote(r.id)
-    ElMessage.success('已删除')
-    loadRcloneRemotes()
-  } catch {}
-}
-async function setProbeRemoteAction(r: RcloneRemote) {
-  try {
-    await setProbeRemote(r.id)
-    ElMessage.success(`探测已切换到「${r.name}」`)
-    loadRcloneRemotes()
-  } catch (e: any) { ElMessage.error(e?.message || '切换失败') }
-}
-async function regenerateConfAction() {
-  try {
-    const res = await regenerateRcloneConf()
-    ElMessage.success('rclone.conf 已重新生成：' + res.path)
-  } catch (e: any) { ElMessage.error(e?.message || '生成失败') }
 }
 async function saveChaseNewAction() {
   if (!chaseNew.value) return
@@ -1207,56 +1147,15 @@ function typeLabel(t: string): string {
         <div class="scrape-block">
           <h3>云盘挂载（rclone）</h3>
           <p class="drawer-hint">
-            管理 rclone remote 配置：个人盘（OAuth）或服务账号 + 团队盘。
-            配置存数据库，一键生成 rclone.conf。可指定哪个 remote 用于后台探测。
+            rclone remote 管理已收拢到「挂载管理」页的「Rclone 配置」标签页：
+            新增 / 编辑 / 删除 remote、上传服务账号、一键生成 rclone.conf、指定探测 remote。
           </p>
-          <div class="scrape-actions" style="margin-bottom: 8px">
-            <el-button size="small" type="primary" @click="openRemoteDialog()">新增 remote</el-button>
-            <el-button size="small" :loading="rcloneLoading" @click="loadRcloneRemotes">刷新</el-button>
-            <el-button size="small" @click="regenerateConfAction">重新生成 rclone.conf</el-button>
-          </div>
-          <div v-if="rcloneLoading" class="drawer-hint">加载中…</div>
-          <div v-else-if="!rcloneRemotes.length" class="drawer-hint">还没有配置 remote，点"新增"添加</div>
-          <div v-else>
-            <div v-for="r in rcloneRemotes" :key="r.id" class="scrape-actions" style="margin-bottom: 6px; align-items: center">
-              <el-tag :type="r.is_probe_remote ? 'success' : 'info'" size="small">{{ r.name }}</el-tag>
-              <span class="drawer-hint">{{ r.remote_type }}<span v-if="r.team_drive_id"> · 团队盘</span><span v-if="r.has_service_account"> · 服务账号</span><span v-if="r.has_token"> · OAuth</span></span>
-              <el-button v-if="!r.is_probe_remote" size="small" @click="setProbeRemoteAction(r)">设为探测用</el-button>
-              <el-tag v-else type="success" size="small">探测中</el-tag>
-              <el-button size="small" @click="openRemoteDialog(r)">编辑</el-button>
-              <el-button size="small" type="danger" @click="deleteRemoteAction(r)">删除</el-button>
-            </div>
-          </div>
-          <div class="drawer-hint" style="margin-top: 8px">
-            服务账号文件：{{ saFiles.length }} 个
-            <span class="sa-enabled-count" v-if="saFiles.length">
-              (启用 {{ saFiles.filter(f => f.is_enabled).length }})
+          <div class="scrape-actions" style="align-items: center">
+            <el-button size="small" type="primary" @click="goRcloneTab">去挂载管理 · Rclone 配置</el-button>
+            <span class="drawer-hint" style="margin-left: 8px">
+              <span v-if="rcloneLoading">加载中…</span>
+              <span v-else>已配置 {{ rcloneRemotes.length }} 个 remote<span v-if="probeRemoteName">，探测用：{{ probeRemoteName }}</span></span>
             </span>
-            <el-button v-if="saFiles.length" size="small" text @click="saListVisible = !saListVisible">
-              {{ saListVisible ? '收起' : '查看列表' }}
-            </el-button>
-          </div>
-          <div v-if="saListVisible && saFiles.length" class="sa-panel">
-            <el-input
-              v-model="saSearch"
-              size="small"
-              placeholder="搜索邮箱 / 文件名"
-              clearable
-              class="sa-search"
-            />
-            <div class="sa-email-list">
-              <div
-                v-for="f in filteredSaFiles"
-                :key="f.id"
-                class="sa-email-item"
-                :class="{ 'sa-disabled': !f.is_enabled }"
-              >
-                <span class="sa-dot" :class="{ on: f.is_enabled }"></span>
-                <span class="sa-email">{{ f.client_email || f.filename }}</span>
-                <span v-if="f.project_id" class="sa-project">{{ f.project_id }}</span>
-              </div>
-              <div v-if="!filteredSaFiles.length" class="drawer-hint">没有匹配的服务账号</div>
-            </div>
           </div>
         </div>
         <div class="scrape-block">
@@ -1679,82 +1578,12 @@ function typeLabel(t: string): string {
       </DataTable>
     </el-drawer>
   </div>
-  <el-dialog v-model="showRemoteDialog" :title="editingRemote ? '编辑 remote' : '新增 remote'" width="500px">
-    <el-form :model="remoteForm" label-width="110px" size="small">
-      <el-form-item label="名称">
-        <el-input v-model="remoteForm.name" placeholder="如 MP" :disabled="!!editingRemote" />
-      </el-form-item>
-      <el-form-item label="类型">
-        <el-select v-model="remoteForm.remote_type">
-          <el-option label="Google Drive" value="drive" />
-        </el-select>
-      </el-form-item>
-      <el-form-item label="团队盘 ID">
-        <el-input v-model="remoteForm.team_drive_id" placeholder="空=个人盘" />
-      </el-form-item>
-      <el-form-item label="服务账号">
-        <el-select v-model="remoteForm.sa_file_id" placeholder="选择已上传的 SA 文件" clearable>
-          <el-option v-for="f in saFiles" :key="f.id" :label="f.client_email || f.filename" :value="f.id" />
-        </el-select>
-        <span class="drawer-hint">先在下面上传 SA JSON 文件</span>
-      </el-form-item>
-      <el-form-item label="OAuth Client ID">
-        <el-input v-model="remoteForm.client_id" placeholder="个人盘 OAuth 用" />
-      </el-form-item>
-      <el-form-item label="OAuth Secret">
-        <el-input v-model="remoteForm.client_secret" type="password" placeholder="个人盘 OAuth 用" />
-      </el-form-item>
-      <el-form-item label="OAuth Token">
-        <el-input v-model="remoteForm.token_json" type="textarea" :rows="2" placeholder='{"access_token":"..."}' />
-      </el-form-item>
-      <el-form-item label="备注">
-        <el-input v-model="remoteForm.remark" />
-      </el-form-item>
-    </el-form>
-    <template #footer>
-      <el-button @click="showRemoteDialog = false">取消</el-button>
-      <el-button type="primary" @click="saveRemoteAction">保存</el-button>
-    </template>
-  </el-dialog>
 </template>
 
 <style scoped>
 .admin-page { gap: 16px; }
 
-.lib-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-  gap: 16px;
-}
-
-.lib-card { display: flex; flex-direction: column; gap: 0; overflow: hidden; min-width: 0; }
-.lib-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: nowrap; }
-.lib-name {
-  font-weight: var(--font-weight-bold); font-size: var(--font-size-lg); color: var(--text-primary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.lib-meta { flex-shrink: 0; font-size: var(--font-size-xs); color: var(--text-tertiary); }
-lib-state { min-height: 18px; }
-
-.lib-cover { position: relative; aspect-ratio: 16 / 8.5; overflow: hidden; background: var(--bg-inset); }
-lib-cover > img { width: 100%; height: 100%; object-fit: cover; display: block; }
-lib-cover-empty {
-  width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 8px; color: var(--text-muted); font-size: var(--font-size-xs);
-}
-lib-cover-shade {
-  position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(to bottom, rgb(0 0 0 / 0.32), transparent 45%, rgb(0 0 0 / 0.18));
-}
-lib-cover-badges { position: absolute; top: 10px; left: 10px; right: 58px; display: flex; gap: 6px; flex-wrap: wrap; }
-lib-cover-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
-cover-button {
-  color: #fff !important; background: rgb(0 0 0 / 0.48) !important;
-  border: 1px solid rgb(255 255 255 / 0.22) !important;
-}
-cover-button:hover { background: rgb(0 0 0 / 0.72) !important; }
-lib-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 14px 12px; flex: 1; }
-lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+/* 媒体库卡片样式统一收敛到 EmbyAdmin.css，此处仅保留 scoped 特有样式 */
 .fact {
   display: inline-flex;
   align-items: center;
@@ -1780,17 +1609,6 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 .lib-policy { display: flex; align-items: center; gap: 10px; }
 .policy-label { font-size: var(--font-size-xs); color: var(--text-tertiary); width: 62px; flex-shrink: 0; }
 .lib-policy :deep(.el-select) { flex: 1; min-width: 0; }
-
-.lib-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
-}
 
 .drawer-hint { margin: 0 0 12px; font-size: var(--font-size-xs); color: var(--text-tertiary); }
 
@@ -1949,59 +1767,11 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 
 /* 手机：卡片内标签与控件竖排，路径允许换行 */
 @media (max-width: 640px) {
-  .lib-grid { grid-template-columns: minmax(0, 1fr); }
   .lib-policy { flex-direction: column; align-items: stretch; gap: 6px; }
   .policy-label { width: auto; }
   .lib-paths { white-space: normal; word-break: break-all; }
   .lib-actions { width: 100%; }
   .lib-actions :deep(.el-button) { flex: 1; }
   .admin-page-actions :deep(.el-button.is-primary) { flex: 1 1 100%; }
-}
-.sa-panel {
-  margin-top: 6px;
-  padding: 8px;
-  background: rgba(0,0,0,0.2);
-  border-radius: 6px;
-}
-.sa-search {
-  margin-bottom: 6px;
-}
-.sa-email-list {
-  max-height: 220px;
-  overflow-y: auto;
-  font-size: 12px;
-}
-.sa-email-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0;
-  color: #a0aec0;
-}
-.sa-email-item.sa-disabled {
-  opacity: 0.45;
-}
-.sa-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #555;
-  flex-shrink: 0;
-}
-.sa-dot.on {
-  background: #34d399;
-}
-.sa-email {
-  word-break: break-all;
-  flex: 1;
-}
-.sa-project {
-  font-size: 11px;
-  color: #6b7280;
-  flex-shrink: 0;
-}
-.sa-enabled-count {
-  color: #34d399;
-  font-size: 12px;
 }
 </style>
