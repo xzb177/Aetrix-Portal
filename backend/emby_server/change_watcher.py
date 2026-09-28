@@ -134,15 +134,45 @@ def _library_mount_sources(library, db: Session) -> list[tuple[int, str]]:
     return sources
 
 
+def _rc_list(mount, cfg: dict, remote: str, *, recurse: bool, files_only: bool = True):
+    """调一次 rclone RC 列举（统一超时与凭据口径）"""
+    from backend.emby_server.mount_rclone import rc_call
+
+    opt: dict = {"filesOnly": files_only}
+    if recurse:
+        opt["recurse"] = True
+    body = rc_call(
+        cfg["rc_url"], "/operations/list",
+        {"fs": cfg.get("fs") or "", "remote": remote, "opt": opt},
+        username=cfg.get("rc_user", "") or "", password=cfg.get("rc_pass", "") or "",
+        # 通用挂载超时（默认 20s）对大库不够：国产剧 1.4 万个文件会超时。
+        timeout=CHASE_NEW_RC_TIMEOUT,
+    )
+    return (body or {}).get("list") or []
+
+
+def _mod_ts(entry) -> float:
+    mt = (entry or {}).get("ModTime")
+    if not mt:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(mt).replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return 0.0
+
+
 def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
                             since_ts: float) -> list[str]:
     """远程挂载（rclone RC）按 ModTime 找新增视频
 
-    rclone ``/operations/list`` 递归列举会返回每个文件的 ``ModTime``（实测 848/848 全带），
-    按时间窗口过滤比全量扫描快一个量级，也不会因为「上一轮扫过」而漏掉刚上传的文件。
-    """
-    from backend.emby_server.mount_rclone import rc_call
+    直接对整库递归列举在生产是走不通的：国产剧 1.4 万个文件，rclone RC 要几分钟，
+    超过任何合理超时，而且 11 个库串行跑一轮远超轮询间隔（每轮都超时）。
 
+    改成**两级**：先只列顶层（一次请求、几百个目录，每个都带 ModTime），
+    只对「ModTime 落在窗口内」的子目录递归。实测顶层 402 个目录全部带 ModTime，
+    正常情况下每轮只递归最近变动的少数几个目录——成本从上万文件降到几十个。
+    上传的片子必然改动所在目录的 mtime，所以不会漏检。
+    """
     mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
     if mount is None or not getattr(mount, "is_enabled", False):
         return []
@@ -150,32 +180,47 @@ def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
     if not cfg.get("rc_url"):
         # cli 模式或非 rclone 挂载：本实现只覆盖 rc（生产实际用法）
         return []
-    fs = cfg.get("fs") or ""
     remote = (rel_dir or "/").lstrip("/")
-    body = rc_call(
-        cfg["rc_url"], "/operations/list",
-        {"fs": fs, "remote": remote, "opt": {"recurse": True, "filesOnly": True}},
-        username=cfg.get("rc_user", "") or "", password=cfg.get("rc_pass", "") or "",
-        # 通用挂载超时（默认 20s）对递归列举大库不够：国产剧 1.4 万个文件会超时。
-        timeout=CHASE_NEW_RC_TIMEOUT,
-    )
-    items = (body or {}).get("list") or []
+
+    try:
+        top = _rc_list(mount, cfg, remote, recurse=False, files_only=False)
+    except Exception as exc:  # noqa: BLE001 — 顶层列不出来就跳过该库，不拖垮整轮
+        logger.warning("[chase-new] 列 %s 顶层失败: %s", remote, exc)
+        return []
+
     found: list[str] = []
-    for it in items:
-        if not isinstance(it, dict) or it.get("IsDir"):
+    # 顶层直接就是视频文件的情况
+    targets: list[str] = []
+    for it in top:
+        if not isinstance(it, dict):
             continue
         name = str(it.get("Name") or "")
-        if not name or os.path.splitext(name)[1].lower() not in VIDEO_EXTS:
+        if not it.get("IsDir"):
+            if (os.path.splitext(name)[1].lower() in VIDEO_EXTS
+                    and _mod_ts(it) > since_ts):
+                # 顶层散片：直接在 remote 后拼文件名（不能对整串做 replace，
+                # 那会把 mount:// 前缀里的双斜杠也去掉，得到 mount:/3/… 的错路径）
+                base = remote.rstrip("/")
+                found.append(f"{MOUNT_PATH_PREFIX}{mount_id}/{base}/{name}" if base
+                             else f"{MOUNT_PATH_PREFIX}{mount_id}/{name}")
             continue
-        mt = it.get("ModTime")
-        if not mt:
-            continue
+        if _mod_ts(it) > since_ts:
+            targets.append(str(it.get("Path") or name))
+
+    for path in targets:
         try:
-            ts = datetime.fromisoformat(str(mt).replace("Z", "+00:00")).timestamp()
-        except (ValueError, AttributeError):
+            items = _rc_list(mount, cfg, f"{remote.rstrip('/')}/{path}", recurse=True, files_only=True)
+        except Exception as exc:  # noqa: BLE001 — 单个子目录失败不影响其它
+            logger.warning("[chase-new] 递归列 %s 失败: %s", path, exc)
             continue
-        if ts > since_ts:
-            # RC 返回的 Path 相对 remote；用 rel 拼成库内绝对路径再挂 mount:// 前缀
+        for it in items:
+            if not isinstance(it, dict) or it.get("IsDir"):
+                continue
+            name = str(it.get("Name") or "")
+            if not name or os.path.splitext(name)[1].lower() not in VIDEO_EXTS:
+                continue
+            if _mod_ts(it) <= since_ts:
+                continue
             rel_path = f"/{remote.rstrip('/')}/{str(it.get('Path') or '').lstrip('/')}".replace("//", "/")
             found.append(f"{MOUNT_PATH_PREFIX}{mount_id}{rel_path}")
     return found
