@@ -433,8 +433,18 @@ export const fetchLogs = (params: { limit?: number; action_filter?: string } = {
 
 export const fetchOverview = () => get<OverviewStats>('/stats/overview')
 
+export interface HealthIssue {
+  level: 'ok' | 'warn' | 'down'
+  key: string
+  message: string
+}
+
 export interface PanelHealth {
+  /** healthy / degraded / unhealthy——由后端按真实指标判定，不再是硬编码常量 */
   status: string
+  health_level?: 'ok' | 'warn' | 'down'
+  health_issues?: HealthIssue[]
+  health_metrics?: Record<string, unknown>
   timestamp: string
   database: string
   online_users: number

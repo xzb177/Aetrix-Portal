@@ -14,8 +14,34 @@ const overview = ref<{ total_items: number; total_libraries: number; active_sess
 const loading = ref(false)
 const lastChecked = ref('')
 
+/** 后端判定的等级；没拿到就退回按 status 推断 */
+const level = computed<'ok' | 'warn' | 'down'>(() => {
+  const h = health.value
+  if (!h) return 'ok'
+  if (h.health_level) return h.health_level
+  if (h.status === 'unhealthy') return 'down'
+  if (h.status === 'degraded') return 'warn'
+  return 'ok'
+})
+
+/** 要展示的告警：优先后端的 health_issues，没有就按 status 兜一句话 */
+const issues = computed(() => {
+  const list = health.value?.health_issues
+  if (list && list.length) return list
+  if (level.value === 'down') return [{ level: 'down' as const, key: 'status', message: '服务不可用' }]
+  if (level.value === 'warn') return [{ level: 'warn' as const, key: 'status', message: '服务降级中' }]
+  return []
+})
+
+const levelText = computed(() => ({ ok: '正常', warn: '降级', down: '不可用' }[level.value]))
+
 const checks = computed(() => [
-  { label: 'EM 面板', detail: health.value?.status === 'healthy' ? 'API 正常响应' : '无法确认状态', ok: health.value?.status === 'healthy', icon: Activity },
+  {
+    label: 'EM 面板',
+    detail: health.value?.status === 'healthy' ? 'API 正常响应' : '无法确认状态',
+    ok: health.value?.status === 'healthy',
+    icon: Activity,
+  },
   { label: '共享数据库', detail: health.value?.database || '未返回数据库信息', ok: !!health.value, icon: Database },
   { label: '媒体网关', detail: overview.value ? `${overview.value.total_items} 个条目可用` : '等待媒体数据', ok: !!overview.value, icon: Film },
   { label: '存储来源', detail: `${mounts.value.filter((m) => m.is_enabled).length} 个挂载已启用`, ok: mounts.value.length === 0 || mounts.value.every((m) => m.last_check_ok !== false), icon: HardDrive },
@@ -63,6 +89,17 @@ onMounted(load)
       </el-button>
     </div>
 
+    <!-- 告警横幅：出问题时第一眼就要看到，而不是自己从一堆「正常」里找 -->
+    <div v-if="issues.length" class="health-alert" :class="level">
+      <div class="health-alert-head">
+        <strong>服务{{ levelText }}</strong>
+        <span>以下问题需要处理：</span>
+      </div>
+      <ul class="health-alert-list">
+        <li v-for="(iss, i) in issues" :key="i">{{ iss.message }}</li>
+      </ul>
+    </div>
+
     <div class="health-grid">
       <div v-for="item in checks" :key="item.label" class="admin-card health-card">
         <div class="health-icon" :class="{ bad: item.ok === false }"><component :is="item.icon" :size="18" /></div>
@@ -108,6 +145,38 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* 告警横幅：warn 橙、down 红。放页面顶部，不折叠、不需要点开 */
+.health-alert {
+  border-radius: var(--radius-md, 8px);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border: 1px solid;
+}
+.health-alert.warn {
+  background: rgba(230, 162, 60, 0.12);
+  border-color: rgba(230, 162, 60, 0.45);
+}
+.health-alert.down {
+  background: rgba(220, 80, 80, 0.12);
+  border-color: rgba(220, 80, 80, 0.5);
+}
+.health-alert-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.health-alert-head span {
+  color: var(--text-muted, #666);
+  font-size: 13px;
+}
+.health-alert-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary, #333);
+}
 .health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .health-card { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 15px; }
 .health-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 10px; color: var(--success); background: var(--success-bg); }

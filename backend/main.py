@@ -369,11 +369,37 @@ app.mount("/metrics", MetricsGuard(metrics_app))
 
 # ==================== 健康检查 ====================
 
+def _collect_health() -> dict:
+    """跑一次健康聚合；任何异常都退化成 warn，绝不让健康检查 500"""
+    from backend import health_report
+    try:
+        db = SessionLocal()
+        try:
+            return health_report.collect(db)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("健康检查聚合失败: %s", e)
+        return {"level": "warn", "status": "degraded",
+                "issues": [{"level": "warn", "key": "health",
+                            "message": f"健康检查无法完成：{str(e)[:120]}"}],
+                "metrics": {}}
+
+
 @app.get("/api/health")
 async def health_check():
-    """健康检查端点"""
+    """健康检查端点
+
+    status **不再硬编码 healthy**：以前数据库断、Redis 挂、worker 刷几千条探测
+    失败，这里一律返回 healthy——「服务健康」页一片绿，出问题只能去翻日志。
+    现在由 health_report 依据真实指标判定（healthy / degraded / unhealthy）。
+    """
+    health = _collect_health()
     return {
-        "status": "healthy",
+        "status": health["status"],
+        "health_level": health["level"],
+        "health_issues": health["issues"],
+        "health_metrics": health["metrics"],
         "timestamp": datetime.now().isoformat(),
         "database": DATABASE_TYPE,
         "online_users": manager.get_online_count(),
@@ -455,6 +481,16 @@ def detailed_health_check():
         "status": "healthy",
         "online_users": manager.get_online_count()
     }
+
+    # 业务侧健康（探测失败率 / 补全堆积 / 扫描失败库）——以前这个端点只看
+    # 数据库与 Redis，worker 刷爆、队列堆积一概看不见。与 /api/health 同一口径。
+    agg = _collect_health()
+    health_status["level"] = agg["level"]
+    health_status["issues"] = agg["issues"]
+    health_status["metrics"] = agg["metrics"]
+    order = {"healthy": 0, "degraded": 1, "unhealthy": 2}
+    if order.get(agg["status"], 0) > order.get(health_status["status"], 0):
+        health_status["status"] = agg["status"]
 
     return health_status
 
