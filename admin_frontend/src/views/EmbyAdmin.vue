@@ -90,6 +90,9 @@ let coverLoadVersion = 0
 
 const settingsVisible = ref(false)
 const settingsTarget = ref<EmbyLibrary | null>(null)
+// 即时保存快照（失败回滚）与防连点
+const settingsSnapshot = ref<Record<string, unknown> | null>(null)
+const savingField = ref<string | null>(null)
 
 // 扫描流水（最近若干轮）：抽屉里看「是不是每轮都在失败」
 const scanDrawer = ref(false)
@@ -129,6 +132,7 @@ const sessionColumns: DataColumn[] = [
 ]
 
 const createVisible = ref(false)
+const createFormRef = ref()
 const form = ref({
   name: '',
   collection_type: 'movies',
@@ -139,6 +143,42 @@ const form = ref({
   realm_id: null as number | null,
   node_id: null as number | null,
 })
+
+/** 路径文本解析：逗号 / 中文逗号 / 换行分隔 */
+function parsePathsInput(): string[] {
+  return form.value.paths.split(/[,，\n]/).map((p) => p.trim()).filter(Boolean)
+}
+
+/** 新建媒体库表单校验（含 mount:// 与 mount_ids 互斥：两者并存会把整个挂载扫进这个库） */
+const createRules = {
+  name: [{ required: true, message: '请填写库名称', trigger: 'blur' }],
+  paths: [
+    {
+      validator: (_rule: unknown, _value: string, callback: (e?: Error) => void) => {
+        if (!parsePathsInput().length && !form.value.mount_ids.length) {
+          callback(new Error('至少配置一个路径或一个存储挂载'))
+        } else callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  mount_ids: [
+    {
+      validator: (_rule: unknown, _value: number[], callback: (e?: Error) => void) => {
+        const hasMountSubpath = parsePathsInput().some((p) => p.startsWith('mount://'))
+        if (hasMountSubpath && form.value.mount_ids.length) {
+          callback(new Error('路径已用 mount://挂载子目录，请清空「存储挂载」（两者同时用会把整个挂载扫进这个库）'))
+        } else callback()
+      },
+      trigger: 'change',
+    },
+  ],
+}
+
+/** 路径改动后联动重验 mount_ids 的互斥规则 */
+function revalidateMountConflict() {
+  createFormRef.value?.validateField('mount_ids').catch(() => {})
+}
 
 /** 刮削策略：只补缺 / 到期重刮 / 每次全量 */
 const POLICIES = [
@@ -252,41 +292,95 @@ async function removeCover(l: EmbyLibrary) {
 
 function openSettings(l: EmbyLibrary) {
   settingsTarget.value = l
+  // 快照：即时保存失败时回滚用
+  settingsSnapshot.value = {
+    realm_id: l.realm_id,
+    node_id: l.node_id,
+    mount_ids: [...(l.mount_ids ?? [])],
+    scrape_policy: l.scrape_policy,
+    account_115_id: l.account_115_id,
+  }
   settingsVisible.value = true
 }
 
+/** 设置抽屉即时保存：try/catch + 失败回滚 v-model + 防连点 */
+async function guardSettingsSave(l: EmbyLibrary, field: string, save: () => Promise<unknown>, okMsg: string) {
+  if (savingField.value) return
+  savingField.value = field
+  try {
+    await save()
+    const v = (l as unknown as Record<string, unknown>)[field]
+    if (settingsSnapshot.value) settingsSnapshot.value[field] = Array.isArray(v) ? [...v] : v
+    ElMessage.success(okMsg)
+  } catch (e: any) {
+    if (settingsSnapshot.value && field in settingsSnapshot.value) {
+      const old = settingsSnapshot.value[field]
+      ;(l as unknown as Record<string, unknown>)[field] = Array.isArray(old) ? [...(old as unknown[])] : old
+    }
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败，已恢复原值')
+  } finally {
+    savingField.value = null
+  }
+}
+
 async function savePolicy(l: EmbyLibrary) {
-  await updateLibrary(l.id, { scrape_policy: l.scrape_policy })
-  ElMessage.success(`「${l.name}」刮削策略已保存（下次扫描生效）`)
+  await guardSettingsSave(
+    l,
+    'scrape_policy',
+    () => updateLibrary(l.id, { scrape_policy: l.scrape_policy }),
+    `「${l.name}」刮削策略已保存（下次扫描生效）`,
+  )
 }
 
 async function saveAccount115(l: EmbyLibrary) {
   // 传 null 表示解绑（回退默认账号）；undefined 会被 axios 丢掉，等于不改
-  await updateLibrary(l.id, { account_115_id: l.account_115_id ?? null })
-  ElMessage.success(`「${l.name}」115 账号绑定已更新`)
+  await guardSettingsSave(
+    l,
+    'account_115_id',
+    () => updateLibrary(l.id, { account_115_id: l.account_115_id ?? null }),
+    `「${l.name}」115 账号绑定已更新`,
+  )
 }
 
 /** 绑定 / 解绑存储挂载（扫描时与「路径」一起遍历） */
 async function saveMounts(l: EmbyLibrary) {
-  await updateLibrary(l.id, { mount_ids: l.mount_ids ?? [] })
-  ElMessage.success(`「${l.name}」挂载绑定已更新（重新扫描后生效）`)
+  await guardSettingsSave(
+    l,
+    'mount_ids',
+    () => updateLibrary(l.id, { mount_ids: l.mount_ids ?? [] }),
+    `「${l.name}」挂载绑定已更新（重新扫描后生效）`,
+  )
 }
 
 /** 归属节点：决定了「谁向客户端展示这个库、谁来扫描它」 */
 async function saveNode(l: EmbyLibrary) {
-  await updateLibrary(l.id, { node_id: l.node_id ?? null })
-  const node = nodes.value.find((n) => n.id === l.node_id)
-  ElMessage.success(node
-    ? `「${l.name}」改由「${node.name}」负责（那台机器看不到这个库的条目时检查它的存储）`
-    : `「${l.name}」已改为未分配：所有节点可见、由面板扫描`)
-  load()
+  await guardSettingsSave(
+    l,
+    'node_id',
+    async () => {
+      await updateLibrary(l.id, { node_id: l.node_id ?? null })
+      load()
+    },
+    (() => {
+      const node = nodes.value.find((n) => n.id === l.node_id)
+      return node
+        ? `「${l.name}」改由「${node.name}」负责（那台机器看不到这个库的条目时检查它的存储）`
+        : `「${l.name}」已改为未分配：所有节点可见、由面板扫描`
+    })(),
+  )
 }
 
 /** 归属服：内容隔离的边界，跨服移动等于把内容交给另一个服 */
 async function saveRealm(l: EmbyLibrary) {
-  await updateLibrary(l.id, { realm_id: l.realm_id ?? null })
-  ElMessage.success(`「${l.name}」归属服已更新`)
-  load()
+  await guardSettingsSave(
+    l,
+    'realm_id',
+    async () => {
+      await updateLibrary(l.id, { realm_id: l.realm_id ?? null })
+      load()
+    },
+    `「${l.name}」归属服已更新`,
+  )
 }
 
 async function generateVirtual() {
@@ -312,13 +406,11 @@ async function repairNow() {
 }
 
 async function submitCreate() {
-  const paths = form.value.paths.split(/[,，\n]/).map((p) => p.trim()).filter(Boolean)
-  if (!form.value.name.trim() || (!paths.length && !form.value.mount_ids.length)) {
-    ElMessage.warning('请填写库名称，并至少配置一个路径或一个存储挂载')
-    return
-  }
+  const valid = await createFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  const paths = parsePathsInput()
   await createLibrary({
-    name: form.value.name,
+    name: form.value.name.trim(),
     collection_type: form.value.collection_type,
     paths,
     mount_ids: form.value.mount_ids,
@@ -1337,12 +1429,12 @@ function typeLabel(t: string): string {
     </div>
 
     <!-- 新建弹窗 -->
-    <el-dialog v-model="createVisible" title="新建媒体库" width="480px">
-      <el-form label-position="top">
-        <el-form-item label="名称">
+    <el-dialog v-model="createVisible" title="新建媒体库" width="min(480px, 94vw)">
+      <el-form ref="createFormRef" :model="form" :rules="createRules" label-position="top">
+        <el-form-item label="名称" prop="name">
           <el-input v-model="form.name" placeholder="如：电影库 / 剧集库" />
         </el-form-item>
-        <el-form-item label="类型">
+        <el-form-item label="类型" prop="collection_type">
           <el-select v-model="form.collection_type" style="width: 100%">
             <el-option label="电影" value="movies" />
             <el-option label="剧集" value="tvshows" />
@@ -1350,27 +1442,28 @@ function typeLabel(t: string): string {
             <el-option label="混合" value="mixed" />
           </el-select>
         </el-form-item>
-        <el-form-item label="刮削策略">
+        <el-form-item label="刮削策略" prop="scrape_policy">
           <el-select v-model="form.scrape_policy" style="width: 100%">
             <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="路径">
+        <el-form-item label="路径" prop="paths">
           <el-input
             v-model="form.paths"
             type="textarea"
             :rows="3"
             placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
+            @blur="revalidateMountConflict"
           />
           <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。</div>
         </el-form-item>
-        <el-form-item label="归属服">
+        <el-form-item label="归属服" prop="realm_id">
           <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
             <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
           <p class="field-help">一个服一个：只有这个服的 EA 会向客户端提供这个库。</p>
         </el-form-item>
-        <el-form-item label="归属播放节点">
+        <el-form-item label="归属播放节点" prop="node_id">
           <el-select
             v-model="form.node_id"
             clearable
@@ -1383,7 +1476,7 @@ function typeLabel(t: string): string {
             如果这个库的内容只在那台机器上（本机目录 / 只在那里配了的 rclone），就把库分配给那台节点。
           </p>
         </el-form-item>
-        <el-form-item label="存储挂载">
+        <el-form-item label="存储挂载" prop="mount_ids">
           <el-select
             v-model="form.mount_ids"
             multiple
@@ -1393,7 +1486,7 @@ function typeLabel(t: string): string {
           >
             <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
           </el-select>
-          <div class="form-hint">路径与挂载可以同时用；挂载在「存储挂载」页里创建与测试。</div>
+          <div class="form-hint">路径与挂载可以同时用；挂载在「存储挂载」页里创建与测试。<strong>注意：路径里写了 <code>mount://…</code> 子目录时，这里必须留空，否则整个挂载都会被扫进这个库。</strong></div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1403,7 +1496,7 @@ function typeLabel(t: string): string {
     </el-dialog>
 
     <!-- 媒体库设置：从卡片移出低频配置，保持卡片可快速扫读 -->
-    <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="430px">
+    <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="min(430px, 92vw)">
       <div v-if="settingsTarget" class="library-settings">
         <div class="settings-section">
           <div class="settings-section-title">归属与来源</div>
@@ -1413,6 +1506,7 @@ function typeLabel(t: string): string {
               v-model="settingsTarget.realm_id"
               clearable
               placeholder="未标注（所有服可见）"
+              :disabled="savingField !== null"
               @change="saveRealm(settingsTarget)"
             >
               <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
@@ -1424,6 +1518,7 @@ function typeLabel(t: string): string {
               v-model="settingsTarget.node_id"
               clearable
               placeholder="未分配（所有节点可见）"
+              :disabled="savingField !== null"
               @change="saveNode(settingsTarget)"
             >
               <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
@@ -1437,6 +1532,7 @@ function typeLabel(t: string): string {
               collapse-tags
               collapse-tags-tooltip
               placeholder="未绑定"
+              :disabled="savingField !== null"
               @change="saveMounts(settingsTarget)"
             >
               <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
@@ -1455,7 +1551,7 @@ function typeLabel(t: string): string {
           <div class="settings-section-title">扫描与账号</div>
           <div class="lib-policy">
             <span class="policy-label">刮削策略</span>
-            <el-select v-model="settingsTarget.scrape_policy" @change="savePolicy(settingsTarget)">
+            <el-select v-model="settingsTarget.scrape_policy" :disabled="savingField !== null" @change="savePolicy(settingsTarget)">
               <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
             </el-select>
           </div>
@@ -1465,6 +1561,7 @@ function typeLabel(t: string): string {
               v-model="settingsTarget.account_115_id"
               clearable
               placeholder="默认账号"
+              :disabled="savingField !== null"
               @change="saveAccount115(settingsTarget)"
             >
               <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
@@ -1475,7 +1572,7 @@ function typeLabel(t: string): string {
     </el-drawer>
 
     <!-- 重新刮削：选策略；all 二次确认并提示配额消耗 -->
-    <el-dialog v-model="rescrapeVisible" title="重新刮削" width="420px">
+    <el-dialog v-model="rescrapeVisible" title="重新刮削" width="min(420px, 94vw)">
       <p class="drawer-hint">
         对「{{ rescrapeTarget?.name }}」触发一次重新刮削扫描，策略只覆盖本轮，不改库配置。
       </p>
@@ -1493,7 +1590,7 @@ function typeLabel(t: string): string {
     </el-dialog>
 
     <!-- 手动绑定 TMDB ID：给「怎么搜都搜不到」的条目一个出口 -->
-    <el-dialog v-model="bindVisible" title="手动绑定 TMDB ID" width="520px">
+    <el-dialog v-model="bindVisible" title="手动绑定 TMDB ID" width="min(520px, 94vw)">
       <p class="drawer-hint">
         有些剧集 TMDB 确实没有收录（尤其中文剧集、综艺），自动刮削会一直失败。
         可以在这里直接指定 TMDB 上的条目 ID，绑定后会立刻按该 ID 补全元数据与海报。
@@ -1532,7 +1629,7 @@ function typeLabel(t: string): string {
     </el-dialog>
 
     <!-- 扫描记录：最近若干轮（每轮的状态 / 触发方 / 增量 / 耗时 / 原因） -->
-    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="620px">
+    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="min(620px, 92vw)">
       <p class="drawer-hint">
         每轮扫描一行，最近的在最上面（每库最多保留 {{ scanKeep }} 条）。
         「每轮都失败」和「只是最近一轮失败」是两件事，这里能直接看出来。
