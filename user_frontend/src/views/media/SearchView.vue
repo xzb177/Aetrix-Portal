@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * 全局搜索 — 跨整个媒体库检索（电影 / 剧集）
+ * 全局搜索 — 跨整个媒体库检索（电影 / 剧集 / 单集）
  *
- * 顶层搜索结果只允许 series/movie 级别：季/单集收进剧集详情页，
- * 不再平铺到搜索结果里（后端 _query_items 亦有默认保护）。
+ * 搜索结果按类型分组展示：电影、剧集、单集（点单集卡片跳到所属剧集详情页）。
+ * 季仍然只出现在剧集详情页内，不平铺到搜索结果里（后端 _query_items 亦有默认保护）。
  *
  * - 此前只能在进入某个媒体库后搜索，这里提供全局入口（顶栏搜索图标直达）
  * - 结果按类型分组展示；无结果时引导到「求片」
@@ -37,6 +37,7 @@ const groups = computed(() => {
   return [
     { title: '电影', items: bucket('Movie') },
     { title: '剧集', items: bucket('Series') },
+    { title: '单集', items: bucket('Episode') },
   ].filter((g) => g.items.length > 0)
 })
 
@@ -83,8 +84,8 @@ async function runSearch(word: string) {
       searchTerm: w,
       limit: PAGE_LIMIT,
       recursive: true,
-      // 顶层只搜电影/剧集：季/单集卡片只出现在剧集详情页内
-      includeTypes: ['Movie', 'Series'],
+      // 顶层搜电影/剧集，单集也直接可搜（点单集卡片跳到所属剧集详情页）
+      includeTypes: ['Movie', 'Series', 'Episode'],
       sortBy: 'SortName',
       sortOrder: 'Ascending',
     })
@@ -153,11 +154,12 @@ onBeforeUnmount(() => {
           class="search-input"
           type="search"
           placeholder="搜索电影、剧集、单集…"
+          aria-label="搜索电影、剧集、单集"
           autocomplete="off"
           @input="onInput"
           @keyup.enter="onInput"
         />
-        <button v-if="keyword" class="clear-btn" title="清空" @click="reset">
+        <button v-if="keyword" class="clear-btn" title="清空" aria-label="清空搜索" @click="reset">
           <X :size="16" />
         </button>
       </div>
@@ -218,7 +220,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <MediaRow v-if="hot.length" title="热门推荐" :items="hot" more-to="/media" />
+        <MediaRow v-if="hot.length" title="最新入库" :items="hot" more-to="/media" />
 
         <div v-else class="au-empty">
           <Sparkles :size="30" />
@@ -265,7 +267,7 @@ onBeforeUnmount(() => {
 .search-input {
   width: 100%;
   height: 50px;
-  padding: 0 2.75rem 0 2.75rem;
+  padding: 0 3.25rem 0 2.75rem;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
@@ -291,22 +293,56 @@ onBeforeUnmount(() => {
 
 .clear-btn {
   position: absolute;
-  right: 0.75rem;
-  width: 28px;
-  height: 28px;
+  right: 0.25rem;
+  /* 触摸目标 44px：视觉圆点保持 28px（::before），点击区域放大到 44px */
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--au-surface-2);
+  background: transparent;
   border: none;
   border-radius: 50%;
   color: var(--au-text-3);
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.clear-btn::before {
+  content: '';
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--au-surface-2);
+  transition: background-color var(--au-fast) var(--au-ease);
+}
+
+.clear-btn > svg {
+  position: relative;
+  z-index: 1;
 }
 
 .clear-btn:hover {
   color: var(--au-text);
+}
+
+.clear-btn:hover::before {
   background: var(--au-surface-3);
+}
+
+.clear-btn:active {
+  transform: scale(0.94);
+  color: var(--au-text);
+}
+
+.clear-btn:active::before {
+  background: var(--au-surface-3);
+}
+
+.clear-btn:focus-visible {
+  outline: 2px solid var(--au-primary);
+  outline-offset: -4px;
 }
 
 .result-count {
@@ -376,6 +412,13 @@ onBeforeUnmount(() => {
 }
 
 .chip:hover {
+  border-color: var(--au-primary-border);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
+}
+
+.chip:active {
+  transform: scale(0.96);
   border-color: var(--au-primary-border);
   background: var(--au-primary-soft);
   color: var(--au-primary);

@@ -17,6 +17,7 @@ import {
   Film, MessageSquareDashed, Radio, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
   Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, ShieldAlert,
+  AlertTriangle, RefreshCw,
 } from 'lucide-vue-next'
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
@@ -48,54 +49,70 @@ const resettingBreaker = ref(false)
 const realms = ref<RealmOverview | null>(null)
 const loading = ref(true)
 const trendLoading = ref(false)
+/** 各数据分区的独立错误态：key 为分区名，value 为错误信息；失败不再静默，展示可重试的错误条 */
+const loadErrors = ref<Record<string, string>>({})
 
 const days = ref(14)
 type Metric = 'new_users' | 'plays' | 'revenue' | 'checkins'
 const metric = ref<Metric>('new_users')
 const metricTabs: { key: Metric; label: string; color: string }[] = [
-  { key: 'new_users', label: '新增用户', color: '#22d3ee' },
-  { key: 'plays', label: '播放次数', color: '#a78bfa' },
-  { key: 'revenue', label: '营收 (¥)', color: '#34d399' },
-  { key: 'checkins', label: '签到次数', color: '#fbbf24' },
+  { key: 'new_users', label: '新增用户', color: 'var(--chart-1)' },
+  { key: 'plays', label: '播放次数', color: 'var(--chart-2)' },
+  { key: 'revenue', label: '营收 (¥)', color: 'var(--chart-3)' },
+  { key: 'checkins', label: '签到次数', color: 'var(--chart-4)' },
 ]
 
 async function loadTrend() {
   trendLoading.value = true
   try {
     trend.value = await fetchStatsTrend(days.value)
+    delete loadErrors.value.trend
+  } catch (err: unknown) {
+    loadErrors.value.trend = err instanceof Error ? err.message : '请求失败'
   } finally {
     trendLoading.value = false
   }
 }
 
-onMounted(async () => {
+/** 各分区的加载器：互相独立，一个挂了不影响其它分区 */
+const sectionLoaders: Record<string, () => Promise<void>> = {
+  overview: async () => { overview.value = await fetchOverview() },
+  playback: async () => { playback.value = await fetchPlaybackStats() },
+  economy: async () => { economy.value = await fetchEconomyStats() },
+  libraries: async () => { libraries.value = (await fetchLibraries()).libraries },
+  sessions: async () => { sessions.value = (await fetchSessions()).sessions },
+  servers: async () => { servers.value = await fetchServersSummary() },
+  realms: async () => { realms.value = await fetchRealmOverview() },
+  mounts: async () => { mounts.value = (await fetchMounts())?.mounts || [] },
+  services: async () => { backendServices.value = ((await fetchBackendServices()) as any)?.services || [] },
+  breaker: async () => { quotaBreaker.value = ((await fetchQuotaBreakerStatus()) as any)?.breaker || null },
+}
+
+/** 安全加载单个分区：失败记入 loadErrors，前端展示错误条 + 重试按钮 */
+async function safeLoad(key: string) {
   try {
-    const [o, p, e, libraryData, sessionData, serverData, realmData, mountData, backendData, breakerData] = await Promise.all([
-      fetchOverview(),
-      fetchPlaybackStats(),
-      fetchEconomyStats(),
-      fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
-      fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
-      fetchServersSummary().catch(() => null),
-      fetchRealmOverview().catch(() => null),
-      fetchMounts().catch(() => null),
-      fetchBackendServices().catch(() => ({ services: [] as BackendServiceStatus[] })),
-      fetchQuotaBreakerStatus().catch(() => null),
-    ])
-    overview.value = o
-    playback.value = p
-    economy.value = e
-    libraries.value = libraryData.libraries
-    sessions.value = sessionData.sessions
-    servers.value = serverData
-    realms.value = realmData
-    mounts.value = mountData?.mounts || []
-    backendServices.value = (backendData as any)?.services || []
-    quotaBreaker.value = (breakerData as any)?.breaker || null
-    await loadTrend()
-  } finally {
-    loading.value = false
+    await sectionLoaders[key]()
+    delete loadErrors.value[key]
+  } catch (err: unknown) {
+    loadErrors.value[key] = err instanceof Error ? err.message : '请求失败'
   }
+}
+
+function retrySection(key: string) {
+  if (key === 'trend') {
+    loadTrend()
+    return
+  }
+  safeLoad(key)
+}
+
+onMounted(() => {
+  // 并行加载：各分区独立 settle，全都 settle 后撤掉整页 loading；
+  // 单个分区失败只影响自己，不再拖垮整页（之前 Promise.all 里三个核心接口无 catch，一挂全挂还静默）。
+  Promise.allSettled(Object.keys(sectionLoaders).map((k) => safeLoad(k))).finally(() => {
+    loading.value = false
+  })
+  loadTrend()
 })
 
 async function handleResetBreaker() {
@@ -261,19 +278,97 @@ const maxValue = computed(() => Math.max(...values.value, 1))
 
 const CHART_W = 720
 const CHART_H = 150
-const PAD = 14
+/** 绘图区内边距：左侧留给 Y 轴标签，Y 轴用 HTML 覆盖层渲染（SVG 拉伸会压扁文字） */
+const PAD_L = 46
+const PAD_R = 10
+const PAD_T = 12
+const PAD_B = 8
+
+const plotW = CHART_W - PAD_L - PAD_R
+const plotH = CHART_H - PAD_T - PAD_B
 
 const points = computed(() => {
   const list = values.value
   const n = list.length
   if (n === 0) return []
-  const step = n > 1 ? CHART_W / (n - 1) : 0
+  const step = n > 1 ? plotW / (n - 1) : 0
   return list.map((v, i) => {
-    const x = i * step
-    const y = CHART_H - PAD - (v / maxValue.value) * (CHART_H - PAD * 2)
+    const x = PAD_L + i * step
+    const y = PAD_T + plotH - (v / maxValue.value) * plotH
     return [x, y] as const
   })
 })
+
+/** Y 轴刻度：0 / 1/3 / 2/3 / 最大值 */
+const yTicks = computed(() => {
+  const ticks: { v: number; y: number }[] = []
+  for (let i = 0; i <= 3; i++) {
+    const v = (maxValue.value * i) / 3
+    ticks.push({ v, y: PAD_T + plotH - (v / maxValue.value) * plotH })
+  }
+  return ticks
+})
+
+/** 刻度/提示里的数值格式化：营收显示金额，大数缩写 */
+function fmtTick(v: number): string {
+  if (metric.value === 'revenue') {
+    return v >= 1000 ? `¥${(v / 1000).toFixed(1)}k` : `¥${Math.round(v)}`
+  }
+  return v >= 10000 ? `${(v / 10000).toFixed(1)}万` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`
+}
+
+/** tooltip：当前悬停的数据点下标（null = 未悬停） */
+const hoverIndex = ref<number | null>(null)
+const chartPlotRef = ref<HTMLElement | null>(null)
+
+function showTip(clientX: number) {
+  const n = values.value.length
+  const el = chartPlotRef.value
+  if (!n || !el) return
+  const rect = el.getBoundingClientRect()
+  const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+  hoverIndex.value = Math.round(frac * (n - 1))
+}
+
+function onChartMove(e: MouseEvent) {
+  showTip(e.clientX)
+}
+
+function onChartTouch(e: TouchEvent) {
+  const t = e.touches[0]
+  if (t) showTip(t.clientX)
+}
+
+function hideTip() {
+  hoverIndex.value = null
+}
+
+const hoverPoint = computed(() =>
+  hoverIndex.value != null ? points.value[hoverIndex.value] : null,
+)
+
+/** tooltip 在容器内的水平位置（百分比，SVG 拉伸下依然对齐数据点） */
+const tipLeftPct = computed(() => {
+  if (hoverIndex.value == null) return 0
+  const n = values.value.length
+  const frac = n > 1 ? hoverIndex.value / (n - 1) : 0.5
+  return ((PAD_L + frac * plotW) / CHART_W) * 100
+})
+
+const tipDate = computed(() => {
+  if (hoverIndex.value == null) return ''
+  return series.value[hoverIndex.value]?.date.slice(5) || ''
+})
+
+const tipValue = computed(() => {
+  if (hoverIndex.value == null) return ''
+  const v = values.value[hoverIndex.value]
+  return metric.value === 'revenue' ? fmtMoney(v) : `${v}`
+})
+
+/** x 轴日期标签左右留白，与绘图区对齐 */
+const xPadL = `${((PAD_L / CHART_W) * 100).toFixed(2)}%`
+const xPadR = `${((PAD_R / CHART_W) * 100).toFixed(2)}%`
 
 const linePath = computed(() =>
   points.value.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' '),
@@ -316,6 +411,16 @@ function sessionProgress(session: EmbySessionRow): number {
         交付链数据卡：先回答「现在能不能用、有没有要处理的」——
         用户 → 播放 → 待办 → 内容（扫描）→ 存储，每张卡点进去就是这个数的明细页。
       -->
+      <!-- 分区加载失败条：失败不静默，可单独重试 -->
+      <button
+        v-if="loadErrors.overview || loadErrors.playback"
+        class="load-error"
+        @click="loadErrors.overview ? retrySection('overview') : retrySection('playback')"
+      >
+        <AlertTriangle :size="14" />
+        <span>部分核心数据加载失败，点击重试</span>
+        <RefreshCw :size="13" />
+      </button>
       <section class="kpi-grid">
         <RouterLink
           v-for="k in kpis"
@@ -491,6 +596,11 @@ function sessionProgress(session: EmbySessionRow): number {
       </section>
 
       <!-- 交易概览 -->
+      <button v-if="loadErrors.economy" class="load-error" @click="retrySection('economy')">
+        <AlertTriangle :size="14" />
+        <span>交易数据加载失败，点击重试</span>
+        <RefreshCw :size="13" />
+      </button>
       <section class="stat-grid">
         <div class="stat-tile">
           <div class="stat-label"><Wallet :size="13" /> 累计营收</div>
@@ -526,12 +636,13 @@ function sessionProgress(session: EmbySessionRow): number {
         <div class="card-header">
           <h2><TrendingUp :size="15" /> 趋势</h2>
           <div class="trend-controls">
-            <div class="metric-tabs">
+            <div class="metric-tabs" role="group" aria-label="趋势指标切换">
               <button
                 v-for="t in metricTabs"
                 :key="t.key"
                 class="metric-tab"
                 :class="{ active: metric === t.key }"
+                :aria-pressed="metric === t.key"
                 :style="metric === t.key ? { color: t.color, borderColor: t.color } : undefined"
                 @click="metric = t.key"
               >
@@ -554,32 +665,107 @@ function sessionProgress(session: EmbySessionRow): number {
         </div>
 
         <div class="chart-wrap" v-loading="trendLoading">
-          <svg class="chart" :viewBox="`0 0 ${CHART_W} ${CHART_H}`" preserveAspectRatio="none" role="img">
-            <defs>
-              <linearGradient :id="`grad-${metric}`" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" :stop-color="currentMetric.color" stop-opacity="0.36" />
-                <stop offset="100%" :stop-color="currentMetric.color" stop-opacity="0" />
-              </linearGradient>
-            </defs>
-            <path :d="areaPath" :fill="`url(#grad-${metric})`" />
-            <path
-              :d="linePath"
-              fill="none"
-              :stroke="currentMetric.color"
-              stroke-width="2"
-              vector-effect="non-scaling-stroke"
-              stroke-linejoin="round"
-              stroke-linecap="round"
-            />
-          </svg>
-          <div class="chart-axis">
-            <span v-for="(l, i) in axisLabels" :key="l + i">{{ l }}</span>
+          <div v-if="loadErrors.trend && !trendLoading" class="chart-error">
+            <button class="load-error" @click="retrySection('trend')">
+              <AlertTriangle :size="14" />
+              <span>趋势数据加载失败，点击重试</span>
+              <RefreshCw :size="13" />
+            </button>
           </div>
+          <template v-else>
+          <!-- chart-plot：SVG 绘图区 + 覆盖层（Y 轴标签 / tooltip）共用同一坐标系 -->
+          <div
+            ref="chartPlotRef"
+            class="chart-plot"
+            @mousemove="onChartMove"
+            @mouseleave="hideTip"
+            @touchstart.passive="onChartTouch"
+            @touchmove.passive="onChartTouch"
+            @touchend="hideTip"
+          >
+            <svg
+              class="chart"
+              :viewBox="`0 0 ${CHART_W} ${CHART_H}`"
+              preserveAspectRatio="none"
+              role="img"
+              :aria-label="`近 ${days} 天${currentMetric.label}趋势图`"
+            >
+              <defs>
+                <linearGradient :id="`grad-${metric}`" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" :style="{ stopColor: currentMetric.color }" stop-opacity="0.36" />
+                  <stop offset="100%" :style="{ stopColor: currentMetric.color }" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <!-- Y 轴网格线 -->
+              <g aria-hidden="true">
+                <line
+                  v-for="t in yTicks"
+                  :key="'g' + t.v"
+                  :x1="PAD_L"
+                  :x2="CHART_W - PAD_R"
+                  :y1="t.y"
+                  :y2="t.y"
+                  class="grid-line"
+                />
+              </g>
+              <path :d="areaPath" :fill="`url(#grad-${metric})`" />
+              <path
+                :d="linePath"
+                fill="none"
+                :style="{ stroke: currentMetric.color }"
+                stroke-width="2"
+                vector-effect="non-scaling-stroke"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+              />
+              <!-- 悬停指示：竖线 + 数据点 -->
+              <g v-if="hoverPoint" aria-hidden="true">
+                <line
+                  :x1="hoverPoint[0]"
+                  :x2="hoverPoint[0]"
+                  :y1="PAD_T"
+                  :y2="CHART_H - PAD_B"
+                  class="hover-line"
+                />
+                <circle
+                  :cx="hoverPoint[0]"
+                  :cy="hoverPoint[1]"
+                  r="4.5"
+                  :style="{ fill: currentMetric.color }"
+                  stroke="#fff"
+                  stroke-width="1.5"
+                  vector-effect="non-scaling-stroke"
+                />
+              </g>
+            </svg>
+            <!-- Y 轴标签：HTML 覆盖层，避免 SVG 拉伸压扁文字 -->
+            <div class="y-labels" aria-hidden="true">
+              <span
+                v-for="t in yTicks"
+                :key="'y' + t.v"
+                :style="{ top: `${((t.y / CHART_H) * 100).toFixed(2)}%` }"
+              >{{ fmtTick(t.v) }}</span>
+            </div>
+            <!-- tooltip：日期 + 数值 -->
+            <div
+              v-if="hoverIndex != null"
+              class="chart-tip"
+              :style="{ left: `${tipLeftPct.toFixed(2)}%` }"
+              aria-hidden="true"
+            >
+              <strong>{{ tipDate }}</strong>
+              <span :style="{ color: currentMetric.color }">{{ tipValue }}</span>
+            </div>
+          </div><!-- /chart-plot -->
+            <div class="chart-axis" :style="{ paddingLeft: xPadL, paddingRight: xPadR }">
+              <span v-for="(l, i) in axisLabels" :key="l + i">{{ l }}</span>
+            </div>
+          </template>
         </div>
       </section>
 
       <!-- 媒体服务运行态：把媒体库、扫描与在线播放放到首页，而不是让管理员逐页排查 -->
-      <section v-if="libraries.length || sessions.length" class="ops-grid">
+      <section v-if="libraries.length || sessions.length || loadErrors.libraries || loadErrors.sessions" class="ops-grid">
         <div class="admin-card ops-card">
           <div class="card-header">
             <h2>
@@ -588,7 +774,13 @@ function sessionProgress(session: EmbySessionRow): number {
             </h2>
             <RouterLink to="/emby" class="card-link">管理媒体库 <ArrowRight :size="13" /></RouterLink>
           </div>
-          <div v-if="libraries.length" class="ops-list">
+          <div v-if="loadErrors.libraries && !libraries.length" class="empty-hint">
+            <button class="load-error inline" @click="retrySection('libraries')">
+              <AlertTriangle :size="14" />
+              <span>加载失败，点击重试</span>
+            </button>
+          </div>
+          <div v-else-if="libraries.length" class="ops-list">
             <div v-for="library in libraries.slice(0, 5)" :key="library.id" class="ops-row">
               <div class="ops-main">
                 <strong>{{ library.name }}</strong>
@@ -608,7 +800,13 @@ function sessionProgress(session: EmbySessionRow): number {
             </h2>
             <RouterLink to="/emby" class="card-link">查看会话 <ArrowRight :size="13" /></RouterLink>
           </div>
-          <div v-if="sessions.length" class="ops-list">
+          <div v-if="loadErrors.sessions && !sessions.length" class="empty-hint">
+            <button class="load-error inline" @click="retrySection('sessions')">
+              <AlertTriangle :size="14" />
+              <span>加载失败，点击重试</span>
+            </button>
+          </div>
+          <div v-else-if="sessions.length" class="ops-list">
             <div v-for="session in sessions.slice(0, 5)" :key="session.session_key" class="ops-row">
               <div class="ops-main">
                 <strong>{{ session.username }} · {{ session.item }}</strong>
@@ -622,32 +820,48 @@ function sessionProgress(session: EmbySessionRow): number {
       </section>
 
       <!-- 排行榜 -->
-      <section class="stats-two-col" v-if="playback">
+      <section class="stats-two-col" v-if="playback || loadErrors.playback">
         <div class="admin-card">
           <div class="card-header">
             <h2>用户播放排行 <span class="range-hint">近 7 天</span></h2>
           </div>
-          <div v-if="playback.user_ranking.length === 0" class="empty-hint">暂无播放数据</div>
-          <div v-for="(u, i) in playback.user_ranking" :key="u.username" class="rank-row">
-            <span class="rank-index">{{ i + 1 }}</span>
-            <span class="rank-name">{{ u.username }}</span>
-            <span class="rank-value">{{ u.plays }} 次</span>
+          <div v-if="loadErrors.playback && !playback" class="empty-hint">
+            <button class="load-error inline" @click="retrySection('playback')">
+              <AlertTriangle :size="14" />
+              <span>加载失败，点击重试</span>
+            </button>
           </div>
+          <template v-else-if="playback">
+            <div v-if="playback.user_ranking.length === 0" class="empty-hint">暂无播放数据</div>
+            <div v-for="(u, i) in playback.user_ranking" :key="u.username" class="rank-row">
+              <span class="rank-index">{{ i + 1 }}</span>
+              <span class="rank-name">{{ u.username }}</span>
+              <span class="rank-value">{{ u.plays }} 次</span>
+            </div>
+          </template>
         </div>
 
         <div class="admin-card">
           <div class="card-header">
             <h2>热门内容 <span class="range-hint">近 7 天</span></h2>
           </div>
-          <div v-if="playback.item_ranking.length === 0" class="empty-hint">暂无播放数据</div>
-          <div v-for="(it, i) in playback.item_ranking" :key="it.name" class="rank-row">
-            <span class="rank-index">{{ i + 1 }}</span>
-            <span class="rank-name">
-              {{ it.name }}
-              <span class="rank-type">{{ it.type === 'episode' ? '剧集' : it.type === 'movie' ? '电影' : it.type }}</span>
-            </span>
-            <span class="rank-value">{{ it.plays }} 次</span>
+          <div v-if="loadErrors.playback && !playback" class="empty-hint">
+            <button class="load-error inline" @click="retrySection('playback')">
+              <AlertTriangle :size="14" />
+              <span>加载失败，点击重试</span>
+            </button>
           </div>
+          <template v-else-if="playback">
+            <div v-if="playback.item_ranking.length === 0" class="empty-hint">暂无播放数据</div>
+            <div v-for="(it, i) in playback.item_ranking" :key="it.name" class="rank-row">
+              <span class="rank-index">{{ i + 1 }}</span>
+              <span class="rank-name">
+                {{ it.name }}
+                <span class="rank-type">{{ it.type === 'episode' ? '剧集' : it.type === 'movie' ? '电影' : it.type }}</span>
+              </span>
+              <span class="rank-value">{{ it.plays }} 次</span>
+            </div>
+          </template>
         </div>
       </section>
     </template>
@@ -657,17 +871,17 @@ function sessionProgress(session: EmbySessionRow): number {
 <style scoped>
 /* 配额熔断器 */
 .breaker-tripped {
-  border-color: #ef4444 !important;
-  background: rgba(239, 68, 68, 0.08) !important;
+  border-color: var(--danger-border) !important;
+  background: var(--danger-bg) !important;
 }
 .breaker-danger {
-  color: #ef4444 !important;
+  color: var(--danger) !important;
 }
 .breaker-reset-btn {
   margin-left: 8px;
   padding: 4px 12px;
-  background: #ef4444;
-  color: white;
+  background: var(--danger-strong);
+  color: var(--danger-on);
   border: none;
   border-radius: 6px;
   font-size: 12px;
@@ -678,9 +892,34 @@ function sessionProgress(session: EmbySessionRow): number {
   cursor: not-allowed;
 }
 .breaker-reset-btn:hover:not(:disabled) {
-  background: #dc2626;
+  filter: brightness(1.12);
 }
 .page-loading { text-align: center; color: var(--text-secondary); padding: 60px 0; }
+
+/* 分区加载失败条：失败不静默，可单独重试 */
+.load-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: filter var(--transition-fast);
+}
+.load-error:hover { filter: brightness(1.15); }
+.load-error.inline {
+  width: auto;
+  margin-bottom: 0;
+  padding: 8px 12px;
+  border-style: solid;
+}
 
 /* ===== 交付链数据卡（顶部六张，一点直达明细页）===== */
 .kpi-grid {
@@ -745,10 +984,10 @@ function sessionProgress(session: EmbySessionRow): number {
 /* 状态包：颜色只用来提示「有没有要看的」，不当装饰 */
 .kpi-card.tone-ok .kpi-icon { background: var(--success-bg); color: var(--success); }
 .kpi-card.tone-info .kpi-icon { background: var(--info-bg); color: var(--info); }
-.kpi-card.tone-warn { border-color: rgba(251, 191, 36, 0.28); }
+.kpi-card.tone-warn { border-color: var(--warning-border); }
 .kpi-card.tone-warn .kpi-icon { background: var(--warning-bg); color: var(--warning); }
 .kpi-card.tone-warn .kpi-value { color: var(--warning); }
-.kpi-card.tone-danger { border-color: rgba(248, 113, 113, 0.28); }
+.kpi-card.tone-danger { border-color: var(--danger-border); }
 .kpi-card.tone-danger .kpi-icon { background: var(--danger-bg); color: var(--danger); }
 .kpi-card.tone-danger .kpi-value { color: var(--danger); }
 
@@ -815,7 +1054,7 @@ function sessionProgress(session: EmbySessionRow): number {
   background: var(--bg-card);
 }
 
-.todo-bar.clear { border-color: rgba(52, 211, 153, 0.25); }
+.todo-bar.clear { border-color: var(--success-border); }
 
 .todo-lead {
   display: flex;
@@ -896,7 +1135,69 @@ function sessionProgress(session: EmbySessionRow): number {
 .trend-total-value { font-size: 22px; font-weight: 700; }
 
 .chart-wrap { position: relative; }
+.chart-plot { position: relative; }
 .chart { width: 100%; height: 150px; display: block; }
+
+/* Y 轴网格线 / 悬停指示线：非等比拉伸下用 vector-effect 保持 1px */
+.grid-line {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 3 3;
+}
+.hover-line {
+  stroke: var(--text-muted);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 4 3;
+}
+
+/* Y 轴标签：HTML 覆盖层，避免 SVG preserveAspectRatio 拉伸压扁文字 */
+.y-labels {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 40px;
+  pointer-events: none;
+}
+.y-labels span {
+  position: absolute;
+  left: 0;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 图表 tooltip：日期 + 数值 */
+.chart-tip {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 2;
+}
+.chart-tip span {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.chart-error { padding: 24px 0; }
 
 .chart-axis {
   display: flex;

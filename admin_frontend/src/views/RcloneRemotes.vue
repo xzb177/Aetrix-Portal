@@ -452,7 +452,7 @@ onMounted(load)
   gap: 12px;
 }
 .rclone-desc {
-  color: #909399;
+  color: var(--text-muted);
   font-size: 13px;
 }
 .rclone-actions {
@@ -468,24 +468,25 @@ onMounted(load)
   font-size: 12px;
 }
 .muted {
-  color: #909399;
+  color: var(--text-muted);
 }
 .ok {
-  color: #67c23a;
+  color: var(--success);
 }
 .missing {
-  color: #f56c6c;
+  color: var(--danger);
 }
 .cred-cell {
   font-size: 13px;
 }
 .empty-hint {
   text-align: center;
-  color: #909399;
+  color: var(--text-muted);
   padding: 40px 0;
 }
 .conf-preview {
-  background: #f5f7fa;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 16px;
   font-size: 12px;

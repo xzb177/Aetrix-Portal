@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
+import { Check, X, Info, TriangleAlert, type LucideIcon } from 'lucide-vue-next'
 
 export interface ToastMessage {
   id: number
@@ -28,16 +29,15 @@ onMounted(() => {
   })
 })
 
-// 获取图标
-const getIcon = (type: string) => {
-  const icons = {
-    success: '✓',
-    error: '✕',
-    warning: '⚠',
-    info: 'ℹ'
-  }
-  return icons[type as keyof typeof icons] || icons.info
+// 状态图标：lucide（与全站统一，不再用 Unicode 字符）
+const iconMap: Record<ToastMessage['type'], LucideIcon> = {
+  success: Check,
+  error: X,
+  warning: TriangleAlert,
+  info: Info,
 }
+
+const getIcon = (type: ToastMessage['type']): LucideIcon => iconMap[type] || Info
 
 // 获取样式类
 const getToastClass = (type: string) => {
@@ -61,7 +61,9 @@ const getToastClass = (type: string) => {
           class="toast"
           :class="getToastClass(msg.type)"
         >
-          <span class="toast-icon" aria-hidden="true">{{ getIcon(msg.type) }}</span>
+          <span class="toast-icon" aria-hidden="true">
+            <component :is="getIcon(msg.type)" :size="12" :stroke-width="2.75" />
+          </span>
           <span class="toast-message">{{ msg.message }}</span>
           <button
             type="button"
@@ -69,7 +71,7 @@ const getToastClass = (type: string) => {
             aria-label="关闭提示"
             @click="emit('remove', msg.id)"
           >
-            ×
+            <X :size="15" />
           </button>
         </div>
       </TransitionGroup>
@@ -115,8 +117,6 @@ const getToastClass = (type: string) => {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  font-size: 12px;
-  font-weight: bold;
   flex-shrink: 0;
 }
 
@@ -129,8 +129,10 @@ const getToastClass = (type: string) => {
 }
 
 .toast-close {
-  width: 24px;
-  height: 24px;
+  /* 触摸区 44px：负 margin 抵消放大，视觉占位与原来 24px 一致 */
+  width: 44px;
+  height: 44px;
+  margin: -10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -139,8 +141,6 @@ const getToastClass = (type: string) => {
   color: var(--au-text-3);
   border-radius: var(--au-r-sm);
   cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
   transition: background-color var(--au-fast) var(--au-ease),
               color var(--au-fast) var(--au-ease),
               transform var(--au-fast) var(--au-ease);

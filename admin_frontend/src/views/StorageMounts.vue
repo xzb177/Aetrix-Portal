@@ -1004,8 +1004,8 @@ function fmtDate(s: string | null): string {
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 .mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
-.mini-badge.remote { background: rgba(59, 130, 246, 0.16); color: #3b82f6; }
-.mini-badge.local { background: rgba(16, 185, 129, 0.16); color: #10b981; }
+.mini-badge.remote { background: var(--info-bg); color: var(--info); }
+.mini-badge.local { background: var(--success-bg); color: var(--success-strong); }
 
 /* EM / EA 可达性：两个播放节点各自能不能碰到这条挂载 */
 .reach-cell { display: flex; flex-direction: column; gap: 3px; }
