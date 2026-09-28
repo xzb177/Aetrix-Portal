@@ -113,8 +113,12 @@ def test_recover_crashed(db):
 
 
 def test_enrich_apply_writes_subtitles(db):
-    """字幕落库：外挂字幕写入 MediaStream，旧字幕先清"""
-    it = _make_item(db, item_type="movie")
+    """字幕落库：外挂字幕写入 MediaStream，旧字幕先清
+
+    条目预置 tmdb_id + overview：未刮干净的条目现在会退回 pending（可重试），
+    这条只验字幕，故给它完整元数据以走 done 分支。
+    """
+    it = _make_item(db, item_type="movie", tmdb_id="999", overview="已有简介")
     # 先放一条旧字幕
     db.add(em.MediaStream(item_id=it.id, stream_index=0,
                           stream_type="Subtitle", is_external=True,
