@@ -272,6 +272,44 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     elif nfo_data and not item.overview:
         nfo_lib.apply_nfo(item, nfo_data, kind)
 
+    # 集/季通常没有独立 TMDB 图片，但客户端会把它们作为独立卡片展示。
+    # 物化一份父级图片到条目上，配合 API 的图片回退链，避免不同客户端只看
+    # 自身 ImageTags 时出现灰色占位图。优先季，其次剧集；绝不覆盖集级专属图。
+    if item_type in ("episode", "season") and not (
+        item.poster_path or item.primary_image_url
+    ):
+        parents = []
+        if item.parent_id:
+            p = db.query(em.MediaItem).filter(em.MediaItem.id == item.parent_id).first()
+            if p:
+                parents.append(p)
+        if item.series_id:
+            s = db.query(em.MediaItem).filter(em.MediaItem.id == item.series_id).first()
+            if s and all(s.id != p.id for p in parents):
+                parents.append(s)
+        for parent in parents:
+            if parent.poster_path or parent.primary_image_url:
+                item.poster_path = parent.poster_path
+                item.primary_image_url = parent.primary_image_url
+                break
+    if item_type in ("episode", "season") and not (
+        item.backdrop_path or item.backdrop_image_url
+    ):
+        parents = []
+        if item.parent_id:
+            p = db.query(em.MediaItem).filter(em.MediaItem.id == item.parent_id).first()
+            if p:
+                parents.append(p)
+        if item.series_id:
+            s = db.query(em.MediaItem).filter(em.MediaItem.id == item.series_id).first()
+            if s and all(s.id != p.id for p in parents):
+                parents.append(s)
+        for parent in parents:
+            if parent.backdrop_path or parent.backdrop_image_url:
+                item.backdrop_path = parent.backdrop_path
+                item.backdrop_image_url = parent.backdrop_image_url
+                break
+
     if needs_repair:
         item.repair_requested_at = None
     item.enrich_status = "done"

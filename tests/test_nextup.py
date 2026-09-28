@@ -79,8 +79,11 @@ def scene(db):
     return SimpleNamespace(db=db, user=user, a2=a2, series_a=series_a, series_b=series_b)
 
 
-def _call(db, user, limit=20):
-    req = SimpleNamespace(query_params={"Limit": str(limit)})
+def _call(db, user, limit=20, series_id=None):
+    params = {"Limit": str(limit)}
+    if series_id:
+        params["SeriesId"] = series_id
+    req = SimpleNamespace(query_params=params)
     with pytest.MonkeyPatch().context() as mp:
         # _item_dto / _prefetch_list_data 依赖请求基地址与图片服务，这里只验证选集逻辑
         mp.setattr(api, "_base_url", lambda request: "http://test")
@@ -113,3 +116,10 @@ def test_nextup_empty_when_nothing_watched(db):
     res = _call(db, user)
     assert res["TotalRecordCount"] == 0
     assert res["Items"] == []
+
+
+def test_nextup_series_id_returns_first_episode_when_unstarted(scene):
+    """详情页请求指定未观看剧时，应返回该剧 E01，不得拿全库别剧的下一集。"""
+    res = _call(scene.db, scene.user, series_id=scene.series_b.guid)
+    assert res["TotalRecordCount"] == 1
+    assert res["Items"][0]["Name"] == "剧B E01"
