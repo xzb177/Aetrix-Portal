@@ -140,34 +140,45 @@ def _enrich_fetch(item: Any) -> dict:
     kind = {"series": "series", "season": "season",
             "episode": "episode", "movie": "movie"}.get(item_type, "")
     scan_file = _scanfile_from_item(item)
-    if scan_file is None:
+
+    # series / season 是目录聚合出来的容器条目，天生没有 file_path（文件在 episode 上）。
+    # 以前这里直接判失败，而下面第 3 步的 TMDB 只需要 name + year，根本用不到
+    # file_path —— 于是所有剧集/季永远刮削不了，重试到超限后锁死 failed。
+    # 现在：没有 scan_file 时跳过 side/NFO 这两个「确实需要本地文件」的步骤，
+    # 但仍然走 TMDB。episode/movie 有 file_path，不走这条退路。
+    ctx = None
+    nfo_data = None
+    if scan_file is not None:
+        snap = _sc.LibrarySnapshot(
+            library_id=item.library_id, name="", collection_type="",
+            paths=(), scrape_policy="smart",
+        )
+        ctx = _sc._ScanContext(snap=snap, lib_id=item.library_id, stats={})
+
+        # 1. side 图片 / 外挂字幕（本地图片优先，不覆盖已有）
+        try:
+            side_poster, side_fanart, external = _sc._side_info(ctx, scan_file)
+            result["poster"] = side_poster
+            result["fanart"] = side_fanart
+            result["external_subs"] = list(external or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("补全 side 失败 %s: %s", item.file_path, exc)
+
+        # 2. NFO（B 方案：NFO 管文字；series/season/episode/movie 全支持）
+        if kind:
+            try:
+                nfo_data, _s1, _s2 = _sc._nfo_work(ctx, scan_file, kind) or (None, None, None)
+                result["nfo_data"] = nfo_data
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("补全 NFO 失败 %s: %s", item.file_path, exc)
+    elif kind in ("episode", "movie"):
+        # 真正需要本地文件却没有 → 无从补全，判失败让退避重试
         result["ok"] = False
         result["error"] = "无 file_path，无法重建 ScanFile"
         return result
-
-    snap = _sc.LibrarySnapshot(
-        library_id=item.library_id, name="", collection_type="",
-        paths=(), scrape_policy="smart",
-    )
-    ctx = _sc._ScanContext(snap=snap, lib_id=item.library_id, stats={})
-
-    # 1. side 图片 / 外挂字幕（本地图片优先，不覆盖已有）
-    try:
-        side_poster, side_fanart, external = _sc._side_info(ctx, scan_file)
-        result["poster"] = side_poster
-        result["fanart"] = side_fanart
-        result["external_subs"] = list(external or [])
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("补全 side 失败 %s: %s", item.file_path, exc)
-
-    # 2. NFO（B 方案：NFO 管文字；series/season/episode/movie 全支持）
-    nfo_data = None
-    if kind:
-        try:
-            nfo_data, _s1, _s2 = _sc._nfo_work(ctx, scan_file, kind) or (None, None, None)
-            result["nfo_data"] = nfo_data
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("补全 NFO 失败 %s: %s", item.file_path, exc)
+    else:
+        logger.debug("补全 %s 无 file_path（容器条目），仅走 TMDB：%s",
+                     item_type, item.name)
 
     # 3. TMDB（NFO 有 tmdb_id 就不搜，只按需取详情补图/补缺）
     needs_repair = bool(getattr(item, "repair_requested_at", None))
