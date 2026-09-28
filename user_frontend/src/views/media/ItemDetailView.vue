@@ -54,6 +54,9 @@ const realmNote = computed(
 const itemId = computed(() => route.params.id as string)
 
 const poster = computed(() => (item.value ? posterUrl(item.value, 480) : ''))
+/** SYS-4：海报 404/过期时切到首字占位 */
+const posterOk = ref(true)
+const failedEpPosters = ref(new Set<string>())
 const backdrop = computed(() => (item.value ? backdropUrl(item.value) : ''))
 const isFavorite = computed(() => !!item.value?.UserData?.IsFavorite)
 const isPlayed = computed(() => !!item.value?.UserData?.Played)
@@ -183,7 +186,11 @@ watch(
 )
 
 watch(itemId, () => {
-  if (itemId.value) loadItem()
+  if (itemId.value) {
+    posterOk.value = true
+    failedEpPosters.value = new Set()
+    loadItem()
+  }
 })
 
 async function toggleFavorite() {
@@ -330,7 +337,7 @@ onMounted(loadItem)
       <template v-else-if="item">
         <div class="head-grid">
           <div class="poster-col">
-            <img v-if="poster" :src="poster" :alt="item.Name" class="poster" />
+            <img v-if="poster && posterOk" :src="poster" :alt="item.Name" class="poster" @error="posterOk = false" />
             <div v-else class="poster placeholder">
               <span class="placeholder-char">{{ titleChar }}</span>
             </div>
@@ -468,7 +475,7 @@ onMounted(loadItem)
             >
               <RouterLink :to="`/watch/${ep.Id}`" class="ep-link">
                 <div class="ep-thumb">
-                  <img v-if="epPoster(ep)" :src="epPoster(ep)" :alt="ep.Name" loading="lazy" />
+                  <img v-if="epPoster(ep) && !failedEpPosters.has(ep.Id)" :src="epPoster(ep)" :alt="ep.Name" loading="lazy" @error="failedEpPosters.add(ep.Id)" />
                   <span v-else class="ep-thumb-num">{{ ep.IndexNumber ?? '·' }}</span>
                 </div>
                 <div class="ep-body">
@@ -633,7 +640,7 @@ onMounted(loadItem)
   align-items: center;
   justify-content: center;
   background: linear-gradient(160deg, var(--au-primary-soft), var(--au-surface));
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .placeholder-char {
@@ -678,7 +685,7 @@ onMounted(loadItem)
   content: '·';
   position: absolute;
   left: -0.5625rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .meta-row .quality {
@@ -698,7 +705,7 @@ onMounted(loadItem)
   padding: 0.125rem 0.4375rem;
   border: 1px solid var(--au-border-strong);
   border-radius: 5px;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 
@@ -727,7 +734,7 @@ onMounted(loadItem)
   border: 1px solid var(--au-primary-border);
   border-radius: 8px;
   color: var(--au-success);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
 }
 
 .overview {
@@ -884,7 +891,7 @@ onMounted(loadItem)
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  height: 34px;
+  height: 40px; /* SYS-2：触摸目标保底 40px */
   padding: 0 0.75rem;
   background: var(--au-overlay-soft);
   border: 1px solid var(--au-border);
@@ -924,7 +931,7 @@ onMounted(loadItem)
 
 .resume-kicker {
   margin: 0;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--au-text-3);
 }
 
@@ -1052,8 +1059,8 @@ onMounted(loadItem)
 }
 
 .ep-meta {
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
 }
 
 .ep-state {
@@ -1090,7 +1097,7 @@ onMounted(loadItem)
   text-align: center;
   padding: 2rem 0;
   font-size: 0.8125rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 /* 加载失败错误态 */

@@ -1388,7 +1388,7 @@ onBeforeUnmount(() => {
   background: var(--au-primary-soft);
   border-radius: var(--au-r-sm);
   color: var(--au-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
   white-space: nowrap;
 }

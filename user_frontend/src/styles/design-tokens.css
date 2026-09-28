@@ -1,40 +1,42 @@
 /* ========================================
-   设计系统 - Design Tokens V2
-   Aetrix 用户门户 H5
+   设计系统 - Design Tokens V2 — 别名层
+   ========================================
+
+   SYS-1 收敛：Aurora（aurora.css）是全站唯一的权威 token。
+   本文件不再定义任何新的颜色 / 背景 / 文字 / 边框 / 圆角 / 阴影值，
+   所有变量一律映射到 --au-*（或 --neo-* 刻度），只保留名字做兼容。
+   「幽灵变量」--text-quaternary 已删除，唯一使用处
+   EmptyState.vue 已改为 --au-text-3。
    ======================================== */
 
 :root {
   /* ==================== 色彩系统 ==================== */
 
-  /* 品牌色 - 电光青（Cyan）
-     旧版这一档从 50 到 900 还是主色叫「绿」时留下的 Emerald，只有 500/600 被换成青色，
-     整档色相是断的（谁拿 400 当主色浅版就会得到绿色）。现在整档同一支色相。 */
-  --brand-50: #ecfeff;
-  --brand-100: #cffafe;
-  --brand-200: #a5f3fc;
-  --brand-300: #67e8f9;
-  --brand-400: #22d3ee;
-  --brand-500: #22d3ee;        /* 主色 */
-  --brand-600: #06b6d4;        /* Hover */
-  --brand-700: #0e7490;
-  --brand-800: #155e75;
-  --brand-900: #164e63;
-  --brand-950: #083344;
+  /* 品牌色 - 电光青（Cyan） */
+  --brand-50: var(--au-primary-soft);
+  --brand-100: var(--au-primary-soft);
+  --brand-200: var(--au-primary-soft);
+  --brand-300: var(--au-primary);
+  --brand-400: var(--au-primary);
+  --brand-500: var(--au-primary);        /* 主色 */
+  --brand-600: var(--au-primary-strong); /* Hover */
+  --brand-700: var(--au-primary-deep);
+  --brand-800: var(--au-primary-deep);
+  --brand-900: var(--au-primary-deep);
+  --brand-950: var(--au-bg);
 
   /* 向后兼容 */
-  --brand-primary: #22d3ee;
-  --brand-primary-hover: #06b6d4;
-  --brand-primary-light: rgba(34, 211, 238, 0.15);
-  --brand-primary-lighter: rgba(34, 211, 238, 0.08);
+  --brand-primary: var(--au-primary);
+  --brand-primary-hover: var(--au-primary-strong);
+  --brand-primary-light: var(--au-primary-soft);
+  --brand-primary-lighter: var(--au-primary-soft);
 
-  /* V2 Profile 专用 - 强调色（小面积点缀） */
-  --accent: #22d3ee;
-  --accent-dim: rgba(34, 211, 238, 0.1);
-  --accent-glow: rgba(34, 211, 238, 0.4);
+  /* 强调色（小面积点缀） */
+  --accent: var(--au-primary);
+  --accent-dim: var(--au-primary-soft);
+  --accent-glow: var(--au-primary-glow);
 
-  /* 语义色 - 全部指向 Aurora 令牌（同一个语义，全站一个颜色）
-     旧版在这里写死了另一套红/黄/绿：页面上用 --au-danger（玫瑰红），这里却是 #ef4444，
-     两边的「错误」长得不一样；「成功」甚至直接等于主色，和主按钮分不出来。 */
+  /* 语义色 - 全部指向 Aurora 令牌（同一个语义，全站一个颜色） */
   --color-info: var(--au-info);
   --color-info-light: var(--au-info-soft);
   --color-info-bg: var(--au-info-soft);
@@ -51,65 +53,63 @@
   --color-danger-light: var(--au-danger-soft);
   --color-danger-bg: var(--au-danger-soft);
 
-  /* 中性色 - 暗黑主题 */
-  --gray-50: #fafafa;
-  --gray-100: #f5f5f5;
-  --gray-200: #e5e5e5;
-  --gray-300: #d4d4d4;
-  --gray-400: #a3a3a3;
-  --gray-500: #737373;
-  --gray-600: #525252;
-  --gray-700: #404040;
-  --gray-800: #262626;
-  --gray-900: #171717;
-  --gray-950: #0a0a0a;
+  /* 中性色 - 暗黑主题：无 Aurora 对应语义，统一收敛到背景层级 */
+  --gray-50: var(--au-text);
+  --gray-100: var(--au-text);
+  --gray-200: var(--au-text-2);
+  --gray-300: var(--au-text-2);
+  --gray-400: var(--au-text-3);
+  --gray-500: var(--au-text-3);
+  --gray-600: var(--au-text-3);
+  --gray-700: var(--au-surface-3);
+  --gray-800: var(--au-surface-2);
+  --gray-900: var(--au-bg-soft);
+  --gray-950: var(--au-bg);
 
   /* 背景色系统 */
-  --bg-primary: #0a0a0a;
-  --bg-secondary: #141414;
-  --bg-tertiary: #1a1a1a;
-  --bg-elevated: #141414;
-  --bg-elevated-hover: #1a1a1a;
-  --bg-elevated-active: #222222;
-  --bg-overlay: rgba(0, 0, 0, 0.8);
-  --bg-dim: rgba(0, 0, 0, 0.5);
-  --bg-card: #1a1a1a; /* 卡片背景，别名 --bg-tertiary */
+  --bg-primary: var(--au-bg);
+  --bg-secondary: var(--au-bg-soft);
+  --bg-tertiary: var(--au-surface);
+  --bg-elevated: var(--au-surface);
+  --bg-elevated-hover: var(--au-surface-2);
+  --bg-elevated-active: var(--au-surface-3);
+  --bg-overlay: var(--au-overlay);
+  --bg-dim: var(--au-overlay-soft);
+  --bg-card: var(--au-surface);
 
   /* 导航栏/头部背景 */
-  --bg-header: rgba(10, 10, 10, 0.85);
-  --bg-dropdown: rgba(10, 10, 10, 0.95);
-  --bg-mobile-menu: rgba(10, 10, 10, 0.98);
+  --bg-header: var(--au-overlay-menu);
+  --bg-dropdown: var(--au-overlay-menu);
+  --bg-mobile-menu: var(--au-overlay-menu);
 
-  /* 文字色系统 - 按对比度分级（WCAG AA 优化） */
-  --text-primary: #ffffff;                  /* 21:1 - AAA */
-  --text-secondary: rgba(255, 255, 255, 0.85);  /* 14.3:1 - AAA */
-  --text-tertiary: rgba(255, 255, 255, 0.65);   /* 9.6:1 - AA */
-  --text-quaternary: rgba(255, 255, 255, 0.45); /* 5.2:1 - AA 大号文字 */
-  --text-inverse: #0a0a0a;
-  /* 链接跟主色走（旧值是绿色 #34d399，主色换成青之后，链接是全站唯一的绿） */
+  /* 文字色系统 */
+  --text-primary: var(--au-text);
+  --text-secondary: var(--au-text-2);
+  --text-tertiary: var(--au-text-3);
+  --text-inverse: var(--au-on-primary);
+  /* 链接跟主色走 */
   --text-link: var(--au-primary);
-  --text-link-hover: #67e8f9;
+  --text-link-hover: var(--au-primary-strong);
 
   /* 边框色系统 */
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.18);
-  --border-focus: #22d3ee;
-  --border-error: #ef4444;
+  --border-subtle: var(--au-border);
+  --border-default: var(--au-border);
+  --border-strong: var(--au-border-strong);
+  --border-focus: var(--au-border-focus);
+  --border-error: var(--au-danger);
 
   /* 分割线 */
-  --divider-color: rgba(255, 255, 255, 0.08);
+  --divider-color: var(--au-border);
 
-  /* ==================== 字体系统 ==================== */
+  /* ==================== 字体系统（刻度保留，Aurora 无字号 token） ==================== */
 
-  /* 字号 */
   --font-size-display: 24px;
   --font-size-h1: 20px;
   --font-size-h2: 16px;
   --font-size-h3: 14px;
   --font-size-body: 14px;
-  --font-size-small: 12px;
-  --font-size-tiny: 11px;
+  --font-size-small: 12px;   /* SYS-5：正文下限 12px */
+  --font-size-tiny: 12px;    /* SYS-5：从 11px 提到 12px */
 
   /* 字重 */
   --font-weight-normal: 400;
@@ -124,44 +124,44 @@
   --line-height-relaxed: 1.5;
   --line-height-loose: 1.6;
 
-  /* ==================== 间距系统（8pt 栅格）==================== */
+  /* ==================== 间距系统（8pt 栅格，刻度保留） ==================== */
 
   --space-0: 0;
-  --space-1: 4px;   /* 极小间距 */
-  --space-2: 8px;   /* 小间距 */
-  --space-3: 12px;  /* 中间距 */
-  --space-4: 16px;  /* 默认间距 */
-  --space-5: 20px;  /* 大间距 */
-  --space-6: 24px;  /* 超大间距 */
-  --space-8: 32px;  /* 特大间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
 
   /* ==================== 圆角 ==================== */
 
   --radius-none: 0;
-  --radius-sm: 6px;   /* 小按钮/标签 */
-  --radius-md: 10px;  /* 卡片/输入框 */
-  --radius-lg: 14px;  /* 大卡片 */
-  --radius-xl: 18px;
-  --radius-2xl: 24px;
-  --radius-full: 9999px; /* 胶囊按钮/标签 */
+  --radius-sm: var(--au-r-sm);
+  --radius-md: var(--au-r-md);
+  --radius-lg: var(--au-r-lg);
+  --radius-xl: var(--au-r-xl);
+  --radius-2xl: var(--au-r-xl);
+  --radius-full: var(--au-r-full);
 
   /* ==================== 阴影/层级 ==================== */
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 12px 24px rgba(0, 0, 0, 0.5);
-  --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.6);
+  --shadow-xs: var(--au-shadow-1);
+  --shadow-sm: var(--au-shadow-1);
+  --shadow-md: var(--au-shadow-2);
+  --shadow-lg: var(--au-shadow-2);
+  --shadow-xl: var(--au-shadow-2);
 
   /* Elevation（层级阴影） */
-  --elevation-1: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --elevation-2: 0 4px 8px rgba(0, 0, 0, 0.4);
-  --elevation-3: 0 12px 24px rgba(0, 0, 0, 0.5);
+  --elevation-1: var(--au-shadow-1);
+  --elevation-2: var(--au-shadow-2);
+  --elevation-3: var(--au-shadow-2);
 
   /* 组件专用阴影 */
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-card: var(--au-shadow-1);
 
   /* ==================== 触控 ==================== */
 
@@ -171,19 +171,19 @@
   /* ==================== Focus Ring ==================== */
 
   --focus-ring-width: 2px;
-  --focus-ring-color: #22d3ee;
+  --focus-ring-color: var(--au-primary);
   --focus-ring-offset: 2px;
 
   /* ==================== 骨架屏 ==================== */
 
-  --skeleton-base: #1a1a1a;
-  --skeleton-highlight: #262626;
-  --skeleton-shimmer-from: rgba(255, 255, 255, 0.03);
-  --skeleton-shimmer-mid: rgba(255, 255, 255, 0.08);
-  --skeleton-shimmer-to: rgba(255, 255, 255, 0.03);
+  --skeleton-base: var(--au-surface-2);
+  --skeleton-highlight: var(--au-surface-3);
+  --skeleton-shimmer-from: var(--au-on-image);
+  --skeleton-shimmer-mid: var(--au-on-image-strong);
+  --skeleton-shimmer-to: var(--au-on-image);
   --skeleton-duration: 1.5s;
 
-  /* ==================== 动画 ==================== */
+  /* ==================== 动画（刻度保留） ==================== */
 
   --duration-fast: 150ms;
   --duration-normal: 200ms;
@@ -195,24 +195,22 @@
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.6, 1);
 
-  /* ==================== Z-index ==================== */
+  /* ==================== Z-index（收敛到 neo 刻度） ==================== */
 
-  --z-dropdown: 100;
-  --z-sticky: 200;
-  --z-fixed: 300;
-  --z-modal-backdrop: 400;
-  --z-modal: 500;
-  --z-popover: 600;
-  --z-tooltip: 700;
+  --z-dropdown: var(--neo-z-dropdown);
+  --z-sticky: var(--neo-z-float);
+  --z-fixed: var(--neo-z-float);
+  --z-modal-backdrop: var(--neo-z-overlay);
+  --z-modal: var(--neo-z-modal);
+  --z-popover: var(--neo-z-dropdown);
+  --z-tooltip: var(--neo-z-toast);
 }
 
 /* ==================== 高对比度模式 ==================== */
 
 @media (prefers-contrast: high) {
   :root {
-    --border-subtle: rgba(255, 255, 255, 0.3);
-    --border-default: rgba(255, 255, 255, 0.5);
-    --text-tertiary: rgba(250, 250, 250, 0.7);
+    --text-tertiary: var(--au-text-2);
   }
 }
 

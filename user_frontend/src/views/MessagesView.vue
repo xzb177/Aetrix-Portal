@@ -358,7 +358,7 @@ onMounted(() => {
   left: 0.75rem;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   pointer-events: none;
 }
 .search-input { padding-left: 2.25rem; }
@@ -392,7 +392,7 @@ onMounted(() => {
   border-radius: var(--au-r-full);
   background: var(--au-primary);
   color: var(--au-on-primary);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
@@ -428,7 +428,7 @@ onMounted(() => {
   background: var(--au-primary-soft);
 }
 
-.tab-count { opacity: 0.65; font-size: 0.6875rem; }
+.tab-count { opacity: 0.65; font-size: 0.75rem; }
 
 /* 列表 */
 .msg-group { margin-bottom: 1.25rem; }
@@ -441,7 +441,7 @@ onMounted(() => {
   letter-spacing: 0.02em;
 }
 
-.group-label span { color: var(--au-text-4); font-weight: 400; }
+.group-label span { color: var(--au-text-3); font-weight: 400; }
 
 .msg-card {
   display: flex;
@@ -487,7 +487,7 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-.msg-time { margin-left: auto; font-size: 0.6875rem; color: var(--au-text-4); white-space: nowrap; }
+.msg-time { margin-left: auto; font-size: 0.75rem; color: var(--au-text-3); white-space: nowrap; }
 
 .msg-title {
   font-size: 0.875rem;
@@ -509,7 +509,7 @@ onMounted(() => {
   white-space: pre-wrap;
 }
 
-.msg-arrow { color: var(--au-text-4); flex-shrink: 0; }
+.msg-arrow { color: var(--au-text-3); flex-shrink: 0; }
 
 /* 骨架 */
 .skeleton-list { display: flex; flex-direction: column; gap: 0.4375rem; }
@@ -573,7 +573,7 @@ onMounted(() => {
   line-height: 1.35;
 }
 
-.modal-time { font-size: 0.6875rem; color: var(--au-text-4); }
+.modal-time { font-size: 0.75rem; color: var(--au-text-3); }
 
 .modal-close {
   width: 30px;

@@ -24,6 +24,8 @@ const toast = useToast()
 const PAGE_SIZE = 20
 
 const items = ref<WatchHistoryItem[]>([])
+/** SYS-4：加载失败的海报 key 集合，404 时显示占位图标 */
+const failedPosters = ref(new Set<string>())
 const loading = ref(true)
 const loadingMore = ref(false)
 const uniqueTotal = ref(0)
@@ -198,7 +200,7 @@ onMounted(refreshAll)
             :to="itemTo(item)"
           >
             <div class="poster">
-              <img v-if="item.poster_url" :src="item.poster_url" :alt="item.name" loading="lazy" />
+              <img v-if="item.poster_url && !failedPosters.has(item.id)" :src="item.poster_url" :alt="item.name" loading="lazy" @error="failedPosters.add(item.id)" />
               <div v-else class="poster-fallback"><Film :size="18" /></div>
               <div v-if="progressOf(item) > 0 && !item.played" class="poster-progress">
                 <div :style="{ width: progressOf(item) + '%' }" />
@@ -372,7 +374,7 @@ onMounted(refreshAll)
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .poster-progress {
@@ -415,13 +417,13 @@ onMounted(refreshAll)
   align-items: center;
   gap: 0.3125rem;
   margin-top: 0.3125rem;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   flex-wrap: wrap;
 }
 
 .item-time { margin-left: auto; }
-.item-arrow { color: var(--au-text-4); flex-shrink: 0; }
+.item-arrow { color: var(--au-text-3); flex-shrink: 0; }
 
 .load-more { align-self: center; margin-top: 0.5rem; }
 

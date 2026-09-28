@@ -107,8 +107,8 @@ watch(() => props.items, () => {
 .more-link:hover { color: var(--au-primary); }
 
 .nav-btn {
-  width: 28px;
-  height: 28px;
+  width: 40px; /* SYS-2：触摸目标保底 40px */
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -124,6 +124,11 @@ watch(() => props.items, () => {
   color: var(--au-text);
   background: var(--au-surface-2);
   border-color: var(--au-border-strong);
+}
+
+/* SYS-2：移动端靠手势横滑，桌面箭头不再需要 */
+@media (max-width: 768px) {
+  .nav-btn { display: none; }
 }
 
 .row-scroller {

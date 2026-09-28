@@ -890,8 +890,8 @@ onBeforeUnmount(stopPayPoll)
 
 .balance-note {
   margin: 0.5rem 0 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   line-height: 1.5;
 }
 
@@ -958,8 +958,8 @@ onBeforeUnmount(stopPayPoll)
 
 .redeem-hint {
   margin: 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
 }
 
 .refresh { align-self: flex-start; margin-top: 0.25rem; }
@@ -1016,7 +1016,7 @@ onBeforeUnmount(stopPayPoll)
   font-style: normal;
   font-size: 0.75rem;
   font-weight: 500;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   text-decoration: line-through;
 }
 
@@ -1091,13 +1091,13 @@ onBeforeUnmount(stopPayPoll)
 }
 .pkg-points em { font-style: normal; font-size: 0.75rem; color: var(--au-text-3); }
 
-.pkg-name { font-size: 0.75rem; color: var(--au-text-4); }
+.pkg-name { font-size: 0.75rem; color: var(--au-text-3); }
 
 .pkg-bonus {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--au-success);
 }
 
@@ -1112,7 +1112,7 @@ onBeforeUnmount(stopPayPoll)
   padding: 0.125rem 0.5rem;
   background: var(--au-gradient-warm);
   color: var(--au-on-primary);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
 }
@@ -1181,7 +1181,7 @@ onBeforeUnmount(stopPayPoll)
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-full);
   color: var(--au-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -1227,7 +1227,7 @@ onBeforeUnmount(stopPayPoll)
 }
 .code-tip svg { color: var(--au-primary); flex-shrink: 0; }
 .code-tip span { flex: 1; min-width: 0; }
-.code-tip .ct-arrow { color: var(--au-text-4); }
+.code-tip .ct-arrow { color: var(--au-text-3); }
 .code-tip:hover {
   border-color: var(--au-primary-border);
   color: var(--au-text-2);
@@ -1271,7 +1271,7 @@ onBeforeUnmount(stopPayPoll)
 }
 
 .ms-sep {
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 /* ==================== 订阅套餐 ==================== */
@@ -1310,14 +1310,14 @@ onBeforeUnmount(stopPayPoll)
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   color: var(--au-text-3);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 500;
   font-style: normal;
   vertical-align: middle;
 }
 
 .plan-price { font-size: 1.125rem; font-weight: 800; color: var(--au-text); white-space: nowrap; }
-.plan-price em { font-style: normal; font-size: 0.6875rem; font-weight: 400; color: var(--au-text-3); }
+.plan-price em { font-style: normal; font-size: 0.75rem; font-weight: 400; color: var(--au-text-3); }
 
 .plan-desc { margin: 0; font-size: 0.8125rem; color: var(--au-text-3); line-height: 1.5; }
 
@@ -1383,8 +1383,8 @@ onBeforeUnmount(stopPayPoll)
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   overflow: hidden;
 }
 .order-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1419,7 +1419,7 @@ onBeforeUnmount(stopPayPoll)
 
 .log-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.125rem; }
 .log-desc { font-size: 0.8125rem; color: var(--au-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-time { font-size: 0.6875rem; color: var(--au-text-4); }
+.log-time { font-size: 0.75rem; color: var(--au-text-3); }
 
 .log-amount { font-weight: 700; font-size: 0.9375rem; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .log-amount.in { color: var(--au-success); }

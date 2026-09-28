@@ -502,7 +502,7 @@ onMounted(() => {
 
 .optional {
   font-style: normal;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .field-box {
@@ -522,7 +522,7 @@ onMounted(() => {
 }
 
 .field-icon {
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   margin-right: 0.5rem;
   flex-shrink: 0;
 }
@@ -543,7 +543,7 @@ onMounted(() => {
 }
 
 .field-box input::placeholder {
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .eye-btn {
@@ -554,7 +554,7 @@ onMounted(() => {
   justify-content: center;
   background: transparent;
   border: none;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   cursor: pointer;
   border-radius: 7px;
 }
@@ -591,7 +591,7 @@ onMounted(() => {
 .strength-fill.lv-3 { width: 100%; background: var(--au-primary); }
 
 .strength-text {
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--au-text-3);
   min-width: 16px;
 }
@@ -652,8 +652,8 @@ onMounted(() => {
 .auth-footnote {
   margin: 1.25rem 0 0;
   text-align: center;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   line-height: 1.5;
 }
 

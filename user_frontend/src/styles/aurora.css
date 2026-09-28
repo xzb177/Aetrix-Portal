@@ -394,3 +394,26 @@ body {
 ::selection { background: var(--au-primary-soft); color: var(--au-text); }
 
 :focus-visible { outline: 2px solid var(--au-primary); outline-offset: 2px; }
+
+/* ==================== 点按反馈（SYS-3） ==================== */
+/* 移动端没有 hover，:active 是用户唯一的"我点中了"确认。
+   用 filter 压暗而不用 transform 缩放——不与各组件已有的 hover 位移
+   （如 .poster-wrap 的 translateY）打架，两个效果可叠加。
+   已有自定义 :active 的组件（.au-btn-primary 等）不受影响——类选择器优先级更高。 */
+
+/* 卡片 / 行级可点击元素：压暗 */
+.media-card:active .poster-wrap,
+.lib-card:active,
+.acct-cell:active,
+.todo-row:active,
+.help-row:active,
+.quick-link:active,
+.panel-more:active {
+  filter: brightness(0.85);
+}
+
+/* 原生按钮 / 链接：压暗闪一下（无位移，不破坏布局） */
+button:not(:disabled):active,
+a:active {
+  filter: brightness(0.9);
+}

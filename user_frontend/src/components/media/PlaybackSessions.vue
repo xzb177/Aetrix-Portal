@@ -198,7 +198,7 @@ onMounted(load)
 }
 
 .bar-fill { height: 100%; background: var(--au-gradient); }
-.bar-text { font-size: 0.6875rem; color: var(--au-text-4); white-space: nowrap; }
+.bar-text { font-size: 0.75rem; color: var(--au-text-3); white-space: nowrap; }
 
 .stop-btn { flex-shrink: 0; }
 

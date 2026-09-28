@@ -30,6 +30,8 @@ const libId = computed(() => (route.params.id as string) || '')
 const libName = ref((route.query.name as string) || '媒体库')
 
 const items = ref<EmbyItem[]>([])
+/** SYS-4：加载失败的海报 id 集合，404/过期时显示首字占位 */
+const failedPosters = ref(new Set<string>())
 const total = ref(0)
 const loading = ref(true)
 const loadingMore = ref(false)
@@ -593,7 +595,7 @@ onBeforeUnmount(() => {
           @click="openItem(item)"
         >
           <div class="lr-poster">
-            <img v-if="posterUrl(item, 160)" :src="posterUrl(item, 160)" :alt="item.Name" loading="lazy" />
+            <img v-if="posterUrl(item, 160) && !failedPosters.has(item.Id)" :src="posterUrl(item, 160)" :alt="item.Name" loading="lazy" @error="failedPosters.add(item.Id)" />
             <span v-else class="lr-char">{{ (item.Name || '?').trim().charAt(0) || '?' }}</span>
           </div>
           <div class="lr-body">
@@ -721,7 +723,7 @@ onBeforeUnmount(() => {
 }
 
 .search-icon {
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   margin-right: 0.5rem;
 }
 
@@ -736,7 +738,7 @@ onBeforeUnmount(() => {
 }
 
 .search-box input::placeholder {
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .toolbar-select {
@@ -792,7 +794,7 @@ onBeforeUnmount(() => {
   border-radius: 9px;
   background: var(--au-primary);
   color: #04121a;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -824,6 +826,13 @@ onBeforeUnmount(() => {
   font-size: 0.75rem;
   cursor: pointer;
   transition: all 0.15s ease;
+  /* SYS-2：扩大点击热区到 40px，视觉高度不变 */
+  position: relative;
+}
+.af-chip::after {
+  content: '';
+  position: absolute;
+  inset: -7px -4px;
 }
 
 .af-chip:hover {
@@ -901,6 +910,13 @@ onBeforeUnmount(() => {
   font-size: 0.75rem;
   cursor: pointer;
   transition: all 0.15s ease;
+  /* SYS-2：扩大点击热区到 40px，视觉高度不变 */
+  position: relative;
+}
+.fp-chip::after {
+  content: '';
+  position: absolute;
+  inset: -6px -4px;
 }
 
 .fp-chip:hover {
@@ -920,7 +936,7 @@ onBeforeUnmount(() => {
   background: transparent;
   border: 1px dashed var(--au-border-strong);
   border-radius: 14px;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   font-size: 0.75rem;
   cursor: pointer;
 }
@@ -1075,7 +1091,7 @@ onBeforeUnmount(() => {
 
 .lr-go {
   flex-shrink: 0;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 /* A-Z 快跳 */
@@ -1097,11 +1113,18 @@ onBeforeUnmount(() => {
   border: none;
   background: transparent;
   color: var(--au-text-3);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
   border-radius: 4px;
   transition: color 0.12s ease;
+  /* SYS-2：扩大点击热区，视觉尺寸不变 */
+  position: relative;
+}
+.az-key::after {
+  content: '';
+  position: absolute;
+  inset: -5px -4px;
 }
 
 .az-key:hover {
@@ -1115,7 +1138,7 @@ onBeforeUnmount(() => {
   .az-key {
     width: 15px;
     height: 17px;
-    font-size: 0.5625rem;
+    font-size: 0.75rem; /* SYS-5：不跟随缩小 */
   }
 }
 
@@ -1146,7 +1169,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.5rem;
   padding: 4rem 1rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .empty svg {
