@@ -78,6 +78,24 @@ const libraryRails = ref<Record<string, EmbyItem[]>>({})
 const railsLoading = ref(false)
 /** 有内容的库（ChildCount > 0）：出海报分区；0 条目的库只出现在顶部横滑卡里 */
 const viewsWithContent = computed(() => views.value.filter((v) => (v.ChildCount || 0) > 0))
+
+// 库卡片横滑指示器：0~100 的滚动进度；不可横滑时隐藏
+const libCarousel = ref<HTMLElement | null>(null)
+const libScrollPct = ref(0)
+const libCanScroll = ref(false)
+
+function updateLibScroll() {
+  const el = libCarousel.value
+  if (!el) return
+  const max = el.scrollWidth - el.clientWidth
+  libCanScroll.value = max > 8
+  libScrollPct.value = max > 0 ? Math.min(100, Math.max(0, (el.scrollLeft / max) * 100)) : 0
+}
+
+// 库列表变化后重新测量（等 DOM 更新完）
+watch(views, () => {
+  requestAnimationFrame(updateLibScroll)
+})
 const latest = ref<EmbyItem[]>([])
 const favorites = ref<EmbyItem[]>([])
 
@@ -337,7 +355,7 @@ onMounted(() => {
             <Library :size="18" />
             我的媒体
           </h2>
-          <div class="lib-carousel" role="list" aria-label="媒体库分类">
+          <div ref="libCarousel" class="lib-carousel" role="list" aria-label="媒体库分类" @scroll="updateLibScroll">
             <RouterLink
               v-for="v in views"
               :key="v.Id"
@@ -362,13 +380,17 @@ onMounted(() => {
               <ChevronRight :size="20" class="lib-card-go" />
             </RouterLink>
           </div>
+          <!-- 横滑指示器：暗示可以横滑；只有一个库时隐藏 -->
+          <div v-if="libCanScroll" class="lib-progress" aria-hidden="true">
+            <div class="lib-progress-fill" :style="{ width: Math.max(8, libScrollPct) + '%' }"></div>
+          </div>
         </section>
 
         <!-- 按库分区：有内容的库出横滑海报轨（数据驱动）；加载中显示骨架 -->
         <section v-if="railsLoading && !Object.keys(libraryRails).length && viewsWithContent.length" class="rail-skeleton" aria-hidden="true">
-          <div class="sk-title"></div>
+          <div class="au-skeleton sk-title"></div>
           <div class="sk-row">
-            <div v-for="i in 4" :key="i" class="sk-card"></div>
+            <div v-for="i in 4" :key="i" class="au-skeleton sk-card"></div>
           </div>
         </section>
         <MediaRow
@@ -655,13 +677,32 @@ onMounted(() => {
   gap: 0.75rem;
   overflow-x: auto;
   scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
-  margin: 0 -1.25rem;
-  padding: 0.25rem 1.25rem 0.5rem;
+  margin: 0 calc(var(--gutter) * -1);
+  padding: 0.25rem var(--gutter) 0.5rem;
+  scroll-padding-left: var(--gutter);
 }
 
 .lib-carousel::-webkit-scrollbar {
   display: none;
+}
+
+/* 库卡片横滑指示器 */
+.lib-progress {
+  height: 3px;
+  margin: 0.25rem var(--gutter) 0;
+  border-radius: 2px;
+  background: var(--au-track);
+  overflow: hidden;
+}
+
+.lib-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--au-primary);
+  opacity: 0.55;
+  transition: width 0.15s ease;
 }
 
 .lib-card {
@@ -677,7 +718,8 @@ onMounted(() => {
   border: 1px solid var(--au-border);
   overflow: hidden;
   text-decoration: none;
-  scroll-snap-align: center;
+  /* 首张贴左：center 会让首张永远无法贴左、末张收尾留大空隙 */
+  scroll-snap-align: start;
   background: linear-gradient(135deg, var(--au-primary-soft), var(--au-bg-soft));
   transition: transform var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease);
 }
@@ -755,7 +797,7 @@ onMounted(() => {
   color: var(--au-primary);
 }
 
-/* 按库海报轨加载中的骨架（深色，无白块） */
+/* 按库海报轨加载中的骨架：用全站统一的 au-skeleton（扫光），与 LibraryView 一致 */
 .rail-skeleton {
   margin-bottom: 2rem;
 }
@@ -763,10 +805,7 @@ onMounted(() => {
 .sk-title {
   width: 120px;
   height: 20px;
-  border-radius: 6px;
-  background: var(--au-surface-2);
   margin-bottom: 0.75rem;
-  animation: au-pulse-soft 1.2s ease-in-out infinite;
 }
 
 .sk-row {
@@ -777,8 +816,5 @@ onMounted(() => {
 .sk-card {
   flex: 0 0 132px;
   aspect-ratio: 2 / 3;
-  border-radius: 12px;
-  background: var(--au-surface-2);
-  animation: au-pulse-soft 1.2s ease-in-out infinite;
 }
 </style>

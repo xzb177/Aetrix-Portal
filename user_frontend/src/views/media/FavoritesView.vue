@@ -426,12 +426,9 @@ onMounted(load)
   fill: currentColor;
 }
 
+/* 用全站共用的 au-spin，不再自造一份同效果的 keyframes */
 .spinning {
-  animation: spin 0.9s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  animation: au-spin 0.9s linear infinite;
 }
 
 @media (max-width: 640px) {

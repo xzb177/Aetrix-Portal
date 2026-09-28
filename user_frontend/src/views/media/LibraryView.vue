@@ -20,7 +20,7 @@ import { embyApi, posterUrl, progressPercent, type EmbyItem, type EmbyFilters } 
 import MediaCard from '@/components/media/MediaCard.vue'
 import {
   Search, X, ArrowUpDown, FolderOpen, SlidersHorizontal, Check, RotateCcw,
-  LayoutGrid, List as ListIcon, ChevronRight,
+  LayoutGrid, List as ListIcon, ChevronRight, ChevronLeft, TriangleAlert,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -33,6 +33,8 @@ const items = ref<EmbyItem[]>([])
 const total = ref(0)
 const loading = ref(true)
 const loadingMore = ref(false)
+// 断网/接口失败：显示错误态 + 重试，而不是「没有找到匹配的影片」的空态文案
+const loadError = ref(false)
 const search = ref('')
 const typeFilter = ref('')
 const DEFAULT_SORT = 'SortName:Ascending'
@@ -233,6 +235,7 @@ async function loadFilters() {
 async function load(reset = true) {
   if (reset) {
     loading.value = true
+    loadError.value = false
     items.value = []
   } else {
     loadingMore.value = true
@@ -259,6 +262,9 @@ async function load(reset = true) {
       items.value.push(...res.Items)
     }
     total.value = res.TotalRecordCount
+  } catch {
+    // 首页加载失败才进错误态；加载更多失败只停掉 spinner，不断掉已有列表
+    if (reset) loadError.value = true
   } finally {
     loading.value = false
     loadingMore.value = false
@@ -316,8 +322,8 @@ onBeforeUnmount(() => {
       <!-- 头部 -->
       <header class="page-head">
         <div class="head-left">
-          <RouterLink to="/media" class="back-btn">
-            <X :size="16" />
+          <RouterLink to="/media" class="back-btn" aria-label="返回媒体库">
+            <ChevronLeft :size="18" />
           </RouterLink>
           <div>
             <h1 class="page-title">{{ libName }}</h1>
@@ -548,7 +554,16 @@ onBeforeUnmount(() => {
 
       <!-- 加载 -->
       <div v-if="loading" class="grid">
-        <div v-for="i in 12" :key="i" class="skeleton"></div>
+        <div v-for="i in 12" :key="i" class="au-skeleton skeleton"></div>
+      </div>
+
+      <!-- 错误态：断网/接口失败时显示，而不是「没有找到匹配的影片」 -->
+      <div v-else-if="loadError" class="empty load-error">
+        <TriangleAlert :size="32" />
+        <p>加载失败，请检查网络后重试</p>
+        <button type="button" class="au-btn au-btn-primary au-btn-sm" @click="load(true)">
+          <RotateCcw :size="13" /> 重新加载
+        </button>
       </div>
 
       <!-- 空态 -->
@@ -675,12 +690,19 @@ onBeforeUnmount(() => {
   color: var(--au-text-3);
 }
 
-/* 工具栏 */
+/* 工具栏：吸顶 + 背景模糊，大库滚到底换排序不用滚回顶部 */
 .toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   gap: 0.625rem;
   margin-bottom: 1.5rem;
   flex-wrap: wrap;
+  padding: 0.75rem 0;
+  background: color-mix(in srgb, var(--au-bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .search-box {
@@ -1103,12 +1125,19 @@ onBeforeUnmount(() => {
   }
 }
 
+/* 加载骨架：用全站统一的 au-skeleton（扫光），与 LibraryHomeView 一致 */
 .skeleton {
   aspect-ratio: 2 / 3.4;
-  border-radius: 12px;
-  background: linear-gradient(100deg, var(--au-surface) 40%, var(--au-surface-2) 50%, var(--au-surface) 60%);
-  background-size: 200% 100%;
-  animation: au-shimmer 1.4s infinite;
+}
+
+/* 加载失败的错误态 */
+.load-error svg {
+  color: var(--au-warning);
+  opacity: 1;
+}
+
+.load-error p {
+  color: var(--au-text-2);
 }
 
 .empty {
