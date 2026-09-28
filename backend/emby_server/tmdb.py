@@ -513,6 +513,10 @@ class TmdbClient:
         """把详情接口的返回落到条目上（与 enrich 同口径，供批量扫描预先取回后套用）"""
         if not data:
             return
+        # 详情只补缺项（简介/评分/别名），不覆盖 NFO 提供的文字。
+        # 用 getattr 兜底：调用方（含测试里的轻量替身）未必带这个字段。
+        if not getattr(item, "metadata_source", None):
+            item.metadata_source = "tmdb"
         imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
         if imdb:
             item.imdb_id = imdb
@@ -560,11 +564,16 @@ class TmdbClient:
             _set_image(item, "Primary", f"{TMDB_IMAGE}/w500{poster}")
         if backdrop:
             _set_image(item, "Backdrop", f"{TMDB_IMAGE}/w1280{backdrop}")
+        if (poster or backdrop) and getattr(item, "metadata_source", None) == "nfo":
+            # NFO 管文字、TMDB 补图（B 方案）——这是最常见的组合，单独标记出来
+            item.metadata_source = "tmdb_img"
         return bool(poster or backdrop)
 
     def apply(self, item: emby_models.MediaItem, hit: dict, kind: str) -> None:
         item.tmdb_id = str(hit.get("id"))
         item.last_scraped_at = datetime.now()
+        # 文字与图片都来自 TMDB 搜索结果
+        item.metadata_source = "tmdb"
         item.overview = hit.get("overview") or item.overview
         rating = hit.get("vote_average")
         # 注意不能用 `if rating:`：TMDB 对没有评分的条目返回 0.0，那是**合法数据**，

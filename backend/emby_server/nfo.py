@@ -155,6 +155,8 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str) -> None:
         if data.get("imdb_id"):
             item.imdb_id = data["imdb_id"]
         item.last_scraped_at = datetime.now()
+        # 文字来自本地 NFO（用户自己整理的，最权威）
+        item.metadata_source = "nfo"
     if data.get("plot"):
         item.overview = data["plot"]
     if data.get("rating") is not None:

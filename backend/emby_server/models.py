@@ -160,6 +160,14 @@ class MediaItem(Base):
     # next_retry_at=下次可重试时间（指数退避）。老库补列后默认 0/NULL。
     enrich_attempts = Column(Integer, default=0)
     enrich_next_retry_at = Column(DateTime)
+    # 元数据来源标记：这条条目的文字/图片**实际来自哪里**。
+    # 取值：nfo=本地 NFO；tmdb=TMDB 搜索/详情；tmdb_img=NFO 给文字、TMDB 补图；
+    # none=刮削跑过但没拿到数据（仍缺 tmdb_id/简介）。NULL=历史数据未标记。
+    #
+    # 以前只能靠 `last_scraped_at IS NULL` 反推"没刮到"，那把"没试过"和
+    # "试过但失败"混为一谈；加上这个字段后，"刮没刮干净"可以直接查、
+    # 可以按来源筛选，也为将来接入新数据源（豆瓣等）留出位置。
+    metadata_source = Column(String(20))
 
 
 from sqlalchemy.orm import relationship  # noqa: E402
