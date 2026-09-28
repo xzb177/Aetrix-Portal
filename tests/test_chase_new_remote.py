@@ -57,9 +57,11 @@ def test_find_new_videos_remote_filters_by_modtime(monkeypatch):
 
     db = SimpleNamespace(query=lambda *a, **k: _Q())
 
-    def fake_rc(rc_url, path, payload, username="", password=""):
+    def fake_rc(rc_url, path, payload, username="", password="", timeout=0):
         assert path == "/operations/list"
         assert payload["opt"]["recurse"] is True
+        # 大库需要放宽超时，否则通用 20s 会截断
+        assert timeout >= 60
         return {"list": items}
 
     monkeypatch.setattr("backend.emby_server.mount_rclone.rc_call", fake_rc)
