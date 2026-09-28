@@ -207,3 +207,67 @@ def test_zero_interval_disables_throttling():
     for _ in range(20):
         limiter.acquire(0)
     assert _t.time() - t0 < 1.0, "interval=0 时不应限速"
+
+
+# ==================== Bangumi ====================
+
+def _bgm_resp(monkeypatch, payload):
+    class _R:
+        status = 200
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import urllib.request
+    monkeypatch.setattr(altmeta.urllib.request, "urlopen", lambda *a, **k: _R())
+
+
+def test_bangumi_matches_on_chinese_name(monkeypatch):
+    """Bangumi 的价值就在 name_cn —— TMDB 缺的中文剧集靠它"""
+    _bgm_resp(monkeypatch, {"list": [
+        {"id": 1, "type": 2, "name": "B-PROJECT～鼓動＊Ambition～",
+         "name_cn": "B-PROJECT～鼓动＊Ambitious～", "air_date": "2016-04-07",
+         "images": {"large": "http://bg/l.jpg"}}]})
+    hit = altmeta.search_bangumi("B PROJECT～鼓动＊Ambitious～ (2016)", 2016,
+                                 "series", min_interval=0)
+    assert hit and hit["title"] == "B-PROJECT～鼓动＊Ambitious～"
+    assert hit["image"] == "http://bg/l.jpg"
+    assert hit["year"] == "2016"
+
+
+def test_bangumi_rejects_same_franchise_siblings(monkeypatch):
+    """「电锯人」会搜到「电锯人~温泉旅行篇」等同系列作品，必须拒绝"""
+    _bgm_resp(monkeypatch, {"list": [
+        {"id": 1, "type": 2, "name": "チェンソーマン", "name_cn": "电锯人~温泉旅行篇"},
+        {"id": 2, "type": 2, "name": "チェンソーマン", "name_cn": "电锯人 舞台剧"}]})
+    assert altmeta.search_bangumi("电锯人", 2022, "series", min_interval=0) is None
+
+
+def test_bangumi_rejects_non_anime_type(monkeypatch):
+    _bgm_resp(monkeypatch, {"list": [
+        {"id": 1, "type": 6, "name": "Leatherface", "name_cn": "人皮脸"}]})
+    assert altmeta.search_bangumi("人皮脸", None, "series", min_interval=0) is None
+
+
+def test_bangumi_empty_query_and_network_error(monkeypatch):
+    assert altmeta.search_bangumi("", None, "series", min_interval=0) is None
+
+    def boom(*a, **k):
+        raise OSError("down")
+
+    monkeypatch.setattr(altmeta.urllib.request, "urlopen", boom)
+    assert altmeta.search_bangumi("任意", None, "series", min_interval=0) is None
+
+
+def test_apply_marks_source_bangumi():
+    it = _item()
+    altmeta.apply(it, {"title": "X", "year": "2020", "image": "http://b/p.jpg"},
+                  source="bangumi")
+    assert it.metadata_source == "bangumi"
+    assert it.primary_image_url == "http://b/p.jpg"

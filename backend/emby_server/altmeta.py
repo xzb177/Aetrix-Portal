@@ -44,12 +44,16 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+from backend.emby_server.tmdb import _YEAR_TAIL_RE
+
 logger = logging.getLogger(__name__)
 
 SUGGEST_URL = "https://movie.douban.com/j/subject_suggest"
+BANGUMI_SEARCH_URL = "https://api.bgm.tv/search/subject"
 CONFIG_ENABLED = "altmeta_enabled"
 CONFIG_KEYS = "altmeta_douban_keys"
 CONFIG_RATE = "altmeta_douban_rate"
+CONFIG_BANGUMI_RATE = "altmeta_bangumi_rate"
 CONFIG_WORKERS = "altmeta_workers"
 
 # 速率限制：**两次请求之间的最小间隔秒数**（``altmeta_douban_rate`` 的语义）。
@@ -64,6 +68,8 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 
 # 电视剧/综艺的 type 值（subject_suggest 返回 movie/tv/book/music）
 _SERIES_TYPES = {"tv", "show", "series"}
+# Bangumi subject type：2=动画 4=音乐 6=电影（无 TV 类，番剧都归 2）
+_BANGUMI_SERIES_TYPES = {"2"}
 
 _lock = threading.Lock()
 
@@ -144,7 +150,9 @@ def warn_dead_keys_once(db) -> None:
 
 
 def _clean(title: str) -> str:
-    return re.sub(r"[\s:：·\-—_]+", "", (title or "").lower())
+    """归一化标题用于比对：去空白与常见标点（`B PROJECT` ≡ `B-PROJECT`）"""
+    return re.sub(r"[\s:：·\-—_\.、,，!！?？~～'\"“”‘’()（）\[\]【】]+",
+                  "", (title or "").lower())
 
 
 def search(title: str, year: Optional[int] = None, kind: str = "series",
@@ -203,7 +211,7 @@ def search(title: str, year: Optional[int] = None, kind: str = "series",
     }
 
 
-def apply(item: Any, hit: dict) -> None:
+def apply(item: Any, hit: dict, source: str = "douban") -> None:
     """把豆瓣命中落到条目上
 
     只补 TMDB 没给的东西，且**绝不覆盖**已有值：豆瓣是兜底源，不是权威源。
@@ -226,4 +234,75 @@ def apply(item: Any, hit: dict) -> None:
         _set_image(item, "Primary", hit["image"])
     if not item.last_scraped_at:
         item.last_scraped_at = datetime.now()
-    item.metadata_source = "douban"
+    item.metadata_source = source
+
+
+# ==================== Bangumi（番组）兜底 ====================
+
+def min_interval_bangumi(db) -> float:
+    """Bangumi 的最小间隔秒数（``altmeta_bangumi_rate``，0 = 不限速）"""
+    try:
+        return max(0.0, float(_get_config(db, CONFIG_BANGUMI_RATE,
+                                          str(DEFAULT_MIN_INTERVAL))))
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_INTERVAL
+
+
+_bgm_limiter = _RateLimiter()
+
+
+def search_bangumi(title: str, year: Optional[int] = None, kind: str = "series",
+                   min_interval: float = DEFAULT_MIN_INTERVAL) -> Optional[dict]:
+    """搜 Bangumi。返回与 :func:`search` 同形状的 dict。
+
+    走 ``/search/subject/`` 公开接口（实测 200）。它比豆瓣好在两点：
+    1. 返回 ``name_cn``（中文名）——TMDB 对中文剧集收录差，这正是我们缺的；
+    2. 返回 ``images``（封面），豆瓣 suggest 也能给但中文剧命中率低得多。
+
+    同样从严：只认清洗后标题完全一致（或互为前缀）且 type 是动画的候选。
+    实测「电锯人」会搜到「电锯人~温泉旅行篇」「电锯人 舞台剧」等同系列作品，
+    这类必须拒绝——写错片名比不写更糟。
+    """
+    q = (title or "").strip()
+    if not q:
+        return None
+    # 目录名几乎都带 `(YYYY)`，不剥掉就永远匹配不上（与 TMDB 搜索同一个坑）
+    q = re.sub(r"\s+", " ", _YEAR_TAIL_RE.sub(" ", q)).strip(" -_.()（）")
+    if not q:
+        return None
+    _bgm_limiter.acquire(min_interval)
+    url = f"{BANGUMI_SEARCH_URL}/{urllib.parse.quote(q)}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8", "ignore"))
+    except Exception as exc:  # noqa: BLE001 — 网络/限流失败不应中断补全
+        logger.debug("[altmeta] Bangumi 搜索失败 %r: %s", q, exc)
+        return None
+    items = (data or {}).get("list") or []
+    want = _clean(q)
+    for it in items[:5]:
+        if not isinstance(it, dict):
+            continue
+        if kind in ("series", "season", "episode") and str(it.get("type")) not in _BANGUMI_SERIES_TYPES:
+            continue
+        names = [it.get("name_cn"), it.get("name")]
+        got = next((_clean(str(n)) for n in names if n), "")
+        if not got:
+            continue
+        # 必须是**完全相等**。前缀匹配会放进「电锯人」→「电锯人~温泉旅行篇」
+        # 「电锯人 舞台剧」这类同系列其它作品——写错片名比不写更糟。
+        if got != want:
+            continue
+        img = it.get("images") or {}
+        cover = img.get("large") or img.get("common") or img.get("medium") or ""
+        air = str(it.get("air_date") or "")
+        return {
+            "id": str(it.get("id") or ""),
+            "title": str(it.get("name_cn") or it.get("name") or ""),
+            "year": air[:4] or None,
+            "image": str(cover or ""),
+            "type": "tv",
+            "url": str(it.get("url") or ""),
+        }
+    return None

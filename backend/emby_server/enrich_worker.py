@@ -215,6 +215,7 @@ def _enrich_fetch(item: Any) -> dict:
                 if _ok:
                     altmeta.warn_dead_keys_once(_cfg_db)
                     _interval = altmeta.min_interval(_cfg_db)
+                    _bgm_interval = altmeta.min_interval_bangumi(_cfg_db)
             finally:
                 _cfg_db.close()
             if _ok:
@@ -223,6 +224,15 @@ def _enrich_fetch(item: Any) -> dict:
                         item.name or "", item.production_year, kind, _interval)
                 except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
                     logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
+                # 豆瓣限流/没命中时再试 Bangumi——它有 name_cn 与封面，
+                # 对 TMDB 收录差的中文剧集特别有用（实测命中 B-PROJECT、落语朱音）。
+                if not result["douban_hit"]:
+                    try:
+                        result["bangumi_hit"] = altmeta.search_bangumi(
+                            item.name or "", item.production_year, kind,
+                            _bgm_interval)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("Bangumi 兜底失败 %s: %s", item.name, exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全 TMDB 失败 %s: %s", item.file_path, exc)
         result["ok"] = False
@@ -341,22 +351,27 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 现在：核心元数据缺失就退回 pending（可重试），刮到了才 done。
     # 豆瓣兜底结果落库（只在没有 TMDB 命中时）
     douban_hit = fetched.get("douban_hit")
-    if douban_hit:
+    alt_hit = douban_hit
+    alt_source = "douban"
+    if not alt_hit:
+        alt_hit = fetched.get("bangumi_hit")
+        alt_source = "bangumi"
+    if alt_hit:
         try:
             from backend.emby_server import altmeta as _alt
-            _alt.apply(item, douban_hit)
+            _alt.apply(item, alt_hit, source=alt_source)
         except Exception as exc:  # noqa: BLE001 — 兜底落库失败不该影响主流程
-            logger.debug("豆瓣兜底落库失败 %s: %s", getattr(item, "name", ""), exc)
-            douban_hit = None
+            logger.debug("兜底落库失败 %s: %s", getattr(item, "name", ""), exc)
+            alt_hit = None
 
     _incomplete = False
     if kind in ("series", "movie"):
-        if tmdb_client.configured and not item.tmdb_id and not douban_hit:
+        if tmdb_client.configured and not item.tmdb_id and not alt_hit:
             _incomplete = True
         if not (item.overview or "").strip():
             # 豆瓣 subject_suggest 不提供简介：补到标题/年份/海报就算完成，
             # 否则这批条目会永远停在 pending 反复重试。
-            if not douban_hit:
+            if not alt_hit:
                 _incomplete = True
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。
