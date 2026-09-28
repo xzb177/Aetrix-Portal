@@ -26,7 +26,13 @@ from unittest import mock
 
 
 def _ew():
-    """运行期导入：此时同批次的库已经建好，绑定到正确的 SessionLocal。"""
+    """运行期导入：此时同批次的库已经建好，绑定到正确的 SessionLocal。
+
+    不能在模块顶层 import——``enrich_worker`` 顶部是
+    ``from backend.database import SessionLocal``，import 那一刻就把引用绑死了。
+    本文件按字母序排在 test_enrich_worker 之前，顶层 import 会让它拿到建库前的
+    旧 session，后续 test_get_progress 读到空表（assert 0 == 2）。
+    """
     return importlib.import_module("backend.emby_server.enrich_worker")
 
 
