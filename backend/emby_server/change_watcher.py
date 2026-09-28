@@ -10,8 +10,9 @@
 - 新入库条目自动进 enrich 队列刮削（NFO→TMDB→豆瓣）
 
 v1 范围：
-- 只支持 local 类型挂载（覆盖 rclone 挂载的所有远端）
-- 115/webdav/alist 跳过并记日志（可用定时扫描兜底）
+- 本机目录：文件 mtime 检测（``find -newermt``）
+- rclone RC 挂载：``/operations/list`` 递归列举 + ``ModTime`` 窗口过滤
+- 115/webdav/alist 暂不直接检测，依赖每日定时扫描兜底
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session
 from backend import models as base_models
 from backend.database import SessionLocal
 from backend.emby_server import models as em
+from backend.emby_server import mounts as mount_lib
 from backend.emby_server import scan_queue
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,74 @@ def _library_local_paths(library, db: Session) -> list[str]:
     return paths
 
 
+MOUNT_PATH_PREFIX = "mount://"
+
+
+def _library_mount_sources(library, db: Session) -> list[tuple[int, str]]:
+    """库里引用的远程挂载：返回 ``[(mount_id, 挂载内相对目录), ...]``
+
+    追新必须覆盖**远程**媒体源。生产实测全部库都是 ``mount://3/MoviePilot/...``
+    （rclone RC），只查本机目录的旧实现等于一个库都没看——线程在跑、
+    last_check 在更新，却永远发现不了新资源。
+    """
+    sources: list[tuple[int, str]] = []
+    raw_paths = [p.strip() for p in (getattr(library, "paths", "") or "").split(",") if p.strip()]
+    for p in raw_paths:
+        if not p.startswith(MOUNT_PATH_PREFIX):
+            continue
+        rest = p[len(MOUNT_PATH_PREFIX):]
+        mid, _, rel = rest.partition("/")
+        if not mid.isdigit():
+            continue
+        sources.append((int(mid), "/" + rel.lstrip("/")))
+    return sources
+
+
+def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
+                            since_ts: float) -> list[str]:
+    """远程挂载（rclone RC）按 ModTime 找新增视频
+
+    rclone ``/operations/list`` 递归列举会返回每个文件的 ``ModTime``（实测 848/848 全带），
+    按时间窗口过滤比全量扫描快一个量级，也不会因为「上一轮扫过」而漏掉刚上传的文件。
+    """
+    from backend.emby_server.mount_rclone import rc_call
+
+    mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
+    if mount is None or not getattr(mount, "is_enabled", False):
+        return []
+    cfg = mount_lib.parse_config(mount)
+    if not cfg.get("rc_url"):
+        # cli 模式或非 rclone 挂载：本实现只覆盖 rc（生产实际用法）
+        return []
+    fs = cfg.get("fs") or ""
+    remote = (rel_dir or "/").lstrip("/")
+    body = rc_call(
+        cfg["rc_url"], "/operations/list",
+        {"fs": fs, "remote": remote, "opt": {"recurse": True, "filesOnly": True}},
+        username=cfg.get("rc_user", "") or "", password=cfg.get("rc_pass", "") or "",
+    )
+    items = (body or {}).get("list") or []
+    found: list[str] = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("IsDir"):
+            continue
+        name = str(it.get("Name") or "")
+        if not name or os.path.splitext(name)[1].lower() not in VIDEO_EXTS:
+            continue
+        mt = it.get("ModTime")
+        if not mt:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(mt).replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            continue
+        if ts > since_ts:
+            # RC 返回的 Path 相对 remote；用 rel 拼成库内绝对路径再挂 mount:// 前缀
+            rel_path = f"/{remote.rstrip('/')}/{str(it.get('Path') or '').lstrip('/')}".replace("//", "/")
+            found.append(f"{MOUNT_PATH_PREFIX}{mount_id}{rel_path}")
+    return found
+
+
 def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
     """找出 since_ts 之后新增/修改的视频文件（用 find -newermt，C 实现比 os.walk 快）"""
     import subprocess
@@ -160,15 +230,17 @@ def _check_once() -> None:
         total_found = 0
         for lib in libraries:
             try:
-                paths = _library_local_paths(lib, db)
-                if not paths:
-                    logger.debug("[chase-new] 库《%s》无本机路径，跳过", getattr(lib, "name", lib.id))
-                    continue
-                new_files = _find_new_videos(paths, since_ts)
-                if new_files:
-                    total_found += len(new_files)
+                found_paths = _find_new_videos(_library_local_paths(lib, db), since_ts)
+                for mid, rel in _library_mount_sources(lib, db):
+                    try:
+                        found_paths += _find_new_videos_remote(db, mid, rel, since_ts)
+                    except Exception as exc:  # noqa: BLE001 — 单个挂载失败不影响其它库
+                        logger.warning("[chase-new] 库《%s》远程挂载 %s 检查失败: %s",
+                                       getattr(lib, "name", lib.id), mid, exc)
+                if found_paths:
+                    total_found += len(found_paths)
                     logger.info("[chase-new] 库《%s》发现 %d 个新文件，触发扫描",
-                                getattr(lib, "name", lib.id), len(new_files))
+                                getattr(lib, "name", lib.id), len(found_paths))
                     scan_queue.enqueue(lib, trigger="chase-new")
             except Exception as e:
                 logger.error("[chase-new] 库《%s》检查失败: %s", getattr(lib, "id", "?"), e)
