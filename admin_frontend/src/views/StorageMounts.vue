@@ -17,10 +17,10 @@
  * 默认只看当前服的挂载，顶部可切到「全部服」做跨服汇总；新建 / 编辑时可以指定归属服，
  * 换归属服时引用它的媒体库会跟着走（避免库跨服引用存储）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { AlertTriangle, Cloud, FolderOpen, HardDrive, Info, Network, Pencil, Plug, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import {
   browseMount,
   createMount,
@@ -53,8 +53,12 @@ import NoticePanel from '@/components/NoticePanel.vue'
 const realm = useRealmStore()
 /** 统计范围：当前服（默认）或全部服 */
 const scope = ref<'realm' | 'all'>('realm')
-/** 标签页：mounts = 存储挂载，rclone = Rclone 配置 */
-const activeTab = ref<'mounts' | 'rclone'>('mounts')
+/** 标签页：mounts = 存储挂载，rclone = Rclone 配置（支持 ?tab=rclone 深链） */
+const route = useRoute()
+const activeTab = ref<'mounts' | 'rclone'>(route.query.tab === 'rclone' ? 'rclone' : 'mounts')
+watch(() => route.query.tab, (t) => {
+  if (t === 'rclone' || t === 'mounts') activeTab.value = t
+})
 /** 后端给的挂载 id → 服名映射（跨服汇总时用） */
 const realmNames = ref<Record<string, string>>({})
 /**
