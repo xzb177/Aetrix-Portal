@@ -136,8 +136,14 @@ def configure_session_local(factory=None) -> None:
     代理，转发能力随之失效——正是本类要解决的陷阱换个形式复发。
 
     ``factory=None`` 表示恢复默认（数据库模块的 engine）。
+
+    传入代理自身会被忽略并回退到默认：调用方若想"保存再还原"，很容易把
+    ``dbmod.SessionLocal``（代理本身）存下来再传回来，那会让代理指向自己、
+    每次调用无限递归。这里挡掉这种误用。
     """
-    SessionLocal._factory = factory if factory is not None else _real_session_local
+    if factory is None or isinstance(factory, _SessionLocalProxy):
+        factory = _real_session_local
+    SessionLocal._factory = factory
 
 
 Base = declarative_base()
@@ -365,6 +371,9 @@ def _auto_migrate():
             # enrich_next_retry_at=NULL（可立即重试，由 worker 按退避调度）。
             ("enrich_attempts", "INTEGER", "0"),
             ("enrich_next_retry_at", "DATETIME", "NULL"),
+            # 元数据来源标记：老库补列后为 NULL（历史数据未标记），
+            # 由刮削时重新写入；查"刮没刮干净"不再依赖 last_scraped_at 反推。
+            ("metadata_source", "VARCHAR(20)", "NULL"),
         ]),
     ]
 

@@ -324,6 +324,10 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             _incomplete = True
         if not (item.overview or "").strip():
             _incomplete = True
+    # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
+    # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。
+    if not item.metadata_source and kind in ("series", "movie", "season", "episode"):
+        item.metadata_source = "none"
     item.enrich_status = "pending" if _incomplete else "done"
     item.enrich_attempts = 0
     item.enrich_next_retry_at = None
