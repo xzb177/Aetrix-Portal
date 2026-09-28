@@ -1648,6 +1648,23 @@ def get_item_detail(
                      api_key=_api_key_for(db, request))
 
 
+def _season_belongs_to(season: em.MediaItem, show: em.MediaItem) -> bool:
+    """这个 season 是不是 show 自己的季（show 可能是 series，也可能本身是 season）
+
+    判据按 Emby 的层级关系来：
+    - show 是 series → season.series_id == series.id
+    - show 是 season → season.id == show.id（此时不该再按父剧筛）
+
+    这个校验存在的意义：客户端可能带着**别的剧的** SeasonId 来请求，
+    那样套上去只会查出 0 条，详情页整片空白（见 get_episodes 的说明）。
+    """
+    if season.item_type != "season":
+        return False
+    if show.item_type == "season":
+        return season.id == show.id
+    return season.series_id == show.id
+
+
 @emby_router.get("/emby/Shows/{item_id}/Seasons")
 @emby_router.get("/Shows/{item_id}/Seasons")
 def get_seasons(item_id: str, request: Request,
@@ -1679,8 +1696,16 @@ def get_episodes(item_id: str, request: Request,
     )
     if season_id:
         season = db.query(em.MediaItem).filter(em.MediaItem.guid == season_id).first()
-        if season:
+        if season and _season_belongs_to(season, item):
             query = query.filter(em.MediaItem.parent_id == season.id)
+        else:
+            # 客户端带了不属于本剧的 SeasonId（缓存串了、或集数列表被别处复用）。
+            # 以前这里照样把 parent_id == 别人的季 套上去，于是 200 + 空 Items：
+            # 详情页「第几集」整片空白，而客户端无法区分「这季没集」和「参数错了」。
+            # 现在按本剧口径忽略这个筛选，返回本剧全部集 —— 宁可多给，不可给空。
+            logger.info(
+                "Episodes 收到不匹配的 SeasonId，忽略该筛选：series=%s season_id=%s",
+                item.guid, season_id)
     episodes = query.order_by(em.MediaItem.season_number, em.MediaItem.episode_number).all()
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
