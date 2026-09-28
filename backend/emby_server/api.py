@@ -496,8 +496,19 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "RemoteTrailers": [],
         "ExternalUrls": [],
         "Subviews": [],
-        "BackdropImageTags": [],
-        "ImageTags": {"Primary": "1"} if (item.poster_path or item.primary_image_url) else {},
+        "BackdropImageTags": (["1"] if (
+            item.backdrop_path or item.backdrop_image_url
+            or (item.item_type in ("episode", "season")
+                and _first_image(item, "Backdrop", db))
+        ) else []),
+        # 集/季通常不单独存 TMDB 图片；图片接口会按「自身 → 季 → 剧」回退。
+        # 这里的 ImageTags 也必须反映这条回退链，否则客户端根本不会发图片请求，
+        # 详情页就会显示灰色占位图（数据库明明已有剧集海报）。
+        "ImageTags": {
+            "Primary": "1"
+        } if (item.poster_path or item.primary_image_url
+               or (item.item_type in ("episode", "season")
+                   and _first_image(item, "Primary", db))) else {},
         "ProviderIds": {
             k: v for k, v in (("Tmdb", item.tmdb_id), ("Imdb", item.imdb_id)) if v
         },
@@ -653,13 +664,23 @@ def _strip_nulls(obj):
 
 
 def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
+    # ffprobe 的 video stream 经常不单独给 bitrate（尤其是远程 HEVC 文件），
+    # 但条目级 probe 已经有可靠的总 bitrate / 分辨率。不能把 0 映射成客户端的
+    # 「1kbps」假数据，也不能把 3840×1920 丢掉。
+    is_video = (s.stream_type or "").lower() == "video"
     dto = {
         "Index": s.stream_index, "Type": s.stream_type, "Codec": s.codec,
         "Language": s.language, "DisplayTitle": s.display_title or s.language,
         "Title": s.title, "IsDefault": bool(s.is_default),
         "IsForced": bool(s.is_forced), "IsExternal": bool(s.is_external),
-        "Channels": s.channels, "BitRate": s.bit_rate,
+        "Channels": s.channels,
+        "BitRate": (s.bit_rate or item.bitrate or None) if is_video else s.bit_rate,
     }
+    if is_video:
+        if item.width:
+            dto["Width"] = item.width
+        if item.height:
+            dto["Height"] = item.height
     if (s.stream_type or "").lower() == "subtitle":
         text_track = subs.is_text_track(s.codec)
         dto["IsTextSubtitleStream"] = text_track
@@ -1725,6 +1746,50 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
     未看的单集，按该剧最近播放时间倒序。
     """
     limit = int(request.query_params.get("Limit") or 20)
+    requested_series_guid = (request.query_params.get("SeriesId") or "").strip()
+    if requested_series_guid:
+        # 详情页进入某部未观看的剧时，客户端会先问
+        # ``NextUp?SeriesId=<本剧>``。旧实现完全忽略 SeriesId，反而从全库
+        # 的已看剧里挑下一集；于是客户端会把另一部剧的 E02 当成本剧首集。
+        requested_series = db.query(em.MediaItem).filter(
+            em.MediaItem.guid == requested_series_guid,
+            em.MediaItem.item_type == "series",
+        ).first()
+        if requested_series is None:
+            return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+        watched_episode_ids = {
+            r.item_id for r in db.query(em.UserMediaData.item_id).filter(
+                em.UserMediaData.user_id == user.id,
+                or_(
+                    em.UserMediaData.played == True,  # noqa: E712
+                    em.UserMediaData.playback_position_ticks > 0,
+                    em.UserMediaData.play_count > 0,
+                ),
+            ).all()
+        }
+        next_episode = (
+            db.query(em.MediaItem)
+            .filter(
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.series_id == requested_series.id,
+                em.MediaItem.is_hidden == False,  # noqa: E712
+                ~em.MediaItem.id.in_(watched_episode_ids)
+                if watched_episode_ids else True,
+            )
+            .order_by(
+                em.MediaItem.season_number.asc().nullslast(),
+                em.MediaItem.episode_number.asc().nullslast(),
+                em.MediaItem.id.asc(),
+            )
+            .first()
+        )
+        if next_episode is None:
+            return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+        base = _base_url(request)
+        _prefetch_list_data(db, user.id, [next_episode])
+        return {"Items": [_item_dto(next_episode, base, user.id, db)],
+                "TotalRecordCount": 1, "StartIndex": 0}
+
     watched = (
         db.query(em.UserMediaData.item_id, em.UserMediaData.last_played_at)
         .filter(
