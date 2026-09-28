@@ -20,6 +20,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from backend.db_retry import commit_with_retry, retry_write
+from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import nfo as nfo_lib
@@ -787,6 +788,9 @@ def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
         # 带上来源根目录：失败原因要能归到具体某条来源上（见 _source_entry 的前缀匹配）
         onerror=lambda e: failed_roots.append(f"{root}: {getattr(e, 'strerror', '') or e}"),
     ):
+        # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵剪掉：里面的 .m2ts 是码流片段，
+        # 当成电影会产出一堆名为「00000」这样、既刮不出元数据也没有封面的条目
+        _dirnames[:] = [d for d in _dirnames if not disc_filter.is_disc_subtree_dir(d)]
         for fname in filenames:
             ext = os.path.splitext(fname)[1].lower()
             if ext not in VIDEO_EXTS:

@@ -52,6 +52,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from sqlalchemy.orm import Session
 
+from backend.emby_server import disc_filter
 from backend.emby_server import models as em
 # 远程 IO 计数与「扫描会话」标记（只依赖标准库，不会形成循环导入）
 from backend.emby_server import scan_progress as progress
@@ -732,7 +733,15 @@ class LocalMount(MountProvider):
         fs_root = self._require_path()
         # rel 始终按挂载根计算（入库路径不变），只把遍历起点挪到子目录
         walk_root = os.path.join(fs_root, root.lstrip("/")) if root.strip("/") else fs_root
-        for dirpath, _dirnames, filenames in os.walk(walk_root):
+        for dirpath, _dirnames, filenames in os.walk(
+            walk_root,
+            # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵剪掉：
+            # 里面的 .m2ts 是码流片段，当成电影会产出一堆没法刮削的条目
+            topdown=True,
+        ):
+            _dirnames[:] = [
+                d for d in _dirnames if not disc_filter.is_disc_subtree_dir(d)
+            ]
             for fname in filenames:
                 ext = os.path.splitext(fname)[1].lower()
                 if ext not in REMOTE_MEDIA_EXTS:
@@ -868,6 +877,8 @@ class Pan115Mount(MountProvider):
                 name = item.get("name") or ""
                 child_rel = f"{rel.rstrip('/')}/{name}"
                 if item.get("is_dir"):
+                    if disc_filter.is_disc_subtree_dir(name):
+                        continue
                     self._cid_cache[child_rel] = item.get("cid") or ""
                     stack.append((child_rel, item.get("cid") or ""))
                     continue
@@ -1040,6 +1051,8 @@ class WebDavMount(MountProvider):
             rel = stack.pop()
             for entry in self.list_dir(rel):
                 if entry.is_dir:
+                    if disc_filter.is_disc_subtree_dir(entry.name):
+                        continue
                     stack.append(entry.rel)
                     continue
                 if os.path.splitext(entry.name)[1].lower() in REMOTE_MEDIA_EXTS:
@@ -1175,6 +1188,8 @@ class AlistMount(MountProvider):
             rel = stack.pop()
             for entry in self.list_dir(rel):
                 if entry.is_dir:
+                    if disc_filter.is_disc_subtree_dir(entry.name):
+                        continue
                     stack.append(entry.rel)
                     continue
                 if os.path.splitext(entry.name)[1].lower() in REMOTE_MEDIA_EXTS:
