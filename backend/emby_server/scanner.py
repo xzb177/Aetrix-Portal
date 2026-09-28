@@ -282,6 +282,12 @@ def needs_probe(item, path: str, size: Optional[int] = None) -> bool:
 
     远程挂载（115 / WebDAV / AList）没有本机文件，大小由调用方从目录列表传入。
     """
+    # 远程探测失败后的 degraded 是明确的降级结果：同一文件不要每轮扫描无限重试。
+    # 用户按需点详情/播放时再 boost_probe，或文件大小变化时重新排队。
+    if getattr(item, "probe_status", None) == "degraded" and item.last_probed_at is not None:
+        if size is None:
+            return False
+        return bool(item.size) and size != item.size
     if not item.duration_ticks or item.last_probed_at is None:
         return True
     if size is None:
@@ -570,6 +576,53 @@ def shutil_which(cmd: str) -> Optional[str]:
     return which(cmd)
 
 
+def _mediainfo(path: str, headers: Optional[dict] = None, size: int = 0) -> Optional[dict]:
+    """ffprobe 失败后的 MediaInfo 备用探测。
+
+    MediaInfo 对部分 MP4/MKV 的容错比 ffprobe 好，但它同样可能被远程 Range 限制，
+    所以只是 fallback，不把它当万能替代。返回与 _ffprobe 兼容的简化结构。
+    """
+    if not shutil_which("mediainfo"):
+        return None
+    cmd = ["mediainfo", "--Output=JSON"]
+    # MediaInfo 没有 ffprobe 那样稳定的 header 注入口；本机文件直接用，
+    # 远程 URL 失败就交给 degraded，不额外制造一次可能更慢的网络请求。
+    if path.startswith(("http://", "https://")):
+        return None
+    cmd.append(path)
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        import json
+        raw = json.loads(out.stdout or "{}")
+        tracks = raw.get("media", {}).get("track", [])
+        if not tracks:
+            return None
+        info = {"format": {}, "streams": []}
+        for t in tracks:
+            kind = str(t.get("@type") or "").lower()
+            if kind == "general":
+                info["format"] = {
+                    "duration": float(t.get("Duration") or 0) / 1000.0,
+                    "size": int(float(t.get("FileSize") or size or 0)),
+                    "bit_rate": int(float(t.get("OverallBitRate") or 0)),
+                }
+            elif kind in ("video", "audio", "text"):
+                stype = {"video": "video", "audio": "audio", "text": "subtitle"}[kind]
+                info["streams"].append({
+                    "codec_type": stype,
+                    "codec_name": t.get("CodecID") or t.get("Format"),
+                    "width": int(float(t.get("Width") or 0)),
+                    "height": int(float(t.get("Height") or 0)),
+                    "bit_rate": int(float(t.get("BitRate") or 0)),
+                    "channels": int(float(t.get("Channel_s_") or t.get("Channels") or 0)),
+                    "tags": {"language": t.get("Language") or ""},
+                })
+        return info if info.get("format", {}).get("duration") else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("MediaInfo 备用探测失败 %s: %s", path, exc)
+        return None
+
+
 def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> dict:
     """返回 duration_ticks/bitrate/尺寸/编码/轨道信息
 
@@ -580,13 +633,26 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
         "video_codec": None, "audio_codec": None,
         "audio_languages": "", "subtitle_languages": "", "streams": [],
     }
-    data = _ffprobe(path, headers)
-    if not data:
-        try:
-            info["size"] = os.path.getsize(path)
-        except OSError:
-            info["size"] = size
-        return info
+    data = _ffprobe(path, headers, size=size)
+    used_mediainfo = False
+    if not data or not data.get("format"):
+        # 本机文件再尝试 MediaInfo；远程 URL 不重复发起一次随机读取，
+        # 直接由调用方记 degraded（客户端仍可播放，信息不完整）。
+        fallback = _mediainfo(path, headers, size=size)
+        if fallback:
+            data = fallback
+            used_mediainfo = True
+        else:
+            try:
+                info["size"] = os.path.getsize(path)
+            except OSError:
+                info["size"] = size
+            if path.startswith(("http://", "https://")):
+                info["_degraded"] = True
+                info["_error_detail"] = "远程媒体可访问，但探测未取得完整时长（ffprobe/MediaInfo）"
+            return info
+    if used_mediainfo:
+        info["_probe_backend"] = "mediainfo"
     # 透出 ffprobe 的 HTTP 错误（供熔断器和日志使用）
     if data.get("_error"):
         info["_error"] = data["_error"]
@@ -2382,7 +2448,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     if platforms:
                         item.platforms = ",".join(platforms)
                     if probe is not None:
-                        item.size = probe.get("size", 0)
+                        item.size = probe.get("size", 0) or item.size or scan_file.size
                         item.duration_ticks = probe["duration_ticks"]
                         item.bitrate = probe["bitrate"]
                         item.width = probe["width"]
@@ -2392,7 +2458,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         item.audio_languages = probe["audio_languages"]
                         item.subtitle_languages = probe["subtitle_languages"]
                         item.last_probed_at = datetime.now()
-                        item.probe_status = "done"
+                        item.probe_status = "degraded" if probe.get("_degraded") else "done"
                         item.probe_attempts = 0
                         item.probe_next_retry_at = None
                     elif _pending.probe_deferred:

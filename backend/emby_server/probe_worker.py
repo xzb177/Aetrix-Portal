@@ -364,6 +364,18 @@ def _probe_one(item_id: int) -> str:
             _apply_probe_result(db, item, info)
             db.commit()
             return "done"
+        # 远程可访问但拿不到 duration：这是信息降级，不是文件坏了。
+        # 不进入 5 次重试/failed 风暴，否则大批云盘 MP4 会持续占满 worker。
+        if info and info.get("_degraded"):
+            item.size = info.get("size", 0) or item.size
+            item.last_probed_at = datetime.now()
+            item.probe_status = "degraded"
+            item.probe_attempts = 0
+            item.probe_next_retry_at = None
+            db.commit()
+            logger.warning("探测降级 item=%s：%s", item.id,
+                           info.get("_error_detail", "远程媒体信息不完整"))
+            return "degraded"
         # 用翻译后的错误文案（403 配额问题不再含糊报"未返回有效时长"）
         err_detail = (info or {}).get("_error_detail") if info else None
         _fail(db, item, err_detail or "ffprobe 未返回有效时长")
