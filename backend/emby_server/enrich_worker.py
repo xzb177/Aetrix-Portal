@@ -207,12 +207,20 @@ def _enrich_fetch(item: Any) -> dict:
         if (kind in ("series", "movie") and not getattr(item, "tmdb_id", None)
                 and not result.get("tmdb_hit")):
             from backend.emby_server import altmeta
-            if altmeta.enabled(db):
-                altmeta.warn_dead_keys_once(db)
+            # _enrich_fetch 是 IO 阶段函数、只收 item、没有 db（写库在 _enrich_apply）。
+            # 配置读取因此另开一个短会话，用完即关——绝不在这里借用写事务的 session。
+            _cfg_db = SessionLocal()
+            try:
+                _ok = altmeta.enabled(_cfg_db)
+                if _ok:
+                    altmeta.warn_dead_keys_once(_cfg_db)
+                    _rate = altmeta.rate_per_min(_cfg_db)
+            finally:
+                _cfg_db.close()
+            if _ok:
                 try:
                     result["douban_hit"] = altmeta.search(
-                        item.name or "", item.production_year, kind,
-                        altmeta.rate_per_min(db))
+                        item.name or "", item.production_year, kind, _rate)
                 except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
                     logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
     except Exception as exc:  # noqa: BLE001
