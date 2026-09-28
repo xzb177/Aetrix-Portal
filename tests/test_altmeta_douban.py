@@ -44,7 +44,7 @@ def _resp(monkeypatch, payload):
 def test_search_returns_hit_when_title_matches(monkeypatch):
     _resp(monkeypatch, [{"title": "电锯人", "year": "2026", "type": "tv",
                          "id": "1", "img": "http://img/p.jpg"}])
-    hit = altmeta.search("电锯人", 2026, "series", per_min=0)
+    hit = altmeta.search("电锯人", 2026, "series", min_interval=0)
     assert hit and hit["title"] == "电锯人"
     assert hit["year"] == "2026"
 
@@ -52,23 +52,23 @@ def test_search_returns_hit_when_title_matches(monkeypatch):
 def test_search_discards_mismatched_title(monkeypatch):
     """首条标题对不上必须丢弃——宁可漏也不错配"""
     _resp(monkeypatch, [{"title": "完全不相干的片子", "year": "2020", "type": "tv"}])
-    assert altmeta.search("电锯人", 2020, "series", per_min=0) is None
+    assert altmeta.search("电锯人", 2020, "series", min_interval=0) is None
 
 
 def test_search_discards_year_mismatch(monkeypatch):
     _resp(monkeypatch, [{"title": "同名剧", "year": "2015", "type": "tv"}])
-    assert altmeta.search("同名剧", 2023, "series", per_min=0) is None
+    assert altmeta.search("同名剧", 2023, "series", min_interval=0) is None
 
 
 def test_search_rejects_movie_for_series(monkeypatch):
     """类型不符（电影 vs 剧集）不能当成剧集写入"""
     _resp(monkeypatch, [{"title": "同名", "year": "2020", "type": "movie"}])
-    assert altmeta.search("同名", 2020, "series", per_min=0) is None
+    assert altmeta.search("同名", 2020, "series", min_interval=0) is None
 
 
 def test_search_empty_query_returns_none():
-    assert altmeta.search("", None, "series", per_min=0) is None
-    assert altmeta.search(None, None, "series", per_min=0) is None
+    assert altmeta.search("", None, "series", min_interval=0) is None
+    assert altmeta.search(None, None, "series", min_interval=0) is None
 
 
 def test_search_survives_network_error(monkeypatch):
@@ -76,7 +76,7 @@ def test_search_survives_network_error(monkeypatch):
         raise OSError("network down")
 
     monkeypatch.setattr(altmeta.urllib.request, "urlopen", boom)
-    assert altmeta.search("任意片名", None, "series", per_min=0) is None
+    assert altmeta.search("任意片名", None, "series", min_interval=0) is None
 
 
 def test_apply_does_not_overwrite_tmdb_data():
@@ -102,11 +102,11 @@ def test_apply_fills_gaps_for_unmatched_item():
     assert it.metadata_source == "douban"
 
 
-def test_rate_per_min_reads_config():
+def test_min_interval_reads_config():
     db = SimpleNamespace(query=lambda *a, **k: SimpleNamespace(
         filter=lambda *x, **y: SimpleNamespace(
             first=lambda: SimpleNamespace(value="12.5"))))
-    assert altmeta.rate_per_min(db) == 12.5
+    assert altmeta.min_interval(db) == 12.5
 
 
 def test_workers_reads_config():
@@ -145,7 +145,7 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
     monkeypatch.setattr(enrich_worker, "SessionLocal", lambda: _CfgDB())
     monkeypatch.setattr("backend.emby_server.altmeta.enabled", lambda db: True)
     monkeypatch.setattr("backend.emby_server.altmeta.warn_dead_keys_once", lambda db: None)
-    monkeypatch.setattr("backend.emby_server.altmeta.rate_per_min", lambda db: 0.0)
+    monkeypatch.setattr("backend.emby_server.altmeta.min_interval", lambda db: 0.0)
     monkeypatch.setattr("backend.emby_server.altmeta.search",
                         lambda *a, **k: {"title": "兜底名", "year": "2020",
                                          "image": "http://d/p.jpg"})
@@ -182,3 +182,28 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
     assert "db" not in (res.get("error") or ""), res
     assert res.get("douban_hit", {}).get("title") == "兜底名", res
     assert opened == ["closed"], "配置会话必须被关闭"
+
+
+def test_rate_is_seconds_between_calls_not_calls_per_minute():
+    """altmeta_douban_rate 的语义是「两次请求最小间隔秒数」
+
+    踩过的坑：最初实现成「每分钟最多 N 次」，配置里 rate=1.0 就变成每分钟 1 次，
+    153 条要跑两个多小时，追新时新条目得等两小时才补上——慢到没有实用价值。
+    现在 rate=1.0 = 每秒 1 次（60/分）。
+    """
+    import time as _t
+    limiter = altmeta._RateLimiter()
+    limiter.acquire(0)          # 第一次：不等待
+    t0 = _t.time()
+    limiter.acquire(0.2)        # 第二次：应至少间隔 0.2s
+    waited = _t.time() - t0
+    assert waited >= 0.15, f"未按最小间隔限速（等了 {waited:.3f}s）"
+
+
+def test_zero_interval_disables_throttling():
+    import time as _t
+    limiter = altmeta._RateLimiter()
+    t0 = _t.time()
+    for _ in range(20):
+        limiter.acquire(0)
+    assert _t.time() - t0 < 1.0, "interval=0 时不应限速"

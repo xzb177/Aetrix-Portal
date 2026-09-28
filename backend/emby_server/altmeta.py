@@ -52,8 +52,12 @@ CONFIG_KEYS = "altmeta_douban_keys"
 CONFIG_RATE = "altmeta_douban_rate"
 CONFIG_WORKERS = "altmeta_workers"
 
-# 速率限制：每分钟最多请求数（豆瓣对高频访问敏感，默认保守）
-DEFAULT_RATE_PER_MIN = 30.0
+# 速率限制：**两次请求之间的最小间隔秒数**（``altmeta_douban_rate`` 的语义）。
+#
+# 取"秒/次"而不是"次/分钟"：配置里写 1.0 时，按次/分钟解读是「每分钟 1 次」，
+# 153 条要跑两个多小时，追新时新条目得等两小时才补上——慢到没有实用价值。
+# 按秒/次解读则是每秒 1 次（60/分），既够快又足够保守。rate=0 表示不限速。
+DEFAULT_MIN_INTERVAL = 1.0
 REQUEST_TIMEOUT = 15
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -62,27 +66,33 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 _SERIES_TYPES = {"tv", "show", "series"}
 
 _lock = threading.Lock()
-_last_call: list[float] = []
 
 
 class _RateLimiter:
-    """按分钟限速，避免把豆瓣打到封 IP。"""
+    """按最小间隔限速，避免把豆瓣打到封 IP。
+
+    语义是「两次请求至少隔 N 秒」而不是「每分钟最多 N 次」：前者对调用方更直观，
+    也不会出现「配 1.0 结果一分钟只发一次」这种反直觉行为。
+    """
 
     def __init__(self) -> None:
-        self._calls: list[float] = []
+        self._last: float = 0.0
 
-    def acquire(self, per_min: float) -> None:
-        if per_min <= 0:
+    def acquire(self, min_interval: float) -> None:
+        # 无论是否限速都要记时间戳：否则「先不限速调用一次、再限速调用」时
+        # 第二次不会等待（_last 还是 0），限速形同虚设。
+        if min_interval <= 0:
+            with _lock:
+                self._last = time.time()
             return
         while True:
             with _lock:
                 now = time.time()
-                self._calls = [t for t in self._calls if now - t < 60.0]
-                if len(self._calls) < per_min:
-                    self._calls.append(now)
+                wait = self._last + min_interval - now if self._last else 0.0
+                if wait <= 0:
+                    self._last = now
                     return
-                sleep_for = 60.0 - (now - self._calls[0]) + 0.05
-            time.sleep(max(0.05, sleep_for))
+            time.sleep(min(wait, 5.0))
 
 
 _limiter = _RateLimiter()
@@ -102,11 +112,12 @@ def enabled(db) -> bool:
     return _get_config(db, CONFIG_ENABLED, "0") == "1"
 
 
-def rate_per_min(db) -> float:
+def min_interval(db) -> float:
+    """两次请求的最小间隔秒数（``altmeta_douban_rate``，0 = 不限速）"""
     try:
-        return max(0.0, float(_get_config(db, CONFIG_RATE, str(DEFAULT_RATE_PER_MIN))))
+        return max(0.0, float(_get_config(db, CONFIG_RATE, str(DEFAULT_MIN_INTERVAL))))
     except (TypeError, ValueError):
-        return DEFAULT_RATE_PER_MIN
+        return DEFAULT_MIN_INTERVAL
 
 
 def workers(db) -> int:
@@ -137,7 +148,7 @@ def _clean(title: str) -> str:
 
 
 def search(title: str, year: Optional[int] = None, kind: str = "series",
-           per_min: float = DEFAULT_RATE_PER_MIN) -> Optional[dict]:
+           min_interval: float = DEFAULT_MIN_INTERVAL) -> Optional[dict]:
     """搜一条，返回 ``{id, title, year, image, type, url}``；没有可信命中返回 None
 
     只取首条结果，且要求清洗后标题与查询高度一致——豆瓣的 suggest 结果里
@@ -146,7 +157,7 @@ def search(title: str, year: Optional[int] = None, kind: str = "series",
     q = (title or "").strip()
     if not q:
         return None
-    _limiter.acquire(per_min)
+    _limiter.acquire(min_interval)
     url = f"{SUGGEST_URL}?q={urllib.parse.quote(q)}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
