@@ -1,0 +1,218 @@
+"""豆瓣兜底刮削：TMDB 搜不到时的第二数据源。
+
+## 为什么需要
+
+实测生产 `metadata_source='none'` 的条目（TMDB 搜不到），用豆瓣 `subject_suggest`
+能找回多数：
+
+    电锯人              -> 链锯人：刺客篇 (2026)
+    落语朱音            -> 朱音落语 (2026) 12集
+    B PROJECT           -> B-PROJECT (2016) 13集
+    现在多闻君是哪一面  -> 现在的是哪一个多闻！？ (2026) 13集
+
+TMDB 对中文剧集/综艺收录偏少，豆瓣互补很有效。
+
+## 为什么不用 api.douban.com/v2
+
+官方 v2 API 早已停止服务——库里配的 ``altmeta_douban_keys`` 实测返回 **HTTP 400**，
+那个 key 现在是无效的。这里走无需 key 的 ``/j/subject_suggest``（实测 200、数据完整）。
+
+``altmeta_douban_keys`` 仍会被读取并记一条 warning，提示 key 不可用，
+避免以后又有人以为它有效。
+
+## 字段能力边界
+
+``subject_suggest`` 只返回 标题/年份/海报/条目ID/副标题，**没有简介和评分**。
+所以本模块只补这三项，简介与评分留空（宁可空着，也不要拿不可靠的来源填）。
+需要简介评分只能抓 subject 页面，反爬脆弱、得不偿失。
+
+## 匹配策略
+
+**只兜底，不覆盖**：仅在条目当前没有 TMDB 命中时才写。已有 TMDB 数据的条目
+一律不动——豆瓣是第二数据源，不能反过来盖掉更权威的 TMDB。
+
+结果同样写入 ``metadata_source='douban'``，与 NFO/TMDB 区分开。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+import urllib.parse
+import urllib.request
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+SUGGEST_URL = "https://movie.douban.com/j/subject_suggest"
+CONFIG_ENABLED = "altmeta_enabled"
+CONFIG_KEYS = "altmeta_douban_keys"
+CONFIG_RATE = "altmeta_douban_rate"
+CONFIG_WORKERS = "altmeta_workers"
+
+# 速率限制：每分钟最多请求数（豆瓣对高频访问敏感，默认保守）
+DEFAULT_RATE_PER_MIN = 30.0
+REQUEST_TIMEOUT = 15
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+# 电视剧/综艺的 type 值（subject_suggest 返回 movie/tv/book/music）
+_SERIES_TYPES = {"tv", "show", "series"}
+
+_lock = threading.Lock()
+_last_call: list[float] = []
+
+
+class _RateLimiter:
+    """按分钟限速，避免把豆瓣打到封 IP。"""
+
+    def __init__(self) -> None:
+        self._calls: list[float] = []
+
+    def acquire(self, per_min: float) -> None:
+        if per_min <= 0:
+            return
+        while True:
+            with _lock:
+                now = time.time()
+                self._calls = [t for t in self._calls if now - t < 60.0]
+                if len(self._calls) < per_min:
+                    self._calls.append(now)
+                    return
+                sleep_for = 60.0 - (now - self._calls[0]) + 0.05
+            time.sleep(max(0.05, sleep_for))
+
+
+_limiter = _RateLimiter()
+
+
+def _get_config(db, key: str, default: str = "") -> str:
+    from backend import models as base_models
+    try:
+        row = db.query(base_models.SystemConfig).filter(
+            base_models.SystemConfig.key == key).first()
+        return row.value if row and row.value is not None else default
+    except Exception:  # noqa: BLE001 — 读配置失败不该影响刮削
+        return default
+
+
+def enabled(db) -> bool:
+    return _get_config(db, CONFIG_ENABLED, "0") == "1"
+
+
+def rate_per_min(db) -> float:
+    try:
+        return max(0.0, float(_get_config(db, CONFIG_RATE, str(DEFAULT_RATE_PER_MIN))))
+    except (TypeError, ValueError):
+        return DEFAULT_RATE_PER_MIN
+
+
+def workers(db) -> int:
+    try:
+        return max(1, min(8, int(_get_config(db, CONFIG_WORKERS, "3") or 3)))
+    except (TypeError, ValueError):
+        return 3
+
+
+def warn_dead_keys_once(db) -> None:
+    """库里的 altmeta_douban_keys 实测已失效（v2 API 停服），提示一次即可"""
+    raw = _get_config(db, CONFIG_KEYS, "").strip()
+    if not raw or getattr(warn_dead_keys_once, "_done", False):
+        return
+    setattr(warn_dead_keys_once, "_done", True)
+    try:
+        keys = json.loads(raw)
+    except (ValueError, TypeError):
+        keys = []
+    if keys:
+        logger.warning(
+            "[altmeta] %s 里配置的豆瓣 key 实测已失效（api.douban.com/v2 停服，"
+            "HTTP 400），已改用无需 key 的 subject_suggest。", CONFIG_KEYS)
+
+
+def _clean(title: str) -> str:
+    return re.sub(r"[\s:：·\-—_]+", "", (title or "").lower())
+
+
+def search(title: str, year: Optional[int] = None, kind: str = "series",
+           per_min: float = DEFAULT_RATE_PER_MIN) -> Optional[dict]:
+    """搜一条，返回 ``{id, title, year, image, type, url}``；没有可信命中返回 None
+
+    只取首条结果，且要求清洗后标题与查询高度一致——豆瓣的 suggest 结果里
+    常常是同名的别的作品（「电锯人」搜到「链锯人」），宁可漏也不错配。
+    """
+    q = (title or "").strip()
+    if not q:
+        return None
+    _limiter.acquire(per_min)
+    url = f"{SUGGEST_URL}?q={urllib.parse.quote(q)}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8", "ignore"))
+    except Exception as exc:  # noqa: BLE001 — 网络/反爬失败不应中断补全
+        logger.debug("[altmeta] 豆瓣搜索失败 %r: %s", q, exc)
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    hit = data[0]
+    if not isinstance(hit, dict):
+        return None
+    got = _clean(str(hit.get("title") or ""))
+    want = _clean(q)
+    if not got or not want:
+        return None
+    # 标题必须完全一致，或一方是另一方的前缀（「落语朱音」/「朱音落语」不算，
+    # 宁可漏掉这类也不要写错片名）
+    if got != want and not (got.startswith(want) or want.startswith(got)):
+        logger.debug("[altmeta] 豆瓣首条标题不匹配，丢弃：%r -> %r", q, got)
+        return None
+    if year and hit.get("year"):
+        try:
+            if int(hit["year"]) != int(year):
+                logger.debug("[altmeta] 豆瓣年份不符，丢弃：%r %s vs %s",
+                             q, hit.get("year"), year)
+                return None
+        except (TypeError, ValueError):
+            pass
+    if kind in ("series", "season", "episode") and hit.get("type") not in _SERIES_TYPES:
+        # 类型对不上就不要（避免电影条目被当成剧集）
+        if hit.get("type") != "tv":
+            logger.debug("[altmeta] 豆瓣类型不符(%s)，丢弃：%r", hit.get("type"), q)
+            return None
+    return {
+        "id": str(hit.get("id") or ""),
+        "title": str(hit.get("title") or ""),
+        "year": hit.get("year") or None,
+        "image": str(hit.get("img") or ""),
+        "type": str(hit.get("type") or ""),
+        "url": str(hit.get("url") or ""),
+    }
+
+
+def apply(item: Any, hit: dict) -> None:
+    """把豆瓣命中落到条目上
+
+    只补 TMDB 没给的东西，且**绝不覆盖**已有值：豆瓣是兜底源，不是权威源。
+    """
+    from datetime import datetime
+    if not item.tmdb_id:
+        item.tmdb_id = None  # 保持为 None——豆瓣 id 放 douban_id，不混用 tmdb_id
+    if hit.get("title"):
+        # 不覆盖已有名字（可能是用户/NFO 整理过的）
+        if not (item.overview or "").strip() and not item.poster_path \
+                and not item.primary_image_url:
+            item.name = hit["title"]
+    if hit.get("year") and not item.production_year:
+        try:
+            item.production_year = int(hit["year"])
+        except (TypeError, ValueError):
+            pass
+    if hit.get("image") and not item.poster_path and not item.primary_image_url:
+        from backend.emby_server.tmdb import _set_image
+        _set_image(item, "Primary", hit["image"])
+    if not item.last_scraped_at:
+        item.last_scraped_at = datetime.now()
+    item.metadata_source = "douban"

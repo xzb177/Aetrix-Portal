@@ -202,6 +202,19 @@ def _enrich_fetch(item: Any) -> dict:
                 getattr(item, "tmdb_id", None), True)
             result["tmdb_hit"] = hit
             result["tmdb_details"] = details
+        # 豆瓣兜底：TMDB 没配置、或 TMDB 搜不到时才走。
+        # 只补 TMDB 没给的（标题/年份/海报），绝不覆盖已有数据。
+        if (kind in ("series", "movie") and not getattr(item, "tmdb_id", None)
+                and not result.get("tmdb_hit")):
+            from backend.emby_server import altmeta
+            if altmeta.enabled(db):
+                altmeta.warn_dead_keys_once(db)
+                try:
+                    result["douban_hit"] = altmeta.search(
+                        item.name or "", item.production_year, kind,
+                        altmeta.rate_per_min(db))
+                except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
+                    logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全 TMDB 失败 %s: %s", item.file_path, exc)
         result["ok"] = False
@@ -318,12 +331,25 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 补全完成，此后 _claim_batch 只捞 pending，永远不会再重试——于是
     # series 3263 条里 464 条永久缺 TMDB，且没有任何重试迹象。
     # 现在：核心元数据缺失就退回 pending（可重试），刮到了才 done。
+    # 豆瓣兜底结果落库（只在没有 TMDB 命中时）
+    douban_hit = fetched.get("douban_hit")
+    if douban_hit:
+        try:
+            from backend.emby_server import altmeta as _alt
+            _alt.apply(item, douban_hit)
+        except Exception as exc:  # noqa: BLE001 — 兜底落库失败不该影响主流程
+            logger.debug("豆瓣兜底落库失败 %s: %s", getattr(item, "name", ""), exc)
+            douban_hit = None
+
     _incomplete = False
     if kind in ("series", "movie"):
-        if tmdb_client.configured and not item.tmdb_id:
+        if tmdb_client.configured and not item.tmdb_id and not douban_hit:
             _incomplete = True
         if not (item.overview or "").strip():
-            _incomplete = True
+            # 豆瓣 subject_suggest 不提供简介：补到标题/年份/海报就算完成，
+            # 否则这批条目会永远停在 pending 反复重试。
+            if not douban_hit:
+                _incomplete = True
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。
     if not item.metadata_source and kind in ("series", "movie", "season", "episode"):
