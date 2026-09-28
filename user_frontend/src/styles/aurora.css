@@ -4,6 +4,8 @@
    ======================================== */
 
 :root {
+  /* 布局 — 内容区 gutter（与 .container 内边距对齐，横滑 bleed 用） */
+  --gutter: 1.25rem;
   /* 主色 — 电光青 */
   --au-primary: #22d3ee;
   --au-primary-strong: #06b6d4;

@@ -670,9 +670,6 @@ onMounted(() => {
 /* ===== 我的媒体：横向滑动的库卡片（宽卡 ~72% 屏宽，大圆角，深色） ===== */
 .my-media {
   margin-bottom: 2rem;
-  /* 边缘 bleed 对齐：桌面 container 内边距 1.25rem，移动端 mobile.css 改成 1rem；
-     用变量统一，负 margin 与 padding 永远对齐，不再错位 4px */
-  --gutter: 1.25rem;
 }
 
 .lib-carousel {
@@ -685,12 +682,6 @@ onMounted(() => {
   margin: 0 calc(var(--gutter) * -1);
   padding: 0.25rem var(--gutter) 0.5rem;
   scroll-padding-left: var(--gutter);
-}
-
-@media (max-width: 768px) {
-  .my-media {
-    --gutter: 1rem;
-  }
 }
 
 .lib-carousel::-webkit-scrollbar {
