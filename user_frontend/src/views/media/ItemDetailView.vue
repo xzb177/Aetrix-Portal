@@ -7,7 +7,7 @@
  *       （每集缩略图/简介/进度/播放入口，有数据的单集才显示简介）。
  * 顶层「继续观看」的剧集卡点进来会带 ?ep=单集Id，自动切到对应季并高亮滚动。
  */
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { embyApi, posterUrl, backdropUrl, progressPercent, ticksToSeconds, formatDuration, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
@@ -31,6 +31,12 @@ const selectedSeasonId = ref('')
 const togglingFavorite = ref(false)
 /** 季选择底部弹窗 */
 const sheetOpen = ref(false)
+/** 详情加载失败时的错误态（替代只有 toast 的空白页） */
+const loadError = ref('')
+/** 主简介展开/收起 */
+const overviewExpanded = ref(false)
+/** 集列表加载中（切换季时先占位，避免旧季内容闪留） */
+const episodesLoading = ref(false)
 /** 多版本：当前选中的版本 Id（默认主版本） */
 const selectedVersionId = ref('')
 /** 从顶层续播卡点进来时高亮直达的单集 */
@@ -55,6 +61,8 @@ const progress = computed(() => (item.value ? progressPercent(item.value) : 0))
 const runtime = computed(() => (item.value?.RunTimeTicks ? formatDuration(ticksToSeconds(item.value.RunTimeTicks)) : '—'))
 /** 无海报时首字占位 */
 const titleChar = computed(() => (item.value?.Name || '?').trim().charAt(0) || '?')
+/** 简介过长时默认折叠 3 行，避免把播放按钮挤到第二屏 */
+const overviewLong = computed(() => (item.value?.Overview || '').length > 160)
 /** 多版本列表（电影去重后，详情页展示所有版本） */
 const versions = computed(() => item.value?.Versions || [])
 const hasVersions = computed(() => versions.value.length > 1)
@@ -117,9 +125,11 @@ function defaultSeasonId(list: EmbyItem[]): string {
 
 async function loadItem() {
   loading.value = true
+  loadError.value = ''
   highlightEpId.value = ''
   pendingScrollEp = ''
   sheetOpen.value = false
+  overviewExpanded.value = false
   try {
     item.value = await embyApi.getItem(itemId.value)
     document.title = pageTitle(item.value.Name)
@@ -136,6 +146,7 @@ async function loadItem() {
       }
     }
   } catch {
+    loadError.value = '详情加载失败，请检查网络连接后重试'
     toast.error('加载详情失败')
   } finally {
     loading.value = false
@@ -145,7 +156,14 @@ async function loadItem() {
 watch(selectedSeasonId, async (sid) => {
   if (sid && item.value?.Type === 'Series') {
     if (!pendingScrollEp) highlightEpId.value = ''
-    episodes.value = await embyApi.getEpisodes(itemId.value, sid)
+    episodesLoading.value = true
+    try {
+      episodes.value = await embyApi.getEpisodes(itemId.value, sid)
+    } catch {
+      toast.error('加载剧集失败')
+    } finally {
+      episodesLoading.value = false
+    }
     if (pendingScrollEp) {
       const id = pendingScrollEp
       pendingScrollEp = ''
@@ -222,6 +240,45 @@ function pickSeason(sid: string) {
   if (sid !== selectedSeasonId.value) selectedSeasonId.value = sid
 }
 
+/** 季弹窗：ESC 关闭 + 打开时锁定 body 滚动 */
+function onSheetKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') sheetOpen.value = false
+}
+watch(sheetOpen, (open) => {
+  if (open) {
+    document.addEventListener('keydown', onSheetKeydown)
+    document.body.style.overflow = 'hidden'
+  } else {
+    document.removeEventListener('keydown', onSheetKeydown)
+    document.body.style.overflow = ''
+    dragY.value = 0
+  }
+})
+
+/** 季弹窗：手柄拖拽关闭（移动端） */
+const dragY = ref(0)
+let dragStartY = 0
+let draggingHandle = false
+function onHandleTouchStart(e: TouchEvent) {
+  draggingHandle = true
+  dragStartY = e.touches[0].clientY
+}
+function onHandleTouchMove(e: TouchEvent) {
+  if (!draggingHandle) return
+  dragY.value = Math.max(0, e.touches[0].clientY - dragStartY)
+}
+function onHandleTouchEnd() {
+  if (!draggingHandle) return
+  draggingHandle = false
+  if (dragY.value > 90) sheetOpen.value = false
+  else dragY.value = 0
+}
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onSheetKeydown)
+  document.body.style.overflow = ''
+})
+
 /** 剧集"继续播放"：找到第一个未看完的集 */
 const resumeEpisode = computed(() => {
   if (item.value?.Type !== 'Series') return null
@@ -264,6 +321,12 @@ onMounted(loadItem)
         <p>加载中…</p>
       </div>
 
+      <div v-else-if="loadError" class="load-error">
+        <Film :size="28" />
+        <p>{{ loadError }}</p>
+        <button class="btn primary" @click="loadItem">重新加载</button>
+      </div>
+
       <template v-else-if="item">
         <div class="head-grid">
           <div class="poster-col">
@@ -297,7 +360,16 @@ onMounted(loadItem)
               <span v-for="g in item.Genres" :key="g" class="genre">{{ g }}</span>
             </div>
 
-            <p v-if="item.Overview" class="overview">{{ item.Overview }}</p>
+            <p v-if="item.Overview" class="overview" :class="{ collapsed: overviewLong && !overviewExpanded }">{{ item.Overview }}</p>
+            <button
+              v-if="overviewLong"
+              type="button"
+              class="overview-toggle"
+              @click="overviewExpanded = !overviewExpanded"
+            >
+              {{ overviewExpanded ? '收起' : '展开全部' }}
+              <ChevronDown :size="14" :class="{ flip: overviewExpanded }" />
+            </button>
 
             <!-- 会员提示：付费墙开启且未订阅 -->
             <RouterLink v-if="needsSubscription" to="/wallet?tab=plans" class="member-notice">
@@ -386,7 +458,7 @@ onMounted(loadItem)
             <span v-else-if="seasons.length === 1" class="season-name">{{ currentSeasonName }}</span>
           </div>
 
-          <ul class="ep-list">
+          <ul v-if="!episodesLoading" class="ep-list">
             <li
               v-for="ep in episodes"
               :key="ep.Id"
@@ -416,7 +488,15 @@ onMounted(loadItem)
               </RouterLink>
             </li>
           </ul>
-          <p v-if="episodes.length === 0" class="no-eps">该季暂无剧集数据</p>
+          <p v-if="episodesLoading" class="eps-loading">加载剧集中…</p>
+          <p v-else-if="episodes.length === 0" class="no-eps">该季暂无剧集数据</p>
+        </section>
+
+        <!-- 演职员：后端 People 字段恒为空（_item_dto 写死 []），待 TMDB/NFO 刮削支持后接入；此处仅占位说明，不 hardcode 数据 -->
+        <!-- TODO(backend): People 刮削落地后，用 embyApi.getItem 返回的 People 渲染横滑卡片 -->
+        <section v-if="item" class="cast">
+          <h2 class="section-title">演职员</h2>
+          <p class="cast-empty">暂无演职员数据</p>
         </section>
       </template>
     </div>
@@ -425,8 +505,19 @@ onMounted(loadItem)
     <Teleport to="body">
       <Transition name="sheet">
         <div v-if="sheetOpen" class="sheet-mask" @click="sheetOpen = false">
-          <div class="sheet" role="dialog" aria-label="选择季" @click.stop>
-            <div class="sheet-handle"></div>
+          <div
+            class="sheet"
+            role="dialog"
+            aria-label="选择季"
+            :style="dragY ? { transform: `translateY(${dragY}px)` } : {}"
+            @click.stop
+          >
+            <div
+              class="sheet-handle"
+              @touchstart="onHandleTouchStart"
+              @touchmove="onHandleTouchMove"
+              @touchend="onHandleTouchEnd"
+            ></div>
             <p class="sheet-title">选择季</p>
             <ul class="sheet-list">
               <li v-for="s in seasons" :key="s.Id">
@@ -1002,6 +1093,79 @@ onMounted(loadItem)
   color: var(--au-text-4);
 }
 
+/* 加载失败错误态 */
+.load-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 5rem 1.5rem;
+  color: var(--au-text-3);
+  text-align: center;
+}
+
+.load-error p {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+/* 长简介折叠 */
+.overview.collapsed {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.overview-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: -0.75rem 0 1.375rem;
+  padding: 0.25rem 0;
+  background: transparent;
+  border: none;
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 44px;
+}
+
+.overview-toggle .flip {
+  transform: rotate(180deg);
+}
+
+/* 切换季时的占位 */
+.eps-loading {
+  text-align: center;
+  padding: 2rem 0;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* 演职员占位（后端暂无数据） */
+.cast {
+  margin-top: 2rem;
+}
+
+.cast-empty {
+  margin: 0;
+  padding: 1.25rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--au-text-4);
+  background: var(--au-surface);
+  border: 1px dashed var(--au-border);
+  border-radius: 12px;
+}
+
+/* 点按反馈（移动端无 hover） */
+.btn:active {
+  transform: scale(0.97);
+}
+
 /* 季选择底部弹窗 */
 .sheet-mask {
   position: fixed;
@@ -1032,6 +1196,12 @@ onMounted(loadItem)
   border-radius: 2px;
   background: var(--au-border-strong);
   margin: 0.375rem auto 0.75rem;
+  cursor: grab;
+  /* 扩大触摸热区 */
+  border-top: 10px solid transparent;
+  border-bottom: 10px solid transparent;
+  background-clip: padding-box;
+  touch-action: none;
 }
 
 .sheet-title {
