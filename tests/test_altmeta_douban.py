@@ -114,3 +114,71 @@ def test_workers_reads_config():
         filter=lambda *x, **y: SimpleNamespace(
             first=lambda: SimpleNamespace(value="5"))))
     assert altmeta.workers(db) == 5
+
+
+def test_fetch_uses_own_session_not_write_session(monkeypatch):
+    """回归：_enrich_fetch 只能收 item，没有 db 参数。
+
+    我第一版在这里调 `altmeta.enabled(db)`，而 db 在这个函数里根本不存在 →
+    线上每条兜底条目都报 `name 'db' is not defined`，被 except 吞成补全失败。
+    单测只测了 altmeta.search（全是 mock），没走这条真实调用路径，CI 也没抓到。
+
+    这里直接调真实的 _enrich_fetch，确保它自己能跑通。
+    """
+    from types import SimpleNamespace
+    from backend.emby_server import enrich_worker
+
+    item = SimpleNamespace(
+        id=1, item_type="series", name="没命中的剧", production_year=2020,
+        file_path="mount://3/x/剧名 (2020)/Season 1/e01.mkv",
+        poster_path=None, primary_image_url=None, imdb_id=None, aliases=None,
+        repair_requested_at=None,
+    )
+    monkeypatch.setattr(enrich_worker, "_scanfile_from_item", lambda i: None)
+
+    opened = []
+
+    class _CfgDB:
+        def close(self):
+            opened.append("closed")
+
+    monkeypatch.setattr(enrich_worker, "SessionLocal", lambda: _CfgDB())
+    monkeypatch.setattr("backend.emby_server.altmeta.enabled", lambda db: True)
+    monkeypatch.setattr("backend.emby_server.altmeta.warn_dead_keys_once", lambda db: None)
+    monkeypatch.setattr("backend.emby_server.altmeta.rate_per_min", lambda db: 0.0)
+    monkeypatch.setattr("backend.emby_server.altmeta.search",
+                        lambda *a, **k: {"title": "兜底名", "year": "2020",
+                                         "image": "http://d/p.jpg"})
+    # TMDB 配好了但搜不到 → 才会走豆瓣兜底
+    class _T:
+        configured = True
+        api_key = "k"
+
+        def search(self, *a, **k):
+            return None
+
+        def details(self, *a, **k):
+            return None
+
+        def apply(self, *a, **k):
+            return None
+
+        def apply_details(self, *a, **k):
+            return None
+
+        def apply_images(self, *a, **k):
+            return False
+
+        def enrich(self, *a, **k):
+            return None
+    monkeypatch.setattr("backend.emby_server.tmdb.tmdb_client", _T())
+    # TMDB 搜索返回空 → result["tmdb_hit"] 为 None，才轮到豆瓣兜底
+    monkeypatch.setattr("backend.emby_server.scanner._tmdb_work",
+                        lambda *a, **k: (None, None))
+
+    res = enrich_worker._enrich_fetch(item)
+
+    assert res["ok"] is True, res
+    assert "db" not in (res.get("error") or ""), res
+    assert res.get("douban_hit", {}).get("title") == "兜底名", res
+    assert opened == ["closed"], "配置会话必须被关闭"
