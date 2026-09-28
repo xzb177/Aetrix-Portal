@@ -965,6 +965,9 @@ class _Pending:
     item_type: str
     series_guid: Optional[str] = None
     season_guid: Optional[str] = None
+    # 从剧集目录推导的稳定剧名；不能拿 episode 文件名当 series 名，
+    # 否则首页会出现「某剧 第 1 集」这种伪剧集卡片。
+    series_name: Optional[str] = None
     item: Any = None
     series: Any = None
     season: Any = None
@@ -1203,6 +1206,31 @@ _SEASON_DIR_RE = re.compile(
     r"^(?:season\s*\.?\s*\d{1,2}|s\d{1,2}|第\s*(?:\d{1,2}|[一二三四五六七八九十]{1,3})\s*季)$",
     re.IGNORECASE,
 )
+
+
+def _series_name_of(scan_file: "ScanFile", parsed: dict) -> str:
+    """从剧集目录推导 series 名，绝不从 episode 文件名猜剧名。
+
+    远端路径通常是 ``剧名/Season 1/file S01E01.mkv``；本机路径同理。
+    没有 Season 目录时取文件所在目录。目录名里的年份、发布标签由同一套
+    ``_tidy_name`` 清洗；若目录名异常为空，才退回解析出的文件名。
+    """
+    if scan_file.local_dir:
+        directory = scan_file.local_dir.rstrip("/\\")
+        parent = os.path.basename(os.path.dirname(directory))
+        leaf = os.path.basename(directory)
+        directory_name = parent if _SEASON_DIR_RE.match(leaf) else leaf
+    else:
+        directory = (scan_file.dir_rel or "/").rstrip("/") or "/"
+        leaf = posixpath.basename(directory)
+        parent = posixpath.basename(posixpath.dirname(directory))
+        directory_name = parent if _SEASON_DIR_RE.match(leaf) else leaf
+
+    name = _tidy_name(directory_name)
+    year = parsed.get("year")
+    if year and str(year) in name:
+        name = name.replace(str(year), "").strip(" .-_()")
+    return name or _tidy_name(parsed.get("name") or "") or (parsed.get("name") or "未知剧集")
 
 
 def _series_guid_of(scan_file: "ScanFile") -> str:
@@ -1494,6 +1522,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         pending = _Pending(scan_file=scan_file, guid=guid, parsed=parsed, item_type=item_type)
         if item_type == "episode":
             pending.series_guid = _series_guid_of(scan_file)
+            pending.series_name = _series_name_of(scan_file, parsed)
             pending.season_guid = item_guid(f"{pending.series_guid}:S{parsed['season']:02d}")
         prepared.append(pending)
         guids.append(guid)
@@ -2399,8 +2428,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         if series is None:
                             series = emby_models.MediaItem(
                                 guid=series_guid, library_id=library.id,
-                                item_type="series", name=parsed["name"],
-                                sort_name=parsed["name"].lower(),
+                                item_type="series", name=_pending.series_name or parsed["name"],
+                                sort_name=(_pending.series_name or parsed["name"]).lower(),
                                 production_year=parsed["year"],
                                 platforms=item.platforms or "",
                                 date_added=datetime.now(),
@@ -2410,6 +2439,11 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             db.add(series)
                             db.flush()
                             ctx.series_items[series_guid] = series
+                        # 现有隐式 series 可能是旧版本用 episode 文件名建出来的污染名称；
+                        # 只要还没有 TMDB/NFO 的权威名称，就用目录名纠正。
+                        if _pending.series_name and not series.tmdb_id:
+                            series.name = _pending.series_name
+                            series.sort_name = _pending.series_name.lower()
                         item.series_id = series.id
                         # B 方案补全：本批为隐式 series 预取的 TMDB 搜索命中先落库
                         # （补 tmdb_id/简介/海报/评分/别名；NFO 文本随后覆盖，保证 NFO 优先）
