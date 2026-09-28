@@ -375,6 +375,20 @@ def _auto_migrate():
             # 由刮削时重新写入；查"刮没刮干净"不再依赖 last_scraped_at 反推。
             ("metadata_source", "VARCHAR(20)", "NULL"),
         ]),
+        # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，
+        # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。
+        ("emby_media_streams", [
+            ("frame_rate", "VARCHAR(20)", "NULL"),
+            ("video_range", "VARCHAR(20)", "NULL"),
+            ("profile", "VARCHAR(30)", "NULL"),
+            ("level", "VARCHAR(30)", "NULL"),
+            ("pixel_format", "VARCHAR(30)", "NULL"),
+            ("aspect_ratio", "VARCHAR(20)", "NULL"),
+            ("bit_depth", "INTEGER", "NULL"),
+            ("sample_rate", "INTEGER", "NULL"),
+            ("channel_layout", "VARCHAR(30)", "NULL"),
+            ("sample_format", "VARCHAR(20)", "NULL"),
+        ]),
     ]
 
     for table, columns in migrations:

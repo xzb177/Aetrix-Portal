@@ -623,6 +623,43 @@ def _mediainfo(path: str, headers: Optional[dict] = None, size: int = 0) -> Opti
         return None
 
 
+# 逐流字段白名单（与 probe_worker._STREAM_COLS 同口径）
+_PROBE_STREAM_COLS = frozenset({
+    "stream_index", "stream_type", "codec", "language", "display_title", "title",
+    "channels", "bit_rate", "frame_rate", "video_range", "profile", "level",
+    "pixel_format", "aspect_ratio", "bit_depth", "sample_rate",
+    "channel_layout", "sample_format",
+})
+
+
+def _detect_video_range(stream: dict, tags: dict) -> str:
+    """从 ffprobe 字段判断动态范围（客户端「动态范围」那一行）"""
+    dovi = (tags.get("DOVI") or tags.get("dovi") or "").lower()
+    if "dv" in dovi or "dolby vision" in dovi:
+        return "DolbyVision"
+    transfer = (stream.get("color_transfer") or "").lower()
+    primaries = (stream.get("color_primaries") or "").lower()
+    space = (stream.get("color_space") or "").lower()
+    if "smpte2084" in transfer or "smpte2084" in primaries or "smpte2084" in space:
+        return "HDR10"
+    if "arib-std-b67" in transfer:
+        return "HLG"
+    return "SDR"
+
+
+def _bit_depth(stream: dict, tags: dict) -> int:
+    """位深：优先 raw_sample，其次 bits_per_sample"""
+    for value in (tags.get("bits_per_raw_sample"), stream.get("bits_per_raw_sample"),
+                  tags.get("bits_per_sample"), stream.get("bits_per_sample")):
+        try:
+            n = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    return 0
+
+
 def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> dict:
     """返回 duration_ticks/bitrate/尺寸/编码/轨道信息
 
@@ -671,22 +708,58 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
     audio_langs, sub_langs, streams = [], [], []
     for idx, s in enumerate(data.get("streams", [])):
         stype = s.get("codec_type")
-        lang = (s.get("tags") or {}).get("language", "")
+        tags = s.get("tags") or {}
+        lang = tags.get("language", "")
         entry = {
             "stream_index": idx, "stream_type": stype, "codec": s.get("codec_name"),
             "language": lang, "channels": s.get("channels"),
             "bit_rate": int(s.get("bit_rate") or 0),
-            "display_title": (s.get("tags") or {}).get("title"),
-            "title": (s.get("tags") or {}).get("title"),
+            "display_title": tags.get("title"),
+            "title": tags.get("title"),
         }
         if stype == "video":
             entry["stream_type"] = "Video"
             info["width"] = s.get("width", 0)
             info["height"] = s.get("height", 0)
             info["video_codec"] = (s.get("codec_name") or "").upper()
+            # 客户端「媒体信息」页逐行显示这些，缺了详情页只剩编码/码率两行
+            fps = s.get("avg_frame_rate") or s.get("r_frame_rate") or ""
+            if fps and fps not in ("0/0", "N/A"):
+                entry["frame_rate"] = fps
+            entry["video_range"] = _detect_video_range(s, tags)
+            if s.get("profile"):
+                entry["profile"] = str(s.get("profile"))
+            if s.get("level") not in (None, -99, ""):
+                entry["level"] = str(s.get("level"))
+            if s.get("pix_fmt"):
+                entry["pixel_format"] = s.get("pix_fmt")
+            sar = s.get("sample_aspect_ratio") or ""
+            if sar not in ("", "N/A", "0:1", "1:1"):
+                entry["aspect_ratio"] = sar
+            depth = _bit_depth(s, tags)
+            if depth:
+                entry["bit_depth"] = depth
         elif stype == "audio":
             entry["stream_type"] = "Audio"
             info["audio_codec"] = (s.get("codec_name") or "").upper()
+            if s.get("sample_rate"):
+                try:
+                    entry["sample_rate"] = int(s.get("sample_rate"))
+                except (TypeError, ValueError):
+                    pass
+            if s.get("sample_fmt"):
+                entry["sample_format"] = s.get("sample_fmt")
+            layout = s.get("channel_layout")
+            if layout:
+                entry["channel_layout"] = layout
+            else:
+                ch = int(s.get("channels") or 0)
+                entry["channel_layout"] = {
+                    1: "mono", 2: "stereo", 6: "5.1", 8: "7.1",
+                }.get(ch, "")
+            depth = _bit_depth(s, tags)
+            if depth:
+                entry["bit_depth"] = depth
             if lang:
                 audio_langs.append(lang)
         elif stype == "subtitle":
@@ -2653,8 +2726,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         for s in probe["streams"]:
                             db.add(emby_models.MediaStream(item_id=item.id, **{
                                 k: v for k, v in s.items()
-                                if k in {"stream_index", "stream_type", "codec", "language",
-                                         "display_title", "title", "channels", "bit_rate"}
+                                if k in _PROBE_STREAM_COLS
                             }))
 
                     # 外挂字幕在批次开头就找好了（本地目录 / 挂载目录都在 IO 线程池里列过），
