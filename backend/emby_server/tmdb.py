@@ -52,19 +52,43 @@ _QUERY_JUNK_RE = re.compile(r"""(?ix)
 """)
 _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ffー]+")
 # 归一化：小写、去全部空白与标点（保留中日韩文字与字母数字）
+# 全角标点先折成半角再做归一化：TMDB 用半角冒号，而国内剧名常见全角
+# （`90 Day： The Last Resort`、`GIGN：精英部队`），不折就必然零结果。
+_PUNCT_FOLD = {
+    "：": ":", "，": ",", "。": ".", "！": "!", "？": "?",
+    "（": "(", "）": ")", "［": "[", "］": "]", "｛": "{", "｝": "}",
+    "、": ",", "；": ";", "／": "/", "＼": "\\", "｜": "|", "％": "%",
+    "＃": "#", "＠": "@", "＆": "&", "＊": "*", "＋": "+", "－": "-",
+    "＝": "=", "～": "~", "＄": "$", "＾": "^", "｀": "`", "　": " ",
+}
+_PUNCT_FOLD_RE = re.compile("|".join(re.escape(k) for k in _PUNCT_FOLD))
+
 _NORM_STRIP_RE = re.compile(
     r"[\s\u3000・·･—\-–_.,;:!?()（）【】《》\"'’‘“”/\\|&+*~^$#@%…‰「」『』〈〉＜＞★☆×″′©®™‖§]+"
 )
 _YEAR_RE = re.compile(r"(19\d{2}|20\d{2})")
+# 目录名尾部的年份：` (2009)` / `(2023-)` / ` - 2019` / ` 2019 年` 等
+_YEAR_TAIL_RE = re.compile(
+    r"[\(\（\[【]?\s*(?:19|20)\d{2}\s*(?:[-–—~]\s*\d{0,4})?\s*[\)）\]】]?\s*(?:年|Season\s*\d{1,2}?)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _fold_punct(s: str) -> str:
+    """全角标点折半角（见 _PUNCT_FOLD）"""
+    return _PUNCT_FOLD_RE.sub(lambda m: _PUNCT_FOLD[m.group(0)], s) if s else s
 
 
 def _norm_text(s):
-    return _NORM_STRIP_RE.sub("", s.lower()) if s else ""
+    if not s:
+        return ""
+    return _NORM_STRIP_RE.sub("", _fold_punct(s).lower())
 
 
 def _clean_query(name):
     """去发行标签与分隔符，返回可用于搜索的干净查询。"""
-    s = _QUERY_JUNK_RE.sub(" ", name or "")
+    # 先折全角标点，否则「剧名：副标题」里的全角冒号会让 TMDB 零结果
+    s = _QUERY_JUNK_RE.sub(" ", _fold_punct(name or ""))
     s = re.sub(r"[._\-+]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -92,12 +116,21 @@ def _search_candidates(name):
     它只允许 Tier 2 精确接受，不做模糊——否则"容祖儿 演唱会"会配到
     "容祖儿1314演唱会"（原文件名是 My Secret Live）。
     """
-    raw = (name or "").strip()
+    # 原始名也要折全角标点：它会直接进 _query_variants 去和 TMDB 标题比对
+    raw = _fold_punct((name or "").strip())
     cleaned = _clean_query(name)
     cands = []
     for c, fuzzy in ((cleaned, True), (raw, True), (_first_run(cleaned), True)):
         if c and c not in [x[0] for x in cands]:
             cands.append((c, fuzzy))
+    # 剥掉年份再搜一次：目录名几乎都带「(YYYY)」，而归一化后年份仍在字符串里
+    # （`Schlag den Star (2009)` → `schlagdenstar2009`），永远匹配不上 TMDB 标题
+    # `schlagdenstar`。西方剧几乎全带年份，不剥就是全军覆没（欧美剧 679 条
+    # 曾有 129 条因此零命中）。年份已作为 _hit_score 的排序信号单独使用。
+    no_year = _YEAR_TAIL_RE.sub(" ", cleaned).strip()
+    no_year = re.sub(r"\s+", " ", no_year).strip(" -_.()（）")
+    if no_year and no_year != cleaned and no_year not in [x[0] for x in cands]:
+        cands.append((no_year, True))
     cjk = " ".join(_CJK_RE.findall(cleaned))
     if cjk and cjk not in [x[0] for x in cands]:
         cands.append((cjk, False))
@@ -177,12 +210,15 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True):
                     best = rank
     if best is None:
         return None
+    # 年份不符**不再直接否决**。目录里的年份常是季/版本/重制年份，而不是 TMDB
+    # 的首播年；早先「年份对不上就 return None」把大量本可命中的条目毙掉
+    # （欧美剧 679 条里有 129 条因此没刮上）。现在只把年份不符的结果排在后面。
     m = _YEAR_RE.search(raw_name or "")
     if m:
         qy = m.group(1)
         hy = (hit.get("first_air_date") or hit.get("release_date") or "")[:4]
         if hy and hy != qy:
-            return None
+            best -= 1
     return (1, best)
 
 
@@ -480,6 +516,17 @@ class TmdbClient:
         imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
         if imdb:
             item.imdb_id = imdb
+        # 简介与评分也从详情补：搜索结果的 overview/vote_average 经常是空或 0，
+        # 只靠 apply() 会让「有 tmdb_id 却缺简介/评分」的一大批永远补不上。
+        overview = data.get("overview")
+        if overview:
+            item.overview = overview
+        rating = data.get("vote_average")
+        if rating is not None and rating != "":
+            try:
+                item.community_rating = round(float(rating), 1)
+            except (TypeError, ValueError):
+                pass
         alt = (data.get("alternative_titles") or {})
         titles = [t.get("title") for t in (alt.get("titles") or [])]
         titles += [t.get("title") for t in (alt.get("results") or [])]
@@ -520,8 +567,13 @@ class TmdbClient:
         item.last_scraped_at = datetime.now()
         item.overview = hit.get("overview") or item.overview
         rating = hit.get("vote_average")
-        if rating:
-            item.community_rating = round(float(rating), 1)
+        # 注意不能用 `if rating:`：TMDB 对没有评分的条目返回 0.0，那是**合法数据**，
+        # 判假值会让这类条目永远没有评分（生产实测 21天重养自己 就是 0.0）。
+        if rating is not None and rating != "":
+            try:
+                item.community_rating = round(float(rating), 1)
+            except (TypeError, ValueError):
+                pass
         poster = hit.get("poster_path")
         backdrop = hit.get("backdrop_path")
         if poster:

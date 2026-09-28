@@ -312,7 +312,19 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
 
     if needs_repair:
         item.repair_requested_at = None
-    item.enrich_status = "done"
+
+    # 判定「是否真的刮干净」，而不是「跑过就算完成」。
+    # 旧实现无条件 done：TMDB 搜不到（网络抖动/限流/当次匹配失败）的条目被标记成
+    # 补全完成，此后 _claim_batch 只捞 pending，永远不会再重试——于是
+    # series 3263 条里 464 条永久缺 TMDB，且没有任何重试迹象。
+    # 现在：核心元数据缺失就退回 pending（可重试），刮到了才 done。
+    _incomplete = False
+    if kind in ("series", "movie"):
+        if tmdb_client.configured and not item.tmdb_id:
+            _incomplete = True
+        if not (item.overview or "").strip():
+            _incomplete = True
+    item.enrich_status = "pending" if _incomplete else "done"
     item.enrich_attempts = 0
     item.enrich_next_retry_at = None
 
