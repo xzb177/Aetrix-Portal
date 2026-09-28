@@ -49,13 +49,14 @@ import {
 } from '@/api'
 import { useToast } from '@/composables/useToast'
 import MediaRow from '@/components/media/MediaRow.vue'
+import Modal from '@/components/ui/Modal.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
   ChevronRight, Crown, MessageSquareDashed, LayoutDashboard, Inbox,
   Wallet, CalendarCheck, Gift, Sparkles, Tv, TriangleAlert,
   Clock, Clapperboard, Film, Ticket, MonitorSmartphone, CircleStop,
-  Rocket, Check,
+  Rocket, Check, RotateCcw,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
@@ -255,7 +256,32 @@ async function stopSession(session: MyPlaybackSession) {
   }
 }
 
-onMounted(async () => {
+// 「结束播放」是踢掉其他设备的高危操作，先弹窗二次确认
+const stopTarget = ref<MyPlaybackSession | null>(null)
+const showStopConfirm = computed({
+  get: () => stopTarget.value !== null,
+  set: (v: boolean) => { if (!v) stopTarget.value = null },
+})
+
+function askStopSession(session: MyPlaybackSession) {
+  stopTarget.value = session
+}
+
+function confirmStopSession() {
+  const session = stopTarget.value
+  stopTarget.value = null
+  if (session) stopSession(session)
+}
+
+// 会员订阅是首页核心数据（会员卡/三步指引都依赖它）：失败时显示错误态 + 重试，
+// 而不是静默吞掉让用户看到错误的「未开通」形态
+const loadError = ref(false)
+
+async function loadData() {
+  loading.value = true
+  loadError.value = false
+  // 订阅接口失败时记下来，加载完统一展示错误态
+  let memberFailed = false
   try {
     // v2.10.3：消息与公告不再在首页拉取——那是顶栏铃铛的事（它本来就在每次轮询未读数），
     // 首页少一组请求，也不再重复展示同一批未读
@@ -265,7 +291,7 @@ onMounted(async () => {
       pointsApi.log({ limit: 1 }).catch((): null => null),
       checkinApi.status().catch((): null => null),
       inviteApi.myCode().catch((): null => null),
-      subscriptionApi.getMine().catch((): MySubscription[] => []),
+      subscriptionApi.getMine().catch((): MySubscription[] => { memberFailed = true; return [] }),
       // 面板数据：任一项失败都各归各的（catch 成 null），不会连带整页报错
       embyApi.getStats().catch((): WatchStats | null => null),
       mediaSeekApi.getMyRequests().catch((): null => null),
@@ -296,13 +322,20 @@ onMounted(async () => {
       }
     }
     sessions.value = sessionsRes?.sessions || []
+    loadError.value = memberFailed
   } catch (err: any) {
+    // 兜底：正常情况下到不了这里（每项请求都有自己的 catch）
+    loadError.value = true
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')
     }
   } finally {
     loading.value = false
   }
+}
+
+onMounted(() => {
+  loadData()
 })
 </script>
 
@@ -369,8 +402,18 @@ onMounted(async () => {
           </template>
         </div>
 
-        <!-- 会员状态卡；公益服换成「免费开放」的说明卡，不出现任何购买引导 -->
-        <aside v-if="isFreeRealm" class="member-card free-card">
+        <!-- 会员状态卡；公益服换成「免费开放」的说明卡，不出现任何购买引导。
+             加载中先显示骨架占位，不渲染任一形态——避免「立即开通会员」闪现再被替换 -->
+        <aside v-if="loading" class="member-card" aria-hidden="true">
+          <div class="member-head">
+            <span class="au-skeleton sk-badge"></span>
+          </div>
+          <p class="au-skeleton sk-plan"></p>
+          <p class="au-skeleton sk-meta-line"></p>
+          <span class="au-skeleton sk-cta"></span>
+        </aside>
+
+        <aside v-else-if="isFreeRealm" class="member-card free-card">
           <div class="member-head">
             <span class="member-badge free">
               <Sparkles :size="13" />
@@ -425,6 +468,16 @@ onMounted(async () => {
     </section>
 
     <main class="container main">
+      <!-- 会员数据加载失败：给错误态 + 重试，而不是静默显示「未开通」 -->
+      <div v-if="loadError && !loading" class="au-empty load-error-card au-card">
+        <TriangleAlert :size="28" />
+        <p>会员信息加载失败，页面数据可能不完整</p>
+        <button class="au-btn au-btn-primary au-btn-sm" @click="loadData">
+          <RotateCcw :size="13" />
+          重新加载
+        </button>
+      </div>
+
       <!-- 新手任务：只在还有未完成步骤时出现，全部完成后整段隐藏。
            首页是服务台，新用户的第一件事是"连上播放器看上片"，不是"浏览内容" -->
       <section v-if="!loading && onboardingTasks.some(t => !t.done)" class="onboard-card au-card au-anim-up">
@@ -452,8 +505,16 @@ onMounted(async () => {
         </div>
       </section>
 
-      <!-- 账号速览条：积分 / 签到 / 邀请（纯经济数据；会员在首屏会员卡，消息在下方消息卡） -->
-      <section class="acct-strip au-card au-anim-up" :class="{ loading }">
+      <!-- 账号速览条：积分 / 签到 / 邀请（纯经济数据；会员在首屏会员卡，消息在下方消息卡）。
+           加载中显示真骨架占位，而不是把「—」压暗——压暗的「—」会被读成「没有数据」 -->
+      <section v-if="loading" class="acct-strip au-card" aria-hidden="true">
+        <div v-for="i in 3" :key="i" class="acct-cell">
+          <span class="au-skeleton sk-acct-label"></span>
+          <span class="au-skeleton sk-acct-value"></span>
+          <span class="au-skeleton sk-acct-sub"></span>
+        </div>
+      </section>
+      <section v-else class="acct-strip au-card au-anim-up">
         <RouterLink
           v-for="c in accountCells"
           :key="c.to"
@@ -471,8 +532,17 @@ onMounted(async () => {
 
       <!-- 我的面板（v2.34.0）：观影数据 / 进行中的事项 / 正在播放（只在本账号真在播时出现）。
            口径：这些是门户独有、客户端给不了的——账号名下的求片与工单状态、跨设备在播概况。
-           完整会话清单与设备管理仍在个人中心，这里只给「一眼看到 + 一键处理」。 -->
-      <section class="panel-grid au-anim-up" :class="{ loading }">
+           完整会话清单与设备管理仍在个人中心，这里只给「一眼看到 + 一键处理」。
+           加载中显示真骨架占位，避免内容突然出现顶开页面（CLS） -->
+      <section v-if="loading" class="panel-grid" aria-hidden="true">
+        <div v-for="i in 2" :key="i" class="panel-card">
+          <div class="au-skeleton sk-panel-title"></div>
+          <div class="au-skeleton sk-panel-row"></div>
+          <div class="au-skeleton sk-panel-row"></div>
+          <div class="au-skeleton sk-panel-row short"></div>
+        </div>
+      </section>
+      <section v-else class="panel-grid au-anim-up">
         <div class="panel-card">
           <header class="panel-head">
             <span class="panel-title">
@@ -552,7 +622,7 @@ onMounted(async () => {
             <button
               class="au-btn au-btn-danger au-btn-sm"
               :disabled="stoppingSession === s.session_key"
-              @click="stopSession(s)"
+              @click="askStopSession(s)"
             >
               <CircleStop :size="13" />
               {{ stoppingSession === s.session_key ? '结束中' : '结束' }}
@@ -565,7 +635,7 @@ onMounted(async () => {
            浏览与继续观看是第三方客户端的事，观看记录在媒体库的 tab 里保留 -->
       <MediaRow v-if="latestItems.length" title="最近上新" :items="latestItems.slice(0, 16)" more-to="/media" class="row" />
 
-      <div v-if="!latestItems.length" class="au-empty content-empty">
+      <div v-if="!loading && !latestItems.length" class="au-empty content-empty">
         <Sparkles :size="28" />
         <p>媒体库还没有内容，稍后再来看看</p>
       </div>
@@ -609,12 +679,25 @@ onMounted(async () => {
         </RouterLink>
       </div>
     </main>
+
+    <!-- 结束播放二次确认：这是踢掉其他设备的操作，对方会立即断开 -->
+    <Modal v-model="showStopConfirm" title="结束播放" size="sm">
+      <p class="stop-confirm-text">
+        确定要结束「{{ stopTarget?.device || '未知设备' }}」上的播放吗？对方将立即断开连接。
+      </p>
+      <template #footer>
+        <div class="stop-confirm-actions">
+          <button class="au-btn au-btn-ghost au-btn-sm" @click="showStopConfirm = false">取消</button>
+          <button class="au-btn au-btn-danger au-btn-sm" @click="confirmStopSession">确定结束</button>
+        </div>
+      </template>
+    </Modal>
   </div>
 </template>
 
 <style scoped>
 .home-view {
-  min-height: 100vh;
+  min-height: 100dvh;
   color: var(--au-text);
 }
 
@@ -745,6 +828,33 @@ onMounted(async () => {
   color: var(--au-warning);
 }
 
+/* 会员卡加载骨架：与真实卡片同高，避免加载完成时布局跳动（CLS） */
+.member-card .sk-badge {
+  display: block;
+  width: 96px;
+  height: 22px;
+  border-radius: var(--au-r-full);
+}
+
+.member-card .sk-plan {
+  width: 60%;
+  height: 20px;
+  margin: 0 0 0.625rem;
+}
+
+.member-card .sk-meta-line {
+  width: 85%;
+  height: 14px;
+  margin: 0 0 1rem;
+}
+
+.member-card .sk-cta {
+  display: block;
+  width: 140px;
+  height: 32px;
+  border-radius: var(--au-r-md);
+}
+
 .member-link {
   display: inline-flex;
   align-items: center;
@@ -812,11 +922,10 @@ onMounted(async () => {
   border-bottom: 1px solid var(--au-border);
 }
 
+/* 中文标题：uppercase / letter-spacing 对中文无效，反而让字间距发虚，这里去掉 */
 .section-title {
   font-size: 0.75rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--au-text-4);
 }
 
@@ -1024,12 +1133,27 @@ onMounted(async () => {
   background: var(--au-border);
   margin-bottom: 2rem;
   overflow: hidden;
-  transition: opacity var(--au-fast) var(--au-ease);
 }
 
-.acct-strip.loading {
-  opacity: 0.45;
-  pointer-events: none;
+/* 账号速览条骨架：与真实格子同高，加载完成不跳动 */
+.sk-acct-label {
+  display: block;
+  width: 64px;
+  height: 12px;
+}
+
+.sk-acct-value {
+  display: block;
+  width: 72px;
+  height: 22px;
+  margin-top: 0.25rem;
+}
+
+.sk-acct-sub {
+  display: block;
+  width: 84px;
+  height: 12px;
+  margin-top: 0.25rem;
 }
 
 .acct-cell {
@@ -1091,13 +1215,23 @@ onMounted(async () => {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1rem;
   margin-bottom: 2rem;
-  transition: opacity var(--au-fast) var(--au-ease);
 }
 
-/* 与账号速览条同一口径：加载中先压暗，避免一闪而过的「—」被读成「没有数据」 */
-.panel-grid.loading {
-  opacity: 0.45;
-  pointer-events: none;
+/* 面板骨架：与真实卡片同高，加载完成不跳动 */
+.sk-panel-title {
+  width: 96px;
+  height: 18px;
+  margin-bottom: 1rem;
+}
+
+.sk-panel-row {
+  height: 14px;
+  margin-bottom: 0.75rem;
+}
+
+.sk-panel-row.short {
+  width: 55%;
+  margin-bottom: 0;
 }
 
 .panel-card {
@@ -1334,8 +1468,53 @@ onMounted(async () => {
   min-width: 0;
 }
 
+/* 超长设备名截断，不把「结束」按钮挤出可视区 */
+.playing-meta > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 .playing-meta .dot {
+  flex-shrink: 0;
   color: var(--au-text-4);
+}
+
+/* 「结束」按钮不被挤压 */
+.playing-row .au-btn {
+  flex-shrink: 0;
+}
+
+/* 结束播放二次确认弹窗 */
+.stop-confirm-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--au-text-2);
+}
+
+.stop-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.625rem;
+}
+
+/* 会员加载失败的错误卡 */
+.load-error-card {
+  margin-bottom: 1.5rem;
+  padding: 1.75rem 1.25rem;
+  gap: 0.75rem;
+}
+
+.load-error-card svg {
+  color: var(--au-warning);
+}
+
+.load-error-card p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--au-text-2);
 }
 
 .playing-bar {

@@ -2,20 +2,43 @@
 /**
  * MediaRow — 横向滚动媒体行（续看/最新/NextUp/收藏等分区共用）
  */
-import { ref } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import MediaCard, { type ResumeInfo } from './MediaCard.vue'
 import type { EmbyItem } from '@/api/emby'
 
 /** moreTo：右上角「查看全部」跳转目标（不传则不显示）
  *  resumeMap：剧集卡的续播信息（key 为条目 Id），「继续观看」行使用 */
-defineProps<{ title: string; items: EmbyItem[]; moreTo?: string; resumeMap?: Record<string, ResumeInfo> }>()
+const props = defineProps<{ title: string; items: EmbyItem[]; moreTo?: string; resumeMap?: Record<string, ResumeInfo> }>()
 
 const scroller = ref<HTMLElement | null>(null)
+// 横滑指示器：0~100 的滚动进度；不可横滑时隐藏
+const scrollPct = ref(0)
+const canScroll = ref(false)
+
+function updateScrollState() {
+  const el = scroller.value
+  if (!el) return
+  const max = el.scrollWidth - el.clientWidth
+  canScroll.value = max > 8
+  scrollPct.value = max > 0 ? Math.min(100, Math.max(0, (el.scrollLeft / max) * 100)) : 0
+}
 
 function scrollBy(dir: 1 | -1) {
-  scroller.value?.scrollBy({ left: dir * 560, behavior: 'smooth' })
+  const el = scroller.value
+  if (!el) return
+  // 按可视宽度的 0.8 倍滚动：固定 560px 在小屏手机上一次滑过一屏半
+  el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: 'smooth' })
 }
+
+onMounted(() => {
+  updateScrollState()
+})
+
+watch(() => props.items, () => {
+  // 内容变化后重新测量（下一帧等 DOM 更新完）
+  requestAnimationFrame(updateScrollState)
+})
 </script>
 
 <template>
@@ -35,8 +58,12 @@ function scrollBy(dir: 1 | -1) {
         </button>
       </div>
     </header>
-    <div ref="scroller" class="row-scroller">
+    <div ref="scroller" class="row-scroller" @scroll="updateScrollState">
       <MediaCard v-for="item in items" :key="item.Id" :item="item" :resume="resumeMap?.[item.Id]" class="row-card" />
+    </div>
+    <!-- 横滑指示器：细进度条，暗示这行可以横滑；内容不足一屏时隐藏 -->
+    <div v-if="canScroll" class="row-progress" aria-hidden="true">
+      <div class="row-progress-fill" :style="{ width: Math.max(8, scrollPct) + '%' }"></div>
     </div>
   </section>
 </template>
@@ -104,6 +131,9 @@ function scrollBy(dir: 1 | -1) {
   gap: 0.75rem;
   overflow-x: auto;
   scroll-behavior: smooth;
+  /* 横滑贴合：松手不停在半张卡上 */
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
   padding-bottom: 0.375rem;
   margin: 0 -1.25rem;
   padding-left: 1.25rem;
@@ -117,6 +147,31 @@ function scrollBy(dir: 1 | -1) {
 
 .row-card {
   flex: 0 0 132px;
+  scroll-snap-align: start;
+}
+
+/* 横滑指示器 */
+.row-progress {
+  height: 3px;
+  margin: 0.5rem 1.25rem 0;
+  border-radius: 2px;
+  background: var(--au-track);
+  overflow: hidden;
+}
+
+.row-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--au-primary);
+  opacity: 0.55;
+  transition: width 0.15s ease;
+}
+
+/* 移动端靠手势横滑，隐藏桌面思维的左右箭头 */
+@media (max-width: 768px) {
+  .nav-btn {
+    display: none;
+  }
 }
 
 @media (min-width: 768px) {
