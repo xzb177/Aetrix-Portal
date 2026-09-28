@@ -337,8 +337,8 @@ onMounted(load)
   border-radius: 50%;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
-  color: var(--au-text-4);
-  font-size: 0.6875rem;
+  color: var(--au-text-3);
+  font-size: 0.75rem;
   font-weight: 600;
   transition: all var(--au-med);
 }
@@ -358,7 +358,7 @@ onMounted(load)
   font-weight: 800;
   font-size: 0.9375rem;
 }
-.streak-rule { margin: 0; font-size: 0.6875rem; color: var(--au-text-4); }
+.streak-rule { margin: 0; font-size: 0.75rem; color: var(--au-text-3); }
 
 .spinner-sm { width: 15px; height: 15px; border-width: 2px; }
 
@@ -392,7 +392,7 @@ onMounted(load)
   align-items: center;
   gap: 0.125rem;
   font-size: 0.75rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   text-decoration: none;
   transition: color var(--au-fast) var(--au-ease);
 }
@@ -406,8 +406,8 @@ onMounted(load)
 }
 .cal-week span {
   text-align: center;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   font-weight: 600;
 }
 
@@ -439,7 +439,7 @@ onMounted(load)
   font-weight: 600;
 }
 
-.cal-note { margin: 0.875rem 0 0; font-size: 0.6875rem; color: var(--au-text-4); }
+.cal-note { margin: 0.875rem 0 0; font-size: 0.75rem; color: var(--au-text-3); }
 
 .gains-list {
   list-style: none;
@@ -466,7 +466,7 @@ onMounted(load)
   flex-shrink: 0;
 }
 .gains-desc { color: var(--au-text-2); flex: 1; }
-.gains-time { color: var(--au-text-4); font-size: 0.6875rem; }
+.gains-time { color: var(--au-text-3); font-size: 0.75rem; }
 .gains-amt { color: var(--au-success); font-variant-numeric: tabular-nums; }
 
 .au-empty.compact { padding: 2rem 1rem; }

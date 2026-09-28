@@ -757,7 +757,7 @@ onMounted(() => {
 }
 
 .quick-link svg {
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
 }
 
@@ -804,7 +804,7 @@ onMounted(() => {
   background: var(--au-overlay-soft);
   border-radius: var(--au-r-full);
   color: var(--au-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -926,7 +926,7 @@ onMounted(() => {
 .section-title {
   font-size: 0.75rem;
   font-weight: 700;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .content-empty {
@@ -962,7 +962,7 @@ onMounted(() => {
   padding: 0.1875rem 0.5625rem;
   background: var(--au-gradient-warm);
   color: var(--au-on-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
 }
@@ -1105,7 +1105,7 @@ onMounted(() => {
 
 .onboard-row.done .onboard-body strong {
   text-decoration: line-through;
-  text-decoration-color: var(--au-text-4);
+  text-decoration-color: var(--au-text-3);
 }
 
 .onboard-body em {
@@ -1116,7 +1116,7 @@ onMounted(() => {
 
 .onboard-done-text {
   font-size: 0.75rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   flex-shrink: 0;
 }
 
@@ -1175,8 +1175,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 0.3125rem;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
 }
 
 .cell-label svg {
@@ -1196,8 +1196,8 @@ onMounted(() => {
 }
 
 .cell-sub {
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1265,7 +1265,7 @@ onMounted(() => {
 
 .panel-hint {
   font-size: 0.75rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   white-space: nowrap;
 }
 
@@ -1311,8 +1311,8 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
 }
 
 .panel-stat-label svg {
@@ -1370,8 +1370,8 @@ onMounted(() => {
 }
 
 .todo-sub {
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1391,7 +1391,7 @@ onMounted(() => {
 
 .todo-arrow {
   flex-shrink: 0;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   transition: color var(--au-fast) var(--au-ease);
 }
 
@@ -1455,7 +1455,7 @@ onMounted(() => {
   border-radius: var(--au-r-full);
   background: var(--au-warning-soft);
   color: var(--au-warning);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 
@@ -1478,7 +1478,7 @@ onMounted(() => {
 
 .playing-meta .dot {
   flex-shrink: 0;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 /* 「结束」按钮不被挤压 */
@@ -1601,7 +1601,7 @@ onMounted(() => {
 
 .help-row-arrow {
   flex-shrink: 0;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
 }
 

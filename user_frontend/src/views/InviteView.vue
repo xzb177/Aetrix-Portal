@@ -307,7 +307,7 @@ onMounted(load)
   padding: 0.3125rem 0.75rem;
   background: var(--au-gradient-warm);
   color: var(--au-on-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
 }
@@ -399,7 +399,7 @@ onMounted(load)
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
 }
-.stat-label { font-size: 0.6875rem; color: var(--au-text-3); }
+.stat-label { font-size: 0.75rem; color: var(--au-text-3); }
 
 /* ===== 列表 ===== */
 .list-grid {
@@ -461,7 +461,7 @@ onMounted(load)
 
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.0625rem; }
 .row-title { font-size: 0.8125rem; color: var(--au-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-sub { font-size: 0.6875rem; color: var(--au-text-4); }
+.row-sub { font-size: 0.75rem; color: var(--au-text-3); }
 
 .row-amt { color: var(--au-success); font-size: 0.875rem; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
@@ -481,7 +481,7 @@ onMounted(load)
 .rules summary svg { color: var(--au-violet); }
 .rules-chevron {
   margin-left: auto;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   transition: transform var(--au-fast) var(--au-ease);
 }
 .rules[open] .rules-chevron { transform: rotate(180deg); }

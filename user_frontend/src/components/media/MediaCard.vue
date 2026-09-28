@@ -2,7 +2,7 @@
 /**
  * MediaCard — 媒体海报卡片（首页行 / 库浏览 / 收藏共用）
  */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Play, Star, Eye } from 'lucide-vue-next'
 import { posterUrl, progressPercent, type EmbyItem } from '@/api/emby'
@@ -24,6 +24,10 @@ const props = defineProps<{ item: EmbyItem; resume?: ResumeInfo | null }>()
 const router = useRouter()
 
 const poster = computed(() => posterUrl(props.item, 342))
+/** SYS-4：图片 404/过期（api_key 失效）时切到首字占位，不裂图 */
+const imgOk = ref(true)
+watch(() => props.item.Id, () => { imgOk.value = true })
+function onImgError() { imgOk.value = false }
 const hasResume = computed(() => props.item.Type === 'Series' && !!props.resume)
 const progress = computed(() =>
   hasResume.value && props.resume ? props.resume.progress : progressPercent(props.item),
@@ -75,7 +79,7 @@ function open() {
 <template>
   <div class="media-card" @click="open">
     <div class="poster-wrap">
-      <img v-if="poster" :src="poster" :alt="item.Name" loading="lazy" />
+      <img v-if="poster && imgOk" :src="poster" :alt="item.Name" loading="lazy" @error="onImgError" />
       <div v-else class="poster-fallback">
         <span class="fallback-char">{{ firstChar }}</span>
       </div>
@@ -153,7 +157,7 @@ function open() {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   background: linear-gradient(160deg, var(--au-primary-soft), var(--au-overlay-soft));
 }
 
@@ -176,7 +180,7 @@ function open() {
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 6px;
   color: #ffd75e;
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.03em;
   backdrop-filter: blur(4px);
@@ -192,7 +196,7 @@ function open() {
   background: var(--au-primary);
   border-radius: 10px;
   color: #04121a;
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
   pointer-events: none;
 }
@@ -272,7 +276,7 @@ function open() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--au-text-3);
 }
 

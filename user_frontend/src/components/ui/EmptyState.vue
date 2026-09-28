@@ -138,7 +138,7 @@ withDefaults(defineProps<EmptyStateProps>(), {
 .empty-state__svg {
   width: 120px;
   height: 120px;
-  color: var(--text-quaternary);
+  color: var(--au-text-3); /* SYS-1：幽灵变量 --text-quaternary 已删除，改用 Aurora */
 }
 
 .empty-state--compact .empty-state__svg {

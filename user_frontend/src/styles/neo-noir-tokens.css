@@ -1,29 +1,25 @@
 /* ========================================
-   Neo-Noir 2.0 Design System
-   Aetrix Portal 用户门户
+   Neo-Noir 2.0 Design System — 别名层
    ========================================
 
-   设计理念：
-   - 更干净的背景（#0B0F14）
-   - 克制的半透明（background rgba，禁用 opacity）
-   - 统一的层级（z-index 0/20/40/80/100）
-   - 两档阴影（轻/中）
-   - 主色点缀（绿色仅用于 CTA）
-
+   SYS-1 收敛：Aurora（aurora.css）是全站唯一的权威 token。
+   本文件不再定义任何新的颜色 / 背景 / 文字 / 边框 / 圆角 / 阴影值，
+   所有变量一律映射到 --au-*，只保留名字做兼容。
+   与 Aurora 无语义冲突的刻度（间距 / 字号 / 字重 / z-index / 动效时长）
+   保留字面量——它们不参与主题，只是刻度尺。
    ======================================== */
 
 :root {
   /* ==================== 色彩系统 ==================== */
 
-  /* 主色 - 绿色（仅用于主CTA，少量点缀） */
-  --neo-primary: #22d3ee;
-  --neo-primary-hover: #06b6d4;
-  --neo-primary-active: #0e7490;
-  --neo-primary-dim: rgba(34, 211, 238, 0.08);
-  --neo-primary-glow: rgba(34, 211, 238, 0.25);
+  /* 主色 - 电光青 */
+  --neo-primary: var(--au-primary);
+  --neo-primary-hover: var(--au-primary-strong);
+  --neo-primary-active: var(--au-primary-deep);
+  --neo-primary-dim: var(--au-primary-soft);
+  --neo-primary-glow: var(--au-primary-glow);
 
-  /* 语义色 —— 指向 Aurora 令牌，全站同一个「成功 / 警告 / 错误 / 信息」一个颜色
-     （旧版这里又是另一套：成功=主色、错误=正红 #EF4444，而页面上用的是玫瑰红） */
+  /* 语义色 —— 指向 Aurora 令牌，全站同一个「成功 / 警告 / 错误 / 信息」一个颜色 */
   --neo-success: var(--au-success);
   --neo-success-bg: var(--au-success-soft);
   --neo-warning: var(--au-warning);
@@ -33,80 +29,66 @@
   --neo-info: var(--au-info);
   --neo-info-bg: var(--au-info-soft);
 
-  /* 中性色 - 灰阶 */
-  --neo-gray-50: #FAFAFA;
-  --neo-gray-100: #F5F5F5;
-  --neo-gray-200: #E5E5E5;
-  --neo-gray-300: #D4D4D4;
-  --neo-gray-400: #A3A3A3;
-  --neo-gray-500: #737373;
-  --neo-gray-600: #525252;
-  --neo-gray-700: #404040;
-  --neo-gray-800: #262626;
-  --neo-gray-900: #171717;
-  --neo-gray-950: #0A0A0A;
-
   /* ==================== 背景系统 ==================== */
 
-  /* 主背景 - Neo-Noir 深色基底 */
-  --neo-bg-base: #0B0F14;
-  --neo-bg-surface: rgba(11, 15, 20, 0.6);
+  --neo-bg-base: var(--au-bg);
+  --neo-bg-surface: var(--au-surface);
 
-  /* 卡片层级背景（禁用 opacity） */
-  --neo-bg-surface-1: rgba(255, 255, 255, 0.04);
-  --neo-bg-surface-2: rgba(255, 255, 255, 0.06);
-  --neo-bg-surface-3: rgba(255, 255, 255, 0.08);
+  /* 卡片层级背景 */
+  --neo-bg-surface-1: var(--au-surface);
+  --neo-bg-surface-2: var(--au-surface-2);
+  --neo-bg-surface-3: var(--au-surface-3);
 
   /* 交互反馈背景（按下态，替代 opacity） */
-  --neo-bg-surface-hover: rgba(255, 255, 255, 0.08);
-  --neo-bg-surface-active: rgba(255, 255, 255, 0.12);
+  --neo-bg-surface-hover: var(--au-surface-2);
+  --neo-bg-surface-active: var(--au-surface-3);
 
   /* 遮罩层 */
-  --neo-bg-overlay: rgba(0, 0, 0, 0.75);
-  --neo-bg-modal: rgba(0, 0, 0, 0.85);
+  --neo-bg-overlay: var(--au-overlay);
+  --neo-bg-modal: var(--au-overlay-strong);
 
   /* ==================== 文字系统 ==================== */
 
-  --neo-text-primary: rgba(255, 255, 255, 0.92);
-  --neo-text-secondary: rgba(255, 255, 255, 0.68);
-  --neo-text-tertiary: rgba(255, 255, 255, 0.48);
-  --neo-text-inverse: #0B0F14;
+  --neo-text-primary: var(--au-text);
+  --neo-text-secondary: var(--au-text-2);
+  --neo-text-tertiary: var(--au-text-3);
+  --neo-text-inverse: var(--au-on-primary);
 
   /* 链接文字 */
   --neo-text-link: var(--au-primary);
-  --neo-text-link-hover: #67e8f9;
+  --neo-text-link-hover: var(--au-primary-strong);
 
   /* ==================== 边框系统 ==================== */
 
-  --neo-border-subtle: rgba(255, 255, 255, 0.06);
-  --neo-border-default: rgba(255, 255, 255, 0.08);
-  --neo-border-strong: rgba(255, 255, 255, 0.12);
-  --neo-border-focus: rgba(34, 211, 238, 0.5);
+  --neo-border-subtle: var(--au-border);
+  --neo-border-default: var(--au-border);
+  --neo-border-strong: var(--au-border-strong);
+  --neo-border-focus: var(--au-border-focus);
 
   /* 分割线 */
-  --neo-divider: rgba(255, 255, 255, 0.06);
+  --neo-divider: var(--au-border);
 
   /* ==================== 圆角系统 ==================== */
 
-  --neo-radius-xs: 8px;      /* 小标签/Badge */
-  --neo-radius-sm: 12px;     /* 输入框 */
-  --neo-radius-md: 14px;     /* 小卡片 */
-  --neo-radius-lg: 18px;     /* 卡片/弹窗 */
-  --neo-radius-xl: 24px;     /* 大卡片 */
-  --neo-radius-full: 9999px; /* Pill/胶囊 */
+  --neo-radius-xs: var(--au-r-sm);    /* 小标签/Badge */
+  --neo-radius-sm: var(--au-r-md);    /* 输入框 */
+  --neo-radius-md: var(--au-r-md);    /* 小卡片 */
+  --neo-radius-lg: var(--au-r-lg);    /* 卡片/弹窗 */
+  --neo-radius-xl: var(--au-r-xl);    /* 大卡片 */
+  --neo-radius-full: var(--au-r-full); /* Pill/胶囊 */
 
-  /* ==================== 阴影系统（两档） ==================== */
+  /* ==================== 阴影系统 ==================== */
 
-  --neo-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
-  --neo-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --neo-shadow-sm: var(--au-shadow-1);
+  --neo-shadow-lg: var(--au-shadow-2);
 
-  /* 内阴影（用于卡片边框感） */
-  --neo-shadow-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  /* 内阴影（用于卡片边框感）：形状保留，颜色走 Aurora 边框 */
+  --neo-shadow-inset: inset 0 0 0 1px var(--au-border);
 
   /* 发光效果（仅用于主CTA） */
-  --neo-glow-primary: 0 0 24px rgba(34, 211, 238, 0.3);
+  --neo-glow-primary: var(--au-shadow-glow);
 
-  /* ==================== 间距系统（8pt 栅格）==================== */
+  /* ==================== 间距系统（8pt 栅格，与 Aurora 无冲突，保留刻度） ==================== */
 
   --neo-space-0: 0;
   --neo-space-1: 4px;
@@ -119,10 +101,10 @@
   --neo-space-10: 40px;
   --neo-space-12: 48px;
 
-  /* ==================== 字体系统 ==================== */
+  /* ==================== 字体系统（与 Aurora 无冲突，保留刻度） ==================== */
 
-  /* 字号 */
-  --neo-font-size-xs: 11px;
+  /* 字号：SYS-5 正文下限 12px，xs 从 11px 提到 12px */
+  --neo-font-size-xs: 12px;
   --neo-font-size-sm: 12px;
   --neo-font-size-md: 14px;
   --neo-font-size-lg: 16px;
@@ -141,7 +123,7 @@
   --neo-line-height-normal: 1.5;
   --neo-line-height-relaxed: 1.75;
 
-  /* ==================== Z-index 层级系统 ==================== */
+  /* ==================== Z-index 层级系统（保留刻度） ==================== */
 
   --neo-z-base: 0;         /* 普通内容 */
   --neo-z-float: 20;       /* 浮动按钮 */
@@ -155,7 +137,7 @@
   --neo-touch-min: 44px;      /* 最小触控区域 */
   --neo-touch-comfort: 48px;  /* 舒适触控区域 */
 
-  /* ==================== 动画 ==================== */
+  /* ==================== 动画（保留刻度） ==================== */
 
   --neo-duration-fast: 150ms;
   --neo-duration-normal: 200ms;
@@ -174,103 +156,78 @@
   --neo-btn-height-md: 44px;
   --neo-btn-height-lg: 52px;
 
-  --neo-btn-radius-sm: 10px;
-  --neo-btn-radius-md: 14px;
-  --neo-btn-radius-lg: 18px;
+  --neo-btn-radius-sm: var(--au-r-sm);
+  --neo-btn-radius-md: var(--au-r-md);
+  --neo-btn-radius-lg: var(--au-r-lg);
 
   /* 输入框 */
   --neo-input-height: 44px;
-  --neo-input-radius: 14px;
+  --neo-input-radius: var(--au-r-md);
   --neo-input-padding: 0 16px;
 
   /* 卡片 */
-  --neo-card-radius: 18px;
+  --neo-card-radius: var(--au-r-lg);
   --neo-card-padding: 16px;
 
   /* Chip/筛选标签 */
   --neo-chip-height: 32px;
-  --neo-chip-radius: 9999px;
+  --neo-chip-radius: var(--au-r-full);
   --neo-chip-padding: 0 14px;
 
   /* Badge/徽章 */
   --neo-badge-height: 20px;
-  --neo-badge-radius: 9999px;
+  --neo-badge-radius: var(--au-r-full);
   --neo-badge-padding: 0 8px;
-  --neo-badge-font-size: 11px;
+  --neo-badge-font-size: 12px;
 
   /* Segmented Control */
   --neo-segment-height: 36px;
-  --neo-segment-radius: 10px;
+  --neo-segment-radius: var(--au-r-sm);
 
   /* Icon Button */
   --neo-icon-btn-sm: 32px;
   --neo-icon-btn-md: 40px;
   --neo-icon-btn-lg: 48px;
-  --neo-icon-btn-radius: 10px;
+  --neo-icon-btn-radius: var(--au-r-sm);
 
   /* Safe Area */
   --neo-safe-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
-
-  /* ==================== Bridge Profile 专用 ==================== */
-
-  /* Holo-ID 全息效果 */
-  --neo-holo-gradient: linear-gradient(135deg, #22d3ee 0%, #3B82F6 50%, #8B5CF6 100%);
-  --neo-holo-scan: linear-gradient(180deg, transparent 0%, rgba(34, 211, 238, 0.15) 50%, transparent 100%);
-  --neo-holo-glow: 0 0 30px rgba(34, 211, 238, 0.3);
-
-  /* 翻转动画 */
-  --neo-card-flip-duration: 600ms;
-  --neo-card-flip-ease: cubic-bezier(0.4, 0, 0.2, 1);
-
-  /* 仪表盘 */
-  --neo-gauge-radius: 40px;
-  --neo-gauge-stroke: 6px;
-  --neo-gauge-bg: rgba(255, 255, 255, 0.06);
-  --neo-gauge-primary: #22d3ee;
-  --neo-gauge-warning: #F59E0B;
-  --neo-gauge-danger: #EF4444;
-
-  /* Z-Index 扩展 */
-  --neo-z-holo-card: 10;
-  --neo-z-dock: 30;
-  --neo-z-vault: 90;
 }
 
-/* ==================== 向后兼容映射 ==================== */
+/* ==================== 向后兼容映射：全部指向 Aurora ==================== */
 
-/* 兼容旧的变量名 */
 :root {
   /* 背景 */
-  --bg-primary: var(--neo-bg-base);
-  --bg-elevated: var(--neo-bg-surface-1);
-  --bg-card: var(--neo-bg-surface-1);
-  --bg-glass: var(--neo-bg-surface-1);
+  --bg-primary: var(--au-bg);
+  --bg-elevated: var(--au-surface);
+  --bg-card: var(--au-surface);
+  --bg-glass: var(--au-surface);
 
   /* 文字 */
-  --text-primary: var(--neo-text-primary);
-  --text-secondary: var(--neo-text-secondary);
-  --text-tertiary: var(--neo-text-tertiary);
+  --text-primary: var(--au-text);
+  --text-secondary: var(--au-text-2);
+  --text-tertiary: var(--au-text-3);
 
   /* 边框 */
-  --border-default: var(--neo-border-default);
-  --border-subtle: var(--neo-border-subtle);
+  --border-default: var(--au-border);
+  --border-subtle: var(--au-border);
 
   /* 圆角 */
-  --radius-sm: var(--neo-radius-sm);
-  --radius-md: var(--neo-radius-lg);
-  --radius-lg: var(--neo-radius-lg);
-  --radius-full: var(--neo-radius-full);
+  --radius-sm: var(--au-r-sm);
+  --radius-md: var(--au-r-md);
+  --radius-lg: var(--au-r-lg);
+  --radius-full: var(--au-r-full);
 
   /* 阴影 */
-  --shadow-sm: var(--neo-shadow-sm);
-  --shadow-md: var(--neo-shadow-lg);
-  --shadow-card: var(--neo-shadow-sm);
+  --shadow-sm: var(--au-shadow-1);
+  --shadow-md: var(--au-shadow-2);
+  --shadow-card: var(--au-shadow-1);
 
   /* 品牌色 */
-  --brand-primary: var(--neo-primary);
-  --brand-primary-hover: var(--neo-primary-hover);
-  --brand-primary-light: var(--neo-primary-dim);
-  --accent-glow: var(--neo-primary-glow);
+  --brand-primary: var(--au-primary);
+  --brand-primary-hover: var(--au-primary-strong);
+  --brand-primary-light: var(--au-primary-soft);
+  --accent-glow: var(--au-primary-glow);
 
   /* Z-index */
   --z-dropdown: var(--neo-z-dropdown);
@@ -282,9 +239,7 @@
 
 @media (prefers-contrast: high) {
   :root {
-    --neo-border-subtle: rgba(255, 255, 255, 0.2);
-    --neo-border-default: rgba(255, 255, 255, 0.3);
-    --neo-text-tertiary: rgba(255, 255, 255, 0.7);
+    --neo-text-tertiary: var(--au-text-2);
   }
 }
 

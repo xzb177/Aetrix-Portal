@@ -70,6 +70,8 @@ async function loadMyRealms() {
 // ===== 库存检查 =====
 const lookupLoading = ref(false)
 const lookupDone = ref(false)
+/** SYS-4：加载失败的海报 key 集合，404 时显示占位图标 */
+const failedPosters = ref(new Set<string>())
 const lookupHits = ref<MediaLookupItem[]>([])
 let lookupTimer: number | undefined
 
@@ -351,7 +353,7 @@ onMounted(async () => {
               :to="`/media/${hit.id}`"
             >
               <div class="hit-poster">
-                <img v-if="hit.poster_url" :src="hit.poster_url" :alt="hit.name" loading="lazy" />
+                <img v-if="hit.poster_url && !failedPosters.has(hit.id)" :src="hit.poster_url" :alt="hit.name" loading="lazy" @error="failedPosters.add(hit.id)" />
                 <Film v-else :size="14" />
               </div>
               <div class="hit-body">
@@ -577,8 +579,8 @@ onMounted(async () => {
 
 .realm-hint {
   margin: 0.375rem 0 0;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   line-height: 1.5;
 }
 
@@ -662,7 +664,7 @@ select.au-input option { background: var(--au-bg-soft); }
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .hit-poster img { width: 100%; height: 100%; object-fit: cover; }
@@ -678,7 +680,7 @@ select.au-input option { background: var(--au-bg-soft); }
   white-space: nowrap;
 }
 
-.hit-meta { font-size: 0.6875rem; color: var(--au-text-4); }
+.hit-meta { font-size: 0.75rem; color: var(--au-text-3); }
 .hit-play { color: var(--au-primary); flex-shrink: 0; }
 
 .lookup-note {

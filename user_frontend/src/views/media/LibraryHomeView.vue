@@ -663,7 +663,7 @@ onMounted(() => {
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-full);
   color: var(--au-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 

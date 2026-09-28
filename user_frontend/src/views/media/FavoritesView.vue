@@ -17,6 +17,8 @@ const loading = ref(true)
 const items = ref<EmbyItem[]>([])
 const typeFilter = ref('')
 const removing = ref<Set<string>>(new Set())
+/** SYS-4：加载失败的海报 id 集合，404/过期时显示占位 */
+const failedPosters = ref<Set<string>>(new Set())
 
 const filters = [
   { value: '', label: '全部' },
@@ -143,7 +145,7 @@ onMounted(load)
           :class="{ leaving: removing.has(item.Id) }"
         >
           <RouterLink :to="target(item)" class="poster-wrap">
-            <img v-if="posterUrl(item, 342)" :src="posterUrl(item, 342)" :alt="item.Name" loading="lazy" />
+            <img v-if="posterUrl(item, 342) && !failedPosters.has(item.Id)" :src="posterUrl(item, 342)" :alt="item.Name" loading="lazy" @error="failedPosters.add(item.Id)" />
             <div v-else class="poster-fallback">
               <Layers :size="26" />
             </div>
@@ -258,8 +260,8 @@ onMounted(load)
 }
 
 .chip-count {
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   font-variant-numeric: tabular-nums;
 }
 
@@ -316,7 +318,7 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .hover-play {
@@ -411,7 +413,7 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 0.4375rem;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: var(--au-text-3);
 }
 

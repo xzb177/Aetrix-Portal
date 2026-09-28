@@ -514,7 +514,7 @@ onMounted(() => {
 }
 
 .message-author {
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--au-primary);
 }
@@ -557,7 +557,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   margin-bottom: 1rem;
 }
 

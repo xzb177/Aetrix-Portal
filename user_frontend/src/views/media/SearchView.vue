@@ -260,7 +260,7 @@ onBeforeUnmount(() => {
 .search-icon {
   position: absolute;
   left: 0.9375rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   pointer-events: none;
 }
 
@@ -279,7 +279,7 @@ onBeforeUnmount(() => {
 }
 
 .search-input::placeholder {
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .search-input:focus {
@@ -306,6 +306,7 @@ onBeforeUnmount(() => {
   color: var(--au-text-3);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  /* SYS-2：扩大点击热区到 40px，视觉尺寸不变 */
 }
 
 .clear-btn::before {
@@ -321,6 +322,12 @@ onBeforeUnmount(() => {
 .clear-btn > svg {
   position: relative;
   z-index: 1;
+}
+
+.clear-btn::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
 }
 
 .clear-btn:hover {

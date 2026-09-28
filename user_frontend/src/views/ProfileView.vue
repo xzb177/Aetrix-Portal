@@ -719,7 +719,7 @@ function formatDate(iso?: string | null) {
   border-radius: var(--au-r-full);
   background: var(--au-gradient-warm);
   color: var(--au-on-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -729,7 +729,7 @@ function formatDate(iso?: string | null) {
   border-radius: var(--au-r-full);
   background: var(--au-primary-soft);
   color: var(--au-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 
@@ -779,8 +779,8 @@ function formatDate(iso?: string | null) {
 .id-stat strong.accent { color: var(--au-primary); }
 
 .id-stat span {
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
 }
 
 /* ==================== 卡片 ==================== */
@@ -840,14 +840,14 @@ function formatDate(iso?: string | null) {
   border-top: 1px dashed var(--au-border);
   font-size: 0.75rem;
   line-height: 1.5;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .badge {
   flex-shrink: 0;
   padding: 0.0625rem 0.5rem;
   border-radius: var(--au-r-full);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   background: var(--au-surface-2);
   color: var(--au-text-3);
 }
@@ -867,7 +867,7 @@ function formatDate(iso?: string | null) {
   padding: 0.0625rem 0.4375rem;
   border-radius: var(--au-r-full);
   background: var(--au-surface-2);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 500;
   color: var(--au-text-3);
 }
@@ -955,7 +955,7 @@ function formatDate(iso?: string | null) {
   background: transparent;
   border: none;
   border-radius: var(--au-r-sm);
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   cursor: pointer;
   transition: all var(--au-fast) var(--au-ease);
 }
@@ -999,8 +999,8 @@ function formatDate(iso?: string | null) {
 .block-label {
   display: block;
   margin-bottom: 0.5rem;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
 }
 
 .realm-list {
@@ -1031,14 +1031,14 @@ function formatDate(iso?: string | null) {
   align-items: center;
   gap: 0.375rem;
   margin-top: 0.25rem;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
   word-break: break-all;
 }
 
 .realm-url .mono { flex: 1; }
 
-.realm-url.muted { color: var(--au-text-4); font-style: normal; }
+.realm-url.muted { color: var(--au-text-3); font-style: normal; }
 
 /* 没查看权限时的解锁卡 */
 .unlock-card {
@@ -1071,7 +1071,7 @@ function formatDate(iso?: string | null) {
 .unlock-hint {
   margin: 0;
   font-size: 0.75rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .scheme-btns {
@@ -1190,13 +1190,13 @@ function formatDate(iso?: string | null) {
 
 .sub-history-date {
   flex: 1;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .sub-realm {
   font-style: normal;
-  font-size: 0.6875rem;
-  color: var(--au-text-4);
+  font-size: 0.75rem;
+  color: var(--au-text-3);
 }
 
 /* ==================== 安全设置 ==================== */
@@ -1228,13 +1228,13 @@ function formatDate(iso?: string | null) {
 
 .list-item.danger { color: var(--au-danger); }
 
-.list-icon { color: var(--au-text-4); }
+.list-icon { color: var(--au-text-3); }
 
 .list-item.danger .list-icon { color: var(--au-danger); opacity: 0.8; }
 
 .list-text { flex: 1; }
 
-.list-arrow { color: var(--au-text-4); }
+.list-arrow { color: var(--au-text-3); }
 
 /* ==================== 弹窗 ==================== */
 .modal-mask {

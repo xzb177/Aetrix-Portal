@@ -601,7 +601,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   justify-content: center;
   background: var(--au-warning);
   color: var(--au-on-warning);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 800;
   border-radius: var(--au-r-full);
   /* 与页面底色同色的描边环，把徽章从任何背景上“抠”出来 */
@@ -636,11 +636,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   background: var(--au-warning-soft);
   border-radius: var(--au-r-full);
   color: var(--au-warning);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
-.msg-drop-clear { font-size: 0.625rem; color: var(--au-text-4); }
+.msg-drop-clear { font-size: 0.75rem; color: var(--au-text-3); }
 
 .msg-drop-item {
   display: flex;
@@ -687,7 +687,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   white-space: nowrap;
 }
 
-.msg-drop-meta { font-size: 0.6875rem; color: var(--au-text-4); }
+.msg-drop-meta { font-size: 0.75rem; color: var(--au-text-3); }
 
 .msg-drop-dot {
   width: 6px;
@@ -703,7 +703,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   padding: 1.125rem 1rem;
   text-align: center;
   font-size: 0.75rem;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
   border-bottom: 1px solid var(--au-border);
 }
 
@@ -790,10 +790,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .dropdown-group-title {
   margin: 0.375rem 0 0.125rem;
   padding: 0 1rem;
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: var(--au-text-4);
+  color: var(--au-text-3);
 }
 
 .dropdown-badge {
@@ -806,7 +806,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   justify-content: center;
   background: var(--au-gradient-warm);
   color: var(--au-on-primary);
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
 }
@@ -819,7 +819,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   background: var(--au-gradient-warm);
   border-radius: var(--au-r-full);
   color: var(--au-on-primary);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
