@@ -214,13 +214,13 @@ def _enrich_fetch(item: Any) -> dict:
                 _ok = altmeta.enabled(_cfg_db)
                 if _ok:
                     altmeta.warn_dead_keys_once(_cfg_db)
-                    _rate = altmeta.rate_per_min(_cfg_db)
+                    _interval = altmeta.min_interval(_cfg_db)
             finally:
                 _cfg_db.close()
             if _ok:
                 try:
                     result["douban_hit"] = altmeta.search(
-                        item.name or "", item.production_year, kind, _rate)
+                        item.name or "", item.production_year, kind, _interval)
                 except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
                     logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
     except Exception as exc:  # noqa: BLE001
