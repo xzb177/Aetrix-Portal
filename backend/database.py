@@ -82,7 +82,63 @@ if DATABASE_TYPE == "sqlite":
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_real_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+class _SessionLocalProxy:
+    """``SessionLocal`` 本体：一个永远在**调用时刻**解析目标的转发器。
+
+    ## 为什么需要它
+
+    仓库里 20+ 个模块写的是 ``from backend.database import SessionLocal``，
+    那是 **import 期就把引用复制一份**到本模块（等价于值传递）。此后
+    ``database.SessionLocal`` 换掉，它们手里的旧引用**不会跟着变**。
+
+    正常运行时 ``SessionLocal`` 只在 ``database.py`` 赋值一次、无人改它，所以
+    无害。但测试为隔离库会重设它，于是踩坑::
+
+        import backend.database as dbmod
+        from backend.emby_server import enrich_worker   # 此刻绑定旧 SessionLocal
+        dbmod.SessionLocal = sessionmaker(...)          # 重建后 enrich_worker 不跟着变
+        # enrich_worker.get_progress() 于是查旧库 → 读到空表 → assert 0 == 2
+
+    是否踩中取决于测试文件的字母序，失败时隐时现，极难定位。
+
+    ## 设计要点
+
+    这个代理**对象本身永不更换**——所有模块 import 到的都是同一个实例。
+    切换只发生在它内部指向的目标上，所以无论 import 顺序如何、各模块何时
+    import，调用时看到的都是当前生效的那个。
+
+    全仓库 ``SessionLocal`` 只被调用（``SessionLocal()``），没有任何属性访问，
+    因此把它做成可调用对象是安全的。
+    """
+
+    def __init__(self, factory):
+        self._factory = factory
+
+    def __call__(self, *args, **kwargs):
+        return self._factory(*args, **kwargs)
+
+    def __repr__(self):
+        return f"<SessionLocal -> {self._factory!r}>"
+
+
+# 全局唯一的代理实例。configure_session_local 只改它的目标，不换它。
+SessionLocal = _SessionLocalProxy(_real_session_local)
+
+
+def configure_session_local(factory=None) -> None:
+    """切换 SessionLocal 代理指向的目标（**测试专用**）。
+
+    请务必用这个函数，不要写 ``database.SessionLocal = ...``：
+    直接赋值会把代理换成一个被冻结的真 factory，此后各模块 import 到的就不再是
+    代理，转发能力随之失效——正是本类要解决的陷阱换个形式复发。
+
+    ``factory=None`` 表示恢复默认（数据库模块的 engine）。
+    """
+    SessionLocal._factory = factory if factory is not None else _real_session_local
+
 
 Base = declarative_base()
 

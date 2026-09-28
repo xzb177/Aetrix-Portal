@@ -14,7 +14,9 @@ from backend import database as _dbmod
 from sqlalchemy import create_engine as _ce
 from sqlalchemy.orm import sessionmaker as _sm
 _dbmod.engine = _ce(os.environ["DATABASE_URL"])
-_dbmod.SessionLocal = _sm(bind=_dbmod.engine)
+# 必须走 configure_session_local：直接赋值会把 SessionLocal 代理顶掉，
+# 之后各模块 import 到的是被冻结的真 factory，又会查旧库。
+_dbmod.configure_session_local(_sm(bind=_dbmod.engine))
 
 import uuid
 from datetime import datetime, timedelta

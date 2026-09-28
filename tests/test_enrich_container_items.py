@@ -20,20 +20,14 @@ file_path——而 TMDB 匹配只需要 ``name`` + ``production_year``，压根�
 ``test_enrich_worker`` 建库之前的那份 SessionLocal，后面 test_get_progress
 就会读到空表（表现为 ``assert 0 == 2``）。改成运行期才导入即可两不耽误。
 """
-import importlib
 from types import SimpleNamespace
 from unittest import mock
 
+from backend.emby_server import enrich_worker
+
 
 def _ew():
-    """运行期导入：此时同批次的库已经建好，绑定到正确的 SessionLocal。
-
-    不能在模块顶层 import——``enrich_worker`` 顶部是
-    ``from backend.database import SessionLocal``，import 那一刻就把引用绑死了。
-    本文件按字母序排在 test_enrich_worker 之前，顶层 import 会让它拿到建库前的
-    旧 session，后续 test_get_progress 读到空表（assert 0 == 2）。
-    """
-    return importlib.import_module("backend.emby_server.enrich_worker")
+    return enrich_worker
 
 
 def _item(item_type, name, year=2020, file_path=None):
