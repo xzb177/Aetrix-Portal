@@ -10,8 +10,10 @@ HTTP 层，客户端直接从 ``www.googleapis.com`` 取文件。
 2. 调 rclone RC ``operations/stat`` 查 Google Drive file ID；
 3. 拿 Google access token：
    - OAuth 型 remote：从 rclone.conf 读 token，过期自动用 refresh_token 刷新；
-   - 服务账号型 remote：读 ``service_account_file`` 指向的 JSON，用私钥签发
-     JWT（OAuth2 JWT Bearer 流程）换 access token，1 小时有效期，进程内缓存；
+   - 服务账号型 remote：走 ``ServiceAccountPool`` 轮换池 —— 递归扫描
+     ``SA_POOL_DIR``（默认 ``/sa-accounts``）下所有 ``*.json``，round-robin
+     取 token，token 按账号缓存 1 小时；被限流（429/403）的账号自动冷却
+     5 分钟（``SA_POOL_COOLDOWN_SEC`` 可调），期间跳过；全部冷却则返回 None；
 4. 拼出 ``https://www.googleapis.com/drive/v3/files/{id}?alt=media&access_token=...``。
 
 所有失败一律返回 None（调用方回退到原有代理逻辑），绝不抛异常。
@@ -34,6 +36,7 @@ import os
 import re
 import threading
 import time
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import unquote
@@ -316,11 +319,19 @@ def _sa_jwt_assertion(sa_info: dict, remote: str) -> Optional[str]:
         return None
 
 
+class SARateLimited(Exception):
+    """服务账号被限流（token 接口返回 429/403）。
+
+    调用方（轮换池）应将该账号标记为冷却，一段时间后再用。
+    """
+
+
 async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, float]]:
-    """用服务账号 JSON 生成 Google access token。返回 (token, expiry_ts)，失败 None。
+    """用服务账号 JSON 生成 Google access token。返回 (token, expiry_ts)。
 
     ``sa_file`` 路径从 rclone.conf 的 ``service_account_file`` 动态读取，
-    不 hardcode。任何异常都返回 None（调用方回退到代理）。
+    不 hardcode。429/403 抛 ``SARateLimited``（调用方做冷却故障转移）；
+    其它失败返回 None（调用方回退到代理）。
     """
     try:
         with open(sa_file, "r", encoding="utf-8") as f:
@@ -353,6 +364,10 @@ async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, flo
     except Exception as exc:
         logger.warning("直链：[%s] 服务账号 token 请求失败: %s", remote, exc)
         return None
+    if resp.status_code in (429, 403):
+        # 限流：抛给轮换池做冷却故障转移（不记为普通失败）
+        logger.warning("直链：[%s] 服务账号被限流（%s），将冷却", remote, resp.status_code)
+        raise SARateLimited(f"token endpoint returned {resp.status_code}")
     if resp.status_code != 200:
         logger.warning("直链：[%s] 服务账号 token 返回 %s", remote, resp.status_code)
         return None
@@ -372,11 +387,223 @@ async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, flo
     return token, time.time() + expires_in
 
 
+def _sa_pool_dir() -> str:
+    return os.getenv("SA_POOL_DIR", "/sa-accounts")
+
+
+def _short_sa_name(path: str) -> str:
+    return os.path.basename(path)
+
+
+class ServiceAccountPool:
+    """服务账号轮换池：把 Google Drive API 配额分散到多个服务账号上。
+
+    - 初始化时递归扫描 ``SA_POOL_DIR``（默认 ``/sa-accounts``）下所有 ``*.json``，
+      只收录 ``type=service_account`` 且含私钥/邮箱的有效账号；
+    - ``get_token()`` 按 round-robin 返回健康账号的 access token，线程安全；
+    - 每个账号的 token 缓存 1 小时（提前 5 分钟视为过期）；
+    - 账号被限流（429/403）时自动冷却（默认 5 分钟），期间跳过；
+      全部冷却时返回 None（调用方回退到代理）；
+    - 启动时后台预热所有账号的 token（不阻塞启动）；
+    - 后台线程每 10 分钟清理过期的冷却标记。
+
+    所有失败都收敛为 None，绝不抛异常影响播放。
+    """
+
+    def __init__(
+        self,
+        sa_dir: Optional[str] = None,
+        cooldown_sec: float = 300.0,
+        prewarm: bool = True,
+        healthcheck_interval: float = 600.0,
+    ):
+        self._sa_dir = sa_dir or _sa_pool_dir()
+        try:
+            self._cooldown_sec = max(0.0, float(os.getenv("SA_POOL_COOLDOWN_SEC", cooldown_sec)))
+        except (TypeError, ValueError):
+            self._cooldown_sec = 300.0
+        self._lock = threading.Lock()
+        self._accounts: list[dict] = []          # {"path", "email"}，按 path 排序
+        self._tokens: dict[str, dict] = {}       # path -> {"token", "expiry"}
+        self._cooldown_until: dict[str, float] = {}  # path -> 冷却结束时间戳
+        self._cursor = 0
+        self._scan_accounts()
+        if prewarm and os.getenv("SA_POOL_PREWARM", "true").strip().lower() not in {
+            "false", "0", "no", "off",
+        }:
+            self._start_prewarm()
+        if healthcheck_interval > 0:
+            self._start_healthcheck(healthcheck_interval)
+
+    # ---- 初始化 ----
+
+    def _scan_accounts(self) -> None:
+        accounts = []
+        if not os.path.isdir(self._sa_dir):
+            logger.warning("直链：服务账号目录不存在 %s，轮换池为空", self._sa_dir)
+            with self._lock:
+                self._accounts = []
+            return
+        for root, _dirs, files in os.walk(self._sa_dir):
+            for name in sorted(files):
+                if not name.endswith(".json"):
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if data.get("type") != "service_account":
+                    continue
+                if not data.get("private_key") or not data.get("client_email"):
+                    continue
+                accounts.append({"path": path, "email": data["client_email"]})
+        accounts.sort(key=lambda a: a["path"])
+        with self._lock:
+            self._accounts = accounts
+        logger.info("直链：服务账号池加载 %d 个账号（%s）", len(accounts), self._sa_dir)
+
+    @property
+    def account_count(self) -> int:
+        with self._lock:
+            return len(self._accounts)
+
+    # ---- 后台任务 ----
+
+    def _start_prewarm(self) -> None:
+        t = threading.Thread(target=self._prewarm_all, name="sa-pool-prewarm", daemon=True)
+        t.start()
+
+    def _prewarm_all(self) -> None:
+        import concurrent.futures
+
+        with self._lock:
+            accounts = list(self._accounts)
+        if not accounts:
+            return
+        logger.info("直链：服务账号池预热开始（%d 个）", len(accounts))
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(5, len(accounts)), thread_name_prefix="sa-prewarm"
+        ) as ex:
+            futs = [ex.submit(self._prewarm_one, acct) for acct in accounts]
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+        logger.info("直链：服务账号池预热完成")
+
+    def _prewarm_one(self, acct: dict) -> None:
+        try:
+            result = asyncio.run(_sa_access_token(acct["path"], acct["email"]))
+        except SARateLimited:
+            self._mark_cooling(acct["path"])
+            return
+        except Exception:
+            return
+        if result:
+            token, expiry = result
+            with self._lock:
+                self._tokens[acct["path"]] = {"token": token, "expiry": expiry}
+
+    def _start_healthcheck(self, interval: float) -> None:
+        t = threading.Thread(
+            target=self._healthcheck_loop, args=(interval,),
+            name="sa-pool-healthcheck", daemon=True,
+        )
+        t.start()
+
+    def _healthcheck_loop(self, interval: float) -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                with self._lock:
+                    self._purge_cooldowns(time.time())
+            except Exception:
+                pass
+
+    # ---- 冷却管理 ----
+
+    def _purge_cooldowns(self, now: float) -> None:
+        expired = [p for p, ts in self._cooldown_until.items() if ts <= now]
+        for p in expired:
+            del self._cooldown_until[p]
+            logger.info("直链：服务账号 %s 冷却结束，恢复使用", _short_sa_name(p))
+
+    def _mark_cooling(self, path: str) -> None:
+        with self._lock:
+            self._cooldown_until[path] = time.time() + self._cooldown_sec
+        logger.warning(
+            "直链：服务账号 %s 被限流，冷却 %d 秒", _short_sa_name(path), int(self._cooldown_sec)
+        )
+
+    def _healthy_accounts(self, now: float) -> list[dict]:
+        self._purge_cooldowns(now)
+        return [a for a in self._accounts if a["path"] not in self._cooldown_until]
+
+    # ---- 对外接口 ----
+
+    async def get_token(self) -> Optional[tuple[str, float]]:
+        """按 round-robin 返回 (access_token, expiry_ts)。
+
+        跳过冷却中的账号；全部冷却或池为空时返回 None。
+        429/403 的账号自动进入冷却并尝试下一个；其它失败直接试下一个。
+        """
+        now = time.time()
+        with self._lock:
+            healthy = self._healthy_accounts(now)
+            if not healthy:
+                return None
+            start = self._cursor % len(healthy)
+            self._cursor += 1
+            ordered = healthy[start:] + healthy[:start]
+        for acct in ordered:
+            path = acct["path"]
+            with self._lock:
+                cached = self._tokens.get(path)
+                if cached and cached["token"] and now < cached["expiry"] - 300:
+                    return cached["token"], cached["expiry"]
+            try:
+                result = await _sa_access_token(path, acct["email"])
+            except SARateLimited:
+                self._mark_cooling(path)
+                continue
+            except Exception:
+                # _sa_access_token 内部已捕获绝大多数异常；这里兜底
+                logger.warning("直链：服务账号 %s 取 token 异常，跳过", _short_sa_name(path))
+                continue
+            if not result:
+                # 账号级失败（文件损坏/400 等），换下一个，不冷却
+                continue
+            token, expiry = result
+            with self._lock:
+                self._tokens[path] = {"token": token, "expiry": expiry}
+            return token, expiry
+        return None
+
+
+# 进程级单例：EA 进程内只建一个池
+_sa_pool: Optional[ServiceAccountPool] = None
+_sa_pool_lock = threading.Lock()
+
+
+def get_sa_pool() -> ServiceAccountPool:
+    """返回进程级服务账号轮换池单例（懒加载，线程安全）。"""
+    global _sa_pool
+    with _sa_pool_lock:
+        if _sa_pool is None:
+            _sa_pool = ServiceAccountPool()
+        return _sa_pool
+
+
 async def get_access_token(fs: str) -> Optional[str]:
     """拿有效的 Google access token（缓存 + 过期自动刷新）。失败返回 None。
 
     ``fs`` 形如 ``paul_emby:``，对应 rclone.conf 里的 ``[paul_emby]`` section。
-    优先级：OAuth 有效 token > OAuth 刷新 > 服务账号 JWT。两者都有时 OAuth 优先。
+    优先级：OAuth 有效 token > OAuth 刷新 > 服务账号轮换池。两者都有时 OAuth 优先。
     """
     remote = fs.rstrip(":")
     cache_key = remote
@@ -407,15 +634,20 @@ async def get_access_token(fs: str) -> Optional[str]:
             return new_token
         # 刷新失败：如果配了服务账号，继续走 SA 路径
 
-    # 服务账号：用 JWT 生成 access token（1 小时有效，同样进缓存）
+    # 服务账号型 remote：走轮换池（配额分散到多个 SA + 限流自动故障转移）。
+    # rclone.conf 里 service_account_file 的存在只作为"这是 SA 型 remote"的判据，
+    # 实际用哪个 SA 的 token 由池子 round-robin 决定。
     sa_file = info.get("service_account_file", "")
     if sa_file:
-        sa_result = await _sa_access_token(sa_file, remote)
-        if sa_result:
-            sa_token, sa_expiry = sa_result
+        try:
+            pool_result = await get_sa_pool().get_token()
+        except Exception as exc:
+            logger.warning("直链：[%s] 服务账号池异常: %s", remote, exc)
+            return None
+        if pool_result:
+            sa_token, sa_expiry = pool_result
             with _token_lock:
                 _token_cache[cache_key] = {"expiry": sa_expiry, "token": sa_token}
-            logger.info("直链：[%s] 服务账号 token 已生成", remote)
             return sa_token
         return None
 
