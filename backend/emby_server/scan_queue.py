@@ -640,7 +640,12 @@ def _run_task(task: ScanTask) -> None:
         task.state = STATE_DONE
         task.result = (library.scan_status or "success")
     except Exception as exc:  # noqa: BLE001 — 后台线程的异常必须落到队列状态里
-        logger.exception("媒体库 %s 扫描失败", task.library_id)
+        # 诊断字段：线程名 + Session id，用于定位 Session 跨线程问题
+        # （logger.exception 自带 traceback，级别为 error）
+        logger.exception(
+            "媒体库 %s 扫描失败 trigger=_run_task thread=%s session_id=%s",
+            task.library_id, threading.current_thread().name, id(db),
+        )
         task.state = STATE_FAILED
         task.result = STATE_FAILED
         task.error = f"{type(exc).__name__}: {exc}"[:500]
