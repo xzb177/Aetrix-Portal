@@ -1,5 +1,11 @@
 """播放速度优化测试：container 回退 + PlaybackInfo 缓存。"""
+import os
+
 import pytest
+
+# 测试文件所在仓库根目录（CI 和本地都能用）
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_API_PATH = os.path.join(_REPO_ROOT, "backend", "emby_server", "api.py")
 
 
 class TestContainerFallback:
@@ -43,7 +49,7 @@ class TestContainerFallback:
 
     def test_source_contains_mapping(self):
         # 源码级断言：api.py 里确实有回退表和函数
-        src = open("/tmp/perf-playback/backend/emby_server/api.py").read()
+        src = open(_API_PATH).read()
         assert "_CONTAINER_BY_EXT" in src
         assert "def _container_of" in src
         assert '"Container": _container_of(item)' in src
@@ -53,7 +59,7 @@ class TestPlaybackInfoCache:
     """playback_info 缓存：key 构成、TTL 可配、PlaySessionId 不进缓存。"""
 
     def _src(self):
-        return open("/tmp/perf-playback/backend/emby_server/api.py").read()
+        return open(_API_PATH).read()
 
     def test_cache_uses_redis_cache_manager(self):
         src = self._src()

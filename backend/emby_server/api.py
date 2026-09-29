@@ -2125,7 +2125,7 @@ async def playback_info(
     # PlaybackInfo 短期缓存（5 分钟）：同一部片子短时间内重复请求直接走 Redis，
     # 省掉 _media_source 的 DB 查询。PlaySessionId 和 api_key 每次重新生成，不进缓存。
     # 缓存 key 包含 user_id（权限不同）+ 设备 profile 指纹 + 码率上限。
-    cache_ttl = int(os.getenv("PLAYBACKINFO_CACHE_TTL", "300") or 300)
+    cache_ttl = int(os.getenv("PLAYBACKINFO_CACHE_TTL", "300") or "300")
     cache_key = None
     cached_source = None
     if cache_ttl > 0:
