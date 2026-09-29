@@ -869,13 +869,24 @@ class LibrarySnapshot:
 
     @classmethod
     def of(cls, library) -> "LibrarySnapshot":
+        paths = tuple(p.strip() for p in (library.paths or "").split(",") if p.strip())
+        # 挂载互斥（scan_queue._MOUNT_OWNER）要看「实际用了哪些挂载」：
+        # 除了 mount_ids 字段，paths 里的 mount://<id>/... 也算。
+        # 否则 mount_ids 为空的库会绕过串行化，与同挂载的库并发扫描——
+        # 2026-09-29 生产事故：动漫/国产剧/欧美剧同用 mount 3 并发扫描，
+        # 触发 SQLAlchemy Session 并发崩溃（provisioning a new connection）。
+        mount_ids = set(mount_lib.parse_mount_ids(library))
+        for p in paths:
+            parsed = mount_lib.parse_mount_path(p)
+            if parsed is not None:
+                mount_ids.add(parsed[0])
         return cls(
             library_id=library.id,
             name=library.name,
             collection_type=library.collection_type or "movies",
-            paths=tuple(p.strip() for p in (library.paths or "").split(",") if p.strip()),
+            paths=paths,
             scrape_policy=normalize_scrape_policy(getattr(library, "scrape_policy", None)),
-            mount_ids=tuple(mount_lib.parse_mount_ids(library)),
+            mount_ids=tuple(sorted(mount_ids)),
         )
 
 
