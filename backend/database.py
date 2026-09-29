@@ -410,6 +410,34 @@ def _auto_migrate():
     _backfill_orm_columns(existing_tables)
     _ensure_probe_index(existing_tables)
     _ensure_default_realm()
+    _hash_plain_emby_tokens(existing_tables)
+
+
+def _hash_plain_emby_tokens(existing_tables: set) -> None:
+    """P1 安全修复：emby_api_tokens.token 改存 SHA256 哈希。
+
+    存量明文 token（40 位 token_hex(20) 或其他遗留格式）一次性哈希化。
+    幂等：只处理长度 != 64 的行，已哈希的（64 位 hex）跳过，跑两次不坏。
+    注意这是单向的：回滚代码版本不会恢复明文，旧客户端会话需重新登录。
+    """
+    import hashlib
+
+    if "emby_api_tokens" not in existing_tables:
+        return
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id, token FROM emby_api_tokens WHERE LENGTH(token) != 64")
+        ).fetchall()
+        for rid, tok in rows:
+            hashed = hashlib.sha256(tok.encode("utf-8")).hexdigest()
+            conn.execute(
+                text("UPDATE emby_api_tokens SET token = :h WHERE id = :i"),
+                {"h": hashed, "i": rid},
+            )
+        if rows:
+            print(f"  🔧 已迁移: emby_api_tokens.token 哈希化 {len(rows)} 条")
 
 
 def _ensure_probe_index(existing_tables: set) -> None:

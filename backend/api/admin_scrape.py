@@ -429,6 +429,8 @@ def upload_sa_file(
     import json as json_lib
 
     content = file.file.read()
+    if len(content) > 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件太大（最大 1MB）")
     try:
         sa_data = json_lib.loads(content)
         client_email = sa_data.get("client_email", "")
@@ -436,16 +438,21 @@ def upload_sa_file(
     except Exception:
         return {"success": False, "message": "不是有效的 JSON 文件"}
 
+    # P1 安全修复：文件名用户可控，防路径遍历（../../）+ 只允许 .json
+    filename = os.path.basename(file.filename or "")
+    if not filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="只允许上传 .json 文件")
+
     # 存到安全目录
     sa_dir = "/opt/aetrix-portal/sa"
     os.makedirs(sa_dir, exist_ok=True)
-    stored_path = os.path.join(sa_dir, file.filename)
+    stored_path = os.path.join(sa_dir, filename)
     with open(stored_path, "wb") as f:
         f.write(content)
     os.chmod(stored_path, 0o600)
 
     rec = em.ServiceAccountFile(
-        filename=file.filename,
+        filename=filename,
         stored_path=stored_path,
         client_email=client_email,
         project_id=project_id,

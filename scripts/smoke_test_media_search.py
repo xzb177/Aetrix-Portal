@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from backend import models
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
+from backend.emby_server.auth import hash_emby_token  # noqa: E402
 from backend.emby_server import scanner as sc
 from backend.emby_server import search as se
 from backend.main import app
@@ -481,7 +482,7 @@ try:
     api_db.commit()
     api_db.refresh(api_user)
     token = f"media-smoke-{suffix}-" + "a" * 12
-    api_db.add(em.EmbyApiToken(token=token, user_id=api_user.id, device_id="smoke-device"))
+    api_db.add(em.EmbyApiToken(token=hash_emby_token(token), user_id=api_user.id, device_id="smoke-device"))
     api_db.commit()
     headers = {"X-Emby-Token": token}
 
@@ -564,7 +565,7 @@ try:
     # 系统信息（无认证）——证明应用本身能正常启动响应
     check("公开系统信息可用（裸根路径）", client.get("/System/Info/Public").status_code == 200)
 
-    api_db.query(em.EmbyApiToken).filter(em.EmbyApiToken.token == token).delete()
+    api_db.query(em.EmbyApiToken).filter(em.EmbyApiToken.token == hash_emby_token(token)).delete()
     api_db.query(models.WebUser).filter(models.WebUser.id == api_user.id).delete()
     api_db.commit()
 finally:

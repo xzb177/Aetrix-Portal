@@ -481,6 +481,8 @@ def upload_service_account(
     project_id = sa_data.get("project_id", "")
     filename = f"{r.name}.json"
     sa_dir = _sa_dir()
+    # 安全说明：r.name 建 remote 时经 _validate_name() 校验（只允许字母/数字/下划线/中划线），
+    # 不含路径分隔符，此处 join 不存在路径遍历风险。
     sa_path = os.path.join(sa_dir, filename)
     # 目录不存在时**不**建：容器本地新建出来的目录 rclone 容器看不到，
     # 建了等于写进黑洞（写成功、用不了、容器一重建就没）。宁可直接报错。

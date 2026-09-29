@@ -461,12 +461,16 @@ class Pan115Account(Base):
 
 
 class EmbyApiToken(Base):
-    """Emby 客户端 Access Token"""
+    """Emby 客户端 Access Token
+
+    P1 安全说明：``token`` 列存的是 SHA256 哈希（64 位 hex），不是明文。
+    签发时把明文给客户端，校验时对输入哈希后再比对（见 auth.hash_emby_token）。
+    """
 
     __tablename__ = "emby_api_tokens"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    token = Column(String(64), unique=True, index=True, nullable=False)
+    token = Column(String(64), unique=True, index=True, nullable=False)  # SHA256 hex，非明文
     user_id = Column(Integer, ForeignKey("web_users.id"), nullable=False)
     device_id = Column(String(100))
     app_name = Column(String(100))
