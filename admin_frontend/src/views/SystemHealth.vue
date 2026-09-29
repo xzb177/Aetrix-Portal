@@ -14,8 +14,18 @@ const overview = ref<{ total_items: number; total_libraries: number; active_sess
 const loading = ref(false)
 const lastChecked = ref('')
 
+const panelOk = computed(() => health.value?.status === 'healthy' || health.value?.status === 'degraded')
+const panelDetail = computed(() => {
+  if (health.value?.status === 'healthy') return 'API 正常响应'
+  if (health.value?.status === 'degraded') {
+    const issues = health.value?.health_issues?.map((i) => i.message).join('；')
+    return issues ? `有警告：${issues}` : '有警告，API 正常响应'
+  }
+  return '无法确认状态'
+})
+
 const checks = computed(() => [
-  { label: 'EM 面板', detail: health.value?.status === 'healthy' ? 'API 正常响应' : '无法确认状态', ok: health.value?.status === 'healthy', icon: Activity },
+  { label: 'EM 面板', detail: panelDetail.value, ok: panelOk.value, icon: Activity },
   { label: '共享数据库', detail: health.value?.database || '未返回数据库信息', ok: !!health.value, icon: Database },
   { label: '媒体网关', detail: overview.value ? `${overview.value.total_items} 个条目可用` : '等待媒体数据', ok: !!overview.value, icon: Film },
   { label: '存储来源', detail: `${mounts.value.filter((m) => m.is_enabled).length} 个挂载已启用`, ok: mounts.value.length === 0 || mounts.value.every((m) => m.last_check_ok !== false), icon: HardDrive },

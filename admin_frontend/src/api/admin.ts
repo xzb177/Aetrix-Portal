@@ -435,6 +435,8 @@ export const fetchOverview = () => get<OverviewStats>('/stats/overview')
 
 export interface PanelHealth {
   status: string
+  health_level?: string
+  health_issues?: Array<{ level: string; key: string; message: string }>
   timestamp: string
   database: string
   online_users: number
