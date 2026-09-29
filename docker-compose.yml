@@ -213,6 +213,13 @@ services:
       - --rc-addr=0.0.0.0:5572
       - --rc-user=${RCLONE_RC_USER:?请在 .env 设置 RCLONE_RC_USER}
       - --rc-pass=${RCLONE_RC_PASS:?请在 .env 设置 RCLONE_RC_PASS}
+    environment:
+      # Go 堆内存上限（安全阀，不是调优）：
+      # 实测 rcd 在持续 RC 调用（扫描列目录）下堆会涨到 2.6GB（23M live objects，
+      # 强制 GC 只能回收约 2%），说明是 rclone 内部累积而非可 GC 的垃圾。
+      # GOMEMLIMIT 降不下来这部分，只能防止它继续涨爆整机内存。
+      # 真正的根治是第二步：Drive 走 SA 池直调 API，彻底不用 rcd（见 PR 描述）。
+      - GOMEMLIMIT=${RCLONE_RCD_GOMEMLIMIT:-4GiB}
     # 配置目录要可写：rclone 刷新 OAuth token / 写回 remote 状态时需要落盘，
     # 只读挂载会出现 "Failed to save config ... read-only file system"，
     # 表面能读，实际 token 一过期就再也续不回来。
@@ -260,11 +267,15 @@ services:
       - --vfs-cache-mode=full
       # 限额必须给死：这台机器磁盘有限，而单个 4K 电影就 17GB。
       # min-free-space 是兜底：剩余低于它就停止继续写入缓存（宁可不缓存也不能撑爆盘）。
-      - --vfs-cache-max-size=${RCLONE_VFS_CACHE_MAX_SIZE:-8G}
+      # 默认值从 8G 降到 2G：这是**磁盘**缓存上限；实测它只在回退代理
+      # 播放时才被用到（正常走 Drive 302 直链），2G 足够覆盖回退场景。
+      - --vfs-cache-max-size=${RCLONE_VFS_CACHE_MAX_SIZE:-2G}
       - --vfs-cache-min-free-space=${RCLONE_VFS_CACHE_MIN_FREE:-5G}
       # 预读块：决定一次回源拉多少。32M 对 4K 码率够用，又不至于让小文件浪费。
       - --vfs-read-chunk-size=32M
-      - --vfs-read-chunk-size-limit=256M
+      # 单文件内存预读上限：每个打开的文件最多在内存里攒这么多，256M→128M。
+      # 并发回退流一多，256M/文件很容易把内存吃光。
+      - --vfs-read-chunk-size-limit=${RCLONE_VFS_READ_CHUNK_LIMIT:-128M}
       # 缓存目录：rclone **没有** --vfs-cache-dir 这个 flag，VFS 缓存放在
       # 全局 --cache-dir 下的 vfs/ 子目录。写成 --vfs-cache-dir 会直接
       # Fatal error: unknown flag，容器起不来（已实测）。
