@@ -11,9 +11,20 @@ from datetime import datetime
 import redis
 from typing import Optional
 
+def _env_int_or(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int((os.getenv(name) or "").strip() or default))
+    except ValueError:
+        return default
+
+
 # ==================== 数据库配置 ====================
 # 支持环境变量切换数据库类型
-DATABASE_TYPE = os.getenv("DATABASE_TYPE", "sqlite")  # sqlite, postgresql, mysql
+# v2.42.0 起**默认 PostgreSQL**：SQLite 只在单文件、写锁模型下工作，多进程
+# 并发（扫描 / 播放上报 / 订单）容易撞 "database is locked"，且备份只能靠
+# 文件级快照。老部署只要没设 DATABASE_TYPE，需要显式设 DATABASE_TYPE=sqlite
+# 才能继续用 SQLite 路径（见下方 fallback 提示）。
+DATABASE_TYPE = os.getenv("DATABASE_TYPE", "postgresql")  # postgresql(默认), sqlite, mysql
 
 # SQLite 默认库文件名（v2.30.0 品牌统一）。
 SQLITE_DB_FILENAME = "aetrix_unified.db"
@@ -46,6 +57,26 @@ if DATABASE_TYPE == "postgresql":
             import psycopg  # noqa: F401
         except ImportError:
             DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len("postgresql://"):]
+    # 两个驱动都没装时**不能直接炸**：默认库是 PG，但本地开发 / 一次性脚本 /
+    # 契约检查常常一个驱动都不装。降级到 SQLite 并明确告警——否则默认改 PG 之后，
+    # 「不设环境变量直接跑个脚本」会从「能跑」变成「ModuleNotFoundError」。
+    # 显式设了 DATABASE_TYPE=postgresql 的部署不会走到这里（那是有意的强制）。
+    if os.getenv("DATABASE_TYPE", "").strip() == "":
+        try:
+            __import__("psycopg2")
+        except ImportError:
+            try:
+                __import__("psycopg")
+            except ImportError:
+                import warnings as _warnings
+                _warnings.warn(
+                    "未安装 PostgreSQL 驱动（psycopg2-binary / psycopg[3]），"
+                    "且未显式设置 DATABASE_TYPE，本次降级使用 SQLite。"
+                    "生产部署请安装驱动或用 Docker Compose（镜像内已装）。",
+                    RuntimeWarning, stacklevel=2,
+                )
+                DATABASE_TYPE = "sqlite"
+                DATABASE_URL = os.getenv("DATABASE_URL") or default_sqlite_url()
 elif DATABASE_TYPE == "mysql":
     DATABASE_URL = os.getenv("DATABASE_URL") or "mysql+pymysql://aetrix:password@localhost:3306/aetrix"
 else:
@@ -66,12 +97,17 @@ engine_config = {
 if DATABASE_TYPE == "sqlite":
     # busy timeout：等待写锁而不是立刻报 "database is locked"（媒体扫描/播放上报并发场景）
     engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
-elif DATABASE_TYPE == "postgresql":
-    engine_config["pool_size"] = 20
-    engine_config["max_overflow"] = 40
+# 原值 20+40=60 是**每进程**的上限；api / worker / EA 三个进程各自持有独立 engine，
+# 峰值 180 > PG 默认 max_connections(100) → 高峰期随机 "too many clients already"。
+# 改为可配 + 对多进程安全的默认值（3×(10+10)=60，留足运维连接余量）。
+_POOL_SIZE = _env_int_or("DB_POOL_SIZE", 10, 1)
+_MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 10, 0)
+if DATABASE_TYPE == "postgresql":
+    engine_config["pool_size"] = _POOL_SIZE
+    engine_config["max_overflow"] = _MAX_OVERFLOW
 elif DATABASE_TYPE == "mysql":
-    engine_config["pool_size"] = 20
-    engine_config["max_overflow"] = 40
+    engine_config["pool_size"] = _POOL_SIZE
+    engine_config["max_overflow"] = _MAX_OVERFLOW
     engine_config["pool_recycle"] = 7200
 
 engine = create_engine(DATABASE_URL, **engine_config)
