@@ -212,6 +212,13 @@ H_ADMIN, H_VIEWER, H_PLAIN = headers(admin_id), headers(viewer_id), headers(plai
 
 library_dir = tempfile.mkdtemp(prefix="aetrix-audit-lib-")
 
+# 建库前置条件：必须先有一台后端服（EA），否则 POST /libraries 会 400
+with SessionLocal() as db:
+    ea = models.RemoteServer(name="审计测试服", kind="ea", url="http://127.0.0.1:9",
+                             api_key="test", is_enabled=True)
+    db.add(ea)
+    db.commit()
+
 r = client.get("/api/admin/emby/libraries", headers=H_ADMIN)
 check("读媒体库列表 → 200", r.status_code == 200, f"HTTP {r.status_code}")
 check("读请求不产生审计记录", admin_logs() == [], f"{len(admin_logs())} 条")
