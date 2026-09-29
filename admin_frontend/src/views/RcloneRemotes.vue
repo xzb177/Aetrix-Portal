@@ -295,7 +295,7 @@ onMounted(load)
       </el-table-column>
       <el-table-column label="类型" width="110">
         <template #default="{ row }">
-          <el-tag :type="row.drive_type === 'service_account' ? 'warning' : ''" size="small">
+          <el-tag :type="row.drive_type === 'service_account' ? 'warning' : undefined" size="small">
             {{ driveTypeLabel(row) }}
           </el-tag>
         </template>
