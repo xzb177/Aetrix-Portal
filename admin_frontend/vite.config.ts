@@ -1,11 +1,24 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
+import AutoImport from 'unplugin-auto-import/vite'
 
 export default defineConfig({
   base: '/admin/',
   plugins: [
     vue(),
+    // element-plus 按需引入：只打包实际用到的组件（原来全量引入 1MB+）。
+    // <el-*> 模板标签自动解析；ElMessage/ElMessageBox 等函数式调用自动引入（含样式）。
+    Components({
+      resolvers: [ElementPlusResolver()],
+      dts: 'src/components.d.ts',
+    }),
+    AutoImport({
+      resolvers: [ElementPlusResolver()],
+      dts: 'src/auto-imports.d.ts',
+    }),
   ],
   resolve: {
     alias: {
@@ -26,7 +39,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'vue-vendor': ['vue', 'vue-router', 'pinia', 'element-plus', '@element-plus/icons-vue'],
+          // vue 核心单独成块；element-plus 按需引入后只含用到的组件，单独成块利于缓存
+          'vue-vendor': ['vue', 'vue-router', 'pinia'],
+          'element-plus': ['element-plus'],
         },
       },
     },

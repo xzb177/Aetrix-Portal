@@ -271,7 +271,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
         <el-switch
           :model-value="ops.allow_download === 'true'"
           :disabled="!isSuper"
-          @update:model-value="(v: boolean) => (ops.allow_download = v ? 'true' : 'false')"
+          @update:model-value="(v: string | number | boolean) => (ops.allow_download = v ? 'true' : 'false')"
         />
       </div>
 
@@ -293,7 +293,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
         <el-switch
           :model-value="ops.device_limit_auto_evict === 'true'"
           :disabled="!isSuper"
-          @update:model-value="(v: boolean) => (ops.device_limit_auto_evict = v ? 'true' : 'false')"
+          @update:model-value="(v: string | number | boolean) => (ops.device_limit_auto_evict = v ? 'true' : 'false')"
         />
       </div>
 

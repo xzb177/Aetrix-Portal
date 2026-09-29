@@ -1,8 +1,10 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
+// element-plus 按需引入（unplugin-vue-components + ElementPlusResolver）：
+// <el-*> 模板标签构建时自动解析，只打包用到的组件；不再全量注册。
+// 注意：不要加回 `import ElementPlus from 'element-plus'` / `app.use(ElementPlus)`，
+// 那会把整个组件库（1MB+）打进首屏包。
 
 import App from './App.vue'
 import router from './router'
@@ -31,7 +33,6 @@ app.config.errorHandler = (err) => {
 
 app.use(createPinia())
 app.use(router)
-app.use(ElementPlus)
 
 app.mount('#app')
 
