@@ -38,13 +38,17 @@ import {
   removeLibraryCover,
   rescrapeItem,
   rescrapeLibrary,
-  previewTmdbId,
-  bindTmdbId,
   runRepairQueue,
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
   fetchRcloneRemotes,
+  createRcloneRemote,
+  updateRcloneRemote,
+  deleteRcloneRemote,
+  setProbeRemote,
+  regenerateRcloneConf,
+  fetchSaFiles,
   saveTmdbKeys,
   testTmdbKeys,
   stopAllTranscodes,
@@ -52,7 +56,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, TmdbPreview, RcloneRemote } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, RcloneRemote, SaFile } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -69,7 +73,6 @@ import type {
   StorageMount,
 } from '@/types'
 import { useRealmStore } from '@/stores/realm'
-import { useRouter } from 'vue-router'
 import DataTable from '@/components/DataTable.vue'
 import './EmbyAdmin.css'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -90,9 +93,6 @@ let coverLoadVersion = 0
 
 const settingsVisible = ref(false)
 const settingsTarget = ref<EmbyLibrary | null>(null)
-// 即时保存快照（失败回滚）与防连点
-const settingsSnapshot = ref<Record<string, unknown> | null>(null)
-const savingField = ref<string | null>(null)
 
 // 扫描流水（最近若干轮）：抽屉里看「是不是每轮都在失败」
 const scanDrawer = ref(false)
@@ -132,7 +132,6 @@ const sessionColumns: DataColumn[] = [
 ]
 
 const createVisible = ref(false)
-const createFormRef = ref()
 const form = ref({
   name: '',
   collection_type: 'movies',
@@ -143,42 +142,6 @@ const form = ref({
   realm_id: null as number | null,
   node_id: null as number | null,
 })
-
-/** 路径文本解析：逗号 / 中文逗号 / 换行分隔 */
-function parsePathsInput(): string[] {
-  return form.value.paths.split(/[,，\n]/).map((p) => p.trim()).filter(Boolean)
-}
-
-/** 新建媒体库表单校验（含 mount:// 与 mount_ids 互斥：两者并存会把整个挂载扫进这个库） */
-const createRules = {
-  name: [{ required: true, message: '请填写库名称', trigger: 'blur' }],
-  paths: [
-    {
-      validator: (_rule: unknown, _value: string, callback: (e?: Error) => void) => {
-        if (!parsePathsInput().length && !form.value.mount_ids.length) {
-          callback(new Error('至少配置一个路径或一个存储挂载'))
-        } else callback()
-      },
-      trigger: 'blur',
-    },
-  ],
-  mount_ids: [
-    {
-      validator: (_rule: unknown, _value: number[], callback: (e?: Error) => void) => {
-        const hasMountSubpath = parsePathsInput().some((p) => p.startsWith('mount://'))
-        if (hasMountSubpath && form.value.mount_ids.length) {
-          callback(new Error('路径已用 mount://挂载子目录，请清空「存储挂载」（两者同时用会把整个挂载扫进这个库）'))
-        } else callback()
-      },
-      trigger: 'change',
-    },
-  ],
-}
-
-/** 路径改动后联动重验 mount_ids 的互斥规则 */
-function revalidateMountConflict() {
-  createFormRef.value?.validateField('mount_ids').catch(() => {})
-}
 
 /** 刮削策略：只补缺 / 到期重刮 / 每次全量 */
 const POLICIES = [
@@ -292,95 +255,41 @@ async function removeCover(l: EmbyLibrary) {
 
 function openSettings(l: EmbyLibrary) {
   settingsTarget.value = l
-  // 快照：即时保存失败时回滚用
-  settingsSnapshot.value = {
-    realm_id: l.realm_id,
-    node_id: l.node_id,
-    mount_ids: [...(l.mount_ids ?? [])],
-    scrape_policy: l.scrape_policy,
-    account_115_id: l.account_115_id,
-  }
   settingsVisible.value = true
 }
 
-/** 设置抽屉即时保存：try/catch + 失败回滚 v-model + 防连点 */
-async function guardSettingsSave(l: EmbyLibrary, field: string, save: () => Promise<unknown>, okMsg: string) {
-  if (savingField.value) return
-  savingField.value = field
-  try {
-    await save()
-    const v = (l as unknown as Record<string, unknown>)[field]
-    if (settingsSnapshot.value) settingsSnapshot.value[field] = Array.isArray(v) ? [...v] : v
-    ElMessage.success(okMsg)
-  } catch (e: any) {
-    if (settingsSnapshot.value && field in settingsSnapshot.value) {
-      const old = settingsSnapshot.value[field]
-      ;(l as unknown as Record<string, unknown>)[field] = Array.isArray(old) ? [...(old as unknown[])] : old
-    }
-    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败，已恢复原值')
-  } finally {
-    savingField.value = null
-  }
-}
-
 async function savePolicy(l: EmbyLibrary) {
-  await guardSettingsSave(
-    l,
-    'scrape_policy',
-    () => updateLibrary(l.id, { scrape_policy: l.scrape_policy }),
-    `「${l.name}」刮削策略已保存（下次扫描生效）`,
-  )
+  await updateLibrary(l.id, { scrape_policy: l.scrape_policy })
+  ElMessage.success(`「${l.name}」刮削策略已保存（下次扫描生效）`)
 }
 
 async function saveAccount115(l: EmbyLibrary) {
   // 传 null 表示解绑（回退默认账号）；undefined 会被 axios 丢掉，等于不改
-  await guardSettingsSave(
-    l,
-    'account_115_id',
-    () => updateLibrary(l.id, { account_115_id: l.account_115_id ?? null }),
-    `「${l.name}」115 账号绑定已更新`,
-  )
+  await updateLibrary(l.id, { account_115_id: l.account_115_id ?? null })
+  ElMessage.success(`「${l.name}」115 账号绑定已更新`)
 }
 
 /** 绑定 / 解绑存储挂载（扫描时与「路径」一起遍历） */
 async function saveMounts(l: EmbyLibrary) {
-  await guardSettingsSave(
-    l,
-    'mount_ids',
-    () => updateLibrary(l.id, { mount_ids: l.mount_ids ?? [] }),
-    `「${l.name}」挂载绑定已更新（重新扫描后生效）`,
-  )
+  await updateLibrary(l.id, { mount_ids: l.mount_ids ?? [] })
+  ElMessage.success(`「${l.name}」挂载绑定已更新（重新扫描后生效）`)
 }
 
 /** 归属节点：决定了「谁向客户端展示这个库、谁来扫描它」 */
 async function saveNode(l: EmbyLibrary) {
-  await guardSettingsSave(
-    l,
-    'node_id',
-    async () => {
-      await updateLibrary(l.id, { node_id: l.node_id ?? null })
-      load()
-    },
-    (() => {
-      const node = nodes.value.find((n) => n.id === l.node_id)
-      return node
-        ? `「${l.name}」改由「${node.name}」负责（那台机器看不到这个库的条目时检查它的存储）`
-        : `「${l.name}」已改为未分配：所有节点可见、由面板扫描`
-    })(),
-  )
+  await updateLibrary(l.id, { node_id: l.node_id ?? null })
+  const node = nodes.value.find((n) => n.id === l.node_id)
+  ElMessage.success(node
+    ? `「${l.name}」改由「${node.name}」负责（那台机器看不到这个库的条目时检查它的存储）`
+    : `「${l.name}」已改为未分配：所有节点可见、由面板扫描`)
+  load()
 }
 
 /** 归属服：内容隔离的边界，跨服移动等于把内容交给另一个服 */
 async function saveRealm(l: EmbyLibrary) {
-  await guardSettingsSave(
-    l,
-    'realm_id',
-    async () => {
-      await updateLibrary(l.id, { realm_id: l.realm_id ?? null })
-      load()
-    },
-    `「${l.name}」归属服已更新`,
-  )
+  await updateLibrary(l.id, { realm_id: l.realm_id ?? null })
+  ElMessage.success(`「${l.name}」归属服已更新`)
+  load()
 }
 
 async function generateVirtual() {
@@ -406,11 +315,13 @@ async function repairNow() {
 }
 
 async function submitCreate() {
-  const valid = await createFormRef.value?.validate().catch(() => false)
-  if (!valid) return
-  const paths = parsePathsInput()
+  const paths = form.value.paths.split(/[,，\n]/).map((p) => p.trim()).filter(Boolean)
+  if (!form.value.name.trim() || (!paths.length && !form.value.mount_ids.length)) {
+    ElMessage.warning('请填写库名称，并至少配置一个路径或一个存储挂载')
+    return
+  }
   await createLibrary({
-    name: form.value.name.trim(),
+    name: form.value.name,
     collection_type: form.value.collection_type,
     paths,
     mount_ids: form.value.mount_ids,
@@ -455,25 +366,25 @@ async function loadAutoScanConfig() {
 const chaseNew = ref<ChaseNewConfig | null>(null)
 const chaseNewSaving = ref(false)
 
-// rclone remote 管理已收拢到「挂载管理」页（StorageMounts 的 rclone 标签页），
-// 此处只保留摘要（remote 数量 + 探测 remote 名）与跳转入口
+// rclone remote 管理
 const rcloneRemotes = ref<RcloneRemote[]>([])
+const saFiles = ref<SaFile[]>([])
+const saListVisible = ref(false)
+const saSearch = ref("")
+const filteredSaFiles = computed(() => {
+  const q = saSearch.value.trim().toLowerCase()
+  if (!q) return saFiles.value
+  return saFiles.value.filter(f =>
+    (f.client_email || "").toLowerCase().includes(q) ||
+    (f.filename || "").toLowerCase().includes(q) ||
+    (f.project_id || "").toLowerCase().includes(q)
+  )
+})
 const rcloneLoading = ref(false)
-const probeRemoteName = computed(() => rcloneRemotes.value.find(r => r.is_probe_remote)?.name || '')
+const showRemoteDialog = ref(false)
+const editingRemote = ref<any>(null)
+const remoteForm = ref({ name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', sa_file_id: null as number | null, team_drive_id: '', remark: '' })
 
-async function loadRcloneRemotes() {
-  rcloneLoading.value = true
-  try {
-    const res = await fetchRcloneRemotes()
-    rcloneRemotes.value = res.remotes || []
-  } catch { rcloneRemotes.value = [] }
-  rcloneLoading.value = false
-}
-
-const router = useRouter()
-function goRcloneTab() {
-  router.push({ name: 'StorageMounts', query: { tab: 'rclone' } })
-}
 async function loadChaseNewConfig() {
   try {
     const res = await fetchChaseNew()
@@ -481,6 +392,61 @@ async function loadChaseNewConfig() {
   } catch {
     chaseNew.value = null
   }
+}
+
+async function loadRcloneRemotes() {
+  rcloneLoading.value = true
+  try {
+    const res = await fetchRcloneRemotes()
+    rcloneRemotes.value = res.remotes || []
+    const saRes = await fetchSaFiles()
+    saFiles.value = saRes.files || []
+  } catch { rcloneRemotes.value = [] }
+  rcloneLoading.value = false
+}
+function openRemoteDialog(r?: RcloneRemote) {
+  if (r) {
+    editingRemote.value = r
+    remoteForm.value = { name: r.name, remote_type: r.remote_type, client_id: '', client_secret: '', token_json: '', sa_file_id: null, team_drive_id: r.team_drive_id, remark: r.remark }
+  } else {
+    editingRemote.value = null
+    remoteForm.value = { name: '', remote_type: 'drive', client_id: '', client_secret: '', token_json: '', sa_file_id: null, team_drive_id: '', remark: '' }
+  }
+  showRemoteDialog.value = true
+}
+async function saveRemoteAction() {
+  if (!remoteForm.value.name) { ElMessage.warning('请填写 remote 名称'); return }
+  try {
+    if (editingRemote.value) {
+      await updateRcloneRemote(editingRemote.value.id, remoteForm.value)
+    } else {
+      await createRcloneRemote(remoteForm.value)
+    }
+    ElMessage.success('已保存')
+    showRemoteDialog.value = false
+    loadRcloneRemotes()
+  } catch (e: any) { ElMessage.error(e?.message || '保存失败') }
+}
+async function deleteRemoteAction(r: RcloneRemote) {
+  try {
+    await ElMessageBox.confirm(`确定删除 remote「${r.name}」吗？`, '确认', { type: 'warning' })
+    await deleteRcloneRemote(r.id)
+    ElMessage.success('已删除')
+    loadRcloneRemotes()
+  } catch {}
+}
+async function setProbeRemoteAction(r: RcloneRemote) {
+  try {
+    await setProbeRemote(r.id)
+    ElMessage.success(`探测已切换到「${r.name}」`)
+    loadRcloneRemotes()
+  } catch (e: any) { ElMessage.error(e?.message || '切换失败') }
+}
+async function regenerateConfAction() {
+  try {
+    const res = await regenerateRcloneConf()
+    ElMessage.success('rclone.conf 已重新生成：' + res.path)
+  } catch (e: any) { ElMessage.error(e?.message || '生成失败') }
 }
 async function saveChaseNewAction() {
   if (!chaseNew.value) return
@@ -585,60 +551,6 @@ async function doRescrapeItem() {
     ElMessage.success('已刷新')
   } finally {
     rescrapeItemLoading.value = false
-  }
-}
-
-// 手动绑定 TMDB ID：TMDB 对中文剧集/综艺收录偏少，有些条目怎么搜都搜不到。
-// 与其反复重试，不如让管理员直接指定权威 ID（思路同 go-emby 的 {tmdb-123} 目录标记）。
-const bindItemId = ref('')
-const bindTmdbInput = ref('')
-const bindLoading = ref(false)
-const bindPreview = ref<TmdbPreview | null>(null)
-const bindVisible = ref(false)
-
-async function doPreviewTmdb() {
-  const id = Number(bindItemId.value)
-  const tid = bindTmdbInput.value.trim()
-  if (!id) return ElMessage.warning('请填写条目 ID')
-  if (!/^\d+$/.test(tid)) return ElMessage.warning('TMDB ID 必须是数字')
-  bindLoading.value = true
-  try {
-    bindPreview.value = await previewTmdbId(id, tid)
-  } catch {
-    bindPreview.value = null
-  } finally {
-    bindLoading.value = false
-  }
-}
-
-async function doBindTmdb() {
-  const id = Number(bindItemId.value)
-  const tid = bindTmdbInput.value.trim()
-  if (!id) return ElMessage.warning('请填写条目 ID')
-  if (!/^\d+$/.test(tid)) return ElMessage.warning('TMDB ID 必须是数字')
-  bindLoading.value = true
-  try {
-    const res = await bindTmdbId(id, tid, true)
-    ElMessage.success(res.unbound ? '已解绑并重新排队' : `已绑定并补全：${res.notes.join('；')}`)
-    bindPreview.value = null
-    bindTmdbInput.value = ''
-    await load()
-  } finally {
-    bindLoading.value = false
-  }
-}
-
-async function doUnbindTmdb() {
-  const id = Number(bindItemId.value)
-  if (!id) return ElMessage.warning('请填写条目 ID')
-  bindLoading.value = true
-  try {
-    await bindTmdbId(id, '', false)
-    ElMessage.success('已解绑，条目重新进入补全队列')
-    bindPreview.value = null
-    await load()
-  } finally {
-    bindLoading.value = false
   }
 }
 
@@ -1239,15 +1151,56 @@ function typeLabel(t: string): string {
         <div class="scrape-block">
           <h3>云盘挂载（rclone）</h3>
           <p class="drawer-hint">
-            rclone remote 管理已收拢到「挂载管理」页的「Rclone 配置」标签页：
-            新增 / 编辑 / 删除 remote、上传服务账号、一键生成 rclone.conf、指定探测 remote。
+            管理 rclone remote 配置：个人盘（OAuth）或服务账号 + 团队盘。
+            配置存数据库，一键生成 rclone.conf。可指定哪个 remote 用于后台探测。
           </p>
-          <div class="scrape-actions" style="align-items: center">
-            <el-button size="small" type="primary" @click="goRcloneTab">去挂载管理 · Rclone 配置</el-button>
-            <span class="drawer-hint" style="margin-left: 8px">
-              <span v-if="rcloneLoading">加载中…</span>
-              <span v-else>已配置 {{ rcloneRemotes.length }} 个 remote<span v-if="probeRemoteName">，探测用：{{ probeRemoteName }}</span></span>
+          <div class="scrape-actions" style="margin-bottom: 8px">
+            <el-button size="small" type="primary" @click="openRemoteDialog()">新增 remote</el-button>
+            <el-button size="small" :loading="rcloneLoading" @click="loadRcloneRemotes">刷新</el-button>
+            <el-button size="small" @click="regenerateConfAction">重新生成 rclone.conf</el-button>
+          </div>
+          <div v-if="rcloneLoading" class="drawer-hint">加载中…</div>
+          <div v-else-if="!rcloneRemotes.length" class="drawer-hint">还没有配置 remote，点"新增"添加</div>
+          <div v-else>
+            <div v-for="r in rcloneRemotes" :key="r.id" class="scrape-actions" style="margin-bottom: 6px; align-items: center">
+              <el-tag :type="r.is_probe_remote ? 'success' : 'info'" size="small">{{ r.name }}</el-tag>
+              <span class="drawer-hint">{{ r.remote_type }}<span v-if="r.team_drive_id"> · 团队盘</span><span v-if="r.has_service_account"> · 服务账号</span><span v-if="r.has_token"> · OAuth</span></span>
+              <el-button v-if="!r.is_probe_remote" size="small" @click="setProbeRemoteAction(r)">设为探测用</el-button>
+              <el-tag v-else type="success" size="small">探测中</el-tag>
+              <el-button size="small" @click="openRemoteDialog(r)">编辑</el-button>
+              <el-button size="small" type="danger" @click="deleteRemoteAction(r)">删除</el-button>
+            </div>
+          </div>
+          <div class="drawer-hint" style="margin-top: 8px">
+            服务账号文件：{{ saFiles.length }} 个
+            <span class="sa-enabled-count" v-if="saFiles.length">
+              (启用 {{ saFiles.filter(f => f.is_enabled).length }})
             </span>
+            <el-button v-if="saFiles.length" size="small" text @click="saListVisible = !saListVisible">
+              {{ saListVisible ? '收起' : '查看列表' }}
+            </el-button>
+          </div>
+          <div v-if="saListVisible && saFiles.length" class="sa-panel">
+            <el-input
+              v-model="saSearch"
+              size="small"
+              placeholder="搜索邮箱 / 文件名"
+              clearable
+              class="sa-search"
+            />
+            <div class="sa-email-list">
+              <div
+                v-for="f in filteredSaFiles"
+                :key="f.id"
+                class="sa-email-item"
+                :class="{ 'sa-disabled': !f.is_enabled }"
+              >
+                <span class="sa-dot" :class="{ on: f.is_enabled }"></span>
+                <span class="sa-email">{{ f.client_email || f.filename }}</span>
+                <span v-if="f.project_id" class="sa-project">{{ f.project_id }}</span>
+              </div>
+              <div v-if="!filteredSaFiles.length" class="drawer-hint">没有匹配的服务账号</div>
+            </div>
           </div>
         </div>
         <div class="scrape-block">
@@ -1264,12 +1217,6 @@ function typeLabel(t: string): string {
           </div>
           <div v-if="rescrapeItemNotes.length" class="scrape-results">
             <div v-for="(n, i) in rescrapeItemNotes" :key="i" class="scrape-result">{{ n }}</div>
-          </div>
-          <div class="scrape-actions" style="margin-top: 10px">
-            <el-button size="small" plain @click="bindVisible = true">手动绑定 TMDB ID…</el-button>
-            <span class="drawer-hint" style="margin-left: 8px">
-              自动刮削一直搜不到的条目，可直接指定 TMDB 上的 ID
-            </span>
           </div>
         </div>
       </div>
@@ -1429,12 +1376,12 @@ function typeLabel(t: string): string {
     </div>
 
     <!-- 新建弹窗 -->
-    <el-dialog v-model="createVisible" title="新建媒体库" width="min(480px, 94vw)">
-      <el-form ref="createFormRef" :model="form" :rules="createRules" label-position="top">
-        <el-form-item label="名称" prop="name">
+    <el-dialog v-model="createVisible" title="新建媒体库" width="480px">
+      <el-form label-position="top">
+        <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="如：电影库 / 剧集库" />
         </el-form-item>
-        <el-form-item label="类型" prop="collection_type">
+        <el-form-item label="类型">
           <el-select v-model="form.collection_type" style="width: 100%">
             <el-option label="电影" value="movies" />
             <el-option label="剧集" value="tvshows" />
@@ -1442,28 +1389,27 @@ function typeLabel(t: string): string {
             <el-option label="混合" value="mixed" />
           </el-select>
         </el-form-item>
-        <el-form-item label="刮削策略" prop="scrape_policy">
+        <el-form-item label="刮削策略">
           <el-select v-model="form.scrape_policy" style="width: 100%">
             <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="路径" prop="paths">
+        <el-form-item label="路径">
           <el-input
             v-model="form.paths"
             type="textarea"
             :rows="3"
             placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
-            @blur="revalidateMountConflict"
           />
           <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。</div>
         </el-form-item>
-        <el-form-item label="归属服" prop="realm_id">
+        <el-form-item label="归属服">
           <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
             <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
           <p class="field-help">一个服一个：只有这个服的 EA 会向客户端提供这个库。</p>
         </el-form-item>
-        <el-form-item label="归属播放节点" prop="node_id">
+        <el-form-item label="归属播放节点">
           <el-select
             v-model="form.node_id"
             clearable
@@ -1476,7 +1422,7 @@ function typeLabel(t: string): string {
             如果这个库的内容只在那台机器上（本机目录 / 只在那里配了的 rclone），就把库分配给那台节点。
           </p>
         </el-form-item>
-        <el-form-item label="存储挂载" prop="mount_ids">
+        <el-form-item label="存储挂载">
           <el-select
             v-model="form.mount_ids"
             multiple
@@ -1486,7 +1432,7 @@ function typeLabel(t: string): string {
           >
             <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
           </el-select>
-          <div class="form-hint">路径与挂载可以同时用；挂载在「存储挂载」页里创建与测试。<strong>注意：路径里写了 <code>mount://…</code> 子目录时，这里必须留空，否则整个挂载都会被扫进这个库。</strong></div>
+          <div class="form-hint">路径与挂载可以同时用；挂载在「存储挂载」页里创建与测试。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1496,7 +1442,7 @@ function typeLabel(t: string): string {
     </el-dialog>
 
     <!-- 媒体库设置：从卡片移出低频配置，保持卡片可快速扫读 -->
-    <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="min(430px, 92vw)">
+    <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="430px">
       <div v-if="settingsTarget" class="library-settings">
         <div class="settings-section">
           <div class="settings-section-title">归属与来源</div>
@@ -1506,7 +1452,6 @@ function typeLabel(t: string): string {
               v-model="settingsTarget.realm_id"
               clearable
               placeholder="未标注（所有服可见）"
-              :disabled="savingField !== null"
               @change="saveRealm(settingsTarget)"
             >
               <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
@@ -1518,7 +1463,6 @@ function typeLabel(t: string): string {
               v-model="settingsTarget.node_id"
               clearable
               placeholder="未分配（所有节点可见）"
-              :disabled="savingField !== null"
               @change="saveNode(settingsTarget)"
             >
               <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
@@ -1532,7 +1476,6 @@ function typeLabel(t: string): string {
               collapse-tags
               collapse-tags-tooltip
               placeholder="未绑定"
-              :disabled="savingField !== null"
               @change="saveMounts(settingsTarget)"
             >
               <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
@@ -1551,7 +1494,7 @@ function typeLabel(t: string): string {
           <div class="settings-section-title">扫描与账号</div>
           <div class="lib-policy">
             <span class="policy-label">刮削策略</span>
-            <el-select v-model="settingsTarget.scrape_policy" :disabled="savingField !== null" @change="savePolicy(settingsTarget)">
+            <el-select v-model="settingsTarget.scrape_policy" @change="savePolicy(settingsTarget)">
               <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
             </el-select>
           </div>
@@ -1561,7 +1504,6 @@ function typeLabel(t: string): string {
               v-model="settingsTarget.account_115_id"
               clearable
               placeholder="默认账号"
-              :disabled="savingField !== null"
               @change="saveAccount115(settingsTarget)"
             >
               <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
@@ -1572,7 +1514,7 @@ function typeLabel(t: string): string {
     </el-drawer>
 
     <!-- 重新刮削：选策略；all 二次确认并提示配额消耗 -->
-    <el-dialog v-model="rescrapeVisible" title="重新刮削" width="min(420px, 94vw)">
+    <el-dialog v-model="rescrapeVisible" title="重新刮削" width="420px">
       <p class="drawer-hint">
         对「{{ rescrapeTarget?.name }}」触发一次重新刮削扫描，策略只覆盖本轮，不改库配置。
       </p>
@@ -1589,47 +1531,8 @@ function typeLabel(t: string): string {
       </template>
     </el-dialog>
 
-    <!-- 手动绑定 TMDB ID：给「怎么搜都搜不到」的条目一个出口 -->
-    <el-dialog v-model="bindVisible" title="手动绑定 TMDB ID" width="min(520px, 94vw)">
-      <p class="drawer-hint">
-        有些剧集 TMDB 确实没有收录（尤其中文剧集、综艺），自动刮削会一直失败。
-        可以在这里直接指定 TMDB 上的条目 ID，绑定后会立刻按该 ID 补全元数据与海报。
-      </p>
-      <div style="display: flex; gap: 8px; align-items: center; margin-top: 12px">
-        <el-input v-model="bindItemId" placeholder="条目 ID（在条目详情页可见）" style="width: 180px" />
-        <el-input v-model="bindTmdbInput" placeholder="TMDB ID（纯数字，如 1399）" style="flex: 1" />
-        <el-button :loading="bindLoading" @click="doPreviewTmdb">预览</el-button>
-      </div>
-
-      <template v-if="bindPreview">
-        <el-alert
-          :type="bindPreview.matches_current ? 'success' : 'warning'"
-          :closable="false"
-          style="margin-top: 12px"
-        >
-          <div>TMDB 标题：<b>{{ bindPreview.title }}</b><span v-if="bindPreview.year">（{{ bindPreview.year }}）</span></div>
-          <div>当前条目名：{{ bindPreview.current_name }}</div>
-          <div v-if="!bindPreview.matches_current" style="margin-top: 6px">
-            两者不一致——确认这就是同一部剧再绑定，否则会写错片名。
-          </div>
-        </el-alert>
-        <img
-          v-if="bindPreview.poster"
-          :src="bindPreview.poster"
-          alt="poster"
-          style="width: 90px; margin-top: 10px; border-radius: 4px"
-        />
-      </template>
-
-      <template #footer>
-        <el-button @click="doUnbindTmdb">解绑并重新排队</el-button>
-        <el-button @click="bindVisible = false">关闭</el-button>
-        <el-button type="primary" :loading="bindLoading" @click="doBindTmdb">绑定并补全</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 扫描记录：最近若干轮（每轮的状态 / 触发方 / 增量 / 耗时 / 原因） -->
-    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="min(620px, 92vw)">
+    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="620px">
       <p class="drawer-hint">
         每轮扫描一行，最近的在最上面（每库最多保留 {{ scanKeep }} 条）。
         「每轮都失败」和「只是最近一轮失败」是两件事，这里能直接看出来。
@@ -1675,12 +1578,82 @@ function typeLabel(t: string): string {
       </DataTable>
     </el-drawer>
   </div>
+  <el-dialog v-model="showRemoteDialog" :title="editingRemote ? '编辑 remote' : '新增 remote'" width="500px">
+    <el-form :model="remoteForm" label-width="110px" size="small">
+      <el-form-item label="名称">
+        <el-input v-model="remoteForm.name" placeholder="如 MP" :disabled="!!editingRemote" />
+      </el-form-item>
+      <el-form-item label="类型">
+        <el-select v-model="remoteForm.remote_type">
+          <el-option label="Google Drive" value="drive" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="团队盘 ID">
+        <el-input v-model="remoteForm.team_drive_id" placeholder="空=个人盘" />
+      </el-form-item>
+      <el-form-item label="服务账号">
+        <el-select v-model="remoteForm.sa_file_id" placeholder="选择已上传的 SA 文件" clearable>
+          <el-option v-for="f in saFiles" :key="f.id" :label="f.client_email || f.filename" :value="f.id" />
+        </el-select>
+        <span class="drawer-hint">先在下面上传 SA JSON 文件</span>
+      </el-form-item>
+      <el-form-item label="OAuth Client ID">
+        <el-input v-model="remoteForm.client_id" placeholder="个人盘 OAuth 用" />
+      </el-form-item>
+      <el-form-item label="OAuth Secret">
+        <el-input v-model="remoteForm.client_secret" type="password" placeholder="个人盘 OAuth 用" />
+      </el-form-item>
+      <el-form-item label="OAuth Token">
+        <el-input v-model="remoteForm.token_json" type="textarea" :rows="2" placeholder='{"access_token":"..."}' />
+      </el-form-item>
+      <el-form-item label="备注">
+        <el-input v-model="remoteForm.remark" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="showRemoteDialog = false">取消</el-button>
+      <el-button type="primary" @click="saveRemoteAction">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
 .admin-page { gap: 16px; }
 
-/* 媒体库卡片样式统一收敛到 EmbyAdmin.css，此处仅保留 scoped 特有样式 */
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  gap: 16px;
+}
+
+.lib-card { display: flex; flex-direction: column; gap: 0; overflow: hidden; min-width: 0; }
+.lib-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: nowrap; }
+.lib-name {
+  font-weight: var(--font-weight-bold); font-size: var(--font-size-lg); color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-meta { flex-shrink: 0; font-size: var(--font-size-xs); color: var(--text-tertiary); }
+lib-state { min-height: 18px; }
+
+.lib-cover { position: relative; aspect-ratio: 16 / 8.5; overflow: hidden; background: var(--bg-inset); }
+lib-cover > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+lib-cover-empty {
+  width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 8px; color: var(--text-muted); font-size: var(--font-size-xs);
+}
+lib-cover-shade {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(to bottom, rgb(0 0 0 / 0.32), transparent 45%, rgb(0 0 0 / 0.18));
+}
+lib-cover-badges { position: absolute; top: 10px; left: 10px; right: 58px; display: flex; gap: 6px; flex-wrap: wrap; }
+lib-cover-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
+cover-button {
+  color: #fff !important; background: rgb(0 0 0 / 0.48) !important;
+  border: 1px solid rgb(255 255 255 / 0.22) !important;
+}
+cover-button:hover { background: rgb(0 0 0 / 0.72) !important; }
+lib-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 14px 12px; flex: 1; }
+lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 .fact {
   display: inline-flex;
   align-items: center;
@@ -1706,6 +1679,17 @@ function typeLabel(t: string): string {
 .lib-policy { display: flex; align-items: center; gap: 10px; }
 .policy-label { font-size: var(--font-size-xs); color: var(--text-tertiary); width: 62px; flex-shrink: 0; }
 .lib-policy :deep(.el-select) { flex: 1; min-width: 0; }
+
+.lib-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
 
 .drawer-hint { margin: 0 0 12px; font-size: var(--font-size-xs); color: var(--text-tertiary); }
 
@@ -1864,11 +1848,59 @@ function typeLabel(t: string): string {
 
 /* 手机：卡片内标签与控件竖排，路径允许换行 */
 @media (max-width: 640px) {
+  .lib-grid { grid-template-columns: minmax(0, 1fr); }
   .lib-policy { flex-direction: column; align-items: stretch; gap: 6px; }
   .policy-label { width: auto; }
   .lib-paths { white-space: normal; word-break: break-all; }
   .lib-actions { width: 100%; }
   .lib-actions :deep(.el-button) { flex: 1; }
   .admin-page-actions :deep(.el-button.is-primary) { flex: 1 1 100%; }
+}
+.sa-panel {
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+}
+.sa-search {
+  margin-bottom: 6px;
+}
+.sa-email-list {
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.sa-email-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  color: #a0aec0;
+}
+.sa-email-item.sa-disabled {
+  opacity: 0.45;
+}
+.sa-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #555;
+  flex-shrink: 0;
+}
+.sa-dot.on {
+  background: #34d399;
+}
+.sa-email {
+  word-break: break-all;
+  flex: 1;
+}
+.sa-project {
+  font-size: 11px;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+.sa-enabled-count {
+  color: #34d399;
+  font-size: 12px;
 }
 </style>

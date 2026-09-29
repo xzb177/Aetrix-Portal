@@ -37,14 +37,12 @@
   .admin-layout .admin-content .admin-page-actions,
   .admin-layout .admin-content .toolbar,
   .admin-layout .admin-content .filter-bar,
-  .admin-layout .admin-content .rclone-actions,
   .admin-layout .admin-content .head-actions { width: 100%; }
 
   .admin-layout .admin-content .toolbar > .el-input,
   .admin-layout .admin-content .toolbar > .el-select,
   .admin-layout .admin-content .filter-bar > .el-input,
   .admin-layout .admin-content .filter-bar > .el-select,
-  .admin-layout .admin-content .rclone-actions > .el-button,
   .admin-layout .admin-content .head-actions > .el-button {
     flex: 1 1 150px;
     width: auto;
@@ -58,7 +56,6 @@
   .admin-layout .admin-content .browser-bar,
   .admin-layout .admin-content .parse-row,
   .admin-layout .admin-content .lib-foot,
-  .admin-layout .admin-content .rclone-toolbar,
   .admin-layout .admin-content .mount-foot { flex-wrap: wrap; }
 
   .admin-layout .admin-content .pager { justify-content: center; margin-top: 14px; }

@@ -499,7 +499,7 @@ function usedByNames(row: RegistrationCode): string {
   font-size: var(--font-size-sm);
   letter-spacing: 0.06em;
   background: var(--primary-soft);
-  color: var(--primary);
+  color: #7fe6f6;
   border: 1px solid var(--primary-border);
   border-radius: var(--radius-sm);
   padding: 5px 10px;
@@ -510,9 +510,9 @@ function usedByNames(row: RegistrationCode): string {
 .code-chip:hover { background: var(--primary-bg); }
 
 /* 用 .admin-page 前缀把权重抬到高于全局徽标规则，颜色才不会被覆盖 */
-.admin-page .mini-badge.type-1 { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
-.admin-page .mini-badge.type-2 { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
-.admin-page .mini-badge.type-3 { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-border); }
+.admin-page .mini-badge.type-1 { background: var(--info-bg); color: #93c5fd; border-color: var(--info-border); }
+.admin-page .mini-badge.type-2 { background: rgba(167, 139, 250, 0.14); color: #c4b5fd; border-color: rgba(167, 139, 250, 0.3); }
+.admin-page .mini-badge.type-3 { background: var(--warning-bg); color: #fcd34d; border-color: var(--warning-border); }
 
 .gen-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; }
 

@@ -433,18 +433,8 @@ export const fetchLogs = (params: { limit?: number; action_filter?: string } = {
 
 export const fetchOverview = () => get<OverviewStats>('/stats/overview')
 
-export interface HealthIssue {
-  level: 'ok' | 'warn' | 'down'
-  key: string
-  message: string
-}
-
 export interface PanelHealth {
-  /** healthy / degraded / unhealthy——由后端按真实指标判定，不再是硬编码常量 */
   status: string
-  health_level?: 'ok' | 'warn' | 'down'
-  health_issues?: HealthIssue[]
-  health_metrics?: Record<string, unknown>
   timestamp: string
   database: string
   online_users: number
@@ -839,32 +829,3 @@ export const uploadRcloneServiceAccount = (id: number, file: File) => {
   return upload<{ success: boolean; filename: string; client_email: string; project_id: string }>(
     `${E}/rclone/remotes/${id}/upload-sa`, fd)
 }
-
-// ==================== 手动绑定 TMDB ID ====================
-
-export interface TmdbPreview {
-  tmdb_id: string
-  title: string
-  year: number | null
-  poster: string | null
-  current_name: string
-  current_tmdb_id: string | null
-  /** 预览到的片名与当前条目名是否一致——不一致时管理员要多看一眼再确认 */
-  matches_current: boolean
-}
-
-export const previewTmdbId = (itemId: number, tmdbId: string) =>
-  get<TmdbPreview>(`${E}/scrape/items/${itemId}/tmdb-preview?tmdb_id=${encodeURIComponent(tmdbId)}`)
-
-export interface BindTmdbResult {
-  success: boolean
-  unbound: boolean
-  item: { id: number; name: string; item_type: string; tmdb_id?: string | null }
-  notes: string[]
-}
-
-export const bindTmdbId = (itemId: number, tmdbId: string, verify = true) =>
-  post<BindTmdbResult>(`${E}/scrape/items/${itemId}/bind-tmdb`, {
-    tmdb_id: tmdbId,
-    verify,
-  })
