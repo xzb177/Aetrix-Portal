@@ -81,10 +81,10 @@ try:
     reset = maint.reset_stale_scan_flags(db, stale_hours=6)
     flags = {lib.id: lib.is_scanning for lib in db.query(em.Library).all()}
     db.close()
-    check(reset == 1, "只复位真正残留的标志", f"复位={reset}")
+    check(reset == 2, "复位所有非本进程的残留标志（v2：单节点启动即复位）", f"复位={reset}")
     check(flags[ids["正在扫（本进程）"]] is True, "本进程正在扫的库不被误清")
     check(flags[ids["崩溃残留"]] is False, "崩溃残留的标志被复位")
-    check(flags[ids["别处刚开始扫"]] is True, "刚开始不久的扫描不被误清（多机部署）")
+    check(flags[ids["别处刚开始扫"]] is False, "刚开始不久的也复位（单节点，启动时本进程不可能在扫）")
     check(flags[ids["没在扫"]] is False, "本来没在扫的库保持原样")
 
     # 幂等：正在扫的那台还在跑，再跑一次维护不应该又找到“残留”

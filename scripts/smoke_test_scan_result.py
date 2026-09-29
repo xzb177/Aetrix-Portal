@@ -458,7 +458,8 @@ from datetime import datetime, timedelta  # noqa: E402
 with Session() as db:
     old = datetime.now() - timedelta(hours=7)
     db.query(em.Library).filter(em.Library.id == crashed_id).update(
-        {"updated_at": old, "last_scan_at": old}, synchronize_session=False)
+        {"updated_at": old, "last_scan_at": old, "scan_started_at": old},
+        synchronize_session=False)
     db.query(em.ScanRun).filter(em.ScanRun.id == open_run_crash).update(
         {"started_at": old}, synchronize_session=False)
     db.commit()
