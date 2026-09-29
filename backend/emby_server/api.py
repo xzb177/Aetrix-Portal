@@ -37,9 +37,9 @@ from backend.emby_server import mounts as mount_lib
 from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
+    _token_from_request,
     get_emby_user,
     parse_emby_authorization,
-    resolve_token,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.direct_url import try_google_direct_url
@@ -1106,9 +1106,13 @@ def _query_result(items: list, user: models.WebUser, db: Session, base: str) -> 
 
 
 def _api_key_for(db: Session, request: Request) -> str:
-    """拼接播放/字幕地址用的 api_key：客户端 token 优先，其次门户 JWT"""
-    token_row = resolve_token(db, request)
-    return token_row[1].token if token_row else _bearer_raw(request)
+    """拼接播放/字幕地址用的 api_key：回显请求中的原始 token。
+
+    注意：不能用库里的 token 字段——P1 #200 后库中只存 SHA256 哈希，
+    把哈希拼进 URL 会导致服务端二次哈希校验失败（401）。
+    调用方已鉴权，这里只做透传。
+    """
+    return _token_from_request(request) or _bearer_raw(request)
 
 
 def _policy_dto(user: models.WebUser) -> dict:
