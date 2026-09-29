@@ -139,6 +139,7 @@ services:
       RCLONE_CONF_PATH: /config/rclone/rclone.conf
       RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
       MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      CORS_ORIGINS: http://15.204.95.101:8000
     ports:
       # 仅供宿主机 nginx 反代。外部访问请走 8001（nginx），不要直接用这个端口。
       - "${EA_INTERNAL_PORT:-8002}:8001"
