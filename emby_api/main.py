@@ -140,6 +140,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 — 维护失败不影响出流
         logger.warning("启动维护失败（可忽略）: %s", exc)
 
+    # P0（2026-09-29）：事件循环健康监控哨兵。单 worker 跑久了若有漏网的同步阻塞，
+    # 这里会先告警，而不是等用户投诉登录变慢。
+    try:
+        from backend.emby_server.loop_monitor import start_loop_monitor
+        start_loop_monitor()
+    except Exception as exc:  # noqa: BLE001 — 监控失败不影响出流
+        logger.warning("事件循环监控启动失败（可忽略）: %s", exc)
+
     logger.info("✅ %s 启动完成", SERVICE_NAME)
     yield
     # 关闭时：收掉 ffmpeg 子进程与临时分片，不留孤儿进程占着 CPU/磁盘
