@@ -310,7 +310,9 @@ def list_coupons(
         query = query.filter(models.CouponCode.is_active == (active == "true"))
     text = (search or "").strip().upper()
     if text:
-        query = query.filter(models.CouponCode.code.like(f"%{text}%"))
+        # ilike：在 PG 下是 ILIKE（不区分大小写），在 SQLite 下退化为 LIKE
+        # （SQLite 的 LIKE 本来就不区分 ASCII 大小写），两边行为一致。
+        query = query.filter(models.CouponCode.code.ilike(f"%{text}%"))
 
     rows = query.order_by(models.CouponCode.id.desc()).limit(limit).all()
     stats = _usage_stats(db, [c.id for c in rows])
