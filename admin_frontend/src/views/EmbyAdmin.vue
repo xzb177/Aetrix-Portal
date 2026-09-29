@@ -11,7 +11,7 @@
  * 所有节点可见，由面板扫描）；已分配的库只有那台 EA 向客户端展示、也只有它会扫描。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
@@ -116,6 +116,7 @@ function nodeLabel(n: RemoteServerRow): string {
 }
 
 const createVisible = ref(false)
+const router = useRouter()
 // 挂载路径选择器
 const pathPicker = ref<{ open: () => void } | null>(null)
 function onPickMountPath(mountPath: string) {
@@ -301,6 +302,25 @@ async function repairNow() {
   ElMessage.success(`已把 ${res.libraries.length} 个库加入扫描队列${merged ? `（另 ${merged} 个已在队列中，已合并）` : ''}`)
   await pollQueue()
   setTimeout(load, 2000)
+}
+
+/** 新建媒体库前置检查：没有后端服（EA）时引导用户先去创建，不直接弹表单 */
+function openCreate() {
+  if (!nodes.value.length) {
+    ElMessageBox.confirm(
+      '还没有后端服务（EA），媒体库需要关联到一台后端服才能工作。请先去「服务器」页添加后端服务。',
+      '请先创建后端服务',
+      {
+        confirmButtonText: '去创建',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    ).then(() => {
+      router.push('/servers')
+    }).catch(() => {})
+    return
+  }
+  createVisible.value = true
 }
 
 async function submitCreate() {
@@ -915,7 +935,7 @@ function typeLabel(t: string): string {
         <el-button @click="stopAll">
           <Square :size="13" style="margin-right: 4px" />停止全部转码
         </el-button>
-        <el-button type="primary" @click="createVisible = true">
+        <el-button type="primary" @click="openCreate">
           <FolderPlus :size="15" style="margin-right: 4px" />新建媒体库
         </el-button>
         <el-button :loading="loading" aria-label="刷新" @click="load">
@@ -1333,7 +1353,12 @@ function typeLabel(t: string): string {
       </article>
 
       <div v-if="libraries.length === 0 && !loading" class="admin-card empty-card">
-        暂无媒体库，点击右上角「新建媒体库」开始
+        <template v-if="!nodes.length">
+          还没有后端服务，请先<RouterLink to="/servers" class="link">去「服务器」页添加后端服务（EA）</RouterLink>，再创建媒体库
+        </template>
+        <template v-else>
+          暂无媒体库，点击右上角「新建媒体库」开始
+        </template>
       </div>
     </div>
 

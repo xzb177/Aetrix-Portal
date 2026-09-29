@@ -1007,6 +1007,15 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
 def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     import uuid
 
+    # 前置校验：必须先有后端服（EA），否则建库无意义。
+    # 对标 Plex/Emby/Jellyfin：先部署后端，再建媒体库。
+    ea_count = db.query(models.RemoteServer).filter(models.RemoteServer.kind == "ea").count()
+    if ea_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="请先在「服务器」页添加后端服务（EA），再创建媒体库",
+        )
+
     if not req.paths and not req.mount_ids:
         raise HTTPException(status_code=400, detail="请至少配置一个路径或一个存储挂载")
     _validate_library_sources(db, req.paths, req.mount_ids)
