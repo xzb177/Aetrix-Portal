@@ -803,6 +803,25 @@ export const testMountConfig = (data: { mount_type: string; path?: string; confi
 export const browseMount = (id: number, rel = '/') =>
   get<{ rel: string; entries: MountDirEntry[]; total: number }>(`${E}/mounts/${id}/browse`, { rel })
 
+/** 挂载路径选择器：只列子目录（媒体库表单「浏览」按钮用，走 /api/admin/mounts） */
+export interface MountPickerDir {
+  name: string
+  path: string
+}
+export interface MountPickerCrumb {
+  name: string
+  path: string
+}
+export const browseMountDirs = (id: number, path?: string) =>
+  get<{
+    mount_id: number
+    path: string
+    parent: string | null
+    crumbs: MountPickerCrumb[]
+    dirs: MountPickerDir[]
+    total: number
+  }>(`/mounts/${id}/browse`, path ? { path } : undefined)
+
 /** rclone：列出远端已配置的 remote（可用表单里尚未保存的 RC 地址 / 密码） */
 export const fetchMountRcloneRemotes = (params: Record<string, string>) =>
   get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/remotes`, params)

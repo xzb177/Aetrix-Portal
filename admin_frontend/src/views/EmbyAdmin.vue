@@ -68,6 +68,7 @@ import type {
 } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
+import MountPathPicker from '@/components/MountPathPicker.vue'
 import './EmbyAdmin.css'
 import type { DataColumn } from '@/components/DataTable.vue'
 
@@ -115,6 +116,13 @@ function nodeLabel(n: RemoteServerRow): string {
 }
 
 const createVisible = ref(false)
+// 挂载路径选择器
+const pathPicker = ref<{ open: () => void } | null>(null)
+function onPickMountPath(mountPath: string) {
+  const cur = (form.value.paths || '').trim()
+  // 已有内容则追加（换行分隔），否则直接填入
+  form.value.paths = cur ? `${cur}\n${mountPath}` : mountPath
+}
 const form = ref({
   name: '',
   collection_type: 'movies',
@@ -1349,13 +1357,16 @@ function typeLabel(t: string): string {
           </el-select>
         </el-form-item>
         <el-form-item label="路径">
-          <el-input
-            v-model="form.paths"
-            type="textarea"
-            :rows="3"
-            placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
-          />
-          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。</div>
+          <div class="paths-input-row">
+            <el-input
+              v-model="form.paths"
+              type="textarea"
+              :rows="3"
+              placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
+            />
+            <el-button class="paths-browse-btn" @click="pathPicker?.open()">浏览</el-button>
+          </div>
+          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。点「浏览」可逐级选择挂载目录。</div>
         </el-form-item>
         <el-form-item label="归属服">
           <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
@@ -1394,6 +1405,7 @@ function typeLabel(t: string): string {
         <el-button type="primary" @click="submitCreate">创建</el-button>
       </template>
     </el-dialog>
+    <MountPathPicker ref="pathPicker" @select="onPickMountPath" />
 
     <!-- 媒体库设置：从卡片移出低频配置，保持卡片可快速扫读 -->
     <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="430px">

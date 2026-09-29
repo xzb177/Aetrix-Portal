@@ -166,3 +166,16 @@
     margin-left: 0;
   }
 }
+
+/* 挂载路径选择器：输入框 + 浏览按钮 */
+.paths-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.paths-input-row .el-textarea {
+  flex: 1;
+}
+.paths-browse-btn {
+  flex-shrink: 0;
+}
