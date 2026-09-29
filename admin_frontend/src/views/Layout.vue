@@ -23,7 +23,6 @@ import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import { useRealmStore } from '@/stores/realm'
 import { useBreakpoint } from '@/composables/useBreakpoint'
-import { useFocusTrap } from '@/composables/useFocusTrap'
 // 站名 / Logo 来自「站点与品牌」能力（改完刷新即生效，不用重新构建）
 import { APP_VERSION as APP_VERSION_BASE, branding, siteName } from '@/composables/branding'
 
@@ -32,11 +31,6 @@ const router = useRouter()
 const auth = useAuthStore()
 const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
-
-/** 移动端抽屉模式下的 focus trap：窄屏侧边栏是覆盖层抽屉，Tab 不能跑到背后去 */
-const sidebarRef = ref<HTMLElement | null>(null)
-const sidebarTrapActive = computed(() => drawerOpen.value && isTablet.value)
-useFocusTrap(sidebarRef, sidebarTrapActive)
 
 /** 当前账号是不是超级管理员（角色见 backend/admin_roles.py）：只影响导航上的标记 */
 const isSuper = computed(() => auth.admin?.is_super !== false)
@@ -301,14 +295,7 @@ onUnmounted(() => {
     </transition>
 
     <!-- 侧边栏：宽屏常驻，≤1024px 变抽屉 -->
-    <aside
-      ref="sidebarRef"
-      class="sidebar"
-      :class="{ open: drawerOpen }"
-      :role="isTablet ? 'dialog' : undefined"
-      :aria-modal="isTablet ? 'true' : undefined"
-      aria-label="管理导航"
-    >
+    <aside class="sidebar" :class="{ open: drawerOpen }">
       <div class="brand">
         <span class="brand-mark">
           <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
@@ -324,7 +311,7 @@ onUnmounted(() => {
       </div>
 
       <nav class="nav">
-        <template v-for="(group, gi) in navGroups" :key="group.title">
+        <template v-for="group in navGroups" :key="group.title">
           <!-- 单项分组：直接是入口 -->
           <RouterLink
             v-if="group.items.length === 1"
@@ -341,15 +328,13 @@ onUnmounted(() => {
             <button
               class="nav-group-head"
               :class="{ active: activeGroup?.title === group.title && !isOpen(group.title) }"
-              :aria-expanded="isOpen(group.title)"
-              :aria-controls="`nav-group-${gi}`"
               @click="toggleGroup(group.title)"
             >
               <component :is="group.icon" :size="18" />
               <span>{{ group.title }}</span>
               <ChevronDown :size="15" class="chev" :class="{ open: isOpen(group.title) }" />
             </button>
-            <div v-show="isOpen(group.title)" :id="`nav-group-${gi}`" class="nav-items">
+            <div v-show="isOpen(group.title)" class="nav-items">
               <RouterLink
                 v-for="item in group.items"
                 :key="item.path"
@@ -596,7 +581,7 @@ onUnmounted(() => {
 
 .nav-item.active {
   background: var(--primary-bg);
-  color: var(--primary);
+  color: #7fe6f6;
   font-weight: var(--font-weight-semibold);
   box-shadow: inset 2px 0 0 0 var(--primary);
 }
@@ -645,7 +630,7 @@ onUnmounted(() => {
 }
 
 .foot-link:hover { background: var(--bg-hover); color: var(--text-primary); }
-.foot-link.danger:hover { background: var(--danger-bg); color: var(--danger); }
+.foot-link.danger:hover { background: var(--danger-bg); color: #fda4af; }
 
 .foot-version {
   margin-top: 8px;
@@ -709,7 +694,7 @@ onUnmounted(() => {
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
-.admin-chip:hover { border-color: var(--border-strong); background: var(--bg-elevated); }
+.admin-chip:hover { border-color: var(--border-strong); background: #1d2836; }
 .chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-chev { color: var(--text-faint); }
 

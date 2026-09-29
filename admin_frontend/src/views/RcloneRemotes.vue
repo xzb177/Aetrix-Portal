@@ -11,9 +11,7 @@
  */
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, RefreshCw, Pencil, Zap, Eye, CheckCircle, ChevronDown } from 'lucide-vue-next'
-import DataTable from '@/components/DataTable.vue'
-import type { DataColumn } from '@/components/DataTable.vue'
+import { KeyRound, Plus, RefreshCw, Trash2, Pencil, Zap, Eye, Upload, CheckCircle } from 'lucide-vue-next'
 import {
   fetchRcloneRemotes,
   createRcloneRemote,
@@ -57,20 +55,6 @@ const oauthSubmitting = ref(false)
 
 // 服务账号上传
 const saUploading = ref(false)
-// 下拉菜单触发 SA 上传：先记行，再点隐藏的 file input
-const saFileInput = ref<HTMLInputElement | null>(null)
-const saPendingRow = ref<RcloneRemote | null>(null)
-
-/** DataTable 列定义（手机端自动变卡片） */
-const columns: DataColumn[] = [
-  { key: 'name', label: '名称', minWidth: 150, mobile: 'title' },
-  { key: 'drive_type', label: '类型', width: 110 },
-  { key: 'team_drive_id', label: '团队盘', minWidth: 140, mobile: 'hide' },
-  { key: 'cred', label: '凭据', width: 150 },
-  { key: 'is_enabled', label: '状态', width: 90 },
-  // 操作收进「编辑 + 更多」两个入口：探测 / 授权 / 上传密钥 / 删除都在下拉里
-  { key: 'actions', label: '操作', width: 170, fixed: 'right', align: 'right' },
-]
 
 async function load() {
   loading.value = true
@@ -185,27 +169,6 @@ async function setProbe(row: RcloneRemote) {
   }
 }
 
-/** 更多下拉菜单分发 */
-function handleAction(cmd: string, row: RcloneRemote) {
-  if (cmd === 'probe') setProbe(row)
-  else if (cmd === 'oauth') openOAuth(row)
-  else if (cmd === 'upload') {
-    saPendingRow.value = row
-    saFileInput.value?.click()
-  } else if (cmd === 'delete') remove(row)
-}
-
-/** 行内启用 / 禁用切换 */
-async function toggleEnabled(row: RcloneRemote) {
-  try {
-    await updateRcloneRemote(row.id, { is_enabled: !row.is_enabled })
-    ElMessage.success(row.is_enabled ? `已禁用「${row.name}」` : `已启用「${row.name}」`)
-    load()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '切换失败')
-  }
-}
-
 async function doGenerate() {
   try {
     await ElMessageBox.confirm(
@@ -279,15 +242,7 @@ async function submitOAuth() {
   }
 }
 
-// 服务账号上传（隐藏 file input 触发）
-function onSaFileChange(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = '' // 允许重复选同一文件
-  if (!file || !saPendingRow.value) return
-  handleSaUpload(saPendingRow.value, file)
-}
-
+// 服务账号上传
 async function handleSaUpload(row: RcloneRemote, file: File) {
   saUploading.value = true
   try {
@@ -298,8 +253,8 @@ async function handleSaUpload(row: RcloneRemote, file: File) {
     ElMessage.error(e?.response?.data?.detail || e?.message || '上传失败')
   } finally {
     saUploading.value = false
-    saPendingRow.value = null
   }
+  return false // 阻止 el-upload 自动上传
 }
 
 function driveTypeLabel(row: RcloneRemote) {
@@ -329,78 +284,96 @@ onMounted(load)
       </div>
     </div>
 
-    <DataTable :rows="remotes" :columns="columns" :loading="loading" empty="还没有配置 remote。点「新建 Remote」添加个人盘或服务账号。">
-      <template #cell-name="{ row }">
-        <span class="remote-name">{{ row.name }}</span>
-        <el-tag v-if="row.is_probe_remote" type="success" size="small" style="margin-left: 6px">
-          探测用
-        </el-tag>
-      </template>
-
-      <template #cell-drive_type="{ row }">
-        <el-tag :type="row.drive_type === 'service_account' ? 'warning' : ''" size="small">
-          {{ driveTypeLabel(row) }}
-        </el-tag>
-      </template>
-
-      <template #cell-team_drive_id="{ row }">
-        <span v-if="row.team_drive_id" class="mono">{{ row.team_drive_id.slice(0, 20) }}…</span>
-        <span v-else class="muted">个人盘</span>
-      </template>
-
-      <template #cell-cred="{ row }">
-        <div v-if="row.drive_type === 'personal'" class="cred-cell">
-          <span :class="row.has_token ? 'ok' : 'missing'">
-            {{ row.has_token ? '✓ 已授权' : '✗ 未授权' }}
-          </span>
-        </div>
-        <div v-else class="cred-cell">
-          <span :class="row.has_service_account ? 'ok' : 'missing'">
-            {{ row.has_service_account ? '✓ ' + (row.service_account_file || '已上传') : '✗ 未上传' }}
-          </span>
-        </div>
-      </template>
-
-      <template #cell-is_enabled="{ row }">
-        <!-- 行内状态切换：点标签直接启用 / 禁用 -->
-        <el-tag
-          :type="row.is_enabled ? 'success' : 'info'"
-          size="small"
-          class="status-toggle"
-          title="点击切换启用 / 禁用"
-          @click="toggleEnabled(row)"
-        >
-          {{ row.is_enabled ? '启用' : '禁用' }}
-        </el-tag>
-      </template>
-
-      <template #cell-actions="{ row }">
-        <el-button size="small" @click="openEdit(row)">
-          <Pencil :size="12" />编辑
-        </el-button>
-        <el-dropdown @command="(cmd: string) => handleAction(cmd, row)">
-          <el-button size="small">
-            更多<ChevronDown :size="12" style="margin-left: 2px" />
+    <el-table :data="remotes" v-loading="loading" style="width: 100%">
+      <el-table-column prop="name" label="名称" min-width="140">
+        <template #default="{ row }">
+          <span class="remote-name">{{ row.name }}</span>
+          <el-tag v-if="row.is_probe_remote" type="success" size="small" style="margin-left: 6px">
+            探测用
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="类型" width="110">
+        <template #default="{ row }">
+          <el-tag :type="row.drive_type === 'service_account' ? 'warning' : ''" size="small">
+            {{ driveTypeLabel(row) }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="团队盘" min-width="160">
+        <template #default="{ row }">
+          <span v-if="row.team_drive_id" class="mono">{{ row.team_drive_id.slice(0, 20) }}…</span>
+          <span v-else class="muted">个人盘</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="凭据" width="180">
+        <template #default="{ row }">
+          <div v-if="row.drive_type === 'personal'" class="cred-cell">
+            <span :class="row.has_token ? 'ok' : 'missing'">
+              {{ row.has_token ? '✓ 已授权' : '✗ 未授权' }}
+            </span>
+          </div>
+          <div v-else class="cred-cell">
+            <span :class="row.has_service_account ? 'ok' : 'missing'">
+              {{ row.has_service_account ? '✓ ' + (row.service_account_file || '已上传') : '✗ 未上传' }}
+            </span>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="80">
+        <template #default="{ row }">
+          <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">
+            {{ row.is_enabled ? '启用' : '禁用' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="300" fixed="right">
+        <template #default="{ row }">
+          <el-button size="small" @click="openEdit(row)">
+            <Pencil :size="12" />编辑
           </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item v-if="!row.is_probe_remote" command="probe">设为探测用</el-dropdown-item>
-              <el-dropdown-item v-if="row.drive_type === 'personal'" command="oauth">OAuth 授权</el-dropdown-item>
-              <el-dropdown-item v-if="row.drive_type === 'service_account'" command="upload">上传 SA 密钥</el-dropdown-item>
-              <el-dropdown-item command="delete" divided class="danger-item">删除</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </template>
-    </DataTable>
-    <!-- SA 上传用隐藏 file input（从「更多」菜单触发） -->
-    <input ref="saFileInput" type="file" accept=".json,application/json" style="display: none" @change="onSaFileChange" />
+          <el-button
+            v-if="!row.is_probe_remote"
+            size="small"
+            type="success"
+            @click="setProbe(row)"
+          >
+            设为探测用
+          </el-button>
+          <el-button
+            v-if="row.drive_type === 'personal'"
+            size="small"
+            type="warning"
+            @click="openOAuth(row)"
+          >
+            <KeyRound :size="12" />授权
+          </el-button>
+          <el-upload
+            v-if="row.drive_type === 'service_account'"
+            :show-file-list="false"
+            :before-upload="(f: File) => handleSaUpload(row, f)"
+            style="display: inline-block; margin-left: 8px"
+          >
+            <el-button size="small" type="warning" :loading="saUploading">
+              <Upload :size="12" />上传密钥
+            </el-button>
+          </el-upload>
+          <el-button size="small" type="danger" @click="remove(row)">
+            <Trash2 :size="12" />
+          </el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+
+    <div v-if="!remotes.length && !loading" class="empty-hint">
+      还没有配置 remote。点「新建 Remote」添加个人盘或服务账号。
+    </div>
 
     <!-- 新建/编辑 -->
     <el-dialog
       v-model="dialogVisible"
       :title="editing ? `编辑 ${editing.name}` : '新建 Remote'"
-      width="min(520px, 94vw)"
+      width="520px"
     >
       <el-form :model="form" label-width="110px">
         <el-form-item label="名称" required>
@@ -442,12 +415,12 @@ onMounted(load)
     </el-dialog>
 
     <!-- 预览 -->
-    <el-dialog v-model="previewVisible" title="rclone.conf 预览（敏感字段已脱敏）" width="min(640px, 94vw)">
+    <el-dialog v-model="previewVisible" title="rclone.conf 预览（敏感字段已脱敏）" width="640px">
       <pre class="conf-preview">{{ previewContent }}</pre>
     </el-dialog>
 
     <!-- OAuth 授权 -->
-    <el-dialog v-model="oauthVisible" title="Google 授权" width="min(520px, 94vw)">
+    <el-dialog v-model="oauthVisible" title="Google 授权" width="520px">
       <p>1. 点下面按钮打开 Google 授权页，登录并允许访问 Drive</p>
       <p>2. 把跳转后地址栏里的 <code>code=</code> 参数值粘贴到下面</p>
       <el-button type="primary" @click="openOAuthPage" style="margin: 12px 0">
@@ -479,7 +452,7 @@ onMounted(load)
   gap: 12px;
 }
 .rclone-desc {
-  color: var(--text-muted);
+  color: #909399;
   font-size: 13px;
 }
 .rclone-actions {
@@ -495,36 +468,24 @@ onMounted(load)
   font-size: 12px;
 }
 .muted {
-  color: var(--text-muted);
+  color: #909399;
 }
 .ok {
-  color: var(--success);
+  color: #67c23a;
 }
 .missing {
-  color: var(--danger);
+  color: #f56c6c;
 }
 .cred-cell {
   font-size: 13px;
 }
 .empty-hint {
   text-align: center;
-  color: var(--text-muted);
+  color: #909399;
   padding: 40px 0;
 }
-/* 状态标签可点：行内启用 / 禁用切换 */
-.status-toggle {
-  cursor: pointer;
-  user-select: none;
-}
-.status-toggle:hover {
-  opacity: 0.8;
-}
-.danger-item {
-  color: var(--el-color-danger);
-}
 .conf-preview {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
+  background: #f5f7fa;
   border-radius: 6px;
   padding: 16px;
   font-size: 12px;

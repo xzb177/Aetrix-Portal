@@ -17,10 +17,10 @@
  * 默认只看当前服的挂载，顶部可切到「全部服」做跨服汇总；新建 / 编辑时可以指定归属服，
  * 换归属服时引用它的媒体库会跟着走（避免库跨服引用存储）。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { AlertTriangle, Cloud, FolderOpen, HardDrive, Info, Network, Pencil, Plug, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink } from 'vue-router'
 import {
   browseMount,
   createMount,
@@ -53,12 +53,8 @@ import NoticePanel from '@/components/NoticePanel.vue'
 const realm = useRealmStore()
 /** 统计范围：当前服（默认）或全部服 */
 const scope = ref<'realm' | 'all'>('realm')
-/** 标签页：mounts = 存储挂载，rclone = Rclone 配置（支持 ?tab=rclone 深链） */
-const route = useRoute()
-const activeTab = ref<'mounts' | 'rclone'>(route.query.tab === 'rclone' ? 'rclone' : 'mounts')
-watch(() => route.query.tab, (t) => {
-  if (t === 'rclone' || t === 'mounts') activeTab.value = t
-})
+/** 标签页：mounts = 存储挂载，rclone = Rclone 配置 */
+const activeTab = ref<'mounts' | 'rclone'>('mounts')
 /** 后端给的挂载 id → 服名映射（跨服汇总时用） */
 const realmNames = ref<Record<string, string>>({})
 /**
@@ -1008,8 +1004,8 @@ function fmtDate(s: string | null): string {
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 .mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
-.mini-badge.remote { background: var(--info-bg); color: var(--info); }
-.mini-badge.local { background: var(--success-bg); color: var(--success-strong); }
+.mini-badge.remote { background: rgba(59, 130, 246, 0.16); color: #3b82f6; }
+.mini-badge.local { background: rgba(16, 185, 129, 0.16); color: #10b981; }
 
 /* EM / EA 可达性：两个播放节点各自能不能碰到这条挂载 */
 .reach-cell { display: flex; flex-direction: column; gap: 3px; }

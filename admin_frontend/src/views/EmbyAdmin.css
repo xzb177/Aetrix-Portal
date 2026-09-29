@@ -1,12 +1,9 @@
 .lib-grid {
-  display: grid;
   grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
   gap: 16px;
 }
 
 .lib-card {
-  display: flex;
-  flex-direction: column;
   gap: 0;
   overflow: hidden;
   min-width: 0;
@@ -82,30 +79,23 @@
 }
 
 .lib-head {
-  display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
   flex-wrap: nowrap;
 }
 
 .lib-name {
-  font-weight: var(--font-weight-bold);
-  font-size: var(--font-size-lg);
-  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.lib-meta {
+.lib-meta,
+.lib-state {
   flex-shrink: 0;
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
 }
 
 .lib-state {
-  flex-shrink: 0;
   min-height: 18px;
 }
 
@@ -116,10 +106,7 @@
 }
 
 .lib-foot {
-  display: flex;
-  align-items: center;
   justify-content: flex-end;
-  gap: 10px;
   flex-wrap: nowrap;
   margin-top: 0;
   padding: 10px 14px 14px;
