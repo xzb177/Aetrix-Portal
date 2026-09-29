@@ -37,7 +37,7 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024      # 单张图上限：海报/背景图不该有更大的
 _LOCKS: dict = {}
 _LOCKS_LOCK = threading.Lock()
-_STATS = {"downloaded": 0, "failed": 0, "served": 0}
+_STATS = {"downloaded": 0, "failed": 0, "served": 0, "throttled": 0}
 
 # ---------- 缩略图 ----------
 # 海报墙下发 TMDB 原图（500KB–2MB/张）是带宽杀手：缩略图把单张压到几十 KB。
@@ -59,8 +59,13 @@ def pil_available() -> bool:
 
 
 def thumb_widths() -> list[int]:
-    """后台预生成的缩略图宽度档（环境变量 EMBY_THUMB_WIDTHS，逗号分隔）"""
-    raw = (os.getenv(_THUMB_WIDTHS_ENV) or "320,640").strip()
+    """后台预生成的缩略图宽度档（环境变量 EMBY_THUMB_WIDTHS，逗号分隔）
+
+    默认 160,320,640：分别对应列表行、海报卡片、详情/背景。
+    早先默认是 320,640，但前端实际请求 160/300/342，一次都命不中预热产物，
+    100% 的缩略图都落到请求线程里现做——反而把线程池打满。
+    """
+    raw = (os.getenv(_THUMB_WIDTHS_ENV) or "160,320,640").strip()
     out: list[int] = []
     for part in raw.split(","):
         try:
@@ -94,6 +99,29 @@ def _clamp_dim(value) -> int | None:
     return min(v, _THUMB_MAX_DIM)
 
 
+def _snap_to_configured_width(value) -> int | None:
+    """把请求宽度吸附到「已配置档位」上；无匹配返回 None（调用方回退原图）。
+
+    为什么必须有这一步：``resized_variant`` 原来只钳上限，于是 ``?maxWidth=1..4096``
+    里任何值都会真的落一个 ``<digest>_wN.jpg``。而 prune 会把**被引用原图的每一个
+    缩略图**都标进 protected，容量淘汰对 protected 一律跳过——于是这些按需生成的
+    变体既不受 ``EMBY_IMAGE_CACHE_MB`` 约束也永远不会被清理。循环请求
+    ``maxWidth=1..2000`` 就能为每张封面生成上千个永不淘汰的文件，撑爆所在卷。
+
+    吸附到配置档位后：文件总数有上界（档位数 × 原图数），且预热命中率回到 100%
+    （原来前端请求 342、预热 320，一次都命不中，等于白预热）。
+    """
+    v = _clamp_dim(value)
+    if not v:
+        return None
+    widths = thumb_widths()
+    if v in widths:
+        return v
+    # 就近吸附：取不小于请求宽度的最小档（宁可略大，也不要生成不在册的变体）
+    larger = [w for w in widths if w >= v]
+    return min(larger) if larger else max(widths)
+
+
 def resized_variant(path: str, max_width=None, max_height=None) -> str:
     """按需生成等比缩放版本，返回缩略图路径；不需要/失败返回空串（调用方用原图）
 
@@ -101,12 +129,20 @@ def resized_variant(path: str, max_width=None, max_height=None) -> str:
     - 超大原图（默认 >25MP）直接拒绝：Pillow 解码要吃掉几百 MB 内存；
     - 有界并发：同一时刻最多 _THUMB_CONCURRENCY（默认 4）个转码，海报墙
       几十张同时请求也不会把 CPU 打满（海报墙/预热/补生成三条路共用信号量）；
+    - **非阻塞**获取名额：抢不到就返回 "" 让调用方发原图，绝不排队。
+      原来用 ``with _GEN_SEMAPHORE`` 阻塞等待，而这个函数跑在 Starlette 的
+      anyio 线程池里（上限 40）。海报墙冷缓存 60 张并发 → 40 个请求线程全部
+      进入本函数，其中 4 个真在转码、36 个攥着线程阻塞等名额；这段时间内
+      **所有其它同步端点都拿不到线程**，整个部署表现为假死。
+      有界资源 + 无界排队 = 限流形同虚设。
     - 同一尺寸并发只生成一次（沿用 _LOCKS 的按路径单飞）；
     - 写文件走「临时文件 → fsync → os.replace」，中途被杀不留半张图。
     """
     if not _PIL_OK:
         return ""
-    width = _clamp_dim(max_width)
+    # 宽度吸附到已配置档位：变体文件总数因此有上界，否则按需生成的文件
+    # 会被 prune 当成"被引用的缩略图"永久保护，既不受容量上限约束也永不清理
+    width = _snap_to_configured_width(max_width) if max_width else None
     height = _clamp_dim(max_height)
     if not width and not height:
         return ""
@@ -122,41 +158,45 @@ def resized_variant(path: str, max_width=None, max_height=None) -> str:
         with lock:
             if os.path.isfile(target) and os.path.getsize(target) > 0:
                 return target
-            tmp = None
-            # 信号量在按路径锁之内：只有真正要转码的线程才占名额
-            with _GEN_SEMAPHORE:
-                try:
-                    with _PILImage.open(path) as img:
-                        ow, oh = img.size
-                        if ow * oh > _THUMB_MAX_PIXELS:
-                            logger.info("原图过大(%dMP)跳过缩略图 %s",
-                                        ow * oh // 1_000_000, path)
-                            return ""
-                        img.load()
-                        box_w = width or 10 ** 7
-                        box_h = height or 10 ** 7
-                        if ow <= box_w and oh <= box_h:
-                            return ""  # 已经够小，不用转
-                        if img.mode in ("RGBA", "LA", "PA", "P"):
-                            img = img.convert("RGB")
-                        img.thumbnail((box_w, box_h), _PILImage.LANCZOS)
-                        os.makedirs(image_dir(), exist_ok=True)
-                        tmp = f"{target}.part{os.getpid()}"
-                        img.save(tmp, "JPEG", quality=_THUMB_QUALITY,
-                                 optimize=True, progressive=True)
-                        with open(tmp, "rb") as fh:
-                            os.fsync(fh.fileno())
-                        os.replace(tmp, target)
-                        tmp = None  # 已换名成功，不用再清
-                except Exception as exc:  # noqa: BLE001 — 缩略图失败只是“没小图”，原图照发
-                    logger.info("缩略图生成失败 %s: %s", path, exc)
-                    if tmp:
-                        try:
-                            if os.path.isfile(tmp):
-                                os.remove(tmp)
-                        except OSError:
-                            pass
-                    return ""
+            # 非阻塞抢名额：抢不到就直接回原图，绝不攥着请求线程排队
+            if not _GEN_SEMAPHORE.acquire(blocking=False):
+                _STATS["throttled"] = _STATS.get("throttled", 0) + 1
+                return ""
+            try:
+                box_w = width or 10 ** 7
+                box_h = height or 10 ** 7
+                tmp = None
+                with _PILImage.open(path) as img:
+                    ow, oh = img.size
+                    if ow * oh > _THUMB_MAX_PIXELS:
+                        logger.info("原图过大(%dMP)跳过缩略图 %s",
+                                    ow * oh // 1_000_000, path)
+                        return ""
+                    img.load()
+                    if ow <= box_w and oh <= box_h:
+                        return ""  # 已经够小，不用转
+                    if img.mode in ("RGBA", "LA", "PA", "P"):
+                        img = img.convert("RGB")
+                    img.thumbnail((box_w, box_h), _PILImage.LANCZOS)
+                    os.makedirs(image_dir(), exist_ok=True)
+                    tmp = f"{target}.part{os.getpid()}"
+                    img.save(tmp, "JPEG", quality=_THUMB_QUALITY,
+                             optimize=True, progressive=True)
+                    with open(tmp, "rb") as fh:
+                        os.fsync(fh.fileno())
+                    os.replace(tmp, target)
+                    tmp = None  # 已换名成功，不用再清
+            except Exception as exc:  # noqa: BLE001 — 缩略图失败只是"没小图"，原图照发
+                logger.info("缩略图生成失败 %s: %s", path, exc)
+                if tmp:
+                    try:
+                        if os.path.isfile(tmp):
+                            os.remove(tmp)
+                    except OSError:
+                        pass
+                return ""
+            finally:
+                _GEN_SEMAPHORE.release()  # 必须在 try 上，否则提前 return 会漏放
             return target
     finally:
         with _LOCKS_LOCK:
@@ -230,6 +270,12 @@ _THUMB_MAX_PIXELS = _env_int("EMBY_THUMB_MAX_MEGAPIXELS", 25, 1) * 1_000_000
 _THUMB_CONCURRENCY = _env_int("EMBY_THUMB_CONCURRENCY", 4, 1)
 # 同时转码的缩略图数（信号量）：海报墙/预热/补生成三条路共用一把
 _GEN_SEMAPHORE = threading.Semaphore(_THUMB_CONCURRENCY)
+# 同时进行的远程下载数：下载吃带宽，但**同样占住请求线程**——_download 超时默认
+# 15s，一张打不通的远程图就能占死一个 anyio 线程。海报墙 40 张冷缓存同时进来
+# 会把线程池占满，其它同步端点（/api/*、管理后台）全部拿不到线程 → 服务假死。
+# 抢不到名额就直接退回远程地址（调用方本来就支持），不排队。
+_DOWNLOAD_CONCURRENCY = _env_int("EMBY_IMAGE_DL_CONCURRENCY", 8, 1)
+_DL_SEMAPHORE = threading.Semaphore(_DOWNLOAD_CONCURRENCY)
 _THUMB_MEM_CAP = _env_int("EMBY_THUMB_MEM_MB", 32, 0) * 1024 * 1024
 # 内存缓存总量上限（默认 32MB）：一张缩略图几十 KB，32MB ≈ 缓存上千张热图
 _THUMB_MEM_ENTRY_MAX = 2 * 1024 * 1024  # 单条目上限：超过 2MB 的不进内存（异常）
@@ -388,7 +434,15 @@ def localize(url: Optional[str]) -> str:
         try:
             if os.path.isfile(path) and os.path.getsize(path) > 0:
                 return path
-            content = _download(url)
+            # 非阻塞抢下载名额：抢不到就退回远程地址（调用方本来就支持），
+            # 绝不攥着请求线程排队——下载超时 15s，排队会把整个线程池拖死
+            if not _DL_SEMAPHORE.acquire(blocking=False):
+                _STATS["throttled"] += 1
+                return ""
+            try:
+                content = _download(url)
+            finally:
+                _DL_SEMAPHORE.release()
             if not content:
                 _STATS["failed"] += 1
                 return ""
@@ -485,7 +539,13 @@ def prune(db) -> dict:
     grace = _env_int("EMBY_IMAGE_GRACE_SECONDS", 3600, 0)
     now = time.time()
     kept: list[tuple[str, int, float]] = []
-    protected = set(referenced)  # 原图 + 被引用的缩略图：清理与淘汰都不动
+    protected = set(referenced)  # 原图：清理与淘汰都不动
+    # 被引用原图的**配置档位**缩略图同样要保护（正在下发的海报就是它）。
+    # 早先这里把每一个 _wN.jpg 都塞进 protected，容量淘汰对 protected 一律跳过，
+    # 于是任何按 maxWidth 现生成的变体都永久受保护、不受 EMBY_IMAGE_CACHE_MB 约束
+    # 也永不清理 → 撑爆所在卷。现在宽度已吸附到配置档位
+    # （_snap_to_configured_width），这里只白名单这有限的几个档位。
+    _cfg_tags = {f"_w{w}" for w in thumb_widths()}
 
     def _remove_file(name: str) -> int:
         """删一个文件（含它的缩略图），返回释放的字节数"""
@@ -510,8 +570,11 @@ def prune(db) -> dict:
             continue
         digest = _thumb_digest(entry.name)
         if entry.name in referenced or (digest and digest in referenced_digests):
-            if digest and digest in referenced_digests:
-                protected.add(entry.name)
+            # 只保护「原图自身 + 配置档位的缩略图」，非档位的现生成变体照常淘汰
+            if digest and digest in referenced_digests and entry.name not in referenced:
+                base = entry.name.rsplit(".", 1)[0]
+                if any(tag in base for tag in _cfg_tags):
+                    protected.add(entry.name)
             try:
                 stat = entry.stat()
             except OSError:
@@ -551,6 +614,7 @@ def prune(db) -> dict:
                 continue            # 正在用的封面（含它的缩略图）不淘汰
             try:
                 os.remove(os.path.join(root, name))
+                thumb_mem_drop(name)  # 内存里那份也得清，否则白占 LRU 配额再也发不出去
             except OSError:
                 continue
             total -= size
