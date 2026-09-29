@@ -595,6 +595,42 @@ export const rescrapeLibrary = (id: number, policy: 'missing_only' | 'all' = 'mi
     { policy },
   )
 
+export interface TmdbPreview {
+  tmdb_id: string
+  title: string
+  year: number | null
+  poster: string | null
+  current_name: string
+  current_tmdb_id: string | number | null
+  matches_current: boolean
+}
+
+/** TMDB 预览：绑定前先看清「这到底是哪部片」，只读不写库 */
+export const previewTmdb = (id: number, tmdbId: string) =>
+  get<TmdbPreview>(`${E}/scrape/items/${id}/tmdb-preview`, { tmdb_id: tmdbId })
+
+export interface TmdbBindResult {
+  success: boolean
+  unbound: boolean
+  item: { id: number; name: string; item_type: string; tmdb_id?: string | number | null }
+  notes: string[]
+}
+
+/** 手动绑定 TMDB ID（tmdbId 为空字符串 = 解绑）；绑定后自动补全缺失元数据 */
+export const bindTmdb = (id: number, tmdbId: string, verify = true) =>
+  post<TmdbBindResult>(`${E}/scrape/items/${id}/bind-tmdb`, { tmdb_id: tmdbId, verify })
+
+export interface EnrichProgress {
+  enrich: { pending: number; enriching: number; done: number; failed: number; retrying: number }
+  probe: Record<string, number>
+  workers: number
+  enabled: boolean
+}
+
+/** 补全 worker 进度：enrich 待处理/进行中/成功/失败/重试中 */
+export const fetchEnrichProgress = () =>
+  get<{ success: boolean } & EnrichProgress>(`${E}/scrape/enrich-progress`)
+
 export interface AutoScanConfig {
   enabled: boolean
   /** 每天执行时间，"HH:MM"（服务器本地时间） */
