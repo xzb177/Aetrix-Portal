@@ -17,6 +17,7 @@ from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server.streaming import (
+    can_redirect_direct,
     get_transcode,
     serve_file,
     serve_image,
@@ -85,6 +86,10 @@ def download_item(item_id: str, request: Request,
     ensure_download_allowed(db, user, request=request)
     target = _play_target(db, item)
     if target.kind == "url":
+        # 无凭据直链（如 Google Drive SA 直链）直接 302，视频字节不经过服务器
+        # （借鉴 go-emby 的"默认拒绝中转"思路）；有凭据的（115/WebDAV）才走代理。
+        if can_redirect_direct(target):
+            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": "no-store"})
         return serve_remote(
             target.value, request, target.headers,
             media_type="application/octet-stream",
@@ -186,10 +191,11 @@ def item_image(item_id: str, image_type: str, request: Request,
             _remember_local_image(db, item, kind, cached)
             return _serve_sized(cached, ew, eh)
         # 仅允许代理 http(s) 远程图片（防 SSRF）
-        import httpx
+        # 共享客户端复用连接：海报墙穿透时不用每次建连
+        from backend.emby_server import mounts as _mounts
 
         try:
-            r = httpx.get(src, timeout=10, follow_redirects=True)
+            r = _mounts._shared_http_client("image_proxy", timeout=10).get(src)
             r.raise_for_status()
         except Exception as e:  # noqa: BLE001 — 远程图失效不能让图片接口 5xx
             logger.warning("远程图片获取失败 %s: %s", src, e)

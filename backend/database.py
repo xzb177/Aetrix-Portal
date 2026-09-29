@@ -178,9 +178,58 @@ if REDIS_ENABLED:
 
 # ==================== 缓存管理 ====================
 class CacheManager:
-    """统一缓存管理器，支持 Redis 和内存缓存"""
+    """统一缓存管理器，支持 Redis 和内存缓存
 
-    _memory_cache = {}
+    内存回退是有界的（借鉴 go-emby 的有界缓存思路）：条目上限
+    ``_MEMORY_CACHE_MAX``，存 (value, expire_at)，读时校验过期、
+    写满时先清过期条目再按 FIFO 淘汰最老的。Redis 故障时也不会
+    无限增长吃掉内存。
+    """
+
+    _memory_cache: dict = {}
+    _memory_cache_order: list = []  # FIFO 顺序，配合淘汰
+    _MEMORY_CACHE_MAX = 2000
+
+    @staticmethod
+    def _memory_get(key: str) -> Optional[str]:
+        entry = CacheManager._memory_cache.get(key)
+        if entry is None:
+            return None
+        value, expire_at = entry
+        import time as _time
+        if expire_at is not None and _time.time() > expire_at:
+            CacheManager._memory_cache.pop(key, None)
+            try:
+                CacheManager._memory_cache_order.remove(key)
+            except ValueError:
+                pass
+            return None
+        return value
+
+    @staticmethod
+    def _memory_set(key: str, value: str, ttl: int = 300) -> None:
+        import time as _time
+        cache = CacheManager._memory_cache
+        expire_at = _time.time() + ttl if ttl and ttl > 0 else None
+        if key not in cache:
+            # 写满：先清过期条目，不够再按 FIFO 淘汰最老
+            while len(cache) >= CacheManager._MEMORY_CACHE_MAX:
+                evicted = False
+                now = _time.time()
+                for k in list(cache.keys()):
+                    _, exp = cache[k]
+                    if exp is not None and now > exp:
+                        cache.pop(k, None)
+                        evicted = True
+                        break
+                if not evicted:
+                    oldest = CacheManager._memory_cache_order.pop(0) if CacheManager._memory_cache_order else None
+                    if oldest is not None:
+                        cache.pop(oldest, None)
+                    else:
+                        break
+            CacheManager._memory_cache_order.append(key)
+        cache[key] = (value, expire_at)
 
     @staticmethod
     def get(key: str) -> Optional[str]:
@@ -191,7 +240,7 @@ class CacheManager:
                 return value
             except Exception:
                 pass
-        return CacheManager._memory_cache.get(key)
+        return CacheManager._memory_get(key)
 
     @staticmethod
     def set(key: str, value: str, ttl: int = 300) -> bool:
@@ -201,7 +250,7 @@ class CacheManager:
                 return redis_client.setex(f"rb:{key}", ttl, value)
             except Exception:
                 pass
-        CacheManager._memory_cache[key] = value
+        CacheManager._memory_set(key, value, ttl)
         return True
 
     @staticmethod
@@ -214,6 +263,10 @@ class CacheManager:
                 pass
         if key in CacheManager._memory_cache:
             del CacheManager._memory_cache[key]
+            try:
+                CacheManager._memory_cache_order.remove(key)
+            except ValueError:
+                pass
         return True
 
     @staticmethod
@@ -237,7 +290,7 @@ class CacheManager:
                 return redis_client.exists(f"rb:{key}") > 0
             except Exception:
                 pass
-        return key in CacheManager._memory_cache
+        return CacheManager._memory_get(key) is not None
 
 
 cache = CacheManager()
