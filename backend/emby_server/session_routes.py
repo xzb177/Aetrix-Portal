@@ -172,11 +172,13 @@ def _install_report_routes(router, originals: dict) -> int:
             db: Session = Depends(get_db),
             _original=original,
         ):
+            from backend.emby_server.async_db import run_db
             body = await request.json()
             if isinstance(body, dict):
                 # 就地改写：starlette 会缓存 Request.json() 的结果，
                 # 原处理函数随后读到的就是归一化后的 body。
-                body["PlaySessionId"] = resolve_session_key(db, user, body)
+                # P0（2026-09-29）：sync DB helper 经 run_db 扔线程池，不卡事件循环。
+                body["PlaySessionId"] = await run_db(resolve_session_key, db, user, body)
             # 原处理函数是同步 def（拆分后跑在线程池）时不 await，直接取返回值
             result = _original(request, user, db)
             if inspect.isawaitable(result):

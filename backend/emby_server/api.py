@@ -2061,11 +2061,14 @@ async def playback_info(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    item = _require_item(db, item_id)
+    # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
+    # 所有碰 DB 的同步 helper 都经 run_db 扔线程池。
+    from backend.emby_server.async_db import run_db
+    item = await run_db(_require_item, db, item_id)
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
-    ensure_playback_allowed(db, user)
+    await run_db(ensure_playback_allowed, db, user)
     # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
-    playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
+    await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
     if not item.file_path:
         # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
         # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
@@ -2086,11 +2089,12 @@ async def playback_info(
         (device_profile.get("MaxStreamingBitrate") or 0)
     ) or 120_000_000
     # 码率上限（v2.26.0）：客户端要 40Mbps 也只按上限给，直连/直传的判定跟着一起收紧
-    max_bitrate = playback_policy.clamp_bitrate_kbps(db, max_bitrate // 1000) * 1000
+    max_bitrate = await run_db(playback_policy.clamp_bitrate_kbps, db, max_bitrate // 1000) * 1000
     # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
-    allow_transcode = playback_policy.transcode_enabled(db) or bool(user.is_staff)
+    allow_transcode = await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)
 
-    media_source = _media_source(item, base)
+    # _media_source 读 item.streams（懒加载关系），必须在线程池里，不能直接在事件循环上碰
+    media_source = await run_db(_media_source, item, base)
     direct = item.bitrate and item.bitrate <= max_bitrate
     # api_key：优先 Emby 客户端 token；JWT 访问时（网页端）直接把 JWT 作为 api_key，
     # 流媒体端点（stream/master.m3u8/切片）均可通过 JWT 回退鉴权
@@ -2121,12 +2125,14 @@ async def video_stream(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    item = _require_item(db, item_id)
+    # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
+    from backend.emby_server.async_db import run_db
+    item = await run_db(_require_item, db, item_id)
     # 授权已由 get_emby_user 依赖完成（Emby token 或 JWT 均可）
-    ensure_playback_allowed(db, user)
-    playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
+    await run_db(ensure_playback_allowed, db, user)
+    await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
     media_type = f"video/{item.container}" if item.container else "video/mp4"
-    target = _play_target(db, item)
+    target = await run_db(_play_target, db, item)
     if target.kind == "url":
         # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
         # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。
@@ -2164,7 +2170,9 @@ async def video_hls(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    item = _require_item(db, item_id)
+    # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
+    from backend.emby_server.async_db import run_db
+    item = await run_db(_require_item, db, item_id)
     base = _base_url(request)
     q = request.query_params
 
