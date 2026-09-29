@@ -148,29 +148,61 @@ def _neutralize_orphans(src, tables, verbose=True):
     if not fk_map:
         return {}
     stats = {}
+    deleted_rows = []
     for tbl, fks in fk_map.items():
         try:
             if not src.execute(f'SELECT 1 FROM "{tbl}" LIMIT 1').fetchone():
                 continue
         except sqlite3.Error:
             continue
-        # SET 子句只列一次，条件用 OR 串起来（多列外键：任一列是孤儿就整行中和）
-        set_cols = ", ".join(f'"{frm}" = NULL' for _p, frm, _to in fks)
+        # 条件用 OR 串起来（多列外键：任一列是孤儿就整行处理）
         conds = " OR ".join(
             f'("{frm}" IS NOT NULL AND NOT EXISTS '
             f'(SELECT 1 FROM "{parent}" WHERE "{parent}"."{to}" = "{tbl}"."{frm}"))'
             for parent, frm, to in fks)
+        # 先问「能不能置 NULL」：NOT NULL 的列置不了，只能整行删。
+        # 生产实测 emby_api_tokens.user_id / station_messages.to_user_id /
+        # user_devices.user_id 都是 NOT NULL，置 NULL 会直接违反本表约束。
+        notnull = set()
+        for r in src.execute(f'PRAGMA table_info("{tbl}")'):
+            if r[3]:                          # PRAGMA table_info 第4列：1=NOT NULL, 0/空=可空
+                notnull.add(r[1])
         try:
-            n = src.execute(f'UPDATE "{tbl}" SET {set_cols} WHERE {conds}').rowcount
+            nullable = [frm for _p, frm, _to in fks if frm not in notnull]
+            forced = [frm for _p, frm, _to in fks if frm in notnull]
+            n = 0
+            if nullable:
+                set_cols = ", ".join(f'"{c}" = NULL' for c in nullable)
+                ncols = " OR ".join(
+                    f'("{frm}" IS NOT NULL AND NOT EXISTS '
+                    f'(SELECT 1 FROM "{parent}" WHERE "{parent}"."{to}" = "{tbl}"."{frm}"))'
+                    for parent, frm, to in fks if frm in nullable)
+                n += src.execute(f'UPDATE "{tbl}" SET {set_cols} WHERE {ncols}').rowcount
+            if forced:
+                # NOT NULL 列：这类行（token 指向已删除的用户）本来就无意义，删掉。
+                # 不删就会在导数据时被 PG 的外键直接拒掉。
+                fcols = " OR ".join(
+                    f'("{frm}" IS NOT NULL AND NOT EXISTS '
+                    f'(SELECT 1 FROM "{parent}" WHERE "{parent}"."{to}" = "{tbl}"."{frm}"))'
+                    for parent, frm, to in fks if frm in forced)
+                d = src.execute(f'DELETE FROM "{tbl}" WHERE {fcols}').rowcount
+                n += d
+                if d:
+                    deleted_rows.append((tbl, d))
             if n:
                 stats[tbl] = n
                 if verbose:
                     print(f"      · {tbl}: 中和 {n} 行孤儿外键 → NULL")
         except sqlite3.Error as e:
             print(f"      ! {tbl} 孤儿处理跳过：{e}")
-    if stats:
+    if stats or deleted_rows:
         src.commit()
-        print(f"      共中和 {sum(stats.values())} 行（源库本就违反外键，SQLite 不强制所以一直没暴露）")
+        if stats:
+            print(f"      共中和 {sum(stats.values())} 行（源库本就违反外键，SQLite 不强制所以一直没暴露）")
+        if deleted_rows:
+            for tbl, d in deleted_rows:
+                print(f"      · {tbl}: 删除 {d} 行 NOT NULL 孤儿行（父记录已不存在，该行已无意义）")
+            print(f"      共删除 {sum(d for _t, d in deleted_rows)} 行")
     return stats
 
 
