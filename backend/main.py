@@ -594,6 +594,7 @@ else:
 # 自建 Emby 门户 API（用户端账号卡/续看/收藏 + 管理端媒体库管理）
 app.include_router(user_emby_router)
 app.include_router(admin_emby_router)
+app.include_router(portal_mount_routes.mount_picker_router)
 
 # 用户门户认证 API（注册/登录/JWT）
 app.include_router(auth_router)

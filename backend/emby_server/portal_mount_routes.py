@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from fastapi import Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -428,4 +428,79 @@ async def browse_mount(mount_id: int, rel: str = "/",
             for e in entries
         ],
         "total": len(entries),
+    }
+
+
+# ==================== 挂载路径选择器（媒体库表单用） ====================
+
+mount_picker_router = APIRouter(
+    prefix="/api/admin/mounts",
+    tags=["挂载路径选择"],
+    dependencies=[Depends(require_staff)],
+)
+
+
+def _normalize_browse_path(raw: str | None) -> str:
+    """规范化浏览路径，防 `..` 跳出挂载根。
+
+    返回以 `/` 开头的干净路径；非法时抛 ValueError。
+    """
+    text = (raw or "").strip().replace("\\", "/")
+    # 逐段处理，遇到 `..` 直接拒绝（不静默消化，避免语义混淆）
+    parts: list[str] = []
+    for seg in text.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            raise ValueError("路径不允许包含 ..")
+        parts.append(seg)
+    return "/" + "/".join(parts)
+
+
+@mount_picker_router.get("/{mount_id}/browse")
+async def browse_mount_dirs(
+    mount_id: int,
+    path: str | None = Query(default=None, description="挂载内的子路径，如 /MoviePilot/剧集"),
+    staff: models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """浏览挂载下的子目录（媒体库「路径」字段的选择器用）。
+
+    - 只返回目录，按名称排序；不返回文件。
+    - 只读：不触发扫描、不写库。
+    - path 必须位于挂载根内，`..` 直接 400。
+    """
+    try:
+        clean_path = _normalize_browse_path(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    mount = await run_in_threadpool(_load_mount, db, mount_id)
+    if not mount:
+        raise HTTPException(status_code=404, detail="挂载不存在")
+    try:
+        provider = await run_in_threadpool(mount_lib.build_provider, mount, db)
+        entries = await run_in_threadpool(provider.list_dir, clean_path)
+    except mount_lib.MountAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except mount_lib.MountError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    dirs = sorted(
+        ({"name": e.name, "path": e.rel} for e in entries if e.is_dir),
+        key=lambda d: d["name"].lower(),
+    )
+    # 面包屑：/a/b → [{name: a, path: /a}, {name: b, path: /a/b}]
+    crumbs: list[dict] = []
+    acc: list[str] = []
+    for seg in clean_path.strip("/").split("/"):
+        if not seg:
+            continue
+        acc.append(seg)
+        crumbs.append({"name": seg, "path": "/" + "/".join(acc)})
+    return {
+        "mount_id": mount_id,
+        "path": clean_path,
+        "parent": "/" + "/".join(clean_path.strip("/").split("/")[:-1]) if clean_path != "/" else None,
+        "crumbs": crumbs,
+        "dirs": dirs,
+        "total": len(dirs),
     }
