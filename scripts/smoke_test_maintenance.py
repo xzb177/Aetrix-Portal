@@ -261,11 +261,13 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     # v2.35.0：SQLite 上周期性 PRAGMA optimize（查询计划不随库增长退化，见
                     # maintenance.optimize_query_plans）。它是一个布尔，所以不参与下面
                     # 「干净时什么都不做」的全零断言：SQLite 上跑了就是 True，非 SQLite 是 False。
-                    "query_plans_optimized"},
+                    "query_plans_optimized",
+                    # perf/server-resource：空闲 GC 是否执行（布尔标记，非计数，同样不参与全零断言）
+                    "idle_gc_done"},
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()
 check(all(v == 0 for key, v in second.items()
-          if key not in ("query_plans_optimized", "thumbs_backfill_done")),
+          if key not in ("query_plans_optimized", "thumbs_backfill_done", "idle_gc_done")),
       "维护周期可反复执行（干净时什么都不做）", f"{second}")
 
 
