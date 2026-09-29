@@ -66,6 +66,12 @@ class Library(Base):
     # 面板只能显示「扫描中」；这里带上阶段 / 已发现 / 已处理 / 当前目录 / 本轮远程请求数，
     # 由 scan_queue 的刷盘线程每几秒写一次。
     scan_progress = Column(Text)       # JSON：phase/enumerated/processed/current/remote_lists…
+    # 本轮扫描**开始**的时刻，用来判断「是不是崩溃残留」。
+    # 不能用 updated_at：进度刷盘（scan_queue.flush_once）每几秒写一次 scan_progress，
+    # ORM 的 onupdate 会连带刷新 updated_at——于是它永远是「刚刚」，让
+    # reset_stale_scan_flags 的超时判定恒不成立，卡死的库永远复位不了
+    # （生产事故：部署打断扫描后两个库永远显示「扫描中」）。
+    scan_started_at = Column(DateTime)
     item_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
