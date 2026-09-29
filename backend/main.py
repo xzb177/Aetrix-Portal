@@ -170,6 +170,13 @@ async def lifespan(app: FastAPI):
             auto_scan.start_auto_scan_scheduler()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动定时扫描调度失败（可忽略）: {e}")
+        # 数据库定时备份：默认开启（每天 03:00，保留 7 天），后台可改；失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import db_backup
+            db_backup.start_backup_scheduler()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动数据库备份调度失败（可忽略）: {e}")
         # 追新：默认关闭，不打扰任何现有行为。失败不影响启动。
     if not _is_api_role:
         try:

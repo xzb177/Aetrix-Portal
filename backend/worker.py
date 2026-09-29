@@ -217,6 +217,14 @@ def main() -> int:
             logger.warning(f"启动定时扫描失败（可忽略）: {e}")
 
         try:
+            from backend.emby_server import db_backup
+            if db_backup.start_backup_scheduler():
+                started.append("db_backup")
+                logger.info("✅ 数据库定时备份已启动")
+        except Exception as e:
+            logger.warning(f"启动数据库备份调度失败（可忽略）: {e}")
+
+        try:
             from backend.emby_server import change_watcher
             change_watcher.start_chase_new_watcher()
             started.append("change_watcher")

@@ -663,6 +663,30 @@ export const fetchSaFiles = () => get<{ success: boolean; files: SaFile[] }>(`${
 export const saveAutoScan = (enabled: boolean, time: string) =>
   put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
 
+export interface BackupFile { name: string; size: number; created_at: string }
+export interface BackupConfig {
+  enabled: boolean
+  /** 每天执行时间，"HH:MM"（服务器本地时间） */
+  time: string
+  /** 保留最近 N 天 */
+  keep_days: number
+  /** 上次执行日期 "YYYY-MM-DD"，没跑过为空 */
+  last_run: string
+  backups: BackupFile[]
+}
+
+/** 数据库备份配置 + 备份文件列表 */
+export const fetchBackupConfig = () =>
+  get<{ success: boolean } & BackupConfig>(`/system/backup`)
+
+/** 保存数据库备份配置：立即生效，无需重启；非法时后端 400 */
+export const saveBackupConfig = (enabled: boolean, time: string, keep_days: number) =>
+  put<{ success: boolean } & BackupConfig>(`/system/backup`, { enabled, time, keep_days })
+
+/** 立即手动备份一次 */
+export const runBackupNow = () =>
+  post<{ success: boolean; backup: { name: string; size: number } } & BackupConfig>(`/system/backup/run`, {})
+
 /**
  * 播放可达性报告（v2.28.0）：出流方式 + 逐库判定 + 用户端地址一致性
  *

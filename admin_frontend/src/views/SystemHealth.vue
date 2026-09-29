@@ -3,8 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Activity, Database, Film, HardDrive, RefreshCw, Radio, Users } from 'lucide-vue-next'
 import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
+import { fetchBackupConfig, saveBackupConfig, runBackupNow } from '@/api/admin'
 import type { EmbySessionRow, StorageMount } from '@/types'
 import type { PanelHealth } from '@/api/admin'
+import type { BackupConfig } from '@/api/admin'
 
 const health = ref<PanelHealth | null>(null)
 const sessions = ref<EmbySessionRow[]>([])
@@ -12,6 +14,17 @@ const mounts = ref<StorageMount[]>([])
 const overview = ref<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number } | null>(null)
 const loading = ref(false)
 const lastChecked = ref('')
+
+const backup = ref<BackupConfig | null>(null)
+const backupSaving = ref(false)
+const backupRunning = ref(false)
+
+function fmtSize(bytes: number): string {
+  if (!bytes) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
 
 const panelOk = computed(() => health.value?.status === 'healthy' || health.value?.status === 'degraded')
 const panelDetail = computed(() => {
@@ -33,21 +46,57 @@ const checks = computed(() => [
 async function load() {
   loading.value = true
   try {
-    const [h, o, s, m] = await Promise.all([
+    const [h, o, s, m, b] = await Promise.all([
       fetchPanelHealth(),
       fetchEmbyOverview().catch(() => null),
       fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
       fetchMounts().catch(() => ({ mounts: [], mount_types: [] })),
+      fetchBackupConfig().catch(() => null),
     ])
     health.value = h
     overview.value = o
     sessions.value = s.sessions
     mounts.value = m.mounts
+    backup.value = b
     lastChecked.value = new Date().toLocaleTimeString()
   } catch {
     ElMessage.error('健康检查失败，请确认 EM 服务仍在运行')
   } finally {
     loading.value = false
+  }
+}
+
+async function saveBackup() {
+  if (!backup.value) return
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(backup.value.time.trim())) {
+    ElMessage.error('时间格式应为 HH:MM（24 小时制）')
+    return
+  }
+  backupSaving.value = true
+  try {
+    backup.value = await saveBackupConfig(
+      backup.value.enabled,
+      backup.value.time.trim(),
+      Math.max(1, Math.min(30, Math.round(backup.value.keep_days) || 7)),
+    )
+    ElMessage.success('备份配置已保存，立即生效')
+  } catch {
+    ElMessage.error('保存失败，请检查时间格式与保留天数')
+  } finally {
+    backupSaving.value = false
+  }
+}
+
+async function manualBackup() {
+  backupRunning.value = true
+  try {
+    const res = await runBackupNow()
+    backup.value = res
+    ElMessage.success(`备份完成：${res.backup.name}`)
+  } catch {
+    ElMessage.error('备份失败，请稍后重试')
+  } finally {
+    backupRunning.value = false
   }
 }
 
@@ -101,6 +150,36 @@ onMounted(load)
         </div>
         <div v-else class="empty-hint">当前没有播放会话</div>
       </div>
+
+      <div class="admin-card">
+        <div class="card-header">
+          <h2><Database :size="15" />数据库备份</h2>
+          <span class="muted">上次执行 {{ backup?.last_run || '—' }}</span>
+        </div>
+        <div v-if="backup" class="backup-form">
+          <div class="backup-row">
+            <el-switch v-model="backup.enabled" active-text="定时备份" />
+            <el-time-picker v-model="backup.time" format="HH:mm" value-format="HH:mm"
+                            placeholder="执行时间" style="width: 130px" :clearable="false" />
+            <span class="muted">保留</span>
+            <el-input-number v-model="backup.keep_days" :min="1" :max="30" :controls="false"
+                             style="width: 70px" />
+            <span class="muted">天</span>
+          </div>
+          <div class="backup-row">
+            <el-button type="primary" size="small" :loading="backupSaving" @click="saveBackup">保存配置</el-button>
+            <el-button size="small" :loading="backupRunning" @click="manualBackup">立即备份</el-button>
+          </div>
+          <div v-if="backup.backups.length" class="status-list backup-list">
+            <div v-for="f in backup.backups.slice(0, 7)" :key="f.name" class="status-row">
+              <span>{{ f.name }}</span>
+              <span class="muted">{{ fmtSize(f.size) }} · {{ f.created_at }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-hint">暂无备份文件</div>
+        </div>
+        <div v-else class="empty-hint">备份信息加载失败（不影响页面其他内容）</div>
+      </div>
     </section>
   </div>
 </template>
@@ -128,6 +207,9 @@ onMounted(load)
 .status-row:last-child { border-bottom: 0; }
 .status-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .muted { color: var(--text-muted); font-size: 12px; }
+.backup-form { display: flex; flex-direction: column; gap: 12px; }
+.backup-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.backup-list { max-height: 220px; overflow-y: auto; }
 .ok-text { color: var(--success); }
 .warn-text { color: var(--warning); }
 @media (max-width: 900px) { .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .runtime-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
