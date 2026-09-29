@@ -778,6 +778,35 @@ def _default_subtitle_index(item: em.MediaItem):
     return None
 
 
+# 文件扩展名 -> 容器格式的安全映射（只做 container 回退，不猜测编码）。
+# 原理：扩展名可靠地反映容器格式；缺失 container 会导致客户端无法判断直放兼容性
+# 而误走转码。这里只补 container，绝不虚报 video/audio codec（宁可保守）。
+_CONTAINER_BY_EXT = {
+    ".mp4": "mp4", ".m4v": "mp4",
+    ".mkv": "mkv",
+    ".avi": "avi",
+    ".mov": "mov",
+    ".ts": "ts", ".m2ts": "m2ts", ".mts": "m2ts",
+    ".webm": "webm",
+    ".flv": "flv",
+    ".wmv": "wmv",
+    ".mpg": "mpeg", ".mpeg": "mpeg",
+}
+
+
+def _container_of(item: em.MediaItem) -> Optional[str]:
+    """取容器格式：优先扫描数据，缺失时从文件扩展名安全回退。"""
+    if item.container:
+        return item.container
+    path = (item.file_path or "").lower()
+    # 去掉 URL 参数（如 ?xxx）
+    path = path.split("?")[0]
+    for ext, container in _CONTAINER_BY_EXT.items():
+        if path.endswith(ext):
+            return container
+    return None
+
+
 def _media_source(item: em.MediaItem, base: str, api_key: str = "") -> dict:
     dto = {
         "Id": item.guid,
@@ -785,7 +814,7 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "") -> dict:
         "Path": item.file_path,
         "Protocol": "File",
         "Type": "Default",
-        "Container": item.container,
+        "Container": _container_of(item),
         "Size": item.size,
         "RunTimeTicks": item.duration_ticks or None,
         "Bitrate": item.bitrate or None,
@@ -2093,8 +2122,36 @@ async def playback_info(
     # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
     allow_transcode = await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)
 
-    # _media_source 读 item.streams（懒加载关系），必须在线程池里，不能直接在事件循环上碰
-    media_source = await run_db(_media_source, item, base)
+    # PlaybackInfo 短期缓存（5 分钟）：同一部片子短时间内重复请求直接走 Redis，
+    # 省掉 _media_source 的 DB 查询。PlaySessionId 和 api_key 每次重新生成，不进缓存。
+    # 缓存 key 包含 user_id（权限不同）+ 设备 profile 指纹 + 码率上限。
+    cache_ttl = int(os.getenv("PLAYBACKINFO_CACHE_TTL", "300") or "300")
+    cache_key = None
+    cached_source = None
+    if cache_ttl > 0:
+        try:
+            profile_fp = hashlib.md5(
+                json.dumps(device_profile, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()[:12]
+            cache_key = f"pi:{item.guid}:{user.id}:{profile_fp}:{max_bitrate // 1000}"
+            from backend.database import CacheManager
+            hit = CacheManager.get(cache_key)
+            if hit:
+                cached_source = json.loads(hit)
+        except Exception:  # noqa: BLE001 — 缓存只是优化，失败就走正常流程
+            cached_source = None
+
+    if cached_source is None:
+        # _media_source 读 item.streams（懒加载关系），必须在线程池里，不能直接在事件循环上碰
+        media_source = await run_db(_media_source, item, base)
+        if cache_key and cache_ttl > 0:
+            try:
+                from backend.database import CacheManager
+                CacheManager.set(cache_key, json.dumps(media_source, ensure_ascii=False), ttl=cache_ttl)
+            except Exception:  # noqa: BLE001
+                pass
+    else:
+        media_source = cached_source
     direct = item.bitrate and item.bitrate <= max_bitrate
     # api_key：优先 Emby 客户端 token；JWT 访问时（网页端）直接把 JWT 作为 api_key，
     # 流媒体端点（stream/master.m3u8/切片）均可通过 JWT 回退鉴权
