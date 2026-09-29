@@ -316,7 +316,7 @@ function openCreate() {
         type: 'warning',
       },
     ).then(() => {
-      router.push('/servers')
+      router.push({ name: 'Servers' })
     }).catch(() => {})
     return
   }
@@ -1354,7 +1354,7 @@ function typeLabel(t: string): string {
 
       <div v-if="libraries.length === 0 && !loading" class="admin-card empty-card">
         <template v-if="!nodes.length">
-          还没有后端服务，请先<RouterLink to="/servers" class="link">去「服务器」页添加后端服务（EA）</RouterLink>，再创建媒体库
+          还没有后端服务，请先<RouterLink :to="{ name: 'Servers' }" class="link">去「服务器」页添加后端服务（EA）</RouterLink>，再创建媒体库
         </template>
         <template v-else>
           暂无媒体库，点击右上角「新建媒体库」开始
