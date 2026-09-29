@@ -18,6 +18,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { embyApi, posterUrl, progressPercent, type EmbyItem, type EmbyFilters } from '@/api/emby'
 import MediaCard from '@/components/media/MediaCard.vue'
+import QuickViewSheet from '@/components/media/QuickViewSheet.vue'
 import {
   Search, X, ArrowUpDown, FolderOpen, SlidersHorizontal, Check, RotateCcw,
   LayoutGrid, List as ListIcon, ChevronRight, ChevronLeft, TriangleAlert,
@@ -69,9 +70,14 @@ function setViewMode(m: ViewMode) {
 
 /** 列表行点击：与 MediaCard 同口径（单集跳到所属剧集） */
 function openItem(item: EmbyItem) {
-  const target =
-    item.Type === 'Episode' && item.SeriesId ? `/media/${item.SeriesId}` : `/media/${item.Id}`
-  router.push(target)
+  openSheet(item)
+}
+
+/** 轻量快线：点卡片先弹快速预览 sheet（/watch/ 式体验），不直接整页跳转 */
+const sheetItemId = ref<string | null>(null)
+function openSheet(item: EmbyItem) {
+  const id = item.Type === 'Episode' && item.SeriesId ? item.SeriesId : item.Id
+  sheetItemId.value = id
 }
 
 // ==================== A-Z 快跳 ====================
@@ -588,7 +594,7 @@ onBeforeUnmount(() => {
       <!-- 网格 -->
       <div v-else-if="viewMode === 'grid'" class="grid">
         <div v-for="item in items" :key="item.Id" class="grid-cell" :data-sortkey="item.Name">
-          <MediaCard :item="item" />
+          <MediaCard :item="item" :quick-view="true" @quick-view="openSheet" />
         </div>
       </div>
 
@@ -646,6 +652,9 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </div>
+
+  <!-- 轻量快线：快速预览 sheet -->
+  <QuickViewSheet :item-id="sheetItemId" @close="sheetItemId = null" />
 </template>
 
 <style scoped>
