@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -55,6 +56,36 @@ _SHARED_DIRS = {"subs"}
 
 # ==================== 数据库侧 ====================
 
+def _redis_queue_readable() -> bool:
+    """Redis 队列是否可读（不可读时不能信「没人领」这个判据）"""
+    try:
+        from backend.emby_server import scan_queue_redis as rq
+        return rq.is_redis_mode() and rq._redis() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _library_claimed_elsewhere(library_id: int) -> bool:
+    """这个库是否已经被（别的）worker 领走——在 Redis 的 queue / processing 里"""
+    try:
+        from backend.emby_server import scan_queue_redis as rq
+        r = rq._redis()
+        if r is None:
+            return False
+        raw = r.lrange(rq.REDIS_SCAN_QUEUE_KEY, 0, -1) + r.lrange(
+            rq.REDIS_SCAN_PROCESSING_KEY, 0, -1)
+    except Exception:  # noqa: BLE001 — 读不到就按「没被领走」处理，交给时间阈值兜底
+        return False
+    for item in raw or []:
+        try:
+            data = json.loads(item) if isinstance(item, (str, bytes)) else item
+            if int((data or {}).get("library_id")) == int(library_id):
+                return True
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
 def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> int:
     """复位崩溃残留的「扫描中」标志
 
@@ -88,12 +119,24 @@ def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> 
         # scan_progress，ORM onupdate 会连带刷新 updated_at——它会永远是「刚刚」，
         # 下面的超时判定恒不成立，卡死的库永远复位不了（生产事故：部署打断扫描后
         # 两个库一直显示「扫描中」）。
-        started = lib.scan_started_at
-        if started is None:
-            # 老数据没有这个字段：退回 updated_at / last_scan_at，宁可多复位一次
-            started = lib.updated_at or lib.last_scan_at
-        if started is not None and started >= cutoff:
-            continue  # 刚开始不久：可能正在另一台机器上扫
+        # **先问「还有没有人在扫」**，这是比时间可靠得多的判据：
+        # 库 id 仍留在 Redis 的 queue / processing 里 → 说明有 worker 领了它、只是还没开始
+        # 或正在跑（本进程刚重启，别的节点还在扫），绝不能碰。worker 启动时
+        # recover_processing_queue() 会把 processing 里的任务移回 queue，所以
+        # 「在 Redis 队列里」确实等价于「有人在扫或即将有人扫」。
+        if _library_claimed_elsewhere(lib.id):
+            continue
+        # 队列可读、且这个 id 确实不在里面 → 没有 worker 领它，就是崩溃/部署留下的孤儿，
+        # 立即复位。再等阈值只会让库一直显示「扫描中」（生产事故：每部署一次就多几个）。
+        if not _redis_queue_readable():
+            # 队列读不到，不敢信「没人领」这个判据，退回时间阈值：宁可晚复位也不误伤
+            # 另一台节点正在扫的库。
+            started = lib.scan_started_at
+            if started is None:
+                # 老数据没有这个字段：退回 updated_at / last_scan_at
+                started = lib.updated_at or lib.last_scan_at
+            if started is not None and started >= cutoff:
+                continue
         lib.is_scanning = False
         # 最近一次的结果也要收尾：扫描被强杀时它停在 running，而那个进程再也不会回来
         # 写终态，刷新页面就会永远显示「扫描中/未完成」，连失败原因都没有。

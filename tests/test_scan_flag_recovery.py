@@ -120,3 +120,40 @@ def test_legacy_row_without_started_at(db, monkeypatch):
     db.commit()
     assert lib.is_scanning is False
     assert lib.scan_status == "failed"
+
+
+def test_resets_immediately_when_redis_says_nobody_claimed(db, monkeypatch):
+    """队列可读且没人领 → 立即复位，不再等 6 小时阈值
+
+    这是部署卡死的真凶：每部署一次，进行中的扫描被 SIGTERM 杀死，
+    库永远停在「扫描中」。生产实测每次部署后都有库卡住。
+    """
+    mt = _mt()
+    monkeypatch.setattr("backend.emby_server.scanner.is_scan_active", lambda i: False)
+    monkeypatch.setattr(mt, "_redis_queue_readable", lambda: True)
+    monkeypatch.setattr(mt, "_library_claimed_elsewhere", lambda i: False)
+    lib = _stuck(db, 0.01, updated_now=True)  # 刚"开始"，但队列里没人领
+    assert mt.reset_stale_scan_flags(db, stale_hours=6) == 1
+    db.commit()
+    assert lib.is_scanning is False
+
+
+def test_does_not_reset_when_claimed_in_redis(db, monkeypatch):
+    """库还在 Redis 队列里 → 有 worker 领了，别碰（多机部署）"""
+    mt = _mt()
+    monkeypatch.setattr("backend.emby_server.scanner.is_scan_active", lambda i: False)
+    monkeypatch.setattr(mt, "_redis_queue_readable", lambda: True)
+    monkeypatch.setattr(mt, "_library_claimed_elsewhere", lambda i: True)
+    _stuck(db, 20)
+    assert mt.reset_stale_scan_flags(db, stale_hours=6) == 0
+
+
+def test_redis_unreadable_falls_back_to_time_threshold(db, monkeypatch):
+    """Redis 读不到时退回时间判定：老的才复位，保守不误伤"""
+    mt = _mt()
+    monkeypatch.setattr("backend.emby_server.scanner.is_scan_active", lambda i: False)
+    monkeypatch.setattr(mt, "_redis_queue_readable", lambda: False)
+    recent = _stuck(db, 1)
+    assert mt.reset_stale_scan_flags(db, stale_hours=6) == 0
+    db.commit()
+    assert recent.is_scanning is True
