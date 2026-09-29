@@ -86,9 +86,9 @@ def test_resized_variant_height_only(imgdir):
 
 
 def test_max_width_capped(imgdir):
-    src = _make_jpeg(os.path.join(imgdir, "big.jpg"), w=3000, h=2000)
+    src = _make_jpeg(os.path.join(imgdir, "big.jpg"), w=6000, h=4000)
     thumb = image_store.resized_variant(src, max_width=99999)
-    assert thumb and "_w1920" in thumb  # 钳制到上限，不会按 99999 生成
+    assert thumb and f"_w{image_store._THUMB_MAX_DIM}" in thumb  # 钳制到上限
 
 
 def test_thumb_widths_env(imgdir, monkeypatch):
@@ -98,9 +98,10 @@ def test_thumb_widths_env(imgdir, monkeypatch):
 
 
 def test_thumb_digest():
-    digest = "a" * 24
+    digest = "a" * 40  # 真实是 40 位 sha1（localize 落盘名）
     assert image_store._thumb_digest(f"{digest}_w320.jpg") == digest
-    assert image_store._thumb_digest(f"{digest}_w320h640.jpg") == digest
+    assert image_store._thumb_digest(f"{digest}_w320_h640.jpg") == digest
+    assert image_store._thumb_digest(f"{digest}_h640.jpg") == digest
     assert image_store._thumb_digest(f"{digest}.jpg") is None
     assert image_store._thumb_digest("random.jpg") is None
 
@@ -163,4 +164,96 @@ def test_clamp_dim_defensive():
     assert image_store._clamp_dim(None) is None
     assert image_store._clamp_dim("0") is None
     assert image_store._clamp_dim("-5") is None
-    assert image_store._clamp_dim("99999") == 1920  # 上限钳制
+    assert image_store._clamp_dim("99999") == image_store._THUMB_MAX_DIM  # 上限钳制
+
+
+def test_pick_dim_priority():
+    # 标准 Emby 参数优先于 w/h 别名；非法值跳过取下一个
+    assert image_store.pick_dim("320", "160") == 320
+    assert image_store.pick_dim(None, "300") == 300
+    assert image_store.pick_dim("abc", "300") == 300
+    assert image_store.pick_dim(None, None) is None
+    assert image_store.pick_dim("0", "300") == 300
+
+
+def test_thumb_mem_cache_lru():
+    cache = image_store._ThumbMemCache()
+    cache.put("a", b"x" * 100)
+    cache.put("b", b"y" * 100)
+    assert cache.get("a") == b"x" * 100
+    assert cache.get("missing") is None
+    # 单条目超限不进缓存
+    cache.put("big", b"z" * (image_store._THUMB_MEM_ENTRY_MAX + 1))
+    assert cache.get("big") is None
+    # drop 清掉
+    cache.drop("a")
+    assert cache.get("a") is None
+
+
+def test_thumb_mem_cache_evicts_oldest():
+    import backend.emby_server.image_store as m
+    old_cap = m._THUMB_MEM_CAP
+    m._THUMB_MEM_CAP = 250  # 临时调小，验证淘汰
+    try:
+        c = m._ThumbMemCache()
+        c.put("k1", b"1" * 100)
+        c.put("k2", b"2" * 100)
+        c.put("k3", b"3" * 100)  # 300 > 250，最老的 k1 被淘汰
+        assert c.get("k1") is None
+        assert c.get("k2") == b"2" * 100
+        assert c.get("k3") == b"3" * 100
+        snap = c.snapshot()
+        assert snap["bytes"] <= 250 and snap["entries"] == 2
+    finally:
+        m._THUMB_MEM_CAP = old_cap
+
+
+def test_huge_image_rejected(imgdir, monkeypatch):
+    import backend.emby_server.image_store as m
+    monkeypatch.setattr(m, "_THUMB_MAX_PIXELS", 10_000)  # 临时调小门限
+    p = _make_jpeg(os.path.join(str(imgdir), "huge.jpg"), w=500, h=500)  # 250000 > 10000
+    assert m.resized_variant(p, max_width=320) == ""
+
+
+def test_gen_semaphore_bounded():
+    import threading
+    sem = image_store._GEN_SEMAPHORE
+    assert isinstance(sem, type(threading.Semaphore()))
+    assert sem._value == image_store._THUMB_CONCURRENCY
+
+
+def test_is_thumb_variant():
+    # 真实命名：40 位 sha1 + _w320（之前 _thumb_digest 按 24 位写，真实缩略图识别不出来）
+    assert image_store.is_thumb_variant("/x/" + "a" * 40 + "_w320.jpg")
+    assert image_store.is_thumb_variant("/x/" + "b" * 40 + "_w320_h640.jpg")
+    assert image_store.is_thumb_variant("/x/" + "c" * 40 + "_h640.jpg")
+    assert not image_store.is_thumb_variant("/x/" + "b" * 40 + ".jpg")
+    assert not image_store.is_thumb_variant("")
+    assert image_store._thumb_digest("d" * 40 + "_w320.jpg") == "d" * 40
+    assert image_store._thumb_digest("e" * 40 + ".jpg") is None
+
+
+def test_concurrent_burst_no_deadlock(imgdir):
+    """海报墙突发：20 线程同时要 5 张不同缩略图，信号量限流但不死锁"""
+    import threading
+    srcs = [_make_jpeg(os.path.join(imgdir, f"c{i}.jpg"), w=1200, h=800)
+            for i in range(5)]
+    results, errors = [], []
+
+    def worker(s):
+        try:
+            results.append(image_store.resized_variant(s, max_width=320))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(s,))
+               for s in srcs for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+        assert not t.is_alive(), "转码线程卡死（疑似死锁）"
+    assert not errors
+    assert len(results) == 20 and all(results)
+    # 同一张图只生成了一次（单飞），5 个源 = 5 个文件
+    assert len(set(results)) == 5

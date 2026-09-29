@@ -253,6 +253,10 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     "item_facets_backfilled", "item_facets_orphans",
                     "scan_dir_states_pruned", "scan_runs_pruned",
                     "images_pruned", "images_freed_bytes",
+                    "thumbs_backfilled",
+                    # 缩略图补生成是布尔（干净时 True=已补完），不参与全零断言，
+                    # 与 query_plans_optimized 同口径。
+                    "thumbs_backfill_done",
                     "ai_usage_pruned",
                     # v2.35.0：SQLite 上周期性 PRAGMA optimize（查询计划不随库增长退化，见
                     # maintenance.optimize_query_plans）。它是一个布尔，所以不参与下面
@@ -260,7 +264,8 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     "query_plans_optimized"},
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()
-check(all(v == 0 for key, v in second.items() if key != "query_plans_optimized"),
+check(all(v == 0 for key, v in second.items()
+          if key not in ("query_plans_optimized", "thumbs_backfill_done")),
       "维护周期可反复执行（干净时什么都不做）", f"{second}")
 
 

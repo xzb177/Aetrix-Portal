@@ -1491,7 +1491,14 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             "StartIndex": start,
         }
 
-    total = query.count()
+    # 无限滚动的海报墙不需要总数：COUNT(*) 在带筛选/关联时很贵。
+    # EnableTotalRecordCount=false 时跳过 COUNT，用“多取一行”做有没有下一页的探测
+    # （TotalRecordCount 返回 -1 表示未知，前端用 HasMore 判断）。
+    # 默认 true：第三方 Emby 客户端的行为与以前完全一致。
+    want_total = (q.get("EnableTotalRecordCount") or "true").strip().lower() not in (
+        "false", "0", "no", "off")
+    total = query.count() if want_total else -1
+    has_more: bool | None = None
     if random_sort:
         # ``ORDER BY RANDOM()`` 会让数据库把整个结果集物化再排序（十万级库就是全表排序）。
         # 随机排序只需要一个随机子集：先取主键、在内存里抽样，再按抽到的 id 取这一页，
@@ -1504,8 +1511,16 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(picked)).all() if picked else []
         position = {item_id: index for index, item_id in enumerate(picked)}
         items.sort(key=lambda item: position.get(item.id, 0))
+        if not want_total:
+            total = len(ids)  # 主键本来就要全取，总数是免费的
     else:
-        items = query.order_by(*order_cols).offset(start).limit(limit).all()
+        if want_total:
+            items = query.order_by(*order_cols).offset(start).limit(limit).all()
+        else:
+            # 多取一行：取到了说明后面还有（去重在取数之后做，不影响这个判断）
+            probe = query.order_by(*order_cols).offset(start).limit(limit + 1).all()
+            has_more = len(probe) > limit
+            items = probe[:limit]
     # 多版本去重：movie 类型按目录分组，只保留主版本（id 最小）
     # 详情页通过 Versions 数组展示所有版本
     deduped = []
@@ -1532,6 +1547,8 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         "Items": [_item_dto(i, base, user.id, db) for i in items],
         "TotalRecordCount": total,
         "StartIndex": start,
+        # 跳过总数时才带：前端无限滚动用它判断要不要继续加载
+        **({} if has_more is None else {"HasMore": has_more}),
     }
 
 

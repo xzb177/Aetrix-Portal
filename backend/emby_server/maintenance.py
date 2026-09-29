@@ -549,16 +549,23 @@ def janitor_tick() -> dict:
     finally:
         db.close()
 
-    # 缩略图历史补生成：每天维护周期跑一批（限速+断点续跑），补完为止
+    # 缩略图历史补生成：每天维护周期跑一批（限速+断点续跑），补完为止。
+    # 扫描正在跑时跳过：转码吃 CPU，别跟扫描抢资源（水位已提交，下次继续）。
+    # 手动触发（管理后台 POST）不受影响：那是管理员明确点的。
     db = SessionLocal()
     try:
-        thumb_result = image_store.backfill_thumbnails(db)
-        result["thumbs_backfilled"] = thumb_result["generated"]
-        result["thumbs_backfill_done"] = thumb_result["done"]
-        if thumb_result["generated"]:
-            logger.info("缩略图补生成：本轮 %d 张，水位 id=%d%s",
-                        thumb_result["generated"], thumb_result["last_id"],
-                        "（已补完）" if thumb_result["done"] else "")
+        scanning = db.query(em.Library.id).filter(
+            em.Library.is_scanning.is_(True)).first() is not None
+        if scanning:
+            logger.info("缩略图补生成：有扫描在跑，本轮跳过")
+        else:
+            thumb_result = image_store.backfill_thumbnails(db)
+            result["thumbs_backfilled"] = thumb_result["generated"]
+            result["thumbs_backfill_done"] = thumb_result["done"]
+            if thumb_result["generated"]:
+                logger.info("缩略图补生成：本轮 %d 张，水位 id=%d%s",
+                            thumb_result["generated"], thumb_result["last_id"],
+                            "（已补完）" if thumb_result["done"] else "")
     except Exception as exc:  # noqa: BLE001
         logger.warning("缩略图补生成失败: %s", exc)
         db.rollback()

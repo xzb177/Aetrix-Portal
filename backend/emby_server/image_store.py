@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import threading
 import time
 from typing import Optional
@@ -41,7 +42,7 @@ _STATS = {"downloaded": 0, "failed": 0, "served": 0}
 # ---------- 缩略图 ----------
 # 海报墙下发 TMDB 原图（500KB–2MB/张）是带宽杀手：缩略图把单张压到几十 KB。
 # 尺寸全部参数化（EMBY_THUMB_WIDTHS），只提供能力，不写死业务尺寸。
-_THUMB_MAX_DIM = 1920          # 单次请求允许的最大边长（防滥用）
+# “有界”旋钮（最大边/超大图拒绝/并发信号量/内存上限）见下面的 _env_int 之后那段。
 _THUMB_QUALITY = 82            # JPEG 质量：82 是体积/观感的甜点
 _THUMB_WIDTHS_ENV = "EMBY_THUMB_WIDTHS"
 
@@ -97,7 +98,10 @@ def resized_variant(path: str, max_width=None, max_height=None) -> str:
     """按需生成等比缩放版本，返回缩略图路径；不需要/失败返回空串（调用方用原图）
 
     - 只缩小不放大：原图本来就小就直接返回 ""（省一次转码）；
-    - 并发只生成一次（沿用 _LOCKS 的按路径单飞）；
+    - 超大原图（默认 >25MP）直接拒绝：Pillow 解码要吃掉几百 MB 内存；
+    - 有界并发：同一时刻最多 _THUMB_CONCURRENCY（默认 4）个转码，海报墙
+      几十张同时请求也不会把 CPU 打满（海报墙/预热/补生成三条路共用信号量）；
+    - 同一尺寸并发只生成一次（沿用 _LOCKS 的按路径单飞）；
     - 写文件走「临时文件 → fsync → os.replace」，中途被杀不留半张图。
     """
     if not _PIL_OK:
@@ -119,34 +123,40 @@ def resized_variant(path: str, max_width=None, max_height=None) -> str:
             if os.path.isfile(target) and os.path.getsize(target) > 0:
                 return target
             tmp = None
-            try:
-                with _PILImage.open(path) as img:
-                    img.load()
-                    ow, oh = img.size
-                    box_w = width or 10 ** 7
-                    box_h = height or 10 ** 7
-                    if ow <= box_w and oh <= box_h:
-                        return ""  # 已经够小，不用转
-                    if img.mode in ("RGBA", "LA", "PA", "P"):
-                        img = img.convert("RGB")
-                    img.thumbnail((box_w, box_h), _PILImage.LANCZOS)
-                    os.makedirs(image_dir(), exist_ok=True)
-                    tmp = f"{target}.part{os.getpid()}"
-                    img.save(tmp, "JPEG", quality=_THUMB_QUALITY,
-                             optimize=True, progressive=True)
-                    with open(tmp, "rb") as fh:
-                        os.fsync(fh.fileno())
-                    os.replace(tmp, target)
-                    tmp = None  # 已换名成功，不用再清
-            except Exception as exc:  # noqa: BLE001 — 缩略图失败只是“没小图”，原图照发
-                logger.info("缩略图生成失败 %s: %s", path, exc)
-                if tmp:
-                    try:
-                        if os.path.isfile(tmp):
-                            os.remove(tmp)
-                    except OSError:
-                        pass
-                return ""
+            # 信号量在按路径锁之内：只有真正要转码的线程才占名额
+            with _GEN_SEMAPHORE:
+                try:
+                    with _PILImage.open(path) as img:
+                        ow, oh = img.size
+                        if ow * oh > _THUMB_MAX_PIXELS:
+                            logger.info("原图过大(%dMP)跳过缩略图 %s",
+                                        ow * oh // 1_000_000, path)
+                            return ""
+                        img.load()
+                        box_w = width or 10 ** 7
+                        box_h = height or 10 ** 7
+                        if ow <= box_w and oh <= box_h:
+                            return ""  # 已经够小，不用转
+                        if img.mode in ("RGBA", "LA", "PA", "P"):
+                            img = img.convert("RGB")
+                        img.thumbnail((box_w, box_h), _PILImage.LANCZOS)
+                        os.makedirs(image_dir(), exist_ok=True)
+                        tmp = f"{target}.part{os.getpid()}"
+                        img.save(tmp, "JPEG", quality=_THUMB_QUALITY,
+                                 optimize=True, progressive=True)
+                        with open(tmp, "rb") as fh:
+                            os.fsync(fh.fileno())
+                        os.replace(tmp, target)
+                        tmp = None  # 已换名成功，不用再清
+                except Exception as exc:  # noqa: BLE001 — 缩略图失败只是“没小图”，原图照发
+                    logger.info("缩略图生成失败 %s: %s", path, exc)
+                    if tmp:
+                        try:
+                            if os.path.isfile(tmp):
+                                os.remove(tmp)
+                        except OSError:
+                            pass
+                    return ""
             return target
     finally:
         with _LOCKS_LOCK:
@@ -208,6 +218,102 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
         return max(minimum, int((os.getenv(name) or "").strip() or default))
     except ValueError:
         return default
+
+
+# ---------- 缩略图“有界”旋钮（借鉴 go-emby：并发 / 内存 / 尺寸三处设上限） ----------
+# 海报墙一次几十张图同时请求缩略图：不限并发会把 CPU 打满，不限内存会把服务
+# 器吃光，不限尺寸会被恶意参数拖死。这里三处都有上限，全部可环境变量调。
+_THUMB_MAX_DIM = _env_int("EMBY_THUMB_MAX_DIM", 4096, 64)
+# 单次请求允许的最大边长（防滥用）：超出钳制到这个值
+_THUMB_MAX_PIXELS = _env_int("EMBY_THUMB_MAX_MEGAPIXELS", 25, 1) * 1_000_000
+# 原图超过这么多像素直接拒绝转码（Pillow 解码 25MP ≈ 75MB 内存，再大不碰）
+_THUMB_CONCURRENCY = _env_int("EMBY_THUMB_CONCURRENCY", 4, 1)
+# 同时转码的缩略图数（信号量）：海报墙/预热/补生成三条路共用一把
+_GEN_SEMAPHORE = threading.Semaphore(_THUMB_CONCURRENCY)
+_THUMB_MEM_CAP = _env_int("EMBY_THUMB_MEM_MB", 32, 0) * 1024 * 1024
+# 内存缓存总量上限（默认 32MB）：一张缩略图几十 KB，32MB ≈ 缓存上千张热图
+_THUMB_MEM_ENTRY_MAX = 2 * 1024 * 1024  # 单条目上限：超过 2MB 的不进内存（异常）
+
+
+class _ThumbMemCache:
+    """缩略图内存 LRU：总量有上限，key 是内容寻址文件名（≈ ETag:宽:高）
+
+    缩略图文件名 = <原图 sha1>_w320.jpg：原图一变文件名就变，宽高也在名
+    字里，所以 key 天然等价于「ETag:宽:高」，不会取到过期内容。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._data: dict[str, bytes] = {}
+        self._bytes = 0
+
+    def get(self, key: str):
+        with self._lock:
+            data = self._data.get(key)
+            if data is None:
+                return None
+            # LRU：命中的挪到队尾
+            del self._data[key]
+            self._data[key] = data
+            return data
+
+    def put(self, key: str, data: bytes) -> None:
+        if not key or not data or len(data) > _THUMB_MEM_ENTRY_MAX:
+            return
+        if _THUMB_MEM_CAP <= 0:
+            return
+        with self._lock:
+            old = self._data.pop(key, None)
+            if old is not None:
+                self._bytes -= len(old)
+            self._data[key] = data
+            self._bytes += len(data)
+            while self._data and self._bytes > _THUMB_MEM_CAP:
+                oldest = next(iter(self._data))  # py3.7+ dict 有序：队头最老
+                self._bytes -= len(self._data.pop(oldest))
+
+    def drop(self, key: str) -> None:
+        with self._lock:
+            old = self._data.pop(key, None)
+            if old is not None:
+                self._bytes -= len(old)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"entries": len(self._data), "bytes": self._bytes,
+                    "cap_bytes": _THUMB_MEM_CAP}
+
+
+_THUMB_MEM = _ThumbMemCache()
+
+
+def thumb_mem_get(name: str):
+    """内存缓存读（未命中返回 None，调用方回退读盘）"""
+    return _THUMB_MEM.get(name)
+
+
+def thumb_mem_put(name: str, data: bytes) -> None:
+    """内存缓存写（超上限自动淘汰最老，失败静默）"""
+    _THUMB_MEM.put(name, data)
+
+
+def thumb_mem_drop(name: str) -> None:
+    """删文件时顺手清内存（prune 用）"""
+    _THUMB_MEM.drop(name)
+
+
+def is_thumb_variant(path: str) -> bool:
+    """是不是缩略图文件（服务层用它决定走内存缓存还是 FileResponse）"""
+    return _thumb_digest(os.path.basename(path or "")) is not None
+
+
+def pick_dim(*values) -> int | None:
+    """多个尺寸别名取第一个合法值：标准 Emby maxWidth/maxHeight 优先，其次 w/h"""
+    for v in values:
+        d = _clamp_dim(v)
+        if d:
+            return d
+    return None
 
 
 def enabled() -> bool:
@@ -331,18 +437,20 @@ def referenced_basenames(db) -> set:
     return found
 
 
+_THUMB_NAME_RE = re.compile(r"^[0-9a-f]{8,}(_[wh]\d+)+$")
+
+
 def _thumb_digest(name: str) -> Optional[str]:
     """缩略图文件名反查原图 digest；不是缩略图返回 None
 
-    缩略图命名：<24位hex digest>_w320.jpg / _h640.jpg / _w320h640.jpg
+    缩略图命名：<hex digest>_w320.jpg / _h640.jpg / _w320_h640.jpg
+    （digest 是原图文件名的 sha1，40 位；tag 一定是 _w数字 / _h数字 组合，
+    原图文件名里不会出现这种后缀，所以不会误判）
     """
     base, dot, _ext = name.partition(".")
-    if not dot or len(base) < 27:  # 24 + "_w1" 最短
+    if not dot or _THUMB_NAME_RE.match(base) is None:
         return None
-    digest, sep, _ = base[:24], base[24], base[25:]
-    if sep != "_" or not all(c in "0123456789abcdef" for c in digest):
-        return None
-    return digest
+    return base.split("_", 1)[0]
 
 
 def prune(db) -> dict:
@@ -389,6 +497,7 @@ def prune(db) -> dict:
             try:
                 st = os.stat(os.path.join(root, cname))
                 os.remove(os.path.join(root, cname))
+                thumb_mem_drop(cname)  # 内存里那份也清掉（key 是文件名，内容寻址）
                 freed += st.st_size
                 result["removed"] += 1
                 result["freed_bytes"] += st.st_size
@@ -414,6 +523,7 @@ def prune(db) -> dict:
             try:
                 stat = entry.stat()
                 os.remove(entry.path)
+                thumb_mem_drop(entry.name)
                 result["removed"] += 1
                 result["freed_bytes"] += stat.st_size
             except OSError as exc:
@@ -474,7 +584,10 @@ def stats() -> dict:
             except OSError:
                 pass
     return {"enabled": enabled(), "dir": root, "files": files, "thumbs": thumbs,
-            "bytes": size, "pil": _PIL_OK, **_STATS}
+            "bytes": size, "pil": _PIL_OK,
+            "thumb_max_dim": _THUMB_MAX_DIM,
+            "thumb_concurrency": _THUMB_CONCURRENCY,
+            "thumb_mem": _THUMB_MEM.snapshot(), **_STATS}
 
 
 # ---------- 历史补生成 ----------
