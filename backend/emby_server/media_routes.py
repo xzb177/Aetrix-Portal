@@ -92,10 +92,67 @@ def download_item(item_id: str, request: Request,
     return FileResponse(target.value, filename=os.path.basename(target.value))
 
 
+def _sized_image(src: str, max_width=None, max_height=None) -> str:
+    """按客户端要的尺寸发图：有现成/能生成的缩略图就发小图，否则发原图
+
+    maxWidth/maxHeight 是标准 Emby 查询参数（前端海报墙发 maxWidth=320，
+    详情页背景发 maxWidth=1280）；w/h 是同义别名（?w=300），标准参数优先。
+    只缩小不放大，失败静默回原图。
+    """
+    if (max_width or max_height) and src and os.path.isfile(src):
+        thumb = image_store.resized_variant(src, max_width=max_width,
+                                            max_height=max_height)
+        if thumb:
+            return thumb
+    return src
+
+
+def serve_thumbnail(path: str) -> Response:
+    """缩略图响应：先查内存 LRU（默认 32MB 总量，key=内容寻址文件名）
+
+    内存命中直接发字节、不碰磁盘；未命中读盘一次并回填。ETag 口径与
+    streaming.serve_image 一致（mtime-size），image_routes 的 304 逻辑照样生效。
+    """
+    from email.utils import formatdate
+
+    name = os.path.basename(path)
+    data = image_store.thumb_mem_get(name)
+    try:
+        st = os.stat(path)
+    except OSError:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if data is None:
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            raise HTTPException(status_code=404, detail="Image not found")
+        image_store.thumb_mem_put(name, data)
+    return Response(
+        content=data,
+        media_type="image/jpeg",  # 缩略图统一转 JPEG（见 resized_variant）
+        headers={
+            "ETag": f'"{int(st.st_mtime)}-{st.st_size}"',
+            "Last-Modified": formatdate(st.st_mtime, usegmt=True),
+            "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
+def _serve_sized(src: str, max_width=None, max_height=None):
+    """尺寸感知的图片下发：缩略图走内存缓存，原图走 FileResponse"""
+    sized = _sized_image(src, max_width, max_height)
+    if sized and image_store.is_thumb_variant(sized):
+        return serve_thumbnail(sized)
+    return serve_image(src)
+
+
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}")
 @emby_router.get("/Items/{item_id}/Images/{image_type}")
 def item_image(item_id: str, image_type: str, request: Request,
-                db: Session = Depends(get_db)):
+               db: Session = Depends(get_db),
+               maxWidth: str | None = None, maxHeight: str | None = None,
+               w: str | None = None, h: str | None = None):
     """条目图片
 
     三处修正：
@@ -105,6 +162,9 @@ def item_image(item_id: str, image_type: str, request: Request,
        鉴权/服务器故障反复重试），而是干净地 404，同时把条目排进修复队列，
        下一轮扫描换成 TMDB 远程图；
     3. **远程图取不到**（404/超时）同样 404 并排队修复，而不是 500。
+
+    尺寸参数：标准 Emby maxWidth/maxHeight 优先，w/h 是同义别名（见
+    image_store.pick_dim）。非法值不 422，直接回原图。
     """
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
@@ -112,6 +172,8 @@ def item_image(item_id: str, image_type: str, request: Request,
     if image_type not in ("Primary", "Backdrop", "Art", "Thumb", "Logo"):
         raise HTTPException(status_code=404, detail="Image not found")
     kind = "Primary" if image_type == "Primary" else "Backdrop"
+    # 按场景精确尺寸：海报墙 320/160、详情页 480、背景 1280，各调各的，不一刀切
+    ew, eh = image_store.pick_dim(maxWidth, w), image_store.pick_dim(maxHeight, h)
     src = _first_image(item, kind, db)
     if not src:
         raise HTTPException(status_code=404, detail="Image not found")
@@ -122,7 +184,7 @@ def item_image(item_id: str, image_type: str, request: Request,
         cached = image_store.localize(src)
         if cached:
             _remember_local_image(db, item, kind, cached)
-            return serve_image(cached)
+            return _serve_sized(cached, ew, eh)
         # 仅允许代理 http(s) 远程图片（防 SSRF）
         import httpx
 
@@ -143,15 +205,18 @@ def item_image(item_id: str, image_type: str, request: Request,
         logger.warning("本地图片文件缺失，已排队修复：%s", src)
         _queue_image_repair(db, item, src)
         raise HTTPException(status_code=404, detail="Image not found")
-    return serve_image(src)
+    return _serve_sized(src, ew, eh)
 
 
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}/{index}")
 @emby_router.get("/Items/{item_id}/Images/{image_type}/{index}")
 def item_image_index(item_id: str, image_type: str, index: str, request: Request,
-                      db: Session = Depends(get_db)):
+                      db: Session = Depends(get_db),
+                      maxWidth: str | None = None, maxHeight: str | None = None,
+                      w: str | None = None, h: str | None = None):
     # 客户端普遍请求 /Images/Backdrop/0、/Images/Primary/0 这类带序号的地址。
     # 旧实现只注册了 Primary，其它类型（Backdrop/Thumb 等）会直接 404。
-    return item_image(item_id, image_type, request, db)
+    return item_image(item_id, image_type, request, db,
+                      maxWidth=maxWidth, maxHeight=maxHeight, w=w, h=h)
 
 

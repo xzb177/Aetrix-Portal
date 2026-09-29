@@ -180,6 +180,11 @@ export interface EmbyQuery {
   startIndex?: number
   limit?: number
   recursive?: boolean
+  /**
+   * 无限滚动的海报墙不需要总数：false 时后端跳过 COUNT(*)，用 HasMore 告诉
+   * 前端有没有下一页（TotalRecordCount 此时为 -1）。默认 true（第三方客户端行为不变）。
+   */
+  enableTotalRecordCount?: boolean
 }
 
 /** 筛选菜单的可选值（后端 /Items/Filters 给出，取值来自全库） */
@@ -220,13 +225,14 @@ export const embyApi = {
   },
 
   /** 通用条目查询（浏览/搜索/筛选/分页） */
-  async getItems(q: EmbyQuery = {}): Promise<{ Items: EmbyItem[]; TotalRecordCount: number }> {
+  async getItems(q: EmbyQuery = {}): Promise<{ Items: EmbyItem[]; TotalRecordCount: number; HasMore?: boolean }> {
     const params: Record<string, string | number> = {
       StartIndex: q.startIndex ?? 0,
       Limit: q.limit ?? 30,
       SortBy: q.sortBy || 'SortName',
       SortOrder: q.sortOrder || 'Ascending',
     }
+    if (q.enableTotalRecordCount === false) params.EnableTotalRecordCount = 'false'
     if (q.parentId) params.ParentId = q.parentId
     if (q.recursive !== false) params.Recursive = 'true'
     if (q.includeTypes?.length) params.IncludeItemTypes = q.includeTypes.join(',')
@@ -237,7 +243,7 @@ export const embyApi = {
     if (q.officialRatings?.length) params.OfficialRatings = q.officialRatings.join(',')
     if (q.tags?.length) params.Tags = q.tags.join('|')
     if (q.filters?.length) params.Filters = q.filters.join(',')
-    return embyGet<{ Items: EmbyItem[]; TotalRecordCount: number }>(USER_ITEMS, { params })
+    return embyGet<{ Items: EmbyItem[]; TotalRecordCount: number; HasMore?: boolean }>(USER_ITEMS, { params })
   },
 
   /** 筛选菜单的可选值（分类 / 标签 / 分级 / 年份） */

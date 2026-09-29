@@ -2,7 +2,7 @@
 /**
  * MediaCard — 媒体海报卡片（首页行 / 库浏览 / 收藏共用）
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Play, Star, Eye } from 'lucide-vue-next'
 import { posterUrl, progressPercent, type EmbyItem } from '@/api/emby'
@@ -26,7 +26,33 @@ const router = useRouter()
 const poster = computed(() => posterUrl(props.item, 342))
 /** SYS-4：图片 404/过期（api_key 失效）时切到首字占位，不裂图 */
 const imgOk = ref(true)
-watch(() => props.item.Id, () => { imgOk.value = true })
+/**
+ * 海报墙懒加载：卡片滚进可视区（提前 200px 预载）才真正发图片请求。
+ * 海报墙一屏几十张卡，loading="lazy" 是浏览器启发式，IO 观察器更可控：
+ * 不可见的卡连请求都不发，首屏更快、滚动更顺。
+ */
+const wrapEl = ref<HTMLElement | null>(null)
+const visible = ref(false)
+let io: IntersectionObserver | null = null
+function observe() {
+  if (typeof IntersectionObserver === 'undefined') { visible.value = true; return }
+  io?.disconnect()
+  io = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        visible.value = true
+        io?.disconnect()
+        io = null
+      }
+    },
+    { rootMargin: '200px 0px' },
+  )
+  if (wrapEl.value) io.observe(wrapEl.value)
+  else visible.value = true // 兜底：拿不到 DOM 就直接加载，不空白
+}
+onMounted(observe)
+onBeforeUnmount(() => { io?.disconnect(); io = null })
+watch(() => props.item.Id, () => { imgOk.value = true; visible.value = false; observe() })
 function onImgError() { imgOk.value = false }
 const hasResume = computed(() => props.item.Type === 'Series' && !!props.resume)
 const progress = computed(() =>
@@ -78,8 +104,8 @@ function open() {
 
 <template>
   <div class="media-card" @click="open">
-    <div class="poster-wrap">
-      <img v-if="poster && imgOk" :src="poster" :alt="item.Name" loading="lazy" @error="onImgError" />
+    <div ref="wrapEl" class="poster-wrap">
+      <img v-if="poster && imgOk && visible" :src="poster" :alt="item.Name" loading="lazy" @error="onImgError" />
       <div v-else class="poster-fallback">
         <span class="fallback-char">{{ firstChar }}</span>
       </div>

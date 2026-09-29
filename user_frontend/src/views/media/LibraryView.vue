@@ -33,6 +33,8 @@ const items = ref<EmbyItem[]>([])
 /** SYS-4：加载失败的海报 id 集合，404/过期时显示首字占位 */
 const failedPosters = ref(new Set<string>())
 const total = ref(0)
+/** 后端 HasMore（跳过总数模式）；null = 后端没给，回退总数比较 */
+const serverHasMore = ref<boolean | null>(null)
 const loading = ref(true)
 const loadingMore = ref(false)
 // 断网/接口失败：显示错误态 + 重试，而不是「没有找到匹配的影片」的空态文案
@@ -257,6 +259,8 @@ async function load(reset = true) {
       sortOrder: sortOrder as 'Ascending' | 'Descending',
       startIndex: reset ? 0 : items.value.length,
       limit: PAGE,
+      // 无限滚动不需要总数：后端跳过 COUNT(*)，用 HasMore 告诉有没有下一页
+      enableTotalRecordCount: false,
     })
     if (reset) {
       items.value = res.Items
@@ -264,6 +268,8 @@ async function load(reset = true) {
       items.value.push(...res.Items)
     }
     total.value = res.TotalRecordCount
+    // 后端跳过总数时 TotalRecordCount 为 -1，此时用 HasMore 判断
+    serverHasMore.value = res.HasMore ?? null
   } catch {
     // 首页加载失败才进错误态；加载更多失败只停掉 spinner，不断掉已有列表
     if (reset) loadError.value = true
@@ -274,6 +280,8 @@ async function load(reset = true) {
 }
 
 function hasMore() {
+  // 后端给了 HasMore（跳过总数模式）就信它；否则回退到总数比较（兼容旧后端）
+  if (serverHasMore.value !== null) return serverHasMore.value
   return items.value.length < total.value
 }
 

@@ -22,7 +22,7 @@ from email.utils import parsedate_to_datetime
 from typing import Optional
 
 from fastapi import Depends, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
@@ -80,12 +80,13 @@ def _not_modified(request: Request, headers: dict) -> bool:
 def with_conditional_get(response, request: Request):
     """把「缓存仍有效」的图片请求变成 304；其余响应原样返回
 
-    只有带校验器的本机文件响应才做这件事：远程代理图（没有 ETag）与错误响应
-    （404 等）保持原样，客户端行为与以前完全一致。
+    带 ETag 校验器的响应才做这件事：本机文件（FileResponse）与内存缓存的
+    缩略图（普通 Response，ETag 口径一致）都能 304；远程代理图（没有 ETag）
+    与错误响应（404 等）保持原样，客户端行为与以前完全一致。
     """
     if request.method not in ("GET", "HEAD"):
         return response
-    if not isinstance(response, FileResponse) or response.status_code != 200:
+    if not isinstance(response, Response) or response.status_code != 200:
         return response
     headers = _passthrough(response)
     if not headers.get("etag") or not _not_modified(request, headers):
@@ -98,12 +99,22 @@ def item_image_cached(
     image_type: str,
     request: Request,
     db: Session = Depends(get_db),
+    maxWidth: str | None = None,
+    maxHeight: str | None = None,
+    w: str | None = None,
+    h: str | None = None,
 ):
     """条目图片：实现见 media_routes（v2.13.0 拆分），这里只补条件请求
 
     同步实现：图片是媒体库滚动时最高频的请求，读盘 / 代理远程图不能占着事件循环。
+    maxWidth/maxHeight 透传给实现做缩略图（标准 Emby 参数，前端海报墙已在用）。
     """
-    return with_conditional_get(media_routes.item_image(item_id, image_type, request, db), request)
+    return with_conditional_get(
+        media_routes.item_image(item_id, image_type, request, db,
+                                maxWidth=maxWidth, maxHeight=maxHeight,
+                                w=w, h=h),
+        request,
+    )
 
 
 def item_image_index_cached(
@@ -112,10 +123,17 @@ def item_image_index_cached(
     index: str,
     request: Request,
     db: Session = Depends(get_db),
+    maxWidth: str | None = None,
+    maxHeight: str | None = None,
+    w: str | None = None,
+    h: str | None = None,
 ):
     """带序号的图片地址（/Images/Backdrop/0 等）：同样交给 media_routes 的实现（同步）"""
     return with_conditional_get(
-        media_routes.item_image_index(item_id, image_type, index, request, db), request
+        media_routes.item_image_index(item_id, image_type, index, request, db,
+                                      maxWidth=maxWidth, maxHeight=maxHeight,
+                                      w=w, h=h),
+        request,
     )
 
 
