@@ -10,10 +10,17 @@ services:
     image: aetrix-backend:latest
     container_name: aetrix-api
     restart: unless-stopped
+    # 合并容器：run_all.py 同时起 API(8000) + worker(扫描) + EA(8001) 三进程
+    command: ["python", "backend/run_all.py"]
     env_file:
       - .env
     environment:
-      AETRIX_ROLE: api
+      AETRIX_ROLE: all  # 合并：api+worker+ea
+      # EA 网关配置（原 ea 服务的环境变量，合并后保留）
+      EMBY_API_PORT: 8001
+      ENABLE_DIRECT_URL: ${ENABLE_DIRECT_URL:-true}
+      RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      CORS_ORIGINS: http://15.204.95.101:8000
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix}@postgres:5432/aetrix}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
@@ -36,6 +43,10 @@ services:
     # 不再直接暴露公网端口：统一走 aetrix-web（nginx）反代
     expose:
       - "8000"
+    ports:
+      # EA 内部端口：仅供宿主机 nginx 反代（原 ea 服务的端口映射，合并后保留）。
+      # 外部访问请走 8001（nginx），不要直接用这个端口。
+      - "${EA_INTERNAL_PORT:-8002}:8001"
     volumes:
       - aetrix_data:/data
       - ${MEDIA_ROOT:-./media}:/media:ro
@@ -51,10 +62,11 @@ services:
       rclone:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
+      # 合并容器健康检查：API(8000) + EA(8001) + worker 心跳（Redis）三者都正常才算健康
+      test: ["CMD", "python", "-c", "import urllib.request,redis,os,json,time; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4); urllib.request.urlopen('http://127.0.0.1:8001/api/health',timeout=4); r=redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'),decode_responses=True); h=r.get('aetrix:worker:heartbeat'); assert h and (time.time()-json.loads(h)['updated_at'])<90"]
       interval: 30s
-      timeout: 5s
-      start_period: 45s
+      timeout: 10s
+      start_period: 90s
       retries: 5
 
   # 前端：nginx serve 双前端静态文件，/api/* 与 /emby/* 反代到 aetrix-api。
@@ -77,123 +89,6 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
-
-  # 后台任务进程（v2.41.0 后端拆分）：扫描/探测/补全/定时/提醒/追新，不监听 HTTP。
-  # 与 aetrix-api 共享数据库、Redis、数据卷；单实例由 Redis 分布式锁保证。
-  aetrix-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    image: aetrix-backend:latest
-    container_name: aetrix-worker
-    restart: unless-stopped
-    command: ["python3", "-m", "backend.worker"]
-    env_file:
-      - .env
-    environment:
-      AETRIX_ROLE: worker
-      DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix}@postgres:5432/aetrix}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
-      REDIS_ENABLED: ${REDIS_ENABLED:-true}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      EMBY_TRANSCODE_DIR: /data/transcode
-      EMBY_IMAGE_DIR: /data/images
-      # 存储挂载 · rclone RC：指向同网络的 rclone 容器，容器名即服务名
-      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
-      MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
-      RCLONE_CONF_PATH: /config/rclone/rclone.conf
-      RCLONE_SA_DIR: /sa-accounts
-    volumes:
-      - aetrix_data:/data
-      - ${MEDIA_ROOT:-./media}:/media:ro
-      # 与 API 同源：worker 的探测 worker 也要读同一份 rclone.conf
-      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
-      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      rclone:
-        condition: service_started
-    # 健康检查：worker 心跳写在 Redis 里（aetrix:worker:heartbeat），60 秒内有心跳即健康
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import redis,os,json; r=redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'), decode_responses=True); h=r.get('aetrix:worker:heartbeat'); assert h and (__import__('time').time()-json.loads(h)['updated_at'])<90, 'no heartbeat'"]
-      interval: 30s
-      timeout: 5s
-      start_period: 60s
-      retries: 3
-
-  # Emby 协议网关（EA）。第三方播放器经**宿主机 nginx** 的 8001 进来。
-  #
-  # 曾经是手工 docker run 起的孤儿容器（没有 compose 标签），带来三个问题：
-  #   1. `docker compose up -d` 不会重建它，镜像更新后 EA 还跑在旧代码上；
-  #      `docker compose down` 也不会收它；
-  #   2. 健康检查探的是 8000，而 emby_api 实际监听 8001，于是永远 unhealthy；
-  #   3. 挂的是 /opt/aetrix-portal/rclone.conf —— 那份文件已随仓库清理被删除，
-  #      容器一旦重启就会挂成空目录，直链（302）随之失效。
-  #
-  # 端口安排：宿主 8001 归 nginx，EA 另开一个**内部端口**给 nginx 反代。
-  #
-  # 为什么不让 EA 直接占宿主 8001：面板容器要回连本机公网 IP，命中 docker-proxy
-  # 会踩 hairpin NAT 超时；改由宿主机 nginx 监听 8001 反代进网络，绕开该问题。
-  #
-  # 为什么 nginx 指向 127.0.0.1:8002 而不是容器 IP：
-  #   - 写死容器 IP 会在容器重建后失效（实测 IP 从 172.18.0.10 变成 172.18.0.7，
-  #     nginx 还指着旧地址 → 502，且没有任何告警）；
-  #   - 想在 nginx 里用容器名解析也不行：nginx 跑在**宿主机**上，
-  #     而 Docker 内嵌 DNS 127.0.0.11 只存在于容器网络命名空间里，宿主机不可用。
-  # 走 127.0.0.1:<固定端口> 既不依赖 IP，也保留 nginx 这一跳。
-  ea:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    image: aetrix-backend:latest
-    container_name: aetrix-ea
-    restart: unless-stopped
-    command: ["python", "-m", "emby_api.main"]
-    env_file:
-      - .env
-    environment:
-      AETRIX_ROLE: ea
-      # emby_api 真正读的是 EMBY_API_PORT（默认 8001）；AETRIX_PORT 仅为排障时对齐日志。
-      AETRIX_PORT: 8001
-      EMBY_API_PORT: 8001
-      DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix}@postgres:5432/aetrix}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
-      # 直链（302）：文件 ID 走 rclone RC，access token 从 rclone.conf 现读现刷。
-      ENABLE_DIRECT_URL: ${ENABLE_DIRECT_URL:-true}
-      RCLONE_CONF_PATH: /config/rclone/rclone.conf
-      RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
-      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
-      CORS_ORIGINS: http://15.204.95.101:8000
-    ports:
-      # 仅供宿主机 nginx 反代。外部访问请走 8001（nginx），不要直接用这个端口。
-      - "${EA_INTERNAL_PORT:-8002}:8001"
-    volumes:
-      - aetrix_data:/data
-      # 与 rclone 服务挂同一份配置：直链要读 token，服务账号 remote 也要能解析到路径。
-      # 之前这里写的是 /opt/aetrix-portal/rclone.conf，那个文件已随仓库清理被删除，
-      # 容器一旦重启就会挂成空目录，直链随之失效。
-      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
-      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rclone:
-        condition: service_started
-    # 必须探 EA 真正监听的端口（8001）。探 8000 会让健康检查永远失败，
-    # 而 update.sh 之后按容器健康度判断，误报会掩盖真实故障。
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=4)"]
-      interval: 30s
-      timeout: 5s
-      start_period: 45s
-      retries: 5
 
   redis:
     image: redis:7-alpine
