@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { adminTitle } from '@/composables/branding'
+import { setupStatus } from '@/api/admin'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -9,6 +10,14 @@ const routes: RouteRecordRaw[] = [
     name: 'Login',
     component: () => import('@/views/Login.vue'),
     meta: { title: '管理员登录', requiresAuth: false },
+  },
+  {
+    // 首次运行向导：setup_completed 为 false 时进这里建第一个管理员，
+    // 完成后入口永久关闭（守卫见下方 beforeEach）
+    path: '/setup',
+    name: 'Setup',
+    component: () => import('@/views/Setup.vue'),
+    meta: { title: '初始化向导', requiresAuth: false },
   },
   {
     path: '/',
@@ -57,8 +66,30 @@ const router = createRouter({
   routes,
 })
 
+// 首次运行向导状态（setup_completed）：一次页面加载只问后端一次。
+// 问失败时按「已完成」处理——别把正常管理员挡在向导页外面；
+// POST /api/admin/setup 本身也会 403 兜底，这里只是分流。
+let setupCompletedPromise: Promise<boolean> | null = null
+function isSetupCompleted(): Promise<boolean> {
+  if (!setupCompletedPromise) {
+    setupCompletedPromise = setupStatus()
+      .then((st) => st.setup_completed)
+      .catch(() => true)
+  }
+  return setupCompletedPromise
+}
+
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+
+  // 首次运行向导分流：没初始化 → 只能去向导页；已初始化 → 向导页不再可进
+  const setupCompleted = await isSetupCompleted()
+  if (!setupCompleted && to.name !== 'Setup') {
+    return { name: 'Setup' }
+  }
+  if (setupCompleted && to.name === 'Setup') {
+    return { name: 'Login' }
+  }
 
   // 进入后台前先把会话敲定：本地票据也要向服务端核对一次（幂等，一次页面加载只做一次），
   // 再决定放行还是去登录页。门户免登（管理员在用户端已登录时直接接管会话）也在这一步。

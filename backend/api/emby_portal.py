@@ -241,8 +241,12 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
         if not error and reg_code and reg_code.target_username:
             if reg_code.target_username.strip().lower() != username.lower():
                 error = "该卡码限指定账号使用"
-        if not error and reg_code and reg_code.is_decoy:
+        if not error and reg_code and codes.is_honeypot(reg_code):
             # 诱饵码：只应出现在盗版/破解渠道，注册即拒绝并落安全日志
+            logger.warning(
+                "诱饵码触发：注册尝试 username=%s 于 %s 使用了诱饵码 %s，已拒绝并落安全日志",
+                username, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reg_code.code,
+            )
             record_event(
                 db, username=username, ip=log_ip(request), agent=user_agent(request),
                 success=False, reason="decoy_code", detail=f"注册使用了诱饵码 {reg_code.code}",

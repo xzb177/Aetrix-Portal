@@ -58,6 +58,15 @@ import type {
 export const login = (data: { username: string; password: string; captcha_token?: string }) =>
   post<LoginResponse>('/auth/login', data)
 
+// ==================== 首次运行向导 ====================
+
+/** 向导状态：初始化是否已完成（免鉴权，前端进 /admin/ 前先问一次） */
+export const setupStatus = () => get<{ setup_completed: boolean }>('/setup/status')
+
+/** 建第一个管理员；成功后向导入口永久关闭（再调直接 403） */
+export const createFirstAdmin = (data: { username: string; password: string }) =>
+  post<{ ok: boolean; username: string; setup_completed: boolean }>('/setup', data)
+
 export const fetchMe = () => get<AdminInfo>('/auth/me')
 
 export const changePassword = (data: { old_password: string; new_password: string }) =>

@@ -109,11 +109,10 @@ _limiter = _RateLimiter()
 
 
 def _get_config(db, key: str, default: str = "") -> str:
-    from backend import models as base_models
+    """统一热读（只许这一套）：短 TTL 缓存，保存时失效"""
+    from backend.integrations import store
     try:
-        row = db.query(base_models.SystemConfig).filter(
-            base_models.SystemConfig.key == key).first()
-        return row.value if row and row.value is not None else default
+        return store.get_value(db, key, default)
     except Exception:  # noqa: BLE001 — 读配置失败不该影响刮削
         return default
 

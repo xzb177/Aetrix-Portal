@@ -69,7 +69,7 @@ def code_dto(db: Session, code: models.RegistrationCode, now: Optional[datetime]
         "days": days,
         "days_text": codes.format_days(days),
         "is_permanent": days < 0,
-        "is_decoy": bool(code.is_decoy),
+        "is_decoy": codes.is_honeypot(code),
         "target_username": code.target_username or "",
         "source": code.source or "admin",
         "max_uses": code.max_uses,
@@ -150,7 +150,7 @@ def code_stats(
         used = c.use_count or 0
         counters[_code_state(c, now)] += 1
 
-        if c.is_decoy:
+        if codes.is_honeypot(c):
             decoy_total += 1
             if used:
                 decoy_triggered += 1
@@ -231,7 +231,7 @@ def generate_codes(
         for _attempt in range(20):
             raw = codes.render_code(
                 code_type=request.code_type, days=days, index=index,
-                algorithm=request.algorithm,
+                algorithm=request.algorithm, decoy=bool(request.is_decoy),
             )
             if not db.query(models.RegistrationCode).filter(
                 models.RegistrationCode.code == raw
@@ -250,7 +250,6 @@ def generate_codes(
             created_by=current_admin.id,
             code_type=request.code_type,
             days=days,
-            is_decoy=bool(request.is_decoy),
             target_username=target_username or None,
             source="admin",
             realm_id=target_realm,

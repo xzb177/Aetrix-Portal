@@ -141,6 +141,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 — 维护失败不影响出流
         logger.warning("启动维护失败（可忽略）: %s", exc)
 
+    # 配置自愈（backend/config_self_heal.py）：EM/EA 共用同一份 .env 与数据库，
+    # 只补缺失、不覆盖；失败只记日志，不影响出流。
+    try:
+        from backend import config_self_heal
+        with SessionLocal() as db:
+            config_self_heal.run_config_self_heal(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("配置自愈失败（可忽略）: %s", exc)
+
     # P0（2026-09-29）：事件循环健康监控哨兵。单 worker 跑久了若有漏网的同步阻塞，
     # 这里会先告警，而不是等用户投诉登录变慢。
     try:

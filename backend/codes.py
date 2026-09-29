@@ -1,7 +1,9 @@
 """卡码体系：注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码
 
 借鉴 twilight-kotomi 的 RegCode 模型：一份数据结构靠 ``code_type`` 区分用途，
-``days`` 表示授予或叠加的会员天数，``is_decoy`` 为蜜罐码，``target_username`` 为指名码。
+``days`` 表示授予或叠加的会员天数，诱饵码（蜜罐）靠 ``HONEY-`` 码前缀识别
+（**零数据库表结构改动**：registration_codes 表不加列，只看码字符串本身），
+``target_username`` 为指名码。
 
 本项目与参考实现的差异：会员口径以 ``UserSubscription(end_date)`` 为**单一事实来源**
 （v2.5.1 起 is_vip / 付费墙 / 后台订阅总览都按它现算），因此卡码的「天数」最终落到订阅上：
@@ -9,6 +11,7 @@
 """
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
@@ -17,6 +20,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import models
+
+logger = logging.getLogger(__name__)
 
 # 卡码类型（对齐参考项目 type 1/2/3）
 CODE_TYPE_REGISTER = 1  # 注册码：为尚无会员的账号开通会员
@@ -28,6 +33,23 @@ CODE_TYPE_NAMES = {
     CODE_TYPE_WHITELIST: "白名单码",
 }
 CODE_TYPE_PREFIX = {CODE_TYPE_REGISTER: "REG", CODE_TYPE_RENEW: "REN", CODE_TYPE_WHITELIST: "VIP"}
+
+# 诱饵码（蜜罐）标识：码字符串以 "HONEY-" 开头即为诱饵码。
+# 设计原则：零 DB 改动——registration_codes 表不加列，识别只看码本身
+# （见 is_honeypot）；创建时由 render_code(decoy=True) 生成 HONEY- 前缀。
+HONEY_PREFIX = "HONEY"
+HONEY_MARK = "HONEY-"
+
+
+def is_honeypot(raw) -> bool:
+    """是否为诱饵码（蜜罐）
+
+    接受 RegistrationCode 对象或原始码字符串：以 ``HONEY-``（大小写不敏感）
+    开头的都是诱饵码。使用它的人会被自动封禁，兑换入口统一返回「卡码无效」，
+    绝不暴露它是陷阱。
+    """
+    code = getattr(raw, "code", raw)
+    return bool(code) and str(code).strip().upper().startswith(HONEY_MARK)
 
 PERMANENT_DAYS = 36500  # 永久近似（100 年）
 DEFAULT_DAYS = 30
@@ -82,11 +104,15 @@ def render_code(
     index: int = 1,
     template: str = DEFAULT_FORMAT,
     algorithm: str = DEFAULT_ALGORITHM,
+    decoy: bool = False,
 ) -> str:
     """按模板生成卡码
 
     支持占位符 ``{random}`` / ``{type}`` / ``{days}`` / ``{index}``；
     模板不含 ``{random}`` 时自动追加 ``-{random}``，避免批量生成出重复码。
+
+    ``decoy=True`` 时生成 ``HONEY-<random>``（诱饵码）：用前缀标识身份，
+    不占数据库列——这就是蜜罐的「零表结构改动」方案。
     """
     template = (template or DEFAULT_FORMAT).strip() or DEFAULT_FORMAT
     code = (
@@ -94,7 +120,10 @@ def render_code(
         .replace("{days}", "PERM" if days < 0 else str(days))
         .replace("{index}", str(index))
     )
-    if "{random}" in template:
+    if decoy:
+        # 诱饵码强制 HONEY- 前缀：不走模板，避免自定义模板把标识吞掉
+        code = f"{HONEY_MARK}{random_part(algorithm)}"
+    elif "{random}" in template:
         code = code.replace("{random}", random_part(algorithm))
     else:
         code = f"{code}-{random_part(algorithm)}"
@@ -399,19 +428,27 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         preview = preview_code(db, raw)
         return {"success": False, "message": preview.get("message") or "卡码无效"}
 
-    error = reg_code_error(code)
-    if error:
-        return {"success": False, "message": error}
-
-    if code.is_decoy:
-        # 蜜罐：诱饵码只应出现在盗版/破解渠道，使用即视为违规
+    if is_honeypot(code):
+        # 蜜罐：诱饵码只应出现在盗版/破解渠道，使用即视为违规。
+        # 顺序是关键：诱饵判定必须在可用性检查之前——陷阱不能因为
+        # 「已用尽 / 已过期 / 已停用」就失效；也不走 claim_code（不占 use_count，
+        # 陷阱永不烧尽）。管理员想收网时直接在后台停用/删除该码即可。
         user.is_active = False
+        logger.warning(
+            "诱饵码触发：用户 %s (id=%s) 于 %s 使用了诱饵码 %s，账号已自动封禁",
+            user.username, user.id,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), code.code,
+        )
         record_event(
             db, username=user.username, user_id=user.id, success=False,
             reason="decoy_code", detail=f"使用了诱饵码 {code.code}，账号已自动封禁",
         )
         db.commit()
         return {"success": False, "message": "卡码无效"}
+
+    error = reg_code_error(code)
+    if error:
+        return {"success": False, "message": error}
 
     if code.target_username and code.target_username.strip().lower() != (user.username or "").lower():
         return {"success": False, "message": "该卡码限指定账号使用"}

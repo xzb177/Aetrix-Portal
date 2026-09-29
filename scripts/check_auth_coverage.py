@@ -66,6 +66,7 @@ ROUTER_MODULES = (
     "backend.api.admin_ops",
     "backend.api.admin_economy",
     "backend.api.admins_admin",
+    "backend.api.setup",
     "backend.api.orders_admin",
     "backend.api.coupons_admin",
     "backend.api.capabilities_admin",
@@ -95,6 +96,10 @@ PRE_AUTH: dict[tuple[str, str], str] = {
         "支付网关回调：拿不到管理员身份（是网关在调），靠 HMAC 验签 + 金额与订单实付核对 + 订单幂等",
     ("POST", "/api/admin/auth/login"):
         "管理员登录：还没通过鉴权就没有身份可归属；限流（8 次/分钟/IP）+ 人机验证 + 登录日志",
+    ("POST", "/api/admin/setup"):
+        "首次运行向导：建第一个管理员（完成后永久 403）；还没通过鉴权就没有身份可归属；"
+        "替代机制：限流（8 次/分钟/IP）+ 登录日志（成功与失败都记）+ 一次性——"
+        "setup_completed 置 True 后入口永久关闭，库里已有管理员时自愈补旗并 403",
 }
 
 

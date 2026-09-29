@@ -14,8 +14,6 @@ from __future__ import annotations
 import time
 from sqlalchemy.orm import Session
 
-from backend import models
-
 SPEC = {
     "title": "IP 与地理位置",
     "desc": "腾讯地图 IP 定位或本地 GeoIP 库；用于登录日志与设备风控显示归属地。",
@@ -35,10 +33,9 @@ SPEC = {
 TENCENT_URL = "https://apis.map.qq.com/ws/location/v1/ip"
 # ip -> (写入时间, 结果, 该条的存活秒数)
 _cache: dict[str, tuple[float, dict, float]] = {}
-# 提供方读得比谁都勤（每写一条登录日志就要问一次要不要查），所以单独做一个短 TTL 缓存：
+# 提供方读得比谁都勤（每写一条登录日志就要问一次要不要查），走统一热读的短 TTL 缓存：
 # 后台保存配置时会调 apply() 清掉它，因此「保存后立即生效」不受影响。
 _PROVIDER_TTL = 30.0
-_provider_cache: dict[str, tuple[float, str]] = {}
 # 失败结果只留 5 分钟：瞬时故障不至于让一个 IP 一整天查不到归属地
 _FAILURE_TTL = 300.0
 # 缓存条数上限（异常场景下别让它无限长大）
@@ -46,26 +43,20 @@ _MAX_CACHE = 5000
 
 
 def _value(db: Session, key: str, default: str = "") -> str:
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    if row and row.value is not None:
-        return str(row.value).strip()
-    return default
+    """统一热读（只许这一套）：短 TTL 缓存，保存时失效"""
+    from backend.integrations import store
+    return store.get_value(db, key, default, ttl=_PROVIDER_TTL).strip()
 
 
 def provider(db: Session) -> str:
-    now = time.time()
-    hit = _provider_cache.get("value")
-    if hit and now - hit[0] < _PROVIDER_TTL:
-        return hit[1]
     name = _value(db, "geoip_provider", "none").lower()
-    name = name if name in ("tencent", "mmdb") else "none"
-    _provider_cache["value"] = (now, name)
-    return name
+    return name if name in ("tencent", "mmdb") else "none"
 
 
 def _invalidate() -> None:
     """配置变更后清缓存（保存能力时调用，保证立即生效）"""
-    _provider_cache.clear()
+    from backend.integrations import store
+    store.invalidate()
     _cache.clear()
 
 

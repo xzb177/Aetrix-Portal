@@ -40,12 +40,10 @@ ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
 
 
 def _read(db: Session, key: str, default: str = "") -> str:
-    from backend import models
+    """统一热读（只许这一套）：短 TTL 缓存，保存时失效"""
+    from backend.integrations import store
 
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    if row and row.value is not None:
-        return str(row.value).strip()
-    return default
+    return store.get_value(db, key, default).strip()
 
 
 def is_configured(values: dict) -> bool:

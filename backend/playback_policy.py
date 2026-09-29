@@ -13,7 +13,7 @@
 缺省配置 = 与升级前完全一样的行为（允许转码、不限并发、不限码率、不拦客户端）。
 
 落库仍然是 ``SystemConfig`` 键值（EM 与 EA 用的是同一个库，见 deploy-ea.md），
-所以面板上改完，EA 立刻按新策略放行/拒绝。
+所以面板上改完最多 60 秒生效（同一进程内保存即生效，跨进程靠短 TTL 兜底）。
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations import store
 
 CONFIG_TRANSCODE_ENABLED = "playback_transcode_enabled"
 CONFIG_MAX_TRANSCODES = "playback_max_concurrent_transcodes"
@@ -42,10 +43,20 @@ POLICY_KEYS = {
 
 DEFAULT_BITRATE_CEILING_KBPS = 0  # 0 = 不限
 
+# 各键的出厂默认值（字符串形态，与 _config_bool / _config_int / _agent_list 的缺省语义一致）。
+# 配置自愈（backend/config_self_heal.py）引用这份表补缺失行 —— 默认值只许在这里定义一次。
+POLICY_DEFAULTS = {
+    CONFIG_TRANSCODE_ENABLED: "true",
+    CONFIG_MAX_TRANSCODES: "0",
+    CONFIG_MAX_BITRATE: str(DEFAULT_BITRATE_CEILING_KBPS),
+    CONFIG_BLOCKED_AGENTS: "",
+    CONFIG_ALLOWED_AGENTS: "",
+}
 
-def _raw(db: Session, key: str) -> Optional[str]:
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    return row.value if row else None
+
+def _raw(db: Session, key: str) -> str:
+    """统一热读（只许这一套）：短 TTL 缓存，保存时失效；缺失返回空串"""
+    return store.get_value(db, key, "")
 
 
 def _config_bool(db: Session, key: str, default: bool) -> bool:
@@ -67,17 +78,20 @@ def _config_int(db: Session, key: str, default: int) -> int:
 
 def transcode_enabled(db: Session) -> bool:
     """是否允许服务端转码（缺省允许；关掉只放直连）"""
-    return _config_bool(db, CONFIG_TRANSCODE_ENABLED, True)
+    return _config_bool(db, CONFIG_TRANSCODE_ENABLED,
+                        POLICY_DEFAULTS[CONFIG_TRANSCODE_ENABLED] == "true")
 
 
 def max_transcodes(db: Session) -> int:
     """并发转码上限；0 = 用进程内置上限（``EMBY_MAX_TRANSCODES`` / CPU 核数）"""
-    return max(0, _config_int(db, CONFIG_MAX_TRANSCODES, 0))
+    return max(0, _config_int(db, CONFIG_MAX_TRANSCODES,
+                        int(POLICY_DEFAULTS[CONFIG_MAX_TRANSCODES])))
 
 
 def max_bitrate_kbps(db: Session) -> int:
     """码率上限（kbps）；0 = 不限"""
-    return max(0, _config_int(db, CONFIG_MAX_BITRATE, DEFAULT_BITRATE_CEILING_KBPS))
+    return max(0, _config_int(db, CONFIG_MAX_BITRATE,
+                        int(POLICY_DEFAULTS[CONFIG_MAX_BITRATE])))
 
 
 def _agent_list(db: Session, key: str) -> list[str]:
@@ -177,4 +191,5 @@ def write_policy(db: Session, values: dict) -> dict:
         else:
             db.add(models.SystemConfig(key=key, value=text))
         applied[key] = text
+    store.invalidate()  # 写时失效：同一进程内保存即生效
     return applied

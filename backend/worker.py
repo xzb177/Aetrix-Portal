@@ -150,6 +150,13 @@ def main() -> int:
         logger.exception("数据库初始化失败，worker 拒绝启动")
         return 1
 
+    # 配置自愈（backend/config_self_heal.py）：只补缺失、不覆盖；失败只记日志，不阻断启动
+    try:
+        from backend import config_self_heal
+        config_self_heal.run_config_self_heal()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"配置自愈失败（可忽略）: {e}")
+
     # 3. Redis 连接（worker 必须有 Redis：单实例锁 + 扫描队列都依赖它）
     from backend.database import redis_client
     if redis_client is None:

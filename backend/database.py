@@ -399,7 +399,7 @@ def _auto_migrate():
         ("registration_codes", [
             ("code_type", "INTEGER", "1"),
             ("days", "INTEGER", "30"),
-            ("is_decoy", "BOOLEAN", "0"),
+            # 诱饵码不建列：靠 HONEY- 前缀识别（见 backend/codes.is_honeypot），零表结构改动
             ("target_username", "VARCHAR(50)", "NULL"),
             ("source", "VARCHAR(20)", "'admin'"),
             ("realm_id", "INTEGER", "NULL"),

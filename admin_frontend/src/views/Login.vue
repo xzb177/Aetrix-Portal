@@ -61,6 +61,11 @@ async function submit() {
         <p>运营管理后台 · 仅限管理员账号登录</p>
       </div>
 
+      <!-- 首次运行向导刚完成：告诉用户用刚建的账号登录 -->
+      <p v-if="route.query.initialized === '1'" class="login-hint">
+        初始化完成，管理员账号已创建，请登录
+      </p>
+
       <!-- 门户（用户端）已登录时的免登结果：能自动进就直接进，不能进也要说明原因 -->
       <p v-if="auth.ssoNotice" class="login-hint">{{ auth.ssoNotice }}</p>
 

@@ -240,6 +240,14 @@ admin_emby_router = APIRouter(prefix="/api/admin/emby", tags=["管理后台-自�
 
 # ==================== 用户端 ====================
 
+# 公益服查看权限的积分价格与有效期键名及出厂默认值。
+# 配置自愈（backend/config_self_heal.py）引用这里 —— 默认值只许在这里定义一次。
+VIEW_UNLOCK_POINTS_KEY = "emby_view_unlock_points"
+VIEW_UNLOCK_POINTS_DEFAULT = 50
+VIEW_UNLOCK_DAYS_KEY = "emby_view_unlock_days"
+VIEW_UNLOCK_DAYS_DEFAULT = 365  # 0=永久
+
+
 def _get_int_config(db: Session, key: str, default: int) -> int:
     row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     try:
@@ -250,8 +258,8 @@ def _get_int_config(db: Session, key: str, default: int) -> int:
 
 def _view_unlock_pricing(db: Session) -> tuple[int, int]:
     """公益服查看权限的积分价格与有效期（天，0=永久），后台 SystemConfig 可调。"""
-    points = _get_int_config(db, "emby_view_unlock_points", 50)
-    days = _get_int_config(db, "emby_view_unlock_days", 365)
+    points = _get_int_config(db, VIEW_UNLOCK_POINTS_KEY, VIEW_UNLOCK_POINTS_DEFAULT)
+    days = _get_int_config(db, VIEW_UNLOCK_DAYS_KEY, VIEW_UNLOCK_DAYS_DEFAULT)
     return max(points, 0), max(days, 0)
 
 

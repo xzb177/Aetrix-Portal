@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from backend import models
-
 SPEC = {
     "title": "Telegram 通知",
     "desc": "填 Bot Token 即启用；用户在个人中心绑定 Telegram 后即可收到站内通知。",
@@ -25,9 +23,9 @@ SPEC = {
 
 
 def token(db: Session) -> str:
-    row = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == "telegram_bot_token").first()
-    return (row.value or "").strip() if row else ""
+    """统一热读（只许这一套）：短 TTL 缓存，保存时失效"""
+    from backend.integrations import store
+    return store.get_value(db, "telegram_bot_token", "").strip()
 
 
 def is_configured(values: dict) -> bool:
