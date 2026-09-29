@@ -37,7 +37,9 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 
 from backend.admin_accounts import (  # noqa: E402 — 必须在 sys.path 就绪后导入
     AdminAccountError,
+    PASSWORD_RECOMMENDED_LENGTH,
     check_password_strength,
+    generate_password,
     upsert_admin,
     validate_username,
 )
