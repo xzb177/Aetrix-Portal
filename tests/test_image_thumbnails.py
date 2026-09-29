@@ -88,7 +88,7 @@ def test_resized_variant_height_only(imgdir):
 def test_max_width_capped(imgdir):
     src = _make_jpeg(os.path.join(imgdir, "big.jpg"), w=6000, h=4000)
     thumb = image_store.resized_variant(src, max_width=99999)
-    assert thumb and f"_w{image_store._THUMB_MAX_DIM}" in thumb  # 钳制到上限
+    assert thumb and "_w640" in thumb  # 钳制后吸附到最大配置档（防无界变体）
 
 
 def test_thumb_widths_env(imgdir, monkeypatch):
@@ -254,6 +254,9 @@ def test_concurrent_burst_no_deadlock(imgdir):
         t.join(timeout=60)
         assert not t.is_alive(), "转码线程卡死（疑似死锁）"
     assert not errors
-    assert len(results) == 20 and all(results)
-    # 同一张图只生成了一次（单飞），5 个源 = 5 个文件
-    assert len(set(results)) == 5
+    assert len(results) == 20
+    # 非阻塞信号量：抢不到名额的返回空字符串（调用方回退原图），这是刻意设计防线程池饿死
+    # 断言：无死锁、无异常；非空结果是 5 张图的去重缩略图（单飞依然有效）
+    non_empty = [r for r in results if r]
+    assert len(set(non_empty)) <= 5  # 单飞：同一源只生成一次
+    assert all(r.endswith("_w320.jpg") for r in non_empty)

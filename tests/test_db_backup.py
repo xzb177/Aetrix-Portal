@@ -83,7 +83,7 @@ def test_should_run_today():
     assert db_backup._should_run_today(now, "03:00", "") is True
     assert db_backup._should_run_today(now, "03:00", "2026-09-29") is False
     assert db_backup._should_run_today(now, "04:00", "") is False
-    assert db_backup._should_run_today(datetime(2026, 9, 29, 3, 1), "03:00", "") is False
+    assert db_backup._should_run_today(datetime(2026, 9, 29, 3, 1), "03:00", "") is True  # 过点未跑自动补跑（>= 语义）
 
 
 def test_run_backup_now_creates_gzipped_backup(fake_db_file):

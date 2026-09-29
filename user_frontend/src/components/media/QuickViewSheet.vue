@@ -81,8 +81,10 @@ async function load(id: string) {
     if (it.Type === 'Series') {
       seasons.value = seasonsList
       if (seasons.value.length) {
+        // 只赋值即可：下面 watch(selectedSeasonId) 会统一触发 loadEpisodes。
+        // 这里再显式 await 一次会让默认季的剧集被并发请求两遍——数据一样但白扔
+        // 一个请求，大剧集（Limit=500）下明显拖慢首屏，且两次响应乱序到达会互相覆盖。
         selectedSeasonId.value = defaultSeasonId(seasons.value)
-        await loadEpisodes(selectedSeasonId.value)
       } else {
         episodes.value = await embyApi.getEpisodes(id)
       }
