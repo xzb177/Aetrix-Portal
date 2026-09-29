@@ -885,11 +885,6 @@ async function openScans(l: EmbyLibrary) {
   }
 }
 
-function progress(pos: number, dur: number): string {
-  if (!dur) return '0%'
-  return Math.min(100, Math.round((pos / dur) * 100)) + '%'
-}
-
 function typeLabel(t: string): string {
   return { movies: '电影', tvshows: '剧集', music: '音乐', mixed: '混合' }[t] || t
 }
