@@ -325,10 +325,16 @@ def expect_startup_refused(script: str, port: int, *, label: str, extra_env: dic
     """起一个**应该失败**的服务，验证它真的拒绝启动并给出可操作提示
 
     EA 的配对闸门就是靠这个语义生效的：宁可拒启，也不要跑一个「能连上但谁都播不了」的假服务。
+
+    必须显式清掉 ``ALLOW_EPHEMERAL_SECRET``：它是**合法**的本地开发开关
+    （见 ``backend.security.validate_secret_key``），开着时缺 ``SECRET_KEY`` 也能启动——
+    继承环境变量会让本项断言变成「取决于本机的开发配置」，在开发机上误报失败，
+    而它要验的恰恰是「没有这个开关时会不会拒启」。
     """
     log_path = os.path.join(tempfile.gettempdir(), f"deploy_check_{port}.log")
+    inherited = {k: v for k, v in os.environ.items() if k != "ALLOW_EPHEMERAL_SECRET"}
     with open(log_path, "w", encoding="utf-8") as log_file:
-        env = {**os.environ, "PORT": str(port), "EMBY_API_PORT": str(port),
+        env = {**inherited, "PORT": str(port), "EMBY_API_PORT": str(port),
                "HOST": "0.0.0.0", **(extra_env or {})}
         proc = subprocess.Popen([sys.executable, script], cwd=ROOT, env=env,
                                 stdout=log_file, stderr=subprocess.STDOUT)
