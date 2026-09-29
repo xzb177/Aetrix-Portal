@@ -38,6 +38,14 @@ def default_sqlite_url(cwd: str = ".") -> str:
 
 if DATABASE_TYPE == "postgresql":
     DATABASE_URL = os.getenv("DATABASE_URL") or "postgresql://aetrix:password@localhost:5432/aetrix"
+    # SQLAlchemy 2.x 的 postgresql:// 默认找 psycopg(v3) 驱动；仓库依赖是
+    # psycopg2-binary，没装 psycopg 时显式指定 psycopg2，否则 import 期直接炸。
+    # 装了 psycopg3 的环境不受影响（走更快的 v3）。
+    if DATABASE_URL.startswith("postgresql://"):
+        try:
+            import psycopg  # noqa: F401
+        except ImportError:
+            DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len("postgresql://"):]
 elif DATABASE_TYPE == "mysql":
     DATABASE_URL = os.getenv("DATABASE_URL") or "mysql+pymysql://aetrix:password@localhost:3306/aetrix"
 else:
@@ -249,6 +257,26 @@ def get_db() -> Session:
         db.close()
 
 
+def _dialect_col_spec(col_type: str, default: str) -> tuple[str, str]:
+    """把迁移清单里的列类型/默认值转成当前方言合法的写法。
+
+    清单里的 ``DATETIME`` / ``BOOLEAN ... DEFAULT 0`` 是 SQLite 口径：
+    - PostgreSQL 没有 ``DATETIME`` 类型（叫 ``TIMESTAMP``）；
+    - PG 不接受整数做布尔列的默认值（``DEFAULT 0`` 直接报错），必须写 ``TRUE``/``FALSE``。
+    MySQL 两者都认，不用转。SQLite 保持原样。
+    """
+    dialect = engine.dialect.name
+    if dialect == "postgresql":
+        if col_type == "DATETIME":
+            col_type = "TIMESTAMP"
+        if col_type == "BOOLEAN":
+            if default == "0":
+                default = "FALSE"
+            elif default == "1":
+                default = "TRUE"
+    return col_type, default
+
+
 def _auto_migrate():
     """轻量自动迁移：为已有表补充新增列（SQLite/MySQL/PG 通用）
 
@@ -401,6 +429,7 @@ def _auto_migrate():
         with engine.begin() as conn:
             for col_name, col_type, default in columns:
                 if col_name not in existing_cols:
+                    col_type, default = _dialect_col_spec(col_type, default)
                     conn.execute(text(
                         f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"
                     ))
@@ -494,7 +523,12 @@ def _column_ddl(col) -> str:
     if arg is None or callable(arg):
         return ddl
     if isinstance(arg, bool):
-        literal = "1" if arg else "0"
+        # PG 不接受整数做布尔默认值（DEFAULT 1 直接报错），必须写 TRUE/FALSE；
+        # SQLite/MySQL 用 1/0 也认。
+        if engine.dialect.name == "postgresql":
+            literal = "TRUE" if arg else "FALSE"
+        else:
+            literal = "1" if arg else "0"
     elif isinstance(arg, (int, float)):
         literal = str(arg)
     elif isinstance(arg, str):
