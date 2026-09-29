@@ -292,13 +292,17 @@ _EA_RATE_LIMITS = [
 ]
 
 def _ea_get_ip(request) -> str:
-    xff = request.headers.get("x-forwarded-for", "").strip()
-    if xff:
-        return xff.split(",")[0].strip()
-    xri = request.headers.get("x-real-ip", "").strip()
-    if xri:
-        return xri
-    return request.client.host if request.client else "unknown"
+    """真实客户端 IP（与 EM 同一口径：只有可信代理写进来的头才算数）
+
+    以前这里直接取 `X-Forwarded-For` 第一段 / `X-Real-IP`：这两个头都是客户端
+    自己能伪造的，等于给爆破者免费换限流桶；反过来，反代没写这些头时所有人都会
+    落到 `request.client.host` 这**一个**桶上，一个人触发限流全站跟着 429。
+    EM（`backend/main.py`）早就换成了带可信代理校验的
+    `backend.ratelimit.get_client_ip`，EA 这里统一过来。
+    """
+    from backend.ratelimit import get_client_ip
+
+    return get_client_ip(request)
 
 def _ea_is_auth(request) -> bool:
     auth = request.headers.get("authorization", "")
@@ -336,7 +340,14 @@ async def ea_rate_limit_middleware(request, call_next):
     if request.url.path.startswith(("/api/", "/emby/")):
         ip = _ea_get_ip(request)
         authenticated = _ea_is_auth(request)
-        allowed, reason = _ea_check_limit(ip, request.url.path, authenticated)
+        # redis-py 是同步客户端：直接在事件循环里 incr/expire，等于每个请求都让整个
+        # 进程排队等一次 Redis 往返（socket_timeout=5s，Redis 一抖动就是全站卡）。
+        # 下放线程池——仓库既有手法，见 scripts/check_blocking_routes.py 的说明。
+        from starlette.concurrency import run_in_threadpool
+
+        allowed, reason = await run_in_threadpool(
+            _ea_check_limit, ip, request.url.path, authenticated
+        )
         if not allowed:
             from fastapi.responses import JSONResponse
             return JSONResponse(
@@ -375,9 +386,13 @@ def _redis_status() -> dict:
         return {"ok": False, "reason": str(e)[:100]}
 
 
-@app.get("/api/health")
-async def health_check():
-    """EA 健康检查：同时报告与 EM 的配对状态"""
+def _health_payload() -> dict:
+    """健康检查的同步实现（EA 与 EM 的配对状态一并上报）
+
+    这一段全是同步 IO：查表名（一个 DB 往返）、Redis ping、节点身份查询、
+    磁盘与转码目录统计。放在 `async` 端点里就压在事件循环上——探针是按秒级打的，
+    一次探活不该让正在播放的人卡一下（旧实现还 ping 了两次 Redis）。整段交给线程池。
+    """
     missing = _missing_em_tables()
     return {
         "service": "ea",
@@ -389,27 +404,21 @@ async def health_check():
         "missing_em_tables": missing,
         "em_panel_url": _panel_url() or None,
         "emby_server_name": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
+        # Redis 状态：队列/熔断器/分布式锁都依赖它
         "redis": _redis_status(),
         # 多机 / 多服部署的关键信息：这台 EA 是谁、属于哪个服、只提供什么内容
         "node": _node_info(),
         # 长期运行的体检口径：正在扫描的库 / 转码会话 / 临时目录占用 / 磁盘余量
         "runtime": _runtime_report(),
-        # Redis 状态：队列/熔断器/分布式锁都依赖它
-        "redis": _redis_status(),
     }
 
 
-def _redis_status() -> dict:
-    """Redis 连通性（健康检查用；异常不抛，只报告）"""
-    try:
-        from backend import database as db
-        r = db.redis_client
-        if r is None:
-            return {"ok": False, "reason": "not_configured"}
-        r.ping()
-        return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "reason": str(e)[:100]}
+@app.get("/api/health")
+async def health_check():
+    """EA 健康检查：同时报告与 EM 的配对状态"""
+    from starlette.concurrency import run_in_threadpool
+
+    return await run_in_threadpool(_health_payload)
 
 
 def _runtime_report() -> dict:

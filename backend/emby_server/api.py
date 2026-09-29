@@ -939,20 +939,26 @@ def authenticate_by_name(
     credentials: dict = Body(...),
     db: Session = Depends(get_db),
 ):
-    # 限流：同 IP 每分钟最多 10 次认证尝试（防暴力破解）
+    username = (credentials.get("Username") or "").strip()
+    password = credentials.get("Pw") or credentials.get("password") or ""
+
+    # 限流：每分钟最多 10 次认证尝试（防暴力破解）。桶按「出口 IP + 账号」建——
+    # 纯按 IP 会在 NAT 下连坐：家庭/宿舍/公司共用一个公网出口，一个人把密码输错
+    # 几次（或客户端拿着过期凭据反复重试），同一 IP 下的**所有人**立刻开始收 429，
+    # 客户端再按 Retry-After 退避，用户看到的就是「登录卡很久」。爆破针对的是
+    # 某个账号，所以按账号建档；出口 IP 这一层由网关中间件的 15 次/分钟规则兜底
+    # （换用户名扫也会被它挡住）。
     from backend.ratelimit import check_rate_limit, client_ip
 
     ip = client_ip(request)
-    allowed, retry_after = check_rate_limit(f"emby-auth:{ip}", 10, 60)
+    account = username.lower() or "-"  # 空用户名（探活 / 畸形请求）落进公共桶
+    allowed, retry_after = check_rate_limit(f"emby-auth:{ip}:{account}", 10, 60)
     if not allowed:
         return Response(
             content='{"error": "TooManyAttempts"}',
             status_code=429, media_type="application/json",
             headers={"Retry-After": str(retry_after)},
         )
-
-    username = (credentials.get("Username") or "").strip()
-    password = credentials.get("Pw") or credentials.get("password") or ""
 
     user = None
     if username:
