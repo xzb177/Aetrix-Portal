@@ -10,6 +10,7 @@ import re
 import subprocess
 import threading
 import time
+import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -2356,7 +2357,7 @@ def _finish_scan_run(db: Session, run_id: Optional[int], status: str,
         prune_library_scan_runs(db, run.library_id)
         commit_with_retry(db, label="扫描流水收尾")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("写入扫描流水失败: %s", exc)
+        logger.warning("写入扫描流水失败: %s", exc, exc_info=True)
         db.rollback()
 
 
@@ -2372,7 +2373,7 @@ def _write_scan_state(db: Session, library: emby_models.Library, status: str,
     try:
         commit_with_retry(db, label="扫描结果写回")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("写入扫描结果失败: %s", exc)
+        logger.warning("写入扫描结果失败: %s", exc, exc_info=True)
         db.rollback()
 
 
@@ -2426,6 +2427,15 @@ def fail_scan(db: Session, library: emby_models.Library, exc: Exception,
               run_id: Optional[int] = None,
               duration_ms: Optional[int] = None) -> None:
     """扫描抛异常时把原因落库（管理端要能看到「为什么没扫成」）"""
+    # 诊断日志：定位 Session 跨线程等问题时直接抓现行（只记日志，不改落库逻辑）。
+    # 调用方保证在 except 块内调用，因此 traceback.format_exc() 一定有内容。
+    logger.error(
+        "扫描失败诊断 library_id=%s trigger=fail_scan thread=%s session_id=%s\n%s",
+        getattr(library, "id", "?"),
+        threading.current_thread().name,
+        id(db),
+        traceback.format_exc(),
+    )
     error = f"{type(exc).__name__}: {exc}"
     _write_scan_state(db, library, SCAN_STATUS_FAILED, None, error)
     # 失败也要记耗时：扫了四十分钟才炸和刚开就炸不是一回事
