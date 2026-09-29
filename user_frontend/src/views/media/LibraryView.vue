@@ -291,8 +291,9 @@ async function load(reset = true) {
       serverOffset.value += res.Items.length
       trimTopItems()
     }
-    total.value = res.TotalRecordCount
-    // 后端跳过总数时 TotalRecordCount 为 -1，此时用 HasMore 判断
+    // 后端跳过总数时 TotalRecordCount 为 -1（表示"未知"，不是"负数个条目"）。
+    // 直接赋值会让页面标题恒显示「-1 个条目」——夹到 0，未知时由 serverHasMore 表达。
+    total.value = Math.max(0, res.TotalRecordCount ?? 0)
     serverHasMore.value = res.HasMore ?? null
   } catch {
     // 主动取消不算错误；首页加载失败才进错误态，加载更多失败只停 spinner
@@ -382,7 +383,7 @@ onBeforeUnmount(() => {
           <div>
             <h1 class="page-title">{{ libName }}</h1>
             <p class="page-sub">
-              {{ total }} 个条目<template v-if="activeCount"> · 已筛选 {{ activeCount }} 项</template>
+              <template v-if="total > 0">{{ total }} 个条目</template><template v-if="total <= 0 && serverHasMore === true"> · 还有更多</template><template v-if="activeCount"> · 已筛选 {{ activeCount }} 项</template>
             </p>
           </div>
         </div>
