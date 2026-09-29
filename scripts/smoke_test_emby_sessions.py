@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import models  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.emby_server.auth import hash_emby_token  # noqa: E402
 
 init_db()
 
@@ -80,7 +81,7 @@ with SessionLocal() as db:
     db.refresh(movie)
 
     for u in (alice, bob, staff):
-        db.add(em.EmbyApiToken(token=f"tok-{u.username}", user_id=u.id, device_id=f"dev-{u.username}"))
+        db.add(em.EmbyApiToken(token=hash_emby_token(f"tok-{u.username}"), user_id=u.id, device_id=f"dev-{u.username}"))
     db.add_all([
         em.PlaybackSession(session_key=ALICE_KEY, user_id=alice.id, item_id=movie.id),
         em.PlaybackSession(session_key=BOB_KEY, user_id=bob.id, item_id=movie.id),

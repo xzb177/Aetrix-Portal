@@ -1,4 +1,5 @@
 """自建 Emby 服务器：认证与 Token 管理"""
+import hashlib
 import os
 import secrets
 import uuid
@@ -8,6 +9,15 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
+
+
+def hash_emby_token(token_value: str) -> str:
+    """Emby 客户端 token 的 SHA256 哈希。
+
+    P1 安全修复：库里只存哈希不存明文（防数据库文件泄露导致会话被接管）。
+    签发时把明文给客户端一次，之后所有校验都是"哈希后再比对"。
+    """
+    return hashlib.sha256(token_value.encode("utf-8")).hexdigest()
 
 from backend import models
 from backend.database import get_db
@@ -102,7 +112,7 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
     token_value = secrets.token_hex(20)
 
     row = emby_models.EmbyApiToken(
-        token=token_value,
+        token=hash_emby_token(token_value),  # P1：只存哈希，不存明文
         user_id=user.id,
         device_id=device_id,
         app_name=app_name,
@@ -137,7 +147,7 @@ def resolve_token(db: Session, request: Request) -> Optional[tuple[models.WebUse
     row = (
         db.query(emby_models.EmbyApiToken)
         .filter(
-            emby_models.EmbyApiToken.token == token_value,
+            emby_models.EmbyApiToken.token == hash_emby_token(token_value),  # P1：哈希后比对
             emby_models.EmbyApiToken.is_revoked == False,  # noqa: E712
         )
         .first()
@@ -200,7 +210,7 @@ def get_emby_user(
         row = (
             db.query(emby_models.EmbyApiToken)
             .filter(
-                emby_models.EmbyApiToken.token == credentials.credentials,
+                emby_models.EmbyApiToken.token == hash_emby_token(credentials.credentials),  # P1：哈希后比对
                 emby_models.EmbyApiToken.is_revoked == False,  # noqa: E712
             )
             .first()

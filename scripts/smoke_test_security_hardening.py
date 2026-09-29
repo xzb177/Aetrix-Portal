@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import models  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.emby_server.auth import hash_emby_token  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
 
 init_db()
@@ -84,7 +85,7 @@ with SessionLocal() as db:
                                    end_date=datetime.now() + timedelta(days=30)))
     db.commit()
 
-    emby_token = em.EmbyApiToken(token="emby-client-token-alice", user_id=alice_id, device_id="dev-1")
+    emby_token = em.EmbyApiToken(token=hash_emby_token("emby-client-token-alice"), user_id=alice_id, device_id="dev-1")
     db.add(emby_token)
     db.commit()
 

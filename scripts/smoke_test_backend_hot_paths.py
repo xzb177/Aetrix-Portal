@@ -62,6 +62,7 @@ from backend.emby_server import api as emby_api  # noqa: E402
 from backend.emby_server import compat_routes, facets  # noqa: E402
 from backend.emby_server import mount_health  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.emby_server.auth import hash_emby_token  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
 
 init_db()
@@ -146,7 +147,7 @@ with SessionLocal() as db:
     db.commit()
 
     token = f"hot-{suffix}-" + "b" * 12
-    db.add(em.EmbyApiToken(token=token, user_id=user.id, device_id="hot-paths-device"))
+    db.add(em.EmbyApiToken(token=hash_emby_token(token), user_id=user.id, device_id="hot-paths-device"))
     db.commit()
     item_guid = items[0].guid
     item_id = items[0].id
@@ -699,7 +700,7 @@ with SessionLocal() as db:
         db.delete(it)
     db.flush()
     db.query(em.Library).filter(em.Library.id == library_id).delete()
-    db.query(em.EmbyApiToken).filter(em.EmbyApiToken.token == token).delete()
+    db.query(em.EmbyApiToken).filter(em.EmbyApiToken.token == hash_emby_token(token)).delete()
     db.query(models.StationMessage).filter(models.StationMessage.to_user_id == staff_id).delete()
     db.query(models.MovieRequest).filter(models.MovieRequest.user_id == user_id).delete()
     db.query(models.AdminLog).filter(models.AdminLog.target_type == "media_seek").delete()

@@ -33,6 +33,7 @@ from backend import models  # noqa: E402
 from backend.database import SessionLocal, engine, init_db  # noqa: E402
 from backend.emby_server import facets  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.emby_server.auth import hash_emby_token  # noqa: E402
 from backend.emby_server.api import _guid_of, invalidate_filters_cache  # noqa: E402
 
 init_db()
@@ -76,7 +77,7 @@ with SessionLocal() as db:
     db.commit()
     db.refresh(user)
     user_id = user.id
-    db.add(em.EmbyApiToken(token=f"tok-{suffix}", user_id=user.id, device_id=f"dev-{suffix}"))
+    db.add(em.EmbyApiToken(token=hash_emby_token(f"tok-{suffix}"), user_id=user.id, device_id=f"dev-{suffix}"))
     lib = em.Library(guid=f"lib{suffix}", name="分类测试库", collection_type="movies")
     db.add(lib)
     db.commit()
