@@ -14,18 +14,18 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
-  Film, MessageSquareDashed, Radio, Ticket, Users, Wallet,
+  Film, MessageSquareDashed, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
   Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, ShieldAlert,
 } from 'lucide-vue-next'
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
-  fetchServersSummary, fetchSessions, fetchStatsTrend, fetchBackendServices,
+  fetchServersSummary, fetchStatsTrend, fetchBackendServices,
   fetchQuotaBreakerStatus, resetQuotaBreaker,
   type BackendServiceStatus } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
-  EmbyLibrary, EmbySessionRow, OverviewStats, PlaybackStats, RealmOverview, ServerSummary,
+  EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary,
   StorageMount, TrendStats,
 } from '@/types'
 
@@ -34,7 +34,6 @@ const playback = ref<PlaybackStats | null>(null)
 const economy = ref<EconomyStats | null>(null)
 const trend = ref<TrendStats | null>(null)
 const libraries = ref<EmbyLibrary[]>([])
-const sessions = ref<EmbySessionRow[]>([])
 /** 存储来源：交付链的起点——挂载断了，媒体库扫不到、也播不了 */
 const mounts = ref<StorageMount[]>([])
 /** 服务器接入情况：面板到底接了几台后端服 / 几台 Emby 服 / 有没有接下载器 */
@@ -70,12 +69,11 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e, libraryData, sessionData, serverData, realmData, mountData, backendData, breakerData] = await Promise.all([
+    const [o, p, e, libraryData, serverData, realmData, mountData, backendData, breakerData] = await Promise.all([
       fetchOverview(),
       fetchPlaybackStats(),
       fetchEconomyStats(),
       fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
-      fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
       fetchServersSummary().catch(() => null),
       fetchRealmOverview().catch(() => null),
       fetchMounts().catch(() => null),
@@ -86,7 +84,6 @@ onMounted(async () => {
     playback.value = p
     economy.value = e
     libraries.value = libraryData.libraries
-    sessions.value = sessionData.sessions
     servers.value = serverData
     realms.value = realmData
     mounts.value = mountData?.mounts || []
@@ -150,10 +147,6 @@ const todoTotal = computed(() => todos.value.reduce((s, t) => s + t.count, 0))
 
 // ==================== 交付链数据卡 ====================
 
-/** 正在转码的会话数：直连很轻，转码才是吃 CPU 的那种 */
-const transcodeCount = computed(
-  () => sessions.value.filter((s) => s.play_method === 'Transcode').length,
-)
 
 /** 扫描状态：正常 / 异常（partial、failed）/ 正在扫 / 从没扫过 */
 const scanSummary = computed(() => {
@@ -201,12 +194,6 @@ const kpis = computed<{
       key: 'users', label: '用户总数', value: overview.value?.users.total ?? 0,
       foot: `活跃 ${overview.value?.users.active ?? 0} · 今日播放 ${playback.value?.today.plays ?? 0} 次`,
       to: '/users', icon: Users, tone: 'plain', title: '用户与账号',
-    },
-    {
-      key: 'playing', label: '当前播放', value: sessions.value.length,
-      foot: sessions.value.length ? `转码 ${transcodeCount.value} 路` : '当前没有播放会话',
-      to: '/emby', icon: Radio, tone: sessions.value.length ? 'ok' : 'plain',
-      title: '实时会话（媒体库页）',
     },
     {
       key: 'seeks', label: '待处理求片', value: overview.value?.media_seeks.pending ?? 0,
@@ -301,10 +288,6 @@ function libraryStatus(library: EmbyLibrary): string {
   return '正常'
 }
 
-function sessionProgress(session: EmbySessionRow): number {
-  if (!session.duration_ticks) return 0
-  return Math.min(100, Math.round((session.position_ticks / session.duration_ticks) * 100))
-}
 </script>
 
 <template>
@@ -578,8 +561,8 @@ function sessionProgress(session: EmbySessionRow): number {
         </div>
       </section>
 
-      <!-- 媒体服务运行态：把媒体库、扫描与在线播放放到首页，而不是让管理员逐页排查 -->
-      <section v-if="libraries.length || sessions.length" class="ops-grid">
+      <!-- 媒体服务运行态：把媒体库与扫描状态放到首页，而不是让管理员逐页排查（实时会话只在服务健康页展示） -->
+      <section v-if="libraries.length" class="ops-grid">
         <div class="admin-card ops-card">
           <div class="card-header">
             <h2>
@@ -600,25 +583,6 @@ function sessionProgress(session: EmbySessionRow): number {
           <div v-else class="empty-hint">暂无媒体库</div>
         </div>
 
-        <div class="admin-card ops-card">
-          <div class="card-header">
-            <h2>
-              <Radio :size="15" /> 实时播放
-              <span class="range-hint">{{ sessions.length }} 路 · 今日 {{ playback?.today.plays ?? 0 }} 次 / {{ playback?.today.users ?? 0 }} 人</span>
-            </h2>
-            <RouterLink to="/emby" class="card-link">查看会话 <ArrowRight :size="13" /></RouterLink>
-          </div>
-          <div v-if="sessions.length" class="ops-list">
-            <div v-for="session in sessions.slice(0, 5)" :key="session.session_key" class="ops-row">
-              <div class="ops-main">
-                <strong>{{ session.username }} · {{ session.item }}</strong>
-                <span>{{ session.client || '未知客户端' }} · {{ sessionProgress(session) }}% · {{ session.play_method === 'Transcode' ? '转码' : '直连' }}</span>
-              </div>
-              <span class="play-dot" :class="{ paused: session.is_paused }" />
-            </div>
-          </div>
-          <div v-else class="empty-hint">当前没有播放会话</div>
-        </div>
       </section>
 
       <!-- 排行榜 -->

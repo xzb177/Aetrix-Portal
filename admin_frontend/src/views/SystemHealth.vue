@@ -2,12 +2,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Activity, Database, Film, HardDrive, RefreshCw, Radio, Users } from 'lucide-vue-next'
-import { fetchEmbyOverview, fetchLibraries, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
-import type { EmbyLibrary, EmbySessionRow, StorageMount } from '@/types'
+import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
+import type { EmbySessionRow, StorageMount } from '@/types'
 import type { PanelHealth } from '@/api/admin'
 
 const health = ref<PanelHealth | null>(null)
-const libraries = ref<EmbyLibrary[]>([])
 const sessions = ref<EmbySessionRow[]>([])
 const mounts = ref<StorageMount[]>([])
 const overview = ref<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number } | null>(null)
@@ -34,16 +33,14 @@ const checks = computed(() => [
 async function load() {
   loading.value = true
   try {
-    const [h, o, l, s, m] = await Promise.all([
+    const [h, o, s, m] = await Promise.all([
       fetchPanelHealth(),
       fetchEmbyOverview().catch(() => null),
-      fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
       fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
       fetchMounts().catch(() => ({ mounts: [], mount_types: [] })),
     ])
     health.value = h
     overview.value = o
-    libraries.value = l.libraries
     sessions.value = s.sessions
     mounts.value = m.mounts
     lastChecked.value = new Date().toLocaleTimeString()
@@ -91,21 +88,12 @@ onMounted(load)
         <div><span>在线用户</span><strong>{{ health?.online_users ?? 0 }}</strong></div>
         <div><span>在线会话</span><strong>{{ overview?.active_sessions ?? sessions.length }}</strong></div>
         <div><span>媒体条目</span><strong>{{ overview?.total_items ?? 0 }}</strong></div>
-        <div><span>媒体库</span><strong>{{ overview?.total_libraries ?? libraries.length }}</strong></div>
+        <div><span>媒体库</span><strong>{{ overview?.total_libraries ?? 0 }}</strong></div>
         <div><span>管理员看到的挂载</span><strong>{{ mounts.length }}</strong></div>
       </div>
     </section>
 
     <section class="ops-grid">
-      <div class="admin-card">
-        <div class="card-header"><h2><Film :size="15" />媒体库状态</h2></div>
-        <div v-if="libraries.length" class="status-list">
-          <div v-for="library in libraries" :key="library.id" class="status-row">
-            <span>{{ library.name }}</span><span :class="library.is_scanning ? 'warn-text' : library.is_enabled ? 'ok-text' : 'muted'">{{ library.is_scanning ? '扫描中' : library.is_enabled ? `${library.item_count} 条目` : '已停用' }}</span>
-          </div>
-        </div>
-        <div v-else class="empty-hint">暂无媒体库</div>
-      </div>
       <div class="admin-card">
         <div class="card-header"><h2><Users :size="15" />实时会话</h2></div>
         <div v-if="sessions.length" class="status-list">
