@@ -125,7 +125,7 @@ function fmtDate(s: string): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">公告管理</h1>
-        <p class="admin-page-subtitle">发布公告会实时推送给所有在线用户</p>
+        <p class="admin-page-desc">发布公告会实时推送给所有在线用户</p>
       </div>
       <div class="toolbar">
         <el-switch v-model="activeOnly" active-text="仅看启用中" />

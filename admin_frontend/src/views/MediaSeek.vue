@@ -178,7 +178,7 @@ function statusLabel(status: string): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">求片管理</h1>
-        <p class="admin-page-subtitle">审核结果会通知提交用户</p>
+        <p class="admin-page-desc">审核结果会通知提交用户</p>
       </div>
       <div class="toolbar">
         <el-radio-group v-model="scope" size="small" @change="load">

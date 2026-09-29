@@ -235,12 +235,11 @@ function currentPath(): string {
 
 <template>
   <div class="admin-page">
-    <!-- 头部用全局的 admin-page-header / admin-page-subtitle：
-         这两个类名以前写成了 admin-page-head / admin-page-desc，从未定义过（标题与副标题都没吃到样式） -->
+    <!-- 头部用全局的 admin-page-header / admin-page-desc（标题与副标题样式，见 styles/index.css） -->
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">115 账号</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           配置 115 Cookie 以使用「存储来源 → 115」直挂：面板 / EA 直接列目录、换直链播放
         </p>
       </div>

@@ -142,7 +142,7 @@ onMounted(load)
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">邀请与积分</h1>
-        <p class="admin-page-subtitle">邀请台账与全站积分流水；规则参数已移至「系统设置」</p>
+        <p class="admin-page-desc">邀请台账与全站积分流水；规则参数已移至「系统设置」</p>
       </div>
       <div class="admin-page-actions">
         <el-button :loading="loading" @click="load">

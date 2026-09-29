@@ -227,7 +227,7 @@ function usedByNames(row: RegistrationCode): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">卡码管理</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码 —— 生成、审计与注册模式管控
         </p>
       </div>

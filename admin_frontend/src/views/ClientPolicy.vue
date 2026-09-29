@@ -110,7 +110,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">客户端策略</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           转码、清晰度与客户端准入：改完对面板与出流的节点同时生效（管理员不受这些策略限制）
         </p>
       </div>

@@ -25,6 +25,8 @@ import {
   uploadRcloneServiceAccount,
 } from '@/api/admin'
 import type { RcloneRemote } from '@/types'
+import DataTable from '@/components/DataTable.vue'
+import type { DataColumn } from '@/components/DataTable.vue'
 
 const remotes = ref<RcloneRemote[]>([])
 const loading = ref(false)
@@ -55,6 +57,16 @@ const oauthSubmitting = ref(false)
 
 // 服务账号上传
 const saUploading = ref(false)
+
+// ==================== 表格列 ====================
+const columns: DataColumn[] = [
+  { key: 'name', label: '名称', minWidth: 140, mobile: 'title' },
+  { key: 'type', label: '类型', width: 110 },
+  { key: 'team', label: '团队盘', minWidth: 160 },
+  { key: 'cred', label: '凭据', width: 180 },
+  { key: 'status', label: '状态', width: 80 },
+  { key: 'actions', label: '操作', width: 300, fixed: 'right' },
+]
 
 async function load() {
   loading.value = true
@@ -284,90 +296,84 @@ onMounted(load)
       </div>
     </div>
 
-    <el-table :data="remotes" v-loading="loading" style="width: 100%">
-      <el-table-column prop="name" label="名称" min-width="140">
-        <template #default="{ row }">
-          <span class="remote-name">{{ row.name }}</span>
-          <el-tag v-if="row.is_probe_remote" type="success" size="small" style="margin-left: 6px">
-            探测用
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="类型" width="110">
-        <template #default="{ row }">
-          <el-tag :type="row.drive_type === 'service_account' ? 'warning' : undefined" size="small">
-            {{ driveTypeLabel(row) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="团队盘" min-width="160">
-        <template #default="{ row }">
-          <span v-if="row.team_drive_id" class="mono">{{ row.team_drive_id.slice(0, 20) }}…</span>
-          <span v-else class="muted">个人盘</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="凭据" width="180">
-        <template #default="{ row }">
-          <div v-if="row.drive_type === 'personal'" class="cred-cell">
-            <span :class="row.has_token ? 'ok' : 'missing'">
-              {{ row.has_token ? '✓ 已授权' : '✗ 未授权' }}
-            </span>
-          </div>
-          <div v-else class="cred-cell">
-            <span :class="row.has_service_account ? 'ok' : 'missing'">
-              {{ row.has_service_account ? '✓ ' + (row.service_account_file || '已上传') : '✗ 未上传' }}
-            </span>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="80">
-        <template #default="{ row }">
-          <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">
-            {{ row.is_enabled ? '启用' : '禁用' }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="openEdit(row)">
-            <Pencil :size="12" />编辑
-          </el-button>
-          <el-button
-            v-if="!row.is_probe_remote"
-            size="small"
-            type="success"
-            @click="setProbe(row)"
-          >
-            设为探测用
-          </el-button>
-          <el-button
-            v-if="row.drive_type === 'personal'"
-            size="small"
-            type="warning"
-            @click="openOAuth(row)"
-          >
-            <KeyRound :size="12" />授权
-          </el-button>
-          <el-upload
-            v-if="row.drive_type === 'service_account'"
-            :show-file-list="false"
-            :before-upload="(f: File) => handleSaUpload(row, f)"
-            style="display: inline-block; margin-left: 8px"
-          >
-            <el-button size="small" type="warning" :loading="saUploading">
-              <Upload :size="12" />上传密钥
-            </el-button>
-          </el-upload>
-          <el-button size="small" type="danger" @click="remove(row)">
-            <Trash2 :size="12" />
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <DataTable
+      :rows="remotes"
+      :columns="columns"
+      :loading="loading"
+      empty="还没有配置 remote。点「新建 Remote」添加个人盘或服务账号。"
+    >
+      <template #cell-name="{ row }">
+        <span class="remote-name">{{ row.name }}</span>
+        <el-tag v-if="row.is_probe_remote" type="success" size="small" style="margin-left: 6px">
+          探测用
+        </el-tag>
+      </template>
 
-    <div v-if="!remotes.length && !loading" class="empty-hint">
-      还没有配置 remote。点「新建 Remote」添加个人盘或服务账号。
-    </div>
+      <template #cell-type="{ row }">
+        <el-tag :type="row.drive_type === 'service_account' ? 'warning' : undefined" size="small">
+          {{ driveTypeLabel(row) }}
+        </el-tag>
+      </template>
+
+      <template #cell-team="{ row }">
+        <span v-if="row.team_drive_id" class="mono">{{ row.team_drive_id.slice(0, 20) }}…</span>
+        <span v-else class="muted">个人盘</span>
+      </template>
+
+      <template #cell-cred="{ row }">
+        <div v-if="row.drive_type === 'personal'" class="cred-cell">
+          <span :class="row.has_token ? 'ok' : 'missing'">
+            {{ row.has_token ? '✓ 已授权' : '✗ 未授权' }}
+          </span>
+        </div>
+        <div v-else class="cred-cell">
+          <span :class="row.has_service_account ? 'ok' : 'missing'">
+            {{ row.has_service_account ? '✓ ' + (row.service_account_file || '已上传') : '✗ 未上传' }}
+          </span>
+        </div>
+      </template>
+
+      <template #cell-status="{ row }">
+        <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">
+          {{ row.is_enabled ? '启用' : '禁用' }}
+        </el-tag>
+      </template>
+
+      <template #cell-actions="{ row }">
+        <el-button size="small" @click="openEdit(row)">
+          <Pencil :size="12" />编辑
+        </el-button>
+        <el-button
+          v-if="!row.is_probe_remote"
+          size="small"
+          type="success"
+          @click="setProbe(row)"
+        >
+          设为探测用
+        </el-button>
+        <el-button
+          v-if="row.drive_type === 'personal'"
+          size="small"
+          type="warning"
+          @click="openOAuth(row)"
+        >
+          <KeyRound :size="12" />授权
+        </el-button>
+        <el-upload
+          v-if="row.drive_type === 'service_account'"
+          :show-file-list="false"
+          :before-upload="(f: File) => handleSaUpload(row, f)"
+          style="display: inline-block; margin-left: 8px"
+        >
+          <el-button size="small" type="warning" :loading="saUploading">
+            <Upload :size="12" />上传密钥
+          </el-button>
+        </el-upload>
+        <el-button size="small" type="danger" @click="remove(row)">
+          <Trash2 :size="12" />
+        </el-button>
+      </template>
+    </DataTable>
 
     <!-- 新建/编辑 -->
     <el-dialog
@@ -452,7 +458,7 @@ onMounted(load)
   gap: 12px;
 }
 .rclone-desc {
-  color: #909399;
+  color: var(--text-tertiary);
   font-size: 13px;
 }
 .rclone-actions {
@@ -468,7 +474,7 @@ onMounted(load)
   font-size: 12px;
 }
 .muted {
-  color: #909399;
+  color: var(--text-tertiary);
 }
 .ok {
   color: #67c23a;
@@ -478,11 +484,6 @@ onMounted(load)
 }
 .cred-cell {
   font-size: 13px;
-}
-.empty-hint {
-  text-align: center;
-  color: #909399;
-  padding: 40px 0;
 }
 .conf-preview {
   background: #f5f7fa;

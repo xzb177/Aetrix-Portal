@@ -112,7 +112,7 @@ onMounted(load)
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">服务健康</h1>
-        <p class="admin-page-subtitle">从媒体服务运维角度查看 EM、媒体库、在线会话与存储来源，而不是只看业务统计。</p>
+        <p class="admin-page-desc">从媒体服务运维角度查看 EM、媒体库、在线会话与存储来源，而不是只看业务统计。</p>
       </div>
       <el-button :loading="loading" type="primary" @click="load">
         <RefreshCw :size="14" style="margin-right: 5px" />重新检查
@@ -186,7 +186,8 @@ onMounted(load)
 
 <style scoped>
 .health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.health-card { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 15px; }
+/* 修饰类：只保留横向排版（卡片基础样式走全局 .admin-card） */
+.health-card { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .health-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 10px; color: var(--success); background: var(--success-bg); }
 .health-icon.bad { color: var(--danger); background: var(--danger-bg); }
 .health-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
@@ -213,5 +214,5 @@ onMounted(load)
 .ok-text { color: var(--success); }
 .warn-text { color: var(--warning); }
 @media (max-width: 900px) { .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .runtime-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 640px) { .health-grid, .ops-grid { grid-template-columns: 1fr; } .runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .health-card { padding: 13px; } }
+@media (max-width: 640px) { .health-grid, .ops-grid { grid-template-columns: 1fr; } .runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>

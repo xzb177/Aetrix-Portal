@@ -227,7 +227,7 @@ onMounted(() => {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">订单</h1>
-        <p class="admin-page-subtitle">充值 / 订阅订单、营收统计与人工补单</p>
+        <p class="admin-page-desc">充值 / 订阅订单、营收统计与人工补单</p>
       </div>
       <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
     </div>

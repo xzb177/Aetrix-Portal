@@ -187,7 +187,7 @@ function fmtDate(value: string | null): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">管理员与权限</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           后台账号就是前台账号：这里只把已注册的人标记为管理员并给他一个角色，不新建账号
         </p>
       </div>

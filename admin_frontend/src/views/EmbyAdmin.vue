@@ -903,7 +903,7 @@ function typeLabel(t: string): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">媒体库</h1>
-        <p class="admin-page-subtitle">上传封面，快速识别媒体库；来源与节点设置集中到「设置」中维护</p>
+        <p class="admin-page-desc">上传封面，快速识别媒体库；来源与节点设置集中到「设置」中维护</p>
       </div>
       <div class="admin-page-actions">
         <el-button v-if="repairCount > 0" @click="repairNow">
@@ -1817,7 +1817,7 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
   flex-shrink: 0;
 }
 .sa-dot.on {
-  background: #34d399;
+  background: var(--success);
 }
 .sa-email {
   word-break: break-all;
@@ -1829,7 +1829,7 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
   flex-shrink: 0;
 }
 .sa-enabled-count {
-  color: #34d399;
+  color: var(--success);
   font-size: 12px;
 }
 </style>

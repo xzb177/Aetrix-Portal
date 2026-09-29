@@ -862,3 +862,45 @@
 .el-radio-button__inner:hover {
   color: var(--primary);
 }
+
+/* ==================== 上传组件深色适配（2026-09-30） ==================== */
+/* 之前 0 条规则：拖拽区白底在深色主题下刺眼，此处用直接属性确保生效 */
+.el-upload-dragger {
+  background-color: var(--bg-elevated);
+  border: 1px dashed var(--border-strong);
+}
+.el-upload-dragger:hover,
+.el-upload-dragger.is-dragover {
+  border-color: var(--primary);
+}
+.el-upload-dragger .el-icon-upload,
+.el-upload__text,
+.el-upload__tip {
+  color: var(--text-secondary);
+}
+.el-upload__text em {
+  color: var(--primary);
+}
+.el-upload-dragger .el-icon-upload {
+  color: var(--text-faint);
+}
+
+/* ==================== 复选框未选中态补全（2026-09-30） ==================== */
+/* 选中态变量此前已覆盖，此处补未选中框体：深色底 + 强边框 + hover 主色 */
+.el-checkbox__inner {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+}
+.el-checkbox:hover .el-checkbox__inner {
+  border-color: var(--primary);
+}
+.el-checkbox__input.is-disabled .el-checkbox__inner {
+  background-color: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+/* ==================== 卡片垂直间距统一（2026-09-30） ==================== */
+/* 连续卡片统一 14px 间距，避免各页面手写 margin 不一致 */
+.admin-card + .admin-card {
+  margin-top: 14px;
+}

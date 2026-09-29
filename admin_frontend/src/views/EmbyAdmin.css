@@ -35,6 +35,8 @@
   font-size: var(--font-size-xs);
 }
 
+/* 压图叠加层（封面渐隐罩）：压在封面照片上，保证徽标在任意图片下可读。
+   与主题表面分层无关，tokens.css 无对应变量，硬编码属业务语义色，予以保留。 */
 .lib-cover-shade {
   position: absolute;
   inset: 0;
@@ -60,6 +62,8 @@
   gap: 4px;
 }
 
+/* 压图浮动按钮：压在封面照片上的操作按钮，白字 + 黑半透明底保证任意图片下可读。
+   与主题无关，tokens.css 无对应变量，硬编码属业务语义色，予以保留。 */
 .cover-button {
   color: #fff !important;
   background: rgb(0 0 0 / 0.48) !important;

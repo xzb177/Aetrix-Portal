@@ -491,17 +491,17 @@ async function remove(row: RemoteServerRow) {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">服务器与线路</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           接了几台后端服、几台已有 Emby、当前用哪台出流、库归谁、这台机器碰不碰得到存储 ——
           都在这一页（范围在右上角切，不用先理解「多服」是个什么模块）
         </p>
       </div>
       <div class="toolbar">
-        <RouterLink to="/realms" class="toolbar-link">
-          <RealmIcon :size="14" />服管理
-        </RouterLink>
-        <RouterLink to="/mounts" class="toolbar-link">存储来源</RouterLink>
-        <RouterLink to="/emby" class="toolbar-link">媒体库</RouterLink>
+        <el-button @click="$router.push({ name: 'Realms' })">
+          <RealmIcon :size="14" style="margin-right: 4px" />服管理
+        </el-button>
+        <el-button @click="$router.push({ name: 'StorageMounts' })">存储来源</el-button>
+        <el-button @click="$router.push({ name: 'EmbyAdmin' })">媒体库</el-button>
         <el-button :loading="liveRunning" @click="runLive">
           <Wifi :size="14" style="margin-right: 4px" />一键体检
         </el-button>
@@ -560,7 +560,7 @@ async function remove(row: RemoteServerRow) {
       <button
         v-for="card in kindCards"
         :key="card.meta.value"
-        class="kind-card admin-card"
+        class="admin-card filter-card"
         :class="{ active: kindFilter === card.meta.value }"
         @click="kindFilter = kindFilter === card.meta.value ? '' : card.meta.value"
       >
@@ -994,38 +994,21 @@ async function remove(row: RemoteServerRow) {
 .ov-scope-label { font-size: var(--font-size-xs); color: var(--text-muted); }
 .scope-realm { width: 150px; }
 
-/* 顶部相邻页入口：交付链上的下一站直接点过去，不用回侧边栏找 */
-.toolbar-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 10px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  color: var(--text-tertiary);
-  font-size: var(--font-size-xs);
-  text-decoration: none;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
-}
-.toolbar-link:hover { border-color: var(--primary-border); color: var(--text-primary); }
-
 /* ==================== 类型卡片 ==================== */
+/* 基座直接用规范 .admin-card（radius-lg + space-5），这里只保留"可点击筛选"的交互差异 */
 .kind-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 14px;
 }
-.kind-card {
+.filter-card {
   text-align: left;
   cursor: pointer;
-  padding: 14px 15px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface);
   transition: border-color var(--transition-base), background var(--transition-base);
 }
-.kind-card:hover { border-color: var(--primary); }
-.kind-card.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary-bg); }
+.filter-card:hover { border-color: var(--primary); }
+.filter-card.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary-bg); }
 .kind-top { display: flex; align-items: center; gap: 8px; }
 .kind-icon {
   width: 30px; height: 30px; display: grid; place-items: center;
