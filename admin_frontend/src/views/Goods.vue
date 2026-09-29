@@ -206,7 +206,7 @@ onMounted(load)
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">商品与套餐</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           订阅套餐与积分充值套餐配置 · 订阅套餐一个服一个，充值套餐全服共用
         </p>
       </div>
@@ -223,7 +223,7 @@ onMounted(load)
     <section class="admin-card block">
       <header class="block-head">
         <h3>订阅套餐</h3>
-        <el-button type="primary" size="small" :icon="Plus" @click="openPlanCreate">新增套餐</el-button>
+        <el-button type="primary" :icon="Plus" @click="openPlanCreate">新增套餐</el-button>
       </header>
       <DataTable :rows="plans" :columns="planColumns" :loading="loading" empty="还没有订阅套餐">
         <template #cell-name="{ row }">
@@ -271,7 +271,7 @@ onMounted(load)
     <section class="admin-card block">
       <header class="block-head">
         <h3>积分充值套餐</h3>
-        <el-button type="primary" size="small" :icon="Plus" @click="openPkgCreate">新增套餐</el-button>
+        <el-button type="primary" :icon="Plus" @click="openPkgCreate">新增套餐</el-button>
       </header>
       <DataTable :rows="packages" :columns="pkgColumns" :loading="loading" empty="还没有充值套餐">
         <template #cell-name="{ row }">

@@ -369,7 +369,7 @@ async function saveRegistration() {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">系统设置</h1>
-        <p class="admin-page-subtitle">外部服务能力与运营参数；修改后立即对用户端生效</p>
+        <p class="admin-page-desc">外部服务能力与运营参数；修改后立即对用户端生效</p>
       </div>
       <el-button @click="loadCapabilities(); load()">
         <RefreshCw :size="14" style="margin-right: 4px" />重新载入

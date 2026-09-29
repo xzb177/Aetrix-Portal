@@ -254,7 +254,7 @@ function shortDate(s: string | null): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">服管理</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储来源、套餐、
           订阅、卡码与求片；同一个服可以部署到多台机器，每台机器就是一台播放节点，同时对外出流。
         </p>

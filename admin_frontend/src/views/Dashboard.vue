@@ -51,6 +51,7 @@ const trendLoading = ref(false)
 const days = ref(14)
 type Metric = 'new_users' | 'plays' | 'revenue' | 'checkins'
 const metric = ref<Metric>('new_users')
+// 趋势图指标语义色：每个指标固定一种颜色便于区分，且 stop-color / stroke 等 SVG 属性不支持 var()，故保留硬编码
 const metricTabs: { key: Metric; label: string; color: string }[] = [
   { key: 'new_users', label: '新增用户', color: '#22d3ee' },
   { key: 'plays', label: '播放次数', color: '#a78bfa' },
@@ -304,7 +305,7 @@ function libraryStatus(library: EmbyLibrary): string {
           v-for="k in kpis"
           :key="k.key"
           :to="k.to"
-          class="kpi-card"
+          class="admin-card kpi-card"
           :class="`tone-${k.tone}`"
           :title="k.title"
         >
@@ -621,16 +622,16 @@ function libraryStatus(library: EmbyLibrary): string {
 <style scoped>
 /* 配额熔断器 */
 .breaker-tripped {
-  border-color: #ef4444 !important;
-  background: rgba(239, 68, 68, 0.08) !important;
+  border-color: var(--danger) !important;
+  background: var(--danger-bg) !important;
 }
 .breaker-danger {
-  color: #ef4444 !important;
+  color: var(--danger) !important;
 }
 .breaker-reset-btn {
   margin-left: 8px;
   padding: 4px 12px;
-  background: #ef4444;
+  background: var(--danger);
   color: white;
   border: none;
   border-radius: 6px;
@@ -654,14 +655,11 @@ function libraryStatus(library: EmbyLibrary): string {
   margin-bottom: 14px;
 }
 
+/* 修饰类：只保留 KPI 横向排版（卡片基础样式走全局 .admin-card） */
 .kpi-card {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px 16px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-card);
   text-decoration: none;
   transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
 }
@@ -887,7 +885,7 @@ function libraryStatus(library: EmbyLibrary): string {
 /* ===== 手机 ===== */
 @media (max-width: 640px) {
   .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-  .kpi-card { padding: 12px; gap: 10px; }
+  .kpi-card { gap: 10px; }
   .kpi-value { font-size: 20px; }
   .kpi-foot { white-space: normal; }
   .todo-bar { padding: 10px 12px; gap: 8px; }

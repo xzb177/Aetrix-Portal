@@ -53,6 +53,16 @@ const columns: DataColumn[] = [
   { key: 'actions', label: '操作', width: 100, fixed: 'right', align: 'right' },
 ]
 
+// 核销记录弹窗里的表格列
+const usagesColumns: DataColumn[] = [
+  { key: 'code', label: '优惠码', width: 130, mobile: 'title' },
+  { key: 'username', label: '用户', width: 120 },
+  { key: 'order_id', label: '订单', minWidth: 180 },
+  { key: 'amount', label: '金额', width: 170 },
+  { key: 'status', label: '状态', width: 120 },
+  { key: 'time', label: '时间', width: 140 },
+]
+
 async function load() {
   loading.value = true
   try {
@@ -366,7 +376,7 @@ onMounted(() => {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">优惠券</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           付费时抵扣：共 {{ summary.total }} 张（可用 {{ summary.usable }}）·
           占用中 {{ summary.reserved }} · 已核销 {{ summary.consumed }}
         </p>
@@ -624,29 +634,27 @@ onMounted(() => {
       :title="usagesFilter ? `核销记录 · ${usagesFilter.code}` : '最近的核销记录'"
       width="760px"
     >
-      <el-table :data="usages" v-loading="usagesLoading" size="small" empty-text="还没有核销记录">
-        <el-table-column prop="code" label="优惠码" width="130">
-          <template #default="{ row }"><span class="mono">{{ row.code }}</span></template>
-        </el-table-column>
-        <el-table-column prop="username" label="用户" width="120" />
-        <el-table-column prop="order_id" label="订单" min-width="180">
-          <template #default="{ row }"><span class="mono">{{ row.order_id }}</span></template>
-        </el-table-column>
-        <el-table-column label="金额" width="170">
-          <template #default="{ row }">
-            ¥{{ row.paid_amount.toFixed(2) }}
-            <span class="muted">（原价 ¥{{ row.list_price.toFixed(2) }}，省 ¥{{ row.discount_amount.toFixed(2) }}）</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="statusMeta(row.status).type" size="small">{{ statusMeta(row.status).label }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="时间" width="140">
-          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
-        </el-table-column>
-      </el-table>
+      <DataTable
+        :rows="usages"
+        :columns="usagesColumns"
+        :loading="usagesLoading"
+        empty="还没有核销记录"
+      >
+        <template #cell-code="{ row }"><span class="mono">{{ row.code }}</span></template>
+
+        <template #cell-order_id="{ row }"><span class="mono">{{ row.order_id }}</span></template>
+
+        <template #cell-amount="{ row }">
+          ¥{{ row.paid_amount.toFixed(2) }}
+          <span class="muted">（原价 ¥{{ row.list_price.toFixed(2) }}，省 ¥{{ row.discount_amount.toFixed(2) }}）</span>
+        </template>
+
+        <template #cell-status="{ row }">
+          <el-tag :type="statusMeta(row.status).type" size="small">{{ statusMeta(row.status).label }}</el-tag>
+        </template>
+
+        <template #cell-time="{ row }">{{ fmtTime(row.created_at) }}</template>
+      </DataTable>
     </el-dialog>
 
     <!--

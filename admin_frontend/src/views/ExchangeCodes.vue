@@ -126,7 +126,7 @@ onMounted(load)
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">兑换码</h1>
-        <p class="admin-page-subtitle">积分 / 订阅兑换码生成与核销审计（已核销 {{ usedSummary }} 次）</p>
+        <p class="admin-page-desc">积分 / 订阅兑换码生成与核销审计（已核销 {{ usedSummary }} 次）</p>
       </div>
       <div class="head-actions">
         <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>

@@ -132,7 +132,7 @@ function ago(s: string | null): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">设备与安全</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           第三方客户端登录设备审查 —— 封禁会同时吊销令牌，移除等于踢下线
         </p>
       </div>
@@ -308,18 +308,18 @@ function ago(s: string | null): string {
   padding: 14px 16px;
 }
 .stat-card.danger { border-color: rgba(239, 68, 68, 0.45); }
-.stat-label { font-size: 12px; color: var(--color-text-secondary, #a3a3a3); }
+.stat-label { font-size: 12px; color: var(--text-secondary); }
 .stat-value { font-size: 22px; font-weight: 600; margin: 4px 0 2px; }
-.stat-hint { font-size: 11px; color: var(--color-text-muted, #737373); }
+.stat-hint { font-size: 11px; color: var(--text-muted); }
 
 .filter-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.filter-count { font-size: 12px; color: var(--color-text-muted, #737373); margin-left: auto; }
+.filter-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
 
 .dev-name { font-size: 13px; }
 .dev-id {
   font-family: ui-monospace, monospace;
   font-size: 11px;
-  color: var(--color-text-muted, #737373);
+  color: var(--text-muted);
   word-break: break-all;
 }
 .mini-badge {
@@ -329,11 +329,11 @@ function ago(s: string | null): string {
   border-radius: 999px;
   font-size: 11px;
   background: var(--border-color, #262626);
-  color: var(--color-text-secondary, #a3a3a3);
+  color: var(--text-secondary);
 }
 .mini-badge.ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
 .mini-badge.danger { background: rgba(239, 68, 68, 0.15); color: #f87171; }
-.muted { color: var(--color-text-muted, #737373); }
+.muted { color: var(--text-muted); }
 
 /* 「已封禁」那块统计立牌要能看出异常：类名写了却没定义过（对照页定义了同样的规则）*/
 .stat-tile.is-danger { border-color: var(--danger-border); }
@@ -342,13 +342,13 @@ function ago(s: string | null): string {
 .dev-detail { display: flex; flex-direction: column; gap: 12px; }
 /* 弹窗里的键值行靠左：值与值之间会很长（设备 ID / 提示文案），右对齐读不动 */
 .dev-detail .kv-row .kv-value { text-align: left; }
-.dev-ver { margin-left: 6px; font-size: 11px; color: var(--color-text-muted, #737373); }
-.dev-ago { margin-left: 6px; font-size: 11px; color: var(--color-text-muted, #737373); }
+.dev-ver { margin-left: 6px; font-size: 11px; color: var(--text-muted); }
+.dev-ago { margin-left: 6px; font-size: 11px; color: var(--text-muted); }
 .dev-actions-hint {
   margin: 0;
   font-size: 12px;
   line-height: 1.7;
-  color: var(--color-text-secondary, #a3a3a3);
+  color: var(--text-secondary);
   background: var(--bg-inset, rgba(255, 255, 255, 0.03));
   border-radius: 8px;
   padding: 10px 12px;

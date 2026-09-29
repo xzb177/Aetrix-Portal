@@ -550,7 +550,7 @@ function fmtDate(s: string | null): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">存储来源</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           媒体库的内容来源：本机目录 / STRM 直链 / 115 / 阿里云盘 / 夸克 / OneDrive / S3 / WebDAV / AList / rclone；
           每条都标明被哪些媒体库使用
         </p>
@@ -955,7 +955,7 @@ function fmtDate(s: string | null): string {
 .type-card { padding: 12px 14px; }
 .type-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .type-name { font-weight: 600; font-size: 13px; }
-.type-hint { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--color-text-secondary, #a3a3a3); }
+.type-hint { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-secondary); }
 
 .mount-head { display: inline-flex; align-items: center; gap: 8px; }
 .mount-name { font-weight: 600; font-size: var(--font-size-md); }
@@ -971,17 +971,17 @@ function fmtDate(s: string | null): string {
 .check-state em { font-style: normal; font-size: var(--font-size-xs); }
 .check-info { color: var(--text-muted); margin-left: 4px; vertical-align: -2px; }
 
-.form-hint { font-size: 11px; color: var(--color-text-muted, #737373); margin-top: 4px; }
-.form-hint.hint-warn { color: var(--color-warning, #fbbf24); }
+.form-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.form-hint.hint-warn { color: var(--warning); }
 .ok-text { color: var(--success, #22c55e); }
-.err-text { color: var(--danger, #ef4444); }
+.err-text { color: var(--danger); }
 
 .browse-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .browse-path {
   flex: 1;
   font-size: 11.5px;
   font-family: ui-monospace, monospace;
-  color: var(--color-text-muted, #737373);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -998,12 +998,12 @@ function fmtDate(s: string | null): string {
 .browse-item.dir { cursor: pointer; }
 .browse-item.dir:hover { background: rgba(255, 255, 255, 0.06); }
 .browse-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.browse-id, .browse-size { font-size: 11px; color: var(--color-text-muted, #737373); }
-.browse-empty { padding: 20px; text-align: center; font-size: 12px; color: var(--color-text-muted, #737373); }
+.browse-id, .browse-size { font-size: 11px; color: var(--text-muted); }
+.browse-empty { padding: 20px; text-align: center; font-size: 12px; color: var(--text-muted); }
 
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 .mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
+.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--text-muted); }
 .mini-badge.remote { background: rgba(59, 130, 246, 0.16); color: #3b82f6; }
 .mini-badge.local { background: rgba(16, 185, 129, 0.16); color: #10b981; }
 

@@ -105,7 +105,7 @@ function detailText(log: AdminLogRow): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">操作日志</h1>
-        <p class="admin-page-subtitle">
+        <p class="admin-page-desc">
           全部管理操作均有审计记录（最近 {{ limit }} 条{{ keyword ? `，筛出 ${visibleLogs.length} 条` : '' }}）
         </p>
       </div>

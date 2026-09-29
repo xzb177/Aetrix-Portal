@@ -122,7 +122,7 @@ function statusBadge(status: string): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">工单</h1>
-        <p class="admin-page-subtitle">回复会以站内消息通知用户</p>
+        <p class="admin-page-desc">回复会以站内消息通知用户</p>
       </div>
       <div class="toolbar">
         <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 120px" @change="load">
@@ -232,7 +232,7 @@ function statusBadge(status: string): string {
 .ticket-title:hover { color: var(--primary); }
 .ticket-preview {
   font-size: 12px;
-  color: var(--color-text-muted, #737373);
+  color: var(--text-muted);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -242,7 +242,7 @@ function statusBadge(status: string): string {
 .mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
 .mini-badge.ok { background: var(--success-bg); color: var(--success); }
 .mini-badge.warn { background: rgba(234, 179, 8, 0.15); color: #eab308; }
-.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--color-text-muted, #737373); }
+.mini-badge.off { background: rgba(255, 255, 255, 0.08); color: var(--text-muted); }
 
 .prio { font-size: 11px; color: var(--text-secondary); }
 .prio.high, .prio.urgent { color: var(--danger); font-weight: 600; }
@@ -263,17 +263,17 @@ function statusBadge(status: string): string {
 .meta-label { color: var(--text-muted); }
 
 .msg-list { display: flex; flex-direction: column; gap: 12px; }
-.msg-empty { text-align: center; color: var(--color-text-muted, #737373); font-size: 13px; margin: 24px 0; }
+.msg-empty { text-align: center; color: var(--text-muted); font-size: 13px; margin: 24px 0; }
 .msg {
   background: rgba(255, 255, 255, 0.04);
   border-radius: 12px;
   padding: 10px 12px;
 }
 .msg.admin { background: var(--primary-bg); border: 1px solid var(--primary-border); }
-.msg-meta { font-size: 11px; color: var(--color-text-muted, #737373); margin-bottom: 4px; }
+.msg-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
 .msg-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 
 .reply-box { margin-top: 16px; }
 .reply-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-.closed-hint { margin-top: 16px; text-align: center; color: var(--color-text-muted, #737373); font-size: 13px; }
+.closed-hint { margin-top: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
 </style>
