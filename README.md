@@ -1,25 +1,252 @@
 # Aetrix Portal
 
-> **完全自建 Emby 影视服务系统** —— 内置自研 Emby 兼容媒体服务器 + 用户门户 + 运营后台
+**把「自己的影视服务器 + 会员网站」一次装好 —— 不用再单独装 Emby。**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-latest-blue.svg)]()
 [![CI](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml)
 
-**Aetrix Portal 把「媒体服务器 + 会员运营 + 客户端接入」装进一个仓库**：媒体库扫描与刮削、
-直连流与 HLS 转码、订阅与积分支付、求片与工单、多服多节点出流，全部自带 —— 不装官方 Emby/EmbyServer，
-也不需要一套容器编排。
+---
 
-| 代号 | 是什么 | 谁在用 |
+## 这是什么
+
+你想开一个自己的视频网站，需要这些东西：
+
+| 你想要的 | 相当于 |
+| --- | --- |
+| 片库（电影、剧集放在硬盘里） | 你的网盘 / NAS |
+| 片库详情页（海报、简介、分类） | 视频网站的详情页 |
+| 让 App 能看到片库并播放 | 视频网站的播放器接口 |
+| 用户注册、会员付费 | 视频网站的会员系统 |
+| 管理员管这一切 | 视频网站的后台 |
+
+**Aetrix 把这些全做了，而且对外伪装成一个 Emby 服务器。**
+
+### 为什么说「伪装成 Emby」
+
+Infuse、Forward、SenPlayer 这些播放器 App 只认 Emby 的接口。Aetrix 内部自己实现了这套接口，
+所以**你不需要装官方 Emby**，直接让这些 App 连上 Aetrix 就能播片。
+
+好处是：界面、会员、支付全归你管，不受官方 Emby 的限制。
+
+### 适合谁
+
+- ✅ 想开**自己的影视站**的人（会员、积分、支付、卡密都内置了）
+- ✅ 手里有**大硬盘 / NAS**，想自建片库的人
+- ✅ 已经有 Emby、但想要**自己的用户端和运营后台**的人
+- ❌ 只想看几个本地视频的人 → 用现成的播放器更省事
+
+---
+
+## 30 秒跑起来
+
+需要：一台 Linux 服务器（2 核 4G 起）+ Docker。
+
+```bash
+# 1. 拉代码
+git clone https://github.com/xzb177/Aetrix-Portal.git
+cd Aetrix-Portal
+
+# 2. 生成一个密钥（必须填，否则拒绝启动）
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+
+# 3. 准备配置，把上面那串密钥填进 SECRET_KEY
+cp env.example .env
+nano .env
+
+# 4. 启动
+bash scripts/deploy.sh
+```
+
+跑完浏览器打开 `http://你的IP:8000/admin/` 就能进后台。
+
+**卡住了？** 看 [新手指南](docs/新手指南.md)，里面有每一步的详细解释和常见问题。
+
+---
+
+## 它能做什么
+
+<details>
+<summary><b>展开看完整功能列表</b></summary>
+
+### 媒体库
+
+- 递归扫描目录，自动认出电影 / 剧集 / 季 / 集（`S01E02`、`1x02`、`第3集` 都能认）
+- ffprobe 提取轨道信息（编码、分辨率、音轨、字幕）
+- 可选 TMDB 中文刮削（海报、简介、评分、类型）
+- 外挂字幕自动发现
+- 增量扫描：目录没变就跳过，不重复干活
+
+### 播放
+
+- HTTP Range 直连流 —— 原盘直出，不转码，零损耗
+- HLS 实时转码 —— 浏览器和受限设备用，可限码率和分辨率
+- 播放进度自动记录，跨设备续看
+- 字幕投递
+
+### 用户端（网页）
+
+- 浏览 / 搜索 / 详情 / 在线播放
+- 每日签到（连签加成）
+- 收藏、播放历史
+- 会员订阅购买（支付回调自动开通）
+- 积分充值、兑换码核销、优惠券抵扣
+- 邀请返利
+- 媒体求片 + 投票
+
+### 管理后台
+
+- 媒体库增删改查、扫描
+- 条目管理
+- 在线会话监控、强制下线
+- 转码管理
+- 存储挂载（本地 / 115 / WebDAV / rclone / STRM）
+- 经济系统配置（价格、套餐、卡密、优惠券）
+- 签到 / 兑换码 / 邀请 统计
+- 多服务器、多节点出流
+- 数据库自动备份
+
+### 客户端兼容
+
+Infuse、Fileball、Forward+、Hills、SenPlayer、官方 Emby App —— 都能直接连。
+
+</details>
+
+---
+
+## 两个角色：EM 和 EA
+
+Aetrix 内部拆成两半，但**默认装在一起，你不用管**：
+
+| 代号 | 干什么 | 谁在用 |
 | --- | --- | --- |
-| **Aetrix EM** | **控制面**：门户、管理后台、扫描、经济系统 · `python serve.py` | 浏览器：用户与管理员 |
-| **Aetrix EA** | **数据面**：Emby 协议网关、拉流、转码、字幕 · `python serve_emby.py` | 播放器：Infuse / Fileball / Forward+ / Hills / SenPlayer / 官方 App |
+| **Aetrix EM** | 面板：网页、扫描、会员系统 | 浏览器里的用户和管理员 |
+| **Aetrix EA** | 出流：传视频字节、转码、字幕 | 播放器 App（Infuse 等） |
 
-两半共用同一个数据库与 `SECRET_KEY`：可以只跑 EM 一个进程（`ENABLE_EMBY_GATEWAY=true`，默认），
-也可以把 EA 拆到另一台机器上专门出流。部署见 [docs/](docs/README.md)，运维见 [docs/operations.md](docs/operations.md)。
+两半共用同一个数据库和 `SECRET_KEY`。
 
-> **名字**：`Aetrix` = **Aether**（以太，串流）+ **Matrix**（矩阵，多服 / 多节点）；
-> `Portal` 是它的角色 —— 面板即门户，字节由 EA 送出。全篇的 **EM / EA** 就指上表的两个部署单元。
+**小机器**：就让它俩待在一起（默认配置）。
+**机器好、想专门出流**：可以把 EA 拆到另一台机器上，EM 只管页面和业务。
+
+> 名字来源：`Aetrix` = Aether（以太，串流）+ Matrix（矩阵，多台服务器组网）。
+> `Portal` 是它的角色 —— 面板即门户，字节由 EA 送出。
+
+### 架构长什么样
+
+```
+Emby 客户端 ──HTTP──▶ EA（出流）
+                        │
+                        ▼
+浏览器 ──▶ EM（面板）──┴──▶ PostgreSQL ──▶ 你的硬盘
+             │
+             └──▶ Redis（缓存 / 限流）
+```
+
+单进程模式下 EM 也会提供出流能力，浏览器一个端口就够了。
+
+更多细节见 [部署文档](docs/deploy-docker.md)。
+
+---
+
+## 常用命令
+
+```bash
+bash scripts/deploy.sh     # 首次安装
+bash scripts/update.sh     # 更新到最新版（自动备份数据库）
+bash scripts/deploy.sh --dry-run   # 只看要执行什么，不真跑
+```
+
+```bash
+curl http://127.0.0.1:8000/api/health   # 看服务状态
+docker logs -f aetrix-api               # 看日志
+docker compose restart                  # 重启
+```
+
+---
+
+## 文档
+
+| 文档 | 什么时候看 |
+| --- | --- |
+| [新手指南](docs/新手指南.md) | **第一次用**，从零开始 |
+| [Docker 部署](docs/deploy-docker.md) | 配置 HTTPS、反代、多机拆分 |
+| [能力清单](docs/capabilities.md) | 有哪些功能、边界在哪 |
+| [运维手册](docs/operations.md) | 日常维护、排查问题 |
+| [性能调优](docs/performance.md) | 扫描慢、内存高、数据库大 |
+
+---
+
+## 技术栈
+
+- **后端**：Python 3.12 · FastAPI · SQLAlchemy
+- **数据库**：PostgreSQL（默认）或 SQLite
+- **缓存**：Redis 7
+- **前端**：Vue 3 · TypeScript · Element Plus
+- **转码**：ffmpeg
+- **存储挂载**：本地 / 115 / WebDAV / rclone / STRM
+
+---
+
+## 常见问题
+
+<details>
+<summary><b>要不要装官方 Emby？</b></summary>
+
+不用。Aetrix 自己实现了 Emby 协议。
+</details>
+
+<details>
+<summary><b>会推片源吗？</b></summary>
+
+不会。这是自建系统，你把片源放在自己的硬盘或挂载上。
+</details>
+
+<details>
+<summary><b>数据存在哪？</b></summary>
+
+Docker volume 里。**但不会自动备份到你的电脑**，重要数据请定期拷出来。
+详见 [新手指南 · 常见问题](docs/新手指南.md)。
+</details>
+
+<details>
+<summary><b>能多开几个站点吗？</b></summary>
+
+能。「多服运营」功能支持一套部署跑多个独立站点，各自有独立的会员、套餐、媒体库。
+</details>
+
+<details>
+<summary><b>我的数据能用官方工具备份吗？</b></summary>
+
+可以。默认 PostgreSQL，用 `pg_dump` 即可。
+</details>
+
+---
+
+## 许可证
+
+[MIT](LICENSE)
+
+---
+
+## 更新日志
+
+### v2.42.0 — 默认数据库切换到 PostgreSQL
+
+SQLite 只在单进程/单机场景够用：单写锁模型下扫描、播放上报、订单并发容易撞
+`database is locked`，备份也只能做文件级快照。Docker Compose 部署会自动配好 PG，
+不用手工连线。老部署若要继续用 SQLite，显式设置 `DATABASE_TYPE=sqlite` 即可。
+
+同时修复了一组迁移链路问题（跨进程建表竞态、孤儿外键、自引用外键导入顺序），
+详见 [PR #221](https://github.com/xzb177/Aetrix-Portal/pull/221)。
+
+### v2.41.0 — 后端拆分
+
+后台任务进程（扫描、探测、补全、定时、追新）从 API 进程里拆出，
+不再和网页服务抢资源。两者用 Redis 锁保证只跑一个。
+
+
+<details>
+<summary><b>展开：技术细节与开发指南（架构详解 / 完整功能列表 / 目录结构 / 配置项 / 开发）</b></summary>
 
 ## 🎯 完全自建架构（v2.0）
 
@@ -354,6 +581,9 @@ python serve_emby.py                   # EA 网关 :8001（客户端连它，分
 - 📂 **整块说明文字收成一行**：管理员与权限页（角色说明、三条护栏）、存储来源页（支持的
   来源类型）默认收起，点开才展开；展开状态记在浏览器本地。以前这些常驻版面，手机上一次
   滑动都到不了真正要操作的清单
+
+
+</details>
 
 ## 📄 许可证
 

@@ -12,8 +12,10 @@ services:
       - .env
     environment:
       AETRIX_ROLE: api
-      DATABASE_TYPE: ${DATABASE_TYPE:-sqlite}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/aetrix_unified.db}
+      DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix}@postgres:5432/aetrix}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       EMBY_TRANSCODE_DIR: /data/transcode
@@ -65,8 +67,10 @@ services:
       - .env
     environment:
       AETRIX_ROLE: worker
-      DATABASE_TYPE: ${DATABASE_TYPE:-sqlite}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/aetrix_unified.db}
+      DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix}@postgres:5432/aetrix}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       EMBY_TRANSCODE_DIR: /data/transcode
@@ -132,8 +136,10 @@ services:
       # emby_api 真正读的是 EMBY_API_PORT（默认 8001）；AETRIX_PORT 仅为排障时对齐日志。
       AETRIX_PORT: 8001
       EMBY_API_PORT: 8001
-      DATABASE_TYPE: ${DATABASE_TYPE:-sqlite}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/aetrix_unified.db}
+      DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix}@postgres:5432/aetrix}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
       # 直链（302）：文件 ID 走 rclone RC，access token 从 rclone.conf 现读现刷。
       ENABLE_DIRECT_URL: ${ENABLE_DIRECT_URL:-true}
       RCLONE_CONF_PATH: /config/rclone/rclone.conf
@@ -177,7 +183,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # PostgreSQL：几千用户量级的主数据库（SQLite 单写锁扛不住几千人的并发写）。
+  # PostgreSQL：主数据库（v2.42.0 起为默认；SQLite 单写锁扛不住并发写，仅老部署兜底）。
   #
   # 默认仍是 SQLite（DATABASE_TYPE=sqlite），这个容器空跑、几乎不占资源；
   # 要切 PG：在 .env 里设 DATABASE_TYPE=postgresql

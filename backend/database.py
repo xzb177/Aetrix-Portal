@@ -4,16 +4,27 @@
 支持 PostgreSQL/MySQL + Redis 缓存
 """
 import os
-from sqlalchemy import create_engine, event, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
+from sqlalchemy import create_engine, event, text, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import datetime
 import redis
 from typing import Optional
 
+def _env_int_or(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int((os.getenv(name) or "").strip() or default))
+    except ValueError:
+        return default
+
+
 # ==================== 数据库配置 ====================
 # 支持环境变量切换数据库类型
-DATABASE_TYPE = os.getenv("DATABASE_TYPE", "sqlite")  # sqlite, postgresql, mysql
+# v2.42.0 起**默认 PostgreSQL**：SQLite 只在单文件、写锁模型下工作，多进程
+# 并发（扫描 / 播放上报 / 订单）容易撞 "database is locked"，且备份只能靠
+# 文件级快照。老部署只要没设 DATABASE_TYPE，需要显式设 DATABASE_TYPE=sqlite
+# 才能继续用 SQLite 路径（见下方 fallback 提示）。
+DATABASE_TYPE = os.getenv("DATABASE_TYPE", "postgresql")  # postgresql(默认), sqlite, mysql
 
 # SQLite 默认库文件名（v2.30.0 品牌统一）。
 SQLITE_DB_FILENAME = "aetrix_unified.db"
@@ -46,6 +57,26 @@ if DATABASE_TYPE == "postgresql":
             import psycopg  # noqa: F401
         except ImportError:
             DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len("postgresql://"):]
+    # 两个驱动都没装时**不能直接炸**：默认库是 PG，但本地开发 / 一次性脚本 /
+    # 契约检查常常一个驱动都不装。降级到 SQLite 并明确告警——否则默认改 PG 之后，
+    # 「不设环境变量直接跑个脚本」会从「能跑」变成「ModuleNotFoundError」。
+    # 显式设了 DATABASE_TYPE=postgresql 的部署不会走到这里（那是有意的强制）。
+    if os.getenv("DATABASE_TYPE", "").strip() == "":
+        try:
+            __import__("psycopg2")
+        except ImportError:
+            try:
+                __import__("psycopg")
+            except ImportError:
+                import warnings as _warnings
+                _warnings.warn(
+                    "未安装 PostgreSQL 驱动（psycopg2-binary / psycopg[3]），"
+                    "且未显式设置 DATABASE_TYPE，本次降级使用 SQLite。"
+                    "生产部署请安装驱动或用 Docker Compose（镜像内已装）。",
+                    RuntimeWarning, stacklevel=2,
+                )
+                DATABASE_TYPE = "sqlite"
+                DATABASE_URL = os.getenv("DATABASE_URL") or default_sqlite_url()
 elif DATABASE_TYPE == "mysql":
     DATABASE_URL = os.getenv("DATABASE_URL") or "mysql+pymysql://aetrix:password@localhost:3306/aetrix"
 else:
@@ -66,12 +97,17 @@ engine_config = {
 if DATABASE_TYPE == "sqlite":
     # busy timeout：等待写锁而不是立刻报 "database is locked"（媒体扫描/播放上报并发场景）
     engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
-elif DATABASE_TYPE == "postgresql":
-    engine_config["pool_size"] = 20
-    engine_config["max_overflow"] = 40
+# 原值 20+40=60 是**每进程**的上限；api / worker / EA 三个进程各自持有独立 engine，
+# 峰值 180 > PG 默认 max_connections(100) → 高峰期随机 "too many clients already"。
+# 改为可配 + 对多进程安全的默认值（3×(10+10)=60，留足运维连接余量）。
+_POOL_SIZE = _env_int_or("DB_POOL_SIZE", 10, 1)
+_MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 10, 0)
+if DATABASE_TYPE == "postgresql":
+    engine_config["pool_size"] = _POOL_SIZE
+    engine_config["max_overflow"] = _MAX_OVERFLOW
 elif DATABASE_TYPE == "mysql":
-    engine_config["pool_size"] = 20
-    engine_config["max_overflow"] = 40
+    engine_config["pool_size"] = _POOL_SIZE
+    engine_config["max_overflow"] = _MAX_OVERFLOW
     engine_config["pool_recycle"] = 7200
 
 engine = create_engine(DATABASE_URL, **engine_config)
@@ -677,6 +713,79 @@ def _widen_code_column(existing_tables: set, inspector) -> None:
             print("  🔧 已迁移: registration_codes.code 宽度 → 64")
 
 
+_PG_LOCK_KEY = 72772620260929
+
+
+def _sqlite_lock_path() -> str:
+    """迁移锁文件：与 SQLite 库同目录（锁必须和数据在同一个文件系统上）。"""
+    try:
+        url = engine.url
+    except Exception:  # noqa: BLE001 — engine 未就绪时退到 cwd
+        return ".aetrix-migrate.lock"
+    if url.drivername != "sqlite" or not url.database or url.database == ":memory:":
+        return ".aetrix-migrate.lock"
+    import os.path
+    return os.path.join(os.path.dirname(os.path.abspath(url.database)) or ".",
+                        ".aetrix-migrate.lock")
+
+
+def _acquire_migrate_lock():
+    """跨进程互斥地跑 schema 初始化/迁移。
+
+    为什么必须有：init_db() 会被 api、worker、EA 三个进程**同时**调用，而建表/加列/
+    建索引在 PG 与 SQLite 上都没有 IF NOT EXISTS。三个进程同时判定"表不存在"→ 全部
+    执行 → 后到的抛 DuplicateTable / duplicate column name。而 main.py 与 worker.py
+    都是 fail-closed 的 raise / return 1，restart: unless-stopped 下变成崩溃重启循环。
+
+    切换到 PG（空库、首次建全表）时三条路径几乎必然同时进来，所以这是**切换的前置
+    条件**，不是可选优化。
+
+    两种方言各用各的原生手段：
+    - PostgreSQL：pg_advisory_lock（会话级、跨进程、不占表）；
+    - SQLite：fcntl.flock 文件锁。**不用数据库事务做锁**——试过 BEGIN IMMEDIATE 与
+      "占一行不提交"，两种都会因为 create_all 走 engine 的其它连接、而 busy_timeout
+      对该场景不生效而报 "database is locked"。flock 是操作系统级阻塞，语义明确。
+
+    拿不到锁时**仍然继续**（fail-open）——加锁只是把"几乎必错"降为"几乎不错"，
+    不能让一次锁故障把服务彻底挡住；原有"重复执行后自愈"的能力保留。
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _locked():
+        if DATABASE_TYPE == "postgresql":
+            conn = engine.connect()
+            try:
+                conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _PG_LOCK_KEY})
+                try:
+                    yield
+                finally:
+                    try:
+                        conn.execute(text("SELECT pg_advisory_unlock(:k)"),
+                                     {"k": _PG_LOCK_KEY})
+                    except Exception:  # noqa: BLE001 — 解锁失败不影响已完成的迁移
+                        pass
+            finally:
+                conn.close()
+            return
+
+        import fcntl
+        import os
+        path = _sqlite_lock_path()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fh = open(path, "w")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)  # 阻塞直到拿到
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+    return _locked()
+
+
 def init_db():
     """初始化数据库，创建所有表并执行轻量自动迁移。
 
@@ -686,8 +795,9 @@ def init_db():
     """
     from backend import models  # 导入所有模型
     from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
-    Base.metadata.create_all(bind=engine)
-    _auto_migrate()
+    with _acquire_migrate_lock():
+        Base.metadata.create_all(bind=engine)
+        _auto_migrate()
     print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
 

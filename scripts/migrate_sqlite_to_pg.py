@@ -54,6 +54,8 @@ def parse_args():
         help="只导这些表（逗号分隔，默认全部）",
     )
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    p.add_argument("--no-self-ref-backfill", action="store_true",
+                   help="不回填自引用外键（调试用：保持全部 NULL）")
     args = p.parse_args()
     if not args.target:
         p.error("--target 未给且 PG_TARGET_URL 环境变量为空")
@@ -113,6 +115,139 @@ def _convert_row(table, col_names, row):
 # 主流程
 # ---------------------------------------------------------------------------
 
+
+# ------------------- 外键自洽 -------------------
+def _fk_parents(conn, table_name):
+    """本表所有外键指向的 (目标表, 本表列, 目标列)"""
+    out = []
+    for fk in conn.execute(f'PRAGMA foreign_key_list("{table_name}")'):
+        # fk = (id, seq, table, from, to, on_update, on_delete, match)
+        out.append((fk[2], fk[3], fk[4]))
+    return out
+
+
+def _neutralize_orphans(src, tables, verbose=True):
+    """把「父表里根本不存在的孤儿外键」置为 NULL。
+
+    为什么必须做：SQLite 默认**不强制外键**（PRAGMA foreign_keys 默认 OFF），
+    所以老库里长期躺着违反约束的数据；PG 强制外键，导到就会
+    ForeignKeyViolation 直接中断。生产实测：
+        admin_users 0 行，但 admin_logs 151 行且 admin_user_id=1
+    ——管理员账号不在这库里（走的是外部认证），日志里的 id 成了孤儿。
+
+    这里只动**确实指向不存在父行**的列（安全），不碰任何有对应父行的数据；
+    置 NULL 而非删行，是为了保住日志/工单这些审计数据。
+    统计结果会打印出来，让人知道有多少行被中和过。
+    """
+    fk_map = {}
+    self_refs = {}   # 表名 -> [(本表列, 目标列)]，需要两阶段导入
+    for t in tables:
+        tname = getattr(t, "name", t)     # 传进来的可能是 ORM Table，也可能是表名
+        for parent, frm, to in _fk_parents(src, tname):
+            if parent == tname:
+                # 自引用：不能用「按主键升序 → 父先于子」的假设。
+                # 生产实测 emby_items 有 4183 行 parent_id > id（子 id 比父 id 小），
+                # 升序导到这些行时父还没进库，PG 直接 ForeignKeyViolation。
+                # 必须两阶段：先置 NULL 导完，再回填。
+                self_refs.setdefault(tname, []).append((frm, to))
+                continue
+            fk_map.setdefault(tname, []).append((parent, frm, to))
+
+    if not fk_map:
+        return {}
+    stats = {}
+    deleted_rows = []
+    for tbl, fks in fk_map.items():
+        try:
+            if not src.execute(f'SELECT 1 FROM "{tbl}" LIMIT 1').fetchone():
+                continue
+        except sqlite3.Error:
+            continue
+        # 条件用 OR 串起来（多列外键：任一列是孤儿就整行处理）
+        conds = " OR ".join(
+            f'("{frm}" IS NOT NULL AND NOT EXISTS '
+            f'(SELECT 1 FROM "{parent}" WHERE "{parent}"."{to}" = "{tbl}"."{frm}"))'
+            for parent, frm, to in fks)
+        # 先问「能不能置 NULL」：NOT NULL 的列置不了，只能整行删。
+        # 生产实测 emby_api_tokens.user_id / station_messages.to_user_id /
+        # user_devices.user_id 都是 NOT NULL，置 NULL 会直接违反本表约束。
+        notnull = set()
+        for r in src.execute(f'PRAGMA table_info("{tbl}")'):
+            if r[3]:                          # PRAGMA table_info 第4列：1=NOT NULL, 0/空=可空
+                notnull.add(r[1])
+        try:
+            nullable = [frm for _p, frm, _to in fks if frm not in notnull]
+            forced = [frm for _p, frm, _to in fks if frm in notnull]
+            n = 0
+            if nullable:
+                set_cols = ", ".join(f'"{c}" = NULL' for c in nullable)
+                ncols = " OR ".join(
+                    f'("{frm}" IS NOT NULL AND NOT EXISTS '
+                    f'(SELECT 1 FROM "{parent}" WHERE "{parent}"."{to}" = "{tbl}"."{frm}"))'
+                    for parent, frm, to in fks if frm in nullable)
+                n += src.execute(f'UPDATE "{tbl}" SET {set_cols} WHERE {ncols}').rowcount
+            if forced:
+                # NOT NULL 列：这类行（token 指向已删除的用户）本来就无意义，删掉。
+                # 不删就会在导数据时被 PG 的外键直接拒掉。
+                fcols = " OR ".join(
+                    f'("{frm}" IS NOT NULL AND NOT EXISTS '
+                    f'(SELECT 1 FROM "{parent}" WHERE "{parent}"."{to}" = "{tbl}"."{frm}"))'
+                    for parent, frm, to in fks if frm in forced)
+                d = src.execute(f'DELETE FROM "{tbl}" WHERE {fcols}').rowcount
+                n += d
+                if d:
+                    deleted_rows.append((tbl, d))
+            if n:
+                stats[tbl] = n
+                if verbose:
+                    print(f"      · {tbl}: 中和 {n} 行孤儿外键 → NULL")
+        except sqlite3.Error as e:
+            print(f"      ! {tbl} 孤儿处理跳过：{e}")
+    if stats or deleted_rows:
+        src.commit()
+        if stats:
+            print(f"      共中和 {sum(stats.values())} 行（源库本就违反外键，SQLite 不强制所以一直没暴露）")
+        if deleted_rows:
+            for tbl, d in deleted_rows:
+                print(f"      · {tbl}: 删除 {d} 行 NOT NULL 孤儿行（父记录已不存在，该行已无意义）")
+            print(f"      共删除 {sum(d for _t, d in deleted_rows)} 行")
+    stats["_self_refs"] = self_refs
+    return stats
+
+
+def _build_export_order(src, tables):
+    """按外键依赖排序：父表先导。自引用用主键顺序单独处理。
+
+    metadata.sorted_tables 只处理了**已声明**的外键；SQLite 老库的孤儿数据
+    （父表 0 行、子表却引用着不存在的 id）依然会让 PG 在导子表时炸
+    ForeignKeyViolation——所以顺序必须自己做，不能只信 sorted_tables。
+    """
+    cur = src.cursor()
+    name_map = {t.name: t for t in tables}
+    deps = {t.name: set() for t in tables}   # table -> 依赖的父表
+    for t in tables:
+        for parent, _frm, _to in _fk_parents(src, t.name):
+            if parent != t.name and parent in name_map:
+                deps[t.name].add(parent)
+    ordered, seen, temp = [], set(), set()
+
+    def visit(n):
+        if n in seen:
+            return
+        if n in temp:      # 成环：按已有顺序硬拆，剩下交给 --truncate-orphans
+            return
+        temp.add(n)
+        for p in sorted(deps.get(n, ())):
+            visit(p)
+        temp.discard(n)
+        seen.add(n)
+        ordered.append(n)
+
+    for t in tables:
+        visit(t.name)
+    return ordered
+
+
 def main():
     args = parse_args()
 
@@ -134,10 +269,21 @@ def main():
     dbmod.init_db()
 
     # 2. 按外键依赖顺序拿表清单
-    tables = list(dbmod.Base.metadata.sorted_tables)
+    _all_tables = list(dbmod.Base.metadata.sorted_tables)
     only = {t.strip() for t in args.tables.split(",") if t.strip()}
     if only:
-        tables = [t for t in tables if t.name in only]
+        _all_tables = [t for t in _all_tables if t.name in only]
+    # 用 SQLite 侧真实的 PRAGMA foreign_key_list 重新排一次：
+    # metadata 只认**模型里声明过**的外键，而老 SQLite 库可能存在
+    # "父表 0 行、子表仍引用着那个 id" 的孤儿数据，PG 强制外键会直接拒绝。
+    # 生产实测：admin_users 0 行、admin_logs 151 行且 admin_user_id=1，
+    # 按 metadata 顺序导到 admin_logs 就 ForeignKeyViolation。
+    _probe = sqlite3.connect(args.source)
+    _order = _build_export_order(_probe, _all_tables)
+    _probe.close()
+    _by_name = {t.name: t for t in _all_tables}
+    tables = [_by_name[n] for n in _order if n in _by_name]
+    tables += [t for t in _all_tables if t not in tables]  # 兜底：环或异常时不丢表
     print(f"[2/5] 共 {len(tables)} 张表（按外键依赖排序）")
 
     src = sqlite3.connect(args.source)
@@ -166,6 +312,11 @@ def main():
                 print(f"      ✗ 目标表 {table.name} 非空（{n} 行），请加 --clean 或先手动清空")
                 sys.exit(2)
 
+    # 3.5 中和孤儿外键（SQLite 不强制、PG 强制，必须先处理）
+    print("[3.5/5] 中和孤儿外键（源库违反约束的残留）...")
+    _orph = _neutralize_orphans(src, tables)
+    self_refs = _orph.get("_self_refs") or {}
+
     # 4. 逐表导数据
     print(f"[4/5] 导数据（batch={args.batch_size}）...")
     total_src, total_dst = 0, 0
@@ -182,17 +333,29 @@ def main():
             continue
         ins = table.insert()
         done = 0
-        # 自引用外键（如 emby_items.parent_id → emby_items.id）：按单调递增的
-        # 整数主键排序后导，父行一定先于子行（扫描入库时父先建，id 更小）。
+        # 自引用外键（emby_items.parent_id → emby_items.id）走**两阶段**：
+        #   阶段1：把这些列置 NULL 整表导完（此时不校验自引用）
+        #   阶段2：全表导完后按主键回填
+        # 早先想用「按主键升序导，父先于子」一把过，实测不成立：
+        # 生产 emby_items 有 4183 行 parent_id > id（子 id 比父 id 小，
+        # 例如 id=277204 的 episode 其 parent_id=277205），升序导到这些行时
+        # 父还没进库 → PG ForeignKeyViolation。
+        srefs = (self_refs or {}).get(table.name, [])
+        sref_cols = [c for c, _ in srefs]
         pk_cols = [c.name for c in table.primary_key.columns]
-        order_by = ""
-        if len(pk_cols) == 1 and type(table.columns[pk_cols[0]].type).__name__ in ("Integer", "BigInteger"):
-            order_by = f' ORDER BY "{pk_cols[0]}"'
+        has_int_pk = (len(pk_cols) == 1
+                      and type(table.columns[pk_cols[0]].type).__name__
+                      in ("Integer", "BigInteger"))
+        order_by = f' ORDER BY "{pk_cols[0]}"' if has_int_pk else ""
         with engine.begin() as conn:
             cur = src_cur.execute(f'SELECT * FROM "{table.name}"{order_by}')
             batch = []
             for row in cur:
-                batch.append(_convert_row(table, col_names, tuple(row)))
+                rec = _convert_row(table, col_names, tuple(row))
+                for c in sref_cols:          # 阶段1：自引用列先置 NULL
+                    if rec.get(c) is not None:
+                        rec[c] = None
+                batch.append(rec)
                 if len(batch) >= args.batch_size:
                     conn.execute(ins, batch)
                     done += len(batch)
@@ -201,6 +364,22 @@ def main():
             if batch:
                 conn.execute(ins, batch)
                 done += len(batch)
+        # 阶段2：回填自引用（此时全表都在，父行必然存在）
+        if sref_cols and has_int_pk and not args.no_self_ref_backfill:
+            pk = pk_cols[0]
+            with engine.begin() as conn:
+                for c, to in srefs:
+                    upd = (sa_text(f'UPDATE "{table.name}" SET "{c}" = s."{to}" '
+                            f'FROM "{table.name}" s WHERE "{table.name}"."{pk}" = s."{pk}" '
+                            f'AND "{table.name}"."{c}" IS NULL AND s."{to}" IS NOT NULL'))
+                    conn.execute(upd)
+            # 仍有对不上的（父 id 在源库就不存在）→ 置 NULL，不能留悬空引用
+            with engine.begin() as conn:
+                for c, to in srefs:
+                    conn.execute(sa_text(
+                        f'UPDATE "{table.name}" t SET "{c}" = NULL WHERE "{c}" IS NOT NULL '
+                        f'AND NOT EXISTS (SELECT 1 FROM "{table.name}" p WHERE p."{to}" = t."{c}")'))
+            print(f"      ↺ {table.name}: 回填自引用列 {', '.join(sref_cols)}")
         # 行数校验
         with engine.begin() as conn:
             dst_n = conn.execute(sa_text(f'SELECT COUNT(*) FROM "{table.name}"')).scalar()
