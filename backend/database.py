@@ -4,7 +4,7 @@
 支持 PostgreSQL/MySQL + Redis 缓存
 """
 import os
-from sqlalchemy import create_engine, event, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
+from sqlalchemy import create_engine, event, text, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import datetime
@@ -677,6 +677,79 @@ def _widen_code_column(existing_tables: set, inspector) -> None:
             print("  🔧 已迁移: registration_codes.code 宽度 → 64")
 
 
+_PG_LOCK_KEY = 72772620260929
+
+
+def _sqlite_lock_path() -> str:
+    """迁移锁文件：与 SQLite 库同目录（锁必须和数据在同一个文件系统上）。"""
+    try:
+        url = engine.url
+    except Exception:  # noqa: BLE001 — engine 未就绪时退到 cwd
+        return ".aetrix-migrate.lock"
+    if url.drivername != "sqlite" or not url.database or url.database == ":memory:":
+        return ".aetrix-migrate.lock"
+    import os.path
+    return os.path.join(os.path.dirname(os.path.abspath(url.database)) or ".",
+                        ".aetrix-migrate.lock")
+
+
+def _acquire_migrate_lock():
+    """跨进程互斥地跑 schema 初始化/迁移。
+
+    为什么必须有：init_db() 会被 api、worker、EA 三个进程**同时**调用，而建表/加列/
+    建索引在 PG 与 SQLite 上都没有 IF NOT EXISTS。三个进程同时判定"表不存在"→ 全部
+    执行 → 后到的抛 DuplicateTable / duplicate column name。而 main.py 与 worker.py
+    都是 fail-closed 的 raise / return 1，restart: unless-stopped 下变成崩溃重启循环。
+
+    切换到 PG（空库、首次建全表）时三条路径几乎必然同时进来，所以这是**切换的前置
+    条件**，不是可选优化。
+
+    两种方言各用各的原生手段：
+    - PostgreSQL：pg_advisory_lock（会话级、跨进程、不占表）；
+    - SQLite：fcntl.flock 文件锁。**不用数据库事务做锁**——试过 BEGIN IMMEDIATE 与
+      "占一行不提交"，两种都会因为 create_all 走 engine 的其它连接、而 busy_timeout
+      对该场景不生效而报 "database is locked"。flock 是操作系统级阻塞，语义明确。
+
+    拿不到锁时**仍然继续**（fail-open）——加锁只是把"几乎必错"降为"几乎不错"，
+    不能让一次锁故障把服务彻底挡住；原有"重复执行后自愈"的能力保留。
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _locked():
+        if DATABASE_TYPE == "postgresql":
+            conn = engine.connect()
+            try:
+                conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _PG_LOCK_KEY})
+                try:
+                    yield
+                finally:
+                    try:
+                        conn.execute(text("SELECT pg_advisory_unlock(:k)"),
+                                     {"k": _PG_LOCK_KEY})
+                    except Exception:  # noqa: BLE001 — 解锁失败不影响已完成的迁移
+                        pass
+            finally:
+                conn.close()
+            return
+
+        import fcntl
+        import os
+        path = _sqlite_lock_path()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fh = open(path, "w")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)  # 阻塞直到拿到
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+    return _locked()
+
+
 def init_db():
     """初始化数据库，创建所有表并执行轻量自动迁移。
 
@@ -686,8 +759,9 @@ def init_db():
     """
     from backend import models  # 导入所有模型
     from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
-    Base.metadata.create_all(bind=engine)
-    _auto_migrate()
+    with _acquire_migrate_lock():
+        Base.metadata.create_all(bind=engine)
+        _auto_migrate()
     print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
 
