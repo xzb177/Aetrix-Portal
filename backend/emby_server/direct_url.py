@@ -8,7 +8,10 @@ HTTP 层，客户端直接从 ``www.googleapis.com`` 取文件。
 1. 从 ``target.value``（形如 ``http://rclone:5572/[paul_emby:]/video/...``）
    解析出 rclone fs 与 remote 路径；
 2. 调 rclone RC ``operations/stat`` 查 Google Drive file ID；
-3. 从 rclone.conf 读 OAuth access token（过期自动用 refresh_token 刷新）；
+3. 拿 Google access token：
+   - OAuth 型 remote：从 rclone.conf 读 token，过期自动用 refresh_token 刷新；
+   - 服务账号型 remote：读 ``service_account_file`` 指向的 JSON，用私钥签发
+     JWT（OAuth2 JWT Bearer 流程）换 access token，1 小时有效期，进程内缓存；
 4. 拼出 ``https://www.googleapis.com/drive/v3/files/{id}?alt=media&access_token=...``。
 
 所有失败一律返回 None（调用方回退到原有代理逻辑），绝不抛异常。
@@ -203,7 +206,12 @@ def _parse_conf_section(conf: str, remote: str) -> Optional[dict]:
 
 
 def _token_from_conf(remote: str) -> Optional[dict]:
-    """从 rclone.conf 读出 token/client_id/client_secret。失败返回 None。"""
+    """从 rclone.conf 读出 OAuth token 或服务账号文件路径。失败返回 None。
+
+    返回字典固定包含 ``access_token``/``refresh_token``/``expiry``/
+    ``client_id``/``client_secret``（OAuth，没有就是空串）和
+    ``service_account_file``（服务账号型 remote 的 JSON 路径，没有就是空串）。
+    """
     conf = _read_conf_text()
     if not conf:
         return None
@@ -211,22 +219,28 @@ def _token_from_conf(remote: str) -> Optional[dict]:
     if not section:
         logger.warning("直链：rclone.conf 里没有 [%s] section", remote)
         return None
-    token_raw = section.get("token", "")
-    if not token_raw:
-        logger.warning("直链：[%s] 没有 token", remote)
-        return None
-    try:
-        token_data = json.loads(token_raw)
-    except (json.JSONDecodeError, TypeError):
-        logger.warning("直链：[%s] token JSON 解析失败", remote)
-        return None
-    return {
-        "access_token": token_data.get("access_token", ""),
-        "refresh_token": token_data.get("refresh_token", ""),
-        "expiry": token_data.get("expiry", ""),
+    info = {
+        "access_token": "",
+        "refresh_token": "",
+        "expiry": "",
         "client_id": section.get("client_id", ""),
         "client_secret": section.get("client_secret", ""),
+        "service_account_file": section.get("service_account_file", ""),
     }
+    token_raw = section.get("token", "")
+    if token_raw:
+        try:
+            token_data = json.loads(token_raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("直链：[%s] token JSON 解析失败", remote)
+        else:
+            info["access_token"] = token_data.get("access_token", "")
+            info["refresh_token"] = token_data.get("refresh_token", "")
+            info["expiry"] = token_data.get("expiry", "")
+    if not info["access_token"] and not info["service_account_file"]:
+        logger.warning("直链：[%s] 没有 token 也没有 service_account_file", remote)
+        return None
+    return info
 
 
 def _expiry_to_ts(expiry: str) -> float:
@@ -274,10 +288,95 @@ async def _refresh_access_token(client_id: str, client_secret: str, refresh_toke
     return token, time.time() + expires_in
 
 
+def _sa_jwt_assertion(sa_info: dict, remote: str) -> Optional[str]:
+    """用服务账号私钥签发 JWT assertion（Google OAuth2 JWT Bearer 流程）。
+
+    私钥内容绝不打日志。签发失败返回 None。
+    """
+    now = int(time.time())
+    claims = {
+        "iss": sa_info["client_email"],
+        "scope": "https://www.googleapis.com/auth/drive",
+        "aud": sa_info.get("token_uri") or "https://oauth2.googleapis.com/token",
+        "exp": now + 3600,
+        "iat": now,
+    }
+    headers = {}
+    if sa_info.get("private_key_id"):
+        headers["kid"] = sa_info["private_key_id"]
+    try:
+        # 函数级导入：jose 缺失时直链降级为 None，绝不能影响 EA 启动与正常播放
+        from jose import jwt as _jose_jwt
+        return _jose_jwt.encode(
+            claims, sa_info["private_key"], algorithm="RS256",
+            headers=headers or None,
+        )
+    except Exception as exc:
+        logger.warning("直链：[%s] 服务账号 JWT 签名失败: %s", remote, type(exc).__name__)
+        return None
+
+
+async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, float]]:
+    """用服务账号 JSON 生成 Google access token。返回 (token, expiry_ts)，失败 None。
+
+    ``sa_file`` 路径从 rclone.conf 的 ``service_account_file`` 动态读取，
+    不 hardcode。任何异常都返回 None（调用方回退到代理）。
+    """
+    try:
+        with open(sa_file, "r", encoding="utf-8") as f:
+            sa_info = json.load(f)
+    except OSError as exc:
+        logger.warning("直链：[%s] 无法读取服务账号文件: %s", remote, exc)
+        return None
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("直链：[%s] 服务账号 JSON 解析失败: %s", remote, type(exc).__name__)
+        return None
+    if not isinstance(sa_info, dict) or sa_info.get("type") != "service_account":
+        logger.warning("直链：[%s] 服务账号文件类型不正确", remote)
+        return None
+    if not sa_info.get("private_key") or not sa_info.get("client_email"):
+        logger.warning("直链：[%s] 服务账号文件缺少 private_key/client_email", remote)
+        return None
+    token_uri = sa_info.get("token_uri") or "https://oauth2.googleapis.com/token"
+    assertion = _sa_jwt_assertion(sa_info, remote)
+    if not assertion:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                token_uri,
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    "assertion": assertion,
+                },
+            )
+    except Exception as exc:
+        logger.warning("直链：[%s] 服务账号 token 请求失败: %s", remote, exc)
+        return None
+    if resp.status_code != 200:
+        logger.warning("直链：[%s] 服务账号 token 返回 %s", remote, resp.status_code)
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    token = data.get("access_token", "")
+    if not token:
+        logger.warning("直链：[%s] 服务账号 token 响应无 access_token", remote)
+        return None
+    expires_in = data.get("expires_in", 3600)
+    try:
+        expires_in = int(expires_in)
+    except (TypeError, ValueError):
+        expires_in = 3600
+    return token, time.time() + expires_in
+
+
 async def get_access_token(fs: str) -> Optional[str]:
-    """拿有效的 Google OAuth access token（缓存 + 过期自动刷新）。失败返回 None。
+    """拿有效的 Google access token（缓存 + 过期自动刷新）。失败返回 None。
 
     ``fs`` 形如 ``paul_emby:``，对应 rclone.conf 里的 ``[paul_emby]`` section。
+    优先级：OAuth 有效 token > OAuth 刷新 > 服务账号 JWT。两者都有时 OAuth 优先。
     """
     remote = fs.rstrip(":")
     cache_key = remote
@@ -297,18 +396,31 @@ async def get_access_token(fs: str) -> Optional[str]:
             _token_cache[cache_key] = {"expiry": _expiry_to_ts(info["expiry"]), "token": access_token}
         return access_token
 
-    # 过期或没有：用 refresh_token 刷新
-    if not (info["refresh_token"] and info["client_id"] and info["client_secret"]):
-        logger.warning("直链：[%s] 无法刷新 token（缺 refresh_token/client_id/client_secret）", remote)
+    # OAuth 刷新（token 过期或缺失时）
+    if info["refresh_token"] and info["client_id"] and info["client_secret"]:
+        refreshed = await _refresh_access_token(info["client_id"], info["client_secret"], info["refresh_token"])
+        if refreshed:
+            new_token, new_expiry = refreshed
+            with _token_lock:
+                _token_cache[cache_key] = {"expiry": new_expiry, "token": new_token}
+            logger.info("直链：[%s] access token 已刷新", remote)
+            return new_token
+        # 刷新失败：如果配了服务账号，继续走 SA 路径
+
+    # 服务账号：用 JWT 生成 access token（1 小时有效，同样进缓存）
+    sa_file = info.get("service_account_file", "")
+    if sa_file:
+        sa_result = await _sa_access_token(sa_file, remote)
+        if sa_result:
+            sa_token, sa_expiry = sa_result
+            with _token_lock:
+                _token_cache[cache_key] = {"expiry": sa_expiry, "token": sa_token}
+            logger.info("直链：[%s] 服务账号 token 已生成", remote)
+            return sa_token
         return None
-    refreshed = await _refresh_access_token(info["client_id"], info["client_secret"], info["refresh_token"])
-    if not refreshed:
-        return None
-    new_token, new_expiry = refreshed
-    with _token_lock:
-        _token_cache[cache_key] = {"expiry": new_expiry, "token": new_token}
-    logger.info("直链：[%s] access token 已刷新", remote)
-    return new_token
+
+    logger.warning("直链：[%s] 无法刷新 token（缺 refresh_token/client_id/client_secret）", remote)
+    return None
 
 
 def build_direct_url(file_id: str, access_token: str) -> str:
