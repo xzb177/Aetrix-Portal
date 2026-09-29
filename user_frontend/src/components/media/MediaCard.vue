@@ -20,7 +20,8 @@ export interface ResumeInfo {
   totalEpisodes?: number | null
 }
 
-const props = defineProps<{ item: EmbyItem; resume?: ResumeInfo | null }>()
+const props = defineProps<{ item: EmbyItem; resume?: ResumeInfo | null; quickView?: boolean }>()
+const emit = defineEmits<{ (e: 'quick-view', item: EmbyItem): void }>()
 const router = useRouter()
 
 const poster = computed(() => posterUrl(props.item, 342))
@@ -98,6 +99,11 @@ const targetRoute = computed(() =>
 )
 
 function open() {
+  // 轻量快线：媒体库点卡片先弹快速预览 sheet，不直接整页跳转
+  if (props.quickView) {
+    emit('quick-view', props.item)
+    return
+  }
   router.push(targetRoute.value)
 }
 </script>
