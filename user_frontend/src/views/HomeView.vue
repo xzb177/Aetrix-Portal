@@ -290,6 +290,11 @@ async function loadCritical() {
   }
 }
 
+async function retryLoad() {
+  await loadCritical()
+  await loadDeferred()
+}
+
 async function loadDeferred() {
   // 订阅接口失败时记下来，加载完统一展示错误态
   let memberFailed = false
@@ -484,7 +489,7 @@ onBeforeUnmount(() => {
       <div v-if="loadError && !loading" class="au-empty load-error-card au-card">
         <TriangleAlert :size="28" />
         <p>会员信息加载失败，页面数据可能不完整</p>
-        <button class="au-btn au-btn-primary au-btn-sm" @click="loadData">
+        <button class="au-btn au-btn-primary au-btn-sm" @click="retryLoad">
           <RotateCcw :size="13" />
           重新加载
         </button>
