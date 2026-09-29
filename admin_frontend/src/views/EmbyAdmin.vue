@@ -114,7 +114,6 @@ function nodeLabel(n: RemoteServerRow): string {
   return `${n.name}（${state}）`
 }
 
-
 const createVisible = ref(false)
 const form = ref({
   name: '',
@@ -347,6 +346,15 @@ async function loadAutoScanConfig() {
 // 追新：开关 + 轮询间隔（分钟），默认关闭
 const chaseNew = ref<ChaseNewConfig | null>(null)
 const chaseNewSaving = ref(false)
+
+async function loadChaseNewConfig() {
+  try {
+    const res = await fetchChaseNew()
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
+  } catch {
+    chaseNew.value = null
+  }
+}
 
 async function saveChaseNewAction() {
   if (!chaseNew.value) return
@@ -591,7 +599,6 @@ async function removeLib(l: EmbyLibrary) {
   load()
 }
 
-
 async function stopAll() {
   const res = await stopAllTranscodes()
   ElMessage.success(`已停止 ${res.stopped} 路转码`)
@@ -740,6 +747,16 @@ function waitingText(t: EmbyScanTask): string {
   return (t.position ?? 1) > 1 ? '前面还有扫描在跑' : '等待调度'
 }
 
+/** 进度一行：已处理 / 已发现 / 耗时（扫到哪了一眼可见，不用看容器 CPU） */
+function progressLine(t: EmbyScanTask): string {
+  const p = t.progress
+  if (!p) return ''
+  const parts = [`已处理 ${p.processed}`]
+  if (p.enumerated) parts.push(`已发现 ${p.enumerated}`)
+  if (p.elapsed_ms) parts.push(fmtDuration(p.elapsed_ms))
+  if (p.remote_lists) parts.push(`远程请求 ${p.remote_lists}`)
+  return parts.join(' · ')
+}
 
 /** 卡片徽标：队列优先（排队中 / 扫描中 + 阶段）→ 归属节点在扫 → 上一次的结果 */
 function cardBadge(l: EmbyLibrary): { text: string; cls: string } | null {
@@ -1317,6 +1334,209 @@ function typeLabel(t: string): string {
       </div>
     </div>
 
+    <!-- 新建弹窗 -->
+    <el-dialog v-model="createVisible" title="新建媒体库" width="480px">
+      <el-form label-position="top">
+        <el-form-item label="名称">
+          <el-input v-model="form.name" placeholder="如：电影库 / 剧集库" />
+        </el-form-item>
+        <el-form-item label="类型">
+          <el-select v-model="form.collection_type" style="width: 100%">
+            <el-option label="电影" value="movies" />
+            <el-option label="剧集" value="tvshows" />
+            <el-option label="音乐" value="music" />
+            <el-option label="混合" value="mixed" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="刮削策略">
+          <el-select v-model="form.scrape_policy" style="width: 100%">
+            <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="路径">
+          <el-input
+            v-model="form.paths"
+            type="textarea"
+            :rows="3"
+            placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
+          />
+          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。</div>
+        </el-form-item>
+        <el-form-item label="归属服">
+          <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
+            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+          </el-select>
+          <p class="field-help">一个服一个：只有这个服的 EA 会向客户端提供这个库。</p>
+        </el-form-item>
+        <el-form-item label="归属播放节点">
+          <el-select
+            v-model="form.node_id"
+            clearable
+            placeholder="留空 = 未分配（所有节点可见、由面板扫描）"
+            style="width: 100%"
+          >
+            <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
+          </el-select>
+          <p class="field-help">
+            如果这个库的内容只在那台机器上（本机目录 / 只在那里配了的 rclone），就把库分配给那台节点。
+          </p>
+        </el-form-item>
+        <el-form-item label="存储挂载">
+          <el-select
+            v-model="form.mount_ids"
+            multiple
+            collapse-tags
+            placeholder="不绑定（只用上面的路径）"
+            style="width: 100%"
+          >
+            <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
+          </el-select>
+          <div class="form-hint">路径与挂载可以同时用；挂载在「存储挂载」页里创建与测试。</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitCreate">创建</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 媒体库设置：从卡片移出低频配置，保持卡片可快速扫读 -->
+    <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="430px">
+      <div v-if="settingsTarget" class="library-settings">
+        <div class="settings-section">
+          <div class="settings-section-title">归属与来源</div>
+          <div class="lib-policy">
+            <span class="policy-label">归属服</span>
+            <el-select
+              v-model="settingsTarget.realm_id"
+              clearable
+              placeholder="未标注（所有服可见）"
+              @change="saveRealm(settingsTarget)"
+            >
+              <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
+            </el-select>
+          </div>
+          <div v-if="!settingsTarget.is_virtual" class="lib-policy">
+            <span class="policy-label">归属节点</span>
+            <el-select
+              v-model="settingsTarget.node_id"
+              clearable
+              placeholder="未分配（所有节点可见）"
+              @change="saveNode(settingsTarget)"
+            >
+              <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
+            </el-select>
+          </div>
+          <div v-if="!settingsTarget.is_virtual" class="lib-policy">
+            <span class="policy-label">存储来源</span>
+            <el-select
+              v-model="settingsTarget.mount_ids"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="未绑定"
+              @change="saveMounts(settingsTarget)"
+            >
+              <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
+            </el-select>
+          </div>
+          <div class="settings-paths">
+            <span>当前路径</span>
+            <p v-if="settingsTarget.is_virtual">
+              按发行平台「{{ settingsTarget.platform || '—' }}」聚合，条目仍归属原媒体库
+            </p>
+            <p v-else>{{ settingsTarget.paths.join(' · ') || '未配置本机路径' }}</p>
+          </div>
+        </div>
+
+        <div v-if="!settingsTarget.is_virtual" class="settings-section">
+          <div class="settings-section-title">扫描与账号</div>
+          <div class="lib-policy">
+            <span class="policy-label">刮削策略</span>
+            <el-select v-model="settingsTarget.scrape_policy" @change="savePolicy(settingsTarget)">
+              <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
+            </el-select>
+          </div>
+          <div class="lib-policy">
+            <span class="policy-label">115 账号</span>
+            <el-select
+              v-model="settingsTarget.account_115_id"
+              clearable
+              placeholder="默认账号"
+              @change="saveAccount115(settingsTarget)"
+            >
+              <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
+            </el-select>
+          </div>
+        </div>
+      </div>
+    </el-drawer>
+
+    <!-- 重新刮削：选策略；all 二次确认并提示配额消耗 -->
+    <el-dialog v-model="rescrapeVisible" title="重新刮削" width="420px">
+      <p class="drawer-hint">
+        对「{{ rescrapeTarget?.name }}」触发一次重新刮削扫描，策略只覆盖本轮，不改库配置。
+      </p>
+      <el-radio-group v-model="rescrapePolicy">
+        <el-radio-button value="missing_only">仅补缺失</el-radio-button>
+        <el-radio-button value="all">全量重刮</el-radio-button>
+      </el-radio-group>
+      <p v-if="rescrapePolicy === 'all'" class="drawer-hint text-danger" style="margin-top: 8px">
+        全量重刮会对该库所有条目重新请求 TMDB，会消耗大量配额，确定要继续吗？
+      </p>
+      <template #footer>
+        <el-button @click="rescrapeVisible = false">取消</el-button>
+        <el-button type="primary" :loading="rescrapeLoading" @click="confirmRescrape">开始</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 扫描记录：最近若干轮（每轮的状态 / 触发方 / 增量 / 耗时 / 原因） -->
+    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="620px">
+      <p class="drawer-hint">
+        每轮扫描一行，最近的在最上面（每库最多保留 {{ scanKeep }} 条）。
+        「每轮都失败」和「只是最近一轮失败」是两件事，这里能直接看出来。
+        「来源」列把这一轮拆到每条路径 / 挂载上：悬停看每条扫到多少文件、哪条是空的。
+      </p>
+      <DataTable
+        :rows="scanRuns"
+        :columns="scanColumns"
+        :loading="scanLoading"
+        empty="还没有扫描记录"
+        row-key="id"
+      >
+        <template #cell-started_at="{ row }">{{ fmtDate(row.started_at) }}</template>
+
+        <template #cell-status="{ row }">
+          <span class="mini-badge" :class="statusMeta(row.status).cls">{{ statusMeta(row.status).text }}</span>
+        </template>
+
+        <template #cell-trigger="{ row }">{{ triggerLabel(row.trigger) }}</template>
+
+        <template #cell-summary="{ row }">
+          <span class="mono">{{ runSummary(row) }}</span>
+        </template>
+
+        <template #cell-sources="{ row }">
+          <span
+            :class="{ 'scan-hint': emptySourceCount(row.sources) }"
+            :title="sourcesDetail(row.sources)"
+          >{{ sourcesLabel(row.sources) }}</span>
+        </template>
+
+        <template #cell-duration="{ row }">
+          {{ row.duration_ms != null ? fmtDuration(row.duration_ms) : '—' }}
+        </template>
+
+        <template #cell-error="{ row }">
+          <span v-if="row.error" class="scan-error" :title="row.error">{{ row.error }}</span>
+          <span v-else-if="row.failed_roots.length" class="scan-error" :title="row.failed_roots.join('；')">
+            {{ row.failed_roots.join('；') }}
+          </span>
+          <span v-else>—</span>
+        </template>
+      </DataTable>
+    </el-drawer>
+  </div>
 </template>
 
 <style scoped>
