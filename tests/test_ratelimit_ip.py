@@ -4,13 +4,17 @@
 1. 不可信来源伪造 XFF → 忽略伪造头，用直连 IP（限流不被绕过）
 2. 可信代理的 XFF → 正常解析出真实客户端 IP
 3. 可信代理的 X-Real-IP → 优先使用
+4. Emby 登录的限流桶按「出口 IP + 账号」建，NAT 下不互相连坐
 """
 import os
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from backend.ratelimit import get_client_ip, client_ip, _is_trusted_proxy
+from backend.ratelimit import get_client_ip, client_ip, _is_trusted_proxy, _limiter
 
 
 def _make_request(direct_ip, xff=None, x_real_ip=None):
@@ -133,3 +137,46 @@ class TestEdgeCases:
     def test_empty_xff(self):
         req = _make_request("127.0.0.1", xff="  ,  ")
         assert get_client_ip(req) == "127.0.0.1"
+
+
+class TestEmbyLoginBucketScope:
+    """Emby 登录限流的桶范围：按账号建档，不能按纯 IP 连坐。
+
+    NAT（家庭 / 宿舍 / 公司共用一个公网出口）下，纯按 IP 建桶意味着一个人把密码
+    输错几次（或客户端拿着过期凭据反复重试），同一 IP 下的**所有人**都开始收
+    429；客户端再按 Retry-After 退避，用户看到的就是「登录卡很久」。
+    """
+
+    @staticmethod
+    def _session():
+        from backend import models
+        from backend.emby_server import models as emby_models
+
+        engine = create_engine("sqlite:///:memory:")
+        models.Base.metadata.create_all(engine)
+        emby_models.Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)()
+
+    @staticmethod
+    def _login(db, username):
+        from backend.emby_server.api import authenticate_by_name
+
+        req = _make_request("203.0.113.7")
+        req.headers.get = lambda k, default="": ({}).get(k.lower(), default)
+        return authenticate_by_name(req, {"Username": username, "Pw": "wrong-password"}, db)
+
+    def test_same_ip_different_accounts_do_not_share_bucket(self):
+        suffix = uuid.uuid4().hex[:8]
+        alice, bob = f"alice-{suffix}", f"bob-{suffix}"
+        db = self._session()
+        try:
+            # alice 连错 10 次（额度用光），第 11 次被限流
+            for _ in range(10):
+                assert self._login(db, alice).status_code == 401
+            assert self._login(db, alice).status_code == 429
+            # 同一个出口 IP 的 bob 不受影响——老实现（纯 IP 桶）这里会是 429
+            assert self._login(db, bob).status_code == 401
+        finally:
+            db.close()
+            for name in (alice, bob, "-"):
+                _limiter.reset(f"emby-auth:203.0.113.7:{name}")

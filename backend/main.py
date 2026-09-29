@@ -299,7 +299,12 @@ async def rate_limit_middleware(request, call_next):
     if path.startswith(("/api/", "/emby/")):
         ip = _get_client_ip(request)
         authenticated = _is_authenticated(request)
-        allowed, reason = _check_rate_limit(ip, path, authenticated)
+        # redis-py 是同步客户端：直接在事件循环里 incr/expire，就把一次 Redis 往返
+        # 压在了全进程上（单进程部署下所有请求——包括正在播放的——都排队等它）。
+        # 下放线程池，与 EA 侧（emby_api/main.py）保持同一手法。
+        from starlette.concurrency import run_in_threadpool
+
+        allowed, reason = await run_in_threadpool(_check_rate_limit, ip, path, authenticated)
         if not allowed:
             from fastapi.responses import JSONResponse
             return JSONResponse(
