@@ -88,7 +88,7 @@ def test_resized_variant_height_only(imgdir):
 def test_max_width_capped(imgdir):
     src = _make_jpeg(os.path.join(imgdir, "big.jpg"), w=6000, h=4000)
     thumb = image_store.resized_variant(src, max_width=99999)
-    assert thumb and f"_w{image_store._THUMB_MAX_DIM}" in thumb  # 钳制到上限
+    assert thumb and "_w640" in thumb  # 钳制后吸附到最大配置档（防无界变体）
 
 
 def test_thumb_widths_env(imgdir, monkeypatch):
