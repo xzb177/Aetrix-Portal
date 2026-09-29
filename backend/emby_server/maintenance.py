@@ -55,66 +55,40 @@ _SHARED_DIRS = {"subs"}
 
 # ==================== 数据库侧 ====================
 
-def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> int:
-    """复位崩溃残留的「扫描中」标志
+def reset_stale_scan_flags(db, stale_hours=None) -> int:
+    """复位「扫描中」残留标志（进程重启后调用）
 
-    判定依据必须是「这次扫描是什么时候开始的」，**不能用 `last_scan_at`**：它记的是
-    上一次扫描**结束**的时间，于是「第一次扫大库」时它是 NULL、「几天前扫过」时它是旧的，
-    两种情况下都指向“很久没动”，会把**正在跑的扫描**一句话清掉（多机部署时另一台
-    EA 正在扫的库更危险：清掉标志后就会允许第二个扫描并发跑，而并发扫描会互相
-    把对方刚扫到的条目当“已删除”清理）。
-
-    所以：
-
-    1. 本进程注册表里正在扫的库，直接跳过；
-    2. 其余用 `updated_at`（写入 `is_scanning=True` 时 ORM 会同时刷新它，
-       它就是这次扫描的起始时间）与阈值比较，超过阈值（默认 6 小时）才当崩溃残留。
+    前提：worker 启动时调用，那时本进程内存里不可能有正在跑的扫描。
+    库里还标着 is_scanning=True 的，就是上一个进程被 SIGTERM 杀掉的残留。
+    单节点部署：不需要「别处可能在扫」的阈值判断，全部复位。
     """
     from backend.emby_server import scanner
 
-    hours = STALE_SCAN_HOURS if stale_hours is None else stale_hours
-    cutoff = datetime.now() - timedelta(hours=hours)
-    rows = (
-        db.query(em.Library)
-        .filter(em.Library.is_scanning == True)  # noqa: E712
-        .all()
-    )
-    reset: list = []
+    rows = db.query(em.Library).filter(em.Library.is_scanning == True).all()  # noqa: E712
+    reset = []
     for lib in rows:
-        if scanner.is_scan_active(lib.id):  # 本进程真的在扫：绝不碰
+        if scanner.is_scan_active(lib.id):   # 本进程真在扫：绝不碰
             continue
-        # 只认 scan_started_at（扫描开始时一次性写入，不被任何后续写入刷新）。
-        # **不能用 updated_at**：进度刷盘 scan_queue.flush_once 每几秒写一次
-        # scan_progress，ORM onupdate 会连带刷新 updated_at——它会永远是「刚刚」，
-        # 下面的超时判定恒不成立，卡死的库永远复位不了（生产事故：部署打断扫描后
-        # 两个库一直显示「扫描中」）。
-        started = lib.scan_started_at
-        if started is None:
-            # 老数据没有这个字段：退回 updated_at / last_scan_at，宁可多复位一次
-            started = lib.updated_at or lib.last_scan_at
-        if started is not None and started >= cutoff:
-            continue  # 刚开始不久：可能正在另一台机器上扫
         lib.is_scanning = False
-        # 最近一次的结果也要收尾：扫描被强杀时它停在 running，而那个进程再也不会回来
-        # 写终态，刷新页面就会永远显示「扫描中/未完成」，连失败原因都没有。
-        if getattr(lib, "scan_status", None) == scanner.SCAN_STATUS_RUNNING:
+        lib.scan_started_at = None
+        lib.scan_progress = None
+        if lib.scan_status == scanner.SCAN_STATUS_RUNNING:
             lib.scan_status = scanner.SCAN_STATUS_FAILED
             lib.scan_error = "进程重启，本轮扫描未完成"
-        # 进度快照同时清掉（v2.27.0）：进程已经死了，那份进度永远不会再更新，
-        # 留着会让面板把一台已经重启的机器显示成「正在扫（已发现 12345）」
-        lib.scan_progress = None
-        reset.append(lib)
+        reset.append(lib.id)
     if reset:
         commit_with_retry(db, label="复位残留扫描标志")
         logger.warning("复位 %d 个残留的“扫描中”标志（崩溃/强杀遗留）: %s",
-                       len(reset), ", ".join(str(lib.id) for lib in reset))
+                       len(reset), ", ".join(str(i) for i in reset))
     return len(reset)
 
 
 def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> int:
     """把崩溃残留的「还在跑」扫描流水收尾成 failed
 
-    与 ``reset_stale_scan_flags`` 同一套判定（先跳过本进程真的在扫的库，再看开始时间），
+    先跳过本进程真的在扫的库，再看开始时间是否超过阈值。
+    （``reset_stale_scan_flags`` 已改为启动即全量复位；这里保留阈值，
+    因为流水行没有 scan_started_at 这样的权威字段。）
     只是对象换成流水行：进程被强杀时那行会永远停在 ``running``——历史里挂着一条“扫描中”，
     而且永远没有结果。
     """

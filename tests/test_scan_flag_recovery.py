@@ -12,8 +12,10 @@
 ``scan_progress``，ORM 的 ``onupdate`` 会连带刷新 ``updated_at``。于是它永远是
 「刚刚」，超时判定恒不成立，**卡死状态自我维持**，永远复位不了。
 
-修法：新增 ``scan_started_at``（扫描开始时一次性写入，之后任何写入都不碰它），
-复位只认这个字段。
+修法（v2，单节点）：worker 启动时调用复位，那时本进程不可能有正在跑的扫描，
+is_scanning=True 的一律是上一个被 SIGTERM 杀掉的进程的残留，全部复位——
+不再做「开始时间 vs 阈值」判断（多机保护不需要）。
+``scan_started_at`` 保留为「本轮扫描何时开始」的权威字段（不再被进度刷盘刷新）。
 """
 import importlib
 import os
@@ -86,14 +88,15 @@ def test_resets_when_started_long_ago_even_if_updated_now(db, monkeypatch):
     assert n == 1, "updated_at 刷新的卡死库必须被复位"
 
 
-def test_keeps_recent_scan(db, monkeypatch):
-    """刚开始不久的不能碰（可能正在另一台机器上扫）"""
+def test_resets_recent_scan_too(db, monkeypatch):
+    """v2：刚开始不久的也复位——单节点 + 启动时调用，本进程不可能在扫"""
     mt = _mt()
     monkeypatch.setattr("backend.emby_server.scanner.is_scan_active", lambda i: False)
     lib = _stuck(db, 1)
-    assert mt.reset_stale_scan_flags(db, stale_hours=6) == 0
+    assert mt.reset_stale_scan_flags(db, stale_hours=6) == 1
     db.commit()
-    assert lib.is_scanning is True
+    assert lib.is_scanning is False
+    assert lib.scan_status == "failed"
 
 
 def test_skip_active_scan_in_this_process(db, monkeypatch):
