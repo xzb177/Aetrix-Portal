@@ -1095,6 +1095,25 @@ def get_library_cover(
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
+@admin_emby_router.get("/images/thumbs/status")
+def thumbs_backfill_status(
+    staff: models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """缩略图补生成进度：水位 id / 宽度档 / Pillow 是否可用"""
+    return {"success": True, **image_store.backfill_status(db)}
+
+
+@admin_emby_router.post("/images/thumbs/backfill")
+def thumbs_backfill_run(
+    staff: models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """手动触发一轮缩略图补生成（限速+断点续跑；维护周期每天也会自动跑一批）"""
+    result = image_store.backfill_thumbnails(db)
+    return {"success": True, **result}
+
+
 @admin_emby_router.delete("/libraries/{lib_id}/cover")
 def remove_library_cover(
     lib_id: int,

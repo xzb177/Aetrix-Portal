@@ -92,10 +92,25 @@ def download_item(item_id: str, request: Request,
     return FileResponse(target.value, filename=os.path.basename(target.value))
 
 
+def _sized_image(src: str, max_width=None, max_height=None) -> str:
+    """按客户端要的尺寸发图：有现成/能生成的缩略图就发小图，否则发原图
+
+    maxWidth/maxHeight 是标准 Emby 查询参数（前端海报墙发 maxWidth=320，
+    详情页背景发 maxWidth=1280）。只缩小不放大，失败静默回原图。
+    """
+    if (max_width or max_height) and src and os.path.isfile(src):
+        thumb = image_store.resized_variant(src, max_width=max_width,
+                                            max_height=max_height)
+        if thumb:
+            return thumb
+    return src
+
+
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}")
 @emby_router.get("/Items/{item_id}/Images/{image_type}")
 def item_image(item_id: str, image_type: str, request: Request,
-                db: Session = Depends(get_db)):
+               db: Session = Depends(get_db),
+               maxWidth: str | None = None, maxHeight: str | None = None):
     """条目图片
 
     三处修正：
@@ -122,7 +137,7 @@ def item_image(item_id: str, image_type: str, request: Request,
         cached = image_store.localize(src)
         if cached:
             _remember_local_image(db, item, kind, cached)
-            return serve_image(cached)
+            return serve_image(_sized_image(cached, maxWidth, maxHeight))
         # 仅允许代理 http(s) 远程图片（防 SSRF）
         import httpx
 
@@ -143,15 +158,17 @@ def item_image(item_id: str, image_type: str, request: Request,
         logger.warning("本地图片文件缺失，已排队修复：%s", src)
         _queue_image_repair(db, item, src)
         raise HTTPException(status_code=404, detail="Image not found")
-    return serve_image(src)
+    return serve_image(_sized_image(src, maxWidth, maxHeight))
 
 
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}/{index}")
 @emby_router.get("/Items/{item_id}/Images/{image_type}/{index}")
 def item_image_index(item_id: str, image_type: str, index: str, request: Request,
-                      db: Session = Depends(get_db)):
+                      db: Session = Depends(get_db),
+                      maxWidth: str | None = None, maxHeight: str | None = None):
     # 客户端普遍请求 /Images/Backdrop/0、/Images/Primary/0 这类带序号的地址。
     # 旧实现只注册了 Primary，其它类型（Backdrop/Thumb 等）会直接 404。
-    return item_image(item_id, image_type, request, db)
+    return item_image(item_id, image_type, request, db,
+                      maxWidth=maxWidth, maxHeight=maxHeight)
 
 

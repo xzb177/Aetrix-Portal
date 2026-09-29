@@ -486,6 +486,7 @@ def janitor_tick() -> dict:
               "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
               "images_pruned": 0,
               "images_freed_bytes": 0, "ai_usage_pruned": 0,
+              "thumbs_backfilled": 0, "thumbs_backfill_done": False,
               "query_plans_optimized": False}
     try:
         result["transcodes_reaped"] = streaming.reap_stale_transcodes()
@@ -544,6 +545,22 @@ def janitor_tick() -> dict:
         result["images_freed_bytes"] = image_result["freed_bytes"]
     except Exception as exc:  # noqa: BLE001
         logger.warning("清理图片缓存失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 缩略图历史补生成：每天维护周期跑一批（限速+断点续跑），补完为止
+    db = SessionLocal()
+    try:
+        thumb_result = image_store.backfill_thumbnails(db)
+        result["thumbs_backfilled"] = thumb_result["generated"]
+        result["thumbs_backfill_done"] = thumb_result["done"]
+        if thumb_result["generated"]:
+            logger.info("缩略图补生成：本轮 %d 张，水位 id=%d%s",
+                        thumb_result["generated"], thumb_result["last_id"],
+                        "（已补完）" if thumb_result["done"] else "")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("缩略图补生成失败: %s", exc)
         db.rollback()
     finally:
         db.close()

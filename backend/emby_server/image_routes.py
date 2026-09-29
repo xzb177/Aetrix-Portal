@@ -98,12 +98,19 @@ def item_image_cached(
     image_type: str,
     request: Request,
     db: Session = Depends(get_db),
+    maxWidth: str | None = None,
+    maxHeight: str | None = None,
 ):
     """条目图片：实现见 media_routes（v2.13.0 拆分），这里只补条件请求
 
     同步实现：图片是媒体库滚动时最高频的请求，读盘 / 代理远程图不能占着事件循环。
+    maxWidth/maxHeight 透传给实现做缩略图（标准 Emby 参数，前端海报墙已在用）。
     """
-    return with_conditional_get(media_routes.item_image(item_id, image_type, request, db), request)
+    return with_conditional_get(
+        media_routes.item_image(item_id, image_type, request, db,
+                                maxWidth=maxWidth, maxHeight=maxHeight),
+        request,
+    )
 
 
 def item_image_index_cached(
@@ -112,10 +119,14 @@ def item_image_index_cached(
     index: str,
     request: Request,
     db: Session = Depends(get_db),
+    maxWidth: str | None = None,
+    maxHeight: str | None = None,
 ):
     """带序号的图片地址（/Images/Backdrop/0 等）：同样交给 media_routes 的实现（同步）"""
     return with_conditional_get(
-        media_routes.item_image_index(item_id, image_type, index, request, db), request
+        media_routes.item_image_index(item_id, image_type, index, request, db,
+                                      maxWidth=maxWidth, maxHeight=maxHeight),
+        request,
     )
 
 
