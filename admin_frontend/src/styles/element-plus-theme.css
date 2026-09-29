@@ -839,3 +839,26 @@
 .el-scrollbar__bar .el-scrollbar__thumb { background-color: var(--border-strong); }
 
 .el-image-viewer__wrapper .el-image-viewer__mask { background: rgba(4, 7, 12, 0.92); }
+
+/* ==================== 深色按钮强制覆盖（2026-09-29） ==================== */
+/* el-button 默认（无 type）在深色主题下发白，此处用直接属性而非仅变量，确保生效 */
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link) {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):hover,
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):focus {
+  background-color: #1d2836;
+  border-color: rgba(255, 255, 255, 0.24);
+  color: var(--text-primary);
+}
+/* el-radio-button 未选中态深色 */
+.el-radio-button__inner {
+  background-color: var(--bg-elevated);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.el-radio-button__inner:hover {
+  color: var(--primary);
+}
