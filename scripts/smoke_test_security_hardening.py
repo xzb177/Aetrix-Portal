@@ -35,6 +35,7 @@ from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server.auth import hash_emby_token  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
+from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
 
 init_db()
 
@@ -106,6 +107,7 @@ def set_config(key: str, value: str) -> None:
         else:
             db.add(models.SystemConfig(key=key, value=value))
         db.commit()
+    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
 
 
 def del_config(key: str) -> None:

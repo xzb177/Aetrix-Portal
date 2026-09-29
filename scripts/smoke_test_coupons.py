@@ -96,6 +96,8 @@ with SessionLocal() as db:
                                    realm_id=realm.id, is_active=True)
     db.add_all([pkg, plan])
     db.commit()
+    for _k in ("payment_gateway_url", "payment_partner_id", "payment_partner_key", "site_url"):
+        invalidate(_k)  # 热缓存失效：测试直接写库，手动清缓存
 
     realm_id, other_realm_id = realm.id, other.id
     pkg_id, plan_id = pkg.id, plan.id

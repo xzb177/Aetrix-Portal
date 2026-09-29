@@ -84,6 +84,8 @@ with SessionLocal() as db:
     db.add(models.InvitationRecord(inviter_id=inviter.id, invitee_id=buyer.id, code_id=code.id))
     db.add(models.SystemConfig(key="invitation_enabled", value="true"))
     db.add(models.SystemConfig(key="invitation_rebate_percent", value="10"))
+    db.commit()
+    invalidate("invitation_enabled", "invitation_rebate_percent")  # 热缓存失效
 
     # price 用于返利计算（订单金额 × 百分比），所以给个整数值让返利可断言：100 × 10% = 10
     pkg = models.RechargePackage(name="100 积分包", amount=100, price=100, bonus=0, is_active=True)
@@ -401,6 +403,7 @@ with SessionLocal() as db:
                                   is_active=True, points=0)
     db.add(notify_buyer)
     db.commit()
+    invalidate(payment_partner_key, payment_partner_id)  # 热缓存失效：测试直接写库，手动清缓存
     notify_buyer_id = notify_buyer.id
 
 

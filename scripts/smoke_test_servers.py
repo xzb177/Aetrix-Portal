@@ -52,6 +52,7 @@ from backend import models, realms  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.main import app as em_app  # noqa: E402
 from backend.security import hash_password  # noqa: E402
+from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
 from emby_api import main as ea  # noqa: E402
 
 init_db()
@@ -182,6 +183,7 @@ def set_config(key: str, value: str) -> None:
         else:
             db.add(models.SystemConfig(key=key, value=value))
         db.commit()
+    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
     finally:
         db.close()
 

@@ -50,6 +50,7 @@ def set_config(key: str, value: str | None) -> None:
     else:
         db.add(models.SystemConfig(key=key, value=value))
     db.commit()
+    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
     db.close()
 
 
@@ -161,6 +162,7 @@ check("/auth/me 同步反映关闭状态", r.json().get("subscription_required")
 from starlette.requests import Request as StarletteRequest  # noqa: E402
 
 from backend.subscriptions import ensure_download_allowed  # noqa: E402
+from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
 from fastapi import HTTPException as FastAPIHTTPException  # noqa: E402
 
 set_config("allow_download", "false")
