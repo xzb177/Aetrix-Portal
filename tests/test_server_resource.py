@@ -14,22 +14,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from pathlib import Path
 
-
-def _repo_file(*parts):
-    """仓库根目录相对路径。"""
-    import os
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(repo_root, *parts)
-
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ---------- 1. CacheManager 有界 ----------
 
 def _fresh_cache_manager():
-    """拿一个 Redis 不可用的 CacheManager（走内存回退路径）。"""
+    """拿一个 Redis 不可用的 CacheManager（走内存回退路径）。
+    只改模块属性并复位，不 reload 整个模块，避免影响其它测试。"""
     import backend.database as dbmod
-    importlib.reload(dbmod)
     dbmod.redis_client = None
     dbmod.CacheManager._memory_cache = {}
     dbmod.CacheManager._memory_cache_order = []
@@ -71,7 +66,7 @@ def test_memory_cache_delete_cleans_order():
 def test_body_limit_middleware_exists():
     """main.py 里有请求体大小限制中间件：读 Content-Length，超限回 413。"""
     import ast
-    src = open(_repo_file("backend", "main.py")).read()
+    src = open(REPO_ROOT / "backend/main.py").read()
     tree = ast.parse(src)
     names = [n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     assert "request_body_limit_middleware" in names
@@ -95,8 +90,8 @@ def test_emby_login_rate_limit_rule_exists():
     EM（backend/main.py，单进程模式）和 EA（emby_api/main.py，分离部署生产用）都要有。"""
     import ast
     for path in [
-        _repo_file("backend", "main.py"),
-        _repo_file("emby_api", "main.py"),
+        REPO_ROOT / "backend/main.py",
+        REPO_ROOT / "emby_api/main.py",
     ]:
         src = open(path).read()
         assert '"/emby/Users/AuthenticateByName"' in src, path
@@ -127,8 +122,8 @@ def test_body_limit_middleware_in_both_apps():
     """EM 和 EA 都有请求体大小限制中间件（413）。"""
     import ast
     for path, mw in [
-        (_repo_file("backend", "main.py"), "request_body_limit_middleware"),
-        (_repo_file("emby_api", "main.py"), "ea_body_limit_middleware"),
+        (REPO_ROOT / "backend/main.py", "request_body_limit_middleware"),
+        (REPO_ROOT / "emby_api/main.py", "ea_body_limit_middleware"),
     ]:
         src = open(path).read()
         tree = ast.parse(src)
@@ -149,8 +144,8 @@ def test_can_redirect_direct_imported_in_download_paths():
     """两个下载/文件端点都已接 can_redirect_direct（无凭据直链 302）。"""
     import ast
     for path in [
-        _repo_file("backend", "emby_server", "media_routes.py"),
-        _repo_file("backend", "emby_server", "mount_routes.py"),
+        REPO_ROOT / "backend/emby_server/media_routes.py",
+        REPO_ROOT / "backend/emby_server/mount_routes.py",
     ]:
         src = open(path).read()
         assert "can_redirect_direct" in src, path
@@ -166,7 +161,7 @@ def test_can_redirect_direct_imported_in_download_paths():
 def test_can_redirect_direct_logic():
     """can_redirect_direct 语义：无凭据头→可302；有 Cookie/Authorization→必须代理。"""
     import ast
-    src = open(_repo_file("backend", "emby_server", "streaming.py")).read()
+    src = open(REPO_ROOT / "backend/emby_server/streaming.py").read()
     tree = ast.parse(src)
     for n in ast.walk(tree):
         if isinstance(n, ast.FunctionDef) and n.name == "can_redirect_direct":
@@ -184,9 +179,7 @@ def test_query_items_skips_count_when_disabled():
     """_query_items 里有 EnableTotalRecordCount=false 分支：跳过 query.count()，
     改多取 1 条判断有没有下一页。"""
     import ast
-    import os
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src = open(os.path.join(repo_root, "backend", "emby_server", "api.py")).read()
+    src = open(REPO_ROOT / "backend/emby_server/api.py").read()
     assert "EnableTotalRecordCount" in src
     tree = ast.parse(src)
     found = False
