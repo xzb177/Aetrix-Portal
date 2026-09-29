@@ -4,7 +4,8 @@ import logging
 import os
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.api.admin_core import get_current_admin
@@ -98,6 +99,48 @@ def reset_quota_breaker(admin=Depends(get_current_admin)):
     quota_breaker_reset()
     logger.info("管理员手动重置了配额熔断器")
     return {"success": True, "message": "熔断器已重置，worker 恢复工作"}
+
+
+class BackupConfigIn(BaseModel):
+    enabled: bool = True
+    time: str = Field(default="03:00", description="每天执行时间，HH:MM（服务器本地时间）")
+    keep_days: int = Field(default=7, ge=1, le=30, description="保留最近 N 天的备份")
+
+
+@services_router.get("/system/backup")
+def get_backup_config(admin=Depends(get_current_admin), db: Session = Depends(get_db)):
+    """数据库备份配置 + 备份文件列表"""
+    from backend.emby_server import db_backup
+    return {"success": True, **db_backup.get_config(db)}
+
+
+@services_router.put("/system/backup")
+def update_backup_config(payload: BackupConfigIn, admin=Depends(get_current_admin),
+                         db: Session = Depends(get_db)):
+    """修改数据库备份配置（开关 / 时间 / 保留天数）；立即生效，无需重启"""
+    from backend.emby_server import db_backup
+    try:
+        cfg = db_backup.save_config(db, payload.enabled, payload.time, payload.keep_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, **cfg}
+
+
+@services_router.post("/system/backup/run")
+def run_backup_now(admin=Depends(get_current_admin), db: Session = Depends(get_db)):
+    """立即手动备份一次数据库（含轮转）"""
+    from backend.emby_server import db_backup
+    cfg = db_backup.get_config(db)
+    try:
+        result = db_backup.run_backup_now(reason="manual")
+        db_backup.prune_old_backups(cfg["keep_days"])
+    except Exception as exc:  # noqa: BLE001 — 转 500，错误信息给管理员看
+        logger.error("手动数据库备份失败：%s", exc)
+        raise HTTPException(status_code=500, detail=f"备份失败：{exc}")
+    logger.info("管理员手动触发数据库备份：%s", result["name"])
+    return {"success": True, "backup": {"name": result["name"], "size": result["size"]},
+            **{k: v for k, v in cfg.items() if k != "backups"},
+            "backups": db_backup.list_backups()}
 
 
 __all__ = ["services_router"]
