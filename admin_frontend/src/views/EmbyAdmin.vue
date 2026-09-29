@@ -18,9 +18,11 @@ import {
   Settings2, Square, Wand2, X,
 } from 'lucide-vue-next'
 import {
+  bindTmdb,
   cancelQueuedScan,
   createLibrary,
   deleteLibrary,
+  fetchEnrichProgress,
   fetchLibraries,
   fetchLibraryCover,
   fetchLibraryScans,
@@ -35,6 +37,7 @@ import {
   fetchChaseNew,
   fetchTmdbKeys,
   generateVirtualLibraries,
+  previewTmdb,
   removeLibraryCover,
   rescrapeItem,
   rescrapeLibrary,
@@ -56,7 +59,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult, RcloneRemote, SaFile } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, EnrichProgress, TmdbBindResult, TmdbKeysStatus, TmdbPreview, TmdbTestResult, RcloneRemote, SaFile } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -168,6 +171,7 @@ async function load() {
       loadTmdbStatus().catch(() => undefined),
       loadAutoScanConfig(),
       loadChaseNewConfig().catch(() => undefined),
+      loadEnrichProgress().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -558,6 +562,97 @@ function openRescrape(l: EmbyLibrary) {
   rescrapeTarget.value = l
   rescrapePolicy.value = 'missing_only'
   rescrapeVisible.value = true
+}
+
+// ==================== 手动绑定 TMDB ====================
+// TMDB 对中文剧集/综艺收录偏少，自动刮削搜不到的条目在这里手动指定 ID。
+// 流程：填条目 ID → 填 TMDB ID → 预览确认是哪部片 → 绑定（或解绑）。
+const bindItemId = ref('')
+const bindTmdbId = ref('')
+const bindPreview = ref<TmdbPreview | null>(null)
+const bindPreviewLoading = ref(false)
+const bindLoading = ref(false)
+const bindNotes = ref<string[]>([])
+
+async function doPreviewTmdb() {
+  const id = Number(bindItemId.value)
+  const tid = bindTmdbId.value.trim()
+  if (!id) { ElMessage.warning('请填写条目 ID'); return }
+  if (!tid) { ElMessage.warning('请填写 TMDB ID'); return }
+  bindPreviewLoading.value = true
+  bindPreview.value = null
+  try {
+    bindPreview.value = await previewTmdb(id, tid)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '预览失败')
+  } finally {
+    bindPreviewLoading.value = false
+  }
+}
+
+async function doBindTmdb() {
+  const id = Number(bindItemId.value)
+  const tid = bindTmdbId.value.trim()
+  if (!id) { ElMessage.warning('请填写条目 ID'); return }
+  if (!tid) { ElMessage.warning('请填写 TMDB ID'); return }
+  try {
+    await ElMessageBox.confirm(
+      bindPreview.value
+        ? `把「${bindPreview.value.current_name}」绑定到 TMDB「${bindPreview.value.title}${bindPreview.value.year ? `（${bindPreview.value.year}）` : ''}」吗？`
+        : `把条目 ${id} 绑定到 TMDB ID ${tid} 吗？（未预览，建议先点「预览」确认）`,
+      '确认绑定',
+      { type: 'warning' },
+    )
+  } catch { return }
+  bindLoading.value = true
+  try {
+    const res: TmdbBindResult = await bindTmdb(id, tid, true)
+    bindNotes.value = [`「${res.item.name}」：${res.notes.join('；')}`]
+    bindPreview.value = null
+    ElMessage.success('已绑定并补全元数据')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '绑定失败')
+  } finally {
+    bindLoading.value = false
+  }
+}
+
+async function doUnbindTmdb() {
+  const id = Number(bindItemId.value)
+  if (!id) { ElMessage.warning('请填写条目 ID'); return }
+  try {
+    await ElMessageBox.confirm(
+      `解绑条目 ${id} 的 TMDB ID？解绑后会重新排入补全队列。`,
+      '确认解绑',
+      { type: 'warning' },
+    )
+  } catch { return }
+  bindLoading.value = true
+  try {
+    const res: TmdbBindResult = await bindTmdb(id, '', true)
+    bindNotes.value = [`「${res.item.name}」：${res.notes.join('；')}`]
+    bindPreview.value = null
+    ElMessage.success('已解绑')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '解绑失败')
+  } finally {
+    bindLoading.value = false
+  }
+}
+
+// ==================== 补全进度 ====================
+const enrichProgress = ref<EnrichProgress | null>(null)
+const enrichProgressLoading = ref(false)
+
+async function loadEnrichProgress() {
+  enrichProgressLoading.value = true
+  try {
+    enrichProgress.value = await fetchEnrichProgress()
+  } catch {
+    enrichProgress.value = null // 出错不挡页面其它内容
+  } finally {
+    enrichProgressLoading.value = false
+  }
 }
 
 async function confirmRescrape() {
@@ -1217,6 +1312,65 @@ function typeLabel(t: string): string {
           </div>
           <div v-if="rescrapeItemNotes.length" class="scrape-results">
             <div v-for="(n, i) in rescrapeItemNotes" :key="i" class="scrape-result">{{ n }}</div>
+          </div>
+        </div>
+        <div class="scrape-block">
+          <h3>手动绑定 TMDB</h3>
+          <p class="drawer-hint">
+            TMDB 对中文剧集 / 综艺收录偏少，自动刮削搜不到的条目在这里手动指定 TMDB ID。
+            先「预览」确认是哪部片，再「绑定」；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
+          </p>
+          <div class="scrape-actions">
+            <el-input v-model="bindItemId" placeholder="条目 ID" style="width: 140px" clearable />
+            <el-input v-model="bindTmdbId" placeholder="TMDB ID（数字）" style="width: 160px" clearable />
+            <el-button size="small" :loading="bindPreviewLoading" @click="doPreviewTmdb">
+              预览
+            </el-button>
+          </div>
+          <div v-if="bindPreview" class="scrape-results">
+            <div class="scrape-result">
+              <span class="mini-badge" :class="bindPreview.matches_current ? 'ok' : 'warn'">
+                {{ bindPreview.matches_current ? '片名一致' : '片名不一致，请核对' }}
+              </span>
+              <span>TMDB：{{ bindPreview.title }}<span v-if="bindPreview.year">（{{ bindPreview.year }}）</span></span>
+              <span class="drawer-hint">当前条目：{{ bindPreview.current_name }}（TMDB {{ bindPreview.current_tmdb_id ?? '未绑定' }}）</span>
+            </div>
+          </div>
+          <div class="scrape-actions" style="margin-top: 8px">
+            <el-button type="primary" size="small" :loading="bindLoading" @click="doBindTmdb">
+              绑定
+            </el-button>
+            <el-button size="small" :loading="bindLoading" @click="doUnbindTmdb">
+              解绑
+            </el-button>
+          </div>
+          <div v-if="bindNotes.length" class="scrape-results">
+            <div v-for="(n, i) in bindNotes" :key="i" class="scrape-result">{{ n }}</div>
+          </div>
+        </div>
+        <div class="scrape-block">
+          <h3>补全进度</h3>
+          <p class="drawer-hint">
+            后台补全 worker（enrich）的工作进度：待处理 / 进行中 / 已完成 / 失败 / 重试中。
+          </p>
+          <div v-if="enrichProgressLoading" class="drawer-hint">加载中…</div>
+          <div v-else-if="!enrichProgress" class="drawer-hint">暂无数据</div>
+          <div v-else>
+            <div class="queue-facts" style="margin-bottom: 8px">
+              <span class="fact">待处理 {{ enrichProgress.enrich.pending }}</span>
+              <span class="fact">进行中 {{ enrichProgress.enrich.enriching }}</span>
+              <span class="fact ok">已完成 {{ enrichProgress.enrich.done }}</span>
+              <span class="fact" :class="{ danger: enrichProgress.enrich.failed > 0 }">
+                失败 {{ enrichProgress.enrich.failed }}
+              </span>
+              <span class="fact">重试中 {{ enrichProgress.enrich.retrying }}</span>
+            </div>
+            <div class="drawer-hint">
+              Worker {{ enrichProgress.workers }} 线程 · {{ enrichProgress.enabled ? '运行中' : '已停用' }}
+              <el-button size="small" text :loading="enrichProgressLoading" @click="loadEnrichProgress">
+                刷新
+              </el-button>
+            </div>
           </div>
         </div>
       </div>
