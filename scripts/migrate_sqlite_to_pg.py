@@ -54,6 +54,8 @@ def parse_args():
         help="只导这些表（逗号分隔，默认全部）",
     )
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    p.add_argument("--no-self-ref-backfill", action="store_true",
+                   help="不回填自引用外键（调试用：保持全部 NULL）")
     args = p.parse_args()
     if not args.target:
         p.error("--target 未给且 PG_TARGET_URL 环境变量为空")
@@ -138,10 +140,16 @@ def _neutralize_orphans(src, tables, verbose=True):
     统计结果会打印出来，让人知道有多少行被中和过。
     """
     fk_map = {}
+    self_refs = {}   # 表名 -> [(本表列, 目标列)]，需要两阶段导入
     for t in tables:
         tname = getattr(t, "name", t)     # 传进来的可能是 ORM Table，也可能是表名
         for parent, frm, to in _fk_parents(src, tname):
-            if parent == tname:           # 自引用不处理（按主键顺序导，父先于子）
+            if parent == tname:
+                # 自引用：不能用「按主键升序 → 父先于子」的假设。
+                # 生产实测 emby_items 有 4183 行 parent_id > id（子 id 比父 id 小），
+                # 升序导到这些行时父还没进库，PG 直接 ForeignKeyViolation。
+                # 必须两阶段：先置 NULL 导完，再回填。
+                self_refs.setdefault(tname, []).append((frm, to))
                 continue
             fk_map.setdefault(tname, []).append((parent, frm, to))
 
@@ -203,6 +211,7 @@ def _neutralize_orphans(src, tables, verbose=True):
             for tbl, d in deleted_rows:
                 print(f"      · {tbl}: 删除 {d} 行 NOT NULL 孤儿行（父记录已不存在，该行已无意义）")
             print(f"      共删除 {sum(d for _t, d in deleted_rows)} 行")
+    stats["_self_refs"] = self_refs
     return stats
 
 
@@ -305,7 +314,8 @@ def main():
 
     # 3.5 中和孤儿外键（SQLite 不强制、PG 强制，必须先处理）
     print("[3.5/5] 中和孤儿外键（源库违反约束的残留）...")
-    _neutralize_orphans(src, tables)
+    _orph = _neutralize_orphans(src, tables)
+    self_refs = _orph.get("_self_refs") or {}
 
     # 4. 逐表导数据
     print(f"[4/5] 导数据（batch={args.batch_size}）...")
@@ -323,17 +333,29 @@ def main():
             continue
         ins = table.insert()
         done = 0
-        # 自引用外键（如 emby_items.parent_id → emby_items.id）：按单调递增的
-        # 整数主键排序后导，父行一定先于子行（扫描入库时父先建，id 更小）。
+        # 自引用外键（emby_items.parent_id → emby_items.id）走**两阶段**：
+        #   阶段1：把这些列置 NULL 整表导完（此时不校验自引用）
+        #   阶段2：全表导完后按主键回填
+        # 早先想用「按主键升序导，父先于子」一把过，实测不成立：
+        # 生产 emby_items 有 4183 行 parent_id > id（子 id 比父 id 小，
+        # 例如 id=277204 的 episode 其 parent_id=277205），升序导到这些行时
+        # 父还没进库 → PG ForeignKeyViolation。
+        srefs = (self_refs or {}).get(table.name, [])
+        sref_cols = [c for c, _ in srefs]
         pk_cols = [c.name for c in table.primary_key.columns]
-        order_by = ""
-        if len(pk_cols) == 1 and type(table.columns[pk_cols[0]].type).__name__ in ("Integer", "BigInteger"):
-            order_by = f' ORDER BY "{pk_cols[0]}"'
+        has_int_pk = (len(pk_cols) == 1
+                      and type(table.columns[pk_cols[0]].type).__name__
+                      in ("Integer", "BigInteger"))
+        order_by = f' ORDER BY "{pk_cols[0]}"' if has_int_pk else ""
         with engine.begin() as conn:
             cur = src_cur.execute(f'SELECT * FROM "{table.name}"{order_by}')
             batch = []
             for row in cur:
-                batch.append(_convert_row(table, col_names, tuple(row)))
+                rec = _convert_row(table, col_names, tuple(row))
+                for c in sref_cols:          # 阶段1：自引用列先置 NULL
+                    if rec.get(c) is not None:
+                        rec[c] = None
+                batch.append(rec)
                 if len(batch) >= args.batch_size:
                     conn.execute(ins, batch)
                     done += len(batch)
@@ -342,6 +364,22 @@ def main():
             if batch:
                 conn.execute(ins, batch)
                 done += len(batch)
+        # 阶段2：回填自引用（此时全表都在，父行必然存在）
+        if sref_cols and has_int_pk and not args.no_self_ref_backfill:
+            pk = pk_cols[0]
+            with engine.begin() as conn:
+                for c, to in srefs:
+                    upd = (sa_text(f'UPDATE "{table.name}" SET "{c}" = s."{to}" '
+                            f'FROM "{table.name}" s WHERE "{table.name}"."{pk}" = s."{pk}" '
+                            f'AND "{table.name}"."{c}" IS NULL AND s."{to}" IS NOT NULL'))
+                    conn.execute(upd)
+            # 仍有对不上的（父 id 在源库就不存在）→ 置 NULL，不能留悬空引用
+            with engine.begin() as conn:
+                for c, to in srefs:
+                    conn.execute(sa_text(
+                        f'UPDATE "{table.name}" t SET "{c}" = NULL WHERE "{c}" IS NOT NULL '
+                        f'AND NOT EXISTS (SELECT 1 FROM "{table.name}" p WHERE p."{to}" = t."{c}")'))
+            print(f"      ↺ {table.name}: 回填自引用列 {', '.join(sref_cols)}")
         # 行数校验
         with engine.begin() as conn:
             dst_n = conn.execute(sa_text(f'SELECT COUNT(*) FROM "{table.name}"')).scalar()
