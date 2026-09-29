@@ -1,9 +1,9 @@
-"""新片入库通知：扫描完成后，给管理员推一条新增内容汇总
+"""新片入库通知（富媒体版）：扫描完成后，给管理员推 TG 富媒体消息
 
 要解决的问题：扫描器发现新片后从不通知，管理员不知道库里进了什么。
 通知管道（TG/邮件/站内）早已存在，这里只做「扫描完成 → 汇总新增 → 发 TG」的接线。
 
-设计（"功能只提供能力"，库名/标题全从数据里取）：
+设计（"功能只提供能力"，库名/标题/URL 全从数据/配置里取）：
 - 触发：扫描成功 / 部分成功且本轮有新增条目时（``maybe_notify_new_media``，
   由 ``scan_queue._run_task`` 在扫描提交完成后调用）。
 - 同一轮扫描只发一条汇总消息，不逐部刷屏。
@@ -11,6 +11,10 @@
   Session——PR #202 的并发教训。
 - 真正的活在 daemon 线程里做：查库 → 组消息 → 发 TG。任何异常只记日志，
   绝不影响扫描本身。
+- 富媒体：有 TMDB 海报的新片用 sendPhoto；多部用 sendMediaGroup（相册，
+  caption 挂第一张）；发图失败自动降级为纯文本，通知不丢。
+- 排版用 HTML parse_mode（标题加粗、年份/集数/评分享受结构化展示），
+  所有来自数据的文本都做 HTML 转义。
 - 配置（SystemConfig）：``new_media_notify_enabled``（"1"/"0"，默认 "1"，开箱即有）、
   ``new_media_notify_channels``（逗号分隔，默认 "telegram"，以后可扩展）。
 - 收件人：全部启用中的管理员（``is_staff``），走他们绑定的 TG 账号。
@@ -20,6 +24,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import threading
 from datetime import datetime
@@ -40,8 +45,10 @@ CONFIG_CHANNELS = "new_media_notify_channels"
 DEFAULT_ENABLED = True
 DEFAULT_CHANNELS = "telegram"
 
-# 消息里最多列出的标题个数，超出截断（防刷屏）
-MAX_TITLES = 10
+# 消息里最多展示的条目个数，超出截断（防刷屏）
+MAX_ITEMS = 10
+# 纯文本消息上限（Telegram 4096）；caption 上限由 TelegramChannel 处理
+MAX_TEXT_LEN = 4000
 
 
 def _get_config(db: Session) -> tuple[bool, list[str]]:
@@ -107,14 +114,18 @@ def _do_notify(
         enabled, channels = _get_config(db)
         if not enabled:
             return
-
         if started_at is None:
             return
+
+        collection_type = _library_collection_type(db, library_id)
         summary = _summarize_new_items(db, library_id, started_at)
         if summary is None:
             return
 
-        title, content = _build_message(library_name, summary)
+        emoji = _library_emoji(library_name, collection_type)
+        text = _build_message(emoji, library_name, summary)
+        photos = _collect_photos(summary)
+
         staff_ids = _staff_ids(db)
         if not staff_ids:
             logger.warning("新片入库通知：没有启用中的管理员，跳过发送")
@@ -123,91 +134,216 @@ def _do_notify(
         db.close()
 
     # 投递是异步的；工作线程里没有事件循环，用 asyncio.run 新起一个
-    asyncio.run(_send_to_staff(staff_ids, title, content, channels))
+    asyncio.run(_send_to_staff(staff_ids, text, photos, channels))
+
+
+def _library_collection_type(db: Session, library_id: int) -> str:
+    """查库的 collection_type（movies/tvshows/mixed），查不到返回空。"""
+    try:
+        row = (
+            db.query(emby_models.Library.collection_type)
+            .filter(emby_models.Library.id == library_id)
+            .first()
+        )
+        return (row[0] or "") if row else ""
+    except Exception:  # noqa: BLE001 — 查不到就按默认展示
+        logger.warning("查库类型失败（库 id=%s）", library_id, exc_info=True)
+        return ""
+
+
+def _library_emoji(library_name: str, collection_type: str) -> str:
+    """按库给 emoji：动漫/剧集/电影不同图标。名字和类型都从数据里取。"""
+    name = library_name or ""
+    if any(k in name for k in ("动漫", "动画", "番剧")):
+        return "📚"
+    if collection_type == "movies" or any(k in name for k in ("电影", "movie")):
+        return "🎬"
+    if collection_type == "tvshows" or any(k in name for k in ("剧", "综艺", "演唱会")):
+        return "📺"
+    return "📚"
 
 
 def _summarize_new_items(
     db: Session, library_id: int, started_at: datetime
 ) -> Optional[dict]:
-    """汇总本轮新增：只用聚合查询，不把几万条 ORM 对象全载进内存。
+    """汇总本轮新增：只用聚合/小批量查询，不把几万条 ORM 对象全载进内存。
 
-    新库首次扫描可能一次新增数万条，这里只取：
-    - 新剧/新电影：总数 + 前 MAX_TITLES 个标题
-    - 新集：按 series_id 分组计数
+    返回：
+    - items: 新剧/新电影列表（最多 MAX_ITEMS 条），每条含 id/name/类型/年份/
+      评分/海报 URL/本轮新增集数
+    - total: 新剧/新电影总数
+    - episode_groups: 老剧出新集 [(剧名, 季号, 集数, 剧 id, 海报 URL)]
     返回 None 表示本轮无新增。
     """
     from sqlalchemy import func
 
-    base = [
-        emby_models.MediaItem.library_id == library_id,
-        emby_models.MediaItem.date_added >= started_at,
-    ]
+    MI = emby_models.MediaItem
+    base = [MI.library_id == library_id, MI.date_added >= started_at]
 
-    sm_q = db.query(emby_models.MediaItem.name).filter(
-        *base, emby_models.MediaItem.item_type.in_(["series", "movie"])
-    )
+    # --- 新剧 / 新电影：总数 + 前 N 条详情 ---
+    sm_q = db.query(MI).filter(*base, MI.item_type.in_(["series", "movie"]))
     sm_total = sm_q.count()
-    sm_names = [
-        (n or "").strip()
-        for (n,) in sm_q.order_by(emby_models.MediaItem.date_added)
-        .limit(MAX_TITLES).all()
-    ]
-    sm_names = [n for n in sm_names if n]
+    sm_rows = (
+        sm_q.order_by(MI.date_added).limit(MAX_ITEMS).all()
+    )
 
+    # 本轮各剧新增的集数（给新剧标"12 集"用）
+    ep_count_by_series: dict[int, int] = {}
+    if sm_rows:
+        series_ids = [r.id for r in sm_rows if r.item_type == "series"]
+        if series_ids:
+            for sid, cnt in (
+                db.query(MI.series_id, func.count(MI.id))
+                .filter(
+                    *base,
+                    MI.item_type == "episode",
+                    MI.series_id.in_(series_ids),
+                )
+                .group_by(MI.series_id)
+                .all()
+            ):
+                ep_count_by_series[sid] = cnt
+
+    items = []
+    for r in sm_rows:
+        items.append({
+            "id": r.id,
+            "name": (r.name or "").strip() or f"条目#{r.id}",
+            "item_type": r.item_type,
+            "year": r.production_year,
+            "rating": r.community_rating,
+            "poster": _safe_url(r.primary_image_url),
+            "episode_count": ep_count_by_series.get(r.id, 0),
+        })
+
+    # --- 老剧出新集：按 (series_id, season_number) 分组 ---
     ep_rows = (
-        db.query(emby_models.MediaItem.series_id, func.count(emby_models.MediaItem.id))
-        .filter(*base, emby_models.MediaItem.item_type == "episode")
-        .group_by(emby_models.MediaItem.series_id)
+        db.query(
+            MI.series_id, MI.season_number, func.count(MI.id),
+        )
+        .filter(*base, MI.item_type == "episode")
+        .group_by(MI.series_id, MI.season_number)
         .all()
     )
 
-    if sm_total == 0 and not ep_rows:
+    # 新剧自己的集不算"老剧出新集"（上面已统计过）
+    new_series_ids = {r.id for r in sm_rows if r.item_type == "series"}
+    ep_rows = [row for row in ep_rows if row[0] not in new_series_ids]
+
+    episode_groups = []
+    if ep_rows:
+        series_ids = sorted({sid for sid, _, _ in ep_rows if sid})
+        meta: dict[int, dict] = {}
+        if series_ids:
+            for r in (
+                db.query(MI)
+                .filter(MI.id.in_(series_ids))
+                .all()
+            ):
+                meta[r.id] = {
+                    "name": (r.name or "").strip() or f"剧集#{r.id}",
+                    "poster": _safe_url(r.primary_image_url),
+                }
+        for sid, season_no, cnt in sorted(
+            ep_rows, key=lambda x: (meta.get(x[0], {}).get("name", ""), x[1] or 0)
+        ):
+            m = meta.get(sid, {})
+            episode_groups.append({
+                "series_id": sid,
+                "name": m.get("name") or "未知剧集",
+                "season": season_no,
+                "count": cnt,
+                "poster": m.get("poster"),
+            })
+
+    if sm_total == 0 and not episode_groups:
         return None
 
-    # 新集按剧查名（一次查齐）
-    series_ids = [sid for sid, _ in ep_rows if sid]
-    name_map: dict = {}
-    if series_ids:
-        for sid, nm in (
-            db.query(emby_models.MediaItem.id, emby_models.MediaItem.name)
-            .filter(emby_models.MediaItem.id.in_(series_ids))
-            .all()
-        ):
-            name_map[sid] = (nm or "").strip() or f"剧集#{sid}"
-    ep_groups = [
-        (name_map.get(sid, "未知剧集"), cnt) for sid, cnt in ep_rows
-    ]
-    ep_groups.sort(key=lambda x: x[0])
-
     return {
-        "series_movie_total": sm_total,
-        "series_movie_names": sm_names,
-        "episode_groups": ep_groups,
+        "items": items,
+        "total": sm_total,
+        "episode_groups": episode_groups,
     }
 
 
-def _build_message(library_name: str, summary: dict) -> tuple[str, str]:
-    """组一条汇总消息：只列标题，不写简介（不剧透）。"""
-    lines: list[str] = []
+def _safe_url(url: Optional[str]) -> Optional[str]:
+    """只接受 http(s) 海报 URL，其他一律丢掉（防 SSRF/坏数据）。"""
+    u = (url or "").strip()
+    if u.startswith("http://") or u.startswith("https://"):
+        return u
+    return None
 
-    # 新剧 / 新电影：列标题
-    total = summary["series_movie_total"]
-    if total > 0:
-        names = summary["series_movie_names"]
-        suffix = f"等 {total} 部" if total > MAX_TITLES else ""
-        quoted = "".join(f"《{n}》" for n in names)
-        lines.append(f"📚 {library_name}新增 {total} 部：{quoted}{suffix}")
 
-    # 老剧出新集：按剧分组，只报"哪部剧多了几集"
+def _fmt_rating(rating) -> Optional[str]:
+    try:
+        v = float(rating)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    return f"{v:.1f}"
+
+
+def _build_message(emoji: str, library_name: str, summary: dict) -> str:
+    """组 HTML 消息：标题加粗、年份/集数/评分享受结构化展示。"""
+    lines: list[str] = [f"{emoji} <b>新片入库 · {html.escape(library_name)}</b>", ""]
+
+    for it in summary["items"]:
+        name = html.escape(it["name"])
+        if it["item_type"] == "movie":
+            kind = "🎬 电影"
+        else:
+            n = it["episode_count"]
+            kind = f"📺 {n} 集" if n > 0 else "📺 剧集"
+        meta_parts = []
+        if it["year"]:
+            meta_parts.append(f"📅 {it['year']}")
+        meta_parts.append(kind)
+        rating = _fmt_rating(it["rating"])
+        if rating:
+            meta_parts.append(f"⭐ {rating}")
+        lines.append(f"<b>《{name}》</b>")
+        lines.append(" · ".join(meta_parts))
+        lines.append("")
+
     groups = summary["episode_groups"]
     if groups:
-        parts = [f"《{s}》新增 {c} 集" for s, c in groups[:MAX_TITLES]]
-        suffix = f"等 {len(groups)} 部剧" if len(groups) > MAX_TITLES else ""
-        lines.append("🎬 " + "；".join(parts) + suffix)
+        shown = groups[:MAX_ITEMS]
+        for g in shown:
+            name = html.escape(g["name"])
+            season_txt = f"第 {g['season']} 季" if g["season"] else ""
+            lines.append(f"🎬 <b>《{name}》</b>{season_txt}新增 {g['count']} 集")
+        if len(groups) > MAX_ITEMS:
+            lines.append(f"<i>…等 {len(groups)} 部剧有更新</i>")
 
-    title = f"{library_name}有新片入库"
-    content = "\n".join(lines)
-    return title, content
+    total = summary["total"]
+    if total > len(summary["items"]):
+        lines.append("")
+        lines.append(f"<i>…等共 {total} 部新片</i>")
+
+    text = "\n".join(lines).rstrip()
+    # 超长截断：优先保标题，逐条丢尾部
+    while len(text) > MAX_TEXT_LEN and len(lines) > 3:
+        lines.pop()
+        text = "\n".join(lines).rstrip()
+    return text
+
+
+def _collect_photos(summary: dict) -> list[str]:
+    """收集海报 URL（最多 10 张，去重）。"""
+    photos: list[str] = []
+    seen: set[str] = set()
+    for it in summary["items"]:
+        p = it.get("poster")
+        if p and p not in seen:
+            seen.add(p)
+            photos.append(p)
+    for g in summary["episode_groups"]:
+        p = g.get("poster")
+        if p and p not in seen:
+            seen.add(p)
+            photos.append(p)
+    return photos[:10]
 
 
 def _staff_ids(db: Session) -> list[int]:
@@ -222,32 +358,86 @@ def _staff_ids(db: Session) -> list[int]:
     return [r[0] for r in rows]
 
 
+def _staff_chat_ids(db: Session, staff_ids: list[int]) -> dict[int, int]:
+    """管理员 id → TG chat_id（TelegramUser.id 即 chat_id）。"""
+    rows = (
+        db.query(models.TelegramUser.web_user_id, models.TelegramUser.id)
+        .filter(models.TelegramUser.web_user_id.in_(staff_ids))
+        .all()
+    )
+    return {web_id: chat_id for web_id, chat_id in rows}
+
+
+def _to_plain_text(html_text: str) -> str:
+    """HTML 消息转纯文本（给邮件/站内信等非 TG 渠道）。"""
+    import re
+
+    text = re.sub(r"</?(b|i|u|code)[^>]*>", "", html_text)
+    return html.unescape(text)
+
+
 async def _send_to_staff(
-    staff_ids: list[int], title: str, content: str, channels: list[str]
+    staff_ids: list[int],
+    text: str,
+    photos: list[str],
+    channels: list[str],
 ) -> None:
-    """给每位管理员发通知。单个失败只记日志，不影响其他人。"""
+    """给每位管理员发富媒体通知。单个失败只记日志，不影响其他人。
+
+    telegram 渠道走 TelegramChannel.send_rich（sendPhoto/media group）；
+    其他渠道沿用旧的文本投递。
+    """
     from backend.notifications import get_notification_service
 
     service = get_notification_service()
-    # 只用真实存在的渠道，避免"渠道不存在"的 warning 刷屏
     valid = [c for c in channels if c in service.channels]
     if not valid:
         logger.warning("新片入库通知：配置的渠道 %s 都不可用，跳过", channels)
         return
 
+    tg_channel = service.channels.get("telegram") if "telegram" in valid else None
+    other_channels = [c for c in valid if c != "telegram"]
+
+    # TG 需要 chat_id：独立查一次（不碰扫描 Session）
+    chat_map: dict[int, int] = {}
+    if tg_channel is not None:
+        db = SessionLocal()
+        try:
+            chat_map = _staff_chat_ids(db, staff_ids)
+        finally:
+            db.close()
+
     for staff_id in staff_ids:
         try:
-            results = await service.send(
-                user_id=staff_id,
-                title=title,
-                content=content,
-                channels=valid,
-                message_type="system",
-            )
-            if not any(results.values()):
-                logger.warning(
-                    "新片入库通知投递失败（管理员 id=%s）：%s", staff_id, results
+            if tg_channel is not None:
+                chat_id = chat_map.get(staff_id)
+                if chat_id is None:
+                    logger.warning(
+                        "新片入库通知：管理员 id=%s 未绑定 TG，跳过", staff_id
+                    )
+                else:
+                    ok, error = await tg_channel.send_rich(
+                        chat_id, text=text, photos=photos,
+                        title="新片入库通知",
+                    )
+                    if not ok:
+                        logger.warning(
+                            "新片入库通知 TG 投递失败（管理员 id=%s）：%s",
+                            staff_id, error,
+                        )
+            for ch in other_channels:
+                results = await service.send(
+                    user_id=staff_id,
+                    title="新片入库通知",
+                    content=_to_plain_text(text),
+                    channels=[ch],
+                    message_type="system",
                 )
+                if not any(results.values()):
+                    logger.warning(
+                        "新片入库通知投递失败（管理员 id=%s，渠道 %s）：%s",
+                        staff_id, ch, results,
+                    )
         except Exception:  # noqa: BLE001 — 单个管理员失败不影响其他人
             logger.warning(
                 "新片入库通知投递异常（管理员 id=%s）", staff_id, exc_info=True
