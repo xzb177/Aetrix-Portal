@@ -625,6 +625,16 @@ def _run_task(task: ScanTask) -> None:
     from backend.emby_server.scanner import scan_library_sync  # 延迟导入，见模块 docstring
 
     db = SessionLocal()
+    # expire_on_commit=False：扫描是"一批一提交"的长事务，ctx 里还缓存着
+    # series/season 的 ORM 对象。默认的 expire_on_commit=True 会在每次
+    # commit_batch() 后把它们全部标过期，下次访问触发懒加载；若此时恰好有
+    # 别的线程（共享进程级 _SCAN_POOL 的 IO 任务）碰到这些对象或 Session，
+    # 就会撞上 "provisioning a new connection; concurrent operations are
+    # not permitted"。关掉过期后对象保持内存值，扫描只读写自己刚写的数据，
+    # 不依赖提交后重读，因此安全。
+    # （用属性赋值而非 SessionLocal(expire_on_commit=False)，兼容测试里的
+    # SessionLocal 打桩。）
+    db.expire_on_commit = False
     # 开扫前绑定「当前线程在扫哪个库」并建进度条目：绑定之后 scanner 的包装层
     # （枚举 / 处理 / 阶段）才知道该把数字记到谁名下；结束无论成败都解绑
     progress.begin_scan(task.library_id, task.name)
