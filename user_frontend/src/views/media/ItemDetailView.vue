@@ -337,7 +337,7 @@ onMounted(loadItem)
       <template v-else-if="item">
         <div class="head-grid">
           <div class="poster-col">
-            <img v-if="poster && posterOk" :src="poster" :alt="item.Name" class="poster" @error="posterOk = false" />
+            <img decoding="async" v-if="poster && posterOk" :src="poster" :alt="item.Name" class="poster" @error="posterOk = false" />
             <div v-else class="poster placeholder">
               <span class="placeholder-char">{{ titleChar }}</span>
             </div>
@@ -475,7 +475,7 @@ onMounted(loadItem)
             >
               <RouterLink :to="`/watch/${ep.Id}`" class="ep-link">
                 <div class="ep-thumb">
-                  <img v-if="epPoster(ep) && !failedEpPosters.has(ep.Id)" :src="epPoster(ep)" :alt="ep.Name" loading="lazy" @error="failedEpPosters.add(ep.Id)" />
+                  <img decoding="async" v-if="epPoster(ep) && !failedEpPosters.has(ep.Id)" :src="epPoster(ep)" :alt="ep.Name" loading="lazy" @error="failedEpPosters.add(ep.Id)" />
                   <span v-else class="ep-thumb-num">{{ ep.IndexNumber ?? '·' }}</span>
                 </div>
                 <div class="ep-body">

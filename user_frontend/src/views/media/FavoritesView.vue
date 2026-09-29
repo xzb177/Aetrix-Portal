@@ -145,7 +145,7 @@ onMounted(load)
           :class="{ leaving: removing.has(item.Id) }"
         >
           <RouterLink :to="target(item)" class="poster-wrap">
-            <img v-if="posterUrl(item, 342) && !failedPosters.has(item.Id)" :src="posterUrl(item, 342)" :alt="item.Name" loading="lazy" @error="failedPosters.add(item.Id)" />
+            <img decoding="async" v-if="posterUrl(item, 342) && !failedPosters.has(item.Id)" :src="posterUrl(item, 342)" :alt="item.Name" loading="lazy" @error="failedPosters.add(item.Id)" />
             <div v-else class="poster-fallback">
               <Layers :size="26" />
             </div>

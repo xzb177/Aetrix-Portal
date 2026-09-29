@@ -200,7 +200,7 @@ onMounted(refreshAll)
             :to="itemTo(item)"
           >
             <div class="poster">
-              <img v-if="item.poster_url && !failedPosters.has(item.id)" :src="item.poster_url" :alt="item.name" loading="lazy" @error="failedPosters.add(item.id)" />
+              <img decoding="async" v-if="item.poster_url && !failedPosters.has(item.id)" :src="item.poster_url" :alt="item.name" loading="lazy" @error="failedPosters.add(item.id)" />
               <div v-else class="poster-fallback"><Film :size="18" /></div>
               <div v-if="progressOf(item) > 0 && !item.played" class="poster-progress">
                 <div :style="{ width: progressOf(item) + '%' }" />

@@ -111,7 +111,7 @@ function open() {
 <template>
   <div class="media-card" @click="open">
     <div ref="wrapEl" class="poster-wrap">
-      <img v-if="poster && imgOk && visible" :src="poster" :alt="item.Name" loading="lazy" @error="onImgError" />
+      <img decoding="async" v-if="poster && imgOk && visible" :src="poster" :alt="item.Name" loading="lazy" @error="onImgError" />
       <div v-else class="poster-fallback">
         <span class="fallback-char">{{ firstChar }}</span>
       </div>

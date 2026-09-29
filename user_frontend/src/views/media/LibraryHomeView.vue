@@ -11,7 +11,7 @@
  * - 只渲染当前分段（v-if），访问 /media 时不会多发两组列表请求；
  * - 浏览分段的数据来自 /emby/* 协议端点（JWT 鉴权），与 Infuse 等客户端共享同一套进度。
  */
-import { ref, computed, onMounted, watch, type Component } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch, type Component } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { embyApi, backdropUrl, ticksToSeconds, progressPercent, type EmbyItem } from '@/api/emby'
 import type { ResumeInfo } from '@/components/media/MediaCard.vue'
@@ -177,37 +177,64 @@ async function loadAll() {
   } finally {
     loading.value = false
   }
-  // 按库海报轨随后流式载入：单个库失败不影响整页
-  void loadRails()
+  // 按库海报轨随后懒加载：进入视口才拉，单个库失败不影响整页
+  await nextTick()
+  setupRailObserver()
+}
+
+// P1#4：11 个库的横轨不再一次全拉。每个分区进入视口（提前 200px）才加载，
+// iOS Safari 同域 6 连接不再排队。单个库失败只影响自己。
+const railEls = new Map<string, Element>()
+let railObserver: IntersectionObserver | null = null
+
+function setRailRef(viewId: string, el: unknown): void {
+  const node = el as Element | null
+  const prev = railEls.get(viewId)
+  if (prev && prev !== node) railObserver?.unobserve(prev)
+  if (node) {
+    railEls.set(viewId, node)
+    // observer 建好后才挂载的分区（如分段切换回来）直接观察
+    if (railObserver) railObserver.observe(node)
+  } else {
+    railEls.delete(viewId)
+  }
+}
+
+async function loadRail(viewId: string): Promise<void> {
+  if (libraryRails.value[viewId]) return
+  try {
+    const res = await embyApi.getItems({
+      parentId: viewId,
+      limit: 12,
+      sortBy: 'DateCreated',
+      sortOrder: 'Descending',
+      includeTypes: ['Movie', 'Series'],
+    })
+    libraryRails.value = { ...libraryRails.value, [viewId]: res.Items }
+  } catch {
+    libraryRails.value = { ...libraryRails.value, [viewId]: [] }
+  } finally {
+    // 首个分区落定后，顶部"加载中"骨架即可撤掉
+    if (railsLoading.value && Object.keys(libraryRails.value).length) railsLoading.value = false
+  }
 }
 
 /** 每个有内容的库取最新 12 个（电影/剧集），做横滑海报轨 */
-async function loadRails() {
+function setupRailObserver() {
+  if (railObserver) railObserver.disconnect()
   railsLoading.value = true
-  try {
-    const targets = viewsWithContent.value
-    const results = await Promise.all(
-      targets.map(async (v) => {
-        try {
-          const res = await embyApi.getItems({
-            parentId: v.Id,
-            limit: 12,
-            sortBy: 'DateCreated',
-            sortOrder: 'Descending',
-            includeTypes: ['Movie', 'Series'],
-          })
-          return [v.Id, res.Items] as const
-        } catch {
-          return [v.Id, [] as EmbyItem[]] as const
-        }
-      }),
-    )
-    const map: Record<string, EmbyItem[]> = {}
-    for (const [id, items] of results) map[id] = items
-    libraryRails.value = map
-  } finally {
-    railsLoading.value = false
-  }
+  railObserver = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue
+        const id = (e.target as HTMLElement).dataset.railId
+        railObserver?.unobserve(e.target)
+        if (id) void loadRail(id)
+      }
+    },
+    { rootMargin: '200px' },
+  )
+  for (const el of railEls.values()) railObserver.observe(el)
 }
 
 /** 继续观看：单集按剧折叠成剧集卡（带续播信息），电影保持原样 */
@@ -276,6 +303,12 @@ async function loadContinue() {
 
 onMounted(() => {
   loadAll().catch(() => toast.error('媒体库加载失败'))
+})
+
+onBeforeUnmount(() => {
+  railObserver?.disconnect()
+  railObserver = null
+  railEls.clear()
 })
 </script>
 
@@ -393,13 +426,23 @@ onMounted(() => {
             <div v-for="i in 4" :key="i" class="au-skeleton sk-card"></div>
           </div>
         </section>
-        <MediaRow
+        <div
           v-for="v in viewsWithContent"
           :key="v.Id"
-          :title="v.Name || '媒体库'"
-          :items="libraryRails[v.Id] || []"
-          :more-to="`/library/${v.Id}?name=${encodeURIComponent(v.Name || '')}`"
-        />
+          :data-rail-id="v.Id"
+          :ref="(el) => setRailRef(v.Id, el)"
+        >
+          <MediaRow
+            :title="v.Name || '媒体库'"
+            :items="libraryRails[v.Id] || []"
+            :more-to="`/library/${v.Id}?name=${encodeURIComponent(v.Name || '')}`"
+          />
+          <div v-if="!libraryRails[v.Id]" class="rail-skeleton rail-skeleton-inline" aria-hidden="true">
+            <div class="au-skeleton sk-row">
+              <div v-for="i in 4" :key="i" class="au-skeleton sk-card"></div>
+            </div>
+          </div>
+        </div>
       </template>
     </div>
     </template>
@@ -801,6 +844,10 @@ onMounted(() => {
 .rail-skeleton {
   margin-bottom: 2rem;
 }
+/* P1#4：分区内联骨架（数据懒加载中占位），复用 sk-row/sk-card */
+.rail-skeleton-inline { margin-bottom: 1.5rem; }
+.rail-skeleton-inline .sk-row { display: flex; gap: 12px; overflow: hidden; }
+.rail-skeleton-inline .sk-card { width: 120px; height: 180px; flex: none; border-radius: 10px; }
 
 .sk-title {
   width: 120px;

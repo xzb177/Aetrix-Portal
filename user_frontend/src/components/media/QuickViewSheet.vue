@@ -9,6 +9,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { X, Play, ChevronRight } from 'lucide-vue-next'
 import { embyApi, posterUrl, backdropUrl, type EmbyItem, type EmbyItemVersion } from '@/api/emby'
+import Skeleton from '@/components/ui/Skeleton.vue'
 
 const props = defineProps<{ itemId: string | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -67,13 +68,18 @@ async function load(id: string) {
   selectedSeasonId.value = ''
   imgOk.value = { backdrop: true, poster: true }
   try {
-    const it = await embyApi.getItem(id)
+    // P0#2：getItem 与 getSeasons 并行，不再串行等 3 个请求。
+    // 电影调 getSeasons 会多一次空返回（后端直接 []），换来剧集少一次 RTT，划算。
+    const [it, seasonsList] = await Promise.all([
+      embyApi.getItem(id),
+      embyApi.getSeasons(id).catch((): EmbyItem[] => []),
+    ])
     item.value = it
     // Versions 含主版本在内（IsPrimary 标记），与 ItemDetailView 同口径
     versions.value = it.Versions || []
     selectedVersionId.value = versions.value.find((v) => v.IsPrimary)?.Id || versions.value[0]?.Id || ''
     if (it.Type === 'Series') {
-      seasons.value = await embyApi.getSeasons(id)
+      seasons.value = seasonsList
       if (seasons.value.length) {
         selectedSeasonId.value = defaultSeasonId(seasons.value)
         await loadEpisodes(selectedSeasonId.value)
@@ -154,12 +160,29 @@ onBeforeUnmount(() => {
       <div class="qv-sheet" role="dialog" aria-modal="true" aria-label="快速预览">
         <button class="qv-close" @click="close" aria-label="关闭"><X :size="20" /></button>
 
-        <div v-if="loading" class="qv-loading">加载中…</div>
+        <div v-if="loading" class="qv-skeleton" aria-hidden="true">
+          <Skeleton variant="rect" class="sk-backdrop" />
+          <div class="sk-body">
+            <div class="sk-head">
+              <Skeleton variant="rounded" class="sk-poster" />
+              <div class="sk-info">
+                <Skeleton variant="text" class="sk-title" />
+                <Skeleton variant="text" class="sk-meta" />
+                <Skeleton variant="rounded" class="sk-btn" />
+              </div>
+            </div>
+            <Skeleton variant="text" class="sk-ov" />
+            <Skeleton variant="text" class="sk-ov sk-ov2" />
+            <div class="sk-eps">
+              <Skeleton v-for="i in 8" :key="i" variant="rounded" class="sk-ep" />
+            </div>
+          </div>
+        </div>
         <div v-else-if="loadError" class="qv-error">{{ loadError }}</div>
         <template v-else-if="item">
           <!-- 背景 -->
           <div class="qv-backdrop">
-            <img
+            <img decoding="async"
               v-if="backdrop && imgOk.backdrop"
               :src="backdrop"
               alt=""
@@ -172,7 +195,7 @@ onBeforeUnmount(() => {
           <div class="qv-body">
             <div class="qv-head">
               <div class="qv-poster">
-                <img
+                <img decoding="async"
                   v-if="poster && imgOk.poster"
                   :src="poster"
                   :alt="item.Name"
@@ -264,6 +287,19 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; justify-content: center; cursor: pointer;
 }
 .qv-loading, .qv-error { padding: 48px 20px; text-align: center; color: #9a9aa5; }
+.qv-skeleton { padding-bottom: 20px; }
+.qv-skeleton .sk-backdrop { display: block; width: 100%; height: 170px; border-radius: 0; }
+.qv-skeleton .sk-body { padding: 0 16px; margin-top: -44px; position: relative; }
+.qv-skeleton .sk-head { display: flex; gap: 14px; }
+.qv-skeleton .sk-poster { width: 92px; height: 138px; flex: none; border-radius: 10px; }
+.qv-skeleton .sk-info { flex: 1; min-width: 0; padding-top: 44px; }
+.qv-skeleton .sk-title { height: 20px; width: 70%; margin-bottom: 8px; }
+.qv-skeleton .sk-meta { height: 14px; width: 45%; margin-bottom: 12px; }
+.qv-skeleton .sk-btn { height: 40px; width: 100%; border-radius: 10px; }
+.qv-skeleton .sk-ov { height: 14px; width: 100%; margin-top: 12px; }
+.qv-skeleton .sk-ov2 { width: 82%; }
+.qv-skeleton .sk-eps { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; margin-top: 12px; }
+.qv-skeleton .sk-ep { aspect-ratio: 1; border-radius: 8px; }
 .qv-backdrop { position: relative; height: 170px; overflow: hidden; background: #0b0b10; }
 .qv-backdrop img { width: 100%; height: 100%; object-fit: cover; }
 .qv-shade {
