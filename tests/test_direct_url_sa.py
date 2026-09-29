@@ -195,6 +195,17 @@ def test_sa_access_token_http_error_returns_none(monkeypatch, tmp_path):
     assert run(_sa_access_token(sa_path, "MP")) is None
 
 
+@pytest.mark.parametrize("status", [429, 403])
+def test_sa_access_token_rate_limited_raises(monkeypatch, tmp_path, status):
+    """429/403 抛 SARateLimited，调用方（轮换池）据此做冷却故障转移。"""
+    from backend.emby_server.direct_url import SARateLimited
+
+    sa_path, _ = _make_sa_json(tmp_path)
+    _patch_async_client(monkeypatch, lambda url, kwargs: _FakeResp(status))
+    with pytest.raises(SARateLimited):
+        run(_sa_access_token(sa_path, "MP"))
+
+
 def test_sa_access_token_network_error_returns_none(monkeypatch, tmp_path):
     sa_path, _ = _make_sa_json(tmp_path)
 
@@ -252,42 +263,37 @@ def test_token_from_conf_oauth_and_sa(monkeypatch, tmp_path):
 
 # ---------------- get_access_token（端到端） ----------------
 
-def test_get_access_token_sa_generates_and_caches(monkeypatch, tmp_path):
-    """第一次生成 JWT 换 token，第二次走缓存（token_uri 只被调一次）。"""
+def _pool_for_sa(monkeypatch, tmp_path, sa_path=None):
+    """给 get_access_token 造一个只含 tmp 目录 SA 的轮换池（不预热、不起后台线程）。"""
+    from backend.emby_server.direct_url import ServiceAccountPool
+
+    if sa_path is None:
+        sa_path, _ = _make_sa_json(tmp_path)
+    pool = ServiceAccountPool(
+        sa_dir=str(tmp_path), prewarm=False, healthcheck_interval=0
+    )
+    monkeypatch.setattr(direct_url, "get_sa_pool", lambda: pool)
+    return pool
+
+
+def test_get_access_token_sa_uses_pool(monkeypatch, tmp_path):
+    """SA 型 remote：get_access_token 走轮换池拿 token。"""
     sa_path, _ = _make_sa_json(tmp_path)
     monkeypatch.setenv("RCLONE_CONF_PATH", _write_sa_conf(tmp_path, sa_path))
+    _pool_for_sa(monkeypatch, tmp_path, sa_path)
     calls = []
 
     def handler(url, kwargs):
         calls.append(url)
-        return _FakeResp(200, {"access_token": "SA_CACHED", "expires_in": 3600})
+        return _FakeResp(200, {"access_token": "SA_POOL_TOKEN", "expires_in": 3600})
 
     _patch_async_client(monkeypatch, handler)
-    assert run(get_access_token("MP:")) == "SA_CACHED"
-    assert run(get_access_token("MP:")) == "SA_CACHED"
-    assert len(calls) == 1, f"第二次应命中缓存，实际请求了 {len(calls)} 次"
-
-
-def test_get_access_token_sa_expired_regenerates(monkeypatch, tmp_path):
-    """缓存过期后重新走 JWT 流程。"""
-    sa_path, _ = _make_sa_json(tmp_path)
-    monkeypatch.setenv("RCLONE_CONF_PATH", _write_sa_conf(tmp_path, sa_path))
-    calls = []
-
-    def handler(url, kwargs):
-        calls.append(url)
-        return _FakeResp(200, {"access_token": f"SA_{len(calls)}", "expires_in": 3600})
-
-    _patch_async_client(monkeypatch, handler)
-    assert run(get_access_token("MP:")) == "SA_1"
-    # 手动把缓存设为过期
-    direct_url._token_cache["MP"] = {"expiry": time.time() - 10, "token": "SA_1"}
-    assert run(get_access_token("MP:")) == "SA_2"
-    assert len(calls) == 2
+    assert run(get_access_token("MP:")) == "SA_POOL_TOKEN"
+    assert len(calls) == 1
 
 
 def test_get_access_token_oauth_preferred_over_sa(monkeypatch, tmp_path):
-    """两者都有且 OAuth token 有效：用 OAuth，不碰服务账号流程。"""
+    """两者都有且 OAuth token 有效：用 OAuth，不碰轮换池。"""
     sa_path, _ = _make_sa_json(tmp_path)
     token = {"access_token": "OAUTH_VALID", "refresh_token": "r",
              "expiry": _future_expiry()}
@@ -301,6 +307,11 @@ def test_get_access_token_oauth_preferred_over_sa(monkeypatch, tmp_path):
     p.write_text(conf, encoding="utf-8")
     monkeypatch.setenv("RCLONE_CONF_PATH", str(p))
 
+    def _boom_pool():
+        raise AssertionError("OAuth 有效时不应使用轮换池")
+
+    monkeypatch.setattr(direct_url, "get_sa_pool", _boom_pool)
+
     def handler(url, kwargs):
         raise AssertionError("OAuth 有效时不应发起任何 token 请求")
 
@@ -308,10 +319,15 @@ def test_get_access_token_oauth_preferred_over_sa(monkeypatch, tmp_path):
     assert run(get_access_token("MP:")) == "OAUTH_VALID"
 
 
-def test_get_access_token_sa_failure_returns_none(monkeypatch, tmp_path):
-    """服务账号文件损坏：返回 None（调用方回退到代理）。"""
-    monkeypatch.setenv(
-        "RCLONE_CONF_PATH",
-        _write_sa_conf(tmp_path, "/tmp/does-not-exist-sa.json"),
-    )
+def test_get_access_token_sa_pool_empty_returns_none(monkeypatch, tmp_path):
+    """池子里没有可用 SA：返回 None（调用方回退到代理）。"""
+    sa_path, _ = _make_sa_json(tmp_path)
+    monkeypatch.setenv("RCLONE_CONF_PATH", _write_sa_conf(tmp_path, sa_path))
+    # 池目录是空的
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    from backend.emby_server.direct_url import ServiceAccountPool
+
+    pool = ServiceAccountPool(sa_dir=str(empty), prewarm=False, healthcheck_interval=0)
+    monkeypatch.setattr(direct_url, "get_sa_pool", lambda: pool)
     assert run(get_access_token("MP:")) is None
