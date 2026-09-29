@@ -298,6 +298,9 @@ def _auto_migrate():
             ("mount_ids", "TEXT", "''"),
             ("node_id", "INTEGER", "NULL"),
             ("realm_id", "INTEGER", "NULL"),
+            # 本轮扫描起始时刻：与 updated_at 分开，避免被进度刷盘顶掉
+            # （见 models.Library.scan_started_at 的说明）
+            ("scan_started_at", "DATETIME", "NULL"),
             # v2.22.0 最近一次扫描结果：老库补列后为 NULL，等价于「尚未扫描」，
             # 不改变原有「只看 is_scanning / last_scan_at」的行为。
             ("scan_status", "VARCHAR(20)", "NULL"),

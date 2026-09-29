@@ -83,7 +83,15 @@ def reset_stale_scan_flags(db: Session, stale_hours: Optional[float] = None) -> 
     for lib in rows:
         if scanner.is_scan_active(lib.id):  # 本进程真的在扫：绝不碰
             continue
-        started = lib.updated_at or lib.last_scan_at
+        # 只认 scan_started_at（扫描开始时一次性写入，不被任何后续写入刷新）。
+        # **不能用 updated_at**：进度刷盘 scan_queue.flush_once 每几秒写一次
+        # scan_progress，ORM onupdate 会连带刷新 updated_at——它会永远是「刚刚」，
+        # 下面的超时判定恒不成立，卡死的库永远复位不了（生产事故：部署打断扫描后
+        # 两个库一直显示「扫描中」）。
+        started = lib.scan_started_at
+        if started is None:
+            # 老数据没有这个字段：退回 updated_at / last_scan_at，宁可多复位一次
+            started = lib.updated_at or lib.last_scan_at
         if started is not None and started >= cutoff:
             continue  # 刚开始不久：可能正在另一台机器上扫
         lib.is_scanning = False

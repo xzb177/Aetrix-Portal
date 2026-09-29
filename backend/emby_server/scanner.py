@@ -2365,6 +2365,7 @@ def _write_scan_state(db: Session, library: emby_models.Library, status: str,
     """状态 / 统计 / 原因写回媒体库并提交（落盘失败只记日志，不覆盖真实异常）"""
     library.is_scanning = False
     library.last_scan_at = datetime.now()
+    library.scan_started_at = None   # 本轮已收尾，不再参与复位判定
     library.scan_status = status
     library.scan_stats = encode_scan_stats(stats)
     library.scan_error = (error or "")[:500] or None
@@ -2385,6 +2386,8 @@ def begin_scan(db: Session, library: emby_models.Library,
     library.is_scanning = True
     library.scan_status = SCAN_STATUS_RUNNING
     library.scan_error = None
+    # 单独记本轮起始时刻：复位判定只能看它（见 models.Library.scan_started_at）
+    library.scan_started_at = datetime.now()
     run = None
     if SCAN_RUN_KEEP > 0:
         run = emby_models.ScanRun(library_id=library.id, status=SCAN_STATUS_RUNNING,

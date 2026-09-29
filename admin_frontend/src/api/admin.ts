@@ -360,7 +360,7 @@ export interface BackendServiceStatus {
   pid?: number; started_at?: number; timestamp?: number
 }
 export const fetchBackendServices = () =>
-  get<{ success: boolean; services: BackendServiceStatus[] }>(`${E}/services/status`)
+  get<{ success: boolean; services: BackendServiceStatus[] }>(`/services/status`)
 
 export interface QuotaBreakerStatus {
   tripped: boolean
@@ -370,9 +370,9 @@ export interface QuotaBreakerStatus {
   backoff_sec: number
 }
 export const fetchQuotaBreakerStatus = () =>
-  get<{ success: boolean; breaker: QuotaBreakerStatus }>(`${E}/quota-breaker/status`)
+  get<{ success: boolean; breaker: QuotaBreakerStatus }>(`/quota-breaker/status`)
 export const resetQuotaBreaker = () =>
-  post<{ success: boolean; message: string }>(`${E}/quota-breaker/reset`)
+  post<{ success: boolean; message: string }>(`/quota-breaker/reset`)
 
 export interface ServerPayload {
   name: string
