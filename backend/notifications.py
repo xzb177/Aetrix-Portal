@@ -20,6 +20,28 @@ logger = logging.getLogger(__name__)
 
 # ==================== 通知渠道抽象 ====================
 
+# Telegram 富媒体常量：media group 最多 10 张；caption 上限 1024 字符
+MAX_MEDIA_GROUP = 10
+MAX_CAPTION_LEN = 1024
+
+
+def _truncate_caption(text: str, limit: int = MAX_CAPTION_LEN) -> str:
+    """安全截断 HTML caption：不把标签拦腰截断，未闭合的 b/i 补上闭合。
+
+    防止 Telegram 因 "can't parse entities" 拒收。预留闭合标签的位置，
+    保证返回值一定不超过 limit。
+    """
+    import re
+
+    if len(text) <= limit:
+        return text
+    # 预留最多 8 字符给 </b></i> 闭合标签
+    cut = re.sub(r"<[^>]*$", "", text[: max(0, limit - 8)])
+    for tag in ("b", "i"):
+        if cut.count(f"<{tag}>") > cut.count(f"</{tag}>"):
+            cut += f"</{tag}>"
+    return cut
+
 class NotificationChannel:
     """通知渠道基类"""
 
@@ -179,6 +201,7 @@ class EmailChannel(NotificationChannel):
 
 
 class TelegramChannel(NotificationChannel):
+    """Telegram Bot API 渠道：文本 + 富媒体（sendPhoto / sendMediaGroup）"""
     """Telegram 通知渠道"""
 
     def __init__(self, bot_token: str = None):
@@ -250,6 +273,113 @@ class TelegramChannel(NotificationChannel):
             return True, None
         except Exception as exc:  # noqa: BLE001 — 投递失败原因要原样记下来
             return False, f"{type(exc).__name__}: {exc}"
+
+    async def _api(self, method: str, payload: dict) -> tuple[bool, Optional[str]]:
+        """Bot API 通用调用：返回 (ok, error)。"""
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    f"https://api.telegram.org/bot{self.bot_token}/{method}",
+                    json=payload,
+                )
+            if resp.status_code != 200:
+                return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            body = resp.json()
+            if not body.get("ok"):
+                return False, f"API error: {str(body)[:200]}"
+            return True, None
+        except Exception as exc:  # noqa: BLE001 — 投递失败原因要原样记下来
+            return False, f"{type(exc).__name__}: {exc}"
+
+    async def send_rich(
+        self,
+        chat_id: int,
+        *,
+        text: str,
+        photos: Optional[List[str]] = None,
+        title: str = "通知",
+    ) -> tuple[bool, Optional[str]]:
+        """富媒体发送（新片入库通知用）。
+
+        - 无图 → sendMessage
+        - 1 张图 → sendPhoto（caption 挂图上）
+        - 2~10 张图 → sendMediaGroup（caption 挂第一张）
+        - 发图失败 → 自动降级为纯文本消息，保证通知不丢
+
+        text 为 HTML（parse_mode=HTML），调用方负责转义。
+        返回 (ok, error)，不抛异常。
+        """
+        if not self.enabled:
+            return False, "Telegram 通知未配置"
+
+        photos = [p for p in (photos or []) if p][:MAX_MEDIA_GROUP]
+
+        ok: bool
+        error: Optional[str]
+        try:
+            if not photos:
+                ok, error = await self._api("sendMessage", {
+                    "chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                })
+            elif len(photos) == 1:
+                ok, error = await self._api("sendPhoto", {
+                    "chat_id": chat_id, "photo": photos[0],
+                    "caption": _truncate_caption(text), "parse_mode": "HTML",
+                })
+                if not ok:
+                    # 图挂了（URL 失效等）→ 降级纯文本
+                    logger.warning("sendPhoto 失败，降级为纯文本: %s", error)
+                    ok, error = await self._api("sendMessage", {
+                        "chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                    })
+            else:
+                media = [
+                    {
+                        "type": "photo", "media": url,
+                        **({"caption": _truncate_caption(text), "parse_mode": "HTML"}
+                           if i == 0 else {}),
+                    }
+                    for i, url in enumerate(photos)
+                ]
+                ok, error = await self._api("sendMediaGroup", {
+                    "chat_id": chat_id, "media": media,
+                })
+                if not ok:
+                    logger.warning("sendMediaGroup 失败，降级为纯文本: %s", error)
+                    ok, error = await self._api("sendMessage", {
+                        "chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                    })
+        except Exception as exc:  # noqa: BLE001 — 富媒体发送绝不抛异常
+            return False, f"{type(exc).__name__}: {exc}"
+
+        self._record_history(chat_id, title, text, ok, error)
+        return ok, error
+
+    def _record_history(
+        self, chat_id: int, title: str, text: str, ok: bool,
+        error: Optional[str],
+    ) -> None:
+        """记一条通知历史（失败也不影响主流程）。"""
+        try:
+            db = next(get_db())
+            try:
+                history = models.NotificationHistory(
+                    notification_type="telegram",
+                    target=str(chat_id),
+                    title=title,
+                    content=text[:2000],
+                    status="sent" if ok else "failed",
+                    error_message=error,
+                    sent_at=datetime.now() if ok else None,
+                )
+                db.add(history)
+                db.commit()
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 — 历史记录失败不影响通知本身
+            logger.warning("通知历史记录失败", exc_info=True)
 
 
 # ==================== 多渠道通知管理器 ====================
