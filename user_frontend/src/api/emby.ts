@@ -21,25 +21,41 @@ import api from '@/api'
  * EM 已关闭 Emby 网关，全部 404，结果就是网页媒体库空白，而 iOS 直连 EA 正常。
  */
 const EMBY_BASE_CACHE_KEY = 'emby_base_url'
+/** EA 地址缓存有效期：1 小时。过期后下次请求会重新拉账号卡校验，避免
+ *  8001→8002 这类服务端换地址后用户端一直拿旧地址连不上的问题。 */
+const EMBY_BASE_TTL_MS = 60 * 60 * 1000
 
 let embyBasePromise: Promise<string> | null = null
+
+/** 读缓存：兼容旧版纯字符串格式（旧格式视为已过期，强制重新校验一次） */
+function readCachedBase(): { url: string; ts: number } {
+  try {
+    const raw = localStorage.getItem(EMBY_BASE_CACHE_KEY) || ''
+    if (!raw) return { url: '', ts: 0 }
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw) as { u?: string; t?: number }
+      return { url: (parsed.u || '').replace(/\/+$/, ''), ts: parsed.t || 0 }
+    }
+    return { url: raw.replace(/\/+$/, ''), ts: 0 }
+  } catch {
+    return { url: '', ts: 0 }
+  }
+}
+
+const _cachedBase = readCachedBase()
 
 /**
  * 同步可读的 EA 地址。图片地址是同步函数、模板里直接用，拿不到 Promise，
  * 所以解析后同时写内存和 localStorage，刷新页面也不会先闪一版错地址。
  */
-let embyBaseCache: string = (() => {
-  try {
-    return (localStorage.getItem(EMBY_BASE_CACHE_KEY) || '').replace(/\/+$/, '')
-  } catch {
-    return ''
-  }
-})()
+let embyBaseCache: string = _cachedBase.url
+let embyBaseTs: number = _cachedBase.ts
 
 function setEmbyBase(base: string): string {
   embyBaseCache = (base || '').replace(/\/+$/, '')
+  embyBaseTs = Date.now()
   try {
-    if (embyBaseCache) localStorage.setItem(EMBY_BASE_CACHE_KEY, embyBaseCache)
+    if (embyBaseCache) localStorage.setItem(EMBY_BASE_CACHE_KEY, JSON.stringify({ u: embyBaseCache, t: embyBaseTs }))
     else localStorage.removeItem(EMBY_BASE_CACHE_KEY)
   } catch {
     /* 隐私模式下写不进去无所谓，内存里还有 */
@@ -53,8 +69,7 @@ export function resetEmbyBaseUrl(): void {
   setEmbyBase('')
 }
 
-async function embyBaseUrl(): Promise<string> {
-  if (embyBaseCache) return embyBaseCache
+function fetchEmbyBase(): Promise<string> {
   if (!embyBasePromise) {
     embyBasePromise = api
       .get<never, { base_url?: string }>('/api/user/emby/server')
@@ -65,6 +80,25 @@ async function embyBaseUrl(): Promise<string> {
       })
   }
   return embyBasePromise
+}
+
+async function embyBaseUrl(): Promise<string> {
+  // 缓存未过期直接用；过期（或没有）则重新拉账号卡，并发去重
+  if (embyBaseCache && Date.now() - embyBaseTs <= EMBY_BASE_TTL_MS) return embyBaseCache
+  return fetchEmbyBase()
+}
+
+/**
+ * App 启动时调用：后台重新校验一次 EA 地址，变了就更新（不阻塞首屏）。
+ * 未登录时跳过，省一次 401。
+ */
+export function refreshEmbyBaseUrl(): void {
+  try {
+    if (!localStorage.getItem('access_token')) return
+  } catch {
+    return
+  }
+  fetchEmbyBase().catch(() => {})
 }
 
 async function embyGet<T>(path: string, config?: object): Promise<T> {
@@ -185,6 +219,8 @@ export interface EmbyQuery {
    * 前端有没有下一页（TotalRecordCount 此时为 -1）。默认 true（第三方客户端行为不变）。
    */
   enableTotalRecordCount?: boolean
+  /** 请求取消信号（筛选/排序快速切换时丢弃过期响应，P1 #8） */
+  signal?: AbortSignal
 }
 
 /** 筛选菜单的可选值（后端 /Items/Filters 给出，取值来自全库） */
@@ -217,11 +253,31 @@ export function formatDuration(seconds: number): string {
 
 const USER_ITEMS = '/emby/Users/me/Items'
 
+/** Views 5 分钟内存缓存：媒体库首页和列表页各拉一次纯属浪费 */
+let viewsCache: { items: EmbyItem[]; ts: number } | null = null
+const VIEWS_TTL_MS = 5 * 60 * 1000
+
+/** 条目详情共享内存缓存：QuickViewSheet / 详情页 / 播放页不再重复拉同一条 */
+const itemCache = new Map<string, { item: EmbyItem; ts: number }>()
+const ITEM_TTL_MS = 2 * 60 * 1000
+const ITEM_CACHE_MAX = 200
+
+function cacheItem(item: EmbyItem): void {
+  itemCache.set(item.Id, { item, ts: Date.now() })
+  if (itemCache.size > ITEM_CACHE_MAX) {
+    const oldest = itemCache.keys().next().value
+    if (oldest) itemCache.delete(oldest)
+  }
+}
+
 export const embyApi = {
   /** 媒体库列表（Views） */
   async getViews(): Promise<EmbyItem[]> {
+    if (viewsCache && Date.now() - viewsCache.ts < VIEWS_TTL_MS) return viewsCache.items
     const res = await embyGet<{ Items: EmbyItem[] }>('/emby/Users/me/Views')
-    return res?.Items || []
+    const items = res?.Items || []
+    viewsCache = { items, ts: Date.now() }
+    return items
   },
 
   /** 通用条目查询（浏览/搜索/筛选/分页） */
@@ -243,7 +299,10 @@ export const embyApi = {
     if (q.officialRatings?.length) params.OfficialRatings = q.officialRatings.join(',')
     if (q.tags?.length) params.Tags = q.tags.join('|')
     if (q.filters?.length) params.Filters = q.filters.join(',')
-    return embyGet<{ Items: EmbyItem[]; TotalRecordCount: number; HasMore?: boolean }>(USER_ITEMS, { params })
+    return embyGet<{ Items: EmbyItem[]; TotalRecordCount: number; HasMore?: boolean }>(
+      USER_ITEMS,
+      q.signal ? { params, signal: q.signal } : { params },
+    )
   },
 
   /** 筛选菜单的可选值（分类 / 标签 / 分级 / 年份） */
@@ -280,9 +339,13 @@ export const embyApi = {
     return res?.Items || []
   },
 
-  /** 条目详情（full，含 MediaSources） */
+  /** 条目详情（full，含 MediaSources）：2 分钟共享缓存，QuickViewSheet/详情页/播放页共用 */
   async getItem(itemId: string): Promise<EmbyItem> {
-    return embyGet<EmbyItem>(`/emby/Items/${itemId}`)
+    const hit = itemCache.get(itemId)
+    if (hit && Date.now() - hit.ts < ITEM_TTL_MS) return hit.item
+    const item = await embyGet<EmbyItem>(`/emby/Items/${itemId}`)
+    cacheItem(item)
+    return item
   },
 
   /** 剧集的季列表 */
@@ -301,15 +364,20 @@ export const embyApi = {
 
   /** 切换收藏 */
   async setFavorite(itemId: string, isFavorite: boolean): Promise<EmbyUserData> {
-    return embyPost<EmbyUserData>(`/emby/Users/me/Items/${itemId}/Rating`, { IsFavorite: isFavorite })
+    const ud = await embyPost<EmbyUserData>(`/emby/Users/me/Items/${itemId}/Rating`, { IsFavorite: isFavorite })
+    const hit = itemCache.get(itemId)
+    if (hit) hit.item.UserData = { ...hit.item.UserData, ...ud }
+    return ud
   },
 
   /** 标记已看 / 未看 */
   async setPlayed(itemId: string, played: boolean): Promise<EmbyUserData> {
-    if (played) {
-      return embyPost<EmbyUserData>(`/emby/Users/me/PlayedItems/${itemId}`)
-    }
-    return embyDelete<EmbyUserData>(`/emby/Users/me/PlayedItems/${itemId}`)
+    const ud = played
+      ? await embyPost<EmbyUserData>(`/emby/Users/me/PlayedItems/${itemId}`)
+      : await embyDelete<EmbyUserData>(`/emby/Users/me/PlayedItems/${itemId}`)
+    const hit = itemCache.get(itemId)
+    if (hit) hit.item.UserData = { ...hit.item.UserData, ...ud }
+    return ud
   },
 
   /** 播放信息（返回带 api_key 的直连 / HLS 地址） */

@@ -14,7 +14,7 @@
  * - **筛选项拿不到不影响浏览**：`/Items/Filters` 失败时只是没有可选项，网格照常出内容，
  *   不会因为一个辅助接口把整个媒体库变成错误页。
  */
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { embyApi, posterUrl, progressPercent, type EmbyItem, type EmbyFilters } from '@/api/emby'
 import MediaCard from '@/components/media/MediaCard.vue'
@@ -214,6 +214,13 @@ function syncUrl() {
 // ==================== 加载 ====================
 
 const PAGE = 30
+/** P1#7：无限滚动 DOM 回收上限。超过后裁掉顶部不可见节点并补偿滚动位置 */
+const MAX_KEEP = 500
+const TRIM_TO = 400
+/** 已从服务端拉取的总条数（items 被裁剪后不再等于 items.value.length） */
+const serverOffset = ref(0)
+/** P1#8：筛选/排序快速切换时取消过期请求 */
+let loadCtrl: AbortController | null = null
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const sortOptions = [
@@ -243,10 +250,15 @@ async function loadFilters() {
 }
 
 async function load(reset = true) {
+  // P1#8：新请求发出前取消上一个，避免旧响应覆盖新筛选的结果
+  loadCtrl?.abort()
+  const ctrl = new AbortController()
+  loadCtrl = ctrl
   if (reset) {
     loading.value = true
     loadError.value = false
     items.value = []
+    serverOffset.value = 0
   } else {
     loadingMore.value = true
   }
@@ -263,26 +275,51 @@ async function load(reset = true) {
       filters: watchState.value ? [watchState.value] : undefined,
       sortBy,
       sortOrder: sortOrder as 'Ascending' | 'Descending',
-      startIndex: reset ? 0 : items.value.length,
+      startIndex: reset ? 0 : serverOffset.value,
       limit: PAGE,
       // 无限滚动不需要总数：后端跳过 COUNT(*)，用 HasMore 告诉有没有下一页
       enableTotalRecordCount: false,
+      signal: ctrl.signal,
     })
+    // 被取消的过期响应直接丢弃（可能晚于新请求返回）
+    if (ctrl.signal.aborted) return
     if (reset) {
       items.value = res.Items
+      serverOffset.value = res.Items.length
     } else {
       items.value.push(...res.Items)
+      serverOffset.value += res.Items.length
+      trimTopItems()
     }
     total.value = res.TotalRecordCount
     // 后端跳过总数时 TotalRecordCount 为 -1，此时用 HasMore 判断
     serverHasMore.value = res.HasMore ?? null
   } catch {
-    // 首页加载失败才进错误态；加载更多失败只停掉 spinner，不断掉已有列表
+    // 主动取消不算错误；首页加载失败才进错误态，加载更多失败只停 spinner
+    if (ctrl.signal.aborted) return
     if (reset) loadError.value = true
   } finally {
-    loading.value = false
-    loadingMore.value = false
+    // 只有最新一次请求能收尾，避免旧请求的 finally 把新请求的 spinner 关掉
+    if (loadCtrl === ctrl) {
+      loading.value = false
+      loadingMore.value = false
+    }
   }
+}
+
+/**
+ * P1#7：DOM 回收。动漫库 3 万条，滚到底几千个卡片节点全在 DOM 里，
+ * 内存和排版都扛不住。超过 MAX_KEEP 时裁掉顶部，nextTick 后按高度差
+ * 回补 scroll，保证视觉位置不动。
+ */
+function trimTopItems() {
+  if (items.value.length <= MAX_KEEP) return
+  const before = document.documentElement.scrollHeight
+  items.value.splice(0, items.value.length - TRIM_TO)
+  nextTick(() => {
+    const delta = document.documentElement.scrollHeight - before
+    if (delta !== 0) window.scrollBy(0, delta)
+  })
 }
 
 function hasMore() {
@@ -321,13 +358,14 @@ watch([genres, years, ratings, tags, watchState], onFilterChange, { deep: true }
 watch(libId, () => load(true))
 
 onMounted(() => {
-  window.addEventListener('scroll', onScroll)
+  window.addEventListener('scroll', onScroll, { passive: true })
   loadFilters()
   load(true)
 })
 
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer)
+  loadCtrl?.abort()
   window.removeEventListener('scroll', onScroll)
 })
 </script>
@@ -609,7 +647,7 @@ onBeforeUnmount(() => {
           @click="openItem(item)"
         >
           <div class="lr-poster">
-            <img v-if="posterUrl(item, 160) && !failedPosters.has(item.Id)" :src="posterUrl(item, 160)" :alt="item.Name" loading="lazy" @error="failedPosters.add(item.Id)" />
+            <img decoding="async" v-if="posterUrl(item, 160) && !failedPosters.has(item.Id)" :src="posterUrl(item, 160)" :alt="item.Name" loading="lazy" @error="failedPosters.add(item.Id)" />
             <span v-else class="lr-char">{{ (item.Name || '?').trim().charAt(0) || '?' }}</span>
           </div>
           <div class="lr-body">

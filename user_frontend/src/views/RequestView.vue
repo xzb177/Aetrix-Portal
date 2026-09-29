@@ -353,7 +353,7 @@ onMounted(async () => {
               :to="`/media/${hit.id}`"
             >
               <div class="hit-poster">
-                <img v-if="hit.poster_url && !failedPosters.has(hit.id)" :src="hit.poster_url" :alt="hit.name" loading="lazy" @error="failedPosters.add(hit.id)" />
+                <img decoding="async" v-if="hit.poster_url && !failedPosters.has(hit.id)" :src="hit.poster_url" :alt="hit.name" loading="lazy" @error="failedPosters.add(hit.id)" />
                 <Film v-else :size="14" />
               </div>
               <div class="hit-body">

@@ -12,7 +12,9 @@
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
-import Hls from 'hls.js'
+// P2#12：hls.js（594KB）改动态 import，只在非 Safari 需要 HLS 转码时才加载，
+// 首屏/路由分包不再背这个体积
+type HlsClass = typeof import('hls.js').default
 import {
   embyApi, posterUrl, ticksToSeconds, type EmbyItem, type EmbyMediaSource,
 } from '@/api/emby'
@@ -64,7 +66,20 @@ const volume = ref(1)
 const brightness = ref(1)
 const showControls = ref(true)
 
-let hls: Hls | null = null
+let hls: import('hls.js').default | null = null
+let hlsCtor: HlsClass | null = null
+
+/** 按需加载 hls.js，失败返回 null（走错误提示） */
+async function ensureHls(): Promise<HlsClass | null> {
+  if (!hlsCtor) {
+    try {
+      hlsCtor = (await import('hls.js')).default
+    } catch {
+      return null
+    }
+  }
+  return hlsCtor
+}
 let controlsTimer: ReturnType<typeof setTimeout> | null = null
 let progressTimer: ReturnType<typeof setInterval> | null = null
 let reportedStart = false
@@ -147,7 +162,8 @@ async function resolveAndPlay() {
         await video.play().catch(() => {})
         return
       }
-      if (Hls.isSupported()) {
+      const Hls = await ensureHls()
+      if (Hls && Hls.isSupported()) {
         destroyHls()
         hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 60 })
         hls.loadSource(hlsUrl)
@@ -215,6 +231,19 @@ function stopProgressLoop() {
   if (progressTimer) {
     clearInterval(progressTimer)
     progressTimer = null
+  }
+}
+
+/**
+ * P2#11：切后台/锁屏时暂停每 10 秒的进度上报，省请求；
+ * 回来时立即上报一次再恢复定时器，避免丢进度。
+ */
+function onVisibilityChange() {
+  if (document.hidden) {
+    stopProgressLoop()
+  } else {
+    reportProgress()
+    startProgressLoop()
   }
 }
 
@@ -634,6 +663,7 @@ async function initPlayback() {
 
 onMounted(() => {
   document.addEventListener('keydown', onGlobalKeydown)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   initPlayback()
 })
 
@@ -657,6 +687,7 @@ onBeforeUnmount(() => {
   if (gestureTipTimer) clearTimeout(gestureTipTimer)
   if (tapTimer) clearTimeout(tapTimer)
   document.removeEventListener('keydown', onGlobalKeydown)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   scrollLocks = 0
   document.body.style.overflow = ''
   document.title = pageTitle()

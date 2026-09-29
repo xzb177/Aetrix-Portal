@@ -40,7 +40,7 @@
  * 面板只做「一眼看到状态 + 点进去办事」：完整的会话清单与设备管理仍在个人中心（控制面板），
  * 与顶栏铃铛 / 消息中心的分工一致——同一个语义，摘要在一处、全量在另一处，不会两处都铺全。
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
@@ -277,17 +277,30 @@ function confirmStopSession() {
 // 而不是静默吞掉让用户看到错误的「未开通」形态
 const loadError = ref(false)
 
-async function loadData() {
+// P1#3：首屏只拉"最新入库"（首屏可见内容），其余 8 个非关键请求延后 1 秒，
+// 首屏不再被积分/签到/订阅这些数据拖慢
+async function loadCritical() {
   loading.value = true
-  loadError.value = false
-  // 订阅接口失败时记下来，加载完统一展示错误态
-  let memberFailed = false
   try {
     // v2.10.3：消息与公告不再在首页拉取——那是顶栏铃铛的事（它本来就在每次轮询未读数），
     // 首页少一组请求，也不再重复展示同一批未读
-    const [latest, pointsRes, checkinRes, inviteRes, subs,
+    latestItems.value = await protocolApi.getLatest(16).catch((): EmbyItem[] => [])
+  } finally {
+    loading.value = false
+  }
+}
+
+async function retryLoad() {
+  await loadCritical()
+  await loadDeferred()
+}
+
+async function loadDeferred() {
+  // 订阅接口失败时记下来，加载完统一展示错误态
+  let memberFailed = false
+  try {
+    const [pointsRes, checkinRes, inviteRes, subs,
       statsRes, seekRes, ticketsRes, sessionsRes] = await Promise.all([
-      protocolApi.getLatest(16).catch((): EmbyItem[] => []),
       pointsApi.log({ limit: 1 }).catch((): null => null),
       checkinApi.status().catch((): null => null),
       inviteApi.myCode().catch((): null => null),
@@ -298,7 +311,6 @@ async function loadData() {
       ticketApi.getMyTickets().catch((): null => null),
       embyApi.getSessions().catch((): { sessions: MyPlaybackSession[] } | null => null),
     ])
-    latestItems.value = latest
     if (pointsRes) quickStats.value.balance = pointsRes.balance
     if (checkinRes) {
       quickStats.value.streak = checkinRes.streak
@@ -329,13 +341,18 @@ async function loadData() {
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')
     }
-  } finally {
-    loading.value = false
   }
 }
 
+let deferredTimer: ReturnType<typeof setTimeout> | null = null
+
 onMounted(() => {
-  loadData()
+  loadCritical()
+  deferredTimer = setTimeout(() => { loadDeferred() }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (deferredTimer) clearTimeout(deferredTimer)
 })
 </script>
 
@@ -472,7 +489,7 @@ onMounted(() => {
       <div v-if="loadError && !loading" class="au-empty load-error-card au-card">
         <TriangleAlert :size="28" />
         <p>会员信息加载失败，页面数据可能不完整</p>
-        <button class="au-btn au-btn-primary au-btn-sm" @click="loadData">
+        <button class="au-btn au-btn-primary au-btn-sm" @click="retryLoad">
           <RotateCcw :size="13" />
           重新加载
         </button>
