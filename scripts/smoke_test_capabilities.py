@@ -33,6 +33,7 @@ from backend import notifications
 from backend.database import SessionLocal, init_db
 from backend.main import app
 from backend.security import create_access_token, hash_password
+from backend.integrations.store import invalidate
 from backend.integrations import ai as ai_cap
 from backend.integrations import captcha as captcha_cap
 from backend.integrations import geoip as geoip_cap
@@ -796,7 +797,6 @@ check("未启用时启动落地不会自己装上代理",
 # 后台改完代理必须立刻生效，不能让管理员靠重启进程解决（「代理填了但 TMDB 还是连不上」）。
 restore_httpx()   # 本节要真实的连接池才能看见代理，前面用的假 httpx 在此收工
 from backend.emby_server import tmdb as tmdb_mod  # noqa: E402 — 放在假 httpx 之后才安全
-from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
 
 
 def _session_proxies(session) -> set:

@@ -49,6 +49,7 @@ from backend.security import hash_password  # noqa: E402
 init_db()
 
 from backend.main import app  # noqa: E402
+from backend.integrations.store import invalidate  # noqa: E402
 
 client = TestClient(app)
 

@@ -26,6 +26,7 @@ from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.main import app
 from backend.security import hash_password
+from backend.integrations.store import invalidate
 
 init_db()
 client = TestClient(app)
@@ -162,7 +163,6 @@ check("/auth/me 同步反映关闭状态", r.json().get("subscription_required")
 from starlette.requests import Request as StarletteRequest  # noqa: E402
 
 from backend.subscriptions import ensure_download_allowed  # noqa: E402
-from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
 from fastapi import HTTPException as FastAPIHTTPException  # noqa: E402
 
 set_config("allow_download", "false")

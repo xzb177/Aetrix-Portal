@@ -24,6 +24,7 @@ from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.main import app
 from backend.security import hash_password
+from backend.integrations.store import invalidate
 
 init_db()
 client = TestClient(app)
@@ -542,7 +543,6 @@ db.close()
 import asyncio  # noqa: E402
 
 from backend import notifications as notif  # noqa: E402
-from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
 
 mail_channel = notif.EmailChannel(
     smtp_host="127.0.0.1", smtp_port=9,  # 必然被拒的本地端口：不发外网、也不挂起
