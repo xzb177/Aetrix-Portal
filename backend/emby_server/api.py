@@ -432,28 +432,28 @@ def _is_primary_version(item, db):
 
 
 def _version_label(item):
-    """版本显示名：从文件名提取版本特征（如 1080p、原盘）。"""
+    """版本显示名：对标标准 Emby。
+
+    标准 Emby 口径（官方 Wiki "Multiversion movies"）：" - " 后面的文本原样
+    作为版本名展示，不拼接其他信息。大小由 Versions[].Size 字段单独下发，
+    客户端自行展示，不要塞进 Name 里。
+    无 " - " 后缀时（标准 Emby 不会把这类文件并为多版本，我们的分组更宽松），
+    按分辨率给一个标准 "Xp" 命名。
+    """
     fp = item.file_path or ""
     name = fp.rsplit("/", 1)[-1] if "/" in fp else fp
     if "." in name:
         name = name.rsplit(".", 1)[0]
     if " - " in name:
-        label = name.split(" - ", 1)[1]
-    else:
-        h = item.height or 0
-        if h >= 2160:
-            label = "4K"
-        elif h >= 1080:
-            label = "1080p"
-        elif h >= 720:
-            label = "720p"
-        else:
-            label = "标清"
-    size = item.size or 0
-    if size > 0:
-        gb = size / (1024 ** 3)
-        label += " · %.1fGB" % gb
-    return label
+        return name.split(" - ", 1)[1]
+    h = item.height or 0
+    if h >= 2160:
+        return "4K"
+    if h >= 1080:
+        return "1080p"
+    if h >= 720:
+        return "720p"
+    return "480p"
 
 
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
