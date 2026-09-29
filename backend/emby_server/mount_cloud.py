@@ -154,6 +154,18 @@ def _xml_text(node, name: str, default: str = "") -> str:
 
 # ==================== 公共基类 ====================
 
+def _walk_workers() -> int:
+    """扫描遍历的并发线程数（SCAN_WALK_WORKERS，默认 16）。
+
+    非法值回退默认，保证配错了也不炸扫描。
+    """
+    try:
+        n = int(os.getenv("SCAN_WALK_WORKERS", "16") or 16)
+    except (TypeError, ValueError):
+        n = 16
+    return max(1, n)
+
+
 class _CloudMount(MountProvider):
     """云端挂载基类：统一 HTTP 调用、错误翻译与递归扫描"""
 
@@ -231,7 +243,10 @@ class _CloudMount(MountProvider):
         # 的 ffprobe 与 TMDB 预取。rel 全局唯一，误杀不了正常文件。
         seen_files: set[str] = set()
         # 分层 BFS：每层目录并发列举
-        with ThreadPoolExecutor(max_workers=16, thread_name_prefix="walk") as pool:
+        # 并发数可配（SCAN_WALK_WORKERS，默认 16）：网盘 API 延迟是瓶颈，并发主要
+        # 是掩盖延迟；但并发越高，同时打向 rclone RC / 网盘的请求越多，rcd 侧的
+        # 内存峰值也越高。内存吃紧的机器可调小（如 8），扫描会慢一些。
+        with ThreadPoolExecutor(max_workers=_walk_workers(), thread_name_prefix="walk") as pool:
             while current:
                 fut_to_dir = {
                     pool.submit(self._entries, rel): (rel, depth)
