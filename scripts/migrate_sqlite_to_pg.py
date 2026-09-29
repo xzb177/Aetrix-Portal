@@ -113,6 +113,100 @@ def _convert_row(table, col_names, row):
 # 主流程
 # ---------------------------------------------------------------------------
 
+
+# ------------------- 外键自洽 -------------------
+def _fk_parents(conn, table_name):
+    """本表所有外键指向的 (目标表, 本表列, 目标列)"""
+    out = []
+    for fk in conn.execute(f'PRAGMA foreign_key_list("{table_name}")'):
+        # fk = (id, seq, table, from, to, on_update, on_delete, match)
+        out.append((fk[2], fk[3], fk[4]))
+    return out
+
+
+def _neutralize_orphans(src, tables, verbose=True):
+    """把「父表里根本不存在的孤儿外键」置为 NULL。
+
+    为什么必须做：SQLite 默认**不强制外键**（PRAGMA foreign_keys 默认 OFF），
+    所以老库里长期躺着违反约束的数据；PG 强制外键，导到就会
+    ForeignKeyViolation 直接中断。生产实测：
+        admin_users 0 行，但 admin_logs 151 行且 admin_user_id=1
+    ——管理员账号不在这库里（走的是外部认证），日志里的 id 成了孤儿。
+
+    这里只动**确实指向不存在父行**的列（安全），不碰任何有对应父行的数据；
+    置 NULL 而非删行，是为了保住日志/工单这些审计数据。
+    统计结果会打印出来，让人知道有多少行被中和过。
+    """
+    fk_map = {}
+    for t in tables:
+        tname = getattr(t, "name", t)     # 传进来的可能是 ORM Table，也可能是表名
+        for parent, frm, to in _fk_parents(src, tname):
+            if parent == tname:           # 自引用不处理（按主键顺序导，父先于子）
+                continue
+            fk_map.setdefault(tname, []).append((parent, frm, to))
+
+    if not fk_map:
+        return {}
+    stats = {}
+    for tbl, fks in fk_map.items():
+        try:
+            if not src.execute(f'SELECT 1 FROM "{tbl}" LIMIT 1').fetchone():
+                continue
+        except sqlite3.Error:
+            continue
+        # SET 子句只列一次，条件用 OR 串起来（多列外键：任一列是孤儿就整行中和）
+        set_cols = ", ".join(f'"{frm}" = NULL' for _p, frm, _to in fks)
+        conds = " OR ".join(
+            f'("{frm}" IS NOT NULL AND NOT EXISTS '
+            f'(SELECT 1 FROM "{parent}" WHERE "{parent}"."{to}" = "{tbl}"."{frm}"))'
+            for parent, frm, to in fks)
+        try:
+            n = src.execute(f'UPDATE "{tbl}" SET {set_cols} WHERE {conds}').rowcount
+            if n:
+                stats[tbl] = n
+                if verbose:
+                    print(f"      · {tbl}: 中和 {n} 行孤儿外键 → NULL")
+        except sqlite3.Error as e:
+            print(f"      ! {tbl} 孤儿处理跳过：{e}")
+    if stats:
+        src.commit()
+        print(f"      共中和 {sum(stats.values())} 行（源库本就违反外键，SQLite 不强制所以一直没暴露）")
+    return stats
+
+
+def _build_export_order(src, tables):
+    """按外键依赖排序：父表先导。自引用用主键顺序单独处理。
+
+    metadata.sorted_tables 只处理了**已声明**的外键；SQLite 老库的孤儿数据
+    （父表 0 行、子表却引用着不存在的 id）依然会让 PG 在导子表时炸
+    ForeignKeyViolation——所以顺序必须自己做，不能只信 sorted_tables。
+    """
+    cur = src.cursor()
+    name_map = {t.name: t for t in tables}
+    deps = {t.name: set() for t in tables}   # table -> 依赖的父表
+    for t in tables:
+        for parent, _frm, _to in _fk_parents(src, t.name):
+            if parent != t.name and parent in name_map:
+                deps[t.name].add(parent)
+    ordered, seen, temp = [], set(), set()
+
+    def visit(n):
+        if n in seen:
+            return
+        if n in temp:      # 成环：按已有顺序硬拆，剩下交给 --truncate-orphans
+            return
+        temp.add(n)
+        for p in sorted(deps.get(n, ())):
+            visit(p)
+        temp.discard(n)
+        seen.add(n)
+        ordered.append(n)
+
+    for t in tables:
+        visit(t.name)
+    return ordered
+
+
 def main():
     args = parse_args()
 
@@ -134,10 +228,21 @@ def main():
     dbmod.init_db()
 
     # 2. 按外键依赖顺序拿表清单
-    tables = list(dbmod.Base.metadata.sorted_tables)
+    _all_tables = list(dbmod.Base.metadata.sorted_tables)
     only = {t.strip() for t in args.tables.split(",") if t.strip()}
     if only:
-        tables = [t for t in tables if t.name in only]
+        _all_tables = [t for t in _all_tables if t.name in only]
+    # 用 SQLite 侧真实的 PRAGMA foreign_key_list 重新排一次：
+    # metadata 只认**模型里声明过**的外键，而老 SQLite 库可能存在
+    # "父表 0 行、子表仍引用着那个 id" 的孤儿数据，PG 强制外键会直接拒绝。
+    # 生产实测：admin_users 0 行、admin_logs 151 行且 admin_user_id=1，
+    # 按 metadata 顺序导到 admin_logs 就 ForeignKeyViolation。
+    _probe = sqlite3.connect(args.source)
+    _order = _build_export_order(_probe, _all_tables)
+    _probe.close()
+    _by_name = {t.name: t for t in _all_tables}
+    tables = [_by_name[n] for n in _order if n in _by_name]
+    tables += [t for t in _all_tables if t not in tables]  # 兜底：环或异常时不丢表
     print(f"[2/5] 共 {len(tables)} 张表（按外键依赖排序）")
 
     src = sqlite3.connect(args.source)
@@ -165,6 +270,10 @@ def main():
             if n:
                 print(f"      ✗ 目标表 {table.name} 非空（{n} 行），请加 --clean 或先手动清空")
                 sys.exit(2)
+
+    # 3.5 中和孤儿外键（SQLite 不强制、PG 强制，必须先处理）
+    print("[3.5/5] 中和孤儿外键（源库违反约束的残留）...")
+    _neutralize_orphans(src, tables)
 
     # 4. 逐表导数据
     print(f"[4/5] 导数据（batch={args.batch_size}）...")
