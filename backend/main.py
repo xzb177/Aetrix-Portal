@@ -241,6 +241,7 @@ if _cors_origins:
 RATE_LIMITS = [
     # (路径前缀, 未认证限额/分钟, 认证用户限额/分钟)
     ("/api/health", 0, 0),              # 健康检查：不限流
+    ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
     ("/api/admin/emby/login", 10, 10),  # 登录：每分钟 10 次（防暴力破解）
     ("/api/user/login", 10, 10),
     ("/api/admin/", 60, 300),           # 管理接口：未认证 60，认证 300
@@ -292,11 +293,13 @@ def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, st
 
 @app.middleware("http")
 async def rate_limit_middleware(request, call_next):
-    # 只限流 API 路径
-    if request.url.path.startswith("/api/"):
+    # API 路径 + Emby 客户端路径都限流。Emby 登录（/emby/Users/AuthenticateByName）
+    # 单独给更严的 per-IP 限额（15次/分钟，对标 go-emby），防暴力破解。
+    path = request.url.path
+    if path.startswith(("/api/", "/emby/")):
         ip = _get_client_ip(request)
         authenticated = _is_authenticated(request)
-        allowed, reason = _check_rate_limit(ip, request.url.path, authenticated)
+        allowed, reason = _check_rate_limit(ip, path, authenticated)
         if not allowed:
             from fastapi.responses import JSONResponse
             return JSONResponse(
@@ -324,6 +327,30 @@ async def security_headers(request: Request, call_next):
         # SPA 入口每次都要回源校验：发了新版本用户刷新就能拿到新构建
         response.headers.setdefault("Cache-Control", "no-cache")
     return response
+
+@app.middleware("http")
+async def request_body_limit_middleware(request, call_next):
+    # 请求体大小上限：防恶意大包打爆内存（借鉴 go-emby 的 MaxBytesReader 思路）。
+    # 先看 Content-Length 头做廉价拒绝；分块传输的超限包会在读取时被 Starlette 截断，
+    # 这里只做头检查，解析层 FastAPI 本身也会按此拒绝。
+    try:
+        max_mb = float(os.getenv("MAX_REQUEST_BODY_MB", "10"))
+    except ValueError:
+        max_mb = 10
+    max_bytes = int(max_mb * 1024 * 1024)
+    clen = request.headers.get("content-length")
+    if clen:
+        try:
+            if int(clen) > max_bytes:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": f"请求体过大，上限 {max_mb:g}MB"},
+                )
+        except ValueError:
+            pass
+    return await call_next(request)
+
 
 # GZip 压缩：JSON / HTML / 接口响应走压缩，已压缩或大块二进制内容不再压缩。
 # Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——

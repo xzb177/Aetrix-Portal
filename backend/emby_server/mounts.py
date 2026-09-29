@@ -937,11 +937,9 @@ class Pan115Mount(MountProvider):
         })
 
     def read_text(self, rel: str) -> str:
-        import httpx
-
         target = self.resolve(rel)
-        with httpx.Client(timeout=MOUNT_TIMEOUT, follow_redirects=True) as client:
-            resp = client.get(target.value, headers=target.headers)
+        client = _shared_http_client("pan115")
+        resp = client.get(target.value, headers=target.headers)
         if resp.status_code >= 400:
             raise MountError(f"读取 115 文件失败: HTTP {resp.status_code}")
         return resp.content.decode("utf-8", errors="ignore")
@@ -951,6 +949,31 @@ def _http_client():
     import httpx
 
     return httpx.Client(timeout=MOUNT_TIMEOUT, follow_redirects=True)
+
+
+# 模块级共享 HTTP 客户端池：按 (base, timeout) 复用连接，避免扫描时
+# 每次请求都新建连接池（借鉴 go-emby 的连接复用思路）。httpx.Client
+# 的同步 API 是线程安全的，可在扫描线程池里共用。
+_shared_clients: dict = {}
+_shared_clients_lock = None
+
+
+def _shared_http_client(key: str = "default", timeout=None):
+    """取（或创建）具名共享客户端。"""
+    import httpx
+    import threading
+
+    global _shared_clients_lock
+    if _shared_clients_lock is None:
+        _shared_clients_lock = threading.Lock()
+    with _shared_clients_lock:
+        client = _shared_clients.get(key)
+        if client is None:
+            client = httpx.Client(
+                timeout=timeout or MOUNT_TIMEOUT, follow_redirects=True
+            )
+            _shared_clients[key] = client
+        return client
 
 
 class WebDavMount(MountProvider):
@@ -1115,12 +1138,10 @@ class AlistMount(MountProvider):
         return self.token
 
     def _post(self, path: str, payload: dict) -> dict:
-        import httpx
-
         headers = self._headers()
         try:
-            with httpx.Client(timeout=MOUNT_TIMEOUT, follow_redirects=True) as client:
-                resp = client.post(f"{self._require_base()}{path}", json=payload, headers=headers)
+            client = _shared_http_client("alist")
+            resp = client.post(f"{self._require_base()}{path}", json=payload, headers=headers)
         except Exception as exc:  # noqa: BLE001
             raise MountError(f"连接 AList 失败: {exc}") from exc
         if resp.status_code in (401, 403):

@@ -259,8 +259,33 @@ else:  # pragma: no cover — 旧版 Starlette 没有按内容类型排除的参
 
 # ============ API 限流（Redis 固定窗口）============
 # EA 公网暴露，需防滥用；健康检查不限流
+
+
+@app.middleware("http")
+async def ea_body_limit_middleware(request, call_next):
+    # 请求体大小上限：防恶意大包打爆内存。Content-Length 头做廉价拒绝。
+    import os
+
+    try:
+        max_mb = float(os.getenv("MAX_REQUEST_BODY_MB", "10"))
+    except ValueError:
+        max_mb = 10
+    max_bytes = int(max_mb * 1024 * 1024)
+    clen = request.headers.get("content-length")
+    if clen:
+        try:
+            if int(clen) > max_bytes:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": f"请求体过大，上限 {max_mb:g}MB"},
+                )
+        except ValueError:
+            pass
+    return await call_next(request)
 _EA_RATE_LIMITS = [
     ("/api/health", 0, 0),              # 健康检查：不限流
+    ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
     ("/api/admin/emby/login", 10, 10),  # 登录：防暴力破解
     ("/api/user/login", 10, 10),
     ("/api/", 120, 600),               # 普通 API
@@ -307,7 +332,8 @@ def _ea_check_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, str]
 
 @app.middleware("http")
 async def ea_rate_limit_middleware(request, call_next):
-    if request.url.path.startswith("/api/"):
+    # /api/ 与 /emby/ 都限流：后者覆盖 Emby 客户端登录（其它 /emby/ 路径无匹配规则则放行）
+    if request.url.path.startswith(("/api/", "/emby/")):
         ip = _ea_get_ip(request)
         authenticated = _ea_is_auth(request)
         allowed, reason = _ea_check_limit(ip, request.url.path, authenticated)

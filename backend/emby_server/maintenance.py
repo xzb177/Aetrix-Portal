@@ -603,7 +603,50 @@ def janitor_tick() -> dict:
         result["subtitle_cache_pruned"] = prune_subtitle_cache()
     except Exception as exc:  # noqa: BLE001
         logger.warning("字幕缓存淘汰失败: %s", exc)
+    try:
+        result["idle_gc_done"] = bool(_idle_gc_if_quiet())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("空闲 GC 失败: %s", exc)
     return result
+
+
+def _idle_gc_if_quiet() -> int:
+    """空闲时回收内存（借鉴 go-emby 的 FreeOSMemory 思路）：
+
+    只在没有扫描运行时做，避免跟扫描抢 CPU；gc.collect() 清 Python
+    循环引用垃圾，再调 malloc_trim 把空闲堆内存还给 OS（Linux）。
+    绝不在请求热路径调用，只在维护线程里跑。
+    """
+    import gc
+
+    from backend.database import SessionLocal
+    from backend.emby_server import models as em
+
+    db = SessionLocal()
+    try:
+        running = (
+            db.query(em.ScanRun.id)
+            .filter(em.ScanRun.status == "running")
+            .first()
+        )
+        if running is not None:
+            return 0  # 有扫描在跑：不动
+    finally:
+        db.close()
+
+    before = gc.get_count()
+    gc.collect()
+    freed = 0
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        # malloc_trim(0)：把堆顶空闲内存还给 OS，返回 1 表示成功
+        if libc.malloc_trim(0):
+            freed = 1
+    except Exception:
+        pass
+    logger.info("空闲 GC 完成（代际计数 %s→%s）", before, gc.get_count())
+    return freed
 
 
 def start_janitor(interval_seconds: Optional[int] = None) -> bool:
