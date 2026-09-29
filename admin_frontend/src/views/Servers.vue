@@ -497,11 +497,11 @@ async function remove(row: RemoteServerRow) {
         </p>
       </div>
       <div class="toolbar">
-        <el-button @click="$router.push('/realms')">
+        <el-button @click="$router.push({ name: 'Realms' })">
           <RealmIcon :size="14" style="margin-right: 4px" />服管理
         </el-button>
-        <el-button @click="$router.push('/mounts')">存储来源</el-button>
-        <el-button @click="$router.push('/emby')">媒体库</el-button>
+        <el-button @click="$router.push({ name: 'StorageMounts' })">存储来源</el-button>
+        <el-button @click="$router.push({ name: 'EmbyAdmin' })">媒体库</el-button>
         <el-button :loading="liveRunning" @click="runLive">
           <Wifi :size="14" style="margin-right: 4px" />一键体检
         </el-button>
