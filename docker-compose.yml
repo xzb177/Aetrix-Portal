@@ -1,11 +1,13 @@
 name: aetrix-portal
 
 services:
+  # 后端 API：只跑 FastAPI，不再打包前端静态文件（前后端分离）。
+  # 前端由 aetrix-web（nginx）单独 serve，/api/* 反代到这里。
   aetrix-api:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: aetrix-portal:latest
+      dockerfile: Dockerfile.backend
+    image: aetrix-backend:latest
     container_name: aetrix-api
     restart: unless-stopped
     env_file:
@@ -20,8 +22,9 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       EMBY_TRANSCODE_DIR: /data/transcode
       EMBY_IMAGE_DIR: /data/images
-      FRONTEND_DIST: /app/user_frontend/dist
-      ADMIN_DIST: /app/admin_frontend/dist
+      # 前后端分离后，后端不再 serve 前端静态文件，指向不存在的路径让 main.py 跳过挂载
+      FRONTEND_DIST: /nonexistent-frontend
+      ADMIN_DIST: /nonexistent-admin
       # 存储挂载 · rclone RC：指向同网络的 rclone 容器，容器名即服务名
       MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
       MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
@@ -30,8 +33,9 @@ services:
       # rclone 容器看不到（面板显示成功、实际用不了）。
       RCLONE_CONF_PATH: /config/rclone/rclone.conf
       RCLONE_SA_DIR: /sa-accounts
-    ports:
-      - "${AETRIX_PORT:-8000}:8000"
+    # 不再直接暴露公网端口：统一走 aetrix-web（nginx）反代
+    expose:
+      - "8000"
     volumes:
       - aetrix_data:/data
       - ${MEDIA_ROOT:-./media}:/media:ro
@@ -53,13 +57,34 @@ services:
       start_period: 45s
       retries: 5
 
+  # 前端：nginx serve 双前端静态文件，/api/* 与 /emby/* 反代到 aetrix-api。
+  # 对外唯一入口（端口 8000）。
+  aetrix-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: aetrix-frontend:latest
+    container_name: aetrix-web
+    restart: unless-stopped
+    ports:
+      - "${AETRIX_PORT:-8000}:80"
+    depends_on:
+      aetrix-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
   # 后台任务进程（v2.41.0 后端拆分）：扫描/探测/补全/定时/提醒/追新，不监听 HTTP。
   # 与 aetrix-api 共享数据库、Redis、数据卷；单实例由 Redis 分布式锁保证。
   aetrix-worker:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: aetrix-portal:latest
+      dockerfile: Dockerfile.backend
+    image: aetrix-backend:latest
     container_name: aetrix-worker
     restart: unless-stopped
     command: ["python3", "-m", "backend.worker"]
@@ -124,8 +149,8 @@ services:
   ea:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: aetrix-portal:latest
+      dockerfile: Dockerfile.backend
+    image: aetrix-backend:latest
     container_name: aetrix-ea
     restart: unless-stopped
     command: ["python", "-m", "emby_api.main"]

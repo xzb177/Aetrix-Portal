@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# 后端专用镜像：只含 Python 后端，不打包前端静态文件。
+# 前端由 Dockerfile.frontend 单独构建，走 nginx 容器 serve。
+
+FROM python:3.12-slim AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg mediainfo ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+# 版本号单一来源：显式先放一份，避免将来 .dockerignore 调整时漏掉它
+COPY VERSION /app/VERSION
+COPY . /app
+# 注意：不再 COPY 前端 dist。FRONTEND_DIST/ADMIN_DIST 留空时
+# backend/main.py 会跳过静态文件挂载，只跑 API。
+ENV HOST=0.0.0.0 \
+    PORT=8000 \
+    ENABLE_EMBY_GATEWAY=true \
+    EMBY_FFMPEG_PATH=ffmpeg
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
+CMD ["python", "serve.py"]
