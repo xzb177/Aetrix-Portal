@@ -169,9 +169,13 @@ def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
     超过任何合理超时，而且 11 个库串行跑一轮远超轮询间隔（每轮都超时）。
 
     改成**两级**：先只列顶层（一次请求、几百个目录，每个都带 ModTime），
-    只对「ModTime 落在窗口内」的子目录递归。实测顶层 402 个目录全部带 ModTime，
-    正常情况下每轮只递归最近变动的少数几个目录——成本从上万文件降到几十个。
-    上传的片子必然改动所在目录的 mtime，所以不会漏检。
+    再对每个顶层目录列一层子目录（季级），只对「ModTime 落在窗口内」的季级
+    子目录递归。实测顶层 402 个目录全部带 ModTime，正常情况下每轮只递归
+    最近变动的少数几个季目录——成本从上万文件降到几十个。
+
+    **不能在顶层按 mtime 过滤**：新出一集只改动 ``Season/`` 子目录的 mtime，
+    顶层剧集目录的 mtime 不变（rclone/Drive 只更新直接父目录）。如果在顶层
+    按 mtime 筛，"老剧出新集"（追新最主要的场景）会被漏掉。
     """
     mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
     if mount is None or not getattr(mount, "is_enabled", False):
@@ -188,41 +192,65 @@ def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
         logger.warning("[chase-new] 列 %s 顶层失败: %s", remote, exc)
         return []
 
+    base = remote.rstrip("/")
+
+    def _mount_url(*parts: str) -> str:
+        # 拼 mount:// 路径：逐段 strip（不能对整串做 replace，
+        # 那会把 mount:// 前缀里的双斜杠也去掉，得到 mount:/3/… 的错路径）
+        rel = "/".join(p.strip("/") for p in parts if p and p.strip("/"))
+        return f"{MOUNT_PATH_PREFIX}{mount_id}/{base}/{rel}" if base else f"{MOUNT_PATH_PREFIX}{mount_id}/{rel}"
+
     found: list[str] = []
-    # 顶层直接就是视频文件的情况
-    targets: list[str] = []
     for it in top:
         if not isinstance(it, dict):
             continue
         name = str(it.get("Name") or "")
         if not it.get("IsDir"):
+            # 顶层散片
             if (os.path.splitext(name)[1].lower() in VIDEO_EXTS
                     and _mod_ts(it) > since_ts):
-                # 顶层散片：直接在 remote 后拼文件名（不能对整串做 replace，
-                # 那会把 mount:// 前缀里的双斜杠也去掉，得到 mount:/3/… 的错路径）
-                base = remote.rstrip("/")
-                found.append(f"{MOUNT_PATH_PREFIX}{mount_id}/{base}/{name}" if base
-                             else f"{MOUNT_PATH_PREFIX}{mount_id}/{name}")
+                found.append(_mount_url(name))
             continue
-        if _mod_ts(it) > since_ts:
-            targets.append(str(it.get("Path") or name))
-
-    for path in targets:
+        # 顶层目录（剧集）：不按 mtime 过滤，直接列第二级（季目录/散文件）
+        show_path = str(it.get("Path") or name)
         try:
-            items = _rc_list(mount, cfg, f"{remote.rstrip('/')}/{path}", recurse=True, files_only=True)
-        except Exception as exc:  # noqa: BLE001 — 单个子目录失败不影响其它
-            logger.warning("[chase-new] 递归列 %s 失败: %s", path, exc)
+            subs = _rc_list(mount, cfg, f"{base}/{show_path}" if base else show_path,
+                            recurse=False, files_only=False)
+        except Exception as exc:  # noqa: BLE001 — 单个剧集目录失败不影响其它
+            logger.warning("[chase-new] 列 %s 第二级失败: %s", show_path, exc)
             continue
-        for it in items:
-            if not isinstance(it, dict) or it.get("IsDir"):
+        for sub in subs:
+            if not isinstance(sub, dict):
                 continue
-            name = str(it.get("Name") or "")
-            if not name or os.path.splitext(name)[1].lower() not in VIDEO_EXTS:
+            sub_name = str(sub.get("Name") or "")
+            sub_path = str(sub.get("Path") or sub_name)
+            if not sub.get("IsDir"):
+                # 剧集目录下直接放视频（无季目录结构）
+                if (os.path.splitext(sub_name)[1].lower() in VIDEO_EXTS
+                        and _mod_ts(sub) > since_ts):
+                    found.append(_mount_url(show_path, sub_path))
                 continue
-            if _mod_ts(it) <= since_ts:
+            if _mod_ts(sub) <= since_ts:
                 continue
-            rel_path = f"/{remote.rstrip('/')}/{str(it.get('Path') or '').lstrip('/')}".replace("//", "/")
-            found.append(f"{MOUNT_PATH_PREFIX}{mount_id}{rel_path}")
+            # 季目录在窗口内变动：递归找新视频
+            try:
+                items = _rc_list(mount, cfg, f"{base}/{show_path}/{sub_path}" if base
+                                 else f"{show_path}/{sub_path}",
+                                 recurse=True, files_only=True)
+            except Exception as exc:  # noqa: BLE001 — 单个季目录失败不影响其它
+                logger.warning("[chase-new] 递归列 %s/%s 失败: %s", show_path, sub_path, exc)
+                continue
+            for fitem in items:
+                if not isinstance(fitem, dict) or fitem.get("IsDir"):
+                    continue
+                fname = str(fitem.get("Name") or "")
+                if not fname or os.path.splitext(fname)[1].lower() not in VIDEO_EXTS:
+                    continue
+                if _mod_ts(fitem) <= since_ts:
+                    continue
+                # 递归结果的 Path 是相对被递归目录的
+                fpath = str(fitem.get("Path") or "").lstrip("/")
+                found.append(_mount_url(show_path, sub_path, fpath))
     return found
 
 

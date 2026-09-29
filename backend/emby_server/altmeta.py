@@ -52,6 +52,10 @@ SUGGEST_URL = "https://movie.douban.com/j/subject_suggest"
 BANGUMI_SEARCH_URL = "https://api.bgm.tv/search/subject"
 CONFIG_ENABLED = "altmeta_enabled"
 CONFIG_KEYS = "altmeta_douban_keys"
+# 注意：这个 key 的语义一旦确定就不能再改。PR #178 曾把它的语义从
+# "每分钟请求数"改成"两次请求最小间隔秒数"，沿用同名 key 会导致老配置
+# 被误读（如配了 30 会从"30次/分钟"变成"30秒一次"，慢 60 倍）。
+# 以后如果还要改语义，必须换新 key 名 + 写迁移，禁止复用。
 CONFIG_RATE = "altmeta_douban_rate"
 CONFIG_BANGUMI_RATE = "altmeta_bangumi_rate"
 CONFIG_WORKERS = "altmeta_workers"
@@ -220,7 +224,9 @@ def apply(item: Any, hit: dict, source: str = "douban") -> None:
     if not item.tmdb_id:
         item.tmdb_id = None  # 保持为 None——豆瓣 id 放 douban_id，不混用 tmdb_id
     if hit.get("title"):
-        # 不覆盖已有名字（可能是用户/NFO 整理过的）
+        # 名字只在"三无"时才用豆瓣标题补（无简介、无海报、无主图）：
+        # 这种一般是文件名解析出的脏名，豆瓣标题（已过校验）比它靠谱；
+        # 只要已有简介或海报，说明之前已刮削过，名字不动（可能是用户/NFO 整理过的）。
         if not (item.overview or "").strip() and not item.poster_path \
                 and not item.primary_image_url:
             item.name = hit["title"]
