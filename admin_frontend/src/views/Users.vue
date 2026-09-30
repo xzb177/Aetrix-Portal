@@ -438,7 +438,10 @@ function logTypeLabel(type: string): string {
         <template #cell-username="{ row }">
           <div class="user-cell">
             <button class="user-link" @click="openDetail(row)">{{ row.username }}</button>
-            <span v-if="row.is_staff" class="mini-badge staff">管理员</span>
+            <!-- 角色位始终有值：非管理员的用户不再是一片空白（v2.42.5） -->
+            <span class="mini-badge" :class="row.is_staff ? 'staff' : 'off'">
+              {{ row.is_staff ? '管理员' : '用户' }}
+            </span>
             <span v-if="!row.is_active" class="mini-badge disabled">已禁用</span>
           </div>
           <div class="user-sub">{{ row.email || '未绑定邮箱' }}</div>
@@ -451,7 +454,7 @@ function logTypeLabel(type: string): string {
             <span class="mini-badge vip">生效中</span>
             <div class="user-sub">至 {{ fmtDay(row.subscription_end) }}</div>
           </template>
-          <span v-else class="user-sub">未订阅</span>
+          <span v-else class="mini-badge off">未订阅</span>
         </template>
 
         <template #cell-last_login_at="{ row }">{{ fmtDate(row.last_login_at) }}</template>
