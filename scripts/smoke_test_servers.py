@@ -33,7 +33,9 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
+# 空值也算没设（配置自愈会往 .env 物化出空的 SECRET_KEY，setdefault 只认「不存在」）
+os.environ["SECRET_KEY"] = (os.environ.get("SECRET_KEY") or "").strip() or \
+    "smoke-test-only-secret-key-not-for-production"
 
 # **强制**用自己的库（不是 setdefault）：本脚本断言的是全局状态——「清单初始为空」
 # 以及「被拒时旧配置没被切走」。CI 里所有冒烟脚本共用一个 DATABASE_URL（ci-smoke.db），
@@ -183,7 +185,7 @@ def set_config(key: str, value: str) -> None:
         else:
             db.add(models.SystemConfig(key=key, value=value))
         db.commit()
-    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
+        invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
     finally:
         db.close()
 

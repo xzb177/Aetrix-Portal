@@ -24,7 +24,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
+# 不能用 setdefault：配置自愈（backend/config_self_heal.py）会往 .env 里物化出
+# SECRET_KEY=（存在但为空），而 setdefault 只认「不存在」，于是空值会被留下来 ——
+# panel_key() 拿到空串，EA 一律 401。这里把「空」也当成没设：非空就尊重原值。
+os.environ["SECRET_KEY"] = (os.environ.get("SECRET_KEY") or "").strip() or \
+    "smoke-test-only-secret-key-not-for-production"
 
 DB = tempfile.mktemp(suffix=".db")
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{DB}")
@@ -104,7 +108,6 @@ def set_config(key: str, value: str) -> None:
             db.add(models.SystemConfig(key=key, value=value))
         db.commit()
         invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
-    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
     finally:
         db.close()
 

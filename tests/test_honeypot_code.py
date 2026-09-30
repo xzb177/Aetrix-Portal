@@ -53,9 +53,12 @@ def _user(db, username="victim"):
 
 
 def _code(db, code_str, **kw):
-    c = models.RegistrationCode(
-        code=code_str, max_uses=1, use_count=0, is_active=True,
-        code_type=codes.CODE_TYPE_REGISTER, days=30, **kw)
+    # 默认值可被调用方覆盖（例如「已停用/已用尽」的诱饵码要传 is_active=False），
+    # 直接把默认值写进构造调用会和 **kw 里的同名参数撞成 TypeError。
+    fields = {"max_uses": 1, "use_count": 0, "is_active": True,
+              "code_type": codes.CODE_TYPE_REGISTER, "days": 30}
+    fields.update(kw)
+    c = models.RegistrationCode(code=code_str, **fields)
     db.add(c)
     db.flush()
     return c

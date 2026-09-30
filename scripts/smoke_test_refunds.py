@@ -404,7 +404,7 @@ with SessionLocal() as db:
                                   is_active=True, points=0)
     db.add(notify_buyer)
     db.commit()
-    invalidate(payment_partner_key, payment_partner_id)  # 热缓存失效：测试直接写库，手动清缓存
+    invalidate("payment_partner_key", "payment_partner_id")  # 热缓存失效：测试直接写库，手动清缓存
     notify_buyer_id = notify_buyer.id
 
 

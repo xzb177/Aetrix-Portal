@@ -108,7 +108,7 @@ if limit_cfg:
 else:
     db.add(models.SystemConfig(key="media_seek_daily_limit", value="3", description="冒烟测试用"))
 db.commit()
-invalidate(media_seek_daily_limit)  # 热缓存失效：测试直接写库，手动清缓存
+invalidate("media_seek_daily_limit")  # 热缓存失效：测试直接写库，手动清缓存
 user_name, staff_name, other_name = user.username, staff.username, other.username
 db.close()
 

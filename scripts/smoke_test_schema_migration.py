@@ -38,7 +38,9 @@ for suffix in ("", "-wal", "-shm"):
 os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["DATABASE_URL"] = f"sqlite:///{DB_FILE}"
 os.environ.setdefault("REDIS_ENABLED", "false")
-os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
+# 空值也算没设（配置自愈会往 .env 物化出空的 SECRET_KEY，setdefault 只认「不存在」）
+os.environ["SECRET_KEY"] = (os.environ.get("SECRET_KEY") or "").strip() or \
+    "smoke-test-only-secret-key-not-for-production"
 
 # 老版本的建表语句（故意缺列）：create_all 不会改已有的表，所以这些表就停留在旧形态
 LEGACY_DDL = [
@@ -141,7 +143,9 @@ check("迁移后没有「模型有列、库里没有」的表", not missing_repo
 # 这次翻车的那几列，单独点名断言（回归标记）
 for table, cols in (
     ("movie_requests", ["realm_id", "push_target", "push_status", "push_message", "pushed_at"]),
-    ("registration_codes", ["code_type", "days", "is_decoy", "target_username", "source", "realm_id"]),
+    # 诱饵码（蜜罐）已改为靠 HONEY- 码前缀识别（backend/codes.is_honeypot），
+    # 不再建 is_decoy 列（见 backend/models.py 的 RegistrationCode 注释），这里不再要求该列。
+    ("registration_codes", ["code_type", "days", "target_username", "source", "realm_id"]),
     ("emby_libraries", ["node_id", "realm_id", "mount_ids"]),
     ("remote_servers", ["node_key", "realm_id"]),
 ):

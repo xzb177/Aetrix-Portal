@@ -649,7 +649,9 @@ def _prepare_child_env(mode: str) -> None:
     os.environ["DATABASE_TYPE"] = "sqlite"
     os.environ["REDIS_ENABLED"] = "false"
     os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mktemp(suffix='.db')}"
-    os.environ.setdefault("SECRET_KEY", "verify-scan-queue-only-secret-not-for-production")
+    # 空值也算没设（配置自愈会往 .env 物化出空的 SECRET_KEY，setdefault 只认「不存在」）
+    os.environ["SECRET_KEY"] = (os.environ.get("SECRET_KEY") or "").strip() or \
+        "verify-scan-queue-only-secret-not-for-production"
     os.environ["EMBY_SCAN_QUEUE"] = "0" if mode == "legacy" else "1"
     os.environ["EMBY_SCAN_MAX_PARALLEL"] = "2"
     os.environ["EMBY_SCAN_MOUNT_SERIAL"] = "1"

@@ -34,7 +34,9 @@ os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["REDIS_ENABLED"] = "false"
 _DB = tempfile.mktemp(suffix=".db")
 os.environ["DATABASE_URL"] = f"sqlite:///{_DB}"
-os.environ.setdefault("SECRET_KEY", "smoke-maintenance-secret-key-0123456789abcdef")
+# 空值也算没设（配置自愈会往 .env 物化出空的 SECRET_KEY，setdefault 只认「不存在」）
+os.environ["SECRET_KEY"] = (os.environ.get("SECRET_KEY") or "").strip() or \
+    "smoke-maintenance-secret-key-0123456789abcdef"
 
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
