@@ -12,11 +12,16 @@
  * 3. 按钮按「实心 / 描边 / 文字」三种形态给出**明确的前景+背景配对**，亮底配深字、
  *    深底配白字，任何组合都过 AA。
  *
- * 本文件在 main.ts 里于 `element-plus/dist/index.css` 之后引入，同权重规则后来者胜。
+ * 打包顺序的坑（v2.21.0 按需引入起）：Element Plus 的组件样式由
+ * unplugin-vue-components + ElementPlusResolver **按需**引入，会被打包到本文件**之后**，
+ * 它自带的 `:root{--el-color-white:#ffffff;--el-fill-color-blank:#ffffff;…}` 会以
+ * 「同权重、后来者胜」把下面这套深色变量盖掉——界面于是退回浅色（输入框 / 下拉 / 弹窗
+ * 发白、主色变回默认蓝）。所以变量块用 `html:root`（权重 0,1,1）压过 Element Plus 的
+ * `:root`（0,1,0）：与打包顺序无关，深色主题才稳定生效。
  */
 
 /* ==================== 1. 全局变量 ==================== */
-:root {
+html:root {
   /* ---- 主色 ---- */
   --el-color-primary: var(--primary);
   --el-color-primary-light-3: #63e2f5;
@@ -506,6 +511,16 @@
   letter-spacing: var(--tracking-wide);
   height: 40px;
   padding: 0;
+}
+
+/* 固定列的表头补丁格：Element Plus 这一条写死了 `background:#fff`（不走变量），
+   深色表头里会露一条白块；表格在本主题里是透明的，所以同样置为透明。
+   选择器加 `html` 前缀（0,2,3）压过 EP 的同权重规则（0,2,2），与打包顺序无关。 */
+html .el-table__header-wrapper tr th.el-table__fixed-right-patch,
+html .el-table__header-wrapper tr td.el-table__fixed-right-patch,
+html .el-table__body-wrapper tr td.el-table__fixed-right-patch,
+html .el-table__footer-wrapper tr td.el-table__fixed-right-patch {
+  background-color: transparent;
 }
 
 .el-table td.el-table__cell {
