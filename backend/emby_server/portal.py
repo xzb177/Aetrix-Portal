@@ -887,7 +887,12 @@ def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int
                 raise HTTPException(status_code=400, detail=f"挂载子目录不可用 {path}: {exc}")
             continue
         if not os.path.isdir(path):
-            raise HTTPException(status_code=400, detail=f"路径不存在: {path}")
+            # 与扫描期同一套措辞：写错格式（带方括号/引号、mount:// 前缀不对）时
+            # 说清真原因，别让人存进去之后在扫描里猜（见 mounts.explain_local_path_failure）
+            raise HTTPException(
+                status_code=400,
+                detail=f"{mount_lib.explain_local_path_failure(path)}（{path}）",
+            )
     if not mount_ids:
         return
     found = {

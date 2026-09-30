@@ -133,6 +133,65 @@ def test_plain_local_paths_still_work(tmp_path):
 
     assert [s.kind for s in sources] == ["local"]
     assert len(failed) == 1 and "不可读" in failed[0]["reason"]
+    # 看不出来是写法问题的，保持原措辞（不要为了花哨把通用情况也改了）
+    assert failed[0]["reason"] == "目录不存在或不可读"
+
+
+# ---------------- 写法错误要说清「真原因」----------------
+
+def test_json_wrapped_path_is_explained_not_reported_as_local_missing(tmp_path):
+    """从 JSON 里连方括号一起粘进来的 paths：告诉他多了括号，而不是「目录不存在」
+
+    现场：媒体库 paths 存了 ``["mount://1/nastool/剧集/儿童"]``，而 mount_ids 为空，
+    于是这个库一个来源都没有，每次扫描都报「目录不存在或不可读」—— 看着像挂载坏
+    了或网络不通，其实只是多了两个方括号。
+    """
+    _tree(tmp_path)
+    mount = _local_mount(2, str(tmp_path))
+    lib = SimpleNamespace(paths=('["mount://2/video/剧集/动漫剧"]'), mount_ids="")
+
+    sources, failed = mnt.library_sources(lib, _FakeDB([mount]))
+
+    assert sources == [], "带壳的路径不应被当成可用来源"
+    assert len(failed) == 1
+    reason = failed[0]["reason"]
+    assert "括号" in reason and "JSON" in reason
+    assert "目录不存在或不可读" not in reason
+    # 提示要能直接拿去改：把真路径原样回给他
+    assert "mount://2/video/剧集/动漫剧" in reason
+
+
+@pytest.mark.parametrize("bad", [
+    '["mount://2/video"]',        # JSON 数组
+    '"mount://2/video"',          # 双引号
+    "'mount://2/video'",          # 单引号
+    "[mount://2/video]",          # 方括号
+    "mount：//2/video",           # 全角冒号
+    "Mount://2/video",            # 大小写
+    "mount://x/video",             # 挂载 ID 不是数字
+    '["mount://2/video"',         # 多元素 JSON 列表被按逗号切开的左半
+    '"mount://2/video"]',         # 右半
+])
+def test_miswritten_mount_paths_say_what_is_wrong(tmp_path, bad):
+    """七种写法错误都不能只报「目录不存在或不可读」（那条会把人带去查错方向）"""
+    _tree(tmp_path)
+    mount = _local_mount(2, str(tmp_path))
+    lib = SimpleNamespace(paths=bad, mount_ids="")
+
+    sources, failed = mnt.library_sources(lib, _FakeDB([mount]))
+
+    assert sources == []
+    assert len(failed) == 1
+    assert failed[0]["reason"] != "目录不存在或不可读", bad
+    assert failed[0]["reason"].strip(), bad
+
+
+def test_explain_local_path_failure_leaves_good_paths_alone():
+    """写法是对的（只是真不存在 / 真读不到）时不乱猜"""
+    assert mnt.explain_local_path_failure("/mnt/真没有这个目录") == "目录不存在或不可读"
+    assert mnt.explain_local_path_failure("") == "目录不存在或不可读"
+    # 已经能解析成挂载路径的不该走到这个函数；真走到也保持通用措辞
+    assert mnt.explain_local_path_failure("mount://2/video") == "目录不存在或不可读"
 
 
 def test_whole_mount_source_keeps_subpath_root(tmp_path):

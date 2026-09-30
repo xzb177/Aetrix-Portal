@@ -76,9 +76,25 @@ SQLite 是单写锁模型：扫描、播放进度上报、订单并发一撞上�
   在容器内 `pg_dump`、校验产出是合法 gzip 且含 `CREATE TABLE`（空壳丢弃，不留假备份）、
   按天数保留；`docs/operations.md` 补上 PostgreSQL 的备份 / 恢复与 cron 口径。
 
+### 媒体库来源写错格式时，提示指向真原因
+
+现场：媒体库的 `paths` 里存的是**从 JSON / 列表里连方括号一起复制**过来的
+`["mount://1/nastool/剧集/儿童"]`。它不是挂载路径，会被当成本机目录，于是**每次扫描**
+都报「目录不存在或不可读」—— 看着像挂载坏了或网络不通，把排查引到错方向，而问题只在格式上。
+
+现在扫描期与保存期用**同一套措辞**（`mounts.explain_local_path_failure`）：
+
+- 带壳的直接给出改法：「去掉外层括号/引号后是 `mount://1/nastool/剧集/儿童`」
+  （也认多元素列表被按逗号切开的半截 `["mount://1/a"` / `"mount://1/b"]`）；
+- `mount://` 前缀写错（全角冒号 / 大小写 / 挂载 ID 不是数字）说明该写成什么；
+- 确实只是目录不存在 / 读不到时，保持原措辞不变（不为了花哨把通用情况也改了）。
+
+后台「路径」输入框的说明也补了「一行一个，不要带方括号或引号」，
+`docs/operations.md` 的「挂载来源不可用」一节加了四种写法错误的对照表。
+
 ### 验证
 
-- `python -m pytest tests/ -q`：596 项通过。
+- `python -m pytest tests/ -q`：607 项通过。
 - 九条静态门禁全部通过：`check_await_consistency` / `check_hardcoded_secrets` /
   `check_version` / `check_branding` / `check_admin_audit_coverage` / `check_auth_coverage` /
   `check_blocking_routes` / `check_frontend_routes` / `check_frontend_tokens`。

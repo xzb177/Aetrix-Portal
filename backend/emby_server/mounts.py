@@ -1308,6 +1308,71 @@ def parse_mount_ids(library) -> list[int]:
     return out
 
 
+def _unwrap_path_wrapper(path: str) -> str:
+    """剥掉外层粘进来的方括号 / 引号
+
+    左右各剥几层，**不要求成对**：从 JSON 数组里连逗号一起复制的多元素列表，
+    会被上层按逗号切成 ``["mount://1/a"`` 与 ``"mount://1/b"]`` 这种半截形状，
+    只认成对括号就漏了这两种。
+    """
+    s = (path or "").strip()
+    for _ in range(3):
+        before = s
+        if s and s[0] in "[\"'":
+            s = s[1:].strip()
+        if s and s[-1] in "]\"'":
+            s = s[:-1].strip()
+        if s == before:
+            break
+    return s
+
+
+def _mount_prefix_typo(path: str) -> Optional[str]:
+    """像挂载来源、但前缀没写成 ``mount://`` 时的说明（写对了返回 None）"""
+    s = (path or "").strip()
+    if not s:
+        return None
+    if is_mount_path(s):
+        rest = s[len(MOUNT_PATH_PREFIX):]
+        if rest and not rest.split("/", 1)[0].isdigit():
+            return (f"挂载来源里的「挂载 ID」必须是数字，要写成 "
+                    f"{MOUNT_PATH_PREFIX}<挂载ID>/<子目录>")
+        return None
+    low = s.lower()
+    if low.startswith(MOUNT_PATH_PREFIX):
+        return (f"挂载来源要写成小写的 {MOUNT_PATH_PREFIX}<挂载ID>/<子目录>"
+                f"（前缀区分大小写）")
+    if low.startswith("mount") or s.startswith("挂载"):
+        return (f"挂载来源要写成 {MOUNT_PATH_PREFIX}<挂载ID>/<子目录>"
+                f"（注意是英文冒号加两个斜杠）")
+    return None
+
+
+def explain_local_path_failure(path: str) -> str:
+    """本机目录不存在时，尽量说清真原因；实在看不出来才退回通用措辞。
+
+    只在 ``os.path.isdir`` 已经失败之后调用，所以不会误伤真实存在的本机目录。
+
+    起因：媒体库的 ``paths`` 里存过 ``["mount://1/nastool/剧集/儿童"]`` ——
+    从 JSON / 列表里连方括号一起复制过来的写法，它不是挂载路径，会被当成本机
+    目录，于是**每次扫描都报「目录不存在或不可读」**，把人带去查挂载、账号和
+    网络，而问题其实只在格式上。两种真实写法错误：
+
+    - 带壳：``["mount://1/剧集/儿童"]`` / ``"mount://1/剧集/儿童"`` / ``[mount://…]``；
+    - ``mount://`` 前缀没写对：全角冒号、大小写、挂载 ID 不是数字。
+    """
+    s = (path or "").strip()
+    inner = _unwrap_path_wrapper(s)
+    if inner != s:
+        hint = f"去掉外层括号/引号后是 {inner}。" if inner else ""
+        return (f"看起来是从 JSON 或列表里连括号/引号一起复制的：{hint}"
+                f"每条来源单独写一行，不要带括号或引号")
+    typo = _mount_prefix_typo(s)
+    if typo:
+        return typo
+    return "目录不存在或不可读"
+
+
 def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dict]]:
     """把媒体库的 ``paths`` + 挂载解析成扫描来源
 
@@ -1335,7 +1400,9 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
 
     for path in local_paths:
         if not os.path.isdir(path):
-            failed.append({"label": path, "reason": "目录不存在或不可读"})
+            # 写错格式（带方括号/引号、mount:// 前缀不对）也会走到这里，
+            # 提示要说清真原因，别让人去查挂载和网络。
+            failed.append({"label": path, "reason": explain_local_path_failure(path)})
             continue
         sources.append(LibrarySource(label=path, kind="local", path=path))
 
