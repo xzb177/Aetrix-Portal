@@ -13,7 +13,7 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, Film, TriangleAlert, Undo2, Percent, X,
+  KeyRound, TriangleAlert, Undo2, Percent, X,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi,
@@ -627,11 +627,21 @@ onBeforeUnmount(stopPayPoll)
     <!-- 优惠券不再是本页独立的一条输入框（v2.10.1）：入口收进顶部那一个核销面板，
          折后价仍留在商品行内（原价删除线 + 实付价），下单时后端再算一遍 -->
 
-    <!-- 充值积分：横向行卡 — 左侧点数信息，右侧价格与购买 -->
+    <!-- 充值积分：横向行卡 — 左侧点数信息，右侧价格与购买。
+         首次加载（loading）先出骨架，不渲染空态——否则请求回来前
+         会先闪一下「暂无可用充值套餐」再变成套餐列表 -->
     <section v-if="tab === 'recharge'" class="tab-body au-anim-up">
       <div v-if="!rechargeEnabled" class="au-empty">
         <CircleAlert :size="30" />
         <p>充值通道暂未开启，可先通过签到、邀请或兑换获取积分</p>
+      </div>
+      <div v-else-if="loading && !packages.length" class="pkg-list" aria-hidden="true">
+        <div v-for="i in 3" :key="i" class="pkg-row pkg-row-skeleton">
+          <span class="pkg-points-wrap">
+            <span class="pkg-points"><strong class="skel-num">···</strong><em>积分</em></span>
+          </span>
+          <span class="pkg-buy"><span class="pkg-price">¥··</span></span>
+        </div>
       </div>
       <div v-else-if="!packages.length" class="au-empty">
         <Coins :size="30" />
@@ -686,10 +696,6 @@ onBeforeUnmount(stopPayPoll)
         </span>
         <p class="free-lead">本服无需开通会员，登录后即可播放全库内容。</p>
         <p class="free-note">{{ realmNote || '资源请勿下载、转卖或外传，账号仅限本人使用。' }}</p>
-        <RouterLink to="/media" class="au-btn au-btn-primary au-btn-sm">
-          <Film :size="14" />
-          进入媒体库
-        </RouterLink>
       </div>
 
       <!-- 当前会员状态：已开通显示套餐与到期，未开通提示付费墙 -->
@@ -1070,6 +1076,19 @@ onBeforeUnmount(stopPayPoll)
 }
 .pkg-row.popular { border-color: var(--au-primary-border); }
 .pkg-row:disabled { opacity: 0.6; cursor: wait; }
+
+/* 首载骨架行：占位不闪空态；不可点、无 hover */
+.pkg-row-skeleton { cursor: default; pointer-events: none; opacity: 0.6; }
+.skel-num { letter-spacing: 0.1em; }
+.pkg-row-skeleton strong,
+.pkg-row-skeleton .pkg-price {
+  background: linear-gradient(90deg, var(--au-border) 25%, var(--au-surface) 50%, var(--au-border) 75%);
+  background-size: 200% 100%;
+  animation: skel-slide 1.2s linear infinite;
+  border-radius: var(--au-r-sm);
+  color: transparent;
+}
+@keyframes skel-slide { to { background-position: -200% 0; } }
 
 .pkg-points-wrap {
   display: flex;

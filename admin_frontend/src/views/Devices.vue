@@ -62,6 +62,9 @@ function openDetail(row: DeviceRow) {
   detail.value = { visible: true, row }
 }
 
+/** 行内处置动作（封禁 / 踢下线）进行中：用 userId:deviceId 做 key */
+const rowBusyKey = ref<string | null>(null)
+
 /** 动作做完刷新列表，并把弹窗里的行换成最新快照（状态徽标就地变化） */
 async function afterAction(row: DeviceRow) {
   await load()
@@ -90,9 +93,15 @@ async function toggleBlock(row: DeviceRow) {
   } catch {
     return
   }
-  const res = await setDeviceBlocked(row.user_id, row.device_id, !row.is_blocked)
-  ElMessage.success(res.message)
-  await afterAction(row)
+  const key = `${row.user_id}:${row.device_id}`
+  rowBusyKey.value = key
+  try {
+    const res = await setDeviceBlocked(row.user_id, row.device_id, !row.is_blocked)
+    ElMessage.success(res.message)
+    await afterAction(row)
+  } finally {
+    rowBusyKey.value = null
+  }
 }
 
 async function kick(row: DeviceRow) {
@@ -105,9 +114,15 @@ async function kick(row: DeviceRow) {
   } catch {
     return
   }
-  const res = await removeDevice(row.user_id, row.device_id)
-  ElMessage.success(res.message)
-  await afterAction(row)
+  const key = `${row.user_id}:${row.device_id}`
+  rowBusyKey.value = key
+  try {
+    const res = await removeDevice(row.user_id, row.device_id)
+    ElMessage.success(res.message)
+    await afterAction(row)
+  } finally {
+    rowBusyKey.value = null
+  }
 }
 
 function fmt(s: string | null): string {
@@ -268,7 +283,7 @@ function ago(s: string | null): string {
 
       <template #footer>
         <div class="dev-footer">
-          <el-button type="warning" plain @click="detail.row && kick(detail.row)">
+          <el-button type="warning" plain :loading="!!detail.row && rowBusyKey === `${detail.row.user_id}:${detail.row.device_id}`" @click="detail.row && kick(detail.row)">
             <LogOut :size="13" style="margin-right: 4px" />移除（踢下线）
           </el-button>
           <div class="dev-footer-right">
@@ -276,6 +291,7 @@ function ago(s: string | null): string {
             <el-button
               v-if="detail.row"
               :type="detail.row.is_blocked ? 'success' : 'danger'"
+              :loading="!!detail.row && rowBusyKey === `${detail.row.user_id}:${detail.row.device_id}`"
               @click="detail.row && toggleBlock(detail.row)"
             >
               <component

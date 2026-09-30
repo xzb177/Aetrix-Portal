@@ -29,6 +29,9 @@ const visibleList = computed(() =>
 const dialogVisible = ref(false)
 const editing = ref<Announcement | null>(null)
 const form = ref({ title: '', content: '', type: 'system', is_pinned: false })
+/** 提交 / 行内动作进行中（按钮 loading，防重复点击） */
+const submitBusy = ref(false)
+const rowBusyId = ref<number | null>(null)
 
 async function load() {
   loading.value = true
@@ -58,15 +61,20 @@ async function submit() {
     ElMessage.warning('标题和内容不能为空')
     return
   }
-  if (editing.value) {
-    await updateAnnouncement(editing.value.id, form.value)
-    ElMessage.success('公告已更新并推送')
-  } else {
-    await createAnnouncement(form.value)
-    ElMessage.success('公告已创建并推送给所有用户')
+  submitBusy.value = true
+  try {
+    if (editing.value) {
+      await updateAnnouncement(editing.value.id, form.value)
+      ElMessage.success('公告已更新并推送')
+    } else {
+      await createAnnouncement(form.value)
+      ElMessage.success('公告已创建并推送给所有用户')
+    }
+    dialogVisible.value = false
+    load()
+  } finally {
+    submitBusy.value = false
   }
-  dialogVisible.value = false
-  load()
 }
 
 // ==================== 公告管理弹窗（v2.29.0） ====================
@@ -97,22 +105,37 @@ async function remove(a: Announcement) {
   } catch {
     return
   }
-  await deleteAnnouncement(a.id)
-  ElMessage.success('已删除')
-  await afterAction(a)
+  rowBusyId.value = a.id
+  try {
+    await deleteAnnouncement(a.id)
+    ElMessage.success('已删除')
+    await afterAction(a)
+  } finally {
+    rowBusyId.value = null
+  }
 }
 
 async function togglePin(a: Announcement) {
-  await updateAnnouncement(a.id, { is_pinned: !a.is_pinned })
-  ElMessage.success(a.is_pinned ? '已取消置顶' : '已置顶（用户端消息中心排在最前）')
-  await afterAction(a)
+  rowBusyId.value = a.id
+  try {
+    await updateAnnouncement(a.id, { is_pinned: !a.is_pinned })
+    ElMessage.success(a.is_pinned ? '已取消置顶' : '已置顶（用户端消息中心排在最前）')
+    await afterAction(a)
+  } finally {
+    rowBusyId.value = null
+  }
 }
 
 async function toggleActive(a: Announcement) {
   const next = a.is_active === false
-  await updateAnnouncement(a.id, { is_active: next })
-  ElMessage.success(next ? '公告已启用' : '公告已停用（用户端不再展示）')
-  await afterAction(a)
+  rowBusyId.value = a.id
+  try {
+    await updateAnnouncement(a.id, { is_active: next })
+    ElMessage.success(next ? '公告已启用' : '公告已停用（用户端不再展示）')
+    await afterAction(a)
+  } finally {
+    rowBusyId.value = null
+  }
 }
 
 function fmtDate(s: string): string {
@@ -197,13 +220,13 @@ function fmtDate(s: string): string {
 
       <template #footer>
         <div class="mg-footer">
-          <el-button v-if="manage.row" type="danger" plain @click="remove(manage.row)">删除</el-button>
+          <el-button v-if="manage.row" type="danger" plain :loading="rowBusyId === manage.row.id" @click="remove(manage.row)">删除</el-button>
           <div class="mg-footer-right">
             <el-button @click="manage.visible = false">关闭</el-button>
-            <el-button v-if="manage.row" @click="togglePin(manage.row)">
+            <el-button v-if="manage.row" :loading="rowBusyId === manage.row.id" @click="togglePin(manage.row)">
               {{ manage.row.is_pinned ? '取消置顶' : '置顶' }}
             </el-button>
-            <el-button v-if="manage.row" type="primary" plain @click="toggleActive(manage.row)">
+            <el-button v-if="manage.row" type="primary" plain :loading="rowBusyId === manage.row.id" @click="toggleActive(manage.row)">
               {{ manage.row.is_active === false ? '启用' : '停用' }}
             </el-button>
             <el-button v-if="manage.row" type="primary" @click="manage.visible = false; openEdit(manage.row)">
@@ -231,7 +254,7 @@ function fmtDate(s: string): string {
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">{{ editing ? '保存' : '发布' }}</el-button>
+        <el-button type="primary" :loading="submitBusy" @click="submit">{{ editing ? '保存' : '发布' }}</el-button>
       </template>
     </el-dialog>
   </div>

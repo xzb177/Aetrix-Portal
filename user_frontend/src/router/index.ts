@@ -69,39 +69,10 @@ const router = createRouter({
       component: () => import('@/views/InviteView.vue'),
       meta: { title: '邀请返利', requiresAuth: true },
     },
-    // ==================== 观看记录（v2.5.0；v2.10.0 收为媒体库分段） ====================
-    // 老地址保留但不再是一级页面：收藏 / 观看记录都是媒体库的视图，
-    // 重定向到 /media?tab=… —— 书签、外部链接与站内旧链接都不会失效（方案 A）。
-    {
-      path: '/history',
-      name: 'history',
-      redirect: (to) => ({ path: '/media', query: { ...to.query, tab: 'history' } }),
-    },
-    // ==================== 媒体库（Emby 协议端点） ====================
-    {
-      path: '/media',
-      name: 'media-home',
-      component: () => import('@/views/media/LibraryHomeView.vue'),
-      meta: { title: '媒体库', requiresAuth: true },
-    },
-    {
-      path: '/library/:id?',
-      name: 'library',
-      component: () => import('@/views/media/LibraryView.vue'),
-      meta: { title: '浏览媒体库', requiresAuth: true },
-    },
-    // ==================== 搜索与收藏（v2.5.0；v2.10.0 收为媒体库分段） ====================
-    {
-      path: '/search',
-      name: 'search',
-      component: () => import('@/views/media/SearchView.vue'),
-      meta: { title: '搜索', requiresAuth: true },
-    },
-    {
-      path: '/favorites',
-      name: 'favorites',
-      redirect: (to) => ({ path: '/media', query: { ...to.query, tab: 'favorites' } }),
-    },
+    // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删） ====================
+    // 老地址 /media、/library、/search、/favorites、/history 的书签与外部链接：
+    // 媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，
+    // 全部落到兜底 404 页（页面里会给「回首页」的出口）。
     {
       path: '/media/:id',
       name: 'media-detail',

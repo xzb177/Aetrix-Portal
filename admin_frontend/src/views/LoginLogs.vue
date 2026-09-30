@@ -52,12 +52,20 @@ async function load() {
 
 onMounted(load)
 
+/** 清理动作进行中（按钮 loading，防重复点击） */
+const purgeBusy = ref(false)
+
 async function purge(preset: number) {
   const label = preset === 0 ? '清空全部日志' : `清理 ${preset} 天前的日志`
   await ElMessageBox.confirm(`${label}？该操作不可撤销。`, '清理日志', { type: 'warning' })
-  const res = await purgeLoginLogs(preset)
-  ElMessage.success(res.message)
-  load()
+  purgeBusy.value = true
+  try {
+    const res = await purgeLoginLogs(preset)
+    ElMessage.success(res.message)
+    load()
+  } finally {
+    purgeBusy.value = false
+  }
 }
 
 function fmt(s: string | null): string {
@@ -80,7 +88,7 @@ function riskLevel(row: LoginLogRow): string {
         <p class="admin-page-desc">登录成功/失败、设备超限、诱饵码触发等风控事件审查</p>
       </div>
       <div class="toolbar">
-        <el-button @click="purge(data && data.total > 0 ? 90 : 0)">
+        <el-button :loading="purgeBusy" @click="purge(data && data.total > 0 ? 90 : 0)">
           <Trash2 :size="14" style="margin-right: 4px" />清理日志
         </el-button>
         <el-button @click="load"><RefreshCw :size="14" /></el-button>

@@ -29,6 +29,8 @@ const messages = ref<TicketMessageRow[]>([])
 const detailLoading = ref(false)
 const replyText = ref('')
 const sending = ref(false)
+/** 行内「关闭」动作进行中（按钮 loading，防重复点击） */
+const rowBusyId = ref<number | null>(null)
 const metaSaving = ref(false)
 
 async function load() {
@@ -78,10 +80,15 @@ async function close(t: TicketRow) {
   } catch {
     return // 用户点了取消
   }
-  await closeTicket(t.id)
-  ElMessage.success('工单已关闭')
-  if (current.value?.id === t.id) current.value.status = 'closed'
-  load()
+  rowBusyId.value = t.id
+  try {
+    await closeTicket(t.id)
+    ElMessage.success('工单已关闭')
+    if (current.value?.id === t.id) current.value.status = 'closed'
+    load()
+  } finally {
+    rowBusyId.value = null
+  }
 }
 
 /** 抽屉内直接调整状态 / 优先级（后端 PUT /tickets/{id}） */
@@ -155,7 +162,7 @@ function statusBadge(status: string): string {
         <template #cell-updated_at="{ row }">{{ fmtDate(row.updated_at) }}</template>
 
         <template #cell-actions="{ row }">
-          <el-button v-if="row.status !== 'closed'" size="small" type="danger" plain @click="close(row)">
+          <el-button v-if="row.status !== 'closed'" size="small" type="danger" plain :loading="rowBusyId === row.id" @click="close(row)">
             关闭
           </el-button>
           <span v-else class="muted done-hint">已关闭</span>

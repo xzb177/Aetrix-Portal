@@ -135,16 +135,33 @@ onMounted(load)
           </div>
 
           <button
-            class="au-btn sign-btn"
-            :class="{ done: status?.checked_today || justSigned || !checkinEnabled }"
+            class="sign-btn"
+            :class="{ done: status?.checked_today || justSigned || !checkinEnabled, celebrate: justSigned }"
             :disabled="loading || signing || status?.checked_today || !checkinEnabled"
             @click="handleSign"
           >
-            <span v-if="signing" class="au-spinner spinner-sm" />
-            <template v-else-if="!checkinEnabled">暂未开放</template>
-            <template v-else-if="justSigned">+{{ rewardPreview }} 积分到账 🎉</template>
-            <template v-else-if="status?.checked_today">明日再来</template>
-            <template v-else>立即签到 +{{ rewardPreview }}</template>
+            <!-- 底层光泽：hover 时扫过（纯 transform，不重绘） -->
+            <span v-if="!status?.checked_today && checkinEnabled" class="sign-btn-shine" aria-hidden="true" />
+            <span class="sign-btn-face">
+              <span v-if="signing" class="au-spinner spinner-sm" />
+              <CalendarCheck v-else-if="!status?.checked_today && checkinEnabled && !justSigned" :size="17" />
+              <PartyPopper v-else :size="17" />
+              <span class="sign-btn-label">
+                <template v-if="!checkinEnabled">暂未开放</template>
+                <template v-else-if="justSigned">+{{ rewardPreview }} 积分到账</template>
+                <template v-else-if="status?.checked_today">明日再来</template>
+                <template v-else>立即签到 +{{ rewardPreview }}</template>
+              </span>
+            </span>
+            <!-- 未签状态的连签小火苗徽标：贴在按钮右上角 -->
+            <span
+              v-if="status && !status.checked_today && status.streak > 0 && checkinEnabled"
+              class="sign-btn-flame"
+              :title="`已连签 ${status.streak} 天`"
+            >
+              <Flame :size="10" />
+              {{ status.streak }}
+            </span>
           </button>
           <p v-if="!checkinEnabled" class="sign-off-tip">管理员已关闭签到，开启后即可继续累计连签</p>
         </div>
@@ -290,17 +307,114 @@ onMounted(load)
 .sign-sub { margin: 0.1875rem 0 0; font-size: 0.8125rem; color: var(--au-text-2); }
 .sign-sub strong { color: var(--au-text); font-weight: 700; }
 
+/* ===== 签到按钮（v2.42.5 重做）：金币打卡质感 =====
+   主态：金渐变实底 + 深金描边 + 内高光 + 悬停光泽扫过；已完成态：优雅的成功确认胶囊。
+   动效只走 transform/opacity，移动端不重绘。 */
 .sign-btn {
-  height: 44px;
-  padding: 0 1.75rem;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  padding: 0;
+  height: 46px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sign-btn-face {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 100%;
+  padding: 0 1.625rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--au-gold-a), var(--au-gold-b));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -2px 0 rgba(146, 84, 4, 0.28),
+    0 1px 0 var(--au-gold-edge),
+    0 6px 18px rgba(236, 148, 32, 0.34);
+  color: #452604;
   font-size: 0.9375rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  transition: transform var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease),
+    filter var(--au-fast) var(--au-ease);
 }
-.sign-btn.done {
+
+.sign-btn:hover:not(:disabled) .sign-btn-face {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -2px 0 rgba(146, 84, 4, 0.28),
+    0 1px 0 var(--au-gold-edge),
+    0 9px 24px rgba(236, 148, 32, 0.44);
+}
+
+.sign-btn:active:not(:disabled) .sign-btn-face { transform: translateY(1px) scale(0.98); }
+
+/* 光泽：一道斜向高光平时停在左外侧，hover 扫过按钮（只动 transform） */
+.sign-btn-shine {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.sign-btn-shine::after {
+  content: '';
+  position: absolute;
+  top: -30%;
+  bottom: -30%;
+  width: 34%;
+  left: -45%;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  transform: skewX(-18deg) translateX(0);
+  transition: transform 0.55s var(--au-ease);
+}
+.sign-btn:hover:not(:disabled) .sign-btn-shine::after { transform: skewX(-18deg) translateX(480%); }
+
+/* 连签火苗徽标：右上角小圆片，徽章感 */
+.sign-btn-flame {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ff7d52, #f04e23);
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  box-shadow: 0 2px 8px rgba(240, 78, 35, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+/* 已签到 / 未开启：安静的成功确认态（同卡片的 success 气质，不再像禁用灰） */
+.sign-btn.done { cursor: default; }
+.sign-btn.done .sign-btn-face {
   background: var(--au-success-soft);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 0 var(--au-success-border);
+  border: 1px solid var(--au-success-border);
   color: var(--au-success);
-  box-shadow: none;
-  cursor: default;
+  padding: 0 1.5rem;
 }
+
+/* 到账庆祝：轻快弹跳两下（reduced-motion 时被全局降级吃掉） */
+.sign-btn.celebrate .sign-btn-face { animation: sign-pop 0.6s var(--au-ease); }
+@keyframes sign-pop {
+  0% { transform: scale(0.94); }
+  45% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+.sign-btn-label { white-space: nowrap; }
 
 .sign-off-tip {
   margin: 0.625rem 0 0;

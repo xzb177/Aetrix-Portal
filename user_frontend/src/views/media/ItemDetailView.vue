@@ -72,7 +72,7 @@ const hasVersions = computed(() => versions.value.length > 1)
 const selectedVersion = computed(() =>
   versions.value.find((v) => v.Id === selectedVersionId.value) || versions.value.find((v) => v.IsPrimary) || versions.value[0]
 )
-/** 画质徽标（与 MediaCard 同口径） */
+/** 画质徽标（与播放页同口径） */
 const quality = computed(() => {
   const h = item.value?.Height || 0
   if (h >= 2160) return '4K'

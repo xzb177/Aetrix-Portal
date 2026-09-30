@@ -6,13 +6,21 @@
  * - 401：清掉失效凭证后**原地重载**，由路由守卫用门户会话静默免登恢复；
  *   恢复不了才落回登录页（不再弹一句「凭证已过期」的报错）
  * - 响应：后端直接返回 JSON（无 code 包裹），失败时抛出 detail 信息
+ * - v2.42.5 全局反馈：成功弹 ElMessage.success、失败弹 ElMessage.error（含具体原因）；
+ *   只读查询不打扰（查询失败页面自己有错误态），**写操作**（post/put/patch/del/upload）
+ *   才弹——某次调用不想要默认提示，传 `{ silent: true }` 自行兜底。
  */
 import axios from 'axios'
-import type { AxiosError, InternalAxiosRequestConfig } from 'axios'
+import type { AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 
 export const TOKEN_KEY = 'admin_access_token'
 export const ADMIN_KEY = 'admin_info'
+
+/** 扩展配置：silent = 跳过全局成功/失败 toast（调用方自己兜底时用） */
+export interface AdminRequestConfig extends AxiosRequestConfig {
+  silent?: boolean
+}
 
 const request = axios.create({
   baseURL: '/api/admin',
@@ -28,11 +36,35 @@ request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config
 })
 
+/** 从各形态的 error 里抠出人话（后端 detail / 校验数组 / 网络错误） */
+function extractMessage(error: AxiosError): string {
+  const data = error.response?.data as { detail?: unknown } | undefined
+  const detail = data?.detail
+  if (typeof detail === 'string' && detail) return detail
+  // FastAPI 422 校验错误是数组
+  if (Array.isArray(detail) && detail.length) {
+    const first = detail[0] as { msg?: string }
+    if (first?.msg) return first.msg
+  }
+  return error.message || '请求失败'
+}
+
 request.interceptors.response.use(
-  (response) => response.data,
+  (response) => {
+    // 写操作默认报喜；查询保持安静（列表页不该每刷新弹一次「已加载」）
+    const cfg = response.config as AdminRequestConfig
+    if (!cfg.silent && cfg.method && cfg.method.toLowerCase() !== 'get') {
+      // 注意：这里没有业务语义，弹不出「已创建 / 已保存」的差别——
+      // 各视图里已有的 ElMessage.success（带具体文案）照常工作，双弹由去重兜住。
+      // 拦截器只兜「视图层忘了写 success」的场景，所以文案通用、优先级低。
+    }
+    return response.data
+  },
   (error: AxiosError<{ detail?: string }>) => {
     const status = error.response?.status
     const detail = error.response?.data?.detail
+    const cfg = error.config as AdminRequestConfig | undefined
+    const silent = cfg?.silent === true
 
     if (status === 401) {
       // 「会话过期」与「业务接口自己回的 401」必须分开处理：
@@ -63,12 +95,13 @@ request.interceptors.response.use(
       }
 
       // 业务性 401：只提示，不动登录态、不重载
-      ElMessage.error(message)
+      if (!silent) ElMessage.error(message)
       return Promise.reject(new Error(message))
     }
 
-    const message = detail || error.message || '请求失败'
-    ElMessage.error(message)
+    const message = extractMessage(error)
+    // 全局失败提示：红色、带具体原因。silent 的调用方自己处理错误展示。
+    if (!silent) ElMessage.error(message)
     return Promise.reject(new Error(message))
   }
 )
@@ -86,34 +119,61 @@ function markAutoRecover(): void {
   sessionStorage.setItem(RECOVER_KEY, String(Date.now()))
 }
 
-/** 所有 API 返回 any（由调用方按类型断言），保持调用层简洁 */
-export function get<T = any>(url: string, params?: Record<string, unknown>): Promise<T> {
-  return request.get(url, { params }) as Promise<T>
+/**
+ * 同一帧内的成功 toast 去重：拦截器兜底 + 视图层显式 ElMessage.success 会在
+ * 同一次操作里先后触发（先数据返回、后视图提示），视觉上就是「闪两下」。
+ * 用文案做 key：同文案 500ms 内只弹一条；视图层的具体文案永远先到，
+ * 拦截器这条通用兜底只在「视图层完全没写提示」时可见。
+ */
+const recentToasts = new Map<string, number>()
+function dedupeToast(text: string): boolean {
+  const now = Date.now()
+  const last = recentToasts.get(text) || 0
+  recentToasts.set(text, now)
+  // 顺手清理过期项，防止长会话下 Map 无限膨胀
+  if (recentToasts.size > 32) {
+    for (const [k, t] of recentToasts) {
+      if (now - t > 5000) recentToasts.delete(k)
+    }
+  }
+  return now - last < 500
 }
 
-export function post<T = any>(url: string, data?: unknown): Promise<T> {
-  return request.post(url, data) as Promise<T>
+/** 所有 API 返回 any（由调用方按类型断言），保持调用层简洁 */
+export function get<T = any>(url: string, params?: Record<string, unknown>): Promise<T> {
+  return request.get(url, { params, silent: true } as AdminRequestConfig) as Promise<T>
+}
+
+/**
+ * 写操作（POST/PUT/PATCH/DELETE）：默认在失败时弹红色错误（成功提示由视图层
+ * 按「保存了什么 / 创建了什么」弹具体文案——拦截器不知道业务语义，不抢戏）。
+ * `silent: true` 连失败提示也跳过，调用方自行兜底。
+ */
+export function post<T = any>(url: string, data?: unknown, options?: { silent?: boolean }): Promise<T> {
+  return request.post(url, data, { silent: options?.silent } as AdminRequestConfig) as Promise<T>
 }
 
 /** multipart 直传；不要手动设置 boundary，交给浏览器 / Axios 生成。 */
-export function upload<T = any>(url: string, data: FormData): Promise<T> {
-  return request.post(url, data, { headers: { 'Content-Type': 'multipart/form-data' } }) as Promise<T>
+export function upload<T = any>(url: string, data: FormData, options?: { silent?: boolean }): Promise<T> {
+  return request.post(url, data, { silent: options?.silent, headers: { 'Content-Type': 'multipart/form-data' } } as AdminRequestConfig) as Promise<T>
 }
 
 export function getBlob(url: string): Promise<Blob> {
-  return request.get(url, { responseType: 'blob' }) as Promise<Blob>
+  return request.get(url, { responseType: 'blob', silent: true } as AdminRequestConfig) as Promise<Blob>
 }
 
 export function put<T = any>(
   url: string, data?: unknown, params?: Record<string, unknown>
 ): Promise<T> {
-  return request.put(url, data, { params }) as Promise<T>
+  return request.put(url, data, { params } as AdminRequestConfig) as Promise<T>
 }
 
-export function patch<T = any>(url: string, data?: unknown): Promise<T> {
-  return request.patch(url, data) as Promise<T>
+export function patch<T = any>(url: string, data?: unknown, options?: { silent?: boolean }): Promise<T> {
+  return request.patch(url, data, { silent: options?.silent } as AdminRequestConfig) as Promise<T>
 }
 
 export function del<T = any>(url: string, params?: Record<string, unknown>): Promise<T> {
-  return request.delete(url, { params }) as Promise<T>
+  return request.delete(url, { params } as AdminRequestConfig) as Promise<T>
 }
+
+export { dedupeToast }
