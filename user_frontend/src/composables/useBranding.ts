@@ -58,6 +58,18 @@ function onColor(rgb: [number, number, number]): string {
   return luminance > 0.6 ? '#05141c' : '#ffffff'
 }
 
+function luminance(rgb: [number, number, number]): number {
+  return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
+}
+
+function toHex(rgb: [number, number, number]): string {
+  const part = (v: number) => v.toString(16).padStart(2, '0')
+  return `#${part(rgb[0])}${part(rgb[1])}${part(rgb[2])}`
+}
+
+/** 品牌色注入用的 <style>（随主题切换分叉深浅两套，见 applyBrandingTokens） */
+let brandStyle: HTMLStyleElement | null = null
+
 function setMeta(name: string, content: string) {
   if (!content) return
   let tag = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)
@@ -71,17 +83,7 @@ function setMeta(name: string, content: string) {
 
 /** 把品牌信息写进文档（主题色令牌 / 标题 / meta） */
 export function applyBranding() {
-  const rgb = hexToRgb(branding.theme_color)
-  const style = document.documentElement.style
-  style.setProperty('--au-primary', branding.theme_color)
-  style.setProperty('--au-primary-strong', darken(rgb, 0.85))
-  style.setProperty('--au-primary-deep', darken(rgb, 0.55))
-  style.setProperty('--au-primary-soft', rgba(rgb, 0.12))
-  style.setProperty('--au-primary-mid', rgba(rgb, 0.2))
-  style.setProperty('--au-primary-border', rgba(rgb, 0.28))
-  style.setProperty('--au-primary-glow', rgba(rgb, 0.35))
-  style.setProperty('--au-on-primary', onColor(rgb))
-  style.setProperty('--au-border-focus', rgba(rgb, 0.55))
+  applyBrandingTokens()
 
   // 标题策略：路由守卫已经写过「页面名 - 旧站名」，这里只把站名那段换掉，
   // 不能直接覆盖成 SEO 标题——否则刚打开 /media 时标题里的「媒体库」会丢。
@@ -93,6 +95,62 @@ export function applyBranding() {
   }
   setMeta('description', branding.seo_description)
   setMeta('keywords', branding.seo_keywords)
+}
+
+/**
+ * 品牌主题色注入（v2.42.3 改造）：不再写 documentElement.style（inline 自定义属性
+ * 优先级最高，双主题的浅色覆盖永远赢不了它——外观切到白日时主色仍是亮青，
+ * 白底上发白看不清）。改为注入一段 <style>，深浅各一条规则：
+ *
+ * - 深色（:root）用管理员填的原色；
+ * - 浅色（html[data-theme='light']）把品牌色连乘压暗到白底可读（亮度阈值 0.42），
+ *   派生色（hover/浅底/描边/文字色）跟着有效色重算，对比度始终成立。
+ *
+ * 选择器用 :root:root 提高特异性，防后续注入的同特异性样式表抢赢；
+ * 主题切换只改 html 的 data-theme 属性，两套品牌色即时切换，无需重新计算。
+ */
+function applyBrandingTokens() {
+  const rgb = hexToRgb(branding.theme_color)
+
+  let light = [...rgb] as [number, number, number]
+  for (let i = 0; i < 6 && luminance(light) > 0.42; i++) {
+    light = [
+      Math.max(0, Math.min(255, Math.round(light[0] * 0.82))),
+      Math.max(0, Math.min(255, Math.round(light[1] * 0.82))),
+      Math.max(0, Math.min(255, Math.round(light[2] * 0.82))),
+    ]
+  }
+
+  const darkRules = [
+    `--au-primary:${branding.theme_color}`,
+    `--au-primary-strong:${darken(rgb, 0.85)}`,
+    `--au-primary-deep:${darken(rgb, 0.55)}`,
+    `--au-primary-soft:${rgba(rgb, 0.12)}`,
+    `--au-primary-mid:${rgba(rgb, 0.2)}`,
+    `--au-primary-border:${rgba(rgb, 0.28)}`,
+    `--au-primary-glow:${rgba(rgb, 0.35)}`,
+    `--au-on-primary:${onColor(rgb)}`,
+    `--au-border-focus:${rgba(rgb, 0.55)}`,
+  ].join(';')
+
+  const lightRules = [
+    `--au-primary:${toHex(light)}`,
+    `--au-primary-strong:${darken(light, 0.85)}`,
+    `--au-primary-deep:${darken(light, 0.55)}`,
+    `--au-primary-soft:${rgba(light, 0.1)}`,
+    `--au-primary-mid:${rgba(light, 0.16)}`,
+    `--au-primary-border:${rgba(light, 0.26)}`,
+    `--au-primary-glow:${rgba(light, 0.22)}`,
+    `--au-on-primary:${onColor(light)}`,
+    `--au-border-focus:${rgba(light, 0.55)}`,
+  ].join(';')
+
+  if (!brandStyle) {
+    brandStyle = document.createElement('style')
+    brandStyle.id = 'brand-tokens'
+    document.head.appendChild(brandStyle)
+  }
+  brandStyle.textContent = `:root:root{${darkRules}}:root:root[data-theme='light']{${lightRules}}`
 }
 
 /** 启动时拉一次（幂等；失败保持默认值） */

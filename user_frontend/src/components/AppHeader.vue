@@ -5,11 +5,13 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Zap, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
+  ChevronRight, LayoutDashboard,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
-  type StationMessage, type Announcement, type MySubscription,
+  type StationMessage, type Announcement,
 } from '@/api'
+import type { MySubscription } from '@/api'
 import { pointsApi } from '@/api/economy'
 import { primaryNav, menuSections } from '@/config/navigation'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
@@ -20,7 +22,7 @@ import { useTheme } from '@/composables/useTheme'
 const userStore = useUserStore()
 const router = useRouter()
 const route = useRoute()
-const { preference: themePreference, resolved: themeResolved, setPreference: setThemePreference } = useTheme()
+const { preference: themePreference, setPreference: setThemePreference } = useTheme()
 
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
@@ -43,6 +45,33 @@ const subPillText = computed(() => {
   return subPillExpiring.value ? `剩 ${sub.days_left} 天` : '会员生效中'
 })
 const isFreeRealm = computed(() => userStore.isFreeRealm)
+
+/** 菜单头部的状态徽章：会员金 / 公益服青，与资产卡同一套色彩编码 */
+const menuBadge = computed(() => {
+  if (activeSub.value) {
+    return {
+      icon: Crown,
+      text: subPillExpiring.value ? `剩 ${activeSub.value.days_left} 天` : '会员生效中',
+      cls: 'gold',
+    }
+  }
+  if (userStore.isFreeRealm) {
+    return { icon: Sparkles, text: '公益服 · 免费', cls: 'cyan' }
+  }
+  return { icon: Crown, text: '未开通会员', cls: 'muted' }
+})
+
+/** 用户菜单里的操作项（纸片人式列表）；退出登录独立成红色分区，不混在列表里 */
+const menuActions = computed(() => menuSections.flatMap((g) => g.items))
+
+/** 昵称展示：登录名可能是一长串邮箱，头像旁只取 @ 前段；@id 用数字 id */
+const displayName = computed(() => {
+  const raw = userStore.user?.username || ''
+  const at = raw.indexOf('@')
+  return at > 0 ? raw.slice(0, at) : raw || '用户'
+})
+
+const userIdLabel = computed(() => (userStore.user?.id ? `@${userStore.user.id}` : ''))
 
 // 顶栏消息入口（v2.10.3 起是全站唯一的消息入口）：既显示「几条未读」，
 // 点开还能先看预览再决定要不要进消息中心
@@ -107,12 +136,6 @@ function relTime(iso?: string): string {
  *
  * v2.10.3：铃铛是站内消息唯一的入口——首页底部那张消息卡已去掉（它和这里列的是
  * 同一批未读）。所以这一份预览就是全站的消息预览。
- *
- * v2.10.2：
- *   - 同标题的多条未读（如 26 条「📥 新的求片请求」，内容各不相同）并排列出来像
- *     同一条消息发了好几遍；合并成一条并把条数写出来。
- *   - 公告有两种身份：发布时广播落下的站内信（`📢 标题`，带已读状态）与公告本身。
- *     已经作为未读消息在列里的公告，不再重复列一遍。
  */
 async function loadMsgPreview() {
   msgLoading.value = true
@@ -195,10 +218,6 @@ function toggleMsgMenu() {
  *
  *   primaryNav   → 顶栏（宽屏横排、窄屏第二行滑动选项卡），全断点同一批条目、同一个顺序
  *   menuSections → 低频入口统一收进头像菜单（全断点一致）
- *
- * v2.10.1：搜索从「右上角图标 + 菜单条目」两处重复，改成主导航里的一项。
- *
- * 顶栏不再有第二个汉堡抽屉：同一批链接在同一屏里出现两遍，是「看着有两个导航」的根源。
  */
 
 function isActive(path: string) {
@@ -219,10 +238,21 @@ async function handleLogout() {
 
 function onDocClick(e: MouseEvent) {
   const target = e.target as Node
-  if (userMenuRef.value && !userMenuRef.value.contains(target)) {
+  // 下拉已 Teleport 到 body：判断「点在不在菜单里」时把传送出去的面板也算自己人，
+  // 否则菜单内任何一次点击都会被当成外部点击而立刻关闭
+  const el = target instanceof Element ? target : null
+  if (
+    userMenuRef.value &&
+    !userMenuRef.value.contains(target) &&
+    !el?.closest('.user-dropdown')
+  ) {
     userMenuOpen.value = false
   }
-  if (msgMenuRef.value && !msgMenuRef.value.contains(target)) {
+  if (
+    msgMenuRef.value &&
+    !msgMenuRef.value.contains(target) &&
+    !el?.closest('.msg-dropdown')
+  ) {
     msgMenuOpen.value = false
   }
 }
@@ -305,6 +335,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
     activeSub.value = null
     msgPreview.value = []
     msgMenuOpen.value = false
+    userMenuOpen.value = false
   }
 })
 
@@ -332,7 +363,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
       </RouterLink>
 
       <!-- 主导航（全断点唯一一套）：≥900px 横排在品牌与账号操作之间，
-           ≤900px 落到第二行、变成可横向滑动的选项卡（见样式里的 .main-nav） -->
+           769~900px 落到第二行、变成可横向滑动的选项卡，
+           ≤768px 整条让位给底部导航坞（AppDock） -->
       <nav ref="navRef" class="main-nav" aria-label="主导航">
         <RouterLink
           v-for="item in primaryNav"
@@ -394,6 +426,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
               </span>
             </button>
 
+            <!-- 下拉用 Teleport 挂到 body：header 的 backdrop-filter 会把它变成
+                 fixed 后代的包含块，fixed 定位会相对 header 而非视口（真机自测抓到过） -->
+            <Teleport to="body">
             <Transition name="dd">
               <div v-if="msgMenuOpen" class="msg-dropdown">
                 <div class="msg-drop-head">
@@ -431,43 +466,41 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                 </RouterLink>
               </div>
             </Transition>
+            </Teleport>
           </div>
 
           <div ref="userMenuRef" class="user-menu">
-            <button class="user-btn" @click="userMenuOpen = !userMenuOpen">
-              <span class="avatar">{{ (userStore.user?.username || 'U').charAt(0).toUpperCase() }}</span>
-              <span class="user-name">{{ userStore.user?.username || '用户' }}</span>
+            <button
+              class="user-btn"
+              :aria-expanded="userMenuOpen"
+              aria-haspopup="menu"
+              @click="userMenuOpen = !userMenuOpen"
+            >
+              <span class="avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
+              <span class="user-name">{{ displayName }}</span>
             </button>
 
+            <Teleport to="body">
             <Transition name="dd">
-              <div v-if="userMenuOpen" class="user-dropdown">
+              <!-- 用户菜单（v2.42.3 纸片人式重做）。Teleport 到 body 后 fixed 定位真正相对视口：
+                   ≤768px 底边锚在拇指区（底部坞）之上、内部滚动；z-index 60 在根层高于
+                   顶栏（50）与底部坞（在其上下文内），低于 Toast（120）与弹窗（80 不冲突：
+                   弹窗打开时应盖住菜单）。点击外部关闭的判定见 onDocClick 的 closest 兼容 -->
+              <div v-if="userMenuOpen" class="user-dropdown" role="menu">
+                <!-- ① 头部：头像 + 昵称 + @id + 状态徽章 -->
                 <div class="dropdown-head">
-                  <span class="dropdown-username">{{ userStore.user?.username }}</span>
-                  <span v-if="userStore.isVIP" class="dropdown-vip">
-                    <Crown :size="11" /> VIP
+                  <span class="avatar dropdown-avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
+                  <span class="dropdown-id">
+                    <span class="dropdown-username">{{ displayName }}</span>
+                    <span v-if="userIdLabel" class="dropdown-uid">{{ userIdLabel }}</span>
+                  </span>
+                  <span v-if="menuBadge" class="dropdown-status" :class="menuBadge.cls">
+                    <component :is="menuBadge.icon" :size="11" />
+                    {{ menuBadge.text }}
                   </span>
                 </div>
 
-                <!-- 长尾入口：低频功能统一收在这里（全断点一致），
-                     顶栏主导航只留 3 个高频目的地（首页 / 媒体库 / 我的） -->
-                <template v-for="group in menuSections" :key="group.title">
-                  <p class="dropdown-group-title">{{ group.title }}</p>
-                  <RouterLink
-                    v-for="item in group.items"
-                    :key="item.path"
-                    :to="item.path"
-                    class="dropdown-item"
-                    @click="closeMenus"
-                  >
-                    <component :is="item.icon" :size="15" /> {{ item.name }}
-                    <span
-                      v-if="item.path === '/messages' && unreadCount > 0"
-                      class="dropdown-badge"
-                    >{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-                  </RouterLink>
-                </template>
-
-                <!-- 外观（v2.42.2）：三档切换，跟随系统实时响应 prefers-color-scheme -->
+                <!-- ② 外观：三档切换（菜单里的显眼位置，紧跟头部） -->
                 <div class="dropdown-group-title">外观</div>
                 <div class="theme-seg" role="radiogroup" aria-label="外观模式">
                   <button
@@ -475,18 +508,16 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                     :class="{ on: themePreference === 'system' }"
                     role="radio"
                     :aria-checked="themePreference === 'system'"
-                    title="跟随系统"
                     @click="setThemePreference('system')"
                   >
                     <MonitorSmartphone :size="13" />
-                    系统
+                    跟随系统
                   </button>
                   <button
                     class="theme-opt"
                     :class="{ on: themePreference === 'light' }"
                     role="radio"
                     :aria-checked="themePreference === 'light'"
-                    title="白日模式"
                     @click="setThemePreference('light')"
                   >
                     <Sun :size="13" />
@@ -497,13 +528,28 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                     :class="{ on: themePreference === 'dark' }"
                     role="radio"
                     :aria-checked="themePreference === 'dark'"
-                    title="黑暗模式"
                     @click="setThemePreference('dark')"
                   >
                     <Moon :size="13" />
                     黑暗
                   </button>
                 </div>
+
+                <!-- ③ 操作项列表 -->
+                <RouterLink
+                  v-for="item in menuActions"
+                  :key="item.path"
+                  :to="item.path"
+                  class="dropdown-item"
+                  role="menuitem"
+                  @click="closeMenus"
+                >
+                  <component :is="item.icon" :size="15" /> {{ item.name }}
+                  <span
+                    v-if="item.path === '/messages' && unreadCount > 0"
+                    class="dropdown-badge"
+                  >{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+                </RouterLink>
 
                 <!-- 管理后台是另一个前端（同源 /admin/），必须用浏览器跳转：
                      写成 RouterLink 会被用户端路由当成 404 兜底页 -->
@@ -516,11 +562,13 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                   <LayoutDashboard :size="15" /> 管理后台
                 </a>
 
-                <button class="dropdown-item dropdown-logout" @click="handleLogout">
+                <!-- ④ 退出登录：独立红色分区（border-t 分隔） -->
+                <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
                   <LogOut :size="15" /> 退出登录
                 </button>
               </div>
             </Transition>
+            </Teleport>
           </div>
         </template>
 
@@ -674,6 +722,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 /* 订阅 pill（功能色：会员金；临期转警示金 + 轻脉动） */
 .sub-chip {
+  position: relative;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   gap: 0.3125rem;
@@ -698,13 +748,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   box-shadow: 0 0 14px rgba(251, 191, 36, 0.25);
 }
 
-/* 临期脉动：伪元素扩散环，只动 opacity/transform（不逐帧重绘 box-shadow）。
-   伪元素继承 pill 的圆角与警示色，父级 overflow: hidden 裁剪扩散范围 */
-.sub-chip {
-  position: relative;
-  overflow: hidden;
-}
-
+/* 临期脉动：伪元素扩散环，只动 opacity/transform（不逐帧重绘 box-shadow） */
 .sub-chip.warn {
   animation: sub-pulse 2.4s ease-in-out infinite;
 }
@@ -717,15 +761,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.35);
   opacity: 0;
   pointer-events: none;
+  animation: sub-ring 2.4s var(--au-ease) infinite;
 }
 
 @keyframes sub-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.8; }
-}
-
-.sub-chip.warn::after {
-  animation: sub-ring 2.4s var(--au-ease) infinite;
 }
 
 @keyframes sub-ring {
@@ -791,118 +832,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   box-shadow: 0 0 0 2px var(--au-overlay);
 }
 
-.msg-dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  width: 292px;
-  background: var(--au-overlay-menu);
-  border: 1px solid var(--au-border-strong);
-  border-radius: var(--au-r-lg);
-  box-shadow: var(--au-shadow-2);
-  overflow: hidden;
-  z-index: 60;
-}
-
-.msg-drop-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.8125rem 1rem;
-  border-bottom: 1px solid var(--au-border);
-}
-
-.msg-drop-title { font-size: 0.875rem; font-weight: 700; color: var(--au-text); }
-
-.msg-drop-unread {
-  padding: 0.125rem 0.5rem;
-  background: var(--au-warning-soft);
-  border-radius: var(--au-r-full);
-  color: var(--au-warning);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.msg-drop-clear { font-size: 0.75rem; color: var(--au-text-3); }
-
-.msg-drop-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.625rem;
-  padding: 0.6875rem 1rem;
-  text-decoration: none;
-  border-bottom: 1px solid var(--au-border);
-  transition: background var(--au-fast) var(--au-ease);
-}
-.msg-drop-item:hover { background: var(--au-surface-2); }
-
-.msg-drop-ic {
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: var(--au-surface-2);
-  color: var(--au-text-3);
-}
-
-.msg-drop-ic.hot {
-  background: var(--au-warning-soft);
-  color: var(--au-warning);
-}
-
-.msg-drop-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.msg-drop-item-title {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.msg-drop-meta { font-size: 0.75rem; color: var(--au-text-3); }
-
-.msg-drop-dot {
-  width: 6px;
-  height: 6px;
-  margin-top: 0.5rem;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--au-warning);
-}
-
-.msg-drop-hint {
-  margin: 0;
-  padding: 1.125rem 1rem;
-  text-align: center;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  border-bottom: 1px solid var(--au-border);
-}
-
-.msg-drop-foot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.1875rem;
-  padding: 0.6875rem 1rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--au-primary);
-  text-decoration: none;
-  transition: background var(--au-fast) var(--au-ease);
-}
-.msg-drop-foot:hover { background: var(--au-surface-2); }
+/* msg-dropdown / user-dropdown 及其内部样式已移至下方全局块（Teleport 到 body 后 scoped 不生效） */
 
 .user-menu { position: relative; }
 
@@ -942,124 +872,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   white-space: nowrap;
 }
 
-.user-dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  width: 200px;
-  background: var(--au-overlay-menu);
-  border: 1px solid var(--au-border-strong);
-  border-radius: var(--au-r-lg);
-  box-shadow: var(--au-shadow-2);
-  overflow: hidden;
-  z-index: 60;
-}
-
-.dropdown-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.875rem 1rem;
-  border-bottom: 1px solid var(--au-border);
-}
-
-.dropdown-username {
-  font-size: 0.875rem;
-  font-weight: 700;
-  color: var(--au-text);
-}
-
-/* 下拉里的分组标题与未读徽标：长尾入口收进来之后需要与账号项区分 */
-.dropdown-group-title {
-  margin: 0.375rem 0 0.125rem;
-  padding: 0 1rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: var(--au-text-3);
-}
-
-.dropdown-badge {
-  margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-gradient-warm);
-  color: var(--au-on-primary);
-  font-size: 0.75rem;
-  font-weight: 700;
-  border-radius: var(--au-r-full);
-}
-
-/* 外观三档切换：药丸分段控件，选中项青底 */
-.theme-seg {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2px;
-  margin: 0.25rem 1rem 0.5rem;
-  padding: 2px;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
-}
-
-.theme-opt {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.25rem;
-  padding: 0.3125rem 0;
-  border: none;
-  border-radius: var(--au-r-full);
-  background: none;
-  color: var(--au-text-3);
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.theme-opt:hover { color: var(--au-text); }
-
-.theme-opt.on {
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  color: var(--au-primary);
-}
-
-.dropdown-vip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.1875rem;
-  padding: 0.125rem 0.5rem;
-  background: var(--au-gradient-warm);
-  border-radius: var(--au-r-full);
-  color: var(--au-on-primary);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  width: 100%;
-  padding: 0.6875rem 1rem;
-  background: none;
-  border: none;
-  color: var(--au-text-2);
-  font-size: 0.8125rem;
-  text-decoration: none;
-  cursor: pointer;
-  transition: all var(--au-fast);
-  text-align: left;
-}
-.dropdown-item:hover { background: var(--au-surface-2); color: var(--au-text); }
-.dropdown-logout { color: var(--au-danger); border-top: 1px solid var(--au-border); }
-.dropdown-logout:hover { background: var(--au-danger-soft); color: var(--au-danger); }
+/* ==================== 用户菜单样式已移至全局块（Teleport） ==================== */
 
 .login-btn {
   display: inline-flex;
@@ -1077,9 +890,13 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 .login-btn:hover { transform: translateY(-1px); }
 
-/* 过渡 */
-.dd-enter-active, .dd-leave-active { transition: opacity var(--au-fast), transform var(--au-fast); }
-.dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-6px); }
+/* 过渡：柔和上浮淡入（opacity+transform，合成器友好） */
+.dd-enter-active, .dd-leave-active { transition: opacity var(--au-med) var(--au-ease), transform var(--au-med) var(--au-ease); }
+.dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-6px) scale(0.98); }
+
+@media (prefers-reduced-motion: reduce) {
+  .dd-enter-active, .dd-leave-active { transition: none; }
+}
 
 /* 窄屏：导航条目收窄，先让出用户名的宽度 */
 @media (max-width: 1080px) {
@@ -1128,11 +945,295 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   }
 
   .msg-dropdown { width: min(292px, calc(100vw - 1.5rem)); }
-  .user-dropdown { width: min(240px, calc(100vw - 1.5rem)); }
 }
 
+</style>
+
+<!-- 下拉已 Teleport 到 body，scoped 样式不跨树：两个下拉的完整样式放全局块。
+     data-v- 剔除后由类名本身保证作用域（user-dropdown / msg-dropdown 只在这一处渲染） -->
+<style>
+.msg-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 292px;
+  background: var(--au-overlay-menu);
+  border: 1px solid var(--au-border-strong);
+  border-radius: var(--au-r-lg);
+  box-shadow: var(--au-shadow-2);
+  overflow: hidden;
+  z-index: 60;
+}
+
+.user-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 236px;
+  background: var(--au-overlay-menu);
+  border: 1px solid var(--au-border-strong);
+  border-radius: var(--au-r-lg);
+  box-shadow: var(--au-shadow-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: min(70vh, 480px);
+  z-index: 60;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 768px) {
+  /* 挂到 body 后 fixed 终于是真视口定位：底边锚在拇指区之上（--au-dock-space
+     由 aurora.css 按断点定义），宽度留 12px 呼吸边，高过视口时内部滚 */
+  .user-dropdown,
+  .msg-dropdown {
+    position: fixed;
+    top: auto;
+    right: 12px;
+    bottom: calc(var(--au-dock-space) + 12px);
+    width: min(320px, calc(100vw - 24px));
+    max-height: calc(100dvh - 140px);
+    overflow-y: auto;
+  }
+}
+
+/* msg-dropdown 内部（原 scoped 规则原样搬来） */
+.msg-drop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8125rem 1rem;
+  border-bottom: 1px solid var(--au-border);
+}
+.msg-drop-title { font-size: 0.875rem; font-weight: 700; color: var(--au-text); }
+.msg-drop-unread {
+  padding: 0.125rem 0.5rem;
+  background: var(--au-warning-soft);
+  border-radius: var(--au-r-full);
+  color: var(--au-warning);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.msg-drop-clear { font-size: 0.75rem; color: var(--au-text-3); }
+.msg-drop-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.6875rem 1rem;
+  text-decoration: none;
+  border-bottom: 1px solid var(--au-border);
+  transition: background var(--au-fast) var(--au-ease);
+}
+.msg-drop-item:hover { background: var(--au-surface-2); }
+.msg-drop-ic {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
+}
+.msg-drop-ic.hot { background: var(--au-warning-soft); color: var(--au-warning); }
+.msg-drop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1;
+}
+.msg-drop-item-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-drop-meta { font-size: 0.75rem; color: var(--au-text-3); }
+.msg-drop-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 0.5rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--au-warning);
+}
+.msg-drop-hint {
+  margin: 0;
+  padding: 1.125rem 1rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+  border-bottom: 1px solid var(--au-border);
+}
+.msg-drop-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1875rem;
+  padding: 0.6875rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--au-primary);
+  text-decoration: none;
+  transition: background var(--au-fast) var(--au-ease);
+}
+.msg-drop-foot:hover { background: var(--au-surface-2); }
+
+/* user-dropdown 内部（原 scoped 规则原样搬来） */
+.dropdown-head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.875rem 1rem;
+  border-bottom: 1px solid var(--au-border);
+}
+.dropdown-avatar {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  font-size: 0.9375rem;
+  box-shadow: 0 0 0 2px var(--au-primary-soft);
+}
+.dropdown-id {
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+  flex: 1;
+}
+.dropdown-username {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropdown-uid {
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.dropdown-status {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: var(--au-r-full);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+.dropdown-status.gold {
+  background: var(--au-warning-soft);
+  border: 1px solid var(--au-warning-border);
+  color: var(--au-warning);
+}
+.dropdown-status.cyan {
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+}
+.dropdown-status.muted {
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  color: var(--au-text-3);
+}
+.theme-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  margin: 0.25rem 1rem 0.625rem;
+  padding: 2px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+}
+.theme-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.375rem 0;
+  border: 1px solid transparent;
+  border-radius: var(--au-r-full);
+  background: none;
+  color: var(--au-text-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
+}
+.theme-opt:hover { color: var(--au-text); }
+.theme-opt:active { transform: scale(0.96); }
+.theme-opt.on {
+  background: var(--au-primary-soft);
+  border-color: var(--au-primary-border);
+  color: var(--au-primary);
+}
+@media (max-width: 768px) {
+  .theme-opt { min-height: 36px; font-size: 0.75rem; }
+}
+.dropdown-group-title {
+  margin: 0.375rem 0 0.125rem;
+  padding: 0 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--au-text-3);
+}
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  min-height: 40px;
+  padding: 0.625rem 1rem;
+  background: none;
+  border: none;
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all var(--au-fast);
+  text-align: left;
+}
+.dropdown-item:hover { background: var(--au-surface-2); color: var(--au-text); }
+.dropdown-item:active { background: var(--au-surface-3); }
+.dropdown-item svg { color: var(--au-text-3); transition: color var(--au-fast) var(--au-ease); }
+.dropdown-item:hover svg { color: var(--au-primary); }
+.dropdown-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--au-gradient-warm);
+  color: var(--au-on-primary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: var(--au-r-full);
+}
+.dropdown-logout {
+  color: var(--au-danger);
+  border-top: 1px solid var(--au-border);
+}
+.dropdown-logout svg { color: var(--au-danger); }
+.dropdown-logout:hover { background: var(--au-danger-soft); color: var(--au-danger); }
+.dropdown-logout:hover svg { color: var(--au-danger); }
+</style>
+
+<style scoped>
 /* ≤768px：顶栏退成单行（品牌 + 资产 pill + 账号操作），主导航交给底部坞（AppDock）。
-   资产 pill 是唯一在所有断点都常驻的资产入口，这里只收紧内边距，不隐藏 */
+   两个下拉都改成 fixed 面板：① 挂在 header 的堆叠上下文里但 z 高于坞的绘制顺序问题
+   已不存在——fixed 仍受 header 的 z-index:50 上下文约束，因此坞提到 40、
+   下拉保持 60（见 AppDock 同步调整），同一上下文内 60 > 50 稳赢；
+   ② max-height + 内部滚动保证菜单永不伸进底部坞的拇指区 */
 @media (max-width: 768px) {
   .header-container {
     flex-wrap: nowrap;
