@@ -136,12 +136,45 @@ rm -f aetrix_unified.db-wal aetrix_unified.db-shm   # 清掉旧 WAL，避免与�
 sudo systemctl start aetrix
 ```
 
-### PostgreSQL
+### PostgreSQL（v2.42.0 起的默认）
+
+> ⚠️ **后台那个「数据库定时备份」开关只管 SQLite。** 跑 PostgreSQL 时它照常按点调度，
+> 但会明确跳过（`backend/emby_server/db_backup.py` 只做 SQLite 文件级备份）——
+> 也就是说**它给不了你任何 PG 备份**。PG 必须另外配一条 pg_dump 定时任务，
+> 否则「备份已开启」只是个心理安慰。
 
 ```bash
-pg_dump -U aetrix aetrix | gzip > /backups/aetrix_$(date +%F_%H%M).sql.gz
+# 手动备份（在服务器上，仓库根目录）
+docker exec aetrix-postgres pg_dump -U aetrix -d aetrix --no-owner --no-acl \
+  | gzip > /backups/aetrix_$(date +%F_%H%M).sql.gz
+
 # 恢复
-gunzip -c /backups/aetrix_2026-09-20_1200.sql.gz | psql -U aetrix aetrix
+gunzip -c /backups/aetrix_2026-09-20_1200.sql.gz | \
+  docker exec -i aetrix-postgres psql -U aetrix -d aetrix
+```
+
+或者直接用仓库脚本：它在容器里跑 pg_dump（**不需要**在 cron 环境里放密码），
+并校验产出是合法 gzip、且里面真有 `CREATE TABLE` —— 空壳会被丢弃，不会当场留一份假备份。
+
+```bash
+bash scripts/backup_db.sh    # → backups/aetrix-<时间戳>.sql.gz，默认保留 14 天
+```
+
+装定时任务（每天 3:10）：
+
+```cron
+10 3 * * * cd /opt/aetrix-portal && bash scripts/backup_db.sh >> /var/log/aetrix_backup.log 2>&1
+```
+
+> 装完**当天就去 `/var/log/aetrix_backup.log` 看一眼有没有真产出**（成功日志里有
+> "完成：<大小>，含 N 张表"），并至少做一次恢复演练（上面的恢复命令）。
+> 没演练过的备份不能算数。`scripts/setup_cron.sh` 也能装，但它有交互式确认，
+> 无人值守时请直接用上面这一行。
+
+定时任务示例（SQLite 部署，把路径换成自己那台机器上的库文件）：
+
+```cron
+10 3 * * * sqlite3 /path/to/aetrix_unified.db ".backup '/backups/aetrix_$(date +\%F).db'" && find /backups -name 'aetrix_*.db' -mtime +14 -delete
 ```
 
 ### 还要一起备份的东西
@@ -149,13 +182,10 @@ gunzip -c /backups/aetrix_2026-09-20_1200.sql.gz | psql -U aetrix aetrix
 - `.env`（含 `SECRET_KEY`，丢了等于所有人重新登录）
 - 你服务器上 Nginx 的证书与续期/cron 配置（**不在仓库里**，仓库那份已删除）
 
-> `scripts/backup.sh` / `backup_db.sh` / `restore.sh` 等是**旧版拆分栈（PostgreSQL + 容器）**的脚本：其 `BACKUP_DIR` 默认 `/backups`、产出 `aetrix_*.sql.gz`。如果你跑的是统一后端的 PostgreSQL，可以直接复用其 `pg_dump` 部分，但别指望它认识 SQLite 单文件部署。
-
-定时任务示例（每天 3:10）：
-
-```cron
-10 3 * * * sqlite3 /opt/Aetrix-Portal/aetrix_unified.db ".backup '/backups/aetrix_$(date +\%F).db'" && find /backups -name 'aetrix_*.db' -mtime +14 -delete
-```
+> `scripts/restore.sh` / `restore_db.sh` 仍是**旧版拆分栈**时代的脚本（还在提
+> `portal_user` / `portal_admin` 这类早已不存在的库名），别直接拿去恢复现在的统一库。
+> 备份侧只有一份实现：`scripts/backup_db.sh`；`scripts/backup.sh` 已退化为转发入口，
+> 只为不让已经装好的 cron 行断掉。
 
 ## 常见问题
 

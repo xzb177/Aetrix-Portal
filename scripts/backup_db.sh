@@ -1,147 +1,79 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Aetrix Portal Database Backup Script
+# Aetrix Portal · PostgreSQL 定时备份
 #
-# This script backs up PostgreSQL databases and can be run via cron
+# 用法：
+#   bash scripts/backup_db.sh            # 备份
+#   bash scripts/backup_db.sh all        # 兼容旧 cron 行的写法（单库后已无区别）
 #
-# Usage: ./backup_db.sh [user|admin|all]
+# 设计约束：
+# - 统一后端只有一个库（aetrix），不再是旧拆分栈的 portal_user / portal_admin；
+# - pg_dump 在 **postgres 容器里** 跑，所以不需要在宿主机 / cron 环境里导出
+#   POSTGRES_PASSWORD（cron 没有环境变量，旧脚本正是因此每次直接 exit 1）；
+# - 备份完要校验（gzip 完整 + 里面真有 CREATE TABLE）—— 一份空壳备份比不备份更危险；
+# - BACKUP_DIR / PG_CONTAINER / DB_NAME / DB_USER 都可用环境变量覆盖。
 #
+set -Eeuo pipefail
 
-set -e
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 
-# Configuration
-BACKUP_DIR="${BACKUP_DIR:-/root/Aetrix-Portal/backups}"
-RETENTION_DAYS=${RETENTION_DAYS:-7}
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-DATE_ONLY=$(date +"%Y%m%d")
+# 默认落在仓库外的 backups/（.gitignore 已忽略，避免 SQLite 部署误提交）
+BACKUP_DIR="${BACKUP_DIR:-$ROOT_DIR/backups}"
+RETENTION_DAYS="${RETENTION_DAYS:-14}"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# docker-compose.yml 里 postgres 服务的 container_name
+# （DB_CONTAINER 是 scripts/backup.sh 时代的旧名，一并认，免得老的 cron 行断掉）
+PG_CONTAINER="${PG_CONTAINER:-${DB_CONTAINER:-aetrix-postgres}}"
+# docker-compose.yml 里 POSTGRES_USER / POSTGRES_DB 的默认值
+DB_USER="${DB_USER:-aetrix}"
+DB_NAME="${DB_NAME:-aetrix}"
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+log()  { printf '\033[1;36m[backup]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Create backup directory if it doesn't exist
-mkdir -p "$BACKUP_DIR"
-mkdir -p "$BACKUP_DIR/daily"
-mkdir -p "$BACKUP_DIR/weekly"
-mkdir -p "$BACKUP_DIR/monthly"
-
-# Get database credentials from environment or docker-compose
-DB_HOST="${DB_HOST:-localhost}"
-DB_PORT="${DB_PORT:-5432}"
-DB_USER="${DB_USER:-postgres}"
-DB_PASSWORD="${POSTGRES_PASSWORD:-}"
-
-if [ -z "$DB_PASSWORD" ]; then
-    log_error "POSTGRES_PASSWORD environment variable not set"
-    exit 1
+# 兼容旧 cron 行里的 `all` / `user` / `admin`：单库之后它们没有区别，
+# 认得就好，别让已经装好的 cron 因为一个多余参数开始报错。
+if (($#)); then
+  case "$1" in
+    all|user|admin) ;;
+    *) die "未知参数：$1（用法：bash scripts/backup_db.sh [all|user|admin]）" ;;
+  esac
 fi
 
-export PGPASSWORD="$DB_PASSWORD"
+command -v docker >/dev/null 2>&1 || die "找不到 docker。本脚本走容器内 pg_dump；裸机 PG 请自行 pg_dump（见 docs/operations.md）。"
 
-# Backup function
-backup_database() {
-    local db_name=$1
-    local backup_type=$2  # daily, weekly, monthly
+state="$(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null || true)"
+[[ "$state" == "true" ]] || die "容器 $PG_CONTAINER 没在运行。用 docker compose ps 看一眼，或 PG_CONTAINER=xxx 覆盖。"
 
-    local filename="${db_name}_${backup_type}_${TIMESTAMP}.sql.gz"
-    local filepath="$BACKUP_DIR/$backup_type/$filename"
+mkdir -p "$BACKUP_DIR"
 
-    log_info "Backing up database: $db_name"
+stamp="$(date +%Y%m%d-%H%M%S)"
+partial="$BACKUP_DIR/.aetrix-$stamp.sql.gz.part"
+final="$BACKUP_DIR/aetrix-$stamp.sql.gz"
 
-    if pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" \
-            -d "$db_name" --no-owner --no-acl | gzip > "$filepath"; then
-        log_info "Backup completed: $filename"
+log "备份 $DB_NAME（容器 $PG_CONTAINER）→ $final"
 
-        # Calculate file size
-        size=$(du -h "$filepath" | cut -f1)
-        log_info "Backup size: $size"
-    else
-        log_error "Failed to backup database: $db_name"
-        return 1
-    fi
-}
+# 先写临时文件，校验过了再改名：中途失败不会留下一个"看起来像备份"的半成品
+if ! docker exec "$PG_CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" \
+        --no-owner --no-acl 2>"$BACKUP_DIR/.aetrix-$stamp.err" | gzip > "$partial"; then
+  err="$(tail -n 3 "$BACKUP_DIR/.aetrix-$stamp.err" 2>/dev/null | tr '\n' ' ')"
+  rm -f "$partial" "$BACKUP_DIR/.aetrix-$stamp.err"
+  die "pg_dump 失败：${err:-无输出}（DB_USER=$DB_USER / DB_NAME=$DB_NAME 是否与 .env 一致？）"
+fi
+rm -f "$BACKUP_DIR/.aetrix-$stamp.err"
 
-# Clean old backups
-cleanup_old_backups() {
-    local backup_type=$1
-    local keep_days=$2
+gzip -t "$partial" 2>/dev/null || { rm -f "$partial"; die "产出不是合法 gzip，已丢弃。"; }
 
-    log_info "Cleaning up old $backup_type backups (keeping last $keep_days days)..."
+# grep -c 会把整条流读完，不会给 gzip 发 SIGPIPE（pipefail 下那会让判定反转）
+tables="$(gzip -dc "$partial" | grep -c 'CREATE TABLE' || true)"
+[[ "${tables:-0}" -ge 1 ]] || { rm -f "$partial"; die "备份里没有 CREATE TABLE，像是空壳，已丢弃。"; }
 
-    find "$BACKUP_DIR/$backup_type" -name "*.sql.gz" -mtime +$keep_days -delete
-}
+mv "$partial" "$final"
+log "完成：$(du -h "$final" | cut -f1)，含 $tables 张表"
 
-# Backup specific databases
-backup_user_databases() {
-    log_info "Starting user databases backup..."
-
-    # Backup portal_user database
-    backup_database "portal_user" "daily"
-
-    # Backup portal_admin database
-    backup_database "portal_admin" "daily"
-}
-
-# Main backup routine
-main() {
-    local backup_target=${1:-all}
-
-    log_info "========================================="
-    log_info "Database Backup Started at $(date)"
-    log_info "========================================="
-
-    case $backup_target in
-        user)
-            backup_database "portal_user" "daily"
-            ;;
-        admin)
-            backup_database "portal_admin" "daily"
-            ;;
-        all)
-            backup_user_databases
-            ;;
-        *)
-            log_error "Invalid target: $backup_target"
-            echo "Usage: $0 [user|admin|all]"
-            exit 1
-            ;;
-    esac
-
-    # Cleanup old backups
-    log_info "Cleaning up old backups..."
-    cleanup_old_backups "daily" "$RETENTION_DAYS"
-    cleanup_old_backups "weekly" 30
-    cleanup_old_backups "monthly" 365
-
-    # Generate backup report
-    log_info "========================================="
-    log_info "Backup Summary:"
-    log_info "========================================="
-
-    for dir in daily weekly monthly; do
-        count=$(find "$BACKUP_DIR/$dir" -name "*.sql.gz" | wc -l)
-        total_size=$(du -sh "$BACKUP_DIR/$dir" 2>/dev/null | cut -f1)
-        log_info "$dir backups: $count files, $total_size"
-    done
-
-    log_info "========================================="
-    log_info "Backup completed at $(date)"
-    log_info "========================================="
-}
-
-# Run main function
-main "$@"
+# 保留策略
+removed="$(find "$BACKUP_DIR" -maxdepth 1 -name 'aetrix-*.sql.gz' -mtime "+$RETENTION_DAYS" -print -delete | wc -l)"
+log "清理超过 $RETENTION_DAYS 天的备份：删除 $removed 个"
+log "当前共 $(find "$BACKUP_DIR" -maxdepth 1 -name 'aetrix-*.sql.gz' | wc -l) 份备份在 $BACKUP_DIR"

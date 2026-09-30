@@ -7,7 +7,11 @@ SystemConfig 新增键同样靠人工补行。
 
 1. **env 自愈**：解析 ``env.example`` 里声明的所有 ``KEY=默认值``
    （生效的保持生效、注释掉的保持注释），``.env`` 里没有的 key 按原样
-   追加到 ``.env`` 末尾；
+   追加到 ``.env`` 末尾。
+   **例外**：会改变「数据落点 / 对外身份 / 暴露面」的 key 不自动补齐，
+   只记一条 WARNING（见 ``_NEVER_AUTO_FILL``）——示例里的默认值只对
+   「按示例新建的部署」成立，照抄到已经在跑的老部署上会连错库或把用户
+   指到假域名；
 2. **SystemConfig 自愈**：把代码各模块定义的 ``(key, 默认值)`` 注册表
    拿出来比对，数据库里没有的 key 插入默认值行。
 
@@ -38,6 +42,38 @@ logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 ENV_EXAMPLE = ROOT / "env.example"
 ENV_FILE = ROOT / ".env"
+
+# ---------------------------------------------------------------------------
+# 绝不自动补齐的 key
+# ---------------------------------------------------------------------------
+# 自愈读的是 env.example 里**生效的默认行**。那些默认值对「按示例新建的部署」
+# 成立，对「已经在跑的老部署」未必成立，而且写进 .env 之后会**永久生效**。
+#
+# 典型事故（本文件写这条护栏的直接原因）：
+#   老部署把 DATABASE_URL 交给 docker-compose 的 environment 注入，.env 里没写它；
+#   自愈把 env.example 的 postgresql://aetrix:aetrix@postgres:5432/aetrix 原样追加
+#   之后，compose 的 `${DATABASE_URL:-...}` 改从 .env 取 → 用错密码连库 →
+#   整站失去数据库。而且自愈跑在 lifespan 里（backend/database.py 早已 import
+#   完），**本次启动照常、下次重启才炸**，是个延迟炸弹。
+#
+# 这些值没有「安全的默认」，只能由部署者按自己那台机器显式写进 .env。
+# 注意：过滤只作用于**生效**的默认行；注释项原样追加只是文档，不改变行为。
+_NEVER_AUTO_FILL = frozenset({
+    # 数据落点：连错库是数据事故，不是配置问题
+    "DATABASE_TYPE",
+    "DATABASE_URL",
+    "POSTGRES_PASSWORD",
+    # 对外身份：用户端账号卡 / 播放器一键导入的地址、客户端认服务器的标识
+    "EMBY_PUBLIC_URL",
+    "EMBY_SERVER_ID",
+    # 部署形态与暴露面
+    "ENABLE_EMBY_GATEWAY",
+    "EMBY_API_PUBLIC_URL",
+    "EM_PANEL_URL",
+    "EM_GATEWAY_REALM",
+    "NODE_KEY",
+    "REALM",
+})
 
 # 匹配 KEY=...（active）与 # KEY=...（注释掉的可选项）
 _ACTIVE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
@@ -105,6 +141,19 @@ def heal_env_file(example_path: Path = ENV_EXAMPLE, env_path: Path = ENV_FILE) -
         return []
     existing = _existing_env_keys(env_path)
     missing = [(k, line, active) for (k, line, active) in items if k not in existing]
+
+    # 拦下发现在「生效」位置的敏感默认值：不写进 .env，只告警。
+    # 只补注释项不影响行为，所以不拦。
+    blocked = sorted(k for (k, _, active) in missing if active and k in _NEVER_AUTO_FILL)
+    if blocked:
+        logger.warning(
+            "[配置自愈] 这些 key 在 .env 里缺失，但不自动补齐（示例默认值只对新部署成立，"
+            "照抄到已有部署上会连错库 / 把用户指到假地址）：%s。"
+            "需要哪个请按 env.example 的说明显式写进 .env。",
+            "、".join(blocked),
+        )
+        missing = [item for item in missing if not (item[2] and item[0] in _NEVER_AUTO_FILL)]
+
     if not missing:
         return []
 
