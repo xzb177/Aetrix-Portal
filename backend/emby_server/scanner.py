@@ -1979,6 +1979,9 @@ def _purge_items(db: Session, item_ids: list) -> None:
     db.query(emby_models.MediaStream).filter(
         emby_models.MediaStream.item_id.in_(ids)
     ).delete(synchronize_session=False)
+    db.query(emby_models.ItemFacet).filter(
+        emby_models.ItemFacet.item_id.in_(ids)
+    ).delete(synchronize_session=False)
     db.query(emby_models.MediaItem).filter(
         emby_models.MediaItem.id.in_(ids)
     ).delete(synchronize_session=False)
