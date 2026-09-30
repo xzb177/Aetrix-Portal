@@ -277,21 +277,6 @@ def _backoff_seconds(attempts: int) -> int:
     return min(3600, 60 * (2 ** max(0, attempts - 1)))
 
 
-def _safe_int(value, default: int = 0) -> int:
-    """把探测结果里的数值字段收敛成能落库的整数。
-
-    ffprobe/MediaInfo 在远程流上偶发给出 None、负数或超大值；任一情况都会让
-    整条 ``db.commit()`` 失败，把这一轮所有条目的探测结果一起打回。
-    """
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    if parsed < 0 or parsed > _INT64_MAX:
-        return default
-    return parsed
-
-
 def _apply_probe_result(db, item, info: dict) -> None:
     """把 ffprobe 结果落到条目 + 重建内封轨道（与 scanner 写循环同口径）"""
     item.size = info.get("size", 0) or item.size

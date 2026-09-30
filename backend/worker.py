@@ -27,7 +27,6 @@ import signal
 import sys
 import threading
 import time
-import time
 
 logging.basicConfig(
     level=logging.INFO,
