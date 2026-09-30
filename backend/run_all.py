@@ -4,7 +4,7 @@
 - 三个子进程：serve.py（API:8000）、backend.worker（扫描）、emby_api.main（EA:8001）
 - SIGTERM/SIGINT 转发给所有子进程，优雅退出
 - 任一子进程异常退出则记录日志；API 或 EA 退出视为致命，整个容器退出（让 Docker 重启）
-  worker 退出则尝试重启一次（扫描任务可恢复）
+  worker 退出则尝试重启最多 3 次（扫描任务可恢复；超过则整容器退出让 Docker 重启）
 """
 import os
 import signal
@@ -75,12 +75,12 @@ def main():
                     log("%s is critical, exiting container" % name)
                     stop_all()
                     sys.exit(1)
-                if worker_restarts < 1:
+                if worker_restarts < 3:
                     worker_restarts += 1
-                    log("restarting worker...")
+                    log("restarting worker (%d/3)..." % worker_restarts)
                     start(name)
                 else:
-                    log("worker already restarted once, exiting container")
+                    log("worker already restarted 3 times, exiting container")
                     stop_all()
                     sys.exit(1)
 
