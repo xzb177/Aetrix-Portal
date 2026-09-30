@@ -33,6 +33,10 @@
   --au-warning: #fbbf24;
   --au-warning-soft: rgba(251, 191, 36, 0.12);
   --au-warning-border: rgba(251, 191, 36, 0.28);
+  /* 金币系（签到按钮专属三档）：亮金渐变起 / 暗金渐变止 / 底部描边深金 */
+  --au-gold-a: #f6b545;
+  --au-gold-b: #ec9420;
+  --au-gold-edge: #c47a10;
   /* 预警色底上的文字（同 --au-on-primary 的思路） */
   --au-on-warning: #1a1205;
   --au-danger: #fb7185;

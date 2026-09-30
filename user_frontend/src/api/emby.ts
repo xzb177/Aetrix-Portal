@@ -257,7 +257,7 @@ const USER_ITEMS = '/emby/Users/me/Items'
 let viewsCache: { items: EmbyItem[]; ts: number } | null = null
 const VIEWS_TTL_MS = 5 * 60 * 1000
 
-/** 条目详情共享内存缓存：QuickViewSheet / 详情页 / 播放页不再重复拉同一条 */
+/** 条目详情共享内存缓存：详情页 / 播放页不再重复拉同一条 */
 const itemCache = new Map<string, { item: EmbyItem; ts: number }>()
 const ITEM_TTL_MS = 2 * 60 * 1000
 const ITEM_CACHE_MAX = 200
@@ -339,7 +339,7 @@ export const embyApi = {
     return res?.Items || []
   },
 
-  /** 条目详情（full，含 MediaSources）：2 分钟共享缓存，QuickViewSheet/详情页/播放页共用 */
+  /** 条目详情（full，含 MediaSources）：2 分钟共享缓存，详情页/播放页共用 */
   async getItem(itemId: string): Promise<EmbyItem> {
     const hit = itemCache.get(itemId)
     if (hit && Date.now() - hit.ts < ITEM_TTL_MS) return hit.item

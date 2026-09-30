@@ -45,6 +45,10 @@ const total = ref(0)
 const filters = ref({ code_type: 0, state: '', keyword: '' })
 
 const genVisible = ref(false)
+/** 生成 / 行内动作 / 模式保存进行中（按钮 loading，防重复点击） */
+const genBusy = ref(false)
+const rowBusyId = ref<number | null>(null)
+const modeBusy = ref(false)
 const genForm = ref({
   code_type: 1 as 1 | 2 | 3,
   count: 5,
@@ -147,41 +151,61 @@ function openGenerate(codeType: 1 | 2 | 3) {
 }
 
 async function generate() {
-  const res = await generateCodes({
-    code_type: genForm.value.code_type,
-    count: genForm.value.count,
-    days: genForm.value.code_type === 3 ? -1 : genForm.value.days,
-    max_uses: genForm.value.max_uses,
-    expires_days: genForm.value.expires_days,
-    algorithm: genForm.value.algorithm,
-    is_decoy: genForm.value.is_decoy,
-    target_username: genForm.value.target_username || undefined,
-    note: genForm.value.note || undefined,
-    realm_id: genForm.value.realm_id ?? undefined,
-  })
-  generated.value = res.codes.map((c) => ({ code: c.code, days_text: c.days_text }))
-  genVisible.value = false
-  resultVisible.value = true
-  ElMessage.success(res.message)
-  load()
+  genBusy.value = true
+  try {
+    const res = await generateCodes({
+      code_type: genForm.value.code_type,
+      count: genForm.value.count,
+      days: genForm.value.code_type === 3 ? -1 : genForm.value.days,
+      max_uses: genForm.value.max_uses,
+      expires_days: genForm.value.expires_days,
+      algorithm: genForm.value.algorithm,
+      is_decoy: genForm.value.is_decoy,
+      target_username: genForm.value.target_username || undefined,
+      note: genForm.value.note || undefined,
+      realm_id: genForm.value.realm_id ?? undefined,
+    })
+    generated.value = res.codes.map((c) => ({ code: c.code, days_text: c.days_text }))
+    genVisible.value = false
+    resultVisible.value = true
+    ElMessage.success(res.message)
+    load()
+  } finally {
+    genBusy.value = false
+  }
 }
 
 async function toggle(row: RegistrationCode) {
-  await patchRegistrationCode(row.id, { is_active: !row.is_active })
-  ElMessage.success(row.is_active ? '已停用' : '已启用')
-  load()
+  rowBusyId.value = row.id
+  try {
+    await patchRegistrationCode(row.id, { is_active: !row.is_active })
+    ElMessage.success(row.is_active ? '已停用' : '已启用')
+    load()
+  } finally {
+    rowBusyId.value = null
+  }
 }
 
 async function remove(row: RegistrationCode) {
   await ElMessageBox.confirm(`确认删除卡码 ${row.code}？`, '删除卡码', { type: 'warning' })
-  const res = await deleteRegistrationCode(row.id)
-  ElMessage.success(res.message)
-  load()
+  rowBusyId.value = row.id
+  try {
+    const res = await deleteRegistrationCode(row.id)
+    ElMessage.success(res.message)
+    load()
+  } finally {
+    rowBusyId.value = null
+  }
 }
 
 async function saveMode() {
-  await updateRegistrationSettings({ mode: settings.value.mode, message: settings.value.message })
-  ElMessage.success('注册模式已更新')
+  modeBusy.value = true
+  try {
+    await updateRegistrationSettings({ mode: settings.value.mode, message: settings.value.message })
+    ElMessage.success('注册模式已更新')
+  } finally {
+    modeBusy.value = false
+  }
 }
 
 /** 旧版「批量生成」入口保留：走类型化接口，默认注册码 */
@@ -295,7 +319,7 @@ function usedByNames(row: RegistrationCode): string {
           placeholder="关闭注册时展示给用户的消息"
           style="max-width: 420px"
         />
-        <el-button size="small" @click="saveMode">保存</el-button>
+        <el-button size="small" :loading="modeBusy" @click="saveMode">保存</el-button>
       </div>
     </div>
 
@@ -387,7 +411,7 @@ function usedByNames(row: RegistrationCode): string {
       </el-form>
       <template #footer>
         <el-button @click="genVisible = false">取消</el-button>
-        <el-button type="primary" @click="generate">生成</el-button>
+        <el-button type="primary" :loading="genBusy" @click="generate">生成</el-button>
       </template>
     </el-dialog>
 
@@ -456,11 +480,12 @@ function usedByNames(row: RegistrationCode): string {
             size="small"
             :type="row.is_active ? 'danger' : 'success'"
             plain
+            :loading="rowBusyId === row.id"
             @click="toggle(row)"
           >
             {{ row.is_active ? '停用' : '启用' }}
           </el-button>
-          <el-button size="small" type="danger" plain @click="remove(row)">
+          <el-button size="small" type="danger" plain :loading="rowBusyId === row.id" @click="remove(row)">
             <Trash2 :size="13" style="margin-right: 2px" />删除
           </el-button>
         </template>

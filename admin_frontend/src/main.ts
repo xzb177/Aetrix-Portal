@@ -19,6 +19,14 @@ import './styles/element-plus-theme.css'
 // 窄屏适配层必须最后引入（它要覆盖上面几层与各页面 scoped 样式）
 import './styles/responsive.css'
 
+// 函数式组件的样式必须手动引：ElMessage / ElMessageBox / v-loading 不经过模板解析，
+// unplugin 的按需样式注入对「直接 import 调用」不生效——漏了这段，toast 的
+// position:fixed 等基础样式进不了包，弹层会掉到文档流末尾（视口外，看不到反馈）。
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/loading/style/css'
+import { ElLoadingDirective } from 'element-plus'
+
 const app = createApp(App)
 
 // 组件里 `await ElMessageBox.confirm(...)` / `prompt(...)` 在用户点「取消」「关闭」时
@@ -33,6 +41,8 @@ app.config.errorHandler = (err) => {
 
 app.use(createPinia())
 app.use(router)
+// v-loading 指令（全量引入时代自带，按需引入后必须手动注册）
+app.directive('loading', ElLoadingDirective)
 
 app.mount('#app')
 

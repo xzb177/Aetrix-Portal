@@ -403,7 +403,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
             </RouterLink>
             <RouterLink
               v-else-if="isFreeRealm"
-              to="/media"
+              to="/wallet"
               class="sub-chip free"
               title="公益服 · 免费开放"
             >

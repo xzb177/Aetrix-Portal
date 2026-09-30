@@ -2,6 +2,33 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.42.5] - 2026-09-30
+
+### 管理后台 toast 修复 + 用户端删除媒体库/搜索 + 签到按钮重做
+
+- **修管理后台「所有操作都没反馈」**：根因不是没弹 toast，而是 ElMessage 的
+  theme-chalk 基础样式（`position:fixed` 等）根本没进包——各视图都是直接
+  `import { ElMessage }`，绕过了 unplugin 的按需样式注入，toast DOM 出现了但
+  `position:static` 掉到文档流末尾（视口外）。`main.ts` 手动引入
+  message / message-box / loading 三个函数式组件样式，并补注册 `v-loading` 指令。
+  实测：失败 toast `position:fixed` 顶部居中可见，双主题下均正确。
+- **拦截器统一反馈**：写操作（post/put/patch/del/upload）失败统一弹红色
+  ElMessage.error（含后端 detail / 422 校验信息）；查询保持安静；`silent: true`
+  跳过。主要操作按钮补 loading 态（公告、卡码、工单、登录日志清理、设备处置），
+  防重复点击。
+- **用户端删除媒体库与搜索页**（v2.42.4 只退到菜单，本轮连页面一起删）：
+  路由 /media、/library、/search、/favorites、/history 及
+  LibraryHomeView / LibraryView / SearchView / FavoritesView / HistoryView、
+  MediaCard / MediaRow / QuickViewSheet 组件与对应契约测试全部删除；老地址落
+  兜底 404。/media/:id 详情与 /watch 播放深链保留（首页/求片/个人中心在用）。
+  首页观影数据卡改为纯展示卡；主导航与底部坞仍是三项（首页/商店/我的）——
+  生产站看到四项是部署滞后，非代码问题。
+- **签到按钮重做**：金渐变实底 + 内高光 + 底部深金描边的「金币打卡」胶囊，
+  悬停光泽扫过（纯 transform）、按压回弹、到账弹跳庆祝；右上角连签火苗徽章；
+  已签态换成优雅的成功确认胶囊（不再是禁用灰）。金色三档入 aurora.css 令牌。
+- **商店充值 tab 占位闪现修复**：充值套餐首载先渲染骨架行（ shimmer），
+  请求回来后再渲染空态或列表——不再闪一下「暂无可用充值套餐」。
+
 ## [2.42.4] - 2026-09-30
 
 ### 导航定稿「首页 / 商店 / 我的」+ 管理后台统一设计语言与双主题

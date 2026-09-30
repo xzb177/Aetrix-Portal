@@ -57,6 +57,7 @@
  */
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink } from 'vue-router'
+// 观影数据卡无落地页（媒体库已下线），同模板里 RouterLink 与 div 二选一
 import { useUserStore } from '@/stores/user'
 import {
   subscriptionApi, isExpiringSoon, embyApi, mediaSeekApi, ticketApi, announcementApi,
@@ -225,7 +226,7 @@ const assetCards = computed(() => {
     },
     {
       key: 'watch',
-      to: '/media?tab=history',
+      to: '',
       icon: Clapperboard,
       tone: 'violet',
       title: '观影数据',
@@ -233,8 +234,8 @@ const assetCards = computed(() => {
       unit: watchUnit,
       progress: null,
       desc: `播放 ${st ? st.total_plays : '—'} 次 · 看过 ${st ? st.watched_items : '—'} 部`,
-      note: '足迹保留在媒体库',
-      footer: '观看记录',
+      note: '在 Infuse 等客户端继续观影',
+      footer: '',
       badge: null,
       hot: false,
     },
@@ -530,12 +531,13 @@ onMounted(() => {
         </div>
       </section>
       <section v-else class="asset-grid au-anim-up">
-        <RouterLink
+        <component
+          :is="c.to ? RouterLink : 'div'"
           v-for="c in assetCards"
           :key="c.key"
-          :to="c.to"
+          :to="c.to || undefined"
           class="asset-card au-card"
-          :class="`tone-${c.tone}`"
+          :class="[{ 'asset-card-static': !c.to }, `tone-${c.tone}`]"
         >
           <!-- ① 图标盒 + 标题（功能色 10% 底 + 20% 边框） -->
           <div class="asset-head">
@@ -561,15 +563,16 @@ onMounted(() => {
           <!-- ③ 说明文案 -->
           <p class="asset-desc">{{ c.desc }}</p>
 
-          <!-- ④ 底部分隔条：左灰色说明 + 右功能色 CTA（全站统一模式） -->
+          <!-- ④ 底部分隔条：左灰色说明 + 右功能色 CTA（全站统一模式）；
+               没有落地页的卡（如观影数据）不渲染 CTA，只留说明 -->
           <div class="asset-foot">
             <span class="asset-note">{{ c.note }}</span>
-            <span class="asset-cta">
+            <span v-if="c.footer" class="asset-cta">
               {{ c.footer }}
               <ChevronRight :size="13" />
             </span>
           </div>
-        </RouterLink>
+        </component>
       </section>
 
       <!-- 我的面板（v2.34.0）：进行中的事项 / 正在播放（只在本账号真在播时出现）。
@@ -849,16 +852,23 @@ html[data-theme='light'] .hero-glow-2 {
   .asset-card { padding: 1.75rem; }
 }
 
-/* hover 微交互克制：边框与阴影走功能色、整卡轻抬，图标稍放大 */
+/* hover 微交互克制：边框与阴影走功能色、整卡轻抬，图标稍放大。
+   纯展示卡（无落地页，如观影数据）不参与 hover 位移 */
 .asset-card:hover {
   border-color: var(--asset-border);
   box-shadow: var(--au-shadow-2);
   transform: translateY(-2px);
 }
+.asset-card-static:hover {
+  transform: none;
+  box-shadow: var(--au-shadow-1);
+}
 
 .asset-card:hover .asset-icon {
   transform: scale(1.06);
 }
+
+.asset-card-static:hover .asset-icon { transform: none; }
 
 .asset-card:hover .asset-title {
   color: var(--asset);

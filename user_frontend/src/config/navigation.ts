@@ -31,8 +31,8 @@
 
 import type { Component } from 'vue'
 import {
-  ArrowDownLeft, Bot, CalendarCheck, Clapperboard, Film, Gift,
-  Inbox, MessageSquareDashed, Receipt, Search, ShoppingBag, Ticket, User, Wallet,
+  ArrowDownLeft, Bot, CalendarCheck, Clapperboard, Gift,
+  Inbox, MessageSquareDashed, Receipt, ShoppingBag, Ticket, User, Wallet,
 } from 'lucide-vue-next'
 
 export interface NavItem {
@@ -58,16 +58,10 @@ export const primaryNav: NavItem[] = [
 ]
 
 /** 长尾入口：头像菜单里的分组，桌面与移动端一致。
- *  v2.42.4：钱包已是主导航的「商店」（一个语义只留一处，钱包条目从这里移除）；
- *  媒体库与搜索从主导航退下来，收进「观影」分组（页面入口不消失，只是不再占位） */
+ *  v2.42.4：钱包已是主导航的「商店」（一个语义只留一处，钱包条目从这里移除）。
+ *  v2.42.5：媒体库与搜索页删除——看片在第三方客户端完成，站内只保留
+ *  首页观影数据卡与详情 / 播放深链，不再提供站内媒体浏览入口 */
 export const menuSections: NavGroup[] = [
-  {
-    title: '观影',
-    items: [
-      { name: '媒体库', path: '/media', icon: Film },
-      { name: '搜索片名', path: '/search', icon: Search },
-    ],
-  },
   {
     title: '账号与经济',
     items: [
