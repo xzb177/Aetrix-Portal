@@ -162,6 +162,25 @@ def cancel_scan_request(library_id: int) -> str:
         return "missing"
 
 
+def _blocking_redis(timeout: int):
+    """拿一个 socket 超时大于阻塞时长的 Redis 客户端。
+
+    共享的 ``redis_client`` 把 ``socket_timeout`` 设成 5s，而 BLMOVE 的阻塞
+    时长也是 5s：队列一空，两边同时到点，客户端先抛
+    ``Timeout reading from socket``，于是空转轮询每 10s 报一次假警。
+    阻塞读必须让 socket 超时大于阻塞时长 + 余量。
+    """
+    from backend.database import REDIS_URL
+    import redis as _redis_mod
+
+    return _redis_mod.from_url(
+        REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=timeout + 5,
+    )
+
+
 def pop_scan_request(timeout: int = 5) -> Optional[dict]:
     """Worker 进程：原子取出一个扫描请求（BLMOVE）
 
@@ -171,7 +190,7 @@ def pop_scan_request(timeout: int = 5) -> Optional[dict]:
     返回 {"library_id": int, "trigger": str, "_raw": str}，超时返回 None。
     _raw 用于 ack 时从 processing 队列删除。
     """
-    r = _redis()
+    r = _blocking_redis(timeout)
     if r is None:
         return None
     try:
@@ -194,6 +213,11 @@ def pop_scan_request(timeout: int = 5) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"从 Redis 取扫描请求失败：{e}")
         return None
+    finally:
+        try:
+            r.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def ack_scan_request(raw) -> None:

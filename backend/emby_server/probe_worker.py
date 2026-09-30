@@ -29,7 +29,7 @@ from sqlalchemy import or_
 from backend.database import SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server.mounts import resolve_play_target, MountError
-from backend.emby_server.scanner import needs_probe, probe_metadata
+from backend.emby_server.scanner import needs_probe, probe_metadata, safe_probe_int
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +173,14 @@ PROBE_BATCH = max(10, int(os.getenv("PROBE_BATCH", "200") or 200))
 PROBE_RATE_PER_SEC = max(1, int(os.getenv("PROBE_RATE_PER_SEC", "4") or 4))
 PROBE_MAX_ATTEMPTS = max(1, int(os.getenv("PROBE_MAX_ATTEMPTS", "5") or 5))
 PROBE_IDLE_POLL_SEC = max(5, int(os.getenv("PROBE_IDLE_POLL_SEC", "30") or 30))
+# 轮间休息：只要还有积压，每轮跑完就立刻再抢下一批（实测 200 条/30s），
+# 4 核机器会被 ffprobe + rclone 打满、swap 吃到 1.2G，用户侧浏览直接卡成转圈。
+# 有积压也要让出资源，默认歇 10s；调 0 可恢复旧行为。
+PROBE_ROUND_PAUSE_SEC = max(0, int(os.getenv("PROBE_ROUND_PAUSE_SEC", "10") or 10))
+
+# 探测结果里的数值字段统一走 scanner.safe_probe_int：ffprobe/MediaInfo 在远程流上
+# 偶发给出 None、负数或超大值，直接落库会让整条 commit 失败、把这一轮全部打回。
+_safe_int = safe_probe_int
 
 BOOST_PRIORITY = 1000   # 按需插队的优先级（新文件 100，普通 0）
 NEW_FILE_PRIORITY = 100
@@ -273,9 +281,11 @@ def _apply_probe_result(db, item, info: dict) -> None:
     """把 ffprobe 结果落到条目 + 重建内封轨道（与 scanner 写循环同口径）"""
     item.size = info.get("size", 0) or item.size
     item.duration_ticks = info["duration_ticks"]
-    item.bitrate = info["bitrate"]
-    item.width = info["width"]
-    item.height = info["height"]
+    # 码率兜底：列已是 BIGINT，但个别探测源会给出 None/负数/超大值，
+    # 直接落库会让整轮 _probe_one 抛 NumericValueOutOfRange。
+    item.bitrate = _safe_int(info.get("bitrate"))
+    item.width = _safe_int(info.get("width"))
+    item.height = _safe_int(info.get("height"))
     item.video_codec = info["video_codec"]
     item.audio_codec = info["audio_codec"]
     item.audio_languages = info["audio_languages"]
@@ -454,6 +464,10 @@ def _worker_loop() -> None:
             counts = run_once()
             if counts["claimed"] == 0:
                 _stop_event.wait(PROBE_IDLE_POLL_SEC)
+            elif PROBE_ROUND_PAUSE_SEC > 0:
+                # 有积压也要让出资源：连续满载会把整台机器压垮，
+                # 优先保证用户侧浏览不被后台探测拖死。
+                _stop_event.wait(PROBE_ROUND_PAUSE_SEC)
         except Exception:  # noqa: BLE001
             logger.exception("探测 worker 一轮异常，10s 后继续")
             _stop_event.wait(10)

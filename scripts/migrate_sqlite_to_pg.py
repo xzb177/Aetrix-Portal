@@ -74,6 +74,10 @@ def _convert_value(col_type, value):
         return None
     type_name = type(col_type).__name__
     if type_name == "Boolean":
+        # 不能用 bool(value)：SQLite 里存成字符串的 '0' / 'false' 会被判成 True，
+        # 等于把「不是管理员」的人全翻成管理员（is_staff / is_active 同理）。
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
         return bool(value)
     if type_name == "DateTime":
         if isinstance(value, datetime):
@@ -265,7 +269,7 @@ def main():
     print(f"目标: {args.target.split('@')[-1]}")  # 不打印密码
 
     # 1. 目标库建表（create_all + _auto_migrate，幂等）
-    print("\n[1/5] 目标库建表（init_db）...")
+    print("\n[1/6] 目标库建表（init_db）...")
     dbmod.init_db()
 
     # 2. 按外键依赖顺序拿表清单
@@ -284,7 +288,7 @@ def main():
     _by_name = {t.name: t for t in _all_tables}
     tables = [_by_name[n] for n in _order if n in _by_name]
     tables += [t for t in _all_tables if t not in tables]  # 兜底：环或异常时不丢表
-    print(f"[2/5] 共 {len(tables)} 张表（按外键依赖排序）")
+    print(f"[2/6] 共 {len(tables)} 张表（按外键依赖排序）")
 
     src = sqlite3.connect(args.source)
     src.row_factory = sqlite3.Row
@@ -296,13 +300,13 @@ def main():
 
     # 3. --clean：先清空目标表（反向依赖顺序 + CASCADE）
     if args.clean:
-        print("[3/5] --clean：清空目标库...")
+        print("[3/6] --clean：清空目标库...")
         with engine.begin() as conn:
             for table in reversed(tables):
                 conn.execute(sa_text(f'TRUNCATE TABLE "{table.name}" RESTART IDENTITY CASCADE'))
         print("      已清空")
     else:
-        print("[3/5] 跳过清空（目标表必须为空）")
+        print("[3/6] 跳过清空（目标表必须为空）")
         for table in tables:
             if table.name not in src_tables:
                 continue
@@ -318,7 +322,7 @@ def main():
     self_refs = _orph.get("_self_refs") or {}
 
     # 4. 逐表导数据
-    print(f"[4/5] 导数据（batch={args.batch_size}）...")
+    print(f"[4/6] 导数据（batch={args.batch_size}）...")
     total_src, total_dst = 0, 0
     failed = []
     for table in tables:
@@ -392,7 +396,7 @@ def main():
     # 5. 重置 PG 自增序列（SERIAL/IDENTITY），否则新插入会主键冲突。
     # 表名/列名来自 metadata（可信来源）直接拼 SQL；pg_get_serial_sequence
     # 拿不到序列名的表（如自然主键）返回 NULL，跳过。
-    print("[5/5] 重置自增序列...")
+    print("[5/6] 重置自增序列...")
     with engine.begin() as conn:
         for table in tables:
             pk_cols = [c.name for c in table.primary_key.columns]
@@ -407,6 +411,18 @@ def main():
                 conn.execute(sa_text(
                     f"SELECT setval('{seq}', COALESCE((SELECT MAX(\"{pk.name}\") "
                     f"FROM \"{table.name}\"), 1), true)"))
+
+    # 6. 补跑「服」自愈：[1/5] 的 init_db 在空库上建好默认服并写了 active_realm_id，
+    #    [3/5] 的 --clean 又把它们连同数据一起 TRUNCATE 掉了；[4/5] 导入的旧行
+    #    realm_id 多为 NULL（源库本来就没有这套结构）。不补这一次，迁移完成后
+    #    user_subscriptions.realm_id 会一直是 NULL —— subscriptions.py:113 的
+    #    `realm_id == target` 走 SQL 三值逻辑，NULL 行一律被排除 →
+    #    has_active_subscription 恒为 False → 所有付费会员播放 403，
+    #    而浏览端点根本不调 ensure_playback_allowed，所以「浏览正常、播放 403」。
+    #    旧架构下 EA 单独启动（不跑 init_db）必然踩中，必须在迁移末尾补齐。
+    #    _ensure_default_realm 自身幂等：已有服就不重建，只回填 NULL 并补 active_realm_id。
+    print("[6/6] 补跑服自愈（回填 realm_id + active_realm_id）...")
+    dbmod._ensure_default_realm()
 
     print(f"\n源库总行数: {total_src}, 目标库总行数: {total_dst}")
     if failed:

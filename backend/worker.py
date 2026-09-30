@@ -40,6 +40,9 @@ _shutdown_event = threading.Event()
 # Redis 单实例锁
 _WORKER_LOCK_KEY = "aetrix:worker:lock"
 _WORKER_LOCK_TTL_MS = 30000  # 30 秒，靠心跳续期
+# 抢锁最多等多久：必须 > TTL，否则部署时旧实例还没走到释放，新实例就会
+# 误判「已有 worker 在跑」直接退出（worker 退出 = 扫描/探测全停摆）。
+_WORKER_LOCK_WAIT_SEC = max(0, int(os.getenv("WORKER_LOCK_WAIT_SEC", "45") or 45))
 _worker_lock_token: str | None = None
 _lock_renew_thread: threading.Thread | None = None
 
@@ -52,25 +55,40 @@ def _handle_signal(signum, frame):
 
 
 def _acquire_worker_lock(redis_client) -> bool:
-    """获取 worker 单实例锁（Redis SET NX PX）"""
+    """获取 worker 单实例锁（Redis SET NX PX）。
+
+    抢不到时最多轮询 ``_WORKER_LOCK_WAIT_SEC``，等的是旧实例的锁按 TTL
+    自然过期，而不是死等；超时仍失败才判定真的存在第二个实例并退出。
+    """
     global _worker_lock_token
     import uuid
-    token = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    try:
-        acquired = redis_client.set(
-            _WORKER_LOCK_KEY, token, nx=True, px=_WORKER_LOCK_TTL_MS
-        )
-        if acquired:
-            _worker_lock_token = token
-            logger.info(f"已获取 worker 单实例锁（token={token}）")
-            return True
-        else:
+
+    deadline = time.monotonic() + _WORKER_LOCK_WAIT_SEC
+    warned = False
+    while True:
+        token = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        try:
+            acquired = redis_client.set(
+                _WORKER_LOCK_KEY, token, nx=True, px=_WORKER_LOCK_TTL_MS
+            )
+            if acquired:
+                _worker_lock_token = token
+                logger.info(f"已获取 worker 单实例锁（token={token}）")
+                return True
             holder = redis_client.get(_WORKER_LOCK_KEY)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"获取 worker 锁失败：{e}")
+            return False
+        if time.monotonic() >= deadline:
             logger.error(f"已有 worker 实例在运行（锁持有者={holder}），本实例退出")
             return False
-    except Exception as e:
-        logger.error(f"获取 worker 锁失败：{e}")
-        return False
+        if not warned:
+            logger.warning(
+                f"worker 锁被占用（持有者={holder}），"
+                f"最多等待 {_WORKER_LOCK_WAIT_SEC}s 让其释放…"
+            )
+            warned = True
+        time.sleep(2)
 
 
 def _renew_worker_lock(redis_client):
@@ -79,9 +97,12 @@ def _renew_worker_lock(redis_client):
     while not _shutdown_event.is_set():
         try:
             # 只续自己的锁（Lua 脚本保证原子性）
+            # 注意：命令名必须是字符串字面量。写成 redis.call(get, ...) 会被
+            # Redis 7.x 判为「访问不存在的全局变量 get」而整段失败，
+            # 结果续期静默失效 → 锁 30s 到期自动过期 → 单实例保护形同虚设。
             renewed = redis_client.eval(
-                "if redis.call(get, KEYS[1]) == ARGV[1] then "
-                "return redis.call(pexpire, KEYS[1], ARGV[2]) else return 0 end",
+                'if redis.call("GET", KEYS[1]) == ARGV[1] then '
+                'return redis.call("PEXPIRE", KEYS[1], ARGV[2]) else return 0 end',
                 1, _WORKER_LOCK_KEY, _worker_lock_token, _WORKER_LOCK_TTL_MS,
             )
             if not renewed:
@@ -101,8 +122,8 @@ def _release_worker_lock(redis_client):
         return
     try:
         redis_client.eval(
-            "if redis.call(get, KEYS[1]) == ARGV[1] then "
-            "return redis.call(del, KEYS[1]) else return 0 end",
+            'if redis.call("GET", KEYS[1]) == ARGV[1] then '
+            'return redis.call("DEL", KEYS[1]) else return 0 end',
             1, _WORKER_LOCK_KEY, _worker_lock_token,
         )
         logger.info("已释放 worker 单实例锁")
