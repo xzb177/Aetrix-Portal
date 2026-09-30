@@ -173,6 +173,10 @@ PROBE_BATCH = max(10, int(os.getenv("PROBE_BATCH", "200") or 200))
 PROBE_RATE_PER_SEC = max(1, int(os.getenv("PROBE_RATE_PER_SEC", "4") or 4))
 PROBE_MAX_ATTEMPTS = max(1, int(os.getenv("PROBE_MAX_ATTEMPTS", "5") or 5))
 PROBE_IDLE_POLL_SEC = max(5, int(os.getenv("PROBE_IDLE_POLL_SEC", "30") or 30))
+# 轮间休息：只要还有积压，每轮跑完就立刻再抢下一批（实测 200 条/30s），
+# 4 核机器会被 ffprobe + rclone 打满、swap 吃到 1.2G，用户侧浏览直接卡成转圈。
+# 有积压也要让出资源，默认歇 10s；调 0 可恢复旧行为。
+PROBE_ROUND_PAUSE_SEC = max(0, int(os.getenv("PROBE_ROUND_PAUSE_SEC", "10") or 10))
 
 BOOST_PRIORITY = 1000   # 按需插队的优先级（新文件 100，普通 0）
 NEW_FILE_PRIORITY = 100
@@ -454,6 +458,10 @@ def _worker_loop() -> None:
             counts = run_once()
             if counts["claimed"] == 0:
                 _stop_event.wait(PROBE_IDLE_POLL_SEC)
+            elif PROBE_ROUND_PAUSE_SEC > 0:
+                # 有积压也要让出资源：连续满载会把整台机器压垮，
+                # 优先保证用户侧浏览不被后台探测拖死。
+                _stop_event.wait(PROBE_ROUND_PAUSE_SEC)
         except Exception:  # noqa: BLE001
             logger.exception("探测 worker 一轮异常，10s 后继续")
             _stop_event.wait(10)
