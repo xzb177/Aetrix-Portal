@@ -43,6 +43,9 @@ build/
 .coverage
 *.tsbuildinfo
 
+# 内置定时备份（backend/emby_server/db_backup.py）在库文件旁边落盘的目录
+backups/
+
 # Logs
 logs/
 *.log

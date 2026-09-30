@@ -1,37 +1,18 @@
 #!/bin/bash
-# Aetrix Emby Portal - Database Backup Script
+#
+# 【已并入 scripts/backup_db.sh】保留这个文件名只为不让已经装好的 cron 行断掉。
+#
+# 它曾经是另一份独立实现，而且默认容器名写的是 ``aetrix_postgres``（下划线），
+# docker-compose.yml 里实际是 ``aetrix-postgres``（连字符）——每次调用都是
+# "No such container"，等于静默不产备份。与其修两份、以后再漂移，不如只留一份。
+#
+# 用法同 backup_db.sh：BACKUP_DIR / RETENTION_DAYS / PG_CONTAINER（旧名 DB_CONTAINER）
+# 都仍然生效。
+#
+set -Eeuo pipefail
 
-set -e
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
-# Configuration
-# 容器 / 库 / 账号名跟着项目品牌统一，但**全部可用环境变量覆盖**：
-# 沿用旧栈命名（改名前的容器 / 库 / 账号）的部署，设一下这三个就能继续用。
-BACKUP_DIR="${BACKUP_DIR:-/backups}"
-RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
-DB_CONTAINER="${DB_CONTAINER:-aetrix_postgres}"
-DB_USER="${DB_USER:-aetrix}"
-DB_NAME="${DB_NAME:-aetrix}"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="${BACKUP_DIR}/aetrix_${TIMESTAMP}.sql.gz"
+printf '\033[1;33m[deprecated]\033[0m scripts/backup.sh 已并入 scripts/backup_db.sh，请改用后者（含备份完整性校验）。\n' >&2
 
-# Colors
-GREEN='\033[0;32m'
-NC='\033[0m'
-
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-
-# Create backup directory
-mkdir -p "$BACKUP_DIR"
-
-# Backup database
-log_info "开始备份..."
-docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" | gzip > "$BACKUP_FILE"
-log_info "备份完成: $BACKUP_FILE"
-
-# Cleanup old backups
-log_info "清理 ${RETENTION_DAYS} 天前的备份..."
-find "$BACKUP_DIR" -name "aetrix_*.sql.gz" -mtime +${RETENTION_DAYS} -delete
-
-# List backups
-log_info "当前备份列表:"
-ls -lh "$BACKUP_DIR"/aetrix_*.sql.gz 2>/dev/null || echo "无备份文件"
+exec bash "$SCRIPT_DIR/backup_db.sh" "$@"

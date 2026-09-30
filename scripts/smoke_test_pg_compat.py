@@ -64,13 +64,11 @@ def main():
         check(f"emby_libraries.scan_started_at 是 timestamp（得 {coltype}）",
               coltype == "timestamp without time zone")
 
-        # BOOLEAN 默认值映射检查
-        coldef = db.execute(text(
-            "SELECT column_default FROM information_schema.columns "
-            "WHERE table_name='registration_codes' AND column_name='is_decoy'"
-        )).scalar()
-        check(f"registration_codes.is_decoy 默认值合法（得 {coldef}）",
-              coldef is None or "false" in str(coldef).lower())
+        # （这里原有一条 ``registration_codes.is_decoy`` 的布尔默认值检查。
+        #   该列已随卡码体系重构删除（诱饵码改为 HONEY- 前缀识别，不建列），
+        #   查询于是恒返回 NULL、断言恒真——护栏静默失效，比没有更坏。
+        #   BOOLEAN DEFAULT 0 → FALSE 的方言映射由下面 [3] 段真删真补地验，
+        #   验的是「老库补列」这条真实路径，不依赖任何具体列名。）
     finally:
         db.close()
 

@@ -20,7 +20,7 @@ services:
       EMBY_API_PORT: 8001
       ENABLE_DIRECT_URL: ${ENABLE_DIRECT_URL:-true}
       RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
-      CORS_ORIGINS: http://15.204.95.101:8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix}@postgres:5432/aetrix}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
@@ -45,8 +45,18 @@ services:
       - "8000"
     ports:
       # EA 内部端口：仅供宿主机 nginx 反代（原 ea 服务的端口映射，合并后保留）。
-      # 外部访问请走 8001（nginx），不要直接用这个端口。
-      - "${EA_INTERNAL_PORT:-8002}:8001"
+      # 外部访问请走 8001（nginx）—— 也就是客户端拿到的 Emby 服务器地址。
+      #
+      # 必须绑 127.0.0.1：这个端口后面是**裸 uvicorn 的 Emby 协议面**，不经过
+      # nginx。绑 0.0.0.0 等于给公网开第二个前门，绕过 nginx 的限流/安全头/后续
+      # 的 TLS 终止；而且它会按 Host 头把自己宣告成 :8002，把客户端诱到那个口上。
+      #
+      # 改之前先确认宿主机 nginx 是用本机地址回源：
+      #   grep -rn "8002" /etc/nginx/    # 要看到 127.0.0.1:8002 或 localhost:8002
+      # 改完在服务器上补两条验证：
+      #   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8002/emby/System/Info/Public
+      #   curl -s http://127.0.0.1:8001/emby/System/Info/Public   # 客户端那条口必须还通
+      - "127.0.0.1:${EA_INTERNAL_PORT:-8002}:8001"
     volumes:
       - aetrix_data:/data
       - ${MEDIA_ROOT:-./media}:/media:ro
