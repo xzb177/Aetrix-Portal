@@ -44,7 +44,10 @@ function isActive(path: string) {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 50;
+  /* 40：高于页面内容、低于顶栏下拉菜单（60）。三者同在一个顶栏堆叠上下文
+     （header 的 z-index:50 + backdrop-filter）里比拼，之前坞挂 50 且 DOM 靠后，
+     把下拉菜单的下缘盖住——移动端外观切换「点不到」的根源 */
+  z-index: 40;
   display: none;
   align-items: stretch;
   justify-content: space-around;
