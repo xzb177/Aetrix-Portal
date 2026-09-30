@@ -2,6 +2,163 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.42.0] - 2026-09-30
+
+### 默认数据库切换到 PostgreSQL + 迁移链路修复
+
+SQLite 是单写锁模型：扫描、播放进度上报、订单并发一撞上就 `database is locked`，
+备份也只能做文件级快照。这一版把**默认数据库改成 PostgreSQL** —— `DATABASE_TYPE`
+的代码默认值就是 `postgresql`。Docker Compose 部署由 compose 自动配好连接串与
+`postgres` 服务，不用手工连线；老部署要继续用 SQLite 必须**显式**写
+`DATABASE_TYPE=sqlite`（见 `env.example` 的「SQLite 仅保留给老部署兜底」一节）。
+裸机部署注意：没显式设连接串时，它会是 `env.example` 里那个 Compose 内部服务名
+`postgres`，连不上就直接退出，**不会静默退回 SQLite** —— 这是有意的。
+
+同时修了一组只在升级现场才踩得到的迁移链路问题
+（[PR #221](https://github.com/xzb177/Aetrix-Portal/pull/221)）：
+
+- **跨进程建表竞态**：api / worker / EA 三个进程同时 `init_db` 会互相踩，用迁移锁串行化；
+- **孤儿外键与自引用外键**：导入顺序不对会让外键指向不存在的行，按依赖顺序建表；
+- 删掉已过时的手写 DDL 迁移脚本，统一走 `scripts/migrate_sqlite_to_pg.py`，并补了迁移文档；
+- 新增 PG 兼容门禁 `scripts/smoke_test_pg_compat.py`（建表 / 迁移方言 / 类型读写 / `ilike`），
+  `DATETIME` → `TIMESTAMP`、`BOOLEAN DEFAULT 0` → `FALSE` 这类方言映射由它盯住。
+
+### 部署形态：前后端分离，后端合并为单容器
+
+- **前后端分离**：后端只跑 API，不再把前端 `dist` 打进镜像；两个前端由 nginx 容器单独
+  serve（`Dockerfile.frontend` + `docker/nginx.conf`），`/api/*` 与 `/emby/*` 反代到后端，
+  管理端仍在 `/admin/`。好处是改前端不用重建后端镜像。
+- **api + worker + ea 合并为一个容器**（`backend/run_all.py` 同时起三个进程），
+  Compose 服务数 8 → 6，少一层编排也少一处配置漂移。
+- EA 的内部端口只发布在宿主机本机地址上，公网入口统一走 nginx。
+
+### 借鉴 twilight-kotomi 的四项能力（[PR #227](https://github.com/xzb177/Aetrix-Portal/pull/227)）
+
+- **配置自愈**（`backend/config_self_heal.py`）：启动时按 `env.example` 补 `.env` 缺失项、
+  按各模块已有的常量注册表补 `system_configs` 缺失行。纪律是**只补缺失、绝不覆盖**，
+  失败只记日志、不拦启动。
+- **诱饵码**：`HONEY-` 前缀识别（`backend/codes.py::is_honeypot`），**零表结构改动** ——
+  不为它建列。用了诱饵码的人会被自动封禁，而兑换入口统一回「卡码无效」，不暴露这是陷阱。
+- **首次运行向导**：空实例打开管理端会进向导建第一个管理员；建完**永久关闭**入口
+  （`POST /api/admin/setup` 之后恒返回 403），限流 8 次/分/IP。
+- **配置热重载**（`backend/integrations/store.py`）：配置分两档读 —— `read_value(s)` 直查 DB、
+  永远最新（后台展示 / daemon 轮询 / 写后回读走这档），`get_value(s)` 走进程内短 TTL 缓存
+  （默认 60 秒）。后台改完，同一进程内「写时失效」立即生效，跨进程最多 60 秒生效。
+
+### 管理端深色主题两次修复
+
+- **默认按钮发白**：`el-button` 的默认类型不走 `--el-color-primary`，补规则压住。
+- **按需引入后 Element Plus 自带样式盖掉深色变量**
+  （[PR #231](https://github.com/xzb177/Aetrix-Portal/pull/231)）：管理端改成 element-plus
+  按需引入后，EP 自带样式被打包到 `element-plus-theme.css` **之后**，它那份
+  `:root{--el-color-white:#ffffff; --el-fill-color-blank:#ffffff; --el-bg-color:#ffffff;
+  --el-color-primary:#409eff}` 以「同权重、后来者胜」压过深色变量 —— 界面退回浅色：
+  输入框 / 下拉 / 弹窗发白、主色变 EP 默认蓝、固定列表头露白块。修法是把深色变量块的
+  选择器从 `:root` 提到 `html:root`（权重 0,1,1 > 0,1,0，**与打包顺序无关**），并把 EP
+  写死 `background:#fff` 的固定列补丁格置为透明。
+
+### 公测前加固（[PR #232](https://github.com/xzb177/Aetrix-Portal/pull/232)）
+
+- **配置自愈不再改写「数据落点 / 对外身份 / 暴露面」**：自愈读的是 `env.example` 里**生效的
+  默认行**，而那些值只对「按示例新建的部署」成立。实测一个只写了 JWT 密钥的 `.env` 会被
+  追加 85 个 key，其中包括数据库类型、连接串、数据库口令、对外 Emby 地址、服务器标识、
+  网关开关。最坏的组合：老部署把连接串交给 compose 的 `environment` 注入、`.env` 里没写它
+  —— 自愈把字面量写进 `.env` 后，compose 的插值改从 `.env` 取，下次重启就用错口令连库，
+  **整站失去数据库**；而且自愈跑在 lifespan 里（`database.py` 早已 import 完），本次启动
+  照常、下次重启才炸。现在这些 key 只记一条 WARNING 点名，不再自动补齐。
+- **EA 内部端口收回本机**：原先绑 `0.0.0.0`，等于给公网开了第二个绕过 nginx 的前门
+  （绕过限流 / 安全头 / 后续 TLS 终止），还会按 Host 头把自己宣告成那个端口、把客户端诱过去。
+- **备份链路真正可用**：内置「数据库定时备份」只做 SQLite 文件级备份，跑 PostgreSQL 时
+  照常调度但**明确跳过**；给 PG 用的旧脚本备份的是早已不存在的 `portal_user` /
+  `portal_admin`、用户默认 `postgres`、目录指向不存在的路径、还要 cron 环境里的口令
+  （cron 没有环境变量 → 每次直接退出，静默无产出），另一份的容器名默认 `aetrix_postgres`
+  （下划线）与实际 `aetrix-postgres`（连字符）不符。现在合并为一份 `scripts/backup_db.sh`：
+  在容器内 `pg_dump`、校验产出是合法 gzip 且含 `CREATE TABLE`（空壳丢弃，不留假备份）、
+  按天数保留；`docs/operations.md` 补上 PostgreSQL 的备份 / 恢复与 cron 口径。
+
+### 验证
+
+- `python -m pytest tests/ -q`：596 项通过。
+- 九条静态门禁全部通过：`check_await_consistency` / `check_hardcoded_secrets` /
+  `check_version` / `check_branding` / `check_admin_audit_coverage` / `check_auth_coverage` /
+  `check_blocking_routes` / `check_frontend_routes` / `check_frontend_tokens`。
+- CI：前端 `user_frontend` / `admin_frontend`（type-check + build）、后端冒烟、PG 兼容冒烟、
+  部署自检（真起 uvicorn + 真发 HTTP）五项全绿。
+- 深色主题：对构建产物做层叠判定 + 无头 Chromium 实测（桌面 1440 与手机 390×844）——
+  输入框 `#16202d`、弹窗 `#101823`、主色按钮 `#22d3ee`，下拉与固定列均为深色。
+- 公测加固：自愈护栏用真实 `env.example` 复现（85 → 79 个 key，6 个危险 key 全部拦住、
+  无害项照常补齐）；`scripts/backup_db.sh` 用假 `docker` 影子件跑通成功路径与三条失败路径
+  （容器未运行 / `pg_dump` 失败 / 空壳 dump，均退出 1 且不留半成品）。
+
+## [2.41.0] - 2026-09-27
+
+### 后端拆分：后台任务从 API 进程里拆出去
+
+扫描、探测、补全、定时扫描、追新这些后台任务原先和网页服务挤在同一个进程里：
+一次全量扫描就能让「点什么都要转 30 秒」。这一版按 `AETRIX_ROLE` 把进程拆开：
+
+- `api`（`backend/main.py`）：只服务 HTTP，不再启动后台任务（走这个入口时会打日志说明）；
+- `worker`（`backend/worker.py`）：只跑后台任务；
+- `ea`：只提供 Emby 协议面；
+- **不设 `AETRIX_ROLE` 时保持单进程旧行为**（向后兼容，老部署不用改配置）。
+
+多进程之间的协调：
+
+- **只跑一个**：同一份后台任务由 Redis 锁保证集群里只有一个实例在跑，不会多进程各扫一遍；
+- **扫描队列 Redis 桥接**（`backend/emby_server/scan_queue_redis.py`）：入队 / 取消 / 进度
+  跨进程可见；
+- Redis 任务**处理完成之后才 ACK**，进程崩溃不会把任务丢掉。
+
+`scripts/update.sh` 的备份容器探测跟着改成按 `AETRIX_ROLE` 认容器 —— 此前它硬编码的服务名
+`aetrix` 在拆分后已不存在，于是每次都走进「未发现正在运行的 aetrix 容器」分支：看着只是
+warn，实际是**静默跳过了数据库备份**。
+
+### 验证
+
+- `scripts/smoke_test_scan_queue.py`：按挂载串行化 / 并发上限 / 排队与取消 / 进度 / 远程限流，
+  以及队列关掉时回到升级前行为。
+- `scripts/verify_scan_queue_concurrency.py`：四个库同时点扫描的复现演练（真 WebDAV + 真接口，
+  升级前后对照 —— 原先四个库同时在跑且同一挂载上叠着多个任务，现在最多 2 个在跑、同一挂载
+  零重叠、有库被明确告知在等哪个挂载、四个库都不失败）。
+- CI：两条前端与后端冒烟全部通过。
+
+## [2.40.0] - 2026-09-26
+
+### 分层扫描 L1/L2/L3 + 文件指纹秒跳
+
+扫描以前是「一轮里把所有事做完」：列目录、写条目、读 NFO、拉 TMDB、ffprobe 全串在一起。
+根因是旧的 `_can_skip_file()` 把「文件变没变」和「元数据全不全」绞在同一个条件里 ——
+配了 TMDB 的剧集库于是每轮都全量重做，增量形同虚设。这一版把两件事拆开、扫描分三层：
+
+- **L1（前台，秒级）**：只做文件发现 + 指纹 + 极简入库，扫完立刻能在媒体库里看见条目，
+  不再等刮削完成；
+- **L2/L3（后台）**：side 图片、NFO、TMDB 刮削、探测交给
+  `backend/emby_server/enrich_worker.py` 慢慢补完。
+
+机制：
+
+- `file_fingerprint`：本地 `path|size|mtime_ns`，远程 `path|size` 的 md5。指纹命中**且**
+  `enrich_status='done'` 时整文件秒跳，一次 IO 都不做；
+- `enrich_status`（`pending` / `done`）把「文件变没变」与「元数据全不全」解耦：文件没动就跳过，
+  元数据没补全就排队，互不牵连；
+- `enrich_attempts` / `enrich_next_retry_at`：补全失败按指数退避重试、超限转 `failed`，
+  不会卡在队列里空转；原子抢单保证多个补全线程不重复做同一件事；
+- **探测**：`background` 模式走 `probe_worker`（v2.39.0 引入）；`inline` 模式在分层开启时
+  也推迟到 `enrich_worker` 排队，避免远程直链的 ffprobe 拖慢秒级入库；关掉分层则恢复当场探测；
+- 两个开关可运行时回退：`SCAN_LAYERED=1`（默认开）、`SCAN_FAST_SKIP=1`（默认开），
+  任一置 0 即回到升级前的行为。
+
+老库由 `_auto_migrate` 自动补列，补出来的 `enrich_status` 是 `pending`，所以升级上来的库会在
+下一轮扫描后把待补全条目慢慢补完，不需要人工干预。
+
+### 验证
+
+- `tests/test_layered_scan.py`：文件指纹秒跳 + L1 极简入库（含本机文件 L1 行为断言）。
+- `tests/test_enrich_worker.py`：原子抢单 / 重试退避 / 防洪峰 / 字幕落库 / 进度接口。
+- `scripts/smoke_test_scan_incremental.py`：未变动重扫不再逐文件写库但条目一条不少、
+  变了一定处理、库里缺行必须重建、远程挂载参与增量且不多列目录。
+- `scripts/smoke_test_scan_budget.py`：批量查库 / 批量落盘 / 并行 IO / 目录只列一次。
+
 ## [2.39.0] - 2026-09-25
 
 ### 后端：`async` 路由里的同步 DB 清零（阻塞路由基线 24 → 0）
