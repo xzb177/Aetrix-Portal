@@ -169,16 +169,35 @@ def _blocking_redis(timeout: int):
     时长也是 5s：队列一空，两边同时到点，客户端先抛
     ``Timeout reading from socket``，于是空转轮询每 10s 报一次假警。
     阻塞读必须让 socket 超时大于阻塞时长 + 余量。
+
+    连接参数从**共享客户端**复制（而不是重新解析 REDIS_URL 直连）：
+    单测给 ``_redis`` 打的桩（FakeRedis 等）原样复用——绕过它去连真实
+    Redis 会让 push 走桩、pop 连真库，无 Redis 的 CI 上冒烟全灭
+    （v2.42.4 修的回归）。
+
+    返回 (client, owned)：owned=True 表示本调用新建的客户端（用完要 close）。
     """
-    from backend.database import REDIS_URL
+    base = _redis()
+    if base is None:
+        return None, False
+    pool = getattr(base, "connection_pool", None)
+    kwargs = getattr(pool, "connection_kwargs", None)
+    if not isinstance(kwargs, dict):
+        # 测试桩或非常规客户端：没有连接参数可调，直接复用
+        return base, False
     import redis as _redis_mod
 
-    return _redis_mod.from_url(
-        REDIS_URL,
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=timeout + 5,
-    )
+    client_kwargs = dict(kwargs)
+    client_kwargs["socket_timeout"] = timeout + 5
+    client_kwargs.setdefault("socket_connect_timeout", 5)
+    try:
+        conn_class = getattr(pool, "connection_class", None)
+        if conn_class is not None:
+            return _redis_mod.Redis(connection_class=conn_class, **client_kwargs), True
+        return _redis_mod.Redis(**client_kwargs), True
+    except Exception as e:  # noqa: BLE001 — 专用客户端拿不到就退回共享的
+        logger.warning(f"构造阻塞读专用 Redis 客户端失败，退回共享客户端：{e}")
+        return base, False
 
 
 def pop_scan_request(timeout: int = 5) -> Optional[dict]:
@@ -190,7 +209,7 @@ def pop_scan_request(timeout: int = 5) -> Optional[dict]:
     返回 {"library_id": int, "trigger": str, "_raw": str}，超时返回 None。
     _raw 用于 ack 时从 processing 队列删除。
     """
-    r = _blocking_redis(timeout)
+    r, owned = _blocking_redis(timeout)
     if r is None:
         return None
     try:
@@ -214,10 +233,11 @@ def pop_scan_request(timeout: int = 5) -> Optional[dict]:
         logger.warning(f"从 Redis 取扫描请求失败：{e}")
         return None
     finally:
-        try:
-            r.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if owned:
+            try:
+                r.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def ack_scan_request(raw) -> None:

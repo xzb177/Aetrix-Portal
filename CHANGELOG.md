@@ -27,6 +27,12 @@
   meta theme-color 深浅跟随；Layout 写死的深色值（顶栏毛玻璃、chip hover、
   抽屉阴影等）令牌化，浅色不再穿帮。实测（Playwright）：三档切换即改
   `html[data-theme]` 且持久化，浅色 body #f5f8fb、KPI 等宽字体、meta 同步。
+- **修 CI 冒烟回归（f0aa598 引入）**：`pop_scan_request` 改用 `_blocking_redis()`
+  时直接从 `REDIS_URL` 新建客户端，绕过了单测打在 `_redis()` 上的桩——push 走
+  FakeRedis、pop 连真 Redis，无 Redis 的 CI 上 7 个队列用例必炸（Connection
+  refused → None），main 近四次 CI 冒烟全红。改为从共享客户端复制连接参数构造
+  专用客户端（保留「socket 超时 > 阻塞时长」的修复意图），桩原样复用；
+  无 Redis 环境本地复现 → 修复 → 11 passed / 全套 607 passed。
 
 ## [2.42.3] - 2026-09-30
 
