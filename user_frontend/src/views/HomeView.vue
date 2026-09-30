@@ -46,32 +46,41 @@
  * 功能色（青 / 金 / 紫），从 pill → 卡片图标 / 数字 / CTA 全链路同色；
  * hero 右侧的会员卡并入订阅资产卡（进度条按真实周期算的口径不变）。
  * ≤768px 由底部导航坞（AppDock）承担主导航，卡片单列。
+ *
+ * v2.42.2：参考的纸片人 dashboard 只有账户资产与服务入口、没有媒体浏览，
+ * 首页据此砍掉「最近上新」海报墙与空态卡——媒体浏览统一走媒体库独立页
+ * （顶栏 / 底部坞的「媒体库」入口不变）。首页收敛为：欢迎卡 → 说明条幅
+ * （置顶公告 / 公益服 / 未开通三态）→ 资产卡 → 新手任务 → 面板 → 帮助。
+ * 同时接入双主题（跟随系统 / 白日 / 黑暗，见 useTheme.ts）：组件全部消费
+ * --au-* 原料（在浅色下有独立调色），性能上移动端不启用卡片级 backdrop-blur、
+ * 脉动与进度条动画只走 opacity/transform。
  */
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
-  subscriptionApi, isExpiringSoon, embyApi, mediaSeekApi, ticketApi,
-  type MySubscription, type WatchStats, type MyPlaybackSession,
+  subscriptionApi, isExpiringSoon, embyApi, mediaSeekApi, ticketApi, announcementApi,
+  type MySubscription, type WatchStats, type MyPlaybackSession, type Announcement,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
-import MediaRow from '@/components/media/MediaRow.vue'
 import Modal from '@/components/ui/Modal.vue'
-import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
   ChevronRight, Crown, MessageSquareDashed, Inbox,
   Sparkles, Tv, TriangleAlert, Zap,
   Clapperboard, Ticket, MonitorSmartphone, CircleStop,
-  Rocket, Check, RotateCcw,
+  Rocket, Check, RotateCcw, X, Megaphone,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
 const toast = useToast()
 
 const loading = ref(true)
-const latestItems = ref<EmbyItem[]>([])
 const subscriptions = ref<MySubscription[]>([])
+
+/** 说明条幅（v2.42.2）：置顶公告优先，其余按运营位兜底；内容型条幅可关闭 */
+const banners = ref<Announcement[]>([])
+const dismissedBannerIds = ref<number[]>([])
 
 // 经济速览（账号速览条数据）
 const quickStats = ref({
@@ -334,34 +343,19 @@ function confirmStopSession() {
 // 而不是静默吞掉让用户看到错误的「未开通」形态
 const loadError = ref(false)
 
-// P1#3：首屏只拉"最新入库"（首屏可见内容），其余 8 个非关键请求延后 1 秒，
-// 首屏不再被积分/签到/订阅这些数据拖慢
-async function loadCritical() {
+// 首屏只出骨架：数据统一走 loadDeferred（公告与资产同批，不再分关键/延后两波）
+async function loadDeferred() {
+  let memberFailed = false
   loading.value = true
   try {
-    // v2.10.3：消息与公告不再在首页拉取——那是顶栏铃铛的事（它本来就在每次轮询未读数），
-    // 首页少一组请求，也不再重复展示同一批未读
-    latestItems.value = await protocolApi.getLatest(16).catch((): EmbyItem[] => [])
-  } finally {
-    loading.value = false
-  }
-}
-
-async function retryLoad() {
-  await loadCritical()
-  await loadDeferred()
-}
-
-async function loadDeferred() {
-  // 订阅接口失败时记下来，加载完统一展示错误态
-  let memberFailed = false
-  try {
-    const [pointsRes, checkinRes, inviteRes, subs,
+    const [pointsRes, checkinRes, inviteRes, subs, notices,
       statsRes, seekRes, ticketsRes, sessionsRes] = await Promise.all([
       pointsApi.log({ limit: 1 }).catch((): null => null),
       checkinApi.status().catch((): null => null),
       inviteApi.myCode().catch((): null => null),
       subscriptionApi.getMine().catch((): MySubscription[] => { memberFailed = true; return [] }),
+      // 说明条幅：置顶公告；失败静默（条幅只是运营位，不值得为它报错）
+      announcementApi.getAnnouncements().catch((): Announcement[] => []),
       // 面板数据：任一项失败都各归各的（catch 成 null），不会连带整页报错
       embyApi.getStats().catch((): WatchStats | null => null),
       mediaSeekApi.getMyRequests().catch((): null => null),
@@ -375,6 +369,9 @@ async function loadDeferred() {
     }
     if (inviteRes) quickStats.value.invited = inviteRes.invited_count
     subscriptions.value = Array.isArray(subs) ? subs : []
+    banners.value = (Array.isArray(notices) ? notices : [])
+      .filter((a) => a.is_pinned && !dismissedBannerIds.value.includes(a.id))
+      .slice(0, 1)
 
     stats.value = statsRes
     if (seekRes) {
@@ -398,18 +395,40 @@ async function loadDeferred() {
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')
     }
+  } finally {
+    loading.value = false
   }
 }
 
-let deferredTimer: ReturnType<typeof setTimeout> | null = null
+/** 错误态重试：重新拉同一批数据 */
+async function retryLoad() {
+  await loadDeferred()
+}
 
-onMounted(() => {
-  loadCritical()
-  deferredTimer = setTimeout(() => { loadDeferred() }, 1000)
+function dismissBanner() {
+  const current = banners.value[0]
+  if (current) dismissedBannerIds.value = [...dismissedBannerIds.value, current.id]
+  banners.value = banners.value.slice(1)
+}
+
+/** 运营位条幅：无公告时按账号状态兑底（公益服 / 未开通），都是静态文案不需请求 */
+const fallbackBanner = computed(() => {
+  if (isFreeRealm.value) {
+    return { icon: Sparkles, tone: 'cyan' as const, title: '公益服 · 免费开放', text: realmNoteText() }
+  }
+  if (!isMember.value) {
+    return { icon: Crown, tone: 'amber' as const, title: '会员未开通', text: '开通后即可播放全库内容，资产卡里的「订阅」可直接前往。' }
+  }
+  return null
 })
 
-onBeforeUnmount(() => {
-  if (deferredTimer) clearTimeout(deferredTimer)
+function realmNoteText() {
+  return userStore.realmNote || '本服为公益服 · 免费开放：无需开通会员即可观看全库内容。'
+}
+
+// 首屏只出骨架：数据统一走 loadDeferred（公告与资产同批，不再分关键/延后两波）
+onMounted(() => {
+  loadDeferred()
 })
 </script>
 
@@ -491,6 +510,32 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <!-- 说明条幅（v2.42.2）：置顶公告（可关闭）优先；无公告时按账号状态兑底
+           （公益服 / 未开通）。加载中不渲染，避免先出兑底再跳成公告 -->
+      <Transition name="banner">
+        <div v-if="!loading && banners.length" class="notice-banner au-card tone-cyan">
+          <Megaphone :size="16" class="banner-icon" />
+          <div class="banner-body">
+            <strong class="banner-title">{{ banners[0].title }}</strong>
+            <p class="banner-text">{{ banners[0].content }}</p>
+          </div>
+          <button class="banner-close" title="关闭" @click="dismissBanner">
+            <X :size="14" />
+          </button>
+        </div>
+        <div
+          v-else-if="!loading && fallbackBanner"
+          class="notice-banner au-card"
+          :class="fallbackBanner.tone === 'amber' ? 'tone-amber' : 'tone-cyan'"
+        >
+          <component :is="fallbackBanner.icon" :size="16" class="banner-icon" />
+          <div class="banner-body">
+            <strong class="banner-title">{{ fallbackBanner.title }}</strong>
+            <p class="banner-text">{{ fallbackBanner.text }}</p>
+          </div>
+        </div>
+      </Transition>
+
       <!-- 新手任务：只在还有未完成步骤时出现，全部完成后整段隐藏。
            首页是服务台，新用户的第一件事是"连上播放器看上片"，不是"浏览内容" -->
       <section v-if="!loading && onboardingTasks.some(t => !t.done)" class="onboard-card au-card au-anim-up">
@@ -561,7 +606,8 @@ onBeforeUnmount(() => {
             <span v-if="c.unit" class="asset-unit">{{ c.unit }}</span>
           </div>
           <div v-if="c.progress !== null" class="asset-progress" :title="`套餐周期已过 ${c.progress}%`">
-            <div class="asset-progress-fill" :style="{ width: c.progress + '%' }"></div>
+            <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
+            <div class="asset-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></div>
           </div>
 
           <!-- ③ 说明文案 -->
@@ -658,14 +704,8 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <!-- 片库动态：「最近上新」是上新公告（告诉用户片库在持续更新），不是浏览入口——
-           浏览与继续观看是第三方客户端的事，观看记录在媒体库的 tab 里保留 -->
-      <MediaRow v-if="latestItems.length" title="最近上新" :items="latestItems.slice(0, 16)" more-to="/media" class="row" />
-
-      <div v-if="!loading && !latestItems.length" class="au-empty content-empty">
-        <Sparkles :size="28" />
-        <p>媒体库还没有内容，稍后再来看看</p>
-      </div>
+      <!-- v2.42.2：「最近上新」海报墙已移除——参考的纸片人 dashboard 没有媒体浏览，
+           首页只做资产与服务；媒体浏览统一在媒体库独立页（顶栏/底部坞入口不变） -->
 
       <!-- 分组：帮助中心。首页是服务台，底部给办事入口；
            账号类入口（订阅/设备/安全）在顶栏「我的」里，这里不重复 -->
@@ -746,6 +786,13 @@ onBeforeUnmount(() => {
   background: radial-gradient(ellipse at center, var(--au-primary-soft) 0%, transparent 70%);
   filter: blur(52px);
   pointer-events: none;
+}
+
+/* 浅色下氛围光再减淡一档：白底上 12% 透明度的青色已经很显，
+   不减会发灰发脏（深色下同样透明度是氛围，浅色下是污渍） */
+html[data-theme='light'] .hero-glow,
+html[data-theme='light'] .hero-glow-2 {
+  opacity: 0.5;
 }
 
 /* 欢迎卡的第二层装饰：左下角极光紫低透明度光斑，与右侧青色光晕呼应，
@@ -953,10 +1000,16 @@ onBeforeUnmount(() => {
 
 .asset-progress-fill {
   height: 100%;
+  width: 100%;
   border-radius: var(--au-r-full);
+  transform-origin: left center;
   /* 跟卡片的 tone 走（订阅卡 = 会员金），未来其它卡加进度条不用再改这里 */
   background: var(--asset);
-  transition: width var(--au-med) var(--au-ease);
+  transition: transform var(--au-med) var(--au-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .asset-progress-fill { transition: none; }
 }
 
 /* ③ 说明文案 */
@@ -1042,6 +1095,79 @@ onBeforeUnmount(() => {
   margin-top: 0.25rem;
 }
 
+/* ==================== 说明条幅（v2.42.2） ====================
+   公告 / 公益服 / 未开通三态共用一条：图标走对应功能色，正文两行截断。
+   广告牌法则：只告知，不抢资产的戏，高度克在两行文案内 */
+
+.notice-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.875rem 1rem;
+  margin-bottom: 1.5rem;
+  box-shadow: var(--au-shadow-1);
+}
+
+.notice-banner.banner-enter-from,
+.notice-banner.banner-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.banner-enter-active,
+.banner-leave-active {
+  transition: opacity var(--au-med) var(--au-ease), transform var(--au-med) var(--au-ease);
+}
+
+.notice-banner .banner-icon {
+  flex-shrink: 0;
+  margin-top: 0.125rem;
+  color: var(--asset, var(--au-primary));
+}
+
+.banner-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.banner-title {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.banner-text {
+  margin: 0.125rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.banner-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--au-r-full);
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
+}
+
+.banner-close:hover {
+  background: var(--au-surface-2);
+  color: var(--text-main);
+}
+
 /* ==================== 分组标签 ==================== */
 
 .section-label {
@@ -1059,10 +1185,6 @@ onBeforeUnmount(() => {
   font-size: 0.75rem;
   font-weight: 700;
   color: var(--au-text-3);
-}
-
-.content-empty {
-  padding: 2rem 1rem;
 }
 
 .hero-eyebrow {
@@ -1537,10 +1659,6 @@ onBeforeUnmount(() => {
 
 .main {
   padding: 2rem 1.25rem 3.5rem;
-}
-
-.row {
-  margin-bottom: 2.25rem;
 }
 
 /* ==================== 帮助中心（三行入口，行间虚线分隔） ==================== */

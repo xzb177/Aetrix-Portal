@@ -62,6 +62,31 @@
         #app-boot .boot-ring { animation: none; }
       }
 
+      /* 白日模式：预套用脚本已写好 data-theme，启动画面同步换浅色，
+         不然浅色用户首屏会先闪一下深蓝黑底 */
+      html[data-theme='light'] {
+        background: #f5f8fb;
+        color-scheme: light;
+      }
+
+      html[data-theme='light'] #app-boot {
+        background:
+          radial-gradient(1000px 500px at 85% -10%, rgba(124, 58, 237, 0.05), transparent 60%),
+          radial-gradient(900px 480px at -10% 0%, rgba(8, 145, 178, 0.06), transparent 55%),
+          #f5f8fb;
+        color: rgba(22, 40, 58, 0.5);
+      }
+
+      html[data-theme='light'] #app-boot .boot-ring {
+        border-color: rgba(15, 32, 48, 0.16);
+        border-top-color: #0891b2;
+      }
+
+      html[data-theme='light'] #app-noscript {
+        background: #f5f8fb;
+        color: rgba(22, 40, 58, 0.72);
+      }
+
       #app-noscript {
         position: fixed;
         inset: 0;
@@ -88,6 +113,26 @@
         <p>请启用 JavaScript 以使用本网站</p>
       </div>
     </noscript>
+    <script>
+      /*
+       * 主题预套用：在样式表与 Vue 挂载前把 html[data-theme] 定好，白日模式
+       * 不会先闪一下深蓝黑底（FOUC）。口径与 src/composables/useTheme.ts 一致：
+       * localStorage('aetrix-theme') = 'light' | 'dark' | 缺省（跟随系统）。
+       */
+      (function () {
+        try {
+          var stored = localStorage.getItem('aetrix-theme');
+          var theme = stored === 'light' || stored === 'dark'
+            ? stored
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          if (theme === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', '#f5f8fb');
+          }
+        } catch (e) { /* localStorage 不可用时跟默认深色 */ }
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

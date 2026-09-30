@@ -4,8 +4,7 @@ import { useUserStore } from '@/stores/user'
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
-  Gift, Zap, Megaphone, AlertCircle, Clock,
-  ChevronRight, LayoutDashboard, Bell,
+  Gift, Zap, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -15,10 +14,13 @@ import { pointsApi } from '@/api/economy'
 import { primaryNav, menuSections } from '@/config/navigation'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
 import { branding } from '@/composables/useBranding'
+// 三档外观（跟随系统 / 白日 / 黑暗），见 useTheme.ts 的口径说明
+import { useTheme } from '@/composables/useTheme'
 
 const userStore = useUserStore()
 const router = useRouter()
 const route = useRoute()
+const { preference: themePreference, resolved: themeResolved, setPreference: setThemePreference } = useTheme()
 
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
@@ -465,6 +467,44 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                   </RouterLink>
                 </template>
 
+                <!-- 外观（v2.42.2）：三档切换，跟随系统实时响应 prefers-color-scheme -->
+                <div class="dropdown-group-title">外观</div>
+                <div class="theme-seg" role="radiogroup" aria-label="外观模式">
+                  <button
+                    class="theme-opt"
+                    :class="{ on: themePreference === 'system' }"
+                    role="radio"
+                    :aria-checked="themePreference === 'system'"
+                    title="跟随系统"
+                    @click="setThemePreference('system')"
+                  >
+                    <MonitorSmartphone :size="13" />
+                    系统
+                  </button>
+                  <button
+                    class="theme-opt"
+                    :class="{ on: themePreference === 'light' }"
+                    role="radio"
+                    :aria-checked="themePreference === 'light'"
+                    title="白日模式"
+                    @click="setThemePreference('light')"
+                  >
+                    <Sun :size="13" />
+                    白日
+                  </button>
+                  <button
+                    class="theme-opt"
+                    :class="{ on: themePreference === 'dark' }"
+                    role="radio"
+                    :aria-checked="themePreference === 'dark'"
+                    title="黑暗模式"
+                    @click="setThemePreference('dark')"
+                  >
+                    <Moon :size="13" />
+                    黑暗
+                  </button>
+                </div>
+
                 <!-- 管理后台是另一个前端（同源 /admin/），必须用浏览器跳转：
                      写成 RouterLink 会被用户端路由当成 404 兜底页 -->
                 <a
@@ -658,13 +698,39 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   box-shadow: 0 0 14px rgba(251, 191, 36, 0.25);
 }
 
+/* 临期脉动：伪元素扩散环，只动 opacity/transform（不逐帧重绘 box-shadow）。
+   伪元素继承 pill 的圆角与警示色，父级 overflow: hidden 裁剪扩散范围 */
+.sub-chip {
+  position: relative;
+  overflow: hidden;
+}
+
 .sub-chip.warn {
   animation: sub-pulse 2.4s ease-in-out infinite;
 }
 
+.sub-chip.warn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.35);
+  opacity: 0;
+  pointer-events: none;
+}
+
 @keyframes sub-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.25); }
-  50% { box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.08); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+.sub-chip.warn::after {
+  animation: sub-ring 2.4s var(--au-ease) infinite;
+}
+
+@keyframes sub-ring {
+  0%, 100% { opacity: 0; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(1.08); }
 }
 
 /* 公益服 pill：青色软底，不跟会员金混在一起 */
@@ -681,6 +747,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 @media (prefers-reduced-motion: reduce) {
   .sub-chip.warn { animation: none; }
+  .sub-chip.warn::after { animation: none; opacity: 0; }
 }
 
 /* 消息铃铛 */
@@ -925,6 +992,42 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   font-size: 0.75rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
+}
+
+/* 外观三档切换：药丸分段控件，选中项青底 */
+.theme-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  margin: 0.25rem 1rem 0.5rem;
+  padding: 2px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+}
+
+.theme-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.3125rem 0;
+  border: none;
+  border-radius: var(--au-r-full);
+  background: none;
+  color: var(--au-text-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--au-fast) var(--au-ease);
+}
+
+.theme-opt:hover { color: var(--au-text); }
+
+.theme-opt.on {
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
 }
 
 .dropdown-vip {
