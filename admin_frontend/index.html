@@ -35,10 +35,37 @@
         font-size: 13px;
         letter-spacing: 0.08em;
       }
+
+      /* 白日模式：预套用脚本已写好 data-theme=light，加载提示同步换浅色，
+         不然浅色用户首屏会先闪一下深蓝黑底 */
+      html[data-theme='light'] #app.loading::before {
+        background: #f5f8fb;
+        color: rgba(22, 40, 58, 0.5);
+      }
     </style>
   </head>
   <body>
     <div id="app" class="loading"></div>
+    <script>
+      /*
+       * 主题预套用（v2.42.4）：在样式表与 Vue 挂载前把 html[data-theme] 定好，
+       * 白日模式不会先闪一下深蓝黑底（FOUC）。口径与 src/composables/useTheme.ts
+       * 一致：localStorage('aetrix-theme') = 'light' | 'dark' | 缺省（跟随系统）。
+       */
+      (function () {
+        try {
+          var stored = localStorage.getItem('aetrix-theme');
+          var theme = stored === 'light' || stored === 'dark'
+            ? stored
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          if (theme === 'light') {
+            document.documentElement.setAttribute('data-theme', 'light');
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', '#f5f8fb');
+          }
+        } catch (e) { /* localStorage 不可用时跟默认深色 */ }
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

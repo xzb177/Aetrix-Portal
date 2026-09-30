@@ -55,7 +55,7 @@ const router = createRouter({
       path: '/wallet',
       name: 'wallet',
       component: () => import('@/views/WalletView.vue'),
-      meta: { title: '我的钱包', requiresAuth: true },
+      meta: { title: '商店', requiresAuth: true },
     },
     {
       path: '/checkin',

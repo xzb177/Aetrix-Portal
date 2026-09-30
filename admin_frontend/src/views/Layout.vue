@@ -18,12 +18,15 @@ import {
   LayoutDashboard, Users, Package, Film, Ticket, Settings, Server,
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Tv,
   CheckCircle2, Route as RealmIcon, Lock,
+  Sun, Moon, MonitorSmartphone,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import { useRealmStore } from '@/stores/realm'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+// v2.42.4：后台白日/黑暗双主题（与用户端同一套三档口径）
+import { useAdminTheme } from '@/composables/useTheme'
 // 站名 / Logo 来自「站点与品牌」能力（改完刷新即生效，不用重新构建）
 import { APP_VERSION as APP_VERSION_BASE, branding, siteName } from '@/composables/branding'
 
@@ -32,6 +35,26 @@ const router = useRouter()
 const auth = useAuthStore()
 const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
+// 外观三档：跟随系统 / 白日 / 黑暗。composable 自带 onMounted 挂监听，
+// 切换只改 html[data-theme]，浅色令牌全在 tokens.css 的浅色块里
+const { preference: themePreference, resolved: themeResolved, setPreference: setThemePreference } = useAdminTheme()
+
+interface ThemeOption {
+  value: 'system' | 'light' | 'dark'
+  label: string
+  title: string
+}
+
+const themeOptions: ThemeOption[] = [
+  { value: 'system', label: '自动', title: '跟随系统' },
+  { value: 'light', label: '白日', title: '白日模式' },
+  { value: 'dark', label: '黑暗', title: '黑暗模式' },
+]
+
+/** 顶栏快捷键：在白日 / 黑暗之间来回（「自动」档进侧栏选） */
+function cycleTheme() {
+  setThemePreference(themeResolved.value === 'light' ? 'dark' : 'light')
+}
 
 /** 当前账号是不是超级管理员（角色见 backend/admin_roles.py）：只影响导航上的标记 */
 const isSuper = computed(() => auth.admin?.is_super !== false)
@@ -366,6 +389,23 @@ onUnmounted(() => {
       </nav>
 
       <div class="sidebar-foot">
+        <div class="theme-row" role="radiogroup" aria-label="外观">
+          <button
+            v-for="opt in themeOptions"
+            :key="opt.value"
+            class="theme-opt"
+            :class="{ active: themePreference === opt.value }"
+            role="radio"
+            :aria-checked="themePreference === opt.value"
+            :title="opt.title"
+            @click="setThemePreference(opt.value)"
+          >
+            <MonitorSmartphone v-if="opt.value === 'system'" :size="14" />
+            <Sun v-else-if="opt.value === 'light'" :size="14" />
+            <Moon v-else :size="14" />
+            <span>{{ opt.label }}</span>
+          </button>
+        </div>
         <div class="who">
           <span class="who-avatar">{{ initial }}</span>
           <div class="who-info">
@@ -429,6 +469,15 @@ onUnmounted(() => {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <button
+            class="icon-btn theme-quick"
+            :title="themeResolved === 'light' ? '切换到黑暗模式' : '切换到白日模式'"
+            aria-label="切换外观"
+            @click="cycleTheme"
+          >
+            <Sun v-if="themeResolved === 'light'" :size="17" />
+            <Moon v-else :size="17" />
+          </button>
           <button class="icon-btn" title="刷新当前页" aria-label="刷新当前页" @click="refreshPage">
             <RefreshCw :size="17" />
           </button>
@@ -504,6 +553,50 @@ onUnmounted(() => {
   color: var(--text-primary);
   background: var(--bg-hover);
 }
+
+/* ==================== 外观切换（v2.42.4） ====================
+   侧栏 foot 三档分段（自动 / 白日 / 黑暗），顶栏一个太阳/月亮快捷键。
+   选中档用主色淡底 + 描边，与用户端 theme-seg 同一配方 */
+.theme-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+}
+
+.theme-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-md) - 4px);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.theme-opt:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+.theme-opt.active {
+  background: var(--primary-soft);
+  border-color: var(--primary-border);
+  color: var(--primary);
+}
+
+/* 顶栏快捷键：小屏也保留（外观切换没有更小的入口了） */
+.theme-quick { width: 32px; height: 32px; border-radius: var(--radius-full); }
 
 /* ==================== 侧边栏 ==================== */
 .sidebar {
@@ -596,7 +689,7 @@ onUnmounted(() => {
 
 .nav-item.active {
   background: var(--primary-bg);
-  color: #7fe6f6;
+  color: var(--primary);
   font-weight: var(--font-weight-semibold);
   box-shadow: inset 2px 0 0 0 var(--primary);
 }
@@ -645,7 +738,7 @@ onUnmounted(() => {
 }
 
 .foot-link:hover { background: var(--bg-hover); color: var(--text-primary); }
-.foot-link.danger:hover { background: var(--danger-bg); color: #fda4af; }
+.foot-link.danger:hover { background: var(--danger-bg); color: var(--danger); }
 
 .foot-version {
   margin-top: 8px;
@@ -674,7 +767,8 @@ onUnmounted(() => {
   min-height: var(--header-h);
   padding: 0 20px;
   padding-top: env(safe-area-inset-top);
-  background: rgba(12, 18, 28, 0.86);
+  /* 半透明表面：深浅色各由令牌分叉（color-mix 保住毛玻璃透底色的质感） */
+  background: color-mix(in srgb, var(--bg-surface) 86%, transparent);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -709,7 +803,7 @@ onUnmounted(() => {
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
-.admin-chip:hover { border-color: var(--border-strong); background: #1d2836; }
+.admin-chip:hover { border-color: var(--border-strong); background: var(--bg-elevated); }
 .chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-chev { color: var(--text-faint); }
 
@@ -762,7 +856,7 @@ onUnmounted(() => {
     transform: translateX(-100%);
     visibility: hidden;
     transition: transform var(--transition-base), visibility var(--transition-base);
-    box-shadow: 0 0 48px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow-lg);
   }
 
   .sidebar.open { transform: translateX(0); visibility: visible; }

@@ -681,8 +681,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 /* ==================== 资产 pill 组（借鉴纸片人控制台） ====================
    每种资产一个固定功能色，从顶部 pill → 卡片图标/数字/CTA 全链路同色：
-   积分 = 品牌青，订阅 = 会员金。胶囊配方：rounded-full + 功能色 10% 底
-   + 20% 边框 + semibold 彩色字（与 au-badge 同构） */
+   积分 = 会员金（钱的语义，v2.42.4 与首页资产卡换位同步），订阅 = 品牌青。
+   胶囊配方：rounded-full + 功能色 10% 底 + 20% 边框 + semibold 彩色字 */
 .assets-group {
   display: flex;
   align-items: center;
@@ -690,24 +690,24 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   min-width: 0;
 }
 
-/* 积分 pill（功能色：品牌青） */
+/* 积分 pill（功能色：会员金——钱的语义） */
 .points-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.3125rem;
   height: 30px;
   padding: 0 0.6875rem;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
+  background: var(--au-warning-soft);
+  border: 1px solid var(--au-warning-border);
   border-radius: var(--au-r-full);
-  color: var(--au-primary);
+  color: var(--au-warning);
   text-decoration: none;
   transition: all var(--au-fast) var(--au-ease);
 }
 
 .points-chip:hover {
-  background: var(--au-primary-mid);
-  box-shadow: 0 0 14px var(--au-primary-glow);
+  background: rgba(251, 191, 36, 0.2);
+  box-shadow: 0 0 14px rgba(251, 191, 36, 0.25);
 }
 
 .points-num {
@@ -720,7 +720,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   white-space: nowrap;
 }
 
-/* 订阅 pill（功能色：会员金；临期转警示金 + 轻脉动） */
+/* 订阅 pill（功能色：品牌青；临期转警示金 + 轻脉动） */
 .sub-chip {
   position: relative;
   overflow: hidden;
@@ -729,10 +729,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   gap: 0.3125rem;
   height: 30px;
   padding: 0 0.6875rem;
-  background: var(--au-warning-soft);
-  border: 1px solid var(--au-warning-border);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-full);
-  color: var(--au-warning);
+  color: var(--au-primary);
   text-decoration: none;
   white-space: nowrap;
   transition: all var(--au-fast) var(--au-ease);
@@ -744,8 +744,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 
 .sub-chip:hover {
-  background: rgba(251, 191, 36, 0.2);
-  box-shadow: 0 0 14px rgba(251, 191, 36, 0.25);
+  background: var(--au-primary-mid);
+  box-shadow: 0 0 14px var(--au-primary-glow);
 }
 
 /* 临期脉动：伪元素扩散环，只动 opacity/transform（不逐帧重绘 box-shadow） */
@@ -774,7 +774,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   50% { opacity: 0.55; transform: scale(1.08); }
 }
 
-/* 公益服 pill：青色软底，不跟会员金混在一起 */
+/* 公益服 pill：青色软底（订阅同为青色系，语义同源：都是「免费看」） */
 .sub-chip.free {
   background: var(--au-primary-soft);
   border-color: var(--au-primary-border);
