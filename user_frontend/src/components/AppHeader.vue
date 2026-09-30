@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
-  Clapperboard, LogOut, Ticket, Inbox, Crown,
+  Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Zap, Megaphone, AlertCircle, Clock,
   ChevronRight, LayoutDashboard, Bell,
 } from 'lucide-vue-next'
 import api, {
-  messageApi, announcementApi,
-  type StationMessage, type Announcement,
+  messageApi, announcementApi, isExpiringSoon, subscriptionApi,
+  type StationMessage, type Announcement, type MySubscription,
 } from '@/api'
 import { pointsApi } from '@/api/economy'
 import { primaryNav, menuSections } from '@/config/navigation'
@@ -25,6 +25,22 @@ const userMenuRef = ref<HTMLElement | null>(null)
 const navRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
 const pointsBalance = ref<number | null>(null)
+
+/**
+ * 资产 pill 组（借鉴纸片人控制台的双资产常驻胶囊）：积分是第一个资产，
+ * 订阅是第二个——生效中给「剩 N 天」，临期转警示色并轻脉动，未订阅不占位。
+ * 订阅态与轮询同频刷新：购买 / 续费后回到任何页面都能立刻看到新状态。
+ */
+const activeSub = ref<MySubscription | null>(null)
+
+const showSubPill = computed(() => !!activeSub.value)
+const subPillExpiring = computed(() => (activeSub.value ? isExpiringSoon(activeSub.value) : false))
+const subPillText = computed(() => {
+  const sub = activeSub.value
+  if (!sub) return ''
+  return subPillExpiring.value ? `剩 ${sub.days_left} 天` : '会员生效中'
+})
+const isFreeRealm = computed(() => userStore.isFreeRealm)
 
 // 顶栏消息入口（v2.10.3 起是全站唯一的消息入口）：既显示「几条未读」，
 // 点开还能先看预览再决定要不要进消息中心
@@ -219,6 +235,18 @@ async function refreshPoints() {
   }
 }
 
+async function refreshSubscription() {
+  if (!userStore.isLoggedIn) return
+  try {
+    const subs = await subscriptionApi.getMine()
+    activeSub.value = (Array.isArray(subs) ? subs : []).find(
+      (s) => s.status === 'active' && s.days_left > 0,
+    ) || null
+  } catch {
+    /* 静默：订阅态拿不到就不显示 pill，不为此报错打扰 */
+  }
+}
+
 async function poll() {
   if (!userStore.isLoggedIn) return
   try {
@@ -228,6 +256,7 @@ async function poll() {
     /* 静默失败 */
   }
   refreshPoints()
+  refreshSubscription()
 }
 
 /**
@@ -257,11 +286,12 @@ async function focusActiveTab(center: boolean) {
   }
 }
 
-// 签到 / 钱包操作后回到顶栏时，积分徽章即时刷新
+// 签到 / 钱包操作后回到顶栏时，积分与订阅两个资产 pill 即时刷新
 watch(() => route.path, (p, old) => {
   const economyPaths = ['/wallet', '/checkin']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshPoints()
+    refreshSubscription()
   }
 })
 
@@ -270,6 +300,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
   else {
     unreadCount.value = 0
     pointsBalance.value = null
+    activeSub.value = null
     msgPreview.value = []
     msgMenuOpen.value = false
   }
@@ -316,14 +347,36 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
       <!-- 右侧用户区 -->
       <div class="user-section">
         <template v-if="userStore.isLoggedIn">
-          <!-- 搜索（v2.10.1）：已升为主导航的一级入口，这里不再单挂一个放大镜图标——
-               图标与菜单项都指向 /search，同一件事在顶栏出现两遍就是重复入口 -->
+          <!-- 资产 pill 组：积分 + 订阅状态常驻（含移动端；≤768px 主导航交给底部坞）。
+               每种资产一个固定功能色，全链路同色：积分=品牌青，订阅=会员金，公益服=青色软底 -->
+          <div class="assets-group">
+            <!-- 积分 pill：点击进入钱包 -->
+            <RouterLink to="/wallet" class="points-chip" title="积分余额 · 进入钱包">
+              <Zap :size="13" />
+              <span class="points-num">{{ pointsBalance === null ? '—' : pointsBalance.toLocaleString() }}</span>
+            </RouterLink>
 
-          <!-- 积分徽章：点击进入钱包 -->
-          <RouterLink to="/wallet" class="points-chip" title="积分余额 · 进入钱包">
-            <Zap :size="13" />
-            <span class="points-num">{{ pointsBalance === null ? '—' : pointsBalance.toLocaleString() }}</span>
-          </RouterLink>
+            <!-- 订阅 pill：生效中常驻；临期转警示色 + 轻脉动；公益服显示免费开放，不出现购买引导 -->
+            <RouterLink
+              v-if="showSubPill"
+              to="/wallet?tab=plans"
+              class="sub-chip"
+              :class="{ warn: subPillExpiring }"
+              title="订阅状态 · 管理订阅"
+            >
+              <Crown :size="12" />
+              <span class="sub-chip-text">{{ subPillText }}</span>
+            </RouterLink>
+            <RouterLink
+              v-else-if="isFreeRealm"
+              to="/media"
+              class="sub-chip free"
+              title="公益服 · 免费开放"
+            >
+              <Sparkles :size="12" />
+              <span class="sub-chip-text">公益服</span>
+            </RouterLink>
+          </div>
 
           <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
           <div ref="msgMenuRef" class="msg-menu">
@@ -535,9 +588,21 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: flex;
   align-items: center;
   gap: 0.625rem;
+  min-width: 0;
 }
 
-/* 积分徽章 */
+/* ==================== 资产 pill 组（借鉴纸片人控制台） ====================
+   每种资产一个固定功能色，从顶部 pill → 卡片图标/数字/CTA 全链路同色：
+   积分 = 品牌青，订阅 = 会员金。胶囊配方：rounded-full + 功能色 10% 底
+   + 20% 边框 + semibold 彩色字（与 au-badge 同构） */
+.assets-group {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+/* 积分 pill（功能色：品牌青） */
 .points-chip {
   display: inline-flex;
   align-items: center;
@@ -565,6 +630,57 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 订阅 pill（功能色：会员金；临期转警示金 + 轻脉动） */
+.sub-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  height: 30px;
+  padding: 0 0.6875rem;
+  background: var(--au-warning-soft);
+  border: 1px solid var(--au-warning-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-warning);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: all var(--au-fast) var(--au-ease);
+}
+
+.sub-chip-text {
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.sub-chip:hover {
+  background: rgba(251, 191, 36, 0.2);
+  box-shadow: 0 0 14px rgba(251, 191, 36, 0.25);
+}
+
+.sub-chip.warn {
+  animation: sub-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes sub-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.25); }
+  50% { box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.08); }
+}
+
+/* 公益服 pill：青色软底，不跟会员金混在一起 */
+.sub-chip.free {
+  background: var(--au-primary-soft);
+  border-color: var(--au-primary-border);
+  color: var(--au-primary);
+}
+
+.sub-chip.free:hover {
+  background: var(--au-primary-mid);
+  box-shadow: 0 0 14px var(--au-primary-glow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sub-chip.warn { animation: none; }
 }
 
 /* 消息铃铛 */
@@ -874,9 +990,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   .nav-link svg { display: none; }
 }
 
-/* ≤900px：顶栏变两行 —— 第一行品牌与账号操作，第二行是可横向滑动的主导航选项卡。
-   四个入口在手机上基本放得下，横滑仍然保留：以后再加条目（或换成长名字的语言）时
-   入口不会被挤成两三个字的碎片，也不用再在页面底部另开一条导航。 */
+/* 769~900px：窄屏保留两行形态（顶栏主导航仍是唯一导航，底部坞未出现） */
 @media (max-width: 900px) {
   .header-container {
     flex-wrap: wrap;
@@ -910,8 +1024,34 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     font-size: 0.8125rem;
   }
 
-  .points-chip { display: none; }
   .msg-dropdown { width: min(292px, calc(100vw - 1.5rem)); }
   .user-dropdown { width: min(240px, calc(100vw - 1.5rem)); }
+}
+
+/* ≤768px：顶栏退成单行（品牌 + 资产 pill + 账号操作），主导航交给底部坞（AppDock）。
+   资产 pill 是唯一在所有断点都常驻的资产入口，这里只收紧内边距，不隐藏 */
+@media (max-width: 768px) {
+  .header-container {
+    flex-wrap: nowrap;
+    padding: 0 1rem;
+    min-height: 54px;
+    gap: 0.5rem;
+  }
+
+  .main-nav { display: none; }
+
+  .user-section { gap: 0.375rem; }
+  .assets-group { gap: 0.25rem; }
+
+  .points-chip,
+  .sub-chip {
+    height: 28px;
+    padding: 0 0.5rem;
+  }
+
+  .points-chip .points-num { max-width: 64px; }
+
+  .user-btn { padding: 0.25rem; }
+  .user-name { display: none; }
 }
 </style>

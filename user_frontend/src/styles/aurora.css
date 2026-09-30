@@ -99,6 +99,10 @@
   --au-fast: 0.16s;
   --au-med: 0.26s;
 
+  /* 页面底部安全留白：≤768px 底部导航坞（AppDock，约 58px + 安全区）悬在内容之上，
+     全站页面靠这个变量让出高度，不需要各自写一份媒体查询 */
+  --au-dock-space: 0px;
+
   /* 兼容旧 token（媒体库等页面依赖） */
   --brand-primary: var(--au-primary);
   --brand-primary-hover: var(--au-primary-strong);
@@ -122,6 +126,46 @@
   --radius-sm: var(--au-r-sm);
   --radius-md: var(--au-r-md);
   --radius-lg: var(--au-r-lg);
+}
+
+@media (max-width: 768px) {
+  :root {
+    --au-dock-space: calc(58px + env(safe-area-inset-bottom));
+  }
+}
+
+/* ==================== 资产卡功能色（v2.42.1，借鉴纸片人控制台） ====================
+   双资产色彩编码：每种资产一个固定功能色，从顶栏 pill → 卡片图标 / 数字 / CTA
+   全链路同色。组件内用 var(--asset / --asset-soft / --asset-border / --asset-mid)
+   取色，tone-x 类负责换色；定义放在这份全局表里，设计令牌契约检查
+   （check_frontend_tokens）才能看到它们，也保证后续页面复用同一套。 */
+
+.asset-card {
+  --asset: var(--au-primary);
+  --asset-soft: var(--au-primary-soft);
+  --asset-border: var(--au-primary-border);
+  --asset-mid: var(--au-primary-mid);
+}
+
+.asset-card.tone-cyan {
+  --asset: var(--au-primary);
+  --asset-soft: var(--au-primary-soft);
+  --asset-border: var(--au-primary-border);
+  --asset-mid: var(--au-primary-mid);
+}
+
+.asset-card.tone-amber {
+  --asset: var(--au-warning);
+  --asset-soft: var(--au-warning-soft);
+  --asset-border: var(--au-warning-border);
+  --asset-mid: rgba(251, 191, 36, 0.2);
+}
+
+.asset-card.tone-violet {
+  --asset: var(--au-violet);
+  --asset-soft: var(--au-violet-soft);
+  --asset-border: rgba(167, 139, 250, 0.28);
+  --asset-mid: rgba(167, 139, 250, 0.2);
 }
 
 /* ==================== 基础 ==================== */
@@ -318,7 +362,8 @@ body {
 }
 
 .au-page {
-  padding: 1.5rem 1.25rem 4rem;
+  /* 底部留白带 --au-dock-space：≤768px 底部导航坞悬在内容之上，整页让位 */
+  padding: 1.5rem 1.25rem calc(4rem + var(--au-dock-space));
 }
 
 .container {
@@ -331,7 +376,7 @@ body {
 }
 
 @media (max-width: 640px) {
-  .au-page { padding: 1.125rem 1rem 5rem; }
+  .au-page { padding: 1.125rem 1rem calc(5rem + var(--au-dock-space)); }
 }
 
 /* ==================== 页头（标题 + 说明 + 右侧操作） ====================

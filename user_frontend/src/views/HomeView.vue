@@ -39,6 +39,13 @@
  *
  * 面板只做「一眼看到状态 + 点进去办事」：完整的会话清单与设备管理仍在个人中心（控制面板），
  * 与顶栏铃铛 / 消息中心的分工一致——同一个语义，摘要在一处、全量在另一处，不会两处都铺全。
+ *
+ * v2.42.1（借鉴纸片人控制台的设计语言）：首页改版为「资产仪表盘」口径——
+ * 顶栏常驻积分 / 订阅资产 pill；hero 收敛成一张带装饰光晕的欢迎卡；
+ * 原账号速览条升级为四段式资产卡（积分 / 订阅 / 观影数据），每种资产一个固定
+ * 功能色（青 / 金 / 紫），从 pill → 卡片图标 / 数字 / CTA 全链路同色；
+ * hero 右侧的会员卡并入订阅资产卡（进度条按真实周期算的口径不变）。
+ * ≤768px 由底部导航坞（AppDock）承担主导航，卡片单列。
  */
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -53,9 +60,9 @@ import Modal from '@/components/ui/Modal.vue'
 import { embyApi as protocolApi, type EmbyItem } from '@/api/emby'
 import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
 import {
-  ChevronRight, Crown, MessageSquareDashed, LayoutDashboard, Inbox,
-  Wallet, CalendarCheck, Gift, Sparkles, Tv, TriangleAlert,
-  Clock, Clapperboard, Film, Ticket, MonitorSmartphone, CircleStop,
+  ChevronRight, Crown, MessageSquareDashed, Inbox,
+  Sparkles, Tv, TriangleAlert, Zap,
+  Clapperboard, Ticket, MonitorSmartphone, CircleStop,
   Rocket, Check, RotateCcw,
 } from 'lucide-vue-next'
 
@@ -110,9 +117,6 @@ const gateMessage = computed(() =>
 )
 // 公益服（v2.7.0）：这个服免费开放，不需要会员，首屏不再推销会员
 const isFreeRealm = computed(() => userStore.isFreeRealm)
-const realmNote = computed(
-  () => userStore.realmNote || '本服为公益服 · 免费开放：无需开通会员即可观看全库内容。',
-)
 // 套餐周期已过多少：按订阅自己的 start_date → end_date 算，不再用「剩余天数猜一个分母」——
 // 那条旧公式（days_left / (days_left + 30)）画出来的进度与真实周期无关，
 // 一个刚买的 30 天套餐会显示成 50%，反而让人以为已经消耗了一半。
@@ -127,51 +131,104 @@ const memberProgress = computed(() => {
   return Math.max(1, Math.min(100, Math.round((used / total) * 100)))
 })
 
-// 账号速览条：三格经济数据（非按钮），点击进入对应页面。
-// 会员状态不进这一条：首屏的会员卡已经在讲同一件事（套餐 / 剩余天数 / 开通或续费），
-// 再来一格只是把“会员”在一屏里说两遍。
-const accountCells = computed(() => [
-  {
-    to: '/wallet',
-    icon: Wallet,
-    label: '积分余额',
-    value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
-    sub: '签到 · 兑换 · 充值',
-    hot: false,
-  },
-  {
-    to: '/checkin',
-    icon: CalendarCheck,
-    label: '每日签到',
-    value: quickStats.value.streak !== null ? `${quickStats.value.streak} 天` : '—',
-    sub: quickStats.value.checkedToday ? '今日已签' : '今日未签',
-    hot: quickStats.value.streak !== null && !quickStats.value.checkedToday,
-  },
-  {
-    to: '/invite',
-    icon: Gift,
-    label: '邀请返利',
-    value: quickStats.value.invited !== null ? String(quickStats.value.invited) : '—',
-    // 一位好友都还没邀请时，“0 位好友已加入”读起来像一条数据，
-    // 看不出这里能点、后面有奖励；换成一句可执行的说明，邀请才找得到入口
-    sub: quickStats.value.invited ? '位好友已加入' : '邀请好友得积分',
-    hot: quickStats.value.invited === 0,
-  },
-])
+// 资产卡（v2.42.1，四段式）：积分 / 订阅 / 观影数据。每种资产一个固定功能色（tone），
+// 从顶栏 pill → 卡片图标 / 数字 / CTA 全链路同色：积分 = 品牌青，订阅 = 会员金，
+// 观影数据 = 极光紫。卡底统一「灰色说明 + 功能色 CTA」，全站一个模式。
+const assetCards = computed(() => {
+  const st = stats.value
 
-/** 累计观看时长：不足 1 小时按分钟显示，别让新用户一上来就看到「0 小时」 */
-function formatWatchTime(seconds?: number | null) {
-  if (!seconds || seconds <= 0) return '—'
-  const hours = Math.floor(seconds / 3600)
-  if (hours >= 1) return `${hours} 小时`
-  return `${Math.max(1, Math.round(seconds / 60))} 分钟`
-}
+  // 观影数据的大数字：≥1 小时按小时、不足 1 小时按分钟（别让新用户一上来就看到「0」）
+  let watchValue = '—'
+  let watchUnit = ''
+  if (st && st.total_seconds > 0) {
+    const hours = Math.floor(st.total_seconds / 3600)
+    if (hours >= 1) {
+      watchValue = String(hours)
+      watchUnit = '小时'
+    } else {
+      watchValue = String(Math.max(1, Math.round(st.total_seconds / 60)))
+      watchUnit = '分钟'
+    }
+  }
 
-const watchCells = computed(() => [
-  { key: 'time', icon: Clock, label: '累计观看', value: formatWatchTime(stats.value?.total_seconds) },
-  { key: 'plays', icon: Clapperboard, label: '播放次数', value: stats.value ? String(stats.value.total_plays) : '—' },
-  { key: 'items', icon: Film, label: '看过影片', value: stats.value ? String(stats.value.watched_items) : '—' },
-])
+  const memberCard = isMember.value && activeSub.value
+    ? {
+        value: String(activeSub.value.days_left),
+        unit: '天',
+        progress: memberProgress.value,
+        desc: `${activeSub.value.plan_name} · ${activeSub.value.end_date?.slice(0, 10) || ''}到期`,
+        note: expiringSoon.value ? '续费后新时长在到期日之后叠加' : '会员权益全库通用',
+        footer: '续费',
+        badge: expiringSoon.value ? '临期' : '生效中',
+        hot: expiringSoon.value,
+      }
+    : isFreeRealm.value
+      ? {
+          value: '免费',
+          unit: '',
+          progress: null,
+          desc: userStore.realmNote || '公益服开放中，无需订阅即可观看全库内容',
+          note: '本服不需要会员',
+          footer: '查看套餐',
+          badge: null,
+          hot: false,
+        }
+      : {
+          value: '未开通',
+          unit: '',
+          progress: null,
+          desc: gateMessage.value || '开通会员后可无限观看全部影视内容',
+          note: '开通后解锁全库',
+          footer: '立即开通',
+          badge: null,
+          hot: false,
+        }
+
+  return [
+    {
+      key: 'points',
+      to: '/wallet',
+      icon: Zap,
+      tone: 'cyan',
+      title: '积分',
+      value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
+      unit: '',
+      progress: null,
+      desc: '签到、邀请与兑换都能攒积分',
+      // 连击天数并进说明行，数据不丢（原速览条的独立「每日签到」格不再重复）
+      note: quickStats.value.checkedToday
+        ? (quickStats.value.streak ? `今日已签 · 连续 ${quickStats.value.streak} 天` : '今日已签 · 明天再来')
+        : '今天还没签到',
+      footer: '去钱包',
+      badge: quickStats.value.checkedToday ? null : '今日未签',
+      // 未签时徽章走警示色（hot），与订阅临期同一套提醒语言
+      hot: !quickStats.value.checkedToday,
+    },
+    {
+      key: 'member',
+      to: '/wallet?tab=plans',
+      icon: Crown,
+      tone: 'amber',
+      title: '订阅',
+      ...memberCard,
+    },
+    {
+      key: 'watch',
+      to: '/media?tab=history',
+      icon: Clapperboard,
+      tone: 'violet',
+      title: '观影数据',
+      value: watchValue,
+      unit: watchUnit,
+      progress: null,
+      desc: `播放 ${st ? st.total_plays : '—'} 次 · 看过 ${st ? st.watched_items : '—'} 部`,
+      note: '足迹保留在媒体库',
+      footer: '观看记录',
+      badge: null,
+      hot: false,
+    },
+  ]
+})
 
 // 进行中的事项：只列「自己提交的东西处理到哪了」。数量为 0 时显示「—」而不显示 0，
 // sub 再说清下一步会发生什么——一个孤零零的 0 读起来像「功能坏了」，不像「没事可做」。
@@ -358,9 +415,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="home-view">
-    <!-- Hero：左问候与主行动，右会员状态卡（双栏） -->
+    <!-- Hero：问候与主行动（会员/订阅状态在下方「我的资产」金色卡里，不再占右栏） -->
     <section class="hero">
       <div class="hero-glow" aria-hidden="true"></div>
+      <div class="hero-glow-2" aria-hidden="true"></div>
       <div class="container hero-grid">
         <div class="hero-inner">
           <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
@@ -419,68 +477,6 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <!-- 会员状态卡；公益服换成「免费开放」的说明卡，不出现任何购买引导。
-             加载中先显示骨架占位，不渲染任一形态——避免「立即开通会员」闪现再被替换 -->
-        <aside v-if="loading" class="member-card" aria-hidden="true">
-          <div class="member-head">
-            <span class="au-skeleton sk-badge"></span>
-          </div>
-          <p class="au-skeleton sk-plan"></p>
-          <p class="au-skeleton sk-meta-line"></p>
-          <span class="au-skeleton sk-cta"></span>
-        </aside>
-
-        <aside v-else-if="isFreeRealm" class="member-card free-card">
-          <div class="member-head">
-            <span class="member-badge free">
-              <Sparkles :size="13" />
-              公益服 · 免费开放
-            </span>
-          </div>
-          <p class="member-plan">无需会员，直接看</p>
-          <p class="member-meta">{{ realmNote }}</p>
-          <RouterLink to="/media" class="au-btn au-btn-primary au-btn-sm member-cta">
-            <Tv :size="14" />
-            进入媒体库
-          </RouterLink>
-        </aside>
-
-        <aside v-else class="member-card" :class="{ inactive: !isMember }">
-          <div class="member-head">
-            <span class="member-badge" :class="{ warn: expiringSoon }">
-              <Crown :size="13" />
-              {{ expiringSoon ? '即将到期' : (isMember ? '会员生效中' : '会员专享') }}
-            </span>
-            <!-- 已开通时给续费入口；未开通时卡内只留一个 CTA，避免同时出现两个开通按钮 -->
-            <RouterLink v-if="isMember" to="/wallet?tab=plans" class="member-link">
-              续费
-              <ChevronRight :size="13" />
-            </RouterLink>
-          </div>
-
-          <template v-if="isMember && activeSub">
-            <p class="member-plan">{{ activeSub.plan_name }}</p>
-            <div v-if="memberProgress" class="member-progress" :title="`套餐周期已过 ${memberProgress}%`">
-              <div class="member-progress-fill" :style="{ width: memberProgress + '%' }"></div>
-            </div>
-            <p class="member-meta">
-              剩 <strong>{{ activeSub.days_left }}</strong> 天 · {{ activeSub.end_date?.slice(0, 10) }} 到期
-            </p>
-            <p v-if="expiringSoon" class="member-warn">
-              <TriangleAlert :size="13" />
-              即将到期，续费后新时长在当前到期日之后叠加
-            </p>
-          </template>
-
-          <template v-else>
-            <p class="member-plan">解锁全库影视</p>
-            <p class="member-meta">{{ gateMessage || '开通会员后可无限观看全部影视内容' }}</p>
-            <RouterLink to="/wallet?tab=plans" class="au-btn au-btn-primary au-btn-sm member-cta">
-              <Crown :size="14" />
-              立即开通会员
-            </RouterLink>
-          </template>
-        </aside>
       </div>
     </section>
 
@@ -522,37 +518,73 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <!-- 账号速览条：积分 / 签到 / 邀请（纯经济数据；会员在首屏会员卡，消息在下方消息卡）。
-           加载中显示真骨架占位，而不是把「—」压暗——压暗的「—」会被读成「没有数据」 -->
-      <section v-if="loading" class="acct-strip au-card" aria-hidden="true">
-        <div v-for="i in 3" :key="i" class="acct-cell">
-          <span class="au-skeleton sk-acct-label"></span>
-          <span class="au-skeleton sk-acct-value"></span>
-          <span class="au-skeleton sk-acct-sub"></span>
+      <!-- 我的资产（v2.42.1）：积分 / 订阅 / 观影数据，四段式资产卡。
+           每种资产一个固定功能色（青 / 金 / 紫），从顶栏 pill → 卡片图标 / 数字 / CTA
+           全链路同色；卡底统一「灰色说明 + 功能色 CTA」。加载中显示真骨架占位，
+           而不是把「—」压暗——压暗的「—」会被读成「没有数据」 -->
+      <div class="section-label">
+        <span class="section-title">我的资产</span>
+      </div>
+      <section v-if="loading" class="asset-grid" aria-hidden="true">
+        <div v-for="i in 3" :key="i" class="asset-card au-card">
+          <div class="asset-head">
+            <span class="au-skeleton sk-asset-icon"></span>
+            <span class="au-skeleton sk-asset-title"></span>
+          </div>
+          <span class="au-skeleton sk-asset-value"></span>
+          <span class="au-skeleton sk-asset-desc"></span>
+          <span class="au-skeleton sk-asset-foot"></span>
         </div>
       </section>
-      <section v-else class="acct-strip au-card au-anim-up">
+      <section v-else class="asset-grid au-anim-up">
         <RouterLink
-          v-for="c in accountCells"
-          :key="c.to"
+          v-for="c in assetCards"
+          :key="c.key"
           :to="c.to"
-          class="acct-cell"
+          class="asset-card au-card"
+          :class="`tone-${c.tone}`"
         >
-          <span class="cell-label">
-            <component :is="c.icon" :size="13" />
-            {{ c.label }}
-          </span>
-          <span class="cell-value">{{ c.value }}</span>
-          <span class="cell-sub" :class="{ hot: c.hot }">{{ c.sub }}</span>
+          <!-- ① 图标盒 + 标题（功能色 10% 底 + 20% 边框） -->
+          <div class="asset-head">
+            <span class="asset-icon">
+              <component :is="c.icon" :size="19" />
+            </span>
+            <span class="asset-title-row">
+              <span class="asset-title">{{ c.title }}</span>
+              <span v-if="c.badge" class="asset-badge" :class="{ hot: c.hot }">{{ c.badge }}</span>
+            </span>
+          </div>
+
+          <!-- ② 巨型等宽数字（染功能色）+ 订阅进度条（按真实周期算的口径不变） -->
+          <div class="asset-value-row">
+            <span class="asset-value">{{ c.value }}</span>
+            <span v-if="c.unit" class="asset-unit">{{ c.unit }}</span>
+          </div>
+          <div v-if="c.progress !== null" class="asset-progress" :title="`套餐周期已过 ${c.progress}%`">
+            <div class="asset-progress-fill" :style="{ width: c.progress + '%' }"></div>
+          </div>
+
+          <!-- ③ 说明文案 -->
+          <p class="asset-desc">{{ c.desc }}</p>
+
+          <!-- ④ 底部分隔条：左灰色说明 + 右功能色 CTA（全站统一模式） -->
+          <div class="asset-foot">
+            <span class="asset-note">{{ c.note }}</span>
+            <span class="asset-cta">
+              {{ c.footer }}
+              <ChevronRight :size="13" />
+            </span>
+          </div>
         </RouterLink>
       </section>
 
-      <!-- 我的面板（v2.34.0）：观影数据 / 进行中的事项 / 正在播放（只在本账号真在播时出现）。
+      <!-- 我的面板（v2.34.0）：进行中的事项 / 正在播放（只在本账号真在播时出现）。
            口径：这些是门户独有、客户端给不了的——账号名下的求片与工单状态、跨设备在播概况。
            完整会话清单与设备管理仍在个人中心，这里只给「一眼看到 + 一键处理」。
+           观影数据已升级为「我的资产」里的紫色资产卡，这里不再重复一张同义卡。
            加载中显示真骨架占位，避免内容突然出现顶开页面（CLS） -->
       <section v-if="loading" class="panel-grid" aria-hidden="true">
-        <div v-for="i in 2" :key="i" class="panel-card">
+        <div class="panel-card">
           <div class="au-skeleton sk-panel-title"></div>
           <div class="au-skeleton sk-panel-row"></div>
           <div class="au-skeleton sk-panel-row"></div>
@@ -560,28 +592,6 @@ onBeforeUnmount(() => {
         </div>
       </section>
       <section v-else class="panel-grid au-anim-up">
-        <div class="panel-card">
-          <header class="panel-head">
-            <span class="panel-title">
-              <LayoutDashboard :size="15" />
-              我的观影
-            </span>
-            <RouterLink to="/media?tab=history" class="panel-more">
-              观看记录
-              <ChevronRight :size="13" />
-            </RouterLink>
-          </header>
-          <div class="panel-stats">
-            <div v-for="c in watchCells" :key="c.key" class="panel-stat">
-              <strong>{{ c.value }}</strong>
-              <span class="panel-stat-label">
-                <component :is="c.icon" :size="12" />
-                {{ c.label }}
-              </span>
-            </div>
-          </div>
-        </div>
-
         <div class="panel-card">
           <header class="panel-head">
             <span class="panel-title">
@@ -738,12 +748,23 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+/* 欢迎卡的第二层装饰：左下角极光紫低透明度光斑，与右侧青色光晕呼应，
+   不抢内容、只给首屏多一层深度 */
+.hero-glow-2 {
+  position: absolute;
+  bottom: -55%;
+  left: -6%;
+  width: 420px;
+  height: 320px;
+  background: radial-gradient(ellipse at center, var(--au-violet-soft) 0%, transparent 70%);
+  filter: blur(56px);
+  pointer-events: none;
+}
+
+/* 会员卡已并入订阅资产卡，hero 只剩左栏：双栏网格收敛为单列流 */
 .hero-grid {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
-  gap: 1.75rem;
-  align-items: center;
+  display: block;
 }
 
 .hero-inner {
@@ -789,142 +810,236 @@ onBeforeUnmount(() => {
   background: var(--au-border-strong);
 }
 
-/* ==================== 会员状态卡 ==================== */
+/* ==================== 我的资产（v2.42.1，四段式资产卡） ====================
+   卡片规格全站统一：16px 圆角（--au-r-lg）、1px 细边框、极克制阴影（--au-shadow-1）、
+   内边距移动端 20px / 桌面 28px。每种资产一个固定功能色（tone），
+   图标盒（10% 底 + 20% 边框）→ 巨型等宽数字 → 底部 CTA 全链路同色。 */
 
-.member-card {
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 2.25rem;
+}
+
+.asset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem;
   min-width: 0;
-  padding: 1.125rem 1.25rem 1.25rem;
-  background: linear-gradient(150deg, var(--au-primary-soft), var(--au-violet-soft));
-  border: 1px solid var(--au-primary-border);
-  border-radius: var(--au-r-lg);
-  backdrop-filter: blur(12px);
+  text-decoration: none;
+  box-shadow: var(--au-shadow-1);
+  transition: border-color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease),
+    box-shadow var(--au-fast) var(--au-ease);
 }
 
-.member-card.inactive {
-  background: linear-gradient(150deg, var(--au-warning-soft), var(--au-violet-soft));
+@media (min-width: 769px) {
+  .asset-card { padding: 1.75rem; }
+}
+
+/* hover 微交互克制：边框与阴影走功能色、整卡轻抬，图标稍放大 */
+.asset-card:hover {
+  border-color: var(--asset-border);
+  box-shadow: var(--au-shadow-2);
+  transform: translateY(-2px);
+}
+
+.asset-card:hover .asset-icon {
+  transform: scale(1.06);
+}
+
+.asset-card:hover .asset-title {
+  color: var(--asset);
+}
+
+/* tone-x 类的功能色变量定义在 styles/aurora.css（全局唯一 token 源），
+   这里只消费；hoover 态与卡片结构样式都走 var(--asset*) */
+
+/* ① 图标盒：功能色 10% 底 + 20% 边框；小标题同行 */
+.asset-head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.asset-icon {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: var(--asset-soft);
+  border: 1px solid var(--asset-border);
+  color: var(--asset);
+  transition: transform var(--au-fast) var(--au-ease);
+}
+
+.asset-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.asset-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text-2);
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+/* 徽章/胶囊配方：rounded-full + 功能色 10% 底 + 20~25% 边框 + semibold 彩色字 */
+.asset-badge {
+  flex-shrink: 0;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--au-r-full);
+  background: var(--asset-soft);
+  border: 1px solid var(--asset-border);
+  color: var(--asset);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.asset-badge.hot {
+  background: var(--au-warning-soft);
   border-color: var(--au-warning-border);
+  color: var(--au-warning);
 }
 
-.member-head {
+/* ② 巨型等宽数字：移动端 30px / 桌面 48px，font-variant-numeric 保证数字不跳动 */
+.asset-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3125rem;
+  min-width: 0;
+}
+
+.asset-value {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.875rem;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--asset);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (min-width: 769px) {
+  .asset-value { font-size: 3rem; }
+}
+
+.asset-unit {
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--au-text-3);
+}
+
+/* 进度条：10px 全圆角 + transition-all（只有订阅卡有） */
+.asset-progress {
+  height: 10px;
+  border-radius: var(--au-r-full);
+  background: var(--au-track);
+  overflow: hidden;
+}
+
+.asset-progress-fill {
+  height: 100%;
+  border-radius: var(--au-r-full);
+  /* 跟卡片的 tone 走（订阅卡 = 会员金），未来其它卡加进度条不用再改这里 */
+  background: var(--asset);
+  transition: width var(--au-med) var(--au-ease);
+}
+
+/* ③ 说明文案 */
+.asset-desc {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--au-text-3);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ④ 底部分隔条：左灰色说明 + 右功能色加粗 CTA（全站统一模式） */
+.asset-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  margin-bottom: 0.75rem;
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--au-border);
 }
 
-.member-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3125rem;
-  padding: 0.1875rem 0.5625rem;
-  background: var(--au-overlay-soft);
-  border-radius: var(--au-r-full);
-  color: var(--au-primary);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-/* 临期：与后台到期提醒同色系，一眼能看出“该续费了” */
-.member-badge.warn {
-  background: var(--au-warning-soft);
-  color: var(--au-warning);
-}
-
-.member-warn {
-  display: flex;
-  align-items: center;
-  gap: 0.3125rem;
-  margin: 0.5rem 0 0;
-  font-size: 0.75rem;
-  line-height: 1.5;
-  color: var(--au-warning);
-}
-
-.member-card.inactive .member-badge {
-  color: var(--au-warning);
-}
-
-/* 会员卡加载骨架：与真实卡片同高，避免加载完成时布局跳动（CLS） */
-.member-card .sk-badge {
-  display: block;
-  width: 96px;
-  height: 22px;
-  border-radius: var(--au-r-full);
-}
-
-.member-card .sk-plan {
-  width: 60%;
-  height: 20px;
-  margin: 0 0 0.625rem;
-}
-
-.member-card .sk-meta-line {
-  width: 85%;
-  height: 14px;
-  margin: 0 0 1rem;
-}
-
-.member-card .sk-cta {
-  display: block;
-  width: 140px;
-  height: 32px;
-  border-radius: var(--au-r-md);
-}
-
-.member-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.125rem;
+.asset-note {
   font-size: 0.75rem;
   color: var(--au-text-3);
-  text-decoration: none;
-  transition: color var(--au-fast) var(--au-ease);
-}
-
-.member-link:hover {
-  color: var(--au-primary);
-}
-
-.member-plan {
-  margin: 0 0 0.5rem;
-  font-size: 1.0625rem;
-  font-weight: 700;
-  color: var(--au-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.member-progress {
-  height: 5px;
-  margin-bottom: 0.5rem;
-  background: var(--au-track);
-  border-radius: 3px;
-  overflow: hidden;
+.asset-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--asset);
 }
 
-.member-progress-fill {
-  height: 100%;
-  background: var(--au-gradient);
-  border-radius: 3px;
+.asset-card:hover .asset-cta svg {
+  transform: translateX(2px);
 }
 
-.member-meta {
-  margin: 0;
-  font-size: 0.75rem;
-  line-height: 1.6;
-  color: var(--au-text-3);
+.asset-cta svg {
+  transition: transform var(--au-fast) var(--au-ease);
 }
 
-.member-meta strong {
-  color: var(--au-primary);
-  font-variant-numeric: tabular-nums;
+/* 资产卡加载骨架：与真实卡片同高，加载完成不跳动（CLS） */
+.sk-asset-icon {
+  display: block;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
 }
 
-.member-cta {
-  margin-top: 0.75rem;
+.sk-asset-title {
+  display: block;
+  width: 64px;
+  height: 14px;
+}
+
+.sk-asset-value {
+  display: block;
+  width: 96px;
+  height: 30px;
+  margin-top: 0.25rem;
+}
+
+.sk-asset-desc {
+  display: block;
+  width: 85%;
+  height: 13px;
+}
+
+.sk-asset-foot {
+  display: block;
   width: 100%;
+  height: 30px;
+  margin-top: 0.25rem;
 }
 
 /* ==================== 分组标签 ==================== */
@@ -988,14 +1103,6 @@ onBeforeUnmount(() => {
 .hero-free {
   background: var(--au-primary-soft);
   border: 1px solid var(--au-primary-border);
-  color: var(--au-primary);
-}
-
-.free-card {
-  background: linear-gradient(150deg, var(--au-primary-soft), var(--au-primary-soft));
-}
-
-.free-card .member-badge.free {
   color: var(--au-primary);
 }
 
@@ -1137,99 +1244,14 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-/* ==================== 账号速览条 ==================== */
 
-/*
- * 数据条：三格（积分 / 签到 / 邀请），分隔线用「容器底色 + 1px gap + 格子自身底色」，
- * 格子增减或列数变化都不会错位。（会员那一格已去掉，详见脚本里的口径）
- */
-.acct-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  background: var(--au-border);
-  margin-bottom: 2rem;
-  overflow: hidden;
-}
-
-/* 账号速览条骨架：与真实格子同高，加载完成不跳动 */
-.sk-acct-label {
-  display: block;
-  width: 64px;
-  height: 12px;
-}
-
-.sk-acct-value {
-  display: block;
-  width: 72px;
-  height: 22px;
-  margin-top: 0.25rem;
-}
-
-.sk-acct-sub {
-  display: block;
-  width: 84px;
-  height: 12px;
-  margin-top: 0.25rem;
-}
-
-.acct-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1875rem;
-  padding: 1rem 1.125rem;
-  min-width: 0;
-  background: var(--au-surface);
-  text-decoration: none;
-  transition: background var(--au-fast) var(--au-ease);
-}
-
-.acct-cell:hover {
-  background: var(--au-surface-2);
-}
-
-.cell-label {
-  display: flex;
-  align-items: center;
-  gap: 0.3125rem;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-}
-
-.cell-label svg {
-  color: var(--au-primary);
-  flex-shrink: 0;
-}
-
-.cell-value {
-  font-size: 1.1875rem;
-  font-weight: 700;
-  line-height: 1.2;
-  color: var(--au-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-variant-numeric: tabular-nums;
-}
-
-.cell-sub {
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.cell-sub.hot {
-  color: var(--au-warning);
-  font-weight: 600;
-}
 
 /* ==================== 我的面板（v2.34.0） ==================== */
 
 .panel-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* 观影数据已并入资产卡：事项卡单独一条时占满整行，未来加回第二张卡时自动变两列 */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1rem;
   margin-bottom: 2rem;
 }
@@ -1298,42 +1320,6 @@ onBeforeUnmount(() => {
 
 .panel-more:hover {
   color: var(--au-primary);
-}
-
-.panel-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-}
-
-.panel-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
-}
-
-.panel-stat strong {
-  font-size: 1.25rem;
-  font-weight: 700;
-  line-height: 1.2;
-  color: var(--au-text);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.panel-stat-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-}
-
-.panel-stat-label svg {
-  flex-shrink: 0;
 }
 
 /* 进行中的事项：两行（求片 / 工单），每行一条真实状态 */
@@ -1630,25 +1616,33 @@ onBeforeUnmount(() => {
 /* ==================== 响应式 ==================== */
 
 @media (max-width: 900px) {
-  /* 这里曾为底部导航坞留 7rem 底部留白；导航坞去掉后，页面尾部不再需要避开任何东西 */
-  .acct-cell {
-    padding: 0.875rem 0.875rem;
+  /* 装饰光晕收一收：小屏上再占这么大面积会顶到内容 */
+  .hero-glow {
+    width: 340px;
+    height: 260px;
   }
-}
 
-@media (max-width: 860px) {
-  .hero-grid {
-    grid-template-columns: 1fr;
-    gap: 1.25rem;
+  .hero-glow-2 {
+    width: 300px;
+    height: 220px;
   }
 
   /* 窄屏：两块面板竖排（观影数据在上、进行中的事项在下） */
   .panel-grid {
     grid-template-columns: 1fr;
   }
+}
 
-  .member-card {
-    padding: 1rem 1.125rem 1.125rem;
+@media (max-width: 768px) {
+  /* 底部坞（AppDock）出现后，页面尾部统一让位（--au-dock-space 由 App.vue 定义） */
+  .main {
+    padding-bottom: calc(3.5rem + var(--au-dock-space));
+  }
+
+  /* 资产卡单列（卡片间距收窄一档） */
+  .asset-grid {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
   }
 }
 
@@ -1666,24 +1660,10 @@ onBeforeUnmount(() => {
     margin-bottom: 1rem;
   }
 
-  /* 三格的横向留白要比原来四格紧一档，否则窄屏上数字会被挤成省略号 */
-  .acct-cell {
-    padding: 0.75rem 0.75rem;
-  }
-
-  .cell-value {
-    font-size: 1.0625rem;
-  }
-}
-
-/* 最窄的手机（≤380px）：三个格子仍保持一行 —— 换成两行会在数据条中间留一道空白缝 */
-@media (max-width: 380px) {
-  .acct-cell {
-    padding: 0.6875rem 0.5rem;
-  }
-
-  .cell-value {
-    font-size: 1rem;
+  /* 内容区 padding 收窄：与底部坞时代移动端的卡片密度匹配 */
+  .main {
+    padding-left: 1rem;
+    padding-right: 1rem;
   }
 }
 </style>
