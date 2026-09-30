@@ -343,6 +343,7 @@ Emby 客户端 ──HTTP──▶ backend/main.py（单进程单端口）
 ### 环境要求
 
 - Python 3.10+
+- 数据库：PostgreSQL（默认）或 SQLite（`DATABASE_TYPE=sqlite`，单机开发够用）
 - ffmpeg（可选，转码需要；直连播放不需要）
 
 ### 启动统一后端（含自建 Emby 服务器）
@@ -352,6 +353,13 @@ pip install -r backend/requirements.txt
 cp env.example .env   # 按需修改 EMBY_PUBLIC_URL 等
 python serve.py       # 默认 0.0.0.0:8000
 ```
+
+> **跑不起来先看这里：数据库。** v2.42.0 起默认连 PostgreSQL，而 `env.example` 里的
+> `DATABASE_URL` 指向的是 Compose 内部的服务名 `postgres`——在没装 PG 的机器上
+> 直接 `python serve.py` 会以 `psycopg2.OperationalError: connection to server at
+> "localhost", port 5432 failed` 退出。两种解法：把 `.env` 换成 SQLite
+> （`DATABASE_TYPE=sqlite` + `DATABASE_URL=sqlite:///./aetrix_unified.db`，
+> `env.example` 末尾有这两行的注释版本），或让 `docker compose up -d` 把 PostgreSQL 一并拉起来。
 
 ### 验证
 
@@ -481,11 +489,24 @@ npm run dev
 
 只有一个后端：仓库根目录的 `backend/`（EM 面板 + 自建 Emby），依赖在 `backend/requirements.txt`。
 
+**先准备好数据库。** `DATABASE_TYPE` 的代码默认值是 `postgresql`，所以「装完依赖直接
+`python serve.py`」在没有 PG 的机器上会以
+`psycopg2.OperationalError: connection to server at "localhost", port 5432 failed` 退出
+——这不是安装坏了，是缺库。单机开发用 SQLite 最省事（`env.example` 里那组
+`@postgres:5432` 是 Compose 的服务名，裸机照抄连不上）：
+
 ```bash
 pip install -r backend/requirements.txt
+
+export DATABASE_TYPE=sqlite                          # 或用 .env 里的 DATABASE_TYPE / DATABASE_URL
+export DATABASE_URL=sqlite:///./aetrix_unified.db
+
 python serve.py          # EM 面板 :8000
 python serve_emby.py     # EA 协议网关 :8001（分离部署时才需要）
 ```
+
+要用 PostgreSQL，就让 `DATABASE_URL` 指向一台真的能连上的 PG（自建 PG 时改掉
+`@postgres:5432` 这个主机名）；`docker compose up -d` 会把 PG 一起拉起来。
 
 ### 持续集成（CI）
 

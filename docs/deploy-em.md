@@ -28,8 +28,8 @@ ENABLE_EMBY_GATEWAY=false   # 分离模式：协议面交给 EA，EM 只跑面�
 | --- | --- | --- |
 | Python | 3.10+（容器镜像为 3.11-slim） | 必需 |
 | Node.js | 20.19+ 或 22.12+ | 仅构建前端时需要（见 `user_frontend/package.json` 的 `engines`） |
-| SQLite | 内置 | 默认数据库 |
-| PostgreSQL | 13+ | 生产推荐 |
+| PostgreSQL | 13+ | **默认数据库**（v2.42.0 起）。必须能被 EM 连上，连不上启动即退出 |
+| SQLite | 内置 | 可选：设 `DATABASE_TYPE=sqlite` 后使用，单机 / 单进程够用 |
 | Redis | 5+ | 可选：多实例、或希望重启不丢风控状态时启用 |
 | ffmpeg | 可选 | **分离部署下转码在 EA 那台机器上，EM 不需要** |
 
@@ -86,7 +86,7 @@ cp env.example .env
 | `EM_PANEL_URL` | 可选 | EM 自己的面板地址；EA 启动时探测它是否可达 |
 | `CORS_ORIGINS` | **生产必填** | 逗号分隔的具体域名。留空等于允许所有源 |
 | `EMBY_ALLOW_LEGACY_TOKENS` | **已移除** | 旧版「纯数字即 user_id」的兼容 token 已彻底删除，设置该变量不再有任何效果 |
-| `CORS_ORIGINS` / `DATABASE_URL` | 生产建议 | 默认 SQLite 单文件；切 PG：`DATABASE_TYPE=postgresql` + `DATABASE_URL=postgresql://…` |
+| `DATABASE_TYPE` / `DATABASE_URL` | **生产必填** | v2.42.0 起**默认 PostgreSQL**：`DATABASE_TYPE` 的代码默认值就是 `postgresql`，而 `env.example` 里给的是 Compose 内部的服务名 `postgres`。**裸机部署必须把它改成自己那台能连上的 PG**，否则 `python serve.py` 直接以 `psycopg2.OperationalError: connection to server at "localhost", port 5432 failed` 退出。想继续用 SQLite：`DATABASE_TYPE=sqlite` + `DATABASE_URL=sqlite:///./aetrix_unified.db` |
 | `REDIS_ENABLED` / `REDIS_URL` | 可选 | 未启用时用内存缓存 |
 | `TMDB_API_KEY` | 可选 | 中文元数据刮削（海报/简介/评分）；不填只做本地 ffprobe 探测 |
 | `ENABLE_EMBY_GATEWAY` | 分离模式必填 | 详见第 1 节 |
