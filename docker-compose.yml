@@ -69,8 +69,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      rclone:
-        condition: service_started
     healthcheck:
       # 合并容器健康检查：API(8000) + EA(8001) + worker 心跳（Redis）三者都正常才算健康
       test: ["CMD", "python", "-c", "import urllib.request,redis,os,json,time; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4); urllib.request.urlopen('http://127.0.0.1:8001/api/health',timeout=4); r=redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'),decode_responses=True); h=r.get('aetrix:worker:heartbeat'); assert h and (time.time()-json.loads(h)['updated_at'])<90"]
@@ -140,7 +138,11 @@ services:
       retries: 5
 
   # rclone RC：把 remote 定义接进 Aetrix「存储挂载」，凭据只放在挂载卷里
+  # 默认不启动（按需启用）：只有挂载类型选了 rclone 时才需要它。
+  #   默认：docker compose up -d          → 4 容器（api + web + postgres + redis）
+  #   启用：docker compose --profile rclone up -d → 6 容器（+ rclone + rclone-serve）
   rclone:
+    profiles: ["rclone"]
     image: rclone/rclone:1.71.1
     container_name: aetrix-rclone
     restart: unless-stopped
@@ -183,6 +185,7 @@ services:
   # 为什么要分两个容器而不是在一个容器里跑两个进程：各自独立健康检查与重启策略，
   # 不用 supervisor/后台化那套（信号处理、僵尸进程都会出问题），配置也更清楚。
   rclone-serve:
+    profiles: ["rclone"]
     image: rclone/rclone:1.71.1
     container_name: aetrix-rclone-serve
     restart: unless-stopped
