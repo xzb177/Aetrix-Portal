@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from backend import models
-
 SPEC = {
     "title": "邮件与模板",
     "desc": "SMTP、发件人与发件地址；保存后站内通知会同时投递到用户邮箱。",
@@ -36,9 +34,9 @@ CONFIG_KEYS = ("email_enabled", "email_smtp_host", "email_smtp_port", "email_smt
 
 
 def load_config(db: Session) -> dict:
-    rows = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key.in_(CONFIG_KEYS)).all()
-    return {row.key: (row.value or "") for row in rows}
+    """统一热读（只许这一套）：短 TTL 缓存，保存时失效"""
+    from backend.integrations import store
+    return store.get_values(db, CONFIG_KEYS, {k: "" for k in CONFIG_KEYS})
 
 
 def build_channel(db: Session):

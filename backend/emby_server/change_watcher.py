@@ -56,8 +56,9 @@ _WATCHER_LOCK = threading.Lock()
 
 
 def _get_config(db: Session, key: str, default: str = "") -> str:
-    row = db.query(base_models.SystemConfig).filter(base_models.SystemConfig.key == key).first()
-    return row.value if row and row.value is not None else default
+    """统一读（只许这一套）：daemon 轮询走直查，永远最新"""
+    from backend.integrations import store
+    return store.read_value(db, key, default)
 
 
 def _set_config(db: Session, key: str, value: str) -> None:

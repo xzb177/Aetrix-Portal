@@ -103,16 +103,18 @@ def test_apply_fills_gaps_for_unmatched_item():
 
 
 def test_min_interval_reads_config():
+    # 统一热读走一次 IN 查询 + .all()（backend.integrations.store.get_values）
     db = SimpleNamespace(query=lambda *a, **k: SimpleNamespace(
         filter=lambda *x, **y: SimpleNamespace(
-            first=lambda: SimpleNamespace(value="12.5"))))
+            all=lambda: [(altmeta.CONFIG_RATE, "12.5")])))
     assert altmeta.min_interval(db) == 12.5
 
 
 def test_workers_reads_config():
+    # 统一热读走一次 IN 查询 + .all()（backend.integrations.store.get_values）
     db = SimpleNamespace(query=lambda *a, **k: SimpleNamespace(
         filter=lambda *x, **y: SimpleNamespace(
-            first=lambda: SimpleNamespace(value="5"))))
+            all=lambda: [(altmeta.CONFIG_WORKERS, "5")])))
     assert altmeta.workers(db) == 5
 
 

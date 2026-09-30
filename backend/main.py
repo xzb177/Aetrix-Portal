@@ -36,6 +36,8 @@ from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
 from backend.api.emby_servers import router as emby_servers_router
 from backend.api.admins_admin import router as admins_router
+# 首次运行向导（setup_mode）：建第一个管理员，完成后入口永久关闭
+from backend.api.setup import router as setup_router
 from backend.api.playback_admin import router as playback_admin_router
 from backend.api.realms import router as realms_router
 from backend.api.servers import router as servers_router
@@ -116,6 +118,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("数据库初始化失败，服务拒绝启动")
         raise
+
+    # 配置自愈（backend/config_self_heal.py，借鉴 twilight-kotomi）：
+    # env.example / 代码默认值 → .env / system_configs，只补缺失、不覆盖；
+    # 失败只记日志，不阻断启动。
+    try:
+        from backend import config_self_heal
+        with SessionLocal() as db:
+            config_self_heal.run_config_self_heal(db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"配置自愈失败（可忽略）: {e}")
 
     # 内容可见性：面板自带的网关按「服」过滤（默认服 → 与单服部署完全一致）。
     # 多服部署时各服的 EA 各自提供本服内容，这里只保证面板不会把别的服的内容也端出去。
@@ -561,6 +573,8 @@ app.include_router(assistant_router)
 app.include_router(site_router)
 # 管理员与权限（v2.26.0）：角色清单 / 授权 / 改角色 / 撤销，见 backend/api/admins_admin.py
 app.include_router(admins_router)
+# 首次运行向导（setup_mode）：GET /api/admin/setup/status 与 POST /api/admin/setup
+app.include_router(setup_router)
 # 播放与客户端策略（v2.26.0）：转码开关 / 并发上限 / 码率上限 / 客户端准入，见 backend/api/playback_admin.py
 app.include_router(playback_admin_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）

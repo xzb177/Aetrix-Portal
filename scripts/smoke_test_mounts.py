@@ -25,7 +25,9 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 不写死库文件名：交给 backend.database 解析（新装 aetrix_unified.db，老部署沿用原库）
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
-os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
+# 空值也算没设（配置自愈会往 .env 物化出空的 SECRET_KEY，setdefault 只认「不存在」）
+os.environ["SECRET_KEY"] = (os.environ.get("SECRET_KEY") or "").strip() or \
+    "smoke-test-only-secret-key-not-for-production"
 os.environ.pop("PAN115_COOKIE", None)
 
 import httpx

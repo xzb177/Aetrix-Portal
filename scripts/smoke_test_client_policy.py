@@ -33,6 +33,7 @@ from backend.emby_server import api as emby_api  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.main import app  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
+from backend.integrations.store import invalidate  # noqa: E402
 
 init_db()
 client = TestClient(app)
@@ -60,6 +61,9 @@ def set_config(key: str, value) -> None:
         else:
             db.add(models.SystemConfig(key=key, value=str(value)))
         db.commit()
+    # 测试直接写 DB 绕过了正常写路径的缓存失效：手动清热缓存，
+    # 否则读到的可能是过期值（热重载 60s TTL）。
+    invalidate(key)
 
 
 def clear_policy() -> None:

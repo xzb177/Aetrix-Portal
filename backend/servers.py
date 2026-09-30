@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
 from backend import models
+from backend.integrations import store
 from backend import moviepilot, qbittorrent, realms
 
 logger = logging.getLogger(__name__)
@@ -354,8 +355,7 @@ def config_value(db: Session, key: str, default: str = "", realm_id: Optional[in
     """读配置；Emby 入口那几个键是**一个服一个**的（默认服沿用历史键名）"""
     if key in realms.REALM_CONFIG_BASES:
         return realms.realm_config(db, key, realm_id, default)
-    row = _config_row(db, key)
-    return ((row.value if row and row.value is not None else default) or "").strip()
+    return store.get_value(db, key, default).strip()
 
 
 def set_config(db: Session, key: str, new_value: str, description: str = "",
@@ -368,6 +368,7 @@ def set_config(db: Session, key: str, new_value: str, description: str = "",
         row.value = new_value
     else:
         db.add(models.SystemConfig(key=key, value=new_value, description=description))
+    store.invalidate(key)  # 写时失效：同一进程内保存即生效
 
 
 def sync_legacy(db: Session, server, *, reachable: Optional[bool] = None,

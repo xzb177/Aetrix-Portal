@@ -235,8 +235,9 @@ def _env_keys() -> list[str]:
 
 
 def _read_config_value(db) -> str:
+    """统一热读（只许这一套）：短 TTL 缓存，保存时失效"""
     from backend.integrations import store
-    return store.read_values(db, [TMDB_KEYS_CONFIG_KEY], {TMDB_KEYS_CONFIG_KEY: ""})[TMDB_KEYS_CONFIG_KEY]
+    return store.get_value(db, TMDB_KEYS_CONFIG_KEY, "")
 
 
 def _db_keys(db=None) -> list[str]:

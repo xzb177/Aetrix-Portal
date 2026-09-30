@@ -794,7 +794,9 @@ class RegistrationCode(Base):
     """卡码表（注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码）
 
     借鉴 twilight-kotomi 的 RegCode：一份数据结构靠 code_type 区分用途，
-    days 表示授予或叠加的会员天数，is_decoy 为蜜罐码，target_username 为指名码。
+    days 表示授予或叠加的会员天数，target_username 为指名码。
+    诱饵码（蜜罐）不建列：靠 HONEY- 码前缀识别（见 backend/codes.is_honeypot），
+    零数据库表结构改动。
     本项目的会员口径以 UserSubscription(end_date) 为单一事实来源，
     因此卡码的「天数」最终落到订阅上（无生效订阅则新建，有则叠加）。
     """
@@ -821,7 +823,6 @@ class RegistrationCode(Base):
     # ===== 卡码体系（借鉴 twilight-kotomi 的 RegCode）=====
     code_type = Column(Integer, default=1)  # 1 注册码 / 2 续期码 / 3 白名单码
     days = Column(Integer, default=30)  # 授予或叠加的会员天数；-1 表示永久
-    is_decoy = Column(Boolean, default=False)  # 诱饵码（蜜罐：使用即封禁账号）
     target_username = Column(String(50))  # 指名码：非空时仅限该用户名使用
     source = Column(String(20), default='admin')  # admin 管理员发放 / invite 邀请体系生成
 

@@ -24,6 +24,7 @@ from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.main import app
 from backend.security import hash_password
+from backend.integrations.store import invalidate
 
 init_db()
 client = TestClient(app)
@@ -48,6 +49,7 @@ def set_config(key: str, value):
     else:
         db.add(models.SystemConfig(key=key, value=str(value)))
     db.commit()
+    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
     db.close()
 
 

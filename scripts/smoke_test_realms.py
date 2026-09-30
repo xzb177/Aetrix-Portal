@@ -26,7 +26,9 @@ import tempfile
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("SECRET_KEY", "smoke-test-only-secret-key-not-for-production")
+# 空值也算没设（配置自愈会往 .env 物化出空的 SECRET_KEY，setdefault 只认「不存在」）
+os.environ["SECRET_KEY"] = (os.environ.get("SECRET_KEY") or "").strip() or \
+    "smoke-test-only-secret-key-not-for-production"
 
 # **强制**用自己的库：断言涉及全局状态（「初始没有服」「当前服是谁」），
 # CI 里所有冒烟脚本共用一个 DATABASE_URL，别的脚本留下的数据会把这些断言弄脏。

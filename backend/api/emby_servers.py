@@ -44,23 +44,14 @@ def _validate_url(raw_url: str) -> str:
 
 
 def value(db: Session, key: str, default: str = "", realm_id: Optional[int] = None) -> str:
-    """读配置：Emby 入口那几个键是**一个服一个**的（默认服沿用历史键名）"""
-    if key in realms.REALM_CONFIG_BASES:
-        return realms.realm_config(db, key, realm_id, default)
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    return (row.value if row and row.value is not None else default).strip()
+    """读配置：收敛到 ``backend.servers.config_value``（横切能力只许一套）"""
+    return registry.config_value(db, key, default, realm_id)
 
 
 def save_value(db: Session, key: str, new_value: str, description: str,
                realm_id: Optional[int] = None) -> None:
-    if key in realms.REALM_CONFIG_BASES:
-        realms.set_realm_config(db, key, new_value, realm_id, description)
-        return
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    if row:
-        row.value = new_value
-    else:
-        db.add(models.SystemConfig(key=key, value=new_value, description=description))
+    """写配置：收敛到 ``backend.servers.set_config``（横切能力只许一套）"""
+    registry.set_config(db, key, new_value, description, realm_id)
 
 
 async def refresh_mount_health(db: Session, url: str, realm_id: Optional[int] = None) -> dict:

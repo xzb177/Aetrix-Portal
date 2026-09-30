@@ -33,6 +33,7 @@ from backend import notifications
 from backend.database import SessionLocal, init_db
 from backend.main import app
 from backend.security import create_access_token, hash_password
+from backend.integrations.store import invalidate
 from backend.integrations import ai as ai_cap
 from backend.integrations import captcha as captcha_cap
 from backend.integrations import geoip as geoip_cap
@@ -146,6 +147,7 @@ def set_config(key: str, value):
     else:
         db.add(models.SystemConfig(key=key, value=str(value)))
     db.commit()
+    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
     db.close()
 
 

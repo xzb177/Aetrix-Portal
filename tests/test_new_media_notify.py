@@ -11,6 +11,7 @@ sys.path.insert(0, "/opt/aetrix-portal")
 from backend import models as base_models
 from backend.emby_server import models as emby_models
 from backend.emby_server import new_media_notify as nmn
+from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
 
 
 @pytest.fixture()
@@ -26,6 +27,7 @@ def db():
 def _add_config(db, key, value):
     db.add(base_models.SystemConfig(key=key, value=value))
     db.commit()
+    invalidate(key)  # 热缓存失效：测试直接写库，手动清缓存
 
 
 def _add_staff(db, username="admin"):

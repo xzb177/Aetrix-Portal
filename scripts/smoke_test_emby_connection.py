@@ -24,6 +24,7 @@ from backend import models
 from backend.api import emby_servers
 from backend.database import Base
 from backend.emby_server import portal
+from backend.integrations.store import invalidate
 
 failures: list[str] = []
 
@@ -116,6 +117,9 @@ try:
         ).first()
         managed.value = "false"
         db.commit()
+        # 热重载缓存（60s TTL）不会因直接写 DB 而失效，测试里手动清掉，
+        # 否则 ensure_emby_backend_available 读到过期值，503 触发不了。
+        invalidate("emby_managed_reachable")
         try:
             portal.ensure_emby_backend_available(_FakeRequest(), db)
             check("EA 不可用时拦截自建功能", False, "未返回 503")

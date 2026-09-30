@@ -67,6 +67,7 @@ ROUTER_MODULES = (
     "backend.api.admin_ops",
     "backend.api.admin_economy",
     "backend.api.admins_admin",
+    "backend.api.setup",
     "backend.api.orders_admin",
     "backend.api.coupons_admin",
     "backend.api.capabilities_admin",
@@ -93,6 +94,10 @@ EXCEPTIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/admin/auth/login"):
         "登录本身没有「管理员身份」可归属（未通过鉴权），而且它已经落在**登录日志**里"
         "（authlog.record_event，reason=admin_login/admin_login_failed，含 IP 与 UA）；"
+        "操作日志再记一份只会把真正的写操作冲淡",
+    ("POST", "/api/admin/setup"):
+        "首次运行向导建第一个管理员：没有「管理员身份」可归属（未通过鉴权），而且它已经落在"
+        "**登录日志**里（authlog.record_event，reason=admin_setup/admin_setup_failed，含 IP 与 UA）；"
         "操作日志再记一份只会把真正的写操作冲淡",
 }
 

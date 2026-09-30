@@ -38,6 +38,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations import store
 from backend.emby_server import models as em
 
 logger = logging.getLogger(__name__)
@@ -231,8 +232,7 @@ def realm_config(db: Session, base: str, realm_id: Optional[int] = None, default
     if realm_id is None:
         realm_id = active_realm_id(db)
     key = realm_key(db, base, realm_id)
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    return (row.value if row and row.value is not None else default) or ""
+    return store.get_value(db, key, default) or ""
 
 
 def set_realm_config(db: Session, base: str, value: str, realm_id: Optional[int] = None,
@@ -246,6 +246,7 @@ def set_realm_config(db: Session, base: str, value: str, realm_id: Optional[int]
         row.value = str(value)
     else:
         db.add(models.SystemConfig(key=key, value=str(value), description=description))
+    store.invalidate(key)  # 写时失效：同一进程内保存即生效
 
 
 def realm_public_url(db: Session, realm_id: Optional[int] = None) -> str:
