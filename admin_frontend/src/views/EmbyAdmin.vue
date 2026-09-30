@@ -1366,7 +1366,7 @@ function typeLabel(t: string): string {
             />
             <el-button class="paths-browse-btn" @click="pathPicker?.open()">浏览</el-button>
           </div>
-          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。点「浏览」可逐级选择挂载目录。</div>
+          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。点「浏览」可逐级选择挂载目录。<strong>一行一个，不要带方括号或引号</strong>（从 JSON 里粘贴时容易带上，扫描就会报「目录不存在或不可读」）。</div>
         </el-form-item>
         <el-form-item label="归属服">
           <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
