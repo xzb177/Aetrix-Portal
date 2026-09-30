@@ -685,14 +685,16 @@ function libraryStatus(library: EmbyLibrary): string {
 .kpi-body { min-width: 0; flex: 1; }
 .kpi-label { font-size: 12px; color: var(--text-tertiary); }
 
+/* KPI 大数字：仪表字型（等宽 + tabular-nums + 800，见 tokens.css 的 .stat-num 配方） */
 .kpi-value {
   margin-top: 3px;
-  font-size: 24px;
-  font-weight: var(--font-weight-bold);
-  line-height: 1.15;
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 
 .kpi-foot {

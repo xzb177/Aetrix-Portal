@@ -58,9 +58,10 @@
 .admin-card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
+  /* v2.42.4 对齐用户端设计语言：16px 大圆角 + 极克制阴影（细边框承担分层） */
   border-radius: var(--radius-lg);
   padding: var(--space-5);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--shadow-xs);
 }
 
 .admin-layout .admin-content .admin-card {

@@ -20,14 +20,19 @@
  * 窄屏更只有一个图标可点。搜索是「找片」这个主线上的一步，跟着媒体库排。
  * 一个语义只留一个入口：菜单里的重复条目与顶栏那个图标一并撤掉。
  *
- * 改导航只改这里：顶栏、头像菜单两处同时生效，不会再出现
+ * 改导航只改这里：顶栏、头像菜单、底部坞三处同时生效，不会再出现
  * 「新页面只加进了一处」这种漏入口。
+ *
+ * v2.42.4（纸片人口径定稿）：主导航收敛为 首页 / 商店 / 我的 三项——
+ * 商店 = 商城 + 钱包一体（积分、余额、充值、套餐、消费记录都在 /wallet），
+ * 参考纸片人的「总览 / Emby / 商店」三分法：导航只留高频目的地，媒体库与
+ * 搜索退到头像菜单与页内入口（页面本身保留，不在主导航占位）。
  */
 
 import type { Component } from 'vue'
 import {
   ArrowDownLeft, Bot, CalendarCheck, Clapperboard, Film, Gift,
-  Inbox, MessageSquareDashed, Receipt, Search, Ticket, User, Wallet,
+  Inbox, MessageSquareDashed, Receipt, Search, ShoppingBag, Ticket, User, Wallet,
 } from 'lucide-vue-next'
 
 export interface NavItem {
@@ -43,22 +48,29 @@ export interface NavGroup {
   items: NavItem[]
 }
 
-/** 主导航：全断点共用同一份（宽屏横排、窄屏滑动选项卡）
- *  四个就够：收藏与观看记录是媒体库内的分段（见上方注释与 /media?tab=），
- *  搜索与媒体库同属「找片」主线，所以排在媒体库旁边，而不是缩在右上角当图标 */
+/** 主导航：全断点共用同一份（宽屏横排、窄屏底部坞）。
+ *  三项定稿（v2.42.4）：商店涵盖钱包全部能力；媒体库与搜索仍可从
+ *  头像菜单 / 首页帮助区 / 顶栏资产 pill 上下文进入，不在主导航占位 */
 export const primaryNav: NavItem[] = [
   { name: '首页', path: '/', icon: Clapperboard },
-  { name: '媒体库', path: '/media', icon: Film },
-  { name: '搜索', path: '/search', icon: Search },
+  { name: '商店', path: '/wallet', icon: ShoppingBag },
   { name: '我的', path: '/profile', icon: User },
 ]
 
-/** 长尾入口：头像菜单里的分组，桌面与移动端一致 */
+/** 长尾入口：头像菜单里的分组，桌面与移动端一致。
+ *  v2.42.4：钱包已是主导航的「商店」（一个语义只留一处，钱包条目从这里移除）；
+ *  媒体库与搜索从主导航退下来，收进「观影」分组（页面入口不消失，只是不再占位） */
 export const menuSections: NavGroup[] = [
+  {
+    title: '观影',
+    items: [
+      { name: '媒体库', path: '/media', icon: Film },
+      { name: '搜索片名', path: '/search', icon: Search },
+    ],
+  },
   {
     title: '账号与经济',
     items: [
-      { name: '我的钱包', path: '/wallet', icon: Wallet },
       // 订单与流水原来只能进钱包再点分页；直接深链到对应分页，少一步寻找
       { name: '我的订单', path: '/wallet?tab=orders', icon: Receipt },
       { name: '积分流水', path: '/wallet?tab=log', icon: ArrowDownLeft },
@@ -69,7 +81,6 @@ export const menuSections: NavGroup[] = [
   {
     title: '互动与支持',
     items: [
-      // 「搜索片名」不再列在这里：搜索已是主导航的一级入口（一个语义只留一处）
       { name: '求片中心', path: '/request', icon: MessageSquareDashed },
       // AI 助手（v2.19.0）：是否真的能用由管理员的后台配置决定，页面里会说清楚
       { name: 'AI 助手', path: '/assistant', icon: Bot },

@@ -132,6 +132,62 @@ html:root {
   --el-form-label-font-size: var(--font-size-sm);
 }
 
+/* ==================== 白日模式（v2.42.4） ====================
+   EP 的 fill/border 用的是「白色加透明」的深色假设，浅色下必须换成「深色加透明」。
+   语义色引用我们的令牌（浅色下已是压深过的值），深浅两套规则只在这里分叉一次。 */
+html[data-theme='light'] {
+  --el-fill-color-blank: var(--bg-elevated);
+  --el-fill-color: rgba(15, 32, 48, 0.045);
+  --el-fill-color-light: rgba(15, 32, 48, 0.04);
+  --el-fill-color-lighter: rgba(15, 32, 48, 0.03);
+  --el-fill-color-extra-light: rgba(15, 32, 48, 0.02);
+  --el-fill-color-dark: rgba(15, 32, 48, 0.07);
+  --el-fill-color-darker: rgba(15, 32, 48, 0.1);
+
+  --el-border-color-extra-light: rgba(15, 32, 48, 0.06);
+
+  --el-color-primary-light-3: #22a7c4;
+  --el-color-primary-light-5: #4dbcd2;
+  --el-color-primary-light-7: #9ad9e6;
+  --el-color-primary-light-8: #c3e9f1;
+  --el-color-primary-light-9: rgba(8, 145, 178, 0.1);
+  --el-color-primary-dark-2: var(--primary-active);
+
+  --el-color-success-light-3: #34b08a;
+  --el-color-success-light-5: #6fc8a8;
+  --el-color-success-light-7: #a7dcc6;
+  --el-color-success-light-8: #c7eadb;
+  --el-color-success-light-9: rgba(5, 150, 105, 0.1);
+  --el-color-success-dark-2: var(--success-strong);
+
+  --el-color-warning-light-3: #c97f34;
+  --el-color-warning-light-5: #d9a066;
+  --el-color-warning-light-7: #e9c39d;
+  --el-color-warning-light-8: #f1d8bf;
+  --el-color-warning-light-9: rgba(180, 83, 9, 0.1);
+  --el-color-warning-dark-2: var(--warning-strong);
+
+  --el-color-error-light-3: #e85576;
+  --el-color-error-light-5: #ef889f;
+  --el-color-error-light-7: #f6b7c6;
+  --el-color-error-light-8: #fad3dc;
+  --el-color-error-light-9: rgba(225, 29, 72, 0.09);
+  --el-color-error-dark-2: var(--danger-strong);
+
+  --el-color-info-light-3: #5f83ee;
+  --el-color-info-light-5: #8fabee;
+  --el-color-info-light-7: #bfd6f5;
+  --el-color-info-light-8: #d8e6f9;
+  --el-color-info-light-9: rgba(37, 99, 235, 0.09);
+  --el-color-info-dark-2: var(--info-strong);
+
+  --el-mask-color: rgba(15, 32, 48, 0.55);
+  --el-mask-color-extra-light: rgba(15, 32, 48, 0.28);
+
+  --el-disabled-bg-color: rgba(15, 32, 48, 0.04);
+  --el-disabled-border-color: rgba(15, 32, 48, 0.1);
+}
+
 /* ==================== 2. 按钮 ==================== */
 .el-button {
   --el-button-bg-color: var(--bg-elevated);
@@ -602,13 +658,15 @@ html .el-table__footer-wrapper tr td.el-table__fixed-right-patch {
 
 /* ==================== 6. 标签 / 徽标 ==================== */
 .el-tag {
-  --el-tag-bg-color: rgba(255, 255, 255, 0.07);
+  --el-tag-bg-color: var(--primary-soft, rgba(255, 255, 255, 0.07));
   --el-tag-border-color: var(--border-default);
   --el-tag-text-color: var(--text-secondary);
-  border-radius: var(--radius-sm);
+  /* v2.42.4 对齐用户端徽章配方：rounded-full + 功能色 10% 底 + 描边 + semibold 彩色字 */
+  border-radius: var(--radius-full);
   font-weight: 600;
   height: 24px;
-  padding: 0 8px;
+  padding: 0 10px;
+  border: 1px solid var(--el-tag-border-color);
 }
 
 .el-tag--primary { --el-tag-bg-color: var(--primary-bg); --el-tag-border-color: var(--primary-border); --el-tag-text-color: #7fe6f6; }
@@ -842,8 +900,17 @@ html .el-table__footer-wrapper tr td.el-table__fixed-right-patch {
 .el-alert__title { font-size: var(--font-size-sm); font-weight: 600; }
 .el-alert__description { font-size: var(--font-size-xs); color: inherit; opacity: 0.9; }
 
-.el-progress-bar__outer { background-color: rgba(255, 255, 255, 0.08); }
-.el-progress-bar__inner { background: var(--gradient-brand); }
+.el-progress-bar__outer { background-color: var(--bg-inset, rgba(255, 255, 255, 0.08)); border-radius: var(--radius-full); }
+/* v2.42.4 对齐用户端：进度条不再用蓝紫渐变，走功能色实色（与徽章/描边同一套配方）；
+   各业务色的进度条由 type 属性决定，默认 primary */
+.el-progress-bar__inner {
+  background: var(--el-color-primary, var(--primary));
+  border-radius: var(--radius-full);
+  transition: width var(--transition-normal, 0.2s) cubic-bezier(0.4, 0, 0.2, 1);
+}
+.el-progress--success .el-progress-bar__inner { background: var(--success); }
+.el-progress--warning .el-progress-bar__inner { background: var(--warning); }
+.el-progress--danger .el-progress-bar__inner { background: var(--danger); }
 
 .el-badge__content { border: none; font-weight: 700; }
 

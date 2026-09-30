@@ -69,7 +69,7 @@ import {
   ChevronRight, Crown, MessageSquareDashed, Inbox,
   Sparkles, Tv, TriangleAlert, Zap,
   Clapperboard, Ticket, MonitorSmartphone, CircleStop,
-  Rocket, Check, RotateCcw, X, Megaphone,
+  RotateCcw, X, Megaphone,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
@@ -198,7 +198,9 @@ const assetCards = computed(() => {
       key: 'points',
       to: '/wallet',
       icon: Zap,
-      tone: 'cyan',
+      // 功能色定稿（v2.42.4）：积分=金（钱的语义）、订阅=青（品牌主色）、
+      // 观影数据=紫；顶栏 pill 同步换位（见 AppHeader 的 assets-group）
+      tone: 'amber',
       title: '积分',
       value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
       unit: '',
@@ -217,7 +219,7 @@ const assetCards = computed(() => {
       key: 'member',
       to: '/wallet?tab=plans',
       icon: Crown,
-      tone: 'amber',
+      tone: 'cyan',
       title: '订阅',
       ...memberCard,
     },
@@ -279,34 +281,6 @@ const todoRows = computed(() => {
     },
   ]
 })
-
-// 新手任务：门户是"服务台"不是"内容货架"，新用户的核心 friction 是
-// "付了钱不会配置客户端"。步骤能自动判定的自动判定（开通看订阅、
-// 有过播放记录视为已连接播放器），全部完成后整段隐藏，老用户不被打扰。
-const onboardingTasks = computed(() => [
-  {
-    key: 'member',
-    title: '开通会员',
-    desc: '解锁全库影视资源',
-    done: isMember.value || isFreeRealm.value,
-    to: '/wallet?tab=plans',
-  },
-  {
-    key: 'connect',
-    title: '连接播放器',
-    desc: '在个人中心一键导入服务器地址与账号',
-    done: (stats.value?.total_plays || 0) > 0,
-    to: '/profile',
-  },
-  {
-    key: 'watch',
-    title: '看第一部片',
-    desc: '在 Infuse 等客户端开始播放',
-    done: (stats.value?.watched_items || 0) > 0,
-    to: '/media',
-  },
-])
-const onboardingDoneCount = computed(() => onboardingTasks.value.filter(t => t.done).length)
 
 async function stopSession(session: MyPlaybackSession) {
   stoppingSession.value = session.session_key
@@ -438,6 +412,7 @@ onMounted(() => {
     <section class="hero">
       <div class="hero-glow" aria-hidden="true"></div>
       <div class="hero-glow-2" aria-hidden="true"></div>
+      <div class="hero-orb" aria-hidden="true"></div>
       <div class="container hero-grid">
         <div class="hero-inner">
           <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
@@ -535,33 +510,6 @@ onMounted(() => {
           </div>
         </div>
       </Transition>
-
-      <!-- 新手任务：只在还有未完成步骤时出现，全部完成后整段隐藏。
-           首页是服务台，新用户的第一件事是"连上播放器看上片"，不是"浏览内容" -->
-      <section v-if="!loading && onboardingTasks.some(t => !t.done)" class="onboard-card au-card au-anim-up">
-        <header class="panel-head">
-          <span class="panel-title">
-            <Rocket :size="15" />
-            新手任务
-          </span>
-          <span class="panel-hint">{{ onboardingDoneCount }}/{{ onboardingTasks.length }}</span>
-        </header>
-        <div class="onboard-list">
-          <div v-for="t in onboardingTasks" :key="t.key" class="onboard-row" :class="{ done: t.done }">
-            <span class="onboard-check">
-              <Check v-if="t.done" :size="14" />
-            </span>
-            <span class="onboard-body">
-              <strong>{{ t.title }}</strong>
-              <em>{{ t.desc }}</em>
-            </span>
-            <RouterLink v-if="!t.done" :to="t.to" class="au-btn au-btn-primary au-btn-sm">
-              去完成
-            </RouterLink>
-            <span v-else class="onboard-done-text">已完成</span>
-          </div>
-        </div>
-      </section>
 
       <!-- 我的资产（v2.42.1）：积分 / 订阅 / 观影数据，四段式资产卡。
            每种资产一个固定功能色（青 / 金 / 紫），从顶栏 pill → 卡片图标 / 数字 / CTA
@@ -805,6 +753,22 @@ html[data-theme='light'] .hero-glow-2 {
   height: 320px;
   background: radial-gradient(ellipse at center, var(--au-violet-soft) 0%, transparent 70%);
   filter: blur(56px);
+  pointer-events: none;
+}
+
+/* 品牌色装饰圆（v2.42.4，纸片人做法）：右上角 ~240px 实心圆 + 5% 透明度 +
+   64px 高斯模糊。纯静态单次合成，不参与任何动画，成本可忽略；
+   深色下给首屏一角一点品牌色呼吸，浅色下是极淡的一团色渍（同样协调） */
+.hero-orb {
+  position: absolute;
+  top: -72px;
+  right: -48px;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  background: var(--au-primary);
+  opacity: 0.05;
+  filter: blur(64px);
   pointer-events: none;
 }
 
@@ -1193,20 +1157,25 @@ html[data-theme='light'] .hero-glow-2 {
   margin: 0 0 0.4375rem;
 }
 
+/* 问候主标题（v2.42.4 加大）：20px / 桌面 24px，让首屏第一眼有主次 */
+.hero-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--au-text);
+  margin: 0;
+}
+
+@media (min-width: 769px) {
+  .hero-title { font-size: 1.5rem; }
+}
+
 .hero-title-row {
   display: flex;
   align-items: center;
   gap: 0.625rem;
   flex-wrap: wrap;
   margin-bottom: 0.5rem;
-}
-
-.hero-title {
-  font-size: 1.75rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--au-text);
-  margin: 0;
 }
 
 .hero-vip {
@@ -1289,84 +1258,6 @@ html[data-theme='light'] .hero-glow-2 {
   gap: 0.625rem;
   flex-wrap: wrap;
 }
-
-/* ==================== 新手任务 ==================== */
-
-.onboard-card {
-  margin-bottom: 1.5rem;
-  padding: 1.125rem 1.25rem;
-}
-
-.onboard-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.onboard-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.625rem 0;
-}
-
-.onboard-row + .onboard-row {
-  border-top: 1px dashed var(--au-border);
-}
-
-.onboard-row.done {
-  opacity: 0.75;
-}
-
-.onboard-check {
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  border: 1px solid var(--au-border-strong);
-  color: transparent;
-}
-
-.onboard-row.done .onboard-check {
-  background: var(--au-primary-soft);
-  border-color: var(--au-primary-border);
-  color: var(--au-primary);
-}
-
-.onboard-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.0625rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.onboard-body strong {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.onboard-row.done .onboard-body strong {
-  text-decoration: line-through;
-  text-decoration-color: var(--au-text-3);
-}
-
-.onboard-body em {
-  font-style: normal;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-}
-
-.onboard-done-text {
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  flex-shrink: 0;
-}
-
-
 
 /* ==================== 我的面板（v2.34.0） ==================== */
 
@@ -1770,7 +1661,7 @@ html[data-theme='light'] .hero-glow-2 {
   }
 
   .hero-title {
-    font-size: 1.5rem;
+    font-size: 1.125rem;
   }
 
   .hero-sub {

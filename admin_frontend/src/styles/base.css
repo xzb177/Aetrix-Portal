@@ -47,6 +47,14 @@ body {
   overflow-x: hidden;
 }
 
+/* 白日模式（v2.42.4）：氛围光减淡一档，暖调纸白不煞白；
+   深浅切换方式与用户端一致（html[data-theme='light']，预套用防闪烁） */
+html[data-theme='light'] body {
+  background-image:
+    radial-gradient(1200px 600px at 100% -10%, rgba(8, 145, 178, 0.05), transparent 60%),
+    radial-gradient(900px 500px at -10% 0%, rgba(124, 58, 237, 0.04), transparent 55%);
+}
+
 a {
   color: var(--primary);
   text-decoration: none;
