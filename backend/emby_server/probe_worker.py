@@ -29,7 +29,7 @@ from sqlalchemy import or_
 from backend.database import SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server.mounts import resolve_play_target, MountError
-from backend.emby_server.scanner import needs_probe, probe_metadata
+from backend.emby_server.scanner import needs_probe, probe_metadata, safe_probe_int
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,10 @@ PROBE_IDLE_POLL_SEC = max(5, int(os.getenv("PROBE_IDLE_POLL_SEC", "30") or 30))
 # 有积压也要让出资源，默认歇 10s；调 0 可恢复旧行为。
 PROBE_ROUND_PAUSE_SEC = max(0, int(os.getenv("PROBE_ROUND_PAUSE_SEC", "10") or 10))
 
+# 探测结果里的数值字段统一走 scanner.safe_probe_int：ffprobe/MediaInfo 在远程流上
+# 偶发给出 None、负数或超大值，直接落库会让整条 commit 失败、把这一轮全部打回。
+_safe_int = safe_probe_int
+
 BOOST_PRIORITY = 1000   # 按需插队的优先级（新文件 100，普通 0）
 NEW_FILE_PRIORITY = 100
 
@@ -273,13 +277,30 @@ def _backoff_seconds(attempts: int) -> int:
     return min(3600, 60 * (2 ** max(0, attempts - 1)))
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """把探测结果里的数值字段收敛成能落库的整数。
+
+    ffprobe/MediaInfo 在远程流上偶发给出 None、负数或超大值；任一情况都会让
+    整条 ``db.commit()`` 失败，把这一轮所有条目的探测结果一起打回。
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < 0 or parsed > _INT64_MAX:
+        return default
+    return parsed
+
+
 def _apply_probe_result(db, item, info: dict) -> None:
     """把 ffprobe 结果落到条目 + 重建内封轨道（与 scanner 写循环同口径）"""
     item.size = info.get("size", 0) or item.size
     item.duration_ticks = info["duration_ticks"]
-    item.bitrate = info["bitrate"]
-    item.width = info["width"]
-    item.height = info["height"]
+    # 码率兜底：列已是 BIGINT，但个别探测源会给出 None/负数/超大值，
+    # 直接落库会让整轮 _probe_one 抛 NumericValueOutOfRange。
+    item.bitrate = _safe_int(info.get("bitrate"))
+    item.width = _safe_int(info.get("width"))
+    item.height = _safe_int(info.get("height"))
     item.video_codec = info["video_codec"]
     item.audio_codec = info["audio_codec"]
     item.audio_languages = info["audio_languages"]

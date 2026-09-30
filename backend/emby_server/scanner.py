@@ -275,6 +275,29 @@ def should_scrape(item, policy: str, now: Optional[datetime] = None) -> bool:
     return (now or datetime.now()) - last >= timedelta(days=window)
 
 
+_INT64_MAX = 2 ** 63 - 1
+
+
+def safe_probe_int(value, default: int = 0) -> int:
+    """把探测结果里的数值字段收敛成能落库的整数。
+
+    ffprobe/MediaInfo 在远程流上偶发给出 None、负数或超大码率。任一情况直接
+    落库都会抛 ``NumericValueOutOfRange``，把这一条 commit 失败、连带整轮扫描
+    或探测白跑，所以写库前一律走这里。
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        # 少数探测源给的是 "1234.9" 这类字符串小数，退一步按浮点解析再截断
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            return default
+    if parsed < 0 or parsed > _INT64_MAX:
+        return default
+    return parsed
+
+
 def needs_probe(item, path: str, size: Optional[int] = None) -> bool:
     """是否需要重新 ffprobe
 
@@ -2576,9 +2599,9 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     if probe is not None:
                         item.size = probe.get("size", 0) or item.size or scan_file.size
                         item.duration_ticks = probe["duration_ticks"]
-                        item.bitrate = probe["bitrate"]
-                        item.width = probe["width"]
-                        item.height = probe["height"]
+                        item.bitrate = safe_probe_int(probe.get("bitrate"))
+                        item.width = safe_probe_int(probe.get("width"))
+                        item.height = safe_probe_int(probe.get("height"))
                         item.video_codec = probe["video_codec"]
                         item.audio_codec = probe["audio_codec"]
                         item.audio_languages = probe["audio_languages"]

@@ -525,6 +525,7 @@ def _auto_migrate():
                     print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
 
     _widen_code_column(existing_tables, inspector)
+    _widen_bitrate_column(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
     _ensure_probe_index(existing_tables)
     _ensure_default_realm()
@@ -689,6 +690,39 @@ def _ensure_default_realm() -> None:
                 "VALUES ('active_realm_id', :value, :desc, :now)"
             ), {"value": str(default_id), "desc": "面板当前操作的服（多服运营）", "now": datetime.now()})
             print(f"  🔧 已设置当前服: active_realm_id={default_id}")
+
+
+def _widen_bitrate_column(existing_tables: set, inspector) -> None:
+    """emby_items.bitrate 曾是 32 位 integer，遇到超大码率时探测 worker 整轮崩
+
+    部分高码率原盘（4K/8K remux）报出的 bitrate 会超过 2**31-1，落库时抛
+    ``NumericValueOutOfRange``，把 ``_probe_one`` 整轮打成异常、探测全停。
+    这里加宽为 BIGINT（先钳位历史值再改类型），语句幂等，已是 BIGINT 直接跳过。
+    SQLite 整数本身是 64 位，无需处理。
+    """
+    from sqlalchemy import text
+
+    if "emby_items" not in existing_tables:
+        return
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+    for col in inspector.get_columns("emby_items"):
+        if col["name"] != "bitrate":
+            continue
+        if col["type"] is not None and "bigint" in str(col["type"]).lower():
+            return
+        with engine.begin() as conn:
+            # 历史值理论上都写进来了（越界的当场就失败了），钳位仅作兜底
+            conn.execute(text(
+                "UPDATE emby_items SET bitrate = 2147483647 "
+                "WHERE bitrate IS NOT NULL AND bitrate > 2147483647"
+            ))
+            if dialect == "postgresql":
+                conn.execute(text("ALTER TABLE emby_items ALTER COLUMN bitrate TYPE BIGINT"))
+            else:
+                conn.execute(text("ALTER TABLE emby_items MODIFY COLUMN bitrate BIGINT"))
+        print("  🔧 已迁移: emby_items.bitrate → BIGINT（修 32 位码率溢出）")
 
 
 def _widen_code_column(existing_tables: set, inspector) -> None:
