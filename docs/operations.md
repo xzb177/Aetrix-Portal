@@ -109,7 +109,10 @@ EM / EA 已内置这些防护（无需你配置）：
 
 ## 备份与恢复
 
-### SQLite（默认）
+### SQLite（`DATABASE_TYPE=sqlite`）
+
+> v2.42.0 起默认数据库是 PostgreSQL：没显式设 `DATABASE_TYPE` 时走 PG，SQLite 要显式
+> `DATABASE_TYPE=sqlite` 才会启用。一直用 SQLite 升级上来的老部署按本节备份。
 
 数据库就是仓库根目录下的 `aetrix_unified.db`（伴随 `-wal` / `-shm` 两个文件）。**不要直接 `cp` 正在被写入的库**，用 SQLite 自己的备份命令：
 
