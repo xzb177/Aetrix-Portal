@@ -25,6 +25,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["REDIS_ENABLED"] = "false"
+# 本脚本数的是真实 TMDB 调用次数：磁盘缓存（第 7 批）会让第二次运行少调甚至不调，
+# 调用计数断言就不再确定——这里显式关掉（缓存的正确性由 tests/test_tmdb_cache.py 守）。
+os.environ["EMBY_TMDB_CACHE"] = "0"
 DB = tempfile.mktemp(suffix=".db")
 os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
 

@@ -476,6 +476,26 @@ def test_retry_unmatched_requeues_terminal_none_items(db):
     assert rows["纯继承集（不该动）"].enrich_status == "done"
 
 
+def test_retry_unmatched_purges_search_cache(db, tmp_path, monkeypatch):
+    """第 7 批：重试未匹配必须清掉阴性搜索缓存，否则补搜命中旧缓存一个请求都不发"""
+    from backend.emby_server import tmdb, tmdb_cache
+
+    monkeypatch.setenv("EMBY_TMDB_CACHE_DIR", str(tmp_path / "tmdb-cache"))
+    monkeypatch.setattr(tmdb_cache, "_disabled", False)
+    _make_item(db, item_type="series", name="终态无望剧",
+               enrich_status="done", metadata_source="none",
+               file_fingerprint="fp-cache")
+    # 预置一份阴性缓存（与 worker 补搜时同键：归一化名字 + year 0）
+    norm = tmdb._norm_text("终态无望剧")
+    tmdb_cache.save_search("tv", norm, 0, [])
+    path = tmdb_cache._key_path("tv", norm, 0)
+    assert os.path.exists(path)
+
+    n = enrich_worker.retry_unmatched(db)
+    assert n == 1
+    assert not os.path.exists(path), "重试入队必须同时清掉旧缓存"
+
+
 def test_apply_terminal_done_for_searched_without_hit(db):
     """处方 5：TMDB 搜过且无高置信命中 → 终态 done + none，不再退回 pending"""
     it = _make_item(db, item_type="series", name="注定搜不到的剧")

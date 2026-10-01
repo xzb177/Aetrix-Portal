@@ -25,6 +25,7 @@ from typing import Optional
 from backend.emby_server import image_store
 from backend.emby_server import models as emby_models
 from backend.emby_server import scan_progress as progress
+from backend.emby_server import tmdb_cache
 
 logger = logging.getLogger(__name__)
 
@@ -730,25 +731,51 @@ class TmdbClient:
             cache[key] = (now, value)
 
     def _search_raw(self, query: str, year: Optional[int], kind: str) -> list:
-        """原始搜索（带缓存），返回 results 列表。"""
+        """原始搜索（带两级缓存），返回 results 列表。
+
+        L1 进程内（300 秒，同一次扫描的预热/写库复用）→ L2 磁盘
+        （``tmdb_cache``，跨进程/跨重启，search 命中 7 天、阴性 24 小时）
+        → 单飞后真的发请求。缓存键用 ``_norm_text`` 归一化（年份独立维度）：
+        同一部剧的两个文件名（``Some Show`` 与 ``Some Show (2024)``）不再各打
+        一遍——跨条目去重从此可靠而非碰运气（§7.3③）。
+        请求失败（data=None）**不落盘**：让这类条目照旧走重试队列。
+        """
         self._ensure_session()
         if not self.session:
             return []
         endpoint = "tv" if kind == "series" else "movie"
-        key = ("search", endpoint, query, year or 0)
+        norm = _norm_text(query)
+        key = ("search", endpoint, norm, year or 0)
         cached = self._cache_get(key)
         if cached is not _MISS:
             return cached or []
-        params: dict = {"language": TMDB_LANG, "query": query}
-        if year:
-            if endpoint == "tv":
-                params["first_air_date_year"] = year
-            else:
-                params["year"] = year
-        data = self._get(f"/search/{endpoint}", params)
-        results = (data or {}).get("results") or []
-        self._cache_put(key, results)
-        return results
+        hit, results = tmdb_cache.load_search(endpoint, norm, year or 0)
+        if hit:
+            progress.note_stage("tmdb_disk_hit")
+            self._cache_put(key, results)   # 回填 L1：同批后续请求走内存
+            return results or []
+        with tmdb_cache.single_flight(key):
+            # 拿到锁后二次检查：等锁期间别的线程可能已经填好 L1 或磁盘
+            cached = self._cache_get(key)
+            if cached is not _MISS:
+                return cached or []
+            hit, results = tmdb_cache.load_search(endpoint, norm, year or 0)
+            if hit:
+                progress.note_stage("tmdb_disk_hit")
+                self._cache_put(key, results)
+                return results or []
+            params: dict = {"language": TMDB_LANG, "query": query}
+            if year:
+                if endpoint == "tv":
+                    params["first_air_date_year"] = year
+                else:
+                    params["year"] = year
+            data = self._get(f"/search/{endpoint}", params)
+            results = (data or {}).get("results") or []
+            if data is not None:
+                tmdb_cache.save_search(endpoint, norm, year or 0, results)
+            self._cache_put(key, results)
+            return results
 
     def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
         """智能搜索：清洗查询 → 多候选 → 置信度校验，只返回高置信命中。
@@ -777,16 +804,36 @@ class TmdbClient:
         return best[2] if best else None
 
     def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
-        """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用"""
+        """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用。
+
+        两级缓存同 ``_search_raw``（L1 300 秒 → L2 磁盘 30 天，按 id 键）。
+        """
         endpoint = "tv" if kind == "series" else "movie"
         key = ("details", endpoint, str(tmdb_id))
         cached = self._cache_get(key)
         if cached is not _MISS:
             return cached
-        data = self._get(f"/{endpoint}/{tmdb_id}", {"language": TMDB_LANG,
-                                                     "append_to_response": "alternative_titles,external_ids"})
-        self._cache_put(key, data)
-        return data
+        hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id))
+        if hit:
+            progress.note_stage("tmdb_disk_hit")
+            self._cache_put(key, data)
+            return data
+        with tmdb_cache.single_flight(key):
+            cached = self._cache_get(key)
+            if cached is not _MISS:
+                return cached
+            hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id))
+            if hit:
+                progress.note_stage("tmdb_disk_hit")
+                self._cache_put(key, data)
+                return data
+            data = self._get(f"/{endpoint}/{tmdb_id}",
+                             {"language": TMDB_LANG,
+                              "append_to_response": "alternative_titles,external_ids"})
+            if data is not None:
+                tmdb_cache.save_details(endpoint, str(tmdb_id), data)
+            self._cache_put(key, data)
+            return data
 
     def enrich(self, item: emby_models.MediaItem, kind: str) -> None:
         """补齐 imdb_id 与 aliases（中英文/繁简多别名搜索的基础）"""

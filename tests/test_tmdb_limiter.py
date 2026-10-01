@@ -26,8 +26,14 @@ from backend.emby_server.tmdb import TmdbClient
 
 
 @pytest.fixture(autouse=True)
-def _clean_cache():
-    """每个用例都从空缓存开始（``_cache`` 是类级 dict，整个进程共享）"""
+def _clean_cache(monkeypatch):
+    """每个用例都从空缓存开始（``_cache`` 是类级 dict，整个进程共享）
+
+    磁盘缓存（第 7 批）也一并关掉：本文件数的是**真实的 HTTP 次数**，
+    磁盘命中（跨用例、甚至跨进程残留）会让计数断言失去确定性。
+    磁盘缓存自身的正确性由 tests/test_tmdb_cache.py 守。
+    """
+    monkeypatch.setenv("EMBY_TMDB_CACHE", "0")
     TmdbClient._cache.clear()
     yield
     TmdbClient._cache.clear()
