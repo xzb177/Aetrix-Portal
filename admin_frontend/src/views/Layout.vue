@@ -37,7 +37,7 @@ const realm = useRealmStore()
 const { isTablet } = useBreakpoint()
 // 外观三档：跟随系统 / 白日 / 黑暗。composable 自带 onMounted 挂监听，
 // 切换只改 html[data-theme]，浅色令牌全在 tokens.css 的浅色块里
-const { preference: themePreference, resolved: themeResolved, setPreference: setThemePreference } = useAdminTheme()
+const { preference: themePreference, setPreference: setThemePreference } = useAdminTheme()
 
 interface ThemeOption {
   value: 'system' | 'light' | 'dark'
@@ -51,10 +51,24 @@ const themeOptions: ThemeOption[] = [
   { value: 'dark', label: '黑暗', title: '黑暗模式' },
 ]
 
-/** 顶栏快捷键：在白日 / 黑暗之间来回（「自动」档进侧栏选） */
+/** 顶栏外观按钮（v2.42.9）：侧栏 foot 那排三段切换器**已删**，外观在本端只剩这一枚按钮，
+ * 点一下轮换一档：跟随系统 → 白日 → 黑暗。
+ *
+ * 「自动」必须进这个环：旧版按钮只在白日/黑暗之间来回、「自动」档得去侧栏选，
+ * 侧栏那排删掉后就再也回不到跟随系统了——这是本轮唯一的功能性取舍，在这里备查。 */
 function cycleTheme() {
-  setThemePreference(themeResolved.value === 'light' ? 'dark' : 'light')
+  const idx = themeOptions.findIndex((o) => o.value === themePreference.value)
+  setThemePreference(themeOptions[(idx + 1) % themeOptions.length].value)
 }
+
+/** 当前档 / 下一档：按钮只有图标，说明全在 title / aria-label 里 */
+const themeCurrent = computed(
+  () => themeOptions.find((o) => o.value === themePreference.value) || themeOptions[0],
+)
+const themeNext = computed(
+  () => themeOptions[(themeOptions.indexOf(themeCurrent.value) + 1) % themeOptions.length],
+)
+const themeTitle = computed(() => `外观：${themeCurrent.value.label}（点击切到${themeNext.value.label}）`)
 
 /** 当前账号是不是超级管理员（角色见 backend/admin_roles.py）：只影响导航上的标记 */
 const isSuper = computed(() => auth.admin?.is_super !== false)
@@ -389,23 +403,8 @@ onUnmounted(() => {
       </nav>
 
       <div class="sidebar-foot">
-        <div class="theme-row" role="radiogroup" aria-label="外观">
-          <button
-            v-for="opt in themeOptions"
-            :key="opt.value"
-            class="theme-opt"
-            :class="{ active: themePreference === opt.value }"
-            role="radio"
-            :aria-checked="themePreference === opt.value"
-            :title="opt.title"
-            @click="setThemePreference(opt.value)"
-          >
-            <MonitorSmartphone v-if="opt.value === 'system'" :size="14" />
-            <Sun v-else-if="opt.value === 'light'" :size="14" />
-            <Moon v-else :size="14" />
-            <span>{{ opt.label }}</span>
-          </button>
-        </div>
+        <!-- 外观三段切换器（.theme-row）已删（v2.42.9）：外观只剩顶栏那一枚圆形按钮，
+             侧栏不再为「换主题」占一整块，腾出的空间留给账号块与页脚 -->
         <div class="who">
           <span class="who-avatar">{{ initial }}</span>
           <div class="who-info">
@@ -469,13 +468,18 @@ onUnmounted(() => {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <!-- 外观（v2.42.9）：侧栏那排三段切换器删掉后，这里是本端唯一入口——
+               图标即当前档（跟随系统 / 白日 / 黑暗），点一下轮换一档；
+               手动指定档时品牌色实底，跟随系统时中性底 + 品牌色细环 -->
           <button
             class="icon-btn theme-quick"
-            :title="themeResolved === 'light' ? '切换到黑暗模式' : '切换到白日模式'"
-            aria-label="切换外观"
+            :class="{ auto: themePreference === 'system' }"
+            :title="themeTitle"
+            :aria-label="themeTitle"
             @click="cycleTheme"
           >
-            <Sun v-if="themeResolved === 'light'" :size="17" />
+            <MonitorSmartphone v-if="themePreference === 'system'" :size="17" />
+            <Sun v-else-if="themePreference === 'light'" :size="17" />
             <Moon v-else :size="17" />
           </button>
           <button class="icon-btn" title="刷新当前页" aria-label="刷新当前页" @click="refreshPage">
@@ -554,64 +558,27 @@ onUnmounted(() => {
   background: var(--bg-hover);
 }
 
-/* ==================== 外观切换（v2.42.4） ====================
-   侧栏 foot 三档分段（自动 / 白日 / 黑暗），顶栏一个太阳/月亮快捷键。
-   选中档用主色淡底 + 描边，与用户端 theme-seg 同一配方 */
-.theme-row {
-  display: grid;
-  /* 三档等分且允许收缩：240px 侧栏里「自动 / 白日 / 黑暗」+ 图标刚好排得下，
-     旧版 28px 高 + 4px 内距把三档挤成一条，选中态也看不出是哪个 */
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 14px;
-  padding: 4px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-inset);
-}
-
-.theme-opt {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  height: 34px;
-  min-width: 0;
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  transition: background var(--transition-fast), color var(--transition-fast),
-    border-color var(--transition-fast);
-}
-
-.theme-opt svg { flex-shrink: 0; }
-.theme-opt span { overflow: hidden; text-overflow: ellipsis; }
-
-.theme-opt:hover { color: var(--text-primary); background: var(--bg-hover); }
-
-/* 选中态：主色实底胶囊（旧版只有 8% 淡底 + 淡描边，两档看着一样） */
-.theme-opt.active {
+/* ==================== 外观（v2.42.9） ====================
+   侧栏 foot 的三档分段（自动 / 白日 / 黑暗）已删，外观只剩顶栏这一枚圆形按钮：
+   图标即当前档，点一下轮换一档。选中态分两类、靠底色一眼区分：
+   · 手动指定档（白日 / 黑暗）→ 品牌色实底 + on-primary 图标 + 微光晕，
+     与侧栏导航选中项、用户端顶栏同一套「主色实底压出来」的配方；
+   · 跟随系统 → 中性底部 + 品牌色细环（表示这一档是生效中的「自动」，
+     而不是「哪一个都没选」） */
+.theme-quick { width: 32px; height: 32px; border-radius: var(--radius-full); }
+.theme-quick.auto { border-color: var(--primary-border); }
+.theme-quick.auto:hover { border-color: var(--primary); }
+.icon-btn.theme-quick:not(.auto) {
   background: var(--primary);
   border-color: var(--primary);
   color: var(--primary-on);
-  font-weight: var(--font-weight-semibold);
   box-shadow: 0 2px 10px var(--primary-glow);
 }
-
-.theme-opt:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
+.icon-btn.theme-quick:not(.auto):hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: var(--primary-on);
 }
-
-/* 顶栏快捷键：小屏也保留（外观切换没有更小的入口了） */
-.theme-quick { width: 32px; height: 32px; border-radius: var(--radius-full); }
 
 /* ==================== 侧边栏 ==================== */
 .sidebar {
@@ -715,14 +682,13 @@ onUnmounted(() => {
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 
-/* 账号块与上面的外观切换器拉开一层：一条分隔线 + 足够的上下留白，
-   旧版两者只隔 10px，截图里看上去叠在一起 */
+/* 账号块：外观切换器删掉后（v2.42.9），它就是侧栏 foot 的第一块，
+   自己那条分隔线要去掉——.sidebar-foot 已有 border-top，两根挨着就是双线 */
 .who {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 4px 12px;
-  border-top: 1px solid var(--border-subtle);
+  padding: 4px 4px 12px;
 }
 
 .who-avatar,
