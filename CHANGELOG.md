@@ -4,6 +4,37 @@
 
 ## [2.42.6] - 2026-10-01
 
+### 修复：合并容器里后台任务跑了两份（`AETRIX_ROLE=all`）
+
+线上实测：`docker logs aetrix-api | grep -c "补全 worker 启动"` 返回 **2** —— 同一套
+后台任务在两个进程里各起了一份。
+
+根因：合并容器用 `backend/run_all.py` 起 api / worker / ea 三个子进程，而它
+`Popen(..., env=os.environ.copy())` 不覆盖角色，容器 env 又是 `AETRIX_ROLE=all`；
+`backend/main.py` 只把 `"api"` 认成 API 角色（`_is_api_role = _role == "api"`），
+`all` 于是被当成「单体模式」，`serve.py` 这个子进程也在 lifespan 里把 janitor /
+probe / enrich / reminders / auto_scan / db_backup / chase_new 整套后台任务起了一遍，
+而 `backend/worker.py` 子进程同样起一套。`start()` 的幂等只靠模块级变量，跨进程无效。
+
+实际影响（都不看日志发现不了）：
+
+- 补全 worker 是 **2×ENRICH_WORKERS** 线程、**两个互不相通的 TMDB 令牌桶**
+  （`_tmdb_limiter` 是模块级、进程内状态），限额被打成两倍；
+- 定时扫描调度器有两个，同一份定时配置会被两个进程各排一次；
+- `scan_queue` 一直停在**单体模式的进程内队列**上（`if AETRIX_ROLE == "api":` 六个
+  分支全不成立），v2.41 的 api/worker 拆分从未真正生效 —— 扫描一直在 API 进程里跑。
+
+修法：`run_all.start()` 给 **api 子进程**显式注入 `AETRIX_ROLE=api`，并把有效角色打进
+启动日志（上一次正是「三个子进程共用一个 all」从日志上看不出来）。`worker` / `ea`
+沿用容器 env 不动：只有 `"api"` 会被特殊对待，worker 靠「`!= api`」走进程内队列正是
+它需要的，`ea`（emby_api）整棵树不读这个变量。
+
+安全性核对：`backend/main.py` 里 `if not _is_api_role:` 门住的 7 个后台任务，
+`backend/worker.py` 的启动清单**逐条对应**（worker 还多一个 Redis 扫描队列消费线程），
+没有任何任务是只有 main.py 会起的；`scripts/update.sh` 读的是 `docker inspect` 的
+**容器级** env，不受子进程注入影响。另新增 `tests/test_run_all_roles.py`：钉住角色
+注入、worker/ea 不被覆盖、以及「worker 必须接过角色门后的每一个后台任务」这条前提。
+
 ### 用户端 UI 重做（批次 1）：7 处线上问题修复 + 双主题硬编码收敛
 
 本轮是用户端 UI 重做的第一批：先把用户实拍反馈的 7 处问题修掉，
