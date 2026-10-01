@@ -151,10 +151,11 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
     monkeypatch.setattr("backend.emby_server.altmeta.search",
                         lambda *a, **k: {"title": "兜底名", "year": "2020",
                                          "image": "http://d/p.jpg"})
-    # TMDB 配好了但搜不到 → 才会走豆瓣兜底
+    # v2.42.9 父级快速失败：TMDB 已配置且搜过无命中 → 跳过兑底（不再走这条）。
+    # 兑底保留分支是「TMDB 未配置」（豆瓣是主数据源）——本回归改走这条。
     class _T:
-        configured = True
-        api_key = "k"
+        configured = False
+        api_key = None
 
         def search(self, *a, **k):
             return None
@@ -174,9 +175,6 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
         def enrich(self, *a, **k):
             return None
     monkeypatch.setattr("backend.emby_server.tmdb.tmdb_client", _T())
-    # TMDB 搜索返回空 → result["tmdb_hit"] 为 None，才轮到豆瓣兜底
-    monkeypatch.setattr("backend.emby_server.scanner._tmdb_work",
-                        lambda *a, **k: (None, None))
 
     res = enrich_worker._enrich_fetch(item)
 
@@ -184,6 +182,42 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
     assert "db" not in (res.get("error") or ""), res
     assert res.get("douban_hit", {}).get("title") == "兜底名", res
     assert opened == ["closed"], "配置会话必须被关闭"
+
+
+def test_fetch_fallback_runs_when_tmdb_unconfigured(monkeypatch):
+    """父级快速失败的另一面：TMDB 未配置时兑底是主数据源，必须照走（钉住保留分支）"""
+    from types import SimpleNamespace
+    from backend.emby_server import enrich_worker
+
+    item = SimpleNamespace(
+        id=2, item_type="series", name="没命中的剧", production_year=2020,
+        file_path="mount://3/x/剧名 (2020)/Season 1/e01.mkv",
+        poster_path=None, primary_image_url=None, imdb_id=None, aliases=None,
+        repair_requested_at=None,
+    )
+    monkeypatch.setattr(enrich_worker, "_scanfile_from_item", lambda i: None)
+
+    class _CfgDB:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(enrich_worker, "SessionLocal", lambda: _CfgDB())
+    monkeypatch.setattr("backend.emby_server.altmeta.enabled", lambda db: True)
+    monkeypatch.setattr("backend.emby_server.altmeta.warn_dead_keys_once", lambda db: None)
+    monkeypatch.setattr("backend.emby_server.altmeta.min_interval", lambda db: 0.0)
+    douban_calls = []
+    monkeypatch.setattr("backend.emby_server.altmeta.search",
+                        lambda *a, **k: douban_calls.append(1)
+                        or {"title": "兑底名", "year": "2020", "image": "http://d/p.jpg"})
+
+    class _T:
+        configured = False
+        api_key = None
+    monkeypatch.setattr("backend.emby_server.tmdb.tmdb_client", _T())
+
+    res = enrich_worker._enrich_fetch(item)
+    assert res.get("douban_hit", {}).get("title") == "兑底名", res
+    assert douban_calls == [1], "TMDB 未配置时豆瓣兑底必须被调用"
 
 
 def test_rate_is_seconds_between_calls_not_calls_per_minute():

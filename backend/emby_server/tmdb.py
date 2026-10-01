@@ -295,6 +295,33 @@ def _latin_words(query):
     return [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", query or "")]
 
 
+def _cjk_contain_rank(variants, names, hit):
+    """Tier 1.5（C-14）：CJK 包含式匹配的 rank；不达标返回 None。
+
+    短中文标题的 LCS 上限就是标题长度——四字名永远进不了 Tier 1
+    （lcs≥6），这是 PR #119 那个坑的精确成因。查询 ≥3 字时改用「字符级
+    包含」（子串，或字符全含且标题只多出 2 字以内），并用**语种/地区闸门**
+    防错配：TMDB 条目必须是中日韩原生产物。≥3 字这一条先挡掉了
+    「虎子」→「老虎和兔子」这类两字名错配；闸门再挡掉拉丁世界同名巧合。
+    rank = 标题超长度的负值（越接近 0 = 标题越贴近查询）。
+    """
+    cjk_ok = (
+        (hit.get("original_language") or "") in ("zh", "ja", "ko", "cn", "tw", "hk")
+        or any(c in ("CN", "TW", "HK", "JP", "KR")
+               for c in (hit.get("origin_country") or []))
+        or bool(_CJK_RE.search(hit.get("original_name") or ""))
+    )
+    if not cjk_ok:
+        return None
+    for v in variants:
+        if re.search(r"[a-z]", v) or len(v) < 3:
+            continue
+        for hn in names:
+            if v in hn or (set(v) <= set(hn) and len(hn) <= len(v) + 2):
+                return -(len(hn) - len(v))
+    return None
+
+
 def _hit_score(raw_name, query, hit, fuzzy_ok=True):
     """置信度打分：返回 (tier, rank)，tier 大者优先，同 tier 比 rank；None 表拒绝。
 
@@ -303,6 +330,9 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True):
     类错配）；此时查询里的拉丁关键词必须在标题里出现过（防"S.H.E 安可场"配到
     "蔡依林 安可场"），同 tier 内用"全查询与标题的最长公共子串"排名消歧
     （如"高达0079"应在 SEED 之前选中 0079）。
+    Tier 1.5（包含式，C-14）：短中文标题（2~5 字）的 LCS 上限就是标题长度，
+    在 Tier 1 的 lcs≥6 口径下结构性永远不达标（PR #119 的坑）。仅在 Tier 1
+    未命中时启用：CJK 查询 ≥3 字用字符级包含，并以语种/地区闸门防同名错配。
     另：文件名里有年份而 TMDB 条目年份对不上，直接否决。
     """
     variants = _query_variants(query)
@@ -331,6 +361,12 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True):
                 if best is None or rank > best:
                     best = rank
     if best is None:
+        # Tier 1.5：短中文标题在 LCS≥6 口径下结构性永远不达标；包含式 + 闸门补上。
+        # tier 用 1.5：仍低于 Tier 2、高于「无结果」，但排在该条目可用的 Tier 1 之后。
+        t15 = _cjk_contain_rank(variants, names, hit)
+        if t15 is not None:
+            best = (1.5, t15)
+    if best is None:
         return None
     # 年份不符**不再直接否决**。目录里的年份常是季/版本/重制年份，而不是 TMDB
     # 的首播年；早先「年份对不上就 return None」把大量本可命中的条目毙掉
@@ -340,8 +376,11 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True):
         qy = m.group(1)
         hy = (hit.get("first_air_date") or hit.get("release_date") or "")[:4]
         if hy and hy != qy:
-            best -= 1
-    return (1, best)
+            if isinstance(best, tuple):
+                best = (best[0], best[1] - 1)
+            else:
+                best -= 1
+    return best if isinstance(best, tuple) else (1, best)
 
 
 

@@ -494,6 +494,21 @@ def get_auto_scan(
     return {"success": True, **auto_scan.get_config(db)}
 
 
+@admin_emby_router.post("/scrape/enrich/retry-unmatched")
+def retry_unmatched_items(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """重试未匹配项（处方 5）：把「搜过、没有」终态条目捞回队列重新补搜。
+
+    TMDB 每天新增条目、本地别名（Tier 1.5）也在变好——终态化不等于永久放弃。
+    捞回的条目置 enrich_priority=50（repair 之下、默认之上），排在队首。
+    """
+    from backend.emby_server import enrich_worker
+    n = enrich_worker.retry_unmatched(db)
+    return {"success": True, "requeued": n}
+
+
 @admin_emby_router.get("/scrape/enrich-progress")
 def get_enrich_progress(
     staff: base_models.WebUser = Depends(require_staff),
