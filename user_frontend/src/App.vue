@@ -25,6 +25,20 @@ const showChrome = computed(
   () => route.name !== 'login' && !route.path.startsWith('/watch'),
 )
 
+/**
+ * 三个主 Tab（首页 / 商店 / 我的）常驻缓存：切 tab 不再销毁重建，
+ * 回来秒出上次的数据，各视图在 onActivated 里做静默刷新（不闪骨架屏）。
+ *
+ * 缓存 key = 路由 path + 用户 id + 登录会话序列：
+ * - 同一 tab 内的实例复用，滚动位置、选项卡状态都保留；
+ * - 登出 / 换号 / 重新登录后旧实例不再复用，不会看到上一个登录态的数据；
+ * - 未列入 include 的页面（详情、播放、登录等）不受影响，照常每次重建。
+ */
+const KEEP_ALIVE_VIEWS = ['HomeView', 'WalletView', 'ProfileView']
+const viewCacheKey = computed(
+  () => `${route.path}:${userStore.user?.id ?? 'guest'}#${userStore.sessionSeq}`,
+)
+
 onMounted(() => {
   userStore.init()
   // P0#1：后台重新校验 EA 地址（8001→8002 这类变更 1 小时内自动纠正，不阻塞首屏）
@@ -41,7 +55,12 @@ onMounted(() => {
 <template>
   <div class="app-shell">
     <AppHeader v-if="showChrome" />
-    <RouterView />
+    <RouterView v-slot="{ Component }">
+      <!-- max=12：key 按登录会话隔离，登出/换号后旧实例不再命中，攒多了自动淘汰最旧的 -->
+      <KeepAlive :include="KEEP_ALIVE_VIEWS" :max="12">
+        <component :is="Component" :key="viewCacheKey" />
+      </KeepAlive>
+    </RouterView>
     <AppDock v-if="showChrome" />
     <Toast :messages="messages" @remove="remove" />
   </div>

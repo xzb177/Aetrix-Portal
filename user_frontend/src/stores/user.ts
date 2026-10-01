@@ -9,6 +9,12 @@ export const useUserStore = defineStore('user', () => {
   const user = ref<AuthUser | null>(null)
   const token = ref<string | null>(null)
   const loading = ref(false)
+  /**
+   * 登录会话序列：login/register/logout 时递增。
+   * App.vue 的 KeepAlive 缓存 key 带上它，换号 / 登出 / 重新登录后旧页面实例
+   * 不再复用——切 tab 秒回上次数据，但绝不会看到上一个登录态的数据。
+   */
+  const sessionSeq = ref(0)
 
   const isLoggedIn = computed(() => !!token.value)
   const isVIP = computed(() => !!user.value?.is_vip)
@@ -40,6 +46,7 @@ export const useUserStore = defineStore('user', () => {
   function _persist(response: { access_token: string; refresh_token: string; user: AuthUser }) {
     token.value = response.access_token
     user.value = response.user
+    sessionSeq.value += 1
     tokenStore.set(response.access_token, response.refresh_token)
     localStorage.setItem('user', JSON.stringify(response.user))
   }
@@ -101,6 +108,7 @@ export const useUserStore = defineStore('user', () => {
   function logout() {
     user.value = null
     token.value = null
+    sessionSeq.value += 1
     tokenStore.clear()
     // 缓存的 EA 地址属于上一个登录态，不清的话同浏览器换号会拿到别人的服地址
     resetEmbyBaseUrl()
@@ -117,6 +125,7 @@ export const useUserStore = defineStore('user', () => {
     user,
     token,
     loading,
+    sessionSeq,
     isLoggedIn,
     isVIP,
     subscriptionRequired,

@@ -13,7 +13,7 @@
  * 「正在播放」为什么在这里：它讲的是**控制**（哪台设备在放、能不能停），
  * 不是「我看过什么」——后者留在媒体库的观看记录分段。v2.10.0 从观看记录页迁过来。
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
@@ -273,7 +273,11 @@ function refreshAccount() {
 }
 
 // ===== 初始化 =====
-onMounted(async () => {
+// silent = true 时为 KeepAlive 切回 tab 的后台静默刷新：不碰 loading，
+// 不闪骨架屏，数据到了直接更新视图
+const hasLoaded = ref(false)
+async function loadProfile(silent = false) {
+  if (!silent) loading.value = true
   try {
     // 观看统计与订阅加载失败不阻塞页面（新用户可能无数据）
     const [accountCard, watchStats, subs] = await Promise.all([
@@ -282,16 +286,28 @@ onMounted(async () => {
       subscriptionApi.getMine().catch((): MySubscription[] => []),
     ])
     account.value = accountCard
-    stats.value = watchStats
-    subscriptions.value = subs
+    // 静默刷新失败时不降级：getStats/getMine 失败走 catch 给 null/[]，
+    // 直接赋值会把好数据刷成"—"/空；首屏失败则保持旧行为（显示空态）
+    if (!silent || watchStats) stats.value = watchStats
+    if (!silent || subs.length) subscriptions.value = subs
     // 播放线路偏好加载失败不阻塞页面：拿不到就按默认直连展示
     getPlayLine().then((line) => { playLine.value = line }).catch(() => {})
   } catch {
     // 401 已由拦截器处理
   } finally {
     loading.value = false
+    hasLoaded.value = true
   }
   loadDevices()
+}
+
+onMounted(() => {
+  loadProfile()
+})
+
+// 从别的 tab 切回来（KeepAlive 缓存命中）：后台静默刷新，不闪骨架屏
+onActivated(() => {
+  if (hasLoaded.value) loadProfile(true)
 })
 
 function formatDate(iso?: string | null) {
