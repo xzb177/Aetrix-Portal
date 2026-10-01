@@ -21,12 +21,13 @@ import {
   type AuthUser, type AccountCard, type AccountRealmCard, type MySubscription, type WatchStats,
 } from '@/api'
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
+import { getPlayLine, setPlayLine, type PlayLine } from '@/api/user'
 import { useToast } from '@/composables/useToast'
 import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
-  MonitorPlay, LayoutDashboard,
+  MonitorPlay, LayoutDashboard, Settings2, Zap, Route,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -55,6 +56,26 @@ const watchHours = computed(() => {
 
 const copiedField = ref('')
 const showPlayPassword = ref(false)
+
+// ===== 播放线路选择 =====
+// direct = 直连线路（默认）：客户端直连网盘，速度最快；
+// relay = 中转线路：经服务器转发，适合直连网盘不通（转圈）的用户。
+// 偏好存在后端 user_play_lines 表，按用户隔离；切换后重新播放生效。
+const playLine = ref<PlayLine>('direct')
+const lineSaving = ref(false)
+
+async function pickLine(line: PlayLine) {
+  if (lineSaving.value || playLine.value === line) return
+  lineSaving.value = true
+  try {
+    playLine.value = await setPlayLine(line)
+    toast.success(line === 'direct' ? '已切换到直连线路' : '已切换到中转线路')
+  } catch {
+    toast.error('切换失败，请重试')
+  } finally {
+    lineSaving.value = false
+  }
+}
 
 const embyUsername = computed(() => account.value?.emby_username || user.value?.emby_username || user.value?.username || '—')
 const serverUrl = computed(() => account.value?.base_url || window.location.origin)
@@ -263,6 +284,8 @@ onMounted(async () => {
     account.value = accountCard
     stats.value = watchStats
     subscriptions.value = subs
+    // 播放线路偏好加载失败不阻塞页面：拿不到就按默认直连展示
+    getPlayLine().then((line) => { playLine.value = line }).catch(() => {})
   } catch {
     // 401 已由拦截器处理
   } finally {
@@ -557,6 +580,43 @@ function formatDate(iso?: string | null) {
           </header>
           <PlaybackSessions />
           <p class="pane-tip">远程结束播放只会终止会话，不会删除观看记录。</p>
+        </section>
+
+        <!-- 播放设置：线路选择。直连最快；直连打不开（转圈）时切中转 -->
+        <section class="pane">
+          <header class="pane-head">
+            <h2 class="pane-title">
+              <Settings2 :size="17" />
+              播放设置
+            </h2>
+          </header>
+          <div class="line-seg" role="radiogroup" aria-label="播放线路">
+            <button
+              type="button"
+              class="line-opt"
+              :class="{ on: playLine === 'direct' }"
+              role="radio"
+              :aria-checked="playLine === 'direct'"
+              :disabled="lineSaving"
+              @click="pickLine('direct')"
+            >
+              <Zap :size="13" />
+              直连线路
+            </button>
+            <button
+              type="button"
+              class="line-opt"
+              :class="{ on: playLine === 'relay' }"
+              role="radio"
+              :aria-checked="playLine === 'relay'"
+              :disabled="lineSaving"
+              @click="pickLine('relay')"
+            >
+              <Route :size="13" />
+              中转线路
+            </button>
+          </div>
+          <p class="pane-tip">直连线路速度最快（客户端直连网盘）；如果视频打不开或一直转圈，请切换到中转线路（经服务器转发）。切换后重新播放生效。</p>
         </section>
 
         <!-- 安全设置 -->
@@ -1235,6 +1295,62 @@ function formatDate(iso?: string | null) {
 .list-text { flex: 1; }
 
 .list-arrow { color: var(--au-text-3); }
+
+/* ==================== 播放线路分段选择 ==================== */
+/* 视觉语言与顶栏主题切换器（AppHeader .theme-seg）一致：胶囊底 + 两档选项，
+   选中态用主色实底，两套主题都清晰 */
+.line-seg {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+}
+.line-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3125rem;
+  min-width: 0;
+  height: 34px;
+  padding: 0 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--au-r-full);
+  background: none;
+  color: var(--au-text-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    box-shadow var(--au-fast) var(--au-ease);
+}
+.line-opt svg { flex-shrink: 0; }
+.line-opt:hover:not(:disabled) { background: var(--au-surface-3); color: var(--au-text); }
+.line-opt:active:not(:disabled) { transform: scale(0.97); }
+.line-opt:disabled { cursor: wait; opacity: 0.7; }
+/* 选中态：主色实底 + on-primary 文字 + 微光晕 */
+.line-opt.on {
+  background: var(--au-primary);
+  border-color: var(--au-primary);
+  color: var(--au-on-primary);
+  box-shadow: 0 2px 10px var(--au-primary-glow);
+}
+.line-opt.on svg { color: var(--au-on-primary); }
+.line-opt:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: 2px;
+}
+@media (max-width: 768px) {
+  /* 拇指区高度与主题切换器看齐 */
+  .line-opt { height: 40px; font-size: 0.8125rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .line-opt { transition: none; }
+}
 
 /* ==================== 弹窗 ==================== */
 .modal-mask {

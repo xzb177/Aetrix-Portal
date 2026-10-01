@@ -29,6 +29,7 @@ from backend import models, realms, subscriptions
 from backend.database import get_db, SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
+from backend.emby_server import play_line
 from backend.emby_server.api import TICKS, SERVER_ID, item_guid_for
 from backend.emby_server.auth import (
     ensure_emby_credentials,
@@ -507,6 +508,34 @@ async def set_emby_password(
         raise HTTPException(status_code=400, detail="密码长度需为 3-64 位")
     ensure_emby_credentials(db, request_user, password=req.password)
     return {"success": True, "emby_username": request_user.emby_username}
+
+
+class PlayLineRequest(BaseModel):
+    line: str
+
+
+@user_emby_router.get("/play-line")
+def get_play_line_pref(request_user: models.WebUser = Depends(get_admin_or_emby_user),
+                       db: Session = Depends(get_db)):
+    """查询当前用户的播放线路偏好：direct（直连线路，默认）/ relay（中转线路）。"""
+    return {"line": play_line.get_play_line(db, request_user.id)}
+
+
+@user_emby_router.put("/play-line")
+def set_play_line_pref(req: PlayLineRequest,
+                       request_user: models.WebUser = Depends(get_admin_or_emby_user),
+                       db: Session = Depends(get_db)):
+    """设置播放线路偏好。
+
+    direct = 直连线路（默认）：video_stream 先试 Google 直链 302，客户端直连 Google。
+    relay = 中转线路：跳过一切 302，直接走服务器代理转发（流量过 VPS），
+    适合客户端直连 Google 不通的用户。
+    """
+    line = (req.line or "").strip().lower()
+    if line not in play_line.PLAY_LINES:
+        raise HTTPException(status_code=400, detail=f"line 只能是 {play_line.PLAY_LINES} 之一")
+    play_line.set_play_line(db, request_user.id, line)
+    return {"line": line}
 
 
 @user_emby_router.get("/resume")
