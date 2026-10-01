@@ -198,6 +198,75 @@ def test_phase1_tvshow_episode_pending_series_done(tmp_path, monkeypatch):
         db.close()
 
 
+# ---------- 轨道字符串超长（StringDataRightTruncation 回归） ----------
+
+def test_migration_widens_stream_title_columns(db):
+    """display_title/title 扩到 VARCHAR(500)：老库补齐，已是 500 的幂等跳过"""
+    from sqlalchemy import inspect as _inspect
+
+    cols = {c["name"]: c["type"] for c in _inspect(engine).get_columns("emby_media_streams")}
+    for name in ("display_title", "title"):
+        assert name in cols
+        length = getattr(cols[name], "length", None)
+        # SQLite 不校验长度，inspector 也可能不给 length；给了就必须 >= 500
+        assert length is None or length >= 500, (name, cols[name])
+
+
+def test_sanitize_truncates_oversized_stream_strings(db):
+    """写库前截断保护：超长 display_title/title 被截到列宽内，不抛异常"""
+    long_text = "超" * 700
+    it = em.MediaStream(item_id=1, stream_index=0, stream_type="Video",
+                        display_title=long_text, title=long_text,
+                        language="und")
+    got = em.sanitize_stream_strings(it)
+    assert got is it
+    assert len(it.display_title) == 500
+    assert len(it.title) == 500
+    assert it.language == "und"          # 正常字段不动
+
+
+def test_sanitize_keeps_none_and_short_values(db):
+    """None 与正常值原样通过；codec/language 等其它受限列一并保护"""
+    it = em.MediaStream(item_id=1, stream_index=0, stream_type="Video",
+                        display_title=None, title="正常标题",
+                        codec="h" * 40)      # codec VARCHAR(30)，构造超长
+    em.sanitize_stream_strings(it)
+    assert it.display_title is None
+    assert it.title == "正常标题"
+    assert len(it.codec) == 30
+
+
+def test_before_insert_hook_clamps_on_flush(db):
+    """钩子兑底：绕过所有显式截断、直接 session.add 超长行，flush 时也会被截"""
+    it = em.MediaStream(item_id=1, stream_index=0, stream_type="Video",
+                        title="长" * 600)
+    db.add(it)
+    db.flush()               # before_insert 钩子在这里触发，不应抛 DataError
+    db.refresh(it)
+    assert len(it.title) == 500
+    db.delete(it)
+    db.commit()
+
+
+def test_apply_probe_result_with_oversized_title_does_not_raise(db):
+    """端到端：探测结果带 700 字标题，_apply_probe_result 落库不炸（worker 不被拖住）"""
+    lib, item = _make_item(db)
+    info = dict(VALID_PROBE)
+    info["streams"] = [{
+        "stream_index": 0, "stream_type": "Video", "codec": "h264",
+        "language": "", "display_title": "超" * 700, "title": "长" * 700,
+        "channels": None, "bit_rate": 8000,
+    }]
+    try:
+        probe_worker._apply_probe_result(db, item, info)
+        db.commit()
+        row = db.query(em.MediaStream).filter(
+            em.MediaStream.item_id == item.id).one()
+        assert len(row.display_title) == 500 and len(row.title) == 500
+    finally:
+        _cleanup(db, lib)
+
+
 # ---------- Phase 2 worker ----------
 
 def test_worker_claims_by_priority_desc(db):

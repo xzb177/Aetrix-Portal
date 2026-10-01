@@ -302,10 +302,13 @@ def _apply_probe_result(db, item, info: dict) -> None:
         em.MediaStream.is_external.isnot(True),
     ).delete(synchronize_session=False)
     for s in info.get("streams") or []:
-        db.add(em.MediaStream(
+        stream = em.MediaStream(
             item_id=item.id,
             **{k: v for k, v in s.items() if k in _STREAM_COLS},
-        ))
+        )
+        # 超长 title/display_title 截断（双保险：before_insert 钩子之外再拦一道）
+        em.sanitize_stream_strings(stream)
+        db.add(stream)
 
 
 def _fail(db, item, reason: str) -> None:

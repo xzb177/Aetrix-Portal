@@ -2812,10 +2812,13 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             emby_models.MediaStream.is_external.isnot(True),
                         ).delete(synchronize_session=False)
                         for s in probe["streams"]:
-                            db.add(emby_models.MediaStream(item_id=item.id, **{
+                            stream = emby_models.MediaStream(item_id=item.id, **{
                                 k: v for k, v in s.items()
                                 if k in _PROBE_STREAM_COLS
-                            }))
+                            })
+                            # 超长 title/display_title 截断（ffprobe 描述句不受控）
+                            emby_models.sanitize_stream_strings(stream)
+                            db.add(stream)
 
                     # 外挂字幕在批次开头就找好了（本地目录 / 挂载目录都在 IO 线程池里列过），
                     # 这里只剩纯 DB 写：绝大多数条目根本没有外挂字幕，也就不必为「给新字幕轨
@@ -2835,14 +2838,17 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             emby_models.MediaStream.item_id == item.id
                         ).scalar() or 0
                     for offset, (lang, sub_path) in enumerate(external, start=1):
-                        db.add(emby_models.MediaStream(
+                        stream = emby_models.MediaStream(
                             item_id=item.id, stream_index=next_index + offset,
                             stream_type="Subtitle",
                             codec=os.path.splitext(sub_path)[1].lstrip("."),
                             language=lang, display_title=os.path.basename(sub_path),
                             is_default=(offset == 1),
                             is_external=True, external_path=sub_path,
-                        ))
+                        )
+                        # 字幕文件名长度不可控（用户自己起的），写库前截断
+                        emby_models.sanitize_stream_strings(stream)
+                        db.add(stream)
                     db.commit()
     finally:
         # 扫描标志与结果由 scan_library_sync 统一写回（成功 / 部分失败 / 异常三条路都覆盖）

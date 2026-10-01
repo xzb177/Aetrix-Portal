@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 
 from backend.database import Base
@@ -208,8 +209,12 @@ class MediaStream(Base):
     stream_type = Column(String(10))  # Video / Audio / Subtitle
     codec = Column(String(30))
     language = Column(String(20))
-    display_title = Column(String(200))
-    title = Column(String(200))
+    # StringDataRightTruncation（生产事故）：ffprobe 的 tags.title（多为流描述句，
+    # 不受 200 字限制）与外挂字幕文件名都可能超 VARCHAR(200)，单条 INSERT 失败会
+    # 把整个写事务带崩（扫描/探测/补全一起遭殃）。放宽到 500；写库前的截断保护见
+    # ``MediaStream.sanitize_stream_strings``（before_insert 钩子，双保险）。
+    display_title = Column(String(500))
+    title = Column(String(500))
     is_default = Column(Boolean, default=False)
     is_forced = Column(Boolean, default=False)
     is_external = Column(Boolean, default=False)
@@ -232,6 +237,38 @@ class MediaStream(Base):
 
 MediaItem.streams = relationship(
     "MediaStream", foreign_keys=[MediaStream.item_id], cascade="all, delete-orphan"
+)
+
+
+# 字符串列宽：写库前截断保护的数据源（见 MediaStream.sanitize_stream_strings）。
+# 长度取自上面的列定义——改列宽时这里自动跟着变，不会再出现两边漂移。
+_MEDIA_STREAM_STR_LIMITS = {
+    col.name: col.type.length
+    for col in MediaStream.__table__.columns
+    if isinstance(col.type, String) and col.type.length
+}
+
+
+def sanitize_stream_strings(target: "MediaStream") -> "MediaStream":
+    """把超长的字符串字段截到列宽以内，绝不因 title 过长炸掉整条写事务。
+
+    StringDataRightTruncation 的杀伤面是一条 INSERT 拖死一个事务：扫描里一个
+    条目的轨道重建失败 = 同批所有条目写库失败；探测/补全 worker 同理。除了
+    ffprobe 报的长描述，还有外挂字幕文件名（用户自己起的名字，长度不可控）。
+    """
+    for attr, limit in _MEDIA_STREAM_STR_LIMITS.items():
+        value = getattr(target, attr, None)
+        if value is not None and len(value) > limit:
+            setattr(target, attr, value[:limit])
+    return target
+
+
+# 写库前最后一道闸：任何入口（扫描/探测/补全/未来的新代码）忘了预截断，
+# 也不会再因一条 title 过长把整个事务拖死。before_insert 只覆盖走 ORM
+# 单元工作（session.add）的写入 —— 与本仓库所有写入点一致。
+event.listen(
+    MediaStream, "before_insert",
+    lambda mapper, connection, target: sanitize_stream_strings(target),
 )
 
 

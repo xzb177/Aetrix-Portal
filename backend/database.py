@@ -531,6 +531,7 @@ def _auto_migrate():
 
     _widen_code_column(existing_tables, inspector)
     _widen_bitrate_column(existing_tables, inspector)
+    _widen_stream_title_columns(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
     _ensure_probe_index(existing_tables)
     _ensure_default_realm()
@@ -750,6 +751,42 @@ def _widen_code_column(existing_tables: set, inspector) -> None:
                 else:
                     conn.execute(text("ALTER TABLE registration_codes MODIFY COLUMN code VARCHAR(64) NOT NULL"))
             print("  🔧 已迁移: registration_codes.code 宽度 → 64")
+
+
+def _widen_stream_title_columns(existing_tables: set, inspector) -> None:
+    """emby_media_streams.display_title/title 从 VARCHAR(200) 扩到 500
+
+    生产日志：ffprobe 的 tags.title（流描述句，长度不受控）与外挂字幕文件名
+    偶发超 200 字，PG 报 ``StringDataRightTruncation``，单条 INSERT 失败把
+    整个写事务（同批扫描/探测/补全）全部带崩。模型已改为 String(500)，
+    老库在这里幂等加宽；SQLite 不校验 VARCHAR 长度，无需处理。
+    """
+    from sqlalchemy import text
+
+    if "emby_media_streams" not in existing_tables:
+        return
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+    for col in inspector.get_columns("emby_media_streams"):
+        if col["name"] not in ("display_title", "title"):
+            continue
+        length = getattr(col.get("type"), "length", None)
+        if length is None or length >= 500:
+            continue
+        with engine.begin() as conn:
+            if dialect == "postgresql":
+                conn.execute(text(
+                    f"ALTER TABLE emby_media_streams ALTER COLUMN {col['name']} "
+                    "TYPE VARCHAR(500)"
+                ))
+            else:
+                conn.execute(text(
+                    f"ALTER TABLE emby_media_streams MODIFY COLUMN {col['name']} "
+                    "VARCHAR(500)"
+                ))
+        print(f"  🔧 已迁移: emby_media_streams.{col['name']} 宽度 → 500"
+              "（修 StringDataRightTruncation）")
 
 
 _PG_LOCK_KEY = 72772620260929

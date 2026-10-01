@@ -362,14 +362,17 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             next_index = db.query(_func.max(em.MediaStream.stream_index)).filter(
                 em.MediaStream.item_id == item.id).scalar() or 0
         for offset, (lang, sub_path) in enumerate(external, start=1):
-            db.add(em.MediaStream(
+            stream = em.MediaStream(
                 item_id=item.id, stream_index=next_index + offset,
                 stream_type="Subtitle",
                 codec=os.path.splitext(sub_path)[1].lstrip("."),
                 language=lang, display_title=os.path.basename(sub_path),
                 is_default=(offset == 1),
                 is_external=True, external_path=sub_path,
-            ))
+            )
+            # 字幕文件名长度不可控，写库前截断（双保险）
+            em.sanitize_stream_strings(stream)
+            db.add(stream)
 
     # 3. NFO + TMDB
     nfo_data = fetched.get("nfo_data")
