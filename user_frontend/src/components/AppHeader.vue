@@ -4,7 +4,7 @@ import { useUserStore } from '@/stores/user'
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
-  Gift, Zap, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
+  Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
   ChevronRight, LayoutDashboard,
 } from 'lucide-vue-next'
 import api, {
@@ -12,7 +12,6 @@ import api, {
   type StationMessage, type Announcement,
 } from '@/api'
 import type { MySubscription } from '@/api'
-import { pointsApi } from '@/api/economy'
 import { primaryNav, menuSections } from '@/config/navigation'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
 import { branding } from '@/composables/useBranding'
@@ -28,23 +27,15 @@ const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
 const navRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
-const pointsBalance = ref<number | null>(null)
 
 /**
- * 资产 pill 组（借鉴纸片人控制台的双资产常驻胶囊）：积分是第一个资产，
- * 订阅是第二个——生效中给「剩 N 天」，临期转警示色并轻脉动，未订阅不占位。
- * 订阅态与轮询同频刷新：购买 / 续费后回到任何页面都能立刻看到新状态。
+ * 会员状态（v2.42.8 起只留在头像菜单里）：顶栏那两颗常驻 pill（积分 / 会员生效中）
+ * 已按设计稿删除——积分由首页「我的资产」与钱包承接，会员状态由菜单头部承接。
+ * 与轮询同频刷新：购买 / 续费后回到任何页面都能立刻看到新状态。
  */
 const activeSub = ref<MySubscription | null>(null)
 
-const showSubPill = computed(() => !!activeSub.value)
 const subPillExpiring = computed(() => (activeSub.value ? isExpiringSoon(activeSub.value) : false))
-const subPillText = computed(() => {
-  const sub = activeSub.value
-  if (!sub) return ''
-  return subPillExpiring.value ? `剩 ${sub.days_left} 天` : '会员生效中'
-})
-const isFreeRealm = computed(() => userStore.isFreeRealm)
 
 /** 菜单头部的状态徽章：会员金 / 公益服青，与资产卡同一套色彩编码 */
 const menuBadge = computed(() => {
@@ -257,16 +248,6 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
-async function refreshPoints() {
-  if (!userStore.isLoggedIn) return
-  try {
-    const log = await pointsApi.log({ limit: 1 })
-    pointsBalance.value = log.balance
-  } catch {
-    /* 静默 */
-  }
-}
-
 async function refreshSubscription() {
   if (!userStore.isLoggedIn) return
   try {
@@ -287,7 +268,6 @@ async function poll() {
   } catch {
     /* 静默失败 */
   }
-  refreshPoints()
   refreshSubscription()
 }
 
@@ -318,11 +298,10 @@ async function focusActiveTab(center: boolean) {
   }
 }
 
-// 签到 / 钱包操作后回到顶栏时，积分与订阅两个资产 pill 即时刷新
+// 签到 / 钱包操作后回到任意页面时，头像菜单里的会员状态即时刷新
 watch(() => route.path, (p, old) => {
   const economyPaths = ['/wallet', '/checkin']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
-    refreshPoints()
     refreshSubscription()
   }
 })
@@ -331,7 +310,6 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
   if (loggedIn) poll()
   else {
     unreadCount.value = 0
-    pointsBalance.value = null
     activeSub.value = null
     msgPreview.value = []
     msgMenuOpen.value = false
@@ -378,44 +356,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         </RouterLink>
       </nav>
 
-      <!-- 右侧用户区 -->
+      <!-- 右侧用户区（v2.42.8）：只剩两枚圆形图标按钮——消息与头像，
+           与管理后台顶栏同一形态；积分 / 会员 pill 与昵称都从顶栏撤下 -->
       <div class="user-section">
         <template v-if="userStore.isLoggedIn">
-          <!-- 资产 pill 组：积分 + 订阅状态常驻（含移动端；≤768px 主导航交给底部坞）。
-               每种资产一个固定功能色，全链路同色：积分=品牌青，订阅=会员金，公益服=青色软底 -->
-          <div class="assets-group">
-            <!-- 积分 pill：点击进入钱包 -->
-            <RouterLink to="/wallet" class="points-chip" title="积分余额 · 进入钱包">
-              <Zap :size="13" />
-              <span class="points-num">{{ pointsBalance === null ? '—' : pointsBalance.toLocaleString() }}</span>
-            </RouterLink>
-
-            <!-- 订阅 pill：生效中常驻；临期转警示色 + 轻脉动；公益服显示免费开放，不出现购买引导 -->
-            <RouterLink
-              v-if="showSubPill"
-              to="/wallet?tab=plans"
-              class="sub-chip"
-              :class="{ warn: subPillExpiring }"
-              title="订阅状态 · 管理订阅"
-            >
-              <Crown :size="12" />
-              <span class="sub-chip-text">{{ subPillText }}</span>
-            </RouterLink>
-            <RouterLink
-              v-else-if="isFreeRealm"
-              to="/wallet"
-              class="sub-chip free"
-              title="公益服 · 免费开放"
-            >
-              <Sparkles :size="12" />
-              <span class="sub-chip-text">公益服</span>
-            </RouterLink>
-          </div>
-
           <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
           <div ref="msgMenuRef" class="msg-menu">
             <button
-              class="msg-btn"
+              class="msg-btn round-btn"
               :class="{ alert: unreadCount > 0, open: msgMenuOpen }"
               :title="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
               @click="toggleMsgMenu"
@@ -471,13 +419,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
           <div ref="userMenuRef" class="user-menu">
             <button
-              class="user-btn"
+              class="user-btn round-btn"
               :aria-expanded="userMenuOpen"
               aria-haspopup="menu"
+              :aria-label="`${displayName} · 账号菜单`"
+              :title="displayName"
               @click="userMenuOpen = !userMenuOpen"
             >
               <span class="avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
-              <span class="user-name">{{ displayName }}</span>
             </button>
 
             <Teleport to="body">
@@ -679,149 +628,52 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   min-width: 0;
 }
 
-/* ==================== 资产 pill 组（借鉴纸片人控制台） ====================
-   每种资产一个固定功能色，从顶部 pill → 卡片图标/数字/CTA 全链路同色：
-   积分 = 会员金（钱的语义，v2.42.4 与首页资产卡换位同步），订阅 = 品牌青。
-   胶囊配方：rounded-full + 功能色 10% 底 + 20% 边框 + semibold 彩色字 */
-.assets-group {
-  display: flex;
-  align-items: center;
-  /* 两个 pill 之间留出真正的呼吸位：旧版 0.375rem 比 pill 自己的内距还小，
-     两颗胶囊看上去是粘在一起的一坨（0.25rem 的手机端更糟） */
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-/* 积分 pill（功能色：会员金——钱的语义） */
-.points-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3125rem;
-  height: 30px;
-  padding: 0 0.6875rem;
-  flex: 0 1 auto;
-  min-width: 0;
-  background: var(--au-warning-soft);
-  border: 1px solid var(--au-warning-border);
-  border-radius: var(--au-r-full);
-  color: var(--au-warning);
-  text-decoration: none;
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.points-chip:hover {
-  background: rgba(251, 191, 36, 0.2);
-  box-shadow: 0 0 14px rgba(251, 191, 36, 0.25);
-}
-
-.points-num {
-  font-size: 0.75rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  max-width: 88px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 订阅 pill（功能色：品牌青；临期转警示金 + 轻脉动） */
-.sub-chip {
-  position: relative;
-  overflow: hidden;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3125rem;
-  height: 30px;
-  padding: 0 0.6875rem;
-  flex: 0 1 auto;
-  min-width: 0;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: var(--au-r-full);
-  color: var(--au-primary);
-  text-decoration: none;
-  white-space: nowrap;
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.sub-chip-text {
-  font-size: 0.75rem;
-  font-weight: 700;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sub-chip:hover {
-  background: var(--au-primary-mid);
-  box-shadow: 0 0 14px var(--au-primary-glow);
-}
-
-/* 临期脉动：伪元素扩散环，只动 opacity/transform（不逐帧重绘 box-shadow） */
-.sub-chip.warn {
-  animation: sub-pulse 2.4s ease-in-out infinite;
-}
-
-.sub-chip.warn::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.35);
-  opacity: 0;
-  pointer-events: none;
-  animation: sub-ring 2.4s var(--au-ease) infinite;
-}
-
-@keyframes sub-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.8; }
-}
-
-@keyframes sub-ring {
-  0%, 100% { opacity: 0; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(1.08); }
-}
-
-/* 公益服 pill：青色软底（订阅同为青色系，语义同源：都是「免费看」） */
-.sub-chip.free {
-  background: var(--au-primary-soft);
-  border-color: var(--au-primary-border);
-  color: var(--au-primary);
-}
-
-.sub-chip.free:hover {
-  background: var(--au-primary-mid);
-  box-shadow: 0 0 14px var(--au-primary-glow);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sub-chip.warn { animation: none; }
-  .sub-chip.warn::after { animation: none; opacity: 0; }
-}
-
-/* 消息铃铛 */
-/* 消息入口：读完后是一个安静的音铃，有未读时才点一颗小数字 */
-.msg-menu { position: relative; }
-
-.msg-btn {
+/* ==================== 右侧圆形图标按钮（v2.42.8） ====================
+   与管理后台顶栏同一形态：一枚圆形按钮（浅色表面 + 1px 描边 + 居中的图标），
+   hover 时描边与底色各抬一档。顶栏因此只剩「品牌 · 消息 · 头像」三件事——
+   原常驻的积分 pill 与「会员生效中」pill 已删（图 4 圈出的两颗），
+   积分仍在首页「我的资产」/ 钱包、会员状态仍在头像菜单头部各有入口。 */
+.round-btn {
   position: relative;
   width: 38px;
   height: 38px;
-  display: flex;
+  flex-shrink: 0;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: none;
-  border: none;
-  border-radius: var(--au-r-md);
+  padding: 0;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  background: var(--au-surface);
   color: var(--au-text-2);
   cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
+  transition: background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease);
 }
-.msg-btn:hover { color: var(--au-text); background: var(--au-surface-2); }
-.msg-btn.open { color: var(--au-text); background: var(--au-surface-2); }
-.msg-btn.alert { color: var(--au-warning); }
+
+.round-btn:hover {
+  color: var(--au-text);
+  background: var(--au-surface-2);
+  border-color: var(--au-border-strong);
+}
+
+.round-btn:active { transform: scale(0.96); }
+
+.round-btn:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: 2px;
+}
+
+/* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
+.msg-menu { position: relative; }
+
+.msg-btn.open {
+  color: var(--au-text);
+  background: var(--au-surface-3);
+  border-color: var(--au-border-strong);
+}
+.msg-btn.alert { color: var(--au-warning); border-color: var(--au-warning-border); }
 
 .msg-badge {
   position: absolute;
@@ -846,18 +698,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 .user-menu { position: relative; }
 
-.user-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.3125rem 0.75rem 0.3125rem 0.3125rem;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
-  cursor: pointer;
-  transition: all var(--au-fast);
-}
-.user-btn:hover { background: var(--au-surface-2); border-color: var(--au-border-strong); }
+/* 头像按钮：与消息按钮同一配方（.round-btn），里面正好嵌一颗 30px 头像
+   （昵称不再出现在顶栏 → 菜单头部那一行仍是完整身份展示） */
+.user-btn { padding: 3px; }
 
 .avatar {
   width: 30px;
@@ -870,16 +713,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   color: var(--au-on-primary);
   font-size: 0.8125rem;
   font-weight: 800;
-}
-
-.user-name {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text);
-  max-width: 100px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ==================== 用户菜单样式已移至全局块（Teleport） ==================== */
@@ -908,9 +741,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   .dd-enter-active, .dd-leave-active { transition: none; }
 }
 
-/* 窄屏：导航条目收窄，先让出用户名的宽度 */
+/* 窄屏：导航条目收窄（顶栏右侧只剩两枚圆形按钮，不再需要给用户名让宽度） */
 @media (max-width: 1080px) {
-  .user-name { display: none; }
   .nav-link { padding: 0.4688rem 0.625rem; }
 }
 
@@ -1152,15 +984,17 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   border: 1px solid var(--au-border);
   color: var(--au-text-3);
 }
+/* 三档分段：与「纸片人控制台」（管理端侧栏 foot 那套）同一配方——
+   圆角矩形的浅色槽 + 槽内三片等分的圆角片，选中的那一片用主色实底压出来 */
 .theme-seg {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
+  gap: 6px;
   margin: 0.375rem 1rem 0.75rem;
-  padding: 3px;
+  padding: 4px;
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
+  border-radius: var(--au-r-md);
 }
 .theme-opt {
   display: inline-flex;
@@ -1169,9 +1003,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   gap: 0.3125rem;
   min-width: 0;
   height: 34px;
-  padding: 0 0.5rem;
+  padding: 0 0.625rem;
   border: 1px solid transparent;
-  border-radius: var(--au-r-full);
+  border-radius: var(--au-r-sm);
   background: none;
   color: var(--au-text-3);
   font-size: 0.75rem;
@@ -1185,12 +1019,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .theme-opt svg { flex-shrink: 0; }
 .theme-opt:hover { background: var(--au-surface-3); color: var(--au-text); }
 .theme-opt:active { transform: scale(0.97); }
-/* 选中态：实底胶囊。旧版只有 10% 青底 + 淡描边，浅色主题下整段「发虚」、
-   看不出选的是哪一档；现在用主色实底 + on-primary 文字 + 微光晕，两套主题都清晰 */
+/* 选中态：主色实底 + on-primary 文字 + semibold + 微光晕。
+   两套主题下都明确是「槽里最亮的那一片」：浅色主题 #0891b2 配白字，
+   深色主题 #22d3ee 配近黑字——不再出现「看不出选的是哪一档」的中间态 */
 .theme-opt.on {
   background: var(--au-primary);
   border-color: var(--au-primary);
   color: var(--au-on-primary);
+  font-weight: 700;
   box-shadow: 0 2px 10px var(--au-primary-glow);
 }
 .theme-opt.on svg { color: var(--au-on-primary); }
@@ -1254,7 +1090,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </style>
 
 <style scoped>
-/* ≤768px：顶栏退成单行（品牌 + 资产 pill + 账号操作），主导航交给底部坞（AppDock）。
+/* ≤768px：顶栏退成单行（品牌 + 消息 + 头像），主导航交给底部坞（AppDock）。
    两个下拉都改成 fixed 面板：① 挂在 header 的堆叠上下文里但 z 高于坞的绘制顺序问题
    已不存在——fixed 仍受 header 的 z-index:50 上下文约束，因此坞提到 40、
    下拉保持 60（见 AppDock 同步调整），同一上下文内 60 > 50 稳赢；
@@ -1264,48 +1100,21 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     flex-wrap: nowrap;
     padding: 0 1rem;
     min-height: 54px;
-    gap: 0.5rem;
+    /* 两颗 pill 撤掉后手机顶栏只剩「品牌 + 消息 + 头像」，
+       间距回到正常口径即可（旧版为了塞下 pill 把它压到 0.25rem） */
+    gap: 0.625rem;
   }
 
+  /* 主导航整条让位给底部坞（AppDock）；圆形按钮保持桌面口径不缩水 */
   .main-nav { display: none; }
-
-  /* 手机顶栏一行要装下：品牌 + 积分 pill + 订阅 pill + 信箱 + 头像。
-     旧版把 pill 间距压到 0.25rem、高度缩到 28px，得到的是「挤在一起」——
-     这里反过来：间距与高度都保持桌面口径（30px，两颗胶囊同一基线），
-     省地方的力气花在品牌 mark 与容器间距上，「会员生效中」不下调字号。 */
-  .header-container { gap: 0.625rem; }
-  .user-section { gap: 0.5rem; }
-  .assets-group { gap: 0.5rem; }
 
   .header-logo { gap: 0.375rem; }
   .logo-mark { width: 30px; height: 30px; border-radius: 10px; }
-
-  .points-chip,
-  .sub-chip {
-    height: 30px;
-    padding: 0 0.625rem;
-  }
-
-  .points-chip .points-num { max-width: 60px; }
-
-  .user-btn { padding: 0.25rem; }
-  .user-name { display: none; }
 }
 
-/* 超窄屏（≤400px，含 iPhone SE（375））：两侧再各收 2px，字号只降一档，
-   两个 pill 的读数与状态文案都保持完整可读 */
+/* 超窄屏（≤400px，含 iPhone SE（375））：两侧再各收 4px。
+   圆形按钮是拇指目标，尺寸不跟着缩——现在空出的宽度足够放下它们 */
 @media (max-width: 400px) {
-  .header-container { gap: 0.5rem; padding: 0 0.75rem; }
-  .assets-group { gap: 0.375rem; }
-
-  .points-chip,
-  .sub-chip { padding: 0 0.5rem; }
-
-  .points-chip .points-num,
-  .sub-chip-text { font-size: 0.6875rem; }
-
-  .points-chip .points-num { max-width: 52px; }
-
-  .msg-btn { width: 34px; height: 34px; }
+  .header-container { padding: 0 0.75rem; gap: 0.5rem; }
 }
 </style>
