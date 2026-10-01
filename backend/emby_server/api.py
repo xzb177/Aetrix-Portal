@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend import models, playback_policy
 from backend.database import SessionLocal, get_db
+from backend.emby_server import cdn
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import models as em
@@ -583,7 +584,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     "SeriesName": item.series.name if item.series else None,
                     "IndexNumber": item.season_number})
     if full:
-        dto["MediaSources"] = [_media_source(item, base, api_key)]
+        dto["MediaSources"] = [_media_source(item, base, api_key, db)]
         dto["MediaSourceCount"] = 1
         dto["Chapters"] = []
         # 多版本：同一目录下的其他版本，供详情页版本切换器使用
@@ -717,7 +718,7 @@ def _external_urls(item: em.MediaItem) -> list:
     return urls
 
 
-def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
+def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = None) -> dict:
     # ffprobe 的 video stream 经常不单独给 bitrate（尤其是远程 HEVC 文件），
     # 但条目级 probe 已经有可靠的总 bitrate / 分辨率。不能把 0 映射成客户端的
     # 「1kbps」假数据，也不能把 3840×1920 丢掉。
@@ -764,10 +765,14 @@ def _stream_dto(s, base: str, item: em.MediaItem, api_key: str) -> dict:
         dto["DeliveryMethod"] = "External"
         if text_track:
             # 客户端靠 DeliveryUrl 发现字幕地址；缺失会表现为“服务器无字幕”
-            dto["DeliveryUrl"] = (
+            delivery = (
                 f"{base}/emby/Videos/{item.guid}/{item.guid}"
                 f"/Subtitles/{s.stream_index}/Stream.vtt?api_key={api_key}"
             )
+            # CDN 预留（第 2/3 层）：启用时字幕也走 CDN 域名（回源到本服务）
+            if db is not None:
+                delivery = cdn.rewrite_url(db, delivery, base)
+            dto["DeliveryUrl"] = delivery
     # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
     return _strip_nulls(dto)
 
@@ -808,7 +813,7 @@ def _container_of(item: em.MediaItem) -> Optional[str]:
     return None
 
 
-def _media_source(item: em.MediaItem, base: str, api_key: str = "") -> dict:
+def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None) -> dict:
     dto = {
         "Id": item.guid,
         "Name": item.name,
@@ -824,9 +829,11 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "") -> dict:
         "SupportsTranscoding": True,
         "IsRemote": False,
         "DefaultSubtitleStreamIndex": _default_subtitle_index(item),
-        "MediaStreams": [_stream_dto(s, base, item, api_key) for s in item.streams],
+        "MediaStreams": [_stream_dto(s, base, item, api_key, db) for s in item.streams],
     }
     # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
+    # 注：DirectStreamUrl / TranscodingUrl 由调用方（playback_info）在拿到 _play_target 后
+    # 拼装，CDN 域名改写也在那一层完成（这里只管字幕 DeliveryUrl）。
     return _strip_nulls(dto)
 
 
@@ -2167,7 +2174,7 @@ async def playback_info(
 
     if cached_source is None:
         # _media_source 读 item.streams（懒加载关系），必须在线程池里，不能直接在事件循环上碰
-        media_source = await run_db(_media_source, item, base)
+        media_source = await run_db(_media_source, item, base, "", db)
         if cache_key and cache_ttl > 0:
             try:
                 from backend.database import CacheManager
@@ -2180,16 +2187,29 @@ async def playback_info(
     # api_key：优先 Emby 客户端 token；JWT 访问时（网页端）直接把 JWT 作为 api_key，
     # 流媒体端点（stream/master.m3u8/切片）均可通过 JWT 回退鉴权
     api_key = _api_key_for(db, request)
+    # CDN 预留（第 2/3 层）：启用时播放面 URL 换 CDN 域名（回源到本服务，
+    # 鉴权查询串原样透传；CDN 侧的缓存规则由管理员配置）。线路选择里选了
+    # cdn 的用户同样走 CDN——未启用/未选时 URL 与升级前逐字节一致。
+    user_wants_cdn = await run_db(
+        play_line.get_play_line, db, getattr(user, "id", None)) == play_line.LINE_CDN
+    use_cdn = user_wants_cdn or await run_db(cdn.enabled, db)
+    stream_url = (
+        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}"
+    )
+    transcoding_url = (
+        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}"
+    )
+    if use_cdn:
+        stream_url = cdn.rewrite_url(db, stream_url, base)
+        transcoding_url = cdn.rewrite_url(db, transcoding_url, base)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
         "SupportsTranscoding": allow_transcode,
-        "DirectStreamUrl": f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}",
+        "DirectStreamUrl": stream_url,
     })
     if allow_transcode:
-        media_source["TranscodingUrl"] = (
-            f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}"
-        )
+        media_source["TranscodingUrl"] = transcoding_url
 
     return _strip_nulls({
         "MediaSources": [media_source],
@@ -2217,23 +2237,32 @@ async def video_stream(
     if target.kind == "url":
         # 线路选择（用户维度，play_line 模块）：
         # relay 线路跳过一切 302，直接走服务器代理转发（流量过 VPS），
-        # 适合客户端直连 Google 不通的用户；direct（默认）保持下面的现有行为。
-        # getattr 兜底：user 可能是测试桩，没有 id 时按默认 direct 走。
-        if await run_db(play_line.get_play_line, db, getattr(user, "id", None)) == play_line.LINE_RELAY:
-            return await serve_remote_async(target.value, request, target.headers, media_type)
+        # 适合客户端直连 Google 不通的用户；direct（默认）保持下面的现有行为；
+        # cdn 线路与 direct 同口径（直链 302 保留）——CDN 只挡回源流量，
+        # URL 的域名改写在 PlaybackInfo/播放列表那几层已完成（cdn 模块）。
+        line = await run_db(play_line.get_play_line, db, getattr(user, "id", None))
+        # CDN 预留（第 2/3 层）：代理转发形态也带上分片缓存头，让 CDN 边缘能缓存
+        # 回源结果；API/302 不走这里（302 分支自带 no-store）。
+        seg_cache = cdn.cache_control_for(str(request.url.path))
+        if line == play_line.LINE_RELAY:
+            return await serve_remote_async(target.value, request, target.headers, media_type,
+                                            cache_control=seg_cache)
         # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
         # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。
         google_direct = await try_google_direct_url(target.value)
         if google_direct:
-            return Response(status_code=302, headers={"Location": google_direct, "Cache-Control": "no-store"})
+            return Response(status_code=302, headers={"Location": google_direct, "Cache-Control": cdn.NO_STORE})
         if request.query_params.get("direct", "").lower() == "true" and can_redirect_direct(target):
-            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": "no-store"})
+            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": cdn.NO_STORE})
         # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
         # Range 与状态码透传，凭据不下发。
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
         # 不能让一个用户的拖动进度条把整个事件循环卡住
-        return await serve_remote_async(target.value, request, target.headers, media_type)
-    return serve_file(target.value, request, media_type)
+        return await serve_remote_async(target.value, request, target.headers, media_type,
+                                        cache_control=seg_cache)
+    # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
+    return serve_file(target.value, request, media_type,
+                      cache_control=cdn.cache_control_for(str(request.url.path)))
 
 
 @emby_router.get("/emby/videos/{item_id}/stream.mkv")
@@ -2282,15 +2311,22 @@ async def video_hls(
                 if not transcode_alive(existing):
                     raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
                 raise HTTPException(status_code=504, detail="转码尚未产出播放列表")
-            content = _rewrite_playlist(info["dir"], base, item.guid, existing, api_key)
-            return Response(content, media_type="application/vnd.apple.mpegurl")
+            content = _rewrite_playlist(info["dir"], base, item.guid, existing, api_key, db)
+            return Response(
+                content, media_type="application/vnd.apple.mpegurl",
+                # 播放列表绝不进 CDN/浏览器缓存：内容随时变（会话回收后失效）
+                headers={"Cache-Control": cdn.NO_STORE},
+            )
         # 客户端请求切片往往早于 ffmpeg 写出，短暂等待而非立即 404
         if not await wait_for_file(file_path, timeout=12.0):
             if not transcode_alive(existing):
                 raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
             raise HTTPException(status_code=404, detail="Segment not ready")
         media_type = "video/mp2t" if transcode_path.endswith(".ts") else "application/octet-stream"
-        return FileResponse(file_path, media_type=media_type)
+        # 分片是 CDN 缓存的全部意义所在：ffmpeg 写完就不变，边缘放多久都安全。
+        # （CDN 未启用时浏览器也能短缓存热点，无副作用。）
+        return FileResponse(file_path, media_type=media_type,
+                            headers={"Cache-Control": cdn.SEGMENT_CACHE_HEADER})
 
     # 新转码请求（付费墙 + 客户端与转码策略：建立会话前校验）
     ensure_playback_allowed(db, user)
@@ -2315,10 +2351,13 @@ async def video_hls(
     )
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
     # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
+    # CDN 预留（第 2/3 层）：启用时变体/切片都走 CDN 域名（回源本服务）。
     variant_url = (
         f"{base}/emby/videos/{item.guid}/main.m3u8"
         f"?session={session_id}&api_key={urllib.parse.quote(api_key)}"
     )
+    if await run_db(cdn.enabled, db):
+        variant_url = cdn.rewrite_url(db, variant_url, base)
     return Response(
         content=f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n",
         media_type="application/vnd.apple.mpegurl",
@@ -2326,10 +2365,12 @@ async def video_hls(
 
 
 def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,  # noqa: D401
-                     api_key: str = "") -> str:
+                     api_key: str = "", db: Session = None) -> str:
     """重写 ffmpeg 播放列表：切片指向本服务，并带上 session 票据与 api_key
 
     不带 api_key 时播放器对切片子请求不会附加认证头，会直接 401。
+    CDN 预留（第 2/3 层）：启用时切片行换 CDN 域名（回源本服务）——热门分片
+    由边缘缓存，躲源站（Google Drive）单文件配额；播放列表本身不变。
     """
     master = os.path.join(out_dir, "master.m3u8")
     if not os.path.isfile(master):
@@ -2337,10 +2378,13 @@ def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id:
     with open(master, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
     suffix = f"&api_key={urllib.parse.quote(api_key)}" if api_key else ""
+    seg_base = base
+    if db is not None and cdn.enabled(db):
+        seg_base = cdn.origin_base(db, base)
     lines = []
     for line in content.splitlines():
         if line.endswith((".ts", ".m4s", ".aac", ".vtt")):
-            lines.append(f"{base}/emby/videos/{item_guid_value}/{line}?session={session_id}{suffix}")
+            lines.append(f"{seg_base}/emby/videos/{item_guid_value}/{line}?session={session_id}{suffix}")
         else:
             lines.append(line)
     return "\n".join(lines) + "\n"

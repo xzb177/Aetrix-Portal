@@ -55,6 +55,18 @@ export interface PlaybackPolicy {
   allowed_agents: string
 }
 
+/** CDN 域名预留（播放三层第 2/3 层极简预留版，/api/admin/playback/cdn） */
+export interface CdnConfig {
+  /** 管理员填的原始域名（可能带 scheme/尾斜杠） */
+  domain: string
+  /** 归一化后的 scheme://host（非法输入时为空串） */
+  normalized: string
+  /** 是否生效（开关打开且域名合法，缺省关闭） */
+  enabled: boolean
+  /** 分片响应的缓存头口径（回显给管理员看） */
+  segment_cache_header: string
+}
+
 /** 策略的运行态：只反映**本进程**（分离部署时转码跑在 EA 上） */
 export interface PlaybackRuntime {
   active_transcodes: number

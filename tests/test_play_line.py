@@ -10,6 +10,7 @@ import pytest
 
 from backend.emby_server.play_line import (
     DEFAULT_LINE,
+    LINE_CDN,
     LINE_DIRECT,
     LINE_RELAY,
     PLAY_LINES,
@@ -98,7 +99,15 @@ def test_broken_db_or_no_user_id_falls_back_to_default(db):
 
 
 def test_play_lines_contract():
-    assert set(PLAY_LINES) == {"direct", "relay"}
+    # cdn 是播放三层第 2/3 层的预留线路：direct（默认）/ cdn / relay
+    assert set(PLAY_LINES) == {"direct", "cdn", "relay"}
+    assert DEFAULT_LINE == LINE_DIRECT
+
+
+def test_set_and_get_cdn(db):
+    u = _make_user(db, "ucdn")
+    assert set_play_line(db, u.id, LINE_CDN) == LINE_CDN
+    assert get_play_line(db, u.id) == LINE_CDN
 
 
 # ---- video_stream 决策分支 ----
@@ -137,8 +146,11 @@ def test_video_stream_relay_skips_google_302(monkeypatch):
     monkeypatch.setattr(api, "try_google_direct_url", boom)
     proxy = object()
 
-    async def fake_proxy(url, request, headers, media_type):
+    async def fake_proxy(url, request, headers, media_type, cache_control=None):
         assert (url, headers, media_type) == (target.value, target.headers, "video/mp4")
+        # relay 也是分片响应：带上可缓存头，让 CDN 边缘缓存回源结果
+        from backend.emby_server import cdn as cdn_mod
+        assert cache_control == cdn_mod.SEGMENT_CACHE_HEADER
         return proxy
 
     monkeypatch.setattr(api, "serve_remote_async", fake_proxy)
@@ -168,6 +180,27 @@ def test_video_stream_direct_keeps_google_302(monkeypatch):
     assert resp.headers["cache-control"] == "no-store"
 
 
+def test_video_stream_cdn_line_keeps_google_302(monkeypatch):
+    """cdn 线路：与 direct 同口径（Google 直链 302 保留，CDN 只挡回源）。"""
+    from backend.emby_server import api
+    from backend.emby_server.mounts import PlayTarget
+
+    target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
+    _stub_common(monkeypatch, api, target)
+    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_CDN)
+
+    async def fake_google(url):
+        assert url == target.value
+        return "https://www.googleapis.com/drive/v3/files/x?alt=media"
+
+    monkeypatch.setattr(api, "try_google_direct_url", fake_google)
+    user = SimpleNamespace(id=7)
+    resp = asyncio.run(api.video_stream("item", _request(), user, object()))
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith("https://www.googleapis.com/")
+    assert resp.headers["cache-control"] == "no-store"
+
+
 def test_video_stream_relay_local_kind_unchanged(monkeypatch):
     """relay 线路只影响 kind=url；本地文件照走 serve_file。"""
     from backend.emby_server import api
@@ -177,7 +210,15 @@ def test_video_stream_relay_local_kind_unchanged(monkeypatch):
     _stub_common(monkeypatch, api, target)
     monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_RELAY)
     sentinel = object()
-    monkeypatch.setattr(api, "serve_file", lambda *a: sentinel)
+
+    def fake_serve_file(path, request, media_type, cache_control=None):
+        from backend.emby_server import cdn as cdn_mod
+        assert path == target.value
+        # 本机文件也是分片形态：带可缓存头
+        assert cache_control == cdn_mod.SEGMENT_CACHE_HEADER
+        return sentinel
+
+    monkeypatch.setattr(api, "serve_file", fake_serve_file)
     user = SimpleNamespace(id=7)
     resp = asyncio.run(api.video_stream("item", _request(), user, object()))
     assert resp is sentinel

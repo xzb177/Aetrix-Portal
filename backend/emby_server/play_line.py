@@ -5,6 +5,10 @@
   客户端直连 Google 下载，不经过服务器代理。
 - relay（中转线路）：跳过一切 302，直接走 serve_remote_async 代理转发，
   流量过 VPS。适合客户端直连 Google 不通（转圈）的用户手动切换。
+- cdn（CDN 线路，第 2/3 层预留）：与 direct 同口径（直链 302 保留），
+  但客户端拿到的播放 URL 走管理员预留的 CDN 域名——热门分片由 CDN 边缘
+  缓存回源，躲 Google Drive 单文件配额。CDN 未启用时选它等同 direct
+  （URL 原样回落本服务），不会让任何人播不出来。
 
 偏好存在 user_play_lines 表；无记录视为 direct，老用户行为不变。
 """
@@ -15,7 +19,8 @@ from backend.models import UserPlayLine
 
 LINE_DIRECT = "direct"
 LINE_RELAY = "relay"
-PLAY_LINES = (LINE_DIRECT, LINE_RELAY)
+LINE_CDN = "cdn"
+PLAY_LINES = (LINE_DIRECT, LINE_CDN, LINE_RELAY)
 DEFAULT_LINE = LINE_DIRECT
 
 

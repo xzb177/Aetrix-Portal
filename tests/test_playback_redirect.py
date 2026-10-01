@@ -64,8 +64,11 @@ def test_video_stream_proxies_when_direct_not_requested(monkeypatch):
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
     proxy = object()
 
-    async def fake_proxy(url, request, headers, media_type):
+    async def fake_proxy(url, request, headers, media_type, cache_control=None):
         assert (url, headers, media_type) == (target.value, target.headers, "video/mp4")
+        # 直接流是分片响应：带可缓存头（CDN 边缘缓存用），兼容升级前的代理实现
+        from backend.emby_server import cdn
+        assert cache_control == cdn.SEGMENT_CACHE_HEADER
         return proxy
 
     monkeypatch.setattr(api, "serve_remote_async", fake_proxy)

@@ -7,6 +7,13 @@
   上限多少、由谁出流）——运营改「并发上限」之前得先知道现在跑到什么程度；
 - ``PUT  /api/admin/playback/policy``：写回策略（仅超级管理员，前缀规则见 admin_roles）。
 
+CDN 域名预留（播放三层第 2/3 层极简预留版）：
+
+- ``GET  /api/admin/playback/cdn``：当前域名/开关/归一化结果/分片缓存头口径；
+- ``PUT  /api/admin/playback/cdn``：写回域名与启用开关（仅超级管理员）。
+  只做域名预留：不做备案、不做厂商对接；CDN 侧的回源与缓存规则由管理员
+  在厂商控制台配置，本服务只保证「启用后播放 URL 走该域名」。
+
 运行态只反映**本进程**：一体化部署时它就是全部；分离部署时转码跑在 EA 上，
 面板这边会显示 ``playback_node=ea``，并提示去「服务器与线路」看节点状态——
 不谎报一个自己看不到的数字。
@@ -17,7 +24,7 @@ from __future__ import annotations
 import os
 import shutil
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -25,7 +32,7 @@ from backend import playback_policy
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 from backend.ratelimit import get_client_ip
-from backend.emby_server import mount_health
+from backend.emby_server import cdn, mount_health
 from backend.emby_server.streaming import (
     active_transcode_ids,
     transcode_capacity,
@@ -86,3 +93,39 @@ def update_playback_policy(
 def _client_ip(request: Request) -> str:
     # 统一用防伪造的 IP 获取（可信代理校验），保留函数名做兼容
     return get_client_ip(request)
+
+
+# ==================== CDN 域名预留（播放三层第 2/3 层） ====================
+
+@router.get("/cdn")
+def get_cdn_config(
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """当前 CDN 预留配置（域名/开关/归一化结果/分片缓存头口径）"""
+    return {"success": True, "cdn": cdn.config_payload(db),
+            "play_lines": list(cdn.play_lines())}
+
+
+class CdnConfigRequest(BaseModel):
+    domain: str = ""
+    enabled: bool = False
+
+
+@router.put("/cdn")
+def update_cdn_config(
+    payload: CdnConfigRequest,
+    request: Request,
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """写回 CDN 预留配置；域名非法时 400 并说清怎么改（不会存半个坏配置）"""
+    try:
+        state = cdn.write_config(db, payload.domain, payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(db, current_admin, "playback_cdn_update", "system", None,
+           {"domain": state.get("domain"), "enabled": state.get("enabled")},
+           ip=_client_ip(request))
+    db.commit()
+    return {"success": True, "cdn": state}

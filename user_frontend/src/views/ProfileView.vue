@@ -27,7 +27,7 @@ import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
-  MonitorPlay, LayoutDashboard, Settings2, Zap, Route,
+  MonitorPlay, LayoutDashboard, Settings2, Zap, Route, Cloud,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -59,17 +59,24 @@ const showPlayPassword = ref(false)
 
 // ===== 播放线路选择 =====
 // direct = 直连线路（默认）：客户端直连网盘，速度最快；
+// cdn = CDN 线路（第 2/3 层预留）：走管理员预留的 CDN 域名，热门分片由边缘缓存；
+//        仅管理员在后台开启 CDN 后才展示（后端给 cdn_enabled）；
 // relay = 中转线路：经服务器转发，适合直连网盘不通（转圈）的用户。
 // 偏好存在后端 user_play_lines 表，按用户隔离；切换后重新播放生效。
 const playLine = ref<PlayLine>('direct')
 const lineSaving = ref(false)
+const cdnAvailable = ref(false)
 
 async function pickLine(line: PlayLine) {
   if (lineSaving.value || playLine.value === line) return
   lineSaving.value = true
   try {
     playLine.value = await setPlayLine(line)
-    toast.success(line === 'direct' ? '已切换到直连线路' : '已切换到中转线路')
+    toast.success(
+      line === 'direct' ? '已切换到直连线路'
+        : line === 'cdn' ? '已切换到 CDN 线路'
+          : '已切换到中转线路',
+    )
   } catch {
     toast.error('切换失败，请重试')
   } finally {
@@ -291,7 +298,9 @@ async function loadProfile(silent = false) {
     if (!silent || watchStats) stats.value = watchStats
     if (!silent || subs.length) subscriptions.value = subs
     // 播放线路偏好加载失败不阻塞页面：拿不到就按默认直连展示
-    getPlayLine().then((line) => { playLine.value = line }).catch(() => {})
+    getPlayLine()
+      .then((res) => { playLine.value = res.line; cdnAvailable.value = res.cdnEnabled })
+      .catch(() => {})
   } catch {
     // 401 已由拦截器处理
   } finally {
@@ -620,6 +629,19 @@ function formatDate(iso?: string | null) {
               直连线路
             </button>
             <button
+              v-if="cdnAvailable"
+              type="button"
+              class="line-opt"
+              :class="{ on: playLine === 'cdn' }"
+              role="radio"
+              :aria-checked="playLine === 'cdn'"
+              :disabled="lineSaving"
+              @click="pickLine('cdn')"
+            >
+              <Cloud :size="13" />
+              CDN 线路
+            </button>
+            <button
               type="button"
               class="line-opt"
               :class="{ on: playLine === 'relay' }"
@@ -632,7 +654,11 @@ function formatDate(iso?: string | null) {
               中转线路
             </button>
           </div>
-          <p class="pane-tip">直连线路速度最快（客户端直连网盘）；如果视频打不开或一直转圈，请切换到中转线路（经服务器转发）。切换后重新播放生效。</p>
+          <p class="pane-tip">
+            直连线路速度最快（客户端直连网盘）；如果视频打不开或一直转圈，请切换到中转线路（经服务器转发）。
+            <template v-if="cdnAvailable">站内已开启 CDN：热门片切到 CDN 线路更稳，首次播放会由边缘缓存分片。</template>
+            切换后重新播放生效。
+          </p>
         </section>
 
         <!-- 安全设置 -->

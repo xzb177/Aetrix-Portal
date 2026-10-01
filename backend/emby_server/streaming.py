@@ -76,15 +76,24 @@ def _range_header(start: int, end: int, total: int) -> dict:
     }
 
 
-def serve_file(path: str, request: Request, media_type: str = "video/mp4") -> StreamingResponse:
-    """带 Range 支持的文件流式响应"""
+def serve_file(path: str, request: Request, media_type: str = "video/mp4",
+               cache_control: Optional[str] = None) -> StreamingResponse:
+    """带 Range 支持的文件流式响应
+
+    ``cache_control``（CDN 预留，第 2/3 层）：分片请求传 ``public, max-age…``，
+    让 CDN 边缘缓存热门分片；None 时不发缓存头（行为与升级前一致）。
+    """
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Media file not found")
     size = os.path.getsize(path)
 
+    extra_headers = {"Accept-Ranges": "bytes"}
+    if cache_control:
+        extra_headers["Cache-Control"] = cache_control
+
     range_header = request.headers.get("range")
     if not range_header:
-        return FileResponse(path, media_type=media_type, headers={"Accept-Ranges": "bytes"})
+        return FileResponse(path, media_type=media_type, headers=dict(extra_headers))
 
     m = RANGE_RE.match(range_header)
     if not m:
@@ -121,7 +130,7 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4") -> St
         iter_file(),
         status_code=206,
         media_type=media_type,
-        headers=_range_header(start, end, size),
+        headers={**_range_header(start, end, size), **extra_headers},
     )
 
 
@@ -224,12 +233,17 @@ async def serve_remote_async(
     request: Request,
     headers: Optional[dict] = None,
     media_type: str = "video/mp4",
+    cache_control: Optional[str] = None,
 ) -> StreamingResponse:
     """远程媒体代理（异步版）：语义与 ``serve_remote`` 完全一致，但不在事件循环上等源站
 
     播放路径上的每次 Range 请求都要等「连上源站 + 源站回首字节」，同步客户端会把这等待
     变成整个进程的暂停（一个用户拖进度条，其他人全部卡住）。异步版的等待只挂起当前请求，
     Range / 状态码 / 透传头的口径与同步版逐项对齐，且凭据同样不下发。
+
+    ``cache_control``（CDN 预留，第 2/3 层）：分片口径时随响应下发，让 CDN 边缘
+    能缓存回源结果；None 时不发缓存头（行为与升级前一致）。凭据在查询串里的
+    API 响应不走这里，302 分支由调用方自带 no-store。
     """
     import httpx
 
@@ -283,6 +297,8 @@ async def serve_remote_async(
         value = resp.headers.get(name)
         if value:
             passthrough[name.title()] = value
+    if cache_control and "Cache-Control" not in passthrough:
+        passthrough["Cache-Control"] = cache_control
     content_type = resp.headers.get("content-type") or media_type
 
     async def iter_remote():
