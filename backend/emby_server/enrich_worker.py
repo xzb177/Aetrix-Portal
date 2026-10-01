@@ -733,20 +733,35 @@ def retry_unmatched(db) -> int:
     （高于默认 0，低于 repair 100）让它们排在队首而不是慢慢等轮转。
     返回捞回的条数。
     """
-    q = (db.query(em.MediaItem)
-         .filter(em.MediaItem.enrich_status == "done",
-                 em.MediaItem.metadata_source == "none",
-                 em.MediaItem.tmdb_id.is_(None),
-                 em.MediaItem.item_type.in_(["series", "movie"]),
-                 em.MediaItem.file_fingerprint.isnot(None)))
-    n = q.update({"enrich_status": "pending",
+    filters = (em.MediaItem.enrich_status == "done",
+               em.MediaItem.metadata_source == "none",
+               em.MediaItem.tmdb_id.is_(None),
+               em.MediaItem.item_type.in_(["series", "movie"]),
+               em.MediaItem.file_fingerprint.isnot(None))
+    # 先把要捞回的名字/年份记下来（第 7 批）：这些片名的阴性搜索结果已落盘
+    # 缓存，不删的话 worker 补搜时直接命中旧缓存、一个请求都不发——
+    # 管理端的重试就成了摆设。
+    affected = {(r[0], r[1], r[2]) for r in db.query(
+        em.MediaItem.name, em.MediaItem.production_year, em.MediaItem.item_type
+    ).filter(*filters).all()}
+    n = (db.query(em.MediaItem).filter(*filters)
+         .update({"enrich_status": "pending",
                   "enrich_attempts": 0,
                   "enrich_next_retry_at": None,
                   "enrich_priority": ENRICH_PRIORITY_RETRY_UNMATCHED},
-                 synchronize_session=False)
+                 synchronize_session=False))
     db.commit()
     if n:
         logger.info("重试未匹配项：%d 条无望条目重新入队（priority=50）", n)
+        try:
+            from backend.emby_server import tmdb_cache
+            purged = 0
+            for name, year, item_type in affected:
+                purged += tmdb_cache.invalidate_search(name, year, item_type)
+            if purged:
+                logger.info("重试未匹配项：已清掉 %d 份旧搜索缓存（下轮补搜真打 TMDB）", purged)
+        except Exception as exc:  # noqa: BLE001 — 缓存清理失败不影响重试入队
+            logger.debug("清理 TMDB 搜索缓存失败: %s", exc)
     return n
 
 

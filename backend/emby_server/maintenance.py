@@ -348,6 +348,7 @@ def run_startup_maintenance() -> dict:
 
     result = {"scan_flags_reset": 0, "scan_runs_closed": 0, "sessions_reaped": 0,
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
+              "tmdb_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_pruned": 0,
               "item_facets_ready": False}
     db = SessionLocal()
@@ -375,6 +376,16 @@ def run_startup_maintenance() -> dict:
         result["subtitle_cache_pruned"] = prune_subtitle_cache()
     except Exception as exc:  # noqa: BLE001
         logger.warning("启动维护（字幕缓存）失败: %s", exc)
+    try:
+        # TMDB 磁盘缓存巡检（第 7 批）：删过期文件 + 超容量按最旧淘汰。
+        # 写入侧也有自己的触发条件，这里是保底——刮削停了缓存也别一直涨。
+        # 值是「删掉的文件数」（干净时 0），与其它计数同口径。
+        from backend.emby_server import tmdb_cache
+        _pruned = tmdb_cache.prune(force=True) or {}
+        result["tmdb_cache_pruned"] = int(_pruned.get("expired_removed", 0)) \
+            + int(_pruned.get("evicted", 0))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("启动维护（TMDB 缓存巡检）失败: %s", exc)
 
     logger.info("启动维护完成: %s", result)
     return result
@@ -482,6 +493,7 @@ def janitor_tick() -> dict:
 
     result = {"sessions_reaped": 0, "sessions_pruned": 0, "transcodes_reaped": 0,
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
+              "tmdb_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
               "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
               "images_pruned": 0,
@@ -603,6 +615,13 @@ def janitor_tick() -> dict:
         result["subtitle_cache_pruned"] = prune_subtitle_cache()
     except Exception as exc:  # noqa: BLE001
         logger.warning("字幕缓存淘汰失败: %s", exc)
+    try:
+        from backend.emby_server import tmdb_cache
+        _pruned = tmdb_cache.prune(force=True) or {}
+        result["tmdb_cache_pruned"] = int(_pruned.get("expired_removed", 0)) \
+            + int(_pruned.get("evicted", 0))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TMDB 缓存巡检失败: %s", exc)
     try:
         result["idle_gc_done"] = bool(_idle_gc_if_quiet())
     except Exception as exc:  # noqa: BLE001
