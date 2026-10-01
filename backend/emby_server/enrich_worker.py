@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 from backend.database import SessionLocal
 from backend.emby_server import models as em
+from backend.emby_server import scan_progress as progress
 
 logger = logging.getLogger(__name__)
 
@@ -393,13 +394,16 @@ def _claim_batch(db, limit: int) -> list:
     return claimed
 
 
-def _mark_failed(db, item_id: int, attempts: int, error: str) -> None:
-    """失败：attempts+1，指数退避，超限转 failed。单条短事务。"""
+def _mark_failed(db, item_id: int, attempts: int, error: str) -> str:
+    """失败：attempts+1，指数退避，超限转 failed。单条短事务。
+
+    返回 "failed" / "retry"，供调用方计入完成速率（v2.42.9）。
+    """
     try:
         item = db.query(em.MediaItem).filter(
             em.MediaItem.id == item_id).first()
         if item is None:
-            return
+            return "skip"
         attempts = (attempts or 0) + 1
         item.enrich_attempts = attempts
         if attempts >= ENRICH_MAX_ATTEMPTS:
@@ -407,15 +411,19 @@ def _mark_failed(db, item_id: int, attempts: int, error: str) -> None:
             item.enrich_next_retry_at = None
             logger.warning("补全重试超限转 failed id=%s attempts=%s err=%s",
                            item_id, attempts, error[:120])
+            outcome = "failed"
         else:
             backoff = ENRICH_RETRY_BASE_SEC * (2 ** (attempts - 1))
             item.enrich_status = "pending"
             item.enrich_next_retry_at = datetime.now() + timedelta(seconds=backoff)
             logger.info("补全失败待重试 id=%s attempts=%s %ss后 err=%s",
                         item_id, attempts, backoff, error[:120])
+            outcome = "retry"
         db.commit()
+        return outcome
     except Exception:  # noqa: BLE001
         db.rollback()
+        return "skip"
 
 
 def _recover_crashed(db) -> int:
@@ -447,6 +455,41 @@ def _suppress_flood(db) -> int:
     return n
 
 
+def _process_item(db, item: Any) -> str:
+    """处理一条已抢到的条目：IO 阶段 → 写库阶段。返回 'done' / 'retry' / 'failed' / 'skip'。
+
+    v2.42.9 从 _worker_loop 里提出来：一是要给**整条**计时并记结果（阶段计数 +
+    完成速率都靠它），二是让循环回到「抢一批 → 逐条处理」两行。行为与提之前一致。
+    """
+    item_id = item.id
+    attempts = getattr(item, "enrich_attempts", 0) or 0
+    # ---- IO 阶段（无写事务）：网络/磁盘全在这里 ----
+    try:
+        fetched = _enrich_fetch(item)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("补全 IO 失败 id=%s: %s", item_id, exc)
+        db.rollback()
+        return _mark_failed(db, item_id, attempts, str(exc))
+    if not fetched.get("ok"):
+        db.rollback()
+        return _mark_failed(db, item_id, attempts,
+                            fetched.get("error") or "fetch failed")
+    # ---- 写库阶段（单条短事务） ----
+    try:
+        fresh = db.query(em.MediaItem).filter(
+            em.MediaItem.id == item_id).first()
+        if fresh is None:
+            return "skip"
+        _enrich_apply(db, fresh, fetched)
+        db.commit()
+        # 写库阶段把状态落成 done / pending（未披干净=留待下次）
+        return "done" if (fresh.enrich_status or "") == "done" else "retry"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("补全写库失败 id=%s: %s", item_id, exc)
+        db.rollback()
+        return _mark_failed(db, item_id, attempts, str(exc))
+
+
 def _worker_loop(worker_id: int) -> None:
     logger.info("补全 worker #%d 启动（L2/L3 后台补全）", worker_id)
     # 同一部剧只搜一次 TMDB：series 级去重（worker 内内存集合）
@@ -466,33 +509,14 @@ def _worker_loop(worker_id: int) -> None:
             for item in batch:
                 if _stop_event.is_set():
                     break
-                item_id = item.id
-                attempts = getattr(item, "enrich_attempts", 0) or 0
-                # ---- IO 阶段（无写事务）：网络/磁盘全在这里 ----
-                try:
-                    fetched = _enrich_fetch(item)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("补全 IO 失败 id=%s: %s", item_id, exc)
-                    db.rollback()
-                    _mark_failed(db, item_id, attempts, str(exc))
-                    continue
-                if not fetched.get("ok"):
-                    db.rollback()
-                    _mark_failed(db, item_id, attempts,
-                                 fetched.get("error") or "fetch failed")
-                    continue
-                # ---- 写库阶段（单条短事务） ----
-                try:
-                    fresh = db.query(em.MediaItem).filter(
-                        em.MediaItem.id == item_id).first()
-                    if fresh is None:
-                        continue
-                    _enrich_apply(db, fresh, fetched)
-                    db.commit()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("补全写库失败 id=%s: %s", item_id, exc)
-                    db.rollback()
-                    _mark_failed(db, item_id, attempts, str(exc))
+                # v2.42.9：单条计时 + 结果计数。这两项就是「单条平均耗时」与
+                # 「近 5 分钟 done/分钟」的来源 —— 后面几批优化（纯继承 / ctx 复用 /
+                # 终态化）到底有没有把积压量降下来，靠它们验收。
+                started = time.monotonic()
+                outcome = _process_item(db, item)
+                progress.note_stage(
+                    "enrich_item", (time.monotonic() - started) * 1000.0)
+                progress.note_completed(outcome)
             # 批次之间释放 session 身份映射，避免长连接内存膨胀
             db.expire_all()
     finally:
@@ -527,6 +551,11 @@ def get_progress() -> dict:
             "probe": probe_by_status,
             "workers": ENRICH_WORKERS,
             "enabled": ENRICH_ENABLED,
+            # v2.42.9 可观测性：状态计数回答「还有多少」，这两个回答
+            # 「一分钟几条、每条卡在哪一段」。进程内计数，重启归零。
+            "stages": progress.stage_stats(),
+            "throughput": progress.throughput(),
+            "mount_io": progress.remote_stats(),
         }
     finally:
         db.close()

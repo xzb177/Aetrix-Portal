@@ -523,11 +523,17 @@ def _is_remote_provider(provider) -> bool:
 
 
 def _call_remote(provider, fn: Callable, rel: str) -> list:
-    """真的列一次目录（远程会占用名额，并记一次「远程列举」用于扫描统计）"""
+    """真的列一次目录（远程会占用名额，并记一次「远程列举」用于统计）
+
+    v2.42.9：远程与**本机**两条路都计一次阶段耗时。以前只统远程——补全积压到底压在
+    网盘 I/O 还是本机磁盘上，是个必须用数据回答的问题（两者的优化方向完全不同）。
+    """
     if not _is_remote_provider(provider):
-        return fn(provider, rel)
-    with remote_io_slot():
-        entries = fn(provider, rel)
+        with progress.stage_timer("local_list"):
+            return fn(provider, rel)
+    with progress.stage_timer("remote_list"):
+        with remote_io_slot():
+            entries = fn(provider, rel)
     progress.note_remote_listing()
     return entries
 

@@ -24,6 +24,7 @@ from typing import Optional
 
 from backend.emby_server import image_store
 from backend.emby_server import models as emby_models
+from backend.emby_server import scan_progress as progress
 
 logger = logging.getLogger(__name__)
 
@@ -534,7 +535,9 @@ class TmdbClient:
             # 重试也要重新取 token：一次重试就是一次真的请求，配额照样要花
             self._limiter.acquire()
             try:
-                return self.session.get(f"{TMDB_API}{path}", params=payload)
+                # v2.42.9：每一次真实发出的 HTTP 都计进 tmdb_req（含重试与换 key 后的重试）
+                with progress.stage_timer("tmdb_req"):
+                    return self.session.get(f"{TMDB_API}{path}", params=payload)
             except Exception as e:  # noqa: BLE001 — 网络异常不应中断整次扫描
                 if attempt >= TMDB_NET_RETRIES:
                     self._stats["net_fail"] += 1
@@ -551,7 +554,9 @@ class TmdbClient:
 
         旧实现的限速是「条目/秒」且只在补全那条路上：一个条目背后是 0~6 次 HTTP，
         于是「2/秒」实际打出去 4~12 请求/秒，而扫描那条路完全没限速。现在两条路都
-        收敛到 `_request()` 的同一个桶上，口径与 TMDB 配额一致。
+        收敛到 `_request()` 的同一个桶上，口径与 TMDB 配额一致（``tmdb_req`` 阶段计数
+        记的是**请求**，与这个桶同一个口径；旧的条目级桶记的是条目，两者对不上正是
+        积压期最容易看错的地方）。
 
         429 也不再是「单 key 直接放弃」：真的读 `Retry-After` 并据此退避，同时把
         速率自适应减半——否则后续条目会在同一个窗口里继续把配额撞满。
@@ -678,6 +683,7 @@ class TmdbClient:
             # 中文短标题的候选数最多（4~5 个）而命中率最低，正是这一条最划算的地方。
             if best is not None and best[0] == 2:
                 self._stats["short_circuit"] += 1
+                progress.note_stage("tmdb_search_short")
                 break
             try:
                 results = self._search_raw(query, year, kind)

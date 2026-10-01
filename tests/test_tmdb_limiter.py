@@ -167,6 +167,8 @@ def test_exact_hit_stops_the_candidate_loop(monkeypatch):
     assert client.search(name, 2013, "series") == HIT
     assert len(client.session.calls) == 1
     assert client.stats()["short_circuits"] == 1
+    # 同时记进阶段计数：管理端「补全进度」面板能直接看到短路省下的候选
+    assert tmdb_mod.progress.stage_stats()["tmdb_search_short"]["count"] >= 1
 
 
 def test_no_exact_hit_still_tries_every_candidate(monkeypatch):
