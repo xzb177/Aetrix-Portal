@@ -5,9 +5,14 @@ side 图片 / NFO / TMDB 刮削全部交给本 worker 在后台补全——这�
 
 - 队列持久化在 ``emby_items.enrich_status``（pending=待补全 done=已补全
   failed=重试超限 enriching=处理中），进程/容器重启不丢；启动时把崩溃残留的
-  ``'enriching'`` 打回 ``'pending'``（断点续补）；
+  ``'enriching'`` 打回 ``'pending'``（断点续补），运行期由 janitor 按租约回收
+  （v2.42.9：抢单写 ``enrich_claimed_at``，停滞超过租约的僵尸行周期打回
+  pending，不再只能靠重启恢复）；
 - 原子抢任务：SELECT FOR UPDATE SKIP LOCKED，多 worker/多进程不重复处理；
 - 失败指数退避：attempts 计数，next_retry_at 调度，5 次后转 failed；
+- 挂载熔断（v2.42.9）：坏挂载不再逐条等 MOUNT_TIMEOUT——挂载连续失败达阈值后
+  熔断打开，该挂载条目在 IO 前就被打回 pending + 长 next_retry_at（不是
+  failed，attempts 不涨），挂载恢复后自然重新入队（见 mounts._call_remote）；
 - 新文件优先（date_added 倒序），TMDB 令牌桶限速；
 - NFO 优先原则不变：NFO 管文字，TMDB 只补图和缺失字段；
 - 补全是幂等的：重复补同一条目只会覆盖出相同结果；
@@ -18,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -42,6 +48,12 @@ ENRICH_ENABLED = (os.getenv("ENRICH_WORKER", "1") or "1").strip().lower() not in
 # 重试：最多 5 次，退避基数 60 秒（60s, 120s, 240s, 480s, 960s）
 ENRICH_MAX_ATTEMPTS = max(1, int(os.getenv("ENRICH_MAX_ATTEMPTS", "5") or 5))
 ENRICH_RETRY_BASE_SEC = max(10, int(os.getenv("ENRICH_RETRY_BASE_SEC", "60") or 60))
+# claim 租约（v2.42.9）：抢单时写 enrich_claimed_at，enriching 停滞超过租约即视为
+# worker 死亡，janitor 打回 pending。单条补全 = 若干次远程 IO + TMDB，正常远不到
+# 15 分钟；真跑超了被回收也只是幂等地多做一次（重试本来就是这么设计的）。
+ENRICH_CLAIM_LEASE_SEC = max(60, int(os.getenv("ENRICH_CLAIM_LEASE_SEC", "900") or 900))
+# janitor 扫描周期：远小于租约即可，回收延迟上限 = 租约 + 周期
+ENRICH_JANITOR_INTERVAL_SEC = max(10, int(os.getenv("ENRICH_JANITOR_INTERVAL_SEC", "60") or 60))
 
 _worker_threads: list = []
 _stop_event = threading.Event()
@@ -364,6 +376,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     item.enrich_status = "pending" if _incomplete else "done"
     item.enrich_attempts = 0
     item.enrich_next_retry_at = None
+    item.enrich_claimed_at = None  # 处理完毕，释放 claim 租约（v2.42.9）
 
     # probe 衔接：需要探测的送进 probe 队列（幂等）
     try:
@@ -399,6 +412,7 @@ def _claim_batch(db, limit: int) -> list:
     claimed = []
     for r in rows:
         r.enrich_status = "enriching"
+        r.enrich_claimed_at = now   # claim 租约：janitor 据此回收僵尸行（v2.42.9）
         claimed.append(r)
     if claimed:
         db.commit()
@@ -417,6 +431,7 @@ def _mark_failed(db, item_id: int, attempts: int, error: str) -> str:
             return "skip"
         attempts = (attempts or 0) + 1
         item.enrich_attempts = attempts
+        item.enrich_claimed_at = None  # 释放 claim 租约（v2.42.9）
         if attempts >= ENRICH_MAX_ATTEMPTS:
             item.enrich_status = "failed"
             item.enrich_next_retry_at = None
@@ -438,13 +453,66 @@ def _mark_failed(db, item_id: int, attempts: int, error: str) -> str:
 
 
 def _recover_crashed(db) -> int:
-    """启动时把崩溃残留的 enriching 打回 pending（断点续补）"""
+    """启动时把崩溃残留的 enriching 打回 pending（断点续补）
+
+    启动时进程内没有任何任务在跑，可以整体回收；运行期的兜底是 janitor
+    （见 _reclaim_stale）：按 claim 租约只回收停滞超时的行，不会误伤在跑的 worker。
+    """
     n = (db.query(em.MediaItem)
          .filter(em.MediaItem.enrich_status == "enriching")
-         .update({"enrich_status": "pending"},
+         .update({"enrich_status": "pending", "enrich_claimed_at": None},
                  synchronize_session=False))
     db.commit()
     return n
+
+
+def _reclaim_stale(db, lease_sec: Optional[int] = None) -> int:
+    """janitor：把「enriching 停滞超过租约」的僵尸行打回 pending（运行期回收）
+
+    场景：worker 线程在补全中途抛出了未预期异常而死亡 / 容器被 kill，行就永远
+    停在 enriching，谁都不会再碰它（_claim_batch 只捞 pending）。旧实现只在
+    start() 时整体回收一次，运行期没有兜底；现在按 claim 时间戳判定：
+
+    - enrich_claimed_at 超出租约 → 打回 pending；
+    - enrich_claimed_at 为 NULL（老库升级上来的历史行）→ 用 date_modified 近似
+      判定：enriching 行在处理期间不写库，date_modified ≈ 被抢到的时刻。
+
+    打回时不改 attempts / next_retry_at：这不是失败，是「没人认领了」——
+    下一次抢单自然捞到（挂载熔断期间的条目已由长 next_retry_at 挡住）。
+    """
+    from sqlalchemy import and_ as _and, or_ as _or
+    lease = ENRICH_CLAIM_LEASE_SEC if lease_sec is None else max(1, int(lease_sec))
+    cutoff = datetime.now() - timedelta(seconds=lease)
+    n = (db.query(em.MediaItem)
+         .filter(em.MediaItem.enrich_status == "enriching")
+         .filter(_or(
+             em.MediaItem.enrich_claimed_at <= cutoff,
+             _and(em.MediaItem.enrich_claimed_at.is_(None),
+                  em.MediaItem.date_modified <= cutoff),
+         ))
+         .update({"enrich_status": "pending", "enrich_claimed_at": None},
+                 synchronize_session=False))
+    db.commit()
+    return n
+
+
+def _janitor_loop() -> None:
+    """租约 janitor 线程：周期回收停滞的 enriching 行（v2.42.9）"""
+    logger.info("补全 janitor 启动（租约 %ss，每 %ss 一轮）",
+                ENRICH_CLAIM_LEASE_SEC, ENRICH_JANITOR_INTERVAL_SEC)
+    while not _stop_event.is_set():
+        try:
+            db = SessionLocal()
+            try:
+                n = _reclaim_stale(db)
+                if n:
+                    logger.info("补全 janitor 回收 %d 条超时租约（enriching → pending）", n)
+            finally:
+                db.close()
+        except Exception as exc:  # noqa: BLE001 — 一轮失败不该拖垮 janitor
+            logger.warning("补全 janitor 执行失败: %s", exc)
+        _stop_event.wait(ENRICH_JANITOR_INTERVAL_SEC)
+    logger.info("补全 janitor 退出")
 
 
 def _suppress_flood(db) -> int:
@@ -466,20 +534,67 @@ def _suppress_flood(db) -> int:
     return n
 
 
+def _mount_id_of(file_path: Optional[str]) -> Optional[int]:
+    """``mount://3/Movies/a.mkv`` → ``3``；非挂载路径返回 None"""
+    path = (file_path or "").strip()
+    if not path.startswith("mount://"):
+        return None
+    head = path[len("mount://"):].partition("/")[0]
+    return int(head) if head.isdigit() else None
+
+
+def _requeue_on_breaker(db, item_id: int, mount_id: Optional[int] = None) -> str:
+    """挂载熔断中：打回 pending + 长 next_retry_at（**不是 failed**）。
+
+    坏挂载上的条目重试只会重复失败：让它们吃长退避，把队列让给健康挂载；
+    attempts 不涨（这不是条目本身的失败，是存储不可用），挂载恢复后自然重补。
+    单条短事务。
+    """
+    try:
+        from backend.emby_server import mounts as mount_lib
+        retry_sec = mount_lib.MOUNT_BREAKER_RETRY_SEC
+        item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+        if item is None:
+            return "skip"
+        item.enrich_status = "pending"
+        item.enrich_claimed_at = None
+        item.enrich_next_retry_at = datetime.now() + timedelta(seconds=retry_sec)
+        db.commit()
+        logger.info("补全熔断跳过 id=%s mount=%s %ss后重试", item_id, mount_id, retry_sec)
+        return "breaker"
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        return "skip"
+
+
 def _process_item(db, item: Any) -> str:
-    """处理一条已抢到的条目：IO 阶段 → 写库阶段。返回 'done' / 'retry' / 'failed' / 'skip'。
+    """处理一条已抢到的条目：IO 阶段 → 写库阶段。
+
+    返回 'done' / 'retry' / 'failed' / 'breaker' / 'skip'
+    （'breaker' = 挂载熔断跳过，不算成功也不算失败，不进速率口径）。
 
     v2.42.9 从 _worker_loop 里提出来：一是要给**整条**计时并记结果（阶段计数 +
     完成速率都靠它），二是让循环回到「抢一批 → 逐条处理」两行。行为与提之前一致。
     """
     item_id = item.id
     attempts = getattr(item, "enrich_attempts", 0) or 0
+    # ---- 熔断前置检查（v2.42.9）：坏挂载的条目不进 IO，不等 20s 超时 ----
+    mount_id = _mount_id_of(item.file_path)
+    if mount_id is not None:
+        from backend.emby_server import mounts as mount_lib
+        if mount_lib.mount_breaker_open(mount_id):
+            db.rollback()
+            return _requeue_on_breaker(db, item_id, mount_id)
     # ---- IO 阶段（无写事务）：网络/磁盘全在这里 ----
     try:
         fetched = _enrich_fetch(item)
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全 IO 失败 id=%s: %s", item_id, exc)
         db.rollback()
+        from backend.emby_server import mounts as mount_lib
+        if isinstance(exc, mount_lib.MountError):
+            # 挂载不可用（含熔断快速失败）：打回 pending + 长退避，不是 failed
+            return _requeue_on_breaker(db, item_id, mount_id)
         return _mark_failed(db, item_id, attempts, str(exc))
     if not fetched.get("ok"):
         db.rollback()
@@ -551,6 +666,16 @@ def get_progress() -> dict:
                       _func.count(em.MediaItem.id)).group_by(
                           em.MediaItem.probe_status).all()
         probe_by_status = {s or "unknown": c for s, c in pq}
+        # 挂载熔断快照（v2.42.9）：「哪个挂载正在熔断」必须能直接看到，
+        # 否则坏挂载拖慢队列时管理员只能对着 pending 数字猜。
+        from backend.emby_server import mounts as mount_lib
+        breakers = mount_lib.mount_breaker_stats()
+        open_ids = {b["mount_id"] for b in breakers["open"] if b["mount_id"] is not None}
+        if open_ids:
+            names = dict(db.query(em.StorageMount.id, em.StorageMount.name)
+                         .filter(em.StorageMount.id.in_(open_ids)).all())
+            for b in breakers["open"]:
+                b["mount_name"] = names.get(b["mount_id"]) or f"挂载 #{b['mount_id']}"
         return {
             "enrich": {
                 "pending": by_status.get("pending", 0),
@@ -567,6 +692,9 @@ def get_progress() -> dict:
             "stages": progress.stage_stats(),
             "throughput": progress.throughput(),
             "mount_io": progress.remote_stats(),
+            # v2.42.9 第 4 批：正在熔断的挂载 + 租约配置（运维一眼定位坏挂载）
+            "mount_breakers": breakers,
+            "claim_lease_sec": ENRICH_CLAIM_LEASE_SEC,
         }
     finally:
         db.close()
@@ -600,7 +728,12 @@ def start() -> None:
                 name=f"enrich-worker-{i}", daemon=True)
             t.start()
             _worker_threads.append(t)
-        logger.info("补全 worker 启动 %d 个线程", ENRICH_WORKERS)
+        # 租约 janitor（v2.42.9）：运行期崩溃的 enriching 行由它周期回收，
+        # 不再只能靠重启。与 worker 同一份幂等守卫（_worker_threads）。
+        j = threading.Thread(target=_janitor_loop, name="enrich-janitor", daemon=True)
+        j.start()
+        _worker_threads.append(j)
+        logger.info("补全 worker 启动 %d 个线程 + janitor", ENRICH_WORKERS)
 
 
 def stop() -> None:

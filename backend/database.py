@@ -491,6 +491,9 @@ def _auto_migrate():
             # enrich_next_retry_at=NULL（可立即重试，由 worker 按退避调度）。
             ("enrich_attempts", "INTEGER", "0"),
             ("enrich_next_retry_at", "DATETIME", "NULL"),
+            # v2.42.9 claim 租约：老库补列后为 NULL（历史 enriching 行没有抢单时刻，
+            # janitor 用 date_modified 近似判定超时，不会误杀正在处理的条目）。
+            ("enrich_claimed_at", "DATETIME", "NULL"),
             # 元数据来源标记：老库补列后为 NULL（历史数据未标记），
             # 由刮削时重新写入；查"刮没刮干净"不再依赖 last_scraped_at 反推。
             ("metadata_source", "VARCHAR(20)", "NULL"),
