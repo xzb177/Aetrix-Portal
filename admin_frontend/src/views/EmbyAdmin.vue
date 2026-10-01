@@ -1804,7 +1804,7 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
   align-items: center;
   gap: 6px;
   padding: 3px 0;
-  color: #a0aec0;
+  color: var(--text-secondary);
 }
 .sa-email-item.sa-disabled {
   opacity: 0.45;
@@ -1825,7 +1825,7 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 }
 .sa-project {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--text-tertiary);
   flex-shrink: 0;
 }
 .sa-enabled-count {

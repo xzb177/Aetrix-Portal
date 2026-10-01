@@ -347,8 +347,8 @@ function ago(s: string | null): string {
   background: var(--border-color, #262626);
   color: var(--text-secondary);
 }
-.mini-badge.ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
-.mini-badge.danger { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+.mini-badge.ok { background: var(--success-bg); color: var(--success); }
+.mini-badge.danger { background: var(--danger-bg); color: var(--danger); }
 .muted { color: var(--text-muted); }
 
 /* 「已封禁」那块统计立牌要能看出异常：类名写了却没定义过（对照页定义了同样的规则）*/

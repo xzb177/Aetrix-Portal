@@ -193,10 +193,12 @@ html[data-theme='light'] {
   --el-button-bg-color: var(--bg-elevated);
   --el-button-border-color: var(--border-strong);
   --el-button-text-color: var(--text-primary);
-  --el-button-hover-bg-color: #1d2836;
-  --el-button-hover-border-color: rgba(255, 255, 255, 0.24);
+  /* 默认按钮的悬停/按下底：以前写死深蓝#1d2836/#131c28与「白色 24%」描边，
+     白日模式下变成白底上的深色块（v2.42.6 改走主题 token） */
+  --el-button-hover-bg-color: var(--bg-hover);
+  --el-button-hover-border-color: var(--border-strong);
   --el-button-hover-text-color: var(--text-primary);
-  --el-button-active-bg-color: #131c28;
+  --el-button-active-bg-color: var(--bg-active);
   --el-button-active-border-color: var(--border-strong);
   --el-button-disabled-bg-color: rgba(255, 255, 255, 0.04);
   --el-button-disabled-border-color: rgba(255, 255, 255, 0.06);
@@ -231,7 +233,7 @@ html[data-theme='light'] {
   --el-button-bg-color: var(--success);
   --el-button-border-color: transparent;
   --el-button-hover-text-color: var(--success-on);
-  --el-button-hover-bg-color: #6ee7b7;
+  --el-button-hover-bg-color: var(--success-strong);
   --el-button-hover-border-color: transparent;
   --el-button-active-bg-color: var(--success-strong);
 }
@@ -241,7 +243,7 @@ html[data-theme='light'] {
   --el-button-bg-color: var(--warning);
   --el-button-border-color: transparent;
   --el-button-hover-text-color: var(--warning-on);
-  --el-button-hover-bg-color: #fcd34d;
+  --el-button-hover-bg-color: var(--warning-strong);
   --el-button-hover-border-color: transparent;
   --el-button-active-bg-color: var(--warning-strong);
 }
@@ -274,36 +276,39 @@ html[data-theme='light'] {
   --el-button-active-bg-color: var(--bg-hover);
 }
 
+/* plain（描边）按钮的彩色文字：原本一律取「深色主题下的亮色值」，
+   白日模式下这几个色（浅青/浅绿/浅黄/浅玫瑰）在浅底上只有 1.5~2.5:1。
+   v2.42.6 全部换成语义 token——浅色主题下令牌已是压深过的值。 */
 .el-button--primary.is-plain {
-  --el-button-text-color: #7fe6f6;
+  --el-button-text-color: var(--primary);
   --el-button-border-color: var(--primary-border);
-  --el-button-hover-text-color: #a5eefb;
+  --el-button-hover-text-color: var(--primary-hover);
   --el-button-hover-border-color: var(--primary);
 }
 
 .el-button--danger.is-plain {
-  --el-button-text-color: #fda4af;
+  --el-button-text-color: var(--danger);
   --el-button-border-color: var(--danger-border);
-  --el-button-hover-bg-color: rgba(251, 113, 133, 0.12);
-  --el-button-hover-text-color: #fecdd3;
+  --el-button-hover-bg-color: var(--danger-bg);
+  --el-button-hover-text-color: var(--danger);
 }
 
 .el-button--success.is-plain {
-  --el-button-text-color: #6ee7b7;
+  --el-button-text-color: var(--success);
   --el-button-border-color: var(--success-border);
-  --el-button-hover-bg-color: rgba(52, 211, 153, 0.12);
+  --el-button-hover-bg-color: var(--success-bg);
 }
 
 .el-button--warning.is-plain {
-  --el-button-text-color: #fcd34d;
+  --el-button-text-color: var(--warning);
   --el-button-border-color: var(--warning-border);
-  --el-button-hover-bg-color: rgba(251, 191, 36, 0.12);
+  --el-button-hover-bg-color: var(--warning-bg);
 }
 
 .el-button--info.is-plain {
-  --el-button-text-color: #93c5fd;
+  --el-button-text-color: var(--info);
   --el-button-border-color: var(--info-border);
-  --el-button-hover-bg-color: rgba(96, 165, 250, 0.12);
+  --el-button-hover-bg-color: var(--info-bg);
 }
 
 /* 文字 / link 按钮：透明底，靠颜色区分（表格行内操作最多） */
@@ -489,7 +494,7 @@ html[data-theme='light'] {
   padding-bottom: 4px;
 }
 
-.el-form-item__error { color: #fda4af; font-size: var(--font-size-xs); padding-top: 3px; }
+.el-form-item__error { color: var(--danger); font-size: var(--font-size-xs); padding-top: 3px; }
 .el-form-item { margin-bottom: 18px; }
 
 .el-form--label-top .el-form-item__label { padding-bottom: 5px; }
@@ -671,8 +676,8 @@ html .el-table__footer-wrapper tr td.el-table__fixed-right-patch {
 
 .el-tag--primary { --el-tag-bg-color: var(--primary-bg); --el-tag-border-color: var(--primary-border); --el-tag-text-color: #7fe6f6; }
 .el-tag--success { --el-tag-bg-color: var(--success-bg); --el-tag-border-color: var(--success-border); --el-tag-text-color: #6ee7b7; }
-.el-tag--warning { --el-tag-bg-color: var(--warning-bg); --el-tag-border-color: var(--warning-border); --el-tag-text-color: #fcd34d; }
-.el-tag--danger { --el-tag-bg-color: var(--danger-bg); --el-tag-border-color: var(--danger-border); --el-tag-text-color: #fda4af; }
+.el-tag--warning { --el-tag-bg-color: var(--warning-bg); --el-tag-border-color: var(--warning-border); --el-tag-text-color: var(--warning); }
+.el-tag--danger { --el-tag-bg-color: var(--danger-bg); --el-tag-border-color: var(--danger-border); --el-tag-text-color: var(--danger); }
 .el-tag--info { --el-tag-bg-color: var(--info-bg); --el-tag-border-color: var(--info-border); --el-tag-text-color: #93c5fd; }
 
 /* ==================== 7. 弹层 ==================== */
@@ -754,10 +759,10 @@ html .el-table__footer-wrapper tr td.el-table__fixed-right-patch {
 }
 
 .el-message__content { font-size: var(--font-size-sm); font-weight: 500; }
-.el-message--success { --el-message-text-color: #a7f3d0; }
-.el-message--warning { --el-message-text-color: #fde68a; }
-.el-message--error { --el-message-text-color: #fecdd3; }
-.el-message--info { --el-message-text-color: #bfdbfe; }
+.el-message--success { --el-message-text-color: var(--success); }
+.el-message--warning { --el-message-text-color: var(--warning); }
+.el-message--error { --el-message-text-color: var(--danger); }
+.el-message--info { --el-message-text-color: var(--info); }
 
 .el-notification { background: var(--bg-elevated); border: 1px solid var(--border-default); }
 
@@ -890,13 +895,13 @@ html .el-table__footer-wrapper tr td.el-table__fixed-right-patch {
 
 .el-alert--warning.is-light {
   background: var(--warning-bg);
-  color: #fde68a;
+  color: var(--warning);
   border: 1px solid var(--warning-border);
 }
 
-.el-alert--error.is-light { background: var(--danger-bg); color: #fecdd3; border: 1px solid var(--danger-border); }
-.el-alert--success.is-light { background: var(--success-bg); color: #a7f3d0; border: 1px solid var(--success-border); }
-.el-alert--info.is-light { background: var(--info-bg); color: #bfdbfe; border: 1px solid var(--info-border); }
+.el-alert--error.is-light { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-border); }
+.el-alert--success.is-light { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-border); }
+.el-alert--info.is-light { background: var(--info-bg); color: var(--info); border: 1px solid var(--info-border); }
 .el-alert__title { font-size: var(--font-size-sm); font-weight: 600; }
 .el-alert__description { font-size: var(--font-size-xs); color: inherit; opacity: 0.9; }
 

@@ -686,7 +686,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .assets-group {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
+  /* 两个 pill 之间留出真正的呼吸位：旧版 0.375rem 比 pill 自己的内距还小，
+     两颗胶囊看上去是粘在一起的一坨（0.25rem 的手机端更糟） */
+  gap: 0.5rem;
   min-width: 0;
 }
 
@@ -697,6 +699,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   gap: 0.3125rem;
   height: 30px;
   padding: 0 0.6875rem;
+  flex: 0 1 auto;
+  min-width: 0;
   background: var(--au-warning-soft);
   border: 1px solid var(--au-warning-border);
   border-radius: var(--au-r-full);
@@ -729,6 +733,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   gap: 0.3125rem;
   height: 30px;
   padding: 0 0.6875rem;
+  flex: 0 1 auto;
+  min-width: 0;
   background: var(--au-primary-soft);
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-full);
@@ -741,6 +747,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .sub-chip-text {
   font-size: 0.75rem;
   font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sub-chip:hover {
@@ -1144,10 +1154,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 .theme-seg {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 2px;
-  margin: 0.25rem 1rem 0.625rem;
-  padding: 2px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  margin: 0.375rem 1rem 0.75rem;
+  padding: 3px;
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-full);
@@ -1156,8 +1166,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.25rem;
-  padding: 0.375rem 0;
+  gap: 0.3125rem;
+  min-width: 0;
+  height: 34px;
+  padding: 0 0.5rem;
   border: 1px solid transparent;
   border-radius: var(--au-r-full);
   background: none;
@@ -1165,17 +1177,30 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
+  transition: background var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    box-shadow var(--au-fast) var(--au-ease);
 }
-.theme-opt:hover { color: var(--au-text); }
-.theme-opt:active { transform: scale(0.96); }
+.theme-opt svg { flex-shrink: 0; }
+.theme-opt:hover { background: var(--au-surface-3); color: var(--au-text); }
+.theme-opt:active { transform: scale(0.97); }
+/* 选中态：实底胶囊。旧版只有 10% 青底 + 淡描边，浅色主题下整段「发虚」、
+   看不出选的是哪一档；现在用主色实底 + on-primary 文字 + 微光晕，两套主题都清晰 */
 .theme-opt.on {
-  background: var(--au-primary-soft);
-  border-color: var(--au-primary-border);
-  color: var(--au-primary);
+  background: var(--au-primary);
+  border-color: var(--au-primary);
+  color: var(--au-on-primary);
+  box-shadow: 0 2px 10px var(--au-primary-glow);
+}
+.theme-opt.on svg { color: var(--au-on-primary); }
+.theme-opt:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: 2px;
 }
 @media (max-width: 768px) {
-  .theme-opt { min-height: 36px; font-size: 0.75rem; }
+  /* 抽屉里是主要入口，移动端给足拇指区高度 */
+  .theme-opt { height: 40px; font-size: 0.8125rem; }
 }
 .dropdown-group-title {
   margin: 0.375rem 0 0.125rem;
@@ -1244,18 +1269,43 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
   .main-nav { display: none; }
 
-  .user-section { gap: 0.375rem; }
-  .assets-group { gap: 0.25rem; }
+  /* 手机顶栏一行要装下：品牌 + 积分 pill + 订阅 pill + 信箱 + 头像。
+     旧版把 pill 间距压到 0.25rem、高度缩到 28px，得到的是「挤在一起」——
+     这里反过来：间距与高度都保持桌面口径（30px，两颗胶囊同一基线），
+     省地方的力气花在品牌 mark 与容器间距上，「会员生效中」不下调字号。 */
+  .header-container { gap: 0.625rem; }
+  .user-section { gap: 0.5rem; }
+  .assets-group { gap: 0.5rem; }
+
+  .header-logo { gap: 0.375rem; }
+  .logo-mark { width: 30px; height: 30px; border-radius: 10px; }
 
   .points-chip,
   .sub-chip {
-    height: 28px;
-    padding: 0 0.5rem;
+    height: 30px;
+    padding: 0 0.625rem;
   }
 
-  .points-chip .points-num { max-width: 64px; }
+  .points-chip .points-num { max-width: 60px; }
 
   .user-btn { padding: 0.25rem; }
   .user-name { display: none; }
+}
+
+/* 超窄屏（≤400px，含 iPhone SE（375））：两侧再各收 2px，字号只降一档，
+   两个 pill 的读数与状态文案都保持完整可读 */
+@media (max-width: 400px) {
+  .header-container { gap: 0.5rem; padding: 0 0.75rem; }
+  .assets-group { gap: 0.375rem; }
+
+  .points-chip,
+  .sub-chip { padding: 0 0.5rem; }
+
+  .points-chip .points-num,
+  .sub-chip-text { font-size: 0.6875rem; }
+
+  .points-chip .points-num { max-width: 52px; }
+
+  .msg-btn { width: 34px; height: 34px; }
 }
 </style>

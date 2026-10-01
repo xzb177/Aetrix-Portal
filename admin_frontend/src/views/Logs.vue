@@ -167,7 +167,7 @@ function detailText(log: AdminLogRow): string {
   font-size: var(--font-size-xs);
   background: var(--primary-soft);
   border: 1px solid var(--primary-border);
-  color: #7fe6f6;
+  color: var(--primary);
   border-radius: var(--radius-sm);
   padding: 3px 8px;
   white-space: nowrap;
@@ -197,7 +197,7 @@ function detailText(log: AdminLogRow): string {
 .quick-chip:hover { color: var(--text-primary); border-color: var(--border-strong); }
 
 .quick-chip.active {
-  color: #7fe6f6;
+  color: var(--primary);
   border-color: var(--primary-border);
   background: var(--primary-bg);
   font-weight: var(--font-weight-semibold);
