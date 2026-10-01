@@ -252,6 +252,9 @@ check(not streaming._TRANSCODE_PROCS, "注册表清空")
 tick = maint.janitor_tick()
 check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     "transcode_orphans", "subtitle_cache_pruned",
+                    # v2.42.9 第 7 批：TMDB 磁盘缓存巡检删掉的文件数（干净时 0，
+                    # 参与全零断言），见 tmdb_cache.prune。
+                    "tmdb_cache_pruned",
                     "item_facets_backfilled", "item_facets_orphans",
                     "scan_dir_states_pruned", "scan_runs_pruned",
                     "images_pruned", "images_freed_bytes",
