@@ -556,6 +556,36 @@ async function doUnbindTmdb() {
 const enrichProgress = ref<EnrichProgress | null>(null)
 const enrichProgressLoading = ref(false)
 
+/**
+ * 阶段用时分解（v2.42.9）：按**累计耗时**降序——排最上面的就是最费时的那一段。
+ * 状态计数只说「还有多少」，这一段回答「每条卡在哪」，是后面几批刮削优化的验收窗口。
+ */
+const enrichStageRows = computed(() => {
+  const stages = enrichProgress.value?.stages || {}
+  return Object.entries(stages)
+    .map(([name, s]) => ({
+      name,
+      label: s.label || name,
+      count: s.count || 0,
+      avgMs: s.avg_ms || 0,
+      totalMs: s.ms || 0,
+    }))
+    .filter((r) => r.count > 0)
+    .sort((a, b) => b.totalMs - a.totalMs)
+})
+
+/** 速率窗口（秒 → 分钟，用于显示文案「近 N 分钟」） */
+const enrichWindowMin = computed(() =>
+  Math.max(1, Math.round((enrichProgress.value?.throughput?.window_sec ?? 300) / 60)))
+
+/** 距上一次成功的时长：done/分钟 为 0 时，它区分「真的慢」与「卡住了 / 没在跑」 */
+const enrichIdleHint = computed(() => {
+  const idle = enrichProgress.value?.throughput?.idle_sec
+  if (idle == null) return '本进程还没成功补全过'
+  if (idle < 60) return `最近一次成功 ${idle} 秒前`
+  return `最近一次成功 ${Math.round(idle / 60)} 分钟前`
+})
+
 async function loadEnrichProgress() {
   enrichProgressLoading.value = true
   try {
@@ -1232,6 +1262,25 @@ function typeLabel(t: string): string {
                 失败 {{ enrichProgress.enrich.failed }}
               </span>
               <span class="fact">重试中 {{ enrichProgress.enrich.retrying }}</span>
+            </div>
+            <!-- v2.42.9：阶段用时分解 + 近 5 分钟完成速率。只报「进程内计数」——
+                 分母是本次进程运行时长，重启会归零，所以标签写清「本进程」。 -->
+            <div v-if="enrichStageRows.length" class="queue-facts" style="margin-bottom: 8px">
+              <span
+                v-for="row in enrichStageRows"
+                :key="row.name"
+                class="fact"
+                :title="`${row.label}：${row.count} 次，累计 ${row.totalMs} ms`"
+              >
+                {{ row.label }} {{ row.avgMs }}ms
+              </span>
+            </div>
+            <div class="drawer-hint" style="margin-bottom: 8px">
+              <template v-if="enrichProgress.throughput">
+                本进程近 {{ enrichWindowMin }} 分钟：
+                完成 {{ enrichProgress.throughput.done_per_min }} 条/分钟
+                （累计 {{ enrichProgress.throughput.done_total }}）· {{ enrichIdleHint }}
+              </template>
             </div>
             <div class="drawer-hint">
               Worker {{ enrichProgress.workers }} 线程 · {{ enrichProgress.enabled ? '运行中' : '已停用' }}

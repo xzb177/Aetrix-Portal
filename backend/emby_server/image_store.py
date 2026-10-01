@@ -31,6 +31,8 @@ import threading
 import time
 from typing import Optional
 
+from backend.emby_server import scan_progress as progress
+
 logger = logging.getLogger(__name__)
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -397,8 +399,11 @@ def _download(url: str) -> Optional[bytes]:
         import httpx
 
         timeout = _env_int("EMBY_IMAGE_TIMEOUT", 15, 1)
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            resp = client.get(url)
+        # v2.42.9：图片走 image.tmdb.org（另一个 CDN，不吃 api_key 配额），单独计时——
+        # 它以前既不占 TMDB 限流、也不进任何可见指标，是整条链上最容易被忽视的尾巴
+        with progress.stage_timer("image_dl"):
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                resp = client.get(url)
         if resp.status_code >= 400:
             logger.info("图片本地化跳过（HTTP %s）: %s", resp.status_code, url)
             return None

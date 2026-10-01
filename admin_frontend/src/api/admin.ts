@@ -629,11 +629,40 @@ export interface TmdbBindResult {
 export const bindTmdb = (id: number, tmdbId: string, verify = true) =>
   post<TmdbBindResult>(`${E}/scrape/items/${id}/bind-tmdb`, { tmdb_id: tmdbId, verify })
 
+/** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
+export interface EnrichStageStat {
+  label: string
+  count: number
+  ms: number
+  avg_ms: number
+  last_at: string | null
+}
+
+/** 完成速率（v2.42.9）：近 window_sec 内每分钟的完成条数 + 距上一次成功的秒数 */
+export interface EnrichThroughput {
+  done_per_min: number
+  retry_per_min: number
+  failed_per_min: number
+  window_sec: number
+  samples: number
+  done_total: number
+  retry_total: number
+  failed_total: number
+  last_done_at: string | null
+  idle_sec: number | null
+}
+
 export interface EnrichProgress {
   enrich: { pending: number; enriching: number; done: number; failed: number; retrying: number }
   probe: Record<string, number>
   workers: number
   enabled: boolean
+  /** v2.42.9：阶段用时分解。键：remote_list / local_list / nfo_read / nfo_hit / tmdb_req /
+   *  image_dl / enrich_item；进程内计数，进程重启归零 */
+  stages?: Record<string, EnrichStageStat>
+  throughput?: EnrichThroughput
+  /** 远程目录列举的累计计数（真实请求 / 复用 / 在飞 / 峰值） */
+  mount_io?: Record<string, number | string | null>
 }
 
 /** 补全 worker 进度：enrich 待处理/进行中/成功/失败/重试中 */

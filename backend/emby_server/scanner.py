@@ -1547,14 +1547,20 @@ def _read_nfo_cached(ctx: "_ScanContext", scan_file: "ScanFile",
     key = ("local", local_path) if local_path else ("mount", scan_file.mount_id, mount_rel)
     if key not in ctx.nfo_cache:
         try:
-            if local_path:
-                with open(local_path, "r", encoding="utf-8-sig", errors="ignore") as f:
-                    text = f.read()
-            else:
-                text = scan_file.provider.read_text(mount_rel)
-            ctx.nfo_cache[key] = nfo_lib.parse_nfo(text)
+            # v2.42.9：真的读一次才计数（耗时含 NFO 的读 + 解析）——
+            # 「nfo_read 次数」与「nfo_hit 次数」的比就是 ctx 缓存的实际复用率
+            with progress.stage_timer("nfo_read"):
+                if local_path:
+                    with open(local_path, "r", encoding="utf-8-sig", errors="ignore") as f:
+                        text = f.read()
+                else:
+                    text = scan_file.provider.read_text(mount_rel)
+                ctx.nfo_cache[key] = nfo_lib.parse_nfo(text)
         except Exception:  # noqa: BLE001 — 单个 NFO 读不到就当没有
             ctx.nfo_cache[key] = None
+    else:
+        # ctx 缓存命中（含阴性缓存）：不读盘、不联网，只记一次命中
+        progress.note_stage("nfo_hit")
     return ctx.nfo_cache[key]
 
 
