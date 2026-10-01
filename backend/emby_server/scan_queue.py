@@ -310,8 +310,137 @@ def is_busy(library_id: int) -> bool:
         return _task_of_locked(library_id) is not None
 
 
+def _db_task_base(lib) -> dict:
+    """库里合成的队列条目：字段名与 ``ScanTask.as_dict`` 对齐（前端两列不用分叉）
+
+    库里没记「谁触发的这一轮」「排了多久 / 被点了几次」——那是进程内任务才有的东西，
+    这里一律留空 / 0，面板显示成「—」，不编一个看起来像真的数字出来。
+    """
+    return {
+        "library_id": int(lib.id),
+        "name": str(lib.name or ""),
+        "trigger": "",
+        "state": STATE_RUNNING,
+        "mount_ids": [],
+        "local_sources": 0,
+        "requested_at": "",
+        "started_at": None,
+        "finished_at": None,
+        "queued_ms": 0,
+        "duration_ms": None,
+        "waiting_for": [],
+        "result": None,
+        "error": None,
+        "request_count": 1,
+        "remote_lists": 0,
+        "remote_reused": 0,
+        "progress": None,
+        # 数据来自执行扫描的节点写进库里的状态，不是本进程的实时队列
+        "via": "db",
+    }
+
+
+def _executor_view(redis_waiting: list) -> dict:
+    """执行扫描的不是本进程时，队列面板三列从库里合成（见 ``snapshot``）
+
+    为什么需要（v2.41 拆分扫描之后暴露）：扫描搬到 worker 进程执行后，API 进程的
+    ``_RUNNING`` / ``_HISTORY`` **永远是空的**，面板的「正在扫描」「最近完成」两列
+    整片空白（空闲时连整个「扫描队列」卡片都不显示）。但 ``Library.scan_status`` /
+    ``scan_progress`` / ``last_scan_at`` 是**跨进程**的：worker 每
+    ``SCAN_PROGRESS_FLUSH_SECONDS`` 秒把进度刷进库，结束时写结果——所以这两列可以从
+    库里合成，每条标 ``via="db"``，面板据此说明「进度来自执行扫描的那台机器」。
+
+    顺带补上 Redis 排队项缺失的库名：Redis 里只存 library_id / trigger，
+    面板的「排队中」列于是只有位置、没有名字。
+
+    返回 ``{"running": [...], "history": [...], "waiting": [...]}``。读库失败时三个
+    列表都退化（不抛）：前端每 3 秒轮询一次这个接口，少两列也比整个面板 500 强。
+    """
+    from backend.emby_server import scanner   # 延迟导入：scanner 反过来依赖本模块
+
+    running: list[dict] = []
+    history: list[dict] = []
+    waiting = [dict(item) for item in (redis_waiting or [])]
+    names: dict[int, str] = {}
+    try:
+        with SessionLocal() as db:
+            running_rows = (
+                db.query(em.Library)
+                .filter(em.Library.scan_status == STATE_RUNNING)
+                .order_by(em.Library.scan_started_at.asc(), em.Library.id.asc())
+                .all()
+            )
+            history_rows = (
+                db.query(em.Library)
+                .filter(em.Library.last_scan_at.isnot(None))
+                .order_by(em.Library.last_scan_at.desc())
+                .limit(SCAN_QUEUE_HISTORY)
+                .all()
+            )
+            for lib in (*running_rows, *history_rows):
+                names[int(lib.id)] = str(lib.name or "")
+
+            for lib in running_rows:
+                data = _db_task_base(lib)
+                # 进度快照是执行节点刷进来的（刷盘间隔见 SCAN_PROGRESS_FLUSH_SECONDS），
+                # 阶段 / 已发现 / 已处理 / 当前目录 / 本轮远程请求数都在里面
+                stored = _decode_progress(getattr(lib, "scan_progress", None)) or {}
+                started = getattr(lib, "scan_started_at", None)
+                data.update({
+                    "state": STATE_RUNNING,
+                    "requested_at": started.isoformat(timespec="seconds") if started else "",
+                    "started_at": started.isoformat(timespec="seconds") if started else None,
+                    "duration_ms": int((datetime.now() - started).total_seconds() * 1000) if started else None,
+                    "remote_lists": int(stored.get("remote_lists") or 0),
+                    "remote_reused": int(stored.get("remote_reused") or 0),
+                    "progress": stored or None,
+                })
+                running.append(data)
+
+            for lib in history_rows:
+                status = str(getattr(lib, "scan_status", None) or scanner.SCAN_STATUS_SUCCESS)
+                stats = scanner.decode_scan_stats(getattr(lib, "scan_stats", None))
+                finished = getattr(lib, "last_scan_at", None)
+                finished_iso = finished.isoformat(timespec="seconds") if finished else None
+                data = _db_task_base(lib)
+                data.update({
+                    "state": STATE_FAILED if status == scanner.SCAN_STATUS_FAILED else STATE_DONE,
+                    "result": status,
+                    "error": getattr(lib, "scan_error", None),
+                    # 库里不留「请求时刻 / 开始时刻」（收尾时 scan_started_at 被清空），
+                    # requested_at 只用于前端列表 key，这里用完成时刻占位
+                    "requested_at": finished_iso or "",
+                    "finished_at": finished_iso,
+                    "duration_ms": stats.get("duration_ms"),
+                })
+                history.append(data)
+
+            missing = [
+                int(item.get("library_id") or 0) for item in waiting
+                if not names.get(int(item.get("library_id") or 0))
+            ]
+            if missing:
+                for lib in db.query(em.Library).filter(em.Library.id.in_(missing)).all():
+                    names[int(lib.id)] = str(lib.name or "")
+    except Exception:  # noqa: BLE001 — 面板少两列，也不能让轮询接口 500
+        logger.warning("从库里合成扫描队列视图失败（面板这两列暂时为空）", exc_info=True)
+        return {"running": [], "history": [], "waiting": waiting}
+
+    for item in waiting:
+        item["name"] = names.get(int(item.get("library_id") or 0), "")
+    return {"running": running, "history": history, "waiting": waiting}
+
+
 def snapshot() -> dict:
-    """整个队列的快照（管理端「扫描队列」面板）"""
+    """整个队列的快照（管理端「扫描队列」面板）
+
+    **谁在执行扫描，决定了这两列从哪来**：
+
+    - 本进程就是执行者（单体模式 / worker）：用进程内队列，实时、有排队原因；
+    - 本进程不是执行者（API 角色 + Redis 桥接可用）：``_RUNNING`` / ``_HISTORY``
+      结构上永远是空的（任务在 worker 的内存里），这时「正在扫描」「最近完成」
+      改从库里的跨进程状态合成，见 ``_executor_view``。
+    """
     # 后端拆分：API 进程的排队列表从 Redis 读（进程内队列是空的）
     redis_waiting = None
     if AETRIX_ROLE == "api":
@@ -335,6 +464,13 @@ def snapshot() -> dict:
                     })
         except Exception:
             redis_waiting = None
+
+    # 执行扫描的不是本进程：三列都从库里合成，并补上 Redis 排队项缺的库名
+    executor_view = None
+    if redis_waiting is not None:
+        executor_view = _executor_view(redis_waiting)
+        redis_waiting = executor_view["waiting"]
+
     with _LOCK:
         waiting = [
             task.as_dict(position=index + 1)
@@ -345,6 +481,9 @@ def snapshot() -> dict:
         running = [task.as_dict() for task in _RUNNING.values()]
         history = [task.as_dict() for task in reversed(_HISTORY)][:SCAN_QUEUE_HISTORY]
         mounts = {str(mount_id): library_id for mount_id, library_id in _MOUNT_OWNER.items()}
+        if executor_view is not None:
+            running = executor_view["running"]
+            history = executor_view["history"]
         return {
             "enabled": bool(SCAN_QUEUE_ENABLED),
             "max_parallel": int(SCAN_MAX_PARALLEL),
@@ -354,6 +493,8 @@ def snapshot() -> dict:
             "history": history,
             "mount_owners": mounts,
             "remote": progress.remote_stats(),
+            # 这两列的数据来源：panel = 本进程的队列（实时）；db = 执行节点的落库状态
+            "view": "db" if executor_view is not None else "panel",
         }
 
 
