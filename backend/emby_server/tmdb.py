@@ -21,6 +21,7 @@ from typing import Optional
 
 from backend.emby_server import image_store
 from backend.emby_server import models as emby_models
+from backend.emby_server import scan_progress as progress
 
 logger = logging.getLogger(__name__)
 
@@ -387,14 +388,20 @@ class TmdbClient:
         return True
 
     def _get(self, path: str, params: dict) -> Optional[dict]:
-        """带密钥轮询的 GET：配额类错误自动换 key 重试"""
+        """带密钥轮询的 GET：配额类错误自动换 key 重试
+
+        v2.42.9：**每一次真实发出的 HTTP** 都计进 ``tmdb_req`` 阶段计数（含换 key 后的重试）。
+        限流器那边计的是「条目」，这里是「请求」——两者对不上正是积压期最容易看错的地方：
+        一个条目后面可能是 0~6 个请求，所以「限速 4/秒」实际可能是几十请求/秒。
+        """
         self._ensure_session()
         if not self.session:
             return None
         tried = 0
         while tried <= len(self.api_keys) or tried == 0:
             try:
-                r = self.session.get(f"{TMDB_API}{path}", params={**params, "api_key": self.api_key})
+                with progress.stage_timer("tmdb_req"):
+                    r = self.session.get(f"{TMDB_API}{path}", params={**params, "api_key": self.api_key})
             except Exception as e:  # noqa: BLE001 — 网络异常不应中断整次扫描
                 logger.warning("TMDB 请求失败 %s: %s", path, e)
                 return None

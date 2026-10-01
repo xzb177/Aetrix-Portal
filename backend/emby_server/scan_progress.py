@@ -1,4 +1,4 @@
-"""扫描实时进度与远程 IO 计数（v2.27.0）
+"""扫描实时进度与远程 IO 计数（v2.27.0；v2.42.9 起兼阶段计数器）
 
 四个媒体库在同几秒内启动扫描时，面板上能看到的信息只有 ``scan_status=running`` 与
 ``item_count=0``——「到底扫到哪了、还要多久、现在卡在谁身上」全靠猜，管理员只能盯着容器 CPU。
@@ -12,13 +12,20 @@
 需要上报远程请求；进度状态若放在 scanner 里，mounts 就得反过来导入 scanner —— 直接形成
 循环依赖。这个模块**不导入任何项目内模块**（只用标准库），三方都只依赖它。
 
+v2.42.9 起这里还装着**阶段计数器**（见文件末尾）：远程/本地目录列举、NFO 读取、TMDB 请求、
+图片下载各自记「次数 + 累计耗时」，再加一条滚动完成速率（近 5 分钟 done/分钟）。
+补全积压到底是「网给慢」还是「根本没在做」，靠这四类计数一眼可分 —— 以前只有状态计数
+（pending/done 几个数字），没有任何用时分解，只能猜。
+
 进程内、不持久化：EM / EA 都是单进程部署，进程内的数据最实时；跨进程 / 刷新页面看的是
 落库快照（``Library.scan_progress``，由 ``scan_queue`` 定期刷盘，见 scan_queue.flush_once）。
 """
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from typing import Optional
 
@@ -225,11 +232,145 @@ def remote_stats() -> dict:
         }
 
 
+# ==================== 阶段计数器（v2.42.9）====================
+# 给「真的会走网络/磁盘」的几个阶段记账：次数 + 累计毫秒 + 最近一次时间。
+#
+# 为什么必须有：补全（enrich）积压 4.2 万条时，进度接口里只有 pending/enriching/done/failed
+# 四个状态数 —— 看不出「一分钟跑几条、每条卡在哪一段」，优化方向只能靠推测。
+# 四类计数落地后，「挂载 I/O 贵还是 TMDB 贵」「本机盘还是 mount://」都能实测回答。
+#
+# 口径：计数器是**进程内**的（EM 单进程部署），与库里的状态计数互补；不落盘、不聚合，
+# 重启归零（重启看的是库里状态）。`enrich_item` 的累计耗时 = 单个条目的整个补全过程，
+# 用它除次数就是「单条平均耗时」——C-1/C-3 那批优化的验收指标。
+
+# 阶段名 → 给人看的中文（管理端直接用，前端不再维护一份）
+STAGE_LABELS = {
+    "remote_list": "远程目录列举",
+    "local_list": "本地目录列举",
+    "nfo_read": "NFO 读取",
+    "nfo_hit": "NFO 命中缓存",
+    "tmdb_req": "TMDB 请求",
+    "image_dl": "图片下载",
+    "enrich_item": "条目补全",
+}
+
+# 完成速率窗口（秒）：近 5 分钟的 done/分钟 = 「积压还要多久」的直接答案
+RATE_WINDOW_SEC = 300
+
+_STAGES: dict = {}
+# 只认这三种结果；别的（如条目已消失的 skip）不进速率口径
+COMPLETION_KINDS = ("done", "retry", "failed")
+# 完成时刻（monotonic, kind）：只留窗口内用于算速率；maxlen 让内存有界
+_COMPLETIONS: deque = deque(maxlen=20000)
+_COMPLETED_TOTAL = {kind: 0 for kind in COMPLETION_KINDS}
+_LAST_DONE_MONO: Optional[float] = None
+_LAST_DONE_ISO: Optional[str] = None
+
+
+def note_stage(name: str, ms: float = 0.0, count: int = 1) -> None:
+    """记一次阶段调用：次数 + 累计毫秒。
+
+    热路径（每秒可能几十上百次）：只做两次加法，不做 IO、不取时间戳以外的工作。
+    ``ms<=0`` 表示只计次数（例如缓存命中）。
+    """
+    if count <= 0:
+        return
+    with _LOCK:
+        row = _STAGES.get(name)
+        if row is None:
+            row = _STAGES[name] = {"count": 0, "ms": 0.0, "timed": 0, "last_at": None}
+        row["count"] += int(count)
+        if ms and ms > 0:
+            row["ms"] += float(ms)
+            row["timed"] += int(count)
+        row["last_at"] = _now_iso()
+
+
+@contextlib.contextmanager
+def stage_timer(name: str):
+    """给一段可能抛异常的 IO 计时：成功失败都记一次（失败照样占用了时间）"""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        note_stage(name, (time.monotonic() - started) * 1000.0)
+
+
+def note_completed(kind: str) -> None:
+    """一条条目跑完：done=真刮干净 / retry=留待下次（含未匹配） / failed=重试超限
+
+    未知 kind（如条目已不存在）直接忽略：它们既不是成功也不是失败，
+    混进取速率会把分母搅浑。
+    """
+    global _LAST_DONE_MONO, _LAST_DONE_ISO
+    if kind not in _COMPLETED_TOTAL:
+        return
+    now = time.monotonic()
+    with _LOCK:
+        _COMPLETIONS.append((now, kind))
+        _COMPLETED_TOTAL[kind] += 1
+        if kind == "done":
+            _LAST_DONE_MONO = now
+            _LAST_DONE_ISO = _now_iso()
+
+
+def stage_stats() -> dict:
+    """阶段计数快照：{阶段: {label, count, ms, avg_ms, last_at}}"""
+    with _LOCK:
+        return {
+            name: {
+                "label": STAGE_LABELS.get(name, name),
+                "count": int(row["count"]),
+                "ms": int(row["ms"]),
+                # 平均只按「计过时的那几次」算：只计次数的缓存命中不该把均值拉下去
+                "avg_ms": int(row["ms"] / row["timed"]) if row["timed"] else 0,
+                "last_at": row["last_at"],
+            }
+            for name, row in _STAGES.items()
+        }
+
+
+def throughput(window_sec: int = RATE_WINDOW_SEC) -> dict:
+    """近 window_sec 的完成速率（每分钟）+ 距上一次成功秒数
+
+    ``done_per_min`` 是积压还能消多久的唯一可直接读出的指标：为 0 且 ``idle_sec`` 在涨，
+    说明 worker 没在干活（而不是干得慢）。
+    """
+    window = max(1, int(window_sec))
+    now = time.monotonic()
+    with _LOCK:
+        rows = [kind for ts, kind in _COMPLETIONS if now - ts <= window]
+        totals = dict(_COMPLETED_TOTAL)
+        last_done_mono = _LAST_DONE_MONO
+        last_done_iso = _LAST_DONE_ISO
+    counts = {"done": 0, "retry": 0, "failed": 0}
+    for kind in rows:
+        if kind in counts:
+            counts[kind] += 1
+    minutes = window / 60.0
+    return {
+        **{f"{k}_per_min": round(counts[k] / minutes, 2) for k in counts},
+        "window_sec": window,
+        "samples": len(rows),
+        "done_total": totals.get("done", 0),
+        "retry_total": totals.get("retry", 0),
+        "failed_total": totals.get("failed", 0),
+        "last_done_at": last_done_iso,
+        "idle_sec": (int(now - last_done_mono) if last_done_mono is not None else None),
+    }
+
+
 def reset() -> None:
     """清空全部进度与计数（测试用；生产代码不调用）"""
-    global _SESSION_DEPTH
+    global _SESSION_DEPTH, _LAST_DONE_MONO, _LAST_DONE_ISO
     with _LOCK:
         _PROGRESS.clear()
         _SESSION_DEPTH = 0
         _REMOTE.update({"lists": 0, "reused": 0, "inflight": 0, "peak_inflight": 0, "last_at": None})
+        _STAGES.clear()
+        _COMPLETIONS.clear()
+        for kind in _COMPLETED_TOTAL:
+            _COMPLETED_TOTAL[kind] = 0
+        _LAST_DONE_MONO = None
+        _LAST_DONE_ISO = None
     unbind()
