@@ -200,8 +200,11 @@ html[data-theme='light'] {
   --el-button-hover-text-color: var(--text-primary);
   --el-button-active-bg-color: var(--bg-active);
   --el-button-active-border-color: var(--border-strong);
-  --el-button-disabled-bg-color: rgba(255, 255, 255, 0.04);
-  --el-button-disabled-border-color: rgba(255, 255, 255, 0.06);
+  /* 按下态文字显式跟随正文色：EP 默认取 hover 文字色，一旦上游改默认值就会
+     出现「深底深字」；写死一处比以后排查便宜（v2.42.6 按钮状态审查） */
+  --el-button-active-text-color: var(--text-primary);
+  --el-button-disabled-bg-color: var(--bg-hover);
+  --el-button-disabled-border-color: var(--border-subtle);
   --el-button-disabled-text-color: var(--text-faint);
 
   height: var(--el-component-size);
@@ -216,8 +219,14 @@ html[data-theme='light'] {
 
 .el-button + .el-button { margin-left: 8px; }
 
-/* 实心按钮：亮底 → 深字（对比度全部 ≥ 4.5:1） */
-.el-button--primary {
+/* 实心按钮：亮底 → 深字（对比度全部 ≥ 4.5:1）
+   ⚠ 选择器一律写成 `.el-button.el-button--x` 双类：Element Plus 自带的
+   组件级变量声明（例如 `.el-button--primary` 把 `--el-button-text-color` 设成它的
+   白色常量）
+   在打包顺序上排在主题文件之后，同优先级下会赢——实心主色按钮因此一直取
+   EP 的白色文字，亮青底白字只有 1.8:1（线上「看不清」的根因）。
+   双类提高一档优先级，不再依赖文件顺序。 */
+.el-button.el-button--primary {
   --el-button-text-color: var(--primary-on);
   --el-button-bg-color: var(--primary);
   --el-button-border-color: transparent;
@@ -228,7 +237,7 @@ html[data-theme='light'] {
   --el-button-active-bg-color: var(--primary-active);
 }
 
-.el-button--success {
+.el-button.el-button--success {
   --el-button-text-color: var(--success-on);
   --el-button-bg-color: var(--success);
   --el-button-border-color: transparent;
@@ -238,7 +247,7 @@ html[data-theme='light'] {
   --el-button-active-bg-color: var(--success-strong);
 }
 
-.el-button--warning {
+.el-button.el-button--warning {
   --el-button-text-color: var(--warning-on);
   --el-button-bg-color: var(--warning);
   --el-button-border-color: transparent;
@@ -249,77 +258,148 @@ html[data-theme='light'] {
 }
 
 /* 深底按钮 → 白字 */
-.el-button--danger {
-  --el-button-text-color: #fff;
+.el-button.el-button--danger {
+  --el-button-text-color: var(--danger-on);
   --el-button-bg-color: var(--danger-strong);
   --el-button-border-color: transparent;
-  --el-button-hover-text-color: #fff;
-  --el-button-hover-bg-color: #f0435f;
+  --el-button-hover-text-color: var(--danger-on);
+  /* #f0435f 压白字只有 3.4:1；#dc2626 在两套主题下都是 4.8:1 */
+  --el-button-hover-bg-color: #dc2626;
   --el-button-hover-border-color: transparent;
+  --el-button-active-text-color: var(--danger-on);
   --el-button-active-bg-color: #be123c;
 }
 
-.el-button--info {
-  --el-button-text-color: #fff;
+.el-button.el-button--info {
+  --el-button-text-color: var(--info-on);
   --el-button-bg-color: var(--info-strong);
   --el-button-border-color: transparent;
-  --el-button-hover-text-color: #fff;
-  --el-button-hover-bg-color: #3b82f6;
+  --el-button-hover-text-color: var(--info-on);
+  /* #3b82f6 压白字 3.7:1 → #2563eb 为 4.9:1 */
+  --el-button-hover-bg-color: #2563eb;
   --el-button-hover-border-color: transparent;
+  --el-button-active-text-color: var(--info-on);
   --el-button-active-bg-color: #1d4ed8;
 }
 
-/* 描边（plain）：透明底 + 彩色字与边框，避免出现浅色块 */
-.el-button.is-plain {
+/* 描边（plain）：透明底 + 彩色字与边框，避免出现浅色块。
+   ⚠ 选择器一律写成 `.el-button.el-button--x.is-plain`（三类别名）：EP 自带的
+   `.is-plain` 系列在打包顺序上靠后，同优先级会赢——它的悬停是「实心彩底 + 白字」，
+   在深色主题下白字压中亮彩底只有 2.4:1，而且底色会从透明变白块。
+   这里把常态/悬停/按下三态一次写全，颜色全跟着语义令牌走。 */
+/* 无色描边按钮走中灰底（文字是正文色，压得住），彩色描边按钮则**不填底**：
+   语义色文字压在 9%~14% 的浅色底上只有 ~4.1:1（浅色主题），
+   改成「底不变 + 描边加重」— 状态提示靠描边与底色阶梯，对比度与常态一致 */
+.el-button.el-button.is-plain {
   --el-button-bg-color: transparent;
+  --el-button-hover-border-color: var(--border-strong);
   --el-button-hover-bg-color: var(--bg-hover);
-  --el-button-active-bg-color: var(--bg-hover);
+  --el-button-active-bg-color: var(--bg-active);
 }
 
-/* plain（描边）按钮的彩色文字：原本一律取「深色主题下的亮色值」，
-   白日模式下这几个色（浅青/浅绿/浅黄/浅玫瑰）在浅底上只有 1.5~2.5:1。
-   v2.42.6 全部换成语义 token——浅色主题下令牌已是压深过的值。 */
-.el-button--primary.is-plain {
+.el-button.el-button--primary.is-plain,
+.el-button.el-button--danger.is-plain,
+.el-button.el-button--success.is-plain,
+.el-button.el-button--warning.is-plain,
+.el-button.el-button--info.is-plain {
+  --el-button-bg-color: transparent;
+  --el-button-hover-bg-color: transparent;
+  --el-button-active-bg-color: transparent;
+}
+
+.el-button.el-button--primary.is-plain {
   --el-button-text-color: var(--primary);
   --el-button-border-color: var(--primary-border);
-  --el-button-hover-text-color: var(--primary-hover);
+  --el-button-hover-text-color: var(--primary);
   --el-button-hover-border-color: var(--primary);
+  --el-button-active-text-color: var(--primary);
+  --el-button-active-border-color: var(--primary);
 }
 
-.el-button--danger.is-plain {
+.el-button.el-button--danger.is-plain {
   --el-button-text-color: var(--danger);
   --el-button-border-color: var(--danger-border);
-  --el-button-hover-bg-color: var(--danger-bg);
   --el-button-hover-text-color: var(--danger);
+  --el-button-hover-border-color: var(--danger);
+  --el-button-active-text-color: var(--danger);
+  --el-button-active-border-color: var(--danger);
 }
 
-.el-button--success.is-plain {
-  --el-button-text-color: var(--success);
+/* success 的浅色值（#059669 压白底 3.4:1）不够，统一用 -strong 档（5.5:1） */
+.el-button.el-button--success.is-plain {
+  --el-button-text-color: var(--success-strong);
   --el-button-border-color: var(--success-border);
-  --el-button-hover-bg-color: var(--success-bg);
+  --el-button-hover-text-color: var(--success-strong);
+  --el-button-hover-border-color: var(--success-strong);
+  --el-button-active-text-color: var(--success-strong);
+  --el-button-active-border-color: var(--success-strong);
 }
 
-.el-button--warning.is-plain {
+.el-button.el-button--warning.is-plain {
   --el-button-text-color: var(--warning);
   --el-button-border-color: var(--warning-border);
-  --el-button-hover-bg-color: var(--warning-bg);
+  --el-button-hover-text-color: var(--warning);
+  --el-button-hover-border-color: var(--warning);
+  --el-button-active-text-color: var(--warning);
+  --el-button-active-border-color: var(--warning);
 }
 
-.el-button--info.is-plain {
+.el-button.el-button--info.is-plain {
   --el-button-text-color: var(--info);
   --el-button-border-color: var(--info-border);
-  --el-button-hover-bg-color: var(--info-bg);
+  --el-button-hover-text-color: var(--info);
+  --el-button-hover-border-color: var(--info);
+  --el-button-active-text-color: var(--info);
+  --el-button-active-border-color: var(--info);
 }
 
-/* 文字 / link 按钮：透明底，靠颜色区分（表格行内操作最多） */
+/* 禁用态：必须压过上面所有状态覆盖。
+   上面的彩色描边规则是三类别名（0,3,0），会盖掉 EP 自带的 `.el-button.is-disabled`，
+   结果禁用按钮仍显示满强度的危险红/主色，看上去和可用的一样。
+   EP 的禁用样式是**直接写属性**（color / border-color / background-color）而非走变量，
+   所以这里也直接写属性 + 抬一档优先级，不依赖文件顺序（变量写法在这里会被 EP 的组合规则盖掉）。 */
+.el-button.el-button:disabled,
+.el-button.el-button.is-disabled,
+.el-button.el-button.is-plain:disabled,
+.el-button.el-button.is-plain.is-disabled {
+  --el-button-text-color: var(--text-faint);
+  --el-button-border-color: var(--border-subtle);
+  --el-button-bg-color: var(--bg-hover);
+  --el-button-hover-bg-color: var(--bg-hover);
+  --el-button-hover-border-color: var(--border-subtle);
+  --el-button-hover-text-color: var(--text-faint);
+  --el-button-active-bg-color: var(--bg-hover);
+  --el-button-active-border-color: var(--border-subtle);
+  --el-button-active-text-color: var(--text-faint);
+  color: var(--text-faint);
+  border-color: var(--border-subtle);
+  background-color: var(--bg-hover);
+  cursor: not-allowed;
+}
+
+/* 描边按钮的禁用态保持透明底，不填灰块 */
+.el-button.el-button.is-plain:disabled,
+.el-button.el-button.is-plain.is-disabled {
+  --el-button-bg-color: transparent;
+  --el-button-hover-bg-color: transparent;
+  --el-button-active-bg-color: transparent;
+  color: var(--text-faint);
+  border-color: var(--border-subtle);
+  background-color: transparent;
+}
+
+/* 文字 / link 按钮：透明底，靠颜色区分（表格行内操作最多）
+   同样双类：EP 的 `.is-text/.is-link` 靠后且同优先级，会把悬停文字改成主色而
+   底色改成浅色块（深色主题下就是白底块） */
 .el-button.is-text,
 .el-button.is-link {
   --el-button-bg-color: transparent;
   --el-button-border-color: transparent;
-  --el-button-hover-bg-color: rgba(255, 255, 255, 0.08);
-  --el-button-active-bg-color: rgba(255, 255, 255, 0.1);
+  --el-button-hover-bg-color: var(--bg-hover);
+  --el-button-active-bg-color: var(--bg-active);
   --el-button-text-color: var(--text-secondary);
   --el-button-hover-text-color: var(--text-primary);
+  --el-button-active-text-color: var(--text-primary);
   height: auto;
   min-height: 30px;
   padding: 5px 9px;
@@ -927,18 +1007,47 @@ html .el-table__footer-wrapper tr td.el-table__fixed-right-patch {
 
 .el-image-viewer__wrapper .el-image-viewer__mask { background: rgba(4, 7, 12, 0.92); }
 
-/* ==================== 深色按钮强制覆盖（2026-09-29） ==================== */
-/* el-button 默认（无 type）在深色主题下发白，此处用直接属性而非仅变量，确保生效 */
-.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link) {
+/* ==================== 默认按钮强制覆盖（2026-09-29，2026-10-01 修状态） ====================
+   el-button 默认（无 type）在深色主题下发白，此处用直接属性而非仅变量，确保生效。
+   但直接属性优先级最高，写死的值会盖掉主题令牌：旧版 hover/focus 是硬编码的
+   #1d2836 + rgba(255,255,255,.24)，在白日模式下就是「深蓝底 + 深色字」，
+   而且 :focus 也在其中——手机点完按钮会一直「粘」在这个深色态（线上实拍即此）。
+   现在全部走主题令牌：悬停/聚焦是淡色阶，按下是主色淡底，文字始终是正文色。
+
+   ⚠ 选择器尾部必须排除禁用态（:not(:disabled):not(.is-disabled)）：这里是 8 个
+   否定类（0,8,0），优先级高得会连带把禁用按钮也染成「正常色」，看上去和可用的一样。 */
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):not(:disabled):not(.is-disabled) {
   background-color: var(--bg-elevated);
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
-.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):hover,
-.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):focus {
-  background-color: #1d2836;
-  border-color: rgba(255, 255, 255, 0.24);
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):not(:disabled):not(.is-disabled):hover,
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):not(:disabled):not(.is-disabled):focus-visible {
+  background-color: var(--bg-hover);
+  border-color: var(--border-strong);
   color: var(--text-primary);
+}
+.el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-text):not(.is-link):not(:disabled):not(.is-disabled):active {
+  background-color: var(--bg-active);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+/* 键盘焦点环：上面那条 :focus-visible{outline:none}（tooltip 触发器）会在
+   键盘用户身上把按钮的焦点可见性一并抹掉，这里用更高优先级补回来 */
+.el-button:focus-visible,
+.el-button.el-tooltip__trigger:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+/* 触摸 / 鼠标点击后的残留焦点：不保留悬停底色，交还各变体自己的常态配色。
+   `:focus`（非 :focus-visible）正是「手指抬起后那一下」——手机不会像键盘那样
+   主动去按 Tab，所以这个状态的底色清掉最符合直觉（旧版在此留下深蓝底）。
+   选择器 3 类起步，免得被 EP 自带的 `.el-button:focus` 盖掉。 */
+.el-button:focus:not(:focus-visible) {
+  background-color: var(--el-button-bg-color);
+  border-color: var(--el-button-border-color);
+  color: var(--el-button-text-color);
 }
 /* el-radio-button 未选中态深色 */
 .el-radio-button__inner {
