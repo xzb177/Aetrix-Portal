@@ -143,3 +143,48 @@ def test_incomplete_stays_pending_for_retry():
         db.query(em.Library).delete()
         db.commit()
         db.close()
+
+
+# ==================== 处方 12・Tier 1.5（C-14）：短中文标题的包含式匹配 ====================
+
+
+def test_cjk_contain_rank_hits_for_short_title():
+    """≥3 字中文查询是标题子串 → Tier 1.5 命中，rank=超长度的负值"""
+    variants = [tmdb._norm_text("虎子的冒险")]
+    names = [tmdb._norm_text("虎子的冒险日记")]
+    hit = {"original_language": "zh", "original_name": "虎子的冒险日记"}
+    got = tmdb._cjk_contain_rank(variants, names, hit)
+    assert got == -(len("虎子的冒险日记") - len("虎子的冒险")), got
+
+
+def test_cjk_contain_rank_rejects_two_char_query():
+    """两字名（如「虎子」）不得包含式命中——先挡掉「虎子→老虎和兔子」类错配"""
+    variants = [tmdb._norm_text("虎子")]
+    names = [tmdb._norm_text("老虎和兔子")]
+    hit = {"original_language": "zh", "original_name": "老虎和兔子"}
+    assert tmdb._cjk_contain_rank(variants, names, hit) is None
+
+
+def test_cjk_contain_rank_language_gate_blocks_latin_world():
+    """语种/地区闸门：拉丁世界的同名巧合不参与包含式匹配"""
+    variants = [tmdb._norm_text("虎子的冒险")]
+    names = [tmdb._norm_text("虎子的冒险日记")]
+    hit = {"original_language": "en", "origin_country": [],
+           "original_name": "Tiger Kid"}   # 无 CJK 原名、非中日韩产物
+    assert tmdb._cjk_contain_rank(variants, names, hit) is None
+
+
+def test_hit_score_tier_15_when_lcs_structurally_impossible():
+    """端到端：4 字查询对 7 字标题，Tier 1（lcs≥6）结构性不达标，Tier 1.5 接住"""
+    hit = {"name": "风犬少年的天空", "original_name": "风犬少年的天空",
+           "original_language": "zh"}
+    sc = tmdb._hit_score("风犬少年 (2020)", "风犬少年", hit)
+    assert sc is not None, "短中文标题必须能命中"
+    assert sc[0] == 1.5, sc
+
+
+def test_hit_score_gate_rejects_mismatch_in_end_to_end_path():
+    """端到端：非中日韩产物 + 非精确匹配 → 整体拒绝（不降级到包含式）"""
+    hit = {"name": "虎子的冒险日记", "original_name": "Tiger Kid",
+           "original_language": "en", "origin_country": ["US"]}
+    assert tmdb._hit_score("虎子的冒险 (2024)", "虎子的冒险", hit) is None

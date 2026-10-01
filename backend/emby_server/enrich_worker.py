@@ -59,6 +59,22 @@ ENRICH_CLAIM_LEASE_SEC = max(60, int(os.getenv("ENRICH_CLAIM_LEASE_SEC", "900") 
 # janitor 扫描周期：远小于租约即可，回收延迟上限 = 租约 + 周期
 ENRICH_JANITOR_INTERVAL_SEC = max(10, int(os.getenv("ENRICH_JANITOR_INTERVAL_SEC", "60") or 60))
 
+# 调度优先级（v2.42.9 处方 4，probe_priority 先例）：
+#   100 = repair（用户主动修复，数量少、可见）——置顶
+#    50 = 重试未匹配项（管理员显式触发的补搜）
+#     0 = 默认（沿用旧口径：新入库优先）
+ENRICH_PRIORITY_REPAIR = 100
+ENRICH_PRIORITY_RETRY_UNMATCHED = 50
+# 按库轮转（处方 4）：每个 worker 进程记住「上一轮从哪个库接着抢」，老分类不再被
+# 新入库条目饿死。库里没有待处理条目时自动跳到下一个库，不多等一轮。
+ENRICH_LIBRARY_FAIRNESS = (os.getenv("ENRICH_LIBRARY_FAIRNESS", "1") or "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+# 零 API 别名索引（处方 12）：进程内 TTL 缓存的重建周期与行数上限
+_ALIAS_INDEX_TTL = max(30, int(os.getenv("ENRICH_ALIAS_INDEX_TTL", "300") or 300))
+_ALIAS_INDEX_MAX = max(1000, int(os.getenv("ENRICH_ALIAS_INDEX_MAX", "50000") or 50000))
+_alias_index: dict = {"rows": None, "at": 0.0}
+
 _worker_threads: list = []
 _stop_event = threading.Event()
 _worker_lock = threading.Lock()
@@ -240,42 +256,64 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
                     False, "", None, kind, tmdb_id, True)
                 result["tmdb_details"] = details
         elif tmdb_client.configured and kind in ("series", "movie"):
-            hit, details = _sc._tmdb_work(
-                True, item.name or "", item.production_year, kind,
-                getattr(item, "tmdb_id", None), True)
-            result["tmdb_hit"] = hit
-            result["tmdb_details"] = details
+            # 处方 12・零 API 别名匹配：同一部剧已在库里（换文件名/换译名重扫）
+            # 时，1 次 details 请求替代 4~5 次候选搜索——且绝不写错名字
+            # （只补 id/图/别名，名字以库里那份为准）。
+            alias_id = _alias_tmdb_id(item.name or "")
+            if alias_id:
+                progress.note_stage("enrich_alias_hit")
+                result["tmdb_id"] = alias_id
+                _hit, details = _sc._tmdb_work(
+                    False, "", None, kind, alias_id, True)
+                result["tmdb_details"] = details
+            else:
+                hit, details = _sc._tmdb_work(
+                    True, item.name or "", item.production_year, kind,
+                    getattr(item, "tmdb_id", None), True)
+                result["tmdb_hit"] = hit
+                result["tmdb_details"] = details
         # 豆瓣兜底：TMDB 没配置、或 TMDB 搜不到时才走。
         # 只补 TMDB 没给的（标题/年份/海报），绝不覆盖已有数据。
+        #
+        # v2.42.9 父级快速失败（生产实测：第 5 批后 65 条/分 → 0.3 条/分）：
+        # 成组抢单让父级先行，而 TMDB 搜不到的父级会串行等豆瓣 + Bangumi
+        # 兑底（各 15s 超时），8 个线程全部卡死在几十个父级上，
+        # 后面上万单集排队。现在：TMDB 已配置且真的搜过（无高置信命中）时
+        # 直接跳过兜底——父级由写库阶段终态化（done + none，见 _enrich_apply），
+        # 子集立刻纯继承；兜底仍保留：TMDB 未配置（豆瓣是主数据源）、
+        # repair 请求（用户等着的）。跳过的随时可用管理端「重试未匹配项」补搜。
         if (kind in ("series", "movie") and not getattr(item, "tmdb_id", None)
                 and not result.get("tmdb_hit")):
-            from backend.emby_server import altmeta
-            # _enrich_fetch 是 IO 阶段函数、只收 item、没有 db（写库在 _enrich_apply）。
-            # 配置读取因此另开一个短会话，用完即关——绝不在这里借用写事务的 session。
-            _cfg_db = SessionLocal()
-            try:
-                _ok = altmeta.enabled(_cfg_db)
-                if _ok:
-                    altmeta.warn_dead_keys_once(_cfg_db)
-                    _interval = altmeta.min_interval(_cfg_db)
-                    _bgm_interval = altmeta.min_interval_bangumi(_cfg_db)
-            finally:
-                _cfg_db.close()
-            if _ok:
+            if tmdb_client.configured and not needs_repair:
+                progress.note_stage("enrich_fallback_skip")
+            else:
+                from backend.emby_server import altmeta
+                # _enrich_fetch 是 IO 阶段函数、只收 item、没有 db（写库在 _enrich_apply）。
+                # 配置读取因此另开一个短会话，用完即关——绝不在这里借用写事务的 session。
+                _cfg_db = SessionLocal()
                 try:
-                    result["douban_hit"] = altmeta.search(
-                        item.name or "", item.production_year, kind, _interval)
-                except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
-                    logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
-                # 豆瓣限流/没命中时再试 Bangumi——它有 name_cn 与封面，
-                # 对 TMDB 收录差的中文剧集特别有用（实测命中 B-PROJECT、落语朱音）。
-                if not result["douban_hit"]:
+                    _ok = altmeta.enabled(_cfg_db)
+                    if _ok:
+                        altmeta.warn_dead_keys_once(_cfg_db)
+                        _interval = altmeta.min_interval(_cfg_db)
+                        _bgm_interval = altmeta.min_interval_bangumi(_cfg_db)
+                finally:
+                    _cfg_db.close()
+                if _ok:
                     try:
-                        result["bangumi_hit"] = altmeta.search_bangumi(
-                            item.name or "", item.production_year, kind,
-                            _bgm_interval)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug("Bangumi 兜底失败 %s: %s", item.name, exc)
+                        result["douban_hit"] = altmeta.search(
+                            item.name or "", item.production_year, kind, _interval)
+                    except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
+                        logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
+                    # 豆瓣限流/没命中时再试 Bangumi——它有 name_cn 与封面，
+                    # 对 TMDB 收录差的中文剧集特别有用（实测命中 B-PROJECT、落语朱音）。
+                    if not result["douban_hit"]:
+                        try:
+                            result["bangumi_hit"] = altmeta.search_bangumi(
+                                item.name or "", item.production_year, kind,
+                                _bgm_interval)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("Bangumi 兜底失败 %s: %s", item.name, exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全 TMDB 失败 %s: %s", item.file_path, exc)
         result["ok"] = False
@@ -428,10 +466,33 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             item.metadata_source = "inherit"
     elif kind in ("series", "movie"):
         if tmdb_client.configured and not item.tmdb_id and not alt_hit:
-            _incomplete = True
-        if not (item.overview or "").strip():
+            # 处方 5（终态化）：search **真的跑过**且无高置信命中 =「搜过、没有」——
+            # 这批条目在旧实现里走 5 次重试 × 每 60~960 秒重打 4~5 个候选搜索，
+            # 结果必然是空：积压数字永不下降，白白烧掉约 7 万次 TMDB 请求。
+            # 终态 done + metadata_source='none'（语义正好是「跑过但没拿到」），
+            # 管理端「重试未匹配项」（retry_unmatched）随时可把它们捞回来。
+            # 别误伤：ok=False（网络/限流失败）、repair 请求、NFO 带 tmdb_id、
+            # 本次搜到了但写库没拿到 id——这四种都走老的重试路。
+            _searched_no_hit = bool(
+                fetched.get("ok")
+                and not needs_repair
+                and not fetched.get("tmdb_id")
+                and not (nfo_data or {}).get("tmdb_id")
+                and not fetched.get("tmdb_hit")
+            )
+            if _searched_no_hit:
+                # 豆瓣/Bangumi 也没兜到（alt_hit 为空才会进到这里）：
+                # 显式记 none，与「从未标记过」区分开。
+                item.metadata_source = "none"
+            else:
+                _incomplete = True
+        else:
+            _searched_no_hit = False
+        if not _searched_no_hit and not (item.overview or "").strip():
             # 豆瓣 subject_suggest 不提供简介：补到标题/年份/海报就算完成，
             # 否则这批条目会永远停在 pending 反复重试。
+            # （终态分支例外：TMDB 都搜过了还没有 id，overview 只能来自
+            #   TMDB/兜底，重试也不会有——不再为它白付一轮退避。）
             if not alt_hit:
                 _incomplete = True
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
@@ -442,6 +503,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     item.enrich_attempts = 0
     item.enrich_next_retry_at = None
     item.enrich_claimed_at = None  # 处理完毕，释放 claim 租约（v2.42.9）
+    # 优先级消费完归零（处方 4）：repair 的 100 在上面已随 repair_requested_at
+    # 清除；重试未匹配的 50 也一样——残留值会让这个条目在未来的重试里永久插队。
+    item.enrich_priority = 0
 
     # probe 衔接：需要探测的送进 probe 队列（幂等）
     try:
@@ -467,27 +531,52 @@ def _claim_batch(db, limit: int) -> list:
     于是同一部剧的条目落在同一个 worker、按季/集顺序连着处理：
     ``_ScanContext`` 的目录列举 / NFO 缓存才能在条目间复用（处方 1），
     父级先落 done、子集才能纯继承（处方 3）。
-    组之间仍按「最近入库」倒序（与旧口径一致；每库公平轮转见后续批次）。
+
+    v2.42.9 第 6 批（处方 4）：调度公平性 + 修复置顶——
+    - ``enrich_priority desc``：repair（用户主动修复）置顶，重试未匹配次之；
+    - **按库轮转**（``_library_turn``）：组仍按「最近入库」倒序，但跨库先绕圈，
+      老分类不再被新入库条目饿死（``ENRICH_LIBRARY_FAIRNESS=0`` 关闭）。
     """
     from sqlalchemy import case as _case, func as _func, or_ as _or
 
     now = datetime.now()
     due = _or(em.MediaItem.enrich_next_retry_at.is_(None),
-              em.MediaItem.enrich_next_retry_at <= now)
+              em.MediaItem.enrich_next_retry_at <= now,
+              # 处方 4：repair 是用户主动触发（图片修复排队），数量少、可见，
+              # 不应陪 4 万条积压等退避——立即置顶抢走（priority=100）。
+              em.MediaItem.repair_requested_at.isnot(None))
     group_key = _func.coalesce(em.MediaItem.series_id, em.MediaItem.id)
 
-    # 先看最近入库的若干个组：通常 1~3 个组就能填满一批；被别的 worker
+    base_order = (
+        # GROUP BY 查询里排序必须用聚合：组优先级 = 组内最大值（PG 硬要求）
+        _func.max(em.MediaItem.enrich_priority).desc(),
+        _func.max(em.MediaItem.date_added).desc(),
+    )
+
+    def _order_with_fairness(q):
+        if ENRICH_LIBRARY_FAIRNESS:
+            # 上一轮消费过的库沉到队尾（不是置顶）：这样轮转才是真正的「绕圈」——
+            # 消费 A → 下一轮 B 先 → 消费 B → 再下一轮 A 先。若置顶，游标库会
+            # 连续吃满批次，轮转退化为静态优先级。
+            return (q.order_by(_case((em.MediaItem.library_id == _library_turn(), 1),
+                                     else_=0),
+                               *base_order))
+        return q.order_by(*base_order)
+
+    # 先看优先级最高 / 最近入库的若干个组：通常 1~3 个组就能填满一批；被别的 worker
     # 锁住（抢到 0 行）的组自动跳过，继续看下一个。GROUP BY 查询没法带
     # FOR UPDATE（PG 限制），所以是「选组」与「抢行」两步。
-    groups = (db.query(group_key.label("g"),
-                       _func.max(em.MediaItem.date_added).label("latest"))
-              .filter(em.MediaItem.enrich_status == "pending", due)
-              .group_by(group_key)
-              .order_by(_func.max(em.MediaItem.date_added).desc())
-              .limit(20).all())
+    groups_q = (db.query(group_key.label("g"),
+                         _func.max(em.MediaItem.date_added).label("latest"),
+                         em.MediaItem.library_id.label("lib"))
+                .filter(em.MediaItem.enrich_status == "pending", due)
+                # library_id 必须显式入组（PG 要求）：组键是全局 id，
+                # 同一组恒在同一库内，(group_key, library_id) 与 group_key 等价。
+                .group_by(group_key, em.MediaItem.library_id))
+    groups = _order_with_fairness(groups_q).limit(20).all()
 
     claimed: list = []
-    for gid, _latest in groups:
+    for gid, _latest, _lib in groups:
         if len(claimed) >= limit:
             break
         q = (db.query(em.MediaItem)
@@ -511,7 +600,26 @@ def _claim_batch(db, limit: int) -> list:
         claimed.extend(rows)
     if claimed:
         db.commit()
+        if ENRICH_LIBRARY_FAIRNESS:
+            # 这一轮实际抢到的库（按优先级最高的那条算）作为下一轮的起点
+            _library_turn(claimed[0].library_id)
     return claimed
+
+
+_library_turn_state = {"lib_id": None}
+
+
+def _library_turn(start_lib_id: Optional[int] = None) -> Optional[int]:
+    """按库轮转的游标（处方 4，进程内即可：每个 worker 线程一个 db session，
+
+    轮转偏移在进程内共享即可达成「老分类不被饿死」——各线程轮转相位不同反而
+    让跨库覆盖更均匀）。无参调用：返回上一轮的起点（组排序用）；
+    带参调用：记录「这一轮从哪个库抢的」。
+    """
+    if start_lib_id is not None:
+        _library_turn_state["lib_id"] = start_lib_id
+        return start_lib_id
+    return _library_turn_state["lib_id"]
 
 
 def _mark_failed(db, item_id: int, attempts: int, error: str) -> str:
@@ -608,6 +716,71 @@ def _janitor_loop() -> None:
             logger.warning("补全 janitor 执行失败: %s", exc)
         _stop_event.wait(ENRICH_JANITOR_INTERVAL_SEC)
     logger.info("补全 janitor 退出")
+
+
+def retry_unmatched(db) -> int:
+    """「重试未匹配项」（处方 5 的配套后台动作）：把终态无望条目捞回队列。
+
+    终态化（_enrich_apply）把「TMDB 搜过、无高置信命中」的条目标 done +
+    metadata_source='none'——它们不再吃重试预算。但这不是永久放弃：
+    TMDB 每天都在新增条目、本地别名（Tier 1.5）也在变好，管理员在
+    管理后台点一次「重试未匹配项」，这批条目就重新排队补搜一遍。
+
+    只动 done + none + 无 tmdb_id 的 series/movie；置 enrich_priority=50
+    （高于默认 0，低于 repair 100）让它们排在队首而不是慢慢等轮转。
+    返回捞回的条数。
+    """
+    q = (db.query(em.MediaItem)
+         .filter(em.MediaItem.enrich_status == "done",
+                 em.MediaItem.metadata_source == "none",
+                 em.MediaItem.tmdb_id.is_(None),
+                 em.MediaItem.item_type.in_(["series", "movie"]),
+                 em.MediaItem.file_fingerprint.isnot(None)))
+    n = q.update({"enrich_status": "pending",
+                  "enrich_attempts": 0,
+                  "enrich_next_retry_at": None,
+                  "enrich_priority": ENRICH_PRIORITY_RETRY_UNMATCHED},
+                 synchronize_session=False)
+    db.commit()
+    if n:
+        logger.info("重试未匹配项：%d 条无望条目重新入队（priority=50）", n)
+    return n
+
+
+def _alias_tmdb_id(name: str) -> Optional[str]:
+    """零 API 本地别名匹配（处方 12）：在已入库条目的 aliases / 名字里找同一部剧。
+
+    Tier 1.5 解决「TMDB 返回的 top10 里挑得出」；这一步解决「已命中的剧
+    本来就在库里，换个文件名又搜一遍」。命中后走 details（1 次请求）
+    替代 4~5 次候选搜索，且不写错名字（只补 id/图/别名）。
+    索引是进程内 TTL 缓存（默认 5 分钟），不随积压增长（上限 5 万行）。
+    """
+    from backend.emby_server.tmdb import _norm_text as _norm
+    key = _norm(name or "")
+    if len(key) < 2:
+        return None
+    now = time.monotonic()
+    if (_alias_index["rows"] is None or now - _alias_index["at"] > _ALIAS_INDEX_TTL):
+        db = SessionLocal()
+        try:
+            rows = (db.query(em.MediaItem.tmdb_id, em.MediaItem.name,
+                             em.MediaItem.aliases)
+                    .filter(em.MediaItem.item_type.in_(["series", "movie"]),
+                            em.MediaItem.tmdb_id.isnot(None))
+                    .limit(_ALIAS_INDEX_MAX).all())
+        except Exception:  # noqa: BLE001 — 索引失败不影响主流程
+            rows = []
+        finally:
+            db.close()
+        index: dict = {}
+        for tmdb_id, mname, aliases in rows:
+            for alias in [mname] + (str(aliases or "").split(",") if aliases else []):
+                nk = _norm(alias or "")
+                if nk and nk not in index:
+                    index[nk] = str(tmdb_id)
+        _alias_index["rows"] = index
+        _alias_index["at"] = now
+    return _alias_index["rows"].get(key)
 
 
 def _suppress_flood(db) -> int:

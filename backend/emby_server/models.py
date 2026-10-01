@@ -172,6 +172,11 @@ class MediaItem(Base):
     # 的行并打回 pending（见 enrich_worker._reclaim_stale），不必等重启。
     # 老库补列后为 NULL：视为「旧格式 enriching」，由 date_modified 近似判定。
     enrich_claimed_at = Column(DateTime)
+    # v2.42.9 处方 4 调度优先级：越大越先补全（0 = 默认，沿用旧口径）。
+    # repair（用户主动修复）置 100；「重试未匹配项」置 50。只影响同库内的排序，
+    # 跨库公平由按库轮转保证（见 enrich_worker._claim_batch）。
+    # probe_priority 的先例：Integer 列即可，无需新表。
+    enrich_priority = Column(Integer, default=0)
     # 元数据来源标记：这条条目的文字/图片**实际来自哪里**。
     # 取值：nfo=本地 NFO；tmdb=TMDB 搜索/详情；tmdb_img=NFO 给文字、TMDB 补图；
     # none=刮削跑过但没拿到数据（仍缺 tmdb_id/简介）。NULL=历史数据未标记。
