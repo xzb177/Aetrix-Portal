@@ -274,7 +274,7 @@ def test_process_item_breaker_open_requeues_pending(db, clean_breaker):
     it = _make_item(db, file_path="mount://9/Movies/a.mkv",
                     enrich_status="enriching", enrich_claimed_at=datetime.now())
 
-    def boom(item):
+    def boom(*_a, **_k):
         raise AssertionError("熔断中的条目不允许进 IO")
 
     with mock.patch.object(enrich_worker, "_enrich_fetch", boom), \
@@ -296,7 +296,7 @@ def test_process_item_mount_error_requeues_not_failed(db, clean_breaker):
     it = _make_item(db, file_path="mount://7/Movies/b.mkv",
                     enrich_status="enriching", enrich_claimed_at=datetime.now())
 
-    def dead_mount(item):
+    def dead_mount(*_a, **_k):
         raise mnt.MountError("网盘连接超时（测试用）")
 
     with mock.patch.object(enrich_worker, "_enrich_fetch", dead_mount):
@@ -312,7 +312,7 @@ def test_process_item_non_mount_error_still_fails_normally(db, clean_breaker):
     """非挂载异常（如 TMDB 之外的真实 bug）仍走原有 attempts/退避路径"""
     it = _make_item(db, file_path="/tmp/local.mp4")
 
-    def broken(item):
+    def broken(*_a, **_k):
         raise RuntimeError("非挂载错误（测试用）")
 
     with mock.patch.object(enrich_worker, "_enrich_fetch", broken):
@@ -329,3 +329,232 @@ def test_mount_id_of():
     assert enrich_worker._mount_id_of("/media/movies") is None
     assert enrich_worker._mount_id_of(None) is None
     assert enrich_worker._mount_id_of("mount://abc/x") is None
+
+
+# ==================== 第 5 批：成组抢单 + ctx 复用 + 纯继承（v2.42.9）====================
+
+
+def test_claim_batch_groups_series_parent_first(db):
+    """成组抢单（处方 2）：同一部剧整组抢走，父级排在最前；组按最近入库倒序"""
+    now = datetime.now()
+    series = _make_item(db, item_type="series", name="组抢剧",
+                        enrich_status="pending",
+                        date_added=now - timedelta(hours=1))
+    eps = [
+        _make_item(db, item_type="episode", name=f"第 1 季 第 {n} 集",
+                   file_path=f"mount://9/剧/Season 1/E{n:02d}.mkv",
+                   series_id=series.id, parent_id=series.id,
+                   season_number=1, episode_number=n,
+                   enrich_status="pending",
+                   date_added=now - timedelta(minutes=60 - n))
+        for n in (1, 2, 3)
+    ]
+    movie = _make_item(db, item_type="movie", name="新入库的电影",
+                       enrich_status="pending",
+                       date_added=now)  # 最新 → 组排最前
+    claimed = enrich_worker._claim_batch(db, 10)
+    ids = [c.id for c in claimed]
+    # 组之间：最新的电影组在前；组内：父级（剧）先于集；整组连在一起
+    assert ids[0] == movie.id
+    assert ids[1] == series.id
+    assert ids[2:] == [e.id for e in eps]
+    assert len(ids) == 5
+    # 抢到的都置 enriching + 租约
+    assert all(c.enrich_status == "enriching" and c.enrich_claimed_at for c in claimed)
+
+
+def test_claim_batch_keeps_group_whole_across_batches(db):
+    """批量截断时组剩余部分仍在队里，下一批继续抢（同一部剧不被打散）"""
+    now = datetime.now()
+    series = _make_item(db, item_type="series", name="长剧",
+                        enrich_status="pending", date_added=now)
+    for n in (1, 2, 3, 4):
+        _make_item(db, item_type="episode", name=f"E{n}",
+                   file_path=f"mount://9/长剧/S1/E{n}.mkv",
+                   series_id=series.id, season_number=1, episode_number=n,
+                   enrich_status="pending",
+                   date_added=now - timedelta(minutes=n))
+    first = enrich_worker._claim_batch(db, 2)
+    assert len(first) == 2
+    assert first[0].id == series.id          # 父级先抢
+    rest = enrich_worker._claim_batch(db, 10)
+    # 剩余三集（同组）被下一批抢走
+    assert all(c.series_id == series.id for c in rest)
+    assert len(rest) == 3
+
+
+def test_claim_batch_skips_locked_out_and_not_due_groups(db):
+    """未到重试时间的组不进候选；无组可选返回空列表"""
+    now = datetime.now()
+    _make_item(db, enrich_next_retry_at=now + timedelta(hours=1))
+    assert enrich_worker._claim_batch(db, 10) == []
+
+
+class _CountingProvider:
+    """假远程提供者：数 list_dir / read_text 次数（验收处方 1 的核心指标）"""
+
+    def __init__(self, nfo_names=(), sub_names=()):
+        self.list_dir_calls: list = []
+        self.read_text_calls: list = []
+        self._nfo = set(nfo_names)
+        self._sub = set(sub_names)
+
+    def list_dir(self, rel: str = "/"):
+        self.list_dir_calls.append(rel)
+        base = rel.rstrip("/").rpartition("/")[2] or ""
+        out = []
+        if base in ("Season 1", "剧名 (2020)"):
+            for n in (1, 2, 3):
+                out.append(type("E", (), {"name": f"E{n:02d}.mkv",
+                                          "rel": f"{rel.rstrip('/')}/E{n:02d}.mkv",
+                                          "is_dir": False})())
+            for nfo in sorted(self._nfo):
+                out.append(type("F", (), {"name": nfo,
+                                          "rel": f"{rel.rstrip('/')}/{nfo}",
+                                          "is_dir": False})())
+        if rel.rstrip("/").endswith("剧名 (2020)") or rel == "/剧名 (2020)":
+            pass
+        return out
+
+    def read_text(self, rel: str) -> str:
+        self.read_text_calls.append(rel)
+        if rel.endswith("tvshow.nfo"):
+            return "<tvshow><title>剧名</title></tvshow>"
+        if rel.endswith(".nfo"):
+            return "<episodedetails><title>E</title></episodedetails>"
+        raise FileNotFoundError(rel)
+
+
+def _episode_scan_file(monkeypatch, provider, name="E01.mkv"):
+    """把 _scanfile_from_item 换成假提供者，避免真去查 StorageMount 表"""
+    from backend.emby_server import scanner as _sc
+    scan_file = _sc.ScanFile(
+        stored_path=f"mount://9/剧名 (2020)/Season 1/{name}", name=name,
+        local_dir=None, dir_rel="/剧名 (2020)/Season 1", size=1, container="mkv",
+        mount_id=9, rel=f"/剧名 (2020)/Season 1/{name}", provider=provider,
+    )
+    monkeypatch.setattr(enrich_worker, "_scanfile_from_item",
+                        lambda it: scan_file)
+    return scan_file
+
+
+def _episode_item(db, series=None, **kw):
+    kw.setdefault("item_type", "episode")
+    kw.setdefault("file_path", f"mount://9/剧名 (2020)/Season 1/{kw.get('name', 'E01.mkv')}")
+    if series is not None:
+        kw.setdefault("series_id", series.id)
+        kw.setdefault("parent_id", series.id)
+    return _make_item(db, **kw)
+
+
+def test_shared_ctx_reuses_listing_within_group(db, monkeypatch):
+    """ctx 复用（处方 1）：同一组里同目录只列一次，tvshow.nfo 只读一次"""
+    provider = _CountingProvider(nfo_names=("tvshow.nfo",))
+    _episode_scan_file(monkeypatch, provider)
+    it1 = _episode_item(db)
+    it2 = _episode_item(db, name="E02.mkv")
+    holder: dict = {}
+    enrich_worker._enrich_fetch(it1, holder=holder)
+    enrich_worker._enrich_fetch(it2, holder=holder)
+    # 同一目录只列一次（旧实现每条集都列）；tvshow.nfo 全组只读一次
+    assert provider.list_dir_calls.count("/剧名 (2020)/Season 1") == 1
+    tvshow_reads = sum(1 for r in provider.read_text_calls
+                       if r.endswith("tvshow.nfo"))
+    assert tvshow_reads == 1
+
+
+def test_shared_ctx_rebuilt_on_new_group(db, monkeypatch):
+    """组边界重置 holder：新组重建 ctx，缓存不跨组携带"""
+    p1 = _CountingProvider()
+    _episode_scan_file(monkeypatch, p1)
+    it1 = _episode_item(db)
+    holder: dict = {}
+    enrich_worker._enrich_fetch(it1, holder=holder)
+    ctx1 = holder["ctx"]
+    enrich_worker._enrich_fetch(_episode_item(db, name="E02.mkv"), holder=holder)
+    assert holder["ctx"] is ctx1
+    # 新组：holder 置空后重建
+    holder = {}
+    enrich_worker._enrich_fetch(_episode_item(db, name="E03.mkv"), holder=holder)
+    assert holder["ctx"] is not ctx1
+
+
+def test_pure_inherit_zero_network_and_copies_parent(db, monkeypatch):
+    """纯继承（处方 3）：父级已 done 且有图、本集无自带 NFO → 零 NFO/TMDB，落 done"""
+    from backend.emby_server import scan_progress as _progress
+    before = _progress.stage_stats().get("enrich_pure_inherit", {}).get("count", 0)
+    series = _make_item(db, item_type="series", name="父级已完成的剧",
+                        enrich_status="done", tmdb_id="777",
+                        poster_path="/img/p.jpg", backdrop_path="/img/f.jpg")
+    provider = _CountingProvider()   # 目录里没有任何 .nfo
+    _episode_scan_file(monkeypatch, provider)
+    it = _episode_item(db, series=series, enrich_status="enriching",
+                       enrich_claimed_at=datetime.now())
+    parent = enrich_worker._inherit_parent_info(db, it)
+    assert parent is not None and parent["series_id"] == series.id
+    res = enrich_worker._enrich_fetch(it, holder={}, inherit_parent=parent)
+    assert res.get("pure_inherit") is True
+    assert res["nfo_data"] is None and res["tmdb_hit"] is None
+    assert provider.read_text_calls == []          # 一个 NFO 都没读
+    # 写库阶段：图片沿父级回退 + 落 done + 标 inherit + 释放租约
+    enrich_worker._enrich_apply(db, it, res)
+    db.commit()
+    assert it.enrich_status == "done"
+    assert it.metadata_source == "inherit"
+    assert it.enrich_claimed_at is None
+    assert it.poster_path == "/img/p.jpg"          # 父级海报回退（既有逻辑）
+    assert it.backdrop_path == "/img/f.jpg"
+    # 计数器可见（用增量断言，不清全局计数器）
+    after = _progress.stage_stats().get("enrich_pure_inherit", {}).get("count", 0)
+    assert after == before + 1
+
+
+def test_pure_inherit_never_overwrites_existing_fields(db, monkeypatch):
+    """「不覆盖已有字段」回归：本集已有自己的图 / metadata_source 时不动它们"""
+    series = _make_item(db, item_type="series", name="父级有图的剧",
+                        enrich_status="done", tmdb_id="888",
+                        poster_path="/img/parent.jpg")
+    provider = _CountingProvider()
+    _episode_scan_file(monkeypatch, provider)
+    it = _episode_item(db, series=series, poster_path="/img/mine.jpg",
+                       metadata_source="nfo")
+    parent = enrich_worker._inherit_parent_info(db, it)
+    res = enrich_worker._enrich_fetch(it, holder={}, inherit_parent=parent)
+    assert res.get("pure_inherit") is True
+    enrich_worker._enrich_apply(db, it, res)
+    db.commit()
+    assert it.poster_path == "/img/mine.jpg"       # 不被父级图覆盖
+    assert it.metadata_source == "nfo"             # 不被 inherit 覆盖
+
+
+def test_pure_inherit_requires_parent_done_and_no_repair(db, monkeypatch):
+    """父级未 done / 本集带修复标记 → 不走捷径，照旧完整抓取"""
+    series_pending = _make_item(db, item_type="series", name="还没刮完的剧",
+                                enrich_status="pending", tmdb_id="999",
+                                poster_path="/img/p.jpg")
+    provider = _CountingProvider()
+    _episode_scan_file(monkeypatch, provider)
+    it1 = _episode_item(db, series=series_pending)
+    assert enrich_worker._inherit_parent_info(db, it1) is None
+
+    series_done = _make_item(db, item_type="series", name="已完成的剧",
+                             enrich_status="done", tmdb_id="999",
+                             poster_path="/img/p.jpg")
+    it2 = _episode_item(db, series=series_done,
+                        repair_requested_at=datetime.now())
+    assert enrich_worker._inherit_parent_info(db, it2) is None
+
+
+def test_episode_with_own_nfo_takes_full_path(db, monkeypatch):
+    """本集有自己的 NFO → 不走纯继承（NFO 里可能有本集专属数据）"""
+    series = _make_item(db, item_type="series", name="有 NFO 的剧",
+                        enrich_status="done", tmdb_id="555",
+                        poster_path="/img/p.jpg")
+    provider = _CountingProvider(nfo_names=("E01.mkv.nfo",))
+    _episode_scan_file(monkeypatch, provider)
+    it = _episode_item(db, series=series)
+    parent = enrich_worker._inherit_parent_info(db, it)
+    assert parent is not None
+    res = enrich_worker._enrich_fetch(it, holder={}, inherit_parent=parent)
+    assert not res.get("pure_inherit")
+    assert provider.read_text_calls, "有自带 NFO 就应该真去读"
