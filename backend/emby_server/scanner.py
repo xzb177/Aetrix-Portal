@@ -35,6 +35,7 @@ from backend.emby_server.tmdb import (  # noqa: F401
     TMDB_IMAGE,
     TMDB_LANG,
     TmdbClient,
+    prewarm_images,
     tmdb_client,
 )
 
@@ -1939,6 +1940,9 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         if series_hit is not None:
             # episode 分支为隐式 series 做的 TMDB 搜索命中，留给写库循环落到 series 上
             ctx.series_tmdb_results[pending.series_guid] = (series_hit, series_details)
+        # 图片也在这里落盘（写事务之外）：写库循环里的 apply_images / apply 只落字段
+        # （见 tmdb._set_image 的 allow_download=False）。剧集详情同样要预热。
+        prewarm_images(hit, details, series_hit, series_details)
         if pending.series_tmdb is not None and isinstance(pending.series_tmdb, Future):
             # 搜索任务本身抛异常了：别记“已搜过”，下次扫描重来
             # （_result 上面已经等过 future，这里 exception() 不会阻塞）
@@ -2769,7 +2773,9 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             # 已有 TMDB 命中但缺 IMDb Id / 多别名 → 用详情接口补齐
                             # （中英文、繁简、多别名搜索依赖 aliases）
                             # 详情同样是预取的：apply_details / apply_images 只把已取回的
-                            # 数据落到条目上，不会在这里发请求（与 enrich / refresh_images 同口径）
+                            # 数据落到条目上，不会在这里发请求（与 enrich / refresh_images 同口径）。
+                            # v2.42.9 起图片也一样：下载在 _prepare_and_prefetch 的
+                            # prewarm_images 里完成，这里的 _set_image 只查本地文件
                             if item.tmdb_id and (needs_repair or not (item.imdb_id and item.aliases)):
                                 if not needs_repair or tmdb_client.apply_images(item, _pending.tmdb_details):
                                     tmdb_client.apply_details(item, _pending.tmdb_details)

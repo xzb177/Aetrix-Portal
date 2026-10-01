@@ -4,6 +4,8 @@
 本测试覆盖「把远程图落成本机文件」这一层的全部关键行为：
 
 - **落盘**：写入原子（不留 .part）、内容一致、同一张图只下载一次、并发只下载一次
+- **写事务里绝不下载**（v2.42.9）：下载统一在 IO 阶段（`prewarm_images`），写库阶段只落字段；
+  没预热上的图只落远程地址，交给取图时的按需自愈
 - **失败回退**：源站 404/超时/非图片内容 → 不落盘、不改条目、接口照旧走原来的代理路径
 - **自愈**：本地缓存被清掉（/tmp 重启清空、维护淘汰）后，取图时按需重新落一份并记住路径
 - **优先级**：本地化过的图优先走本地；用户自己放的封面（不在缓存目录里）不受影响
@@ -134,7 +136,7 @@ for label, url in (("源站 404", "https://img.tmdb.org/boom.jpg"),
 AUTH_FAIL["on"] = False
 check("失败不会留下半张图", not [n for n in os.listdir(IMAGE_DIR) if ".part" in n])
 
-# ==================== 3. 刮削时本地化（tmdb.apply）====================
+# ==================== 3. 刮削时本地化（IO 阶段预热 → 写库只落字段）====================
 lib = em.Library(guid="i" * 32, name="图片本地化库", collection_type="movies", paths="")
 db.add(lib)
 db.commit()
@@ -144,7 +146,16 @@ db.commit()
 
 hit = {"id": 999001, "title": "本地化测试片", "overview": "…", "vote_average": 7.5,
        "poster_path": "/poster.jpg", "backdrop_path": "/backdrop.jpg", "genre_ids": [28]}
+# v2.42.9：下载统一在 IO 阶段（写事务之外）。以前是 apply() → _set_image() → localize()
+# 在**写事务里**真的发 HTTP——一张图超时 15s 就等于攥着数据库写锁 15s，而 scanner /
+# enrich 的注释里却写着「不会在这里发请求」，代码与自己的声明相反。
+downloads.clear()
+check("IO 阶段预热：要落哪两张图就哪两张备好", tmdb.prewarm_images(hit) == 2,
+      f"下载 {len(downloads)} 次 {downloads}")
+marked = len(downloads)
 tmdb.tmdb_client.apply(item, hit, "movie")
+check("写库阶段一次 HTTP 都不发（预热过的图只查本地文件）",
+      len(downloads) == marked, f"写库阶段又下载 {len(downloads) - marked} 次")
 db.commit()
 check("刮削后条目同时有远程地址与本地文件",
       item.primary_image_url.endswith("/poster.jpg") and
@@ -156,6 +167,20 @@ check("背景图同样本地化",
 chain = emby_api._image_chain(item, "Primary", db)
 check("取图链路优先走本地（缓存目录里的那份）", chain and chain[0] == item.poster_path,
       str(chain[:2]))
+
+# 没预热过的图：写库阶段不下载，只落远程地址——由取图时的按需自愈补上（见第 4 节）
+bare = em.MediaItem(guid="i" * 31 + "9", library_id=lib.id, item_type="movie",
+                    name="没预热的片")
+db.add(bare)
+db.commit()
+hit2 = {**hit, "id": 999003, "poster_path": "/poster2.jpg", "backdrop_path": "/backdrop2.jpg"}
+marked = len(downloads)
+tmdb.tmdb_client.apply(bare, hit2, "movie")
+check("没预热过的图绝不在写事务里下载，只落远程地址（交给按需自愈）",
+      len(downloads) == marked and bare.primary_image_url.endswith("/poster2.jpg")
+      and not bare.poster_path,
+      f"下载 +{len(downloads) - marked} poster_path={bare.poster_path!r}")
+db.commit()
 
 # ==================== 4. 缓存被清掉 → 自愈 ====================
 os.remove(item.poster_path)

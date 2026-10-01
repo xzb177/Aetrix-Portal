@@ -211,6 +211,17 @@ def _enrich_fetch(item: Any) -> dict:
         result["ok"] = False
         result["error"] = str(exc)[:200]
 
+    # 4. 图片预热（IO 阶段）：把这次要落的图先下到本地，写库阶段就只落字段
+    #    （v2.42.9：以前 _enrich_apply → apply → _set_image → localize 在**写事务里**
+    #    真的发 HTTP，一张图超时 15s 就把数据库写锁攥 15s，违反本模块自己的声明；
+    #    现在写事务里的 localize 是 allow_download=False，预热没赶上的图只是「这轮没
+    #    本地化」，交给取图时的按需自愈）。豆瓣/Bangumi 兜底图走 extra。
+    from backend.emby_server.tmdb import prewarm_images
+    result["images_prewarmed"] = prewarm_images(
+        result.get("tmdb_hit"), result.get("tmdb_details"),
+        extra=[(result.get(_k) or {}).get("image")
+               for _k in ("douban_hit", "bangumi_hit")])
+
     return result
 
 

@@ -39,6 +39,7 @@ from backend.emby_server.tmdb import (
     TMDB_KEYS_CONFIG_KEY,
     _env_keys,
     _split_keys,
+    prewarm_images,
     tmdb_client,
 )
 from backend.integrations import store
@@ -233,6 +234,8 @@ def _rescrape_one(db: Session, item: em.MediaItem) -> dict:
                 # 有 TMDB ID：跳过搜索，只取详情补缺失的图 / IMDb / 别名
                 details = tmdb_client.details(str(tmdb_id), kind)
                 if details:
+                    # 图先落盘再落字段：写事务里 _set_image 不再发 HTTP（v2.42.9）
+                    prewarm_images(details)
                     if not (item.imdb_id and item.aliases):
                         tmdb_client.apply_details(item, details)
                         notes.append("TMDB 补齐 IMDb/别名")
@@ -245,6 +248,7 @@ def _rescrape_one(db: Session, item: em.MediaItem) -> dict:
                 # 无 TMDB ID：按名称 + 年份搜索后全量应用（手动触发才走这条路）
                 hit = tmdb_client.search(item.name, item.production_year, kind)
                 if hit:
+                    prewarm_images(hit)
                     tmdb_client.apply(item, hit, kind)
                     notes.append(f"TMDB 搜索命中：{hit.get('title') or hit.get('name')}")
                 else:
@@ -621,6 +625,7 @@ def bind_tmdb_id(
         kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
         data = tmdb_client.details(tid, kind)
         if data:
+            prewarm_images(data)
             if not (item.imdb_id and item.aliases):
                 tmdb_client.apply_details(item, data)
                 notes.append("补齐 IMDb/别名")

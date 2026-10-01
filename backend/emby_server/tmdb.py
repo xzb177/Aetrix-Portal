@@ -382,18 +382,60 @@ def _db_keys(db=None) -> list[str]:
 _MISS = object()
 
 
+def image_specs(*payloads) -> list[tuple[str, str]]:
+    """一次刮削要落的图片 ``(kind, url)`` 列表——IO 阶段按这个预热，写库阶段按这个落字段
+
+    必须是单一口径：``_set_image`` 在写事务里**不再下载**，所以预热要看**同一份** URL，
+    否则本地化会静默失效（w500 海报 / w1280 背景这两个尺寸不要在任何地方再拼一遍）。
+    """
+    out: list[tuple[str, str]] = []
+    for data in payloads:
+        if not data:
+            continue
+        poster = data.get("poster_path")
+        backdrop = data.get("backdrop_path")
+        if poster:
+            out.append(("Primary", f"{TMDB_IMAGE}/w500{poster}"))
+        if backdrop:
+            out.append(("Backdrop", f"{TMDB_IMAGE}/w1280{backdrop}"))
+    return out
+
+
+def prewarm_images(*payloads, extra=()) -> int:
+    """IO 阶段把这一批刮削要落的图先下到本地（写库阶段只落字段，v2.42.9）
+
+    ``payloads`` 是 TMDB 的 hit / details（按 ``image_specs`` 拼 URL）；``extra`` 是不走
+    TMDB 尺寸规则的图（豆瓣 / Bangumi 兜底源给的原图 URL）。
+
+    写事务里的 ``_set_image`` 是 ``allow_download=False``：只认已经在本地的那份。所以只要
+    要调 ``apply`` / ``apply_images``，就应在**写事务之前**调一次这里。预热失败或被并发旋钮
+    挡住（``image_store._STATS["throttled"]``）只是「这轮不本地化」，取图时会按需补一份。
+    """
+    try:
+        urls = [url for _kind, url in image_specs(*payloads)]
+        urls += [str(u) for u in extra if u]
+        return image_store.prewarm(urls) if urls else 0
+    except Exception as exc:  # noqa: BLE001 — 预热失败不影响刮削
+        logger.debug("图片预热失败: %s", exc)
+        return 0
+
+
 def _set_image(item: emby_models.MediaItem, kind: str, url: str) -> None:
-    """落一个刮削到的图片地址；开启本地化时同时把图落成本地文件
+    """落一个刮削到的图片地址；本地文件**已预热**时同时落本地路径
 
     远程地址**始终**保留（唯一事实来源）：本地那份只是缓存，被清掉/被删掉都能自愈——
     取图时若发现本地文件不在了，会按需再落一份（见 media_routes.item_image）。
-    下载失败只是“没本地化”，不影响入库。
+
+    这个函数只在**写事务里**被调用，所以这里绝不发 HTTP（``allow_download=False``）：
+    下载统一在 IO 阶段做（``image_specs`` + ``image_store.prewarm``）。在此处下载一张图
+    超时 15s，就等于攥着数据库写锁 15s，而且与 scanner 里「写库不调网络」的声明相矛的
+    （v2.42.9 之前的实情）。没预热上的图只是「这轮不本地化」，取图时会按需补一份。
     """
     if kind == "Backdrop":
         item.backdrop_image_url = url
     else:
         item.primary_image_url = url
-    local = image_store.localize(url)
+    local = image_store.localize(url, allow_download=False)
     if not local:
         return
     if kind == "Backdrop":
@@ -759,22 +801,21 @@ class TmdbClient:
         if not item.tmdb_id:
             return False
         data = self.details(str(item.tmdb_id), kind)
+        # 修复路径同样是「先落盘再落字段」：写库阶段不发 HTTP（见 _set_image）
+        image_store.prewarm(url for _kind, url in image_specs(data))
         return self.apply_images(item, data)
 
     def apply_images(self, item: emby_models.MediaItem, data: dict) -> bool:
         """把详情接口里的图片落到条目上（返回是否拿到图）"""
         if not data:
             return False
-        poster = data.get("poster_path")
-        backdrop = data.get("backdrop_path")
-        if poster:
-            _set_image(item, "Primary", f"{TMDB_IMAGE}/w500{poster}")
-        if backdrop:
-            _set_image(item, "Backdrop", f"{TMDB_IMAGE}/w1280{backdrop}")
-        if (poster or backdrop) and getattr(item, "metadata_source", None) == "nfo":
+        specs = image_specs(data)
+        for img_kind, url in specs:
+            _set_image(item, img_kind, url)
+        if specs and getattr(item, "metadata_source", None) == "nfo":
             # NFO 管文字、TMDB 补图（B 方案）——这是最常见的组合，单独标记出来
             item.metadata_source = "tmdb_img"
-        return bool(poster or backdrop)
+        return bool(specs)
 
     def apply(self, item: emby_models.MediaItem, hit: dict, kind: str) -> None:
         item.tmdb_id = str(hit.get("id"))
@@ -790,12 +831,8 @@ class TmdbClient:
                 item.community_rating = round(float(rating), 1)
             except (TypeError, ValueError):
                 pass
-        poster = hit.get("poster_path")
-        backdrop = hit.get("backdrop_path")
-        if poster:
-            _set_image(item, "Primary", f"{TMDB_IMAGE}/w500{poster}")
-        if backdrop:
-            _set_image(item, "Backdrop", f"{TMDB_IMAGE}/w1280{backdrop}")
+        for img_kind, url in image_specs(hit):
+            _set_image(item, img_kind, url)
         if kind == "series" and hit.get("name"):
             item.name = hit.get("name")
         elif hit.get("title"):
