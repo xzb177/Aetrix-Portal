@@ -17,7 +17,6 @@ import { useToast } from '@/composables/useToast'
 interface Bubble {
   role: 'user' | 'assistant' | 'error'
   content: string
-  model?: string
 }
 
 const toast = useToast()
@@ -76,7 +75,7 @@ async function ask(text?: string) {
       .map((b) => ({ role: b.role as 'user' | 'assistant', content: b.content }))
       .slice(-8)
     const res = await aiApi.ask(content, history)
-    bubbles.value.push({ role: 'assistant', content: res.answer, model: res.model })
+    bubbles.value.push({ role: 'assistant', content: res.answer })
     status.value = { ...(status.value as AiStatus), ...res }
   } catch (err) {
     const detail = (err as { response?: { data?: { detail?: string } }; message?: string })
@@ -145,7 +144,6 @@ async function ask(text?: string) {
             </span>
             <div class="bubble">
               <p>{{ b.content }}</p>
-              <span v-if="b.model" class="model-tag">{{ b.model }}</span>
             </div>
           </div>
         </section>
@@ -242,13 +240,6 @@ async function ask(text?: string) {
 .bubble-row.error .bubble { background: var(--au-danger-soft); border-color: var(--au-danger-border); }
 
 .bubble p { margin: 0; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; color: var(--text-primary); }
-
-.model-tag {
-  display: inline-block;
-  margin-top: 6px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
 
 .composer { display: flex; gap: 10px; }
 
