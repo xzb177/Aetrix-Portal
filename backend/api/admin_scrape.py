@@ -61,13 +61,21 @@ def get_tmdb_keys(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """当前 TMDB Key 状态（只返回掩码与数量，不返回原文）"""
+    """当前 TMDB Key 状态与限速（只返回掩码与数量，不返回原文）
+
+    顺带给出**实际在打**的请求速率：配置里的 ENRICH_TMDB_PER_SEC 只是上限，
+    撞 429 会自适应减半、连续成功后再慢慢加回来（见 tmdb._RequestLimiter）。
+    """
+    meta = tmdb_client.stats()
     return {
         "configured": tmdb_client.configured,
         "source": tmdb_client.key_source,  # env | db | none
         "count": len(tmdb_client.api_keys),
         "masked": tmdb_client.masked_keys(),
         "env_present": bool(_env_keys()),  # 环境变量有值时后台填写暂不生效
+        "rate": meta["rate"],              # 实际请求/秒（自适应后）
+        "rate_ceiling": meta["ceiling"],   # 配置上限
+        "throttled": meta["throttled"],    # 进程内累计撞 429 次数
     }
 
 

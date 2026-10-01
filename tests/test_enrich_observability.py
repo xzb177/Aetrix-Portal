@@ -165,6 +165,9 @@ def test_tmdb_each_http_request_counted(monkeypatch):
     client.api_keys = ["k"]
     client.api_key = "k"
     client.session = _Sess()
+    # v2.42.9：_get 先过请求级令牌桶，所以裸客户端要按 __init__ 的口径补上这两个字段
+    client._limiter = tmdb_lib._RequestLimiter(rate=1_000_000.0, min_rate=1.0)
+    client._stats = {"short_circuit": 0, "retry": 0, "net_fail": 0}
 
     assert client._get("/search/tv", {"query": "x"}) == {"results": []}
     assert client._get("/search/tv", {"query": "y"}) == {"results": []}

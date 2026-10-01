@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
 
 from backend.emby_server import image_store
@@ -31,6 +34,124 @@ TMDB_LANG = os.getenv("TMDB_LANGUAGE", "zh-CN")
 
 # TMDB API Key 在 SystemConfig 里的键：管理后台「元数据与刮削」填写，保存即热生效
 TMDB_KEYS_CONFIG_KEY = "tmdb_api_keys"
+
+# ---------------------------------------------------------------------------
+# 请求级限流 / 超时 / 429 退避（v2.42.9）
+#
+# 旧实现把令牌桶放在 enrich_worker 里，**按条目**扣一个 token，而一个条目后面可能是
+# 0~6 个 HTTP（中文标题 4~5 个候选搜索，最贵）；于是“4/秒”实际上是 8~24 请求/秒，
+# 而且扫描那条路（scanner._tmdb_work）**完全没有限流**。
+# 现在桶搬到这里，一条请求一个 token，口径与 TMDB 配额一致，两条路共用同一个桶。
+#
+# 注：TMDB 2019-12-16 已取消旧的 40 次/10 秒硬限流，现在是非正式 ~50 请求/秒/IP，
+# 所以**不要**把速率拉满；429 时下面的自适应会自己降下来。
+#
+# 环境变量（沿用旧名字，但语义已从「条目/秒」改为「请求/秒」）：
+#   ENRICH_TMDB_PER_SEC      请求上限（默认 2）
+#   ENRICH_TMDB_MIN_PER_SEC  429 自适应下降的下限（默认 1）
+#   TMDB_TIMEOUT             单次请求超时秒数（默认 10；带 append_to_response 的详情请求
+#                            在跨境链路上 8 秒偏紧）
+#   TMDB_NET_RETRIES         读超时/连接错误的重试次数（默认 2）
+TMDB_PER_SEC = max(1.0, float(os.getenv("ENRICH_TMDB_PER_SEC", "2") or 2))
+TMDB_MIN_PER_SEC = max(1.0, float(os.getenv("ENRICH_TMDB_MIN_PER_SEC", "1") or 1))
+TMDB_TIMEOUT = max(5.0, float(os.getenv("TMDB_TIMEOUT", "10") or 10))
+TMDB_NET_RETRIES = max(0, min(4, int(os.getenv("TMDB_NET_RETRIES", "2") or 2)))
+# Retry-After 上限：后台 worker 睡太久会白白占着线程， 超过就按上限退避
+TMDB_RETRY_AFTER_CAP_SEC = max(1.0, float(os.getenv("TMDB_RETRY_AFTER_CAP_SEC", "20") or 20))
+# 连续成功多少次之后才试着恢复速率（避免成功一次就立刻又撞 429）
+TMDB_RECOVER_AFTER = max(5, int(os.getenv("TMDB_RECOVER_AFTER", "50") or 50))
+
+
+class _RequestLimiter:
+    """请求级令牌桶 + 429 自适应（进程内；两条 TMDB 调用路径共用）
+
+    - `acquire()`：拿一个 token（不够就睡到够），与旧桶同形状；
+    - `note_throttled()`：429 时速率乘性下调（×0.5，下限 min_rate），返回建议等待秒数；
+    - `note_success()`：连续成功到 TMDB_RECOVER_AFTER 次后速率 +25%，上限是配置值。
+    """
+
+    def __init__(self, rate: float = TMDB_PER_SEC, min_rate: float = TMDB_MIN_PER_SEC):
+        self._ceiling = max(1.0, float(rate))
+        self._min_rate = max(1.0, min(float(min_rate), self._ceiling))
+        self._rate = self._ceiling
+        self._tokens = self._ceiling
+        self._updated = time.monotonic()
+        self._lock = threading.Lock()
+        self._ok_streak = 0
+        self._throttled = 0
+
+    @property
+    def rate(self) -> float:
+        return self._rate
+
+    @property
+    def ceiling(self) -> float:
+        """配置上限（ENRICH_TMDB_PER_SEC）：自适应恢复最多回到这里"""
+        return self._ceiling
+
+    @property
+    def throttled_count(self) -> int:
+        return self._throttled
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._tokens = min(self._rate, self._tokens + (now - self._updated) * self._rate)
+                self._updated = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait = (1.0 - self._tokens) / self._rate
+            time.sleep(min(wait, 0.5))
+
+    def note_throttled(self, retry_after: Optional[float] = None) -> float:
+        """429：速率乘性下调并返回建议等待秒数（已按上限截断）"""
+        with self._lock:
+            self._rate = max(self._min_rate, self._rate * 0.5)
+            self._tokens = 0.0          # 下调后桶也清空：立刻再打一次毫无意义
+            self._updated = time.monotonic()
+            self._ok_streak = 0
+            self._throttled += 1
+            rate = self._rate
+        wait = TMDB_RETRY_AFTER_CAP_SEC if retry_after is None else max(0.0, float(retry_after))
+        wait = min(wait, TMDB_RETRY_AFTER_CAP_SEC)
+        if wait <= 0:
+            # 没给 Retry-After（或给了 0）：按新速率等一个 token 的时间，别直接转圈
+            wait = min(1.0 / rate, TMDB_RETRY_AFTER_CAP_SEC)
+        return wait
+
+    def note_success(self) -> None:
+        """连续成功后缓慢恢复（每次 +25%，不超上限）"""
+        with self._lock:
+            if self._rate >= self._ceiling:
+                self._ok_streak = 0
+                return
+            self._ok_streak += 1
+            if self._ok_streak >= TMDB_RECOVER_AFTER:
+                self._rate = min(self._ceiling, self._rate * 1.25)
+                self._ok_streak = 0
+
+
+def _retry_after_seconds(resp) -> Optional[float]:
+    """读 Retry-After（秒数或 HTTP 日期）——旧实现全文未读取该头"""
+    try:
+        raw = (resp.headers.get("retry-after") or "").strip()
+    except Exception:  # noqa: BLE001 — 响应对象可能是测试替身
+        return None
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except Exception:  # noqa: BLE001 — 格式不认识就当没给
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +432,10 @@ class TmdbClient:
         self.session = None
         self._session_proxy_sig: Optional[str] = None
         self._session_lock = threading.Lock()
+        # 请求级限流器：所有 TMDB 调用（扫描 + 补全）共用（v2.42.9）
+        self._limiter = _RequestLimiter()
+        # 运行观测：短路 / 重试 / 网络失败（429 次数在 _limiter 里，那边是加锁的）
+        self._stats = {"short_circuit": 0, "retry": 0, "net_fail": 0}
         self.refresh_keys()  # 环境变量优先，为空则回落 SystemConfig
         self._ensure_session()
 
@@ -367,7 +492,11 @@ class TmdbClient:
                     return
             import httpx
 
-            stale, self.session = self.session, httpx.Client(timeout=8)
+            # timeout 8 → 10：带 append_to_response 的详情请求在跨境链路上 8 秒偏紧。
+            # 重试统一交给 _request()（连接错误与读超时一视同仁，见那里）——**不要**在这里
+            # 传自定义 transport：一旦显式给 transport，httpx 就不再按环境变量挂代理了，
+            # 后台配的代理会静默失效（scripts/smoke_test_capabilities.py 钉住了这一点）。
+            stale, self.session = self.session, httpx.Client(timeout=TMDB_TIMEOUT)
             self._session_proxy_sig = sig
         if stale is not None:
             # 可能还有别的扫描线程正拿旧会话取数据：它会拿到一次异常，_get 按「一次失败的
@@ -387,42 +516,104 @@ class TmdbClient:
         logger.warning("TMDB 密钥轮询到第 %s 个", self._key_index + 1)
         return True
 
-    def _get(self, path: str, params: dict) -> Optional[dict]:
-        """带密钥轮询的 GET：配额类错误自动换 key 重试
+    def _throttle(self, retry_after: Optional[float] = None) -> float:
+        """429：速率自适应下调，返回建议退避秒数（睡不睡由调用方决定）"""
+        return self._limiter.note_throttled(retry_after)
 
-        v2.42.9：**每一次真实发出的 HTTP** 都计进 ``tmdb_req`` 阶段计数（含换 key 后的重试）。
-        限流器那边计的是「条目」，这里是「请求」——两者对不上正是积压期最容易看错的地方：
-        一个条目后面可能是 0~6 个请求，所以「限速 4/秒」实际可能是几十请求/秒。
+    def _request(self, path: str, params: dict):
+        """单次 GET：先过**请求级**令牌桶，再按 TMDB_NET_RETRIES 退避重试网络异常
+
+        连接错误与读超时都在这里重试（httpx 默认的连接级重试不覆盖读超时，而跨境
+        链路上更常见的恰恰是读超时）；一次抖动不再让条目这轮刮不上、要等下一轮
+        补全才回来。
+        """
+        if not self.session:
+            return None
+        payload = {**params, "api_key": self.api_key}
+        delay = 0.5
+        for attempt in range(TMDB_NET_RETRIES + 1):
+            # 重试也要重新取 token：一次重试就是一次真的请求，配额照样要花
+            self._limiter.acquire()
+            try:
+                # v2.42.9：每一次真实发出的 HTTP 都计进 tmdb_req（含重试与换 key 后的重试）
+                with progress.stage_timer("tmdb_req"):
+                    return self.session.get(f"{TMDB_API}{path}", params=payload)
+            except Exception as e:  # noqa: BLE001 — 网络异常不应中断整次扫描
+                if attempt >= TMDB_NET_RETRIES:
+                    self._stats["net_fail"] += 1
+                    logger.warning("TMDB 请求失败 %s（重试 %s 次后放弃）: %s", path, attempt, e)
+                    return None
+                self._stats["retry"] += 1
+                # 加抖动：多个 worker 同时撞上抖动时不要齐步重打
+                time.sleep(delay + random.random() * 0.25)
+                delay = min(delay * 2, 4.0)
+        return None
+
+    def _get(self, path: str, params: dict) -> Optional[dict]:
+        """带密钥轮询的 GET：限流 → 网络重试 → 429 退避/换 key（v2.42.9 收口）
+
+        旧实现的限速是「条目/秒」且只在补全那条路上：一个条目背后是 0~6 次 HTTP，
+        于是「2/秒」实际打出去 4~12 请求/秒，而扫描那条路完全没限速。现在两条路都
+        收敛到 `_request()` 的同一个桶上，口径与 TMDB 配额一致（``tmdb_req`` 阶段计数
+        记的是**请求**，与这个桶同一个口径；旧的条目级桶记的是条目，两者对不上正是
+        积压期最容易看错的地方）。
+
+        429 也不再是「单 key 直接放弃」：真的读 `Retry-After` 并据此退避，同时把
+        速率自适应减半——否则后续条目会在同一个窗口里继续把配额撞满。
         """
         self._ensure_session()
         if not self.session:
             return None
-        tried = 0
-        while tried <= len(self.api_keys) or tried == 0:
+        attempts = 0
+        while True:
+            attempts += 1
+            r = self._request(path, params)
+            if r is None:
+                return None
+            status = r.status_code
+            if status in (401, 429):
+                wait = self._throttle(_retry_after_seconds(r)) if status == 429 else 0.0
+                # 还有别的 key 就换一把（配额是按 key 算的，每把 key 只试一次）；
+                # 换不动就退避后放弃这一条
+                can_retry = attempts < len(self.api_keys) and self._rotate()
+                if not can_retry:
+                    if wait > 0:
+                        # 全部 key 都不可用：退避一轮再放行后续请求（这段窗口内的条目会
+                        # 落到重试队列，而不是继续把已经超限的配额撞满）
+                        time.sleep(wait)
+                    logger.warning("TMDB 全部密钥不可用（HTTP %s）", status)
+                    return None
+                if wait > 0:
+                    time.sleep(min(wait, 1.0))
+                continue
+            if status >= 400:
+                logger.warning("TMDB 响应异常 %s: HTTP %s", path, status)
+                return None
             try:
-                with progress.stage_timer("tmdb_req"):
-                    r = self.session.get(f"{TMDB_API}{path}", params={**params, "api_key": self.api_key})
-            except Exception as e:  # noqa: BLE001 — 网络异常不应中断整次扫描
-                logger.warning("TMDB 请求失败 %s: %s", path, e)
-                return None
-            if r.status_code in (401, 429):
-                if self._rotate():
-                    tried += 1
-                    continue
-                logger.warning("TMDB 全部密钥不可用（HTTP %s）", r.status_code)
-                return None
-            if r.status_code >= 400:
-                logger.warning("TMDB 响应异常 %s: HTTP %s", path, r.status_code)
-                return None
-            try:
-                return r.json()
+                data = r.json()
             except Exception:  # noqa: BLE001
                 return None
-        return None
+            self._limiter.note_success()
+            return data
 
     @property
     def configured(self) -> bool:
         return bool(self.api_keys)
+
+    def stats(self) -> dict:
+        """运行观测：实际限速、429 次数、网络重试/失败、Tier 2 短路次数（v2.42.9）
+
+        限速是**自适应**的（撞 429 减半、连续成功再慢慢加回来），所以「配置里写的
+        ENRICH_TMDB_PER_SEC」并不等于「实际在打的速率」——管理后台要看这里的实际值。
+        """
+        return {
+            "rate": round(self._limiter.rate, 3),
+            "ceiling": round(self._limiter.ceiling, 3),
+            "throttled": self._limiter.throttled_count,
+            "retries": self._stats["retry"],
+            "net_fail": self._stats["net_fail"],
+            "short_circuits": self._stats["short_circuit"],
+        }
 
     def _cache_get(self, key):
         """取缓存（未命中返回 _MISS；过期视为未命中，顺手删掉）"""
@@ -486,6 +677,14 @@ class TmdbClient:
         """
         best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
         for query, fuzzy_ok in _search_candidates(name):
+            # 短路（v2.42.9）：已有 Tier 2（归一化后**精确相等**）就收手。
+            # Tier 2 永远压过 Tier 1（元组比较先看 tier），后续候选最多只能换来
+            # 「更长的精确变体」这一个 rank 的差别，不值得再打 1~4 次 HTTP。
+            # 中文短标题的候选数最多（4~5 个）而命中率最低，正是这一条最划算的地方。
+            if best is not None and best[0] == 2:
+                self._stats["short_circuit"] += 1
+                progress.note_stage("tmdb_search_short")
+                break
             try:
                 results = self._search_raw(query, year, kind)
             except Exception:  # noqa: BLE001 — 单个候选失败换下一个

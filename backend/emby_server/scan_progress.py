@@ -250,6 +250,9 @@ STAGE_LABELS = {
     "nfo_read": "NFO 读取",
     "nfo_hit": "NFO 命中缓存",
     "tmdb_req": "TMDB 请求",
+    # 归一化后精确命中就收手、不再打剩下的候选（每个候选 1~4 次请求）——
+    # 这条计数就是「短路到底省了多少次请求」的直接证据
+    "tmdb_search_short": "TMDB 短路（省下的候选）",
     "image_dl": "图片下载",
     "enrich_item": "条目补全",
 }
