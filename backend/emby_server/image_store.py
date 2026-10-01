@@ -421,17 +421,23 @@ def _download(url: str) -> Optional[bytes]:
         return None
 
 
-def localize(url: Optional[str]) -> str:
+def localize(url: Optional[str], allow_download: bool = True) -> str:
     """把远程图落成本地文件，返回本地路径；失败或未开启返回空串
 
     同一张图并发请求只下载一次（按 URL 单飞）；文件已经存在就直接复用。
     写文件走「临时文件 → fsync → os.replace」：中途被杀不会留下半张图。
+
+    ``allow_download=False``：只认「文件已经在本地」，不在这里发 HTTP。**数据库写事务里
+    必须用这一档** —— 一张图超时 15s，就等于攥着写锁 15s。v2.42.9 把下载统一挪到 IO 阶段
+    （见 ``prewarm``），写库阶段只落字段；没预热上的图交给取图时的按需自愈（media_routes）。
     """
     if not url or not url.startswith("http") or not enabled():
         return ""
     path = local_path(url)
     if os.path.isfile(path) and os.path.getsize(path) > 0:
         return path
+    if not allow_download:
+        return ""
     with _LOCKS_LOCK:
         lock = _LOCKS.get(path) or threading.RLock()
         _LOCKS[path] = lock
@@ -469,6 +475,31 @@ def localize(url: Optional[str]) -> str:
         finally:
             with _LOCKS_LOCK:
                 _LOCKS.pop(path, None)
+
+
+def prewarm(urls) -> int:
+    """IO 阶段把一批图先落盘，返回成功缓存的张数（v2.42.9）
+
+    与 ``localize()`` 是同一个函数、同一份内容寻址文件、同一把锁：预热过的图在写事务里
+    调 ``localize(url, allow_download=False)`` 只是一次 ``isfile``，不发 HTTP、不攥写锁。
+
+    预热本身就是一次真下载（TMDB 走 image.tmdb.org，不吃 api_key 配额）。预热失败、或
+    被并发旋钮挡住（``_STATS["throttled"]``）都只是「这轮不本地化」，不影响刮削。
+    """
+    done = 0
+    seen: set = set()
+    for url in urls or ():
+        # 同一张图在同一批里出现多次很正常（搜索命中与详情都给同一个 backdrop）：
+        # 去重后计数才是「真的备好了几张图」
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        try:
+            if localize(url):
+                done += 1
+        except Exception:  # noqa: BLE001 — 预热绝不该影响主流程
+            continue
+    return done
 
 
 def referenced_basenames(db) -> set:
