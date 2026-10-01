@@ -142,7 +142,7 @@ const memberProgress = computed(() => {
 })
 
 // 资产卡（v2.42.1，四段式）：积分 / 订阅 / 观影数据。每种资产一个固定功能色（tone），
-// 从顶栏 pill → 卡片图标 / 数字 / CTA 全链路同色：积分 = 品牌青，订阅 = 会员金，
+// 从卡片图标 → 数字 / CTA 全链路同色：积分 = 品牌青，订阅 = 会员金，
 // 观影数据 = 极光紫。卡底统一「灰色说明 + 功能色 CTA」，全站一个模式。
 const assetCards = computed(() => {
   const st = stats.value
@@ -200,7 +200,7 @@ const assetCards = computed(() => {
       to: '/wallet',
       icon: Zap,
       // 功能色定稿（v2.42.4）：积分=金（钱的语义）、订阅=青（品牌主色）、
-      // 观影数据=紫；顶栏 pill 同步换位（见 AppHeader 的 assets-group）
+      // 观影数据=紫；顶栏 pill 已删（v2.42.8），资产卡是唯一的常驻资产入口
       tone: 'amber',
       title: '积分',
       value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
@@ -513,7 +513,7 @@ onMounted(() => {
       </Transition>
 
       <!-- 我的资产（v2.42.1）：积分 / 订阅 / 观影数据，四段式资产卡。
-           每种资产一个固定功能色（青 / 金 / 紫），从顶栏 pill → 卡片图标 / 数字 / CTA
+           每种资产一个固定功能色（青 / 金 / 紫），从卡片图标 → 数字 / CTA
            全链路同色；卡底统一「灰色说明 + 功能色 CTA」。加载中显示真骨架占位，
            而不是把「—」压暗——压暗的「—」会被读成「没有数据」 -->
       <div class="section-label">
