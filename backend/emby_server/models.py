@@ -166,6 +166,12 @@ class MediaItem(Base):
     # next_retry_at=下次可重试时间（指数退避）。老库补列后默认 0/NULL。
     enrich_attempts = Column(Integer, default=0)
     enrich_next_retry_at = Column(DateTime)
+    # v2.42.9 claim 租约：worker 抢到这条（置 enriching）的时刻。
+    # 运行期崩溃的 worker 会留下永远 enriching 的僵尸行——旧实现只在启动时整体
+    # 回收一次，运行期没有兜底。有了这个时间戳，janitor 可以周期扫描「租约超时」
+    # 的行并打回 pending（见 enrich_worker._reclaim_stale），不必等重启。
+    # 老库补列后为 NULL：视为「旧格式 enriching」，由 date_modified 近似判定。
+    enrich_claimed_at = Column(DateTime)
     # 元数据来源标记：这条条目的文字/图片**实际来自哪里**。
     # 取值：nfo=本地 NFO；tmdb=TMDB 搜索/详情；tmdb_img=NFO 给文字、TMDB 补图；
     # none=刮削跑过但没拿到数据（仍缺 tmdb_id/简介）。NULL=历史数据未标记。

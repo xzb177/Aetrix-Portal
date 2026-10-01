@@ -522,18 +522,172 @@ def _is_remote_provider(provider) -> bool:
     return (meta.get("kind") or "") == "remote"
 
 
+# ==================== 按挂载熔断（v2.42.9）====================
+# 问题：一个挂载坏了（网盘宕机 / Cookie 失效 / 网络不通），每条条目的补全都还是
+# 真的去问它——每问一次就吃满一个 MOUNT_TIMEOUT（默认 20s）。补全积压 4 万条时，
+# 一条坏挂载能把整个队列拖成「每条 20 秒」的龟速，重试洪峰还会把无谓的 attempts
+# 烧成 failed。ctx 是每条新建的，任何实例级状态都跨不过条目——熔断状态必须放
+# **模块级**，按挂载键共享给扫描与补全两条路。
+#
+# 语义（经典三态熔断器）：
+# - 连续 MountError 达到阈值 → 熔断打开：后续调用**不发网络请求**，直接抛
+#   MountBreakerOpen（调用方毫秒级拿到失败，而不是等 20s 超时）；
+# - 冷却时间过后自动半开：放一个请求真去探测，成功则熔断关闭、失败则立刻重新打开；
+# - 一次成功就把连续失败清零（偶发抖动不触发熔断）。
+#
+# 只认 MountError 家族：配置错误 / 网络错误 / 路径不存在才该熔断；编程错误等其他
+# 异常不该把挂载拉黑。补全 worker 在抢单后、IO 前会先问熔断状态，把熔断中挂载的
+# 条目打回 pending + 长 next_retry_at（**不是 failed**，attempts 也不涨）——
+# 挂载恢复后它们自然会被重新捞到。
+MOUNT_BREAKER_THRESHOLD = max(2, int(os.getenv("MOUNT_BREAKER_THRESHOLD", "3") or 3))
+MOUNT_BREAKER_COOLDOWN_SEC = max(10, int(os.getenv("MOUNT_BREAKER_COOLDOWN_SEC", "300") or 300))
+# 熔断期间条目的重试间隔：打回 pending 时写给 enrich_next_retry_at，
+# 避免积压条目在熔断期间被反复捞起、反复秒拒（空转刷日志）。
+MOUNT_BREAKER_RETRY_SEC = max(60, int(os.getenv("MOUNT_BREAKER_RETRY_SEC", "1800") or 1800))
+
+
+class MountBreakerOpen(MountError):
+    """挂载熔断中：连续失败达到阈值，快速失败，等冷却后再探测
+
+    继承 MountError：所有把 MountError 当「挂载不可用」处理的调用方
+    （扫描 / 补全 / 播放代理）不需要新增分支就能拿到快速失败。
+    """
+
+
+# 键 = (挂载 id, 类型, 配置指纹)：与目录缓存同口径——换配置就是新键，
+# 不会因为改了配置还被旧故障的熔断挡着；同一挂载的多条临时记录也互不串扰。
+_BREAKERS: dict = {}
+_BREAKER_LOCK = threading.Lock()
+_BREAKER_STATS = {"fast_fails": 0, "opens": 0}
+
+
+def _breaker_key(provider) -> tuple:
+    mount = getattr(provider, "mount", None)
+    return (
+        getattr(mount, "id", None),
+        (getattr(mount, "mount_type", "") or "").strip(),
+        _config_fingerprint(provider),
+    )
+
+
+def _breaker_open_key(key: tuple) -> bool:
+    """这个键的熔断是否处于打开状态（冷却期过后自动视为半开，放探测请求进去）"""
+    with _BREAKER_LOCK:
+        st = _BREAKERS.get(key)
+        if not st or st["opened_at"] <= 0:
+            return False
+        return time.monotonic() < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC
+
+
+def mount_breaker_open(mount_id) -> bool:
+    """这个挂载（按 id）是否有打开中的熔断——补全 worker 的 IO 前置检查用
+
+    调用方通常只知道 mount:// 里的数字 id，不掌握配置指纹，所以这里按 id 匹配
+    任意键。熔断状态本来就是「挂载坏没坏」的物理事实，同一 id 的不同指纹键
+    同时打开时，按 id 看也应当是打开的。
+    """
+    with _BREAKER_LOCK:
+        now = time.monotonic()
+        for key, st in _BREAKERS.items():
+            if key[0] != mount_id:
+                continue
+            if st["opened_at"] > 0 and now < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC:
+                return True
+    return False
+
+
+def _breaker_record_success(key: tuple) -> None:
+    with _BREAKER_LOCK:
+        st = _BREAKERS.get(key)
+        if st and (st["fails"] or st["opened_at"]):
+            # 半开探测成功 / 恢复正常：清零（一次成功就信任，偶发抖动不熔断）
+            st["fails"] = 0
+            st["opened_at"] = 0.0
+            st["last_error"] = ""
+
+
+def _breaker_record_failure(key: tuple, error: str) -> None:
+    now = time.monotonic()
+    with _BREAKER_LOCK:
+        st = _BREAKERS.get(key)
+        if st is None:
+            st = _BREAKERS[key] = {
+                "fails": 0, "opened_at": 0.0, "opened_wall": None,
+                "last_error": "", "updated_at": now,
+            }
+        st["fails"] += 1
+        st["last_error"] = (error or "")[:200]
+        st["updated_at"] = now
+        opened = st["opened_at"] > 0 and now < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC
+        if opened:
+            return  # 冷却期内不续期：到点自动半开放探测
+        if st["fails"] >= MOUNT_BREAKER_THRESHOLD:
+            st["opened_at"] = now
+            st["opened_wall"] = datetime.now()
+            _BREAKER_STATS["opens"] += 1
+            logger.warning("挂载熔断打开 mount=%s type=%s 连续失败 %d 次：%s",
+                           key[0], key[1], st["fails"], st["last_error"])
+
+
+def mount_breaker_stats() -> dict:
+    """熔断器快照（进度接口 / 健康检查用）：正在熔断的挂载一目了然"""
+    with _BREAKER_LOCK:
+        now = time.monotonic()
+        open_list = []
+        for key, st in _BREAKERS.items():
+            if st["opened_at"] > 0 and now < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC:
+                open_list.append({
+                    "mount_id": key[0],
+                    "mount_type": key[1],
+                    "opened_at": (st.get("opened_wall") or datetime.now()).isoformat(
+                        timespec="seconds"),
+                    "fails": int(st["fails"]),
+                    "last_error": st["last_error"],
+                })
+        return {
+            "threshold": MOUNT_BREAKER_THRESHOLD,
+            "cooldown_sec": MOUNT_BREAKER_COOLDOWN_SEC,
+            "retry_sec": MOUNT_BREAKER_RETRY_SEC,
+            "fast_fails": int(_BREAKER_STATS["fast_fails"]),
+            "opens": int(_BREAKER_STATS["opens"]),
+            "tracked": len(_BREAKERS),
+            "open": open_list,
+        }
+
+
+def breaker_reset() -> None:
+    """清空熔断状态（测试用；生产不调）"""
+    with _BREAKER_LOCK:
+        _BREAKERS.clear()
+        _BREAKER_STATS.update({"fast_fails": 0, "opens": 0})
+
+
 def _call_remote(provider, fn: Callable, rel: str) -> list:
     """真的列一次目录（远程会占用名额，并记一次「远程列举」用于统计）
 
     v2.42.9：远程与**本机**两条路都计一次阶段耗时。以前只统远程——补全积压到底压在
     网盘 I/O 还是本机磁盘上，是个必须用数据回答的问题（两者的优化方向完全不同）。
+
+    v2.42.9 第 4 批：远程路是熔断的收口点。打开时在这里**快速失败**（不占远程名额、
+    不发网络请求），成功 / 失败在这里记账——扫描与补全两条路共用同一份熔断状态。
     """
     if not _is_remote_provider(provider):
         with progress.stage_timer("local_list"):
             return fn(provider, rel)
-    with progress.stage_timer("remote_list"):
-        with remote_io_slot():
-            entries = fn(provider, rel)
+    key = _breaker_key(provider)
+    if _breaker_open_key(key):
+        with _BREAKER_LOCK:
+            _BREAKER_STATS["fast_fails"] += 1
+        raise MountBreakerOpen(
+            f"挂载熔断中（mount={key[0]}）：连续失败已达阈值，等待冷却后自动探测")
+    try:
+        with progress.stage_timer("remote_list"):
+            with remote_io_slot():
+                entries = fn(provider, rel)
+    except MountError as exc:
+        _breaker_record_failure(key, str(exc))
+        raise
+    _breaker_record_success(key)
     progress.note_remote_listing()
     return entries
 
