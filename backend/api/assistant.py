@@ -78,9 +78,10 @@ def assistant_ask(
         # 上游的错误信息（含模型名与 HTTP 状态）对排错很有用，原样转给用户端
         raise HTTPException(status_code=502, detail=result.get("message") or "模型调用失败")
     remaining = None if limit <= 0 else max(0, limit - used)
+    # 不回传 model：用户不需要看到模型名称（气泡里不显示，响应里也不该有），
+    # 管理端的「测试模型」仍会回显模型供排错。
     return {
         "answer": result.get("answer", ""),
-        "model": result.get("model", ""),
         "daily_limit": limit,
         "used": used,
         "remaining": remaining,

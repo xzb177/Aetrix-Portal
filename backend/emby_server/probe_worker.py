@@ -382,6 +382,13 @@ def _probe_one(item_id: int) -> str:
             _apply_probe_result(db, item, info)
             db.commit()
             return "done"
+        # 远端 HTTP 错误（403/404/401…）优先于「信息不完整」：403 已交给上面的熔断器，
+        # 其余按失败重试收敛——别静默终结成 degraded，否则熔断器永远看不到远程文件的
+        # 配额耗尽，「文件已被删除」也永远不会变成 failed（生产 4.3 万 degraded 里混着它们）。
+        if info and info.get("_error"):
+            _fail(db, item, info.get("_error_detail") or f"探测失败（{info['_error']}）")
+            db.commit()
+            return "failed"
         # 远程可访问但拿不到 duration：这是信息降级，不是文件坏了。
         # 不进入 5 次重试/failed 风暴，否则大批云盘 MP4 会持续占满 worker。
         if info and info.get("_degraded"):

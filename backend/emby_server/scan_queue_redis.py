@@ -176,6 +176,13 @@ def _blocking_redis(timeout: int):
     （v2.42.4 修的回归）。
 
     返回 (client, owned)：owned=True 表示本调用新建的客户端（用完要 close）。
+
+    P0（2026-10-01）：``connection_class`` 是 **ConnectionPool** 的参数，不是
+    ``Redis()`` 的 —— 之前直接传给 ``Redis()``，每次阻塞读都抛
+    ``TypeError: unexpected keyword argument 'connection_class'``，被 except 吞掉后
+    退回共享客户端（socket_timeout 又是 5s），于是 BLMOVE 的空转超时原样复发
+    ——修法等于没上（生产每 10 秒一条告警）。这里改为先把连接池建出来，
+    再把池交给 Redis()。
     """
     base = _redis()
     if base is None:
@@ -191,10 +198,10 @@ def _blocking_redis(timeout: int):
     client_kwargs["socket_timeout"] = timeout + 5
     client_kwargs.setdefault("socket_connect_timeout", 5)
     try:
-        conn_class = getattr(pool, "connection_class", None)
-        if conn_class is not None:
-            return _redis_mod.Redis(connection_class=conn_class, **client_kwargs), True
-        return _redis_mod.Redis(**client_kwargs), True
+        conn_class = getattr(pool, "connection_class", None) or _redis_mod.Connection
+        blocking_pool = _redis_mod.ConnectionPool(
+            connection_class=conn_class, **client_kwargs)
+        return _redis_mod.Redis(connection_pool=blocking_pool), True
     except Exception as e:  # noqa: BLE001 — 专用客户端拿不到就退回共享的
         logger.warning(f"构造阻塞读专用 Redis 客户端失败，退回共享客户端：{e}")
         return base, False

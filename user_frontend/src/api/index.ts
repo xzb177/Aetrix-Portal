@@ -243,7 +243,7 @@ export interface AiStatus {
 
 export interface AiAnswer extends AiStatus {
   answer: string
-  model: string
+  // 不回传模型名：用户不需要看到具体模型（服务端也不下发）
 }
 
 export const aiApi = {
