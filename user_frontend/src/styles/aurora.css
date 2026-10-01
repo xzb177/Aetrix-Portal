@@ -119,6 +119,13 @@
   --border-subtle: var(--au-border);
   --accent-primary: var(--au-primary);
 
+  /* 输入框（v2.42.6 双主题）：.au-input 以前直接写死 rgba(7, 11, 18, 0.55)，
+     白日模式下就是一块「深灰底 + 浅灰字」——浅色主题里最刺眼的串色。
+     收敛成语义 token，深浅两套各自调色，组件与页面零改动。 */
+  --au-input-bg: rgba(7, 11, 18, 0.55);
+  --au-input-bg-focus: rgba(7, 11, 18, 0.72);
+  --au-input-border: var(--au-border);
+
   /* 兼容旧 token（媒体库等页面依赖） */
   --brand-primary: var(--au-primary);
   --brand-primary-hover: var(--au-primary-strong);
@@ -282,18 +289,20 @@ body {
   width: 100%;
   height: 42px;
   padding: 0 0.875rem;
-  background: rgba(7, 11, 18, 0.55);
-  border: 1px solid var(--au-border);
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-input-border);
   border-radius: var(--au-r-md);
   color: var(--au-text);
   font-size: 0.875rem;
   outline: none;
-  transition: border-color var(--au-fast), box-shadow var(--au-fast);
+  transition: border-color var(--au-fast), box-shadow var(--au-fast),
+    background var(--au-fast);
   box-sizing: border-box;
 }
 
 .au-input::placeholder { color: var(--au-text-4); }
 .au-input:focus {
+  background: var(--au-input-bg-focus);
   border-color: var(--au-border-focus);
   box-shadow: 0 0 0 3px var(--au-primary-soft);
 }
@@ -505,6 +514,11 @@ html[data-theme='light'] {
   /* 原料层：只换中性色与主色亮度，品牌色相不变 */
   --au-bg: #f5f8fb;
   --au-bg-soft: #eef3f8;
+  /* 输入框在白日模式下是白底 + 略深描边：与卡片同色，靠边框与聚焦环分层，
+     不再让深色底漏进浅色页面 */
+  --au-input-bg: #ffffff;
+  --au-input-bg-focus: #ffffff;
+  --au-input-border: rgba(15, 32, 48, 0.16);
   --au-surface: #ffffff;
   --au-surface-2: #f0f4f9;
   --au-surface-3: #e6edf5;

@@ -477,16 +477,17 @@ onMounted(load)
   color: var(--text-tertiary);
 }
 .ok {
-  color: #67c23a;
+  color: var(--success);
 }
 .missing {
-  color: #f56c6c;
+  color: var(--danger);
 }
 .cred-cell {
   font-size: 13px;
 }
 .conf-preview {
-  background: #f5f7fa;
+  /* 以前写死近白底：深色主题里就是一块亮斑，浅色主题里又与卡片同色看不出边界 */
+  background: var(--bg-inset);
   border-radius: 6px;
   padding: 16px;
   font-size: 12px;

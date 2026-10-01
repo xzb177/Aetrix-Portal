@@ -461,8 +461,8 @@ function currentPath(): string {
 .acc-title { font-size: var(--font-size-lg); font-weight: var(--font-weight-bold); color: var(--text-primary); }
 .acc-hint { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 5px; max-width: 640px; line-height: 1.6; }
 
-.ok-text { color: #6ee7b7; font-weight: 600; }
-.bad-text { color: #fda4af; font-weight: 600; }
+.ok-text { color: var(--success); font-weight: 600; }
+.bad-text { color: var(--danger); font-weight: 600; }
 
 .browser {
   width: 100%;

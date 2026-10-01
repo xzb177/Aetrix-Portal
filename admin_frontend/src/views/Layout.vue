@@ -559,9 +559,11 @@ onUnmounted(() => {
    选中档用主色淡底 + 描边，与用户端 theme-seg 同一配方 */
 .theme-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  margin-bottom: 10px;
+  /* 三档等分且允许收缩：240px 侧栏里「自动 / 白日 / 黑暗」+ 图标刚好排得下，
+     旧版 28px 高 + 4px 内距把三档挤成一条，选中态也看不出是哪个 */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
   padding: 4px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -572,27 +574,40 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 4px;
+  gap: 4px;
+  height: 34px;
+  min-width: 0;
+  padding: 0 6px;
   border: 1px solid transparent;
-  border-radius: calc(var(--radius-md) - 4px);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 12px;
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
   transition: background var(--transition-fast), color var(--transition-fast),
     border-color var(--transition-fast);
 }
 
+.theme-opt svg { flex-shrink: 0; }
+.theme-opt span { overflow: hidden; text-overflow: ellipsis; }
+
 .theme-opt:hover { color: var(--text-primary); background: var(--bg-hover); }
 
+/* 选中态：主色实底胶囊（旧版只有 8% 淡底 + 淡描边，两档看着一样） */
 .theme-opt.active {
-  background: var(--primary-soft);
-  border-color: var(--primary-border);
-  color: var(--primary);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-on);
+  font-weight: var(--font-weight-semibold);
+  box-shadow: 0 2px 10px var(--primary-glow);
+}
+
+.theme-opt:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 /* 顶栏快捷键：小屏也保留（外观切换没有更小的入口了） */
@@ -700,7 +715,15 @@ onUnmounted(() => {
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 
-.who { display: flex; align-items: center; gap: 10px; padding: 4px 4px 12px; }
+/* 账号块与上面的外观切换器拉开一层：一条分隔线 + 足够的上下留白，
+   旧版两者只隔 10px，截图里看上去叠在一起 */
+.who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 4px 12px;
+  border-top: 1px solid var(--border-subtle);
+}
 
 .who-avatar,
 .chip-avatar {

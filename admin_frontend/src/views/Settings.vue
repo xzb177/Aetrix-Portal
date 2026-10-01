@@ -611,6 +611,9 @@ async function saveRegistration() {
   padding: 2px 10px;
 }
 
+/* 支付网关提示横幅（v2.42.6）：文字改走语义 token。
+   旧版写死 #fde68a / #a7f3d0（深色底上才够亮的浅黄/浅绿），
+   白日模式下面就是「浅黄字压浅底」，几乎读不出来。 */
 .notice {
   display: flex;
   align-items: center;
@@ -618,19 +621,24 @@ async function saveRegistration() {
   padding: 12px 14px;
   border-radius: var(--radius-md);
   font-size: var(--font-size-sm);
+  font-weight: 500;
   line-height: 1.6;
   border: 1px solid var(--warning-border);
   background: var(--warning-bg);
-  color: #fde68a;
+  /* -strong 档：浅色下 #92400e 压 10% 琥珀底 ≈ 6:1，基础档 #b45309 只有 ≈ 4.3:1
+     （13px 正文不够 AA） */
+  color: var(--warning-strong);
 }
 
-.notice :deep(svg) { flex-shrink: 0; }
+.notice :deep(svg) { flex-shrink: 0; color: var(--warning-strong); }
 
 .notice.ok {
   border-color: var(--success-border);
   background: var(--success-bg);
-  color: #a7f3d0;
+  color: var(--success-strong);
 }
+
+.notice.ok :deep(svg) { color: var(--success-strong); }
 
 .notice strong,
 .capability-note strong { color: var(--text-primary); font-weight: var(--font-weight-semibold); }

@@ -159,7 +159,8 @@ body.theme-transition *::after {
    Aurora 的口径是高亮底配深墨色文字，顺带用渐变与主色发光 */
 .btn-primary {
   background: var(--au-gradient);
-  color: #05141c;
+  /* 亮青渐变底配深墨字；白日模式渐变压深后 token 已切为白字 */
+  color: var(--au-on-primary);
   box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
@@ -261,8 +262,8 @@ body.theme-transition *::after {
 .input {
   width: 100%;
   padding: 0.75rem 1rem;
-  background: rgba(7, 11, 18, 0.55);
-  border: 1px solid var(--au-border);
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-input-border);
   border-radius: var(--au-r-md);
   color: var(--au-text);
   font-family: inherit;

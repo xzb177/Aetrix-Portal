@@ -38,12 +38,15 @@
   margin: 0;
 }
 
+/* 页面副标题：它是一段说明文，不是第二个大标题。
+   旧版用 --font-size-2xl（20px），句子一长就在手机上排成「一堵墙」
+   ——「服务器与线路」页最典型。统一到正文 14px + 次要文字色（v2.42.6） */
 .admin-page-desc {
-  font-size: var(--font-size-2xl);
+  font-size: var(--font-size-md);
   color: var(--text-secondary);
-  line-height: var(--line-height-normal);
-  margin: 6px 0 0;
-  max-width: 68ch;
+  line-height: var(--line-height-relaxed);
+  margin: 8px 0 0;
+  max-width: 74ch;
 }
 
 /* 页面头右侧的操作区 */
@@ -251,14 +254,14 @@
 
 .mini-badge.warn,
 .mini-badge.warning,
-.mini-badge.scanning { background: var(--warning-bg); color: #fcd34d; border-color: var(--warning-border); }
+.mini-badge.scanning { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-border); }
 
 /* 公益服（v2.7.0）：免费开放，用主色区分于付费服与状态类徽标 */
 .mini-badge.free { background: var(--primary-bg); color: #67e8f9; border-color: var(--primary-border); }
 
 .mini-badge.danger,
 .mini-badge.disabled,
-.mini-badge.off { background: var(--danger-bg); color: #fda4af; border-color: var(--danger-border); }
+.mini-badge.off { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
 
 .mini-badge.type,
 .mini-badge.muted { background: rgba(255, 255, 255, 0.06); color: var(--text-tertiary); border-color: var(--border-subtle); }
