@@ -255,6 +255,24 @@ class WebUser(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class UserPlayLine(Base):
+    """用户播放线路偏好（线路选择功能）
+
+    line 取值：direct（直连线路，默认：video_stream 先试 Google 直链 302，
+              客户端直连 Google，VPS 不中转）
+              relay（中转线路：跳过一切 302，直接走服务器代理转发，
+              流量过 VPS，适合直连 Google 不通的用户）
+    无记录 = direct（老用户默认直连，保持现有行为不变）。
+    """
+    __tablename__ = 'user_play_lines'
+
+    user_id = Column(Integer, ForeignKey('web_users.id'), primary_key=True)
+    line = Column(String(16), default='direct', nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship("WebUser", backref="play_line_pref")
+
+
 class TelegramUser(Base):
     """Telegram 用户表（从主项目迁移）"""
     __tablename__ = 'telegram_users'
