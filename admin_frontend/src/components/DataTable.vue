@@ -78,7 +78,10 @@ function field(row: T, key: string): unknown {
 
 function cellText(row: T, key: string): string {
   const value = field(row, key)
-  return value === undefined || value === null ? '' : String(value)
+  // 空值统一显示「—」：表格里留白看不出是「没有这项」还是「没加载出来」（v2.42.5）
+  if (value === undefined || value === null) return '—'
+  const text = String(value)
+  return text === '' ? '—' : text
 }
 
 function rowId(row: T, index: number): string {

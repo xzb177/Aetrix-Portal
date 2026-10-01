@@ -177,7 +177,8 @@ const mountSummary = computed(() => {
     failed: failed.length,
     unchecked: list.filter((m) => reach(m) === null).length,
     blocked: list.filter((m) => m.ea_reachable === false && (m.library_ids?.length || 0) > 0).length,
-    failedNames: failed.slice(0, 3).map((m) => m.name).join('、'),
+    failedNames: failed.slice(0, 2).map((m) => m.name).join('、'),
+    failedMore: failed.length > 2,
   }
 })
 
@@ -226,7 +227,7 @@ const kpis = computed<{
       key: 'mounts', label: '存储健康', value: `${mount.ok}/${mount.total}`,
       foot: mount.total
         ? `可用 / 共 ${mount.total} 条来源`
-          + (mount.failed ? ` · 异常 ${mount.failed}${mount.failedNames ? `（${mount.failedNames}）` : ''}` : '')
+          + (mount.failed ? ` · 异常 ${mount.failed}${mount.failedNames ? `（${mount.failedNames}${mount.failedMore ? ' 等' : ''}）` : ''}` : '')
           + (mount.unchecked ? ` · 未体检 ${mount.unchecked}` : '')
           + (mount.blocked ? ` · 播放节点够不着 ${mount.blocked}` : '')
         : '还没有存储来源',
@@ -287,6 +288,18 @@ function libraryStatus(library: EmbyLibrary): string {
   if (library.is_scanning) return '扫描中'
   if (!library.is_enabled) return '已停用'
   return '正常'
+}
+
+/** 后端服务状态中文映射：redis_unavailable 这类英文枚举不直接上界面 */
+const SERVICE_STATUS_LABEL: Record<string, string> = {
+  healthy: '运行中',
+  degraded: '降级',
+  redis_unavailable: 'Redis 不可用',
+  unreachable: '心跳丢失',
+}
+
+function serviceStatusLabel(status: string): string {
+  return SERVICE_STATUS_LABEL[status] || status
 }
 
 </script>
@@ -378,8 +391,8 @@ function libraryStatus(library: EmbyLibrary): string {
             <Server :size="13" /> {{ svc.name }}
             <span class="server-current">{{ svc.role }}</span>
           </div>
-          <div class="stat-value" :class="{ 'stat-accent': svc.status === 'healthy' }">
-            {{ svc.status === 'healthy' ? '运行中' : svc.status }}
+          <div class="stat-value" :class="{ 'stat-accent': svc.status === 'healthy', 'stat-warn-text': svc.status !== 'healthy' }">
+            {{ serviceStatusLabel(svc.status) }}
             <span v-if="svc.lag_seconds != null" class="stat-sub"> · 心跳 {{ svc.lag_seconds }}s 前</span>
           </div>
           <div class="stat-foot">
@@ -620,6 +633,13 @@ function libraryStatus(library: EmbyLibrary): string {
 </template>
 
 <style scoped>
+/* 非健康服务（如 Redis 不可用）：警示色小号字，不再和 30px 大数字抢权重 */
+.stat-warn-text {
+  color: var(--warning);
+  font-size: 16px;
+  font-variant-numeric: normal;
+  letter-spacing: 0;
+}
 /* 配额熔断器 */
 .breaker-tripped {
   border-color: var(--danger) !important;
@@ -697,13 +717,15 @@ function libraryStatus(library: EmbyLibrary): string {
   letter-spacing: -0.02em;
 }
 
+/* 脚注允许换行（v2.42.5）：nowrap + ellipsis 会把「异常 2（日…」截断，
+   到底哪个来源异常反而看不到；换行后完整可读，卡片高度由网格自行拉齐。 */
 .kpi-foot {
   margin-top: 4px;
   font-size: 11.5px;
+  line-height: 1.45;
   color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* 状态包：颜色只用来提示「有没有要看的」，不当装饰 */

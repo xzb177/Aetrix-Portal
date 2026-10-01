@@ -389,7 +389,7 @@ async function saveRegistration() {
       </p>
     </NoticePanel>
 
-    <div v-loading="capsLoading" class="settings-body">
+    <div v-loading="capsLoading" class="settings-body cap-flow">
       <section v-for="g in capGroups" :key="g.name" class="cap-section">
         <h2 class="cap-group-title">{{ g.name }}</h2>
         <div class="cap-grid">
@@ -664,6 +664,24 @@ async function saveRegistration() {
   gap: 12px;
 }
 
+/*
+  能力卡按列打包（v2.42.5）：此前每个分组各占一整行，「AI 与智能」「站点与品牌」
+  这种只有 1 张卡的分组会让整行右侧大片留白。改成多列打包后，单卡分组与相邻分组
+  并排；分组本身不被拆开（break-inside: avoid），阅读顺序仍是分组的自然顺序。
+*/
+.cap-flow {
+  display: block;
+  column-width: 300px;
+  column-gap: 12px;
+}
+.cap-flow .cap-section {
+  display: block;
+  break-inside: avoid;
+  margin-bottom: 14px;
+}
+.cap-flow .cap-grid { display: block; }
+.cap-flow .cap-card { margin-bottom: 12px; break-inside: avoid; }
+
 .cap-card {
   display: flex;
   flex-direction: column;
@@ -737,6 +755,10 @@ async function saveRegistration() {
   .card-footer :deep(.el-button) { flex: 1; margin-left: 0; }
   .settings-body { gap: 12px; }
   .cap-grid { grid-template-columns: 1fr; }
+  /* 手机：能力卡回到单列，分组标题紧贴自己的卡片 */
+  .cap-flow { column-width: auto; column-count: 1; }
+  .cap-flow .cap-section { margin-bottom: 12px; }
+  .cap-flow .cap-card { margin-bottom: 10px; }
   .cap-drawer-footer { justify-content: stretch; }
   .cap-drawer-footer :deep(.el-button) { flex: 1; margin-left: 0; }
 }
