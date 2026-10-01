@@ -10,7 +10,11 @@ import { siteApi, type Branding } from '@/api/site'
 
 export const DEFAULT_SITE_NAME = 'Aetrix'
 export const DEFAULT_THEME_COLOR = '#22d3ee'
-export const APP_VERSION = 'v2.33.0'
+// 管理后台页脚展示的版本号（views/Layout.vue 的 foot-version）。构建期写死，不读根目录
+// VERSION —— 所以必须与 VERSION 保持一致，由 scripts/check_version.py 门禁守着：
+// 它曾停在 v2.33.0 而 VERSION 已到 2.42.6，导致「看界面版本判断线上跑的是哪个构建」
+// 变成一个假信号（页脚永远显示同一个值）。
+export const APP_VERSION = 'v2.42.7'
 
 export const branding = reactive<Branding>({
   site_name: DEFAULT_SITE_NAME,

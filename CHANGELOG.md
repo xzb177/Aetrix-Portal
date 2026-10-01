@@ -2,7 +2,7 @@
 
 所有项目重要更改都将记录在此文件中。
 
-## [2.42.6] - 2026-10-01
+## [2.42.7] - 2026-10-01
 
 ### 修复：合并容器里后台任务跑了两份（`AETRIX_ROLE=all`）
 
@@ -34,6 +34,14 @@ probe / enrich / reminders / auto_scan / db_backup / chase_new 整套后台任�
 没有任何任务是只有 main.py 会起的；`scripts/update.sh` 读的是 `docker inspect` 的
 **容器级** env，不受子进程注入影响。另新增 `tests/test_run_all_roles.py`：钉住角色
 注入、worker/ea 不被覆盖、以及「worker 必须接过角色门后的每一个后台任务」这条前提。
+
+- **管理端页脚版本号修正（同一类「标记不可信」的病）**：`admin_frontend/src/
+  composables/branding.ts` 的 `APP_VERSION` 停在 `v2.33.0`，而 `VERSION` 已到
+  2.42.6 —— 页脚「Aetrix v2.33.0」**永远显示同一个值**，根本没法用来看线上跑的
+  是哪个构建（而这正是部署验证最需要它的场景）。现同步成 `v2.42.7`，并把这一项
+  纳入 `scripts/check_version.py` 门禁：以后前端页脚版本与 `VERSION` 漂了，CI 直接拦。
+
+## [2.42.6] - 2026-10-01
 
 ### 用户端 UI 重做（批次 1）：7 处线上问题修复 + 双主题硬编码收敛
 
