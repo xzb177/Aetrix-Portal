@@ -492,11 +492,11 @@ class TmdbClient:
                     return
             import httpx
 
-            # timeout 8 → 10：带 append_to_response 的详情请求在跨境链路上 8 秒偏紧；
-            # transport 层再带连接级重试（同一个 TMDB_NET_RETRIES 旋钮；
-            # 读超时由 _request 自己重试，见那里）
-            transport = httpx.HTTPTransport(retries=TMDB_NET_RETRIES)
-            stale, self.session = self.session, httpx.Client(timeout=TMDB_TIMEOUT, transport=transport)
+            # timeout 8 → 10：带 append_to_response 的详情请求在跨境链路上 8 秒偏紧。
+            # 重试统一交给 _request()（连接错误与读超时一视同仁，见那里）——**不要**在这里
+            # 传自定义 transport：一旦显式给 transport，httpx 就不再按环境变量挂代理了，
+            # 后台配的代理会静默失效（scripts/smoke_test_capabilities.py 钉住了这一点）。
+            stale, self.session = self.session, httpx.Client(timeout=TMDB_TIMEOUT)
             self._session_proxy_sig = sig
         if stale is not None:
             # 可能还有别的扫描线程正拿旧会话取数据：它会拿到一次异常，_get 按「一次失败的
@@ -523,9 +523,9 @@ class TmdbClient:
     def _request(self, path: str, params: dict):
         """单次 GET：先过**请求级**令牌桶，再按 TMDB_NET_RETRIES 退避重试网络异常
 
-        transport 层的 retries 只覆盖连接建立失败；跨境链路上更常见的读超时
-        （httpx.ReadTimeout）得在这里重试，否则一次抖动就让条目这轮刮不上、
-        要等下一轮补全才回来。
+        连接错误与读超时都在这里重试（httpx 默认的连接级重试不覆盖读超时，而跨境
+        链路上更常见的恰恰是读超时）；一次抖动不再让条目这轮刮不上、要等下一轮
+        补全才回来。
         """
         if not self.session:
             return None

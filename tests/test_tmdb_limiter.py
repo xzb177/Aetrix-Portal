@@ -261,6 +261,48 @@ def test_enrich_worker_no_longer_owns_a_tmdb_bucket():
     assert not hasattr(worker, "_RateLimiter")
 
 
+def _session_proxy_urls(session) -> set:
+    """读出一个 httpx.Client 实际生效的代理地址（与冒烟脚本同一口径）
+
+    httpx 没有公开这个信息（代理在构造时就织进了 transport），只能读内部结构。
+    """
+    urls = set()
+    for transport in (getattr(session, "_mounts", None) or {}).values():
+        url = getattr(getattr(transport, "_pool", None), "_proxy_url", None)
+        if not url:
+            continue
+        part = lambda v: v.decode() if isinstance(v, bytes) else str(v)  # noqa: E731
+        port = getattr(url, "port", None)
+        urls.add(f"{part(url.scheme)}://{part(url.host)}" + (f":{port}" if port else ""))
+    return urls
+
+
+def test_session_keeps_env_proxy_support(monkeypatch):
+    """不要给 httpx.Client 传自定义 transport——那会让环境变量里的代理静默失效
+
+    实测事故：为了加一层连接级重试传了 ``transport=httpx.HTTPTransport(retries=2)``，
+    httpx 就不再按环境变量挂代理，「后台配的代理」对刮削完全不生效，而且**不报错**；
+    只有真发请求的冒烟（scripts/smoke_test_capabilities.py）才发现。重试因此统一
+    交给 _request()，会话按默认方式建。
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.delenv("TMDB_API_KEYS", raising=False)
+    monkeypatch.delenv("TMDB_API_KEY", raising=False)
+    monkeypatch.setattr(tmdb_mod, "_read_config_value", lambda db: "")
+    client = TmdbClient()
+    client._set_keys(["k"], "env")
+    # 不接 _client()：那条路会把 _ensure_session 打桩，而这里要验的正是它
+    client._ensure_session()
+    assert client.session is not None
+    try:
+        proxies = _session_proxy_urls(client.session)
+        assert proxies, "会话没有代理挂载点：要么没走默认 transport，要么 httpx 改了内部结构"
+        assert "http://127.0.0.1:9" in proxies
+    finally:
+        client.session.close()
+
+
 def test_admin_tmdb_keys_reports_the_effective_rate():
     """管理后台能看出「实际在打的速率」，配置值只是上限"""
     from backend.api import admin_scrape
