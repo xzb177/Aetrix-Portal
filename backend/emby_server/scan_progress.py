@@ -255,6 +255,9 @@ STAGE_LABELS = {
     "tmdb_search_short": "TMDB 短路（省下的候选）",
     "image_dl": "图片下载",
     "enrich_item": "条目补全",
+    # 第 5 批（处方 3）：父级已 done 的集零网络继承——这条计数直接回答
+    # 「有多少单集根本没碰网络就补完了」
+    "enrich_pure_inherit": "纯继承（零网络）",
 }
 
 # 完成速率窗口（秒）：近 5 分钟的 done/分钟 = 「积压还要多久」的直接答案

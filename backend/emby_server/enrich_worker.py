@@ -9,6 +9,10 @@ side 图片 / NFO / TMDB 刮削全部交给本 worker 在后台补全——这�
   （v2.42.9：抢单写 ``enrich_claimed_at``，停滞超过租约的僵尸行周期打回
   pending，不再只能靠重启恢复）；
 - 原子抢任务：SELECT FOR UPDATE SKIP LOCKED，多 worker/多进程不重复处理；
+- 成组抢单（v2.42.9 第 5 批）：按父级（同一部剧 = 一个组）整组抢走、父级在前，
+  组内共享一份 ``_ScanContext``（目录列举 / NFO 缓存）——同一季只列一次；
+- 纯继承（v2.42.9 第 5 批）：父级已 done 且有图/tmdb_id、本集无自带 NFO 时，
+  不读 NFO、不查 TMDB，图片沿父级回退，零网络落 done；
 - 失败指数退避：attempts 计数，next_retry_at 调度，5 次后转 failed；
 - 挂载熔断（v2.42.9）：坏挂载不再逐条等 MOUNT_TIMEOUT——挂载连续失败达阈值后
   熔断打开，该挂载条目在 IO 前就被打回 pending + 长 next_retry_at（不是
@@ -107,11 +111,59 @@ def _scanfile_from_item(item: Any) -> Optional[Any]:
     )
 
 
-def _enrich_fetch(item: Any) -> dict:
+def _shared_ctx(item: Any, holder: Optional[dict]):
+    """同组（同一部剧）内共享的 ``_ScanContext``（v2.42.9 第 5 批・处方 1）
+
+    ctx 里的目录列举 / NFO 缓存正是扫描器「同目录只列一次」的机制，但旧实现
+    每条补全都新建一个 ctx → 同一季的目录每条集列一次、``tvshow.nfo`` 每条集重读。
+    ``holder`` 由 ``_worker_loop`` 按组管理（换剧即重建），缓存不随积压增长；
+    holder 为 None（旧调用方 / 单测直调）时行为与旧实现一致——每条新建。
+    """
+    from backend.emby_server import scanner as _sc
+
+    if holder is not None and holder.get("ctx") is not None:
+        return holder["ctx"]
+    snap = _sc.LibrarySnapshot(
+        library_id=item.library_id, name="", collection_type="",
+        paths=(), scrape_policy="smart",
+    )
+    ctx = _sc._ScanContext(snap=snap, lib_id=item.library_id, stats={})
+    if holder is not None:
+        holder["ctx"] = ctx
+    return ctx
+
+
+def _episode_has_own_nfo(ctx, scan_file) -> bool:
+    """本集有没有自己的 NFO——只看目录列举（ctx 缓存里现成的那份），不读任何文件
+
+    纯继承（处方 3）的判定条件之一：「一季一次列举」的返回里就含本季所有文件名，
+    谁有 .nfo 一眼可见。判定不了（列举异常）时保守地当「有」——不走捷径。
+    """
+    from backend.emby_server import scanner as _sc
+
+    try:
+        if scan_file.local_dir is not None:
+            names = set(_sc._list_dir_cached(scan_file.local_dir))
+        else:
+            names = {e.name for e in _sc._mount_dir_entries(
+                ctx, scan_file, scan_file.dir_rel)}
+    except Exception:  # noqa: BLE001 — 判定不了就不走捷径
+        return True
+    return any(cand in names
+               for cand in _sc._nfo_candidates("episode", scan_file.name))
+
+
+def _enrich_fetch(item: Any, holder: Optional[dict] = None,
+                  inherit_parent: Optional[dict] = None) -> dict:
     """IO 阶段（无 DB 写事务）：side 图片/字幕 → NFO → TMDB。
 
     返回待写入的数据包，写库阶段只做纯 DB 操作。
-    同一部剧的 TMDB 搜索由调用方经 _searched_series 去重。
+
+    v2.42.9 第 5 批（处方 1+3）：
+    - ``holder``：同组（同一部剧）内共享的 ``_ScanContext``（目录列举 / NFO 缓存），
+      由 ``_worker_loop`` 在组边界上重置——同一季的目录只列一次、tvshow.nfo 只读一次；
+    - ``inherit_parent``：父级剧已 done 且有图/tmdb_id 时的快照（见 ``_inherit_parent_info``）。
+      本集没有自己的 NFO 时走**纯继承**：不读 NFO、不查 TMDB，图片在写库阶段沿父级回退。
     """
     from backend.emby_server import scanner as _sc
     from backend.emby_server import nfo as nfo_lib
@@ -136,11 +188,7 @@ def _enrich_fetch(item: Any) -> dict:
     ctx = None
     nfo_data = None
     if scan_file is not None:
-        snap = _sc.LibrarySnapshot(
-            library_id=item.library_id, name="", collection_type="",
-            paths=(), scrape_policy="smart",
-        )
-        ctx = _sc._ScanContext(snap=snap, lib_id=item.library_id, stats={})
+        ctx = _shared_ctx(item, holder)
 
         # 1. side 图片 / 外挂字幕（本地图片优先，不覆盖已有）
         try:
@@ -150,6 +198,16 @@ def _enrich_fetch(item: Any) -> dict:
             result["external_subs"] = list(external or [])
         except Exception as exc:  # noqa: BLE001
             logger.debug("补全 side 失败 %s: %s", item.file_path, exc)
+
+        # 1.5 纯继承快路径（处方 3）：父级已 done、本集没有自己的 NFO →
+        #     目录列举已在上一步进 ctx 缓存（同一份），谁有 .nfo 一眼可见；
+        #     不读 NFO、不查 TMDB，图片在写库阶段沿父级回退。
+        #     有自带 NFO 的集不走这条（NFO 里可能有本集专属数据）。
+        if (inherit_parent and kind == "episode"
+                and not _episode_has_own_nfo(ctx, scan_file)):
+            result["pure_inherit"] = True
+            progress.note_stage("enrich_pure_inherit")
+            return result
 
         # 2. NFO（B 方案：NFO 管文字；series/season/episode/movie 全支持）
         if kind:
@@ -361,7 +419,14 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             alt_hit = None
 
     _incomplete = False
-    if kind in ("series", "movie"):
+    if fetched.get("pure_inherit"):
+        # 纯继承（处方 3）：本集的数据来自父级剧（图片回退在上面已完成），
+        # 不是「跑过没拿到」——单独标 inherit，避免落进无望队列的口径。
+        # 之前失败过（none）的条目现在拿到数据了，也从 none 改标；
+        # 真正的来源标记（nfo/tmdb/douban…）不动。
+        if not item.metadata_source or item.metadata_source == "none":
+            item.metadata_source = "inherit"
+    elif kind in ("series", "movie"):
         if tmdb_client.configured and not item.tmdb_id and not alt_hit:
             _incomplete = True
         if not (item.overview or "").strip():
@@ -396,24 +461,54 @@ def _claim_batch(db, limit: int) -> list:
     SELECT FOR UPDATE SKIP LOCKED：PostgreSQL/MySQL 原子跳过已被锁的行；
     SQLite 忽略 SKIP LOCKED 但事务本身串行化，同样不会重入。
     只抢「到重试时间」的（next_retry_at IS NULL 或已到期）。
+
+    v2.42.9 第 5 批（处方 2）：**按父级成组**抢单。组 = ``coalesce(series_id, id)``
+    ——剧条目与它名下所有集共享同一个组键，整组一次抢走，父级排在最前。
+    于是同一部剧的条目落在同一个 worker、按季/集顺序连着处理：
+    ``_ScanContext`` 的目录列举 / NFO 缓存才能在条目间复用（处方 1），
+    父级先落 done、子集才能纯继承（处方 3）。
+    组之间仍按「最近入库」倒序（与旧口径一致；每库公平轮转见后续批次）。
     """
+    from sqlalchemy import case as _case, func as _func, or_ as _or
+
     now = datetime.now()
-    q = (db.query(em.MediaItem)
-         .filter(em.MediaItem.enrich_status == "pending")
-         .filter((em.MediaItem.enrich_next_retry_at.is_(None)) |
-                 (em.MediaItem.enrich_next_retry_at <= now))
-         .order_by(em.MediaItem.date_added.desc())
-         .limit(limit))
-    try:
-        rows = q.with_for_update(skip_locked=True).all()
-    except Exception:
-        # 方言不支持 FOR UPDATE 时退回普通查询（单 worker 仍正确）
-        rows = q.all()
-    claimed = []
-    for r in rows:
-        r.enrich_status = "enriching"
-        r.enrich_claimed_at = now   # claim 租约：janitor 据此回收僵尸行（v2.42.9）
-        claimed.append(r)
+    due = _or(em.MediaItem.enrich_next_retry_at.is_(None),
+              em.MediaItem.enrich_next_retry_at <= now)
+    group_key = _func.coalesce(em.MediaItem.series_id, em.MediaItem.id)
+
+    # 先看最近入库的若干个组：通常 1~3 个组就能填满一批；被别的 worker
+    # 锁住（抢到 0 行）的组自动跳过，继续看下一个。GROUP BY 查询没法带
+    # FOR UPDATE（PG 限制），所以是「选组」与「抢行」两步。
+    groups = (db.query(group_key.label("g"),
+                       _func.max(em.MediaItem.date_added).label("latest"))
+              .filter(em.MediaItem.enrich_status == "pending", due)
+              .group_by(group_key)
+              .order_by(_func.max(em.MediaItem.date_added).desc())
+              .limit(20).all())
+
+    claimed: list = []
+    for gid, _latest in groups:
+        if len(claimed) >= limit:
+            break
+        q = (db.query(em.MediaItem)
+             .filter(em.MediaItem.enrich_status == "pending", due,
+                     group_key == gid)
+             .order_by(
+                 # 父级（剧/电影）先于子级：父级先落 done，子集才能纯继承
+                 _case((em.MediaItem.item_type.in_(["series", "movie"]), 0), else_=1),
+                 em.MediaItem.season_number,
+                 em.MediaItem.episode_number,
+                 em.MediaItem.date_added.desc())
+             .limit(limit - len(claimed)))
+        try:
+            rows = q.with_for_update(skip_locked=True).all()
+        except Exception:
+            # 方言不支持 FOR UPDATE 时退回普通查询（单 worker 仍正确）
+            rows = q.all()
+        for r in rows:
+            r.enrich_status = "enriching"
+            r.enrich_claimed_at = now   # claim 租约：janitor 据此回收僵尸行（v2.42.9）
+        claimed.extend(rows)
     if claimed:
         db.commit()
     return claimed
@@ -567,7 +662,33 @@ def _requeue_on_breaker(db, item_id: int, mount_id: Optional[int] = None) -> str
         return "skip"
 
 
-def _process_item(db, item: Any) -> str:
+def _inherit_parent_info(db, item: Any) -> Optional[dict]:
+    """纯继承（处方 3）的前提：剧已 done 且有图/tmdb_id，本集无待修复标记。
+
+    返回 None 表示不具备纯继承条件（走完整抓取）；否则返回剧的快照。
+    只对 episode 判定：season 本来就不发网络（无文件、不搜 TMDB）。
+    ``populate_existing`` 强制重读：父级可能在同批的前一条刚落 done，
+    身份映射里的旧对象会骗过这个判定。
+    """
+    if (item.item_type or "") != "episode":
+        return None
+    if getattr(item, "repair_requested_at", None):
+        return None
+    if not item.series_id:
+        return None
+    series = (db.query(em.MediaItem)
+              .filter(em.MediaItem.id == item.series_id)
+              .populate_existing().first())
+    if series is None:
+        return None
+    if (series.enrich_status or "") != "done":
+        return None
+    if not (series.poster_path or series.primary_image_url or series.tmdb_id):
+        return None
+    return {"series_id": series.id}
+
+
+def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
     """处理一条已抢到的条目：IO 阶段 → 写库阶段。
 
     返回 'done' / 'retry' / 'failed' / 'breaker' / 'skip'
@@ -585,9 +706,12 @@ def _process_item(db, item: Any) -> str:
         if mount_lib.mount_breaker_open(mount_id):
             db.rollback()
             return _requeue_on_breaker(db, item_id, mount_id)
+    # ---- 纯继承预判（处方 3）：父级已 done 且有图/tmdb_id 才值得走 ----
+    inherit_parent = _inherit_parent_info(db, item)
     # ---- IO 阶段（无写事务）：网络/磁盘全在这里 ----
     try:
-        fetched = _enrich_fetch(item)
+        fetched = _enrich_fetch(item, holder=holder,
+                                inherit_parent=inherit_parent)
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全 IO 失败 id=%s: %s", item_id, exc)
         db.rollback()
@@ -618,8 +742,6 @@ def _process_item(db, item: Any) -> str:
 
 def _worker_loop(worker_id: int) -> None:
     logger.info("补全 worker #%d 启动（L2/L3 后台补全）", worker_id)
-    # 同一部剧只搜一次 TMDB：series 级去重（worker 内内存集合）
-    _searched_series: set = set()
     db = SessionLocal()
     try:
         while not _stop_event.is_set():
@@ -632,14 +754,23 @@ def _worker_loop(worker_id: int) -> None:
             if not batch:
                 _stop_event.wait(ENRICH_IDLE_POLL_SEC)
                 continue
+            # v2.42.9 第 5 批（处方 1+2）：批次按组（同一部剧）聚在一起返回，
+            # 组内条目共享一份 _ScanContext——同一季的目录列举与 tvshow.nfo
+            # 只付一次网络成本；组边界上丢弃重建，缓存不随积压增长。
+            holder: Optional[dict] = None
+            current_group = None
             for item in batch:
                 if _stop_event.is_set():
                     break
+                gkey = item.series_id or item.id
+                if gkey != current_group:
+                    holder = {}          # 新组：上一组的 ctx 缓存随之释放
+                    current_group = gkey
                 # v2.42.9：单条计时 + 结果计数。这两项就是「单条平均耗时」与
                 # 「近 5 分钟 done/分钟」的来源 —— 后面几批优化（纯继承 / ctx 复用 /
                 # 终态化）到底有没有把积压量降下来，靠它们验收。
                 started = time.monotonic()
-                outcome = _process_item(db, item)
+                outcome = _process_item(db, item, holder)
                 progress.note_stage(
                     "enrich_item", (time.monotonic() - started) * 1000.0)
                 progress.note_completed(outcome)
