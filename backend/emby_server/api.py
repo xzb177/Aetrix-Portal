@@ -2218,7 +2218,8 @@ async def video_stream(
         # 线路选择（用户维度，play_line 模块）：
         # relay 线路跳过一切 302，直接走服务器代理转发（流量过 VPS），
         # 适合客户端直连 Google 不通的用户；direct（默认）保持下面的现有行为。
-        if await run_db(play_line.get_play_line, db, user.id) == play_line.LINE_RELAY:
+        # getattr 兜底：user 可能是测试桩，没有 id 时按默认 direct 走。
+        if await run_db(play_line.get_play_line, db, getattr(user, "id", None)) == play_line.LINE_RELAY:
             return await serve_remote_async(target.value, request, target.headers, media_type)
         # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
         # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。

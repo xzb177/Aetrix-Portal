@@ -19,9 +19,18 @@ PLAY_LINES = (LINE_DIRECT, LINE_RELAY)
 DEFAULT_LINE = LINE_DIRECT
 
 
-def get_play_line(db: Session, user_id: int) -> str:
-    """读用户线路偏好；无记录或脏数据一律回默认 direct。"""
-    pref = db.query(UserPlayLine).filter(UserPlayLine.user_id == user_id).first()
+def get_play_line(db: Session, user_id: int | None) -> str:
+    """读用户线路偏好。
+
+    无记录、脏数据、user_id 为空或读取异常，一律回默认 direct。
+    偏好只是辅助：读不到也不能让播放 500。
+    """
+    try:
+        if user_id is None:
+            return DEFAULT_LINE
+        pref = db.query(UserPlayLine).filter(UserPlayLine.user_id == user_id).first()
+    except Exception:
+        return DEFAULT_LINE
     if pref is not None and pref.line in PLAY_LINES:
         return pref.line
     return DEFAULT_LINE

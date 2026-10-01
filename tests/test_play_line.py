@@ -86,6 +86,17 @@ def test_dirty_value_falls_back_to_default(db):
     assert get_play_line(db, u.id) == LINE_DIRECT
 
 
+def test_broken_db_or_no_user_id_falls_back_to_default(db):
+    # user_id 为空 / db 异常时不能炸，播放要按默认 direct 走
+    assert get_play_line(db, None) == LINE_DIRECT
+
+    class BrokenDB:
+        def query(self, *a, **k):
+            raise RuntimeError("db down")
+
+    assert get_play_line(BrokenDB(), 1) == LINE_DIRECT
+
+
 def test_play_lines_contract():
     assert set(PLAY_LINES) == {"direct", "relay"}
 
