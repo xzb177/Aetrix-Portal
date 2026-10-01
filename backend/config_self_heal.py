@@ -282,6 +282,13 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         (k, v, f"播放策略：{k}") for k, v in playback_policy.POLICY_DEFAULTS.items()
     ])
 
+    # 7.5 CDN 域名预留（播放三层第 2/3 层）：默认关闭 + 空域名 = 与升级前一致
+    from backend.emby_server import cdn
+    items.extend([
+        (cdn.CONFIG_CDN_DOMAIN, "", "CDN 域名预留：回源到本服务的域名（留空 = 未配置）"),
+        (cdn.CONFIG_CDN_ENABLED, "false", "CDN 域名预留开关（默认关闭）"),
+    ])
+
     # 8. 公益服查看权限价格
     from backend.emby_server import portal
     items.extend([

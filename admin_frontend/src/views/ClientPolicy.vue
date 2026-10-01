@@ -15,12 +15,12 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  AlertTriangle, Download, Gauge, Info, RefreshCw, Save, ShieldBan, Smartphone, Tv,
+  AlertTriangle, Cloud, Download, Gauge, Info, RefreshCw, Save, ShieldBan, Smartphone, Tv,
 } from 'lucide-vue-next'
-import { fetchPlaybackPolicy, updatePlaybackPolicy } from '@/api/admin'
+import { fetchCdnConfig, fetchPlaybackPolicy, updateCdnConfig, updatePlaybackPolicy } from '@/api/admin'
 // 下载与设备风控落在经济设置里（同一批 SystemConfig 键），这里只是换个更顺手的入口
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
-import type { PlaybackPolicy, PlaybackRuntime } from '@/types'
+import type { CdnConfig, PlaybackPolicy, PlaybackRuntime } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
 
@@ -32,6 +32,7 @@ const isSuper = computed(() => auth.admin?.is_super !== false)
 const loading = ref(false)
 const savingPolicy = ref(false)
 const savingOps = ref(false)
+const savingCdn = ref(false)
 
 const policy = ref<PlaybackPolicy>({
   transcode_enabled: true,
@@ -45,6 +46,13 @@ const runtime = ref<PlaybackRuntime | null>(null)
 /** 下载与设备风控（与「系统设置」共用同一批键，这里只是换个更顺手的入口） */
 const ops = ref({ allow_download: 'true', device_limit_per_user: '0', device_limit_auto_evict: 'false' })
 
+/** CDN 域名预留（播放三层第 2/3 层）：只做域名预留，默认关闭 */
+const cdnConfig = ref<CdnConfig>({
+  domain: '', normalized: '', enabled: false, segment_cache_header: '',
+})
+/** 服务端注册的线路清单（direct / cdn / relay）——展示用，不在这里改 */
+const cdnPlayLines = ref<string[]>([])
+
 const PLAYBACK_NODE_LABEL: Record<string, string> = {
   ea: '分离部署的 EA 节点',
   external: '已有 Emby 服',
@@ -54,12 +62,17 @@ const PLAYBACK_NODE_LABEL: Record<string, string> = {
 async function load() {
   loading.value = true
   try {
-    const [p, s] = await Promise.all([
+    const [p, s, c] = await Promise.all([
       fetchPlaybackPolicy(),
       fetchEconomySettings().catch(() => ({ settings: {} as Record<string, string> })),
+      fetchCdnConfig().catch(() => null),
     ])
     policy.value = p.policy
     runtime.value = p.runtime
+    if (c) {
+      cdnConfig.value = c.cdn
+      cdnPlayLines.value = c.play_lines
+    }
     ops.value = {
       allow_download: s.settings.allow_download ?? '',
       device_limit_per_user: s.settings.device_limit_per_user ?? '',
@@ -96,6 +109,24 @@ async function saveOps() {
     ElMessage.error(e instanceof Error ? e.message : '保存失败')
   } finally {
     savingOps.value = false
+  }
+}
+
+async function saveCdn() {
+  savingCdn.value = true
+  try {
+    const res = await updateCdnConfig({
+      domain: cdnConfig.value.domain,
+      enabled: cdnConfig.value.enabled,
+    })
+    cdnConfig.value = res.cdn
+    ElMessage.success(cdnConfig.value.enabled
+      ? 'CDN 预留已启用：播放 URL 走该域名，热门分片由边缘缓存'
+      : 'CDN 预留已保存（未启用，播放 URL 与升级前逐字节一致）')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+  } finally {
+    savingCdn.value = false
   }
 }
 
@@ -206,6 +237,68 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
           :min="0" :max="200000" :step="1000"
           :disabled="!isSuper"
         />
+      </div>
+    </section>
+
+    <!-- CDN 域名预留（播放三层第 2/3 层，默认关闭） -->
+    <section class="admin-card">
+      <div class="card-header">
+        <h2><Cloud :size="15" /> CDN 域名预留</h2>
+        <span class="badge-hint">{{ cdnConfig.enabled ? '已启用' : '未启用（默认）' }}</span>
+      </div>
+
+      <p class="field-hint" style="margin-top: 0">
+        把一个回源到本服务的 CDN 域名填进来并启用：播放 URL（直连流 / HLS 播放列表 / 字幕）
+        改走该域名，热门视频分片由 CDN 边缘缓存，省掉源站（Google Drive）的单文件下载配额。
+        <b>只做域名预留</b>：备案、证书、回源与缓存规则都在 CDN 厂商控制台自行配置，本服务不代管。
+      </p>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>CDN 域名</label>
+          <p class="field-hint">
+            例如 cdn.example.com 或 https://cdn.example.com（省略协议默认 https）。
+            该域名必须回源到本服务，否则播放会失败。
+          </p>
+        </div>
+        <el-input
+          v-model="cdnConfig.domain"
+          class="cdn-input"
+          :disabled="!isSuper"
+          placeholder="cdn.example.com"
+          clearable
+        />
+      </div>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>启用 CDN（总开关）</label>
+          <p class="field-hint">
+            关闭时（默认）播放 URL 与升级前一致；开启后还需域名合法才生效。
+            用户侧「线路选择」里的 cdn 线路也只在总开关开启后才出现并生效。
+          </p>
+        </div>
+        <el-switch v-model="cdnConfig.enabled" :disabled="!isSuper" />
+      </div>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>缓存口径</label>
+          <p class="field-hint">
+            视频分片：<code>{{ cdnConfig.segment_cache_header || 'public, max-age=300, s-maxage=21600' }}</code>
+            （边缘可缓存）；播放列表 / API / 302 跳转：<code>no-store</code>（绝不被缓存）。
+          </p>
+        </div>
+        <span class="badge-hint">
+          {{ cdnConfig.normalized || '域名未填写' }}
+          <template v-if="cdnPlayLines.length">· 线路 {{ cdnPlayLines.join(' / ') }}</template>
+        </span>
+      </div>
+
+      <div class="save-row">
+        <el-button type="primary" :loading="savingCdn" :disabled="!isSuper" @click="saveCdn">
+          <Save :size="14" style="margin-right: 4px" />保存 CDN 预留
+        </el-button>
       </div>
     </section>
 
@@ -371,6 +464,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
 .field-row label { font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--text-primary); }
 .field-hint { margin: 4px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.6; }
 .num-input { width: 120px; }
+.cdn-input { width: 260px; }
 .save-row { display: flex; justify-content: flex-end; padding-top: 4px; }
 code {
   padding: 1px 5px;

@@ -7,6 +7,7 @@ import type {
   AdminRole,
   AdminRow,
   Announcement,
+  CdnConfig,
   CodeStats,
   DeviceRow,
   DeviceStats,
@@ -779,6 +780,15 @@ export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
   put<{ success: boolean; applied: Record<string, string>; policy: PlaybackPolicy }>(
     '/playback/policy', { policy },
   )
+
+// ==================== CDN 域名预留（播放三层第 2/3 层，/api/admin/playback/cdn） ====================
+// 只做域名预留：启用后播放 URL 走该 CDN 域名（回源到现有服务），热门分片由边缘缓存。
+
+export const fetchCdnConfig = () =>
+  get<{ success: boolean; cdn: CdnConfig; play_lines: string[] }>('/playback/cdn')
+
+export const updateCdnConfig = (payload: { domain: string; enabled: boolean }) =>
+  put<{ success: boolean; cdn: CdnConfig }>('/playback/cdn', payload)
 
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
 // 挂载 = 媒体库的内容来源：local / strm 是本机目录，115 / webdav / alist 是远程来源。

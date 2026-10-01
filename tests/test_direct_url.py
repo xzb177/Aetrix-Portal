@@ -378,8 +378,10 @@ def test_video_stream_falls_back_to_proxy_when_no_direct_url(monkeypatch):
     monkeypatch.setattr(api, "try_google_direct_url", _fake_none)
     proxy = object()
 
-    async def fake_proxy(url, request, headers, media_type):
+    async def fake_proxy(url, request, headers, media_type, cache_control=None):
         assert (url, headers, media_type) == (target.value, target.headers, "video/mkv")
+        # 分片响应带可缓存头（CDN 边缘缓存用）
+        assert cache_control == "public, max-age=300, s-maxage=21600"
         return proxy
 
     monkeypatch.setattr(api, "serve_remote_async", fake_proxy)
