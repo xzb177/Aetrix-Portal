@@ -541,10 +541,13 @@ def _parse_ffprobe_http_error(stderr: str) -> Optional[int]:
     return None
 
 
-def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0) -> Optional[dict]:
+def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
+             ranged: bool = True) -> Optional[dict]:
     """ffprobe 提取媒体信息（无 ffprobe 时优雅降级）。
 
     远程直链补一个有限 Range，兼容 rclone rc-serve；本机文件不改变行为。
+    ``ranged=False`` 时不注入 Range，让 ffprobe 自己按需 seek（慢速回退路径，
+    见 ``probe_metadata``：有限窗口读不到 moov 的容器需要它）。
 
     返回的 dict 可能含 `_error` 字段：
     - `_error="quota"`：HTTP 403，远端配额/权限受限
@@ -556,7 +559,7 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0) -> Option
     # -v error：只输出错误（不用 quiet，否则 403/404 的真实原因被吞掉）
     cmd = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams"]
     probe_headers = dict(headers or {})
-    if path.startswith(("http://", "https://")) and not any(
+    if ranged and path.startswith(("http://", "https://")) and not any(
         str(k).lower() == "range" for k in probe_headers
     ):
         total = int(size or 0)
@@ -695,7 +698,21 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
         "video_codec": None, "audio_codec": None,
         "audio_languages": "", "subtitle_languages": "", "streams": [],
     }
+    remote = path.startswith(("http://", "https://"))
     data = _ffprobe(path, headers, size=size)
+    # 有限 Range 只是「少读点」的快速路径（decd396）：它只保证**头部带时长**的封装
+    # （Matroska 实测有效）。moov 在文件尾的 MP4/MOV 在前 1 MiB 里根本没有时长，
+    # 而我们注入的 Range 又让 ffprobe 把 206 当成整个文件，读到窗口末尾就报
+    # "File ended prematurely" → format 为空 → 白白记 degraded（生产 4.3 万条）。
+    # 拿不到 format、且不是明确的 HTTP 错误时，去掉 Range 再探一次（可自由 seek，
+    # ffprobe 自己按需 Range 读取 moov）。只对「窗口确实截断了文件」的条目做，
+    # 避免给本就完整的文件白跑一遍。
+    if (remote and (size <= 0 or size > PROBE_REMOTE_RANGE_BYTES)
+            and (not data or not data.get("format"))
+            and not (data or {}).get("_http_code")):
+        seekable = _ffprobe(path, headers, size=size, ranged=False)
+        if seekable and seekable.get("format"):
+            data = seekable
     used_mediainfo = False
     if not data or not data.get("format"):
         # 本机文件再尝试 MediaInfo；远程 URL 不重复发起一次随机读取，
@@ -709,9 +726,16 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
                 info["size"] = os.path.getsize(path)
             except OSError:
                 info["size"] = size
-            if path.startswith(("http://", "https://")):
+            if remote:
+                # 明确解析出的远端 HTTP 错误照样随结果透出（403 → 熔断器；
+                # 404/401 → 重试→failed），别让早返回把它吞成一句「信息不完整」。
+                if (data or {}).get("_error"):
+                    info["_error"] = data["_error"]
+                    info["_http_code"] = data.get("_http_code")
+                    info["_error_detail"] = data.get("_error_detail", "")
                 info["_degraded"] = True
-                info["_error_detail"] = "远程媒体可访问，但探测未取得完整时长（ffprobe/MediaInfo）"
+                if not info.get("_error_detail"):
+                    info["_error_detail"] = "远程媒体可访问，但探测未取得完整时长（ffprobe/MediaInfo）"
             return info
     if used_mediainfo:
         info["_probe_backend"] = "mediainfo"

@@ -132,6 +132,42 @@ def test_consume_loop_uses_existing_model():
     assert "em.Library" in src, "消费循环应使用 em.Library"
 
 
+# ==================== 阻塞读专用客户端 ====================
+
+def test_blocking_client_has_longer_socket_timeout(monkeypatch):
+    """阻塞读必须拿到专用客户端：socket_timeout 要大于 BLMOVE 阻塞时长。
+
+    真实事故（2026-10-01 生产）：``_blocking_redis`` 把 ``connection_class`` 传给
+    ``Redis()``，而 redis-py 只认 **ConnectionPool** 的这个参数 → 每次阻塞读都
+    ``TypeError``、退回共享客户端（socket_timeout=5s）；BLMOVE 阻塞也是 5s，
+    两边同时到点，每空转一轮报一次 "Timeout reading from socket"（修法等于没上）。
+
+    这里用真 redis 对象（只构造、不连服务器）钉住：
+    1. 真的新建了专用客户端（不再静默退回共享客户端）；
+    2. socket_timeout = 阻塞时长 + 5s，且共享客户端的连接参数（decode_responses 等）原样继承。
+    """
+    import redis as redis_mod
+
+    base_pool = redis_mod.ConnectionPool.from_url(
+        "redis://127.0.0.1:6379/0", decode_responses=True,
+        socket_connect_timeout=5, socket_timeout=5, retry_on_timeout=True,
+    )
+    base = redis_mod.Redis(connection_pool=base_pool)
+    monkeypatch.setattr(rq, "_redis", lambda: base)
+
+    client, owned = rq._blocking_redis(5)
+    try:
+        assert owned is True, "退回共享客户端 = 5s socket 超时原样复发"
+        assert client is not base
+        kw = client.connection_pool.connection_kwargs
+        assert kw["socket_timeout"] == 10
+        assert kw["socket_connect_timeout"] == 5
+        assert kw["decode_responses"] is True
+        assert client.connection_pool.connection_class is base_pool.connection_class
+    finally:
+        client.close()
+
+
 # ==================== ACK 与恢复 ====================
 
 def test_missing_library_is_acked(fr, monkeypatch):

@@ -43,6 +43,7 @@ SPEC = {
          "required": True, "placeholder": "gpt-4o-mini / deepseek-chat / qwen2.5:7b"},
         {"key": "ai_system_prompt", "label": "系统提示词", "type": "str",
          "default": "你是本站的客服助手，回答要简短、友好，只回答与本站使用相关的问题。",
+         "hint": "服务端会追加一条身份约束：被问到模型/厂商时统一回答「我是本站的 AI 客服助手」，不透露具体模型名称",
          "placeholder": "客服人设 / 回答边界"},
         {"key": "ai_temperature", "label": "温度", "type": "str", "default": "0.7"},
         {"key": "ai_max_tokens", "label": "单次最大回复长度", "type": "int", "default": "512"},
@@ -112,6 +113,27 @@ def _config_of(settings: dict) -> dict:
     }
 
 
+IDENTITY_GUARD = (
+    "身份约束：当用户询问你是什么模型、由哪家提供、底层用什么技术时，"
+    "统一回答「我是本站的 AI 客服助手」，不要透露、不要猜测、也不要讨论具体模型名称。"
+)
+
+
+def _system_prompt_with_guard(prompt: str) -> str:
+    """在管理员配置的人设后面追加身份约束（已含则不重复追加）
+
+    放在代码里而不是只改默认值：
+    - 存量部署的 ``ai_system_prompt`` 已经落库，改默认值对它们无效；
+    - 管理员改提示词时不应该能把「不透露模型名」这条一起改掉。
+    """
+    text = (prompt or "").strip()
+    if not text:
+        return IDENTITY_GUARD
+    if IDENTITY_GUARD in text:
+        return text
+    return f"{text}\n\n{IDENTITY_GUARD}"
+
+
 def _next_key(keys: list[str]) -> str:
     if not keys:
         return ""
@@ -132,8 +154,10 @@ def chat(db: Session, messages: list[dict], *, max_tokens: Optional[int] = None,
         return {"ok": False, "message": "未配置 API 密钥"}
     key = _next_key(keys)
     payload_messages = []
-    if use_system_prompt and cfg["system_prompt"]:
-        payload_messages.append({"role": "system", "content": cfg["system_prompt"]})
+    if use_system_prompt:
+        system_prompt = _system_prompt_with_guard(cfg["system_prompt"])
+        if system_prompt:
+            payload_messages.append({"role": "system", "content": system_prompt})
     payload_messages.extend(messages)
     import httpx
 
