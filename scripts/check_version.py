@@ -9,7 +9,10 @@
 
 1. ``VERSION`` 存在且是形如 ``2.34.0`` 的版本号；
 2. 两个前端的 ``package.json`` 与 ``package-lock.json`` 都和它一致；
-3. 后端不残留硬编码版本号（应当改为从 ``backend.version`` 读取）。
+3. 管理后台页脚展示的 ``APP_VERSION``（``admin_frontend/src/composables/branding.ts``）
+   与它一致——那个常量是构建期写死的、不读 VERSION，一旦漂了，
+   「看界面版本号判断线上跑的是哪个构建」就成了假信号；
+4. 后端不残留硬编码版本号（应当改为从 ``backend.version`` 读取）。
 
 退出码 0 = 一致；1 = 有漂移。
 """
@@ -26,6 +29,13 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 # 这些文件里不该再出现写死的 "x.y.z" 版本号
 BACKEND_FILES = ("backend/main.py", "emby_api/main.py")
+# 管理后台页脚展示的版本号：构建期常量，必须与 VERSION 同步
+# （2026-10-01 实测它停在 v2.33.0 而 VERSION 已到 2.42.6 —— 页脚版本完全不能用来
+#  判断线上跑的是哪个构建，而这正是部署验证最需要它的场景）
+BRANDING_FILE = "admin_frontend/src/composables/branding.ts"
+APP_VERSION_RE = re.compile(
+    r"export\s+const\s+APP_VERSION\s*=\s*['\"]v?(\d+\.\d+\.\d+)['\"]"
+)
 # 允许出现的注释（历史说明 / 变更记录），不是运行版本
 COMMENT_VERSION = re.compile(r"#.*\d+\.\d+\.\d+|v\d+\.\d+\.\d+")
 
@@ -66,6 +76,22 @@ def main() -> int:
                 problems.append(f"{rel} version={got!r}，应为 {version!r}")
             if root_pkg is not None and root_pkg != version:
                 problems.append(f"{rel} packages[\"\"].version={root_pkg!r}，应为 {version!r}")
+
+        # 管理后台页脚版本号（views/Layout.vue 的 foot-version）是构建期常量，
+        # 不读 VERSION —— 不同步就会变成一个假的「构建标记」。
+        brand = ROOT / BRANDING_FILE
+        if not brand.is_file():
+            problems.append(f"{BRANDING_FILE} 不存在")
+        else:
+            found = APP_VERSION_RE.search(brand.read_text(encoding="utf-8"))
+            if found is None:
+                problems.append(
+                    f"{BRANDING_FILE} 里找不到 APP_VERSION = 'vX.Y.Z'（页脚版本号靠它展示）"
+                )
+            elif found.group(1) != version:
+                problems.append(
+                    f"{BRANDING_FILE} 的 APP_VERSION 是 {found.group(1)!r}，应为 {version!r}"
+                )
 
     # 后端不允许再写死版本号：应当用 app_version()
     for rel in BACKEND_FILES:
