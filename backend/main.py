@@ -198,6 +198,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动追新线程失败（可忽略）: {e}")
 
+        # VPS 本地缓存（播放线路 cache）：默认关闭；开启后把热门片串行、限速地
+        # 拉到本机（播放中自动让路），超配额按 LRU 淘汰。失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import local_cache_worker
+            local_cache_worker.start_local_cache_worker()
+            logger.info("本地缓存 worker 已启动（默认关闭，后台可开）")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动本地缓存 worker 失败（可忽略）: {e}")
+
         # 外部服务能力落地：管理员配过的出站代理要写回进程环境变量（否则重启后失效），
         # 邮件 / Telegram 通知渠道也在这里按最新配置重建。没配过的能力什么都不做。
     try:

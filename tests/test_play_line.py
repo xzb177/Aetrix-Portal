@@ -10,6 +10,7 @@ import pytest
 
 from backend.emby_server.play_line import (
     DEFAULT_LINE,
+    LINE_CACHE,
     LINE_CDN,
     LINE_DIRECT,
     LINE_RELAY,
@@ -99,8 +100,8 @@ def test_broken_db_or_no_user_id_falls_back_to_default(db):
 
 
 def test_play_lines_contract():
-    # cdn 是播放三层第 2/3 层的预留线路：direct（默认）/ cdn / relay
-    assert set(PLAY_LINES) == {"direct", "cdn", "relay"}
+    # direct（默认）/ cdn（边缘缓存预留）/ cache（VPS 本地缓存）/ relay（中转）
+    assert set(PLAY_LINES) == {"direct", "cdn", "cache", "relay"}
     assert DEFAULT_LINE == LINE_DIRECT
 
 
@@ -108,6 +109,13 @@ def test_set_and_get_cdn(db):
     u = _make_user(db, "ucdn")
     assert set_play_line(db, u.id, LINE_CDN) == LINE_CDN
     assert get_play_line(db, u.id) == LINE_CDN
+
+
+def test_set_and_get_cache_line(db):
+    """本地缓存线路可持久化（选择与读取与其它线路同口径）"""
+    u = _make_user(db, "ucache")
+    assert set_play_line(db, u.id, LINE_CACHE) == LINE_CACHE
+    assert get_play_line(db, u.id) == LINE_CACHE
 
 
 # ---- video_stream 决策分支 ----
@@ -198,6 +206,78 @@ def test_video_stream_cdn_line_keeps_google_302(monkeypatch):
     resp = asyncio.run(api.video_stream("item", _request(), user, object()))
     assert resp.status_code == 302
     assert resp.headers["location"].startswith("https://www.googleapis.com/")
+    assert resp.headers["cache-control"] == "no-store"
+
+
+def test_video_stream_cache_line_hit_serves_local_file(monkeypatch):
+    """cache 线路命中本机副本：直接 serve_file（不回源、不入队）。"""
+    from backend.emby_server import api, local_cache
+    from backend.emby_server.mounts import PlayTarget
+
+    target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
+    _stub_common(monkeypatch, api, target)
+    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_CACHE)
+    monkeypatch.setattr(local_cache, "lookup", lambda db, item: "/cache/abc123.mkv")
+
+    def boom_enqueue(*a, **k):
+        raise AssertionError("命中时不该再入队")
+
+    monkeypatch.setattr(local_cache, "enqueue", boom_enqueue)
+    monkeypatch.setattr(api, "try_google_direct_url",
+                        lambda url: (_ for _ in ()).throw(AssertionError("不该回源")))
+    sentinel = object()
+
+    def fake_serve_file(path, request, media_type, cache_control=None):
+        assert path == "/cache/abc123.mkv"
+        assert media_type == "video/mp4"
+        from backend.emby_server import cdn as cdn_mod
+        assert cache_control == cdn_mod.SEGMENT_CACHE_HEADER
+        return sentinel
+
+    monkeypatch.setattr(api, "serve_file", fake_serve_file)
+    resp = asyncio.run(api.video_stream("item", _request(), SimpleNamespace(id=7), object()))
+    assert resp is sentinel
+
+
+def test_video_stream_cache_line_miss_falls_back_to_source(monkeypatch):
+    """cache 线路未命中：按 direct 口径回源（Google 直链 302），并高优先级入队缓存。"""
+    from backend.emby_server import api, local_cache
+    from backend.emby_server.mounts import PlayTarget
+
+    target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
+    _stub_common(monkeypatch, api, target)
+    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_CACHE)
+    monkeypatch.setattr(local_cache, "lookup", lambda db, item: None)
+    enqueued = []
+    monkeypatch.setattr(local_cache, "enqueue",
+                        lambda db, item, priority=0: enqueued.append(priority) or None)
+
+    async def fake_google(url):
+        assert url == target.value
+        return "https://www.googleapis.com/drive/v3/files/x?alt=media"
+
+    monkeypatch.setattr(api, "try_google_direct_url", fake_google)
+    resp = asyncio.run(api.video_stream("item", _request(), SimpleNamespace(id=7), object()))
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith("https://www.googleapis.com/")
+    assert enqueued == [local_cache.PLAY_PRIORITY]
+
+
+def test_video_stream_cache_line_disabled_is_plain_direct(monkeypatch):
+    """本地缓存未启用：lookup/enqueue 都是空操作，行为与 direct 一模一样。"""
+    from backend.emby_server import api, local_cache
+    from backend.emby_server.mounts import PlayTarget
+
+    target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
+    _stub_common(monkeypatch, api, target)
+    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_CACHE)
+    # 未启用时 local_cache 自己返回 None（不替换、不报错）：这里用真实函数
+    async def fake_google(url):
+        return "https://www.googleapis.com/drive/v3/files/x?alt=media"
+
+    monkeypatch.setattr(api, "try_google_direct_url", fake_google)
+    resp = asyncio.run(api.video_stream("item", _request(), SimpleNamespace(id=7), object()))
+    assert resp.status_code == 302
     assert resp.headers["cache-control"] == "no-store"
 
 

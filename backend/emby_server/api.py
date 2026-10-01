@@ -33,6 +33,7 @@ from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
 from backend.emby_server import facets
 from backend.emby_server import image_store
+from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_line
@@ -2241,6 +2242,16 @@ async def video_stream(
         # cdn 线路与 direct 同口径（直链 302 保留）——CDN 只挡回源流量，
         # URL 的域名改写在 PlaybackInfo/播放列表那几层已完成（cdn 模块）。
         line = await run_db(play_line.get_play_line, db, getattr(user, "id", None))
+        # 本地缓存线路（local_cache 模块）：命中本机副本就直接读本机（不过网络、
+        # 不碰云盘配额）；没命中就走下面的回源口径，同时按最高优先级排进缓存队列
+        # （后台单线程限速下载，播放时自动让路）。未启用缓存时 queue 为空操作，
+        # 行为与 direct 完全一致。
+        if line == play_line.LINE_CACHE:
+            cached_file = await run_db(local_cache.lookup, db, item)
+            if cached_file:
+                return serve_file(cached_file, request, media_type,
+                                  cache_control=cdn.cache_control_for(str(request.url.path)))
+            await run_db(local_cache.enqueue, db, item, local_cache.PLAY_PRIORITY)
         # CDN 预留（第 2/3 层）：代理转发形态也带上分片缓存头，让 CDN 边缘能缓存
         # 回源结果；API/302 不走这里（302 分支自带 no-store）。
         seg_cache = cdn.cache_control_for(str(request.url.path))
@@ -2345,6 +2356,15 @@ async def video_hls(
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS
     target = _play_target(db, item)
+    # 本地缓存线路：有本机副本时让 ffmpeg 直接读本地（少一次远程回源）；
+    # 没命中就把这条排进缓存队列（与 video_stream 同口径）。
+    if (target.kind == "url"
+            and play_line.get_play_line(db, getattr(user, "id", None)) == play_line.LINE_CACHE):
+        cached_file = local_cache.lookup(db, item)
+        if cached_file:
+            target = mount_lib.PlayTarget("local", cached_file, {})
+        else:
+            local_cache.enqueue(db, item, local_cache.PLAY_PRIORITY)
     session_id = start_transcode(
         target.value, start_seconds, video_bitrate, height,
         user_id=user.id, item_guid=item.guid, input_headers=target.headers,

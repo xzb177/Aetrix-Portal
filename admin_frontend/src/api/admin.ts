@@ -18,6 +18,9 @@ import type {
   EmbyScanRun,
   EmbyScanTask,
   EmbySessionRow,
+  LocalCacheConfig,
+  LocalCacheEntryInfo,
+  LocalCacheStats,
   Pan115Account,
   Pan115DirEntry,
   StorageMount,
@@ -789,6 +792,36 @@ export const fetchCdnConfig = () =>
 
 export const updateCdnConfig = (payload: { domain: string; enabled: boolean }) =>
   put<{ success: boolean; cdn: CdnConfig }>('/playback/cdn', payload)
+
+// ==================== VPS 本地缓存（播放线路「本地缓存」，/api/admin/playback/local-cache） ====================
+
+/** 本地缓存：配置 + 占用/命中率统计 + 条目列表（只读） */
+export const fetchLocalCacheConfig = () =>
+  get<{
+    success: boolean
+    local_cache: LocalCacheConfig
+    stats: LocalCacheStats
+    entries: LocalCacheEntryInfo[]
+    play_lines: string[]
+  }>('/playback/local-cache')
+
+/** 写回本地缓存配置（开关 / 目录 / 配额 / 热门规则 / 限速），参数非法由后端 400 拒绝 */
+export const updateLocalCacheConfig = (payload: {
+  enabled: boolean
+  dir: string
+  max_gb: number
+  hot_days: number
+  hot_plays: number
+  rate_mbps: number
+}) => put<{ success: boolean; local_cache: LocalCacheConfig; stats: LocalCacheStats }>(
+  '/playback/local-cache', payload,
+)
+
+/** 手动清理：ready = 清本机副本，failed = 清失败记录，all = 全部（不含下载中的） */
+export const cleanLocalCache = (mode: 'ready' | 'failed' | 'all') =>
+  post<{ success: boolean; cleaned: { mode: string; removed: number; freed_bytes: number }; stats: LocalCacheStats }>(
+    '/playback/local-cache/clean', { mode },
+  )
 
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
 // 挂载 = 媒体库的内容来源：local / strm 是本机目录，115 / webdav / alist 是远程来源。

@@ -260,6 +260,15 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动追新失败（可忽略）: {e}")
 
+        # VPS 本地缓存（播放线路 cache）：默认关闭；开启后串行、限速地拉热门片到本机
+        try:
+            from backend.emby_server import local_cache_worker
+            if local_cache_worker.start_local_cache_worker():
+                started.append("local_cache_worker")
+                logger.info("✅ 本地缓存 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动本地缓存 worker 失败（可忽略）: {e}")
+
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
             from backend.emby_server import scan_queue
