@@ -23,6 +23,34 @@ const router = useRouter()
 const route = useRoute()
 const { preference: themePreference, setPreference: setThemePreference } = useTheme()
 
+/**
+ * 外观（v2.42.9）：用户菜单里那排三段切换器**已删**，改到顶栏做成一枚圆形图标按钮
+ * ——与管理后台顶栏同一形态，点一下轮换一档：跟随系统 → 白日 → 黑暗。
+ *
+ * 三档图标各不相同（显示器 / 太阳 / 月亮），「当前是哪一档」由图标 + 按钮底色承载，
+ * 工具提示里再写一遍「当前档 + 下一档」；比在菜单里占一整行的三段切换器轻得多，
+ * 而且顶栏常驻——不必先点头像才能换主题。
+ */
+const themeModes = [
+  { value: 'system', label: '跟随系统', icon: MonitorSmartphone },
+  { value: 'light', label: '白日', icon: Sun },
+  { value: 'dark', label: '黑暗', icon: Moon },
+] as const
+
+/** 当前档在环上的位置：脏存储值落到第一档（与 useTheme 的读法一致，不会出现 undefined） */
+const themeIndex = computed(() => {
+  const idx = themeModes.findIndex((m) => m.value === themePreference.value)
+  return idx < 0 ? 0 : idx
+})
+const themeCurrent = computed(() => themeModes[themeIndex.value])
+const themeNext = computed(() => themeModes[(themeIndex.value + 1) % themeModes.length])
+/** 按钮只有图标，没有文字：当前档与下一档都写进 title / aria-label */
+const themeTitle = computed(() => `外观：${themeCurrent.value.label}（点击切到${themeNext.value.label}）`)
+
+function cycleTheme() {
+  setThemePreference(themeNext.value.value)
+}
+
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
 const navRef = ref<HTMLElement | null>(null)
@@ -356,9 +384,21 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         </RouterLink>
       </nav>
 
-      <!-- 右侧用户区（v2.42.8）：只剩两枚圆形图标按钮——消息与头像，
-           与管理后台顶栏同一形态；积分 / 会员 pill 与昵称都从顶栏撤下 -->
+      <!-- 右侧用户区（v2.42.9）：外观 + 消息 + 头像，三枚同一配方的圆形图标按钮，
+           与管理后台顶栏同一形态；积分 / 会员 pill 与昵称都从顶栏撤下。
+           外观按钮放在登录判断**之外**：未登录也能切主题（原先藏在头像菜单里，
+           没登录时根本没有入口） -->
       <div class="user-section">
+        <button
+          class="theme-btn round-btn"
+          :class="{ auto: themePreference === 'system' }"
+          :title="themeTitle"
+          :aria-label="themeTitle"
+          @click="cycleTheme"
+        >
+          <component :is="themeCurrent.icon" :size="18" />
+        </button>
+
         <template v-if="userStore.isLoggedIn">
           <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
           <div ref="msgMenuRef" class="msg-menu">
@@ -449,42 +489,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                   </span>
                 </div>
 
-                <!-- ② 外观：三档切换（菜单里的显眼位置，紧跟头部） -->
-                <div class="dropdown-group-title">外观</div>
-                <div class="theme-seg" role="radiogroup" aria-label="外观模式">
-                  <button
-                    class="theme-opt"
-                    :class="{ on: themePreference === 'system' }"
-                    role="radio"
-                    :aria-checked="themePreference === 'system'"
-                    @click="setThemePreference('system')"
-                  >
-                    <MonitorSmartphone :size="13" />
-                    跟随系统
-                  </button>
-                  <button
-                    class="theme-opt"
-                    :class="{ on: themePreference === 'light' }"
-                    role="radio"
-                    :aria-checked="themePreference === 'light'"
-                    @click="setThemePreference('light')"
-                  >
-                    <Sun :size="13" />
-                    白日
-                  </button>
-                  <button
-                    class="theme-opt"
-                    :class="{ on: themePreference === 'dark' }"
-                    role="radio"
-                    :aria-checked="themePreference === 'dark'"
-                    @click="setThemePreference('dark')"
-                  >
-                    <Moon :size="13" />
-                    黑暗
-                  </button>
-                </div>
-
-                <!-- ③ 操作项列表 -->
+                <!-- ② 操作项列表（外观三段切换器已删：v2.42.9 搬到顶栏那枚圆形按钮） -->
                 <RouterLink
                   v-for="item in menuActions"
                   :key="item.path"
@@ -511,7 +516,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                   <LayoutDashboard :size="15" /> 管理后台
                 </a>
 
-                <!-- ④ 退出登录：独立红色分区（border-t 分隔） -->
+                <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
                   <LogOut :size="15" /> 退出登录
                 </button>
@@ -538,9 +543,31 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--au-border);
+  /* 装饰圆要裁在顶栏内（下拉都 Teleport 到 body，不会被裁到） */
+  overflow: hidden;
+}
+
+/* 顶栏也撒一颗品牌色装饰圆（v2.42.9，纸片人做法：见 HomeView 的 .hero-orb）：
+   右上一团 5% 品牌色 + 64px 模糊，纯静态单次合成、不参与动画。
+   深色下让顶栏右上角有一点品牌色呼吸，浅色下是一团极淡的色渍 */
+.app-header::after {
+  content: '';
+  position: absolute;
+  top: -64px;
+  right: 6%;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: var(--au-primary);
+  opacity: 0.05;
+  filter: blur(64px);
+  pointer-events: none;
 }
 
 .header-container {
+  position: relative;
+  /* 压住上面的装饰圆：伪元素是同层的最后一个盒子，抬一层才不会被它蒙住 */
+  z-index: 1;
   max-width: 1080px;
   margin: 0 auto;
   padding: 0 1.25rem;
@@ -591,22 +618,29 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .main-nav {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.375rem;
   min-width: 0;
 }
 
+/* 导航「片」（v2.42.9 纸片人化）：默认是一枚描边透明的空片，悬停时浮出浅表面 +
+   细描边，当前页用品牌色实底压出来 —— 与外观按钮、菜单里的选中态同一套语言
+   （同一件事只有一种表达）。描边常驻而非 hover 才加，避免悬停时 1px 的布局跳动 */
 .nav-link {
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
-  padding: 0.4688rem 0.75rem;
-  border-radius: var(--au-r-sm);
+  padding: 0.4375rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--au-r-full);
   font-size: 0.875rem;
   font-weight: 500;
   white-space: nowrap;
   color: var(--au-text-2);
   text-decoration: none;
-  transition: all var(--au-fast) var(--au-ease);
+  transition: background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease),
+    box-shadow var(--au-fast) var(--au-ease);
 }
 
 .nav-link svg { opacity: 0.75; }
@@ -614,11 +648,29 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .nav-link:hover {
   color: var(--au-text);
   background: var(--au-surface-2);
+  border-color: var(--au-border);
 }
 
-.nav-link-active {
-  color: var(--au-primary);
-  background: var(--au-primary-soft);
+.nav-link:active { transform: scale(0.98); }
+
+/* 当前页：主色实底 + on-primary 字（浅色主题 #0891b2 配白字，深色主题 #22d3ee
+   配近黑字）+ 微光晕。旧版只有 12% 主色淡底，在顶栏这种低对比区域里几乎看不出
+   当前在哪一页 */
+.nav-link-active,
+.nav-link-active:hover {
+  color: var(--au-on-primary);
+  background: var(--au-primary);
+  border-color: var(--au-primary);
+  font-weight: 600;
+  box-shadow: 0 2px 10px var(--au-primary-glow);
+}
+
+.nav-link-active svg { opacity: 1; }
+
+/* 键盘焦点环：与全站其余可聚焦元素同一配方（替代掉的 .theme-opt:focus-visible 同源） */
+.nav-link:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: 2px;
 }
 
 .user-section {
@@ -663,6 +715,30 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .round-btn:focus-visible {
   outline: 2px solid var(--au-border-focus);
   outline-offset: 2px;
+}
+
+/* ==================== 顶栏外观按钮（v2.42.9） ====================
+   外观切换从用户菜单搬到顶栏：一枚与管理后台顶栏同形态的圆形按钮，
+   点一下轮换一档（跟随系统 → 白日 → 黑暗），图标即当前档。
+   选中态分两类、靠底色一眼区分：
+   · 手动指定档（白日 / 黑暗）→ 品牌色实底 + on-primary 图标 + 微光晕
+     （与主导航当前页、菜单选中态同一套「主色实底压出来」的配方）；
+   · 跟随系统 → 中性表面 + 品牌色细环 —— 表示这一档是生效中的「自动」，
+     而不是「哪一个都没选」。 */
+.theme-btn.auto { border-color: var(--au-primary-border); }
+.theme-btn.auto:hover { border-color: var(--au-primary); }
+
+.theme-btn:not(.auto) {
+  background: var(--au-primary);
+  border-color: var(--au-primary);
+  color: var(--au-on-primary);
+  box-shadow: 0 2px 10px var(--au-primary-glow);
+}
+
+.theme-btn:not(.auto):hover {
+  background: var(--au-primary-strong);
+  border-color: var(--au-primary-strong);
+  color: var(--au-on-primary);
 }
 
 /* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
@@ -924,7 +1000,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 .msg-drop-foot:hover { background: var(--au-surface-2); }
 
-/* user-dropdown 内部（原 scoped 规则原样搬来） */
+/* user-dropdown 内部 */
 .dropdown-head {
   display: flex;
   align-items: center;
@@ -984,68 +1060,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   border: 1px solid var(--au-border);
   color: var(--au-text-3);
 }
-/* 三档分段：与「纸片人控制台」（管理端侧栏 foot 那套）同一配方——
-   圆角矩形的浅色槽 + 槽内三片等分的圆角片，选中的那一片用主色实底压出来 */
-.theme-seg {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  margin: 0.375rem 1rem 0.75rem;
-  padding: 4px;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
-}
-.theme-opt {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3125rem;
-  min-width: 0;
-  height: 34px;
-  padding: 0 0.625rem;
-  border: 1px solid transparent;
-  border-radius: var(--au-r-sm);
-  background: none;
-  color: var(--au-text-3);
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--au-fast) var(--au-ease),
-    color var(--au-fast) var(--au-ease),
-    border-color var(--au-fast) var(--au-ease),
-    box-shadow var(--au-fast) var(--au-ease);
-}
-.theme-opt svg { flex-shrink: 0; }
-.theme-opt:hover { background: var(--au-surface-3); color: var(--au-text); }
-.theme-opt:active { transform: scale(0.97); }
-/* 选中态：主色实底 + on-primary 文字 + semibold + 微光晕。
-   两套主题下都明确是「槽里最亮的那一片」：浅色主题 #0891b2 配白字，
-   深色主题 #22d3ee 配近黑字——不再出现「看不出选的是哪一档」的中间态 */
-.theme-opt.on {
-  background: var(--au-primary);
-  border-color: var(--au-primary);
-  color: var(--au-on-primary);
-  font-weight: 700;
-  box-shadow: 0 2px 10px var(--au-primary-glow);
-}
-.theme-opt.on svg { color: var(--au-on-primary); }
-.theme-opt:focus-visible {
-  outline: 2px solid var(--au-border-focus);
-  outline-offset: 2px;
-}
-@media (max-width: 768px) {
-  /* 抽屉里是主要入口，移动端给足拇指区高度 */
-  .theme-opt { height: 40px; font-size: 0.8125rem; }
-}
-.dropdown-group-title {
-  margin: 0.375rem 0 0.125rem;
-  padding: 0 1rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: var(--au-text-3);
-}
+/* 外观三段切换器（.theme-seg / .theme-opt）与它的分组标题（.dropdown-group-title）
+   已在 v2.42.9 删除：外观改由顶栏那枚圆形图标按钮承担（.theme-btn） */
 .dropdown-item {
   display: flex;
   align-items: center;
@@ -1100,8 +1116,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     flex-wrap: nowrap;
     padding: 0 1rem;
     min-height: 54px;
-    /* 两颗 pill 撤掉后手机顶栏只剩「品牌 + 消息 + 头像」，
-       间距回到正常口径即可（旧版为了塞下 pill 把它压到 0.25rem） */
+    /* 手机顶栏是「品牌 + 外观 + 消息 + 头像」四件事（v2.42.9 起外观也常驻顶栏），
+       间距用正常口径；双 pill 时代为塞下胶囊才把它压到 0.25rem */
     gap: 0.625rem;
   }
 
@@ -1113,7 +1129,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 
 /* 超窄屏（≤400px，含 iPhone SE（375））：两侧再各收 4px。
-   圆形按钮是拇指目标，尺寸不跟着缩——现在空出的宽度足够放下它们 */
+   三枚圆形按钮是拇指目标，尺寸不跟着缩——现在空出的宽度足够放下它们
+   （375px 下：内距 24 + 品牌 ~91 + 三枚 114 + 两个 8px 间距 = ~245px） */
 @media (max-width: 400px) {
   .header-container { padding: 0 0.75rem; gap: 0.5rem; }
 }

@@ -1297,8 +1297,8 @@ function formatDate(iso?: string | null) {
 .list-arrow { color: var(--au-text-3); }
 
 /* ==================== 播放线路分段选择 ==================== */
-/* 视觉语言与顶栏主题切换器（AppHeader .theme-seg）一致：胶囊底 + 两档选项，
-   选中态用主色实底，两套主题都清晰 */
+/* 视觉语言与顶栏外观按钮（AppHeader .theme-btn）一致：选中态用主色实底 +
+   on-primary 文字，两套主题下都清晰（顶栏那排三段切换器已在 v2.42.9 删除） */
 .line-seg {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
