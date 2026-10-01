@@ -5,7 +5,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, LayoutDashboard,
+  ChevronRight, LayoutDashboard, Check,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -24,12 +24,14 @@ const route = useRoute()
 const { preference: themePreference, setPreference: setThemePreference } = useTheme()
 
 /**
- * 外观（v2.42.9）：用户菜单里那排三段切换器**已删**，改到顶栏做成一枚圆形图标按钮
- * ——与管理后台顶栏同一形态，点一下轮换一档：跟随系统 → 白日 → 黑暗。
+ * 外观（v2.42.9 二改）：顶栏常驻一枚圆形图标按钮，点开一个**三选一的小菜单**
+ * （跟随系统 / 白日 / 黑暗），当前档用品牌色勾选。
  *
- * 三档图标各不相同（显示器 / 太阳 / 月亮），「当前是哪一档」由图标 + 按钮底色承载，
- * 工具提示里再写一遍「当前档 + 下一档」；比在菜单里占一整行的三段切换器轻得多，
- * 而且顶栏常驻——不必先点头像才能换主题。
+ * 演进：三段切换器原在头像菜单里（占一整行、移动端点不到，见 a69f5ea）→ 一改
+ * 搬到顶栏改成「点一下轮换一档」的单枚圆钮——只有图标，发现性差：没人知道
+ * 能点、点了会切到哪（线上反馈「外观切换器被删了」）。二改改成点开菜单直接
+ * 选：明确列出三档 + 当前档打勾，不是旧版三段式，也不需要盲猜轮换顺序；
+ * 按钮仍放在登录判断之外（未登录也能切主题）。
  */
 const themeModes = [
   { value: 'system', label: '跟随系统', icon: MonitorSmartphone },
@@ -43,12 +45,21 @@ const themeIndex = computed(() => {
   return idx < 0 ? 0 : idx
 })
 const themeCurrent = computed(() => themeModes[themeIndex.value])
-const themeNext = computed(() => themeModes[(themeIndex.value + 1) % themeModes.length])
-/** 按钮只有图标，没有文字：当前档与下一档都写进 title / aria-label */
-const themeTitle = computed(() => `外观：${themeCurrent.value.label}（点击切到${themeNext.value.label}）`)
+/** 图标按钮没有文字：当前档写进 title / aria-label，展开后菜单里三档可选 */
+const themeTitle = computed(() => `外观：${themeCurrent.value.label}（点击选择）`)
 
-function cycleTheme() {
-  setThemePreference(themeNext.value.value)
+const themeMenuOpen = ref(false)
+const themeMenuRef = ref<HTMLElement | null>(null)
+
+function toggleThemeMenu() {
+  userMenuOpen.value = false
+  msgMenuOpen.value = false
+  themeMenuOpen.value = !themeMenuOpen.value
+}
+
+function pickTheme(value: 'system' | 'light' | 'dark') {
+  setThemePreference(value)
+  themeMenuOpen.value = false
 }
 
 const userMenuOpen = ref(false)
@@ -247,6 +258,7 @@ function isActive(path: string) {
 function closeMenus() {
   userMenuOpen.value = false
   msgMenuOpen.value = false
+  themeMenuOpen.value = false
 }
 
 async function handleLogout() {
@@ -273,6 +285,14 @@ function onDocClick(e: MouseEvent) {
     !el?.closest('.msg-dropdown')
   ) {
     msgMenuOpen.value = false
+  }
+  // 外观菜单不 Teleport：按钮与小菜单同在一个相对定位容器里，
+  // contains 一把就能同时盖住「点按钮」与「点选项」
+  if (
+    themeMenuRef.value &&
+    !themeMenuRef.value.contains(target)
+  ) {
+    themeMenuOpen.value = false
   }
 }
 
@@ -342,6 +362,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
     msgPreview.value = []
     msgMenuOpen.value = false
     userMenuOpen.value = false
+    themeMenuOpen.value = false
   }
 })
 
@@ -389,15 +410,47 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
            外观按钮放在登录判断**之外**：未登录也能切主题（原先藏在头像菜单里，
            没登录时根本没有入口） -->
       <div class="user-section">
-        <button
-          class="theme-btn round-btn"
-          :class="{ auto: themePreference === 'system' }"
-          :title="themeTitle"
-          :aria-label="themeTitle"
-          @click="cycleTheme"
-        >
-          <component :is="themeCurrent.icon" :size="18" />
-        </button>
+        <div ref="themeMenuRef" class="theme-menu">
+          <button
+            class="theme-btn round-btn"
+            :class="{ auto: themePreference === 'system' }"
+            :aria-expanded="themeMenuOpen"
+            aria-haspopup="menu"
+            :title="themeTitle"
+            :aria-label="themeTitle"
+            @click="toggleThemeMenu"
+          >
+            <component :is="themeCurrent.icon" :size="18" />
+          </button>
+
+          <!-- 外观小菜单（v2.42.9 二改）：三选一直选，替代「点一下轮换」。
+               不 Teleport：小面板锚在按钮正下方，顶栏（sticky，无 overflow 裁剪）
+               里的绝对定位后代照常溢出显示，头部 z-index:50 的堆叠上下文
+               天然盖过底部坞（40） -->
+          <Transition name="dd">
+            <div v-if="themeMenuOpen" class="theme-dropdown" role="menu" aria-label="外观">
+              <button
+                v-for="m in themeModes"
+                :key="m.value"
+                class="theme-drop-item"
+                :class="{ active: themePreference === m.value }"
+                role="menuitemradio"
+                :aria-checked="themePreference === m.value"
+                @click="pickTheme(m.value)"
+              >
+                <span class="theme-drop-ic">
+                  <component :is="m.icon" :size="15" />
+                </span>
+                <span class="theme-drop-label">{{ m.label }}</span>
+                <Check
+                  v-if="themePreference === m.value"
+                  :size="14"
+                  class="theme-drop-check"
+                />
+              </button>
+            </div>
+          </Transition>
+        </div>
 
         <template v-if="userStore.isLoggedIn">
           <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
@@ -717,14 +770,17 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   outline-offset: 2px;
 }
 
-/* ==================== 顶栏外观按钮（v2.42.9） ====================
-   外观切换从用户菜单搬到顶栏：一枚与管理后台顶栏同形态的圆形按钮，
-   点一下轮换一档（跟随系统 → 白日 → 黑暗），图标即当前档。
-   选中态分两类、靠底色一眼区分：
+/* ==================== 顶栏外观（v2.42.9 二改） ====================
+   一改把外观从用户菜单搬到顶栏、做成「点一下轮换一档」的单枚圆钮——
+   只有图标，发现性差（线上反馈「切换器被删了」）。二改：同一枚圆钮改成
+   点开三选一的小菜单，当前档在菜单里用品牌色勾选——不是旧版三段切换器，
+   也不需要盲猜轮换顺序。按钮的选中态分两类、靠底色一眼区分：
    · 手动指定档（白日 / 黑暗）→ 品牌色实底 + on-primary 图标 + 微光晕
      （与主导航当前页、菜单选中态同一套「主色实底压出来」的配方）；
    · 跟随系统 → 中性表面 + 品牌色细环 —— 表示这一档是生效中的「自动」，
      而不是「哪一个都没选」。 */
+.theme-menu { position: relative; }
+
 .theme-btn.auto { border-color: var(--au-primary-border); }
 .theme-btn.auto:hover { border-color: var(--au-primary); }
 
@@ -740,6 +796,65 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   border-color: var(--au-primary-strong);
   color: var(--au-on-primary);
 }
+
+/* 外观小菜单：锚在按钮正下方的窄面板（小面板不需要 Teleport 那套
+   fixed 底部锚定——它不会伸进底部坞的拇指区） */
+.theme-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 176px;
+  padding: 0.375rem;
+  background: var(--au-overlay-menu);
+  border: 1px solid var(--au-border-strong);
+  border-radius: var(--au-r-lg);
+  box-shadow: var(--au-shadow-2);
+  z-index: 60;
+}
+
+.theme-drop-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5625rem;
+  width: 100%;
+  padding: 0.5rem 0.5rem 0.5rem 0.4375rem;
+  border: 0;
+  border-radius: var(--au-r-md);
+  background: transparent;
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease);
+}
+.theme-drop-item:hover {
+  background: var(--au-surface-2);
+  color: var(--au-text);
+}
+.theme-drop-item:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: 1px;
+}
+.theme-drop-ic {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
+}
+.theme-drop-label { flex: 1; }
+.theme-drop-item.active { color: var(--au-primary); }
+.theme-drop-item.active .theme-drop-ic {
+  background: var(--au-primary);
+  color: var(--au-on-primary);
+}
+.theme-drop-check { color: var(--au-primary); flex-shrink: 0; }
 
 /* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
 .msg-menu { position: relative; }
