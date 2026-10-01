@@ -7,7 +7,7 @@
  * 「优惠码」是分页上另起的一条输入框，同一页两个「输入码 → 应用」的面板，
  * 既割裂又让用户猜手里那张码该填哪边；现在只有一个入口，由后端预检识别来源。
  */
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onBeforeUnmount, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
@@ -345,8 +345,19 @@ async function refreshBalance() {
   } catch { /* 静默 */ }
 }
 
-async function loadAll() {
-  loading.value = true
+/** 是否已完成过首屏加载：KeepAlive 缓存命中时走静默刷新 */
+const hasLoaded = ref(false)
+
+/** 取 settled 结果：成功用返回值；失败时首屏/手动刷新走兜底，静默刷新返回 undefined（调用方跳过赋值，不碰已有数据） */
+function settled<T>(r: PromiseSettledResult<T>, fallback: T, silent: boolean): T | undefined {
+  if (r.status === 'fulfilled') return r.value
+  return silent ? undefined : fallback
+}
+
+async function loadAll(silent = false) {
+  // silent = true 时为 KeepAlive 切回 tab 的后台静默刷新：不碰 loading，
+  // 不闪骨架屏，数据到了直接更新视图
+  if (!silent) loading.value = true
   try {
     const emptyPkgs = { enabled: false, packages: [] as RechargePackage[] }
     // 兜底也要带上接入方式字段：公益服下接口失败时不能退回“付费服”的口径
@@ -365,34 +376,50 @@ async function loadAll() {
     const emptySubs: MySubscription[] = []
     const exchangeFallback = { enabled: true }
     const couponFallback = { enabled: false }
-    const [pkgRes, planRes, methodRes, orderRes, logRes, statusRes, exchangeRes, subsRes, couponRes] = await Promise.all([
-      paymentApi.packages().catch(() => emptyPkgs),
-      paymentApi.plans().catch(() => emptyPlans),
-      paymentApi.methods().catch(() => emptyMethods),
-      paymentApi.orders({ limit: 20 }).catch(() => emptyOrders),
-      pointsApi.log({ limit: 30 }).catch(() => emptyLogs),
-      checkinApi.status().catch(() => statusFallback),
-      exchangeApi.config().catch(() => exchangeFallback),
-      subscriptionApi.getMine().catch(() => emptySubs),
+    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR] = await Promise.allSettled([
+      paymentApi.packages(),
+      paymentApi.plans(),
+      paymentApi.methods(),
+      paymentApi.orders({ limit: 20 }),
+      pointsApi.log({ limit: 30 }),
+      checkinApi.status(),
+      exchangeApi.config(),
+      subscriptionApi.getMine(),
       // 接口失败时按「关闭」处理：宁可不展示，也不让用户填完码才报错
-      couponApi.config().catch(() => couponFallback),
-])
-    packages.value = pkgRes.packages || []
-    plans.value = planRes.plans || []
-    isFreeRealm.value = planRes.is_free === true || planRes.access_mode === 'free'
-    realmNote.value = planRes.access_note || ''
-    methods.value = Array.isArray(methodRes) ? methodRes : []
-    orders.value = orderRes.orders || []
-    logs.value = logRes.logs || []
-    balance.value = logRes.balance
-    checkin.value = statusRes
-    rechargeEnabled.value = pkgRes.enabled !== false
-    plansEnabled.value = planRes.enabled !== false
-    exchangeEnabled.value = exchangeRes.enabled !== false
-    couponEnabled.value = couponRes.enabled === true
-    subscriptions.value = Array.isArray(subsRes) ? subsRes : []
+      couponApi.config(),
+    ])
+    const pkg = settled(pkgR, emptyPkgs, silent)
+    if (pkg !== undefined) {
+      packages.value = pkg.packages || []
+      rechargeEnabled.value = pkg.enabled !== false
+    }
+    const plan = settled(planR, emptyPlans, silent)
+    if (plan !== undefined) {
+      plans.value = plan.plans || []
+      isFreeRealm.value = plan.is_free === true || plan.access_mode === 'free'
+      realmNote.value = plan.access_note || ''
+      plansEnabled.value = plan.enabled !== false
+    }
+    const methodList = settled(methodR, emptyMethods, silent)
+    if (methodList !== undefined) methods.value = Array.isArray(methodList) ? methodList : []
+    const orderData = settled(orderR, emptyOrders, silent)
+    if (orderData !== undefined) orders.value = orderData.orders || []
+    const logData = settled(logR, emptyLogs, silent)
+    if (logData !== undefined) {
+      logs.value = logData.logs || []
+      balance.value = logData.balance
+    }
+    const checkinStatus = settled(statusR, statusFallback, silent)
+    if (checkinStatus !== undefined) checkin.value = checkinStatus
+    const exchangeCfg = settled(exchangeR, exchangeFallback, silent)
+    if (exchangeCfg !== undefined) exchangeEnabled.value = exchangeCfg.enabled !== false
+    const subs = settled(subsR, emptySubs, silent)
+    if (subs !== undefined) subscriptions.value = Array.isArray(subs) ? subs : []
+    const couponCfg = settled(couponR, couponFallback, silent)
+    if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
   } finally {
     loading.value = false
+    hasLoaded.value = true
   }
 }
 
@@ -479,17 +506,40 @@ async function pollPaymentResult() {
   }, 3000)
 }
 
-onMounted(async () => {
-  await loadAll()
+/** 进入时的 query 处理：?tab= 定位选项卡；?order= / ?paid=1 触发支付到账轮询。
+ * KeepAlive 下 query 变化不再触发重建，所以 onMounted / onActivated / query watcher
+ * 都要走这里；用 lastHandledEntry 去重，避免同一笔订单反复弹"支付已提交"。 */
+const lastHandledEntry = ref('')
+function handleEntryQuery() {
   // 支持 ?tab=log 等定位到指定选项卡（签到页「全部流水」链接）
   const tabParam = route.query.tab
   if (tabParam === 'recharge' || tabParam === 'plans' || tabParam === 'orders' || tabParam === 'log') {
     tab.value = tabParam
   }
   // 支付完成跳回：轮询到账结果（订单号来自 ?order=，兼容旧 ?paid=1）
-  if (paidFlag.value || route.query.order) {
+  const entryKey = `${String(route.query.order ?? '')}|${String(route.query.paid ?? '')}`
+  if ((paidFlag.value || route.query.order) && !payPolling.value && entryKey !== lastHandledEntry.value) {
+    lastHandledEntry.value = entryKey
     toast.info('支付已提交，正在确认到账结果…', 4000)
     pollPaymentResult()
+  }
+}
+
+onMounted(async () => {
+  await loadAll()
+  handleEntryQuery()
+})
+
+// 从别的 tab 切回来（KeepAlive 缓存命中）：先处理 query，再后台静默刷新
+onActivated(() => {
+  handleEntryQuery()
+  if (hasLoaded.value) void loadAll(true)
+})
+
+// 停留在本页时 query 变化（例如 ?tab=log）：同样要定位选项卡
+watch(() => route.query.tab, (tabParam) => {
+  if (tabParam === 'recharge' || tabParam === 'plans' || tabParam === 'orders' || tabParam === 'log') {
+    tab.value = tabParam
   }
 })
 
@@ -589,7 +639,7 @@ onBeforeUnmount(stopPayPoll)
         </p>
       </form>
 
-      <button class="au-btn au-btn-ghost au-btn-sm refresh" title="刷新" @click="loadAll">
+      <button class="au-btn au-btn-ghost au-btn-sm refresh" title="刷新" @click="() => loadAll()">
         <RefreshCw :size="14" :class="{ spinning: loading }" />
       </button>
     </section>

@@ -55,7 +55,7 @@
  * --au-* 原料（在浅色下有独立调色），性能上移动端不启用卡片级 backdrop-blur、
  * 脉动与进度条动画只走 opacity/transform。
  */
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onActivated, onBeforeUnmount } from 'vue'
 import { RouterLink } from 'vue-router'
 // 观影数据卡无落地页（媒体库已下线），同模板里 RouterLink 与 div 二选一
 import { useUserStore } from '@/stores/user'
@@ -319,9 +319,12 @@ function confirmStopSession() {
 const loadError = ref(false)
 
 // 首屏只出骨架：数据统一走 loadDeferred（公告与资产同批，不再分关键/延后两波）
-async function loadDeferred() {
+// silent = true 时为 KeepAlive 切回 tab 的后台静默刷新：不碰 loading，
+// 不闪骨架屏，数据到了直接更新视图
+const hasLoaded = ref(false)
+async function loadDeferred(silent = false) {
   let memberFailed = false
-  loading.value = true
+  if (!silent) loading.value = true
   try {
     const [pointsRes, checkinRes, inviteRes, subs, notices,
       statsRes, seekRes, ticketsRes, sessionsRes] = await Promise.all([
@@ -343,12 +346,17 @@ async function loadDeferred() {
       quickStats.value.checkedToday = checkinRes.checked_today
     }
     if (inviteRes) quickStats.value.invited = inviteRes.invited_count
-    subscriptions.value = Array.isArray(subs) ? subs : []
+    // 静默刷新失败时不降级：不覆盖已有数据、不弹错误态（首屏失败才走错误态）
+    if (!silent || !memberFailed) {
+      subscriptions.value = Array.isArray(subs) ? subs : []
+      loadError.value = memberFailed
+    }
     banners.value = (Array.isArray(notices) ? notices : [])
       .filter((a) => a.is_pinned && !dismissedBannerIds.value.includes(a.id))
       .slice(0, 1)
 
-    stats.value = statsRes
+    // 观看统计失败时静默刷新不降级：保持上次的数据，不刷成"—"
+    if (!silent || statsRes) stats.value = statsRes
     if (seekRes) {
       const rows = seekRes.requests || []
       seekCounts.value = {
@@ -362,16 +370,19 @@ async function loadDeferred() {
         settled: ticketsRes.filter((t) => t.status === 'closed' || t.status === 'resolved').length,
       }
     }
-    sessions.value = sessionsRes?.sessions || []
+    if (!silent || sessionsRes) sessions.value = sessionsRes?.sessions || []
     loadError.value = memberFailed
   } catch (err: any) {
     // 兜底：正常情况下到不了这里（每项请求都有自己的 catch）
+    // 静默刷新失败不打扰用户：保留上次数据，不弹错误
+    if (silent) return
     loadError.value = true
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')
     }
   } finally {
     loading.value = false
+    hasLoaded.value = true
   }
 }
 
@@ -404,6 +415,11 @@ function realmNoteText() {
 // 首屏只出骨架：数据统一走 loadDeferred（公告与资产同批，不再分关键/延后两波）
 onMounted(() => {
   loadDeferred()
+})
+
+// 从别的 tab 切回来（KeepAlive 缓存命中）：后台静默刷新，不闪骨架屏
+onActivated(() => {
+  if (hasLoaded.value) void loadDeferred(true)
 })
 </script>
 
