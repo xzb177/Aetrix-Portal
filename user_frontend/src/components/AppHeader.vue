@@ -5,7 +5,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, LayoutDashboard, Check,
+  ChevronRight, LayoutDashboard,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -13,25 +13,35 @@ import api, {
 } from '@/api'
 import type { MySubscription } from '@/api'
 import { primaryNav, menuSections } from '@/config/navigation'
+import { checkinApi } from '@/api/economy'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
 import { branding } from '@/composables/useBranding'
+
+/** 积分余额（顶栏 pill 显示，登录后加载） */
+const pointsBalance = ref<number | null>(null)
+async function loadPoints() {
+  if (!userStore.isLoggedIn) {
+    pointsBalance.value = null
+    return
+  }
+  try {
+    const st = await checkinApi.status()
+    pointsBalance.value = st.points
+  } catch {
+    /* 拿不到就不显示，不打扰 */
+  }
+}
 // 三档外观（跟随系统 / 白日 / 黑暗），见 useTheme.ts 的口径说明
 import { useTheme } from '@/composables/useTheme'
 
 const userStore = useUserStore()
 const router = useRouter()
 const route = useRoute()
-const { preference: themePreference, setPreference: setThemePreference } = useTheme()
+const { preference: themePreference, resolved: themeResolved, setPreference: setThemePreference } = useTheme()
 
 /**
- * 外观（v2.42.9 二改）：顶栏常驻一枚圆形图标按钮，点开一个**三选一的小菜单**
- * （跟随系统 / 白日 / 黑暗），当前档用品牌色勾选。
- *
- * 演进：三段切换器原在头像菜单里（占一整行、移动端点不到，见 a69f5ea）→ 一改
- * 搬到顶栏改成「点一下轮换一档」的单枚圆钮——只有图标，发现性差：没人知道
- * 能点、点了会切到哪（线上反馈「外观切换器被删了」）。二改改成点开菜单直接
- * 选：明确列出三档 + 当前档打勾，不是旧版三段式，也不需要盲猜轮换顺序；
- * 按钮仍放在登录判断之外（未登录也能切主题）。
+ * 外观（v2.42.9 三改）：顶栏常驻一枚圆形图标按钮，点一下直接在白日/黑暗之间切换，
+ * 不要下拉菜单。跟随系统时按当前实际生效的反着切。
  */
 const themeModes = [
   { value: 'system', label: '跟随系统', icon: MonitorSmartphone },
@@ -45,21 +55,15 @@ const themeIndex = computed(() => {
   return idx < 0 ? 0 : idx
 })
 const themeCurrent = computed(() => themeModes[themeIndex.value])
-/** 图标按钮没有文字：当前档写进 title / aria-label，展开后菜单里三档可选 */
-const themeTitle = computed(() => `外观：${themeCurrent.value.label}（点击选择）`)
+/** 图标按钮没有文字：当前档写进 title / aria-label */
+const themeTitle = computed(() => `外观：${themeCurrent.value.label}（点击切换）`)
 
-const themeMenuOpen = ref(false)
-const themeMenuRef = ref<HTMLElement | null>(null)
-
-function toggleThemeMenu() {
-  userMenuOpen.value = false
-  msgMenuOpen.value = false
-  themeMenuOpen.value = !themeMenuOpen.value
-}
-
-function pickTheme(value: 'system' | 'light' | 'dark') {
-  setThemePreference(value)
-  themeMenuOpen.value = false
+/** 点一下直接切换：白日↔黑暗；跟随系统时按实际生效的反着切 */
+function toggleTheme() {
+  const cur = themePreference.value
+  if (cur === 'light') setThemePreference('dark')
+  else if (cur === 'dark') setThemePreference('light')
+  else setThemePreference(themeResolved.value === 'light' ? 'dark' : 'light')
 }
 
 const userMenuOpen = ref(false)
@@ -258,7 +262,6 @@ function isActive(path: string) {
 function closeMenus() {
   userMenuOpen.value = false
   msgMenuOpen.value = false
-  themeMenuOpen.value = false
 }
 
 async function handleLogout() {
@@ -285,14 +288,6 @@ function onDocClick(e: MouseEvent) {
     !el?.closest('.msg-dropdown')
   ) {
     msgMenuOpen.value = false
-  }
-  // 外观菜单不 Teleport：按钮与小菜单同在一个相对定位容器里，
-  // contains 一把就能同时盖住「点按钮」与「点选项」
-  if (
-    themeMenuRef.value &&
-    !themeMenuRef.value.contains(target)
-  ) {
-    themeMenuOpen.value = false
   }
 }
 
@@ -346,23 +341,26 @@ async function focusActiveTab(center: boolean) {
   }
 }
 
-// 签到 / 钱包操作后回到任意页面时，头像菜单里的会员状态即时刷新
+// 签到 / 钱包操作后回到任意页面时，头像菜单里的会员状态、顶栏积分即时刷新
 watch(() => route.path, (p, old) => {
   const economyPaths = ['/wallet', '/checkin']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshSubscription()
+    loadPoints()
   }
 })
 
 watch(() => userStore.isLoggedIn, (loggedIn) => {
-  if (loggedIn) poll()
-  else {
+  if (loggedIn) {
+    poll()
+    loadPoints()
+  } else {
     unreadCount.value = 0
     activeSub.value = null
     msgPreview.value = []
     msgMenuOpen.value = false
     userMenuOpen.value = false
-    themeMenuOpen.value = false
+    pointsBalance.value = null
   }
 })
 
@@ -372,6 +370,7 @@ watch(() => route.path, () => focusActiveTab(true))
 onMounted(() => {
   document.addEventListener('click', onDocClick)
   poll()
+  loadPoints()
   window.setInterval(poll, 60_000)
   focusActiveTab(false)
 })
@@ -406,51 +405,29 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
       </nav>
 
       <!-- 右侧用户区（v2.42.9）：外观 + 消息 + 头像，三枚同一配方的圆形图标按钮，
-           与管理后台顶栏同一形态；积分 / 会员 pill 与昵称都从顶栏撤下。
-           外观按钮放在登录判断**之外**：未登录也能切主题（原先藏在头像菜单里，
-           没登录时根本没有入口） -->
+           与管理后台顶栏同一形态。
+           外观按钮放在登录判断**之外**：未登录也能切主题。点一下直接在白日/黑暗
+           之间切换，不要下拉菜单 -->
       <div class="user-section">
-        <div ref="themeMenuRef" class="theme-menu">
-          <button
-            class="theme-btn round-btn"
-            :class="{ auto: themePreference === 'system' }"
-            :aria-expanded="themeMenuOpen"
-            aria-haspopup="menu"
-            :title="themeTitle"
-            :aria-label="themeTitle"
-            @click="toggleThemeMenu"
-          >
-            <component :is="themeCurrent.icon" :size="18" />
-          </button>
-
-          <!-- 外观小菜单（v2.42.9 二改）：三选一直选，替代「点一下轮换」。
-               不 Teleport：小面板锚在按钮正下方，顶栏（sticky，无 overflow 裁剪）
-               里的绝对定位后代照常溢出显示，头部 z-index:50 的堆叠上下文
-               天然盖过底部坞（40） -->
-          <Transition name="dd">
-            <div v-if="themeMenuOpen" class="theme-dropdown" role="menu" aria-label="外观">
-              <button
-                v-for="m in themeModes"
-                :key="m.value"
-                class="theme-drop-item"
-                :class="{ active: themePreference === m.value }"
-                role="menuitemradio"
-                :aria-checked="themePreference === m.value"
-                @click="pickTheme(m.value)"
-              >
-                <span class="theme-drop-ic">
-                  <component :is="m.icon" :size="15" />
-                </span>
-                <span class="theme-drop-label">{{ m.label }}</span>
-                <Check
-                  v-if="themePreference === m.value"
-                  :size="14"
-                  class="theme-drop-check"
-                />
-              </button>
-            </div>
-          </Transition>
-        </div>
+        <!-- 积分徽章：登录后显示当前积分，点击进钱包 -->
+        <RouterLink
+          v-if="userStore.isLoggedIn && pointsBalance !== null"
+          to="/wallet"
+          class="points-pill"
+          title="我的积分，点击查看钱包"
+        >
+          <Sparkles :size="13" />
+          <span>{{ pointsBalance }}</span>
+        </RouterLink>
+        <button
+          class="theme-btn round-btn"
+          :class="{ auto: themePreference === 'system' }"
+          :title="themeTitle"
+          :aria-label="themeTitle"
+          @click="toggleTheme"
+        >
+          <component :is="themeCurrent.icon" :size="18" />
+        </button>
 
         <template v-if="userStore.isLoggedIn">
           <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
@@ -797,64 +774,30 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   color: var(--au-on-primary);
 }
 
-/* 外观小菜单：锚在按钮正下方的窄面板（小面板不需要 Teleport 那套
-   fixed 底部锚定——它不会伸进底部坞的拇指区） */
-.theme-dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  min-width: 176px;
-  padding: 0.375rem;
-  background: var(--au-overlay-menu);
-  border: 1px solid var(--au-border-strong);
-  border-radius: var(--au-r-lg);
-  box-shadow: var(--au-shadow-2);
-  z-index: 60;
-}
-
-.theme-drop-item {
-  display: flex;
+/* 积分徽章：顶栏常驻小 pill，显示当前积分，点击进钱包 */
+.points-pill {
+  display: inline-flex;
   align-items: center;
-  gap: 0.5625rem;
-  width: 100%;
-  padding: 0.5rem 0.5rem 0.5rem 0.4375rem;
-  border: 0;
-  border-radius: var(--au-r-md);
-  background: transparent;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  background: var(--au-surface-2);
   color: var(--au-text-2);
   font-size: 0.8125rem;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--au-fast) var(--au-ease),
-    color var(--au-fast) var(--au-ease);
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
-.theme-drop-item:hover {
-  background: var(--au-surface-2);
+.points-pill:hover {
+  border-color: var(--au-primary);
   color: var(--au-text);
 }
-.theme-drop-item:focus-visible {
-  outline: 2px solid var(--au-border-focus);
-  outline-offset: 1px;
-}
-.theme-drop-ic {
-  width: 26px;
-  height: 26px;
+.points-pill svg {
+  color: var(--au-primary);
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: var(--au-surface-2);
-  color: var(--au-text-3);
 }
-.theme-drop-label { flex: 1; }
-.theme-drop-item.active { color: var(--au-primary); }
-.theme-drop-item.active .theme-drop-ic {
-  background: var(--au-primary);
-  color: var(--au-on-primary);
-}
-.theme-drop-check { color: var(--au-primary); flex-shrink: 0; }
 
 /* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
 .msg-menu { position: relative; }
