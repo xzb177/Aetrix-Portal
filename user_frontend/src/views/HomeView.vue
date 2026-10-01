@@ -60,12 +60,12 @@ import { RouterLink } from 'vue-router'
 // 观影数据卡无落地页（媒体库已下线），同模板里 RouterLink 与 div 二选一
 import { useUserStore } from '@/stores/user'
 import {
-  subscriptionApi, isExpiringSoon, embyApi, mediaSeekApi, ticketApi, announcementApi,
+  isExpiringSoon, embyApi,
   type MySubscription, type WatchStats, type MyPlaybackSession, type Announcement,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
 import Modal from '@/components/ui/Modal.vue'
-import { pointsApi, checkinApi, inviteApi } from '@/api/economy'
+import { homeApi, type HomeSummary } from '@/api/economy'
 import {
   ChevronRight, Crown, MessageSquareDashed, Inbox,
   Sparkles, Tv, TriangleAlert, Zap,
@@ -318,64 +318,108 @@ function confirmStopSession() {
 // 而不是静默吞掉让用户看到错误的「未开通」形态
 const loadError = ref(false)
 
-// 首屏只出骨架：数据统一走 loadDeferred（公告与资产同批，不再分关键/延后两波）
-// silent = true 时为 KeepAlive 切回 tab 的后台静默刷新：不碰 loading，
-// 不闪骨架屏，数据到了直接更新视图
-const hasLoaded = ref(false)
-async function loadDeferred(silent = false) {
-  let memberFailed = false
-  if (!silent) loading.value = true
+/**
+ * 首屏数据快照（v2.42.9）
+ *
+ * 这批数据（积分 / 连签 / 观影统计 / 求片与工单数量…）变化以天为单位，秒级刷新
+ * 没有意义，但每次进页面都要等接口回来才出内容，首屏就得先闪一段骨架。
+ *
+ * 做法：数据到手后按账号存一份快照；下次进页面先用快照渲染真实内容，同时
+ * 静默拉一次更新数字。回访用户首屏 0 骨架，只有首次访问才看得到加载态。
+ *
+ * 快照按 user_id 分键：同一台设备换账号登录不会看到上一个账号的数据。
+ */
+const SNAPSHOT_KEY = 'aetrix:home-summary:v1'
+const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+interface HomeSnapshot {
+  savedAt: number
+  userId: number
+  data: HomeSummary
+}
+
+function readSnapshot(userId: number): HomeSummary | null {
   try {
-    const [pointsRes, checkinRes, inviteRes, subs, notices,
-      statsRes, seekRes, ticketsRes, sessionsRes] = await Promise.all([
-      pointsApi.log({ limit: 1 }).catch((): null => null),
-      checkinApi.status().catch((): null => null),
-      inviteApi.myCode().catch((): null => null),
-      subscriptionApi.getMine().catch((): MySubscription[] => { memberFailed = true; return [] }),
-      // 说明条幅：置顶公告；失败静默（条幅只是运营位，不值得为它报错）
-      announcementApi.getAnnouncements().catch((): Announcement[] => []),
-      // 面板数据：任一项失败都各归各的（catch 成 null），不会连带整页报错
-      embyApi.getStats().catch((): WatchStats | null => null),
-      mediaSeekApi.getMyRequests().catch((): null => null),
-      ticketApi.getMyTickets().catch((): null => null),
-      embyApi.getSessions().catch((): { sessions: MyPlaybackSession[] } | null => null),
-    ])
-    if (pointsRes) quickStats.value.balance = pointsRes.balance
-    if (checkinRes) {
-      quickStats.value.streak = checkinRes.streak
-      quickStats.value.checkedToday = checkinRes.checked_today
-    }
-    if (inviteRes) quickStats.value.invited = inviteRes.invited_count
-    // 静默刷新失败时不降级：不覆盖已有数据、不弹错误态（首屏失败才走错误态）
-    if (!silent || !memberFailed) {
-      subscriptions.value = Array.isArray(subs) ? subs : []
-      loadError.value = memberFailed
-    }
-    banners.value = (Array.isArray(notices) ? notices : [])
+    const raw = localStorage.getItem(SNAPSHOT_KEY)
+    if (!raw) return null
+    const snap = JSON.parse(raw) as HomeSnapshot
+    if (snap.userId !== userId) return null
+    if (Date.now() - snap.savedAt > SNAPSHOT_MAX_AGE_MS) return null
+    return snap.data
+  } catch {
+    return null
+  }
+}
+
+function writeSnapshot(userId: number, data: HomeSummary) {
+  try {
+    const snap: HomeSnapshot = { savedAt: Date.now(), userId, data }
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snap))
+  } catch {
+    // 隐私模式 / 配额满：快照只是优化，拿不到就算了，不影响正常加载
+  }
+}
+
+/** 把聚合响应套用到各视图状态（快照与实时数据走同一条路，保证渲染口径一致） */
+function applySummary(data: HomeSummary) {
+  if (data.points) quickStats.value.balance = data.points.balance
+  if (data.checkin) {
+    quickStats.value.streak = data.checkin.streak
+    quickStats.value.checkedToday = data.checkin.checked_today
+  }
+  if (data.invite) quickStats.value.invited = data.invite.invited_count
+  if (data.subscriptions) subscriptions.value = data.subscriptions
+  if (data.announcements) {
+    banners.value = data.announcements
       .filter((a) => a.is_pinned && !dismissedBannerIds.value.includes(a.id))
       .slice(0, 1)
+  }
+  if (data.stats) stats.value = data.stats
+  if (data.media_seek) {
+    const rows = data.media_seek.requests || []
+    seekCounts.value = {
+      active: rows.filter((r) => r.status === 'pending' || r.status === 'approved').length,
+      completed: rows.filter((r) => r.status === 'completed').length,
+    }
+  }
+  if (data.tickets) {
+    ticketCounts.value = {
+      active: data.tickets.filter((t) => t.status === 'open' || t.status === 'pending').length,
+      settled: data.tickets.filter((t) => t.status === 'closed' || t.status === 'resolved').length,
+    }
+  }
+  if (data.sessions) sessions.value = data.sessions.sessions || []
+}
 
-    // 观看统计失败时静默刷新不降级：保持上次的数据，不刷成"—"
-    if (!silent || statsRes) stats.value = statsRes
-    if (seekRes) {
-      const rows = seekRes.requests || []
-      seekCounts.value = {
-        active: rows.filter((r) => r.status === 'pending' || r.status === 'approved').length,
-        completed: rows.filter((r) => r.status === 'completed').length,
-      }
+// silent = true 时为 KeepAlive 切回 tab 的后台静默刷新：不碰 loading，不闪骨架屏
+const hasLoaded = ref(false)
+async function loadDeferred(silent = false) {
+  // 有快照：先用它出内容（不闪骨架），再静默刷新；没有才走完整加载态
+  const userId = userStore.user?.id
+  const snapshot = userId != null ? readSnapshot(userId) : null
+  if (snapshot) {
+    applySummary(snapshot)
+    hasLoaded.value = true
+    loading.value = false
+  }
+  if (!silent && !snapshot) loading.value = true
+  let memberFailed = false
+  try {
+    // 9 项首屏数据一次取回（原来是 9 个并发请求，浏览器 6 连接上限要分两波排队）
+    const data = await homeApi.summary()
+    memberFailed = data.subscriptions === null
+    applySummary(data)
+    // 静默刷新失败时不降级：不覆盖已有数据、不弹错误态（首屏失败才走错误态）
+    if (!silent || !memberFailed) {
+      subscriptions.value = Array.isArray(data.subscriptions) ? data.subscriptions : []
+      loadError.value = memberFailed
     }
-    if (Array.isArray(ticketsRes)) {
-      ticketCounts.value = {
-        active: ticketsRes.filter((t) => t.status === 'open' || t.status === 'pending').length,
-        settled: ticketsRes.filter((t) => t.status === 'closed' || t.status === 'resolved').length,
-      }
-    }
-    if (!silent || sessionsRes) sessions.value = sessionsRes?.sessions || []
+    if (userId != null) writeSnapshot(userId, data)
     loadError.value = memberFailed
   } catch (err: any) {
-    // 兜底：正常情况下到不了这里（每项请求都有自己的 catch）
-    // 静默刷新失败不打扰用户：保留上次数据，不弹错误
-    if (silent) return
+    // 兜底：正常情况下到不了这里
+    // 静默刷新失败，或已有快照可显示时，都不打扰用户
+    if (silent || snapshot) return
     loadError.value = true
     if (err?.response?.status !== 401) {
       toast.error('加载失败，请刷新重试')

@@ -2,6 +2,35 @@
  * 经济系统与邀请返利 API（backend/api/economy.py + invitation.py）
  */
 import api from './index'
+import type {
+  MySubscription, Announcement, WatchStats, MediaSeekRequest, MediaSeekQuota,
+  Ticket, MyPlaybackSession,
+} from './index'
+
+/**
+ * 首页聚合接口：一次请求取回首屏 9 项数据（backend/api/home_summary.py）
+ *
+ * 原来是 9 个并发请求，浏览器同源 HTTP/1.1 只有 6 条并发上限，要分两波排队，
+ * 骨架屏要熬两轮 RTT。合并成一个后首屏只剩一轮往返。
+ *
+ * 字段与原 9 个接口逐一对应（types 直接复用），服务端逐项独立容错：
+ * 任一项失败只把该字段置 null，其余照常，前端各归各的降级。
+ */
+export interface HomeSummary {
+  points: { balance: number } | null
+  checkin: CheckinStatus | null
+  invite: MyInviteInfo | null
+  subscriptions: MySubscription[] | null
+  announcements: Announcement[] | null
+  stats: WatchStats | null
+  media_seek: { requests: MediaSeekRequest[]; quota: MediaSeekQuota } | null
+  tickets: Ticket[] | null
+  sessions: { sessions: MyPlaybackSession[] } | null
+}
+
+export const homeApi = {
+  summary: () => api.get<never, HomeSummary>('/api/user/home/summary'),
+}
 
 // ==================== 类型 ====================
 
