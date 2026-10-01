@@ -985,6 +985,15 @@ function typeLabel(t: string): string {
             远程请求 {{ scanQueue?.remote.lists }} · 复用 {{ scanQueue?.remote.reused }}
             · 在飞 {{ scanQueue?.remote.inflight }}
           </span>
+          <!-- 扫描拆给 worker 执行后，本进程看不到它的内存队列：
+               这两列来自它写进库里的状态（进度按刷盘间隔更新），说清楚免得被当成实时值 -->
+          <span
+            v-if="scanQueue?.view === 'db'"
+            class="fact"
+            title="扫描由执行节点（worker）运行；「正在扫描」「最近完成」两列来自它写进数据库的状态，进度按刷盘间隔更新"
+          >
+            进度来自执行节点
+          </span>
         </div>
       </div>
 
@@ -995,6 +1004,11 @@ function typeLabel(t: string): string {
             <div class="queue-row-head">
               <span class="queue-name">{{ t.name }}</span>
               <span class="mini-badge scanning">{{ t.progress?.phase_label || '准备中' }}</span>
+              <span
+                v-if="t.via === 'db'"
+                class="mini-badge muted"
+                title="本轮由执行扫描的节点运行；这里显示的是它写进数据库的进度快照"
+              >执行节点</span>
             </div>
             <div class="queue-row-sub mono">{{ progressLine(t) || '刚刚开始' }}</div>
             <div v-if="t.progress?.current" class="queue-row-sub mono" :title="t.progress.current">

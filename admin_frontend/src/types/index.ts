@@ -883,6 +883,12 @@ export interface EmbyScanTask {
   /** 排队中的位置（第几位）；正在跑 / 已结束为 null */
   position?: number | null
   progress?: EmbyScanProgress | null
+  /**
+   * 这条记录从哪来：缺省 = 本进程的队列；
+   * redis = 排队项（Redis 里只有位置与触发方）；
+   * db = 从执行扫描的节点写进库里的状态合成（进度按刷盘间隔更新，不是实时的）
+   */
+  via?: 'redis' | 'db'
 }
 
 /** 一个媒体库的实时扫描状态（媒体库列表里的 scan_live） */
@@ -910,6 +916,11 @@ export interface EmbyScanQueue {
   running: EmbyScanTask[]
   waiting: EmbyScanTask[]
   history: EmbyScanTask[]
+  /**
+   * running / history 两列的数据来源：panel = 本进程的队列（实时）；
+   * db = 扫描由别的进程执行，这两列来自执行节点写进库里的状态
+   */
+  view: 'panel' | 'db'
   /** 挂载 id → 正在占着它的媒体库 id */
   mount_owners: Record<string, number>
   /** 挂载 id → 名字（面板直接写名字，不用去存储来源页对号） */
