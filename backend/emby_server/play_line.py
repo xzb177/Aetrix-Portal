@@ -9,6 +9,9 @@
   但客户端拿到的播放 URL 走管理员预留的 CDN 域名——热门分片由 CDN 边缘
   缓存回源，躲 Google Drive 单文件配额。CDN 未启用时选它等同 direct
   （URL 原样回落本服务），不会让任何人播不出来。
+- cache（本地缓存线路）：优先读 VPS 本机副本（热门片由后台 worker 提前拉到本地，
+  见 ``local_cache``）；本地没有就走 direct 的回源口径，并把这条片子按最高优先级
+  排进缓存队列。本地缓存未启用时选它等同 direct，不会让任何人播不出来。
 
 偏好存在 user_play_lines 表；无记录视为 direct，老用户行为不变。
 """
@@ -20,7 +23,8 @@ from backend.models import UserPlayLine
 LINE_DIRECT = "direct"
 LINE_RELAY = "relay"
 LINE_CDN = "cdn"
-PLAY_LINES = (LINE_DIRECT, LINE_CDN, LINE_RELAY)
+LINE_CACHE = "cache"
+PLAY_LINES = (LINE_DIRECT, LINE_CDN, LINE_CACHE, LINE_RELAY)
 DEFAULT_LINE = LINE_DIRECT
 
 

@@ -27,7 +27,7 @@ import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
-  MonitorPlay, LayoutDashboard, Settings2, Zap, Route, Cloud,
+  MonitorPlay, LayoutDashboard, Settings2, Zap, Route, Cloud, HardDrive,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -61,11 +61,14 @@ const showPlayPassword = ref(false)
 // direct = 直连线路（默认）：客户端直连网盘，速度最快；
 // cdn = CDN 线路（第 2/3 层预留）：走管理员预留的 CDN 域名，热门分片由边缘缓存；
 //        仅管理员在后台开启 CDN 后才展示（后端给 cdn_enabled）；
+// cache = 本地缓存线路：优先从 VPS 本地读热门片，本地没有则回源并触发缓存；
+//        仅管理员在后台开启本地缓存后才展示（后端给 cache_enabled）；
 // relay = 中转线路：经服务器转发，适合直连网盘不通（转圈）的用户。
 // 偏好存在后端 user_play_lines 表，按用户隔离；切换后重新播放生效。
 const playLine = ref<PlayLine>('direct')
 const lineSaving = ref(false)
 const cdnAvailable = ref(false)
+const cacheAvailable = ref(false)
 
 async function pickLine(line: PlayLine) {
   if (lineSaving.value || playLine.value === line) return
@@ -75,7 +78,8 @@ async function pickLine(line: PlayLine) {
     toast.success(
       line === 'direct' ? '已切换到直连线路'
         : line === 'cdn' ? '已切换到 CDN 线路'
-          : '已切换到中转线路',
+          : line === 'cache' ? '已切换到本地缓存线路'
+            : '已切换到中转线路',
     )
   } catch {
     toast.error('切换失败，请重试')
@@ -299,7 +303,13 @@ async function loadProfile(silent = false) {
     if (!silent || subs.length) subscriptions.value = subs
     // 播放线路偏好加载失败不阻塞页面：拿不到就按默认直连展示
     getPlayLine()
-      .then((res) => { playLine.value = res.line; cdnAvailable.value = res.cdnEnabled })
+      .then((res) => {
+        playLine.value = res.line
+        cdnAvailable.value = res.cdnEnabled
+        cacheAvailable.value = res.cacheEnabled
+        // 服务端不支持的线路（未开启）：退回直连，不留一个点了没变化的死选项
+        if (playLine.value === 'cache' && !res.cacheEnabled) playLine.value = 'direct'
+      })
       .catch(() => {})
   } catch {
     // 401 已由拦截器处理
@@ -642,6 +652,19 @@ function formatDate(iso?: string | null) {
               CDN 线路
             </button>
             <button
+              v-if="cacheAvailable"
+              type="button"
+              class="line-opt"
+              :class="{ on: playLine === 'cache' }"
+              role="radio"
+              :aria-checked="playLine === 'cache'"
+              :disabled="lineSaving"
+              @click="pickLine('cache')"
+            >
+              <HardDrive :size="13" />
+              本地缓存
+            </button>
+            <button
               type="button"
               class="line-opt"
               :class="{ on: playLine === 'relay' }"
@@ -657,6 +680,7 @@ function formatDate(iso?: string | null) {
           <p class="pane-tip">
             直连线路速度最快（客户端直连网盘）；如果视频打不开或一直转圈，请切换到中转线路（经服务器转发）。
             <template v-if="cdnAvailable">站内已开启 CDN：热门片切到 CDN 线路更稳，首次播放会由边缘缓存分片。</template>
+            <template v-if="cacheAvailable">本地缓存线路：优先从服务器本地读热门片，更少受网盘波动影响，没有缓存时会自动回源并缓存。</template>
             切换后重新播放生效。
           </p>
         </section>

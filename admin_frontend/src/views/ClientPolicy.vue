@@ -13,14 +13,19 @@
  * 判定口径：**管理员不受限**（排障时不能被自己的策略挡住）；所有开关缺省 = 与升级前一致。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, Cloud, Download, Gauge, Info, RefreshCw, Save, ShieldBan, Smartphone, Tv,
+  AlertTriangle, Cloud, Download, Gauge, HardDrive, Info, RefreshCw, Save, ShieldBan, Smartphone, Trash2, Tv,
 } from 'lucide-vue-next'
-import { fetchCdnConfig, fetchPlaybackPolicy, updateCdnConfig, updatePlaybackPolicy } from '@/api/admin'
+import {
+  cleanLocalCache, fetchCdnConfig, fetchLocalCacheConfig, fetchPlaybackPolicy,
+  updateCdnConfig, updateLocalCacheConfig, updatePlaybackPolicy,
+} from '@/api/admin'
 // 下载与设备风控落在经济设置里（同一批 SystemConfig 键），这里只是换个更顺手的入口
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
-import type { CdnConfig, PlaybackPolicy, PlaybackRuntime } from '@/types'
+import type {
+  CdnConfig, LocalCacheConfig, LocalCacheEntryInfo, LocalCacheStats, PlaybackPolicy, PlaybackRuntime,
+} from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
 
@@ -33,6 +38,8 @@ const loading = ref(false)
 const savingPolicy = ref(false)
 const savingOps = ref(false)
 const savingCdn = ref(false)
+const savingCache = ref(false)
+const cleaningCache = ref(false)
 
 const policy = ref<PlaybackPolicy>({
   transcode_enabled: true,
@@ -53,6 +60,32 @@ const cdnConfig = ref<CdnConfig>({
 /** 服务端注册的线路清单（direct / cdn / relay）——展示用，不在这里改 */
 const cdnPlayLines = ref<string[]>([])
 
+/** VPS 本地缓存（播放线路「本地缓存」）：默认关闭，开启后热门片自动拉到本机 */
+const localCache = ref<LocalCacheConfig>({
+  enabled: false, dir: '', default_dir: '', max_gb: 500, max_bytes: 0,
+  hot_days: 7, hot_plays: 3, rate_mbps: 20, busy_rate_mbps: 2, play_line: 'cache',
+  max_attempts: 3, active_playback_window_sec: 300,
+})
+const cacheStats = ref<LocalCacheStats | null>(null)
+const cacheEntries = ref<LocalCacheEntryInfo[]>([])
+
+function fmtBytes(n: number): string {
+  if (!n) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+function fmtRate(r: number | null): string {
+  return r === null || r === undefined ? '—' : `${(r * 100).toFixed(1)}%`
+}
+
+const cacheStateLabel: Record<string, string> = {
+  pending: '排队中', downloading: '下载中', ready: '已缓存', failed: '已失败',
+}
+
 const PLAYBACK_NODE_LABEL: Record<string, string> = {
   ea: '分离部署的 EA 节点',
   external: '已有 Emby 服',
@@ -62,16 +95,22 @@ const PLAYBACK_NODE_LABEL: Record<string, string> = {
 async function load() {
   loading.value = true
   try {
-    const [p, s, c] = await Promise.all([
+    const [p, s, c, lc] = await Promise.all([
       fetchPlaybackPolicy(),
       fetchEconomySettings().catch(() => ({ settings: {} as Record<string, string> })),
       fetchCdnConfig().catch(() => null),
+      fetchLocalCacheConfig().catch(() => null),
     ])
     policy.value = p.policy
     runtime.value = p.runtime
     if (c) {
       cdnConfig.value = c.cdn
       cdnPlayLines.value = c.play_lines
+    }
+    if (lc) {
+      localCache.value = lc.local_cache
+      cacheStats.value = lc.stats
+      cacheEntries.value = lc.entries
     }
     ops.value = {
       allow_download: s.settings.allow_download ?? '',
@@ -134,6 +173,55 @@ const blockedCount = computed(
   () => (policy.value.blocked_agents || '').split(/[,，\n]/).filter((v) => v.trim()).length,
 )
 const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_seconds ?? 0))
+
+async function saveLocalCache() {
+  savingCache.value = true
+  try {
+    const res = await updateLocalCacheConfig({
+      enabled: localCache.value.enabled,
+      dir: localCache.value.dir,
+      max_gb: Number(localCache.value.max_gb) || 0,
+      hot_days: Number(localCache.value.hot_days) || 1,
+      hot_plays: Number(localCache.value.hot_plays) || 1,
+      rate_mbps: Number(localCache.value.rate_mbps) || 0,
+    })
+    localCache.value = res.local_cache
+    cacheStats.value = res.stats
+    ElMessage.success(localCache.value.enabled
+      ? '本地缓存已启用：热门片会限速拉到本机，用户侧新增「本地缓存」线路'
+      : '本地缓存配置已保存（未启用，播放行为与升级前一致）')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+  } finally {
+    savingCache.value = false
+  }
+}
+
+async function cleanLocalCacheMode(mode: 'ready' | 'all') {
+  const s = cacheStats.value
+  const desc = mode === 'ready'
+    ? `清理全部已缓存副本（当前占用 ${fmtBytes(s?.bytes_used || 0)}），记录一并删除，下次播放会重新回源。`
+    : '清空本地缓存的全部记录与副本（下载中的那条会等下载完再清）。'
+  try {
+    await ElMessageBox.confirm(desc, '手动清理本地缓存', {
+      type: 'warning', confirmButtonText: '确认清理', cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  cleaningCache.value = true
+  try {
+    const res = await cleanLocalCache(mode)
+    cacheStats.value = res.stats
+    const fresh = await fetchLocalCacheConfig().catch(() => null)
+    if (fresh) cacheEntries.value = fresh.entries
+    ElMessage.success(`已清理 ${res.cleaned.removed} 条，释放 ${fmtBytes(res.cleaned.freed_bytes)}`)
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '清理失败')
+  } finally {
+    cleaningCache.value = false
+  }
+}
 </script>
 
 <template>
@@ -302,6 +390,149 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       </div>
     </section>
 
+    <!-- VPS 本地缓存（播放线路「本地缓存」，默认关闭） -->
+    <section class="admin-card">
+      <div class="card-header">
+        <h2><HardDrive :size="15" /> VPS 本地缓存</h2>
+        <span class="badge-hint">{{ localCache.enabled ? '已启用' : '未启用（默认）' }}</span>
+      </div>
+
+      <p class="field-hint" style="margin-top: 0">
+        把热门的远程挂载片提前拉到 VPS 本机磁盘：用户切到「本地缓存」线路时优先读本机，
+        没有才回源并触发缓存。下载<b>单线程 + 限速</b>，有人在播放时自动降到
+        {{ localCache.busy_rate_mbps }}MB/s 让路，不碰 direct / relay / cdn 三条现有线路；
+        超配额按 LRU 删最久未访问的副本。只缓存远程挂载来源的条目（本机文件不需要副本）。
+      </p>
+
+      <div v-if="cacheStats" class="runtime-grid">
+        <div class="rt-item">
+          <b>{{ fmtBytes(cacheStats.bytes_used) }}</b>
+          <em>已占用 / {{ cacheStats.max_bytes ? fmtBytes(cacheStats.max_bytes) : '不限' }}</em>
+        </div>
+        <div class="rt-item">
+          <b>{{ fmtRate(cacheStats.hit_rate) }}</b>
+          <em>命中率（命中 {{ cacheStats.hits }} / 未命中 {{ cacheStats.misses }}）</em>
+        </div>
+        <div class="rt-item">
+          <b>{{ cacheStats.entries.ready || 0 }}</b>
+          <em>已缓存 / 共 {{ cacheStats.entries_total }} 条</em>
+        </div>
+        <div class="rt-item">
+          <b :class="{ warn: !cacheStats.dir_exists }">
+            {{ cacheStats.dir_exists ? fmtBytes(cacheStats.disk_free_bytes) : '目录不存在' }}
+          </b>
+          <em>磁盘剩余</em>
+        </div>
+        <div class="rt-item">
+          <b>{{ cacheStats.entries.downloading || 0 }} / {{ cacheStats.entries.pending || 0 }}</b>
+          <em>下载中 / 排队</em>
+        </div>
+      </div>
+      <p v-if="cacheStats" class="runtime-foot">
+        目录 <code>{{ cacheStats.dir }}</code>；热门规则：近 {{ localCache.hot_days }} 天播放
+        ≥ {{ localCache.hot_plays }} 次即自动缓存；下载限速
+        {{ localCache.rate_mbps ? `${localCache.rate_mbps} MB/s` : '不限速' }}。
+        <template v-if="cacheStats.entries.failed">失败 {{ cacheStats.entries.failed }} 条（可在下方清理）。</template>
+      </p>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>启用本地缓存（总开关）</label>
+          <p class="field-hint">
+            关闭时（默认）播放行为与升级前一致；开启后用户侧「线路选择」才会出现 cache 线路，
+            后台 worker 开始按热门规则拉片。
+          </p>
+        </div>
+        <el-switch v-model="localCache.enabled" :disabled="!isSuper" />
+      </div>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>缓存目录</label>
+          <p class="field-hint">
+            绝对路径，留空用默认目录 <code>{{ localCache.default_dir }}</code>。
+            目录所在磁盘要装得下配额，建议指向数据盘。
+          </p>
+        </div>
+        <el-input
+          v-model="localCache.dir"
+          class="cdn-input"
+          :disabled="!isSuper"
+          :placeholder="localCache.default_dir"
+          clearable
+        />
+      </div>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>最大占用（GB）</label>
+          <p class="field-hint">超过配额时按 LRU 删除最久未访问的副本；0 = 不限制。</p>
+        </div>
+        <el-input-number
+          v-model="localCache.max_gb"
+          :min="0" :max="100000" :step="50"
+          :disabled="!isSuper"
+        />
+      </div>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>热门判定规则</label>
+          <p class="field-hint">近 N 天内播放达到 M 次的片子自动入队下载（按播放次数从多到少排队）。</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px">
+          <el-input-number v-model="localCache.hot_days" :min="1" :max="90" :disabled="!isSuper" />
+          <span class="badge-hint">天内 ≥</span>
+          <el-input-number v-model="localCache.hot_plays" :min="1" :max="1000" :disabled="!isSuper" />
+          <span class="badge-hint">次</span>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field-main">
+          <label>下载限速（MB/s）</label>
+          <p class="field-hint">
+            缓存下载占用的带宽上限，0 = 不限速；检测到有人在播放时自动降到
+            {{ localCache.busy_rate_mbps }}MB/s 给播放让路，绝不抢当前播放的带宽。
+          </p>
+        </div>
+        <el-input-number
+          v-model="localCache.rate_mbps"
+          :min="0" :max="10000" :step="5"
+          :disabled="!isSuper"
+        />
+      </div>
+
+      <div v-if="cacheEntries.length" class="cache-list">
+        <div v-for="e in cacheEntries.slice(0, 6)" :key="e.item_guid" class="cache-item">
+          <span class="ci-name">{{ e.name || e.source_path }}</span>
+          <span class="ci-meta">
+            <b :class="{ warn: e.state === 'failed' }">{{ cacheStateLabel[e.state] || e.state }}</b>
+            · {{ fmtBytes(e.file_size) }} · 命中 {{ e.hits }}
+            <template v-if="e.last_accessed_at"> · 最近访问 {{ e.last_accessed_at.slice(0, 16).replace('T', ' ') }}</template>
+          </span>
+        </div>
+      </div>
+
+      <div class="save-row">
+        <el-button
+          :loading="cleaningCache" :disabled="!isSuper || !cacheEntries.length"
+          @click="cleanLocalCacheMode('ready')"
+        >
+          <Trash2 :size="14" style="margin-right: 4px" />清理缓存副本
+        </el-button>
+        <el-button
+          :loading="cleaningCache" :disabled="!isSuper"
+          @click="cleanLocalCacheMode('all')"
+        >
+          <Trash2 :size="14" style="margin-right: 4px" />清空全部
+        </el-button>
+        <el-button type="primary" :loading="savingCache" :disabled="!isSuper" @click="saveLocalCache">
+          <Save :size="14" style="margin-right: 4px" />保存本地缓存
+        </el-button>
+      </div>
+    </section>
+
     <!-- 客户端准入 -->
     <section class="admin-card">
       <div class="card-header">
@@ -465,6 +696,39 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
 .field-hint { margin: 4px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.6; }
 .num-input { width: 120px; }
 .cdn-input { width: 260px; }
+.cache-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.cache-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass);
+}
+.cache-item .ci-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+.cache-item .ci-meta {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.cache-item .ci-meta b { font-weight: var(--font-weight-medium); }
+.cache-item .ci-meta b.warn { color: var(--warning); }
 .save-row { display: flex; justify-content: flex-end; padding-top: 4px; }
 code {
   padding: 1px 5px;
