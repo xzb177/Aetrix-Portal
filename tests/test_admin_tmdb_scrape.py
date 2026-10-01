@@ -103,11 +103,23 @@ def test_rotate_cycles_keys():
     assert client.api_key == "k1"  # 循环
 
 
-def test_get_skips_invalid_key(monkeypatch):
-    """401 的 key 被跳过：_get 用下一个 key 重试并返回成功结果"""
+def _bare_client(*keys) -> TmdbClient:
+    """绕过 __init__ 的裸客户端：只给 _get 需要的那几个字段
+
+    v2.42.9 起 _get 先过请求级令牌桶，所以 _limiter/_stats 要按 __init__ 的口径一并补上；
+    这些用例走假会话，速率调快以免真的等。
+    """
     client = TmdbClient.__new__(TmdbClient)
     client._keys_lock = threading.Lock()
-    client._set_keys(["bad", "good"], "env")
+    client._set_keys(list(keys), "env")
+    client._limiter = tmdb_mod._RequestLimiter(rate=1_000_000.0, min_rate=1.0)
+    client._stats = {"short_circuit": 0, "retry": 0, "net_fail": 0}
+    return client
+
+
+def test_get_skips_invalid_key(monkeypatch):
+    """401 的 key 被跳过：_get 用下一个 key 重试并返回成功结果"""
+    client = _bare_client("bad", "good")
     calls = []
 
     def fake_get(url, params):
@@ -123,9 +135,7 @@ def test_get_skips_invalid_key(monkeypatch):
 
 
 def test_get_all_keys_bad_returns_none(monkeypatch):
-    client = TmdbClient.__new__(TmdbClient)
-    client._keys_lock = threading.Lock()
-    client._set_keys(["only"], "env")
+    client = _bare_client("only")
     client.session = SimpleNamespace(
         get=lambda url, params: SimpleNamespace(status_code=401, json=lambda: {}))
     monkeypatch.setattr(client, "_ensure_session", lambda: None)

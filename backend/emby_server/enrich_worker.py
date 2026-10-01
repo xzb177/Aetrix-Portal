@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -29,9 +28,12 @@ from backend.emby_server import models as em
 logger = logging.getLogger(__name__)
 
 # ---- 可调参数（环境变量） ----
+# 注：TMDB 限速（ENRICH_TMDB_PER_SEC）在 v2.42.9 挪进了 tmdb.TmdbClient 的**请求级**
+# 令牌桶。旧实现是在这里按**条目**扣 token，而一个条目背后是 0~6 次 HTTP
+# （中文标题 4~5 个候选搜索最贵），于是「2/秒」实际打出去 4~12 请求/秒，
+# 而且扫描那条路（scanner._tmdb_work）完全没有限速。现在只有一个桶。
 ENRICH_WORKERS = max(1, min(16, int(os.getenv("ENRICH_WORKERS", "4") or 4)))
 ENRICH_BATCH = max(10, int(os.getenv("ENRICH_BATCH", "100") or 100))
-ENRICH_TMDB_PER_SEC = max(1, int(os.getenv("ENRICH_TMDB_PER_SEC", "2") or 2))
 ENRICH_IDLE_POLL_SEC = max(5, int(os.getenv("ENRICH_IDLE_POLL_SEC", "30") or 30))
 ENRICH_ENABLED = (os.getenv("ENRICH_WORKER", "1") or "1").strip().lower() not in {
     "0", "false", "no", "off",
@@ -43,34 +45,6 @@ ENRICH_RETRY_BASE_SEC = max(10, int(os.getenv("ENRICH_RETRY_BASE_SEC", "60") or 
 _worker_threads: list = []
 _stop_event = threading.Event()
 _worker_lock = threading.Lock()
-
-
-class _RateLimiter:
-    """令牌桶：TMDB 调用限速"""
-
-    def __init__(self, rate_per_sec: int):
-        self._rate = max(1, rate_per_sec)
-        self._tokens = float(self._rate)
-        self._updated = time.monotonic()
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                self._tokens = min(
-                    float(self._rate),
-                    self._tokens + (now - self._updated) * self._rate,
-                )
-                self._updated = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                wait = (1.0 - self._tokens) / self._rate
-            time.sleep(min(wait, 0.5))
-
-
-_tmdb_limiter = _RateLimiter(ENRICH_TMDB_PER_SEC)
 
 
 def _scanfile_from_item(item: Any) -> Optional[Any]:
@@ -191,12 +165,10 @@ def _enrich_fetch(item: Any) -> dict:
                 or not (item.poster_path or item.primary_image_url)
                 or not (item.imdb_id and item.aliases))
             if want_details and tmdb_client.configured:
-                _tmdb_limiter.acquire()
                 _hit, details = _sc._tmdb_work(
                     False, "", None, kind, tmdb_id, True)
                 result["tmdb_details"] = details
         elif tmdb_client.configured and kind in ("series", "movie"):
-            _tmdb_limiter.acquire()
             hit, details = _sc._tmdb_work(
                 True, item.name or "", item.production_year, kind,
                 getattr(item, "tmdb_id", None), True)
