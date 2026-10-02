@@ -171,14 +171,23 @@ def item_image(item_id: str, image_type: str, request: Request,
     尺寸参数：标准 Emby maxWidth/maxHeight 优先，w/h 是同义别名（见
     image_store.pick_dim）。非法值不 422，直接回原图。
     """
+    # 按场景精确尺寸：海报墙 320/160、详情页 480、背景 1280，各调各的，不一刀切
+    ew, eh = image_store.pick_dim(maxWidth, w), image_store.pick_dim(maxHeight, h)
+    # 媒体库封面：第三方客户端用库的 guid 拉 /Images/Primary
+    if image_type == "Primary":
+        lib = db.query(em.Library).filter(em.Library.guid == item_id).first()
+        if lib is not None and getattr(lib, "cover_path", None):
+            import os as _os
+            if _os.path.isfile(lib.cover_path):
+                return _serve_sized(lib.cover_path, ew, eh)
+            raise HTTPException(status_code=404, detail="Image not found")
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     if image_type not in ("Primary", "Backdrop", "Art", "Thumb", "Logo"):
         raise HTTPException(status_code=404, detail="Image not found")
     kind = "Primary" if image_type == "Primary" else "Backdrop"
-    # 按场景精确尺寸：海报墙 320/160、详情页 480、背景 1280，各调各的，不一刀切
-    ew, eh = image_store.pick_dim(maxWidth, w), image_store.pick_dim(maxHeight, h)
+
     src = _first_image(item, kind, db)
     if not src:
         raise HTTPException(status_code=404, detail="Image not found")

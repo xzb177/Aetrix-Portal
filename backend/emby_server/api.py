@@ -1254,6 +1254,15 @@ def _library_item_count(db, lib) -> int:
     ).count()
 
 
+def _library_cover_tag(cover_path: str | None) -> str:
+    """库封面的 ImageTag：用文件 mtime 做 tag，换封面后客户端缓存失效"""
+    import os as _os
+    try:
+        return str(int(_os.path.getmtime(cover_path)))
+    except OSError:
+        return "1"
+
+
 @emby_router.get("/emby/Users/{user_id}/Views")
 @emby_router.get("/Users/{user_id}/Views")
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
@@ -1266,6 +1275,9 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
         # 虚拟媒体库（按发行平台生成）：只在总开关 + 该库开启时才出现在客户端
         if is_virtual and not virtual_on:
             continue
+        # 媒体库封面：有 cover_path 才给 Primary 标记，客户端才会去拉 /Images/Primary
+        cover_path = getattr(lib, "cover_path", None)
+        image_tags = {"Primary": _library_cover_tag(cover_path)} if cover_path else {}
         items.append({
             "Name": lib.name,
             "Id": lib.guid,
@@ -1274,7 +1286,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             "CollectionType": "mixed" if is_virtual else lib.collection_type,
             "IsFolder": True,
             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False, "IsFavorite": False},
-            "ImageTags": {},
+            "ImageTags": image_tags,
             "ChildCount": count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib),
         })
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
