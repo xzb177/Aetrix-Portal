@@ -121,6 +121,8 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/servers', label: '服务器与线路' },
       { path: '/emby', label: '媒体库' },
+      // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
+      { path: '/metadata-sources', label: '元数据来源' },
       { path: '/mounts', label: '存储来源' },
       { path: '/pan115', label: '115 账号' },
     ],

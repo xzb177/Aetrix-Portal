@@ -41,6 +41,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'tickets', name: 'Tickets', component: () => import('@/views/Tickets.vue'), meta: { title: '工单' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库' } },
+      // 元数据来源（Phase 6）：条目级的元数据纠偏与补全进度，从「媒体库」页迁到这里
+      { path: 'metadata-sources', name: 'MetadataSources', component: () => import('@/views/MetadataSources.vue'), meta: { title: '元数据来源' } },
       { path: 'mounts', name: 'StorageMounts', component: () => import('@/views/StorageMounts.vue'), meta: { title: '存储来源' } },
       // v2.18.0：转存任务下线，页面只保留 115 账号；旧地址保留为跳转，收藏不会 404
       { path: 'pan115', alias: 'transfer-115', name: 'Pan115Accounts', component: () => import('@/views/Pan115Accounts.vue'), meta: { title: '115 账号' } },
