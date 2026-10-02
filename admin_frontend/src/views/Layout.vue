@@ -125,6 +125,8 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/servers', label: '服务器与线路' },
       { path: '/emby', label: '媒体库' },
+      // 谁能看到哪些库（服务器默认范围 + 指定用户覆盖）：默认关闭，不改现有行为
+      { path: '/library-scope', label: '可见范围' },
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
       { path: '/metadata-sources', label: '元数据来源' },
       { path: '/mounts', label: '存储来源' },

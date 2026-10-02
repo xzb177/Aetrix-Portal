@@ -291,6 +291,68 @@ export const saveShareGuardPolicy = (policy: Partial<ShareGuardPolicy>) =>
 export const purgeShareGuardEvents = (days: number | null) =>
   post<{ success: boolean; message: string; deleted: number }>('/share-guard/purge', { days })
 
+// ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 ====================
+
+/** 媒体库下拉选项（后端返回的全部库，含启用/虚拟状态） */
+export interface LibraryScopeOption {
+  id: number
+  guid: string
+  name: string
+  is_enabled: boolean
+  is_virtual: boolean
+  item_count: number
+}
+
+/** 可选用户（后端已切上限；覆盖是按 user_id 存的，不依赖这份名单） */
+export interface LibraryScopeUser {
+  id: number
+  username: string
+  is_staff: boolean
+  is_active: boolean
+}
+
+/** 某个用户的单独覆盖；`enabled=false` = 恢复跟随服务器默认（列表留着方便再开） */
+export interface LibraryScopeOverride {
+  enabled: boolean
+  library_ids: number[]
+}
+
+export interface LibraryScopePolicy {
+  default: {
+    enabled: boolean
+    library_ids: number[]
+    /** 真的在生效吗（开着但选的库全被删了 = 没生效，后台要看得见） */
+    active: boolean
+  }
+  overrides: Record<string, LibraryScopeOverride>
+  libraries: LibraryScopeOption[]
+  users: LibraryScopeUser[]
+  counts: { libraries: number; overrides: number; users: number }
+}
+
+export interface LibraryScopeResponse extends LibraryScopePolicy {
+  success: boolean
+}
+
+type LibraryScopeResult = {
+  success: boolean
+  applied: { enabled?: boolean; library_ids?: number[]; removed?: boolean; user_id?: number }
+  policy: LibraryScopePolicy
+}
+
+export const fetchLibraryScope = () => get<LibraryScopeResponse>('/library-scope')
+
+export const saveLibraryScopeDefault = (data: { enabled: boolean; library_ids: number[] }) =>
+  put<LibraryScopeResult>('/library-scope', data)
+
+export const saveLibraryScopeUser = (
+  userId: number,
+  data: { enabled: boolean; library_ids: number[] },
+) => put<LibraryScopeResult>(`/library-scope/users/${userId}`, data)
+
+export const removeLibraryScopeUser = (userId: number) =>
+  del<LibraryScopeResult>(`/library-scope/users/${userId}`)
+
 // ==================== 公告 ====================
 
 export const fetchAnnouncements = (params: { active_only?: boolean } = {}) =>

@@ -364,6 +364,20 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
          "防共享事件保留天数（0 = 不自动清理）"),
     ])
 
+    # 7.9 媒体库可见范围：默认关闭 = 所有启用的库都可见（升级前行为）
+    from backend import library_scope
+    items.extend([
+        (library_scope.CONFIG_DEFAULT_ENABLED,
+         library_scope.DEFAULTS[library_scope.CONFIG_DEFAULT_ENABLED],
+         "媒体库可见范围·服务器默认总开关（0 = 关闭，所有启用的库都可见）"),
+        (library_scope.CONFIG_DEFAULT_LIBRARIES,
+         library_scope.DEFAULTS[library_scope.CONFIG_DEFAULT_LIBRARIES],
+         "媒体库可见范围·服务器默认可见的库 id（JSON 数组，总开关关闭时无效）"),
+        (library_scope.CONFIG_USER_OVERRIDES,
+         library_scope.DEFAULTS[library_scope.CONFIG_USER_OVERRIDES],
+         "媒体库可见范围·逐用户覆盖（JSON，enabled=false = 跟随服务器默认）"),
+    ])
+
     # 8. 公益服查看权限价格
     from backend.emby_server import portal
     items.extend([

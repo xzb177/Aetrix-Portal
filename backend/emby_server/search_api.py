@@ -22,6 +22,7 @@ from backend import models
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server.api import _base_url, _emby_type, _image_url
+from backend import library_scope
 from backend.emby_server.auth import get_emby_user
 from backend.emby_server.search import (
     CANDIDATE_LIMIT as SEARCH_CANDIDATE_LIMIT,
@@ -64,6 +65,9 @@ def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user)
     base = _base_url(request)
 
     query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False)  # noqa: E712
+    # 媒体库可见范围：搜索建议是独立于 /Users/{id}/Items 的另一个出口，
+    # 不挂上同一份范围，被藏起来的库照样能从搜索框里被搜出来。
+    query = library_scope.scope_query(query, library_scope.effective_ids_safe(db, user))
     if term:
         clauses = _search_clauses(term)
         if clauses:

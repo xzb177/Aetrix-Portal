@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import false, func, or_
 from sqlalchemy.orm import Session, joinedload
 
-from backend import models, playback_policy
+from backend import library_scope, models, playback_policy
 from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
 from backend.emby_server import facets
@@ -1292,14 +1292,33 @@ def _library_cover_tag(cover_path: str | None) -> str:
         return "1"
 
 
+def _library_scope(db: Session, user) -> "set[int] | None":
+    """这个用户能看到哪些媒体库 id；``None`` = 不过滤（绝大多数部署）
+
+    两层规则（服务器默认范围 + 指定用户覆盖）都在 ``backend/library_scope.py``，
+    这里只负责调用。走 ``effective_ids_safe``：读失败按「不过滤」处理，
+    展示层设置不该把整个浏览页拦下来。
+    """
+    return library_scope.effective_ids_safe(db, user)
+
+
+def _scope_items(query, allowed: "set[int] | None"):
+    """把可见范围挂到条目查询上（``None`` = 不加条件）"""
+    return library_scope.scope_query(query, allowed)
+
+
 @emby_router.get("/emby/Users/{user_id}/Views")
 @emby_router.get("/Users/{user_id}/Views")
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
     virtual_on = _virtual_libraries_enabled()
+    allowed = _library_scope(db, user)
     items = []
     for lib in libs:
+        # 服务器默认范围 / 个人覆盖：不在名单里的库不出现在客户端的媒体库列表里
+        if allowed is not None and lib.id not in allowed:
+            continue
         is_virtual = bool(getattr(lib, "is_virtual", False))
         # 虚拟媒体库（按发行平台生成）：只在总开关 + 该库开启时才出现在客户端
         if is_virtual and not virtual_on:
@@ -1352,6 +1371,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     limit = int(q.get("Limit") or 100)
     recursive = (q.get("Recursive") or "false").lower() == "true"
     user_id = q.get("UserId") or str(user.id)
+    allowed = _library_scope(db, user)
     random_sort = any(c.strip().lower() == "random" for c in sort_by)
     ids = [x.strip() for value in q.getlist("Ids") for x in value.split(",") if x.strip()]
 
@@ -1400,6 +1420,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             # 可能是媒体库
             lib = db.query(em.Library).filter(em.Library.guid == parent_id).first()
             if lib:
+                if allowed is not None and lib.id not in allowed:
+                    # 直接拿别的库的 guid 打进来：当成不存在（不泄露库名与是否真的存在）
+                    raise HTTPException(status_code=404, detail="Not found")
                 if getattr(lib, "is_virtual", False):
                     # 虚拟媒体库：跨库的发行平台视图；未开启时直达也 404
                     if not (_virtual_libraries_enabled() and lib.is_enabled):
@@ -1434,6 +1457,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     elif not recursive:
         # 非递归默认返回顶层
         query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
+
+    # 媒体库可见范围：搜索 / 递归浏览 / Latest 都走这条路径，一处过滤全覆盖
+    query = _scope_items(query, allowed)
 
     if search and not parent_id and not explicit_types:
         # 全局搜索默认只返回顶层（series/movie）：季/单集不出现在顶层搜索结果里。
@@ -1621,14 +1647,17 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
     """
     limit = int(request.query_params.get("Limit") or 12)
     rows = (
-        db.query(em.UserMediaData, em.MediaItem)
-        .join(em.MediaItem, em.MediaItem.id == em.UserMediaData.item_id)
-        .filter(
-            em.UserMediaData.user_id == user.id,
-            em.UserMediaData.playback_position_ticks > 0,
-            em.UserMediaData.played == False,  # noqa: E712
-            em.MediaItem.item_type.in_(["movie", "series"]),
-            em.MediaItem.is_hidden == False,  # noqa: E712
+        _scope_items(
+            db.query(em.UserMediaData, em.MediaItem)
+            .join(em.MediaItem, em.MediaItem.id == em.UserMediaData.item_id)
+            .filter(
+                em.UserMediaData.user_id == user.id,
+                em.UserMediaData.playback_position_ticks > 0,
+                em.UserMediaData.played == False,  # noqa: E712
+                em.MediaItem.item_type.in_(["movie", "series"]),
+                em.MediaItem.is_hidden == False,  # noqa: E712
+            ),
+            _library_scope(db, user),
         )
         .order_by(em.UserMediaData.last_played_at.desc())
         .limit(limit)
@@ -1646,8 +1675,13 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     limit = int(request.query_params.get("Limit") or 16)
     items = (
-        db.query(em.MediaItem)
-        .filter(em.MediaItem.item_type.in_(["movie", "series"]), em.MediaItem.is_hidden == False)  # noqa: E712
+        _scope_items(
+            db.query(em.MediaItem).filter(
+                em.MediaItem.item_type.in_(["movie", "series"]),
+                em.MediaItem.is_hidden == False,  # noqa: E712
+            ),
+            _library_scope(db, user),
+        )
         .order_by(em.MediaItem.date_added.desc())
         .limit(limit)
         .all()
@@ -1668,10 +1702,15 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
 @emby_router.get("/Items/Counts")
 def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     # 一次 GROUP BY 顶掉三个 item_type 计数（客户端启动时就会问这个端点），
-    # 总数也走 Core 的 COUNT(*)（不再让 ORM 把实体包一层子查询）
+    # 总数也走 Core 的 COUNT(*)（不再让 ORM 把实体包一层子查询）。
+    # 计数同样按可见范围收：否则客户端导航栏显示 120 部、点进去只有 40 部。
+    allowed = _library_scope(db, user)
     by_type = dict(
-        db.query(em.MediaItem.item_type, func.count())
-        .filter(em.MediaItem.is_hidden == False)  # noqa: E712
+        _scope_items(
+            db.query(em.MediaItem.item_type, func.count())
+            .filter(em.MediaItem.is_hidden == False),  # noqa: E712
+            allowed,
+        )
         .group_by(em.MediaItem.item_type)
         .all()
     )
@@ -1680,7 +1719,9 @@ def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = De
         "MovieCount": int(by_type.get("movie", 0)),
         "SeriesCount": int(by_type.get("series", 0)),
         "EpisodeCount": int(by_type.get("episode", 0)),
-        "ItemCount": int(db.query(func.count()).select_from(em.MediaItem).scalar() or 0),
+        "ItemCount": int(_scope_items(
+            db.query(func.count()).select_from(em.MediaItem), allowed
+        ).scalar() or 0),
         "AlbumCount": 0, "SongCount": 0, "ArtistCount": 0, "AlbumArtistCount": 0,
         "MusicVideoCount": 0, "TrailerCount": 0, "BoxSetCount": 0, "BookCount": 0,
     }
@@ -1928,6 +1969,7 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
     """
     limit = int(request.query_params.get("Limit") or 20)
     requested_series_guid = (request.query_params.get("SeriesId") or "").strip()
+    allowed = _library_scope(db, user)
     if requested_series_guid:
         # 详情页进入某部未观看的剧时，客户端会先问
         # ``NextUp?SeriesId=<本剧>``。旧实现完全忽略 SeriesId，反而从全库
@@ -1937,6 +1979,9 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
             em.MediaItem.item_type == "series",
         ).first()
         if requested_series is None:
+            return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+        if allowed is not None and requested_series.library_id not in allowed:
+            # 别的库的剧直接拿来问「下一集」：不泄露它的存在，当没看见
             return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
         watched_episode_ids = {
             r.item_id for r in db.query(em.UserMediaData.item_id).filter(
@@ -1991,8 +2036,11 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         if w.last_played_at and w.item_id not in last_played:
             last_played[w.item_id] = w.last_played_at
     ep_series = (
-        db.query(em.MediaItem.id, em.MediaItem.series_id)
-        .filter(em.MediaItem.id.in_(watched_ids), em.MediaItem.series_id.isnot(None))
+        _scope_items(
+            db.query(em.MediaItem.id, em.MediaItem.series_id)
+            .filter(em.MediaItem.id.in_(watched_ids), em.MediaItem.series_id.isnot(None)),
+            allowed,
+        )
         .all()
     )
     series_ids = sorted({r.series_id for r in ep_series})

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import authlog, codes, devices, models, realms, share_guard
+from backend import authlog, codes, devices, library_scope, models, realms, share_guard
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
@@ -676,6 +676,91 @@ def purge_share_guard_events(
            {"days": payload.days, "deleted": deleted})
     db.commit()
     return {"success": True, "message": f"已清理 {deleted} 条防共享事件", "deleted": deleted}
+
+
+# ==================== 媒体库可见范围（v2.43.0） ====================
+#
+# 两层规则（服务器默认范围 + 指定用户覆盖）与判定逻辑都在
+# ``backend/library_scope.py``；这里只做读写与审计。
+#
+# 写端点**不静默失败**：启用时一个库都没选属于配置错误，
+# ``library_scope`` 会抛 ``ValueError``，这里转 400 报给前端——
+# 悄悄把配置存成「谁也看不见」比报错危险得多。
+
+
+class LibraryScopeDefaultRequest(BaseModel):
+    enabled: bool = False
+    library_ids: list[int] = Field(default_factory=list)
+
+
+@admin_ops_router.get("/library-scope")
+def get_library_scope(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """媒体库可见范围：默认范围 + 逐用户覆盖 + 可选库与用户（只读）"""
+    payload = library_scope.policy_payload(db)
+    return {"success": True, **payload}
+
+
+@admin_ops_router.put("/library-scope")
+def update_library_scope_default(
+    request: LibraryScopeDefaultRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """保存服务器默认范围"""
+    try:
+        applied = library_scope.write_default(db, request.enabled, request.library_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(db, current_admin, "update_library_scope_default", "system", None, applied)
+    db.commit()
+    return {"success": True, "applied": applied,
+            "policy": library_scope.policy_payload(db)}
+
+
+class LibraryScopeUserRequest(BaseModel):
+    enabled: bool = False
+    library_ids: list[int] = Field(default_factory=list)
+
+
+@admin_ops_router.put("/library-scope/users/{user_id}")
+def update_library_scope_user(
+    user_id: int,
+    request: LibraryScopeUserRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """保存某个用户的单独覆盖（``enabled=false`` = 恢复跟随服务器默认）"""
+    target = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    try:
+        applied = library_scope.write_user_override(
+            db, user_id, request.enabled, request.library_ids
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _audit(db, current_admin, "update_library_scope_user", "user", user_id,
+           {**applied, "username": target.username})
+    db.commit()
+    return {"success": True, "applied": applied,
+            "policy": library_scope.policy_payload(db)}
+
+
+@admin_ops_router.delete("/library-scope/users/{user_id}")
+def delete_library_scope_user(
+    user_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """删掉某个用户的覆盖 = 彻底回到跟随默认"""
+    applied = library_scope.remove_user_override(db, user_id)
+    _audit(db, current_admin, "remove_library_scope_user", "user", user_id, applied)
+    db.commit()
+    return {"success": True, "applied": applied,
+            "policy": library_scope.policy_payload(db)}
 
 
 __all__ = ["admin_ops_router"]
