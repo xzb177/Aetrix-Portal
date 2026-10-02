@@ -57,6 +57,14 @@ defineSlots<{
 
 const { isPhone } = useBreakpoint()
 
+/**
+ * el-table 的 `data` prop 是 `Record<PropertyKey, any>[]`（element-plus 2.13+），
+ * 未约束的泛型 `T[]` 过不了类型检查。这个错只在 `src/components.d.ts` 存在时暴露，
+ * 而该文件由 vite dev/build 生成——CI 先 type-check 后 build，所以一直没拦到。
+ * 单元格取值全部走 field() / 插槽（不依赖 el-table 的行类型），这里显式放宽即可。
+ */
+const tableRows = computed(() => props.rows as any[])
+
 const titleColumn = computed(
   () => props.columns.find((c) => c.mobile === 'title') ?? props.columns[0],
 )
@@ -99,7 +107,7 @@ function onRowClick(row: T) {
   <el-table
     v-if="!isPhone"
     v-loading="loading"
-    :data="rows"
+    :data="tableRows"
     :row-key="rowKey"
     :class="{ 'is-clickable': clickable }"
     @row-click="onRowClick"

@@ -12,7 +12,7 @@
  * 策略落在 SystemConfig 里，EM 与 EA 共用同一个库 → 面板上改完，出流的 EA 立刻生效。
  * 判定口径：**管理员不受限**（排障时不能被自己的策略挡住）；所有开关缺省 = 与升级前一致。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   AlertTriangle, Cloud, Download, Gauge, HardDrive, Info, RefreshCw, Save, ShieldBan, Smartphone, Trash2, Tv,
@@ -60,8 +60,13 @@ const cdnConfig = ref<CdnConfig>({
 /** 服务端注册的线路清单（direct / cdn / relay）——展示用，不在这里改 */
 const cdnPlayLines = ref<string[]>([])
 
-/** VPS 本地缓存（播放线路「本地缓存」）：默认关闭，开启后热门片自动拉到本机 */
-const localCache = ref<LocalCacheConfig>({
+/**
+ * VPS 本地缓存（播放线路「本地缓存」）：默认关闭，开启后热门片自动拉到本机。
+ *
+ * 用 `reactive` 而不是 `ref`：这一整个对象都是表单字段，模板里到处是 `localCache.xxx` 的
+ * v-model 与回显，`reactive` 的对象语义最直白，也不依赖 ref 在模板里的解包行为。
+ */
+const localCache = reactive<LocalCacheConfig>({
   enabled: false, dir: '', default_dir: '', max_gb: 500, max_bytes: 0,
   hot_days: 7, hot_plays: 3, rate_mbps: 20, busy_rate_mbps: 2, play_line: 'cache',
   max_attempts: 3, active_playback_window_sec: 300,
@@ -108,7 +113,8 @@ async function load() {
       cdnPlayLines.value = c.play_lines
     }
     if (lc) {
-      localCache.value = lc.local_cache
+      // Object.assign 而不是整体替换：reactive 对象保持同一个引用，模板绑定不会断
+      Object.assign(localCache, lc.local_cache)
       cacheStats.value = lc.stats
       cacheEntries.value = lc.entries
     }
@@ -174,20 +180,34 @@ const blockedCount = computed(
 )
 const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_seconds ?? 0))
 
+/**
+ * 数字框写回兜底：el-input-number 自身会钳制，这里再做一次「取整 + 范围」写回，
+ * 保证提交的永远是合法整数；清空 / 非法输入回落到下限，不会把 undefined 留在表单里。
+ */
+function clampCacheNumber(
+  field: 'max_gb' | 'hot_days' | 'hot_plays' | 'rate_mbps',
+  lo: number,
+  hi: number,
+  raw: unknown,
+) {
+  const num = Math.trunc(Number(raw))
+  localCache[field] = Number.isFinite(num) ? Math.min(hi, Math.max(lo, num)) : lo
+}
+
 async function saveLocalCache() {
   savingCache.value = true
   try {
     const res = await updateLocalCacheConfig({
-      enabled: localCache.value.enabled,
-      dir: localCache.value.dir,
-      max_gb: Number(localCache.value.max_gb) || 0,
-      hot_days: Number(localCache.value.hot_days) || 1,
-      hot_plays: Number(localCache.value.hot_plays) || 1,
-      rate_mbps: Number(localCache.value.rate_mbps) || 0,
+      enabled: localCache.enabled,
+      dir: localCache.dir,
+      max_gb: Number(localCache.max_gb) || 0,
+      hot_days: Number(localCache.hot_days) || 1,
+      hot_plays: Number(localCache.hot_plays) || 1,
+      rate_mbps: Number(localCache.rate_mbps) || 0,
     })
-    localCache.value = res.local_cache
+    Object.assign(localCache, res.local_cache)
     cacheStats.value = res.stats
-    ElMessage.success(localCache.value.enabled
+    ElMessage.success(localCache.enabled
       ? '本地缓存已启用：热门片会限速拉到本机，用户侧新增「本地缓存」线路'
       : '本地缓存配置已保存（未启用，播放行为与升级前一致）')
   } catch (e) {
@@ -472,6 +492,7 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
           v-model="localCache.max_gb"
           :min="0" :max="100000" :step="50"
           :disabled="!isSuper"
+          @change="clampCacheNumber('max_gb', 0, 100000, $event)"
         />
       </div>
 
@@ -480,10 +501,24 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
           <label>热门判定规则</label>
           <p class="field-hint">近 N 天内播放达到 M 次的片子自动入队下载（按播放次数从多到少排队）。</p>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px">
-          <el-input-number v-model="localCache.hot_days" :min="1" :max="90" :disabled="!isSuper" />
+        <!--
+          两个数字框放在 .num-pair 里：桌面并排；窄屏（响应式层会把 .el-input-number 拉成 100%）
+          允许换行、并保留可读宽度——之前挤在一行里时数字会被两侧按钮盖住、看着像空框。
+        -->
+        <div class="num-pair">
+          <el-input-number
+            v-model="localCache.hot_days"
+            :min="1" :max="90" :step="1"
+            :disabled="!isSuper"
+            @change="clampCacheNumber('hot_days', 1, 90, $event)"
+          />
           <span class="badge-hint">天内 ≥</span>
-          <el-input-number v-model="localCache.hot_plays" :min="1" :max="1000" :disabled="!isSuper" />
+          <el-input-number
+            v-model="localCache.hot_plays"
+            :min="1" :max="1000" :step="1"
+            :disabled="!isSuper"
+            @change="clampCacheNumber('hot_plays', 1, 1000, $event)"
+          />
           <span class="badge-hint">次</span>
         </div>
       </div>
@@ -500,6 +535,7 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
           v-model="localCache.rate_mbps"
           :min="0" :max="10000" :step="5"
           :disabled="!isSuper"
+          @change="clampCacheNumber('rate_mbps', 0, 10000, $event)"
         />
       </div>
 
@@ -696,6 +732,24 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
 .field-hint { margin: 4px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.6; }
 .num-input { width: 120px; }
 .cdn-input { width: 260px; }
+
+/* 热门判定规则的两个数字框：并排时不被压扁，窄屏允许换行 */
+.num-pair { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.num-pair .el-input-number { flex: none; }
+
+@media (max-width: 640px) {
+  /*
+    窄屏下响应式层会把 .el-input-number 统一拉成 100%：两个数字框挤在同一行里会
+    互相抢宽度，数字被两侧的加减按钮盖住（看着像空框、点了也“没反应”）。
+    这里让它们各占一行、并保证一个可读的最小宽度。
+  */
+  .admin-card .num-pair { width: 100%; }
+  .admin-card .num-pair .el-input-number {
+    flex: 1 1 120px;
+    width: auto !important;
+    min-width: 112px;
+  }
+}
 .cache-list {
   display: flex;
   flex-direction: column;

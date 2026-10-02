@@ -304,6 +304,11 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
          "本地缓存下载限速（MB/s，0=不限；播放中自动降到 2MB/s）"),
     ])
 
+    # 7.7 求片中心：每日额度（规则与默认值都在 backend/media_seek.py）
+    from backend import media_seek
+    items.append((media_seek.CONFIG_DAILY_LIMIT, str(media_seek.DEFAULT_DAILY_LIMIT),
+                  "用户每日求片上限（超过当天不能再提交）"))
+
     # 8. 公益服查看权限价格
     from backend.emby_server import portal
     items.extend([

@@ -803,6 +803,22 @@ class TmdbClient:
                     best = (sc[0], sc[1], hit)
         return best[2] if best else None
 
+    def search_candidates(self, name: str, kind: str, limit: int = 6) -> list[dict]:
+        """原始候选搜索（求片中心用）：不做置信度裁剪，用户自己认片
+
+        刮削要的是「唯一正确答案」（``search()`` 会按置信度裁剪、宁缺毋滥），
+        而求片要的是「一组候选」：用户搜什么就列什么，选哪部由他决定。
+        同样走两级缓存与请求限流，失败返回空表（不让一次网络抖动把用户的搜索框打成报错）。
+        """
+        query = _clean_query(name) or (name or "").strip()
+        if not query:
+            return []
+        try:
+            results = self._search_raw(query, None, kind)
+        except Exception:  # noqa: BLE001 — 与 search() 同口径：单个查询失败不当成致命错误
+            return []
+        return [hit for hit in list(results or [])[:limit] if isinstance(hit, dict)]
+
     def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
         """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用。
 

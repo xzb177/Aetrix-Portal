@@ -32,7 +32,8 @@ from sqlalchemy.orm import Session
 
 from backend import models
 from backend.database import get_db
-from backend.api.user import get_current_user, _seek_daily_limit, WITHDRAWN_STATUS
+from backend.api.user import get_current_user
+from backend.media_seek import WITHDRAWN_STATUS, season_label
 from backend.emby_server import models as em
 from backend.emby_server.api import TICKS
 
@@ -218,19 +219,16 @@ def _media_seek(db: Session, user: models.WebUser) -> dict:
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    used = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == user.id,
-        models.MovieRequest.created_at >= today_start,
-    ).count()
-    limit = _seek_daily_limit(db)
-
     return {
         "requests": [
             {
                 "id": r.id, "movie_name": r.movie_name, "year": r.year,
                 "type": r.type, "note": r.note, "status": r.status,
                 "admin_note": r.admin_note,
+                # 首页只需要列表与额度；字段口径与 GET /user/media-seek 一致
+                "season": r.season,
+                "season_label": season_label(r.season),
+                "emby_item_id": r.emby_item_id,
                 "realm_id": r.realm_id,
                 "realm_name": realm_names.get(r.realm_id, "") if r.realm_id else "",
                 "created_at": r.created_at.isoformat(),

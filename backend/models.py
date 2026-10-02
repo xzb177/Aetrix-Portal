@@ -1057,6 +1057,10 @@ class MovieRequest(Base):
     movie_name = Column(String(255), nullable=False)
     year = Column(String(10))
     type = Column(String(50))
+    # TMDB 候选带过来的 id：管理端「标记已入库」按它精确匹配（手填片名时为空）
+    tmdb_id = Column(String(20))
+    # 剧集按整季申请：存 "1,2" 或 "all"（全季）；电影/其它类型为空
+    season = Column(String(50))
     note = Column(Text)
     status = Column(String(20), default='pending')
     admin_note = Column(Text)

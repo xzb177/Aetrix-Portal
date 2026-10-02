@@ -266,6 +266,18 @@ export const updateMediaSeek = (id: number, data: { status: string; admin_note?:
   put<{ success: boolean }>(`/media-seek/${id}`, data)
 
 /**
+ * 入库后标记已入库：后端会先确认片真的在媒体库里（按 tmdb_id / 片名匹配），
+ * 匹配不到返回 409；`force=true` 是人工兜底（片改了名入库时用）。
+ */
+export const markMediaSeekInLibrary = (id: number, force = false) =>
+  post<{ success: boolean; matched: boolean; emby_item_id?: string | null; message: string }>(
+    `/media-seek/${id}/mark-in-library`,
+    { force },
+    // silent：409（库里没找到）要由视图弹确认框，不能先弹一条红色错误
+    { silent: true },
+  )
+
+/**
  * 把求片交给外部服务：MoviePilot（提交订阅）或 qBittorrent（加种）。
  * qB 自己不会去找片子，所以选它时必须带链接（磁力或 .torrent 地址）。
  */
