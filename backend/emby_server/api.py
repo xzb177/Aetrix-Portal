@@ -1262,16 +1262,7 @@ def _library_cover_abs(cover_path: str | None) -> str | None:
     if _os.path.isabs(cover_path):
         return cover_path
     from backend.emby_server import image_store as _is
-    try:
-        abs_path = _is.local_path(cover_path)
-    except Exception:
-        abs_path = None
-    if not abs_path:
-        try:
-            abs_path = _os.path.abspath(_os.path.join(_is.image_dir(), cover_path))
-        except Exception:
-            return None
-    return abs_path
+    return _os.path.abspath(_os.path.join(_is.image_dir(), cover_path))
 
 
 def _library_cover_tag(cover_path: str | None) -> str:

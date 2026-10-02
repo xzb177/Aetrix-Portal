@@ -179,14 +179,8 @@ def item_image(item_id: str, image_type: str, request: Request,
         cover_rel = getattr(lib, "cover_path", None) if lib is not None else None
         if cover_rel:
             import os as _os
-            abs_path = cover_rel
-            if not _os.path.isabs(abs_path):
-                try:
-                    abs_path = image_store.local_path(cover_rel)
-                except Exception:
-                    abs_path = None
-                if not abs_path:
-                    abs_path = _os.path.abspath(_os.path.join(image_store.image_dir(), cover_rel))
+            abs_path = cover_rel if _os.path.isabs(cover_rel) else _os.path.abspath(
+                _os.path.join(image_store.image_dir(), cover_rel))
             if abs_path and _os.path.isfile(abs_path):
                 return _serve_sized(abs_path, ew, eh)
             raise HTTPException(status_code=404, detail="Image not found")

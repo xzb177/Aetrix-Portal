@@ -68,10 +68,8 @@ def _write_generated_cover(lib: em.Library, data: bytes) -> str:
     封面和上传的封面在客户端侧是同一个 URL，切换时不用清缓存逻辑。
     """
     relative = os.path.join("library-covers", f"{lib.guid}.webp")
-    target = image_store.local_path(relative)
-    if not target:
-        image_dir = image_store.image_dir()
-        target = os.path.abspath(os.path.join(image_dir, relative))
+    # 注意：image_store.local_path() 是给远程 URL 做内容哈希的，不能解析本地相对路径
+    target = os.path.abspath(os.path.join(image_store.image_dir(), relative))
     os.makedirs(os.path.dirname(target), exist_ok=True)
     temporary = f"{target}.{os.getpid()}.rendering"
     try:
