@@ -9,9 +9,13 @@
  *
  * v2.6.20：多服 / 多机部署——每个库都能指定「归属服」与「归属播放节点」（未指定 = 所有服、
  * 所有节点可见，由面板扫描）；已分配的库只有那台 EA 向客户端展示、也只有它会扫描。
+ *
+ * v2.42.9：**本页不再承担跳板职责**。「元数据与刮削」卡片里的 TMDB 密钥填写框、
+ * 「去存储来源页管理」与「去元数据来源页」两个跳转按钮、以及文内的链接全部移除：
+ * 密钥只在「元数据来源」页填（单一入口），本页只保留 TMDB 状态读数与按库的扫描配置。
+ * 侧边栏已经是这两个页面的入口，页内再堆按钮只会让人以为「这里管不了，得去别处」。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
@@ -44,13 +48,11 @@ import {
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
-  saveTmdbKeys,
-  testTmdbKeys,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbTestResult } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -798,11 +800,8 @@ async function saveAutoScanAction() {
   }
 }
 
+/** TMDB 密钥只读状态：密钥在「元数据来源」页填写，本页只回答「配了没」 */
 const tmdbStatus = ref<TmdbKeysStatus | null>(null)
-const tmdbKeysInput = ref('')
-const tmdbSaving = ref(false)
-const tmdbTesting = ref(false)
-const tmdbTestResults = ref<TmdbTestResult[]>([])
 const rescrapeVisible = ref(false)
 const rescrapeTarget = ref<EmbyLibrary | null>(null)
 const rescrapePolicy = ref<'missing_only' | 'all'>('missing_only')
@@ -819,37 +818,6 @@ async function loadTmdbStatus() {
     tmdbStatus.value = await fetchTmdbKeys()
   } catch {
     tmdbStatus.value = null // 出错不挡页面其它内容
-  }
-}
-
-async function saveTmdbKeysAction() {
-  if (!tmdbKeysInput.value.trim()) {
-    ElMessage.warning('请先填写 Key')
-    return
-  }
-  tmdbSaving.value = true
-  try {
-    const res = await saveTmdbKeys(tmdbKeysInput.value)
-    tmdbKeysInput.value = ''
-    tmdbTestResults.value = []
-    ElMessage.success(`已保存 ${res.saved} 个 Key，${res.source === 'env' ? '当前生效的仍是环境变量' : '已立即生效'}`)
-    await loadTmdbStatus()
-  } finally {
-    tmdbSaving.value = false
-  }
-}
-
-async function testTmdbKeysAction() {
-  tmdbTesting.value = true
-  try {
-    // 输入框有内容就测候选 key，否则测当前生效的 key
-    const res = await testTmdbKeys(tmdbKeysInput.value.trim() || undefined)
-    tmdbTestResults.value = res.results
-    const ok = res.results.filter((r) => r.ok).length
-    if (ok === res.results.length && res.results.length) ElMessage.success('全部 Key 有效')
-    else if (!res.results.length) ElMessage.warning('没有可测试的 Key')
-  } finally {
-    tmdbTesting.value = false
   }
 }
 
@@ -1352,7 +1320,7 @@ function typeLabel(t: string): string {
       </div>
     </div>
 
-    <!-- 元数据与刮削：TMDB Key 填写与手动刮削收拢在这里（不放在通用系统设置页） -->
+    <!-- 元数据与刮削：按库的扫描 / 定时 / 追新收在这里（密钥不在本页填，见页面末尾的说明） -->
     <div class="admin-card scrape-card">
       <div class="card-header">
         <h2>元数据与刮削</h2>
@@ -1363,40 +1331,6 @@ function typeLabel(t: string): string {
         </div>
       </div>
       <div class="scrape-grid">
-        <div class="scrape-block">
-          <h3>TMDB API Keys</h3>
-          <p class="drawer-hint">
-            每行一个，也可用逗号分隔；多个 key 在 401 / 429 时自动轮询。
-            保存后立即生效，无需重启。<span
-              v-if="tmdbStatus?.env_present"
-              class="text-danger"
-            >环境变量里已配置 TMDB Key，后台填写暂不生效（环境变量优先）。</span>
-          </p>
-          <el-input
-            v-model="tmdbKeysInput"
-            type="textarea"
-            :rows="3"
-            placeholder="粘贴 TMDB API Key，每行一个或用逗号分隔"
-          />
-          <div class="scrape-actions">
-            <el-button type="primary" size="small" :loading="tmdbSaving" @click="saveTmdbKeysAction">
-              保存
-            </el-button>
-            <el-button size="small" :loading="tmdbTesting" @click="testTmdbKeysAction">
-              测试连接
-            </el-button>
-            <span v-if="tmdbStatus && tmdbStatus.masked.length" class="mono scrape-masked">
-              已配置 {{ tmdbStatus.count }} 个（{{ tmdbStatus.masked.join(' · ') }}）
-            </span>
-          </div>
-          <div v-if="tmdbTestResults.length" class="scrape-results">
-            <div v-for="r in tmdbTestResults" :key="r.index" class="scrape-result">
-              <span class="mini-badge" :class="r.ok ? 'ok' : 'danger'">{{ r.ok ? '有效' : '失败' }}</span>
-              <span class="mono">{{ r.masked }}</span>
-              <span>{{ r.message }}</span>
-            </div>
-          </div>
-        </div>
         <div class="scrape-block">
           <h3>定时扫描</h3>
           <p class="drawer-hint">
@@ -1452,26 +1386,18 @@ function typeLabel(t: string): string {
           </div>
         </div>
         <div class="scrape-block">
-          <h3>云盘挂载</h3>
+          <h3>本页之外的三处</h3>
           <p class="drawer-hint">
-            rclone remote 与服务账号统一在「存储来源」页管理。
+            <strong>TMDB 密钥</strong>（多把轮换、逐把测试、失效自动冷却）在「元数据来源」页填，
+            本页只显示当前配了几把，不做第二个填写入口——同一把钥匙只该有一个地方能改。
           </p>
-          <div class="scrape-actions">
-            <RouterLink to="/mounts"><el-button size="small" type="primary">去存储来源页管理</el-button></RouterLink>
-          </div>
-        </div>
-        <div class="scrape-block">
-          <h3>条目级元数据</h3>
           <p class="drawer-hint">
-            条目元数据刷新、手动绑定 TMDB、补全进度已经移到
-            <RouterLink to="/metadata-sources">「元数据来源」</RouterLink>页：
-            它们回答的是「这一条的元数据从哪来、错了怎么纠」，与按库的扫描 / 刮削策略不是一层。
+            <strong>rclone remote 与服务账号</strong>在「存储来源」页配置。
           </p>
-          <div class="scrape-actions">
-            <RouterLink to="/metadata-sources">
-              <el-button size="small" type="primary">去元数据来源页</el-button>
-            </RouterLink>
-          </div>
+          <p class="drawer-hint">
+            <strong>条目这一层的元数据</strong>（重刮单条、手动绑定 TMDB、补全进度）
+            在「元数据来源」页管理。
+          </p>
         </div>
       </div>
     </div>
@@ -2134,9 +2060,6 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 .scrape-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .scrape-block h3 { margin: 0 0 8px; font-size: var(--font-size-sm); font-weight: 600; }
 .scrape-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.scrape-masked { font-size: var(--font-size-xs); color: var(--text-tertiary); }
-.scrape-results { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
-.scrape-result { display: flex; align-items: center; gap: 8px; font-size: var(--font-size-xs); }
 @media (max-width: 900px) { .scrape-grid { grid-template-columns: 1fr; } }
 
 /* 最近一次扫描结果：摘要一行 +（失败时）原因一行 */
