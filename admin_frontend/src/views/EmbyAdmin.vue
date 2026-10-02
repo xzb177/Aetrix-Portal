@@ -10,7 +10,7 @@
  * v2.6.20：多服 / 多机部署——每个库都能指定「归属服」与「归属播放节点」（未指定 = 所有服、
  * 所有节点可见，由面板扫描）；已分配的库只有那台 EA 向客户端展示、也只有它会扫描。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
@@ -85,8 +85,7 @@ const coverUrls = ref<Record<number, string>>({})
 const coverUploading = ref<Record<number, boolean>>({})
 let coverLoadVersion = 0
 
-const settingsVisible = ref(false)
-const settingsTarget = ref<EmbyLibrary | null>(null)
+// 媒体库配置表单的可见性与状态统一在下面的「单页分组表单」一节里（新建 / 编辑共用）
 
 // 扫描流水（最近若干轮）：抽屉里看「是不是每轮都在失败」
 const scanDrawer = ref(false)
@@ -115,60 +114,393 @@ function nodeLabel(n: RemoteServerRow): string {
   return `${n.name}（${state}）`
 }
 
-const createVisible = ref(false)
+// ==================== 媒体库配置：新建与编辑共用一张分组表单 ====================
+// 借鉴 Emby Manager：一个媒体库的全部配置在一张单页表单里改完（分组 + 每项一句人话
+// 说明 + 推荐项标注），而不是「新建一个弹窗 + 设置一个抽屉」两处各改一半：以前
+// 路径在设置里只能看不能改、启用状态和追新监听根本没入口。
+// 表单状态只有这一份，所以「浏览」的追加 / 去重口径两边完全一致。
+
+interface LibFormState {
+  /** null = 新建 */
+  id: number | null
+  name: string
+  collection_type: string
+  is_enabled: boolean
+  realm_id: number | null
+  node_id: number | null
+  mount_ids: number[]
+  scrape_policy: string
+  account_115_id: number | null
+  /** 媒体路径：一行一个（也容忍逗号分隔，与后端同一套拆分口径） */
+  paths: string
+  /** 是否纳入「追新」轮询监听（仅编辑可用；追新本身是全局开关） */
+  chase: boolean
+}
+
+function emptyLibForm(): LibFormState {
+  return {
+    id: null,
+    name: '',
+    collection_type: 'movies',
+    is_enabled: true,
+    realm_id: null,
+    node_id: null,
+    mount_ids: [],
+    scrape_policy: 'missing_only',
+    account_115_id: null,
+    paths: '',
+    chase: false,
+  }
+}
+
+const libForm = reactive<LibFormState>(emptyLibForm())
+const libFormVisible = ref(false)
+const libFormSaving = ref(false)
+/** 追新监听是即时保存的（另一个接口），单独一个 loading，不跟表单保存共用 */
+const chaseLibSaving = ref(false)
+/** 编辑中的库对象（封面操作要用）；新建时为 null */
+const libFormTarget = ref<EmbyLibrary | null>(null)
+/** 打开时的表单指纹：算「有没有改动」+ 还原用（存指纹而不是对象引用） */
+const libFormFingerprintAtOpen = ref('')
+
+interface LibOption { value: string; label: string; hint: string; recommended?: boolean }
+
+/** 内容类型：每一项都写清「选了会发生什么」 */
+const COLLECTION_TYPES: LibOption[] = [
+  { value: 'movies', label: '电影', hint: '一个文件一部片：客户端只给「播放」，没有季 / 集' },
+  { value: 'tvshows', label: '剧集', hint: '按「剧名/季/集」目录组织：客户端能选季选集，刮削按剧集算' },
+  { value: 'music', label: '音乐', hint: '按「歌手/专辑」组织，刮削走音乐元数据（TMDB 音乐条目少）' },
+  { value: 'mixed', label: '混合', hint: '电影剧集放一起：能扫进来，但客户端分不出季集，只适合临时合并' },
+]
+
+/** 刮削策略：决定一轮扫描要不要回头重刮「已经刮过」的条目（直接影响 TMDB 配额） */
+const POLICIES: LibOption[] = [
+  { value: 'missing_only', label: '仅缺失时刮削', hint: '只补缺图 / 缺简介的条目，刮过的不再请求 TMDB —— 最省配额', recommended: true },
+  { value: '3m', label: '3 个月重刮', hint: '顺手修正三个月前刮错的信息（换主图、补 IMDb / 别名）' },
+  { value: '6m', label: '半年重刮', hint: '半年回头重刮一次；条目多时配额开销明显' },
+  { value: '1y', label: '一年重刮', hint: '一年一次大修：适合整站换源 / 换刮削源之后' },
+  { value: 'all', label: '全部重刮', hint: '每轮扫描把所有条目重刮一遍，最干净也最耗配额，别常开' },
+]
+
+function optionOf(list: LibOption[], value: string | null | undefined): LibOption | undefined {
+  return list.find((o) => o.value === value)
+}
+
+/** 下拉收起时也能看见「（推荐）」，不然推荐项藏在面板里没人知道 */
+function optionLabel(list: LibOption[], value: string | null | undefined): string {
+  const hit = optionOf(list, value)
+  return hit ? (hit.recommended ? `${hit.label}（推荐）` : hit.label) : ''
+}
+
+// ---- 媒体路径：一行一个，浏览按钮的单选 / 多选都追加到同一个框 ----
+
 // 挂载路径选择器
 const pathPicker = ref<{ open: () => void } | null>(null)
-function onPickMountPath(mountPath: string) {
-  const cur = (form.value.paths || '').trim()
-  // 已有内容则追加（换行分隔），否则直接填入
-  form.value.paths = cur ? `${cur}\n${mountPath}` : mountPath
+
+/** 路径框 → 路径数组：一行一个（兼容逗号 / 中文逗号），去重且去空 */
+function parsePaths(text: string): string[] {
+  const out: string[] = []
+  for (const raw of (text || '').split(/[,，\n]/)) {
+    const p = raw.trim()
+    if (p && !out.includes(p)) out.push(p)
+  }
+  return out
 }
+
 /**
- * 多选追加：一批目录一次性写入路径框（换行分隔，与单选同口径）。
- * 去重：与框里已有的（逗号/换行都算分隔）逐个比对，已存在就跳过；
- * 批次内部同样去重（跨层级重复勾选时只写一次）。
+ * 追加一批路径：与框里已有的逐个比对，已存在就跳过；批次内部同样去重
+ * （跨层级重复勾选时只写一次）。跳过的数量要报出来——「我勾了 5 个，怎么只加了 2 个」
+ * 是这里最容易让人以为坏了的地方。
  */
-function onPickMountPaths(mountPaths: string[]) {
-  const existing = new Set(
-    (form.value.paths || '').split(/[,，\n]/).map((p) => p.trim()).filter(Boolean),
-  )
+function appendPaths(list: string[]) {
+  const existing = parsePaths(libForm.paths)
+  const seen = new Set(existing)
   const added: string[] = []
-  for (const raw of mountPaths) {
+  let skipped = 0
+  for (const raw of list) {
     const p = (raw || '').trim()
-    if (!p || existing.has(p)) continue
-    existing.add(p)
+    if (!p) continue
+    if (seen.has(p)) {
+      skipped += 1
+      continue
+    }
+    seen.add(p)
     added.push(p)
   }
-  const skipped = mountPaths.length - added.length
   if (!added.length) {
-    ElMessage.info('所选目录都已在路径框里，没有新增')
+    ElMessage.info(`所选 ${list.length} 个目录都已在路径框里，没有新增`)
     return
   }
-  const cur = (form.value.paths || '').trim()
-  form.value.paths = cur ? `${cur}\n${added.join('\n')}` : added.join('\n')
+  libForm.paths = [...existing, ...added].join('\n')
   ElMessage.success(skipped > 0
     ? `已追加 ${added.length} 个目录（跳过 ${skipped} 个已存在）`
     : `已追加 ${added.length} 个目录`)
 }
-const form = ref({
-  name: '',
-  collection_type: 'movies',
-  paths: '',
-  mount_ids: [] as number[],
-  scrape_policy: 'missing_only',
-  // 多服 / 多机：留空 = 当前服 / 未分配节点
-  realm_id: null as number | null,
-  node_id: null as number | null,
+
+/** 单选：追加一个目录（与多选同口径，同样去重） */
+function onPickMountPath(mountPath: string) {
+  appendPaths([mountPath])
+}
+
+/** 多选：一批目录一次性写入路径框 */
+function onPickMountPaths(mountPaths: string[]) {
+  appendPaths(mountPaths)
+}
+
+// ---- 打开 / 还原 / 保存 ----
+
+/** 表单指纹：只认「规范化后」的差异（路径去空去重、挂载排序），空改空格不算改动 */
+function formFingerprint(): string {
+  return JSON.stringify({
+    name: libForm.name.trim(),
+    collection_type: libForm.collection_type,
+    is_enabled: libForm.is_enabled,
+    realm_id: libForm.realm_id,
+    node_id: libForm.node_id,
+    mount_ids: [...libForm.mount_ids].sort((a, b) => a - b),
+    scrape_policy: libForm.scrape_policy,
+    account_115_id: libForm.account_115_id,
+    paths: parsePaths(libForm.paths),
+    chase: libForm.chase,
+  })
+}
+
+const libFormDirty = computed(
+  () => libFormVisible.value && formFingerprint() !== libFormFingerprintAtOpen.value,
+)
+
+/** 路径改没改：改了就必须重新扫描一次才生效（扫描任务用配置快照，见 update_library） */
+const libFormPathsChanged = computed(() => {
+  if (!libFormDirty.value) return false
+  const before = JSON.parse(libFormFingerprintAtOpen.value || '{}')
+  return JSON.stringify(before.paths) !== JSON.stringify(parsePaths(libForm.paths))
 })
 
-/** 刮削策略：只补缺 / 到期重刮 / 每次全量 */
-const POLICIES = [
-  { value: 'missing_only', label: '仅缺失时刮削' },
-  { value: '3m', label: '3 个月重刮' },
-  { value: '6m', label: '半年重刮' },
-  { value: '1y', label: '一年重刮' },
-  { value: 'all', label: '全部重刮' },
-]
+function openCreate() {
+  libFormTarget.value = null
+  Object.assign(libForm, emptyLibForm())
+  libFormVisible.value = true
+  libFormFingerprintAtOpen.value = formFingerprint()
+}
+
+function openSettings(l: EmbyLibrary) {
+  libFormTarget.value = l
+  Object.assign(libForm, {
+    id: l.id,
+    name: l.name,
+    collection_type: l.collection_type || 'movies',
+    is_enabled: l.is_enabled !== false,
+    realm_id: l.realm_id ?? null,
+    node_id: l.node_id ?? null,
+    mount_ids: [...(l.mount_ids || [])],
+    scrape_policy: l.scrape_policy || 'missing_only',
+    account_115_id: l.account_115_id ?? null,
+    paths: (l.paths || []).join('\n'),
+    chase: chaseLibraryIds().includes(l.id),
+  })
+  libFormVisible.value = true
+  libFormFingerprintAtOpen.value = formFingerprint()
+}
+
+/** 还原：回到打开时的样子（追新监听是即时保存的，不在这份还原范围内） */
+function revertForm() {
+  if (libFormTarget.value) openSettings(libFormTarget.value)
+  else openCreate()
+  ElMessage.info('已还原为打开时的配置')
+}
+
+/** 抽屉里还有没保存的改动时拦一下：关抽屉不等于想丢掉刚才填的 */
+function beforeCloseForm(done: () => void) {
+  if (!libFormDirty.value) {
+    done()
+    return
+  }
+  ElMessageBox.confirm('表单里有还没保存的改动，放弃吗？', '放弃改动', {
+    type: 'warning',
+    confirmButtonText: '放弃改动',
+    cancelButtonText: '继续编辑',
+  }).then(() => done()).catch(() => undefined)
+}
+
+/** 「取消」按钮走同一条拦截（直接改 v-model 不会触发 before-close） */
+function cancelForm() {
+  beforeCloseForm(() => {
+    libFormVisible.value = false
+    libFormTarget.value = null
+  })
+}
+
+/** 追新开关：即时代理到全局清单，失败弹回原状态（toggleChase 里处理） */
+function onChaseSwitch(v: unknown) {
+  toggleChase(!!v)
+}
+
+/**
+ * 保存：新建走 POST、编辑走 PUT（同一个鉴权接口，一次提交全部字段）。
+ * 路径类改动后端会回 rescan_required —— 扫描任务用的是配置快照，不重扫就还是老路径。
+ */
+async function saveForm(thenScan = false) {
+  const editingId = libForm.id
+  const name = libForm.name.trim()
+  const paths = parsePaths(libForm.paths)
+  const virtual = !!libFormTarget.value?.is_virtual
+  if (!name) {
+    ElMessage.warning('请填写媒体库名称')
+    return
+  }
+  if (!virtual && !paths.length && !libForm.mount_ids.length) {
+    ElMessage.warning('请至少配置一个媒体路径或一个存储挂载，否则扫不到任何内容')
+    return
+  }
+  libFormSaving.value = true
+  try {
+    let savedId: number | null = null
+    if (editingId == null) {
+      const res = await createLibrary({
+        name,
+        collection_type: libForm.collection_type,
+        paths,
+        mount_ids: libForm.mount_ids,
+        scrape_policy: libForm.scrape_policy,
+        account_115_id: libForm.account_115_id ?? undefined,
+        realm_id: libForm.realm_id ?? undefined,
+        node_id: libForm.node_id ?? undefined,
+      })
+      savedId = res.id
+      const hasSource = paths.length > 0 || libForm.mount_ids.length > 0
+      ElMessage.success(`媒体库「${name}」已创建${hasSource ? '，可以扫一次了' : ''}`)
+    } else {
+      // 虚拟库没有自己的目录与挂载（也不归属某台节点），这几个字段干脆不传：
+      // 传空数组等于「清空来源」，没必要为看不出来的库担这个风险
+      const res = await updateLibrary(editingId, {
+        name,
+        collection_type: libForm.collection_type,
+        is_enabled: libForm.is_enabled,
+        scrape_policy: libForm.scrape_policy,
+        // 传 null 表示解绑（回退默认账号）；省略会被 axios 丢掉，等于不改
+        account_115_id: libForm.account_115_id ?? null,
+        realm_id: libForm.realm_id ?? null,
+        ...(virtual
+          ? {}
+          : { paths, mount_ids: libForm.mount_ids, node_id: libForm.node_id ?? null }),
+      })
+      savedId = editingId
+      ElMessage.success(res?.rescan_required
+        ? `「${name}」配置已保存（路径 / 归属类改动要重新扫描后才对扫描生效）`
+        : `「${name}」配置已保存`)
+    }
+    libFormVisible.value = false
+    libFormTarget.value = null
+    await load()
+    if (thenScan && savedId != null) {
+      const target = libraries.value.find((x) => x.id === savedId)
+      if (target) await scan(target)
+    }
+  } catch {
+    // 失败提示由全局拦截器给出（带着后端的 detail，如「目录不存在或不可读」）；
+    // 这里不重复弹，表单内容原样留着让管理员改完再存
+  } finally {
+    libFormSaving.value = false
+  }
+}
+
+// ---- 目录变更监听（追新）：全局开关 + 每库一个「纳不纳入」 ----
+
+/** 追新监听的库 id 列表。空串 = 全部启用库（后端 change_watcher._check_once 的口径） */
+function chaseLibraryIds(): number[] {
+  return (chaseNew.value?.libraries || '')
+    .split(/[,，\n]/)
+    .map((x) => Number(x.trim()))
+    .filter((x) => Number.isInteger(x) && x > 0)
+}
+
+/** 清单为空 = 「所有启用库都监听」，此时单个库的开关没有意义（关掉自己 = 还是全选） */
+function chaseCoversAll(): boolean {
+  return !!chaseNew.value && !chaseNew.value.libraries.trim()
+}
+
+/** 把当前库挪进 / 挪出追新清单（改的是全局配置里的一行，保存即生效） */
+async function toggleChase(on: boolean) {
+  const cfg = chaseNew.value
+  if (!cfg || libForm.id == null) return
+  const ids = new Set(chaseLibraryIds())
+  if (on) ids.add(libForm.id)
+  else ids.delete(libForm.id)
+  if (!ids.size) {
+    ElMessage.warning('追新清单不能全空：清空代表「所有启用库都监听」。要只排除某几个库，先在别的库上打开它。')
+    return
+  }
+  chaseLibSaving.value = true
+  try {
+    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','))
+    chaseNew.value = {
+      enabled: res.enabled,
+      interval: res.interval,
+      libraries: res.libraries,
+      last_check: res.last_check,
+      last_found: res.last_found,
+    }
+    libForm.chase = on
+    // 追新是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
+    // 其余字段的改动状态要原样留着
+    const before = JSON.parse(libFormFingerprintAtOpen.value || '{}')
+    before.chase = on
+    libFormFingerprintAtOpen.value = JSON.stringify(before)
+    ElMessage.success(on
+      ? `已纳入追新监听（每 ${res.interval} 分钟检查一次新文件）`
+      : '已移出追新监听')
+  } catch {
+    // 拦截器已提示；开关弹回去，别留一个「看起来生效了」的假状态
+    libForm.chase = !on
+  } finally {
+    chaseLibSaving.value = false
+  }
+}
+
+// ---- 卡片上的一句话策略摘要（不用点进设置就知道这个库怎么跑的） ----
+
+function policyLabel(value: string | null | undefined): string {
+  return optionOf(POLICIES, value)?.label || '仅缺失时刮削'
+}
+
+/** 这个库在不在追新轮询里；不在也要说清是「追新没开」还是「就它没参与」 */
+function chaseFact(l: EmbyLibrary): string {
+  const cfg = chaseNew.value
+  // 配置没读到时不能说「追新关」——那是在编一个结论
+  if (!cfg) return '追新状态未知'
+  if (!cfg.enabled) return '追新关'
+  const covered = chaseCoversAll() || chaseLibraryIds().includes(l.id)
+  return covered ? `追新每 ${cfg.interval} 分钟` : '不参与追新'
+}
+
+function libSummary(l: EmbyLibrary): string {
+  if (l.is_virtual) return `虚拟库 · ${l.platform || '按平台聚合'} · 刮削 ${policyLabel(l.scrape_policy)}`
+  const total = l.paths?.length || 0
+  const pathBit = total
+    ? `${total} 个路径${l.paths[0] ? `（${l.paths[0]}）` : ''}`
+    : (l.mount_ids?.length ? '无本机路径 · 走挂载' : '未配路径')
+  return [pathBit, chaseFact(l), `刮削 ${policyLabel(l.scrape_policy)}`].join(' · ')
+}
+
+/** 摘要的悬停全文：路径逐条列全（卡片上只留一行，看全靠悬停） */
+function libSummaryTitle(l: EmbyLibrary): string {
+  const lines: string[] = []
+  if (l.is_virtual) {
+    lines.push(`虚拟库：按发行平台「${l.platform || '—'}」聚合，没有自己的目录`)
+  } else if (l.paths?.length) {
+    lines.push(`媒体路径（${l.paths.length}）：`)
+    lines.push(...l.paths.map((p) => `· ${p}`))
+  } else {
+    lines.push('媒体路径：未配置本机路径')
+  }
+  if (l.mount_ids?.length) {
+    lines.push(`存储挂载：${l.mount_ids.map((id) => mounts.value.find((m) => m.id === id)?.name || `#${id}`).join('、')}`)
+  }
+  lines.push(`追新监听：${chaseFact(l)}`)
+  lines.push(`刮削策略：${policyLabel(l.scrape_policy)}`)
+  return lines.join('\n')
+}
+
 
 async function load() {
   loading.value = true
@@ -269,45 +601,6 @@ async function removeCover(l: EmbyLibrary) {
   ElMessage.success('媒体库封面已移除')
 }
 
-function openSettings(l: EmbyLibrary) {
-  settingsTarget.value = l
-  settingsVisible.value = true
-}
-
-async function savePolicy(l: EmbyLibrary) {
-  await updateLibrary(l.id, { scrape_policy: l.scrape_policy })
-  ElMessage.success(`「${l.name}」刮削策略已保存（下次扫描生效）`)
-}
-
-async function saveAccount115(l: EmbyLibrary) {
-  // 传 null 表示解绑（回退默认账号）；undefined 会被 axios 丢掉，等于不改
-  await updateLibrary(l.id, { account_115_id: l.account_115_id ?? null })
-  ElMessage.success(`「${l.name}」115 账号绑定已更新`)
-}
-
-/** 绑定 / 解绑存储挂载（扫描时与「路径」一起遍历） */
-async function saveMounts(l: EmbyLibrary) {
-  await updateLibrary(l.id, { mount_ids: l.mount_ids ?? [] })
-  ElMessage.success(`「${l.name}」挂载绑定已更新（重新扫描后生效）`)
-}
-
-/** 归属节点：决定了「谁向客户端展示这个库、谁来扫描它」 */
-async function saveNode(l: EmbyLibrary) {
-  await updateLibrary(l.id, { node_id: l.node_id ?? null })
-  const node = nodes.value.find((n) => n.id === l.node_id)
-  ElMessage.success(node
-    ? `「${l.name}」改由「${node.name}」负责（那台机器看不到这个库的条目时检查它的存储）`
-    : `「${l.name}」已改为未分配：所有节点可见、由面板扫描`)
-  load()
-}
-
-/** 归属服：内容隔离的边界，跨服移动等于把内容交给另一个服 */
-async function saveRealm(l: EmbyLibrary) {
-  await updateLibrary(l.id, { realm_id: l.realm_id ?? null })
-  ElMessage.success(`「${l.name}」归属服已更新`)
-  load()
-}
-
 async function generateVirtual() {
   virtualLoading.value = true
   try {
@@ -328,30 +621,6 @@ async function repairNow() {
   ElMessage.success(`已把 ${res.libraries.length} 个库加入扫描队列${merged ? `（另 ${merged} 个已在队列中，已合并）` : ''}`)
   await pollQueue()
   setTimeout(load, 2000)
-}
-
-async function submitCreate() {
-  const paths = form.value.paths.split(/[,，\n]/).map((p) => p.trim()).filter(Boolean)
-  if (!form.value.name.trim() || (!paths.length && !form.value.mount_ids.length)) {
-    ElMessage.warning('请填写库名称，并至少配置一个路径或一个存储挂载')
-    return
-  }
-  await createLibrary({
-    name: form.value.name,
-    collection_type: form.value.collection_type,
-    paths,
-    mount_ids: form.value.mount_ids,
-    scrape_policy: form.value.scrape_policy,
-    realm_id: form.value.realm_id ?? undefined,
-    node_id: form.value.node_id ?? undefined,
-  })
-  ElMessage.success('媒体库已创建')
-  createVisible.value = false
-  form.value = {
-    name: '', collection_type: 'movies', paths: '', mount_ids: [], scrape_policy: 'missing_only',
-    realm_id: null, node_id: null,
-  }
-  load()
 }
 
 async function scan(l: EmbyLibrary) {
@@ -652,9 +921,9 @@ async function removeLib(l: EmbyLibrary) {
     { type: 'warning' }
   )
   await deleteLibrary(l.id)
-  if (settingsTarget.value?.id === l.id) {
-    settingsVisible.value = false
-    settingsTarget.value = null
+  if (libFormTarget.value?.id === l.id) {
+    libFormVisible.value = false
+    libFormTarget.value = null
   }
   if (coverUrls.value[l.id]) {
     URL.revokeObjectURL(coverUrls.value[l.id])
@@ -960,7 +1229,9 @@ function typeLabel(t: string): string {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">媒体库</h1>
-        <p class="admin-page-desc">上传封面，快速识别媒体库；来源与节点设置集中到「设置」中维护</p>
+        <p class="admin-page-desc">
+          点「新建媒体库」或卡片上的「设置」打开同一张配置表单：分组改完路径、归属、刮削与追新
+        </p>
       </div>
       <div class="admin-page-actions">
         <el-button v-if="repairCount > 0" @click="repairNow">
@@ -972,7 +1243,7 @@ function typeLabel(t: string): string {
         <el-button @click="stopAll">
           <Square :size="13" style="margin-right: 4px" />停止全部转码
         </el-button>
-        <el-button type="primary" @click="createVisible = true">
+        <el-button type="primary" @click="openCreate">
           <FolderPlus :size="15" style="margin-right: 4px" />新建媒体库
         </el-button>
         <el-button :loading="loading" aria-label="刷新" @click="load">
@@ -1381,11 +1652,15 @@ function typeLabel(t: string): string {
             <span class="fact" :class="{ warn: serviceFact(l).warn }" :title="'服务：' + serviceFact(l).text">
               <Server :size="12" />{{ serviceFact(l).text }}
             </span>
+
             <span class="fact" :class="{ warn: sourceFact(l).warn }" :title="'来源：' + sourceFact(l).text">
               <HardDrive :size="12" />{{ sourceFact(l).text }}
             </span>
             <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
           </div>
+
+          <!-- 一句话策略摘要：路径 / 轮询间隔 / 刮削策略，不点进设置也知道这个库怎么跑 -->
+          <div class="lib-summary" :title="libSummaryTitle(l)">{{ libSummary(l) }}</div>
 
           <div class="lib-state">
             <span v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
@@ -1427,147 +1702,311 @@ function typeLabel(t: string): string {
       </div>
     </div>
 
-    <!-- 新建弹窗 -->
-    <el-dialog v-model="createVisible" title="新建媒体库" width="480px">
-      <el-form label-position="top">
-        <el-form-item label="名称">
-          <el-input v-model="form.name" placeholder="如：电影库 / 剧集库" />
-        </el-form-item>
-        <el-form-item label="类型">
-          <el-select v-model="form.collection_type" style="width: 100%">
-            <el-option label="电影" value="movies" />
-            <el-option label="剧集" value="tvshows" />
-            <el-option label="音乐" value="music" />
-            <el-option label="混合" value="mixed" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="刮削策略">
-          <el-select v-model="form.scrape_policy" style="width: 100%">
-            <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="路径">
-          <div class="paths-input-row">
-            <el-input
-              v-model="form.paths"
-              type="textarea"
-              :rows="3"
-              placeholder="服务器上的媒体目录，多个用逗号或换行分隔&#10;如：/media/movies&#10;挂载子目录：mount://挂载ID/子目录（如 mount://2/video/剧集/动漫剧）"
-            />
-            <el-button class="paths-browse-btn" @click="pathPicker?.open()">浏览</el-button>
-          </div>
-          <div class="form-hint">本机目录；也可以写 <code>mount://挂载ID/子目录</code> 只扫描挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）。想扫整个挂载用下面的「存储挂载」。点「浏览」可逐级选择挂载目录，可切换到「多选」一次勾选多个目录批量追加。<strong>一行一个，不要带方括号或引号</strong>（从 JSON 里粘贴时容易带上，扫描就会报「目录不存在或不可读」）。</div>
-        </el-form-item>
-        <el-form-item label="归属服">
-          <el-select v-model="form.realm_id" placeholder="留空 = 面板当前服" style="width: 100%">
-            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
-          </el-select>
-          <p class="field-help">一个服一个：只有这个服的 EA 会向客户端提供这个库。</p>
-        </el-form-item>
-        <el-form-item label="归属播放节点">
-          <el-select
-            v-model="form.node_id"
-            clearable
-            placeholder="留空 = 未分配（所有节点可见、由面板扫描）"
-            style="width: 100%"
-          >
-            <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
-          </el-select>
-          <p class="field-help">
-            如果这个库的内容只在那台机器上（本机目录 / 只在那里配了的 rclone），就把库分配给那台节点。
-          </p>
-        </el-form-item>
-        <el-form-item label="存储挂载">
-          <el-select
-            v-model="form.mount_ids"
-            multiple
-            collapse-tags
-            placeholder="不绑定（只用上面的路径）"
-            style="width: 100%"
-          >
-            <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
-          </el-select>
-          <div class="form-hint">路径与挂载可以同时用；挂载在「存储挂载」页里创建与测试。</div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitCreate">创建</el-button>
-      </template>
-    </el-dialog>
-    <MountPathPicker ref="pathPicker" @select="onPickMountPath" @select-multi="onPickMountPaths" />
-
-    <!-- 媒体库设置：从卡片移出低频配置，保持卡片可快速扫读 -->
-    <el-drawer v-model="settingsVisible" :title="`媒体库设置 · ${settingsTarget?.name || ''}`" size="430px">
-      <div v-if="settingsTarget" class="library-settings">
+    <!--
+      媒体库配置：新建与编辑共用这一张单页表单（借鉴 Emby Manager）。
+      以前这里是两个地方——「新建弹窗」管一半、「设置抽屉」管另一半，路径在设置里只能看
+      不能改、启用状态与追新监听干脆没入口。现在一张表单分组改完，每个选项都有一句
+      人话说明，推荐项直接标出来。
+    -->
+    <el-drawer
+      v-model="libFormVisible"
+      :title="libForm.id ? `媒体库设置 · ${libFormTarget?.name || ''}` : '新建媒体库'"
+      size="min(680px, 96vw)"
+      :before-close="beforeCloseForm"
+    >
+      <div class="library-settings">
+        <!-- 分组一：基础信息 -->
         <div class="settings-section">
-          <div class="settings-section-title">归属与来源</div>
-          <div class="lib-policy">
-            <span class="policy-label">归属服</span>
-            <el-select
-              v-model="settingsTarget.realm_id"
-              clearable
-              placeholder="未标注（所有服可见）"
-              @change="saveRealm(settingsTarget)"
-            >
-              <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
-            </el-select>
-          </div>
-          <div v-if="!settingsTarget.is_virtual" class="lib-policy">
-            <span class="policy-label">归属节点</span>
-            <el-select
-              v-model="settingsTarget.node_id"
-              clearable
-              placeholder="未分配（所有节点可见）"
-              @change="saveNode(settingsTarget)"
-            >
-              <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
-            </el-select>
-          </div>
-          <div v-if="!settingsTarget.is_virtual" class="lib-policy">
-            <span class="policy-label">存储来源</span>
-            <el-select
-              v-model="settingsTarget.mount_ids"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              placeholder="未绑定"
-              @change="saveMounts(settingsTarget)"
-            >
-              <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
-            </el-select>
-          </div>
-          <div class="settings-paths">
-            <span>当前路径</span>
-            <p v-if="settingsTarget.is_virtual">
-              按发行平台「{{ settingsTarget.platform || '—' }}」聚合，条目仍归属原媒体库
-            </p>
-            <p v-else>{{ settingsTarget.paths.join(' · ') || '未配置本机路径' }}</p>
+          <div class="settings-section-title">基础信息</div>
+          <p class="form-hint">
+            库叫什么、装什么内容、归谁管。「归属」两项决定了这个库的内容会不会出现在
+            别的服 / 别的机器上，是多服多机部署里最容易配错的一处。
+          </p>
+          <el-form label-position="top">
+            <el-form-item label="媒体库名称">
+              <el-input v-model="libForm.name" placeholder="如：电影库 / 剧集库 / 动漫库" />
+            </el-form-item>
+
+            <el-form-item label="内容类型">
+              <el-select
+                v-model="libForm.collection_type"
+                style="width: 100%"
+                popper-class="lib-opt-popper"
+              >
+                <el-option
+                  v-for="t in COLLECTION_TYPES"
+                  :key="t.value"
+                  :label="optionLabel(COLLECTION_TYPES, t.value)"
+                  :value="t.value"
+                >
+                  <div class="opt">
+                    <div class="opt-label">{{ t.label }}</div>
+                    <div class="opt-hint">{{ t.hint }}</div>
+                  </div>
+                </el-option>
+              </el-select>
+              <p class="field-help">{{ optionOf(COLLECTION_TYPES, libForm.collection_type)?.hint }}</p>
+            </el-form-item>
+
+            <el-form-item label="启用状态">
+              <el-switch v-model="libForm.is_enabled" active-text="启用" inactive-text="停用" />
+              <p class="field-help">
+                停用后客户端看不到这个库，它也不参与定时扫描与追新；已入库的条目留着不删，
+                重新启用就回来。
+              </p>
+            </el-form-item>
+
+            <el-form-item label="归属服">
+              <el-select
+                v-model="libForm.realm_id"
+                clearable
+                placeholder="未标注（所有服可见）"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="r in realmOptions"
+                  :key="r.id"
+                  :label="r.id === realm.activeId ? `${r.name}（推荐 · 当前服）` : r.name"
+                  :value="r.id"
+                />
+              </el-select>
+              <p class="field-help">
+                内容隔离的边界：只有这个服的 EA 会向客户端提供这个库。换服等于把内容交给另一个服，
+                绑定在旧服上的挂载会跟着搬过去。
+              </p>
+            </el-form-item>
+
+            <el-form-item v-if="!libFormTarget?.is_virtual" label="归属播放节点">
+              <el-select
+                v-model="libForm.node_id"
+                clearable
+                placeholder="未分配（所有节点可见，由面板扫描）"
+                style="width: 100%"
+              >
+                <el-option v-for="n in nodes" :key="n.id" :label="nodeLabel(n)" :value="n.id" />
+              </el-select>
+              <p class="field-help">
+                决定「谁向客户端展示这个库、谁来扫描它」。内容只在那台机器上（本机目录 / 只在那里配了的
+                rclone）就分配给它；留空则所有节点可见、由面板扫。
+              </p>
+            </el-form-item>
+
+            <el-form-item v-if="!libFormTarget?.is_virtual" label="存储挂载">
+              <el-select
+                v-model="libForm.mount_ids"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="不绑定（只用下面的媒体路径）"
+                style="width: 100%"
+              >
+                <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
+              </el-select>
+              <p class="field-help">
+                网盘 / WebDAV / 115 直挂这类远程来源用它，扫描时与「媒体路径」一起遍历；挂载在
+                「存储来源」页创建与测试。路径与挂载可以同时用。
+              </p>
+            </el-form-item>
+          </el-form>
+        </div>
+
+        <!-- 虚拟库：没有自己的目录与挂载，后面两组不适用 -->
+        <div v-if="libFormTarget?.is_virtual" class="settings-paths">
+          <span>虚拟媒体库</span>
+          <p>
+            按发行平台「{{ libFormTarget.platform || '—' }}」聚合库里已识别到的条目，条目仍归属原媒体库。
+            它没有自己的目录与挂载，所以下面不列「媒体路径」与「追新监听」——要改内容来源，去改原始媒体库。
+          </p>
+        </div>
+
+        <!-- 分组二：扫描性能 -->
+        <div class="settings-section">
+          <div class="settings-section-title">扫描性能与刮削</div>
+          <p class="form-hint">
+            这一组决定扫描时花多少力气：刮削策略决定要不要回头重刮「已经刮过」的条目，
+            直接影响 TMDB 配额与扫描耗时。
+          </p>
+          <el-form label-position="top">
+            <el-form-item label="刮削策略">
+              <el-select
+                v-model="libForm.scrape_policy"
+                style="width: 100%"
+                popper-class="lib-opt-popper"
+              >
+                <el-option
+                  v-for="p in POLICIES"
+                  :key="p.value"
+                  :label="optionLabel(POLICIES, p.value)"
+                  :value="p.value"
+                >
+                  <div class="opt">
+                    <div class="opt-label">
+                      {{ p.label }}<span v-if="p.recommended" class="opt-rec">（推荐）</span>
+                    </div>
+                    <div class="opt-hint">{{ p.hint }}</div>
+                  </div>
+                </el-option>
+              </el-select>
+              <p class="field-help">{{ optionOf(POLICIES, libForm.scrape_policy)?.hint }}</p>
+            </el-form-item>
+
+            <el-form-item label="115 账号">
+              <el-select
+                v-model="libForm.account_115_id"
+                clearable
+                placeholder="默认账号（面板级 PAN115_COOKIE）"
+                style="width: 100%"
+              >
+                <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
+              </el-select>
+              <p class="field-help">这个库用哪个 115 配置档转存 / 下载；留空 = 用默认账号。</p>
+            </el-form-item>
+
+            <div class="settings-paths">
+              <span>定时扫描（全局）</span>
+              <p v-if="autoScan">
+                {{ autoScan.enabled
+                  ? `已开启：每天 ${autoScan.time} 把所有启用库入队扫描（增量，没变化的目录跳过）。`
+                  : '未开启：只在手动点「扫描」、或追新发现新文件时扫。' }}
+                上次执行：{{ autoScan.last_run || '还没有执行过' }}。
+              </p>
+              <p v-else>读取中…</p>
+              <p>所有启用库共用一份计划，开关与时间在本页下方「元数据与刮削」里改。</p>
+            </div>
+          </el-form>
+        </div>
+
+        <!-- 分组三：媒体库封面 -->
+        <div v-if="libFormTarget" class="settings-section">
+          <div class="settings-section-title">媒体库封面</div>
+          <p class="form-hint">
+            封面只影响列表与首页的观感，不参与刮削，扫描也不会覆盖它。支持 JPG / PNG / WebP，单张最大 8 MB。
+          </p>
+          <div class="lib-cover-edit">
+            <div class="lib-cover-thumb">
+              <img
+                v-if="libFormTarget.cover_url && coverUrls[libFormTarget.id]"
+                :src="coverUrls[libFormTarget.id]"
+                :alt="`${libFormTarget.name} 封面`"
+              />
+              <div v-else class="lib-cover-empty">
+                <Film :size="20" />
+                <span>未设置封面</span>
+              </div>
+            </div>
+            <div class="lib-cover-ops">
+              <el-upload
+                :accept="'image/jpeg,image/png,image/webp'"
+                :show-file-list="false"
+                :disabled="!!coverUploading[libFormTarget.id]"
+                :http-request="(options: UploadRequestOptions) => requestCoverUpload(libFormTarget!, options)"
+              >
+                <el-button :loading="!!coverUploading[libFormTarget.id]">
+                  <ImagePlus :size="14" style="margin-right: 4px" />{{ libFormTarget.cover_url ? '更换封面' : '上传封面' }}
+                </el-button>
+              </el-upload>
+              <el-button v-if="libFormTarget.cover_url" @click="removeCover(libFormTarget)">
+                <X :size="14" style="margin-right: 4px" />移除封面
+              </el-button>
+            </div>
           </div>
         </div>
 
-        <div v-if="!settingsTarget.is_virtual" class="settings-section">
-          <div class="settings-section-title">扫描与账号</div>
-          <div class="lib-policy">
-            <span class="policy-label">刮削策略</span>
-            <el-select v-model="settingsTarget.scrape_policy" @change="savePolicy(settingsTarget)">
-              <el-option v-for="p in POLICIES" :key="p.value" :label="p.label" :value="p.value" />
-            </el-select>
-          </div>
-          <div class="lib-policy">
-            <span class="policy-label">115 账号</span>
-            <el-select
-              v-model="settingsTarget.account_115_id"
-              clearable
-              placeholder="默认账号"
-              @change="saveAccount115(settingsTarget)"
-            >
-              <el-option v-for="a in panAccounts" :key="a.id" :label="a.name" :value="a.id" />
-            </el-select>
-          </div>
+        <!-- 分组四：媒体路径 -->
+        <div v-if="!libFormTarget?.is_virtual" class="settings-section">
+          <div class="settings-section-title">媒体路径</div>
+          <p class="form-hint">
+            决定扫描哪些目录，<strong>一行一个</strong>。也可以写 <code>mount://挂载ID/子目录</code>
+            只扫挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）；想扫整个挂载就用上面「存储挂载」。
+          </p>
+          <el-form label-position="top">
+            <el-form-item>
+              <div class="paths-input-row">
+                <el-input
+                  v-model="libForm.paths"
+                  type="textarea"
+                  :rows="4"
+                  placeholder="服务器上的媒体目录，一行一个&#10;/media/movies&#10;/media/tv/breaking-bad"
+                />
+                <el-button class="paths-browse-btn" @click="pathPicker?.open()">浏览</el-button>
+              </div>
+              <div class="form-hint">
+                点「浏览」逐级选挂载目录；切到「多选」可一次勾多个目录批量追加，已存在的会自动跳过并报出个数。
+                <strong>不要带方括号或引号</strong>（从 JSON 里粘贴时容易带上，保存就会报「目录不存在或不可读」）。
+                共 {{ parsePaths(libForm.paths).length }} 条路径。
+              </div>
+            </el-form-item>
+          </el-form>
+        </div>
+
+        <!-- 分组五：目录变更监听 -->
+        <div v-if="libFormTarget && !libFormTarget.is_virtual" class="settings-section">
+          <div class="settings-section-title">目录变更监听</div>
+          <p class="form-hint">
+            「追新」每隔几分钟扫一遍目录，发现新视频文件就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
+            不用等手动扫描。开关与间隔是全局的，纳不纳入某个库在这里定。
+          </p>
+          <el-form label-position="top">
+            <el-form-item label="本库是否纳入追新监听">
+              <el-switch
+                :model-value="libForm.chase"
+                :loading="chaseLibSaving"
+                :disabled="chaseCoversAll()"
+                active-text="纳入"
+                inactive-text="不纳入"
+                @change="onChaseSwitch"
+              />
+              <p class="field-help">
+                <template v-if="chaseCoversAll()">
+                  当前是「所有启用库都监听」（清单留空即代表全部），此时单独关掉本库没有意义。
+                  要只排除某几个库，先在别的库上打开它、让清单列出来，再回来关本库。
+                </template>
+                <template v-else-if="chaseNew">
+                  改动即时生效：写进全局追新清单（当前 {{ chaseLibraryIds().length }} 个库）。
+                </template>
+                <template v-else>追新配置读取中…</template>
+              </p>
+            </el-form-item>
+            <div class="settings-paths">
+              <span>追新总开关（全局）</span>
+              <p v-if="chaseNew">
+                {{ chaseNew.enabled
+                  ? `已开启 · 每 ${chaseNew.interval} 分钟检查一次`
+                  : '未开启（开关与间隔在本页下方「元数据与刮削」）' }}
+              </p>
+              <p v-if="chaseNew?.last_check">
+                上次检查：{{ chaseNew.last_check }} ｜ 上轮发现 {{ chaseNew.last_found }} 个新文件
+              </p>
+            </div>
+          </el-form>
         </div>
       </div>
+
+      <template #footer>
+        <div class="lib-form-foot">
+          <span class="lib-form-dirty">
+            {{ libFormDirty
+              ? (libFormPathsChanged ? '路径已改：保存后需要重新扫描一次' : '有未保存的改动')
+              : '' }}
+          </span>
+          <div class="lib-form-foot-btns">
+            <el-button :disabled="!libFormDirty" @click="revertForm">还原</el-button>
+            <el-button @click="cancelForm">取消</el-button>
+            <el-button
+              v-if="libForm.id && libFormPathsChanged"
+              :loading="libFormSaving"
+              @click="saveForm(true)"
+            >
+              保存并扫描
+            </el-button>
+            <el-button type="primary" :loading="libFormSaving" @click="saveForm(false)">
+              {{ libForm.id ? '保存' : '创建' }}
+            </el-button>
+          </div>
+        </div>
+      </template>
     </el-drawer>
+    <MountPathPicker ref="pathPicker" @select="onPickMountPath" @select-multi="onPickMountPaths" />
 
     <!-- 重新刮削：选策略；all 二次确认并提示配额消耗 -->
     <el-dialog v-model="rescrapeVisible" title="重新刮削" width="420px">
