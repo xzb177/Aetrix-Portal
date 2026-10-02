@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import models, realms
+from backend import media_seek, models, realms
 from backend import qbittorrent
 from backend import servers
 from backend.database import get_db
@@ -78,8 +78,14 @@ class TicketReplyRequest(BaseModel):
 
 
 class MediaSeekUpdateRequest(BaseModel):
-    status: str  # approved, rejected, completed
+    # 审核结果：approved / rejected；「入库」走单独的 mark-in-library（要校验片真的进了库）
+    status: str
     admin_note: Optional[str] = None
+
+
+class MediaSeekMarkRequest(BaseModel):
+    """标记已入库：force = 库里没匹配到也要标（人工兜底）"""
+    force: bool = False
 
 
 class MediaSeekPushRequest(BaseModel):
@@ -970,6 +976,11 @@ def get_media_seeks(
             "movie_name": req.movie_name,
             "year": req.year,
             "type": req.type,
+            # 剧集按整季申请：season 是 "1,2" / "all"，label 是给界面看的文案
+            "season": req.season,
+            "season_label": media_seek.season_label(req.season),
+            "tmdb_id": req.tmdb_id,
+            "emby_item_id": req.emby_item_id,
             "note": req.note,
             "status": req.status,
             "admin_note": req.admin_note,
@@ -1060,6 +1071,40 @@ async def push_media_seek(
     }
 
 
+def _review_media_seek_sync(db: Session, admin_id: int, request_id: int,
+                            status_value: str, note: str) -> dict:
+    """同步落库：参数校验 + 审核结果 + 审计（整段下放线程池，见 update_media_seek）
+
+    校验放在这里而不是只放端点里，是为了让「拒绝必须写理由」这条规则
+    在单元测试里有一处直接的调用点（不必起整个 HTTP 栈）。
+    """
+    if status_value not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=400,
+            detail="状态只支持 approved / rejected；已入库请用「标记已入库」（会校验片真的进了库）",
+        )
+    if status_value == "rejected" and not note:
+        raise HTTPException(status_code=400, detail="拒绝求片必须填写理由（用户会收到这条说明）")
+
+    media_request = db.query(models.MovieRequest).filter(
+        models.MovieRequest.id == request_id
+    ).first()
+    if not media_request:
+        raise HTTPException(status_code=404, detail="求片请求不存在")
+
+    media_request.status = status_value
+    media_request.admin_note = note or None
+    media_request.updated_at = datetime.now()
+    db.commit()
+
+    _audit(db, admin_id, "update_media_seek", "media_seek", request_id,
+           {"status": status_value})
+    db.commit()
+    return {"user_id": media_request.user_id,
+            "movie_name": media_request.movie_name,
+            "season": media_request.season}
+
+
 @admin_router.put("/media-seek/{request_id}")
 async def update_media_seek(
     request_id: int,
@@ -1067,48 +1112,118 @@ async def update_media_seek(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
+    """审核求片：批准 / 拒绝（拒绝必须写理由，用户会收到这条说明）
+
+    「已入库」不再走这个入口（以前 completed 只是改个状态，面板无从知道片到底有没有进库）：
+    入库后标记请用 ``POST /media-seek/{id}/mark-in-library``，它会先确认片真的在媒体库里。
+    """
     admin_id = current_admin.id
+    # 校验在 _review_media_seek_sync 里（与落库同一段；单测直接打那个函数）
+    status_value = (request.status or "").strip()
+    note = (request.admin_note or "").strip()
 
-    def _update() -> dict:
-        media_request = db.query(models.MovieRequest).filter(
-            models.MovieRequest.id == request_id
-        ).first()
-        if not media_request:
-            raise HTTPException(status_code=404, detail="求片请求不存在")
-
-        media_request.status = request.status
-        media_request.admin_note = request.admin_note
-        media_request.updated_at = datetime.now()
-        db.commit()
-
-        _audit(db, admin_id, "update_media_seek", "media_seek", request_id,
-               {"status": request.status})
-        db.commit()
-        return {"user_id": media_request.user_id,
-                "movie_name": media_request.movie_name}
-
-    info = await run_in_threadpool(_update)
+    info = await run_in_threadpool(
+        _review_media_seek_sync, db, admin_id, request_id, status_value, note,
+    )
 
     event_map = {
         "approved": AdminEvent.MEDIA_SEEK_APPROVED,
         "rejected": AdminEvent.MEDIA_SEEK_REJECTED,
-        "completed": AdminEvent.MEDIA_SEEK_COMPLETED,
     }
     title_map = {
         "approved": "求片请求已批准",
         "rejected": "求片请求已拒绝",
-        "completed": "求片请求已完成",
     }
+    # 用户看到的通知用中文状态与「（全季）」这样的范围说明，不把英文状态码和季混在一起
+    status_text = {"approved": "已批准", "rejected": "已拒绝"}.get(status_value, status_value)
+    season_text = media_seek.season_label(info["season"])
     await notify_admin_event(
-        event_type=event_map.get(request.status, "media_seek.updated"),
+        event_type=event_map.get(status_value, "media_seek.updated"),
         user_id=info["user_id"],
-        title=title_map.get(request.status, "求片状态已更新"),
-        content=(f"您的求片《{info['movie_name']}》状态已更新为：{request.status}"
-                 + (f"\n备注：{request.admin_note}" if request.admin_note else "")),
+        title=title_map.get(status_value, "求片状态已更新"),
+        content=(f"您的求片《{info['movie_name']}》"
+                 + (f"（{season_text}）" if season_text else "")
+                 + f"状态已更新为：{status_text}"
+                 + (f"\n备注：{note}" if note else "")),
         related_id=request_id,
         from_admin_id=admin_id,
     )
     return {"success": True, "message": "求片状态更新成功"}
+
+
+def _mark_media_seek_sync(db: Session, admin_id: int, request_id: int, force: bool) -> dict:
+    """同步落库：库内匹配 + 标记已入库 + 审计（整段下放线程池，见 mark_media_seek_in_library）"""
+    media_request = db.query(models.MovieRequest).filter(
+        models.MovieRequest.id == request_id
+    ).first()
+    if not media_request:
+        raise HTTPException(status_code=404, detail="求片请求不存在")
+    if media_request.status not in media_seek.ACTIVE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这条求片当前是「{media_request.status}」，不能重复标记入库",
+        )
+
+    match = media_seek.find_library_match(db, media_request)
+    if match is None and not force:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"媒体库里没找到《{media_request.movie_name}》：等扫描入库后再标记；"
+                    f"如果片已入库（但改了名），可以再点一次「强制标记」"),
+        )
+
+    media_request.status = "completed"
+    media_request.emby_item_id = str(getattr(match, "guid", "") or "") or None
+    media_request.updated_at = datetime.now()
+    _audit(db, admin_id, "mark_media_seek_in_library", "media_seek", request_id,
+           {"matched": match is not None, "force": force,
+            "item_type": getattr(match, "item_type", None)})
+    db.commit()
+    return {
+        "user_id": media_request.user_id,
+        "movie_name": media_request.movie_name,
+        "season": media_request.season,
+        "item_id": media_request.emby_item_id,
+        "matched": match is not None,
+    }
+
+
+@admin_router.post("/media-seek/{request_id}/mark-in-library")
+async def mark_media_seek_in_library(
+    request_id: int,
+    payload: MediaSeekMarkRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """入库后标记已入库：先确认片真的在媒体库里（按 tmdb_id 优先、退片名匹配）
+
+    匹配上 → 求片置为 completed 并记下条目 guid（用户端可直接去观看）；
+    没匹配到 → 409 并说清「等扫描入库后再标记」，除非显式 ``force``（人工兜底，
+    例如片换了名字入库，面板匹配不到）。以前 completed 只是纯状态改写，
+    这次把它变成一条可核实的结论。
+    """
+    admin_id = current_admin.id
+    force = bool(payload.force)
+
+    info = await run_in_threadpool(_mark_media_seek_sync, db, admin_id, request_id, force)
+
+    season_text = media_seek.season_label(info["season"])
+    await notify_admin_event(
+        event_type=AdminEvent.MEDIA_SEEK_COMPLETED,
+        user_id=info["user_id"],
+        title="求片已入库",
+        content=(f"您求的《{info['movie_name']}》"
+                 + (f"（{season_text}）" if season_text else "")
+                 + ("已入库，可以直接观看了。" if info["matched"] else "已入库（管理员已确认）。")),
+        related_id=request_id,
+        from_admin_id=admin_id,
+    )
+    return {
+        "success": True,
+        "matched": info["matched"],
+        "emby_item_id": info["item_id"],
+        "message": "已标记入库" if info["matched"] else "已强制标记入库（媒体库里没匹配到条目）",
+    }
 
 
 # ==================== 操作日志 API ====================

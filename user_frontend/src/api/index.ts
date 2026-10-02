@@ -501,10 +501,41 @@ export interface MediaSeekRequest {
   note?: string | null
   status: string
   admin_note?: string | null
+  /** 剧集按整季申请："1,2" 或 "all"（全季）；电影为空 */
+  season?: string | null
+  /** 季的展示文案（后端统一生成：全季 / 第 1、2 季） */
+  season_label?: string
+  /** TMDB 条目 id（从候选列表带过来；手填片名为空） */
+  tmdb_id?: string | null
+  /** 已入库的条目 guid：completed 时可直接跳详情观看 */
+  emby_item_id?: string | null
   /** 这部片求给哪个服（多服运营时由用户选择 / 单服自动带出） */
   realm_id?: number | null
   realm_name?: string
   created_at: string
+}
+
+/** TMDB 搜索候选（求片表单用）：in_library=true 的已在库，直接看不用求 */
+export interface MediaSeekCandidate {
+  tmdb_id: string
+  /** movie / series（剧集要选季） */
+  kind: 'movie' | 'series'
+  name: string
+  year: string
+  overview?: string
+  poster_url?: string | null
+  rating?: number | null
+  in_library: boolean
+  /** 在库时对应条目 guid（可直接跳详情） */
+  library_item_id?: string | null
+}
+
+/** 剧集的一季（TMDB） */
+export interface TvSeason {
+  season_number: number
+  name: string
+  episode_count: number
+  air_date?: string
 }
 
 export interface MediaSeekQuota {
@@ -526,10 +557,22 @@ export const mediaSeekApi = {
   getMyRequests: (params?: { status_filter?: string }) =>
     api.get<never, { requests: MediaSeekRequest[]; quota: MediaSeekQuota }>('/api/user/media-seek', { params }),
 
-  /** 求片前库存检查：片名是否已在库中 */
+  /** 求片前库存检查：片名是否已在库中（TMDB 未配置时的回退路径） */
   lookup: (name: string) =>
     api.get<never, { in_library: boolean; items: MediaLookupItem[] }>('/api/user/media-seek/lookup', {
       params: { name },
+    }),
+
+  /** TMDB 候选搜索：列条目并标出哪些已在库（configured=false 时前端回退本地查库） */
+  search: (query: string, type?: string) =>
+    api.get<never, { configured: boolean; results: MediaSeekCandidate[] }>('/api/user/media-seek/search', {
+      params: { query, ...(type ? { type } : {}) },
+    }),
+
+  /** 剧集的季列表（按整季申请时的季选择器） */
+  seasons: (tmdbId: string) =>
+    api.get<never, { seasons: TvSeason[] }>('/api/user/media-seek/seasons', {
+      params: { tmdb_id: tmdbId },
     }),
 
   create: (data: {
@@ -539,6 +582,10 @@ export const mediaSeekApi = {
     note?: string
     /** 求给哪个服；多个服都买了会员时需要用户选一个 */
     realm_id?: number
+    /** 从 TMDB 候选带过来的 id（管理端靠它匹配「真的入库了吗」） */
+    tmdb_id?: string
+    /** 剧集按整季申请："1,2" 或 "all"（全季） */
+    season?: string
   }) =>
     api.post<never, { success: boolean; request_id: number; message: string }>('/api/user/media-seek', data),
 

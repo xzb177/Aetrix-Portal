@@ -36,6 +36,17 @@ request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config
 })
 
+/**
+ * 把原始 AxiosError 的 response 挂回抛出的 Error 上：
+ * 全局提示照旧只用 message，但需要按状态码分支的调用方（如「标记已入库」的 409 走确认流程）
+ * 可以读 err.response.status，不用为此再绕一套裸 axios。
+ */
+function withResponse(err: Error, source: AxiosError): Error {
+  ;(err as Error & { response?: AxiosError['response']; code?: string }).response = source.response
+  ;(err as Error & { code?: string }).code = source.code
+  return err
+}
+
 /** 从各形态的 error 里抠出人话（后端 detail / 校验数组 / 网络错误） */
 function extractMessage(error: AxiosError): string {
   const data = error.response?.data as { detail?: unknown } | undefined
@@ -96,13 +107,13 @@ request.interceptors.response.use(
 
       // 业务性 401：只提示，不动登录态、不重载
       if (!silent) ElMessage.error(message)
-      return Promise.reject(new Error(message))
+      return Promise.reject(withResponse(new Error(message), error))
     }
 
     const message = extractMessage(error)
     // 全局失败提示：红色、带具体原因。silent 的调用方自己处理错误展示。
     if (!silent) ElMessage.error(message)
-    return Promise.reject(new Error(message))
+    return Promise.reject(withResponse(new Error(message), error))
   }
 )
 

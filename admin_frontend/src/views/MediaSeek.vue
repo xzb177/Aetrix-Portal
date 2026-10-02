@@ -1,9 +1,11 @@
 <script setup lang="ts">
 /** 求片管理：审核批准/拒绝/标记完成，联动用户通知 */
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CloudDownload, Download, RefreshCw, X } from 'lucide-vue-next'
-import { fetchMediaSeeks, fetchServersSummary, pushMediaSeek, updateMediaSeek } from '@/api/admin'
+import {
+  fetchMediaSeeks, fetchServersSummary, markMediaSeekInLibrary, pushMediaSeek, updateMediaSeek,
+} from '@/api/admin'
 import type { MediaSeekRow, ServerKind } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
@@ -71,7 +73,7 @@ const handle = ref({
   link: '',
 })
 
-/** 这一行还有没有可做的动作（已上架 / 已拒绝 / 已撤回只是查看） */
+/** 这一行还有没有可做的动作（已入库 / 已拒绝 / 已撤回只是查看） */
 function isActionable(r: MediaSeekRow): boolean {
   return r.status === 'pending' || r.status === 'approved'
 }
@@ -93,22 +95,61 @@ async function afterAction(id: number) {
   }
 }
 
-/** 批准 / 拒绝 / 标记上架 */
+/** 批准 / 拒绝（拒绝必须写理由：用户收到的通知就是这条说明） */
 async function reviewStatus(status: string) {
+  const r = handle.value.row
+  if (!r) return
+  const note = handle.value.note.trim()
+  if (status === 'rejected' && !note) {
+    ElMessage.warning('拒绝求片要先在「处理备注」里填写理由')
+    return
+  }
+  busyId.value = r.id
+  try {
+    await updateMediaSeek(r.id, { status, admin_note: note || undefined })
+    ElMessage.success({ approved: '已批准', rejected: '已拒绝' }[status] || '已更新')
+    await afterAction(r.id)
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    busyId.value = null
+  }
+}
+
+/**
+ * 入库后标记已入库：后端先核验片真的进了媒体库（按 tmdb_id / 片名匹配）。
+ * 匹配不到 → 409；管理员确认后可以强制标记（片改了名入库的场景）。
+ * 两次调用都走 silent，错误提示由这里控制，避免先弹报错再弹确认框。
+ */
+async function markInLibrary() {
   const r = handle.value.row
   if (!r) return
   busyId.value = r.id
   try {
-    await updateMediaSeek(r.id, {
-      status,
-      admin_note: handle.value.note.trim() || undefined,
-    })
-    ElMessage.success(
-      { approved: '已批准', rejected: '已拒绝', completed: '已标记上架' }[status] || '已更新'
-    )
+    try {
+      const res = await markMediaSeekInLibrary(r.id)
+      ElMessage.success(res.message || '已标记入库')
+    } catch (err: any) {
+      const status = err?.response?.status
+      const detail = err?.response?.data?.detail
+      if (status !== 409) throw err
+      // 409：媒体库里没找到——让管理员确认后再强制标记
+      try {
+        await ElMessageBox.confirm(
+          typeof detail === 'string' ? detail : '媒体库里没找到这部片',
+          '强制标记已入库？',
+          { type: 'warning', confirmButtonText: '强制标记', cancelButtonText: '再等等' },
+        )
+      } catch {
+        return
+      }
+      const forced = await markMediaSeekInLibrary(r.id, true)
+      ElMessage.warning(forced.message || '已强制标记入库')
+    }
     await afterAction(r.id)
-  } catch {
-    /* 拦截器已提示 */
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    ElMessage.error(typeof detail === 'string' ? detail : '标记失败，请稍后重试')
   } finally {
     busyId.value = null
   }
@@ -159,13 +200,14 @@ function statusBadge(status: string): string {
 
 function typeLabel(type: string | null): string {
   if (type === 'movie') return '电影'
-  if (type === 'tv') return '剧集'
+  if (type === 'tv' || type === 'series') return '剧集'
+  if (type === 'anime') return '动漫'
   return type || '—'
 }
 
 function statusLabel(status: string): string {
   const map: Record<string, string> = {
-    pending: '待审核', approved: '已批准', completed: '已上架', rejected: '已拒绝',
+    pending: '待审核', approved: '已批准', completed: '已入库', rejected: '已拒绝',
     // 用户自己撤掉的：默认不进待办清单，只能靠状态筛选查（下面有这一项）
     withdrawn: '已撤回',
   }
@@ -188,7 +230,7 @@ function statusLabel(status: string): string {
         <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 120px" @change="load">
           <el-option label="待审核" value="pending" />
           <el-option label="已批准" value="approved" />
-          <el-option label="已上架" value="completed" />
+          <el-option label="已入库" value="completed" />
           <el-option label="已拒绝" value="rejected" />
           <!-- 用户自己撤掉的默认不在待办里（额度仍按提交数算），需要审计时从这里查 -->
           <el-option label="已撤回" value="withdrawn" />
@@ -210,6 +252,7 @@ function statusLabel(status: string): string {
         <template #cell-movie_name="{ row }">
           <span class="movie-name">《{{ row.movie_name }}》</span>
           <span v-if="row.year" class="movie-year">{{ row.year }}</span>
+          <span v-if="row.season_label" class="mini-badge muted movie-season">{{ row.season_label }}</span>
           <div v-if="row.note" class="movie-note">用户备注：{{ row.note }}</div>
         </template>
 
@@ -245,7 +288,7 @@ function statusLabel(status: string): string {
         <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
 
         <template #cell-actions="{ row }">
-          <!-- 一个入口：详情 + 批准 / 拒绝 / 转交 / 标记上架 都在弹窗里（原来这行有 5 个按钮） -->
+          <!-- 一个入口：详情 + 批准 / 拒绝 / 转交 / 标记已入库 都在弹窗里（原来这行有 5 个按钮） -->
           <el-button
             size="small"
             :type="isActionable(row) ? 'primary' : 'default'"
@@ -261,7 +304,7 @@ function statusLabel(status: string): string {
     <!--
       处理弹窗（v2.29.0）：求片详情 + 处理备注 + 全部动作都在这一处。
       动作做完弹窗不关——就地换成最新快照，转交结果 / 新状态直接可见，
-      而且换行的动作（批准 → 标记上架）不用再重新找到那一行。
+      而且换行的动作（批准 → 标记已入库）不用再重新找到那一行。
     -->
     <el-dialog
       v-model="handle.visible"
@@ -273,6 +316,9 @@ function statusLabel(status: string): string {
           <div class="kv-row"><span class="kv-key">片名</span><span class="kv-value">《{{ handle.row.movie_name }}》</span></div>
           <div class="kv-row"><span class="kv-key">年份 / 类型</span>
             <span class="kv-value">{{ handle.row.year || '—' }} · {{ typeLabel(handle.row.type) }}</span>
+          </div>
+          <div v-if="handle.row.season_label" class="kv-row"><span class="kv-key">申请范围</span>
+            <span class="kv-value">{{ handle.row.season_label }}</span>
           </div>
           <div class="kv-row"><span class="kv-key">提交用户</span><span class="kv-value">{{ handle.row.user_name }}</span></div>
           <div class="kv-row"><span class="kv-key">求给</span>
@@ -306,7 +352,7 @@ function statusLabel(status: string): string {
               :rows="2"
               placeholder="如：预计本周内上架 / 已有同类型资源…"
             />
-            <p class="form-hint">拒绝时会作为原因展示给提交用户；批准时作为进度说明（可不填）。</p>
+            <p class="form-hint">拒绝时必填，作为理由展示给提交用户；批准时作为进度说明（可不填）。</p>
           </el-form-item>
 
           <!-- qBittorrent 自己不会找片子：要交给它就必须在这里把链接填上（原来是一个二次弹窗） -->
@@ -345,15 +391,19 @@ function statusLabel(status: string): string {
             >
               <Check :size="13" style="margin-right: 3px" />批准
             </el-button>
+            <!--
+              标记已入库：走后端校验——先确认片真的在媒体库里（按 tmdb_id / 片名匹配），
+              匹配不到会 409，管理员确认后再强制标记。原来只是把状态改成「已上架」，面板无从核实。
+            -->
             <el-button
-              v-if="handle.row?.status === 'approved'"
+              v-if="handle.row?.status === 'approved' || handle.row?.status === 'pending'"
               size="small"
               type="primary"
               plain
               :loading="busyId === handle.row.id"
-              @click="reviewStatus('completed')"
+              @click="markInLibrary"
             >
-              标记上架
+              标记已入库
             </el-button>
             <el-button
               v-if="canMoviePilot && handle.row && isActionable(handle.row)"
@@ -385,6 +435,7 @@ function statusLabel(status: string): string {
 /* 工具条、徽标、muted 等技术样式已收到全局原语（styles/index.css），页面只留专有样式 */
 .movie-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
 .movie-year { font-size: var(--font-size-xs); color: var(--text-muted); margin-left: 6px; }
+.movie-season { margin-left: 6px; }
 .movie-note { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 3px; }
 .done-hint { font-size: var(--font-size-xs); }
 .push-guide { margin-bottom: 14px; line-height: 1.7; }

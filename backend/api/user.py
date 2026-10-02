@@ -14,7 +14,7 @@ import logging
 from sqlalchemy import func
 
 from backend.database import get_db
-from backend import codes, devices, models, realms
+from backend import codes, devices, media_seek, models, realms
 from backend.db_retry import commit_with_retry
 from backend.notifications import get_notification_service, AdminEvent
 from backend.ratelimit import check_rate_limit
@@ -561,12 +561,11 @@ def get_announcements(
 
 
 # ==================== 求片 API ====================
+# 规则与配置都在 backend/media_seek.py：额度键（SystemConfig）、「剧集按整季申请」的季校验、
+# TMDB 候选搜索、库内匹配。这里只做鉴权 / 参数 / 通知。
 
-# 每日求片上限（防止刷单），可在系统配置中通过 media_seek_daily_limit 覆盖
-DEFAULT_DAILY_SEEK_LIMIT = 5
-
-# 用户主动撤回的求片：不再展示、也不再参与去重，但仍计入当天的提交数
-WITHDRAWN_STATUS = "withdrawn"
+# 撤回状态在列表 / 撤回端点里判断「在处理中」，值与 media_seek 保持一份
+WITHDRAWN_STATUS = media_seek.WITHDRAWN_STATUS
 
 
 class MediaSeekRequest(BaseModel):
@@ -577,6 +576,10 @@ class MediaSeekRequest(BaseModel):
     note: Optional[str] = None
     # 这部片要进哪个服的库（用户端会让他选/自动带出）；留空时后端自己推导
     realm_id: Optional[int] = None
+    # 来自 TMDB 候选：id 用于管理端「标记已入库」精确匹配
+    tmdb_id: Optional[str] = None
+    # 剧集按整季申请："1,2" 或 "all"（全季）；电影/其它类型忽略
+    season: Optional[str] = None
 
 
 def _resolve_seek_realm(db: Session, user: models.WebUser,
@@ -609,12 +612,34 @@ def _resolve_seek_realm(db: Session, user: models.WebUser,
 
 
 def _seek_daily_limit(db: Session) -> int:
-    cfg = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == "media_seek_daily_limit"
-    ).first()
-    if cfg and str(cfg.value).isdigit():
-        return max(1, int(cfg.value))
-    return DEFAULT_DAILY_SEEK_LIMIT
+    """每日上限（兼容旧调用点；规则与默认值都在 media_seek.daily_limit）"""
+    return media_seek.daily_limit(db)
+
+
+@user_router.get("/media-seek/search")
+def search_media_seek_candidates(
+    query: str,
+    type: Optional[str] = None,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """TMDB 候选搜索（求片表单的「搜你想看的片」）
+
+    返回 TMDB 条目并标出哪些已经在库：在库的引导去播放（不占额度），
+    没在库的可以直接发起求片。TMDB 未配置时 ``configured=False``，
+    前端回退到按片名查本地库（``/media-seek/lookup``），不会出现永远搜不出东西的框。
+    """
+    return media_seek.search_candidates(db, query, type)
+
+
+@user_router.get("/media-seek/seasons")
+def media_seek_seasons(
+    tmdb_id: str,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """剧集的季列表：用户端「按整季申请」的季选择器用它（查不到就手动填季）"""
+    return {"seasons": media_seek.seasons_for(tmdb_id)}
 
 
 @user_router.get("/media-seek/lookup")
@@ -670,25 +695,31 @@ def _create_media_seek_sync(
     校验失败照原样抛 HTTPException——线程里抛出的异常会由 await 处原样抛给客户端，
     状态码与文案和以前一致（400 / 409 / 429 的语义没有变）。
     """
-    # 去重：同名且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）
+    # 剧集按整季申请：先把季归一化（无 / 脏输入 → 400；不填 = 全季）。
+    # 电影/纪录片等非剧集类型忽略该字段，存空串，不让脏值进库。
+    try:
+        season = media_seek.normalize_season(
+            request.season, series=request.type in media_seek.SERIES_TYPES
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # 去重：同名**且同季**且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）。
+    # 季参与去重：同一部剧的 S1 在看、S2 还想求，是两条独立请求，不该被名字相同挡回去。
     exists = db.query(models.MovieRequest).filter(
         models.MovieRequest.user_id == user.id,
         func.lower(models.MovieRequest.movie_name) == name.lower(),
-        models.MovieRequest.status.in_(["pending", "approved"]),
+        func.coalesce(models.MovieRequest.season, "") == season,
+        models.MovieRequest.status.in_(media_seek.ACTIVE_STATUSES),
     ).first()
     if exists:
-        raise HTTPException(status_code=409, detail=f"《{name}》已在处理中，请耐心等待（可在列表中看到进度）")
+        # 无季的（电影 / 老数据）保持原来的文案；剧集把季说清楚，用户知道是哪一条在排队
+        suffix = f"（{media_seek.season_label(season)}）" if season and season != media_seek.SEASON_ALL else ""
+        raise HTTPException(status_code=409, detail=f"《{name}》{suffix}已在处理中，请耐心等待（可在列表中看到进度）")
 
-    # 每日额度：统计**今天提交过多少条**（含后来撤回的）。
-    # 撤回不退还额度——否则「提交 → 撤回 → 再提交」可以无限刷新额度，
-    # 同时每次提交都会给全体管理员推一条站内消息，那就成了通知刷屏器。
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    today_count = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == user.id,
-        models.MovieRequest.created_at >= today_start,
-    ).count()
-    limit = _seek_daily_limit(db)
-    if today_count >= limit:
+    # 每日额度：统计**今天提交过多少条**（含后来撤回的，口径见 media_seek.used_today）。
+    limit = media_seek.daily_limit(db)
+    if media_seek.used_today(db, user.id) >= limit:
         raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
 
     media_request = models.MovieRequest(
@@ -696,6 +727,9 @@ def _create_media_seek_sync(
         movie_name=name,
         year=request.year,
         type=request.type,
+        # TMDB 候选带过来的 id 与季：管理端匹配「真的入库了吗」靠它们
+        tmdb_id=media_seek.normalize_tmdb_id(request.tmdb_id) or None,
+        season=season or None,
         note=request.note,
         status="pending",
         # 求片是「给哪个服求」的：用户选/单服自动带出，读不出就未标注
@@ -794,13 +828,6 @@ def get_my_media_seeks(
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    used = db.query(models.MovieRequest).filter(
-        models.MovieRequest.user_id == current_user.id,
-        models.MovieRequest.created_at >= today_start,
-    ).count()
-    limit = _seek_daily_limit(db)
-
     return {
         "requests": [
             {
@@ -811,6 +838,12 @@ def get_my_media_seeks(
                 "note": r.note,
                 "status": r.status,
                 "admin_note": r.admin_note,
+                # 剧集按整季申请：界面文案由 season_label 统一（全季 / 第 1、2 季）
+                "season": r.season,
+                "season_label": media_seek.season_label(r.season),
+                "tmdb_id": r.tmdb_id,
+                # 已入库的条目 guid：用户端可以一键跳到详情页（只读进度的一部分）
+                "emby_item_id": r.emby_item_id,
                 # 这部片求给哪个服（用户自己就能看到，不用问管理员）
                 "realm_id": r.realm_id,
                 "realm_name": realm_names.get(r.realm_id, "") if r.realm_id else "",
@@ -818,7 +851,8 @@ def get_my_media_seeks(
             }
             for r in requests
         ],
-        "quota": {"used_today": used, "daily_limit": limit, "remaining": max(0, limit - used)},
+        # 「申请时显示剩余额度」：统一走 media_seek.quota（与提交时的校验同一份口径）
+        "quota": media_seek.quota(db, current_user.id),
     }
 
 

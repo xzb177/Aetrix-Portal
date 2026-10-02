@@ -307,6 +307,14 @@ export interface MediaSeekRow {
   note: string | null
   status: string
   admin_note: string | null
+  /** 剧集按整季申请："1,2" 或 "all"（全季）；电影为空 */
+  season?: string | null
+  /** 季的展示文案（后端统一生成：全季 / 第 1、2 季） */
+  season_label?: string
+  /** TMDB 条目 id（用户从候选列表选则时有；手填片名为空） */
+  tmdb_id?: string | null
+  /** 已入库条目的 guid（标记入库时记下，用户端可直接去观看） */
+  emby_item_id?: string | null
   user_name: string
   /** 这部片是给哪个服求的（用户提交时选/单服自动带出）；空 = 未标注 */
   realm_id?: number | null
