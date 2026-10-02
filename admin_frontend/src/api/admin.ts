@@ -758,6 +758,15 @@ export interface MetaSourceRow {
   cooling: number
   /** 这一轮为什么不参与（空 = 会参与）：已关闭 / 缺密钥 */
   skipped_reason: string
+  /** key 去哪申请（后台直接给链接与说明，不用去搜索引擎里找） */
+  apply_url?: string
+  apply_hint?: string
+  /** 密钥存在哪个配置键（告诉用户“去哪填”） */
+  key_storage?: string
+  /** true = 已废弃的旧键里还有残留（启动自愈会合并，界面提醒看一眼） */
+  keys_legacy?: boolean
+  /** 密钥在哪里填：inline = 本卡片行内输入；pool_card = 在下面的密钥池卡片里（TMDB） */
+  key_entry?: 'inline' | 'pool_card'
 }
 
 export interface MetaSourcesConfig {

@@ -245,6 +245,14 @@
   color: var(--warning);
 }
 
+/* key 申请入口：直接跳官方页面，不让管理员去搜索引擎里找 */
+.ms-apply-link {
+  display: inline-block;
+  margin-top: 2px;
+  color: var(--primary);
+  word-break: break-all;
+}
+
 .ms-panel-title {
   display: flex;
   align-items: center;

@@ -300,11 +300,16 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         items.extend([
             (ms_config.CONFIG_SOURCE_ENABLED.format(id=_spec.id), "1",
              f"元数据源「{_spec.label}」开关"),
-            (ms_config.CONFIG_SOURCE_KEYS.format(id=_spec.id), "",
-             f"元数据源「{_spec.label}」密钥池（逗号分隔，按顺序轮换）"),
             (ms_config.CONFIG_SOURCE_RATE.format(id=_spec.id),
              str(ms_config.DEFAULT_RATE), f"元数据源「{_spec.label}」请求最小间隔秒数"),
         ])
+        # 密钥池键：TMDB 不在这里注册——它的密钥只有一处存储（tmdb_api_keys，
+        # 见上面的 6a 段）。再注册一个 meta_source_keys_tmdb 就是两份密钥、
+        # 两个入口，后台还会显示两遍。
+        if _spec.id not in ms_config.LEGACY_KEY_CONFIG:
+            items.append((
+                ms_config.CONFIG_SOURCE_KEYS.format(id=_spec.id), "",
+                f"元数据源「{_spec.label}」密钥池（逗号分隔，按顺序轮换）"))
 
     # 7. 播放策略
     from backend import playback_policy
@@ -375,6 +380,59 @@ def _insert_missing(db, items: list[tuple[str, str, str]]) -> list[str]:
     return [k for k, _, _ in todo]
 
 
+def _migrate_legacy_meta_keys(db) -> list[str]:
+    """一次性迁移：把废弃的 ``meta_source_keys_tmdb`` 并入 ``tmdb_api_keys``
+
+    Phase 6b 早期版本给 TMDB 开了第二个密钥存储，于是同一把钥匙存了两份、
+    后台显示两遍。本函数在启动自愈时把它们合成一处：
+
+    - 只在**正式入口为空、旧键非空**时搬（两边都有值时不猜，以正式的为准）；
+    - 搬完把旧键清空（不清的话下次升级又搬一遍，而用户可能已经改过正式入口）；
+    - 幂等：旧键清空后再跑就是空操作。
+
+    返回实际迁移过的 key 列表（给调用方记日志用，不记密钥原文）。
+    """
+    from backend import models
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.tmdb import _split_keys
+
+    primary_key = ms_config.TMDB_KEY_STORAGE
+    moved: list[str] = []
+    for source_id, legacy_key in ms_config.LEGACY_KEY_CONFIG.items():
+        try:
+            legacy_row = db.query(models.SystemConfig).filter(
+                models.SystemConfig.key == legacy_key).first()
+            primary_row = db.query(models.SystemConfig).filter(
+                models.SystemConfig.key == primary_key).first()
+            legacy_keys = _split_keys(getattr(legacy_row, "value", "") or "")
+            primary_keys = _split_keys(getattr(primary_row, "value", "") or "")
+            if not legacy_keys or primary_keys:
+                # 无需迁移：没有旧键，或正式入口已经有值（以正式的为准）
+                continue
+            if primary_row is None:
+                db.add(models.SystemConfig(
+                    key=primary_key, value=",".join(legacy_keys),
+                    description="TMDB API Keys（元数据来源，多 key 逗号分隔）"))
+            else:
+                primary_row.value = ",".join(legacy_keys)
+            if legacy_row is not None:
+                legacy_row.value = ""
+            db.commit()
+            moved.append(legacy_key)
+        except Exception:  # noqa: BLE001 — 迁移失败不该阻断启动（下次启动会重试）
+            logger.warning("[配置自愈] 迁移 %s → %s 失败，本次跳过",
+                           legacy_key, primary_key, exc_info=True)
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+    if moved:
+        # 只记键名，不记密钥原文
+        logger.info("[配置自愈] 已把废弃的元数据源密钥配置 %s 并入 %s",
+                    ", ".join(moved), primary_key)
+    return moved
+
+
 def heal_system_config(db) -> list[str]:
     """SystemConfig 自愈：DB 里没有的 key 插入默认值行；返回补了的 key 列表。"""
     from sqlalchemy.exc import IntegrityError
@@ -392,6 +450,7 @@ def heal_system_config(db) -> list[str]:
         logger.info("[配置自愈] system_configs 补齐 %s=%r", key, default)
     if healed:
         logger.info("[配置自愈] system_configs 本次共补齐 %d 项", len(healed))
+    _migrate_legacy_meta_keys(db)
     return healed
 
 

@@ -522,7 +522,16 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
     rows = []
     for position, source_cfg in enumerate(snapshot.sources, start=1):
         spec = ms_sources.SPEC_BY_ID.get(source_cfg.id)
-        pool = ms_keypool.pool_for(source_cfg.id, source_cfg.keys)
+        if source_cfg.id == "tmdb":
+            # TMDB 的密钥池归 Phase 6a 的 TmdbClient 管（单一入口）。
+            # 这里直接读它的快照，**不再建第二个池**——两处冷却状态各说各话，
+            # 管理员会以为同一把钥匙在两个地方表现不一样。
+            key_rows = tmdb_client.key_pool(db)
+            cooling = len([r for r in key_rows if r.get("cooling")])
+        else:
+            pool = ms_keypool.pool_for(source_cfg.id, source_cfg.keys)
+            key_rows = pool.status()
+            cooling = pool.cooling_count()
         rows.append({
             "id": source_cfg.id,
             "label": source_cfg.label,
@@ -533,11 +542,20 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
             "lang": source_cfg.lang,
             "rate": source_cfg.rate,
             "key_count": len(source_cfg.keys),
-            "keys": pool.status(),
-            "cooling": pool.cooling_count(),
+            "keys": key_rows,
+            "cooling": cooling,
             # 「不参与」的两种原因分别说清楚：手动关掉 vs 缺密钥
             "skipped_reason": ("已在后台关闭" if not source_cfg.enabled
                                else ("需要密钥但一个都没配" if source_cfg.needs_key else "")),
+            # key 去哪申请（界面直接给链接与说明，不用去搜索引擎里找）
+            "apply_url": spec.apply_url if spec else "",
+            "apply_hint": spec.apply_hint if spec else "",
+            # 密钥存在哪个配置键：界面据此告诉用户「去哪填」
+            "key_storage": source_cfg.key_storage or (spec.key_storage if spec else ""),
+            # true = 已废弃的旧键里还有残留（启动自愈会合并，界面提醒看一眼）
+            "keys_legacy": source_cfg.keys_legacy,
+            # TMDB 的密钥池在 6a 那张卡片里（单一入口），这里不再重复给输入框
+            "key_entry": "pool_card" if source_cfg.id == "tmdb" else "inline",
         })
     return {
         "enabled": snapshot.enabled,

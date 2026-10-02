@@ -492,6 +492,13 @@ const keyPanelRow = computed<MetaSourceRow | null>(
   () => metaRows.value.find((r) => r.id === keyPanelOpen.value) || null,
 )
 
+/** TMDB 的密钥在下方「TMDB 密钥池与镜像」卡片里管：这里只给个跳转，不弄第二个入口 */
+const tmdbPoolRef = ref<HTMLElement | null>(null)
+
+function scrollToTmdbPool() {
+  tmdbPoolRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 function toggleKeyPanel(row: MetaSourceRow) {
   keyPanelOpen.value = keyPanelOpen.value === row.id ? '' : row.id
   keyInput.value = ''
@@ -507,7 +514,7 @@ async function addSourceKey(row: MetaSourceRow) {
   try {
     meta.value = await addMetaSourceKey(row.id, value)
     keyInput.value = ''
-    ElMessage.success(`已添加，「${row.label}」现有 ${row.key_count + 1} 把`)
+    ElMessage.success(`已保存并生效，「${row.label}」现有 ${row.key_count + 1} 把`)
     delete sourceKeyTests.value[row.id]
   } catch {
     /* 拦截器已提示（409：已经在池子里） */
@@ -787,27 +794,40 @@ onMounted(() => {
                   </el-input>
                 </td>
                 <td>
-                  <span v-if="row.requires_key" class="muted">
-                    {{ row.key_count }} 把<template v-if="row.cooling"> · 冷却 {{ row.cooling }}</template>
+                  <span v-if="row.requires_key">
+                    <template v-if="row.key_count">
+                      {{ row.key_count }} 把<template v-if="row.cooling"> · 冷却 {{ row.cooling }}</template>
+                    </template>
+                    <span v-else class="mini-badge warn">未填</span>
+                    <div v-if="row.keys_legacy" class="ms-note warn">
+                      检测到旧版遗留的密钥配置，启动时会自动合并到下方密钥池
+                    </div>
                   </span>
                   <span v-else class="muted">无需密钥</span>
                 </td>
                 <td>
                   <div class="ms-row-ops">
+                    <!-- TMDB：密钥只在下方「TMDB 密钥池与镜像」里填（单一入口），
+                         这里不再给第二个输入框，否则同一把钥匙会出现两个入口 -->
                     <el-button
-                      v-if="row.requires_key"
+                      v-if="row.key_entry === 'pool_card'"
                       size="small"
                       text
-                      @click="toggleKeyPanel(row)"
-                    >{{ keyPanelOpen === row.id ? '收起' : '密钥' }}</el-button>
-                    <el-button
-                      size="small"
-                      text
-                      :loading="sourceTesting === row.id"
-                      :disabled="row.requires_key && !row.key_count"
-                      title="拿上面的片名逐把试这个源的密钥"
-                      @click="testSourceKeys(row)"
-                    >测试</el-button>
+                      @click="scrollToTmdbPool"
+                    >去密钥池</el-button>
+                    <template v-else-if="row.requires_key">
+                      <el-button size="small" text @click="toggleKeyPanel(row)">
+                        {{ keyPanelOpen === row.id ? '收起' : '密钥' }}
+                      </el-button>
+                      <el-button
+                        size="small"
+                        text
+                        :loading="sourceTesting === row.id"
+                        :disabled="!row.key_count"
+                        title="拿上面的片名逐把试这个源的密钥"
+                        @click="testSourceKeys(row)"
+                      >测试</el-button>
+                    </template>
                   </div>
                 </td>
               </tr>
@@ -815,12 +835,26 @@ onMounted(() => {
           </table>
 
           <!-- 逐源密钥池：默认收起，展开后逐把增删 + 冷却 -->
-          <div v-if="keyPanelOpen && keyPanelRow" class="ms-keypanel">
+          <div v-if="keyPanelOpen && keyPanelRow && keyPanelRow.key_entry !== 'pool_card'" class="ms-keypanel">
             <div class="ms-keypanel-inner">
               <div class="ms-panel-title">
                 <KeyRound :size="13" style="margin-right: 4px" />{{ keyPanelRow.label }} 密钥池
                 <span class="muted">（原文不会出现在接口里，只显示后 4 位）</span>
               </div>
+              <p v-if="keyPanelRow.apply_hint" class="ms-note">
+                {{ keyPanelRow.apply_hint }}
+                <a
+                  v-if="keyPanelRow.apply_url"
+                  :href="keyPanelRow.apply_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="ms-apply-link"
+                >{{ keyPanelRow.apply_url }}</a>
+              </p>
+              <p v-if="keyPanelRow.key_storage" class="ms-note">
+                存在配置项 <code class="mono">{{ keyPanelRow.key_storage }}</code>
+                （写入即生效，下一轮采集就用它，不用重启）。
+              </p>
               <div v-if="!keyPanelRow.keys.length" class="ms-hint">
                 还没有密钥：这个源现在<strong>不会参与采集</strong>。
               </div>
@@ -864,7 +898,7 @@ onMounted(() => {
                   :loading="keyBusy === keyPanelRow.id"
                   @click="addSourceKey(keyPanelRow)"
                 >
-                  添加
+                  保存并生效
                 </el-button>
                 <el-button size="small" :loading="sourceTesting === keyPanelRow.id" @click="testSourceKeys(keyPanelRow)">
                   <PlugZap :size="14" style="margin-right: 4px" />测试全部
@@ -931,7 +965,7 @@ onMounted(() => {
       </div>
 
       <!-- 1. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
-      <div class="admin-card ms-card ms-card-wide">
+      <div ref="tmdbPoolRef" class="admin-card ms-card ms-card-wide">
         <div class="card-header">
           <h2><KeyRound :size="16" style="margin-right: 6px" />TMDB 密钥池与镜像</h2>
           <div class="ms-facts">
