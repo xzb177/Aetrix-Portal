@@ -882,6 +882,76 @@ export interface UserDetail {
   watch: { plays: number; watched_items: number }
 }
 
+/** 授权资源卡片 · 一个服一张（GET /api/admin/user-grants/{user_id}） */
+export interface UserGrantSubscription {
+  subscription_id: number | null
+  plan_name: string
+  start_date: string | null
+  end_date: string | null
+  days_left: number
+  auto_renew: boolean
+  /** 退款撤销（与「自然到期」分开说） */
+  cancelled: boolean
+}
+
+/** 公益服的花积分解锁记录（付费服恒为 undefined） */
+export interface UserGrantUnlock {
+  unlocked: boolean
+  unlocked_at: string | null
+  expires_at: string | null
+  points_spent: number
+}
+
+export interface UserGrantCard {
+  realm_id: number
+  realm_name: string
+  slug: string
+  is_default: boolean
+  /** 服本身是否启用（停用不改变播放判定，只提示管理员该清理） */
+  is_active: boolean
+  access_mode: 'paid' | 'free'
+  is_free: boolean
+  access_note: string
+  /** 授权来源：subscription / expired / none / unlock / free_open */
+  grant: 'subscription' | 'expired' | 'none' | 'unlock' | 'free_open'
+  grant_label: string
+  /** 配色语义：ok 生效 / warn 即将到期 / off 未授权或已过期 */
+  state: 'ok' | 'warn' | 'off'
+  expiring_soon: boolean
+  /** 这份授权能做什么 */
+  can_play: boolean
+  view_granted: boolean
+  download_allowed: boolean
+  /** 这个服提供什么（null = 统计读取失败，显示「—」而不是谎报 0） */
+  resources: {
+    libraries: number | null
+    enabled_libraries: number | null
+    items: number | null
+    mounts: number | null
+    nodes: number | null
+    nodes_online: number | null
+  }
+  subscription?: UserGrantSubscription
+  unlock?: UserGrantUnlock
+}
+
+export interface UserGrants {
+  user: { id: number; username: string; is_staff: boolean; is_active: boolean }
+  summary: {
+    realms_total: number
+    realms_playable: number
+    realms_expiring: number
+    realms_expired: number
+    /** 设备数（null = 读取失败，显示「—」而不是谎报 0） */
+    devices_used: number | null
+    device_limit: number | null
+    play_line: string
+    play_line_label: string
+    scope_note: string
+  }
+  cards: UserGrantCard[]
+}
+
 /** 趋势统计（GET /api/admin/stats/trend） */
 export interface TrendPoint {
   date: string

@@ -268,30 +268,17 @@ def _view_unlock_pricing(db: Session) -> tuple[int, int]:
 
 def _realm_view_granted(db: Session, user: models.WebUser, realm_id: int | None
                         ) -> tuple[bool, models.EmbyViewUnlock | None]:
-    """用户是否有权查看某服的 Emby 账号/线路。
+    """用户是否有权查看某服的 Emby 账号/线路（口径见 ``subscriptions.view_grant``）。
 
     规则：付费服 = 有效订阅即权限；公益服 = 花积分解锁即权限
     （见 unlock_emby_view）。没权限时账号卡不下发地址，前端也不展示。
+
+    判定本身在 ``backend/subscriptions.py``——它是全站唯一口径，管理端的
+    「用户授权资源卡片」（backend/user_grants.py）读同一份，两边不会漂。
     """
     if realm_id is None:
         realm_id = realms.active_realm_id(db)
-    if realms.is_free_realm(db, realm_id):
-        now = datetime.now()
-        unlock = (db.query(models.EmbyViewUnlock)
-                    .filter(models.EmbyViewUnlock.user_id == user.id,
-                            models.EmbyViewUnlock.realm_id == realm_id,
-                            or_(models.EmbyViewUnlock.expires_at.is_(None),
-                                models.EmbyViewUnlock.expires_at > now))
-                    .order_by(models.EmbyViewUnlock.unlocked_at.desc())
-                    .first())
-        return (unlock is not None), unlock
-    sub = (db.query(models.UserSubscription)
-             .filter(models.UserSubscription.user_id == user.id,
-                     models.UserSubscription.realm_id == realm_id,
-                     models.UserSubscription.status == "active",
-                     models.UserSubscription.end_date > datetime.now())
-             .first())
-    return (sub is not None), None
+    return subscriptions.view_grant(db, user, realm_id)
 
 
 def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None,

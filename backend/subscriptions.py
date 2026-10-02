@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend import models, realms
@@ -91,6 +92,36 @@ def is_free_realm(db: Session, realm_id: Optional[int] = None) -> bool:
 def realm_access_note(db: Session, realm_id: Optional[int] = None) -> str:
     """该服的规则文案（公益服没写时给缺省提示；付费服为空串）"""
     return realms.access_note_of(db, _scoped_realm_id(db, realm_id))
+
+
+def view_grant(db: Session, user: models.WebUser,
+               realm_id: Optional[int] = None) -> tuple[bool, Optional[models.EmbyViewUnlock]]:
+    """用户有没有权限查看某服的 Emby 账号 / 线路（**全站单一事实来源**）
+
+    规则：付费服 = 有效订阅即权限；公益服 = 花积分解锁即权限（``EmbyViewUnlock``）。
+    判定一律按 ``end_date`` / ``expires_at`` **现算**，不信行上的 status 字段
+    （它不会随时间自动翻转，见本模块开头）。
+
+    ``backend/emby_server/portal.py`` 的账号卡与服卡片都调这里——以前那段逻辑
+    私有地写在 portal 里，管理端想回答「这个人到底被授权了什么」只能复制一份，
+    两份迟早会漂。
+    """
+    target = _scoped_realm_id(db, realm_id)
+    if realms.is_free_realm(db, target):
+        now = datetime.now()
+        unlock = (
+            db.query(models.EmbyViewUnlock)
+            .filter(
+                models.EmbyViewUnlock.user_id == user.id,
+                models.EmbyViewUnlock.realm_id == target,
+                or_(models.EmbyViewUnlock.expires_at.is_(None),
+                    models.EmbyViewUnlock.expires_at > now),
+            )
+            .order_by(models.EmbyViewUnlock.unlocked_at.desc())
+            .first()
+        )
+        return (unlock is not None), unlock
+    return has_active_subscription(db, user.id, resolve_realm_id(realm_id)), None
 
 CONFIG_REQUIRED = "subscription_required"
 CONFIG_MESSAGE = "subscription_gate_message"
@@ -245,6 +276,7 @@ __all__ = [
     "gate_message",
     "can_play",
     "ensure_playback_allowed",
+    "view_grant",
     "download_allowed",
     "download_gate_message",
     "ensure_download_allowed",
