@@ -428,6 +428,12 @@ def _auto_migrate():
             ("scan_progress", "TEXT", "NULL"),
             # 媒体库封面由管理员直传，扫描/刮削不得覆盖；只保存图片目录下的相对路径。
             ("cover_path", "VARCHAR(500)", "NULL"),
+            # 封面自动生成样式与文字（老库补列后为 NULL = 未启用，仍用直传的 cover_path）。
+            # template: poster（海报拼贴）/ visual（主视觉）/ filmstrip（胶片带）
+            ("cover_template", "VARCHAR(20)", "NULL"),
+            # 标题/副标题支持 {library} {type} {year} 三个变量，只渲染纯文本
+            ("cover_title", "VARCHAR(100)", "NULL"),
+            ("cover_subtitle", "VARCHAR(100)", "NULL"),
         ]),
         # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
         ("remote_servers", [

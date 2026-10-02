@@ -14,6 +14,11 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 # 版本号单一来源：显式先放一份，避免将来 .dockerignore 调整时漏掉它
 COPY VERSION /app/VERSION
+# 媒体库封面渲染用的中文字体（Noto Sans SC，SIL OFL 1.1）。
+# 显式 COPY 而不是指望 `COPY . /app` 带进来：将来 .dockerignore 加了
+# *.ttf 或 **/assets 之类规则时，这里会先失败并让构建停下，而不是
+# 悄悄产出一个字体缺失、封面不出字的镜像。
+COPY backend/assets/fonts /app/backend/assets/fonts
 COPY . /app
 # 注意：不再 COPY 前端 dist。FRONTEND_DIST/ADMIN_DIST 留空时
 # backend/main.py 会跳过静态文件挂载，只跑 API。

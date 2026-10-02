@@ -39,6 +39,7 @@ from backend.api.admins_admin import router as admins_router
 # 首次运行向导（setup_mode）：建第一个管理员，完成后入口永久关闭
 from backend.api.setup import router as setup_router
 from backend.api.playback_admin import router as playback_admin_router
+from backend.api.library_cover import router as library_cover_router
 from backend.api.home_summary import router as home_summary_router
 from backend.api.realms import router as realms_router
 from backend.api.servers import router as servers_router
@@ -590,6 +591,8 @@ app.include_router(admins_router)
 app.include_router(setup_router)
 # 播放与客户端策略（v2.26.0）：转码开关 / 并发上限 / 码率上限 / 客户端准入，见 backend/api/playback_admin.py
 app.include_router(playback_admin_router)
+# 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
+app.include_router(library_cover_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

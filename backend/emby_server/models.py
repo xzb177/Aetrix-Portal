@@ -38,6 +38,12 @@ class Library(Base):
     scrape_policy = Column(String(20), default="missing_only")
     # 管理员上传的媒体库封面；保存为图片目录下的相对路径，扫描/刮削不会覆盖它。
     cover_path = Column(String(500))
+    # 封面自动生成：样式 + 标题文字。留空 = 沿用直传的 cover_path 不生成。
+    # 生成时从库里挑**最新入库**（last_scraped_at 最近）的海报自动拼图，
+    # 所以刚补完刮削的库换个样式重生成就是新海报，不用管理员传图。
+    cover_template = Column(String(20))    # poster / visual / filmstrip
+    cover_title = Column(String(100))      # 支持 {library} {type} {year}
+    cover_subtitle = Column(String(100))   # 同上
     # 虚拟媒体库：按发行平台（Netflix / Disney+ …）自动生成，没有自己的文件与路径
     is_virtual = Column(Boolean, default=False)
     platform = Column(String(30))  # 虚拟库对应的平台 id（见 scanner.PLATFORM_LABELS）
