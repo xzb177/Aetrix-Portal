@@ -35,6 +35,51 @@
   line-height: 1.8;
 }
 
+.ms-alert {
+  margin: 0;
+}
+
+/* 密钥池 / 镜像表：列少、字短，不用横向滚动 */
+.ms-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-xs);
+}
+
+.ms-table th {
+  text-align: left;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-tertiary);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.ms-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+}
+
+.ms-table tr:last-child td {
+  border-bottom: none;
+}
+
+.ms-sub {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+/* .mono 是全局已有的等宽字体类（index.css），这里不重复定义 */
+
+.ms-facts .fact.warn {
+  color: var(--warning);
+}
+
 .ms-hint.ms-block {
   margin-top: 6px;
 }
@@ -89,5 +134,13 @@
 @media (max-width: 900px) {
   .ms-grid {
     grid-template-columns: 1fr;
+  }
+  .ms-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .ms-actions .el-input {
+    width: 100% !important;
   }
 }

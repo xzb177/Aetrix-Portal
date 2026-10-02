@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import contextlib
 import os
 import random
 import re
@@ -29,12 +30,27 @@ from backend.emby_server import tmdb_cache
 
 logger = logging.getLogger(__name__)
 
-TMDB_API = "https://api.themoviedb.org/3"
-TMDB_IMAGE = "https://image.tmdb.org/t/p"
+TMDB_API_DEFAULT = "https://api.themoviedb.org/3"
+TMDB_IMAGE_DEFAULT = "https://image.tmdb.org/t/p"
+# 兼容旧引用（scanner.py 再导出这两个名字）：真正生效的地址走 ``api_base()`` /
+# ``image_base()``，可以在管理后台配镜像（境内直连不通时用）。
+TMDB_API = TMDB_API_DEFAULT
+TMDB_IMAGE = TMDB_IMAGE_DEFAULT
 TMDB_LANG = os.getenv("TMDB_LANGUAGE", "zh-CN")
 
 # TMDB API Key 在 SystemConfig 里的键：管理后台「元数据与刮削」填写，保存即热生效
 TMDB_KEYS_CONFIG_KEY = "tmdb_api_keys"
+# 镜像 / 反代地址（空 = 用官方地址）。API 与图片分开：跨境时常见的是图片 CDN 可走
+# 镜像而 API 直连（或反过来），一条配置管两件事会互相绑死。
+TMDB_API_BASE_CONFIG_KEY = "tmdb_api_base"
+TMDB_IMAGE_BASE_CONFIG_KEY = "tmdb_image_base"
+# 密钥冷却时长：单把密钥 429 / 401 之后跳过它多久（阈值走配置，不写死）
+TMDB_KEY_COOLDOWN_CONFIG_KEY = "tmdb_key_cooldown_sec"
+TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY = "tmdb_key_invalid_cooldown_sec"
+DEFAULT_KEY_COOLDOWN_SEC = 900          # 15 分钟：配额窗口一般几分钟
+DEFAULT_KEY_INVALID_COOLDOWN_SEC = 21600  # 6 小时：401 多半是 key 废了，等管理员换
+# 冷却 / 镜像配置的进程内 TTL：跨进程（API / worker / EA）靠它兜底，同进程保存即失效
+SETTINGS_TTL_SEC = 30.0
 
 # ---------------------------------------------------------------------------
 # 请求级限流 / 超时 / 429 退避（v2.42.9）
@@ -402,6 +418,109 @@ def _read_config_value(db) -> str:
     return store.get_value(db, TMDB_KEYS_CONFIG_KEY, "")
 
 
+# ---------------------------------------------------------------------------
+# 镜像地址与冷却时长：进程内短 TTL 缓存（读多写少，跨进程靠 TTL 兜底）
+# ---------------------------------------------------------------------------
+
+_SETTINGS_CACHE: dict = {"at": 0.0, "data": {}}
+_settings_lock = threading.Lock()
+
+
+def normalize_base(raw: str, default: str) -> str:
+    """镜像地址归一化：补 https://、去尾部斜杠；空值回落默认"""
+    value = str(raw or "").strip()
+    if not value:
+        return default
+    if not value.startswith(("http://", "https://")):
+        value = "https://" + value
+    return value.rstrip("/")
+
+
+def validate_base(raw: str, field: str) -> str:
+    """后台保存镜像地址时的校验：必须是 http(s) 绝对地址，错误要能直接给管理员看"""
+    value = str(raw or "").strip()
+    if not value:
+        return ""  # 空 = 回到官方地址
+    if any(ch.isspace() for ch in value):
+        raise ValueError(f"{field}不能包含空格")
+    if not value.startswith(("http://", "https://")):
+        raise ValueError(f"{field}必须以 http:// 或 https:// 开头")
+    body = value.split("://", 1)[1]
+    if not body or "/" == body[0] or "." not in body.split("/")[0]:
+        raise ValueError(f"{field}看起来不像完整地址（例如 https://tmdb.example.com）")
+    return normalize_base(value, "")
+
+
+def _config_text(key: str, db=None) -> str:
+    """读一个 SystemConfig 字符串；读不到返回空（表没建好 / 未配置）"""
+    from backend.integrations import store
+    try:
+        if db is None:
+            from backend.database import SessionLocal
+            session = SessionLocal()
+            try:
+                return store.get_value(session, key, "")
+            finally:
+                session.close()
+        return store.get_value(db, key, "")
+    except Exception:  # noqa: BLE001 — DB 没建好时当没配
+        return ""
+
+
+def settings(db=None, *, refresh: bool = False) -> dict:
+    """镜像地址与冷却时长（环境变量 > SystemConfig > 默认）
+
+    这是**唯一**读这四个配置的地方：热路径（每次拼图片 URL、每次发请求）都走它，
+    内部 30 秒 TTL 缓存，不会每次都开一次数据库会话。
+    """
+    now = time.monotonic()
+    with _settings_lock:
+        if not refresh and (now - _SETTINGS_CACHE["at"]) < SETTINGS_TTL_SEC \
+                and _SETTINGS_CACHE.get("data"):
+            return dict(_SETTINGS_CACHE["data"])
+    env_api = (os.getenv("TMDB_API_BASE") or "").strip()
+    env_image = (os.getenv("TMDB_IMAGE_BASE") or "").strip()
+    env_cooldown = (os.getenv("TMDB_KEY_COOLDOWN_SEC") or "").strip()
+    env_invalid = (os.getenv("TMDB_KEY_INVALID_COOLDOWN_SEC") or "").strip()
+    data = {
+        "api_base": normalize_base(env_api or _config_text(TMDB_API_BASE_CONFIG_KEY, db),
+                                   TMDB_API_DEFAULT),
+        "image_base": normalize_base(env_image or _config_text(TMDB_IMAGE_BASE_CONFIG_KEY, db),
+                                     TMDB_IMAGE_DEFAULT),
+        "cooldown_sec": _positive_float(env_cooldown, DEFAULT_KEY_COOLDOWN_SEC, 1.0),
+        "invalid_cooldown_sec": _positive_float(
+            env_invalid, DEFAULT_KEY_INVALID_COOLDOWN_SEC, 1.0),
+        "api_base_from_env": bool(env_api),
+        "image_base_from_env": bool(env_image),
+    }
+    with _settings_lock:
+        _SETTINGS_CACHE.update({"at": now, "data": dict(data)})
+    return data
+
+
+def _positive_float(raw: str, default: float, floor: float) -> float:
+    try:
+        return max(floor, float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def invalidate_settings() -> None:
+    """保存镜像 / 冷却配置后立刻失效缓存（同进程即时生效，跨进程靠 TTL）"""
+    with _settings_lock:
+        _SETTINGS_CACHE.update({"at": 0.0, "data": {}})
+
+
+def api_base(db=None) -> str:
+    """当前生效的 API 基础地址（镜像 / 反代）"""
+    return settings(db)["api_base"]
+
+
+def image_base(db=None) -> str:
+    """当前生效的图片 CDN 基础地址（与 API 分开配）"""
+    return settings(db)["image_base"]
+
+
 def _db_keys(db=None) -> list[str]:
     """SystemConfig 里的 key。db 未给时自己开短会话；读不到返回空（不抛异常）"""
     try:
@@ -429,15 +548,17 @@ def image_specs(*payloads) -> list[tuple[str, str]]:
     否则本地化会静默失效（w500 海报 / w1280 背景这两个尺寸不要在任何地方再拼一遍）。
     """
     out: list[tuple[str, str]] = []
+    # 图片地址走**可配的 CDN 镜像**：境内直连 image.tmdb.org 不稳时，单独改这一项就行
+    base = image_base()
     for data in payloads:
         if not data:
             continue
         poster = data.get("poster_path")
         backdrop = data.get("backdrop_path")
         if poster:
-            out.append(("Primary", f"{TMDB_IMAGE}/w500{poster}"))
+            out.append(("Primary", f"{base}/w500{poster}"))
         if backdrop:
-            out.append(("Backdrop", f"{TMDB_IMAGE}/w1280{backdrop}"))
+            out.append(("Backdrop", f"{base}/w1280{backdrop}"))
     return out
 
 
@@ -511,6 +632,10 @@ class TmdbClient:
         self.api_keys: list[str] = []
         self.api_key = ""
         self._key_index = 0
+        # 密钥池健康：key -> {"until": 单调时钟截止, "reason", "hits"}
+        # 冷却是**进程内**状态（同令牌桶的性质）：重启后全部重新试一遍，
+        # 写进配置反而会变成“记得某个 key 坏过”这种陈旧结论。
+        self._cooldown: dict = {}
         self.session = None
         self._session_proxy_sig: Optional[str] = None
         self._session_lock = threading.Lock()
@@ -527,6 +652,9 @@ class TmdbClient:
             self.api_key = self.api_keys[0] if self.api_keys else ""
             self._key_index = 0
             self.key_source = source if keys else "none"
+            # 已被换掉的 key 不再留着冷却记录（它不在池子里了，记着也没用）
+            alive = set(self.api_keys)
+            self._cooldown = {k: v for k, v in self._cooldown_map().items() if k in alive}
 
     def refresh_keys(self, db=None) -> dict:
         """重算有效密钥：后台保存与进程启动都走这里，无需重启进程。
@@ -590,7 +718,7 @@ class TmdbClient:
             logger.info("TMDB 客户端已按新的代理设置重建连接")
 
     def _rotate(self) -> bool:
-        """轮到下一个密钥，全部用过则返回 False"""
+        """轮到下一个密钥，全部用过则返回 False（保留给旧调用方）"""
         if len(self.api_keys) <= 1:
             return False
         self._key_index = (self._key_index + 1) % len(self.api_keys)
@@ -598,11 +726,108 @@ class TmdbClient:
         logger.warning("TMDB 密钥轮询到第 %s 个", self._key_index + 1)
         return True
 
+    # ---------------- 密钥池：轮换 + 逐把冷却 ----------------
+
+    def _key_lock(self):
+        """密钥锁（防御式：测试里会用 ``__new__`` 绕开 ``__init__`` 造客户端）"""
+        lock = getattr(self, "_keys_lock", None)
+        return lock if lock is not None else contextlib.nullcontext()
+
+    def _cooldown_map(self) -> dict:
+        """冷却表（防御式取：测试里会用 ``__new__`` 绕开 ``__init__`` 造客户端）"""
+        data = getattr(self, "_cooldown", None)
+        if data is None:
+            data = {}
+            self._cooldown = data
+        return data
+
+    def _pick_key(self, exclude=(), *, allow_cooled: bool = False) -> str:
+        """从池子里挑一把能用的 key（轮转起点，避免总是第一把先死）
+
+        ``exclude`` 是**这一次调用已经试过**的 key：冷却是给后续请求用的，
+        不能让一把刚被判 429 的 key 在同一次调用里立刻又被选上（那会变成死循环）。
+        ``allow_cooled=True`` 是兵底：全池都在冷却时也得把请求发出去，
+        冷却是优化，不是锁死。
+        """
+        keys = self.api_keys
+        if not keys:
+            return ""
+        excluded = set(exclude)
+        now = time.monotonic()
+        # 轮转起点：默认从第一把开始（裸客户端没有 _key_index 时也是从 0 起）
+        start = int(getattr(self, "_key_index", 0) or 0)
+        with self._key_lock():
+            total = len(keys)
+            for step in range(total):
+                idx = (start + step) % total
+                key = keys[idx]
+                if key in excluded:
+                    continue
+                entry = self._cooldown_map().get(key)
+                if entry and entry.get("until", 0) > now and not allow_cooled:
+                    continue
+                self._key_index = (idx + 1) % total
+                self.api_key = key
+                return key
+        return ""
+
+    def _cool_key(self, key: str, reason: str, seconds: float) -> None:
+        """把一把 key 放进冷却，并记下原因（界面上要能写出“为什么这把在休息”）"""
+        seconds = max(1.0, float(seconds or 0))
+        with self._key_lock():
+            entry = self._cooldown_map().setdefault(key, {"until": 0.0, "reason": "", "hits": 0})
+            entry["until"] = max(float(entry.get("until") or 0), time.monotonic() + seconds)
+            entry["reason"] = reason
+            entry["hits"] = int(entry.get("hits") or 0) + 1
+        logger.warning("TMDB 密钥 ****%s 冷却 %.0f 秒（%s）", key[-4:] if key else "", seconds, reason)
+
+    def note_key_throttled(self, key: str, retry_after: Optional[float] = None) -> float:
+        """429：按 Retry-After（读不到则用配置值）冷却这把 key，返回建议等待秒数"""
+        wait = float(retry_after) if retry_after and retry_after > 0 else 0.0
+        if wait <= 0:
+            wait = float(settings()["cooldown_sec"])
+        self._cool_key(key, "限流（HTTP 429）", min(wait, TMDB_RETRY_AFTER_CAP_SEC) or wait)
+        return wait
+
+    def note_key_invalid(self, key: str) -> None:
+        """401：这把 key 基本废了，冷却更久（等管理员换掉它）"""
+        self._cool_key(key, "无效（HTTP 401）", float(settings()["invalid_cooldown_sec"]))
+
+    def clear_cooldowns(self) -> int:
+        """手动清除全部冷却（管理员换完 key / 网络恢复后用）"""
+        with self._key_lock():
+            count = len(self._cooldown_map())
+            self._cooldown_map().clear()
+        return count
+
+    def key_pool(self, db=None) -> list:
+        """密钥池快照（只给掩码与状态，**不返回原文**）
+
+        冷却剩余秒数是运行时事实，前端据此显示“这把在休息，还要 xx 秒”。
+        """
+        now = time.monotonic()
+        cfg = settings(db)
+        rows: list[dict] = []
+        for idx, key in enumerate(self.api_keys):
+            with self._key_lock():
+                entry = dict(self._cooldown_map().get(key) or {})
+            remaining = max(0.0, float(entry.get("until") or 0) - now)
+            rows.append({
+                "index": idx + 1,
+                "masked": f"****{key[-4:]}" if len(key) > 4 else "****",
+                "current": key == self.api_key,
+                "cooling": remaining > 0,
+                "cooldown_remaining": int(round(remaining)),
+                "reason": entry.get("reason") or "",
+                "hits": int(entry.get("hits") or 0),
+            })
+        return rows
+
     def _throttle(self, retry_after: Optional[float] = None) -> float:
         """429：速率自适应下调，返回建议退避秒数（睡不睡由调用方决定）"""
         return self._limiter.note_throttled(retry_after)
 
-    def _request(self, path: str, params: dict):
+    def _request(self, path: str, params: dict, key: str = ""):
         """单次 GET：先过**请求级**令牌桶，再按 TMDB_NET_RETRIES 退避重试网络异常
 
         连接错误与读超时都在这里重试（httpx 默认的连接级重试不覆盖读超时，而跨境
@@ -611,7 +836,8 @@ class TmdbClient:
         """
         if not self.session:
             return None
-        payload = {**params, "api_key": self.api_key}
+        payload = {**params, "api_key": key or self.api_key}
+        base = api_base()
         delay = 0.5
         for attempt in range(TMDB_NET_RETRIES + 1):
             # 重试也要重新取 token：一次重试就是一次真的请求，配额照样要花
@@ -619,7 +845,7 @@ class TmdbClient:
             try:
                 # v2.42.9：每一次真实发出的 HTTP 都计进 tmdb_req（含重试与换 key 后的重试）
                 with progress.stage_timer("tmdb_req"):
-                    return self.session.get(f"{TMDB_API}{path}", params=payload)
+                    return self.session.get(f"{base}{path}", params=payload)
             except Exception as e:  # noqa: BLE001 — 网络异常不应中断整次扫描
                 if attempt >= TMDB_NET_RETRIES:
                     self._stats["net_fail"] += 1
@@ -646,28 +872,33 @@ class TmdbClient:
         self._ensure_session()
         if not self.session:
             return None
-        attempts = 0
+        total = max(1, len(self.api_keys))
+        tried: set[str] = set()
+        last_wait = 0.0
         while True:
-            attempts += 1
-            r = self._request(path, params)
+            # 先跳在冷却里的 key；全都在冷却时宁可硬用一把（冷却是优化，不是锁死）
+            key = self._pick_key(tried) or self._pick_key(tried, allow_cooled=True)
+            if not key:
+                break
+            tried.add(key)
+            r = self._request(path, params, key)
             if r is None:
                 return None
             status = r.status_code
             if status in (401, 429):
-                wait = self._throttle(_retry_after_seconds(r)) if status == 429 else 0.0
-                # 还有别的 key 就换一把（配额是按 key 算的，每把 key 只试一次）；
-                # 换不动就退避后放弃这一条
-                can_retry = attempts < len(self.api_keys) and self._rotate()
-                if not can_retry:
+                if status == 429:
+                    wait = self._throttle(_retry_after_seconds(r))
+                    self.note_key_throttled(key, wait)
+                else:
+                    wait = 0.0
+                    self.note_key_invalid(key)
+                last_wait = max(last_wait, wait)
+                # 还有别的 key 就换一把（配额是按 key 算的，每把 key 只试一次）
+                if len(tried) < total:
                     if wait > 0:
-                        # 全部 key 都不可用：退避一轮再放行后续请求（这段窗口内的条目会
-                        # 落到重试队列，而不是继续把已经超限的配额撞满）
-                        time.sleep(wait)
-                    logger.warning("TMDB 全部密钥不可用（HTTP %s）", status)
-                    return None
-                if wait > 0:
-                    time.sleep(min(wait, 1.0))
-                continue
+                        time.sleep(min(wait, 1.0))
+                    continue
+                break
             if status >= 400:
                 logger.warning("TMDB 响应异常 %s: HTTP %s", path, status)
                 return None
@@ -675,8 +906,19 @@ class TmdbClient:
                 data = r.json()
             except Exception:  # noqa: BLE001
                 return None
+            # 成功一次就清掉这把的失败计数（它可能只是碰到了临时配额窗口）
+            with self._key_lock():
+                entry = self._cooldown_map().pop(key, None)
+            if entry:
+                logger.info("TMDB 密钥 ****%s 恢复正常", key[-4:])
             self._limiter.note_success()
             return data
+        if last_wait > 0:
+            # 全部 key 都不可用：退避一轮再放行后续请求（这段窗口内的条目会
+            # 落到重试队列，而不是继续把已经超限的配额撞满）
+            time.sleep(last_wait)
+        logger.warning("TMDB 全部密钥不可用或已用尽")
+        return None
 
     @property
     def configured(self) -> bool:
@@ -695,6 +937,7 @@ class TmdbClient:
             "retries": self._stats["retry"],
             "net_fail": self._stats["net_fail"],
             "short_circuits": self._stats["short_circuit"],
+            "keys_cooling": len([row for row in self.key_pool() if row["cooling"]]),
         }
 
     def _cache_get(self, key):

@@ -35,12 +35,21 @@ from backend.emby_server import rclone_manager
 from backend.emby_server import scan_queue
 from backend.emby_server.portal import admin_emby_router, require_staff
 from backend.emby_server.tmdb import (
-    TMDB_API,
+    TMDB_API_DEFAULT,
+    TMDB_IMAGE_DEFAULT,
+    TMDB_API_BASE_CONFIG_KEY,
+    TMDB_IMAGE_BASE_CONFIG_KEY,
+    TMDB_KEY_COOLDOWN_CONFIG_KEY,
+    TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY,
     TMDB_KEYS_CONFIG_KEY,
+    _db_keys,
     _env_keys,
     _split_keys,
+    invalidate_settings,
     prewarm_images,
+    settings as tmdb_settings,
     tmdb_client,
+    validate_base,
 )
 from backend.integrations import store
 
@@ -68,6 +77,7 @@ def get_tmdb_keys(
     撞 429 会自适应减半、连续成功后再慢慢加回来（见 tmdb._RequestLimiter）。
     """
     meta = tmdb_client.stats()
+    cfg = tmdb_settings(db)
     return {
         "configured": tmdb_client.configured,
         "source": tmdb_client.key_source,  # env | db | none
@@ -77,6 +87,16 @@ def get_tmdb_keys(
         "rate": meta["rate"],              # 实际请求/秒（自适应后）
         "rate_ceiling": meta["ceiling"],   # 配置上限
         "throttled": meta["throttled"],    # 进程内累计撞 429 次数
+        # 密钥池逐把状态：哪把在用、哪把在冷却（还要 xx 秒）、为什么
+        "pool": tmdb_client.key_pool(db),
+        "keys_cooling": meta.get("keys_cooling", 0),
+        # 镜像：空值 = 用官方地址，环境变量优先
+        "api_base": cfg["api_base"],
+        "image_base": cfg["image_base"],
+        "api_base_default": TMDB_API_DEFAULT,
+        "image_base_default": TMDB_IMAGE_DEFAULT,
+        "api_base_from_env": cfg["api_base_from_env"],
+        "image_base_from_env": cfg["image_base_from_env"],
     }
 
 
@@ -99,9 +119,15 @@ def save_tmdb_keys(
 
 
 def _test_one_key(key: str) -> tuple[bool, str]:
-    """测单个 key：调 TMDB /configuration（不记录原文）"""
+    """测单个 key：调 TMDB /configuration（不记录原文）
+
+    走**当前生效的镜像地址**：境内配了反代时，直连官方可能测不通，但反代本身是好的。
+    """
+    from backend.emby_server import tmdb as tmdb_mod
+
     try:
-        resp = httpx.get(f"{TMDB_API}/configuration", params={"api_key": key}, timeout=10)
+        resp = httpx.get(f"{tmdb_mod.api_base()}/configuration",
+                         params={"api_key": key}, timeout=10)
     except Exception as e:  # noqa: BLE001 — 网络异常直接当测试失败
         return False, f"网络异常：{type(e).__name__}"
     if resp.status_code == 200:
@@ -117,18 +143,165 @@ def test_tmdb_keys(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """测试连接：逐个 key 调 TMDB，只返回序号 / 掩码 / 有效性"""
+    """一键测试全部密钥：逐个 key 调 TMDB，只返回序号 / 掩码 / 有效性
+
+    测的是**当前生效的池**（除非传了 ``keys``）。测出 401 / 429 的 key 直接
+    放进冷却：测都过不了的 key 没必要继续拿去打真实请求。
+    """
     candidates = _split_keys(req.keys) or list(tmdb_client.api_keys)
+    testing_pool = not req.keys
     results = []
     for i, key in enumerate(candidates):
         ok, message = _test_one_key(key)
+        if testing_pool and key in tmdb_client.api_keys and not ok:
+            if "401" in message:
+                tmdb_client.note_key_invalid(key)
+            else:
+                tmdb_client.note_key_throttled(key)
         results.append({
             "index": i + 1,
             "masked": f"****{key[-4:]}" if len(key) > 4 else "****",
             "ok": ok,
             "message": message,
         })
-    return {"results": results}
+    return {"results": results, "pool": tmdb_client.key_pool(db)}
+
+
+class TmdbKeyAddRequest(BaseModel):
+    key: str = Field(..., min_length=8, max_length=200, description="一把新的 TMDB API Key")
+
+
+def _save_pool(db: Session, keys: list[str]) -> int:
+    """把密钥池写回 SystemConfig 并热生效（返回写入数量）"""
+    count = store.write_values(
+        db,
+        {TMDB_KEYS_CONFIG_KEY: ",".join(keys)},
+        {TMDB_KEYS_CONFIG_KEY: "TMDB API Keys（元数据来源，多 key 逗号分隔）"},
+    )
+    db.commit()
+    tmdb_client.refresh_keys(db)
+    return count
+
+
+@admin_emby_router.post("/scrape/tmdb-keys/add")
+def add_tmdb_key(
+    req: TmdbKeyAddRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """逐把增：往密钥池里追加一把（去重，不覆盖已有）
+
+    环境变量里有 key 时（``TMDB_API_KEYS``）写入仍然成功，但**不会生效**——
+    返回里的 ``effective=false`` 就是给界面提示用的，与密钥来源优先级一致。
+    """
+    key = req.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="密钥不能为空")
+    existing = _db_keys(db)
+    if key in existing:
+        raise HTTPException(status_code=409, detail="这把密钥已经在池子里了")
+    _save_pool(db, existing + [key])
+    info = tmdb_client.refresh_keys(db)
+    return {
+        "success": True,
+        "count": len(tmdb_client.api_keys),
+        "masked": tmdb_client.masked_keys(),
+        "effective": tmdb_client.key_source == "db",
+        "note": "" if tmdb_client.key_source == "db"
+                else "环境变量 TMDB_API_KEYS 优先，后台添加的这把暂不生效",
+        **info,
+    }
+
+
+@admin_emby_router.delete("/scrape/tmdb-keys/{index}")
+def delete_tmdb_key(
+    index: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """逐把删：按**序号**（从 1 开始，与界面展示一致）删掉一把"""
+    keys = _db_keys(db)
+    if index < 1 or index > len(keys):
+        raise HTTPException(
+            status_code=400,
+            detail=f"序号超出范围：密钥池里只有 {len(keys)} 把（删的是后台填写的那部分）",
+        )
+    removed = keys.pop(index - 1)
+    _save_pool(db, keys)
+    return {
+        "success": True,
+        "removed": f"****{removed[-4:]}" if len(removed) > 4 else "****",
+        "count": len(tmdb_client.api_keys),
+        "masked": tmdb_client.masked_keys(),
+    }
+
+
+@admin_emby_router.post("/scrape/tmdb-keys/cooldown/reset")
+def reset_tmdb_key_cooldown(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """清除全部密钥的冷却（换完 key / 网络恢复后手动重来一次）"""
+    cleared = tmdb_client.clear_cooldowns()
+    return {"success": True, "cleared": cleared, "pool": tmdb_client.key_pool(db)}
+
+
+class TmdbMirrorRequest(BaseModel):
+    api_base: str = Field(default="", description="API 镜像/反代地址（留空 = 官方）")
+    image_base: str = Field(default="", description="图片 CDN 镜像地址（留空 = 官方）")
+
+
+@admin_emby_router.put("/scrape/tmdb-mirror")
+def save_tmdb_mirror(
+    req: TmdbMirrorRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存 TMDB 镜像地址（API 与图片分开；保存即热生效）
+
+    空值 = 回到官方地址；写进 SystemConfig，跨进程靠短 TTL 兜底。
+    """
+    try:
+        api = validate_base(req.api_base, "API 镜像地址")
+        image = validate_base(req.image_base, "图片 CDN 镜像地址")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    store.write_values(
+        db,
+        {TMDB_API_BASE_CONFIG_KEY: api, TMDB_IMAGE_BASE_CONFIG_KEY: image},
+        {
+            TMDB_API_BASE_CONFIG_KEY: "TMDB API 镜像/反代地址（留空 = 官方地址）",
+            TMDB_IMAGE_BASE_CONFIG_KEY: "TMDB 图片 CDN 镜像地址（留空 = 官方地址）",
+        },
+    )
+    db.commit()
+    invalidate_settings()
+    cfg = tmdb_settings(db, refresh=True)
+    return {
+        "success": True,
+        "api_base": cfg["api_base"],
+        "image_base": cfg["image_base"],
+        "defaults": {"api_base": TMDB_API_DEFAULT, "image_base": TMDB_IMAGE_DEFAULT},
+    }
+
+
+@admin_emby_router.get("/scrape/tmdb-mirror")
+def get_tmdb_mirror(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """当前生效的镜像地址 + 官方默认值（界面上的“恢复默认”要比对得出差异）"""
+    cfg = tmdb_settings(db, refresh=True)
+    return {
+        "api_base": cfg["api_base"],
+        "image_base": cfg["image_base"],
+        "api_base_from_env": cfg["api_base_from_env"],
+        "image_base_from_env": cfg["image_base_from_env"],
+        "defaults": {"api_base": TMDB_API_DEFAULT, "image_base": TMDB_IMAGE_DEFAULT},
+        "cooldown_sec": cfg["cooldown_sec"],
+        "invalid_cooldown_sec": cfg["invalid_cooldown_sec"],
+        "cooldown_config_keys": [TMDB_KEY_COOLDOWN_CONFIG_KEY, TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY],
+    }
 
 
 # ==================== 条目级重刮 ====================

@@ -272,9 +272,17 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         (change_watcher.CONFIG_LIBRARIES, "", "追新库过滤（留空=全部库）"),
     ])
 
-    # 6. TMDB API Key（管理员在后台填）
+    # 6. TMDB API Key（管理员在后台填）+ 镜像地址 + 密钥冷却时长
     from backend.emby_server import tmdb
-    items.append((tmdb.TMDB_KEYS_CONFIG_KEY, "", "TMDB API Key（多个换行分隔，后台填写）"))
+    items.extend([
+        (tmdb.TMDB_KEYS_CONFIG_KEY, "", "TMDB API Key（多个换行分隔，后台填写）"),
+        (tmdb.TMDB_API_BASE_CONFIG_KEY, "", "TMDB API 镜像/反代地址（留空 = 官方地址）"),
+        (tmdb.TMDB_IMAGE_BASE_CONFIG_KEY, "", "TMDB 图片 CDN 镜像地址（留空 = 官方地址）"),
+        (tmdb.TMDB_KEY_COOLDOWN_CONFIG_KEY, str(tmdb.DEFAULT_KEY_COOLDOWN_SEC),
+         "单把 TMDB Key 被限流后的冷却秒数"),
+        (tmdb.TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY, str(tmdb.DEFAULT_KEY_INVALID_COOLDOWN_SEC),
+         "单把 TMDB Key 返回 401 后的冷却秒数"),
+    ])
 
     # 7. 播放策略
     from backend import playback_policy
