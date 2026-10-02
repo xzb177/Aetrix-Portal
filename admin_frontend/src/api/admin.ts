@@ -561,6 +561,10 @@ export const createLibrary = (data: {
   realm_id?: number
   /** 归属播放节点（留空 = 未分配：所有节点可见、由面板扫描） */
   node_id?: number
+  /** 封面自动生成：样式 + 标题文字；空 = 用直传封面 */
+  cover_template?: 'poster' | 'visual' | 'filmstrip' | null
+  cover_title?: string | null
+  cover_subtitle?: string | null
 }) => post<{ success: boolean; id: number; guid: string }>(`${E}/libraries`, data)
 
 export const updateLibrary = (
@@ -579,6 +583,10 @@ export const updateLibrary = (
     realm_id?: number | null
     /** 归属播放节点：传 null 表示不分配（所有节点可见），省略则不修改 */
     node_id?: number | null
+    /** 封面自动生成：传 null/空串表示清除（回退直传封面），省略则不修改 */
+    cover_template?: 'poster' | 'visual' | 'filmstrip' | null
+    cover_title?: string | null
+    cover_subtitle?: string | null
   }
 ) => put<{ success: boolean; rescan_required?: boolean }>(`${E}/libraries/${id}`, data)
 

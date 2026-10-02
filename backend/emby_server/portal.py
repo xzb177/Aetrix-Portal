@@ -897,6 +897,10 @@ class LibraryCreate(BaseModel):
     # 归属：服（多服运营）与播放节点（多机同时出流）；留空 = 当前服 / 未分配节点
     realm_id: int | None = None
     node_id: int | None = None
+    # 封面自动生成：样式 + 标题文字；空 = 用直传的 cover_path
+    cover_template: str | None = None
+    cover_title: str | None = None
+    cover_subtitle: str | None = None
 
 
 class LibraryUpdate(BaseModel):
@@ -910,6 +914,10 @@ class LibraryUpdate(BaseModel):
     # 归属：服（多服运营）与播放节点（多机同时出流）。显式传 null 表示「不分配」
     realm_id: int | None = None
     node_id: int | None = None
+    # 封面自动生成：传 null/空串表示清除（回退直传封面），省略则不修改
+    cover_template: str | None = None
+    cover_title: str | None = None
+    cover_subtitle: str | None = None
 
 
 def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int]) -> None:
@@ -1082,6 +1090,8 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         scrape_policy=normalize_scrape_policy(req.scrape_policy),
         account_115_id=req.account_115_id,
         realm_id=realm_id, node_id=node_id,
+        cover_template=req.cover_template, cover_title=req.cover_title,
+        cover_subtitle=req.cover_subtitle,
     )
     db.add(lib)
     db.commit()
@@ -1203,6 +1213,12 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
         lib.is_enabled = req.is_enabled
     if req.scrape_policy is not None:
         lib.scrape_policy = normalize_scrape_policy(req.scrape_policy)
+    if "cover_template" in req.model_fields_set:
+        lib.cover_template = req.cover_template or None
+    if "cover_title" in req.model_fields_set:
+        lib.cover_title = req.cover_title or None
+    if "cover_subtitle" in req.model_fields_set:
+        lib.cover_subtitle = req.cover_subtitle or None
     if "account_115_id" in req.model_fields_set:
         # 允许显式解绑（传 null）
         lib.account_115_id = req.account_115_id

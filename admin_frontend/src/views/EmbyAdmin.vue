@@ -470,6 +470,9 @@ async function saveForm(thenScan = false) {
         account_115_id: libForm.account_115_id ?? undefined,
         realm_id: libForm.realm_id ?? undefined,
         node_id: libForm.node_id ?? undefined,
+        cover_template: coverTemplate.value || null,
+        cover_title: coverTitle.value || null,
+        cover_subtitle: coverSubtitle.value || null,
       })
       savedId = res.id
       const hasSource = paths.length > 0 || libForm.mount_ids.length > 0
@@ -488,6 +491,9 @@ async function saveForm(thenScan = false) {
         ...(virtual
           ? {}
           : { paths, mount_ids: libForm.mount_ids, node_id: libForm.node_id ?? null }),
+        cover_template: coverTemplate.value || null,
+        cover_title: coverTitle.value || null,
+        cover_subtitle: coverSubtitle.value || null,
       })
       savedId = editingId
       ElMessage.success(res?.rescan_required
