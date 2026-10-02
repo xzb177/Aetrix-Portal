@@ -2385,6 +2385,29 @@ def scan_runs_payload(db: Session, library_id: int, limit: int = 20) -> list:
     return [_scan_run_payload(run) for run in rows]
 
 
+def recent_scan_runs(db: Session, library_ids, limit: int = 40) -> list:
+    """跨库取最近若干轮扫描流水（服务器维度视图用；新的在前）
+
+    「整服视角的扫描历史」问的是「这台节点负责的那批库，最近扫得怎么样」——
+    按库各查一遍再拼接既慢又排不出时间顺序，所以这里一次查完再排。
+    每条带上 ``library_id``，面板才能把流水写回库名。
+    """
+    ids = [int(i) for i in (library_ids or [])]
+    if not ids:
+        return []
+    hits = max(0, min(int(limit or 0), 200))
+    if not hits:
+        return []
+    rows = (
+        db.query(emby_models.ScanRun)
+        .filter(emby_models.ScanRun.library_id.in_(ids))
+        .order_by(emby_models.ScanRun.id.desc())
+        .limit(hits)
+        .all()
+    )
+    return [{**_scan_run_payload(run), "library_id": run.library_id} for run in rows]
+
+
 def prune_library_scan_runs(db: Session, library_id: int,
                             keep: Optional[int] = None) -> int:
     """只留某个媒体库最近 ``keep`` 轮流水（不提交：由调用方与本次写入一起提交）"""

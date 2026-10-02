@@ -598,6 +598,142 @@ export interface ServerOverview {
   kinds: ServerKindMeta[]
 }
 
+/** 服务器维度媒体运维里的一个库（**只读事实**：配置仍在媒体库页改） */
+export interface ServerOpsLibrary {
+  id: number
+  name: string
+  enabled: boolean
+  virtual: boolean
+  platform: string | null
+  item_count: number
+  paths: number
+  mount_ids: number[]
+  last_scan_at: string | null
+  last_scan: EmbyScanResult | null
+  /** live 有值 = 此刻在队列里 / 在扫（含 source=other：由归属节点在扫） */
+  live: EmbyScanLive | null
+  /** 从 live 归约出来的状态；空闲为 idle */
+  state: EmbyScanTaskState | 'idle'
+}
+
+/** 整服扫描流水里的一条（比单库的多了库名，跨库合并后按时间倒序） */
+export interface ServerOpsRun extends EmbyScanRun {
+  library_id: number
+  library_name: string
+}
+
+/** 扫描队列（只含这个节点范围内的行） */
+export interface ServerOpsQueue {
+  view: 'panel' | 'db' | string
+  enabled: boolean
+  max_parallel: number | null
+  mount_serial: boolean
+  running: EmbyScanTask[]
+  waiting: EmbyScanTask[]
+  history: EmbyScanTask[]
+  /** 挂载 id → 名字（只带这个范围正在等的那些） */
+  mount_names: Record<string, string>
+  remote: { lists: number; reused: number; inflight: number; peak_inflight: number; last_at: string | null } | null
+}
+
+/** 正在熔断的挂载（坏挂载会把这一台的扫描一起拖慢） */
+export interface ServerOpsBreaker {
+  mount_id: number | null
+  mount_name?: string
+  mount_type: string
+  opened_at: string
+  fails: number
+  last_error: string | null
+}
+
+/** 刮削补全 / 探测 / 修复：按这个节点范围内的条目聚合 */
+export interface ServerOpsPipeline {
+  items: number
+  /** enrich_status → 条数（pending / enriching / done / failed） */
+  enrich: Record<string, number>
+  /** probe_status → 条数 */
+  probe: Record<string, number>
+  repair: {
+    total: number
+    items: {
+      id: string
+      name: string
+      type: string | null
+      library_id: number
+      requested_at: string | null
+      file_exists: boolean
+    }[]
+  }
+  mount_breakers: ServerOpsBreaker[]
+  note?: string
+}
+
+/**
+ * 内容转交（求片 → MoviePilot / qBittorrent）
+ *
+ * scope=realm：**服级**，不是这台节点在跑（外部服务自己找片、下载、整理入库），
+ * 面板不能把它写成「这台服务器在转存」。
+ */
+export interface ServerOpsHandoff {
+  scope: 'realm' | 'none' | string
+  realm_id?: number | null
+  total: number
+  items: {
+    id: number
+    movie_name: string
+    type: string | null
+    season: string | null
+    status: string
+    push_target: string | null
+    push_status: string | null
+    push_message: string | null
+    pushed_at: string | null
+  }[]
+  note?: string
+}
+
+/** 服务器维度媒体运维快照（`GET /api/admin/servers/{id}/ops`） */
+export interface ServerOpsSnapshot {
+  server_id: number
+  realm_id: number | null
+  server: RemoteServerRow
+  scope: {
+    include_unassigned: boolean
+    libraries: number
+    enabled: number
+    /** 同服里还没分配给任何节点的库数（默认不算进本节点视图） */
+    unassigned: number
+    runs_limit: number
+    scan_cap: number
+  }
+  libraries: ServerOpsLibrary[]
+  /** 整服视角扫描历史：跨库合并，新的在前 */
+  runs: ServerOpsRun[]
+  queue: ServerOpsQueue
+  pipeline: ServerOpsPipeline
+  handoff: ServerOpsHandoff
+  /** 把「这个视图意味着什么」写成人话；面板直接展示，不自己推断 */
+  notes: string[]
+}
+
+/** 一键扫描的结果（`POST /api/admin/servers/{id}/ops/scan`） */
+export interface ServerOpsScanResult {
+  success: boolean
+  server_id: number
+  server_name: string
+  /** 本地入队的库 */
+  queued: { id: number; name: string; message: string }[]
+  /** 已在队列 / 正在扫的（不重复推） */
+  already: { id: number; name: string; message: string; state?: string }[]
+  /** 转发给归属节点并成功的 */
+  forwarded: { id: number; name: string; node_id: number; node_name: string }[]
+  /** 转发失败的：只有这一类会让整键变成「部分失败」 */
+  failed: { id: number; name: string; node_id: number; node_name: string; error: string }[]
+  /** 停用 / 虚拟库 / 超出单次上限被跳过的（带原因） */
+  skipped: { id: number; name: string; reason: string }[]
+  message: string
+}
+
 export interface ServerProbeResult {
   ok: boolean
   message?: string

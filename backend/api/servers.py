@@ -5,6 +5,8 @@
 
 - `GET    /api/admin/servers`            清单 + 类型元数据 + 统计（面板顶部与数据概览都用它）
 - `GET    /api/admin/servers/summary`    只取统计（数据概览的信息展示用）
+- `GET    /api/admin/servers/{id}/ops`   媒体运维快照（**服务器维度**：整服扫描历史 / 扫描任务 / 刮削补全 / 内容转交）
+- `POST   /api/admin/servers/{id}/ops/scan` 一键把这台节点负责的库推入扫描队列
 - `POST   /api/admin/servers`            新增（保存即体检一次，结果落到列表）
 - `PUT    /api/admin/servers/{id}`       修改（密钥留空 = 不改）
 - `POST   /api/admin/servers/{id}/test`  重新体检
@@ -34,6 +36,7 @@ from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server import mount_health
 from backend.emby_server import nodes as node_lib
+from backend.emby_server import server_ops
 
 logger = logging.getLogger(__name__)
 
@@ -659,6 +662,127 @@ async def refresh_mount_health_now(
            {"ok": health.get("ok")})
     await run_in_threadpool(db.commit)
     return {"success": bool(health.get("ok")), "health": health, "server": ea["name"]}
+
+
+# ==================== 媒体运维（服务器维度） ====================
+
+def _ops_server(db: Session, server_id: int):
+    """取出这台服务器，并挡住「媒体运维只对后端服（EA）开放」
+
+    EA 才是扫内容的机器：外部 Emby / MoviePilot / qBittorrent 都不在
+    ``emby_libraries.node_id`` 的另一端，给它们开一个空的运维面板只会让人以为配错了。
+    """
+    server = registry.get_server(db, server_id)
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+    if server.kind != "ea":
+        raise HTTPException(400, "媒体运维只对后端服（EA）开放：它才是扫描与出流内容的机器")
+    return server
+
+
+@router.get("/{server_id}/ops")
+def server_ops_snapshot(
+    server_id: int,
+    _: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    include_unassigned: bool = False,
+    runs_limit: int = server_ops.DEFAULT_RUNS,
+):
+    """这台节点的媒体运维快照（整服扫描历史 + 扫描任务 + 刮削补全 + 内容转交）
+
+    纯读：按库的配置不在这里改，这里只回答「这台机器现在跑得怎么样」。
+    ``include_unassigned=true`` 把同服里还没分配节点的库也算进来（默认不算——
+    那些库由面板扫，不属于这台节点）。
+    """
+    server = _ops_server(db, server_id)
+    snapshot = server_ops.ops_snapshot(
+        db, server, include_unassigned=include_unassigned, runs_limit=runs_limit)
+    snapshot["server"] = registry.serialize(db, server)
+    return snapshot
+
+
+class ServerOpsScanRequest(BaseModel):
+    """一键扫描的范围（body 而不是 query：这是一个有语义的写动作）"""
+
+    include_unassigned: bool = Field(
+        default=False,
+        description="是否连同服里还没分配节点的库一起扫（默认只扫归这台节点的）",
+    )
+
+
+@router.post("/{server_id}/ops/scan")
+async def server_ops_scan(
+    server_id: int,
+    req: Optional[ServerOpsScanRequest] = None,
+    admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """一键把这台节点负责的库推入扫描队列（扫描 → 入库 → 刮削流水线）
+
+    与逐库「扫描」同一套机制：面板能扫的本地入队，归其它节点管的转发过去
+    （只有那台机器碰得到文件），已在队列 / 正在扫的不重复推。所以这里不新建
+    任何执行路径，只是把「按库点」换成「按节点点」。
+    """
+    include_unassigned = bool(req.include_unassigned) if req is not None else False
+    admin_id = admin.id          # 纯值：下面有提交，之后再读 ORM 属性会在事件循环上回查
+
+    def load():
+        return _ops_server(db, server_id)
+
+    server = await run_in_threadpool(load)
+    server_name = server.name
+
+    plan = await run_in_threadpool(server_ops.scan_plan, db, server, include_unassigned)
+
+    # 转发是网络调用，必须 await（留在事件循环上）；本地入队是同步 SQLAlchemy，
+    # 已经在上面的线程池任务里做完了。
+    forwarded: list[dict] = []
+    failed: list[dict] = []
+    for entry in plan["forward"]:
+        result = await node_lib.push_scan(entry["url"], entry["id"])
+        row = {"id": entry["id"], "name": entry["name"],
+               "node_id": entry["node_id"], "node_name": entry["node_name"]}
+        if result.get("ok"):
+            forwarded.append(row)
+        else:
+            failed.append({**row, "error": str(result.get("error") or "转发失败")[:200]})
+
+    _audit(db, admin_id, "server_ops_scan", "server", server_id,
+           {"name": server_name, "include_unassigned": include_unassigned,
+            "queued": len(plan["queued"]), "already": len(plan["already"]),
+            "forwarded": len(forwarded), "failed": len(failed),
+            "skipped": len(plan["skipped"])})
+    await run_in_threadpool(db.commit)
+
+    return {
+        "success": not failed,
+        "server_id": server_id,
+        "server_name": server_name,
+        "queued": plan["queued"],
+        "already": plan["already"],
+        "forwarded": forwarded,
+        "failed": failed,
+        "skipped": plan["skipped"],
+        "message": _ops_scan_message(plan, forwarded, failed),
+    }
+
+
+def _ops_scan_message(plan: dict, forwarded: list, failed: list) -> str:
+    """一句话说清这一键到底做了什么（面板直接显示，不要自己拼）"""
+    parts: list[str] = []
+    if plan["queued"]:
+        started = len([row for row in plan["queued"] if row.get("message")])
+        parts.append(f"已推入扫描队列 {len(plan['queued'])} 个库"
+                     + (f"（其中 {started} 个已开始）" if started else ""))
+    if plan["already"]:
+        parts.append(f"{len(plan['already'])} 个已在队列或正在扫")
+    if forwarded:
+        parts.append(f"{len(forwarded)} 个已转发给归属节点")
+    if failed:
+        parts.append(f"{len(failed)} 个转发失败")
+    if plan["skipped"]:
+        parts.append(f"{len(plan['skipped'])} 个被跳过（停用 / 虚拟库 / 超出单次上限）")
+    return "；".join(parts) or "没有可扫的启用库"
 
 
 __all__ = ["router"]

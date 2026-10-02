@@ -34,6 +34,8 @@ import type {
   ServerKind,
   ServerKindMeta,
   ServerOverview,
+  ServerOpsScanResult,
+  ServerOpsSnapshot,
   ServerProbeResult,
   ServerSummary,
   LoginResponse,
@@ -378,6 +380,26 @@ export const fetchServersOverview = (params: { realm_id?: number; live?: boolean
   get<ServerOverview>(`${S}/overview`, params)
 
 export const fetchServersSummary = () => get<ServerSummary>(`${S}/summary`)
+
+/**
+ * 媒体运维快照（服务器维度）：整服扫描历史 + 扫描任务 + 刮削补全 / 修复 + 内容转交
+ *
+ * 按库的配置不在这里改，这里只回答「这台机器现在跑得怎么样」。
+ * `include_unassigned=true` 把同服里还没分配节点的库也算进来（默认不算）。
+ */
+export const fetchServerOps = (serverId: number, params: {
+  include_unassigned?: boolean
+  runs_limit?: number
+} = {}) => get<ServerOpsSnapshot>(`${S}/${serverId}/ops`, params)
+
+/**
+ * 一键把这台节点负责的库推入扫描队列（扫描 → 入库 → 刮削流水线）
+ *
+ * 与逐库「扫描」同一套机制：面板能扫的本地入队、归其它节点管的转发过去、
+ * 已在队列的不重复推。
+ */
+export const runServerOpsScan = (serverId: number, params: { include_unassigned?: boolean } = {}) =>
+  post<ServerOpsScanResult>(`${S}/${serverId}/ops/scan`, params)
 
 export interface BackendServiceStatus {
   name: string; role: string; status: string
