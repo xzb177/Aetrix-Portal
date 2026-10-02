@@ -68,13 +68,17 @@ class Hit:
 @dataclass
 class SourceSpec:
     """源的静态元信息（能力、要不要 key、天生给哪种语言）"""
-
     id: str
     label: str
     requires_key: bool
     lang: str
     note: str
     search: Callable
+    #: key 去哪申请（界面直接展示，避免管理员去搜索引擎里找）
+    apply_url: str = ""
+    apply_hint: str = ""
+    #: 密钥存在哪个 SystemConfig 键（告诉用户“在哪填”）
+    key_storage: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -457,11 +461,23 @@ SPECS: list = [
     SourceSpec("tvmaze", "TVmaze", False, "en",
                "英文剧集强、免费无 key；中文片名常常搜不到", search_tvmaze),
     SourceSpec("omdb", "OMDb（IMDb 数据）", True, "en",
-               "需要免费 key；只索引电影，剧集不参与", search_omdb),
+               "需要免费 key；只索引电影，剧集不参与", search_omdb,
+               apply_url="https://www.omdbapi.com/apikey.aspx",
+               apply_hint="OMDb key 免费申请：填个邮箱就能拿到，每日 1000 次（够个人用）。"
+                          "只索引**电影**，剧集条目不会用它。",
+               key_storage="meta_source_keys_omdb"),
     SourceSpec("tvdb", "TheTVDB", True, "en",
-               "需要 API token；只索引剧集", search_tvdb),
+               "需要 API key；只索引剧集", search_tvdb,
+               apply_url="https://thetvdb.com/",
+               apply_hint="TheTVDB key 免费申请：注册账号后在「API」页申请 v4 API key，"
+                          "免费档每月 5000 次查询。只索引**剧集**。",
+               key_storage="meta_source_keys_tvdb"),
     SourceSpec("tmdb", "TMDB", True, "en",
-               "字段最全，但中文剧集/综艺收录偏少，默认排在最后", search_tmdb),
+               "字段最全，但中文剧集/综艺收录偏少，默认排在最后", search_tmdb,
+               apply_url="https://www.themoviedb.org/settings/api",
+               apply_hint="TMDB key 免费申请：账号设置页直接生成 v3 API Key。"
+                          "密钥填在下方「TMDB 密钥池与镜像」卡片里（那里也是唯一入口）。",
+               key_storage="tmdb_api_keys"),
 ]
 
 SPEC_BY_ID = {spec.id: spec for spec in SPECS}

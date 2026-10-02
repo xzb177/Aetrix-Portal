@@ -35,6 +35,17 @@ CONFIG_SOURCE_RATE = "meta_source_rate_{id}"
 
 DEFAULT_RATE = 1.0
 
+#: **TMDB 的密钥池只有一处存储**：复用 Phase 6a 的 ``tmdb_api_keys``（那才是 6a 的
+#: 后台入口与密钥池实现的宿主）。6b 早期版本又开了一个 ``meta_source_keys_tmdb``，
+#: 于是同一把钥匙存了两份、后台还显示两遍——这里把分叉收掉：
+#:
+#: - 读：只认 ``tmdb_api_keys``；
+#: - 写：``meta_source_keys_tmdb`` **不再写**（函数层面堵死，不靠前端自觉）；
+#: - 残留：旧键里已有的值由启动自愈合并过来（``config_self_heal``），本模块只
+#:   标记「旧键里还有东西」让界面提醒，不当场当生效值用。
+TMDB_KEY_STORAGE = "tmdb_api_keys"
+LEGACY_KEY_CONFIG = {"tmdb": "meta_source_keys_tmdb"}
+
 # 一次采集最多问几个源。7 个源全开 + 磁盘很大 = 每条 7 次网络请求，
 # 这两个上限是为了让补全队列不被拖垮；宁可少问几个源，也不要把 worker 卡住。
 MAX_SOURCES = 7
@@ -56,6 +67,10 @@ class SourceConfig:
     lang: str                       # zh / en / any：这个源天然给哪种语言的标题
     keys: list[str] = field(default_factory=list)
     rate: float = DEFAULT_RATE       # 两次请求最小间隔秒数，0 = 不限
+    #: 已废弃的旧键里是否还有残留（启动自愈会合并；界面据此提醒去正式入口看一眼）
+    keys_legacy: bool = False
+    #: 密钥存在哪个 SystemConfig 键（界面告诉用户“去哪填”）
+    key_storage: str = ""
 
     @property
     def needs_key(self) -> bool:
@@ -86,6 +101,24 @@ def _truthy(raw: str, default: bool) -> bool:
     return value in ("1", "true", "yes", "on")
 
 
+def _keys_for(db, cfg, source_id: str) -> tuple[list, bool, str]:
+    """读某个源的密钥，返回 ``(生效的keys, 废弃键里是否还有残留, 存在哪个键)``
+
+    TMDB 只认 Phase 6a 的 ``tmdb_api_keys``。废弃键里残留的旧值由启动自愈
+    （``config_self_heal._migrate_legacy_meta_keys``）合并过去；这里**不当场生效**——
+    引擎真正发请求的是 ``TmdbClient``，让它读一个它不读的键只会让面板显示“有 key”
+    而实际一把都用不上，那比明说“没有”更糟。
+    """
+    from backend.emby_server.tmdb import TMDB_KEYS_CONFIG_KEY, _db_keys
+
+    if source_id == "tmdb":
+        keys = _db_keys(db) if db is not None else _split_keys(cfg(TMDB_KEYS_CONFIG_KEY, ""))
+        legacy_left = bool(_split_keys(cfg(LEGACY_KEY_CONFIG["tmdb"], "")))
+        return list(keys), legacy_left, TMDB_KEY_STORAGE
+    return _split_keys(cfg(CONFIG_SOURCE_KEYS.format(id=source_id), "")), False, \
+        CONFIG_SOURCE_KEYS.format(id=source_id)
+
+
 def read_config(db, specs: list) -> Snapshot:
     """把 SystemConfig 读成快照（``specs`` 是各源的静态元信息，见 sources.SPECS）"""
     from backend.integrations import store
@@ -100,13 +133,16 @@ def read_config(db, specs: list) -> Snapshot:
         spec = by_id.get(source_id)
         if spec is None:
             continue
+        keys, keys_legacy, key_storage = _keys_for(db, cfg, source_id)
         sources.append(SourceConfig(
             id=spec.id,
             label=spec.label,
             enabled=_truthy(cfg(CONFIG_SOURCE_ENABLED.format(id=source_id), ""), True),
             requires_key=bool(spec.requires_key),
             lang=spec.lang,
-            keys=_split_keys(cfg(CONFIG_SOURCE_KEYS.format(id=source_id), "")),
+            keys=keys,
+            keys_legacy=keys_legacy,
+            key_storage=key_storage,
             rate=_rate(cfg(CONFIG_SOURCE_RATE.format(id=source_id), "")),
         ))
     return Snapshot(
@@ -165,17 +201,30 @@ def write_config(db, *, enabled: bool, prefer_chinese: bool,
         values[key] = "1" if on else "0"
         descriptions[key] = f"元数据源「{source_id}」开关"
     for source_id, pool in (keys or {}).items():
-        key = CONFIG_SOURCE_KEYS.format(id=source_id)
         # 接受两种形态：原始字符串（后台批量粘贴）或已拆好的列表（接口内部）
         items = list(pool) if isinstance(pool, (list, tuple)) else _split_keys(pool)
-        values[key] = ",".join(str(k).strip() for k in items if str(k).strip())
-        descriptions[key] = f"元数据源「{source_id}」密钥池（逗号分隔，按顺序轮换）"
+        items = [str(k).strip() for k in items if str(k).strip()]
+        if source_id == "tmdb":
+            # TMDB 只写 Phase 6a 那一个键（单一存储）；写完顺手刷新密钥池，
+            # 否则多源这条路径写进去了、真正发请求的 TmdbClient 还拿着旧列表
+            key = TMDB_KEY_STORAGE
+            descriptions[key] = "TMDB API Keys（元数据来源，多 key 逗号分隔）"
+        else:
+            key = CONFIG_SOURCE_KEYS.format(id=source_id)
+            descriptions[key] = f"元数据源「{source_id}」密钥池（逗号分隔，按顺序轮换）"
+        values[key] = ",".join(items)
+    for source_id in LEGACY_KEY_CONFIG:
+        # 已废弃的分叉键：从「本轮要写的键」里拿掉，函数层面就不可能再写它
+        values.pop(LEGACY_KEY_CONFIG[source_id], None)
     for source_id, raw_rate in (rates or {}).items():
         key = CONFIG_SOURCE_RATE.format(id=source_id)
         values[key] = str(_rate(raw_rate))
         descriptions[key] = f"元数据源「{source_id}」请求最小间隔秒数（0 = 不限速）"
     count = store.write_values(db, values, descriptions)
     db.commit()
+    if any(source_id == "tmdb" for source_id in (keys or {})):
+        from backend.emby_server.tmdb import tmdb_client
+        tmdb_client.refresh_keys(db)
     invalidate()
     return count
 
@@ -208,6 +257,7 @@ def snapshot(db, specs: list) -> Snapshot:
 __all__ = [
     "COLLECT_TIMEOUT_SEC", "CONFIG_ENABLED", "CONFIG_ORDER", "CONFIG_PREFER_CN",
     "CONFIG_SOURCE_ENABLED", "CONFIG_SOURCE_KEYS", "CONFIG_SOURCE_RATE",
-    "DEFAULT_ORDER", "DEFAULT_RATE", "MAX_SOURCES", "Snapshot", "SourceConfig",
+    "DEFAULT_ORDER", "DEFAULT_RATE", "LEGACY_KEY_CONFIG", "MAX_SOURCES",
+    "TMDB_KEY_STORAGE", "Snapshot", "SourceConfig",
     "invalidate", "read_config", "snapshot", "write_config",
 ]
