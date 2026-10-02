@@ -66,6 +66,7 @@ ROUTER_MODULES = (
     "backend.api.admin",
     "backend.api.admin_ops",
     "backend.api.admin_economy",
+    "backend.api.admin_user_grants",
     "backend.api.admins_admin",
     "backend.api.setup",
     "backend.api.orders_admin",

@@ -56,6 +56,7 @@ import type {
   TicketRow,
   TrendStats,
   UserDetail,
+  UserGrants,
   UsersResponse,
 } from '@/types'
 
@@ -86,6 +87,9 @@ export const fetchUsers = (params: { search?: string; active?: boolean; limit?: 
 
 /** 用户 360° 详情：资料 / 订阅 / 积分 / 订单 / 邀请 / 签到 / 观看 */
 export const fetchUserDetail = (id: number) => get<UserDetail>(`/users/${id}`)
+
+/** 用户授权资源卡片（Phase 4）：一个服一张，看他现在能用什么 */
+export const fetchUserGrants = (id: number) => get<UserGrants>(`/user-grants/${id}`)
 
 /** 趋势统计（近 N 天，按日补零） */
 export const fetchStatsTrend = (days = 14) => get<TrendStats>('/stats/trend', { days })

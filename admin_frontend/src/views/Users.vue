@@ -13,16 +13,17 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  CalendarCheck, Coins, Crown, Eye, Film, Gift, KeyRound, Megaphone,
-  MoreHorizontal, RefreshCw, Search, ShieldCheck, Wallet,
+  CalendarCheck, CircleCheck, CircleSlash, Coins, Crown, Download, Eye, EyeOff, Film, Gift,
+  KeyRound, Megaphone, MonitorSmartphone, MoreHorizontal, PlayCircle, RefreshCw, Search,
+  Server, ShieldCheck, Wallet, Waypoints,
 } from 'lucide-vue-next'
 import {
   broadcastMessage, extendSubscription, fetchDevices, fetchPlans, fetchUserDetail, fetchUsers,
-  grantSubscription, removeDevice, resetUserPassword, sendUserMessage, setDeviceBlocked,
+  fetchUserGrants, grantSubscription, removeDevice, resetUserPassword, sendUserMessage, setDeviceBlocked,
   updateUser, type PlanRow,
 } from '@/api/admin'
 import { adjustUserPoints } from '@/api/economy'
-import type { AdminUserRow, DeviceRow, UserDetail } from '@/types'
+import type { AdminUserRow, DeviceRow, UserDetail, UserGrantCard, UserGrants } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -121,11 +122,16 @@ const userDevices = ref<DeviceRow[]>([])
 const deviceLoading = ref(false)
 const detailTab = ref('overview')
 const detailUser = ref<AdminUserRow | null>(null)
+// 授权资源卡片（Phase 4）：与详情同一次交互取回，但**单独兜底**——
+// 它挂了不能连累 360° 详情（面板与后端分开部署时可能短暂 404）
+const grants = ref<UserGrants | null>(null)
+const grantsLoading = ref(false)
 
 async function openDetail(u: AdminUserRow) {
   detailUser.value = u
   detailTab.value = 'overview'
   detail.value = null
+  grants.value = null
   detailVisible.value = true
   detailLoading.value = true
   try {
@@ -140,6 +146,11 @@ async function openDetail(u: AdminUserRow) {
   } finally {
     detailLoading.value = false
   }
+  grantsLoading.value = true
+  fetchUserGrants(u.id)
+    .then((res) => { grants.value = res })
+    .catch(() => { grants.value = null })
+    .finally(() => { grantsLoading.value = false })
 }
 
 /** 详情里的快捷操作后刷新两侧数据 */
@@ -401,6 +412,40 @@ function logTypeLabel(type: string): string {
   }
   return map[type] || type
 }
+
+// ==================== 授权资源卡片（Phase 4） ====================
+
+/** 卡片状态点：生效 / 即将到期 / 未授权（颜色只在点上，卡片本体不染色） */
+function grantState(card: UserGrantCard): { cls: string; text: string } {
+  if (card.state === 'warn') return { cls: 'warn', text: `${card.subscription?.days_left ?? 0} 天后到期` }
+  if (card.state === 'ok') return { cls: 'ok', text: card.grant_label }
+  return { cls: 'off', text: card.grant_label }
+}
+
+/** 授权来源的一句话：管理员不展开卡片也能知道「凭什么能看」 */
+function grantReason(card: UserGrantCard): string {
+  const sub = card.subscription
+  if (card.grant === 'subscription') {
+    return `${sub?.plan_name || '订阅'} · ${fmtDay(sub?.end_date ?? null)} 到期`
+  }
+  if (card.grant === 'expired') {
+    if (sub?.cancelled) return `${sub.plan_name || '订阅'} 已退款取消`
+    return `${sub?.plan_name || '订阅'} 已于 ${fmtDay(sub?.end_date ?? null)} 到期`
+  }
+  if (card.grant === 'unlock') {
+    const u = card.unlock
+    return u?.expires_at ? `积分解锁 · ${fmtDay(u.expires_at)} 到期` : '积分解锁 · 永久有效'
+  }
+  if (card.grant === 'free_open') return '公益服免费开放，未解锁 Emby 账号查看'
+  return '付费服未开通会员，播放会被付费墙拦下'
+}
+
+/** 资源数字：条目数常在十万级，给个千分位比堆 6 位数字好读；null 显示「—」而不是 0 */
+function fmtCount(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—'
+  return n.toLocaleString('zh-CN')
+}
+
 </script>
 
 <template>
@@ -571,6 +616,113 @@ function logTypeLabel(type: string): string {
           </div>
 
           <el-tabs v-model="detailTab" class="detail-tabs">
+            <!-- 授权资源：一个服一张卡（Phase 4） -->
+            <el-tab-pane label="授权资源" name="grants">
+              <template #label>
+                <span class="tab-label"><Server :size="13" />授权资源</span>
+              </template>
+              <div v-if="grantsLoading" class="empty-hint">授权卡片读取中…</div>
+              <div v-else-if="!grants" class="empty-hint">授权卡片读取失败，关掉抽屉重开可重试</div>
+              <template v-else>
+                <div class="grant-summary">
+                  <div class="gs-item">
+                    <span class="gs-label">可播放</span>
+                    <span class="gs-value">
+                      {{ grants.summary.realms_playable }} / {{ grants.summary.realms_total }} 个服
+                    </span>
+                  </div>
+                  <div class="gs-item">
+                    <span class="gs-label">即将到期</span>
+                    <span class="gs-value" :class="{ warn: grants.summary.realms_expiring > 0 }">
+                      {{ grants.summary.realms_expiring }} 个服
+                    </span>
+                  </div>
+                  <div class="gs-item">
+                    <span class="gs-label">已过期</span>
+                    <span class="gs-value">{{ grants.summary.realms_expired }} 个服</span>
+                  </div>
+                  <div class="gs-item">
+                    <span class="gs-label">活跃设备</span>
+                    <span class="gs-value">
+                      {{ grants.summary.devices_used === null ? '—' : `${grants.summary.devices_used} 台` }}
+                      <em v-if="grants.summary.device_limit !== null">
+                        {{ grants.summary.device_limit ? `/ 上限 ${grants.summary.device_limit}` : '（不限）' }}
+                      </em>
+                    </span>
+                  </div>
+                  <div class="gs-item">
+                    <span class="gs-label">播放线路</span>
+                    <span class="gs-value">{{ grants.summary.play_line_label }}</span>
+                  </div>
+                </div>
+
+                <div v-if="grants.cards.length === 0" class="empty-hint">
+                  还没有配置任何服，先到「服管理」建一个
+                </div>
+                <div v-else class="grant-grid">
+                  <div v-for="card in grants.cards" :key="card.realm_id" class="grant-card">
+                    <div class="grant-head">
+                      <span class="grant-dot" :class="grantState(card).cls" />
+                      <b class="grant-name">{{ card.realm_name }}</b>
+                      <span class="mini-badge" :class="grantState(card).cls">{{ grantState(card).text }}</span>
+                      <span v-if="card.is_default" class="mini-badge off">默认服</span>
+                      <span v-if="card.is_free" class="mini-badge vip">公益服</span>
+                      <span v-if="!card.is_active" class="mini-badge disabled">已停用</span>
+                    </div>
+
+                    <p class="grant-reason">{{ grantReason(card) }}</p>
+
+                    <div class="grant-caps">
+                      <span class="cap" :class="card.can_play ? 'on' : 'off'">
+                        <PlayCircle :size="12" />{{ card.can_play ? '可播放' : '不可播放' }}
+                      </span>
+                      <span class="cap" :class="card.view_granted ? 'on' : 'off'">
+                        <component :is="card.view_granted ? Eye : EyeOff" :size="12" />
+                        {{ card.view_granted ? '可见账号' : '账号未下发' }}
+                      </span>
+                      <span class="cap" :class="card.download_allowed ? 'on' : 'off'">
+                        <Download :size="12" />{{ card.download_allowed ? '可下载' : '禁下载' }}
+                      </span>
+                      <span v-if="card.subscription?.auto_renew" class="cap on">
+                        <CircleCheck :size="12" />自动续费
+                      </span>
+                    </div>
+
+                    <div class="grant-metrics">
+                      <div class="grant-metric">
+                        <b>
+                          {{ fmtCount(card.resources.enabled_libraries) }}<em v-if="card.resources.libraries !== null">/{{ card.resources.libraries }}</em>
+                        </b>
+                        <span>媒体库</span>
+                      </div>
+                      <div class="grant-metric">
+                        <b>{{ fmtCount(card.resources.items) }}</b>
+                        <span>条目</span>
+                      </div>
+                      <div class="grant-metric">
+                        <b>
+                          {{ fmtCount(card.resources.nodes_online) }}<em v-if="card.resources.nodes !== null">/{{ card.resources.nodes }}</em>
+                        </b>
+                        <span>出流节点</span>
+                      </div>
+                    </div>
+
+                    <p v-if="card.is_free && card.access_note" class="grant-note">
+                      <Waypoints :size="12" />{{ card.access_note }}
+                    </p>
+                    <p v-else-if="!card.can_play" class="grant-note muted">
+                      <CircleSlash :size="12" />到「商品与套餐」授予该服会员，或用该服的卡码开通
+                    </p>
+                    <p v-else-if="card.is_free && !card.unlock?.unlocked" class="grant-note">
+                      <MonitorSmartphone :size="12" />能看全库，但客户端需在个人中心花积分解锁账号地址
+                    </p>
+                  </div>
+                </div>
+
+                <p class="grant-scope">{{ grants.summary.scope_note }}</p>
+              </template>
+            </el-tab-pane>
+
             <el-tab-pane label="订阅记录" name="overview">
               <div v-if="detail.subscription.history.length === 0" class="empty-hint">暂无订阅记录</div>
               <DataTable
@@ -801,6 +953,8 @@ function logTypeLabel(type: string): string {
 .mini-badge.disabled { background: var(--danger-bg); color: var(--danger); }
 .mini-badge.vip { background: var(--warning-bg); color: var(--warning); }
 .mini-badge.off { background: var(--bg-hover); color: var(--text-muted); }
+.mini-badge.ok { background: var(--success-bg); color: var(--success); }
+.mini-badge.warn { background: var(--warning-bg); color: var(--warning); }
 
 .pager { display: flex; justify-content: flex-end; padding: 14px 0 4px; }
 
@@ -879,4 +1033,122 @@ function logTypeLabel(type: string): string {
 .dialog-user { font-weight: 600; }
 .dialog-hint { font-size: 12px; color: var(--text-muted); }
 .dialog-hint.warn { color: var(--warning); }
+
+/* ===== 授权资源卡片（Phase 4）===== */
+.tab-label { display: inline-flex; align-items: center; gap: 4px; }
+
+.grant-summary {
+  display: grid;
+  /* 104px 下限：620px 抽屉里一行放得下 5 项，92vw 的手机上一行 3 项自动换行 */
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.gs-item {
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.gs-label { display: block; font-size: 11.5px; color: var(--text-muted); }
+.gs-value { display: block; margin-top: 2px; font-size: 14px; font-weight: 600; }
+.gs-value.warn { color: var(--warning); }
+.gs-value em { font-style: normal; margin-left: 4px; font-size: 11.5px; font-weight: 400; color: var(--text-secondary); }
+
+.grant-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.grant-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  /* 抽屉底色就是 --bg-card，卡片再用同色会只剩一条边；用 inset 表面拉开层次 */
+  background: var(--bg-inset);
+}
+
+/* 状态色只落在标题行的点上，卡片本体不染色（否则整块变色压迫阅读） */
+.grant-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.grant-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+
+.grant-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.grant-dot.ok { background: var(--success); }
+.grant-dot.warn { background: var(--warning); }
+.grant-dot.off { background: var(--text-muted); }
+
+.grant-reason {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grant-caps { display: flex; flex-wrap: wrap; gap: 5px; }
+.cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 500;
+}
+.cap.on { background: var(--success-bg); color: var(--success); }
+.cap.off { background: var(--bg-hover); color: var(--text-muted); }
+
+.grant-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 2px;
+}
+.grant-metric { display: flex; flex-direction: column; gap: 1px; }
+.grant-metric b {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.grant-metric b em { font-style: normal; font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
+.grant-metric span { font-size: 11px; color: var(--text-muted); }
+
+.grant-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.grant-note svg { margin-top: 2px; flex-shrink: 0; }
+.grant-note.muted { color: var(--text-muted); }
+
+.grant-scope {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+@media (max-width: 640px) {
+  .grant-metrics { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .grant-metric b { font-size: var(--font-size-sm); }
+  .grant-reason { white-space: normal; }
+}
 </style>
