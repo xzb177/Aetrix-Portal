@@ -1,0 +1,93 @@
+/* 元数据来源页：样式从 EmbyAdmin 的 scoped 样式原样搬来（迁移只改位置，不改观感） */
+.ms-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.ms-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 卡片标题：与 EmbyAdmin 的 .card-header h2 同一套值（那个是 scoped，这里自带） */
+.ms-card .card-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+/* 补全进度要放下两排阶段耗时：整行 */
+.ms-card-wide {
+  grid-column: 1 / -1;
+}
+
+.ms-hint {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  line-height: 1.8;
+}
+
+.ms-hint.ms-block {
+  margin-top: 6px;
+}
+
+.ms-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ms-results {
+  margin-top: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ms-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--font-size-xs);
+  line-height: 1.7;
+}
+
+.ms-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+/* 「事实小标签」：与 EmbyAdmin 的 .fact 同一套值，但挂在 .ms-facts 下面——
+   这个样式表是全局引入的，不能让 .fact 裸奔到其它页去 */
+.ms-facts .fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.ms-facts .fact.ok {
+  color: var(--success);
+}
+
+.ms-facts .fact.danger {
+  color: var(--danger);
+}
+
+@media (max-width: 900px) {
+  .ms-grid {
+    grid-template-columns: 1fr;
+  }
+}
