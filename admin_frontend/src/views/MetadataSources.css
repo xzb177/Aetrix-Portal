@@ -131,6 +131,151 @@
   color: var(--danger);
 }
 
+/* ==================== 多源元数据（Phase 6b） ==================== */
+
+/* 小节标题里的图标与文字对不齐，用行内基线微调 */
+.ms-sub svg {
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+
+/* 小节下方的状态文案：.warn / .danger 全局没有同名类，挂在本页下 */
+.ms-hint.warn {
+  color: var(--warning);
+}
+
+.ms-hint.danger {
+  color: var(--danger);
+}
+
+.ms-block {
+  margin-top: 8px;
+}
+
+/* 两个总开关并排：窄屏自动竖排 */
+.ms-switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+}
+
+.ms-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 260px;
+  flex: 1 1 260px;
+}
+
+.ms-switch-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+/* 源表：位次、开关、限速、密钥、操作五列 */
+.ms-table-order td {
+  vertical-align: middle;
+}
+
+/* 关掉的源：整行压暗，但文字仍可读（不是隐藏） */
+.ms-table-order tr.ms-off td {
+  opacity: 0.55;
+}
+
+.ms-order-cell {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ms-pos {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--primary-bg);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.ms-order-btns {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ms-source-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+.ms-row-ops {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 逐源密钥池：展开在表格下方，标题在上 */
+.ms-keypanel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+
+/* 表格单元格里的一行说明：不能拿 .ms-sub（有分隔线），单独一个类 */
+.ms-note {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  line-height: 1.7;
+  white-space: normal;
+}
+
+.ms-note.warn {
+  color: var(--warning);
+}
+
+.ms-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.ms-key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: var(--font-size-xs);
+}
+
+/* 试采集结果 */
+.ms-probe {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ms-probe-value {
+  color: var(--text-secondary);
+  word-break: break-word;
+  max-width: 720px;
+}
+
 @media (max-width: 900px) {
   .ms-grid {
     grid-template-columns: 1fr;
@@ -142,5 +287,19 @@
   }
   .ms-actions .el-input {
     width: 100% !important;
+  }
+  /* 源表在窄屏要保留可读的换行：位次/开关/限速三列很窄，不横向滚会挤成一团 */
+  .ms-table-order {
+    white-space: normal;
+  }
+  .ms-table-order td,
+  .ms-table-order th {
+    min-width: 0;
+  }
+  .ms-switch {
+    min-width: 0;
+  }
+  .ms-probe-value {
+    max-width: 100%;
   }
 }

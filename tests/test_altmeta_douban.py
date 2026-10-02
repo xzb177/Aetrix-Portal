@@ -141,6 +141,8 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
     opened = []
 
     class _CfgDB:
+        # Phase 6b 起多源配置也走短会话：开两个都关。两个断言都要成立——
+        # 「每个都关了」是本用例的真正保护点，「至少开过一个」防用例本身失效。
         def close(self):
             opened.append("closed")
 
@@ -181,7 +183,7 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
     assert res["ok"] is True, res
     assert "db" not in (res.get("error") or ""), res
     assert res.get("douban_hit", {}).get("title") == "兜底名", res
-    assert opened == ["closed"], "配置会话必须被关闭"
+    assert opened and set(opened) == {"closed"}, "配置会话必须被关闭"
 
 
 def test_fetch_fallback_runs_when_tmdb_unconfigured(monkeypatch):

@@ -1,0 +1,213 @@
+"""多源元数据：配置（总开关 / 中文优先 / 源顺序 / 每源开关与密钥池）
+
+## 为什么把配置单独拎出来
+
+连哪几个外部站、谁优先、哪一站暂时不接 —— 这些是**运维的判断**，不是代码常量。
+所以这里只做一件事：把 SystemConfig 里那几个键读成一份**快照**，并提供写回去的函数。
+刮削时只读快照，不再查库。
+
+| SystemConfig 键 | 含义 | 默认 |
+|---|---|---|
+| ``meta_sources_enabled`` | 总开关（关掉 = 完全走原来的 NFO → TMDB → 豆瓣/Bangumi 链路） | 0 |
+| ``meta_sources_prefer_chinese`` | 中文信息优先 | 1 |
+| ``meta_sources_order`` | 源顺序（JSON 数组，**只有这里出现的源会被采集**） | DEFAULT_ORDER |
+| ``meta_source_enabled_{id}`` | 单源开关 | 默认见 DEFAULT_ORDER（都开） |
+| ``meta_source_keys_{id}`` | 该源的密钥池（逗号分隔，与 TMDB 那套同一个拆分口径） | 空 |
+| ``meta_source_rate_{id}`` | 该源两次请求的最小间隔秒数（0 = 不限速） | 1.0 |
+
+密钥与速率**逐源**而不是全局：Bangumi 有 UA 礼仪、TMDB 有配额、TVmaze 没限制，
+用同一个间隔要么把快的源拖慢、要么把慢的源打挂。
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Optional
+
+from backend.emby_server.tmdb import _split_keys
+
+CONFIG_ENABLED = "meta_sources_enabled"
+CONFIG_PREFER_CN = "meta_sources_prefer_chinese"
+CONFIG_ORDER = "meta_sources_order"
+CONFIG_SOURCE_ENABLED = "meta_source_enabled_{id}"
+CONFIG_SOURCE_KEYS = "meta_source_keys_{id}"
+CONFIG_SOURCE_RATE = "meta_source_rate_{id}"
+
+DEFAULT_RATE = 1.0
+
+# 一次采集最多问几个源。7 个源全开 + 磁盘很大 = 每条 7 次网络请求，
+# 这两个上限是为了让补全队列不被拖垮；宁可少问几个源，也不要把 worker 卡住。
+MAX_SOURCES = 7
+COLLECT_TIMEOUT_SEC = 40.0
+
+# 默认顺序：**中文源在前**（治 TMDB 对中文剧集/综艺搜不准），
+# TMDB 放最后兜底 —— 它字段最全，但中文命中率最低。
+DEFAULT_ORDER = ["bangumi", "douban", "anilist", "tvmaze", "omdb", "tvdb", "tmdb"]
+
+
+@dataclass
+class SourceConfig:
+    """一个源的运行配置（刮削时只读这份，不查库）"""
+
+    id: str
+    label: str
+    enabled: bool
+    requires_key: bool
+    lang: str                       # zh / en / any：这个源天然给哪种语言的标题
+    keys: list[str] = field(default_factory=list)
+    rate: float = DEFAULT_RATE       # 两次请求最小间隔秒数，0 = 不限
+
+    @property
+    def needs_key(self) -> bool:
+        """需要密钥但一个都没有 = 这一源这次不参与（不是报错，是配置问题）"""
+        return self.requires_key and not self.keys
+
+
+@dataclass
+class Snapshot:
+    """一次采集用的完整配置快照"""
+
+    enabled: bool
+    prefer_chinese: bool
+    sources: list[SourceConfig]
+
+    def ordered(self) -> list[SourceConfig]:
+        """这一轮真正要采集的源（开关 + 密钥条件已过滤），保持配置顺序"""
+        return [s for s in self.sources if s.enabled and not s.needs_key]
+
+    def by_id(self, source_id: str) -> Optional[SourceConfig]:
+        return next((s for s in self.sources if s.id == source_id), None)
+
+
+def _truthy(raw: str, default: bool) -> bool:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
+
+
+def read_config(db, specs: list) -> Snapshot:
+    """把 SystemConfig 读成快照（``specs`` 是各源的静态元信息，见 sources.SPECS）"""
+    from backend.integrations import store
+
+    def cfg(key: str, default: str = "") -> str:
+        return store.get_value(db, key, default) if db is not None else default
+
+    order = _parse_order(cfg(CONFIG_ORDER, ""), [s.id for s in specs])
+    by_id = {s.id: s for s in specs}
+    sources: list[SourceConfig] = []
+    for source_id in order:
+        spec = by_id.get(source_id)
+        if spec is None:
+            continue
+        sources.append(SourceConfig(
+            id=spec.id,
+            label=spec.label,
+            enabled=_truthy(cfg(CONFIG_SOURCE_ENABLED.format(id=source_id), ""), True),
+            requires_key=bool(spec.requires_key),
+            lang=spec.lang,
+            keys=_split_keys(cfg(CONFIG_SOURCE_KEYS.format(id=source_id), "")),
+            rate=_rate(cfg(CONFIG_SOURCE_RATE.format(id=source_id), "")),
+        ))
+    return Snapshot(
+        enabled=_truthy(cfg(CONFIG_ENABLED, ""), False),
+        prefer_chinese=_truthy(cfg(CONFIG_PREFER_CN, ""), True),
+        sources=sources,
+    )
+
+
+def _parse_order(raw: str, known: list[str]) -> list[str]:
+    """解析源顺序：旧的 / 坏的 / 少写的都能救回来，且**永远包含全部已知源**"""
+    seen: list[str] = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                seen = [str(x) for x in parsed if str(x) in known]
+        except (ValueError, TypeError):
+            seen = []
+    # 配置里没提到的源追加到末尾（新增源上线时老配置也不会把它弄丢）
+    seen += [sid for sid in DEFAULT_ORDER if sid in known and sid not in seen]
+    seen += [sid for sid in known if sid not in seen]
+    return seen
+
+
+def _rate(raw: str) -> float:
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return DEFAULT_RATE
+
+
+def write_config(db, *, enabled: bool, prefer_chinese: bool,
+                 order: list[str], toggles: dict[str, bool],
+                 keys: Optional[dict] = None,
+                 rates: Optional[dict] = None) -> int:
+    """保存配置（总开关 / 中文优先 / 顺序 / 每源开关 / 密钥池 / 限速），立即热生效
+
+    ``keys`` / ``rates`` 是可选的：**只在字典里出现的源才写**，这样「改一下开关」
+    不会顺手把密钥池洗掉（密钥原文从不上前端，全靠这一层保留）。
+    """
+    from backend.integrations import store
+
+    values = {
+        CONFIG_ENABLED: "1" if enabled else "0",
+        CONFIG_PREFER_CN: "1" if prefer_chinese else "0",
+        CONFIG_ORDER: json.dumps(list(order), ensure_ascii=False),
+    }
+    descriptions = {
+        CONFIG_ENABLED: "多源元数据补全总开关（关闭 = 只用原来的 NFO/TMDB/豆瓣链路）",
+        CONFIG_PREFER_CN: "中文信息优先（同等条件下优先采用中文标题与简介）",
+        CONFIG_ORDER: "元数据源采集顺序（JSON 数组，靠前的源先取，字段按序填充）",
+    }
+    for source_id, on in (toggles or {}).items():
+        key = CONFIG_SOURCE_ENABLED.format(id=source_id)
+        values[key] = "1" if on else "0"
+        descriptions[key] = f"元数据源「{source_id}」开关"
+    for source_id, pool in (keys or {}).items():
+        key = CONFIG_SOURCE_KEYS.format(id=source_id)
+        # 接受两种形态：原始字符串（后台批量粘贴）或已拆好的列表（接口内部）
+        items = list(pool) if isinstance(pool, (list, tuple)) else _split_keys(pool)
+        values[key] = ",".join(str(k).strip() for k in items if str(k).strip())
+        descriptions[key] = f"元数据源「{source_id}」密钥池（逗号分隔，按顺序轮换）"
+    for source_id, raw_rate in (rates or {}).items():
+        key = CONFIG_SOURCE_RATE.format(id=source_id)
+        values[key] = str(_rate(raw_rate))
+        descriptions[key] = f"元数据源「{source_id}」请求最小间隔秒数（0 = 不限速）"
+    count = store.write_values(db, values, descriptions)
+    db.commit()
+    invalidate()
+    return count
+
+
+# 进程内快照缓存：刮削是高频读，配置是低频写
+_SNAPSHOT_CACHE: dict = {"at": 0.0, "db_key": None, "snapshot": None}
+SNAPSHOT_TTL_SEC = 30.0
+
+
+def invalidate() -> None:
+    """保存配置后立刻失效缓存（同进程即时生效，跨进程靠 TTL）"""
+    _SNAPSHOT_CACHE.update({"at": 0.0, "snapshot": None, "db_key": None})
+
+
+def snapshot(db, specs: list) -> Snapshot:
+    """带 TTL 的快照读取（``db`` 为 None 时每次都真读，给后台接口用）"""
+    if db is None:
+        return read_config(None, specs)
+    import time
+
+    now = time.monotonic()
+    cached = _SNAPSHOT_CACHE.get("snapshot")
+    if cached is not None and (now - _SNAPSHOT_CACHE["at"]) < SNAPSHOT_TTL_SEC:
+        return cached
+    value = read_config(db, specs)
+    _SNAPSHOT_CACHE.update({"at": now, "snapshot": value})
+    return value
+
+
+__all__ = [
+    "COLLECT_TIMEOUT_SEC", "CONFIG_ENABLED", "CONFIG_ORDER", "CONFIG_PREFER_CN",
+    "CONFIG_SOURCE_ENABLED", "CONFIG_SOURCE_KEYS", "CONFIG_SOURCE_RATE",
+    "DEFAULT_ORDER", "DEFAULT_RATE", "MAX_SOURCES", "Snapshot", "SourceConfig",
+    "invalidate", "read_config", "snapshot", "write_config",
+]

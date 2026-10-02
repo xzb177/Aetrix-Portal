@@ -169,6 +169,40 @@ def _episode_has_own_nfo(ctx, scan_file) -> bool:
                for cand in _sc._nfo_candidates("episode", scan_file.name))
 
 
+def _collect_multisource(item: Any, kind: str, result: dict) -> bool:
+    """多源补全（Phase 6b）：总开关关着时返回 False，调用方走原豆瓣/Bangumi 兜底
+
+    单独开一个函数而不是内联，是为了测试能直接调它（不启动 worker 线程）。
+    配置读取用短会话，用完即关——IO 阶段没有写事务，不能借用。
+
+    返回 False 的两种情况都意味着「**没接管这一块**」：开关关着、配置读不到
+    （数据库异常时宁可走老路，也不能把兵底白白丢掉）。
+    """
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import engine as ms_engine
+    from backend.emby_server.metasources import sources as ms_sources
+
+    _db = SessionLocal()
+    try:
+        snapshot = ms_config.read_config(_db, ms_sources.SPECS)
+    except Exception as exc:  # noqa: BLE001 — 读不到配置就当没开，走原来的兵底
+        logger.debug("多源配置读取失败，回退到豆瓣兵底：%s", exc)
+        return False
+    finally:
+        _db.close()
+    if not snapshot.enabled:
+        return False
+    try:
+        collected = ms_engine.collect(
+            None, item.name or "", item.production_year, kind, snapshot=snapshot)
+    except Exception as exc:  # noqa: BLE001 — 多源失败不影响主流程
+        logger.debug("多源采集失败 %s: %s", getattr(item, "name", ""), exc)
+        result["multisource_error"] = str(exc)[:200]
+        return True
+    result["multisource"] = collected.as_dict()
+    return True
+
+
 def _enrich_fetch(item: Any, holder: Optional[dict] = None,
                   inherit_parent: Optional[dict] = None) -> dict:
     """IO 阶段（无 DB 写事务）：side 图片/字幕 → NFO → TMDB。
@@ -287,33 +321,39 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
             if tmdb_client.configured and not needs_repair:
                 progress.note_stage("enrich_fallback_skip")
             else:
-                from backend.emby_server import altmeta
-                # _enrich_fetch 是 IO 阶段函数、只收 item、没有 db（写库在 _enrich_apply）。
-                # 配置读取因此另开一个短会话，用完即关——绝不在这里借用写事务的 session。
-                _cfg_db = SessionLocal()
-                try:
-                    _ok = altmeta.enabled(_cfg_db)
-                    if _ok:
-                        altmeta.warn_dead_keys_once(_cfg_db)
-                        _interval = altmeta.min_interval(_cfg_db)
-                        _bgm_interval = altmeta.min_interval_bangumi(_cfg_db)
-                finally:
-                    _cfg_db.close()
-                if _ok:
+                # Phase 6b：多源总开关打开时，这一块交给多源引擎
+                # （七个源按顺序问、字段按序填充、单源失败隔离）。
+                # 关着时走原来的豆瓣 → Bangumi 兜底，行为与升级前一致。
+                if _collect_multisource(item, kind, result):
+                    progress.note_stage("enrich_multisource")
+                else:
+                    from backend.emby_server import altmeta
+                    # _enrich_fetch 是 IO 阶段函数、只收 item、没有 db（写库在 _enrich_apply）。
+                    # 配置读取因此另开一个短会话，用完即关——绝不在这里借用写事务的 session。
+                    _cfg_db = SessionLocal()
                     try:
-                        result["douban_hit"] = altmeta.search(
-                            item.name or "", item.production_year, kind, _interval)
-                    except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
-                        logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
-                    # 豆瓣限流/没命中时再试 Bangumi——它有 name_cn 与封面，
-                    # 对 TMDB 收录差的中文剧集特别有用（实测命中 B-PROJECT、落语朱音）。
-                    if not result["douban_hit"]:
+                        _ok = altmeta.enabled(_cfg_db)
+                        if _ok:
+                            altmeta.warn_dead_keys_once(_cfg_db)
+                            _interval = altmeta.min_interval(_cfg_db)
+                            _bgm_interval = altmeta.min_interval_bangumi(_cfg_db)
+                    finally:
+                        _cfg_db.close()
+                    if _ok:
                         try:
-                            result["bangumi_hit"] = altmeta.search_bangumi(
-                                item.name or "", item.production_year, kind,
-                                _bgm_interval)
-                        except Exception as exc:  # noqa: BLE001
-                            logger.debug("Bangumi 兜底失败 %s: %s", item.name, exc)
+                            result["douban_hit"] = altmeta.search(
+                                item.name or "", item.production_year, kind, _interval)
+                        except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
+                            logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
+                        # 豆瓣限流/没命中时再试 Bangumi——它有 name_cn 与封面，
+                        # 对 TMDB 收录差的中文剧集特别有用（实测命中 B-PROJECT、落语朱音）。
+                        if not result["douban_hit"]:
+                            try:
+                                result["bangumi_hit"] = altmeta.search_bangumi(
+                                    item.name or "", item.production_year, kind,
+                                    _bgm_interval)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.debug("Bangumi 兜底失败 %s: %s", item.name, exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全 TMDB 失败 %s: %s", item.file_path, exc)
         result["ok"] = False
@@ -328,7 +368,8 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
     result["images_prewarmed"] = prewarm_images(
         result.get("tmdb_hit"), result.get("tmdb_details"),
         extra=[(result.get(_k) or {}).get("image")
-               for _k in ("douban_hit", "bangumi_hit")])
+               for _k in ("douban_hit", "bangumi_hit")]
+        + [((result.get("multisource") or {}).get("fields") or {}).get("poster")])
 
     return result
 
@@ -459,6 +500,22 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             logger.debug("兜底落库失败 %s: %s", getattr(item, "name", ""), exc)
             alt_hit = None
 
+    # Phase 6b：多源归并结果落库（与豆瓣兜底同一个位置——都只在 TMDB 没命中时发生）。
+    # 只补缺项；用户主动「修复」时允许覆盖（fill_missing_only 跟 needs_repair 反向）。
+    multi = fetched.get("multisource")
+    multi_fields = (multi or {}).get("fields") or {}
+    if multi_fields:
+        try:
+            from backend.emby_server.metasources import engine as _ms_engine
+            _ms_engine.apply_to_item(
+                item, _ms_engine.CollectResult.from_dict(multi),
+                fill_missing_only=not needs_repair)
+            if not item.last_scraped_at:
+                item.last_scraped_at = datetime.now()
+        except Exception as exc:  # noqa: BLE001 — 多源落库失败不该影响主流程
+            logger.debug("多源落库失败 %s: %s", getattr(item, "name", ""), exc)
+            multi_fields = {}
+
     _incomplete = False
     if fetched.get("pure_inherit"):
         # 纯继承（处方 3）：本集的数据来自父级剧（图片回退在上面已完成），
@@ -468,7 +525,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         if not item.metadata_source or item.metadata_source == "none":
             item.metadata_source = "inherit"
     elif kind in ("series", "movie"):
-        if tmdb_client.configured and not item.tmdb_id and not alt_hit:
+        if tmdb_client.configured and not item.tmdb_id and not alt_hit and not multi_fields:
             # 处方 5（终态化）：search **真的跑过**且无高置信命中 =「搜过、没有」——
             # 这批条目在旧实现里走 5 次重试 × 每 60~960 秒重打 4~5 个候选搜索，
             # 结果必然是空：积压数字永不下降，白白烧掉约 7 万次 TMDB 请求。
@@ -496,7 +553,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             # 否则这批条目会永远停在 pending 反复重试。
             # （终态分支例外：TMDB 都搜过了还没有 id，overview 只能来自
             #   TMDB/兜底，重试也不会有——不再为它白付一轮退避。）
-            if not alt_hit:
+            if not alt_hit and not multi_fields:
                 _incomplete = True
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。

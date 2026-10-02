@@ -15,22 +15,52 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { KeyRound, PlugZap, RefreshCw, RotateCw, Wand2 } from 'lucide-vue-next'
 import {
+  ArrowDown,
+  ArrowUp,
+  KeyRound,
+  Layers,
+  ListOrdered,
+  PlugZap,
+  RefreshCw,
+  RotateCw,
+  Search,
+  Wand2,
+} from 'lucide-vue-next'
+import {
+  addMetaSourceKey,
   addTmdbKey,
   bindTmdb,
+  deleteMetaSourceKey,
   deleteTmdbKey,
   fetchEnrichProgress,
+  fetchMetaSources,
   fetchTmdbKeys,
   fetchTmdbMirror,
   previewTmdb,
+  probeMetaSources,
   rescrapeItem,
+  resetMetaSourceCooldown,
   resetTmdbKeyCooldown,
+  saveMetaSources,
   saveTmdbMirror,
+  testMetaSourceKeys,
   testTmdbKeys,
 } from '@/api/admin'
-import type { TmdbKeyPoolRow, TmdbKeysStatus, TmdbMirror, TmdbTestResult } from '@/api/admin'
-import type { EnrichProgress, TmdbBindResult, TmdbPreview } from '@/api/admin'
+import type {
+  EnrichProgress,
+  MetaSourceKeyRow,
+  MetaSourceOutcome,
+  MetaSourceProbe,
+  MetaSourceRow,
+  MetaSourcesConfig,
+  TmdbBindResult,
+  TmdbKeyPoolRow,
+  TmdbKeysStatus,
+  TmdbMirror,
+  TmdbPreview,
+  TmdbTestResult,
+} from '@/api/admin'
 import './MetadataSources.css'
 
 // ==================== 条目元数据刷新 ====================
@@ -318,10 +348,298 @@ function restoreDefaultMirror() {
   mirrorForm.image_base = ''
 }
 
+// ==================== 多源元数据（Phase 6b） ====================
+
+const meta = ref<MetaSourcesConfig | null>(null)
+const metaLoading = ref(false)
+const metaSaving = ref(false)
+/** 本地草稿：开关、顺序、限速在改完点「保存」之前不动后端 */
+const metaDraft = reactive({
+  enabled: false,
+  prefer_chinese: true,
+  order: [] as string[],
+  toggles: {} as Record<string, boolean>,
+  rates: {} as Record<string, number>,
+})
+/** 哪个源的密钥框是张开的（默认收起，否则页面太长） */
+const keyPanelOpen = ref('')
+const keyInput = ref('')
+const keyBusy = ref('')
+const sourceKeyTests = ref<Record<string, Array<{ index: number; masked: string; ok: boolean; message: string }>>>({})
+const probe = reactive({ title: '', year: '', kind: 'series' as 'series' | 'movie' })
+const probeResult = ref<MetaSourceProbe | null>(null)
+const probeOnly = ref('')
+const probeNote = ref('')
+const probing = ref(false)
+const sourceTesting = ref('')
+
+/** 按草稿顺序排好的源（顺序变了但还没保存时，页面也能看出新次序） */
+const metaRows = computed<MetaSourceRow[]>(() => {
+  const rows = meta.value?.sources || []
+  if (!rows.length) return rows
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const ordered = metaDraft.order.map((id) => byId.get(id)).filter(Boolean) as MetaSourceRow[]
+  rows.forEach((r) => {
+    if (!metaDraft.order.includes(r.id)) ordered.push(r)
+  })
+  return ordered
+})
+
+const metaDirty = computed(() => {
+  const cfg = meta.value
+  if (!cfg) return false
+  return (
+    cfg.enabled !== metaDraft.enabled ||
+    cfg.prefer_chinese !== metaDraft.prefer_chinese ||
+    cfg.order.join(',') !== metaDraft.order.join(',') ||
+    metaRows.value.some((r) => {
+      const on = metaDraft.toggles[r.id] ?? r.enabled
+      const rate = metaDraft.rates[r.id] ?? r.rate
+      return on !== r.enabled || rate !== r.rate
+    })
+  )
+})
+
+const probeOutcomes = computed<MetaSourceOutcome[]>(() => probeResult.value?.outcomes || [])
+
+async function loadMeta() {
+  metaLoading.value = true
+  try {
+    const cfg = await fetchMetaSources()
+    meta.value = cfg
+    metaDraft.enabled = cfg.enabled
+    metaDraft.prefer_chinese = cfg.prefer_chinese
+    metaDraft.order = [...cfg.order]
+    metaDraft.toggles = {}
+    metaDraft.rates = {}
+  } catch {
+    meta.value = null
+  } finally {
+    metaLoading.value = false
+  }
+}
+
+function sourceToggle(row: MetaSourceRow): boolean {
+  return metaDraft.toggles[row.id] ?? row.enabled
+}
+
+function sourceRate(row: MetaSourceRow): number {
+  return metaDraft.rates[row.id] ?? row.rate
+}
+
+async function saveMeta() {
+  metaSaving.value = true
+  try {
+    const cfg = await saveMetaSources({
+      enabled: metaDraft.enabled,
+      prefer_chinese: metaDraft.prefer_chinese,
+      order: [...metaDraft.order],
+      toggles: Object.fromEntries(
+        metaRows.value.map((r) => [r.id, metaDraft.toggles[r.id] ?? r.enabled]),
+      ),
+      rates: Object.fromEntries(
+        metaRows.value.map((r) => [r.id, Number(metaDraft.rates[r.id] ?? r.rate)]),
+      ),
+    })
+    meta.value = cfg
+    metaDraft.enabled = cfg.enabled
+    metaDraft.prefer_chinese = cfg.prefer_chinese
+    metaDraft.order = [...cfg.order]
+    metaDraft.toggles = {}
+    metaDraft.rates = {}
+    ElMessage.success(
+      cfg.enabled
+        ? `已保存并生效：${cfg.active_count} 个源参与采集`
+        : '已保存：多源补全已关闭，补全走原来的 NFO / TMDB / 豆瓣链路',
+    )
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    metaSaving.value = false
+  }
+}
+
+/** 丢弃未保存的改动 */
+function revertMeta() {
+  const cfg = meta.value
+  if (!cfg) return
+  metaDraft.enabled = cfg.enabled
+  metaDraft.prefer_chinese = cfg.prefer_chinese
+  metaDraft.order = [...cfg.order]
+  metaDraft.toggles = {}
+  metaDraft.rates = {}
+}
+
+/** 上移 / 下移：只改草稿，点「保存」才写库 */
+function moveSource(row: MetaSourceRow, offset: number) {
+  const order = metaDraft.order
+  const index = order.indexOf(row.id)
+  const target = index + offset
+  if (index < 0 || target < 0 || target >= order.length) return
+  const next = [...order]
+  next.splice(index, 1)
+  next.splice(target, 0, row.id)
+  metaDraft.order = next
+}
+
+/** 该源在**保存后**的位次（用于 ↑↓ 按钮的禁用状态） */
+function draftPosition(row: MetaSourceRow): number {
+  return metaDraft.order.indexOf(row.id)
+}
+
+/** 展开密钥池的那一行（null = 都没展开） */
+const keyPanelRow = computed<MetaSourceRow | null>(
+  () => metaRows.value.find((r) => r.id === keyPanelOpen.value) || null,
+)
+
+function toggleKeyPanel(row: MetaSourceRow) {
+  keyPanelOpen.value = keyPanelOpen.value === row.id ? '' : row.id
+  keyInput.value = ''
+}
+
+async function addSourceKey(row: MetaSourceRow) {
+  const value = keyInput.value.trim()
+  if (!value) {
+    ElMessage.warning(`请填写「${row.label}」的密钥`)
+    return
+  }
+  keyBusy.value = row.id
+  try {
+    meta.value = await addMetaSourceKey(row.id, value)
+    keyInput.value = ''
+    ElMessage.success(`已添加，「${row.label}」现有 ${row.key_count + 1} 把`)
+    delete sourceKeyTests.value[row.id]
+  } catch {
+    /* 拦截器已提示（409：已经在池子里） */
+  } finally {
+    keyBusy.value = ''
+  }
+}
+
+async function removeSourceKey(row: MetaSourceRow, key: MetaSourceKeyRow) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除「${row.label}」的第 ${key.index} 把密钥（${key.masked}）吗？`,
+      '删除密钥',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  keyBusy.value = row.id
+  try {
+    meta.value = await deleteMetaSourceKey(row.id, key.index)
+    ElMessage.success('已删除')
+    delete sourceKeyTests.value[row.id]
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    keyBusy.value = ''
+  }
+}
+
+async function clearSourceCooldown(row: MetaSourceRow) {
+  try {
+    const res = await resetMetaSourceCooldown(row.id)
+    ElMessage.success(res.cleared ? `已清除 ${res.cleared} 把的冷却` : '当前没有密钥在冷却')
+    meta.value = res.config
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+/** 逐把试这个源的密钥（拿试采集里同一个片名去问） */
+async function testSourceKeys(row: MetaSourceRow) {
+  const title = probe.title.trim()
+  if (!title) {
+    ElMessage.warning('先在上面填一个试采集用的片名')
+    return
+  }
+  sourceTesting.value = row.id
+  try {
+    const res = await testMetaSourceKeys(row.id, {
+      title,
+      year: probe.year ? Number(probe.year) : null,
+      kind: probe.kind,
+    })
+    sourceKeyTests.value = { ...sourceKeyTests.value, [row.id]: res.results }
+    meta.value = res.config
+    const okCount = res.results.filter((r) => r.ok).length
+    if (okCount === res.results.length) ElMessage.success(`${okCount} 把全部可用`)
+    else ElMessage.warning(`${okCount}/${res.results.length} 把可用，其余已转入冷却`)
+  } catch {
+    /* 拦截器已提示（没配密钥时 400） */
+  } finally {
+    sourceTesting.value = ''
+  }
+}
+
+/** 试采集：只看不写，告诉我们“开了这个源到底有没有用” */
+async function runProbe() {
+  const title = probe.title.trim()
+  if (!title) {
+    ElMessage.warning('请填写要试的片名')
+    return
+  }
+  probing.value = true
+  try {
+    const res = await probeMetaSources({
+      title,
+      year: probe.year ? Number(probe.year) : null,
+      kind: probe.kind,
+      source: probeOnly.value,
+    })
+    probeResult.value = res.probe
+    probeNote.value = res.note
+    const hits = res.probe.outcomes.filter((o) => o.hit).map((o) => o.label)
+    if (!hits.length) ElMessage.warning('没有源命中这部片')
+    else ElMessage.success(`命中：${hits.join('、')}`)
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    probing.value = false
+  }
+}
+
+/** 试采集结果里，最后被哪个源填上的字段（按人看的顺序，不按字典序） */
+const PROBE_FIELD_LABELS: Record<string, string> = {
+  title: '标题',
+  original_title: '原名',
+  overview: '简介',
+  genres: '类型',
+  rating: '评分',
+  year: '年份',
+  poster: '海报',
+}
+
+const probeFieldRows = computed<Array<{ name: string; label: string; value: string }>>(() => {
+  const fields = probeResult.value?.fields || {}
+  return Object.keys(PROBE_FIELD_LABELS)
+    .filter((key) => fields[key] !== undefined && fields[key] !== null && fields[key] !== '')
+    .map((key) => ({
+      name: key,
+      label: PROBE_FIELD_LABELS[key],
+      value: Array.isArray(fields[key]) ? (fields[key] as unknown[]).join('、')
+        : String(fields[key]),
+    }))
+})
+
+const probeExternalIds = computed<Array<{ site: string; id: string }>>(
+  () => Object.entries(probeResult.value?.external_ids || {}).map(([site, id]) => ({ site, id })),
+)
+
+function outcomeBadge(row: MetaSourceOutcome): { text: string; cls: string } {
+  if (row.skipped) return { text: row.skipped, cls: 'muted' }
+  if (!row.ok) return { text: row.error || '失败', cls: 'danger' }
+  if (row.hit) return { text: '命中', cls: 'ok' }
+  return { text: '没搜到', cls: 'warn' }
+}
+
 onMounted(() => {
   loadEnrichProgress().catch(() => undefined)
   loadTmdbKeys().catch(() => undefined)
   loadMirror().catch(() => undefined)
+  loadMeta().catch(() => undefined)
 })
 </script>
 
@@ -344,7 +662,275 @@ onMounted(() => {
     </div>
 
     <div class="ms-grid">
-      <!-- 0. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
+      <!-- 0. 多源元数据补全（Phase 6b）：总开关 / 中文优先 / 顺序 / 逐源开关与密钥池 -->
+      <div class="admin-card ms-card ms-card-wide">
+        <div class="card-header">
+          <h2><Layers :size="16" style="margin-right: 6px" />多源元数据补全</h2>
+          <div class="ms-facts">
+            <span v-if="meta" class="fact" :class="meta.enabled ? 'ok' : 'muted'">
+              总开关：{{ meta.enabled ? '已开启' : '已关闭' }}
+            </span>
+            <span v-if="meta" class="fact">
+              {{ meta.active_count }} / {{ meta.sources.length }} 个源参与
+              <template v-if="!meta.enabled">（总开关关着，暂不参与）</template>
+            </span>
+            <span v-if="metaDirty" class="fact warn">有未保存的改动</span>
+          </div>
+        </div>
+        <p class="ms-hint">
+          TMDB 对中文剧集 / 综艺收录偏少。开多源后，TMDB 没搜到的条目会按下面的顺序
+          再问一遍其它源：<strong>标题 / 简介 / 类型 / 评分逐个字段按序填充</strong>，
+          某个源没有的字段自动让给下一个源；任何一个源失败（限流 / 密钥失效 / 反爬）
+          都只影响它自己，不会中断整条刮削。命中的各源外部 ID 会合并存到条目上。
+        </p>
+
+        <div v-if="metaLoading && !meta" class="ms-hint">加载中…</div>
+        <div v-else-if="!meta" class="ms-hint">读取多源配置失败，稍后点「刷新」重试。</div>
+        <template v-else>
+          <el-alert
+            v-if="!meta.enabled"
+            type="info"
+            :closable="false"
+            show-icon
+            class="ms-alert"
+          >
+            总开关关着：补全链路与升级前完全一致（NFO → TMDB → 豆瓣 / Bangumi 兵底），
+            下面的配置不会生效，但可以先配好、随时打开。
+          </el-alert>
+
+          <div class="ms-switches">
+            <div class="ms-switch">
+              <el-switch v-model="metaDraft.enabled" />
+              <div>
+                <div class="ms-switch-title">启用多源补全</div>
+                <div class="ms-hint">关 = 走原来的单源链路；开 = TMDB 没命中时按顺序问其它源</div>
+              </div>
+            </div>
+            <div class="ms-switch">
+              <el-switch v-model="metaDraft.prefer_chinese" />
+              <div>
+                <div class="ms-switch-title">中文信息优先</div>
+                <div class="ms-hint">
+                  只影响<strong>标题与简介</strong>：中文源的文案压过优先级更高但给英文的源；
+                  类型、评分、海报、外部 ID 仍按顺序取
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ms-sub"><ListOrdered :size="13" style="margin-right: 4px" />源优先级</div>
+          <p class="ms-hint">
+            越靠前越先问。默认把中文源（Bangumi / 豆瓣）放前面治中文命中率，
+            TMDB 放最后兜底（它字段最全但中文收录少）。
+            一次最多问 {{ meta.max_sources }} 个源、限时 {{ meta.collect_timeout_sec }} 秒。
+          </p>
+
+          <table class="ms-table ms-table-order">
+            <thead>
+              <tr>
+                <th style="width: 46px">顺序</th>
+                <th>数据源</th>
+                <th style="width: 96px">参与</th>
+                <th style="width: 130px">限速</th>
+                <th style="width: 92px">密钥</th>
+                <th style="width: 168px">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in metaRows" :key="row.id" :class="{ 'ms-off': !sourceToggle(row) }">
+                <td>
+                  <div class="ms-order-cell">
+                    <span class="ms-pos">{{ draftPosition(row) + 1 }}</span>
+                    <span class="ms-order-btns">
+                      <el-button
+                        size="small"
+                        text
+                        :disabled="draftPosition(row) <= 0"
+                        title="上移（优先问这个源）"
+                        @click="moveSource(row, -1)"
+                      ><ArrowUp :size="13" /></el-button>
+                      <el-button
+                        size="small"
+                        text
+                        :disabled="draftPosition(row) >= metaRows.length - 1"
+                        title="下移"
+                        @click="moveSource(row, 1)"
+                      ><ArrowDown :size="13" /></el-button>
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  <div class="ms-source-name">
+                    {{ row.label }}
+                    <span v-if="row.lang === 'zh'" class="mini-badge ok">中文强</span>
+                  </div>
+                  <div class="ms-note">{{ row.note }}</div>
+                  <div v-if="row.skipped_reason" class="ms-note warn">{{ row.skipped_reason }}</div>
+                </td>
+                <td>
+                  <el-switch
+                    :model-value="sourceToggle(row)"
+                    @update:model-value="(v: string | number | boolean) => (metaDraft.toggles[row.id] = Boolean(v))"
+                  />
+                </td>
+                <td>
+                  <el-input
+                    :model-value="sourceRate(row)"
+                    type="number"
+                    size="small"
+                    :min="0"
+                    :step="0.5"
+                    :disabled="!sourceToggle(row)"
+                    @update:model-value="(v: string | number) => (metaDraft.rates[row.id] = Number(v))"
+                  >
+                    <template #append>秒</template>
+                  </el-input>
+                </td>
+                <td>
+                  <span v-if="row.requires_key" class="muted">
+                    {{ row.key_count }} 把<template v-if="row.cooling"> · 冷却 {{ row.cooling }}</template>
+                  </span>
+                  <span v-else class="muted">无需密钥</span>
+                </td>
+                <td>
+                  <div class="ms-row-ops">
+                    <el-button
+                      v-if="row.requires_key"
+                      size="small"
+                      text
+                      @click="toggleKeyPanel(row)"
+                    >{{ keyPanelOpen === row.id ? '收起' : '密钥' }}</el-button>
+                    <el-button
+                      size="small"
+                      text
+                      :loading="sourceTesting === row.id"
+                      :disabled="row.requires_key && !row.key_count"
+                      title="拿上面的片名逐把试这个源的密钥"
+                      @click="testSourceKeys(row)"
+                    >测试</el-button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- 逐源密钥池：默认收起，展开后逐把增删 + 冷却 -->
+          <div v-if="keyPanelOpen && keyPanelRow" class="ms-keypanel">
+            <div class="ms-keypanel-inner">
+              <div class="ms-panel-title">
+                <KeyRound :size="13" style="margin-right: 4px" />{{ keyPanelRow.label }} 密钥池
+                <span class="muted">（原文不会出现在接口里，只显示后 4 位）</span>
+              </div>
+              <div v-if="!keyPanelRow.keys.length" class="ms-hint">
+                还没有密钥：这个源现在<strong>不会参与采集</strong>。
+              </div>
+              <div v-for="key in keyPanelRow.keys" :key="key.index" class="ms-key-row">
+                <span class="muted">{{ key.index }}</span>
+                <span class="mono">{{ key.masked }}</span>
+                <span
+                  class="mini-badge"
+                  :class="key.cooling ? 'warn' : 'ok'"
+                  :title="key.reason ? `${key.reason}（本进程命中 ${key.hits} 次）` : ''"
+                >
+                  {{ key.cooling ? `冷却中 · 还剩 ${key.cooldown_remaining}s` : '待命' }}
+                </span>
+                <el-button
+                  size="small"
+                  text
+                  type="danger"
+                  :loading="keyBusy === keyPanelRow.id"
+                  @click="removeSourceKey(keyPanelRow, key)"
+                >删除</el-button>
+              </div>
+              <div v-if="sourceKeyTests[keyPanelRow.id]?.length" class="ms-results">
+                <div v-for="t in sourceKeyTests[keyPanelRow.id]" :key="t.index" class="ms-result">
+                  <span class="mini-badge" :class="t.ok ? 'ok' : 'danger'">
+                    {{ t.ok ? '可用' : '不可用' }}
+                  </span>
+                  <span class="mono">{{ t.masked }}</span>
+                  <span class="muted">{{ t.message }}</span>
+                </div>
+              </div>
+              <div class="ms-actions">
+                <el-input
+                  v-model="keyInput"
+                  placeholder="粘贴一把新的密钥"
+                  style="width: 300px"
+                  clearable
+                />
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="keyBusy === keyPanelRow.id"
+                  @click="addSourceKey(keyPanelRow)"
+                >
+                  添加
+                </el-button>
+                <el-button size="small" :loading="sourceTesting === keyPanelRow.id" @click="testSourceKeys(keyPanelRow)">
+                  <PlugZap :size="14" style="margin-right: 4px" />测试全部
+                </el-button>
+                <el-button size="small" :disabled="!keyPanelRow.cooling" @click="clearSourceCooldown(keyPanelRow)">
+                  清除冷却
+                </el-button>
+              </div>
+            </div>
+          </div>
+
+          <div class="ms-actions ms-block">
+            <el-button size="small" type="primary" :loading="metaSaving" @click="saveMeta">保存</el-button>
+            <el-button size="small" :disabled="!metaDirty" @click="revertMeta">还原</el-button>
+            <el-button size="small" text :loading="metaLoading" @click="loadMeta">
+              <RefreshCw :size="14" />
+            </el-button>
+          </div>
+
+          <!-- 试采集：开一个源之前先用它试一下能不能搜到这部片 -->
+          <div class="ms-sub"><Search :size="13" style="margin-right: 4px" />试采集（只看不写）</div>
+          <p class="ms-hint">
+            用一个真实片名跑一遍，看看每个源能不能命中、最后哪个字段被哪个源填上。
+            不会写入任何数据，总开关关着也能试（临时试采集）。
+          </p>
+          <div class="ms-actions">
+            <el-input v-model="probe.title" placeholder="片名，如：落语朱音" style="width: 220px" clearable />
+            <el-input v-model="probe.year" placeholder="年份（可空）" style="width: 130px" clearable />
+            <el-select v-model="probe.kind" style="width: 120px">
+              <el-option label="剧集" value="series" />
+              <el-option label="电影" value="movie" />
+            </el-select>
+            <el-select v-model="probeOnly" placeholder="全部源" clearable style="width: 170px">
+              <el-option v-for="row in metaRows" :key="row.id" :label="row.label" :value="row.id" />
+            </el-select>
+            <el-button size="small" type="primary" :loading="probing" @click="runProbe">试采集</el-button>
+          </div>
+
+          <div v-if="probeResult" class="ms-probe">
+            <p class="ms-hint ms-block">
+              逐源结果{{ probeNote ? `（${probeNote}）` : '' }}
+              <span v-if="probeResult.primary">｜标题取自 {{ probeResult.primary }}</span>
+            </p>
+            <div class="ms-results">
+              <div v-for="row in probeOutcomes" :key="row.source" class="ms-result">
+                <span class="mini-badge" :class="outcomeBadge(row).cls">{{ outcomeBadge(row).text }}</span>
+                <span>{{ row.label }}</span>
+                <span class="muted">{{ row.elapsed_ms }}ms</span>
+              </div>
+            </div>
+            <div v-if="probeFieldRows.length" class="ms-results">
+              <div v-for="f in probeFieldRows" :key="f.name" class="ms-result">
+                <span class="mini-badge">{{ f.label }}</span>
+                <span class="ms-probe-value">{{ f.value }}</span>
+              </div>
+            </div>
+            <div v-if="probeExternalIds.length" class="ms-results">
+              <span v-for="row in probeExternalIds" :key="row.site" class="mini-badge mono">
+                {{ row.site }}: {{ row.id }}
+              </span>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- 1. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
       <div class="admin-card ms-card ms-card-wide">
         <div class="card-header">
           <h2><KeyRound :size="16" style="margin-right: 6px" />TMDB 密钥池与镜像</h2>
@@ -451,7 +1037,7 @@ onMounted(() => {
           {{ mirror.image_base_from_env ? '（来自环境变量）' : '' }}
         </p>
       </div>
-      <!-- 1. 条目元数据刷新 -->
+      <!-- 2. 条目元数据刷新 -->
       <div class="admin-card ms-card">
         <div class="card-header">
           <h2><RotateCw :size="16" style="margin-right: 6px" />条目元数据刷新</h2>
@@ -471,7 +1057,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 2. 手动绑定 TMDB -->
+      <!-- 3. 手动绑定 TMDB -->
       <div class="admin-card ms-card">
         <div class="card-header">
           <h2><Wand2 :size="16" style="margin-right: 6px" />手动绑定 TMDB</h2>
@@ -509,7 +1095,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 3. 补全进度 -->
+      <!-- 4. 补全进度 -->
       <div class="admin-card ms-card ms-card-wide">
         <div class="card-header">
           <h2><RefreshCw :size="16" style="margin-right: 6px" />补全进度</h2>

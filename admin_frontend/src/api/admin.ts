@@ -727,6 +727,136 @@ export const testTmdbKeys = (keys?: string) =>
   post<{ results: TmdbTestResult[]; pool?: TmdbKeyPoolRow[] }>(
     `${E}/scrape/tmdb-test`, { keys: keys || '' })
 
+// ==================== 多源元数据（Phase 6b） ====================
+
+/** 某个源密钥池里的一把 key（同样只给掩码与运行状态） */
+export interface MetaSourceKeyRow {
+  index: number
+  masked: string
+  cooling: boolean
+  cooldown_remaining: number
+  reason: string
+  hits: number
+}
+
+/** 一个数据源在配置里的样子（静态能力 + 运行状态都在这里） */
+export interface MetaSourceRow {
+  id: string
+  label: string
+  /** 一句话能力说明：它强在哪、缺什么（从后端的源注册表来，不在前端写死） */
+  note: string
+  /** 当前位次（从 1 开始，与拖动后的顺序一致） */
+  position: number
+  enabled: boolean
+  requires_key: boolean
+  /** 源天然给哪种语言：zh / en */
+  lang: string
+  /** 两次请求最小间隔秒数（0 = 不限速） */
+  rate: number
+  key_count: number
+  keys: MetaSourceKeyRow[]
+  cooling: number
+  /** 这一轮为什么不参与（空 = 会参与）：已关闭 / 缺密钥 */
+  skipped_reason: string
+}
+
+export interface MetaSourcesConfig {
+  enabled: boolean
+  prefer_chinese: boolean
+  order: string[]
+  sources: MetaSourceRow[]
+  default_order: string[]
+  max_sources: number
+  collect_timeout_sec: number
+  active_count: number
+}
+
+export const fetchMetaSources = () => get<MetaSourcesConfig>(`${E}/scrape/meta-sources`)
+
+/** 保存总开关 / 中文优先 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
+export const saveMetaSources = (data: {
+  enabled: boolean
+  prefer_chinese: boolean
+  order: string[]
+  toggles: Record<string, boolean>
+  rates: Record<string, number>
+}) => put<MetaSourcesConfig>(`${E}/scrape/meta-sources`, data)
+
+/** 逐源逐把增：追加一把密钥（已存在返回 409） */
+export const addMetaSourceKey = (sourceId: string, key: string) =>
+  post<MetaSourcesConfig>(`${E}/scrape/meta-sources/${sourceId}/keys`, { key })
+
+/** 逐源逐把删：按展示序号（从 1 开始）删一把 */
+export const deleteMetaSourceKey = (sourceId: string, index: number) =>
+  del<MetaSourcesConfig>(`${E}/scrape/meta-sources/${sourceId}/keys/${index}`)
+
+/** 清除某个源全部密钥的冷却 */
+export const resetMetaSourceCooldown = (sourceId: string) =>
+  post<{ success: boolean; cleared: number; config: MetaSourcesConfig }>(
+    `${E}/scrape/meta-sources/${sourceId}/keys/reset`)
+
+/** 试采集的一行：命中了没有 / 为什么没问 / 失败原因 */
+export interface MetaSourceOutcome {
+  source: string
+  label: string
+  ok: boolean
+  hit: boolean
+  error: string
+  elapsed_ms: number
+  skipped: string
+}
+
+export interface MetaSourceProbe {
+  fields: Record<string, unknown>
+  external_ids: Record<string, string>
+  outcomes: MetaSourceOutcome[]
+  /** 哪个源赢了标题（空 = 都没命中） */
+  primary: string
+  prefer_chinese: boolean
+}
+
+/**
+ * 试采集：用一个片名跑一遍，**不改任何数据**。
+ * ``source`` 传了就只问那一个源（单独排查“是不是这个站在抽风”）。
+ */
+export const probeMetaSources = (data: {
+  title: string
+  year?: number | null
+  kind: 'series' | 'movie'
+  source?: string
+}) => post<{
+  success: boolean
+  switch_on: boolean
+  probe: MetaSourceProbe
+  note: string
+  sources: MetaSourceRow[]
+}>(`${E}/scrape/meta-sources/test`, {
+  title: data.title,
+  year: data.year ?? null,
+  kind: data.kind,
+  source: data.source || '',
+})
+
+/** 逐把试某个源的密钥（测不通的直接进冷却） */
+export const testMetaSourceKeys = (
+  sourceId: string,
+  data: { title: string; year?: number | null; kind: 'series' | 'movie' },
+) => post<{
+  results: Array<{
+    index: number
+    masked: string
+    ok: boolean
+    hit?: boolean
+    message: string
+    elapsed_ms?: number
+  }>
+  config: MetaSourcesConfig
+}>(`${E}/scrape/meta-sources/${sourceId}/test`, {
+  title: data.title,
+  year: data.year ?? null,
+  kind: data.kind,
+})
+
 export interface RescrapeSummary {
   notes: string[]
   changed: Record<string, string>

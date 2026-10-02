@@ -29,6 +29,7 @@ SystemConfig 新增键同样靠人工补行。
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import re
@@ -283,6 +284,27 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         (tmdb.TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY, str(tmdb.DEFAULT_KEY_INVALID_COOLDOWN_SEC),
          "单把 TMDB Key 返回 401 后的冷却秒数"),
     ])
+
+    # 6.5 多源元数据（Phase 6b）：总开关 + 中文优先 + 顺序 + 逐源开关/密钥池/限速
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import sources as ms_sources
+    items.extend([
+        (ms_config.CONFIG_ENABLED, "0",
+         "多源元数据补全总开关（关闭 = 只用原来的 NFO/TMDB/豆瓣链路）"),
+        (ms_config.CONFIG_PREFER_CN, "1", "中文信息优先（标题与简介）"),
+        (ms_config.CONFIG_ORDER,
+         json.dumps(ms_config.DEFAULT_ORDER, ensure_ascii=False),
+         "元数据源采集顺序（靠前的源先取，字段按序填充）"),
+    ])
+    for _spec in ms_sources.SPECS:
+        items.extend([
+            (ms_config.CONFIG_SOURCE_ENABLED.format(id=_spec.id), "1",
+             f"元数据源「{_spec.label}」开关"),
+            (ms_config.CONFIG_SOURCE_KEYS.format(id=_spec.id), "",
+             f"元数据源「{_spec.label}」密钥池（逗号分隔，按顺序轮换）"),
+            (ms_config.CONFIG_SOURCE_RATE.format(id=_spec.id),
+             str(ms_config.DEFAULT_RATE), f"元数据源「{_spec.label}」请求最小间隔秒数"),
+        ])
 
     # 7. 播放策略
     from backend import playback_policy
