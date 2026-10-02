@@ -192,6 +192,13 @@ class MediaItem(Base):
     # "试过但失败"混为一谈；加上这个字段后，"刮没刮干净"可以直接查、
     # 可以按来源筛选，也为将来接入新数据源（豆瓣等）留出位置。
     metadata_source = Column(String(20))
+    # 多源元数据（Phase 6b）：各源合并的外部 ID，JSON 对象
+    # ``{"tmdb": "60300", "imdb": "tt0903747", "douban": "1292052", ...}``。
+    # 为什么不用 tmdb_id / imdb_id 两列：那两个列已被扫描/求片链路直接读写
+    # （含 ``is not None`` 之类的判空），塞进 7 个源会让那些判空全部失真。
+    # 这里另存一份完整的，**只增不改**已有列；tmdb/imdb 同时回写那两列（引擎负责）。
+    # 用途：跨源去重、换源时直接命中、改名后重新匹配。
+    external_ids = Column(Text)
 
 
 from sqlalchemy.orm import relationship  # noqa: E402

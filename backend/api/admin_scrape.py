@@ -14,6 +14,7 @@ import logging
 import os
 import posixpath
 import threading
+import time
 from dataclasses import replace
 from datetime import datetime
 from typing import Optional
@@ -310,7 +311,7 @@ def get_tmdb_mirror(
 _TRACKED_FIELDS = (
     "name", "original_title", "overview", "tagline", "production_year",
     "community_rating", "official_rating", "genres", "studios",
-    "tmdb_id", "imdb_id", "aliases",
+    "tmdb_id", "imdb_id", "aliases", "external_ids",
     "poster_path", "primary_image_url", "backdrop_path", "backdrop_image_url",
 )
 
@@ -385,6 +386,34 @@ def _discover_nfo(db: Session, item: em.MediaItem) -> Optional[dict]:
     return nfo_lib.parse_nfo(text) if text else None
 
 
+def _rescrape_multisource(db: Session, item: em.MediaItem, kind: str) -> list[str]:
+    """手动重刮里的多源环节：总开关关着时返回空列表（行为与升级前一致）"""
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import engine as ms_engine
+    from backend.emby_server.metasources import sources as ms_sources
+
+    snapshot = ms_config.read_config(db, ms_sources.SPECS)
+    if not snapshot.enabled:
+        return []
+    try:
+        collected = ms_engine.collect(db, item.name or "", item.production_year, kind)
+    except Exception as exc:  # noqa: BLE001 — 多源失败不影响已经完成的 TMDB 部分
+        logger.warning("多源采集失败 %s: %s", item.name, exc)
+        return [f"多源采集失败：{exc}"]
+    if not collected.fields:
+        return ["多源未命中任何可用数据"]
+    prewarm_images(extra=[collected.fields.get("poster")])
+    changed = ms_engine.apply_to_item(item, collected, fill_missing_only=False)
+    hits = [o.source for o in collected.outcomes if o.hit]
+    notes = [f"多源命中：{'、'.join(hits) if hits else '无'}（标题取自 {collected.primary}）"]
+    if changed:
+        notes.append("多源补齐：" + "、".join(changed))
+    failed = [f"{o.source}（{o.error}）" for o in collected.outcomes if not o.ok and o.error]
+    if failed:
+        notes.append("失败已隔离：" + "；".join(failed))
+    return notes
+
+
 def _rescrape_one(db: Session, item: em.MediaItem) -> dict:
     """条目级重刮：NFO 管文字（有则重读覆盖），TMDB 只补缺失项。幂等：重复调用结果一致。"""
     kind = item.item_type
@@ -401,6 +430,8 @@ def _rescrape_one(db: Session, item: em.MediaItem) -> dict:
     if kind in ("movie", "series"):
         if not tmdb_client.configured:
             notes.append("未配置 TMDB Key，跳过 TMDB")
+            # TMDB 压根没配密钥时，多源（如果开了）就是唯一能拿到东西的路
+            notes.extend(_rescrape_multisource(db, item, kind))
         else:
             tmdb_id = (nfo_data or {}).get("tmdb_id") or item.tmdb_id
             if tmdb_id:
@@ -426,6 +457,9 @@ def _rescrape_one(db: Session, item: em.MediaItem) -> dict:
                     notes.append(f"TMDB 搜索命中：{hit.get('title') or hit.get('name')}")
                 else:
                     notes.append("TMDB 未搜到匹配")
+                    # Phase 6b：TMDB 没搜到时，多源总开关开着就把剩下几个源跑一遍
+                    #（手动重刮本来就是「用户主动要求认真刮」，不跳多源）
+                    notes.extend(_rescrape_multisource(db, item, kind))
         item.last_scraped_at = datetime.now()
 
     changed = {
@@ -455,6 +489,282 @@ def rescrape_item(
         "item": {"id": item.id, "name": item.name, "item_type": item.item_type},
         "summary": summary,
     }
+
+
+# ==================== 多源元数据（Phase 6b） ====================
+
+class MetaSourcesSaveRequest(BaseModel):
+    enabled: bool = Field(default=False, description="多源补全总开关")
+    prefer_chinese: bool = Field(default=True, description="中文信息优先")
+    order: list[str] = Field(default_factory=list, description="源顺序（源 id 数组）")
+    toggles: dict[str, bool] = Field(default_factory=dict, description="逐源开关")
+    rates: dict[str, float] = Field(default_factory=dict, description="逐源请求间隔（秒）")
+
+
+class MetaSourceProbeRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200, description="要试的片名")
+    year: Optional[int] = Field(default=None, ge=1800, le=2200)
+    kind: str = Field(default="series", description="series | movie")
+    source: str = Field(default="", description="只试这一个源（留空 = 按顺序全试）")
+
+
+def _meta_sources_view(db: Session, snapshot=None) -> dict:
+    """把配置快照 + 运行时状态拼成一份界面直接可用的视图
+
+    **密钥原文不出这个函数**：每把只给掩码、冷却剩余秒数与原因。
+    """
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import keypool as ms_keypool
+    from backend.emby_server.metasources import sources as ms_sources
+
+    snapshot = snapshot if snapshot is not None else ms_config.read_config(db, ms_sources.SPECS)
+    order = [s.id for s in snapshot.sources]
+    rows = []
+    for position, source_cfg in enumerate(snapshot.sources, start=1):
+        spec = ms_sources.SPEC_BY_ID.get(source_cfg.id)
+        pool = ms_keypool.pool_for(source_cfg.id, source_cfg.keys)
+        rows.append({
+            "id": source_cfg.id,
+            "label": source_cfg.label,
+            "note": spec.note if spec else "",
+            "position": position,
+            "enabled": source_cfg.enabled,
+            "requires_key": source_cfg.requires_key,
+            "lang": source_cfg.lang,
+            "rate": source_cfg.rate,
+            "key_count": len(source_cfg.keys),
+            "keys": pool.status(),
+            "cooling": pool.cooling_count(),
+            # 「不参与」的两种原因分别说清楚：手动关掉 vs 缺密钥
+            "skipped_reason": ("已在后台关闭" if not source_cfg.enabled
+                               else ("需要密钥但一个都没配" if source_cfg.needs_key else "")),
+        })
+    return {
+        "enabled": snapshot.enabled,
+        "prefer_chinese": snapshot.prefer_chinese,
+        "order": order,
+        "sources": rows,
+        "default_order": list(ms_config.DEFAULT_ORDER),
+        "max_sources": ms_config.MAX_SOURCES,
+        "collect_timeout_sec": ms_config.COLLECT_TIMEOUT_SEC,
+        "active_count": len([r for r in rows if r["enabled"] and not r["skipped_reason"]]),
+    }
+
+
+@admin_emby_router.get("/scrape/meta-sources")
+def get_meta_sources(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """多源配置 + 逐源运行时状态（密钥只给掩码）"""
+    return _meta_sources_view(db)
+
+
+@admin_emby_router.put("/scrape/meta-sources")
+def save_meta_sources(
+    req: MetaSourcesSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存总开关 / 中文优先 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**）"""
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import sources as ms_sources
+
+    known = {spec.id for spec in ms_sources.SPECS}
+    order = [sid for sid in (req.order or []) if sid in known]
+    # 顺序里没提到的源追加到末尾（前端漏发不丢源）；重复的丢弃
+    order += [sid for sid in ms_config.DEFAULT_ORDER if sid in known and sid not in order]
+    toggles = {sid: bool(on) for sid, on in (req.toggles or {}).items() if sid in known}
+    rates = {sid: rate for sid, rate in (req.rates or {}).items() if sid in known}
+    ms_config.write_config(
+        db, enabled=bool(req.enabled), prefer_chinese=bool(req.prefer_chinese),
+        order=order, toggles=toggles, rates=rates)
+    return _meta_sources_view(db)
+
+
+class MetaSourceKeyAddRequest(BaseModel):
+    key: str = Field(..., min_length=6, max_length=200, description="一把新的密钥")
+
+
+@admin_emby_router.post("/scrape/meta-sources/{source_id}/keys")
+def add_meta_source_key(
+    source_id: str,
+    req: MetaSourceKeyAddRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """逐源逐把增：追加一把密钥（去重，不覆盖已有）"""
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import sources as ms_sources
+
+    if source_id not in ms_sources.SPEC_BY_ID:
+        raise HTTPException(status_code=404, detail=f"未知的数据源：{source_id}")
+    key = req.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="密钥不能为空")
+    snapshot = ms_config.read_config(db, ms_sources.SPECS)
+    existing = list((snapshot.by_id(source_id).keys if snapshot.by_id(source_id) else []))
+    if key in existing:
+        raise HTTPException(status_code=409, detail="这把密钥已经在池子里了")
+    ms_config.write_config(db, enabled=snapshot.enabled,
+                            prefer_chinese=snapshot.prefer_chinese,
+                            order=[s.id for s in snapshot.sources],
+                            toggles={s.id: s.enabled for s in snapshot.sources},
+                            rates={s.id: s.rate for s in snapshot.sources},
+                            keys={source_id: existing + [key]})
+    return _meta_sources_view(db)
+
+
+@admin_emby_router.delete("/scrape/meta-sources/{source_id}/keys/{index}")
+def delete_meta_source_key(
+    source_id: str,
+    index: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """逐源逐把删：按**序号**（从 1 开始，与界面展示一致）删一把"""
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import sources as ms_sources
+
+    if source_id not in ms_sources.SPEC_BY_ID:
+        raise HTTPException(status_code=404, detail=f"未知的数据源：{source_id}")
+    snapshot = ms_config.read_config(db, ms_sources.SPECS)
+    source_cfg = snapshot.by_id(source_id)
+    if source_cfg is None:
+        raise HTTPException(status_code=404, detail=f"未知的数据源：{source_id}")
+    if index < 1 or index > len(source_cfg.keys):
+        raise HTTPException(
+            status_code=400,
+            detail=f"序号超出范围：「{source_cfg.label}」的池子里只有 {len(source_cfg.keys)} 把",
+        )
+    remaining = [k for i, k in enumerate(source_cfg.keys, start=1) if i != index]
+    ms_config.write_config(db, enabled=snapshot.enabled,
+                            prefer_chinese=snapshot.prefer_chinese,
+                            order=[s.id for s in snapshot.sources],
+                            toggles={s.id: s.enabled for s in snapshot.sources},
+                            rates={s.id: s.rate for s in snapshot.sources},
+                            keys={source_id: remaining})
+    return _meta_sources_view(db)
+
+
+@admin_emby_router.post("/scrape/meta-sources/{source_id}/keys/reset")
+def reset_meta_source_cooldown(
+    source_id: str,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """清除某个源全部密钥的冷却（换完密钥 / 网络恢复后手动重来一次）"""
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import keypool as ms_keypool
+    from backend.emby_server.metasources import sources as ms_sources
+
+    if source_id not in ms_sources.SPEC_BY_ID:
+        raise HTTPException(status_code=404, detail=f"未知的数据源：{source_id}")
+    snapshot = ms_config.read_config(db, ms_sources.SPECS)
+    source_cfg = snapshot.by_id(source_id)
+    keys = list(source_cfg.keys) if source_cfg else []
+    cleared = ms_keypool.pool_for(source_id, keys).clear()
+    return {"success": True, "cleared": cleared, "config": _meta_sources_view(db)}
+
+
+@admin_emby_router.post("/scrape/meta-sources/test")
+def probe_meta_sources(
+    req: MetaSourceProbeRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """试采集：用一个片名跑一遍，**不改任何数据**，返回逐源命中与合并后的字段
+
+    这是配置页最有用的一把尺子：开一个源之前先看它到底能不能搜到这部片。
+    ``source`` 指定时只问那一个源（用来单独排查“是不是这个站在抽风”）。
+    """
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import engine as ms_engine
+    from backend.emby_server.metasources import sources as ms_sources
+
+    kind = "movie" if req.kind == "movie" else "series"
+    if req.source and req.source not in ms_sources.SPEC_BY_ID:
+        raise HTTPException(status_code=404, detail=f"未知的数据源：{req.source}")
+    # 试采集要能测「被关掉的源」，所以不走过滤后的 ordered()
+    result = ms_engine.collect(db, req.title.strip(), req.year, kind,
+                               only=req.source or None, ignore_switch=True)
+    snapshot = ms_config.read_config(db, ms_sources.SPECS)
+    view = _meta_sources_view(db, snapshot)
+    return {
+        "success": True,
+        "switch_on": snapshot.enabled,
+        "probe": result.as_dict(),
+        "note": "" if snapshot.enabled
+                else "总开关现在是关的，这次是临时试采集（不会真的落库）",
+        "sources": view["sources"],
+    }
+
+
+# 只有这些词出现时，才算「密钥自己的问题」。
+# 写成一组词而不是逐个源判断，是因为各站的报错文案不一致（OMDb 说 Error: Invalid API key!，
+# TheTVDB 说 token 过期，TMDB 直接回 401），而**网络类失败**长得很像（超时 / 拒绝连接 /
+# 429 / 403），绝不能误伤——那会把好密钥白白晾起来。
+_KEY_FAULT_WORDS = ("401", "403 认证", "密钥无效", "无效密钥", "api key", "apikey",
+                    "invalid", "token", "unauthorized", "配额", "quota")
+
+
+def _is_key_fault(message: str) -> bool:
+    text = str(message or "").lower()
+    return any(word in text for word in _KEY_FAULT_WORDS)
+
+
+@admin_emby_router.post("/scrape/meta-sources/{source_id}/test")
+def test_meta_source_keys(
+    source_id: str,
+    req: MetaSourceProbeRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """一键测试某个源的密钥：逐把试一遍，测不通的直接进冷却
+
+    与 TMDB 那套同一口径：测都过不了的密钥没必要继续拿去打真实请求。
+    测不出来（非密钥类失败，如网络）**不进冷却**——那不是密钥的锅。
+    """
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import keypool as ms_keypool
+    from backend.emby_server.metasources import sources as ms_sources
+
+    spec = ms_sources.SPEC_BY_ID.get(source_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail=f"未知的数据源：{source_id}")
+    snapshot = ms_config.read_config(db, ms_sources.SPECS)
+    source_cfg = snapshot.by_id(source_id)
+    keys = list(source_cfg.keys) if source_cfg else []
+    if not keys:
+        raise HTTPException(status_code=400, detail=f"「{spec.label}」还没有配置密钥")
+    pool = ms_keypool.pool_for(source_id, keys)
+    kind = "movie" if req.kind == "movie" else "series"
+    results = []
+    for index, key in enumerate(keys, start=1):
+        probe_pool = ms_keypool.KeyPool(source_id, [key])
+        gate = ms_keypool.RateGate(source_id, 0.0)   # 测试不等限速
+        began = time.monotonic()
+        try:
+            hit = spec.search(req.title.strip(), req.year, kind,
+                              pool=probe_pool, gate=gate)
+        except ms_sources.SourceError as exc:
+            message = str(exc)
+            # 只冷却**密钥自己的锅**（401 / 无效 / token 过期 / 配额耗尽）。
+            # 网络超时、限流、反爬一律不冷却：那不是这把密钥的问题，
+            # 把它晾起来只会在管理员网络恢复后平白少一把能用的密钥。
+            if _is_key_fault(message):
+                pool.note_invalid(key)
+                message = f"{message}（已冷却，不再使用这把）"
+            results.append({"index": index, "masked": ms_keypool.mask(key),
+                            "ok": False, "message": message[:140]})
+            continue
+        results.append({
+            "index": index, "masked": ms_keypool.mask(key), "ok": True,
+            "hit": hit is not None,
+            "message": (f"可用，搜到「{hit.title}」" if hit else "可用，但这片没搜到"),
+            "elapsed_ms": int((time.monotonic() - began) * 1000),
+        })
+    return {"results": results, "config": _meta_sources_view(db)}
 
 
 # ==================== 库级重刮 ====================
