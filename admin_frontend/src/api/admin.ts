@@ -29,6 +29,7 @@ import type {
   PlaybackNode,
   PlaybackPolicy,
   PlaybackRuntime,
+  PlayLinesSnapshot,
   EaMountHealth,
   RemoteServerRow,
   ServerKind,
@@ -1047,6 +1048,13 @@ export const fetchPlaybackPolicy = () =>
   get<{ policy: PlaybackPolicy; keys: Record<string, string>; runtime: PlaybackRuntime }>(
     '/playback/policy',
   )
+
+// ==================== 播放线路可观测（Phase 3，/api/admin/playback/lines） ====================
+// 四条线路各一张卡片：能不能用 / 是不是在降级 / 有多少人多少流量 / 效果如何。
+// **只读**：线路配置在 CDN / 本地缓存两个卡片里改，这里不改。
+// 灰度发布（0% 流量影子评估）本期不做，所以也没有对应的开关。
+
+export const fetchPlayLines = () => get<PlayLinesSnapshot>('/playback/lines')
 
 export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
   put<{ success: boolean; applied: Record<string, string>; policy: PlaybackPolicy }>(
