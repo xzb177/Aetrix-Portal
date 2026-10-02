@@ -632,12 +632,40 @@ export const fetchScanQueue = () => get<EmbyScanQueue>(`${E}/scan-queue`)
 
 // ==================== 元数据与刮削（EmbyAdmin.vue「元数据与刮削」分组） ====================
 
+/** 密钥池里的一把 key（只给掩码与运行状态，**没有原文**） */
+export interface TmdbKeyPoolRow {
+  /** 展示序号（从 1 开始，与删除接口一致） */
+  index: number
+  masked: string
+  /** 此刻正在用它发请求 */
+  current: boolean
+  /** 被限流 / 失效后进了冷却 */
+  cooling: boolean
+  cooldown_remaining: number
+  reason: string
+  hits: number
+}
+
 export interface TmdbKeysStatus {
   configured: boolean
   source: 'env' | 'db' | 'none'
   count: number
   masked: string[]
   env_present: boolean
+  /** 实际在打请求/秒（自适应后） */
+  rate?: number
+  rate_ceiling?: number
+  throttled?: number
+  /** 逐把状态：哪把在用、哪把在冷却（还要 xx 秒） */
+  pool?: TmdbKeyPoolRow[]
+  keys_cooling?: number
+  /** 当前生效的镜像地址（空配置 = 官方地址） */
+  api_base?: string
+  image_base?: string
+  api_base_default?: string
+  image_base_default?: string
+  api_base_from_env?: boolean
+  image_base_from_env?: boolean
 }
 
 /** TMDB Key 状态（只返回掩码与数量） */
@@ -647,6 +675,46 @@ export const fetchTmdbKeys = () => get<TmdbKeysStatus>(`${E}/scrape/tmdb-keys`)
 export const saveTmdbKeys = (keys: string) =>
   put<{ success: boolean; saved: number; source: string; count: number }>(`${E}/scrape/tmdb-keys`, { keys })
 
+/** 逐把增：往密钥池追加一把（去重；已存在返回 409） */
+export const addTmdbKey = (key: string) =>
+  post<{
+    success: boolean
+    count: number
+    masked: string[]
+    /** 环境变量里也有 key 时为 false（写入成功但暂不生效） */
+    effective: boolean
+    note: string
+  }>(`${E}/scrape/tmdb-keys/add`, { key })
+
+/** 逐把删：按展示序号（从 1 开始）删掉一把 */
+export const deleteTmdbKey = (index: number) =>
+  del<{ success: boolean; removed: string; count: number; masked: string[] }>(
+    `${E}/scrape/tmdb-keys/${index}`)
+
+/** 清除全部密钥的冷却（换完 key / 网络恢复后手动重来一次） */
+export const resetTmdbKeyCooldown = () =>
+  post<{ success: boolean; cleared: number; pool: TmdbKeyPoolRow[] }>(
+    `${E}/scrape/tmdb-keys/cooldown/reset`)
+
+export interface TmdbMirror {
+  api_base: string
+  image_base: string
+  api_base_from_env?: boolean
+  image_base_from_env?: boolean
+  defaults: { api_base: string; image_base: string }
+  cooldown_sec: number
+  invalid_cooldown_sec: number
+  /** 冷却时长对应的 SystemConfig 键（阈值不写死，可在配置里改） */
+  cooldown_config_keys: string[]
+}
+
+export const fetchTmdbMirror = () => get<TmdbMirror>(`${E}/scrape/tmdb-mirror`)
+
+/** 保存镜像地址（两个都传空 = 回到官方地址） */
+export const saveTmdbMirror = (data: { api_base: string; image_base: string }) =>
+  put<{ success: boolean; api_base: string; image_base: string; defaults: TmdbMirror['defaults'] }>(
+    `${E}/scrape/tmdb-mirror`, data)
+
 export interface TmdbTestResult {
   index: number
   masked: string
@@ -654,9 +722,10 @@ export interface TmdbTestResult {
   message: string
 }
 
-/** 测试 TMDB 连接：keys 为空则测当前生效的 key，否则测这批候选 key */
+/** 一键测试全部密钥：keys 为空则测当前生效的密钥池（测不通的会被放进冷却） */
 export const testTmdbKeys = (keys?: string) =>
-  post<{ results: TmdbTestResult[] }>(`${E}/scrape/tmdb-test`, { keys: keys || '' })
+  post<{ results: TmdbTestResult[]; pool?: TmdbKeyPoolRow[] }>(
+    `${E}/scrape/tmdb-test`, { keys: keys || '' })
 
 export interface RescrapeSummary {
   notes: string[]

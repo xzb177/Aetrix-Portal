@@ -190,7 +190,10 @@ def find_library_match(db: Session, request: models.MovieRequest):
 def _poster_url(path: Optional[str]) -> Optional[str]:
     if not path:
         return None
-    return f"https://image.tmdb.org/t/p/w300{path}"
+    # 图片 CDN 地址跟刮削侧同源：后台配了镜像，这里自动跟着走
+    from backend.emby_server import tmdb
+
+    return f"{tmdb.image_base()}/w300{path}"
 
 
 def _year_of(hit: dict, kind: str) -> str:

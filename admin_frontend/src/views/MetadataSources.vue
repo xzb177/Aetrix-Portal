@@ -12,16 +12,24 @@
  * 按库的东西仍在「媒体库」页：TMDB API Keys、整库重刮、定时扫描、目录变更监听、
  * 云盘挂载入口。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, RotateCw, Wand2 } from 'lucide-vue-next'
+import { KeyRound, PlugZap, RefreshCw, RotateCw, Wand2 } from 'lucide-vue-next'
 import {
+  addTmdbKey,
   bindTmdb,
+  deleteTmdbKey,
   fetchEnrichProgress,
+  fetchTmdbKeys,
+  fetchTmdbMirror,
   previewTmdb,
   rescrapeItem,
+  resetTmdbKeyCooldown,
+  saveTmdbMirror,
+  testTmdbKeys,
 } from '@/api/admin'
+import type { TmdbKeyPoolRow, TmdbKeysStatus, TmdbMirror, TmdbTestResult } from '@/api/admin'
 import type { EnrichProgress, TmdbBindResult, TmdbPreview } from '@/api/admin'
 import './MetadataSources.css'
 
@@ -174,8 +182,146 @@ async function loadEnrichProgress() {
   }
 }
 
+// ==================== TMDB 密钥池与镜像（Phase 6a） ====================
+
+const tmdbKeys = ref<TmdbKeysStatus | null>(null)
+const tmdbKeysLoading = ref(false)
+const newKey = ref('')
+const keyAdding = ref(false)
+const keyBusyIndex = ref<number | null>(null)
+const keyTests = ref<TmdbTestResult[]>([])
+const keyTesting = ref(false)
+const mirror = ref<TmdbMirror | null>(null)
+const mirrorForm = reactive({ api_base: '', image_base: '' })
+const mirrorSaving = ref(false)
+
+async function loadTmdbKeys() {
+  tmdbKeysLoading.value = true
+  try {
+    tmdbKeys.value = await fetchTmdbKeys()
+  } catch {
+    tmdbKeys.value = null
+  } finally {
+    tmdbKeysLoading.value = false
+  }
+}
+
+/** 密钥池每一行：序号 + 掩码 + 状态（冷却中的写出“还要 xx 秒”与原因） */
+const keyRows = computed<TmdbKeyPoolRow[]>(() => tmdbKeys.value?.pool || [])
+
+function keyStatus(row: TmdbKeyPoolRow): { text: string; cls: string } {
+  if (row.cooling) return { text: `冷却中 · 还剩 ${row.cooldown_remaining}s`, cls: 'warn' }
+  if (row.current) return { text: '正在使用', cls: 'ok' }
+  return { text: '待命', cls: 'muted' }
+}
+
+/** 冷却原因 + 命中次数（悬停才看，避免表格过宽） */
+function keyStatusTitle(row: TmdbKeyPoolRow): string {
+  if (!row.reason) return ''
+  return `${row.reason}（本进程命中 ${row.hits} 次）`
+}
+
+async function addKey() {
+  const value = newKey.value.trim()
+  if (!value) {
+    ElMessage.warning('请填写 TMDB API Key')
+    return
+  }
+  keyAdding.value = true
+  try {
+    const res = await addTmdbKey(value)
+    newKey.value = ''
+    if (res.effective) ElMessage.success(`已添加，密钥池现有 ${res.count} 把`)
+    else ElMessage.warning(res.note || '已写入，但暂不生效')
+    keyTests.value = []
+    await loadTmdbKeys()
+  } catch {
+    /* 拦截器已提示（如 409：已经在池子里） */
+  } finally {
+    keyAdding.value = false
+  }
+}
+
+async function removeKey(row: TmdbKeyPoolRow) {
+  keyBusyIndex.value = row.index
+  try {
+    const res = await deleteTmdbKey(row.index)
+    ElMessage.success(`已删除 ${res.removed}，还剩 ${res.count} 把`)
+    keyTests.value = keyTests.value.filter((t) => t.index !== row.index)
+    await loadTmdbKeys()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    keyBusyIndex.value = null
+  }
+}
+
+/** 一键测试全部：测不通的那几把会被后端直接放进冷却 */
+async function testAllKeys() {
+  keyTesting.value = true
+  try {
+    const res = await testTmdbKeys()
+    keyTests.value = res.results
+    const okCount = res.results.filter((r) => r.ok).length
+    if (!res.results.length) ElMessage.warning('密钥池是空的：先添加一把')
+    else if (okCount === res.results.length) ElMessage.success(`${okCount} 把全部可用`)
+    else ElMessage.warning(`${okCount}/${res.results.length} 把可用，其余已转入冷却`)
+    await loadTmdbKeys()
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    keyTesting.value = false
+  }
+}
+
+async function resetCooldowns() {
+  try {
+    const res = await resetTmdbKeyCooldown()
+    ElMessage.success(res.cleared ? `已清除 ${res.cleared} 把的冷却` : '当前没有密钥在冷却')
+    await loadTmdbKeys()
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+async function loadMirror() {
+  try {
+    mirror.value = await fetchTmdbMirror()
+    mirrorForm.api_base = mirror.value.api_base
+    mirrorForm.image_base = mirror.value.image_base
+  } catch {
+    mirror.value = null
+  }
+}
+
+async function saveMirror() {
+  mirrorSaving.value = true
+  try {
+    const res = await saveTmdbMirror({
+      api_base: mirrorForm.api_base.trim(),
+      image_base: mirrorForm.image_base.trim(),
+    })
+    ElMessage.success('已保存并生效（图片地址下一次刮削就用镜像）')
+    mirrorForm.api_base = res.api_base
+    mirrorForm.image_base = res.image_base
+    await Promise.all([loadMirror(), loadTmdbKeys()])
+  } catch {
+    /* 拦截器已提示（400 会带上具体哪个地址不合法） */
+  } finally {
+    mirrorSaving.value = false
+  }
+}
+
+/** 恢复官方地址：两个输入框清空后保存即可 */
+function restoreDefaultMirror() {
+  mirrorForm.api_base = ''
+  mirrorForm.image_base = ''
+}
+
 onMounted(() => {
   loadEnrichProgress().catch(() => undefined)
+  loadTmdbKeys().catch(() => undefined)
+  loadMirror().catch(() => undefined)
 })
 </script>
 
@@ -198,6 +344,113 @@ onMounted(() => {
     </div>
 
     <div class="ms-grid">
+      <!-- 0. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
+      <div class="admin-card ms-card ms-card-wide">
+        <div class="card-header">
+          <h2><KeyRound :size="16" style="margin-right: 6px" />TMDB 密钥池与镜像</h2>
+          <div class="ms-facts">
+            <span v-if="tmdbKeys" class="fact">
+              来源：{{ tmdbKeys.source === 'env' ? '环境变量' : tmdbKeys.source === 'db' ? '后台填写' : '未配置' }}
+            </span>
+            <span v-if="tmdbKeys" class="fact">共 {{ tmdbKeys.count }} 把</span>
+            <span v-if="tmdbKeys?.keys_cooling" class="fact warn">
+              冷却中 {{ tmdbKeys.keys_cooling }}
+            </span>
+            <span v-if="tmdbKeys" class="fact">实际 {{ tmdbKeys.rate ?? 0 }}/秒（上限 {{ tmdbKeys.rate_ceiling ?? 0 }}）</span>
+          </div>
+        </div>
+        <p class="ms-hint">
+          多把密钥轮着：一把被限流（429）或失效（401）会自动冷却并切到下一把，
+          冷却时长走配置（当前 429 {{ mirror?.cooldown_sec ?? '—' }} 秒 / 401
+          {{ mirror?.invalid_cooldown_sec ?? '—' }} 秒）。密钥原文不会出现在接口里，只显示后 4 位。
+        </p>
+        <el-alert
+          v-if="tmdbKeys?.env_present"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="ms-alert"
+        >
+          环境变量 <code>TMDB_API_KEYS</code> 里已经有密钥，它优先于后台填写的池子：
+          下面添加的密钥会存下来但<strong>暂不生效</strong>。
+        </el-alert>
+
+        <div v-if="tmdbKeysLoading && !tmdbKeys" class="ms-hint">加载中…</div>
+        <div v-else-if="!tmdbKeys" class="ms-hint">读取密钥池失败，稍后点「刷新」重试。</div>
+        <div v-else-if="!keyRows.length" class="ms-hint">
+          还没有密钥：刮削会静默跳过。在下面添一把，或去「媒体库」页的 TMDB API Keys 批量粘贴。
+        </div>
+        <table v-else class="ms-table">
+          <thead>
+            <tr><th>#</th><th>密钥</th><th>状态</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in keyRows" :key="row.index">
+              <td class="muted">{{ row.index }}</td>
+              <td class="mono">{{ row.masked }}</td>
+              <td>
+                <span class="mini-badge" :class="keyStatus(row).cls" :title="keyStatusTitle(row)">
+                  {{ keyStatus(row).text }}
+                </span>
+                <div v-if="row.reason" class="ms-sub muted">{{ row.reason }}</div>
+              </td>
+              <td>
+                <el-button
+                  size="small"
+                  text
+                  type="danger"
+                  :loading="keyBusyIndex === row.index"
+                  @click="removeKey(row)"
+                >删除</el-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="ms-actions">
+          <el-input
+            v-model="newKey"
+            placeholder="粘贴一把新的 TMDB API Key"
+            style="width: 320px"
+            clearable
+          />
+          <el-button size="small" type="primary" :loading="keyAdding" @click="addKey">添加</el-button>
+          <el-button size="small" :loading="keyTesting" @click="testAllKeys">
+            <PlugZap :size="14" style="margin-right: 4px" />测试全部
+          </el-button>
+          <el-button size="small" :disabled="!tmdbKeys?.keys_cooling" @click="resetCooldowns">
+            清除冷却
+          </el-button>
+          <el-button size="small" text :loading="tmdbKeysLoading" @click="loadTmdbKeys">
+            <RefreshCw :size="14" />
+          </el-button>
+        </div>
+        <div v-if="keyTests.length" class="ms-results">
+          <div v-for="t in keyTests" :key="t.index" class="ms-result">
+            <span class="mini-badge" :class="t.ok ? 'ok' : 'danger'">{{ t.ok ? '可用' : '不可用' }}</span>
+            <span class="mono">{{ t.masked }}</span>
+            <span class="muted">{{ t.message }}</span>
+          </div>
+        </div>
+
+        <div class="ms-sub">镜像 / 反代地址（境内直连不通时填）</div>
+        <p class="ms-hint">
+          API 与图片 CDN <strong>分开配</strong>：常见情况是图片走镜像、API 直连（或反过来）。
+          留空 = 用官方地址。环境变量 <code>TMDB_API_BASE</code> / <code>TMDB_IMAGE_BASE</code> 优先。
+        </p>
+        <div class="ms-actions">
+          <el-input v-model="mirrorForm.api_base" placeholder="API 地址，如 https://tmdb.example.com/3" style="width: 300px" />
+          <el-input v-model="mirrorForm.image_base" placeholder="图片 CDN，如 https://img.example.com/t/p" style="width: 300px" />
+          <el-button size="small" type="primary" :loading="mirrorSaving" @click="saveMirror">保存镜像</el-button>
+          <el-button size="small" text @click="restoreDefaultMirror">清空（恢复官方）</el-button>
+        </div>
+        <p v-if="mirror" class="ms-hint">
+          当前生效：API <code class="mono">{{ mirror.api_base }}</code>
+          {{ mirror.api_base_from_env ? '（来自环境变量，后台保存不生效）' : '' }}
+          ｜图片 <code class="mono">{{ mirror.image_base }}</code>
+          {{ mirror.image_base_from_env ? '（来自环境变量）' : '' }}
+        </p>
+      </div>
       <!-- 1. 条目元数据刷新 -->
       <div class="admin-card ms-card">
         <div class="card-header">
