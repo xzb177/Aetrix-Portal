@@ -1452,102 +1452,6 @@ function typeLabel(t: string): string {
           </div>
         </div>
         <div class="scrape-block">
-          <h3>媒体库封面</h3>
-          <p class="drawer-hint">
-            选个样式，系统会从<strong>最新入库</strong>的条目里挑海报自动拼一张横版封面
-            （1920×1080），不用自己找图配字。刮完新片点「按最新海报重新生成」即可换封面。
-          </p>
-
-          <el-form-item label="自动生成样式" style="margin-bottom: 12px">
-            <el-select
-              v-model="coverTemplate"
-              placeholder="留空 = 用上传的封面"
-              clearable
-              style="width: 100%"
-            >
-              <el-option
-                v-for="t in COVER_TEMPLATES"
-                :key="t.value"
-                :label="t.label"
-                :value="t.value"
-              />
-            </el-select>
-            <p class="drawer-hint" style="margin-top: 4px">
-              选中的样式：{{ optionOf(COVER_TEMPLATES, coverTemplate)?.hint || '不生成，仍用上传的封面' }}
-            </p>
-          </el-form-item>
-
-          <template v-if="coverTemplate">
-            <el-form-item label="封面标题" style="margin-bottom: 12px">
-              <el-input
-                v-model="coverTitle"
-                placeholder="例如：{library}"
-                maxlength="100"
-              />
-            </el-form-item>
-            <el-form-item label="封面副标题" style="margin-bottom: 12px">
-              <el-input
-                v-model="coverSubtitle"
-                placeholder="例如：{type} · {year}"
-                maxlength="100"
-              />
-            </el-form-item>
-            <p class="drawer-hint" style="margin: -6px 0 10px">
-              可用变量：<code>{library}</code> 媒体库名、<code>{type}</code> 内容类型、<code>{year}</code> 当前年份。
-              只渲染纯文字，不执行 HTML 或样式；字体不可用时自动省略文字，不影响封面生成。
-            </p>
-
-            <div class="cover-preview-wrap">
-              <div class="cover-preview-box">
-                <img
-                  v-if="coverPreviewUrl"
-                  :src="coverPreviewUrl"
-                  alt="封面预览"
-                  class="cover-preview-img"
-                />
-                <el-empty
-                  v-else-if="coverPreviewLoading"
-                  description="正在渲染预览…"
-                  :image-size="52"
-                />
-                <div v-else class="cover-preview-hint">
-                  {{ coverPreviewError || '选好样式后自动出预览' }}
-                </div>
-              </div>
-              <div class="cover-preview-actions">
-                <el-button
-                  size="small"
-                  :loading="coverPreviewLoading"
-                  :disabled="!canPreviewCover()"
-                  @click="loadCoverPreview"
-                >
-                  刷新预览
-                </el-button>
-                <el-button
-                  size="small"
-                  type="primary"
-                  :loading="coverSaving"
-                  :disabled="!canPreviewCover()"
-                  @click="saveCoverConfig"
-                >
-                  生成并保存
-                </el-button>
-                <el-button
-                  v-if="libFormTarget?.cover_template"
-                  size="small"
-                  :loading="coverRegenerating"
-                  @click="regenerateCover"
-                >
-                  按最新海报重新生成
-                </el-button>
-                <p v-if="!canPreviewCover()" class="drawer-hint">
-                  新建的库还没有条目，保存后扫出内容才能生成封面。
-                </p>
-              </div>
-            </div>
-          </template>
-        </div>
-        <div class="scrape-block">
           <h3>云盘挂载</h3>
           <p class="drawer-hint">
             rclone remote 与服务账号统一在「存储来源」页管理。
@@ -1891,6 +1795,99 @@ function typeLabel(t: string): string {
               </el-button>
             </div>
           </div>
+  <div class="form-hint" style="margin-top: 12px">
+    或者选个样式自动生成：系统会从<strong>最新入库</strong>的条目里挑海报拼一张横版封面
+    （1920×1080），不用自己找图配字。刮完新片点「按最新海报重新生成」即可换封面。
+  </div>
+
+  <el-form-item label="自动生成样式" style="margin-bottom: 12px">
+    <el-select
+      v-model="coverTemplate"
+      placeholder="留空 = 用上传的封面"
+      clearable
+      style="width: 100%"
+    >
+      <el-option
+        v-for="t in COVER_TEMPLATES"
+        :key="t.value"
+        :label="t.label"
+        :value="t.value"
+      />
+    </el-select>
+    <p class="drawer-hint" style="margin-top: 4px">
+      选中的样式：{{ optionOf(COVER_TEMPLATES, coverTemplate)?.hint || '不生成，仍用上传的封面' }}
+    </p>
+  </el-form-item>
+
+  <template v-if="coverTemplate">
+    <el-form-item label="封面标题" style="margin-bottom: 12px">
+      <el-input
+        v-model="coverTitle"
+        placeholder="例如：{library}"
+        maxlength="100"
+      />
+    </el-form-item>
+    <el-form-item label="封面副标题" style="margin-bottom: 12px">
+      <el-input
+        v-model="coverSubtitle"
+        placeholder="例如：{type} · {year}"
+        maxlength="100"
+      />
+    </el-form-item>
+    <p class="drawer-hint" style="margin: -6px 0 10px">
+      可用变量：<code>{library}</code> 媒体库名、<code>{type}</code> 内容类型、<code>{year}</code> 当前年份。
+      只渲染纯文字，不执行 HTML 或样式；字体不可用时自动省略文字，不影响封面生成。
+    </p>
+
+    <div class="cover-preview-wrap">
+      <div class="cover-preview-box">
+        <img
+          v-if="coverPreviewUrl"
+          :src="coverPreviewUrl"
+          alt="封面预览"
+          class="cover-preview-img"
+        />
+        <el-empty
+          v-else-if="coverPreviewLoading"
+          description="正在渲染预览…"
+          :image-size="52"
+        />
+        <div v-else class="cover-preview-hint">
+          {{ coverPreviewError || '选好样式后自动出预览' }}
+        </div>
+      </div>
+      <div class="cover-preview-actions">
+        <el-button
+          size="small"
+          :loading="coverPreviewLoading"
+          :disabled="!canPreviewCover()"
+          @click="loadCoverPreview"
+        >
+          刷新预览
+        </el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="coverSaving"
+          :disabled="!canPreviewCover()"
+          @click="saveCoverConfig"
+        >
+          生成并保存
+        </el-button>
+        <el-button
+          v-if="libFormTarget?.cover_template"
+          size="small"
+          :loading="coverRegenerating"
+          @click="regenerateCover"
+        >
+          按最新海报重新生成
+        </el-button>
+        <p v-if="!canPreviewCover()" class="drawer-hint">
+          新建的库还没有条目，保存后扫出内容才能生成封面。
+        </p>
+      </div>
+    </div>
+  </template>
         </div>
 
         <!-- 分组四：媒体路径 -->
