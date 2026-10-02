@@ -1252,8 +1252,22 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
     if scan_queue.is_busy(lib.id):
         raise HTTPException(status_code=409, detail="该媒体库在扫描队列中，请先取消排队再删除")
 
+    # 先断开自引用（parent_id / series_id）：分批删时父条目可能先于子条目被删，
+    # 自引用外键没有级联会直接 500。整个库都要删掉，置空没有任何副作用。
+    db.query(em.MediaItem).filter(
+        em.MediaItem.library_id == lib.id
+    ).update(
+        {em.MediaItem.parent_id: None, em.MediaItem.series_id: None},
+        synchronize_session=False,
+    )
+    db.commit()
+
     # 分批删除：老实现把整库条目一次载入内存再逐条删（十万级库会直接把面板拖死）
+    # 删除顺序铁律：所有外键指向 emby_items 的子表（且无 ON DELETE CASCADE）
+    # 都必须先于条目本身删除，漏掉任何一张都会 500
+    # （2026-10-02：ItemFacet / PlaybackSession / LocalCacheEntry 漏删致删库 500）。
     removed = 0
+    cache_files: list = []
     while True:
         chunk = [
             row[0] for row in db.query(em.MediaItem.id)
@@ -1269,11 +1283,31 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
         db.query(em.UserMediaData).filter(
             em.UserMediaData.item_id.in_(chunk)
         ).delete(synchronize_session=False)
+        db.query(em.ItemFacet).filter(
+            em.ItemFacet.item_id.in_(chunk)
+        ).delete(synchronize_session=False)
+        db.query(em.PlaybackSession).filter(
+            em.PlaybackSession.item_id.in_(chunk)
+        ).delete(synchronize_session=False)
+        cache_files.extend(
+            row[0] for row in db.query(em.LocalCacheEntry.file_path)
+            .filter(em.LocalCacheEntry.item_id.in_(chunk))
+            .all() if row[0]
+        )
+        db.query(em.LocalCacheEntry).filter(
+            em.LocalCacheEntry.item_id.in_(chunk)
+        ).delete(synchronize_session=False)
         db.query(em.MediaItem).filter(
             em.MediaItem.id.in_(chunk)
         ).delete(synchronize_session=False)
         db.commit()
         removed += len(chunk)
+    # 本地缓存文件随记录一起清理（best-effort，避免磁盘泄漏）
+    for _f in cache_files:
+        try:
+            os.unlink(_f)
+        except OSError:
+            pass
     old_cover = lib.cover_path
     db.delete(lib)
     db.commit()
