@@ -6,8 +6,13 @@
  * 扫描状态 / 存储健康）：先看「现在能不能用、有没有要处理的」，再往下才是经营与排行。
  * 每张卡都直接点进对应页面，不用先想「这个数字在哪一页」。
  *
- * - 顶部「待办」条：待处理工单 / 待审求片 / 待支付订单，一点直达对应页面
- * - 交易概览：今日营收、累计营收、积分存量、今日签到、兑换码核销、邀请人数
+ * v2.42.10（Phase 5·KPI 深链）：**每一个数字都能点**，而且点进去**已经带上筛选**——
+ * 「待处理工单 3」进的是 `/tickets?status=open`（只看待处理的那几条），不是全部工单；
+ * 「待支付订单」进 `/orders?status=pending`。落地页用 `useQueryFilter` 接这个参数
+ * （见 composables/useQueryFilter.ts），所以从仪表盘、待办条、命令面板点过去口径一致。
+ *
+ * - 顶部「待办」条：待处理工单 / 待审求片 / 待支付订单，一点直达对应页面（带筛选）
+ * - 交易概览：今日营收、累计营收、积分存量、今日签到、兑换码核销、邀请人数（均可点）
  * - 趋势图：近 7/14/30 天的新增用户 / 播放 / 营收 / 签到（纯 SVG，无额外依赖）
  * - 播放榜：用户榜 + 热门内容榜
  */
@@ -21,8 +26,8 @@ import {
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
   fetchServersSummary, fetchStatsTrend, fetchBackendServices,
-  fetchQuotaBreakerStatus, resetQuotaBreaker,
   type BackendServiceStatus } from '@/api/admin'
+import { useDangerOps } from '@/composables/useDangerOps'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
   EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary,
@@ -40,9 +45,13 @@ const mounts = ref<StorageMount[]>([])
 const servers = ref<ServerSummary | null>(null)
 /** 后端服务：aetrix-api + aetrix-worker 的运行状态 */
 const backendServices = ref<BackendServiceStatus[]>([])
-/** 配额熔断器状态 */
-const quotaBreaker = ref<{ tripped: boolean; consecutive_403: number; threshold: number; tripped_at: number | null; backoff_sec: number } | null>(null)
-const resettingBreaker = ref(false)
+/** 配额熔断器状态（危险操作逻辑与确认文案在 useDangerOps，与「系统设置 → 危险操作」同一份） */
+const {
+  breaker: quotaBreaker,
+  busy: dangerBusy,
+  loadBreaker: loadQuotaBreaker,
+  resetBreakerNow: handleResetBreaker,
+} = useDangerOps()
 /** 多服运营：每个服的会员 / 内容 / 节点，一个面板同时管几个服一眼看完 */
 const realms = ref<RealmOverview | null>(null)
 const loading = ref(true)
@@ -70,7 +79,7 @@ async function loadTrend() {
 
 onMounted(async () => {
   try {
-    const [o, p, e, libraryData, serverData, realmData, mountData, backendData, breakerData] = await Promise.all([
+    const [o, p, e, libraryData, serverData, realmData, mountData, backendData] = await Promise.all([
       fetchOverview(),
       fetchPlaybackStats(),
       fetchEconomyStats(),
@@ -79,7 +88,6 @@ onMounted(async () => {
       fetchRealmOverview().catch(() => null),
       fetchMounts().catch(() => null),
       fetchBackendServices().catch(() => ({ services: [] as BackendServiceStatus[] })),
-      fetchQuotaBreakerStatus().catch(() => null),
     ])
     overview.value = o
     playback.value = p
@@ -89,27 +97,13 @@ onMounted(async () => {
     realms.value = realmData
     mounts.value = mountData?.mounts || []
     backendServices.value = (backendData as any)?.services || []
-    quotaBreaker.value = (breakerData as any)?.breaker || null
     await loadTrend()
   } finally {
     loading.value = false
   }
+  // 熔断器单独拉（失败就当没有这块卡，不影响仪表盘其余内容）
+  loadQuotaBreaker()
 })
-
-async function handleResetBreaker() {
-  if (!confirm('确定要手动重置配额熔断器吗？请确认 Google Drive 配额已恢复。')) return
-  resettingBreaker.value = true
-  try {
-    await resetQuotaBreaker()
-    const data = await fetchQuotaBreakerStatus().catch(() => null)
-    quotaBreaker.value = (data as any)?.breaker || null
-    alert('熔断器已重置，worker 恢复工作')
-  } catch (e) {
-    alert('重置失败，请稍后重试')
-  } finally {
-    resettingBreaker.value = false
-  }
-}
 
 // ==================== 服务器接入（信息展示）====================
 
@@ -135,11 +129,11 @@ watch(days, loadTrend)
 const todos = computed(() => {
   const list: { label: string; count: number; to: string; icon: unknown; tone: string }[] = []
   if (overview.value) {
-    list.push({ label: '待处理工单', count: overview.value.tickets.open, to: '/tickets', icon: Ticket, tone: 'danger' })
-    list.push({ label: '待审求片', count: overview.value.media_seeks.pending, to: '/media-seek', icon: MessageSquareDashed, tone: 'warning' })
+    list.push({ label: '待处理工单', count: overview.value.tickets.open, to: '/tickets?status=open', icon: Ticket, tone: 'danger' })
+    list.push({ label: '待审求片', count: overview.value.media_seeks.pending, to: '/media-seek?status=pending', icon: MessageSquareDashed, tone: 'warning' })
   }
   if (economy.value) {
-    list.push({ label: '待支付订单', count: economy.value.orders.pending, to: '/orders', icon: Wallet, tone: 'info' })
+    list.push({ label: '待支付订单', count: economy.value.orders.pending, to: '/orders?status=pending', icon: Wallet, tone: 'info' })
   }
   return list
 })
@@ -199,15 +193,15 @@ const kpis = computed<{
     },
     {
       key: 'seeks', label: '待处理求片', value: overview.value?.media_seeks.pending ?? 0,
-      foot: (overview.value?.media_seeks.pending ?? 0) > 0 ? '点开去处理' : '没有待处理求片',
-      to: '/media-seek', icon: MessageSquareDashed,
+      foot: (overview.value?.media_seeks.pending ?? 0) > 0 ? '点开只看待审核' : '没有待处理求片',
+      to: '/media-seek?status=pending', icon: MessageSquareDashed,
       tone: (overview.value?.media_seeks.pending ?? 0) > 0 ? 'warn' : 'plain',
       title: '求片与内容',
     },
     {
       key: 'tickets', label: '待处理工单', value: overview.value?.tickets.open ?? 0,
-      foot: (overview.value?.tickets.open ?? 0) > 0 ? '点开去回复' : '没有待处理工单',
-      to: '/tickets', icon: Ticket,
+      foot: (overview.value?.tickets.open ?? 0) > 0 ? '点开只看进行中' : '没有待处理工单',
+      to: '/tickets?status=open', icon: Ticket,
       tone: (overview.value?.tickets.open ?? 0) > 0 ? 'danger' : 'plain',
       title: '服务支持',
     },
@@ -422,11 +416,14 @@ function serviceStatusLabel(status: string): string {
               <span>配额耗尽，worker 已暂停</span>
               <button
                 class="breaker-reset-btn"
-                :disabled="resettingBreaker"
-                @click="handleResetBreaker"
+                :disabled="dangerBusy === 'breaker'"
+                @click="handleResetBreaker()"
               >
-                {{ resettingBreaker ? '重置中...' : '手动恢复' }}
+                {{ dangerBusy === 'breaker' ? '恢复中...' : '手动恢复' }}
               </button>
+              <RouterLink class="danger-jump" :to="{ name: 'Settings', query: { tab: 'danger', op: 'breaker' } }">
+                危险操作中心 →
+              </RouterLink>
             </template>
             <template v-else>
               Google Drive 配额保护
@@ -460,7 +457,7 @@ function serviceStatusLabel(status: string): string {
           <RouterLink
             v-for="r in realms.realms"
             :key="r.id"
-            to="/servers"
+            to="/realms"
             class="realm-row"
             :class="{ current: r.id === realms.active_realm_id, off: !r.is_active }"
           >
@@ -487,35 +484,35 @@ function serviceStatusLabel(status: string): string {
         </div>
       </section>
 
-      <!-- 交易概览 -->
+      <!-- 交易概览：每个数字都能点进它自己的明细页（v2.42.10 带筛选深链） -->
       <section class="stat-grid">
-        <div class="stat-tile">
+        <RouterLink class="stat-tile stat-link" to="/orders?status=paid">
           <div class="stat-label"><Wallet :size="13" /> 累计营收</div>
           <div class="stat-value stat-accent">{{ fmtMoney(economy?.orders.revenue ?? 0) }}</div>
           <div class="stat-foot">{{ economy?.orders.pending ?? 0 }} 笔待支付</div>
-        </div>
-        <div class="stat-tile">
+        </RouterLink>
+        <RouterLink class="stat-tile stat-link" to="/invitations">
           <div class="stat-label"><Coins :size="13" /> 积分存量</div>
           <div class="stat-value">{{ economy?.total_points ?? 0 }}</div>
           <div class="stat-foot">全站用户持有</div>
-        </div>
-        <div class="stat-tile">
+        </RouterLink>
+        <RouterLink class="stat-tile stat-link" to="/users">
           <div class="stat-label"><CalendarCheck :size="13" /> 今日签到</div>
           <div class="stat-value">{{ economy?.checkins_today ?? 0 }}</div>
           <div class="stat-foot">人已签到</div>
-        </div>
-        <div class="stat-tile">
+        </RouterLink>
+        <RouterLink class="stat-tile stat-link" to="/exchange-codes">
           <div class="stat-label"><TicketCheck :size="13" /> 兑换码</div>
           <div class="stat-value">
             {{ economy?.exchange_codes.used ?? 0 }}<span class="stat-sub"> / {{ economy?.exchange_codes.total ?? 0 }}</span>
           </div>
           <div class="stat-foot">已核销 / 已生成</div>
-        </div>
-        <div class="stat-tile">
+        </RouterLink>
+        <RouterLink class="stat-tile stat-link" to="/invitations">
           <div class="stat-label"><Gift :size="13" /> 邀请关系</div>
           <div class="stat-value">{{ economy?.invitations ?? 0 }}</div>
           <div class="stat-foot">累计成功邀请</div>
-        </div>
+        </RouterLink>
       </section>
 
       <!-- 趋势 -->
@@ -665,6 +662,14 @@ function serviceStatusLabel(status: string): string {
 .breaker-reset-btn:hover:not(:disabled) {
   background: #dc2626;
 }
+/* 危险操作全部收在「系统设置 → 危险操作」：这里给个入口，不在仪表盘开第二个现场 */
+.danger-jump {
+  margin-left: 8px;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 11.5px;
+}
+.danger-jump:hover { color: var(--danger); text-decoration: underline; }
 .page-loading { text-align: center; color: var(--text-secondary); padding: 60px 0; }
 
 /* ===== 交付链数据卡（顶部六张，一点直达明细页）===== */
@@ -761,6 +766,11 @@ function serviceStatusLabel(status: string): string {
 /* ===== 服务器接入卡（一点直达「服务器」页）===== */
 .server-tile { text-decoration: none; display: block; }
 .server-tile:hover { border-color: var(--primary); }
+
+/* 交易概览的数字也点得进去：与服务器接入卡同一套「悬停亮边」反馈 */
+.stat-link { text-decoration: none; display: block; }
+.stat-link:hover { border-color: var(--primary); }
+.stat-link .stat-value { color: inherit; }
 .server-current {
   margin-left: 4px; padding: 0 6px; border-radius: 999px;
   background: var(--primary-bg); color: var(--primary); font-size: 10px; font-weight: 700;

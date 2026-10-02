@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshCw, Send } from 'lucide-vue-next'
 import { closeTicket, fetchTicketMessages, fetchTickets, replyTicket, updateTicket } from '@/api/admin'
 import type { TicketMessageRow, TicketRow } from '@/types'
+import { useQueryFilter } from '@/composables/useQueryFilter'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
@@ -21,6 +22,8 @@ const columns: DataColumn[] = [
 const list = ref<TicketRow[]>([])
 const loading = ref(false)
 const statusFilter = ref('')
+// 深链：仪表盘「待处理工单」/ 命令面板跳过来时带的就是这个筛选（Phase 5）
+useQueryFilter(statusFilter, 'status', load)
 
 const drawerVisible = ref(false)
 const current = ref<TicketRow | null>(null)

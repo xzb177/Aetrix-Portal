@@ -18,6 +18,7 @@ import {
   type ReminderStatus,
 } from '@/api/economy'
 import type { SubscriptionOverviewRow } from '@/types'
+import { useQueryFilter } from '@/composables/useQueryFilter'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -46,6 +47,14 @@ const rows = ref<SubscriptionOverviewRow[]>([])
 const summary = ref({ total: 0, active: 0, expiring_7d: 0, expired: 0 })
 const statusFilter = ref<string>('')
 const search = ref('')
+// 深链：仪表盘 / 命令面板带筛选过来（Phase 5，如 /subscriptions?status=expiring）
+useQueryFilter(statusFilter, 'status', load)
+
+/** 顶部四个数字块 = 四个筛选入口（点一下就把下面的清单筛成这个状态） */
+function filterBy(status: string) {
+  statusFilter.value = statusFilter.value === status ? '' : status
+  load()
+}
 const plans = ref<PlanRow[]>([])
 
 async function load() {
@@ -272,22 +281,42 @@ async function submit() {
     </div>
 
     <section class="stat-grid">
-      <div class="stat-tile">
+      <button
+        class="stat-tile stat-tile-btn"
+        :class="{ active: statusFilter === 'active' }"
+        title="只看生效中的订阅"
+        @click="filterBy('active')"
+      >
         <div class="stat-label"><Crown :size="13" /> 生效中</div>
         <div class="stat-value stat-accent">{{ summary.active }}</div>
-      </div>
-      <div class="stat-tile">
+      </button>
+      <button
+        class="stat-tile stat-tile-btn"
+        :class="{ active: statusFilter === 'expiring' }"
+        title="只看 7 天内到期的订阅"
+        @click="filterBy('expiring')"
+      >
         <div class="stat-label"><CalendarClock :size="13" /> 7 天内到期</div>
         <div class="stat-value" :class="{ 'stat-warn': summary.expiring_7d > 0 }">{{ summary.expiring_7d }}</div>
-      </div>
-      <div class="stat-tile">
+      </button>
+      <button
+        class="stat-tile stat-tile-btn"
+        :class="{ active: statusFilter === 'expired' }"
+        title="只看已过期的订阅"
+        @click="filterBy('expired')"
+      >
         <div class="stat-label"><TimerOff :size="13" /> 已过期</div>
         <div class="stat-value">{{ summary.expired }}</div>
-      </div>
-      <div class="stat-tile">
+      </button>
+      <button
+        class="stat-tile stat-tile-btn"
+        :class="{ active: statusFilter === '' }"
+        title="取消筛选，看全部记录"
+        @click="filterBy('')"
+      >
         <div class="stat-label"><Users :size="13" /> 记录总数</div>
         <div class="stat-value">{{ summary.total }}</div>
-      </div>
+      </button>
     </section>
 
     <!-- 到期提醒：会员到期前自动触达，是续费率最直接的一环；面板要能看出它在跑 -->
@@ -503,4 +532,19 @@ async function submit() {
 .empty-hint { font-size: 13px; color: var(--text-muted); padding: 16px 0; text-align: center; }
 .dialog-user { font-weight: 600; }
 .dialog-user em { font-style: normal; font-size: 12px; color: var(--text-muted); font-weight: 400; }
+
+/* 数字块兼作筛选按钮：语义上它们本来就是「按这个状态看清单」的入口。
+   选中态走边框+底色（与各处 tab / chip 一致），不改变数字本身的颜色语义。 */
+.stat-tile-btn {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.stat-tile-btn:hover { border-color: var(--primary); }
+.stat-tile-btn.active {
+  border-color: var(--primary-border);
+  background: var(--primary-bg);
+}
 </style>

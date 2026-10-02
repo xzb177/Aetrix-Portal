@@ -13,14 +13,15 @@
  * 判定口径：**管理员不受限**（排障时不能被自己的策略挡住）；所有开关缺省 = 与升级前一致。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   Activity, AlertTriangle, Cloud, Download, Gauge, HardDrive, Info, RefreshCw, Save, ShieldBan, Smartphone, Trash2, Tv,
 } from 'lucide-vue-next'
 import {
-  cleanLocalCache, fetchCdnConfig, fetchLocalCacheConfig, fetchPlayLines, fetchPlaybackPolicy,
+  fetchCdnConfig, fetchLocalCacheConfig, fetchPlayLines, fetchPlaybackPolicy,
   updateCdnConfig, updateLocalCacheConfig, updatePlaybackPolicy,
 } from '@/api/admin'
+import { useDangerOps, fmtBytes } from '@/composables/useDangerOps'
 // 下载与设备风控落在经济设置里（同一批 SystemConfig 键），这里只是换个更顺手的入口
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
@@ -31,6 +32,8 @@ import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
 
 const auth = useAuthStore()
+/** 危险操作共用实现（与「系统设置 → 危险操作」页签同一份） */
+const dangerOps = useDangerOps()
 // 这两组策略都由服务端限定为超级管理员（见 backend/admin_roles.py 的前缀规则），
 // 所以只有一个口径：不是 super 就只读
 const isSuper = computed(() => auth.admin?.is_super !== false)
@@ -75,15 +78,7 @@ const localCache = reactive<LocalCacheConfig>({
 const cacheStats = ref<LocalCacheStats | null>(null)
 const cacheEntries = ref<LocalCacheEntryInfo[]>([])
 
-function fmtBytes(n: number): string {
-  if (!n) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let v = n
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1 }
-  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
-}
-
+// fmtBytes 用 composable 里的那份（与危险操作文案同一个函数，避免两处实现漂移）
 function fmtRate(r: number | null): string {
   return r === null || r === undefined ? '—' : `${(r * 100).toFixed(1)}%`
 }
@@ -265,26 +260,18 @@ async function saveLocalCache() {
 }
 
 async function cleanLocalCacheMode(mode: 'ready' | 'all') {
-  const s = cacheStats.value
-  const desc = mode === 'ready'
-    ? `清理全部已缓存副本（当前占用 ${fmtBytes(s?.bytes_used || 0)}），记录一并删除，下次播放会重新回源。`
-    : '清空本地缓存的全部记录与副本（下载中的那条会等下载完再清）。'
-  try {
-    await ElMessageBox.confirm(desc, '手动清理本地缓存', {
-      type: 'warning', confirmButtonText: '确认清理', cancelButtonText: '取消',
-    })
-  } catch {
-    return
-  }
+  // 危险操作（清空本地缓存）的确认与执行在 useDangerOps——与「系统设置 → 危险操作」同一份实现，
+  // 这里只负责清完之后刷新本页的缓存读数
   cleaningCache.value = true
   try {
-    const res = await cleanLocalCache(mode)
-    cacheStats.value = res.stats
+    const ok = await dangerOps.cleanCache(mode)
+    if (!ok) return
+    cacheStats.value = dangerOps.cacheStats.value
     const fresh = await fetchLocalCacheConfig().catch(() => null)
-    if (fresh) cacheEntries.value = fresh.entries
-    ElMessage.success(`已清理 ${res.cleaned.removed} 条，释放 ${fmtBytes(res.cleaned.freed_bytes)}`)
-  } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '清理失败')
+    if (fresh) {
+      cacheEntries.value = fresh.entries
+      cacheStats.value = fresh.stats
+    }
   } finally {
     cleaningCache.value = false
   }
@@ -664,6 +651,9 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
         <el-button type="primary" :loading="savingCache" :disabled="!isSuper" @click="saveLocalCache">
           <Save :size="14" style="margin-right: 4px" />保存本地缓存
         </el-button>
+        <RouterLink class="danger-jump" :to="{ name: 'Settings', query: { tab: 'danger', op: 'cache' } }">
+          危险操作中心 →
+        </RouterLink>
       </div>
     </section>
 
@@ -958,7 +948,13 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
 }
 .cache-item .ci-meta b { font-weight: var(--font-weight-medium); }
 .cache-item .ci-meta b.warn { color: var(--warning); }
-.save-row { display: flex; justify-content: flex-end; padding-top: 4px; }
+.save-row { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding-top: 4px; flex-wrap: wrap; }
+.danger-jump {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 11.5px;
+}
+.danger-jump:hover { color: var(--danger); text-decoration: underline; }
 code {
   padding: 1px 5px;
   border-radius: var(--radius-sm);
