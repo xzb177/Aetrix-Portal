@@ -1254,11 +1254,34 @@ def _library_item_count(db, lib) -> int:
     ).count()
 
 
+def _library_cover_abs(cover_path: str | None) -> str | None:
+    """库封面相对路径转绝对路径（cover_path 存的是 library-covers/<guid>.webp）"""
+    if not cover_path:
+        return None
+    import os as _os
+    if _os.path.isabs(cover_path):
+        return cover_path
+    from backend.emby_server import image_store as _is
+    try:
+        abs_path = _is.local_path(cover_path)
+    except Exception:
+        abs_path = None
+    if not abs_path:
+        try:
+            abs_path = _os.path.abspath(_os.path.join(_is.image_dir(), cover_path))
+        except Exception:
+            return None
+    return abs_path
+
+
 def _library_cover_tag(cover_path: str | None) -> str:
     """库封面的 ImageTag：用文件 mtime 做 tag，换封面后客户端缓存失效"""
     import os as _os
+    abs_path = _library_cover_abs(cover_path)
+    if not abs_path:
+        return "1"
     try:
-        return str(int(_os.path.getmtime(cover_path)))
+        return str(int(_os.path.getmtime(abs_path)))
     except OSError:
         return "1"
 
