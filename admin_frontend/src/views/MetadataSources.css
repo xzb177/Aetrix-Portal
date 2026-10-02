@@ -178,6 +178,12 @@
   vertical-align: middle;
 }
 
+/* 卡片模式下的字段名（「限速」「密钥」「操作」）：桌面端表头已经写了，隐藏；
+   卡片模式下没有表头，不写就得猜哪个数字框是限速。 */
+.ms-cell-label {
+  display: none;
+}
+
 /* 关掉的源：整行压暗，但文字仍可读（不是隐藏） */
 .ms-table-order tr.ms-off td {
   opacity: 0.55;
@@ -309,5 +315,88 @@
   }
   .ms-probe-value {
     max-width: 100%;
+  }
+}
+
+/* ==================== 手机：源表改卡片（<768px） ====================
+   源表有六列（顺序/源名/参与/限速/密钥/操作），在 375px 宽里要么横向滚、
+   要么把「去密钥池」这种字截成「去密钥…」。两种都让人以为东西坏了。
+
+   这里把每一行改读成一张卡片：
+     上行 = 序号 + 源名（描述在名字下方）+ 参与开关
+     下行 = 限速输入 + 密钥状态 + 操作按钮
+   **文字一律不截断**：宁可换行，不缺字。桌面端（>=768px）完全不受影响。
+
+   用 flex-wrap 而不是 grid：grid 的两行会**共用列宽**（序号格与限速格抢同一列），
+   在窄屏会把源名挤成一条缝。flex 的换行按实际可用宽度算，窄了就多折一行，
+   只会变高、不会变窄。 */
+@media (max-width: 767px) {
+  .ms-table-order {
+    display: block;
+    white-space: normal;
+    overflow: visible;
+  }
+  .ms-table-order thead {
+    display: none;
+  }
+  .ms-table-order tbody {
+    display: block;
+  }
+  .ms-table-order tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    /* 卡片里的卡片：用 --bg-inset（内嵌面）而不是 --bg-card（与外层卡同色，会看不见） */
+    background: var(--bg-inset);
+  }
+  .ms-table-order td {
+    display: block;
+    padding: 0;
+    border: none;
+    vertical-align: middle;
+  }
+  /* 上行三格：序号 / 源名 / 开关 */
+  .ms-table-order td:nth-child(1) { flex: 0 0 auto; }
+  /* flex-basis 140px：够一行时它占满剩余空间；不够时先让位给开关，名字宁可折行 */
+  .ms-table-order td:nth-child(2) { flex: 1 1 140px; min-width: 0; }
+  .ms-table-order td:nth-child(3) { flex: 0 0 auto; margin-left: auto; }
+  /* 下行三格：限速 / 密钥 / 操作 */
+  .ms-table-order td:nth-child(4) { flex: 0 0 auto; }
+  .ms-table-order td:nth-child(5) { flex: 1 1 90px; min-width: 0; }
+  .ms-table-order td:nth-child(6) { flex: 0 0 auto; margin-left: auto; }
+
+  .ms-cell-label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+  }
+
+  /* 源名允许换行（源名 + 「中文强」标签），描述跟在名字下方 */
+  .ms-source-name {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  /* 限速输入给固定宽：el-input 默认 width:100%，会反过来把这一格擑宽、把同行挤下去 */
+  .ms-rate-cell .el-input {
+    width: 104px;
+  }
+  /* 密钥状态文字：不截断，宁可换行 */
+  .ms-keys-cell {
+    font-size: var(--font-size-xs);
+    line-height: 1.6;
+  }
+  /* 操作按钮：宁可换行也不截字（「去密钥池」四个字必须看得全） */
+  .ms-row-ops {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .ms-row-ops .el-button {
+    white-space: nowrap;
   }
 }

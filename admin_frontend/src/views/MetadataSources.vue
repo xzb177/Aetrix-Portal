@@ -9,8 +9,8 @@
  * 这里仍然是**执行视角**：不新增任何状态、不改后端接口，三块功能与迁移前逐字一致
  * （接口、参数、提示文案、确认弹窗都没有动）。
  *
- * 按库的东西仍在「媒体库」页：TMDB API Keys、整库重刮、定时扫描、目录变更监听、
- * 云盘挂载入口。
+ * 按库的东西仍在「媒体库」页：整库重刮、定时扫描、目录变更监听。
+ * **TMDB 密钥也只在这里填**（媒体库页的填写框已移除）：一把钥匙只该有一个地方能改。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -766,7 +766,7 @@ onMounted(() => {
                     </span>
                   </div>
                 </td>
-                <td>
+                <td class="ms-name-cell">
                   <div class="ms-source-name">
                     {{ row.label }}
                     <span v-if="row.lang === 'zh'" class="mini-badge ok">中文强</span>
@@ -774,13 +774,14 @@ onMounted(() => {
                   <div class="ms-note">{{ row.note }}</div>
                   <div v-if="row.skipped_reason" class="ms-note warn">{{ row.skipped_reason }}</div>
                 </td>
-                <td>
+                <td class="ms-toggle-cell">
                   <el-switch
                     :model-value="sourceToggle(row)"
                     @update:model-value="(v: string | number | boolean) => (metaDraft.toggles[row.id] = Boolean(v))"
                   />
                 </td>
-                <td>
+                <td class="ms-rate-cell">
+                  <span class="ms-cell-label">限速</span>
                   <el-input
                     :model-value="sourceRate(row)"
                     type="number"
@@ -793,7 +794,8 @@ onMounted(() => {
                     <template #append>秒</template>
                   </el-input>
                 </td>
-                <td>
+                <td class="ms-keys-cell">
+                  <span class="ms-cell-label">密钥</span>
                   <span v-if="row.requires_key">
                     <template v-if="row.key_count">
                       {{ row.key_count }} 把<template v-if="row.cooling"> · 冷却 {{ row.cooling }}</template>
@@ -805,7 +807,8 @@ onMounted(() => {
                   </span>
                   <span v-else class="muted">无需密钥</span>
                 </td>
-                <td>
+                <td class="ms-ops-cell">
+                  <span class="ms-cell-label">操作</span>
                   <div class="ms-row-ops">
                     <!-- TMDB：密钥只在下方「TMDB 密钥池与镜像」里填（单一入口），
                          这里不再给第二个输入框，否则同一把钥匙会出现两个入口 -->
@@ -998,7 +1001,8 @@ onMounted(() => {
         <div v-if="tmdbKeysLoading && !tmdbKeys" class="ms-hint">加载中…</div>
         <div v-else-if="!tmdbKeys" class="ms-hint">读取密钥池失败，稍后点「刷新」重试。</div>
         <div v-else-if="!keyRows.length" class="ms-hint">
-          还没有密钥：刮削会静默跳过。在下面添一把，或去「媒体库」页的 TMDB API Keys 批量粘贴。
+          还没有密钥：刮削会静默跳过。在下方输入框添一把（可多添几把轮着用），
+          填完点「测试全部」先确认能通。
         </div>
         <table v-else class="ms-table">
           <thead>
