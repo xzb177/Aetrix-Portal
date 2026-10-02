@@ -156,6 +156,75 @@
   word-break: break-all;
 }
 
+/* 表单里每一项下面那句人话说明（与 Servers.vue 的 .field-help 同一套值） */
+.field-help {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  margin: 5px 0 0;
+  line-height: 1.6;
+}
+
+/* 卡片上的一句话策略摘要：一行、溢出省略，悬停出全文 */
+.lib-summary {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  padding: 5px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 配置表单里的封面：缩略图 + 操作按钮 */
+.lib-cover-edit {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.lib-cover-thumb {
+  width: 148px;
+  aspect-ratio: 16 / 9;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+}
+.lib-cover-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.lib-cover-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 表单底栏：左边一句状态，右边按钮 */
+.lib-form-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.lib-form-dirty {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+.lib-form-foot-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 640px) {
   .lib-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -169,6 +238,49 @@
     flex: 1;
     margin-left: 0;
   }
+
+  /* 摘要换行显示：窄屏上一行省略号看不出扫了几个目录 */
+  .lib-summary {
+    white-space: normal;
+  }
+
+  /* 表单底栏按钮竖排：手机上四个按钮挤一行会互相挤掉 */
+  .lib-form-foot {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lib-form-foot-btns {
+    justify-content: stretch;
+  }
+
+  .lib-form-foot-btns .el-button {
+    flex: 1;
+    margin-left: 0;
+  }
+}
+
+/* 下拉选项里的人话说明：面板挂在 body 上（不是 scoped 能盖到的位置），所以写在这里。
+   两行选项需要把 element-plus 的定高改成自适应，否则第二行会被裁掉。 */
+.lib-opt-popper .el-select-dropdown__item {
+  height: auto;
+  line-height: 1.5;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.lib-opt-popper .opt-label {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+.lib-opt-popper .opt-rec {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+.lib-opt-popper .opt-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  white-space: normal;
+  line-height: 1.5;
 }
 
 /* 挂载路径选择器：输入框 + 浏览按钮 */

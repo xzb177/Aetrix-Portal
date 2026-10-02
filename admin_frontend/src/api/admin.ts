@@ -507,6 +507,8 @@ export const createLibrary = (data: {
   mount_ids?: number[]
   /** 刮削策略：missing_only（仅缺失时）/ 3m / 6m / 1y / all（全部重刮） */
   scrape_policy?: string
+  /** 115 账号配置档：建库时就能绑，省得建完再进设置改一趟 */
+  account_115_id?: number
   /** 归属服（留空 = 面板当前服）：内容隔离的边界 */
   realm_id?: number
   /** 归属播放节点（留空 = 未分配：所有节点可见、由面板扫描） */
