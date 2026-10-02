@@ -10,7 +10,7 @@
  * v2.6.20：多服 / 多机部署——每个库都能指定「归属服」与「归属播放节点」（未指定 = 所有服、
  * 所有节点可见，由面板扫描）；已分配的库只有那台 EA 向客户端展示、也只有它会扫描。
  */
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
@@ -36,11 +36,9 @@ import {
   fetchTmdbKeys,
   generateVirtualLibraries,
   previewLibraryCover,
-  previewTmdb,
   regenerateLibraryCover,
   removeLibraryCover,
   renderLibraryCover,
-  rescrapeItem,
   rescrapeLibrary,
   runRepairQueue,
   scanLibrary,
@@ -236,7 +234,7 @@ async function saveCoverConfig() {
       subtitle: coverSubtitle.value,
     })
     ElMessage.success('封面已重新生成并保存')
-    await loadLibraries()
+    await load()
     await loadCoverPreview()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '封面生成失败')
@@ -252,7 +250,7 @@ async function regenerateCover() {
   try {
     await regenerateLibraryCover(lib.id)
     ElMessage.success('已按最新入库的海报重新生成')
-    await loadLibraries()
+    await load()
     await loadCoverPreview()
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '重新生成失败')
