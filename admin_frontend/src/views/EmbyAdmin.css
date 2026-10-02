@@ -295,3 +295,50 @@
 .paths-browse-btn {
   flex-shrink: 0;
 }
+
+/* ---- 媒体库封面：预览框 ---- */
+/* 预览图按 16:9 显示（服务端出的就是 1920×1080），换比例会看到拉伸变形 */
+.cover-preview-wrap {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.cover-preview-box {
+  flex: 1 1 420px;
+  min-width: 260px;
+  max-width: 560px;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.cover-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cover-preview-hint {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+}
+
+.cover-preview-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 168px;
+}

@@ -891,6 +891,13 @@ export interface EmbyLibrary {
   paths: string[]
   /** 绑定的存储挂载（storage_mounts.id）：本机目录 / STRM / 115 / WebDAV / AList */
   mount_ids: number[]
+  /**
+   * 封面自动生成：样式 + 标题文字。为 null/空表示仍在用直传的 cover_path。
+   * 标题支持 {library} {type} {year} 三个变量。
+   */
+  cover_template?: 'poster' | 'visual' | 'filmstrip' | null
+  cover_title?: string | null
+  cover_subtitle?: string | null
   is_enabled: boolean
   is_scanning: boolean
   /**

@@ -1,5 +1,5 @@
 /** v2.2.0 管理端 API（全部走 /api/admin/*，详见 backend/api/admin.py 与 emby_server/portal.py） */
-import { get, getBlob, post, put, patch, del, upload } from '@/utils/request'
+import { get, getBlob, postBlob, post, put, patch, del, upload } from '@/utils/request'
 import type {
   AdminInfo,
   AdminListResponse,
@@ -505,6 +505,13 @@ const E = '/emby'
 
 export const fetchEmbyOverview = () => get<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number }>(`${E}/overview`)
 
+/** 封面自动生成的配置：样式 + 标题文字（都支持 {library}{type}{year} 变量） */
+export interface LibraryCoverConfig {
+  template: 'poster' | 'visual' | 'filmstrip'
+  title: string
+  subtitle: string
+}
+
 export const fetchLibraries = () => get<{ libraries: EmbyLibrary[] }>(`${E}/libraries`)
 
 /** 拉取封面二进制；管理端图片请求也带 JWT，不把令牌拼进 URL。 */
@@ -520,6 +527,25 @@ export const uploadLibraryCover = (id: number, file: File) => {
 
 export const removeLibraryCover = (id: number) =>
   del<{ success: boolean }>(`${E}/libraries/${id}/cover`)
+
+/** 封面自动生成：按当前配置渲染一张预览图（不落库，改一个字调一次） */
+export const previewLibraryCover = (id: number, body: LibraryCoverConfig) =>
+  postBlob(`${E}/libraries/${id}/cover/preview`, body)
+
+/** 封面自动生成：渲染并落库落盘，返回新的封面 URL */
+export const renderLibraryCover = (id: number, body: LibraryCoverConfig) =>
+  post<{
+    success: boolean
+    cover_url: string
+    content_type: string
+    template: string
+    library_name: string
+    media_type: string
+  }>(`${E}/libraries/${id}/cover/render`, body)
+
+/** 封面自动生成：按库里已保存的样式/标题重新生成（刮削补完新片后换封面） */
+export const regenerateLibraryCover = (id: number) =>
+  post<{ success: boolean; cover_url: string }>(`${E}/libraries/${id}/cover/regenerate`)
 
 export const createLibrary = (data: {
   name: string

@@ -35,7 +35,12 @@ import {
   fetchChaseNew,
   fetchTmdbKeys,
   generateVirtualLibraries,
+  previewLibraryCover,
+  previewTmdb,
+  regenerateLibraryCover,
   removeLibraryCover,
+  renderLibraryCover,
+  rescrapeItem,
   rescrapeLibrary,
   runRepairQueue,
   scanLibrary,
@@ -159,6 +164,106 @@ const libFormTarget = ref<EmbyLibrary | null>(null)
 /** 打开时的表单指纹：算「有没有改动」+ 还原用（存指纹而不是对象引用） */
 const libFormFingerprintAtOpen = ref('')
 
+// ---- 封面自动生成（样式 + 标题变量） ----
+
+/** 样式选项：每项写清「长什么样」，别让管理员对着预览猜 */
+const COVER_TEMPLATES: LibOption[] = [
+  { value: 'poster', label: '海报拼贴', hint: '最新入库的多张海报排在一起，下面压标题。适合剧集库，一眼看出最近更新了什么' },
+  { value: 'visual', label: '主视觉', hint: '单张海报铺满整幅，底部渐变压标题。适合电影库，干净大气' },
+  { value: 'filmstrip', label: '胶片带', hint: '三张海报横排成带状，标题压在下方。适合片库少的分类' },
+]
+
+const coverTemplate = ref<'' | 'poster' | 'visual' | 'filmstrip'>('')
+const coverTitle = ref('')
+const coverSubtitle = ref('')
+const coverPreviewUrl = ref('')
+const coverPreviewLoading = ref(false)
+const coverPreviewError = ref('')
+const coverSaving = ref(false)
+const coverRegenerating = ref(false)
+
+/** 预览的 blob URL，用完必须 revoke，否则每点一次泄漏一份 */
+let coverPreviewObjectUrl = ''
+
+function releaseCoverPreview() {
+  if (coverPreviewObjectUrl) {
+    URL.revokeObjectURL(coverPreviewObjectUrl)
+    coverPreviewObjectUrl = ''
+  }
+}
+
+/** 预览需要已保存的库 id：渲染要从库里挑海报，新建库还没入库没有海报可选 */
+function canPreviewCover(): boolean {
+  return libFormTarget.value !== null
+}
+
+async function loadCoverPreview() {
+  const lib = libFormTarget.value
+  if (!lib || !coverTemplate.value) {
+    coverPreviewUrl.value = ''
+    coverPreviewError.value = coverTemplate.value ? '新建的库还没有条目，保存后再生成封面' : ''
+    return
+  }
+  coverPreviewLoading.value = true
+  coverPreviewError.value = ''
+  try {
+    const blob = await previewLibraryCover(lib.id, {
+      template: coverTemplate.value,
+      title: coverTitle.value,
+      subtitle: coverSubtitle.value,
+    })
+    releaseCoverPreview()
+    coverPreviewObjectUrl = URL.createObjectURL(blob)
+    coverPreviewUrl.value = coverPreviewObjectUrl
+    coverPreviewError.value = ''
+  } catch (e) {
+    // 生成不出来是常态（库还没刮削出图），给一句话说明而不是弹错
+    coverPreviewUrl.value = ''
+    coverPreviewError.value = e instanceof Error ? e.message : '预览失败'
+  } finally {
+    coverPreviewLoading.value = false
+  }
+}
+
+async function saveCoverConfig() {
+  const lib = libFormTarget.value
+  if (!lib || !coverTemplate.value) return
+  coverSaving.value = true
+  try {
+    await renderLibraryCover(lib.id, {
+      template: coverTemplate.value,
+      title: coverTitle.value,
+      subtitle: coverSubtitle.value,
+    })
+    ElMessage.success('封面已重新生成并保存')
+    await loadLibraries()
+    await loadCoverPreview()
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '封面生成失败')
+  } finally {
+    coverSaving.value = false
+  }
+}
+
+async function regenerateCover() {
+  const lib = libFormTarget.value
+  if (!lib) return
+  coverRegenerating.value = true
+  try {
+    await regenerateLibraryCover(lib.id)
+    ElMessage.success('已按最新入库的海报重新生成')
+    await loadLibraries()
+    await loadCoverPreview()
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '重新生成失败')
+  } finally {
+    coverRegenerating.value = false
+  }
+}
+
+/** 关表单时顺手回收 blob URL */
+watch(coverTemplate, () => { if (coverTemplate.value) loadCoverPreview() })
+
 interface LibOption { value: string; label: string; hint: string; recommended?: boolean }
 
 /** 内容类型：每一项都写清「选了会发生什么」 */
@@ -281,6 +386,12 @@ function openCreate() {
 
 function openSettings(l: EmbyLibrary) {
   libFormTarget.value = l
+  // 封面：先回填已存配置，再拉一张预览（走 blob，不占 cover_path）
+  coverTemplate.value = (l.cover_template || '') as typeof coverTemplate.value
+  coverTitle.value = l.cover_title || ''
+  coverSubtitle.value = l.cover_subtitle || ''
+  if (coverTemplate.value) void loadCoverPreview()
+  else { coverPreviewUrl.value = ''; coverPreviewError.value = '' }
   Object.assign(libForm, {
     id: l.id,
     name: l.name,
@@ -1335,6 +1446,102 @@ function typeLabel(t: string): string {
           <div v-else-if="chaseNew" class="drawer-hint" style="margin-top: 6px">
             还没有检查过
           </div>
+        </div>
+        <div class="scrape-block">
+          <h3>媒体库封面</h3>
+          <p class="drawer-hint">
+            选个样式，系统会从<strong>最新入库</strong>的条目里挑海报自动拼一张横版封面
+            （1920×1080），不用自己找图配字。刮完新片点「按最新海报重新生成」即可换封面。
+          </p>
+
+          <el-form-item label="自动生成样式" style="margin-bottom: 12px">
+            <el-select
+              v-model="coverTemplate"
+              placeholder="留空 = 用上传的封面"
+              clearable
+              style="width: 100%"
+            >
+              <el-option
+                v-for="t in COVER_TEMPLATES"
+                :key="t.value"
+                :label="t.label"
+                :value="t.value"
+              />
+            </el-select>
+            <p class="drawer-hint" style="margin-top: 4px">
+              选中的样式：{{ optionOf(COVER_TEMPLATES, coverTemplate)?.hint || '不生成，仍用上传的封面' }}
+            </p>
+          </el-form-item>
+
+          <template v-if="coverTemplate">
+            <el-form-item label="封面标题" style="margin-bottom: 12px">
+              <el-input
+                v-model="coverTitle"
+                placeholder="例如：{library}"
+                maxlength="100"
+              />
+            </el-form-item>
+            <el-form-item label="封面副标题" style="margin-bottom: 12px">
+              <el-input
+                v-model="coverSubtitle"
+                placeholder="例如：{type} · {year}"
+                maxlength="100"
+              />
+            </el-form-item>
+            <p class="drawer-hint" style="margin: -6px 0 10px">
+              可用变量：<code>{library}</code> 媒体库名、<code>{type}</code> 内容类型、<code>{year}</code> 当前年份。
+              只渲染纯文字，不执行 HTML 或样式；字体不可用时自动省略文字，不影响封面生成。
+            </p>
+
+            <div class="cover-preview-wrap">
+              <div class="cover-preview-box">
+                <img
+                  v-if="coverPreviewUrl"
+                  :src="coverPreviewUrl"
+                  alt="封面预览"
+                  class="cover-preview-img"
+                />
+                <el-empty
+                  v-else-if="coverPreviewLoading"
+                  description="正在渲染预览…"
+                  :image-size="52"
+                />
+                <div v-else class="cover-preview-hint">
+                  {{ coverPreviewError || '选好样式后自动出预览' }}
+                </div>
+              </div>
+              <div class="cover-preview-actions">
+                <el-button
+                  size="small"
+                  :loading="coverPreviewLoading"
+                  :disabled="!canPreviewCover()"
+                  @click="loadCoverPreview"
+                >
+                  刷新预览
+                </el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="coverSaving"
+                  :disabled="!canPreviewCover()"
+                  @click="saveCoverConfig"
+                >
+                  生成并保存
+                </el-button>
+                <el-button
+                  v-if="libFormTarget?.cover_template"
+                  size="small"
+                  :loading="coverRegenerating"
+                  @click="regenerateCover"
+                >
+                  按最新海报重新生成
+                </el-button>
+                <p v-if="!canPreviewCover()" class="drawer-hint">
+                  新建的库还没有条目，保存后扫出内容才能生成封面。
+                </p>
+              </div>
+            </div>
+          </template>
         </div>
         <div class="scrape-block">
           <h3>云盘挂载</h3>

@@ -173,6 +173,11 @@ export function getBlob(url: string): Promise<Blob> {
   return request.get(url, { responseType: 'blob', silent: true } as AdminRequestConfig) as Promise<Blob>
 }
 
+/** POST 一份 JSON 拿回二进制（封面预览就是这种：改一个字渲染一次图）。 */
+export function postBlob(url: string, data?: unknown): Promise<Blob> {
+  return request.post(url, data, { responseType: 'blob', silent: true } as AdminRequestConfig) as Promise<Blob>
+}
+
 export function put<T = any>(
   url: string, data?: unknown, params?: Record<string, unknown>
 ): Promise<T> {
