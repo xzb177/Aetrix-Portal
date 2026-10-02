@@ -137,6 +137,64 @@ export interface PlaybackRuntime {
   max_transcodes_env: string
 }
 
+/** 一条线路的降级原因（本进程累计，按次数降序） */
+export interface LineDegradeReason {
+  reason: string
+  count: number
+}
+
+/** 一张线路卡片的**效果**数据：各线路不同，由后端按线路给（缓存给命中率、CDN 给缓存口径…） */
+export interface LineEffect {
+  /** cache：命中率（null = 还没有过任何一次查找） */
+  hit_rate?: number | null
+  hits?: number
+  misses?: number
+  bytes_used?: number
+  max_bytes?: number
+  entries?: Record<string, number>
+  entries_total?: number
+  /** cdn：分片缓存口径 / 生效域名 */
+  segment_cache_header?: string
+  domain?: string
+  /** direct：中转线路里「不经本机」这类说明 */
+  vps_bytes?: number
+  note?: string
+}
+
+/** 播放线路可观测卡片（Phase 3，/api/admin/playback/lines） */
+export interface PlayLineCard {
+  line: string
+  label: string
+  /** 这条线路到底把流量送到哪（一句话） */
+  summary: string
+  /** 配置上能不能用（不看运行数据） */
+  ready: boolean
+  ready_note: string
+  /** 配置缺口导致的降级（空 = 没降级）；文案是「退化成什么」而不是「坏了」 */
+  degraded_by_config: string
+  /** 运行态降级原因（本进程累计） */
+  degraded_reasons: LineDegradeReason[]
+  /** 本进程经手的播放请求数 */
+  requests: number
+  /** 本进程经手的出流量（字节）；302 直连这类不经本机的路径不计入 */
+  bytes_out: number
+  degraded_requests: number
+  /** 最近一次使用距今多少秒（null = 本进程内还没用过） */
+  idle_seconds: number | null
+  /** 显式选这条线路的用户数（没配过的走默认线路，不计入） */
+  users: number
+  effect: LineEffect
+}
+
+export interface PlayLinesSnapshot {
+  lines: PlayLineCard[]
+  total_users: number
+  default_line: string
+  uptime_seconds: number
+  /** 口径说明（流量/降级是本进程，用户数是全库） */
+  scope_note: string
+}
+
 export interface LoginResponse {
   access_token: string
   refresh_token: string

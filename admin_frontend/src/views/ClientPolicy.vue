@@ -15,16 +15,17 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, Cloud, Download, Gauge, HardDrive, Info, RefreshCw, Save, ShieldBan, Smartphone, Trash2, Tv,
+  Activity, AlertTriangle, Cloud, Download, Gauge, HardDrive, Info, RefreshCw, Save, ShieldBan, Smartphone, Trash2, Tv,
 } from 'lucide-vue-next'
 import {
-  cleanLocalCache, fetchCdnConfig, fetchLocalCacheConfig, fetchPlaybackPolicy,
+  cleanLocalCache, fetchCdnConfig, fetchLocalCacheConfig, fetchPlayLines, fetchPlaybackPolicy,
   updateCdnConfig, updateLocalCacheConfig, updatePlaybackPolicy,
 } from '@/api/admin'
 // 下载与设备风控落在经济设置里（同一批 SystemConfig 键），这里只是换个更顺手的入口
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
   CdnConfig, LocalCacheConfig, LocalCacheEntryInfo, LocalCacheStats, PlaybackPolicy, PlaybackRuntime,
+  PlayLineCard, PlayLinesSnapshot,
 } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
@@ -100,14 +101,17 @@ const PLAYBACK_NODE_LABEL: Record<string, string> = {
 async function load() {
   loading.value = true
   try {
-    const [p, s, c, lc] = await Promise.all([
+    const [p, s, c, lc, ln] = await Promise.all([
       fetchPlaybackPolicy(),
       fetchEconomySettings().catch(() => ({ settings: {} as Record<string, string> })),
       fetchCdnConfig().catch(() => null),
       fetchLocalCacheConfig().catch(() => null),
+      // 线路可观测读不到不影响本页其它卡片（CDN / 本地缓存配置）
+      fetchPlayLines().catch(() => null),
     ])
     policy.value = p.policy
     runtime.value = p.runtime
+    playLines.value = ln
     if (c) {
       cdnConfig.value = c.cdn
       cdnPlayLines.value = c.play_lines
@@ -131,6 +135,49 @@ async function load() {
 }
 
 onMounted(load)
+
+// ==================== 播放线路可观测（Phase 3） ====================
+// 四条线路各一张卡片。这里**不改任何线路配置**（配置在下面 CDN / 本地缓存卡片里），
+// 只回答“这会儿每条线路怎么样”：能不能用、是不是在降级、有多少人多少流量、效果如何。
+
+const playLines = ref<PlayLinesSnapshot | null>(null)
+
+/** 本机文件整文件直发 / 转码拉流不走本服务响应体，流量口径不包含它们 */
+const lineBytesHint = '流量 = 本进程经手的出流量（不含转码时 ffmpeg 的拉流与整文件直发）'
+
+function lineState(card: PlayLineCard): { text: string; cls: string } {
+  if (!card.ready) return { text: '降级中', cls: 'warn' }
+  if (card.degraded_requests > 0) return { text: '有降级', cls: 'warn' }
+  return { text: '正常', cls: 'ok' }
+}
+
+/** 降级原因合并成一行（配置缺口 + 运行态，按次数降序） */
+function lineDegradeText(card: PlayLineCard): string {
+  const parts: string[] = []
+  if (card.degraded_by_config) parts.push(card.degraded_by_config)
+  card.degraded_reasons.forEach((r) => parts.push(`${r.reason}（${r.count} 次）`))
+  return parts.join('；')
+}
+
+function lineIdleText(card: PlayLineCard): string {
+  if (card.idle_seconds === null) return '本进程内还没人用过'
+  if (card.idle_seconds < 60) return '刚刚还在用'
+  if (card.idle_seconds < 3600) return `${Math.floor(card.idle_seconds / 60)} 分钟前用过`
+  return `${Math.floor(card.idle_seconds / 3600)} 小时前用过`
+}
+
+/** 每条线路“效果”那一栏：按线路给不同口径（缓存给命中率、CDN 给缓存口径…） */
+function lineEffectText(card: PlayLineCard): string {
+  const e = card.effect
+  if (card.line === 'cache') {
+    if (e.hit_rate === null || e.hit_rate === undefined) return '还没有过查找，命中率待观察'
+    return `命中率 ${fmtRate(e.hit_rate)}（命中 ${e.hits ?? 0} / 未命中 ${e.misses ?? 0}）`
+  }
+  if (card.line === 'cdn') {
+    return e.domain ? `回源域名 ${e.domain}` : '未启用或域名未填，播放 URL 走本服务'
+  }
+  return e.note || ''
+}
 
 async function savePolicy() {
   savingPolicy.value = true
@@ -349,6 +396,57 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
     </section>
 
     <!-- CDN 域名预留（播放三层第 2/3 层，默认关闭） -->
+    <!-- 播放线路可观测（Phase 3）：四条线路各一张卡片，只读；配置在下面两张卡片里改 -->
+    <section class="admin-card">
+      <div class="card-header">
+        <h2><Activity :size="15" /> 播放线路</h2>
+        <span class="badge-hint">
+          {{ playLines ? `${playLines.lines.filter((l) => l.ready).length} / ${playLines.lines.length} 条就绪` : '加载中…' }}
+        </span>
+      </div>
+
+      <p class="field-hint" style="margin-top: 0">
+        四条线路的<b>健康状态、流量与降级</b>。它们都不会“挂”：任何一条都以降级方式回退到
+        另一条（所以功能不会坏），但“降级中”意味着它此刻<b>没按自己该有的方式工作</b>——
+        比如本地缓存线路没副本时，用户拿到的其实是回源流。
+        <br />
+        {{ playLines?.scope_note || lineBytesHint }}
+      </p>
+
+      <div v-if="playLines" class="line-grid">
+        <div v-for="card in playLines.lines" :key="card.line" class="line-card">
+          <div class="line-head">
+            <b>{{ card.label }}</b>
+            <span class="mini-badge" :class="lineState(card).cls">{{ lineState(card).text }}</span>
+            <span v-if="card.degraded_requests > 0" class="mini-badge warn">
+              降级 {{ card.degraded_requests }} 次
+            </span>
+          </div>
+          <p class="line-summary">{{ card.summary }}</p>
+
+          <div class="line-metrics">
+            <div class="line-metric">
+              <b>{{ card.requests }}</b><em>播放请求（本进程）</em>
+            </div>
+            <div class="line-metric">
+              <b>{{ fmtBytes(card.bytes_out) }}</b><em>出流量（本进程）</em>
+            </div>
+            <div class="line-metric">
+              <b>{{ card.users }}</b><em>选了这条的用户</em>
+            </div>
+          </div>
+
+          <p class="line-ready">
+            <span class="line-dot" :class="lineState(card).cls" />{{ card.ready_note }}
+          </p>
+          <p v-if="lineDegradeText(card)" class="line-degrade">{{ lineDegradeText(card) }}</p>
+          <p class="line-effect">{{ lineEffectText(card) }}</p>
+          <p class="line-idle">{{ lineIdleText(card) }}</p>
+        </div>
+      </div>
+      <div v-else class="field-hint">线路数据读取失败，下方策略与配置不受影响；点「刷新」重试。</div>
+    </section>
+
     <section class="admin-card">
       <div class="card-header">
         <h2><Cloud :size="15" /> CDN 域名预留</h2>
@@ -716,6 +814,83 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
 }
 
 .admin-card + .admin-card { margin-top: 14px; }
+
+/* ============ 播放线路可观测卡片（Phase 3） ============ */
+.line-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.line-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+
+/* 就绪 / 降级：只在标题行的小圆点上用颜色，卡片本体不染色（避免整块变色压迫阅读） */
+.line-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.line-head b { font-size: var(--font-size-sm); color: var(--text-primary); }
+
+.line-summary {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.line-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 2px 0;
+}
+.line-metric { display: flex; flex-direction: column; gap: 1px; }
+.line-metric b {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.line-metric em {
+  font-style: normal;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.line-ready,
+.line-degrade,
+.line-effect,
+.line-idle {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+.line-ready { display: flex; align-items: flex-start; gap: 6px; }
+.line-degrade { color: var(--warning); }
+.line-idle { color: var(--text-tertiary); }
+
+.line-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.line-dot.ok { background: var(--success); }
+.line-dot.warn { background: var(--warning); }
 
 .field-row {
   display: flex;

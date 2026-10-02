@@ -33,6 +33,7 @@ from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
 from backend.emby_server import facets
 from backend.emby_server import image_store
+from backend.emby_server import line_stats
 from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
@@ -2246,6 +2247,47 @@ async def playback_info(
     })
 
 
+def _observe_line(response, line: str):
+    """给播放响应包一层计字节（Phase 3 可观测用），并记一次请求
+
+    只包 ``body_iterator``，不改状态码、不改头、不改内容——包装器把原迭代器
+    原样吐出去，只在旁边数一下一共流了多少字节。计数在迭代器跑完后上报一次，
+    不是每块加一次锁；流中途报错/断开也会上报（已经发出去的字节是真的）。
+
+    **Starlette 的 ``FileResponse`` 不走 body_iterator**（它自己处理 Range，
+    可能直接用 sendfile），所以那种响应只记请求、不记字节。宁可少算，
+    也不按 Content-Length 记账：客户端中途断开时那样会把没发出去的字节算进去，
+    面板上的「出流量」就会虚高——宁可口径窄，也不能给一个偏大的数。
+    """
+    line_stats.record_request(line)
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None:
+        return response
+
+    async def _counting():
+        total = 0
+        try:
+            async for chunk in iterator:
+                total += len(chunk)
+                yield chunk
+        finally:
+            line_stats.record_bytes(line, total)
+
+    response.body_iterator = _counting()
+    return response
+
+
+def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
+    """用户选的线路退化成了另一条：两边都记一笔
+
+    退化方记「降级 +1 与原因」，实际承载的那条记请求——否则运维会看到
+    「本地缓存很忙」，而流量其实全压在回源上。
+    """
+    line_stats.record_request(selected, degraded=reason)
+    if actual and actual != selected:
+        line_stats.record_request(actual)
+
+
 @emby_router.get("/emby/Videos/{item_id}/stream")
 @emby_router.get("/Videos/{item_id}/stream")
 async def video_stream(
@@ -2275,28 +2317,43 @@ async def video_stream(
         if line == play_line.LINE_CACHE:
             cached_file = await run_db(local_cache.lookup, db, item)
             if cached_file:
-                return serve_file(cached_file, request, media_type,
-                                  cache_control=cdn.cache_control_for(str(request.url.path)))
+                return _observe_line(
+                    serve_file(cached_file, request, media_type,
+                               cache_control=cdn.cache_control_for(str(request.url.path))),
+                    play_line.LINE_CACHE)
             await run_db(local_cache.enqueue, db, item, local_cache.PLAY_PRIORITY)
+            # 没命中 → 这次实际走的是下面那条回源路径，缓存线路记一次降级
+            _note_line_fallback(play_line.LINE_CACHE, "", "本机无副本，已回源并排队缓存")
         # CDN 预留（第 2/3 层）：代理转发形态也带上分片缓存头，让 CDN 边缘能缓存
         # 回源结果；API/302 不走这里（302 分支自带 no-store）。
         seg_cache = cdn.cache_control_for(str(request.url.path))
         if line == play_line.LINE_RELAY:
-            return await serve_remote_async(target.value, request, target.headers, media_type,
-                                            cache_control=seg_cache)
+            return _observe_line(
+                await serve_remote_async(target.value, request, target.headers, media_type,
+                                         cache_control=seg_cache),
+                play_line.LINE_RELAY)
         # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
         # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。
         google_direct = await try_google_direct_url(target.value)
         if google_direct:
+            # 302 的字节不经本机：只记请求，不记流量（line_stats 对 0 字节天然忽略）
+            line_stats.record_request(line)
             return Response(status_code=302, headers={"Location": google_direct, "Cache-Control": cdn.NO_STORE})
         if request.query_params.get("direct", "").lower() == "true" and can_redirect_direct(target):
+            line_stats.record_request(line)
             return Response(status_code=302, headers={"Location": target.value, "Cache-Control": cdn.NO_STORE})
         # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
         # Range 与状态码透传，凭据不下发。
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
-        # 不能让一个用户的拖动进度条把整个事件循环卡住
-        return await serve_remote_async(target.value, request, target.headers, media_type,
-                                        cache_control=seg_cache)
+        # 不能让一个用户的拖动进度条把整个事件循环卡住。
+        # 到这一步说明 Google 直链没拿到 = 直连线路退化成代理线路（Phase 3 可观测）
+        if line == play_line.LINE_DIRECT:
+            _note_line_fallback(play_line.LINE_DIRECT, play_line.LINE_RELAY,
+                                "Google 直链不可用，已回落到代理转发")
+        return _observe_line(
+            await serve_remote_async(target.value, request, target.headers, media_type,
+                                     cache_control=seg_cache),
+            line)
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
     return serve_file(target.value, request, media_type,
                       cache_control=cdn.cache_control_for(str(request.url.path)))
@@ -2389,8 +2446,16 @@ async def video_hls(
         cached_file = local_cache.lookup(db, item)
         if cached_file:
             target = mount_lib.PlayTarget("local", cached_file, {})
+            # 转码口径下命中本机副本：这条请求确实走的是缓存线路
+            line_stats.record_request(play_line.LINE_CACHE)
         else:
             local_cache.enqueue(db, item, local_cache.PLAY_PRIORITY)
+            _note_line_fallback(play_line.LINE_CACHE, "", "本机无副本，转码从回源拉流")
+    elif target.kind == "url":
+        # 转码的拉流字节由 ffmpeg 进程走，不经过本服务的响应体，
+        # 所以这里只记请求不记流量（面板上已标明流量口径不含转码拉流）。
+        line_stats.record_request(
+            play_line.LINE_CDN if cdn.enabled(db) else play_line.LINE_DIRECT)
     session_id = start_transcode(
         target.value, start_seconds, video_bitrate, height,
         user_id=user.id, item_guid=item.guid, input_headers=target.headers,
