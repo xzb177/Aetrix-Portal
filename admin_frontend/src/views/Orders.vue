@@ -7,6 +7,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshCw, Search, CircleCheck, Wallet, Ban, Undo2, ReceiptText } from 'lucide-vue-next'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import { useQueryFilter } from '@/composables/useQueryFilter'
 
 /** 手机卡片：商品名为标题，金额/状态/用户/时间做键值行，订单号收进详情（太长会撑满一行） */
 const columns: DataColumn[] = [
@@ -42,6 +43,11 @@ const pageSize = 20
 const statusFilter = ref('')
 const kindFilter = ref('')
 const search = ref('')
+// 深链：仪表盘 KPI / 命令面板带筛选过来（Phase 5，如 /orders?status=pending）
+// 回调里回到第一页：带着筛选翻到第 5 页是空页，深链不该把人送到空页上
+useQueryFilter(statusFilter, 'status', () => { page.value = 1; load() })
+useQueryFilter(kindFilter, 'kind', () => { page.value = 1; load() })
+useQueryFilter(search, 'search', () => { page.value = 1; load() })
 
 async function load() {
   loading.value = true

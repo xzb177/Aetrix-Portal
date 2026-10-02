@@ -7,6 +7,7 @@ import {
   fetchMediaSeeks, fetchServersSummary, markMediaSeekInLibrary, pushMediaSeek, updateMediaSeek,
 } from '@/api/admin'
 import type { MediaSeekRow, ServerKind } from '@/types'
+import { useQueryFilter } from '@/composables/useQueryFilter'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -35,6 +36,8 @@ const columns = computed<DataColumn[]>(() => [
 const list = ref<MediaSeekRow[]>([])
 const loading = ref(false)
 const statusFilter = ref('')
+// 深链：仪表盘「待审求片」/ 命令面板跳过来时带的就是这个筛选（Phase 5）
+useQueryFilter(statusFilter, 'status', load)
 const busyId = ref<number | null>(null)
 /** 哪几类外部服务已经接好（用于决定显示哪些推送按钮） */
 const pushReady = ref<ServerKind[]>([])

@@ -6,9 +6,9 @@
  * 供风控审查；支持按保留天数清理，避免表无限增长。
  */
 import { onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshCw, Search, Trash2, ShieldAlert } from 'lucide-vue-next'
-import { fetchLoginLogs, purgeLoginLogs } from '@/api/admin'
+import { fetchLoginLogs } from '@/api/admin'
+import { useDangerOps } from '@/composables/useDangerOps'
 import type { LoginLogRow, LoginLogsResponse } from '@/types'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -54,15 +54,14 @@ onMounted(load)
 
 /** 清理动作进行中（按钮 loading，防重复点击） */
 const purgeBusy = ref(false)
+/** 危险操作共用实现（与「系统设置 → 危险操作」页签同一份） */
+const dangerOps = useDangerOps()
 
+/** 清理日志是危险操作：确认文案与执行都在 useDangerOps（与「系统设置 → 危险操作」同一份） */
 async function purge(preset: number) {
-  const label = preset === 0 ? '清空全部日志' : `清理 ${preset} 天前的日志`
-  await ElMessageBox.confirm(`${label}？该操作不可撤销。`, '清理日志', { type: 'warning' })
   purgeBusy.value = true
   try {
-    const res = await purgeLoginLogs(preset)
-    ElMessage.success(res.message)
-    load()
+    if (await dangerOps.purgeLogs(preset)) load()
   } finally {
     purgeBusy.value = false
   }
@@ -88,6 +87,9 @@ function riskLevel(row: LoginLogRow): string {
         <p class="admin-page-desc">登录成功/失败、设备超限、诱饵码触发等风控事件审查</p>
       </div>
       <div class="toolbar">
+        <RouterLink class="danger-jump" :to="{ name: 'Settings', query: { tab: 'danger', op: 'logs' } }">
+          危险操作中心 →
+        </RouterLink>
         <el-button :loading="purgeBusy" @click="purge(data && data.total > 0 ? 90 : 0)">
           <Trash2 :size="14" style="margin-right: 4px" />清理日志
         </el-button>
@@ -198,6 +200,13 @@ function riskLevel(row: LoginLogRow): string {
 </template>
 
 <style scoped>
+/* 危险操作全部收在「系统设置 → 危险操作」：这里只留一个入口，不开第二个现场 */
+.danger-jump {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: var(--font-size-xs);
+}
+.danger-jump:hover { color: var(--danger); text-decoration: underline; }
 /* 统计瓦片、工具条、徽标都走全局原语，页面只补两种状态描边 */
 .stat-tile.is-warn { border-color: var(--warning-border); }
 .stat-tile.is-danger { border-color: var(--danger-border); }

@@ -7,23 +7,55 @@
  * v2.6.0 下载与设备风控分组（下载开关 / 设备上限 / 自动踢人 / 日志保留）
  * v2.19.0 **外部服务能力中心**：代理 / 人机验证 / 邮件与模板 / Telegram / AI 模型 / IP 归属地
  *
+ * v2.42.10（Phase 5·危险操作独立 tab）：页面改成三个页签——「能力与服务」「运营参数」
+ * 「**危险操作**」。前两个装的都是日常要改的东西，第三个装的是**会立刻改变线上数据、
+ * 且大多不能撤销**的操作（手动恢复配额熔断器 / 清空本地缓存 / 清理登录与安全日志）。
+ * 把它们从仪表盘、客户端策略、登录日志三个页面里搬到这里，是为了让「不可撤销」这件事
+ * 在**一个地方**说清楚：先备份、再确认、再执行。原来三处的按钮改成深链指过来
+ * （如 `/settings?tab=danger&op=cache`），**执行逻辑只在这里一份**。
+ *
  * 能力中心的口径：**项目只提供能力，凭据一律由管理员自己填**。字段表由后端下发，
  * 这里只按类型渲染控件，所以后端加字段不需要改这个页面，也不会出现「界面漏了字段」。
  * 密钥字段后端只回 ******，留空即保持原值不变。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
+  DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal,
 } from 'lucide-vue-next'
-import { fetchRegistrationSettings, updateRegistrationSettings } from '@/api/admin'
+import {
+  fetchRegistrationSettings, updateRegistrationSettings,
+} from '@/api/admin'
+import { useAuthStore } from '@/stores/auth'
+import { useQueryFilter } from '@/composables/useQueryFilter'
+import { useDangerOps, fmtBytes } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
   type CapabilityCard, type CapabilityField, type CapabilityTestResult,
 } from '@/api/capabilities'
 import NoticePanel from '@/components/NoticePanel.vue'
+
+const route = useRoute()
+const auth = useAuthStore()
+
+/** ==================== 页签（Phase 5） ==================== */
+
+const TAB_KEYS = ['capabilities', 'params', 'danger']
+const tab = ref<string>('capabilities')
+// 深链：/settings?tab=danger（仪表盘 / 命令面板 / 其它页面的「去危险操作」都指这里）
+useQueryFilter(tab, 'tab')
+watch(
+  tab,
+  (value) => {
+    // 非法值回默认页签：宁可回到第一页，也不要停在一个不存在的页签上（空白页）
+    if (!TAB_KEYS.includes(value)) tab.value = 'capabilities'
+  },
+  { immediate: true },
+)
 
 type FieldType = 'bool' | 'int' | 'str' | 'secret'
 
@@ -362,6 +394,60 @@ async function saveRegistration() {
     regSaving.value = false
   }
 }
+
+// ==================== 危险操作（Phase 5） ====================
+
+/** 只读审计角色：服务端会拒，这里先置灰并说清原因（口径同导航上的锁标记） */
+const canWrite = computed(() => auth.admin?.can_write !== false)
+const WRITE_HINT = '当前账号是只读审计角色：可以看，不能执行写操作'
+
+/** 逻辑与确认文案都在 useDangerOps 里（仪表盘 / 客户端策略 / 登录日志共用同一份） */
+const dangerOps = useDangerOps()
+const {
+  backup: backupInfo,
+  breaker,
+  busy: dangerBusy,
+  cacheStats,
+  loadState: loadDanger,
+  loading: dangerLoading,
+} = dangerOps
+const {
+  backupNow: doBackup,
+  cleanCache: doCleanCache,
+  purgeLogs: doPurgeLogs,
+  resetBreakerNow: doResetBreaker,
+} = dangerOps
+
+/** 保留天数：0 = 清空全部登录与安全日志 */
+const purgeDays = ref(90)
+/** 从别的页面深链过来时高亮对应卡片（?op=breaker|cache|logs） */
+const TAB_OPS = ['breaker', 'cache', 'logs']
+const target = ref('')
+
+// 切到危险操作页签时才拉数据：这三个接口在另外两个页签里用不上
+watch(tab, (value) => {
+  if (value === 'danger' && !breaker.value && !cacheStats.value) loadDanger()
+})
+
+/** 深链定位：?op=xxx → 高亮对应卡片并滚过去（其它页面「去危险操作」的落点） */
+function scrollToTarget(key: string) {
+  document.getElementById(`danger-${key}`)?.scrollIntoView({ block: 'center' })
+}
+
+watch(
+  () => route.query.op,
+  (op) => {
+    const key = Array.isArray(op) ? (op[0] ?? '') : (op ?? '')
+    target.value = TAB_OPS.includes(key) ? key : ''
+    if (!target.value) return
+    nextTick(() => scrollToTarget(target.value))
+    // el-tabs 的页签内容是懒渲染的：首次切过去时 DOM 可能还没挂上，滚不到就再试一次
+    window.setTimeout(() => scrollToTarget(target.value), 150)
+    // 高亮只用来「指给你看这是哪一张」，停几秒就淡掉（否则一直亮着反而像出错了）
+    window.setTimeout(() => { target.value = '' }, 4000)
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -369,150 +455,344 @@ async function saveRegistration() {
     <div class="admin-page-header">
       <div>
         <h1 class="admin-page-title">系统设置</h1>
-        <p class="admin-page-desc">外部服务能力与运营参数；修改后立即对用户端生效</p>
+        <p class="admin-page-desc">外部服务能力、运营参数与危险操作；修改后立即对用户端生效</p>
       </div>
-      <el-button @click="loadCapabilities(); load()">
+      <el-button @click="loadCapabilities(); load(); tab === 'danger' && loadDanger()">
         <RefreshCw :size="14" style="margin-right: 4px" />重新载入
       </el-button>
     </div>
 
-    <!-- ==================== 外部服务能力 ==================== -->
-    <NoticePanel
-      title="外部服务能力说明"
-      summary="凭据由管理员自行填写，填入后即可测试连接"
-      :icon="Zap"
-      storage-key="settings-capabilities"
-    >
-      <p class="capability-note">
-        能力由面板提供，<strong>凭据全部由你自己填</strong>：各家的 API Key / 站点密钥 / 代理地址 / Bot Token
-        都由本项目之外的账号体系签发，填进来即可用，每个能力都能当场「测试连接」。
-      </p>
-    </NoticePanel>
+    <!-- Phase 5：日常要改的放前两个页签，不可撤销的独立一页 -->
+    <el-tabs v-model="tab" class="settings-tabs">
+      <el-tab-pane name="capabilities">
+        <template #label>
+          <span class="tab-label"><Globe :size="13" />能力与服务</span>
+        </template>
 
-    <div v-loading="capsLoading" class="settings-body cap-flow">
-      <section v-for="g in capGroups" :key="g.name" class="cap-section">
-        <h2 class="cap-group-title">{{ g.name }}</h2>
-        <div class="cap-grid">
-          <button
-            v-for="card in g.items"
-            :key="card.slug"
-            type="button"
-            class="cap-card"
-            :class="capStatus(card).tone"
-            @click="openCapability(card.slug)"
+        <!-- ==================== 外部服务能力 ==================== -->
+        <NoticePanel
+          title="外部服务能力说明"
+          summary="凭据由管理员自行填写，填入后即可测试连接"
+          :icon="Zap"
+          storage-key="settings-capabilities"
+        >
+          <p class="capability-note">
+            能力由面板提供，<strong>凭据全部由你自己填</strong>：各家的 API Key / 站点密钥 / 代理地址 / Bot Token
+            都由本项目之外的账号体系签发，填进来即可用，每个能力都能当场「测试连接」。
+          </p>
+        </NoticePanel>
+
+        <div v-loading="capsLoading" class="settings-body cap-flow">
+          <section v-for="g in capGroups" :key="g.name" class="cap-section">
+            <h2 class="cap-group-title">{{ g.name }}</h2>
+            <div class="cap-grid">
+              <button
+                v-for="card in g.items"
+                :key="card.slug"
+                type="button"
+                class="cap-card"
+                :class="capStatus(card).tone"
+                @click="openCapability(card.slug)"
+              >
+                <div class="cap-card-top">
+                  <span class="cap-icon">
+                    <component :is="CAP_ICONS[card.slug] || Globe" :size="18" />
+                  </span>
+                  <span class="cap-badge" :class="capStatus(card).tone">{{ capStatus(card).label }}</span>
+                </div>
+                <h3>{{ card.title }}</h3>
+                <p>{{ card.desc }}</p>
+                <span class="cap-more">配置与测试 →</span>
+              </button>
+            </div>
+          </section>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane name="params">
+        <template #label>
+          <span class="tab-label"><SlidersHorizontal :size="13" />运营参数</span>
+        </template>
+
+        <div v-loading="loading" class="settings-body">
+          <!-- 注册策略 -->
+          <section class="admin-card">
+            <header class="card-header">
+              <div class="card-title">
+                <KeyRound :size="16" />
+                <div>
+                  <h2>注册策略</h2>
+                  <p>决定新用户如何进入站点</p>
+                </div>
+              </div>
+            </header>
+
+            <el-form label-position="top" class="field-form">
+              <el-form-item label="注册模式">
+                <el-radio-group v-model="reg.mode">
+                  <el-radio-button value="open">开放注册</el-radio-button>
+                  <el-radio-button value="code">注册码</el-radio-button>
+                  <el-radio-button value="closed">关闭注册</el-radio-button>
+                </el-radio-group>
+                <span class="field-hint">{{ regModeHint }}</span>
+              </el-form-item>
+              <el-form-item v-if="reg.mode === 'closed'" label="关闭提示">
+                <el-input v-model="reg.message" type="textarea" :rows="2" placeholder="展示给无法注册的用户…" />
+              </el-form-item>
+            </el-form>
+
+            <div class="card-footer">
+              <el-button type="primary" :loading="regSaving" @click="saveRegistration">
+                <Save :size="14" style="margin-right: 4px" />保存注册策略
+              </el-button>
+            </div>
+          </section>
+
+          <!-- 支付状态提示 -->
+          <div class="notice" :class="{ ok: paymentReady }">
+            <ShieldAlert :size="15" />
+            <span v-if="paymentReady">支付网关已配置完成，用户端可直接下单充值。</span>
+            <span v-else>支付网关尚未配置齐全（需要网关地址 + 商户 ID + 商户密钥），用户端充值下单会提示未启用。</span>
+          </div>
+
+          <!-- 经济配置分组 -->
+          <section v-for="g in GROUPS" :key="g.id" class="admin-card">
+            <header class="card-header">
+              <div class="card-title">
+                <component :is="g.icon" :size="16" />
+                <div>
+                  <h2>{{ g.title }}</h2>
+                  <p>{{ g.desc }}</p>
+                </div>
+              </div>
+              <span v-if="isDirty(g)" class="dirty-dot">未保存</span>
+            </header>
+
+            <el-form label-position="top" class="field-form">
+              <el-form-item v-for="f in g.fields" :key="f.key" :label="f.label">
+                <el-switch
+                  v-if="f.type === 'bool'"
+                  v-model="settings[f.key]"
+                  active-value="true"
+                  inactive-value="false"
+                />
+                <el-input
+                  v-else-if="f.type === 'int'"
+                  v-model="settings[f.key]"
+                  type="number"
+                  min="0"
+                  class="num-input"
+                />
+                <el-input
+                  v-else
+                  v-model="settings[f.key]"
+                  :type="f.type === 'secret' ? 'password' : 'text'"
+                  :show-password="f.type === 'secret'"
+                  :placeholder="f.type === 'secret' ? '留空表示不修改' : ''"
+                />
+                <span v-if="f.suffix" class="field-suffix">{{ f.suffix }}</span>
+                <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+              </el-form-item>
+            </el-form>
+
+            <div class="card-footer">
+              <el-button
+                type="primary"
+                :disabled="!isDirty(g)"
+                :loading="savingGroup === g.id"
+                @click="saveGroup(g)"
+              >
+                <Save :size="14" style="margin-right: 4px" />保存{{ g.title }}
+              </el-button>
+            </div>
+          </section>
+
+          <p class="foot-note">
+            <Coins :size="13" />
+            积分、套餐与兑换码的明细请前往「商品与套餐」「兑换码」「邀请与积分」页面管理。
+          </p>
+        </div>
+      </el-tab-pane>
+
+      <!-- ==================== 危险操作（Phase 5） ==================== -->
+      <el-tab-pane name="danger">
+        <template #label>
+          <span class="tab-label"><TriangleAlert :size="13" />危险操作</span>
+        </template>
+
+        <div v-loading="dangerLoading" class="settings-body">
+          <!-- 先备份：不可撤销的操作之前，总得有个能回退的地方 -->
+          <section class="admin-card danger-guard">
+            <div class="danger-guard-main">
+              <DatabaseBackup :size="18" class="danger-guard-icon" />
+              <div>
+                <h2>动手之前，先备份一次</h2>
+                <p>
+                  下面三项都会立刻改变线上数据，其中两项不可恢复。
+                  定时备份是每天一次，不等于「刚才那一刻的状态」。
+                </p>
+                <p class="danger-guard-meta">
+                  定时备份 {{ backupInfo?.enabled ? `已开启 · 每天 ${backupInfo.time} · 保留 ${backupInfo.keep_days} 天` : '未开启' }}
+                  · 上次执行 {{ backupInfo?.last_run || '—' }}
+                  · 已有 {{ backupInfo?.backups.length ?? 0 }} 份备份
+                </p>
+              </div>
+            </div>
+            <el-button
+              type="primary"
+              :loading="dangerBusy === 'backup'"
+              :disabled="!canWrite"
+              :title="canWrite ? '' : WRITE_HINT"
+              @click="doBackup"
+            >
+              <DatabaseBackup :size="14" style="margin-right: 4px" />立即备份
+            </el-button>
+          </section>
+
+          <div v-if="!canWrite" class="notice danger-locked">
+            <ShieldAlert :size="15" />
+            <span>{{ WRITE_HINT }}。下面的按钮已置灰，但内容仍然可读。</span>
+          </div>
+
+          <!-- 1. 配额熔断器 -->
+          <section
+            id="danger-breaker"
+            class="admin-card danger-card"
+            :class="{ 'is-target': target === 'breaker' }"
           >
-            <div class="cap-card-top">
-              <span class="cap-icon">
-                <component :is="CAP_ICONS[card.slug] || Globe" :size="18" />
+            <header class="card-header">
+              <div class="card-title">
+                <ShieldAlert :size="16" />
+                <div>
+                  <h2>手动恢复配额熔断器</h2>
+                  <p>连续 403 会自动熔断、暂停 worker；这里是可以强行把它叫醒的唯一入口</p>
+                </div>
+              </div>
+              <span class="mini-badge" :class="breaker?.tripped ? 'danger' : 'ok'">
+                {{ breaker?.tripped ? '已熔断' : '未触发' }}
               </span>
-              <span class="cap-badge" :class="capStatus(card).tone">{{ capStatus(card).label }}</span>
+            </header>
+            <p class="danger-effect">
+              <template v-if="breaker?.tripped">
+                已连续 {{ breaker.consecutive_403 }} 次 403（阈值 {{ breaker.threshold }}）。
+                恢复后 worker 会立刻重新请求上游——<strong>配额没恢复的话，会马上再撞一次并重新熔断</strong>。
+              </template>
+              <template v-else-if="breaker">
+                熔断器当前是正常的（连续 403 计数 {{ breaker.consecutive_403 }}）。没有触发时无需恢复。
+              </template>
+              <template v-else>熔断器状态读取失败，不提供恢复入口（避免在状态不明时盲操作）。</template>
+            </p>
+            <div class="card-footer">
+              <el-button
+                type="danger"
+                plain
+                :disabled="!canWrite || !breaker?.tripped"
+                :loading="dangerBusy === 'breaker'"
+                :title="canWrite ? '' : WRITE_HINT"
+                @click="doResetBreaker"
+              >
+                确认配额已恢复，恢复 worker
+              </el-button>
             </div>
-            <h3>{{ card.title }}</h3>
-            <p>{{ card.desc }}</p>
-            <span class="cap-more">配置与测试 →</span>
-          </button>
-        </div>
-      </section>
-    </div>
+          </section>
 
-    <div v-loading="loading" class="settings-body">
-      <!-- 注册策略 -->
-      <section class="admin-card">
-        <header class="card-header">
-          <div class="card-title">
-            <KeyRound :size="16" />
-            <div>
-              <h2>注册策略</h2>
-              <p>决定新用户如何进入站点</p>
-            </div>
-          </div>
-        </header>
-
-        <el-form label-position="top" class="field-form">
-          <el-form-item label="注册模式">
-            <el-radio-group v-model="reg.mode">
-              <el-radio-button value="open">开放注册</el-radio-button>
-              <el-radio-button value="code">注册码</el-radio-button>
-              <el-radio-button value="closed">关闭注册</el-radio-button>
-            </el-radio-group>
-            <span class="field-hint">{{ regModeHint }}</span>
-          </el-form-item>
-          <el-form-item v-if="reg.mode === 'closed'" label="关闭提示">
-            <el-input v-model="reg.message" type="textarea" :rows="2" placeholder="展示给无法注册的用户…" />
-          </el-form-item>
-        </el-form>
-
-        <div class="card-footer">
-          <el-button type="primary" :loading="regSaving" @click="saveRegistration">
-            <Save :size="14" style="margin-right: 4px" />保存注册策略
-          </el-button>
-        </div>
-      </section>
-
-      <!-- 支付状态提示 -->
-      <div class="notice" :class="{ ok: paymentReady }">
-        <ShieldAlert :size="15" />
-        <span v-if="paymentReady">支付网关已配置完成，用户端可直接下单充值。</span>
-        <span v-else>支付网关尚未配置齐全（需要网关地址 + 商户 ID + 商户密钥），用户端充值下单会提示未启用。</span>
-      </div>
-
-      <!-- 经济配置分组 -->
-      <section v-for="g in GROUPS" :key="g.id" class="admin-card">
-        <header class="card-header">
-          <div class="card-title">
-            <component :is="g.icon" :size="16" />
-            <div>
-              <h2>{{ g.title }}</h2>
-              <p>{{ g.desc }}</p>
-            </div>
-          </div>
-          <span v-if="isDirty(g)" class="dirty-dot">未保存</span>
-        </header>
-
-        <el-form label-position="top" class="field-form">
-          <el-form-item v-for="f in g.fields" :key="f.key" :label="f.label">
-            <el-switch
-              v-if="f.type === 'bool'"
-              v-model="settings[f.key]"
-              active-value="true"
-              inactive-value="false"
-            />
-            <el-input
-              v-else-if="f.type === 'int'"
-              v-model="settings[f.key]"
-              type="number"
-              min="0"
-              class="num-input"
-            />
-            <el-input
-              v-else
-              v-model="settings[f.key]"
-              :type="f.type === 'secret' ? 'password' : 'text'"
-              :show-password="f.type === 'secret'"
-              :placeholder="f.type === 'secret' ? '留空表示不修改' : ''"
-            />
-            <span v-if="f.suffix" class="field-suffix">{{ f.suffix }}</span>
-            <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
-          </el-form-item>
-        </el-form>
-
-        <div class="card-footer">
-          <el-button
-            type="primary"
-            :disabled="!isDirty(g)"
-            :loading="savingGroup === g.id"
-            @click="saveGroup(g)"
+          <!-- 2. 本地播放缓存 -->
+          <section
+            id="danger-cache"
+            class="admin-card danger-card"
+            :class="{ 'is-target': target === 'cache' }"
           >
-            <Save :size="14" style="margin-right: 4px" />保存{{ g.title }}
-          </el-button>
-        </div>
-      </section>
+            <header class="card-header">
+              <div class="card-title">
+                <HardDrive :size="16" />
+                <div>
+                  <h2>清空本地播放缓存</h2>
+                  <p>清的是 VPS 本机副本（热门片提前拉到本机的那份），不是媒体库里的文件</p>
+                </div>
+              </div>
+              <span class="mini-badge warn">清掉不可恢复</span>
+            </header>
+            <p class="danger-effect">
+              当前占用 <strong>{{ fmtBytes(cacheStats?.bytes_used || 0) }}</strong>
+              （上限 {{ fmtBytes(cacheStats?.max_bytes || 0) }}）
+              <template v-if="cacheStats?.hit_rate != null">
+                · 命中率 {{ Math.round(cacheStats.hit_rate * 100) }}%
+              </template>
+              。清完之后这些片子要重新回源拉一次，热门时段会变慢。
+            </p>
+            <div class="card-footer">
+              <el-button
+                :disabled="!canWrite"
+                :loading="dangerBusy === 'cache:ready'"
+                :title="canWrite ? '' : WRITE_HINT"
+                @click="doCleanCache('ready')"
+              >
+                <Eraser :size="14" style="margin-right: 4px" />清理已缓存副本
+              </el-button>
+              <el-button
+                :disabled="!canWrite"
+                :loading="dangerBusy === 'cache:failed'"
+                :title="canWrite ? '' : WRITE_HINT"
+                @click="doCleanCache('failed')"
+              >
+                清理失败记录
+              </el-button>
+              <el-button
+                type="danger"
+                plain
+                :disabled="!canWrite"
+                :loading="dangerBusy === 'cache:all'"
+                :title="canWrite ? '' : WRITE_HINT"
+                @click="doCleanCache('all')"
+              >
+                清空全部
+              </el-button>
+            </div>
+          </section>
 
-      <p class="foot-note">
-        <Coins :size="13" />
-        积分、套餐与兑换码的明细请前往「商品与套餐」「兑换码」「邀请与积分」页面管理。
-      </p>
-    </div>
+          <!-- 3. 登录与安全日志 -->
+          <section
+            id="danger-logs"
+            class="admin-card danger-card"
+            :class="{ 'is-target': target === 'logs' }"
+          >
+            <header class="card-header">
+              <div class="card-title">
+                <History :size="16" />
+                <div>
+                  <h2>清理登录与安全日志</h2>
+                  <p>登录成功/失败、设备超限被拒、诱饵码触发封禁等风控事件的流水</p>
+                </div>
+              </div>
+              <span class="mini-badge danger">删掉就查不到了</span>
+            </header>
+            <p class="danger-effect">
+              保留 <strong>0</strong> 天 = 清空全部。删掉之后，风控与安全审计就查不到那段历史了。
+              想让它自然收敛，应该去「系统设置 → 运营参数 → 下载与设备风控」改日志保留天数。
+            </p>
+            <div class="card-footer">
+              <span class="field-suffix">保留天数</span>
+              <el-input-number v-model="purgeDays" :min="0" :max="3650" :controls="false" style="width: 120px" />
+              <el-button
+                type="danger"
+                :disabled="!canWrite"
+                :loading="dangerBusy === 'logs'"
+                :title="canWrite ? '' : WRITE_HINT"
+                @click="doPurgeLogs(purgeDays)"
+              >
+                清理日志
+              </el-button>
+            </div>
+          </section>
+
+          <p class="foot-note">
+            <TriangleAlert :size="13" />
+            删除媒体库、删除服务器、删除挂载这类<strong>针对单个对象</strong>的操作仍然留在它们各自的页面上——
+            那里才看得到要删的是什么；本页只收「跨对象、不可逆」的那几项。
+          </p>
+        </div>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- ==================== 能力配置抽屉 ==================== -->
     <el-drawer v-model="drawerOpen" :title="drawerTitle" size="520px">
@@ -580,6 +860,45 @@ async function saveRegistration() {
 
 <style scoped>
 .settings-body { display: flex; flex-direction: column; gap: 14px; }
+
+/* ==================== 页签（Phase 5） ==================== */
+.settings-tabs { margin-bottom: 4px; }
+.tab-label { display: inline-flex; align-items: center; gap: 4px; }
+.danger-locked { border-color: var(--warning-border); }
+
+/* 危险操作卡：左边一条警示色，与前两个页签的日常配置卡区分开 */
+.danger-card { border-left: 3px solid var(--danger-border); }
+.danger-card.is-target {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-bg);
+}
+
+.danger-guard {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  border-color: var(--success-border);
+  background: var(--success-bg);
+}
+.danger-guard-main { display: flex; align-items: flex-start; gap: 12px; flex: 1; min-width: 0; }
+.danger-guard-icon { color: var(--success); flex-shrink: 0; margin-top: 2px; }
+.danger-guard h2 { font-size: 15px; margin: 0; color: var(--text-primary); }
+.danger-guard p { margin: 4px 0 0; font-size: var(--font-size-xs); color: var(--text-secondary); line-height: 1.6; }
+.danger-guard-meta { color: var(--text-muted) !important; }
+
+.danger-effect {
+  margin: 0 0 4px;
+  font-size: var(--font-size-xs);
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.danger-effect strong { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
+
+.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: var(--radius-full); font-weight: 600; flex-shrink: 0; }
+.mini-badge.ok { background: var(--success-bg); color: var(--success); }
+.mini-badge.warn { background: var(--warning-bg); color: var(--warning); }
+.mini-badge.danger { background: var(--danger-bg); color: var(--danger); }
 
 .card-title { display: flex; align-items: flex-start; gap: 10px; }
 .card-title h2 { font-size: 15px; margin: 0; }

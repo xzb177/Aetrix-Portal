@@ -17,7 +17,8 @@ import { ElMessage } from 'element-plus'
 import {
   LayoutDashboard, Users, Package, Film, Ticket, Settings, Server,
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Tv,
-  CheckCircle2, Route as RealmIcon, Lock,
+  CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
+  TriangleAlert,
   Sun, Moon, MonitorSmartphone,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
@@ -25,6 +26,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useRealmStore } from '@/stores/realm'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import CommandPalette, { type PaletteItem } from '@/components/CommandPalette.vue'
 // v2.42.4：后台白日/黑暗双主题（与用户端同一套三档口径）
 import { useAdminTheme } from '@/composables/useTheme'
 // 站名 / Logo 来自「站点与品牌」能力（改完刷新即生效，不用重新构建）
@@ -226,7 +228,96 @@ watch(drawerOpen, (open) => {
 })
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') closeDrawer()
+  // ⌘K / Ctrl+K：全局命令搜索。面板自己会处理 Esc / 方向键 / Enter，
+  // 这里只管开关（开着的时候按一下是收起来）
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    paletteOpen.value = !paletteOpen.value
+    // 命令面板与侧边栏抽屉都是浮层：开着抽屉时开面板，先把抽屉收掉，不叠两层遮罩
+    if (paletteOpen.value) closeDrawer()
+    return
+  }
+  if (e.key === 'Escape' && !paletteOpen.value) closeDrawer()
+}
+
+// ==================== 全局命令搜索（Phase 5） ====================
+
+const paletteOpen = ref(false)
+
+/** 命令面板里的「常用定位」：与仪表盘 KPI 用同一套深链，落地页筛选口径一致 */
+const QUICK_JUMPS: PaletteItem[] = [
+  { id: 'jump-tickets', label: '待处理工单', group: '常用定位', to: '/tickets?status=open', icon: Ticket, hint: '只看进行中的工单' },
+  { id: 'jump-seeks', label: '待审求片', group: '常用定位', to: '/media-seek?status=pending', icon: MessageSquareDashed, hint: '只看待审核的求片' },
+  { id: 'jump-orders', label: '待支付订单', group: '常用定位', to: '/orders?status=pending', icon: Wallet, hint: '只看待支付的订单' },
+  { id: 'jump-expiring', label: '7 天内到期订阅', group: '常用定位', to: '/subscriptions?status=expiring', icon: Crown, hint: '续费窗口里的会员' },
+]
+
+/** 侧边栏的页面清单（含不占导航位置的 /realms）——命令面板不维护第二份 */
+const pageCommands = computed<PaletteItem[]>(() => {
+  const items: PaletteItem[] = []
+  for (const group of navGroups) {
+    for (const item of group.items) {
+      // 超级管理员限定的页（如客户端策略 / 系统设置）与侧边栏同一个口径：
+      // 不藏起来（藏了就找不到了），但在提示里说清「进去也没用」
+      const locked = Boolean(item.superOnly) && !isSuper.value
+      items.push({
+        id: `page-${item.path}`,
+        label: item.label,
+        group: group.title,
+        to: item.path,
+        icon: group.icon,
+        hint: locked ? SUPER_ONLY_HINT : item.path,
+        keywords: locked ? '仅超级管理员' : undefined,
+      })
+    }
+  }
+  for (const [path, groupTitle] of Object.entries(OFF_NAV_GROUP)) {
+    items.push({
+      id: `page-${path}`,
+      label: '服管理',
+      group: groupTitle,
+      to: path,
+      icon: RealmIcon,
+      hint: path,
+      keywords: 'realm 服 切换',
+    })
+  }
+  return items
+})
+
+/** 外观命令的提示写「点一下会切到哪一档」，免得点完不知道变成什么了 */
+const themeCommandHint = computed(() => `切到${themeNext.value.label}`)
+
+const actionCommands = computed<PaletteItem[]>(() => [
+  { id: 'act-refresh', label: '刷新当前页', group: '操作', icon: RefreshCw, hint: '重新加载整页' },
+  { id: 'act-theme', label: '切换外观', group: '操作', icon: MonitorSmartphone, hint: themeCommandHint.value },
+  { id: 'act-password', label: '修改密码', group: '操作', icon: KeyRound, hint: '当前管理员账号' },
+  { id: 'act-logout', label: '退出登录', group: '操作', icon: LogOut, hint: '清掉本地会话', danger: true },
+  { id: 'act-danger', label: '危险操作', group: '操作', icon: TriangleAlert, hint: '熔断器 / 缓存 / 日志', keywords: '清理 清空 删除' },
+].map((item) => ({ ...item, run: actionRun(item.id) })))
+
+/** 动作命令统一走一张表 → 实际执行；`act-danger` 走深链（给 useQueryFilter 接住） */
+function actionRun(id: string): () => void {
+  if (id === 'act-refresh') return refreshPage
+  if (id === 'act-theme') return cycleTheme
+  if (id === 'act-password') return openPwdDialog
+  if (id === 'act-danger') return () => router.push({ name: 'Settings', query: { tab: 'danger' } })
+  return logout
+}
+
+const paletteItems = computed<PaletteItem[]>(() => [
+  ...QUICK_JUMPS,
+  ...pageCommands.value,
+  ...actionCommands.value,
+])
+
+function onPaletteRun(item: PaletteItem) {
+  if (item.to) {
+    // 同一页只改 query 时 vue-router 不会重建组件，所以关面板 + 让目标页自己 watch query
+    router.push(item.to)
+    return
+  }
+  item.run?.()
 }
 
 watch(
@@ -442,6 +533,18 @@ onUnmounted(() => {
         </div>
 
         <div class="topbar-actions">
+          <!-- 命令搜索（Phase 5）：桌面带 ⌘K 提示，手机只留图标（顶栏本来就很挤） -->
+          <button
+            class="cmd-btn"
+            title="命令搜索（⌘K / Ctrl+K）"
+            aria-label="命令搜索"
+            @click="paletteOpen = true; closeDrawer()"
+          >
+            <Search :size="15" />
+            <span class="cmd-btn-text">搜索</span>
+            <kbd class="cmd-btn-kbd">⌘K</kbd>
+          </button>
+
           <!-- 当前服：面板可以同时运营多个服，切完各页的作用域跟着走 -->
           <el-dropdown v-if="realm.realms.length" trigger="click" @command="onRealmCommand">
             <button class="realm-chip" aria-label="切换当前服">
@@ -511,6 +614,12 @@ onUnmounted(() => {
         <RouterView />
       </main>
     </div>
+
+    <CommandPalette
+      v-model="paletteOpen"
+      :items="paletteItems"
+      @run="onPaletteRun"
+    />
 
     <el-dialog v-model="pwdVisible" title="修改密码" width="420px">
       <el-form label-position="top" @submit.prevent>
@@ -780,6 +889,33 @@ onUnmounted(() => {
 
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
+/* 命令搜索入口：与顶栏其它按钮同高；宽屏才展开文字 + ⌘K 提示 */
+.cmd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+.cmd-btn:hover { border-color: var(--primary-border); color: var(--text-primary); }
+.cmd-btn-kbd {
+  padding: 0 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.7;
+}
+
 .admin-chip {
   display: flex;
   align-items: center;
@@ -869,6 +1005,10 @@ onUnmounted(() => {
   .topbar-crumb { display: none; }
   .chip-name,
   .chip-chev { display: none; }
+  /* 手机：只留放大镜图标，文字与 ⌘K 提示都藏起来（顶栏要留给服切换与账号） */
+  .cmd-btn { width: 32px; padding: 0; justify-content: center; }
+  .cmd-btn-text,
+  .cmd-btn-kbd { display: none; }
   .realm-chip-name { max-width: 84px; }
   .admin-chip { padding: 4px; border-radius: var(--radius-full); }
   .chip-avatar { width: 28px; height: 28px; font-size: 12px; }
