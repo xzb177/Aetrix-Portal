@@ -365,6 +365,36 @@ def search_omdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
 # ---------------------------------------------------------------------------
 
 TVDB_SEARCH = "https://api4.thetvdb.com/v4/search"
+TVDB_LOGIN = "https://api4.thetvdb.com/v4/login"
+
+# 每把 key 独立缓存登录 token：{api_key: (token, 获取时间戳)}
+# TVDB v4 的 key 不能直接当 Bearer 用，必须先 POST /login 换 JWT
+_tvdb_token_cache: dict = {}
+_tvdb_token_lock = __import__("threading").Lock()
+_TVDB_TOKEN_TTL = 20 * 3600  # 20 小时，比官方过期稍短，提前换
+
+
+def _tvdb_bearer(api_key: str) -> str:
+    """拿 key 换 Bearer token（带缓存，过期/401 自动重登）"""
+    import time as _time
+    now = _time.time()
+    with _tvdb_token_lock:
+        hit = _tvdb_token_cache.get(api_key)
+        if hit and now - hit[1] < _TVDB_TOKEN_TTL:
+            return hit[0]
+    body = json.dumps({"apikey": api_key}).encode("utf-8")
+    data = _http_obj(TVDB_LOGIN, headers={"Content-Type": "application/json"}, data=body)
+    token = (data.get("data") or {}).get("token") or ""
+    if not token:
+        raise SourceError("TheTVDB 登录失败：没拿到 token")
+    with _tvdb_token_lock:
+        _tvdb_token_cache[api_key] = (token, now)
+    return token
+
+
+def _tvdb_invalidate(api_key: str) -> None:
+    with _tvdb_token_lock:
+        _tvdb_token_cache.pop(api_key, None)
 
 
 def search_tvdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Optional[Hit]:
@@ -376,7 +406,17 @@ def search_tvdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
     gate.acquire()
     query = f"{title} {year}".strip() if year else (title or "").strip()
     url = f"{TVDB_SEARCH}?query={urllib.parse.quote(query)}&limit=5"
-    data = _http_obj(url, headers={"Authorization": f"Bearer {key}"})
+    bearer = _tvdb_bearer(key)
+    try:
+        data = _http_obj(url, headers={"Authorization": f"Bearer {bearer}"})
+    except SourceError as e:
+        # token 可能过期：清缓存重登一次再试
+        if "401" in str(e) or "unauthorized" in str(e).lower():
+            _tvdb_invalidate(key)
+            bearer = _tvdb_bearer(key)
+            data = _http_obj(url, headers={"Authorization": f"Bearer {bearer}"})
+        else:
+            raise
     results = data.get("data") or []
     best = None
     for entry in results:
