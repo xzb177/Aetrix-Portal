@@ -24,6 +24,8 @@ REASONS = {
     "decoy_code": "诱饵码触发",
     "captcha_failed": "人机验证失败",
     "password_change": "修改密码",
+    # 防共享命中后停用账号（backend/share_guard.py）：这是「为什么这个号突然登不上」的答案
+    "share_guard": "防共享停用",
 }
 DEFAULT_RETENTION_DAYS = 90  # 可由 login_log_retention_days 配置覆盖
 

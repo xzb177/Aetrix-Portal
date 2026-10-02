@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import authlog, codes, devices, models, realms
+from backend import authlog, codes, devices, models, realms, share_guard
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
@@ -562,6 +562,120 @@ def purge_login_logs(
            {"days": request.days, "deleted": deleted})
     db.commit()
     return {"success": True, "message": f"已清理 {deleted} 条日志", "deleted": deleted}
+
+
+# ==================== 防共享：跨城市轨迹 + 同播检测（v2.43.0） ====================
+#
+# 判定与处置逻辑都在 ``backend/share_guard.py``；这里只做三件事：读策略与事件、
+# 写策略、清理事件。两处写端点都写审计——「谁把自动停用打开了」必须是可追溯的，
+# 否则一个被误伤的用户没地方说理。
+
+
+@admin_ops_router.get("/share-guard")
+def get_share_guard(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    kind: str = "",
+    limit: int = 100,
+    offset: int = 0,
+):
+    """防共享策略 + 事件流水 + 近 24h 概览（只读，运营与只读角色都能看）
+
+    只列**判定**：基线行（``is_baseline``，只是「这个账号现在在 X 城」）是判定算法
+    自己的记忆，不是异常。它留在库里（判定要靠它记住上一次的城市），但不进这一页——
+    否则列表里绝大多数是「用户还在原地」，概览数字也会被它冲高到失去意义。
+    """
+    query = db.query(models.ShareGuardEvent).filter(
+        models.ShareGuardEvent.is_baseline.is_(False)
+    )
+    if kind in (share_guard.KIND_TRAVEL, share_guard.KIND_CONCURRENT):
+        query = query.filter(models.ShareGuardEvent.kind == kind)
+
+    total = query.count()
+    rows = (
+        query.order_by(models.ShareGuardEvent.created_at.desc())
+        .offset(max(offset, 0))
+        .limit(min(max(limit, 1), 300))
+        .all()
+    )
+    day_ago = datetime.now() - timedelta(hours=24)
+    _recent = (
+        models.ShareGuardEvent.created_at >= day_ago,
+        models.ShareGuardEvent.is_baseline.is_(False),
+    )
+    travel_24h = db.query(func.count(models.ShareGuardEvent.id)).filter(
+        *_recent, models.ShareGuardEvent.kind == share_guard.KIND_TRAVEL,
+    ).scalar() or 0
+    concurrent_24h = db.query(func.count(models.ShareGuardEvent.id)).filter(
+        *_recent, models.ShareGuardEvent.kind == share_guard.KIND_CONCURRENT,
+    ).scalar() or 0
+    enforced_24h = db.query(func.count(models.ShareGuardEvent.id)).filter(
+        *_recent, models.ShareGuardEvent.action == "enforce",
+    ).scalar() or 0
+
+    return {
+        "success": True,
+        "policy": share_guard.policy_payload(db),
+        "summary": {
+            "total": int(total),
+            "travel_24h": int(travel_24h),
+            "concurrent_24h": int(concurrent_24h),
+            "enforced_24h": int(enforced_24h),
+        },
+        "kinds": [
+            {"value": "", "label": "全部"},
+            {"value": share_guard.KIND_TRAVEL, "label": share_guard.KIND_LABELS[share_guard.KIND_TRAVEL]},
+            {"value": share_guard.KIND_CONCURRENT, "label": share_guard.KIND_LABELS[share_guard.KIND_CONCURRENT]},
+        ],
+        "events": [share_guard.event_dto(row) for row in rows],
+    }
+
+
+class ShareGuardPolicyRequest(BaseModel):
+    policy: dict
+
+
+@admin_ops_router.put("/share-guard/policy")
+def update_share_guard_policy(
+    payload: ShareGuardPolicyRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """写回防共享策略（只认白名单里的键，非法值保持原值不动）
+
+    不静默降级：写入后返回**真实生效值**，前端照它回填，不自己猜。
+    """
+    applied = share_guard.write_policy(db, payload.policy)
+    _audit(db, current_admin, "share_guard_policy_update", "system", None, applied)
+    db.commit()
+    return {
+        "success": True,
+        "applied": applied,
+        "policy": share_guard.policy_payload(db),
+    }
+
+
+class ShareGuardPurgeRequest(BaseModel):
+    days: Optional[int] = Field(default=None, ge=0, le=3650)
+
+
+@admin_ops_router.post("/share-guard/purge")
+def purge_share_guard_events(
+    payload: ShareGuardPurgeRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """清理防共享事件（days=0 = 清空全部）"""
+    if payload.days == 0:
+        deleted = int(db.query(models.ShareGuardEvent).delete(synchronize_session=False) or 0)
+        db.commit()
+    else:
+        deleted = share_guard.purge_old(db, payload.days)
+
+    _audit(db, current_admin, "purge_share_guard_events", "share_guard_event", None,
+           {"days": payload.days, "deleted": deleted})
+    db.commit()
+    return {"success": True, "message": f"已清理 {deleted} 条防共享事件", "deleted": deleted}
 
 
 __all__ = ["admin_ops_router"]

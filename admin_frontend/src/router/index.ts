@@ -37,6 +37,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'codes', name: 'RegistrationCodes', component: () => import('@/views/RegistrationCodes.vue'), meta: { title: '卡码管理' } },
       { path: 'devices', name: 'Devices', component: () => import('@/views/Devices.vue'), meta: { title: '设备与安全' } },
       { path: 'login-logs', name: 'LoginLogs', component: () => import('@/views/LoginLogs.vue'), meta: { title: '登录日志' } },
+      // v2.43.0：防共享（跨城市轨迹 + 同播检测）。默认关闭，「处置」档仅超管可开。
+      { path: 'share-guard', name: 'ShareGuard', component: () => import('@/views/ShareGuard.vue'), meta: { title: '防共享' } },
       { path: 'announcements', name: 'Announcements', component: () => import('@/views/Announcements.vue'), meta: { title: '公告管理' } },
       { path: 'tickets', name: 'Tickets', component: () => import('@/views/Tickets.vue'), meta: { title: '工单' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },

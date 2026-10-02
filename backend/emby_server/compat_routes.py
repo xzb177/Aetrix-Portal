@@ -13,7 +13,8 @@ from __future__ import annotations
 import logging
 import os
 
-from backend import admin_roles, models
+from backend import admin_roles, models, share_guard
+from backend.authlog import client_ip as real_client_ip
 from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
@@ -88,6 +89,27 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
     new_session = session is None
     if new_session:
+        # 防共享两件套（默认全部 off，不判定也不写库）：
+        # 1) 同播检测——并发超上限时 enforce 档直接拦下这条会话（返回 None）；
+        # 2) 跨城市轨迹——播放也算一次活动，与登录走同一份判定。
+        # 两件事都放在**建会话之前**：拦下时库里不会多一条会话记录，
+        # 「谁在什么时候多路播放」看的就是这张表。
+        # ``ended`` 不参与判定：客户端的「停止」上报也会命中新会话分支，
+        # 而那根本不是在开始播放（拿它去数并发会把每一次正常结束都报成同播）。
+        if not ended:
+            # 判定用**可信代理口径**的 IP（与登录落点同一份）：直接取
+            # request.client.host 在反代后面拿到的是代理自己的地址，归属地会
+            # 全部落到机房所在城市，跨城市检测就废了。下面 remote_addr
+            # 保持原有口径，不在这里跟着改。
+            ip = real_client_ip(request)
+            verdict = share_guard.note_session(db, user, session_key, ip)
+            if verdict and verdict.get("blocked"):
+                logger.info("同播拦截：user=%s session=%s", user.id, session_key)
+                return None, False
+            verdict = share_guard.note_activity(db, user, ip)
+            if verdict and verdict.get("blocked"):
+                logger.info("跨城市停用后拒绝建会话：user=%s", user.id)
+                return None, False
         session = em.PlaybackSession(
             session_key=session_key, user_id=user.id, item_id=item.id,
         )
@@ -128,12 +150,24 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
 
 def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_item(db, body.get("ItemId") or "")
-    _upsert_session(db, request, user, item, body)
+    session, _wrote = _upsert_session(db, request, user, item, body)
+    if session is None:
+        # 被防共享拦下（session 返回 None = 不建会话）
+        raise HTTPException(
+            status_code=403,
+            detail="同时播放的会话数已达上限，本次播放请求已被拦截",
+        )
 
 
 def _record_progress(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_item(db, body.get("ItemId") or "")
     _session, wrote = _upsert_session(db, request, user, item, body)
+    if _session is None:
+        # 被拦下的会话：库里没有它，也没有观看进度可写，直接告诉客户端
+        raise HTTPException(
+            status_code=403,
+            detail="同时播放的会话数已达上限，本次播放请求已被拦截",
+        )
 
     pos = int(body.get("PositionTicks") or 0)
     runtime = item.duration_ticks or 0

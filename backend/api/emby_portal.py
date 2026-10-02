@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend import codes, models
 from backend.db_retry import commit_with_retry
 from backend.authlog import client_ip as log_ip, record_event, user_agent
+from backend import share_guard
 from backend.database import get_db
 from backend.devices import device_limit
 from backend.emby_server.auth import ensure_emby_credentials
@@ -336,6 +337,14 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
         db, username=user.username, user_id=user.id, ip=log_ip(request),
         agent=user_agent(request), success=True, reason="portal_login",
     )
+    # 防共享·跨城市轨迹（默认 off，不判定也不写库）。命中 enforce 时账号已被停用，
+    # 这里直接拒绝本次登录——先落安全日志，管理员才能查到「为什么这个号突然登不上」
+    verdict = share_guard.note_activity(db, user, log_ip(request))
+    if verdict and verdict.get("blocked"):
+        raise HTTPException(
+            status_code=403,
+            detail="检测到该账号在短时间内于多个城市登录，已被暂停使用，请联系管理员",
+        )
     # 旧数据迁移：emby_password 为空的老用户，登录成功后用已验证的门户密码补齐 Emby 凭据
     return _issue_auth_response(user, db, plain_password=req.password)
 

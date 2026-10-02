@@ -1032,6 +1032,20 @@ def authenticate_by_name(
         agent=request.headers.get("user-agent"), success=True, reason="emby_login",
         detail=f"{auth.get('Client') or 'Emby Client'} / {token_row.device_id}",
     )
+    # 防共享·跨城市轨迹（默认 off，不判定也不写库）。命中 enforce 时账号已被停用、
+    # 刚签发的令牌也已吊销，所以直接拒绝本次登录而不是「登进去发现不能用」
+    from backend import share_guard
+
+    verdict = share_guard.note_activity(db, user, ip)
+    if verdict and verdict.get("blocked"):
+        return Response(
+            content=json.dumps(
+                {"error": "AccountSuspended",
+                 "message": "检测到该账号在短时间内于多个城市登录，已被暂停使用，请联系管理员"},
+                ensure_ascii=False,
+            ),
+            status_code=403, media_type="application/json; charset=utf-8",
+        )
     access_token = token_value
     server_id = SERVER_ID
     user_dto = _user_dto(user, db)

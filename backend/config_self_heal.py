@@ -344,6 +344,26 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
     items.append((media_seek.CONFIG_DAILY_LIMIT, str(media_seek.DEFAULT_DAILY_LIMIT),
                   "用户每日求片上限（超过当天不能再提交）"))
 
+    # 7.8 防共享（跨城市轨迹 + 同播检测）：两档都默认 off = 与升级前完全一致，
+    # enforce（自动停用 / 自动拦截）只能由管理员显式选，绝不自动生效
+    from backend import share_guard
+    items.extend([
+        (share_guard.CONFIG_TRAVEL_ACTION, share_guard.DEFAULTS[share_guard.CONFIG_TRAVEL_ACTION],
+         "防共享·跨城市轨迹处置档位（off/record/alert/enforce，默认 off）"),
+        (share_guard.CONFIG_TRAVEL_WINDOW,
+         share_guard.DEFAULTS[share_guard.CONFIG_TRAVEL_WINDOW],
+         "防共享·城市切换判定时间窗口（分钟）"),
+        (share_guard.CONFIG_CONCURRENT_ACTION,
+         share_guard.DEFAULTS[share_guard.CONFIG_CONCURRENT_ACTION],
+         "防共享·同播检测处置档位（off/record/alert/enforce，默认 off）"),
+        (share_guard.CONFIG_CONCURRENT_LIMIT,
+         share_guard.DEFAULTS[share_guard.CONFIG_CONCURRENT_LIMIT],
+         "防共享·同时播放数上限（超过即判定为同播）"),
+        (share_guard.CONFIG_RETENTION_DAYS,
+         share_guard.DEFAULTS[share_guard.CONFIG_RETENTION_DAYS],
+         "防共享事件保留天数（0 = 不自动清理）"),
+    ])
+
     # 8. 公益服查看权限价格
     from backend.emby_server import portal
     items.extend([
