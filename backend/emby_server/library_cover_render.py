@@ -2,15 +2,19 @@
 
 后台「媒体库封面」三种自动样式，管理员不用传图配字，系统自己去库里挑：
 
-- ``poster``    海报拼贴：底图虚化铺满，前景放多张海报扇形排布
-- ``visual``    主视觉：一张大图铺满，底部渐变压文字
-- ``filmstrip`` 胶片带：横向三格，每格不同海报
+- ``visual``    景深横幅：宽底图压暗铺满 + 三张海报右侧错落（中间抬高）+
+  投影 + 左下角衬线大标题、金色装饰线、字距拉开的副标题
+- ``poster``    编辑拼贴：左侧深色面板做排印（金色眉题 + 大标题 + 分隔线 +
+  副标题），右侧宽图满幅，三张小海报在面板内居中陈列
+- ``filmstrip`` 暗房胶片：深灰底 + 顶部微光，四张海报等距陈列带细边框和
+  投影，标题居中、副标题两侧配金色短线
 
 **选图规则**「最新入库的海报」：按 ``emby_items.last_scraped_at``（刮削完成时刻）倒序，
 取最近入库且有海报的条目。不能用 ``updated_at``——进度刷盘每几秒就刷一次，
 它永远是「刚刚」，排不出新片。海报优先用 ``poster_path``（已本地化到磁盘
-的文件），没有才退回 ``primary_image_url`` 远程地址。这样刚补完刮削的库
-会立刻换成新海报，不用手动点重新生成。
+的文件），没有才退回 ``primary_image_url`` 远程地址。宽底图（visual/poster
+用）优先 ``backdrop_path``，没有就退回 ``backdrop_image_url``，再没有就用
+第一张海报压暗顶上。这样刚补完刮削的库会立刻换成新海报，不用手动点重新生成。
 
 标题 / 副标题支持三个变量：``{library}`` 媒体库名、``{type}`` 内容类型、
 ``{year}`` 当前年份（内容年份要从条目聚合才有意义，这里刻意不查库，
@@ -27,7 +31,7 @@ import io
 import logging
 import os
 from datetime import datetime
-from typing import List, Optional, Sequence
+from typing import List, Optional
 
 logger = logging.getLogger("aetrix.library_cover")
 
@@ -37,8 +41,15 @@ CANVAS_H = 1080
 TEMPLATES = ("poster", "visual", "filmstrip")
 DEFAULT_TEMPLATE = "poster"
 # 各模板需要几张海报（不够就少放几张，不补空白）
-TEMPLATE_POSTER_COUNT = 5
-TEMPLATE_FILMSTRIP_COUNT = 3
+TEMPLATE_POSTER_COUNT = 3       # poster / visual：右侧或面板内三张小海报
+TEMPLATE_FILMSTRIP_COUNT = 4    # filmstrip：横向四张
+
+# 设计语言：深海军蓝底 + 金色点缀，全模板统一
+_INK = (13, 16, 24, 255)        # 面板 / 深色底
+_ACCENT = (212, 162, 78, 255)   # 金色装饰线
+_TITLE_FILL = (255, 255, 255, 255)
+_SUB_FILL = (170, 178, 192, 255)
+_BRAND_KICKER = "AETRIX · 媒体库"  # poster 模板左上角眉题，品牌固定文案
 
 _FONT_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "assets", "fonts"
@@ -116,6 +127,22 @@ def render_text(text: str, library_name: str, media_type: str,
 
 # ---------------- 选图 ----------------
 
+def _usable_source(value) -> Optional[str]:
+    """海报/横图值 → 可读路径或远程 URL；不可用返回 None
+
+    ``*_path`` 存的就是磁盘上的本地文件，**不能**再过
+    ``image_store.local_path()``——那个函数是给远程 URL 算内容寻址
+    缓存路径的（sha1(url)[:24] + 后缀），把本地路径喂进去会得到一个
+    根本不存在的文件名，于是「明明有海报却一张都选不出来」。
+    """
+    if not value:
+        return None
+    text = str(value)
+    if text.startswith(("http://", "https://")):
+        return text  # 远程：留给出图阶段按需下载
+    return text if os.path.isfile(text) else None
+
+
 def pick_recent_posters(db, library, limit: int) -> List[str]:
     """取该库**最新入库**且有海报的若干条，返回可用的本地文件路径
 
@@ -139,31 +166,38 @@ def pick_recent_posters(db, library, limit: int) -> List[str]:
              .limit(max(limit * 4, 20)))
     rows = query.all()
 
-    def _usable(value) -> Optional[str]:
-        """海报值 → 可读路径；不可用返回 None
-
-        ``poster_path`` 存的就是磁盘上的本地文件，**不能**再过
-        ``image_store.local_path()``——那个函数是给远程 URL 算内容寻址
-        缓存路径的（sha1(url)[:24] + 后缀），把本地路径喂进去会得到一个
-        根本不存在的文件名，于是「明明有海报却一张都选不出来」。
-        """
-        if not value:
-            return None
-        text = str(value)
-        if text.startswith(("http://", "https://")):
-            return text  # 远程：留给出图阶段按需下载
-        return text if os.path.isfile(text) else None
-
     picked: List[str] = []
     for item in rows:
         for candidate in (item.poster_path, item.primary_image_url):
-            usable = _usable(candidate)
+            usable = _usable_source(candidate)
             if usable:
                 picked.append(usable)
                 break
         if len(picked) >= limit:
             break
     return picked[:limit]
+
+
+def pick_recent_backdrop(db, library) -> Optional[str]:
+    """取该库最新入库且有横图的条目，供 visual/poster 模板铺底
+
+    优先 ``backdrop_path``（本地），其次 ``backdrop_image_url``（远程）。
+    一个都没有返回 None，调用方用第一张海报压暗顶上。
+    """
+    from backend.emby_server.models import MediaItem
+
+    rows = (db.query(MediaItem)
+            .filter(MediaItem.library_id == library.id)
+            .filter(MediaItem.last_scraped_at.isnot(None))
+            .filter((MediaItem.backdrop_path.isnot(None)) | (MediaItem.backdrop_image_url.isnot(None)))
+            .order_by(MediaItem.last_scraped_at.desc())
+            .limit(20)).all()
+    for item in rows:
+        for candidate in (item.backdrop_path, item.backdrop_image_url):
+            usable = _usable_source(candidate)
+            if usable:
+                return usable
+    return None
 
 
 # ---------------- 出图 ----------------
@@ -189,42 +223,6 @@ def _open_source(Image_, src: str):
         return None
 
 
-def _text_block(img, title: str, subtitle: str) -> bool:
-    """底部渐变遮罩 + 标题/副标题。返回是否真的画了字"""
-    pil = _pil()
-    if pil is None:
-        return False
-    Image_, ImageDraw, _filter, _font_mod = pil
-
-    title_font = _font(int(img.height * 0.082), bold=True) if title else None
-    sub_font = _font(int(img.height * 0.040)) if subtitle else None
-    if title_font is None and sub_font is None:
-        return False
-
-    grad_top = int(img.height * 0.42)
-    grad_h = img.height - grad_top
-    strip = Image_.new("L", (1, grad_h), 0)
-    for y in range(grad_h):
-        strip.putpixel((0, y), int(215 * ((y / max(1, grad_h - 1)) ** 1.6)))
-    alpha = Image_.new("RGBA", (img.width, grad_h), (8, 10, 18, 0))
-    alpha.putalpha(strip.resize((img.width, grad_h)))
-    img.alpha_composite(alpha, (0, grad_top))
-
-    draw = ImageDraw.Draw(img)
-    pad = int(img.width * 0.055)
-    if title_font is not None:
-        y = img.height - int(img.height * 0.20) - (int(img.height * 0.055)
-                                                 if sub_font is not None else 0)
-        draw.text((pad, y), title, font=title_font, fill=(255, 255, 255, 255))
-    if sub_font is not None:
-        y = img.height - int(img.height * 0.115)
-        x = pad
-        for ch in subtitle:   # 副标题带字距，手写逐字排
-            draw.text((x, y), ch, font=sub_font, fill=(206, 214, 232, 255))
-            x += draw.textlength(ch, font=sub_font) + 2
-    return True
-
-
 def _cover_fit(crop_anchor: float = 0.5):
     """等比缩放到目标框内并居中裁切；``crop_anchor`` 纵向取景位置"""
     def fit(image, box_w: int, box_h: int, Image_):
@@ -237,68 +235,216 @@ def _cover_fit(crop_anchor: float = 0.5):
     return fit
 
 
-def _template_visual(img, posters, Image_, ImageFilter) -> None:
-    """主视觉：第一张铺满；底图不够大时用自身模糊放大补底"""
-    base = _open_source(Image_, posters[0]).convert("RGB")
-    scale = max(img.width / base.width, img.height / base.height)
-    big = base.resize((max(1, int(base.width * scale)), max(1, int(base.height * scale))),
-                      Image_.LANCZOS)
-    if scale > 1:
-        blur = big.filter(ImageFilter.GaussianBlur(radius=20))
-        img.paste(_cover_fit()(blur, img.width, img.height, Image_), (0, 0))
-    img.paste(_cover_fit()(big, img.width, img.height, Image_), (0, 0))
+def _apply_vignette(base_rgb, Image_, ImageFilter, strength: float = 0.5):
+    """四角压暗，让主体从背景里跳出来（在 RGB 底图上操作）"""
+    w, h = base_rgb.size
+    mask = Image_.new("L", (w, h), 0)
+    from PIL import ImageDraw as _ID
+
+    m = _ID.Draw(mask)
+    m.ellipse((-w * 0.25, -h * 0.55, w * 1.25, h * 1.55), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=int(w * 0.12)))
+    dark = Image_.new("RGB", (w, h), (0, 0, 0))
+    inv = Image_.eval(mask, lambda v: int((1 - v / 255) * 255 * strength))
+    return Image_.composite(dark, base_rgb, inv)
 
 
-def _template_poster(img, posters, Image_, ImageFilter) -> None:
-    """海报拼贴：最近的海报虚化铺底，前面扇形排布最多 5 张"""
-    first = _open_source(Image_, posters[0]).convert("RGB")
-    bg = first.filter(ImageFilter.GaussianBlur(radius=30))
-    scale = max(img.width / bg.width, img.height / bg.height)
-    bg = bg.resize((max(1, int(bg.width * scale)), max(1, int(bg.height * scale))),
-                   Image_.LANCZOS)
-    img.paste(_cover_fit()(bg, img.width, img.height, Image_), (0, 0))
+def _bottom_shade(img, Image_, top_ratio: float = 0.5, alpha: int = 215) -> None:
+    """底部渐变遮罩，给左下角标题腾出可读区域"""
+    w, h = img.size
+    strip = Image_.new("L", (1, h), 0)
+    for y in range(h):
+        t = max(0.0, (y / h - top_ratio) / (1 - top_ratio))
+        strip.putpixel((0, y), int(alpha * (t ** 1.7)))
+    layer = Image_.new("RGBA", (w, h), (5, 8, 14, 0))
+    layer.putalpha(strip.resize((w, h)))
+    img.alpha_composite(layer)
 
-    count = min(len(posters), TEMPLATE_POSTER_COUNT)
-    gap = int(img.width * 0.012)
-    # 先按可用宽度反推单张宽度：宁可矮一点，也不让最外侧的海报被画布切掉
-    usable = int(img.width * 0.86)
-    pw = (usable - (count - 1) * gap) // max(1, count)
-    ph = int(pw * 3 / 2)                # 2:3 比例
-    ph = min(ph, int(img.height * 0.54))
-    pw = int(ph * 2 / 3)
-    x = (img.width - (count * pw + (count - 1) * gap)) // 2
-    top = int(img.height * 0.06)
-    fit = _cover_fit(0.5)
-    for i in range(count):
-        src = _open_source(Image_, posters[i])
-        if src is None:
-            x += pw + gap
-            continue
-        card = fit(src.convert("RGB"), pw, ph, Image_)
-        # 侧边卡略微下沉 + 缩小，形成层次
-        offset = int((count - 1 - abs(i - count // 2)) * img.height * 0.012)
-        shade = Image_.new("RGBA", card.size, (0, 0, 0, 0))
-        img.alpha_composite(shade, (x, top + offset))
-        img.paste(card, (x, top + offset))
+
+def _drop_shadow(base, box, Image_, ImageFilter,
+                 radius: int = 34, y_offset: int = 22, opacity: int = 150) -> None:
+    """给矩形卡片画投影（圆角），让海报从底图上浮起来"""
+    from PIL import ImageDraw as _ID
+
+    sh = Image_.new("RGBA", base.size, (0, 0, 0, 0))
+    d = _ID.Draw(sh)
+    x0, y0, x1, y1 = box
+    d.rounded_rectangle([x0, y0 + y_offset, x1, y1 + y_offset],
+                        radius=radius, fill=(0, 0, 0, opacity))
+    sh = sh.filter(ImageFilter.GaussianBlur(radius=max(1, radius // 2)))
+    base.alpha_composite(sh)
+
+
+def _spaced_text(draw, xy, text: str, font, fill, spacing: int = 8) -> None:
+    """逐字排字距（中文排印呼吸感就靠它）"""
+    x, y = xy
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += draw.textlength(ch, font=font) + spacing
+
+
+def _poster_card(img, src, box, Image_, ImageFilter, border_alpha: int = 40) -> bool:
+    """贴一张海报卡片：投影 + 本体 + 细边框。打不开返回 False"""
+    from PIL import ImageDraw as _ID
+
+    card_img = _open_source(Image_, src)
+    if card_img is None:
+        return False
+    x0, y0, x1, y1 = box
+    card = _cover_fit(0.5)(card_img.convert("RGB"), x1 - x0, y1 - y0, Image_)
+    _drop_shadow(img, box, Image_, ImageFilter)
+    img.paste(card, (x0, y0))
+    d = _ID.Draw(img)
+    d.rounded_rectangle(box, radius=10,
+                        outline=(255, 255, 255, border_alpha), width=2)
+    return True
+
+
+# ---------------- 三个样式 ----------------
+
+def _template_visual(img, posters, backdrop_src, title_text: str, sub_text: str,
+                     pil) -> None:
+    """景深横幅：宽底图压暗铺满 + 三张海报右侧错落 + 左下角大标题"""
+    Image_, ImageDraw, ImageFilter, _ImageFont = pil
+    from PIL import ImageDraw as _ID
+
+    bg_img = _open_source(Image_, backdrop_src) if backdrop_src else None
+    if bg_img is None:
+        bg_img = _open_source(Image_, posters[0])
+    if bg_img is None:
+        img.paste(Image_.new("RGBA", img.size, _INK), (0, 0))
+    else:
+        bg = _cover_fit(0.42)(bg_img.convert("RGB"), img.width, img.height, Image_)
+        # 压暗底图：降亮 + 暗角，海报和字才能跳出来（拒绝把原图模糊当背景）
+        bg = Image_.blend(bg, Image_.new("RGB", (img.width, img.height), (8, 10, 16)), 0.38)
+        bg = _apply_vignette(bg, Image_, ImageFilter, 0.5)
+        img.paste(bg.convert("RGBA"), (0, 0))
+    _bottom_shade(img, Image_, top_ratio=0.5, alpha=215)
+
+    # 三张海报右侧排布，中间一张抬高形成层次；张数不够就按实际张数居中
+    pw, ph = 300, 450
+    gap = 36
+    count = len(posters)
+    total = count * pw + (count - 1) * gap
+    x = img.width - total - 90
+    base_top = 150
+    for i, src in enumerate(posters):
+        top = base_top + (0 if (count == 1 or i == count // 2) else 46)
+        _poster_card(img, src, (x, top, x + pw, top + ph), Image_, ImageFilter)
         x += pw + gap
 
+    title_font = _font(118, bold=True) if title_text else None
+    sub_font = _font(40) if sub_text else None
+    if title_font is None and sub_font is None:
+        return
+    d = _ID.Draw(img)
+    pad = 90
+    if title_font is not None:
+        d.line([(pad, img.height - 300), (pad + 120, img.height - 300)],
+               fill=_ACCENT, width=6)
+        d.text((pad, img.height - 285), title_text, font=title_font, fill=_TITLE_FILL)
+    if sub_font is not None:
+        _spaced_text(d, (pad + 4, img.height - 130), sub_text, sub_font,
+                     (214, 220, 232, 255), spacing=8)
 
-def _template_filmstrip(img, posters, Image_, ImageFilter) -> None:
-    """胶片带：横向三格（窄-宽-窄），每格一张不同的海报"""
-    cell_h = int(img.height * 0.54)
-    gap = int(img.width * 0.012)
-    widths = [int(img.width * 0.20), int(img.width * 0.28), int(img.width * 0.20)]
-    anchors = [0.35, 0.5, 0.65]
-    x = (img.width - (sum(widths) + gap * 2)) // 2
-    top = int(img.height * 0.10)
-    for idx, w in enumerate(widths):
-        src = _open_source(Image_, posters[idx % len(posters)])
-        if src is None:
-            x += w + gap
-            continue
-        img.paste(_cover_fit(anchors[idx])(src.convert("RGB"), w, cell_h, Image_),
-                  (x, top))
-        x += w + gap
+
+def _template_poster(img, posters, backdrop_src, title_text: str, sub_text: str,
+                     pil) -> None:
+    """编辑拼贴：左侧深色面板排印 + 右侧宽图满幅 + 三张小海报面板内居中"""
+    Image_, ImageDraw, ImageFilter, _ImageFont = pil
+    from PIL import ImageDraw as _ID
+
+    right_w = 1180
+    panel_w = img.width - right_w + 60  # 面板含 60px 渐隐衔接带
+    bg_img = _open_source(Image_, backdrop_src) if backdrop_src else None
+    if bg_img is None and posters:
+        bg_img = _open_source(Image_, posters[0])
+    if bg_img is not None:
+        bg = _cover_fit(0.45)(bg_img.convert("RGB"), right_w, img.height, Image_)
+        bg = _apply_vignette(bg, Image_, ImageFilter, 0.35)
+        img.paste(bg.convert("RGBA"), (img.width - right_w, 0))
+    # 左侧深色面板
+    img.paste(Image_.new("RGBA", (panel_w, img.height), _INK), (0, 0))
+    # 面板右缘渐隐，和右图衔接
+    fade = Image_.new("L", (220, img.height), 0)
+    for fx in range(220):
+        v = int(255 * (1 - fx / 220) ** 1.4)
+        for fy in range(0, img.height, 8):
+            fade.putpixel((fx, fy), v)
+    fade = fade.filter(ImageFilter.GaussianBlur(6))
+    edge = Image_.new("RGBA", (220, img.height), _INK[:3] + (0,))
+    edge.putalpha(fade)
+    img.alpha_composite(edge, (img.width - right_w - 160, 0))
+
+    # 三张小海报面板内居中（不够三张按实际张数排）
+    pw, ph = 180, 270
+    gap = 26
+    count = len(posters)
+    total = count * pw + max(0, count - 1) * gap
+    x0 = (panel_w - total) // 2
+    for i, src in enumerate(posters):
+        _poster_card(img, src, (x0 + i * (pw + gap), 620,
+                                x0 + i * (pw + gap) + pw, 620 + ph),
+                     Image_, ImageFilter, border_alpha=36)
+
+    d = _ID.Draw(img)
+    pad = 70
+    kick_font = _font(34, bold=True)
+    title_font = _font(132, bold=True) if title_text else None
+    sub_font = _font(38) if sub_text else None
+    if kick_font is not None:
+        _spaced_text(d, (pad, 120), _BRAND_KICKER, kick_font, _ACCENT, spacing=10)
+    if title_font is not None:
+        d.text((pad, 190), title_text, font=title_font, fill=_TITLE_FILL)
+        d.line([(pad, 380), (pad + 200, 380)], fill=(255, 255, 255, 60), width=2)
+    if sub_font is not None:
+        _spaced_text(d, (pad, 410), sub_text, sub_font, _SUB_FILL, spacing=8)
+
+
+def _template_filmstrip(img, posters, _backdrop_src, title_text: str,
+                        sub_text: str, pil) -> None:
+    """暗房胶片：深灰底 + 顶部微光 + 海报等距陈列 + 居中标题"""
+    Image_, ImageDraw, ImageFilter, _ImageFont = pil
+    from PIL import ImageDraw as _ID
+
+    img.paste(Image_.new("RGBA", img.size, (19, 22, 30, 255)), (0, 0))
+    # 顶部微光：拒绝死黑
+    glow = Image_.new("L", (1, img.height), 0)
+    for y in range(img.height):
+        glow.putpixel((0, y), int(26 * max(0, 1 - y / (img.height * 0.7))))
+    sheen = Image_.new("RGBA", img.size, (70, 90, 130, 0))
+    sheen.putalpha(glow.resize(img.size))
+    img.alpha_composite(sheen)
+
+    pw, ph = 300, 450
+    gap = 44
+    count = len(posters)
+    total = count * pw + max(0, count - 1) * gap
+    x = (img.width - total) // 2
+    top = 170
+    for src in posters:
+        _poster_card(img, src, (x, top, x + pw, top + ph),
+                     Image_, ImageFilter, border_alpha=30)
+        x += pw + gap
+
+    d = _ID.Draw(img)
+    title_font = _font(92, bold=True) if title_text else None
+    sub_font = _font(36) if sub_text else None
+    if title_font is None and sub_font is None:
+        return
+    if title_font is not None:
+        tw = d.textlength(title_text, font=title_font)
+        d.text(((img.width - tw) / 2, 700), title_text,
+               font=title_font, fill=(245, 246, 248, 255))
+    if sub_font is not None:
+        sw = sum(d.textlength(c, font=sub_font) + 10 for c in sub_text)
+        _spaced_text(d, ((img.width - sw) / 2, 830), sub_text, sub_font,
+                     (150, 158, 172, 255), spacing=10)
+        cx = img.width / 2
+        d.line([(cx - sw / 2 - 90, 848), (cx - sw / 2 - 30, 848)],
+               fill=_ACCENT, width=3)
+        d.line([(cx + sw / 2 + 30, 848), (cx + sw / 2 + 90, 848)],
+               fill=_ACCENT, width=3)
 
 
 def render_cover_bytes(
@@ -321,12 +467,15 @@ def render_cover_bytes(
     if template not in TEMPLATES:
         template = DEFAULT_TEMPLATE
 
-    need = 1 if template == "visual" else (
-        TEMPLATE_POSTER_COUNT if template == "poster" else TEMPLATE_FILMSTRIP_COUNT)
+    need = TEMPLATE_POSTER_COUNT if template in ("poster", "visual") \
+        else TEMPLATE_FILMSTRIP_COUNT
     posters = pick_recent_posters(db, library, need)
     if not posters:
         logger.info("媒体库「%s」没有可用海报，跳过封面生成", getattr(library, "name", "?"))
         return None
+    backdrop = None
+    if template in ("poster", "visual"):
+        backdrop = pick_recent_backdrop(db, library) or posters[0]
 
     title_text = render_text(title, library.name, library.collection_type or "")
     sub_text = render_text(subtitle, library.name, library.collection_type or "")
@@ -334,12 +483,11 @@ def render_cover_bytes(
     try:
         img = Image_.new("RGBA", (CANVAS_W, CANVAS_H), (12, 15, 24, 255))
         if template == "visual":
-            _template_visual(img, posters, Image_, ImageFilter)
-        elif template == "filmstrip":
-            _template_filmstrip(img, posters, Image_, ImageFilter)
+            _template_visual(img, posters, backdrop, title_text, sub_text, pil)
+        elif template == "poster":
+            _template_poster(img, posters, backdrop, title_text, sub_text, pil)
         else:
-            _template_poster(img, posters, Image_, ImageFilter)
-        _text_block(img, title_text, sub_text)
+            _template_filmstrip(img, posters, backdrop, title_text, sub_text, pil)
         out = io.BytesIO()
         img.convert("RGB").save(out, format="WEBP", quality=86, method=5)
         return out.getvalue()
