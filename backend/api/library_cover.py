@@ -152,6 +152,10 @@ def render_library_cover(
             detail="生成失败：这个库还没有可用海报（等刮削补完再试）",
         )
     _write_generated_cover(lib, data)
+    # 配置落库：不然「按最新海报重新生成」读不到上次用的样式/标题
+    lib.cover_template = template
+    lib.cover_title = (payload.get("title") or "")[:100] or None
+    lib.cover_subtitle = (payload.get("subtitle") or "")[:100] or None
     db.commit()
     return {
         "success": True,
