@@ -50,6 +50,7 @@ SUPER_ONLY_PREFIXES = (
     "/api/admin/economy/settings",  # 系统 / 经济设置
     "/api/admin/playback/policy",   # 播放与客户端策略（影响所有人能不能看）
     "/api/admin/capabilities",      # 能力中心：上游 Key
+    "/api/admin/share-guard",       # 防共享：enforce 档会停用用户 / 拦下会话
 )
 
 

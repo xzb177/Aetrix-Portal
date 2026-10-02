@@ -43,7 +43,7 @@ export function fmtBytes(n: number): string {
  * 不可撤销的操作要手打一个词才算确认：点错一次不该丢数据
  * （返回 false = 用户取消或没打对，调用方直接返回，不要执行）
  */
-async function confirmIrreversible(message: string, word: string, title: string): Promise<boolean> {
+export async function confirmIrreversible(message: string, word: string, title: string): Promise<boolean> {
   try {
     const { value } = await ElMessageBox.prompt(message, title, {
       type: 'warning',

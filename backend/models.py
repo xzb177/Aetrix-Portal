@@ -899,6 +899,53 @@ class LoginLog(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class ShareGuardEvent(Base):
+    """防共享事件（v2.43.0）：跨城市轨迹 + 同播检测的判定结果
+
+    为什么单独一张表而不是复用 ``login_logs``：两者的**查询口径**不一样。
+    ``login_logs`` 是「登录与安全事件的流水」，按 ``reason`` 筛选；这里是
+    「一个账号在时间轴上的位置与并发情况」，要按 ``(user_id, kind, created_at)``
+    往前翻最近一次在哪、上一次并发了几路。两张表混在一起会让登录日志页
+    既慢又难读。
+
+    **两种 kind 共用一张表**：它们是同一件事的两面（账号被多人共用），
+    后台要在一个地方按时间看完整轨迹，而不是翻两个页签。
+
+    行是**有界**的：见 ``backend/share_guard.py`` 的写入节流（同一区域每隔
+    ``travel_window_minutes`` 最多一行 / 城市一变立刻一行），再加按保留天数清理，
+    所以开着也不会无限长。
+    """
+
+    __tablename__ = 'share_guard_events'
+
+    __table_args__ = (
+        Index('idx_shareguard_user_kind', 'user_id', 'kind', 'created_at'),
+        Index('idx_shareguard_time', 'created_at'),
+        Index('idx_shareguard_kind', 'kind'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    username = Column(String(64))
+    # travel = 跨城市轨迹；concurrent = 同播检测
+    kind = Column(String(20), nullable=False, index=True)
+    # 基线行（该账号当前所在的域市）不是一次判定。它要落库——下一次的比对就是拿它当
+    # 「上一次在哪」——但混在事件流水里会让「判出来过什么」失真，所以单独标出来。
+    is_baseline = Column(Boolean, default=False, nullable=False, index=True)
+    # 实际生效的档位：record（只记录）/ alert（记录 + 通知管理员）/ enforce（记录 + 处置）
+    # off 不会产生任何行——「关闭」的意思就是不写库，而不是「写一行表示关闭」
+    action = Column(String(20), default='record', nullable=False)
+    ip = Column(String(64))
+    # 归属地串（能力：IP 与地理位置）。查不到就是空串，空串**不参与**城市比对
+    region = Column(String(100))
+    # travel：上一次的城市（空 = 首次或上次查不到）；concurrent：本次判定时的并发数
+    prev_region = Column(String(100))
+    sessions = Column(Integer, default=0)
+    # 人看的说明（已含城市、窗口、并发数等具体数字）
+    detail = Column(String(255))
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+
 class AiUsage(Base):
     """AI 助手每日用量（能力：AI 模型设置）
 

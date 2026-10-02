@@ -114,6 +114,8 @@ const navGroups: NavGroup[] = [
       // 客户端能做什么（转码 / 清晰度 / 准入 / 下载与设备）：与「设备与安全」互为补充
       { path: '/client-policy', label: '客户端策略', superOnly: true },
       { path: '/login-logs', label: '登录日志' },
+      // 防共享：跨城市轨迹 + 同播检测。默认关闭，但「处置」档会停用账号 → 仅超管可改
+      { path: '/share-guard', label: '防共享', superOnly: true },
     ],
   },
   {

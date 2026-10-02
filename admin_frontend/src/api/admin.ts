@@ -234,6 +234,63 @@ export const fetchLoginLogs = (params: {
 export const purgeLoginLogs = (days: number) =>
   post<{ success: boolean; message: string; deleted: number }>('/login-logs/purge', { days })
 
+// ==================== 防共享：跨城市轨迹 + 同播检测 ====================
+
+/** 四档处置：关闭 / 只记录 / 记录并告警 / 记录、告警并处置（缺省 off） */
+export type ShareGuardAction = 'off' | 'record' | 'alert' | 'enforce'
+
+export interface ShareGuardPolicy {
+  travel_action: ShareGuardAction
+  travel_window_minutes: number
+  concurrent_action: ShareGuardAction
+  concurrent_limit: number
+  retention_days: number
+  actions: ShareGuardAction[]
+  action_labels: Record<string, string>
+  /** 城市能不能查出来：没配「IP 与地理位置」能力时，跨城市检测只能不判定 */
+  geo_ready: boolean
+}
+
+export interface ShareGuardEventRow {
+  id: number
+  user_id: number | null
+  username: string
+  kind: string
+  kind_label: string
+  action: string
+  action_label: string
+  ip: string
+  region: string
+  prev_region: string
+  sessions: number
+  detail: string
+  created_at: string | null
+}
+
+export interface ShareGuardResponse {
+  success: boolean
+  policy: ShareGuardPolicy
+  summary: {
+    total: number
+    travel_24h: number
+    concurrent_24h: number
+    enforced_24h: number
+  }
+  kinds: Array<{ value: string; label: string }>
+  events: ShareGuardEventRow[]
+}
+
+export const fetchShareGuard = (params: { kind?: string; limit?: number; offset?: number } = {}) =>
+  get<ShareGuardResponse>('/share-guard', params)
+
+export const saveShareGuardPolicy = (policy: Partial<ShareGuardPolicy>) =>
+  put<{ success: boolean; applied: Record<string, string>; policy: ShareGuardPolicy }>(
+    '/share-guard/policy', { policy },
+  )
+
+export const purgeShareGuardEvents = (days: number | null) =>
+  post<{ success: boolean; message: string; deleted: number }>('/share-guard/purge', { days })
+
 // ==================== 公告 ====================
 
 export const fetchAnnouncements = (params: { active_only?: boolean } = {}) =>
