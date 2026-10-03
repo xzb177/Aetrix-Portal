@@ -42,13 +42,25 @@ ROOT = Path(__file__).resolve().parent.parent
 #: 管理后台 axios 实例的 baseURL（见 admin_frontend/src/utils/request.ts）
 BASE_URL = "/api/admin"
 
-#: 前端 HTTP 调用：get('/x') / post(`/x`, ...) / delete("/x/y")
+#: 前端 HTTP 调用：get('/x') / post(`/x`, ...) / delete("/x/y") / getPublic('/api/health')
 #:
 #: 用命名分组而不是位置分组——位置分组一旦调整就会静默取错值（踩过一次：方法名被
 #: 当成了路径，输出全是 ``POST /users`` 这种胡说）。
 #: ``(?<!\w)`` 保证匹配的是独立标识符，不会命中 ``budget`` / ``target`` 这种尾巴。
+#:
+#: ``getPublic`` 必须**显式列出**：``get`` 后面紧跟 ``Public``（非空白），既不会被
+#: 现有的 ``\s*`` 接上，命中不了它——服务健康页那次 ``/api/admin/api/health`` 的
+#: 404 就是这么溜过门禁的（端点计数从 184 掉到 183 才暴露出来）。
+#: 交替里 ``getPublic`` 必须排在 ``get`` 前面：正则择先匹配，不是最长匹配。
+#:
+#: ``bare`` 不做成正则分组：``(?<!\w)`` 正是为了避开 ``budget.get`` 这种尾巴，
+#: 而它会连带阻止可选的 ``(?P<bare>\.)?`` 在点号位置匹配（点号前一个字符是 \w）。
+#: 所以改成匹配后回看源码里紧邻的前一个字符——``axios.get(...)`` 的 ``g`` 前面
+#: 是 ``.`` → 裸 axios / publicRequest 实例（无 baseURL），导入的 ``get(...)``
+#: 前面是换行或标识符 → 走 baseURL。两者拼接行为相反，不区分就会把 site.ts 里
+#: 正确的裸 axios 调用误报成拼接错误。
 CALL_RE = re.compile(
-    r"""(?<!\w)(?P<verb>get|post|put|patch|delete)\s*(?:<[^>]*>)?\s*\(\s*"""
+    r"""(?<!\w)(?P<verb>getPublic|get|post|put|patch|delete)\s*(?:<[^>]*>)?\s*\(\s*"""
     r"""(?P<q>['"`])(?P<path>[^'"`]+)(?P=q)""",
     re.S,
 )
@@ -111,14 +123,19 @@ def _norm(path: str) -> str:
     return PARAM_RE.sub("{}", path.rstrip("/") or "/")
 
 
-def frontend_calls() -> tuple[dict[tuple[str, str], tuple[str, str]], int]:
-    """扫后台前端 API 封装 → {(METHOD, path): (原始路径, 文件:行号)}、无法判定的条数
+def frontend_calls() -> tuple[
+    dict[tuple[str, str], tuple[str, str]], int, list[tuple[str, str, str]]
+]:
+    """扫后台前端 API 封装
+
+    返回 ``({(METHOD, 实际请求路径): (原始路径, 文件:行号)}, 无法判定条数, 拼接错误列表)``
 
     模板串拼出来的路径（``/economy/orders/${id}``）也**参与判定**：把 ``${...}``
     归一成 ``{}`` 后与后端占位符对齐。早先版本直接跳过它们，结果 186 个调用里只
     验了 76 个，剩下七成正是「点了没反应」最容易藏的地方。
     """
     calls: dict[tuple[str, str], tuple[str, str]] = {}
+    misjoined: list[tuple[str, str, str]] = []
     unresolved = 0
     api_dir = ROOT / "admin_frontend" / "src" / "api"
     for file in sorted(api_dir.glob("*.ts")):
@@ -126,7 +143,13 @@ def frontend_calls() -> tuple[dict[tuple[str, str], tuple[str, str]], int]:
         # ``const R = '/realms'`` 这类路径常量：拼出来的整段路径也能参与判定
         consts = {m.group(1): m.group(2) for m in CONST_RE.finditer(src)}
         for match in CALL_RE.finditer(src):
-            method = match.group("verb").upper()
+            verb = match.group("verb")
+            # 调用紧前面那个字符是 ``.`` → 裸 axios / publicRequest 实例，无 baseURL
+            bare = verb == "getPublic" or (
+                match.start() > 0 and src[match.start() - 1] == "."
+            )
+            # ``getPublic`` 是个包装函数名，不是 HTTP 动词，归一成 GET
+            method = "GET" if verb == "getPublic" else verb.upper()
             raw = match.group("path")
             line = src.count("\n", 0, match.start()) + 1
             where = f"{file.relative_to(ROOT)}:{line}"
@@ -138,12 +161,31 @@ def frontend_calls() -> tuple[dict[tuple[str, str], tuple[str, str]], int]:
             if not path.startswith("/"):
                 unresolved += 1
                 continue
-            # 本仓库的封装习惯是**带前导斜杠但相对 baseURL**（``get('/users')`` →
-            # ``/api/admin/users``），而 site.ts 那两处是真正的同源绝对路径。
-            # 所以判据不能是「有没有前导斜杠」，而是「是不是已经指向 /api/」。
-            full = path if path.startswith("/api/") else f"{BASE_URL}{path}"
+
+            if bare:
+                # 裸 axios / publicRequest（无 baseURL）：路径原样发出，所以必须
+                # 自带 /api/ 前缀，否则会被当同源静态资源（走 index.html）或直接 404
+                if not path.startswith("/api/"):
+                    misjoined.append((raw, where, "裸 axios 实例的路径必须以 /api/ 开头"))
+                    continue
+                full = path
+            elif path.startswith("/api/"):
+                # 走带 baseURL 的封装却又写了 /api/ 开头的绝对路径 →
+                # axios 的 baseURL 是**字符串拼接**不是 URL 解析，结果是
+                # ``/api/admin/api/health``。#295 的服务健康页 404 就是这么来的，
+                # 而且它能骗过「端点存在性」检查：``/api/health`` 确实存在，
+                # 只是没人会请求它。所以必须拿真实 baseURL 拼一遍再查。
+                misjoined.append((
+                    raw,
+                    where,
+                    f"经 baseURL {BASE_URL} 拼接后会变成 {BASE_URL}{path}；"
+                    f"要打绝对路径请用 getPublic",
+                ))
+                full = path
+            else:
+                full = f"{BASE_URL}{path}"
             calls.setdefault((method, _norm(full)), (raw, where))
-    return calls, unresolved
+    return calls, unresolved, misjoined
 
 
 def main() -> int:
@@ -152,7 +194,7 @@ def main() -> int:
         return 0
 
     routes = backend_routes()
-    calls, unresolved = frontend_calls()
+    calls, unresolved, misjoined = frontend_calls()
 
     missing = sorted(
         (m, raw, where) for (m, p), (raw, where) in calls.items() if (m, p) not in routes
@@ -170,6 +212,11 @@ def main() -> int:
     else:
         print(f"✅ 前端调用的 {len(calls)} 个端点全部存在")
 
+    if misjoined:
+        print(f"\n❌ baseURL 拼接错误（{len(misjoined)} 处，运行时必然 404）：")
+        for raw, where, why in misjoined:
+            print(f"   - {raw}  ({where})\n       {why}")
+
     if fragile:
         print(f"\n⚠️  {len(fragile)} 处路径含 '..'，靠 URL 归一化才生效（脆弱写法）：")
         for raw, where in fragile:
@@ -178,7 +225,7 @@ def main() -> int:
     if unresolved:
         print(f"\nℹ️ 另有 {unresolved} 处路径整段由变量拼成，不在判定范围内")
 
-    return 1 if missing else 0
+    return 1 if (missing or misjoined) else 0
 
 
 if __name__ == "__main__":

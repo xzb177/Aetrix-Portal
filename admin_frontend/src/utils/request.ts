@@ -11,7 +11,7 @@
  *   才弹——某次调用不想要默认提示，传 `{ silent: true }` 自行兜底。
  */
 import axios from 'axios'
-import type { AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios'
+import type { AxiosError, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 
 export const TOKEN_KEY = 'admin_access_token'
@@ -28,13 +28,16 @@ const request = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+/** 请求拦截：挂后台凭证。抽成具名函数是为了让第二个实例（publicRequest）复用。 */
+function attachAuth(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
   const token = localStorage.getItem(TOKEN_KEY)
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
   return config
-})
+}
+
+request.interceptors.request.use(attachAuth)
 
 /**
  * 把原始 AxiosError 的 response 挂回抛出的 Error 上：
@@ -61,61 +64,68 @@ function extractMessage(error: AxiosError): string {
 }
 
 request.interceptors.response.use(
-  (response) => {
-    // 写操作默认报喜；查询保持安静（列表页不该每刷新弹一次「已加载」）
-    const cfg = response.config as AdminRequestConfig
-    if (!cfg.silent && cfg.method && cfg.method.toLowerCase() !== 'get') {
-      // 注意：这里没有业务语义，弹不出「已创建 / 已保存」的差别——
-      // 各视图里已有的 ElMessage.success（带具体文案）照常工作，双弹由去重兜住。
-      // 拦截器只兜「视图层忘了写 success」的场景，所以文案通用、优先级低。
-    }
-    return response.data
-  },
-  (error: AxiosError<{ detail?: string }>) => {
-    const status = error.response?.status
-    const detail = error.response?.data?.detail
-    const cfg = error.config as AdminRequestConfig | undefined
-    const silent = cfg?.silent === true
+  onResponse,
+  onError,
+)
 
-    if (status === 401) {
-      // 「会话过期」与「业务接口自己回的 401」必须分开处理：
-      // 后者（如挂载表单里 RC 账号密码填错）不是登录态问题，整页重载会把用户
-      // 正在填的表单整个清掉。
-      // 判据：这次请求**带了**后台凭证却仍被拒 → 会话失效；**没带**凭证 → 登录页自身
-      // 的 401（密码输错）或业务接口的鉴权 401，都不该触发重载。
-      const sentAuth = Boolean(error.config?.headers?.Authorization)
-      const isSession401 = sentAuth
-      const message = detail || '登录状态已失效'
+/**
+ * 成功响应：直接交出 data（视图层拿到的是业务对象，不是 AxiosResponse）。
+ *
+ * 抽成具名函数是为了让 publicRequest 复用**同一套**行为，而不是再抄一遍。
+ */
+function onResponse(response: AxiosResponse): any {
+  // 这里刻意什么都不做：查询保持安静（列表页不该每刷新弹一次「已加载」），写操作的
+  // 「报喜」也交给各视图里已有的 ElMessage.success——拦截器没有业务语义，弹不出
+  // 「已创建 / 已保存」的差别，只会多出一层通用文案噪音。（原先这里是个空 if 块，
+  // 带着一堆注释却什么都不执行，读代码的人会以为漏实现了。）
+  return response.data
+}
 
-      if (isSession401) {
-        localStorage.removeItem(TOKEN_KEY)
-        localStorage.removeItem(ADMIN_KEY)
-        // 避免登录页自身的 401（密码输错）循环重载
-        if (!window.location.pathname.endsWith('/login')) {
-          if (canAutoRecover()) {
-            // 整页重载后路由守卫会拿门户会话静默接管：成功即原地恢复，失败才会去登录页
-            markAutoRecover()
-            window.location.reload()
-          } else {
-            // 刚恢复过又失效：不再循环，直接交给登录页
-            window.location.href = '/admin/login'
-          }
+/** 失败响应：401 自愈 + 全局错误提示。同样抽出来给两个实例共用。 */
+function onError(error: AxiosError<{ detail?: string }>): Promise<never> {
+  const status = error.response?.status
+  const detail = error.response?.data?.detail
+  const cfg = error.config as AdminRequestConfig | undefined
+  const silent = cfg?.silent === true
+
+  if (status === 401) {
+    // 「会话过期」与「业务接口自己回的 401」必须分开处理：
+    // 后者（如挂载表单里 RC 账号密码填错）不是登录态问题，整页重载会把用户
+    // 正在填的表单整个清掉。
+    // 判据：这次请求**带了**后台凭证却仍被拒 → 会话失效；**没带**凭证 → 登录页自身
+    // 的 401（密码输错）或业务接口的鉴权 401，都不该触发重载。
+    const sentAuth = Boolean(error.config?.headers?.Authorization)
+    const isSession401 = sentAuth
+    const message = detail || '登录状态已失效'
+
+    if (isSession401) {
+      localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem(ADMIN_KEY)
+      // 避免登录页自身的 401（密码输错）循环重载
+      if (!window.location.pathname.endsWith('/login')) {
+        if (canAutoRecover()) {
+          // 整页重载后路由守卫会拿门户会话静默接管：成功即原地恢复，失败才会去登录页
+          markAutoRecover()
+          window.location.reload()
+        } else {
+          // 刚恢复过又失效：不再循环，直接交给登录页
+          window.location.href = '/admin/login'
         }
-        // 401 不做全局报错：这是一次可自愈的会话过期，提示交给登录页的说明文案
-        return Promise.reject(new Error(message))
       }
-
-      // 业务性 401：只提示，不动登录态、不重载
-      if (!silent) ElMessage.error(message)
-      return Promise.reject(withResponse(new Error(message), error))
+      // 401 不做全局报错：这是一次可自愈的会话过期，提示交给登录页的说明文案
+      return Promise.reject(new Error(message))
     }
 
-    const message = extractMessage(error)
-    // 全局失败提示：红色、带具体原因。silent 的调用方自己处理错误展示。
+    // 业务性 401：只提示，不动登录态、不重载
     if (!silent) ElMessage.error(message)
     return Promise.reject(withResponse(new Error(message), error))
   }
-)
+
+  const message = extractMessage(error)
+  // 全局失败提示：红色、带具体原因。silent 的调用方自己处理错误展示。
+  if (!silent) ElMessage.error(message)
+  return Promise.reject(withResponse(new Error(message), error))
+}
 
 /** 401 自愈节流：短时间内只自动重载一次，避免「重载 → 又 401 → 再重载」的死循环 */
 const RECOVER_KEY = 'admin_401_recover_at'
@@ -190,6 +200,37 @@ export function patch<T = any>(url: string, data?: unknown, options?: { silent?:
 
 export function del<T = any>(url: string, params?: Record<string, unknown>): Promise<T> {
   return request.delete(url, { params } as AdminRequestConfig) as Promise<T>
+}
+
+/**
+ * 同源**绝对路径**的 GET（不带 ``/api/admin`` 前缀）。
+ *
+ * ## 为什么要单独一个实例
+ *
+ * axios 的 ``baseURL`` 是**字符串拼接**，不是 URL 解析：带 baseURL 的实例上写
+ * ``get('/api/health')`` 实际请求的是 ``/api/admin/api/health`` → 404。
+ * （这个坑真实发生过两次：``fetchPanelHealth`` 先写成 ``'/../health'``，靠浏览器
+ * 归一化“能用”；后来改成“直白的绝对路径” ``'/api/health'``，反而 404。）
+ *
+ * 少数端点确实不在后台前缀下（``/api/health``），它们的正确写法就是这里：
+ * 一个**不设 baseURL** 的实例，url 原样发出。拦截器复用上面那三个具名函数，
+ * 所以鉴权头、401 自愈与错误提示与其它后台请求完全一致。
+ */
+const publicRequest = axios.create({
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+})
+publicRequest.interceptors.request.use(attachAuth)
+publicRequest.interceptors.response.use(onResponse, onError)
+
+/**
+ * 打同源绝对路径（必须以 ``/`` 开头）。详见上方说明。
+ *
+ * 刻意**不传** ``silent``：走的是同一个 ``onError``，面板健康挂了照样弹全局错误
+ * 提示。静默失败只会让「页面数据永远空着」这种问题更难被发现。
+ */
+export function getPublic<T = any>(url: string, params?: Record<string, unknown>): Promise<T> {
+  return publicRequest.get(url, { params } as AdminRequestConfig) as Promise<T>
 }
 
 export { dedupeToast }
