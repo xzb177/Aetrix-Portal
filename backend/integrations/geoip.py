@@ -95,6 +95,10 @@ def _from_tencent(db: Session, ip: str) -> dict:
         return {"ok": False, "message": f"定位失败：{body.get('message') or f'HTTP {resp.status_code}'}"}
     result = body.get("result") or {}
     ad_info = result.get("ad_info") or {}
+    # nation 单独留着给「只允许国内访问」这类**国家级**判定用：region 里
+    # 「中国」是被摘掉的（那是绝大多数请求，留在串里只会把 region 撑长）。
+    # 这里只加字段、不改 region 的算法，老调用方（防共享 / 登录日志）行为不变。
+    country = str(ad_info.get("nation") or "").strip()
     parts = [ad_info.get("nation"), ad_info.get("province"), ad_info.get("city"),
              ad_info.get("district")]
     region = " ".join([str(p) for p in parts if p and str(p) != "中国"]) or "未知"
@@ -102,6 +106,7 @@ def _from_tencent(db: Session, ip: str) -> dict:
         "ok": True,
         "ip": ip,
         "region": region,
+        "country": country,
         "isp": ad_info.get("isp") or "",
         "source": "tencent",
         "detail": {"location": result.get("location") or {}},
@@ -132,13 +137,15 @@ def _from_mmdb(db: Session, ip: str) -> dict:
         return names.get("zh-CN") or names.get("en") or ""
 
     subdivisions = record.get("subdivisions") or []
+    country = _name(record.get("country"))
     parts = [
-        _name(record.get("country")),
+        country,
         _name(subdivisions[0]) if subdivisions else "",
         _name(record.get("city")),
     ]
     region = " ".join([p for p in parts if p]) or "未知"
-    return {"ok": True, "ip": ip, "region": region, "isp": "", "source": "mmdb", "detail": {}}
+    return {"ok": True, "ip": ip, "region": region, "country": country,
+            "isp": "", "source": "mmdb", "detail": {}}
 
 
 def lookup(db: Session, ip: str, *, use_cache: bool = True) -> dict:
@@ -184,6 +191,17 @@ def region_of(db: Session, ip: str) -> str:
     """只取地区串（查不到返回空串），给日志列表批量用"""
     result = lookup(db, ip)
     return result.get("region", "") if result.get("ok") else ""
+
+
+def country_of(db: Session, ip: str) -> str:
+    """只取国家/地区名（查不到返回空串）
+
+    给「只允许国内访问」这类**国家级**判定用。与 :func:`region_of` 分开而不是
+    并成一个函数，是因为两者的失败语义不同：国家级判定一旦把「查不到」当成
+    「在境外」，没配地理库的部署会把自己人全拦在门外。
+    """
+    result = lookup(db, ip)
+    return str(result.get("country") or "").strip() if result.get("ok") else ""
 
 
 def test(db: Session, payload: dict) -> dict:

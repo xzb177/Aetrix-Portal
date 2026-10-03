@@ -31,6 +31,7 @@ from backend.security import validate_secret_key
 from backend.version import app_version
 from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
+from backend.access_guard import AccessGuardMiddleware
 from backend.emby_server.audit import AdminWriteAuditMiddleware
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
@@ -398,6 +399,12 @@ _GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip"
 
 # 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）
 app.add_middleware(DownloadGuardMiddleware)
+
+# 访问拦截（UA 关键词 + IP 归属地）：**两个开关默认都是关的**，
+# 未配置时中间件只做一次时间比较就透传（零 DB / 零 await）。
+# 放在下载兜底之后注册 = 它更靠外层：先判「这个客户端该不该进来」，
+# 再判「进来之后能不能下载」。
+app.add_middleware(AccessGuardMiddleware)
 
 # 媒体与交付域的写操作审计（v2.30.0）：``/api/admin/emby/*`` 的成功写操作落进操作日志。
 # 这一域长期不写审计：删媒体库 / 删条目 / 删 115 账号 / 停全站转码，在「操作日志」里

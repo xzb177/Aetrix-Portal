@@ -116,6 +116,8 @@ const navGroups: NavGroup[] = [
       { path: '/login-logs', label: '登录日志' },
       // 防共享：跨城市轨迹 + 同播检测。默认关闭，但「处置」档会停用账号 → 仅超管可改
       { path: '/share-guard', label: '防共享', superOnly: true },
+      // 访问拦截：UA 关键词 + IP 归属地。默认全关，但一旦打开就直接影响所有人能否访问 → 仅超管可改
+      { path: '/access-guard', label: '访问拦截', superOnly: true },
     ],
   },
   {
