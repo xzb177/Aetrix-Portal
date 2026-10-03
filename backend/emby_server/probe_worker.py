@@ -38,7 +38,10 @@ logger = logging.getLogger(__name__)
 # 状态存 Redis（持久化，重启不丢）；三个函数语义分离，杜绝"只读检查误清零"
 _QUOTA_BREAKER_THRESHOLD = 10
 _QUOTA_BREAKER_REDIS_KEY = "aetrix:quota_breaker:state"
-_QUOTA_BREAKER_BACKOFF_SEC = 300  # 熔断后每次退避 5 分钟
+#: 熔断后的休眠时长。原为 300s（5 分钟）——而熔断状态本身靠 Redis 的 24h TTL 过期，
+#: 两者口径不一致的结果是：worker 每天醒来 288 次，每次发现「还熔着」就 continue，
+#: 什么请求都不发，只是刷日志。改成 24h 与 TTL 对齐，醒来时状态多半已自然解除。
+_QUOTA_BREAKER_BACKOFF_SEC = 86400  # 熔断后休眠 24 小时
 _quota_lock = threading.Lock()
 # Redis 不可用时的内存降级状态（进程内，重启丢失；Redis 恢复后以 Redis 为准）
 _quota_mem_state = {"consecutive_403": 0, "tripped": False, "tripped_at": None}
@@ -185,8 +188,10 @@ PROBE_ROUND_PAUSE_SEC = max(0, int(os.getenv("PROBE_ROUND_PAUSE_SEC", "10") or 1
 # 偶发给出 None、负数或超大值，直接落库会让整条 commit 失败、把这一轮全部打回。
 _safe_int = safe_probe_int
 
-BOOST_PRIORITY = 1000   # 按需插队的优先级（新文件 100，普通 0）
-NEW_FILE_PRIORITY = 100
+BOOST_PRIORITY = 1000   # 按需插队的优先级（最高）
+NEW_FILE_PRIORITY = 100  # 新入库文件
+RETRY_PRIORITY = 10     # 重试中的老文件：低于新文件，让新片先拿到元数据
+DEFAULT_PRIORITY = 0    # 从未探 / 其它
 
 # 逐流字段：ffprobe 能拿到多少就存多少，客户端「媒体信息」页直接显示这些
 _STREAM_COLS = {
@@ -275,9 +280,59 @@ def boost_probe(db, item) -> bool:
     return True
 
 
+#: 单条重试的退避上限（24 小时）。
+#:
+#: 原上限是 1 小时。配额耗尽要 24 小时才恢复，按小时重试意味着每个文件在配额
+#: 恢复前会白白打 24 次请求——正是“配额受限还在反复探测”的来源。
+MAX_BACKOFF_SECONDS = 86400
+
+#: 配额耗尽的退避：**直接**用 24 小时，不走指数。
+#:
+#: 指数退避对配额问题是错的——它假设“等久一点可能就好了”，而配额是 24 小时
+#: 整点恢复的阶梯函数。与其 60s/120s/240s 地试 11 次，不如直接等满 24 小时。
+QUOTA_BACKOFF_SECONDS = 86400
+
+
 def _backoff_seconds(attempts: int) -> int:
-    # 60s, 120s, 240s, 480s, … 上限 1 小时
-    return min(3600, 60 * (2 ** max(0, attempts - 1)))
+    # 60s, 120s, 240s, 480s, … 上限 24 小时
+    return min(MAX_BACKOFF_SECONDS, 60 * (2 ** max(0, attempts - 1)))
+
+
+# ---- 失败分类 ----
+#
+# “重试”只对重试有用的事。文件已经被删了、或格式根本不支持，再试一万次也是
+# 同一个结果，而每一次重试都要占用 worker 名额与云盘配额，把真正能探到的文件
+# 挤到后面去（见 ``_claim_batch`` 的优先级排序）。
+
+KIND_PERMANENT = "permanent"   # 重试无意义：直接 failed
+KIND_TRANSIENT = "transient"   # 重试有意义：退避后重来
+
+#: 确定性的永久失败：文件不存在（被删 / 被移走）或请求本身不合法/不支持。
+#:
+#: 不含 401（凭据失效）：那不是文件坏了，而是部署配置坏了——管理员改完凭据
+#: 文件就能探，不该被永久判死（后台手动「重新探测」仍可拉起来，但没必要让它
+#: 自动占着 24 小时的重试位）。
+#:
+#: 403 不在这里：ffprobe 把配额耗尽也报成 403，scanner 统一归成 ``quota``，
+#: 由配额熔断器处理，绝不能当成永久失败。
+PERMANENT_ERRORS = frozenset({
+    "not_found",
+    "http_404", "http_410",   # 没了 / 已被彻底移除
+    "http_400",               # 请求不合法
+    "http_405", "http_415", "http_416",  # 方法 / 媒体类型 / 范围不支持
+})
+
+
+def _classify_failure(error: Optional[str]) -> str:
+    """把 scanner 的 ``_error`` 归成「永久 / 临时」。
+
+    认不出来的一律当**临时**（沿用旧行为）——宁可多试几次，也不要因为归错类
+    而把好文件判死。``quota`` 明确归临时（且单独用 24 小时退避）。
+    """
+    code = str(error or "").strip().lower()
+    if code in PERMANENT_ERRORS:
+        return KIND_PERMANENT
+    return KIND_TRANSIENT
 
 
 def _apply_probe_result(db, item, info: dict) -> None:
@@ -314,7 +369,38 @@ def _apply_probe_result(db, item, info: dict) -> None:
         db.add(stream)
 
 
-def _fail(db, item, reason: str) -> None:
+def _fail(db, item, reason: str, error: Optional[str] = None) -> None:
+    """记一次失败，按**错误类型**决定：直接放弃、退避重试，还是等配额恢复
+
+    三条分支对应三类完全不同的处置：
+
+    - **永久失败**（文件没了 / 格式不支持）：直接 ``failed``，不再重试。
+      重试一万次还是同一个结果，而每一次都要占 worker 名额与云盘配额。
+    - **配额耗尽**：等满 24 小时，且**不计入尝试次数**。配额是部署/账号的
+      状态，不是这个文件的错——计进 5 次上限就等于“因为配额问题把文件判死”。
+    - **其它临时失败**：指数退避，上限 24 小时；并把优先级降到 ``RETRY_PRIORITY``，
+      让重试中的老文件排在新入库文件之后（用户要看的元数据先填上）。
+    """
+    kind = _classify_failure(error)
+
+    if kind == KIND_PERMANENT:
+        item.probe_status = "failed"
+        item.probe_attempts = PROBE_MAX_ATTEMPTS
+        item.probe_next_retry_at = None
+        logger.warning("探测放弃 item=%s（永久失败 %s）: %s", item.id, error, reason)
+        return
+
+    if str(error or "") == "quota":
+        item.probe_status = "pending"
+        item.probe_next_retry_at = datetime.now() + timedelta(
+            seconds=QUOTA_BACKOFF_SECONDS)
+        item.probe_priority = RETRY_PRIORITY
+        logger.warning(
+            "探测遇配额耗尽 item=%s：等 %d 小时后再试（不计入失败次数）",
+            item.id, QUOTA_BACKOFF_SECONDS // 3600,
+        )
+        return
+
     attempts = (item.probe_attempts or 0) + 1
     item.probe_attempts = attempts
     if attempts >= PROBE_MAX_ATTEMPTS:
@@ -325,6 +411,8 @@ def _fail(db, item, reason: str) -> None:
         item.probe_status = "pending"
         item.probe_next_retry_at = datetime.now() + timedelta(
             seconds=_backoff_seconds(attempts))
+        # 重试中的老文件降优先级：新入库的文件先探
+        item.probe_priority = RETRY_PRIORITY
         logger.info("探测失败 item=%s，第 %d 次，%ds 后重试: %s",
                     item.id, attempts, _backoff_seconds(attempts), reason)
 
@@ -359,12 +447,12 @@ def _probe_one(item_id: int) -> str:
                 breaker_record_success()
             if is_403 and breaker_is_tripped():
                 # 熔断中，把当前条目打回 pending（不是它的错，是配额问题）
-                # 配额 403 不增加普通文件失败次数，attempts 清零
+                # 配额 403 不增加普通文件失败次数，且**不排到马上重试**——
+                # 直接走 _fail 的配额分支，等满 24 小时，与熔断窗口对齐。
                 db.rollback()
                 item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
                 if item is not None:
-                    item.probe_status = "pending"
-                    item.probe_attempts = 0
+                    _fail(db, item, "远端配额耗尽，熔断中", error="quota")
                     db.commit()
                 return "paused_quota"
         except MountError as exc:
@@ -389,7 +477,8 @@ def _probe_one(item_id: int) -> str:
         # 其余按失败重试收敛——别静默终结成 degraded，否则熔断器永远看不到远程文件的
         # 配额耗尽，「文件已被删除」也永远不会变成 failed（生产 4.3 万 degraded 里混着它们）。
         if info and info.get("_error"):
-            _fail(db, item, info.get("_error_detail") or f"探测失败（{info['_error']}）")
+            _fail(db, item, info.get("_error_detail") or f"探测失败（{info['_error']}）",
+                  error=info.get("_error"))
             db.commit()
             return "failed"
         # 远程可访问但拿不到 duration：这是信息降级，不是文件坏了。
@@ -406,7 +495,8 @@ def _probe_one(item_id: int) -> str:
             return "degraded"
         # 用翻译后的错误文案（403 配额问题不再含糊报"未返回有效时长"）
         err_detail = (info or {}).get("_error_detail") if info else None
-        _fail(db, item, err_detail or "ffprobe 未返回有效时长")
+        _fail(db, item, err_detail or "ffprobe 未返回有效时长",
+              error=(info or {}).get("_error"))
         db.commit()
         return "failed"
     finally:

@@ -355,12 +355,17 @@ def test_worker_failure_backoff_then_failed(db, monkeypatch):
         _cleanup(db, lib)
 
 
-def test_worker_http_error_goes_to_retry_not_degraded(db, monkeypatch):
-    """远端 HTTP 错误（404/401…）不是「信息不完整」：要走重试→failed 收敛。
+def test_worker_http_404_fails_immediately_not_degraded(db, monkeypatch):
+    """远端 404（文件已被删除）是**永久失败**：一次就判 failed，不再排重试。
 
     真实问题（生产 4.3 万条 degraded）：probe_metadata 在没有 format 时提前返回，
     把已解析出的 HTTP 错误码吞掉，于是「文件已被删除」也永远躺在 degraded 里，
     熔断器（靠 _error == "quota"）对远程文件永远不触发。
+
+    v2.43.0 起的分档：404 归入永久失败（见 ``probe_worker.PERMANENT_ERRORS``）。
+    原来这里是「退避重试 → 超限 failed」，对��个已经不在的文件白白打 5 次请求。
+    本用例断言：**仍然收敛到 failed**（不落 degraded，这是本测试的原始意图），
+    但不再走重试阶梯。
     """
     lib, item = _make_item(db)
     db.commit()
@@ -373,6 +378,40 @@ def test_worker_http_error_goes_to_retry_not_degraded(db, monkeypatch):
         "duration_ticks": 0, "size": 1, "_degraded": True,
         "_error": "not_found", "_http_code": 404,
         "_error_detail": "远端文件不存在 (HTTP 404)"})
+    try:
+        db.query(em.MediaItem).filter(em.MediaItem.id == item.id).update(
+            {"probe_status": "probing"})
+        db.commit()
+        assert probe_worker._probe_one(item.id) == "failed"
+        db.expire_all()
+        got = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+        assert got.probe_status == "failed"          # 收敛到 failed，不是 degraded
+        assert got.probe_next_retry_at is None       # 不再排重试
+    finally:
+        _cleanup(db, lib)
+
+
+def test_worker_http_error_goes_to_retry_not_degraded(db, monkeypatch):
+    """远端 HTTP 错误（**临时**类，如 500/502）仍要走重试→failed 收敛。
+
+    原始问题（生产 4.3 万条 degraded）：probe_metadata 在没有 format 时提前返回，
+    把已解析出的 HTTP 错误码吞掉，于是远端错误也永远躺在 degraded 里，熔断器
+    （靠 _error == "quota"）对远程文件永远不触发。
+
+    404 已拆到上面的用例（永久失败，一次判死）；这里用 500 保住「临时错误要走
+    重试阶梯并最终收敛到 failed」这条覆盖。
+    """
+    lib, item = _make_item(db)
+    db.commit()
+    monkeypatch.setattr(probe_worker, "_rate_limiter",
+                        SimpleNamespace(acquire=lambda: None))
+    monkeypatch.setattr(
+        probe_worker, "resolve_play_target",
+        lambda path, db: SimpleNamespace(value="http://x/f.mp4", headers={}))
+    monkeypatch.setattr(probe_worker, "probe_metadata", lambda *a, **k: {
+        "duration_ticks": 0, "size": 1, "_degraded": True,
+        "_error": "http_500", "_http_code": 500,
+        "_error_detail": "远端 HTTP 错误 (HTTP 500)"})
     monkeypatch.setattr(probe_worker, "PROBE_MAX_ATTEMPTS", 2)
     try:
         for attempt in (1, 2):
