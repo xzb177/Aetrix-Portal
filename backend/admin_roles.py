@@ -51,6 +51,10 @@ SUPER_ONLY_PREFIXES = (
     "/api/admin/playback/policy",   # 播放与客户端策略（影响所有人能不能看）
     "/api/admin/capabilities",      # 能力中心：上游 Key
     "/api/admin/share-guard",       # 防共享：enforce 档会停用用户 / 拦下会话
+    # 访问拦截：UA 白名单 / 地区封禁是**全站**开关。一个只读名单写歪就能把所有人
+    # （包括别的管理员）挡在门外，而且这玩意儿本身就是「把自己锁在门外」的保险，
+    # 出了事只能回这一页改——所以与防共享同级，只给超管。
+    "/api/admin/access-guard",
 )
 
 
