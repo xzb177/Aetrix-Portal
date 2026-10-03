@@ -297,6 +297,69 @@ export const saveShareGuardPolicy = (policy: Partial<ShareGuardPolicy>) =>
 export const purgeShareGuardEvents = (days: number | null) =>
   post<{ success: boolean; message: string; deleted: number }>('/share-guard/purge', { days })
 
+// ==================== 访问拦截（UA 关键词 + IP 归属地） ====================
+
+/** 归属地方向：屏蔽名单内 / 只允许名单内 */
+export type AccessGuardRegionMode = 'block' | 'allow'
+
+export interface AccessGuardPolicy {
+  ua_enabled: boolean
+  /** 已解析的关键词（后端存的也是规范化后的形式，不是原始长文本） */
+  ua_allow: string[]
+  ua_deny: string[]
+  region_enabled: boolean
+  region_mode: AccessGuardRegionMode
+  region_countries: string[]
+  region_keywords: string[]
+  /** 是否真的在拦：开关都关了，或开了但一个关键词都没填，都算没生效 */
+  active: boolean
+  modes: AccessGuardRegionMode[]
+  mode_labels: Record<string, string>
+  /** 没配「IP 与地理位置」能力时，地区规则只能「不判定」并放行 */
+  geo_ready: boolean
+}
+
+/** 试跑结果（不拦截任何东西，只回判定） */
+export interface AccessGuardPreview {
+  ip: string
+  user_agent: string
+  country: string
+  region: string
+  /** 归属地有没有查出来。false = 「不知道在哪」，此时一律放行 */
+  resolved: boolean
+  active: boolean
+  blocked: boolean
+  reason: string
+  message: string
+  matched: string
+}
+
+export const fetchAccessGuard = () =>
+  get<{ success: boolean; policy: AccessGuardPolicy }>('/access-guard')
+
+/**
+ * 写入用的形状：关键词字段传**原始文本**（逗号/换行分隔）而不是数组。
+ * 拆词、去重、大小写归一都由后端做（``access_guard.split_keywords``），
+ * 前端不维护第二份解析规则；读回来时后端给的是已解析的数组。
+ */
+export interface AccessGuardPolicyInput {
+  ua_enabled?: boolean
+  ua_allow?: string
+  ua_deny?: string
+  region_enabled?: boolean
+  region_mode?: AccessGuardRegionMode
+  region_countries?: string
+  region_keywords?: string
+}
+
+export const saveAccessGuardPolicy = (policy: AccessGuardPolicyInput) =>
+  put<{ success: boolean; applied: Record<string, string>; policy: AccessGuardPolicy }>(
+    '/access-guard/policy', { policy },
+  )
+
+export const previewAccessGuard = (payload: { ip: string; user_agent: string }) =>
+  post<{ success: boolean; result: AccessGuardPreview }>('/access-guard/preview', payload)
+
 // ==================== 邀请码管理（v2.44.0 第一阶段） ====================
 
 /** 邀请码状态：可用 / 已用完 / 已过期 / 已作废 */

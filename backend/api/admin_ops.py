@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from backend import (authlog, codes, devices, library_scope, models, promotion,
                      realms, share_guard)
+from backend import access_guard  # noqa: E402  - 与其余模块同一行导入
 from backend.api.invitation import _generate_invite_code
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
@@ -678,6 +679,73 @@ def purge_share_guard_events(
            {"days": payload.days, "deleted": deleted})
     db.commit()
     return {"success": True, "message": f"已清理 {deleted} 条防共享事件", "deleted": deleted}
+
+
+# ==================== 访问拦截：UA 关键词 + IP 归属地 ====================
+#
+# 判定逻辑在 ``backend/access_guard.py``，这里只做存取。写端点写审计——
+# 「谁把屏蔽打开了」必须可追溯：这一页的两个开关一旦打开就会**直接影响所有人
+# 的访问**，而误配的表现是「用户打不开站」，事后很难自己想起来。
+
+
+@admin_ops_router.get("/access-guard")
+def get_access_guard(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """当前访问拦截策略（只读，运营与只读角色都能看）"""
+    return {"success": True, "policy": access_guard.policy_payload(db)}
+
+
+class AccessGuardPolicyRequest(BaseModel):
+    policy: dict
+
+
+@admin_ops_router.put("/access-guard/policy")
+def update_access_guard_policy(
+    payload: AccessGuardPolicyRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """写回访问拦截策略（只认白名单里的键，非法值保持原值不动）
+
+    不静默降级：返回**真实生效值**，前端照它回填。
+    """
+    applied = access_guard.write_policy(db, payload.policy)
+    _audit(db, current_admin, "access_guard_policy_update", "system", None, applied)
+    db.commit()
+    return {
+        "success": True,
+        "applied": applied,
+        "policy": access_guard.policy_payload(db),
+    }
+
+
+class AccessGuardPreviewRequest(BaseModel):
+    ip: str = ""
+    user_agent: str = ""
+
+
+@admin_ops_router.post("/access-guard/preview")
+def preview_access_guard(
+    payload: AccessGuardPreviewRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """用当前规则试跑一个样本 IP / UA，**不拦截任何东西**。
+
+    开「只允许国内」这类规则之前先拿自己的 IP 跑一遍，比开完发现进不来
+    再去改配置要安全得多。
+    """
+    _audit(db, current_admin, "access_guard_preview", "system", None,
+           {"ip": payload.ip, "user_agent": payload.user_agent[:200]})
+    db.commit()
+    return {
+        "success": True,
+        "result": access_guard.preview(
+            db, ip=payload.ip, user_agent=payload.user_agent
+        ),
+    }
 
 
 # ==================== 媒体库可见范围（v2.43.0） ====================

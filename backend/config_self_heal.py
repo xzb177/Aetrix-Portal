@@ -387,6 +387,19 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
                     promotion.CONFIG_AMOUNT, promotion.CONFIG_DAYS)
     ])
 
+    # 7.11 访问拦截（UA 关键词 + IP 归属地）：两个开关**默认 false**
+    # = 升级后行为与升级前完全一致，不会因为升级就有人打不开站；
+    # 归属地规则还依赖地理能力，没配地理库时判定自动失效放行。
+    from backend import access_guard
+    items.extend([
+        (key, access_guard.DEFAULTS[key], access_guard.DESCRIPTIONS[key])
+        for key in (access_guard.CONFIG_UA_ENABLED, access_guard.CONFIG_UA_ALLOW,
+                    access_guard.CONFIG_UA_DENY, access_guard.CONFIG_REGION_ENABLED,
+                    access_guard.CONFIG_REGION_MODE,
+                    access_guard.CONFIG_REGION_COUNTRIES,
+                    access_guard.CONFIG_REGION_KEYWORDS)
+    ])
+
     # 8. 公益服查看权限价格
     from backend.emby_server import portal
     items.extend([

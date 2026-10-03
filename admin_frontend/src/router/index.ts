@@ -39,6 +39,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'login-logs', name: 'LoginLogs', component: () => import('@/views/LoginLogs.vue'), meta: { title: '登录日志' } },
       // v2.43.0：防共享（跨城市轨迹 + 同播检测）。默认关闭，「处置」档仅超管可开。
       { path: 'share-guard', name: 'ShareGuard', component: () => import('@/views/ShareGuard.vue'), meta: { title: '防共享' } },
+      // 访问拦截：UA 关键词 + IP 归属地。全站级开关，默认全关，仅超管可改。
+      { path: 'access-guard', name: 'AccessGuard', component: () => import('@/views/AccessGuard.vue'), meta: { title: '访问拦截' } },
       { path: 'announcements', name: 'Announcements', component: () => import('@/views/Announcements.vue'), meta: { title: '公告管理' } },
       { path: 'tickets', name: 'Tickets', component: () => import('@/views/Tickets.vue'), meta: { title: '工单' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
