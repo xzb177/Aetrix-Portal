@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
-from fastapi import Depends, File, HTTPException, UploadFile
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -32,7 +32,7 @@ from backend.emby_server import nfo as nfo_lib
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import auto_scan
 from backend.emby_server import change_watcher
-from backend.emby_server import rclone_manager
+
 from backend.emby_server import scan_queue
 from backend.emby_server.portal import admin_emby_router, require_staff
 from backend.emby_server.tmdb import (
@@ -883,96 +883,6 @@ def get_chase_new(
 ):
     """追新当前配置（开关 / 间隔 / 监听库 / 上次检查）"""
     return {"success": True, **change_watcher.get_config(db)}
-
-
-# ---------- rclone remote 管理（数据驱动） ----------
-# 注：CRUD（GET/POST/PUT/DELETE /rclone/remotes*）已迁移到
-# backend/emby_server/rclone_admin.py（字段脱敏 + 探测保护 + OAuth/SA 流程）。
-# 此处仅保留仍被 EmbyAdmin 旧版 UI 调用的 probe / regenerate / sa-files 端点。
-
-
-@admin_emby_router.post("/rclone/remotes/{remote_id}/probe")
-def set_probe_remote_api(
-    remote_id: int,
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """设置探测用 remote（全局唯一，立即生效）"""
-    ok = rclone_manager.set_probe_remote(db, remote_id)
-    return {"success": ok}
-
-
-@admin_emby_router.post("/rclone/regenerate")
-def regenerate_rclone_conf(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """从数据库重新生成 rclone.conf"""
-    path = rclone_manager.write_rclone_conf(db)
-    return {"success": True, "path": path}
-
-
-@admin_emby_router.get("/rclone/sa-files")
-def list_sa_files(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """列出服务账号文件"""
-    from backend.emby_server import models as em
-    files = db.query(em.ServiceAccountFile).order_by(em.ServiceAccountFile.filename).all()
-    return {"success": True, "files": [
-        {
-            "id": f.id, "filename": f.filename,
-            "client_email": f.client_email or "",
-            "project_id": f.project_id or "",
-            "is_enabled": f.is_enabled,
-        }
-        for f in files
-    ]}
-
-
-@admin_emby_router.post("/rclone/sa-files/upload")
-def upload_sa_file(
-    file: UploadFile = File(...),
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """上传服务账号 JSON 文件"""
-    from backend.emby_server import models as em
-    import json as json_lib
-
-    content = file.file.read()
-    if len(content) > 1024 * 1024:
-        raise HTTPException(status_code=400, detail="文件太大（最大 1MB）")
-    try:
-        sa_data = json_lib.loads(content)
-        client_email = sa_data.get("client_email", "")
-        project_id = sa_data.get("project_id", "")
-    except Exception:
-        return {"success": False, "message": "不是有效的 JSON 文件"}
-
-    # P1 安全修复：文件名用户可控，防路径遍历（../../）+ 只允许 .json
-    filename = os.path.basename(file.filename or "")
-    if not filename.lower().endswith(".json"):
-        raise HTTPException(status_code=400, detail="只允许上传 .json 文件")
-
-    # 存到安全目录
-    sa_dir = "/opt/aetrix-portal/sa"
-    os.makedirs(sa_dir, exist_ok=True)
-    stored_path = os.path.join(sa_dir, filename)
-    with open(stored_path, "wb") as f:
-        f.write(content)
-    os.chmod(stored_path, 0o600)
-
-    rec = em.ServiceAccountFile(
-        filename=filename,
-        stored_path=stored_path,
-        client_email=client_email,
-        project_id=project_id,
-    )
-    db.add(rec)
-    db.commit()
-    return {"success": True, "id": rec.id, "client_email": client_email}
 
 
 @admin_emby_router.put("/scrape/chase-new")

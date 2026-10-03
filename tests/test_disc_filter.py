@@ -25,8 +25,8 @@ class _FakeProvider:
         return list(self.list_dir(rel))
 
     def walk_media(self, root="/"):
-        from backend.emby_server.mount_cloud import _CloudMount
-        return _CloudMount.walk_media(self, root=root)
+        from backend.emby_server.mounts import RemoteMount
+        return RemoteMount.walk_media(self, root=root)
 
 
 def _bd_tree():

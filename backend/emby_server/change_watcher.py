@@ -12,11 +12,11 @@
 v1 范围：
 - 本机目录：文件 mtime 检测（``find -newermt``）
 - rclone RC 挂载：逐层列举 + ``ModTime`` 窗口过滤（走 ``mounts`` 公共通道）
-- 115/webdav/alist 暂不直接检测，依赖每日定时扫描兜底
+- 115 直挂暂不直接检测（远端 API 不给可靠的 mtime），依赖每日定时扫描兜底
 
 2026-10：远程检测曾绕过 ``mounts`` 的公共通道直接调 rclone RC，是一条无上限的
 旁路（生产 24 小时 5.2 万条报错）。现在统一走 ``build_provider`` → ``list_dir``，
-吃缓存 / 单飞 / 限流 / 熔断 / 统计，并占用追新自己的小名额。
+吃缓存 / 单飞 / 限流 / 退避 / 统计，并占用追新自己的小名额。
 """
 
 from __future__ import annotations

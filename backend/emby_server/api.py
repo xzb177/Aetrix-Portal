@@ -32,7 +32,6 @@ from backend import library_scope, models, playback_policy
 from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
 from backend.emby_server import facets
-from backend.emby_server import file_id_cache
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
 from backend.emby_server import local_cache
@@ -2349,43 +2348,6 @@ def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
         line_stats.record_request(actual)
 
 
-async def _serve_remote_retry_on_stale(
-    target, request: Request, db: Session, item, media_type: str, cache_control: Optional[str],
-):
-    """代理转发，**上游 404 且命中过 file id 缓存**时自愈一次
-
-    「路径 → file id」缓存让点播零次 Drive API 请求（秒开），代价是文件在 Drive 上
-    被移动 / 改名 / 删除后，缓存里的 id 会失效。这里不做主动校验（那等于每次播放都打
-    一次 API，秒开就没了），而是 **懒失效**：真的拿到 404 了才清掉这一条、重新解析、
-    重试一次，并把新 id 写回缓存（``resolve`` 会做）。
-
-    只在「确实删掉了一条缓存」时才重试：压根没有缓存行 = 这次的 id 是现解析出来的，
-    404 就是文件真没了，重试只是白花一轮目录解析。
-    """
-    try:
-        return await serve_remote_async(target.value, request, target.headers, media_type,
-                                         cache_control=cache_control)
-    except HTTPException as exc:
-        if exc.status_code != 404 or not item.file_path:
-            raise
-        parsed = mount_lib.parse_mount_path(item.file_path)
-        if parsed is None:
-            raise                       # 本机文件，不涉及挂载缓存
-        mount_id, rel = parsed
-        from backend.emby_server.async_db import run_db
-
-        removed = await run_db(file_id_cache.invalidate, db, mount_id, rel)
-        if not removed:
-            raise                       # 没有缓存行 = 不是缓存过期，重试无意义
-        logger.info("file id 缓存失效（文件可能被移动/删除），重新解析: mount=%s %s",
-                    mount_id, rel)
-        fresh = await run_db(_play_target, db, item)
-        return await serve_remote_async(fresh.value, request, fresh.headers, media_type,
-                                         cache_control=cache_control)
-
-
-@emby_router.get("/emby/Videos/{item_id}/stream")
-@emby_router.get("/Videos/{item_id}/stream")
 async def video_stream(
     item_id: str, request: Request,
     user: models.WebUser = Depends(get_emby_user),
@@ -2425,22 +2387,17 @@ async def video_stream(
         seg_cache = cdn.cache_control_for(str(request.url.path))
         if line == play_line.LINE_RELAY:
             return _observe_line(
-                await _serve_remote_retry_on_stale(
-                    target, request, db, item, media_type, seg_cache),
+                await serve_remote_async(target.value, request, target.headers, media_type,
+                                         cache_control=seg_cache),
                 play_line.LINE_RELAY)
-        # 挂载来源（115 / WebDAV / AList / STRM 直链 / Google Drive）：一律由本
-        # 服务代理转发，Range 与状态码透传，凭据不下发。**不再有任何 302 分支**：
-        # Drive 的 alt=media 要 Authorization 头而重定向带不过去，token 塞 URL
-        # 里会被限流（Alist / RClone / Cloudreve 也均为服务端代理）。
-        #
-        # 顺带好处：file id 来自「路径 → id」缓存时（可能是被移动/删除的旧 id），
-        # 代理路径自带 404 自愈重试（_serve_remote_retry_on_stale）。
+        # 挂载来源（115 / rclone / 本地 .strm 直链）：一律由本服务代理转发，
+        # Range 与状态码透传，凭据不下发。**不再有任何 302 分支**。
         #
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
         # 不能让一个用户的拖动进度条把整个事件循环卡住。
         return _observe_line(
-            await _serve_remote_retry_on_stale(
-                target, request, db, item, media_type, seg_cache),
+            await serve_remote_async(target.value, request, target.headers, media_type,
+                                     cache_control=seg_cache),
             line)
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
     return serve_file(target.value, request, media_type,

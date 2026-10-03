@@ -1,6 +1,6 @@
 """扫描队列与实时进度冒烟测试（v2.27.0）
 
-线上症状：四个媒体库在同一分钟里依次点「扫描」，四个任务同时跑起来——同一个 WebDAV
+线上症状：四个媒体库在同一分钟里依次点「扫描」，四个任务同时跑起来——同一个远程挂载
 被四个任务反复 PROPFIND（日志里「同一路径每 5 秒一次」），CPU 打满而 item_count 一直是 0。
 
 本测试覆盖这一版加的四层保护与两处可见性：
@@ -104,8 +104,8 @@ check("开关默认值：并发上限 ≥1、挂载串行化默认开",
 
 # ==================== 1. 替身扫描：按挂载串行化 + 并发上限 ====================
 print("\n=== 1. 同一远程挂载串行化（核心）===")
-shared_mount = make_mount("webdav", "MP媒体库")
-other_mount = make_mount("webdav", "另一个挂载")
+shared_mount = make_mount("rclone", "MP媒体库")
+other_mount = make_mount("rclone", "另一个挂载")
 tmp_dir = tempfile.mkdtemp(prefix="queue-local-")
 lib_a = make_library("剧集", mounts=(shared_mount,))
 lib_b = make_library("电影", mounts=(shared_mount,))
@@ -394,10 +394,10 @@ class CountingProvider(mnt.MountProvider):
 
 
 class FakeRemoteMount:
-    def __init__(self, mid: int, mount_type: str = "webdav"):
+    def __init__(self, mid: int, mount_type: str = "rclone"):
         self.id = mid
         self.mount_type = mount_type
-        self.config = '{"url": "https://dav.example.com"}'
+        self.config = '{"mode": "rc"}'
 
 
 mnt.invalidate_list_cache()

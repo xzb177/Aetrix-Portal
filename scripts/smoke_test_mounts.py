@@ -2,18 +2,16 @@
 
 「挂载」是把内容接进媒体库的方式，本测试逐层覆盖：
 
-- **类型注册表**：local / strm / 115 / webdav / alist / s3 / aliyun / quark / onedrive 的元数据、
+- **类型注册表**：local / 115 / rclone 三种类型的元数据、
   必填字段、脱敏集合与提供者注册
 - **虚拟路径**：`mount://<id>/<rel>` 的构造与解析
 - **本机挂载**（local / strm）：目录可读、只枚举媒体、STRM 读文件内容取直链
-- **远程挂载**（115 / webdav / alist）：目录枚举、鉴权头、凭据失效可识别
-- **云端挂载**（s3 / aliyun / quark / onedrive）：预签名直链、换票与复用、Cookie 失效、
-  `.strm` 对象解析、挂载根前缀 / 目录 ID 回写
+- **远程挂载**（115 / rclone）：目录枚举、鉴权头、凭据失效可识别
 - **扫描集成**：媒体库绑定挂载后条目入库（远程为 `mount://` 路径）、来源不可用时禁止清理
 - **播放 / 文件 / 字幕**：解析成直链、Range 代理转发、字幕解析钩子
 - **管理端 API**：CRUD、必填校验、脱敏、测试连接、目录浏览、媒体库绑定与解绑
 
-网络层整体被替换（`httpx.Client` → 假服务），因此本测试不依赖真实网盘 / WebDAV / 对象存储账号。
+网络层整体被替换（`httpx.Client` → 假服务），因此本测试不依赖真实网盘 / rclone 账号。
 """
 import asyncio
 import inspect
@@ -90,7 +88,7 @@ class FakeResponse:
 
 
 class FakeWeb:
-    """假的 115 / WebDAV / AList / CDN：只实现本功能用到的端点"""
+    """假的 115 / rclone / CDN：只实现本功能用到的端点"""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -107,45 +105,6 @@ class FakeWeb:
                 {"fid": "s1", "n": "Beta.S01E01.1080p.zh.srt", "s": 20, "pc": "pc-sub", "fc": "1"},
             ],
         }
-        # WebDAV：路径 → (是否目录, 大小)
-        self.dav = {
-            "/media": (True, 0),
-            "/media/Movies": (True, 0),
-            "/media/Movies/Movie.2024.1080p.mkv": (False, 4096),
-        }
-        # AList：路径 → 子项
-        self.alist = {
-            "/115": [{"name": "Movies", "is_dir": True, "size": 0}],
-            "/115/Movies": [{"name": "Alist.Movie.2023.mkv", "is_dir": False, "size": 2048}],
-        }
-        self.alist_token = "fresh-token"
-        self.alist_logins = 0
-        # S3（path-style：/movies/<key>）；键 → 大小
-        self.s3_objects = {
-            "Movies/S3.Movie.2024.mkv": 4096,
-            "Movies/S3.Sub.zh.srt": 20,
-            "Movies/Link.strm": 64,
-        }
-        self.s3_strm_body = "https://cdn.example.com/strm/from-s3.mkv"
-        self.s3_missing_signature = 0
-        # 阿里云盘：parent_file_id → 子项
-        self.aliyun = {
-            "root": [{"file_id": "ad1", "name": "电影", "type": "folder", "size": 0}],
-            "ad1": [{"file_id": "af1", "name": "Aliyun.Movie.2024.mkv", "type": "file", "size": 1024}],
-        }
-        self.aliyun_token_calls = 0
-        # 夸克：pdir_fid → 子项
-        self.quark = {
-            "0": [{"fid": "qd1", "file_name": "电影", "dir": True, "size": 0}],
-            "qd1": [{"fid": "qf1", "file_name": "Quark.Movie.2024.mkv", "dir": False, "size": 2048}],
-        }
-        # OneDrive：目录路径 → 子项
-        self.onedrive = {
-            "影视": [{"id": "od1", "name": "电影", "folder": {"childCount": 1}}],
-            "影视/电影": [{"id": "odf1", "name": "OneDrive.Movie.2024.mkv",
-                       "folder": None, "file": {"mimeType": "video/x-matroska"}, "size": 4096}],
-        }
-        self.graph_token_calls = 0
         # rclone rc：fs → 子项（rclone /operations/list 风格字段）
         self.rclone = {
             "gdrive:Movies": [
@@ -212,22 +171,6 @@ class FakeWeb:
             return self._media(headers)
         if "webapi.115.com" in url or "115share" in url:
             return self._pan115(url, headers, params)
-        if url.startswith("https://dav.example.com"):
-            return self._webdav(method, url)
-        if url.startswith("https://alist.example.com"):
-            return self._alist(url, headers, body)
-        if url.startswith("https://s3.example.com"):
-            return self._s3(url)
-        if url.startswith("https://auth.aliyundrive.com") or "/oauth/access_token" in url:
-            return self._aliyun_token(headers, body)
-        if url.startswith("https://openapi.alipan.com"):
-            return self._aliyun(url, headers, body)
-        if url.startswith("https://drive-pc.quark.cn"):
-            return self._quark(url, headers, body, params)
-        if url.startswith("https://login.microsoftonline.com"):
-            return self._graph_token(headers, body, data)
-        if url.startswith("https://graph.microsoft.com"):
-            return self._onedrive(url, headers)
         if url.startswith("http://127.0.0.1:5572"):
             return self._rclone_rc(method, url, headers, body)
         return FakeResponse(404, b"not found")
@@ -263,191 +206,6 @@ class FakeWeb:
             cid = str(params.get("cid") or "0")
             return FakeResponse(200, body={"state": True, "data": self.pan115.get(cid, [])})
         return FakeResponse(404, b"")
-
-    def _webdav(self, method, url) -> FakeResponse:
-        if self.auth_fail:
-            return FakeResponse(401, b"")
-        if method != "PROPFIND":
-            return FakeResponse(404, b"")
-        from urllib.parse import urlparse
-
-        path = urlparse(url).path.rstrip("/") or "/"
-        parts = ["<?xml version='1.0' encoding='utf-8'?>", "<D:multistatus xmlns:D='DAV:'>"]
-        parts.append(self._dav_node(path, True, 0))
-        for p, (is_dir, size) in self.dav.items():
-            if p == path:
-                continue
-            parent = p.rstrip("/").rsplit("/", 1)[0] or "/"
-            if parent != path:
-                continue
-            parts.append(self._dav_node(p, is_dir, size))
-        parts.append("</D:multistatus>")
-        return FakeResponse(207, "".join(parts).encode())
-
-    @staticmethod
-    def _dav_node(path: str, is_dir: bool, size: int) -> str:
-        kind = "<D:resourcetype><D:collection/></D:resourcetype>" if is_dir else "<D:resourcetype/>"
-        return (
-            "<D:response><D:href>" + path + "</D:href><D:propstat><D:prop>" + kind
-            + f"<D:getcontentlength>{size}</D:getcontentlength>"
-            + "</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
-        )
-
-    def _alist(self, url, headers, body) -> FakeResponse:
-        if url.endswith("/api/auth/login"):
-            self.alist_logins += 1
-            return FakeResponse(200, body={"code": 200, "data": {"token": self.alist_token}})
-        if self.auth_fail:
-            return FakeResponse(401, b"")
-        token = headers.get("Authorization") or ""
-        if url.endswith("/api/fs/list"):
-            if token and token != self.alist_token:
-                return FakeResponse(200, body={"code": 401, "message": "token is invalid"})
-            path = str((body or {}).get("path") or "/")
-            return FakeResponse(200, body={"code": 200, "data": {"content": self.alist.get(path, [])}})
-        if url.endswith("/api/fs/get"):
-            path = str((body or {}).get("path") or "")
-            name = path.rsplit("/", 1)[-1]
-            return FakeResponse(200, body={"code": 200, "data": {
-                "raw_url": f"https://cdn.example.com/alist/{name}",
-            }})
-        return FakeResponse(404, b"")
-
-    # ---- S3 ----
-
-    def _s3(self, url) -> FakeResponse:
-        from urllib.parse import parse_qs, urlparse
-
-        parsed = urlparse(url)
-        query = parse_qs(parsed.query)
-        if "X-Amz-Signature" not in query or "X-Amz-Credential" not in query:
-            self.s3_missing_signature += 1
-            return FakeResponse(403, b"<Error><Code>AccessDenied</Code></Error>")
-        if self.auth_fail:
-            return FakeResponse(403, b"<Error><Code>SignatureDoesNotMatch</Code></Error>")
-        path = parsed.path.lstrip("/")
-        bucket, _, key = path.partition("/")
-        if bucket != "movies":
-            return FakeResponse(404, b"<Error><Code>NoSuchBucket</Code></Error>")
-        if query.get("list-type") == ["2"]:
-            prefix = (query.get("prefix") or [""])[0]
-            entries = {k: v for k, v in self.s3_objects.items() if k.startswith(prefix)}
-            dirs = sorted({k[len(prefix):].split("/")[0] + "/"
-                           for k in entries if "/" in k[len(prefix):]})
-            files = {k: v for k, v in entries.items() if "/" not in k[len(prefix):]}
-            parts = ["<?xml version='1.0' encoding='UTF-8'?>",
-                     "<ListBucketResult xmlns='http://s3.amazonaws.com/doc/2006-03-01/'>",
-                     "<Name>movies</Name><IsTruncated>false</IsTruncated>"]
-            parts += [f"<CommonPrefixes><Prefix>{d}</Prefix></CommonPrefixes>" for d in dirs]
-            parts += [f"<Contents><Key>{k}</Key><Size>{v}</Size></Contents>" for k, v in files.items()]
-            parts.append("</ListBucketResult>")
-            return FakeResponse(200, "".join(parts).encode())
-        if key in self.s3_objects:
-            if key.endswith(".strm"):
-                return FakeResponse(200, self.s3_strm_body.encode())
-            return self._media({})
-        return FakeResponse(404, b"<Error><Code>NoSuchKey</Code></Error>")
-
-    # ---- 阿里云盘 ----
-
-    def _aliyun_token(self, headers, body) -> FakeResponse:
-        self.aliyun_token_calls += 1
-        if self.auth_fail:
-            return FakeResponse(400, body={"code": "RefreshTokenExpired", "message": "refresh token 已失效"})
-        payload = body or {}
-        grant = payload.get("grant_type")
-        if grant != "refresh_token" or not payload.get("refresh_token"):
-            return FakeResponse(400, body={"code": "InvalidParameter", "message": "缺少 refresh_token"})
-        return FakeResponse(200, body={"access_token": f"ali-token-{self.aliyun_token_calls}",
-                                       "refresh_token": payload.get("refresh_token"),
-                                       "default_drive_id": "drive-1", "expires_in": 7200})
-
-    def _aliyun(self, url, headers, body) -> FakeResponse:
-        if self.auth_fail:
-            return FakeResponse(401, b"")
-        auth = headers.get("Authorization") or ""
-        if not auth.startswith("Bearer ali-token"):
-            return FakeResponse(401, body={"code": "AccessTokenInvalid", "message": "令牌无效"})
-        payload = body or {}
-        if url.endswith("/adrive/v1.0/openFile/list"):
-            if payload.get("drive_id") != "drive-1":
-                return FakeResponse(400, body={"code": "InvalidParameter", "message": "drive_id 不正确"})
-            fid = str(payload.get("parent_file_id") or "root")
-            return FakeResponse(200, body={"items": self.aliyun.get(fid, []), "next_marker": ""})
-        if url.endswith("/adrive/v1.0/openFile/getDownloadUrl"):
-            file_id = str(payload.get("file_id") or "")
-            if not file_id:
-                return FakeResponse(400, body={"code": "InvalidParameter", "message": "缺少 file_id"})
-            return FakeResponse(200, body={"url": f"https://cdn.example.com/aliyun/{file_id}",
-                                           "expiration": "2026-09-20T23:59:59Z"})
-        return FakeResponse(404, b"")
-
-    # ---- 夸克 ----
-
-    def _quark(self, url, headers, body, params=None) -> FakeResponse:
-        if not headers.get("Cookie"):
-            return FakeResponse(200, body={"status": 401, "code": 31001, "message": "请先登录"})
-        if self.auth_fail:
-            return FakeResponse(200, body={"status": 200, "code": 31023, "message": "账号未登录"})
-        payload = body or {}
-        if url.endswith("/file/download"):
-            fids = payload.get("fids") or []
-            return FakeResponse(200, body={"status": 200, "code": 0, "data": [
-                {"fid": fid, "download_url": f"https://cdn.example.com/quark/{fid}"} for fid in fids
-            ]})
-        if url.endswith("/file/sort"):
-            from urllib.parse import parse_qs, urlparse
-
-            query = parse_qs(urlparse(url).query)
-            sources = [params or {}, query]
-            fid = next((str(s.get("pdir_fid")[0] if isinstance(s.get("pdir_fid"), list)
-                            else s.get("pdir_fid")) for s in sources if s.get("pdir_fid")), "0")
-            items = self.quark.get(str(fid), [])
-            return FakeResponse(200, body={"status": 200, "code": 0, "data": {
-                "list": items, "metadata": {"_total": len(items)},
-            }})
-        return FakeResponse(404, b"")
-
-    # ---- OneDrive ----
-
-    def _graph_token(self, headers, body, data=None) -> FakeResponse:
-        self.graph_token_calls += 1
-        # 换票走的是表单（data），不是 JSON，两者都认
-        payload = {**(data or {}), **(body or {})}
-        if self.auth_fail:
-            return FakeResponse(400, body={"error": "invalid_grant",
-                                           "error_description": "refresh token 已失效"})
-        if payload.get("grant_type") != "refresh_token" or not payload.get("client_id"):
-            return FakeResponse(400, body={"error": "invalid_request",
-                                           "error_description": "缺少 client_id"})
-        return FakeResponse(200, body={"access_token": f"graph-token-{self.graph_token_calls}",
-                                       "expires_in": 3600})
-
-    def _onedrive(self, url, headers) -> FakeResponse:
-        if self.auth_fail:
-            return FakeResponse(401, b"")
-        if not (headers.get("Authorization") or "").startswith("Bearer graph-token"):
-            return FakeResponse(401, b"")
-        import re as _re
-        from urllib.parse import unquote, urlparse
-
-        rest = unquote(urlparse(url).path).split("/me/drive/root", 1)[-1]
-        m = _re.match(r"^:?/(?P<path>.*):/content$", rest) or _re.match(r"^:(?P<path>.*):/content$", rest)
-        if m:
-            name = m.group("path").strip("/").rsplit("/", 1)[-1]
-            ident = next((f["id"] for files in self.onedrive.values() for f in files
-                          if f.get("name") == name), name)
-            return FakeResponse(302, b"", headers={"Location": f"https://cdn.example.com/onedrive/{ident}"})
-        m = _re.match(r"^:?/(?P<path>.*):/children$", rest) or _re.match(r"^:(?P<path>.*):/children$", rest)
-        if m:
-            folder = m.group("path").strip("/")
-            return FakeResponse(200, body={"value": self.onedrive.get(folder, [])})
-        if rest in ("/children", ""):
-            return FakeResponse(200, body={"id": "drive", "name": "OneDrive", "value": []})
-        return FakeResponse(404, b"")
-
-
-    # ---- rclone（rc 模式 + rc-serve）----
 
     def _rclone_rc(self, method, url, headers, body) -> FakeResponse:
         import base64
@@ -543,27 +301,34 @@ def _mount(name: str, mount_type: str, *, path: str = "", config: dict | None = 
 
 print("=== 类型注册表与虚拟路径 ===")
 registered = {t["value"] for t in mnt.MOUNT_TYPES}
-check("十种挂载类型都在注册表",
-      registered == {"local", "strm", "115", "webdav", "alist", "s3", "aliyun", "quark",
-                    "onedrive", "rclone", "gdrive"},
-      str(sorted(registered)))
+check("只剩三种挂载类型（v2.42.12 精简）",
+      registered == {"local", "115", "rclone"}, str(sorted(registered)))
+check("删掉的类型一个都不许复活",
+      not ({"strm", "webdav", "alist", "s3", "aliyun", "quark", "onedrive", "gdrive"}
+           & (registered | set(mnt._PROVIDERS))), str(sorted(registered)))
 check("每种类型都有标签 / 说明 / 字段定义",
       all(t.get("label") and t.get("hint") and "fields" in t for t in mnt.MOUNT_TYPES))
 check("本机类型需要路径，远程类型不需要",
       all(t["needs_path"] for t in mnt.MOUNT_TYPES if t["kind"] == "local")
       and all(not t["needs_path"] for t in mnt.MOUNT_TYPES if t["kind"] == "remote"))
-check("类型标签可查", mnt.MOUNT_TYPE_LABELS.get("115") == "115 网盘直挂",
+check("类型标签可查", mnt.MOUNT_TYPE_LABELS.get("115") == "115 网盘",
       str(mnt.MOUNT_TYPE_LABELS.get("115")))
 check("每种类型都有提供者", set(mnt.MOUNT_TYPE_MAP) <= set(mnt._PROVIDERS), str(sorted(mnt._PROVIDERS)))
 check("类型带分组 / 浏览 / 根字段元数据",
       all(t.get("group") and "browse" in t and "root_key" in t for t in mnt.MOUNT_TYPES)
-      and mnt.supports_browse("s3") and mnt.root_key("quark") == "pdir_fid",
+      and mnt.supports_browse("115") and mnt.root_key("115") == "cid",
       str([(t["value"], t.get("group"), t.get("root_key")) for t in mnt.MOUNT_TYPES]))
-check("必填字段来自类型元数据",
-      [f["key"] for f in mnt.required_fields("s3")] == ["endpoint", "bucket", "access_key", "secret_key"],
-      str([f["key"] for f in mnt.required_fields("s3")]))
+
+# ---- 路径前缀即类型 ----
+check("路径前缀决定类型", [mnt.detect_mount_type(p) for p in
+                           ("115:/0", "rclone:gdrive/M", "/media/movies")]
+      == ["115", "rclone", "local"],
+      str([mnt.detect_mount_type(p) for p in ("115:/0", "rclone:gdrive/M", "/media/movies")]))
+check("认不出来的前缀返回空串（让调用方明确报错，不猜）",
+      mnt.detect_mount_type("s3://x") == "" and mnt.detect_mount_type("") == "",
+      repr(mnt.detect_mount_type("s3://x")))
 check("密钥字段自动进入脱敏集合",
-      {"secret_key", "refresh_token", "cookie", "access_token"} <= mnt.secret_config_keys(),
+      {"rc_pass", "cookie", "access_token"} <= mnt.secret_config_keys(),
       str(sorted(mnt.secret_config_keys())))
 
 mount_path = mnt.mount_path(7, "/Movies/A.mkv")
@@ -582,9 +347,9 @@ except mnt.MountError as exc:
     check("未知类型构造提供者会报错", "不支持的挂载类型" in str(exc), str(exc))
 
 
-# ==================== 二、本机挂载（local / strm）====================
+# ==================== 二、本机挂载（本地硬盘；.strm 也归这一类）====================
 
-print("\n=== 本机挂载（local / strm）===")
+print("\n=== 本机挂载（本地硬盘，含 .strm）===")
 local_root = tempfile.mkdtemp(prefix="mount_local_")
 with open(os.path.join(local_root, "Local.Movie.2024.1080p.mkv"), "wb") as f:
     f.write(b"x" * 1024)
@@ -653,7 +418,7 @@ with open(os.path.join(strm_root, "Strm.Movie.2022.1080p.strm"), "w", encoding="
     f.write("\ufeff# 注释行\n\nhttps://cdn.example.com/strm/movie.mkv\n")
 with open(os.path.join(strm_root, "Broken.strm"), "w", encoding="utf-8") as f:
     f.write("这里没有直链")
-strm_mount = _mount("STRM 盘", "strm", path=strm_root)
+strm_mount = _mount("STRM 目录", "local", path=strm_root)
 check("STRM 内容解析（BOM / 注释 / 空行）",
       mnt.strm_url("\ufeff#c\n\nhttps://a.example.com/x.mkv\n") == "https://a.example.com/x.mkv")
 check("STRM 容器取自直链", mnt.strm_container("https://a.example.com/x.mkv") == "mkv")
@@ -731,56 +496,9 @@ check("同主机重定向保留凭据头（WebDAV 的鉴权要跟着走）",
       same == {"Authorization": "Basic x", "User-Agent": "u"}, str(same))
 
 
-# ==================== 三、远程挂载（115 / WebDAV / AList）====================
+# ==================== 三、远程挂载：115 ====================
 
-print("\n=== 远程挂载（115 / WebDAV / AList）===")
-dav_mount = _mount("群晖", "webdav",
-                   config={"url": "https://dav.example.com/media", "username": "u", "password": "p"})
-dav = mnt.build_provider(dav_mount)
-check("WebDAV 测试连接", mnt.test_mount(dav_mount)["ok"])
-check("WebDAV 解析 PROPFIND 目录",
-      {e.name for e in dav.list_dir("/")} == {"Movies"},
-      str([e.name for e in dav.list_dir("/")]))
-dav_files = sorted(f.rel for f in dav.walk_media())
-check("WebDAV 递归枚举媒体", dav_files == ["/Movies/Movie.2024.1080p.mkv"], str(dav_files))
-dav_target = dav.resolve("/Movies/Movie.2024.1080p.mkv")
-check("WebDAV 解析成 http 直链",
-      dav_target.kind == "url"
-      and dav_target.value == "https://dav.example.com/media/Movies/Movie.2024.1080p.mkv",
-      dav_target.value)
-check("WebDAV 带 Basic 鉴权头", dav_target.headers.get("Authorization", "").startswith("Basic "),
-      str(dav_target.headers))
-
-FAKE.auth_fail = True
-dav_fail = mnt.test_mount(dav_mount)
-check("WebDAV 401 识别为凭据问题",
-      dav_fail["ok"] is False and dav_fail.get("auth_error") is True, str(dav_fail))
-FAKE.auth_fail = False
-
-alist_mount = _mount("AList", "alist", config={"url": "https://alist.example.com", "path": "/115"})
-alist = mnt.build_provider(alist_mount)
-check("AList 测试连接", mnt.test_mount(alist_mount)["ok"])
-check("AList 递归枚举媒体",
-      [f.rel for f in alist.walk_media()] == ["/Movies/Alist.Movie.2023.mkv"])
-alist_target = alist.resolve("/Movies/Alist.Movie.2023.mkv")
-check("AList 用 raw_url 作为直链",
-      alist_target.kind == "url" and alist_target.value.endswith("/alist/Alist.Movie.2023.mkv"),
-      alist_target.value)
-
-login_mount = _mount("AList 登录", "alist",
-                     config={"url": "https://alist.example.com", "path": "/115",
-                             "username": "admin", "password": "pw"})
-check("AList 未配令牌时自动登录",
-      mnt.test_mount(login_mount)["ok"] and FAKE.alist_logins > 0, f"logins={FAKE.alist_logins}")
-
-retry_mount = _mount("AList 过期令牌", "alist",
-                     config={"url": "https://alist.example.com", "path": "/115",
-                             "token": "stale-token", "username": "admin", "password": "pw"})
-before_logins = FAKE.alist_logins
-check("AList 令牌过期后换令牌重试",
-      mnt.test_mount(retry_mount)["ok"] and FAKE.alist_logins > before_logins,
-      f"logins+{FAKE.alist_logins - before_logins}")
-
+print("\n=== 远程挂载：115 ===")
 os.environ["PAN115_COOKIE"] = PAN_COOKIE
 pan_mount = _mount("115 影库", "115", config={"cid": "0"})
 pan = mnt.build_provider(pan_mount)
@@ -877,7 +595,7 @@ db.add(staff)
 
 # 挂载必须先落库：扫描按挂载 id 从数据库取行（与后台保存后的行为一致）
 local_row = _mount(f"本机源{suf}", "local", path=local_root)
-strm_row = _mount(f"STRM 源{suf}", "strm", path=strm_root)
+strm_row = _mount(f"STRM 目录{suf}", "local", path=strm_root)
 pan_row = _mount(f"115 源{suf}", "115", config={"cid": "100"})
 db.add_all([local_row, strm_row, pan_row])
 db.commit()
@@ -1088,111 +806,6 @@ check("挂载外挂字幕取回并转成 WebVTT",
       sub_resp.body[:16].decode(errors="ignore"))
 
 
-# ==================== 六、云端挂载（S3 / 阿里云盘 / 夸克 / OneDrive）====================
-
-print("\n=== 云端挂载（S3 / 阿里云盘 / 夸克 / OneDrive）===")
-
-S3_CONFIG = {"endpoint": "https://s3.example.com", "bucket": "movies", "region": "us-east-1",
-             "access_key": "AKIATEST", "secret_key": "secret-test", "path_style": "true"}
-s3_mount = _mount("对象存储", "s3", config=S3_CONFIG)
-s3 = mnt.build_provider(s3_mount)
-check("S3 测试连接", mnt.test_mount(s3_mount)["ok"], str(mnt.test_mount(s3_mount)))
-s3_entries = s3.list_dir("/")
-check("S3 列目录区分目录与对象",
-      [(e.name, e.is_dir) for e in s3_entries] == [("Movies", True)],
-      str([(e.name, e.is_dir) for e in s3_entries]))
-check("S3 递归枚举媒体（跳过外挂字幕）",
-      sorted(f.rel for f in s3.walk_media()) == ["/Movies/Link.strm", "/Movies/S3.Movie.2024.mkv"],
-      str(sorted(f.rel for f in s3.walk_media())))
-s3_target = s3.resolve("/Movies/S3.Movie.2024.mkv")
-check("S3 直链是 SigV4 预签名 URL",
-      s3_target.kind == "url" and "X-Amz-Signature=" in s3_target.value
-      and "X-Amz-Credential=AKIATEST%2F" in s3_target.value,
-      s3_target.value[:120])
-check("S3 直链不下发密钥", "secret-test" not in s3_target.value, s3_target.value[:80])
-check("S3 预签名请求都带签名", FAKE.s3_missing_signature == 0, f"缺签 {FAKE.s3_missing_signature} 次")
-check("S3 .strm 对象解析成文件里的直链",
-      s3.resolve_final("/Movies/Link.strm").value == FAKE.s3_strm_body,
-      s3.resolve_final("/Movies/Link.strm").value)
-check("S3 子前缀可当挂载根",
-      sorted(f.rel for f in mnt.build_provider(
-          _mount("S3 子前缀", "s3", config={**S3_CONFIG, "prefix": "Movies"})).walk_media())
-      == ["/Link.strm", "/S3.Movie.2024.mkv"])
-check("S3 可切换虚拟主机寻址",
-      mnt.build_provider(_mount("S3 企业", "s3", config={**S3_CONFIG, "path_style": "false"})
-                         )._base_url() == "https://movies.s3.example.com")
-check("S3 缺密钥报凭据错误",
-      mnt.test_mount(_mount("S3 裸配置", "s3", config={"endpoint": "https://s3.example.com",
-                                                        "bucket": "movies"})).get("auth_error") is True)
-FAKE.auth_fail = True
-check("S3 403 识别为凭据问题", mnt.test_mount(s3_mount).get("auth_error") is True)
-FAKE.auth_fail = False
-
-ali_mount = _mount("阿里云盘", "aliyun", config={"refresh_token": "rt-ali"})
-ali = mnt.build_provider(ali_mount)
-token_calls_before = FAKE.aliyun_token_calls
-check("阿里云盘测试连接（自动换 access_token）",
-      mnt.test_mount(ali_mount)["ok"] and FAKE.aliyun_token_calls > token_calls_before,
-      f"换票 {FAKE.aliyun_token_calls - token_calls_before} 次")
-check("阿里云盘递归枚举媒体",
-      [f.rel for f in ali.walk_media()] == ["/电影/Aliyun.Movie.2024.mkv"],
-      str([f.rel for f in ali.walk_media()]))
-check("阿里云盘解析成直链",
-      ali.resolve("/电影/Aliyun.Movie.2024.mkv").value == "https://cdn.example.com/aliyun/af1",
-      ali.resolve("/电影/Aliyun.Movie.2024.mkv").value)
-calls_after_first = FAKE.aliyun_token_calls
-ali.resolve("/电影/Aliyun.Movie.2024.mkv")
-check("阿里云盘令牌在实例内复用", FAKE.aliyun_token_calls == calls_after_first,
-      f"{calls_after_first} → {FAKE.aliyun_token_calls}")
-check("阿里云盘子目录可当挂载根",
-      [f.rel for f in mnt.build_provider(
-          _mount("阿里云盘子目录", "aliyun", config={"refresh_token": "rt-ali", "file_id": "ad1"})
-      ).walk_media()] == ["/Aliyun.Movie.2024.mkv"])
-check("阿里云盘未配 refresh_token 报凭据错误",
-      mnt.test_mount(_mount("阿里云盘裸配置", "aliyun")).get("auth_error") is True)
-FAKE.auth_fail = True
-check("阿里云盘换票失败识别为凭据问题", mnt.test_mount(ali_mount).get("auth_error") is True)
-FAKE.auth_fail = False
-
-QUARK_COOKIE = "QUARK=smoke-token"
-quark_mount = _mount("夸克", "quark", config={"cookie": QUARK_COOKIE, "pdir_fid": "0"})
-quark = mnt.build_provider(quark_mount)
-check("夸克测试连接", mnt.test_mount(quark_mount)["ok"], str(mnt.test_mount(quark_mount)))
-check("夸克递归枚举媒体",
-      [f.rel for f in quark.walk_media()] == ["/电影/Quark.Movie.2024.mkv"],
-      str([f.rel for f in quark.walk_media()]))
-quark_target = quark.resolve("/电影/Quark.Movie.2024.mkv")
-check("夸克解析成下载直链", quark_target.value.endswith("/quark/qf1"), quark_target.value)
-check("夸克直链带 Cookie / Referer（仅本机使用）",
-      quark_target.headers.get("Cookie") == QUARK_COOKIE and "Referer" in quark_target.headers,
-      str(sorted(quark_target.headers)))
-FAKE.auth_fail = True
-check("夸克 Cookie 失效识别为凭据问题", mnt.test_mount(quark_mount).get("auth_error") is True)
-FAKE.auth_fail = False
-check("夸克未配 Cookie 报凭据错误",
-      mnt.test_mount(_mount("夸克裸配置", "quark")).get("auth_error") is True)
-
-od_mount = _mount("OneDrive", "onedrive",
-                  config={"client_id": "cid-1", "refresh_token": "rt-od", "path": "影视"})
-od = mnt.build_provider(od_mount)
-graph_calls_before = FAKE.graph_token_calls
-check("OneDrive 测试连接（自动换 access_token）",
-      mnt.test_mount(od_mount)["ok"] and FAKE.graph_token_calls > graph_calls_before,
-      f"换票 {FAKE.graph_token_calls - graph_calls_before} 次")
-check("OneDrive 递归枚举媒体（走配置的目录路径）",
-      [f.rel for f in od.walk_media()] == ["/电影/OneDrive.Movie.2024.mkv"],
-      str([f.rel for f in od.walk_media()]))
-check("OneDrive 解析成 graph 预授权直链",
-      od.resolve("/电影/OneDrive.Movie.2024.mkv").value == "https://cdn.example.com/onedrive/odf1",
-      od.resolve("/电影/OneDrive.Movie.2024.mkv").value)
-check("OneDrive 未配 client_id 报凭据错误",
-      mnt.test_mount(_mount("OneDrive 裸配置", "onedrive",
-                            config={"refresh_token": "rt-od"})).get("auth_error") is True)
-FAKE.auth_fail = True
-check("OneDrive 换票失败识别为凭据问题", mnt.test_mount(od_mount).get("auth_error") is True)
-FAKE.auth_fail = False
-
-
 # ==================== 七、rclone 挂载（rc / cli）====================
 
 print("\n=== rclone 挂载（rc / cli）===")
@@ -1200,10 +813,9 @@ print("\n=== rclone 挂载（rc / cli）===")
 RC_CONFIG = {"mode": "rc", "fs": "gdrive:Movies", "rc_url": "http://127.0.0.1:5572"}
 rc_mount = _mount("rclone rc", "rclone", config=RC_CONFIG)
 rc = mnt.build_provider(rc_mount)
-check("rclone 类型可浏览 / 支持 remote 列表 / 必填 remote",
-      mnt.supports_browse("rclone") and mnt.type_meta("rclone").get("remotes") is True
-      and mnt.root_key("rclone") == "fs"
-      and [f["key"] for f in mnt.required_fields("rclone")] == ["fs"])
+check("rclone 类型可浏览 / 支持 remote 列表",
+      mnt.supports_browse("rclone") and mnt.type_meta("rclone").get("remotes") is True,
+      str(mnt.type_meta("rclone")))
 check("rclone RC 测试连接", mnt.test_mount(rc_mount)["ok"], str(mnt.test_mount(rc_mount)))
 check("rclone RC 列目录走 RC API", any("/operations/list" in call for call in FAKE.rc_calls))
 check("rclone RC 递归枚举媒体",
@@ -1308,54 +920,80 @@ r = client.post("/api/admin/emby/mounts",
 check("挂载重名被拒绝", r.status_code == 400, r.text[:120])
 
 r = client.post("/api/admin/emby/mounts",
-                json={"name": f"坏类型{suf}", "mount_type": "ftp"}, headers=sh)
+                json={"name": f"坏类型{suf}", "mount_type": "ftp",
+                      "path": f"/media/{suf}"}, headers=sh)
 check("未知类型被拒绝", r.status_code == 400, r.text[:120])
+
+r = client.post("/api/admin/emby/mounts",
+                json={"name": f"无前缀{suf}", "mount_type": "rclone",
+                      "path": f"gdrive:Movies{suf}"}, headers=sh)
+check("路径没带来源前缀被拒绝（不静默按调用方给的类型存）",
+      r.status_code == 400 and "前缀" in r.json().get("detail", ""), r.text[:160])
 
 r = client.post("/api/admin/emby/mounts",
                 json={"name": f"坏路径{suf}", "mount_type": "local", "path": "/nope/nope"}, headers=sh)
 check("路径不存在被拒绝", r.status_code == 400, r.text[:120])
 
 r = client.post("/api/admin/emby/mounts",
-                json={"name": f"缺地址{suf}", "mount_type": "webdav"}, headers=sh)
-check("WebDAV 缺地址被拒绝", r.status_code == 400, r.text[:120])
-
-r = client.post("/api/admin/emby/mounts",
-                json={"name": f"API 群晖{suf}", "mount_type": "webdav",
-                      "config": {"url": "https://dav.example.com/media", "username": "u",
-                                 "password": "super-secret-pw"}},
+                json={"name": f"API rclone 脱敏{suf}", "mount_type": "rclone",
+                      "path": "rclone:gdrive:Movies",
+                      "config": {"mode": "rc", "rc_user": "u", "rc_pass": "super-secret-pw"}},
                 headers=sh)
-check("创建 WebDAV 挂载", r.status_code == 200, r.text[:120])
-dav_api_id = r.json()["mount"]["id"]
+check("创建 rclone 挂载", r.status_code == 200, r.text[:120])
+rclone_api_id = r.json()["mount"]["id"]
 check("配置回传脱敏（密码只报已配置）",
-      "super-secret-pw" not in r.text and "password" in r.json()["mount"]["secret_keys"],
+      "super-secret-pw" not in r.text and "rc_pass" in r.json()["mount"]["secret_keys"],
       str(r.json()["mount"]["secret_keys"]))
 
-r = client.put(f"/api/admin/emby/mounts/{dav_api_id}", json={"remark": "改备注"}, headers=sh)
+r = client.put(f"/api/admin/emby/mounts/{rclone_api_id}", json={"remark": "改备注"}, headers=sh)
 check("更新挂载返回「需重新扫描」",
       r.status_code == 200 and r.json()["rescan_required"] is True, r.text[:120])
 mounts_now = client.get("/api/admin/emby/mounts", headers=sh).json()["mounts"]
-dav_row = next(m for m in mounts_now if m["id"] == dav_api_id)
-check("留空密钥不会把已保存的密钥抹掉", "password" in dav_row["secret_keys"],
-      str(dav_row["secret_keys"]))
+rclone_row = next(m for m in mounts_now if m["id"] == rclone_api_id)
+check("留空密钥不会把已保存的密钥抹掉", "rc_pass" in rclone_row["secret_keys"],
+      str(rclone_row["secret_keys"]))
 
-r = client.post(f"/api/admin/emby/mounts/{dav_api_id}/test", headers=sh)
+# 换源：类型是路径前缀的函数，改前缀就等于换来源。
+# 这件事必须让前端知道——已入库的条目是**旧**来源解释出来的，不会自己改口径。
+r = client.post("/api/admin/emby/mounts",
+                json={"name": f"API 换源{suf}", "mount_type": "local", "path": local_root},
+                headers=sh)
+switch_id = r.json()["mount"]["id"]
+
+r = client.put(f"/api/admin/emby/mounts/{switch_id}", json={"remark": "只改备注"}, headers=sh)
+check("只改备注不报换源", r.json().get("mount_type_changed") is False, r.text[:120])
+
+r = client.put(f"/api/admin/emby/mounts/{switch_id}",
+               json={"path": "rclone:gdrive:Movies", "config": {"mode": "rc"}}, headers=sh)
+check("改路径前缀 = 换来源，并回传这个事实让前端提醒重扫",
+      r.status_code == 200 and r.json().get("mount_type_changed") is True
+      and r.json()["mount"]["mount_type"] == "rclone"
+      and r.json()["mount"]["path"] == "rclone:gdrive:Movies", r.text[:160])
+check("换源后类型不再接受调用方给的旧值（类型只由路径决定）",
+      r.json()["mount"]["mount_type"] != "local", r.json()["mount"]["mount_type"])
+client.delete(f"/api/admin/emby/mounts/{switch_id}", headers=sh)
+
+r = client.post(f"/api/admin/emby/mounts/{rclone_api_id}/test", headers=sh)
 check("测试已保存的挂载并记录结果",
       r.status_code == 200 and r.json()["success"] is True
       and r.json()["mount"]["last_check_ok"] is True, r.text[:140])
 
 r = client.post("/api/admin/emby/mounts/test",
-                json={"mount_type": "webdav", "config": {"url": "https://dav.example.com/media"}},
+                json={"mount_type": "rclone", "path": "rclone:gdrive:Movies",
+                      "config": {"mode": "rc", "rc_url": "http://127.0.0.1:5572"}},
                 headers=sh)
 check("测试未保存的配置（先测再存）", r.status_code == 200 and r.json()["success"] is True,
       r.text[:120])
 
 r = client.post("/api/admin/emby/mounts/test",
-                json={"mount_type": "115", "config": {"cid": "0"}}, headers=sh)
+                json={"mount_type": "115", "path": "115:/0", "config": {"cid": "0"}},
+                headers=sh)
 check("未保存的 115 配置也能测试",
       r.status_code == 200 and r.json()["success"] is True, r.text[:120])
 
 r = client.post("/api/admin/emby/mounts",
-                json={"name": f"API 115{suf}", "mount_type": "115", "config": {"cid": "0"}},
+                json={"name": f"API 115{suf}", "mount_type": "115", "path": "115:/0",
+                      "config": {"cid": "0"}},
                 headers=sh)
 check("创建 115 直挂", r.status_code == 200, r.text[:120])
 pan_api_id = r.json()["mount"]["id"]
@@ -1409,53 +1047,31 @@ check("删除挂载不会删掉已入库条目",
           em.MediaItem.file_path.like(f"mount://{pan_row.id}/%"),
       ).count() == 2)
 
-r = client.post("/api/admin/emby/mounts",
-                json={"name": f"缺密钥的对象存储{suf}", "mount_type": "s3",
-                      "config": {"endpoint": "https://s3.example.com", "bucket": "movies"}},
-                headers=sh)
-check("对象存储缺必填字段被拒绝",
-      r.status_code == 400 and "Access Key" in r.json()["detail"], r.text[:160])
+# rclone.conf 由用户粘贴：落盘后只回 remote 名（不回原文）
+CONF_BODY = ("[gdrive]\ntype = drive\nclient_id = cid\n"
+             "\n[onedrive]\ntype = onedrive\n\n[s3]\ntype = s3\n")
+r = client.post("/api/admin/emby/mounts/rclone/conf", json={"conf": CONF_BODY}, headers=sh)
+check("粘贴 rclone.conf 能落盘并解析出 remote",
+      r.status_code == 200 and r.json()["remotes"] == ["gdrive:", "onedrive:", "s3:"],
+      r.text[:160])
 
-r = client.post("/api/admin/emby/mounts",
-                json={"name": f"坏地址的对象存储{suf}", "mount_type": "s3",
-                      "config": {**S3_CONFIG, "endpoint": "s3.example.com"}}, headers=sh)
-check("对象存储端点格式错误被拒绝", r.status_code == 400, r.text[:160])
+r = client.get("/api/admin/emby/mounts/rclone/conf", headers=sh)
+check("读 rclone.conf 只回 remote 名，不回原文（里面全是 token）",
+      r.status_code == 200 and r.json()["remotes"] == ["gdrive:", "onedrive:", "s3:"]
+      and "client_id" not in r.text, r.text[:160])
 
-r = client.post("/api/admin/emby/mounts",
-                json={"name": f"API 对象存储{suf}", "mount_type": "s3", "config": S3_CONFIG},
-                headers=sh)
-check("创建对象存储挂载", r.status_code == 200, r.text[:160])
-s3_api = r.json()["mount"]
-check("对象存储密钥脱敏（只报已配置）",
-      "secret-test" not in r.text and "AKIATEST" not in r.text
-      and {"access_key", "secret_key"} <= set(s3_api["secret_keys"]),
-      str(s3_api["secret_keys"]))
-check("对象存储非密钥字段正常回传",
-      s3_api["config"].get("bucket") == "movies" and "access_key" not in s3_api["config"],
-      str(s3_api["config"]))
+r = client.post("/api/admin/emby/mounts/rclone/conf",
+                json={"conf": "[断掉的\ntype = drive\n"}, headers=sh)
+check("非法 INI 当场拒绝（不等到扫描才发现一个 remote 都没有）",
+      r.status_code == 400 and "INI" in r.json().get("detail", ""), r.text[:160])
 
-r = client.get(f"/api/admin/emby/mounts/{s3_api['id']}/browse", params={"rel": "/"}, headers=sh)
-check("浏览对象存储目录（前缀也可当挂载根）",
-      r.status_code == 200 and [e["name"] for e in r.json()["entries"]] == ["Movies"], r.text[:140])
-
-r = client.get("/api/admin/emby/mounts/rclone/remotes",
-               params={"mode": "rc", "rc_url": "http://127.0.0.1:5572"}, headers=sh)
-check("后台可拉取 rclone remote 列表",
-      r.status_code == 200 and r.json()["remotes"] == ["gdrive:", "onedrive:", "s3:"], r.text[:140])
-
-r = client.get("/api/admin/emby/mounts/rclone/remotes",
-               params={"mode": "cli", "rclone_bin": FakeRcloneCLI.RCLONE_PATH}, headers=sh)
-check("rclone remote 列表也支持命令模式",
-      r.status_code == 200 and len(r.json()["remotes"]) == 3, r.text[:140])
-
-r = client.post("/api/admin/emby/mounts",
-                json={"name": f"缺 remote 的 rclone{suf}", "mount_type": "rclone",
-                      "config": {"mode": "rc"}}, headers=sh)
-check("rclone 缺 remote 被拒绝",
-      r.status_code == 400 and "remote" in r.json()["detail"], r.text[:160])
+r = client.post("/api/admin/emby/mounts/rclone/conf",
+                json={"conf": "[gdrive]\nclient_id = cid\n"}, headers=sh)
+check("缺 type 的 remote 段被拒绝", r.status_code == 400, r.text[:160])
 
 r = client.post("/api/admin/emby/mounts",
                 json={"name": f"API rclone{suf}", "mount_type": "rclone",
+                      "path": "rclone:gdrive:Movies",
                       "config": {**RC_CONFIG, "rc_pass": "secret-rc-pass"}}, headers=sh)
 check("创建 rclone 挂载", r.status_code == 200, r.text[:160])
 rclone_api = r.json()["mount"]
@@ -1472,30 +1088,6 @@ r = client.post("/api/admin/emby/libraries",
 check("媒体库可绑定 rclone 挂载", r.status_code == 200, r.text[:160])
 rclone_lib_id = r.json()["id"]
 
-r = client.post("/api/admin/emby/mounts/test",
-                json={"mount_type": "quark", "config": {"cookie": QUARK_COOKIE}}, headers=sh)
-check("未保存的夸克配置也能测试", r.status_code == 200 and r.json()["success"] is True, r.text[:140])
-
-r = client.post("/api/admin/emby/mounts",
-                json={"name": f"API 阿里云盘{suf}", "mount_type": "aliyun",
-                      "config": {"refresh_token": "rt-ali"}}, headers=sh)
-check("创建阿里云盘挂载", r.status_code == 200, r.text[:160])
-ali_api_id = r.json()["mount"]["id"]
-r = client.post(f"/api/admin/emby/mounts/{ali_api_id}/test", headers=sh)
-check("测试已保存的阿里云盘挂载",
-      r.status_code == 200 and r.json()["success"] is True
-      and r.json()["mount"]["last_check_ok"] is True, r.text[:160])
-
-r = client.post("/api/admin/emby/libraries",
-                json={"name": f"云盘挂载库{suf}", "collection_type": "movies", "paths": [],
-                      "mount_ids": [s3_api["id"]]}, headers=sh)
-check("媒体库可绑定对象存储挂载", r.status_code == 200, r.text[:160])
-cloud_lib_id = r.json()["id"]
-cloud_lib_row = next(l for l in client.get("/api/admin/emby/libraries", headers=sh).json()["libraries"]
-                     if l["id"] == cloud_lib_id)
-check("云盘挂载库列表回传绑定", cloud_lib_row["mount_ids"] == [s3_api["id"]],
-      str(cloud_lib_row["mount_ids"]))
-
 # 远程挂载条目的 file_path 是 mount://，播放/存在性都靠提供者解析
 cloud_item = db.query(em.MediaItem).filter(
     em.MediaItem.library_id == lib_remote.id,
@@ -1508,7 +1100,7 @@ check("播放入口统一走 resolve_final（远程条目）",
 # 冒烟测试共用同一个数据库：远程挂载条目按 mount://<id>/<rel> 生成 guid，
 # 每次运行的挂载 id 都不同，不清理会持续累积（并影响其它测试的全局统计断言）。
 cleanup_lib_ids = [x for x in (lib_local.id, lib_remote.id, lib_strm.id, lib_dual.id,
-                              api_lib_id, cloud_lib_id, rclone_lib_id) if x]
+                              api_lib_id, rclone_lib_id) if x]
 cleanup_rows = db.query(em.MediaItem).filter(em.MediaItem.library_id.in_(cleanup_lib_ids)).all()
 for row in cleanup_rows:
     db.query(em.MediaStream).filter(em.MediaStream.item_id == row.id).delete(synchronize_session=False)

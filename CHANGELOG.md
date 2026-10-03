@@ -2,6 +2,63 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.42.12] - 2026-10-03
+
+### 存储挂载精简到三种（只做能力），挂载熔断器整体删除
+
+- **只剩三种来源，且类型由路径前缀决定**：本地硬盘（`/media` 开头）、
+  115 网盘（`115:/` 开头）、rclone（`rclone:` 开头，形如 `rclone:gdrive/Movies`）。
+  后台不再有类型下拉——这三种的配置本来就只有一条路径加少量可选项，多一个下拉
+  只会让人选出不匹配的组合。认不出来的前缀保存时直接 400 并写清正确写法，
+  不静默按调用方给的类型存。
+- **删干净其余类型**：WebDAV / AList / S3 / 阿里云盘 / 夸克 / OneDrive /
+  Google Drive 原生，连同 STRM 独立类型一起删除——后端模块（`mount_cloud.py`、
+  `mount_google.py`、`direct_url.py`、`file_id_cache.py`）、模型
+  （`RcloneRemote` / `ServiceAccountFile` / `MountFileIdCache`）、前端界面与
+  文档一并移除。STRM 的**能力**没丢：`.strm` 小文件改由本地硬盘挂载承载。
+  它们现在都应该改走 rclone（这类后端 rclone 全都支持）。
+- **rclone.conf 完全由用户自理**：删掉「rclone remote 管理」页与
+  `rclone_admin.py` / `rclone_manager.py`（面板不再代管凭据、不再从库里生成配置）。
+  改成在后台「rclone.conf」页粘贴标准 INI 文本，落盘到
+  `data/rclone/rclone.conf`（权限 600，先写临时文件再改名），每条 rclone 命令
+  自动带 `--config` 指过去。**原文不回显**（里面全是 token）。rclone 装在哪、
+  配置写在哪由用户决定，不写死。
+- **挂载熔断器整块删除**（`mounts.py` 里的 `MountBreakerOpen` / `_BREAKERS` /
+  `mount_breaker_open` / `mount_breaker_stats` / `breaker_reset`，以及
+  `enrich_worker` / `server_ops` / 进度接口 / 运维页上的「挂载熔断中」卡片）。
+  它把「网盘临时连不上」和「配置写错了」当成同一件事，前者被误判成后者，
+  结果整个挂载被拉黑几分钟。
+- **留下来的是它的另一半**：「存储读不动 → 条目打回 pending + 长退避」这条不删。
+  否则一个挂不上的 remote 会让整库条目 5 次尝试后全部终结，补全队列再也回不来。
+  原来的 `MOUNT_BREAKER_RETRY_SEC` 随之改名为 `MOUNT_UNAVAILABLE_RETRY_SEC`
+  （讲的是自己的事情，不再跟着熔断器消失）。
+- **换来源会明确提醒重扫**：改一条挂载的路径前缀（`115:/` ↔ `rclone:` ↔ `/media`）
+  就等于换来源，后端回传 `mount_type_changed`，后台弹提示要求重新扫描对应媒体库。
+  原因：库里已入库条目的 `mount://<id>/<rel>` 是**旧**来源解释出来的，换提供者后
+  不会自己改口径——不提醒就会静默地把一堆条目解释错。
+- **数据库迁移不自动执行**：三张没人再读的表由
+  `scripts/drop_removed_mount_tables.py` 清理，必须显式 `--yes` 才动手，先打印
+  会删多少行。不删也不影响功能（ORM 里已经没有了）。发行镜像按设计不含
+  `scripts/`（客户看不到源码），所以 DEPLOY.md 与运维文档给的是等价的 `psql`
+  删表命令，自建部署才用脚本。
+
+### 未做真机点检
+
+本次没有做「登录 ghcr → pull → up」的端到端点检（需要真实包权限，沙箱跑不了）。
+已验证的是：12 项 `check_*.py` 全过、pytest 1158 passed、双端 type-check + build
+rc=0，存储挂载 / 挂载体检 / 可达性 / 扫描队列 / 队列并发演练等冒烟全部通过
+（后者从「真 WebDAV 服务」改成「真 rclone RC 服务」，保留真 HTTP、真延迟与服务端
+观测，只是换了协议）。
+
+### 已知遗留
+
+- `probe_worker` 的**配额熔断器**（连续 HTTP 403 暂停 worker）**保留**：它保护的是
+  上游配额，与被删的挂载熔断器不是一回事，文案已从「Google Drive 配额」改为
+  「上游配额」。
+- 升级前存在的 WebDAV / AList / S3 等旧类型挂载行会变成「不支持的挂载类型」并
+  **大声报错**（而不是静默当空库）；管理员需在后台删掉或改绑成 rclone 挂载。
+  这是有意选的失败形态——问题会当场出现在挂载列表里，而不是让扫描悄悄扫出空库。
+
 ## [2.42.11] - 2026-10-03
 
 ### 授权版环境变量：修掉两个「照文档走仍然起不来」的阻断

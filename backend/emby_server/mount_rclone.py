@@ -1,25 +1,35 @@
 """rclone 挂载：直接复用 rclone 的 remote，把内容接进媒体库
 
 和 `local` 挂载的区别：**不需要把网盘挂到本机**。rclone 支持的后端（Google Drive /
-OneDrive / S3 / 115 / 阿里云盘 / 夸克 / WebDAV / SFTP …）都通过同一个挂载类型接进来，
-配置也只复用 rclone 自己的 remote 定义，不用在面板里再抄一遍密钥。
+OneDrive / S3 / 115 / 阿里云盘 / 夸克 / WebDAV / SFTP …）都通过这一个挂载类型接进来。
 
-两种模式：
+**rclone.conf 完全由用户自理**（v2.42.12）：面板不再有「rclone remote 管理」页，
+也不再从数据库生成配置。用户直接粘贴标准 INI 文本（``rclone config`` 生成的那种），
+落盘到 ``data/rclone/rclone.conf``，本模块每次跑 rclone 都用 ``--config`` 指过去。
+写在哪、rclone 装在哪台机器上，都是用户自己的事。
 
-``rc``（推荐，默认）
-    连到正在运行的 ``rclone rcd --rc-serve``：
+挂载路径写成 ``rclone:gdrive/Movies``：前缀 ``rclone:`` 是类型标记，剩下的是 rclone
+自己的 ``remote:路径`` 写法（见 ``mounts.detect_mount_type``）。也就是说 remote 名必须
+带冒号，否则 rclone 会把它当成本机目录——``_target`` / ``fs_missing_colon_hint`` 专门
+翻译这个高频错误。
+
+两种调用方式：
+
+``rc``（默认）
+    连到用户自己跑着的 ``rclone rcd --rc-serve``：
 
     - 列目录 / 测试走 RC API（``POST /operations/list``、``/config/listremotes``）；
     - 播放地址直接用 rc-serve 暴露的 ``http://<rc 地址>/<remote:path>``，
       rclone 自己处理 Range，EA 照旧代理转发，凭据与 rc 地址都不下发客户端。
+    - 这条路用的是**用户启动的 rcd 自己的配置**，与本面板的 rclone.conf 无关。
 
-``cli``（兜底）
-    直接调用 rclone 可执行文件：``lsjson`` 列目录、``cat`` 读内容（.strm / 字幕）、
-    ``link`` 取公开直链。适合「机器上有 rclone 但不想常驻 rc」的场景；
-    后端不支持公开链接时会在测试里明确提示改用 rc 模式或把网盘挂到本机（``local``）。
+``cli``
+    直接调用 rclone 可执行文件，用上面那份粘贴的 rclone.conf：
+    ``lsjson`` 列目录、``cat`` 读内容（.strm / 字幕）、``link`` 取公开直链。
 """
 from __future__ import annotations
 
+import configparser
 import json
 import logging
 import os
@@ -30,31 +40,90 @@ import urllib.parse
 from typing import Optional
 
 from backend.emby_server import mounts as mount_lib
-from backend.emby_server.mount_cloud import _CloudMount
 from backend.emby_server.mounts import (
     MountAuthError,
     MountEntry,
     MountError,
     PlayTarget,
+    RemoteMount,
     cached_listing,
     parse_mod_ts,
 )
 
 logger = logging.getLogger(__name__)
 
-MOUNT_RCLONE = "rclone"
+MOUNT_RCLONE = mount_lib.MOUNT_RCLONE
 
 MODE_RC = "rc"
 MODE_CLI = "cli"
 
 RCLONE_BIN = os.getenv("MOUNT_RCLONE_BIN", "rclone")
-RCLONE_CONFIG = os.getenv("MOUNT_RCLONE_CONFIG", "")
+#: 用户粘贴的 rclone.conf 落盘位置。可用挂载配置里的 ``rclone_config`` 覆盖，
+#: 也可用 MOUNT_RCLONE_RCLONE_CONF 换路径（容器里 data/ 是持久卷）。
+CONF_PATH = os.getenv(
+    "MOUNT_RCLONE_CONF", os.getenv("AETRIX_DATA_DIR", "data") + "/rclone/rclone.conf"
+)
 RC_URL = os.getenv("MOUNT_RCLONE_RC_URL", "http://127.0.0.1:5572")
 # 服务器侧统一配置的 RC 凭据（见 docker-compose.yml 的 .env）：
 # 同一台机器上的 rclone RC 属于本机基础设施，挂载表单不必（也不应该）每条都存一份密码。
-# 表单留空 → 直接用这里；表单填错 → 先按填的试，失败自动回退到这里并记一条日志。
 RC_USER = os.getenv("MOUNT_RCLONE_RC_USER", "").strip()
 RC_PASS = os.getenv("MOUNT_RCLONE_RC_PASS", "")
+
+
+# ==================== rclone.conf 存取 ====================
+
+def parse_rclone_conf(text: str) -> dict[str, dict[str, str]]:
+    """解析 rclone.conf 的 INI 文本，返回 ``{remote 名: {key: value}}``
+
+    用 ``configparser`` 而不是自己按行切：rclone.conf 允许行内注释、分节名里带空格，
+    而手写解析器会把 ``[gdrive] # 备注`` 读成一个叫 ``gdrive] # 备注`` 的 remote。
+    """
+    parser = configparser.RawConfigParser(strict=False, interpolation=None)
+    parser.optionxform = str  # rclone 的 key 大小写敏感（token / client_id）
+    try:
+        parser.read_string(text or "")
+    except configparser.Error as exc:
+        raise MountError(f"rclone.conf 不是合法的 INI 文本：{exc}") from exc
+    return {section: dict(parser.items(section)) for section in parser.sections()}
+
+
+def conf_remote_names(text: str) -> list[str]:
+    """从 rclone.conf 文本里读出 remote 名（带尾冒号，与 rclone 自己输出一致）"""
+    return [f"{name}:" for name in parse_rclone_conf(text or "")]
+
+
+def write_rclone_conf(text: str, path: str = "") -> str:
+    """把用户粘贴的 INI 文本落盘，返回实际写入的路径（权限 600）
+
+    先解析再写：非法 INI 在这里就报出来，而不是等扫描时才发现 remote 一个都没注册。
+    """
+    target = (path or CONF_PATH).strip()
+    conf = parse_rclone_conf(text or "")
+    if not conf:
+        raise MountError("rclone.conf 里一个 remote 段都没有——至少要有 ``[名字]`` 加 ``type = ...``")
+    for name, section in conf.items():
+        if not (section.get("type") or "").strip():
+            raise MountError(f"rclone.conf 的 [{name}] 缺 type = ...")
+    directory = os.path.dirname(target)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    # 先写临时文件再改名：写到一半断电不会留下半个配置（rclone 读到半个文件会直接全盘报错）
+    tmp = f"{target}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, target)
+    logger.info("rclone.conf 已更新：%s（%d 个 remote）", target, len(conf))
+    return target
+
+
+def read_rclone_conf(path: str = "") -> str:
+    """读回 rclone.conf 原文（文件不存在返回空串）"""
+    target = (path or CONF_PATH).strip()
+    if not os.path.isfile(target):
+        return ""
+    with open(target, encoding="utf-8") as handle:
+        return handle.read()
 
 # CLI 输出里这些字样说明是凭据问题而不是网络/路径问题
 _AUTH_HINTS = ("unauthorized", "401", "403", "invalid_grant", "token", "credentials",
@@ -170,7 +239,9 @@ def run_rclone(args: list[str], *, bin_path: str = "", config: str = "",
             f"或用 MOUNT_RCLONE_BIN 指定）"
         )
     command = [binary, *args]
-    config_path = (config or RCLONE_CONFIG or "").strip()
+    # 没显式指定就指用户粘贴的那份（CONF_PATH）。不指的话 rclone 会去读它自己的
+    # ~/.config/rclone/rclone.conf，而那里面什么都没有——表现是「remote 全都不存在」。
+    config_path = (config or CONF_PATH or "").strip()
     if config_path:
         command.append(f"--config={config_path}")
     try:
@@ -312,7 +383,7 @@ def _rc_list_items(rc_url: str, fs: str, remote: str, *, username: str = "",
     return [i for i in ((body or {}).get("list") or []) if isinstance(i, dict)]
 
 
-class RcloneMount(_CloudMount):
+class RcloneMount(RemoteMount):
     """rclone 挂载（rc 模式 / cli 模式）"""
 
     mount_type = MOUNT_RCLONE
@@ -324,8 +395,13 @@ class RcloneMount(_CloudMount):
         self.mode = (cfg.get("mode") or MODE_RC).strip().lower()
         if self.mode not in (MODE_RC, MODE_CLI):
             self.mode = MODE_RC
-        # fs 就是 rclone 的「remote:路径」，例如 gdrive:Movies
-        self.fs = (cfg.get("fs") or cfg.get("remote") or "").strip()
+        # fs 就是 rclone 的「remote:路径」。v2.42.12 起它写在**路径**里而不是单独的
+        # config 字段：路径形如 ``rclone:gdrive/Movies``，去掉类型前缀就得到 ``gdrive/Movies``。
+        # 配置里残留的旧 ``fs`` 仍然认，方便升级前存过的挂载不用重填。
+        raw = (getattr(mount, "path", "") or "").strip()
+        if raw.lower().startswith(MOUNT_RCLONE + ":"):
+            raw = raw[len(MOUNT_RCLONE) + 1:]
+        self.fs = (raw or cfg.get("fs") or cfg.get("remote") or "").strip()
         self.rc_url = (cfg.get("rc_url") or RC_URL).strip().rstrip("/") or RC_URL
         # 数据面（真正取媒体字节）与控制面（列目录/查状态）可以走不同的端点。
         # 留空 = 沿用 rc-serve 取流（旧行为，完全兼容）；填了就走该地址。
@@ -334,6 +410,7 @@ class RcloneMount(_CloudMount):
         self.rc_user = (cfg.get("rc_user") or RC_USER).strip()
         self.rc_pass = cfg.get("rc_pass") or RC_PASS
         self.bin_path = (cfg.get("rclone_bin") or "").strip()
+        # 留空 = 用用户粘贴的那份（data/rclone/rclone.conf）
         self.config_path = (cfg.get("rclone_config") or "").strip()
         # remote 名漏冒号时的原始写法（自愈后留在 test 提示里，好让管理员把配置改过来）
         self.healed_from = ""
@@ -345,27 +422,35 @@ class RcloneMount(_CloudMount):
             raise MountError("请填写 remote（例如 gdrive:Movies）")
         return self.fs
 
-    def _heal_fs(self) -> bool:
-        """remote 名漏冒号时按远端已配置的 remote 自愈（只在列目录 / 测试这类网络入口做）
-
-        老配置里存成 ``paul_emby``（漏冒号）时 rclone 会把它当本机目录，报
-        「refers to a local folder」。这里问一次远端有哪些 remote，首段能对上就补冒号，
-        不必先让管理员手改配置、重扫一遍才恢复。
-        """
-        if not self.fs or fs_remote_name(self.fs) or looks_like_local_path(self.fs):
-            return False
+    def _known_remotes(self) -> list[str]:
+        """已配置的 remote 名：rc 模式问 RC，cli 模式读用户粘贴的 rclone.conf"""
+        if self.mode == MODE_CLI:
+            try:
+                return conf_remote_names(read_rclone_conf(self.config_path))
+            except MountError:
+                return []
         try:
-            remotes = list_remotes(
+            return list_remotes(
                 self.rc_url, username=self.rc_user, password=self.rc_pass,
                 bin_path=self.bin_path, config=self.config_path, mode=self.mode,
             )
         except MountError as exc:
             logger.info("rclone remote 列表读取失败（不自动纠正 %s）: %s", self.fs, exc)
+            return []
+
+    def _heal_fs(self) -> bool:
+        """remote 名漏冒号时按已配置的 remote 自愈（只在列目录 / 测试这类网络入口做）
+
+        老配置里存成 ``paul_emby``（漏冒号）时 rclone 会把它当本机目录，报
+        「refers to a local folder」。这里问一次有哪些 remote，首段能对上就补冒号，
+        不必先让管理员手改路径、重扫一遍才恢复。
+        """
+        if not self.fs or fs_remote_name(self.fs) or looks_like_local_path(self.fs):
             return False
-        fixed = normalize_fs(self.fs, remotes)
+        fixed = normalize_fs(self.fs, self._known_remotes())
         if fixed == self.fs:
             return False
-        logger.warning("rclone remote 名漏冒号：%s → %s（建议在挂载配置里改成带冒号的写法）",
+        logger.warning("rclone remote 名漏冒号：%s → %s（建议把挂载路径改成带冒号的写法）",
                        self.fs, fixed)
         self.healed_from, self.fs = self.fs, fixed
         return True
@@ -451,8 +536,7 @@ class RcloneMount(_CloudMount):
 
         ``ModTime`` 以前在这里被丢掉了——追新要判断「新增」必须知道最后修改时间，
         而追新拿不到它就只能绕开公共通道直接读 rclone 原始 JSON，等于自带一条无限流的
-        旁路（2026-10 rclone 请求风暴）。现在它一路带到 ``MountEntry.mod_ts``，
-        追新也能吃缓存 / 限流 / 熔断。
+        旁路（2026-10 rclone 请求风暴）。现在它一路带到 ``MountEntry.mod_ts``。
         """
         if self.mode == MODE_CLI:
             items = self._cli_lsjson(rel)
@@ -549,49 +633,14 @@ class RcloneMount(_CloudMount):
         return super().read_text(rel)
 
 
-MOUNT_TYPE_ENTRIES = [
-    {
-        "value": MOUNT_RCLONE,
-        "label": "rclone（任意后端）",
-        "kind": "remote",
-        "group": "gateway",
-        "hint": "复用 rclone 的 remote，网盘不用挂到本机。推荐连 rclone rcd --rc-serve；"
-                "也可以直接调 rclone 命令。已经 rclone mount 到本机的目录用「本地 / 已挂载目录」更直接。",
-        "needs_path": False,
-        "browse": True,
-        "root_key": "fs",
-        "remotes": True,
-        "fields": [
-            {
-                "key": "mode", "label": "模式", "type": "select",
-                "options": [{"label": "RC API（推荐，需 rclone rcd --rc-serve）", "value": "rc"},
-                            {"label": "直接调用 rclone 命令", "value": "cli"}],
-            },
-            {"key": "fs", "label": "remote", "placeholder": "gdrive:Movies", "required": True,
-             "type": "rclone_fs"},
-            {"key": "rc_url", "label": "RC 地址", "placeholder": "http://127.0.0.1:5572"},
-            {"key": "rc_user", "label": "RC 用户名（可选）"},
-            {"key": "rc_pass", "label": "RC 密码（可选）", "secret": True},
-            {"key": "serve_url", "label": "取流地址（可选）",
-             "placeholder": "http://127.0.0.1:8080",
-             "hint": "留空则用 RC 地址取流（旧行为）；填了则媒体字节走该端点。"
-                     "配 rclone serve http（带 VFS 缓存）时填这里，重复读取可命中缓存。"},
-            {"key": "rclone_bin", "label": "rclone 路径（可选）", "placeholder": "默认从 PATH 找 rclone"},
-            {"key": "rclone_config", "label": "rclone.conf 路径（可选）",
-             "placeholder": "默认 ~/.config/rclone/rclone.conf"},
-        ],
-    },
-]
-
 PROVIDERS = {MOUNT_RCLONE: RcloneMount}
 
 
 def register() -> None:
-    """注册 rclone 挂载类型与提供者（幂等）"""
-    mount_lib.register_mount_types(MOUNT_TYPE_ENTRIES)
+    """注册 rclone 提供者（幂等）。类型元数据在 mounts.py 里，与另外两种放在一起。"""
     mount_lib.register_providers(PROVIDERS)
-    logger.debug("已注册 rclone 挂载类型")
+    logger.debug("已注册 rclone 挂载提供者")
 
 
-# 模块导入即注册：无论谁先被导入（mounts 或本模块），类型表都是齐的
+# 模块导入即注册：无论谁先被导入（mounts 或本模块），提供者表都是齐的
 register()

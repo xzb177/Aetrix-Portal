@@ -2,14 +2,15 @@
 /**
  * 存储挂载：媒体库的内容来源
  *
- * 一个挂载就是「把内容接进媒体库」的一种方式：
- * - 本机目录：rclone / CloudDrive2 / SMB / NFS 已经挂到本机后的目录；
- * - STRM 目录：本地只放 .strm 小文件，内容是播放直链；
- * - 网盘直挂：115 / 阿里云盘 / 夸克 / OneDrive，直接读网盘，不用挂到本机；
- * - 网关与对象存储：WebDAV / AList；S3 兼容对象存储（MinIO / R2 / Backblaze）。
+ * 只支持三种来源（v2.42.11），**类型由路径前缀决定**，所以表单里没有类型下拉：
+ * - `/media/...`  —— 本地硬盘（目录里的 .strm 小文件照样认）；
+ * - `115:/...`   —— 115 网盘，账号用 Cookie 配置档；
+ * - `rclone:...` —— rclone 任意后端，形如 `rclone:gdrive/Movies`。
  *
- * 类型列表、表单字段、必填项、目录浏览入口全部由后端下发的类型元数据驱动，
- * 所以后端新增一种挂载类型时，这个页面不用改。
+ * rclone.conf 完全由用户自理：切到「rclone.conf」页粘贴标准 INI 文本，
+ * 面板只负责落盘并给 rclone 命令加 --config。
+ *
+ * 类型说明、配置字段、必填项、目录浏览入口仍由后端下发的类型元数据驱动。
  *
  * 挂载本身不拥有条目：媒体库通过「绑定挂载」引用它，同一个挂载可被多个库共用。
  *
@@ -46,7 +47,7 @@ import type {
 } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
-import RcloneRemotes from './RcloneRemotes.vue'
+import RcloneConfEditor from '@/components/RcloneConfEditor.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import NoticePanel from '@/components/NoticePanel.vue'
 
@@ -135,9 +136,40 @@ const form = ref({
   realm_id: null as number | null,
 })
 
-/** rclone：远端已配置的 remote（点「获取 remote 列表」才拉） */
+/** rclone：用户粘贴的 rclone.conf 里已配置的 remote */
 const rcloneRemotes = ref<string[]>([])
 const remotesLoading = ref(false)
+
+/** 路径前缀 → 类型（与后端 mounts.detect_mount_type 同一张表） */
+const PATH_TYPE_PREFIXES: [string, string][] = [
+  ['115:/', '115'],
+  ['rclone:', 'rclone'],
+  ['/media', 'local'],
+]
+
+/**
+ * 认不出来的**前缀**返回空串：表单据此报错，而不是猜一个类型存进去。
+ *
+ * 但绝对路径一律当本地硬盘（与后端 `DEFAULT_PATH_TYPE` 一致）：裸机部署的
+ * 媒体常在 /mnt/media、/srv/media 这类地方，前端要是只认 /media，一台装得好好的
+ * 机器就建不出挂载。真正的「认不出」是 s3://x、漏前缀的 gdrive:Movies 这种。
+ */
+function detectType(path: string): string {
+  const raw = (path || '').trim()
+  for (const [prefix, type] of PATH_TYPE_PREFIXES) {
+    if (raw.startsWith(prefix)) return type
+  }
+  if (raw.startsWith('/') || raw.startsWith('./') || raw.startsWith('../') || raw.startsWith('~')) {
+    return 'local'
+  }
+  return ''
+}
+
+/** 去掉 rclone: 前缀后的真实 remote:路径（前端做提示用，后端也会自己剥一遍） */
+function rcloneTarget(path: string): string {
+  const raw = (path || '').trim()
+  return raw.startsWith('rclone:') ? raw.slice('rclone:'.length) : raw
+}
 
 /**
  * rclone 的规则：没有冒号的路径是**本机路径**。
@@ -161,9 +193,8 @@ function rcloneWithColon(name: string): string {
 
 /** 表单里的 remote 漏冒号时给出可操作的提示（保存时后端也会拦/纠正） */
 const rcloneFsHint = computed(() => {
-  const key = currentType.value?.root_key
-  if (!key) return ''
-  const raw = (form.value.config[key] || '').trim()
+  if (form.value.mount_type !== 'rclone') return ''
+  const raw = rcloneTarget(form.value.path)
   if (!raw || rcloneRemoteName(raw)) return ''
   if (raw.startsWith('/') || raw.startsWith('.') || raw.startsWith('~')) return ''
   const head = raw.split('/')[0].trim()
@@ -172,15 +203,15 @@ const rcloneFsHint = computed(() => {
     + `正确写法：${head}: 或 ${head}:子目录。`
 })
 
-/** 选中 / 输入 remote 后补冒号：`paul_emby` → `paul_emby:`（只认远端已配置的 remote） */
-function fixRcloneFs(key: string) {
-  const raw = (form.value.config[key] || '').trim()
+/** 选中 / 输入 remote 后补冒号：`paul_emby` → `paul_emby:`（只认已配置的 remote） */
+function fixRcloneFs() {
+  const raw = rcloneTarget(form.value.path)
   if (!raw || rcloneRemoteName(raw)) return
   const [head, ...rest] = raw.split('/')
   const known = rcloneRemotes.value.map((r) => r.replace(/:$/, ''))
   if (!known.includes(head.trim())) return
   const tail = rest.join('/').replace(/^\/+|\/+$/g, '')
-  form.value.config[key] = tail ? `${head.trim()}:${tail}` : `${head.trim()}:`
+  form.value.path = `rclone:${tail ? `${head.trim()}:${tail}` : `${head.trim()}:`}`
 }
 
 const browseVisible = ref(false)
@@ -201,7 +232,7 @@ function typeMeta(mountType: string): MountTypeMeta | undefined {
   return types.value.find((t) => t.value === mountType)
 }
 
-/** 图标按分组区分：本机盘 / 云盘 / 网关（WebDAV、AList） */
+/** 图标按分组区分：本机盘 / 115 / rclone */
 function iconOf(mountType: string) {
   const group = typeMeta(mountType)?.group || 'local'
   if (group === 'cloud') return Cloud
@@ -209,10 +240,10 @@ function iconOf(mountType: string) {
   return HardDrive
 }
 
-/** 概要：本机类型显示路径，远程类型显示第一个「能代表来源」的字段 */
+/** 概要：路径就是来源，一列说清；没路径时才看配置字段 */
 function sourceSummary(m: StorageMount): string {
+  if (m.path) return m.path
   const meta = typeMeta(m.mount_type)
-  if (meta?.needs_path) return m.path || '未配置路径'
   for (const f of meta?.fields ?? []) {
     const value = (m.config?.[f.key] ?? '').toString().trim()
     if (value) {
@@ -308,7 +339,7 @@ onMounted(load)
 function resetForm() {
   form.value = {
     name: '',
-    mount_type: types.value[0]?.value || 'local',
+    mount_type: 'local',
     path: '',
     config: {},
     is_enabled: true,
@@ -328,7 +359,7 @@ function openEdit(m: StorageMount) {
   editing.value = m
   form.value = {
     name: m.name,
-    mount_type: m.mount_type,
+    mount_type: detectType(m.path) || m.mount_type,
     path: m.path,
     config: { ...(m.config || {}) },
     is_enabled: m.is_enabled,
@@ -339,13 +370,35 @@ function openEdit(m: StorageMount) {
   dialogVisible.value = true
 }
 
+/** 当前路径认出来的类型（认不出来是空串，表单会报错） */
+const pathType = computed(() => detectType(form.value.path))
+
+/** 路径改了就跟着改类型——类型是前缀的函数，不是另一个字段 */
+function syncTypeFromPath() {
+  if (pathType.value) form.value.mount_type = pathType.value
+}
+
+/** 从下拉里选 remote：写回路径，并顺手补上 remote 名后面那个冒号 */
+function pickRcloneRemote(value: string) {
+  form.value.path = value
+  fixRcloneFs()
+  syncTypeFromPath()
+}
+
 async function submit() {
   if (!form.value.name.trim()) {
     ElMessage.warning('请填写挂载名称')
     return
   }
-  if (currentType.value?.needs_path && !form.value.path.trim()) {
-    ElMessage.warning('请填写目录路径')
+  if (!form.value.path.trim()) {
+    ElMessage.warning('请填写路径')
+    return
+  }
+  syncTypeFromPath()
+  if (!pathType.value) {
+    ElMessage.warning(
+      '路径要带上来源前缀：本机目录填绝对路径，115 以 115:/ 开头，rclone 以 rclone: 开头'
+    )
     return
   }
   // 必填字段由后端类型元数据声明；密钥字段在编辑时留空表示沿用已保存的值
@@ -371,9 +424,15 @@ async function submit() {
     }
     if (editing.value) {
       const res = await updateMount(editing.value.id, payload)
-      ElMessage.success(
-        res.rescan_required ? '挂载已保存：重新扫描对应媒体库后生效' : '挂载已保存'
-      )
+      // 路径前缀变了 = 来源换了：已入库的条目是旧来源解释出来的，
+      // 不会自己改口径，必须重扫才作数。
+      if (res.mount_type_changed) {
+        ElMessage.warning('来源已切换（旧条目的读取方式随之改变），请重新扫描对应媒体库')
+      } else {
+        ElMessage.success(
+          res.rescan_required ? '挂载已保存：重新扫描对应媒体库后生效' : '挂载已保存'
+        )
+      }
     } else {
       await createMount(payload)
       ElMessage.success('挂载已创建：到媒体库页把它绑定到库上即可扫描')
@@ -482,7 +541,7 @@ async function browseTo(rel: string) {
   }
 }
 
-/** 正在编辑的类型声明了 root_key（115 的 cid / S3 的 prefix / 网盘的目录 ID）时才回写 */
+/** 正在编辑的类型声明了 root_key（115 的 cid）时才回写 */
 const browseRootKey = computed(() => {
   const target = browseTarget.value
   if (!target || !dialogVisible.value) return ''
@@ -492,30 +551,22 @@ const browseRootKey = computed(() => {
 
 function entryIdLabel(entry: MountDirEntry): string {
   if (!entry.entry_id || !entry.is_dir) return ''
-  return browseRootKey.value === 'prefix' ? entry.entry_id : `ID ${entry.entry_id}`
+  return `ID ${entry.entry_id}`
 }
 
-/** rclone：用当前表单里的 RC 地址 / 路径去问远端有哪些 remote（未保存的配置也能查） */
+/** rclone：读用户粘贴的 rclone.conf，看有哪些 remote */
 async function loadRcloneRemotes() {
   remotesLoading.value = true
   try {
-    const params: Record<string, string> = {
-      mode: form.value.config.mode || 'rc',
-      rc_url: form.value.config.rc_url || '',
-      rc_user: form.value.config.rc_user || '',
-      rc_pass: form.value.config.rc_pass || '',
-      rclone_bin: form.value.config.rclone_bin || '',
-      rclone_config: form.value.config.rclone_config || '',
-    }
-    const res = await fetchMountRcloneRemotes(params)
+    const res = await fetchMountRcloneRemotes()
     // 统一带上冒号：选项直接当 remote 根用时（`gdrive:`）不会被 rclone 当成本机目录
     rcloneRemotes.value = res.remotes.map(rcloneWithColon)
     ElMessage.success(
-      res.remotes.length ? `已获取 ${res.remotes.length} 个 remote` : '远端没有配置任何 remote'
+      res.remotes.length ? `rclone.conf 里有 ${res.remotes.length} 个 remote` : 'rclone.conf 里还没有 remote'
     )
   } catch (e: unknown) {
     const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-    ElMessage.error(detail || '获取 remote 列表失败')
+    ElMessage.error(detail || '读取 rclone.conf 失败')
   } finally {
     remotesLoading.value = false
   }
@@ -551,8 +602,8 @@ function fmtDate(s: string | null): string {
       <div>
         <h1 class="admin-page-title">存储来源</h1>
         <p class="admin-page-desc">
-          媒体库的内容来源：本机目录 / STRM 直链 / 115 / 阿里云盘 / 夸克 / OneDrive / S3 / WebDAV / AList / rclone；
-          每条都标明被哪些媒体库使用
+          媒体库的内容来源只有三种：本地硬盘（/media 开头）/ 115 网盘（115:/ 开头）/
+          rclone（rclone: 开头）；每条都标明被哪些媒体库使用
         </p>
       </div>
       <div class="toolbar">
@@ -575,7 +626,7 @@ function fmtDate(s: string | null): string {
 
     <el-tabs v-model="activeTab" style="margin-bottom: 16px">
       <el-tab-pane label="存储挂载" name="mounts" />
-      <el-tab-pane label="Rclone 配置" name="rclone" />
+      <el-tab-pane label="rclone.conf" name="rclone" />
     </el-tabs>
 
     <template v-if="activeTab === 'mounts'">
@@ -597,8 +648,8 @@ function fmtDate(s: string | null): string {
       </template>
       <div class="ea-warning-body">
         这些库会扫得到、播不了：{{ eaBlockedMounts.map((m) => m.name).join('、') }}。<br />
-        「本机 / 已挂载目录」「STRM 直链目录」的路径与 rclone 的 RC 地址都是那台机器上的
-        资源，要在 EA 所在机器上配好（或把它们改成网络型来源：115 / WebDAV / AList / S3）。
+        「本地硬盘」的路径与 rclone 的 RC 地址都是那台机器上的资源，要在 EA 所在机器上配好
+        （或改用 115 / rclone 这种服务器侧能直接访问的来源）。
       </div>
     </el-alert>
 
@@ -730,7 +781,7 @@ function fmtDate(s: string | null): string {
 
     <template v-if="activeTab === 'rclone'">
       <div class="admin-card">
-        <RcloneRemotes />
+        <RcloneConfEditor @saved="loadRcloneRemotes" />
       </div>
     </template>
 
@@ -830,17 +881,47 @@ function fmtDate(s: string | null): string {
             只有归属服的播放节点会用它；换归属服时，引用它的媒体库会一起跟过去。
           </div>
         </el-form-item>
-        <el-form-item label="类型">
-          <el-select v-model="form.mount_type" :disabled="!!editing" style="width: 220px">
-            <el-option v-for="t in types" :key="t.value" :label="t.label" :value="t.value" />
-          </el-select>
-          <div v-if="editing" class="form-hint">
-            类型决定条目路径的解析方式，不支持改类型；要换请新建挂载后重新绑定。
+        <el-form-item label="路径">
+          <el-input
+            v-model="form.path"
+            placeholder="/media/movies · 115:/0 · rclone:gdrive/Movies"
+            @blur="syncTypeFromPath"
+          />
+          <div class="form-hint">
+            前缀就是类型，不用另外选：<b>/media</b> 本地硬盘 ·
+            <b>115:/</b> 115 网盘（目录 ID，0 = 根目录） ·
+            <b>rclone:</b> rclone（形如 rclone:gdrive/Movies）。
+          </div>
+          <div v-if="form.path && !pathType" class="form-hint hint-warn">
+            路径要带上来源前缀：本地硬盘以 /media 开头，115 以 115:/ 开头，rclone 以 rclone: 开头。
           </div>
         </el-form-item>
-        <el-form-item v-if="currentType?.needs_path" label="目录路径">
-          <el-input v-model="form.path" :placeholder="form.mount_type === 'strm' ? '/media/strm' : '/media/movies'" />
-          <div class="form-hint">服务器本机路径。rclone / CloudDrive2 / SMB 挂到本机后填挂载点。</div>
+        <el-form-item v-if="form.mount_type === 'rclone' && rcloneRemotes.length" label="已配置的 remote">
+          <div class="fs-row">
+            <el-select
+              :model-value="form.path"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="rclone:gdrive:Movies"
+              style="width: 320px"
+              @change="pickRcloneRemote"
+            >
+              <el-option
+                v-for="r in rcloneRemotes"
+                :key="r"
+                :label="`rclone:${r}`"
+                :value="`rclone:${r}`"
+              />
+            </el-select>
+            <el-button native-type="button" :loading="remotesLoading" size="small" @click="loadRcloneRemotes">
+              刷新列表
+            </el-button>
+            <div class="form-hint">
+              列表来自你粘贴的 rclone.conf；选完可以继续在「路径」里补子目录。
+            </div>
+          </div>
+          <div v-if="rcloneFsHint" class="form-hint hint-warn">{{ rcloneFsHint }}</div>
         </el-form-item>
         <el-form-item v-for="f in currentFields" :key="f.key" :label="f.label">
           <el-select
@@ -852,26 +933,6 @@ function fmtDate(s: string | null): string {
           >
             <el-option v-for="a in accounts" :key="a.id" :label="a.name" :value="String(a.id)" />
           </el-select>
-          <div v-else-if="f.type === 'rclone_fs'" class="fs-row">
-            <el-select
-              v-model="form.config[f.key]"
-              filterable
-              allow-create
-              default-first-option
-              placeholder="gdrive:Movies"
-              style="width: 260px"
-              @change="fixRcloneFs(f.key)"
-            >
-              <el-option v-for="r in rcloneRemotes" :key="r" :label="r" :value="r" />
-            </el-select>
-            <el-button native-type="button" :loading="remotesLoading" size="small" @click="loadRcloneRemotes">
-              获取 remote 列表
-            </el-button>
-            <div class="form-hint">
-              列表来自远端的 rclone 配置；选一个 remote 后可以继续补子目录（如 gdrive:Movies）。
-            </div>
-            <div v-if="rcloneFsHint" class="form-hint hint-warn">{{ rcloneFsHint }}</div>
-          </div>
           <el-select
             v-else-if="f.type === 'select'"
             v-model="form.config[f.key]"

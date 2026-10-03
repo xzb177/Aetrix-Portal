@@ -162,9 +162,9 @@ def test_get_progress(db):
     assert p["enrich"]["done"] == 1
     assert p["workers"] == enrich_worker.ENRICH_WORKERS
     # v2.42.9 第 4 批：熔断快照 + 租约配置必须出现在进度里（管理端靠它定位坏挂载）
-    assert "mount_breakers" in p
+    assert "claim_lease_sec" in p
     assert p["claim_lease_sec"] == enrich_worker.ENRICH_CLAIM_LEASE_SEC
-    assert p["mount_breakers"]["open"] == []
+    assert "mount_breakers" not in p, "熔断器删了，进度里不该再有这个字段"
 
 
 # ==================== claim 租约 + janitor（v2.42.9）====================
@@ -257,42 +257,23 @@ def test_reclaim_stale_custom_lease(db):
         em.MediaItem.enrich_status == "enriching").count() == 0
 
 
-# ==================== 挂载熔断：打回 pending 而非 failed（v2.42.9）====================
+# ==================== 存储不可用：打回 pending 而非 failed ====================
 
 
 @pytest.fixture()
-def clean_breaker():
+def mount_lib():
     from backend.emby_server import mounts as mnt
-    mnt.breaker_reset()
-    yield mnt
-    mnt.breaker_reset()
+    return mnt
 
 
-def test_process_item_breaker_open_requeues_pending(db, clean_breaker):
-    """熔断中的挂载：条目在 IO 前就被打回 pending + 长退避，不碰网络、不烧 attempts"""
-    mnt = clean_breaker
-    it = _make_item(db, file_path="mount://9/Movies/a.mkv",
-                    enrich_status="enriching", enrich_claimed_at=datetime.now())
+def test_process_item_mount_error_requeues_not_failed(db, mount_lib):
+    """IO 中抛 MountError（存储读不动）：打回 pending + 长退避，不走 _mark_failed
 
-    def boom(*_a, **_k):
-        raise AssertionError("熔断中的条目不允许进 IO")
-
-    with mock.patch.object(enrich_worker, "_enrich_fetch", boom), \
-            mock.patch.object(mnt, "mount_breaker_open", lambda mid: True):
-        outcome = enrich_worker._process_item(db, it)
-    assert outcome == "breaker"
-    db.refresh(it)
-    assert it.enrich_status == "pending"          # 不是 failed
-    assert it.enrich_attempts == 0                # attempts 不涨
-    assert it.enrich_claimed_at is None           # 租约释放
-    assert it.enrich_next_retry_at is not None    # 长 next_retry_at
-    delta = (it.enrich_next_retry_at - datetime.now()).total_seconds()
-    assert mnt.MOUNT_BREAKER_RETRY_SEC - 120 < delta <= mnt.MOUNT_BREAKER_RETRY_SEC
-
-
-def test_process_item_mount_error_requeues_not_failed(db, clean_breaker):
-    """IO 中抛 MountError（挂载不可用）：打回 pending + 长退避，不走 _mark_failed"""
-    mnt = clean_breaker
+    这是删掉熔断器之后**留下来**的那部分：熔断器自己没了，但「网盘挂了别把队列烧成
+    failed」这件事得留着——否则一个挂不上的 remote 会让整库条目 5 次尝试后全部
+    终结，补全队列再也回不来。
+    """
+    mnt = mount_lib
     it = _make_item(db, file_path="mount://7/Movies/b.mkv",
                     enrich_status="enriching", enrich_claimed_at=datetime.now())
 
@@ -301,14 +282,25 @@ def test_process_item_mount_error_requeues_not_failed(db, clean_breaker):
 
     with mock.patch.object(enrich_worker, "_enrich_fetch", dead_mount):
         outcome = enrich_worker._process_item(db, it)
-    assert outcome == "breaker"
+    assert outcome == "mount_unavailable"
     db.refresh(it)
     assert it.enrich_status == "pending"
     assert it.enrich_attempts == 0
+    assert it.enrich_claimed_at is None
     assert it.enrich_next_retry_at is not None
+    delta = (it.enrich_next_retry_at - datetime.now()).total_seconds()
+    assert mnt.MOUNT_UNAVAILABLE_RETRY_SEC - 120 < delta <= mnt.MOUNT_UNAVAILABLE_RETRY_SEC
 
 
-def test_process_item_non_mount_error_still_fails_normally(db, clean_breaker):
+def test_mount_breaker_module_is_gone(mount_lib):
+    """熔断器整块删除：这些名字不能再存在（有人 import 就会当场炸）"""
+    for gone in ("MountBreakerOpen", "breaker_reset", "mount_breaker_open",
+                 "mount_breaker_stats", "_BREAKERS", "MOUNT_BREAKER_THRESHOLD",
+                 "MOUNT_BREAKER_COOLDOWN_SEC", "MOUNT_BREAKER_RETRY_SEC"):
+        assert not hasattr(mount_lib, gone), f"{gone} 应已随熔断器一起删除"
+
+
+def test_process_item_non_mount_error_still_fails_normally(db, mount_lib):
     """非挂载异常（如 TMDB 之外的真实 bug）仍走原有 attempts/退避路径"""
     it = _make_item(db, file_path="/tmp/local.mp4")
 

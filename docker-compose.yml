@@ -40,10 +40,10 @@ services:
       # 存储挂载 · rclone RC：指向同网络的 rclone 容器，容器名即服务名
       MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
       MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
-      # rclone 集中管理面板：写 rclone.conf 与服务账号要用。
-      # 这两个目录必须与 rclone 容器挂的是**同一份宿主目录**，否则写进去的文件
-      # rclone 容器看不到（面板显示成功、实际用不了）。
-      RCLONE_CONF_PATH: /config/rclone/rclone.conf
+      # rclone：配置由**用户自己**粘贴（后台「rclone.conf」页），面板只负责落盘并
+      # 给 rclone 命令加 --config。这个目录必须与 rclone 容器挂的是**同一份宿主目录**，
+      # 否则写进去的 rclone.conf rclone 容器看不到（面板显示成功、实际用不了）。
+      MOUNT_RCLONE_CONF: /config/rclone/rclone.conf
       RCLONE_SA_DIR: /sa-accounts
     # 不再直接暴露公网端口：统一走 aetrix-web（nginx）反代
     expose:
@@ -65,9 +65,9 @@ services:
     volumes:
       - aetrix_data:/data
       - ${MEDIA_ROOT:-./media}:/media:ro
-      # rw：面板要写 rclone.conf（.conf 里含 token/secret，故容器内权限收紧为 600）
+      # rw：后台粘贴的 rclone.conf 写在这里（.conf 里含 token/secret，故权限收紧为 600）
       - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
-      # rw：面板要写服务账号 JSON（同样 chmod 600）
+      # ro：你的 rclone.conf 里写了 service_account_file 时指向它（面板不再代管）
       - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
     depends_on:
       redis:

@@ -137,14 +137,12 @@ def _pipeline_payload(db: Session, library_ids: Iterable[int]) -> dict:
     按库聚合而不是取全局计数：全局数字回答不了「是这台机器的哪批库卡住了」。
     """
     ids = [int(i) for i in (library_ids or [])]
-    breakers = _breaker_rows(db)
     if not ids:
         return {
             "items": 0,
             "enrich": {},
             "probe": {},
             "repair": {"total": 0, "items": []},
-            "mount_breakers": breakers,
             "note": "这个范围里还没有媒体库",
         }
 
@@ -178,23 +176,7 @@ def _pipeline_payload(db: Session, library_ids: Iterable[int]) -> dict:
                 "file_exists": bool(row.file_path and os.path.isfile(row.file_path)),
             } for row in repair_rows],
         },
-        # 正在熔断的挂载：坏挂载会把这一台的扫描一起拖慢，属于节点级运维信息
-        "mount_breakers": breakers,
     }
-
-
-def _breaker_rows(db: Session) -> list:
-    """正在熔断的挂载 + 挂载名
-
-    熔断器快照里只有 ``mount_id``（它是进程内状态，不带名字）；运维页面上写
-    「挂载 #7 正在熔断」没人能对号，所以在这里补一次名字查询。
-    """
-    open_list = mount_lib.mount_breaker_stats().get("open") or []
-    ids = [int(row["mount_id"]) for row in open_list if row.get("mount_id") is not None]
-    names = dict(db.query(em.StorageMount.id, em.StorageMount.name)
-                 .filter(em.StorageMount.id.in_(ids)).all()) if ids else {}
-    return [{**row, "mount_name": names.get(int(row.get("mount_id") or 0)) or ""}
-            for row in open_list]
 
 
 # ==================== 任务：内容转交（求片 → 外部下载整理） ====================

@@ -1,7 +1,7 @@
 """挂载体检冒烟测试（v2.6.18）
 
 要解决的问题：同一条挂载会被 EM（面板：扫描/浏览/测试）与 EA（网关：播放出流）两个进程
-各自解析，而 ``local`` / ``strm`` 的路径、rclone 的 RC 地址都是**主机相对**的配置。
+各自解析，而本地硬盘的路径、rclone 的 RC 地址都是**主机相对**的配置。
 后台「测试连接」跑在 EM 进程里，所以它通过并不代表那台 EA 能播。
 
 覆盖：
@@ -79,9 +79,10 @@ try:
     good = em.StorageMount(name=f"本机可读{suf}", mount_type="local", path=good_dir, is_enabled=True)
     bad = em.StorageMount(name=f"目录不存在{suf}", mount_type="local", path=missing_dir, is_enabled=True)
     off = em.StorageMount(name=f"已停用{suf}", mount_type="local", path=good_dir, is_enabled=False)
-    dav = em.StorageMount(name=f"WebDAV 不可达{suf}", mount_type="webdav",
-                          path="", is_enabled=True,
-                          config='{"url": "http://127.0.0.1:9/dav", "password": "%s"}' % SECRET_PASSWORD)
+    # 远端不可达：用 rclone + 一个连不上的 RC 地址（127.0.0.1:9 = discard 端口）
+    dav = em.StorageMount(name=f"rclone 不可达{suf}", mount_type="rclone",
+                          path="rclone:gdrive/Movies", is_enabled=True,
+                          config='{"mode": "rc", "rc_url": "http://127.0.0.1:9", "rc_pass": "%s"}' % SECRET_PASSWORD)
     db.add_all([good, bad, off, dav])
     db.commit()
 
@@ -171,7 +172,7 @@ try:
           str(item.get("message")))
 
     item = by_id.get(dav_id) or {}
-    check("WebDAV 连不上 → 不可达", item.get("ok") is False, str(item.get("message"))[:60])
+    check("远端连不上 → 不可达", item.get("ok") is False, str(item.get("message"))[:60])
 
     # 密钥绝不能随体检结果出来
     body_text = r.text
@@ -269,16 +270,27 @@ try:
     print("\n--- rclone remote 名漏冒号 ---")
     r = em_client.post("/api/admin/emby/mounts",
                        json={"name": f"带冒号 rclone{suf}", "mount_type": "rclone",
-                             "config": {"mode": "rc", "fs": "gdrive:Movies"}}, headers=staff_h)
+                             "path": "rclone:gdrive:Movies",
+                             "config": {"mode": "rc"}}, headers=staff_h)
     check("remote 写法正常（带冒号）照旧能存",
-          r.status_code == 200 and r.json()["mount"]["config"]["fs"] == "gdrive:Movies",
+          r.status_code == 200 and r.json()["mount"]["path"] == "rclone:gdrive:Movies",
           f"HTTP {r.status_code} {r.text[:120]}")
+
+    # 没有前缀的路径：不是任何一种来源，保存时就该说清正确写法
+    r = em_client.post("/api/admin/emby/mounts",
+                       json={"name": f"没前缀{suf}", "mount_type": "rclone",
+                             "path": f"gdrive:Movies{suf}", "config": {"mode": "rc"}},
+                       headers=staff_h)
+    detail = r.json().get("detail", "") if r.status_code == 400 else ""
+    check("路径没带来源前缀被拦下（不是等扫描才报「不支持的类型」）",
+          r.status_code == 400 and "前缀" in detail and "rclone:" in detail,
+          f"HTTP {r.status_code} {r.text[:160]}")
 
     # 随机名字：不管本机能否列到 remote 列表，结论都一样是「拦下 + 说清写法」
     typo = f"漏冒号{suf}"
     r = em_client.post("/api/admin/emby/mounts",
                        json={"name": f"漏冒号 rclone{suf}", "mount_type": "rclone",
-                             "config": {"mode": "rc", "fs": typo}}, headers=staff_h)
+                             "path": f"rclone:{typo}", "config": {"mode": "rc"}}, headers=staff_h)
     detail = r.json().get("detail", "") if r.status_code == 400 else ""
     check("remote 名漏冒号被拦下（不是等扫描才报「目录不存在」）",
           r.status_code == 400 and "冒号" in detail and typo in detail,

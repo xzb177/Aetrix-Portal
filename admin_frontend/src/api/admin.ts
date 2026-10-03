@@ -51,7 +51,6 @@ import type {
   PlaybackStats,
   RegistrationCode,
   RegistrationSettings,
-  RcloneRemote,
   TicketMessageRow,
   TicketRow,
   TrendStats,
@@ -849,7 +848,7 @@ export const createLibrary = (data: {
   name: string
   collection_type: string
   paths: string[]
-  /** 绑定的存储挂载（本机目录 / STRM / 115 / WebDAV / AList） */
+  /** 绑定的存储挂载（本机目录 / 115 / rclone） */
   mount_ids?: number[]
   /** 刮削策略：missing_only（仅缺失时）/ 3m / 6m / 1y / all（全部重刮） */
   scrape_policy?: string
@@ -1272,12 +1271,6 @@ export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`$
 export const saveChaseNew = (enabled: boolean, interval: number, libraries: string) =>
   put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, libraries })
 
-// rclone remote 管理（类型统一在 @/types，与后端 _serialize_remote 对齐）
-export type { RcloneRemote } from '@/types'
-export const setProbeRemote = (id: number) => post<{ success: boolean }>(`${E}/rclone/remotes/${id}/probe`, {})
-export const regenerateRcloneConf = () => post<{ success: boolean; path: string }>(`${E}/rclone/regenerate`, {})
-export interface SaFile { id: number; filename: string; client_email: string; project_id: string; is_enabled: boolean }
-export const fetchSaFiles = () => get<{ success: boolean; files: SaFile[] }>(`${E}/rclone/sa-files`)
 export const saveAutoScan = (enabled: boolean, time: string) =>
   put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
 
@@ -1407,7 +1400,8 @@ export const cleanLocalCache = (mode: 'ready' | 'failed' | 'all') =>
   )
 
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
-// 挂载 = 媒体库的内容来源：local / strm 是本机目录，115 / webdav / alist 是远程来源。
+// 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone 是远程来源。
+// 类型只由路径前缀决定（115:/ / rclone: / 绝对路径），没有第四种类型。
 // 远程挂载的条目在库里存 mount:// 路径，播放时由 EA 代理转发（凭据不下发）。
 
 /** 挂载清单；`realm_id=0` = 全部服，不传 = 当前服（挂载是一个服一个的） */
@@ -1451,7 +1445,13 @@ export const createMount = (data: MountPayload) =>
   post<{ success: boolean; mount: StorageMount }>(`${E}/mounts`, data)
 
 export const updateMount = (id: number, data: MountPayload) =>
-  put<{ success: boolean; mount: StorageMount; rescan_required?: boolean }>(`${E}/mounts/${id}`, data)
+  put<{
+    success: boolean
+    mount: StorageMount
+    rescan_required?: boolean
+    /** 路径前缀变了 = 来源换了（115:/ ↔ rclone: ↔ 本机目录），旧条目会被重新解释 */
+    mount_type_changed?: boolean
+  }>(`${E}/mounts/${id}`, data)
 
 export const deleteMount = (id: number) =>
   del<{ success: boolean; unbound_libraries: number }>(`${E}/mounts/${id}`)
@@ -1486,9 +1486,9 @@ export const browseMountDirs = (id: number, path?: string) =>
     total: number
   }>(`/mounts/${id}/browse`, path ? { path } : undefined)
 
-/** rclone：列出远端已配置的 remote（可用表单里尚未保存的 RC 地址 / 密码） */
-export const fetchMountRcloneRemotes = (params: Record<string, string>) =>
-  get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/remotes`, params)
+/** rclone：列出用户粘贴的 rclone.conf 里已配置的 remote */
+export const fetchMountRcloneRemotes = () =>
+  get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/conf`)
 
 // ==================== 115 账号与直挂（/api/admin/emby/115/*） ====================
 
@@ -1525,52 +1525,13 @@ export const browsePan115 = (params: { cid?: string; account_id?: number; cookie
   )
 
 
-// ==================== rclone remote 配置（/api/admin/emby/rclone/*） ====================
+// ==================== rclone.conf（用户自己粘贴，面板只负责跑 rclone） ====================
+// 后端只回 remote 名，不回 rclone.conf 原文——里面全是 token / secret。
 
-export const fetchRcloneRemotes = () =>
-  get<{ remotes: RcloneRemote[] }>(`${E}/rclone/remotes`)
+export const fetchRcloneConf = () =>
+  get<{ path: string; configured: boolean; remotes: string[]; total: number }>(
+    `${E}/mounts/rclone/conf`)
 
-export const createRcloneRemote = (data: {
-  name: string
-  remote_type?: string
-  drive_type?: string
-  client_id?: string
-  client_secret?: string
-  team_drive_id?: string
-  is_enabled?: boolean
-  remark?: string
-}) => post<{ success: boolean; remote: RcloneRemote }>(`${E}/rclone/remotes`, data)
-
-export const updateRcloneRemote = (
-  id: number,
-  data: { name?: string; client_id?: string; client_secret?: string; team_drive_id?: string; is_enabled?: boolean; remark?: string }
-) => put<{ success: boolean; remote: RcloneRemote }>(`${E}/rclone/remotes/${id}`, data)
-
-export const deleteRcloneRemote = (id: number) =>
-  del<{ success: boolean }>(`${E}/rclone/remotes/${id}`)
-
-export const generateRcloneConf = () =>
-  post<{ success: boolean; message: string; backup: string; reload: { success: boolean; message: string } }>(
-    `${E}/rclone/remotes/generate-conf`, {})
-
-export const previewRcloneConf = () =>
-  get<{ preview: string }>(`${E}/rclone/remotes/conf-preview`)
-
-export const setProbeRcloneRemote = (id: number) =>
-  post<{ success: boolean; probe_remote: string }>(`${E}/rclone/remotes/${id}/set-probe`, {})
-
-export const fetchProbeRcloneRemote = () =>
-  get<{ probe_remote: string | null }>(`${E}/rclone/probe-remote`)
-
-export const fetchRcloneOAuthUrl = (id: number) =>
-  get<{ oauth_url: string; redirect_uri: string }>(`${E}/rclone/remotes/${id}/oauth-url`)
-
-export const submitRcloneOAuthCode = (id: number, data: { code: string; redirect_uri: string }) =>
-  post<{ success: boolean; has_token: boolean }>(`${E}/rclone/remotes/${id}/oauth-callback`, data)
-
-export const uploadRcloneServiceAccount = (id: number, file: File) => {
-  const fd = new FormData()
-  fd.append('file', file)
-  return upload<{ success: boolean; filename: string; client_email: string; project_id: string }>(
-    `${E}/rclone/remotes/${id}/upload-sa`, fd)
-}
+export const saveRcloneConf = (conf: string) =>
+  post<{ success: boolean; path: string; remotes: string[]; total: number }>(
+    `${E}/mounts/rclone/conf`, { conf })

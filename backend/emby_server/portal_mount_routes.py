@@ -1,11 +1,13 @@
 """管理后台 · 存储挂载端点（从 portal.py 拆出）
 
-挂载 = 媒体库的内容来源：local / strm 是本机目录，115 / webdav / alist / s3 / aliyun /
-quark / onedrive 是远程来源（远程挂载的条目入库为 mount://<id>/<rel>，播放时由 EA 按
-Range 代理转发，凭据不下发）。
+挂载 = 媒体库的内容来源，只有三种（v2.42.12）：**本地硬盘**（/media 开头）、**115 网盘**
+（115:/ 开头）、**rclone**（rclone: 开头）。远程来源的条目入库为 mount://<id>/<rel>，
+播放时由 EA 按 Range 代理转发，凭据不下发。
 
-类型、配置字段、必填与脱敏规则都来自类型元数据：backend/emby_server/mounts.py（基础类型）
-与 backend/emby_server/mount_cloud.py（云端类型）。
+类型由**路径前缀**决定（``mounts.detect_mount_type``），表单不另给一个类型下拉——
+三种来源的配置本来就只有一条路径加少量可选项，多一个下拉只会让人选出不匹配的组合。
+
+类型元数据与脱敏规则都来自 ``backend/emby_server/mounts.py`` 的 ``MOUNT_TYPES``。
 
 拆分约定：路由仍挂在 portal.py 定义的 ``admin_emby_router`` 上（导入即注册），
 调用方（backend/main.py）在 ``include_router`` 之前导入本模块；
@@ -59,9 +61,9 @@ def _merge_mount_config(old: dict, new: dict) -> dict:
 
 
 def _validate_mount_fields(mount_type: str, path: str, config: dict) -> None:
-    """按类型元数据校验：本机路径 + 必填字段 + 地址格式
+    """按类型元数据校验：本机路径 + 必填字段
 
-    必填字段来自 ``MOUNT_TYPES[*].fields[*].required``，所以新类型的校验也是自动的。
+    必填字段来自 ``MOUNT_TYPES[*].fields[*].required``。
     """
     meta = mount_lib.MOUNT_TYPE_MAP.get(mount_type)
     if meta is None:
@@ -74,49 +76,56 @@ def _validate_mount_fields(mount_type: str, path: str, config: dict) -> None:
     for field in mount_lib.required_fields(mount_type):
         if not str(config.get(field["key"]) or "").strip():
             raise HTTPException(status_code=400, detail=f"请填写{field.get('label') or field['key']}")
-    for field in mount_lib.type_meta(mount_type).get("fields", []):
-        if field["key"] not in ("url", "endpoint"):
-            continue
-        value = str(config.get(field["key"]) or "").strip()
-        if value and not value.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail=f"{field.get('label') or field['key']} 必须以 http:// 或 https:// 开头")
 
 
-def _fix_rclone_root(mount_type: str, config: dict) -> None:
+def _resolve_mount_type(path: str) -> str:
+    """类型以**路径前缀**为准；认不出来就报错
+
+    这里**故意不接受调用方给的 ``mount_type`` 兜底**：路径没带前缀时，按调用方说的类型
+    存进去，就等于允许存下「一条路径与它的类型对不上」的挂载——扫描时才会以
+    「不支持的挂载类型」的形式炸出来，那时候没人想得起来该改哪一栏。
+    历史数据不受影响：它只在读取时被解析，那条路走 ``mount.mount_type``。
+    """
+    detected = mount_lib.detect_mount_type(path)
+    if detected:
+        return detected
+    raise HTTPException(
+        status_code=400,
+        detail=("路径要带上来源前缀：本机目录（约定 /media）填绝对路径，"
+                "115 以 115:/ 开头，rclone 以 rclone: 开头"),
+    )
+
+
+def _fix_rclone_root(mount_type: str, path: str, config: dict) -> str:
     """rclone 的 remote 名必须带冒号（漏了会被 rclone 当成本机目录）
 
-    只在**首段没有冒号**时介入，正常写法（``gdrive:Movies``）不受影响：
+    只在**首段没有冒号**时介入，正常写法（``rclone:gdrive/Movies``）不受影响：
 
-    - 首段就是远端已配置的 remote → 直接补上冒号（``paul_emby/电影`` → ``paul_emby:电影``）；
+    - 首段就是已配置的 remote → 直接补上冒号（``rclone:paul_emby/电影`` →
+      ``rclone:paul_emby:电影``）；
     - 查得到 remote 列表却没有这个名字 → 400，给出正确写法与可用的 remote；
-    - 查不到（EM 这台机器没 rclone / RC 连不上）→ 按文本规则兜底。
+    - 查不到（还没粘 rclone.conf / 这台机器没 rclone）→ 按文本规则兜底。
 
-    不拦明确的本地写法（``/media``、``./media``）：rclone 本来就支持本机路径，
-    只是本机目录应该用「本地 / 已挂载目录」类型，提示里也这么写。
+    不拦明确的本地写法（``/media``）：rclone 本来就支持本机路径，只是本机目录
+    应该用「本地硬盘」类型，提示里也这么写。
     """
     if mount_type != mount_rclone.MOUNT_RCLONE:
-        return
-    fs = str(config.get("fs") or config.get("remote") or "").strip()
-    if not fs or mount_rclone.fs_remote_name(fs) or mount_rclone.looks_like_local_path(fs):
-        return
-    remotes: list[str] | None = None
+        return path
+    target = path[len(mount_rclone.MOUNT_RCLONE) + 1:].strip()
+    if not target or mount_rclone.fs_remote_name(target) or mount_rclone.looks_like_local_path(target):
+        return path
     try:
-        remotes = mount_rclone.list_remotes(
-            str(config.get("rc_url") or ""), username=str(config.get("rc_user") or ""),
-            password=config.get("rc_pass") or "",
-            bin_path=str(config.get("rclone_bin") or ""),
-            config=str(config.get("rclone_config") or ""),
-            mode=str(config.get("mode") or mount_rclone.MODE_RC),
-        )
+        remotes = mount_rclone.conf_remote_names(
+            mount_rclone.read_rclone_conf(str(config.get("rclone_config") or "")))
     except mount_lib.MountError:
-        remotes = None  # EM 侧查不到不影响保存：退回文本规则
-    fixed = mount_rclone.normalize_fs(fs, remotes)
-    if fixed != fs:
-        config["fs"] = fixed
-        return
-    hint = mount_rclone.fs_missing_colon_hint(fs, remotes)
+        remotes = []
+    fixed = mount_rclone.normalize_fs(target, remotes)
+    if fixed != target:
+        return f"{mount_rclone.MOUNT_RCLONE}:{fixed}"
+    hint = mount_rclone.fs_missing_colon_hint(target, remotes)
     if hint:
         raise HTTPException(status_code=400, detail=hint)
+    return path
 
 
 def _load_mount(db: Session, mount_id: int) -> em.StorageMount | None:
@@ -196,6 +205,11 @@ class MountTestRequest(BaseModel):
     config: dict = {}
 
 
+class RcloneConfSave(BaseModel):
+    """用户粘贴的 rclone.conf（标准 INI 文本，整份替换）"""
+    conf: str = ""
+
+
 class MountBrowseParams(BaseModel):
     rel: str = "/"
 
@@ -258,28 +272,36 @@ async def check_all_mounts(staff: models.WebUser = Depends(require_staff),
     return health
 
 
-@admin_emby_router.get("/mounts/rclone/remotes")
-async def list_rclone_remotes(mode: str = "rc", rc_url: str = "", rc_user: str = "",
-                              rc_pass: str = "", rclone_bin: str = "",
-                              rclone_config: str = "",
-                              staff: models.WebUser = Depends(require_staff)):
-    """列出 rclone 已配置的 remote（给 rclone 挂载的「remote」选择器用）
+@admin_emby_router.get("/mounts/rclone/conf")
+async def get_rclone_conf(staff: models.WebUser = Depends(require_staff)):
+    """读取 rclone.conf（只报 remote 名，不回明文）
 
-    即使用表单里还没保存的 RC 地址 / 密码也能查，方便先连上再看有哪些 remote。
+    rclone.conf 里全是 token / secret，回明文就等于把它写进浏览器历史与前端日志。
+    用户要改内容直接重新粘贴一次覆盖（**本来就是整份替换**，没有增量编辑）。
     """
+    text = await run_in_threadpool(mount_rclone.read_rclone_conf, "")
     try:
-        remotes = await run_in_threadpool(
-            mount_rclone.list_remotes, rc_url,
-            username=rc_user, password=rc_pass,
-            bin_path=rclone_bin, config=rclone_config, mode=mode,
-        )
-    except mount_lib.MountAuthError as exc:
-        # 这是「RC 地址/账号密码不对」，属于挂载表单的填写错误，不是后台会话过期。
-        # 回 401 会让前端 401 拦截器整页重载，用户刚填的表单全丢，所以这里回 400。
-        raise HTTPException(status_code=400, detail=str(exc))
+        remotes = mount_rclone.conf_remote_names(text)
     except mount_lib.MountError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"remotes": remotes, "total": len(remotes)}
+    return {
+        "path": mount_rclone.CONF_PATH,
+        "configured": bool(remotes),
+        "remotes": remotes,
+        "total": len(remotes),
+    }
+
+
+@admin_emby_router.post("/mounts/rclone/conf")
+async def save_rclone_conf(req: RcloneConfSave,
+                           staff: models.WebUser = Depends(require_staff)):
+    """保存用户粘贴的 rclone.conf（整份替换，写到 data/rclone/rclone.conf）"""
+    try:
+        path = await run_in_threadpool(mount_rclone.write_rclone_conf, req.conf)
+    except mount_lib.MountError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    remotes = mount_rclone.conf_remote_names(req.conf)
+    return {"success": True, "path": path, "remotes": remotes, "total": len(remotes)}
 
 
 @admin_emby_router.post("/mounts")
@@ -291,13 +313,15 @@ def create_mount(req: MountCreate, staff: models.WebUser = Depends(require_staff
     if db.query(em.StorageMount).filter(em.StorageMount.name == name).first():
         raise HTTPException(status_code=400, detail=f"挂载名称已存在: {name}")
     config = _merge_mount_config({}, req.config)
-    _validate_mount_fields(req.mount_type, req.path, config)
-    _fix_rclone_root(req.mount_type, config)
+    path = (req.path or "").strip()
+    mount_type = _resolve_mount_type(path)
+    path = _fix_rclone_root(mount_type, path, config)
+    _validate_mount_fields(mount_type, path, config)
     realm_id = req.realm_id or realms.active_realm_id(db)
     if not realms.get_realm(db, realm_id):
         raise HTTPException(status_code=400, detail=f"服不存在: #{realm_id}")
     mount = em.StorageMount(
-        name=name, mount_type=req.mount_type, path=(req.path or "").strip(),
+        name=name, mount_type=mount_type, path=path,
         config=mount_lib.dump_config(config), is_enabled=req.is_enabled,
         remark=(req.remark or "")[:300], realm_id=realm_id,
     )
@@ -326,9 +350,14 @@ def update_mount(mount_id: int, req: MountUpdate,
         mount.name = name
     config = _merge_mount_config(mount_lib.parse_config(mount), req.config or {})
     path = (req.path if req.path is not None else mount.path or "").strip()
-    # 换类型不允许（条目路径按挂载 id + 类型解析），只允许改配置与路径
-    _validate_mount_fields(mount.mount_type, path, config)
-    _fix_rclone_root(mount.mount_type, config)
+    # 类型跟着路径走：改路径就等于换来源（115:/ ↔ rclone: ↔ /media），这是允许的。
+    # 但已入库条目的路径是 mount://<id>/<rel>，换来源后它们会被**新**提供者重新解释——
+    # 所以下面把这个事实回给前端，让它提醒「重新扫描」，而不是悄悄换掉一堆条目的含义。
+    mount_type = _resolve_mount_type(path)
+    type_changed = mount_type != mount.mount_type
+    path = _fix_rclone_root(mount_type, path, config)
+    _validate_mount_fields(mount_type, path, config)
+    mount.mount_type = mount_type
     mount.path = path
     mount.config = mount_lib.dump_config(config)
     if req.is_enabled is not None:
@@ -347,7 +376,8 @@ def update_mount(mount_id: int, req: MountUpdate,
     db.commit()
     db.refresh(mount)
     # 路径/配置变更后需要重新扫描才生效（扫描任务使用固定配置快照）
-    return {"success": True, "mount": _serialize_mount(db, mount), "rescan_required": True}
+    return {"success": True, "mount": _serialize_mount(db, mount),
+            "rescan_required": True, "mount_type_changed": type_changed}
 
 
 @admin_emby_router.delete("/mounts/{mount_id}")

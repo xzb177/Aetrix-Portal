@@ -1,19 +1,19 @@
-"""扫描队列并发验证：四个媒体库同时点扫描（真 HTTP + 真 WebDAV + 真日志）
+"""扫描队列并发验证：四个媒体库同时点扫描（真 HTTP + 真 rclone RC + 真日志）
 
 这不是又一份冒烟测试，而是把线上那次日志审计的现场**复现一遍**再对比：
 
-    四个媒体库在几秒内依次点「扫描」→ 旧行为是四个扫描任务同时打同一个 WebDAV，
-    远端目录被重复 PROPFIND（审计里那条「同一路径每 5 秒一次」），CPU 打满、进度
+    四个媒体库在几秒内依次点「扫描」→ 旧行为是四个扫描任务同时打同一个远程端点，
+    远端目录被重复列举（审计里那条「同一路径每 5 秒一次」），CPU 打满、进度
     长时间停在 item_count=0。v2.27.0 按「远程挂载串行化」后，引用同一挂载的库排队跑。
 
-脚本起一个**真的 WebDAV 服务**（真 PROPFIND / 真 207 multistatus、真网络延迟，并记录
+脚本起一个**真的 rclone RC 服务**（真 HTTP POST /operations/list、真网络延迟，并记录
 每个请求的时刻与在飞并发），再通过**真的管理端 HTTP 接口**连点四个库的扫描，然后一边
 轮询队列快照 / 媒体库列表（面板看到的同一份数据）、一边记录：
 
 - 每次 POST 的响应（已启动 / 排队第几位 / 在等哪个挂载）；
 - 每秒时间线：每个库的排队位置、阶段、已发现 / 已处理、当前目录；
 - 应用日志（扫描出入队 / 开始 / 结束、远程列举次数）——与线上审计用的同一批日志；
-- WebDAV 服务端日志：每个 PROPFIND 的时刻、路径、当时在飞请求与峰值；
+- 远端服务端日志：每次列目录的时刻、路径、当时在飞请求与峰值；
 - 结果对照：并发峰值、同一路径被列了几次、四个库的条目数与总耗时。
 
 两种模式各跑一遍（各自独立进程，保证模块级开关是干净的），默认对比输出：
@@ -43,17 +43,17 @@ sys.path.insert(0, ROOT)
 
 # ---- 现场规模（够看出并发差异，又不至于让验证跑几分钟）----
 FILES_PER_DIR = 20
-REMOTE_LATENCY = 0.05          # 每次 PROPFIND 的服务端延迟（模拟远程端点的真实延迟）
-# 远端目录用 ASCII 名：WebDAV 的 href 是百分号编码的，而非 ASCII 目录名会撞上
-# 「自己也被列成自己的子项」的存量口径问题（与扫描队列无关，单独一条线去看）
-DIRS = ["/dav/tv", "/dav/movies", "/dav/concerts"]
+REMOTE_LATENCY = 0.05          # 每次列目录的服务端延迟（模拟远程端点的真实延迟）
+# 远端目录用 ASCII 名：非 ASCII 目录名会撞上「自己也被列成自己的子项」的存量口径问题
+# （与扫描队列无关，单独一条线去看）
+DIRS = ["tv", "movies", "concerts"]
 POLL_SECONDS = 0.25
 RUN_TIMEOUT = 180
 
 
-# ==================== 假的 WebDAV 服务（真 HTTP） ====================
+# ==================== 假的 rclone RC 服务（真 HTTP） ====================
 
-class _WebDavState:
+class _RcloneRcState:
     """服务端观测点：请求日志、在飞并发、同一路径被列了几次"""
 
     def __init__(self) -> None:
@@ -81,33 +81,23 @@ class _WebDavState:
             self.inflight = max(0, self.inflight - 1)
 
 
-def _multistatus(self_path: str, children: list[tuple[str, bool, int]]) -> bytes:
-    """按 DAV: 的格式造一份 PROPFIND 响应（与 WebDavMount._propfind 的解析口径对齐）"""
-    parts = []
+def _rc_list_body(remote: str, children: list[tuple[str, bool, int]]) -> bytes:
+    """造一份 rclone ``/operations/list`` 的响应（字段与 RcloneMount._raw_listing 对齐）
 
-    def add(path: str, is_dir: bool, size: int) -> None:
-        kind = "<D:resourcetype><D:collection/></D:resourcetype>" if is_dir else "<D:resourcetype/>"
-        parts.append(
-            "<D:response>"
-            f"<D:href>{urllib.parse.quote(path)}</D:href>"
-            "<D:propstat><D:prop>"
-            f"{kind}<D:getcontentlength>{size}</D:getcontentlength>"
-            "<D:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</D:getlastmodified>"
-            "</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>"
-            "</D:response>"
-        )
-
-    add(self_path, True, 0)
-    for path, is_dir, size in children:
-        add(path, is_dir, size)
-    body = ('<?xml version="1.0" encoding="utf-8"?>'
-            '<D:multistatus xmlns:D="DAV:">' + "".join(parts) + "</D:multistatus>")
-    return body.encode("utf-8")
+    ``children`` 里是**本层条目名**（rclone 的 ``Name`` 就是相对本层的名字，``Path``
+    是带 remote 的全路径）——之前把全路径塞进 ``Name``，扫描器就会拿 ``MP:tv``
+    当子目录名去请求，凭空多出一层。
+    """
+    items = [{"Path": f"{remote}/{name}" if not name.startswith(remote) else name,
+              "Name": name, "Size": size, "IsDir": is_dir,
+              "ModTime": "2025-01-01T00:00:00.000000000Z"}
+             for name, is_dir, size in children]
+    return json.dumps({"list": items, "remote": remote}).encode("utf-8")
 
 
-class _WebDavHandler(http.server.BaseHTTPRequestHandler):
+class _RcloneRcHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "FakeWebDav/1.0"
+    server_version = "FakeRcloneRc/1.0"
 
     # 服务端日志由脚本自己记，标准输出保持干净
     def log_message(self, fmt, *args) -> None:  # noqa: A003
@@ -120,23 +110,31 @@ class _WebDavHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_PROPFIND(self) -> None:  # noqa: N802 — HTTP 方法名
-        state: _WebDavState = self.server.dav_state  # type: ignore[attr-defined]
-        path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path).rstrip("/") or "/dav"
-        state.enter("PROPFIND", path)
+    def do_POST(self) -> None:  # noqa: N802 — HTTP 方法名
+        state: _RcloneRcState = self.server.rc_state  # type: ignore[attr-defined]
+        length = int(self.headers.get("Content-Length") or 0)
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        if not self.path.startswith("/operations/list"):
+            self._send(404, b'{"error":"no such method"}', "application/json")
+            return
+        # ``fs`` 是挂载根（如 MP:），``remote`` 是它下面的相对子路径
+        fs = str(payload.get("fs") or "")
+        remote = str(payload.get("remote") or "")
+        state.enter("LIST", f"{fs}{remote}")
         try:
             time.sleep(REMOTE_LATENCY)
             tree: dict = self.server.tree  # type: ignore[attr-defined]
-            children = tree.get(path)
+            key = f"{fs}{remote}"
+            children = tree.get(key)
             if children is None:
-                self._send(404, b"not found", "text/plain; charset=utf-8")
+                self._send(404, b'{"error":"directory not found"}', "application/json")
                 return
-            self._send(207, _multistatus(path, children), "application/xml; charset=utf-8")
+            self._send(200, _rc_list_body(key, children), "application/json")
         finally:
             state.leave()
 
-    def do_GET(self) -> None:  # noqa: N802 — 播放 / 读 .strm 才会用到
-        state: _WebDavState = self.server.dav_state  # type: ignore[attr-defined]
+    def do_GET(self) -> None:  # noqa: N802 — 出流（rc-serve 暴露的 remote 根目录页）
+        state: _RcloneRcState = self.server.rc_state  # type: ignore[attr-defined]
         path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
         state.enter("GET", path)
         try:
@@ -151,7 +149,8 @@ class _WebDavHandler(http.server.BaseHTTPRequestHandler):
 
 
 def _build_tree() -> dict[str, list[tuple[str, bool, int]]]:
-    tree: dict[str, list[tuple[str, bool, int]]] = {"/dav": [(d, True, 0) for d in DIRS]}
+    # 键 = RC 请求里的 ``fs``（挂载根 MP:）+ ``remote``（相对子路径）
+    tree: dict[str, list[tuple[str, bool, int]]] = {"MP:": [(d, True, 0) for d in DIRS]}
     for directory in DIRS:
         children = []
         leaf = directory.rsplit("/", 1)[-1]
@@ -162,24 +161,24 @@ def _build_tree() -> dict[str, list[tuple[str, bool, int]]]:
                 name = f"Movie.Name.{2000 + index}.1080p.BluRay.mkv"
             else:
                 name = f"Concert.Name.2024.Part{index + 1:02d}.1080p.mkv"
-            children.append((f"{directory}/{name}", False, 1024 * 1024))
-        tree[directory] = children
+            children.append((name, False, 1024 * 1024))
+        tree[f"MP:{directory}"] = children
     return tree
 
 
-class _WebDavServer:
+class _RcloneRcServer:
     def __init__(self) -> None:
-        self.state = _WebDavState()
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _WebDavHandler)
+        self.state = _RcloneRcState()
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RcloneRcHandler)
         self.httpd.tree = _build_tree()          # type: ignore[attr-defined]
-        self.httpd.dav_state = self.state        # type: ignore[attr-defined]
+        self.httpd.rc_state = self.state        # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
 
     @property
     def url(self) -> str:
         host, port = self.httpd.server_address[:2]
-        return f"http://{host}:{port}/dav"
+        return f"http://{host}:{port}"
 
     def stop(self) -> None:
         self.httpd.shutdown()
@@ -254,7 +253,7 @@ def run_scenario(mode: str) -> dict:
         db.commit()
         headers = {"Authorization": f"Bearer {create_access_token(admin.id)}"}
 
-    server = _WebDavServer()
+    server = _RcloneRcServer()
     local_dir = tempfile.mkdtemp(prefix="verify-queue-local-")
     for index in range(8):
         with open(os.path.join(local_dir, f"Local.Movie.{index}.2024.1080p.mp4"), "wb") as handle:
@@ -263,8 +262,8 @@ def run_scenario(mode: str) -> dict:
     try:
         # 三条来源指向同一个远程挂载（审计里的 MP媒体库），第四条只读本机目录
         with SessionLocal() as db:
-            mount = em.StorageMount(name="MP媒体库", mount_type="webdav", path="",
-                                    config=json.dumps({"url": server.url, "username": "", "password": ""}),
+            mount = em.StorageMount(name="MP媒体库", mount_type="rclone", path="rclone:MP:",
+                                    config=json.dumps({"mode": "rc", "rc_url": server.url}),
                                     is_enabled=True)
             db.add(mount)
             db.commit()
@@ -379,12 +378,12 @@ def run_scenario(mode: str) -> dict:
             "mount_serial": bool(scan_queue.SCAN_MOUNT_SERIAL),
             "remote_concurrency": mnt.MOUNT_REMOTE_CONCURRENCY,
             "mount_id": mount_id,
-            "webdav_url": server.url,
+            "rclone_rc_url": server.url,
             "responses": responses,
             "timeline": timeline,
             "persisted_progress": persisted_samples,
             "finals": finals,
-            "webdav": {
+            "rclone": {
                 "requests": server.state.requests,
                 "peak_inflight": server.state.peak_inflight,
                 "per_path": server.state.per_path,
@@ -443,9 +442,9 @@ def metrics(result: dict) -> dict:
     return {
         "peak_concurrent_scans": peak_scans,
         "log_peak_simultaneous": log_peak,
-        "peak_webdav_inflight": result["webdav"]["peak_inflight"],
-        "webdav_requests": result["webdav"]["total"],
-        "webdav_max_same_path": max(result["webdav"]["per_path"].values(), default=0),
+        "peak_remote_inflight": result["rclone"]["peak_inflight"],
+        "remote_requests": result["rclone"]["total"],
+        "remote_max_same_path": max(result["rclone"]["per_path"].values(), default=0),
         "shared_mount_overlap_seconds": round(overlap, 2),
         "shared_mount_libs": shared,
         "all_four_running_at_once": any(
@@ -498,9 +497,9 @@ def assertions(result: dict, stats: dict) -> list[tuple[str, bool, str]]:
             f"最长重叠 {stats['shared_mount_overlap_seconds']}s")
         add("有库被明确告知「在等挂载」而不是硬上",
             len(stats["queued_libs"]) >= 1, str(stats["queued_libs"]))
-        add("WebDAV 端点的并发请求数不超过远程上限",
-            stats["peak_webdav_inflight"] <= result["remote_concurrency"],
-            f"peak={stats['peak_webdav_inflight']} 上限={result['remote_concurrency']}")
+        add("远端端点的并发请求数不超过远程上限",
+            stats["peak_remote_inflight"] <= result["remote_concurrency"],
+            f"peak={stats['peak_remote_inflight']} 上限={result['remote_concurrency']}")
         add("扫描开始的日志里同时最多 2 个在跑（日志口径与快照一致）",
             stats["log_peak_simultaneous"] <= result["max_parallel"],
             f"日志 peak={stats['log_peak_simultaneous']} 上限={result['max_parallel']}")
@@ -541,7 +540,7 @@ def _bar(value: float, scale: float, width: int = 28) -> str:
 def print_scenario(result: dict, stats: dict, checks: list[tuple[str, bool, str]]) -> None:
     label = "队列开启（v2.27.0）" if result["mode"] == "queue" else "队列关闭（升级前行为）"
     print(f"\n{'=' * 78}\n【{label}】\n{'=' * 78}")
-    print(f"WebDAV: {result['webdav_url']}（同一挂载 id={result['mount_id']}，每次 PROPFIND 延迟 "
+    print(f"rclone RC: {result['rclone_rc_url']}（同一挂载 id={result['mount_id']}，每次列目录延迟 "
           f"{int(REMOTE_LATENCY * 1000)}ms）")
     print(f"场景：剧集 / 电影 / 演唱会 → 同一个远程挂载；音乐片 → 本机目录（不吃远程串行化）")
 
@@ -561,11 +560,11 @@ def print_scenario(result: dict, stats: dict, checks: list[tuple[str, bool, str]
     if not interesting:
         print("  （没有队列相关日志：升级前是直接起线程，没有入队/排队这一步）")
 
-    print("\n-- WebDAV 服务端日志（每个请求的时刻与在飞并发）--")
-    for row in result["webdav"]["requests"]:
+    print("\n-- 远端服务端日志（每次列目录的时刻与在飞并发）--")
+    for row in result["rclone"]["requests"]:
         print(f"  t+{row['t']:6.2f}s {row['method']:<8} {urllib.parse.unquote(row['path']):<44} "
               f"inflight={row['inflight']}")
-    print(f"  → 共 {result['webdav']['total']} 次请求，在飞峰值 {result['webdav']['peak_inflight']}")
+    print(f"  → 共 {result['rclone']['total']} 次请求，在飞峰值 {result['rclone']['peak_inflight']}")
 
     print("\n-- 每个库的最终结果 --")
     for item in result["finals"]:
@@ -603,9 +602,9 @@ def print_scenario(result: dict, stats: dict, checks: list[tuple[str, bool, str]
     print("\n-- 汇总 --")
     print(f"  同时最多几个扫描在跑 : {stats['peak_concurrent_scans']}（扫描开始日志：{stats['log_peak_simultaneous']}）")
     print(f"  同一挂载的最长重叠   : {stats['shared_mount_overlap_seconds']}s")
-    print(f"  WebDAV 在飞峰值      : {stats['peak_webdav_inflight']}")
-    print(f"  WebDAV 总请求        : {stats['webdav_requests']}"
-          f"（同一路径最多 {stats['webdav_max_same_path']} 次）")
+    print(f"  远端在飞峰值         : {stats['peak_remote_inflight']}")
+    print(f"  远端总请求           : {stats['remote_requests']}"
+          f"（同一路径最多 {stats['remote_max_same_path']} 次）")
     print(f"  入口到全部跑完       : {stats['wall_seconds']}s")
     if result["mode"] == "queue":
         print(f"  被排队的库           : {stats['queued_libs']}")
@@ -625,8 +624,8 @@ def print_comparison(results: dict[str, dict], stats: dict[str, dict]) -> None:
     print(f"\n{'=' * 78}\n对照：四个库同时点扫描，一次线上日志审计的现场\n{'=' * 78}")
     row("同时在跑的扫描", old["peak_concurrent_scans"], new["peak_concurrent_scans"], " 个")
     row("同一挂载的最长并发重叠", old["shared_mount_overlap_seconds"], new["shared_mount_overlap_seconds"], " s")
-    row("WebDAV 在飞请求峰值", old["peak_webdav_inflight"], new["peak_webdav_inflight"])
-    row("WebDAV 总请求数", old["webdav_requests"], new["webdav_requests"])
+    row("远端在飞请求峰值", old["peak_remote_inflight"], new["peak_remote_inflight"])
+    row("远端总请求数", old["remote_requests"], new["remote_requests"])
     row("四个库全部跑完（墙上时间）", old["wall_seconds"], new["wall_seconds"], " s")
     row("排队等待的库数", len(old["queued_libs"]), len(new["queued_libs"]))
     print(f"  {'扫描失败（并发写库互踩）':<26} {len(old['failed'])} 个 {old['failed']}  →  "
@@ -662,7 +661,7 @@ def _prepare_child_env(mode: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="扫描队列并发验证（真 WebDAV + 真管理端接口）")
+    parser = argparse.ArgumentParser(description="扫描队列并发验证（真 rclone RC + 真管理端接口）")
     parser.add_argument("--mode", choices=("legacy", "queue"), help="只跑一种模式（默认两种都跑并对照）")
     parser.add_argument("--json", help="把原始观测写到这个文件")
     args = parser.parse_args()

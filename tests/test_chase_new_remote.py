@@ -63,10 +63,8 @@ def _make_db(mount_type="rclone", mode="rc"):
 @pytest.fixture(autouse=True)
 def _clean_cache():
     mount_lib.invalidate_list_cache()
-    mount_lib.breaker_reset()
     yield
     mount_lib.invalidate_list_cache()
-    mount_lib.breaker_reset()
 
 
 def _install_tree(monkeypatch, tree: dict, calls: list):
@@ -261,8 +259,8 @@ def test_chase_new_uses_its_own_small_concurrency_quota(monkeypatch):
     mount_lib._CHASE_SEM_SIZE = 0
 
 
-def test_chase_new_is_breaker_protected(monkeypatch):
-    """远端坏了：追新必须吃熔断（快速失败），而不是一轮轮把请求全打过去"""
+def test_chase_new_goes_through_the_shared_channel(monkeypatch):
+    """远端坏了：追新必须真打请求（熔断器已删），但走公共通道而不是自带旁路"""
     from backend.emby_server import mounts as ml
 
     calls = []
@@ -274,13 +272,10 @@ def test_chase_new_is_breaker_protected(monkeypatch):
         raise ml.MountError("rclone: 模拟远端故障")
 
     monkeypatch.setattr(mount_rclone, "rc_call", boom)
-    monkeypatch.setattr(ml, "MOUNT_BREAKER_THRESHOLD", 2)
-    monkeypatch.setattr(ml, "MOUNT_BREAKER_COOLDOWN_SEC", 300)
 
-    for _ in range(6):
+    for _ in range(3):
         cw._find_new_videos_remote(_make_db(), 3, "/MP2", 0.0)
 
-    # 阈值 2：第 3 次起就该熔断，后续不再发网络请求
-    assert len(calls) == 2, calls
-    stats = mount_lib.mount_breaker_stats()
-    assert stats["opens"] >= 1 and stats["fast_fails"] >= 1, stats
+    # 熔断器删除后不再有「快速失败」这条捷径：每一次都真去问远端，错误如实抛出。
+    # 这正是它跟 limit/缓存共用 _call_remote 的意义——请求量看得见、可限流。
+    assert len(calls) == 3, calls

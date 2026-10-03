@@ -14,9 +14,9 @@ side 图片 / NFO / TMDB 刮削全部交给本 worker 在后台补全——这�
 - 纯继承（v2.42.9 第 5 批）：父级已 done 且有图/tmdb_id、本集无自带 NFO 时，
   不读 NFO、不查 TMDB，图片沿父级回退，零网络落 done；
 - 失败指数退避：attempts 计数，next_retry_at 调度，5 次后转 failed；
-- 挂载熔断（v2.42.9）：坏挂载不再逐条等 MOUNT_TIMEOUT——挂载连续失败达阈值后
-  熔断打开，该挂载条目在 IO 前就被打回 pending + 长 next_retry_at（不是
-  failed，attempts 不涨），挂载恢复后自然重新入队（见 mounts._call_remote）；
+- 挂载不可用（v2.42.12）：存储真的读不动时（``MountError``），该挂载的条目打回
+  pending + 长 next_retry_at（**不是** failed，attempts 不涨），挂载恢复后自然重新入队；
+  否则一个挂不上的网盘会把整个队列烧成 failed，重扫也救不回来。
 - 新文件优先（date_added 倒序），TMDB 令牌桶限速；
 - NFO 优先原则不变：NFO 管文字，TMDB 只补图和缺失字段；
 - 补全是幂等的：重复补同一条目只会覆盖出相同结果；
@@ -886,8 +886,8 @@ def _mount_id_of(file_path: Optional[str]) -> Optional[int]:
     return int(head) if head.isdigit() else None
 
 
-def _requeue_on_breaker(db, item_id: int, mount_id: Optional[int] = None) -> str:
-    """挂载熔断中：打回 pending + 长 next_retry_at（**不是 failed**）。
+def _requeue_mount_unavailable(db, item_id: int, mount_id: Optional[int] = None) -> str:
+    """存储读不动：打回 pending + 长 next_retry_at（**不是 failed**）。
 
     坏挂载上的条目重试只会重复失败：让它们吃长退避，把队列让给健康挂载；
     attempts 不涨（这不是条目本身的失败，是存储不可用），挂载恢复后自然重补。
@@ -895,7 +895,7 @@ def _requeue_on_breaker(db, item_id: int, mount_id: Optional[int] = None) -> str
     """
     try:
         from backend.emby_server import mounts as mount_lib
-        retry_sec = mount_lib.MOUNT_BREAKER_RETRY_SEC
+        retry_sec = mount_lib.MOUNT_UNAVAILABLE_RETRY_SEC
         item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
         if item is None:
             return "skip"
@@ -903,8 +903,9 @@ def _requeue_on_breaker(db, item_id: int, mount_id: Optional[int] = None) -> str
         item.enrich_claimed_at = None
         item.enrich_next_retry_at = datetime.now() + timedelta(seconds=retry_sec)
         db.commit()
-        logger.info("补全熔断跳过 id=%s mount=%s %ss后重试", item_id, mount_id, retry_sec)
-        return "breaker"
+        logger.info("补全跳过（存储不可用）id=%s mount=%s %ss后重试",
+                    item_id, mount_id, retry_sec)
+        return "mount_unavailable"
     except Exception:  # noqa: BLE001
         db.rollback()
         return "skip"
@@ -939,21 +940,15 @@ def _inherit_parent_info(db, item: Any) -> Optional[dict]:
 def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
     """处理一条已抢到的条目：IO 阶段 → 写库阶段。
 
-    返回 'done' / 'retry' / 'failed' / 'breaker' / 'skip'
-    （'breaker' = 挂载熔断跳过，不算成功也不算失败，不进速率口径）。
+    返回 'done' / 'retry' / 'failed' / 'mount_unavailable' / 'skip'
+    （'mount_unavailable' = 存储读不动，不算成功也不算失败，不进速率口径）。
 
     v2.42.9 从 _worker_loop 里提出来：一是要给**整条**计时并记结果（阶段计数 +
     完成速率都靠它），二是让循环回到「抢一批 → 逐条处理」两行。行为与提之前一致。
     """
     item_id = item.id
     attempts = getattr(item, "enrich_attempts", 0) or 0
-    # ---- 熔断前置检查（v2.42.9）：坏挂载的条目不进 IO，不等 20s 超时 ----
     mount_id = _mount_id_of(item.file_path)
-    if mount_id is not None:
-        from backend.emby_server import mounts as mount_lib
-        if mount_lib.mount_breaker_open(mount_id):
-            db.rollback()
-            return _requeue_on_breaker(db, item_id, mount_id)
     # ---- 纯继承预判（处方 3）：父级已 done 且有图/tmdb_id 才值得走 ----
     inherit_parent = _inherit_parent_info(db, item)
     # ---- IO 阶段（无写事务）：网络/磁盘全在这里 ----
@@ -965,8 +960,8 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
         db.rollback()
         from backend.emby_server import mounts as mount_lib
         if isinstance(exc, mount_lib.MountError):
-            # 挂载不可用（含熔断快速失败）：打回 pending + 长退避，不是 failed
-            return _requeue_on_breaker(db, item_id, mount_id)
+            # 存储不可用：打回 pending + 长退避，不是 failed
+            return _requeue_mount_unavailable(db, item_id, mount_id)
         return _mark_failed(db, item_id, attempts, str(exc))
     if not fetched.get("ok"):
         db.rollback()
@@ -1045,16 +1040,6 @@ def get_progress() -> dict:
                       _func.count(em.MediaItem.id)).group_by(
                           em.MediaItem.probe_status).all()
         probe_by_status = {s or "unknown": c for s, c in pq}
-        # 挂载熔断快照（v2.42.9）：「哪个挂载正在熔断」必须能直接看到，
-        # 否则坏挂载拖慢队列时管理员只能对着 pending 数字猜。
-        from backend.emby_server import mounts as mount_lib
-        breakers = mount_lib.mount_breaker_stats()
-        open_ids = {b["mount_id"] for b in breakers["open"] if b["mount_id"] is not None}
-        if open_ids:
-            names = dict(db.query(em.StorageMount.id, em.StorageMount.name)
-                         .filter(em.StorageMount.id.in_(open_ids)).all())
-            for b in breakers["open"]:
-                b["mount_name"] = names.get(b["mount_id"]) or f"挂载 #{b['mount_id']}"
         return {
             "enrich": {
                 "pending": by_status.get("pending", 0),
@@ -1071,8 +1056,6 @@ def get_progress() -> dict:
             "stages": progress.stage_stats(),
             "throughput": progress.throughput(),
             "mount_io": progress.remote_stats(),
-            # v2.42.9 第 4 批：正在熔断的挂载 + 租约配置（运维一眼定位坏挂载）
-            "mount_breakers": breakers,
             "claim_lease_sec": ENRICH_CLAIM_LEASE_SEC,
         }
     finally:
