@@ -61,7 +61,7 @@ const ops = ref({ allow_download: 'true', device_limit_per_user: '0', device_lim
 const cdnConfig = ref<CdnConfig>({
   domain: '', normalized: '', enabled: false, segment_cache_header: '',
 })
-/** 服务端注册的线路清单（direct / cdn / relay）——展示用，不在这里改 */
+/** 服务端注册的线路清单（relay / cdn / cache）——展示用，不在这里改 */
 const cdnPlayLines = ref<string[]>([])
 
 /**
@@ -136,6 +136,8 @@ onMounted(load)
 // 只回答“这会儿每条线路怎么样”：能不能用、是不是在降级、有多少人多少流量、效果如何。
 
 const playLines = ref<PlayLinesSnapshot | null>(null)
+/** 在用线路（剔除已下线的直连，否则就绪率会被历史卡片拉低） */
+const liveLines = computed(() => (playLines.value?.lines ?? []).filter((l) => !l.retired))
 
 /** 本机文件整文件直发 / 转码拉流不走本服务响应体，流量口径不包含它们 */
 const lineBytesHint = '流量 = 本进程经手的出流量（不含转码时 ffmpeg 的拉流与整文件直发）'
@@ -388,14 +390,17 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
       <div class="card-header">
         <h2><Activity :size="15" /> 播放线路</h2>
         <span class="badge-hint">
-          {{ playLines ? `${playLines.lines.filter((l) => l.ready).length} / ${playLines.lines.length} 条就绪` : '加载中…' }}
+          {{ playLines ? `${liveLines.filter((l) => l.ready).length} / ${liveLines.length} 条就绪` : '加载中…' }}
         </span>
       </div>
 
       <p class="field-hint" style="margin-top: 0">
-        四条线路的<b>健康状态、流量与降级</b>。它们都不会“挂”：任何一条都以降级方式回退到
+        各条线路的<b>健康状态、流量与降级</b>。它们都不会“挂”：任何一条都以降级方式回退到
         另一条（所以功能不会坏），但“降级中”意味着它此刻<b>没按自己该有的方式工作</b>——
         比如本地缓存线路没副本时，用户拿到的其实是回源流。
+        <br />
+        <b>302 直连已下线</b>（Google Drive 带不过 Authorization 头，token 放 URL 会被限流），
+        末尾那张卡片只留历史计数，不计入就绪分母。
         <br />
         {{ playLines?.scope_note || lineBytesHint }}
       </p>
@@ -441,7 +446,7 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
       </div>
 
       <p class="field-hint" style="margin-top: 0">
-        把一个回源到本服务的 CDN 域名填进来并启用：播放 URL（直连流 / HLS 播放列表 / 字幕）
+        把一个回源到本服务的 CDN 域名填进来并启用：播放 URL（视频流 / HLS 播放列表 / 字幕）
         改走该域名，热门视频分片由 CDN 边缘缓存，省掉源站（Google Drive）的单文件下载配额。
         <b>只做域名预留</b>：备案、证书、回源与缓存规则都在 CDN 厂商控制台自行配置，本服务不代管。
       </p>
@@ -505,7 +510,7 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
       <p class="field-hint" style="margin-top: 0">
         把热门的远程挂载片提前拉到 VPS 本机磁盘：用户切到「本地缓存」线路时优先读本机，
         没有才回源并触发缓存。下载<b>单线程 + 限速</b>，有人在播放时自动降到
-        {{ localCache.busy_rate_mbps }}MB/s 让路，不碰 direct / relay / cdn 三条现有线路；
+        {{ localCache.busy_rate_mbps }}MB/s 让路，不碰 cdn / relay 两条现有线路；
         超配额按 LRU 删最久未访问的副本。只缓存远程挂载来源的条目（本机文件不需要副本）。
       </p>
 

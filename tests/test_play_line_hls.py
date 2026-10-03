@@ -1,18 +1,18 @@
 """转码 / HLS 路径（video_hls）的线路处理回归测试
 
 ## 起因
-``video_stream``（直连播放那条路）一直正确地尊重用户的线路选择：
-选了 relay 就跳过 Google 直链 302、改走本服务代理转发。但 ``video_hls``
-（转码那条路，客户端拿 ``master.m3u8`` 走 HLS 时用的就是它）**从头到尾
-没有看过 ``get_play_line``** —— 除了本地缓存线路那条特判。
+``video_hls``（转码那条路，客户端拿 ``master.m3u8`` 走 HLS 时用的就是它）
+**从头到尾没有看过 ``get_play_line``** —— 除了本地缓存线路那条特判。
 
 于是两个后果：
 
-1. **统计说谎**：用户明明选了中转线路，转码请求却被记成
-   ``line_stats.record_request(LINE_DIRECT)``。面板上「代理中转」永远是 0，
-   运维会以为没人用中转 —— 从面板看就像「切换没生效」。
+1. **统计说谎**：用户明明选了中转线路，转码请求却被记成默认线路。面板上
+   「代理中转」永远是 0，运维会以为没人用中转 —— 从面板看就像「切换没生效」。
 2. **CDN 未启用时的退化没有记录**：选了 cdn 但管理员没开 CDN，
-   直连路径会记一条「降级 + 原因」，转码路径不记。
+   播放路径会记一条「降级 + 原因」，转码路径不记。
+
+（注：这里的“默认线路”在 302 直连下线后是 relay；用例里仍用 monkeypatch 直接
+指定线路值，验证的是「记的是用户选的那条」这个口径本身。）
 
 （本文件最初还怀疑「转码把源站凭据丢了」，实测 ``start_transcode`` 确实带着
 ``input_headers`` 走到 ffmpeg 的 ``-headers``，那个猜测是错的；
@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.emby_server.play_line import LINE_CACHE, LINE_CDN, LINE_DIRECT, LINE_RELAY
+from backend.emby_server.play_line import LINE_CACHE, LINE_CDN, LINE_RELAY
 
 
 class _StopAtTranscode(Exception):
@@ -106,13 +106,14 @@ def test_relay_line_is_recorded_on_transcode(harness, monkeypatch):
         f"转码路径忽略了线路选择，实际记成 {[l for l, _ in state.recorded]}")
 
 
-def test_direct_line_is_recorded_on_transcode(harness, monkeypatch):
+def test_relay_line_is_recorded_on_transcode(harness, monkeypatch):
+    """中转线路（当前默认）在转码路径上要记成 relay，而不是别的线。"""
     api, state = harness
-    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_DIRECT)
+    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_RELAY)
 
     _run(api)
 
-    assert [line for line, _ in state.recorded] == [LINE_DIRECT]
+    assert [line for line, _ in state.recorded] == [LINE_RELAY]
 
 
 def test_cache_miss_still_records_cache_as_degraded(harness, monkeypatch):
@@ -153,7 +154,7 @@ def test_transcode_input_headers_empty_when_source_has_none(harness, monkeypatch
 
     api, state = harness
     state.target = PlayTarget("url", "https://origin.example/public.mkv", {})
-    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_DIRECT)
+    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_RELAY)
 
     _run(api)
 
@@ -175,4 +176,4 @@ def test_cdn_line_without_cdn_enabled_is_recorded_as_degraded(harness, monkeypat
     recorded = dict(state.recorded)
     assert LINE_CDN in recorded, "选中的线路本身必须留下记录"
     assert recorded[LINE_CDN].get("degraded"), "未启用的降级必须带上原因"
-    assert LINE_DIRECT in recorded, "实际承载回源的那条线也要记一笔"
+    assert LINE_RELAY in recorded, "实际承载回源的那条线也要记一笔"

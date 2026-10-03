@@ -28,7 +28,7 @@ import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
-  MonitorPlay, LayoutDashboard, Settings2, Zap, Route, Cloud, HardDrive,
+  MonitorPlay, LayoutDashboard, Settings2, Route, Cloud, HardDrive,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -60,17 +60,35 @@ const copiedField = ref('')
 const showPlayPassword = ref(false)
 
 // ===== 播放线路选择 =====
-// direct = 直连线路（默认）：客户端直连网盘，速度最快；
+// relay = 中转线路（默认）：视频字节经本服务转发，Google 凭据不下发到客户端；
 // cdn = CDN 线路（第 2/3 层预留）：走管理员预留的 CDN 域名，热门分片由边缘缓存；
 //        仅管理员在后台开启 CDN 后才展示（后端给 cdn_enabled）；
 // cache = 本地缓存线路：优先从 VPS 本地读热门片，本地没有则回源并触发缓存；
-//        仅管理员在后台开启本地缓存后才展示（后端给 cache_enabled）；
-// relay = 中转线路：经服务器转发，适合直连网盘不通（转圈）的用户。
-// 偏好存在后端 user_play_lines 表，按用户隔离；切换后重新播放生效。
-const playLine = ref<PlayLine>('direct')
+//        仅管理员在后台开启本地缓存后才展示（后端给 cache_enabled）。
+//
+// direct（302 直连）已下线：调研 Alist / RClone / Cloudreve 后确认 Google Drive
+// 的 302 真直链不可行——重定向带不过 Authorization 头，token 放进 URL 又会被
+// Google 限流，三家也都是服务端代理。库里存过 direct 的老用户由前端与后端
+// 两侧都折成 relay，所以界面上不会出现「选了也没用」的选项。
+const playLine = ref<PlayLine>('relay')
 const lineSaving = ref(false)
 const cdnAvailable = ref(false)
 const cacheAvailable = ref(false)
+
+/** 当前真正可选项：CDN / 本地缓存没开就不出现（不给点了没变化的死选项） */
+const lineOptions = computed<PlayLine[]>(() => {
+  const options: PlayLine[] = []
+  if (cdnAvailable.value) options.push('cdn')
+  if (cacheAvailable.value) options.push('cache')
+  options.push('relay')
+  return options
+})
+
+/**
+ * 只有一个可选项时，分段选择器本身没有意义（一个按钮点下去什么都不会变），
+ * 改成一行静态文案。等以后接上 CDN，这里会自动恢复成可点的分段器。
+ */
+const singleLine = computed(() => (lineOptions.value.length === 1 ? lineOptions.value[0] : null))
 
 async function pickLine(line: PlayLine) {
   if (lineSaving.value || playLine.value === line) return
@@ -78,10 +96,9 @@ async function pickLine(line: PlayLine) {
   try {
     playLine.value = await setPlayLine(line)
     toast.success(
-      line === 'direct' ? '已切换到直连线路'
-        : line === 'cdn' ? '已切换到 CDN 线路'
-          : line === 'cache' ? '已切换到本地缓存线路'
-            : '已切换到中转线路',
+      line === 'cdn' ? '已切换到 CDN 线路'
+        : line === 'cache' ? '已切换到本地缓存线路'
+          : '已切换到中转线路',
     )
   } catch (err: any) {
     // 不要把服务器给的原因丢掉：400（线路非法）/ 503（自建 Emby 已停用）/
@@ -318,14 +335,15 @@ async function loadProfile(silent = false) {
     // 直接赋值会把好数据刷成"—"/空；首屏失败则保持旧行为（显示空态）
     if (!silent || watchStats) stats.value = watchStats
     if (!silent || subs.length) subscriptions.value = subs
-    // 播放线路偏好加载失败不阻塞页面：拿不到就按默认直连展示
+    // 播放线路偏好加载失败不阻塞页面：拿不到就按默认中转展示
     getPlayLine()
       .then((res) => {
-        playLine.value = res.line
         cdnAvailable.value = res.cdnEnabled
         cacheAvailable.value = res.cacheEnabled
-        // 服务端不支持的线路（未开启）：退回直连，不留一个点了没变化的死选项
-        if (playLine.value === 'cache' && !res.cacheEnabled) playLine.value = 'direct'
+        playLine.value = res.line
+        // 服务端不支持的线路（未开启）：退回中转，不留一个点了没变化的死选项
+        if (playLine.value === 'cache' && !res.cacheEnabled) playLine.value = 'relay'
+        if (playLine.value === 'cdn' && !res.cdnEnabled) playLine.value = 'relay'
       })
       .catch(() => {})
   } catch {
@@ -634,7 +652,7 @@ function formatDate(iso?: string | null) {
           <p class="pane-tip">远程结束播放只会终止会话，不会删除观看记录。</p>
         </section>
 
-        <!-- 播放设置：线路选择。直连最快；直连打不开（转圈）时切中转 -->
+        <!-- 播放设置：线路选择。默认中转（经服务器转发），接上 CDN 后会多出选项 -->
         <section class="pane">
           <header class="pane-head">
             <h2 class="pane-title">
@@ -642,19 +660,13 @@ function formatDate(iso?: string | null) {
               播放设置
             </h2>
           </header>
-          <div class="line-seg" role="radiogroup" aria-label="播放线路">
-            <button
-              type="button"
-              class="line-opt"
-              :class="{ on: playLine === 'direct' }"
-              role="radio"
-              :aria-checked="playLine === 'direct'"
-              :disabled="lineSaving"
-              @click="pickLine('direct')"
-            >
-              <Zap :size="13" />
-              直连线路
-            </button>
+          <!-- 只有一个可选项时不做成可点的分段器：点它什么都不会变，
+               直接说清当前线路，等新线路接入后自动恢复成分段选择 -->
+          <p v-if="singleLine" class="line-only">
+            <Route :size="14" />
+            当前线路：中转（视频经服务器转发，网盘凭据不下发到客户端）
+          </p>
+          <div v-else class="line-seg" role="radiogroup" aria-label="播放线路">
             <button
               v-if="cdnAvailable"
               type="button"
@@ -695,10 +707,10 @@ function formatDate(iso?: string | null) {
             </button>
           </div>
           <p class="pane-tip">
-            直连线路速度最快（客户端直连网盘）；如果视频打不开或一直转圈，请切换到中转线路（经服务器转发）。
+            当前为中转线路：视频字节经服务器转发，Google 账号凭据不会下发到客户端。
             <template v-if="cdnAvailable">站内已开启 CDN：热门片切到 CDN 线路更稳，首次播放会由边缘缓存分片。</template>
             <template v-if="cacheAvailable">本地缓存线路：优先从服务器本地读热门片，更少受网盘波动影响，没有缓存时会自动回源并缓存。</template>
-            切换后重新播放生效。
+            <template v-if="!singleLine">切换后重新播放生效。</template>
           </p>
         </section>
 
@@ -1384,13 +1396,30 @@ function formatDate(iso?: string | null) {
    on-primary 文字，两套主题下都清晰（顶栏那排三段切换器已在 v2.42.9 删除） */
 .line-seg {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 列数随可选项变化（CDN / 本地缓存接上就会变 2 → 3），不写死列数 */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 3px;
   padding: 3px;
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-full);
 }
+/* 只有一个可选项时的静态文案（不是按钮，所以没有 hover / 选中态） */
+.line-only {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+  color: var(--au-text-2);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+.line-only svg { flex-shrink: 0; color: var(--au-primary); }
 .line-opt {
   display: inline-flex;
   align-items: center;

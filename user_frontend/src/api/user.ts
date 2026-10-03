@@ -8,23 +8,27 @@ import api from '@/api'
 
 /**
  * 播放线路：
- * - direct = 直连线路（默认，客户端直连网盘）；
+ * - relay = 中转线路（默认）：视频字节经服务器转发，凭据不下发；
  * - cdn = CDN 线路（播放三层第 2/3 层预留）：播放地址走管理员预留的 CDN 域名，
  *   热门分片由边缘缓存；管理员开启 CDN 后后端才会置 cdn_enabled，界面上供选择；
  * - cache = 本地缓存线路：优先从 VPS 本地读热门片，本地没有则回源并触发缓存；
- *   管理员开启本地缓存后后端才会置 cache_enabled，界面上供选择；
- * - relay = 中转线路（经服务器转发）。
+ *   管理员开启本地缓存后后端才会置 cache_enabled，界面上供选择。
+ *
+ * direct（302 直连）已下线：Google Drive 无法用重定向发真直链——302 带不过
+ * Authorization 头，token 放 URL 里会被 Google 限流。老用户库里存着的 direct
+ * 在这里被折成 relay（与后端 normalize 同口径），所以界面上不会出现一个
+ * 选了也没用的死选项。
  */
-export type PlayLine = 'direct' | 'cdn' | 'cache' | 'relay'
+export type PlayLine = 'cdn' | 'cache' | 'relay'
 
 function normalizeLine(line: unknown): PlayLine {
-  if (line === 'relay') return 'relay'
   if (line === 'cdn') return 'cdn'
   if (line === 'cache') return 'cache'
-  return 'direct'
+  // relay / 已下线的 direct / 任何不认识的值：统一按中转对待
+  return 'relay'
 }
 
-/** 查询当前用户的播放线路偏好（无记录时后端回 direct）+ CDN / 本地缓存是否已启用 */
+/** 查询当前用户的播放线路偏好（无记录时后端回 relay）+ CDN / 本地缓存是否已启用 */
 export async function getPlayLine(): Promise<{ line: PlayLine; cdnEnabled: boolean; cacheEnabled: boolean }> {
   const res = await api.get<never, { line?: string; cdn_enabled?: boolean; cache_enabled?: boolean }>(
     '/api/user/emby/play-line',
@@ -46,9 +50,9 @@ export async function getPlayLine(): Promise<{ line: PlayLine; cdnEnabled: boole
  * 1. **响应体不是对象时解构本身抛 TypeError**（空响应体 / 反代返回 200 +
  *    空体）。这个 TypeError 会冒到调用方的 catch，用户看到的是无信息量的
  *    「切换失败，请重试」——查了半天也不知道后端到底回没回。
- * 2. **后端没回显目标线路时，``normalizeLine`` 兜底成 direct**，于是请求
- *    “切到中转”的用户会被界面显示成「已切换到直连线路」，而库里存的其实
- *    是中转。看起来就是「切换不成功」——但方向正好相反。
+ * 2. **后端没回显目标线路时，``normalizeLine`` 会兜底成 relay**，于是请求
+ *    “切到 CDN”的用户会被界面显示成「已切换到中转线路」，而库里存的其实
+ *    是 CDN。看起来就是「切换不成功」——但方向正好相反。
  *
  * 所以这里显式校验：**必须确认后端把偏好存成了我们要的那条线**，
  * 否则当作失败抛出，而不是报一个假的成功。

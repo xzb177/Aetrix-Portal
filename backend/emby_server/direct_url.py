@@ -1,5 +1,18 @@
 """Google Drive 直链 302：EA 返回重定向，客户端直连 Google 下载，不经过服务器代理。
 
+**已下线（2026-10）：本模块不再被播放路径调用**，代码整体保留。
+调研 Alist / RClone / Cloudreve 三家后发现 Google Drive 的 302 真直链不可行：
+
+1. ``alt=media`` 需要 ``Authorization`` 头，而 302 是重定向——客户端不会把
+   本服务请求上的请求头带到新地址（Emby 客户端尤其不会）；
+2. 唯一能进 URL 的 ``access_token`` 会进客户端日志 / Referer / 中间代理，
+   且 Google 对「URL 带 token」的请求有独立且更严的限流；
+3. 三家自建方案无一例外都走服务端代理。
+
+保留本模块是因为 file id 解析、token 轮换池、rclone URL 解析这些零件将来
+接 CDN 时还用得上（``ServiceAccountPool`` 已被 ``mount_google`` 复用）。
+不要因为「代码还在」就以为直连仍然生效。
+
 背景：rclone 的 ``--rc-serve`` HTTP 服务对含全角字符（！！、：等）文件名的
 GET 请求返回 404（HEAD 200 / GET 404），这是 rclone 的 bug。直链绕开 rclone
 HTTP 层，客户端直接从 ``www.googleapis.com`` 取文件。
@@ -812,7 +825,9 @@ async def get_direct_url(fs: str, remote_path: str) -> Optional[str]:
 async def try_google_direct_url(rclone_url: str) -> Optional[str]:
     """入口：rclone serve URL -> Google Drive 直链；不可用时返回 None。
 
-    非 rclone URL、开关关闭、任一步失败都返回 None，调用方走原有代理逻辑。
+    **已下线**：播放路径不再调用它（见模块说明）。函数保留供将来接 CDN 复用，
+    单元测试仍在，所以行为一字不改；非 rclone URL、开关关闭、任一步失败都返回
+    None。
     """
     if not direct_url_enabled():
         return None
