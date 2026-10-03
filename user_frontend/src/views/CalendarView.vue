@@ -102,6 +102,15 @@ const allTypesSelected = computed(() => selectedTypes.value.length === ALL_TYPES
 const loading = ref(true)
 const payload = ref<CalendarResponse | null>(null)
 
+/**
+ * 请求序号：连续翻月 / 换库时，先发的请求可能后到。
+ *
+ * 不做这个护栏的话会出现「标题写着 10 月、格子画的是 9 月」——因为后发的
+ * 10 月请求先回来、先渲染，随后 9 月那份才落地并覆盖它。接口不慢的时候几乎
+ * 不会发生，但在弱网 / 冷缓存下必现，而且看起来像「日期错乱」很难自查。
+ */
+let latestRequest = 0
+
 /** 日期 → 当天数据；没有新片的日期不进 map，模板里用可选链读 */
 const dayMap = computed(() => {
   const map = new Map<string, CalendarResponse['days'][number]>()
@@ -206,20 +215,26 @@ function weekdayOf(date: string): string {
 // ==================== 拉取 ====================
 
 async function load() {
+  const reqId = ++latestRequest
   loading.value = true
   try {
-    payload.value = await fetchCalendar({
+    const res = await fetchCalendar({
       start: rangeStart.value,
       end: rangeEnd.value,
       libraryId: libraryId.value || undefined,
       itemTypes: allTypesSelected.value ? [] : selectedTypes.value,
     })
+    // 已经有更新的请求在飞：这份是过期结果，丢掉（否则会把新月份覆盖成旧月份）
+    if (reqId !== latestRequest) return
+    payload.value = res
   } catch (err: any) {
+    if (reqId !== latestRequest) return
     payload.value = null
     const detail = err?.response?.data?.detail
     toast.error(typeof detail === 'string' ? detail : '日历加载失败，请稍后重试')
   } finally {
-    loading.value = false
+    // 同理：只有最后一次请求才能收 loading，否则会把新请求的骨架屏提前收掉
+    if (reqId === latestRequest) loading.value = false
   }
 }
 

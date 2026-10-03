@@ -66,6 +66,12 @@ class _FakeDrive:
         self.errors = errors or {}
         self.calls = []
         self.token_calls = 0
+        #: 共享盘 ID（Drive 把它当作根文件夹的 parent）
+        self.drive_id = "DRV1"
+        #: 共享盘根文件夹 ID
+        self.drive_root_id = "DRVROOT"
+        #: ``/drives/{id}`` 的响应；默认**不返回 root 字段**（生产上的真实情况）
+        self.drive_meta = {"id": "DRV1", "name": "团队盘"}
 
     def __enter__(self):
         return self
@@ -101,9 +107,13 @@ class _FakeDrive:
             if frag in url:
                 return resp
         if "/files?" not in url and not url.endswith("/files"):
-            return _Resp(200, {"id": "root", "name": "我的云端硬盘", "root": "root"})
+            return _Resp(200, self.drive_meta)
         params = params or {}
         parent = self._parent_of(params.get("q", ""))
+        if parent == self.drive_id:
+            # Drive 把共享盘 ID 当作根文件夹的 parent：列它就是列根目录
+            return _Resp(200, {"files": [{"id": self.drive_root_id, "name": "共享盘根",
+                                          "mimeType": FOLDER}]})
         items = self.tree.get(parent)
         if items is None:
             return _Resp(404, {"error": {"code": 404, "message": "File not found.",
@@ -219,6 +229,8 @@ def test_list_dir_paginates(drive):
 
 def test_list_dir_sends_shared_drive_params(drive):
     """共享盘缺 supportsAllDrives / driveId 就是「能列目录但打不开文件」。"""
+    # 共享盘的根文件夹指向假树里的 root，否则 list_dir("/") 会在树里找不到
+    drive.drive_root_id = "root"
     p = _provider({"drive_id": "DRV1"})
     p.list_dir("/")
     params = [c["params"] for c in drive.calls if c["params"].get("q")]
@@ -521,3 +533,79 @@ def test_chase_new_still_rejects_local_and_disabled(monkeypatch):
     off = _mount()
     off.is_enabled = False
     assert cw._chase_provider(off, None) is None
+
+# ---------------- 共享盘根目录解析（2026-10 生产热修） ----------------
+#
+# 生产上一直打补丁修的问题：``drives.get?fields=id,name,root`` 的 ``root``
+# 字段拿不到（403 或响应里没有），旧代码直接判「读取共享云端硬盘根目录失败」，
+# 挂载整个不可用——而账号其实能正常列文件。正式修法已写进 ``_root_id``：
+# 把共享盘 ID 当作根文件夹的 parent 去列，不再依赖 root 字段。
+
+
+def test_shared_drive_root_resolved_without_root_field(drive):
+    """``drives.get`` 不返回 root 时，改用「盘 ID 即根的 parent」列出来"""
+    assert drive.drive_meta.get("root") is None, "默认就不给 root，复现生产情况"
+    p = _provider({"drive_id": "DRV1"})
+    assert p._root_id() == "DRVROOT"
+
+
+def test_shared_drive_root_resolved_when_drive_meta_is_forbidden(drive):
+    """连 ``drives.get`` 都不给读（403）也能解析：那条错误不作数，继续试 files.list"""
+    drive.errors["/drives/"] = _Resp(403, {"error": {
+        "code": 403, "reason": "insufficientFilePermissions",
+        "message": "Insufficient permissions",
+        "errors": [{"message": "Insufficient permissions"}]}})
+    p = _provider({"drive_id": "DRV1"})
+    assert p._root_id() == "DRVROOT"
+
+
+def test_shared_drive_root_uses_root_field_when_available(drive):
+    """环境仍然返回 root 时直接用（少发一次 files.list）"""
+    drive.drive_meta = {"id": "DRV1", "name": "团队盘", "root": "ROOTFROMAPI"}
+    p = _provider({"drive_id": "DRV1"})
+    assert p._root_id() == "ROOTFROMAPI"
+
+
+def test_explicit_root_id_skips_drive_lookup(drive):
+    """显式填了 root_id 就一步到位：不查 drives.get，也不查根目录"""
+    p = _provider({"drive_id": "DRV1", "root_id": "FOLDER_X"})
+    assert p._root_id() == "FOLDER_X"
+    assert not [c for c in drive.calls if "/drives/" in c["url"]]
+    assert not [c for c in drive.calls if c["params"].get("q")]
+
+
+def test_shared_drive_root_failure_message_mentions_drive_id(drive):
+    """两处都拿不到根目录、且 drives.get 没报错：提示要指向 drive_id 本身"""
+    drive.drive_root_id = ""             # 「盘 ID 即 parent」列不出有 id 的条目
+    p = _provider({"drive_id": "DRV1"})
+    with pytest.raises(mount_lib.MountError) as exc:
+        p._root_id()
+    text = str(exc.value)
+    assert "drive_id" in text, "要明确告诉用户去核对 drive_id"
+    assert "内容管理员" in text, "并给出「服务账号要加什么角色」这条可执行动作"
+
+
+def test_shared_drive_root_failure_surfaces_access_error(drive):
+    """drives.get 报的是「访问被拒」时，用它的信息——比「目录读不到」有指向性"""
+    drive.errors["/drives/"] = _Resp(403, {"error": {
+        "code": 403, "reason": "insufficientFilePermissions",
+        "message": "Insufficient permissions",
+        "errors": [{"message": "Insufficient permissions"}]}})
+    drive.drive_root_id = ""
+    p = _provider({"drive_id": "DRV1"})
+    with pytest.raises(mount_lib.MountError) as exc:
+        p._root_id()
+    text = str(exc.value)
+    assert "共享云端硬盘" in text and "内容管理员" in text
+
+
+def test_shared_drive_root_lookup_sends_required_params(drive):
+    """解析根目录的那次 files.list 必须带共享盘必需参数，否则会「能列目录但打不开」"""
+    _provider({"drive_id": "DRV1"})._root_id()
+    probe = [c for c in drive.calls if c["params"].get("q") == "'DRV1' in parents and trashed = false"]
+    assert probe, "没有发出「盘 ID 即 parent」的查询"
+    prm = probe[0]["params"]
+    assert prm["supportsAllDrives"] == "true"
+    assert prm["includeItemsFromAllDrives"] == "true"
+    assert prm["corpora"] == "drive"
+    assert prm["driveId"] == "DRV1"

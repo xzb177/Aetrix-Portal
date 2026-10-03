@@ -205,20 +205,73 @@ class GoogleDriveMount(_CloudMount):
     # ---------------- 目录 ----------------
 
     def _root_id(self) -> str:
-        """挂载根的 Drive 文件夹 ID（``root`` 是 My Drive 根目录的固定别名）。"""
+        """挂载根的 Drive 文件夹 ID（``root`` 是 My Drive 根目录的固定别名）。
+
+        显式填了 ``root_id`` 时直接用它，一次 API 都不发；共享盘没填才去解析根目录
+        （见 ``_resolve_shared_drive_root``）；两者都没填就是 My Drive 的 ``root`` 别名。
+        """
         if self._drive_root:
             return self._drive_root
         if self.drive_id:
-            body = self._api(f"/drives/{urllib.parse.quote(self.drive_id, safe='')}",
-                             {"fields": "id,name,root"}, what="读取共享云端硬盘")
-            self._drive_root = str(body.get("root") or "")
+            self._drive_root = self._resolve_shared_drive_root()
             if not self._drive_root:
                 raise MountError(
                     "读取共享云端硬盘根目录失败：请确认 drive_id 正确，且账号有该盘的访问权"
+                    "（服务账号需被加入共享盘并授予「内容管理员」及以上角色）"
                 )
             return self._drive_root
         self._drive_root = "root"
         return self._drive_root
+
+    def _resolve_shared_drive_root(self) -> str:
+        """共享盘的根文件夹 ID（**不再依赖 ``drives.get`` 的 ``root`` 字段**）。
+
+        ## 为什么不能用 ``root`` 字段（2026-10 生产热修，此前只在服务器上打补丁）
+
+        ``drives/{id}?fields=id,name,root`` 在部分环境下拿不到 ``root``：要么返回
+        403（服务账号只被授权了文件读写，没被授予读盘元数据的权限），要么返回体里
+        根本没有 ``root``。两种情况都会被旧代码判成「读取共享云端硬盘根目录失败」，
+        整个挂载直接不可用——而实际上账号是能正常列文件的。
+
+        ## 替代做法：把共享盘 ID 当作根文件夹的 parent
+
+        Drive 约定：共享盘 ID 本身就是根文件夹的 parent。所以直接列它的直属子项：
+
+            files.list?q="'<driveId>' in parents"&corpora=drive&driveId=<driveId>
+
+        出来的那一条文件夹就是根。这条路只依赖 ``files.list``（与读文件是同一份授权），
+        不再被 ``root`` 字段的可见性卡住。``drives.get`` 仍保留一次，但只取
+        ``id,name``（兼作「能不能访问这个盘」的探测与盘名展示），失败也不阻断。
+        """
+        drive_error: Optional[Exception] = None
+        try:
+            info = self._api(
+                f"/drives/{urllib.parse.quote(self.drive_id, safe='')}",
+                {"fields": "id,name"}, what="读取共享云端硬盘")
+            # 兼容：个别环境仍然会返回 root，有就直接用（省掉一次 files.list）
+            root = str(info.get("root") or "")
+            if root:
+                return root
+        except MountError as exc:
+            drive_error = exc
+
+        body = self._api("/files", {
+            "q": f"'{self.drive_id}' in parents and trashed = false",
+            "fields": "files(id,name,mimeType)",
+            "pageSize": "1",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+            "corpora": "drive",
+            "driveId": self.drive_id,
+        }, what="读取共享云端硬盘根目录")
+        roots = [f for f in (body.get("files") or [])
+                 if isinstance(f, dict) and f.get("id")]
+        if roots:
+            return str(roots[0]["id"])
+        if drive_error is not None:
+            # files.list 也空，且 drives.get 报过错——那条错误信息更有指向性
+            raise drive_error
+        return ""
 
     def _files_of(self, parent_id: str) -> list[dict]:
         """列一个文件夹的直属子项（翻页追完）。
