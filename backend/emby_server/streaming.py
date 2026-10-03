@@ -228,6 +228,58 @@ def serve_remote(
     )
 
 
+# ---- 共享连接池（中转秒播：连接复用）----
+#
+# 原来每次代理请求都新建一个 ``httpx.AsyncClient``，用完就关：每个 Range 请求
+# （用户拖进度条一次就一个）都要重新 TCP 握手 + TLS 握手到源站（Google Drive
+# 是跨洲链路，两次握手加起来就是几百毫秒的白等）。改成进程内共享一个 client，
+# 连接在多次请求之间复用。
+#
+# **只共享 client，不共享响应**：``resp`` 仍然是每次请求自己的流，用完在
+# ``iter_remote`` 的 finally 里关掉。池里的连接会在响应体读完/关掉后归还。
+_shared_client: Optional["httpx.AsyncClient"] = None
+_client_lock = threading.Lock()
+
+#: 同时保持的上游连接数。按并发播放人数给余量；``None`` = 不限。
+#: 定住上限是为了避免「人一多就把源站连接数打满」——那是把首字节变慢换成
+#: 源站限流。
+_RELAY_MAX_CONNECTIONS = max(4, min(64, int(os.getenv("RELAY_MAX_CONNECTIONS", "24") or 24)))
+_RELAY_MAX_KEEPALIVE = max(2, min(32, int(os.getenv("RELAY_MAX_KEEPALIVE", "12") or 12)))
+
+
+def get_relay_client() -> "httpx.AsyncClient":
+    """取（或懒建）共享的代理客户端。
+
+    懒建 + 线程锁：首次调用可能并发，用锁避免建出两个池。
+    """
+    import httpx
+
+    global _shared_client
+    if _shared_client is None:
+        with _client_lock:
+            if _shared_client is None:
+                limits = httpx.Limits(
+                    max_connections=_RELAY_MAX_CONNECTIONS,
+                    max_keepalive_connections=_RELAY_MAX_KEEPALIVE,
+                )
+                _shared_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0, read=None),
+                    limits=limits,
+                    # 重定向仍由本模块自己追（要逐跳校验、跨主机剥凭据）
+                    follow_redirects=False,
+                )
+    return _shared_client
+
+
+async def close_relay_client() -> None:
+    """关掉共享客户端（进程退出 / 测试收尾用）"""
+    global _shared_client
+    client = _shared_client
+    _shared_client = None
+    if client is not None:
+        await client.aclose()
+
+
 async def serve_remote_async(
     url: str,
     request: Request,
@@ -254,7 +306,8 @@ async def serve_remote_async(
         forward["Range"] = range_header
 
     # 与同步版同一套口径：重定向自己追，逐跳校验目标、跨主机剥凭据（见 serve_remote）
-    client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None), follow_redirects=False)
+    # 共享 client（连接复用）；**响应**仍然每次独立，用完在 iter_remote 里关。
+    client = get_relay_client()
     try:
         current = url
         for _hop in range(MAX_REDIRECTS + 1):
@@ -268,7 +321,6 @@ async def serve_remote_async(
                 target = _next_redirect(current, location)
             except MountError as exc:
                 await resp.aclose()
-                await client.aclose()
                 logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
                 raise HTTPException(status_code=403, detail=str(exc)) from exc
             await resp.aclose()  # 确认要跟着走，这一跳的响应就不要再占着连接了
@@ -276,19 +328,16 @@ async def serve_remote_async(
             current = target
         else:
             await resp.aclose()
-            await client.aclose()
             raise HTTPException(status_code=502, detail="源站重定向次数过多")
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
-        await client.aclose()
         logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
         raise HTTPException(status_code=502, detail="源站不可达") from exc
 
     if resp.status_code >= 400:
         status = resp.status_code
         await resp.aclose()
-        await client.aclose()
         logger.warning("远程媒体源站返回 %s: %s", status, url.split("?")[0])
         raise HTTPException(status_code=502 if status >= 500 else status, detail=f"源站返回 {status}")
 
@@ -306,8 +355,9 @@ async def serve_remote_async(
             async for chunk in resp.aiter_bytes(CHUNK):
                 yield chunk
         finally:
+            # 只关响应，不关 client —— client 是进程共享的，关了会让其它并发请求炸掉。
+            # 连接会在响应关闭后自动归还池里，供下一次 Range 请求复用。
             await resp.aclose()
-            await client.aclose()
 
     return StreamingResponse(
         iter_remote(), status_code=resp.status_code, media_type=content_type, headers=passthrough,

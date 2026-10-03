@@ -285,6 +285,13 @@ class PlayTarget:
     value: str
     headers: dict = field(default_factory=dict)
     direct: Optional[str] = None
+    #: 这个 file id / 路径是不是来自「路径 → 上游 id」的持久化缓存（秒开那套）。
+    #:
+    #: 播放层用它决定**能不能盲 302**：缓存里的 id 可能已经失效（文件在 Drive 上
+    #: 被移动/改名/删除），而 302 之后字节不经本机，服务器永远看不到那个 404，
+    #: 也就没机会自愈。所以缓存来的 id 一律改走代理——代理路径有 404 重试。
+    #: 现解析出来的 id 不受影响，照旧 302（省服务器带宽）。
+    from_file_id_cache: bool = False
 
 
 # ==================== 路径约定 ====================
