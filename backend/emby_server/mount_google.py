@@ -36,6 +36,7 @@ from typing import Iterator, Optional
 
 from backend.emby_server import disc_filter
 from backend.emby_server import direct_url
+from backend.emby_server import file_id_cache
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.mount_cloud import _CloudMount
 from backend.emby_server.mounts import (
@@ -337,8 +338,24 @@ class GoogleDriveMount(_CloudMount):
 
         默认返回带 Bearer 头的服务器代理形态（凭据不下发）；配置里打开
         ``direct_link`` 时另外给出一条可直接 302 的直链（``PlayTarget.direct``）。
+
+        **秒开靠的是 file id 持久化缓存**：``_locate`` 在目录缓存冷了之后要走
+        ``_parent_id`` 逐级下钻，4 层目录就是 4~5 次 Drive 请求（1~2 秒）。这里先问
+        ``file_id_cache``（库里的「挂载 + 相对路径 → file id」），命中就**一次 API 都
+        不调**直接拼地址；没命中才走原来的逐级下钻，并把结果写回缓存。
+
+        取 token 的路径**一字未改**（``self._token()`` 每次现取）——缓存里只有 file id，
+        没有凭据。
         """
-        entry = self._locate(rel)
+        clean = "/" + (rel or "").lstrip("/")
+        mount_id = getattr(self.mount, "id", 0) or 0
+        file_id = file_id_cache.lookup(self.db, mount_id, clean) if mount_id else ""
+        if file_id:
+            entry = {"id": file_id, "size": 0}
+        else:
+            entry = self._locate(clean)
+            if mount_id:
+                file_id_cache.store(self.db, mount_id, clean, entry["id"], entry.get("size", 0))
         target = PlayTarget("url", self._file_url(entry["id"]), self._headers())
         if self.direct_link:
             target.direct = self._file_url(entry["id"], with_token=True)

@@ -32,6 +32,7 @@ from backend import library_scope, models, playback_policy
 from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
 from backend.emby_server import facets
+from backend.emby_server import file_id_cache
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
 from backend.emby_server import local_cache
@@ -2350,6 +2351,41 @@ def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
         line_stats.record_request(actual)
 
 
+async def _serve_remote_retry_on_stale(
+    target, request: Request, db: Session, item, media_type: str, cache_control: Optional[str],
+):
+    """代理转发，**上游 404 且命中过 file id 缓存**时自愈一次
+
+    「路径 → file id」缓存让点播零次 Drive API 请求（秒开），代价是文件在 Drive 上
+    被移动 / 改名 / 删除后，缓存里的 id 会失效。这里不做主动校验（那等于每次播放都打
+    一次 API，秒开就没了），而是 **懒失效**：真的拿到 404 了才清掉这一条、重新解析、
+    重试一次，并把新 id 写回缓存（``resolve`` 会做）。
+
+    只在「确实删掉了一条缓存」时才重试：压根没有缓存行 = 这次的 id 是现解析出来的，
+    404 就是文件真没了，重试只是白花一轮目录解析。
+    """
+    try:
+        return await serve_remote_async(target.value, request, target.headers, media_type,
+                                         cache_control=cache_control)
+    except HTTPException as exc:
+        if exc.status_code != 404 or not item.file_path:
+            raise
+        parsed = mount_lib.parse_mount_path(item.file_path)
+        if parsed is None:
+            raise                       # 本机文件，不涉及挂载缓存
+        mount_id, rel = parsed
+        from backend.emby_server.async_db import run_db
+
+        removed = await run_db(file_id_cache.invalidate, db, mount_id, rel)
+        if not removed:
+            raise                       # 没有缓存行 = 不是缓存过期，重试无意义
+        logger.info("file id 缓存失效（文件可能被移动/删除），重新解析: mount=%s %s",
+                    mount_id, rel)
+        fresh = await run_db(_play_target, db, item)
+        return await serve_remote_async(fresh.value, request, fresh.headers, media_type,
+                                         cache_control=cache_control)
+
+
 @emby_router.get("/emby/Videos/{item_id}/stream")
 @emby_router.get("/Videos/{item_id}/stream")
 async def video_stream(
@@ -2391,8 +2427,8 @@ async def video_stream(
         seg_cache = cdn.cache_control_for(str(request.url.path))
         if line == play_line.LINE_RELAY:
             return _observe_line(
-                await serve_remote_async(target.value, request, target.headers, media_type,
-                                         cache_control=seg_cache),
+                await _serve_remote_retry_on_stale(
+                    target, request, db, item, media_type, seg_cache),
                 play_line.LINE_RELAY)
         # 原生挂载给的直链（Google Drive 原生 provider）：提供者自己就有 file id 与
         # token，不需要问任何人。优先于 rclone 那条老路（后者要先 stat 查 file id）。
@@ -2421,8 +2457,8 @@ async def video_stream(
             _note_line_fallback(play_line.LINE_DIRECT, play_line.LINE_RELAY,
                                 "Google 直链不可用，已回落到代理转发")
         return _observe_line(
-            await serve_remote_async(target.value, request, target.headers, media_type,
-                                     cache_control=seg_cache),
+            await _serve_remote_retry_on_stale(
+                target, request, db, item, media_type, seg_cache),
             line)
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
     return serve_file(target.value, request, media_type,

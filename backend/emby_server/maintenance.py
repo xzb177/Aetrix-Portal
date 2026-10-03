@@ -348,7 +348,7 @@ def run_startup_maintenance() -> dict:
 
     result = {"scan_flags_reset": 0, "scan_runs_closed": 0, "sessions_reaped": 0,
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
-              "tmdb_cache_pruned": 0,
+              "tmdb_cache_pruned": 0, "mount_file_ids_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_pruned": 0,
               "item_facets_ready": False}
     db = SessionLocal()
@@ -361,6 +361,10 @@ def run_startup_maintenance() -> dict:
         result["item_facets_backfilled"] = facets.ensure_backfill(db)
         result["item_facets_pruned"] = facets.prune_orphans(db)
         result["item_facets_ready"] = facets.ready(db)
+        # 挂载 file id 缓存（播放秒开）：每部片一行，不清就会无限增长。
+        # 只删长期没人碰的（默认 180 天），最近在看的片缓存留着继续省请求。
+        from backend.emby_server import file_id_cache
+        result["mount_file_ids_pruned"] = file_id_cache.prune(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("启动维护（数据库部分）失败: %s", exc)
         db.rollback()
