@@ -130,9 +130,11 @@ sed -i "s|^SECRET_KEY=.*|SECRET_KEY=$(python3 -c 'import secrets; print(secrets.
 # 3) 改掉数据库默认密码（见下方说明，至少改这一个）
 sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')|" .env
 
-# 4) 确认两行都改到了（应该输出两个非空的密码，且**内容不一样**才对）
+# 4) 确认两行都改到了（下面应输出 2 行 <已设置>，且长度都不是 0）
 grep -E '^(SECRET_KEY|POSTGRES_PASSWORD)=' .env | sed 's/=.*/=<已设置>/'
-sed -n 's/^POSTGRES_PASSWORD=//p' .env | wc -c     # 远大于 1 = 确实换掉了
+awk -F= '/^SECRET_KEY=|^POSTGRES_PASSWORD=/{print $1, "长度:", length($2)}' .env
+# 长度明显大于 1 才算真的换了（模板里 SECRET_KEY 本来是空的、
+# POSTGRES_PASSWORD 本来是 aetrix）；若看到长度 0 或 6，说明上面没改到
 
 # 5) 拉镜像并启动
 docker compose pull
