@@ -23,6 +23,7 @@ import {
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { getPlayLine, setPlayLine, type PlayLine } from '@/api/user'
 import { useToast } from '@/composables/useToast'
+import { useClipboard } from '@/composables/useClipboard'
 import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
@@ -33,6 +34,7 @@ import {
 const router = useRouter()
 const userStore = useUserStore()
 const toast = useToast()
+const { copy } = useClipboard()
 
 const user = computed(() => userStore.user as AuthUser | null)
 
@@ -144,15 +146,24 @@ function openScheme(url: string) {
   window.location.href = url
 }
 
+/**
+ * 复制服务器地址 / Emby 用户名 / 各服 base_url。
+ *
+ * 复制与提示交给 useClipboard（非安全上下文下 navigator.clipboard 不存在，
+ * 它会降级到 execCommand 并给出可操作的失败提示）；这里只管成功后的勾选反馈。
+ * field 形如 'server' / 'user' / 'realm-<id>'。
+ */
+const COPY_LABELS: Record<string, string> = {
+  server: '服务器地址',
+  user: '用户名',
+}
+
 const copyText = async (text: string, field: string) => {
-  try {
-    await navigator.clipboard.writeText(text)
-    copiedField.value = field
-    toast.success('已复制')
-    setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1600)
-  } catch {
-    toast.error('复制失败')
-  }
+  const label = COPY_LABELS[field] || '服务器地址'
+  const ok = await copy(text, label)
+  if (!ok) return
+  copiedField.value = field
+  setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1600)
 }
 
 // ===== 修改门户密码 =====
