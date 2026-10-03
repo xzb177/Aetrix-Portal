@@ -2524,8 +2524,19 @@ async def video_hls(
     elif target.kind == "url":
         # 转码的拉流字节由 ffmpeg 进程走，不经过本服务的响应体，
         # 所以这里只记请求不记流量（面板上已标明流量口径不含转码拉流）。
-        line_stats.record_request(
-            play_line.LINE_CDN if cdn.enabled(db) else play_line.LINE_DIRECT)
+        #
+        # 记的是**用户选的那条线**。原先这里按 ``cdn.enabled(db)`` 记成 cdn
+        # 或 direct —— 整条转码路径压根没看过 ``get_play_line``，于是选了
+        # 中转线路的用户，面板上「代理中转」永远是 0，看起来就像「切换
+        # 没生效」。转码输入本来就是本服务的 ffmpeg 去拉源站（这正是 relay
+        # 的语义），所以口径上记 relay 没有偏差。
+        selected = play_line.get_play_line(db, getattr(user, "id", None))
+        if selected == play_line.LINE_CDN and not cdn.enabled(db):
+            # 选了 CDN 但没启用 = 退化到回源，与 video_stream 的口径对齐
+            _note_line_fallback(play_line.LINE_CDN, play_line.LINE_DIRECT,
+                                "CDN 未启用，转码从回源拉流")
+        else:
+            line_stats.record_request(selected)
     session_id = start_transcode(
         target.value, start_seconds, video_bitrate, height,
         user_id=user.id, item_guid=item.guid, input_headers=target.headers,
