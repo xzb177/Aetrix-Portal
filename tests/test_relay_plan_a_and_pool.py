@@ -224,6 +224,20 @@ def test_relay_pool_limits_are_sane():
     assert streaming._RELAY_MAX_CONNECTIONS >= streaming._RELAY_MAX_KEEPALIVE >= 2
 
 
+def test_app_shutdown_closes_the_relay_client():
+    """关闭时必须把共享连接池关掉
+
+    不关的后果有两个：httpx 报未关闭的客户端；更实际的是它**绑定在创建它的事件
+    循环上**，进程重启 / reload 后复用会直接报错。
+    """
+    import inspect
+
+    from backend.main import lifespan
+
+    src = inspect.getsource(lifespan)
+    assert "close_relay_client" in src, "lifespan 关闭段没有关连接池"
+
+
 def test_serve_remote_async_never_closes_the_shared_client():
     """**最危险的一条**：单个请求把共享 client 关掉，会把其它并发请求一起炸掉"""
     from fastapi import HTTPException
