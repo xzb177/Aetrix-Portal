@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -27,7 +27,7 @@ from backend.database import get_db
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.api import _play_target, _require_item
 from backend.emby_server.auth import get_emby_user
-from backend.emby_server.streaming import can_redirect_direct, serve_remote
+from backend.emby_server.streaming import serve_remote
 from backend.subscriptions import ensure_playback_allowed
 
 logger = logging.getLogger(__name__)
@@ -49,9 +49,8 @@ def mounted_item_file(
     # 复用 api 的目标解析与错误映射，保证两条端点对同一份数据行为一致
     target = _play_target(db, item)
     if target.kind == "url":
-        # 无凭据直链直接 302（视频字节不经过服务器）；有凭据的才走代理
-        if can_redirect_direct(target):
-            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": "no-store"})
+        # 一律代理转发：不对任何来源 302（Drive 带不过 Authorization 头，
+        # token 放 URL 会被限流），凭据不下发到客户端
         return serve_remote(target.value, request, target.headers)
     if not target.value or not os.path.isfile(target.value):
         raise HTTPException(status_code=404, detail="File not found")

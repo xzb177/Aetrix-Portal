@@ -66,7 +66,6 @@ from backend.emby_server.streaming import (
     serve_image,
     serve_remote,
     serve_remote_async,
-    can_redirect_direct,
     start_transcode,
     find_transcodes,
     stop_all_transcodes,
@@ -2424,28 +2423,19 @@ async def video_stream(
         # CDN 预留（第 2/3 层）：代理转发形态也带上分片缓存头，让 CDN 边缘能缓存
         # 回源结果。
         seg_cache = cdn.cache_control_for(str(request.url.path))
-        # 唯一的重定向残留：**显式** ``?direct=true`` 且目标不带凭据时才 302
-        #（STRM / rclone 公开直链这类）。``can_redirect_direct`` 见到
-        # Authorization / Cookie 就拒绝，所以带凭据的挂载（115 / WebDAV /
-        # Google Drive）无论带不带这个参数都走代理——与已下线的 Drive 直链无关。
-        if request.query_params.get("direct", "").lower() == "true" and can_redirect_direct(target):
-            line_stats.record_request(line)
-            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": cdn.NO_STORE})
         if line == play_line.LINE_RELAY:
             return _observe_line(
                 await _serve_remote_retry_on_stale(
                     target, request, db, item, media_type, seg_cache),
                 play_line.LINE_RELAY)
-        # 原生挂载给的直链（``PlayTarget.direct``，需挂载开 direct_link）与 rclone
-        # 的 ``try_google_direct_url`` 都**不再产生 302**：Drive 的 alt=media 要
-        # Authorization 头而重定向带不过去，token 塞 URL 里会被限流。两条分支整体
-        # 下线，代码保留在 direct_url / mounts 里，方便将来接上 CDN 再复用。
+        # 挂载来源（115 / WebDAV / AList / STRM 直链 / Google Drive）：一律由本
+        # 服务代理转发，Range 与状态码透传，凭据不下发。**不再有任何 302 分支**：
+        # Drive 的 alt=media 要 Authorization 头而重定向带不过去，token 塞 URL
+        # 里会被限流（Alist / RClone / Cloudreve 也均为服务端代理）。
         #
         # 顺带好处：file id 来自「路径 → id」缓存时（可能是被移动/删除的旧 id），
-        # 不再盲 302 —— 代理路径自带 404 自愈重试（_serve_remote_retry_on_stale）。
+        # 代理路径自带 404 自愈重试（_serve_remote_retry_on_stale）。
         #
-        # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
-        # Range 与状态码透传，凭据不下发。
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
         # 不能让一个用户的拖动进度条把整个事件循环卡住。
         return _observe_line(

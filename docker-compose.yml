@@ -18,8 +18,6 @@ services:
       AETRIX_ROLE: all  # 合并：api+worker+ea
       # EA 网关配置（原 ea 服务的环境变量，合并后保留）
       EMBY_API_PORT: 8001
-      ENABLE_DIRECT_URL: ${ENABLE_DIRECT_URL:-true}
-      RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}

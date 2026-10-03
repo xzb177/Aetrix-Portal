@@ -11,7 +11,7 @@ Google Drive 本身有完整的 REST API，``direct_url.ServiceAccountPool`` 里
 做好了「服务账号轮换 + token 缓存 + 限流冷却」。所以这里直接把这两块拼起来：
 
     扫描列目录 → Drive files.list
-    播放       → 服务器代理转发（302 真直链已下线，见 ``direct_link`` 说明）
+    播放       → 服务器代理转发（凭据不下发；Google 的 302 真直链不可行）
     ffprobe    → 与播放同一套 resolve（走 Drive 的 alt=media）
 
 rclone 仍然保留给 SFTP / FTP / WebDAV 等其它后端，**不在本类型的链路上**。
@@ -21,11 +21,11 @@ rclone 仍然保留给 SFTP / FTP / WebDAV 等其它后端，**不在本类型�
 - ``auth_mode``：``sa``（服务账号轮换池，默认）/ ``oauth``（refresh_token 换票）
 - ``root_id``：Drive 文件夹 ID，留空 = My Drive 根目录（共享盘建议显式填）
 - ``drive_id``：共享云端硬盘 ID；填了则按团队盘寻址
-- ``direct_link``：**已下线**，仅为兼容旧配置保留。开启也不会再产生 302：
-  Drive 的 ``alt=media`` 需要 Authorization 头，而重定向不会把请求头带过去；
-  唯一能用的 ``access_token`` 放进 URL 会进客户端日志/Referer，且触发 Google
-  对「URL 带 token」更严的限流。Alist / RClone / Cloudreve 三家均为服务端代理。
 - ``api_base``：接口地址，测试或自建代理可改
+
+> 曾经有过一个 ``direct_link`` 配置（打开则播放 302 到 Drive），已删除：重定向带不
+> 过 Authorization 头，token 放 URL 会被限流（Alist / RClone / Cloudreve 也均为服务
+> 端代理）。**库里已存的配置值不受影响**（不再读取，也不会报错）。
 
 条目带 ``modTime``，所以后台「追新」对本类型同样生效（走公共通道，吃缓存与限流）。
 """
@@ -94,12 +94,6 @@ class GoogleDriveMount(_CloudMount):
         self.client_id = (cfg.get("client_id") or "").strip()
         self.client_secret = (cfg.get("client_secret") or "").strip()
         self.refresh_token = (cfg.get("refresh_token") or "").strip()
-        # 保留读取（配置项不删，老配置不报错），但**不再据此产生 302**：
-        # Google Drive 的真直链不可行（见模块说明：302 带不过 Authorization 头，
-        # token 放查询串会被限流），Alist / RClone / Cloudreve 均为服务端代理。
-        self.direct_link = str(cfg.get("direct_link") or "").strip().lower() in {
-            "1", "true", "yes", "on",
-        }
         # token 缓存（每个挂载实例一份；resolve 会被并发调用）
         self._token_value = ""
         self._token_exp = 0.0
@@ -333,9 +327,7 @@ class GoogleDriveMount(_CloudMount):
     def _file_url(self, file_id: str) -> str:
         """文件字节地址（不带凭据）。
 
-        凭据走 ``_headers()`` 的 Authorization 头，由本服务代理转发时带上；
-        以前还有个 ``with_token=True`` 把 access_token 塞进查询串（direct_link
-        302 用），现已下线并删除——302 带不过请求头，留着只会让人误以为还能用。
+        凭据走 ``_headers()`` 的 Authorization 头，由本服务代理转发时带上。
         """
         params = {"alt": "media", "supportsAllDrives": "true"}
         return f"{self.api_base}/files/{urllib.parse.quote(file_id, safe='')}?" + \
@@ -344,9 +336,7 @@ class GoogleDriveMount(_CloudMount):
     def resolve(self, rel: str) -> PlayTarget:
         """解析成播放目标。
 
-        始终返回带 Bearer 头的服务器代理形态（凭据不下发）。``direct_link``
-        已下线，不再拼 ``PlayTarget.direct``（那条直链带 access_token，且
-        302 本来就带不过 Authorization 头）。
+        始终返回带 Bearer 头的服务器代理形态（凭据不下发，播放层也没有 302 分支）。
 
         **秒开靠的是 file id 持久化缓存**：``_locate`` 在目录缓存冷了之后要走
         ``_parent_id`` 逐级下钻，4 层目录就是 4~5 次 Drive 请求（1~2 秒）。这里先问
@@ -368,8 +358,6 @@ class GoogleDriveMount(_CloudMount):
                 file_id_cache.store(self.db, mount_id, clean, entry["id"], entry.get("size", 0))
         target = PlayTarget("url", self._file_url(entry["id"]), self._headers())
         target.from_file_id_cache = from_cache
-        # direct_link 已下线：不再拼带 access_token 的直链。
-        # 播放器一律走代理（``api.video_stream`` 里也没有 302 分支了）。
         return target
 
     def walk_media(self, max_depth: int = 32, root: str = "/") -> Iterator[MountFile]:
@@ -464,14 +452,6 @@ MOUNT_TYPE_ENTRIES: list[dict] = [
             {"key": "client_id", "label": "client_id（OAuth 模式）"},
             {"key": "client_secret", "label": "client_secret（OAuth 模式）", "secret": True},
             {"key": "refresh_token", "label": "refresh_token（OAuth 模式）", "secret": True},
-            {"key": "direct_link", "label": "Drive 直链 302（已下线）", "type": "select",
-             "options": [
-                 {"label": "关（当前唯一形态：服务器代理，凭据不下发）", "value": ""},
-                 {"label": "开（已下线，不再生效）", "value": "1"},
-             ],
-             "hint": "已下线：Google Drive 无法用 302 真直链（重定向带不过 "
-                     "Authorization 头，token 放 URL 又会被限流），播放一律经服务器转发。"
-                     "配置项保留仅为兼容旧数据。"},
             {"key": "api_base", "label": "接口地址（可选）",
              "placeholder": "https://www.googleapis.com/drive/v3"},
         ],
