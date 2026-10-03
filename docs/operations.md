@@ -442,6 +442,46 @@ rclone 挂载是唯一一种「一种类型接住所有后端」的来源（Goog
 
 > 已经 `rclone mount` 到本机目录的场景，直接用 `local` 挂载那个目录更直接（走本机文件，没有代理开销）。
 
+### Google Drive 怎么选：原生（gdrive）还是 rclone
+
+Drive 有**两条路**，按需选，不互相取代：
+
+| | Google Drive（原生） | rclone（rc 模式） |
+|---|---|---|
+| 需要 rclone 容器 | **不需要** | 需要 |
+| CPU / 内存 | 稳（见下） | 跑久了会涨，历史实测 83% CPU |
+| 支持的后端 | 只有 Drive | Drive / OneDrive / S3 / 115 / 夸克 / SFTP … |
+| 什么时候选 | 内容在 Drive | SFTP、WebDAV 等别的后端 |
+
+**rclone 为什么会有 CPU 问题**：`rcd` 在持续 RC 调用（扫描列目录、追新）下堆会累积到
+GB 级（实测 2.6GB / 2300 万 live object），强制 GC 只能回收约 2%——那是 rclone 内部
+结构体累积，不是可回收的垃圾，调参与 `GOMEMLIMIT` 都压不下来（同理会一直触发 GC 空转）。
+**Drive 直接走 REST v3 就没有这层状态。** SFTP 这类后端用 rclone 仍然合适。
+
+配置步骤（后台「存储挂载」→ 新建 → 类型选「Google Drive（原生）」）：
+
+1. **授权方式**二选一
+   - **服务账号轮换池（推荐）**：把服务账号 JSON 放进 `SA_POOL_DIR`（容器内默认
+     `/sa-accounts`）。池子按 round-robin 取 token，**多账号分摊 Drive 的 per-user
+     配额**，撞 429/403 自动把该账号冷却 5 分钟再换下一个。团队盘记得把服务账号
+     加为共享云端硬盘成员（内容管理员及以上），否则 403 会明确提示这一点。
+   - **OAuth refresh_token**：填 client_id / client_secret / refresh_token，令牌过期自动续。
+2. **根目录 ID**：填 Drive 文件夹 ID（可用后面的「浏览」选目录自动回填），留空 = My Drive 根目录。
+3. **共享云端硬盘**：填 `drive_id`（团队盘必填），否则会「能列目录但打不开文件」。
+4. **播放走直链 302**：默认**关**（走服务器代理，凭据不下发）。打开省服务器带宽，
+   但 access_token 会出现在客户端请求的查询串里。
+
+两个要点：
+
+- **遍历并发被单独限到 4**（`GDRIVE_WALK_WORKERS`）：Drive 是 100 秒 10000 次查询的
+  per-user 配额，用全局的 `SCAN_WALK_WORKERS=16` 会直接撞限流导致整轮扫描失败。
+- **追新不覆盖原生 Drive**：追新模块目前只认本机 mtime 与 rclone RC，gdrive 挂载靠
+  后台的「定时扫描」入库（与 115 / WebDAV 同样待遇）。
+
+> 从 rclone 迁移：**新建一个 gdrive 挂载**，媒体库改绑后重新扫描，**不要原地改类型**。
+> 条目路径存的是 `mount://<挂载id>/<相对路径>`，挂载 id 一变旧条目立刻失效；
+> 后台的挂载编辑本身也禁止改类型（历史设计如此）。确认新库正常后再把旧 rclone 挂载停用。
+
 ### 115 直挂：列目录失败 / 提示 Cookie 失效
 
 115 直挂（存储挂载类型选 **115**）用 Cookie 型 Web API 列目录、换直链，**没有转存任务那一层**

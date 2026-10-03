@@ -257,22 +257,17 @@ def _expiry_to_ts(expiry: str) -> float:
         return 0.0
 
 
-async def _refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> Optional[tuple[str, float]]:
-    """用 refresh_token 换新的 access token。返回 (token, expiry_ts)，失败 None。"""
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
-            )
-    except Exception as exc:
-        logger.warning("直链：刷新 token 请求失败: %s", exc)
-        return None
+def _oauth_refresh_form(client_id: str, client_secret: str, refresh_token: str) -> dict:
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }
+
+
+def _oauth_token_from_response(resp) -> Optional[tuple[str, float]]:
+    """把 refresh_token 换票响应翻译成 ``(access_token, expiry_ts)``，失败 None。"""
     if resp.status_code != 200:
         logger.warning("直链：刷新 token 返回 %s", resp.status_code)
         return None
@@ -289,6 +284,41 @@ async def _refresh_access_token(client_id: str, client_secret: str, refresh_toke
     except (TypeError, ValueError):
         expires_in = 3600
     return token, time.time() + expires_in
+
+
+async def _refresh_access_token(client_id: str, client_secret: str, refresh_token: str) -> Optional[tuple[str, float]]:
+    """用 refresh_token 换新的 access token。返回 (token, expiry_ts)，失败 None。"""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                _GOOGLE_TOKEN_URL,
+                data=_oauth_refresh_form(client_id, client_secret, refresh_token),
+            )
+    except Exception as exc:
+        logger.warning("直链：刷新 token 请求失败: %s", exc)
+        return None
+    return _oauth_token_from_response(resp)
+
+
+def refresh_access_token_sync(
+    client_id: str, client_secret: str, refresh_token: str,
+) -> Optional[tuple[str, float]]:
+    """``_refresh_access_token`` 的同步版本（供同步的挂载提供者使用）
+
+    原生 Google Drive 挂载在扫描工作线程里就要换票，不能走 async 那条路。
+    """
+    if not (client_id and client_secret and refresh_token):
+        return None
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(
+                _GOOGLE_TOKEN_URL,
+                data=_oauth_refresh_form(client_id, client_secret, refresh_token),
+            )
+    except Exception as exc:
+        logger.warning("直链：刷新 token 请求失败: %s", exc)
+        return None
+    return _oauth_token_from_response(resp)
 
 
 def _sa_jwt_assertion(sa_info: dict, remote: str) -> Optional[str]:
@@ -326,12 +356,11 @@ class SARateLimited(Exception):
     """
 
 
-async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, float]]:
-    """用服务账号 JSON 生成 Google access token。返回 (token, expiry_ts)。
+def _sa_load_info(sa_file: str, remote: str) -> Optional[dict]:
+    """读服务账号 JSON 并校验有效性。读不到/类型不对/缺字段一律 None。
 
-    ``sa_file`` 路径从 rclone.conf 的 ``service_account_file`` 动态读取，
-    不 hardcode。429/403 抛 ``SARateLimited``（调用方做冷却故障转移）；
-    其它失败返回 None（调用方回退到代理）。
+    同步与异步两条取票路共用这一段：失败原因（哪个文件、什么问题）与日志口径必须一致，
+    不能因为走 sync 还是 async 就给出不一样的解释。
     """
     try:
         with open(sa_file, "r", encoding="utf-8") as f:
@@ -348,22 +377,15 @@ async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, flo
     if not sa_info.get("private_key") or not sa_info.get("client_email"):
         logger.warning("直链：[%s] 服务账号文件缺少 private_key/client_email", remote)
         return None
-    token_uri = sa_info.get("token_uri") or "https://oauth2.googleapis.com/token"
-    assertion = _sa_jwt_assertion(sa_info, remote)
-    if not assertion:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                token_uri,
-                data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                    "assertion": assertion,
-                },
-            )
-    except Exception as exc:
-        logger.warning("直链：[%s] 服务账号 token 请求失败: %s", remote, exc)
-        return None
+    return sa_info
+
+
+def _sa_token_from_response(resp, remote: str) -> Optional[tuple[str, float]]:
+    """把 token 接口响应翻译成 ``(access_token, expiry_ts)``。
+
+    429/403 抛 ``SARateLimited``（轮换池据此冷却该账号并换下一个），
+    其余失败一律 None —— 换票只是优化，绝不能把播放带崩。
+    """
     if resp.status_code in (429, 403):
         # 限流：抛给轮换池做冷却故障转移（不记为普通失败）
         logger.warning("直链：[%s] 服务账号被限流（%s），将冷却", remote, resp.status_code)
@@ -385,6 +407,65 @@ async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, flo
     except (TypeError, ValueError):
         expires_in = 3600
     return token, time.time() + expires_in
+
+
+def _sa_token_form(sa_info: dict, remote: str) -> Optional[tuple[str, dict]]:
+    """JWT assertion + 换票表单；签不出 JWT 返回 None。"""
+    assertion = _sa_jwt_assertion(sa_info, remote)
+    if not assertion:
+        return None
+    token_uri = sa_info.get("token_uri") or "https://oauth2.googleapis.com/token"
+    return token_uri, {
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": assertion,
+    }
+
+
+async def _sa_access_token(sa_file: str, remote: str) -> Optional[tuple[str, float]]:
+    """用服务账号 JSON 生成 Google access token（异步）。返回 (token, expiry_ts)。
+
+    ``sa_file`` 路径从 rclone.conf 的 ``service_account_file`` 动态读取，
+    不 hardcode。429/403 抛 ``SARateLimited``（调用方做冷却故障转移）；
+    其它失败返回 None（调用方回退到代理）。
+    """
+    sa_info = _sa_load_info(sa_file, remote)
+    if not sa_info:
+        return None
+    form = _sa_token_form(sa_info, remote)
+    if not form:
+        return None
+    token_uri, data = form
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(token_uri, data=data)
+    except Exception as exc:
+        logger.warning("直链：[%s] 服务账号 token 请求失败: %s", remote, exc)
+        return None
+    return _sa_token_from_response(resp, remote)
+
+
+def _sa_access_token_sync(sa_file: str, remote: str) -> Optional[tuple[str, float]]:
+    """``_sa_access_token`` 的同步版本，语义与日志逐条一致。
+
+    为什么需要同步版：挂载提供者体系全是同步的（``_CloudMount`` 用 ``httpx.Client``，
+    扫描遍历跑在线程池里，路由走 ``run_in_threadpool``）。原生 Google Drive 挂载
+    要在**工作线程**里取票，而 ``asyncio.run`` 会为每次取票新建事件循环——
+    在有 16 个遍历线程的扫描里那样做等于自己制造负载。
+    """
+    sa_info = _sa_load_info(sa_file, remote)
+    if not sa_info:
+        return None
+    form = _sa_token_form(sa_info, remote)
+    if not form:
+        return None
+    token_uri, data = form
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(token_uri, data=data)
+    except Exception as exc:
+        logger.warning("直链：[%s] 服务账号 token 请求失败: %s", remote, exc)
+        return None
+    return _sa_token_from_response(resp, remote)
 
 
 def _sa_pool_dir() -> str:
@@ -546,6 +627,32 @@ class ServiceAccountPool:
 
     # ---- 对外接口 ----
 
+    def _ordered_accounts(self, now: float) -> list[dict]:
+        """健康账号的 round-robin 顺序（跳过冷却中的；空池返回空列表）。
+
+        游标在这里推进，所以 async 与 sync 两条取票路共用同一份轮换语义——
+        谁先调谁先拿，不会出现「同步路把 async 路的账号全占了」。
+        """
+        with self._lock:
+            healthy = self._healthy_accounts(now)
+            if not healthy:
+                return []
+            start = self._cursor % len(healthy)
+            self._cursor += 1
+            return healthy[start:] + healthy[:start]
+
+    def _cached_token(self, path: str, now: float) -> Optional[tuple[str, float]]:
+        """这个账号的 token 还在有效期内吗（提前 5 分钟视为过期）。"""
+        with self._lock:
+            cached = self._tokens.get(path)
+            if cached and cached["token"] and now < cached["expiry"] - 300:
+                return cached["token"], cached["expiry"]
+        return None
+
+    def _store_token(self, path: str, token: str, expiry: float) -> None:
+        with self._lock:
+            self._tokens[path] = {"token": token, "expiry": expiry}
+
     async def get_token(self) -> Optional[tuple[str, float]]:
         """按 round-robin 返回 (access_token, expiry_ts)。
 
@@ -553,19 +660,11 @@ class ServiceAccountPool:
         429/403 的账号自动进入冷却并尝试下一个；其它失败直接试下一个。
         """
         now = time.time()
-        with self._lock:
-            healthy = self._healthy_accounts(now)
-            if not healthy:
-                return None
-            start = self._cursor % len(healthy)
-            self._cursor += 1
-            ordered = healthy[start:] + healthy[:start]
-        for acct in ordered:
+        for acct in self._ordered_accounts(now):
             path = acct["path"]
-            with self._lock:
-                cached = self._tokens.get(path)
-                if cached and cached["token"] and now < cached["expiry"] - 300:
-                    return cached["token"], cached["expiry"]
+            cached = self._cached_token(path, now)
+            if cached:
+                return cached
             try:
                 result = await _sa_access_token(path, acct["email"])
             except SARateLimited:
@@ -579,8 +678,35 @@ class ServiceAccountPool:
                 # 账号级失败（文件损坏/400 等），换下一个，不冷却
                 continue
             token, expiry = result
-            with self._lock:
-                self._tokens[path] = {"token": token, "expiry": expiry}
+            self._store_token(path, token, expiry)
+            return token, expiry
+        return None
+
+    def get_token_sync(self) -> Optional[tuple[str, float]]:
+        """``get_token`` 的同步版本（扫描遍历与后台 worker 都在工作线程里取票）
+
+        轮换、冷却、缓存与异步版**共用同一份实现**（``_ordered_accounts`` /
+        ``_cached_token`` / ``_store_token``），所以两条路的账号选择顺序、
+        冷却时长、缓存时长逐条一致——不存在「同步路拿到的号更容易被限流」这种偏差。
+        """
+        now = time.time()
+        for acct in self._ordered_accounts(now):
+            path = acct["path"]
+            cached = self._cached_token(path, now)
+            if cached:
+                return cached
+            try:
+                result = _sa_access_token_sync(path, acct["email"])
+            except SARateLimited:
+                self._mark_cooling(path)
+                continue
+            except Exception:
+                logger.warning("直链：服务账号 %s 取 token 异常，跳过", _short_sa_name(path))
+                continue
+            if not result:
+                continue
+            token, expiry = result
+            self._store_token(path, token, expiry)
             return token, expiry
         return None
 

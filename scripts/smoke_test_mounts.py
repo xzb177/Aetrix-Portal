@@ -545,7 +545,7 @@ print("=== 类型注册表与虚拟路径 ===")
 registered = {t["value"] for t in mnt.MOUNT_TYPES}
 check("十种挂载类型都在注册表",
       registered == {"local", "strm", "115", "webdav", "alist", "s3", "aliyun", "quark",
-                    "onedrive", "rclone"},
+                    "onedrive", "rclone", "gdrive"},
       str(sorted(registered)))
 check("每种类型都有标签 / 说明 / 字段定义",
       all(t.get("label") and t.get("hint") and "fields" in t for t in mnt.MOUNT_TYPES))

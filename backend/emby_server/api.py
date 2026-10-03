@@ -2394,6 +2394,14 @@ async def video_stream(
                 await serve_remote_async(target.value, request, target.headers, media_type,
                                          cache_control=seg_cache),
                 play_line.LINE_RELAY)
+        # 原生挂载给的直链（Google Drive 原生 provider）：提供者自己就有 file id 与
+        # token，不需要问任何人。优先于 rclone 那条老路（后者要先 stat 查 file id）。
+        if getattr(target, "direct", None):
+            # 302 的字节不经本机：只记请求，不记流量（line_stats 对 0 字节天然忽略）
+            line_stats.record_request(line)
+            return Response(status_code=302, headers={
+                "Location": target.direct, "Cache-Control": cdn.NO_STORE,
+            })
         # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
         # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。
         google_direct = await try_google_direct_url(target.value)

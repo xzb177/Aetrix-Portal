@@ -225,6 +225,19 @@ class _CloudMount(MountProvider):
             logger.warning("%s 子目录读取失败，跳过: %s (%s)", self.what, rel, exc)
             return []
 
+    def walk_workers(self) -> int:
+        """本挂载遍历的并发上限（默认全局 ``SCAN_WALK_WORKERS``）。
+
+        给「有硬配额」的后端一个下调口子：Google Drive 是 100 秒 10000 次查询的
+        per-user 配额，用全局的 16 线程并发打过去会直接撞 ``rateLimitExceeded``，
+        那时整轮扫描只能失败重试。子类覆写这一项即可，115 / S3 等已稳定的类型
+        保持原样。
+
+        用 ``getattr`` 兜底：测试里的假挂载常直接继承本类而只实现必需方法，
+        少实现一个钩子不该让整轮遍历抛 AttributeError——退回全局默认即可。
+        """
+        return _walk_workers()
+
     def walk_media(self, max_depth: int = 32, root: str = "/") -> Iterator[MountFile]:
         """远程挂载的通用遍历：靠 ``list_dir`` 递归，自动跳过过深目录
 
@@ -251,7 +264,11 @@ class _CloudMount(MountProvider):
         # 并发数可配（SCAN_WALK_WORKERS，默认 8）：网盘 API 延迟是瓶颈，并发主要
         # 是掩盖延迟；但并发越高，同时打向 rclone RC / 网盘的请求越多，rcd 侧的
         # 内存峰值也越高。内存吃紧的机器可调小（如 8），扫描会慢一些。
-        with ThreadPoolExecutor(max_workers=_walk_workers(), thread_name_prefix="walk") as pool:
+        # 并发数走 ``getattr(self, "walk_workers", None)`` 而不是直接调方法：
+        # 测试里的假挂载常只实现必需方法、没继承这个钩子，直接调会 AttributeError
+        # 让整轮遍历失败（2026-10 加这个钩子时踩过）。取不到就退回全局默认。
+        workers = self.walk_workers() if hasattr(self, "walk_workers") else _walk_workers()
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="walk") as pool:
             while current:
                 fut_to_dir = {
                     pool.submit(self._entries, rel): (rel, depth)

@@ -274,11 +274,17 @@ class PlayTarget:
 
     - ``kind="local"``：本机文件，调用方直接按文件读；
     - ``kind="url"``：远程直链，调用方用 ``headers`` 代理转发（不要下发给客户端）。
+
+    ``direct`` 是**可选**的客户端直连地址（原生 Google Drive 挂载用它做 302，
+    省掉服务器带宽）。它是可选字段而不是必需参数：所有既有提供者与既有构造
+    （``PlayTarget("url", url, headers)``）行为逐字节不变，``direct`` 恒为 None。
+    注意它天然含凭据（access_token），只有提供者显式给出时才下发。
     """
 
     kind: str
     value: str
     headers: dict = field(default_factory=dict)
+    direct: Optional[str] = None
 
 
 # ==================== 路径约定 ====================
@@ -1789,8 +1795,8 @@ subtitles.register_mount_resolver(mount_source_resolver)
 
 
 # ==================== 扩展挂载类型 ====================
-# s3 / aliyun / quark / onedrive（mount_cloud.py）与 rclone（mount_rclone.py）定义在
-# 单独模块里（避免本文件继续膨胀）。它们导入时调用 register_mount_types +
-# register_providers，因此类型元数据与提供者在应用启动时就已经齐了，后面的代码
-# 无需知道有哪些扩展类型。
-from backend.emby_server import mount_cloud, mount_rclone  # noqa: E402,F401  (导入即注册)
+# s3 / aliyun / quark / onedrive（mount_cloud.py）、Google Drive 原生（mount_google.py）
+# 与 rclone（mount_rclone.py）定义在单独模块里（避免本文件继续膨胀）。它们导入时调用
+# register_mount_types + register_providers，因此类型元数据与提供者在应用启动时就已经齐了，
+# 后面的代码无需知道有哪些扩展类型。
+from backend.emby_server import mount_cloud, mount_google, mount_rclone  # noqa: E402,F401  (导入即注册)
