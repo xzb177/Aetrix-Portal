@@ -28,7 +28,6 @@ media/
 venv/
 .venv/
 tests/
-scripts/
 docs/
 backups/
 monitoring/
@@ -36,6 +35,15 @@ monitoring/
 .vly-run/
 .aetrix-migrate.lock
 
+# scripts/ **刻意不排除**（2026-10-03，v2.42.10）。
+# 它要进构建上下文，`Dockerfile.backend` 的 with-scripts target 才 COPY 得到 ——
+# 而这里排除掉的话，那一行 COPY 会**静默产出空目录**：不报错、构建成功，
+# 镜像里 /app/scripts 是空的，运维脚本一个都跑不到，而且只有真去 exec 才会发现。
+# 反过来，放行 scripts/ 也不会让发行镜像带上它 —— 发行走的是 runtime target，
+# 白名单里没有 scripts/ 这一条，.dockerignore 不是边界，Dockerfile 的白名单才是。
+# 代价只是构建上下文多约 2 MB（实测 scripts/ 共 2.3 MB），可以接受。
+
 # 刻意**不**排除的（白名单 COPY 的目标，漏了会让构建失败）：
 #   backend/  emby_api/  web_player/  serve.py  VERSION  docker/（nginx.conf）
 #   user_frontend/ admin_frontend/（前端构建阶段要它们的源码）
+#   scripts/（只有 with-scripts target 用，见上）

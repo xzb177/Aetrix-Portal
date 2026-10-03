@@ -2,6 +2,40 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.42.10] - 2026-10-03
+
+### 发行镜像拆分 target：自建能跑运维脚本，客户镜像仍然不带
+
+[2.42.9] 把后端镜像改成白名单 COPY（不带源码），但连带把 `scripts/` 也排除了，
+于是 `docker exec` 进容器跑运维脚本（造管理员、迁库、备份恢复）这条路断了。
+本条用一个独立的构建 target 把两个需求分开：**运维脚本进自建镜像，不进客户镜像**。
+
+- **`Dockerfile.backend` 拆成三个 stage**：`base`（白名单拷贝，即发行内容）
+  → `with-scripts`（补 `scripts/`，自建/开发用）→ `runtime`（空收尾 stage）。
+- **stage 顺序是刻意的，不是随手排的**：`docker build` 不带 `--target` 时构建的是
+  **最后一个** stage。若把 `with-scripts` 放在末尾，任何人执行
+  `docker build -f Dockerfile.backend .` 都会拿到带测试脚本的镜像 ——
+  而发布流水线当时正是这么调的，会**静默**推到 ghcr.io。末尾空壳让默认值始终等于
+  精简版，发布脚本另外显式写 `--target runtime`，两道保险。
+- **`.dockerignore` 不再排除 `scripts/`**：排除它的话 `with-scripts` 那行 COPY 会
+  **静默产出空目录** —— 不报错、构建绿、镜像正常起来，直到 exec 进去才发现一个脚本
+  都没有。放行的代价仅是构建上下文多约 2 MB（实测 2.3 MB），且发行镜像走白名单，
+  不会因此带上它。
+- **两条路径在 compose 层面就分开**：`docker-compose.yml`（自建）的 `aetrix-api`
+  用 `target: with-scripts`；`docker-compose.prod.yml`（客户）只拉 ghcr 镜像，
+  无 `build:`、无 `target:`。
+- **新增出厂自检断言**：`publish-images.yml` 在推送前检查镜像里 `/app/scripts`
+  条目数为 0 —— 万一 `--target` 写错或 stage 顺序被调，推送前就停下。
+- **新增静态门禁 `scripts/check_image_targets.py`**（已接入 CI）：把上述不变量
+  写死成断言。它们的共同点是**破坏时不报错**，review 看不住。已做反向验证：
+  逐个破坏 9 个不变量（含「三个 stage 名都在、只把 runtime 挪到中间」这种
+  最隐蔽的），全部 rc=1 被捕获。
+
+实测：两个 target 均构建通过；`runtime` 的 `/app` 恰好 5 项、`/app/scripts` 0 个，
+`with-scripts` 6 项、82 个脚本；ops 镜像内 `python scripts/create_admin.py --dry-run`
+真跑通（能 `import backend`、能建库），精简镜像内同命令报 `No such file`。
+两侧 compose 渲染均 rc=0。未做真机点检：完整「登录 ghcr → pull → up」需真实包权限。
+
 ## [2.42.9] - 2026-10-03
 
 ### 私有镜像发布流程（授权客户部署，不再给源码）

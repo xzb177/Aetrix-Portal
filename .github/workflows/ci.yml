@@ -143,6 +143,12 @@ jobs:
       - name: 阻塞路由契约检查（async 路由里做同步 DB 只减不增）
         run: python scripts/check_blocking_routes.py
 
+      # 发行镜像的 target 契约：默认产物必须是精简版（不带 scripts/），
+      # 发布流水线必须显式 --target runtime，自建 compose 必须用 with-scripts。
+      # 这几个不变量的共同点是「破坏时不报错」—— 只靠 review 看不住。
+      - name: 发行镜像 target 契约（客户镜像不带 scripts/）
+        run: python scripts/check_image_targets.py
+
       # 不依赖前端构建产物，所以单独一个 job，改后端时能更快拿到反馈
       - name: 门户认证端到端（注册 → 登录 → me → refresh → 改密）
         run: python scripts/smoke_test_auth.py

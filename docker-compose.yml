@@ -7,6 +7,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      # 自建部署要能 docker exec 进容器跑运维脚本（造管理员、迁移库、冒烟、
+      # 备份恢复），所以显式用带 scripts/ 的 target，不依赖默认 stage。
+      # 客户拿到的发行镜像不带 scripts/：docker-compose.prod.yml 走的是 ghcr 镜像
+      # （runtime target），两条路径在 compose 文件层面就分开了。
+      # 为什么这里必须写 target：删掉它不会报错，只会换成构建默认 stage ——
+      # 而默认 stage 依赖 Dockerfile 里的排列顺序（见那里的说明）。
+      target: with-scripts
     image: aetrix-backend:latest
     container_name: aetrix-api
     restart: unless-stopped
