@@ -2348,6 +2348,8 @@ def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
         line_stats.record_request(actual)
 
 
+@emby_router.get("/emby/Videos/{item_id}/stream")
+@emby_router.get("/Videos/{item_id}/stream")
 async def video_stream(
     item_id: str, request: Request,
     user: models.WebUser = Depends(get_emby_user),
