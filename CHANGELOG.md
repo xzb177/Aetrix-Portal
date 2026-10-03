@@ -2,6 +2,53 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.42.9] - 2026-10-03
+
+### 私有镜像发布流程（授权客户部署，不再给源码）
+
+仓库转私有后，授权客户走「拉私有镜像」而不是「拿到源码自己部署」。本条把这条
+链路从构建到交付全部打通，并顺手修掉两个**以前从未被验证过**的镜像构建问题。
+
+- **发布工作流**（`.github/workflows/publish-images.yml`）：监听 CI 的完成事件，
+  **只有 main 的 push 且 CI 全绿才发镜像**。直接 `on: push` 的话，CI 跑红的合并
+  也会发，而 ghcr.io 的 `latest` 一被覆盖就无法回退。
+  拒绝来自 fork 的 PR 触发（`workflow_run` 对它们的 CI 同样会触发，不加
+  event/head_branch 判断的话，一个 fork 分支变绿就能往 ghcr 推镜像）。
+  镜像：`ghcr.io/xzb177/aetrix-api` 与 `ghcr.io/xzb177/aetrix-web`，
+  各打三个 tag：版本号、`sha-<短哈希>`、`latest`。
+- **镜像里不再带源码**：后端 Dockerfile 原来是 `COPY . /app`，会把两个前端的完整
+  TypeScript 源码、tests/、docs/、scripts/ 一并打进镜像。改为**白名单 COPY**
+  （`backend/`、`emby_api/`、`web_player/`、`serve.py`、`VERSION`）。
+  用白名单而不是加黑名单规则，是因为黑名单永远会漏：以后新增一个顶层目录，
+  忘了写进 .dockerignore 就跟着进镜像了；白名单则是「不写就不进」。
+  这五条白名单每一条都有具体理由，其中 `emby_api/` 最隐蔽 ——
+  `backend/run_all.py` 是用 `python -m emby_api.main` 这个**字符串**拉起它的，
+  搜 import 语句搜不到，漏了容器起来就只剩一个进程。
+  顺带把 `venv/` 加进 .dockerignore（此前它整个进了构建上下文）。
+- **修前端镜像构建失败**：`Dockerfile.frontend` 原来在 `node:22-alpine` 上构建，
+  实测必挂：`Source phase import "vite/modulepreload-polyfill" in "index.html" must
+  be external`（发生在 vite 还没转换到业务模块时）。同样的 package-lock.json 在
+  CI（ubuntu + node 22）是绿的，所以只出在 musl 这条路径；rollup 的 musl native 包
+  安装是正常的（`@rollup/rollup-linux-x64-musl` 确实装上了），不是依赖缺失。
+  构建阶段改用 `node:22-slim`，把构建环境与 CI 对齐；运行阶段仍是 nginx:alpine，
+  镜像体积不受影响（vite 产物是纯静态文件）。
+  **这条以前从没暴露过**：CI 从来不构建 Docker 镜像。
+- **生产部署编排**（`docker-compose.prod.yml`）：只拉官方镜像、不含 `build:`，
+  与自建用的 `docker-compose.yml` 并存（一个 build、一个 pull，职责不混）。
+  `AETRIX_IMAGE_TAG` 选版本，留空跟随 `latest`。
+- **`DEPLOY.md`**：客户侧 3 步（装 Docker → 登录 ghcr → `docker compose up`），
+  含 PAT 生成步骤、版本升级/回滚、授权权限的授予与回收。
+
+**关于「收权」的边界（DEPLOY.md 里已写明，不藏）：** 移除 GitHub 协作者只让对方
+**之后**拉不到；已经 pull 到客户机器上的镜像不会被远程删除，要真正收回必须客户
+自己 `docker image rm`。所以交付时不该让客户锁 `latest`，而应按授权单独发版本
+tag 的凭据。
+
+**未做真机点检：** 整个客户链路（真实 GHCR 登录 → pull → up）需要真实的包权限，
+沙箱里无法端到端跑。本地已验证到：两个镜像都能构建、后端镜像内只有 5 个白名单条目
+且无 `.git`／无 `.vue`、run_all 三进程（api/worker/ea）在 Redis 下全活、
+`/api/health` 与 EA 的 `/watch` 均返回 200、生产 compose 用 `env.example` 渲染通过。
+
 ## [2.42.8] - 2026-10-01
 
 ### 用户端顶栏导航重做（只改样式）+ 播放线路选择（直连 / 中转）

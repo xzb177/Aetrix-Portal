@@ -1,3 +1,8 @@
+# Docker 构建上下文过滤。
+#
+# 注意：这份文件**只用来缩小上下文**，不是发行镜像的安全边界。真正的边界是
+# Dockerfile.backend / Dockerfile 里的白名单 COPY —— 新加一个顶层目录时，
+# 黑名单会漏掉它、白名单则天然不会带上。
 .git
 .gitignore
 .env
@@ -17,3 +22,20 @@ admin_frontend/dist/
 logs/
 tmp/
 media/
+
+# 开发期脚手架：一个都不进发行镜像（venv 尤其重要 —— 几十上百 MB，
+# 而且里面躺着 backend/ 的完整源码副本）
+venv/
+.venv/
+tests/
+scripts/
+docs/
+backups/
+monitoring/
+*.md
+.vly-run/
+.aetrix-migrate.lock
+
+# 刻意**不**排除的（白名单 COPY 的目标，漏了会让构建失败）：
+#   backend/  emby_api/  web_player/  serve.py  VERSION  docker/（nginx.conf）
+#   user_frontend/ admin_frontend/（前端构建阶段要它们的源码）

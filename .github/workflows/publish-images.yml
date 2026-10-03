@@ -1,0 +1,196 @@
+name: Publish Images
+
+# ============================================================================
+# 授权销售用的私有镜像发布（ghcr.io）
+#
+# ## 为什么用 workflow_run 而不是直接 on: push
+#
+# 直接 `on: push: branches: [main]` 的话，main 上每次合并都会发镜像 —— 哪怕
+# 这次合并把 CI 跑红了。那样授权客户 `docker compose pull` 就能拉到一个已知有问题的
+# 版本，而且 ghcr.io 的 latest 一旦被覆盖，回滚要重新打 tag。
+# 所以改成**监听 CI 的完成事件**：只有 CI 全绿才发布。
+#
+# ## 为什么这里用 docker CLI 而不是 docker/login-action + build-push-action
+#
+# 两个原因：
+#   1. 不赌外部 action 的版本号。仓库里其它官方 action 已经用到 v7/v8，写错一个
+#      版本号的后果是 workflow 直接起不来（而且只有 main 合并时才暴露）。
+#   2. 发布逻辑本来就简单：登录 → build → push → 校验。透明可控更好排查。
+#      代价是没有跨 job 的 layer 缓存，构建耗时约 6-8 分钟，频率是每次 main 合并一次。
+#
+# ## 安全：只认真实 push 到 main 的 CI
+#
+# workflow_run 对**所有** CI 运行都会触发，包括 fork 仓库发来的 PR（它们的 CI 也可能
+# 绿）。如果不加 event / head_branch 判断，一个 fork 分支的 CI 变绿就能往 ghcr.io 推
+# 镜像。下面的 gate 步骤把这条路堵死：只接受 event == push 且 head_branch == main。
+# ============================================================================
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+# 读代码 + 推包。不需要 contents: write（不改代码、不动 tag）。
+permissions:
+  contents: read
+  packages: write
+
+# 不取消进行中的发布：取消到一半会留下「版本 tag 推了但 latest 没推」的镜像库状态，
+# 客户拉到的 latest 可能是个半成品。宁可排队等前一次跑完。
+concurrency:
+  group: publish-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: 镜像 · 构建并推送 ghcr.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # ---- 闸门：不是「main 的 push 且 CI 绿」就整轮跳过 ----
+      - name: 判断是否需要发布
+        id: gate
+        env:
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ "$CONCLUSION" = "success" ] && [ "$EVENT" = "push" ] && [ "$HEAD_BRANCH" = "main" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "跳过发布：conclusion=$CONCLUSION event=$EVENT branch=$HEAD_BRANCH"
+          fi
+
+      # 检出触发 CI 的那个 commit，而不是默认分支的 HEAD：
+      # CI 跑完到本 workflow 启动之间，main 可能又前进了一个提交，那样发布的
+      # 就不是刚验证过的那个版本了。
+      - name: 检出被验证的提交
+        if: steps.gate.outputs.should_publish == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # 版本号单一来源是根目录 VERSION（scripts/check_version.py 守着它与两个前端
+      # package.json 不漂移）。这里直接读它，不在 workflow 里再写一份。
+      - name: 读取版本号
+        if: steps.gate.outputs.should_publish == 'true'
+        id: meta
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION 内容不是合法版本号：'$version'" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "将发布 $version（sha $(git rev-parse --short HEAD)）"
+
+      - name: 登录 ghcr.io
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+
+      # ---- 后端镜像 ----
+      # 白名单拷贝（Dockerfile.backend）：镜像里只有 backend/ emby_api/ web_player/
+      # serve.py VERSION，没有 .git、没有前端 TS 源码、没有 tests/ 与 docs/。
+      - name: 构建后端镜像（不推送）
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+          TAG_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          docker build --pull \
+            -f Dockerfile.backend \
+            -t "ghcr.io/xzb177/aetrix-api:$TAG_VERSION" \
+            -t "ghcr.io/xzb177/aetrix-api:sha-$TAG_SHA" \
+            -t "ghcr.io/xzb177/aetrix-api:latest" \
+            .
+
+      # ---- 前端镜像 ----
+      - name: 构建前端镜像（不推送）
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+          TAG_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          docker build --pull \
+            -f Dockerfile.frontend \
+            -t "ghcr.io/xzb177/aetrix-web:$TAG_VERSION" \
+            -t "ghcr.io/xzb177/aetrix-web:sha-$TAG_SHA" \
+            -t "ghcr.io/xzb177/aetrix-web:latest" \
+            .
+
+      # 推送前的出厂自检。镜像一旦推上去就成了对外承诺（客户随时可能拉），
+      # 带着源码推出去没法悄悄撤回，所以在这里拦。
+      - name: 出厂自检（镜像里不能有源码 / .git / 密钥）
+        if: steps.gate.outputs.should_publish == 'true'
+        run: |
+          set -e
+          fail=0
+          for image in ghcr.io/xzb177/aetrix-api ghcr.io/xzb177/aetrix-web; do
+            # .git
+            if [ -n "$(docker run --rm --entrypoint sh "$image" -c 'find / -maxdepth 3 -name .git 2>/dev/null' || true)" ]; then
+              echo "❌ $image 里存在 .git"; fail=1
+            fi
+            # 前端 TS/Vue 源码
+            n=$(docker run --rm --entrypoint sh "$image" -c \
+              'find / -name "*.vue" -not -path "*/node_modules/*" 2>/dev/null | wc -l' || echo 0)
+            if [ "$n" != "0" ]; then
+              echo "❌ $image 里存在 $n 个 .vue 源码文件"; fail=1
+            fi
+            # 明文密钥：环境变量里最容易被打进去的东西。镜像自带的 ENV 里不该有非空 SECRET_KEY
+            if docker run --rm --entrypoint sh "$image" -c \
+              '[ -n "${SECRET_KEY:-}" ] && echo LEAK || echo OK' | grep -q LEAK; then
+              echo "❌ $image 的镜像层里烤进了 SECRET_KEY（必须走运行时环境变量）"; fail=1
+            fi
+            echo "✅ $image 自检通过"
+          done
+          exit $fail
+
+      - name: 推送后端镜像
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+          TAG_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          for tag in "$TAG_VERSION" "sha-$TAG_SHA" latest; do
+            docker push "ghcr.io/xzb177/aetrix-api:$tag"
+          done
+
+      - name: 推送前端镜像
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+          TAG_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          for tag in "$TAG_VERSION" "sha-$TAG_SHA" latest; do
+            docker push "ghcr.io/xzb177/aetrix-web:$tag"
+          done
+
+      - name: 输出镜像地址
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          {
+            echo "### 镜像已发布（v$TAG_VERSION）"
+            echo
+            echo '```'
+            echo "ghcr.io/xzb177/aetrix-api:$TAG_VERSION"
+            echo "ghcr.io/xzb177/aetrix-web:$TAG_VERSION"
+            echo '```'
+            echo
+            echo "客户侧：docker login ghcr.io → docker compose pull && docker compose up -d"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 校验用：把构建上下文大小打出来，方便以后发现「venv 又被 COPY 进去了」这类退化
+      - name: 记录镜像大小
+        if: steps.gate.outputs.should_publish == 'true'
+        run: |
+          docker images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}' \
+            | grep -E '^ghcr.io/xzb177/' | tee -a "$GITHUB_STEP_SUMMARY"

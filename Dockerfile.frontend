@@ -1,15 +1,28 @@
 # syntax=docker/dockerfile:1
 # 前端专用镜像：构建 user_frontend + admin_frontend，用 nginx serve。
 # /api/* 反代到后端 aetrix-api:8000（见 nginx.conf）。
+#
+# ---- 构建阶段用 node:22-slim（glibc）而不是 alpine（musl）----
+# 实测在 alpine 上构建 admin_frontend 会直接失败：
+#   Source phase import "vite/modulepreload-polyfill" in "index.html" must be external.
+#   （发生在 vite 解析 index.html、还没转换到业务模块时 —— “✓ 2 modules transformed”）
+# 而完全相同的 package-lock.json 在 CI（ubuntu + node 22）构建是通过的，所以问题
+# 只出在 musl 这条路径上。rollup 4.54 的平台 native 包在 alpine 里安装是正常的
+# （@rollup/rollup-linux-x64-musl 确实装上了），所以不是“依赖没装全”。
+# 与其去追一个只在前端构建阶段出现的 musl 差异，不如把构建环境与 CI 对齐：
+# slim 就是 CI 那个 linux/glibc 家族，构建行为可预期。
+#
+# 只改**构建阶段**；最终运行镜像仍是 nginx:1.27-alpine，运行时体积与原来一样小。
+# vite 产物是纯静态文件，不受 libc 影响，所以换基础镜像不改变产物。
 
-FROM node:22-alpine AS user-build
+FROM node:22-slim AS user-build
 WORKDIR /src/user_frontend
 COPY user_frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
 COPY user_frontend/ ./
 RUN npm run build-only
 
-FROM node:22-alpine AS admin-build
+FROM node:22-slim AS admin-build
 WORKDIR /src/admin_frontend
 COPY admin_frontend/package*.json ./
 RUN npm ci --no-audit --no-fund
