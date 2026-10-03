@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -55,6 +56,17 @@ logger = logging.getLogger(__name__)
 #: 为什么要过期：file id 不会自己变，但**条目**会被删库/改绑挂载。留着不过期的行会
 #: 无限增长（每部片一行）。180 天足够盖住任何片的复看周期，又不至于让表长到扫不动。
 RETENTION_DAYS = 180
+
+# 播放是高频读路径：同一片的 Range / 重试会连续命中多次。
+# 旧实现每次 lookup 都改 hits + last_used_at 并 flush，结果「读缓存」变成一次数据库
+# 写事务；SQLite 会拿写锁，PG 也会制造无意义的 WAL / 行锁。首个命中仍记一次，之后
+# 至少隔这么久才更新 LRU 元数据。缓存本身的命中统计仍在进程内每次递增，不丢观测口径。
+try:
+    TOUCH_INTERVAL_SECONDS = max(
+        1.0, float(os.getenv("MOUNT_FILE_ID_TOUCH_INTERVAL", "60") or 60)
+    )
+except (TypeError, ValueError):
+    TOUCH_INTERVAL_SECONDS = 60.0
 
 #: 进程内统计（跨重启清零，只给「现在热不热」看个大概，不做业务判断）
 _stats = {"hit": 0, "miss": 0, "store": 0, "invalidate": 0}
@@ -105,10 +117,15 @@ def lookup(db: Optional[Session], mount_id: int, rel: str) -> str:
         if row is None or not row.file_id:
             _stats["miss"] += 1
             return ""
-        # 命中统计与最后使用时间：LRU 淘汰的依据，也是「这套东西到底有没有用」的答案
-        row.hits = int(row.hits or 0) + 1
-        row.last_used_at = datetime.now()
-        db.flush()
+        # 命中统计在进程内每次都记；数据库里的 hits / last_used_at 只做近似 LRU
+        # 与跨重启观察，按间隔节流。旧实现每个播放 Range 都 flush 一次，把读路径
+        # 变成写路径并在 SQLite 上争写锁。
+        now = datetime.now()
+        last = row.last_used_at
+        if int(row.hits or 0) == 0 or last is None or (now - last).total_seconds() >= TOUCH_INTERVAL_SECONDS:
+            row.hits = int(row.hits or 0) + 1
+            row.last_used_at = now
+            db.flush()
         _stats["hit"] += 1
         return str(row.file_id)
     except Exception:  # noqa: BLE001 — 缓存出问题绝不能连累播放

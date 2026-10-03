@@ -117,6 +117,50 @@ def test_lookup_counts_hits_and_updates_last_used(db):
     assert row.last_used_at >= before
 
 
+def test_repeated_hits_do_not_write_every_time(db, monkeypatch):
+    """**性能契约**：连续命中不该每次都写库。
+
+    旧实现每次 lookup 都改 hits / last_used_at 并 flush，把「读缓存」变成一次
+    数据库写事务——播放时每个 Range 都来一次，SQLite 上直接争写锁。
+    这里数的是**真正的 UPDATE 语句**（不能数 flush：``db.query()`` 自带的 autoflush
+    也会走 flush，那不是我们要量的东西）。
+    """
+    from sqlalchemy import event as sa_event
+
+    fic.store(db, 1, "/a.mkv", "FID")
+    db.commit()
+
+    updates = []
+    @sa_event.listens_for(db.get_bind(), "before_cursor_execute")
+    def _count(conn, cursor, statement, parameters, context, executemany):  # noqa: ARG001
+        if statement.lstrip().upper().startswith("UPDATE"):
+            updates.append(statement)
+
+    hits_before = fic._stats["hit"]
+    try:
+        for _ in range(5):
+            assert fic.lookup(db, 1, "/a.mkv") == "FID"
+        db.commit()
+    finally:
+        sa_event.remove(db.get_bind(), "before_cursor_execute", _count)
+
+    # 首次命中记一次（hits 从 0 变 1），之后 4 次全部命中缓存、不写库
+    assert len(updates) == 1, f"连续 5 次命中只应有首次那一次写库，实际 {len(updates)} 次"
+    assert fic._stats["hit"] == hits_before + 5, "进程内命中统计每次都要记"
+    assert _rows(db)[0].hits == 1
+
+
+def test_touch_interval_zero_reverts_to_every_hit(db, monkeypatch):
+    """把间隔调成 0（配 MOUNT_FILE_ID_TOUCH_INTERVAL=0）就回到「每次都写」的老口径"""
+    fic.store(db, 1, "/a.mkv", "FID")
+    db.commit()
+    monkeypatch.setattr(fic, "TOUCH_INTERVAL_SECONDS", 0.0)
+    for _ in range(3):
+        fic.lookup(db, 1, "/a.mkv")
+    db.commit()
+    assert _rows(db)[0].hits >= 3
+
+
 def test_store_ignores_empty_file_id(db):
     assert fic.store(db, 1, "/a.mkv", "") is False
     assert _rows(db) == []

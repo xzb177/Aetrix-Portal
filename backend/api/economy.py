@@ -521,7 +521,7 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
 
 
 @router.get("/payment/coupon/config")
-async def coupon_config(db: Session = Depends(get_db)):
+def coupon_config(db: Session = Depends(get_db)):
     """优惠券开关：关闭时用户端不展示优惠码输入框，避免填了才报错"""
     return {"enabled": coupons.enabled(db)}
 
@@ -533,7 +533,7 @@ class CouponQuoteRequest(BaseModel):
 
 
 @router.post("/payment/coupon/quote")
-async def coupon_quote(
+def coupon_quote(
     req: CouponQuoteRequest,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),

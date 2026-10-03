@@ -31,10 +31,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -320,48 +320,89 @@ def nodes_of_realm(db: Session, realm_id: int) -> list[models.RemoteServer]:
 # ==================== 统计 ====================
 
 def stats(db: Session, realm_id: int) -> dict:
-    """一个服的运营数据（服管理页的卡片与概览页用）"""
+    """一个服的运营数据（服管理页的卡片与概览页用）
+
+    这里是后台最容易被低估的热路径：服管理页一次请求会对每个服调用一次，
+    旧实现把库 / 套餐 / 订阅 / 节点整行拉进 Python，再 count / 去重。
+    大库下不该把「统计」变成物化几十万条记录；数据库只返回计数与计划 ID。
+    """
     now = datetime.now()
-    libraries = db.query(em.Library).filter(em.Library.realm_id == realm_id).all()
-    lib_ids = [lib.id for lib in libraries]
+
+    lib_rows = db.query(em.Library.id, em.Library.is_enabled).filter(
+        em.Library.realm_id == realm_id
+    ).all()
+    lib_ids = [row[0] for row in lib_rows]
     item_count = (
-        db.query(em.MediaItem).filter(em.MediaItem.library_id.in_(lib_ids)).count()
+        db.query(func.count(em.MediaItem.id))
+        .filter(em.MediaItem.library_id.in_(lib_ids)).scalar() or 0
         if lib_ids else 0
     )
-    plans = db.query(models.SubscriptionPlan).filter(
-        models.SubscriptionPlan.realm_id == realm_id).all()
-    plan_ids = [p.id for p in plans]
-    active_subs = (
-        db.query(models.UserSubscription)
-        .filter(models.UserSubscription.realm_id == realm_id,
-                models.UserSubscription.status == "active",
-                models.UserSubscription.end_date > now)
-        .all()
+
+    plan_q = db.query(models.SubscriptionPlan.id).filter(
+        models.SubscriptionPlan.realm_id == realm_id
     )
-    expiring = [s for s in active_subs if (s.end_date - now).days <= 7]
-    nodes = nodes_of_realm(db, realm_id)
-    mounts = db.query(em.StorageMount).filter(em.StorageMount.realm_id == realm_id).count()
-    pending_requests = db.query(models.MovieRequest).filter(
+    plan_ids = [row[0] for row in plan_q.all()]
+
+    # 不再把所有有效订阅物化到 Python：active / 7 天内 / 去重用户均由 DB 聚合。
+    sub_filter = (
+        models.UserSubscription.realm_id == realm_id,
+        models.UserSubscription.status == "active",
+        models.UserSubscription.end_date > now,
+    )
+    active_subs = db.query(func.count(models.UserSubscription.id)).filter(*sub_filter).scalar() or 0
+    expiring = db.query(func.count(models.UserSubscription.id)).filter(
+        *sub_filter,
+        models.UserSubscription.end_date <= now + timedelta(days=7),
+    ).scalar() or 0
+    subscribers = db.query(func.count(func.distinct(models.UserSubscription.user_id))).filter(
+        *sub_filter
+    ).scalar() or 0
+
+    node_q = db.query(models.RemoteServer.id, models.RemoteServer.last_check_ok).filter(
+        models.RemoteServer.realm_id == realm_id,
+        models.RemoteServer.kind == "ea",
+    )
+    node_rows = node_q.all()
+    mounts = db.query(func.count(em.StorageMount.id)).filter(
+        em.StorageMount.realm_id == realm_id
+    ).scalar() or 0
+    pending_requests = db.query(func.count(models.MovieRequest.id)).filter(
         models.MovieRequest.realm_id == realm_id,
-        models.MovieRequest.status == "pending").count()
+        models.MovieRequest.status == "pending",
+    ).scalar() or 0
     return {
-        "libraries": len(libraries),
-        "enabled_libraries": len([lib for lib in libraries if lib.is_enabled]),
-        "items": item_count,
-        "mounts": mounts,
-        "plans": len(plans),
+        "libraries": len(lib_ids),
+        "enabled_libraries": sum(1 for _, enabled in lib_rows if enabled),
+        "items": int(item_count),
+        "mounts": int(mounts),
+        "plans": len(plan_ids),
         "plan_ids": plan_ids,
-        "active_subscriptions": len(active_subs),
-        "expiring_subscriptions": len(expiring),
-        "subscribers": len({s.user_id for s in active_subs}),
-        "nodes": len(nodes),
-        "nodes_online": len([n for n in nodes if n.last_check_ok is True]),
-        "pending_requests": pending_requests,
+        "active_subscriptions": int(active_subs),
+        "expiring_subscriptions": int(expiring),
+        "subscribers": int(subscribers),
+        "nodes": len(node_rows),
+        "nodes_online": sum(1 for _, ok in node_rows if ok is True),
+        "pending_requests": int(pending_requests),
     }
 
 
-def serialize(db: Session, realm: models.ServerRealm, with_stats: bool = True) -> dict:
+def serialize(
+    db: Session,
+    realm: models.ServerRealm,
+    with_stats: bool = True,
+    *,
+    stats_data: Optional[dict] = None,
+    legacy_id: Optional[int] = None,
+) -> dict:
+    """序列化一个服。
+
+    ``stats_data`` / ``legacy_id`` 是批量列表页的复用入口：
+    ``GET /realms`` 会同时组装卡片与顶部汇总，旧实现把同一服的统计算两遍，
+    服数一多就变成 2N 轮 count。单服调用不传时保持原行为。
+    """
     mode = normalize_access_mode(realm.access_mode)
+    if legacy_id is None:
+        legacy_id = legacy_realm_id(db)
     data = {
         "id": realm.id,
         "name": realm.name,
@@ -375,7 +416,7 @@ def serialize(db: Session, realm: models.ServerRealm, with_stats: bool = True) -
         "allow_download": realm.allow_download,
         "is_active": bool(realm.is_active),
         "sort_order": realm.sort_order or 0,
-        "is_default": realm.id == legacy_realm_id(db),
+        "is_default": realm.id == legacy_id,
         "public_url": realm_public_url(db, realm.id),
         "nodes": [
             {
@@ -391,7 +432,7 @@ def serialize(db: Session, realm: models.ServerRealm, with_stats: bool = True) -
         "created_at": realm.created_at.isoformat() if realm.created_at else None,
     }
     if with_stats:
-        data["stats"] = stats(db, realm.id)
+        data["stats"] = stats_data if stats_data is not None else stats(db, realm.id)
     return data
 
 

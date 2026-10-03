@@ -59,10 +59,21 @@ class RealmUpdatePayload(BaseModel):
     download_policy: Optional[str] = Field(default=None, max_length=10)
 
 
-def _summary(db: Session) -> dict:
-    """跨服汇总：面板顶部与「数据概览」的服信息展示用"""
-    rows = realms.list_realms(db)
-    all_stats = {r.id: realms.stats(db, r.id) for r in rows}
+def _summary(
+    db: Session,
+    rows: Optional[list] = None,
+    all_stats: Optional[dict[int, dict]] = None,
+) -> dict:
+    """跨服汇总：面板顶部与「数据概览」的服信息展示用。
+
+    ``rows`` / ``all_stats`` 由列表端点复用，避免同一个请求里把每服统计
+    做两遍（旧实现 /realms 一次序列化算一遍，顶部 summary 又算一遍）。
+    """
+    rows = realms.list_realms(db) if rows is None else rows
+    all_stats = (
+        {r.id: realms.stats(db, r.id) for r in rows}
+        if all_stats is None else all_stats
+    )
     total_active_subs = sum(s["active_subscriptions"] for s in all_stats.values())
     free_realms = [r for r in rows if realms.normalize_access_mode(r.access_mode) == realms.ACCESS_FREE]
     return {
@@ -83,19 +94,27 @@ def _summary(db: Session) -> dict:
 
 
 @router.get("")
-async def list_realms(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+def list_realms(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     rows = realms.list_realms(db)
     active = realms.active_realm(db)
+    # 一次请求内复用同一份 stats / legacy_id：
+    # 旧实现先在每个 serialize() 里统计一次，随后 _summary() 再对所有服统计一次。
+    # 服管理页打开一次就会把 COUNT / 订阅物化查询做两遍，服数越多越明显。
+    legacy_id = realms.legacy_realm_id(db)
+    all_stats = {r.id: realms.stats(db, r.id) for r in rows}
     return {
-        "realms": [realms.serialize(db, r) for r in rows],
+        "realms": [
+            realms.serialize(db, r, stats_data=all_stats[r.id], legacy_id=legacy_id)
+            for r in rows
+        ],
         "active_realm_id": active.id,
         "active_realm_name": active.name,
-        "summary": _summary(db),
+        "summary": _summary(db, rows=rows, all_stats=all_stats),
     }
 
 
 @router.get("/overview")
-async def realms_overview(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+def realms_overview(_: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     """只有各服的运营数据：给「数据概览」的服卡片用（不重复下发节点明细）"""
     rows = realms.list_realms(db)
     return {
