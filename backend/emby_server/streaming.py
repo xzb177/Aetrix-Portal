@@ -57,17 +57,6 @@ def _next_redirect(url: str, location: str) -> str:
     return reject_private_url(urljoin(url, location or ""))
 
 
-def can_redirect_direct(target) -> bool:
-    """Only redirect when no server-side credential must be forwarded."""
-    return (
-        getattr(target, "kind", "") == "url"
-        and not any(
-            str(name).lower() in {"authorization", "cookie", "proxy-authorization"}
-            for name in (getattr(target, "headers", {}) or {})
-        )
-    )
-
-
 def _range_header(start: int, end: int, total: int) -> dict:
     return {
         "Content-Range": f"bytes {start}-{end}/{total}",

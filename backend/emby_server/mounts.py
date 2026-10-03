@@ -273,21 +273,20 @@ class PlayTarget:
     """媒体可播放目标
 
     - ``kind="local"``：本机文件，调用方直接按文件读；
-    - ``kind="url"``：远程直链，调用方用 ``headers`` 代理转发（不要下发给客户端）。
+    - ``kind="url"``：远程地址，调用方用 ``headers`` 代理转发（不要下发给客户端）。
 
-    ``direct`` 是**可选**的客户端直连地址，**已下线**（保留字段是为了不碰既有
-    构造）：Google Drive 的 ``alt=media`` 要 Authorization 头，而 302 重定向
-    不会把请求头带过去，所以没有任何提供者再填它，播放层也不再消费它。
-    它天然含凭据（access_token），保留只是不删 API；新代码不要读它。
+    **没有「客户端直连地址」这种形态**：曾经有个可选的 ``direct`` 字段给
+    302 直链用（拼一条带 access_token 的 Google 地址），现已删除——Drive 的
+    ``alt=media`` 要 Authorization 头而重定向带不过去，token 放 URL 又会被限流，
+    所以播放只有「服务端代理转发」这一种走法。
     """
 
     kind: str
     value: str
     headers: dict = field(default_factory=dict)
-    direct: Optional[str] = None
     #: 这个 file id / 路径是不是来自「路径 → 上游 id」的持久化缓存（秒开那套）。
     #:
-    #: 302 直连下线后，缓存里的 id 失效时服务器能看到上游 404（代理路径），
+    #: 缓存里的 id 失效时服务器能看到上游 404（代理路径），
     #: ``_serve_remote_retry_on_stale`` 会自动重解析并写回，所以这个标记
     #: 只用于诊断与日志，不再决定播放走向。
     from_file_id_cache: bool = False

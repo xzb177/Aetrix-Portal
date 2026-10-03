@@ -1,9 +1,9 @@
 """方案 A + 中转连接复用 回归测试
 
-**方案 A**：file id 来自「路径 → id」缓存（秒开那套）时，不能再盲 302。
-302 之后字节不经本机，服务器永远看不到那个 404，自愈就不会触发，而缓存也不
-会被清——于是每次重试都是同一个死地址，客户端永远转圈。所以缓存来的 id 一律
-改走代理：代理路径带 404 重试，失效时能自动重解析并把新 id 写回。
+**方案 A**：file id 来自「路径 → id」缓存（秒开那套）时，一旦失效必须能被看见。
+最早这里是靠「缓存来的 id 不盲 302」实现的——302 之后字节不经本机，服务器永远
+看不到那个 404，自愈就不会触发。现在 302 直链整体下线，**所有**来源都走代理，
+代理路径自带 404 重试：失效时自动重解析并把新 id 写回。
 
 **连接复用**：代理客户端改成进程内共享，每个 Range 请求不再重做 TCP+TLS 握手。
 要钉住两件容易做错的事：共享的 client **绝不能**被单个请求关掉（会把其它并发
@@ -31,18 +31,17 @@ def _run(coro):
 
 
 def test_play_target_default_is_not_from_cache():
-    """所有既有提供者与既有构造行为不变：默认就是 False（照旧 302）"""
+    """所有既有提供者与既有构造行为不变：默认就是 False"""
     t = mount_lib.PlayTarget("url", "https://x/f.mp4")
     assert t.from_file_id_cache is False
 
 
-def test_play_target_flag_does_not_break_existing_construction():
-    """老的三参构造逐字不变（direct 仍是可选第四参）"""
-    t = mount_lib.PlayTarget("url", "https://x/f.mp4", {"Authorization": "Bearer t"},
-                             "https://x/direct")
+def test_play_target_has_no_direct_field():
+    """302 直链下线：``PlayTarget`` 不再有「客户端直连地址」这个字段"""
+    t = mount_lib.PlayTarget("url", "https://x/f.mp4", {"Authorization": "Bearer t"})
     assert t.value == "https://x/f.mp4"
-    assert t.direct == "https://x/direct"
     assert t.from_file_id_cache is False
+    assert not hasattr(t, "direct"), "旧的 direct 字段必须已删除，不能留成死字段"
 
 
 @pytest.fixture()
@@ -86,7 +85,6 @@ def test_gdrive_marks_cache_hits():
     m.mount = type("M", (), {"id": 7})()
     m.api_base = "https://example.invalid/drive/v3"
     m.auth_mode = "oauth"
-    m.direct_link = True                      # 配置项保留（已下线，不影响行为）
     m.root_id = ""
     m.drive_id = ""
     m.sa_file = ""
@@ -104,7 +102,6 @@ def test_gdrive_marks_cache_hits():
     # 第一次：未命中缓存 → 现解析 → 不打标记
     first = m.resolve("/m/a.mkv")
     assert first.from_file_id_cache is False
-    assert first.direct is None  # 302 直链下线，不再给直链
 
     session.commit()
     assert fic.lookup(session, 7, "/m/a.mkv") == "REAL-FID"
@@ -178,12 +175,6 @@ def test_cache_derived_target_still_self_heals_through_proxy(session):
     finally:
         api.serve_remote_async = monkey
         api._play_target = monkey_resolve
-
-
-def test_can_redirect_direct_still_blocks_gdrive_targets():
-    """带 Authorization 头的目标（gdrive 原生挂载）本来就不允许裸 302 到无凭据地址"""
-    assert streaming.can_redirect_direct(_stream_target()) is False
-    assert streaming.can_redirect_direct(_stream_target(direct="https://x")) is False
 
 
 # ==================== 连接复用 ====================

@@ -1,12 +1,13 @@
-"""直链 302 的服务账号（JWT）支持测试。
+"""Google Drive 令牌层：服务账号（JWT）取票测试。
 
 全部用 mock / 临时文件 / 本地生成的 RSA 密钥，不碰真实 rclone、
 不碰真实 Google API、不写任何真实密码或 token。
+
+（直链 302 与 rclone.conf 取票已删除，剩余用例只覆盖原生挂载在用的令牌层。）
 """
 import asyncio
 import json
 import time
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -14,21 +15,11 @@ from backend.emby_server import direct_url
 from backend.emby_server.direct_url import (
     _sa_access_token,
     _sa_jwt_assertion,
-    _token_from_conf,
-    get_access_token,
 )
 
 
 def run(coro):
     return asyncio.run(coro)
-
-
-@pytest.fixture(autouse=True)
-def _clear_token_cache():
-    """token 缓存是进程级的，每个测试前清空，避免相互污染。"""
-    direct_url._token_cache.clear()
-    yield
-    direct_url._token_cache.clear()
 
 
 # ---------------- 测试辅助 ----------------
@@ -89,25 +80,6 @@ def _make_sa_json(tmp_path, token_uri="https://oauth2.googleapis.com/token"):
     p = tmp_path / "sa.json"
     p.write_text(json.dumps(sa), encoding="utf-8")
     return str(p), sa
-
-
-def _write_sa_conf(tmp_path, sa_path, remote="MP", extra=""):
-    """rclone.conf：服务账号型 remote。"""
-    conf = (
-        f"[{remote}]\n"
-        f"type = drive\n"
-        f"scope = drive\n"
-        f"service_account_file = {sa_path}\n"
-        f"team_drive = 0ABCDEF\n"
-        f"{extra}"
-    )
-    p = tmp_path / "rclone.conf"
-    p.write_text(conf, encoding="utf-8")
-    return str(p)
-
-
-def _future_expiry():
-    return (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
 
 
 # ---------------- _sa_jwt_assertion ----------------
@@ -220,114 +192,3 @@ def test_sa_access_token_no_access_token_in_response(monkeypatch, tmp_path):
     sa_path, _ = _make_sa_json(tmp_path)
     _patch_async_client(monkeypatch, lambda url, kwargs: _FakeResp(200, {}))
     assert run(_sa_access_token(sa_path, "MP")) is None
-
-
-# ---------------- _token_from_conf ----------------
-
-def test_token_from_conf_sa_only(monkeypatch, tmp_path):
-    """只有 service_account_file、没有 OAuth token：返回 SA 路径。"""
-    sa_path, _ = _make_sa_json(tmp_path)
-    monkeypatch.setenv("RCLONE_CONF_PATH", _write_sa_conf(tmp_path, sa_path))
-    info = _token_from_conf("MP")
-    assert info is not None
-    assert info["service_account_file"] == sa_path
-    assert info["access_token"] == ""
-
-
-def test_token_from_conf_neither_returns_none(monkeypatch, tmp_path):
-    """既没有 token 也没有 service_account_file：返回 None。"""
-    p = tmp_path / "rclone.conf"
-    p.write_text("[MP]\ntype = drive\nscope = drive\n", encoding="utf-8")
-    monkeypatch.setenv("RCLONE_CONF_PATH", str(p))
-    assert _token_from_conf("MP") is None
-
-
-def test_token_from_conf_oauth_and_sa(monkeypatch, tmp_path):
-    """两者都有：都返回，优先级由 get_access_token 决定。"""
-    sa_path, _ = _make_sa_json(tmp_path)
-    token = {"access_token": "OAUTH1", "refresh_token": "r",
-             "expiry": _future_expiry()}
-    conf = (
-        "[MP]\n"
-        "type = drive\n"
-        f"service_account_file = {sa_path}\n"
-        f"token = {json.dumps(token)}\n"
-    )
-    p = tmp_path / "rclone.conf"
-    p.write_text(conf, encoding="utf-8")
-    monkeypatch.setenv("RCLONE_CONF_PATH", str(p))
-    info = _token_from_conf("MP")
-    assert info["access_token"] == "OAUTH1"
-    assert info["service_account_file"] == sa_path
-
-
-# ---------------- get_access_token（端到端） ----------------
-
-def _pool_for_sa(monkeypatch, tmp_path, sa_path=None):
-    """给 get_access_token 造一个只含 tmp 目录 SA 的轮换池（不预热、不起后台线程）。"""
-    from backend.emby_server.direct_url import ServiceAccountPool
-
-    if sa_path is None:
-        sa_path, _ = _make_sa_json(tmp_path)
-    pool = ServiceAccountPool(
-        sa_dir=str(tmp_path), prewarm=False, healthcheck_interval=0
-    )
-    monkeypatch.setattr(direct_url, "get_sa_pool", lambda: pool)
-    return pool
-
-
-def test_get_access_token_sa_uses_pool(monkeypatch, tmp_path):
-    """SA 型 remote：get_access_token 走轮换池拿 token。"""
-    sa_path, _ = _make_sa_json(tmp_path)
-    monkeypatch.setenv("RCLONE_CONF_PATH", _write_sa_conf(tmp_path, sa_path))
-    _pool_for_sa(monkeypatch, tmp_path, sa_path)
-    calls = []
-
-    def handler(url, kwargs):
-        calls.append(url)
-        return _FakeResp(200, {"access_token": "SA_POOL_TOKEN", "expires_in": 3600})
-
-    _patch_async_client(monkeypatch, handler)
-    assert run(get_access_token("MP:")) == "SA_POOL_TOKEN"
-    assert len(calls) == 1
-
-
-def test_get_access_token_oauth_preferred_over_sa(monkeypatch, tmp_path):
-    """两者都有且 OAuth token 有效：用 OAuth，不碰轮换池。"""
-    sa_path, _ = _make_sa_json(tmp_path)
-    token = {"access_token": "OAUTH_VALID", "refresh_token": "r",
-             "expiry": _future_expiry()}
-    conf = (
-        "[MP]\n"
-        "type = drive\n"
-        f"service_account_file = {sa_path}\n"
-        f"token = {json.dumps(token)}\n"
-    )
-    p = tmp_path / "rclone.conf"
-    p.write_text(conf, encoding="utf-8")
-    monkeypatch.setenv("RCLONE_CONF_PATH", str(p))
-
-    def _boom_pool():
-        raise AssertionError("OAuth 有效时不应使用轮换池")
-
-    monkeypatch.setattr(direct_url, "get_sa_pool", _boom_pool)
-
-    def handler(url, kwargs):
-        raise AssertionError("OAuth 有效时不应发起任何 token 请求")
-
-    _patch_async_client(monkeypatch, handler)
-    assert run(get_access_token("MP:")) == "OAUTH_VALID"
-
-
-def test_get_access_token_sa_pool_empty_returns_none(monkeypatch, tmp_path):
-    """池子里没有可用 SA：返回 None（调用方回退到代理）。"""
-    sa_path, _ = _make_sa_json(tmp_path)
-    monkeypatch.setenv("RCLONE_CONF_PATH", _write_sa_conf(tmp_path, sa_path))
-    # 池目录是空的
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    from backend.emby_server.direct_url import ServiceAccountPool
-
-    pool = ServiceAccountPool(sa_dir=str(empty), prewarm=False, healthcheck_interval=0)
-    monkeypatch.setattr(direct_url, "get_sa_pool", lambda: pool)
-    assert run(get_access_token("MP:")) is None

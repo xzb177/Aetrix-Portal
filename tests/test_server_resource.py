@@ -4,7 +4,7 @@
 1. CacheManager 内存回退有界（条目上限 + TTL 过期 + FIFO 淘汰）
 2. 请求体大小限制中间件（超限 413）
 3. Emby 登录限流规则存在（15次/分钟）
-4. Download/File 端点对无凭据直链走 302（can_redirect_direct 接线）
+4. Download/File 端点一律服务端代理（不再对客户端 302）
 5. 主列表接口 EnableTotalRecordCount=false 时跳过 COUNT(*)
 """
 import importlib
@@ -138,39 +138,25 @@ def test_body_limit_middleware_in_both_apps():
             raise AssertionError(f"{mw} not found in {path}")
 
 
-# ---------- 4. Download/File 302 接线 ----------
+# ---------- 4. Download/File 一律代理（不再 302） ----------
 
-def test_can_redirect_direct_imported_in_download_paths():
-    """两个下载/文件端点都已接 can_redirect_direct（无凭据直链 302）。"""
+def test_download_paths_never_redirect_the_client():
+    """下载 / 拉文件两个端点都不再对客户端 302，只做服务端代理转发。"""
     import ast
     for path in [
         REPO_ROOT / "backend/emby_server/media_routes.py",
         REPO_ROOT / "backend/emby_server/mount_routes.py",
     ]:
         src = open(path).read()
-        assert "can_redirect_direct" in src, path
-        # 端点函数体内真的调用了它，而不只是 import
+        assert "can_redirect_direct" not in src, path
+        assert "status_code=302" not in src, path
         tree = ast.parse(src)
         calls = [
             n.func.id for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
         ]
-        assert "can_redirect_direct" in calls, path
+        assert "serve_remote" in calls, path
 
-
-def test_can_redirect_direct_logic():
-    """can_redirect_direct 语义：无凭据头→可302；有 Cookie/Authorization→必须代理。"""
-    import ast
-    src = open(REPO_ROOT / "backend/emby_server/streaming.py").read()
-    tree = ast.parse(src)
-    for n in ast.walk(tree):
-        if isinstance(n, ast.FunctionDef) and n.name == "can_redirect_direct":
-            body_src = ast.get_source_segment(src, n)
-            assert "authorization" in body_src
-            assert "cookie" in body_src
-            break
-    else:
-        raise AssertionError("can_redirect_direct not found")
 
 
 # ---------- 5. EnableTotalRecordCount=false ----------

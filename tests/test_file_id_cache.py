@@ -189,7 +189,6 @@ def test_no_token_anywhere_in_the_cache(db, monkeypatch):
     mount.client_id = ""
     mount.client_secret = ""
     mount.refresh_token = ""
-    mount.direct_link = False
     mount._token_value = ""
     mount._token_exp = 0.0
     mount._drive_root = "root"
@@ -281,7 +280,6 @@ def _gdrive(db, *, hit_cache: bool):
     mount.mount = type("M", (), {"id": 7})()
     mount.api_base = "https://example.invalid/drive/v3"
     mount.auth_mode = "oauth"
-    mount.direct_link = False
     mount.root_id = ""
     mount.drive_id = ""
     mount.sa_file = ""

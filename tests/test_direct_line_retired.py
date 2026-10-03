@@ -15,7 +15,8 @@
 - 老用户库里存着的 ``direct`` 一律被折成 ``relay``（读、写两个方向），用户
   不会看到一个点了没变化的死选项；
 - 播放路径不再产生 302 到 Drive（连导入都不留）；
-- ``direct_link`` **配置项不删**（老配置不能报错），只是不再生效；
+- ``direct_link`` 连同直链生成逻辑**已彻底删除**（代码不再读取它）；库里已存的配置值
+  原样留着，不读、不报错、不报错迁移；
 - 用户端类型与面板里不再出现 direct 选项。
 """
 # 必须**在任何业务模块之前**设好：backend.database 在 import 期就按
@@ -33,7 +34,7 @@ import textwrap
 
 import pytest
 
-from backend.emby_server import api, mount_google, play_line, portal
+from backend.emby_server import api, direct_url, mount_google, play_line, portal
 from backend.emby_server.play_line import LINE_DIRECT, LINE_RELAY
 
 
@@ -107,7 +108,7 @@ def test_direct_is_not_a_selectable_line():
 
 
 def test_video_stream_source_has_no_google_direct_call():
-    """结构性护栏：video_stream 里不能再出现直链入口或 302 到 Drive
+    """结构性护栏：video_stream 里不能再出现直链入口，也不再有 302 响应
 
     用 AST 取**真实代码**（注释里可以继续解释为什么下线）。
     """
@@ -115,8 +116,7 @@ def test_video_stream_source_has_no_google_direct_call():
     code = ast.unparse(ast.Module(body=tree.body, type_ignores=[]))
     assert "try_google_direct_url" not in code
     assert "target.direct" not in code
-    # 唯一保留的 302 是「显式 ?direct=true 且目标无凭据」，它不指向 Drive
-    assert code.count("status_code=302") == 1
+    assert "status_code=302" not in code, "播放路径不再对客户端 302"
 
 
 def test_module_no_longer_imports_direct_url():
@@ -189,22 +189,19 @@ def test_gdrive_target_with_credentials_never_redirects(monkeypatch):
 # ---------------- 配置项保留 ----------------
 
 
-def test_direct_link_config_field_is_kept_but_marked_retired():
-    """DB / 表单字段不删：老挂载的配置不能报错，只是标注已下线"""
-    fields = next(e["fields"] for e in mount_google.MOUNT_TYPE_ENTRIES
-                  if e["value"] == mount_google.MOUNT_GDRIVE)
-    field = next(f for f in fields if f["key"] == "direct_link")
-    assert "已下线" in field["label"]
-    assert {opt["value"] for opt in field["options"]} == {"", "1"}, (
-        "选项值不能变，否则老挂载保存时会把配置冲掉")
+def test_direct_link_is_gone_from_code_and_form():
+    """配置项与表单字段都已删除：代码不再读取它，界面上也没有这个开关。
 
-
-def test_provider_still_reads_direct_link_config():
-    """兼容老配置：读到 1 不报错，但不再拼出带 token 的直链"""
+    库里已存的 ``direct_link`` 值原样留着（不迁移、不报错），只是没人读了。
+    """
     import json
     import types
 
     from backend.emby_server import mounts as mount_lib
+
+    fields = [f for e in mount_google.MOUNT_TYPE_ENTRIES
+              if e["value"] == mount_google.MOUNT_GDRIVE for f in e["fields"]]
+    assert "direct_link" not in {f["key"] for f in fields}, "后台表单不该再有这个开关"
 
     mount = types.SimpleNamespace(
         id=99, name="gd", mount_type=mount_google.MOUNT_GDRIVE, path="",
@@ -212,7 +209,25 @@ def test_provider_still_reads_direct_link_config():
         is_enabled=True, realm_id=None, remark="",
     )
     provider = mount_lib.build_provider(mount)
-    assert provider.direct_link is True, "配置项仍要能被读到（保留字段的含义）"
+    assert not hasattr(provider, "direct_link"), "代码不再读取 direct_link"
+    # 库里已存的配置值原样保留：没有迁移、没有报错，只是不再有人读它
+    assert provider.config["direct_link"] == "1"
+
+
+def test_direct_link_module_api_is_gone():
+    """直链生成那一套函数整体删除，模块只剩令牌层（ServiceAccountPool 仍在）"""
+    for gone in ("build_direct_url", "get_direct_url", "try_google_direct_url",
+                 "parse_rclone_url", "get_file_id", "direct_url_enabled",
+                 "get_access_token"):
+        assert not hasattr(direct_url, gone), f"{gone} 应已删除"
+    for kept in ("ServiceAccountPool", "get_sa_pool", "refresh_access_token_sync"):
+        assert hasattr(direct_url, kept), f"{kept} 是挂载在用的令牌层，不能误删"
+
+
+def test_play_target_has_no_direct_field():
+    from backend.emby_server.mounts import PlayTarget
+
+    assert not hasattr(PlayTarget("url", "https://x/f.mp4"), "direct")
 
 
 # ---------------- 前端契约 ----------------

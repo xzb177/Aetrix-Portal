@@ -468,11 +468,12 @@ GB 级（实测 2.6GB / 2300 万 live object），强制 GC 只能回收约 2%�
    - **OAuth refresh_token**：填 client_id / client_secret / refresh_token，令牌过期自动续。
 2. **根目录 ID**：填 Drive 文件夹 ID（可用后面的「浏览」选目录自动回填），留空 = My Drive 根目录。
 3. **共享云端硬盘**：填 `drive_id`（团队盘必填），否则会「能列目录但打不开文件」。
-4. **播放走直链 302**：**已下线**，配置项保留但不再生效。原因是 Google Drive 的
-   `alt=media` 需要 `Authorization` 头，而 302 重定向不会把请求头带过去；唯一能
-   塞进 URL 的 `access_token` 会进客户端日志 / Referer，并触发 Google 对「URL 带
-   token」更严的限流。Alist / RClone / Cloudreve 三家均为服务端代理，本项目跟着
-   统一走代理转发（凭据不下发）。播放线路里对应地只剩「中转」。
+
+> 曾经还有一个「播放走直链 302」开关（后台表单里的 `direct_link`），**已删除**：
+> Google Drive 的 `alt=media` 需要 `Authorization` 头，而 302 重定向不会把请求头
+> 带过去；唯一能塞进 URL 的 `access_token` 会进客户端日志 / Referer，并触发 Google
+> 对「URL 带 token」更严的限流。Alist / RClone / Cloudreve 三家均为服务端代理，
+> 本项目统一走代理转发（凭据不下发）。已存的老配置值原样留在库里，不读也不报错。
 
 两个要点：
 

@@ -17,7 +17,6 @@ from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server.streaming import (
-    can_redirect_direct,
     get_transcode,
     serve_file,
     serve_image,
@@ -86,10 +85,8 @@ def download_item(item_id: str, request: Request,
     ensure_download_allowed(db, user, request=request)
     target = _play_target(db, item)
     if target.kind == "url":
-        # 无凭据直链（如 Google Drive SA 直链）直接 302，视频字节不经过服务器
-        # （借鉴 go-emby 的"默认拒绝中转"思路）；有凭据的（115/WebDAV）才走代理。
-        if can_redirect_direct(target):
-            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": "no-store"})
+        # 一律代理转发：不再对任何来源 302（Drive 的 alt=media 带不过
+        # Authorization 头，token 放 URL 又会被限流）。凭据不下发到客户端。
         return serve_remote(
             target.value, request, target.headers,
             media_type="application/octet-stream",
