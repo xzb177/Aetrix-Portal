@@ -132,6 +132,12 @@ jobs:
       - name: 写端点鉴权覆盖（每个写端点都要有鉴权）
         run: python scripts/check_auth_coverage.py
 
+      # 管理端 API 契约：前端封装的每个路径都必须真实存在。写错一个字符运行时就是
+      # 404，表现是「按钮点了没反应」——类型检查与构建都抓不到。运行时 introspect
+      # 后端路由表（不是扫源码），顺带报出「后端做了但前端没入口」的端点。
+      - name: 管理端 API 契约（前端调用的端点必须存在）
+        run: python scripts/check_admin_api_contract.py
+
       # 另一条同源护栏：async 路由里不许出现同步 SQLAlchemy（FastAPI 只在事件循环上跑
       # async 端点）。存量记在脚本的 BASELINE 里，只许减少不许增加。
       - name: 阻塞路由契约检查（async 路由里做同步 DB 只减不增）

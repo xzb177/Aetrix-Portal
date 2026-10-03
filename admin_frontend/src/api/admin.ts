@@ -783,8 +783,13 @@ export interface PanelHealth {
   emby_server: string
 }
 
-/** EM 面板健康状态；不暴露密钥与连接串，仅返回可运营的信息。 */
-export const fetchPanelHealth = () => get<PanelHealth>('/../health')
+/** EM 面板健康状态；不暴露密钥与连接串，仅返回可运营的信息。
+ *
+ *  走**同源绝对路径**而不是 `'/../health'`：后者靠浏览器把 `/api/admin/../health`
+ *  归一化成 `/api/health` 才碰巧生效，换个反代、不做归一化的测试环境，或以后改
+ *  了 baseURL 就会 404。写得直白点更可靠。
+ */
+export const fetchPanelHealth = () => get<PanelHealth>('/api/health')
 
 // 注：「Emby 服务入口」那两个格子的页面（及它的读写接口封装）已下线，
 // EA / Emby 入口统一在「服务器」页维护（见 views/Servers.vue）。

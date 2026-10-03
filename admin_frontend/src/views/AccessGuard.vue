@@ -28,6 +28,21 @@ import {
   type AccessGuardPreview,
   type AccessGuardRegionMode,
 } from '@/api/admin'
+import { useAuthStore } from '@/stores/auth'
+
+/**
+ * 能不能写。
+ *
+ * 访问拦截是**全站**开关：UA 白名单一旦写歪（漏了某个客户端、或忘了管理员自己
+ * 的浏览器），整站对外关闭，而它本身就是「把自己锁在门外」的保险——只能回这一页
+ * 改配置才能解开。所以只有超管能写，与防共享同级。
+ *
+ * ⚠️ 这层置灰只是**提示**，真正的拦截在后端 ``admin_roles.SUPER_ONLY_PREFIXES``：
+ * 绕开界面直接打接口，运营角色也会拿到 403。
+ */
+const auth = useAuthStore()
+const canWrite = computed(() => auth.admin?.is_super !== false)
+const WRITE_HINT = '访问拦截是全站开关（UA 黑白名单 / 地区封禁），需要超级管理员才能修改'
 
 const data = ref<AccessGuardPolicy | null>(null)
 const loading = ref(false)
@@ -239,6 +254,16 @@ const testSummary = computed(() => {
         <span v-if="dirty" class="fact warn">有未保存的改动</span>
       </header>
 
+      <el-alert
+        v-if="!canWrite"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="ag-alert"
+      >
+        {{ WRITE_HINT }}。下面的保存按钮已置灰，但内容仍然可读。
+      </el-alert>
+
       <el-form label-position="top">
         <!-- UA -->
         <div class="ag-block">
@@ -313,7 +338,7 @@ const testSummary = computed(() => {
         </div>
 
         <div class="ag-actions">
-          <el-button type="primary" :loading="saving" :disabled="!dirty" @click="save">
+          <el-button type="primary" :loading="saving" :disabled="!canWrite || !dirty" @click="save">
             <Save :size="14" style="margin-right: 4px" />保存
           </el-button>
           <el-button :disabled="!dirty" @click="revert">
