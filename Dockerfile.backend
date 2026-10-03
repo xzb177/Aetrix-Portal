@@ -19,11 +19,26 @@
 #   VERSION     backend/version.py 按 `parent.parent/"VERSION"` 读，漏了版本号
 #               会退化成 dev，/api/health 报的版本是假的
 #
-# 刻意**不带**：.git、前端 TS 源码、tests/、scripts/、docs/、venv/、*.db。
+# base 里刻意**不带**：.git、前端 TS 源码、tests/、docs/、venv/、*.db，
+# 也不带 scripts/（只有 with-scripts target 才补它，见下）。
 # 要动这份白名单前，先确认没有别处还在读被排除的路径：
 #   grep -rn "parent.parent\|parents\[" backend/ emby_api/ serve.py
+#
+# ==================== 三个 stage 的排布（别改顺序）====================
+# base          白名单拷贝的成品 —— 客户拿到的就是它
+# with-scripts  在 base 之上补 scripts/，给自建部署做运维（见下）
+# runtime       空 stage，只是 `FROM base`，**必须放在最后**
+#
+# 为什么最后要挂一个空壳：`docker build` 不带 `--target` 时构建的是**最后一个
+# stage`，不是第一个也不是名字带 release 的那个。所以只要 with-scripts 排在末尾，
+# 「不带 --target 的 docker build」就会静默产出带 scripts/ 的镜像 —— 而这正是
+# 隐藏地雷的形状：构建不报错、镜像正常起来，只是内容不对。push 之后 ghcr 的 latest
+# 被覆盖，客户随时可能拉，没法悄悄撤回。
+#
+# 末尾这个空收尾让默认值恰好也是精简版；发布脚本（publish-images.yml）**另外**
+# 显式写 `--target runtime`，不依赖这个「恰好」。两道保险，顺序上安全的那个是默认的。
 
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
@@ -68,3 +83,25 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
 CMD ["python", "serve.py"]
+
+# ==================== 运维变体：带 scripts/ ====================
+# 给**自建/开发**部署用：docker exec 进容器跑运维脚本（造管理员、迁移库、
+# 冒烟、备份恢复…），不必在宿主上再装一遍 Python 环境。
+#
+# 为什么这些脚本在容器里能直接跑：它们普遍以
+#   ROOT = Path(__file__).resolve().parent.parent
+#   sys.path.insert(0, str(ROOT))
+# 定位项目根。放进 /app/scripts/ 后 ROOT 正好是 /app，而白名单已经把 backend/
+# 放在了 /app/backend/ —— 两边对得上，不需要为容器改任何一行脚本代码。
+# 依赖同样对得上：scripts/*.py 用到的第三方库（fastapi / httpx / sqlalchemy /
+# starlette / uvicorn）全在 backend/requirements.txt 里，pip 那一步两个变体共用。
+#
+# 注意有 scripts 依赖宿主环境、容器里跑不了的（backup.sh 一类按 venv/bin/python
+# 找解释器、enrich_backlog_report.py 读仓库相对路径）。带进来是为了「能跑的那些
+# 都在手边」，不是承诺每一条都等价 —— 要跑完整的备份流程仍按 DEPLOY.md 走宿主。
+FROM base AS with-scripts
+COPY scripts/ /app/scripts/
+
+# ==================== 发行变体：默认产物 ====================
+# 见文件头的「三个 stage 的排布」。保持空，不要往这里加 COPY。
+FROM base AS runtime

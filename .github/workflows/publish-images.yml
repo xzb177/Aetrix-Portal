@@ -98,6 +98,11 @@ jobs:
       # ---- 后端镜像 ----
       # 白名单拷贝（Dockerfile.backend）：镜像里只有 backend/ emby_api/ web_player/
       # serve.py VERSION，没有 .git、没有前端 TS 源码、没有 tests/ 与 docs/。
+      #
+      # --target runtime 是**必须显式写的**，不能依赖默认值。Dockerfile.backend 有
+      # 三个 stage（base / with-scripts / runtime），带 scripts/ 的 with-scripts 是
+      # 给自建部署跑运维用的，绝不能进 ghcr.io。末尾那个空 stage 让默认值恰好也是
+      # runtime，但「恰好」不等于「保证」—— 显式写出来才不受 stage 顺序变动影响。
       - name: 构建后端镜像（不推送）
         if: steps.gate.outputs.should_publish == 'true'
         env:
@@ -105,6 +110,7 @@ jobs:
           TAG_SHA: ${{ steps.meta.outputs.short_sha }}
         run: |
           docker build --pull \
+            --target runtime \
             -f Dockerfile.backend \
             -t "ghcr.io/xzb177/aetrix-api:$TAG_VERSION" \
             -t "ghcr.io/xzb177/aetrix-api:sha-$TAG_SHA" \
@@ -147,6 +153,16 @@ jobs:
             if docker run --rm --entrypoint sh "$image" -c \
               '[ -n "${SECRET_KEY:-}" ] && echo LEAK || echo OK' | grep -q LEAK; then
               echo "❌ $image 的镜像层里烤进了 SECRET_KEY（必须走运行时环境变量）"; fail=1
+            fi
+            # 运维脚本：Dockerfile.backend 的 with-scripts target 专供自建部署，
+            # 里面是冒烟/迁移/备份脚本与它们对宿主环境的假设，不属于客户交付物。
+            # 客户镜像必须是 runtime target —— 这条断言就是为了「--target 写错/
+            # stage 顺序被人调了」而设的最后一道闸，推上去就撤不回来。
+            # 前端镜像本来就没有 /app，一并查无害：缺失与「目录存在但为空」同样视为通过。
+            n=$(docker run --rm --entrypoint sh "$image" -c \
+              'ls -1 /app/scripts 2>/dev/null | wc -l')
+            if [ "$n" != "0" ]; then
+              echo "❌ $image 里出现了 $n 个运维脚本（应为 0，检查 --target runtime）"; fail=1
             fi
             echo "✅ $image 自检通过"
           done
