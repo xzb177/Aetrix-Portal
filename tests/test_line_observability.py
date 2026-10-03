@@ -202,34 +202,47 @@ def test_format_bytes_is_human_readable():
 
 def test_snapshot_returns_four_cards_in_cost_order(db):
     data = line_health.snapshot(db)
+    # 在用线路按成本排，已下线的直连放最后（只留历史计数）
     assert [c["line"] for c in data["lines"]] == [
-        play_line.LINE_DIRECT, play_line.LINE_CDN, play_line.LINE_CACHE, play_line.LINE_RELAY]
-    assert data["default_line"] == play_line.LINE_DIRECT
+        play_line.LINE_CDN, play_line.LINE_CACHE, play_line.LINE_RELAY,
+        play_line.LINE_DIRECT]
+    assert data["default_line"] == play_line.LINE_RELAY
     assert data["uptime_seconds"] >= 0
     assert "本进程" in data["scope_note"]
 
 
-def test_direct_and_relay_are_always_ready(db):
+def test_direct_card_is_marked_retired_and_not_ready(db):
+    """已下线的直连：面板上必须一眼看出不可用，且带 retired 标记"""
     cards = {c["line"]: c for c in line_health.snapshot(db)["lines"]}
-    assert cards[play_line.LINE_DIRECT]["ready"] is True
+    direct = cards[play_line.LINE_DIRECT]
+    assert direct["retired"] is True
+    assert direct["ready"] is False
+    assert "已下线" in direct["label"]
+    assert "已下线" in direct["ready_note"]
+    for live in (play_line.LINE_CDN, play_line.LINE_CACHE, play_line.LINE_RELAY):
+        assert cards[live]["retired"] is False
+
+
+def test_relay_is_always_ready(db):
+    cards = {c["line"]: c for c in line_health.snapshot(db)["lines"]}
     assert cards[play_line.LINE_RELAY]["ready"] is True
-    # 直连没有配置缺口，所以不该被标成降级
-    assert cards[play_line.LINE_DIRECT]["degraded_by_config"] == ""
+    # 中转是当前默认线路，没有配置缺口，不该被标成降级
+    assert cards[play_line.LINE_RELAY]["degraded_by_config"] == ""
 
 
-def test_cdn_disabled_is_reported_as_degraded_to_direct(db):
+def test_cdn_disabled_is_reported_as_degraded_to_relay(db):
     cards = {c["line"]: c for c in line_health.snapshot(db)["lines"]}
     cdn_card = cards[play_line.LINE_CDN]
     assert cdn_card["ready"] is False
-    assert "等同直连" in cdn_card["degraded_by_config"]
+    assert "等同中转" in cdn_card["degraded_by_config"]
     assert "未启用" in cdn_card["ready_note"]
 
 
-def test_cache_disabled_is_reported_as_degraded_to_direct(db):
+def test_cache_disabled_is_reported_as_degraded_to_relay(db):
     cards = {c["line"]: c for c in line_health.snapshot(db)["lines"]}
     cache_card = cards[play_line.LINE_CACHE]
     assert cache_card["ready"] is False
-    assert "等同直连" in cache_card["degraded_by_config"]
+    assert "等同中转" in cache_card["degraded_by_config"]
 
 
 def test_degradation_reasons_are_sorted_by_count(db):

@@ -7,7 +7,7 @@
 | 这条线路**能不能用** | 线路自身配置（play_line / cdn / local_cache） | 配置口径，跨重启有效 |
 | 它**是不是在降级** | 配置缺口 + 本进程运行时的降级计数（line_stats） | 两者都给，不编结论 |
 | 有**多少人/多少流量**在这条线上 | ``user_play_lines`` 分布 + line_stats 计数 | 用户数是全库；流量是本进程 |
-| 它的**效果**如何 | cache 命中率 / CDN 缓存口径 / 直连不过 VPS | 复用各模块已有口径，不重算 |
+| 它的**效果**如何 | cache 命中率 / CDN 缓存口径 / 中转出流量 | 复用各模块已有口径，不重算 |
 
 ## 「降级」到底指什么
 
@@ -16,9 +16,11 @@
 
 > 用户选了（或被分流到）这条线路，但它退化成了另一条线路的行为。
 
-例：本地缓存线路在缓存未启用、或本机没有副本时，用户拿到的其实是回源直连的流——
+例：本地缓存线路在缓存未启用、或本机没有副本时，用户拿到的其实是回源代理的流——
 功能没坏，但「本地缓存」这个名字此刻是空的。面板必须说清楚，否则管理员会以为
-缓存线路在正常工作。这与代码里的既有口径一致（cdn / cache 未启用时**等同 direct**）。
+缓存线路在正常工作。这与代码里的既有口径一致（cdn / cache 未启用时**等同 relay**）。
+（direct / 302 直连已下线：Google Drive 的重定向带不过 Authorization 头，
+token 放 URL 又会被限流，所以不再作为线路存在；面板上它只在末尾留一张历史卡片。）
 
 ## 不做的事
 
@@ -39,12 +41,14 @@ from backend.models import UserPlayLine
 logger = logging.getLogger(__name__)
 
 #: 面板上的展示顺序 = 用户侧「线路选择」的顺序（play_line.PLAY_LINES），
-#: 但要按「成本从低到高」排给运维看：直连不过 VPS → CDN 边缘 → 本机缓存 → 代理中转
-LINE_ORDER = (play_line.LINE_DIRECT, play_line.LINE_CDN,
-              play_line.LINE_CACHE, play_line.LINE_RELAY)
+#: 按「成本从低到高」排给运维看：CDN 边缘 → 本机缓存 → 代理中转。
+#: 已下线的 direct 放最后并标「已下线」：历史计数留着（否则从面板上看不出
+#: 「为什么请求数一夜之间涨到代理中转」），但一眼能看出它不再可用。
+LINE_ORDER = (play_line.LINE_CDN, play_line.LINE_CACHE,
+              play_line.LINE_RELAY, play_line.LINE_DIRECT)
 
 LINE_LABELS = {
-    play_line.LINE_DIRECT: "直连",
+    play_line.LINE_DIRECT: "直连（已下线）",
     play_line.LINE_CDN: "CDN",
     play_line.LINE_CACHE: "本地缓存",
     play_line.LINE_RELAY: "代理中转",
@@ -52,19 +56,20 @@ LINE_LABELS = {
 
 #: 每条线路的一句话：它到底把流量送到哪
 LINE_SUMMARY = {
-    play_line.LINE_DIRECT: "客户端直连 Google，302 跳转，流量不过 VPS（最省）",
+    play_line.LINE_DIRECT: "已下线：Google Drive 无法用 302 真直链（重定向带不过 "
+                           "Authorization 头，token 放 URL 会被限流），只留历史计数",
     play_line.LINE_CDN: "URL 走 CDN 域名，热门分片由边缘缓存（回源省配额）",
     play_line.LINE_CACHE: "优先读 VPS 本机副本，命中不过网络也不碰云盘配额",
-    play_line.LINE_RELAY: "本服务代理转发，客户端直连不通时的兜底（流量过 VPS）",
+    play_line.LINE_RELAY: "本服务代理转发（当前默认线路，流量过 VPS）",
 }
 
 
 def _users_by_line(db: Session) -> dict:
     """用户线路偏好分布（多少人选了这条线）
 
-    没有偏好记录的用户走默认 direct（play_line.get_play_line），所以这里
-    **只统计显式选过的**，并把「没选过」的数单列出来——否则会让人以为
-    选 direct 的人很少，而实际上绝大多数人只是没配过。
+    没有偏好记录的用户走默认 relay（play_line.get_play_line），所以这里
+    **只统计显式选过的**。已下线的 direct 按等价线路 relay 归类——它读出来
+    就是 relay，面板上再挂一个「直连有人选」会让人以为死选项还生效。
     """
     try:
         rows = (
@@ -75,7 +80,8 @@ def _users_by_line(db: Session) -> dict:
         return {}
     counts: dict = {}
     for line, _user_id in rows:
-        key = str(line or play_line.DEFAULT_LINE)
+        # 已下线的 direct 折成 relay（与 get_play_line 同口径）
+        key = play_line.normalize(line) or play_line.DEFAULT_LINE
         counts[key] = counts.get(key, 0) + 1
     return counts
 
@@ -112,26 +118,27 @@ def _line_card(line: str, *, users: dict, counts: dict, cdn_state: dict,
         ready = bool(cdn_state.get("enabled")) and bool(cdn_state.get("normalized"))
         if not cdn_state.get("enabled"):
             ready_note = "CDN 总开关未启用"
-            degraded_by_config = "CDN 未启用 → 等同直连"
+            degraded_by_config = "CDN 未启用 → 等同中转"
         elif not cdn_state.get("normalized"):
             ready_note = "CDN 已启用但域名未填（或不合法）"
-            degraded_by_config = "CDN 域名未配置 → 等同直连"
+            degraded_by_config = "CDN 域名未配置 → 等同中转"
         else:
             ready_note = f"回源域名 {cdn_state.get('normalized')}"
     elif line == play_line.LINE_CACHE:
         ready = bool(cache_state.get("enabled"))
         if not ready:
             ready_note = "本地缓存总开关未启用"
-            degraded_by_config = "本地缓存未启用 → 等同直连"
+            degraded_by_config = "本地缓存未启用 → 等同中转"
         elif not cache_state.get("dir_exists"):
             ready_note = "已启用但缓存目录不存在"
-            degraded_by_config = "缓存目录不存在 → 等同直连"
+            degraded_by_config = "缓存目录不存在 → 等同中转"
         else:
             ready_note = f"缓存目录 {cache_state.get('dir')}"
     elif line == play_line.LINE_DIRECT:
-        ready_note = "默认线路：先试 Google 直链，拿不到就自动回落到代理"
+        ready = False
+        ready_note = "已下线：302 真直链不可行，老用户偏好已自动按代理中转处理"
     elif line == play_line.LINE_RELAY:
-        ready_note = "始终可用：直连 Google 不通时的手动兜底"
+        ready_note = "当前默认线路：始终可用，视频流量经本服务转发"
 
     # 2) 运行态降级：按次数从高到低，管理员一眼看出「一直退化成什么」
     reasons = sorted(
@@ -159,8 +166,8 @@ def _line_card(line: str, *, users: dict, counts: dict, cdn_state: dict,
             "domain": cdn_state.get("normalized") or "",
         }
     elif line == play_line.LINE_DIRECT:
-        # 直连的「效果」就是它不过 VPS：出流量恒为 0 是**正确**而不是没数据
-        effect = {"vps_bytes": 0, "note": "302 直连，字节不经本机"}
+        # 已下线，只留历史口径：曾经 302 直连时字节不经本机
+        effect = {"vps_bytes": 0, "note": "已下线：历史计数（当时 302 直连，字节不经本机）"}
     else:
         effect = {"note": "流量过本机，带宽与出网费由这条线路承担"}
 
@@ -168,6 +175,8 @@ def _line_card(line: str, *, users: dict, counts: dict, cdn_state: dict,
         "line": line,
         "label": label,
         "summary": LINE_SUMMARY.get(line, ""),
+        #: 已下线的线路（目前只有 302 直连）：只留历史计数，不再计入「就绪」分母
+        "retired": line == play_line.LINE_DIRECT,
         "ready": ready,
         "ready_note": ready_note,
         "degraded_by_config": degraded_by_config,

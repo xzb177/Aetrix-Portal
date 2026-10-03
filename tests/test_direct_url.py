@@ -1,5 +1,9 @@
 """Google Drive 直链 302 的单元测试。
 
+**302 直链已下线**：本模块的函数全部保留（将来接 CDN 时还要用），但播放路径
+不再调用 ``try_google_direct_url``。所以这里既测零件本身，也测「播放层确实
+不再走 302」。
+
 全部用 mock / 临时文件，不碰真实 rclone、不碰真实 Google API、
 不写任何真实密码或 token。
 """
@@ -316,7 +320,7 @@ def test_try_google_direct_url_exception_returns_none(monkeypatch):
 
 
 # ---------------- video_stream 集成 ----------------
-# 只测「直链 302 / 回退代理」这一层：鉴权与客户端策略按放行处理。
+# 只测「不再 302，一律代理转发」这一层：鉴权与客户端策略按放行处理。
 
 def _video_stream_request():
     from starlette.requests import Request
@@ -340,42 +344,20 @@ def _stub_video_stream(monkeypatch, target):
     return api
 
 
-def test_video_stream_uses_google_direct_url_when_available(monkeypatch):
+def test_video_stream_no_longer_redirects_to_google(monkeypatch):
+    """播放层不再导入 / 调用直链入口，只剩代理转发。
+
+    直链可行时这里会拿到 302；现在必须返回代理结果。
+    """
     pytest.importorskip("starlette")
     from backend.emby_server import api
     from backend.emby_server.mounts import PlayTarget
     target = PlayTarget("url", "http://rclone:5572/[paul_emby:]/video/a.mkv",
                         {"Authorization": "Basic xyz"})
     _stub_video_stream(monkeypatch, target)
+    assert not hasattr(api, "try_google_direct_url"), (
+        "api 不应再导入已下线的 try_google_direct_url")
 
-    async def _fake_direct(url):
-        assert url == target.value
-        return "https://www.googleapis.com/drive/v3/files/X?alt=media&access_token=Y"
-
-    monkeypatch.setattr(api, "try_google_direct_url", _fake_direct)
-
-    def _boom(*args, **kwargs):
-        raise AssertionError("proxy should not be called when direct url works")
-
-    monkeypatch.setattr(api, "serve_remote_async", _boom)
-    response = run(api.video_stream("item", _video_stream_request(), object(), object()))
-    assert response.status_code == 302
-    assert response.headers["location"].startswith("https://www.googleapis.com/")
-    assert response.headers["cache-control"] == "no-store"
-
-
-def test_video_stream_falls_back_to_proxy_when_no_direct_url(monkeypatch):
-    pytest.importorskip("starlette")
-    from backend.emby_server import api
-    from backend.emby_server.mounts import PlayTarget
-    target = PlayTarget("url", "http://rclone:5572/[paul_emby:]/video/a.mkv",
-                        {"Authorization": "Basic xyz"})
-    _stub_video_stream(monkeypatch, target)
-
-    async def _fake_none(url):
-        return None
-
-    monkeypatch.setattr(api, "try_google_direct_url", _fake_none)
     proxy = object()
 
     async def fake_proxy(url, request, headers, media_type, cache_control=None):

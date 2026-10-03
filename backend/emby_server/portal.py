@@ -509,10 +509,13 @@ class PlayLineRequest(BaseModel):
 @user_emby_router.get("/play-line")
 def get_play_line_pref(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                        db: Session = Depends(get_db)):
-    """查询当前用户的播放线路偏好：direct（直连线路，默认）/ cdn / cache / relay。
+    """查询当前用户的播放线路偏好：relay（中转线路，默认）/ cdn / cache。
 
     同时告诉客户端 CDN 预留与本地缓存是否真的生效：用户端据此只在管理员开启后
     才展示 cdn / cache 线路，不给出一个点了也没变化的死选项。
+
+    库里存着已下线的 direct（老用户）时，这里返回的是等价线路 relay，
+    用户端拿到的永远是有效选项。
     """
     return {"line": play_line.get_play_line(db, request_user.id),
             "cdn_enabled": cdn.enabled(db),
@@ -525,19 +528,20 @@ def set_play_line_pref(req: PlayLineRequest,
                        db: Session = Depends(get_db)):
     """设置播放线路偏好。
 
-    direct = 直连线路（默认）：video_stream 先试 Google 直链 302，客户端直连 Google。
     cdn = CDN 线路（第 2/3 层预留）：播放 URL 走管理员预留的 CDN 域名，
-    热门分片由边缘缓存；CDN 未启用时等同 direct（不会让用户播不出来）。
+    热门分片由边缘缓存；CDN 未启用时等同 relay（不会让用户播不出来）。
     cache = 本地缓存线路：优先读 VPS 本机副本（热门片由后台提前拉回本机），
-    本地没有则回源并触发缓存；未启用时等同 direct（不会让用户播不出来）。
-    relay = 中转线路：跳过一切 302，直接走服务器代理转发（流量过 VPS），
-    适合客户端直连 Google 不通的用户。
+    本地没有则回源并触发缓存；未启用时等同 relay（不会让用户播不出来）。
+    relay = 中转线路（默认）：由本服务代理转发（流量过 VPS）。
+
+    direct（302 直连）已下线：老客户端重发它不算错，由 ``play_line.normalize``
+    折成 relay 并顺手把库里那条老记录迁掉；回的是**实际落库**的那条线，
+    客户端不会看到「请求 A、库里 B」的不一致。
     """
-    line = (req.line or "").strip().lower()
-    if line not in play_line.PLAY_LINES:
+    line = play_line.normalize(req.line)
+    if line is None:
         raise HTTPException(status_code=400, detail=f"line 只能是 {play_line.PLAY_LINES} 之一")
-    play_line.set_play_line(db, request_user.id, line)
-    return {"line": line}
+    return {"line": play_line.set_play_line(db, request_user.id, line)}
 
 
 @user_emby_router.get("/resume")

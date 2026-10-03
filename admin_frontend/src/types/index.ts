@@ -156,7 +156,7 @@ export interface LineEffect {
   /** cdn：分片缓存口径 / 生效域名 */
   segment_cache_header?: string
   domain?: string
-  /** direct：中转线路里「不经本机」这类说明 */
+  /** direct（已下线）：历史口径里「不经本机」这类说明 */
   vps_bytes?: number
   note?: string
 }
@@ -169,6 +169,8 @@ export interface PlayLineCard {
   summary: string
   /** 配置上能不能用（不看运行数据） */
   ready: boolean
+  /** 已下线的线路（302 直连）：只留历史计数，不计入「就绪」分母 */
+  retired: boolean
   ready_note: string
   /** 配置缺口导致的降级（空 = 没降级）；文案是「退化成什么」而不是「坏了」 */
   degraded_by_config: string
@@ -176,12 +178,12 @@ export interface PlayLineCard {
   degraded_reasons: LineDegradeReason[]
   /** 本进程经手的播放请求数 */
   requests: number
-  /** 本进程经手的出流量（字节）；302 直连这类不经本机的路径不计入 */
+  /** 本进程经手的出流量（字节）；已下线的 302 直连等不经本机的路径不计入 */
   bytes_out: number
   degraded_requests: number
   /** 最近一次使用距今多少秒（null = 本进程内还没用过） */
   idle_seconds: number | null
-  /** 显式选这条线路的用户数（没配过的走默认线路，不计入） */
+  /** 显式选这条线路的用户数（没配过的走默认线路，不计入；已下线的 direct 归中转） */
   users: number
   effect: LineEffect
 }

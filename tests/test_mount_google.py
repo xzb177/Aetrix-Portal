@@ -250,13 +250,18 @@ def test_resolve_returns_proxy_target_without_leaking(drive):
     assert "/files/m1" in t.value
     assert "alt=media" in t.value
     assert t.headers["Authorization"] == "Bearer TOKEN_X"
-    assert t.direct is None, "没打开 direct_link 就不能给直链"
+    assert t.direct is None, "播放目标不带直链（302 直连已下线）"
 
 
-def test_direct_link_only_when_enabled(drive):
+def test_direct_link_config_no_longer_produces_a_direct_url(drive):
+    """direct_link 配置项保留（老配置不报错），但不再拼出带 token 的直链。
+
+    Google Drive 的 302 真直链不可行：重定向带不过 Authorization 头，
+    token 放 URL 里会被限流（Alist / RClone / Cloudreve 也均为服务端代理）。
+    """
     t = _provider({"direct_link": "1"}).resolve("/电影/A.电影 (2024).mkv")
-    assert t.direct and "access_token=TOKEN_X" in t.direct
-    assert "alt=media" in t.direct
+    assert t.direct is None, "direct_link 已下线，不能再生成直链"
+    assert "access_token" not in t.value, "凭据只能走 Authorization 头，不能进 URL"
 
 
 def test_resolve_missing_file(drive):

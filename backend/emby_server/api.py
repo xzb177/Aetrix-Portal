@@ -47,7 +47,6 @@ from backend.emby_server.auth import (
     parse_emby_authorization,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
-from backend.emby_server.direct_url import try_google_direct_url
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
@@ -2403,15 +2402,15 @@ async def video_stream(
     target = await run_db(_play_target, db, item)
     if target.kind == "url":
         # 线路选择（用户维度，play_line 模块）：
-        # relay 线路跳过一切 302，直接走服务器代理转发（流量过 VPS），
-        # 适合客户端直连 Google 不通的用户；direct（默认）保持下面的现有行为；
-        # cdn 线路与 direct 同口径（直链 302 保留）——CDN 只挡回源流量，
-        # URL 的域名改写在 PlaybackInfo/播放列表那几层已完成（cdn 模块）。
+        # 302 真直连已下线（原因见 play_line 模块说明：302 带不过 Authorization 头，
+        # token 放 URL 会被 Google 限流），所以 kind=url 一律由本服务代理转发。
+        # cdn 线路与 relay 同口径——CDN 只挡回源流量，URL 的域名改写在
+        # PlaybackInfo/播放列表那几层已完成（cdn 模块）。
         line = await run_db(play_line.get_play_line, db, getattr(user, "id", None))
         # 本地缓存线路（local_cache 模块）：命中本机副本就直接读本机（不过网络、
         # 不碰云盘配额）；没命中就走下面的回源口径，同时按最高优先级排进缓存队列
         # （后台单线程限速下载，播放时自动让路）。未启用缓存时 queue 为空操作，
-        # 行为与 direct 完全一致。
+        # 行为与 relay 完全一致。
         if line == play_line.LINE_CACHE:
             cached_file = await run_db(local_cache.lookup, db, item)
             if cached_file:
@@ -2423,48 +2422,32 @@ async def video_stream(
             # 没命中 → 这次实际走的是下面那条回源路径，缓存线路记一次降级
             _note_line_fallback(play_line.LINE_CACHE, "", "本机无副本，已回源并排队缓存")
         # CDN 预留（第 2/3 层）：代理转发形态也带上分片缓存头，让 CDN 边缘能缓存
-        # 回源结果；API/302 不走这里（302 分支自带 no-store）。
+        # 回源结果。
         seg_cache = cdn.cache_control_for(str(request.url.path))
+        # 唯一的重定向残留：**显式** ``?direct=true`` 且目标不带凭据时才 302
+        #（STRM / rclone 公开直链这类）。``can_redirect_direct`` 见到
+        # Authorization / Cookie 就拒绝，所以带凭据的挂载（115 / WebDAV /
+        # Google Drive）无论带不带这个参数都走代理——与已下线的 Drive 直链无关。
+        if request.query_params.get("direct", "").lower() == "true" and can_redirect_direct(target):
+            line_stats.record_request(line)
+            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": cdn.NO_STORE})
         if line == play_line.LINE_RELAY:
             return _observe_line(
                 await _serve_remote_retry_on_stale(
                     target, request, db, item, media_type, seg_cache),
                 play_line.LINE_RELAY)
-        # 原生挂载给的直链（Google Drive 原生 provider）：提供者自己就有 file id 与
-        # token，不需要问任何人。优先于 rclone 那条老路（后者要先 stat 查 file id）。
-        if getattr(target, "direct", None) and not getattr(target, "from_file_id_cache", False):
-            # 302 的字节不经本机：只记请求，不记流量（line_stats 对 0 字节天然忽略）
-            line_stats.record_request(line)
-            return Response(status_code=302, headers={
-                "Location": target.direct, "Cache-Control": cdn.NO_STORE,
-            })
-        if getattr(target, "from_file_id_cache", False):
-            # 方案A：file id 来自「路径 → id」缓存（秒开那套），而缓存的 id 可能已经
-            # 失效（文件在 Drive 上被移动/改名/删除）。**此时不能盲 302** ——
-            # 302 之后字节不经本机，服务器永远看不到那个 404，自愈就不会触发，
-            # 而缓存也不会被清 → 每次重试都是同一个死地址。
-            # 改走代理：代理路径带 404 重试（_serve_remote_retry_on_stale），
-            # 失效时能自动重解析并把新 id 写回。代价是这一次流量过 VPS，可接受。
-            _note_line_fallback(line, play_line.LINE_RELAY,
-                                "file id 来自缓存，为保证失效可自愈改走代理转发")
-        # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
-        # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。
-        google_direct = await try_google_direct_url(target.value)
-        if google_direct:
-            # 302 的字节不经本机：只记请求，不记流量（line_stats 对 0 字节天然忽略）
-            line_stats.record_request(line)
-            return Response(status_code=302, headers={"Location": google_direct, "Cache-Control": cdn.NO_STORE})
-        if request.query_params.get("direct", "").lower() == "true" and can_redirect_direct(target):
-            line_stats.record_request(line)
-            return Response(status_code=302, headers={"Location": target.value, "Cache-Control": cdn.NO_STORE})
+        # 原生挂载给的直链（``PlayTarget.direct``，需挂载开 direct_link）与 rclone
+        # 的 ``try_google_direct_url`` 都**不再产生 302**：Drive 的 alt=media 要
+        # Authorization 头而重定向带不过去，token 塞 URL 里会被限流。两条分支整体
+        # 下线，代码保留在 direct_url / mounts 里，方便将来接上 CDN 再复用。
+        #
+        # 顺带好处：file id 来自「路径 → id」缓存时（可能是被移动/删除的旧 id），
+        # 不再盲 302 —— 代理路径自带 404 自愈重试（_serve_remote_retry_on_stale）。
+        #
         # 挂载来源（115 / WebDAV / AList / STRM 直链）：由本服务代理转发，
         # Range 与状态码透传，凭据不下发。
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
         # 不能让一个用户的拖动进度条把整个事件循环卡住。
-        # 到这一步说明 Google 直链没拿到 = 直连线路退化成代理线路（Phase 3 可观测）
-        if line == play_line.LINE_DIRECT:
-            _note_line_fallback(play_line.LINE_DIRECT, play_line.LINE_RELAY,
-                                "Google 直链不可用，已回落到代理转发")
         return _observe_line(
             await _serve_remote_retry_on_stale(
                 target, request, db, item, media_type, seg_cache),
@@ -2578,7 +2561,8 @@ async def video_hls(
         selected = play_line.get_play_line(db, getattr(user, "id", None))
         if selected == play_line.LINE_CDN and not cdn.enabled(db):
             # 选了 CDN 但没启用 = 退化到回源，与 video_stream 的口径对齐
-            _note_line_fallback(play_line.LINE_CDN, play_line.LINE_DIRECT,
+            # （回源即 relay：302 直连下线后，回源就是代理转发这一种形态）
+            _note_line_fallback(play_line.LINE_CDN, play_line.LINE_RELAY,
                                 "CDN 未启用，转码从回源拉流")
         else:
             line_stats.record_request(selected)

@@ -2,6 +2,8 @@
 
 - 纯逻辑用隔离的内存 SQLite，不碰生产库。
 - video_stream 决策分支沿用 test_playback_redirect.py 的 monkeypatch 风格。
+- 302 直连已下线：这里的重点是“老用户存的 direct 会被迁成 relay”，
+  以及任何线路都不会再把播放 302 到 Google。
 """
 import asyncio
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from backend.emby_server.play_line import (
     LINE_RELAY,
     PLAY_LINES,
     get_play_line,
+    normalize,
     set_play_line,
 )
 
@@ -45,10 +48,10 @@ def _make_user(db, username):
     return u
 
 
-def test_default_is_direct_without_record(db):
+def test_default_is_relay_without_record(db):
     u = _make_user(db, "u1")
-    assert get_play_line(db, u.id) == LINE_DIRECT
-    assert DEFAULT_LINE == LINE_DIRECT
+    assert get_play_line(db, u.id) == LINE_RELAY
+    assert DEFAULT_LINE == LINE_RELAY
 
 
 def test_set_and_get_relay(db):
@@ -57,26 +60,49 @@ def test_set_and_get_relay(db):
     assert get_play_line(db, u.id) == LINE_RELAY
 
 
-def test_set_back_to_direct(db):
+def test_legacy_direct_pref_is_read_as_relay(db):
+    """老用户库里存着 direct：读出来就是 relay（用户看不到失效选项）"""
+    from backend import models
+
     u = _make_user(db, "u3")
-    set_play_line(db, u.id, LINE_RELAY)
-    set_play_line(db, u.id, LINE_DIRECT)
-    assert get_play_line(db, u.id) == LINE_DIRECT
+    db.add(models.UserPlayLine(user_id=u.id, line=LINE_DIRECT))
+    db.commit()
+    assert get_play_line(db, u.id) == LINE_RELAY
+
+
+def test_setting_direct_migrates_the_stored_row(db):
+    """老客户端重发 direct：不报错，库里那条老记录顺手迁成 relay"""
+    from backend import models
+
+    u = _make_user(db, "u3b")
+    db.add(models.UserPlayLine(user_id=u.id, line=LINE_DIRECT))
+    db.commit()
+    assert set_play_line(db, u.id, LINE_DIRECT) == LINE_RELAY
+    assert db.query(models.UserPlayLine).filter(
+        models.UserPlayLine.user_id == u.id).first().line == LINE_RELAY
+
+
+def test_normalize_maps_legacy_and_rejects_unknown():
+    assert normalize(LINE_DIRECT) == LINE_RELAY
+    assert normalize("DIRECT") == LINE_RELAY          # 大小写 / 空白都归一
+    assert normalize("  relay ") == LINE_RELAY
+    assert normalize(None) is None
+    assert normalize("bogus") is None
 
 
 def test_set_invalid_raises_and_keeps_default(db):
     u = _make_user(db, "u4")
     with pytest.raises(ValueError):
         set_play_line(db, u.id, "bogus")
-    assert get_play_line(db, u.id) == LINE_DIRECT
+    assert get_play_line(db, u.id) == LINE_RELAY
 
 
 def test_users_are_independent(db):
     a = _make_user(db, "ua")
     b = _make_user(db, "ub")
-    set_play_line(db, a.id, LINE_RELAY)
-    assert get_play_line(db, a.id) == LINE_RELAY
-    assert get_play_line(db, b.id) == LINE_DIRECT
+    set_play_line(db, a.id, LINE_CDN)
+    assert get_play_line(db, a.id) == LINE_CDN
+    assert get_play_line(db, b.id) == LINE_RELAY
 
 
 def test_dirty_value_falls_back_to_default(db):
@@ -85,24 +111,26 @@ def test_dirty_value_falls_back_to_default(db):
     u = _make_user(db, "u5")
     db.add(models.UserPlayLine(user_id=u.id, line="bogus"))
     db.commit()
-    assert get_play_line(db, u.id) == LINE_DIRECT
+    assert get_play_line(db, u.id) == LINE_RELAY
 
 
 def test_broken_db_or_no_user_id_falls_back_to_default(db):
-    # user_id 为空 / db 异常时不能炸，播放要按默认 direct 走
-    assert get_play_line(db, None) == LINE_DIRECT
+    # user_id 为空 / db 异常时不能炸，播放要按默认 relay 走
+    assert get_play_line(db, None) == LINE_RELAY
 
     class BrokenDB:
         def query(self, *a, **k):
             raise RuntimeError("db down")
 
-    assert get_play_line(BrokenDB(), 1) == LINE_DIRECT
+    assert get_play_line(BrokenDB(), 1) == LINE_RELAY
 
 
 def test_play_lines_contract():
-    # direct（默认）/ cdn（边缘缓存预留）/ cache（VPS 本地缓存）/ relay（中转）
-    assert set(PLAY_LINES) == {"direct", "cdn", "cache", "relay"}
-    assert DEFAULT_LINE == LINE_DIRECT
+    # cdn（边缘缓存预留）/ cache（VPS 本地缓存）/ relay（中转，默认）
+    # direct 已下线：常量还在（历史数据/统计认它），但不再是可选项
+    assert set(PLAY_LINES) == {"cdn", "cache", "relay"}
+    assert LINE_DIRECT not in PLAY_LINES
+    assert DEFAULT_LINE == LINE_RELAY
 
 
 def test_set_and_get_cdn(db):
@@ -139,8 +167,8 @@ def _stub_common(monkeypatch, api, target):
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
 
 
-def test_video_stream_relay_skips_google_302(monkeypatch):
-    """relay 线路：跳过 try_google_direct_url，直接走服务器代理。"""
+def test_video_stream_relay_proxies_without_google_302(monkeypatch):
+    """relay 线路（默认）：走服务器代理，且播放层压根不再持有 Google 直链入口。"""
     from backend.emby_server import api
     from backend.emby_server.mounts import PlayTarget
 
@@ -148,10 +176,8 @@ def test_video_stream_relay_skips_google_302(monkeypatch):
     _stub_common(monkeypatch, api, target)
     monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_RELAY)
 
-    async def boom(*a, **k):
-        raise AssertionError("relay 线路不该调 try_google_direct_url")
-
-    monkeypatch.setattr(api, "try_google_direct_url", boom)
+    assert not hasattr(api, "try_google_direct_url"), (
+        "302 直链下线后，播放模块不应再导入 try_google_direct_url")
     proxy = object()
 
     async def fake_proxy(url, request, headers, media_type, cache_control=None):
@@ -167,46 +193,46 @@ def test_video_stream_relay_skips_google_302(monkeypatch):
     assert resp is proxy
 
 
-def test_video_stream_direct_keeps_google_302(monkeypatch):
-    """direct 线路：保持现有行为，Google 直链成功则 302。"""
-    from backend.emby_server import api
-    from backend.emby_server.mounts import PlayTarget
+def test_video_stream_never_302s_to_google(monkeypatch):
+    """无论哪条线路都不再 302 到 Drive。
 
-    target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
-    _stub_common(monkeypatch, api, target)
-    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_DIRECT)
-
-    async def fake_google(url):
-        assert url == target.value
-        return "https://www.googleapis.com/drive/v3/files/x?alt=media"
-
-    monkeypatch.setattr(api, "try_google_direct_url", fake_google)
-    user = SimpleNamespace(id=7)
-    resp = asyncio.run(api.video_stream("item", _request(), user, object()))
-    assert resp.status_code == 302
-    assert resp.headers["location"].startswith("https://www.googleapis.com/")
-    assert resp.headers["cache-control"] == "no-store"
-
-
-def test_video_stream_cdn_line_keeps_google_302(monkeypatch):
-    """cdn 线路：与 direct 同口径（Google 直链 302 保留，CDN 只挡回源）。"""
+    直链可行的话这里会返回一个 302；现在必须走代理。
+    """
     from backend.emby_server import api
     from backend.emby_server.mounts import PlayTarget
 
     target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
     _stub_common(monkeypatch, api, target)
     monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_CDN)
+    proxy = object()
 
-    async def fake_google(url):
-        assert url == target.value
-        return "https://www.googleapis.com/drive/v3/files/x?alt=media"
+    async def fake_proxy(*a, **k):
+        return proxy
 
-    monkeypatch.setattr(api, "try_google_direct_url", fake_google)
-    user = SimpleNamespace(id=7)
-    resp = asyncio.run(api.video_stream("item", _request(), user, object()))
-    assert resp.status_code == 302
-    assert resp.headers["location"].startswith("https://www.googleapis.com/")
-    assert resp.headers["cache-control"] == "no-store"
+    monkeypatch.setattr(api, "serve_remote_async", fake_proxy)
+    resp = asyncio.run(api.video_stream("item", _request(), SimpleNamespace(id=7), object()))
+    assert resp is proxy
+
+
+def test_video_stream_cdn_line_proxies(monkeypatch):
+    """cdn 线路：与 relay 同口径（服务端代理），CDN 只挡回源流量。"""
+    from backend.emby_server import api
+    from backend.emby_server.mounts import PlayTarget
+
+    target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
+    _stub_common(monkeypatch, api, target)
+    monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_CDN)
+    proxy = object()
+
+    async def fake_proxy(url, request, headers, media_type, cache_control=None):
+        assert (url, headers, media_type) == (target.value, target.headers, "video/mp4")
+        from backend.emby_server import cdn as cdn_mod
+        assert cache_control == cdn_mod.SEGMENT_CACHE_HEADER
+        return proxy
+
+    monkeypatch.setattr(api, "serve_remote_async", fake_proxy)
+    resp = asyncio.run(api.video_stream("item", _request(), SimpleNamespace(id=7), object()))
+    assert resp is proxy
 
 
 def test_video_stream_cache_line_hit_serves_local_file(monkeypatch):
@@ -223,8 +249,6 @@ def test_video_stream_cache_line_hit_serves_local_file(monkeypatch):
         raise AssertionError("命中时不该再入队")
 
     monkeypatch.setattr(local_cache, "enqueue", boom_enqueue)
-    monkeypatch.setattr(api, "try_google_direct_url",
-                        lambda url: (_ for _ in ()).throw(AssertionError("不该回源")))
     sentinel = object()
 
     def fake_serve_file(path, request, media_type, cache_control=None):
@@ -240,7 +264,7 @@ def test_video_stream_cache_line_hit_serves_local_file(monkeypatch):
 
 
 def test_video_stream_cache_line_miss_falls_back_to_source(monkeypatch):
-    """cache 线路未命中：按 direct 口径回源（Google 直链 302），并高优先级入队缓存。"""
+    """cache 线路未命中：回源走代理，并高优先级入队缓存。"""
     from backend.emby_server import api, local_cache
     from backend.emby_server.mounts import PlayTarget
 
@@ -251,34 +275,33 @@ def test_video_stream_cache_line_miss_falls_back_to_source(monkeypatch):
     enqueued = []
     monkeypatch.setattr(local_cache, "enqueue",
                         lambda db, item, priority=0: enqueued.append(priority) or None)
+    proxy = object()
 
-    async def fake_google(url):
-        assert url == target.value
-        return "https://www.googleapis.com/drive/v3/files/x?alt=media"
+    async def fake_proxy(url, request, headers, media_type, cache_control=None):
+        return proxy
 
-    monkeypatch.setattr(api, "try_google_direct_url", fake_google)
+    monkeypatch.setattr(api, "serve_remote_async", fake_proxy)
     resp = asyncio.run(api.video_stream("item", _request(), SimpleNamespace(id=7), object()))
-    assert resp.status_code == 302
-    assert resp.headers["location"].startswith("https://www.googleapis.com/")
+    assert resp is proxy
     assert enqueued == [local_cache.PLAY_PRIORITY]
 
 
-def test_video_stream_cache_line_disabled_is_plain_direct(monkeypatch):
-    """本地缓存未启用：lookup/enqueue 都是空操作，行为与 direct 一模一样。"""
-    from backend.emby_server import api, local_cache
+def test_video_stream_cache_line_disabled_is_plain_relay(monkeypatch):
+    """本地缓存未启用：lookup/enqueue 都是空操作，行为与 relay 一模一样。"""
+    from backend.emby_server import api
     from backend.emby_server.mounts import PlayTarget
 
     target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
     _stub_common(monkeypatch, api, target)
     monkeypatch.setattr(api.play_line, "get_play_line", lambda db, uid: LINE_CACHE)
-    # 未启用时 local_cache 自己返回 None（不替换、不报错）：这里用真实函数
-    async def fake_google(url):
-        return "https://www.googleapis.com/drive/v3/files/x?alt=media"
+    proxy = object()
 
-    monkeypatch.setattr(api, "try_google_direct_url", fake_google)
+    async def fake_proxy(url, request, headers, media_type, cache_control=None):
+        return proxy
+
+    monkeypatch.setattr(api, "serve_remote_async", fake_proxy)
     resp = asyncio.run(api.video_stream("item", _request(), SimpleNamespace(id=7), object()))
-    assert resp.status_code == 302
-    assert resp.headers["cache-control"] == "no-store"
+    assert resp is proxy
 
 
 def test_video_stream_relay_local_kind_unchanged(monkeypatch):

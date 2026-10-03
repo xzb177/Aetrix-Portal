@@ -86,7 +86,7 @@ def test_gdrive_marks_cache_hits():
     m.mount = type("M", (), {"id": 7})()
     m.api_base = "https://example.invalid/drive/v3"
     m.auth_mode = "oauth"
-    m.direct_link = True                      # 关键：直链 302 是开着的
+    m.direct_link = True                      # 配置项保留（已下线，不影响行为）
     m.root_id = ""
     m.drive_id = ""
     m.sa_file = ""
@@ -101,18 +101,17 @@ def test_gdrive_marks_cache_hits():
     m._headers = lambda: {"Authorization": "Bearer tok"}
     m._locate = lambda rel: {"id": "REAL-FID", "size": 1}
 
-    # 第一次：未命中缓存 → 现解析 → 不打标记（照旧可以盲 302）
+    # 第一次：未命中缓存 → 现解析 → 不打标记
     first = m.resolve("/m/a.mkv")
     assert first.from_file_id_cache is False
-    assert first.direct  # 直链确实给出了
+    assert first.direct is None  # 302 直链下线，不再给直链
 
     session.commit()
     assert fic.lookup(session, 7, "/m/a.mkv") == "REAL-FID"
 
-    # 第二次：命中缓存 → 打标记 → 播放层据此改走代理
+    # 第二次：命中缓存 → 打标记（播放层不再盲 302，两种情况都走代理）
     second = m.resolve("/m/a.mkv")
     assert second.from_file_id_cache is True
-    assert second.direct
     session.close()
 
 

@@ -178,11 +178,11 @@ def test_play_line_pref_payload_exposes_cdn_flag(db):
 
     user = SimpleNamespace(id=42)
     assert portal.get_play_line_pref(user, db) == {
-        "line": "direct", "cdn_enabled": False, "cache_enabled": False,
+        "line": "relay", "cdn_enabled": False, "cache_enabled": False,
     }
     _enable(db)
     payload = portal.get_play_line_pref(user, db)
-    assert payload["line"] == "direct"
+    assert payload["line"] == "relay"
     assert payload["cdn_enabled"] is True
     assert payload["cache_enabled"] is False  # 本地缓存默认关闭，同样不给死选项
     # 后台开本地缓存后，用户端才能看到 cache 线路
