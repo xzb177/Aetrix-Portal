@@ -135,6 +135,31 @@ export interface RebateRow {
   created_at: string | null
 }
 
+/** 推广奖励一笔（v2.44.0）：邀请成功后另发的，类型余额/有效期，数值全在服务端配置里 */
+export interface PromotionRewardRow {
+  id: number
+  invitee_id: number
+  invitee_username: string
+  reward_type: 'balance' | 'days'
+  reward_type_label: string
+  reward_value: number
+  realm_id: number | null
+  created_at: string | null
+}
+
+export interface MyPromotions {
+  total: number
+  config: {
+    enabled: boolean
+    reward_type: string
+    amount: number
+    days: number
+    reward_types: string[]
+    reward_type_labels: Record<string, string>
+  }
+  rewards: PromotionRewardRow[]
+}
+
 // ==================== 签到 ====================
 
 export const checkinApi = {
@@ -276,4 +301,7 @@ export const inviteApi = {
     api.get<never, { total: number; records: InvitationRecordRow[] }>('/api/user/invite/records', { params }),
   rebates: (params?: { limit?: number }) =>
     api.get<never, { total_rebate: number; rebates: RebateRow[] }>('/api/user/invite/rebates', { params }),
+  /** 我的推广奖励明细（邀请即发的一次性奖励，与充值返利分开两张表） */
+  promotions: (params?: { limit?: number }) =>
+    api.get<never, MyPromotions>('/api/user/invite/promotions', { params }),
 }

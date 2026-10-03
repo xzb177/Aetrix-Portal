@@ -213,12 +213,17 @@ export interface AdminUserRow {
   subscription_id: number | null
   subscription_end: string | null
   last_login_at: string | null
+  /** 注册渠道（v2.44.0 归因）：空串 = 升级前存量，label 显示「未记录」 */
+  register_channel: string
+  register_channel_label: string
   created_at: string
 }
 
 export interface UsersResponse {
   total: number
   users: AdminUserRow[]
+  /** 后端下发的渠道枚举（含「未记录」哨兵值），前端不自己拼一份 */
+  channels?: Array<{ value: string; label: string }>
 }
 
 export type CodeType = 1 | 2 | 3

@@ -61,7 +61,7 @@ def upsert_admin(db, username: str, password: str | None = None,
 
     ``applied_password`` 是本次真正写进库的密码（没有改密码时为 None）。
     """
-    from backend import models
+    from backend import models, register_channel
     from backend.emby_server.auth import ensure_emby_credentials
     from backend.security import hash_password
 
@@ -82,6 +82,8 @@ def upsert_admin(db, username: str, password: str | None = None,
             password_hash=hash_password(applied),
             is_staff=True,
             is_active=True,
+            # 注册渠道归因（v2.44.0）：管理员建的号不混进「开放注册」
+            register_channel=register_channel.ADMIN,
         )
         db.add(user)
     else:

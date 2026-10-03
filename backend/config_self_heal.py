@@ -378,6 +378,15 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
          "媒体库可见范围·逐用户覆盖（JSON，enabled=false = 跟随服务器默认）"),
     ])
 
+    # 7.10 推广奖励（v2.44.0）：**默认关闭 + 0** —— 管理员不手动打开，
+    # 邀请成功就不会多发任何东西（本期唯一的自动发奖动作，故默认关）
+    from backend import promotion
+    items.extend([
+        (key, promotion.DEFAULTS[key], promotion.DESCRIPTIONS[key])
+        for key in (promotion.CONFIG_ENABLED, promotion.CONFIG_TYPE,
+                    promotion.CONFIG_AMOUNT, promotion.CONFIG_DAYS)
+    ])
+
     # 8. 公益服查看权限价格
     from backend.emby_server import portal
     items.extend([

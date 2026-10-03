@@ -388,6 +388,14 @@ def _auto_migrate():
             # v2.26.0 管理员角色（super / operator / viewer）：老库补列后为 NULL，
             # 按 super 处理 → 升级前后权限完全一致（见 backend/admin_roles.py）
             ("admin_role", "VARCHAR(20)", "NULL"),
+            # v2.44.0 注册渠道归因（admin/code/invitation/open）：老用户补列后为 NULL，
+            # 按「未记录」显示——不硬猜成 open（见 backend/register_channel.py）
+            ("register_channel", "VARCHAR(20)", "NULL"),
+        ]),
+        # v2.44.0 邀请码白名单（内测码 / 渠道码）：NULL / 空串都按「不限」处理，
+        # 所以存量邀请码行为升级前后完全一致（见 backend/api/invitation.py）
+        ("invitation_codes", [
+            ("whitelist", "TEXT", "''"),
         ]),
         # v2.6.15 通知历史记录真实投递结果：邮件/TG 发送失败必须留下原因，
         # 而不是像以前那样一律写成 status="sent"

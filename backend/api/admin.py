@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import media_seek, models, realms
+from backend import media_seek, models, realms, register_channel
 from backend import qbittorrent
 from backend import servers
 from backend.database import get_db
@@ -39,7 +39,6 @@ from backend.notifications import (
     notify_all_users,
 )
 from backend.security import hash_password
-
 from backend.db_retry import commit_with_retry
 from backend.api.admin_core import (
     _audit,
@@ -49,6 +48,9 @@ from backend.api.admin_core import (
     get_current_admin,
     logger,
 )
+
+#: 渠道筛选用的「未记录」哨兵值：升级前的存量用户没记渠道，单独给它一个可选值
+UNRECORDED_CHANNEL = "__unrecorded"
 
 # ==================== 请求/响应模型 ====================
 
@@ -268,12 +270,16 @@ async def extend_subscription(
 def list_users(
     search: str = "",
     active: Optional[bool] = None,
+    channel: str = "",
     limit: int = 50,
     offset: int = 0,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """用户列表：搜索（用户名/邮箱）+ 状态筛选 + 分页"""
+    """用户列表：搜索（用户名/邮箱）+ 状态筛选 + 注册渠道筛选 + 分页
+
+    ``channel`` 空 = 全部；``channel=__unrecorded`` = 存量用户（当时没记渠道）。
+    """
     query = db.query(models.WebUser)
     if search:
         like = f"%{search}%"
@@ -283,6 +289,14 @@ def list_users(
         ))
     if active is not None:
         query = query.filter(models.WebUser.is_active == active)
+    if channel:
+        col = models.WebUser.register_channel
+        if channel == UNRECORDED_CHANNEL:
+            query = query.filter(or_(col.is_(None), col == ""))
+        elif channel in register_channel.ALL:
+            query = query.filter(col == channel)
+        else:
+            query = query.filter(or_(col.is_(None), col == ""))
 
     total = query.count()
     users = query.order_by(models.WebUser.id.desc()).offset(offset).limit(min(limit, 200)).all()
@@ -306,10 +320,19 @@ def list_users(
             "subscription_id": active_sub.id if active_sub else None,
             "subscription_end": active_sub.end_date.isoformat() if active_sub else None,
             "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+            # 注册渠道（v2.44.0 归因）：空值 = 升级前存量，显示「未记录」
+            "register_channel": register_channel.normalize(u.register_channel),
+            "register_channel_label": register_channel.label_of(u.register_channel),
             "created_at": _log_out(u),
         })
 
-    return {"total": total, "users": items}
+    return {
+        "total": total,
+        "users": items,
+        "channels": [
+            {"value": c, "label": register_channel.LABELS[c]} for c in register_channel.ALL
+        ] + [{"value": UNRECORDED_CHANNEL, "label": register_channel.LABELS[""]}],
+    }
 
 
 class UserUpdateRequest(BaseModel):

@@ -247,6 +247,11 @@ class WebUser(Base):
     admin_role = Column(String(20), nullable=True)
     points = Column(Integer, default=0)  # 积分余额（签到/邀请返利/兑换/充值）
 
+    # 注册渠道（v2.44.0 归因）：admin=管理员创建 / code=卡密注册 /
+    # invitation=邀请码注册 / open=开放注册。
+    # 空值 = 升级前的存量用户（当时没记，不硬猜），后台显示为「未记录」。
+    register_channel = Column(String(20), index=True)
+
     # 自建 Emby 凭据（完全自建模式下，Emby 客户端用此账号密码登录）
     emby_username = Column(String(64), unique=True, nullable=True)
     emby_password = Column(String(128), nullable=True)
@@ -984,6 +989,10 @@ class InvitationCode(Base):
     reward_points = Column(Integer, default=0)
     expires_at = Column(DateTime)
     is_active = Column(Boolean, default=True)
+    # 白名单（可选）：逗号分隔的用户名。非空时**只有这些人**能拿这个码注册，
+    # 用完即无效——与卡码的 target_username 同一个思路（内测码 / 渠道码）。
+    # 空 = 不限（与升级前行为一致）。
+    whitelist = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
@@ -1005,6 +1014,48 @@ class InvitationRecord(Base):
     code_id = Column(Integer, ForeignKey('invitation_codes.id'), nullable=False)
     reward_points = Column(Integer, default=0)
     reward_claimed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    inviter = relationship("WebUser", foreign_keys=[inviter_id])
+    invitee = relationship("WebUser", foreign_keys=[invitee_id])
+    code = relationship("InvitationCode")
+
+
+class PromotionReward(Base):
+    """推广奖励记录（v2.44.0 第一阶段）
+
+    邀请成功后**另发**的一笔奖励，与既有的双向积分奖励并列、互不干扰：
+    那边是「邀请这件事本身的回报」，这边是「本期推广激励」，所以走独立的
+    开关与阈值（``promotion_reward_*``），默认关闭。
+
+    奖励类型两选一（值全部来自 SystemConfig，不在代码里写死）：
+
+    - ``balance``：加积分余额（``reward_value`` = 积分数）；
+    - ``days``：加会员有效期（``reward_value`` = 天数，``realm_id`` 记归属服）。
+
+    一行一条，用户在「我的」里看到的明细就是这张表；``config_snapshot``
+    记下发时的开关与阈值，否则日后改了配置就再也说不清「当时到底按多少发的」。
+    """
+    __tablename__ = 'promotion_rewards'
+
+    __table_args__ = (
+        # 一个被邀请人只能给邀请人发一笔（与 invitation_records 的唯一索引同一道门）
+        Index('idx_promo_invitee', 'invitee_id', unique=True),
+        Index('idx_promo_inviter', 'inviter_id'),
+        Index('idx_promo_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    inviter_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    invitee_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    code_id = Column(Integer, ForeignKey('invitation_codes.id'))
+    # balance / days（见 promotion.py 的 REWARD_TYPES）
+    reward_type = Column(String(16), nullable=False)
+    reward_value = Column(Integer, nullable=False, default=0)
+    # reward_type=days 时的归属服（空 = 当前服，与 grant_membership_days 同口径）
+    realm_id = Column(Integer)
+    # 下发时的配置快照（JSON），事后能还原「按哪一档发的」
+    config_snapshot = Column(String(500))
     created_at = Column(DateTime, default=datetime.now)
 
     inviter = relationship("WebUser", foreign_keys=[inviter_id])

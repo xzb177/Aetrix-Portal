@@ -65,6 +65,8 @@ interface Field {
   type: FieldType
   hint?: string
   suffix?: string
+  /** 有值时渲染成下拉（type 仍是 str，保存走同一串行化分支） */
+  choices?: Array<{ value: string; label: string }>
 }
 
 interface Group {
@@ -183,6 +185,24 @@ const GROUPS: Group[] = [
       { key: 'invitation_reward_points', label: '邀请人奖励', type: 'int', suffix: '积分' },
       { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分' },
       { key: 'invitation_rebate_percent', label: '消费返利', type: 'int', suffix: '%', hint: '下级充值/消费时邀请人可得的比例' },
+      {
+        key: 'promotion_reward_enabled',
+        label: '推广奖励',
+        type: 'bool',
+        hint: '邀请成功后在双向积分之外「另发」一笔；默认关闭，不打开就不会发',
+      },
+      {
+        key: 'promotion_reward_type',
+        label: '推广奖励类型',
+        type: 'str',
+        choices: [
+          { value: 'balance', label: '余额（积分）' },
+          { value: 'days', label: '有效期（天）' },
+        ],
+        hint: '选「有效期」时给邀请人叠加会员天数，归属当前服',
+      },
+      { key: 'promotion_reward_amount', label: '推广奖励·余额数值', type: 'int', suffix: '积分', hint: '类型为「余额」时生效；0 = 不发' },
+      { key: 'promotion_reward_days', label: '推广奖励·有效期天数', type: 'int', suffix: '天', hint: '类型为「有效期」时生效；0 = 不发' },
     ],
   },
 ]
@@ -583,6 +603,18 @@ watch(
                   min="0"
                   class="num-input"
                 />
+                <el-select
+                  v-else-if="f.choices"
+                  v-model="settings[f.key]"
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-for="c in f.choices"
+                    :key="c.value"
+                    :label="c.label"
+                    :value="c.value"
+                  />
+                </el-select>
                 <el-input
                   v-else
                   v-model="settings[f.key]"

@@ -19,7 +19,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import authlog, codes, devices, library_scope, models, realms, share_guard
+from backend import (authlog, codes, devices, library_scope, models, promotion,
+                     realms, share_guard)
+from backend.api.invitation import _generate_invite_code
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
@@ -761,6 +763,313 @@ def delete_library_scope_user(
     db.commit()
     return {"success": True, "applied": applied,
             "policy": library_scope.policy_payload(db)}
+
+
+# ==================== 邀请码管理（v2.44.0 第一阶段） ====================
+#
+# 用户自己的那张码（``GET /api/user/invite/my-code``）照旧自动建，不受影响；
+# 这里是**管理员维度**的批量生成 / 改配 / 作废，回答的是
+# 「我发出去的那一堆渠道码现在用到哪一步了」。
+#
+# 次数、有效天数、白名单都是每码一份，不写死：0 次数 = 不限，0 天 = 永不过期，
+# 白名单空 = 不限（与升级前行为一致）。判定逻辑在 ``apply_invitation``，
+# 这里只管生与改，两处口径必须一致。
+
+
+def _inv_code_state(code: models.InvitationCode, now: datetime) -> str:
+    if not code.is_active:
+        return "revoked"
+    if code.expires_at and code.expires_at < now:
+        return "expired"
+    if code.max_uses and (code.use_count or 0) >= code.max_uses:
+        return "used_up"
+    return "active"
+
+
+INV_CODE_STATE_LABELS = {
+    "active": "可用",
+    "used_up": "已用完",
+    "expired": "已过期",
+    "revoked": "已作废",
+}
+
+
+def _inv_code_dto(code: models.InvitationCode, owner: str, now: datetime) -> dict:
+    whitelist = [w.strip() for w in (code.whitelist or "").split(",") if w.strip()]
+    state = _inv_code_state(code, now)
+    days_left = None
+    if code.expires_at:
+        days_left = max(0, int((code.expires_at - now).total_seconds() // 86400))
+    return {
+        "id": code.id,
+        "code": code.code,
+        "owner_user_id": code.user_id,
+        "owner_username": owner,
+        "max_uses": int(code.max_uses or 0),
+        "use_count": int(code.use_count or 0),
+        # None = 不限次数（前端显示「不限」，不要显示 0）
+        "remaining": (None if not code.max_uses
+                      else max(0, int(code.max_uses) - int(code.use_count or 0))),
+        "whitelist": whitelist,
+        "is_active": bool(code.is_active),
+        "state": state,
+        "state_label": INV_CODE_STATE_LABELS.get(state, state),
+        "expires_at": code.expires_at.isoformat() if code.expires_at else None,
+        "expires_days_left": days_left,
+        "reward_points": int(code.reward_points or 0),
+        "created_at": code.created_at.isoformat() if code.created_at else None,
+    }
+
+
+def _normalize_whitelist(raw: str) -> str:
+    """逗号/空格/换行分隔 → 去重小写逗号串（存储口径，与 apply_invitation 一致）"""
+    seen: list[str] = []
+    for chunk in (raw or "").replace("，", ",").replace("\n", ",").split(","):
+        name = chunk.strip().lower()
+        if name and name not in seen:
+            seen.append(name)
+    return ",".join(seen)[:2000]
+
+
+class InvitationCodeGenerateRequest(BaseModel):
+    owner_user_id: int = Field(..., ge=1)
+    count: int = Field(default=1, ge=1, le=200)
+    max_uses: int = Field(default=100, ge=0, le=100000)
+    expires_days: int = Field(default=0, ge=0, le=3650)
+    whitelist: str = ""
+
+
+@admin_ops_router.post("/invitation-codes")
+def generate_invitation_codes(
+    request: InvitationCodeGenerateRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """批量生成：一次给某个用户发 N 张同规格的渠道码"""
+    owner = db.query(models.WebUser).filter(
+        models.WebUser.id == request.owner_user_id
+    ).first()
+    if not owner:
+        raise HTTPException(status_code=404, detail="归属用户不存在")
+
+    expires_at = (datetime.now() + timedelta(days=request.expires_days)
+                  if request.expires_days > 0 else None)
+    whitelist = _normalize_whitelist(request.whitelist)
+
+    created = []
+    for _ in range(request.count):
+        # _generate_invite_code 自己会循环到库/会话里都不撞号为止（本批 pending
+        # 行会被 autoflush 出来，所以批内也不会重号），这里不必再兜一层
+        created.append(models.InvitationCode(
+            code=_generate_invite_code(db),
+            user_id=owner.id,
+            max_uses=request.max_uses,
+            use_count=0,
+            reward_points=0,
+            expires_at=expires_at,
+            is_active=True,
+            whitelist=whitelist,
+        ))
+    db.add_all(created)
+    db.commit()
+    for row in created:
+        db.refresh(row)
+
+    _audit(db, current_admin, "generate_invitation_codes", "invitation_code",
+           created[0].id if created else None,
+           {"count": len(created), "owner_user_id": owner.id,
+            "max_uses": request.max_uses, "expires_days": request.expires_days,
+            "whitelist": whitelist or None})
+    db.commit()
+
+    now = datetime.now()
+    return {
+        "success": True,
+        "message": f"已为「{owner.username}」生成 {len(created)} 个邀请码",
+        "codes": [_inv_code_dto(c, owner.username, now) for c in created],
+    }
+
+
+class InvitationCodeUpdateRequest(BaseModel):
+    max_uses: Optional[int] = Field(default=None, ge=0, le=100000)
+    # None = 不改；0 = 改成永不过期；>0 = 从现在起 N 天
+    expires_days: Optional[int] = Field(default=None, ge=0, le=3650)
+    whitelist: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@admin_ops_router.put("/invitation-codes/{code_id}")
+def update_invitation_code(
+    code_id: int,
+    request: InvitationCodeUpdateRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """改邀请码：次数 / 有效天数 / 白名单 / 启停"""
+    code = db.query(models.InvitationCode).filter(
+        models.InvitationCode.id == code_id
+    ).first()
+    if not code:
+        raise HTTPException(status_code=404, detail="邀请码不存在")
+
+    before = {"max_uses": int(code.max_uses or 0), "is_active": bool(code.is_active),
+              "expires_at": code.expires_at.isoformat() if code.expires_at else None,
+              "whitelist": code.whitelist or ""}
+
+    if request.max_uses is not None:
+        code.max_uses = request.max_uses
+    if request.expires_days is not None:
+        code.expires_at = (datetime.now() + timedelta(days=request.expires_days)
+                           if request.expires_days > 0 else None)
+    if request.whitelist is not None:
+        code.whitelist = _normalize_whitelist(request.whitelist)
+    if request.is_active is not None:
+        code.is_active = request.is_active
+    db.commit()
+
+    _audit(db, current_admin, "update_invitation_code", "invitation_code", code.id,
+           {"before": before,
+            "after": {"max_uses": int(code.max_uses or 0),
+                      "is_active": bool(code.is_active),
+                      "expires_at": code.expires_at.isoformat() if code.expires_at else None,
+                      "whitelist": code.whitelist or ""}})
+    db.commit()
+    owner = db.query(models.WebUser).filter(models.WebUser.id == code.user_id).first()
+    return {"success": True, "code": _inv_code_dto(code, owner.username if owner else "", datetime.now())}
+
+
+class InvitationCodeRevokeRequest(BaseModel):
+    ids: list[int] = Field(default_factory=list, min_length=1, max_length=500)
+
+
+@admin_ops_router.post("/invitation-codes/revoke")
+def revoke_invitation_codes(
+    request: InvitationCodeRevokeRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """批量作废：只翻 is_active，不删行——已经产生的邀请关系还指着这些码"""
+    rows = db.query(models.InvitationCode).filter(
+        models.InvitationCode.id.in_(request.ids)
+    ).all()
+    for row in rows:
+        row.is_active = False
+    db.commit()
+
+    _audit(db, current_admin, "revoke_invitation_codes", "invitation_code", None,
+           {"ids": [r.id for r in rows], "count": len(rows)})
+    db.commit()
+    return {"success": True, "message": f"已作废 {len(rows)} 个邀请码", "count": len(rows)}
+
+
+@admin_ops_router.get("/invitation-codes")
+def list_invitation_codes(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    keyword: str = "",
+    owner_user_id: Optional[int] = None,
+    state: str = "",
+    limit: int = 100,
+    offset: int = 0,
+):
+    """邀请码列表（关键字 / 归属人 / 状态筛选 + 使用情况汇总）"""
+    query = db.query(models.InvitationCode)
+    if owner_user_id:
+        query = query.filter(models.InvitationCode.user_id == owner_user_id)
+    kw = (keyword or "").strip().lower()
+    if kw:
+        query = query.filter(models.InvitationCode.code.ilike(f"%{kw}%"))
+
+    now = datetime.now()
+    rows = query.order_by(models.InvitationCode.id.desc()).all()
+    owners = {}
+    owner_ids = {r.user_id for r in rows}
+    if owner_ids:
+        owners = {u.id: u.username for u in db.query(models.WebUser).filter(
+            models.WebUser.id.in_(owner_ids)).all()}
+
+    items = [_inv_code_dto(r, owners.get(r.user_id, f"用户 #{r.user_id}"), now)
+             for r in rows]
+    if state:
+        items = [i for i in items if i["state"] == state]
+
+    summary = {key: sum(1 for i in items if i["state"] == key)
+               for key in INV_CODE_STATE_LABELS}
+    summary["total"] = len(items)
+    summary["uses"] = sum(i["use_count"] for i in items)
+
+    start = max(offset, 0)
+    page = items[start:start + min(max(limit, 1), 300)]
+    return {
+        "success": True,
+        "total": len(items),
+        "summary": summary,
+        "states": [{"value": "", "label": "全部"}] + [
+            {"value": k, "label": v} for k, v in INV_CODE_STATE_LABELS.items()
+        ],
+        "codes": page,
+    }
+
+
+# ==================== 推广奖励（v2.44.0 第一阶段） ====================
+#
+# 开关与阈值全在 SystemConfig（``backend/promotion.py``），出厂全关/全 0：
+# 管理员不手动打开，邀请成功就不会多发任何东西。
+
+
+class PromotionPolicyRequest(BaseModel):
+    policy: dict
+
+
+@admin_ops_router.get("/promotion")
+def get_promotion(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    limit: int = 100,
+    offset: int = 0,
+):
+    """推广奖励：策略 + 汇总 + 发放流水（只读）"""
+    total = db.query(func.count(models.PromotionReward.id)).scalar() or 0
+    day_ago = datetime.now() - timedelta(hours=24)
+    reward_24h = db.query(func.count(models.PromotionReward.id)).filter(
+        models.PromotionReward.created_at >= day_ago
+    ).scalar() or 0
+
+    rows = (
+        db.query(models.PromotionReward)
+        .order_by(models.PromotionReward.created_at.desc())
+        .offset(max(offset, 0))
+        .limit(min(max(limit, 1), 300))
+        .all()
+    )
+    user_ids = {r.inviter_id for r in rows} | {r.invitee_id for r in rows}
+    names = {u.id: u.username for u in db.query(models.WebUser).filter(
+        models.WebUser.id.in_(user_ids)).all()} if user_ids else {}
+
+    return {
+        "success": True,
+        "policy": promotion.policy_payload(db),
+        "summary": {"total": int(total), "reward_24h": int(reward_24h)},
+        "rewards": [
+            {**promotion.dto(r, names.get(r.invitee_id, "已注销")),
+             "inviter_username": names.get(r.inviter_id, "已注销")}
+            for r in rows
+        ],
+    }
+
+
+@admin_ops_router.put("/promotion/policy")
+def update_promotion_policy(
+    payload: PromotionPolicyRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """写回推广奖励策略（只认白名单键，非法值保持原值不动）"""
+    applied = promotion.write_policy(db, payload.policy)
+    _audit(db, current_admin, "promotion_policy_update", "system", None, applied)
+    db.commit()
+    return {"success": True, "applied": applied,
+            "policy": promotion.policy_payload(db)}
 
 
 __all__ = ["admin_ops_router"]

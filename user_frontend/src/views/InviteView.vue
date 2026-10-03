@@ -5,11 +5,12 @@
 import { ref, computed, onMounted } from 'vue'
 import {
   Gift, Users, Coins, Percent, Copy, Check, Share2, UserPlus, Link2, Handshake, ChevronDown,
-  RefreshCw,
+  RefreshCw, Sparkles,
 } from 'lucide-vue-next'
 import {
   inviteApi,
   type MyInviteInfo, type InvitationRecordRow, type RebateRow,
+  type MyPromotions, type PromotionRewardRow,
 } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 
@@ -21,6 +22,8 @@ const info = ref<MyInviteInfo | null>(null)
 const records = ref<InvitationRecordRow[]>([])
 const rebates = ref<RebateRow[]>([])
 const totalRebate = ref(0)
+const promotions = ref<PromotionRewardRow[]>([])
+const promoConfig = ref<MyPromotions['config'] | null>(null)
 const copied = ref('')
 
 const inviteLink = computed(() => {
@@ -55,21 +58,35 @@ function fmtTime(iso?: string | null) {
  */
 const disabled = computed(() => info.value?.config?.enabled === false)
 
+/** 推广奖励开关（来自 /promotions 的 config）：决定空态怎么解释 */
+const promoEnabled = computed(() => promoConfig.value?.enabled === true)
+
 async function load() {
   loading.value = true
   failed.value = false
   try {
     const emptyRecords = { total: 0, records: [] as InvitationRecordRow[] }
     const emptyRebates = { total_rebate: 0, rebates: [] as RebateRow[] }
-    const [my, rec, reb] = await Promise.all([
+    const emptyPromotions: MyPromotions = {
+      total: 0,
+      config: {
+        enabled: false, reward_type: 'balance', amount: 0, days: 0,
+        reward_types: [], reward_type_labels: {},
+      },
+      rewards: [],
+    }
+    const [my, rec, reb, pro] = await Promise.all([
       inviteApi.myCode(),
       inviteApi.records({ limit: 50 }).catch(() => emptyRecords),
       inviteApi.rebates({ limit: 50 }).catch(() => emptyRebates),
+      inviteApi.promotions({ limit: 50 }).catch(() => emptyPromotions),
     ])
     info.value = my
     records.value = rec.records
     rebates.value = reb.rebates
     totalRebate.value = reb.total_rebate
+    promotions.value = pro.rewards
+    promoConfig.value = pro.config
   } catch {
     // 邀请码拿不到（网络 / 接口异常）要跟「没邀请记录」区分开：
     // 旧实现会留一页 '···' 和 '—'，看上去就像功能没做
@@ -234,6 +251,32 @@ onMounted(load)
         </ul>
       </section>
     </div>
+
+    <!-- 推广奖励明细：邀请即发的一次性奖励（余额/有效期），与充值返利分开说 -->
+    <section v-if="!failed" class="au-card au-card-pad promo-card au-anim-up" style="animation-delay: 145ms">
+      <header class="list-head">
+        <h3><Sparkles :size="16" /> 推广奖励</h3>
+        <span class="au-badge au-badge-violet">{{ promotions.length }} 笔</span>
+      </header>
+      <div v-if="!promotions.length" class="au-empty compact">
+        <Sparkles :size="26" />
+        <p>
+          {{ promoEnabled
+            ? '邀请成功后，这里会记下你获得的推广奖励明细'
+            : '推广奖励当前未开启；管理员开启后，邀请成功会在这里记一笔' }}
+        </p>
+      </div>
+      <ul v-else class="rows">
+        <li v-for="r in promotions" :key="r.id">
+          <span class="row-dot promo-dot" />
+          <span class="row-main">
+            <span class="row-title">成功邀请 {{ r.invitee_username }}</span>
+            <span class="row-sub">{{ r.reward_type_label }} · {{ fmtTime(r.created_at) }}</span>
+          </span>
+          <strong class="row-amt">+{{ r.reward_value }}{{ r.reward_type === 'days' ? ' 天' : ' 积分' }}</strong>
+        </li>
+      </ul>
+    </section>
 
     <!-- 规则说明：折叠式，避免占视觉主体 -->
     <details v-if="!failed" class="rules au-card au-card-pad au-anim-up" style="animation-delay: 170ms">
@@ -464,6 +507,9 @@ onMounted(load)
 .row-sub { font-size: 0.75rem; color: var(--au-text-3); }
 
 .row-amt { color: var(--au-success); font-size: 0.875rem; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+/* 推广奖励：行首圆点换成紫色，与邀请记录（绿）一眼区分；间距沿用 .row-dot */
+.promo-dot { background: var(--au-violet); }
 
 /* ===== 规则（折叠） ===== */
 .rules summary {

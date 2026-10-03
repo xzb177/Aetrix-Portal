@@ -35,6 +35,8 @@ const columns: DataColumn[] = [
   { key: 'username', label: '用户', minWidth: 200, mobile: 'title' },
   { key: 'emby_username', label: 'Emby 账号', minWidth: 130 },
   { key: 'subscription', label: '订阅', minWidth: 160 },
+  // 注册渠道（v2.44.0 归因）：一眼看出这个号是哪来的
+  { key: 'register_channel_label', label: '来源', width: 105 },
   { key: 'last_login_at', label: '最近登录', width: 150 },
   { key: 'created_at', label: '注册时间', width: 150, mobile: 'hide' },
   { key: 'actions', label: '操作', width: 180, fixed: 'right', align: 'right' },
@@ -63,6 +65,9 @@ const total = ref(0)
 const search = ref('')
 const activeFilter = ref<string>('')
 const subFilter = ref<string>('')
+/** 注册渠道枚举由后端下发（含「未记录」），前端不自己拼一份 */
+const channelFilter = ref<string>('')
+const channels = ref<Array<{ value: string; label: string }>>([])
 const loading = ref(false)
 const page = ref(0)
 const PAGE_SIZE = 20
@@ -80,9 +85,11 @@ async function load() {
     const params: Record<string, unknown> = { limit: PAGE_SIZE, offset: page.value * PAGE_SIZE }
     if (search.value) params.search = search.value
     if (activeFilter.value !== '') params.active = activeFilter.value === 'true'
+    if (channelFilter.value) params.channel = channelFilter.value
     const res = await fetchUsers(params)
     users.value = res.users
     total.value = res.total
+    if (res.channels?.length) channels.value = res.channels
   } finally {
     loading.value = false
   }
@@ -468,6 +475,9 @@ function fmtCount(n: number | null | undefined): string {
         <el-select v-model="activeFilter" placeholder="账号状态" clearable @change="page = 0; load()">
           <el-option label="正常" value="true" />
           <el-option label="已禁用" value="false" />
+        </el-select>
+        <el-select v-model="channelFilter" placeholder="注册来源" clearable @change="page = 0; load()">
+          <el-option v-for="c in channels" :key="c.value" :label="c.label" :value="c.value" />
         </el-select>
         <el-select v-model="subFilter" placeholder="订阅状态" clearable>
           <el-option label="订阅中" value="has" />

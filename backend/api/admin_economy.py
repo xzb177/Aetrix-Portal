@@ -171,6 +171,11 @@ ECONOMY_CONFIG_KEYS = {
     "login_log_retention_days": "int",
     "invitation_enabled": "bool", "invitation_reward_points": "int",
     "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
+    # 推广奖励（v2.44.0）：默认全关/全 0，管理员不手动开就不发
+    "promotion_reward_enabled": "bool",
+    "promotion_reward_type": "str",
+    "promotion_reward_amount": "int",
+    "promotion_reward_days": "int",
 }
 
 
