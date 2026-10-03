@@ -1,6 +1,27 @@
 # syntax=docker/dockerfile:1
 # 后端专用镜像：只含 Python 后端，不打包前端静态文件。
 # 前端由 Dockerfile.frontend 单独构建，走 nginx 容器 serve。
+#
+# ==================== 发行镜像：白名单拷贝 ====================
+# 这个镜像要发给买授权的客户，他们**看不到源码**。所以这里用白名单 COPY，
+# 而不是 `COPY . /app`：黑名单（.dockerignore）永远漏得掉东西 —— 新加一个顶层
+# 目录、忘了往 .dockerignore 里补，它就跟着进镜像了。白名单则是「不加进来就是
+# 不进来」，新增目录默认安全。
+#
+# 白名单的每一条都对应「运行时真的会去读这个路径」，不是随手列的：
+#   backend/    FastAPI 应用本体（main.py / api/ / emby_server/ / assets/ ...）
+#   emby_api/   自建 Emby 服务端。backend/run_all.py 用 `python -m emby_api.main`
+#               拉起它 —— 这条是字符串拼出来的命令，静态搜 import 搜不到，
+#               漏了它容器起来就只剩一个进程、EA 直接崩。
+#   web_player/ 单文件看片页。emby_api/main.py 按 `parent.parent/"web_player"`
+#               定位它，漏了 /watch 会 404（手机浏览器看片直接不可用）。
+#   serve.py    run_all.py 的 api 子进程入口（uvicorn backend.main:app）
+#   VERSION     backend/version.py 按 `parent.parent/"VERSION"` 读，漏了版本号
+#               会退化成 dev，/api/health 报的版本是假的
+#
+# 刻意**不带**：.git、前端 TS 源码、tests/、scripts/、docs/、venv/、*.db。
+# 要动这份白名单前，先确认没有别处还在读被排除的路径：
+#   grep -rn "parent.parent\|parents\[" backend/ emby_api/ serve.py
 
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -12,21 +33,38 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
-# 版本号单一来源：显式先放一份，避免将来 .dockerignore 调整时漏掉它
+# 版本号单一来源：显式先放一份，避免将来白名单调整时漏掉它
 COPY VERSION /app/VERSION
 # 媒体库封面渲染用的中文字体（Noto Sans SC，SIL OFL 1.1）。
-# 显式 COPY 而不是指望 `COPY . /app` 带进来：将来 .dockerignore 加了
-# *.ttf 或 **/assets 之类规则时，这里会先失败并让构建停下，而不是
+# 显式 COPY 而不是只指望下面那行 `COPY backend/`：将来白名单或 .dockerignore
+# 加了 *.ttf / **/assets 之类规则时，这里会先失败并让构建停下，而不是
 # 悄悄产出一个字体缺失、封面不出字的镜像。
 COPY backend/assets/fonts /app/backend/assets/fonts
-COPY . /app
-# 注意：不再 COPY 前端 dist。FRONTEND_DIST/ADMIN_DIST 留空时
+
+# ---- 白名单拷贝（顺序无所谓，两个目录之间无 import 依赖）----
+COPY backend/ /app/backend/
+COPY emby_api/ /app/emby_api/
+COPY web_player/ /app/web_player/
+COPY serve.py /app/serve.py
+
+# 密钥一个都不打进镜像：SECRET_KEY / 数据库口令 / 各家 API Key 全走运行时环境变量
+# （compose 的 env_file / environment）。backend/__init__.py 那个 load_dotenv 读的
+# 是 /app/.env，而 .env 被 .dockerignore 排除 —— 镜像里根本不存在这个文件。
+#
+# 注：这里刻意**没有**切到非 root 跑。compose 里有三个 rw 挂载（/data 转码、
+# /config/rclone 面板写配置、/sa-accounts 服务账号 JSON），而 named volume 由 Docker
+# 以 root:root 755 创建（实测：uid 10001 对 named volume touch → Permission denied）。
+# 切非 root 会让转码和挂载面板当场失效。要做这个加固得先在 Dockerfile 里给那些
+# 挂载点建目录并 chown，或给 volume 配 uid —— 那是另一个独立的改动。
+
+# 注意：不 COPY 前端 dist。FRONTEND_DIST/ADMIN_DIST 留空时
 # backend/main.py 会跳过静态文件挂载，只跑 API。
 ENV HOST=0.0.0.0 \
     PORT=8000 \
     ENABLE_EMBY_GATEWAY=true \
     EMBY_FFMPEG_PATH=ffmpeg
 EXPOSE 8000
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
 CMD ["python", "serve.py"]

@@ -1,4 +1,9 @@
 # syntax=docker/dockerfile:1
+# 单容器镜像：后端 + 两个前端的构建产物一起打进去（compose 用的是前后端分离的
+# Dockerfile.backend / Dockerfile.frontend，这个保留给单容器部署场景）。
+#
+# 与 Dockerfile.backend 同样采用**白名单拷贝**：发行镜像不能带仓库源码。
+# `COPY . /app` 会把两个前端的完整 TS 源码、tests/、docs/、scripts/ 一并带进去。
 
 FROM node:22-alpine AS user-build
 WORKDIR /src/user_frontend
@@ -26,7 +31,12 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 # 版本号单一来源：显式先放一份，避免将来 .dockerignore 调整时漏掉它
 COPY VERSION /app/VERSION
-COPY . /app
+# 白名单拷贝（与 Dockerfile.backend 同一份依据；见那里的逐条说明）：
+#   backend/ emby_api/ web_player/ serve.py
+COPY backend/ /app/backend/
+COPY emby_api/ /app/emby_api/
+COPY web_player/ /app/web_player/
+COPY serve.py /app/serve.py
 COPY --from=user-build /src/user_frontend/dist /app/user_frontend/dist
 COPY --from=admin-build /src/admin_frontend/dist /app/admin_frontend/dist
 ENV FRONTEND_DIST=/app/user_frontend/dist \
