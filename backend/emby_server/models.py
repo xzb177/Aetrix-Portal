@@ -587,6 +587,44 @@ class LocalCacheEntry(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class MountFileIdCache(Base):
+    """远程挂载「相对路径 → 上游文件 ID」持久化映射（播放秒开）
+
+    一条 = 某个挂载下的某个相对路径已经解析出过上游 file id（Google Drive 那一类
+    需要逐级下钻才能找到文件的后端）。播同一个片时直接拼下载地址，**零次上游 API 请求**。
+
+    - **只存 file id，不存任何凭据**：``access_token`` 有效期短且跟着服务账号轮换池走，
+      落库等于把凭据写进磁盘。播放时取 token 的路径一字未改。
+    - 唯一索引建在 ``path_hash``（sha256 定长）而不是 ``(mount_id, rel_path)``：
+      ``rel_path`` 是 ``String(1000)``，中文路径按 utf8 最坏 3000 字节，超过 PostgreSQL
+      btree 索引项 2704 字节上限，建表就会失败。``mount_id`` / ``rel_path`` 另存为
+      普通列，方便排查与按挂载清理。
+
+    失效是**懒失效**：不主动校验，播放真的拿到 404 了才删这一条并重新解析写回
+    （见 ``file_id_cache.invalidate`` 与播放路径的重试）。
+    """
+
+    __tablename__ = "emby_mount_file_ids"
+
+    __table_args__ = (
+        UniqueConstraint("path_hash", name="uq_mount_file_id_path"),
+        # ``mount_id`` 的单列索引由列上的 ``index=True`` 建（与 LocalCacheEntry 同口径），
+        # 这里只补它盖不到的复合/排序场景，避免建出两个一样的索引。
+        Index("idx_mount_file_id_used", "last_used_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mount_id = Column(Integer, nullable=False, index=True)
+    rel_path = Column(String(1000), nullable=False)
+    path_hash = Column(String(64), nullable=False)
+    file_id = Column(String(255), nullable=False)   # 上游文件 ID（不是凭据）
+    size = Column(BigInteger, default=0)
+    hits = Column(Integer, default=0)
+    last_used_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class LocalCacheStat(Base):
     """本地缓存的累计计数（单行，name='global'）
 
