@@ -94,6 +94,11 @@ class MediaItem(Base):
         Index("idx_item_series", "series_id"),
         # 两阶段扫描 Phase 2：后台探测按（状态，优先级）取待探测条目
         Index("idx_item_probe", "probe_status", "probe_priority", "id"),
+        # 追新日历：按「入库时间落在某月」取条目（date_added BETWEEN 起 止）。
+        # 没有索引时这是一张全表扫 + filesort，条目量上万后打开日历要几秒。
+        # 复合第二列带上 item_type：日历的类型筛选（电影 / 剧集 / 单集）
+        # 绝大多数时候都带，能把回表行数再压一截。
+        Index("idx_item_added", "date_added", "item_type"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

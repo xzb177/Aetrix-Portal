@@ -548,6 +548,7 @@ def _auto_migrate():
     _widen_stream_title_columns(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
     _ensure_probe_index(existing_tables)
+    _ensure_added_index(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
 
@@ -599,6 +600,29 @@ def _ensure_probe_index(existing_tables: set) -> None:
             "ON emby_items (probe_status, probe_priority, id)"
         ))
         print("  🔧 已迁移: emby_items.idx_item_probe（探测队列索引）")
+
+
+def _ensure_added_index(existing_tables: set) -> None:
+    """给老库补追新日历的入库时间索引（幂等）
+
+    与 :func:`_ensure_probe_index` 同理：``create_all`` 只在建新表时建索引，
+    升级上来的库 ``emby_items`` 表已存在，这里按 inspector 显式补上
+    ``idx_item_added``，否则用户打开追新日历就是一次全表扫。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_items" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
+    if "idx_item_added" in names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX idx_item_added "
+            "ON emby_items (date_added, item_type)"
+        ))
+        print("  🔧 已迁移: emby_items.idx_item_added（追新日历索引）")
 
 
 def _backfill_orm_columns(existing_tables: set) -> None:
