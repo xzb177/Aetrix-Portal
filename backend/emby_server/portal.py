@@ -32,7 +32,10 @@ from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import play_line
-from backend.emby_server.api import TICKS, SERVER_ID, item_guid_for
+from backend.emby_server.api import (
+    TICKS, SERVER_ID, item_guid_for,
+    _base_url, _item_dto, _library_scope, _prefetch_list_data, _scope_items,
+)
 from backend.emby_server.auth import (
     ensure_emby_credentials,
     get_admin_or_emby_user,
@@ -602,6 +605,179 @@ def toggle_favorite(item_id: str, request_user: models.WebUser = Depends(get_adm
     umd.is_favorite = not umd.is_favorite
     db.commit()
     return {"success": True, "is_favorite": umd.is_favorite}
+
+
+# ==================== 追新日历 ====================
+
+#: 一次最多查多少天。日历按月翻页，给到「一个季度」已经远超翻页粒度；
+#: 上限存在的意义是有人直接打 ``/calendar?start=1970-01-01`` 时不会把整库拉出来。
+CALENDAR_MAX_DAYS = 93
+
+#: 单日最多回多少条条目详情。日历格子只画得下几张封面，超出的只给计数
+#: （前端显示「+N」），点开那天再按需拉详情。
+CALENDAR_MAX_ITEMS_PER_DAY = 24
+
+#: 日历支持的条目类型。**不含 season**：季是剧集的中间层，
+#: 出现在「今天新上了什么」里只会占格子、没信息量。
+CALENDAR_ITEM_TYPES = ("movie", "series", "episode")
+
+
+def _calendar_day(raw: str | None) -> datetime | None:
+    """``YYYY-MM-DD`` → datetime；空值或格式不对都返回 None（走默认口径）"""
+    try:
+        return datetime.strptime((raw or "").strip(), "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _calendar_month_bounds() -> tuple[datetime, datetime]:
+    """没有给区间时看当月（两端都是**含当天**的日历日）"""
+    first = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    next_month = datetime(first.year + (first.month == 12), first.month % 12 + 1, 1)
+    return first, next_month - timedelta(days=1)
+
+
+def _resolve_calendar_library(db: Session, raw: str | None) -> int | None:
+    """把前端传来的库标识解析成 ``Library.id``；无法解析时返回 None（不过滤）
+
+    前端的库下拉直接用 ``/emby/Users/me/Views`` 的 ``Id``，那是 **guid**；
+    这里两种都收（纯数字当库 id，其余当 guid），免得前端为了筛选再换一套标识。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    lib = db.query(em.Library.id).filter(em.Library.guid == text).first()
+    return lib[0] if lib else None
+
+
+@user_emby_router.get("/calendar")
+def get_chase_calendar(request: Request,
+                       request_user: models.WebUser = Depends(get_admin_or_emby_user),
+                       db: Session = Depends(get_db)):
+    """追新日历：按入库日期分组的新增条目
+
+    **口径**：以 ``MediaItem.date_added``（条目入库时间）为准，**不用
+    ``date_modified``**。后者带 ``onupdate=datetime.now``，后台补全 / 重刮一次
+    元数据就刷新一次，拿它当「上线时间」会让每条片子在日历上反复横跳。
+    扫描把新文件写进库时写的就是 ``date_added``，那才是用户感知的「上新了」。
+
+    **区间口径**：``start`` / ``end`` 都是**含当天**的日历日（前端按月翻页，
+    「2026-10-01 ~ 2026-10-31」理应包含 10 月 31 日晚上入库的东西）。
+    落到 SQL 上是 ``>= start 00:00`` 且 ``< end+1 天 00:00``。
+
+    **分组时区**：``date_added`` 存的是服务器本地时间（naive），按它 ``.date()``
+    分组即服务器本地日历日，与用户端日历格子的本地日期一一对应，不做二次转换。
+
+    **可见范围**：与媒体库列表、条目浏览同一个口径（``_library_scope``），
+    否则会出现「客户端里看不到的库，日历里却有新片」。
+
+    **``types`` 不受 ``item_type`` 筛选影响**：它是「这个区间里各类各有多少」，
+    前端拿它给筛选按钮写角标。跟着筛选走的话，选了剧集之后电影按钮就永远显示 0。
+    """
+    q = request.query_params
+    start = _calendar_day(q.get("start"))
+    end = _calendar_day(q.get("end"))
+    if start is None and end is None:
+        start, end = _calendar_month_bounds()
+    elif start is None:
+        start = end
+    elif end is None:
+        end = start
+    if end < start:
+        end = start
+    if (end - start).days >= CALENDAR_MAX_DAYS:
+        end = start + timedelta(days=CALENDAR_MAX_DAYS - 1)
+    # 闭区间 → SQL 的左闭右开
+    end_exclusive = end + timedelta(days=1)
+
+    types = [
+        t for t in (q.get("item_type") or "").split(",")
+        if t.strip() in CALENDAR_ITEM_TYPES
+    ] or list(CALENDAR_ITEM_TYPES)
+
+    allowed = _library_scope(db, request_user)
+    library_id = _resolve_calendar_library(db, q.get("library_id"))
+    # 指定了却解析不出库 → 落到空结果而不是「不过滤」：
+    # 库被删 / guid 过期时，宁可空着也不能悄悄把全库的新片端出来。
+    library_missing = bool((q.get("library_id") or "").strip()) and library_id is None
+
+    base_query = None if library_missing else _scope_items(
+        db.query(em.MediaItem.id, em.MediaItem.date_added,
+                 em.MediaItem.item_type, em.MediaItem.library_id)
+        .filter(
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            em.MediaItem.date_added >= start,
+            em.MediaItem.date_added < end_exclusive,
+        ),
+        allowed,
+    )
+    if base_query is not None and library_id is not None:
+        base_query = base_query.filter(em.MediaItem.library_id == library_id)
+
+    # 只取四个小列做聚合：一天的条目可能上千，构造 DTO 才是贵的部分，
+    # 计数 / 分组没必要把整行实体拉出来。
+    # **类型筛选在 Python 侧做**：``types`` 要报的是「不受当前类型筛选影响」的
+    # 分类型计数（前端拿它给筛选按钮写角标——「只看剧集时电影显示 0」没有意义，
+    # 用户要看到的是「这个月电影有多少」）。下推到 SQL 拿不到这个数。
+    rows = base_query.order_by(
+        em.MediaItem.date_added.desc(), em.MediaItem.id.desc()
+    ).all() if base_query is not None else []
+
+    type_counts: dict[str, int] = {}
+    for _id, _added, item_type, _lib in rows:
+        # 只统计真会出现在日历上的类型：season 是剧集的中间层，
+        # 把它算进角标会让「剧集」那个数字比日历上实际能看到的条目还多
+        if item_type in CALENDAR_ITEM_TYPES:
+            type_counts[item_type] = type_counts.get(item_type, 0) + 1
+    rows = [r for r in rows if r[2] in types]
+
+    day_ids: dict[str, list[int]] = {}
+    day_counts: dict[str, int] = {}
+    for item_id, date_added, _type, _lib in rows:
+        day = (date_added.date() if date_added else start.date()).isoformat()
+        day_counts[day] = day_counts.get(day, 0) + 1
+        bucket = day_ids.setdefault(day, [])
+        # rows 已按 date_added DESC 排序，先到先得 —— 留下的是当天最新入库的那批
+        if len(bucket) < CALENDAR_MAX_ITEMS_PER_DAY:
+            bucket.append(item_id)
+
+    # 只为要塞进格子的那批条目取实体（每天至多 CALENDAR_MAX_ITEMS_PER_DAY 条），
+    # DTO 里的 UserData / ChildCount 都要额外查询，只算在真要返回的条目上
+    wanted = [i for ids in day_ids.values() for i in ids]
+    by_id = {
+        it.id: it for it in (
+            db.query(em.MediaItem).filter(em.MediaItem.id.in_(wanted)).all()
+            if wanted else []
+        )
+    }
+    _prefetch_list_data(db, request_user.id, list(by_id.values()))
+
+    base_url = _base_url(request)
+    lib_names = {row[0]: row[1] for row in db.query(em.Library.id, em.Library.name).all()}
+    days = [
+        {
+            "date": day,
+            # count 是当天的**全部**条数（含被截断没回详情的），
+            # 前端用它在格子上写「+N」，不能拿 len(items) 冒充
+            "count": day_counts[day],
+            "items": [
+                dict(_item_dto(by_id[i], base_url, request_user.id, db),
+                     LibraryName=lib_names.get(by_id[i].library_id))
+                for i in day_ids[day] if i in by_id
+            ],
+        }
+        for day in sorted(day_ids)
+    ]
+
+    return {
+        "start": start.date().isoformat(),
+        "end": end.date().isoformat(),
+        "total": len(rows),
+        "days": days,
+        "types": type_counts,
+    }
 
 
 @user_emby_router.get("/stats")

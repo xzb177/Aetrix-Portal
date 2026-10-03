@@ -69,6 +69,14 @@ const router = createRouter({
       component: () => import('@/views/InviteView.vue'),
       meta: { title: '邀请返利', requiresAuth: true },
     },
+    // 追新日历：站内唯一一个「按时间看片」的页面（媒体浏览在第三方客户端，
+    // 门户只保留“最近入库”这一个内容型入口）
+    {
+      path: '/calendar',
+      name: 'calendar',
+      component: () => import('@/views/CalendarView.vue'),
+      meta: { title: '追新日历', requiresAuth: true },
+    },
     // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删） ====================
     // 老地址 /media、/library、/search、/favorites、/history 的书签与外部链接：
     // 媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，

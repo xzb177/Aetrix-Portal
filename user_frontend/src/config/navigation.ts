@@ -31,7 +31,7 @@
 
 import type { Component } from 'vue'
 import {
-  ArrowDownLeft, Bot, CalendarCheck, Clapperboard, Gift,
+  ArrowDownLeft, Bot, CalendarCheck, CalendarDays, Clapperboard, Gift,
   Inbox, MessageSquareDashed, Receipt, ShoppingBag, Ticket, User, Wallet,
 } from 'lucide-vue-next'
 
@@ -60,8 +60,17 @@ export const primaryNav: NavItem[] = [
 /** 长尾入口：头像菜单里的分组，桌面与移动端一致。
  *  v2.42.4：钱包已是主导航的「商店」（一个语义只留一处，钱包条目从这里移除）。
  *  v2.42.5：媒体库与搜索页删除——看片在第三方客户端完成，站内只保留
- *  首页观影数据卡与详情 / 播放深链，不再提供站内媒体浏览入口 */
+ *  首页观影数据卡与详情 / 播放深链，不再提供站内媒体浏览入口。
+ *  v2.42.8：新增「看片」分组放追新日历（按入库时间看每天新上了什么）。 */
 export const menuSections: NavGroup[] = [
+  {
+    title: '看片',
+    items: [
+      // v2.42.8：站内不再提供媒体浏览（统一走第三方客户端），
+      // 但「最近入了什么新」是门户自己能给的，所以单独做了日历页
+      { name: '追新日历', path: '/calendar', icon: CalendarDays },
+    ],
+  },
   {
     title: '账号与经济',
     items: [
