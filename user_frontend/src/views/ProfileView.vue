@@ -83,8 +83,14 @@ async function pickLine(line: PlayLine) {
           : line === 'cache' ? '已切换到本地缓存线路'
             : '已切换到中转线路',
     )
-  } catch {
-    toast.error('切换失败，请重试')
+  } catch (err: any) {
+    // 不要把服务器给的原因丢掉：400（线路非法）/ 503（自建 Emby 已停用）/
+    // 断网 / 会话过期，各有各的可操作动作。一律报「切换失败，请重试」
+    // 等于让用户和排查都只能瞎猜——这正是这个 bug 最难受的地方。
+    const detail = err?.response?.data?.detail
+    toast.error(
+      (typeof detail === 'string' && detail) || err?.message || '切换失败，请重试',
+    )
   } finally {
     lineSaving.value = false
   }
