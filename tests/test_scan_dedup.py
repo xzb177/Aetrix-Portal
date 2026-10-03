@@ -20,8 +20,7 @@ import pytest
 
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
-from backend.emby_server import mounts as _mounts  # noqa: F401 -- 必须先于 mount_cloud 导入，避免循环导入
-from backend.emby_server import mount_cloud
+from backend.emby_server import mounts as _mounts  # noqa: F401 -- 必须先于 scanner 导入，避免循环导入
 from backend.emby_server import scanner
 from backend.emby_server.mounts import MountEntry
 
@@ -154,5 +153,5 @@ def test_cloud_walk_media_dedups_duplicate_listing():
         def _entries(self, rel):
             return self.list_dir(rel)
 
-    files = list(mount_cloud._CloudMount.walk_media(_Stub(), root="/"))
+    files = list(_mounts.RemoteMount.walk_media(_Stub(), root="/"))
     assert [f.rel for f in files] == ["/dir/a.mkv"]

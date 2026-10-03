@@ -701,16 +701,6 @@ export interface ServerOpsQueue {
   remote: { lists: number; reused: number; inflight: number; peak_inflight: number; last_at: string | null } | null
 }
 
-/** 正在熔断的挂载（坏挂载会把这一台的扫描一起拖慢） */
-export interface ServerOpsBreaker {
-  mount_id: number | null
-  mount_name?: string
-  mount_type: string
-  opened_at: string
-  fails: number
-  last_error: string | null
-}
-
 /** 刮削补全 / 探测 / 修复：按这个节点范围内的条目聚合 */
 export interface ServerOpsPipeline {
   items: number
@@ -729,7 +719,6 @@ export interface ServerOpsPipeline {
       file_exists: boolean
     }[]
   }
-  mount_breakers: ServerOpsBreaker[]
   note?: string
 }
 
@@ -1328,12 +1317,23 @@ export interface MountTypeMeta {
   browse?: boolean
   /** 「根目录标识」字段名，浏览时点目录会写回它 */
   root_key?: string
-  /** 是否可以从远端拉取「已配置的 remote 列表」（rclone） */
+  /** 是否可以从 rclone.conf 拉取「已配置的 remote 列表」（rclone） */
   remotes?: boolean
   fields: MountTypeField[]
 }
 
-/** 存储挂载：媒体库的内容来源（local / strm / 115 / webdav / alist / s3 / aliyun / quark / onedrive） */
+/** rclone.conf：用户粘贴的标准 INI 文本（面板不代管，只负责跑 rclone） */
+export interface RcloneConfStatus {
+  /** 实际落盘路径（data/rclone/rclone.conf） */
+  path: string
+  /** 是否已配置（至少有一个 remote 段） */
+  configured: boolean
+  /** 已配置的 remote 名，带尾冒号 */
+  remotes: string[]
+  total: number
+}
+
+/** 存储挂载：媒体库的内容来源（local / 115 / rclone，类型由路径前缀决定） */
 export interface StorageMount {
   id: number
   name: string
@@ -1352,7 +1352,7 @@ export interface StorageMount {
   last_check_ok: boolean | null
   last_check_message: string | null
   library_ids: number[]
-  /** local / strm 的路径是否存在（远程类型为 null） */
+  /** 本地硬盘的路径是否存在（远程类型为 null） */
   path_exists: boolean | null
   /** EM（面板进程）能不能用它：等于后台「测试连接」的结果 */
   em_reachable: boolean | null
@@ -1422,25 +1422,3 @@ export interface EmbySessionRow {
   started_at: string | null
 }
 
-/** rclone remote 配置（密钥类字段不回传明文） */
-export interface RcloneRemote {
-  id: number
-  name: string
-  remote_type: string
-  drive_type: 'personal' | 'service_account'
-  client_id: string
-  client_id_masked: string
-  has_client_secret: boolean
-  has_token: boolean
-  team_drive_id: string
-  service_account_file: string
-  has_service_account: boolean
-  is_enabled: boolean
-  is_probe_remote: boolean
-  remark: string
-  last_checked_at: string | null
-  last_check_ok: boolean | null
-  last_check_message: string | null
-  created_at: string | null
-  updated_at: string | null
-}

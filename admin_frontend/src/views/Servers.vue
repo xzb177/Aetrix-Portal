@@ -1206,13 +1206,7 @@ const opsLastScan = ref<{
 
           <div class="ops-sub">刮削补全 / 探测（范围共 {{ ops?.pipeline.items ?? 0 }} 个条目）</div>
           <p class="ops-hint">{{ opsCountsText(ops?.pipeline.enrich || {}) || '还没有条目' }}</p>
-          <div v-if="ops?.pipeline.mount_breakers.length" class="ops-tasks">
-            <div v-for="b in ops!.pipeline.mount_breakers" :key="`b${b.mount_id}`" class="ops-task">
-              <span class="mini-badge off">挂载熔断中</span>
-              <span class="ops-task-name">{{ b.mount_name || `#${b.mount_id}` }}</span>
-              <span class="muted">连续失败 {{ b.fails }} 次 · {{ b.last_error || '原因未知' }}</span>
-            </div>
-          </div>
+
           <div class="ops-sub">待修复条目（{{ ops?.pipeline.repair.total ?? 0 }}）</div>
           <p v-if="!ops?.pipeline.repair.total" class="ops-hint">没有待修复的条目。</p>
           <div v-else class="ops-tasks">

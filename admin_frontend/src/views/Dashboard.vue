@@ -400,7 +400,7 @@ function serviceStatusLabel(status: string): string {
         </div>
       </section>
 
-      <!-- 配额熔断器：连续 403 触发，保护 Google Drive 配额 -->
+      <!-- 配额熔断器：连续 403 触发，保护上游（网盘 / rclone 后端）配额 -->
       <section v-if="quotaBreaker" class="stat-grid">
         <div class="stat-tile server-tile" :class="{ 'breaker-tripped': quotaBreaker.tripped }">
           <div class="stat-label">
@@ -426,7 +426,7 @@ function serviceStatusLabel(status: string): string {
               </RouterLink>
             </template>
             <template v-else>
-              Google Drive 配额保护
+              上游配额保护
             </template>
           </div>
         </div>

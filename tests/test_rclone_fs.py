@@ -17,6 +17,7 @@
 不碰网络、不碰数据库：列 remote 的调用在本文件里被替换。
 """
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -60,8 +61,8 @@ def _clean_list_cache():
     mnt.invalidate_list_cache()
 
 
-def _mount(config: dict) -> em.StorageMount:
-    return em.StorageMount(name="测试 rclone", mount_type="rclone", path="",
+def _mount(config: dict, path: str = "") -> em.StorageMount:
+    return em.StorageMount(name="测试 rclone", mount_type="rclone", path=path,
                            config=mnt.dump_config(config), is_enabled=True)
 
 
@@ -132,41 +133,141 @@ def test_missing_colon_hint_tells_the_exact_fix():
 
 # ==================== 保存时纠正 / 拦截 ====================
 
-def test_save_fixes_the_missing_colon_when_the_remote_exists(monkeypatch):
-    monkeypatch.setattr(mount_rclone, "list_remotes", lambda *a, **k: ["paul_emby:", "gdrive:"])
-    config = {"fs": "paul_emby/电影", "mode": "cli"}
-    _fix_rclone_root("rclone", config)
-    assert config["fs"] == "paul_emby:电影"
+#: rclone.conf 里配了哪些 remote（保存时读它，而不是问远端）
+CONF_TEXT = "[paul_emby]\ntype = webdav\nurl = https://dav.example.com\n\n[gdrive]\ntype = drive\n"
+
+
+@pytest.fixture()
+def _conf(monkeypatch):
+    monkeypatch.setattr(mount_rclone, "read_rclone_conf", lambda path="": CONF_TEXT)
+
+
+def test_save_fixes_the_missing_colon_when_the_remote_exists(monkeypatch, _conf):
+    assert _fix_rclone_root("rclone", "rclone:paul_emby/电影", {}) == "rclone:paul_emby:电影"
 
 
 def test_save_rejects_a_remote_name_that_does_not_exist(monkeypatch):
-    monkeypatch.setattr(mount_rclone, "list_remotes", lambda *a, **k: ["gdrive:"])
+    monkeypatch.setattr(mount_rclone, "read_rclone_conf", lambda path="": "[gdrive]\ntype = drive\n")
     with pytest.raises(HTTPException) as exc:
-        _fix_rclone_root("rclone", {"fs": "paul_emby"})
+        _fix_rclone_root("rclone", "rclone:paul_emby", {})
     assert exc.value.status_code == 400
     assert "冒号" in str(exc.value.detail) and "gdrive" in str(exc.value.detail)
 
 
-def test_save_still_blocks_the_typo_when_the_remote_list_is_unavailable(monkeypatch):
-    """EM 这台机器没有 rclone / RC 连不上：查不到列表也要把明显的漏冒号拦下"""
-    def boom(*_args, **_kwargs):
-        raise MountError("找不到 rclone 可执行文件")
-
-    monkeypatch.setattr(mount_rclone, "list_remotes", boom)
+def test_save_still_blocks_the_typo_when_the_conf_is_missing(monkeypatch):
+    """还没粘 rclone.conf：查不到列表也要把明显的漏冒号拦下"""
+    monkeypatch.setattr(mount_rclone, "read_rclone_conf", lambda path="": "")
     with pytest.raises(HTTPException) as exc:
-        _fix_rclone_root("rclone", {"fs": "paul_emby"})
+        _fix_rclone_root("rclone", "rclone:paul_emby", {})
     assert exc.value.status_code == 400 and "冒号" in str(exc.value.detail)
 
 
-def test_save_does_not_touch_other_types_or_correct_values(monkeypatch):
+def test_save_does_not_touch_other_types_or_correct_values(monkeypatch, _conf):
     def unexpected(*_args, **_kwargs):
-        raise AssertionError("写法没问题时不该去问远端 remote 列表")
+        raise AssertionError("写法没问题时不该去读 rclone.conf")
 
-    monkeypatch.setattr(mount_rclone, "list_remotes", unexpected)
-    _fix_rclone_root("rclone", {"fs": "gdrive:Movies"})        # 已带冒号
-    _fix_rclone_root("webdav", {"fs": "paul_emby"})            # 不是 rclone 类型
-    _fix_rclone_root("rclone", {"fs": "/media/movies"})        # 明确的本地路径
-    _fix_rclone_root("rclone", {})                             # 没填 remote（必填校验会报）
+    monkeypatch.setattr(mount_rclone, "read_rclone_conf", unexpected)
+    assert _fix_rclone_root("rclone", "rclone:gdrive:Movies", {}) == "rclone:gdrive:Movies"
+    assert _fix_rclone_root("115", "115:/0", {}) == "115:/0"          # 不是 rclone 类型
+    assert _fix_rclone_root("local", "/media/movies", {}) == "/media/movies"
+    assert _fix_rclone_root("rclone", "rclone:/media/movies", {}) == "rclone:/media/movies"
+
+
+# ==================== 类型由路径前缀决定 ====================
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("115:/0", "115"),
+    ("115:/12345/电影", "115"),
+    ("rclone:gdrive/Movies", "rclone"),
+    ("rclone:", "rclone"),
+    ("/media/movies", "local"),
+    ("/media", "local"),
+])
+def test_detect_mount_type_from_path_prefix(path, expected):
+    assert mnt.detect_mount_type(path) == expected
+
+
+@pytest.mark.parametrize("path", ["", "s3://bucket/x", "gdrive:Movies", "media/movies"])
+def test_detect_mount_type_rejects_unknown_prefixes(path):
+    """认不出来的前缀必须返回空串，让调用方明确报错而不是猜一个类型"""
+    assert mnt.detect_mount_type(path) == ""
+
+
+# ==================== rclone.conf 由用户粘贴 ====================
+
+
+def test_pasted_conf_is_written_atomically_with_600(tmp_path, monkeypatch):
+    target = tmp_path / "rclone" / "rclone.conf"
+    written = mount_rclone.write_rclone_conf(CONF_TEXT, str(target))
+    assert written == str(target)
+    assert target.read_text(encoding="utf-8") == CONF_TEXT
+    assert oct(target.stat().st_mode)[-3:] == "600"
+    assert not list(tmp_path.rglob("*.tmp")), "临时文件应该已经改名为正式文件"
+
+
+def test_conf_parsing_rejects_broken_ini():
+    with pytest.raises(MountError) as exc:
+        mount_rclone.parse_rclone_conf("这不是 INI\n[未闭合\ntype = drive\n")
+    assert "INI" in str(exc.value)
+
+
+def test_conf_without_type_is_rejected(tmp_path):
+    with pytest.raises(MountError) as exc:
+        mount_rclone.write_rclone_conf("[gdrive]\nclient_id = x\n", str(tmp_path / "c.conf"))
+    assert "type" in str(exc.value)
+
+
+def test_conf_with_no_remote_at_all_is_rejected(tmp_path):
+    with pytest.raises(MountError):
+        mount_rclone.write_rclone_conf("# 只有注释\n", str(tmp_path / "c.conf"))
+
+
+def test_conf_remote_names_ignore_surrounding_whitespace():
+    assert mount_rclone.conf_remote_names(CONF_TEXT) == ["paul_emby:", "gdrive:"]
+
+
+def test_read_conf_of_a_missing_file_is_empty(tmp_path):
+    assert mount_rclone.read_rclone_conf(str(tmp_path / "nope.conf")) == ""
+
+
+def test_cli_mode_passes_the_pasted_conf_to_rclone(monkeypatch, tmp_path):
+    """cli 模式不填 rclone_config 时，跑的每条 rclone 命令都带 --config=<粘贴的那份>
+
+    这是「rclone.conf 由用户自理」能不能成立的那一步：配置文件落在磁盘上没用，
+    命令行不指过去 rclone 就还是去读它自己的 ~/.config/rclone/rclone.conf。
+    """
+    conf = tmp_path / "rclone.conf"
+    conf.write_text(CONF_TEXT, encoding="utf-8")
+    monkeypatch.setattr(mount_rclone, "CONF_PATH", str(conf))
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        commands.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout=b"[]", stderr=b"")
+
+    monkeypatch.setattr(mount_rclone.subprocess, "run", fake_run)
+    monkeypatch.setattr(mount_rclone.shutil, "which", lambda _b: "/usr/bin/rclone")
+    RcloneMount(_mount({"mode": "cli"}, path="rclone:gdrive/Movies")).list_dir("/")
+    assert commands and commands[0][:2] == ["rclone", "lsjson"]
+    assert f"--config={conf}" in commands[0], commands[0]
+
+
+def test_explicit_rclone_config_overrides_the_default(monkeypatch, tmp_path):
+    conf = tmp_path / "rclone.conf"
+    conf.write_text(CONF_TEXT, encoding="utf-8")
+    monkeypatch.setattr(mount_rclone, "CONF_PATH", str(tmp_path / "default.conf"))
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        commands.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout=b"[]", stderr=b"")
+
+    monkeypatch.setattr(mount_rclone.subprocess, "run", fake_run)
+    monkeypatch.setattr(mount_rclone.shutil, "which", lambda _b: "/usr/bin/rclone")
+    mount = _mount({"mode": "cli", "rclone_config": str(conf)}, path="rclone:gdrive/M")
+    RcloneMount(mount).list_dir("/")
+    assert f"--config={conf}" in commands[0], commands[0]
 
 
 # ==================== 列目录 / 测试时自愈 ====================

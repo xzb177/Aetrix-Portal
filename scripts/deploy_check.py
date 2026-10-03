@@ -253,19 +253,20 @@ def run_checks(base: str, username: str, password: str, media_dir: str,
     status, text, _ = request("GET", f"{base}/api/admin/emby/mounts", token=token)
     mounts_payload = as_json(text) or {}
     types = [t.get("value") for t in mounts_payload.get("mount_types") or []]
-    check("挂载类型表可下发", status == 200 and len(types) >= 10,
+    # v2.42.12 起只剩三种（类型由路径前缀决定）。这里断言**集合相等**而不是
+    # 「至少 N 种」：以前写的是 >= 10，往回加一种删不掉一种都照样绿。
+    check("挂载类型表可下发且只剩三种",
+          status == 200 and sorted(types) == ["115", "local", "rclone"],
           f"HTTP {status} {len(types)} 种：{','.join(types)}")
     check("rclone 类型已注册且声明 remote 选择器",
           any(t.get("value") == "rclone" and t.get("remotes")
               for t in mounts_payload.get("mount_types") or []))
 
-    status, text, _ = request(
-        "GET", f"{base}/api/admin/emby/mounts/rclone/remotes?"
-        + urllib.parse.urlencode({"mode": "cli", "rclone_bin": "rclone-not-installed"}),
-        token=token)
-    detail = str((as_json(text) or {}).get("detail") or "")
-    check("rclone remote 接口的失败提示可读",
-          status in (400, 401) and "rclone" in detail, f"HTTP {status} {detail[:70]}")
+    status, text, _ = request("GET", f"{base}/api/admin/emby/mounts/rclone/conf", token=token)
+    conf = as_json(text) or {}
+    check("rclone.conf 接口可读，且只回 remote 名不回明文",
+          status == 200 and "remotes" in conf and "conf" not in conf,
+          f"HTTP {status} {str(conf)[:70]}")
 
     print("\n=== 五、存储挂载与媒体库（真实读写）===")
     suffix = random.randint(100000, 999999)

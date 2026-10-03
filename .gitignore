@@ -32,6 +32,10 @@ build/
 *.key
 *.pem
 
+# 用户粘贴的 rclone.conf（v2.42.12 起落盘位置，**里面全是 token/secret**）：
+# 裸机默认 data/rclone/rclone.conf，compose 宿主目录 ./rclone/（容器里 /config/rclone）。
+rclone/
+
 # Database
 *.db
 *.sqlite

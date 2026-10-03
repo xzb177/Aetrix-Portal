@@ -418,13 +418,12 @@ class StorageMount(Base):
     一个挂载 = 一种「把内容接到媒体库上」的方式。挂载本身不拥有条目，
     媒体库通过 `Library.mount_ids` 引用它，因此同一个挂载可以被多个库共用。
 
-    支持的类型（见 ``mounts.MOUNT_TYPES``）：
+    支持的类型（见 ``mounts.MOUNT_TYPES``，v2.42.12 起只剩这三种）：
 
-    - ``local``：本机目录。rclone / CloudDrive2 / SMB / NFS 已经挂到本机后，对面板就是一条路径；
-    - ``strm``：STRM 目录。扫描 ``.strm`` 文件内容作为播放直链（本地只放小文件，媒体在远端）；
-    - ``115``：115 网盘直挂。Cookie 型 API 直接读网盘目录，**不需要本地挂载**；
-    - ``webdav``：通用 WebDAV（群晖 / Nextcloud / 自建）；
-    - ``alist``：AList / OpenList（一个挂载聚合多种网盘）。
+    - ``local``：本地硬盘。路径以 ``/media`` 开头；目录里的 ``.strm`` 文件照样扫描成直链；
+    - ``115``：115 网盘。路径以 ``115:/`` 开头，Cookie 型 API 直接读网盘目录，
+      **不需要本地挂载**；
+    - ``rclone``：rclone 任意后端。路径以 ``rclone:`` 开头，rclone.conf 由用户自己粘贴。
 
     远程挂载的媒体由 EA 按 Range 代理转发，播放地址不落到客户端，Cookie / 令牌不下发。
     """
@@ -435,11 +434,12 @@ class StorageMount(Base):
     name = Column(String(100), unique=True, nullable=False)
     # 属于哪个服（server_realms.id）：挂载是主机相对的资源，跟着服走
     realm_id = Column(Integer)
-    # local / strm / 115 / webdav / alist
+    # local / 115 / rclone。**由 path 的前缀决定**（mounts.detect_mount_type），
+    # 保留这一列是因为已有数据与大量查询按它分组，不再允许手工改。
     mount_type = Column(String(20), nullable=False, default="local")
-    # 本机目录（local / strm）：远程挂载留空
+    # local：/media 下的本机目录；115：115:/…；rclone：rclone:remote/路径
     path = Column(String(1024), default="")
-    # 类型相关配置（JSON 文本）：115 的 cid/账号、WebDAV 的 url/账号、AList 的 url/token 等
+    # 类型相关配置（JSON 文本）：115 的 cid/账号、rclone 的调用方式等
     config = Column(Text, default="{}")
     is_enabled = Column(Boolean, default=True)
     remark = Column(String(300), default="")
@@ -449,57 +449,6 @@ class StorageMount(Base):
     last_check_message = Column(String(300))
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
-class RcloneRemote(Base):
-    """rclone remote 配置（数据驱动，不写 rclone.conf 文件）
-
-    一个 remote = 一种访问云盘的方式。支持：
-    - drive (OAuth 个人盘)：client_id/secret/token
-    - drive (服务账号)：service_account_file + team_drive
-    - 可扩展其它 type
-
-    系统从本表生成 rclone.conf，探测 worker 按 ``probe_remote`` 选择用哪个。
-    """
-
-    __tablename__ = "rclone_remotes"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), unique=True, nullable=False)  # remote 名，如 paul_emby / MP
-    remote_type = Column(String(30), nullable=False, default="drive")  # drive / s3 / ...
-    # OAuth 方式
-    client_id = Column(String(300), default="")
-    client_secret = Column(String(300), default="")
-    token_json = Column(Text, default="")  # OAuth token JSON
-    scope = Column(String(100), default="drive")
-    # 服务账号方式
-    sa_file_id = Column(Integer, default=None)  # 关联 service_account_files.id
-    team_drive = Column(String(100), default="")  # 团队盘 ID，空=个人盘
-    # 通用
-    chunk_size = Column(String(20), default="64M")
-    is_enabled = Column(Boolean, default=True)
-    is_probe_remote = Column(Boolean, default=False)  # 是否为探测用 remote（全局唯一）
-    remark = Column(String(300), default="")
-    last_checked_at = Column(DateTime)
-    last_check_ok = Column(Boolean)
-    last_check_message = Column(String(300))
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
-class ServiceAccountFile(Base):
-    """服务账号 JSON 文件（元数据，文件本体存安全目录）"""
-
-    __tablename__ = "service_account_files"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    filename = Column(String(200), nullable=False)  # 原始文件名
-    stored_path = Column(String(1024), nullable=False)  # 服务器上的安全路径
-    client_email = Column(String(300), default="")  # 从 JSON 解析，方便识别
-    project_id = Column(String(200), default="")
-    is_enabled = Column(Boolean, default=True)
-    remark = Column(String(300), default="")
-    created_at = Column(DateTime, default=datetime.now)
 
 
 class Pan115Account(Base):
@@ -583,44 +532,6 @@ class LocalCacheEntry(Base):
     last_error = Column(String(500))
     cached_at = Column(DateTime)
     last_accessed_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
-class MountFileIdCache(Base):
-    """远程挂载「相对路径 → 上游文件 ID」持久化映射（播放秒开）
-
-    一条 = 某个挂载下的某个相对路径已经解析出过上游 file id（Google Drive 那一类
-    需要逐级下钻才能找到文件的后端）。播同一个片时直接拼下载地址，**零次上游 API 请求**。
-
-    - **只存 file id，不存任何凭据**：``access_token`` 有效期短且跟着服务账号轮换池走，
-      落库等于把凭据写进磁盘。播放时取 token 的路径一字未改。
-    - 唯一索引建在 ``path_hash``（sha256 定长）而不是 ``(mount_id, rel_path)``：
-      ``rel_path`` 是 ``String(1000)``，中文路径按 utf8 最坏 3000 字节，超过 PostgreSQL
-      btree 索引项 2704 字节上限，建表就会失败。``mount_id`` / ``rel_path`` 另存为
-      普通列，方便排查与按挂载清理。
-
-    失效是**懒失效**：不主动校验，播放真的拿到 404 了才删这一条并重新解析写回
-    （见 ``file_id_cache.invalidate`` 与播放路径的重试）。
-    """
-
-    __tablename__ = "emby_mount_file_ids"
-
-    __table_args__ = (
-        UniqueConstraint("path_hash", name="uq_mount_file_id_path"),
-        # ``mount_id`` 的单列索引由列上的 ``index=True`` 建（与 LocalCacheEntry 同口径），
-        # 这里只补它盖不到的复合/排序场景，避免建出两个一样的索引。
-        Index("idx_mount_file_id_used", "last_used_at"),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    mount_id = Column(Integer, nullable=False, index=True)
-    rel_path = Column(String(1000), nullable=False)
-    path_hash = Column(String(64), nullable=False)
-    file_id = Column(String(255), nullable=False)   # 上游文件 ID（不是凭据）
-    size = Column(BigInteger, default=0)
-    hits = Column(Integer, default=0)
-    last_used_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

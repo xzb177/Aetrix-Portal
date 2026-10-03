@@ -11,7 +11,7 @@
 1. 面板自己出流（一体化）：本机路径的库 = ok（内容就在这台机器上）；
 2. EA 出流 + 本机路径 / local 挂载：没体检证据 = warn（无法确认，给出改法），
    EA 体检明确报读不到 = bad；体检明确说能读到（两端同一份 NFS）= ok；
-3. EA 出流 + 共享挂载（WebDAV 等）：体检 ok = ok、没体检 = warn、体检失败 = bad；
+3. EA 出流 + 共享挂载（rclone 等）：体检 ok = ok、没体检 = warn、体检失败 = bad；
 4. 停用挂载 / 挂载被删 = bad（面板一眼看出这条来源不会出内容）；
 5. 已有 Emby 入口 + 本机路径 = warn（对方的库不是这台机器）；
 6. 用户端地址一致性：面板关了协议面却仍让用户连面板 = bad；localhost 地址 = warn/bad；
@@ -85,10 +85,10 @@ def seed() -> dict:
             db.commit()
             return mount.id
 
-        out["m_webdav"] = add_mount("共享影库", "webdav", "https://dav.example.com/media")
+        out["m_rclone"] = add_mount("共享影库", "rclone", "rclone:gdrive/Movies")
         out["m_local"] = add_mount("本机磁盘", "local", "/srv/media")
         out["m_nfs"] = add_mount("同路径 NFS", "local", "/mnt/nfs-media")
-        out["m_off"] = add_mount("已停用挂载", "webdav", "https://old.example.com", enabled=False)
+        out["m_off"] = add_mount("已停用挂载", "rclone", "rclone:old/Movies", enabled=False)
 
         def add_lib(name, *, mounts=(), paths=(), node_id=None, virtual=False,
                     enabled=True, realm_id=None) -> int:
@@ -103,11 +103,11 @@ def seed() -> dict:
             return lib.id
 
         out["l_path"] = add_lib("本机路径库", paths=["/srv/media/movies"], node_id=node.id)
-        out["l_webdav"] = add_lib("共享挂载库", mounts=[out["m_webdav"]], node_id=node.id)
+        out["l_rclone"] = add_lib("共享挂载库", mounts=[out["m_rclone"]], node_id=node.id)
         out["l_local"] = add_lib("本机挂载库", mounts=[out["m_local"]], node_id=node.id)
         out["l_nfs"] = add_lib("同路径库", mounts=[out["m_nfs"]], node_id=node.id)
         out["l_virtual"] = add_lib("虚拟聚合库", virtual=True, node_id=node.id)
-        out["l_disabled"] = add_lib("停用库", mounts=[out["m_webdav"]], node_id=node.id,
+        out["l_disabled"] = add_lib("停用库", mounts=[out["m_rclone"]], node_id=node.id,
                                     enabled=False)
     return out
 
@@ -178,7 +178,7 @@ set_mode("", enabled=False)
 set_url("https://panel.example.com")
 r = detail_of("l_path", ids["l_path"])
 check("本机路径库：面板出流 → ok", r["level"] == "ok", f"{r['level']}/{r['code']}")
-r = detail_of("l_webdav", ids["l_webdav"])
+r = detail_of("l_rclone", ids["l_rclone"])
 check("共享挂载库：面板出流 → ok（面板自己扫自己播）", r["level"] == "ok",
       f"{r['level']}/{r['code']}")
 r = detail_of("l_nfs", ids["l_nfs"])
@@ -198,7 +198,7 @@ check("  文案带上出流节点名", "EA-东京" in r["message"], r["message"]
 r = detail_of("l_local", ids["l_local"])
 check("本机挂载库：EA 出流无证据 → warn/host_local_unchecked",
       r["level"] == "warn" and r["code"] == "host_local_unchecked", f"{r['level']}/{r['code']}")
-r = detail_of("l_webdav", ids["l_webdav"])
+r = detail_of("l_rclone", ids["l_rclone"])
 check("共享挂载库：EA 出流无证据 → warn/mount_unchecked（存疑不装 ok）",
       r["level"] == "warn" and r["code"] == "mount_unchecked", f"{r['level']}/{r['code']}")
 check("  共享来源与主机相对来源分开报", r["shared_sources"] and not r["local_sources"],
@@ -207,13 +207,13 @@ check("  共享来源与主机相对来源分开报", r["shared_sources"] and no
 # ==================== 3. EA 体检快照：按证据升级/降级 ====================
 print("\n--- 3. 拉过 EA 体检（按证据判定）---")
 write_snapshot([
-    {"id": ids["m_webdav"], "name": "共享影库", "ok": True, "message": "目录可读"},
+    {"id": ids["m_rclone"], "name": "共享影库", "ok": True, "message": "目录可读"},
     {"id": ids["m_local"], "name": "本机磁盘", "ok": False,
      "message": "路径不存在或不可读: /srv/media"},
     {"id": ids["m_nfs"], "name": "同路径 NFS", "ok": True, "message": "目录可读"},
     {"id": ids["m_off"], "name": "已停用挂载", "ok": None, "message": "已停用（未体检）"},
 ])
-r = detail_of("l_webdav", ids["l_webdav"])
+r = detail_of("l_rclone", ids["l_rclone"])
 check("共享挂载库：EA 体检 ok → ok", r["level"] == "ok", f"{r['level']}/{r['code']}")
 r = detail_of("l_local", ids["l_local"])
 check("本机挂载库：EA 体检报读不到 → bad/mount_unreachable_on_node",
@@ -259,7 +259,7 @@ r = detail_of("l_path", ids["l_path"])
 check("本机路径库：已有 Emby 出流 → warn/external_emby_local_path",
       r["level"] == "warn" and any(p["code"] == "external_emby_local_path" for p in r["problems"]),
       f"{r['level']}/{r['code']}")
-r = detail_of("l_webdav", ids["l_webdav"])
+r = detail_of("l_rclone", ids["l_rclone"])
 check("共享挂载库：已有 Emby → ok（不理我们自己的库来源）", r["level"] == "ok",
       f"{r['level']}/{r['code']}")
 
@@ -298,7 +298,7 @@ print("\n--- 7. 汇总与接口 ---")
 set_mode("managed_ea", url="https://emby.example.com")
 os.environ["ENABLE_EMBY_GATEWAY"] = "false"
 write_snapshot([
-    {"id": ids["m_webdav"], "name": "共享影库", "ok": True, "message": "目录可读"},
+    {"id": ids["m_rclone"], "name": "共享影库", "ok": True, "message": "目录可读"},
     {"id": ids["m_local"], "name": "本机磁盘", "ok": False, "message": "路径不存在: /srv/media"},
     {"id": ids["m_nfs"], "name": "同路径 NFS", "ok": True, "message": "目录可读"},
 ])

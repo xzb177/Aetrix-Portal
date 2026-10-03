@@ -388,7 +388,7 @@ REMOTE_PER_DIR = 4
 class FakeRemoteProvider(mnt.MountProvider):
     """最小远程提供者（无网络）：目录列举带计数，用来验证「不多列一次目录」
 
-    真实提供者（mounts / mount_cloud / mount_rclone 里九个）都带 ``cached_listing``，
+    真实提供者（mounts 里的本地 / 115，以及 mount_rclone）都带 ``cached_listing``，
     这里保持一致：否则就变成一个“每次列举都打一次网盘”的假对象，量出来的次数没有意义。
     """
 

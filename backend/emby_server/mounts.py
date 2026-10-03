@@ -3,33 +3,30 @@
 一个**挂载**就是一种「把内容接进媒体库」的方式。挂载本身不拥有条目，媒体库通过
 ``Library.mount_ids`` 引用它，所以同一个挂载可以被多个库共用。
 
-支持的挂载类型（``MOUNT_TYPES``）：
+**只支持三种来源**（v2.42.12 起，其余类型连同代码一并删除，不再维护）：
 
 ============================  ====================================================
-``local``                     本机目录。rclone / CloudDrive2 / SMB / NFS 已经挂到本机
-                              之后，对面板就是一条路径——这类「挂载盘」不需要特殊支持，
-                              但显式声明成挂载后可以单独测试、单独停用。
-``strm``                      STRM 目录。本地只放 ``.strm`` 小文件，文件内容是一条播放
-                              直链；扫描按文件名建条目，播放时读文件内容取直链。
-``115``                       115 网盘直挂。Cookie 型 API 直接读网盘目录，**不需要把网盘
-                              挂到本机**，也不依赖 115 OpenAPI。
-``webdav``                    通用 WebDAV（群晖 / Nextcloud / 自建）。
-``alist``                     AList / OpenList（一个挂载聚合多种网盘）。
-``s3``                        S3 兼容对象存储（AWS S3 / MinIO / Cloudflare R2 / Backblaze）。
-``aliyun``                    阿里云盘（Open API，refresh_token 换 access_token）。
-``quark``                     夸克网盘（Cookie 型 API）。
-``onedrive``                  OneDrive / SharePoint（Microsoft Graph）。
+``local``                     本机硬盘。路径以 ``/media`` 开头（本机真实目录）。
+``115``                       115 网盘直挂。路径以 ``115:/`` 开头，账号用 Cookie
+                              配置档（``pan115_accounts`` 表）。
+``rclone``                    rclone 任意后端。路径以 ``rclone:`` 开头，形如
+                              ``rclone:gdrive/Movies``；rclone.conf 由用户自己粘贴，
+                              落盘到 ``data/rclone/rclone.conf``，调用时 ``--config``
+                              指过去。
 ============================  ====================================================
 
-类型元数据是**唯一事实来源**：后台下拉、表单字段、必填校验、密钥脱敏、目录浏览入口
-都读同一份 ``MOUNT_TYPES``。新增类型只需在 ``mount_cloud.py``（或任何模块）里
-调用 ``register_mount_types`` + ``register_providers`` 注册，后端与其他前端不用改。
+**路径前缀即类型**（``detect_mount_type``）：表单只填一条路径，前缀决定它是哪种来源，
+和「先选类型再填一堆字段」是两种交互。这样做是因为这三种来源的配置本来就只有一条路径
+外加少量可选项，多一套类型下拉只会让人有机会选出不匹配的组合。
+
+类型元数据是**唯一事实来源**：后台下拉、表单字段、必填校验、密钥脱敏都读同一份
+``MOUNT_TYPES``，前端不自己维护一份。
 
 约定：
 
-- **本机可读的挂载**（``local`` / ``strm``）与历史数据完全兼容：条目仍然存真实文件路径，
-  探测、图片、外挂字幕都走本机，行为和「直接在媒体库里填一个目录」一致。
-- **远程挂载**（``115`` / ``webdav`` / ``alist``）的条目路径形如 ``mount://<挂载 id>/<相对路径>``，
+- **本机可读的挂载**（``local``）条目仍然存真实文件路径，探测、图片、外挂字幕都走本机。
+  目录里的 ``.strm`` 小文件照样认（内容是播放直链），不需要单独的 STRM 类型。
+- **远程挂载**（``115`` / ``rclone``）的条目路径形如 ``mount://<挂载 id>/<相对路径>``，
   播放时由提供者解析成真实 URL，再由 EA 按 Range **代理转发**：Cookie / 令牌不出服务器，
   客户端拿到的仍然是本服务器的地址。
 - 解析结果同时用于**扫描探测**（ffprobe 直接读 URL）与**播放**，不会出现「能扫到但播不了」。
@@ -64,10 +61,20 @@ from backend.emby_server import subtitles, transfer115
 logger = logging.getLogger(__name__)
 
 MOUNT_LOCAL = "local"
-MOUNT_STRM = "strm"
 MOUNT_PAN115 = "115"
-MOUNT_WEBDAV = "webdav"
-MOUNT_ALIST = "alist"
+MOUNT_RCLONE = "rclone"
+
+#: 路径前缀 → 挂载类型。表单只填一条路径，类型由前缀决定（``detect_mount_type``）。
+PATH_TYPE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("115:/", MOUNT_PAN115),
+    ("rclone:", MOUNT_RCLONE),
+    ("/media", MOUNT_LOCAL),
+)
+
+#: 路径没带任何已知前缀时按什么处理。约定是 /media（容器里媒体盘的挂载点），但
+#: 裸机部署的媒体常在 /mnt/media、/srv/media 这类地方，所以**绝对路径一律当本地硬盘**——
+#: 把它判成「未知类型」只会让一台装得好好的机器建不出挂载。
+DEFAULT_PATH_TYPE = MOUNT_LOCAL
 
 # 挂载类型元数据：后台下拉与「这类挂载要填什么」的说明都来自这里
 #
@@ -83,21 +90,11 @@ MOUNT_ALIST = "alist"
 MOUNT_TYPES: list[dict] = [
     {
         "value": MOUNT_LOCAL,
-        "label": "本地 / 已挂载目录",
+        "label": "本地硬盘",
         "kind": "local",
         "group": "local",
-        "hint": "本机可读的目录。rclone / CloudDrive2 / SMB / NFS 挂到本机后填它的真实路径。",
-        "needs_path": True,
-        "browse": True,
-        "root_key": "",
-        "fields": [],
-    },
-    {
-        "value": MOUNT_STRM,
-        "label": "STRM 直链目录",
-        "kind": "local",
-        "group": "local",
-        "hint": "本机目录，里面是扩展名为 .strm 的文本文件，内容为播放直链（http/https）。",
+        "hint": "服务器本机目录，任意绝对路径都行（/media 只是约定，裸机常在 /mnt/media）。"
+                "目录里的 .strm 小文件照样认。",
         "needs_path": True,
         "browse": True,
         "root_key": "",
@@ -105,10 +102,11 @@ MOUNT_TYPES: list[dict] = [
     },
     {
         "value": MOUNT_PAN115,
-        "label": "115 网盘直挂",
+        "label": "115 网盘",
         "kind": "remote",
         "group": "cloud",
-        "hint": "Cookie 型 API 直读网盘，无需把 115 挂到本机。目录 ID 填 0 表示根目录，可先浏览再选。",
+        "hint": "Cookie 型 API 直读网盘，不用挂到本机。路径以 115:/ 开头；"
+                "目录 ID 填 0 表示根目录，可先浏览再选。",
         "needs_path": False,
         "browse": True,
         "root_key": "cid",
@@ -118,40 +116,53 @@ MOUNT_TYPES: list[dict] = [
         ],
     },
     {
-        "value": MOUNT_WEBDAV,
-        "label": "WebDAV",
+        "value": MOUNT_RCLONE,
+        "label": "rclone",
         "kind": "remote",
         "group": "gateway",
-        "hint": "群晖 / Nextcloud / 自建 WebDAV。填到目录为止，例如 https://dav.example.com/media。",
+        "hint": "路径以 rclone: 开头，例如 rclone:gdrive/Movies。"
+                "rclone.conf 在「rclone 配置」页粘贴，本面板只负责用它跑 rclone 命令。",
         "needs_path": False,
         "browse": True,
-        "root_key": "path",
+        "root_key": "fs",
+        "remotes": True,
         "fields": [
-            {"key": "url", "label": "地址", "placeholder": "https://dav.example.com/media",
-             "required": True},
-            {"key": "username", "label": "用户名"},
-            {"key": "password", "label": "密码", "secret": True},
-        ],
-    },
-    {
-        "value": MOUNT_ALIST,
-        "label": "AList / OpenList",
-        "kind": "remote",
-        "group": "gateway",
-        "hint": "一个挂载聚合多种网盘。填 AList 站点地址与目录路径，可用令牌或账号密码。",
-        "needs_path": False,
-        "browse": True,
-        "root_key": "path",
-        "fields": [
-            {"key": "url", "label": "站点地址", "placeholder": "https://alist.example.com",
-             "required": True},
-            {"key": "path", "label": "目录路径", "placeholder": "/115"},
-            {"key": "token", "label": "令牌（可选）", "secret": True},
-            {"key": "username", "label": "用户名（可选）"},
-            {"key": "password", "label": "密码（可选）", "secret": True},
+            {
+                "key": "mode", "label": "调用方式", "type": "select",
+                "options": [{"label": "RC API（需你自己跑 rclone rcd --rc-serve）", "value": "rc"},
+                            {"label": "直接调用 rclone 命令（用粘贴的 rclone.conf）", "value": "cli"}],
+            },
+            {"key": "rc_url", "label": "RC 地址", "placeholder": "http://127.0.0.1:5572"},
+            {"key": "rc_user", "label": "RC 用户名（可选）"},
+            {"key": "rc_pass", "label": "RC 密码（可选）", "secret": True},
+            {"key": "serve_url", "label": "取流地址（可选）",
+             "placeholder": "http://127.0.0.1:8080",
+             "hint": "留空则用 RC 地址取流；填了则媒体字节走该端点（rclone serve http + VFS 缓存）。"},
+            {"key": "rclone_bin", "label": "rclone 路径（可选）", "placeholder": "默认从 PATH 找 rclone"},
+            {"key": "rclone_config", "label": "rclone.conf 路径（可选）",
+             "placeholder": "默认 data/rclone/rclone.conf"},
         ],
     },
 ]
+
+
+def detect_mount_type(path: str) -> str:
+    """按路径判断挂载类型（认不出来时返回空串，让调用方明确报错）
+
+    顺序重要：``115:/`` 与 ``rclone:`` 都是「前缀 + 冒号」，必须先比字面量更具体的，
+    否则 ``115:/x`` 会被当成 rclone 的 ``115`` remote。
+
+    判不出来时：**绝对路径当本地硬盘**（见 ``DEFAULT_PATH_TYPE``）；其余（``s3://x``、
+    漏了 ``rclone:`` 前缀的 ``gdrive:Movies``、空路径）一律返回空串——宁可报错，
+    也别静默存成一种错的来源。
+    """
+    raw = (path or "").strip()
+    for prefix, mount_type in PATH_TYPE_PREFIXES:
+        if raw.startswith(prefix):
+            return mount_type
+    if raw.startswith(("/", "./", "../", "~")):
+        return DEFAULT_PATH_TYPE
+    return ""
 
 MOUNT_TYPE_LABELS = {t["value"]: t["label"] for t in MOUNT_TYPES}
 MOUNT_TYPE_MAP = {t["value"]: t for t in MOUNT_TYPES}
@@ -220,6 +231,10 @@ MOUNT_TIMEOUT = float(os.getenv("MOUNT_TIMEOUT", "20"))
 # ffprobe / ffmpeg 读远程源时的 UA（多数网盘直链对 UA 有要求）
 MOUNT_UA = os.getenv("MOUNT_UA", transfer115.PAN115_UA)
 MOUNT_RANGE_CHUNK = 1024 * 256
+# 存储读不动时，补全条目打回 pending 后等多久再试（不是 failed，attempts 不涨）。
+# 原本这个值叫 MOUNT_BREAKER_RETRY_SEC、绑在熔断器上；熔断器删掉后它讲的是自己的
+# 事情（避免一个挂不上的网盘把队列烧成 failed），所以改名而不是跟着一起删。
+MOUNT_UNAVAILABLE_RETRY_SEC = max(60, int(os.getenv("MOUNT_UNAVAILABLE_RETRY_SEC", "1800") or 1800))
 
 
 class MountError(RuntimeError):
@@ -284,12 +299,6 @@ class PlayTarget:
     kind: str
     value: str
     headers: dict = field(default_factory=dict)
-    #: 这个 file id / 路径是不是来自「路径 → 上游 id」的持久化缓存（秒开那套）。
-    #:
-    #: 缓存里的 id 失效时服务器能看到上游 404（代理路径），
-    #: ``_serve_remote_retry_on_stale`` 会自动重解析并写回，所以这个标记
-    #: 只用于诊断与日志，不再决定播放走向。
-    from_file_id_cache: bool = False
 
 
 # ==================== 路径约定 ====================
@@ -624,172 +633,21 @@ def parse_mod_ts(value) -> float:
         return 0.0
 
 
-# ==================== 按挂载熔断（v2.42.9）====================
-# 问题：一个挂载坏了（网盘宕机 / Cookie 失效 / 网络不通），每条条目的补全都还是
-# 真的去问它——每问一次就吃满一个 MOUNT_TIMEOUT（默认 20s）。补全积压 4 万条时，
-# 一条坏挂载能把整个队列拖成「每条 20 秒」的龟速，重试洪峰还会把无谓的 attempts
-# 烧成 failed。ctx 是每条新建的，任何实例级状态都跨不过条目——熔断状态必须放
-# **模块级**，按挂载键共享给扫描与补全两条路。
-#
-# 语义（经典三态熔断器）：
-# - 连续 MountError 达到阈值 → 熔断打开：后续调用**不发网络请求**，直接抛
-#   MountBreakerOpen（调用方毫秒级拿到失败，而不是等 20s 超时）；
-# - 冷却时间过后自动半开：放一个请求真去探测，成功则熔断关闭、失败则立刻重新打开；
-# - 一次成功就把连续失败清零（偶发抖动不触发熔断）。
-#
-# 只认 MountError 家族：配置错误 / 网络错误 / 路径不存在才该熔断；编程错误等其他
-# 异常不该把挂载拉黑。补全 worker 在抢单后、IO 前会先问熔断状态，把熔断中挂载的
-# 条目打回 pending + 长 next_retry_at（**不是 failed**，attempts 也不涨）——
-# 挂载恢复后它们自然会被重新捞到。
-MOUNT_BREAKER_THRESHOLD = max(2, int(os.getenv("MOUNT_BREAKER_THRESHOLD", "3") or 3))
-MOUNT_BREAKER_COOLDOWN_SEC = max(10, int(os.getenv("MOUNT_BREAKER_COOLDOWN_SEC", "300") or 300))
-# 熔断期间条目的重试间隔：打回 pending 时写给 enrich_next_retry_at，
-# 避免积压条目在熔断期间被反复捞起、反复秒拒（空转刷日志）。
-MOUNT_BREAKER_RETRY_SEC = max(60, int(os.getenv("MOUNT_BREAKER_RETRY_SEC", "1800") or 1800))
-
-
-class MountBreakerOpen(MountError):
-    """挂载熔断中：连续失败达到阈值，快速失败，等冷却后再探测
-
-    继承 MountError：所有把 MountError 当「挂载不可用」处理的调用方
-    （扫描 / 补全 / 播放代理）不需要新增分支就能拿到快速失败。
-    """
-
-
-# 键 = (挂载 id, 类型, 配置指纹)：与目录缓存同口径——换配置就是新键，
-# 不会因为改了配置还被旧故障的熔断挡着；同一挂载的多条临时记录也互不串扰。
-_BREAKERS: dict = {}
-_BREAKER_LOCK = threading.Lock()
-_BREAKER_STATS = {"fast_fails": 0, "opens": 0}
-
-
-def _breaker_key(provider) -> tuple:
-    mount = getattr(provider, "mount", None)
-    return (
-        getattr(mount, "id", None),
-        (getattr(mount, "mount_type", "") or "").strip(),
-        _config_fingerprint(provider),
-    )
-
-
-def _breaker_open_key(key: tuple) -> bool:
-    """这个键的熔断是否处于打开状态（冷却期过后自动视为半开，放探测请求进去）"""
-    with _BREAKER_LOCK:
-        st = _BREAKERS.get(key)
-        if not st or st["opened_at"] <= 0:
-            return False
-        return time.monotonic() < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC
-
-
-def mount_breaker_open(mount_id) -> bool:
-    """这个挂载（按 id）是否有打开中的熔断——补全 worker 的 IO 前置检查用
-
-    调用方通常只知道 mount:// 里的数字 id，不掌握配置指纹，所以这里按 id 匹配
-    任意键。熔断状态本来就是「挂载坏没坏」的物理事实，同一 id 的不同指纹键
-    同时打开时，按 id 看也应当是打开的。
-    """
-    with _BREAKER_LOCK:
-        now = time.monotonic()
-        for key, st in _BREAKERS.items():
-            if key[0] != mount_id:
-                continue
-            if st["opened_at"] > 0 and now < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC:
-                return True
-    return False
-
-
-def _breaker_record_success(key: tuple) -> None:
-    with _BREAKER_LOCK:
-        st = _BREAKERS.get(key)
-        if st and (st["fails"] or st["opened_at"]):
-            # 半开探测成功 / 恢复正常：清零（一次成功就信任，偶发抖动不熔断）
-            st["fails"] = 0
-            st["opened_at"] = 0.0
-            st["last_error"] = ""
-
-
-def _breaker_record_failure(key: tuple, error: str) -> None:
-    now = time.monotonic()
-    with _BREAKER_LOCK:
-        st = _BREAKERS.get(key)
-        if st is None:
-            st = _BREAKERS[key] = {
-                "fails": 0, "opened_at": 0.0, "opened_wall": None,
-                "last_error": "", "updated_at": now,
-            }
-        st["fails"] += 1
-        st["last_error"] = (error or "")[:200]
-        st["updated_at"] = now
-        opened = st["opened_at"] > 0 and now < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC
-        if opened:
-            return  # 冷却期内不续期：到点自动半开放探测
-        if st["fails"] >= MOUNT_BREAKER_THRESHOLD:
-            st["opened_at"] = now
-            st["opened_wall"] = datetime.now()
-            _BREAKER_STATS["opens"] += 1
-            logger.warning("挂载熔断打开 mount=%s type=%s 连续失败 %d 次：%s",
-                           key[0], key[1], st["fails"], st["last_error"])
-
-
-def mount_breaker_stats() -> dict:
-    """熔断器快照（进度接口 / 健康检查用）：正在熔断的挂载一目了然"""
-    with _BREAKER_LOCK:
-        now = time.monotonic()
-        open_list = []
-        for key, st in _BREAKERS.items():
-            if st["opened_at"] > 0 and now < st["opened_at"] + MOUNT_BREAKER_COOLDOWN_SEC:
-                open_list.append({
-                    "mount_id": key[0],
-                    "mount_type": key[1],
-                    "opened_at": (st.get("opened_wall") or datetime.now()).isoformat(
-                        timespec="seconds"),
-                    "fails": int(st["fails"]),
-                    "last_error": st["last_error"],
-                })
-        return {
-            "threshold": MOUNT_BREAKER_THRESHOLD,
-            "cooldown_sec": MOUNT_BREAKER_COOLDOWN_SEC,
-            "retry_sec": MOUNT_BREAKER_RETRY_SEC,
-            "fast_fails": int(_BREAKER_STATS["fast_fails"]),
-            "opens": int(_BREAKER_STATS["opens"]),
-            "tracked": len(_BREAKERS),
-            "open": open_list,
-        }
-
-
-def breaker_reset() -> None:
-    """清空熔断状态（测试用；生产不调）"""
-    with _BREAKER_LOCK:
-        _BREAKERS.clear()
-        _BREAKER_STATS.update({"fast_fails": 0, "opens": 0})
+# ==================== 远程列举的收口点 ====================
+# 扫描、追新、补全都通过这里列目录，所以它是「远程 I/O 排队 + 阶段耗时」的唯一口径。
+# v2.42.12：这里原本还挂着按挂载的熔断器（连续失败 N 次快速失败），已整块删除——
+# 它把「网盘临时连不上」和「配置写错了」当成同一件事，前者被误判成后者，
+# 结果是整个挂载被拉黑几分钟；现在失败就如实抛，由调用方按自己的退避策略处理。
 
 
 def _call_remote(provider, fn: Callable, rel: str) -> list:
-    """真的列一次目录（远程会占用名额，并记一次「远程列举」用于统计）
-
-    v2.42.9：远程与**本机**两条路都计一次阶段耗时。以前只统远程——补全积压到底压在
-    网盘 I/O 还是本机磁盘上，是个必须用数据回答的问题（两者的优化方向完全不同）。
-
-    v2.42.9 第 4 批：远程路是熔断的收口点。打开时在这里**快速失败**（不占远程名额、
-    不发网络请求），成功 / 失败在这里记账——扫描与补全两条路共用同一份熔断状态。
-    """
+    """真的列一次目录（远程会占用名额，并记一次「远程列举」用于统计）"""
     if not _is_remote_provider(provider):
         with progress.stage_timer("local_list"):
             return fn(provider, rel)
-    key = _breaker_key(provider)
-    if _breaker_open_key(key):
-        with _BREAKER_LOCK:
-            _BREAKER_STATS["fast_fails"] += 1
-        raise MountBreakerOpen(
-            f"挂载熔断中（mount={key[0]}）：连续失败已达阈值，等待冷却后自动探测")
-    try:
-        with progress.stage_timer("remote_list"):
-            with remote_io_slot():
-                entries = fn(provider, rel)
-    except MountError as exc:
-        _breaker_record_failure(key, str(exc))
-        raise
-    _breaker_record_success(key)
+    with progress.stage_timer("remote_list"):
+        with remote_io_slot():
+            entries = fn(provider, rel)
     progress.note_remote_listing()
     return entries
 
@@ -1207,12 +1065,6 @@ class Pan115Mount(MountProvider):
         return resp.content.decode("utf-8", errors="ignore")
 
 
-def _http_client():
-    import httpx
-
-    return httpx.Client(timeout=MOUNT_TIMEOUT, follow_redirects=True)
-
-
 # 模块级共享 HTTP 客户端池：按 (base, timeout) 复用连接，避免扫描时
 # 每次请求都新建连接池（借鉴 go-emby 的连接复用思路）。httpx.Client
 # 的同步 API 是线程安全的，可在扫描线程池里共用。
@@ -1238,278 +1090,168 @@ def _shared_http_client(key: str = "default", timeout=None):
         return client
 
 
-class WebDavMount(MountProvider):
-    """通用 WebDAV"""
+def walk_workers_limit() -> int:
+    """扫描遍历的并发线程数（SCAN_WALK_WORKERS，默认 8）。
+
+    非法值回退默认，保证配错了也不炸扫描。
+
+    2026-10 从 16 降到 8：并发主要是为了掩盖网盘/Rclone 的延迟，不是为了提高吞吐。
+    16 个线程同时打向同一个 rclone RC 端点时，rcd 侧排队把延迟放大到十几倍，
+    并且把大量请求堆成 context canceled / connection reset（生产 24 小时 5.2 万条）。
+    降一半后单轮扫描慢一些，但成功率与错误量都大幅改善。
+    """
+    try:
+        n = int(os.getenv("SCAN_WALK_WORKERS", "8") or 8)
+    except (TypeError, ValueError):
+        n = 8
+    return max(1, n)
+
+
+class RemoteMount(MountProvider):
+    """远程挂载基类：统一 HTTP 调用、错误翻译与递归扫描
+
+    v2.42.12：随 s3 / aliyun / quark / onedrive 一起从 mount_cloud.py 搬到这里。
+    原来它和那四个具体后端住在同一个文件里，现在唯一的子类是 rclone，
+    留在 mounts.py 里才不用为一个基类单开一个模块。
+    """
 
     kind = "remote"
-    mount_type = MOUNT_WEBDAV
+    #: 出错提示里用的名字（如「阿里云盘」）
+    what = "云端存储"
 
-    def __init__(self, mount, db=None, library=None):
-        super().__init__(mount, db, library)
-        self.base = (self.config.get("url") or "").strip().rstrip("/")
-        self.username = self.config.get("username") or ""
-        self.password = self.config.get("password") or ""
-
-    def _require_base(self) -> str:
-        if not self.base.startswith(("http://", "https://")):
-            raise MountError("WebDAV 地址必须以 http:// 或 https:// 开头")
-        return self.base
-
-    def _auth(self):
+    def _client(self, follow_redirects: bool = True):
         import httpx
 
-        return httpx.BasicAuth(self.username, self.password) if self.username else None
+        return httpx.Client(timeout=MOUNT_TIMEOUT, follow_redirects=follow_redirects)
 
-    def _url_of(self, rel: str) -> str:
-        base = self._require_base()
-        rel = "/" + (rel or "").lstrip("/")
-        return base + urllib.parse.quote(rel) if rel != "/" else base + "/"
-
-    def test(self) -> dict:
-        base = self._require_base()
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Optional[dict] = None,
+        params: Optional[dict] = None,
+        json_body: Optional[dict] = None,
+        data: Optional[dict] = None,
+        follow_redirects: bool = True,
+    ):
         try:
-            with _http_client() as client:
-                resp = client.request(
-                    "PROPFIND", base + "/", headers={"Depth": "0"}, auth=self._auth(),
+            with self._client(follow_redirects) as client:
+                return client.request(
+                    method, url, headers=headers or {}, params=params,
+                    json=json_body, data=data,
                 )
-        except Exception as exc:  # noqa: BLE001 — 网络错误统一成可读提示
-            raise MountError(f"连接 WebDAV 失败: {exc}") from exc
-        if resp.status_code in (401, 403):
-            raise MountAuthError(f"WebDAV 拒绝访问（HTTP {resp.status_code}），请检查账号密码")
-        if resp.status_code >= 400:
-            raise MountError(f"WebDAV 返回 HTTP {resp.status_code}")
-        return {"ok": True, "message": f"WebDAV 可访问（HTTP {resp.status_code}）", "url": base}
+        except Exception as exc:  # noqa: BLE001 — 网络层异常统一成可读提示
+            raise MountError(f"连接{self.what}失败: {exc}") from exc
 
-    def _propfind(self, rel: str) -> list[dict]:
-        base = self._require_base()
-        url = self._url_of(rel)
+    def _request_json(self, method: str, url: str, **kwargs) -> dict:
+        resp = self._request(method, url, **kwargs)
         try:
-            with _http_client() as client:
-                resp = client.request(
-                    "PROPFIND", url,
-                    headers={"Depth": "1", "Content-Type": "application/xml"},
-                    auth=self._auth(),
-                )
+            body = resp.json()
         except Exception as exc:  # noqa: BLE001
-            raise MountError(f"连接 WebDAV 失败: {exc}") from exc
-        if resp.status_code in (401, 403):
-            raise MountAuthError(f"WebDAV 拒绝访问（HTTP {resp.status_code}）")
-        if resp.status_code >= 400:
-            raise MountError(f"WebDAV 返回 HTTP {resp.status_code}")
+            raise MountError(f"{self.what}返回了无法解析的响应: {exc}") from exc
+        return body if isinstance(body, dict) else {}
+
+    def _entries(self, rel: str) -> list[MountEntry]:
+        """列目录；**子目录**读不到时只记日志不中断整库扫描
+
+        根目录失败仍然抛错（扫描据此判定来源不可用并跳过清理），但一个没权限的子目录
+        不应该让整个媒体库扫不完。
+        """
         try:
-            root = ET.fromstring(resp.content or b"<root/>")
-        except ET.ParseError as exc:
-            raise MountError(f"WebDAV 返回了无法解析的响应: {exc}") from exc
-        ns = "{DAV:}"
-        base_path = urllib.parse.urlparse(base).path.rstrip("/")
-        out: list[dict] = []
-        request_path = urllib.parse.urlparse(url).path.rstrip("/")
-        for node in root.findall(f"{ns}response"):
-            href = (node.findtext(f"{ns}href") or "").strip()
-            if not href:
-                continue
-            path = urllib.parse.unquote(urllib.parse.urlparse(href).path).rstrip("/")
-            name = path.rsplit("/", 1)[-1]
-            if path == request_path or not name:
-                continue  # PROPFIND 会带回自己
-            is_dir = node.find(f"{ns}propstat/{ns}prop/{ns}resourcetype/{ns}collection") is not None
-            length = node.findtext(f"{ns}propstat/{ns}prop/{ns}getcontentlength") or "0"
-            rel_from_base = path[len(base_path):].strip("/") if base_path and path.startswith(base_path) else path.strip("/")
-            out.append({
-                "name": urllib.parse.unquote(name),
-                "rel": "/" + rel_from_base,
-                "is_dir": is_dir,
-                "size": int(length or 0),
-            })
-        return out
+            return self.list_dir(rel)
+        except MountError as exc:
+            if rel in ("", "/"):
+                raise
+            logger.warning("%s 子目录读取失败，跳过: %s (%s)", self.what, rel, exc)
+            return []
 
-    @cached_listing
-    def list_dir(self, rel: str = "/") -> list[MountEntry]:
-        entries = [MountEntry(name=e["name"], rel=e["rel"], is_dir=e["is_dir"], size=e["size"])
-                   for e in self._propfind(rel)]
-        entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
-        return entries
+    def walk_workers(self) -> int:
+        """本挂载遍历的并发上限（默认全局 ``SCAN_WALK_WORKERS``）。
 
-    def walk_media(self, root: str = "/") -> Iterator[MountFile]:
-        stack = [root]
-        while stack:
-            rel = stack.pop()
-            for entry in self.list_dir(rel):
-                if entry.is_dir:
-                    if disc_filter.is_disc_subtree_dir(entry.name):
+        给「有硬配额」的后端一个下调口子：Google Drive 是 100 秒 10000 次查询的
+        per-user 配额，用全局的 16 线程并发打过去会直接撞 ``rateLimitExceeded``，
+        那时整轮扫描只能失败重试。子类覆写这一项即可，115 / S3 等已稳定的类型
+        保持原样。
+
+        用 ``getattr`` 兜底：测试里的假挂载常直接继承本类而只实现必需方法，
+        少实现一个钩子不该让整轮遍历抛 AttributeError——退回全局默认即可。
+        """
+        return walk_workers_limit()
+
+    def walk_media(self, max_depth: int = 32, root: str = "/") -> Iterator[MountFile]:
+        """远程挂载的通用遍历：靠 ``list_dir`` 递归，自动跳过过深目录
+
+        ``root`` 为挂载内的起始子目录（"/" = 整个挂载）；产出的 ``rel`` 始终是
+        挂载根相对路径，与 ``root`` 无关。
+
+        起始目录读不到时直接抛错（不吞掉）：上层按「来源不可用」处理并跳过清理，
+        避免把「读不到」当成「文件已删除」而误删条目。
+
+        分层并行：同一层级的目录用 16 线程并发列举（网盘 API 延迟是瓶颈）。
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        self.list_dir(root)
+        seen: set[str] = set()
+        seen.add(root)
+        current = [(root, 0)]
+        # 文件级去重：rclone lsjson 偶发在单次列举里返回同一文件两次（网盘侧重复
+        # 条目 / 分页异常；2026-09-25 生产事故：同一 mkv 被产出两次，扫描器在同一
+        # 事务内两次 INSERT 撞 emby_items.guid 唯一键、整库扫描 abort）。扫描器在
+        # _prepare_and_prefetch 按 guid 去重兜底，这里在源头先拦一道，也省掉重复
+        # 的 ffprobe 与 TMDB 预取。rel 全局唯一，误杀不了正常文件。
+        seen_files: set[str] = set()
+        # 分层 BFS：每层目录并发列举
+        # 并发数可配（SCAN_WALK_WORKERS，默认 8）：网盘 API 延迟是瓶颈，并发主要
+        # 是掩盖延迟；但并发越高，同时打向 rclone RC / 网盘的请求越多，rcd 侧的
+        # 内存峰值也越高。内存吃紧的机器可调小（如 8），扫描会慢一些。
+        # 并发数走 ``getattr(self, "walk_workers", None)`` 而不是直接调方法：
+        # 测试里的假挂载常只实现必需方法、没继承这个钩子，直接调会 AttributeError
+        # 让整轮遍历失败（2026-10 加这个钩子时踩过）。取不到就退回全局默认。
+        workers = self.walk_workers() if hasattr(self, "walk_workers") else walk_workers_limit()
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="walk") as pool:
+            while current:
+                fut_to_dir = {
+                    pool.submit(self._entries, rel): (rel, depth)
+                    for rel, depth in current
+                }
+                current = []
+                for fut in as_completed(fut_to_dir):
+                    rel, depth = fut_to_dir[fut]
+                    try:
+                        entries = fut.result()
+                    except Exception as e:
+                        logger.warning("%s 并行列目录失败 %s: %s", self.what, rel, e)
                         continue
-                    stack.append(entry.rel)
-                    continue
-                if os.path.splitext(entry.name)[1].lower() in REMOTE_MEDIA_EXTS:
-                    yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
-                                    is_strm=_is_strm_name(entry.name))
-
-    def resolve(self, rel: str) -> PlayTarget:
-        headers = {"User-Agent": MOUNT_UA}
-        if self.username:
-            import base64
-
-            token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
-            headers["Authorization"] = f"Basic {token}"
-        return PlayTarget("url", self._url_of(rel), headers)
+                    for entry in entries:
+                        if entry.is_dir:
+                            # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵跳过，
+                            # 否则每条 .m2ts 都会被当成一部电影
+                            if disc_filter.is_disc_subtree_dir(entry.name):
+                                continue
+                            if depth < max_depth and entry.rel not in seen:
+                                seen.add(entry.rel)
+                                current.append((entry.rel, depth + 1))
+                            continue
+                        if os.path.splitext(entry.name)[1].lower() not in REMOTE_MEDIA_EXTS:
+                            continue
+                        if entry.rel in seen_files:
+                            logger.debug("%s 遍历跳过重复文件条目：%s", self.what, entry.rel)
+                            continue
+                        seen_files.add(entry.rel)
+                        yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
+                                        is_strm=_is_strm_name(entry.name))
 
     def read_text(self, rel: str) -> str:
+        """默认实现：解析成直链后把内容当文本读（用于 .strm 与字幕）"""
         target = self.resolve(rel)
-        with _http_client() as client:
-            resp = client.get(target.value, headers=target.headers)
-        if resp.status_code >= 400:
-            raise MountError(f"读取 WebDAV 文件失败: HTTP {resp.status_code}")
-        return resp.content.decode("utf-8", errors="ignore")
-
-
-class AlistMount(MountProvider):
-    """AList / OpenList（一个挂载聚合多种网盘）"""
-
-    kind = "remote"
-    mount_type = MOUNT_ALIST
-
-    def __init__(self, mount, db=None, library=None):
-        super().__init__(mount, db, library)
-        self.base = (self.config.get("url") or "").strip().rstrip("/")
-        self.root = "/" + (self.config.get("path") or "").strip().strip("/")
-        self.token = (self.config.get("token") or "").strip()
-        self.username = self.config.get("username") or ""
-        self.password = self.config.get("password") or ""
-
-    def _require_base(self) -> str:
-        if not self.base.startswith(("http://", "https://")):
-            raise MountError("AList 地址必须以 http:// 或 https:// 开头")
-        return self.base
-
-    def _headers(self) -> dict:
-        headers = {"User-Agent": MOUNT_UA, "Content-Type": "application/json"}
-        if self.token:
-            headers["Authorization"] = self.token
-        return headers
-
-    def _login(self) -> str:
-        if not self.username:
-            raise MountAuthError("未配置令牌，也没有可登录的账号密码")
-        body = self._post("/api/auth/login", {"username": self.username, "password": self.password})
-        if body.get("code") != 200:
-            raise MountAuthError(f"AList 登录失败: {body.get('message') or body.get('code')}")
-        token = ((body.get("data") or {}) if isinstance(body.get("data"), dict) else {}).get("token")
-        if not token:
-            raise MountAuthError("AList 登录未返回令牌")
-        self.token = str(token)
-        return self.token
-
-    def _post(self, path: str, payload: dict) -> dict:
-        headers = self._headers()
-        try:
-            client = _shared_http_client("alist")
-            resp = client.post(f"{self._require_base()}{path}", json=payload, headers=headers)
-        except Exception as exc:  # noqa: BLE001
-            raise MountError(f"连接 AList 失败: {exc}") from exc
-        if resp.status_code in (401, 403):
-            raise MountAuthError(f"AList 拒绝访问（HTTP {resp.status_code}）")
-        if resp.status_code >= 400:
-            raise MountError(f"AList 返回 HTTP {resp.status_code}")
-        try:
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            raise MountError(f"AList 返回了无法解析的响应: {exc}") from exc
-        return data if isinstance(data, dict) else {}
-
-    def _api(self, path: str, payload: dict) -> dict:
-        """带一次自动登录重试的调用（未配置令牌时先登录拿令牌）"""
-        if not self.token and self.username:
-            self._login()
-        body = self._post(path, payload)
-        if body.get("code") == 401 and self.username:
-            self._login()
-            body = self._post(path, payload)
-        if body.get("code") != 200:
-            message = str(body.get("message") or f"code={body.get('code')}")
-            if "password" in message.lower() or "token" in message.lower():
-                raise MountAuthError(f"AList: {message}")
-            raise MountError(f"AList: {message}")
-        return body
-
-    def _abs(self, rel: str) -> str:
-        rel = "/" + (rel or "").lstrip("/")
-        path = (self.root.rstrip("/") + rel).replace("//", "/")
-        return path.rstrip("/") or "/"
-
-    def test(self) -> dict:
-        body = self._api("/api/fs/list", {
-            "path": self.root or "/", "password": "", "page": 1, "per_page": 0, "refresh": False,
-        })
-        data = body.get("data")
-        total = len((data or {}).get("content") or []) if isinstance(data, dict) else 0
-        return {"ok": True, "message": f"AList 可访问（{self.root or '/'} 下 {total} 项）"}
-
-    @cached_listing
-    def list_dir(self, rel: str = "/") -> list[MountEntry]:
-        path = self._abs(rel)
-        body = self._api("/api/fs/list", {
-            "path": path, "password": "", "page": 1, "per_page": 0, "refresh": False,
-        })
-        data = body.get("data") or {}
-        content = (data.get("content") or []) if isinstance(data, dict) else []
-        prefix = ("/" + (rel or "").lstrip("/")).rstrip("/")
-        entries = [
-            MountEntry(
-                name=str(item.get("name") or ""),
-                rel=f"{prefix}/{item.get('name')}",
-                is_dir=bool(item.get("is_dir")),
-                size=int(item.get("size") or 0),
-            )
-            for item in content
-        ]
-        entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
-        return entries
-
-    def walk_media(self, root: str = "/") -> Iterator[MountFile]:
-        stack = [root]
-        while stack:
-            rel = stack.pop()
-            for entry in self.list_dir(rel):
-                if entry.is_dir:
-                    if disc_filter.is_disc_subtree_dir(entry.name):
-                        continue
-                    stack.append(entry.rel)
-                    continue
-                if os.path.splitext(entry.name)[1].lower() in REMOTE_MEDIA_EXTS:
-                    yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
-                                    is_strm=_is_strm_name(entry.name))
-
-    def _raw_url(self, rel: str) -> tuple[str, dict]:
-        path = self._abs(rel)
-        body = self._api("/api/fs/get", {"path": path, "password": ""})
-        data = body.get("data") or {}
-        raw = str(data.get("raw_url") or data.get("url") or "")
-        if not raw:
-            raise MountError(f"AList 未返回直链: {path}")
-        headers = {"User-Agent": MOUNT_UA}
-        if self.token:
-            headers["Authorization"] = self.token
-        return raw, headers
-
-    def resolve(self, rel: str) -> PlayTarget:
-        raw, headers = self._raw_url(rel)
-        return PlayTarget("url", raw, headers)
-
-    def read_text(self, rel: str) -> str:
-        target, headers = self._raw_url(rel)
-        with _http_client() as client:
-            resp = client.get(target, headers=headers)
-        if resp.status_code >= 400:
-            raise MountError(f"读取 AList 文件失败: HTTP {resp.status_code}")
+        resp = self._request("GET", target.value, headers=target.headers)
         return resp.content.decode("utf-8", errors="ignore")
 
 
 _PROVIDERS = {
     MOUNT_LOCAL: LocalMount,
-    MOUNT_STRM: LocalMount,
     MOUNT_PAN115: Pan115Mount,
-    MOUNT_WEBDAV: WebDavMount,
-    MOUNT_ALIST: AlistMount,
 }
 
 
@@ -1799,9 +1541,7 @@ def mount_source_resolver(path: str):
 subtitles.register_mount_resolver(mount_source_resolver)
 
 
-# ==================== 扩展挂载类型 ====================
-# s3 / aliyun / quark / onedrive（mount_cloud.py）、Google Drive 原生（mount_google.py）
-# 与 rclone（mount_rclone.py）定义在单独模块里（避免本文件继续膨胀）。它们导入时调用
-# register_mount_types + register_providers，因此类型元数据与提供者在应用启动时就已经齐了，
-# 后面的代码无需知道有哪些扩展类型。
-from backend.emby_server import mount_cloud, mount_google, mount_rclone  # noqa: E402,F401  (导入即注册)
+# ==================== rclone 挂载类型 ====================
+# rclone 的实现单独放在 mount_rclone.py（依赖 rclone 命令 / RC，不适合塞进本文件）。
+# 它导入时调用 register_providers，因此提供者在本模块定义完 _PROVIDERS 之后就已经可用了。
+from backend.emby_server import mount_rclone  # noqa: E402,F401  (导入即注册)

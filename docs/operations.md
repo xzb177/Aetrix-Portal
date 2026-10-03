@@ -271,7 +271,7 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 
 ### 同一条挂载，EM 能用不代表 EA 能播（分离部署必看）
 
-挂载里的配置有相当一部分是**「跟着服务器走」**的：`local` / `strm` 的路径、rclone 的 RC 地址
+挂载里的配置有相当一部分是**「跟着服务器走」**的：`local` 的路径、rclone 的 RC 地址
 （默认 `127.0.0.1:5572` 指的是各自那台机器自己）与 rclone 可执行文件。
 而同一条 `StorageMount` 会被**两个进程各自解析**：**EM（面板）** 负责扫描、目录浏览、
 后台「测试连接」，**EA（网关）** 负责播放出流。所以后台测试通过，**并不代表那台 EA 能播**——
@@ -288,8 +288,8 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
   「N 条不可达」与不可达挂载名，页头的「一键体检」可随时重拉。
 - 两个按钮：**「本机体检」**=在 EM 进程里逐条跑探测，**「EA 体检」**=向 EA 再拉一次
   （EA 连不上时**保留上一次逐条结果**并提示快照已失效，不会把结论全抹成未知）。
-- 修法通常二选一：在那台 EA 机器上把同样的路径 / rclone 配好；或者改用网络型来源
-  （`115` / `webdav` / `alist` / `s3` …），它们只要两台机器能出网就行。
+- 修法通常二选一：在那台 EA 机器上把同样的路径 / rclone 配好；或者改用服务器侧直接访问的来源
+  （`115` / `rclone`），它们只要两台机器能出网就行。
 
 > EA 上的体检端点是 `GET /api/admin/mounts/health`，鉴权用两端共享的 `SECRET_KEY`
 > （请求头 `X-Panel-Key`）。**EA 与 EM 的 `SECRET_KEY` 必须一致**，否则会得到
@@ -391,11 +391,11 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 排查顺序：
 
 1. 后台「存储挂载」里点对应挂载的「测试」：能看到「Cookie / 令牌 / 密钥」字样的错误就是凭据问题，重新粘贴即可（密钥字段留空表示不修改）；
-2. 本机类型（`local` / `strm`）报「目录不可用」：挂载点掉了（rclone / CloudDrive2 / SMB / NFS 断了），或者容器里没把宿主目录挂进来；
-3. 远程类型报网络错误：EM / EA 所在机器能不能出网、域名是否被网络策略改写（用 `MOUNT_*_BASE` 覆盖入口）；
+2. 本地硬盘（`/media` 开头）报「目录不可用」：挂载点掉了（SMB / NFS 断了），或者容器里没把宿主目录挂进来；
+3. rclone 报「找不到 remote」：rclone.conf 没粘、粘的位置不对，或这台机器上没有 rclone 可执行文件；
 4. 媒体库若绑定了多个来源，确认要用的那个没有被停用（停用的挂载不会参与扫描，也不能被新绑定）。
 
-常见类型对应的参数都在后台表单里；入口地址与超时可以用 `env.example` 里的 `MOUNT_TIMEOUT` / `MOUNT_UA` / `MOUNT_S3_REGION` / `MOUNT_ALIYUN_ENDPOINT` / `MOUNT_QUARK_BASE` / `MOUNT_GRAPH_BASE` 覆盖。
+超时与 UA 可以用 `env.example` 里的 `MOUNT_TIMEOUT` / `MOUNT_UA` 覆盖。
 
 > 远程挂载的条目入库为 `mount://<挂载 id>/<相对路径>`，播放时才解析成真实直链并由服务器按 Range 代理转发。所以**客户端拿不到你的 Cookie / 令牌 / 预签名地址**，也不会因为直链过期而播放失败。
 
@@ -404,8 +404,8 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 “媒体直链指向哪里”分两套口径，弄清区别再去改配置（v2.23.1）：
 
 - **配置来源的直链默认允许内网**：`paths` 里的 `.strm`、存储挂载解析出的地址，即使指向
-  `192.168.x.x` / `127.0.0.1` 也照常播。局域网 NAS、自建 WebDAV / AList / MinIO、
-  rclone 的本地 HTTP 端点都是这个项目的正常用法（能配媒体来源的人本来就有管理权限）。
+  `192.168.x.x` / `127.0.0.1` 也照常播。局域网 NAS、rclone 的本地 HTTP 端点都是这个
+  项目的正常用法（能配媒体来源的人本来就有管理权限）。
   这一层只拦真正无歧义的：**非 `http(s)`**、**URL 里带内嵌凭据**；
   **解析不了的域名不算内网**（离线 / 内网 DNS / 临时解析故障不会把公开 CDN 直链弄坏）。
   想更严就打开 `EMBY_BLOCK_PRIVATE_MEDIA_URLS=true`，再用
@@ -413,78 +413,94 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 - **服务器自己追出去的重定向目标一律拦内网 / 回环**（不受上面开关影响）：源站回一个 302 指向
   内网运维接口或云元数据（`169.254.169.254`）时，代理会带着你的 Cookie / Basic 去取——
   这是真能被第三方利用的 SSRF。同时**跨主机重定向会剥掉凭据头**（同主机的相对跳转保留），
-  所以公开直链把你引导到别的主机时，WebDAV 的鉴权不会被拱手递出去。
+  所以公开直链把你引导到别的主机时，rclone RC 的鉴权不会被拱手递出去。
 - 症状对照：`403 播放地址指向受保护的内部地址`＝重定向目标被判为内网（或开了严格开关）；
   `502 源站不可达`＝真的连不上（先按上一节排查挂载）。
 
-### rclone 挂载怎么选模式
+### 存储来源只有三种，类型由路径前缀决定
 
-rclone 挂载是唯一一种「一种类型接住所有后端」的来源（Google Drive / OneDrive / S3 / 115 / 夸克 / SFTP …），它复用你机器上已有的 rclone remote，面板里不用重填密钥。两种模式：
+v2.42.12 起挂载只剩三种，后台**不再有类型下拉**——路径的前缀就是类型：
 
-- **rc（推荐）**：宿主机上先起一个 rc 服务，rclone 挂载里选 rc 模式并填地址（支持用户名 / 密码）：
+| 路径写法 | 类型 | 说明 |
+|---|---|---|
+| `/mnt/media/movies` | 本地硬盘 | 本机目录，**任何绝对路径都行**（`/media` 只是约定）；里面的 `.strm` 小文件照样扫成直链 |
+| `115:/0` | 115 网盘 | Cookie 型 API 直读网盘；目录 ID `0` = 根目录 |
+| `rclone:gdrive/Movies` | rclone | 任意后端，格式是 rclone 自己的 `remote:路径` |
+
+没有前缀的路径（例如 `s3://x`、`gdrive:Movies`）保存时会直接报 400 并提示正确写法——
+**宁可当场报错，也别静默存成一种错的来源**。
+
+> 以前还有 WebDAV / AList / S3 / 阿里云盘 / 夸克 / OneDrive / Google Drive 原生 等类型，
+> 都已删除（代码、界面、表一并移除）。**它们现在都应该改走 rclone**：这类后端 rclone
+> 全都支持，粘一份 rclone.conf 就能接，不用面板替你保管凭据。
+
+**老机器升级后会多出三张没人读写的表**：`rclone_remotes`（以前面板自己生成
+rclone.conf 的记录）、`service_account_files`（Google Drive 服务账号元数据）、
+`emby_mount_file_ids`（Google Drive 的 file id 缓存）。它们**不自动删**——
+启动时自动 DROP 等于删别人机器上的数据且无法撤销。**留着完全不影响功能**，
+只是占点空间；确认新的 rclone 配置跑通后再清理：
+
+```bash
+# 发行镜像（客户）走 SQL
+docker compose exec postgres psql -U aetrix -d aetrix -c \
+  'DROP TABLE IF EXISTS rclone_remotes, service_account_files, emby_mount_file_ids;'
+
+# 自建部署 / 仓库里跑，带预览、必须显式 --yes
+venv/bin/python scripts/drop_removed_mount_tables.py
+```
+
+### rclone.conf 由你自己粘贴
+
+面板**不代管 rclone 凭据**，只提供「能跑 rclone」的能力：
+
+1. 后台「存储来源」→ 切到「**rclone.conf**」页，把 `rclone config` 生成的 INI 文本原样粘进去；
+2. 它会落盘到 `data/rclone/rclone.conf`（容器里是 `/config/rclone/rclone.conf`，
+   即 `RCLONE_CONFIG_DIR` 指的那个目录），权限 600；
+3. 之后每条 rclone 命令都自动带 `--config` 指过去。
+
+**服务器上要先有 rclone 可执行文件。** 容器里默认没有——要么在 compose 里加一行装它，
+要么把宿主机上装好的挂进去（挂载表单里的「rclone 路径」填绝对路径）。
+
+rclone.conf **不回显**（里面全是 token / secret）。要改就重新粘一份覆盖，是整份替换。
+
+**remote 名后面必须带冒号**：`gdrive:` / `gdrive:Movies` 才是 remote，`gdrive` 或
+`gdrive/Movies` 在 rclone 眼里都是**它自己的本机目录**（报
+`refers to a local folder, use "gdrive:" to refer to your remote`，后面还跟一句
+`directory not found`，很容易被误读成「目录不存在」）。保存挂载时面板会直接处理：
+rclone.conf 里已配置的 remote 自动补上冒号，查不到这个名字就当场拦下并写清正确写法。
+
+### rclone 挂载怎么选调用方式
+
+挂载表单里的「调用方式」决定面板怎么跟 rclone 说话：
+
+- **RC API（默认）**：连到**你自己跑着的** `rclone rcd --rc-serve`：
+
   ```bash
-  rclone rcd --rc-serve --rc-addr 127.0.0.1:5572
-  # 带认证（生产建议）：--rc-user=user --rc-pass=pass
+  rclone rcd --rc-serve --rc-addr 0.0.0.0:5572 --rc-user=user --rc-pass=pass
   ```
-  列目录 / 测试走 RC API，播放地址直接取自 rc-serve（rclone 自己处理 Range）。容器部署时注意 `127.0.0.1` 指向的是容器自己，要改成宿主机地址（如 `http://host.docker.internal:5572`）并让 rc 监听 `0.0.0.0`。
-- **cli（兜底）**：直接调用 rclone 可执行文件（`lsjson` / `cat` / `link`）。适合「机器上有 rclone 但不想常驻 rc」；EM / EA 进程必须能找到 rclone（不在 PATH 就用 `MOUNT_RCLONE_BIN` 或配置里的绝对路径）。
 
-> **remote 名后面必须带冒号**：`gdrive:` / `gdrive:Movies` 才是 remote，`gdrive` 或 `gdrive/Movies`
-> 在 rclone 眼里都是**它自己的本机目录**（报 `refers to a local folder, use "gdrive:" to refer to your remote`，
-> 后面还跟一句 `directory not found`，很容易被误读成「目录不存在」）。保存挂载时面板会直接处理：
-> 远端已配置的 remote 自动补上冒号，查不到这个名字就当场拦下并写清正确写法。
+  列目录 / 测试走 RC API，播放地址直接取自 rc-serve（rclone 自己处理 Range）。
+  这条路用的是 **rcd 自己的配置**，与面板里粘的那份 rclone.conf 无关——两者得指向同一份，
+  通常就是同一个 `RCLONE_CONFIG_DIR`。容器部署时注意 `127.0.0.1` 指向容器自己，
+  要改成宿主机地址（如 `http://host.docker.internal:5572`）。
+
+- **直接调用 rclone 命令**：用面板里粘的那份 rclone.conf（`lsjson` / `cat` / `link`）。
+  适合「机器上有 rclone 但不想常驻 rc」。EM / EA 进程必须能找到 rclone 可执行文件。
+
+> **rclone rcd 会攒内存**：`rcd` 在持续 RC 调用（扫描列目录、追新）下堆会累积到 GB 级
+> （实测 2.6GB / 2300 万 live object），强制 GC 只能回收约 2%——那是 rclone 内部结构体
+> 累积，不是可回收的垃圾，调参与 `GOMEMLIMIT` 都压不下来（同理会一直触发 GC 空转）。
+> compose 里给了 `RCLONE_RCD_GOMEMLIMIT` 作为安全阀。长跑之后如果整机被拖慢，先看它。
 
 三个容易踩的点：
 
 1. **列目录正常但一播就 404** → `--rc-serve` 没开。后台测试连接会提示「rc-serve 似乎未开启」。
-2. **`cli` 模式报「rclone 未返回公开直链」** → 该后端不支持 `rclone link`（比如部分网盘）。改用 rc 模式，或把网盘 `rclone mount` 到本机后用 `local` 挂载。
-3. **报「目录不存在」但目录明明在** → 检查 remote 是不是漏了冒号（见上）：rclone 把没有冒号的路径当本机目录，所以永远找不到。
+2. **命令行模式报「rclone 未返回公开直链」** → 该后端不支持 `rclone link`（比如部分网盘）。
+   改用 RC API，或把网盘 `rclone mount` 到本机后用本地硬盘挂载。
+3. **报「目录不存在」但目录明明在** → 检查 remote 是不是漏了冒号（见上）。
 
-> 已经 `rclone mount` 到本机目录的场景，直接用 `local` 挂载那个目录更直接（走本机文件，没有代理开销）。
-
-### Google Drive 怎么选：原生（gdrive）还是 rclone
-
-Drive 有**两条路**，按需选，不互相取代：
-
-| | Google Drive（原生） | rclone（rc 模式） |
-|---|---|---|
-| 需要 rclone 容器 | **不需要** | 需要 |
-| CPU / 内存 | 稳（见下） | 跑久了会涨，历史实测 83% CPU |
-| 支持的后端 | 只有 Drive | Drive / OneDrive / S3 / 115 / 夸克 / SFTP … |
-| 什么时候选 | 内容在 Drive | SFTP、WebDAV 等别的后端 |
-
-**rclone 为什么会有 CPU 问题**：`rcd` 在持续 RC 调用（扫描列目录、追新）下堆会累积到
-GB 级（实测 2.6GB / 2300 万 live object），强制 GC 只能回收约 2%——那是 rclone 内部
-结构体累积，不是可回收的垃圾，调参与 `GOMEMLIMIT` 都压不下来（同理会一直触发 GC 空转）。
-**Drive 直接走 REST v3 就没有这层状态。** SFTP 这类后端用 rclone 仍然合适。
-
-配置步骤（后台「存储挂载」→ 新建 → 类型选「Google Drive（原生）」）：
-
-1. **授权方式**二选一
-   - **服务账号轮换池（推荐）**：把服务账号 JSON 放进 `SA_POOL_DIR`（容器内默认
-     `/sa-accounts`）。池子按 round-robin 取 token，**多账号分摊 Drive 的 per-user
-     配额**，撞 429/403 自动把该账号冷却 5 分钟再换下一个。团队盘记得把服务账号
-     加为共享云端硬盘成员（内容管理员及以上），否则 403 会明确提示这一点。
-   - **OAuth refresh_token**：填 client_id / client_secret / refresh_token，令牌过期自动续。
-2. **根目录 ID**：填 Drive 文件夹 ID（可用后面的「浏览」选目录自动回填），留空 = My Drive 根目录。
-3. **共享云端硬盘**：填 `drive_id`（团队盘必填），否则会「能列目录但打不开文件」。
-
-> 曾经还有一个「播放走直链 302」开关（后台表单里的 `direct_link`），**已删除**：
-> Google Drive 的 `alt=media` 需要 `Authorization` 头，而 302 重定向不会把请求头
-> 带过去；唯一能塞进 URL 的 `access_token` 会进客户端日志 / Referer，并触发 Google
-> 对「URL 带 token」更严的限流。Alist / RClone / Cloudreve 三家均为服务端代理，
-> 本项目统一走代理转发（凭据不下发）。已存的老配置值原样留在库里，不读也不报错。
-
-两个要点：
-
-- **遍历并发被单独限到 4**（`GDRIVE_WALK_WORKERS`）：Drive 是 100 秒 10000 次查询的
-  per-user 配额，用全局的 `SCAN_WALK_WORKERS` 会直接撞限流导致整轮扫描失败。
-- **追新支持原生 Drive**：走公共通道（吃缓存 / 单飞 / 限流 / 熔断），占用追新自己的
-  小名额。rclone cli 模式仍不支持（它的 ModTime 口径不同）。
-
-> 从 rclone 迁移：**新建一个 gdrive 挂载**，媒体库改绑后重新扫描，**不要原地改类型**。
-> 条目路径存的是 `mount://<挂载id>/<相对路径>`，挂载 id 一变旧条目立刻失效；
-> 后台的挂载编辑本身也禁止改类型（历史设计如此）。确认新库正常后再把旧 rclone 挂载停用。
+> 已经 `rclone mount` 到本机目录的场景，直接用本地硬盘挂载那个目录更直接
+> （走本机文件，没有代理开销）。
 
 ### 115 直挂：列目录失败 / 提示 Cookie 失效
 

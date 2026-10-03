@@ -34,7 +34,7 @@ import textwrap
 
 import pytest
 
-from backend.emby_server import api, direct_url, mount_google, play_line, portal
+from backend.emby_server import api, mount_rclone, play_line, portal
 from backend.emby_server.play_line import LINE_DIRECT, LINE_RELAY
 
 
@@ -156,16 +156,16 @@ def test_relay_line_never_redirects_without_explicit_param(monkeypatch):
     assert seen == [target.value], "不该出现任何 302，带不带凭据都一样"
 
 
-def test_gdrive_target_with_credentials_never_redirects(monkeypatch):
-    """Google Drive 目标的 headers 必带 Authorization：连 ?direct=true 也不 302"""
+def test_rclone_target_with_credentials_never_redirects(monkeypatch):
+    """远程目标（带凭据 / 签名）一律代理转发：连 ?direct=true 也不 302"""
     from types import SimpleNamespace
 
     from starlette.requests import Request
 
     from backend.emby_server.mounts import PlayTarget
 
-    target = PlayTarget("url", "https://www.googleapis.com/drive/v3/files/x?alt=media",
-                        {"Authorization": "Bearer ya29.tok"})
+    target = PlayTarget("url", "http://127.0.0.1:5572/%5Bgdrive:%5D/a.mkv",
+                        {"Authorization": "Basic dXNlcjpwYXNz"})
     monkeypatch.setattr(api, "_require_item", lambda db_, item_id: SimpleNamespace(container="mp4"))
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda *a, **k: None)
     monkeypatch.setattr(api.playback_policy, "ensure_client_allowed", lambda *a, **k: None)
@@ -183,45 +183,21 @@ def test_gdrive_target_with_credentials_never_redirects(monkeypatch):
                        "server": ("t", 80), "client": ("1.1.1.1", 1)})
     resp = asyncio.run(api.video_stream("item", request, SimpleNamespace(id=1), object()))
     assert resp == "proxied"
-    assert seen == [target.value]
+    assert seen == [target.value], "不该出现任何 302，带不带凭据都一样"
 
 
-# ---------------- 配置项保留 ----------------
+# ---------------- rclone.conf 由用户自理 ----------------
 
 
-def test_direct_link_is_gone_from_code_and_form():
-    """配置项与表单字段都已删除：代码不再读取它，界面上也没有这个开关。
+def test_no_server_side_rclone_conf_generation():
+    """面板不再代管 rclone.conf：生成/写出的那两个入口整个模块都没了"""
+    import importlib
 
-    库里已存的 ``direct_link`` 值原样留着（不迁移、不报错），只是没人读了。
-    """
-    import json
-    import types
-
-    from backend.emby_server import mounts as mount_lib
-
-    fields = [f for e in mount_google.MOUNT_TYPE_ENTRIES
-              if e["value"] == mount_google.MOUNT_GDRIVE for f in e["fields"]]
-    assert "direct_link" not in {f["key"] for f in fields}, "后台表单不该再有这个开关"
-
-    mount = types.SimpleNamespace(
-        id=99, name="gd", mount_type=mount_google.MOUNT_GDRIVE, path="",
-        config=json.dumps({"auth_mode": "sa", "direct_link": "1"}),
-        is_enabled=True, realm_id=None, remark="",
-    )
-    provider = mount_lib.build_provider(mount)
-    assert not hasattr(provider, "direct_link"), "代码不再读取 direct_link"
-    # 库里已存的配置值原样保留：没有迁移、没有报错，只是不再有人读它
-    assert provider.config["direct_link"] == "1"
-
-
-def test_direct_link_module_api_is_gone():
-    """直链生成那一套函数整体删除，模块只剩令牌层（ServiceAccountPool 仍在）"""
-    for gone in ("build_direct_url", "get_direct_url", "try_google_direct_url",
-                 "parse_rclone_url", "get_file_id", "direct_url_enabled",
-                 "get_access_token"):
-        assert not hasattr(direct_url, gone), f"{gone} 应已删除"
-    for kept in ("ServiceAccountPool", "get_sa_pool", "refresh_access_token_sync"):
-        assert hasattr(direct_url, kept), f"{kept} 是挂载在用的令牌层，不能误删"
+    for gone in ("rclone_admin", "rclone_manager"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"backend.emby_server.{gone}")
+    assert not hasattr(mount_rclone, "generate_rclone_conf")
+    assert not hasattr(mount_rclone, "write_conf_from_db")
 
 
 def test_play_target_has_no_direct_field():

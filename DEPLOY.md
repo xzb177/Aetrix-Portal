@@ -190,12 +190,12 @@ docker compose logs -f aetrix-api
 
 ## 三、升级到新版本
 
-我们每次发新版会在仓库里更新 `VERSION`，镜像 tag 跟着版本号走（如 `2.42.11`）。
+我们每次发新版会在仓库里更新 `VERSION`，镜像 tag 跟着版本号走（如 `2.42.12`）。
 
 **推荐：锁定版本号**，这样出问题能精确回滚。在 `.env` 里加一行：
 
 ```
-AETRIX_IMAGE_TAG=2.42.11
+AETRIX_IMAGE_TAG=2.42.12
 ```
 
 然后升级：
@@ -211,6 +211,37 @@ docker compose up -d    # 原地替换容器
 
 > 不写 `AETRIX_IMAGE_TAG` 时默认跟随 `latest`（永远是最新的稳定版）。图省事可以不管，
 > 但出问题时就没法一句话回滚了。
+
+### 从 2.42.11 升到 2.42.12：存储来源只剩三种
+
+后台「存储来源」的类型**由路径前缀决定**，不再有类型下拉，只有三种：
+
+| 路径写法 | 来源 |
+| --- | --- |
+| `/media/...`（任意绝对路径） | 本地硬盘 |
+| `115:/...` | 115 网盘 |
+| `rclone:...` | rclone 任意后端 |
+
+升级前请注意两件事：
+
+1. **rclone 配置改由你自己粘贴。** 升级后到后台「rclone.conf」页把你的
+   `rclone.conf`（标准 INI 文本）粘进去保存；面板只负责落盘并给 rclone 命令
+   加 `--config`，不代管任何凭据。粘好之前，rclone 挂载会连不上（面板会明确
+   报「读不到 rclone.conf」，不会静默失败）。
+2. **老数据不动。** 已有的挂载、媒体库、已入库条目都保留；只是那些不再支持的
+   类型（Google Drive 原生挂载等）不再能被新建。库里三张没人读写的遗留表
+   （`rclone_remotes` / `service_account_files` / `emby_mount_file_ids`）
+   **不自动删**，占点空间而已，**不清也完全不影响功能**。确认新配置跑通后再清理：
+
+   ```bash
+   # 发行镜像里不含 scripts/（客户看不到源码），所以走 SQL：
+   docker compose exec postgres psql -U aetrix -d aetrix -c \
+     'DROP TABLE IF EXISTS rclone_remotes, service_account_files, emby_mount_file_ids;'
+
+   # 自建部署（镜像带 scripts/，或直接在仓库里跑）可以用带预览的脚本：
+   venv/bin/python scripts/drop_removed_mount_tables.py          # 先看会删什么
+   venv/bin/python scripts/drop_removed_mount_tables.py --yes    # 确认后真删
+   ```
 
 ---
 
@@ -270,7 +301,12 @@ docker image rm ghcr.io/xzb177/aetrix-api:<版本> ghcr.io/xzb177/aetrix-web:<�
 ## 五、常见问题
 
 **`docker compose up` 报 `RCLONE_RC_USER` 相关错误？**
-只在你要用「rclone 网盘挂载」时才需要。现在不用管，也不影响启动。
+只在你要用「rclone 挂载」时才需要。现在不用管，也不影响启动。
+（授权版 `docker-compose.prod.yml` 里这两个变量默认空，不会因为它起不来。）
+
+**升级到 2.42.12 后 rclone 挂载连不上了？**
+面板不再代管 `rclone.conf`——到后台「rclone.conf」页把你的配置粘进去保存。
+另见上面「三、升级到新版本」里的两种来源写法。
 
 **`/api/health` 打不开 / 容器一直 restarting？**
 `docker compose logs aetrix-api`，最常见是 `.env` 里 `SECRET_KEY` 没填或长度不够 32 位。
@@ -301,7 +337,8 @@ docker compose up -d --force-recreate
 改 `.env` 的 `AETRIX_PORT`（比如 8080），然后 `docker compose up -d`。
 
 **数据存在哪？怎么备份？**
-数据库在 volume `postgres_data`，配置在 `./rclone`（若启用），媒体库是你自己的目录
+数据库在 volume `postgres_data`，rclone 配置在 volume `rclone_data`
+（你要用 rclone 挂载时才需要），媒体库是你自己的目录
 （`.env` 的 `MEDIA_ROOT`）。备份用：
 
 ```bash
