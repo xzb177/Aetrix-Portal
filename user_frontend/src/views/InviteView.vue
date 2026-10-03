@@ -12,9 +12,9 @@ import {
   type MyInviteInfo, type InvitationRecordRow, type RebateRow,
   type MyPromotions, type PromotionRewardRow,
 } from '@/api/economy'
-import { useToast } from '@/composables/useToast'
+import { useClipboard } from '@/composables/useClipboard'
 
-const toast = useToast()
+const { copy } = useClipboard()
 
 const loading = ref(true)
 const failed = ref(false)
@@ -34,16 +34,18 @@ const inviteLink = computed(() => {
 
 const copiedField = ref('')
 
+/**
+ * 复制邀请码 / 邀请链接。
+ *
+ * 真正的复制与反馈都交给 useClipboard（HTTP 等非安全上下文下
+ * navigator.clipboard 不存在，它会降级到 execCommand）；
+ * 这里只负责成功后把图标换成勾，以及 1.8 秒后换回去。
+ */
 async function copyText(text: string, field: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    copiedField.value = field
-    toast.success('已复制')
-    setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1800)
-  } catch {
-    // 降级方案：选中文字
-    toast.error('复制失败，请手动复制')
-  }
+  const ok = await copy(text, field === 'link' ? '邀请链接' : '邀请码')
+  if (!ok) return
+  copiedField.value = field
+  setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1800)
 }
 
 function fmtTime(iso?: string | null) {
