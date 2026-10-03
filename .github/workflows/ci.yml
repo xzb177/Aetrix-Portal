@@ -149,6 +149,12 @@ jobs:
       - name: 发行镜像 target 契约（客户镜像不带 scripts/）
         run: python scripts/check_image_targets.py
 
+      # 授权版环境变量契约：env.example / 编排 / DEPLOY.md 三者必须一致。
+      # 客户的部署动作只有「照文档敲几条命令」，所以三者之间任何不一致
+      # 都是启动阻断（历史上真出现过：改密码后连接串不同步、Redis 被关掉）。
+      - name: 授权版环境变量契约（照文档能起得来）
+        run: python scripts/check_env_contract.py
+
       # 不依赖前端构建产物，所以单独一个 job，改后端时能更快拿到反馈
       - name: 门户认证端到端（注册 → 登录 → me → refresh → 改密）
         run: python scripts/smoke_test_auth.py

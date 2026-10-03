@@ -2,6 +2,53 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.42.11] - 2026-10-03
+
+### 授权版环境变量：修掉两个「照文档走仍然起不来」的阻断
+
+授权客户的部署动作只有「照 DEPLOY.md 敲几条命令」，所以 `env.example`、
+编排与文档之间的任何不一致都是**启动阻断**，而不是文档瑕疵。逐项对照后发现
+两个真的会把客户卡住的问题，**均用真容器复现过**。
+
+- **改密码后连不上自己的数据库**：`env.example` 里写死了
+  `DATABASE_URL=postgresql://aetrix:aetrix@...`，而 DEPLOY.md 让客户用 sed 改
+  `POSTGRES_PASSWORD`。两处密码从此不一致，后端一直报
+  `password authentication failed for user "aetrix"`，容器反复重启，
+  而报错里完全看不出是哪一行配错了。
+  实测：起真 PostgreSQL，用 `aetrix` 连 → `FATAL`；用 sed 后的密码连 → 成功。
+  修法：**`env.example` 不再出现 `DATABASE_URL`**，连接串交给
+  `docker-compose.prod.yml` 拼（它内部已经嵌套引用 `POSTGRES_PASSWORD`）。
+  实测修完后：渲染出的 URL 密码与 PG 密码一致，且真连 + 建表写入成功。
+- **服务永远等不到就绪**：`env.example` 里 `REDIS_ENABLED=false`，但
+  compose 的健康检查硬断言 Redis 里有 worker 心跳，且 `backend/worker.py`
+  在 `REDIS_ENABLED=false` 时直接 `return 1` 拒绝启动。
+  实测：真跑 worker → 「Redis 不可用…worker 拒绝启动」。
+  也就是说 false 不是「关掉缓存跑得更快」，而是永远不 healthy。
+  修法：改成 `true`，并写明「只有不用 compose 的单机测试才可能需要 false」。
+- **`PORT` / `HOST` 是死变量**：授权版对外端口是 `AETRIX_PORT`，
+  compose 不读 `PORT`/`HOST`。留着生效值会让客户改了以为有用、实际白改。
+  已降为注释并标注原因。
+- **补齐 5 个 compose 里用到但 env.example 没提的变量**：
+  `EA_INTERNAL_PORT`（固定绑 127.0.0.1，标注「不要改」）、
+  `RCLONE_CONFIG_DIR` / `RCLONE_SA_DIR` / `RCLONE_SERVE_REMOTE` /
+  `RCLONE_VFS_CACHE_MIN_FREE`。客户在 compose 里看到 `${...}` 不至于一头雾水。
+- **DEPLOY.md 同步**：第 3 步加了「确认两行都改到了」的检查命令与 macOS
+  `sed -i ''` 的差异提示；新增「必须改 / 不用动」两张表（后者点名
+  `REDIS_ENABLED`、`DATABASE_URL`、`MEDIA_ROOT`、`EMBY_PUBLIC_URL`）；
+  常见问题补上本次两个故障的**症状 → 排查命令**。
+- **新增 `scripts/check_env_contract.py`（接入 CI）**：把上述不变量写成断言。
+  已做反向验证 10 项（含逐字还原上面两个真实 bug），全部 rc=1 被捕获。
+
+> 过程中的一个教训：第一版修法把 `DATABASE_URL` 写成
+> `postgresql://aetrix:${POSTGRES_PASSWORD}@...`，看着能自动同步，实测渲染出的是
+> **空密码** —— `env_file:` 的值不做插值，插值只认 shell / `--env-file` / 同目录
+> `.env`。是这个「先验证再改」的过程把它挡下来的，否则等于用一个更隐蔽的故障
+> 换掉原来那个。
+
+未做真机点检：完整「登录 ghcr → pull → up」需真实包权限。但本次两个故障
+已在本地用真 PostgreSQL / 真 worker 复现并验证修好。
+
+
 ## [2.42.10] - 2026-10-03
 
 ### 发行镜像拆分 target：自建能跑运维脚本，客户镜像仍然不带

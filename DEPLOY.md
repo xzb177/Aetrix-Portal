@@ -40,7 +40,7 @@ cd dist && zip -r "aetrix-portal-$VER.zip" "aetrix-portal-$VER"
 发行包一共 3 个文件，解压后长这样：
 
 ```
-aetrix-portal-2.42.9/
+aetrix-portal-2.42.11/
 ├── docker-compose.yml   ← 部署编排（已写好官方镜像地址）
 ├── env.example          ← 配置模板
 └── DEPLOY.md             ← 本文件
@@ -119,7 +119,7 @@ docker login ghcr.io -u <你的GitHub用户名>
 ### 第 3 步：配置并启动
 
 ```bash
-cd aetrix-portal-2.42.9      # 换成你实际解压出来的目录名
+cd aetrix-portal-2.42.11     # 换成你实际解压出来的目录名
 
 # 1) 生成配置文件
 cp env.example .env
@@ -130,10 +130,22 @@ sed -i "s|^SECRET_KEY=.*|SECRET_KEY=$(python3 -c 'import secrets; print(secrets.
 # 3) 改掉数据库默认密码（见下方说明，至少改这一个）
 sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')|" .env
 
-# 4) 拉镜像并启动
+# 4) 确认两行都改到了（应该输出两个非空的密码，且**内容不一样**才对）
+grep -E '^(SECRET_KEY|POSTGRES_PASSWORD)=' .env | sed 's/=.*/=<已设置>/'
+sed -n 's/^POSTGRES_PASSWORD=//p' .env | wc -c     # 远大于 1 = 确实换掉了
+
+# 5) 拉镜像并启动
 docker compose pull
 docker compose up -d
 ```
+
+> 第 2、3 步的 `sed` 在 macOS 上若报 `invalid command` 或行为异常，用
+> `sed -i '' "s|...|...|"`（BSD sed 的 `-i` 要跟参数）。写错了也不会出事：
+> 下一步的 `grep` 会直接告诉你有没有改到。
+>
+> **只改 `POSTGRES_PASSWORD` 就够了**，不要自己动 `DATABASE_URL`
+> （`env.example` 里默认没有这一行，它由编排文件根据密码自动拼）。
+> 两个一起改、改成不一致的密码，是这套部署最常见的启动失败原因。
 
 首次启动要 1-3 分钟（容器要等数据库、Redis、后端都健康才算就绪）。查看进度：
 
@@ -144,6 +156,9 @@ docker compose logs -f aetrix-api
 
 **就绪后浏览器打开** `http://<服务器IP>:8000`
 （端口在 `.env` 的 `AETRIX_PORT` 里改，默认 8000。）
+
+> 改端口改 `AETRIX_PORT`。`env.example` 里的 `PORT` / `HOST` 是容器**内部**
+> 监听用的，编排文件不读它们 —— 改那里不会有任何效果。
 
 首次进入需要创建管理员账号：打开 `http://<服务器IP>:8000/admin`。
 
@@ -158,18 +173,27 @@ docker compose logs -f aetrix-api
 | `SECRET_KEY` | 会话签名密钥。上面第 2 条命令已自动生成。**泄露 = 别人能伪造登录态** |
 | `POSTGRES_PASSWORD` | 数据库账号密码。上面第 3 条命令已自动生成 |
 
-其余按需在 `.env` 里调整（对外端口、媒体库路径、Emby 网关、支付、邮件等都有注释说明）。
+其余**全部保持默认即可**，包括这几项容易踩的：
+
+| 配置项 | 为什么不用动 |
+|---|---|
+| `REDIS_ENABLED` | 保持 `true`。改成 `false` 会让后台扫描进程拒绝启动，服务永远等不到「就绪」 |
+| `DATABASE_URL` | 默认不出现这一行，由编排文件根据 `POSTGRES_PASSWORD` 自动拼。手动写容易造成密码不一致 |
+| `MEDIA_ROOT` | 不指向真实媒体库也能启动；之后在后台「媒体库管理」里加库更方便 |
+| `EMBY_PUBLIC_URL` | 只影响客户端一键导入时的地址提示，不影响启动 |
+
+不确定的项就别动 —— 每个变量上方都有注释说明「改了会发生什么」。
 
 ---
 
 ## 三、升级到新版本
 
-我们每次发新版会在仓库里更新 `VERSION`，镜像 tag 跟着版本号走（如 `2.42.9`）。
+我们每次发新版会在仓库里更新 `VERSION`，镜像 tag 跟着版本号走（如 `2.42.11`）。
 
 **推荐：锁定版本号**，这样出问题能精确回滚。在 `.env` 里加一行：
 
 ```
-AETRIX_IMAGE_TAG=2.42.9
+AETRIX_IMAGE_TAG=2.42.11
 ```
 
 然后升级：
@@ -248,6 +272,28 @@ docker image rm ghcr.io/xzb177/aetrix-api:<版本> ghcr.io/xzb177/aetrix-web:<�
 
 **`/api/health` 打不开 / 容器一直 restarting？**
 `docker compose logs aetrix-api`，最常见是 `.env` 里 `SECRET_KEY` 没填或长度不够 32 位。
+
+**日志里出现 `password authentication failed for user "aetrix"`？**
+`.env` 里数据库密码被改成了两处不一致的值。两个地方必须同时匹配：
+`.env` 的 `POSTGRES_PASSWORD`，以及（如果你自己写了）`DATABASE_URL` 里的密码。
+**最省事的修法：删掉 `.env` 里的 `DATABASE_URL` 那一行**（它本来就不用写），
+只保留 `POSTGRES_PASSWORD`，重建容器即可。
+
+```bash
+# 删掉可能手改坏的 DATABASE_URL，并重置成一致的密码
+sed -i '/^DATABASE_URL=/d' .env
+sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')|" .env
+docker compose up -d --force-recreate
+```
+
+**`docker compose ps` 里 aetrix-api 一直显示 `starting`，等很久也不变 healthy？**
+先确认 `.env` 里 `REDIS_ENABLED` 是 `true`（compose 部署必须如此）。
+改成 `false` 后，后台扫描进程会拒绝启动，健康检查永远等不到它需要的心跳，
+看起来就像「卡住了」。把它改回 `true`，再 `docker compose up -d --force-recreate`。
+
+**第一次启动要等多久？**
+1-3 分钟（要等数据库初始化、Redis、后端三步健康）。
+如果超过 5 分钟还没变 healthy，请看上面的重启与密码两条。
 
 **端口被占用？**
 改 `.env` 的 `AETRIX_PORT`（比如 8080），然后 `docker compose up -d`。

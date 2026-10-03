@@ -1,6 +1,6 @@
 {
   "name": "aetrix-admin-frontend",
-  "version": "2.42.10",
+  "version": "2.42.11",
   "private": true,
   "type": "module",
   "scripts": {
