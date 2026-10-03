@@ -19,7 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import codes, models
+from backend import codes, models, register_channel
 from backend.db_retry import commit_with_retry
 from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend import share_guard
@@ -269,6 +269,9 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
         password_hash=hash_password(req.password),
         email=req.email.strip() if req.email else None,
         is_active=True,
+        # 注册渠道归因（v2.44.0）：先记进门的凭据，邀请码生效后再升级为 invitation
+        register_channel=(register_channel.CODE if reg_code is not None
+                          else register_channel.OPEN),
     )
     db.add(user)
     db.flush()   # 先拿主键；**不提交**：用户 + 卡码消耗 + 会员天数要么全成、要么全不留痕
@@ -293,7 +296,12 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
     if req.invitation_code:
         try:
             from backend.api.invitation import apply_invitation
-            apply_invitation(db, user, req.invitation_code)
+
+            result = apply_invitation(db, user, req.invitation_code)
+            # 归因收尾：码无效/被拒时这个号就是自己注册的，记成 invitation 会把
+            # 渠道分析带偏。优先级（卡密 > 邀请码 > 开放）由 resolve 统一裁决。
+            user.register_channel = register_channel.resolve(
+                user.register_channel, bool((result or {}).get("applied")))
             db.commit()
         except Exception:  # noqa: BLE001 — 邀请奖励失败不阻塞注册
             db.rollback()

@@ -82,8 +82,14 @@ export const changePassword = (data: { old_password: string; new_password: strin
 
 // ==================== 用户管理 ====================
 
-export const fetchUsers = (params: { search?: string; active?: boolean; limit?: number; offset?: number }) =>
-  get<UsersResponse>('/users', params)
+export const fetchUsers = (params: {
+  search?: string
+  active?: boolean
+  /** 注册渠道：空 = 全部；__unrecorded = 升级前存量（未记录） */
+  channel?: string
+  limit?: number
+  offset?: number
+}) => get<UsersResponse>('/users', params)
 
 /** 用户 360° 详情：资料 / 订阅 / 积分 / 订单 / 邀请 / 签到 / 观看 */
 export const fetchUserDetail = (id: number) => get<UserDetail>(`/users/${id}`)
@@ -290,6 +296,106 @@ export const saveShareGuardPolicy = (policy: Partial<ShareGuardPolicy>) =>
 
 export const purgeShareGuardEvents = (days: number | null) =>
   post<{ success: boolean; message: string; deleted: number }>('/share-guard/purge', { days })
+
+// ==================== 邀请码管理（v2.44.0 第一阶段） ====================
+
+/** 邀请码状态：可用 / 已用完 / 已过期 / 已作废 */
+export type InvitationCodeState = 'active' | 'used_up' | 'expired' | 'revoked'
+
+export interface InvitationCodeRow {
+  id: number
+  code: string
+  owner_user_id: number
+  owner_username: string
+  max_uses: number
+  use_count: number
+  /** null = 不限次数（前端显示「不限」） */
+  remaining: number | null
+  whitelist: string[]
+  is_active: boolean
+  state: InvitationCodeState
+  state_label: string
+  expires_at: string | null
+  expires_days_left: number | null
+  reward_points: number
+  created_at: string | null
+}
+
+export interface InvitationCodesResponse {
+  success: boolean
+  total: number
+  summary: Record<string, number>
+  states: Array<{ value: string; label: string }>
+  codes: InvitationCodeRow[]
+}
+
+export const fetchInvitationCodes = (params: {
+  keyword?: string
+  owner_user_id?: number
+  state?: string
+  limit?: number
+  offset?: number
+} = {}) => get<InvitationCodesResponse>('/invitation-codes', params)
+
+export const generateInvitationCodes = (data: {
+  owner_user_id: number
+  count: number
+  max_uses: number
+  expires_days: number
+  whitelist?: string
+}) =>
+  post<{ success: boolean; message: string; codes: InvitationCodeRow[] }>(
+    '/invitation-codes', data,
+  )
+
+export const updateInvitationCode = (
+  id: number,
+  data: { max_uses?: number; expires_days?: number; whitelist?: string; is_active?: boolean },
+) => put<{ success: boolean; code: InvitationCodeRow }>(`/invitation-codes/${id}`, data)
+
+export const revokeInvitationCodes = (ids: number[]) =>
+  post<{ success: boolean; message: string; count: number }>('/invitation-codes/revoke', { ids })
+
+// ==================== 推广奖励（v2.44.0 第一阶段） ====================
+
+export interface PromotionPolicy {
+  enabled: boolean
+  reward_type: 'balance' | 'days'
+  amount: number
+  days: number
+  reward_types: string[]
+  reward_type_labels: Record<string, string>
+  /** 真的会发吗（开关开着但值是 0 = 等同没开，后台要看得见） */
+  active: boolean
+}
+
+export interface PromotionRewardRow {
+  id: number
+  invitee_id: number
+  invitee_username: string
+  inviter_username?: string
+  reward_type: string
+  reward_type_label: string
+  reward_value: number
+  realm_id: number | null
+  created_at: string | null
+}
+
+export interface PromotionResponse {
+  success: boolean
+  policy: PromotionPolicy
+  summary: { total: number; reward_24h: number }
+  rewards: PromotionRewardRow[]
+}
+
+export const fetchPromotion = (params: { limit?: number; offset?: number } = {}) =>
+  get<PromotionResponse>('/promotion', params)
+
+/** 键是 SystemConfig 的键名（promotion_reward_*），不是 policy_payload 的读模型 */
+export const savePromotionPolicy = (policy: Record<string, string>) =>
+  put<{ success: boolean; applied: Record<string, string>; policy: PromotionPolicy }>(
+    '/promotion/policy', { policy },
+  )
 
 // ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 ====================
 

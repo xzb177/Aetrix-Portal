@@ -88,6 +88,14 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     if code.expires_at and code.expires_at < now:
         return {"applied": False}
 
+    # 白名单（可选）：内测码 / 渠道码只给指定的人用。空名单 = 不限，
+    # 所以存量邀请码行为完全不变。
+    if (code.whitelist or "").strip():
+        allowed = {w.strip().lower() for w in code.whitelist.split(",") if w.strip()}
+        if (user.username or "").strip().lower() not in allowed:
+            logger.info("邀请码白名单未命中，跳过: code=%s user=%s", code_str, user.id)
+            return {"applied": False}
+
     inviter = db.query(models.WebUser).filter(
         models.WebUser.id == code.user_id
     ).first()
@@ -123,6 +131,14 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     )
 
     code.use_count = (code.use_count or 0) + 1
+
+    # 推广奖励（v2.44.0）：独立开关、独立阈值，**默认关闭** → 这里返回 None，
+    # 既有行为逐字不变。它不 flush：下面这一次 flush 会把邀请关系、双向积分、
+    # 推广奖励一起落盘，任何一处冲突都整体回滚。
+    from backend import promotion as promotion_rewards
+
+    promotion_rewards.grant(db, inviter, user, code)
+
     try:
         # 唯一索引 invitee_id 兜底：并发重复调用时让冲突在此暴露并整体回滚，
         # 不会出现「发了奖但没有关系记录」
@@ -249,6 +265,27 @@ def my_invitation_records(
             "created_at": r.created_at.isoformat() if r.created_at else None,
         })
     return {"total": len(items), "records": items}
+
+
+@router.get("/promotions")
+def my_promotions(
+    limit: int = 50,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """我的推广奖励明细（v2.44.0）：邀请成功后另发的那一笔
+
+    与「返利台账」分开：返利是被邀请人充值后按比例分的，这里是邀请即发的一次性
+    奖励，类型可以是余额也可以是会员有效期——合成一张表会说不清「这笔是什么」。
+    """
+    from backend import promotion
+
+    items = promotion.rewards_for(db, current_user.id, limit)
+    return {
+        "total": len(items),
+        "config": promotion.config(db),
+        "rewards": items,
+    }
 
 
 @router.get("/rebates")
