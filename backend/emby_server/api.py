@@ -2432,12 +2432,21 @@ async def video_stream(
                 play_line.LINE_RELAY)
         # 原生挂载给的直链（Google Drive 原生 provider）：提供者自己就有 file id 与
         # token，不需要问任何人。优先于 rclone 那条老路（后者要先 stat 查 file id）。
-        if getattr(target, "direct", None):
+        if getattr(target, "direct", None) and not getattr(target, "from_file_id_cache", False):
             # 302 的字节不经本机：只记请求，不记流量（line_stats 对 0 字节天然忽略）
             line_stats.record_request(line)
             return Response(status_code=302, headers={
                 "Location": target.direct, "Cache-Control": cdn.NO_STORE,
             })
+        if getattr(target, "from_file_id_cache", False):
+            # 方案A：file id 来自「路径 → id」缓存（秒开那套），而缓存的 id 可能已经
+            # 失效（文件在 Drive 上被移动/改名/删除）。**此时不能盲 302** ——
+            # 302 之后字节不经本机，服务器永远看不到那个 404，自愈就不会触发，
+            # 而缓存也不会被清 → 每次重试都是同一个死地址。
+            # 改走代理：代理路径带 404 重试（_serve_remote_retry_on_stale），
+            # 失效时能自动重解析并把新 id 写回。代价是这一次流量过 VPS，可接受。
+            _note_line_fallback(line, play_line.LINE_RELAY,
+                                "file id 来自缓存，为保证失效可自愈改走代理转发")
         # Google Drive 直链 302：客户端直连 Google 下载，不经过服务器代理。
         # try_google_direct_url 失败（未配置/查不到/异常）时返回 None，自动回退到代理。
         google_direct = await try_google_direct_url(target.value)

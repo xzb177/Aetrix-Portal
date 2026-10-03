@@ -350,6 +350,7 @@ class GoogleDriveMount(_CloudMount):
         clean = "/" + (rel or "").lstrip("/")
         mount_id = getattr(self.mount, "id", 0) or 0
         file_id = file_id_cache.lookup(self.db, mount_id, clean) if mount_id else ""
+        from_cache = bool(file_id)
         if file_id:
             entry = {"id": file_id, "size": 0}
         else:
@@ -357,6 +358,7 @@ class GoogleDriveMount(_CloudMount):
             if mount_id:
                 file_id_cache.store(self.db, mount_id, clean, entry["id"], entry.get("size", 0))
         target = PlayTarget("url", self._file_url(entry["id"]), self._headers())
+        target.from_file_id_cache = from_cache
         if self.direct_link:
             target.direct = self._file_url(entry["id"], with_token=True)
         return target
