@@ -237,7 +237,7 @@ def match_keywords(haystack: str, words: Iterable[str]) -> str:
 
 
 def evaluate_ua(rules: Rules, user_agent: str) -> Verdict:
-    """UA 判定。白名单优先于黑名单（命���白名单一律放行）。"""
+    """UA 判定。白名单优先于黑名单（命中白名单一律放行）。"""
     if not rules.ua_enabled or not (rules.ua_allow or rules.ua_deny):
         return ALLOW
 
@@ -351,7 +351,7 @@ def is_local_client(ip: str) -> bool:
        不另立一套「什么算内网」）；
     2. 它是一道**「把自己锁在门外」的保险**。UA 白名单一旦填错（比如只填了
        某个客户端的名字、没包含管理员自己的浏览器），整站对管理员关闭，而
-       唯一能改回来���就是这一页——没有第二条路时那就是一个不可自愈的事故。
+       唯一能改回来的就是这一页——没有第二条路时那就是一个不可自愈的事故。
 
     注意这只对 **UA** 生效，归属地规则不因它放行：内网地址本来就没有归属地，
     ``resolve_geo`` 查不到就按 fail-open 放行了。

@@ -363,7 +363,7 @@ def test_worker_http_404_fails_immediately_not_degraded(db, monkeypatch):
     熔断器（靠 _error == "quota"）对远程文件永远不触发。
 
     v2.43.0 起的分档：404 归入永久失败（见 ``probe_worker.PERMANENT_ERRORS``）。
-    原来这里是「退避重试 → 超限 failed」，对��个已经不在的文件白白打 5 次请求。
+    原来这里是「退避重试 → 超限 failed」，对一个已经不在的文件白白打 5 次请求。
     本用例断言：**仍然收敛到 failed**（不落 degraded，这是本测试的原始意图），
     但不再走重试阶梯。
     """
