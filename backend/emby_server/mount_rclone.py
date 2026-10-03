@@ -37,6 +37,7 @@ from backend.emby_server.mounts import (
     MountError,
     PlayTarget,
     cached_listing,
+    parse_mod_ts,
 )
 
 logger = logging.getLogger(__name__)
@@ -446,7 +447,13 @@ class RcloneMount(_CloudMount):
     # ---- 接口 ----
 
     def _raw_listing(self, rel: str) -> list[dict]:
-        """列目录并统一成 ``{Path, Name, Size, IsDir}``（rc / cli 两种模式各自的字段都要对齐）"""
+        """列目录并统一成 ``{Path, Name, Size, IsDir, ModTime}``（rc / cli 各自的字段都要对齐）
+
+        ``ModTime`` 以前在这里被丢掉了——追新要判断「新增」必须知道最后修改时间，
+        而追新拿不到它就只能绕开公共通道直接读 rclone 原始 JSON，等于自带一条无限流的
+        旁路（2026-10 rclone 请求风暴）。现在它一路带到 ``MountEntry.mod_ts``，
+        追新也能吃缓存 / 限流 / 熔断。
+        """
         if self.mode == MODE_CLI:
             items = self._cli_lsjson(rel)
         else:
@@ -455,7 +462,8 @@ class RcloneMount(_CloudMount):
                                    username=self.rc_user, password=self.rc_pass)
         return [
             {"Path": str(i.get("Path") or ""), "Name": str(i.get("Name") or ""),
-             "Size": int(i.get("Size") or 0), "IsDir": bool(i.get("IsDir"))}
+             "Size": int(i.get("Size") or 0), "IsDir": bool(i.get("IsDir")),
+             "ModTime": str(i.get("ModTime") or "")}
             for i in items
         ]
 
@@ -489,6 +497,7 @@ class RcloneMount(_CloudMount):
             entries.append(MountEntry(
                 name=name, rel=child_rel, is_dir=item["IsDir"],
                 size=item["Size"], entry_id=item["Path"] if item["IsDir"] else "",
+                mod_ts=parse_mod_ts(item.get("ModTime")),
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries

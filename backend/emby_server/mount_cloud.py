@@ -155,14 +155,19 @@ def _xml_text(node, name: str, default: str = "") -> str:
 # ==================== 公共基类 ====================
 
 def _walk_workers() -> int:
-    """扫描遍历的并发线程数（SCAN_WALK_WORKERS，默认 16）。
+    """扫描遍历的并发线程数（SCAN_WALK_WORKERS，默认 8）。
 
     非法值回退默认，保证配错了也不炸扫描。
+
+    2026-10 从 16 降到 8：并发主要是为了掩盖网盘/Rclone 的延迟，不是为了提高吞吐。
+    16 个线程同时打向同一个 rclone RC 端点时，rcd 侧排队把延迟放大到十几倍，
+    并且把大量请求堆成 context canceled / connection reset（生产 24 小时 5.2 万条）。
+    降一半后单轮扫描慢一些，但成功率与错误量都大幅改善。
     """
     try:
-        n = int(os.getenv("SCAN_WALK_WORKERS", "16") or 16)
+        n = int(os.getenv("SCAN_WALK_WORKERS", "8") or 8)
     except (TypeError, ValueError):
-        n = 16
+        n = 8
     return max(1, n)
 
 
@@ -243,7 +248,7 @@ class _CloudMount(MountProvider):
         # 的 ffprobe 与 TMDB 预取。rel 全局唯一，误杀不了正常文件。
         seen_files: set[str] = set()
         # 分层 BFS：每层目录并发列举
-        # 并发数可配（SCAN_WALK_WORKERS，默认 16）：网盘 API 延迟是瓶颈，并发主要
+        # 并发数可配（SCAN_WALK_WORKERS，默认 8）：网盘 API 延迟是瓶颈，并发主要
         # 是掩盖延迟；但并发越高，同时打向 rclone RC / 网盘的请求越多，rcd 侧的
         # 内存峰值也越高。内存吃紧的机器可调小（如 8），扫描会慢一些。
         with ThreadPoolExecutor(max_workers=_walk_workers(), thread_name_prefix="walk") as pool:

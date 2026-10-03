@@ -262,6 +262,10 @@ class MountEntry:
     is_dir: bool
     size: int = 0
     entry_id: str = ""
+    #: 远端最后修改时间（Unix 秒；拿不到就是 0.0）。追新靠它做「新增」窗口过滤——
+    #: 之前追新为此绕开公共通道直接读 rclone 原始 JSON 的 ModTime，等于自带一条
+    #: 无限流的旁路（2026-10 rclone 请求风暴）。带在条目上，公共通道就能直接复用。
+    mod_ts: float = 0.0
 
 
 @dataclass
@@ -374,22 +378,30 @@ def local_play_target(path: str) -> PlayTarget:
 # （115 的 ``/电影/2024/x.mkv`` 就是 3 次网盘往返），多个人同时播就是几十次。
 #
 # 所以把缓存**下沉到提供者层**，按（挂载、类型指纹、目录）做 TTL 缓存，扫描与播放共用：
-#   MOUNT_LIST_CACHE_SECONDS  目录列举缓存有效期（0 = 关闭，默认 5）
+#   MOUNT_LIST_CACHE_SECONDS  目录列举缓存有效期（0 = 关闭，默认 30）
 #   MOUNT_LIST_CACHE_MAX      最多缓存多少个目录（满了整体清空，内存有上限）
 # 失败**不缓存**（网盘抖动不该被固化 TTL 秒），返回值是**拷贝**（调用方会排序/裁剪，
 # 共享同一个 list 对象会让它们互相污染）。
-MOUNT_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("MOUNT_LIST_CACHE_SECONDS", "5") or 0))
+MOUNT_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("MOUNT_LIST_CACHE_SECONDS", "30") or 0))
 MOUNT_LIST_CACHE_MAX = max(50, int(os.getenv("MOUNT_LIST_CACHE_MAX", "2000") or 2000))
 # 远程并发上限（v2.27.0）：同时最多几个远程请求在飞。WebDAV / rclone / 网盘代理在高并发下
 # 并不会更快——它们要么排队、要么限流，四个库同时扫一个端点时延迟被放大到十几倍。
 # 本机目录（local / strm / rclone 最终落到本机路径的用法）不吃这个名额。
 MOUNT_REMOTE_CONCURRENCY = max(1, min(16, int(os.getenv("MOUNT_REMOTE_CONCURRENCY", "2") or 2)))
+# 追新（chase_new）的**独立**远程名额（2026-10 rclone 请求风暴修复）：
+# 追新原来绕开本模块直接调 rc_call，无上限地把请求打向 rcd——生产 24 小时 5.2 万条
+# 报错（context canceled 2.6 万 / connection reset 1.9 万）就是这么来的。改成走公共
+# 通道后它会和扫描抢同一批名额，而扫描是主任务、追新只是低频后台任务，所以给它一个
+# **更小的独立名额**：追新慢一点没关系，绝不能把扫描饿着（反过来也一样）。
+CHASE_REMOTE_CONCURRENCY = max(1, min(8, int(os.getenv("CHASE_REMOTE_CONCURRENCY", "1") or 1)))
 
 _LIST_CACHE: dict = {}
 _LIST_LOCKS: dict = {}
 _LIST_CACHE_LOCK = threading.Lock()
 _REMOTE_SEM: Optional[threading.BoundedSemaphore] = None
 _REMOTE_SEM_SIZE = MOUNT_REMOTE_CONCURRENCY
+_CHASE_SEM: Optional[threading.BoundedSemaphore] = None
+_CHASE_SEM_SIZE = CHASE_REMOTE_CONCURRENCY
 _REMOTE_SEM_LOCK = threading.Lock()
 _LIST_CACHE_STATS = {"hits": 0, "misses": 0, "expired": 0, "evictions": 0, "waits": 0}
 
@@ -400,6 +412,7 @@ def list_cache_stats() -> dict:
         return {**_LIST_CACHE_STATS, "entries": len(_LIST_CACHE),
                 "ttl_seconds": MOUNT_LIST_CACHE_SECONDS,
                 "remote_concurrency": MOUNT_REMOTE_CONCURRENCY,
+                "chase_concurrency": CHASE_REMOTE_CONCURRENCY,
                 "scan_session": progress.in_scan_session()}
 
 
@@ -498,14 +511,57 @@ def _remote_semaphore() -> threading.BoundedSemaphore:
         return _REMOTE_SEM
 
 
+def _chase_semaphore() -> threading.BoundedSemaphore:
+    """追新专用的远程名额（更小，见 CHASE_REMOTE_CONCURRENCY 的说明）"""
+    global _CHASE_SEM, _CHASE_SEM_SIZE
+    with _REMOTE_SEM_LOCK:
+        if _CHASE_SEM is None or _CHASE_SEM_SIZE != CHASE_REMOTE_CONCURRENCY:
+            _CHASE_SEM = threading.BoundedSemaphore(CHASE_REMOTE_CONCURRENCY)
+            _CHASE_SEM_SIZE = CHASE_REMOTE_CONCURRENCY
+        return _CHASE_SEM
+
+
+# 用途标记是**线程局部**的：调用方（追新）在自己的线程里声明「我这一段算追新」，
+# 于是它经由 cached_listing → _call_remote → remote_io_slot 走的每一跳都自动落到
+# 追新名额上。用线程局部而不是给 list_dir / _call_remote 一路加参数，是因为公共通道
+# 有九个子类、几十个调用点，加参数要么改遍所有签名，要么就漏掉某一跳——限流一旦有
+# 漏网的路径，限流就等于没有。
+PURPOSE_SCAN = "scan"
+PURPOSE_CHASE = "chase"
+_IO_PURPOSE = threading.local()
+
+
+@contextlib.contextmanager
+def remote_io_purpose(purpose: str):
+    """声明本线程接下来这一段远程 IO 属于哪个用途（决定它占哪个名额）
+
+    必须是 ``with`` 作用域而不是全局开关：扫描 / 补全 / 追新跑在不同线程上，
+    全局开关会让追新顺手把扫描的名额也换掉。
+    """
+    previous = getattr(_IO_PURPOSE, "purpose", PURPOSE_SCAN)
+    _IO_PURPOSE.purpose = purpose or PURPOSE_SCAN
+    try:
+        yield
+    finally:
+        _IO_PURPOSE.purpose = previous
+
+
+def current_io_purpose() -> str:
+    """当前线程的用途标记（统计 / 日志用）"""
+    return getattr(_IO_PURPOSE, "purpose", PURPOSE_SCAN) or PURPOSE_SCAN
+
+
 @contextlib.contextmanager
 def remote_io_slot():
     """占用一个「远程请求」名额（v2.27.0 的远程限流）
 
     只包住**真的会发出网络请求**的那一步（列目录、远程探测），缓存命中与单飞等待都不占名额——
     否则并发请求同一个目录时，等锁的线程会把名额白白占住，反而降低吞吐。
+
+    名额按当前线程的用途标记分流（``remote_io_purpose``）：默认走扫描/补全的共享名额，
+    追新走自己那个更小的独立名额，两边互不抢。
     """
-    sem = _remote_semaphore()
+    sem = _chase_semaphore() if current_io_purpose() == PURPOSE_CHASE else _remote_semaphore()
     sem.acquire()
     progress.note_remote_inflight(1)
     try:
@@ -520,6 +576,41 @@ def _is_remote_provider(provider) -> bool:
     mount = getattr(provider, "mount", None)
     meta = type_meta(getattr(mount, "mount_type", "") or "")
     return (meta.get("kind") or "") == "remote"
+
+
+def parse_mod_ts(value) -> float:
+    """把远端返回的最后修改时间解析成 Unix 秒（解析不了就是 0.0）
+
+    远端给的是 RFC3339 字符串，但**精度与时区写法因后端而异**：rclone 的
+    ``ModTime`` 是纳秒（``2026-10-01T12:00:00.000000123Z``），而 Python 3.10 的
+    ``fromisoformat`` 只接受 3 或 6 位小数——直接扔给它会解析失败、退化成 0.0，
+    于是追新永远看不到新文件（静默漏检，比报错更难查）。所以先把小数秒截到微秒
+    再解析；时区偏移（``+08:00``）原样保留，交给 ``fromisoformat``。
+    """
+    if value in (None, ""):
+        return 0.0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    head, sep, frac = text.partition(".")
+    if sep:
+        # 小数部分后面还跟着时区偏移（12:00:00.123+08:00）
+        digits = ""
+        for ch in frac:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        tail = frac[len(digits):]
+        text = f"{head}.{digits[:6].ljust(6, '0')}{tail}"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except (ValueError, AttributeError, TypeError):
+        return 0.0
 
 
 # ==================== 按挂载熔断（v2.42.9）====================

@@ -11,8 +11,12 @@
 
 v1 范围：
 - 本机目录：文件 mtime 检测（``find -newermt``）
-- rclone RC 挂载：``/operations/list`` 递归列举 + ``ModTime`` 窗口过滤
+- rclone RC 挂载：逐层列举 + ``ModTime`` 窗口过滤（走 ``mounts`` 公共通道）
 - 115/webdav/alist 暂不直接检测，依赖每日定时扫描兜底
+
+2026-10：远程检测曾绕过 ``mounts`` 的公共通道直接调 rclone RC，是一条无上限的
+旁路（生产 24 小时 5.2 万条报错）。现在统一走 ``build_provider`` → ``list_dir``，
+吃缓存 / 单飞 / 限流 / 熔断 / 统计，并占用追新自己的小名额。
 """
 
 from __future__ import annotations
@@ -46,10 +50,13 @@ MAX_INTERVAL = 120
 # 视频扩展名白名单
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm"}
 
-# 追新远端列举的超时（秒）。通用挂载默认 20s（MOUNT_TIMEOUT），
-# 递归列举上万个文件的库会超时——生产实测国产剧 1.4 万文件。追新是低频后台任务，
-# 给足时间换取不漏检。
-CHASE_NEW_RC_TIMEOUT = float(os.getenv("CHASE_NEW_RC_TIMEOUT", "180"))
+# 追新在一个季目录里最多往下钻几层。rclone 的一次递归列举会把整个子树拍平返回，
+# 国产剧 1.4 万个文件时生产实测要几分钟、远超任何合理超时。改成逐层走公共通道后
+# 每一跳都是「一个小目录」，但仍需要上限：层数不封顶，遇到结构异常深的面粉盘
+# 会变成无界遍历。3 层足够盖住「季目录 / 特别篇 / 压制组」这类真实结构。
+CHASE_MAX_DEPTH = max(1, int(os.getenv("CHASE_MAX_DEPTH", "3") or 3))
+# 单个季目录递归时最多收多少条目：卡住不是因为结构，而是有人往里塞了几万个文件。
+CHASE_MAX_ENTRIES = max(100, int(os.getenv("CHASE_MAX_ENTRIES", "5000") or 5000))
 
 _WATCHER_STARTED = False
 _WATCHER_LOCK = threading.Lock()
@@ -135,31 +142,71 @@ def _library_mount_sources(library, db: Session) -> list[tuple[int, str]]:
     return sources
 
 
-def _rc_list(mount, cfg: dict, remote: str, *, recurse: bool, files_only: bool = True):
-    """调一次 rclone RC 列举（统一超时与凭据口径）"""
-    from backend.emby_server.mount_rclone import rc_call
+def _chase_provider(mount, db: Session):
+    """构造追新要用的提供者（只支持 rclone rc 模式——生产实际用法）
 
-    opt: dict = {"filesOnly": files_only}
-    if recurse:
-        opt["recurse"] = True
-    body = rc_call(
-        cfg["rc_url"], "/operations/list",
-        {"fs": cfg.get("fs") or "", "remote": remote, "opt": opt},
-        username=cfg.get("rc_user", "") or "", password=cfg.get("rc_pass", "") or "",
-        # 通用挂载超时（默认 20s）对大库不够：国产剧 1.4 万个文件会超时。
-        timeout=CHASE_NEW_RC_TIMEOUT,
-    )
-    return (body or {}).get("list") or []
+    返回 None 表示这个挂载追新管不了（cli 模式 / 未启用 / 构造失败），调用方直接跳过。
+    构造失败只记日志不抛：这个挂载坏了不该让整轮追新中断。
+    """
+    from backend.emby_server import mount_rclone
 
-
-def _mod_ts(entry) -> float:
-    mt = (entry or {}).get("ModTime")
-    if not mt:
-        return 0.0
+    if not getattr(mount, "is_enabled", False):
+        return None
     try:
-        return datetime.fromisoformat(str(mt).replace("Z", "+00:00")).timestamp()
-    except (ValueError, AttributeError):
-        return 0.0
+        provider = mount_lib.build_provider(mount, db)
+    except Exception as exc:  # noqa: BLE001 — 构造失败（含未知类型）= 跳过该挂载
+        logger.warning("[chase-new] 挂载 %s 构造提供者失败: %s",
+                       getattr(mount, "id", None), exc)
+        return None
+    # 只覆盖 rc 模式：cli 模式靠子进程列目录，ModTime 口径不同，且追新不是它的主场景
+    if getattr(provider, "mode", "") != mount_rclone.MODE_RC:
+        return None
+    return provider
+
+
+def _mount_url(mount_id: int, rel: str) -> str:
+    """挂载内相对路径 → ``mount://<id>/<rel>``"""
+    return f"{MOUNT_PATH_PREFIX}{int(mount_id)}/{(rel or '').lstrip('/')}"
+
+
+def _walk_files(provider, rel: str, max_depth: int, max_entries: int) -> list:
+    """从 ``rel`` 往下逐层找视频文件（每一跳都走公共通道）
+
+    旧实现是一次 ``recurse=True`` 把整个子树拍平拿回来（国产剧 1.4 万个文件要几分钟、
+    超时）。这里改成**逐层列一层**：单次响应小、稳，而且每一跳都吃得到缓存、单飞锁、
+    限流名额、熔断保护与统计——这正是这个修复要的东西。
+
+    层数与条目数都有上限：没有上限的话，结构异常深或异常大的目录会变成无界遍历。
+    """
+    found: list = []
+    seen_dirs: set[str] = set()
+    current = ["/" + (rel or "").lstrip("/")]
+    depth = 0
+    while current and depth < max_depth and len(found) < max_entries:
+        nxt: list[str] = []
+        for one in current:
+            try:
+                entries = provider.list_dir(one)
+            except Exception as exc:  # noqa: BLE001 — 单个目录失败不影响其它
+                logger.warning("[chase-new] 列 %s 失败: %s", one, exc)
+                continue
+            for entry in entries:
+                if len(found) >= max_entries:
+                    break
+                if entry.is_dir:
+                    child = "/" + (entry.rel or "").lstrip("/")
+                    if child not in seen_dirs:
+                        seen_dirs.add(child)
+                        nxt.append(child)
+                    continue
+                if os.path.splitext(entry.name)[1].lower() in VIDEO_EXTS:
+                    found.append(entry)
+        current = nxt
+        depth += 1
+    if len(found) >= max_entries:
+        logger.warning("[chase-new] %s 递归达到条目上限 %d（可能有异常大的目录），已截断",
+                       rel, max_entries)
+    return found
 
 
 def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
@@ -171,87 +218,62 @@ def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
 
     改成**两级**：先只列顶层（一次请求、几百个目录，每个都带 ModTime），
     再对每个顶层目录列一层子目录（季级），只对「ModTime 落在窗口内」的季级
-    子目录递归。实测顶层 402 个目录全部带 ModTime，正常情况下每轮只递归
+    子目录往下钻。实测顶层 402 个目录全部带 ModTime，正常情况下每轮只钻
     最近变动的少数几个季目录——成本从上万文件降到几十个。
 
     **不能在顶层按 mtime 过滤**：新出一集只改动 ``Season/`` 子目录的 mtime，
     顶层剧集目录的 mtime 不变（rclone/Drive 只更新直接父目录）。如果在顶层
     按 mtime 筛，"老剧出新集"（追新最主要的场景）会被漏掉。
+
+    2026-10：这里以前直接调 ``rc_call``，是一条**无限流旁路**——绕开了缓存、限流、
+    熔断与统计，生产 24 小时把 rclone 打出 5.2 万条报错。现在全部改走
+    ``mounts`` 的公共通道（``build_provider`` → ``list_dir``），并用
+    ``remote_io_purpose`` 把追新划到**自己的、更小的 RC 名额**上，不与扫描抢。
     """
     mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
-    if mount is None or not getattr(mount, "is_enabled", False):
+    if mount is None:
         return []
-    cfg = mount_lib.parse_config(mount)
-    if not cfg.get("rc_url"):
-        # cli 模式或非 rclone 挂载：本实现只覆盖 rc（生产实际用法）
+    provider = _chase_provider(mount, db)
+    if provider is None:
         return []
-    remote = (rel_dir or "/").lstrip("/")
+    base = "/" + (rel_dir or "/").lstrip("/")
 
-    try:
-        top = _rc_list(mount, cfg, remote, recurse=False, files_only=False)
-    except Exception as exc:  # noqa: BLE001 — 顶层列不出来就跳过该库，不拖垮整轮
-        logger.warning("[chase-new] 列 %s 顶层失败: %s", remote, exc)
-        return []
-
-    base = remote.rstrip("/")
-
-    def _mount_url(*parts: str) -> str:
-        # 拼 mount:// 路径：逐段 strip（不能对整串做 replace，
-        # 那会把 mount:// 前缀里的双斜杠也去掉，得到 mount:/3/… 的错路径）
-        rel = "/".join(p.strip("/") for p in parts if p and p.strip("/"))
-        return f"{MOUNT_PATH_PREFIX}{mount_id}/{base}/{rel}" if base else f"{MOUNT_PATH_PREFIX}{mount_id}/{rel}"
-
-    found: list[str] = []
-    for it in top:
-        if not isinstance(it, dict):
-            continue
-        name = str(it.get("Name") or "")
-        if not it.get("IsDir"):
-            # 顶层散片
-            if (os.path.splitext(name)[1].lower() in VIDEO_EXTS
-                    and _mod_ts(it) > since_ts):
-                found.append(_mount_url(name))
-            continue
-        # 顶层目录（剧集）：不按 mtime 过滤，直接列第二级（季目录/散文件）
-        show_path = str(it.get("Path") or name)
+    with mount_lib.remote_io_purpose(mount_lib.PURPOSE_CHASE):
         try:
-            subs = _rc_list(mount, cfg, f"{base}/{show_path}" if base else show_path,
-                            recurse=False, files_only=False)
-        except Exception as exc:  # noqa: BLE001 — 单个剧集目录失败不影响其它
-            logger.warning("[chase-new] 列 %s 第二级失败: %s", show_path, exc)
-            continue
-        for sub in subs:
-            if not isinstance(sub, dict):
+            top = provider.list_dir(base)
+        except Exception as exc:  # noqa: BLE001 — 顶层列不出来就跳过该库，不拖垮整轮
+            logger.warning("[chase-new] 列 %s 顶层失败: %s", base, exc)
+            return []
+
+        found: list[str] = []
+        for it in top:
+            if not it.is_dir:
+                # 顶层散片
+                if (os.path.splitext(it.name)[1].lower() in VIDEO_EXTS
+                        and it.mod_ts > since_ts):
+                    found.append(_mount_url(mount_id, it.rel))
                 continue
-            sub_name = str(sub.get("Name") or "")
-            sub_path = str(sub.get("Path") or sub_name)
-            if not sub.get("IsDir"):
-                # 剧集目录下直接放视频（无季目录结构）
-                if (os.path.splitext(sub_name)[1].lower() in VIDEO_EXTS
-                        and _mod_ts(sub) > since_ts):
-                    found.append(_mount_url(show_path, sub_path))
-                continue
-            if _mod_ts(sub) <= since_ts:
-                continue
-            # 季目录在窗口内变动：递归找新视频
+            # 顶层目录（剧集）：不按 mtime 过滤，直接列第二级（季目录/散文件）
             try:
-                items = _rc_list(mount, cfg, f"{base}/{show_path}/{sub_path}" if base
-                                 else f"{show_path}/{sub_path}",
-                                 recurse=True, files_only=True)
-            except Exception as exc:  # noqa: BLE001 — 单个季目录失败不影响其它
-                logger.warning("[chase-new] 递归列 %s/%s 失败: %s", show_path, sub_path, exc)
+                subs = provider.list_dir(it.rel)
+            except Exception as exc:  # noqa: BLE001 — 单个剧集目录失败不影响其它
+                logger.warning("[chase-new] 列 %s 第二级失败: %s", it.rel, exc)
                 continue
-            for fitem in items:
-                if not isinstance(fitem, dict) or fitem.get("IsDir"):
+            for sub in subs:
+                if not sub.is_dir:
+                    # 剧集目录下直接放视频（无季目录结构）
+                    if (os.path.splitext(sub.name)[1].lower() in VIDEO_EXTS
+                            and sub.mod_ts > since_ts):
+                        found.append(_mount_url(mount_id, sub.rel))
                     continue
-                fname = str(fitem.get("Name") or "")
-                if not fname or os.path.splitext(fname)[1].lower() not in VIDEO_EXTS:
+                if sub.mod_ts <= since_ts:
                     continue
-                if _mod_ts(fitem) <= since_ts:
-                    continue
-                # 递归结果的 Path 是相对被递归目录的
-                fpath = str(fitem.get("Path") or "").lstrip("/")
-                found.append(_mount_url(show_path, sub_path, fpath))
+                # 季目录在窗口内变动：逐层往下钻（每一跳都受缓存/限流/熔断保护）
+                for entry in _walk_files(provider, sub.rel, CHASE_MAX_DEPTH,
+                                         CHASE_MAX_ENTRIES):
+                    if entry.mod_ts <= since_ts:
+                        continue
+                    found.append(_mount_url(mount_id, entry.rel))
     return found
 
 

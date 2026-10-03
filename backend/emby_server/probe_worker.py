@@ -168,9 +168,12 @@ def _quota_breaker_check(is_403: bool) -> bool:
     return breaker_is_tripped()
 
 # ---- 可调参数（环境变量） ----
-PROBE_WORKERS = max(1, min(32, int(os.getenv("PROBE_WORKERS", "8") or 8)))
+# 2026-10 调低：探测会和扫描 / 追新一起打向同一个 rclone 端点，8 个线程 + 4/s 的
+# 启动速率叠加上去就是请求风暴的主要来源之一（生产 24 小时 5.2 万条报错）。降一半后
+# 积压消化得慢一些，但不再把 rclone 打死；两者都能用环境变量调回去。
+PROBE_WORKERS = max(1, min(32, int(os.getenv("PROBE_WORKERS", "4") or 4)))
 PROBE_BATCH = max(10, int(os.getenv("PROBE_BATCH", "200") or 200))
-PROBE_RATE_PER_SEC = max(1, int(os.getenv("PROBE_RATE_PER_SEC", "4") or 4))
+PROBE_RATE_PER_SEC = max(1, int(os.getenv("PROBE_RATE_PER_SEC", "2") or 2))
 PROBE_MAX_ATTEMPTS = max(1, int(os.getenv("PROBE_MAX_ATTEMPTS", "5") or 5))
 PROBE_IDLE_POLL_SEC = max(5, int(os.getenv("PROBE_IDLE_POLL_SEC", "30") or 30))
 # 轮间休息：只要还有积压，每轮跑完就立刻再抢下一批（实测 200 条/30s），
