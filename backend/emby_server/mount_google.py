@@ -23,6 +23,8 @@ rclone 仍然保留给 SFTP / FTP / WebDAV 等其它后端，**不在本类型�
 - ``drive_id``：共享云端硬盘 ID；填了则按团队盘寻址
 - ``direct_link``：``1`` 时播放直接 302 到 Drive（默认关，走服务器代理）
 - ``api_base``：接口地址，测试或自建代理可改
+
+条目带 ``modTime``，所以后台「追新」对本类型同样生效（走公共通道，吃缓存与限流）。
 """
 from __future__ import annotations
 
@@ -224,13 +226,16 @@ class GoogleDriveMount(_CloudMount):
 
         只按 **父目录 ID** 查询，不按文件名：Drive 的 ``q`` 用单引号包字符串，
         文件名里的单引号必须转义，错一个字符就是 400 或「目录不存在」——按 ID 查彻底绕开。
+
+        ``modTime`` 一起取：追新（``change_watcher``）靠条目的 ``mod_ts`` 做
+        「新增」窗口过滤，不取就等于这一类挂载永远检不出新文件（静默漏检）。
         """
         items: list[dict] = []
         page = ""
         for _ in range(_MAX_PAGES):
             params = {
                 "q": f"'{parent_id}' in parents and trashed = false",
-                "fields": "nextPageToken,files(id,name,size,mimeType)",
+                "fields": "nextPageToken,files(id,name,size,mimeType,modifiedTime)",
                 "pageSize": str(_PAGE_SIZE),
                 # 共享云端硬盘必需：缺了这两个参数会「能列目录但打不开文件」
                 "supportsAllDrives": "true",
@@ -302,6 +307,9 @@ class GoogleDriveMount(_CloudMount):
                 # file id 放进 entry_id：解析播放目标时靠它在父目录里定位文件，
                 # 于是播放不需要再问 Drive「这个路径对应哪个文件」。
                 entry_id=str(item.get("id") or ""),
+                # modifiedTime 走公共通道的 parse_mod_ts（Drive 给的是 RFC3339，
+                # 精度写法与 rclone 不同，统一由那一个函数处理）
+                mod_ts=mount_lib.parse_mod_ts(item.get("modifiedTime")),
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries

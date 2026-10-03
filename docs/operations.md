@@ -474,9 +474,9 @@ GB 级（实测 2.6GB / 2300 万 live object），强制 GC 只能回收约 2%�
 两个要点：
 
 - **遍历并发被单独限到 4**（`GDRIVE_WALK_WORKERS`）：Drive 是 100 秒 10000 次查询的
-  per-user 配额，用全局的 `SCAN_WALK_WORKERS=16` 会直接撞限流导致整轮扫描失败。
-- **追新不覆盖原生 Drive**：追新模块目前只认本机 mtime 与 rclone RC，gdrive 挂载靠
-  后台的「定时扫描」入库（与 115 / WebDAV 同样待遇）。
+  per-user 配额，用全局的 `SCAN_WALK_WORKERS` 会直接撞限流导致整轮扫描失败。
+- **追新支持原生 Drive**：走公共通道（吃缓存 / 单飞 / 限流 / 熔断），占用追新自己的
+  小名额。rclone cli 模式仍不支持（它的 ModTime 口径不同）。
 
 > 从 rclone 迁移：**新建一个 gdrive 挂载**，媒体库改绑后重新扫描，**不要原地改类型**。
 > 条目路径存的是 `mount://<挂载id>/<相对路径>`，挂载 id 一变旧条目立刻失效；

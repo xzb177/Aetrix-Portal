@@ -460,3 +460,51 @@ def test_test_message_mentions_auth_mode(drive):
     out = _provider().test()
     assert out["ok"] is True
     assert "服务账号轮换池" in out["message"]
+
+
+# ---------------- 与追新的衔接 ----------------
+
+def test_entries_carry_modified_time(drive):
+    """追新靠条目的 mod_ts 做「新增」窗口过滤。
+
+    不带 mod_ts 等于这类挂载永远检不出新文件——**静默漏检**，不报错，最难查。
+    """
+    drive.tree["d1"] = _TREE["d1"] + [
+        {"id": "m9", "name": "新片.mkv", "mimeType": "video/x-matroska",
+         "size": "10", "modifiedTime": "2026-10-01T12:00:00.123456789Z"},
+    ]
+    entries = _provider().list_dir("/电影")
+    new = next(e for e in entries if e.name == "新片.mkv")
+    # Drive 给的是 9 位纳秒（rclone 也有同样的精度问题），公共通道的
+    # parse_mod_ts 负责归一；这里断言它落在正确的秒级且亚秒部分没丢
+    assert new.mod_ts == pytest.approx(1790856000.123, abs=0.01)
+
+
+def test_chase_new_accepts_gdrive(monkeypatch, drive):
+    """追新的类型判定：能给出远端 modTime 的远程挂载都要能接上
+
+    ``#283`` 把追新改成走公共通道（吃缓存/限流/熔断），判定条件是「条目带得上
+    mod_ts」。若这里只认 rclone 的 ``mode == rc``，gdrive 会被**静默跳过**——
+    线程在跑、last_check 在更新，却永远发现不了新资源（与追新早年的真故障同型）。
+    """
+    from backend.emby_server import change_watcher as cw
+
+    got = cw._chase_provider(_mount(), None)
+    assert got is not None
+    assert got.mount_type == "gdrive"
+
+
+def test_chase_new_still_rejects_local_and_disabled(monkeypatch):
+    """本机目录（走 find -newermt 那条路）与停用挂载必须继续被排除。"""
+    from backend.emby_server import change_watcher as cw
+
+    local = types.SimpleNamespace(
+        id=1, name="l", mount_type="local", path="/tmp", config="{}",
+        is_enabled=True, realm_id=None, remark="",
+    )
+    assert cw._chase_provider(local, None) is None
+    # 停用的 gdrive 同样不进追新
+    assert cw._chase_provider(_mount(), None) is not None
+    off = _mount()
+    off.is_enabled = False
+    assert cw._chase_provider(off, None) is None

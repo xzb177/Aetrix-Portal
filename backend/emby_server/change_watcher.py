@@ -33,6 +33,7 @@ from backend import models as base_models
 from backend.database import SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mount_rclone
 from backend.emby_server import scan_queue
 
 logger = logging.getLogger(__name__)
@@ -143,13 +144,16 @@ def _library_mount_sources(library, db: Session) -> list[tuple[int, str]]:
 
 
 def _chase_provider(mount, db: Session):
-    """构造追新要用的提供者（只支持 rclone rc 模式——生产实际用法）
+    """构造追新要用的提供者（只覆盖**能给出远端 modTime** 的远程挂载）
 
-    返回 None 表示这个挂载追新管不了（cli 模式 / 未启用 / 构造失败），调用方直接跳过。
-    构造失败只记日志不抛：这个挂载坏了不该让整轮追新中断。
+    返回 None 表示这个挂载追新管不了（cli 模式 / 本机目录 / 未启用 / 构造失败），
+    调用方直接跳过。构造失败只记日志不抛：这个挂载坏了不该让整轮追新中断。
+
+    判据是「条目带得上 ``mod_ts``」——追新全靠它做新增窗口过滤。所以：
+    - rclone rc 模式：``/operations/list`` 的 ModTime（纳秒，由 parse_mod_ts 归一）；
+    - gdrive 原生：Drive ``modifiedTime``（RFC3339）；
+    - cli 模式靠子进程列目录、ModTime 口径不同，且追新不是它的主场景，仍然排除。
     """
-    from backend.emby_server import mount_rclone
-
     if not getattr(mount, "is_enabled", False):
         return None
     try:
@@ -158,9 +162,12 @@ def _chase_provider(mount, db: Session):
         logger.warning("[chase-new] 挂载 %s 构造提供者失败: %s",
                        getattr(mount, "id", None), exc)
         return None
-    # 只覆盖 rc 模式：cli 模式靠子进程列目录，ModTime 口径不同，且追新不是它的主场景
-    if getattr(provider, "mode", "") != mount_rclone.MODE_RC:
-        return None
+    kind = getattr(provider, "kind", "")
+    if kind != "remote":
+        return None                      # 本机目录由 find -newermt 那条路处理
+    mode = getattr(provider, "mode", "")
+    if mode and mode != mount_rclone.MODE_RC:
+        return None                      # rclone cli 模式：ModTime 口径不同，排除
     return provider
 
 
