@@ -1050,11 +1050,29 @@ def _remove_library_cover(relative_path: str | None) -> None:
         logger.warning("删除媒体库封面失败 %s: %s", path, exc)
 
 
+class LibraryPathEntry(BaseModel):
+    """媒体库的一条路径（**路径与存储后端分开**，界面不出现 mount:// 前缀）
+
+    - ``path``：本机来源给绝对路径；挂载来源给挂载内路径（``/视频/剧集/国产剧``）；
+      高级模式下也允许直接写 ``rclone:gdrive/Movies`` / ``115:/0`` 这种前缀路径。
+    - ``backend``：``local`` / ``rclone`` / ``115``，决定选哪个存储挂载。
+    - ``mount_id``：远程来源必填（本地来源忽略）。
+    """
+    path: str
+    backend: str = "local"
+    mount_id: int | None = None
+    mount_name: str = ""
+    backend_label: str = ""
+
+
 class LibraryCreate(BaseModel):
     name: str
     collection_type: str = "movies"
     # 内容来源：本机目录（可多个）与存储挂载（storage_mounts.id）至少给一个
     paths: list[str] = []
+    # 简化形式（推荐用这个）：路径与存储后端分开，不出现 mount:// 前缀。
+    # 传了它就以它为准；不传则回退到老的 paths 写法。
+    path_entries: list[LibraryPathEntry] | None = None
     mount_ids: list[int] = []
     is_enabled: bool = True
     # 刮削策略：missing_only（只补缺，默认）/ 3m / 6m / 1y / all（每次全量重刮）
@@ -1074,6 +1092,7 @@ class LibraryUpdate(BaseModel):
     name: str | None = None
     collection_type: str | None = None
     paths: list[str] | None = None
+    path_entries: list[LibraryPathEntry] | None = None
     mount_ids: list[int] | None = None
     is_enabled: bool | None = None
     scrape_policy: str | None = None
@@ -1124,6 +1143,56 @@ def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int
 
 def _mount_ids_field(db: Session, mount_ids: list[int]) -> str:
     return ",".join(str(i) for i in dict.fromkeys(mount_ids))
+
+
+def _resolve_entry_mounts(db: Session, entries: list[LibraryPathEntry]) -> list[dict]:
+    """路径条目 → 入库形态（自动拼回 mount://，并校验挂载与后端对得上）
+
+    返回 ``[{"raw", "backend"}, …]``，顺序与入参一致（``storage_backends`` 按位存）。
+    """
+    out: list[dict] = []
+    for entry in entries:
+        path = (entry.path or "").strip()
+        if not path:
+            raise HTTPException(status_code=400, detail="媒体路径不能为空")
+        backend = mount_lib.normalize_storage_backend(entry.backend) or "local"
+        mount = None
+        if entry.mount_id is not None:
+            mount = db.query(em.StorageMount).filter(
+                em.StorageMount.id == entry.mount_id).first()
+            if mount is None:
+                raise HTTPException(status_code=400,
+                                    detail=f"存储挂载不存在: #{entry.mount_id}")
+            if not mount.is_enabled:
+                raise HTTPException(
+                    status_code=400, detail=f"挂载「{mount.name}」已停用")
+            if not mount_lib.backend_matches_mount(backend, mount):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"「{path}」选的是{mount_lib.storage_backend_label(backend)}，"
+                            f"但挂载「{mount.name}」是"
+                            f"{mount_lib.storage_backend_label(mount.mount_type)}"),
+                )
+        item = {"path": path, "backend": backend, "mount_id": mount.id if mount else None}
+        try:
+            item["raw"] = mount_lib.assemble_library_path(item)
+        except mount_lib.MountError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        out.append(item)
+    return out
+
+
+def _library_path_payload(db: Session, entries: list[LibraryPathEntry]) -> tuple[str, str]:
+    """路径条目 → ``(paths 字段, storage_backends 字段)``（两者逐条对应，一次写入）"""
+    resolved = _resolve_entry_mounts(db, entries)
+    raws: list[str] = []
+    for item in resolved:
+        if item["raw"] not in raws:
+            raws.append(item["raw"])
+    # 去重后后端列要跟着重排：按 raw 回填，重复项沿用第一次的后端
+    backend_by_raw = {item["raw"]: item["backend"] for item in resolved}
+    backends = [backend_by_raw.get(raw, "") for raw in raws]
+    return ",".join(raws), mount_lib.dump_storage_backends(backends)
 
 
 class VirtualLibraryRequest(BaseModel):
@@ -1177,6 +1246,8 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
     nodes = {n.id: n for n in db.query(models.RemoteServer)
              .filter(models.RemoteServer.kind == "ea").all()}
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    # 路径回显要靠挂载表把 ``mount://<id>/…`` 还原成「挂载内路径 + 后端标签」（挂载数很少，一次查完）
+    mounts_by_id = {m.id: m for m in db.query(em.StorageMount).all()}
     # 播放可达性：库的「归属节点」决定了内容要在哪台机器上真正存在（见 reachability 模块）
     # 按服各算一份上下文：一个服一条库地混在一个列表里时，不能用甲服的节点去判乙服的库
     reach_ctxs: dict = {}
@@ -1193,6 +1264,8 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "id": lib.id, "guid": lib.guid, "name": lib.name,
             "collection_type": lib.collection_type,
             "paths": [p for p in (lib.paths or "").split(",") if p],
+            # 简化路径条目：界面用它渲染列表（不带 mount:// 前缀，带存储后端标签）
+            "path_entries": mount_lib.library_path_entries(lib, mounts_by_id),
             "mount_ids": mount_lib.parse_mount_ids(lib),
             "is_enabled": lib.is_enabled,
             # 正在扫描以进程内任务为准：数据库标志在进程崩溃后会残留为真
@@ -1229,6 +1302,11 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             {"value": "6m", "label": "半年重刮"},
             {"value": "1y", "label": "一年重刮"},
             {"value": "all", "label": "全部重刮"},
+        ],
+        # 存储后端下拉（本地文件 / Rclone / 115 网盘）——**由后端下发**，前端不自己维护一份
+        "storage_backends": [
+            {"value": value, "label": label}
+            for value, label in mount_lib.STORAGE_BACKEND_LABELS.items()
         ]}
 
 
@@ -1236,6 +1314,11 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
 def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     import uuid
 
+    # 简化形式优先：界面传的是「裸路径 + 存储后端」，mount:// 前缀在后端拼回去
+    backends_field = ""
+    if req.path_entries is not None:
+        paths_field, backends_field = _library_path_payload(db, req.path_entries)
+        req.paths = paths_field.split(",") if paths_field else []
     if not req.paths and not req.mount_ids:
         raise HTTPException(status_code=400, detail="请至少配置一个路径或一个存储挂载")
     _validate_library_sources(db, req.paths, req.mount_ids)
@@ -1252,7 +1335,9 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
             raise HTTPException(status_code=400, detail="这台节点属于另一个服，不能分配本服的媒体库")
     lib = em.Library(
         guid=guid, name=req.name, collection_type=req.collection_type,
-        paths=",".join(req.paths), mount_ids=_mount_ids_field(db, req.mount_ids),
+        paths=",".join(req.paths),
+        storage_backends=backends_field,
+        mount_ids=_mount_ids_field(db, req.mount_ids),
         is_enabled=req.is_enabled,
         scrape_policy=normalize_scrape_policy(req.scrape_policy),
         account_115_id=req.account_115_id,
@@ -1370,9 +1455,18 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
         lib.name = req.name
     if req.collection_type is not None:
         lib.collection_type = req.collection_type
-    if req.paths is not None:
+    if req.path_entries is not None:
+        paths_field, backends_field = _library_path_payload(db, req.path_entries)
+        _validate_library_sources(db, paths_field.split(","), [])
+        lib.paths = paths_field
+        lib.storage_backends = backends_field
+    elif req.paths is not None:
         _validate_library_sources(db, req.paths, [])
         lib.paths = ",".join(req.paths)
+        # 老写法（直接给 paths）没有后端信息：把这一列清空，让回显层按「挂载类型 + 路径
+        # 前缀」现推。写死一个猜出来的值更糟——把 115 的库标成「本地文件」会让管理员
+        # 去查错的挂载。
+        lib.storage_backends = ""
     if req.mount_ids is not None:
         _validate_library_sources(db, [], req.mount_ids)
         lib.mount_ids = _mount_ids_field(db, req.mount_ids)

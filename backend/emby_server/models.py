@@ -32,6 +32,12 @@ class Library(Base):
     realm_id = Column(Integer)
     collection_type = Column(String(30), default="movies")  # movies / tvshows / mixed
     paths = Column(Text, default="")  # 逗号分隔的扫描根目录；虚拟媒体库为空
+    # 与 :attr:`paths` **逐条对应**的存储后端（逗号分隔）：local / rclone / 115。
+    # 路径与后端分离后，界面上不再出现 ``mount://1/...`` 这种技术前缀——展示时用
+    # 「挂载内路径 + 后端标签」，入库时仍然把前缀拼回 paths（见 mounts.library_path_entries
+    # 与 mounts.assemble_library_path），所以这一列纯粹是给界面回显用的旁挂信息。
+    # 老库没有这一列时读出来是空串，后端按路径前缀 + 挂载类型现推，行为不变。
+    storage_backends = Column(Text, default="")
     is_enabled = Column(Boolean, default=True)
     is_scanning = Column(Boolean, default=False)
     # 刮削策略：missing_only / 3m / 6m / 1y / all（见 scanner.SCAN_POLICIES）

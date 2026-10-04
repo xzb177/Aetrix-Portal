@@ -283,17 +283,14 @@
   line-height: 1.5;
 }
 
-/* 挂载路径选择器：输入框 + 浏览按钮 */
-.paths-input-row {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
+/* 媒体路径：默认只展示列表，“高级前缀路径”收在折叠块里（绝大多数人用不到） */
+.lpm-advanced {
+  margin-top: 10px;
 }
-.paths-input-row .el-textarea {
-  flex: 1;
-}
-.paths-browse-btn {
-  flex-shrink: 0;
+.lpm-advanced :deep(.el-collapse-item__header) {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  border-bottom: none;
 }
 
 /* ---- 媒体库封面：预览框 ---- */
