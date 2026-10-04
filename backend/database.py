@@ -421,6 +421,9 @@ def _auto_migrate():
             ("platform", "VARCHAR(30)", "NULL"),
             ("account_115_id", "INTEGER", "NULL"),
             ("mount_ids", "TEXT", "''"),
+            # v2.43.0 路径与存储后端分离：与 paths 逐条对应的后端列（local/rclone/115）。
+            # 老库补列后为 ''，界面按「挂载类型 + 路径前缀」现推，行为与升级前一致。
+            ("storage_backends", "TEXT", "''"),
             ("node_id", "INTEGER", "NULL"),
             ("realm_id", "INTEGER", "NULL"),
             # 本轮扫描起始时刻：与 updated_at 分开，避免被进度刷盘顶掉

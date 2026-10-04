@@ -1348,6 +1348,155 @@ def parse_mount_ids(library) -> list[int]:
     return out
 
 
+# ==================== 路径与存储后端分离（界面上不出现 mount://）====================
+#
+# 入库的 ``Library.paths`` 始终保持老形态（本机绝对路径 / ``mount://<id>/<子目录>`` /
+# ``115:/`` / ``rclone:`` 前缀），扫描、播放、追新全都按它工作——**一行代码都不改**。
+# 只有「界面怎么显示」与「界面怎么写回来」这一层做了转换：
+#
+#   存 → assemble_library_path：裸路径 + 后端 + 挂载 id ⇒ mount://3/电影
+#   读 → library_path_entries：  mount://3/电影      ⇒ {path: /电影, backend: 115}
+#
+# 为什么值得加这一层：``mount://1/paul_emby/video/剧集/国产剧`` 这类路径对人没有信息量
+# （1 是数据库主键、paul_emby 是挂载名），管理员既看不懂也改不动。
+
+#: 存储后端 → 展示名（**由后端下发**，前端不自己维护一份）
+STORAGE_BACKEND_LABELS: dict[str, str] = {
+    MOUNT_LOCAL: "本地文件",
+    MOUNT_RCLONE: "Rclone",
+    MOUNT_PAN115: "115 网盘",
+}
+
+#: 归一时要认的别名（界面上传的值、扩展模块注册的写法都从这里过）
+_BACKEND_ALIASES: dict[str, str] = {
+    "local": MOUNT_LOCAL, "disk": MOUNT_LOCAL, "本地": MOUNT_LOCAL,
+    "rclone": MOUNT_RCLONE, "115": MOUNT_PAN115, "pan115": MOUNT_PAN115,
+}
+
+
+def normalize_storage_backend(value: Optional[str]) -> str:
+    """归一存储后端标识：``local`` / ``rclone`` / ``115``（扩展类型原样小写）
+
+    认不出来时返回**空串**而不是猜一个——猜错会让界面把「115 网盘」标成「Rclone」，
+    比空着更误导（空着时界面显示「未知来源」，一眼就知道该去核对这个挂载）。
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    return _BACKEND_ALIASES.get(raw, raw)
+
+
+def storage_backend_label(backend: Optional[str]) -> str:
+    """后端展示名（认不出来的原样回显，总比空白好懂）"""
+    key = normalize_storage_backend(backend)
+    return STORAGE_BACKEND_LABELS.get(key) or MOUNT_TYPE_LABELS.get(key) or key or "未知来源"
+
+
+def split_library_paths(raw: Any) -> list[str]:
+    """把 ``Library.paths`` 拆成路径列表（逗号 / 中文逗号分隔，去重去空）"""
+    out: list[str] = []
+    for part in str(raw or "").replace("，", ",").split(","):
+        item = part.strip()
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
+def dump_storage_backends(backends: list[str]) -> str:
+    """后端列表 → 入库字符串（与 paths 逐条对应）"""
+    return ",".join(normalize_storage_backend(b) for b in backends)
+
+
+def _stored_backends(library) -> list[str]:
+    return split_library_paths(getattr(library, "storage_backends", ""))
+
+
+def library_path_entries(library, mounts: Optional[dict] = None) -> list[dict]:
+    """把媒体库的 ``paths`` 拆成**界面友好的路径条目**（隐藏 mount:// 前缀）
+
+    每条：``{path, backend, backend_label, mount_id, mount_name, source, raw}``
+
+    - ``path``：挂载来源给挂载内路径（``/视频/剧集/国产剧``），本机来源给绝对路径；
+    - ``backend``：``local`` / ``rclone`` / ``115``，老数据靠「挂载类型 + 路径前缀」现推；
+    - ``raw``：原样保留，界面不显示它，但改动对比 / 排障要用。
+
+    ``mounts`` 是 ``{id: StorageMount}``；不传时只按前缀推断（拿不到挂载名与真实类型）。
+    """
+    raws = split_library_paths(getattr(library, "paths", ""))
+    stored = _stored_backends(library)
+    mounts = mounts or {}
+    entries: list[dict] = []
+    for idx, raw in enumerate(raws):
+        remembered = normalize_storage_backend(stored[idx]) if idx < len(stored) else ""
+        parsed = parse_mount_path(raw)
+        if parsed is not None:
+            mount_id, rel = parsed
+            mount = mounts.get(mount_id)
+            # 挂载还在时**以挂载类型为准**（它是真实情况：挂载可能被改过类型）；
+            # 记住的后端只接挂载已经查不到时的班，否则会把删掉的挂载标错。
+            backend = (normalize_storage_backend(getattr(mount, "mount_type", ""))
+                       or remembered)
+            entries.append({
+                "path": rel or "/",
+                "backend": backend,
+                "backend_label": storage_backend_label(backend),
+                "mount_id": mount_id,
+                "mount_name": getattr(mount, "name", "") if mount is not None else "",
+                "source": "mount",
+                "raw": raw,
+            })
+            continue
+        backend = (remembered or normalize_storage_backend(detect_mount_type(raw))
+                   or MOUNT_LOCAL)
+        entries.append({
+            "path": raw,
+            "backend": backend,
+            "backend_label": storage_backend_label(backend),
+            "mount_id": None,
+            "mount_name": "",
+            "source": "local" if raw.startswith("/") else "prefix",
+            "raw": raw,
+        })
+    return entries
+
+
+def assemble_library_path(entry: dict) -> str:
+    """界面条目 → 入库路径（**自动拼回** ``mount://<id>/<子目录>``）
+
+    - 本机来源：原样（必须是绝对路径，前缀路径如 ``rclone:gdrive/Movies`` 也原样保留，
+      扫描器认得这两个前缀，不需要挂载）；
+    - 远程来源且选了挂载：拼 ``mount://<挂载id>/<子目录>``；
+    - 远程来源但没选挂载：只有当路径自带 ``115:/`` / ``rclone:`` 前缀时才放行
+      （不建挂载直连的老用法），否则报错——写进去只能扫不出东西。
+    """
+    raw_path = str(entry.get("path") or "").strip()
+    backend = normalize_storage_backend(entry.get("backend")) or MOUNT_LOCAL
+    mount_id = entry.get("mount_id")
+    try:
+        mount_id = int(mount_id) if mount_id not in (None, "") else None
+    except (TypeError, ValueError):
+        mount_id = None
+    if mount_id is not None:
+        return mount_path(mount_id, raw_path)
+    if backend == MOUNT_LOCAL:
+        return raw_path
+    if not raw_path:
+        raise MountError(f"「{storage_backend_label(backend)}」来源需要填写目录路径")
+    if detect_mount_type(raw_path) == backend:
+        return raw_path
+    raise MountError(
+        f"「{storage_backend_label(backend)}」来源请先选择对应的存储挂载"
+        f"（挂载在「服务器」页配置），或在高级模式里直接手写 {backend}: 前缀路径"
+    )
+
+
+def backend_matches_mount(backend: Optional[str], mount) -> bool:
+    """界面选的存储后端与挂载实际类型是否一致（不一致就拒绝，别存出自相矛盾的来源）"""
+    chosen = normalize_storage_backend(backend)
+    actual = normalize_storage_backend(getattr(mount, "mount_type", ""))
+    return bool(chosen) and chosen == actual
+
+
 def _unwrap_path_wrapper(path: str) -> str:
     """剥掉外层粘进来的方括号 / 引号
 

@@ -66,10 +66,12 @@ import type {
   Pan115Account,
   RemoteServerRow,
   StorageMount,
+  StorageBackend,
+  LibraryPathEntry,
 } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
-import MountPathPicker from '@/components/MountPathPicker.vue'
+import LibraryPathManager from '@/components/LibraryPathManager.vue'
 import MountSourceEditor from '@/components/MountSourceEditor.vue'
 import type { MountTypeValue } from '@/components/MountSourceEditor.vue'
 import './EmbyAdmin.css'
@@ -134,8 +136,8 @@ interface LibFormState {
   mount_ids: number[]
   scrape_policy: string
   account_115_id: number | null
-  /** 媒体路径：一行一个（也容忍逗号分隔，与后端同一套拆分口径） */
-  paths: string
+  /** 媒体路径（简化形式）：路径与存储后端分开，不出现 mount:// 前缀 */
+  path_entries: LibraryPathEntry[]
   /** 是否纳入「追新」轮询监听（仅编辑可用；追新本身是全局开关） */
   chase: boolean
 }
@@ -151,7 +153,7 @@ function emptyLibForm(): LibFormState {
     mount_ids: [],
     scrape_policy: 'missing_only',
     account_115_id: null,
-    paths: '',
+    path_entries: [],
     chase: false,
   }
 }
@@ -295,76 +297,59 @@ function optionLabel(list: LibOption[], value: string | null | undefined): strin
   return hit ? (hit.recommended ? `${hit.label}（推荐）` : hit.label) : ''
 }
 
-// ---- 按类型添加来源（三个类型切换 + 前缀自动带）----
+// ---- 高级：不建挂载，直接写 rclone: / 115: 前缀路径 ----
+// （前缀路径扫描器认得，但没挂载就没法用挂载级的能力；正常情况都该用上面的添加弹窗）
+
 const srcPath = ref('')
 const srcType = ref<MountTypeValue>('local')
 
 function appendSourcePath() {
   const value = srcPath.value.trim()
   if (!value) return
-  const existing = parsePaths(libForm.paths)
-  if (existing.includes(value)) {
+  if (libForm.path_entries.some((e) => e.path === value)) {
     ElMessage.info('这条路径已经在里面了')
     return
   }
-  libForm.paths = [...existing, value].join('\n')
+  libForm.path_entries.push({
+    path: value,
+    backend: srcType.value,
+    backend_label: backendLabelOf(srcType.value),
+    mount_id: null,
+    mount_name: '',
+    source: 'prefix',
+    raw: value,
+  })
   srcPath.value = ''
   ElMessage.success(`已加入：${value}`)
 }
 
-// ---- 媒体路径：一行一个，浏览按钮的单选 / 多选都追加到同一个框 ----
-
-// 挂载路径选择器
-const pathPicker = ref<{ open: () => void } | null>(null)
-
-/** 路径框 → 路径数组：一行一个（兼容逗号 / 中文逗号），去重且去空 */
-function parsePaths(text: string): string[] {
-  const out: string[] = []
-  for (const raw of (text || '').split(/[,，\n]/)) {
-    const p = raw.trim()
-    if (p && !out.includes(p)) out.push(p)
-  }
-  return out
+/** 后端标签：优先用后端下发的（本地文件 / Rclone / 115 网盘），没下发时回落到标识本身 */
+function backendLabelOf(backend: string): string {
+  return storageBackends.value.find((b) => b.value === backend)?.label || backend
 }
 
-/**
- * 追加一批路径：与框里已有的逐个比对，已存在就跳过；批次内部同样去重
- * （跨层级重复勾选时只写一次）。跳过的数量要报出来——「我勾了 5 个，怎么只加了 2 个」
- * 是这里最容易让人以为坏了的地方。
- */
-function appendPaths(list: string[]) {
-  const existing = parsePaths(libForm.paths)
-  const seen = new Set(existing)
-  const added: string[] = []
-  let skipped = 0
-  for (const raw of list) {
-    const p = (raw || '').trim()
-    if (!p) continue
-    if (seen.has(p)) {
-      skipped += 1
-      continue
+/** 后端下发的存储后端清单（老后端没有这个字段时用固定的三项） */
+const storageBackends = ref<StorageBackend[]>([
+  { value: 'local', label: '本地文件' },
+  { value: 'rclone', label: 'Rclone' },
+  { value: '115', label: '115 网盘' },
+])
+
+/** 库里的路径条目（后端已把 mount:// 拆成「挂载内路径 + 存储后端」；老后端则按前缀现推） */
+function pathEntriesOf(l: EmbyLibrary): LibraryPathEntry[] {
+  if (l.path_entries?.length) return l.path_entries
+  return (l.paths || []).map((raw) => {
+    const backend = raw.startsWith('115:/') ? '115' : raw.startsWith('rclone:') ? 'rclone' : 'local'
+    return {
+      path: raw,
+      backend,
+      backend_label: backendLabelOf(backend),
+      mount_id: null,
+      mount_name: '',
+      source: raw.startsWith('/') ? 'local' : 'prefix',
+      raw,
     }
-    seen.add(p)
-    added.push(p)
-  }
-  if (!added.length) {
-    ElMessage.info(`所选 ${list.length} 个目录都已在路径框里，没有新增`)
-    return
-  }
-  libForm.paths = [...existing, ...added].join('\n')
-  ElMessage.success(skipped > 0
-    ? `已追加 ${added.length} 个目录（跳过 ${skipped} 个已存在）`
-    : `已追加 ${added.length} 个目录`)
-}
-
-/** 单选：追加一个目录（与多选同口径，同样去重） */
-function onPickMountPath(mountPath: string) {
-  appendPaths([mountPath])
-}
-
-/** 多选：一批目录一次性写入路径框 */
-function onPickMountPaths(mountPaths: string[]) {
-  appendPaths(mountPaths)
+  })
 }
 
 // ---- 打开 / 还原 / 保存 ----
@@ -380,7 +365,7 @@ function formFingerprint(): string {
     mount_ids: [...libForm.mount_ids].sort((a, b) => a - b),
     scrape_policy: libForm.scrape_policy,
     account_115_id: libForm.account_115_id,
-    paths: parsePaths(libForm.paths),
+    paths: libForm.path_entries.map((e) => `${e.backend}|${e.mount_id ?? ''}|${e.path}`),
     chase: libForm.chase,
   })
 }
@@ -393,7 +378,8 @@ const libFormDirty = computed(
 const libFormPathsChanged = computed(() => {
   if (!libFormDirty.value) return false
   const before = JSON.parse(libFormFingerprintAtOpen.value || '{}')
-  return JSON.stringify(before.paths) !== JSON.stringify(parsePaths(libForm.paths))
+  return JSON.stringify(before.paths) !== JSON.stringify(
+    libForm.path_entries.map((e) => `${e.backend}|${e.mount_id ?? ''}|${e.path}`))
 })
 
 function openCreate() {
@@ -421,7 +407,7 @@ function openSettings(l: EmbyLibrary) {
     mount_ids: [...(l.mount_ids || [])],
     scrape_policy: l.scrape_policy || 'missing_only',
     account_115_id: l.account_115_id ?? null,
-    paths: (l.paths || []).join('\n'),
+    path_entries: pathEntriesOf(l).map((e) => ({ ...e })),
     chase: chaseLibraryIds().includes(l.id),
   })
   libFormVisible.value = true
@@ -468,13 +454,17 @@ function onChaseSwitch(v: unknown) {
 async function saveForm(thenScan = false) {
   const editingId = libForm.id
   const name = libForm.name.trim()
-  const paths = parsePaths(libForm.paths)
+  const pathEntries = libForm.path_entries.map((e) => ({
+    path: e.path,
+    backend: e.backend,
+    mount_id: e.mount_id ?? null,
+  }))
   const virtual = !!libFormTarget.value?.is_virtual
   if (!name) {
     ElMessage.warning('请填写媒体库名称')
     return
   }
-  if (!virtual && !paths.length && !libForm.mount_ids.length) {
+  if (!virtual && !pathEntries.length && !libForm.mount_ids.length) {
     ElMessage.warning('请至少配置一个媒体路径或一个存储挂载，否则扫不到任何内容')
     return
   }
@@ -485,7 +475,8 @@ async function saveForm(thenScan = false) {
       const res = await createLibrary({
         name,
         collection_type: libForm.collection_type,
-        paths,
+        paths: [],
+        path_entries: pathEntries,
         mount_ids: libForm.mount_ids,
         scrape_policy: libForm.scrape_policy,
         account_115_id: libForm.account_115_id ?? undefined,
@@ -496,7 +487,7 @@ async function saveForm(thenScan = false) {
         cover_subtitle: coverSubtitle.value || null,
       })
       savedId = res.id
-      const hasSource = paths.length > 0 || libForm.mount_ids.length > 0
+      const hasSource = pathEntries.length > 0 || libForm.mount_ids.length > 0
       ElMessage.success(`媒体库「${name}」已创建${hasSource ? '，可以扫一次了' : ''}`)
     } else {
       // 虚拟库没有自己的目录与挂载（也不归属某台节点），这几个字段干脆不传：
@@ -511,7 +502,7 @@ async function saveForm(thenScan = false) {
         realm_id: libForm.realm_id ?? null,
         ...(virtual
           ? {}
-          : { paths, mount_ids: libForm.mount_ids, node_id: libForm.node_id ?? null }),
+          : { path_entries: pathEntries, mount_ids: libForm.mount_ids, node_id: libForm.node_id ?? null }),
         cover_template: coverTemplate.value || null,
         cover_title: coverTitle.value || null,
         cover_subtitle: coverSubtitle.value || null,
@@ -607,9 +598,9 @@ function chaseFact(l: EmbyLibrary): string {
 
 function libSummary(l: EmbyLibrary): string {
   if (l.is_virtual) return `虚拟库 · ${l.platform || '按平台聚合'} · 刮削 ${policyLabel(l.scrape_policy)}`
-  const total = l.paths?.length || 0
-  const pathBit = total
-    ? `${total} 个路径${l.paths[0] ? `（${l.paths[0]}）` : ''}`
+  const entries = pathEntriesOf(l)
+  const pathBit = entries.length
+    ? `${entries.length} 个路径${entries[0] ? `（${entries[0].path}）` : ''}`
     : (l.mount_ids?.length ? '无本机路径 · 走挂载' : '未配路径')
   return [pathBit, chaseFact(l), `刮削 ${policyLabel(l.scrape_policy)}`].join(' · ')
 }
@@ -619,9 +610,10 @@ function libSummaryTitle(l: EmbyLibrary): string {
   const lines: string[] = []
   if (l.is_virtual) {
     lines.push(`虚拟库：按发行平台「${l.platform || '—'}」聚合，没有自己的目录`)
-  } else if (l.paths?.length) {
-    lines.push(`媒体路径（${l.paths.length}）：`)
-    lines.push(...l.paths.map((p) => `· ${p}`))
+  } else if (pathEntriesOf(l).length) {
+    lines.push(`媒体路径（${pathEntriesOf(l).length}）：`)
+    lines.push(...pathEntriesOf(l).map(
+      (e) => `· ${e.path}（${e.backend_label || e.backend}）`))
   } else {
     lines.push('媒体路径：未配置本机路径')
   }
@@ -652,6 +644,7 @@ async function load() {
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
+    if (l.storage_backends?.length) storageBackends.value = l.storage_backends
     void loadCoverImages(libraries.value)
     repairCount.value = r.total
     panAccounts.value = a.accounts
@@ -1839,27 +1832,16 @@ function typeLabel(t: string): string {
         <div v-if="!libFormTarget?.is_virtual" class="settings-section">
           <div class="settings-section-title">媒体路径</div>
           <p class="form-hint">
-            决定扫描哪些目录，<strong>一行一个</strong>。也可以写 <code>mount://挂载ID/子目录</code>
-            只扫挂载下的某个子目录（如 <code>mount://2/video/剧集/动漫剧</code>）；想扫整个挂载就用上面「存储挂载」。
+            决定扫描哪些目录：<strong>一行一条</strong>，路径只写目录本身（如 <code>/电影</code>），
+            它存在哪种存储上由每行的标签决定（本地文件 / Rclone / 115 网盘）。
           </p>
-          <el-form label-position="top">
-            <el-form-item>
-              <div class="paths-input-row">
-                <el-input
-                  v-model="libForm.paths"
-                  type="textarea"
-                  :rows="4"
-                  placeholder="服务器上的媒体目录，一行一个&#10;/media/movies&#10;/media/tv/breaking-bad"
-                />
-                <el-button class="paths-browse-btn" @click="pathPicker?.open()">浏览</el-button>
-              </div>
-              <div class="form-hint">
-                点「浏览」逐级选挂载目录；切到「多选」可一次勾多个目录批量追加，已存在的会自动跳过并报出个数。
-                <strong>不要带方括号或引号</strong>（从 JSON 里粘贴时容易带上，保存就会报「目录不存在或不可读」）。
-                共 {{ parsePaths(libForm.paths).length }} 条路径。
-              </div>
-            </el-form-item>
-            <el-form-item label="按类型添加来源">
+          <LibraryPathManager
+            v-model="libForm.path_entries"
+            :mounts="mounts"
+            :backends="storageBackends"
+          />
+          <el-collapse class="lpm-advanced">
+            <el-collapse-item title="高级：不建挂载，直接写前缀路径" name="advanced">
               <MountSourceEditor v-model="srcPath" v-model:type="srcType" />
               <el-button
                 style="margin-top: 8px"
@@ -1869,11 +1851,12 @@ function typeLabel(t: string): string {
                 <Plus :size="14" style="margin-right: 4px" />加入媒体路径
               </el-button>
               <div class="form-hint">
-                三个类型切换后前缀自动带上，不用自己敲 <code>115:/</code> 或 <code>rclone:</code>。
-                远程来源不需要先建挂载：直接写 <code>rclone:gdrive/Movies</code> 这样的前缀路径也能扫。
+                一般不需要用这一块：上面的「添加路径」会自动把挂载与路径组好。
+                这里适合写 <code>rclone:gdrive/Movies</code> 这种不建挂载就能直接扫的前缀路径
+                （代价是没法用挂载级能力，如单独配 115 账号）。
               </div>
-            </el-form-item>
-          </el-form>
+            </el-collapse-item>
+          </el-collapse>
         </div>
 
         <!-- 分组五：目录变更监听 -->
@@ -1943,7 +1926,6 @@ function typeLabel(t: string): string {
         </div>
       </template>
     </el-drawer>
-    <MountPathPicker ref="pathPicker" @select="onPickMountPath" @select-multi="onPickMountPaths" />
 
     <!-- 重新刮削：选策略；all 二次确认并提示配额消耗 -->
     <el-dialog v-model="rescrapeVisible" title="重新刮削" width="420px">

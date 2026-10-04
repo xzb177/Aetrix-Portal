@@ -1000,6 +1000,37 @@ export interface EconomyOverview {
   invitations: number
 }
 
+/** 存储后端：本地文件 / Rclone / 115 网盘（label 由后端下发，前端不自己维护） */
+export interface StorageBackend {
+  value: string
+  label: string
+}
+
+/**
+ * 媒体库的一条路径（**路径与存储后端分开**，界面不出现 mount:// 前缀）
+ *
+ * - `path`：本机来源给绝对路径（/media/电影）；挂载来源给挂载内路径（/video/剧集/国产剧）
+ * - `backend` / `backend_label`：这条路径走哪种存储
+ * - `mount_id`：远程来源绑定的 storage_mounts.id
+ * - `raw`：拼回前缀后的入库形态，只用于改动对比，界面不显示
+ */
+export interface LibraryPathEntry {
+  path: string
+  backend: string
+  backend_label: string
+  mount_id: number | null
+  mount_name: string
+  source: 'mount' | 'local' | 'prefix'
+  raw: string
+}
+
+/** 提交给后端的路径（只有这三项；label / mount_name / raw 都是回显用的） */
+export interface LibraryPathInput {
+  path: string
+  backend: string
+  mount_id: number | null
+}
+
 export interface EmbyLibrary {
   id: number
   guid: string
@@ -1013,6 +1044,11 @@ export interface EmbyLibrary {
   /** 归属节点最近一次体检是否通过；null = 未体检 */
   node_online?: boolean | null
   paths: string[]
+  /**
+   * 简化路径条目（v2.43.0）：界面用它渲染路径列表（隐藏 mount:// 前缀，带存储后端标签）。
+   * 老后端不返回这个字段时回退到 paths —— 所以它是可选的。
+   */
+  path_entries?: LibraryPathEntry[]
   /** 绑定的存储挂载（storage_mounts.id）：本机目录 / STRM / 115 / WebDAV / AList */
   mount_ids: number[]
   /**

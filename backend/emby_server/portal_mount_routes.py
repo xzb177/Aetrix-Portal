@@ -520,6 +520,9 @@ async def browse_mount(mount_id: int, rel: str = "/",
 
 # ==================== 挂载路径选择器（媒体库表单用） ====================
 
+#: 本机目录浏览单层最多回多少个子目录（再多前端也渲染不动）
+_LOCAL_BROWSE_MAX = 1000
+
 mount_picker_router = APIRouter(
     prefix="/api/admin/mounts",
     tags=["挂载路径选择"],
@@ -542,6 +545,88 @@ def _normalize_browse_path(raw: str | None) -> str:
             raise ValueError("路径不允许包含 ..")
         parts.append(seg)
     return "/" + "/".join(parts)
+
+
+@mount_picker_router.get("/local-dirs")
+async def browse_local_dirs(
+    path: str = Query(default="/", description="服务器上的目录（绝对路径）"),
+    staff: models.WebUser = Depends(require_staff),
+):
+    """浏览**服务器本机**目录（媒体库「本地文件」来源选路径用）
+
+    与 :func:`browse_mount_dirs` 返回**完全一样的结构**，所以前端一个浏览组件
+    同时能吃本地目录与挂载目录（新增路径弹窗因此不用写两套列表 UI）。
+
+    - 只列目录，不列文件；按名称排序；
+    - 单层最多回 1000 个目录（再多页面也渲染不动，截断时带 truncated 标记）；
+    - 只读，不写库、不触发扫描。
+    """
+    clean = (path or "/").strip() or "/"
+    if not clean.startswith("/"):
+        raise HTTPException(status_code=400, detail="本地目录必须是绝对路径（以 / 开头）")
+    listing = await run_in_threadpool(_list_local_dirs, clean)
+    if isinstance(listing, tuple):
+        dirs, truncated = listing
+    else:
+        # None = 不存在；字符串 = 存在但不是目录。两种都直接告诉管理员改哪里
+        raise HTTPException(
+            status_code=404 if listing is None else 400,
+            detail=(f"目录不存在或不可读：{clean}" if listing is None
+                    else f"不是目录：{clean}"),
+        )
+    dirs, truncated = listing
+    segments = [s for s in clean.split("/") if s]
+    acc: list[str] = []
+    crumbs: list[dict] = []
+    for seg in segments:
+        acc.append(seg)
+        crumbs.append({"name": seg, "path": "/" + "/".join(acc)})
+    return {
+        "path": clean,
+        # 根目录没有上一级（返回 None 而不是 "/"：弹窗靠它决定要不要画“返回上一级”）
+        "parent": "/" + "/".join(segments[:-1]) if len(segments) > 1 else None,
+        "crumbs": crumbs,
+        "dirs": dirs,
+        "total": len(dirs),
+        "truncated": truncated,
+    }
+
+
+def _list_local_dirs(path: str):
+    """列一层子目录（阻塞 IO，在线程池里跑）
+
+    返回 ``([{name, path}], truncated)``；路径不存在返回 ``None``，存在但不是目录
+    返回字符串（说明原因）。用 ``os.scandir`` 而不是 ``os.listdir``：能不能进得去
+    靠 ``is_dir(follow_symlinks=False)`` 一次拿到，不对每个条目都触发一次 stat。
+    """
+    if not os.path.isdir(path):
+        if os.path.exists(path):
+            return "不是目录"
+        return None
+    names: list[str] = []
+    truncated = False
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue  # 断链 / 无权限的条目直接略过，不让整个列表挂掉
+                names.append(entry.name)
+                if len(names) >= _LOCAL_BROWSE_MAX:
+                    truncated = True
+                    break
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=f"没有权限读取该目录：{path}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"读取目录失败：{exc}") from exc
+    dirs = sorted(
+        ({"name": name, "path": (path.rstrip("/") + "/" + name) if path != "/" else "/" + name}
+         for name in names),
+        key=lambda d: d["name"].lower(),
+    )
+    return dirs, truncated
 
 
 @mount_picker_router.get("/{mount_id}/browse")

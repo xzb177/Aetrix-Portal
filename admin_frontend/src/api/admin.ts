@@ -21,6 +21,8 @@ import type {
   LocalCacheConfig,
   LocalCacheEntryInfo,
   LocalCacheStats,
+  LibraryPathInput,
+  StorageBackend,
   Pan115Account,
   Pan115DirEntry,
   StorageMount,
@@ -809,7 +811,7 @@ export interface LibraryCoverConfig {
   subtitle: string
 }
 
-export const fetchLibraries = () => get<{ libraries: EmbyLibrary[] }>(`${E}/libraries`)
+export const fetchLibraries = () => get<{ libraries: EmbyLibrary[]; storage_backends?: StorageBackend[] }>(`${E}/libraries`)
 
 /** 拉取封面二进制；管理端图片请求也带 JWT，不把令牌拼进 URL。 */
 export const fetchLibraryCover = (id: number) => getBlob(`${E}/libraries/${id}/cover`)
@@ -848,6 +850,8 @@ export const createLibrary = (data: {
   name: string
   collection_type: string
   paths: string[]
+  /** 简化路径（路径 + 存储后端分开）：传了它就以它为准，mount:// 前缀由后端拼 */
+  path_entries?: LibraryPathInput[]
   /** 绑定的存储挂载（本机目录 / 115 / rclone） */
   mount_ids?: number[]
   /** 刮削策略：missing_only（仅缺失时）/ 3m / 6m / 1y / all（全部重刮） */
@@ -870,6 +874,8 @@ export const updateLibrary = (
     name?: string
     collection_type?: string
     paths?: string[]
+    /** 简化路径（路径 + 存储后端分开）；传 null / [] = 清空路径 */
+    path_entries?: LibraryPathInput[]
     /** 存储挂载绑定：传 [] 表示解绑全部，省略则不修改 */
     mount_ids?: number[]
     is_enabled?: boolean
@@ -1487,6 +1493,23 @@ export const browseMountDirs = (id: number, path?: string) =>
     dirs: MountPickerDir[]
     total: number
   }>(`/mounts/${id}/browse`, path ? { path } : undefined)
+
+/**
+ * 浏览**服务器本机**目录（本地文件来源选路径用）
+ *
+ * 与 `browseMountDirs` 返回**同一套结构**，所以新增路径弹窗只写一套列表 UI：
+ * 本机目录与挂载目录的区别只在“加载函数”与“返回的路径要不要拼挂载前缀”。
+ */
+export const browseLocalDirs = (path = '/') =>
+  get<{
+    path: string
+    parent: string | null
+    crumbs: MountPickerCrumb[]
+    dirs: MountPickerDir[]
+    total: number
+    /** 单层超过 1000 个子目录时会截断，弹窗提示一下 */
+    truncated?: boolean
+  }>('/mounts/local-dirs', { path })
 
 /** rclone：列出用户粘贴的 rclone.conf 里已配置的 remote */
 export const fetchMountRcloneRemotes = () =>
