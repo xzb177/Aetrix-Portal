@@ -383,6 +383,29 @@ try:
               r.status_code == 400 and "EA" in str((r.json() or {}).get("detail") or ""),
               f"HTTP {r.status_code} {str((r.json() or {}).get('detail'))[:60]}")
 
+    # 权限闸门：rclone.conf 等同一份凭据文件，**仅超级管理员**可读写。
+    # 降级成运营 / 只读审计再试一遍——这是没有回归测试就会烂掉的闸门。
+    db2 = SessionLocal()
+    try:
+        me = db2.query(models.WebUser).filter(
+            models.WebUser.username == f"sv_staff{suf}").first()
+        saved_role = getattr(me, "admin_role", None)
+        for role in ("operator", "viewer"):
+            me.admin_role = role
+            db2.commit()
+            limited = {"Authorization": f"Bearer {token}"}
+            rg = client.get(f"/api/admin/servers/{ea_id}/rclone-conf", headers=limited)
+            rp = client.post(f"/api/admin/servers/{ea_id}/rclone-conf", headers=limited,
+                             json={"conf": "[x]\ntype = drive\n"})
+            check(f"rclone.conf 闸门：{role} 角色读写都被拒",
+                  rg.status_code == 403 and rp.status_code == 403
+                  and "超级管理员" in str((rg.json() or {}).get("detail") or ""),
+                  f"GET {rg.status_code} / POST {rp.status_code}")
+        me.admin_role = saved_role
+        db2.commit()
+    finally:
+        db2.close()
+
     r = client.post(f"/api/admin/servers/{ea_id}/activate", headers=H)
     body = r.json() if r.status_code == 200 else {}
     check("EA 设为当前使用成功", body.get("success") is True and body.get("activated") is True,
