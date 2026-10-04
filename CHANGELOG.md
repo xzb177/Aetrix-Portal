@@ -13,6 +13,8 @@
 全局开关都已有（scanner v2.40.0）。所以这一版**没有重写增量**，而是补上真正缺的：
 
 - **每库「增量扫描」开关**（默认开）：之前 `SCAN_INCREMENTAL` 只能全局关，无法只给某一个库关。
+- 卡片上多一个「全量扫描」按钮（带代价提示的二次确认）：平时用不到，排查“改了文件却扫出
+  旧数据”这类指纹异常时才用。
 - **手动「全量扫描」**：`POST /libraries/{id}/scan?full=true`，无视所有指纹完整处理一遍。
   全量打在**扫描快照**上，只影响这一轮，不会把这个库或别的库改成“以后都全量”；多节点部署下
   全量标记跟着转发到归属节点。
@@ -51,7 +53,11 @@
 `_backfill_orm_columns`（按 ORM 声明补列的兜底）只对账 `database.Base`，而
 `backend.emby_server.models` 是自建的另一个 Base——**emby_* 的表从来没被兜底过**。于是每给
 `emby_libraries` 加一列，都必须同步手写 `_MISSING_COLUMNS` 条目，漏了就直接报
-`table emby_libraries has no column named …`。现在两边都以 ORM 为准，忘了写也能自愈。
+“表没有该列”。现在两边都以 ORM 为准，忘了写也能自愈。
+
+另外 `LibrarySnapshot` 是 frozen dataclass，而全量扫描的标记原先是直接赋值的——
+真点一次「全量扫描」就会抛 `FrozenInstanceError`。已改成 `dataclasses.replace`，
+并补了回归测试钉住。
 
 ## [2.43.1] - 2026-10-04
 

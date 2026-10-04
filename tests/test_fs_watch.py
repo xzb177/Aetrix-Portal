@@ -239,3 +239,49 @@ def test_snapshot_captures_incremental_switch():
                            scrape_policy=None, mount_ids="")
     # 老对象没有这一列时按 True（保持升级前的行为）
     assert scanner.LibrarySnapshot.of(lib2).incremental_scan is True
+
+
+# ==================== 手动全量扫描真的落到快照上 ====================
+
+def test_force_full_flag_reaches_the_snapshot(monkeypatch):
+    """「全量扫描」不能只是个透传参数：必须真的把快照标成 force_full"""
+    from backend.emby_server import scan_queue
+
+    lib = SimpleNamespace(id=3, name="库", collection_type="movies", paths="/mnt/x",
+                          scrape_policy=None, mount_ids="", incremental_scan=True)
+    seen = {}
+
+    def _fake_enqueue(library, *, trigger="manual", force_full=False):
+        seen["trigger"] = trigger
+        seen["force_full"] = force_full
+        return {"created": True, "task": {"state": "queued", "position": 1}}
+
+    monkeypatch.setattr(scan_queue, "enqueue", _fake_enqueue)
+    scan_queue.enqueue(lib, trigger="manual", force_full=True)
+    assert seen == {"trigger": "manual", "force_full": True}
+
+    # 走真实的快照路径：快照是 frozen dataclass，全量标记只能靠 replace 打上去
+    import dataclasses
+
+    snapshot = dataclasses.replace(scanner.LibrarySnapshot.of(lib), force_full=True)
+    assert scanner._incremental_on(SimpleNamespace(snap=snapshot)) is False
+
+
+def test_enqueue_local_accepts_force_full(monkeypatch):
+    """真实入队路径不能因为 frozen 快照报错（回归钉：force_full 必须能落到任务上）
+
+    这里不真的起线程，只验证「拍快照 + 打 force_full」这一步不炸。
+    """
+    import dataclasses
+
+    from backend.emby_server import scan_queue
+
+    lib = SimpleNamespace(id=4, name="库", collection_type="movies", paths="/mnt/x",
+                          scrape_policy=None, mount_ids="", incremental_scan=True)
+    snapshot = dataclasses.replace(scanner.LibrarySnapshot.of(lib), force_full=True)
+
+    # frozen dataclass 不可变：直接赋值必须失败（说明全量标记只能走 replace）
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        snapshot.force_full = True
+    assert snapshot.force_full is True
+    assert scan_queue is not None

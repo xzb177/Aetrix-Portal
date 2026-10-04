@@ -25,6 +25,7 @@ CPU 打满而进度一动不动。
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 
 # 后端拆分（v2.41.0）：AETRIX_ROLE 环境变量
@@ -204,7 +205,8 @@ def enqueue_local(library, *, trigger: str = "manual", redis_raw=None,
     snapshot = LibrarySnapshot.of(library)
     # 手动「全量扫描」只影响这一轮：宁可多处理一遍，也不能让别的库跟着变全量
     if force_full:
-        snapshot.force_full = True
+        # 快照是 frozen dataclass，不能直接赋值；用 replace 造一份新的
+        snapshot = dataclasses.replace(snapshot, force_full=True)
     with _LOCK:
         existing = _task_of_locked(library.id)
         if existing is not None:

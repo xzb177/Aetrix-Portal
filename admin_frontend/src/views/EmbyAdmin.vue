@@ -19,7 +19,8 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
-  Delete, Film, FolderPlus, HardDrive, History, ImagePlus, RefreshCw, ScanSearch, Server,
+  Delete, Film, FolderPlus, HardDrive, History, ImagePlus, RefreshCcw, RefreshCw, ScanSearch,
+  Server,
   Settings2, Square, Wand2, X,
 } from 'lucide-vue-next'
 import {
@@ -787,14 +788,34 @@ async function repairNow() {
   setTimeout(load, 2000)
 }
 
-async function scan(l: EmbyLibrary) {
-  const res = await scanLibrary(l.id)
+async function scan(l: EmbyLibrary, full = false) {
+  const res = await scanLibrary(l.id, full)
   // 三件事要分清（v2.27.0）：已开扫 / 排在队列第几位（在等哪个挂载）/ 重复点击被合并
   if (res.already) ElMessage.info(`「${l.name}」${res.message || '已在扫描 / 已在队列中'}`)
   else if (res.started === false) ElMessage.warning(`「${l.name}」${res.message || '已加入扫描队列'}`)
-  else ElMessage.success(`「${l.name}」扫描已启动`)
+  else ElMessage.success(`「${l.name}」${full ? '全量扫描已启动' : '扫描已启动'}`)
   await pollQueue()
   setTimeout(load, 1500)
+}
+
+/**
+ * 手动全量扫描：无视所有指纹，把每个文件重新处理一遍。
+ *
+ * 平时不需要——增量扫描本来就是对的；这是给“指纹异常（改了文件但扫出来还是旧数据）”
+ * 用的后门。所以二次确认里写清楚代价：条目多的大库可能要跑很久。
+ */
+async function scanFull(l: EmbyLibrary) {
+  try {
+    await ElMessageBox.confirm(
+      `全量扫描会无视增量指纹，把「${l.name}」里的每个文件重新处理一遍。` +
+      `条目多的大库可能要跑很久。确定吗？`,
+      '全量扫描',
+      { type: 'warning', confirmButtonText: '开始全量扫描', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await scan(l, true)
 }
 
 // ==================== 元数据与刮削 ====================
@@ -1544,6 +1565,14 @@ function typeLabel(t: string): string {
         <div class="lib-foot">
           <el-button size="small" type="primary" plain @click="scan(l)">
             <ScanSearch :size="13" />扫描
+          </el-button>
+          <el-button
+            size="small"
+            plain
+            title="无视增量指纹，完整重扫一遍（排查指纹异常时用）"
+            @click="scanFull(l)"
+          >
+            <RefreshCcw :size="13" />全量扫描
           </el-button>
           <el-button size="small" plain title="重新刮削元数据" @click="openRescrape(l)">
             <RefreshCw :size="13" />重新刮削
