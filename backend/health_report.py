@@ -150,10 +150,15 @@ def collect(db) -> dict:
     try:
         done = _count(db, "movie", "done") + _count(db, "episode", "done")
         degraded = _count(db, "movie", "degraded") + _count(db, "episode", "degraded")
+        # ffprobe 跑完但没时长：可播、不算失败，但必须进分母，
+        # 否则它们从总量里消失，失败率会虚低（v2.42.14 新增状态）
+        no_duration = (_count(db, "movie", "probed_no_duration")
+                       + _count(db, "episode", "probed_no_duration"))
         failed = _count(db, "movie", "failed") + _count(db, "episode", "failed")
-        total = done + degraded + failed
+        total = done + degraded + no_duration + failed
         ratio = (failed / total) if total else 0.0
         metrics["probe_degraded"] = degraded
+        metrics["probe_no_duration"] = no_duration
         metrics["probe_failed"] = failed
         metrics["probe_ratio"] = round(ratio, 4)
         # 样本太少时不算数（刚开机的库会误报）

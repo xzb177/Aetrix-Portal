@@ -1846,7 +1846,8 @@ def _maybe_boost_probe(db: Session, item) -> None:
         from backend.emby_server import probe_worker
         if not probe_worker.enabled():
             return
-        if (getattr(item, "probe_status", None) or "") != "pending":
+        if (getattr(item, "probe_status", None) or "") not in (
+                "pending", "degraded", probe_worker.STATUS_NO_DURATION):
             return
         probe_worker.boost_probe(db, item)
     except Exception:  # noqa: BLE001
