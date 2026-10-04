@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.db_retry import commit_with_retry, retry_write
@@ -1835,6 +1836,74 @@ def _load_items(db: Session, guids: list) -> dict:
     return found
 
 
+def _is_unique_violation(exc: IntegrityError) -> bool:
+    """这个 IntegrityError 是唯一约束冲突（而不是 NOT NULL / 外键 / 类型错）
+
+    只认「唯一约束」这一种，因为只有它值得降级重试：NOT NULL 或外键违规说明
+    扫描器自己算错了数据，那属于真 bug，应该原样抛出去让整库失败、留下证据。
+    """
+    text_ = str(getattr(exc, "orig", exc) or "")
+    return ("unique" in text_.lower() or "duplicate key" in text_.lower()
+            or "UNIQUE constraint" in text_)
+
+
+def _claim_guid(db: Session, guid: str, library_id: int, defaults: dict) -> bool:
+    """原子地「占位」一个 guid，返回 True = 这次 INSERT 真的插进去了
+
+    占位行就是最终那一行——调用方随后用 ``_resolve_conflict`` 把它查回来当 ORM
+    对象继续填字段，**不要**再 ``db.add`` 一个同 guid 的新对象（那等于自己撞自己）。
+
+    为什么需要它：``_load_items`` 是「先查有没有，再决定插不插」，而扫描期间
+    同一个 guid 可能被**另一个 Session** 先插进去——跨进程扫描（另一台面板 /
+    EA）、同一库的重叠任务、或者容器在扫描中途重启后重扫同一个文件。
+    查和插之间那个窗口一旦被抢到，两个插入都认为「不存在」，
+    第二个 INSERT 撞 ``ix_emby_items_guid`` → **整批回滚、整库扫描 abort**。
+
+    2026-10-04 生产事故：库 17（国产剧）扫到 ``兰香如故 S01E42``，
+    该 guid 已由 8 秒前那次（被容器重启打断的）扫描提交入库，本轮再插一次就炸，
+    一个文件拖垮整库。
+
+    用数据库自己的 upsert 把「查+插」压成一条原子语句，窗口就没了：
+    - PostgreSQL：``INSERT ... ON CONFLICT (guid) DO NOTHING``，
+      冲突时靠 RETURNING 是否有行判断是谁赢的；
+    - SQLite：``INSERT ... ON CONFLICT (guid) DO NOTHING``；
+    - MySQL：``INSERT IGNORE``。
+
+    ``DO NOTHING`` 而不是 ``DO UPDATE``：占位行随后会被扫描器正常补全字段，
+    真正要更新已有数据的话走 ORM 的 UPDATE，不需要在这里覆盖别人的行。
+    """
+    MI = emby_models.MediaItem
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as _pg_insert
+        stmt = _pg_insert(MI).values(guid=guid, library_id=library_id, **defaults)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["guid"])
+        # RETURNING 只在真的插进去时才有行 —— 这是「我是不是赢家」的判据
+        return db.execute(stmt.returning(MI.id)).first() is not None
+
+    # SQLite / MySQL：INSERT OR IGNORE / INSERT IGNORE，rowcount 为 0 即冲突
+    if db.bind is not None and db.bind.dialect.name == "mysql":
+        from sqlalchemy.dialects.mysql import insert as _my_insert
+        stmt = _my_insert(MI).values(guid=guid, library_id=library_id, **defaults)
+        stmt = stmt.prefix_with("IGNORE")
+    else:
+        from sqlalchemy.dialects.sqlite import insert as _lite_insert
+        stmt = _lite_insert(MI).values(guid=guid, library_id=library_id, **defaults)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["guid"])
+    res = db.execute(stmt)
+    return (res.rowcount or 0) > 0
+
+
+def _resolve_conflict(db: Session, guid: str) -> Any:
+    """upsert 没抢到（别人先插了）时，把那行取出来给扫描器当已存在条目用
+
+    查得到就返回 ORM 对象：调用方随后走 update 分支，字段会被正常补全，
+    于是「被抢到的这一集」最终状态与「自己插的」完全一样，只是不再重复插入。
+    """
+    return db.query(emby_models.MediaItem).filter(
+        emby_models.MediaItem.guid == guid
+    ).first()
+
+
 def _load_external_subtitles(db, item_ids: list) -> dict:
     """批量取本批条目的外挂字幕路径：item_id → {external_path}。
 
@@ -2355,8 +2424,47 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
 
         主体里之所以敢把「每文件一次提交」退化成 flush，是因为这里一批只提交一次；
         代价是这一批的写事务期间不能有任何 IO（见 _prepare_and_prefetch 的说明）。
+
+        唯一键冲突（IntegrityError）单独处理：唯一约束撞了说明这一批里某个 guid
+        被**另一个 Session** 抢先插入了——批次开头的 _load_items 与此刻之间存在窗口。
+        这种情况**不能让整批、整库失败**：2026-10-04 生产事故里，一个文件让国产剧
+        整库反复扫描失败。所以这里只回滚到 SAVEPOINT、保住这一批其余的写入，
+        把冲突的那一批降级为「重查 + 改写」。
         """
-        retry_write(real_commit, label="扫描批次提交")
+        try:
+            retry_write(real_commit, label="扫描批次提交")
+        except IntegrityError as exc:
+            if not _is_unique_violation(exc):
+                raise
+            logger.warning(
+                "扫描批次提交撞唯一键，回滚本批写入后改为逐条重写：%s",
+                str(exc).splitlines()[0][:200])
+            db.rollback()
+            return "conflict"
+
+    def emit_batch(current: list) -> None:
+        """处理并提交一批；撞唯一键时整批重走一次（第二次会走 update 分支）
+
+        重试必须把本批的 guid 从 ``ctx.seen_guids`` 里摘掉，否则 _prepare_and_prefetch
+        会把它们全当「遍历器重复产出」跳过，重试等于什么都没做——那样静默丢条目，
+        比报错更难查。所以这里按本批实际入队的 guid 精确回退。
+
+        只重试一次：第二次还撞说明不是竞态而是真有重复数据，让它抛出去、
+        整库失败留下证据，比无限重试诚实。
+        """
+        before = set(ctx.seen_guids)
+        for attempt in (1, 2):
+            yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, current, ctx, pool)
+                        if not p.skipped and not p.fast_skipped)
+            _store_dir_states(db, ctx)   # 增量扫描：这批真处理过的目录指纹随本次提交写回
+            outcome = commit_batch()
+            if outcome != "conflict":
+                return
+            # 回滚本批占过的 guid，让重试能重新准备这些文件
+            ctx.seen_guids.difference_update(ctx.seen_guids - before)
+            if attempt == 2:
+                raise AssertionError("unreachable — attempt 只到 2，第二次必 return 或抛")
+
     try:
         for scan_file in files:
             batch.append(scan_file)
@@ -2366,16 +2474,10 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
             if not _library_exists(db, ctx.lib_id):
                 logger.warning("媒体库 %s 在扫描期间被删除，扫描提前结束", ctx.lib_id)
                 return
-            yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool)
-                        if not p.skipped and not p.fast_skipped)
-            _store_dir_states(db, ctx)   # 增量扫描：这批真处理过的目录指纹随本次提交写回
+            yield from emit_batch(batch)
             batch = []
-            commit_batch()  # 一批一次提交：几百个文件才一次 fsync
         if batch:
-            yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, batch, ctx, pool)
-                        if not p.skipped and not p.fast_skipped)
-            _store_dir_states(db, ctx)
-            commit_batch()
+            yield from emit_batch(batch)
     finally:
         # 正常结束、中途报错、生成器被提前关闭：都要恢复真实提交
         db.commit = real_commit
@@ -3040,10 +3142,36 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item = _pending.item
                     is_new = item is None
                     if is_new:
-                        item = emby_models.MediaItem(guid=guid, library_id=ctx.lib_id)
-                        db.add(item)
+                        # 原子占位 guid 再插：批次开头的 _load_items 说「没有」，
+                        # 但那之后到此刻之间另一个 Session 可能已经插进去了
+                        # （跨进程扫描 / 重叠任务 / 容器重启后重扫）。裸 db.add
+                        # 撞 ix_emby_items_guid 会让整批回滚、整库扫描 abort，
+                        # 所以这里让数据库自己裁决：抢到就插入一行占位，抢不到
+                        # 就取回别人那行。两条路径最后都拿到一个「已在库里」的
+                        # ORM 对象，下面那套字段赋值共用——注意占位成功后
+                        # **不能再 db.add 一个同 guid 的新对象**，那才是自己撞自己。
+                        won = _claim_guid(db, guid, ctx.lib_id, {
+                            "item_type": _pending.item_type,
+                            "name": parsed["name"],
+                            "file_path": full_path,
+                        })
+                        item = _resolve_conflict(db, guid)
+                        if item is None:
+                            # 占位行在别的未提交事务里，本事务看不到它。
+                            # 只能退回等价的纯内存处理：本批跳过这个文件，
+                            # 交给下一轮扫描处理（下一轮 _load_items 就能查到它了）。
+                            stats["conflict_skipped"] = stats.get("conflict_skipped", 0) + 1
+                            logger.warning(
+                                "扫描跳过条目 %s：guid %s 正被其他事务持有，"
+                                "本轮不插入，留给下一轮扫描",
+                                full_path, guid)
+                            continue
                         _pending.item = item
-                        stats["added"] += 1
+                        if won:
+                            stats["added"] += 1
+                        else:
+                            # 别人先插了：走 update 分支补全字段
+                            stats["conflict_taken_over"] = stats.get("conflict_taken_over", 0) + 1
                     else:
                         stats["updated"] += 1
                         if getattr(item, "deleted_at", None):
