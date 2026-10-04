@@ -54,7 +54,7 @@ const placeholder = computed(() => TYPES.find((x) => x.value === props.type)?.pl
       :model-value="type"
       size="small"
       :disabled="disabled"
-      @update:model-value="(v) => switchType(v as MountTypeValue)"
+      @update:model-value="(v: string | number | boolean | undefined) => switchType(v as MountTypeValue)"
     >
       <el-radio-button v-for="t in TYPES" :key="t.value" :value="t.value">
         {{ t.label }}
@@ -64,7 +64,7 @@ const placeholder = computed(() => TYPES.find((x) => x.value === props.type)?.pl
       :model-value="modelValue"
       :placeholder="placeholder"
       :disabled="disabled"
-      @update:model-value="(v) => emit('update:modelValue', v as string)"
+      @update:model-value="(v: string) => emit('update:modelValue', v)"
     />
     <p class="ms-hint">
       前缀由类型决定：本地任意绝对路径 · 115 以 <code>115:/</code> 开头 · rclone 以
