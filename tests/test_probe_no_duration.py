@@ -175,3 +175,58 @@ def test_boost_leaves_done_untouched():
     db = _DB(item)
     assert probe_worker.boost_probe(db, item) is False
     assert item.probe_status == "done"
+
+
+# ---------- 关键：这些条目必须**还能播**（需求 3） ----------
+
+@pytest.fixture()
+def db():
+    """真会话（隔离的内存 SQLite）：``_item_dto`` 要查库，桩撑不住"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from backend import models as web_models
+    from backend.emby_server import models as em
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    web_models.Base.metadata.create_all(engine)
+    em.Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    session.add(em.Library(guid="lib-1", name="电影"))
+    session.commit()
+    yield session
+    session.close()
+
+
+def test_no_duration_item_is_still_playable(db):
+    """时长未知 ≠ 不可播：媒体信息缺失不许影响播放地址的发放
+
+    这是本次改动最容易漏掉的一条。探测状态只管媒体信息，管播放的是
+    ``file_path``：PlaybackInfo 只在**没有 file_path** 时才发空 MediaSources
+    （Emby 客户端的「无可播放源」）。时长读不出来时必须照样发地址，
+    否则「不判死」这个修复只做了一半，用户照样点不开。
+    """
+    from backend.emby_server import api as emby_api
+    from backend.emby_server import models as em
+
+    row = em.MediaItem(
+        guid="g-nodur", library_id=db.query(em.Library).first().id,
+        item_type="movie", name="NoDuration.mkv", container="mkv",
+        file_path="/media/NoDuration.mkv",
+        probe_status=probe_worker.STATUS_NO_DURATION, last_probed_at=datetime.now(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    dto = emby_api._item_dto(row, "http://ea.test", None, db, full=True)
+    sources = dto.get("MediaSources") or []
+    assert len(sources) == 1, "时长未知也必须发得出播放源"
+    assert sources[0]["Path"] == "/media/NoDuration.mkv"
+    # 时长确实没有——``_strip_nulls`` 会把空值整键去掉，所以用户端看到的是
+    # 「没有这个字段」而不是 0（0 会被当成「时长 0 秒」）。
+    # 这不影响可播：播放地址照发。
+    assert sources[0].get("RunTimeTicks") in (None, 0)
+    assert dto.get("MediaSourceCount") == 1
