@@ -50,6 +50,10 @@ class Library(Base):
     cover_template = Column(String(20))    # poster / visual / filmstrip
     cover_title = Column(String(100))      # 支持 {library} {type} {year}
     cover_subtitle = Column(String(100))   # 同上
+    # 新片入库后自动重新生成封面（v2.43.1）：扫完一轮且**确实有新增条目**时，按当前
+    # cover_template / 标题重拼一次封面。默认关闭——它会在扫描线程里多花一次渲染时间，
+    # 而且多数库的封面本来就不用天天变。
+    cover_auto_regen = Column(Boolean, default=False)
     # 虚拟媒体库：按发行平台（Netflix / Disney+ …）自动生成，没有自己的文件与路径
     is_virtual = Column(Boolean, default=False)
     platform = Column(String(30))  # 虚拟库对应的平台 id（见 scanner.PLATFORM_LABELS）

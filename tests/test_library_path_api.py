@@ -219,6 +219,75 @@ def test_legacy_paths_payload_still_works(client):
     assert lib.storage_backends == ""
 
 
+# ==================== 封面“新片入库后自动更新”开关 ====================
+
+def test_list_returns_cover_auto_regen_and_defaults_to_off(client):
+    c, db, _ = client
+    lib = em.Library(guid="g-cover", name="电影库", collection_type="movies")
+    db.add(lib)
+    db.commit()
+
+    row = c.get("/api/admin/emby/libraries").json()["libraries"][0]
+
+    assert row["cover_auto_regen"] is False
+
+
+def test_update_turns_auto_regen_on_and_back_off(client):
+    c, db, _ = client
+    lib = em.Library(guid="g-cover2", name="电影库", collection_type="movies",
+                     cover_template="poster")
+    db.add(lib)
+    db.commit()
+
+    on = c.put(f"/api/admin/emby/libraries/{lib.id}", json={"cover_auto_regen": True})
+    assert on.status_code == 200, on.text
+    db.expire_all()
+    db.refresh(lib)
+    assert lib.cover_auto_regen is True
+    assert c.get("/api/admin/emby/libraries").json()["libraries"][0]["cover_auto_regen"] is True
+
+    off = c.put(f"/api/admin/emby/libraries/{lib.id}", json={"cover_auto_regen": False})
+    assert off.status_code == 200, off.text
+    db.expire_all()
+    db.refresh(lib)
+    assert lib.cover_auto_regen is False
+
+
+def test_update_without_the_field_leaves_switch_untouched(client):
+    """没传这个字段 = 不修改（否则每次改名字都会把开关关回去）"""
+    c, db, _ = client
+    lib = em.Library(guid="g-cover3", name="旧名字", collection_type="movies",
+                     cover_auto_regen=True)
+    db.add(lib)
+    db.commit()
+
+    res = c.put(f"/api/admin/emby/libraries/{lib.id}", json={"name": "新名字"})
+
+    assert res.status_code == 200, res.text
+    db.expire_all()
+    db.refresh(lib)
+    assert lib.name == "新名字"
+    assert lib.cover_auto_regen is True
+
+
+def test_create_accepts_auto_regen(client):
+    c, db, tmp_path = client
+    media = tmp_path / "电影"
+    media.mkdir()
+
+    res = c.post("/api/admin/emby/libraries", json={
+        "name": "自动封面库",
+        "collection_type": "movies",
+        "cover_template": "poster",
+        "cover_auto_regen": True,
+        "path_entries": [{"path": str(media), "backend": "local", "mount_id": None}],
+    })
+
+    assert res.status_code == 200, res.text
+    lib = db.query(em.Library).filter(em.Library.id == res.json()["id"]).one()
+    assert lib.cover_auto_regen is True
+
+
 # ==================== 本机目录浏览 ====================
 
 def test_local_dirs_returns_same_shape_as_mount_browse(client):

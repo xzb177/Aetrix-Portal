@@ -167,18 +167,27 @@ def render_library_cover(
     }
 
 
-@router.post("/{lib_id}/cover/regenerate")
-def regenerate_library_cover(
-    lib_id: int,
-    db: Session = Depends(get_db),
-):
-    """按库里已保存的模板/标题重新生成（刮削补完新片后点一下就换新封面）"""
-    lib = _load_library(db, lib_id)
+class CoverRegenError(RuntimeError):
+    """封面重生成失败（带 HTTP 状态码，手动接口与自动更新共用同一套语义）
+
+    单独一个异常类型而不是直接抛 HTTPException：自动更新的调用方在**扫描线程**里，
+    不该（也无法）往 HTTP 响应里塞东西，它要的是“失败了就记日志，别影响扫描结果”。
+    """
+
+    def __init__(self, detail: str, status_code: int = 422):
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
+def regenerate_cover_for_library(db: Session, lib: em.Library) -> str:
+    """按库里已保存的模板/标题重新生成封面（手动按钮与“新片入库后自动更新”共用）
+
+    返回新的 cover_path。**不 commit**：手动接口与扫描钩子各自决定什么时候落库。
+    失败抛 :class:`CoverRegenError`，两种调用方都不应该让“封面没画出来”变成别的后果。
+    """
     if not lib.cover_template:
-        raise HTTPException(
-            status_code=400,
-            detail="该媒体库没有配置封面样式，先选一个样式并保存",
-        )
+        raise CoverRegenError("该媒体库没有配置封面样式，先选一个样式并保存", 400)
     data = render_cover_bytes(
         db, lib,
         template=lib.cover_template,
@@ -186,11 +195,21 @@ def regenerate_library_cover(
         subtitle=lib.cover_subtitle or "",
     )
     if not data:
-        raise HTTPException(
-            status_code=422,
-            detail="生成失败：这个库还没有可用海报（等刮削补完再试）",
-        )
-    _write_generated_cover(lib, data)
+        raise CoverRegenError("生成失败：这个库还没有可用海报（等刮削补完再试）")
+    return _write_generated_cover(lib, data)
+
+
+@router.post("/{lib_id}/cover/regenerate")
+def regenerate_library_cover(
+    lib_id: int,
+    db: Session = Depends(get_db),
+):
+    """按库里已保存的模板/标题重新生成（刮削补完新片后点一下就换新封面）"""
+    lib = _load_library(db, lib_id)
+    try:
+        regenerate_cover_for_library(db, lib)
+    except CoverRegenError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     db.commit()
     return {
         "success": True,

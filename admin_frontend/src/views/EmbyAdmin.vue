@@ -180,6 +180,8 @@ const COVER_TEMPLATES: LibOption[] = [
 const coverTemplate = ref<'' | 'poster' | 'visual' | 'filmstrip'>('')
 const coverTitle = ref('')
 const coverSubtitle = ref('')
+/** “新片入库后自动重生成封面”开关：跟着表单一起存（保存走主表单的提交） */
+const coverAutoRegen = ref(false)
 const coverPreviewUrl = ref('')
 const coverPreviewLoading = ref(false)
 const coverPreviewError = ref('')
@@ -366,6 +368,9 @@ function formFingerprint(): string {
     scrape_policy: libForm.scrape_policy,
     account_115_id: libForm.account_115_id,
     paths: libForm.path_entries.map((e) => `${e.backend}|${e.mount_id ?? ''}|${e.path}`),
+    // 封面“自动更新”开关没有单独的保存按钮，是跟着表单存的 —— 不进指纹的话
+    // 只改它时 libFormDirty 为 false，“保存”一直灰着，开关就永远存不进去
+    cover_auto_regen: coverAutoRegen.value,
     chase: libForm.chase,
   })
 }
@@ -385,6 +390,13 @@ const libFormPathsChanged = computed(() => {
 function openCreate() {
   libFormTarget.value = null
   Object.assign(libForm, emptyLibForm())
+  // 封面几项也要清干净：新建库不该继承上一个库的样式/标题/自动更新开关
+  coverTemplate.value = ''
+  coverTitle.value = ''
+  coverSubtitle.value = ''
+  coverAutoRegen.value = false
+  coverPreviewUrl.value = ''
+  coverPreviewError.value = ''
   libFormVisible.value = true
   libFormFingerprintAtOpen.value = formFingerprint()
 }
@@ -395,6 +407,7 @@ function openSettings(l: EmbyLibrary) {
   coverTemplate.value = (l.cover_template || '') as typeof coverTemplate.value
   coverTitle.value = l.cover_title || ''
   coverSubtitle.value = l.cover_subtitle || ''
+coverAutoRegen.value = l.cover_auto_regen === true
   if (coverTemplate.value) void loadCoverPreview()
   else { coverPreviewUrl.value = ''; coverPreviewError.value = '' }
   Object.assign(libForm, {
@@ -485,6 +498,7 @@ async function saveForm(thenScan = false) {
         cover_template: coverTemplate.value || null,
         cover_title: coverTitle.value || null,
         cover_subtitle: coverSubtitle.value || null,
+        cover_auto_regen: coverAutoRegen.value,
       })
       savedId = res.id
       const hasSource = pathEntries.length > 0 || libForm.mount_ids.length > 0
@@ -506,6 +520,7 @@ async function saveForm(thenScan = false) {
         cover_template: coverTemplate.value || null,
         cover_title: coverTitle.value || null,
         cover_subtitle: coverSubtitle.value || null,
+        cover_auto_regen: coverAutoRegen.value,
       })
       savedId = editingId
       ElMessage.success(res?.rescan_required
@@ -1755,6 +1770,20 @@ function typeLabel(t: string): string {
     <p class="drawer-hint" style="margin-top: 4px">
       选中的样式：{{ optionOf(COVER_TEMPLATES, coverTemplate)?.hint || '不生成，仍用上传的封面' }}
     </p>
+    <div class="cover-autogen">
+      <el-switch
+        v-model="coverAutoRegen"
+        active-text="新片入库后自动更新"
+        inactive-text="不自动更新"
+      />
+      <p class="drawer-hint" style="margin: 4px 0 0">
+        打开后，这个库每扫完一轮且<b>确实有新片入库时</b>，会自动用最新入库的海报按上面选的样式
+        重新拼一张封面；没有新片就不动它。默认关闭。
+        <template v-if="!coverTemplate">
+          <br /><span style="color: var(--el-color-warning)">需先选一个封面样式，否则不会生效。</span>
+        </template>
+      </p>
+    </div>
   </el-form-item>
 
   <template v-if="coverTemplate">

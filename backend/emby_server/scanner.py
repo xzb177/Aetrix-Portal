@@ -2772,6 +2772,41 @@ def begin_scan(db: Session, library: emby_models.Library,
     return int(run.id) if run is not None and run.id is not None else None
 
 
+def _cover_autogen_after_scan(db: Session, library, stats: dict) -> None:
+    """新片入库后自动重生成封面（``Library.cover_auto_regen`` 开了才做）
+
+    三个提前返回都是刻意的：
+
+    - 没开开关 → 什么都不做（这是绝大多数库）；
+    - 没选样式 → 没有可复用的配置，重生成必然失败，不如什么都不做；
+    - **本轮没新增** → 封面就是最新的，重画一遍只会白白花渲染时间 + 让缓存失效。
+      “自动更新”该跟“新片”绑定，而不是跟“又扫了一次”绑定。
+
+    延迟导入：封面模块住在 ``backend.api`` 且反过来依赖本包，直接 import 会成环
+    （与 ``probe_worker`` 里的延迟导入同理）。失败只记日志——封面是锦上添花，
+    不能因为它把一轮扫描的结果拖下水。
+    """
+    if not getattr(library, "cover_auto_regen", False):
+        return
+    if not getattr(library, "cover_template", ""):
+        return
+    if not int((stats or {}).get("added") or 0):
+        return
+    library_id = getattr(library, "id", None)
+    try:
+        from backend.api.library_cover import regenerate_cover_for_library
+
+        regenerate_cover_for_library(db, library)
+        db.commit()
+    except Exception:  # noqa: BLE001 — 封面失败绝不能影响扫描结果落库
+        logger.warning("自动重生成封面失败 library_id=%s", library_id, exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001 — 回滚失败就只能让这轮挂在事务里等上层收拾
+            logger.debug("自动重生成封面失败后回滚也失败 library_id=%s",
+                         library_id, exc_info=True)
+
+
 def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict],
                 run_id: Optional[int] = None) -> str:
     """写入一轮扫描的结果，返回归类后的状态
@@ -2788,6 +2823,8 @@ def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]
     _write_scan_state(db, library, status, stats, error)
     # 与媒体库状态分开两次提交：流水写不进去不该影响「上一轮扫得怎么样」这条主状态
     _finish_scan_run(db, run_id, status, stats, error)
+    # 结果已经落库了，封面重生成即使失败也不影响上面那两条状态
+    _cover_autogen_after_scan(db, library, stats)
     return status
 
 
