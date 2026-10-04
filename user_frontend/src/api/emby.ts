@@ -142,6 +142,11 @@ export interface EmbyItem {
   DateCreated?: string | null
   SeriesId?: string | null
   SeriesName?: string | null
+  /**
+   * 外部 id 来源（Tmdb / Imdb / Douban / Bangumi…），后端 `_item_dto` 按有值的才放。
+   * 追新日历的 Rex deep link 靠它拿 TMDB id；没刮削过的条目这里是空对象。
+   */
+  ProviderIds?: Record<string, string> | null
   SeasonId?: string | null
   ParentIndexNumber?: number | null
   IndexNumber?: number | null

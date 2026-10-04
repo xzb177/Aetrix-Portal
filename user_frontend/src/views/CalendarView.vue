@@ -16,7 +16,7 @@
  * 全程只用 --au-* 令牌，浅色 / 深色两套主题自动跟随，不写死任何色值。
  */
 import { ref, computed, watch, onMounted } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   CalendarDays, ChevronLeft, ChevronRight, Film, Tv, ListVideo, Sparkles,
 } from 'lucide-vue-next'
@@ -24,6 +24,7 @@ import {
   fetchCalendar, type CalendarItem, type CalendarItemType, type CalendarResponse,
 } from '@/api/calendar'
 import { embyApi, posterUrl, type EmbyItem } from '@/api/emby'
+import { rexDeepLink } from '@/utils/rexDeepLink'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
@@ -392,7 +393,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
 
       <ul v-else class="day-list">
         <li v-for="item in selectedDay.items" :key="item.Id">
-          <RouterLink :to="{ name: 'media-detail', params: { id: item.Id } }" class="day-item">
+          <a :href="rexDeepLink(item)" class="day-item" :title="`在 Rex 里打开：${titleOf(item)}`">
             <span class="day-poster">
               <img
                 v-if="posterOf(item)"
@@ -413,12 +414,16 @@ watch([year, month, libraryId, selectedTypes], async () => {
               </span>
             </span>
             <ChevronRight :size="16" class="day-go" aria-hidden="true" />
-          </RouterLink>
+          </a>
         </li>
       </ul>
 
       <p v-if="selectedDay && selectedDay.count > selectedDay.items.length" class="cal-note">
         当天共 {{ selectedDay.count }} 条，这里只列出最近入库的 {{ selectedDay.items.length }} 条。
+      </p>
+      <p v-if="selectedDay" class="cal-note">
+        点条目会用 <strong>Rex</strong> 打开：有 TMDB 编号的直接跳到那部作品，没有的按名字交给
+        Rex 搜索。需要先装好 Rex 客户端。
       </p>
     </section>
   </div>
