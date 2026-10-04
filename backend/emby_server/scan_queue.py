@@ -153,7 +153,7 @@ _FLUSHER: Optional[threading.Thread] = None
 
 # ==================== 入队 / 取消 ====================
 
-def enqueue(library, *, trigger: str = "manual") -> dict:
+def enqueue(library, *, trigger: str = "manual", force_full: bool = False) -> dict:
     """把一个媒体库的扫描放进队列（角色分发版）
 
     - API 进程（AETRIX_ROLE=api 且 Redis 可用）：推入 Redis 队列，由 worker 消费执行
@@ -163,10 +163,11 @@ def enqueue(library, *, trigger: str = "manual") -> dict:
         try:
             from backend.emby_server import scan_queue_redis as _rq
             if _rq.is_redis_mode():
-                return _rq.push_scan_request(int(library.id), trigger=trigger)
+                return _rq.push_scan_request(int(library.id), trigger=trigger,
+                                             force_full=force_full)
         except Exception as e:
             logger.warning(f"Redis 入队失败，回退进程内队列：{e}")
-    return enqueue_local(library, trigger=trigger)
+    return enqueue_local(library, trigger=trigger, force_full=force_full)
 
 
 def start_redis_consumer() -> bool:
@@ -181,7 +182,8 @@ def stop_redis_consumer(timeout: float = 5.0) -> None:
     _rq.stop_redis_consumer(timeout=timeout)
 
 
-def enqueue_local(library, *, trigger: str = "manual", redis_raw=None) -> dict:
+def enqueue_local(library, *, trigger: str = "manual", redis_raw=None,
+                  force_full: bool = False) -> dict:
     """把一个媒体库的扫描放进队列（已在队列里 / 正在跑就返回那一条，不报错）
 
     快照在这一刻拍下（``LibrarySnapshot.of``）：排队期间管理员改了路径 / 策略，
@@ -192,12 +194,17 @@ def enqueue_local(library, *, trigger: str = "manual", redis_raw=None) -> dict:
     随 ``ScanTask`` 携带，**扫描真正完成后才 ACK**（P0-0c：提前确认会导致
     worker 崩溃时任务无声丢失）。单体模式传 ``None``。
 
+    ``force_full``：这一轮无视所有指纹，完整处理一遍（管理员手动点「全量扫描」）。
+
     返回 ``{"created": bool, "task": {...}}``：``created=False`` 表示这次点击被合并到已有任务。
     """
     from backend.emby_server.scanner import LibrarySnapshot  # 延迟导入：避免与 scanner 互相导入
 
     scan_instrument.install()   # 进度上报点（幂等；见 scan_instrument 的模块说明）
     snapshot = LibrarySnapshot.of(library)
+    # 手动「全量扫描」只影响这一轮：宁可多处理一遍，也不能让别的库跟着变全量
+    if force_full:
+        snapshot.force_full = True
     with _LOCK:
         existing = _task_of_locked(library.id)
         if existing is not None:

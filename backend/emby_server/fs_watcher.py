@@ -1,0 +1,344 @@
+"""本机媒体目录实时监听（inotify）：新片入库不用等定时扫描
+
+为什么做这个：以前只有一个**轮询**版（``change_watcher``，每 N 分钟列一次目录）。
+本地挂载（/mnt/...）改成宿主机直接映射之后，文件一落地就有 inotify 事件，
+等下一轮轮询（分钟级）纯属白等。
+
+## 设计取舍
+
+- **只管入队，不管扫描**：监听到事件只做一件事——给对应媒体库入队一轮**增量**扫描
+  （``trigger="fs-event"``）。真正的遍历/入库还是走扫描器，它已经会按目录/文件指纹
+  秒跳。监听线程因此永远不做重活，也就不会抢播放与 API 的资源。
+- **1 秒防抖 + 按库合并**：转场一个目录（复制一批剧集）会产生成百上千个事件，
+  逐个处理等于把磁盘读烂。这里按「库」聚合，1 秒内的所有事件只触发**一次**入队；
+  入队本身对同一库是幂等的（已在队列里就返回已有任务），所以重复触发天然安全。
+- **独立线程 + 事件回调只做记账**：watchdog 的回调线程只把 (库 id → 计数) 记进字典，
+  真正的入队放在自己的线程里按防抖窗口做，不碰数据库连接。
+- **降级而不是失败**：路径不可读 / watch 数超上限 / inotify 实例耗尽时，把该库记成
+  ``degraded`` 并给出人话原因，界面能看到；此时该库退回轮询（定时扫描照跑），
+  不会少入库，只是慢一点。监听**永远不能影响扫描/播放/接口**。
+- **容器重启自动恢复**：``start_fs_watcher()`` 在应用 lifespan 里调（与追新线程同一处），
+  从数据库读「当前所有启用库的本地路径」重建监听，不写死任何路径。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import time
+from typing import Optional
+
+logger = logging.getLogger("aetrix.fs_watcher")
+
+#: 事件防抖窗口（秒）：这之内同一媒体库的多个事件只触发一次入队
+FS_EVENT_DEBOUNCE_SEC = 1.0
+#: 一次合并处理里最多触发多少个库（其余下一轮再处理；转场大目录时不让一轮就把
+#: 扫描队列灌满——待处理集合不会丢，下一轮接着出）
+FS_EVENT_MAX_TRIGGERS = 8
+#: 全局最小入队间隔（秒）：防抖窗口之上的第二道闸——磁盘抖动导致事件断断续续时，
+#: 不会把扫描队列灌满（同库入队本就幂等，但队列长度会虚高、界面一直在闪）
+FS_EVENT_MIN_INTERVAL_SEC = 60.0
+#: 同时监听的最大目录数（watchdog/inotify 每个目录占一个 watch，实例数有限）
+FS_WATCH_MAX_DIRS = 4000
+
+try:  # watchdog 是可选依赖：装不上时整个模块退化为「不监听」，不影响任何其他功能
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
+    WATCHDOG_AVAILABLE = True
+except Exception as _watchdog_import_error:  # noqa: BLE001
+    FileSystemEventHandler = object  # type: ignore[assignment,misc]
+    Observer = None  # type: ignore[assignment]
+    WATCHDOG_AVAILABLE = False
+    logger.warning("未安装 watchdog，本机目录实时监听不可用（已降级为定时扫描）：%s",
+                   _watchdog_import_error)
+
+_STATE_LOCK = threading.RLock()
+#: 库 id → 该库本机路径列表（监听与状态查询共用这一份）
+_LIBRARY_PATHS: dict[int, tuple[str, ...]] = {}
+#: 库 id → 降级原因（空串 = 正常监听中）
+_DEGRADED: dict[int, str] = {}
+#: 库 id → {路径: watchdog watch 句柄}
+_WATCHES: dict[int, dict] = {}
+#: 库 id → 最近一次入队时间（限流用）
+_LAST_TRIGGER: dict[int, float] = {}
+#: 待处理事件：库 id → 最近一次事件时刻
+_PENDING: dict[int, float] = {}
+
+_OBSERVER = None
+_THREAD: Optional[threading.Thread] = None
+_STOP: Optional[threading.Event] = None
+_STATS = {"events": 0, "triggers": 0, "coalesced": 0, "errors": 0}
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+# ==================== 目标路径计算（只算本机路径，不写死）====================
+
+def local_paths_for_library(library) -> tuple[str, ...]:
+    """这个库要监听哪些**本机目录**
+
+    从媒体库配置动态算：``paths`` 里的绝对路径 + 绑定的 local 挂载根。
+    远程挂载（``mount://`` / ``115:/`` / ``rclone:``）拿不到可靠的事件源，**不监听**
+    ——它们继续由轮询追新兜底。
+    """
+    from backend.emby_server import mounts as mount_lib
+
+    out: list[str] = []
+    for raw in mount_lib.split_library_paths(getattr(library, "paths", "")):
+        if mount_lib.parse_mount_path(raw) is not None:
+            continue                       # mount://<id>/... = 远程挂载子目录
+        if raw.startswith("/"):
+            out.append(raw.rstrip("/") or "/")
+    return tuple(dict.fromkeys(out))
+
+
+def is_watchable(path: str) -> tuple[bool, str]:
+    """这个目录能不能监听 → ``(能不能, 不能的原因)``"""
+    if not path:
+        return False, "路径为空"
+    if not path.startswith("/"):
+        return False, "不是绝对路径"
+    if not os.path.isdir(path):
+        return False, "目录不存在或不可读"
+    if not os.access(path, os.R_OK):
+        return False, "没有读权限"
+    return True, ""
+
+
+# ==================== 事件回调（只记账，不做重活）====================
+
+class _CoalescingHandler(FileSystemEventHandler):  # type: ignore[misc]
+    """把 inotify 事件按「库」记到 ``_PENDING``，什么都不做
+
+    真正的入队在 ``_drain_loop`` 里按防抖窗口统一做。这里如果直接查库/入队，
+    watchdog 的回调线程就会被数据库与磁盘 IO 拖住——而它是个共享的 emitter 线程，
+    拖住它等于拖住所有被监听目录。
+    """
+
+    def on_any_event(self, event) -> None:  # noqa: ANN001 — watchdog 的事件对象
+        if getattr(event, "is_directory", False):
+            return                      # 目录级事件（新建/改名目录）后面由扫描器发现
+        # 事件类型不筛：inotify 只报「有变动」，靠扫描器按指纹判断到底变没变。
+        # 这里越宽越安全（宁可多触发一次增量扫描，也不能漏），代价是防抖吸收了抖动。
+        src = getattr(event, "src_path", "") or ""
+        with _STATE_LOCK:
+            for lib_id, paths in _LIBRARY_PATHS.items():
+                if any(src.startswith(p.rstrip("/") + "/") for p in paths):
+                    _PENDING[lib_id] = _now()
+                    _STATS["events"] += 1
+                    return
+
+
+# ==================== 入队（独立线程 + 防抖 + 限流）====================
+
+def _trigger_scan(library_id: int) -> None:
+    """给一个库入队一轮增量扫描
+
+    自己开 Session：回调线程 / 防抖线程都不能复用别人的连接。失败只记日志——
+    监听失败不该拖垮扫描本身。
+    """
+    now = _now()
+    with _STATE_LOCK:
+        last = _LAST_TRIGGER.get(library_id, 0.0)
+        if now - last < FS_EVENT_MIN_INTERVAL_SEC:
+            with _STATE_LOCK:
+                _STATS["coalesced"] += 1
+            return
+        _LAST_TRIGGER[library_id] = now
+    try:
+        from backend.database import SessionLocal
+        from backend.emby_server import models as em
+        from backend.emby_server import scan_queue
+
+        db = SessionLocal()
+        try:
+            lib = db.query(em.Library).filter(em.Library.id == library_id).first()
+            if lib is None or not lib.is_enabled:
+                return
+            if getattr(lib, "fs_watch", True) is False:
+                return
+            # 一定是增量：监听到的只是「有变动」，到底变没变由扫描器的指纹判断
+            scan_queue.enqueue(lib, trigger="fs-event")
+            with _STATE_LOCK:
+                _STATS["triggers"] += 1
+            logger.info("fs-watch: 库「%s」(id=%s) 有文件变动，已入队增量扫描",
+                        lib.name, library_id)
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 — 入队失败只丢这一轮，下一次事件会再来
+        with _STATE_LOCK:
+            _STATS["errors"] += 1
+        logger.warning("fs-watch: 触发扫描失败 library_id=%s", library_id, exc_info=True)
+
+
+def _drain_loop(stop: threading.Event) -> None:
+    """防抖线程：把 ``_PENDING`` 里的库按窗口合并后逐个入队"""
+    while not stop.is_set():
+        time.sleep(FS_EVENT_DEBOUNCE_SEC)
+        now = _now()
+        ready: list[int] = []
+        with _STATE_LOCK:
+            for lib_id, seen_at in list(_PENDING.items()):
+                if now - seen_at >= FS_EVENT_DEBOUNCE_SEC:
+                    _PENDING.pop(lib_id, None)
+                    ready.append(lib_id)
+        for lib_id in ready[:FS_EVENT_MAX_TRIGGERS]:
+            _trigger_scan(lib_id)
+
+
+# ==================== 监听生命周期 ====================
+
+def _watch_now(library_id: int, paths: tuple[str, ...]) -> None:
+    """给一个库建立/刷新监听；失败只降级不抛"""
+    global _OBSERVER
+    with _STATE_LOCK:
+        observer = _OBSERVER
+        unwatch = _WATCHES.pop(library_id, None)
+        if unwatch and observer is not None:
+            for handle in unwatch.values():
+                try:
+                    observer.unschedule(handle)
+                except Exception:  # noqa: BLE001 — 旧的 watch 可能已经失效
+                    pass
+        _DEGRADED.pop(library_id, None)
+        handles: dict = {}
+        reasons: list[str] = []
+        for path in paths:
+            ok, why = is_watchable(path)
+            if not ok:
+                reasons.append(f"{path}：{why}")
+                continue
+            try:
+                handles[path] = observer.schedule(
+                    _CoalescingHandler(), path, recursive=True)
+            except OSError as exc:
+                # inotify 实例耗尽（fs.inotify.max_user_watches）是这里最常见的失败
+                reasons.append(f"{path}：监听失败（{exc}）")
+        if handles:
+            _WATCHES[library_id] = handles
+        if reasons:
+            _DEGRADED[library_id] = "；".join(reasons[:3])
+            logger.warning("fs-watch: 库 id=%s 部分目录监听失败，已降级为定时扫描：%s",
+                           library_id, _DEGRADED[library_id])
+
+
+def sync_from_db() -> dict:
+    """按库里**当前**的启用媒体库重建监听（启动时调一次；之后可重复调）
+
+    不写死任何路径：每次都以数据库里启用的库为准，路径改了再调一次就跟着变。
+    """
+    status = {"watched": 0, "degraded": 0, "dirs": 0, "available": WATCHDOG_AVAILABLE}
+    if not WATCHDOG_AVAILABLE:
+        return status
+    try:
+        from backend.database import SessionLocal
+        from backend.emby_server import models as em
+
+        db = SessionLocal()
+        try:
+            libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()
+            wanted = {
+                lib.id: local_paths_for_library(lib)
+                for lib in libs
+                if getattr(lib, "fs_watch", True) is not False
+            }
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 — 读库失败就保持现状，不清空已有监听
+        logger.warning("fs-watch: 读取媒体库列表失败，沿用当前监听", exc_info=True)
+        return status
+
+    with _STATE_LOCK:
+        observer = _OBSERVER
+        for lib_id in list(_LIBRARY_PATHS):
+            if lib_id not in wanted:
+                unwatch = _WATCHES.pop(lib_id, None)
+                if unwatch and observer is not None:
+                    for handle in unwatch.values():
+                        try:
+                            observer.unschedule(handle)
+                        except Exception:  # noqa: BLE001
+                            pass
+                _LIBRARY_PATHS.pop(lib_id, None)
+                _DEGRADED.pop(lib_id, None)
+    for lib_id, paths in wanted.items():
+        if not paths:
+            continue
+        with _STATE_LOCK:
+            _LIBRARY_PATHS[lib_id] = paths
+            status["dirs"] += len(paths)
+        _watch_now(lib_id, paths)
+    with _STATE_LOCK:
+        status["watched"] = len(_WATCHES)
+        status["degraded"] = len(_DEGRADED)
+    return status
+
+
+def start_fs_watcher() -> bool:
+    """启动监听（应用 lifespan 里调；重复调用是安全的）
+
+    返回是否真的起了监听。**失败返回 False 而不是抛异常**：启动监听失败绝不能
+    让整个服务起不来——最坏情况就是退回定时扫描。
+    """
+    global _OBSERVER, _THREAD, _STOP
+    with _STATE_LOCK:
+        if not WATCHDOG_AVAILABLE or _THREAD is not None:
+            return False
+        try:
+            _OBSERVER = Observer()
+            _OBSERVER.daemon = True
+            _OBSERVER.start()
+        except Exception:  # noqa: BLE001 — inotify 实例拿不到就降级
+            logger.warning("fs-watch: 启动监听线程失败，已降级为定时扫描", exc_info=True)
+            _OBSERVER = None
+            return False
+        _STOP = threading.Event()
+        thread = threading.Thread(target=_drain_loop, args=(_STOP,),
+                                  name="fs-watch-drain", daemon=True)
+        thread.start()
+        _THREAD = thread
+    status = sync_from_db()
+    logger.info("fs-watch: 已启动，监听 %s 个库 / %s 个目录（降级 %s 个）",
+                status["watched"], status["dirs"], status["degraded"])
+    return True
+
+
+def stop_fs_watcher() -> None:
+    """停掉监听（测试与优雅退出用）"""
+    global _OBSERVER, _THREAD, _STOP
+    with _STATE_LOCK:
+        observer, _THREAD = _OBSERVER, None
+        stop_event, _STOP = _STOP, None
+        _WATCHES.clear()
+        _LIBRARY_PATHS.clear()
+        _DEGRADED.clear()
+        _PENDING.clear()
+        _OBSERVER = None
+    if stop_event is not None:
+        stop_event.set()
+    if observer is not None:
+        try:
+            observer.stop()
+            observer.join(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def watcher_status() -> dict:
+    """当前监听状态（管理端 Dashboard / 设置页回显用）
+
+    含每个库的降级原因——「监听失败」这件事必须让人看得见，否则就是默默不工作。
+    """
+    with _STATE_LOCK:
+        return {
+            "available": WATCHDOG_AVAILABLE,
+            "running": _THREAD is not None,
+            "debounce_sec": FS_EVENT_DEBOUNCE_SEC,
+            "min_interval_sec": FS_EVENT_MIN_INTERVAL_SEC,
+            "watched_libraries": sorted(_WATCHES.keys()),
+            "degraded": {str(k): v for k, v in _DEGRADED.items()},
+            "stats": dict(_STATS),
+        }

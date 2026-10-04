@@ -283,6 +283,13 @@
   line-height: 1.5;
 }
 
+/* 监听降级提示：橙色实心会像报错，这里只说“已降级为定时扫描”，不是故障 */
+.field-warn {
+  color: var(--el-color-warning);
+  font-size: var(--font-size-xs);
+  margin: 4px 0 0;
+}
+
 /* 封面“自动更新”开关：与样式下拉隔开一点，不然会被当成下拉的一部分 */
 .cover-autogen {
   margin-top: 14px;

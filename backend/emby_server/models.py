@@ -54,6 +54,13 @@ class Library(Base):
     # cover_template / 标题重拼一次封面。默认关闭——它会在扫描线程里多花一次渲染时间，
     # 而且多数库的封面本来就不用天天变。
     cover_auto_regen = Column(Boolean, default=False)
+    # 增量扫描（v2.44.0，默认开）：走已有的目录/文件指纹秒跳（scanner.SCAN_INCREMENTAL
+    # 只能全局关，这个是每库粒度）。关掉 = 每轮都把目录当没变过，完整处理一遍。
+    incremental_scan = Column(Boolean, default=True)
+    # 实时监听（v2.44.0，默认开）：本机目录有变动就自动触发一轮增量扫描，不用等定时扫描。
+    # 只对**本机路径**生效（远程挂载拿不到可靠的事件源，仍靠定时扫描）。
+    # 监听起不来时自动降级为定时扫描，并在设置里说明，不会默默不工作。
+    fs_watch = Column(Boolean, default=True)
     # 虚拟媒体库：按发行平台（Netflix / Disney+ …）自动生成，没有自己的文件与路径
     is_virtual = Column(Boolean, default=False)
     platform = Column(String(30))  # 虚拟库对应的平台 id（见 scanner.PLATFORM_LABELS）

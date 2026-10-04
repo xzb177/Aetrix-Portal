@@ -1188,6 +1188,11 @@ class LibrarySnapshot:
     scrape_policy: str
     # 绑定的存储挂载（storage_mounts.id）；扫描时与 paths 一起遍历
     mount_ids: tuple[int, ...] = ()
+    # 本轮是否走增量秒跳：全局开关 SCAN_INCREMENTAL 与本库的开关都要开（v2.44.0）
+    incremental_scan: bool = True
+    # 这一轮强制全量（管理员手动点「全量扫描」）：无视所有指纹，处理一遍全部文件。
+    # 快照字段而不是全局开关 —— 别的库、别的轮次都不能被这次手动操作带跑。
+    force_full: bool = False
 
     @classmethod
     def of(cls, library) -> "LibrarySnapshot":
@@ -1209,6 +1214,8 @@ class LibrarySnapshot:
             paths=paths,
             scrape_policy=normalize_scrape_policy(getattr(library, "scrape_policy", None)),
             mount_ids=tuple(sorted(mount_ids)),
+            # 老库没有这两列时 getattr 默认 True = 保持升级前的行为（本来就有增量）
+            incremental_scan=getattr(library, "incremental_scan", True) is not False,
         )
 
 
@@ -1530,8 +1537,27 @@ class _ScanContext:
 #
 # 远程挂载同样参与：目录列举本来就要做（图片/字幕判定用同一份列表），指纹只是复用
 # 那份列表，不额外增加任何网络往返。SCAN_INCREMENTAL=0 可整体关掉（回到每次全量处理）。
+#
+# v2.44.0 多了**每库**开关（``Library.incremental_scan``，默认开）：扫描循环里一律问
+# ``_incremental_on(ctx)``，而不是直接读这个模块级常量——否则全局开着时无法只给某一个
+# 关掉。手动「全量扫描」通过快照上的 ``force_full`` 只让**那一轮**变成全量。
 SCAN_INCREMENTAL = (os.getenv("SCAN_INCREMENTAL", "1") or "1").strip().lower() \
     not in {"0", "false", "no", "off"}
+
+
+def _incremental_on(ctx: "_ScanContext") -> bool:
+    """这一轮要不要走增量秒跳：全局开关 ∧ 本库开关 ∧ 没被强制全量
+
+    全量时返回 False，于是「读目录指纹 / 文件指纹秒跳」那一整套都退化为不启用——
+    目录照常完整处理一遍，指纹这一轮也不写回（写回也没错，但会白丢一批下次能秒跳的
+    机会，所以 force_full 时不写）。
+    """
+    snap = getattr(ctx, "snap", None)
+    if snap is None:
+        return SCAN_INCREMENTAL
+    if getattr(snap, "force_full", False):
+        return False
+    return SCAN_INCREMENTAL and getattr(snap, "incremental_scan", True) is not False
 
 
 # 分层扫描 L1/L2 总开关（v2.40.0）：1=开（默认）。
@@ -1620,7 +1646,7 @@ def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: 
 
     任何一条不满足都退回完整处理——宁可多做，不能漏文件或漏元数据。
     """
-    if not SCAN_INCREMENTAL or item is None or not fingerprint:
+    if not _incremental_on(ctx) or item is None or not fingerprint:
         return False
     if fingerprint != stored_fingerprint:
         return False                     # 目录变过：图片/字幕/轨道都要重新看一遍
@@ -2067,11 +2093,11 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
 
     # 增量扫描：先把本批远程目录的列举并发预热（指纹要用，写库循环里的图片/字幕判定
     # 也要用同一份，不会多一次网络往返），再一次取出这些目录的已存指纹
-    if SCAN_INCREMENTAL:
+    if _incremental_on(ctx):
         _prefetch_remote_listings(ctx, prepared, pool)
     stored_states = _load_dir_states(
         db, ctx.lib_id, [_dir_key_of(p.scan_file) for p in prepared]
-    ) if SCAN_INCREMENTAL else {}
+    ) if _incremental_on(ctx) else {}
 
     policy = ctx.snap.scrape_policy
     for pending in prepared:
@@ -2086,7 +2112,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         # 文件指纹是纯内存计算。旧 _can_skip_file 保留做兜底（指纹缺失的老数据）。
         file_fp = _file_fingerprint(scan_file)
         pending.file_fingerprint = file_fp
-        if (SCAN_INCREMENTAL
+        if (_incremental_on(ctx)
                 and _fast_skip_enabled()
                 and not is_new
                 and (getattr(item, "file_fingerprint", None) or None) == file_fp
@@ -2103,7 +2129,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
                 continue
         # 目录没变、库里这一行也是最新的 → 不做任何逐文件工作（guid 已在上面记进 seen_guids）
         dir_key = _dir_key_of(scan_file)
-        fingerprint = _dir_fingerprint(ctx, scan_file) if SCAN_INCREMENTAL else None
+        fingerprint = _dir_fingerprint(ctx, scan_file) if _incremental_on(ctx) else None
         if _can_skip_file(ctx, item, pending, fingerprint, stored_states.get(dir_key)):
             pending.skipped = True
             # updated 照旧计一次（对用户来说这个条目本轮确实重新核对过），

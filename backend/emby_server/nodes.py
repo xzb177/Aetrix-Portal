@@ -380,10 +380,12 @@ def node_libraries(db: Session = Depends(get_db)):
 
 
 @node_router.post("/libraries/{library_id}/scan", dependencies=[Depends(require_panel_key)])
-def node_scan_library(library_id: int, db: Session = Depends(get_db)):
+def node_scan_library(library_id: int, full: bool = False,
+                      db: Session = Depends(get_db)):
     """由归属节点执行一次扫描（面板点「扫描」时转发过来）
 
     只有能碰到文件的那台机器扫得动，所以已分配的库必须走这条路径。
+    ``full=true`` 是面板转发过来的「全量扫描」，只影响这一轮。
     """
     lib = db.query(em.Library).filter(em.Library.id == library_id).first()
     if not lib:
@@ -395,14 +397,14 @@ def node_scan_library(library_id: int, db: Session = Depends(get_db)):
     if realm_id is not None and lib.realm_id not in (None, realm_id):
         raise HTTPException(409, f"这个库属于另一个服（realm_id={lib.realm_id}），不该由本节点扫描")
     try:
-        start_local_scan(db, lib)
+        start_local_scan(db, lib, force_full=bool(full))
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"success": True, "message": "扫描已在本节点启动", "library_id": library_id,
-            "node": describe(db)}
+            "full": bool(full), "node": describe(db)}
 
 
-def start_local_scan(db: Session, lib) -> dict:
+def start_local_scan(db: Session, lib, force_full: bool = False) -> dict:
     """在本进程里启动一次后台扫描（与面板的扫描按钮同一条路径）
 
     v2.27.0 起走扫描队列：多台节点上同时点、或同一个远程挂载被多个库引用时，
@@ -411,7 +413,7 @@ def start_local_scan(db: Session, lib) -> dict:
     from backend.emby_server import scan_queue
 
     # 这个库归本节点：面板点「扫描」时会转发到这台机器，流水里标成 node
-    result = scan_queue.enqueue(lib, trigger="node")
+    result = scan_queue.enqueue(lib, trigger="node", force_full=bool(force_full))
     task = result["task"]
     if not result["created"] and task.get("state") == "running":
         raise ValueError("该媒体库正在扫描中")
@@ -453,8 +455,12 @@ async def fetch_node_identity(url: str, timeout: float = 12.0) -> dict:
     return await _get_node(url, "/api/admin/nodes/me", timeout)
 
 
-async def push_scan(url: str, library_id: int, timeout: float = 20.0) -> dict:
-    """让节点扫描它负责的库（EM 侧的「扫描」路由转发用）"""
+async def push_scan(url: str, library_id: int, timeout: float = 20.0,
+                    full: bool = False) -> dict:
+    """让节点扫描它负责的库（EM 侧的「扫描」路由转发用）
+
+    ``full=True`` 把「全量扫描」转发过去（参数名与本地扫描接口一致）。
+    """
     import httpx
 
     from backend.emby_server.mount_health import panel_key
@@ -463,9 +469,11 @@ async def push_scan(url: str, library_id: int, timeout: float = 20.0) -> dict:
     if not key:
         return {"ok": False, "error": "EM 未配置 SECRET_KEY，无法让节点执行扫描"}
     target = f"{(url or '').rstrip('/')}/api/admin/nodes/libraries/{int(library_id)}/scan"
+    params = {"full": "true"} if full else None
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.post(target, headers={PANEL_KEY_HEADER: key})
+            resp = await client.post(target, headers={PANEL_KEY_HEADER: key},
+                                     params=params)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"无法连接节点: {exc}"}
     if resp.status_code == 401:

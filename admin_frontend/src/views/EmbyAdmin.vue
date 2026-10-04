@@ -34,6 +34,7 @@ import {
   fetchReachability,
   fetchRepairQueue,
   fetchScanQueue,
+  fetchFsWatchStatus,
   fetchServers,
   fetchAutoScan,
   fetchChaseNew,
@@ -303,6 +304,21 @@ function optionLabel(list: LibOption[], value: string | null | undefined): strin
 // （前缀路径扫描器认得，但没挂载就没法用挂载级的能力；正常情况都该用上面的添加弹窗）
 
 const srcPath = ref('')
+
+// ---- 扫描策略开关（v2.44.0）----
+/** 增量扫描：走目录/文件指纹，没变动的目录不重扫 */
+const incrementalScan = ref(true)
+/** 本机目录实时监听：新片入库自动触发增量扫描，不用等定时扫描 */
+const fsWatch = ref(true)
+/** 实时监听健康状况（降级原因要让人看见：默默不工作比报错更糟） */
+const fsWatchStatus = ref<Awaited<ReturnType<typeof fetchFsWatchStatus>> | null>(null)
+const fsWatchForThisLib = computed(() => {
+  const id = libForm.id
+  if (id == null || !fsWatchStatus.value) return null
+  if (!fsWatchStatus.value.available) return '未安装监听组件，已改用定时扫描'
+  const reason = fsWatchStatus.value.degraded[String(id)]
+  return reason ? `${reason}（已改用定时扫描）` : null
+})
 const srcType = ref<MountTypeValue>('local')
 
 function appendSourcePath() {
@@ -371,6 +387,8 @@ function formFingerprint(): string {
     // 封面“自动更新”开关没有单独的保存按钮，是跟着表单存的 —— 不进指纹的话
     // 只改它时 libFormDirty 为 false，“保存”一直灰着，开关就永远存不进去
     cover_auto_regen: coverAutoRegen.value,
+    incremental_scan: incrementalScan.value,
+    fs_watch: fsWatch.value,
     chase: libForm.chase,
   })
 }
@@ -408,6 +426,9 @@ function openSettings(l: EmbyLibrary) {
   coverTitle.value = l.cover_title || ''
   coverSubtitle.value = l.cover_subtitle || ''
 coverAutoRegen.value = l.cover_auto_regen === true
+  incrementalScan.value = l.incremental_scan !== false
+  fsWatch.value = l.fs_watch !== false
+  if (!fsWatchStatus.value) void fetchFsWatchStatus().then((s) => { fsWatchStatus.value = s }).catch(() => undefined)
   if (coverTemplate.value) void loadCoverPreview()
   else { coverPreviewUrl.value = ''; coverPreviewError.value = '' }
   Object.assign(libForm, {
@@ -499,6 +520,8 @@ async function saveForm(thenScan = false) {
         cover_title: coverTitle.value || null,
         cover_subtitle: coverSubtitle.value || null,
         cover_auto_regen: coverAutoRegen.value,
+        incremental_scan: incrementalScan.value,
+        fs_watch: fsWatch.value,
       })
       savedId = res.id
       const hasSource = pathEntries.length > 0 || libForm.mount_ids.length > 0
@@ -521,6 +544,8 @@ async function saveForm(thenScan = false) {
         cover_title: coverTitle.value || null,
         cover_subtitle: coverSubtitle.value || null,
         cover_auto_regen: coverAutoRegen.value,
+        incremental_scan: incrementalScan.value,
+        fs_watch: fsWatch.value,
       })
       savedId = editingId
       ElMessage.success(res?.rescan_required
@@ -1665,6 +1690,32 @@ function typeLabel(t: string): string {
             直接影响 TMDB 配额与扫描耗时。
           </p>
           <el-form label-position="top">
+            <el-form-item label="增量扫描">
+              <el-switch
+                v-model="incrementalScan"
+                active-text="开"
+                inactive-text="关（每轮全量重扫）"
+              />
+              <p class="field-help">
+                开着时，只有新增或改动过的文件会重新处理，没变动的目录直接跳过——
+                没变动的库一般秒级扫完。关掉则每轮都完整处理一遍（排查指纹异常时才需要）。
+              </p>
+            </el-form-item>
+
+            <el-form-item label="新片入库实时监听">
+              <el-switch
+                v-model="fsWatch"
+                active-text="开"
+                inactive-text="关"
+              />
+              <p class="field-help">
+                对**本机目录**（如 <code>/mnt/...</code>）用 inotify 监听：文件一落地就自动触发
+                一轮增量扫描，不用等定时扫描。1 秒内的多个变动会合并成一次，不会把队列灌满。
+                远程挂载（115 / rclone）拿不到事件源，仍由定时扫描兜底。
+              </p>
+              <p v-if="fsWatchForThisLib" class="field-warn">{{ fsWatchForThisLib }}</p>
+            </el-form-item>
+
             <el-form-item label="刮削策略">
               <el-select
                 v-model="libForm.scrape_policy"

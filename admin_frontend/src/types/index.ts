@@ -1063,6 +1063,10 @@ export interface EmbyLibrary {
    * 没有封面模板时这个开关是空转的（后端会自己跳过）。
    */
   cover_auto_regen?: boolean
+  /** 增量扫描（v2.44.0，默认开）：走目录/文件指纹秒跳，没变动的目录不重扫 */
+  incremental_scan?: boolean
+  /** 本机目录实时监听（v2.44.0，默认开）：有变动自动触发增量扫描；远程挂载仍靠定时扫描 */
+  fs_watch?: boolean
   is_enabled: boolean
   is_scanning: boolean
   /**
