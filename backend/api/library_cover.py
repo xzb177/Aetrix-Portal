@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -197,6 +199,126 @@ def regenerate_cover_for_library(db: Session, lib: em.Library) -> str:
     if not data:
         raise CoverRegenError("生成失败：这个库还没有可用海报（等刮削补完再试）")
     return _write_generated_cover(lib, data)
+
+
+# ==================== 异步重生成队列（v2.48.0）====================
+# 以前扫描尾部**同步**渲染封面：渲染慢就把整轮扫描拖住，而且一批文件落库会在
+# 同一次扫描里反复触发。现在改成后台线程 + 按库合并：
+#   - 同一媒体库排队期间来多少请求都只算**一个**任务（转场 200 个文件 → 1 次渲染）
+#   - 扫描线程只管入队，立刻返回；封面渲染与扫描完全解耦
+#   - 失败保留旧封面（_write_generated_cover 只在拿到完整数据后才 os.replace）
+_COVER_LOCK = threading.RLock()
+_COVER_PENDING: set[int] = set()      # 排队中（尚未开始）
+_COVER_RUNNING: set[int] = set()      # 正在渲染
+_COVER_STATUS: dict[int, dict] = {}   # lib_id → {state, at, error}
+_COVER_THREAD: Optional[threading.Thread] = None
+_COVER_STOP: Optional[threading.Event] = None
+#: 有新任务时叫醒 worker：空闲就真的阻塞着，不做「每秒醒一次看看有没有活」
+_COVER_WAKE = threading.Event()
+#: 两个任务之间的最小间隔（秒）：批量导入时不给渲染器喘息
+COVER_MIN_INTERVAL_SEC = max(0, float(os.getenv("COVER_MIN_INTERVAL_SEC", "2") or 2))
+
+
+def cover_status(lib_id: int) -> dict:
+    """封面生成状态（前端展示用）：idle / pending / running / done / failed"""
+    with _COVER_LOCK:
+        if lib_id in _COVER_RUNNING:
+            return {"state": "running"}
+        if lib_id in _COVER_PENDING:
+            return {"state": "pending"}
+        return dict(_COVER_STATUS.get(lib_id) or {"state": "idle"})
+
+
+def _set_cover_state(lib_id: int, state: str, error: str = "") -> None:
+    with _COVER_LOCK:
+        _COVER_STATUS[lib_id] = {"state": state, "at": time.time(), "error": error}
+        if state in ("pending", "running"):
+            _COVER_STATUS[lib_id].pop("error", None)
+
+
+def _cover_worker(stop: threading.Event) -> None:
+    from backend.database import SessionLocal
+
+    last_done = 0.0
+    while not stop.is_set():
+        with _COVER_LOCK:
+            lib_id = next(iter(_COVER_PENDING), None)
+            if lib_id is not None:
+                _COVER_PENDING.discard(lib_id)
+                _COVER_RUNNING.add(lib_id)
+        if lib_id is None:
+            # 空闲就真阻塞着（等入队叫醒或停机），不做每秒一次的空转轮询
+            _COVER_WAKE.wait()
+            _COVER_WAKE.clear()
+            continue
+        # 限速：批量导入时不把 CPU 全占光
+        gap = time.monotonic() - last_done
+        if gap < COVER_MIN_INTERVAL_SEC:
+            stop.wait(COVER_MIN_INTERVAL_SEC - gap)
+        try:
+            _set_cover_state(lib_id, "running")
+            db = SessionLocal()
+            try:
+                lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+                if lib is None or not lib.cover_template:
+                    _set_cover_state(lib_id, "done")
+                else:
+                    try:
+                        regenerate_cover_for_library(db, lib)
+                        db.commit()
+                        _set_cover_state(lib_id, "done")
+                    except CoverRegenError as exc:
+                        db.rollback()
+                        # 失败保旧：旧封面原封不动，只记状态
+                        _set_cover_state(lib_id, "failed", str(exc.detail))
+                    except Exception:  # noqa: BLE001 — 渲染崩了也不能拖垮 worker
+                        db.rollback()
+                        logger.warning("封面异步重生成失败 library_id=%s", lib_id,
+                                       exc_info=True)
+                        _set_cover_state(lib_id, "failed", "生成失败，已保留原封面")
+            finally:
+                db.close()
+        finally:
+            with _COVER_LOCK:
+                _COVER_RUNNING.discard(lib_id)
+            last_done = time.monotonic()
+
+
+def enqueue_cover_regeneration(lib_id: int) -> bool:
+    """排一个封面重生成任务 → ``是否新建了任务``
+
+    **合并**：排队中重复调用直接返回 False，不会堆出 N 个任务。扫描侧只管调它，
+    不等渲染结果——封面慢或失败都不影响本轮扫描结果。
+    """
+    global _COVER_THREAD, _COVER_STOP
+    if lib_id is None:
+        return False
+    with _COVER_LOCK:
+        if lib_id in _COVER_PENDING or lib_id in _COVER_RUNNING:
+            return False
+        _COVER_PENDING.add(lib_id)
+        _set_cover_state(lib_id, "pending")
+        _COVER_WAKE.set()          # 叫醒可能正阻塞着的 worker
+        need_thread = _COVER_THREAD is None or not _COVER_THREAD.is_alive()
+        if need_thread:
+            _COVER_STOP = threading.Event()
+            _COVER_THREAD = threading.Thread(target=_cover_worker, args=(_COVER_STOP,),
+                                             name="cover-regen", daemon=True)
+            _COVER_THREAD.start()
+    return True
+
+
+def stop_cover_worker(timeout: float = 5.0) -> None:
+    """停掉后台线程（进程收尾时调用）：正在渲染的那一个最多等 timeout 秒"""
+    global _COVER_THREAD, _COVER_STOP
+    with _COVER_LOCK:
+        thread, _COVER_THREAD = _COVER_THREAD, None
+        stop_event, _COVER_STOP = _COVER_STOP, None
+    if stop_event is not None:
+        stop_event.set()
+    _COVER_WAKE.set()          # 正在阻塞等任务的 worker 也要能立刻醒过来退出
+    if thread is not None:
+        thread.join(timeout=timeout)
 
 
 @router.post("/{lib_id}/cover/regenerate")

@@ -238,6 +238,12 @@ async def lifespan(app: FastAPI):
         maintenance.shutdown_cleanup()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"退出收尾失败（可忽略）: {e}")
+    # 封面异步重生成线程（v2.48.0）：它是惰性起的，但排到队还没画完就退出会丢任务
+    try:
+        from backend.api.library_cover import stop_cover_worker
+        stop_cover_worker(timeout=5.0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"停止封面 worker 失败（可忽略）: {e}")
     # 关掉中转代理的共享连接池（秒播那套）。不关的话 httpx 会报未关闭的
     # 客户端；而且它绑定在创建它的事件循环上，换循环后复用会直接炸。
     try:

@@ -27,6 +27,8 @@ from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import nfo as nfo_lib
+# 软删除（v2.48.0）：清理阶段默认只标记 deleted_at，物理删除留给过期回收
+from backend.emby_server import soft_delete as _soft_delete
 # 实时进度与远程 IO 计数（v2.27.0）：只依赖标准库，不会与 scanner / mounts 形成循环
 from backend.emby_server import scan_progress as progress
 
@@ -91,11 +93,16 @@ def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, i
     """能不能开始清理 → ``(能不能, 不能的原因, 库内文件类条目数)``
 
     只做计数（走索引），O(1) 次查询；不做任何删除。
+
+    计数**只算可见行**（v2.48.0 软删除）：已经下架的行不需要再删，也不能拿它们当
+    分母——否则一个删过 90 部的库会把「本轮看到 10 部」误判成“来源整体不可用”，
+    把后面真正需要清理的场景也一起拦住。
     """
     total = int(db.execute(
         text(
             "SELECT COUNT(*) FROM emby_items "
-            "WHERE library_id = :lib AND item_type IN ('movie', 'episode')"
+            "WHERE library_id = :lib AND item_type IN ('movie', 'episode') "
+            "AND deleted_at IS NULL"
         ),
         {"lib": library.id},
     ).scalar() or 0)
@@ -1693,6 +1700,8 @@ def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: 
     """
     if not _incremental_on(ctx) or item is None or not fingerprint:
         return False
+    if getattr(item, "deleted_at", None):
+        return False                     # 已下架的条目又出现了：必须走完整路径把它放回来
     if fingerprint != stored_fingerprint:
         return False                     # 目录变过：图片/字幕/轨道都要重新看一遍
     scan_file = pending.scan_file
@@ -1811,12 +1820,18 @@ def _load_items(db: Session, guids: list) -> dict:
 
     老实现每个文件查 1~3 次（条目、剧集、季），十万个文件就是几十万次往返；
     现在一批只查（guids / 200）次。
+
+    **这里必须看得见已软删的条目**（``include_deleted``）：扫描遇到一个 guid 时，
+    如果那一行存在只是被下架了，正确做法是把它放回来（连同播放进度与收藏），
+    而不是报 guid 唯一键冲突。这也是软删除能“可恢复”的关键一步。
     """
     found: dict = {}
     unique = list(dict.fromkeys(g for g in guids if g))
-    for chunk in _chunks(unique, SQL_IN_CHUNK):
-        for row in db.query(emby_models.MediaItem).filter(emby_models.MediaItem.guid.in_(chunk)):
-            found[row.guid] = row
+    with _soft_delete.include_deleted():
+        for chunk in _chunks(unique, SQL_IN_CHUNK):
+            for row in db.query(emby_models.MediaItem).filter(
+                    emby_models.MediaItem.guid.in_(chunk)):
+                found[row.guid] = row
     return found
 
 
@@ -2160,6 +2175,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         if (_incremental_on(ctx)
                 and _fast_skip_enabled()
                 and not is_new
+                and not getattr(item, "deleted_at", None)   # 下架过的条目不能秒跳
                 and (getattr(item, "file_fingerprint", None) or None) == file_fp
                 and (getattr(item, "enrich_status", None) or "pending") == "done"
                 and not getattr(item, "repair_requested_at", None)):
@@ -2405,7 +2421,8 @@ def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
     file_backed = int(db.execute(
         text(
             "SELECT COUNT(*) FROM emby_items "
-            "WHERE library_id = :lib AND item_type IN ('movie', 'episode')"
+            "WHERE library_id = :lib AND item_type IN ('movie', 'episode') "
+            "AND deleted_at IS NULL"
         ),
         {"lib": library.id},
     ).scalar() or 0)
@@ -2416,7 +2433,8 @@ def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
     parents = int(db.execute(
         text(
             "SELECT COUNT(*) FROM emby_items "
-            "WHERE library_id = :lib AND item_type IN ('series', 'season')"
+            "WHERE library_id = :lib AND item_type IN ('series', 'season') "
+            "AND deleted_at IS NULL"
         ),
         {"lib": library.id},
     ).scalar() or 0)
@@ -2426,14 +2444,15 @@ def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
         text(
             "SELECT COUNT(DISTINCT series_id) FROM emby_items "
             "WHERE library_id = :lib AND item_type IN ('episode', 'season') "
-            "AND series_id IS NOT NULL"
+            "AND series_id IS NOT NULL AND deleted_at IS NULL"
         ),
         {"lib": library.id},
     ).scalar() or 0)
     refs_season = int(db.execute(
         text(
             "SELECT COUNT(DISTINCT parent_id) FROM emby_items "
-            "WHERE library_id = :lib AND item_type = 'episode' AND parent_id IS NOT NULL"
+            "WHERE library_id = :lib AND item_type = 'episode' "
+            "AND parent_id IS NOT NULL AND deleted_at IS NULL"
         ),
         {"lib": library.id},
     ).scalar() or 0)
@@ -2450,7 +2469,10 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     - **游标分批**：老实现 `db.query(...).all()` 把整库条目一次性读进内存——十万级库
       就是几十万个 ORM 对象，正是「扫描把机器拖垮」的主因。现在按 id 递增读取，
       且只取 4 个列（Core 语句，不构造 ORM 实体），删除也不会让游标卡住（每批只往后走）。
-    - **显式删从属数据**：见 `_purge_items`。
+    - **软删除优先**（v2.48.0）：默认只写 `deleted_at`（见 `soft_delete`），从属数据
+      全部留着——误删一部片还能连播放进度与收藏一起回来。物理删除仍会做，但只针对
+      「已经隐藏很久」的条目（`MEDIA_SOFT_DELETE_PURGE_DAYS`，默认 30 天），
+      否则表会无限涨。把 `MEDIA_SOFT_DELETE=0` 就完全回到硬删。
     """
     global _CLEANUP_LAST
     started = time.perf_counter()
@@ -2485,6 +2507,8 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
             .where(
                 emby_models.MediaItem.library_id == library.id,
                 emby_models.MediaItem.id > last_id,
+                # 已经下架的行不用再看：全局可见性过滤只管 ORM 查询，Core 语句要自己带
+                emby_models.MediaItem.deleted_at.is_(None),
             )
             .order_by(emby_models.MediaItem.id)
             .limit(CLEANUP_BATCH)
@@ -2516,9 +2540,19 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 if not has_children:
                     doomed.append(item_id)
         if doomed:
-            _purge_items(db, doomed)
+            if _soft_delete.soft_delete_enabled():
+                # 只标记：从属数据（播放进度 / 收藏 / 分面）留着，文件回来就能恢复
+                _soft_delete.mark_soft_deleted(db, doomed)
+            else:
+                _purge_items(db, doomed)
             removed += len(doomed)
             db.commit()  # 一批一次提交：与扫描主体同一套资源口径
+    if _soft_delete.soft_delete_enabled():
+        try:
+            _soft_delete.purge_expired(db, library_id=library.id)
+        except Exception as exc:  # noqa: BLE001 — 回收失败不影响本轮清理结果
+            db.rollback()
+            logger.warning("软删除回收失败 library_id=%s: %s", library.id, exc)
     _CLEANUP_LAST.update(walked=walked, removed=removed,
                          elapsed_ms=(time.perf_counter() - started) * 1000)
     return removed
@@ -2548,8 +2582,8 @@ SCAN_RUN_KEEP = int(os.getenv("EMBY_SCAN_HISTORY", "20"))
 
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scraped",
-                   "repaired", "unchanged", "removal_skipped", "failed_roots",
-                   "duplicate_files", "duration_ms", "sources")
+                   "repaired", "unchanged", "resurrected", "removal_skipped",
+                   "failed_roots", "duplicate_files", "duration_ms", "sources")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
@@ -2680,6 +2714,8 @@ def _scan_metrics(stats: dict) -> dict:
         "scraped": int(stats.get("scraped") or 0),
         "repaired": int(stats.get("repaired") or 0),
         "unchanged": int(stats.get("unchanged") or 0),
+        # 软删除（v2.48.0）：文件重新出现、被放回可见的原条目数
+        "resurrected": int(stats.get("resurrected") or 0),
         "removal_skipped": bool(stats.get("removal_skipped")),
         "failed_roots": list(stats.get("failed_roots") or []),
         # 按来源拆分的明细：只记失败来源的话，「挂载在、但一条文件都没有」这种
@@ -2862,8 +2898,9 @@ def _cover_autogen_after_scan(db: Session, library, stats: dict) -> None:
       “自动更新”该跟“新片”绑定，而不是跟“又扫了一次”绑定。
 
     延迟导入：封面模块住在 ``backend.api`` 且反过来依赖本包，直接 import 会成环
-    （与 ``probe_worker`` 里的延迟导入同理）。失败只记日志——封面是锦上添花，
-    不能因为它把一轮扫描的结果拖下水。
+    （与 ``probe_worker`` 里的延迟导入同理）。**只入队**、不渲染：渲染交给后台
+    线程按库合并执行（见 ``library_cover.enqueue_cover_regeneration``），封面慢、
+    失败或根本没有海报，都不会把一轮扫描的结果拖下水。
     """
     if not getattr(library, "cover_auto_regen", False):
         return
@@ -2873,17 +2910,16 @@ def _cover_autogen_after_scan(db: Session, library, stats: dict) -> None:
         return
     library_id = getattr(library, "id", None)
     try:
-        from backend.api.library_cover import regenerate_cover_for_library
+        # 只入队，不渲染（v2.48.0）：渲染慢会把整轮扫描拖住，而且转场一批新片时
+        # 同一轮里会反复触发。队列按库合并，扫描与封面完全解耦。
+        from backend.api.library_cover import enqueue_cover_regeneration
 
-        regenerate_cover_for_library(db, library)
-        db.commit()
+        created = enqueue_cover_regeneration(library_id)
+        logger.info("封面已排队（%s）library_id=%s 新增=%s",
+                    "新建任务" if created else "已有任务在跑，合并", library_id,
+                    (stats or {}).get("added"))
     except Exception:  # noqa: BLE001 — 封面失败绝不能影响扫描结果落库
-        logger.warning("自动重生成封面失败 library_id=%s", library_id, exc_info=True)
-        try:
-            db.rollback()
-        except Exception:  # noqa: BLE001 — 回滚失败就只能让这轮挂在事务里等上层收拾
-            logger.debug("自动重生成封面失败后回滚也失败 library_id=%s",
-                         library_id, exc_info=True)
+        logger.warning("封面任务入队失败 library_id=%s", library_id, exc_info=True)
 
 
 def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict],
@@ -3010,6 +3046,12 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         stats["added"] += 1
                     else:
                         stats["updated"] += 1
+                        if getattr(item, "deleted_at", None):
+                            # 文件又出现了：撤销上一轮的软删除。播放进度、收藏、
+                            # 已刮好的元数据都还在行上，跟着一起回来了。
+                            item.deleted_at = None
+                            stats["resurrected"] = stats.get("resurrected", 0) + 1
+                            logger.info("条目已重新出现，恢复可见: %s", guid)
 
                     # 探测 / 目录列举 / TMDB 的结果都在批次开头取回了（见 _prepare_and_prefetch）：
                     # 这里只读纯值，本循环里**不许再出现任何网络或磁盘 IO**——
@@ -3312,9 +3354,10 @@ def _scan_library_body(db: Session, library: emby_models.Library,
             stats["removal_guard"] = _CLEANUP_LAST["skipped"]
             stats["removal_skipped"] = True
 
-    library.item_count = db.query(emby_models.MediaItem).filter(
+    library.item_count = _soft_delete.count_visible(
+        db,
         emby_models.MediaItem.library_id == library.id,
         emby_models.MediaItem.item_type.in_(["movie", "series"]),
-    ).count()
+    )
     db.commit()
     return stats

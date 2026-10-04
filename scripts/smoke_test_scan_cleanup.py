@@ -32,6 +32,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from backend.database import engine, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server import scanner as sc  # noqa: E402
+from backend.emby_server import soft_delete  # noqa: E402
 
 init_db()
 Session = sessionmaker(bind=engine)
@@ -115,8 +116,20 @@ def scan() -> dict:
 
 
 def item_count() -> int:
+    """库里**看得见**的条目数
+
+    清理阶段自 v2.48.0 起是软删除：消失的条目只标记 `deleted_at`，行还在。因此这里
+    必须数可见行（``count_visible``）——``Query.count()`` 会把语句包成子查询，全局可见性
+    过滤下不到那里去，用它会把已下架的行也算进来，而这个脚本要验的正是「用户还剩多少条目」。
+    """
     with Session() as db:
-        return int(db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_id).count())
+        return soft_delete.count_visible(db, em.MediaItem.library_id == lib_id)
+
+
+def visible_count(*conditions) -> int:
+    """给定条件下看得见的条目数（下架的行不算）"""
+    with Session() as db:
+        return soft_delete.count_visible(db, *conditions)
 
 
 # ==================== 1. 首次扫描（本来就是干净的） ====================
@@ -179,10 +192,10 @@ check("无子条目的季被识别并清理（不走快速路径）",
       fifth["removed"] == 1 and sc._CLEANUP_LAST["fast_path"] is False,
       f"removed={fifth['removed']} fast_path={sc._CLEANUP_LAST['fast_path']}")
 with Session() as db:
-    left = db.query(em.MediaItem).filter(em.MediaItem.guid == "orphan-season-1").count()
+    left = db.query(em.MediaItem).filter(em.MediaItem.guid == "orphan-season-1").first()
 check("那条残留季确实没了、同剧的集没被牵连",
-      left == 0 and item_count() == TOTAL + PARENTS - 1,
-      f"剩余季={left} 条目={item_count()}")
+      left is None and item_count() == TOTAL + PARENTS - 1,
+      f"剩余季={0 if left is None else 1} 条目={item_count()}")
 
 with Session() as db:
     db.add(em.MediaItem(guid="orphan-series-1", library_id=lib_id, item_type="series",
@@ -191,9 +204,10 @@ with Session() as db:
 sixth = scan()
 check("无子条目的剧也被清理", sixth["removed"] == 1, f"removed={sixth['removed']}")
 with Session() as db:
-    left_series = db.query(em.MediaItem).filter(em.MediaItem.guid == "orphan-series-1").count()
+    left_series = db.query(em.MediaItem).filter(
+        em.MediaItem.guid == "orphan-series-1").first()
 check("孤儿剧已删除、其余条目不受影响",
-      left_series == 0 and item_count() == TOTAL + PARENTS - 1, f"剩余={item_count()}")
+      left_series is None and item_count() == TOTAL + PARENTS - 1, f"剩余={item_count()}")
 
 # ==================== 5. 行被外部删掉（文件还在）：扫描先把它补回来，不会误删 ====================
 print("\n=== 5. 条目行缺失但文件还在 ===")
@@ -207,8 +221,9 @@ seventh = scan()
 check("文件还在 → 条目被重新入库（不会当成删除）",
       seventh["added"] == 1 and seventh["removed"] == 0, f"{seventh}")
 with Session() as db:
-    restored = db.query(em.MediaItem).filter(em.MediaItem.guid == missing_guid).count()
-check("重新入库的是同一个 guid（路径哈希稳定）", restored == 1, f"guid={missing_guid} {missing_name}")
+    restored = db.query(em.MediaItem).filter(em.MediaItem.guid == missing_guid).first()
+check("重新入库的是同一个 guid（路径哈希稳定）", restored is not None,
+      f"guid={missing_guid} {missing_name}")
 check("行补回之后库又是干净的 → 回到快速路径",
       sc._CLEANUP_LAST["fast_path"] is True and sc._CLEANUP_LAST["walked"] == 0,
       f"cleanup={sc._CLEANUP_LAST}")

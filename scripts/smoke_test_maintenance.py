@@ -45,6 +45,7 @@ from backend.database import engine, init_db  # noqa: E402
 from backend.emby_server import maintenance as maint  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server import scanner as sc  # noqa: E402
+from backend.emby_server import soft_delete  # noqa: E402
 from backend.emby_server import streaming, subtitles  # noqa: E402
 
 init_db()
@@ -371,24 +372,48 @@ finally:
 
 db = Session()
 left_item = db.query(em.MediaItem).filter(em.MediaItem.id == victim_id).first()
-left_stream = db.query(em.MediaStream).filter(em.MediaStream.item_id == victim_id).count()
-left_progress = db.query(em.UserMediaData).filter(
-    em.UserMediaData.item_id == victim_id).count()
-remaining = db.query(em.MediaItem).filter(
-    em.MediaItem.library_id == lib_id).count()
+# count_visible 而不是 Query.count()：后者会把语句包成子查询，全局可见性过滤下不到那里去
+remaining = soft_delete.count_visible(db, em.MediaItem.library_id == lib_id)
 item_count = db.query(em.Library).filter(em.Library.id == lib_id).first().item_count
+# 从属数据必须**留着**（v2.48.0 软删除：下架不是删除，误删还能连播放进度一起回来）
+with soft_delete.include_deleted():
+    hidden = db.query(em.MediaItem).filter(em.MediaItem.id == victim_id).first()
+    left_stream = db.query(em.MediaStream).filter(em.MediaStream.item_id == victim_id).count()
+    left_progress = db.query(em.UserMediaData).filter(
+        em.UserMediaData.item_id == victim_id).count()
 db.close()
 
 sc.probe_metadata = real_probe
 sc.tmdb_client.session = real_session
 
 check(second["removed"] == 1, "小批大小下清理仍然正确（游标分批）", f"removed={second['removed']}")
-check(left_item is None, "消失的条目被删除")
-check(left_stream == 0, "媒体流一并删除")
-check(left_progress == 0, "播放进度/收藏一并删除（不再留孤儿行）")
+check(left_item is None, "消失的条目不再可见（软删除）")
+check(hidden is not None and hidden.deleted_at is not None, "下架的行仍然保留（可恢复）")
+check(left_stream == streams_before, "媒体流保留（文件回来即可用）", f"流={left_stream}")
+check(left_progress == 1, "播放进度/收藏保留（不再因为一次下架就丢）")
 check(remaining == 12 + 1 + 1 + 3 - 1, "其余条目完好", f"剩余={remaining}")
 # 计数口径是「电影 + 剧集」：11 部幸存的电影 + 1 部剧
 check(item_count == 11 + 1, "库计数按电影/剧集口径更新", f"item_count={item_count}")
+
+# ==================== 7b. 回收：隐藏够久才物理删除（连同从属数据）====================
+db = Session()
+with soft_delete.include_deleted():
+    db.query(em.MediaItem).filter(em.MediaItem.id == victim_id).update(
+        {"deleted_at": datetime.now() - timedelta(days=soft_delete.soft_delete_purge_days() + 1)},
+        synchronize_session=False)
+db.commit()
+purged = soft_delete.purge_expired(db, library_id=lib_id)
+left_stream = db.query(em.MediaStream).filter(em.MediaStream.item_id == victim_id).count()
+left_progress = db.query(em.UserMediaData).filter(
+    em.UserMediaData.item_id == victim_id).count()
+with soft_delete.include_deleted():
+    gone_row = db.query(em.MediaItem).filter(em.MediaItem.id == victim_id).first()
+db.close()
+
+check(purged == 1, "过期下架条目被物理回收", f"purged={purged}")
+check(gone_row is None, "回收后行真的没了")
+check(left_stream == 0, "媒体流一并回收（不留孤儿行）", f"流={left_stream}")
+check(left_progress == 0, "播放进度/收藏一并回收（不留孤儿行）")
 
 
 # ==================== 8. 分类关联表的兜底维护（v2.15.0） ====================
