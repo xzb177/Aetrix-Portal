@@ -1203,6 +1203,8 @@ export interface EmbyScanMetrics {
   repaired: number
   /** 增量扫描跳过的未变化条目数 */
   unchanged: number
+  /** 本轮被放回可见的下架条目数（v2.48.0 软删除：文件回来即复活，连播放进度一起） */
+  resurrected: number
   /** 来源不完整，本轮跳过了「清理已删除条目」 */
   removal_skipped: boolean
   /** 读不到的来源（路径 / 挂载 + 原因） */

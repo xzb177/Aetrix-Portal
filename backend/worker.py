@@ -327,6 +327,11 @@ def main() -> int:
     except Exception as e:
         logger.warning(f"停止补全 worker 失败：{e}")
     try:
+        from backend.api.library_cover import stop_cover_worker
+        stop_cover_worker(timeout=5.0)
+    except Exception as e:
+        logger.warning(f"停止封面 worker 失败：{e}")
+    try:
         from backend.emby_server import maintenance as _m
         _m.shutdown_cleanup()
     except Exception as e:

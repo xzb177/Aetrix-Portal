@@ -41,6 +41,15 @@ FS_EVENT_MAX_TRIGGERS = 8
 FS_EVENT_MIN_INTERVAL_SEC = 60.0
 #: 同时监听的最大目录数（watchdog/inotify 每个目录占一个 watch，实例数有限）
 FS_WATCH_MAX_DIRS = 4000
+#: 周期性对账间隔（秒）：inotify 会漏事件（watch 上限 / 容器重建 / 目录被换掉），
+#: 定期与数据库对一次差才能发现。**只重建监听集合，不遍历目录、不列文件**，
+#: 所以它不会退化成周期性全量读取。
+#: 非法值回落默认（写错一个环境变量不应该让整个服务起不来）。
+try:
+    RECONCILE_INTERVAL_SEC = max(60, int(
+        (os.getenv("FS_RECONCILE_INTERVAL_SEC") or "900").strip() or 900))
+except ValueError:
+    RECONCILE_INTERVAL_SEC = 900
 
 try:  # watchdog 是可选依赖：装不上时整个模块退化为「不监听」，不影响任何其他功能
     from watchdog.events import FileSystemEventHandler
@@ -64,6 +73,9 @@ _WATCHES: dict[int, dict] = {}
 _LAST_TRIGGER: dict[int, float] = {}
 #: 待处理事件：库 id → 最近一次事件时刻
 _PENDING: dict[int, float] = {}
+
+#: 最近一次对账的结果（状态接口回显用）：at=单调时刻, changed=是否有差异
+_LAST_RECONCILE: dict = {"at": 0.0, "changed": None}
 
 _OBSERVER = None
 _THREAD: Optional[threading.Thread] = None
@@ -250,10 +262,20 @@ def _trigger_scan(library_id: int) -> None:
 
 
 def _drain_loop(stop: threading.Event) -> None:
-    """防抖线程：把 ``_PENDING`` 里的库按窗口合并后逐个入队"""
+    """防抖线程：把 ``_PENDING`` 里的库按窗口合并后逐个入队
+
+    兼做**周期性对账**（v2.48.0）：inotify 会漏事件（watch 上限、容器重建、驱动
+    重启、目录被换掉），而这些变更只有靠定期与数据库对一下才能被发现。这里只在
+    **监听集合与数据库不一致**时重建——不遍历目录、不列文件、不做全量读取，
+    代价就是一次库查询 + 内存集合比较。
+    """
+    last_reconcile = _now()
     while not stop.is_set():
         time.sleep(FS_EVENT_DEBOUNCE_SEC)
         now = _now()
+        if now - last_reconcile >= RECONCILE_INTERVAL_SEC:
+            last_reconcile = now
+            _reconcile_once()
         ready: list[int] = []
         with _STATE_LOCK:
             for lib_id, seen_at in list(_PENDING.items()):
@@ -298,6 +320,67 @@ def _watch_now(library_id: int, paths: tuple[str, ...]) -> None:
             _DEGRADED[library_id] = "；".join(reasons[:3])
             logger.warning("fs-watch: 库 id=%s 部分目录监听失败，已降级为定时扫描：%s",
                            library_id, _DEGRADED[library_id])
+
+
+def _expected_libraries() -> dict:
+    """库里**当前**应该被监听的库 → ``{lib_id: 本机路径元组}``（只查库，不碰磁盘）
+
+    过滤口径与 :func:`sync_from_db` **完全一致**（包括“没有本机路径的库不进结果”）：
+    对账比的就是「库里的现状」与「上次建出来的监听」，两边口径不一致会每轮都判成
+    「有差异」——那就不是补漏，而是每 15 分钟无意义地重建一次全部监听。
+    """
+    from backend.database import SessionLocal
+    from backend.emby_server import change_watcher
+    from backend.emby_server import models as em
+
+    db = SessionLocal()
+    try:
+        excluded = set(change_watcher.resolve_excluded(db))
+        libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()
+        wanted: dict = {}
+        for lib in libs:
+            if getattr(lib, "fs_watch", True) is False or lib.id in excluded:
+                continue
+            paths = local_paths_for_library(lib)
+            if not paths:
+                continue            # 纯远程来源的库本来就不监听（与 sync_from_db 同口径）
+            wanted[lib.id] = paths
+        return wanted
+    finally:
+        db.close()
+
+
+def _reconcile_once() -> dict:
+    """对账一次：**只在有差异时**重建监听
+
+    - 没有差异 → 一条日志都不打（绝大多数时候它就是空转）
+    - 有差异 → 重建，并把差异说清楚（新加了库 / 移除了库 / 路径改了）
+
+    刻意**不**在这里触发扫描：inotify 漏掉的事件无法可靠地判定“漏了哪些文件”，
+    凭猜测补扫描要么重复要么遗漏。补漏靠增量扫描的目录指纹，它本来就只处理变化。
+    """
+    if not WATCHDOG_AVAILABLE:
+        return {"changed": False}
+    _LAST_RECONCILE["at"] = _now()
+    try:
+        wanted = _expected_libraries()
+    except Exception:  # noqa: BLE001 — 读库失败保持现状，下轮再对
+        logger.debug("fs-watch: 对账读库失败，下轮重试", exc_info=True)
+        _LAST_RECONCILE["changed"] = None
+        return {"changed": False}
+    with _STATE_LOCK:
+        current = {lib_id: tuple(paths) for lib_id, paths in _LIBRARY_PATHS.items()}
+    if current == wanted:
+        _LAST_RECONCILE["changed"] = False
+        return {"changed": False}
+    _LAST_RECONCILE["changed"] = True
+    added = sorted(set(wanted) - set(current))
+    removed = sorted(set(current) - set(wanted))
+    retuned = sorted(k for k in set(wanted) & set(current) if wanted[k] != current[k])
+    logger.info("fs-watch: 对账发现差异，重建监听（新增=%s 移除=%s 路径变更=%s）",
+                added, removed, retuned)
+    sync_from_db()
+    return {"changed": True, "added": added, "removed": removed, "retuned": retuned}
 
 
 def sync_from_db() -> dict:
@@ -420,6 +503,9 @@ def watcher_status() -> dict:
             "running": _THREAD is not None,
             "debounce_sec": FS_EVENT_DEBOUNCE_SEC,
             "min_interval_sec": FS_EVENT_MIN_INTERVAL_SEC,
+            "reconcile_interval_sec": RECONCILE_INTERVAL_SEC,
+            "last_reconcile_at": _LAST_RECONCILE.get("at"),
+            "last_reconcile_changed": _LAST_RECONCILE.get("changed"),
             "watched_libraries": sorted(_WATCHES.keys()),
             "degraded": {str(k): v for k, v in _DEGRADED.items()},
             "stats": dict(_STATS),

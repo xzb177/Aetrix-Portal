@@ -64,6 +64,7 @@ from backend.emby_server import mounts as mount_lib
 # 扫描队列（v2.27.0）：按远程挂载串行化 + 并发上限 + 排队状态/进度，见 scan_queue.py
 from backend.emby_server import reachability
 from backend.emby_server import scan_queue
+from backend.emby_server import soft_delete
 from backend.emby_server import transfer115
 
 logger = logging.getLogger(__name__)
@@ -1245,7 +1246,7 @@ def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session =
     total_libraries = lib_query.count()
     lib_ids = [row[0] for row in realms.scope_inclusive(
         db.query(em.Library.id), em.Library.realm_id, scope_id).all()]
-    total_items = (db.query(em.MediaItem).filter(em.MediaItem.library_id.in_(lib_ids)).count()
+    total_items = (soft_delete.count_visible(db, em.MediaItem.library_id.in_(lib_ids))
                    if lib_ids else 0)
     active_sessions = (
         db.query(em.PlaybackSession).filter(em.PlaybackSession.ended_at.is_(None)).count()
@@ -1630,40 +1631,43 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
     # （2026-10-02：ItemFacet / PlaybackSession / LocalCacheEntry 漏删致删库 500）。
     removed = 0
     cache_files: list = []
-    while True:
-        chunk = [
-            row[0] for row in db.query(em.MediaItem.id)
-            .filter(em.MediaItem.library_id == lib.id)
-            .limit(500)
-            .all()
-        ]
-        if not chunk:
-            break
-        db.query(em.MediaStream).filter(
-            em.MediaStream.item_id.in_(chunk)
-        ).delete(synchronize_session=False)
-        db.query(em.UserMediaData).filter(
-            em.UserMediaData.item_id.in_(chunk)
-        ).delete(synchronize_session=False)
-        db.query(em.ItemFacet).filter(
-            em.ItemFacet.item_id.in_(chunk)
-        ).delete(synchronize_session=False)
-        db.query(em.PlaybackSession).filter(
-            em.PlaybackSession.item_id.in_(chunk)
-        ).delete(synchronize_session=False)
-        cache_files.extend(
-            row[0] for row in db.query(em.LocalCacheEntry.file_path)
-            .filter(em.LocalCacheEntry.item_id.in_(chunk))
-            .all() if row[0]
-        )
-        db.query(em.LocalCacheEntry).filter(
-            em.LocalCacheEntry.item_id.in_(chunk)
-        ).delete(synchronize_session=False)
-        db.query(em.MediaItem).filter(
-            em.MediaItem.id.in_(chunk)
-        ).delete(synchronize_session=False)
-        db.commit()
-        removed += len(chunk)
+    # include_deleted（v2.48.0 软删除）：删库是物理删除，必须把**已下架**的行也算进来，
+    # 否则它们会被可见性过滤挡在分批循环外，变成一批指向已删媒体的孤儿行。
+    with soft_delete.include_deleted():
+        while True:
+            chunk = [
+                row[0] for row in db.query(em.MediaItem.id)
+                .filter(em.MediaItem.library_id == lib.id)
+                .limit(500)
+                .all()
+            ]
+            if not chunk:
+                break
+            db.query(em.MediaStream).filter(
+                em.MediaStream.item_id.in_(chunk)
+            ).delete(synchronize_session=False)
+            db.query(em.UserMediaData).filter(
+                em.UserMediaData.item_id.in_(chunk)
+            ).delete(synchronize_session=False)
+            db.query(em.ItemFacet).filter(
+                em.ItemFacet.item_id.in_(chunk)
+            ).delete(synchronize_session=False)
+            db.query(em.PlaybackSession).filter(
+                em.PlaybackSession.item_id.in_(chunk)
+            ).delete(synchronize_session=False)
+            cache_files.extend(
+                row[0] for row in db.query(em.LocalCacheEntry.file_path)
+                .filter(em.LocalCacheEntry.item_id.in_(chunk))
+                .all() if row[0]
+            )
+            db.query(em.LocalCacheEntry).filter(
+                em.LocalCacheEntry.item_id.in_(chunk)
+            ).delete(synchronize_session=False)
+            db.query(em.MediaItem).filter(
+                em.MediaItem.id.in_(chunk)
+            ).delete(synchronize_session=False)
+            db.commit()
+            removed += len(chunk)
     # 本地缓存文件随记录一起清理（best-effort，避免磁盘泄漏）
     for _f in cache_files:
         try:
@@ -1904,7 +1908,8 @@ def repair_queue(staff: models.WebUser = Depends(require_staff), db: Session = D
         .all()
     )
     return {
-        "total": db.query(em.MediaItem).filter(em.MediaItem.repair_requested_at.isnot(None)).count(),
+        "total": soft_delete.count_visible(db,
+                                            em.MediaItem.repair_requested_at.isnot(None)),
         "items": [
             {"id": r.guid, "name": r.name, "type": r.item_type, "library_id": r.library_id,
              "requested_at": r.repair_requested_at.isoformat() if r.repair_requested_at else None,

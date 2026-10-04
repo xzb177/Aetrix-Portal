@@ -90,6 +90,9 @@ class _DB:
 def _run_one(monkeypatch, info):
     item = _Item()
     db = _DB(item)
+    # 每个用例都是一次**独立**的探测：探测缓存（v2.48.0，键 path+size+mtime）是进程级的，
+    # 而这里的假路径在所有用例里都一样，不清掉就会拿到上一个用例的结果。
+    probe_worker.clear_probe_cache()
     monkeypatch.setattr(probe_worker, "SessionLocal", lambda: db)
     monkeypatch.setattr(probe_worker, "needs_probe", lambda *a, **k: True)
     monkeypatch.setattr(probe_worker, "breaker_is_tripped", lambda: False)

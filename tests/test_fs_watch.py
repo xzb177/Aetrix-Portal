@@ -285,3 +285,148 @@ def test_enqueue_local_accepts_force_full(monkeypatch):
         snapshot.force_full = True
     assert snapshot.force_full is True
     assert scan_queue is not None
+
+# ==================== 周期性对账（v2.48.0）====================
+
+def test_reconcile_is_silent_when_nothing_changed(monkeypatch):
+    """绝大多数时候它就是空转：不重建、不打日志、不动扫描"""
+    rebuilt = []
+    monkeypatch.setattr(fw, "WATCHDOG_AVAILABLE", True)
+    monkeypatch.setattr(fw, "_expected_libraries", lambda: {7: ("/mnt/a",)})
+    monkeypatch.setattr(fw, "sync_from_db", lambda: rebuilt.append(1))
+    fw._LIBRARY_PATHS[7] = ("/mnt/a",)
+
+    result = fw._reconcile_once()
+
+    assert result["changed"] is False
+    assert rebuilt == [], "没有差异就不该重建监听"
+    assert fw._LAST_RECONCILE["changed"] is False
+    assert fw._LAST_RECONCILE["at"] > 0
+
+
+def test_reconcile_rebuilds_on_any_difference(monkeypatch):
+    """新增库 / 移除库 / 路径改了，三种都要被发现并重建"""
+    monkeypatch.setattr(fw, "WATCHDOG_AVAILABLE", True)
+    monkeypatch.setattr(fw, "sync_from_db", lambda: None)
+    fw._LIBRARY_PATHS[1] = ("/mnt/old",)
+    fw._LIBRARY_PATHS[2] = ("/mnt/keep",)
+    fw._LIBRARY_PATHS[4] = ("/mnt/stale",)
+    monkeypatch.setattr(fw, "_expected_libraries", lambda: {
+        2: ("/mnt/keep",), 3: ("/mnt/new",), 4: ("/mnt/moved",)})
+
+    result = fw._reconcile_once()
+
+    assert result["changed"] is True
+    assert result["added"] == [3]
+    assert result["removed"] == [1]
+    assert result["retuned"] == [4], "同一个库路径变了也要重建（监听的是旧路径）"
+    assert fw._LAST_RECONCILE["changed"] is True
+
+
+def test_reconcile_never_triggers_a_scan(monkeypatch):
+    """对账只补「监听集合」，不补扫描
+
+    inotify 漏掉的事件没法可靠判定漏了哪些文件，凭猜测补扫描要么重复要么遗漏；
+    而且一次全量扫描的代价远高于重建监听。真要补漏靠增量扫描的目录指纹。
+    """
+    enqueued = []
+    monkeypatch.setattr(fw, "WATCHDOG_AVAILABLE", True)
+    monkeypatch.setattr(fw, "_expected_libraries", lambda: {9: ("/mnt/a",)})
+    monkeypatch.setattr(fw, "sync_from_db", lambda: None)
+    monkeypatch.setattr("backend.emby_server.scan_queue.enqueue",
+                        lambda lib, trigger=None, **kw: enqueued.append(lib))
+    fw._LIBRARY_PATHS[9] = ("/mnt/a",)
+    fw._PENDING[9] = 0.0
+
+    fw._reconcile_once()
+
+    assert enqueued == []
+
+
+def test_reconcile_keeps_current_watches_when_db_read_fails(monkeypatch):
+    """读库失败保持现状，下一轮再对——不能把正在工作的监听清空"""
+    monkeypatch.setattr(fw, "WATCHDOG_AVAILABLE", True)
+    monkeypatch.setattr(fw, "sync_from_db", lambda: None)
+    monkeypatch.setattr(fw, "_expected_libraries",
+                        lambda: (_ for _ in ()).throw(RuntimeError("库读不到")))
+    fw._LIBRARY_PATHS[5] = ("/mnt/a",)
+
+    result = fw._reconcile_once()
+
+    assert result["changed"] is False
+    assert fw._LAST_RECONCILE["changed"] is None, "None = 这一轮没对成，界面上要能看出来"
+    assert 5 in fw._LIBRARY_PATHS
+
+
+def test_reconcile_is_skipped_without_watchdog(monkeypatch):
+    monkeypatch.setattr(fw, "WATCHDOG_AVAILABLE", False)
+    monkeypatch.setattr(fw, "_expected_libraries",
+                        lambda: (_ for _ in ()).throw(AssertionError("不该读库")))
+
+    assert fw._reconcile_once() == {"changed": False}
+
+
+def test_reconcile_interval_is_env_tunable_and_floored(monkeypatch):
+    """间隔可调；但有下限——把它调到 0 就变成了每秒对一次库"""
+    import importlib
+
+    monkeypatch.setenv("FS_RECONCILE_INTERVAL_SEC", "300")
+    assert importlib.reload(fw).RECONCILE_INTERVAL_SEC == 300
+    monkeypatch.setenv("FS_RECONCILE_INTERVAL_SEC", "1")
+    assert importlib.reload(fw).RECONCILE_INTERVAL_SEC == 60
+    monkeypatch.setenv("FS_RECONCILE_INTERVAL_SEC", "abc")
+    assert importlib.reload(fw).RECONCILE_INTERVAL_SEC == 900
+    monkeypatch.delenv("FS_RECONCILE_INTERVAL_SEC")
+    importlib.reload(fw)
+
+
+def test_expected_libraries_uses_the_same_filter_as_sync(monkeypatch, tmp_path):
+    """口径必须与 sync_from_db 一致，否则每轮都判成「有差异」空转重建"""
+    import backend.database as dbmod
+    from backend.emby_server import change_watcher
+
+    class _Lib:
+        def __init__(self, lib_id, paths, **kw):
+            self.id = lib_id
+            self.paths = paths
+            self.fs_watch = kw.get("fs_watch", True)
+
+    libs = [
+        _Lib(1, str(tmp_path)),                      # 该监听
+        _Lib(2, str(tmp_path), fs_watch=False),      # 用户关了监听
+        _Lib(3, "mount://1/a,115:/0"),               # 纯远程来源：不监听
+        _Lib(4, ""),                                 # 没配路径
+    ]
+
+    class _Query:
+        def filter(self, *a, **k):
+            return self
+
+        def all(self):
+            return libs
+
+    class _Session:
+        def query(self, *a, **k):
+            return _Query()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(dbmod, "SessionLocal", _Session)
+    monkeypatch.setattr(change_watcher, "resolve_excluded", lambda db: [4])
+
+    wanted = fw._expected_libraries()
+
+    assert list(wanted) == [1], "只留「启用了监听 且 有本机路径」的库"
+
+
+def test_watcher_status_exposes_reconcile(monkeypatch):
+    """管理端要能看到「多久对一次、上次对出差异没有」"""
+    monkeypatch.setattr(fw, "_LAST_RECONCILE", {"at": 123.0, "changed": True})
+    fw._LIBRARY_PATHS[3] = ("/mnt/a",)
+
+    status = fw.watcher_status()
+
+    assert status["reconcile_interval_sec"] == fw.RECONCILE_INTERVAL_SEC
+    assert status["last_reconcile_at"] == 123.0
+    assert status["last_reconcile_changed"] is True

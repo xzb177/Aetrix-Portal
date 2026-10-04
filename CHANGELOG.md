@@ -2,6 +2,115 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.48.0] - 2026-10-04
+
+上一轮标为「超出本轮范围」的六项，这轮全部落地：写入中的文件不再被探测、监听丢事件能
+自己对账、补全队列补上复合索引、探测结果按 path+size+mtime 缓存并合并同文件任务、
+封面重生成改为异步且按库合并、条目下架改为**软删除**（可回滚）。
+
+### 1. 写入中的文件不再被探测（避免截断时长落库）
+
+拷贝 / 转场 / 转码过程中扫描到的文件，`ffprobe` 会读出**截断**的时长，而它一旦落库就是
+`done`、此后再不重探——比不探更糟。现在探测前比一次指纹（`path|size|mtime_ns` 的 md5，
+与扫描时落库的 `MediaItem.file_fingerprint` 同算法）：
+
+- 指纹相同 → 文件自扫描起没动过，直接探（绝大多数情况，零额外开销）；
+- 指纹不同**且** mtime 距今不足 `PROBE_STABILITY_SEC`（默认 60s）→ 判定还在写，
+  推迟 `PROBE_STABILITY_RETRY_SEC`（默认 60s）后再来，本轮记为 `unstable`；
+- 没有扫描时留下的指纹（老数据行）→ **没有证据**就在写，直接探，不会被无限期推迟；
+- `os.stat` 失败 → 文件是真的没了，**放行**：稳定性闸子只负责「晚一点探」，不负责改判结果
+  （下游的 404 / not-found 分支会立即判失败并计入重试）。
+
+刻意**不用**「连续两次观测 size/mtime 相同」那种做法：那要求每个条目都多等一轮，把 worker
+吞吐直接砍半，而上面第 3 条已经用 mtime 新鲜度抓住了真正危险的那一小段窗口。
+
+### 2. 监听丢失能自己对账（不退化成全量扫描）
+
+inotify 会漏事件（watch 数超上限 / 容器重建 / 驱动重启 / 目录被换掉），而这些变更只有靠定期
+与数据库对一次差才能发现。现在监听线程每 `FS_RECONCILE_INTERVAL_SEC`（默认 900s，下限 60s）
+对一次账：
+
+- **只在有差异时**重建监听：无差异时一条日志都不打（绝大多数时候它就是空转）；
+- 有差异时记 info 日志说清楚是「新增库 / 移除库 / 路径变更」，再 `sync_from_db()`；
+- 对账口径与 `sync_from_db` **完全一致**（含排除清单、`fs_watch` 开关、纯远程来源的库不监听），
+  两边不一致会每轮都判成「有差异」，那就不是补漏而是每 15 分钟空转重建一次；
+- **刻意不触发扫描**：inotify 漏掉的事件无法可靠判定“漏了哪些文件”，凭猜测补扫描要么重复
+  要么遗漏；补漏靠增量扫描的目录指纹。对账只查库、比内存集合，**不遍历目录、不列文件**。
+
+`watcher_status()` 新增 `reconcile_interval_sec` / `last_reconcile_at` /
+`last_reconcile_changed`（`changed` 为 `None` 表示这一轮没对成，界面上能看出异常）。
+
+### 3. 补全队列补上复合索引
+
+探测队列早就有 `idx_item_probe`，补全队列当初只给了 `enrich_status` 单列索引——而
+`_claim_batch` 的抢单是 `WHERE enrich_status='pending' AND enrich_next_retry_at<=now` 再按
+`enrich_priority` 排序，单列索引帮不上忙，积压一涨就是排序全表。新增
+`idx_item_enrich(enrich_status, enrich_next_retry_at, enrich_priority)`，老库启动时按
+inspector 幂等补建（`DROP INDEX idx_item_enrich` 即可回滚，无数据影响）。
+
+### 4. 探测缓存 + 同文件任务合并
+
+真正贵的那一步是 ffprobe（起进程 / 向网盘发 Range）。同一份文件被反复排队时，那些成本是
+**同一份字节的同一次**：
+
+- **缓存**：键 = `path + size + mtime`（本机文件，文件一变键就变，命中的一定是同一份字节；
+  远程挂载拿不到 mtime，退化为 `path + size`）。有界 LRU + TTL
+  （`PROBE_CACHE_MAX` 512 / `PROBE_CACHE_TTL_SEC` 900）。**只缓存干净结果**——
+  缓存一个 404 等于把这个文件永久判死，文件补回来之后再也探不出时长。
+- **合并**：同一批里指向同一个文件（`file_path + size`）的条目只探一次，结果连同内封轨道一起
+  镜像给其余条目；抢单顺序（优先级）不变。代表条目「没探成」（被抢走 / 配额熔断）时**不镜像**，
+  影子条目退回 `pending`——停在 `probing` 上既不会被下一轮抢到（它只捞 pending），也没人会再动它。
+
+### 5. 封面自动更新改为异步（与扫描解耦、任务合并、失败保旧）
+
+以前扫描尾部**同步**渲染封面：渲染慢就把整轮扫描拖住，转场一批新片还会在同一轮里反复触发。
+现在扫描只调 `library_cover.enqueue_cover_regeneration(lib_id)`，后台线程按库合并执行：
+
+- 排队 / 渲染期间同一库再来多少次都只算**一个**任务（转场 200 个文件 → 1 次渲染）；
+- 任务之间限速（`COVER_MIN_INTERVAL_SEC`，默认 2s），批量导入时不给渲染器喘息；
+- 失败**保留旧封面**：`_write_generated_cover` 只在拿到完整数据后才 `os.replace`，渲染崩了
+  旧文件原封不动，只记 `failed` 与原因；一个库失败不影响队列里后面的库；
+- `cover_status(lib_id)` 给出 `idle/pending/running/done/failed`；应用与 worker 退出时
+  `stop_cover_worker()` 收尾。手动接口仍然是同步调用同一个 `regenerate_cover_for_library`
+  ——两条路渲染参数同源，只是自动路径不再占用扫描线程。
+
+### 6. 条目下架改为软删除（可回滚）
+
+以前清理阶段是**硬删**：条目连同外挂的播放进度、收藏、分面一起消失，误删一次就再也回不来。
+现在 `emby_items` 新增 `deleted_at`（老库补列后全为 NULL = 行为不变）：
+
+- **标记**：清理阶段只写 `deleted_at`；
+- **隐藏**：可见性由一个装在 `sqlalchemy.orm.Session` 上的 `do_orm_execute` 钩子**全局**补上
+  `deleted_at IS NULL`——三十多个模块、几百处 `db.query(MediaItem)` 只需漏改一处，被删的条目
+  就会换个页面重新冒出来，所以一处兜住，读路径一行都不用改。钩子只作用于 `SELECT` 且只在
+  真的选了 `MediaItem` 实体时才加条件（给别的表加会凭空多出一张表的笛卡尔积）；
+  复活 / 删库 / 排查用 `include_deleted()` 显式放行；
+- **复活**：文件重新出现时扫描器清空 `deleted_at`——复用**原来那一行**（不是新建一条），
+  播放进度、收藏、已刮好的元数据一起回来，扫描统计里多一个 `resurrected` 计数。
+  指纹秒跳与 `_can_skip_file` 都对「下架过的条目」放行，否则文件回来了却会被秒跳掉；
+- **回收**：隐藏超过 `MEDIA_SOFT_DELETE_PURGE_DAYS`（默认 30 天）才物理删除（连从属数据），
+  表不会无限涨；
+- **删除保护不被绕开**：零结果 / 数量阈值两道闸照旧，而且计数**只算可见行**——否则一个删过
+  90 部的库会把「本轮看到剩下 10 部」误判成“来源整体不可用”，把后面真正要清理的场景一起拦住；
+- 新增 `idx_item_lib_deleted(library_id, deleted_at)`（老库幂等补建）：可见性条件与几乎所有
+  查询的 `library_id = ?` 绑在一起，索引能把已下架的行在索引层就跳过；
+- **计数也跟可见性走**：媒体库条目数、`Items/Counts`、看板统计、修复队列条数、剧/季子条目数
+  全部改走 `soft_delete.count_visible()`（`Query.count()` 会把语句包成子查询，全局过滤器
+  下不到那里去，否则界面上的条目数会比实际能浏览到的多）；
+- **回滚**：`.env` 里 `MEDIA_SOFT_DELETE=0` 并重启。此时启动阶段先把已隐藏的行**全部放回可见**
+  （否则它们会变成既不显示、也永远删不掉的僵尸行），之后照旧物理删除，与 v2.47.0 一致。
+
+### 验证
+
+pytest **1441 passed**（新增 62 条：`test_soft_delete` 30 / `test_probe_cache_merge` 16 /
+`test_cover_auto_regen` +7 / `test_fs_watch` +8 / `test_removal_guard` +1）；12 项
+`scripts/check_*.py` 全过；两个前端 type-check + build 全 rc=0。
+
+顺带修掉的：封面 worker 的 `stop_cover_worker()` 少写一个 `global` 导致收尾必抛
+`UnboundLocalError`；`FS_RECONCILE_INTERVAL_SEC` / `PROBE_*` 写成非法值会让整个模块导入失败
+（现在回落默认）；探测缓存的 `streams` 列表原本是共享引用（调用方改它会改到缓存）；扫描流水
+多一个 `resurrected` 计数（后台「新增/更新/下架」列会在发生时补一个 `↺N`）。
+
 ## [2.47.0] - 2026-10-04
 
 一轮「存储健康 / 实时监听 / 后台 UI」系统优化，四个主题。

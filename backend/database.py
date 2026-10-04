@@ -522,6 +522,9 @@ def _auto_migrate():
             # 元数据来源标记：老库补列后为 NULL（历史数据未标记），
             # 由刮削时重新写入；查"刮没刮干净"不再依赖 last_scraped_at 反推。
             ("metadata_source", "VARCHAR(20)", "NULL"),
+            # v2.48.0 软删除：老库补列后全为 NULL = 全部可见，行为与以前完全一致。
+            # 回滚：MEDIA_SOFT_DELETE=0 启动时会把已隐藏的行清空（见 _resurrect_soft_deleted）。
+            ("deleted_at", "DATETIME", "NULL"),
         ]),
         # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，
         # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。
@@ -557,7 +560,10 @@ def _auto_migrate():
     _widen_stream_title_columns(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
     _ensure_probe_index(existing_tables)
+    _ensure_enrich_index(existing_tables)
     _ensure_added_index(existing_tables)
+    _ensure_deleted_index(existing_tables)
+    _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
 
@@ -611,6 +617,32 @@ def _ensure_probe_index(existing_tables: set) -> None:
         print("  🔧 已迁移: emby_items.idx_item_probe（探测队列索引）")
 
 
+def _ensure_enrich_index(existing_tables: set) -> None:
+    """给老库补补全队列的复合索引（幂等，v2.48.0）
+
+    与 :func:`_ensure_probe_index` 同理。探测队列早就有 ``idx_item_probe``，
+    补全队列当初只给了 ``enrich_status`` 单列索引——而 ``_claim_batch`` 的抢单是
+    ``WHERE enrich_status='pending' AND enrich_next_retry_at<=now`` 再按
+    ``enrich_priority`` 排序，单列索引帮不上忙，积压一涨就是排序全表。
+
+    **可回滚**：``DROP INDEX idx_item_enrich`` 即可，无数据影响。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_items" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
+    if "idx_item_enrich" in names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX idx_item_enrich "
+            "ON emby_items (enrich_status, enrich_next_retry_at, enrich_priority)"
+        ))
+        print("  🔧 已迁移: emby_items.idx_item_enrich（补全队列复合索引）")
+
+
 def _ensure_added_index(existing_tables: set) -> None:
     """给老库补追新日历的入库时间索引（幂等）
 
@@ -632,6 +664,52 @@ def _ensure_added_index(existing_tables: set) -> None:
             "ON emby_items (date_added, item_type)"
         ))
         print("  🔧 已迁移: emby_items.idx_item_added（追新日历索引）")
+
+
+def _ensure_deleted_index(existing_tables: set) -> None:
+    """给老库补软删除可见性索引（幂等，v2.48.0）
+
+    可见性过滤（``deleted_at IS NULL``）是全局拼上去的，与几乎所有查询的
+    ``library_id = ?`` 绑在一起。把 deleted_at 跟在 library_id 后面，已下架的行
+    在索引里就被跳过，不必回表再过滤。
+
+    **可回滚**：``DROP INDEX idx_item_lib_deleted`` 即可，无数据影响。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_items" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
+    if "idx_item_lib_deleted" in names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX idx_item_lib_deleted "
+            "ON emby_items (library_id, deleted_at)"
+        ))
+        print("  🔧 已迁移: emby_items.idx_item_lib_deleted（软删除可见性索引）")
+
+
+def _resurrect_soft_deleted(existing_tables: set) -> None:
+    """回滚软删除：``MEDIA_SOFT_DELETE=0`` 时把已隐藏的条目放回来（幂等）
+
+    关掉开关意味着清理阶段回到硬删，也就是「条目会真的消失」。如果不把已隐藏的行
+    放回来，它们就会变成既不显示、也永远删不掉的僵尸行——所以开关关掉的**那一刻**
+    就必须恢复成软删除上线前的可见状态，之后的删除才是真的删除。
+    """
+    from sqlalchemy import text
+
+    from backend.emby_server.soft_delete import soft_delete_enabled
+
+    if soft_delete_enabled() or "emby_items" not in existing_tables:
+        return
+    with engine.begin() as conn:
+        restored = conn.execute(
+            text("UPDATE emby_items SET deleted_at = NULL WHERE deleted_at IS NOT NULL")
+        ).rowcount
+    if restored:
+        print(f"  🔧 软删除已关闭：{restored} 条隐藏条目已恢复可见")
 
 
 def _all_metadata():

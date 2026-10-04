@@ -1002,7 +1002,10 @@ function triggerLabel(trigger: string | null): string {
 
 /** 流水里一轮的增量摘要（与卡片上的口径一致，失败时只显示原因） */
 function runSummary(r: EmbyScanRun): string {
-  return [`+${r.added}`, `~${r.updated}`, `-${r.removed}`].join(' / ')
+  const bits = [`+${r.added}`, `~${r.updated}`, `-${r.removed}`]
+  // 复活只在真的发生时占位：它是「下架过的片又回来了」，没发生就不该增加噪音
+  if (r.resurrected) bits.push(`↺${r.resurrected}`)
+  return bits.join(' / ')
 }
 
 // ---- 按来源拆分（哪条来源扫到了什么）----
@@ -1207,7 +1210,7 @@ const scanColumns: DataColumn[] = [
   { key: 'started_at', label: '开始', width: 140, mobile: 'title' },
   { key: 'status', label: '结果', width: 110 },
   { key: 'trigger', label: '触发', width: 90 },
-  { key: 'summary', label: '新增/更新/删除', width: 150 },
+  { key: 'summary', label: '新增/更新/下架', width: 170 },
   { key: 'sources', label: '来源', width: 110 },
   { key: 'duration', label: '耗时', width: 90 },
   { key: 'error', label: '原因', minWidth: 160 },
@@ -1851,7 +1854,8 @@ function typeLabel(t: string): string {
       />
       <p class="drawer-hint" style="margin: 4px 0 0">
         打开后，这个库每扫完一轮且<b>确实有新片入库时</b>，会自动用最新入库的海报按上面选的样式
-        重新拼一张封面；没有新片就不动它。默认关闭。
+        重新拼一张封面；没有新片就不动它。渲染在<b>后台排队</b>进行，不会拖慢扫描；转场一次入库
+        几百个文件也只会排一个任务，画不出来时旧封面原样保留。默认关闭。
         <template v-if="!coverTemplate">
           <br /><span style="color: var(--el-color-warning)">需先选一个封面样式，否则不会生效。</span>
         </template>

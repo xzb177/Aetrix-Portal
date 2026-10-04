@@ -24,6 +24,7 @@ from sqlalchemy.pool import StaticPool
 from backend import models
 from backend.emby_server import models as em
 from backend.emby_server import scanner
+from backend.emby_server import soft_delete
 from backend.integrations import store
 
 
@@ -137,9 +138,12 @@ def test_absolute_floor_defaults_are_safe_for_small_libraries(db, tmp_path):
 # ==================== 不能“一刀切地不删” ====================
 
 def test_normal_small_cleanup_still_deletes(db, tmp_path):
-    """正常场景要真删：100 条里删 1 条（一部片下架了），必须删掉
+    """正常场景要真删：100 条里删 1 条（一部片下架了），必须下架它
 
     没有这一条的话，前面的保护会把清理功能整个废掉。
+
+    v2.48.0 起「删掉」默认是软删除：行还在、只是对所有人隐藏（见 test_soft_delete.py）。
+    这里同时钉住两条：默认隐藏、``MEDIA_SOFT_DELETE=0`` 时真的物理删除。
     """
     lib = _lib(db, str(tmp_path))
     gone = _item(db, lib, "gone")
@@ -151,7 +155,27 @@ def test_normal_small_cleanup_still_deletes(db, tmp_path):
 
     assert removed == 1
     assert db.query(em.MediaItem).filter(em.MediaItem.guid == "gone").first() is None
+    with soft_delete.include_deleted():
+        hidden = db.query(em.MediaItem).filter(em.MediaItem.guid == "gone").one()
+    assert hidden.deleted_at is not None, "默认是软删除：行保留、标记下架"
     assert not scanner._CLEANUP_LAST.get("skipped")
+
+
+def test_normal_small_cleanup_physically_deletes_when_soft_delete_is_off(db, tmp_path,
+                                                                        monkeypatch):
+    """关掉软删除就是回到硬删：那条目**真的**没了（不是标记）"""
+    monkeypatch.setenv("MEDIA_SOFT_DELETE", "0")
+    lib = _lib(db, str(tmp_path))
+    gone = _item(db, lib, "gone")
+    for i in range(100):
+        _item(db, lib, f"m{i:03d}")
+    seen = {f"m{i:03d}" for i in range(100)}
+
+    removed = scanner._remove_missing_items(db, lib, seen)
+
+    assert removed == 1
+    with soft_delete.include_deleted():
+        assert db.query(em.MediaItem).filter(em.MediaItem.guid == "gone").first() is None
 
 
 def test_empty_library_is_not_blocked(db, tmp_path):

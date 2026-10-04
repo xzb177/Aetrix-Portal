@@ -111,11 +111,21 @@ class MediaItem(Base):
         Index("idx_item_series", "series_id"),
         # 两阶段扫描 Phase 2：后台探测按（状态，优先级）取待探测条目
         Index("idx_item_probe", "probe_status", "probe_priority", "id"),
+        # 补全队列抢单：WHERE enrich_status='pending' AND enrich_next_retry_at<=now
+        # ORDER BY enrich_priority DESC。之前 enrich_status 只有单列索引，而抢单还
+        # 带一个 to-time 条件与优先级排序，PG 得自己过滤 + 排序，积压一多就是全表级
+        # 开销（探测队列的 idx_item_probe 就是为此建的，补全队列当时漏了）。
+        Index("idx_item_enrich", "enrich_status", "enrich_next_retry_at",
+              "enrich_priority"),
         # 追新日历：按「入库时间落在某月」取条目（date_added BETWEEN 起 止）。
         # 没有索引时这是一张全表扫 + filesort，条目量上万后打开日历要几秒。
         # 复合第二列带上 item_type：日历的类型筛选（电影 / 剧集 / 单集）
         # 绝大多数时候都带，能把回表行数再压一截。
         Index("idx_item_added", "date_added", "item_type"),
+        # 软删除（v2.48.0）：几乎所有查询都带 `library_id = ? AND deleted_at IS NULL`
+        # （可见性由全局过滤器拼上）。把 deleted_at 跟在 library_id 后面，已下架的
+        # 行能在索引里就被跳过，不用先回表再过滤。
+        Index("idx_item_lib_deleted", "library_id", "deleted_at"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -221,6 +231,10 @@ class MediaItem(Base):
     # 这里另存一份完整的，**只增不改**已有列；tmdb/imdb 同时回写那两列（引擎负责）。
     # 用途：跨源去重、换源时直接命中、改名后重新匹配。
     external_ids = Column(Text)
+    # 软删除（v2.48.0）：清理阶段不再物理删条目，只写这个时刻。
+    # NULL = 正常可见；非 NULL = 已下架。读路径由 backend/emby_server/soft_delete.py
+    # 的全局 ORM 过滤器自动挡掉，文件重新出现时扫描器会把它清空（连播放进度一起回来）。
+    deleted_at = Column(DateTime, default=None)
 
 
 from sqlalchemy.orm import relationship  # noqa: E402
@@ -577,6 +591,11 @@ class LocalCacheStat(Base):
     misses = Column(BigInteger, default=0)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+
+# 软删除的全局可见性过滤器（v2.48.0）在这里装上：它注册在 sqlalchemy.orm.Session
+# 类上，所以只要 MediaItem 这个模型被导入过，它就生效——也就是说，本仓库里任何
+# 会查条目的代码（不只 emby_server 下的）都自动看不到已下架的条目。
+from backend.emby_server import soft_delete as _soft_delete  # noqa: E402,F401
 
 __all__ = [
     "Library",

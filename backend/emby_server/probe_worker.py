@@ -20,7 +20,9 @@ import logging
 import os
 import threading
 import time
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -187,6 +189,131 @@ PROBE_ROUND_PAUSE_SEC = max(0, int(os.getenv("PROBE_ROUND_PAUSE_SEC", "10") or 1
 # 探测结果里的数值字段统一走 scanner.safe_probe_int：ffprobe/MediaInfo 在远程流上
 # 偶发给出 None、负数或超大值，直接落库会让整条 commit 失败、把这一轮全部打回。
 _safe_int = safe_probe_int
+
+
+# ==================== 文件稳定性 + 探测缓存（v2.48.0）====================
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    """环境变量 → 整数（带下限）。写错一个值不应该让整个 worker 导入失败。"""
+    try:
+        return max(minimum, int((os.getenv(name) or "").strip() or default))
+    except ValueError:
+        return default
+
+
+#: mtime 距今不足这么多秒，就认为「可能还在写」，推迟本轮探测。
+#: 老文件（mtime 是几天前）永远不会被这条规则拦到——所以它不会变成吞吐上的固定开销。
+STABILITY_RECENT_SEC = _env_int("PROBE_STABILITY_SEC", 60, 0)
+#: 等待稳定时的退避（秒）：不立刻重排，给拷贝/转码留出时间
+STABILITY_RETRY_SEC = _env_int("PROBE_STABILITY_RETRY_SEC", 60, 10)
+
+
+def local_fingerprint(path: str, size: int, mtime_ns: int) -> str:
+    """本机文件指纹（path|size|mtime_ns 的 md5）
+
+    与 ``scanner._file_fingerprint`` **同一个算法**，因此探测 worker 能直接拿它
+    与扫描时落库的 ``MediaItem.file_fingerprint`` 对比：两个值相等 = 文件自扫描
+    起就没再变过（写完了），不等 = 扫描之后又变了。
+    """
+    raw = "|".join((path, str(size), str(mtime_ns)))
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def await_file_stable(path: str, scanned_fingerprint: Optional[str]) -> tuple[bool, str]:
+    """本机文件是不是「写完了」→ ``(能不能探, 不能的原因)``
+
+    只在**有证据表明它可能还在写**时才推迟，而且不需要任何进程内状态：
+
+    1. 没有扫描时记下的指纹 → **没有证据**，直接探（老数据行不会被无限期推迟）
+    2. 指纹与扫描时落库的相同 → 自扫描起没变过，直接探（绝大多数情况，零开销）
+    3. 指纹不同（= 扫描之后它变了）**且** mtime 距今不足
+       :data:`STABILITY_RECENT_SEC` → 刚动过，多半是拷贝/转码还在写，推迟一轮
+    4. 指纹不同但 mtime 已经很老 → 那是写完之后又被改动（重新压制之类），直接探
+
+    刻意**不用**「连续两次观测 size/mtime 相同」那种做法：它要求先记一轮状态，
+    意味着每个条目都要多等一轮，把 worker 的吞吐直接砍半——而第3 条已经用
+    mtime 新鲜度抓住了真正危险的那一小段窗口。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        # 文件没了**不是**“还没写完”，而是真没了：交给下游的 404 / not-found 分支
+        # 立即判失败并计入重试次数。稳定性闸子只负责“晚一点再探”，不负责改判结果。
+        return True, ""
+    cur = local_fingerprint(path, st.st_size, st.st_mtime_ns)
+    if not scanned_fingerprint:
+        # 没有扫描时记下的指纹（老数据行 / 外部写入的库）→ **没有证据**说它在写，
+        # 直接探。不能因为缺证据就拦，否则老库会被无限期推迟。
+        return True, ""
+    if scanned_fingerprint == cur:
+        return True, ""                      # 自扫描起就没动过
+    # 指纹对不上 = 扫描之后它变了。再用 mtime 新鲜度缩小范围：
+    # 刚动过的多半还在写；mtime 已经很老的，那是写完之后又被重新压制，直接探。
+    age = time.time() - st.st_mtime
+    if 0 <= age < STABILITY_RECENT_SEC:
+        return False, f"文件 {int(age)}s 前还在写入，等稳定后再探"
+    return True, ""
+
+
+# ==================== 探测缓存（v2.48.0）====================
+# 同一个文件被反复排队时（重试撞上复制、同一份文件挂在两个库下、用户手动点重试），
+# 真正贵的那一步是 ffprobe——它要么起进程，要么向网盘发 Range 请求。缓存把这一步
+# 变成一次内存查表：
+#
+# - **键 = path + size + mtime**（本机文件）：文件一变键就变，命中的一定是同一份字节；
+#   远程挂载拿不到 mtime，退化成 path + size，这是那边唯一稳定的文件标识。
+# - **只缓存干净结果**：带 ``_error`` 的结果不进缓存——否则一次 404 会被缓存成
+#   「这个文件永远 404」，文件补回来之后再也探不出时长。
+# - 有界（LRU）+ TTL，避免长跑进程里无限增长。
+PROBE_CACHE_TTL_SEC = _env_int("PROBE_CACHE_TTL_SEC", 900, 0)
+PROBE_CACHE_MAX = _env_int("PROBE_CACHE_MAX", 512, 16)
+_probe_cache: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+_probe_cache_lock = threading.Lock()
+
+
+def probe_cache_key(path: str, size: int) -> str:
+    """缓存键：本机文件用 path|size|mtime（同一个函数算指纹），远程用 path|size"""
+    mtime_ns = None
+    if not str(path).startswith("mount://"):
+        try:
+            mtime_ns = os.stat(path).st_mtime_ns
+        except OSError:
+            mtime_ns = None
+    return f"{path}|{size or 0}|{mtime_ns}"
+
+
+def probe_cache_get(key: str) -> Optional[dict]:
+    """命中就返回一份**副本**（调用方会改它），否则 None"""
+    if PROBE_CACHE_TTL_SEC <= 0:
+        return None
+    now = time.time()
+    with _probe_cache_lock:
+        hit = _probe_cache.get(key)
+        if hit is None:
+            return None
+        cached_at, info = hit
+        if now - cached_at > PROBE_CACHE_TTL_SEC:
+            _probe_cache.pop(key, None)
+            return None
+        _probe_cache.move_to_end(key)
+        return dict(info, streams=list(info.get("streams") or []))
+
+
+def probe_cache_put(key: str, info: Optional[dict]) -> None:
+    """写缓存（只收干净结果；写之前复制一份，避免调用方之后改它把缓存改了）"""
+    if PROBE_CACHE_TTL_SEC <= 0 or not info or info.get("_error"):
+        return
+    with _probe_cache_lock:
+        # 浅拷贝 + streams 单独拷一份：调用方之后改 info（填 streams 等）不能把缓存改了
+        _probe_cache[key] = (time.time(),
+                            dict(info, streams=list(info.get("streams") or [])))
+        _probe_cache.move_to_end(key)
+        while len(_probe_cache) > PROBE_CACHE_MAX:
+            _probe_cache.popitem(last=False)
+
+
+def clear_probe_cache() -> None:
+    with _probe_cache_lock:
+        _probe_cache.clear()
 
 BOOST_PRIORITY = 1000   # 按需插队的优先级（最高）
 NEW_FILE_PRIORITY = 100  # 新入库文件
@@ -509,11 +636,32 @@ def _probe_one(item_id: int) -> str:
             # 熔断器：已触发则直接跳过，不烧配额（纯只读，不碰计数器）
             if breaker_is_tripped():
                 return "paused_quota"
-            target = resolve_play_target(item.file_path, db)
-            # container 一并传下去：扫描时写库的容器比 URL 后缀可靠（直链常带 ?token=，
-            # 且扩展名可能骗人），而它决定要不要走「尾部再读一次」的双 Range。
-            info = probe_metadata(target.value, target.headers, size=item.size or 0,
-                                  container=getattr(item, "container", "") or "")
+            # 文件稳定性（v2.48.0）：写入中的文件不探。转场拷贝 / 转码会让 ffprobe
+            # 读出**截断**的时长，而它一旦落库就是 done、此后再不重探——比不探更糟。
+            # 只对本机文件生效；远程拿不到稳定的 mtime，仍按原逻辑探。
+            if item.file_path and not str(item.file_path).startswith("mount://"):
+                ok, why = await_file_stable(item.file_path,
+                                           getattr(item, "file_fingerprint", None))
+                if not ok:
+                    item.probe_status = "pending"
+                    item.probe_next_retry_at = datetime.now() + timedelta(
+                        seconds=STABILITY_RETRY_SEC)
+                    db.commit()
+                    logger.info("探测暂缓（文件未稳定）: %s（%s）", item.file_path, why)
+                    return "unstable"
+            # 探测缓存（v2.48.0）：同一份字节（path+size+mtime 相同）已经探过就直接
+            # 复用结果，省掉一次 ffprobe / 一轮网盘 Range。键里带 mtime，文件一改就失效。
+            cache_key = probe_cache_key(item.file_path or "", item.size or 0)
+            info = probe_cache_get(cache_key)
+            if info is not None:
+                logger.debug("探测命中缓存: %s", item.file_path)
+            else:
+                target = resolve_play_target(item.file_path, db)
+                # container 一并传下去：扫描时写库的容器比 URL 后缀可靠（直链常带 ?token=，
+                # 且扩展名可能骗人），而它决定要不要走「尾部再读一次」的双 Range。
+                info = probe_metadata(target.value, target.headers, size=item.size or 0,
+                                      container=getattr(item, "container", "") or "")
+                probe_cache_put(cache_key, info)
             # 检查是否 403，更新熔断器（语义分离：记录 vs 只读检查）
             is_403 = bool(info and info.get("_error") == "quota")
             if is_403:
@@ -622,26 +770,118 @@ def _claim_batch(db, limit: int) -> list[int]:
     return ids
 
 
+#: 镜像时跟着代表条目一起写的列（探测结果 + 队列记账）
+_MIRROR_COLS = (
+    "size", "duration_ticks", "bitrate", "width", "height", "video_codec", "audio_codec",
+    "audio_languages", "subtitle_languages", "last_probed_at", "probe_status",
+    "probe_attempts", "probe_next_retry_at", "probe_priority",
+)
+
+
+def _group_probe_tasks(db, ids: list) -> tuple[list, dict]:
+    """同批里指向同一个文件的条目只探一次，其余作为「镜像任务」
+
+    同一份文件挂在两个库下、或转场时新旧路径都在库里，都会在队列里成对出现；对它们
+    做 ffprobe /网盘请求是**同一份字节的同一次成本**。返回
+    ``(要真正探测的 id 列表, {代表 id: [镜像 id…]})``，顺序沿用抢单顺序（优先级）。
+    """
+    if len(ids) < 2:
+        return list(ids), {}
+    rows = db.query(
+        em.MediaItem.id, em.MediaItem.file_path, em.MediaItem.size
+    ).filter(em.MediaItem.id.in_(ids)).all()
+    by_id = {row[0]: (row[1], row[2]) for row in rows}
+    primaries: list = []
+    shadows: dict = {}
+    seen: dict = {}
+    for item_id in ids:
+        file_path, size = by_id.get(item_id, (None, None))
+        if not file_path:
+            primaries.append(item_id)      # 没有路径：无从判定是否同一个，各探各的
+            continue
+        key = f"{file_path}|{size or 0}"
+        first = seen.setdefault(key, item_id)
+        if first == item_id:
+            primaries.append(item_id)
+        else:
+            shadows.setdefault(first, []).append(item_id)
+    return primaries, shadows
+
+
+def _mirror_probe_result(primary_id: int, shadows: list, outcome: str) -> None:
+    """把代表条目的探测结果镜像给同文件的其他条目
+
+    ``skipped`` / ``paused_quota`` 代表的是「压根没探成」（条目没了、熔断中），这种
+    结果不能镜像——影子条目会被退回 pending，而不是停在 ``probing`` 上永远没人理。
+    """
+    db = SessionLocal()
+    try:
+        primary = db.query(em.MediaItem).filter(em.MediaItem.id == primary_id).first()
+        if primary is None:
+            return
+        rows = db.query(em.MediaItem).filter(em.MediaItem.id.in_(list(shadows))).all()
+        if not rows:
+            return
+        if outcome in ("skipped", "paused_quota"):
+            for row in rows:
+                row.probe_status = "pending"
+        else:
+            streams = []
+            if primary.probe_status == "done":
+                streams = db.query(em.MediaStream).filter(
+                    em.MediaStream.item_id == primary_id,
+                    em.MediaStream.is_external.isnot(True),
+                ).all()
+            for row in rows:
+                for col in _MIRROR_COLS:
+                    setattr(row, col, getattr(primary, col))
+                if not streams:
+                    continue
+                db.query(em.MediaStream).filter(
+                    em.MediaStream.item_id == row.id,
+                    em.MediaStream.is_external.isnot(True),
+                ).delete(synchronize_session=False)
+                for stream in streams:
+                    db.add(em.MediaStream(item_id=row.id, **{
+                        c.name: getattr(stream, c.name)
+                        for c in em.MediaStream.__table__.columns
+                        if c.name not in ("id", "item_id")
+                    }))
+        db.commit()
+        logger.info("探测结果已合并：%d 条同文件条目复用 item=%s（%s）",
+                    len(rows), primary_id, outcome)
+    except Exception:  # noqa: BLE001 — 合并失败不能带崩这一轮
+        db.rollback()
+        logger.warning("合并探测结果失败 item=%s", primary_id, exc_info=True)
+    finally:
+        db.close()
+
+
 def run_once(db=None, limit: int = PROBE_BATCH) -> dict:
-    """跑一轮：抢一批 → 并发探测 → 等全部结束。返回计数（可测试）。"""
+    """跑一轮：抢一批 → 合并同文件任务 → 并发探测 → 镜像结果。返回计数（可测试）。"""
     own = db is None
     db = db or SessionLocal()
     try:
         ids = _claim_batch(db, limit)
+        primaries, shadows = _group_probe_tasks(db, ids)
     finally:
         if own:
             db.close()
     if not ids:
-        return {"claimed": 0, "done": 0, "skipped": 0, "failed": 0}
+        return {"claimed": 0, "done": 0, "skipped": 0, "failed": 0, "merged": 0}
     counts = {"claimed": len(ids), "done": 0, "skipped": 0, "failed": 0,
-              STATUS_NO_DURATION: 0}
+              STATUS_NO_DURATION: 0, "unstable": 0,
+              "merged": sum(len(v) for v in shadows.values())}
     with ThreadPoolExecutor(max_workers=PROBE_WORKERS,
                             thread_name_prefix="probe-worker") as pool:
-        for result in pool.map(_probe_one, ids):
+        for item_id, result in zip(primaries, pool.map(_probe_one, primaries)):
             counts[result] = counts.get(result, 0) + 1
-    logger.info("探测 worker 一轮：claimed=%d done=%d skipped=%d failed=%d 无时长=%d",
-                counts["claimed"], counts["done"], counts["skipped"], counts["failed"],
-                counts[STATUS_NO_DURATION])
+            if item_id in shadows:
+                _mirror_probe_result(item_id, shadows[item_id], result)
+    logger.info(
+        "探测 worker 一轮：claimed=%d done=%d skipped=%d failed=%d 无时长=%d 未稳定=%d 合并=%d",
+        counts["claimed"], counts["done"], counts["skipped"], counts["failed"],
+        counts[STATUS_NO_DURATION], counts.get("unstable", 0), counts["merged"])
     return counts
 
 

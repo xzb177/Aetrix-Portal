@@ -1296,6 +1296,7 @@ def get_stats_overview(
 ):
     """系统概览统计"""
     from backend.emby_server import models as em
+    from backend.emby_server import soft_delete
 
     total_users = db.query(models.WebUser).count()
     active_users = db.query(models.WebUser).filter(
@@ -1309,7 +1310,7 @@ def get_stats_overview(
     ).count()
 
     # 自建 Emby 实时数据（低 IO：直接读本地表，不扫媒体库）
-    total_items = db.query(em.MediaItem).count()
+    total_items = soft_delete.count_visible(db)
     active_sessions = db.query(em.PlaybackSession).filter(
         em.PlaybackSession.ended_at.is_(None)
     ).count()

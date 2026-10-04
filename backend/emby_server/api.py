@@ -38,6 +38,7 @@ from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_line
+from backend.emby_server import soft_delete
 from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
@@ -620,10 +621,10 @@ def _child_count(item: em.MediaItem, db: Session) -> int | None:
     if item.id in counts:
         return counts[item.id] or None
     return (
-        db.query(em.MediaItem).filter(em.MediaItem.series_id == item.id,
-                                      em.MediaItem.item_type == "episode").count()
+        soft_delete.count_visible(db, em.MediaItem.series_id == item.id,
+                                  em.MediaItem.item_type == "episode")
         if item.item_type == "series"
-        else db.query(em.MediaItem).filter(em.MediaItem.parent_id == item.id).count()
+        else soft_delete.count_visible(db, em.MediaItem.parent_id == item.id)
     ) or None
 
 
@@ -1261,10 +1262,13 @@ def _library_item_count(db, lib) -> int:
     时实时计数，口径与扫描器一致（只计 movie/series）。"""
     if lib.item_count is not None:
         return lib.item_count
-    return db.query(em.MediaItem).filter(
+    # count_visible 而非 Query.count()：后者数得到已下架的条目（软删除可见性过滤
+    # 下不到它包出来的子查询），客户端会看到比实际能浏览到的更多条目
+    return soft_delete.count_visible(
+        db,
         em.MediaItem.library_id == lib.id,
         em.MediaItem.item_type.in_(["movie", "series"]),
-    ).count()
+    )
 
 
 def _library_cover_abs(cover_path: str | None) -> str | None:
