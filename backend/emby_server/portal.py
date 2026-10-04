@@ -1073,6 +1073,8 @@ class LibraryCreate(BaseModel):
     # 简化形式（推荐用这个）：路径与存储后端分开，不出现 mount:// 前缀。
     # 传了它就以它为准；不传则回退到老的 paths 写法。
     path_entries: list[LibraryPathEntry] | None = None
+    # v2.46.0 起前端不再下发这个字段（挂载已在每条 path_entry 上表达）。
+    # 保留是为了兼容老前端与外部调用方：传了照旧写入，新界面一律不传。
     mount_ids: list[int] = []
     is_enabled: bool = True
     # 刮削策略：missing_only（只补缺，默认）/ 3m / 6m / 1y / all（每次全量重刮）
@@ -1098,6 +1100,8 @@ class LibraryUpdate(BaseModel):
     collection_type: str | None = None
     paths: list[str] | None = None
     path_entries: list[LibraryPathEntry] | None = None
+    # v2.46.0 起前端不再下发这个字段。**省略 = 不修改**（老数据原样保留，不会被清空），
+    # 只有显式传列表才会覆盖 —— 这样前端「不展示」不等于「抹掉」。
     mount_ids: list[int] | None = None
     is_enabled: bool | None = None
     scrape_policy: str | None = None
@@ -1120,8 +1124,22 @@ def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int
 
     ``paths`` 里还可以写 ``mount://<挂载 id>/<子目录>``（只扫描该挂载下的子目录），
     此时校验挂载存在、启用且子目录可读。
+
+    空条目一律跳过：``path_entries=[]`` 会被拼成空串再 ``split(",")`` 成 ``[""]``，
+    不跳过的话「一个路径都没配」会被误判成「目录不存在」（v2.46.0 前老库里只剩
+    ``mount_ids`` 的那种库，改个名字都存不进去）。
+
+    ``rclone:gdrive/Movies`` 这种**前缀路径**同样跳过：它根本不是本机目录，拿
+    ``os.path.isdir`` 判必然是「不存在」，于是老库上的这类存量条目会把整个表单卡死
+    （存不进去 ≠ 报错提示对，是最难查的一种）。它到底通不通得由扫描期说（那时会把它
+    记成「不可用来源」并跳过清理，而不是在这里拒绝保存）。
     """
     for path in paths:
+        if not (path or "").strip():
+            continue
+        detected = mount_lib.detect_mount_type(path)
+        if detected and detected != mount_lib.MOUNT_LOCAL:
+            continue
         parsed = mount_lib.parse_mount_path(path)
         if parsed is not None:
             mount_id, rel = parsed
