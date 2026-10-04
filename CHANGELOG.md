@@ -65,8 +65,8 @@ watch 会把整个挂载点拖死；现在按文件系统类型直接降级为�
 
 ### 验证
 
-pytest **1379 passed**（新增 28 条：`test_removal_guard` / `test_excluded_unified` /
-`test_path_parsing_unified` / `test_fs_watcher_fuse`）；12 项 `scripts/check_*.py` 全过；
+pytest **1379 passed**（新增 36 条：`test_fs_watcher_fuse` 13 / `test_removal_guard` 8 /
+`test_path_parsing_unified` 8 / `test_excluded_unified` 7）；12 项 `scripts/check_*.py` 全过；
 两个前端 type-check + build 全 rc=0。
 
 ## [2.46.0] - 2026-10-04
