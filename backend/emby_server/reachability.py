@@ -223,10 +223,14 @@ def library_reachability(db: Session, library, ctx: Optional[Context] = None,
 
     # EA 已并入本容器（AETRIX_ROLE=all 时 API/worker/EA 同容器），此时本机路径 EA 直接可读，
     # 不应再按"另一台机器"报待确认。只有明确配置了远端目标时才算异机。
+    # 注意：self_node_id 为 None 时无法区分远近，同容器模式下一律按本机处理。
     import os as _os
     _ea_colocated = _os.environ.get("AETRIX_ROLE", "") == "all"
+    _has_real_remote = bool(remote_targets) and not (
+        _ea_colocated and ctx.self_node_id is None
+    )
     on_other_machine = ctx.playback in (PLAYBACK_EA, PLAYBACK_EXTERNAL) and (
-        ctx.playback == PLAYBACK_EXTERNAL or bool(remote_targets)
+        ctx.playback == PLAYBACK_EXTERNAL or _has_real_remote
         or (not targets and not _ea_colocated)
     )
 
