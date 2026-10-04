@@ -72,6 +72,24 @@ RC_PASS = os.getenv("MOUNT_RCLONE_RC_PASS", "")
 
 # ==================== rclone.conf 存取 ====================
 
+def conf_path_for_server(server_id) -> str:
+    """**每台 EA 一份** rclone.conf：``rclone-<server_id>.conf``
+
+    放主配置**同一个目录**是刻意的：容器里那个目录是 bind 挂载，rclone /
+    rclone-serve 容器看到的就是同一批文件，不必为每个服再挂一次。
+
+    传不出 id（没绑服务器的老挂载）时回退到共享的那份——宁可多台 EA 共用一份，
+    也不要让老数据直接不可用。
+    """
+    try:
+        sid = int(server_id or 0)
+    except (TypeError, ValueError):
+        sid = 0
+    if sid <= 0:
+        return CONF_PATH
+    return os.path.join(os.path.dirname(CONF_PATH) or ".", f"rclone-{sid}.conf")
+
+
 def parse_rclone_conf(text: str) -> dict[str, dict[str, str]]:
     """解析 rclone.conf 的 INI 文本，返回 ``{remote 名: {key: value}}``
 
@@ -410,8 +428,10 @@ class RcloneMount(RemoteMount):
         self.rc_user = (cfg.get("rc_user") or RC_USER).strip()
         self.rc_pass = cfg.get("rc_pass") or RC_PASS
         self.bin_path = (cfg.get("rclone_bin") or "").strip()
-        # 留空 = 用用户粘贴的那份（data/rclone/rclone.conf）
-        self.config_path = (cfg.get("rclone_config") or "").strip()
+        # 留空 = 用这台 EA 自己那份（在「添加服务器」弹窗里粘贴的）；
+        # 没绑服务器的老挂载回退到共享的那份（data/rclone/rclone.conf）。
+        self.config_path = (cfg.get("rclone_config") or "").strip() or conf_path_for_server(
+            getattr(mount, "server_id", None))
         # remote 名漏冒号时的原始写法（自愈后留在 test 提示里，好让管理员把配置改过来）
         self.healed_from = ""
 

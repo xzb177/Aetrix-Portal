@@ -103,6 +103,40 @@ def resolve_cookie(
     return "", "未配置"
 
 
+def resolve_ua(
+    db: Session,
+    *,
+    library=None,
+    account_id: Optional[int] = None,
+    explicit_ua: str = "",
+) -> str:
+    """解析该用哪个 UA，**优先级与 :func:`resolve_cookie` 完全一致**
+
+    刻意与 Cookie 走同一套优先级而不是各选各的：UA 是「这个账号像哪台设备」的
+    一部分，两边选到不同账号（例如 Cookie 用了默认档、UA 用了停用档）就串味了。
+    返回空串 = 用服务器级 ``PAN115_UA``。
+    """
+    if account_id is not None:
+        account = db.query(em.Pan115Account).filter(em.Pan115Account.id == account_id).first()
+        return (account.ua or "") if account else ""
+
+    if (explicit_ua or "").strip():
+        return explicit_ua.strip()
+
+    bound_id = getattr(library, "account_115_id", None)
+    if bound_id:
+        account = db.query(em.Pan115Account).filter(em.Pan115Account.id == bound_id).first()
+        if account and account.is_enabled:
+            return account.ua or ""
+
+    default = (
+        db.query(em.Pan115Account)
+        .filter(em.Pan115Account.is_default == True, em.Pan115Account.is_enabled == True)  # noqa: E712
+        .first()
+    )
+    return (default.ua or "") if default else ""
+
+
 def ensure_single_default(db: Session, keep_id: int) -> None:
     """保证同一时间只有一个默认账号（否则配置档更新后行为不确定）"""
     for other in db.query(em.Pan115Account).filter(em.Pan115Account.id != keep_id).all():
@@ -124,12 +158,13 @@ def _http_json(
     data: Optional[dict] = None,
     cookie: str = "",
     timeout: Optional[float] = None,
+    ua: str = "",
 ) -> dict:
     """薄 HTTP 封装（测试可替换本函数，其余逻辑全部与网络解耦）"""
     import httpx
 
     headers = {
-        "User-Agent": PAN115_UA,
+        "User-Agent": (ua or "").strip() or PAN115_UA,
         "Referer": "https://115.com/",
         "Accept": "application/json, text/plain, */*",
     }
@@ -164,8 +199,10 @@ def _raise_for_state(body: dict) -> dict:
 class Pan115Client:
     """Cookie 型 115 客户端（只覆盖直挂与后台浏览用到的几个端点）"""
 
-    def __init__(self, cookie: str):
+    def __init__(self, cookie: str, ua: str = ""):
         self.cookie = normalize_cookie(cookie)
+        # 空 = 用服务器级 PAN115_UA；不同配置档可以指向不同设备（115 直链接口挑 UA）
+        self.ua = (ua or "").strip() or PAN115_UA
         if not self.cookie:
             raise Pan115AuthError("未配置 115 Cookie")
 
@@ -228,7 +265,8 @@ class Pan115Client:
 
     def _call(self, method: str, url: str, *, params: Optional[dict] = None,
               data: Optional[dict] = None) -> dict:
-        return _http_json(method, url, params=params, data=data, cookie=self.cookie)
+        return _http_json(method, url, params=params, data=data, cookie=self.cookie,
+                          ua=self.ua)
 
 
 def _is_dir(entry: dict) -> bool:

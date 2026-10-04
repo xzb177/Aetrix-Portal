@@ -48,6 +48,7 @@ async function load() {
     const res = await fetchPan115Accounts()
     accounts.value = res.accounts
     envCookieConfigured.value = res.env_cookie_configured
+    uaPresets.value = res.ua_presets || []
   } finally {
     loading.value = false
   }
@@ -66,7 +67,9 @@ const accVisible = ref(false)
 const accEditing = ref<Pan115Account | null>(null)
 const accSaving = ref(false)
 const accTesting = ref(false)
-const accForm = reactive({ name: '', cookie: '', is_default: false, is_enabled: true, remark: '' })
+const accForm = reactive({ name: '', cookie: '', is_default: false, is_enabled: true, remark: '', ua: '' })
+/** UA 预置项由后端下发（前端不自己维护一份，免得两边漂移） */
+const uaPresets = ref<{ value: string; label: string }[]>([])
 
 function openAccount(a: Pan115Account | null) {
   accEditing.value = a
@@ -75,6 +78,7 @@ function openAccount(a: Pan115Account | null) {
   accForm.is_default = a?.is_default ?? false
   accForm.is_enabled = a?.is_enabled ?? true
   accForm.remark = a?.remark || ''
+  accForm.ua = a?.ua || ''
   accVisible.value = true
 }
 
@@ -94,6 +98,7 @@ async function saveAccount() {
       is_default: accForm.is_default,
       is_enabled: accForm.is_enabled,
       remark: accForm.remark,
+      ua: accForm.ua,
     }
     if (accForm.cookie.trim()) payload.cookie = accForm.cookie.trim()
     if (accEditing.value) {
@@ -324,6 +329,19 @@ function currentPath(): string {
             :rows="3"
             :placeholder="accEditing ? '留空表示不修改' : '粘贴浏览器里的 uid=…; cid=…; seid=…; kid=…'"
           />
+        </el-form-item>
+        <el-form-item label="请求 UA">
+          <el-select v-model="accForm.ua" style="width: 100%">
+            <el-option
+              v-for="p in uaPresets"
+              :key="p.value || '__default__'"
+              :label="p.label"
+              :value="p.value"
+            />
+          </el-select>
+          <div class="form-hint">
+            115 的直链接口对 UA 有偏好，不同配置档可以指向不同设备；默认用服务器级 UA。
+          </div>
         </el-form-item>
         <el-form-item label="默认账号">
           <el-switch v-model="accForm.is_default" />

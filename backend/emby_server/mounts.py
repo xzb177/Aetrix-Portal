@@ -230,6 +230,22 @@ MOUNT_PATH_PREFIX = "mount://"
 MOUNT_TIMEOUT = float(os.getenv("MOUNT_TIMEOUT", "20"))
 # ffprobe / ffmpeg 读远程源时的 UA（多数网盘直链对 UA 有要求）
 MOUNT_UA = os.getenv("MOUNT_UA", transfer115.PAN115_UA)
+
+#: 115 配置档可选的 UA（后台下拉用）。115 的直链接口对 UA 有偏好，不同档可以指不同设备；
+#: 空值 = 用服务器级 MOUNT_UA。**由后端下发**，前端不自己维护一份。
+UA_PRESETS: tuple[dict[str, str], ...] = (
+    {"value": "", "label": "跟随服务器默认（MOUNT_UA）"},
+    {"value": transfer115.PAN115_UA, "label": "Chrome / Windows"},
+    {"value": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+               "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"),
+     "label": "iPhone / Safari"},
+    {"value": ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"),
+     "label": "Android / Chrome"},
+    {"value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+     "label": "Firefox / Windows"},
+    {"value": "Lufia/2.2", "label": "115 官方 App（部分接口需要）"},
+)
 MOUNT_RANGE_CHUNK = 1024 * 256
 # 存储读不动时，补全条目打回 pending 后等多久再试（不是 failed，attempts 不涨）。
 # 原本这个值叫 MOUNT_BREAKER_RETRY_SEC、绑在熔断器上；熔断器删掉后它讲的是自己的
@@ -933,8 +949,21 @@ class Pan115Mount(MountProvider):
             raise MountAuthError(f"未解析到 115 Cookie（来源：{source}）")
         return cookie
 
+    def _ua(self) -> str:
+        """这个挂载发 115 请求时用的 UA（与 Cookie 同一套账号优先级）"""
+        if self.db is None:
+            return ""
+        try:
+            account_id = int(self.config.get("account_id") or 0) or None
+        except (TypeError, ValueError):
+            account_id = None
+        return transfer115.resolve_ua(
+            self.db, library=self.library, account_id=account_id,
+            explicit_ua=self.config.get("ua") or "",
+        )
+
     def _client(self) -> transfer115.Pan115Client:
-        return transfer115.Pan115Client(self._cookie())
+        return transfer115.Pan115Client(self._cookie(), ua=self._ua())
 
     def _wrap(self, exc: Exception) -> MountError:
         if isinstance(exc, transfer115.Pan115AuthError):
@@ -1051,7 +1080,7 @@ class Pan115Mount(MountProvider):
             raise self._wrap(exc) from exc
         # 直链自带签名，但仍带上 UA/Cookie：EA 代理转发，客户端看不到这些头
         return PlayTarget("url", url, {
-            "User-Agent": MOUNT_UA,
+            "User-Agent": self._ua() or MOUNT_UA,
             "Referer": "https://115.com/",
             "Cookie": self._cookie(),
         })
@@ -1260,7 +1289,14 @@ def build_provider(mount, db: Optional[Session] = None, library=None) -> MountPr
     mount_type = (getattr(mount, "mount_type", "") or "").strip()
     provider_cls = _PROVIDERS.get(mount_type)
     if provider_cls is None:
-        raise MountError(f"不支持的挂载类型: {mount_type or '(空)'}")
+        # 已下线类型（WebDAV / AList / S3 / 夸克 / OneDrive / Google Drive 原生…）在库里
+        # 可能还有残留行。**不自动删**：自动删 = 删别人机器上的数据且无法撤销。
+        # 所以这里把改法一起说出来，而不是只报一个「不支持的类型」让人猜。
+        supported = "、".join(f"{t['value']}" for t in MOUNT_TYPES)
+        raise MountError(
+            f"不支持的挂载类型：{mount_type or '(空)'}（这类型已在 v2.42.12 下线，"
+            f"数据仍然保留）。请在服务器管理里改成这三种之一：{supported}。"
+            "这些后端 rclone 都支持，粘一份 rclone.conf 就能接上。")
     return provider_cls(mount, db, library)
 
 

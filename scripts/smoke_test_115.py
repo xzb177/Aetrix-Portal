@@ -63,7 +63,7 @@ class FakePan115:
         self.calls = 0
         self.auth_broken = False          # Cookie 失效（所有端点）
 
-    def __call__(self, method, url, *, params=None, data=None, cookie="", timeout=None):
+    def __call__(self, method, url, *, params=None, data=None, cookie="", timeout=None, ua=""):
         self.calls += 1
         if not cookie:
             raise t115.Pan115AuthError("未配置 115 Cookie")

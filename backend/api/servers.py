@@ -14,6 +14,8 @@
 - `POST   /api/admin/servers/{id}/toggle`    启用 / 停用
 - `DELETE /api/admin/servers/{id}`       删除
 - `POST   /api/admin/servers/test`       测试「还没保存」的配置
+- `GET    /api/admin/servers/{id}/rclone-conf`  这台 EA 的 rclone.conf（**只返 remote 名**）
+- `POST   /api/admin/servers/{id}/rclone-conf`  保存这台 EA 的 rclone.conf
 
 EA / Emby 被激活时会同步写回既有的 `emby_managed_*` / `emby_external_*` / `emby_active_mode`，
 所以网关闸门、挂载体检、客户端指引、用户端账号卡全部照旧生效（见 ``backend.servers.sync_legacy``）。
@@ -37,6 +39,7 @@ from backend.emby_server import models as em
 from backend.emby_server import mount_health
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import server_ops
+from backend.emby_server import mount_rclone
 
 logger = logging.getLogger(__name__)
 
@@ -636,6 +639,85 @@ def delete_server(
     _audit(db, admin, "delete_server", "server", server_id, {"kind": kind, "name": name})
     db.commit()
     return {"success": True, "summary": registry.summary(db)}
+
+
+# ==================== 每台 EA 一份 rclone.conf ====================
+# rclone.conf 里全是 token / secret，所以：
+#   1) 只在「添加/编辑服务器」弹窗里由用户自己粘贴，服务器级配一次；
+#   2) **只返 remote 名**（带尾冒号），永不回明文；
+#   3) 仅超级管理员可读写——它等同一份凭据文件。
+
+class RcloneConfPayload(BaseModel):
+    conf: str = Field(default="", max_length=200_000)
+
+
+def _require_super(user) -> None:
+    from backend import admin_roles
+
+    if not admin_roles.is_super(user):
+        raise HTTPException(
+            status_code=403,
+            detail="rclone.conf 含网盘凭据，仅超级管理员可读写（当前角色：{}）".format(
+                admin_roles.role_label(admin_roles.role_of(user))),
+        )
+
+
+def _ea_server_or_404(db: Session, server_id: int):
+    server = registry.get_server(db, server_id)
+    if not server:
+        raise HTTPException(404, "服务器不存在")
+    if server.kind != "ea":
+        raise HTTPException(
+            400, f"「{server.name}」不是 EA（{server.kind}），rclone.conf 只对 EA 有意义")
+    return server
+
+
+@router.get("/{server_id}/rclone-conf")
+async def get_server_rclone_conf(
+    server_id: int,
+    admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """这台 EA 的 rclone.conf：只返 remote 名，**不返明文**"""
+    _require_super(admin)
+    server = _ea_server_or_404(db, server_id)
+    path = mount_rclone.conf_path_for_server(server.id)
+    text = await run_in_threadpool(mount_rclone.read_rclone_conf, path)
+    try:
+        remotes = mount_rclone.conf_remote_names(text)
+    except mount_rclone.mount_lib.MountError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "path": path,
+        "server_id": server.id,
+        "server_name": server.name,
+        "configured": bool(remotes),
+        "remotes": remotes,
+        "total": len(remotes),
+    }
+
+
+@router.post("/{server_id}/rclone-conf")
+async def save_server_rclone_conf(
+    server_id: int,
+    req: RcloneConfPayload,
+    admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """保存这台 EA 的 rclone.conf（整份替换，写到 ``rclone-<id>.conf``，权限 600）"""
+    _require_super(admin)
+    server = _ea_server_or_404(db, server_id)
+    path = mount_rclone.conf_path_for_server(server.id)
+    try:
+        written = await run_in_threadpool(mount_rclone.write_rclone_conf, req.conf, path)
+        remotes = mount_rclone.conf_remote_names(req.conf)
+    except mount_rclone.mount_lib.MountError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # 落审计 + 提交是同步 DB 操作，不能在 async 路由的事件循环里直接调
+    await run_in_threadpool(_audit, db, admin, "save_server_rclone_conf", "remote_server",
+                            server_id, {"remotes": len(remotes)})
+    await run_in_threadpool(db.commit)
+    return {"success": True, "path": written, "remotes": remotes, "total": len(remotes)}
 
 
 @router.post("/mounts/health")

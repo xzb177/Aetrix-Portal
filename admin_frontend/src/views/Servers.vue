@@ -29,21 +29,30 @@ import {
 import {
   activateServer,
   createServer,
+  createMount,
+  deleteMount,
   deleteServer,
   fetchServers,
   fetchServersOverview,
   fetchServerOps,
+  fetchMounts,
+  fetchServerRcloneConf,
   refreshServerMounts,
   runServerOpsScan,
+  saveServerRcloneConf,
   testServer,
   testServerConfig,
   toggleServer,
   updateServer,
+  testSavedMount,
+  updateMount,
 } from '@/api/admin'
 import type {
   RemoteServerRow, ServerKind, ServerKindMeta, ServerOverview, ServerOverviewRow,
-  ServerOpsSnapshot, ServerProbeResult, ServerSummary,
+  ServerOpsSnapshot, ServerProbeResult, ServerSummary, StorageMount,
 } from '@/types'
+import MountSourceEditor from '@/components/MountSourceEditor.vue'
+import type { MountTypeValue } from '@/components/MountSourceEditor.vue'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -79,6 +88,118 @@ const busyId = ref<number | null>(null)
 
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
+
+/** rclone 配置并进「添加服务器」：**每台 EA 一份**，服务器级配一次就够了 */
+const rcloneConf = ref('')
+const rcloneRemotes = ref<string[]>([])
+const rcloneConfPath = ref('')
+const rcloneLoading = ref(false)
+const rcloneSaving = ref(false)
+
+async function loadRcloneConf(serverId: number) {
+  rcloneLoading.value = true
+  try {
+    const res = await fetchServerRcloneConf(serverId)
+    rcloneRemotes.value = res.remotes
+    rcloneConfPath.value = res.path
+    // **不回显原文**：rclone.conf 里全是 token，回显等于写进浏览器历史与前端日志。
+    // 要改就重新粘一份覆盖（本来就是整份替换）。
+    rcloneConf.value = ''
+  } catch (e) {
+    rcloneRemotes.value = []
+    rcloneConfPath.value = ''
+  } finally {
+    rcloneLoading.value = false
+  }
+}
+
+/** 挂载也并进服务器：挂到哪台 EA 上，就由它去读（每台 EA 一份 rclone.conf） */
+const serverMounts = ref<StorageMount[]>([])
+const mountsLoading = ref(false)
+const mountForm = reactive({ name: '', type: 'local' as MountTypeValue, path: '' })
+
+async function loadServerMounts() {
+  if (!editingId.value) return
+  mountsLoading.value = true
+  try {
+    const res = await fetchMounts(0)
+    serverMounts.value = (res.mounts || []).filter((m) => m.server_id === editingId.value)
+  } finally {
+    mountsLoading.value = false
+  }
+}
+
+async function addMount() {
+  if (!editingId.value) return
+  const name = mountForm.name.trim()
+  if (!name) {
+    ElMessage.warning('请填写挂载名称')
+    return
+  }
+  if (!mountForm.path.trim()) {
+    ElMessage.warning('请填写路径')
+    return
+  }
+  const row = servers.value.find((s) => s.id === editingId.value)
+  try {
+    await createMount({
+      name,
+      path: mountForm.path.trim(),
+      server_id: editingId.value,
+      realm_id: row?.realm_id ?? undefined,
+    })
+    ElMessage.success('挂载已创建：到「媒体库」页把它绑定到库上即可扫描')
+    mountForm.name = ''
+    mountForm.path = ''
+    mountForm.type = 'local'
+    loadServerMounts()
+  } catch (e) {
+    ElMessage.error(String((e as Error)?.message || e))
+  }
+}
+
+async function testOneMount(m: StorageMount) {
+  const res = await testSavedMount(m.id)
+  if (res.success) ElMessage.success(`${m.name}：${res.result.message}`)
+  else ElMessage.error(`${m.name}：${res.result.message}`)
+  loadServerMounts()
+}
+
+async function toggleMount(m: StorageMount) {
+  await updateMount(m.id, { is_enabled: !m.is_enabled })
+  ElMessage.success(m.is_enabled ? `「${m.name}」已停用（重扫后生效）` : `「${m.name}」已启用（重扫后生效）`)
+  loadServerMounts()
+}
+
+async function removeMount(m: StorageMount) {
+  try {
+    await ElMessageBox.confirm(`删除挂载「${m.name}」？引用它的媒体库会自动解绑。`, '删除挂载', {
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  await deleteMount(m.id)
+  ElMessage.success('已删除')
+  loadServerMounts()
+}
+
+async function saveRcloneConf() {
+  if (!editingId.value) return
+  if (!rcloneConf.value.trim()) {
+    ElMessage.warning('先把 rclone config 生成的 INI 文本粘进来')
+    return
+  }
+  rcloneSaving.value = true
+  try {
+    const res = await saveServerRcloneConf(editingId.value, rcloneConf.value)
+    rcloneRemotes.value = res.remotes
+    rcloneConf.value = ''
+    ElMessage.success(`已保存：${res.total} 个 remote 可用（原文不再回显）`)
+  } finally {
+    rcloneSaving.value = false
+  }
+}
 const saving = ref(false)
 const testingUnsaved = ref(false)
 const unsavedResult = ref<ServerProbeResult | null>(null)
@@ -308,6 +429,11 @@ function openEdit(row: RemoteServerRow) {
   for (const [key, value] of Object.entries(row.config || {})) config[key] = value ?? ''
   form.config = config
   dialogVisible.value = true
+  // rclone 配置只在「已存在」的 EA 上可读（新增时还没有 id）
+  if (row.kind === 'ea') {
+    loadRcloneConf(row.id)
+    loadServerMounts()
+  }
 }
 
 /** 换类型时旧类型的字段不再适用，清掉避免把 A 类型的配置存进 B 类型 */
@@ -983,6 +1109,83 @@ const opsLastScan = ref<{
           />
           <p v-if="field.help" class="field-help">{{ field.help }}</p>
         </el-form-item>
+        <!-- rclone 配置：每台 EA 一份，在「添加/编辑服务器」里配一次（对标 oceancloud）-->
+        <template v-if="form.kind === 'ea'">
+          <el-divider content-position="left">rclone 配置（每台 EA 一份）</el-divider>
+          <el-form-item label="rclone.conf">
+            <el-input
+              v-model="rcloneConf"
+              type="textarea"
+              :rows="7"
+              placeholder="[gdrive]&#10;type = drive&#10;token = …&#10;&#10;[onedrive]&#10;type = onedrive"
+              :disabled="!editingId"
+            />
+            <p class="field-help">
+              粘 <code>rclone config</code> 生成的 INI 文本，落盘到
+              <code>{{ rcloneConfPath || 'data/rclone/rclone-&lt;服务器ID&gt;.conf' }}</code>，调 rclone 时自动带
+              <code>--config</code>。面板不代管凭据，也不回显原文——要改就重新粘一份覆盖。
+            </p>
+            <p v-if="!editingId" class="field-help">
+              先保存这台服务器，拿到 ID 后才能粘贴配置（每台一份，需要按服务器分别保存）。
+            </p>
+            <div class="rclone-row">
+              <el-button
+                v-if="editingId"
+                :loading="rcloneSaving"
+                :disabled="!rcloneConf.trim()"
+                @click="saveRcloneConf"
+              >
+                保存 rclone.conf
+              </el-button>
+              <span v-if="rcloneLoading" class="field-help">读取中…</span>
+              <span v-else-if="rcloneRemotes.length" class="field-help">
+                已配置 {{ rcloneRemotes.length }} 个 remote：{{ rcloneRemotes.join('、') }}
+              </span>
+              <span v-else-if="editingId" class="field-help">还没配置 rclone.conf</span>
+            </div>
+          </el-form-item>
+        </template>
+        <!-- 存储挂载也并进服务器：建在哪台 EA 上就由它去读 -->
+        <template v-if="form.kind === 'ea' && editingId">
+          <el-divider content-position="left">存储挂载</el-divider>
+          <p class="field-help" style="margin-bottom: 10px">
+            挂载 = 把内容接进媒体库的方式。类型由路径前缀决定；建在这里就固定由这台 EA 读，
+            并用这台 EA 自己的 rclone.conf。
+          </p>
+          <div v-if="mountsLoading" class="field-help">读取中…</div>
+          <div v-else-if="serverMounts.length" class="server-mounts">
+            <div v-for="m in serverMounts" :key="m.id" class="server-mount-row">
+              <div class="server-mount-main">
+                <span class="mini-badge">{{ m.mount_type_label }}</span>
+                <code>{{ m.path }}</code>
+                <span v-if="m.library_ids.length" class="field-help">
+                  被 {{ m.library_ids.length }} 个媒体库使用
+                </span>
+                <div v-if="m.legacy_note" class="legacy-note">{{ m.legacy_note }}</div>
+              </div>
+              <div class="server-mount-ops">
+                <el-button link :loading="busyId === m.id" @click="testOneMount(m)">
+                  <Wifi :size="14" />
+                </el-button>
+                <el-button link @click="toggleMount(m)">
+                  {{ m.is_enabled ? '停用' : '启用' }}
+                </el-button>
+                <el-button link type="danger" @click="removeMount(m)">
+                  <Trash2 :size="14" />
+                </el-button>
+              </div>
+            </div>
+          </div>
+          <div v-else class="field-help">这台服务器还没有挂载</div>
+
+          <div class="add-mount">
+            <el-input v-model="mountForm.name" placeholder="挂载名称，例如「主号电影」" />
+            <MountSourceEditor v-model="mountForm.path" v-model:type="mountForm.type" />
+            <el-button type="primary" plain @click="addMount">
+              <Plus :size="14" style="margin-right: 4px" />添加挂载
+            </el-button>
+          </div>
+        </template>
         <el-form-item label="备注">
           <el-input v-model="form.remark" placeholder="可选，例如「主力机」「备份」" />
         </el-form-item>
@@ -1428,6 +1631,19 @@ const opsLastScan = ref<{
 .section-title { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
 .section-label .muted { font-size: var(--font-size-xs); }
 .field-help { color: var(--text-muted); font-size: var(--font-size-xs); margin: 5px 0 0; line-height: 1.6; }
+.rclone-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.server-mounts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.server-mount-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-md);
+}
+.server-mount-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.server-mount-ops { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.server-mount-main code { font-size: var(--font-size-xs); word-break: break-all; }
+.legacy-note {
+  color: var(--danger); font-size: var(--font-size-xs); line-height: 1.6; margin-top: 2px;
+}
+.add-mount { display: flex; flex-direction: column; gap: 8px; }
 .probe { padding: 9px 11px; border-radius: var(--radius-md); font-size: var(--font-size-sm); margin-top: 4px; }
 .probe.ok { color: var(--success); background: var(--success-bg); }
 .probe.bad { color: var(--danger); background: var(--danger-bg); }

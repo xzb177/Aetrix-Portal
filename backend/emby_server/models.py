@@ -434,6 +434,10 @@ class StorageMount(Base):
     name = Column(String(100), unique=True, nullable=False)
     # 属于哪个服（server_realms.id）：挂载是主机相对的资源，跟着服走
     realm_id = Column(Integer)
+    # 由哪台 EA（remote_servers.id，kind='ea'）实际去读这个来源。**可空**：
+    # 空 = 老数据，回退到该服已激活的 EA，再不济用共享的那份 rclone.conf。
+    # 有了它，「每台 EA 一份 rclone.conf」才有地方挂：配置跟着跑它的那台机器走。
+    server_id = Column(Integer, index=True)
     # local / 115 / rclone。**由 path 的前缀决定**（mounts.detect_mount_type），
     # 保留这一列是因为已有数据与大量查询按它分组，不再允许手工改。
     mount_type = Column(String(20), nullable=False, default="local")
@@ -464,6 +468,9 @@ class Pan115Account(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), unique=True, nullable=False)
     cookie = Column(Text, nullable=False)
+    # 该配置档发请求时用的 UA（预置下拉里选，留空用服务器级 MOUNT_UA）。
+    # 115 的直链接口对 UA 有偏好，不同配置档可以指向不同设备。
+    ua = Column(String(300), default="")
     is_default = Column(Boolean, default=False)
     is_enabled = Column(Boolean, default=True)
     remark = Column(String(300), default="")

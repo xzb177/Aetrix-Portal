@@ -26,6 +26,7 @@
 """
 import os
 import random
+from pathlib import Path
 import socket
 import sys
 import tempfile
@@ -52,6 +53,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from backend import models, realms  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
+from backend.emby_server import mount_rclone  # noqa: E402
 from backend.main import app as em_app  # noqa: E402
 from backend.security import hash_password  # noqa: E402
 from backend.integrations.store import invalidate  # 热缓存失效（测试直接写库需手动清）
@@ -338,7 +340,50 @@ try:
     check("EA 新增且体检通过", ea_row.get("last_check_ok") is True,
           str(ea_row.get("last_check_message"))[:80])
 
-    r = client.post(f"/api/admin/servers/{ea_row['id']}/activate", headers=H)
+    # ---- 每台 EA 一份 rclone.conf（v2.42.13：配置从「挂载」搬进「服务器」）----
+    ea_id = ea_row["id"]
+    # 先清掉上一轮可能残留的同名文件：否则「还没配」这条断言会被上一跑污染
+    stale_conf = Path(mount_rclone.conf_path_for_server(ea_id))
+    if stale_conf.is_file():
+        stale_conf.unlink()
+    r = client.get(f"/api/admin/servers/{ea_id}/rclone-conf", headers=H)
+    body = r.json() if r.status_code == 200 else {}
+    check("还没配 rclone.conf 时如实说没配（而不是报错）",
+          r.status_code == 200 and body.get("configured") is False and body.get("remotes") == [],
+          f"HTTP {r.status_code} {str(body)[:70]}")
+    check("rclone.conf 路径带服务器 id（每台一份）",
+          str(body.get("path") or "").endswith(f"rclone-{ea_id}.conf"), str(body.get("path")))
+
+    conf_text = "[gdrive]\ntype = drive\ntoken = secret-token-abc\n\n[onedrive]\ntype = onedrive\n"
+    r = client.post(f"/api/admin/servers/{ea_id}/rclone-conf", headers=H,
+                    json={"conf": conf_text})
+    body = r.json() if r.status_code == 200 else {}
+    check("粘贴的 rclone.conf 能落盘并解析出 remote",
+          r.status_code == 200 and body.get("total") == 2, f"HTTP {r.status_code} {str(body)[:70]}")
+    check("**不回显明文**（响应里不得出现 token）", "secret-token-abc" not in r.text, r.text[:80])
+
+    r = client.get(f"/api/admin/servers/{ea_id}/rclone-conf", headers=H)
+    body = r.json() if r.status_code == 200 else {}
+    check("读回只给 remote 名，不给原文",
+          body.get("configured") is True and body.get("remotes") == ["gdrive:", "onedrive:"]
+          and "secret-token-abc" not in r.text, str(body.get("remotes")))
+
+    r = client.post(f"/api/admin/servers/{ea_id}/rclone-conf", headers=H, json={"conf": "[broken\n"})
+    check("非法 INI 当场拒绝（不等到扫描才发现一个 remote 都没有）",
+          r.status_code == 400 and "INI" in str((r.json() or {}).get("detail") or ""),
+          f"HTTP {r.status_code} {str((r.json() or {}).get('detail'))[:60]}")
+
+    r = client.post("/api/admin/servers", headers=H, json={
+        "name": f"非 EA 的 rclone{suf}", "kind": "qbittorrent", "url": fake_url,
+    })
+    qb_row = (r.json() if r.status_code == 200 else {}).get("server") or {}
+    if qb_row.get("id"):
+        r = client.get(f"/api/admin/servers/{qb_row['id']}/rclone-conf", headers=H)
+        check("rclone.conf 对非 EA 服务器当场说清为什么",
+              r.status_code == 400 and "EA" in str((r.json() or {}).get("detail") or ""),
+              f"HTTP {r.status_code} {str((r.json() or {}).get('detail'))[:60]}")
+
+    r = client.post(f"/api/admin/servers/{ea_id}/activate", headers=H)
     body = r.json() if r.status_code == 200 else {}
     check("EA 设为当前使用成功", body.get("success") is True and body.get("activated") is True,
           str(body.get("message"))[:60])

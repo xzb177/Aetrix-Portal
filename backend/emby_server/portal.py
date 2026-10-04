@@ -1859,6 +1859,7 @@ def _serialize_account(account: em.Pan115Account) -> dict:
         "name": account.name,
         "cookie_preview": _mask_cookie(account.cookie),
         "has_cookie": bool((account.cookie or "").strip()),
+        "ua": account.ua or "",
         "is_default": bool(account.is_default),
         "is_enabled": bool(account.is_enabled),
         "remark": account.remark or "",
@@ -1875,6 +1876,8 @@ class Pan115AccountCreate(BaseModel):
     is_default: bool = False
     is_enabled: bool = True
     remark: str = ""
+    # 该配置档发请求用的 UA（留空 = 服务器级 MOUNT_UA）
+    ua: str = ""
 
 
 class Pan115AccountUpdate(BaseModel):
@@ -1883,6 +1886,7 @@ class Pan115AccountUpdate(BaseModel):
     is_default: bool | None = None
     is_enabled: bool | None = None
     remark: str | None = None
+    ua: str | None = None
 
 
 class Pan115VerifyRequest(BaseModel):
@@ -1897,6 +1901,8 @@ def list_pan115_accounts(staff: models.WebUser = Depends(require_staff),
     return {
         "accounts": [_serialize_account(a) for a in accounts],
         "env_cookie_configured": bool(env_cookie),
+        # UA 预置项由后端下发（115 直链接口对 UA 有偏好）
+        "ua_presets": [dict(p) for p in mount_lib.UA_PRESETS],
     }
 
 
@@ -1914,6 +1920,7 @@ def create_pan115_account(req: Pan115AccountCreate,
     account = em.Pan115Account(
         name=name, cookie=transfer115.normalize_cookie(req.cookie),
         is_default=req.is_default, is_enabled=req.is_enabled, remark=req.remark or "",
+        ua=(req.ua or "").strip()[:300],
     )
     db.add(account)
     db.commit()
@@ -1946,6 +1953,8 @@ def update_pan115_account(account_id: int, req: Pan115AccountUpdate,
         account.last_verify_message = None
     if req.is_enabled is not None:
         account.is_enabled = req.is_enabled
+    if req.ua is not None:
+        account.ua = req.ua.strip()[:300]
     if req.remark is not None:
         account.remark = req.remark
     if req.is_default:
