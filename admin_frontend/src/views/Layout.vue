@@ -131,7 +131,6 @@ const navGroups: NavGroup[] = [
       { path: '/library-scope', label: '可见范围' },
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
       { path: '/metadata-sources', label: '元数据来源' },
-      { path: '/mounts', label: '存储来源' },
       { path: '/pan115', label: '115 账号' },
     ],
   },

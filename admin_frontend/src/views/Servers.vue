@@ -23,8 +23,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, CheckCircle2, CloudDownload, Download, HardDrive, Info, Pencil, Plus,
-  RefreshCw, Route as RealmIcon, Server, Trash2, Wifi,
+  AlertTriangle, CheckCircle2, CloudDownload, Download, FolderOpen, HardDrive, Info, Pencil,
+  Plus, RefreshCw, Route as RealmIcon, Server, Trash2, Wifi,
 } from 'lucide-vue-next'
 import {
   activateServer,
@@ -37,6 +37,7 @@ import {
   fetchServerOps,
   fetchMounts,
   fetchServerRcloneConf,
+  probeMountsHealth,
   refreshServerMounts,
   runServerOpsScan,
   saveServerRcloneConf,
@@ -52,6 +53,7 @@ import type {
   ServerOpsSnapshot, ServerProbeResult, ServerSummary, StorageMount,
 } from '@/types'
 import MountSourceEditor from '@/components/MountSourceEditor.vue'
+import MountBrowseDialog from '@/components/MountBrowseDialog.vue'
 import type { MountTypeValue } from '@/components/MountSourceEditor.vue'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
@@ -117,6 +119,68 @@ async function loadRcloneConf(serverId: number) {
 const serverMounts = ref<StorageMount[]>([])
 const mountsLoading = ref(false)
 const mountForm = reactive({ name: '', type: 'local' as MountTypeValue, path: '' })
+const editingMountId = ref<number | null>(null)
+
+/** 目录浏览（从存储来源页搬过来的组件）与体检 */
+const browseVisible = ref(false)
+const browseTarget = ref<StorageMount | null>(null)
+const checkingMounts = ref(false)
+
+function openMountBrowse(m: StorageMount) {
+  browseTarget.value = m
+  browseVisible.value = true
+}
+
+/** 点目录时把它回写成挂载根（仅 115 有 cid 这类「根」的概念） */
+async function onBrowsePick(rel: string) {
+  const m = browseTarget.value
+  if (!m || !rel || rel === '/') return
+  if (!['115', 'rclone'].includes(m.mount_type)) return
+  const prefix = m.mount_type === '115' ? '115:' : 'rclone:'
+  const path = `${prefix}${rel}`
+  await updateMount(m.id, { path })
+  ElMessage.success(`挂载根已改为：${path}（请重新扫描对应媒体库）`)
+  loadServerMounts()
+}
+
+async function runMountHealth() {
+  checkingMounts.value = true
+  try {
+    const res = await probeMountsHealth()
+    ElMessage.success(`本机体检完成：${res.ok_count}/${res.total} 条可达`)
+    loadServerMounts()
+  } finally {
+    checkingMounts.value = false
+  }
+}
+
+/** 「存储来源」按钮：直接开这台服（本服已激活的 EA）的弹窗，里面就是它的挂载区 */
+function openMountsForServer() {
+  const row = servers.value.find((s) => s.kind === 'ea')
+    && (editingId.value ? servers.value.find((s) => s.id === editingId.value)
+                        : servers.value.find((s) => s.kind === 'ea'))
+  if (!row) {
+    ElMessage.warning('还没有添加 EA 服务器，先添加一台再配存储来源')
+    openCreate('ea')
+    return
+  }
+  openEdit(row)
+}
+
+function startEditMount(m: StorageMount) {
+  editingMountId.value = m.id
+  mountForm.name = m.name
+  mountForm.type = (['local', '115', 'rclone'].includes(m.mount_type)
+    ? m.mount_type : 'local') as MountTypeValue
+  mountForm.path = m.path
+}
+
+function cancelEditMount() {
+  editingMountId.value = null
+  mountForm.name = ''
+  mountForm.path = ''
+  mountForm.type = 'local'
+}
 
 async function loadServerMounts() {
   if (!editingId.value) return
@@ -142,16 +206,28 @@ async function addMount() {
   }
   const row = servers.value.find((s) => s.id === editingId.value)
   try {
-    await createMount({
-      name,
-      path: mountForm.path.trim(),
-      server_id: editingId.value,
-      realm_id: row?.realm_id ?? undefined,
-    })
-    ElMessage.success('挂载已创建：到「媒体库」页把它绑定到库上即可扫描')
-    mountForm.name = ''
-    mountForm.path = ''
-    mountForm.type = 'local'
+    if (editingMountId.value) {
+      const res = await updateMount(editingMountId.value, {
+        name, path: mountForm.path.trim(),
+      })
+      if (res.mount_type_changed) {
+        ElMessage.warning('来源已切换（旧条目的读取方式随之改变），请重新扫描对应媒体库')
+      } else {
+        ElMessage.success('挂载已更新：重新扫描对应媒体库后生效')
+      }
+      cancelEditMount()
+    } else {
+      await createMount({
+        name,
+        path: mountForm.path.trim(),
+        server_id: editingId.value,
+        realm_id: row?.realm_id ?? undefined,
+      })
+      ElMessage.success('挂载已创建：到「媒体库」页把它绑定到库上即可扫描')
+      mountForm.name = ''
+      mountForm.path = ''
+      mountForm.type = 'local'
+    }
     loadServerMounts()
   } catch (e) {
     ElMessage.error(String((e as Error)?.message || e))
@@ -774,7 +850,7 @@ const opsLastScan = ref<{
         <el-button @click="$router.push({ name: 'Realms' })">
           <RealmIcon :size="14" style="margin-right: 4px" />服管理
         </el-button>
-        <el-button @click="$router.push({ name: 'StorageMounts' })">存储来源</el-button>
+        <el-button @click="openMountsForServer">存储来源</el-button>
         <el-button @click="$router.push({ name: 'EmbyAdmin' })">媒体库</el-button>
         <el-button :loading="liveRunning" @click="runLive">
           <Wifi :size="14" style="margin-right: 4px" />一键体检
@@ -1167,6 +1243,10 @@ const opsLastScan = ref<{
                 <el-button link :loading="busyId === m.id" @click="testOneMount(m)">
                   <Wifi :size="14" />
                 </el-button>
+                <el-button link @click="openMountBrowse(m)">
+                  <FolderOpen :size="14" />
+                </el-button>
+                <el-button link @click="startEditMount(m)">编辑</el-button>
                 <el-button link @click="toggleMount(m)">
                   {{ m.is_enabled ? '停用' : '启用' }}
                 </el-button>
@@ -1181,9 +1261,16 @@ const opsLastScan = ref<{
           <div class="add-mount">
             <el-input v-model="mountForm.name" placeholder="挂载名称，例如「主号电影」" />
             <MountSourceEditor v-model="mountForm.path" v-model:type="mountForm.type" />
-            <el-button type="primary" plain @click="addMount">
-              <Plus :size="14" style="margin-right: 4px" />添加挂载
-            </el-button>
+            <div class="add-mount-ops">
+              <el-button type="primary" plain @click="addMount">
+                <Plus v-if="!editingMountId" :size="14" style="margin-right: 4px" />
+                {{ editingMountId ? '保存修改' : '添加挂载' }}
+              </el-button>
+              <el-button v-if="editingMountId" text @click="cancelEditMount">取消</el-button>
+              <el-button :loading="checkingMounts" @click="runMountHealth">
+                <RefreshCw :size="14" style="margin-right: 4px" />挂载体检
+              </el-button>
+            </div>
           </div>
         </template>
         <el-form-item label="备注">
@@ -1503,6 +1590,14 @@ const opsLastScan = ref<{
         </div>
       </template>
     </el-drawer>
+
+    <!-- 目录浏览：从「存储来源」页搬过来的独立组件 -->
+    <MountBrowseDialog
+      v-model="browseVisible"
+      :mount="browseTarget"
+      root-key-label="目录"
+      @pick="onBrowsePick"
+    />
   </div>
 </template>
 
@@ -1644,6 +1739,7 @@ const opsLastScan = ref<{
   color: var(--danger); font-size: var(--font-size-xs); line-height: 1.6; margin-top: 2px;
 }
 .add-mount { display: flex; flex-direction: column; gap: 8px; }
+.add-mount-ops { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .probe { padding: 9px 11px; border-radius: var(--radius-md); font-size: var(--font-size-sm); margin-top: 4px; }
 .probe.ok { color: var(--success); background: var(--success-bg); }
 .probe.bad { color: var(--danger); background: var(--danger-bg); }

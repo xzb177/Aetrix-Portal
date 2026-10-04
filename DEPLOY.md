@@ -224,10 +224,11 @@ docker compose up -d    # 原地替换容器
 
 升级前请注意两件事：
 
-1. **rclone 配置改由你自己粘贴。** 升级后到后台「rclone.conf」页把你的
-   `rclone.conf`（标准 INI 文本）粘进去保存；面板只负责落盘并给 rclone 命令
-   加 `--config`，不代管任何凭据。粘好之前，rclone 挂载会连不上（面板会明确
-   报「读不到 rclone.conf」，不会静默失败）。
+1. **rclone 配置改由你自己粘贴。** 升级后到后台「服务器与线路」页，编辑对应
+   的 EA，在弹窗里的 **rclone 配置** 区把你的 `rclone.conf`（标准 INI 文本）粘
+   进去保存；**每台 EA 一份**（落盘为 `rclone-<服务器ID>.conf`）。面板只负责
+   落盘并给 rclone 命令加 `--config`，不代管任何凭据、也不回显原文。粘好之前，
+   rclone 挂载会连不上（面板会明确报「读不到 rclone.conf」，不会静默失败）。
 2. **老数据不动。** 已有的挂载、媒体库、已入库条目都保留；只是那些不再支持的
    类型（Google Drive 原生挂载等）不再能被新建。库里三张没人读写的遗留表
    （`rclone_remotes` / `service_account_files` / `emby_mount_file_ids`）

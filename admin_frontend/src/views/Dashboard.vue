@@ -225,9 +225,9 @@ const kpis = computed<{
           + (mount.unchecked ? ` · 未体检 ${mount.unchecked}` : '')
           + (mount.blocked ? ` · 播放节点够不着 ${mount.blocked}` : '')
         : '还没有存储来源',
-      to: '/mounts', icon: HardDrive,
+      to: '/servers', icon: HardDrive,
       tone: mount.failed || mount.blocked ? 'warn' : mount.total ? 'ok' : 'plain',
-      title: '存储来源',
+      title: '存储来源（按服务器配置）',
     },
   ]
 })

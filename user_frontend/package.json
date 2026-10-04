@@ -1,6 +1,6 @@
 {
   "name": "user_frontend",
-  "version": "2.42.14",
+  "version": "2.42.15",
   "private": true,
   "type": "module",
   "engines": {

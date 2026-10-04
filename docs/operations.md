@@ -453,10 +453,13 @@ venv/bin/python scripts/drop_removed_mount_tables.py
 
 面板**不代管 rclone 凭据**，只提供「能跑 rclone」的能力：
 
-1. 后台「存储来源」→ 切到「**rclone.conf**」页，把 `rclone config` 生成的 INI 文本原样粘进去；
-2. 它会落盘到 `data/rclone/rclone.conf`（容器里是 `/config/rclone/rclone.conf`，
-   即 `RCLONE_CONFIG_DIR` 指的那个目录），权限 600；
-3. 之后每条 rclone 命令都自动带 `--config` 指过去。
+1. 后台「服务器与线路」→ 编辑（或添加）对应的那台 **EA** → 弹窗里的
+   **rclone 配置** 区，把 `rclone config` 生成的 INI 文本原样粘进去；
+2. 它会落盘到 `data/rclone/rclone-<服务器ID>.conf`（**每台 EA 一份**；
+   容器里是 `/config/rclone/` 下的同名文件，即 `RCLONE_CONFIG_DIR` 指的那个目录），
+   权限 600；
+3. 之后该机上的每条 rclone 命令都自动带 `--config` 指过去。挂载建在同一弹窗里，
+   并自动记下「由这台 EA 去读」，所以多条挂载共用这台的配置。
 
 **服务器上要先有 rclone 可执行文件。** 容器里默认没有——要么在 compose 里加一行装它，
 要么把宿主机上装好的挂进去（挂载表单里的「rclone 路径」填绝对路径）。
