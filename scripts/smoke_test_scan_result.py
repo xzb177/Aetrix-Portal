@@ -44,6 +44,7 @@ from backend.database import engine, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server import portal as emby_portal  # noqa: E402
 from backend.emby_server import scanner as sc  # noqa: E402
+from backend.emby_server import soft_delete  # noqa: E402
 
 init_db()
 Session = sessionmaker(bind=engine)
@@ -139,8 +140,14 @@ def snapshot() -> dict:
 
 
 def item_count() -> int:
+    """库里**看得见**的条目数
+
+    清理自 v2.48.0 起是软删除（消失的条目只标记 deleted_at，行还在），所以这里数可见行：
+    ``Query.count()`` 会把语句包成子查询，全局可见性过滤下不到那里去，会把已下架的行也算上，
+    而这个脚本要验的正是「用户还能浏览到多少条目」。
+    """
     with Session() as db:
-        return int(db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_id).count())
+        return soft_delete.count_visible(db, em.MediaItem.library_id == lib_id)
 
 
 # ==================== 1. 从没扫过 ====================
