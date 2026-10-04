@@ -328,7 +328,11 @@ def test_worker_failure_backoff_then_failed(db, monkeypatch):
         probe_worker, "resolve_play_target",
         lambda path, db: SimpleNamespace(value="http://x/f.mp4", headers={}))
     monkeypatch.setattr(probe_worker, "probe_metadata",
-                        lambda *a, **k: {"duration_ticks": 0})  # ffprobe 失败
+                        lambda *a, **k: {"_error": "http_500",
+                                         "_error_detail": "上游临时故障"})
+    # 注意：这里必须用**真的错误**。v2.42.14 起「ffprobe 跑完但没时长」不再是失败，
+    # 而是 probed_no_duration（见 test_probe_no_duration.py）；本用例要验的是
+    # 「临时错误 → 退避阶梯 → 超限转 failed」这条路。
     monkeypatch.setattr(probe_worker, "PROBE_MAX_ATTEMPTS", 3)
     try:
         for attempt in (1, 2):

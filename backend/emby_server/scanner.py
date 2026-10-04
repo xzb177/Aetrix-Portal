@@ -307,9 +307,12 @@ def needs_probe(item, path: str, size: Optional[int] = None) -> bool:
 
     远程挂载（115 / WebDAV / AList）没有本机文件，大小由调用方从目录列表传入。
     """
-    # 远程探测失败后的 degraded 是明确的降级结果：同一文件不要每轮扫描无限重试。
-    # 用户按需点详情/播放时再 boost_probe，或文件大小变化时重新排队。
-    if getattr(item, "probe_status", None) == "degraded" and item.last_probed_at is not None:
+    # 远程探测失败后的 degraded、以及 ffprobe 跑完但拿不到时长的 probed_no_duration，
+    # 都是**明确的终态结果**：同一文件不要每轮扫描无限重试（否则 2.6 万条会把 worker
+    # 名额占满，真正能探到的文件排不进来）。用户按需点详情/播放时再 boost_probe，
+    # 或文件大小变化时重新排队。
+    if (getattr(item, "probe_status", None) in ("degraded", "probed_no_duration")
+            and item.last_probed_at is not None):
         if size is None:
             return False
         return bool(item.size) and size != item.size

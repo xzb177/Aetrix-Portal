@@ -263,17 +263,50 @@ def reset_stale_probing(db=None) -> int:
             db.close()
 
 
+def retry_failed(db, limit: int = 5000) -> int:
+    """把 ``failed`` 的探测条目捞回队列，返回拈回数（后台「重试失败探测」用）
+
+    为什么需要它：v2.42.14 之前「ffprobe 跑完但没时长」被判成失败，
+    生产里已经堆了几万条这类 ``failed``（实测 2.6 万，93% 在 MoviePilot 目录）。
+    修正分类只阻止**新增**，存量行还得有人拉回来。
+
+    只拈 ``failed``（真正的终态失败），不动 done / degraded / probed_no_duration
+    —— 后三者本来就是「已探完」的状态，重探它们只是白烧 ffprobe 与云盘配额。
+    按 id 升序取，避免每次都从同一批开始。
+    """
+    rows = (db.query(em.MediaItem.id)
+            .filter(em.MediaItem.probe_status == "failed")
+            .order_by(em.MediaItem.id)
+            .limit(max(1, int(limit)))
+            .all())
+    ids = [r[0] for r in rows]
+    if not ids:
+        return 0
+    db.query(em.MediaItem).filter(em.MediaItem.id.in_(ids)).update(
+        {"probe_status": "pending", "probe_attempts": 0, "probe_next_retry_at": None},
+        synchronize_session=False,
+    )
+    db.commit()
+    logger.info("重试失败探测：%d 条重新入队", len(ids))
+    return len(ids)
+
+
 def boost_probe(db, item) -> bool:
     """按需插队：优先级提到最高、清除退避，下一轮 worker 即取。
 
     已探测完（done）的不需要排队，返回 False；其余返回 True。
+
+    **终态但不是 done 的（failed / degraded / probed_no_duration）一律重新入队**：
+    用户点播放就是「我想知道它到底能不能放」，此时再探一次是唯一能回答问题的办法。
+    只改优先级不改状态的话，这些条目永远不会被 ``_claim_batch`` 取到（它只取 pending），
+    「重新探测」按钮就成了摆设。
     """
     if (getattr(item, "probe_status", None) or "") == "done":
         return False
     item.probe_priority = BOOST_PRIORITY
     item.probe_next_retry_at = None
-    if item.probe_status == "failed":
-        # 之前放弃的也给一次机会（计数清零）
+    if item.probe_status in ("failed", "degraded", STATUS_NO_DURATION):
+        # 之前放弃 / 已降级的也给一次机会（计数清零）
         item.probe_status = "pending"
         item.probe_attempts = 0
     db.commit()
@@ -307,7 +340,15 @@ def _backoff_seconds(attempts: int) -> int:
 KIND_PERMANENT = "permanent"   # 重试无意义：直接 failed
 KIND_TRANSIENT = "transient"   # 重试有意义：退避后重来
 
-#: 确定性的永久失败：文件不存在（被删 / 被移走）或请求本身不合法/不支持。
+#: 确定性的永久失败：**只认「文件真的不在了」**。
+#:
+#: 原来还包含 400 / 405 / 415 / 416（请求不合法 / 方法或媒体类型不支持）。实测这些
+#: 码在云盘与反代后面绝大多数不是「文件坏了」：签名 URL 过期、网关回了个 415、
+#: Range 请求被中间层改写，都会落到这几码。把它们当永久失败 = 把**还在线播放的**
+#: 条目判死，用户端直接变成「网络错误或者当前媒体库不存在该项目」。
+#:
+#: 它们现在归临时：走指数退避，最多试 PROBE_MAX_ATTEMPTS 次。真的不支持的格式
+#: 最终还是 failed（只是多花几次名额），但不会第一次就被判死。
 #:
 #: 不含 401（凭据失效）：那不是文件坏了，而是部署配置坏了——管理员改完凭据
 #: 文件就能探，不该被永久判死（后台手动「重新探测」仍可拉起来，但没必要让它
@@ -318,9 +359,14 @@ KIND_TRANSIENT = "transient"   # 重试有意义：退避后重来
 PERMANENT_ERRORS = frozenset({
     "not_found",
     "http_404", "http_410",   # 没了 / 已被彻底移除
-    "http_400",               # 请求不合法
-    "http_405", "http_415", "http_416",  # 方法 / 媒体类型 / 范围不支持
 })
+
+#: ffprobe 跑成功了、只是没给出时长：这是**结果**，不是失败。
+#:
+#: 播放器不靠时长也能播（进度条按字节估算即可），所以这种条目必须留在可播状态里，
+#: 不能进重试——否则同一批文件会反复占满 worker 名额（实测 2.6 万条 MoviePilot 目录
+#: 的文件全是这一种，重试 5 轮后集体 failed，用户端报「不存在该项目」）。
+STATUS_NO_DURATION = "probed_no_duration"
 
 
 def _classify_failure(error: Optional[str]) -> str:
@@ -495,8 +541,23 @@ def _probe_one(item_id: int) -> str:
             return "degraded"
         # 用翻译后的错误文案（403 配额问题不再含糊报"未返回有效时长"）
         err_detail = (info or {}).get("_error_detail") if info else None
-        _fail(db, item, err_detail or "ffprobe 未返回有效时长",
-              error=(info or {}).get("_error"))
+        error = (info or {}).get("_error") if info else None
+        if not error:
+            # **没有 _error = ffprobe 跑完了，只是没给出时长**（MP4 缺 moov、流媒体片段、
+            # 容器损坏到读不出时长等）。这是信息降级，不是文件没了：
+            #   - 判 failed 会让用户端报「网络错误或者当前媒体库不存在该项目」，而文件其实能播；
+            #   - 退避重试 5 轮只会让这批文件反复占满 worker 名额（实测 2.6 万条）。
+            # 所以记成一个**终态但不失败**的状态，与 degraded 同类：不重试、可播放。
+            item.size = (info or {}).get("size", 0) or item.size
+            item.last_probed_at = datetime.now()
+            item.probe_status = STATUS_NO_DURATION
+            item.probe_attempts = 0
+            item.probe_next_retry_at = None
+            db.commit()
+            logger.info("探测完成但无时长 item=%s（可播放，不重试）: %s",
+                        item.id, err_detail or "ffprobe 未返回有效时长")
+            return STATUS_NO_DURATION
+        _fail(db, item, err_detail or f"探测失败（{error}）", error=error)
         db.commit()
         return "failed"
     finally:
@@ -541,13 +602,15 @@ def run_once(db=None, limit: int = PROBE_BATCH) -> dict:
             db.close()
     if not ids:
         return {"claimed": 0, "done": 0, "skipped": 0, "failed": 0}
-    counts = {"claimed": len(ids), "done": 0, "skipped": 0, "failed": 0}
+    counts = {"claimed": len(ids), "done": 0, "skipped": 0, "failed": 0,
+              STATUS_NO_DURATION: 0}
     with ThreadPoolExecutor(max_workers=PROBE_WORKERS,
                             thread_name_prefix="probe-worker") as pool:
         for result in pool.map(_probe_one, ids):
             counts[result] = counts.get(result, 0) + 1
-    logger.info("探测 worker 一轮：claimed=%d done=%d skipped=%d failed=%d",
-                counts["claimed"], counts["done"], counts["skipped"], counts["failed"])
+    logger.info("探测 worker 一轮：claimed=%d done=%d skipped=%d failed=%d 无时长=%d",
+                counts["claimed"], counts["done"], counts["skipped"], counts["failed"],
+                counts[STATUS_NO_DURATION])
     return counts
 
 

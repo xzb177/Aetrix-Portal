@@ -71,10 +71,22 @@ def _item(db, name="a.mkv", **kw):
 @pytest.mark.parametrize("error", [
     "not_found",
     "http_404", "http_410",
-    "http_400", "http_415", "http_416",
 ])
 def test_permanent_errors(error):
+    """永久失败只认「文件真的不在了」（v2.42.14 收紧）
+
+    原来还包含 400 / 415 / 416，但线上实测这些码在云盘与反代后面绝大多数不是
+    「文件坏了」：签名 URL 过期、网关回 415、Range 被中间层改写都会落到这几码。
+    当成永久失败 = 把还在线播放的条目判死，用户端直接变「不存在该项目」。
+    """
     assert pw._classify_failure(error) == pw.KIND_PERMANENT
+
+
+@pytest.mark.parametrize("error", ["http_400", "http_405", "http_415", "http_416"])
+def test_ambiguous_http_codes_are_not_permanent(error):
+    """这些码现在是临时失败：退避重试；真不支持的格式会在 PROBE_MAX_ATTEMPTS 后
+    自行转 failed（只是不再第一次就被判死）"""
+    assert pw._classify_failure(error) == pw.KIND_TRANSIENT
 
 
 @pytest.mark.parametrize("error", [
@@ -122,9 +134,12 @@ def test_permanent_failure_fails_immediately(db):
 
 
 def test_permanent_failure_does_not_walk_the_backoff_ladder(db):
-    """只失败一次就直接放弃，不会先 pending 退避几次才 failed"""
+    """只失败一次就直接放弃，不会先 pending 退避几次才 failed
+
+    用**确实代表文件没了**的码（v2.42.14 收紧后 415 不再算永久）。
+    """
     item = _item(db, "gone.mkv", probe_attempts=0)
-    pw._fail(db, item, "格式不支持", error="http_415")
+    pw._fail(db, item, "文件不存在", error="http_404")
     db.commit()
     assert item.probe_status == "failed"
     assert item.probe_attempts == pw.PROBE_MAX_ATTEMPTS

@@ -920,6 +920,24 @@ def retry_unmatched_items(
     return {"success": True, "requeued": n}
 
 
+@admin_emby_router.post("/scrape/probe/retry-failed")
+def retry_failed_probes(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+    limit: int = 5000,
+):
+    """重试被标成 failed 的探测条目（v2.42.14 配套）。
+
+    修正分类只阻止**新增**失败；存量行（比如那 2.6 万条「ffprobe 跑完但没时长」
+    被误判失败的）要靠这个把它们拉回队列。它们重新探测后大多会落到
+    ``probed_no_duration``——可播放，只是时长未知。
+    """
+    from backend.emby_server import probe_worker
+
+    n = probe_worker.retry_failed(db, limit=limit)
+    return {"success": True, "requeued": n}
+
+
 @admin_emby_router.get("/scrape/enrich-progress")
 def get_enrich_progress(
     staff: base_models.WebUser = Depends(require_staff),

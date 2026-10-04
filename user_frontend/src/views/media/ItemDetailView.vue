@@ -61,7 +61,20 @@ const backdrop = computed(() => (item.value ? backdropUrl(item.value) : ''))
 const isFavorite = computed(() => !!item.value?.UserData?.IsFavorite)
 const isPlayed = computed(() => !!item.value?.UserData?.Played)
 const progress = computed(() => (item.value ? progressPercent(item.value) : 0))
-const runtime = computed(() => (item.value?.RunTimeTicks ? formatDuration(ticksToSeconds(item.value.RunTimeTicks)) : '—'))
+/**
+ * 时长：ffprobe 没读出来时**显示「时长未知」而不是「—」**
+ *
+ * 「—」读起来像「这项数据不存在」，而实际是「探测没读出来」——用户会以为影片坏了。
+ * 影片能播就不该暗示它坏了（v2.42.14）。
+ *
+ * 只对**单个可播条目**这么写：剧集 / 季本来就没有时长，给它们挂一个「时长未知」
+ * 是凭空多出来的噪音。
+ */
+const runtime = computed(() => {
+  if (!['Movie', 'Episode', 'Video'].includes(item.value?.Type || '')) return ''
+  const ticks = item.value?.RunTimeTicks
+  return ticks ? formatDuration(ticksToSeconds(ticks)) : '时长未知'
+})
 /** 无海报时首字占位 */
 const titleChar = computed(() => (item.value?.Name || '?').trim().charAt(0) || '?')
 /** 简介过长时默认折叠 3 行，避免把播放按钮挤到第二屏 */
