@@ -443,7 +443,7 @@ coverAutoRegen.value = l.cover_auto_regen === true
     scrape_policy: l.scrape_policy || 'missing_only',
     account_115_id: l.account_115_id ?? null,
     path_entries: pathEntriesOf(l).map((e) => ({ ...e })),
-    chase: chaseLibraryIds().includes(l.id),
+    chase: chaseExcluded(l.id),
   })
   libFormVisible.value = true
   libFormFingerprintAtOpen.value = formFingerprint()
@@ -479,7 +479,8 @@ function cancelForm() {
 
 /** 追新开关：即时代理到全局清单，失败弹回原状态（toggleChase 里处理） */
 function onChaseSwitch(v: unknown) {
-  toggleChase(!!v)
+  // 开关现在是「监听 / 排除」，而排除清单是反着存的：开关为真 = 监听 = 不排除
+  toggleChase(!v)
 }
 
 /**
@@ -570,36 +571,38 @@ async function saveForm(thenScan = false) {
 
 // ---- 目录变更监听（追新）：全局开关 + 每库一个「纳不纳入」 ----
 
-/** 追新监听的库 id 列表。空串 = 全部启用库（后端 change_watcher._check_once 的口径） */
-function chaseLibraryIds(): number[] {
-  return (chaseNew.value?.libraries || '')
+/** 追新**排除**清单的库 id（v2.45.0 起）。空 = 全部启用库都监听 */
+function chaseExcludedIds(): number[] {
+  return (chaseNew.value?.excluded || '')
     .split(/[,，\n]/)
     .map((x) => Number(x.trim()))
     .filter((x) => Number.isInteger(x) && x > 0)
 }
 
-/** 清单为空 = 「所有启用库都监听」，此时单个库的开关没有意义（关掉自己 = 还是全选） */
-function chaseCoversAll(): boolean {
-  return !!chaseNew.value && !chaseNew.value.libraries.trim()
+/** 这个库是否被排除在追新之外 */
+function chaseExcluded(id: number | null): boolean {
+  return id != null && chaseExcludedIds().includes(id)
 }
 
-/** 把当前库挪进 / 挪出追新清单（改的是全局配置里的一行，保存即生效） */
+/**
+ * 把当前库挪进 / 挪出**排除清单**（改的是全局配置里的一行，保存即生效）
+ *
+ * 语义是「排除」而不是「纳入」：以前想关掉一个库，得先去别的库上打开开关、让包含
+ * 清单被写出来，再回来把它删掉。现在直接加进排除清单即可，不需要任何前置步骤。
+ */
 async function toggleChase(on: boolean) {
   const cfg = chaseNew.value
   if (!cfg || libForm.id == null) return
-  const ids = new Set(chaseLibraryIds())
+  const ids = new Set(chaseExcludedIds())
   if (on) ids.add(libForm.id)
   else ids.delete(libForm.id)
-  if (!ids.size) {
-    ElMessage.warning('追新清单不能全空：清空代表「所有启用库都监听」。要只排除某几个库，先在别的库上打开它。')
-    return
-  }
   chaseLibSaving.value = true
   try {
     const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','))
     chaseNew.value = {
       enabled: res.enabled,
       interval: res.interval,
+      excluded: res.excluded,
       libraries: res.libraries,
       last_check: res.last_check,
       last_found: res.last_found,
@@ -611,8 +614,8 @@ async function toggleChase(on: boolean) {
     before.chase = on
     libFormFingerprintAtOpen.value = JSON.stringify(before)
     ElMessage.success(on
-      ? `已纳入追新监听（每 ${res.interval} 分钟检查一次新文件）`
-      : '已移出追新监听')
+      ? `「${libFormTarget.value?.name || '本库'}」已排除追新，不再自动扫描新文件`
+      : `已重新纳入追新监听（每 ${res.interval} 分钟检查一次新文件）`)
   } catch {
     // 拦截器已提示；开关弹回去，别留一个「看起来生效了」的假状态
     libForm.chase = !on
@@ -633,8 +636,9 @@ function chaseFact(l: EmbyLibrary): string {
   // 配置没读到时不能说「追新关」——那是在编一个结论
   if (!cfg) return '追新状态未知'
   if (!cfg.enabled) return '追新关'
-  const covered = chaseCoversAll() || chaseLibraryIds().includes(l.id)
-  return covered ? `追新每 ${cfg.interval} 分钟` : '不参与追新'
+  const covered = !chaseExcluded(l.id)
+  // 措辞跟着新语义走：不在排除清单 = 在听；在清单里 = 已排除追新
+  return covered ? `追新每 ${cfg.interval} 分钟` : '已排除追新'
 }
 
 function libSummary(l: EmbyLibrary): string {
@@ -839,7 +843,7 @@ const chaseNewSaving = ref(false)
 async function loadChaseNewConfig() {
   try {
     const res = await fetchChaseNew()
-    chaseNew.value = { enabled: res.enabled, interval: res.interval, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
   } catch {
     chaseNew.value = null
   }
@@ -849,8 +853,8 @@ async function saveChaseNewAction() {
   if (!chaseNew.value) return
   chaseNewSaving.value = true
   try {
-    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.libraries)
-    chaseNew.value = { enabled: res.enabled, interval: res.interval, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
+    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded)
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
     ElMessage.success(res.enabled ? '追新已开启（每 ' + res.interval + ' 分钟）' : '追新已关闭')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
@@ -1976,24 +1980,21 @@ function typeLabel(t: string): string {
             不用等手动扫描。开关与间隔是全局的，纳不纳入某个库在这里定。
           </p>
           <el-form label-position="top">
-            <el-form-item label="本库是否纳入追新监听">
+            <el-form-item label="本库是否监听追新">
               <el-switch
-                :model-value="libForm.chase"
+                :model-value="!libForm.chase"
                 :loading="chaseLibSaving"
-                :disabled="chaseCoversAll()"
-                active-text="纳入"
-                inactive-text="不纳入"
+                active-text="监听"
+                inactive-text="排除"
                 @change="onChaseSwitch"
               />
               <p class="field-help">
-                <template v-if="chaseCoversAll()">
-                  当前是「所有启用库都监听」（清单留空即代表全部），此时单独关掉本库没有意义。
-                  要只排除某几个库，先在别的库上打开它、让清单列出来，再回来关本库。
+                <template v-if="!chaseNew">追新配置读取中…</template>
+                <template v-else>
+                  改动即时生效：开「监听」就是正常扫新片；开「排除」就是把这个库加进
+                  <strong>排除清单</strong>（当前已排除 {{ chaseExcludedIds().length }} 个库），
+                  不会再自动发现新片——手动扫描与定时扫描不受影响。
                 </template>
-                <template v-else-if="chaseNew">
-                  改动即时生效：写进全局追新清单（当前 {{ chaseLibraryIds().length }} 个库）。
-                </template>
-                <template v-else>追新配置读取中…</template>
               </p>
             </el-form-item>
             <div class="settings-paths">
