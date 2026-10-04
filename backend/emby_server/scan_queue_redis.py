@@ -51,10 +51,12 @@ def is_redis_mode() -> bool:
     return _redis() is not None
 
 
-def push_scan_request(library_id: int, trigger: str = "manual") -> dict:
+def push_scan_request(library_id: int, trigger: str = "manual",
+                      force_full: bool = False) -> dict:
     """API 进程：把扫描请求推入 Redis 队列
 
     返回 {"created": bool, "task": {...}}，与 scan_queue.enqueue() 的返回形状一致。
+    ``force_full`` 随 payload 带到 worker（手动「全量扫描」在多进程部署下也得算数）。
     """
     r = _redis()
     if r is None:
@@ -78,6 +80,7 @@ def push_scan_request(library_id: int, trigger: str = "manual") -> dict:
     payload = json.dumps({
         "library_id": library_id,
         "trigger": str(trigger or "manual"),
+        "force_full": bool(force_full),
         "enqueued_at": time.time(),
     })
     r.rpush(REDIS_SCAN_QUEUE_KEY, payload)
@@ -213,7 +216,7 @@ def pop_scan_request(timeout: int = 5) -> Optional[dict]:
     用 BLMOVE 原子地把任务从 queue 移到 processing，worker 崩溃后
     任务仍在 processing 中，重启时可恢复，不丢任务。
 
-    返回 {"library_id": int, "trigger": str, "_raw": str}，超时返回 None。
+    返回 {"library_id": int, "trigger": str, "force_full": bool, "_raw": str}，超时返回 None。
     _raw 用于 ack 时从 processing 队列删除。
     """
     r, owned = _blocking_redis(timeout)
@@ -234,6 +237,7 @@ def pop_scan_request(timeout: int = 5) -> Optional[dict]:
         return {
             "library_id": library_id,
             "trigger": data.get("trigger", "manual"),
+            "force_full": bool(data.get("force_full")),
             "_raw": raw,
         }
     except Exception as e:
@@ -364,7 +368,8 @@ def _consume_loop():
                     continue
                 # 走进程内入队（worker 进程内的 scan_queue 完整逻辑：串行化/并发上限）。
                 # raw 随任务携带，扫描真正完成后才 ACK（见 _ack_redis_raws）。
-                result = scan_queue.enqueue_local(lib, trigger=trigger, redis_raw=raw or None)
+                result = scan_queue.enqueue_local(lib, trigger=trigger, redis_raw=raw or None,
+                                                force_full=bool(req.get("force_full")))
                 logger.info(f"Redis 扫描请求已转进程内队列：库「{lib.name}」(id={library_id}) "
                             f"触发={trigger} created={result.get('created')}")
                 # expunge：enqueue_local 内部会拍快照，lib 不能随 session 关闭失效

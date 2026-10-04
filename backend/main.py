@@ -199,6 +199,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动追新线程失败（可忽略）: {e}")
 
+        # 本机目录实时监听（v2.44.0）：容器重启后自动重建，路径从库里读、不写死。
+        # 失败/不可用就降级为定时扫描，不影响启动，也不影响扫描与播放。
+        try:
+            from backend.emby_server import fs_watcher
+            if fs_watcher.start_fs_watcher():
+                logger.info("本机目录实时监听已启动（新片入库会自动触发增量扫描）")
+            else:
+                logger.info("本机目录实时监听未启用，已降级为定时扫描")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动目录监听失败（已降级为定时扫描）: {e}")
+
         # VPS 本地缓存（播放线路 cache）：默认关闭；开启后把热门片串行、限速地
         # 拉到本机（播放中自动让路），超配额按 LRU 淘汰。失败不影响启动。
     if not _is_api_role:

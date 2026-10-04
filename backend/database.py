@@ -447,6 +447,10 @@ def _auto_migrate():
             ("cover_subtitle", "VARCHAR(100)", "NULL"),
             # v2.43.1 新片入库后自动重生成封面；老库补列后为 0（关闭），行为与升级前一致
             ("cover_auto_regen", "BOOLEAN", "0"),
+            # v2.44.0 每库扫描开关；老库补列后分别为 1（增量）与 1（实时监听），
+            # 即与升级前行为一致：本来就是有增量、有追新的
+            ("incremental_scan", "BOOLEAN", "1"),
+            ("fs_watch", "BOOLEAN", "1"),
         ]),
         # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
         ("remote_servers", [
@@ -630,6 +634,21 @@ def _ensure_added_index(existing_tables: set) -> None:
         print("  🔧 已迁移: emby_items.idx_item_added（追新日历索引）")
 
 
+def _all_metadata():
+    """所有 ORM 元数据（不止本模块的 Base）
+
+    ``backend.emby_server.models`` 自建了一个 Base（两种部署形态要能分开建表），
+    它不在 ``Base.metadata`` 里。以前这份对账只看 ``Base.metadata``，于是
+    **emby_* 的表从来没被兼底过**：每次给 ``emby_libraries`` 加新列，都必须同步手写一条
+    ``_MISSING_COLUMNS``；漏了就直接报 “table emby_libraries has no column named …”
+    （建表走的是 emby 的 Base，而那条 ALTER 只对已经存在的表生效）。
+    改成两边都以 ORM 为准，忘了写也能自愈。
+    """
+    from backend.emby_server import models as emby_models
+
+    return (Base.metadata, emby_models.Base.metadata)
+
+
 def _backfill_orm_columns(existing_tables: set) -> None:
     """兜底：ORM 声明了、库里却没有的列，在这里补上（幂等）
 
@@ -642,17 +661,21 @@ def _backfill_orm_columns(existing_tables: set) -> None:
 
     # 每次重新 inspect：上面的清单已经改过表结构，缓存的列信息会过时
     inspector = inspect(engine)
-    for table in Base.metadata.sorted_tables:
-        if table.name not in existing_tables:
-            continue
-        existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
-        missing = [c for c in table.columns if c.name not in existing_cols and not c.primary_key]
-        if not missing:
-            continue
-        with engine.begin() as conn:
-            for col in missing:
-                conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {_column_ddl(col)}"))
-                print(f"  🔧 已迁移: {table.name}.{col.name}（按模型补齐）")
+    seen_tables: set = set()
+    for meta in _all_metadata():
+        for table in meta.sorted_tables:
+            if table.name not in existing_tables or table.name in seen_tables:
+                continue
+            seen_tables.add(table.name)
+            existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
+            missing = [c for c in table.columns
+                       if c.name not in existing_cols and not c.primary_key]
+            if not missing:
+                continue
+            with engine.begin() as conn:
+                for col in missing:
+                    conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {_column_ddl(col)}"))
+                    print(f"  🔧 已迁移: {table.name}.{col.name}（按模型补齐）")
 
 
 def _column_ddl(col) -> str:

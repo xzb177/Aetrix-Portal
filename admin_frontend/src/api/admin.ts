@@ -868,6 +868,9 @@ export const createLibrary = (data: {
   cover_subtitle?: string | null
   /** 新片入库后自动重生成封面；不传 = 关 */
   cover_auto_regen?: boolean
+  /** 扫描策略开关；不传 = 默认开 */
+  incremental_scan?: boolean
+  fs_watch?: boolean
 }) => post<{ success: boolean; id: number; guid: string }>(`${E}/libraries`, data)
 
 export const updateLibrary = (
@@ -894,6 +897,9 @@ export const updateLibrary = (
     cover_subtitle?: string | null
     /** 新片入库后自动重生成封面；传 false = 关，省略则不修改 */
     cover_auto_regen?: boolean
+    /** 扫描策略开关；传 false = 关，省略则不修改 */
+    incremental_scan?: boolean
+    fs_watch?: boolean
   }
 ) => put<{ success: boolean; rescan_required?: boolean }>(`${E}/libraries/${id}`, data)
 
@@ -923,7 +929,7 @@ export const runRepairQueue = () =>
  * - `started: false` + `task.position`：排在第几位（`task.waiting_for` 写明在等哪个挂载）；
  * - `already: true`：这个库已经在扫描 / 已在队列里（重复点击不报错），`message` 里有原因。
  */
-export const scanLibrary = (id: number) =>
+export const scanLibrary = (id: number, full = false) =>
   post<{
     success: boolean
     queued?: boolean
@@ -932,7 +938,18 @@ export const scanLibrary = (id: number) =>
     state?: string
     message?: string
     task?: EmbyScanTask
-  }>(`${E}/libraries/${id}/scan`)
+  }>(`${E}/libraries/${id}/scan${full ? '?full=true' : ''}`)
+
+/** 本机目录实时监听状态（含降级原因；设置页用来告知“监听不可用，已改用定时扫描”） */
+export const fetchFsWatchStatus = () => get<{
+  available: boolean
+  running: boolean
+  debounce_sec: number
+  min_interval_sec: number
+  watched_libraries: number[]
+  degraded: Record<string, string>
+  stats: { events: number; triggers: number; coalesced: number; errors: number }
+}>(`${E}/fs-watch/status`)
 
 /** 扫描队列快照：正在跑 / 排队中 / 最近完成 + 远程 IO 计数（面板每几秒轮询一次） */
 export const fetchScanQueue = () => get<EmbyScanQueue>(`${E}/scan-queue`)

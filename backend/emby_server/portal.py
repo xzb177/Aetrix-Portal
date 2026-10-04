@@ -1088,6 +1088,9 @@ class LibraryCreate(BaseModel):
     cover_subtitle: str | None = None
     # 新片入库后自动重生成封面（默认关）
     cover_auto_regen: bool = False
+    # 扫描策略开关（v2.44.0，默认开）
+    incremental_scan: bool = True
+    fs_watch: bool = True
 
 
 class LibraryUpdate(BaseModel):
@@ -1107,6 +1110,9 @@ class LibraryUpdate(BaseModel):
     cover_title: str | None = None
     cover_subtitle: str | None = None
     cover_auto_regen: bool | None = None
+    # 扫描策略开关（v2.44.0）：不传 = 不修改
+    incremental_scan: bool | None = None
+    fs_watch: bool | None = None
 
 
 def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int]) -> None:
@@ -1285,6 +1291,9 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "cover_title": lib.cover_title,
             "cover_subtitle": lib.cover_subtitle,
             "cover_auto_regen": bool(getattr(lib, "cover_auto_regen", False)),
+            # 扫描策略开关（v2.44.0）：老库没值时按默认「都开」处理，与升级前行为一致
+            "incremental_scan": getattr(lib, "incremental_scan", True) is not False,
+            "fs_watch": getattr(lib, "fs_watch", True) is not False,
             "account_115_id": getattr(lib, "account_115_id", None),
             "last_scan_at": lib.last_scan_at.isoformat() if lib.last_scan_at else None,
             # 最近一次扫描的结果：新增/更新/删除多少、哪些来源读不到、有没有异常
@@ -1353,6 +1362,8 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         cover_template=req.cover_template, cover_title=req.cover_title,
         cover_subtitle=req.cover_subtitle,
         cover_auto_regen=bool(req.cover_auto_regen),
+        incremental_scan=bool(req.incremental_scan),
+        fs_watch=bool(req.fs_watch),
     )
     db.add(lib)
     db.commit()
@@ -1493,6 +1504,10 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
         # 没选封面样式时这个开关是空转的，但不拦着存：扫描侧的 _cover_autogen_after_scan
         # 会自己跳过（没有可复用的样式，重画必然失败），没必要为此拒绝保存整个表单
         lib.cover_auto_regen = bool(req.cover_auto_regen)
+    if req.incremental_scan is not None:
+        lib.incremental_scan = bool(req.incremental_scan)
+    if req.fs_watch is not None:
+        lib.fs_watch = bool(req.fs_watch)
     if "account_115_id" in req.model_fields_set:
         # 允许显式解绑（传 null）
         lib.account_115_id = req.account_115_id
@@ -1624,7 +1639,14 @@ def list_library_scans(lib_id: int, limit: int = 20,
 
 
 @admin_emby_router.post("/libraries/{lib_id}/scan")
-async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
+async def scan_library_endpoint(lib_id: int, full: bool = False,
+                                staff: models.WebUser = Depends(require_staff),
+                                db: Session = Depends(get_db)):
+    """触发一轮扫描。``full=true`` = 全量扫描（无视所有指纹，完整处理一遍）
+
+    全量只影响**这一轮**（打在扫描快照上），不会把这个库或别的库改成“以后都全量”。
+    归属到别的节点的库仍然转发过去，全量标记跟着一起过去。
+    """
     def _enqueue() -> dict:
         """查库 + 归属节点判定 + 入队：整段同步 SQLAlchemy，下放线程池执行
 
@@ -1638,13 +1660,14 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
         # 由面板本地扫描只会得到一堆 failed_roots，所以转发过去让归属节点扫。
         owner = node_lib.library_owner(db, lib)
         if owner is not None and owner.id != node_lib.self_node_id(db):
-            return {"forward_to": {"id": owner.id, "name": owner.name, "url": owner.url}}
+            return {"forward_to": {"id": owner.id, "name": owner.name, "url": owner.url,
+                                   "force_full": bool(full)}}
 
         # 入队而不是直接起线程（v2.27.0）：不同媒体库引用同一个远程挂载时排队跑，
         # 不让四个任务同时打同一个 WebDAV；重复点击不报 409，直接告诉你「已经在队列/正在扫」。
         # 后台线程用独立 Session（请求结束时请求级 Session 会被关闭，复用会导致
         # "transaction is closed" 与 SQLite 写锁冲突）——那一层现在在 scan_queue 里。
-        result = scan_queue.enqueue(lib, trigger="manual")
+        result = scan_queue.enqueue(lib, trigger="manual", force_full=bool(full))
         task = result["task"]
         if not result["created"]:
             return {"response": {
@@ -1670,7 +1693,9 @@ async def scan_library_endpoint(lib_id: int, staff: models.WebUser = Depends(req
 
     target = prepared.get("forward_to")
     if target:
-        forward = await node_lib.push_scan(target["url"], lib_id)
+        # 全量标记跟着转发：不然点「全量扫描」在多节点部署下会被默默降成普通增量
+        forward = await node_lib.push_scan(target["url"], lib_id,
+                                          full=bool(target.get("force_full")))
         if not forward.get("ok"):
             raise HTTPException(
                 status_code=502,
@@ -1688,6 +1713,19 @@ def _waiting_mount_objects(db: Session, mount_ids) -> list:
     if not ids:
         return []
     return db.query(em.StorageMount).filter(em.StorageMount.id.in_(ids)).all()
+
+
+@admin_emby_router.get("/fs-watch/status")
+def fs_watch_status(staff: models.WebUser = Depends(require_staff)):
+    """本机目录实时监听的状态（设置页 / Dashboard 回显用）
+
+    单独一个只读端点而不是拼进 scan-queue：它是**另一个线程**的健康状况，
+    且降级原因（路径不可读 / inotify 实例耗尽）必须让人看得见，
+    否则就是默默不工作。
+    """
+    from backend.emby_server import fs_watcher
+
+    return fs_watcher.watcher_status()
 
 
 @admin_emby_router.get("/scan-queue")
