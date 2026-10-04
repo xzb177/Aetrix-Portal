@@ -335,6 +335,17 @@ const storageBackends = ref<StorageBackend[]>([
   { value: '115', label: '115 网盘' },
 ])
 
+/** 单机单节点时隐藏「归属服 / 播放节点」：只有一个选项时下拉框只会传递「没必要选」的信号 */
+const isSingleRealm = computed(() => realmOptions.value.length <= 1)
+const isSingleNode = computed(() => nodes.value.length <= 1)
+
+/** 这个库是不是真的需要 115？只看「有没有 115 网盘来源」——
+ *  纯本机目录的库也摆个 115 账号选择器，只会让人以为要用 115（§十一 ⑨）。
+ *  新建库还没加路径时不显示；等真加了一条 115 路径它自己会出现。 */
+const libraryNeeds115 = computed(() => (
+  libForm.path_entries.some((e) => e.backend === '115')
+))
+
 /** 库里的路径条目（后端已把 mount:// 拆成「挂载内路径 + 存储后端」；老后端则按前缀现推） */
 function pathEntriesOf(l: EmbyLibrary): LibraryPathEntry[] {
   if (l.path_entries?.length) return l.path_entries
@@ -1566,8 +1577,8 @@ function typeLabel(t: string): string {
           >
             <RefreshCcw :size="13" />全量扫描
           </el-button>
-          <el-button size="small" plain title="重新刮削元数据" @click="openRescrape(l)">
-            <RefreshCw :size="13" />重新刮削
+          <el-button size="small" plain title="刷新已有条目的元数据（不扫描新文件）" @click="openRescrape(l)">
+            <RefreshCw :size="13" />刷新元数据
           </el-button>
           <el-button size="small" plain @click="openSettings(l)">
             <Settings2 :size="13" />设置
@@ -1640,7 +1651,7 @@ function typeLabel(t: string): string {
               </p>
             </el-form-item>
 
-            <el-form-item label="归属服">
+            <el-form-item v-if="!isSingleRealm" label="归属服">
               <el-select
                 v-model="libForm.realm_id"
                 clearable
@@ -1660,7 +1671,10 @@ function typeLabel(t: string): string {
               </p>
             </el-form-item>
 
-            <el-form-item v-if="!libFormTarget?.is_virtual" label="归属播放节点">
+            <el-form-item
+              v-if="!libFormTarget?.is_virtual && !isSingleNode"
+              label="归属播放节点"
+            >
               <el-select
                 v-model="libForm.node_id"
                 clearable
@@ -1743,7 +1757,7 @@ function typeLabel(t: string): string {
               <p class="field-help">{{ optionOf(POLICIES, libForm.scrape_policy)?.hint }}</p>
             </el-form-item>
 
-            <el-form-item label="115 账号">
+            <el-form-item v-if="libraryNeeds115" label="115 账号">
               <el-select
                 v-model="libForm.account_115_id"
                 clearable
@@ -1774,6 +1788,10 @@ function typeLabel(t: string): string {
           <div class="settings-section-title">媒体库封面</div>
           <p class="form-hint">
             封面只影响列表与首页的观感，不参与刮削，扫描也不会覆盖它。支持 JPG / PNG / WebP，单张最大 8 MB。
+          </p>
+          <p class="form-hint">
+            <strong>封面样式与标题改完要点底部「保存」才生效</strong>——页面上的预览只是预览，
+            不会自动写库；已经生成过的封面在下次「生成封面」或扫描后自动更新时才被替换。
           </p>
           <div class="lib-cover-edit">
             <div class="lib-cover-thumb">
@@ -1916,7 +1934,7 @@ function typeLabel(t: string): string {
         <div v-if="!libFormTarget?.is_virtual" class="settings-section">
           <div class="settings-section-title">媒体路径</div>
           <p class="form-hint">
-            决定扫描哪些目录：<strong>一行一条</strong>，路径只写目录本身（如 <code>/电影</code>），
+            决定扫描哪些目录：<strong>一行一条</strong>，路径只写目录本身（如 <code>/mnt/电影</code>），
             它存在哪种存储上由每行的标签决定（本地文件 / Rclone / 115 网盘）。
             点「按类型添加路径」选好类型再浏览目录，默认就是服务器本地硬盘。
           </p>
@@ -1983,31 +2001,31 @@ function typeLabel(t: string): string {
         <div class="lib-form-foot">
           <span class="lib-form-dirty">
             {{ libFormDirty
-              ? (libFormPathsChanged ? '路径已改：保存后需要重新扫描一次' : '有未保存的改动')
+              ? (libFormPathsChanged ? '路径已改：保存会连带重新扫描一次' : '有未保存的改动')
               : '' }}
           </span>
           <div class="lib-form-foot-btns">
             <el-button :disabled="!libFormDirty" @click="revertForm">还原</el-button>
             <el-button @click="cancelForm">取消</el-button>
+            <!-- 路径改了就把**主**按钮变成「保存并扫描」：以前两个并列按钮摆一起，
+               主按钮还是「保存」，很容易只点它、然后发现扫描没跟着跑 -->
             <el-button
-              v-if="libForm.id && libFormPathsChanged"
+              type="primary"
               :loading="libFormSaving"
-              @click="saveForm(true)"
+              @click="saveForm(!!(libForm.id && libFormPathsChanged))"
             >
-              保存并扫描
-            </el-button>
-            <el-button type="primary" :loading="libFormSaving" @click="saveForm(false)">
-              {{ libForm.id ? '保存' : '创建' }}
+              {{ libForm.id ? (libFormPathsChanged ? '保存并扫描' : '保存') : '创建' }}
             </el-button>
           </div>
         </div>
       </template>
     </el-drawer>
 
-    <!-- 重新刮削：选策略；all 二次确认并提示配额消耗 -->
-    <el-dialog v-model="rescrapeVisible" title="重新刮削" width="420px">
+    <!-- 刷新元数据：选策略；all 二次确认并提示配额消耗 -->
+    <el-dialog v-model="rescrapeVisible" title="刷新元数据" width="420px">
       <p class="drawer-hint">
-        对「{{ rescrapeTarget?.name }}」触发一次重新刮削扫描，策略只覆盖本轮，不改库配置。
+        对「{{ rescrapeTarget?.name }}」里**已有**的条目重新刮削一遍。不会扫描新文件（要发现新片请用「扫描」），
+        策略只覆盖本轮，不改库配置。
       </p>
       <el-radio-group v-model="rescrapePolicy">
         <el-radio-button value="missing_only">仅补缺失</el-radio-button>

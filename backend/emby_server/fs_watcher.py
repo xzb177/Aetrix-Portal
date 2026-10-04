@@ -95,12 +95,87 @@ def local_paths_for_library(library) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))
 
 
+#: FUSE 文件系统类型：这些挂载上**不能**挂 inotify 监听。
+#: rclone mount / sshfs / ntfs-3g 都能通过 ``isdir`` + ``access`` 检查，但 inotify
+#: 在它们上面要么根本收不到事件，要么在遍历时把整个挂载点拖死（内核线程卡在 FUSE
+#: 用户态守护进程上）。所以必须**按文件系统类型**判，不能只看路径存不存在。
+FUSE_FSTYPES = frozenset({
+    "fuse", "fuseblk", "fuse.sshfs", "fuse.rclone", "fuse.rclonefs", "fuse.glusterfs",
+    "fuse.portal", "rclone", "sshfs", "ntfs-3g", "ntfs3", "exfat", "cifs", "smb3",
+    "afpfs", "davfs", "gfs2", "ceph", "9p", "virtiofs",
+})
+
+#: 挂载表缓存：``/proc/self/mountinfo`` 解析一次几毫秒，而 ``is_watchable`` 每建一个
+#: watch 就要调一次。挂载很少变，缓存 60s 足够；容器里重新挂载后最多一分钟内跟上。
+_MOUNTINFO_TTL_SEC = 60.0
+_mountinfo_cache: tuple[float, list[tuple[str, str]]] | None = None
+
+
+def _read_mount_table() -> list[tuple[str, str]]:
+    """``[(挂载点, 文件系统类型), ...]``，按挂载点长度倒序（最长前缀优先匹配）
+
+    读 ``/proc/self/mountinfo``（Debian 上稳定存在）；读不到就返回空表并让调用方
+    **继续按老路走**——拿不到信息不等于“不能监听”，不能因为这个把正常本机目录全降级。
+    """
+    global _mountinfo_cache
+    now = time.monotonic()
+    cached = _mountinfo_cache
+    if cached is not None and now - cached[0] < _MOUNTINFO_TTL_SEC:
+        return cached[1]
+    rows: list[tuple[str, str]] = []
+    try:
+        with open("/proc/self/mountinfo", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                # mountinfo: id parent maj:min root mount_point options... - fstype source super_options
+                try:
+                    left, sep, right = line.partition(" - ")
+                    if not sep:
+                        continue
+                    fstype = right.split(" ", 1)[0].strip()
+                    mount_point = left.split(" ")[4]
+                except (IndexError, ValueError):
+                    continue
+                # 内核把 \040 之类的转义留在挂载点里，解回来才能和真实路径前缀对上
+                mount_point = (
+                    mount_point.replace("\\040", " ")
+                    .replace("\\011", "\t")
+                    .replace("\\012", "\n")
+                    .replace("\\134", "\\")
+                )
+                rows.append((mount_point.rstrip("/") or "/", fstype.lower()))
+    except OSError as exc:
+        logger.debug("读 /proc/self/mountinfo 失败（按「无 FUSE 信息」继续）: %s", exc)
+        rows = []
+    rows.sort(key=lambda item: len(item[0]), reverse=True)
+    _mountinfo_cache = (now, rows)
+    return rows
+
+
+def fstype_of(path: str) -> str:
+    """这个路径所在文件系统的类型；认不出来就返回空串（调用方据此**不要**判成 FUSE）"""
+    best = ""
+    best_len = 0
+    for mount_point, fstype in _read_mount_table():
+        if path == mount_point or path.startswith(mount_point.rstrip("/") + "/"):
+            if len(mount_point) >= best_len:
+                best, best_len = fstype, len(mount_point)
+    return best
+
+
 def is_watchable(path: str) -> tuple[bool, str]:
-    """这个目录能不能监听 → ``(能不能, 不能的原因)``"""
+    """这个目录能不能监听 → ``(能不能, 不能的原因)``
+
+    FUSE / 网络文件系统一律拒掉（v2.46.0）：``isdir`` + ``access`` 在它们上面会返回
+    “一切正常”，而真去 watch 的代价是整个挂载点卡死。这类目录继续由定时扫描 +
+    追新轮询管，不会少入库，只是慢一点。
+    """
     if not path:
         return False, "路径为空"
     if not path.startswith("/"):
         return False, "不是绝对路径"
+    fstype = fstype_of(path)
+    if fstype and fstype in FUSE_FSTYPES:
+        return False, f"{fstype} 挂载不支持实时监听（已降级为定时扫描）"
     if not os.path.isdir(path):
         return False, "目录不存在或不可读"
     if not os.access(path, os.R_OK):
@@ -229,21 +304,28 @@ def sync_from_db() -> dict:
     """按库里**当前**的启用媒体库重建监听（启动时调一次；之后可重复调）
 
     不写死任何路径：每次都以数据库里启用的库为准，路径改了再调一次就跟着变。
+
+    **排除清单与追新用同一套语义**（v2.46.0）：被排除的库既不进追新轮询，也不被
+    inotify 监听。之前这里只看 ``is_enabled``/``fs_watch``，于是“已排除追新”的库
+    仍然会因为本机文件变动被触发增量扫描——用户关掉的东西还在后台跑。
     """
     status = {"watched": 0, "degraded": 0, "dirs": 0, "available": WATCHDOG_AVAILABLE}
     if not WATCHDOG_AVAILABLE:
         return status
     try:
         from backend.database import SessionLocal
+        from backend.emby_server import change_watcher
         from backend.emby_server import models as em
 
         db = SessionLocal()
         try:
+            # 与追新共用同一个解析函数（含旧包含清单的一次性迁移），不自己再写一套
+            excluded = set(change_watcher.resolve_excluded(db))
             libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()
             wanted = {
                 lib.id: local_paths_for_library(lib)
                 for lib in libs
-                if getattr(lib, "fs_watch", True) is not False
+                if getattr(lib, "fs_watch", True) is not False and lib.id not in excluded
             }
         finally:
             db.close()

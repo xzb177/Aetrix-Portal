@@ -75,8 +75,53 @@ SQL_IN_CHUNK = 200
 # 实测十万条目：每批 400 条 2.1s → 每批 5000 条 0.6s（稳定库还有更快的快速路径，见下）。
 CLEANUP_BATCH = max(20, int(os.getenv("SCAN_CLEANUP_BATCH", "5000") or 5000))
 
+# ==================== 删除保护（v2.46.0）====================
+# 事故形状：「挂载断开 → 底层空目录还在 → 本轮扫描看到 0 个文件 → 清理阶段把整库删了」。
+# ``failed_roots`` 挡不住这种（目录还在，只是空的），所以再加两道：
+# 1) **零结果**：一个文件都没看到，但库里有条目 —— 直接不删。一次判断就能兜住事故主体。
+# 2) **数量阈值**：本轮删掉的量超过库内条目数的这个比例（或绝对数），就认为不对劲。
+REMOVAL_MIN_SEEN = 1
+#: 比例阈值：删掉超过库内文件类条目的这个比例就停手（0.5 = 一半以上全没了）
+REMOVAL_MAX_RATIO = float(os.getenv("SCAN_REMOVAL_MAX_RATIO", "0.5") or 0.5)
+#: 绝对阈值：小库也要有下限保护（库里总共就 10 条，删 6 条就已经是“全没了”）
+REMOVAL_MAX_ABSOLUTE = max(1, int(os.getenv("SCAN_REMOVAL_MAX_ABSOLUTE", "20") or 20))
+
+
+def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, int]:
+    """能不能开始清理 → ``(能不能, 不能的原因, 库内文件类条目数)``
+
+    只做计数（走索引），O(1) 次查询；不做任何删除。
+    """
+    total = int(db.execute(
+        text(
+            "SELECT COUNT(*) FROM emby_items "
+            "WHERE library_id = :lib AND item_type IN ('movie', 'episode')"
+        ),
+        {"lib": library.id},
+    ).scalar() or 0)
+    if total <= 0:
+        return True, "", 0                      # 本来就没有文件类条目，清不清都一样
+    seen = len(seen_guids)
+    if seen < REMOVAL_MIN_SEEN:
+        return False, (
+            f"本轮一个文件都没看到，但库里有 {total} 条文件类条目——"
+            f"这正是「挂载断了底层空目录还在」的事故形状，本轮禁止清理"
+        ), total
+    # 剩下要删的至多 total 条；超过阈值就说明来源多半整体读不到了
+    limit = max(REMOVAL_MAX_ABSOLUTE, int(total * REMOVAL_MAX_RATIO))
+    if total - seen >= limit:
+        return False, (
+            f"本轮只看到 {seen} 个文件，库里有 {total} 条，预计要删 {total - seen} 条"
+            f"（阈值 {limit}）——超过阈值，判定来源整体不可用，本轮禁止清理"
+        ), total
+    return True, "", total
+
 # 上一次清理阶段的决策（健康检查与测试用：有没有走快速路径、走过多少条、耗时）
-_CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0}
+_CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0,
+                       # skipped = 删除保护拦下了本轮清理的原因（空串 = 没拦）
+                       # 调用点用 .get("skipped") 读，所以这个键**必须一开始就存在**，
+                       # 否则读出来恒为空、“被拦了”这件事就永远传不到接口/前端。
+                       "skipped": ""}
 
 # ==================== 扫描限速（播放优先）====================
 # 扫描跑在 API 进程的后台线程里，而 POSIX 的 nice 是**进程级**的：直接给本进程降优先级，
@@ -2409,7 +2454,8 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     """
     global _CLEANUP_LAST
     started = time.perf_counter()
-    _CLEANUP_LAST = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0}
+    _CLEANUP_LAST = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0,
+                     "skipped": ""}
     if _no_removals_possible(db, library, seen_guids):
         elapsed = (time.perf_counter() - started) * 1000
         _CLEANUP_LAST.update(fast_path=True, elapsed_ms=elapsed)
@@ -2417,6 +2463,13 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
             "清理阶段：%d 个文件与库内条目一一对应，无需遍历整库（%.0f ms）",
             len(seen_guids), elapsed,
         )
+        return 0
+    # 删除保护：先过预算，再开始删（预算不够则一条都不删）
+    allowed, why, _total = _removal_budget(db, library, seen_guids)
+    if not allowed:
+        _CLEANUP_LAST.update(skipped=why, walked=0, removed=0,
+                             elapsed_ms=(time.perf_counter() - started) * 1000)
+        logger.error("清理阶段已中止（删除保护）：%s", why)
         return 0
     removed = 0
     walked = 0
@@ -3253,6 +3306,11 @@ def _scan_library_body(db: Session, library: emby_models.Library,
     else:
         # 移除已不存在的文件条目（电影/集）；series/season 无实体文件，仅在没有子条目时清理
         stats["removed"] += _remove_missing_items(db, library, seen_guids)
+        # 删除保护触发过就把原因写进本轮 stats：接口/前端能看出“本轮没删任何东西是因为被拦了”，
+        # 而不是以为“库里本来就空”（日志有了，但排障时看不到的是这个）
+        if _CLEANUP_LAST.get("skipped"):
+            stats["removal_guard"] = _CLEANUP_LAST["skipped"]
+            stats["removal_skipped"] = True
 
     library.item_count = db.query(emby_models.MediaItem).filter(
         emby_models.MediaItem.library_id == library.id,

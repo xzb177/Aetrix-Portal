@@ -557,9 +557,22 @@ async function save() {
     const res = editingId.value
       ? await updateServer(editingId.value, payload)
       : await createServer(payload)
+    // 新建时也能直接粘 rclone.conf（v2.46.0）：拿到服务器 ID 后顺手写入，
+    // 不用先保存、再打开一次、再粘一遍。写失败只提示，不推翻服务器已建成功的事实。
+    let rcloneNote = ''
+    const pendingRclone = rcloneConf.value.trim()
+    if (pendingRclone && res.server?.id) {
+      try {
+        const rc = await saveServerRcloneConf(res.server.id, pendingRclone)
+        rcloneConf.value = ''
+        rcloneNote = `，已同时写入 rclone.conf（${rc.total} 个 remote）`
+      } catch {
+        rcloneNote = '，但 rclone.conf 写入失败（服务器已建好，可重新编辑这台服务器补填）'
+      }
+    }
     res.probe?.ok
-      ? ElMessage.success('已保存，连接正常')
-      : ElMessage.warning(res.probe?.message || '已保存，但连接失败：请检查地址与凭据')
+      ? ElMessage.success(`已保存，连接正常${rcloneNote}`)
+      : ElMessage.warning(`${res.probe?.message || '已保存，但连接失败：请检查地址与凭据'}${rcloneNote}`)
     dialogVisible.value = false
     await load()
   } catch {
@@ -1194,7 +1207,7 @@ const opsLastScan = ref<{
               type="textarea"
               :rows="7"
               placeholder="[gdrive]&#10;type = drive&#10;token = …&#10;&#10;[onedrive]&#10;type = onedrive"
-              :disabled="!editingId"
+              :disabled="false"
             />
             <p class="field-help">
               粘 <code>rclone config</code> 生成的 INI 文本，落盘到
@@ -1202,7 +1215,7 @@ const opsLastScan = ref<{
               <code>--config</code>。面板不代管凭据，也不回显原文——要改就重新粘一份覆盖。
             </p>
             <p v-if="!editingId" class="field-help">
-              先保存这台服务器，拿到 ID 后才能粘贴配置（每台一份，需要按服务器分别保存）。
+              现在可以直接粘：点下方「创建」时会连同服务器一起写入，不用先保存再回来。
             </p>
             <div class="rclone-row">
               <el-button
