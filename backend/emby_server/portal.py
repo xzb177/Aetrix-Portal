@@ -1086,6 +1086,8 @@ class LibraryCreate(BaseModel):
     cover_template: str | None = None
     cover_title: str | None = None
     cover_subtitle: str | None = None
+    # 新片入库后自动重生成封面（默认关）
+    cover_auto_regen: bool = False
 
 
 class LibraryUpdate(BaseModel):
@@ -1104,6 +1106,7 @@ class LibraryUpdate(BaseModel):
     cover_template: str | None = None
     cover_title: str | None = None
     cover_subtitle: str | None = None
+    cover_auto_regen: bool | None = None
 
 
 def _validate_library_sources(db: Session, paths: list[str], mount_ids: list[int]) -> None:
@@ -1277,6 +1280,11 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "is_virtual": bool(getattr(lib, "is_virtual", False)),
             "platform": lib.platform,
             "cover_url": f"/api/admin/emby/libraries/{lib.id}/cover" if lib.cover_path else None,
+            # 封面配置：样式回显 + “新片入库后自动更新”开关（老库没这列时按关闭处理）
+            "cover_template": lib.cover_template,
+            "cover_title": lib.cover_title,
+            "cover_subtitle": lib.cover_subtitle,
+            "cover_auto_regen": bool(getattr(lib, "cover_auto_regen", False)),
             "account_115_id": getattr(lib, "account_115_id", None),
             "last_scan_at": lib.last_scan_at.isoformat() if lib.last_scan_at else None,
             # 最近一次扫描的结果：新增/更新/删除多少、哪些来源读不到、有没有异常
@@ -1344,6 +1352,7 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         realm_id=realm_id, node_id=node_id,
         cover_template=req.cover_template, cover_title=req.cover_title,
         cover_subtitle=req.cover_subtitle,
+        cover_auto_regen=bool(req.cover_auto_regen),
     )
     db.add(lib)
     db.commit()
@@ -1480,6 +1489,10 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
         lib.cover_title = req.cover_title or None
     if "cover_subtitle" in req.model_fields_set:
         lib.cover_subtitle = req.cover_subtitle or None
+    if "cover_auto_regen" in req.model_fields_set:
+        # 没选封面样式时这个开关是空转的，但不拦着存：扫描侧的 _cover_autogen_after_scan
+        # 会自己跳过（没有可复用的样式，重画必然失败），没必要为此拒绝保存整个表单
+        lib.cover_auto_regen = bool(req.cover_auto_regen)
     if "account_115_id" in req.model_fields_set:
         # 允许显式解绑（传 null）
         lib.account_115_id = req.account_115_id

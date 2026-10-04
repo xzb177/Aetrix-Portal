@@ -1058,6 +1058,11 @@ export interface EmbyLibrary {
   cover_template?: 'poster' | 'visual' | 'filmstrip' | null
   cover_title?: string | null
   cover_subtitle?: string | null
+  /**
+   * 新片入库后自动重新生成封面（v2.43.1）：扫完一轮且确实有新增条目时，按当前模板重拼一次。
+   * 没有封面模板时这个开关是空转的（后端会自己跳过）。
+   */
+  cover_auto_regen?: boolean
   is_enabled: boolean
   is_scanning: boolean
   /**

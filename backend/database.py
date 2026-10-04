@@ -445,6 +445,8 @@ def _auto_migrate():
             # 标题/副标题支持 {library} {type} {year} 三个变量，只渲染纯文本
             ("cover_title", "VARCHAR(100)", "NULL"),
             ("cover_subtitle", "VARCHAR(100)", "NULL"),
+            # v2.43.1 新片入库后自动重生成封面；老库补列后为 0（关闭），行为与升级前一致
+            ("cover_auto_regen", "BOOLEAN", "0"),
         ]),
         # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
         ("remote_servers", [

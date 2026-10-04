@@ -866,6 +866,8 @@ export const createLibrary = (data: {
   cover_template?: 'poster' | 'visual' | 'filmstrip' | null
   cover_title?: string | null
   cover_subtitle?: string | null
+  /** 新片入库后自动重生成封面；不传 = 关 */
+  cover_auto_regen?: boolean
 }) => post<{ success: boolean; id: number; guid: string }>(`${E}/libraries`, data)
 
 export const updateLibrary = (
@@ -890,6 +892,8 @@ export const updateLibrary = (
     cover_template?: 'poster' | 'visual' | 'filmstrip' | null
     cover_title?: string | null
     cover_subtitle?: string | null
+    /** 新片入库后自动重生成封面；传 false = 关，省略则不修改 */
+    cover_auto_regen?: boolean
   }
 ) => put<{ success: boolean; rescan_required?: boolean }>(`${E}/libraries/${id}`, data)
 

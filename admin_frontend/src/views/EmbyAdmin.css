@@ -283,6 +283,13 @@
   line-height: 1.5;
 }
 
+/* 封面“自动更新”开关：与样式下拉隔开一点，不然会被当成下拉的一部分 */
+.cover-autogen {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
 /* 媒体路径：默认只展示列表，“高级前缀路径”收在折叠块里（绝大多数人用不到） */
 .lpm-advanced {
   margin-top: 10px;
