@@ -65,6 +65,8 @@ services:
     volumes:
       - aetrix_data:/data
       - ${MEDIA_ROOT:-./media}:/media:ro
+      - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
+      - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
       # rw：后台粘贴的 rclone.conf 写在这里（.conf 里含 token/secret，故权限收紧为 600）
       - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
       # ro：你的 rclone.conf 里写了 service_account_file 时指向它（面板不再代管）
@@ -141,111 +143,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # rclone RC：把 remote 定义接进 Aetrix「存储挂载」，凭据只放在挂载卷里
-  # 默认不启动（按需启用）：只有挂载类型选了 rclone 时才需要它。
-  #   默认：docker compose up -d          → 4 容器（api + web + postgres + redis）
-  #   启用：docker compose --profile rclone up -d → 6 容器（+ rclone + rclone-serve）
-  rclone:
-    profiles: ["rclone"]
-    image: rclone/rclone:1.71.1
-    container_name: aetrix-rclone
-    restart: unless-stopped
-    command:
-      - rcd
-      - --rc-serve
-      - --rc-addr=0.0.0.0:5572
-      - --rc-user=${RCLONE_RC_USER:?请在 .env 设置 RCLONE_RC_USER}
-      - --rc-pass=${RCLONE_RC_PASS:?请在 .env 设置 RCLONE_RC_PASS}
-    environment:
-      # Go 堆内存上限（安全阀，不是调优）：
-      # 实测 rcd 在持续 RC 调用（扫描列目录）下堆会涨到 2.6GB（23M live objects，
-      # 强制 GC 只能回收约 2%），说明是 rclone 内部累积而非可 GC 的垃圾。
-      # GOMEMLIMIT 降不下来这部分，只能防止它继续涨爆整机内存。
-      # 真正的根治是第二步：Drive 走 SA 池直调 API，彻底不用 rcd（见 PR 描述）。
-      - GOMEMLIMIT=${RCLONE_RCD_GOMEMLIMIT:-4GiB}
-    # 配置目录要可写：rclone 刷新 OAuth token / 写回 remote 状态时需要落盘，
-    # 只读挂载会出现 "Failed to save config ... read-only file system"，
-    # 表面能读，实际 token 一过期就再也续不回来。
-    volumes:
-      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
-      # 服务账号（Google Drive 团队盘常用）：remote 里写
-      # ``service_account_file = /sa-accounts/<name>.json``，这里把宿主机目录挂进去。
-      # 未配置时用同一个默认目录；目录不存在也不影响启动（rclone 不会主动去读）。
-      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts:ro
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 5572 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-
-  # rclone 取流服务（数据面）：与上面的 rcd（控制面）配套，**必须**开 VFS 缓存。
-  #
-  # 为什么不用 rcd 取流：rcd --rc-serve 走 operations.OpenFile，**不经过 VFS 层**，
-  # 而 VFS 缓存只挂在 VFS 上。rclone 1.71.1 的 rcd 连 --vfs-cache-mode 这个 flag
-  # 都没有（实测 `rcd --help | grep -c vfs-cache-mode` → 0），
-  # 所以经 rcd 取的每一个 Range 请求都是冷读。
-  #
-  # 为什么要分两个容器而不是在一个容器里跑两个进程：各自独立健康检查与重启策略，
-  # 不用 supervisor/后台化那套（信号处理、僵尸进程都会出问题），配置也更清楚。
-  rclone-serve:
-    profiles: ["rclone"]
-    image: rclone/rclone:1.71.1
-    container_name: aetrix-rclone-serve
-    restart: unless-stopped
-    # remote 名硬编码为 MP：面板里那个 rclone 挂载用的就是它。
-    # 换 remote 时这里与挂载配置里的 fs 要一起改。
-    command:
-      - serve
-      - http
-      - ${RCLONE_SERVE_REMOTE:-MP:}
-      - --addr=0.0.0.0:8080
-      # 与 rcd 用同一套 RC 凭据；Aetrix 取流时带同样的 Basic 认证
-      - --user=${RCLONE_RC_USER:?请在 .env 设置 RCLONE_RC_USER}
-      - --pass=${RCLONE_RC_PASS:?请在 .env 设置 RCLONE_RC_PASS}
-      # ---- 关键：VFS 缓存 ----
-      # full：读写都缓存。Drive 每次 Range 读有约 1.2 秒固定往返
-      # （实测 1MB=1.3s、32MB=1.9s，带宽本身有 17MB/s 不差），
-      # 播放器的探测与续读全是小 Range，每次都吃这段延迟。
-      # 开缓存后读过的区间落本地，重复读从 1.2s 降到毫秒级（实测 2ms）。
-      - --vfs-cache-mode=full
-      # 限额必须给死：这台机器磁盘有限，而单个 4K 电影就 17GB。
-      # min-free-space 是兜底：剩余低于它就停止继续写入缓存（宁可不缓存也不能撑爆盘）。
-      # 默认值从 8G 降到 2G：这是**磁盘**缓存上限；实测它只在回退代理
-      # 播放时才被用到（正常走 Drive 302 直链），2G 足够覆盖回退场景。
-      - --vfs-cache-max-size=${RCLONE_VFS_CACHE_MAX_SIZE:-2G}
-      - --vfs-cache-min-free-space=${RCLONE_VFS_CACHE_MIN_FREE:-5G}
-      # 预读块：决定一次回源拉多少。32M 对 4K 码率够用，又不至于让小文件浪费。
-      - --vfs-read-chunk-size=32M
-      # 单文件内存预读上限：每个打开的文件最多在内存里攒这么多，256M→128M。
-      # 并发回退流一多，256M/文件很容易把内存吃光。
-      - --vfs-read-chunk-size-limit=${RCLONE_VFS_READ_CHUNK_LIMIT:-128M}
-      # 缓存目录：rclone **没有** --vfs-cache-dir 这个 flag，VFS 缓存放在
-      # 全局 --cache-dir 下的 vfs/ 子目录。写成 --vfs-cache-dir 会直接
-      # Fatal error: unknown flag，容器起不来（已实测）。
-      - --cache-dir=/config/rclone
-      - --dir-cache-time=24h
-      # 纯只读用途，关掉这两项省掉一次目录 stat
-      - --no-modtime
-      - --no-check-certificate
-    volumes:
-      # 与 rcd 同一份 rclone.conf（服务账号路径、team_drive 都在里面）
-      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
-      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts:ro
-    # 探 TCP 端口，不要探 HTTP 路径：serve http 配了 --user/--pass，
-    # 无凭据请求一律 401（那是**期望行为**，不是故障），拿它当健康标准会永远
-    # unhealthy。也刻意不去 poll Drive 列目录——每 30 秒一次纯属烧配额。
-    # 与上面 rclone 服务的探针保持一致。
-    healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
-    depends_on:
-      rclone:
-        condition: service_started
 
 volumes:
   aetrix_data:
