@@ -1847,8 +1847,8 @@ def _is_unique_violation(exc: IntegrityError) -> bool:
             or "UNIQUE constraint" in text_)
 
 
-def _claim_guid(db: Session, guid: str, library_id: int, defaults: dict) -> bool:
-    """原子地「占位」一个 guid，返回 True = 这次 INSERT 真的插进去了
+def _claim_guid(db: Session, guid: str, library_id: int, defaults: dict) -> Optional[int]:
+    """原子地「占位」一个 guid，返回 ID = 这次 INSERT 真的插进去了（None = 没抢到）
 
     占位行就是最终那一行——调用方随后用 ``_resolve_conflict`` 把它查回来当 ORM
     对象继续填字段，**不要**再 ``db.add`` 一个同 guid 的新对象（那等于自己撞自己）。
@@ -1877,8 +1877,10 @@ def _claim_guid(db: Session, guid: str, library_id: int, defaults: dict) -> bool
         from sqlalchemy.dialects.postgresql import insert as _pg_insert
         stmt = _pg_insert(MI).values(guid=guid, library_id=library_id, **defaults)
         stmt = stmt.on_conflict_do_nothing(index_elements=["guid"])
-        # RETURNING 只在真的插进去时才有行 —— 这是「我是不是赢家」的判据
-        return db.execute(stmt.returning(MI.id)).first() is not None
+        # RETURNING 只在真的插进去时才有行 —— 返回 ID（None = 没抢到）
+        # v2.48.2: 返回 ID 而不是 True/False，避免调用方再查一次
+        row = db.execute(stmt.returning(MI.id)).first()
+        return row[0] if row else None
 
     # SQLite / MySQL：INSERT OR IGNORE / INSERT IGNORE，rowcount 为 0 即冲突
     if db.bind is not None and db.bind.dialect.name == "mysql":
@@ -1890,7 +1892,10 @@ def _claim_guid(db: Session, guid: str, library_id: int, defaults: dict) -> bool
         stmt = _lite_insert(MI).values(guid=guid, library_id=library_id, **defaults)
         stmt = stmt.on_conflict_do_nothing(index_elements=["guid"])
     res = db.execute(stmt)
-    return (res.rowcount or 0) > 0
+    if (res.rowcount or 0) > 0:
+        # 插进去了，取 ID（SQLite/MySQL 没有 RETURNING，用 lastrowid）
+        return res.lastrowid
+    return None
 
 
 def _resolve_conflict(db: Session, guid: str) -> Any:
@@ -3150,12 +3155,18 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         # 就取回别人那行。两条路径最后都拿到一个「已在库里」的
                         # ORM 对象，下面那套字段赋值共用——注意占位成功后
                         # **不能再 db.add 一个同 guid 的新对象**，那才是自己撞自己。
-                        won = _claim_guid(db, guid, ctx.lib_id, {
+                        claimed_id = _claim_guid(db, guid, ctx.lib_id, {
                             "item_type": _pending.item_type,
                             "name": parsed["name"],
                             "file_path": full_path,
                         })
-                        item = _resolve_conflict(db, guid)
+                        won = claimed_id is not None
+                        if won:
+                            # 自己抢到的：用 ID 直接取（identity map 命中，无额外查询）
+                            # v2.48.2: 避免 _resolve_conflict 的额外 SELECT
+                            item = db.get(emby_models.MediaItem, claimed_id)
+                        else:
+                            item = _resolve_conflict(db, guid)
                         if item is None:
                             # 占位行在别的未提交事务里，本事务看不到它。
                             # 只能退回等价的纯内存处理：本批跳过这个文件，
