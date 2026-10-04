@@ -269,6 +269,20 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动本地缓存 worker 失败（可忽略）: {e}")
 
+        # 本机目录实时监听（v2.46.0）：必须在这里也起一次。
+        # main.py 里的同一段包在 `if not _is_api_role` 里，而 run_all.py 会把 serve.py
+        # 子进程改写成 AETRIX_ROLE=api —— API 进程整块跳过、后台任务只由本进程承担。
+        # 漏掉这一行 = 生产的 inotify 从来没启动过（新片只能等定时扫描）。
+        try:
+            from backend.emby_server import fs_watcher
+            if fs_watcher.start_fs_watcher():
+                started.append("fs_watcher")
+                logger.info("✅ 本机目录实时监听已启动")
+            else:
+                logger.info("本机目录实时监听未启用，已降级为定时扫描")
+        except Exception as e:
+            logger.warning(f"启动目录监听失败（已降级为定时扫描）: {e}")
+
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
             from backend.emby_server import scan_queue

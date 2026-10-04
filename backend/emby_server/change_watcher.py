@@ -120,18 +120,14 @@ def _parse_interval(raw: str) -> int:
 def _library_local_paths(library, db: Session) -> list[str]:
     """获取库的本机可读路径（local 类型挂载 + paths 里的本机目录）"""
     paths = []
-    # paths 里的本机目录（非 mount:// 开头）
-    for raw in (getattr(library, "paths", "") or "").split(","):
-        p = raw.strip()
-        if p and not p.startswith("mount://") and os.path.isdir(p):
+    # paths 里的本机目录（非 mount:// 开头）——走 mounts 的统一拆法（全角逗号/去空/去重）
+    for p in mount_lib.split_library_paths(getattr(library, "paths", "")):
+        if not p.startswith("mount://") and os.path.isdir(p):
             paths.append(p)
     # mount_ids 引用的 local 类型挂载
     # 注意：按 AGENTS.md 教训，paths 用 mount://子目录时 mount_ids 应为空
     # 这里只处理 mount_ids 指向的 local 挂载的根
-    try:
-        mount_ids = [int(x.strip()) for x in (getattr(library, "mount_ids", "") or "").split(",") if x.strip().isdigit()]
-    except (ValueError, AttributeError):
-        mount_ids = []
+    mount_ids = mount_lib.parse_mount_ids(library)
     if mount_ids:
         mounts = db.query(em.StorageMount).filter(em.StorageMount.id.in_(mount_ids)).all()
         for m in mounts:
@@ -153,8 +149,8 @@ def _library_mount_sources(library, db: Session) -> list[tuple[int, str]]:
     last_check 在更新，却永远发现不了新资源。
     """
     sources: list[tuple[int, str]] = []
-    raw_paths = [p.strip() for p in (getattr(library, "paths", "") or "").split(",") if p.strip()]
-    for p in raw_paths:
+    # 与扫描/监听同一个拆法（mounts.split_library_paths），不再自己 split(",")
+    for p in mount_lib.split_library_paths(getattr(library, "paths", "")):
         if not p.startswith(MOUNT_PATH_PREFIX):
             continue
         rest = p[len(MOUNT_PATH_PREFIX):]
@@ -337,20 +333,17 @@ def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
 
 #: 库 id 的合理上限（SQLite/PG 的主键都是 64 位整数）。粘进来的超长数字串直接丢掉，
 #: 不让它在配置里越攒越长
-_MAX_LIBRARY_ID = 2 ** 63 - 1
+_MAX_LIBRARY_ID = mount_lib.MAX_ID_VALUE
 
 
 def _parse_ids(raw) -> list[int]:
-    """把 "1,2,  3" 这种字串解析成去重后的整数列表（脏值忽略，不报错）"""
-    out: list[int] = []
-    for part in str(raw or "").replace("，", ",").split(","):
-        part = part.strip()
-        if not part.isdigit():
-            continue
-        value = int(part)
-        if 0 < value <= _MAX_LIBRARY_ID and value not in out:
-            out.append(value)
-    return out
+    """把 "1,2,  3" 这种字串解析成去重后的整数列表（脏值忽略，不报错）
+
+    转发给 ``mounts.parse_id_list``（v2.46.0）：追新配置与 ``Library.mount_ids``
+    必须是同一个解析口，否则同一串 id 在两处可能解出不同结果——追新决定谁被监听，
+    扫描决定扫哪里，两边不一致就是“界面说在听、实际没扫”。
+    """
+    return mount_lib.parse_id_list(raw)
 
 
 def _enabled_library_ids(db: Session) -> list[int]:
@@ -483,6 +476,15 @@ def save_config(db: Session, enabled: bool, interval: int,
     _set_config(db, CONFIG_LIBRARIES, "")
     logger.info("[chase-new] 配置已保存: enabled=%s interval=%d excluded=%s",
                 enabled, minutes, ",".join(str(i) for i in ids))
+    # 排除清单同时管着 inotify（v2.46.0 起两边同语义），所以改完要立即重建监听，
+    # 否则被排除的库还要等容器重启才真的停下来。重建走 sync_from_db() 内部幂等：
+    # 差异对比 + unschedule/schedule，不会因为反复调而叠出第二个 observer。
+    try:
+        from backend.emby_server import fs_watcher
+
+        fs_watcher.sync_from_db()
+    except Exception:  # noqa: BLE001 — 刷新监听失败不影响配置已保存的事实
+        logger.warning("[chase-new] 刷新实时监听失败（配置已保存，重启后自愈）", exc_info=True)
     return get_config(db)
 
 

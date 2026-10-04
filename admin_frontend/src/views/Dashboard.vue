@@ -161,17 +161,24 @@ const scanSummary = computed(() => {
  *
  * 「被媒体库绑定、但播放节点（EA）够不着」是唯一阻断播放的一种，单独点出来。
  */
+/** 存储卡改看**本机目录可读性**（v2.46.0）
+
+之前这里看的是 EA 可达性（旧的挂载体检状态），但面板自己真正会因挂载断掉而扫不到的是
+本机路径：那个路径在容器里读不到，扫描就会把它当成“来源没了”。所以改成按库的本机目录
+判：ok=能列举 / false=有路径读不到 / null=纯远程或没配本机路径，不参与判定。
+ */
 const mountSummary = computed(() => {
-  const list = mounts.value.filter((m) => m.is_enabled)
-  const reach = (m: StorageMount) => (m.em_reachable === null ? m.last_check_ok : m.em_reachable)
-  const failed = list.filter((m) => reach(m) === false)
+  const libs = libraries.value.filter((l) => !l.is_virtual)
+  const local = libs.filter((l) => l.local_dirs_readable !== null)
+  const failed = local.filter((l) => l.local_dirs_readable === false)
   return {
-    total: mounts.value.length,
-    ok: list.filter((m) => reach(m) === true).length,
+    total: libs.length,
+    ok: local.filter((l) => l.local_dirs_readable === true).length,
     failed: failed.length,
-    unchecked: list.filter((m) => reach(m) === null).length,
-    blocked: list.filter((m) => m.ea_reachable === false && (m.library_ids?.length || 0) > 0).length,
-    failedNames: failed.slice(0, 2).map((m) => m.name).join('、'),
+    unchecked: libs.length - local.length,
+    blocked: libs.filter((l) => (l.local_dirs_readable === false)
+      && (l.path_entries?.length || 0) > 0).length,
+    failedNames: failed.slice(0, 2).map((l) => l.name).join('、'),
     failedMore: failed.length > 2,
   }
 })

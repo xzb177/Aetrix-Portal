@@ -1049,6 +1049,12 @@ export interface EmbyLibrary {
    * 老后端不返回这个字段时回退到 paths —— 所以它是可选的。
    */
   path_entries?: LibraryPathEntry[]
+  /**
+   * 本机目录可读性（v2.46.0，后端真实 scandir 得出）：
+   * true=能列举 / false=有本机路径读不到（挂载断了等）/ null=纯远程来源或没配本机路径。
+   * 纯远程时读不到是正常的，所以置 null 而不是 false。
+   */
+  local_dirs_readable?: boolean | null
   /** 绑定的存储挂载（storage_mounts.id）：本机目录 / STRM / 115 / WebDAV / AList */
   mount_ids: number[]
   /**

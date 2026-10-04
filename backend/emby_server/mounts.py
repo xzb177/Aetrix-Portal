@@ -1338,14 +1338,33 @@ class LibrarySource:
     subpath: str = "/"             # kind=mount 时只扫描挂载下的这个子目录（"/" = 整个挂载）
 
 
-def parse_mount_ids(library) -> list[int]:
-    raw = (getattr(library, "mount_ids", "") or "").replace("，", ",")
+#: 库 id 的合理上限（SQLite/PG 主键都是 64 位整数）：粘进来的超长数字串直接丢掉
+MAX_ID_VALUE = 2 ** 63 - 1
+
+
+def parse_id_list(raw: Any) -> list[int]:
+    """把 ``"1,2,  3"`` 这种字串解析成**去重后的整数列表**（脏值忽略，不报错）
+
+    全仓**唯一**的 id 字串解析口（v2.46.0）：``Library.mount_ids`` 列与追新配置里的
+    排除/包含清单都走它。以前追新自己写了一份，两边对「全角逗号 / 上限 / 去重」的
+    处理并不一致——同一串 id 在两处可能解析出不同结果。
+
+    规则：全角逗号当半角、去空白、非数字丢弃、重复丢弃、超过 64 位上限丢弃。
+    """
     out: list[int] = []
-    for part in raw.split(","):
+    for part in str(raw or "").replace("，", ",").split(","):
         part = part.strip()
-        if part.isdigit() and int(part) not in out:
-            out.append(int(part))
+        if not part.isdigit():
+            continue
+        value = int(part)
+        if 0 < value <= MAX_ID_VALUE and value not in out:
+            out.append(value)
     return out
+
+
+def parse_mount_ids(library) -> list[int]:
+    """库里绑定的挂载 id 列表（``Library.mount_ids`` 列）"""
+    return parse_id_list(getattr(library, "mount_ids", ""))
 
 
 # ==================== 路径与存储后端分离（界面上不出现 mount://）====================

@@ -1273,6 +1273,40 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
     nodes = {n.id: n for n in db.query(models.RemoteServer)
              .filter(models.RemoteServer.kind == "ea").all()}
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    # 本机目录可读性（v2.46.0）：Dashboard 之前看的是 EA 可达性（“旧挂载状态”），
+    # 但面板真正会因挂载断掉而扫不到的是**本机路径**。这里只做真实 stat/列目录，
+    # 不做 os.access 单判；远程来源（mount:// / rclone: / 115:）不归它管，置 null。
+    local_readable: dict = {}
+
+    def _local_read_state(lib) -> dict:
+        from backend.emby_server import fs_watcher
+
+        state = {"ok": None, "missing": [], "denied": [], "remote": False}
+        for raw in mount_lib.split_library_paths(getattr(lib, "paths", "")):
+            if mount_lib.parse_mount_path(raw) is not None or not raw.startswith("/"):
+                state["remote"] = True          # 远程来源：本机读不到是正常的
+                continue
+            # FUSE / 网络盘不在这儿 scandir：一个卡死的挂载点会把**这个列表接口**
+            # 同步拖住（§五验收：API 请求不能被阻塞）。它们由 fs_watcher 与扫描器负责。
+            fstype = fs_watcher.fstype_of(raw)
+            if fstype and fstype in fs_watcher.FUSE_FSTYPES:
+                state["remote"] = True
+                continue
+            try:
+                # 真正列一次目录：只 isdir 会把「挂载断了但空目录还在」判成正常
+                with os.scandir(raw) as it:
+                    next(it, None)
+            except PermissionError:
+                state["denied"].append(raw)
+            except (FileNotFoundError, NotADirectoryError):
+                state["missing"].append(raw)
+            except OSError as exc:               # I/O 错误 / FUSE 挂掉
+                state["denied"].append(f"{raw}（{exc.strerror or exc}）")
+            else:
+                state["ok"] = True
+        if state["missing"]:
+            state["ok"] = False
+        return state
     # 路径回显要靠挂载表把 ``mount://<id>/…`` 还原成「挂载内路径 + 后端标签」（挂载数很少，一次查完）
     mounts_by_id = {m.id: m for m in db.query(em.StorageMount).all()}
     # 播放可达性：库的「归属节点」决定了内容要在哪台机器上真正存在（见 reachability 模块）
@@ -1286,6 +1320,9 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
                 db, lib_realm if lib_realm is not None else scope_id)
         return reach_ctxs[key]
 
+    for _lib in libs:
+        local_readable[_lib.id] = _local_read_state(_lib)
+
     return {"libraries": [
         {
             "id": lib.id, "guid": lib.guid, "name": lib.name,
@@ -1293,6 +1330,8 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             "paths": [p for p in (lib.paths or "").split(",") if p],
             # 简化路径条目：界面用它渲染列表（不带 mount:// 前缀，带存储后端标签）
             "path_entries": mount_lib.library_path_entries(lib, mounts_by_id),
+            # 本机目录可读性（v2.46.0）：ok=可列举 / False=有路径读不到 / null=没有本机路径
+            "local_dirs_readable": local_readable.get(lib.id),
             "mount_ids": mount_lib.parse_mount_ids(lib),
             "is_enabled": lib.is_enabled,
             # 正在扫描以进程内任务为准：数据库标志在进程崩溃后会残留为真
