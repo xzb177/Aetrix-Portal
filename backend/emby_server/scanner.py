@@ -7,7 +7,9 @@ import logging
 import os
 import posixpath
 import re
+import struct
 import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -517,6 +519,26 @@ except ValueError:
     PROBE_REMOTE_RANGE_BYTES = 1 << 20
 
 
+# 第二跳（双 Range）的**尾部**窗口。moov 原子在文件尾的 MP4/MOV，头部窗口读不到时长，
+# 这时才并行再取一段尾巴——只对下面这些容器开，其它封装（MKV 的时长在 EBML 头部）
+# 第一跳就拿到了，别为它们多花流量。
+try:
+    PROBE_REMOTE_TAIL_BYTES = max(1 << 18, int(os.getenv("PROBE_REMOTE_TAIL_BYTES", "2097152")))
+except ValueError:
+    PROBE_REMOTE_TAIL_BYTES = 2 << 20
+
+#: 需要「尾部再读一次」的容器（moov 可能落在文件尾）。
+#: 只收 MP4/MOV 系：Matroska / WebM 的时长写在文件头的 Segment Info 里，
+#: 第一跳 1 MiB 稳定命中，给它们加尾部请求纯属白烧网盘流量与带宽。
+_TAIL_MOOV_CONTAINERS = frozenset({
+    "mp4", "m4v", "m4a", "mov", "qt", "3gp", "3g2", "f4v",
+})
+
+#: 双 Range 抓字节的超时。rclone rc-serve / 云盘直链首字节慢是常态，
+#: 但也别放到和 ffprobe 一样的 90 秒——那是兜底 seek 路径的量级。
+PROBE_HTTP_TIMEOUT = 45.0
+
+
 # ffprobe 错误码翻译：把含糊的底层错误转成可行动的信息
 _FFPROBE_HTTP_ERRORS = {
     403: "远端配额/权限受限 (HTTP 403)——可能是 Google Drive 每日下载配额耗尽，24 小时后自动恢复；或检查 rclone 账号权限",
@@ -545,12 +567,15 @@ def _parse_ffprobe_http_error(stderr: str) -> Optional[int]:
 
 
 def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
-             ranged: bool = True) -> Optional[dict]:
+             ranged: bool = True, local_path: str = "") -> Optional[dict]:
     """ffprobe 提取媒体信息（无 ffprobe 时优雅降级）。
 
     远程直链补一个有限 Range，兼容 rclone rc-serve；本机文件不改变行为。
     ``ranged=False`` 时不注入 Range，让 ffprobe 自己按需 seek（慢速回退路径，
     见 ``probe_metadata``：有限窗口读不到 moov 的容器需要它）。
+    ``local_path`` 非空时改为探测**这个本地文件**（双 Range 拼出来的「头部 + moov」临时文件），
+    完全不碰 Range / ``-headers``——这两项只对 http 协议有效，喂本地文件反而会让
+    ffprobe 报 ``Option headers not found`` 直接失败。
 
     返回的 dict 可能含 `_error` 字段：
     - `_error="quota"`：HTTP 403，远端配额/权限受限
@@ -561,17 +586,19 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
         return None
     # -v error：只输出错误（不用 quiet，否则 403/404 的真实原因被吞掉）
     cmd = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams"]
-    probe_headers = dict(headers or {})
-    if ranged and path.startswith(("http://", "https://")) and not any(
-        str(k).lower() == "range" for k in probe_headers
-    ):
-        total = int(size or 0)
-        end = min(total - 1, PROBE_REMOTE_RANGE_BYTES - 1) if total > 0 else PROBE_REMOTE_RANGE_BYTES - 1
-        probe_headers["Range"] = f"bytes=0-{max(0, end)}"
-    if probe_headers:
-        joined = "".join(f"{k}: {v}\r\n" for k, v in probe_headers.items())
-        cmd += ["-headers", joined]
-    cmd.append(path)
+    target = local_path or path
+    if not local_path:
+        probe_headers = dict(headers or {})
+        if ranged and path.startswith(("http://", "https://")) and not any(
+            str(k).lower() == "range" for k in probe_headers
+        ):
+            total = int(size or 0)
+            end = min(total - 1, PROBE_REMOTE_RANGE_BYTES - 1) if total > 0 else PROBE_REMOTE_RANGE_BYTES - 1
+            probe_headers["Range"] = f"bytes=0-{max(0, end)}"
+        if probe_headers:
+            joined = "".join(f"{k}: {v}\r\n" for k, v in probe_headers.items())
+            cmd += ["-headers", joined]
+    cmd.append(target)
     # 扫描探测让路给播放（见文件头「扫描限速」）：只降这一条子命令，不碰本进程
     cmd = _io_nice_command(cmd)
     try:
@@ -654,6 +681,239 @@ def _mediainfo(path: str, headers: Optional[dict] = None, size: int = 0) -> Opti
         return None
 
 
+# ==================== 第二跳：远程 moov 在尾的双 Range 读取 ====================
+#
+# 背景：第一跳只注入 ``Range: bytes=0-1MiB``，ffprobe 把 206 当成整个文件。mkv 的时长在
+# EBML 头部（第一跳就拿到），但**moov 原子在文件尾**的 mp4/mov 前 1 MiB 里根本没时长，
+# 于是 format 为空。旧做法是「去掉 Range 再探一次」让 ffprobe 自己 seek——它会把整个文件
+# 从头拉到尾，云盘直链上这是几 GB 的流量，2.6 万条文件撞上它就是场灾难。
+#
+# 现在改成：**并行**取两段（前 1 MiB + 后 N MiB），从尾段里把 moov 盒子**摘出来**，
+# 拼成「头部 + moov」的小文件再喂 ffprobe，并把 mdat 的大小改写成恰好在 moov 前结束。
+# 这样 demuxer 读得懂、时长与各轨参数都来自 moov（正确），而落盘只有 1 MiB 出头。
+#
+# 为什么不是「头尾直接首尾相接」：实测（ffmpeg 7.0.2）那样拼出来会报
+# ``moov atom not found`` —— 头部里的 mdat 声明了整个 mdat 的长度，demuxer 跳完它就
+# EOF 了，根本走不到后面接的 moov。改写 mdat 长度是让它「指到 moov」的唯一办法。
+#
+# 为什么不用「按真实偏移回填 + 稀疏文件」：那样 moov 的绝对位置天然正确，但文件逻辑
+# 大小等于原文件。ext4 与 Docker 的 overlayfs 在实测里**不会真的挖洞**（8 GiB 的空洞
+# 实打实占了 8 GiB），一次探测就能把磁盘吃穿。
+
+
+def _mp4_boxes(buf: bytes, base: int = 0, allow_overrun: bool = False):
+    """按 MP4 box 结构逐层遍历顶层盒子，产出 (类型, 绝对起点, 绝对终点, 头长度, 声明大小)。
+
+    ``allow_overrun=True`` 时不因「盒子声明的长度超出缓冲区」而停下。定位 mdat 头必须用
+    这个模式：它的声明长度就是**整个媒体文件的大小**，远大于我们手上的 1 MiB 窗口，
+    严格模式下永远走不到它。
+    """
+    off = 0
+    while off + 8 <= len(buf):
+        size = int.from_bytes(buf[off:off + 4], "big")
+        typ = bytes(buf[off + 4:off + 8])
+        hdr = 8
+        if size == 1:                      # 64 位长度：大文件常见
+            if off + 16 > len(buf):
+                return
+            size = int.from_bytes(buf[off + 8:off + 16], "big")
+            hdr = 16
+        if size == 0:                      # 「一直到文件末尾」
+            size = len(buf) - off
+        if size < hdr:
+            return                          # 非法长度，停止遍历
+        if off + size > len(buf):
+            if not allow_overrun:
+                return                      # 被截断了，停止遍历
+            # 越界盒（就是 mdat）：位置与头长度仍然可信，交给调用方去改写它
+            yield (typ, base + off, base + off + size, hdr, size)
+            return
+        yield (typ, base + off, base + off + size, hdr, size)
+        off += size
+
+
+def _find_moov(buf: bytes, base: int = 0):
+    """在字节里定位 moov 盒子，返回 (绝对起点, 绝对终点)；找不到返回 None。
+
+    不能从 buf[0] 按盒结构往下解析：尾段的起点在 mdat 中间，第一个「盒子」就是乱码，
+    解析会立刻停住。改成搜 ``moov`` 四字节码，再校验它前面那个长度字段站得住脚。
+    """
+    pos = 0
+    while True:
+        hit = buf.find(b"moov", pos)
+        if hit < 0:
+            return None
+        start = hit - 4
+        if start >= 4:
+            size = int.from_bytes(buf[start:start + 4], "big")
+            hdr = 8
+            if size == 1 and start + 16 <= len(buf):
+                size = int.from_bytes(buf[start + 8:start + 16], "big")
+                hdr = 16
+            if size >= hdr and start + size <= len(buf):
+                return (base + start, base + start + size)
+        pos = hit + 4
+
+
+def _mp4_probe_bytes(head: bytes, tail: bytes) -> Optional[bytes]:
+    """「头部 + moov」拼出 ffprobe 能读的小文件；拼不出来返回 None（交给上层回退）。"""
+    span = _find_moov(tail)
+    if not span:
+        return None
+    moov = tail[span[0]:span[1]]
+    body = bytearray(head + moov)
+    moov_at = len(head)
+    for typ, start, _end, hdr, _size in _mp4_boxes(bytes(body), allow_overrun=True):
+        if typ != b"mdat":
+            continue
+        # 把 mdat 的声明长度改成「恰好停在 moov 前」，demuxer 跳过它就能读到 moov
+        new_size = moov_at - start
+        if new_size < 8:
+            return None
+        if hdr == 16 or new_size > 0xFFFFFFFF:
+            struct.pack_into(">I", body, start, 1)
+            struct.pack_into(">Q", body, start + 8, new_size)
+        else:
+            struct.pack_into(">I", body, start, new_size)
+        return bytes(body)
+    return None  # 没有顶层 mdat（分片 mp4 / 非标准封装），别硬拼
+
+
+def _tail_moov_container(path: str, container: str = "") -> bool:
+    """这个文件要不要走尾部再读一次（moov 可能落在文件尾的 MP4/MOV 系）。
+
+    优先用调用方从库里带来的 ``container``（``MediaItem.container``，扫描时写死的），
+    没给就从 URL 的后缀推——远程直链常带 ``?token=`` 之类的查询串，要先剥掉。
+    """
+    name = (container or "").strip().lower().lstrip(".")
+    if not name:
+        bare = path.split("?", 1)[0].split("#", 1)[0]
+        name = posixpath.splitext(bare)[1].lstrip(".").lower()
+    return name in _TAIL_MOOV_CONTAINERS
+
+
+def _http_fetch_range(url: str, headers: Optional[dict], start: int, end: int) -> Optional[bytes]:
+    """按 ``Range: bytes=start-end`` 取一段字节；失败返回 None（不抛）。
+
+    云盘直链有几种不讲理的行为，这里都当正常情况处理：
+    - 206（正常）与 200（**无视 Range 直接回整个文件**）都接受，后者按偏移自己切；
+    - 4xx/5xx 抛出去（403 配额、404 文件没了要在上层翻译成 _error）。
+    """
+    import httpx
+
+    req = {str(k): str(v) for k, v in (headers or {}).items()}
+    req["Range"] = f"bytes={start}-{end}"
+    with httpx.Client(timeout=PROBE_HTTP_TIMEOUT, follow_redirects=True) as client:
+        resp = client.get(url, headers=req)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    body = resp.content or b""
+    if resp.status_code == 206:
+        return body
+    # 200：服务端没认 Range，按我们请求的偏移自己切一刀（长度不够说明拿不全，弃用）
+    return body[start:end + 1] if len(body) >= end + 1 else None
+
+
+def _dual_range_temp_file(path: str, headers: Optional[dict], size: int) -> Optional[str]:
+    """并行取「前 1 MiB + 后 PROBE_REMOTE_TAIL_BYTES」，拼成「头部 + moov」的临时文件。
+
+    返回临时文件路径（调用方负责删），任何一步没成就返回 None。
+    **两个请求是并行的**：先全部 submit 到 2 线程的池子，再逐个取结果——
+    顺序等待等于串行，等于白优化。
+    """
+    total = int(size or 0)
+    if total <= PROBE_REMOTE_RANGE_BYTES:
+        return None  # 文件整个都在头部窗口里，第二跳没意义
+    head_end = min(total - 1, PROBE_REMOTE_RANGE_BYTES - 1)
+    tail_start = max(0, total - PROBE_REMOTE_TAIL_BYTES)
+    if tail_start <= head_end + 1:
+        return None  # 两段已经贴上（乃至重叠），拼出来就是整个文件，不如直接慢速回退
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        # 两个请求都 submit 完再取结果：此刻它们已经在路上，并行。
+        # 谁先返回谁先完成无所谓——顺序等待就是串行，等于白优化。
+        head_future = pool.submit(_http_fetch_range, path, headers, 0, head_end)
+        tail_future = pool.submit(_http_fetch_range, path, headers, tail_start, total - 1)
+        try:
+            head = head_future.result()
+            tail = tail_future.result()
+        except Exception as exc:  # noqa: BLE001 — 抓字节失败只是「这次双 Range 没成」
+            logger.debug("双 Range 抓取失败 %s: %s", path, exc)
+            return None
+    if not head or not tail:
+        logger.debug("双 Range 缺段 %s：head=%s tail=%s",
+                     path, len(head or b""), len(tail or b""))
+        return None
+    payload = _mp4_probe_bytes(head, tail)
+    if not payload:
+        logger.debug("双 Range 拼不出可探的 mp4 %s（尾窗口里没有完整的 moov？）", path)
+        return None
+    suffix = posixpath.splitext(path.split("?", 1)[0])[1][:8] or ".bin"
+    fd, tmp = tempfile.mkstemp(prefix="probe-tail-", suffix=suffix)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+    except OSError as exc:
+        logger.debug("双 Range 写临时文件失败 %s: %s", path, exc)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return None
+    return tmp
+
+
+def _rescale_synthetic_format(data: dict, real_size: int, synth_size: int) -> None:
+    """把 ffprobe 从「合成文件」算出来的容器级数值换算回原文件（就地改）。
+
+    时长与各轨参数（分辨率 / 编码 / 帧率 / 声道）都写在 moov 里，不受拼装影响；
+    但 ``format.bit_rate`` 与 ``format.size`` 是 demuxer 用「文件大小 ÷ 时长」现算的，
+    而我们喂进去的只有 1 MiB 出头。实测差到千分之几（224 MiB 的文件被算成 19 kb/s）。
+    漏掉这一步会把一堆离谱的码率写进库、显示在客户端的「媒体信息」页上。
+    """
+    fmt = data.get("format") or {}
+    if not isinstance(fmt, dict):
+        return
+    if real_size > 0:
+        fmt["size"] = str(real_size)
+    if real_size <= 0 or synth_size <= 0 or synth_size >= real_size:
+        return
+    try:
+        bit_rate = int(fmt.get("bit_rate") or 0)
+    except (TypeError, ValueError):
+        return
+    if bit_rate > 0:
+        fmt["bit_rate"] = int(bit_rate * real_size / synth_size)
+
+
+def _dual_range_probe(path: str, headers: Optional[dict], size: int,
+                      container: str = "") -> Optional[dict]:
+    """第二跳：头尾并行抓 → 拼出「头部 + moov」→ ffprobe。
+
+    拿不到 format 就返回 None，让上层回退到旧的自由 seek 路径（行为不倒退）。
+    """
+    if not _tail_moov_container(path, container):
+        return None
+    # 调用方自己带了 Range（说明它对这条直链另有安排），别插手
+    if any(str(k).lower() == "range" for k in (headers or {})):
+        return None
+    tmp = _dual_range_temp_file(path, headers, size)
+    if not tmp:
+        return None
+    try:
+        data = _ffprobe(path, headers, size=size, local_path=tmp)
+        if data and data.get("format"):
+            try:
+                _rescale_synthetic_format(data, int(size or 0), os.path.getsize(tmp))
+            except OSError:
+                pass
+        return data
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:  # noqa: BLE001 — 临时文件删不掉也不该让探测崩掉
+            logger.debug("双 Range 临时文件删除失败 %s", tmp)
+
+
 # 逐流字段白名单（与 probe_worker._STREAM_COLS 同口径）
 _PROBE_STREAM_COLS = frozenset({
     "stream_index", "stream_type", "codec", "language", "display_title", "title",
@@ -691,10 +951,12 @@ def _bit_depth(stream: dict, tags: dict) -> int:
     return 0
 
 
-def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> dict:
+def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
+                   container: str = "") -> dict:
     """返回 duration_ticks/bitrate/尺寸/编码/轨道信息
 
     ``size`` 是已知的文件大小（远程挂载从目录列表传入），ffprobe 读不到本地文件大小时用它兜底。
+    ``container`` 是调用方从库里带来的容器后缀（``MediaItem.container``）；不给就从 URL 后缀推。
     """
     info: dict = {
         "duration_ticks": 0, "bitrate": 0, "width": 0, "height": 0,
@@ -707,15 +969,24 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0) -> 
     # （Matroska 实测有效）。moov 在文件尾的 MP4/MOV 在前 1 MiB 里根本没有时长，
     # 而我们注入的 Range 又让 ffprobe 把 206 当成整个文件，读到窗口末尾就报
     # "File ended prematurely" → format 为空 → 白白记 degraded（生产 4.3 万条）。
-    # 拿不到 format、且不是明确的 HTTP 错误时，去掉 Range 再探一次（可自由 seek，
-    # ffprobe 自己按需 Range 读取 moov）。只对「窗口确实截断了文件」的条目做，
-    # 避免给本就完整的文件白跑一遍。
+    #
+    # 拿不到 format、且不是明确的 HTTP 错误时，按「速度优先」分两级回退：
+    #   第二跳（mp4/mov 专有）：并行取「头 1 MiB + 尾 2 MiB」拼成等大稀疏文件，
+    #     moov 回到它在原文件里的偏移，ffprobe 直接读得到。流量固定在两个窗口，
+    #     与文件多大无关（8 GB 的片子也只读 3 MiB）。
+    #   第三跳（兜底）：去掉 Range 让 ffprobe 自己按需 seek。这条会把整个文件拉下来，
+    #     所以放在最后，只在双 Range 也失手时才走。
+    # 只对「窗口确实截断了文件」的条目做，避免给本就完整的文件白跑一遍。
     if (remote and (size <= 0 or size > PROBE_REMOTE_RANGE_BYTES)
             and (not data or not data.get("format"))
             and not (data or {}).get("_http_code")):
-        seekable = _ffprobe(path, headers, size=size, ranged=False)
-        if seekable and seekable.get("format"):
-            data = seekable
+        tail_first = _dual_range_probe(path, headers, size, container)
+        if tail_first and tail_first.get("format"):
+            data = tail_first
+        else:
+            seekable = _ffprobe(path, headers, size=size, ranged=False)
+            if seekable and seekable.get("format"):
+                data = seekable
     used_mediainfo = False
     if not data or not data.get("format"):
         # 本机文件再尝试 MediaInfo；远程 URL 不重复发起一次随机读取，

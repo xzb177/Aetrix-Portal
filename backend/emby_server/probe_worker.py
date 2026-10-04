@@ -267,19 +267,27 @@ def reset_stale_probing(db=None) -> int:
 _RETRY_CHUNK = 500
 
 
-def retry_failed(db, limit: int = 5000) -> int:
-    """把 ``failed`` 的探测条目捞回队列，返回拈回数（后台「重试失败探测」用）
+def retry_failed(db, limit: int = 5000, statuses: Optional[tuple] = None) -> int:
+    """把探测失败/降级的条目捞回队列，返回拈回数（后台「重试失败探测」用）
 
     为什么需要它：v2.42.14 之前「ffprobe 跑完但没时长」被判成失败，
     生产里已经堆了几万条这类 ``failed``（实测 2.6 万，93% 在 MoviePilot 目录）。
     修正分类只阻止**新增**，存量行还得有人拉回来。
 
-    只拈 ``failed``（真正的终态失败），不动 done / degraded / probed_no_duration
+    默认只拈 ``failed``（真正的终态失败），不动 done / degraded / probed_no_duration
     —— 后三者本来就是「已探完」的状态，重探它们只是白烧 ffprobe 与云盘配额。
     按 id 升序取，避免每次都从同一批开始。
+
+    ``statuses`` 是 v2.42.16 加的口子：**探测手段变了就需要把旧结论重新跑一遍**。
+    双 Range 头尾读取（能读到 moov 在尾的 mp4/mov）上线时，已经被标成
+    ``probed_no_duration`` / ``degraded`` 的那批也得重探——否则它们会永远停在
+    「没时长」的旧结论上，明明新逻辑能拿到。显式传参才生效，默认行为不变。
     """
+    wanted = tuple(s for s in (statuses or ("failed",)) if s)
+    if not wanted:
+        return 0
     rows = (db.query(em.MediaItem.id)
-            .filter(em.MediaItem.probe_status == "failed")
+            .filter(em.MediaItem.probe_status.in_(wanted))
             .order_by(em.MediaItem.id)
             .limit(max(1, int(limit)))
             .all())
@@ -296,7 +304,7 @@ def retry_failed(db, limit: int = 5000) -> int:
             synchronize_session=False,
         )
     db.commit()
-    logger.info("重试失败探测：%d 条重新入队", len(ids))
+    logger.info("重试失败探测：%d 条重新入队（状态=%s）", len(ids), ",".join(wanted))
     return len(ids)
 
 
@@ -498,7 +506,10 @@ def _probe_one(item_id: int) -> str:
             if breaker_is_tripped():
                 return "paused_quota"
             target = resolve_play_target(item.file_path, db)
-            info = probe_metadata(target.value, target.headers, size=item.size or 0)
+            # container 一并传下去：扫描时写库的容器比 URL 后缀可靠（直链常带 ?token=，
+            # 且扩展名可能骗人），而它决定要不要走「尾部再读一次」的双 Range。
+            info = probe_metadata(target.value, target.headers, size=item.size or 0,
+                                  container=getattr(item, "container", "") or "")
             # 检查是否 403，更新熔断器（语义分离：记录 vs 只读检查）
             is_403 = bool(info and info.get("_error") == "quota")
             if is_403:

@@ -51,6 +51,12 @@
 | `SCAN_INCREMENTAL` | `1` | 目录指纹增量扫描（置 `0` 回到「每次全量处理」的旧行为） |
 | `SCAN_CLEANUP_BATCH` | `5000` | 清理阶段每批读多少条目（不碰 IO，批越大越省往返） |
 | `SCAN_IO_NICE` | `10` | 探测子进程的 niceness（`0` 关闭）；有 `ionice` 时同时降 IO 优先级 |
+| `PROBE_REMOTE_RANGE_BYTES` | `1048576` | 远程探测第一跳的头部窗口（1 MiB）。实测 8 MiB 会触发 ffprobe 的 “File ended prematurely”，调大会变差 |
+| `PROBE_REMOTE_TAIL_BYTES` | `2097152` | 第二跳的尾部窗口（2 MiB），只对 moov 在文件尾的 MP4/MOV 生效；与头尾两个请求**并行**发出 |
+
+> 第二跳的判定条件（全部满足才会触发）：第一跳没读出时长 + 容器是 MP4/MOV 系 +
+> 文件大于第一跳窗口 + 没有明确的 HTTP 错误。两个 Range 并行发出，落盘的是「头部 + moov」
+> 的小文件（1 MiB 出头，与原文件大小无关）。详见 CHANGELOG 的 2.42.16。
 
 ## 一·五、扫描队列（v2.27.0）：同一远程挂载串行化
 

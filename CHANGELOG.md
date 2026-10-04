@@ -2,6 +2,44 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [2.42.16] - 2026-10-04
+
+### 远程探测第二跳：moov 在文件尾的 MP4/MOV 改用并行双 Range
+
+上一版（2.42.14）把「ffprobe 跑完却没时长」从失败改成可播放终态，但**探测本身没修**：
+存量那 2.6 万条依旧探不出时长。这一版改的是探测怎么读。
+
+- **第一跳不变**：还是只取前 1 MiB。mkv（时长写在 EBML 头部）和头带 moov 的 mp4
+  一次就搞定，**90% 的文件速度零影响**。
+- **第二跳（新增）**：仅当第一跳没读出时长、且容器是 MP4/MOV 系（moov 可能在文件尾）、
+  且文件大于 1 MiB 时触发。**并行**发两个 Range（前 1 MiB + 后 2 MiB，尾部窗口可用
+  `PROBE_REMOTE_TAIL_BYTES` 调），从尾段里把 moov 盒子摘出来，拼成「头部 + moov」的
+  小文件再喂 ffprobe，并把 mdat 的声明长度改写到恰好停在 moov 之前。
+  流量固定在两个窗口，与文件多大无关：8 GB 的片子也只读 3 MiB。
+- **旧回退保留**：双 Range 失手（尾窗口里没有完整 moov、分片 mp4、HTTP 错误）仍会退回
+  原来的「去掉 Range 让 ffprobe 自己 seek」，行为不倒退。
+
+三个实现细节都是实测出来的，不是推测（用 ffmpeg 7.0.2 在真实 MP4/MOV 上验过）：
+
+1. **头尾直接首尾相接不行**：头部里 mdat 声明了整个媒体的长度，demuxer 跳完它就 EOF，
+   实测报 `moov atom not found`。必须改写 mdat 长度指到 moov。
+2. **不能用「按真实偏移回填 + 稀疏文件」**：那样 moov 位置天然正确，但文件逻辑大小等于
+   原文件。实测 ext4 与 overlayfs **不会真的挖洞**（8 GiB 的空洞实打实占了 8 GiB），
+   一次探测就能把磁盘吃穿。改成「头部 + moov」后落盘只有 1 MiB 出头。
+3. **容器码率与大小要还原**：时长、分辨率、编码、帧率、声道都写在 moov 里，不受影响；
+   但 ffprobe 的 `format.bit_rate` 和 `format.size` 是拿「文件大小 ÷ 时长」现算的，
+   合成文件只有 1 MiB 出头。实测 224 MiB 的文件被算成 **19 kb/s**（真值 3134），
+   不还原就等于把一堆假码率写进库、显示在客户端「媒体信息」页上。
+
+**存量 2.6 万条**：仍需手动执行
+`POST /api/admin/emby/scrape/probe/retry-failed` 拉回队列。上一版捞过的条目会停在
+`probed_no_duration` / `degraded`，新逻辑对他们没用，所以该接口新增了可选的
+`statuses` 参数（默认不变）：
+
+```
+POST /api/admin/emby/scrape/probe/retry-failed?statuses=failed,degraded,probed_no_duration
+```
+
 ## [2.42.15] - 2026-10-04
 
 ### 「存储来源」独立页撒销，存储全部按服务器配
