@@ -74,8 +74,6 @@ import type {
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import LibraryPathManager from '@/components/LibraryPathManager.vue'
-import MountSourceEditor from '@/components/MountSourceEditor.vue'
-import type { MountTypeValue } from '@/components/MountSourceEditor.vue'
 import './EmbyAdmin.css'
 import type { DataColumn } from '@/components/DataTable.vue'
 
@@ -135,7 +133,6 @@ interface LibFormState {
   is_enabled: boolean
   realm_id: number | null
   node_id: number | null
-  mount_ids: number[]
   scrape_policy: string
   account_115_id: number | null
   /** 媒体路径（简化形式）：路径与存储后端分开，不出现 mount:// 前缀 */
@@ -152,7 +149,6 @@ function emptyLibForm(): LibFormState {
     is_enabled: true,
     realm_id: null,
     node_id: null,
-    mount_ids: [],
     scrape_policy: 'missing_only',
     account_115_id: null,
     path_entries: [],
@@ -167,6 +163,17 @@ const libFormSaving = ref(false)
 const chaseLibSaving = ref(false)
 /** 编辑中的库对象（封面操作要用）；新建时为 null */
 const libFormTarget = ref<EmbyLibrary | null>(null)
+/**
+ * 老数据里「库级挂载」的 id（v2.46.0 起不再能编辑，只读展示）。
+ * 它不进表单、也不回传：后端对省略 = 不修改，所以老库挂着的挂载原封不动。
+ * 只做两件事：校验时让「只有挂载没路径」的老库还能保存 + 在界面上说清它还在生效。
+ */
+const legacyMountIds = computed<number[]>(() => libFormTarget.value?.mount_ids || [])
+/** 挂载 id → 名字（挂载已删时回落成 ``#id``，不能变成一片空白） */
+function mountNamesOf(ids: number[]): string {
+  return ids.map((id) => mounts.value.find((m) => m.id === id)?.name || `#${id}`).join('、')
+}
+const legacyMountNames = computed<string>(() => mountNamesOf(legacyMountIds.value))
 /** 打开时的表单指纹：算「有没有改动」+ 还原用（存指纹而不是对象引用） */
 const libFormFingerprintAtOpen = ref('')
 
@@ -301,11 +308,6 @@ function optionLabel(list: LibOption[], value: string | null | undefined): strin
   return hit ? (hit.recommended ? `${hit.label}（推荐）` : hit.label) : ''
 }
 
-// ---- 高级：不建挂载，直接写 rclone: / 115: 前缀路径 ----
-// （前缀路径扫描器认得，但没挂载就没法用挂载级的能力；正常情况都该用上面的添加弹窗）
-
-const srcPath = ref('')
-
 // ---- 扫描策略开关（v2.44.0）----
 /** 增量扫描：走目录/文件指纹，没变动的目录不重扫 */
 const incrementalScan = ref(true)
@@ -320,27 +322,6 @@ const fsWatchForThisLib = computed(() => {
   const reason = fsWatchStatus.value.degraded[String(id)]
   return reason ? `${reason}（已改用定时扫描）` : null
 })
-const srcType = ref<MountTypeValue>('local')
-
-function appendSourcePath() {
-  const value = srcPath.value.trim()
-  if (!value) return
-  if (libForm.path_entries.some((e) => e.path === value)) {
-    ElMessage.info('这条路径已经在里面了')
-    return
-  }
-  libForm.path_entries.push({
-    path: value,
-    backend: srcType.value,
-    backend_label: backendLabelOf(srcType.value),
-    mount_id: null,
-    mount_name: '',
-    source: 'prefix',
-    raw: value,
-  })
-  srcPath.value = ''
-  ElMessage.success(`已加入：${value}`)
-}
 
 /** 后端标签：优先用后端下发的（本地文件 / Rclone / 115 网盘），没下发时回落到标识本身 */
 function backendLabelOf(backend: string): string {
@@ -373,7 +354,7 @@ function pathEntriesOf(l: EmbyLibrary): LibraryPathEntry[] {
 
 // ---- 打开 / 还原 / 保存 ----
 
-/** 表单指纹：只认「规范化后」的差异（路径去空去重、挂载排序），空改空格不算改动 */
+/** 表单指纹：只认「规范化后」的差异（路径去空去重），空改空格不算改动 */
 function formFingerprint(): string {
   return JSON.stringify({
     name: libForm.name.trim(),
@@ -381,7 +362,6 @@ function formFingerprint(): string {
     is_enabled: libForm.is_enabled,
     realm_id: libForm.realm_id,
     node_id: libForm.node_id,
-    mount_ids: [...libForm.mount_ids].sort((a, b) => a - b),
     scrape_policy: libForm.scrape_policy,
     account_115_id: libForm.account_115_id,
     paths: libForm.path_entries.map((e) => `${e.backend}|${e.mount_id ?? ''}|${e.path}`),
@@ -439,7 +419,6 @@ coverAutoRegen.value = l.cover_auto_regen === true
     is_enabled: l.is_enabled !== false,
     realm_id: l.realm_id ?? null,
     node_id: l.node_id ?? null,
-    mount_ids: [...(l.mount_ids || [])],
     scrape_policy: l.scrape_policy || 'missing_only',
     account_115_id: l.account_115_id ?? null,
     path_entries: pathEntriesOf(l).map((e) => ({ ...e })),
@@ -486,6 +465,9 @@ function onChaseSwitch(v: unknown) {
 /**
  * 保存：新建走 POST、编辑走 PUT（同一个鉴权接口，一次提交全部字段）。
  * 路径类改动后端会回 rescan_required —— 扫描任务用的是配置快照，不重扫就还是老路径。
+ *
+ * 注意**不下发 mount_ids**（v2.46.0）：挂载已经写在每条 path_entry 上了，再单传一份
+ * 只会两处说法打架。后端对省略 = 不修改，所以老库原来挂着的挂载不会被清掉。
  */
 async function saveForm(thenScan = false) {
   const editingId = libForm.id
@@ -500,8 +482,8 @@ async function saveForm(thenScan = false) {
     ElMessage.warning('请填写媒体库名称')
     return
   }
-  if (!virtual && !pathEntries.length && !libForm.mount_ids.length) {
-    ElMessage.warning('请至少配置一个媒体路径或一个存储挂载，否则扫不到任何内容')
+  if (!virtual && !pathEntries.length && !legacyMountIds.value.length) {
+    ElMessage.warning('请至少添加一个媒体路径，否则扫不到任何内容')
     return
   }
   libFormSaving.value = true
@@ -513,7 +495,6 @@ async function saveForm(thenScan = false) {
         collection_type: libForm.collection_type,
         paths: [],
         path_entries: pathEntries,
-        mount_ids: libForm.mount_ids,
         scrape_policy: libForm.scrape_policy,
         account_115_id: libForm.account_115_id ?? undefined,
         realm_id: libForm.realm_id ?? undefined,
@@ -526,7 +507,7 @@ async function saveForm(thenScan = false) {
         fs_watch: fsWatch.value,
       })
       savedId = res.id
-      const hasSource = pathEntries.length > 0 || libForm.mount_ids.length > 0
+      const hasSource = pathEntries.length > 0
       ElMessage.success(`媒体库「${name}」已创建${hasSource ? '，可以扫一次了' : ''}`)
     } else {
       // 虚拟库没有自己的目录与挂载（也不归属某台节点），这几个字段干脆不传：
@@ -541,7 +522,7 @@ async function saveForm(thenScan = false) {
         realm_id: libForm.realm_id ?? null,
         ...(virtual
           ? {}
-          : { path_entries: pathEntries, mount_ids: libForm.mount_ids, node_id: libForm.node_id ?? null }),
+          : { path_entries: pathEntries, node_id: libForm.node_id ?? null }),
         cover_template: coverTemplate.value || null,
         cover_title: coverTitle.value || null,
         cover_subtitle: coverSubtitle.value || null,
@@ -641,6 +622,11 @@ function chaseFact(l: EmbyLibrary): string {
   return covered ? `追新每 ${cfg.interval} 分钟` : '已排除追新'
 }
 
+/** 老库上的库级挂载拼成一句话（卡片与悬停全文共用的口径） */
+function legacyMountNamesFor(l: EmbyLibrary): string {
+  return mountNamesOf(l.mount_ids || [])
+}
+
 function libSummary(l: EmbyLibrary): string {
   if (l.is_virtual) return `虚拟库 · ${l.platform || '按平台聚合'} · 刮削 ${policyLabel(l.scrape_policy)}`
   const entries = pathEntriesOf(l)
@@ -660,10 +646,12 @@ function libSummaryTitle(l: EmbyLibrary): string {
     lines.push(...pathEntriesOf(l).map(
       (e) => `· ${e.path}（${e.backend_label || e.backend}）`))
   } else {
-    lines.push('媒体路径：未配置本机路径')
+    lines.push(l.mount_ids?.length
+      ? '媒体路径：未配置（内容来自下方只读的挂载来源）'
+      : '媒体路径：未配置本机路径')
   }
   if (l.mount_ids?.length) {
-    lines.push(`存储挂载：${l.mount_ids.map((id) => mounts.value.find((m) => m.id === id)?.name || `#${id}`).join('、')}`)
+    lines.push(`挂载来源（只读，v2.46.0 起不再能编辑）：${legacyMountNamesFor(l)}`)
   }
   lines.push(`追新监听：${chaseFact(l)}`)
   lines.push(`刮削策略：${policyLabel(l.scrape_policy)}`)
@@ -1686,23 +1674,6 @@ function typeLabel(t: string): string {
                 rclone）就分配给它；留空则所有节点可见、由面板扫。
               </p>
             </el-form-item>
-
-            <el-form-item v-if="!libFormTarget?.is_virtual" label="存储挂载">
-              <el-select
-                v-model="libForm.mount_ids"
-                multiple
-                collapse-tags
-                collapse-tags-tooltip
-                placeholder="不绑定（只用下面的媒体路径）"
-                style="width: 100%"
-              >
-                <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
-              </el-select>
-              <p class="field-help">
-                115 / rclone 这类远程来源用它，扫描时与「媒体路径」一起遍历；挂载在
-                「服务器」页（按服务器配置）创建与测试。路径与挂载可以同时用。
-              </p>
-            </el-form-item>
           </el-form>
         </div>
 
@@ -1947,29 +1918,25 @@ function typeLabel(t: string): string {
           <p class="form-hint">
             决定扫描哪些目录：<strong>一行一条</strong>，路径只写目录本身（如 <code>/电影</code>），
             它存在哪种存储上由每行的标签决定（本地文件 / Rclone / 115 网盘）。
+            点「按类型添加路径」选好类型再浏览目录，默认就是服务器本地硬盘。
           </p>
           <LibraryPathManager
             v-model="libForm.path_entries"
             :mounts="mounts"
             :backends="storageBackends"
           />
-          <el-collapse class="lpm-advanced">
-            <el-collapse-item title="高级：不建挂载，直接写前缀路径" name="advanced">
-              <MountSourceEditor v-model="srcPath" v-model:type="srcType" />
-              <el-button
-                style="margin-top: 8px"
-                :disabled="!srcPath.trim()"
-                @click="appendSourcePath"
-              >
-                <Plus :size="14" style="margin-right: 4px" />加入媒体路径
-              </el-button>
-              <div class="form-hint">
-                一般不需要用这一块：上面的「添加路径」会自动把挂载与路径组好。
-                这里适合写 <code>rclone:gdrive/Movies</code> 这种不建挂载就能直接扫的前缀路径
-                （代价是没法用挂载级能力，如单独配 115 账号）。
-              </div>
-            </el-collapse-item>
-          </el-collapse>
+          <!--
+            老库的「库级挂载」：v2.46.0 起了独立的下拉框去重，这里只读回显。
+            不删它是因为扫描 / 追新 / 挂载健康都还按 mount_ids 走，写成「已删除」等于
+            骗用户说数据没了 —— 实际它还在生效，只是不能再从这里改。
+          -->
+          <div v-if="legacyMountIds.length" class="legacy-mount-note">
+            <b>还挂着 {{ legacyMountIds.length }} 个库级挂载</b>：{{ legacyMountNames }}
+            <p>
+              这是旧配置留下的，内容仍会一起扫描。为了不再两处说法打架，v2.46.0 起不再单独编辑它
+              —— 要加目录请用上面的「按类型添加路径」，要解除绑定请到「服务器」页删掉对应挂载。
+            </p>
+          </div>
         </div>
 
         <!-- 分组五：目录变更监听 -->
@@ -2106,6 +2073,24 @@ function typeLabel(t: string): string {
 
 <style scoped>
 .admin-page { gap: 16px; }
+
+/* 老库的只读挂载回显：说清“还在生效” + “不再能改”，否则看着像残留的破 UI */
+.legacy-mount-note {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-left: 3px solid var(--el-color-warning);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.legacy-mount-note p {
+  margin: 6px 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
 
 .lib-grid {
   display: grid;

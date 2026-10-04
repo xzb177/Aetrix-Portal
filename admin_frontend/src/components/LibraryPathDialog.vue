@@ -3,8 +3,9 @@
  * 添加路径 / 浏览目录弹窗（媒体库设置的「媒体路径」区块用）
  *
  * 交互按「先说清楚存在哪，再挑目录」排：
- *   1. 选**存储后端**（本地文件 / Rclone / 115 网盘，label 由后端下发）；
- *   2. 远程后端再选一个**存储挂载**（同一后端可能有多个挂载，如「115 影库」「115 备份」）；
+ *   1. **默认就是服务器本地硬盘**，直接展开目录就能选（99% 的库都是它）；
+ *   2. 目录在 115 / Rclone 上时，展开「高级」选**存储后端** + 对应的**存储挂载**
+ *      （同一后端可能有多个挂载，如「115 影库」「115 备份」）；
  *   3. 浏览目录。本机目录与挂载目录的**列表 UI 完全一样**——两个后端接口返回同一套
  *      结构（browseLocalDirs / browseMountDirs），只有“取回路径要不要拼挂载 id”不同。
  *
@@ -13,7 +14,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FolderOpen, HardDriveDownload, Plus } from 'lucide-vue-next'
+import { FolderOpen, HardDrive, HardDriveDownload, Plus } from 'lucide-vue-next'
 import { browseLocalDirs, browseMountDirs } from '@/api/admin'
 import type { MountPickerCrumb, MountPickerDir } from '@/api/admin'
 import type { LibraryPathEntry, StorageBackend, StorageMount } from '@/types'
@@ -43,6 +44,13 @@ const BACKEND_LOCAL = 'local'
 
 const backend = ref(BACKEND_LOCAL)
 const mountId = ref<number | null>(null)
+/** 「高级」折叠区默认收起：后端选本地时它根本用不上（v2.46.0） */
+const advancedOpen = ref(false)
+/** el-collapse 的 v-model 是「展开项名字」，所以在这里翻成数组再绑上去 */
+const advancedNames = computed<string[]>({
+  get: () => (advancedOpen.value ? ['advanced'] : []),
+  set: (names) => { advancedOpen.value = names.includes('advanced') },
+})
 const multi = ref(false)
 /** 多选时跨层级保留的目录（存的是展示路径，不是 mount:// 全路径） */
 const checked = ref<string[]>([])
@@ -70,6 +78,11 @@ const backendLabel = computed(
   () => props.backends.find((b) => b.value === backend.value)?.label || backend.value,
 )
 
+/** 改一条「前缀路径」（没绑挂载的老写法）时要说清为什么要选挂载，否则只能干瞪眼 */
+const presetIsPrefix = computed(() => !!props.preset
+  && props.preset.mount_id == null
+  && props.preset.backend !== BACKEND_LOCAL)
+
 /** 标题要能看出这是“换一条”还是“加一条”：弹窗开着时看不出区别会让人以为多了一条 */
 const dialogTitle = computed(() => (
   props.preset ? `更换目录：${props.preset.path}` : '添加媒体路径'
@@ -88,6 +101,7 @@ function resetTo(entry: LibraryPathEntry | null) {
     currentPath.value = '/'
     crumbs.value = []
     dirs.value = []
+    advancedOpen.value = false
     return
   }
   backend.value = (entry.backend || BACKEND_LOCAL).toLowerCase()
@@ -96,6 +110,9 @@ function resetTo(entry: LibraryPathEntry | null) {
   currentPath.value = entry.path || '/'
   crumbs.value = []
   dirs.value = []
+  // 改的本身就是远程来源时把「高级」推开：不然用户只会看到一个空的本机列表，
+  // 看不出自己正在改的是 115 / Rclone 路径
+  advancedOpen.value = backend.value !== BACKEND_LOCAL
 }
 
 /** 打开时：新建从「本地文件」起步；编辑则定位到它原来的位置 */
@@ -114,6 +131,8 @@ async function onBackendChange() {
   // 换后端 = 换一套目录树，之前勾选的目录语义全变了，整批作废
   checked.value = []
   mountId.value = backend.value === BACKEND_LOCAL ? null : (mountOptions.value[0]?.id ?? null)
+  // 选回本地就把「高级」收起来，否则面板会一直开着，里面却什么都没选
+  advancedOpen.value = backend.value !== BACKEND_LOCAL
   if (canBrowse.value) await load('/')
 }
 
@@ -232,39 +251,55 @@ function confirmChecked() {
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >
     <div class="lpd-body">
-      <el-form label-position="top">
-        <el-form-item label="存储位置">
-          <el-select v-model="backend" style="width: 100%" @change="onBackendChange">
-            <el-option
-              v-for="b in backends"
-              :key="b.value"
-              :label="b.label"
-              :value="b.value"
-            />
-          </el-select>
-          <p class="lpd-hint">
-            先选这个目录存在哪：服务器硬盘、Rclone 远程，还是 115 网盘。路径只写目录本身，
-            不带任何技术前缀。
-          </p>
-        </el-form-item>
+      <!--
+        存储位置：默认就是本机硬盘，所以不再占一个下拉框置顶，改成一行回显；
+        115 / Rclone 收到下面的「高级」里，需要时才展开（v2.46.0）。
+      -->
+      <div class="lpd-source">
+        <HardDrive :size="14" class="lpd-source-icon" />
+        <span>目录存在：<b>{{ backendLabel }}</b></span>
+        <el-tag v-if="mountId != null" size="small" type="primary" effect="plain">
+          {{ props.mounts.find((m) => m.id === mountId)?.name }}
+        </el-tag>
+      </div>
 
-        <el-form-item v-if="backend !== BACKEND_LOCAL" label="存储挂载">
-          <el-select v-model="mountId" style="width: 100%" @change="onMountChange">
-            <el-option
-              v-for="m in mountOptions"
-              :key="m.id"
-              :label="`${m.name}（${m.mount_type || ''}）`"
-              :value="m.id"
-            />
-          </el-select>
-          <p v-if="missingMount" class="lpd-warn">
-            还没有配置{{ backendLabel }}存储挂载。挂载里存着账号与连接信息，请到「服务器」页新建一个再回来。
-          </p>
-          <p v-else class="lpd-hint">
-            同一后端可以有多个挂载（如「115 影库」「115 备份」），这里选这次要用的那一个。
-          </p>
-        </el-form-item>
-      </el-form>
+      <el-collapse v-model="advancedNames" class="lpd-advanced">
+        <el-collapse-item title="高级：目录不在本机（115 / Rclone）" name="advanced">
+          <el-form label-position="top">
+            <el-form-item label="存储位置">
+              <el-select v-model="backend" style="width: 100%" @change="onBackendChange">
+                <el-option
+                  v-for="b in backends"
+                  :key="b.value"
+                  :label="b.label"
+                  :value="b.value"
+                />
+              </el-select>
+              <p class="lpd-hint">
+                先选这个目录存在哪：服务器硬盘、Rclone 远程，还是 115 网盘。路径只写目录本身，
+                不带任何技术前缀。
+              </p>
+            </el-form-item>
+
+            <el-form-item v-if="backend !== BACKEND_LOCAL" label="存储挂载">
+              <el-select v-model="mountId" style="width: 100%" @change="onMountChange">
+                <el-option
+                  v-for="m in mountOptions"
+                  :key="m.id"
+                  :label="`${m.name}（${m.mount_type || ''}）`"
+                  :value="m.id"
+                />
+              </el-select>
+              <p v-if="missingMount" class="lpd-warn">
+                还没有配置{{ backendLabel }}存储挂载。挂载里存着账号与连接信息，请到「服务器」页新建一个再回来。
+              </p>
+              <p v-else class="lpd-hint">
+                同一后端可以有多个挂载（如「115 影库」「115 备份」），这里选这次要用的那一个。
+              </p>
+            </el-form-item>
+          </el-form>
+        </el-collapse-item>
+      </el-collapse>
 
       <div class="lpd-toolbar">
         <el-input
@@ -318,7 +353,12 @@ function confirmChecked() {
         </div>
         <div v-if="loadError" class="lpd-error">{{ loadError }}</div>
       </div>
-      <div v-else class="lpd-empty">先选一个存储挂载就能浏览目录了</div>
+      <div v-else class="lpd-empty">
+        <template v-if="presetIsPrefix">
+          这一条是旧写法的前缀路径（没绑挂载），改成{{ backendLabel }}挂载后就能浏览目录了。
+        </template>
+        <template v-else>展开上方「高级」选一个{{ backendLabel }}存储挂载，就能浏览目录了</template>
+      </div>
 
       <div v-if="multi && checked.length" class="lpd-checked">
         已勾选 <b>{{ checked.length }}</b> 个目录
@@ -344,6 +384,21 @@ function confirmChecked() {
 
 <style scoped>
 .lpd-body { min-height: 220px; }
+.lpd-source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-lighter);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+.lpd-source b { color: var(--el-text-color-primary); }
+.lpd-source-icon { flex: none; }
+.lpd-advanced { margin-bottom: 10px; }
 .lpd-hint {
   margin: 4px 0 0;
   font-size: var(--font-size-xs);

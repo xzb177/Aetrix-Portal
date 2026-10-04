@@ -5,6 +5,9 @@
  * 这一块刻意做得极简——一行一条路径、旁边两个图标：
  *   📁 浏览/更换目录（就地改这一条）   ✕ 删除这一条
  *
+ * 「按类型添加路径」是添加的唯一入口（v2.46.0）：弹窗里先选类型（默认本地硬盘）再浏览
+ * 目录，类型与挂载都在弹窗里定，所以库里不再有第二个「选挂载」的地方。
+ *
  * 之前这块是一个多行文本框加一段“mount://<id>/子目录”的格式说明，而那种路径对人
  * 没有信息量（id 是数据库主键）。现在路径与存储后端分开展示：路径写 `/电影`，后端
  * 单独一个标签（本地文件 / Rclone / 115 网盘），改后端也不影响已选的目录。
@@ -115,7 +118,7 @@ function removeAt(index: number) {
   <div class="lpm">
     <div v-if="!entries.length" class="lpm-empty">
       <FolderOpen :size="20" style="vertical-align: -4px; margin-right: 6px" />
-      还没有媒体路径。加一个目录，扫描才知道去哪里找片源。
+      还没有媒体路径。点下方「按类型添加路径」，默认就是服务器本地硬盘，选个目录就行。
     </div>
 
     <div v-for="(e, i) in entries" :key="`${e.backend}-${e.mount_id ?? 0}-${e.path}-${i}`" class="lpm-row">
@@ -150,10 +153,11 @@ function removeAt(index: number) {
     </div>
 
     <el-button style="margin-top: 10px" @click="openAdd">
-      <Plus :size="14" style="margin-right: 4px" />添加路径
+      <Plus :size="14" style="margin-right: 4px" />按类型添加路径
     </el-button>
     <p class="lpm-hint-block">
-      一行一条路径。点文件夹图标可以重新浏览这个目录；保存后需要重新扫描一次才会生效。
+      一行一条路径。点「按类型添加路径」选好类型再浏览目录，默认是服务器本地硬盘；
+      115 / Rclone 在弹窗的「高级」里。点文件夹图标可以重新浏览这个目录；保存后需要重新扫描一次才会生效。
     </p>
 
     <LibraryPathDialog
