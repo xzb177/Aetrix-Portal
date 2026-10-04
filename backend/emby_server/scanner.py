@@ -971,9 +971,9 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
     # "File ended prematurely" → format 为空 → 白白记 degraded（生产 4.3 万条）。
     #
     # 拿不到 format、且不是明确的 HTTP 错误时，按「速度优先」分两级回退：
-    #   第二跳（mp4/mov 专有）：并行取「头 1 MiB + 尾 2 MiB」拼成等大稀疏文件，
-    #     moov 回到它在原文件里的偏移，ffprobe 直接读得到。流量固定在两个窗口，
-    #     与文件多大无关（8 GB 的片子也只读 3 MiB）。
+    #   第二跳（mp4/mov 专有）：并行取「头 1 MiB + 尾 2 MiB」，从尾段摘出 moov 拼成
+    #     「头部 + moov」的小文件，时长与各轨参数都来自 moov（正确）。流量固定在
+    #     两个窗口，与文件多大无关（8 GB 的片子也只读 3 MiB）。
     #   第三跳（兜底）：去掉 Range 让 ffprobe 自己按需 seek。这条会把整个文件拉下来，
     #     所以放在最后，只在双 Range 也失手时才走。
     # 只对「窗口确实截断了文件」的条目做，避免给本就完整的文件白跑一遍。

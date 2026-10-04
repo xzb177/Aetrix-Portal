@@ -282,8 +282,12 @@ def retry_failed(db, limit: int = 5000, statuses: Optional[tuple] = None) -> int
     双 Range 头尾读取（能读到 moov 在尾的 mp4/mov）上线时，已经被标成
     ``probed_no_duration`` / ``degraded`` 的那批也得重探——否则它们会永远停在
     「没时长」的旧结论上，明明新逻辑能拿到。显式传参才生效，默认行为不变。
+
+    ``None``（没传）与空元组（传了但没内容）**含义不同**：前者用默认的 ``("failed",)``，
+    后者是「无事可做」返回 0。写成 ``statuses or ("failed",)`` 会在传空元组时默默退回
+    默认，把几万条 failed 给重排了——这里显式区分。
     """
-    wanted = tuple(s for s in (statuses or ("failed",)) if s)
+    wanted = tuple(s for s in (("failed",) if statuses is None else statuses) if s)
     if not wanted:
         return 0
     rows = (db.query(em.MediaItem.id)
