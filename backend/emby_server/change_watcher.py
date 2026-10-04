@@ -25,6 +25,7 @@ import logging
 import os
 import threading
 import time
+from typing import Optional
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -40,6 +41,17 @@ logger = logging.getLogger(__name__)
 
 CONFIG_ENABLED = "chase_new_enabled"
 CONFIG_INTERVAL = "chase_new_interval"
+#: v2.45.0：**排除清单**（逗号分隔的库 id）。空 = 全部启用库都监听。
+#:
+#: 为什么从「包含清单」改成「排除清单」：包含清单空 = 全部，于是想关掉 A 库就必须先去
+#: B 库打开开关、让清单被写出来，再回来把 A 删掉——反直觉且容易漏。现在直接往排除
+#: 清单里加 A 就行，一次点击到位。
+#:
+#: 旧键 ``CONFIG_LIBRARIES``（包含清单）只在下述迁移里读一次：新键存在就以新键为准；
+#: 新键不存在而旧键非空 = 老部署，把「启用库 − 包含清单」算成排除清单写进去。
+#: 不这么做的话，老部署升级后会**静默变成监听全部库**（原来的「只听 A、B」变成全听），
+#: 相当于一次扫描风暴。
+CONFIG_EXCLUDED = "chase_new_excluded"
 CONFIG_LIBRARIES = "chase_new_libraries"
 CONFIG_LAST_CHECK = "chase_new_last_check"
 CONFIG_LAST_FOUND = "chase_new_last_found"
@@ -67,6 +79,16 @@ def _get_config(db: Session, key: str, default: str = "") -> str:
     """统一读（只许这一套）：daemon 轮询走直查，永远最新"""
     from backend.integrations import store
     return store.read_value(db, key, default)
+
+
+def _config_exists(db: Session, key: str) -> bool:
+    """配置行是否已存在（区分「没配过」与「配了但值为空」）
+
+    迁移靠它判断能不能走：新键存在 = 已经在新语义下，不必再看旧键。
+    """
+    row = db.query(base_models.SystemConfig).filter(
+        base_models.SystemConfig.key == key).first()
+    return row is not None
 
 
 def _set_config(db: Session, key: str, value: str) -> None:
@@ -313,6 +335,50 @@ def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
     return new_files
 
 
+#: 库 id 的合理上限（SQLite/PG 的主键都是 64 位整数）。粘进来的超长数字串直接丢掉，
+#: 不让它在配置里越攒越长
+_MAX_LIBRARY_ID = 2 ** 63 - 1
+
+
+def _parse_ids(raw) -> list[int]:
+    """把 "1,2,  3" 这种字串解析成去重后的整数列表（脏值忽略，不报错）"""
+    out: list[int] = []
+    for part in str(raw or "").replace("，", ",").split(","):
+        part = part.strip()
+        if not part.isdigit():
+            continue
+        value = int(part)
+        if 0 < value <= _MAX_LIBRARY_ID and value not in out:
+            out.append(value)
+    return out
+
+
+def _enabled_library_ids(db: Session) -> list[int]:
+    return [row[0] for row in db.query(em.Library.id)
+            .filter(em.Library.is_enabled == True).all()]
+
+
+def resolve_excluded(db: Session) -> list[int]:
+    """当前生效的**排除清单**（含旧包含清单的一次性迁移）
+
+    迁移只做一次：新键写成功后旧键清空，之后就只认新键。
+    """
+    stored = _get_config(db, CONFIG_EXCLUDED, "")
+    if _config_exists(db, CONFIG_EXCLUDED):
+        return _parse_ids(stored)
+    legacy = _get_config(db, CONFIG_LIBRARIES, "")
+    if not _parse_ids(legacy):
+        # 旧键也是空 = 本来就是「全部监听」，新语义一致，不用写
+        return []
+    included = set(_parse_ids(legacy))
+    migrated = sorted(i for i in _enabled_library_ids(db) if i not in included)
+    _set_config(db, CONFIG_EXCLUDED, ",".join(str(i) for i in migrated))
+    _set_config(db, CONFIG_LIBRARIES, "")
+    logger.info("[chase-new] 旧包含清单 %s 已迁移为排除清单 %s",
+                legacy, ",".join(str(i) for i in migrated))
+    return migrated
+
+
 def _check_once() -> None:
     """执行一轮检查"""
     db = SessionLocal()
@@ -325,17 +391,10 @@ def _check_once() -> None:
         # 用 2 倍间隔作为 mtime 阈值，防漏检
         since_ts = time.time() - (interval * 2 * 60)
 
-        # 解析监听的库
-        lib_filter = _get_config(db, CONFIG_LIBRARIES, "").strip()
+        # 解析要监听的库：**排除清单里没有的**全部启用库都监听
+        excluded = set(resolve_excluded(db))
         query = db.query(em.Library).filter(em.Library.is_enabled == True)
-        if lib_filter:
-            try:
-                ids = [int(x.strip()) for x in lib_filter.split(",") if x.strip().isdigit()]
-                if ids:
-                    query = query.filter(em.Library.id.in_(ids))
-            except (ValueError, AttributeError):
-                pass
-        libraries = query.all()
+        libraries = [lib for lib in query.all() if lib.id not in excluded]
 
         total_found = 0
         for lib in libraries:
@@ -387,25 +446,43 @@ def _watcher_loop() -> None:
 
 
 def get_config(db: Session) -> dict:
-    """追新当前配置（管理后台展示）"""
+    """追新当前配置（管理后台展示）
+
+    ``excluded`` 是排除清单（v2.45.0 起的唯一口径）；``libraries`` 保留为空串，
+    因为老前端还在读它——给一个非空值会让老前端把排除清单当成包含清单用。
+    """
     return {
         "enabled": _get_config(db, CONFIG_ENABLED, "0") == "1",
         "interval": _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL))),
-        "libraries": _get_config(db, CONFIG_LIBRARIES, ""),
+        "excluded": ",".join(str(i) for i in resolve_excluded(db)),
+        "libraries": "",
         "last_check": _get_config(db, CONFIG_LAST_CHECK, ""),
         "last_found": int(_get_config(db, CONFIG_LAST_FOUND, "0") or "0"),
     }
 
 
-def save_config(db: Session, enabled: bool, interval: int, libraries: str = "") -> dict:
-    """保存追新配置，立即生效"""
+def save_config(db: Session, enabled: bool, interval: int,
+                excluded: str = "", libraries: Optional[str] = None) -> dict:
+    """保存追新配置，立即生效
+
+    ``excluded`` 是排除清单。``libraries`` 是**旧字段**（包含清单），只为老调用方保留：
+    传了它就按老语义换算成排除清单（启用库 − 包含清单），而不是直接当排除清单存——
+    否则一个还在用老前端的部署会把清单含义整个反过来。
+    """
     minutes = _parse_interval(str(interval))
     _set_config(db, CONFIG_ENABLED, "1" if enabled else "0")
     _set_config(db, CONFIG_INTERVAL, str(minutes))
-    # 清洗库 ID 列表：只保留数字
-    clean_ids = ",".join(x.strip() for x in (libraries or "").split(",") if x.strip().isdigit())
-    _set_config(db, CONFIG_LIBRARIES, clean_ids)
-    logger.info("[chase-new] 配置已保存: enabled=%s interval=%d libraries=%s", enabled, minutes, clean_ids)
+    if libraries is not None and not excluded:
+        included = set(_parse_ids(libraries))
+        ids = sorted(i for i in _enabled_library_ids(db) if i not in included)
+    else:
+        ids = _parse_ids(excluded)
+    _set_config(db, CONFIG_EXCLUDED, ",".join(str(i) for i in ids))
+    # 旧键清空：万一还有进程在按老口径读，它看到的是「空 = 全部监听」，
+    # 与新语义下的“排除为空”一致，不会出现两边理解打架。
+    _set_config(db, CONFIG_LIBRARIES, "")
+    logger.info("[chase-new] 配置已保存: enabled=%s interval=%d excluded=%s",
+                enabled, minutes, ",".join(str(i) for i in ids))
     return get_config(db)
 
 

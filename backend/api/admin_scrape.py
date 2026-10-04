@@ -873,7 +873,11 @@ class AutoScanSaveRequest(BaseModel):
 class ChaseNewSaveRequest(BaseModel):
     enabled: bool = Field(default=False, description="追新总开关")
     interval: int = Field(default=10, description="轮询间隔（分钟），5-120")
-    libraries: str = Field(default="", description="监听的库 ID，逗号分隔，空=全部启用库")
+    excluded: str = Field(default="",
+                          description="**排除**监听的库 ID，逗号分隔，空 = 全部启用库都监听")
+    # 旧字段（包含清单）：只为还在用老前端的部署保留，后端会换算成排除清单
+    libraries: Optional[str] = Field(
+        default=None, description="已废弃：旧版包含清单（空 = 全部监听）")
 
 
 @admin_emby_router.get("/scrape/chase-new")
@@ -892,7 +896,8 @@ def save_chase_new(
     db: Session = Depends(get_db),
 ):
     """保存追新配置：立即生效，无需重启"""
-    cfg = change_watcher.save_config(db, req.enabled, req.interval, req.libraries)
+    cfg = change_watcher.save_config(db, req.enabled, req.interval,
+                                   excluded=req.excluded, libraries=req.libraries)
     return {"success": True, **cfg}
 
 
