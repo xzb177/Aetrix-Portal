@@ -70,6 +70,8 @@ import type {
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import MountPathPicker from '@/components/MountPathPicker.vue'
+import MountSourceEditor from '@/components/MountSourceEditor.vue'
+import type { MountTypeValue } from '@/components/MountSourceEditor.vue'
 import './EmbyAdmin.css'
 import type { DataColumn } from '@/components/DataTable.vue'
 
@@ -291,6 +293,23 @@ function optionOf(list: LibOption[], value: string | null | undefined): LibOptio
 function optionLabel(list: LibOption[], value: string | null | undefined): string {
   const hit = optionOf(list, value)
   return hit ? (hit.recommended ? `${hit.label}（推荐）` : hit.label) : ''
+}
+
+// ---- 按类型添加来源（三个类型切换 + 前缀自动带）----
+const srcPath = ref('')
+const srcType = ref<MountTypeValue>('local')
+
+function appendSourcePath() {
+  const value = srcPath.value.trim()
+  if (!value) return
+  const existing = parsePaths(libForm.paths)
+  if (existing.includes(value)) {
+    ElMessage.info('这条路径已经在里面了')
+    return
+  }
+  libForm.paths = [...existing, value].join('\n')
+  srcPath.value = ''
+  ElMessage.success(`已加入：${value}`)
 }
 
 // ---- 媒体路径：一行一个，浏览按钮的单选 / 多选都追加到同一个框 ----
@@ -1614,8 +1633,8 @@ function typeLabel(t: string): string {
                 <el-option v-for="m in mounts" :key="m.id" :label="m.name" :value="m.id" />
               </el-select>
               <p class="field-help">
-                网盘 / WebDAV / 115 直挂这类远程来源用它，扫描时与「媒体路径」一起遍历；挂载在
-                「存储来源」页创建与测试。路径与挂载可以同时用。
+                115 / rclone 这类远程来源用它，扫描时与「媒体路径」一起遍历；挂载在
+                「服务器」页（按服务器配置）创建与测试。路径与挂载可以同时用。
               </p>
             </el-form-item>
           </el-form>
@@ -1838,6 +1857,20 @@ function typeLabel(t: string): string {
                 点「浏览」逐级选挂载目录；切到「多选」可一次勾多个目录批量追加，已存在的会自动跳过并报出个数。
                 <strong>不要带方括号或引号</strong>（从 JSON 里粘贴时容易带上，保存就会报「目录不存在或不可读」）。
                 共 {{ parsePaths(libForm.paths).length }} 条路径。
+              </div>
+            </el-form-item>
+            <el-form-item label="按类型添加来源">
+              <MountSourceEditor v-model="srcPath" v-model:type="srcType" />
+              <el-button
+                style="margin-top: 8px"
+                :disabled="!srcPath.trim()"
+                @click="appendSourcePath"
+              >
+                <Plus :size="14" style="margin-right: 4px" />加入媒体路径
+              </el-button>
+              <div class="form-hint">
+                三个类型切换后前缀自动带上，不用自己敲 <code>115:/</code> 或 <code>rclone:</code>。
+                远程来源不需要先建挂载：直接写 <code>rclone:gdrive/Movies</code> 这样的前缀路径也能扫。
               </div>
             </el-form-item>
           </el-form>

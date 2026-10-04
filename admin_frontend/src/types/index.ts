@@ -1339,6 +1339,12 @@ export interface StorageMount {
   name: string
   /** 属于哪个服（storage_mounts.realm_id）；空 = 未标注（所有服都看得到） */
   realm_id?: number | null
+  /** 由哪台 EA 去读（每台 EA 一份 rclone.conf）；空 = 老数据，回退到本服 EA */
+  server_id?: number | null
+  /** server_id 对应的服务器名（后端顺手下发，前端不自己查） */
+  server_name?: string | null
+  /** 已下线类型的残留行：不自动删，这里给出怎么改（前端直接显示并报红） */
+  legacy_note?: string
   mount_type: string
   mount_type_label: string
   kind: 'local' | 'remote'
@@ -1388,6 +1394,8 @@ export interface Pan115Account {
   name: string
   cookie_preview: string
   has_cookie: boolean
+  /** 该配置档发 115 请求用的 UA（空 = 跟服务器级 MOUNT_UA） */
+  ua: string
   is_default: boolean
   is_enabled: boolean
   remark: string

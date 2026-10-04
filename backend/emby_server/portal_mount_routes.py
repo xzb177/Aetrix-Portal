@@ -133,7 +133,29 @@ def _load_mount(db: Session, mount_id: int) -> em.StorageMount | None:
     return db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
 
 
-def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = None) -> dict:
+def _ea_server_names(db: Session) -> dict:
+    """``{server_id: name}``（只列 EA）——列表里把 server_id 显示成人看得懂的名字"""
+    rows = db.query(models.RemoteServer).filter(models.RemoteServer.kind == "ea").all()
+    return {row.id: row.name for row in rows}
+
+
+def _legacy_note(mount_type: str) -> str:
+    """v2.42.12 删掉的类型在库里可能还有残留行：**不自动删**，只说清怎么改
+
+    留着它们是有意的：自动删 = 删别人机器上的数据且无法撤销。所以走「明确报错 +
+    告诉管理员手动改」这条路，而不是让扫描一碰到就报「不支持的挂载类型」然后让人
+    猜到底要改哪一栏。
+    """
+    if mount_type in mount_lib.MOUNT_TYPE_MAP:
+        return ""
+    return (f"「{mount_type or '(空)'}」是 v2.42.12 已下线的挂载类型，数据仍然保留，"
+            "但不再可用。请在服务器管理里把它改成下面三种之一："
+            "本地硬盘（绝对路径）/ 115 网盘（115:/ 开头）/ rclone（rclone: 开头）。"
+            "这些后端 rclone 都支持，粘一份 rclone.conf 即可接上。")
+
+
+def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = None,
+                     server_names: dict | None = None) -> dict:
     config, secrets = _mask_mount_config(mount_lib.parse_config(mount))
     meta = mount_lib.MOUNT_TYPE_MAP.get(mount.mount_type, {})
     kind = meta.get("kind", "local")
@@ -152,8 +174,13 @@ def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = 
         "id": mount.id,
         "name": mount.name,
         "realm_id": mount.realm_id,
+        # 由哪台 EA 去读（每台 EA 一份 rclone.conf 就靠它）；null = 老数据，回退到本服 EA
+        "server_id": mount.server_id,
+        "server_name": server_names.get(mount.server_id) if server_names else None,
         "mount_type": mount.mount_type,
         "mount_type_label": mount_lib.MOUNT_TYPE_LABELS.get(mount.mount_type, mount.mount_type),
+        # 已下线类型的残留行：前端直接报红并显示怎么改（数据本身不删）
+        "legacy_note": _legacy_note(mount.mount_type),
         "kind": kind,
         "path": path,
         "config": config,
@@ -187,6 +214,8 @@ class MountCreate(BaseModel):
     remark: str = ""
     # 归属哪个服（留空 = 当前服）：存储是主机相对资源，跟着服走
     realm_id: int | None = None
+    # 由哪台 EA 去读（留空 = 本服已激活的 EA，再不济用共享的那份 rclone.conf）
+    server_id: int | None = None
 
 
 class MountUpdate(BaseModel):
@@ -196,6 +225,7 @@ class MountUpdate(BaseModel):
     is_enabled: bool | None = None
     remark: str | None = None
     realm_id: int | None = None
+    server_id: int | None = None
 
 
 class MountTestRequest(BaseModel):
@@ -224,8 +254,9 @@ def list_mounts(staff: models.WebUser = Depends(require_staff), db: Session = De
     ea_map = mount_health.ea_mount_map(db, scope_id)
     snapshot = mount_health.read_ea_health(db, scope_id)
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    server_names = _ea_server_names(db)
     return {
-        "mounts": [_serialize_mount(db, m, ea_map) for m in mounts],
+        "mounts": [_serialize_mount(db, m, ea_map, server_names) for m in mounts],
         # 类型元数据（标签 / 说明 / 需要哪些字段）由后端下发，前端不再自己维护一份
         "mount_types": [dict(t) for t in mount_lib.MOUNT_TYPES],
         # 当前谁在出流：EA 分离部署 / 外部 Emby / 面板自己。
@@ -304,6 +335,28 @@ async def save_rclone_conf(req: RcloneConfSave,
     return {"success": True, "path": path, "remotes": remotes, "total": len(remotes)}
 
 
+def _resolve_mount_server(db: Session, server_id: int | None, realm_id: int | None) -> int | None:
+    """挂载归哪台 EA 读：显式指定 > 本服已激活的 EA > None（用共享的那份 rclone.conf）
+
+    指定了就必须是**存在且是 EA** 的服务器：挂到一台不存在的机器上，表现是
+    「配都配对了，就是扫不出东西」——这种错不该等到扫描时才暴露。
+    """
+    if server_id:
+        server = db.query(models.RemoteServer).filter(
+            models.RemoteServer.id == server_id).first()
+        if not server:
+            raise HTTPException(status_code=400, detail=f"服务器不存在: #{server_id}")
+        if server.kind != "ea":
+            raise HTTPException(
+                status_code=400,
+                detail=f"「{server.name}」不是 EA（{server.kind}），只有 EA 能读存储挂载")
+        return server.id
+    from backend import servers as server_registry
+
+    active = server_registry.active_server(db, "ea", realm_id)
+    return active.id if active else None
+
+
 @admin_emby_router.post("/mounts")
 def create_mount(req: MountCreate, staff: models.WebUser = Depends(require_staff),
                        db: Session = Depends(get_db)):
@@ -324,11 +377,12 @@ def create_mount(req: MountCreate, staff: models.WebUser = Depends(require_staff
         name=name, mount_type=mount_type, path=path,
         config=mount_lib.dump_config(config), is_enabled=req.is_enabled,
         remark=(req.remark or "")[:300], realm_id=realm_id,
+        server_id=_resolve_mount_server(db, req.server_id, realm_id),
     )
     db.add(mount)
     db.commit()
     db.refresh(mount)
-    return {"success": True, "mount": _serialize_mount(db, mount)}
+    return {"success": True, "mount": _serialize_mount(db, mount, None, _ea_server_names(db))}
 
 
 @admin_emby_router.put("/mounts/{mount_id}")
@@ -364,6 +418,8 @@ def update_mount(mount_id: int, req: MountUpdate,
         mount.is_enabled = req.is_enabled
     if req.remark is not None:
         mount.remark = req.remark[:300]
+    if "server_id" in req.model_fields_set and req.server_id is not None:
+        mount.server_id = _resolve_mount_server(db, req.server_id, mount.realm_id)
     if "realm_id" in req.model_fields_set and req.realm_id is not None:
         if not realms.get_realm(db, req.realm_id):
             raise HTTPException(status_code=400, detail=f"服不存在: #{req.realm_id}")
@@ -376,7 +432,8 @@ def update_mount(mount_id: int, req: MountUpdate,
     db.commit()
     db.refresh(mount)
     # 路径/配置变更后需要重新扫描才生效（扫描任务使用固定配置快照）
-    return {"success": True, "mount": _serialize_mount(db, mount),
+    return {"success": True,
+            "mount": _serialize_mount(db, mount, None, _ea_server_names(db)),
             "rescan_required": True, "mount_type_changed": type_changed}
 
 

@@ -1439,6 +1439,8 @@ export interface MountPayload {
   remark?: string
   /** 归属服（留空 = 当前服）；换服时引用它的媒体库会跟着走 */
   realm_id?: number
+  /** 由哪台 EA 去读（每台 EA 一份 rclone.conf）；留空 = 本服已激活的 EA */
+  server_id?: number
 }
 
 export const createMount = (data: MountPayload) =>
@@ -1490,10 +1492,29 @@ export const browseMountDirs = (id: number, path?: string) =>
 export const fetchMountRcloneRemotes = () =>
   get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/conf`)
 
+// ==================== 每台 EA 一份 rclone.conf ====================
+
+/** 读这台 EA 的 rclone.conf：**只返 remote 名，不返明文**（含 token） */
+export const fetchServerRcloneConf = (serverId: number) =>
+  get<{
+    path: string
+    server_id: number
+    server_name: string
+    configured: boolean
+    remotes: string[]
+    total: number
+  }>(`${S}/${serverId}/rclone-conf`)
+
+/** 保存这台 EA 的 rclone.conf（整份替换）。仅超级管理员可用 */
+export const saveServerRcloneConf = (serverId: number, conf: string) =>
+  post<{ success: boolean; path: string; remotes: string[]; total: number }>(
+    `${S}/${serverId}/rclone-conf`, { conf })
+
 // ==================== 115 账号与直挂（/api/admin/emby/115/*） ====================
 
 export const fetchPan115Accounts = () =>
-  get<{ accounts: Pan115Account[]; env_cookie_configured: boolean }>(`${E}/115/accounts`)
+  get<{ accounts: Pan115Account[]; env_cookie_configured: boolean
+        ua_presets: { value: string; label: string }[] }>(`${E}/115/accounts`)
 
 export const createPan115Account = (data: {
   name: string
@@ -1501,11 +1522,14 @@ export const createPan115Account = (data: {
   is_default?: boolean
   is_enabled?: boolean
   remark?: string
+  /** 该配置档发 115 请求用的 UA（留空 = 服务器级 MOUNT_UA） */
+  ua?: string
 }) => post<{ success: boolean; account: Pan115Account }>(`${E}/115/accounts`, data)
 
 export const updatePan115Account = (
   id: number,
-  data: { name?: string; cookie?: string; is_default?: boolean; is_enabled?: boolean; remark?: string }
+  data: { name?: string; cookie?: string; is_default?: boolean; is_enabled?: boolean
+          remark?: string; ua?: string }
 ) => put<{ success: boolean; account: Pan115Account }>(`${E}/115/accounts/${id}`, data)
 
 export const deletePan115Account = (id: number) => del<{ success: boolean }>(`${E}/115/accounts/${id}`)
