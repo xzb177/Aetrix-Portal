@@ -1413,8 +1413,7 @@ function typeLabel(t: string): string {
         <div class="scrape-block">
           <h3>定时扫描</h3>
           <p class="drawer-hint">
-            打开后，每天到点自动把所有本机负责的启用库入队扫描（增量：没变化的目录跳过）。
-            有扫描正在跑 / 排队时会跳过，不打断手工扫描。时间是服务器本地时间。
+            每天到点自动扫描所有启用库（增量，没变化的跳过）
           </p>
           <div v-if="autoScan" class="scrape-actions" style="align-items: center">
             <el-switch v-model="autoScan.enabled" active-text="开启" inactive-text="关闭" />
@@ -1440,8 +1439,7 @@ function typeLabel(t: string): string {
         <div class="scrape-block">
           <h3>追新</h3>
           <p class="drawer-hint">
-            打开后，每隔 N 分钟检查挂载上的新视频文件，发现即自动触发扫描 +
-            刮削（NFO 优先 → TMDB → 豆瓣）。只支持本机可读的挂载（含 rclone 挂载的网盘）。
+            每隔 N 分钟检查新文件，发现即自动扫描刮削
           </p>
           <div v-if="chaseNew" class="scrape-actions" style="align-items: center">
             <el-switch v-model="chaseNew.enabled" active-text="开启" inactive-text="关闭" />
@@ -1464,20 +1462,7 @@ function typeLabel(t: string): string {
             还没有检查过
           </div>
         </div>
-        <div class="scrape-block">
-          <h3>本页之外的三处</h3>
-          <p class="drawer-hint">
-            <strong>TMDB 密钥</strong>（多把轮换、逐把测试、失效自动冷却）在「元数据来源」页填，
-            本页只显示当前配了几把，不做第二个填写入口——同一把钥匙只该有一个地方能改。
-          </p>
-          <p class="drawer-hint">
-            <strong>rclone remote 与服务账号</strong>在「存储来源」页配置。
-          </p>
-          <p class="drawer-hint">
-            <strong>条目这一层的元数据</strong>（重刮单条、手动绑定 TMDB、补全进度）
-            在「元数据来源」页管理。
-          </p>
-        </div>
+        
       </div>
     </div>
 
