@@ -82,3 +82,30 @@ def test_retry_is_idempotent_and_bounded(db):
 
 def test_retry_on_empty_table_is_zero(db):
     assert pw.retry_failed(db) == 0
+
+
+def test_retry_handles_more_rows_than_sqlite_variable_limit(db):
+    """分块是真需求，不是保险：``id IN (...)`` 会把每个 id 变成一个绑定变量
+
+    SQLite 老版本上限 999。生产实测要捞回的是 2.6 万条，不分块就会在某些部署上
+    直接报「too many SQL variables」。这里造 1200 条跨过那根线。
+    """
+    lib_id = db.query(em.Library).first().id
+    db.bulk_save_objects([
+        em.MediaItem(
+            guid=f"g-bulk-{i}", library_id=lib_id, item_type="movie",
+            name=f"bulk{i}.mkv", file_path=f"/media/bulk{i}.mkv", container="mp4",
+            probe_status="failed", probe_attempts=5,
+        )
+        for i in range(1200)
+    ])
+    db.commit()
+
+    assert pw.retry_failed(db, limit=2000) == 1200
+    db.expire_all()
+    left = (db.query(em.MediaItem)
+            .filter(em.MediaItem.probe_status == "failed").count())
+    assert left == 0
+    assert (db.query(em.MediaItem)
+            .filter(em.MediaItem.probe_status == "pending",
+                    em.MediaItem.probe_attempts == 0).count()) == 1200

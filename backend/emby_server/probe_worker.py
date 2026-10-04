@@ -263,6 +263,10 @@ def reset_stale_probing(db=None) -> int:
             db.close()
 
 
+#: ``retry_failed`` 分块更新的块大小（远低于任何 SQLite/PostgreSQL 的变量上限）
+_RETRY_CHUNK = 500
+
+
 def retry_failed(db, limit: int = 5000) -> int:
     """把 ``failed`` 的探测条目捞回队列，返回拈回数（后台「重试失败探测」用）
 
@@ -282,10 +286,15 @@ def retry_failed(db, limit: int = 5000) -> int:
     ids = [r[0] for r in rows]
     if not ids:
         return 0
-    db.query(em.MediaItem).filter(em.MediaItem.id.in_(ids)).update(
-        {"probe_status": "pending", "probe_attempts": 0, "probe_next_retry_at": None},
-        synchronize_session=False,
-    )
+    # 分块更新：``id IN (...)`` 会把每个 id 变成一个绑定变量，SQLite 老版本上限 999，
+    # PostgreSQL 也有自己的上限。批量本来就可能捞回几千条（生产实测 2.6 万），
+    # 不分块就会在某些部署上直接报「too many SQL variables」。
+    for start in range(0, len(ids), _RETRY_CHUNK):
+        db.query(em.MediaItem).filter(
+            em.MediaItem.id.in_(ids[start:start + _RETRY_CHUNK])).update(
+            {"probe_status": "pending", "probe_attempts": 0, "probe_next_retry_at": None},
+            synchronize_session=False,
+        )
     db.commit()
     logger.info("重试失败探测：%d 条重新入队", len(ids))
     return len(ids)
@@ -464,7 +473,13 @@ def _fail(db, item, reason: str, error: Optional[str] = None) -> None:
 
 
 def _probe_one(item_id: int) -> str:
-    """探测单个条目（工作线程内自带 Session）。返回 done / skipped / failed"""
+    """探测单个条目（工作线程内自带 Session）。
+
+    返回值是给 ``run_once`` 计数用的，取值：
+    ``done``（探到时长）/ ``probed_no_duration``（跑完但无时长，可播放）/
+    ``degraded``（远程可访问但媒体信息不完整）/ ``skipped``（已探完或被抢走）/
+    ``paused_quota``（配额熔断中）/ ``failed``（真的探不出来）。
+    """
     _rate_limiter.acquire()
     db = SessionLocal()
     try:
@@ -539,7 +554,8 @@ def _probe_one(item_id: int) -> str:
             logger.warning("探测降级 item=%s：%s", item.id,
                            info.get("_error_detail", "远程媒体信息不完整"))
             return "degraded"
-        # 用翻译后的错误文案（403 配额问题不再含糊报"未返回有效时长"）
+        # 到这里已经排除了 duration_ticks / _error / _degraded 三种情况，剩下的就是
+        # 「跑完了但没给时长」与「有错但没被归类」两类，先分清再处置。
         err_detail = (info or {}).get("_error_detail") if info else None
         error = (info or {}).get("_error") if info else None
         if not error:
