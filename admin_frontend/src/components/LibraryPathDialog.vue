@@ -70,6 +70,11 @@ const backendLabel = computed(
   () => props.backends.find((b) => b.value === backend.value)?.label || backend.value,
 )
 
+/** 标题要能看出这是“换一条”还是“加一条”：弹窗开着时看不出区别会让人以为多了一条 */
+const dialogTitle = computed(() => (
+  props.preset ? `更换目录：${props.preset.path}` : '添加媒体路径'
+))
+
 /** 当前目录（远程来源是挂载内路径，本机来源是绝对路径） */
 const currentLabel = computed(() => currentPath.value || '/')
 
@@ -221,7 +226,7 @@ function confirmChecked() {
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="添加媒体路径"
+    :title="dialogTitle"
     width="min(620px, 94vw)"
     :close-on-click-modal="false"
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
