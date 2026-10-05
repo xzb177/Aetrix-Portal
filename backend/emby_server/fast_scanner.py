@@ -294,6 +294,45 @@ def _collect_files(paths: tuple[str, ...]) -> list[FastScanFile]:
     return files
 
 
+def _normalize_name(name: str) -> str:
+    """归一化名称用于去重：小写、去空格、去常见符号"""
+    import re
+    n = (name or "").lower().strip()
+    # 去掉年份括号、清晰度标签等
+    n = re.sub(r"\(\d{4}\)", "", n)
+    n = re.sub(r"[\s\.\-_]+", "", n)
+    return n
+
+
+def _dedupe_by_name_year(files: list[FastScanFile], parse_media_filename,
+                         lib_type: str) -> list[FastScanFile]:
+    """同名同年去重（用户 2026-10-05 要求）
+
+    两个挂载（/mnt/mp 和 /mnt/paul）有同名同年资源时只保留一个，
+    优先保留 /mnt/mp 的（主挂载）。
+    """
+    # 按挂载优先级排序：/mnt/mp 优先
+    def _priority(f: FastScanFile) -> int:
+        return 0 if f.path.startswith("/mnt/mp/") else 1
+
+    seen: dict[tuple[str, Optional[int]], FastScanFile] = {}
+    for f in sorted(files, key=_priority):
+        try:
+            parsed = parse_media_filename(f.path, lib_type)
+            key = (_normalize_name(parsed.get("name", "")), parsed.get("year"))
+        except Exception:
+            # 解析失败的用文件路径做 key（不去重）
+            key = (f.path, None)
+        if key not in seen:
+            seen[key] = f
+        # 已存在的跳过（保留优先挂载的）
+    deduped = list(seen.values())
+    removed = len(files) - len(deduped)
+    if removed:
+        logger.info("[fast] 同名同年去重：去掉 %d 个重复", removed)
+    return deduped
+
+
 def scan_library_fast(db, library, snapshot) -> dict:
     """极速扫描单个媒体库
 
@@ -320,6 +359,11 @@ def scan_library_fast(db, library, snapshot) -> dict:
     logger.info("[fast] 库 %s(%d) 开始拉清单", library.name, lib_id)
     files = _collect_files(snapshot.paths)
     logger.info("[fast] 共 %d 个视频文件", len(files))
+
+    # 1b. 同名同年去重（用户 2026-10-05 要求：两个挂载的同名同年资源合并）
+    # 按 (归一化名称, 年份) 去重，保留第一个（优先 /mnt/mp 的）
+    files = _dedupe_by_name_year(files, parse_media_filename, lib_type)
+    logger.info("[fast] 去重后 %d 个文件", len(files))
 
     # 2. 加载已有（一次查进内存）
     # 包括已软删除的：如果文件又出现了，需要取消删除
