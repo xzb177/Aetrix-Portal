@@ -1506,6 +1506,8 @@ class _Pending:
     # 否则首页会出现「某剧 第 1 集」这种伪剧集卡片。
     series_name: Optional[str] = None
     item: Any = None
+    claimed_id: Optional[int] = None  # 批次开头占位成功拿到的 id（None=没抢到）
+    claimed_item: Any = None  # 占位成功的行（强引用，防 identity map 弱引用被 GC）
     series: Any = None
     season: Any = None
     probe: Any = None   # Future[dict] | None
@@ -1850,8 +1852,9 @@ def _is_unique_violation(exc: IntegrityError) -> bool:
 def _claim_guid(db: Session, guid: str, library_id: int, defaults: dict) -> Optional[int]:
     """原子地「占位」一个 guid，返回 ID = 这次 INSERT 真的插进去了（None = 没抢到）
 
-    占位行就是最终那一行——调用方随后用 ``_resolve_conflict`` 把它查回来当 ORM
-    对象继续填字段，**不要**再 ``db.add`` 一个同 guid 的新对象（那等于自己撞自己）。
+    占位行就是最终那一行。调用方（``_claim_batch_guids``）随后用 IN 查询把本批
+    抢到的行取出来直接当 ORM 对象用，**不要**再 ``db.add`` 一个同 guid 的新对象
+    （那等于自己撞自己）。
 
     为什么需要它：``_load_items`` 是「先查有没有，再决定插不插」，而扫描期间
     同一个 guid 可能被**另一个 Session** 先插进去——跨进程扫描（另一台面板 /
@@ -1896,6 +1899,46 @@ def _claim_guid(db: Session, guid: str, library_id: int, defaults: dict) -> Opti
         # 插进去了，取 ID（SQLite/MySQL 没有 RETURNING，用 lastrowid）
         return res.lastrowid
     return None
+
+
+def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None:
+    """批量占位本批新文件的 guid，并把抢到的行取出来挂在 _pending 上。
+
+    ``_claim_guid`` 的 Core upsert 本身不产生 SELECT，但它只返回 id——如果随后
+    每个文件 ``db.get()`` 一次，identity map 里没有这行，162 个文件就是 162 次
+    SELECT，直接超冒烟预算。
+
+    这里把占位并成批：先把本批所有新 guid 一次占位完，再用
+    ``WHERE id IN (...)`` 把抢到的行一次性取出来（1~2 条语句），以**强引用**
+    挂在各 ``_pending.claimed_item`` 上。注意必须强引用：identity map 是弱引用，
+    不拿住的话对象会被 GC，后面就取不到了。
+
+    没抢到的（冲突）``claimed_item`` 为 None，调用方走 ``_resolve_conflict``
+    单查——冲突是小概率事件，不影响预算。
+    """
+    MI = emby_models.MediaItem
+    to_claim = []
+    for p in prepared:
+        p.claimed_id = None
+        p.claimed_item = None
+        if p.item is None:
+            to_claim.append(p)
+    for p in to_claim:
+        p.claimed_id = _claim_guid(db, p.guid, ctx.lib_id, {
+            "item_type": p.item_type,
+            "name": p.parsed["name"],
+            "file_path": p.scan_file.stored_path,
+        })
+    won_ids = [p.claimed_id for p in to_claim if p.claimed_id is not None]
+    by_id = {}
+    # 分片 IN 查询：SQL_IN_CHUNK=200，一批最多 400 个文件，至多 2 条语句
+    for chunk in _chunks(won_ids, SQL_IN_CHUNK):
+        for it in db.query(MI).filter(MI.id.in_(chunk)).all():
+            by_id[it.id] = it
+    for p in to_claim:
+        # 同一事务内刚占位的行，IN 查询一定能查到；万一没查到就让调用方走
+        # _resolve_conflict 兜底，不会丢条目
+        p.claimed_item = by_id.get(p.claimed_id)
 
 
 def _resolve_conflict(db: Session, guid: str) -> Any:
@@ -2459,8 +2502,12 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session):
         """
         before = set(ctx.seen_guids)
         for attempt in (1, 2):
-            yield from ((p.scan_file, p) for p in _prepare_and_prefetch(db, current, ctx, pool)
-                        if not p.skipped and not p.fast_skipped)
+            prepared = [p for p in _prepare_and_prefetch(db, current, ctx, pool)
+                        if not p.skipped and not p.fast_skipped]
+            # 批量占位 + 一次取回：写库循环里每个新文件直接用预热好的 ORM 对象，
+            # 不再产生逐文件 SELECT（资源预算）
+            _claim_batch_guids(db, prepared, ctx)
+            yield from ((p.scan_file, p) for p in prepared)
             _store_dir_states(db, ctx)   # 增量扫描：这批真处理过的目录指纹随本次提交写回
             outcome = commit_batch()
             if outcome != "conflict":
@@ -3147,25 +3194,17 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item = _pending.item
                     is_new = item is None
                     if is_new:
-                        # 原子占位 guid 再插：批次开头的 _load_items 说「没有」，
-                        # 但那之后到此刻之间另一个 Session 可能已经插进去了
-                        # （跨进程扫描 / 重叠任务 / 容器重启后重扫）。裸 db.add
-                        # 撞 ix_emby_items_guid 会让整批回滚、整库扫描 abort，
-                        # 所以这里让数据库自己裁决：抢到就插入一行占位，抢不到
-                        # 就取回别人那行。两条路径最后都拿到一个「已在库里」的
-                        # ORM 对象，下面那套字段赋值共用——注意占位成功后
-                        # **不能再 db.add 一个同 guid 的新对象**，那才是自己撞自己。
-                        claimed_id = _claim_guid(db, guid, ctx.lib_id, {
-                            "item_type": _pending.item_type,
-                            "name": parsed["name"],
-                            "file_path": full_path,
-                        })
-                        won = claimed_id is not None
-                        if won:
-                            # 自己抢到的：用 ID 直接取（identity map 命中，无额外查询）
-                            # v2.48.2: 避免 _resolve_conflict 的额外 SELECT
-                            item = db.get(emby_models.MediaItem, claimed_id)
-                        else:
+                        # 原子占位在批次开头已由 _claim_batch_guids 批量完成
+                        # （Core upsert，无 SELECT；抢到的行已取回并以强引用挂在
+                        # _pending.claimed_item 上）。这里直接用，不产生任何 SQL。
+                        # 跨 Session 竞态（另一进程/重叠任务/重启重扫）下没抢到的，
+                        # 走 _resolve_conflict 取回别人那行——两条路径最后都拿到
+                        # 一个「已在库里」的 ORM 对象，下面那套字段赋值共用。
+                        # 注意：占位成功后**不能再 db.add 一个同 guid 的新对象**，
+                        # 那才是自己撞自己。
+                        item = _pending.claimed_item
+                        won = item is not None
+                        if not won:
                             item = _resolve_conflict(db, guid)
                         if item is None:
                             # 占位行在别的未提交事务里，本事务看不到它。
