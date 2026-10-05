@@ -591,6 +591,38 @@ _TAIL_MOOV_CONTAINERS = frozenset({
 #: 但也别放到和 ffprobe 一样的 90 秒——那是兜底 seek 路径的量级。
 PROBE_HTTP_TIMEOUT = 45.0
 
+#: 探测**本机文件**（含 FUSE / rclone 挂载）的超时秒数。
+#:
+#: 原先本机与远端共用 90 秒，而 ffprobe 失败后还会再跑一次同样 90 秒的 MediaInfo
+#: 备用探测——单个文件最坏 180 秒。生产实测（2026-10-05）：4 核机器、``/mnt/mp``
+#: 是 fuse.rclone，mediainfo 常驻 D 状态（不可中断 IO），探测吞吐掉到约 1.3 个
+#: 文件/分钟，一千多个待探测条目堆着不动，同时把补全 worker 的 IO 一起堵住。
+#:
+#: 读文件头不需要 90 秒：正常文件秒级返回，读不出来的是挂载本身没响应，等满 90 秒
+#: 也等不到——只会白占一个 worker 槽位。
+PROBE_FILE_TIMEOUT = max(5.0, float(os.getenv("PROBE_FILE_TIMEOUT_SEC", "30") or 30))
+#: 远端 URL 的探测上限不变：网络慢是常态，砍时间会误伤真正在下载的大文件。
+PROBE_REMOTE_TIMEOUT = max(10.0, float(os.getenv("PROBE_REMOTE_TIMEOUT_SEC", "90") or 90))
+
+#: 最近一次 ffprobe 是否以超时告终。ffprobe 跑在多个 worker 线程里，所以用线程局部
+#: 存；判定只发生在紧接其后的调用点，不跨条目复用。
+_ffprobe_timeout_flag = threading.local()
+
+
+def _mark_ffprobe_timed_out() -> None:
+    _ffprobe_timeout_flag.timed_out = True
+
+
+def _last_ffprobe_timed_out() -> bool:
+    """读取「本次 ffprobe 是否超时」并**清零**（供 probe_metadata 决定要不要跑备用探测）
+
+    读完就清，避免上一条标记让后面的判定走偏；``_ffprobe`` 入口也会再清一次——
+    两处都清是刻意的：这里防「上一条」，入口防「上一跳」。
+    """
+    was = bool(getattr(_ffprobe_timeout_flag, "timed_out", False))
+    _ffprobe_timeout_flag.timed_out = False
+    return was
+
 
 # ffprobe 错误码翻译：把含糊的底层错误转成可行动的信息
 _FFPROBE_HTTP_ERRORS = {
@@ -654,8 +686,14 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
     cmd.append(target)
     # 扫描探测让路给播放（见文件头「扫描限速」）：只降这一条子命令，不碰本进程
     cmd = _io_nice_command(cmd)
+    # 本机文件（含 FUSE）与远端 URL 用不同上限：FUSE 读不出就是读不出，
+    # 干等 90 秒只是白占 worker 槽位（见 PROBE_FILE_TIMEOUT 的说明）。
+    _is_remote = (not local_path) and path.startswith(("http://", "https://"))
+    _timeout = PROBE_REMOTE_TIMEOUT if _is_remote else PROBE_FILE_TIMEOUT
+    # 每次调用先清零：上一次 ffprobe 超时不应让这一次的判定跟着走偏。
+    _ffprobe_timeout_flag.timed_out = False
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=_timeout)
         import json
 
         data = json.loads(out.stdout or "{}")
@@ -676,6 +714,14 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
                 else:
                     data["_error"] = f"http_{http_code}"
         return data
+    except subprocess.TimeoutExpired:
+        # 超时 ≠ 数据不对，而是「挂载/端点没响应」。标记给 probe_metadata，
+        # 让它跳过同样会超时的 MediaInfo 备用探测。
+        # 必须排在下面的宽 except **之前**：TimeoutExpired 继承自 SubprocessError，
+        # 被宽分支先吃掉的话这个专用处理永远轮不到（测试就是这么抓出来的）。
+        _mark_ffprobe_timed_out()
+        logger.warning("ffprobe 超时（%ss）%s: 挂载或端点无响应", _timeout, path)
+        return None
     except Exception as e:  # noqa: BLE001
         logger.warning("ffprobe 失败 %s: %s", path, e)
         return None
@@ -701,8 +747,10 @@ def _mediainfo(path: str, headers: Optional[dict] = None, size: int = 0) -> Opti
     if path.startswith(("http://", "https://")):
         return None
     cmd.append(path)
+    # 与 ffprobe 用同一个上限：FUSE 上超时意味着挂载没响应，
+    # 这时再等一次同样读不出东西。
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=PROBE_FILE_TIMEOUT)
         import json
         raw = json.loads(out.stdout or "{}")
         tracks = raw.get("media", {}).get("track", [])
@@ -1042,9 +1090,16 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
                 data = seekable
     used_mediainfo = False
     if not data or not data.get("format"):
-        # 本机文件再尝试 MediaInfo；远程 URL 不重复发起一次随机读取，
-        # 直接由调用方记 degraded（客户端仍可播放，信息不完整）。
-        fallback = _mediainfo(path, headers, size=size)
+        # ffprobe 是**超时**还是**读完但没数据**，决定还要不要跑 MediaInfo：
+        # 超时说明挂载本身没响应（生产上 /mnt/mp 是 fuse.rclone，mediainfo 常驻
+        # D 状态），再花一个 PROBE_FILE_TIMEOUT 读同一份字节只是白等——
+        # 单文件最坏耗时直接减半。读完没数据才值得换工具再试。
+        ffprobe_timed_out = _last_ffprobe_timed_out()
+        fallback = None
+        if not ffprobe_timed_out:
+            # 本机文件再尝试 MediaInfo；远程 URL 不重复发起一次随机读取，
+            # 直接由调用方记 degraded（客户端仍可播放，信息不完整）。
+            fallback = _mediainfo(path, headers, size=size)
         if fallback:
             data = fallback
             used_mediainfo = True
