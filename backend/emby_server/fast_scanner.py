@@ -194,7 +194,9 @@ def _rclone_list(fs: str, remote: str, recurse: bool = True) -> list[dict]:
             return data.get("list", [])
     except Exception as exc:
         logger.error("rclone list 失败 fs=%s remote=%s: %s", fs, remote, exc)
-        return []
+        # 关键安全：rclone 失败必须抛异常，不能返回空列表
+        # 否则调用方会误以为目录是空的，把库里所有文件标记为删除
+        raise RuntimeError(f"rclone list 失败 fs={fs} remote={remote}: {exc}") from exc
 
 
 def _parse_rclone_time(t: str) -> float:
