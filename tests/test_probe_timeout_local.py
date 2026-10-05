@@ -24,6 +24,9 @@ def test_local_probe_uses_short_timeout(monkeypatch):
     monkeypatch.setattr(
         scanner.subprocess, "run",
         lambda cmd, **kw: (seen.update(kw), _Result())[1])
+    # CI 的 ubuntu-latest 无 ffprobe：不 mock 的话 _ffprobe 入口直接返回 None，
+    # subprocess.run 根本不会被调到（KeyError: 'timeout' 就是这么来的）。
+    monkeypatch.setattr(scanner, "shutil_which", lambda c: "/usr/bin/ffprobe")
     scanner._ffprobe("/mnt/mp/movie.mkv")
     assert seen["timeout"] == scanner.PROBE_FILE_TIMEOUT
     assert seen["timeout"] < 90, "本机路径不该再等满 90 秒"
@@ -35,6 +38,7 @@ def test_remote_probe_keeps_long_timeout(monkeypatch):
     monkeypatch.setattr(
         scanner.subprocess, "run",
         lambda cmd, **kw: (seen.update(kw), _Result())[1])
+    monkeypatch.setattr(scanner, "shutil_which", lambda c: "/usr/bin/ffprobe")
     scanner._ffprobe("https://example.com/a.mp4", {"UA": "x"}, size=10)
     assert seen["timeout"] == scanner.PROBE_REMOTE_TIMEOUT
 
