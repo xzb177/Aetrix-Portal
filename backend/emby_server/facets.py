@@ -152,19 +152,26 @@ def prune_orphans(db: Session, commit: bool = True) -> int:
     批量删除（``db.query(MediaItem).filter(...).delete()``）走的是 Core 语句，
     ORM 的删除事件看不到，所以这里用一条 ``NOT IN`` 的 SQL 兜底：扫描的条目清理、
     后台删条目、任何将来的批量删除路径都不会留下孤儿行。
+
+    v2.48.1: NOT IN 在 PG 大表上太慢，改用 NOT EXISTS + 30s 超时。
     """
-    existing = select(em.MediaItem.id)
-    removed = (
-        db.query(em.ItemFacet)
-        .filter(~em.ItemFacet.item_id.in_(existing))
-        .delete(synchronize_session=False)
-    )
-    if removed:
-        invalidate_values_cache()
-        if commit:
-            db.commit()
-        logger.info("清理 %d 行失效的分类关联记录", removed)
-    return int(removed or 0)
+    from sqlalchemy import text as sa_text
+    try:
+        db.execute(sa_text("SET LOCAL statement_timeout = '30s'"))
+        result = db.execute(
+            sa_text("DELETE FROM emby_item_facets WHERE NOT EXISTS (SELECT 1 FROM emby_items WHERE emby_items.id = emby_item_facets.item_id)")
+        )
+        removed = result.rowcount or 0
+        if removed:
+            invalidate_values_cache()
+            if commit:
+                db.commit()
+            logger.info("清理 %d 行失效的分类关联记录", removed)
+        return int(removed)
+    except Exception as exc:
+        logger.warning("清理分类孤儿行失败（下次启动重试）: %s", exc)
+        db.rollback()
+        return 0
 
 
 def orphan_count(db: Session) -> int:
