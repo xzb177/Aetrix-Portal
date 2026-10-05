@@ -238,6 +238,23 @@ def _split_rclone_path(full_path: str) -> Optional[tuple[str, str]]:
 # 主流程
 # ---------------------------------------------------------------------------
 
+# 原盘结构目录（复用老代码 backend/emby_server/disc_filter.py 的口径）：
+# BDMV/STREAM 里的 .m2ts 是码流片段，不能当独立条目入库
+# （生产教训：一次扫描产出 3966 条这种碎片，占 movie 总数的 69%）
+DISC_STRUCTURE_DIRS = frozenset({
+    "BDMV", "VIDEO_TS", "CERTIFICATE", "AUXDATA", "SSIF",
+})
+
+
+def _is_disc_file(path: str) -> bool:
+    """路径是否在原盘结构目录下（如 /xxx/BDMV/STREAM/00000.m2ts）"""
+    upper = path.upper()
+    for d in DISC_STRUCTURE_DIRS:
+        if f"/{d}/" in upper:
+            return True
+    return False
+
+
 def _collect_files(paths: tuple[str, ...]) -> list[FastScanFile]:
     """从所有库路径收集文件清单"""
     files: list[FastScanFile] = []
@@ -263,6 +280,9 @@ def _collect_files(paths: tuple[str, ...]) -> list[FastScanFile]:
             if prefix and rpath.startswith(prefix):
                 rpath = rpath[len(prefix):]
             full = os.path.join(path, rpath)
+            # 原盘碎文件跳过（BDMV/STREAM/*.m2ts 等）
+            if _is_disc_file(full):
+                continue
             files.append(FastScanFile(
                 path=full,
                 name=name,
