@@ -753,3 +753,31 @@ def test_episode_with_own_nfo_takes_full_path(db, monkeypatch):
     res = enrich_worker._enrich_fetch(it, holder={}, inherit_parent=parent)
     assert not res.get("pure_inherit")
     assert provider.read_text_calls, "有自带 NFO 就应该真去读"
+
+
+def test_process_item_closes_read_transaction_before_slow_io(db, monkeypatch):
+    """补全进入 FUSE/TMDB 前，Session 不得停在 idle in transaction。"""
+    it = _make_item(db, item_type="movie", name="事务边界测试",
+                    file_path="/tmp/transaction-boundary.mp4",
+                    enrich_status="enriching", enrich_attempts=2)
+    seen = {}
+
+    def fake_fetch(item, **_kwargs):
+        seen["type"] = type(item)
+        seen["in_transaction"] = db.in_transaction()
+        return {"ok": False, "error": "测试用失败"}
+
+    monkeypatch.setattr(enrich_worker, "_enrich_fetch", fake_fetch)
+    outcome = enrich_worker._process_item(db, it)
+
+    assert outcome == "retry"
+    assert seen["type"] is enrich_worker._EnrichItemSnapshot
+    assert seen["in_transaction"] is False
+    assert not db.in_transaction()
+
+
+def test_empty_claim_rolls_back_read_transaction(db):
+    """没有待补全条目时，worker 睡眠前也不能留下 idle in transaction。"""
+    db.rollback()
+    assert enrich_worker._claim_batch(db, 10) == []
+    assert not db.in_transaction()

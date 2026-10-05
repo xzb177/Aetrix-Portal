@@ -29,6 +29,7 @@ import os
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -78,6 +79,59 @@ _alias_index: dict = {"rows": None, "at": 0.0}
 _worker_threads: list = []
 _stop_event = threading.Event()
 _worker_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _EnrichItemSnapshot:
+    """补全 IO 阶段使用的只读条目快照
+
+    ``_claim_batch`` 提交后 ORM 对象仍绑定在 worker 的 Session 上。若随后先查父级，
+    SQLAlchemy 会开启一个事务；再拿这个对象去读 FUSE / 请求 TMDB，就会把该事务
+    挂在慢 IO 上。把 IO 需要的字段复制出来，rollback 后再进入 IO，数据库连接
+    在整个慢阶段保持空闲且无事务。
+    """
+    id: int
+    library_id: int
+    enrich_attempts: int = 0
+    item_type: str = ""
+    name: str = ""
+    file_path: Optional[str] = None
+    size: int = 0
+    container: str = ""
+    production_year: Optional[int] = None
+    poster_path: Optional[str] = None
+    primary_image_url: Optional[str] = None
+    imdb_id: Optional[str] = None
+    aliases: Optional[str] = None
+    tmdb_id: Optional[str] = None
+    repair_requested_at: Optional[datetime] = None
+    overview: Optional[str] = None
+    series_id: Optional[int] = None
+    parent_id: Optional[int] = None
+
+
+def _snapshot_item(item: Any) -> _EnrichItemSnapshot:
+    """在当前短事务内读取 IO 所需字段，返回与 Session 无关的快照"""
+    return _EnrichItemSnapshot(
+        id=item.id,
+        library_id=item.library_id,
+        enrich_attempts=getattr(item, "enrich_attempts", 0) or 0,
+        item_type=item.item_type or "",
+        name=item.name or "",
+        file_path=item.file_path,
+        size=item.size or 0,
+        container=item.container or "",
+        production_year=item.production_year,
+        poster_path=item.poster_path,
+        primary_image_url=item.primary_image_url,
+        imdb_id=item.imdb_id,
+        aliases=item.aliases,
+        tmdb_id=item.tmdb_id,
+        repair_requested_at=item.repair_requested_at,
+        overview=item.overview,
+        series_id=item.series_id,
+        parent_id=item.parent_id,
+    )
 
 
 def _scanfile_from_item(item: Any) -> Optional[Any]:
@@ -663,6 +717,10 @@ def _claim_batch(db, limit: int) -> list:
         if ENRICH_LIBRARY_FAIRNESS:
             # 这一轮实际抢到的库（按优先级最高的那条算）作为下一轮的起点
             _library_turn(claimed[0].library_id)
+    else:
+        # 即使只是 SELECT，SQLAlchemy/PG 也会打开事务；worker 接下来会睡眠，
+        # 不 rollback 就会留下 idle in transaction，长期占着快照/连接。
+        db.rollback()
     return claimed
 
 
@@ -946,37 +1004,46 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
     v2.42.9 从 _worker_loop 里提出来：一是要给**整条**计时并记结果（阶段计数 +
     完成速率都靠它），二是让循环回到「抢一批 → 逐条处理」两行。行为与提之前一致。
     """
-    item_id = item.id
-    attempts = getattr(item, "enrich_attempts", 0) or 0
-    mount_id = _mount_id_of(item.file_path)
-    # ---- 纯继承预判（处方 3）：父级已 done 且有图/tmdb_id 才值得走 ----
-    inherit_parent = _inherit_parent_info(db, item)
-    # ---- IO 阶段（无写事务）：网络/磁盘全在这里 ----
+    # _claim_batch 的 commit 会让 ORM 对象过期；一次性复制字段后，后续 IO 不再
+    # 触碰 ORM 对象，避免属性访问重新开启一个事务。
+    snapshot = item if isinstance(item, _EnrichItemSnapshot) else _snapshot_item(item)
+    item_id = snapshot.id
+    attempts = snapshot.enrich_attempts
+    mount_id = _mount_id_of(snapshot.file_path)
+
+    # 父级查询是 IO 前唯一允许的 DB 读取；查询后明确 rollback，切断事务。
+    inherit_parent = _inherit_parent_info(db, snapshot)
+    if db.in_transaction():
+        db.rollback()
+
+    # ---- IO 阶段：没有 ORM 对象，也没有数据库事务 ----
     try:
-        fetched = _enrich_fetch(item, holder=holder,
+        fetched = _enrich_fetch(snapshot, holder=holder,
                                 inherit_parent=inherit_parent)
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全 IO 失败 id=%s: %s", item_id, exc)
         db.rollback()
         from backend.emby_server import mounts as mount_lib
         if isinstance(exc, mount_lib.MountError):
-            # 存储不可用：打回 pending + 长退避，不是 failed
             return _requeue_mount_unavailable(db, item_id, mount_id)
         return _mark_failed(db, item_id, attempts, str(exc))
     if not fetched.get("ok"):
         db.rollback()
         return _mark_failed(db, item_id, attempts,
                             fetched.get("error") or "fetch failed")
-    # ---- 写库阶段（单条短事务） ----
+
+    # ---- 写库阶段：重新加载 ORM，单条短事务 ----
     try:
+        db.rollback()  # 防止 IO 前任何只读查询把事务带进写回阶段
         fresh = db.query(em.MediaItem).filter(
             em.MediaItem.id == item_id).first()
         if fresh is None:
+            db.rollback()
             return "skip"
         _enrich_apply(db, fresh, fetched)
+        outcome = "done" if (fresh.enrich_status or "") == "done" else "retry"
         db.commit()
-        # 写库阶段把状态落成 done / pending（未披干净=留待下次）
-        return "done" if (fresh.enrich_status or "") == "done" else "retry"
+        return outcome
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全写库失败 id=%s: %s", item_id, exc)
         db.rollback()
@@ -986,11 +1053,15 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
 def _worker_loop(worker_id: int) -> None:
     logger.info("补全 worker #%d 启动（L2/L3 后台补全）", worker_id)
     db = SessionLocal()
+    # _claim_batch 提交后不要让 ORM 条目过期；否则下面访问 series_id / file_path
+    # 会重新 SELECT，打开一个事务，再把它带进 FUSE/TMDB 慢 IO。
+    db.expire_on_commit = False
     try:
         while not _stop_event.is_set():
             try:
                 batch = _claim_batch(db, ENRICH_BATCH)
             except Exception as exc:  # noqa: BLE001
+                db.rollback()
                 logger.warning("补全 worker 取单失败: %s", exc)
                 _stop_event.wait(ENRICH_IDLE_POLL_SEC)
                 continue
