@@ -607,7 +607,24 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             # 否则这批条目会永远停在 pending 反复重试。
             # （终态分支例外：TMDB 都搜过了还没有 id，overview 只能来自
             #   TMDB/兜底，重试也不会有——不再为它白付一轮退避。）
-            if not alt_hit and not multi_fields:
+            #
+            # v2.49.0 修正：原实现只问「兜底源有没有命中」，**从不看条目自己是否
+            # 已经拿到核心字段**。生产实测（2026-10-05）：外语电影库里 571 条
+            # 全部有标题 + 年份、104 条有 tmdb_id，却因为简介为空被判 _incomplete
+            # → 退回 pending → worker 反复重刮，队列永远不降。
+            # 口径改成「条目自身的核心字段齐了就完成」：标题 / 年份 / 海报三者有其二，
+            # 或已有 tmdb_id，即视为刮干净。简介缺失只降级为可重试而非永久 pending。
+            #
+            # 注意**不能**把 alt_hit / multi_fields 算进来：它们只说明「这一轮抓到了
+            # 什么」，不说明条目是否已经刮干净——把它们算进去会让只有标题、没有年份
+            # 和海报的条目被判完成（测试 test_stays_pending_when_only_title_... 就是
+            # 抓这个的），真正没刮干净的条目被静默放过。
+            has_core = bool(item.tmdb_id) or sum(bool(x) for x in (
+                (item.name or "").strip(),
+                item.production_year is not None,
+                bool(item.poster_path or item.primary_image_url),
+            )) >= 2
+            if not has_core:
                 _incomplete = True
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。

@@ -60,6 +60,11 @@ DEFAULT_INTERVAL = 10  # 分钟
 MIN_INTERVAL = 5
 MAX_INTERVAL = 120
 
+#: 单个目录的 ``find`` 超时秒数。超时不会丢数据——会退回 ``_scandir_new_videos``
+#: （慢但能跑完），所以这里不需要设很大；生产上 FUSE 目录 60 秒都扫不完，
+#: 早降级早拿到结果。
+_FIND_TIMEOUT_SEC = max(10, int(os.getenv("CHASE_NEW_FIND_TIMEOUT", "60") or 60))
+
 # 视频扩展名白名单
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm"}
 
@@ -303,7 +308,14 @@ def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
 
 
 def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
-    """找出 since_ts 之后新增/修改的视频文件（用 find -newermt，C 实现比 os.walk 快）"""
+    """找出 since_ts 之后新增/修改的视频文件（用 find -newermt，C 实现比 os.walk 快）
+
+    FUSE / rclone 挂载上 ``find`` 常在 60 秒内扫不完大目录。旧实现超时后直接
+    ``跳过``——那意味着**这个目录的新片这一轮彻底丢失**，直到下一次定时扫描
+    才可能补上（生产实测 2026-10-05：``/mnt/paul`` 上 find 超时被跳过多次）。
+    现在超时后改走 Python 侧的 scandir（带 mtime 过滤），慢但能跑完；
+    两种方式都失败才如实记一条告警，不再静默丢。
+    """
     import subprocess
     from datetime import datetime, timezone
 
@@ -319,16 +331,47 @@ def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
     for base in paths:
         try:
             cmd = ["find", base, "-type", "f", "-newermt", since_str, "("] + ext_args + [")", "-print"]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=_FIND_TIMEOUT_SEC)
             if result.returncode == 0 and result.stdout.strip():
                 new_files.extend(line for line in result.stdout.strip().split("\n") if line)
             elif result.returncode != 0:
                 logger.warning("[chase-new] find %s 失败: %s", base, result.stderr[:200])
         except subprocess.TimeoutExpired:
-            logger.warning("[chase-new] find %s 超时（60s），跳过", base)
+            logger.warning(
+                "[chase-new] find %s 超时（%ss），改用 scandir 兜底",
+                base, _FIND_TIMEOUT_SEC)
+            new_files.extend(_scandir_new_videos(base, since_ts))
         except Exception as e:
             logger.warning("[chase-new] find %s 异常: %s", base, e)
     return new_files
+
+
+def _scandir_new_videos(base: str, since_ts: float) -> list[str]:
+    """``find`` 超时后的兜底：os.scandir + mtime 过滤（慢，但不会丢整个目录）
+
+    不用 ``os.walk``：它默认对每个目录都 ``stat``，在 FUSE 上会额外放大往返。
+    ``scandir`` 的 ``entry.stat()`` 只在需要时付代价，且我们本来就要 mtime。
+    单个目录读不动就跳过该目录并记告警——宁可少一个目录，不要整轮失败。
+    """
+    import os
+
+    found: list = []
+    try:
+        with os.scandir(base) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if not entry.name.lower().endswith(tuple(e.lower() for e in VIDEO_EXTS)):
+                        continue
+                    if entry.stat(follow_symlinks=False).st_mtime <= since_ts:
+                        continue
+                except OSError:
+                    continue      # 单个条目读不动就跳过，不影响其余
+                found.append(entry.path)
+    except OSError as exc:
+        logger.warning("[chase-new] scandir %s 失败: %s", base, exc)
+    return found
 
 
 #: 库 id 的合理上限（SQLite/PG 的主键都是 64 位整数）。粘进来的超长数字串直接丢掉，
