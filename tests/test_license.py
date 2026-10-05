@@ -208,3 +208,172 @@ def test_expire_reclaimer_single_failure_does_not_block_others():
         assert statuses["user2"] == "expired"
     finally:
         db.close()
+
+
+# ==================== 第二遍打磨新增测试 ====================
+
+def _rate_limit_error():
+    """构造一个限流 403：带 X-RateLimit-Remaining: 0 头"""
+    import urllib.error
+    from email.message import Message
+    hdrs = Message()
+    hdrs["X-RateLimit-Remaining"] = "0"
+    hdrs["X-RateLimit-Reset"] = "9999999999"  # 很大的值会被 cap 到 300s
+    return urllib.error.HTTPError(
+        url="https://api.github.com/x", code=403, msg="Forbidden",
+        hdrs=hdrs, fp=None,
+    )
+
+
+def test_rate_limit_retries_and_succeeds(monkeypatch):
+    """限流时自动退避重试，恢复后成功（不抛异常）"""
+    import urllib.error
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"{}"
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _rate_limit_error()
+        return FakeResp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    # 睡眠 mock 掉，避免测试真等
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    result = license_github._api_request(
+        "PUT", "https://api.github.com/x", "token"
+    )
+    assert result == {}
+    assert calls["n"] == 3
+
+
+def test_rate_limit_exhausted_raises_distinct_error(monkeypatch):
+    """重试耗尽后抛 GitHubRateLimitError（不是普通 GitHubPackageError）"""
+    monkeypatch.setattr(
+        "urllib.request.urlopen", mock.Mock(side_effect=_rate_limit_error())
+    )
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    with pytest.raises(license_github.GitHubRateLimitError):
+        license_github._api_request(
+            "PUT", "https://api.github.com/x", "token"
+        )
+
+
+def test_403_without_rate_limit_headers_is_not_retried(monkeypatch):
+    """权限不足的 403（无 rate limit 头）不重试，直接报权限错误"""
+    import urllib.error
+    err = urllib.error.HTTPError(
+        url="https://api.github.com/x", code=403, msg="Forbidden",
+        hdrs={}, fp=None,
+    )
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        calls["n"] += 1
+        raise err
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    with pytest.raises(license_github.GitHubPackageError) as e:
+        license_github._api_request("PUT", "https://api.github.com/x", "token")
+    # 不是限流错误，且只试了一次
+    assert not isinstance(e.value, license_github.GitHubRateLimitError)
+    assert "权限不足" in str(e.value)
+    assert calls["n"] == 1
+
+
+def test_unique_constraint_prevents_duplicate_active():
+    """DB 唯一约束：同一用户同一包不能有两条 active"""
+    from sqlalchemy.exc import IntegrityError
+    db = SessionLocal()
+    try:
+        db.add(em.License(
+            github_username="dupuser", package_name="aetrix-web",
+            granted_at=license_github.utcnow(),
+            expires_at=license_github.utcnow(),
+            status="active",
+        ))
+        db.commit()
+        db.add(em.License(
+            github_username="dupuser", package_name="aetrix-web",
+            granted_at=license_github.utcnow(),
+            expires_at=license_github.utcnow(),
+            status="active",
+        ))
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+        # 但 expired 的历史记录不冲突：可重新发放
+        db.add(em.License(
+            github_username="dupuser", package_name="aetrix-web",
+            granted_at=license_github.utcnow(),
+            expires_at=license_github.utcnow(),
+            status="expired",
+        ))
+        db.commit()  # 不抛异常
+    finally:
+        db.close()
+
+
+def test_utcnow_is_naive_utc():
+    """utcnow() 返回 naive UTC 时间（与 datetime.now(timezone.utc) 差值极小）"""
+    from datetime import timezone
+    got = license_github.utcnow()
+    assert got.tzinfo is None
+    ref = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert abs((ref - got).total_seconds()) < 5
+
+
+def test_worker_stops_batch_on_rate_limit():
+    """worker 遇到限流立刻停下本轮，不继续烧配额"""
+    db = SessionLocal()
+    try:
+        for u in ("rl1", "rl2", "rl3"):
+            db.add(em.License(
+                github_username=u, package_name="aetrix-web",
+                granted_at=license_github.utcnow(),
+                expires_at=license_github.utcnow(),
+                status="active",
+            ))
+        # expires_at 设成过去（utcnow 当下会有微秒差，减 1 秒确保过期）
+        from datetime import timedelta
+        for lic in db.query(em.License).all():
+            lic.expires_at = license_github.utcnow() - timedelta(seconds=1)
+        db.commit()
+
+        with mock.patch.object(
+            license_github, "get_token_from_db", side_effect=_mock_token
+        ), mock.patch.object(
+            license_github, "revoke_package_access",
+            side_effect=license_github.GitHubRateLimitError("限流"),
+        ) as mock_revoke:
+            n = license_worker._reclaim_expired_once()
+            assert n == 0
+            # 只试了一次就熔断，没把三个都试一遍
+            assert mock_revoke.call_count == 1
+
+        # 三条都还是 active，下一轮再试
+        assert db.query(em.License).filter(
+            em.License.status == "active").count() == 3
+    finally:
+        db.close()
+
+
+def test_token_error_points_to_admin_panel():
+    """token 缺失/失效的错误信息指引去管理后台更新"""
+    db = SessionLocal()
+    try:
+        with mock.patch(
+            "backend.integrations.store.get_value", return_value=""
+        ):
+            with pytest.raises(license_github.GitHubPackageError) as e:
+                license_github.get_token_from_db(db)
+            assert "管理后台" in str(e.value)
+            assert "github_package_token" in str(e.value)
+    finally:
+        db.close()

@@ -597,9 +597,20 @@ class License(Base):
 
     用户付款后，系统自动调 GitHub API 给他的 GitHub 账号加对应 container
     package 的读权限；到期后由 license_worker 自动回收。
+
+    并发安全：(github_username, package_name, status) 唯一约束——
+    两管理员同时给同一人发同一包时，只有一个能写入 active 记录，
+    另一个触发 IntegrityError 后由 license_api 幂等返回已有记录。
+    同一用户同一包的历史记录（expired/revoked）不受影响，可重复发放。
     """
 
     __tablename__ = "aetrix_licenses"
+    __table_args__ = (
+        UniqueConstraint(
+            "github_username", "package_name", "status",
+            name="uq_license_user_pkg_status",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     # 被授权人的 GitHub 用户名

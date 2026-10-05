@@ -8,10 +8,16 @@
     license_worker.start_license_reclaimer()
 
 daemon 线程，随进程退出；同一进程只启动一次。
+
+第二遍打磨（审查意见落实）：
+- 时间统一用 naive UTC（license_github._utcnow），不混本地时区；
+- 限流熔断：收到 GitHubRateLimitError 立刻停下本轮，剩下的下一轮再试，
+  而不是把每个条目都试一遍烧光配额；
+- 部分失败隔离：单个 revoke 失败只回滚自己，不影响其它条目，
+  且回收循环本身绝不抛异常中断 daemon。
 """
 import logging
 import threading
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +29,13 @@ _SCHEDULER_LOCK = threading.Lock()
 
 
 def _reclaim_expired_once() -> int:
-    """回收一轮过期的授权，返回回收数量"""
+    """回收一轮过期的授权，返回成功回收数量"""
     from backend.database import SessionLocal
     from backend.emby_server import license_github, models
 
     db = SessionLocal()
     try:
-        now = datetime.now()
+        now = license_github.utcnow()
         expired = (
             db.query(models.License)
             .filter(
@@ -37,6 +43,7 @@ def _reclaim_expired_once() -> int:
                 models.License.expires_at.isnot(None),
                 models.License.expires_at < now,
             )
+            .order_by(models.License.expires_at.asc())
             .all()
         )
         if not expired:
@@ -50,28 +57,42 @@ def _reclaim_expired_once() -> int:
 
         count = 0
         for lic in expired:
+            # 先取出来，后面 rollback 不影响日志打印
+            username = lic.github_username
+            package = lic.package_name
+            lic_id = lic.id
             try:
-                license_github.revoke_package_access(
-                    lic.github_username, lic.package_name, token
+                license_github.revoke_package_access(username, package, token)
+            except license_github.GitHubRateLimitError as e:
+                # 限流熔断：停下本轮，剩下的下一轮再试
+                logger.warning(
+                    "GitHub 限流，授权回收本轮中止（已回收 %d 条，剩余下轮）：%s",
+                    count, e,
                 )
-                lic.status = "expired"
-                lic.updated_at = now
-                db.commit()
-                count += 1
-                logger.info(
-                    "授权到期自动回收：%s -/-> %s",
-                    lic.github_username, lic.package_name,
-                )
+                break
             except license_github.GitHubPackageError as e:
                 # 单个失败不影响其它，下一轮再试
                 db.rollback()
                 logger.warning(
                     "授权回收失败（下一轮重试）：%s -> %s：%s",
-                    lic.github_username, lic.package_name, e,
+                    username, package, e,
                 )
+                continue
             except Exception as e:  # noqa: BLE001 — 同上
                 db.rollback()
-                logger.warning("授权回收异常：%s", e)
+                logger.warning(
+                    "授权回收异常（id=%s）：%s", lic_id, e,
+                )
+                continue
+            try:
+                lic.status = "expired"
+                lic.updated_at = license_github.utcnow()
+                db.commit()
+                count += 1
+                logger.info("授权到期自动回收：%s -/-> %s", username, package)
+            except Exception as e:  # noqa: BLE001 — 写库失败不影响其它
+                db.rollback()
+                logger.warning("授权状态写库失败（id=%s）：%s", lic_id, e)
         return count
     finally:
         db.close()
