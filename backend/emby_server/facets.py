@@ -157,7 +157,10 @@ def prune_orphans(db: Session, commit: bool = True) -> int:
     """
     from sqlalchemy import text as sa_text
     try:
-        db.execute(sa_text("SET LOCAL statement_timeout = '30s'"))
+        # statement_timeout 是 PG 专用语法：SQLite/MySQL 下跳过
+        #（冒烟测试跑 SQLite；生产是 PG，超时熔断只在生产生效）
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            db.execute(sa_text("SET LOCAL statement_timeout = '30s'"))
         result = db.execute(
             sa_text("DELETE FROM emby_item_facets WHERE NOT EXISTS (SELECT 1 FROM emby_items WHERE emby_items.id = emby_item_facets.item_id)")
         )
