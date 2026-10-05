@@ -253,6 +253,14 @@ def main() -> int:
             logger.warning(f"启动数据库备份调度失败（可忽略）: {e}")
 
         try:
+            from backend.emby_server import license_worker
+            if license_worker.start_license_reclaimer():
+                started.append("license_reclaimer")
+                logger.info("✅ 授权过期回收已启动")
+        except Exception as e:
+            logger.warning(f"启动授权回收失败（可忽略）: {e}")
+
+        try:
             from backend.emby_server import change_watcher
             change_watcher.start_chase_new_watcher()
             started.append("change_watcher")

@@ -592,6 +592,41 @@ class LocalCacheStat(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class License(Base):
+    """Aetrix 授权：GitHub Package 读权限的发放记录（v2.50.0）
+
+    用户付款后，系统自动调 GitHub API 给他的 GitHub 账号加对应 container
+    package 的读权限；到期后由 license_worker 自动回收。
+
+    并发安全：(github_username, package_name, status) 唯一约束——
+    两管理员同时给同一人发同一包时，只有一个能写入 active 记录，
+    另一个触发 IntegrityError 后由 license_api 幂等返回已有记录。
+    同一用户同一包的历史记录（expired/revoked）不受影响，可重复发放。
+    """
+
+    __tablename__ = "aetrix_licenses"
+    __table_args__ = (
+        UniqueConstraint(
+            "github_username", "package_name", "status",
+            name="uq_license_user_pkg_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 被授权人的 GitHub 用户名
+    github_username = Column(String(100), nullable=False, index=True)
+    # 包名，如 aetrix-web / aetrix-api（不含 ghcr.io/xzb177/ 前缀）
+    package_name = Column(String(200), nullable=False)
+    # 授权发放时间
+    granted_at = Column(DateTime, default=datetime.now)
+    # 到期时间；NULL = 永久
+    expires_at = Column(DateTime, index=True)
+    # active / expired / revoked
+    status = Column(String(20), default="active", nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 # 软删除的全局可见性过滤器（v2.48.0）在这里装上：它注册在 sqlalchemy.orm.Session
 # 类上，所以只要 MediaItem 这个模型被导入过，它就生效——也就是说，本仓库里任何
 # 会查条目的代码（不只 emby_server 下的）都自动看不到已下架的条目。
@@ -609,4 +644,5 @@ __all__ = [
     "EmbyApiToken",
     "LocalCacheEntry",
     "LocalCacheStat",
+    "License",
 ]
