@@ -1678,6 +1678,12 @@ def _incremental_on(ctx: "_ScanContext") -> bool:
 SCAN_LAYERED = (os.getenv("SCAN_LAYERED", "1") or "1").strip().lower() \
     not in {"0", "false", "no", "off"}
 
+# 强制远程模式（2026-10-05）：FUSE 挂载（如 /mnt/mp）有本地路径但 IO 并不快，
+# 按"本地"处理会走 side/NFO 的逐文件慢操作。设为 1 后，所有文件都按远程处理，
+# 跳过逐文件的 FUSE 慢操作，只做极简入库。简洁/高效/稳定：默认关闭，按需开启。
+SCAN_FORCE_REMOTE = (os.getenv("SCAN_FORCE_REMOTE", "0") or "0").strip().lower() \
+    not in {"0", "false", "no", "off"}
+
 
 def _fast_skip_enabled() -> bool:
     """文件指纹秒跳总开关（v2.40.0）：1=开（默认）。运行时读环境变量，
@@ -2379,7 +2385,8 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             # 保证本地海报扫描完立即可见）；远程文件跳过全部 IO（网络慢，后台补）。
             # 写库时 enrich_status='pending'，enrich_worker 随后补完剩下的。
             pending.layered = True
-            pending.layered_local_fast = bool(scan_file.local_dir)
+            # SCAN_FORCE_REMOTE=1 时强制按远程处理（FUSE 有本地路径但 IO 慢）
+            pending.layered_local_fast = bool(scan_file.local_dir) and not SCAN_FORCE_REMOTE
         if pending.probe_needed:
             if PROBE_BACKGROUND:
                 # Phase 1：不提交 ffprobe（连 probe_input 的直链解析都省了），
