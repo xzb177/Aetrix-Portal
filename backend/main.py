@@ -53,6 +53,7 @@ from backend.api.admin_services import services_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
+from backend.emby_server.license_api import router as license_router
 # v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
 # 只提供能力，密钥一律由管理员自己填。
 from backend.api.capabilities_admin import capabilities_router
@@ -610,6 +611,8 @@ app.include_router(admin_reminders_router)
 app.include_router(admin_orders_router)
 # 优惠券管理（v2.10.0）：券的 CRUD / 核销记录 / 开关，见 backend/api/coupons_admin.py
 app.include_router(admin_coupons_router)
+# 授权自动分发（v2.50.0）：GHCR 私有镜像的授权发放/回收，见 backend/emby_server/license_api.py
+app.include_router(license_router)
 # 外部服务能力中心（v2.19.0）：能力总览 / 配置 / 测试，见 backend/api/capabilities_admin.py
 app.include_router(capabilities_router)
 # 用户端 AI 助手（v2.19.0）：能力「AI 模型设置」的消费点，见 backend/api/assistant.py
