@@ -43,8 +43,9 @@ def _guid_of(path: str) -> str:
 # ==================== 第 1 层：_claim_guid 原子占位 ====================
 
 def test_claim_guid_inserts_when_absent(db):
-    """库里没有 → 占位成功（返回 True），行确实落库了"""
-    assert scanner._claim_guid(db, "g1", 17, {"item_type": "episode", "name": "x"}) is True
+    """库里没有 → 占位成功（返回新行 id），行确实落库了"""
+    claimed_id = scanner._claim_guid(db, "g1", 17, {"item_type": "episode", "name": "x"})
+    assert isinstance(claimed_id, int)
     assert db.query(emby_models.MediaItem).filter_by(guid="g1").count() == 1
 
 
@@ -57,7 +58,7 @@ def test_claim_guid_returns_false_when_taken(db):
                              item_type="episode", name="原名"))
     db.commit()
 
-    assert scanner._claim_guid(db, "g1", 17, {"item_type": "movie", "name": "新名"}) is False
+    assert scanner._claim_guid(db, "g1", 17, {"item_type": "movie", "name": "新名"}) is None
 
     row = db.query(emby_models.MediaItem).filter_by(guid="g1").one()
     assert row.name == "原名", "占位失败时不允许覆盖已有条目"
@@ -77,8 +78,8 @@ def test_claim_guid_is_atomic_against_a_second_connection(db):
                                   item_type="episode", name="抢先的"))
     other.commit()
 
-    # 本 Session 占位：必须失败
-    assert scanner._claim_guid(db, guid, 17, {"item_type": "episode", "name": "本轮的"}) is False
+    # 本 Session 占位：必须失败（返回 None）
+    assert scanner._claim_guid(db, guid, 17, {"item_type": "episode", "name": "本轮的"}) is None
 
     # 且库里仍然只有一行，名字没被覆盖
     assert other.query(emby_models.MediaItem).filter_by(guid=guid).count() == 1
@@ -147,6 +148,11 @@ def test_batch_conflict_rewinds_seen_guids_so_retry_actually_reruns(monkeypatch)
             self.scan_file = scan_file
             self.skipped = False
             self.fast_skipped = False
+            self.item = None
+            self.item_type = "movie"
+            self.parsed = {"name": guid}
+            self.claimed_id = None
+            self.claimed_item = None
 
     guids = ["g1", "g2", "g3"]
 
@@ -167,6 +173,9 @@ def test_batch_conflict_rewinds_seen_guids_so_retry_actually_reruns(monkeypatch)
     monkeypatch.setattr(scanner, "_prepare_and_prefetch", fake_prepare)
     monkeypatch.setattr(scanner, "_store_dir_states", lambda db, ctx: None)
     monkeypatch.setattr(scanner, "_library_exists", lambda db, lib_id: True)
+    # 本测试只验证冲突重试语义，占位逻辑由上面的单测覆盖，这里 stub 掉
+    #（FakeDb 没有真实 bind，走 _claim_guid 的方言分支会炸）
+    monkeypatch.setattr(scanner, "_claim_batch_guids", lambda db, prepared, ctx: None)
 
     commits = {"n": 0}
 
@@ -233,3 +242,90 @@ def test_batch_conflict_rewinds_seen_guids_so_retry_actually_reruns(monkeypatch)
         ["/m/g2.mkv"],
         ["/m/g3.mkv"],
     ], f"重试必须重新准备本批，实际：{prepared_batches}"
+
+
+# ==================== 第 3 层：批量占位 + 预热（v2.48.3）====================
+
+def test_claim_batch_guids_warms_items_without_per_file_select(db):
+    """_claim_batch_guids：批量占位后，一次 IN 查询取回，写库循环直接用对象、零逐文件 SELECT。
+
+    回归目标：冒烟测试曾抓到每个新文件一次 db.get() SELECT（162 文件=169 次）。
+    这里用事件计数证明：预热后取对象不再产生 emby_items 上的 SELECT。
+    """
+    from sqlalchemy import event
+
+    class FakeScanFile:
+        stored_path = "/mnt/x/a.mkv"
+
+    class FakePending:
+        def __init__(self, guid, name):
+            self.guid = guid
+            self.parsed = {"name": name}
+            self.item_type = "movie"
+            self.item = None
+            self.scan_file = FakeScanFile()
+            self.claimed_id = None
+            self.claimed_item = None
+
+    class FakeCtx:
+        lib_id = 17
+
+    pendings = [FakePending(f"g{i}", f"片名{i}") for i in range(5)]
+    scanner._claim_batch_guids(db, pendings, FakeCtx())
+
+    # 都占位成功，且对象已挂好（强引用，防 GC）
+    assert all(p.claimed_id is not None for p in pendings)
+    assert all(p.claimed_item is not None for p in pendings)
+    assert all(p.claimed_item.guid == p.guid for p in pendings)
+
+    # 此后取对象：不允许再有 emby_items 上的 SELECT
+    selects = []
+
+    @event.listens_for(db.bind, "before_cursor_execute")
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip()[:6].upper() == "SELECT" and "emby_items" in statement:
+            selects.append(statement)
+
+    try:
+        for p in pendings:
+            item = p.claimed_item
+            # 模拟写库循环的字段填充（纯内存操作）
+            item.name = item.name + "-filled"
+        db.flush()
+    finally:
+        event.remove(db.bind, "before_cursor_execute", _count)
+
+    assert selects == [], f"预热后仍有逐文件 SELECT: {selects[:2]}"
+    # 字段确实写进去了（同一事务内可见）
+    assert db.query(emby_models.MediaItem).filter_by(guid="g0").one().name == "片名0-filled"
+
+
+def test_claim_batch_guids_conflict_leaves_claimed_item_none(db):
+    """没抢到的（别人先插了），claimed_item 为 None，调用方走 _resolve_conflict 兜底"""
+    db.add(emby_models.MediaItem(guid="g1", library_id=17,
+                                item_type="movie", name="别人先插的"))
+    db.commit()
+
+    class FakeScanFile:
+        stored_path = "/mnt/x/a.mkv"
+
+    class FakePending:
+        def __init__(self, guid):
+            self.guid = guid
+            self.parsed = {"name": "x"}
+            self.item_type = "movie"
+            self.item = None
+            self.scan_file = FakeScanFile()
+            self.claimed_id = None
+            self.claimed_item = None
+
+    class FakeCtx:
+        lib_id = 17
+
+    p = FakePending("g1")
+    scanner._claim_batch_guids(db, [p], FakeCtx())
+    assert p.claimed_id is None
+    assert p.claimed_item is None
+    # 兜底能取回那行
+    row = scanner._resolve_conflict(db, "g1")
+    assert row.name == "别人先插的"
