@@ -157,7 +157,7 @@ def test_cache_control_taxonomy():
     assert cdn.cache_control_for("/emby/videos/x/main.m3u8") == "no-store"
     assert cdn.cache_control_for("/emby/Users/abc") == cdn.NO_STORE
     assert cdn.cache_control_for("/emby/videos/x/1.ts") == cdn.SEGMENT_CACHE_HEADER
-    assert cdn.SEGMENT_CACHE_HEADER == "public, max-age=300, s-maxage=21600"
+    assert cdn.SEGMENT_CACHE_HEADER == "public, max-age=21600, s-maxage=21600, immutable"
 
 
 # ---------- 与 play_line / 播放面打通 ----------
