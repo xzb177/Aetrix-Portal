@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from backend.emby_server.filename_meta import parse_filename, resolution_to_wh
+
 logger = logging.getLogger("fast_scanner")
 
 # ---------------------------------------------------------------------------
@@ -469,6 +471,10 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
         parsed = parse_media_filename(f.path, lib_type)
         season_no = parsed.get("season")
         episode_no = parsed.get("episode")
+        # 文件名元数据（零 Drive 调用）：分辨率 / 编码 / 发行来源直接入库，
+        # Width/Height 由分辨率推算，供客户端详情页与播放器显示。
+        fn_meta = parse_filename(f.name)
+        fn_w, fn_h = resolution_to_wh(fn_meta.get("resolution"))
 
         if lib_type == "tvshows" and season_no is not None:
             # 剧集：算 series_guid 和 season_guid
@@ -509,6 +515,13 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "size": f.size,
                 "container": os.path.splitext(f.name)[1].lower().lstrip("."),
                 "date_added": now,
+                # 文件名解析的视频信息（零 Drive 调用）
+                "video_resolution": fn_meta.get("resolution"),
+                "video_codec": fn_meta.get("video_codec"),
+                "audio_codec": fn_meta.get("audio_codec"),
+                "media_source": fn_meta.get("source"),
+                "width": fn_w,
+                "height": fn_h,
                 # 探测/补全延后
                 "probe_status": "pending",
                 "probe_priority": 0,
@@ -530,6 +543,13 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "size": f.size,
                 "container": os.path.splitext(f.name)[1].lower().lstrip("."),
                 "date_added": now,
+                # 文件名解析的视频信息（零 Drive 调用）
+                "video_resolution": fn_meta.get("resolution"),
+                "video_codec": fn_meta.get("video_codec"),
+                "audio_codec": fn_meta.get("audio_codec"),
+                "media_source": fn_meta.get("source"),
+                "width": fn_w,
+                "height": fn_h,
                 "probe_status": "pending",
                 "probe_priority": 0,
                 "enrich_status": "pending",

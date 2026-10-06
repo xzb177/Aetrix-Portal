@@ -171,6 +171,10 @@ class MediaItem(Base):
     audio_codec = Column(String(30))
     audio_languages = Column(String(200), default="")
     subtitle_languages = Column(String(200), default="")
+    # 文件名解析（v2.49.0）：扫描时从文件名提取，零 Drive 调用。
+    # video_codec 复用已有列；这里新增分辨率与发行来源。
+    video_resolution = Column(String(10))  # 480p / 720p / 1080p / 2160p
+    media_source = Column(String(30))  # WEB-DL / BluRay / HDTV / DVDRip / WEBRip
 
     # 图片
     poster_path = Column(String(1024))  # 本地海报文件
