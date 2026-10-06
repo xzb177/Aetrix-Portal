@@ -21,7 +21,7 @@ import { RouterLink } from 'vue-router'
 import {
   Film, MessageSquareDashed, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
-  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, ShieldAlert,
+  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon,
 } from 'lucide-vue-next'
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
