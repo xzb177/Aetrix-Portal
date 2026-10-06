@@ -352,6 +352,9 @@ def save_tmdb_language(
         {TMDB_PREFERRED_LANGUAGE_CONFIG_KEY: "TMDB 首选语言（简介/标题/别名返回语言）"},
     )
     db.commit()
+    # commit 后立即过期会话级缓存：防止同一 Session 的 identity map 读到旧值
+    #（保存后同一 db 读必须看到新值）
+    db.expire_all()
     invalidate_language()
     return {"success": True, "language": preferred_language(db)}
 

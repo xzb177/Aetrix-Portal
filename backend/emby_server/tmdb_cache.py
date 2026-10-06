@@ -246,16 +246,21 @@ def invalidate_search(name: str, year: Optional[int], kind: str, lang: str = "")
 
     endpoint = "tv" if kind == "series" else "movie"
     years = {int(year or 0), 0}   # year 维度两种取值都清（键里 year or 0）
+    # 语言维度也要对齐：当前语言的键 + 老版本无语言键（lang=""）都清。
+    # 后者覆盖升级前写下的缓存文件，以及测试/调用方用默认 lang="" 预置的情形；
+    # 不清的话重试仍会命中旧阴性缓存、一个请求都不发。
+    langs = {lang or "", ""}
     removed = 0
     for query, _fuzzy in _search_candidates(name or ""):
         norm = _norm_text(query)
         if not norm:
             continue
         for y in years:
-            path = _key_path(endpoint, norm, y, lang)
-            if os.path.exists(path):
-                _unlink(path)
-                removed += 1
+            for lg in langs:
+                path = _key_path(endpoint, norm, y, lg)
+                if os.path.exists(path):
+                    _unlink(path)
+                    removed += 1
     return removed
 
 
