@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
+import re
 import threading
 import time
 from dataclasses import replace
@@ -43,10 +44,15 @@ from backend.emby_server.tmdb import (
     TMDB_KEY_COOLDOWN_CONFIG_KEY,
     TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY,
     TMDB_KEYS_CONFIG_KEY,
+    TMDB_LANGUAGE_OPTIONS,
+    TMDB_PREFERRED_LANGUAGE_CONFIG_KEY,
+    TMDB_PREFERRED_LANGUAGE_DEFAULT,
     _db_keys,
     _env_keys,
     _split_keys,
+    invalidate_language,
     invalidate_settings,
+    preferred_language,
     prewarm_images,
     settings as tmdb_settings,
     tmdb_client,
@@ -303,6 +309,51 @@ def get_tmdb_mirror(
         "invalid_cooldown_sec": cfg["invalid_cooldown_sec"],
         "cooldown_config_keys": [TMDB_KEY_COOLDOWN_CONFIG_KEY, TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY],
     }
+
+
+class TmdbLanguageSaveRequest(BaseModel):
+    language: str = Field(default=TMDB_PREFERRED_LANGUAGE_DEFAULT,
+                          description="TMDB 首选语言：简介/标题/别名返回哪种语言")
+
+
+@admin_emby_router.get("/scrape/tmdb-language")
+def get_tmdb_language(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """TMDB 首选语言：当前生效值 + 可选列表。
+
+    from_env 为真时环境变量 TMDB_LANGUAGE 覆盖了后台配置（下拉改了也不生效）。
+    """
+    return {
+        "language": preferred_language(db),
+        "options": list(TMDB_LANGUAGE_OPTIONS),
+        "default": TMDB_PREFERRED_LANGUAGE_DEFAULT,
+        "from_env": bool((os.getenv("TMDB_LANGUAGE") or "").strip()),
+    }
+
+
+@admin_emby_router.put("/scrape/tmdb-language")
+def save_tmdb_language(
+    req: TmdbLanguageSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存 TMDB 首选语言（写进 SystemConfig，保存即热生效，无需重启）"""
+    lang = (req.language or "").strip()
+    if lang not in TMDB_LANGUAGE_OPTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的语言：{lang}（可选：{'、'.join(TMDB_LANGUAGE_OPTIONS)}）",
+        )
+    store.write_values(
+        db,
+        {TMDB_PREFERRED_LANGUAGE_CONFIG_KEY: lang},
+        {TMDB_PREFERRED_LANGUAGE_CONFIG_KEY: "TMDB 首选语言（简介/标题/别名返回语言）"},
+    )
+    db.commit()
+    invalidate_language()
+    return {"success": True, "language": preferred_language(db)}
 
 
 # ==================== 条目级重刮 ====================
@@ -992,6 +1043,61 @@ def search_items_for_bind(
 class TmdbBindRequest(BaseModel):
     tmdb_id: str = Field(default="", description="要绑定的 TMDB ID；留空表示解绑")
     verify: bool = Field(default=True, description="绑定前先向 TMDB 校验该 ID 确实存在")
+    mode: str = Field(default="missing",
+                      description="补全模式：missing=仅补缺失（默认），all=全量刷新")
+
+
+# IMDb ID 形如 tt1234567（tt + 纯数字）；纯数字才是 TMDB ID
+_IMDB_ID_RE = re.compile(r"^tt\d+$")
+
+# 全量刷新时清掉的字段：只清 TMDB 来源的。
+# NFO 的文字目前没有字段级来源标记，所以 name 不在这里——片名是管理员可能手改过的，
+# 绑错一次 ID 就顺手把人家改好的名字洗掉，是不可逆事故；简介/评分/类型/别名/图片
+# 全部来自刮削，可以按 TMDB 重写。
+_TMDB_OWNED_FIELDS = (
+    "overview",
+    "community_rating",
+    "genres",
+    "aliases",
+    "imdb_id",
+    "primary_image_url",
+    "backdrop_image_url",
+    "poster_path",
+    "backdrop_path",
+)
+
+
+def _clear_tmdb_fields(item: em.MediaItem) -> None:
+    """全量刷新第一步：先把 TMDB 来源的字段清空，再按新 ID 重填"""
+    for field in _TMDB_OWNED_FIELDS:
+        if hasattr(item, field):
+            setattr(item, field, None)
+
+
+def _resolve_external_id(tid: str, kind: str) -> tuple[str, str | None]:
+    """IMDb ID（tt 开头）→ TMDB ID；纯数字的 TMDB ID 原样返回。
+
+    返回 (tmdb_id, imdb_id)：第二个值非空表示输入是 IMDb ID。
+    TMDB 的 find 接口按条目类型分别返回 movie_results / tv_results：优先取与条目
+    类型一致的那一侧，另一侧兜底（防止条目类型判错导致找不到）。
+    """
+    if _IMDB_ID_RE.match(tid):
+        if not tmdb_client.configured:
+            raise HTTPException(status_code=400, detail="未配置 TMDB Key，无法解析 IMDb ID")
+        found = tmdb_client.find_by_imdb(tid)
+        primary = "tv_results" if kind == "series" else "movie_results"
+        secondary = "movie_results" if kind == "series" else "tv_results"
+        hit = None
+        for key in (primary, secondary):
+            rows = (found or {}).get(key) or []
+            if rows:
+                hit = rows[0]
+                break
+        if not hit or not hit.get("id"):
+            raise HTTPException(status_code=404,
+                                detail=f"IMDb {tid} 在 TMDB 上找不到对应的条目")
+        return str(hit["id"]), tid
+    return tid, None
 
 
 @admin_emby_router.get("/scrape/items/{item_id}/tmdb-preview")
@@ -1004,16 +1110,18 @@ def preview_tmdb_id(
     """输入 TMDB ID 时实时预览：管理员要先看清「这到底是哪部片」再决定绑不绑。
 
     预览只读，不写库。返回的 title/year 会显示在确认框里，避免手滑绑错。
+    接受两种输入：纯数字的 TMDB ID，或 tt 开头的 IMDb ID（走 TMDB find 接口换算）。
     """
     item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
     if item is None:
         raise HTTPException(status_code=404, detail="条目不存在")
     tid = (tmdb_id or "").strip()
-    if not tid.isdigit():
-        raise HTTPException(status_code=400, detail="TMDB ID 必须是数字")
+    if not tid or not (tid.isdigit() or _IMDB_ID_RE.match(tid)):
+        raise HTTPException(status_code=400, detail="TMDB ID 必须是数字，IMDb ID 以 tt 开头")
     if not tmdb_client.configured:
         raise HTTPException(status_code=400, detail="未配置 TMDB Key，无法校验")
     kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
+    tid, imdb_id = _resolve_external_id(tid, kind)
     data = tmdb_client.details(tid, kind)
     if not data:
         raise HTTPException(status_code=404, detail=f"TMDB 上找不到 ID {tid}")
@@ -1021,6 +1129,7 @@ def preview_tmdb_id(
     year = (data.get("first_air_date") or data.get("release_date") or "")[:4]
     return {
         "tmdb_id": tid,
+        "imdb_id": imdb_id,
         "title": title,
         "year": year or None,
         "poster": data.get("poster_path"),
@@ -1049,6 +1158,9 @@ def bind_tmdb_id(
     反复重试也是白试。给管理员一个**手动出口**——比再接第四个数据源更治本。
 
     绑定后立刻取详情补全（图/简介/评分/别名），省得还要再点一次重刮。
+
+    mode=all（全量刷新）：先把 TMDB 来源的字段清空（保留片名 name——那是管理员
+    可能手改过的，不碰），再按新 ID 把简介/评分/类型/别名/图片全部重写一遍。
     """
     item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
     if item is None:
@@ -1058,6 +1170,9 @@ def bind_tmdb_id(
 
     tid = (req.tmdb_id or "").strip()
     notes: list[str] = []
+    mode = (req.mode or "missing").strip()
+    if mode not in ("missing", "all"):
+        raise HTTPException(status_code=400, detail="mode 必须是 missing 或 all")
 
     if not tid:
         # 解绑
@@ -1075,33 +1190,50 @@ def bind_tmdb_id(
             "notes": [f"已解绑（原 TMDB {before}）并重新排入补全队列"],
         }
 
-    if not tid.isdigit():
-        raise HTTPException(status_code=400, detail="TMDB ID 必须是数字")
+    if not (tid.isdigit() or _IMDB_ID_RE.match(tid)):
+        raise HTTPException(status_code=400, detail="TMDB ID 必须是数字，IMDb ID 以 tt 开头")
 
+    kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
+    # IMDb ID 先换算成 TMDB ID；库里存的永远是 TMDB ID
+    tid, imdb_id = _resolve_external_id(tid, kind)
+
+    if mode == "all" and not tmdb_client.configured:
+        raise HTTPException(status_code=400, detail="未配置 TMDB Key，全量刷新取不到数据")
+
+    data = None
     if req.verify:
         if not tmdb_client.configured:
             raise HTTPException(status_code=400, detail="未配置 TMDB Key，无法校验")
-        kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
         data = tmdb_client.details(tid, kind)
         if not data:
             raise HTTPException(status_code=404, detail=f"TMDB 上找不到 ID {tid}，未绑定")
         notes.append(f"已校验：{data.get('name') or data.get('title')}")
+    if imdb_id:
+        notes.append(f"IMDb {imdb_id} → TMDB {tid}")
 
     item.tmdb_id = tid
     item.last_scraped_at = datetime.now()
     item.metadata_source = "tmdb"
-    # 绑定了权威 ID 就补齐缺失项（不覆盖 NFO 已提供的文字）
-    if req.verify and tmdb_client.configured:
-        kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
-        data = tmdb_client.details(tid, kind)
+    if tmdb_client.configured and (req.verify or mode == "all"):
+        if data is None:
+            data = tmdb_client.details(tid, kind)
         if data:
             prewarm_images(data)
-            if not (item.imdb_id and item.aliases):
+            if mode == "all":
+                # 全量刷新：先清空 TMDB 来源字段（保留 name），再按新 ID 重填
+                _clear_tmdb_fields(item)
                 tmdb_client.apply_details(item, data)
-                notes.append("补齐 IMDb/别名")
-            if not (item.poster_path or item.primary_image_url):
+                notes.append("全量刷新：简介/评分/类型/别名已按 TMDB 重写")
                 if tmdb_client.apply_images(item, data):
-                    notes.append("补齐海报")
+                    notes.append("全量刷新：海报/背景图已按 TMDB 重写")
+            else:
+                # 仅补缺失（不覆盖 NFO 已提供的文字 / 已有图片）
+                if not (item.imdb_id and item.aliases):
+                    tmdb_client.apply_details(item, data)
+                    notes.append("补齐 IMDb/别名")
+                if not (item.poster_path or item.primary_image_url):
+                    if tmdb_client.apply_images(item, data):
+                        notes.append("补齐海报")
     item.enrich_status = "done"
     item.enrich_attempts = 0
     item.enrich_next_retry_at = None

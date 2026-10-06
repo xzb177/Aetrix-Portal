@@ -1027,6 +1027,27 @@ export const saveTmdbMirror = (data: { api_base: string; image_base: string }) =
   put<{ success: boolean; api_base: string; image_base: string; defaults: TmdbMirror['defaults'] }>(
     `${E}/scrape/tmdb-mirror`, data)
 
+export interface TmdbLanguageStatus {
+  language: string
+  options: string[]
+  default: string
+  from_env: boolean
+}
+
+/** TMDB 首选语言的展示文案（后端只给值，文案前端定） */
+export const TMDB_LANGUAGE_LABELS: Record<string, string> = {
+  'zh-CN': '简体中文',
+  'zh-TW': '繁体中文',
+  'en-US': '英文',
+  'ja-JP': '日文',
+}
+
+/** TMDB 首选语言：简介/标题/别名返回哪种语言 */
+export const fetchTmdbLanguage = () => get<TmdbLanguageStatus>(`${E}/scrape/tmdb-language`)
+
+export const saveTmdbLanguage = (language: string) =>
+  put<{ success: boolean; language: string }>(`${E}/scrape/tmdb-language`, { language })
+
 export interface TmdbTestResult {
   index: number
   masked: string
@@ -1200,6 +1221,8 @@ export const rescrapeLibrary = (id: number, policy: 'missing_only' | 'all' = 'mi
 
 export interface TmdbPreview {
   tmdb_id: string
+  /** 输入是 IMDb ID 时有值（后端已换算成 tmdb_id） */
+  imdb_id?: string | null
   title: string
   year: number | null
   poster: string | null
@@ -1232,9 +1255,11 @@ export interface TmdbBindResult {
   notes: string[]
 }
 
-/** 手动绑定 TMDB ID（tmdbId 为空字符串 = 解绑）；绑定后自动补全缺失元数据 */
-export const bindTmdb = (id: number, tmdbId: string, verify = true) =>
-  post<TmdbBindResult>(`${E}/scrape/items/${id}/bind-tmdb`, { tmdb_id: tmdbId, verify })
+/** 手动绑定 TMDB ID（tmdbId 为空字符串 = 解绑）；绑定后自动补全缺失元数据
+ *  mode：missing=仅补缺失（默认），all=全量刷新（先清空 TMDB 字段再重填）
+ *  tmdbId 也支持 tt 开头的 IMDb ID（后端经 TMDB /find 换算成 TMDB ID） */
+export const bindTmdb = (id: number, tmdbId: string, verify = true, mode: 'missing' | 'all' = 'missing') =>
+  post<TmdbBindResult>(`${E}/scrape/items/${id}/bind-tmdb`, { tmdb_id: tmdbId, verify, mode })
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
 export interface EnrichStageStat {

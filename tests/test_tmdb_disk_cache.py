@@ -203,15 +203,17 @@ def test_single_flight_merges_concurrent_searches(cache_dir, monkeypatch):
 
 def test_invalidate_search_purges_entries(cache_dir, monkeypatch):
     """按片名失效：该片名候选的缓存（含阴性）都被删掉"""
+    # 语言是缓存维度（v2.49.0）：读写/失效都带同一语言
+    monkeypatch.setattr(tmdb, "preferred_language", lambda db=None: "zh-CN")
     client, _ = _fake_client(monkeypatch, api_results={
         "Some Show (2024)": {"results": []},
         "Some Show": {"results": []},
     })
     client.search("Some Show (2024)", 2024, "series")
-    path = tmdb_cache._key_path("tv", tmdb._norm_text("Some Show"), 2024)
+    path = tmdb_cache._key_path("tv", tmdb._norm_text("Some Show"), 2024, "zh-CN")
     assert os.path.exists(path)
 
-    removed = tmdb_cache.invalidate_search("Some Show (2024)", 2024, "series")
+    removed = tmdb_cache.invalidate_search("Some Show (2024)", 2024, "series", "zh-CN")
     assert removed >= 1
     assert not os.path.exists(path)
 

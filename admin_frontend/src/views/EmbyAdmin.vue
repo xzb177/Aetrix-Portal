@@ -16,11 +16,12 @@
  * 侧边栏已经是这两个页面的入口，页内再堆按钮只会让人以为「这里管不了，得去别处」。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
   Delete, Film, FolderPlus, HardDrive, History, ImagePlus, RefreshCcw, RefreshCw, ScanSearch,
-  Server,
+  Search, Server,
   Settings2, Square, Wand2, X,
 } from 'lucide-vue-next'
 import {
@@ -40,6 +41,7 @@ import {
   fetchAutoScan,
   fetchChaseNew,
   fetchTmdbKeys,
+  fetchTmdbLanguage,
   generateVirtualLibraries,
   previewLibraryCover,
   regenerateLibraryCover,
@@ -50,11 +52,13 @@ import {
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
+  saveTmdbLanguage,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbLanguageStatus } from '@/api/admin'
+import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -685,6 +689,7 @@ async function load() {
       loadTmdbStatus().catch(() => undefined),
       loadAutoScanConfig(),
       loadChaseNewConfig().catch(() => undefined),
+      loadTmdbLanguageConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -878,6 +883,44 @@ async function saveAutoScanAction() {
 
 /** TMDB 密钥只读状态：密钥在「元数据来源」页填写，本页只回答「配了没」 */
 const tmdbStatus = ref<TmdbKeysStatus | null>(null)
+
+/** 手动识别入口前移（P1）：库卡片上的「识别」按钮直达元数据来源页 */
+const router = useRouter()
+
+/** 跳到「元数据来源」页并带上条目 ID：对方 onMounted 会自动填入并选中，跳过「搜条目」一步 */
+function goIdentify(l: EmbyLibrary) {
+  router.push({ name: 'MetadataSources', query: { item_id: String(l.id) } })
+}
+
+// ==================== TMDB 首选语言（P2c） ====================
+
+/** TMDB 返回的简介/标题/别名用哪种语言：后台配置，保存即热生效 */
+const tmdbLang = ref<TmdbLanguageStatus | null>(null)
+const tmdbLangSaving = ref(false)
+
+const tmdbLangLabel = (v: string) => TMDB_LANGUAGE_LABELS[v] || v
+
+async function loadTmdbLanguageConfig() {
+  try {
+    tmdbLang.value = await fetchTmdbLanguage()
+  } catch {
+    tmdbLang.value = null // 出错不挡页面其它内容
+  }
+}
+
+async function saveTmdbLanguageAction() {
+  if (!tmdbLang.value) return
+  tmdbLangSaving.value = true
+  try {
+    const res = await saveTmdbLanguage(tmdbLang.value.language)
+    tmdbLang.value.language = res.language
+    ElMessage.success('TMDB 首选语言已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    tmdbLangSaving.value = false
+  }
+}
 const rescrapeVisible = ref(false)
 const rescrapeTarget = ref<EmbyLibrary | null>(null)
 const rescrapePolicy = ref<'missing_only' | 'all'>('missing_only')
@@ -1486,6 +1529,31 @@ function typeLabel(t: string): string {
             还没有检查过
           </div>
         </div>
+        <div class="scrape-block">
+          <h3>TMDB 首选语言</h3>
+          <p class="drawer-hint">
+            TMDB 返回的简介 / 标题 / 别名用哪种语言（保存后立即生效）
+          </p>
+          <div v-if="tmdbLang" class="scrape-actions" style="align-items: center">
+            <el-select v-model="tmdbLang.language" style="width: 160px" aria-label="TMDB 首选语言">
+              <el-option
+                v-for="v in tmdbLang.options"
+                :key="v"
+                :label="tmdbLangLabel(v)"
+                :value="v"
+              />
+            </el-select>
+            <el-button type="primary" size="small" :loading="tmdbLangSaving" @click="saveTmdbLanguageAction">
+              保存
+            </el-button>
+          </div>
+          <div v-else class="drawer-hint" style="margin-top: 6px">
+            加载中…
+          </div>
+          <div v-if="tmdbLang?.from_env" class="drawer-hint" style="margin-top: 6px">
+            环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
+          </div>
+        </div>
         
       </div>
     </div>
@@ -1591,6 +1659,9 @@ function typeLabel(t: string): string {
           </el-button>
           <el-button size="small" plain title="刷新已有条目的元数据（不扫描新文件）" @click="openRescrape(l)">
             <RefreshCw :size="13" />刷新元数据
+          </el-button>
+          <el-button size="small" plain title="手动识别：跳到「元数据来源」页直接绑定 TMDB / IMDb ID" @click="goIdentify(l)">
+            <Search :size="13" />识别
           </el-button>
           <el-button size="small" plain @click="openSettings(l)">
             <Settings2 :size="13" />设置
