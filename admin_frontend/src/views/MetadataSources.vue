@@ -1165,11 +1165,7 @@ onMounted(() => {
               {{ row.label }} {{ row.avgMs }}ms
             </span>
           </div>
-          <p v-if="enrichProgress.throughput" class="ms-hint ms-block">
-            本进程近 {{ enrichWindowMin }} 分钟：
-            完成 {{ enrichProgress.throughput.done_per_min }} 条/分钟
-            （累计 {{ enrichProgress.throughput.done_total }}）· {{ enrichIdleHint }}
-          </p>
+
           <p class="ms-hint ms-block">
             Worker {{ enrichProgress.workers }} 线程 · {{ enrichProgress.enabled ? '运行中' : '已停用' }}
             <el-button size="small" text :loading="enrichProgressLoading" @click="loadEnrichProgress">
