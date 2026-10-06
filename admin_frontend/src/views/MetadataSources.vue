@@ -13,7 +13,7 @@
  * **TMDB 密钥也只在这里填**（媒体库页的填写框已移除）：一把钥匙只该有一个地方能改。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowDown,
@@ -99,6 +99,9 @@ async function doRescrapeItem() {
 }
 
 // ==================== 手动绑定 TMDB ====================
+
+// P1 入口前移：媒体库列表的「识别」按钮跳过来时会带 ?item_id=xxx
+const route = useRoute()
 
 // --- 手动绑定卡片折叠（默认收起，状态存 localStorage） ---
 const bindCardCollapsed = ref(localStorage.getItem('aetrix_bind_tmdb_collapsed') !== '0')
@@ -252,7 +255,7 @@ async function doPreviewTmdb() {
   const id = Number(bindItemId.value)
   const tid = bindTmdbId.value.trim()
   if (!id) { ElMessage.warning('请先搜索并选择条目'); return }
-  if (!tid) { ElMessage.warning('请填写 TMDB ID'); return }
+  if (!tid) { ElMessage.warning('请填写 TMDB ID（或 IMDb ID）'); return }
   bindPreviewLoading.value = true
   bindPreview.value = null
   try {
@@ -267,20 +270,11 @@ async function doPreviewTmdb() {
 async function doBindTmdb() {
   const id = Number(bindItemId.value)
   const tid = bindTmdbId.value.trim()
-  if (!id) { ElMessage.warning('请先搜索并选择条目'); return }
-  if (!tid) { ElMessage.warning('请填写 TMDB ID'); return }
-  try {
-    await ElMessageBox.confirm(
-      bindPreview.value
-        ? `把「${bindPreview.value.current_name}」绑定到 TMDB「${bindPreview.value.title}${bindPreview.value.year ? `（${bindPreview.value.year}）` : ''}」吗？`
-        : `把条目 ${id} 绑定到 TMDB ID ${tid} 吗？（未预览，建议先点「预览」确认）`,
-      '确认绑定',
-      { type: 'warning' },
-    )
-  } catch { return }
+  if (!id || !tid) { bindConfirmVisible.value = false; return }
+  bindConfirmVisible.value = false
   bindLoading.value = true
   try {
-    const res: TmdbBindResult = await bindTmdb(id, tid, true)
+    const res: TmdbBindResult = await bindTmdb(id, tid, true, bindMode.value)
     bindNotes.value = [`「${res.item.name}」：${res.notes.join('；')}`]
     bindPreview.value = null
     ElMessage.success('已绑定并补全元数据')
@@ -289,6 +283,32 @@ async function doBindTmdb() {
   } finally {
     bindLoading.value = false
   }
+}
+
+/** 绑定确认弹窗：确认前选补全范围（默认仅补缺失） */
+const bindConfirmVisible = ref(false)
+const bindMode = ref<'missing' | 'all'>('missing')
+
+const bindConfirmText = computed(() => {
+  const id = Number(bindItemId.value)
+  const tid = bindTmdbId.value.trim()
+  if (bindPreview.value) {
+    const year = bindPreview.value.year ? `（${bindPreview.value.year}）` : ''
+    return `把「${bindPreview.value.current_name}」绑定到 TMDB「${bindPreview.value.title}${year}」吗？`
+  }
+  const kindLabel = /^tt\d+$/.test(tid) ? 'IMDb' : 'TMDB'
+  return `把条目 ${id} 绑定到 ${kindLabel} ID ${tid} 吗？（未预览，建议先点「预览」确认）`
+})
+
+/** 点「绑定」先弹确认框（选补全范围），确认后再真正调接口 */
+function openBindConfirm() {
+  const id = Number(bindItemId.value)
+  const tid = bindTmdbId.value.trim()
+  if (!id) { ElMessage.warning('请先搜索并选择条目'); return }
+  if (!tid) { ElMessage.warning('请填写 TMDB ID（或 IMDb ID）'); return }
+  // 全量刷新会清空字段：每次打开都回到默认的「仅补缺失」，防止上次的选项被顺手沿用
+  bindMode.value = 'missing'
+  bindConfirmVisible.value = true
 }
 
 async function doUnbindTmdb() {
@@ -784,6 +804,23 @@ onMounted(() => {
   loadTmdbKeys().catch(() => undefined)
   loadMirror().catch(() => undefined)
   loadMeta().catch(() => undefined)
+  // P1 入口前移：媒体库列表的「识别」按钮跳过来时带 ?item_id=xxx，
+  // 直接填入条目 ID 并选中，跳过「搜条目」一步（深链刷新页面也要生效）
+  const deepItemId = Number(route.query.item_id)
+  if (deepItemId) {
+    bindCardCollapsed.value = false
+    localStorage.setItem('aetrix_bind_tmdb_collapsed', '0')
+    bindItemId.value = String(deepItemId)
+    bindSelectedItem.value = {
+      id: deepItemId,
+      name: `条目 #${deepItemId}`,
+      year: null,
+      item_type: '',
+      tmdb_id: null,
+    }
+    bindPreview.value = null
+    bindNotes.value = []
+  }
 })
 </script>
 
@@ -1241,7 +1278,7 @@ onMounted(() => {
         <div v-show="!bindCardCollapsed">
         <p class="ms-hint">
           TMDB 对中文剧集 / 综艺收录偏少，自动刮削搜不到的条目在这里手动识别。
-          第一步搜库内条目并选中，第二步搜 TMDB 候选、一键绑定；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
+          第一步搜库内条目并选中，第二步搜 TMDB 候选、一键绑定（或手动输入 TMDB ID / tt 开头的 IMDb ID）；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
         </p>
         <div class="ms-hint" style="font-weight: 600">第一步：搜库内条目</div>
         <div class="ms-actions">
@@ -1360,6 +1397,27 @@ onMounted(() => {
             </div>
           </div>
         </template>
+        <!-- 绑定确认弹窗：选补全范围（默认仅补缺失） -->
+        <el-dialog v-model="bindConfirmVisible" title="确认绑定" width="min(480px, 92vw)">
+          <p class="bind-confirm-text">{{ bindConfirmText }}</p>
+          <div class="bind-mode">
+            <span class="ms-hint">补全范围：</span>
+            <el-radio-group v-model="bindMode">
+              <el-radio value="missing">仅补缺失</el-radio>
+              <el-radio value="all">全量刷新</el-radio>
+            </el-radio-group>
+          </div>
+          <p class="ms-hint" style="margin-top: 8px">
+            {{ bindMode === 'all'
+              ? '全量刷新会先清空该条目的 TMDB 来源字段（简介 / 评分 / 类型 / 别名 / 图片），再按新 ID 重写一遍；片名不动。'
+              : '仅补缺失：已有的简介 / 图片 / IMDb / 别名不动，只填空着的项。' }}
+          </p>
+          <template #footer>
+            <el-button @click="bindConfirmVisible = false">取消</el-button>
+            <el-button type="primary" :loading="bindLoading" @click="doBindTmdb">确认绑定</el-button>
+          </template>
+        </el-dialog>
+
         <div v-if="bindNotes.length" class="ms-results">
           <div v-for="(n, i) in bindNotes" :key="i" class="ms-result">{{ n }}</div>
         </div>

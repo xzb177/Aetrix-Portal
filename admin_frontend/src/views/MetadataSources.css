@@ -408,6 +408,32 @@
   padding: 2px 8px;
 }
 
+/* 绑定确认弹窗：确认文案 + 补全范围 radio（窄屏 radio 换行不挤） */
+.bind-confirm-text {
+  margin: 0;
+  line-height: 1.7;
+}
+
+.bind-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .bind-mode {
+    align-items: flex-start;
+  }
+  .bind-mode .el-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .bind-mode .el-radio {
+    margin-right: 0;
+
 /* 元数据锁定（P3，Emby 式）：锁定行视觉区分——名字后小锁标 + 行内锁定按钮 */
 .ms-result .ms-result-name {
   display: inline-flex;
@@ -534,5 +560,6 @@
     height: auto;
     aspect-ratio: 2 / 3;
     max-height: 320px;
+
   }
 }
