@@ -1228,8 +1228,6 @@ export interface ItemSearchResult {
   year: number | null
   item_type: string
   tmdb_id: string | number | null
-  /** 元数据锁定（P3，Emby 式）：True = 自动补全不再碰它 */
-  metadata_locked: boolean
 }
 
 /** 按剧名关键字（+可选年份）搜索顶层条目，供「手动绑定 TMDB」选条目用，最多 20 条 */
@@ -1251,22 +1249,6 @@ export interface TmdbBindResult {
 export const bindTmdb = (id: number, tmdbId: string, verify = true) =>
   post<TmdbBindResult>(`${E}/scrape/items/${id}/bind-tmdb`, { tmdb_id: tmdbId, verify })
 
-export interface ItemLockResult {
-  success: boolean
-  item: { id: number; name: string; item_type: string; tmdb_id?: string | number | null; metadata_locked: boolean }
-}
-
-/** 锁定条目元数据（P3，Emby 式）：自动补全不再覆盖手动整理成果 */
-export const lockItemMetadata = (id: number) =>
-  post<ItemLockResult>(`${E}/scrape/items/${id}/lock`)
-
-/** 解锁条目元数据：恢复自动补全资格 */
-export const unlockItemMetadata = (id: number) =>
-  post<ItemLockResult>(`${E}/scrape/items/${id}/unlock`)
-
-/** 条目详情（含 metadata_locked） */
-export const fetchItemLockStatus = (id: number) =>
-  get<ItemLockResult>(`${E}/scrape/items/${id}`)
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
 export interface EnrichStageStat {
