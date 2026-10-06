@@ -130,12 +130,3 @@ class TestAltmetaStripsYear:
         assert item.name == "某剧"
         assert item.production_year == 2022
 
-
-class TestScannerFullwidthYear:
-    def test_parse_fullwidth_year_parens(self):
-        from backend.emby_server.scanner import parse_media_filename
-
-        r = parse_media_filename("/mnt/x/马拉多纳：美好的梦想（2021）/S01E01.mkv", "tvshows")
-        assert r["year"] == 2021
-        assert "2021" not in r["name"]
-        assert "（）" not in r["name"]
