@@ -257,6 +257,48 @@ def _collect_multisource(item: Any, kind: str, result: dict) -> bool:
     return True
 
 
+def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
+                       result: dict) -> None:
+    """单集 TMDB 补全（v2.50.0）：父级剧有 tmdb_id 时，拉取本集的标题/简介/剧照。
+
+    走季接口批量拉（`TmdbClient.season_episodes` 带两级缓存），同一季的多个集
+    只打 1 次 TMDB。结果存入 result["episode_tmdb"]，写库阶段由
+    `_enrich_apply` 落库。
+
+    失败静默（不影响 pure_inherit 的主流程）：TMDB 没这集、网络超时等，
+    只是本集拿不到标题/剧照，图片仍沿父级回退。
+    """
+    from backend.emby_server.tmdb import tmdb_client, image_base, prewarm_images
+
+    series_tmdb_id = (inherit_parent or {}).get("tmdb_id")
+    if not series_tmdb_id:
+        return
+    season_no = getattr(item, "season_number", None)
+    ep_no = getattr(item, "episode_number", None)
+    if season_no is None or ep_no is None:
+        return
+    try:
+        ep_data = tmdb_client.find_episode(str(series_tmdb_id), season_no, ep_no)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("单集 TMDB 查询失败 series=%s S%sE%s: %s",
+                     series_tmdb_id, season_no, ep_no, exc)
+        return
+    if not ep_data:
+        return
+    result["episode_tmdb"] = ep_data
+    # 剧照预热（IO 阶段下载，写库阶段只落字段，与海报同一口径）
+    still_path = ep_data.get("still_path")
+    if still_path:
+        try:
+            base = image_base()
+            # 剧照 16:9，用 w500（与海报同尺寸口径）
+            still_url = f"{base}/w500{still_path}"
+            result["episode_still_url"] = still_url
+            prewarm_images(extra=[still_url])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("单集剧照预热失败: %s", exc)
+
+
 def _enrich_fetch(item: Any, holder: Optional[dict] = None,
                   inherit_parent: Optional[dict] = None) -> dict:
     """IO 阶段（无 DB 写事务）：side 图片/字幕 → NFO → TMDB。
@@ -311,6 +353,9 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
                 and not _episode_has_own_nfo(ctx, scan_file)):
             result["pure_inherit"] = True
             progress.note_stage("enrich_pure_inherit")
+            # 单集 TMDB 补全（v2.50.0）：父级有 tmdb_id 时拉取本集标题/简介/剧照
+            # 季接口带缓存，同一季多集只打 1 次 TMDB；失败静默，不影响继承主流程
+            _fetch_episode_tmdb(item, inherit_parent, result)
             return result
 
         # 2. NFO（B 方案：NFO 管文字；series/season/episode/movie 全支持）
@@ -492,6 +537,21 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             nfo_lib.apply_nfo(item, nfo_data, kind)
     elif nfo_data and not item.overview:
         nfo_lib.apply_nfo(item, nfo_data, kind)
+
+    # 单集 TMDB 数据（v2.50.0）：标题/简介/剧照
+    # 在父级图片回退之前应用——有专属剧照的集用自己的，没有的才回退
+    episode_tmdb = fetched.get("episode_tmdb")
+    if item_type == "episode" and episode_tmdb:
+        from backend.emby_server.tmdb import TmdbClient
+        applied = TmdbClient.apply_episode(item, episode_tmdb)
+        # 剧照：IO 阶段已预热，写库阶段只落字段（与海报同一口径）
+        still_url = fetched.get("episode_still_url")
+        if still_url and not (item.poster_path or item.primary_image_url):
+            from backend.emby_server import image_store
+            item.primary_image_url = still_url
+            local = image_store.localize(still_url, allow_download=False)
+            if local:
+                item.poster_path = local
 
     # 集/季通常没有独立 TMDB 图片，但客户端会把它们作为独立卡片展示。
     # 物化一份父级图片到条目上，配合 API 的图片回退链，避免不同客户端只看
@@ -1009,7 +1069,7 @@ def _inherit_parent_info(db, item: Any) -> Optional[dict]:
         return None
     if not (series.poster_path or series.primary_image_url or series.tmdb_id):
         return None
-    return {"series_id": series.id}
+    return {"series_id": series.id, "tmdb_id": series.tmdb_id}
 
 
 def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:

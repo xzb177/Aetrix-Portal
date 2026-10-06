@@ -1094,6 +1094,114 @@ class TmdbClient:
             self._cache_put(key, data)
             return data
 
+
+    def season_episodes(self, tmdb_id: str, season_number: int) -> Optional[list]:
+        """获取某季所有集的信息（标题/简介/剧照）。
+
+        走 `GET /tv/{tv_id}/season/{season_number}`，一次请求拿整季，
+        同一季的多个集共享缓存，不重复打 TMDB。
+
+        两级缓存同 ``details``（L1 300 秒 → L2 磁盘 30 天，按 tv_id+季号键）。
+
+        返回 episode 字典列表（每项有 episode_number / name / overview /
+        still_path），失败返回 None。
+        """
+        try:
+            season_no = int(season_number)
+        except (TypeError, ValueError):
+            return None
+        key = ("season_episodes", str(tmdb_id), str(season_no))
+        cached = self._cache_get(key)
+        if cached is not _MISS:
+            return cached
+        cache_key = f"{tmdb_id}_{season_no}"
+        hit, data = tmdb_cache.load_details("season", cache_key)
+        if hit:
+            progress.note_stage("tmdb_disk_hit")
+            eps = (data or {}).get("episodes")
+            self._cache_put(key, eps)
+            return eps
+        with tmdb_cache.single_flight(key):
+            cached = self._cache_get(key)
+            if cached is not _MISS:
+                return cached
+            hit, data = tmdb_cache.load_details("season", cache_key)
+            if hit:
+                progress.note_stage("tmdb_disk_hit")
+                eps = (data or {}).get("episodes")
+                self._cache_put(key, eps)
+                return eps
+            data = self._get(f"/tv/{tmdb_id}/season/{season_no}",
+                             {"language": TMDB_LANG})
+            if data is not None:
+                tmdb_cache.save_details("season", cache_key, data)
+            eps = (data or {}).get("episodes") if data else None
+            self._cache_put(key, eps)
+            return eps
+
+    def find_episode(self, tmdb_id: str, season_number: int,
+                     episode_number: int) -> Optional[dict]:
+        """在某季里找指定集的数据（标题/简介/剧照）。
+
+        找不到返回 None（TMDB 没这集，或季接口失败）。
+        """
+        try:
+            ep_no = int(episode_number)
+        except (TypeError, ValueError):
+            return None
+        episodes = self.season_episodes(str(tmdb_id), season_number)
+        if not episodes:
+            return None
+        for ep in episodes:
+            try:
+                if int(ep.get("episode_number", -1)) == ep_no:
+                    return ep
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def apply_episode(episode_item, episode_data: dict) -> dict:
+        """把单集 TMDB 数据落到条目上（纯内存操作，不碰 DB/网络）。
+
+        返回 {"updated": bool, "still_path": Optional[str]}：
+        - updated=True 表示 name/overview 有变化，调用方需要写库
+        - still_path 是 TMDB 的剧照路径（如 "/abc123.jpg"），调用方负责拼 URL
+          并预热下载
+
+        标题规则（用户要求）：
+        - TMDB 有真实标题（非空，且不是 "Episode N" 这种占位）→ 用真实标题
+        - 当前 name 是"第X集"格式 → 只有 TMDB 有真实标题时才覆盖，否则保留
+        - 当前 name 不是"第X集"格式（已有真实标题）→ 不覆盖
+        """
+        result = {"updated": False, "still_path": None}
+        if not episode_data:
+            return result
+
+        tmdb_name = (episode_data.get("name") or "").strip()
+        # TMDB 占位标题（"Episode 1" / "第 1 集"英文版）不算真实标题
+        is_placeholder = (
+            not tmdb_name
+            or tmdb_name.lower().startswith("episode ")
+        )
+        current = (getattr(episode_item, "name", "") or "").strip()
+        is_generic = bool(re.match(r"^第\d+集$", current))
+
+        if not is_placeholder and is_generic:
+            # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖
+            episode_item.name = tmdb_name
+            result["updated"] = True
+        # 简介：当前为空时才补（不覆盖 NFO/已有的）
+        tmdb_overview = (episode_data.get("overview") or "").strip()
+        if tmdb_overview and not (getattr(episode_item, "overview", "") or "").strip():
+            episode_item.overview = tmdb_overview
+            result["updated"] = True
+        # 剧照路径（调用方拼 URL + 预热）
+        still = episode_data.get("still_path")
+        if still:
+            result["still_path"] = still
+        return result
+
     def enrich(self, item: emby_models.MediaItem, kind: str) -> None:
         """补齐 imdb_id 与 aliases（中英文/繁简多别名搜索的基础）"""
         if not item.tmdb_id or (item.imdb_id and item.aliases):
