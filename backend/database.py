@@ -529,6 +529,11 @@ def _auto_migrate():
             # video_codec / audio_codec 列已存在（探测器时代留下），复用即可。
             ("video_resolution", "VARCHAR(10)", "NULL"),
             ("media_source", "VARCHAR(30)", "NULL"),
+            # v2.51.0 演员刮削：TMDB details 的 origin_country / spoken_languages
+            # 落库，供 EA 详情页 Countries / Languages 用。
+            # 老库补列后为空串 = 以前的 []，行为与升级前一致。
+            ("countries", "TEXT", "''"),
+            ("languages", "TEXT", "''"),
         ]),
         # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，
         # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。

@@ -158,6 +158,10 @@ class MediaItem(Base):
     imdb_id = Column(String(20))
     # 多别名（逗号分隔）：TMDB 的 also known as / 原名等，供中英文与繁简搜索命中
     aliases = Column(Text, default="")
+    # v2.51.0 演员刮削：TMDB details 的 origin_country / spoken_languages，
+    # EA 详情页 Countries / Languages 用。逗号分隔；老库补列后为空串（= 以前的 []）。
+    countries = Column(Text, default="")
+    languages = Column(Text, default="")
 
     # 媒体文件
     file_path = Column(String(1024), index=True)
@@ -248,6 +252,30 @@ MediaItem.parent = relationship("MediaItem", remote_side="MediaItem.id", foreign
 MediaItem.series = relationship(
     "MediaItem", remote_side="MediaItem.id", foreign_keys=[MediaItem.series_id]
 )
+
+
+class EmbyPerson(Base):
+    """演员/主创（v2.51.0）：TMDB credits 刮削落库，供 EA 详情页返回 People。
+
+    新表：由 ``create_all`` 自动建表，老库无需 ALTER（见 database._auto_migrate
+    的注释：新表不在迁移列表里）。
+    ``image`` 存头像**远程 URL**（唯一事实来源）：本地那份走 image_store 预热/
+    按需自愈，与 MediaItem.primary_image_url 同口径——删缓存不丢数据。
+    """
+
+    __tablename__ = "emby_people"
+    __table_args__ = (
+        Index("idx_person_item_order", "item_id", "sort_order"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False, index=True)
+    # name 建索引：/emby/Persons 按名字分组、/emby/Persons/{name}/Images/Primary
+    # 按名字查，都走这个索引（演员行数 = 条目数 ×10，全表扫太贵）。
+    name = Column(String(200), nullable=False, index=True)
+    role = Column(String(200))       # 饰演角色（TMDB character）
+    image = Column(String(1024))     # 头像远程 URL（TMDB profile_path 拼出来的）
+    sort_order = Column(Integer, default=0)  # TMDB cast 原顺序（戏份排序）
 
 
 class MediaStream(Base):

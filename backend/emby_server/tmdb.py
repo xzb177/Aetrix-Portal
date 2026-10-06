@@ -581,6 +581,54 @@ def prewarm_images(*payloads, extra=()) -> int:
         return 0
 
 
+# 演员表一次取几个（TMDB cast 按戏份排序，取前 10 足够详情页展示）
+TMDB_CAST_LIMIT = 10
+
+
+def _has_credits(data) -> bool:
+    """details 载荷里有没有 credits：v2.51.0 前缓存的老载荷没有这个键。
+
+    ``details()`` 发现缓存里是老载荷时视为过期、重新拉一次——之后 30 天内
+    都是带 credits 的新载荷，不会反复重拉。
+    阴性缓存（请求失败记的 None）返回 True：保持「TTL 内不再重打」的原语义，
+    重试由补全 worker 自己的退避调度负责。
+    """
+    if data is None:
+        return True
+    return isinstance(data, dict) and isinstance(data.get("credits"), dict)
+
+
+def cast_list(details: Optional[dict], limit: int = TMDB_CAST_LIMIT) -> list[dict]:
+    """从 details 载荷（``append_to_response=credits``）里取前 N 个演员。
+
+    返回 ``[{"name": 演员名, "role": 饰演角色, "image": 头像 URL,
+    "sort_order": 原顺序}]``。头像尺寸用 w185（TMDB 标准头像尺寸）。
+
+    **单一口径**：``_enrich_fetch`` 用它拼预热 URL，``_enrich_apply`` 用它写
+    ``emby_people``——两边看到的演员表必须完全一致，否则预热和落库会对不上
+    （预热了 A 的头像、落库了 B 的名字）。
+    """
+    if not details:
+        return []
+    cast = (details.get("credits") or {}).get("cast") or []
+    base = image_base()
+    out: list[dict] = []
+    for c in cast[: max(0, int(limit))]:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        if not name:
+            continue
+        profile = c.get("profile_path")
+        out.append({
+            "name": name,
+            "role": str(c.get("character") or "").strip(),
+            "image": f"{base}/w185{profile}" if profile else "",
+            "sort_order": len(out),
+        })
+    return out
+
+
 def _set_image(item: emby_models.MediaItem, kind: str, url: str) -> None:
     """落一个刮削到的图片地址；本地文件**已预热**时同时落本地路径
 
@@ -1066,33 +1114,45 @@ class TmdbClient:
         """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用。
 
         两级缓存同 ``_search_raw``（L1 300 秒 → L2 磁盘 30 天，按 id 键）。
+
+        v2.51.0：``append_to_response`` 带上 ``credits``——演员表和详情**一次请求**
+        拿全，不新增请求、不新增限流器（走同一个令牌桶）。升级前缓存的老载荷没有
+        credits 键，读到时视为过期重拉一次（见 ``_has_credits``）。
         """
         endpoint = "tv" if kind == "series" else "movie"
         key = ("details", endpoint, str(tmdb_id))
         cached = self._cache_get(key)
-        if cached is not _MISS:
+        if cached is not _MISS and _has_credits(cached):
             return cached
         hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id))
-        if hit:
+        if hit and _has_credits(data):
             progress.note_stage("tmdb_disk_hit")
             self._cache_put(key, data)
             return data
         with tmdb_cache.single_flight(key):
             cached = self._cache_get(key)
-            if cached is not _MISS:
+            if cached is not _MISS and _has_credits(cached):
                 return cached
             hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id))
-            if hit:
+            if hit and _has_credits(data):
                 progress.note_stage("tmdb_disk_hit")
                 self._cache_put(key, data)
                 return data
             data = self._get(f"/{endpoint}/{tmdb_id}",
                              {"language": TMDB_LANG,
-                              "append_to_response": "alternative_titles,external_ids"})
+                              "append_to_response": "alternative_titles,external_ids,credits"})
             if data is not None:
                 tmdb_cache.save_details(endpoint, str(tmdb_id), data)
             self._cache_put(key, data)
             return data
+
+    def credits(self, tmdb_id: str, kind: str) -> list[dict]:
+        """前 10 演员（``cast_list`` 口径：name / role / image / sort_order）。
+
+        复用 ``details()`` 的 ``append_to_response=credits``——**不新增请求**，
+        也不新增限流器（``details`` 里那次 ``_get`` 已经过了令牌桶）。
+        """
+        return cast_list(self.details(str(tmdb_id), kind))
 
 
     def season_episodes(self, tmdb_id: str, season_number: int) -> Optional[list]:
@@ -1245,6 +1305,22 @@ class TmdbClient:
                 if n and n not in seen:
                     seen.append(n)
             item.aliases = ",".join(seen[:12])
+        # v2.51.0：国家/语言落库（EA 详情页 Countries / Languages 用）。
+        # 只补缺项、不覆盖已有（与简介/评分同口径）；getattr 兜底轻量替身。
+        countries = [str(c).strip() for c in (data.get("origin_country") or [])
+                     if str(c).strip()]
+        if countries and not getattr(item, "countries", None):
+            item.countries = ",".join(countries)[:500]
+        spoken = data.get("spoken_languages") or []
+        lang_names = [str(l.get("english_name") or l.get("name") or "").strip()
+                      for l in spoken if isinstance(l, dict)]
+        lang_names = [n for n in lang_names if n]
+        if not lang_names:
+            orig = str(data.get("original_language") or "").strip()
+            if orig:
+                lang_names = [orig]
+        if lang_names and not getattr(item, "languages", None):
+            item.languages = ",".join(lang_names)[:500]
 
     def refresh_images(self, item: emby_models.MediaItem, kind: str) -> bool:
         """重新取图——数据库里有图片记录但本地文件已丢失时用

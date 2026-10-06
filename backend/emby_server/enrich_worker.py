@@ -463,14 +463,50 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
     #    真的发 HTTP，一张图超时 15s 就把数据库写锁攥 15s，违反本模块自己的声明；
     #    现在写事务里的 localize 是 allow_download=False，预热没赶上的图只是「这轮没
     #    本地化」，交给取图时的按需自愈）。豆瓣/Bangumi 兜底图走 extra。
-    from backend.emby_server.tmdb import prewarm_images
+    from backend.emby_server.tmdb import prewarm_images, cast_list
+    # v2.51.0 演员头像也在 IO 阶段预热：写事务里不碰网络（见模块注释处方 1）。
+    # 口径与 _enrich_apply 写 emby_people 用的是同一个 cast_list，预热和落库对得上。
+    cast_urls = [c["image"] for c in cast_list(result.get("tmdb_details"))
+                 if c.get("image")]
     result["images_prewarmed"] = prewarm_images(
         result.get("tmdb_hit"), result.get("tmdb_details"),
         extra=[(result.get(_k) or {}).get("image")
                for _k in ("douban_hit", "bangumi_hit")]
-        + [((result.get("multisource") or {}).get("fields") or {}).get("poster")])
+        + [((result.get("multisource") or {}).get("fields") or {}).get("poster")]
+        + cast_urls)
 
     return result
+
+
+def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
+    """写库阶段：把 details 里的演员表写入 ``emby_people``（幂等）。
+
+    details 自带 credits（``append_to_response``，一次请求，不新增 TMDB 调用）。
+    **只在该条目还没有演员行时写**：补全重跑/修复重跑不会产生重复行；头像已在
+    IO 阶段预热（``_enrich_fetch``），写事务里不碰网络。失败只记日志，
+    不影响主流程（演员表是增强信息，不是核心元数据）。
+    """
+    if not details:
+        return
+    try:
+        from backend.emby_server.tmdb import cast_list as _cast_list
+        cast = _cast_list(details)
+        if not cast:
+            return
+        exists = db.query(em.EmbyPerson.id).filter(
+            em.EmbyPerson.item_id == item.id).first()
+        if exists:
+            return
+        for c in cast:
+            db.add(em.EmbyPerson(
+                item_id=item.id,
+                name=str(c["name"])[:200],
+                role=str(c.get("role") or "")[:200],
+                image=str(c.get("image") or "")[:1024],
+                sort_order=int(c.get("sort_order") or 0),
+            ))
+    except Exception as exc:  # noqa: BLE001 — 演员落库失败不该影响主流程
+        logger.debug("演员落库失败 %s: %s", getattr(item, "name", ""), exc)
 
 
 def _enrich_apply(db, item: Any, fetched: dict) -> None:
@@ -537,6 +573,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             nfo_lib.apply_nfo(item, nfo_data, kind)
     elif nfo_data and not item.overview:
         nfo_lib.apply_nfo(item, nfo_data, kind)
+
+    # 3.5 演员表（v2.51.0）：details 自带 credits；幂等，只在没有演员行时写。
+    _apply_cast(db, item, fetched.get("tmdb_details"))
 
     # 单集 TMDB 数据（v2.50.0）：标题/简介/剧照
     # 在父级图片回退之前应用——有专属剧照的集用自己的，没有的才回退
