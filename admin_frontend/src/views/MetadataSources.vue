@@ -43,6 +43,7 @@ import {
   previewTmdb,
   probeMetaSources,
   searchItemsForBind,
+  searchTmdbCandidates,
   rescrapeItem,
   resetMetaSourceCooldown,
   resetTmdbKeyCooldown,
@@ -61,6 +62,7 @@ import type {
   MetaSourceRow,
   MetaSourcesConfig,
   TmdbBindResult,
+  TmdbCandidate,
   TmdbKeyPoolRow,
   TmdbKeysStatus,
   TmdbMirror,
@@ -139,16 +141,22 @@ function selectBindItem(item: ItemSearchResult) {
   bindItemId.value = String(item.id)
   bindPreview.value = null
   bindNotes.value = []
+  // 第二步默认填条目名 + 年份，管理员直接点「搜索 TMDB」即可
+  tmdbSearchQ.value = item.name || ''
+  tmdbSearchYear.value = item.year ? String(item.year) : ''
+  tmdbCandidates.value = []
+  tmdbSearched.value = false
 }
 
 function clearBindSelection() {
   bindSelectedItem.value = null
   bindItemId.value = ''
   bindPreview.value = null
+  tmdbCandidates.value = []
+  tmdbSearched.value = false
 }
 
-// ==================== 元数据锁定（P3，Emby 式手动识别） ====================
-// 锁定 = 自动补全（enrich）不再碰这条，防止自动刷新覆盖手动整理成果。
+// ==================== 元数据锁定（P3，Emby 式手动识别） =============// 锁定 = 自动补全（enrich）不再碰这条，防止自动刷新覆盖手动整理成果。
 // 手动绑定/手动重刮不受锁定影响——锁定防的是「自动」，手动永远优先。
 const lockLoadingId = ref<number | null>(null)
 
@@ -172,6 +180,68 @@ async function toggleItemLock(item: ItemSearchResult) {
 }
 // TMDB 对中文剧集/综艺收录偏少，自动刮削搜不到的条目在这里手动指定 ID。
 // 流程：填条目 ID → 填 TMDB ID → 预览确认是哪部片 → 绑定（或解绑）。
+=======
+// --- 第二步：TMDB 候选搜索 + 一键绑定（Emby 式手动识别） ---
+const tmdbSearchQ = ref('')
+const tmdbSearchYear = ref('')
+const tmdbCandidates = ref<TmdbCandidate[]>([])
+const tmdbSearchLoading = ref(false)
+const tmdbSearched = ref(false)
+const tmdbBindLoading = ref<number | null>(null)
+/** 手填 TMDB ID 入口默认折叠：候选墙能解决绝大多数情况 */
+const manualIdCollapsed = ref(true)
+
+async function doSearchTmdbCandidates() {
+  const item = bindSelectedItem.value
+  if (!item) { ElMessage.warning('请先搜索并选择条目'); return }
+  const q = tmdbSearchQ.value.trim()
+  if (!q) { ElMessage.warning('请输入剧名'); return }
+  const yearStr = tmdbSearchYear.value.trim()
+  let year: number | null = null
+  if (yearStr) {
+    year = Number(yearStr)
+    if (!Number.isInteger(year) || year <= 0) { ElMessage.warning('年份必须是正整数'); return }
+  }
+  tmdbSearchLoading.value = true
+  tmdbCandidates.value = []
+  try {
+    const kind = item.item_type === 'movie' ? 'movie' : 'series'
+    const res = await searchTmdbCandidates(q, year, kind)
+    tmdbCandidates.value = res.candidates
+    tmdbSearched.value = true
+    if (!res.candidates.length) ElMessage.info('TMDB 没找到匹配的候选，换个剧名或年份试试')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '搜索 TMDB 失败')
+  } finally {
+    tmdbSearchLoading.value = false
+  }
+}
+
+async function doBindCandidate(c: TmdbCandidate) {
+  const item = bindSelectedItem.value
+  if (!item) { ElMessage.warning('请先搜索并选择条目'); return }
+  try {
+    await ElMessageBox.confirm(
+      `把「${item.name}」绑定到 TMDB「${c.title}${c.year ? `（${c.year}）` : ''}」吗？绑定后自动补全缺失的图 / 简介 / IMDb / 别名。`,
+      '确认绑定',
+      { type: 'warning' },
+    )
+  } catch { return }
+  tmdbBindLoading.value = c.tmdb_id
+  try {
+    const res: TmdbBindResult = await bindTmdb(item.id, String(c.tmdb_id), true)
+    bindNotes.value = [`「${res.item.name}」：${res.notes.join('；')}`]
+    bindPreview.value = null
+    if (res.item.tmdb_id != null) item.tmdb_id = res.item.tmdb_id
+    ElMessage.success('已绑定并补全元数据')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '绑定失败')
+  } finally {
+    tmdbBindLoading.value = null
+  }
+}
+// TMDB 对中文剧集/综艺收录偏少，自动刮削搜不到的条目在这里手动识别。
+// 流程：第一步搜库内条目并选中 → 第二步搜 TMDB 候选、一键绑定（或展开「手动输入 TMDB ID」兜底）。
 const bindItemId = ref('')
 const bindTmdbId = ref('')
 const bindPreview = ref<TmdbPreview | null>(null)
@@ -1171,9 +1241,10 @@ onMounted(() => {
         </div>
         <div v-show="!bindCardCollapsed">
         <p class="ms-hint">
-          TMDB 对中文剧集 / 综艺收录偏少，自动刮削搜不到的条目在这里手动指定 TMDB ID。
-          先搜剧名选条目，再「预览」确认是哪部片，最后「绑定」；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
+          TMDB 对中文剧集 / 综艺收录偏少，自动刮削搜不到的条目在这里手动识别。
+          第一步搜库内条目并选中，第二步搜 TMDB 候选、一键绑定；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
         </p>
+        <div class="ms-hint" style="font-weight: 600">第一步：搜库内条目</div>
         <div class="ms-actions">
           <el-input v-model="bindSearchQ" placeholder="剧名关键字，如：黑鸟" style="width: 200px" clearable @keyup.enter="doSearchBindItems" />
           <el-input v-model="bindSearchYear" placeholder="年份（可选）" style="width: 110px" clearable @keyup.enter="doSearchBindItems" />
@@ -1219,29 +1290,77 @@ onMounted(() => {
             <el-button size="small" text @click="clearBindSelection">重选</el-button>
           </div>
         </div>
-        <div class="ms-actions">
-          <el-input v-model="bindTmdbId" placeholder="TMDB ID（数字）" style="width: 160px" clearable />
-          <el-button size="small" :loading="bindPreviewLoading" @click="doPreviewTmdb">
-            预览
-          </el-button>
-        </div>
-        <div v-if="bindPreview" class="ms-results">
-          <div class="ms-result">
-            <span class="mini-badge" :class="bindPreview.matches_current ? 'ok' : 'warn'">
-              {{ bindPreview.matches_current ? '片名一致' : '片名不一致，请核对' }}
-            </span>
-            <span>TMDB：{{ bindPreview.title }}<span v-if="bindPreview.year">（{{ bindPreview.year }}）</span></span>
-            <span class="ms-hint">当前条目：{{ bindPreview.current_name }}（TMDB {{ bindPreview.current_tmdb_id ?? '未绑定' }}）</span>
+        <!-- 第二步：搜 TMDB 候选，一键绑定（Emby 式手动识别） -->
+        <template v-if="bindSelectedItem">
+          <div class="ms-hint" style="font-weight: 600; margin-top: 10px">第二步：搜 TMDB 候选，一键绑定</div>
+          <div class="ms-actions">
+            <el-input v-model="tmdbSearchQ" placeholder="剧名，如：黑鸟" style="width: 200px" clearable @keyup.enter="doSearchTmdbCandidates" />
+            <el-input v-model="tmdbSearchYear" placeholder="年份（可选）" style="width: 110px" clearable @keyup.enter="doSearchTmdbCandidates" />
+            <el-button type="primary" size="small" :loading="tmdbSearchLoading" @click="doSearchTmdbCandidates">
+              搜索 TMDB
+            </el-button>
           </div>
-        </div>
-        <div class="ms-actions">
-          <el-button type="primary" size="small" :loading="bindLoading" @click="doBindTmdb">
-            绑定
-          </el-button>
-          <el-button size="small" :loading="bindLoading" @click="doUnbindTmdb">
-            解绑
-          </el-button>
-        </div>
+          <div v-if="tmdbCandidates.length" class="tmdb-candidates">
+            <div v-for="c in tmdbCandidates" :key="c.tmdb_id" class="tmdb-candidate">
+              <div class="tmdb-poster">
+                <img
+                  v-if="c.poster_path"
+                  :src="`https://image.tmdb.org/t/p/w200${c.poster_path}`"
+                  :alt="c.title"
+                  loading="lazy"
+                />
+                <div v-else class="tmdb-poster-empty">暂无海报</div>
+              </div>
+              <div class="tmdb-info">
+                <div class="tmdb-title">{{ c.title }}<span v-if="c.year">（{{ c.year }}）</span></div>
+                <div class="tmdb-meta">{{ c.media_type === 'tv' ? '剧集' : '电影' }} · TMDB {{ c.tmdb_id }}</div>
+                <p class="tmdb-overview" :title="c.overview">{{ c.overview || '暂无简介' }}</p>
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="tmdbBindLoading === c.tmdb_id"
+                  @click="doBindCandidate(c)"
+                >
+                  绑定此条
+                </el-button>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="tmdbSearched && !tmdbSearchLoading" class="ms-hint">
+            TMDB 没找到匹配的候选，换个剧名或年份试试；或者展开下方「手动输入 TMDB ID」。
+          </div>
+          <!-- 手填 TMDB ID 入口（默认折叠）：候选墙搜不到时的兜底 -->
+          <div class="tmdb-manual-toggle">
+            <el-button size="small" text @click="manualIdCollapsed = !manualIdCollapsed">
+              {{ manualIdCollapsed ? '▸' : '▾' }} 手动输入 TMDB ID
+            </el-button>
+          </div>
+          <div v-show="!manualIdCollapsed">
+            <div class="ms-actions">
+              <el-input v-model="bindTmdbId" placeholder="TMDB ID（数字）" style="width: 160px" clearable />
+              <el-button size="small" :loading="bindPreviewLoading" @click="doPreviewTmdb">
+                预览
+              </el-button>
+            </div>
+            <div v-if="bindPreview" class="ms-results">
+              <div class="ms-result">
+                <span class="mini-badge" :class="bindPreview.matches_current ? 'ok' : 'warn'">
+                  {{ bindPreview.matches_current ? '片名一致' : '片名不一致，请核对' }}
+                </span>
+                <span>TMDB：{{ bindPreview.title }}<span v-if="bindPreview.year">（{{ bindPreview.year }}）</span></span>
+                <span class="ms-hint">当前条目：{{ bindPreview.current_name }}（TMDB {{ bindPreview.current_tmdb_id ?? '未绑定' }}）</span>
+              </div>
+            </div>
+            <div class="ms-actions">
+              <el-button type="primary" size="small" :loading="bindLoading" @click="doBindTmdb">
+                绑定
+              </el-button>
+              <el-button size="small" :loading="bindLoading" @click="doUnbindTmdb">
+                解绑
+              </el-button>
+            </div>
+          </div>
+        </template>
         <div v-if="bindNotes.length" class="ms-results">
           <div v-for="(n, i) in bindNotes" :key="i" class="ms-result">{{ n }}</div>
         </div>

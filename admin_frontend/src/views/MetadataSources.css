@@ -433,5 +433,104 @@
     min-width: 44px;
     padding: 8px 14px;
     font-size: 14px;
+/* 手动绑定 TMDB · 第二步：TMDB 候选卡片墙（Emby 式手动识别） */
+.tmdb-candidates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.tmdb-candidate {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+
+.tmdb-poster {
+  flex: 0 0 72px;
+  width: 72px;
+}
+
+.tmdb-poster img {
+  display: block;
+  width: 72px;
+  height: 108px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
+
+.tmdb-poster-empty {
+  width: 72px;
+  height: 108px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+.tmdb-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tmdb-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.tmdb-meta {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+/* 简介只露两行，hover 显示全文（title 属性兜底） */
+.tmdb-overview {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tmdb-info .el-button {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.tmdb-manual-toggle {
+  margin-top: 10px;
+}
+
+/* 移动端（<768px）：候选墙单列，卡片内图片和文字上下排 */
+@media (max-width: 767px) {
+  .tmdb-candidates {
+    grid-template-columns: 1fr;
+  }
+  .tmdb-candidate {
+    flex-direction: column;
+  }
+  .tmdb-poster,
+  .tmdb-poster img,
+  .tmdb-poster-empty {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 2 / 3;
+    max-height: 320px;
   }
 }
