@@ -13,6 +13,9 @@
    而调用自身确实花了 ≥0.5s（活儿真干了，只是不在循环上）；
    （2026-10-05：阈值从 0.15s 放宽到 0.3s——CI 负载下事件循环心跳抖动超 0.15s
    是常态，3 红 1 绿的系统性 flake；阻塞基线是 ≥0.5s，0.3s 仍有足够区分度）
+   （2026-10-06：根因是心跳把 OS 调度抖动和事件循环阻塞混在一起量，绝对阈值在
+   共享 CI 上必然 flake。改为时序断言测 3 次取最小——抖动随机、真阻塞确定，
+   取最小不损失检出能力；5s 长测试单次测量、阈值放宽到 1.0s（阻塞特征 ~5s）。）
 3. **路由级**：结束自己的播放 / 管理员结束任意会话 / 停止全部转码三条 ``async`` 路由，
    在同一条事件循环里打进真实 app（ASGITransport），心跳同样只有很小的空洞；
 4. **语义不变**：SIGTERM 不理就打 SIGKILL、会话目录被删、异常退出的 ffmpeg 日志尾部进服务日志、
@@ -167,21 +170,39 @@ class LoopWatch:
         return self.max_gap
 
 
-async def measure(awaitable_factory):
-    """跑一段协程，返回 (耗时, 心跳最坏空洞)"""
-    watch = LoopWatch()
-    watch.start()
-    # 先让心跳真正跑起来（记下基准时刻），否则第一次 sleep 之前就被阻塞时量不到
-    await asyncio.sleep(watch.interval * 2)
-    started = time.monotonic()
-    await awaitable_factory()
-    elapsed = time.monotonic() - started
-    # 阻塞的时长是「心跳下一次醒来时才被看见」的，所以这里要再放一拍再收网，
-    # 否则刚被卡住的循环还没机会把那段空隙记下来
-    await asyncio.sleep(watch.interval * 2)
-    gap = watch.stop()
-    assert watch.ticks > 0, "心跳任务没跑起来，测量无效"
-    return elapsed, gap
+async def measure(awaitable_factory, attempts: int = 1):
+    """跑一段协程，返回 (耗时, 心跳最坏空洞)。
+
+    attempts>1 时重复测量、取空洞最小的一次：OS 调度抖动是随机的（单次测量可能
+    撞上尖刺），真正的事件循环阻塞是确定性的（每次测量都有）。取最小值不损失对
+    真阻塞的检出能力，但把随机抖动造成误报的概率从 p 降到 p**attempts。
+    """
+    best_elapsed, best_gap = None, None
+    for _ in range(max(1, attempts)):
+        watch = LoopWatch()
+        watch.start()
+        # 先让心跳真正跑起来（记下基准时刻），否则第一次 sleep 之前就被阻塞时量不到
+        await asyncio.sleep(watch.interval * 2)
+        started = time.monotonic()
+        await awaitable_factory()
+        elapsed = time.monotonic() - started
+        # 阻塞的时长是「心跳下一次醒来时才被看见」的，所以这里要再放一拍再收网，
+        # 否则刚被卡住的循环还没机会把那段空隙记下来
+        await asyncio.sleep(watch.interval * 2)
+        gap = watch.stop()
+        assert watch.ticks > 0, "心跳任务没跑起来，测量无效"
+        if best_gap is None or gap < best_gap:
+            best_elapsed, best_gap = elapsed, gap
+    return best_elapsed, best_gap
+
+
+async def measure_stable(awaitable_factory, attempts: int = 3):
+    """对时序敏感的断言用这个：测多次取最稳的一次，专治 CI 负载抖动。
+
+    原理见 measure() 的 attempts 说明。3 次测量的耗时增加约 2 倍，
+    对 0.3~0.6s 级别的操作可接受；5s 级别的长操作不要用这个（见真子进程那节）。
+    """
+    return await measure(awaitable_factory, attempts=attempts)
 
 
 # ==================== 1. 基线：同步版本确实会卡住循环 ====================
@@ -201,7 +222,7 @@ async def section_baseline():
 # ==================== 2. 异步版本：活儿真干了，但循环没被占住 ====================
 async def section_async():
     sid, directory = register(FakeProc(seconds=0.6))
-    elapsed, gap = await measure(lambda: streaming.stop_transcode_async(sid))
+    elapsed, gap = await measure_stable(lambda: streaming.stop_transcode_async(sid))
     check("异步停止：阻塞部分真的花了时间（0.6s 的等待没被跳过）",
           elapsed >= 0.5, f"耗时={elapsed:.3f}s")
     check("异步停止：期间事件循环保持响应（心跳空洞 <0.3s）",
@@ -210,7 +231,7 @@ async def section_async():
     check("异步停止：会话已从 registry 摘除", sid not in registry_ids())
 
     # 心跳任务本身是活的（防止「空洞小」是因为心跳压根没跑）
-    _, gap2 = await measure(lambda: asyncio.sleep(0.3))
+    _, gap2 = await measure_stable(lambda: asyncio.sleep(0.3))
     check("对照：空闲 0.3s 的心跳空洞同样很小（测量方法可信）",
           gap2 < 0.15, f"心跳空洞={gap2:.3f}s")
 
@@ -227,11 +248,13 @@ async def section_async():
         "user_id": 0, "item_guid": "guid-real", "file_path": "/tmp/real.mkv",
     }
     try:
+        # 注：这里故意不用 measure_stable——5s x 3 次太慢。单次测量 + 1.0s 阈值：
+        # 真阻塞的特征是 ~5s 的空洞（旧写法），1.0s 仍有 5 倍区分度，同时容忍 CI 抖动。
         elapsed, gap = await measure(lambda: streaming.stop_transcode_async(real_id))
         check("真子进程：等满 5 秒超时后才 SIGKILL（真的走完了阻塞路径）",
-              elapsed >= 4.5 and child.poll() is not None, f"耗时={elapsed:.2f}s") 
-        check("真子进程：这 5 秒里事件循环保持响应（心跳空洞 <0.3s）",
-              gap < 0.3, f"心跳空洞={gap:.3f}s（旧写法会是 ~5s）")
+              elapsed >= 4.5 and child.poll() is not None, f"耗时={elapsed:.2f}s")
+        check("真子进程：这 5 秒里事件循环保持响应（心跳空洞 <1.0s）",
+              gap < 1.0, f"心跳空洞={gap:.3f}s（旧写法会是 ~5s）")
         check("真子进程：会话目录已删", not os.path.isdir(real_dir))
     finally:
         if child.poll() is None:
@@ -292,7 +315,7 @@ async def section_semantics():
 async def section_concurrency():
     for _ in range(4):
         register(FakeProc(seconds=0.4))
-    elapsed, gap = await measure(streaming.stop_all_transcodes_async)
+    elapsed, gap = await measure_stable(streaming.stop_all_transcodes_async)
     check("停掉全部转码是并发执行（4×0.4s 的会话总耗时 <1s，逐个等会是 1.6s+）",
           elapsed < 1.0, f"耗时={elapsed:.3f}s")
     check("并发停止期间事件循环同样保持响应", gap < 0.3, f"心跳空洞={gap:.3f}s")
@@ -352,7 +375,7 @@ async def section_routes():
             box["resp"] = await api.delete(
                 f"/api/user/emby/sessions/{owner_key}", headers=OWNER_H)
 
-        elapsed, gap = await measure(stop_mine)
+        elapsed, gap = await measure_stable(stop_mine)
         resp = box["resp"]
         check("结束自己的播放 → 200", resp.status_code == 200, f"实际 {resp.status_code}")
         check("结束播放真的停掉了对应转码（播放会话键 ≠ 转码 id）",
@@ -369,7 +392,7 @@ async def section_routes():
             box["resp"] = await api.delete(
                 f"/api/admin/emby/sessions/{staff_key}", headers=STAFF_H)
 
-        elapsed, gap = await measure(stop_admin)
+        elapsed, gap = await measure_stable(stop_admin)
         resp = box["resp"]
         check("管理员结束会话 → 200", resp.status_code == 200, f"实际 {resp.status_code}")
         check("管理员结束会话同样释放转码", sid not in registry_ids(), str(registry_ids()))
@@ -384,7 +407,7 @@ async def section_routes():
             box["resp"] = await api.post(
                 "/api/admin/emby/transcodes/stop-all", headers=STAFF_H)
 
-        elapsed, gap = await measure(stop_all_route)
+        elapsed, gap = await measure_stable(stop_all_route)
         resp = box["resp"]
         check("停止全部转码 → 200 且报了数量",
               resp.status_code == 200 and resp.json()["stopped"] == 3, resp.text[:120])
