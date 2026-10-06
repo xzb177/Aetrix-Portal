@@ -928,6 +928,19 @@ export const scanLibrary = (id: number, full = false) =>
     task?: EmbyScanTask
   }>(`${E}/libraries/${id}/scan${full ? '?full=true' : ''}`)
 
+/** 一键扫描全部：把所有启用的库按顺序加入扫描队列（增量）。新用户挂载后点这个。 */
+export const scanAllLibraries = () =>
+  post<{
+    success: boolean
+    queued_count: number
+    already_count: number
+    skipped_count: number
+    queued: Array<{ id: number; name: string }>
+    already: Array<{ id: number; name: string; state?: string }>
+    skipped: Array<{ id: number; name: string; reason?: string }>
+    message?: string
+  }>('/emby/scan/all')
+
 /** 本机目录实时监听状态（含降级原因；设置页用来告知“监听不可用，已改用定时扫描”） */
 export const fetchFsWatchStatus = () => get<{
   available: boolean
@@ -1267,6 +1280,7 @@ export const unlockItemMetadata = (id: number) =>
 /** 条目详情（含 metadata_locked） */
 export const fetchItemLockStatus = (id: number) =>
   get<ItemLockResult>(`${E}/scrape/items/${id}`)
+
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
 export interface EnrichStageStat {

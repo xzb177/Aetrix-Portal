@@ -47,6 +47,7 @@ import {
   renderLibraryCover,
   rescrapeLibrary,
   runRepairQueue,
+  scanAllLibraries,
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
@@ -821,6 +822,40 @@ async function scanFull(l: EmbyLibrary) {
   await scan(l, true)
 }
 
+/**
+ * 一键扫描全部：把所有启用的库按顺序加入扫描队列（增量扫描）。
+ * 新用户挂载后点这个，不用一个个点 11 次。
+ * 正在扫的库会自动跳过，不会重复加入。
+ */
+async function scanAll() {
+  const enabledCount = libraries.value.filter(l => l.is_enabled !== false).length
+  if (enabledCount === 0) {
+    ElMessage.warning('没有启用的媒体库，先去创建一个吧')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将把 ${enabledCount} 个启用的库按顺序加入扫描队列（增量扫描，只处理新增/改过的文件）。` +
+      `正在扫的库会自动跳过。全部扫完可能需要较长时间，确定吗？`,
+      '一键扫描全部',
+      { type: 'info', confirmButtonText: '开始扫描', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = await scanAllLibraries()
+    const parts = [`已加入 ${res.queued_count} 个库的扫描队列`]
+    if (res.already_count > 0) parts.push(`${res.already_count} 个正在扫/已在队列（已跳过）`)
+    if (res.skipped_count > 0) parts.push(`${res.skipped_count} 个已停用/虚拟（已跳过）`)
+    ElMessage.success(parts.join('，'))
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '一键扫描失败')
+  }
+  await pollQueue()
+  setTimeout(load, 1500)
+}
+
 // ==================== 元数据与刮削 ====================
 // 定时扫描：开关 + 每天几点扫，全部由用户在后台决定（默认关闭）
 const autoScan = ref<AutoScanConfig | null>(null)
@@ -1491,6 +1526,32 @@ function typeLabel(t: string): string {
     </div>
 
     <!-- 媒体库列表：卡片只保留识别信息、关键状态和高频操作，其余设置收进抽屉 -->
+    <div class="admin-card" style="margin-bottom: 16px;">
+      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <el-button
+          type="primary"
+          title="把所有启用的库各扫一次（增量扫描）。新用户挂载后点这个，不用一个个点。"
+          @click="scanAll"
+        >
+          <ScanSearch :size="14" />一键扫描全部
+        </el-button>
+        <span class="drawer-hint">新用户挂载后点这个，不用一个个点 11 次</span>
+      </div>
+      <el-alert
+        type="info"
+        :closable="false"
+        style="margin-top: 12px;"
+        title="扫描说明"
+      >
+        <template #default>
+          <div style="line-height: 1.8;">
+            <div>• <b>扫描</b>（每个库）：增量扫描，只处理新增/改过的文件，没变化的跳过。日常用这个。</div>
+            <div>• <b>一键扫描全部</b>：把所有库各扫一次（增量）。新用户挂载后点这个。</div>
+            <div>• <b>全量扫描</b>（每个库）：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。</div>
+          </div>
+        </template>
+      </el-alert>
+    </div>
     <div class="lib-grid">
       <article v-for="l in libraries" :key="l.id" class="admin-card lib-card">
         <div class="lib-cover">
@@ -1578,13 +1639,19 @@ function typeLabel(t: string): string {
         </div>
 
         <div class="lib-foot">
-          <el-button size="small" type="primary" plain @click="scan(l)">
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            title="增量扫描：只处理新增/改过的文件，没变化的跳过。日常用这个。"
+            @click="scan(l)"
+          >
             <ScanSearch :size="13" />扫描
           </el-button>
           <el-button
             size="small"
             plain
-            title="无视增量指纹，完整重扫一遍（排查指纹异常时用）"
+            title="全量扫描：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。"
             @click="scanFull(l)"
           >
             <RefreshCcw :size="13" />全量扫描
