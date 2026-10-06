@@ -39,6 +39,7 @@ import {
   fetchTmdbMirror,
   previewTmdb,
   probeMetaSources,
+  searchItemsForBind,
   rescrapeItem,
   resetMetaSourceCooldown,
   resetTmdbKeyCooldown,
@@ -48,6 +49,7 @@ import {
   testTmdbKeys,
 } from '@/api/admin'
 import type {
+  ItemSearchResult,
   EnrichProgress,
   MetaSourceKeyRow,
   MetaSourceOutcome,
@@ -91,6 +93,55 @@ async function doRescrapeItem() {
 }
 
 // ==================== 手动绑定 TMDB ====================
+
+// --- 手动绑定卡片折叠（默认收起，状态存 localStorage） ---
+const bindCardCollapsed = ref(localStorage.getItem('aetrix_bind_tmdb_collapsed') !== '0')
+function toggleBindCard() {
+  bindCardCollapsed.value = !bindCardCollapsed.value
+  localStorage.setItem('aetrix_bind_tmdb_collapsed', bindCardCollapsed.value ? '1' : '0')
+}
+
+// --- 剧名+年份搜索（替代手输条目 ID） ---
+const bindSearchQ = ref('')
+const bindSearchYear = ref('')
+const bindSearchResults = ref<ItemSearchResult[]>([])
+const bindSearchLoading = ref(false)
+const bindSelectedItem = ref<ItemSearchResult | null>(null)
+
+async function doSearchBindItems() {
+  const q = bindSearchQ.value.trim()
+  if (!q) { ElMessage.warning('请输入剧名关键字'); return }
+  const yearStr = bindSearchYear.value.trim()
+  let year: number | null = null
+  if (yearStr) {
+    year = Number(yearStr)
+    if (!Number.isInteger(year) || year <= 0) { ElMessage.warning('年份必须是正整数'); return }
+  }
+  bindSearchLoading.value = true
+  bindSearchResults.value = []
+  try {
+    const res = await searchItemsForBind(q, year)
+    bindSearchResults.value = res.items
+    if (!res.items.length) ElMessage.info('没搜到匹配的条目，换个关键字试试')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '搜索失败')
+  } finally {
+    bindSearchLoading.value = false
+  }
+}
+
+function selectBindItem(item: ItemSearchResult) {
+  bindSelectedItem.value = item
+  bindItemId.value = String(item.id)
+  bindPreview.value = null
+  bindNotes.value = []
+}
+
+function clearBindSelection() {
+  bindSelectedItem.value = null
+  bindItemId.value = ''
+  bindPreview.value = null
+}
 // TMDB 对中文剧集/综艺收录偏少，自动刮削搜不到的条目在这里手动指定 ID。
 // 流程：填条目 ID → 填 TMDB ID → 预览确认是哪部片 → 绑定（或解绑）。
 const bindItemId = ref('')
@@ -103,7 +154,7 @@ const bindNotes = ref<string[]>([])
 async function doPreviewTmdb() {
   const id = Number(bindItemId.value)
   const tid = bindTmdbId.value.trim()
-  if (!id) { ElMessage.warning('请填写条目 ID'); return }
+  if (!id) { ElMessage.warning('请先搜索并选择条目'); return }
   if (!tid) { ElMessage.warning('请填写 TMDB ID'); return }
   bindPreviewLoading.value = true
   bindPreview.value = null
@@ -119,7 +170,7 @@ async function doPreviewTmdb() {
 async function doBindTmdb() {
   const id = Number(bindItemId.value)
   const tid = bindTmdbId.value.trim()
-  if (!id) { ElMessage.warning('请填写条目 ID'); return }
+  if (!id) { ElMessage.warning('请先搜索并选择条目'); return }
   if (!tid) { ElMessage.warning('请填写 TMDB ID'); return }
   try {
     await ElMessageBox.confirm(
@@ -145,7 +196,7 @@ async function doBindTmdb() {
 
 async function doUnbindTmdb() {
   const id = Number(bindItemId.value)
-  if (!id) { ElMessage.warning('请填写条目 ID'); return }
+  if (!id) { ElMessage.warning('请先搜索并选择条目'); return }
   try {
     await ElMessageBox.confirm(
       `解绑条目 ${id} 的 TMDB ID？解绑后会重新排入补全队列。`,
@@ -1095,17 +1146,48 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 3. 手动绑定 TMDB -->
+      <!-- 3. 手动绑定 TMDB（默认折叠） -->
       <div class="admin-card ms-card">
-        <div class="card-header">
+        <div class="card-header" style="cursor: pointer" @click="toggleBindCard">
           <h2><Wand2 :size="16" style="margin-right: 6px" />手动绑定 TMDB</h2>
+          <span class="ms-hint">{{ bindCardCollapsed ? '展开' : '收起' }}</span>
         </div>
+        <div v-show="!bindCardCollapsed">
         <p class="ms-hint">
           TMDB 对中文剧集 / 综艺收录偏少，自动刮削搜不到的条目在这里手动指定 TMDB ID。
-          先「预览」确认是哪部片，再「绑定」；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
+          先搜剧名选条目，再「预览」确认是哪部片，最后「绑定」；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
         </p>
         <div class="ms-actions">
-          <el-input v-model="bindItemId" placeholder="条目 ID" style="width: 140px" clearable />
+          <el-input v-model="bindSearchQ" placeholder="剧名关键字，如：黑鸟" style="width: 200px" clearable @keyup.enter="doSearchBindItems" />
+          <el-input v-model="bindSearchYear" placeholder="年份（可选）" style="width: 110px" clearable @keyup.enter="doSearchBindItems" />
+          <el-button size="small" :loading="bindSearchLoading" @click="doSearchBindItems">
+            搜索条目
+          </el-button>
+        </div>
+        <div v-if="bindSearchResults.length" class="ms-results">
+          <div
+            v-for="item in bindSearchResults"
+            :key="item.id"
+            class="ms-result"
+            :class="{ 'is-selected': bindSelectedItem?.id === item.id }"
+            style="cursor: pointer"
+            @click="selectBindItem(item)"
+          >
+            <span>{{ item.name }}</span>
+            <span v-if="item.year" class="ms-hint">（{{ item.year }}）</span>
+            <span class="ms-hint">{{ item.item_type === 'series' ? '剧集' : '电影' }}</span>
+            <span class="mini-badge" :class="item.tmdb_id ? 'ok' : 'warn'">
+              {{ item.tmdb_id ? `已绑 ${item.tmdb_id}` : '未绑定' }}
+            </span>
+          </div>
+        </div>
+        <div v-if="bindSelectedItem" class="ms-results">
+          <div class="ms-result">
+            <span>已选：{{ bindSelectedItem.name }}<span v-if="bindSelectedItem.year">（{{ bindSelectedItem.year }}）</span></span>
+            <el-button size="small" text @click="clearBindSelection">重选</el-button>
+          </div>
+        </div>
+        <div class="ms-actions">
           <el-input v-model="bindTmdbId" placeholder="TMDB ID（数字）" style="width: 160px" clearable />
           <el-button size="small" :loading="bindPreviewLoading" @click="doPreviewTmdb">
             预览
@@ -1130,6 +1212,7 @@ onMounted(() => {
         </div>
         <div v-if="bindNotes.length" class="ms-results">
           <div v-for="(n, i) in bindNotes" :key="i" class="ms-result">{{ n }}</div>
+        </div>
         </div>
       </div>
 

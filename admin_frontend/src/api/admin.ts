@@ -1208,6 +1208,19 @@ export interface TmdbPreview {
   matches_current: boolean
 }
 
+
+export interface ItemSearchResult {
+  id: number
+  name: string
+  year: number | null
+  item_type: string
+  tmdb_id: string | number | null
+}
+
+/** 按剧名关键字（+可选年份）搜索顶层条目，供「手动绑定 TMDB」选条目用，最多 20 条 */
+export const searchItemsForBind = (q: string, year?: number | null) =>
+  get<{ items: ItemSearchResult[] }>(`${E}/items/search`, { q, year: year ?? '' })
+
 /** TMDB 预览：绑定前先看清「这到底是哪部片」，只读不写库 */
 export const previewTmdb = (id: number, tmdbId: string) =>
   get<TmdbPreview>(`${E}/scrape/items/${id}/tmdb-preview`, { tmdb_id: tmdbId })
