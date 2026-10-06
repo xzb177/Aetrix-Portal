@@ -363,6 +363,18 @@ def scan_library_fast(db, library, snapshot) -> dict:
     files = _collect_files(snapshot.paths)
     logger.info("[fast] 共 %d 个视频文件", len(files))
 
+    # 2. 加载已有（一次查进内存）——必须在增量过滤之前，过滤要读它
+    # 包括已软删除的：如果文件又出现了，需要取消删除
+    MI = emby_models.MediaItem
+    # file_path -> (id, size, mtime, is_deleted)
+    existing: dict[str, tuple[int, int, float, bool]] = {}
+    for item_id, file_path, size, mtime, deleted_at in db.query(
+            MI.id, MI.file_path, MI.size, MI.file_mtime, MI.deleted_at).filter(
+            MI.library_id == lib_id).all():
+        if file_path:
+            existing[file_path] = (item_id, size or 0, mtime or 0, deleted_at is not None)
+    logger.info("[fast] 库里已有 %d 条", len(existing))
+
     # 1b. 增量过滤（v2.50.0）：mtime+size 未变且未删除的文件直接跳过
     # 用户抱怨"点一次扫描每次都要重新开始"——之前全量文件都要过 parse_media_filename
     # mtime 为 0（老数据未回填）时视为已变更，走一次全量比对后回填 mtime
@@ -384,18 +396,6 @@ def scan_library_fast(db, library, snapshot) -> dict:
     # 逻辑不变，只是输入从全量变为变更集（未变更的去重结果与上次一致）
     files = _dedupe_by_name_year(changed_files, parse_media_filename, lib_type)
     logger.info("[fast] 去重后 %d 个文件", len(files))
-
-    # 2. 加载已有（一次查进内存）
-    # 包括已软删除的：如果文件又出现了，需要取消删除
-    MI = emby_models.MediaItem
-    # file_path -> (id, size, mtime, is_deleted)
-    existing: dict[str, tuple[int, int, float, bool]] = {}
-    for item_id, file_path, size, mtime, deleted_at in db.query(
-            MI.id, MI.file_path, MI.size, MI.file_mtime, MI.deleted_at).filter(
-            MI.library_id == lib_id).all():
-        if file_path:
-            existing[file_path] = (item_id, size or 0, mtime or 0, deleted_at is not None)
-    logger.info("[fast] 库里已有 %d 条", len(existing))
 
     # 3. 比对（只处理变更集；未变更的已在 1b 跳过）
     to_add: list[FastScanFile] = []
