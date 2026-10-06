@@ -939,7 +939,7 @@ export const scanAllLibraries = () =>
     already: Array<{ id: number; name: string; state?: string }>
     skipped: Array<{ id: number; name: string; reason?: string }>
     message?: string
-  }>(`${E}/scan/all`)
+  }>('/emby/scan/all')
 
 /** 本机目录实时监听状态（含降级原因；设置页用来告知“监听不可用，已改用定时扫描”） */
 export const fetchFsWatchStatus = () => get<{
