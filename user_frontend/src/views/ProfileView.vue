@@ -707,9 +707,9 @@ function formatDate(iso?: string | null) {
             </button>
           </div>
           <p class="pane-tip">
-            当前为中转线路：视频字节经服务器转发，Google 账号凭据不会下发到客户端。
-            <template v-if="cdnAvailable">站内已开启 CDN：热门片切到 CDN 线路更稳，首次播放会由边缘缓存分片。</template>
-            <template v-if="cacheAvailable">本地缓存线路：优先从服务器本地读热门片，更少受网盘波动影响，没有缓存时会自动回源并缓存。</template>
+            <template v-if="playLine === 'cdn'">CDN 线路：热门影片走边缘节点分发，播放更稳。首次播放自动缓存，后续直接命中。</template>
+            <template v-else-if="playLine === 'cache'">本地缓存：优先读服务器本地已缓存的热门片，不受网盘波动影响。没缓存时自动回源。</template>
+            <template v-else>中转线路：视频经服务器转发，Google 账号信息不下发到你的设备。</template>
             <template v-if="!singleLine">切换后重新播放生效。</template>
           </p>
         </section>
