@@ -408,6 +408,31 @@
   padding: 2px 8px;
 }
 
+/* 元数据锁定（P3，Emby 式）：锁定行视觉区分——名字后小锁标 + 行内锁定按钮 */
+.ms-result .ms-result-name {
+  display: inline-flex;
+  align-items: center;
+}
+.ms-result .lock-mark {
+  color: var(--el-color-warning);
+  margin-left: 4px;
+  flex: none;
+}
+.ms-result.is-locked .ms-result-name {
+  color: var(--text-secondary);
+}
+.ms-result .lock-btn {
+  margin-left: auto;
+  flex: none;
+}
+
+@media (max-width: 767px) {
+  /* 移动端：锁定按钮不小于 44px 触控目标，<768px 时正常显示 */
+  .ms-result .lock-btn {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 8px 14px;
+    font-size: 14px;
 /* 手动绑定 TMDB · 第二步：TMDB 候选卡片墙（Emby 式手动识别） */
 .tmdb-candidates {
   display: grid;
