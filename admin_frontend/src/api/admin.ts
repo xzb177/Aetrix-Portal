@@ -1221,11 +1221,24 @@ export interface ItemSearchResult {
 
 /** 按剧名关键字（+可选年份）搜索顶层条目，供「手动绑定 TMDB」选条目用，最多 20 条 */
 export const searchItemsForBind = (q: string, year?: number | null) =>
-  get<{ items: ItemSearchResult[] }>(`${E}/items/search`, { q, year: year ?? '' })
+  get<{ items: ItemSearchResult[] }>(`${E}/items/search`, { q, ...(year ? { year } : {}) })
 
 /** TMDB 预览：绑定前先看清「这到底是哪部片」，只读不写库 */
 export const previewTmdb = (id: number, tmdbId: string) =>
   get<TmdbPreview>(`${E}/scrape/items/${id}/tmdb-preview`, { tmdb_id: tmdbId })
+
+export interface TmdbCandidate {
+  tmdb_id: number
+  title: string
+  year: string | null
+  overview: string
+  poster_path: string | null
+  media_type: string
+}
+
+/** Emby 式手动识别：按剧名搜 TMDB 返回候选列表（最多 10 条）；失败返回空列表 */
+export const searchTmdbCandidates = (q: string, year?: number | null, kind: 'movie' | 'series' = 'series') =>
+  get<{ candidates: TmdbCandidate[] }>(`${E}/scrape/tmdb/search`, { q, kind, ...(year ? { year } : {}) })
 
 export interface TmdbBindResult {
   success: boolean
