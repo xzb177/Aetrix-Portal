@@ -433,6 +433,8 @@
     min-width: 44px;
     padding: 8px 14px;
     font-size: 14px;
+  }
+}
 /* 手动绑定 TMDB · 第二步：TMDB 候选卡片墙（Emby 式手动识别） */
 .tmdb-candidates {
   display: grid;
