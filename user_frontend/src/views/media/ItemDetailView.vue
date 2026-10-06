@@ -248,12 +248,19 @@ const inProgressLabel = computed(() => {
       : e.IndexNumber != null
         ? `第${e.IndexNumber}集`
         : ''
-  return `${pos} · ${e.Name || ''}`.trim()
+  const nm = e.Name || ''
+  // DB 里已是"第X集"时，避免"第1季第1集 · 第1集"冗余
+  if (/^第\d+集/.test(nm)) return `${pos}`.trim()
+  return `${pos} · ${nm}`.trim()
 })
 /** 单集缩略图（有图才显示）；长标题在 CSS 里截断 */
 const epPoster = (ep: EmbyItem) => posterUrl(ep, 320)
-const epTitle = (ep: EmbyItem) =>
-  `${ep.IndexNumber != null ? `第${ep.IndexNumber}集 ` : ''}${ep.Name || ''}`.trim()
+const epTitle = (ep: EmbyItem) => {
+  const name = ep.Name || ''
+  // DB 里已是"第X集"格式时不再重复拼接
+  if (/^第\d+集/.test(name)) return name
+  return `${ep.IndexNumber != null ? `第${ep.IndexNumber}集 ` : ''}${name}`.trim()
+}
 /** 季选择：底部弹窗 */
 function pickSeason(sid: string) {
   sheetOpen.value = false
