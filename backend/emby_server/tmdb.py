@@ -1185,7 +1185,7 @@ class TmdbClient:
             or tmdb_name.lower().startswith("episode ")
         )
         current = (getattr(episode_item, "name", "") or "").strip()
-        is_generic = bool(__import__("re").match(r"^第\d+集$", current))
+        is_generic = bool(re.match(r"^第\d+集$", current))
 
         if not is_placeholder and is_generic:
             # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖
