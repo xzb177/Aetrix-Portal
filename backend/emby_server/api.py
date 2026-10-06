@@ -2031,6 +2031,12 @@ def get_item_detail(
     db: Session = Depends(get_db),
 ):
     item = _require_item(db, item_id)
+    # 按需探测：缺媒体信息的电影/剧集入队，后台限流探测，不阻塞详情页（v2.51.0）
+    try:
+        from backend.emby_server import probe_worker
+        probe_worker.maybe_enqueue(db, item)
+    except Exception:  # noqa: BLE001 — 入队失败不影响详情页
+        pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      api_key=_api_key_for(db, request))
 
@@ -2371,6 +2377,12 @@ async def playback_info(
         if _ticks:
             await run_db(_save_duration_ticks, db, item.guid, _ticks)
             item.duration_ticks = _ticks
+    # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
+    try:
+        from backend.emby_server import probe_worker
+        await run_db(probe_worker.maybe_enqueue, db, item)
+    except Exception:  # noqa: BLE001
+        pass
     if not item.file_path:
         # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
         # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。

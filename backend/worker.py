@@ -221,6 +221,14 @@ def main() -> int:
             logger.warning(f"启动补全 worker 失败（可忽略）: {e}")
 
         try:
+            from backend.emby_server import probe_worker
+            probe_worker.start()
+            started.append("probe_worker")
+            logger.info("✅ 按需探测 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动按需探测 worker 失败（可忽略）: {e}")
+
+        try:
             from backend import reminders
             if reminders.start_reminder_scheduler():
                 started.append("reminders")
@@ -308,3 +316,8 @@ def main() -> int:
         _sq.stop_redis_consumer(timeout=5.0)
     except Exception as e:
         logger.warning(f"停止 Redis 扫描消费失败：{e}")
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
