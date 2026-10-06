@@ -167,6 +167,9 @@ class MediaItem(Base):
     file_path = Column(String(1024), index=True)
     container = Column(String(20))
     size = Column(BigInteger, default=0)
+    # 增量扫描（v2.50.0）：文件修改时间戳，用于 mtime 比对跳过未变更文件。
+    # 为空（老数据）时视为已变更，走一次全量比对后回填。
+    file_mtime = Column(Float, default=0)
     duration_ticks = Column(BigInteger, default=0)  # 100ns ticks
     bitrate = Column(Integer, default=0)
     width = Column(Integer, default=0)
@@ -224,6 +227,12 @@ class MediaItem(Base):
     # 跨库公平由按库轮转保证（见 enrich_worker._claim_batch）。
     # probe_priority 的先例：Integer 列即可，无需新表。
     enrich_priority = Column(Integer, default=0)
+    # 元数据锁定（手动识别 P3，Emby 式）：管理员手动整理过的条目置 True，
+    # 后台自动补全（enrich worker 抢单）不再碰它——自动刷新不会覆盖手动成果。
+    # 手动操作（手动绑定 bind-tmdb、手动重刮 rescrape）不受锁定影响：
+    # 锁定防的是「自动」，手动永远优先。
+    # 老库补列后为 0（False）= 未锁定，行为与升级前完全一致（见 database._auto_migrate）。
+    metadata_locked = Column(Boolean, default=False)
     # 元数据来源标记：这条条目的文字/图片**实际来自哪里**。
     # 取值：nfo=本地 NFO；tmdb=TMDB 搜索/详情；tmdb_img=NFO 给文字、TMDB 补图；
     # none=刮削跑过但没拿到数据（仍缺 tmdb_id/简介）。NULL=历史数据未标记。
