@@ -218,6 +218,9 @@ def _media_seek(db: Session, user: models.WebUser) -> dict:
     )
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    from backend import media_seek as _ms
+    limit = _ms.daily_limit(db)
+    used = _ms.used_today(db, user.id)
 
     return {
         "requests": [
