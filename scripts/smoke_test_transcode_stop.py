@@ -16,6 +16,8 @@
    （2026-10-06：根因是心跳把 OS 调度抖动和事件循环阻塞混在一起量，绝对阈值在
    共享 CI 上必然 flake。改为时序断言测 3 次取最小——抖动随机、真阻塞确定，
    取最小不损失检出能力；5s 长测试单次测量、阈值放宽到 1.0s（阻塞特征 ~5s）。）
+   （2026-10-06 v2：转码停止是摘除式的，非幂等——复用旧会话第 2 次测的是空操作。
+   改为 measure_stable_fresh：每次测量都登记全新会话，杜绝空操作。）
 3. **路由级**：结束自己的播放 / 管理员结束任意会话 / 停止全部转码三条 ``async`` 路由，
    在同一条事件循环里打进真实 app（ASGITransport），心跳同样只有很小的空洞；
 4. **语义不变**：SIGTERM 不理就打 SIGKILL、会话目录被删、异常退出的 ffmpeg 日志尾部进服务日志、
@@ -197,12 +199,39 @@ async def measure(awaitable_factory, attempts: int = 1):
 
 
 async def measure_stable(awaitable_factory, attempts: int = 3):
-    """对时序敏感的断言用这个：测多次取最稳的一次，专治 CI 负载抖动。
+    """对时序敏感且无状态的断言用这个（如纯 asyncio.sleep 对照）。
 
-    原理见 measure() 的 attempts 说明。3 次测量的耗时增加约 2 倍，
-    对 0.3~0.6s 级别的操作可接受；5s 级别的长操作不要用这个（见真子进程那节）。
+    有状态的操作（停转码：停一次会话即摘除）请用 measure_stable_fresh，
+    否则第 2 次起测的是空操作。
     """
     return await measure(awaitable_factory, attempts=attempts)
+
+
+async def measure_stable_fresh(fresh_factory, attempts: int = 3):
+    """对时序敏感且有状态的断言用这个：每次测量都用全新状态。
+
+    fresh_factory() 返回 (op, state)：op 是无参协程工厂（await op() 执行被测操作），
+    state 是该次测量的状态（供后置断言用，如 sid/directory）。
+    取心跳空洞最小的一次，返回 (elapsed, gap, best_state)。
+
+    为什么必须每次全新：转码停止是摘除式（pop），停过的会话第 2 次调直接返回，
+    不会再有 0.6s 的等待——复用旧状态测到的是空操作。
+    """
+    best = None
+    for _ in range(max(1, attempts)):
+        op_factory, state = fresh_factory()
+        watch = LoopWatch()
+        watch.start()
+        await asyncio.sleep(watch.interval * 2)
+        started = time.monotonic()
+        await op_factory()
+        elapsed = time.monotonic() - started
+        await asyncio.sleep(watch.interval * 2)
+        gap = watch.stop()
+        assert watch.ticks > 0, "心跳任务没跑起来，测量无效"
+        if best is None or gap < best[1]:
+            best = (elapsed, gap, state)
+    return best
 
 
 # ==================== 1. 基线：同步版本确实会卡住循环 ====================
@@ -221,8 +250,12 @@ async def section_baseline():
 
 # ==================== 2. 异步版本：活儿真干了，但循环没被占住 ====================
 async def section_async():
-    sid, directory = register(FakeProc(seconds=0.6))
-    elapsed, gap = await measure_stable(lambda: streaming.stop_transcode_async(sid))
+    def _fresh():
+        sid, directory = register(FakeProc(seconds=0.6))
+        async def _op():
+            await streaming.stop_transcode_async(sid)
+        return _op, (sid, directory)
+    elapsed, gap, (sid, directory) = await measure_stable_fresh(_fresh)
     check("异步停止：阻塞部分真的花了时间（0.6s 的等待没被跳过）",
           elapsed >= 0.5, f"耗时={elapsed:.3f}s")
     check("异步停止：期间事件循环保持响应（心跳空洞 <0.3s）",
@@ -313,9 +346,13 @@ async def section_semantics():
 
 # ==================== 4. 并发：全部转码一起停 ====================
 async def section_concurrency():
-    for _ in range(4):
-        register(FakeProc(seconds=0.4))
-    elapsed, gap = await measure_stable(streaming.stop_all_transcodes_async)
+    def _fresh():
+        for _ in range(4):
+            register(FakeProc(seconds=0.4))
+        async def _op():
+            await streaming.stop_all_transcodes_async()
+        return _op, None
+    elapsed, gap, _ = await measure_stable_fresh(_fresh)
     check("停掉全部转码是并发执行（4×0.4s 的会话总耗时 <1s，逐个等会是 1.6s+）",
           elapsed < 1.0, f"耗时={elapsed:.3f}s")
     check("并发停止期间事件循环同样保持响应", gap < 0.3, f"心跳空洞={gap:.3f}s")
@@ -368,14 +405,18 @@ async def section_routes():
 
         # 5.1 结束自己的播放：真的释放转码进程，且不卡循环
         #     （播放会话键与转码会话 id 不同 —— 这条同时是那个真 bug 的回归护栏）
-        sid, directory = register(FakeProc(seconds=0.5), item_guid=movie_guid, user_id=owner_id)
         box: dict = {}
 
-        async def stop_mine():
-            box["resp"] = await api.delete(
-                f"/api/user/emby/sessions/{owner_key}", headers=OWNER_H)
+        def _fresh_mine():
+            # 每次测量前重新登记转码会话（上一次的已被停掉摘除）；播放会话在 DB 里，
+            # 路由对已结束的会话仍返回 200（幂等），可复用。
+            sid, directory = register(FakeProc(seconds=0.5), item_guid=movie_guid, user_id=owner_id)
+            async def _op():
+                box["resp"] = await api.delete(
+                    f"/api/user/emby/sessions/{owner_key}", headers=OWNER_H)
+            return _op, (sid, directory)
 
-        elapsed, gap = await measure_stable(stop_mine)
+        elapsed, gap, (sid, directory) = await measure_stable_fresh(_fresh_mine)
         resp = box["resp"]
         check("结束自己的播放 → 200", resp.status_code == 200, f"实际 {resp.status_code}")
         check("结束播放真的停掉了对应转码（播放会话键 ≠ 转码 id）",
@@ -385,29 +426,33 @@ async def section_routes():
         check("结束播放的会话已标记结束", session_row(owner_key).ended_at is not None)
 
         # 5.2 管理员结束他人会话
-        sid, _ = register(FakeProc(seconds=0.5), item_guid=movie_guid, user_id=staff_id)
         box = {}
 
-        async def stop_admin():
-            box["resp"] = await api.delete(
-                f"/api/admin/emby/sessions/{staff_key}", headers=STAFF_H)
+        def _fresh_admin():
+            sid, _ = register(FakeProc(seconds=0.5), item_guid=movie_guid, user_id=staff_id)
+            async def _op():
+                box["resp"] = await api.delete(
+                    f"/api/admin/emby/sessions/{staff_key}", headers=STAFF_H)
+            return _op, sid
 
-        elapsed, gap = await measure_stable(stop_admin)
+        elapsed, gap, sid = await measure_stable_fresh(_fresh_admin)
         resp = box["resp"]
         check("管理员结束会话 → 200", resp.status_code == 200, f"实际 {resp.status_code}")
         check("管理员结束会话同样释放转码", sid not in registry_ids(), str(registry_ids()))
         check("管理员结束会话这条 async 路由不阻塞事件循环", gap < 0.3, f"心跳空洞={gap:.3f}s")
 
         # 5.3 停止全部转码（N 路一起停）
-        for _ in range(3):
-            register(FakeProc(seconds=0.4), item_guid=movie_guid, user_id=owner_id)
         box = {}
 
-        async def stop_all_route():
-            box["resp"] = await api.post(
-                "/api/admin/emby/transcodes/stop-all", headers=STAFF_H)
+        def _fresh_all():
+            for _ in range(3):
+                register(FakeProc(seconds=0.4), item_guid=movie_guid, user_id=owner_id)
+            async def _op():
+                box["resp"] = await api.post(
+                    "/api/admin/emby/transcodes/stop-all", headers=STAFF_H)
+            return _op, None
 
-        elapsed, gap = await measure_stable(stop_all_route)
+        elapsed, gap, _ = await measure_stable_fresh(_fresh_all)
         resp = box["resp"]
         check("停止全部转码 → 200 且报了数量",
               resp.status_code == 200 and resp.json()["stopped"] == 3, resp.text[:120])
