@@ -952,6 +952,43 @@ def save_auto_scan(
 
 # ==================== 手动绑定 TMDB ID ====================
 
+@admin_emby_router.get("/items/search")
+def search_items_for_bind(
+    q: str = "",
+    year: int | None = None,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """按剧名关键字（+可选年份）搜索条目，供「手动绑定 TMDB」选择条目用。
+
+    只搜顶层条目（movie/series），不返回单集/季。最多返回 20 条。
+    """
+    keyword = (q or "").strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="请填写搜索关键字")
+    # LIKE 转义：把用户输入里的 % _ \ 当字面量处理
+    escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    query = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type.in_(("movie", "series")),
+        em.MediaItem.name.ilike(f"%{escaped}%", escape="\\"),
+    )
+    if year:
+        query = query.filter(em.MediaItem.production_year == year)
+    rows = query.order_by(em.MediaItem.id.desc()).limit(20).all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "year": r.production_year,
+                "item_type": r.item_type,
+                "tmdb_id": r.tmdb_id,
+            }
+            for r in rows
+        ]
+    }
+
+
 class TmdbBindRequest(BaseModel):
     tmdb_id: str = Field(default="", description="要绑定的 TMDB ID；留空表示解绑")
     verify: bool = Field(default=True, description="绑定前先向 TMDB 校验该 ID 确实存在")

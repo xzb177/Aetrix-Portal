@@ -400,3 +400,10 @@
     white-space: nowrap;
   }
 }
+
+/* 手动绑定 TMDB：搜索结果选中态 */
+.ms-result.is-selected {
+  background: var(--el-color-primary-light-9);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
