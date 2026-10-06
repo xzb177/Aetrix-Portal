@@ -153,6 +153,14 @@ class TestReferer:
         db = _FakeDB("emby.135505.autos")
         play_sign.check_referer(_FakeRequest(None), db)
 
+    def test_db_error_fail_open(self):
+        """配置读失败时 fail-open 放行：播放链路不能因配置表读不到就全挂。
+
+        回归：video_stream 的单测用 mock db（object()）直接调，
+        防盗链不能在这种场景下炸掉整个播放。
+        """
+        play_sign.check_referer(_FakeRequest("https://evil.com/x"), object())
+
     def test_write_normalizes_hosts(self):
         db = _FakeDB(None)
         hosts = play_sign.write_allowed_referers(
