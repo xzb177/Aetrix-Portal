@@ -693,6 +693,46 @@ def _set_image(item: emby_models.MediaItem, kind: str, url: str) -> None:
         item.poster_path = local
 
 
+def extract_air_dates(data: dict) -> tuple[Optional[int], Optional[datetime]]:
+    """从 TMDB 负载（search hit / details）提取 (production_year, premiere_date)。
+
+    纯函数：只读 ``data``、不碰 ``item``。search hit 与 details 同形状
+    （``first_air_date`` / ``release_date``），供 ``apply()`` /
+    ``apply_details()`` 与一次性回填脚本共用——年份口径全仓库只有这一套。
+    """
+    raw = str((data or {}).get("first_air_date")
+              or (data or {}).get("release_date") or "").strip()
+    m = re.match(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$", raw)
+    if not m:
+        return None, None
+    try:
+        year = int(m.group(1))
+    except (TypeError, ValueError):  # pragma: no cover — 正则已保证 4 位数字
+        return None, None
+    premiere: Optional[datetime] = None
+    if m.group(2) and m.group(3):
+        try:
+            premiere = datetime(year, int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            # "2021-13-99" 这类脏日期：年份照取，完整日期不要
+            premiere = None
+    return year, premiere
+
+
+def _fill_air_dates(item, data: dict) -> None:
+    """把 TMDB 的首播/上映日期落到条目：**只补缺项**。
+
+    ``apply()`` 与 ``apply_details()`` 共用——两条路口径必须一致，
+    否则新刮的 series 还是会丢年份（P0-1 的根因）。
+    已有值（NFO / 用户整理 / 豆瓣兜底先落的）一律不覆盖。
+    """
+    year, premiere = extract_air_dates(data)
+    if year is not None and not getattr(item, "production_year", None):
+        item.production_year = year
+    if premiere is not None and not getattr(item, "premiere_date", None):
+        item.premiere_date = premiere
+
+
 class TmdbClient:
     """轻量 TMDB 客户端（未配置 key 时静默跳过）
 
@@ -1315,7 +1355,7 @@ class TmdbClient:
         """把详情接口的返回落到条目上（与 enrich 同口径，供批量扫描预先取回后套用）"""
         if not data:
             return
-        # 详情只补缺项（简介/评分/别名/类型），不覆盖 NFO 提供的文字。
+        # 详情只补缺项（简介/评分/别名/类型/年份/首播日期），不覆盖 NFO 提供的文字。
         # 用 getattr 兜底：调用方（含测试里的轻量替身）未必带这个字段。
         if not getattr(item, "metadata_source", None):
             item.metadata_source = "tmdb"
@@ -1353,6 +1393,9 @@ class TmdbClient:
                 if n and n not in seen:
                     seen.append(n)
             item.aliases = ",".join(seen[:12])
+        # 首播/上映日期 → production_year + premiere_date（只补缺项；
+        # 详情的 first_air_date 通常比搜索命中准，但已有值不覆盖）
+        _fill_air_dates(item, data)
         # v2.51.0：国家/语言落库（EA 详情页 Countries / Languages 用）。
         # 只补缺项、不覆盖已有（与简介/评分同口径）；getattr 兜底轻量替身。
         countries = [str(c).strip() for c in (data.get("origin_country") or [])
@@ -1426,6 +1469,8 @@ class TmdbClient:
             item.genres = ",".join(
                 _GENRE_NAMES.get(g, str(g)) for g in genre_ids[:_MAX_GENRES]
             )
+        # 搜索命中里就有 first_air_date / release_date：年份与首播日期只补缺项
+        _fill_air_dates(item, hit)
 
 
 tmdb_client = TmdbClient()  # 进程级单例：一次扫描里的预热与写库共用同一份缓存与连接池
