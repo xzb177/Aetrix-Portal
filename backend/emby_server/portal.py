@@ -1776,6 +1776,43 @@ def _waiting_mount_objects(db: Session, mount_ids) -> list:
     return db.query(em.StorageMount).filter(em.StorageMount.id.in_(ids)).all()
 
 
+@admin_emby_router.post("/scan/all")
+async def scan_all_libraries_endpoint(
+    staff: models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """一键扫描全部：把所有启用的库按顺序加入扫描队列（增量扫描）。
+
+    新用户挂载后点这个，不用一个个点 11 次。
+    正在扫的库会自动跳过，不会重复加入。
+    """
+    def _plan():
+        # server_ops.scan_plan 会算清哪些入队、哪些已在队列、哪些跳过
+        # 需要 server 对象，这里传 None 表示本机（单机部署）
+        from backend.emby_server import server_ops as _so
+        # 构造一个最小的 server 对象（scan_plan 只用它做节点归属判断）
+        # 单机部署：直接传 None，scan_plan 内部会处理
+        return _so.scan_plan(db, None)
+
+    result = await run_in_threadpool(_plan)
+    queued = result.get("queued", [])
+    already = result.get("already", [])
+    skipped = result.get("skipped", [])
+
+    return {
+        "success": True,
+        "queued_count": len(queued),
+        "already_count": len(already),
+        "skipped_count": len(skipped),
+        "queued": queued,
+        "already": already,
+        "skipped": skipped,
+        "message": f"已加入 {len(queued)} 个库的扫描队列"
+        + (f"，{len(already)} 个正在扫/已在队列（已跳过）" if already else "")
+        + (f"，{len(skipped)} 个已停用/虚拟（已跳过）" if skipped else ""),
+    }
+
+
 @admin_emby_router.get("/fs-watch/status")
 def fs_watch_status(staff: models.WebUser = Depends(require_staff)):
     """本机目录实时监听的状态（设置页 / Dashboard 回显用）
