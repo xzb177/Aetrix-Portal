@@ -21,7 +21,7 @@ def db():
     finally:
         s.close()
 def _make_lib(db):
-    lib = em.Library(name=f"t_{_guid()[:8]}", collection_type="movies", paths="mount://1/test")
+    lib = em.Library(guid=_guid(), name=f"t_{_guid()[:8]}", collection_type="movies", paths="mount://1/test")
     db.add(lib); db.commit(); db.refresh(lib)
     return lib
 def _cleanup(db, lib):
