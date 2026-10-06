@@ -146,7 +146,7 @@ class TestClaimBatch:
             future.probe_next_retry_at = datetime.now() + timedelta(hours=1)
             db.commit()
 
-            claimed = probe_worker._claim_batch(db, 10)
+            claimed = probe_worker._claim_batch(db, 10, library_id=lib.id)
             ids = [c.id for c in claimed]
             assert ids == [high.id, low.id], f"优先级排序错误: {ids}"
             for c in claimed:
@@ -159,7 +159,7 @@ class TestClaimBatch:
         db = SessionLocal()
         lib = _make_lib(db)
         try:
-            assert probe_worker._claim_batch(db, 10) == []
+            assert probe_worker._claim_batch(db, 10, library_id=lib.id) == []
         finally:
             _cleanup(db, lib)
             db.close()

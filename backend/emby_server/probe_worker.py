@@ -110,22 +110,26 @@ def _due_filter(now: datetime):
                em.MediaItem.probe_next_retry_at <= now)
 
 
-def _claim_batch(db, limit: int) -> List[em.MediaItem]:
+def _claim_batch(db, limit: int, library_id: Optional[int] = None) -> List[em.MediaItem]:
     """原子抢一批待探测条目，抢到的标 probing。
 
     范围：pending + movie/series + 缺 video_codec（NULL 或空串）+ 有 file_path。
     排序：优先级高的先（按需 1000 插队在扫描器 100 之前），同优先级按 id。
+    ``library_id``：可选的库过滤（测试用，生产传 None 即全库）。
     """
     now = datetime.now()
     missing_codec = or_(em.MediaItem.video_codec.is_(None),
                         em.MediaItem.video_codec == "")
+    filters = [em.MediaItem.probe_status == "pending",
+               em.MediaItem.item_type.in_(PROBE_ITEM_TYPES),
+               missing_codec,
+               em.MediaItem.file_path.isnot(None),
+               em.MediaItem.file_path != "",
+               _due_filter(now)]
+    if library_id is not None:
+        filters.append(em.MediaItem.library_id == library_id)
     q = (db.query(em.MediaItem)
-         .filter(em.MediaItem.probe_status == "pending",
-                 em.MediaItem.item_type.in_(PROBE_ITEM_TYPES),
-                 missing_codec,
-                 em.MediaItem.file_path.isnot(None),
-                 em.MediaItem.file_path != "",
-                 _due_filter(now))
+         .filter(*filters)
          .order_by(em.MediaItem.probe_priority.desc(), em.MediaItem.id)
          .limit(limit))
     try:
