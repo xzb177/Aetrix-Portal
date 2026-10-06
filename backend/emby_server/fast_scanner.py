@@ -333,7 +333,7 @@ def _dedupe_by_name_year(files: list[FastScanFile], parse_media_filename,
     for f in sorted(files, key=_priority):
         try:
             parsed = parse_media_filename(f.path, lib_type)
-            key = (_normalize_name(parsed.get("name", "")), parsed.get("year"))
+            key = (_normalize_name(parsed.get("name", "")), parsed.get("year"), parsed.get("season"), parsed.get("episode"))
         except Exception:
             # 解析失败的用文件路径做 key（不去重）
             key = (f.path, None)
