@@ -39,7 +39,7 @@ CONFIG_CDN_ENABLED = "cdn_enabled"
 # 转码会话的分片同样不可变（一个 session 一份内容，session 票据在查询串里）。
 SEGMENT_CACHE_SECONDS = 6 * 3600
 # CDN 边缘缓存一般要比浏览器激进：给 s-maxage 留长一些，浏览器短一点
-SEGMENT_CACHE_HEADER = f"public, max-age=300, s-maxage={SEGMENT_CACHE_SECONDS}"
+SEGMENT_CACHE_HEADER = f"public, max-age={SEGMENT_CACHE_SECONDS}, s-maxage={SEGMENT_CACHE_SECONDS}, immutable"
 # API 响应、302 跳转、播放列表：绝不能被缓存（凭据在查询串里/内容随时变）
 NO_STORE = "no-store"
 

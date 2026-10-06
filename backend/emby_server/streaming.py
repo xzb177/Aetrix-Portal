@@ -65,6 +65,15 @@ def _range_header(start: int, end: int, total: int) -> dict:
     }
 
 
+def _validators_header(path: str) -> dict:
+    """给 206 分片响应补 ETag/Last-Modified，让 CDN 能落盘缓存"""
+    try:
+        etag, last_modified = _file_validators(os.stat(path))
+        return {"ETag": etag, "Last-Modified": last_modified}
+    except OSError:
+        return {}
+
+
 def serve_file(path: str, request: Request, media_type: str = "video/mp4",
                cache_control: Optional[str] = None) -> StreamingResponse:
     """带 Range 支持的文件流式响应
@@ -76,7 +85,7 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
         raise HTTPException(status_code=404, detail="Media file not found")
     size = os.path.getsize(path)
 
-    extra_headers = {"Accept-Ranges": "bytes"}
+    extra_headers = {"Accept-Ranges": "bytes", "X-Accel-Buffering": "no"}
     if cache_control:
         extra_headers["Cache-Control"] = cache_control
 
@@ -119,7 +128,7 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
         iter_file(),
         status_code=206,
         media_type=media_type,
-        headers={**_range_header(start, end, size), **extra_headers},
+        headers={**_range_header(start, end, size), **_validators_header(path), **extra_headers},
     )
 
 
@@ -337,6 +346,7 @@ async def serve_remote_async(
             passthrough[name.title()] = value
     if cache_control and "Cache-Control" not in passthrough:
         passthrough["Cache-Control"] = cache_control
+    passthrough["X-Accel-Buffering"] = "no"
     content_type = resp.headers.get("content-type") or media_type
 
     async def iter_remote():
