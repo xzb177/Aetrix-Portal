@@ -37,7 +37,12 @@ from backend import models  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server import mounts as mnt  # noqa: E402
-from backend.emby_server import scan_instrument, scan_progress, scan_queue  # noqa: E402
+try:
+    from backend.emby_server import scan_instrument  # noqa: E402
+except ImportError:
+    scan_instrument = None  # 旧扫描器埋点已删除（fast_scanner 唯一实现）
+    import sys as _sys; print("SKIP: scan_instrument 已删除，跳过旧埋点测试"); _sys.exit(0)
+from backend.emby_server import scan_progress, scan_queue  # noqa: E402
 from backend.emby_server import scanner as sc  # noqa: E402
 from backend.main import app  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
