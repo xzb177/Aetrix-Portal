@@ -62,6 +62,7 @@ class FastScanStats:
     updated: int = 0
     removed: int = 0
     skipped: int = 0
+    skipped_unchanged: int = 0  # 增量扫描：mtime+size 未变更而跳过的文件数
 
 
 # ---------------------------------------------------------------------------
@@ -362,47 +363,65 @@ def scan_library_fast(db, library, snapshot) -> dict:
     files = _collect_files(snapshot.paths)
     logger.info("[fast] 共 %d 个视频文件", len(files))
 
-    # 1b. 同名同年去重（用户 2026-10-05 要求：两个挂载的同名同年资源合并）
+    # 1b. 增量过滤（v2.50.0）：mtime+size 未变且未删除的文件直接跳过
+    # 用户抱怨"点一次扫描每次都要重新开始"——之前全量文件都要过 parse_media_filename
+    # mtime 为 0（老数据未回填）时视为已变更，走一次全量比对后回填 mtime
+    all_paths = set(f.path for f in files)  # 保留全量路径，供删除检测
+    changed_files: list[FastScanFile] = []
+    for f in files:
+        if f.path in existing:
+            _eid, old_size, old_mtime, is_deleted = existing[f.path]
+            if (not is_deleted and old_mtime and old_size == f.size
+                    and abs(f.mtime - old_mtime) < 1.0):
+                stats.skipped_unchanged += 1
+                continue
+        changed_files.append(f)
+    logger.info("[fast] 增量过滤：跳过 %d 个未变更，%d 个需处理",
+                stats.skipped_unchanged, len(changed_files))
+
+    # 1c. 同名同年去重（用户 2026-10-05 要求：两个挂载的同名同年资源合并）
     # 按 (归一化名称, 年份) 去重，保留第一个（优先 /mnt/mp 的）
-    files = _dedupe_by_name_year(files, parse_media_filename, lib_type)
+    # 逻辑不变，只是输入从全量变为变更集（未变更的去重结果与上次一致）
+    files = _dedupe_by_name_year(changed_files, parse_media_filename, lib_type)
     logger.info("[fast] 去重后 %d 个文件", len(files))
 
     # 2. 加载已有（一次查进内存）
     # 包括已软删除的：如果文件又出现了，需要取消删除
     MI = emby_models.MediaItem
-    existing: dict[str, tuple[int, int, bool]] = {}  # file_path -> (id, size, is_deleted)
-    for item_id, file_path, size, deleted_at in db.query(
-            MI.id, MI.file_path, MI.size, MI.deleted_at).filter(
+    # file_path -> (id, size, mtime, is_deleted)
+    existing: dict[str, tuple[int, int, float, bool]] = {}
+    for item_id, file_path, size, mtime, deleted_at in db.query(
+            MI.id, MI.file_path, MI.size, MI.file_mtime, MI.deleted_at).filter(
             MI.library_id == lib_id).all():
         if file_path:
-            existing[file_path] = (item_id, size or 0, deleted_at is not None)
+            existing[file_path] = (item_id, size or 0, mtime or 0, deleted_at is not None)
     logger.info("[fast] 库里已有 %d 条", len(existing))
 
-    # 3. 比对
-    seen_paths = set()
+    # 3. 比对（只处理变更集；未变更的已在 1b 跳过）
     to_add: list[FastScanFile] = []
     to_update: list[tuple[int, FastScanFile]] = []  # (id, file)
     to_undelete: list[int] = []
     for f in files:
-        seen_paths.add(f.path)
         if f.path not in existing:
             to_add.append(f)
         else:
-            item_id, old_size, is_deleted = existing[f.path]
+            item_id, old_size, old_mtime, is_deleted = existing[f.path]
+            mtime_changed = abs((old_mtime or 0) - f.mtime) >= 1.0
             if is_deleted:
                 # 文件又出现了：取消软删除
                 to_undelete.append(item_id)
-                if old_size != f.size:
+                if old_size != f.size or mtime_changed:
                     to_update.append((item_id, f))
-            elif old_size != f.size:
+            elif old_size != f.size or mtime_changed:
                 to_update.append((item_id, f))
             else:
                 stats.skipped += 1
 
     # 删除：库里有但文件清单里没有的（只处理未删除的）
+    # 用 all_paths（全量）做检测，跳过的文件不算删除
     to_remove_ids = [
-        item_id for fp, (item_id, _, is_deleted) in existing.items()
-        if fp not in seen_paths and not is_deleted
+        item_id for fp, (item_id, _, _, is_deleted) in existing.items()
+        if fp not in all_paths and not is_deleted
     ]
 
     logger.info(
@@ -418,12 +437,13 @@ def scan_library_fast(db, library, snapshot) -> dict:
         _bulk_insert(db, MI, to_add, lib_id, lib_type,
                      parse_media_filename, item_guid, now, stats)
 
-    # 4b. 更新（只更新 size，批量）
+    # 4b. 更新（size + file_mtime，批量）
     for chunk_start in range(0, len(to_update), FAST_SCAN_BATCH):
         chunk = to_update[chunk_start:chunk_start + FAST_SCAN_BATCH]
         # 用 bulk_update_mappings 批量更新
         db.bulk_update_mappings(MI, [
-            {"id": item_id, "size": f.size} for item_id, f in chunk
+            {"id": item_id, "size": f.size, "file_mtime": f.mtime}
+            for item_id, f in chunk
         ])
         db.commit()
         stats.updated += len(chunk)
@@ -452,6 +472,7 @@ def scan_library_fast(db, library, snapshot) -> dict:
         "updated": stats.updated,
         "removed": stats.removed,
         "skipped": stats.skipped,
+        "skipped_unchanged": stats.skipped_unchanged,
     }
 
 
@@ -513,6 +534,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "episode_number": episode_no,
                 "file_path": f.path,
                 "size": f.size,
+                "file_mtime": f.mtime,
                 "container": os.path.splitext(f.name)[1].lower().lstrip("."),
                 "date_added": now,
                 # 文件名解析的视频信息（零 Drive 调用）
@@ -541,6 +563,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "production_year": parsed.get("year"),
                 "file_path": f.path,
                 "size": f.size,
+                "file_mtime": f.mtime,
                 "container": os.path.splitext(f.name)[1].lower().lstrip("."),
                 "date_added": now,
                 # 文件名解析的视频信息（零 Drive 调用）
