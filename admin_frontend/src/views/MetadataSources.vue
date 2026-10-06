@@ -190,17 +190,6 @@ const enrichStageRows = computed(() => {
 })
 
 /** 速率窗口（秒 → 分钟，用于显示文案「近 N 分钟」） */
-const enrichWindowMin = computed(() =>
-  Math.max(1, Math.round((enrichProgress.value?.throughput?.window_sec ?? 300) / 60)))
-
-/** 距上一次成功的时长：done/分钟 为 0 时，它区分「真的慢」与「卡住了 / 没在跑」 */
-const enrichIdleHint = computed(() => {
-  const idle = enrichProgress.value?.throughput?.idle_sec
-  if (idle == null) return '本进程还没成功补全过'
-  if (idle < 60) return `最近一次成功 ${idle} 秒前`
-  return `最近一次成功 ${Math.round(idle / 60)} 分钟前`
-})
-
 async function loadEnrichProgress() {
   enrichProgressLoading.value = true
   try {
@@ -1165,11 +1154,7 @@ onMounted(() => {
               {{ row.label }} {{ row.avgMs }}ms
             </span>
           </div>
-          <p v-if="enrichProgress.throughput" class="ms-hint ms-block">
-            本进程近 {{ enrichWindowMin }} 分钟：
-            完成 {{ enrichProgress.throughput.done_per_min }} 条/分钟
-            （累计 {{ enrichProgress.throughput.done_total }}）· {{ enrichIdleHint }}
-          </p>
+
           <p class="ms-hint ms-block">
             Worker {{ enrichProgress.workers }} 线程 · {{ enrichProgress.enabled ? '运行中' : '已停用' }}
             <el-button size="small" text :loading="enrichProgressLoading" @click="loadEnrichProgress">
