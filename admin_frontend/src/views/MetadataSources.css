@@ -433,6 +433,8 @@
   }
   .bind-mode .el-radio {
     margin-right: 0;
+  }
+}
 
 /* 元数据锁定（P3，Emby 式）：锁定行视觉区分——名字后小锁标 + 行内锁定按钮 */
 .ms-result .ms-result-name {
