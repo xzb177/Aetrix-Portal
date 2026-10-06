@@ -47,11 +47,11 @@ from backend.emby_server.auth import (
     parse_emby_authorization,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
+from backend.emby_server.fast_scanner import scan_library_sync
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
     parse_media_filename,
-    scan_library_sync,
 )
 from backend.emby_server.search import (
     CANDIDATE_LIMIT as SEARCH_CANDIDATE_LIMIT,
@@ -1841,41 +1841,8 @@ def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = D
     return _filters_payload(db)
 
 
-def _maybe_boost_probe(db: Session, item) -> None:
-    """两阶段扫描（v2.39.0）：详情被打开时，待探测条目顺手插队。
-
-    fire-and-forget：只是一条 UPDATE，失败只记日志，绝不影响详情响应。
-    """
-    try:
-        from backend.emby_server import probe_worker
-        if not probe_worker.enabled():
-            return
-        if (getattr(item, "probe_status", None) or "") not in (
-                "pending", "degraded", probe_worker.STATUS_NO_DURATION):
-            return
-        probe_worker.boost_probe(db, item)
-    except Exception:  # noqa: BLE001
-        logger.warning("探测插队失败 item=%s（可忽略）", getattr(item, "id", "?"),
-                       exc_info=True)
 
 
-@emby_router.post("/api/items/{item_id}/probe-boost")
-def probe_boost(item_id: str,
-                user: models.WebUser = Depends(get_emby_user),
-                db: Session = Depends(get_db)):
-    """两阶段扫描（v2.39.0）：手动把条目的探测插到队首。
-
-    播放页/详情页在时长未知时可调这个接口；详情接口本身也会对 pending 条目
-    自动插队，这里是给客户端显式触发用的。
-    """
-    from backend.emby_server import probe_worker
-
-    item = _require_item(db, item_id)
-    if not probe_worker.enabled():
-        return {"ok": False, "reason": "后台探测未启用（SCAN_PROBE_MODE=background）",
-                "probe_status": getattr(item, "probe_status", None)}
-    queued = probe_worker.boost_probe(db, item)
-    return {"ok": True, "queued": queued, "probe_status": item.probe_status}
 
 
 @emby_router.get("/emby/Items/{item_id}")
@@ -1889,7 +1856,6 @@ def get_item_detail(
     db: Session = Depends(get_db),
 ):
     item = _require_item(db, item_id)
-    _maybe_boost_probe(db, item)
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      api_key=_api_key_for(db, request))
 

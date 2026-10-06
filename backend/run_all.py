@@ -25,7 +25,7 @@ CRITICAL = {"api", "ea"}
 #
 # api 必须显式声明。容器 env 是 AETRIX_ROLE=all，而 main.py 只把 "api" 认成 API 角色
 # （_is_api_role = _role == "api"）：all 会被当成「单体模式」，于是 serve.py 这个子进程
-# 也在 lifespan 里把 janitor / probe_worker / enrich_worker / reminders / auto_scan /
+# 也在 lifespan 里把 janitor / enrich_worker / reminders / auto_scan /
 # db_backup / chase_new 整套后台任务起一遍 —— 而 backend.worker 子进程同样起一套。
 # 结果是同一套后台任务跑两份：补全 worker 变成 2×ENRICH_WORKERS 线程、两个互不相通的
 # TMDB 令牌桶互相打架（容器日志里「补全 worker 启动」出现两次），扫描队列也一直停在

@@ -6,7 +6,6 @@ Aetrix Worker - 后台任务独立进程入口
 
 启动的后台任务：
 - maintenance：崩溃恢复 + 定时维护（janitor）
-- probe_worker：两阶段扫描 Phase 2 探测
 - enrich_worker：分层扫描 L2/L3 补全
 - reminders：订阅到期提醒
 - auto_scan：定时扫描调度
@@ -212,13 +211,6 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动维护任务失败（可忽略）: {e}")
 
-        try:
-            from backend.emby_server import probe_worker
-            if probe_worker.start_probe_worker():
-                started.append("probe_worker")
-                logger.info("✅ 后台探测 worker 已启动")
-        except Exception as e:
-            logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
 
         try:
             from backend.emby_server import enrich_worker
@@ -316,31 +308,3 @@ def main() -> int:
         _sq.stop_redis_consumer(timeout=5.0)
     except Exception as e:
         logger.warning(f"停止 Redis 扫描消费失败：{e}")
-    try:
-        from backend.emby_server import probe_worker as _pw
-        _pw.stop_probe_worker(timeout=10.0)
-    except Exception as e:
-        logger.warning(f"停止探测 worker 失败：{e}")
-    try:
-        from backend.emby_server import enrich_worker as _ew
-        _ew.stop()
-    except Exception as e:
-        logger.warning(f"停止补全 worker 失败：{e}")
-    try:
-        from backend.api.library_cover import stop_cover_worker
-        stop_cover_worker(timeout=5.0)
-    except Exception as e:
-        logger.warning(f"停止封面 worker 失败：{e}")
-    try:
-        from backend.emby_server import maintenance as _m
-        _m.shutdown_cleanup()
-    except Exception as e:
-        logger.warning(f"退出收尾失败：{e}")
-
-    _release_worker_lock(redis_client)
-    logger.info("✅ Aetrix Worker 已关闭")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

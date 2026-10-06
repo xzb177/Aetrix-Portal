@@ -796,12 +796,11 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
 
     不走 scan_queue.enqueue：policy 覆盖是本轮快照的一次性行为，不改库配置。
     """
-    from backend.emby_server import scan_instrument
+    from backend.emby_server.fast_scanner import scan_library_sync
     from backend.emby_server.scanner import (
         LibrarySnapshot,
         ScanInProgress,
         normalize_scrape_policy,
-        scan_library_sync,
     )
 
     db = SessionLocal()
@@ -813,7 +812,6 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
         snap = LibrarySnapshot.of(lib)
         if policy == "all":
             snap = replace(snap, scrape_policy=normalize_scrape_policy("all"))
-        scan_instrument.install()  # 幂等：进度上报点
         scan_library_sync(db, lib, snap, trigger="rescrape")
     except ScanInProgress:
         logger.info("重新刮削：媒体库 %s 正在扫描中，本次触发跳过", library_id)
@@ -925,30 +923,6 @@ def retry_unmatched_items(
     return {"success": True, "requeued": n}
 
 
-@admin_emby_router.post("/scrape/probe/retry-failed")
-def retry_failed_probes(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-    limit: int = 5000,
-    statuses: str = "",
-):
-    """重试被标成 failed 的探测条目（v2.42.14 配套）。
-
-    修正分类只阻止**新增**失败；存量行（比如那 2.6 万条「ffprobe 跑完但没时长」
-    被误判失败的）要靠这个把它们拉回队列。它们重新探测后大多会落到
-    ``probed_no_duration``——可播放，只是时长未知。
-
-    ``statuses`` 是逗号分隔的状态白名单（默认只处理 ``failed``）。**探测手段换了才需要传**：
-    v2.42.16 上了双 Range 头尾读取（能读到 moov 在尾的 mp4/mov）之后，已经停在
-    ``probed_no_duration`` / ``degraded`` 的条目也得重探一次，否则会一直挂着
-    「没时长」的旧结论。用法：
-    ``POST /api/admin/emby/scrape/probe/retry-failed?statuses=failed,degraded,probed_no_duration``
-    """
-    from backend.emby_server import probe_worker
-
-    wanted = tuple(s.strip() for s in statuses.split(",") if s.strip()) or None
-    n = probe_worker.retry_failed(db, limit=limit, statuses=wanted)
-    return {"success": True, "requeued": n, "statuses": wanted or ("failed",)}
 
 
 @admin_emby_router.get("/scrape/enrich-progress")

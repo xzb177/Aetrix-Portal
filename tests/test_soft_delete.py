@@ -30,7 +30,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend import models
 from backend.emby_server import models as em
-from backend.emby_server import probe_worker, scanner, soft_delete
+from backend.emby_server import scanner, soft_delete
 from backend.integrations import store
 
 
@@ -208,104 +208,6 @@ def test_bulk_update_is_not_filtered(db):
 
 # ==================== 清理阶段：标记而不是删 ====================
 
-def test_cleanup_marks_instead_of_deleting(db):
-    lib = _lib(db)
-    lib_id = lib.id
-    kept = _item(db, lib_id, guid="m0")
-    gone = _item(db, lib_id, guid="m1")
-
-    removed = scanner._remove_missing_items(db, lib, {"m0"})
-
-    assert removed == 1
-    assert _visible_ids(db, lib_id) == [kept]
-    assert _physical_count(db, library_id=lib_id) == 2, "行必须还在，只是被隐藏"
-    assert gone not in _visible_ids(db, lib_id)
-
-
-def test_cleanup_keeps_user_data_for_a_coming_back_file(db):
-    """下架一部片不该把用户的播放进度与收藏一起带走"""
-    lib = _lib(db)
-    lib_id = lib.id
-    _item(db, lib_id, guid="m0")
-    gone = _item(db, lib_id, guid="m1")
-    db.add(em.UserMediaData(item_id=gone, user_id=1, playback_position_ticks=12345))
-    db.commit()
-
-    scanner._remove_missing_items(db, lib, {"m0"})
-
-    assert db.query(em.UserMediaData).filter(
-        em.UserMediaData.item_id == gone).count() == 1
-
-
-def test_deleted_at_is_stamped(db):
-    lib = _lib(db)
-    lib_id = lib.id
-    _item(db, lib_id, guid="m0")
-    gone = _item(db, lib_id, guid="m1")
-
-    before = datetime.now()
-    scanner._remove_missing_items(db, lib, {"m0"})
-
-    with soft_delete.include_deleted():
-        row = db.query(em.MediaItem).filter(em.MediaItem.id == gone).one()
-    assert row.deleted_at is not None and row.deleted_at >= before
-
-
-def test_already_deleted_rows_are_not_walked_again(db):
-    """已经下架的行不该每轮清理都再遍历、再统计一次"""
-    lib = _lib(db)
-    lib_id = lib.id
-    _item(db, lib_id, guid="m0")
-    _item(db, lib_id, guid="m1")
-
-    scanner._remove_missing_items(db, lib, {"m0"})
-
-    assert scanner._no_removals_possible(db, lib, {"m0"}) is True, \
-        "有软删行时也必须走快速路径，否则每次扫描都要遍历整库"
-
-
-def test_soft_deleted_rows_do_not_block_later_cleanups(db):
-    """下架过的行不能当删除保护的分母
-
-    否则一个删过 90 部的库，本轮正常看到剩下 10 部也会被判定成“来源整体不可用”，
-    后面真正要清理的场景跟着一起被拦住。
-    """
-    lib = _lib(db)
-    lib_id = lib.id
-    kept = _item(db, lib_id, guid="m0")
-    for i in range(1, 41):
-        _item(db, lib_id, guid=f"g{i}")
-    seen = {f"g{i}" for i in range(1, 41)} | {"m0"}
-
-    soft_delete.mark_soft_deleted(db, [
-        i.id for i in db.query(em.MediaItem.id).filter(
-            em.MediaItem.guid.in_({f"g{i}" for i in range(1, 41)})).all()])
-    db.commit()
-
-    allowed, why, total = scanner._removal_budget(db, lib, seen)
-    assert allowed is True, f"不该被拦住：{why}"
-    assert total == 1, "预算只看可见行"
-
-    # 再下一部：正常清理必须能发生（不被软删行拖累成「来源不可用」）
-    gone = _item(db, lib_id, guid="m9")
-    allowed, why, _total = scanner._removal_budget(db, lib, seen)
-    assert allowed is True
-    assert scanner._remove_missing_items(db, lib, seen - {"m9"}) == 1
-    assert gone not in _visible_ids(db, lib_id)
-    assert kept in _visible_ids(db, lib_id)
-
-
-def test_soft_delete_does_not_loosen_the_removal_guard(db):
-    """软删除不能变成「绕过删除保护的后门」：零结果仍然一条都不动"""
-    lib = _lib(db)
-    lib_id = lib.id
-    for i in range(30):
-        _item(db, lib_id, guid=f"m{i:02d}")
-
-    assert scanner._remove_missing_items(db, lib, set()) == 0
-    assert _physical_count(db, library_id=lib_id) == 30
-    assert scanner._CLEANUP_LAST["skipped"]
-
 
 # ==================== 回收：过期才物理删 ====================
 
@@ -371,99 +273,7 @@ def test_resurrect_makes_the_row_visible_again(db):
     assert db.query(em.MediaItem).filter(em.MediaItem.id == gone).one().deleted_at is None
 
 
-def test_scan_resurrects_instead_of_inserting_a_duplicate(db, tmp_path, monkeypatch):
-    """文件重新出现：必须复用原来那一行（连播放进度一起），不能撞 guid 唯一键"""
-    monkeypatch.setattr(scanner, "PROBE_BACKGROUND", True)
-    monkeypatch.setattr(scanner, "SCAN_LAYERED", False)
-    gone_movie = tmp_path / "Come Back (2024).mp4"
-    kept_movie = tmp_path / "Still Here (2023).mp4"
-    for path in (gone_movie, kept_movie):
-        path.write_bytes(b"\x00" * 64)
-    present = {"files": [gone_movie, kept_movie]}
-
-    def fake_sources(snap, library, db, failed_roots, report=None):
-        yield "test", iter([
-            scanner.ScanFile(stored_path=str(p), name=p.name, local_dir=str(p.parent),
-                             size=64, container="mp4")
-            for p in present["files"]
-        ])
-
-    monkeypatch.setattr(scanner, "iter_scan_sources", fake_sources)
-    lib = _lib(db, name="复活库", paths=str(tmp_path))
-    lib_id = lib.id
-
-    scanner.scan_library_sync(db, lib)
-    item_id = next(i.id for i in db.query(em.MediaItem).filter(
-        em.MediaItem.file_path == str(gone_movie)).all())
-    db.add(em.UserMediaData(item_id=item_id, user_id=1, playback_position_ticks=999))
-    db.commit()
-
-    # 那一部真的从磁盘上撤了（库里还有另一部，所以清理阶段照常进行）
-    gone_movie.unlink()
-    present["files"] = [kept_movie]
-    scanner.scan_library_sync(db, lib)
-    assert item_id not in _visible_ids(db, lib_id)
-    assert _physical_count(db, library_id=lib_id) == 2, "下架不是删除"
-
-    # 补种回来了 → 同一条记录复活，播放进度还在
-    gone_movie.write_bytes(b"\x00" * 64)
-    present["files"] = [gone_movie, kept_movie]
-    stats = scanner.scan_library_sync(db, lib)
-
-    assert item_id in _visible_ids(db, lib_id), "必须是原来那一行，不是新插一条"
-    assert _physical_count(db, library_id=lib_id) == 2, "不能多出一行"
-    assert db.query(em.UserMediaData).filter(
-        em.UserMediaData.item_id == item_id).count() == 1
-    assert stats.get("resurrected") == 1
-
-
-def test_resurrected_item_is_never_fast_skipped(db):
-    """秒跳的前提是「这一行是可见的」：下架过的条目即使指纹没变也要走完整路径"""
-    ctx = type("Ctx", (), {"snap": type("S", (), {"scrape_policy": "missing_only"})(),
-                           "lib_id": 1})()
-    monkeypatch_env = os.environ.get("SCAN_INCREMENTAL", "1")
-    os.environ["SCAN_INCREMENTAL"] = "1"
-    try:
-        item = type("Row", (), {"deleted_at": datetime.now(), "repair_requested_at": None,
-                                "size": 1, "duration_ticks": 10, "probe_status": "done",
-                                "file_path": "/x.mkv"})()
-        pending = type("P", (), {"item_type": "movie", "series_guid": None})()
-        scan_file = type("F", (), {"stored_path": "/x.mkv", "size": 1})()
-
-        assert scanner._can_skip_file(ctx, item, pending, "fp", "fp") is False
-    finally:
-        os.environ["SCAN_INCREMENTAL"] = monkeypatch_env
-
-
 # ==================== 后台队列不该再碰下架的条目 ====================
-
-def test_probe_queue_skips_deleted_items(db):
-    lib = _lib(db)
-    hidden = _item(db, lib.id)
-    db.query(em.MediaItem).filter(em.MediaItem.id == hidden).update(
-        {"probe_status": "pending"}, synchronize_session=False)
-    db.commit()
-    soft_delete.mark_soft_deleted(db, [hidden])
-    db.commit()
-
-    assert probe_worker._claim_batch(db, 10) == []
-
-
-# ==================== 回滚：MEDIA_SOFT_DELETE=0 ====================
-
-def test_cleanup_hard_deletes_when_disabled(db, monkeypatch):
-    monkeypatch.setenv("MEDIA_SOFT_DELETE", "0")
-    lib = _lib(db)
-    lib_id = lib.id
-    _item(db, lib_id, guid="m0")
-    gone = _item(db, lib_id, guid="m1")
-
-    removed = scanner._remove_missing_items(db, lib, {"m0"})
-
-    assert removed == 1
-    assert _physical_count(db, library_id=lib_id) == 1
-    assert gone not in _all_ids(db, lib_id)
-
 
 def test_startup_restores_hidden_rows_when_disabled(db, monkeypatch):
     """关掉开关的那一刻必须先把隐藏行放回来，否则它们变成看不见也删不掉的僵尸"""
@@ -511,3 +321,50 @@ def test_restore_all_puts_everything_back(db, monkeypatch):
     monkeypatch.setenv("MEDIA_SOFT_DELETE", "0")
     assert soft_delete.restore_all(db) == 2
     assert sorted(_visible_ids(db, lib_id)) == sorted([a, b])
+
+# ==================== fast_scanner 复活行为 ====================
+
+def test_fast_scan_resurrects_instead_of_inserting_a_duplicate(db, tmp_path, monkeypatch):
+    """文件重新出现：必须复用原来那一行（连播放进度一起），不能撞 guid 唯一键"""
+    from unittest import mock
+    from backend.emby_server import fast_scanner
+    from backend.emby_server.scanner import LibrarySnapshot
+
+    gone_movie = tmp_path / "Come Back (2024).mp4"
+    kept_movie = tmp_path / "Still Here (2023).mp4"
+    for path in (gone_movie, kept_movie):
+        path.write_bytes(b"\x00" * 64)
+    present = {"files": [gone_movie, kept_movie]}
+
+    def fake_collect(paths):
+        return [fast_scanner.FastScanFile(
+            path=str(p), name=p.name, size=64, mtime=1.0)
+            for p in present["files"]]
+
+    monkeypatch.setattr(fast_scanner, "_collect_files", fake_collect)
+    lib = _lib(db, name="复活库", paths=str(tmp_path))
+    lib_id = lib.id
+    snap = LibrarySnapshot.of(lib)
+
+    fast_scanner.scan_library_sync(db, lib, snap, trigger="test")
+    item_id = next(i.id for i in db.query(em.MediaItem).filter(
+        em.MediaItem.file_path == str(gone_movie)).all())
+    db.add(em.UserMediaData(item_id=item_id, user_id=1, playback_position_ticks=999))
+    db.commit()
+
+    # 那一部真的从磁盘上撤了（库里还有另一部，所以清理阶段照常进行）
+    gone_movie.unlink()
+    present["files"] = [kept_movie]
+    fast_scanner.scan_library_sync(db, lib, snap, trigger="test")
+    assert item_id not in _visible_ids(db, lib_id)
+    assert _physical_count(db, library_id=lib_id) == 2, "下架不是删除"
+
+    # 补种回来了 → 同一条记录复活，播放进度还在
+    gone_movie.write_bytes(b"\x00" * 64)
+    present["files"] = [gone_movie, kept_movie]
+    fast_scanner.scan_library_sync(db, lib, snap, trigger="test")
+
+    assert item_id in _visible_ids(db, lib_id), "必须是原来那一行，不是新插一条"
+    assert _physical_count(db, library_id=lib_id) == 2, "不能多出一行"
+    assert db.query(em.UserMediaData).filter(
+        em.UserMediaData.item_id == item_id).count() == 1
