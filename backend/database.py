@@ -525,6 +525,10 @@ def _auto_migrate():
             # v2.48.0 软删除：老库补列后全为 NULL = 全部可见，行为与以前完全一致。
             # 回滚：MEDIA_SOFT_DELETE=0 启动时会把已隐藏的行清空（见 _resurrect_soft_deleted）。
             ("deleted_at", "DATETIME", "NULL"),
+            # v2.49.0 文件名元数据：扫描时从文件名解析分辨率/发行来源（零 Drive 调用）。
+            # video_codec / audio_codec 列已存在（探测器时代留下），复用即可。
+            ("video_resolution", "VARCHAR(10)", "NULL"),
+            ("media_source", "VARCHAR(30)", "NULL"),
         ]),
         # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，
         # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。
@@ -542,6 +546,7 @@ def _auto_migrate():
         ]),
     ]
 
+    _newly_added_columns: list[tuple[str, str]] = []
     for table, columns in migrations:
         if table not in existing_tables:
             continue
@@ -554,11 +559,16 @@ def _auto_migrate():
                         f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type} DEFAULT {default}"
                     ))
                     print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
+                    _newly_added_columns.append((table, col_name))
 
     _widen_code_column(existing_tables, inspector)
     _widen_bitrate_column(existing_tables, inspector)
     _widen_stream_title_columns(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
+    # v2.49.0：本次刚补上 video_resolution 列的老库，用文件名解析回填已有条目
+    # （纯字符串解析，零 Drive 调用；只跑一次，下次启动列已存在不会再触发）
+    if ("emby_items", "video_resolution") in _newly_added_columns:
+        _backfill_filename_meta()
     _ensure_probe_index(existing_tables)
     _ensure_enrich_index(existing_tables)
     _ensure_added_index(existing_tables)
@@ -566,6 +576,64 @@ def _auto_migrate():
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
+
+
+def _backfill_filename_meta() -> None:
+    """v2.49.0：老库补上 video_resolution 列后，用文件名解析回填已有条目。
+
+    纯字符串解析，零 Drive 调用。只处理 file_path 非空且 video_resolution
+    为空的行；已有探测数据的字段（非空的 video_codec / 非零的 width 等）
+    不覆盖——文件名解析只是回退，不如 ffprobe 精确。
+    分批提交；幂等（跑过一次后触发条件不再成立）。
+    """
+    from backend.emby_server import models as emby_models
+    from backend.emby_server.filename_meta import parse_filename, resolution_to_wh
+
+    MI = emby_models.MediaItem
+    session = Session(bind=engine)
+    try:
+        # 先一次性拿 ID（避免“解析不到的行保持 NULL 被反复选中”的死循环）
+        all_ids = [
+            row[0] for row in session.query(MI.id).filter(
+                MI.video_resolution.is_(None), MI.file_path.isnot(None)
+            ).all()
+        ]
+        BATCH = 1000
+        total = 0
+        for i in range(0, len(all_ids), BATCH):
+            chunk = all_ids[i:i + BATCH]
+            rows = (
+                session.query(
+                    MI.id, MI.file_path, MI.video_codec, MI.audio_codec,
+                    MI.media_source, MI.width, MI.height,
+                )
+                .filter(MI.id.in_(chunk))
+                .all()
+            )
+            mappings = []
+            for (row_id, file_path, vcodec, acodec, msource, width, height) in rows:
+                name = (file_path or "").rsplit("/", 1)[-1]
+                meta = parse_filename(name)
+                m = {"id": row_id, "video_resolution": meta.get("resolution")}
+                if not vcodec and meta.get("video_codec"):
+                    m["video_codec"] = meta["video_codec"]
+                if not acodec and meta.get("audio_codec"):
+                    m["audio_codec"] = meta["audio_codec"]
+                if not msource and meta.get("source"):
+                    m["media_source"] = meta["source"]
+                w, h = resolution_to_wh(meta.get("resolution"))
+                if not width and w:
+                    m["width"] = w
+                if not height and h:
+                    m["height"] = h
+                mappings.append(m)
+            session.bulk_update_mappings(MI, mappings)
+            session.commit()
+            total += len(mappings)
+        if total:
+            print(f"  🔧 已回填: emby_items 文件名元数据 {total} 条")
+    finally:
+        session.close()
 
 
 def _hash_plain_emby_tokens(existing_tables: set) -> None:

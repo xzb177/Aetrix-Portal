@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -18,6 +19,7 @@ import os
 import random
 import secrets
 import shutil
+import subprocess
 import time
 import urllib.parse
 from datetime import datetime, timedelta
@@ -550,6 +552,11 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         dto["Width"] = item.width
     if item.height:
         dto["Height"] = item.height
+    # 文件名解析的视频信息（v2.49.0，零 Drive 调用）：Emby 兼容字段名
+    if item.video_codec:
+        dto["VideoCodec"] = item.video_codec
+    if item.audio_codec:
+        dto["AudioCodec"] = item.audio_codec
     dto["IsHD"] = bool((item.height or 0) >= 720)
     if item.original_title:
         dto["OriginalTitle"] = item.original_title
@@ -823,7 +830,9 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         "Type": "Default",
         "Container": _container_of(item),
         "Size": item.size,
-        "RunTimeTicks": item.duration_ticks or None,
+        # 兼容修复：RunTimeTicks 必须始终存在（0 = 未知），缺字段时三方客户端
+        # 会显示默认的 1 分钟。之前 or None 会被 _strip_nulls 删掉字段。
+        "RunTimeTicks": item.duration_ticks or 0,
         "Bitrate": item.bitrate or None,
         "SupportsDirectPlay": True,
         "SupportsDirectStream": True,
@@ -832,6 +841,12 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         "DefaultSubtitleStreamIndex": _default_subtitle_index(item),
         "MediaStreams": [_stream_dto(s, base, item, api_key, db) for s in item.streams],
     }
+    # 文件名解析的视频信息（v2.49.0）：MediaStreams 为空时客户端「媒体信息」页
+    # 也有编码可显示；有流信息时以流为准（这里只是回退）。
+    if item.video_codec:
+        dto["VideoCodec"] = item.video_codec
+    if item.audio_codec:
+        dto["AudioCodec"] = item.audio_codec
     # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
     # 注：DirectStreamUrl / TranscodingUrl 由调用方（playback_info）在拿到 _play_target 后
     # 拼装，CDN 域名改写也在那一层完成（这里只管字幕 DeliveryUrl）。
@@ -847,6 +862,55 @@ def _require_item(db: Session, item_id: str) -> em.MediaItem:
 
 def _run_time_ticks(item: em.MediaItem) -> int:
     return item.duration_ticks or 0
+
+
+def _save_duration_ticks(db: Session, guid: str, ticks: int) -> None:
+    """按需探测写回时长（线程池内调用，幂等）。"""
+    db.query(em.MediaItem).filter(em.MediaItem.guid == guid).update(
+        {"duration_ticks": ticks}
+    )
+    db.commit()
+
+
+def _ffprobe_duration_sync(file_path: str, timeout: int = 10) -> int | None:
+    """同步探测单个文件的时长（阻塞，调用方必须扔线程池）。
+
+    只读文件头拿 duration，不下载全片。任何异常（文件不可读、ffprobe
+    不在、超时）都返回 None，绝不抛给调用方。
+    """
+    try:
+        if not os.path.isfile(file_path):
+            return None
+    except OSError:
+        return None
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if proc.returncode != 0:
+            return None
+        duration = float((proc.stdout or "").strip())
+        if duration <= 0:
+            return None
+        return int(duration * 10_000_000)  # 秒 -> 100ns ticks
+    except Exception:  # noqa: BLE001 — 探测失败不影响播放
+        return None
+
+
+async def _probe_duration_on_demand(file_path: str) -> int | None:
+    """按需探测：用户点播放、且库里没有时长时，才探测这一个文件。
+
+    后台批量探测已下线（烧 Drive 配额），这里一次只探一个。ffprobe 在
+    线程池跑，不占事件循环；整体超时 12 秒，失败/超时直接跳过。
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_ffprobe_duration_sync, file_path), timeout=12,
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> dict:
@@ -2188,6 +2252,14 @@ async def playback_info(
     await run_db(ensure_playback_allowed, db, user)
     # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
+    # 按需探测（v2.49.0）：库里没有时长时，播放瞬间才探测这一个文件。
+    # 后台批量探测已下线（烧 Drive 配额）。线程池跑、不占事件循环，整体
+    # 超时 12 秒；失败/超时直接跳过，不影响播放。写回 DB 后下次不再探。
+    if not item.duration_ticks and item.file_path:
+        _ticks = await _probe_duration_on_demand(item.file_path)
+        if _ticks:
+            await run_db(_save_duration_ticks, db, item.guid, _ticks)
+            item.duration_ticks = _ticks
     if not item.file_path:
         # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
         # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
