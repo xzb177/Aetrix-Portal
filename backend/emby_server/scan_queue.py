@@ -421,6 +421,9 @@ def _executor_view(redis_waiting: list) -> dict:
                     "requested_at": finished_iso or "",
                     "finished_at": finished_iso,
                     "duration_ms": stats.get("duration_ms"),
+                    "added": int(stats.get("added") or 0),
+                    "updated": int(stats.get("updated") or 0),
+                    "removed": int(stats.get("removed") or 0),
                 })
                 history.append(data)
 
