@@ -218,6 +218,46 @@ def _fold_punct(s: str) -> str:
     return _PUNCT_FOLD_RE.sub(lambda m: _PUNCT_FOLD[m.group(0)], s) if s else s
 
 
+# TMDB 类型 id → 中文名：全项目唯一一份映射（横切纪律：不许有第二套）。
+# 搜索接口只给 genre_ids，用它翻译；详情接口给 genres=[{id, name}]，
+# name 已是本地化中文、优先用 name，缺 name 时才回退到这张表。
+_GENRE_NAMES = {
+    28: "动作", 12: "冒险", 16: "动画", 35: "喜剧", 80: "犯罪",
+    99: "纪录片", 18: "剧情", 10751: "家庭", 14: "奇幻", 36: "历史",
+    27: "恐怖", 10402: "音乐", 9648: "悬疑", 10749: "爱情",
+    878: "科幻", 10770: "电视电影", 53: "惊悚", 10752: "战争", 37: "西部",
+}
+_MAX_GENRES = 4
+
+
+def _genres_from_details(data: dict) -> list:
+    """从详情接口 payload 提取类型名（不发请求，纯解析）。
+
+    payload 形态：``genres=[{"id": 28, "name": "动作"}, ...]``。
+    name 为空或缺失时回退到 ``_GENRE_NAMES`` 按 id 翻译；都取不到就跳过
+    （不写原文 id 数字——搜索路径 apply() 写数字是历史行为，保持不动）。
+    """
+    out = []
+    for g in (data or {}).get("genres") or []:
+        name = ""
+        gid = None
+        if isinstance(g, dict):
+            name = (g.get("name") or "").strip()
+            gid = g.get("id")
+        elif isinstance(g, (int, str)):
+            gid = g
+        if not name and gid is not None:
+            try:
+                name = _GENRE_NAMES.get(int(gid), "")
+            except (TypeError, ValueError):
+                name = ""
+        if name and name not in out:
+            out.append(name)
+        if len(out) >= _MAX_GENRES:
+            break
+    return out
+
+
 def _norm_text(s):
     if not s:
         return ""
@@ -1094,114 +1134,6 @@ class TmdbClient:
             self._cache_put(key, data)
             return data
 
-
-    def season_episodes(self, tmdb_id: str, season_number: int) -> Optional[list]:
-        """获取某季所有集的信息（标题/简介/剧照）。
-
-        走 `GET /tv/{tv_id}/season/{season_number}`，一次请求拿整季，
-        同一季的多个集共享缓存，不重复打 TMDB。
-
-        两级缓存同 ``details``（L1 300 秒 → L2 磁盘 30 天，按 tv_id+季号键）。
-
-        返回 episode 字典列表（每项有 episode_number / name / overview /
-        still_path），失败返回 None。
-        """
-        try:
-            season_no = int(season_number)
-        except (TypeError, ValueError):
-            return None
-        key = ("season_episodes", str(tmdb_id), str(season_no))
-        cached = self._cache_get(key)
-        if cached is not _MISS:
-            return cached
-        cache_key = f"{tmdb_id}_{season_no}"
-        hit, data = tmdb_cache.load_details("season", cache_key)
-        if hit:
-            progress.note_stage("tmdb_disk_hit")
-            eps = (data or {}).get("episodes")
-            self._cache_put(key, eps)
-            return eps
-        with tmdb_cache.single_flight(key):
-            cached = self._cache_get(key)
-            if cached is not _MISS:
-                return cached
-            hit, data = tmdb_cache.load_details("season", cache_key)
-            if hit:
-                progress.note_stage("tmdb_disk_hit")
-                eps = (data or {}).get("episodes")
-                self._cache_put(key, eps)
-                return eps
-            data = self._get(f"/tv/{tmdb_id}/season/{season_no}",
-                             {"language": TMDB_LANG})
-            if data is not None:
-                tmdb_cache.save_details("season", cache_key, data)
-            eps = (data or {}).get("episodes") if data else None
-            self._cache_put(key, eps)
-            return eps
-
-    def find_episode(self, tmdb_id: str, season_number: int,
-                     episode_number: int) -> Optional[dict]:
-        """在某季里找指定集的数据（标题/简介/剧照）。
-
-        找不到返回 None（TMDB 没这集，或季接口失败）。
-        """
-        try:
-            ep_no = int(episode_number)
-        except (TypeError, ValueError):
-            return None
-        episodes = self.season_episodes(str(tmdb_id), season_number)
-        if not episodes:
-            return None
-        for ep in episodes:
-            try:
-                if int(ep.get("episode_number", -1)) == ep_no:
-                    return ep
-            except (TypeError, ValueError):
-                continue
-        return None
-
-    @staticmethod
-    def apply_episode(episode_item, episode_data: dict) -> dict:
-        """把单集 TMDB 数据落到条目上（纯内存操作，不碰 DB/网络）。
-
-        返回 {"updated": bool, "still_path": Optional[str]}：
-        - updated=True 表示 name/overview 有变化，调用方需要写库
-        - still_path 是 TMDB 的剧照路径（如 "/abc123.jpg"），调用方负责拼 URL
-          并预热下载
-
-        标题规则（用户要求）：
-        - TMDB 有真实标题（非空，且不是 "Episode N" 这种占位）→ 用真实标题
-        - 当前 name 是"第X集"格式 → 只有 TMDB 有真实标题时才覆盖，否则保留
-        - 当前 name 不是"第X集"格式（已有真实标题）→ 不覆盖
-        """
-        result = {"updated": False, "still_path": None}
-        if not episode_data:
-            return result
-
-        tmdb_name = (episode_data.get("name") or "").strip()
-        # TMDB 占位标题（"Episode 1" / "第 1 集"英文版）不算真实标题
-        is_placeholder = (
-            not tmdb_name
-            or tmdb_name.lower().startswith("episode ")
-        )
-        current = (getattr(episode_item, "name", "") or "").strip()
-        is_generic = bool(re.match(r"^第\d+集$", current))
-
-        if not is_placeholder and is_generic:
-            # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖
-            episode_item.name = tmdb_name
-            result["updated"] = True
-        # 简介：当前为空时才补（不覆盖 NFO/已有的）
-        tmdb_overview = (episode_data.get("overview") or "").strip()
-        if tmdb_overview and not (getattr(episode_item, "overview", "") or "").strip():
-            episode_item.overview = tmdb_overview
-            result["updated"] = True
-        # 剧照路径（调用方拼 URL + 预热）
-        still = episode_data.get("still_path")
-        if still:
-            result["still_path"] = still
-        return result
-
     def enrich(self, item: emby_models.MediaItem, kind: str) -> None:
         """补齐 imdb_id 与 aliases（中英文/繁简多别名搜索的基础）"""
         if not item.tmdb_id or (item.imdb_id and item.aliases):
@@ -1215,10 +1147,18 @@ class TmdbClient:
         """把详情接口的返回落到条目上（与 enrich 同口径，供批量扫描预先取回后套用）"""
         if not data:
             return
-        # 详情只补缺项（简介/评分/别名），不覆盖 NFO 提供的文字。
+        # 详情只补缺项（简介/评分/别名/类型），不覆盖 NFO 提供的文字。
         # 用 getattr 兜底：调用方（含测试里的轻量替身）未必带这个字段。
         if not getattr(item, "metadata_source", None):
             item.metadata_source = "tmdb"
+        # 类型：详情接口直接给 genres=[{id, name}]（language=zh-CN 下 name 已是中文）。
+        # 这是「有 tmdb_id 却无类型」的主因：以前 apply_details 完全忽略它，
+        # 凡走 tmdb_id → 详情分支的（NFO 自带 tmdb_id、别名匹配、已有 id 补缺）
+        # 都永远拿不到类型，只有搜索命中走 apply() 的才有。
+        if not (getattr(item, "genres", None) or "").strip():
+            gnames = _genres_from_details(data)
+            if gnames:
+                item.genres = ",".join(gnames)
         imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
         if imdb:
             item.imdb_id = imdb
@@ -1299,13 +1239,9 @@ class TmdbClient:
             item.aliases = ",".join(dict.fromkeys(merged))[:2000]
         genre_ids = hit.get("genre_ids") or []
         if genre_ids:
-            mapping = {
-                28: "动作", 12: "冒险", 16: "动画", 35: "喜剧", 80: "犯罪",
-                99: "纪录片", 18: "剧情", 10751: "家庭", 14: "奇幻", 36: "历史",
-                27: "恐怖", 10402: "音乐", 9648: "悬疑", 10749: "爱情",
-                878: "科幻", 10770: "电视电影", 53: "惊悚", 10752: "战争", 37: "西部",
-            }
-            item.genres = ",".join(mapping.get(g, str(g)) for g in genre_ids[:4])
+            item.genres = ",".join(
+                _GENRE_NAMES.get(g, str(g)) for g in genre_ids[:_MAX_GENRES]
+            )
 
 
 tmdb_client = TmdbClient()  # 进程级单例：一次扫描里的预热与写库共用同一份缓存与连接池
