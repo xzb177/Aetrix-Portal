@@ -147,10 +147,12 @@ class TestClaimBatch:
             db.commit()
 
             claimed = probe_worker._claim_batch(db, 10, library_id=lib.id)
-            ids = [c.id for c in claimed]
-            assert ids == [high.id, low.id], f"优先级排序错误: {ids}"
-            for c in claimed:
-                assert c.probe_status == "probing"
+            assert claimed == [high.id, low.id], f"优先级排序错误: {claimed}"
+            # 抢到的已标 probing
+            statuses = {r[0]: r[1] for r in
+                        db.query(em.MediaItem.id, em.MediaItem.probe_status)
+                        .filter(em.MediaItem.id.in_(claimed)).all()}
+            assert all(s == "probing" for s in statuses.values())
         finally:
             _cleanup(db, lib)
             db.close()

@@ -110,12 +110,15 @@ def _due_filter(now: datetime):
                em.MediaItem.probe_next_retry_at <= now)
 
 
-def _claim_batch(db, limit: int, library_id: Optional[int] = None) -> List[em.MediaItem]:
+def _claim_batch(db, limit: int, library_id: Optional[int] = None) -> List[int]:
     """原子抢一批待探测条目，抢到的标 probing。
 
     范围：pending + movie/series + 缺 video_codec（NULL 或空串）+ 有 file_path。
     排序：优先级高的先（按需 1000 插队在扫描器 100 之前），同优先级按 id。
     ``library_id``：可选的库过滤（测试用，生产传 None 即全库）。
+
+    返回条目 id 列表（不返回 ORM 对象：调用方拿到结果后往往已关 session，
+    再读对象属性会 DetachedInstanceError；id 跨线程也安全）。
     """
     now = datetime.now()
     missing_codec = or_(em.MediaItem.video_codec.is_(None),
@@ -128,7 +131,7 @@ def _claim_batch(db, limit: int, library_id: Optional[int] = None) -> List[em.Me
                _due_filter(now)]
     if library_id is not None:
         filters.append(em.MediaItem.library_id == library_id)
-    q = (db.query(em.MediaItem)
+    q = (db.query(em.MediaItem.id)
          .filter(*filters)
          .order_by(em.MediaItem.probe_priority.desc(), em.MediaItem.id)
          .limit(limit))
@@ -137,15 +140,17 @@ def _claim_batch(db, limit: int, library_id: Optional[int] = None) -> List[em.Me
     except Exception:
         # 方言不支持 FOR UPDATE 时退回普通查询（单 worker 仍正确）
         rows = q.all()
-    for r in rows:
-        r.probe_status = "probing"
-    if rows:
+    ids = [r[0] for r in rows]
+    if ids:
+        (db.query(em.MediaItem)
+         .filter(em.MediaItem.id.in_(ids))
+         .update({"probe_status": "probing"}, synchronize_session=False))
         db.commit()
     else:
         # 只是 SELECT 也会开事务；worker 接下来睡眠，不 rollback 会留下
         # idle in transaction 占连接（与 enrich_worker 同一教训）。
         db.rollback()
-    return rows
+    return ids
 
 
 def _recover_crashed(db) -> int:
@@ -216,12 +221,12 @@ def _dispatcher_loop() -> None:
             if not claimed:
                 _stop_event.wait(PROBE_IDLE_SLEEP_SEC)
                 continue
-            for item in claimed:
+            for item_id in claimed:
                 gap = PROBE_MIN_INTERVAL_SEC - (time.monotonic() - last_submit)
                 if gap > 0 and _stop_event.wait(gap):
                     break
                 last_submit = time.monotonic()
-                pool.submit(_process_one, item.id)
+                pool.submit(_process_one, item_id)
     finally:
         pool.shutdown(wait=False)
 
