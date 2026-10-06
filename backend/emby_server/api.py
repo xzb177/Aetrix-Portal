@@ -1416,6 +1416,72 @@ def get_items(
     return _query_items(request, user, db, _base_url(request))
 
 
+
+def _dedup_primary_ids(cand_rows, db) -> list[int]:
+    """对候选 (id, item_type, file_path, library_id) 去重，只保留主版本/主剧集的 id（保持原顺序）。
+
+    去重在分页之前做，保证 Limit/StartIndex 语义正确：
+    Limit=20 就返回 20 条不重复的，TotalRecordCount 也是去重后的总数。
+    """
+    from collections import defaultdict
+
+    movie_groups: dict[tuple, list] = defaultdict(list)
+    series_ids: list[int] = []
+    other_ids: list[int] = []
+
+    for row in cand_rows:
+        iid, itype, fpath, lib_id = row[0], row[1], row[2], row[3]
+        if itype == "movie":
+            pdir = _parent_dir(fpath)
+            base = _version_base_name(fpath)
+            if pdir and base:
+                movie_groups[(lib_id, pdir, base)].append(iid)
+            else:
+                other_ids.append(iid)
+        elif itype == "series":
+            series_ids.append(iid)
+        else:
+            other_ids.append(iid)
+
+    keep = set(other_ids)
+    for _key, ids in movie_groups.items():
+        keep.add(min(ids))
+
+    # series 分组：先按 (library_id, name) 粗分组，只对有重复的组做 source_dir 精确检查
+    # （_series_siblings 内部是 O(N²)，全量调用太慢）
+    if series_ids:
+        # 批量查出 series 的基本信息
+        series_rows = db.query(
+            em.MediaItem.id, em.MediaItem.library_id, em.MediaItem.name
+        ).filter(em.MediaItem.id.in_(series_ids)).all()
+        name_groups = {}
+        for sid, lib_id, sname in series_rows:
+            key = (lib_id, sname or "")
+            name_groups.setdefault(key, []).append(sid)
+        for _key, sids in name_groups.items():
+            if len(sids) == 1:
+                keep.add(sids[0])
+                continue
+            # 有同名：按 source_dir 精确分组
+            dir_groups = {}
+            for sid in sids:
+                item = db.query(em.MediaItem).filter(em.MediaItem.id == sid).first()
+                if item is None:
+                    keep.add(sid)
+                    continue
+                try:
+                    src = _series_source_dir(item, db)
+                except Exception:
+                    src = None
+                # source_dir 为空的，按 id 单独成组（不合并，避免误伤）
+                gkey = src if src else f"__noid__{sid}"
+                dir_groups.setdefault(gkey, []).append(sid)
+            for _gkey, gids in dir_groups.items():
+                keep.add(min(gids))
+
+    return [row[0] for row in cand_rows if row[0] in keep]
+
+
 def _query_items(request: Request, user: models.WebUser, db: Session, base: str) -> dict:
     q = request.query_params
     parent_id = q.get("ParentId")
@@ -1645,12 +1711,12 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     # 默认 true：第三方 Emby 客户端的行为与以前完全一致。
     want_total = (q.get("EnableTotalRecordCount") or "true").strip().lower() not in (
         "false", "0", "no", "off")
-    total = query.count() if want_total else -1
     has_more: bool | None = None
     if random_sort:
         # ``ORDER BY RANDOM()`` 会让数据库把整个结果集物化再排序（十万级库就是全表排序）。
         # 随机排序只需要一个随机子集：先取主键、在内存里抽样，再按抽到的 id 取这一页，
         # 成本从「全表排序 + 全行物化」降到「扫主键 + 取 N 行」。
+        # 注意：随机模式下跳过去重（Emby 官方随机也是全量随机），保持原有行为。
         id_rows = query.with_entities(em.MediaItem.id).all()
         ids = [row[0] for row in id_rows]
         if not ids:
@@ -1659,36 +1725,34 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(picked)).all() if picked else []
         position = {item_id: index for index, item_id in enumerate(picked)}
         items.sort(key=lambda item: position.get(item.id, 0))
-        if not want_total:
-            total = len(ids)  # 主键本来就要全取，总数是免费的
+        total = len(ids) if want_total else -1
     else:
-        if want_total:
-            items = query.order_by(*order_cols).offset(start).limit(limit).all()
+        # 修复：去重必须在分页之前，否则 Limit=20 可能只返回 2-3 条
+        # （第三方播放器靠 TotalRecordCount + 分页加载，去重后数量不对会显示不全）。
+        # 先取所有候选的 (id, item_type, file_path)，Python 去重得到 primary_ids，
+        # 再对 primary_ids 做 offset/limit，最后按 id 取完整对象。
+        cand_rows = (
+            query.order_by(*order_cols)
+            .with_entities(
+                em.MediaItem.id,
+                em.MediaItem.item_type,
+                em.MediaItem.file_path,
+                em.MediaItem.library_id,
+            )
+            .all()
+        )
+        primary_ids = _dedup_primary_ids(cand_rows, db)
+        total = len(primary_ids) if want_total else -1
+        if not want_total:
+            # 多取一个判断有没有下一页
+            has_more = len(primary_ids) > start + limit
+        page_ids = primary_ids[start:start + limit]
+        if not page_ids:
+            items = []
         else:
-            # 多取一行：取到了说明后面还有（去重在取数之后做，不影响这个判断）
-            probe = query.order_by(*order_cols).offset(start).limit(limit + 1).all()
-            has_more = len(probe) > limit
-            items = probe[:limit]
-    # 多版本去重：movie 类型按目录分组，只保留主版本（id 最小）
-    # 详情页通过 Versions 数组展示所有版本
-    deduped = []
-    seen_dirs = set()
-    for it in items:
-        if it.item_type == "series":
-            if not _is_primary_series(it, db):
-                continue
-        if it.item_type == "movie":
-            pdir = _parent_dir(it.file_path)
-            if pdir and pdir in seen_dirs:
-                continue
-            # 检查是否为该目录的主版本
-            if pdir and not _is_primary_version(it, db):
-                seen_dirs.add(pdir)
-                continue
-            if pdir:
-                seen_dirs.add(pdir)
-        deduped.append(it)
-    items = deduped
+            items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(page_ids)).all()
+            position = {item_id: index for index, item_id in enumerate(page_ids)}
+            items.sort(key=lambda item: position.get(item.id, 0))
     _prefetch_list_data(db, user.id, items)
 
     return {
