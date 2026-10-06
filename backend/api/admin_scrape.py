@@ -796,11 +796,12 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
 
     不走 scan_queue.enqueue：policy 覆盖是本轮快照的一次性行为，不改库配置。
     """
-    from backend.emby_server.fast_scanner import scan_library_sync
+    from backend.emby_server import scan_instrument
     from backend.emby_server.scanner import (
         LibrarySnapshot,
         ScanInProgress,
         normalize_scrape_policy,
+        scan_library_sync,
     )
 
     db = SessionLocal()
@@ -812,6 +813,7 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
         snap = LibrarySnapshot.of(lib)
         if policy == "all":
             snap = replace(snap, scrape_policy=normalize_scrape_policy("all"))
+        scan_instrument.install()  # 幂等：进度上报点
         scan_library_sync(db, lib, snap, trigger="rescrape")
     except ScanInProgress:
         logger.info("重新刮削：媒体库 %s 正在扫描中，本次触发跳过", library_id)

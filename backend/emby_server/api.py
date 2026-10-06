@@ -47,11 +47,11 @@ from backend.emby_server.auth import (
     parse_emby_authorization,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
-from backend.emby_server.fast_scanner import scan_library_sync
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
     parse_media_filename,
+    scan_library_sync,
 )
 from backend.emby_server.search import (
     CANDIDATE_LIMIT as SEARCH_CANDIDATE_LIMIT,
