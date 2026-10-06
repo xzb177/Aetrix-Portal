@@ -212,6 +212,29 @@ _YEAR_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 名字末尾的年份后缀：`xxx (2021)` / `xxx（2021）` -> `xxx`
+# enrich/豆瓣兜底等所有「往 name 写标题」的地方共用这一份实现（横切只许一套），
+# 年份只进 production_year，不进名字。
+_YEAR_SUFFIX_RE = re.compile(r"\s*[\(\（]\s*(?:19|20)\d{2}\s*[\)\）]\s*$")
+
+
+def strip_year_suffix(name):
+    """去掉标题末尾的年份后缀（半角/全角括号都认）。"""
+    if not name:
+        return ""
+    return _YEAR_SUFFIX_RE.sub("", str(name)).strip()
+
+
+def _year_from_tmdb_date(data):
+    """从 TMDB 的 first_air_date / release_date 取年份（YYYY-MM-DD）。"""
+    for key in ("first_air_date", "release_date"):
+        v = (data or {}).get(key)
+        if v and len(str(v)) >= 4 and str(v)[:4].isdigit():
+            y = int(str(v)[:4])
+            if 1900 <= y <= 2100:
+                return y
+    return None
+
 
 def _fold_punct(s: str) -> str:
     """全角标点折半角（见 _PUNCT_FOLD）"""
@@ -1330,6 +1353,10 @@ class TmdbClient:
         imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
         if imdb:
             item.imdb_id = imdb
+        if not getattr(item, "production_year", None):
+            y = _year_from_tmdb_date(data)
+            if y:
+                item.production_year = y
         # 简介与评分也从详情补：搜索结果的 overview/vote_average 经常是空或 0，
         # 只靠 apply() 会让「有 tmdb_id 却缺简介/评分」的一大批永远补不上。
         overview = data.get("overview")
@@ -1411,9 +1438,17 @@ class TmdbClient:
         for img_kind, url in image_specs(hit):
             _set_image(item, img_kind, url)
         if kind == "series" and hit.get("name"):
-            item.name = hit.get("name")
+            _n = strip_year_suffix(hit.get("name"))
+            if _n:
+                item.name = _n
         elif hit.get("title"):
-            item.name = hit.get("title")
+            _n = strip_year_suffix(hit.get("title"))
+            if _n:
+                item.name = _n
+        if not getattr(item, "production_year", None):
+            y = _year_from_tmdb_date(hit)
+            if y:
+                item.production_year = y
         # 搜索命中里就能拿到的多别名（中英文/原名）：先落库，详情接口再补全
         hit_aliases = [hit.get("name"), hit.get("title"),
                        hit.get("original_name"), hit.get("original_title")]

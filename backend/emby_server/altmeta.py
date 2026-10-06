@@ -228,7 +228,10 @@ def apply(item: Any, hit: dict, source: str = "douban") -> None:
         # 只要已有简介或海报，说明之前已刮削过，名字不动（可能是用户/NFO 整理过的）。
         if not (item.overview or "").strip() and not item.poster_path \
                 and not item.primary_image_url:
-            item.name = hit["title"]
+            from backend.emby_server.tmdb import strip_year_suffix
+            _n = strip_year_suffix(hit["title"])
+            if _n:
+                item.name = _n
     if hit.get("year") and not item.production_year:
         try:
             item.production_year = int(hit["year"])
