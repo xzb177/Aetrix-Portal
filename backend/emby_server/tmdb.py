@@ -1137,7 +1137,7 @@ class TmdbClient:
         imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
         if imdb:
             item.imdb_id = imdb
-        if not item.production_year:
+        if not getattr(item, "production_year", None):
             y = _year_from_tmdb_date(data)
             if y:
                 item.production_year = y
@@ -1213,7 +1213,7 @@ class TmdbClient:
             _n = strip_year_suffix(hit.get("title"))
             if _n:
                 item.name = _n
-        if not item.production_year:
+        if not getattr(item, "production_year", None):
             y = _year_from_tmdb_date(hit)
             if y:
                 item.production_year = y
