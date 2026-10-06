@@ -230,3 +230,80 @@ def test_rescrape_item_tmdb_only_fills_missing(monkeypatch):
     assert searched == [], "有 TMDB ID 时必须跳过搜索"
     assert item.imdb_id == "tt0000000"
     assert item.primary_image_url == "https://example.com/old.jpg"
+
+
+# ---------- TMDB 候选搜索（Emby 式手动识别） ----------
+
+_SERIES_HIT = {
+    "id": 100, "name": "黑鸟", "first_air_date": "2022-07-08",
+    "overview": "简介" * 100, "poster_path": "/abc.jpg", "media_type": "tv",
+}
+_MOVIE_HIT = {
+    "id": 200, "title": "黑鸟行动", "release_date": "2021-05-01",
+    "overview": "电影简介", "poster_path": None, "media_type": "movie",
+}
+_SERIES_HIT_2020 = {
+    "id": 101, "name": "黑鸟", "first_air_date": "2020-01-01",
+    "overview": "旧版", "poster_path": "/old.jpg", "media_type": "tv",
+}
+
+
+def _mock_search(monkeypatch, hits=None, exc=None):
+    def _fake(name, kind, limit=10):
+        if exc:
+            raise exc
+        assert limit == 10, "手动识别默认拉 10 个候选"
+        return [dict(h) for h in (hits or [])]
+    monkeypatch.setattr(admin_scrape.tmdb_client, "search_candidates", _fake)
+
+
+def test_tmdb_search_candidate_shape(monkeypatch):
+    """返回格式：tmdb_id / title / year（取前4位）/ overview（截200字）/ poster_path / media_type"""
+    _mock_search(monkeypatch, [_SERIES_HIT])
+    res = admin_scrape.search_tmdb_candidates(q="黑鸟")
+    cands = res["candidates"]
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["tmdb_id"] == 100
+    assert c["title"] == "黑鸟"
+    assert c["year"] == "2022"
+    assert c["overview"] == "简介" * 100
+    assert len(c["overview"]) == 200
+    assert c["poster_path"] == "/abc.jpg"
+    assert c["media_type"] == "tv"
+
+
+def test_tmdb_search_movie_kind(monkeypatch):
+    """kind=movie 时标题取 title、年份取 release_date"""
+    _mock_search(monkeypatch, [_MOVIE_HIT])
+    res = admin_scrape.search_tmdb_candidates(q="黑鸟", kind="movie")
+    c = res["candidates"][0]
+    assert c["title"] == "黑鸟行动"
+    assert c["year"] == "2021"
+    assert c["poster_path"] is None
+    assert c["media_type"] == "movie"
+
+
+def test_tmdb_search_year_filter(monkeypatch):
+    """给了年份只留年份一致的候选（重名翻拍就靠它区分）"""
+    _mock_search(monkeypatch, [_SERIES_HIT, _SERIES_HIT_2020])
+    res = admin_scrape.search_tmdb_candidates(q="黑鸟", year=2020)
+    assert [c["tmdb_id"] for c in res["candidates"]] == [101]
+
+
+def test_tmdb_search_failure_returns_empty(monkeypatch):
+    """TMDB 抖动/抛异常：返回空列表，不 500"""
+    _mock_search(monkeypatch, exc=RuntimeError("boom"))
+    res = admin_scrape.search_tmdb_candidates(q="黑鸟")
+    assert res == {"candidates": []}
+
+
+def test_tmdb_search_empty_q_returns_empty(monkeypatch):
+    """空关键字：返回空列表，不打 TMDB"""
+    called = []
+    monkeypatch.setattr(
+        admin_scrape.tmdb_client, "search_candidates",
+        lambda *a, **k: called.append(1) or [],
+    )
+    assert admin_scrape.search_tmdb_candidates(q="   ") == {"candidates": []}
+    assert called == []

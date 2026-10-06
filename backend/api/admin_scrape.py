@@ -1112,3 +1112,48 @@ def bind_tmdb_id(
                  "tmdb_id": item.tmdb_id},
         "notes": notes,
     }
+
+
+def _tmdb_candidate_view(hit: dict, kind: str) -> dict:
+    """把 TMDB 原始 hit 压成前端候选卡片要的形状（只读投影，不写库）。"""
+    title = hit.get("name") or hit.get("title") or ""
+    date = hit.get("first_air_date") or hit.get("release_date") or ""
+    year = date[:4] if len(date) >= 4 and date[:4].isdigit() else None
+    return {
+        "tmdb_id": hit.get("id"),
+        "title": title,
+        "year": year,
+        "overview": (hit.get("overview") or "")[:200],
+        "poster_path": hit.get("poster_path"),
+        "media_type": hit.get("media_type") or ("tv" if kind == "series" else "movie"),
+    }
+
+
+@admin_emby_router.get("/scrape/tmdb/search")
+def search_tmdb_candidates(
+    q: str,
+    year: int | None = None,
+    kind: str = "series",
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """Emby 式手动识别：搜剧名 → 返回 TMDB 候选列表 → 管理员点一下绑定。
+
+    刮削要的是「唯一正确答案」（search() 会按置信度裁剪、宁缺毋滥），
+    手动识别要的是「一组候选」：用户搜什么就列什么，选哪部由他决定。
+    year 可选：给了就只留年份一致的候选（重名翻拍/同名剧就靠它区分）。
+    失败一律返回空列表，不 500——TMDB 抖动或没配 key 都不该把搜索框打成报错。
+    """
+    keyword = (q or "").strip()
+    search_kind = "movie" if kind == "movie" else "series"
+    try:
+        if not keyword:
+            return {"candidates": []}
+        hits = tmdb_client.search_candidates(keyword, search_kind, limit=10)
+    except Exception:  # noqa: BLE001 — 与 search_candidates 同口径：失败不当成致命错误
+        logger.warning("TMDB 候选搜索失败：q=%r kind=%s", keyword, search_kind, exc_info=True)
+        return {"candidates": []}
+    candidates = [_tmdb_candidate_view(h, search_kind) for h in hits if isinstance(h, dict)]
+    if year:
+        candidates = [c for c in candidates if c["year"] == str(year)]
+    return {"candidates": candidates}
