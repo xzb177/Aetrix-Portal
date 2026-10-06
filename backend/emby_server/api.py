@@ -572,6 +572,18 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
             ) or 0
         dto["UserData"]["UnplayedItemCount"] = unp or 0
     if item.item_type == "episode":
+        # 集数显示名：E01 打底，有子标题则拼“ · 子标题”（对标截图格式）
+        _ep_num = item.episode_number
+        _ep_base = ("E%02d" % _ep_num) if isinstance(_ep_num, int) else (item.name or "")
+        _ep_sub = (item.original_title or "").strip()
+        # 文件名特征（含 SxxExx / 版本词）的不算子标题
+        import re as _re
+        if _ep_sub and (_re.search(r"S\d+E\d+", _ep_sub, _re.I) or _re.search(r"WEB-DL|HDTV|BluRay|H\.264|H\.265|x264|x265", _ep_sub, _re.I)):
+            _ep_sub = ""
+        if _ep_sub:
+            dto["Name"] = _ep_base + " · " + _ep_sub
+        else:
+            dto["Name"] = _ep_base
         dto.update({
             "SeriesId": item.series.guid if item.series else None,
             "SeriesName": item.series.name if item.series else None,
@@ -1313,7 +1325,7 @@ def _scope_items(query, allowed: "set[int] | None"):
 @emby_router.get("/Users/{user_id}/Views")
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
-    libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
+    libs = db.query(em.Library).filter(em.Library.is_enabled == True).order_by(em.Library.id).all()  # noqa: E712
     virtual_on = _virtual_libraries_enabled()
     allowed = _library_scope(db, user)
     items = []
@@ -1955,8 +1967,31 @@ def get_episodes(item_id: str, request: Request,
     episodes = query.order_by(em.MediaItem.season_number, em.MediaItem.episode_number).all()
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
-    return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
-            "TotalRecordCount": len(episodes), "StartIndex": 0}
+    # 同季集号重复条目合并：多版本走 MediaSources，客户端出版本选择器
+    merged = []
+    seen = {}
+    for e in episodes:
+        if e.season_number is None or e.episode_number is None:
+            merged.append(e)
+            continue
+        key = (e.season_number, e.episode_number)
+        if key in seen:
+            seen[key].append(e)
+        else:
+            seen[key] = [e]
+            merged.append(e)
+    items = []
+    for e in merged:
+        dto = _item_dto(e, base, user.id, db)
+        if e.season_number is not None and e.episode_number is not None:
+            dupes = seen.get((e.season_number, e.episode_number), [e])
+            if len(dupes) > 1:
+                akey = _api_key_for(user)
+                dto["MediaSources"] = [_media_source(d, base, akey, db) for d in dupes]
+                dto["MediaSourceCount"] = len(dupes)
+        items.append(dto)
+    return {"Items": items,
+            "TotalRecordCount": len(items), "StartIndex": 0}
 
 
 @emby_router.get("/emby/Shows/NextUp")

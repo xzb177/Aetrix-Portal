@@ -359,8 +359,14 @@ def scan_library_fast(db, library, snapshot) -> dict:
     lib_type = "tvshows" if "tv" in collection_type.lower() else "movies"
 
     # 1. 拉清单
-    logger.info("[fast] 库 %s(%d) 开始拉清单", library.name, lib_id)
-    files = _collect_files(snapshot.paths)
+    # mount_ids 兼容：复用 mounts.library_sources 的口径（paths + mount_ids），
+    # 避免 mount_ids 有值但 paths 为空的库被扫空（对齐旧 scanner 行为）。
+    from backend.emby_server import mounts as _mounts
+    _sources, _failed = _mounts.library_sources(library, db)
+    _all_paths = tuple(s.path for s in _sources if getattr(s, "path", None))
+    if not _all_paths:
+        _all_paths = tuple(snapshot.paths)
+    files = _collect_files(_all_paths)
     logger.info("[fast] 共 %d 个视频文件", len(files))
     from backend.emby_server import scan_progress as _progress
     _progress.set_enumerated(lib_id, len(files))

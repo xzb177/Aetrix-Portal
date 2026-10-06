@@ -1671,3 +1671,9 @@ def fail_scan(db: Session, library: emby_models.Library, exc: Exception,
     stats = {"duration_ms": duration_ms} if duration_ms is not None else None
     _finish_scan_run(db, run_id, SCAN_STATUS_FAILED, stats, error)
 
+
+
+def scan_library_sync(db, library, snapshot=None, trigger=manual):
+    Compat wrapper: old scanner.scan_library_sync now lives in fast_scanner.
+    from backend.emby_server import fast_scanner
+    return fast_scanner.scan_library_sync(db, library, snapshot=snapshot, trigger=trigger)
