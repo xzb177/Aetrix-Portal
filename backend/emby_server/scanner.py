@@ -1063,6 +1063,7 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
         "duration_ticks": 0, "bitrate": 0, "width": 0, "height": 0,
         "video_codec": None, "audio_codec": None,
         "audio_languages": "", "subtitle_languages": "", "streams": [],
+        "moov_position": None,
     }
     remote = path.startswith(("http://", "https://"))
     data = _ffprobe(path, headers, size=size)
@@ -1078,11 +1079,13 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
     #   第三跳（兜底）：去掉 Range 让 ffprobe 自己按需 seek。这条会把整个文件拉下来，
     #     所以放在最后，只在双 Range 也失手时才走。
     # 只对「窗口确实截断了文件」的条目做，避免给本就完整的文件白跑一遍。
+    _moov_via_dual_range = False
     if (remote and (size <= 0 or size > PROBE_REMOTE_RANGE_BYTES)
             and (not data or not data.get("format"))
             and not (data or {}).get("_http_code")):
         tail_first = _dual_range_probe(path, headers, size, container)
         if tail_first and tail_first.get("format"):
+            _moov_via_dual_range = True
             data = tail_first
         else:
             seekable = _ffprobe(path, headers, size=size, ranged=False)
@@ -1121,6 +1124,10 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
             return info
     if used_mediainfo:
         info["_probe_backend"] = "mediainfo"
+    else:
+        _container_lc = (container or "").lower()
+        if _container_lc in ("mp4", "mov", "m4v"):
+            info["moov_position"] = "back" if _moov_via_dual_range else "front"
     # 透出 ffprobe 的 HTTP 错误（供熔断器和日志使用）
     if data.get("_error"):
         info["_error"] = data["_error"]

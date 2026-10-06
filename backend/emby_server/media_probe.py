@@ -108,6 +108,8 @@ def write_back(db, item, probe: dict) -> None:
         ticks = 0
     if ticks > 0:
         item.duration_ticks = ticks
+    if probe.get("moov_position"):
+        item.moov_position = probe["moov_position"]
     item.last_probed_at = datetime.now()
     item.probe_attempts = 0
     item.probe_next_retry_at = None

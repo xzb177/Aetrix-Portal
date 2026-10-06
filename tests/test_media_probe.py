@@ -328,3 +328,56 @@ class TestResolve:
         finally:
             _cleanup(db, lib)
             db.close()
+
+    def test_write_back_moov_position(self):
+        """P0-1: write_back 把 moov_position 写回数据库"""
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing")
+            db.commit()
+            media_probe.write_back(db, item, {
+                "video_codec": "h264", "width": 1920, "height": 1080,
+                "duration_ticks": 72000000000, "moov_position": "front",
+            })
+            db.refresh(item)
+            assert item.moov_position == "front"
+            assert item.probe_status == "done"
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_write_back_moov_position_back(self):
+        """P0-1: moov 在尾部时标记为 back"""
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing")
+            db.commit()
+            media_probe.write_back(db, item, {
+                "video_codec": "h264", "width": 1920, "height": 1080,
+                "duration_ticks": 72000000000, "moov_position": "back",
+            })
+            db.refresh(item)
+            assert item.moov_position == "back"
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_write_back_no_moov_stays_null(self):
+        """P0-1: 非 MP4（无 moov_position）时字段保持 NULL"""
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing")
+            db.commit()
+            # MKV 没有 moov_position
+            media_probe.write_back(db, item, {
+                "video_codec": "h264", "width": 1920, "height": 1080,
+                "duration_ticks": 72000000000,
+            })
+            db.refresh(item)
+            assert item.moov_position is None
+        finally:
+            _cleanup(db, lib)
+            db.close()
