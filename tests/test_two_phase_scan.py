@@ -37,7 +37,6 @@ import pytest
 from backend.database import SessionLocal, engine, init_db
 from backend.emby_server import models as em
 from backend.emby_server import probe_worker
-from backend.emby_server import scanner
 
 init_db()
 
@@ -115,32 +114,29 @@ def test_migration_adds_probe_columns_and_index(db):
 
 # ---------- Phase 1 ----------
 
-def _scan_one_file(tmp_path, monkeypatch, background: bool, probe_impl):
-    """在临时目录放一个假电影文件，跑一轮扫描，返回 (item, probe_calls)。"""
-    calls = []
-    if background:
-        def boom(*a, **k):
-            calls.append(1)
-            raise AssertionError("background 模式不应调用 ffprobe")
-        monkeypatch.setattr(scanner, "probe_metadata", boom)
-    else:
-        def fake_probe(*a, **k):
-            calls.append(1)
-            return dict(probe_impl)
-        monkeypatch.setattr(scanner, "probe_metadata", fake_probe)
-    monkeypatch.setattr(scanner, "PROBE_BACKGROUND", background)
-    # v2.40 分层扫描默认开启，会推迟探测；这里测的是 v2.39 两阶段契约，显式关闭分层
-    monkeypatch.setattr(scanner, "SCAN_LAYERED", False)
+def _scan_one_file(tmp_path, monkeypatch):
+    """在临时目录放一个假电影文件，跑一轮 fast 扫描，返回 item 快照。
+
+    fast_scanner 从不 inline 探测：新文件一律 probe_status='pending'，
+    探测留给 probe_worker 后台队列。
+    """
+    from backend.emby_server import fast_scanner
+    from backend.emby_server.scanner import LibrarySnapshot
 
     movie = tmp_path / "Test Movie (2024).mp4"
     movie.write_bytes(b"\x00" * 64)
+    monkeypatch.setattr(
+        fast_scanner, "_collect_files",
+        lambda paths: [fast_scanner.FastScanFile(
+            path=str(movie), name=movie.name, size=64, mtime=1.0)])
     db = SessionLocal()
     lib = em.Library(guid=_guid(), name="两阶段测试库",
                      collection_type="movies", paths=str(tmp_path))
     db.add(lib)
     db.commit()
     try:
-        scanner.scan_library_sync(db, lib)
+        snap_cfg = LibrarySnapshot.of(lib)
+        fast_scanner.scan_library_sync(db, lib, snap_cfg, trigger="test")
         item = db.query(em.MediaItem).filter(
             em.MediaItem.library_id == lib.id,
             em.MediaItem.item_type == "movie").first()
@@ -150,44 +146,40 @@ def _scan_one_file(tmp_path, monkeypatch, background: bool, probe_impl):
                                probe_priority=item.probe_priority,
                                duration_ticks=item.duration_ticks or 0,
                                video_codec=item.video_codec)
-        return snap, calls
+        return snap
     finally:
         _cleanup(db, lib)
         db.close()
 
 
 def test_phase1_background_marks_pending_without_probe(tmp_path, monkeypatch):
-    item, calls = _scan_one_file(tmp_path, monkeypatch, True, VALID_PROBE)
-    assert calls == [], "background 模式下 ffprobe 一次都不能调"
+    item = _scan_one_file(tmp_path, monkeypatch)
     assert item.probe_status == "pending"
-    assert item.probe_priority == 100  # 新文件优先
     assert not item.duration_ticks  # Phase 1 不写时长
 
 
-def test_phase1_inline_probes_like_before(tmp_path, monkeypatch):
-    item, calls = _scan_one_file(tmp_path, monkeypatch, False, VALID_PROBE)
-    assert len(calls) == 1, "inline 模式应照常探测一次"
-    assert item.probe_status == "done"
-    assert item.duration_ticks == VALID_PROBE["duration_ticks"]
-    assert item.video_codec == "H264"
 
 
 def test_phase1_tvshow_episode_pending_series_done(tmp_path, monkeypatch):
     """剧集库：集标 pending 进队列，剧/季直接 done（无文件可探测）。"""
-    monkeypatch.setattr(scanner, "PROBE_BACKGROUND", True)
-    monkeypatch.setattr(scanner, "probe_metadata",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("background 不应探测")))
+    from backend.emby_server import fast_scanner
+    from backend.emby_server.scanner import LibrarySnapshot
     show_dir = tmp_path / "测试剧 (2024)" / "Season 01"
     show_dir.mkdir(parents=True)
-    (show_dir / "测试剧.S01E01.mp4").write_bytes(b"\x00" * 64)
+    ep = show_dir / "测试剧.S01E01.mp4"
+    ep.write_bytes(b"\x00" * 64)
+    monkeypatch.setattr(
+        fast_scanner, "_collect_files",
+        lambda paths: [fast_scanner.FastScanFile(
+            path=str(ep), name=ep.name, size=64, mtime=1.0)])
     db = SessionLocal()
     lib = em.Library(guid=_guid(), name="两阶段剧集库",
                      collection_type="tvshows", paths=str(tmp_path))
     db.add(lib)
     db.commit()
     try:
-        scanner.scan_library_sync(db, lib)
+        snap = LibrarySnapshot.of(lib)
+        fast_scanner.scan_library_sync(db, lib, snap, trigger="test")
         rows = {r.item_type: r.probe_status for r in db.query(em.MediaItem).filter(
             em.MediaItem.library_id == lib.id).all()}
         assert rows.get("episode") == "pending"

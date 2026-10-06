@@ -41,6 +41,7 @@ from backend.emby_server.auth import (
     get_admin_or_emby_user,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
+from backend.emby_server.fast_scanner import scan_library_sync
 from backend.emby_server.scanner import (
     PLATFORM_LABELS,
     SCAN_RUN_KEEP,
@@ -48,7 +49,6 @@ from backend.emby_server.scanner import (
     ScanInProgress,
     is_scan_active,
     normalize_scrape_policy,
-    scan_library_sync,
     scan_result_payload,
     scan_runs_payload,
 )

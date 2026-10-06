@@ -53,7 +53,7 @@ _SESSION_DEPTH = 0
 # 远程 IO 计数：真实请求 / 缓存复用 / 在飞数量 / 峰值 / 最近一次时间
 _REMOTE = {"lists": 0, "reused": 0, "inflight": 0, "peak_inflight": 0, "last_at": None}
 
-# 「当前线程正在扫哪个库」：进度上报点在包装层（见 scan_instrument），它需要知道归属。
+# 「当前线程正在扫哪个库」：fast_scanner 直接调本模块上报进度，需要知道归属。
 # 一个扫描任务全程只在它自己的工作线程里跑，所以线程局部变量足够且不会串库。
 _CTX = threading.local()
 

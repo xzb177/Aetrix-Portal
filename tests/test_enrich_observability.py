@@ -119,29 +119,6 @@ class _FakeProvider:
         return "<movie><title>测试电影</title><tmdbid>603</tmdbid></movie>"
 
 
-def test_nfo_read_counted_and_cache_hit_counted_separately():
-    """真读一次计 nfo_read；同一条目再取命中 ctx 缓存 → 只计 nfo_hit"""
-    snap = scanner.LibrarySnapshot(
-        library_id=1, name="", collection_type="movies", paths=(), scrape_policy="smart")
-    ctx = scanner._ScanContext(snap=snap, lib_id=1, stats={})
-    provider = _FakeProvider()
-    scan_file = SimpleNamespace(mount_id=1, provider=provider)
-
-    data = scanner._read_nfo_cached(ctx, scan_file, mount_rel="/电影/x.nfo")
-    assert data and data.get("tmdb_id") == "603"
-    assert provider.calls == 1
-
-    stats = progress.stage_stats()
-    assert stats["nfo_read"]["count"] == 1
-    assert "nfo_hit" not in stats                 # 第一次是未命中，不该有命中计数
-
-    scanner._read_nfo_cached(ctx, scan_file, mount_rel="/电影/x.nfo")
-    stats = progress.stage_stats()
-    assert provider.calls == 1                    # 没有第二次真实读取
-    assert stats["nfo_read"]["count"] == 1
-    assert stats["nfo_hit"]["count"] == 1         # 缓存复用率 = hit / (hit + read)
-
-
 def test_tmdb_each_http_request_counted(monkeypatch):
     """计的是**请求**不是条目：一次 _get = 一次计数（与限流器按条目计数区分开）"""
     monkeypatch.setattr(tmdb_lib.TmdbClient, "_ensure_session", lambda self: None)

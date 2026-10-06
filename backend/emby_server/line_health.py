@@ -123,7 +123,7 @@ def _line_card(line: str, *, users: dict, counts: dict, cdn_state: dict,
             ready_note = "CDN 已启用但域名未填（或不合法）"
             degraded_by_config = "CDN 域名未配置 → 等同中转"
         else:
-            ready_note = f"回源域名 {cdn_state.get('normalized')}"
+            ready_note = "CDN 已启用"
     elif line == play_line.LINE_CACHE:
         ready = bool(cache_state.get("enabled"))
         if not ready:

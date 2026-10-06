@@ -1,150 +1,219 @@
 name: aetrix-portal
-
 services:
-  # 后端 API：只跑 FastAPI，不再打包前端静态文件（前后端分离）。
-  # 前端由 aetrix-web（nginx）单独 serve，/api/* 反代到这里。
   aetrix-api:
     build:
       context: .
       dockerfile: Dockerfile.backend
-      # 自建部署要能 docker exec 进容器跑运维脚本（造管理员、迁移库、冒烟、
-      # 备份恢复），所以显式用带 scripts/ 的 target，不依赖默认 stage。
-      # 客户拿到的发行镜像不带 scripts/：docker-compose.prod.yml 走的是 ghcr 镜像
-      # （runtime target），两条路径在 compose 文件层面就分开了。
-      # 为什么这里必须写 target：删掉它不会报错，只会换成构建默认 stage ——
-      # 而默认 stage 依赖 Dockerfile 里的排列顺序（见那里的说明）。
       target: with-scripts
-    image: aetrix-backend:latest
+    command:
+    - python
+    - serve.py
     container_name: aetrix-api
-    restart: unless-stopped
-    # 合并容器：run_all.py 同时起 API(8000) + worker(扫描) + EA(8001) 三进程
-    command: ["python", "backend/run_all.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
-      - .env
+    - .env
     environment:
-      AETRIX_ROLE: all  # 合并：api+worker+ea
-      # EA 网关配置（原 ea 服务的环境变量，合并后保留）
-      EMBY_API_PORT: 8001
+      ADMIN_DIST: /nonexistent-admin
+      AETRIX_ROLE: api
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      EMBY_IMAGE_DIR: /data/images
+      EMBY_TRANSCODE_DIR: /data/transcode
+      FRONTEND_DIST: /nonexistent-frontend
+      MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
+      MOUNT_RCLONE_CONF: /config/rclone/rclone.conf
+      NODE_KEY: ea-01
+      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      RCLONE_SA_DIR: /sa-accounts
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      EMBY_TRANSCODE_DIR: /data/transcode
-      EMBY_IMAGE_DIR: /data/images
-      # 前后端分离后，后端不再 serve 前端静态文件，指向不存在的路径让 main.py 跳过挂载
-      FRONTEND_DIST: /nonexistent-frontend
-      ADMIN_DIST: /nonexistent-admin
-      # 存储挂载 · rclone RC：指向同网络的 rclone 容器，容器名即服务名
-      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
-      MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
-      # rclone：配置由**用户自己**粘贴（后台「rclone.conf」页），面板只负责落盘并
-      # 给 rclone 命令加 --config。这个目录必须与 rclone 容器挂的是**同一份宿主目录**，
-      # 否则写进去的 rclone.conf rclone 容器看不到（面板显示成功、实际用不了）。
-      MOUNT_RCLONE_CONF: /config/rclone/rclone.conf
-      RCLONE_SA_DIR: /sa-accounts
-    # 不再直接暴露公网端口：统一走 aetrix-web（nginx）反代
     expose:
-      - "8000"
-    ports:
-      # EA 内部端口：仅供宿主机 nginx 反代（原 ea 服务的端口映射，合并后保留）。
-      # 外部访问请走 8001（nginx）—— 也就是客户端拿到的 Emby 服务器地址。
-      #
-      # 必须绑 127.0.0.1：这个端口后面是**裸 uvicorn 的 Emby 协议面**，不经过
-      # nginx。绑 0.0.0.0 等于给公网开第二个前门，绕过 nginx 的限流/安全头/后续
-      # 的 TLS 终止；而且它会按 Host 头把自己宣告成 :8002，把客户端诱到那个口上。
-      #
-      # 改之前先确认宿主机 nginx 是用本机地址回源：
-      #   grep -rn "8002" /etc/nginx/    # 要看到 127.0.0.1:8002 或 localhost:8002
-      # 改完在服务器上补两条验证：
-      #   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8002/emby/System/Info/Public
-      #   curl -s http://127.0.0.1:8001/emby/System/Info/Public   # 客户端那条口必须还通
-      - "127.0.0.1:${EA_INTERNAL_PORT:-8002}:8001"
-    volumes:
-      - aetrix_data:/data
-      - ${MEDIA_ROOT:-./media}:/media:ro
-      - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
-      - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
-      # rw：后台粘贴的 rclone.conf 写在这里（.conf 里含 token/secret，故权限收紧为 600）
-      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
-      # ro：你的 rclone.conf 里写了 service_account_file 时指向它（面板不再代管）
-      - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
+    - '8000'
     healthcheck:
-      # 合并容器健康检查：API(8000) + EA(8001) + worker 心跳（Redis）三者都正常才算健康
-      test: ["CMD", "python", "-c", "import urllib.request,redis,os,json,time; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4); urllib.request.urlopen('http://127.0.0.1:8001/api/health',timeout=4); r=redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'),decode_responses=True); h=r.get('aetrix:worker:heartbeat'); assert h and (time.time()-json.loads(h)['updated_at'])<90"]
       interval: 30s
-      timeout: 10s
-      start_period: 90s
       retries: 5
-
-  # 前端：nginx serve 双前端静态文件，/api/* 与 /emby/* 反代到 aetrix-api。
-  # 对外唯一入口（端口 8000）。
-  aetrix-web:
+      start_period: 60s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=4)
+      timeout: 10s
+    image: aetrix-backend:latest
+    ports:
+    - 8000:8000
+    restart: unless-stopped
+    volumes:
+    - aetrix_data:/data
+    - ${MEDIA_ROOT:-./media}:/media:ro
+    - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
+    - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
+    - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
+    - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
+  aetrix-ea:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
-    image: aetrix-frontend:latest
-    container_name: aetrix-web
-    restart: unless-stopped
-    ports:
-      - "${AETRIX_PORT:-8000}:80"
+      dockerfile: Dockerfile.backend
+      target: with-scripts
+    command:
+    - python
+    - -m
+    - emby_api.main
+    container_name: aetrix-ea
     depends_on:
-      aetrix-api:
+      postgres:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-
-  redis:
-    image: redis:7-alpine
-    container_name: aetrix-redis
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-
-  # PostgreSQL：主数据库（v2.42.0 起为默认；SQLite 单写锁扛不住并发写，仅老部署兜底）。
-  #
-  # 默认仍是 SQLite（DATABASE_TYPE=sqlite），这个容器空跑、几乎不占资源；
-  # 要切 PG：在 .env 里设 DATABASE_TYPE=postgresql
-  #   DATABASE_URL=postgresql://aetrix:<密码>@postgres:5432/aetrix
-  # 数据迁移见 scripts/migrate_sqlite_to_pg.py（生产切换要停机窗口，另行安排）。
-  #
-  # 密码走环境变量 POSTGRES_PASSWORD，不写死。开发机默认有个弱密码能直接起，
-  # 生产 .env 里必须改掉。
-  postgres:
-    image: postgres:16-alpine
-    container_name: aetrix-postgres
-    restart: unless-stopped
+      redis:
+        condition: service_healthy
+    env_file:
+    - .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-aetrix}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}
-      POSTGRES_DB: ${POSTGRES_DB:-aetrix}
-      PGDATA: /var/lib/postgresql/data/pgdata
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      ADMIN_DIST: /nonexistent-admin
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      EMBY_API_PORT: 8001
+      EMBY_IMAGE_DIR: /data/images
+      EMBY_TRANSCODE_DIR: /data/transcode
+      FRONTEND_DIST: /nonexistent-frontend
+      MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
+      MOUNT_RCLONE_CONF: /config/rclone/rclone.conf
+      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      RCLONE_SA_DIR: /sa-accounts
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      NODE_KEY: ea-01
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    expose:
+    - '8001'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-aetrix} -d $${POSTGRES_DB:-aetrix}"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
       retries: 5
-
+      start_period: 60s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health',timeout=4)
+      timeout: 10s
+    image: aetrix-backend:latest
+    ports:
+    - 127.0.0.1:${EA_INTERNAL_PORT:-8002}:8001
+    restart: unless-stopped
+    volumes:
+    - aetrix_data:/data
+    - ${MEDIA_ROOT:-./media}:/media:ro
+    - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
+    - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
+    - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
+    - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
+  aetrix-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: with-scripts
+    command:
+    - python
+    - -m
+    - backend.worker
+    container_name: aetrix-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+    - .env
+    environment:
+      ADMIN_DIST: /nonexistent-admin
+      AETRIX_ROLE: worker
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      EMBY_IMAGE_DIR: /data/images
+      EMBY_TRANSCODE_DIR: /data/transcode
+      ENRICH_BATCH: 200
+      ENRICH_WORKERS: 16
+      FRONTEND_DIST: /nonexistent-frontend
+      MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
+      MOUNT_RCLONE_CONF: /config/rclone/rclone.conf
+      MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
+      PROBE_BATCH: 400
+      PROBE_RATE_PER_SEC: 10
+      PROBE_WORKERS: 16
+      RCLONE_RC_URL: http://172.18.0.1:5572
+      RCLONE_SA_DIR: /sa-accounts
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SCAN_FORCE_REMOTE: 1
+      SCAN_WORKERS: 16
+    healthcheck:
+      interval: 30s
+      retries: 5
+      start_period: 90s
+      test:
+      - CMD
+      - python
+      - -c
+      - import redis,os,json,time; r=redis.from_url(os.getenv('REDIS_URL','redis://redis:6379/0'),decode_responses=True);
+        h=r.get('aetrix:worker:heartbeat'); assert h and (time.time()-json.loads(h)['updated_at'])<90
+      timeout: 10s
+    image: aetrix-backend:latest
+    restart: unless-stopped
+    volumes:
+    - aetrix_data:/data
+    - ${MEDIA_ROOT:-./media}:/media:ro
+    - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
+    - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
+    - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
+    - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
+  postgres:
+    container_name: aetrix-postgres
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: ${POSTGRES_DB:-aetrix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}
+      POSTGRES_USER: ${POSTGRES_USER:-aetrix}
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - pg_isready -U $${POSTGRES_USER:-aetrix} -d $${POSTGRES_DB:-aetrix}
+      timeout: 5s
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+    - postgres_data:/var/lib/postgresql/data
+  redis:
+    command:
+    - redis-server
+    - --appendonly
+    - 'yes'
+    container_name: aetrix-redis
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD
+      - redis-cli
+      - ping
+      timeout: 3s
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+    - redis_data:/data
 volumes:
-  aetrix_data:
-  redis_data:
-  postgres_data:
+  aetrix_data: null
+  postgres_data: null
+  redis_data: null

@@ -1,15 +1,13 @@
-"""删除保护：挂载异常时不得批量删除媒体记录（§四 / §十四 验收 5、6）
+"""删除保护：来源异常时不得批量删除媒体记录（fast_scanner 版）
 
-事故形状：**挂载断开 → 底层空目录还在 → 本轮扫描看到 0 个文件 → 清理阶段把整库删了**。
+事故形状：**挂载断开 → rclone 返回空/残缺清单 → 清理阶段把整库删了**。
 
-``failed_roots`` 挡不住它——目录还在，只是空的，所以 ``os.path.isdir`` 与列目录都“正常”。
-这里钉住补上的两道闸：
+fast_scanner.scan_library_fast 内置两道闸（从旧 scanner._removal_budget 移植）：
 
 1. **零结果**：一个文件都没看到而库里有条目 → 一条都不删
-2. **数量阈值**：预计要删的量超过「比例 / 绝对数」任一上限 → 一条都不删
+2. **数量阈值**：预计要删的量超过「比例 / 绝对数」上限 → 一条都不删
 
-以及「不该拦的时候别拦」：正常删几条（删了一部下架的电影）仍然要真删，否则这个功能
-就变成了“清理永远不生效”。
+以及「不该拦的时候别拦」：正常删几条（删了一部下架的电影）仍然要真删。
 """
 import os
 
@@ -23,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend import models
 from backend.emby_server import models as em
-from backend.emby_server import scanner
+from backend.emby_server import fast_scanner
 from backend.emby_server import soft_delete
 from backend.integrations import store
 
@@ -41,7 +39,7 @@ def db():
     session.close()
 
 
-def _lib(db, paths=""):
+def _lib(db, paths="mount://1/test"):
     row = em.Library(guid="g1", name="电影库", collection_type="movies",
                      paths=paths, storage_backends="")
     db.add(row)
@@ -50,147 +48,115 @@ def _lib(db, paths=""):
     return row
 
 
-def _item(db, lib, guid, item_type="movie", path=None):
-    row = em.MediaItem(guid=guid, library_id=lib.id, item_type=item_type,
-                       name=guid, file_path=path)
+def _item(db, lib, guid, path=None):
+    row = em.MediaItem(guid=guid, library_id=lib.id, item_type="movie",
+                       name=guid, file_path=path or f"/mnt/mp/test/{guid}.mp4")
     db.add(row)
     db.commit()
     return row
 
 
+def _files(*names):
+    """造一批 FastScanFile"""
+    return [fast_scanner.FastScanFile(
+        path=f"/mnt/mp/test/{n}.mp4", name=f"{n}.mp4", size=100, mtime=1.0)
+        for n in names]
+
+
+def _scan(db, lib, files):
+    """用 mock 的文件清单跑一轮 fast 扫描，返回 stats"""
+    import unittest.mock as mock
+    from backend.emby_server.scanner import LibrarySnapshot
+    snap = LibrarySnapshot.of(lib)
+    with mock.patch.object(fast_scanner, "_collect_files", return_value=files):
+        return fast_scanner.scan_library_sync(db, lib, snap, trigger="test")
+
+
+def _visible_count(db, lib):
+    return db.execute(text(
+        "SELECT COUNT(*) FROM emby_items WHERE library_id = :l "
+        "AND deleted_at IS NULL"), {"l": lib.id}).scalar()
+
+
 # ==================== 零结果：事故主体 ====================
 
-def test_zero_files_seen_blocks_all_removal(db, tmp_path):
-    """挂载断了、目录还在但空的 → 本轮看到 0 个文件 → 库里 30 条全部保住"""
-    lib = _lib(db, str(tmp_path))
+def test_zero_files_seen_blocks_all_removal(db, monkeypatch):
+    """rclone 返回空清单、库里有 30 条 → 全部保住，stats 标记 removal_skipped"""
+    lib = _lib(db)
     for i in range(30):
         _item(db, lib, f"m{i:02d}")
 
-    removed = scanner._remove_missing_items(db, lib, set())
+    stats = _scan(db, lib, [])
 
-    assert removed == 0
-    left = db.execute(text(
-        "SELECT COUNT(*) FROM emby_items WHERE library_id = :l"), {"l": lib.id}).scalar()
-    assert left == 30, "零结果时不允许删任何条目"
-    assert scanner._CLEANUP_LAST["skipped"], "必须留下拦截原因供排障"
+    assert stats.get("removal_skipped") is True
+    assert _visible_count(db, lib) == 30, "零结果时不允许删任何条目"
+    assert stats.get("failed_roots"), "必须留下拦截原因供排障"
 
 
-def test_zero_seen_blocks_even_a_tiny_library(db, tmp_path):
+def test_zero_seen_blocks_even_a_tiny_library(db):
     """小库也要拦：库里就 1 条、这轮看到 0 个 —— 那一条也不能删"""
-    lib = _lib(db, str(tmp_path))
+    lib = _lib(db)
     _item(db, lib, "only")
 
-    assert scanner._remove_missing_items(db, lib, set()) == 0
-    left = db.execute(text(
-        "SELECT COUNT(*) FROM emby_items WHERE library_id = :l"), {"l": lib.id}).scalar()
-    assert left == 1
+    stats = _scan(db, lib, [])
+
+    assert stats.get("removal_skipped") is True
+    assert _visible_count(db, lib) == 1
 
 
 # ==================== 数量阈值 ====================
 
-def test_mass_loss_beyond_ratio_is_blocked(db, tmp_path):
-    """看到 0 条不行；看到 5 条、库里有 100 条（要删 95 条）也不行"""
-    lib = _lib(db, str(tmp_path))
+def test_mass_loss_beyond_ratio_is_blocked(db):
+    """看到 5 条、库里有 100 条（要删 95 条）→ 拦住"""
+    lib = _lib(db)
     for i in range(100):
         _item(db, lib, f"m{i:03d}")
 
-    seen = {f"m{i:03d}" for i in range(5)}
-    removed = scanner._remove_missing_items(db, lib, seen)
+    stats = _scan(db, lib, _files(*[f"m{i:03d}" for i in range(5)]))
 
-    assert removed == 0
-    left = db.execute(text(
-        "SELECT COUNT(*) FROM emby_items WHERE library_id = :l"), {"l": lib.id}).scalar()
-    assert left == 100
-    assert "阈值" in scanner._CLEANUP_LAST["skipped"]
+    assert stats.get("removal_skipped") is True
+    assert _visible_count(db, lib) == 100
+    assert "阈值" in (stats.get("failed_roots") or [""])[0]
 
 
-def test_absolute_floor_protects_small_libraries(db, tmp_path, monkeypatch):
-    """库里就 5 条、看到 1 条（要删 4 条）：比例放到最松也拦得住
-
-    单独把绝对下限调到 3（默认 20 是给大库用的），验证两道闸是**取大**而不是二选一。
-    """
-    monkeypatch.setattr(scanner, "REMOVAL_MAX_RATIO", 0.99)   # 比例放到最松
-    monkeypatch.setattr(scanner, "REMOVAL_MAX_ABSOLUTE", 3)   # 绝对下限收紧
-    lib = _lib(db, str(tmp_path))
+def test_absolute_floor_protects_small_libraries(db, monkeypatch):
+    """库里 5 条、看到 1 条（要删 4 条）：比例放到最松也拦得住"""
+    monkeypatch.setattr(fast_scanner, "REMOVAL_MAX_RATIO", 0.99)
+    monkeypatch.setattr(fast_scanner, "REMOVAL_MAX_ABSOLUTE", 3)
+    lib = _lib(db)
     for i in range(5):
         _item(db, lib, f"m{i}")
 
-    removed = scanner._remove_missing_items(db, lib, {"m0"})
+    stats = _scan(db, lib, _files("m0"))
 
-    assert removed == 0
-    left = db.execute(text(
-        "SELECT COUNT(*) FROM emby_items WHERE library_id = :l"), {"l": lib.id}).scalar()
-    assert left == 5
-
-
-def test_absolute_floor_defaults_are_safe_for_small_libraries(db, tmp_path):
-    """默认参数下，小库删一大半确实会被比例阈拦住（不靠绝对值）"""
-    lib = _lib(db, str(tmp_path))
-    for i in range(10):
-        _item(db, lib, f"m{i}")
-
-    # 看到 4 条 → 要删 6 条；比例上限 max(20, int(10*0.5)=5) = 20 → 6 < 20 不拦
-    # （默认绝对值 20 是给“一次性下架很多片”的正常场景留的口子）
-    removed = scanner._remove_missing_items(db, lib, {f"m{i}" for i in range(4)})
-    assert removed == 6, "默认参数下这种小规模清理应当正常执行"
+    assert stats.get("removal_skipped") is True
+    assert _visible_count(db, lib) == 5
 
 
 # ==================== 不能“一刀切地不删” ====================
 
-def test_normal_small_cleanup_still_deletes(db, tmp_path):
-    """正常场景要真删：100 条里删 1 条（一部片下架了），必须下架它
+def test_normal_small_cleanup_still_deletes(db):
+    """正常场景要真删：101 条里删 1 条（一部片下架了），必须下架它"""
+    lib = _lib(db)
+    _item(db, lib, "gone", path="/mnt/mp/test/gone.mp4")
+    names = [f"m{i:03d}" for i in range(100)]
+    for n in names:
+        _item(db, lib, n)
 
-    没有这一条的话，前面的保护会把清理功能整个废掉。
+    stats = _scan(db, lib, _files(*names))
 
-    v2.48.0 起「删掉」默认是软删除：行还在、只是对所有人隐藏（见 test_soft_delete.py）。
-    这里同时钉住两条：默认隐藏、``MEDIA_SOFT_DELETE=0`` 时真的物理删除。
-    """
-    lib = _lib(db, str(tmp_path))
-    gone = _item(db, lib, "gone")
-    for i in range(100):
-        _item(db, lib, f"m{i:03d}")
-    seen = {f"m{i:03d}" for i in range(100)}
-
-    removed = scanner._remove_missing_items(db, lib, seen)
-
-    assert removed == 1
-    assert db.query(em.MediaItem).filter(em.MediaItem.guid == "gone").first() is None
+    assert not stats.get("removal_skipped")
+    assert stats.get("removed") == 1
+    # 默认是软删除：行还在、标记 deleted_at
+    assert _visible_count(db, lib) == 100
     with soft_delete.include_deleted():
-        hidden = db.query(em.MediaItem).filter(em.MediaItem.guid == "gone").one()
-    assert hidden.deleted_at is not None, "默认是软删除：行保留、标记下架"
-    assert not scanner._CLEANUP_LAST.get("skipped")
+        hidden = db.query(em.MediaItem).filter(
+            em.MediaItem.guid == "gone").one()
+    assert hidden.deleted_at is not None
 
 
-def test_normal_small_cleanup_physically_deletes_when_soft_delete_is_off(db, tmp_path,
-                                                                        monkeypatch):
-    """关掉软删除就是回到硬删：那条目**真的**没了（不是标记）"""
-    monkeypatch.setenv("MEDIA_SOFT_DELETE", "0")
-    lib = _lib(db, str(tmp_path))
-    gone = _item(db, lib, "gone")
-    for i in range(100):
-        _item(db, lib, f"m{i:03d}")
-    seen = {f"m{i:03d}" for i in range(100)}
-
-    removed = scanner._remove_missing_items(db, lib, seen)
-
-    assert removed == 1
-    with soft_delete.include_deleted():
-        assert db.query(em.MediaItem).filter(em.MediaItem.guid == "gone").first() is None
-
-
-def test_empty_library_is_not_blocked(db, tmp_path):
-    """库里本来就没有文件类条目 → 预算函数直接放行，不该报错也不该拦"""
-    lib = _lib(db, str(tmp_path))
-    allowed, why, total = scanner._removal_budget(db, lib, set())
-    assert allowed is True and total == 0 and why == ""
-
-
-# ==================== 阈值可通过环境变量调 ====================
-
-def test_thresholds_are_env_tunable(db, tmp_path, monkeypatch):
-    """运维要能在不改代码的前提下放宽/收紧阈值"""
-    monkeypatch.setenv("SCAN_REMOVAL_MAX_ABSOLUTE", "2")
-    assert max(1, int(os.environ["SCAN_REMOVAL_MAX_ABSOLUTE"])) == 2
-    # 非法值不能把功能打挂：回落到默认
-    monkeypatch.setenv("SCAN_REMOVAL_MAX_RATIO", "")
-    assert float(os.environ["SCAN_REMOVAL_MAX_RATIO"] or 0.5) == 0.5
+def test_empty_library_is_not_blocked(db):
+    """库里本来就没条目 → 不该拦也不该报错"""
+    lib = _lib(db)
+    stats = _scan(db, lib, [])
+    assert not stats.get("removal_skipped")

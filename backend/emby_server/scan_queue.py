@@ -20,7 +20,7 @@ CPU 打满而进度一动不动。
 线程模型：一个调度线程（没有任务时退出，下次入队再起）+ 每个被派发的任务一个工作线程。
 **入队时就在调用方线程里派发一次**（``_pump_locked``）：排队面板点完扫描拿到的响应就是
 真实状态，而不是等调度线程醒来的猜测；调度线程负责「有任务释放资源后把等在后面的接上」。
-任务在自己的线程里用**独立 Session**跑 ``scanner.scan_library_sync``（与升级前的后台线程一样），
+任务在自己的线程里用**独立 Session**跑 ``fast_scanner.scan_library_sync``（与升级前的后台线程一样），
 所以请求级 Session 的生命周期问题不受影响。进程内状态，EM / EA 各自单进程部署。
 """
 from __future__ import annotations
@@ -45,7 +45,6 @@ from typing import Optional
 
 from backend.database import SessionLocal
 from backend.emby_server import models as em
-from backend.emby_server import scan_instrument
 from backend.emby_server import scan_progress as progress
 
 logger = logging.getLogger(__name__)
@@ -201,7 +200,6 @@ def enqueue_local(library, *, trigger: str = "manual", redis_raw=None,
     """
     from backend.emby_server.scanner import LibrarySnapshot  # 延迟导入：避免与 scanner 互相导入
 
-    scan_instrument.install()   # 进度上报点（幂等；见 scan_instrument 的模块说明）
     snapshot = LibrarySnapshot.of(library)
     # 手动「全量扫描」只影响这一轮：宁可多处理一遍，也不能让别的库跟着变全量
     if force_full:
@@ -772,7 +770,7 @@ def _ack_redis_raws(task: ScanTask) -> None:
 
 def _run_task(task: ScanTask) -> None:
     """在工作线程里真正跑一轮扫描（独立 Session，与升级前的后台线程一致）"""
-    from backend.emby_server.scanner import scan_library_sync  # 延迟导入，见模块 docstring
+    from backend.emby_server.fast_scanner import scan_library_sync  # 延迟导入，见模块 docstring
 
     db = SessionLocal()
     # expire_on_commit=False：扫描是"一批一提交"的长事务，ctx 里还缓存着

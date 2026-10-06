@@ -5,8 +5,8 @@
 - rclone RC 接口一次递归拉清单，不用 FUSE 逐目录爬
 - 内存比对算新增/变化/删除，批量写库（一次 1000 条）
 - NFO/海报/字幕/ffprobe 全延后，扔给 enrich_worker/probe_worker
-- 老 scanner.py 一个字符不动，本模块独立
-- 环境变量 USE_FAST_SCANNER=1 开启，默认关闭
+- 本模块是唯一的扫描器实现（2026-10-05 起替代 scanner.py 的旧扫描体）
+- 进度直接调 scan_progress 上报，不再用 monkey-patch
 
 作者：Aetrix 团队
 日期：2026-10-05
@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,9 +35,11 @@ logger = logging.getLogger("fast_scanner")
 RCLONE_RC_URL = os.getenv("RCLONE_RC_URL", "http://127.0.0.1:5572")
 # 批量写库大小
 FAST_SCAN_BATCH = max(100, int(os.getenv("FAST_SCAN_BATCH", "1000") or 1000))
-# 是否启用（默认关闭）
-USE_FAST_SCANNER = (os.getenv("USE_FAST_SCANNER", "0") or "0").strip().lower() \
-    not in {"0", "false", "no", "off"}
+# 删除保护（从旧 scanner._removal_budget 移植）：防止来源整体不可读时误删整库
+# - 本轮一个文件都没看到，但库里有条目 → 禁止清理
+# - 预计删除数超过阈值（50% 或 20 条取大） → 禁止清理
+REMOVAL_MAX_RATIO = float(os.getenv("SCAN_REMOVAL_MAX_RATIO", "0.5") or 0.5)
+REMOVAL_MAX_ABSOLUTE = max(1, int(os.getenv("SCAN_REMOVAL_MAX_ABSOLUTE", "20") or 20))
 
 # 视频扩展名白名单（与老扫描器一致）
 VIDEO_EXTS = {
@@ -359,19 +362,28 @@ def scan_library_fast(db, library, snapshot) -> dict:
     logger.info("[fast] 库 %s(%d) 开始拉清单", library.name, lib_id)
     files = _collect_files(snapshot.paths)
     logger.info("[fast] 共 %d 个视频文件", len(files))
+    from backend.emby_server import scan_progress as _progress
+    _progress.set_enumerated(lib_id, len(files))
 
     # 1b. 同名同年去重（用户 2026-10-05 要求：两个挂载的同名同年资源合并）
     # 按 (归一化名称, 年份) 去重，保留第一个（优先 /mnt/mp 的）
     files = _dedupe_by_name_year(files, parse_media_filename, lib_type)
     logger.info("[fast] 去重后 %d 个文件", len(files))
+    _progress.set_enumerated(lib_id, len(files))
+    _progress.set_phase(lib_id, "processing")
 
     # 2. 加载已有（一次查进内存）
-    # 包括已软删除的：如果文件又出现了，需要取消删除
+    # 包括已软删除的：如果文件又出现了，需要取消删除。
+    # 注意：soft_delete 的 ORM 钩子默认过滤掉 deleted_at 非空的行，
+    # 这里必须用 include_deleted() 才能看到它们，否则复活会变 INSERT 撞 guid。
     MI = emby_models.MediaItem
     existing: dict[str, tuple[int, int, bool]] = {}  # file_path -> (id, size, is_deleted)
-    for item_id, file_path, size, deleted_at in db.query(
+    from backend.emby_server import soft_delete as _soft_delete
+    with _soft_delete.include_deleted():
+        _existing_rows = db.query(
             MI.id, MI.file_path, MI.size, MI.deleted_at).filter(
-            MI.library_id == lib_id).all():
+            MI.library_id == lib_id).all()
+    for item_id, file_path, size, deleted_at in _existing_rows:
         if file_path:
             existing[file_path] = (item_id, size or 0, deleted_at is not None)
     logger.info("[fast] 库里已有 %d 条", len(existing))
@@ -381,8 +393,10 @@ def scan_library_fast(db, library, snapshot) -> dict:
     to_add: list[FastScanFile] = []
     to_update: list[tuple[int, FastScanFile]] = []  # (id, file)
     to_undelete: list[int] = []
-    for f in files:
+    for _fi, f in enumerate(files):
         seen_paths.add(f.path)
+        if _fi % 50 == 0:
+            _progress.note_processed(lib_id, f.path)
         if f.path not in existing:
             to_add.append(f)
         else:
@@ -433,24 +447,51 @@ def scan_library_fast(db, library, snapshot) -> dict:
             {"deleted_at": None}, synchronize_session=False)
         db.commit()
 
-    # 4c. 删除（软删除）
-    for chunk_start in range(0, len(to_remove_ids), FAST_SCAN_BATCH):
-        chunk = to_remove_ids[chunk_start:chunk_start + FAST_SCAN_BATCH]
-        db.query(MI).filter(MI.id.in_(chunk)).update(
-            {"deleted_at": now}, synchronize_session=False)
-        db.commit()
-        stats.removed += len(chunk)
+    # 4c. 删除（软删除）：先过删除预算，来源整体不可读时禁止清理
+    _progress.set_phase(lib_id, "cleanup")
+    removal_skipped = False
+    removal_skip_reason = ""
+    existing_visible = len([1 for _, _, is_deleted in existing.values() if not is_deleted])
+    if existing_visible > 0:
+        if len(files) == 0:
+            removal_skipped = True
+            removal_skip_reason = (
+                f"本轮一个文件都没看到，但库里有 {existing_visible} 条未删除条目——"
+                f"判定来源整体不可用，本轮禁止清理"
+            )
+        else:
+            limit = max(REMOVAL_MAX_ABSOLUTE, int(existing_visible * REMOVAL_MAX_RATIO))
+            if len(to_remove_ids) >= limit:
+                removal_skipped = True
+                removal_skip_reason = (
+                    f"本轮只看到 {len(files)} 个文件，库里有 {existing_visible} 条，"
+                    f"预计要删 {len(to_remove_ids)} 条（阈值 {limit}）——"
+                    f"超过阈值，判定来源整体不可用，本轮禁止清理"
+                )
+    if removal_skipped:
+        logger.warning("[fast] 删除保护拦下清理: %s", removal_skip_reason)
+    else:
+        for chunk_start in range(0, len(to_remove_ids), FAST_SCAN_BATCH):
+            chunk = to_remove_ids[chunk_start:chunk_start + FAST_SCAN_BATCH]
+            db.query(MI).filter(MI.id.in_(chunk)).update(
+                {"deleted_at": now}, synchronize_session=False)
+            db.commit()
+            stats.removed += len(chunk)
 
     # 更新库的扫描状态
     library.is_scanning = False
     db.commit()
 
-    return {
+    result = {
         "added": stats.added,
         "updated": stats.updated,
         "removed": stats.removed,
         "skipped": stats.skipped,
     }
+    if removal_skipped:
+        result["removal_skipped"] = True
+        result["failed_roots"] = [removal_skip_reason]
+    return result
 
 
 def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
@@ -649,3 +690,44 @@ def _bulk_upsert(db, MI, mappings: list[dict]) -> None:
         # 非 PG：逐条 add（测试环境用）
         for m in mappings:
             db.add(MI(**m))
+# ---------------------------------------------------------------------------
+# 唯一对外扫描入口（与旧 scanner.scan_library_sync 同签名）
+# ---------------------------------------------------------------------------
+
+def scan_library_sync(db, library, snapshot=None, trigger: str = "manual") -> dict:
+    """扫描单个媒体库（同步入口，极速实现）
+
+    与旧 ``scanner.scan_library_sync`` 同签名：ScanRun 流水、trigger 归一化、
+    进程内互斥（同一媒体库同时只跑一个）语义保持不变；实际扫描走
+    ``scan_library_fast``（不 ffprobe、不读 NFO，纯清单同步）。
+
+    调用方（scan_queue / admin_scrape / 手动触发）无需改动。
+    """
+    from backend.emby_server.scanner import (
+        LibrarySnapshot,
+        _acquire_scan,
+        _release_scan,
+        begin_scan,
+        fail_scan,
+        finish_scan,
+    )
+
+    snap = snapshot or LibrarySnapshot.of(library)
+    # 进程内互斥：重复任务在这里被拒绝，不会写库、也不会启动扫描
+    _acquire_scan(snap.library_id)
+    try:
+        run_id = begin_scan(db, library, trigger)
+        started = time.perf_counter()
+        try:
+            stats = scan_library_fast(db, library, snap)
+        except Exception as exc:  # noqa: BLE001 — 异常落库后再原样抛给调用方
+            logger.exception("[fast] 媒体库「%s」扫描失败", snap.name)
+            fail_scan(db, library, exc, run_id,
+                      duration_ms=int((time.perf_counter() - started) * 1000))
+            raise
+        stats["duration_ms"] = int((time.perf_counter() - started) * 1000)
+        finish_scan(db, library, stats, run_id)
+        return stats
+    finally:
+        # 无论成功、失败还是异常，都释放进程内占位
+        _release_scan(snap.library_id)

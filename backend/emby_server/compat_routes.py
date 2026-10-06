@@ -20,11 +20,11 @@ from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server import facets
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
+from backend.emby_server.fast_scanner import scan_library_sync
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
     parse_media_filename,
-    scan_library_sync,
 )
 from backend.emby_server.streaming import (
     get_transcode,

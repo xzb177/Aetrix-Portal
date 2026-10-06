@@ -238,8 +238,8 @@ def test_ack_only_after_scan_completes(fake_redis, stub_snapshot, no_dispatch, f
             return False
 
     monkeypatch.setattr(scan_queue, "SessionLocal", lambda: _FakeSession())
-    from backend.emby_server import scanner as _scanner
-    monkeypatch.setattr(_scanner, "scan_library_sync", lambda *a, **k: None)
+    from backend.emby_server import fast_scanner as _fs
+    monkeypatch.setattr(_fs, "scan_library_sync", lambda *a, **k: None)
 
     # 手动把任务从 _QUEUE 取出（模拟派发），直接跑完成路径
     with scan_queue._LOCK:
@@ -318,8 +318,8 @@ def test_failed_scan_still_acks(fake_redis, stub_snapshot, no_dispatch, fake_lib
             return False
 
     monkeypatch.setattr(scan_queue, "SessionLocal", lambda: _FakeSession())
-    from backend.emby_server import scanner as _scanner
-    monkeypatch.setattr(_scanner, "scan_library_sync", lambda *a, **k: None)
+    from backend.emby_server import fast_scanner as _fs
+    monkeypatch.setattr(_fs, "scan_library_sync", lambda *a, **k: None)
 
     with scan_queue._LOCK:
         scan_queue._QUEUE.remove(task)
