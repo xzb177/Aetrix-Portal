@@ -990,9 +990,12 @@ def retry_unmatched(db) -> int:
         logger.info("重试未匹配项：%d 条无望条目重新入队（priority=50）", n)
         try:
             from backend.emby_server import tmdb_cache
+            from backend.emby_server.tmdb import preferred_language
+            # 语言是缓存维度：按当前首选语言清，否则清的是空语言键、实际缓存还在
+            lang = preferred_language()
             purged = 0
             for name, year, item_type in affected:
-                purged += tmdb_cache.invalidate_search(name, year, item_type)
+                purged += tmdb_cache.invalidate_search(name, year, item_type, lang)
             if purged:
                 logger.info("重试未匹配项：已清掉 %d 份旧搜索缓存（下轮补搜真打 TMDB）", purged)
         except Exception as exc:  # noqa: BLE001 — 缓存清理失败不影响重试入队
