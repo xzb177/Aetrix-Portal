@@ -47,11 +47,11 @@ from backend.emby_server.auth import (
     parse_emby_authorization,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
+from backend.emby_server.fast_scanner import scan_library_sync
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
     parse_media_filename,
-    scan_library_sync,
 )
 from backend.emby_server.search import (
     CANDIDATE_LIMIT as SEARCH_CANDIDATE_LIMIT,
@@ -2286,11 +2286,14 @@ async def playback_info(
     user_wants_cdn = await run_db(
         play_line.get_play_line, db, getattr(user, "id", None)) == play_line.LINE_CDN
     use_cdn = user_wants_cdn or await run_db(cdn.enabled, db)
+    # HMAC 短签名代替 api_key：CDN 可按 guid 归一缓存键，不同用户共享缓存
+    _sig, _exp, _uid = await run_db(cdn.sign_guid, db, item.guid, getattr(user, "id", 0))
+    _sig_qs = f"sig={_sig}&exp={_exp}&uid={_uid}"
     stream_url = (
-        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}"
+        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&{_sig_qs}"
     )
     transcoding_url = (
-        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}"
+        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&{_sig_qs}"
     )
     if use_cdn:
         stream_url = cdn.rewrite_url(db, stream_url, base)

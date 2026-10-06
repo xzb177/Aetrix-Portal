@@ -39,7 +39,7 @@ CONFIG_CDN_ENABLED = "cdn_enabled"
 # 转码会话的分片同样不可变（一个 session 一份内容，session 票据在查询串里）。
 SEGMENT_CACHE_SECONDS = 6 * 3600
 # CDN 边缘缓存一般要比浏览器激进：给 s-maxage 留长一些，浏览器短一点
-SEGMENT_CACHE_HEADER = f"public, max-age=300, s-maxage={SEGMENT_CACHE_SECONDS}"
+SEGMENT_CACHE_HEADER = f"public, max-age={SEGMENT_CACHE_SECONDS}, s-maxage={SEGMENT_CACHE_SECONDS}, immutable"
 # API 响应、302 跳转、播放列表：绝不能被缓存（凭据在查询串里/内容随时变）
 NO_STORE = "no-store"
 
@@ -186,3 +186,59 @@ def write_config(db: Session, domain: str, enabled_flag: bool) -> dict:
     db.commit()
     store.invalidate()
     return config_payload(db)
+
+
+# ---------- HMAC 短签名（CDN 缓存键归一） ----------
+# URL 形态：?sig=<hmac>&exp=<ts>&uid=<user_id>
+# sig = HMAC-SHA256(secret, "guid:user_id:exp")[:32]
+# CDN 缓存键只按 guid（去掉 sig/exp/uid），不同用户共享同一份缓存。
+# uid 明文传输，sig 防篡改；10 分钟过期。
+CONFIG_SIGN_SECRET = "cdn_sign_secret"
+SIGN_TTL_SECONDS = 600  # 10 分钟
+
+
+def _get_sign_secret(db: Session) -> str:
+    """取签名密钥，不存在则生成并持久化"""
+    import secrets
+    row = db.query(SystemConfig).filter(SystemConfig.key == CONFIG_SIGN_SECRET).first()
+    if row and row.value:
+        return row.value
+    secret = secrets.token_hex(32)
+    if row:
+        row.value = secret
+    else:
+        db.add(SystemConfig(key=CONFIG_SIGN_SECRET, value=secret))
+    db.commit()
+    return secret
+
+
+def sign_guid(guid: str, user_id: int, db: Session, ttl: int = SIGN_TTL_SECONDS) -> tuple:
+    """生成 (sig, exp, uid)：sig=HMAC(secret, guid:uid:exp)"""
+    import hmac, hashlib, time
+    secret = _get_sign_secret(db)
+    exp = int(time.time()) + ttl
+    msg = f"{guid}:{user_id}:{exp}".encode()
+    sig = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()[:32]
+    return sig, exp, user_id
+
+
+def verify_guid_sig(guid: str, sig: str, exp: str, uid: str, db: Session):
+    """校验签名，返回 user 对象（或 None）。防时序攻击 + 过期检查。"""
+    import hmac, hashlib, time
+    try:
+        exp_int = int(exp)
+        uid_int = int(uid)
+    except (TypeError, ValueError):
+        return None
+    if exp_int < int(time.time()):
+        return None
+    secret = _get_sign_secret(db)
+    msg = f"{guid}:{uid_int}:{exp_int}".encode()
+    expected = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(expected, sig or ""):
+        return None
+    from backend.models import WebUser
+    user = db.query(WebUser).filter(WebUser.id == uid_int).first()
+    if user and user.is_active:
+        return user
+    return None

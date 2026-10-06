@@ -206,6 +206,24 @@ def get_emby_user(
     无需先走 AuthenticateByName 换取客户端 token。JWT 有效即视为已认证用户。
     """
     result = None
+    # HMAC 短签名（CDN 缓存共享）：?sig=..&exp=..&uid=..
+    # 播放 URL 用签名代替 api_key，CDN 可按 guid 归一缓存键。
+    qp = request.query_params
+    _sig, _exp, _uid = qp.get("sig"), qp.get("exp"), qp.get("uid")
+    if _sig and _exp and _uid:
+        # guid 从路径中取：/emby/Videos/{guid}/stream 或 /emby/videos/{guid}/...
+        _guid = None
+        _parts = request.url.path.strip("/").split("/")
+        # 找 Videos/videos 后面的那段
+        for _idx, _p in enumerate(_parts):
+            if _p.lower() == "videos" and _idx + 1 < len(_parts):
+                _guid = _parts[_idx + 1]
+                break
+        if _guid:
+            from backend.emby_server import cdn as _cdn
+            _user = _cdn.verify_guid_sig(_guid, _sig, _exp, _uid, db)
+            if _user:
+                return _user
     if credentials and credentials.credentials:
         row = (
             db.query(emby_models.EmbyApiToken)
