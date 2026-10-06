@@ -180,7 +180,6 @@ async function toggleItemLock(item: ItemSearchResult) {
 }
 // TMDB 对中文剧集/综艺收录偏少，自动刮削搜不到的条目在这里手动指定 ID。
 // 流程：填条目 ID → 填 TMDB ID → 预览确认是哪部片 → 绑定（或解绑）。
-=======
 // --- 第二步：TMDB 候选搜索 + 一键绑定（Emby 式手动识别） ---
 const tmdbSearchQ = ref('')
 const tmdbSearchYear = ref('')

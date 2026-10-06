@@ -1171,7 +1171,6 @@ def unlock_item_metadata(
     item.metadata_locked = False
     db.commit()
     return {"success": True, "item": _item_lock_view(item)}
-=======
 def _tmdb_candidate_view(hit: dict, kind: str) -> dict:
     """把 TMDB 原始 hit 压成前端候选卡片要的形状（只读投影，不写库）。"""
     title = hit.get("name") or hit.get("title") or ""
