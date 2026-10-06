@@ -540,6 +540,9 @@ def _auto_migrate():
         ]),
         # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，
         # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。
+        ("emby_items", [
+            ("drive_file_id", "VARCHAR(64)", "NULL"),
+        ]),
         ("emby_media_streams", [
             ("frame_rate", "VARCHAR(20)", "NULL"),
             ("video_range", "VARCHAR(20)", "NULL"),
@@ -581,6 +584,7 @@ def _auto_migrate():
     _ensure_enrich_index(existing_tables)
     _ensure_added_index(existing_tables)
     _ensure_deleted_index(existing_tables)
+    _ensure_drive_file_id_index(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -765,6 +769,28 @@ def _ensure_deleted_index(existing_tables: set) -> None:
             "ON emby_items (library_id, deleted_at)"
         ))
         print("  🔧 已迁移: emby_items.idx_item_lib_deleted（软删除可见性索引）")
+
+
+
+def _ensure_drive_file_id_index(existing_tables: set) -> None:
+    """v2.52.0: 给老库补 drive_file_id 索引（幂等）
+
+    改名/移动检测按 drive_file_id 批量查条目，没有索引就是全表扫。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_items" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
+    if "idx_item_drive_file_id" in names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX idx_item_drive_file_id "
+            "ON emby_items (drive_file_id)"
+        ))
+        print("  已迁移: emby_items.idx_item_drive_file_id")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:

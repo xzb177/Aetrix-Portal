@@ -171,6 +171,64 @@ def enqueue(library, *, trigger: str = "manual", force_full: bool = False) -> di
     return enqueue_local(library, trigger=trigger, force_full=force_full)
 
 
+
+
+def enqueue_targeted(library, prefixes: list[str],
+                     trigger: str = "drive-changes") -> dict:
+    """v2.52.0: 定向扫描——只扫指定路径前缀下的文件（Drive Changes API 用）。
+
+    实现：快照的 paths 保持原样（挂载互斥/来源解析要用），但加上
+    ``limit_prefixes`` 让文件迭代器只产出命中前缀的文件，并置
+    ``targeted=True`` 跳过删除清理阶段（看不到的目录不能当成"已删除"）。
+
+    与整库增量扫描共用同一队列与挂载互斥，不会并发打架。
+    """
+    import dataclasses
+    from backend.emby_server.scanner import LibrarySnapshot
+
+    snapshot = LibrarySnapshot.of(library)
+    snapshot = dataclasses.replace(
+        snapshot,
+        limit_prefixes=tuple(prefixes or ()),
+        targeted=True,
+    )
+    # 复用 enqueue_local 的入队逻辑，但用我们改好的快照
+    return _enqueue_with_snapshot(library, snapshot, trigger=trigger)
+
+
+def _enqueue_with_snapshot(library, snapshot, trigger: str = "manual") -> dict:
+    """用外部给定的快照入队（enqueue_local 的快照可替换版）。"""
+    from backend.emby_server import scan_instrument  # 延迟导入
+
+    scan_instrument.install()
+    with _LOCK:
+        existing = _task_of_locked(library.id)
+        if existing is not None:
+            existing.request_count += 1
+            return {"created": False, "task": existing.as_dict(
+                position=_position_locked(existing))}
+        task = ScanTask(
+            library_id=int(library.id),
+            name=str(snapshot.name or ""),
+            trigger=str(trigger or "manual"),
+            mount_ids=tuple(int(m) for m in (snapshot.mount_ids or ())),
+            local_paths=tuple(snapshot.paths or ()),
+            snapshot=snapshot,
+            redis_raws=[],
+        )
+        _QUEUE.append(task)
+        task.waiting_for = _conflicts_locked(task)
+        logger.info("定向扫描入队：库「%s」(id=%s) 触发=%s；目录数=%d；队列长度 %s",
+                    task.name or "?", task.library_id, task.trigger,
+                    len(getattr(snapshot, "limit_prefixes", ()) or ()),
+                    len(_QUEUE))
+        _ensure_scheduler_locked()
+        _pump_locked()
+        _COND.notify_all()
+        return {"created": True, "task": task.as_dict(
+            position=_position_locked(task))}
+
+
 def start_redis_consumer() -> bool:
     """Worker 进程：启动 Redis 扫描队列消费（backend/worker.py 调用）"""
     from backend.emby_server import scan_queue_redis as _rq

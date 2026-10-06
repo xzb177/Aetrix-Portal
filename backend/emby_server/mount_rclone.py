@@ -567,7 +567,10 @@ class RcloneMount(RemoteMount):
         return [
             {"Path": str(i.get("Path") or ""), "Name": str(i.get("Name") or ""),
              "Size": int(i.get("Size") or 0), "IsDir": bool(i.get("IsDir")),
-             "ModTime": str(i.get("ModTime") or "")}
+             "ModTime": str(i.get("ModTime") or ""),
+             # Drive file_id（rclone lsjson 的 ID 字段）：改名/移动不变，
+             # 扫描器用它做文件身份。非 Drive 后端为空串。
+             "ID": str(i.get("ID") or "")}
             for i in items
         ]
 
@@ -602,6 +605,8 @@ class RcloneMount(RemoteMount):
                 name=name, rel=child_rel, is_dir=item["IsDir"],
                 size=item["Size"], entry_id=item["Path"] if item["IsDir"] else "",
                 mod_ts=parse_mod_ts(item.get("ModTime")),
+                # 文件稳定 ID：目录为空串（entry_id 已覆盖目录标识）
+                file_id="" if item["IsDir"] else item.get("ID", ""),
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries

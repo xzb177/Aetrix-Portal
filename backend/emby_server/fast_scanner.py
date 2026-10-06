@@ -54,6 +54,8 @@ class FastScanFile:
     name: str       # 文件名
     size: int       # 字节
     mtime: float    # 修改时间戳
+    # Drive file_id（改名/移动不变）：改名识别用。rclone lsjson 的 ID 字段。
+    file_id: str = ""
 
 
 @dataclass
@@ -291,6 +293,7 @@ def _collect_files(paths: tuple[str, ...]) -> list[FastScanFile]:
                 name=name,
                 size=int(e.get("Size", 0) or 0),
                 mtime=_parse_rclone_time(e.get("ModTime", "")),
+                file_id=str(e.get("ID", "") or ""),
             ))
         logger.info("路径 %s: 找到 %d 个视频文件", path, len(
             [f for f in files if f.path.startswith(path)]))
@@ -366,13 +369,19 @@ def scan_library_fast(db, library, snapshot) -> dict:
     # 2. 加载已有（一次查进内存）——必须在增量过滤之前，过滤要读它
     # 包括已软删除的：如果文件又出现了，需要取消删除
     MI = emby_models.MediaItem
-    # file_path -> (id, size, mtime, is_deleted)
-    existing: dict[str, tuple[int, int, float, bool]] = {}
-    for item_id, file_path, size, mtime, deleted_at in db.query(
-            MI.id, MI.file_path, MI.size, MI.file_mtime, MI.deleted_at).filter(
+    # file_path -> (id, size, mtime, is_deleted, drive_file_id)
+    existing: dict[str, tuple] = {}
+    # drive_file_id -> (id, file_path)：改名/移动识别用
+    existing_by_fid: dict[str, tuple[int, str]] = {}
+    for item_id, file_path, size, mtime, deleted_at, drive_fid in db.query(
+            MI.id, MI.file_path, MI.size, MI.file_mtime, MI.deleted_at,
+            MI.drive_file_id).filter(
             MI.library_id == lib_id).all():
         if file_path:
-            existing[file_path] = (item_id, size or 0, mtime or 0, deleted_at is not None)
+            existing[file_path] = (item_id, size or 0, mtime or 0,
+                                   deleted_at is not None, drive_fid or "")
+        if drive_fid:
+            existing_by_fid[drive_fid] = (item_id, file_path or "")
     logger.info("[fast] 库里已有 %d 条", len(existing))
 
     # 1b. 增量过滤（v2.50.0）：mtime+size 未变且未删除的文件直接跳过
@@ -382,7 +391,7 @@ def scan_library_fast(db, library, snapshot) -> dict:
     changed_files: list[FastScanFile] = []
     for f in files:
         if f.path in existing:
-            _eid, old_size, old_mtime, is_deleted = existing[f.path]
+            _eid, old_size, old_mtime, is_deleted, _fid = existing[f.path]
             if (not is_deleted and old_mtime and old_size == f.size
                     and abs(f.mtime - old_mtime) < 1.0):
                 stats.skipped_unchanged += 1
@@ -401,11 +410,21 @@ def scan_library_fast(db, library, snapshot) -> dict:
     to_add: list[FastScanFile] = []
     to_update: list[tuple[int, FastScanFile]] = []  # (id, file)
     to_undelete: list[int] = []
+    to_rename: list[tuple[int, FastScanFile]] = []  # (id, file)：改名/移动
+    renamed_old_paths: set[str] = set()
     for f in files:
         if f.path not in existing:
-            to_add.append(f)
+            # v2.52.0: 路径是新的，但 drive_file_id 认识 = 改名/移动
+            # 复用已有行（元数据全保留），只更新路径
+            if f.file_id and f.file_id in existing_by_fid:
+                item_id, old_path = existing_by_fid[f.file_id]
+                to_rename.append((item_id, f))
+                renamed_old_paths.add(old_path)
+                logger.info("[fast] 识别改名/移动: %s -> %s", old_path, f.path)
+            else:
+                to_add.append(f)
         else:
-            item_id, old_size, old_mtime, is_deleted = existing[f.path]
+            item_id, old_size, old_mtime, is_deleted, _fid = existing[f.path]
             mtime_changed = abs((old_mtime or 0) - f.mtime) >= 1.0
             if is_deleted:
                 # 文件又出现了：取消软删除
@@ -418,10 +437,11 @@ def scan_library_fast(db, library, snapshot) -> dict:
                 stats.skipped += 1
 
     # 删除：库里有但文件清单里没有的（只处理未删除的）
-    # 用 all_paths（全量）做检测，跳过的文件不算删除
+    # 用 all_paths（全量）做检测，跳过的文件不算删除；
+    # 改名/移动的旧路径不算删除（那行已经复用给了新路径）
     to_remove_ids = [
-        item_id for fp, (item_id, _, _, is_deleted) in existing.items()
-        if fp not in all_paths and not is_deleted
+        item_id for fp, (item_id, _, _, is_deleted, _f) in existing.items()
+        if fp not in all_paths and fp not in renamed_old_paths and not is_deleted
     ]
 
     logger.info(
@@ -436,6 +456,20 @@ def scan_library_fast(db, library, snapshot) -> dict:
     if to_add:
         _bulk_insert(db, MI, to_add, lib_id, lib_type,
                      parse_media_filename, item_guid, now, stats)
+
+    # 4a2. 改名/移动：更新 file_path（guid 跟着新路径走，元数据全保留）
+    for chunk_start in range(0, len(to_rename), FAST_SCAN_BATCH):
+        chunk = to_rename[chunk_start:chunk_start + FAST_SCAN_BATCH]
+        db.bulk_update_mappings(MI, [
+            {"id": item_id, "file_path": f.path,
+             "guid": item_guid(f.path),
+             "drive_file_id": f.file_id or None,
+             "size": f.size, "file_mtime": f.mtime}
+            for item_id, f in chunk
+        ])
+        db.commit()
+        stats.updated += len(chunk)
+        logger.info("[fast] 改名/移动已更新 %d 条", len(chunk))
 
     # 4b. 更新（size + file_mtime，批量）
     for chunk_start in range(0, len(to_update), FAST_SCAN_BATCH):
@@ -533,6 +567,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "season_number": season_no,
                 "episode_number": episode_no,
                 "file_path": f.path,
+                "drive_file_id": f.file_id or None,
                 "size": f.size,
                 "file_mtime": f.mtime,
                 "container": os.path.splitext(f.name)[1].lower().lstrip("."),
@@ -562,6 +597,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "sort_name": parsed["name"].lower(),
                 "production_year": parsed.get("year"),
                 "file_path": f.path,
+                "drive_file_id": f.file_id or None,
                 "size": f.size,
                 "file_mtime": f.mtime,
                 "container": os.path.splitext(f.name)[1].lower().lstrip("."),

@@ -1308,6 +1308,11 @@ class LibrarySnapshot:
     # 这一轮强制全量（管理员手动点「全量扫描」）：无视所有指纹，处理一遍全部文件。
     # 快照字段而不是全局开关 —— 别的库、别的轮次都不能被这次手动操作带跑。
     force_full: bool = False
+    # v2.52.0 定向扫描（Drive Changes API）：只扫描这些路径前缀下的文件，
+    # 不做删除清理（看不到的目录不能当成"文件已删除"）。
+    # 为空 = 正常全库扫描。
+    limit_prefixes: tuple = ()
+    targeted: bool = False
 
     @classmethod
     def of(cls, library) -> "LibrarySnapshot":
@@ -1351,6 +1356,8 @@ class ScanFile:
     container: str = ""           # 已知容器（strm 取直链里的真实容器）
     mount_id: Optional[int] = None
     rel: str = ""
+    # Drive file_id（改名/移动不变）：扫描器用它识别改名
+    file_id: str = ""
     mtime_ns: Optional[int] = None  # 本机文件=st_mtime_ns；远程挂载无mtime，记None""
     provider: Any = None
     local_target: Any = None      # 本机可读来源的播放目标（strm 的直链在这里）
@@ -1451,6 +1458,7 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
                 local_dir=os.path.dirname(full_path), dir_rel=dir_rel,
                 size=mount_file.size, container=container,
                 mount_id=mount_id, rel=rel, provider=provider, local_target=target,
+                file_id=getattr(mount_file, "file_id", "") or "",
             )
             continue
         container = os.path.splitext(mount_file.name)[1].lstrip(".").lower()
@@ -1460,7 +1468,22 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
             stored_path=mount_lib.mount_path(mount_id, rel), name=mount_file.name,
             local_dir=None, dir_rel=dir_rel, size=mount_file.size,
             container=container, mount_id=mount_id, rel=rel, provider=provider,
+            file_id=getattr(mount_file, "file_id", "") or "",
         )
+
+
+
+def _prefix_filter(files, prefixes: tuple) -> "Iterator":
+    """v2.52.0: 定向扫描——只产出路径前缀命中的文件。"""
+    if not prefixes:
+        yield from files
+        return
+    for sf in files:
+        sp = getattr(sf, "stored_path", "") or ""
+        for px in prefixes:
+            if sp == px or sp.startswith(px.rstrip("/") + "/"):
+                yield sf
+                break
 
 
 def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
@@ -1486,14 +1509,17 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
         })
 
     try:
+        prefixes = getattr(snap, "limit_prefixes", ()) or ()
         for src in sources:
             if src.kind == "local":
-                yield src.label, _local_dir_files(src.path, failed_roots)
+                yield src.label, _prefix_filter(
+                    _local_dir_files(src.path, failed_roots), prefixes)
                 continue
 
             def _guarded(src=src):
                 try:
-                    yield from _mount_files(src, src.provider, failed_roots)
+                    yield from _prefix_filter(
+                        _mount_files(src, src.provider, failed_roots), prefixes)
                 except mount_lib.MountError as exc:
                     logger.warning("媒体库「%s」的挂载「%s」不可用：%s", snap.name, src.label, exc)
                     failed_roots.append(f"{src.label}: {exc}")
@@ -1568,6 +1594,10 @@ class _Pending:
     # 否则首页会出现「某剧 第 1 集」这种伪剧集卡片。
     series_name: Optional[str] = None
     item: Any = None
+    # 改名/移动标记（v2.52.0）：guid 没命中但 drive_file_id 命中的 = 同一文件换了路径。
+    # 写库循环里更新 file_path + guid（保持 guid=path 派生的不变式），不删记录、
+    # 不丢元数据（TMDB 绑定、刮削结果、播放进度全保留）。
+    renamed: bool = False
     claimed_id: Optional[int] = None  # 批次开头占位成功拿到的 id（None=没抢到）
     claimed_item: Any = None  # 占位成功的行（强引用，防 identity map 弱引用被 GC）
     series: Any = None
@@ -2277,6 +2307,64 @@ def _submit(pool: ThreadPoolExecutor, fn, *args, **kwargs) -> "Future":
         return _scan_pool().submit(fn, *args, **kwargs)
 
 
+
+def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
+                              ctx: "_ScanContext") -> None:
+    """v2.52.0: 用 drive_file_id 识别改名/移动。
+
+    guid（path 派生）没命中的文件，如果它的 drive_file_id 在库里能找到，
+    说明是同一文件改了名/换了目录：把已有的那行直接挂到 pending 上，
+    写库循环走 update 分支（更新 file_path + guid），不删记录、不丢元数据。
+
+    批量查一次，不逐文件点查。没有 file_id 的文件（本地/115）跳过。
+    """
+    MI = emby_models.MediaItem
+    # 收集需要按 file_id 查的 pending
+    need: list = []
+    fids: list[str] = []
+    for p in prepared:
+        if p.item is not None:
+            continue  # guid 已命中，不是改名
+        fid = getattr(p.scan_file, "file_id", "") or ""
+        if not fid:
+            continue
+        need.append(p)
+        fids.append(fid)
+    if not need:
+        return
+    # 批量查（分片），要看得见软删除的行（改名后又删了又改回来也能认出来）
+    found: dict[str, Any] = {}
+    unique_fids = list(dict.fromkeys(fids))
+    with _soft_delete.include_deleted():
+        for chunk in _chunks(unique_fids, SQL_IN_CHUNK):
+            for row in db.query(MI).filter(
+                    MI.drive_file_id.in_(chunk),
+                    MI.library_id == ctx.lib_id).all():
+                if row.drive_file_id and row.drive_file_id not in found:
+                    found[row.drive_file_id] = row
+    matched = 0
+    claimed_fids: set[str] = set()  # 同一批里同一 file_id 只认一次（防 rclone 重复条目）
+    for p, fid in zip(need, fids):
+        if fid in claimed_fids:
+            continue
+        row = found.get(fid)
+        if row is None:
+            continue
+        claimed_fids.add(fid)
+        # 同一文件但路径没变：说明 guid 查漏了（不应该发生），防御性处理
+        if row.file_path == p.scan_file.stored_path:
+            p.item = row
+            continue
+        # 改名/移动：复用这一行
+        p.item = row
+        p.renamed = True
+        matched += 1
+        logger.info("扫描识别改名/移动: %s -> %s（保留元数据）",
+                    row.file_path, p.scan_file.stored_path)
+    if matched:
+        ctx.stats["renamed"] = ctx.stats.get("renamed", 0) + matched
+
+
 def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -> list:
     """把一批文件变成「可直接写库」的任务：一次查库 + 并行预取"""
     prepared: list = []
@@ -2308,6 +2396,9 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         guids.append(guid)
 
     known = _load_items(db, guids)
+
+    # v2.52.0: guid 没命中的，用 drive_file_id 识别改名/移动（复用已有行）
+    _match_renames_by_file_id(db, prepared, known, ctx)
 
     # 外挂字幕一批查齐：秒跳时每个文件都要比对字幕有无变化，不能逐文件查 DB
     ctx.ext_subtitles = _load_external_subtitles(
@@ -3320,6 +3411,15 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item.sort_name = parsed["name"].lower()
                     item.production_year = parsed["year"]
                     item.file_path = full_path
+                    # v2.52.0: 改名/移动的行，guid 跟着新路径走（保持 guid=path 派生不变式）；
+                    # 元数据（TMDB/刮削/播放进度）都在同一行上，全保留。
+                    if getattr(_pending, "renamed", False):
+                        item.guid = _pending.guid
+                        ctx.stats["renamed_updated"] = ctx.stats.get("renamed_updated", 0) + 1
+                    # v2.52.0: 落 drive_file_id（改名识别 + Changes API 都靠它）
+                    _fid = getattr(scan_file, "file_id", "") or ""
+                    if _fid:
+                        item.drive_file_id = _fid
                     item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
                     # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
                     # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；
@@ -3590,7 +3690,12 @@ def _scan_library_body(db: Session, library: emby_models.Library,
             db.rollback()
 
     stats["failed_roots"] = failed_roots
-    if failed_roots or not (snap.paths or snap.mount_ids):
+    if getattr(snap, "targeted", False):
+        # v2.52.0 定向扫描（Drive Changes）：只看了部分目录，看不到的不能当成
+        # "文件已删除"，跳过清理阶段。删除检测留给整库扫描做。
+        stats["removal_skipped"] = True
+        logger.info("媒体库「%s」定向扫描，跳过清理阶段", snap.name)
+    elif failed_roots or not (snap.paths or snap.mount_ids):
         # 来源列表不完整：禁止清理，宁肯多留几条记录，也不能误删整库
         stats["removal_skipped"] = True
         logger.warning(
