@@ -1,0 +1,88 @@
+# -*- coding: utf-8 -*-
+"""多节点健康检查与流量分配测试"""
+import os
+import sys
+from unittest import mock
+
+# 用相对路径定位模块，避免硬编码 /opt 路径
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_MOD_PATH = os.path.join(_HERE, '..', 'backend', 'emby_server', 'node_health.py')
+_MOD_PATH = os.path.normpath(_MOD_PATH)
+
+import importlib.util
+
+def _load():
+    # 每次加载前确保 sqlalchemy 被 mock，且不污染全局
+    with mock.patch.dict(sys.modules, {
+        'sqlalchemy': mock.MagicMock(),
+        'sqlalchemy.orm': mock.MagicMock(),
+    }):
+        spec = importlib.util.spec_from_file_location('_nh_test', _MOD_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+_nh = _load()
+
+
+def test_config_constants():
+    assert _nh.CONFIG_KEY == 'stream_nodes'
+    assert _nh.HEALTH_CHECK_INTERVAL == 30
+
+
+def test_is_healthy_defaults_true():
+    assert _nh.is_healthy('http://never-checked:9999') is True
+
+
+def test_health_state_transition():
+    url = 'http://test-node:18001'
+    _nh._node_health.pop(url, None)
+    try:
+        assert _nh.is_healthy(url) is True
+        _nh._node_health[url] = {'healthy': False, 'last_check': 0, 'fail_count': 2}
+        assert _nh.is_healthy(url) is False
+        _nh._node_health[url] = {'healthy': True, 'last_check': 0, 'fail_count': 0}
+        assert _nh.is_healthy(url) is True
+    finally:
+        _nh._node_health.pop(url, None)
+
+
+def test_pick_node_single():
+    db = mock.MagicMock()
+    single = [{'url': 'http://127.0.0.1:8000', 'weight': 100, 'name': 'local'}]
+    with mock.patch.object(_nh, 'healthy_nodes', return_value=single):
+        assert _nh.pick_node(db)['url'] == 'http://127.0.0.1:8000'
+
+
+def test_pick_node_excludes_unhealthy():
+    db = mock.MagicMock()
+    with mock.patch.object(_nh, 'healthy_nodes',
+                           return_value=[{'url': 'http://n1:8000', 'weight': 50}]):
+        for _ in range(10):
+            assert _nh.pick_node(db)['url'] == 'http://n1:8000'
+
+
+def test_pick_node_fallback():
+    db = mock.MagicMock()
+    all_nodes = [{'url': 'http://n1:8000', 'weight': 100}]
+    with mock.patch.object(_nh, 'healthy_nodes', return_value=[]):
+        with mock.patch.object(_nh, 'get_nodes', return_value=all_nodes):
+            assert _nh.pick_node(db)['url'] == 'http://n1:8000'
+
+
+def test_pick_node_weighted():
+    db = mock.MagicMock()
+    nodes = [
+        {'url': 'http://heavy:8000', 'weight': 90},
+        {'url': 'http://light:8000', 'weight': 10},
+    ]
+    with mock.patch.object(_nh, 'healthy_nodes', return_value=nodes):
+        c = {'http://heavy:8000': 0, 'http://light:8000': 0}
+        for _ in range(200):
+            c[_nh.pick_node(db)['url']] += 1
+    assert c['http://heavy:8000'] > c['http://light:8000'] * 3
+
+
+def test_daemon_idempotent():
+    _nh.start_health_daemon(lambda: mock.MagicMock())
+    _nh.start_health_daemon(lambda: mock.MagicMock())
