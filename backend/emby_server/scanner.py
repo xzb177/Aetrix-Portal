@@ -203,7 +203,7 @@ SEASON_PATTERNS_ANY = [
     re.compile(r"第\s*([一二三四五六七八九十]{1,3})\s*季"),
 ]
 # 电影文件名解析: Name (2019) / Name.2019.1080p
-YEAR_RE = re.compile(r"[\(\.\s](\d{4})[\)\.\s]")
+YEAR_RE = re.compile(r"[\(\.\s\（](\d{4})[\)\.\s\）]")
 # 旧写法 `[.\_-_\[\]【】]+'` 在字符类外多了一个引号，导致这个正则几乎永不命中，
 # 于是 `Rick.and.Morty` 这类点分隔片名会原样入库（显示成 "Rick.and.Morty"）。
 CLEAN_RE = re.compile(r"[\.\_\-\[\]【】]+")
@@ -537,7 +537,7 @@ def parse_media_filename(path: str, library_type: str) -> dict:
         if 1900 <= y <= datetime.now().year + 2:
             year = y
     if year and str(year) in name_part:
-        name_part = name_part.replace(str(year), "").strip(" .-_()")
+        name_part = name_part.replace(str(year), "").strip(" .-_()\uff08\uff09")
 
     return {"name": name_part or stem, "year": year, "season": season, "episode": episode}
 
