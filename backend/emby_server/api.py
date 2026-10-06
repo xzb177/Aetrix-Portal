@@ -2527,6 +2527,10 @@ async def video_stream(
     # 授权已由 get_emby_user 依赖完成（Emby token 或 JWT 均可）
     await run_db(ensure_playback_allowed, db, user)
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
+    # P0 安全修复：检查条目是否在用户可见的库范围内
+    allowed_libs = await run_db(_library_scope, db, user)
+    if allowed_libs is not None and getattr(item, "library_id", None) not in allowed_libs:
+        raise HTTPException(status_code=403, detail="Library not accessible")
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     target = await run_db(_play_target, db, item)
     if target.kind == "url":
@@ -2596,6 +2600,10 @@ async def video_hls(
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     from backend.emby_server.async_db import run_db
     item = await run_db(_require_item, db, item_id)
+    # P0 安全修复：检查条目是否在用户可见的库范围内
+    allowed_libs = await run_db(_library_scope, db, user)
+    if allowed_libs is not None and getattr(item, "library_id", None) not in allowed_libs:
+        raise HTTPException(status_code=403, detail="Library not accessible")
     base = _base_url(request)
     q = request.query_params
 
