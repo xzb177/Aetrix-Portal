@@ -340,9 +340,13 @@ def test_request_injects_preferred_language(monkeypatch):
 def test_language_get_put_roundtrip(own_db):
     """GET/PUT /scrape/tmdb-language：保存即生效，非法值 400"""
     from fastapi import HTTPException
+    from backend.integrations import store
     db, _lib = own_db
     user = SimpleNamespace(id=1)
+    # 进程级缓存都是全局的（tmdb._LANGUAGE_CACHE 30s、store._ttl_cache 60s），
+    # 先清干净再测，避免被同进程里先跑的用例污染。
     tmdb_mod.invalidate_language()
+    store.invalidate()
 
     got = admin_scrape.get_tmdb_language(user, db)
     assert got["language"] == "zh-CN", "默认 zh-CN"
@@ -358,6 +362,9 @@ def test_language_get_put_roundtrip(own_db):
         admin_scrape.save_tmdb_language(
             admin_scrape.TmdbLanguageSaveRequest(language="fr-FR"), user, db)
     assert e.value.status_code == 400
+    # 收尾清缓存：别把 en-US 留给后面的用例
+    tmdb_mod.invalidate_language()
+    store.invalidate()
     assert admin_scrape.get_tmdb_language(user, db)["language"] == "en-US", "非法值不许覆盖"
     tmdb_mod.invalidate_language()
 
