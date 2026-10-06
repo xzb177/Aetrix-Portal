@@ -41,7 +41,6 @@ from backend.emby_server.auth import (
     get_admin_or_emby_user,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
-from backend.emby_server import server_ops
 from backend.emby_server.scanner import (
     PLATFORM_LABELS,
     SCAN_RUN_KEEP,
