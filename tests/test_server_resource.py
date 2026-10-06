@@ -163,7 +163,7 @@ def test_download_paths_never_redirect_the_client():
 
 def test_query_items_skips_count_when_disabled():
     """_query_items 里有 EnableTotalRecordCount=false 分支：跳过 query.count()，
-    改多取 1 条判断有没有下一页。"""
+    改用有没有下一页的探测（HasMore）。"""
     import ast
     src = open(REPO_ROOT / "backend/emby_server/api.py").read()
     assert "EnableTotalRecordCount" in src
@@ -173,8 +173,11 @@ def test_query_items_skips_count_when_disabled():
         if isinstance(n, ast.FunctionDef) and n.name == "_query_items":
             body_src = ast.get_source_segment(src, n)
             assert "want_total" in body_src
-            # 不查总数时 limit+1
-            assert "limit + 1" in body_src
+            # 不查总数时：用 has_more 探测有没有下一页（旧实现是 limit+1 多取一行，
+            # PR #343 改为先全量取去重后的 id 再比较 len > start + limit，语义等价且更精确）
+            assert "has_more" in body_src
+            assert "HasMore" in body_src
+            assert "start + limit" in body_src
             found = True
             break
     assert found, "_query_items not found"
