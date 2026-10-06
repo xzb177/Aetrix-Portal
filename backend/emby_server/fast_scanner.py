@@ -318,6 +318,24 @@ def _normalize_name(name: str) -> str:
     return n
 
 
+def _find_local_poster(file_path):
+    import os
+    dir_path = os.path.dirname(file_path)
+    base = os.path.splitext(os.path.basename(file_path))[0].lower()
+    try:
+        entries = os.listdir(dir_path)
+    except OSError:
+        return None
+    for f in entries:
+        low = f.lower()
+        stem, ext = os.path.splitext(low)
+        if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+            continue
+        if stem in ("poster", "cover", "folder") or stem == base:
+            return os.path.join(dir_path, f)
+    return None
+
+
 def _dedupe_by_name_year(files: list[FastScanFile], parse_media_filename,
                          lib_type: str) -> list[FastScanFile]:
     """同名同年去重（用户 2026-10-05 要求）
@@ -378,7 +396,7 @@ def scan_library_fast(db, library, snapshot) -> dict:
     if not _paths and getattr(snapshot, "mount_ids", None):
         from backend.emby_server import mounts as _mounts
         _sources, _failed = _mounts.library_sources(library, db)
-        _sp = tuple(s.path for s in _sources if getattr(s, path, None))
+        _sp = tuple(s.path for s in _sources if getattr(s, "path", None))
         if _sp:
             _paths = _sp
     files = _collect_files(_paths)
@@ -597,6 +615,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "enrich_status": "pending",
                 "_series_guid": None,
                 "_season_guid": None,
+                "poster_path": _find_local_poster(f.path),
             })
 
     # 查已有的 series/season guid（避免重复插入）
