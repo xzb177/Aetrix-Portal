@@ -337,10 +337,12 @@ def test_request_injects_preferred_language(monkeypatch):
     assert captured["language"] == "ja-JP", "调用方显式传的 language 不被覆盖"
 
 
-def test_language_get_put_roundtrip(own_db):
+def test_language_get_put_roundtrip(own_db, monkeypatch):
     """GET/PUT /scrape/tmdb-language：保存即生效，非法值 400"""
     from fastapi import HTTPException
     from backend.integrations import store
+    # 环境变量优先于 DB 配置（CI runner 上可能设了 TMDB_LANGUAGE），测试 DB 口径必须先隔离掉
+    monkeypatch.delenv("TMDB_LANGUAGE", raising=False)
     db, _lib = own_db
     user = SimpleNamespace(id=1)
     # 进程级缓存都是全局的（tmdb._LANGUAGE_CACHE 30s、store._ttl_cache 60s），
@@ -355,15 +357,6 @@ def test_language_get_put_roundtrip(own_db):
     res = admin_scrape.save_tmdb_language(
         admin_scrape.TmdbLanguageSaveRequest(language="en-US"), user, db)
     assert res["success"] is True
-    # --- 临时调试：CI 复现用 ---
-    from backend import models as _m
-    _rows = db.query(_m.SystemConfig).filter(_m.SystemConfig.key == "tmdb_preferred_language").all()
-    print(f"\n[DEBUG] db rows: {[(r.key, r.value) for r in _rows]}")
-    print(f"[DEBUG] store cache: {store._ttl_cache.get('tmdb_preferred_language')}")
-    print(f"[DEBUG] tmdb cache: {tmdb_mod._LANGUAGE_CACHE}")
-    print(f"[DEBUG] env TMDB_LANGUAGE: {os.environ.get('TMDB_LANGUAGE')!r}")
-    print(f"[DEBUG] store.get_value: {store.get_value(db, 'tmdb_preferred_language', '')!r}")
-    # --- 临时调试结束 ---
     assert admin_scrape.get_tmdb_language(user, db)["language"] == "en-US"
     assert tmdb_mod.preferred_language(db) == "en-US", "读配置口径与热路径一致"
 
