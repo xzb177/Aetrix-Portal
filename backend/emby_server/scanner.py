@@ -1078,11 +1078,13 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
     #   第三跳（兜底）：去掉 Range 让 ffprobe 自己按需 seek。这条会把整个文件拉下来，
     #     所以放在最后，只在双 Range 也失手时才走。
     # 只对「窗口确实截断了文件」的条目做，避免给本就完整的文件白跑一遍。
+    _moov_via_dual_range = False
     if (remote and (size <= 0 or size > PROBE_REMOTE_RANGE_BYTES)
             and (not data or not data.get("format"))
             and not (data or {}).get("_http_code")):
         tail_first = _dual_range_probe(path, headers, size, container)
         if tail_first and tail_first.get("format"):
+            _moov_via_dual_range = True
             data = tail_first
         else:
             seekable = _ffprobe(path, headers, size=size, ranged=False)
@@ -1127,6 +1129,10 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
         info["_http_code"] = data.get("_http_code")
         info["_error_detail"] = data.get("_error_detail", "")
 
+    # moov ä½ç½®æ£æµ (v2.50.0): åªå¯¹ MP4/MOV ææä¹
+    _container_lc = (container or "").lower()
+    if _container_lc in ("mp4", "mov", "m4v"):
+        info["moov_position"] = "back" if _moov_via_dual_range else "front"
     fmt = data.get("format", {})
     duration = float(fmt.get("duration") or 0)
     info["duration_ticks"] = int(duration * 10_000_000)

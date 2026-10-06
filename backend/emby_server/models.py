@@ -190,7 +190,9 @@ class MediaItem(Base):
     backdrop_image_url = Column(String(1024))
 
     # 状态
-    last_probed_at = Column(DateTime)  # 上次 ffprobe 时间，供刮削策略判断是否重探
+    last_probed_at = Column(DateTime)
+    # moov ä½ç½® (v2.50.0): front=faststartå¯ç§æ­ back=å¨å°¾é¨ NULL=éMP4/æªæ¢æµ
+    moov_position = Column(String(10))
     # 两阶段扫描（v2.39.0）：Phase 1 只入库结构不做 ffprobe，需要探测的条目由
     # 后台 worker 按优先级探测。pending=待探测 probing=探测中 done=已探测 failed=放弃。
     probe_status = Column(String(20), default="pending")
