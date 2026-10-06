@@ -1063,6 +1063,7 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
         "duration_ticks": 0, "bitrate": 0, "width": 0, "height": 0,
         "video_codec": None, "audio_codec": None,
         "audio_languages": "", "subtitle_languages": "", "streams": [],
+        "moov_position": None,
     }
     remote = path.startswith(("http://", "https://"))
     data = _ffprobe(path, headers, size=size)
@@ -1123,16 +1124,16 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
             return info
     if used_mediainfo:
         info["_probe_backend"] = "mediainfo"
+    else:
+        _container_lc = (container or "").lower()
+        if _container_lc in ("mp4", "mov", "m4v"):
+            info["moov_position"] = "back" if _moov_via_dual_range else "front"
     # 透出 ffprobe 的 HTTP 错误（供熔断器和日志使用）
     if data.get("_error"):
         info["_error"] = data["_error"]
         info["_http_code"] = data.get("_http_code")
         info["_error_detail"] = data.get("_error_detail", "")
 
-    # moov ä½ç½®æ£æµ (v2.50.0): åªå¯¹ MP4/MOV ææä¹
-    _container_lc = (container or "").lower()
-    if _container_lc in ("mp4", "mov", "m4v"):
-        info["moov_position"] = "back" if _moov_via_dual_range else "front"
     fmt = data.get("format", {})
     duration = float(fmt.get("duration") or 0)
     info["duration_ticks"] = int(duration * 10_000_000)
