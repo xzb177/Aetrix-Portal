@@ -21,13 +21,12 @@ import { RouterLink } from 'vue-router'
 import {
   Film, MessageSquareDashed, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
-  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, ShieldAlert,
+  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon,
 } from 'lucide-vue-next'
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
   fetchServersSummary, fetchStatsTrend, fetchBackendServices,
   type BackendServiceStatus } from '@/api/admin'
-import { useDangerOps } from '@/composables/useDangerOps'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
   EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary,
@@ -45,13 +44,6 @@ const mounts = ref<StorageMount[]>([])
 const servers = ref<ServerSummary | null>(null)
 /** 后端服务：aetrix-api + aetrix-worker 的运行状态 */
 const backendServices = ref<BackendServiceStatus[]>([])
-/** 配额熔断器状态（危险操作逻辑与确认文案在 useDangerOps，与「系统设置 → 危险操作」同一份） */
-const {
-  breaker: quotaBreaker,
-  busy: dangerBusy,
-  loadBreaker: loadQuotaBreaker,
-  resetBreakerNow: handleResetBreaker,
-} = useDangerOps()
 /** 多服运营：每个服的会员 / 内容 / 节点，一个面板同时管几个服一眼看完 */
 const realms = ref<RealmOverview | null>(null)
 const loading = ref(true)
@@ -101,8 +93,6 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-  // 熔断器单独拉（失败就当没有这块卡，不影响仪表盘其余内容）
-  loadQuotaBreaker()
 })
 
 // ==================== 服务器接入（信息展示）====================
@@ -407,37 +397,6 @@ function serviceStatusLabel(status: string): string {
         </div>
       </section>
 
-      <!-- 配额熔断器：连续 403 触发，保护上游（网盘 / rclone 后端）配额 -->
-      <section v-if="quotaBreaker" class="stat-grid">
-        <div class="stat-tile server-tile" :class="{ 'breaker-tripped': quotaBreaker.tripped }">
-          <div class="stat-label">
-            <ShieldAlert :size="13" /> 配额熔断器
-            <span class="server-current">{{ quotaBreaker.tripped ? '已触发' : '正常' }}</span>
-          </div>
-          <div class="stat-value" :class="{ 'stat-accent': !quotaBreaker.tripped, 'breaker-danger': quotaBreaker.tripped }">
-            {{ quotaBreaker.tripped ? '已熔断' : '运行中' }}
-            <span class="stat-sub"> · 连续 403: {{ quotaBreaker.consecutive_403 }}/{{ quotaBreaker.threshold }}</span>
-          </div>
-          <div class="stat-foot">
-            <template v-if="quotaBreaker.tripped">
-              <span>配额耗尽，worker 已暂停</span>
-              <button
-                class="breaker-reset-btn"
-                :disabled="dangerBusy === 'breaker'"
-                @click="handleResetBreaker()"
-              >
-                {{ dangerBusy === 'breaker' ? '恢复中...' : '手动恢复' }}
-              </button>
-              <RouterLink class="danger-jump" :to="{ name: 'Settings', query: { tab: 'danger', op: 'breaker' } }">
-                危险操作中心 →
-              </RouterLink>
-            </template>
-            <template v-else>
-              上游配额保护
-            </template>
-          </div>
-        </div>
-      </section>
 
       <!--
         各服概况：每个服的会员 / 内容 / 播放节点都在这里，不用一个个切过去看。
@@ -643,31 +602,6 @@ function serviceStatusLabel(status: string): string {
   font-size: 16px;
   font-variant-numeric: normal;
   letter-spacing: 0;
-}
-/* 配额熔断器 */
-.breaker-tripped {
-  border-color: var(--danger) !important;
-  background: var(--danger-bg) !important;
-}
-.breaker-danger {
-  color: var(--danger) !important;
-}
-.breaker-reset-btn {
-  margin-left: 8px;
-  padding: 4px 12px;
-  background: var(--danger);
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.breaker-reset-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-.breaker-reset-btn:hover:not(:disabled) {
-  background: #dc2626;
 }
 /* 危险操作全部收在「系统设置 → 危险操作」：这里给个入口，不在仪表盘开第二个现场 */
 .danger-jump {

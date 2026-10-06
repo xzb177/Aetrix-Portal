@@ -425,7 +425,6 @@ const WRITE_HINT = '当前账号是只读审计角色：可以看，不能执行
 const dangerOps = useDangerOps()
 const {
   backup: backupInfo,
-  breaker,
   busy: dangerBusy,
   cacheStats,
   loadState: loadDanger,
@@ -435,18 +434,17 @@ const {
   backupNow: doBackup,
   cleanCache: doCleanCache,
   purgeLogs: doPurgeLogs,
-  resetBreakerNow: doResetBreaker,
 } = dangerOps
 
 /** 保留天数：0 = 清空全部登录与安全日志 */
 const purgeDays = ref(90)
-/** 从别的页面深链过来时高亮对应卡片（?op=breaker|cache|logs） */
-const TAB_OPS = ['breaker', 'cache', 'logs']
+/** 从别的页面深链过来时高亮对应卡片（?op=cache|logs） */
+const TAB_OPS = ['cache', 'logs']
 const target = ref('')
 
 // 切到危险操作页签时才拉数据：这三个接口在另外两个页签里用不上
 watch(tab, (value) => {
-  if (value === 'danger' && !breaker.value && !cacheStats.value) loadDanger()
+  if (value === 'danger' && !cacheStats.value) loadDanger()
 })
 
 /** 深链定位：?op=xxx → 高亮对应卡片并滚过去（其它页面「去危险操作」的落点） */
@@ -686,49 +684,8 @@ watch(
             <span>{{ WRITE_HINT }}。下面的按钮已置灰，但内容仍然可读。</span>
           </div>
 
-          <!-- 1. 配额熔断器 -->
-          <section
-            id="danger-breaker"
-            class="admin-card danger-card"
-            :class="{ 'is-target': target === 'breaker' }"
-          >
-            <header class="card-header">
-              <div class="card-title">
-                <ShieldAlert :size="16" />
-                <div>
-                  <h2>手动恢复配额熔断器</h2>
-                  <p>连续 403 会自动熔断、暂停 worker；这里是可以强行把它叫醒的唯一入口</p>
-                </div>
-              </div>
-              <span class="mini-badge" :class="breaker?.tripped ? 'danger' : 'ok'">
-                {{ breaker?.tripped ? '已熔断' : '未触发' }}
-              </span>
-            </header>
-            <p class="danger-effect">
-              <template v-if="breaker?.tripped">
-                已连续 {{ breaker.consecutive_403 }} 次 403（阈值 {{ breaker.threshold }}）。
-                恢复后 worker 会立刻重新请求上游——<strong>配额没恢复的话，会马上再撞一次并重新熔断</strong>。
-              </template>
-              <template v-else-if="breaker">
-                熔断器当前是正常的（连续 403 计数 {{ breaker.consecutive_403 }}）。没有触发时无需恢复。
-              </template>
-              <template v-else>熔断器状态读取失败，不提供恢复入口（避免在状态不明时盲操作）。</template>
-            </p>
-            <div class="card-footer">
-              <el-button
-                type="danger"
-                plain
-                :disabled="!canWrite || !breaker?.tripped"
-                :loading="dangerBusy === 'breaker'"
-                :title="canWrite ? '' : WRITE_HINT"
-                @click="doResetBreaker"
-              >
-                确认配额已恢复，恢复 worker
-              </el-button>
-            </div>
-          </section>
 
-          <!-- 2. 本地播放缓存 -->
+          <!-- 1. 本地播放缓存 -->
           <section
             id="danger-cache"
             class="admin-card danger-card"

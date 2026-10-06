@@ -36,7 +36,7 @@ _SRC_WORKER = _ROOT / "backend" / "worker.py"
 
 # main.py 里被 `if not _is_api_role:` 门住的后台任务模块（worker 必须逐条接过）
 _ROLE_GATED_TASKS = (
-    "maintenance", "probe_worker", "enrich_worker",
+    "maintenance", "enrich_worker",
     "reminders", "auto_scan", "db_backup", "change_watcher",
     "local_cache_worker",
 )

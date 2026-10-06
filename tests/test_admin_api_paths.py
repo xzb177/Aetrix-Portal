@@ -18,7 +18,7 @@ from pathlib import Path
 ADMIN_TS = Path(__file__).resolve().parents[1] / "admin_frontend" / "src" / "api" / "admin.ts"
 
 # 必须是「直接挂在 /api/admin 下」的路径（services_router 的 prefix 就是它）
-FLAT_PREFIXES = ("/services/", "/quota-breaker/")
+FLAT_PREFIXES = ("/services/",)
 
 
 def _registered_admin_routes() -> set[str]:
@@ -43,8 +43,6 @@ def test_admin_ts_uses_paths_that_backend_actually_registers():
     routes = _registered_admin_routes()
     assert routes, "没能从后端解析出 services_router 的路由（源码结构变了？）"
     assert "/api/admin/services/status" in routes, sorted(routes)
-    assert "/api/admin/quota-breaker/status" in routes, sorted(routes)
-    assert "/api/admin/quota-breaker/reset" in routes, sorted(routes)
 
 
 def test_no_double_emby_prefix_in_flat_endpoints():

@@ -4,12 +4,9 @@ import {
   cleanLocalCache,
   fetchBackupConfig,
   fetchLocalCacheConfig,
-  fetchQuotaBreakerStatus,
   purgeLoginLogs,
-  resetQuotaBreaker,
   runBackupNow,
   type BackupConfig,
-  type QuotaBreakerStatus,
 } from '@/api/admin'
 import type { LocalCacheStats } from '@/types'
 
@@ -59,7 +56,6 @@ export async function confirmIrreversible(message: string, word: string, title: 
 }
 
 export function useDangerOps() {
-  const breaker = ref<QuotaBreakerStatus | null>(null)
   const cacheStats = ref<LocalCacheStats | null>(null)
   const backup = ref<BackupConfig | null>(null)
   const loading = ref(false)
@@ -78,16 +74,10 @@ export function useDangerOps() {
       cacheStats.value = cacheRes?.stats ?? null
       backup.value = backupRes ?? null
     } finally {
-      await loadBreaker()
       loading.value = false
     }
   }
 
-  /** 只拉熔断器状态：仪表盘只想显示那块小卡，不必把缓存与备份配置也拖回来 */
-  async function loadBreaker() {
-    const res = await fetchQuotaBreakerStatus().catch(() => null)
-    breaker.value = res?.breaker ?? null
-  }
 
   /** 立即备份一次（不是危险操作，但它是危险操作的前置动作，所以放在同一个地方） */
   async function backupNow(): Promise<boolean> {
@@ -104,30 +94,6 @@ export function useDangerOps() {
     }
   }
 
-  /** 手动恢复配额熔断器：状态读不到或本来就没触发时**不做**（不盲操作） */
-  async function resetBreakerNow(): Promise<boolean> {
-    if (!breaker.value?.tripped) return false
-    try {
-      await ElMessageBox.confirm(
-        '恢复后 worker 会立刻重新请求上游。如果配额其实还没恢复，会马上再撞一次 403 并重新熔断。',
-        '手动恢复配额熔断器',
-        { type: 'warning', confirmButtonText: '确认恢复', cancelButtonText: '取消' },
-      )
-    } catch {
-      return false
-    }
-    busy.value = 'breaker'
-    try {
-      await resetQuotaBreaker()
-      ElMessage.success('熔断器已恢复，worker 重新开始工作')
-      await loadState()
-      return true
-    } catch {
-      return false
-    } finally {
-      busy.value = ''
-    }
-  }
 
   /** 清理 / 清空本地播放缓存。清空全部不可恢复，要求手打「清空」。 */
   async function cleanCache(mode: CacheCleanMode): Promise<boolean> {
@@ -189,15 +155,12 @@ export function useDangerOps() {
 
   return {
     backup,
-    breaker,
     busy,
     cacheStats,
     cleanCache,
-    loadBreaker,
     loadState,
     loading,
     purgeLogs,
     backupNow,
-    resetBreakerNow,
   }
 }

@@ -30,7 +30,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend import models
 from backend.emby_server import models as em
-from backend.emby_server import probe_worker, scanner, soft_delete
+from backend.emby_server import scanner, soft_delete
 from backend.integrations import store
 
 
@@ -436,20 +436,6 @@ def test_resurrected_item_is_never_fast_skipped(db):
 
 
 # ==================== 后台队列不该再碰下架的条目 ====================
-
-def test_probe_queue_skips_deleted_items(db):
-    lib = _lib(db)
-    hidden = _item(db, lib.id)
-    db.query(em.MediaItem).filter(em.MediaItem.id == hidden).update(
-        {"probe_status": "pending"}, synchronize_session=False)
-    db.commit()
-    soft_delete.mark_soft_deleted(db, [hidden])
-    db.commit()
-
-    assert probe_worker._claim_batch(db, 10) == []
-
-
-# ==================== 回滚：MEDIA_SOFT_DELETE=0 ====================
 
 def test_cleanup_hard_deletes_when_disabled(db, monkeypatch):
     monkeypatch.setenv("MEDIA_SOFT_DELETE", "0")

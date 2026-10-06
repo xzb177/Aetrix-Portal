@@ -703,18 +703,6 @@ export interface BackendServiceStatus {
 export const fetchBackendServices = () =>
   get<{ success: boolean; services: BackendServiceStatus[] }>(`/services/status`)
 
-export interface QuotaBreakerStatus {
-  tripped: boolean
-  consecutive_403: number
-  threshold: number
-  tripped_at: number | null
-  backoff_sec: number
-}
-export const fetchQuotaBreakerStatus = () =>
-  get<{ success: boolean; breaker: QuotaBreakerStatus }>(`/quota-breaker/status`)
-export const resetQuotaBreaker = () =>
-  post<{ success: boolean; message: string }>(`/quota-breaker/reset`)
-
 export interface ServerPayload {
   name: string
   kind: ServerKind
