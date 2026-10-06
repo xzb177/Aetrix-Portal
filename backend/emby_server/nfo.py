@@ -83,6 +83,63 @@ def _pick_year(root: ET.Element) -> Optional[int]:
     return None
 
 
+def _parse_streamdetails(root):
+    """Parse <fileinfo><streamdetails>, extract video/audio tech specs.
+
+    Kodi NFO format:
+    <fileinfo><streamdetails>
+      <video><codec>h264</codec><width>1920</width><height>1080</height></video>
+      <audio><codec>aac</codec><channels>2</channels></audio>
+    </streamdetails></fileinfo>
+
+    Returns dict with possible keys: video_codec, video_width,
+    video_height, video_duration (seconds), audio_codec, audio_channels.
+    Empty dict if no streamdetails.
+    """
+    out = {}
+    fileinfo = root.find("fileinfo")
+    if fileinfo is None:
+        return out
+    sd = fileinfo.find("streamdetails")
+    if sd is None:
+        return out
+    video = sd.find("video")
+    if video is not None:
+        codec = _text(video, "codec") or _text(video, "micodec")
+        if codec:
+            out["video_codec"] = codec
+        try:
+            w = int(_text(video, "width"))
+            if w > 0:
+                out["video_width"] = w
+        except (TypeError, ValueError):
+            pass
+        try:
+            h = int(_text(video, "height"))
+            if h > 0:
+                out["video_height"] = h
+        except (TypeError, ValueError):
+            pass
+        try:
+            dur = int(_text(video, "durationinseconds"))
+            if dur > 0:
+                out["video_duration"] = dur
+        except (TypeError, ValueError):
+            pass
+    audio = sd.find("audio")
+    if audio is not None:
+        codec = _text(audio, "codec") or _text(audio, "micodec")
+        if codec:
+            out["audio_codec"] = codec
+        try:
+            ch = int(_text(audio, "channels"))
+            if ch > 0:
+                out["audio_channels"] = ch
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def parse_nfo(text: str) -> Optional[Dict[str, Any]]:
     """解析 NFO 文本 → 元数据 dict；解析失败或没有可用字段返回 None。"""
     if not text or not isinstance(text, str):
@@ -113,6 +170,8 @@ def parse_nfo(text: str) -> Optional[Dict[str, Any]]:
         "imdb_id": _pick_id(root, "imdb"),
         "tvdb_id": _pick_id(root, "tvdb"),
     }
+    # 媒体流信息（fileinfo/streamdetails）：NFO 优先于文件名解析
+    data["streamdetails"] = _parse_streamdetails(root)
     if kind == "episodedetails":
         data["season"] = _text(root, "season")
         data["episode"] = _text(root, "episode")
@@ -157,6 +216,19 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str) -> None:
         item.last_scraped_at = datetime.now()
         # 文字来自本地 NFO（用户自己整理的，最权威）
         item.metadata_source = "nfo"
+    # 媒体流信息（NFO streamdetails 优先于文件名解析，更准确）
+    sd = data.get("streamdetails") or {}
+    if sd.get("video_codec"):
+        item.video_codec = sd["video_codec"]
+    if sd.get("video_width"):
+        item.width = sd["video_width"]
+    if sd.get("video_height"):
+        item.height = sd["video_height"]
+    if sd.get("video_duration"):
+        # duration_ticks 是 100ns ticks
+        item.duration_ticks = int(sd["video_duration"] * 10_000_000)
+    if sd.get("audio_codec"):
+        item.audio_codec = sd["audio_codec"]
     if data.get("plot"):
         item.overview = data["plot"]
     if data.get("rating") is not None:
