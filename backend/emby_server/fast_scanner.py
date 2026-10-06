@@ -262,6 +262,17 @@ def _collect_files(paths: tuple[str, ...]) -> list[FastScanFile]:
     """从所有库路径收集文件清单"""
     files: list[FastScanFile] = []
     for path in paths:
+        # 本地路径：直接走文件系统（CI 冒烟测试用 /tmp 路径）
+        import os as _os
+        if _os.path.isdir(path):
+            for _root, _dirs, _files in _os.walk(path):
+                for _fn in _files:
+                    _ext = _os.path.splitext(_fn)[1].lower()
+                    if _ext not in VIDEO_EXTS:
+                        continue
+                    _full = _os.path.join(_root, _fn)
+                    files.append(FastScanFile(path=_full, name=_fn, size=_os.path.getsize(_full), mtime=_os.path.getmtime(_full)))
+            continue
         split = _split_rclone_path(path)
         if split is None:
             logger.warning("路径 %s 不在已知挂载映射中，跳过", path)
