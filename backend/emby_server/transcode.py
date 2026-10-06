@@ -1,0 +1,210 @@
+# -*- coding: utf-8 -*-
+"""按需转码（弱网降码率）：码率档位 + 持久化缓存 + 并发硬限制
+
+Jellyfin 式按需转码的最小可用实现：
+
+- 触发：客户端请求转码（``video_hls`` 路由），不预转码。
+- 档位：480p / 720p / 1080p 三档，按客户端请求的码率就近归档，
+  只转需要的档，不转任意码率。
+- 缓存：整片转完（ffmpeg 正常退出、且从 0 开始转）的输出落盘持久化
+  （``EMBY_TRANSCODE_CACHE_DIR``，默认 ``/data/transcode_cache``），
+  同一片同档位第二次直接复用，不再起 ffmpeg。
+- 限流：同时最多 ``TRANSCODE_MAX_CONCURRENT`` 路（默认 2，VPS 性能有限），
+  超了 503 让客户端降级直连。
+
+转码命令的构造仍在 ``streaming.build_hls_command``（全项目只一套），
+本模块只做档位 / 缓存 / 限流编排，不重复造 ffmpeg 命令。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import shutil
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
+
+# 三档转码：只转需要的档。码率按 H.264 veryfast 的经验值给，
+# 弱网用户 480p 1Mbps 能流畅，720p 2.5Mbps 够手机看。
+TIERS: dict[str, dict[str, int]] = {
+    "480p": {"height": 480, "video_bitrate": 1_000_000, "audio_bitrate": 128_000},
+    "720p": {"height": 720, "video_bitrate": 2_500_000, "audio_bitrate": 128_000},
+    "1080p": {"height": 1080, "video_bitrate": 5_000_000, "audio_bitrate": 192_000},
+}
+_TIER_ORDER = ("480p", "720p", "1080p")
+
+
+def _streaming():
+    """延迟导入 streaming，避免循环导入（streaming 的回收钩子反过来调本模块）。"""
+    from backend.emby_server import streaming
+    return streaming
+
+
+def cache_dir() -> str:
+    return os.getenv("EMBY_TRANSCODE_CACHE_DIR", "/data/transcode_cache")
+
+
+def max_concurrent() -> int:
+    try:
+        value = int(os.getenv("TRANSCODE_MAX_CONCURRENT", "2") or "2")
+    except ValueError:
+        value = 2
+    return value if value > 0 else 2
+
+
+def pick_tier(video_bitrate: int, src_height: Optional[int] = None) -> str:
+    """按客户端请求的码率就近归档。
+
+    ``src_height`` 已知且低于档位时不做无意义的上采样（480p 源要 1080p
+    也只给 480p 档）。
+    """
+    if video_bitrate >= 4_000_000:
+        tier = "1080p"
+    elif video_bitrate >= 1_500_000:
+        tier = "720p"
+    else:
+        tier = "480p"
+    if src_height:
+        while tier != "480p" and TIERS[tier]["height"] > src_height:
+            tier = _TIER_ORDER[_TIER_ORDER.index(tier) - 1]
+    return tier
+
+
+def cache_key(item_guid: str, tier: str, fingerprint: Optional[str] = None) -> str:
+    """缓存键：同一片 + 同档位 + 同源文件指纹 → 同一份转码缓存。
+
+    源文件被替换（指纹变化）时缓存自动失效，不会播出旧内容。
+    """
+    raw = f"{item_guid}|{tier}|{fingerprint or ''}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _cache_valid(path: str) -> bool:
+    """缓存目录有效：有播放列表 + 至少一个分片。"""
+    if not os.path.isdir(path):
+        return False
+    try:
+        playlist = os.path.join(path, "master.m3u8")
+        if not (os.path.isfile(playlist) and os.path.getsize(playlist) > 0):
+            return False
+        return any(name.endswith(".ts") for name in os.listdir(path))
+    except OSError:
+        # 判断与读取之间目录被删 / 挂载掉线：视为无效，不抛异常
+        return False
+
+
+def find_cache(item_guid: str, tier: str, fingerprint: Optional[str] = None) -> Optional[str]:
+    """找可复用的转码缓存，命中返回缓存目录，否则 None。"""
+    path = os.path.join(cache_dir(), cache_key(item_guid, tier, fingerprint))
+    if _cache_valid(path):
+        logger.info("转码缓存命中 %s %s", item_guid, tier)
+        return path
+    return None
+
+
+def register_cache_session(cache_path: str, user_id: int, item_guid: str, tier: str) -> str:
+    """把缓存目录注册成一个「无进程」的转码会话。
+
+    复用 ``video_hls`` 已有的会话服务逻辑（播放列表重写 / 切片投递）；
+    ``cached=True`` 让回收时跳过删目录（见 ``streaming._terminate_and_cleanup``），
+    ``proc=None`` 表示没有 ffmpeg 进程在跑。
+    """
+    session_id = uuid.uuid4().hex[:16]
+    _streaming()._TRANSCODE_PROCS[session_id] = {
+        "proc": None,
+        "dir": cache_path,
+        "started": datetime.now(),
+        "user_id": user_id,
+        "item_guid": item_guid,
+        "tier": tier,
+        "cached": True,
+    }
+    return session_id
+
+
+def live_transcode_count() -> int:
+    """当前正在跑（有 ffmpeg 进程）的转码路数。缓存复用不占路数。"""
+    streaming = _streaming()
+    count = 0
+    for sid in streaming.active_transcode_ids():
+        info = streaming.get_transcode(sid)
+        if not info or info.get("cached"):
+            continue
+        proc = info.get("proc")
+        if proc is not None and proc.poll() is None:
+            count += 1
+    return count
+
+
+def ensure_slot_or_503() -> None:
+    """转码入场检查：达到并发上限就 503，让客户端降级走直连。
+
+    这里只做「检查时」的判定（与 ``playback_policy.ensure_transcode_allowed``
+    同口径，接受瞬时竞态；持续超限由 ``enforce_transcode_capacity`` 回收闲置）。
+    """
+    limit = max_concurrent()
+    running = live_transcode_count()
+    if running >= limit:
+        raise HTTPException(
+            status_code=503,
+            detail=f"转码忙（{running}/{limit} 路），请使用直连播放",
+        )
+
+
+def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
+    """转码完成 → 落盘进持久缓存。返回是否已提升。
+
+    只提升「整片转完」的会话：ffmpeg 正常退出（returncode 0）、从 0 开始转、
+    有档位信息。seek 中途开始的、转码失败的都不进缓存。
+    由 ``streaming.reap_stale_transcodes`` 在回收前调用。
+    """
+    if info.get("cached"):
+        return False
+    proc = info.get("proc")
+    if proc is None or proc.poll() != 0:
+        return False
+    if (info.get("start_seconds") or 0) > 1:
+        return False
+    tier = info.get("tier")
+    key = info.get("cache_key")
+    src_dir = info.get("dir")
+    if not tier or not key or not src_dir:
+        return False
+    if not _cache_valid(src_dir):
+        return False
+    dst = os.path.join(cache_dir(), key)
+    try:
+        os.makedirs(cache_dir(), exist_ok=True)
+    except OSError:
+        return False
+    if os.path.isdir(dst):
+        # 并发转完：先到的已落盘，后到的直接丢弃（调用方正常回收删目录）
+        return False
+    try:
+        shutil.move(src_dir, dst)
+    except OSError as exc:
+        logger.warning("转码缓存落盘失败 %s: %s", session_id, exc)
+        return False
+    try:
+        meta = {
+            "item_guid": info.get("item_guid"),
+            "tier": tier,
+            "fingerprint": info.get("fingerprint"),
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        with open(os.path.join(dst, "cache.json"), "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False)
+    except OSError:
+        pass
+    # 会话继续登记，指向缓存目录：正在拉切片的客户端不受影响；
+    # 回收时 cached=True 跳过删目录，缓存留给下次复用。
+    info["dir"] = dst
+    info["cached"] = True
+    logger.info("转码缓存落盘 %s %s", info.get("item_guid"), tier)
+    return True
