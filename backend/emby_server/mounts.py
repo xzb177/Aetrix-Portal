@@ -279,6 +279,9 @@ class MountFile:
     name: str
     size: int = 0
     is_strm: bool = False
+    # 远端文件稳定 ID（Drive file_id）：改名/移动不变
+    # 扫描器用它做文件身份，改名不丢元数据。
+    file_id: str = ""
 
 
 @dataclass
@@ -293,6 +296,8 @@ class MountEntry:
     is_dir: bool
     size: int = 0
     entry_id: str = ""
+    #: 文件稳定 ID（Drive file_id）：目录为空串。list_dir 透出给扫描器。
+    file_id: str = ""
     #: 远端最后修改时间（Unix 秒；拿不到就是 0.0）。追新靠它做「新增」窗口过滤——
     #: 之前追新为此绕开公共通道直接读 rclone 原始 JSON 的 ModTime，等于自带一条
     #: 无限流的旁路（2026-10 rclone 请求风暴）。带在条目上，公共通道就能直接复用。
@@ -1269,7 +1274,8 @@ class RemoteMount(MountProvider):
                             continue
                         seen_files.add(entry.rel)
                         yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
-                                        is_strm=_is_strm_name(entry.name))
+                                        is_strm=_is_strm_name(entry.name),
+                                        file_id=getattr(entry, "file_id", "") or "")
 
     def read_text(self, rel: str) -> str:
         """默认实现：解析成直链后把内容当文本读（用于 .strm 与字幕）"""

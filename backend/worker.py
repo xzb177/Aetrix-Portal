@@ -260,6 +260,15 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动追新失败（可忽略）: {e}")
 
+        # v2.52.0: Drive Changes API 增量发现（O(变化量) 代替 O(总量)）
+        try:
+            from backend.emby_server import drive_changes
+            if drive_changes.start():
+                started.append("drive_changes")
+                logger.info("✅ Drive 增量发现已启动")
+        except Exception as e:
+            logger.warning(f"启动 Drive 增量发现失败（可忽略）: {e}")
+
         # VPS 本地缓存（播放线路 cache）：默认关闭；开启后串行、限速地拉热门片到本机
         try:
             from backend.emby_server import local_cache_worker
