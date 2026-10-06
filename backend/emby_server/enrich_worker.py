@@ -775,6 +775,10 @@ def _claim_batch(db, limit: int) -> list:
               # 处方 4：repair 是用户主动触发（图片修复排队），数量少、可见，
               # 不应陪 4 万条积压等退避——立即置顶抢走（priority=100）。
               em.MediaItem.repair_requested_at.isnot(None))
+    # 元数据锁定（P3，Emby 式）：管理员手动锁定的条目，自动补全永远跳过。
+    # isnot(True) 而不是 == False：容忍 NULL 旧行（migration 给 DEFAULT 0，
+    # 但手写 SQL/旧版本 ORM 可能留 NULL），NULL 视为未锁定。
+    unlocked = em.MediaItem.metadata_locked.isnot(True)
     group_key = _func.coalesce(em.MediaItem.series_id, em.MediaItem.id)
 
     base_order = (
@@ -799,7 +803,7 @@ def _claim_batch(db, limit: int) -> list:
     groups_q = (db.query(group_key.label("g"),
                          _func.max(em.MediaItem.date_added).label("latest"),
                          em.MediaItem.library_id.label("lib"))
-                .filter(em.MediaItem.enrich_status == "pending", due)
+                .filter(em.MediaItem.enrich_status == "pending", due, unlocked)
                 # library_id 必须显式入组（PG 要求）：组键是全局 id，
                 # 同一组恒在同一库内，(group_key, library_id) 与 group_key 等价。
                 .group_by(group_key, em.MediaItem.library_id))
@@ -810,7 +814,7 @@ def _claim_batch(db, limit: int) -> list:
         if len(claimed) >= limit:
             break
         q = (db.query(em.MediaItem)
-             .filter(em.MediaItem.enrich_status == "pending", due,
+             .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
                      group_key == gid)
              .order_by(
                  # 父级（剧/电影）先于子级：父级先落 done，子集才能纯继承

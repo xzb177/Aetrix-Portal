@@ -21,6 +21,8 @@ import {
   KeyRound,
   Layers,
   ListOrdered,
+  Lock,
+  LockOpen,
   PlugZap,
   RefreshCw,
   RotateCw,
@@ -37,6 +39,7 @@ import {
   fetchMetaSources,
   fetchTmdbKeys,
   fetchTmdbMirror,
+  lockItemMetadata,
   previewTmdb,
   probeMetaSources,
   searchItemsForBind,
@@ -47,6 +50,7 @@ import {
   saveTmdbMirror,
   testMetaSourceKeys,
   testTmdbKeys,
+  unlockItemMetadata,
 } from '@/api/admin'
 import type {
   ItemSearchResult,
@@ -141,6 +145,30 @@ function clearBindSelection() {
   bindSelectedItem.value = null
   bindItemId.value = ''
   bindPreview.value = null
+}
+
+// ==================== 元数据锁定（P3，Emby 式手动识别） ====================
+// 锁定 = 自动补全（enrich）不再碰这条，防止自动刷新覆盖手动整理成果。
+// 手动绑定/手动重刮不受锁定影响——锁定防的是「自动」，手动永远优先。
+const lockLoadingId = ref<number | null>(null)
+
+async function toggleItemLock(item: ItemSearchResult) {
+  lockLoadingId.value = item.id
+  try {
+    const res = item.metadata_locked
+      ? await unlockItemMetadata(item.id)
+      : await lockItemMetadata(item.id)
+    item.metadata_locked = res.item.metadata_locked
+    ElMessage.success(
+      item.metadata_locked
+        ? `「${item.name}」已锁定：自动补全不再覆盖它`
+        : `「${item.name}」已解锁：恢复自动补全`,
+    )
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '操作失败')
+  } finally {
+    lockLoadingId.value = null
+  }
 }
 // TMDB 对中文剧集/综艺收录偏少，自动刮削搜不到的条目在这里手动指定 ID。
 // 流程：填条目 ID → 填 TMDB ID → 预览确认是哪部片 → 绑定（或解绑）。
@@ -1158,16 +1186,31 @@ onMounted(() => {
             v-for="item in bindSearchResults"
             :key="item.id"
             class="ms-result"
-            :class="{ 'is-selected': bindSelectedItem?.id === item.id }"
+            :class="{ 'is-selected': bindSelectedItem?.id === item.id, 'is-locked': item.metadata_locked }"
             style="cursor: pointer"
             @click="selectBindItem(item)"
           >
-            <span>{{ item.name }}</span>
+            <span class="ms-result-name">
+              {{ item.name }}
+              <Lock v-if="item.metadata_locked" :size="13" class="lock-mark" />
+            </span>
             <span v-if="item.year" class="ms-hint">（{{ item.year }}）</span>
             <span class="ms-hint">{{ item.item_type === 'series' ? '剧集' : '电影' }}</span>
             <span class="mini-badge" :class="item.tmdb_id ? 'ok' : 'warn'">
               {{ item.tmdb_id ? `已绑 ${item.tmdb_id}` : '未绑定' }}
             </span>
+            <el-button
+              class="lock-btn"
+              size="small"
+              :type="item.metadata_locked ? 'warning' : 'default'"
+              :loading="lockLoadingId === item.id"
+              :title="item.metadata_locked ? '已锁定：点击解锁，恢复自动补全' : '锁定：自动补全不再覆盖此条目'"
+              @click.stop="toggleItemLock(item)"
+            >
+              <Lock v-if="item.metadata_locked" :size="14" />
+              <LockOpen v-else :size="14" />
+              {{ item.metadata_locked ? '已锁定' : '锁定' }}
+            </el-button>
           </div>
         </div>
         <div v-if="bindSelectedItem" class="ms-results">

@@ -983,6 +983,7 @@ def search_items_for_bind(
                 "year": r.production_year,
                 "item_type": r.item_type,
                 "tmdb_id": r.tmdb_id,
+                "metadata_locked": bool(r.metadata_locked),
             }
             for r in rows
         ]
@@ -1112,3 +1113,62 @@ def bind_tmdb_id(
                  "tmdb_id": item.tmdb_id},
         "notes": notes,
     }
+
+
+# ==================== 元数据锁定（P3，Emby 式手动识别） ====================
+
+def _item_lock_view(item: "em.MediaItem") -> dict:
+    """条目锁定视图：名字/类型/TMDB ID/锁定态，供前端行按钮与详情展示"""
+    return {
+        "id": item.id,
+        "name": item.name,
+        "item_type": item.item_type,
+        "tmdb_id": item.tmdb_id,
+        "metadata_locked": bool(item.metadata_locked),
+    }
+
+
+def _lock_item_or_404(db: Session, item_id: int) -> "em.MediaItem":
+    item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    return item
+
+
+@admin_emby_router.get("/scrape/items/{item_id}")
+def get_item_lock_status(
+    item_id: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """条目详情（含 metadata_locked，供管理端展示锁定状态）。"""
+    return {"success": True, "item": _item_lock_view(_lock_item_or_404(db, item_id))}
+
+
+@admin_emby_router.post("/scrape/items/{item_id}/lock")
+def lock_item_metadata(
+    item_id: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """锁定条目元数据（Emby 式）：自动补全（enrich 抢单）不再碰它，
+    防止自动刷新覆盖管理员手动整理/手动识别的成果。
+    手动操作（手动绑定 bind-tmdb、手动重刮 rescrape）不受锁定影响——手动永远优先于锁定。
+    """
+    item = _lock_item_or_404(db, item_id)
+    item.metadata_locked = True
+    db.commit()
+    return {"success": True, "item": _item_lock_view(item)}
+
+
+@admin_emby_router.post("/scrape/items/{item_id}/unlock")
+def unlock_item_metadata(
+    item_id: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """解锁条目元数据：恢复自动补全资格。"""
+    item = _lock_item_or_404(db, item_id)
+    item.metadata_locked = False
+    db.commit()
+    return {"success": True, "item": _item_lock_view(item)}
