@@ -1441,6 +1441,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
         image_tags = {"Primary": _library_cover_tag(cover_path)} if cover_path else {}
         items.append({
             "Name": lib.name,
+            "ServerId": SERVER_ID,
             "Id": lib.guid,
             "Type": "CollectionFolder",
             # 虚拟库跨电影/剧集聚合，统一按 mixed 上报，客户端才能正常当普通文件夹浏览
@@ -1448,6 +1449,9 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             "IsFolder": True,
             "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False, "IsFavorite": False},
             "ImageTags": image_tags,
+            "BackdropImageTags": [],
+            "SortName": lib.name,
+            "LocationType": "FileSystem",
             "ChildCount": count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib),
         })
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
