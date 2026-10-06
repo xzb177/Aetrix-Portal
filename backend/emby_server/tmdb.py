@@ -218,6 +218,46 @@ def _fold_punct(s: str) -> str:
     return _PUNCT_FOLD_RE.sub(lambda m: _PUNCT_FOLD[m.group(0)], s) if s else s
 
 
+# TMDB 类型 id → 中文名：全项目唯一一份映射（横切纪律：不许有第二套）。
+# 搜索接口只给 genre_ids，用它翻译；详情接口给 genres=[{id, name}]，
+# name 已是本地化中文、优先用 name，缺 name 时才回退到这张表。
+_GENRE_NAMES = {
+    28: "动作", 12: "冒险", 16: "动画", 35: "喜剧", 80: "犯罪",
+    99: "纪录片", 18: "剧情", 10751: "家庭", 14: "奇幻", 36: "历史",
+    27: "恐怖", 10402: "音乐", 9648: "悬疑", 10749: "爱情",
+    878: "科幻", 10770: "电视电影", 53: "惊悚", 10752: "战争", 37: "西部",
+}
+_MAX_GENRES = 4
+
+
+def _genres_from_details(data: dict) -> list:
+    """从详情接口 payload 提取类型名（不发请求，纯解析）。
+
+    payload 形态：``genres=[{"id": 28, "name": "动作"}, ...]``。
+    name 为空或缺失时回退到 ``_GENRE_NAMES`` 按 id 翻译；都取不到就跳过
+    （不写原文 id 数字——搜索路径 apply() 写数字是历史行为，保持不动）。
+    """
+    out = []
+    for g in (data or {}).get("genres") or []:
+        name = ""
+        gid = None
+        if isinstance(g, dict):
+            name = (g.get("name") or "").strip()
+            gid = g.get("id")
+        elif isinstance(g, (int, str)):
+            gid = g
+        if not name and gid is not None:
+            try:
+                name = _GENRE_NAMES.get(int(gid), "")
+            except (TypeError, ValueError):
+                name = ""
+        if name and name not in out:
+            out.append(name)
+        if len(out) >= _MAX_GENRES:
+            break
+    return out
+
+
 def _norm_text(s):
     if not s:
         return ""
@@ -1275,10 +1315,18 @@ class TmdbClient:
         """把详情接口的返回落到条目上（与 enrich 同口径，供批量扫描预先取回后套用）"""
         if not data:
             return
-        # 详情只补缺项（简介/评分/别名），不覆盖 NFO 提供的文字。
+        # 详情只补缺项（简介/评分/别名/类型），不覆盖 NFO 提供的文字。
         # 用 getattr 兜底：调用方（含测试里的轻量替身）未必带这个字段。
         if not getattr(item, "metadata_source", None):
             item.metadata_source = "tmdb"
+        # 类型：详情接口直接给 genres=[{id, name}]（language=zh-CN 下 name 已是中文）。
+        # 这是「有 tmdb_id 却无类型」的主因：以前 apply_details 完全忽略它，
+        # 凡走 tmdb_id → 详情分支的（NFO 自带 tmdb_id、别名匹配、已有 id 补缺）
+        # 都永远拿不到类型，只有搜索命中走 apply() 的才有。
+        if not (getattr(item, "genres", None) or "").strip():
+            gnames = _genres_from_details(data)
+            if gnames:
+                item.genres = ",".join(gnames)
         imdb = (data.get("external_ids") or {}).get("imdb_id") or data.get("imdb_id")
         if imdb:
             item.imdb_id = imdb
@@ -1375,13 +1423,9 @@ class TmdbClient:
             item.aliases = ",".join(dict.fromkeys(merged))[:2000]
         genre_ids = hit.get("genre_ids") or []
         if genre_ids:
-            mapping = {
-                28: "动作", 12: "冒险", 16: "动画", 35: "喜剧", 80: "犯罪",
-                99: "纪录片", 18: "剧情", 10751: "家庭", 14: "奇幻", 36: "历史",
-                27: "恐怖", 10402: "音乐", 9648: "悬疑", 10749: "爱情",
-                878: "科幻", 10770: "电视电影", 53: "惊悚", 10752: "战争", 37: "西部",
-            }
-            item.genres = ",".join(mapping.get(g, str(g)) for g in genre_ids[:4])
+            item.genres = ",".join(
+                _GENRE_NAMES.get(g, str(g)) for g in genre_ids[:_MAX_GENRES]
+            )
 
 
 tmdb_client = TmdbClient()  # 进程级单例：一次扫描里的预热与写库共用同一份缓存与连接池
