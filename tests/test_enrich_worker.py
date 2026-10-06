@@ -474,13 +474,15 @@ def test_retry_unmatched_purges_search_cache(db, tmp_path, monkeypatch):
 
     monkeypatch.setenv("EMBY_TMDB_CACHE_DIR", str(tmp_path / "tmdb-cache"))
     monkeypatch.setattr(tmdb_cache, "_disabled", False)
+    # 语言是缓存维度：worker 按当前首选语言清，这里固定住
+    monkeypatch.setattr(tmdb, "preferred_language", lambda db=None: "zh-CN")
     _make_item(db, item_type="series", name="终态无望剧",
                enrich_status="done", metadata_source="none",
                file_fingerprint="fp-cache")
-    # 预置一份阴性缓存（与 worker 补搜时同键：归一化名字 + year 0）
+    # 预置一份阴性缓存（与 worker 补搜时同键：归一化名字 + year 0 + 语言维度）
     norm = tmdb._norm_text("终态无望剧")
-    tmdb_cache.save_search("tv", norm, 0, [])
-    path = tmdb_cache._key_path("tv", norm, 0)
+    tmdb_cache.save_search("tv", norm, 0, [], "zh-CN")
+    path = tmdb_cache._key_path("tv", norm, 0, "zh-CN")
     assert os.path.exists(path)
 
     n = enrich_worker.retry_unmatched(db)
