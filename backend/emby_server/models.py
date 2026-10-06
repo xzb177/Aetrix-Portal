@@ -167,6 +167,9 @@ class MediaItem(Base):
     file_path = Column(String(1024), index=True)
     container = Column(String(20))
     size = Column(BigInteger, default=0)
+    # 增量扫描（v2.50.0）：文件修改时间戳，用于 mtime 比对跳过未变更文件。
+    # 为空（老数据）时视为已变更，走一次全量比对后回填。
+    file_mtime = Column(Float, default=0)
     duration_ticks = Column(BigInteger, default=0)  # 100ns ticks
     bitrate = Column(Integer, default=0)
     width = Column(Integer, default=0)
