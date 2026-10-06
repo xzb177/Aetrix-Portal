@@ -1066,6 +1066,24 @@ const liveTasks = computed(() => {
 })
 
 const queueHistory = computed(() => (scanQueue.value?.history || []).slice(0, 5))
+
+/** v2.49.0: "最近完成"区域显示开关，存 localStorage */
+const showScanHistory = ref(localStorage.getItem('aetrix_show_scan_history') !== '0')
+watch(showScanHistory, (v) => {
+  try { localStorage.setItem('aetrix_show_scan_history', v ? '1' : '0') } catch { /* ignore */ }
+})
+
+/** v2.49.0: 格式化扫描数量，如"扫描 2325 条 · 新增 50 条" */
+function scanCountText(t: any): string {
+  const added = Number(t.added || 0)
+  const updated = Number(t.updated || 0)
+  const removed = Number(t.removed || 0)
+  const total = added + updated + removed
+  const parts: string[] = []
+  if (total > 0) parts.push(`扫描 ${total} 条`)
+  if (added > 0) parts.push(`新增 ${added} 条`)
+  return parts.join(' · ')
+}
 const queueHasContent = computed(() => !!scanQueue.value && (queueBusy.value || queueHistory.value.length > 0))
 
 function liveFor(l: EmbyLibrary): EmbyScanTask | null {
@@ -1381,20 +1399,26 @@ function typeLabel(t: string): string {
         </div>
 
         <div class="queue-col">
-          <div class="queue-col-title">最近完成</div>
+          <div class="queue-col-title" style="display: flex; align-items: center; justify-content: space-between;">
+            <span>最近完成</span>
+            <el-switch v-model="showScanHistory" size="small" title="显示/隐藏扫描记录" />
+          </div>
+          <template v-if="showScanHistory">
           <div v-for="t in queueHistory" :key="'done-' + t.library_id + t.requested_at" class="queue-row">
             <div class="queue-row-head">
               <span class="queue-name">{{ t.name }}</span>
               <span class="mini-badge" :class="taskBadge(t).cls">{{ taskBadge(t).text }}</span>
             </div>
             <div class="queue-row-sub mono">
-              {{ [t.duration_ms != null ? `耗时 ${fmtDuration(t.duration_ms)}` : '',
+              {{ [scanCountText(t),
+                 t.duration_ms != null ? `耗时 ${fmtDuration(t.duration_ms)}` : '',
                  queuedSince(t), triggerLabel(t.trigger),
                  t.request_count > 1 ? `被点 ${t.request_count} 次` : ''].filter(Boolean).join(' · ') }}
             </div>
             <div v-if="t.error" class="queue-row-sub danger" :title="t.error">{{ t.error }}</div>
           </div>
           <div v-if="!queueHistory.length" class="queue-empty">还没有跑完的扫描</div>
+          </template>
         </div>
       </div>
     </div>

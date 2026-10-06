@@ -1289,6 +1289,10 @@ export interface EmbyScanTask {
    * db = 从执行扫描的节点写进库里的状态合成（进度按刷盘间隔更新，不是实时的）
    */
   via?: 'redis' | 'db'
+  /** v2.49.0: 新增/更新/删除条数 */
+  added?: number | null
+  updated?: number | null
+  removed?: number | null
 }
 
 /** 一个媒体库的实时扫描状态（媒体库列表里的 scan_live） */
