@@ -375,7 +375,7 @@ def scan_library_fast(db, library, snapshot) -> dict:
     # 1. 拉清单：paths 为空但 mount_ids 有值时（如部署自检），
     # 用 mounts.library_sources 解析出实际路径（对齐旧 scanner）。
     _paths = tuple(snapshot.paths)
-    if not _paths and getattr(snapshot, mount_ids, None):
+    if not _paths and getattr(snapshot, "mount_ids", None):
         from backend.emby_server import mounts as _mounts
         _sources, _failed = _mounts.library_sources(library, db)
         _sp = tuple(s.path for s in _sources if getattr(s, path, None))
@@ -532,7 +532,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
         season_no = parsed.get("season")
         episode_no = parsed.get("episode")
 
-        if lib_type == "tvshows" and season_no is not None:
+        if season_no is not None:
             # 剧集：算 series_guid 和 season_guid
             # series 目录 = 季目录的父目录
             dirpath = os.path.dirname(f.path)
@@ -579,9 +579,6 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "_season_guid": se_guid,
             })
         else:
-            # 电影库：带季集号的文件是剧集，跳过（不对齐旧 scanner 的过滤）
-            if season_no is not None or episode_no is not None:
-                continue
             # 电影
             e_guid = item_guid(f.path)
             items_to_insert.append({
