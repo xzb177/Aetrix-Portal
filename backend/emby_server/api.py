@@ -306,10 +306,22 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
         )
         unplayed = {sid: n for sid, n in rows}
 
+    # 4) 演员表（v2.51.0：详情页 People 用，一条 IN 查询，不逐条 N+1）
+    people_map: dict[int, list] = {}
+    people_rows = (
+        db.query(em.EmbyPerson)
+        .filter(em.EmbyPerson.item_id.in_(item_ids))
+        .order_by(em.EmbyPerson.item_id, em.EmbyPerson.sort_order, em.EmbyPerson.id)
+        .all()
+    )
+    for p in people_rows:
+        people_map.setdefault(p.item_id, []).append(p)
+
     db.info["_aetrix_prefetch"] = {
         "umd": umd_map,
         "counts": counts,
         "unplayed": unplayed,
+        "people": people_map,
         "items": {i.id: i for i in items},
     }
 
@@ -495,9 +507,12 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         "Tags": [t for t in (item.tags or "").split(",") if t],
         "Taglines": [],
         "Studios": [{"Name": s, "Id": s} for s in (item.studios or "").split(",") if s],
-        "Countries": [],
-        "Languages": [],
-        "People": [],
+        # v2.51.0：国家/语言由 TMDB details 落库（origin_country / spoken_languages）；
+        # 没刮到的条目仍是 []（与以前一致，客户端按 [] 处理）。
+        "Countries": [c for c in (item.countries or "").split(",") if c],
+        "Languages": [l for l in (item.languages or "").split(",") if l],
+        # v2.51.0：演员表走 emby_people（TMDB credits 刮削），不再硬编码 []。
+        "People": _people_dto(item, db, prefetch),
         "RemoteTrailers": [],
         "ExternalUrls": _external_urls(item),
         "Subviews": [],
@@ -633,6 +648,38 @@ def _child_count(item: em.MediaItem, db: Session) -> int | None:
         if item.item_type == "series"
         else soft_delete.count_visible(db, em.MediaItem.parent_id == item.id)
     ) or None
+
+
+def _people_dto(item: em.MediaItem, db: Session, prefetch: dict) -> list[dict]:
+    """条目演员表（v2.51.0，Emby People 口径）。
+
+    列表页走 ``_prefetch_list_data`` 的批量预取（不 N+1）；单条（详情页等）
+    回退为单查。有头像的才给 ``PrimaryImageTag``——客户端只对有这个标记的
+    条目发图片请求（见 ``_item_dto`` 的 ImageTags 回退链注释，同理）。
+
+    注意 ``people_map is not None`` 的判法：预取跑过但该条目没有演员时，
+    ``map.get(item.id)`` 是 None——这时**不能**回退单查，否则列表页里每个
+    没演员的条目都会多一次查询，预取就白做了。
+    """
+    people_map = prefetch.get("people")
+    if people_map is not None:
+        rows = people_map.get(item.id, [])
+    else:
+        rows = (
+            db.query(em.EmbyPerson)
+            .filter(em.EmbyPerson.item_id == item.id)
+            .order_by(em.EmbyPerson.sort_order, em.EmbyPerson.id)
+            .all()
+        )
+    out: list[dict] = []
+    for p in rows:
+        entry = {"Name": p.name or "", "Role": p.role or "", "Type": "Actor"}
+        if p.image:
+            # 图片走 /emby/Persons/{name}/Images/Primary（media_routes），
+            # tag 用行 id：稳定且唯一，换头像不影响（图片内容寻址）。
+            entry["PrimaryImageTag"] = str(p.id)
+        out.append(entry)
+    return out
 
 
 def _user_data_dto(umd) -> dict:

@@ -2616,6 +2616,11 @@ def _purge_items(db: Session, item_ids: list) -> None:
     db.query(emby_models.ItemFacet).filter(
         emby_models.ItemFacet.item_id.in_(ids)
     ).delete(synchronize_session=False)
+    # v2.51.0 演员表：emby_people.item_id 外键指向 emby_items，不清掉这里
+    # PG 会报 FK 违反（与上面三个从属表同口径：批量删，不逐条）。
+    db.query(emby_models.EmbyPerson).filter(
+        emby_models.EmbyPerson.item_id.in_(ids)
+    ).delete(synchronize_session=False)
     db.query(emby_models.MediaItem).filter(
         emby_models.MediaItem.id.in_(ids)
     ).delete(synchronize_session=False)

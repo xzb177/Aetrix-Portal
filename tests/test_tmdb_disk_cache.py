@@ -142,15 +142,34 @@ def test_client_does_not_cache_failures(cache_dir, monkeypatch):
 
 
 def test_client_details_hits_disk(cache_dir, monkeypatch):
+    # v2.51.0 起 details 带 append_to_response=credits：mock 载荷也要带 credits，
+    # 否则会被当成升级前的老缓存而重拉（见下个测试）。
+    payload = {"id": "42", "name": "剧", "credits": {"cast": []}}
     client1, _ = _fake_client(monkeypatch)
-    with mock.patch.object(client1, "_get", return_value={"id": "42", "name": "剧"}):
+    with mock.patch.object(client1, "_get", return_value=dict(payload)):
         d1 = client1.details("42", "series")
-    assert d1 == {"id": "42", "name": "剧"}
+    assert d1 == payload
     client2, _ = _fake_client(monkeypatch)
     with mock.patch.object(client2, "_get",
                            side_effect=AssertionError("不应再发请求")):
         d2 = client2.details("42", "series")
-    assert d2 == {"id": "42", "name": "剧"}
+    assert d2 == payload
+
+
+def test_client_details_refetches_stale_payload_without_credits(cache_dir, monkeypatch):
+    """v2.51.0 前的老缓存（无 credits 键）视为过期：重拉一次，并用新载荷覆盖旧缓存。"""
+    tmdb_cache.save_details("tv", "42", {"id": "42", "name": "老载荷"})
+    client, _ = _fake_client(monkeypatch)
+    fresh = {"id": "42", "name": "新载荷", "credits": {"cast": []}}
+    with mock.patch.object(client, "_get", return_value=dict(fresh)) as m_get:
+        got = client.details("42", "series")
+    assert m_get.call_count == 1
+    assert got == fresh
+    # 新载荷已落盘：下一次不再请求
+    client2, _ = _fake_client(monkeypatch)
+    with mock.patch.object(client2, "_get",
+                           side_effect=AssertionError("不应再发请求")):
+        assert client2.details("42", "series") == fresh
 
 
 def test_single_flight_merges_concurrent_searches(cache_dir, monkeypatch):

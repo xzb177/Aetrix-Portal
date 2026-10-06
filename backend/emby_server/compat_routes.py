@@ -549,8 +549,39 @@ def studios_list(user: models.WebUser = Depends(get_emby_user), db: Session = De
 
 @emby_router.get("/emby/Persons")
 @emby_router.get("/Persons")
-def persons_list(user: models.WebUser = Depends(get_emby_user)):
-    return _empty_items()  # 刮削未落演员表，返回空而非 404
+def persons_list(user: models.WebUser = Depends(get_emby_user),
+                 db: Session = Depends(get_db),
+                 Limit: int | None = None,
+                 StartIndex: int = 0):
+    """演员列表（v2.51.0）：``emby_people`` 落库后返回真实数据。
+
+    以前刮削没落演员表，这里只能返回空（``_empty_items``）；现在 TMDB credits
+    已入库，同名合并为一条：``Id`` 取最早入库行的 id（稳定）；同名里只要有一条
+    有头像就给 ``PrimaryImageTag``（取图按名字找第一条有头像的行，
+    见 ``media_routes.person_image``）。
+    """
+    start = max(0, int(StartIndex or 0))
+    limit = 5000 if Limit is None else max(0, min(int(Limit), 5000))
+    base = (
+        db.query(
+            em.EmbyPerson.name,
+            func.min(em.EmbyPerson.id).label("pid"),
+            func.max(em.EmbyPerson.image).label("img"),
+        )
+        .group_by(em.EmbyPerson.name)
+        .order_by(em.EmbyPerson.name)
+    )
+    total = base.count()
+    items = []
+    # func.max(image)：只要同名里有一条有头像，max 出来就是非空 URL；
+    # 全空/全 NULL 时 max 是 '' 或 None，都判假。
+    for name, pid, img in base.offset(start).limit(limit).all():
+        entry = {"Name": name, "Id": str(pid), "Type": "Person",
+                 "ImageTags": {}, "BackdropImageTags": []}
+        if img:
+            entry["ImageTags"] = {"Primary": str(pid)}
+        items.append(entry)
+    return {"Items": items, "TotalRecordCount": total, "StartIndex": start}
 
 
 # ---- 媒体库视图别名 ----

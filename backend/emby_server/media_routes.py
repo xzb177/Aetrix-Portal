@@ -235,3 +235,36 @@ def item_image_index(item_id: str, image_type: str, index: str, request: Request
                       maxWidth=maxWidth, maxHeight=maxHeight, w=w, h=h)
 
 
+@emby_router.get("/emby/Persons/{name}/Images/Primary")
+@emby_router.get("/Persons/{name}/Images/Primary")
+def person_image(name: str, request: Request,
+                 db: Session = Depends(get_db),
+                 maxWidth: str | None = None, maxHeight: str | None = None,
+                 w: str | None = None, h: str | None = None):
+    """演员头像（v2.51.0）：``_item_dto`` 里 People 条目的 ``PrimaryImageTag``
+    指向这里，对标 Emby 官方的 ``/emby/Persons/{Name}/Images/Primary``。
+
+    同名演员取第一条有头像的行（``ORDER BY id``，行为稳定）。图片来源是
+    ``emby_people.image`` 存的 TMDB 远程 URL——与 ``item_image`` 同口径：
+    先 ``image_store.localize`` 落本地（刮削时已在 IO 阶段预热，通常是一次
+    ``isfile``），落不下来就 404，不代理、不抛 5xx。只允许 http(s)（防 SSRF）。
+    """
+    ew, eh = image_store.pick_dim(maxWidth, w), image_store.pick_dim(maxHeight, h)
+    person = (
+        db.query(em.EmbyPerson)
+        .filter(em.EmbyPerson.name == name, em.EmbyPerson.image != "",
+                em.EmbyPerson.image.isnot(None))
+        .order_by(em.EmbyPerson.id)
+        .first()
+    )
+    if not person or not person.image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    src = person.image
+    if not (src.startswith("http://") or src.startswith("https://")):
+        raise HTTPException(status_code=404, detail="Image not found")
+    cached = image_store.localize(src)
+    if cached and os.path.isfile(cached):
+        return _serve_sized(cached, ew, eh)
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
