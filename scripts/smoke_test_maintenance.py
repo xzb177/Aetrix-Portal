@@ -258,6 +258,7 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     "tmdb_cache_pruned",
                     "item_facets_backfilled", "item_facets_orphans",
                     "scan_dir_states_pruned", "scan_runs_pruned",
+                    "emby_tokens_purged",
                     "images_pruned", "images_freed_bytes",
                     "thumbs_backfilled",
                     # 缩略图补生成是布尔（干净时 True=已补完），不参与全零断言，

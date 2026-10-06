@@ -164,6 +164,19 @@ def prune_playback_sessions(db: Session, retention_days: Optional[float] = None)
 
 # ==================== 文件侧 ====================
 
+
+def purge_expired_emby_tokens(db: Session) -> int:
+    """清理已过期的 Emby 客户端 token（expires_at 非空且已过期）。
+
+    新签发的 token 默认 30 天有效（见 play_sign.token_expiry_default）；
+    过期 token 校验时已视为无效，这里只是把行删掉防止表无限增长。
+    由 janitor_tick 定期调用。
+    """
+    from backend.emby_server import play_sign
+
+    return play_sign.purge_expired_tokens(db)
+
+
 def _transcode_root() -> str:
     from backend.emby_server import streaming
 
@@ -496,6 +509,7 @@ def janitor_tick() -> dict:
               "tmdb_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
               "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
+              "emby_tokens_purged": 0,
               "images_pruned": 0,
               "images_freed_bytes": 0, "ai_usage_pruned": 0,
               "thumbs_backfilled": 0, "thumbs_backfill_done": False,
@@ -511,6 +525,16 @@ def janitor_tick() -> dict:
         result["sessions_pruned"] = prune_playback_sessions(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("回收过期播放会话失败: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # 过期 Emby token：校验时已视为无效，这里定期把行删掉
+    db = SessionLocal()
+    try:
+        result["emby_tokens_purged"] = purge_expired_emby_tokens(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("清理过期 Emby token 失败: %s", exc)
         db.rollback()
     finally:
         db.close()

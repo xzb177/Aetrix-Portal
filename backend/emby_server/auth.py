@@ -1,5 +1,6 @@
 """自建 Emby 服务器：认证与 Token 管理"""
 import hashlib
+import logging
 import os
 import secrets
 import uuid
@@ -111,6 +112,8 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
 
     token_value = secrets.token_hex(20)
 
+    from backend.emby_server import play_sign
+
     row = emby_models.EmbyApiToken(
         token=hash_emby_token(token_value),  # P1：只存哈希，不存明文
         user_id=user.id,
@@ -118,6 +121,8 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
         app_name=app_name,
         app_version=app_version,
         last_ip=client_ip(request),
+        # token 有效期：新签发默认 30 天；过期后客户端需重新登录
+        expires_at=play_sign.token_expiry_default(),
     )
     db.add(row)
     db.commit()
@@ -153,6 +158,11 @@ def resolve_token(db: Session, request: Request) -> Optional[tuple[models.WebUse
         .first()
     )
     if not row:
+        return None
+    from backend.emby_server import play_sign
+
+    if not play_sign.token_is_usable(row):
+        # 过期/吊销的 token 一律视为无效，客户端需重新走 AuthenticateByName
         return None
     user = db.query(models.WebUser).filter(models.WebUser.id == row.user_id).first()
     if not user or not user.is_active:
@@ -215,6 +225,11 @@ def get_emby_user(
             )
             .first()
         )
+        if row:
+            from backend.emby_server import play_sign
+
+            if not play_sign.token_is_usable(row):
+                row = None
         if row:
             user = db.query(models.WebUser).filter(models.WebUser.id == row.user_id).first()
             if user and user.is_active:
@@ -282,3 +297,39 @@ def get_admin_or_emby_user(request: Request, db: Session = Depends(get_db)) -> m
 
     raise HTTPException(status_code=401, detail="未提供认证凭证")
 
+
+
+def get_play_user(
+    request: Request,
+    db: Session = Depends(get_db),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> models.WebUser:
+    """播放端点鉴权依赖：短期签名优先，回退原有 token/JWT 口径。
+
+    - URL 带 ``uid/exp/sign`` 且能对应上路径里的 ``item_id`` 时走签名校验：
+      签名对不上或已过期 → 403；用户不存在/禁用 → 401。
+    - 否则（老客户端、缓存的旧 URL）走 ``get_emby_user`` 原有逻辑，
+      行为与升级前完全一致。双轨并行，逐步迁移。
+    """
+    q = request.query_params
+    sign = q.get("sign")
+    exp_s = q.get("exp")
+    uid_s = q.get("uid")
+    item_id = (request.path_params or {}).get("item_id")
+    if sign and exp_s and uid_s and item_id:
+        from backend.emby_server import play_sign
+
+        try:
+            exp = int(exp_s)
+            uid = int(uid_s)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=403, detail="播放签名无效")
+        if not play_sign.verify_play_sign(uid, item_id, exp, sign):
+            logger = logging.getLogger(__name__)
+            logger.warning("播放签名校验失败: uid=%s item=%s", uid_s, item_id)
+            raise HTTPException(status_code=403, detail="播放签名无效或已过期")
+        user = db.query(models.WebUser).filter(models.WebUser.id == uid).first()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+        return user
+    return get_emby_user(request, db, credentials)
