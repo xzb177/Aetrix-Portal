@@ -449,6 +449,9 @@ def start_transcode(
     user_id: Optional[int] = None,
     item_guid: Optional[str] = None,
     input_headers: Optional[dict] = None,
+    tier: Optional[str] = None,
+    cache_key: Optional[str] = None,
+    fingerprint: Optional[str] = None,
 ) -> str:
     """启动转码，返回播放列表 URL 路径片段 /emby/videos/{session}/master.m3u8
 
@@ -460,7 +463,7 @@ def start_transcode(
     # 为别人遗留的会话等待（见 _reap_in_background）。
     threading.Thread(target=_reap_in_background, daemon=True).start()
     if user_id is not None and item_guid:
-        existing = find_active_transcode(user_id, item_guid)
+        existing = find_active_transcode(user_id, item_guid, tier)
         if existing:
             logger.info("复用进行中的 HLS 转码 %s", existing)
             return existing
@@ -475,6 +478,11 @@ def start_transcode(
         "user_id": user_id,
         "item_guid": item_guid,      # 「结束播放」按它反查（见 find_transcodes）
         "file_path": file_path,
+        # 按需转码 P1：档位 / 缓存键 / 源指纹 / 起始秒数（回收时判断能否落盘缓存）
+        "tier": tier,
+        "cache_key": cache_key,
+        "fingerprint": fingerprint,
+        "start_seconds": start_seconds,
     }
     logger.info("HLS 转码启动 %s -> %s", os.path.basename(file_path), session_id)
     return session_id
@@ -493,10 +501,13 @@ def find_transcodes(user_id: int, item_guid: Optional[str] = None) -> list:
             and (item_guid is None or info.get("item_guid") == item_guid)]
 
 
-def find_active_transcode(user_id: int, item_guid: str) -> Optional[str]:
-    """查找同一用户同一影片仍在运行的转码会话"""
+def find_active_transcode(user_id: int, item_guid: str,
+                        tier: Optional[str] = None) -> Optional[str]:
+    """查找同一用户同一影片仍在运行的转码会话（tier 指定时只复用同档）"""
     for sid, info in _TRANSCODE_PROCS.items():
         if info.get("user_id") != user_id or info.get("item_guid") != item_guid:
+            continue
+        if tier is not None and info.get("tier") != tier:
             continue
         proc = info.get("proc")
         if proc is not None and proc.poll() is None:
@@ -533,6 +544,13 @@ def reap_stale_transcodes(max_age_seconds: int = 6 * 3600) -> int:
         exited = proc is not None and proc.poll() is not None
         expired = (now - started).total_seconds() > max_age_seconds
         if exited or expired:
+            if exited and not info.get("cached"):
+                # 按需转码 P1：整片转完的会话落盘进持久缓存（延迟导入防循环导入）
+                try:
+                    from backend.emby_server import transcode as _tc
+                    _tc.maybe_promote_to_cache(sid, info)
+                except Exception as exc:  # noqa: BLE001 — 提升失败不影响回收
+                    logger.warning("转码缓存提升失败 %s: %s", sid, exc)
             stop_transcode(sid)
             reaped += 1
     if reaped:
@@ -561,15 +579,18 @@ def _terminate_and_cleanup(session_id: str, info: dict) -> None:
     最后几个分片），``shutil.rmtree`` 要递归删掉整场播放的分片（上千个文件，挂载目录上更慢）。
     只在线程 / 同步路由 / 后台回收线程里直接调；事件循环上一律走 ``stop_transcode_async``。
     """
-    proc = info["proc"]
-    if proc.poll() is None:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()          # SIGTERM 不理就 SIGKILL，否则进程会一直挂着
-    _log_ffmpeg_tail(info.get("dir") or "", session_id, proc.poll())
-    shutil.rmtree(info["dir"], ignore_errors=True)
+    proc = info.get("proc")
+    if proc is not None:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()      # SIGTERM 不理就 SIGKILL，否则进程会一直挂着
+        _log_ffmpeg_tail(info.get("dir") or "", session_id, proc.poll())
+    # 按需转码 P1：缓存会话（cached=True）跳过删目录，缓存留给下次复用
+    if not info.get("cached"):
+        shutil.rmtree(info.get("dir"), ignore_errors=True)
 
 
 def stop_transcode(session_id: str) -> None:

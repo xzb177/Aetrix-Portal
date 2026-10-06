@@ -2649,6 +2649,12 @@ async def video_hls(
         db, int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000) // 1000,
     ) * 1000
     height = int(q.get("Height") or 0) or None
+    # 按需转码 P1：码率归档到 480p/720p/1080p 三档（弱网降码率只转需要的档）；
+    # 源片分辨率低于档位时不做无意义的上采样
+    from backend.emby_server import transcode as transcode_mod
+    tier = transcode_mod.pick_tier(video_bitrate, getattr(item, "height", None))
+    video_bitrate = transcode_mod.TIERS[tier]["video_bitrate"]
+    height = transcode_mod.TIERS[tier]["height"]
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS
     target = _play_target(db, item)
@@ -2681,10 +2687,21 @@ async def video_hls(
                                 "CDN 未启用，转码从回源拉流")
         else:
             line_stats.record_request(selected)
-    session_id = start_transcode(
-        target.value, start_seconds, video_bitrate, height,
-        user_id=user.id, item_guid=item.guid, input_headers=target.headers,
-    )
+    # 按需转码 P1：缓存命中直接复用，不再起 ffmpeg；
+    # 2 路硬限制超了就 503，让客户端降级走直连
+    fingerprint = getattr(item, "file_fingerprint", None)
+    cached_dir = transcode_mod.find_cache(item.guid, tier, fingerprint)
+    if cached_dir:
+        session_id = transcode_mod.register_cache_session(
+            cached_dir, user_id=user.id, item_guid=item.guid, tier=tier)
+    else:
+        transcode_mod.ensure_slot_or_503()
+        session_id = start_transcode(
+            target.value, start_seconds, video_bitrate, height,
+            user_id=user.id, item_guid=item.guid, input_headers=target.headers,
+            tier=tier, cache_key=transcode_mod.cache_key(item.guid, tier, fingerprint),
+            fingerprint=fingerprint,
+        )
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
     # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
     # CDN 预留（第 2/3 层）：启用时变体/切片都走 CDN 域名（回源本服务）。
