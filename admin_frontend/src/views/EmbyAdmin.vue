@@ -829,6 +829,10 @@ async function scanFull(l: EmbyLibrary) {
  */
 async function scanAll() {
   const enabledCount = libraries.value.filter(l => l.is_enabled !== false).length
+  if (enabledCount === 0) {
+    ElMessage.warning('没有启用的媒体库，先去创建一个吧')
+    return
+  }
   try {
     await ElMessageBox.confirm(
       `将把 ${enabledCount} 个启用的库按顺序加入扫描队列（增量扫描，只处理新增/改过的文件）。` +
