@@ -40,12 +40,14 @@ from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_line
+from backend.emby_server import play_sign
 from backend.emby_server import soft_delete
 from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
     _token_from_request,
     get_emby_user,
+    get_play_user,
     parse_emby_authorization,
 )
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
@@ -2447,11 +2449,15 @@ async def playback_info(
     user_wants_cdn = await run_db(
         play_line.get_play_line, db, getattr(user, "id", None)) == play_line.LINE_CDN
     use_cdn = user_wants_cdn or await run_db(cdn.enabled, db)
+    # 播放短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带 uid/exp/sign，
+    # 播放端点优先验签。签名 15 分钟过期、绑定 user_id+item_id，泄露后窗口极小。
+    play_exp, play_sig = play_sign.issue_play_sign(user.id, item.guid)
+    signed_qs = f"&uid={user.id}&exp={play_exp}&sign={play_sig}"
     stream_url = (
-        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}"
+        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}{signed_qs}"
     )
     transcoding_url = (
-        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}"
+        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}{signed_qs}"
     )
     if use_cdn:
         stream_url = cdn.rewrite_url(db, stream_url, base)
@@ -2518,15 +2524,17 @@ def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
 @emby_router.get("/Videos/{item_id}/stream")
 async def video_stream(
     item_id: str, request: Request,
-    user: models.WebUser = Depends(get_emby_user),
+    user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     from backend.emby_server.async_db import run_db
     item = await run_db(_require_item, db, item_id)
-    # 授权已由 get_emby_user 依赖完成（Emby token 或 JWT 均可）
+    # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token / JWT）
     await run_db(ensure_playback_allowed, db, user)
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
+    # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）
+    await run_db(play_sign.check_referer, request, db)
     # P0 安全修复：检查条目是否在用户可见的库范围内
     allowed_libs = await run_db(_library_scope, db, user)
     if allowed_libs is not None and getattr(item, "library_id", None) not in allowed_libs:
@@ -2583,7 +2591,7 @@ async def video_stream(
 async def video_stream_ext(
     item_id: str,
     request: Request,
-    user: models.WebUser = Depends(get_emby_user),
+    user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
     """带扩展名的直接流路由（iOS 客户端用 .mkv/.mp4 后缀请求）"""
@@ -2594,7 +2602,7 @@ async def video_stream_ext(
 @emby_router.get("/videos/{item_id}/{transcode_path:path}")
 async def video_hls(
     item_id: str, transcode_path: str, request: Request,
-    user: models.WebUser = Depends(get_emby_user),
+    user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
@@ -2644,6 +2652,9 @@ async def video_hls(
                             headers={"Cache-Control": cdn.SEGMENT_CACHE_HEADER})
 
     # 新转码请求（付费墙 + 客户端与转码策略：建立会话前校验）
+    # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）；
+    # 切片子请求走 session 票据，不经过这里。
+    await run_db(play_sign.check_referer, request, db)
     ensure_playback_allowed(db, user)
     playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
     # 并发上限按**本机**正在跑的转码数判定：分离部署时 EA 就是那台播放节点

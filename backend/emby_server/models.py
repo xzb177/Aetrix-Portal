@@ -575,6 +575,10 @@ class EmbyApiToken(Base):
     created_at = Column(DateTime, default=datetime.now)
     last_used_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     is_revoked = Column(Boolean, default=False)
+    # token 有效期：新签发默认 30 天（见 play_sign.token_expiry_default）；
+    # 为空 = 历史 token，视为永不过期（不强制老客户端重新登录）。
+    # 列由 _backfill_orm_columns 幂等补齐，无需手写迁移。
+    expires_at = Column(DateTime, nullable=True)
 
 
 class LocalCacheEntry(Base):
