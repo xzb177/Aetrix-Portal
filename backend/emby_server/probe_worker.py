@@ -16,6 +16,7 @@
 方言不支持时退回普通查询（单 worker 仍正确），与 enrich_worker 同口径。
 """
 import logging
+from backend.emby_server.env_util import env_float, env_int
 import os
 import threading
 import time
@@ -31,42 +32,29 @@ from backend.emby_server import media_probe
 logger = logging.getLogger(__name__)
 
 
-def _env_int(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, min(hi, value))
-
-
-def _env_float(name: str, default: float, lo: float) -> float:
-    try:
-        value = float(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, value)
-
 
 PROBE_ENABLED = (os.getenv("PROBE_ONDEMAND_ENABLED", "1") or "1").strip() not in ("0", "false", "no")
-PROBE_WORKERS = _env_int("PROBE_WORKERS", 2, 1, 5)
-PROBE_MIN_INTERVAL_SEC = _env_float("PROBE_MIN_INTERVAL_SEC", 1.0, 0.0)
-PROBE_CLAIM_BATCH = _env_int("PROBE_CLAIM_BATCH", 20, 1, 100)
-PROBE_IDLE_SLEEP_SEC = _env_float("PROBE_IDLE_SLEEP_SEC", 5.0, 1.0)
+PROBE_WORKERS = env_int("PROBE_WORKERS", 2, 1, 5)
+PROBE_MIN_INTERVAL_SEC = env_float("PROBE_MIN_INTERVAL_SEC", 1.0, 0.0)
+PROBE_CLAIM_BATCH = env_int("PROBE_CLAIM_BATCH", 20, 1, 100)
+PROBE_IDLE_SLEEP_SEC = env_float("PROBE_IDLE_SLEEP_SEC", 5.0, 1.0)
 # 独占模式（对标 StrmAssistant GeneralOptions.CooldownDurationSeconds）：
 # 并发为 1 时每次探测后冷却 N 秒，避免 ffprobe 连续读网盘互相争抢。
 # 并发 >1 时不冷却（冷却只在单线程串行时有意义）。
-PROBE_COOLDOWN_SEC = _env_float("PROBE_COOLDOWN_SEC", 0.0, 0.0)
+# 背压系数：线程池积压超过 WORKERS×系数时跳过抢单
+PROBE_BACKLOG_FACTOR = 4
+PROBE_COOLDOWN_SEC = env_float("PROBE_COOLDOWN_SEC", 0.0, 0.0)
 
 # 预提取（对标 StrmAssistant ExtractMediaInfoTask）：定时把全库缺媒体信息的
 # 条目扫出来入队，首播时直接命中，零等待。
 # "1" = 开（默认）；"0" = 关（只保留按需探测）。
 PREPROBE_ENABLED = (os.getenv("PROBE_PREEXTRACT_ENABLED", "1") or "1").strip() not in ("0", "false", "no")
 # 预提取扫描间隔（秒），默认 6 小时；启动时先跑一轮。
-PREPROBE_INTERVAL_SEC = _env_float("PROBE_PREEXTRACT_INTERVAL_SEC", 21600.0, 60.0)
+PREPROBE_INTERVAL_SEC = env_float("PROBE_PREEXTRACT_INTERVAL_SEC", 21600.0, 60.0)
 # 预提取入队优先级（低于按需 1000，高于扫描器 100）
 PREPROBE_PRIORITY = 500
 # 单次扫描最多入队条数（防 40 万库一次全标 pending）
-PREPROBE_SWEEP_LIMIT = _env_int("PROBE_PREEXTRACT_SWEEP_LIMIT", 5000, 100, 100000)
+PREPROBE_SWEEP_LIMIT = env_int("PROBE_PREEXTRACT_SWEEP_LIMIT", 5000, 100, 100000)
 
 # 按需插队优先级（models.py 约定）；只做 movie/series，单集/季不碰
 ONDEMAND_PRIORITY = 1000
@@ -154,7 +142,9 @@ def _claim_batch(db, limit: int, library_id: Optional[int] = None) -> List[int]:
     try:
         rows = q.with_for_update(skip_locked=True).all()
     except Exception:
-        # 方言不支持 FOR UPDATE 时退回普通查询（单 worker 仍正确）
+        # 方言不支持 FOR UPDATE 时退回普通查询（单 worker 仍正确）；
+        # 多 worker 下会失去"不重复抢单"保证，打 debug 日志让运维能察觉
+        logger.debug("FOR UPDATE 不支持，退回普通查询")
         rows = q.all()
     ids = [r[0] for r in rows]
     if ids:
@@ -217,6 +207,7 @@ def preprobe_sweep(db, limit: int = PREPROBE_SWEEP_LIMIT) -> int:
     try:
         rows = q.with_for_update(skip_locked=True).all()
     except Exception:
+        logger.debug("FOR UPDATE 不支持，退回普通查询")
         rows = q.all()
     ids = [r[0] for r in rows]
     if ids:
@@ -304,6 +295,15 @@ def _dispatcher_loop() -> None:
     pool = ThreadPoolExecutor(max_workers=PROBE_WORKERS,
                               thread_name_prefix="media-probe")
     last_submit = 0.0
+    # 在途任务计数（替代 pool._work_queue.qsize()：不依赖 CPython 私有属性）
+    in_flight = 0
+    in_flight_lock = threading.Lock()
+
+    def _done(_fut):
+        nonlocal in_flight
+        with in_flight_lock:
+            in_flight = max(0, in_flight - 1)
+
     try:
         while not _stop_event.is_set():
             db = SessionLocal()
@@ -323,11 +323,9 @@ def _dispatcher_loop() -> None:
                 continue
             # 背压：线程池积压过多时跳过本轮抢单，避免预提取的 5000 条积压
             # 把用户触发的按需探测（priority 1000）饿死在队列尾部
-            try:
-                backlog = pool._work_queue.qsize()
-            except Exception:
-                backlog = 0
-            if backlog > PROBE_WORKERS * 4:
+            with in_flight_lock:
+                backlog = in_flight
+            if backlog > PROBE_WORKERS * PROBE_BACKLOG_FACTOR:
                 logger.debug("探测线程池积压 %d，跳过本轮抢单", backlog)
                 _stop_event.wait(PROBE_IDLE_SLEEP_SEC)
                 continue
@@ -336,7 +334,10 @@ def _dispatcher_loop() -> None:
                 if gap > 0 and _stop_event.wait(gap):
                     break
                 last_submit = time.monotonic()
-                pool.submit(_process_one, item_id)
+                fut = pool.submit(_process_one, item_id)
+                fut.add_done_callback(_done)
+                with in_flight_lock:
+                    in_flight += 1
     finally:
         pool.shutdown(wait=False)
 
@@ -372,8 +373,7 @@ def start() -> None:
             _preprobe_thread = threading.Thread(
                 target=_preprobe_loop, name="media-preprobe", daemon=True)
             _preprobe_thread.start()
-            from backend.emby_server import worker_registry as _wr2
-            _wr2.register("probe_preextract", _preprobe_thread)
+            _wr.register("probe_preextract", _preprobe_thread)
             logger.info("预提取定时器已启动")
 
 

@@ -1501,7 +1501,6 @@ class TmdbClient:
                 pass
         return data
 
-
     def season_episodes(self, tmdb_id: str, season_number: int) -> Optional[list]:
         """获取某季所有集的信息（标题/简介/剧照）。
 

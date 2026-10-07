@@ -17,6 +17,10 @@ API：EA 通过 /emby/Items/{id}/Thumbnails/{index} 取图（见 media_routes）
 """
 
 import logging
+
+# Emby 时间单位：100ns（与 api.py 的 TICKS 同值）
+TICKS_PER_SECOND = 10_000_000
+from backend.emby_server.env_util import env_float, env_int
 import os
 import subprocess
 import threading
@@ -26,40 +30,25 @@ from typing import List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-def _env_int(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, min(hi, value))
-
-
-def _env_float(name: str, default: float, lo: float) -> float:
-    try:
-        value = float(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, value)
-
 
 # 开关：默认开
 THUMBNAIL_ENABLED = (
     os.getenv("THUMBNAIL_EXTRACT_ENABLED", "1") or "1"
 ).strip().lower() not in ("0", "false", "no")
 # 扫描间隔（秒），默认 6 小时
-THUMBNAIL_INTERVAL_SEC = _env_float("THUMBNAIL_INTERVAL_SEC", 21600.0, 3600.0)
+THUMBNAIL_INTERVAL_SEC = env_float("THUMBNAIL_INTERVAL_SEC", 21600.0, 3600.0)
 # 每视频抽帧数
-THUMBNAIL_COUNT = _env_int("THUMBNAIL_COUNT", 10, 1, 50)
+THUMBNAIL_COUNT = env_int("THUMBNAIL_COUNT", 10, 1, 50)
 # 并发数（默认 1，Rclone 场景防 I/O 争抢）
-THUMBNAIL_WORKERS = _env_int("THUMBNAIL_WORKERS", 1, 1, 3)
+THUMBNAIL_WORKERS = env_int("THUMBNAIL_WORKERS", 1, 1, 3)
 # 单次扫描最多处理条数
-THUMBNAIL_BATCH_LIMIT = _env_int("THUMBNAIL_BATCH_LIMIT", 500, 10, 10000)
+THUMBNAIL_BATCH_LIMIT = env_int("THUMBNAIL_BATCH_LIMIT", 500, 10, 10000)
 # 缩略图根目录
 THUMBNAIL_ROOT = os.getenv("THUMBNAIL_ROOT", "/data/thumbnails")
 # ffmpeg 超时（秒）
-THUMBNAIL_FFMPEG_TIMEOUT = _env_int("THUMBNAIL_FFMPEG_TIMEOUT", 60, 10, 600)
+THUMBNAIL_FFMPEG_TIMEOUT = env_int("THUMBNAIL_FFMPEG_TIMEOUT", 60, 10, 600)
 # 单视频总耗时上限（秒）：损坏文件 10 次超时也不应卡死 worker
-THUMBNAIL_PER_VIDEO_TIMEOUT = _env_int("THUMBNAIL_PER_VIDEO_TIMEOUT", 300, 60, 1800)
+THUMBNAIL_PER_VIDEO_TIMEOUT = env_int("THUMBNAIL_PER_VIDEO_TIMEOUT", 300, 60, 1800)
 
 _thumb_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
@@ -142,7 +131,7 @@ def extract_thumbnails(item) -> int:
 
     # 时长（秒）：duration_ticks 是 100ns
     duration_ticks = getattr(item, "duration_ticks", 0) or 0
-    duration_sec = duration_ticks / 10_000_000
+    duration_sec = duration_ticks / TICKS_PER_SECOND
     if duration_sec <= 0:
         logger.debug("缩略图：无时长信息 %s", item.name)
         return 0
