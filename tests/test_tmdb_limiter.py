@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.emby_server import tmdb as tmdb_mod
-from backend.emby_server.tmdb import TmdbClient
+from backend.emby_server.tmdb import TmdbClient, TmdbTransientError
 
 
 @pytest.fixture(autouse=True)
@@ -190,12 +190,18 @@ def test_no_exact_hit_still_tries_every_candidate(monkeypatch):
 # ==================== 429：退避、换 key ====================
 
 def test_single_key_429_reads_retry_after_and_backs_off(monkeypatch, sleeps):
+    """单 key 429：按 Retry-After 退避 + 速率减半，然后抛瞬态（转重试队列）
+
+    v2.53.0 前这里返回 ``None``——与「真搜不到」不可区分，条目被写成终态
+    none（问题一）。退避与减半语义不变，只把结局换成可重试异常。
+    """
     client = _client(monkeypatch,
                      answer=lambda url, params: _resp(429, headers={"retry-after": "12"}),
                      rate=2.0)
     assert client._limiter.rate == 2.0
 
-    assert client._get("/search/tv", {"query": "x"}) is None
+    with pytest.raises(TmdbTransientError):
+        client._get("/search/tv", {"query": "x"})
     assert client.stats()["throttled"] == 1
     assert sleeps == [12.0]                    # 真的按 Retry-After 退避（旧实现压根不读）
     assert client._limiter.rate == 1.0         # 同时把速率减半
@@ -203,7 +209,8 @@ def test_single_key_429_reads_retry_after_and_backs_off(monkeypatch, sleeps):
 
 def test_single_key_429_without_header_still_waits_a_token(monkeypatch, sleeps):
     client = _client(monkeypatch, answer=lambda url, params: _resp(429), rate=2.0)
-    assert client._get("/search/tv", {"query": "x"}) is None
+    with pytest.raises(TmdbTransientError):   # 没有 Retry-After 也退避，然后转重试
+        client._get("/search/tv", {"query": "x"})
     assert len(sleeps) == 1 and 0 < sleeps[0] <= tmdb_mod.TMDB_RETRY_AFTER_CAP_SEC
 
 
@@ -253,7 +260,9 @@ def test_network_error_gives_up_after_the_configured_retries(monkeypatch, sleeps
         raise OSError("connection reset")
 
     client = _client(monkeypatch, answer=answer)
-    assert client._get("/configuration", {}) is None
+    # 重试次数照旧打满，但结局从「返回 None（会被写成终态 none）」改为抛瞬态
+    with pytest.raises(TmdbTransientError):
+        client._get("/configuration", {})
     assert client.stats()["retries"] == tmdb_mod.TMDB_NET_RETRIES
     assert client.stats()["net_fail"] == 1
 

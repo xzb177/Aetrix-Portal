@@ -47,6 +47,7 @@ from backend.emby_server.tmdb import (
     TMDB_LANGUAGE_OPTIONS,
     TMDB_PREFERRED_LANGUAGE_CONFIG_KEY,
     TMDB_PREFERRED_LANGUAGE_DEFAULT,
+    TmdbTransientError,
     _db_keys,
     _env_keys,
     _split_keys,
@@ -499,7 +500,12 @@ def _rescrape_one(db: Session, item: em.MediaItem) -> dict:
             tmdb_id = (nfo_data or {}).get("tmdb_id") or item.tmdb_id
             if tmdb_id:
                 # 有 TMDB ID：跳过搜索，只取详情补缺失的图 / IMDb / 别名
-                details = tmdb_client.details(str(tmdb_id), kind)
+                try:
+                    details = tmdb_client.details(str(tmdb_id), kind)
+                except TmdbTransientError as exc:
+                    # 手动重刮不 500：瞬态失败（网络/限流）按「详情没拿到」继续
+                    logger.warning("手动重刮：TMDB 详情暂时不可用 id=%s: %s", item.id, exc)
+                    details = None
                 if details:
                     # 图先落盘再落字段：写事务里 _set_image 不再发 HTTP（v2.42.9）
                     prewarm_images(details)
@@ -513,13 +519,20 @@ def _rescrape_one(db: Session, item: em.MediaItem) -> dict:
                     notes.append("TMDB 详情获取失败")
             else:
                 # 无 TMDB ID：按名称 + 年份搜索后全量应用（手动触发才走这条路）
-                hit = tmdb_client.search(item.name, item.production_year, kind)
+                try:
+                    hit = tmdb_client.search(item.name, item.production_year, kind)
+                except TmdbTransientError as exc:
+                    # 瞬态失败不 500：如实记一条，多源兜底照跑（它有独立的源隔离）
+                    logger.warning("手动重刮：TMDB 搜索暂时不可用 id=%s: %s", item.id, exc)
+                    hit = None
+                    notes.append("TMDB 暂时不可用（网络/限流），可稍后再试")
                 if hit:
                     prewarm_images(hit)
                     tmdb_client.apply(item, hit, kind)
                     notes.append(f"TMDB 搜索命中：{hit.get('title') or hit.get('name')}")
                 else:
-                    notes.append("TMDB 未搜到匹配")
+                    if not any(n.startswith("TMDB 暂时不可用") for n in notes):
+                        notes.append("TMDB 未搜到匹配")
                     # Phase 6b：TMDB 没搜到时，多源总开关开着就把剩下几个源跑一遍
                     #（手动重刮本来就是「用户主动要求认真刮」，不跳多源）
                     notes.extend(_rescrape_multisource(db, item, kind))
@@ -1135,7 +1148,13 @@ def preview_tmdb_id(
         raise HTTPException(status_code=400, detail="未配置 TMDB Key，无法校验")
     kind = "series" if item.item_type in ("series", "season", "episode") else "movie"
     tid, imdb_id = _resolve_external_id(tid, kind)
-    data = tmdb_client.details(tid, kind)
+    try:
+        data = tmdb_client.details(tid, kind)
+    except TmdbTransientError as exc:
+        logger.warning("TMDB 校验暂时不可用 id=%s: %s", item.id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="TMDB 暂时不可用（网络/限流），请稍后再试") from exc
     if not data:
         raise HTTPException(status_code=404, detail=f"TMDB 上找不到 ID {tid}")
     title = data.get("name") or data.get("title") or ""
@@ -1217,7 +1236,13 @@ def bind_tmdb_id(
     if req.verify:
         if not tmdb_client.configured:
             raise HTTPException(status_code=400, detail="未配置 TMDB Key，无法校验")
-        data = tmdb_client.details(tid, kind)
+        try:
+            data = tmdb_client.details(tid, kind)
+        except TmdbTransientError as exc:
+            logger.warning("绑定 TMDB 校验暂时不可用 id=%s: %s", item.id, exc)
+            raise HTTPException(
+                status_code=503,
+                detail="TMDB 暂时不可用（网络/限流），请稍后再试") from exc
         if not data:
             raise HTTPException(status_code=404, detail=f"TMDB 上找不到 ID {tid}，未绑定")
         notes.append(f"已校验：{data.get('name') or data.get('title')}")
@@ -1228,8 +1253,12 @@ def bind_tmdb_id(
     item.last_scraped_at = datetime.now()
     item.metadata_source = "tmdb"
     if tmdb_client.configured and (req.verify or mode == "all"):
-        if data is None:
-            data = tmdb_client.details(tid, kind)
+        try:
+            if data is None:
+                data = tmdb_client.details(tid, kind)
+        except TmdbTransientError as exc:
+            logger.warning("绑定后补详情暂时不可用 id=%s: %s", item.id, exc)
+            data = None
         if data:
             prewarm_images(data)
             if mode == "all":

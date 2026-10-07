@@ -30,6 +30,21 @@ from backend.emby_server import tmdb_cache
 
 logger = logging.getLogger(__name__)
 
+
+class TmdbTransientError(RuntimeError):
+    """TMDB 请求的**瞬态**失败（网络重试耗尽 / 5xx / 响应解析失败 / 全部密钥被限流）。
+
+    必须与「真搜不到」区分开：瞬态失败向上抛，补全 worker 走既有的
+    ``ok=False → _mark_failed`` 指数退避重试（复现见 scripts/repro_scrape_stability.py）。
+    旧实现把它吞成 ``None``，``_enrich_apply`` 便写成终态
+    ``done + metadata_source='none'``——条目从此不再重试，这正是
+    「刮削时好时坏」的根因（问题一）。
+
+    非瞬态仍返回 ``None``，保持既有阴性语义：404（真没有）、401（密钥配置错）、
+    未配置 key —— 这三种烧重试预算没有意义。
+    """
+
+
 TMDB_API_DEFAULT = "https://api.themoviedb.org/3"
 TMDB_IMAGE_DEFAULT = "https://image.tmdb.org/t/p"
 # 兼容旧引用（scanner.py 再导出这两个名字）：真正生效的地址走 ``api_base()`` /
@@ -230,6 +245,45 @@ def strip_year_suffix(name):
     if not name:
         return ""
     return _YEAR_SUFFIX_RE.sub("", str(name)).strip()
+
+
+# ---- 标题清洗（问题二：横切纪律——写 item.name 的地方只许走这一套） ----
+#
+# ① 冒号切「主标题：副标题」：TMDB 中文译名常带「：第一季」这类后缀
+#    （实例：黑鸟：第一季），冒号后的副标题不该进标题；全角/半角冒号都切。
+# ② 控制字符（Tab/换行/响铃…）、零宽/双向控制符是脏数据，绝不能出现在标题里
+#    （拷贝、排序、展示都会出怪招）；反斜杠是路径分隔符，`" < > |` 从不出现在
+#    正规标题里、又是 XML/HTML/日志的危险字符，一并清掉。
+# ③ **保留** `/ ? *`：它们是合法标题字符（Face/Off、What If?、M*A*S*H）——
+#    标题只用于展示与匹配、不生成文件名，砍掉会把正确标题改错。
+#    冒号已在 ① 处理（切完的主标题里不可能再有冒号）。
+_TITLE_SPLIT_RE = re.compile(r"[:：]")
+_TITLE_CTRL_RE = re.compile(r'[\x00-\x1f\x7f\\"<>|]')
+_TITLE_INVISIBLE_RE = re.compile(
+    "[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
+
+
+def clean_title(name) -> str:
+    """标题清洗：写 ``item.name`` 的唯一入口（TMDB / 豆瓣 / 多源共用，一套口径）。
+
+    顺序：去年份后缀（``strip_year_suffix`` 既有口径）→ 切冒号副标题 →
+    清控制/零宽/反斜杠 → 折叠空白。清完为空返回 ``""``，
+    调用方**不写空名**（保持原样，等下一轮）。
+    """
+    s = strip_year_suffix(name)
+    if not s:
+        return ""
+    if _TITLE_SPLIT_RE.search(s):
+        head = _TITLE_SPLIT_RE.split(s, 1)[0]
+        # 切掉副标题后，主标题尾部悬空的分隔符（"标题 ·：副标题"）一并修剪
+        s = head.rstrip(" ·—–-").strip()
+        if not s:
+            # 「:xxx」这种开头就冒号的怪名：没有可留的主标题，
+            # 退回全串并把冒号降级为空格（而不是返回空、让调用方写不进名字）
+            s = _TITLE_SPLIT_RE.sub(" ", strip_year_suffix(name))
+    s = _TITLE_CTRL_RE.sub(" ", s)
+    s = _TITLE_INVISIBLE_RE.sub("", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def _year_from_tmdb_date(data):
@@ -1067,6 +1121,10 @@ class TmdbClient:
 
         429 也不再是「单 key 直接放弃」：真的读 `Retry-After` 并据此退避，同时把
         速率自适应减半——否则后续条目会在同一个窗口里继续把配额撞满。
+
+        **瞬态失败上抛** ``TmdbTransientError``（网络重试耗尽、5xx、解析失败、
+        全 key 429），让调用方把条目送回重试队列；404/401/未配置照旧返回
+        ``None``（阴性语义，不烧重试预算）。
         """
         self._ensure_session()
         if not self.session:
@@ -1074,6 +1132,7 @@ class TmdbClient:
         total = max(1, len(self.api_keys))
         tried: set[str] = set()
         last_wait = 0.0
+        saw_429 = False
         while True:
             # 先跳在冷却里的 key；全都在冷却时宁可硬用一把（冷却是优化，不是锁死）
             key = self._pick_key(tried) or self._pick_key(tried, allow_cooled=True)
@@ -1082,12 +1141,16 @@ class TmdbClient:
             tried.add(key)
             r = self._request(path, params, key)
             if r is None:
-                return None
+                # 网络异常已在 _request 里按 TMDB_NET_RETRIES 退避重试过，到这
+                # 说明抖动持续存在：抛瞬态异常，条目回重试队列（吞成 None 会被
+                # 写成终态 none，且 L1 会把失败当空结果缓存 300 秒——时好时坏）
+                raise TmdbTransientError(f"TMDB 网络请求失败（重试耗尽）: {path}")
             status = r.status_code
             if status in (401, 429):
                 if status == 429:
                     wait = self._throttle(_retry_after_seconds(r))
                     self.note_key_throttled(key, wait)
+                    saw_429 = True
                 else:
                     wait = 0.0
                     self.note_key_invalid(key)
@@ -1098,13 +1161,18 @@ class TmdbClient:
                         time.sleep(min(wait, 1.0))
                     continue
                 break
+            if status >= 500:
+                # TMDB/网关侧的临时错误：瞬态，转重试队列（404/400 仍按阴性处理）
+                logger.warning("TMDB 服务端错误 %s: HTTP %s（瞬态，转重试）", path, status)
+                raise TmdbTransientError(f"TMDB 服务端错误 HTTP {status}: {path}")
             if status >= 400:
                 logger.warning("TMDB 响应异常 %s: HTTP %s", path, status)
                 return None
             try:
                 data = r.json()
-            except Exception:  # noqa: BLE001
-                return None
+            except Exception as exc:  # noqa: BLE001 — 200 却解析不出（多半是网关错误页）
+                logger.warning("TMDB 响应解析失败 %s: %s", path, exc)
+                raise TmdbTransientError(f"TMDB 响应解析失败: {path}") from exc
             # 成功一次就清掉这把的失败计数（它可能只是碰到了临时配额窗口）
             with self._key_lock():
                 entry = self._cooldown_map().pop(key, None)
@@ -1113,10 +1181,14 @@ class TmdbClient:
             self._limiter.note_success()
             return data
         if last_wait > 0:
-            # 全部 key 都不可用：退避一轮再放行后续请求（这段窗口内的条目会
+            # 全部 key 都撞了限流：先退避一轮再放行后续请求（这段窗口内的条目
             # 落到重试队列，而不是继续把已经超限的配额撞满）
             time.sleep(last_wait)
-        logger.warning("TMDB 全部密钥不可用或已用尽")
+        if saw_429:
+            # 限流是配额窗口问题（瞬态）：抛出去让条目退避重试；
+            # 只有 401/无 key 这种「配置坏了」才按阴性返回 None
+            raise TmdbTransientError(f"TMDB 全部密钥限流（HTTP 429）: {path}")
+        logger.warning("TMDB 全部密钥不可用或已用尽: %s", path)
         return None
 
     @property
@@ -1180,7 +1252,8 @@ class TmdbClient:
         → 单飞后真的发请求。缓存键用 ``_norm_text`` 归一化（年份独立维度）：
         同一部剧的两个文件名（``Some Show`` 与 ``Some Show (2024)``）不再各打
         一遍——跨条目去重从此可靠而非碰运气（§7.3③）。
-        请求失败（data=None）**不落盘**：让这类条目照旧走重试队列。
+        瞬态失败直接抛 ``TmdbTransientError``（L1/L2 都不写，网络恢复后自然
+        重打）；``data=None`` 的非瞬态（401/404）不写 L2 磁盘。
         """
         self._ensure_session()
         if not self.session:
@@ -1226,8 +1299,13 @@ class TmdbClient:
 
         无高置信命中时返回 None（调用方按既有口径记 last_scraped_at，
         条目名字保持原样，绝不写错）。
+
+        瞬态失败（网络/5xx/全 key 429）在**没有任何命中**时上抛
+        ``TmdbTransientError``——那不是「搜过了没有」，是「没搜成」，
+        条目应进重试队列；已有命中则照常返回（部分候选失败不挡命中）。
         """
         best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
+        transient: Optional[Exception] = None
         for query, fuzzy_ok in _search_candidates(name):
             # 短路（v2.42.9）：已有 Tier 2（归一化后**精确相等**）就收手。
             # Tier 2 永远压过 Tier 1（元组比较先看 tier），后续候选最多只能换来
@@ -1239,13 +1317,22 @@ class TmdbClient:
                 break
             try:
                 results = self._search_raw(query, year, kind)
-            except Exception:  # noqa: BLE001 — 单个候选失败换下一个
+            except TmdbTransientError as exc:
+                # 瞬态失败只记不吞：一个候选都没拿到真实响应时整次上抛，
+                # 条目走补全退避重试（吞成 None 会被写成终态 none）
+                transient = transient or exc
+                continue
+            except Exception:  # noqa: BLE001 — 缓存/磁盘等杂项异常换下一个候选
                 continue
             for hit in results[:10]:
                 sc = _hit_score(name, query, hit, fuzzy_ok)
                 if sc and (best is None or sc > best[:2]):
                     best = (sc[0], sc[1], hit)
-        return best[2] if best else None
+        if best:
+            return best[2]
+        if transient is not None:
+            raise transient
+        return None
 
     def search_candidates(self, name: str, kind: str, limit: int = 6) -> list[dict]:
         """原始候选搜索（求片中心用）：不做置信度裁剪，用户自己认片
@@ -1259,6 +1346,11 @@ class TmdbClient:
             return []
         try:
             results = self._search_raw(query, None, kind)
+        except TmdbTransientError as exc:
+            # 求片中心的契约是「失败也不 500」：照样返回空表，
+            # 但必须留下可见日志（网络恢复后用户再搜一次即可）
+            logger.warning("TMDB 候选搜索暂时不可用 q=%r: %s", query, exc)
+            return []
         except Exception:  # noqa: BLE001 — 与 search() 同口径：单个查询失败不当成致命错误
             return []
         return [hit for hit in list(results or [])[:limit] if isinstance(hit, dict)]
@@ -1404,9 +1496,12 @@ class TmdbClient:
         is_generic = bool(re.match(r"^第\d+集$", current))
 
         if not is_placeholder and is_generic:
-            # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖
-            episode_item.name = tmdb_name
-            result["updated"] = True
+            # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖。先过统一标题清洗
+            # （冒号副标题/控制符不进标题）；清空了就不覆盖，保住现有真实名
+            cleaned = clean_title(tmdb_name)
+            if cleaned:
+                episode_item.name = cleaned
+                result["updated"] = True
         # 简介：当前为空时才补（不覆盖 NFO/已有的）
         tmdb_overview = (episode_data.get("overview") or "").strip()
         if tmdb_overview and not (getattr(episode_item, "overview", "") or "").strip():
@@ -1552,11 +1647,11 @@ class TmdbClient:
         for img_kind, url in image_specs(hit):
             _set_image(item, img_kind, url)
         if kind == "series" and hit.get("name"):
-            _n = strip_year_suffix(hit.get("name"))
+            _n = clean_title(hit.get("name"))
             if _n:
                 item.name = _n
         elif hit.get("title"):
-            _n = strip_year_suffix(hit.get("title"))
+            _n = clean_title(hit.get("title"))
             if _n:
                 item.name = _n
         if not getattr(item, "production_year", None):

@@ -77,7 +77,9 @@ class TestApplyStripsYear:
             "first_air_date": "2021-03-14",
         }
         client.apply(item, hit, "series")
-        assert item.name == "马拉多纳：美好的梦想"
+        # 问题二（v2.53.0）：冒号副标题也切——TMDB 中文译名常带「：第一季」这类后缀
+        assert item.name == "马拉多纳"
+        assert "：" not in item.name
         assert "(2021)" not in item.name
         assert item.production_year == 2021
 
