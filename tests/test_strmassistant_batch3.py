@@ -3,8 +3,10 @@
 import sys
 import os
 
-sys.path.insert(0, "/tmp/aetrix-main")
-sys.path.insert(0, "/tmp/aetrix-main/backend")
+# CI 兼容：用仓库根目录的相对路径，不硬编码 /tmp
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 
 class TestFallbackLanguages:
