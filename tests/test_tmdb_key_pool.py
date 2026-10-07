@@ -112,7 +112,9 @@ def test_success_clears_the_cooldown_record():
         return _resp(payload={"ok": True})
 
     client = _client(("k1",), answer)
-    client._get("/configuration", {})
+    # 单 key 429：先记冷却（下面要断言），再抛瞬态（v2.53.0 起：转重试队列）
+    with pytest.raises(tmdb_mod.TmdbTransientError):
+        client._get("/configuration", {})
     assert client.key_pool()[0]["cooling"] is True
     client.clear_cooldowns()
     assert client.key_pool()[0]["cooling"] is False

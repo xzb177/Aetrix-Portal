@@ -244,8 +244,12 @@ def apply_to_item(item, result: CollectResult, *, fill_missing_only: bool = True
 
     title = result.fields.get("title")
     if title and (not fill_missing_only or not (item.name or "").strip()):
-        if title != item.name:
-            item.name = title
+        from backend.emby_server.tmdb import clean_title
+        # 统一标题口径（一套横切）：冒号副标题/控制符不进 item.name（问题二）；
+        # 清完为空（全是脏字符）就不写，保持空名等下一轮
+        cleaned = clean_title(title)
+        if cleaned and cleaned != item.name:
+            item.name = cleaned
             changed.append("name")
     overview = result.fields.get("overview")
     if overview and (not fill_missing_only or not (item.overview or "").strip()):

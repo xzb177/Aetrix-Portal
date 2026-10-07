@@ -119,6 +119,47 @@ def test_bind_rejects_non_numeric(own_db):
     assert e.value.status_code == 400
 
 
+def test_bind_transient_returns_503(own_db, monkeypatch):
+    """TMDB 瞬态不可用：校验返 503——而不是 404 误报「找不到」或裸 500"""
+    from fastapi import HTTPException
+    from backend.emby_server.tmdb import TmdbTransientError
+    db, lib = own_db
+    it = _series(db, lib)
+
+    class _T:
+        configured = True
+
+        def details(self, *a, **k):
+            raise TmdbTransientError("TMDB 网络请求失败（重试耗尽）: /tv/1")
+
+    monkeypatch.setattr(admin_scrape, "tmdb_client", _T())
+    with pytest.raises(HTTPException) as e:
+        admin_scrape.bind_tmdb_id(it.id, admin_scrape.TmdbBindRequest(tmdb_id="123"),
+                                  SimpleNamespace(id=1), db)
+    assert e.value.status_code == 503
+    assert it.tmdb_id is None, "校验没通过就不能写入 tmdb_id"
+
+
+def test_preview_transient_returns_503(own_db, monkeypatch):
+    """tmdb-preview 校验：瞬态失败 → 503（404 语义只留给真没有）"""
+    from fastapi import HTTPException
+    from backend.emby_server.tmdb import TmdbTransientError
+    db, lib = own_db
+    it = _series(db, lib)
+
+    class _T:
+        configured = True
+
+        def details(self, *a, **k):
+            raise TmdbTransientError("TMDB 服务端错误 HTTP 503: /tv/1")
+
+    monkeypatch.setattr(admin_scrape, "tmdb_client", _T())
+    user = SimpleNamespace(id=1)
+    with pytest.raises(HTTPException) as e:
+        admin_scrape.preview_tmdb_id(it.id, "1", user, db)
+    assert e.value.status_code == 503
+
+
 def test_unbind_clears_and_requeues(own_db, monkeypatch):
     """解绑后应重新排入补全队列，让自动刮削有机会再试"""
     db, lib = own_db

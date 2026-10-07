@@ -877,10 +877,25 @@ check("新会话真的指向新代理",
       str(_session_proxies(tmdb.session)))
 check("指纹同步到新代理", tmdb._session_proxy_sig == proxy_cap.signature())
 
-# 真发一次请求：命中假代理的 CONNECT 就是「出口真的换了」的硬证据
+# 真发一次请求：命中假代理的 CONNECT 就是「出口真的换了」的硬证据。
+# v2.53.0（问题一）：请求失败必须归类为**瞬态**——TmdbTransientError 抛给补全
+# 队列去退避重试；旧契约是「吞成 None 不抛异常」，那会把条目写成终态 none
 _FakeProxy.seen.clear()
-check("走代理后请求失败也只当作一次失败的网络请求（不抛异常）",
-      tmdb._get("/configuration", {}) is None)
+
+
+def _probe_outcome() -> str:
+    try:
+        tmdb._get("/configuration", {})
+    except tmdb_mod.TmdbTransientError:
+        return "transient"
+    except Exception as exc:  # noqa: BLE001 — 其它异常类不该从这里漏出去
+        return f"unexpected: {type(exc).__name__}: {exc}"
+    return "none"  # 居然没失败：下面的 CONNECT 断言会揭示真相
+
+
+outcome = _probe_outcome()
+check("走代理后请求失败归类为可重试瞬态（不再吞成 None）",
+      outcome == "transient", outcome)
 time.sleep(0.3)
 check("刮削请求真的发到了代理（CONNECT api.themoviedb.org:443）",
       any(line.startswith("CONNECT api.themoviedb.org:443") for line in _FakeProxy.seen),

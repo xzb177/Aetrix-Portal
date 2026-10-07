@@ -265,10 +265,17 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
     只打 1 次 TMDB。结果存入 result["episode_tmdb"]，写库阶段由
     `_enrich_apply` 落库。
 
-    失败静默（不影响 pure_inherit 的主流程）：TMDB 没这集、网络超时等，
-    只是本集拿不到标题/剧照，图片仍沿父级回退。
+    「TMDB 没这集」才静默（不影响 pure_inherit 的主流程）：只是本集拿不到标题/剧照，
+    图片仍沿父级回退。瞬态失败（网络/限流，``TmdbTransientError``）**上抛**：
+    整条进补全重试队列，下一轮把本集标题/剧照补上——吞掉它就是静默写 done
+    （问题一：时好时坏的另一个缺口）。
     """
-    from backend.emby_server.tmdb import tmdb_client, image_base, prewarm_images
+    from backend.emby_server.tmdb import (
+        image_base,
+        prewarm_images,
+        tmdb_client,
+        TmdbTransientError,
+    )
 
     series_tmdb_id = (inherit_parent or {}).get("tmdb_id")
     if not series_tmdb_id:
@@ -279,6 +286,10 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
         return
     try:
         ep_data = tmdb_client.find_episode(str(series_tmdb_id), season_no, ep_no)
+    except TmdbTransientError:
+        # 瞬态失败不静默：上抛让整条进重试队列（见函数头），
+        # 与「TMDB 没这集」的静默路径严格区分
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.debug("单集 TMDB 查询失败 series=%s S%sE%s: %s",
                      series_tmdb_id, season_no, ep_no, exc)
@@ -697,6 +708,10 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 # 豆瓣/Bangumi 也没兜到（alt_hit 为空才会进到这里）：
                 # 显式记 none，与「从未标记过」区分开。
                 item.metadata_source = "none"
+                # 「跑过但没拿到」必须可见：以前这条是静默写入，
+                # 网络抖动被吞成搜不到时根本查不出（问题一的可见性缺口）
+                logger.info("TMDB 搜过无高置信命中（终态 none）id=%s name=%r year=%s",
+                            item.id, item.name, item.production_year)
             else:
                 _incomplete = True
         else:

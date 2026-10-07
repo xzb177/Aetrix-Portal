@@ -232,6 +232,47 @@ def test_rescrape_item_tmdb_only_fills_missing(monkeypatch):
     assert item.primary_image_url == "https://example.com/old.jpg"
 
 
+# ---------- 瞬态失败：手动重刮不 500（问题一） ----------
+
+def test_rescrape_search_transient_records_note(monkeypatch):
+    """TMDB 瞬态失败：记「暂时不可用」、不误报「未搜到匹配」，多源兜底照跑"""
+    from backend.emby_server.tmdb import TmdbTransientError
+
+    monkeypatch.setattr(admin_scrape, "_discover_nfo", lambda db, item: None)
+    monkeypatch.setattr(admin_scrape.tmdb_client, "api_keys", ["testkey"])
+
+    def boom(name, year, kind):
+        raise TmdbTransientError("TMDB 网络请求失败（重试耗尽）: /search/movie")
+
+    monkeypatch.setattr(admin_scrape.tmdb_client, "search", boom)
+    multi: list = []
+    monkeypatch.setattr(
+        admin_scrape, "_rescrape_multisource",
+        lambda db, item, kind: multi.append(kind) or ["多源命中：douban"])
+
+    out = admin_scrape._rescrape_one(_fake_db(), _movie_item())
+    assert any("暂时不可用" in n for n in out["notes"])
+    assert not any("未搜到匹配" in n for n in out["notes"])
+    assert multi, "瞬态失败时多源兜底仍应尝试"
+
+
+def test_rescrape_details_transient_records_note(monkeypatch):
+    """有 TMDB ID 时详情瞬态失败：不抛异常，按「详情没拿到」记 note 继续"""
+    from backend.emby_server.tmdb import TmdbTransientError
+
+    monkeypatch.setattr(admin_scrape, "_discover_nfo",
+                        lambda db, item: dict(NFO_DATA))
+    monkeypatch.setattr(admin_scrape.tmdb_client, "api_keys", ["testkey"])
+
+    def boom(tid, kind):
+        raise TmdbTransientError("TMDB 服务端错误 HTTP 503: /tv/129")
+
+    monkeypatch.setattr(admin_scrape.tmdb_client, "details", boom)
+
+    out = admin_scrape._rescrape_one(_fake_db(), _movie_item())
+    assert "TMDB 详情获取失败" in out["notes"]
+
+
 # ---------- TMDB 候选搜索（Emby 式手动识别） ----------
 
 _SERIES_HIT = {

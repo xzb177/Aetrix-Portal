@@ -38,10 +38,14 @@ def _image_env(tmp_path, monkeypatch):
 
 @pytest.fixture
 def downloads(monkeypatch):
-    """把真下载换成计数替身：返回的内容足够写成一个非空文件"""
+    """把真下载换成计数替身：返回的内容足够写成一个非空文件
+
+    ``attempts`` 是 v2.53.0 ``_download`` 的重试次数参数（问题一），
+    替身收下但不重试——这里数的是「发起下载的 URL」，不是重试次数。
+    """
     calls: list = []
 
-    def fake_download(url):
+    def fake_download(url, attempts=1):
         calls.append(url)
         return b"fake-image-bytes"
 
@@ -52,7 +56,7 @@ def downloads(monkeypatch):
 @pytest.fixture
 def downloads_forbidden(monkeypatch):
     """写事务里一旦真下载就炸（本文件最关键的断言方式）"""
-    def boom(url):  # pragma: no cover — 被调用就是失败
+    def boom(url, attempts=1):  # pragma: no cover — 被调用就是失败
         raise AssertionError(f"写事务里不该下载图片: {url}")
 
     monkeypatch.setattr(image_store, "_download", boom)

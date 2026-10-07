@@ -783,3 +783,50 @@ def test_empty_claim_rolls_back_read_transaction(db):
     db.rollback()
     assert enrich_worker._claim_batch(db, 10) == []
     assert not db.in_transaction()
+
+
+# ---------- 瞬态失败与「真搜不到」的边界（问题一：刮削时好时坏） ----------
+
+def test_transient_tmdb_failure_retries_instead_of_terminal(db, monkeypatch):
+    """瞬态 TMDB 失败 → ok=False → 退避重试；绝不写终态 done+none
+
+    复现（scripts/repro_scrape_stability.py，修复前）：网络抖动被吞成
+    ``search()=None`` → ``_enrich_apply`` 写终态 ``done + metadata_source='none'``，
+    条目从此不再重试——「时好时坏」的根因。
+    """
+    from backend.emby_server import tmdb as tmdb_mod
+
+    def boom(*a, **k):
+        raise tmdb_mod.TmdbTransientError(
+            "TMDB 网络请求失败（重试耗尽）: /search/tv")
+
+    monkeypatch.setattr(tmdb_mod.TmdbClient, "configured",
+                        property(lambda self: True))
+    monkeypatch.setattr(tmdb_mod.tmdb_client, "search", boom)
+
+    it = _make_item(db, item_type="series", name="黑鸟", file_path=None)
+    outcome = enrich_worker._process_item(db, it)
+    db.refresh(it)
+
+    assert outcome == "retry"
+    assert it.enrich_status == "pending"
+    assert it.enrich_attempts == 1
+    assert it.enrich_next_retry_at is not None, "应排入指数退避"
+    assert it.metadata_source != "none", "瞬态失败不许写成「搜过没有」终态"
+
+
+def test_genuine_miss_still_terminal_none(db, monkeypatch):
+    """对照组：真搜不到（正常返回 None）仍是终态 done+none——新旧边界不变"""
+    from backend.emby_server import tmdb as tmdb_mod
+
+    monkeypatch.setattr(tmdb_mod.TmdbClient, "configured",
+                        property(lambda self: True))
+    monkeypatch.setattr(tmdb_mod.tmdb_client, "search", lambda *a, **k: None)
+
+    it = _make_item(db, item_type="series", name="不存在的剧", file_path=None)
+    outcome = enrich_worker._process_item(db, it)
+    db.refresh(it)
+
+    assert outcome == "done"
+    assert it.metadata_source == "none"
+    assert it.enrich_status == "done"

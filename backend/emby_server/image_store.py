@@ -19,6 +19,7 @@
 ``EMBY_IMAGE_CACHE_MB``   缓存上限，默认 2048 MB
 ``EMBY_IMAGE_GRACE_SECONDS`` 新增文件保护期，默认 3600 秒（刚落盘、还没写库的文件不被清理）
 ``EMBY_IMAGE_TIMEOUT``    单张图下载超时（秒），默认 15
+``EMBY_IMAGE_RETRIES``    预热下载的重试次数（默认 2，共 3 次尝试），0.5s 起指数退避加抖动
 ======================  ==========================================================
 """
 from __future__ import annotations
@@ -26,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -393,35 +395,73 @@ def local_path(url: str) -> str:
     return os.path.join(image_dir(), digest + ext)
 
 
-def _download(url: str) -> Optional[bytes]:
-    """下载远程图（失败返回 None：调用方退回远程地址，不影响功能）"""
+def _download_attempts() -> int:
+    """图片下载总尝试次数 = 1 + ``EMBY_IMAGE_RETRIES``（默认 2 次重试，共 3 次）"""
+    return 1 + max(0, int(os.getenv("EMBY_IMAGE_RETRIES", "2") or 2))
+
+
+def _fetch_once(url: str, timeout: int) -> tuple:
+    """单次下载：返回 (内容, 是否值得重试)（问题一：以前没有重试这个概念）
+
+    瞬态失败（网络异常 / 429 / 5xx）→ ``(None, True)``——网络抖动时该退避重打；
+    确定性失败（404、超大、内容类型不对，重试也不会变）→ ``(None, False)``。
+    """
     try:
         import httpx
 
-        timeout = _env_int("EMBY_IMAGE_TIMEOUT", 15, 1)
         # v2.42.9：图片走 image.tmdb.org（另一个 CDN，不吃 api_key 配额），单独计时——
         # 它以前既不占 TMDB 限流、也不进任何可见指标，是整条链上最容易被忽视的尾巴
         with progress.stage_timer("image_dl"):
             with httpx.Client(timeout=timeout, follow_redirects=True) as client:
                 resp = client.get(url)
+        if resp.status_code >= 429 or resp.status_code >= 500:
+            logger.info("图片下载暂不可达（HTTP %s，将重试）: %s", resp.status_code, url)
+            return None, True
         if resp.status_code >= 400:
             logger.info("图片本地化跳过（HTTP %s）: %s", resp.status_code, url)
-            return None
+            return None, False
         content = resp.content or b""
         if not content or len(content) > _MAX_IMAGE_BYTES:
             logger.info("图片本地化跳过（大小 %s 字节）: %s", len(content), url)
-            return None
+            return None, False
         ctype = (resp.headers.get("content-type") or "").lower()
         if ctype and not ctype.startswith("image/"):
             logger.info("图片本地化跳过（内容类型 %s）: %s", ctype, url)
-            return None
-        return content
+            return None, False
+        return content, False
     except Exception as exc:  # noqa: BLE001 — 第三方取不到图不该影响刮削/播放
-        logger.info("图片本地化失败（退回远程图）: %s（%s）", url, exc)
-        return None
+        logger.info("图片下载失败（将重试）: %s（%s）", url, exc)
+        return None, True
 
 
-def localize(url: Optional[str], allow_download: bool = True) -> str:
+def _download(url: str, attempts: Optional[int] = None) -> Optional[bytes]:
+    """下载远程图：瞬态失败**指数退避重试**，重试耗尽返回 None（退回远程地址）
+
+    ``attempts=None`` 取 ``_download_attempts()``（``EMBY_IMAGE_RETRIES``，默认 3）。
+    确定性失败不浪费重试；重试耗尽打 **WARNING** ——旧实现只打 INFO，
+    「图片下不下来」在日志里完全看不见（问题一的可见性缺口）。
+    """
+    if attempts is None:
+        attempts = _download_attempts()
+    attempts = max(1, int(attempts))
+    timeout = _env_int("EMBY_IMAGE_TIMEOUT", 15, 1)
+    delay = 0.5
+    for n in range(1, attempts + 1):
+        content, retryable = _fetch_once(url, timeout)
+        if content:
+            return content
+        if not retryable or n >= attempts:
+            if retryable:  # 确定性失败已在 _fetch_once 里各自打了日志
+                logger.warning("图片下载失败（尝试 %s 次后放弃，退回远程图）: %s", n, url)
+            return None
+        # 加抖动：8 个 worker 同时撞上抖动时不要齐步重打
+        time.sleep(delay + random.random() * 0.25)
+        delay = min(delay * 2, 4.0)
+    return None
+
+
+def localize(url: Optional[str], allow_download: bool = True,
+             attempts: int = 1) -> str:
     """把远程图落成本地文件，返回本地路径；失败或未开启返回空串
 
     同一张图并发请求只下载一次（按 URL 单飞）；文件已经存在就直接复用。
@@ -430,6 +470,11 @@ def localize(url: Optional[str], allow_download: bool = True) -> str:
     ``allow_download=False``：只认「文件已经在本地」，不在这里发 HTTP。**数据库写事务里
     必须用这一档** —— 一张图超时 15s，就等于攥着写锁 15s。v2.42.9 把下载统一挪到 IO 阶段
     （见 ``prewarm``），写库阶段只落字段；没预热上的图交给取图时的按需自愈（media_routes）。
+
+    ``attempts``：下载尝试次数。默认 1 —— 取图时的按需自愈要快，失败了客户端
+    本来就能退回远程地址；IO 阶段的 ``prewarm`` 传 ``_download_attempts()``
+    （`EMBY_IMAGE_RETRIES`，默认 3 次 + 指数退避），那才是刮削链上「图片下不下来」
+    的主战场（问题一）。
     """
     if not url or not url.startswith("http") or not enabled():
         return ""
@@ -451,7 +496,7 @@ def localize(url: Optional[str], allow_download: bool = True) -> str:
                 _STATS["throttled"] += 1
                 return ""
             try:
-                content = _download(url)
+                content = _download(url, attempts=attempts)
             finally:
                 _DL_SEMAPHORE.release()
             if not content:
@@ -495,7 +540,9 @@ def prewarm(urls) -> int:
             continue
         seen.add(url)
         try:
-            if localize(url):
+            # 预热是刮削链上的图片下载主战场：带上重试与退避（问题一）。取图时的
+            # 按需自愈（localize 默认 1 次）不加：那里要快，失败了反正还有远程地址
+            if localize(url, attempts=_download_attempts()):
                 done += 1
         except Exception:  # noqa: BLE001 — 预热绝不该影响主流程
             continue
