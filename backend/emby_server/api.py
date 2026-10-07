@@ -633,10 +633,30 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         dto["MediaSources"] = [_media_source(item, base, api_key, db)]
         dto["MediaSourceCount"] = 1
         dto["Chapters"] = []
-        # 多版本：同一目录下的其他版本，供详情页版本切换器使用
+        # 多版本：同一目录下的其他版本 + 物理合并的版本，供详情页版本切换器使用
+        # （对标 StrmAssistant MergeMultiVersionTask：合并后用户要在详情页看到并切换版本）
         if item.item_type == "movie":
             sibs = _version_siblings(item, db)
-            if len(sibs) > 1:
+            # 物理合并的版本（merged_into_id 指向本条目）：_version_siblings
+            # 只找同目录同名文件，跨目录的合并版本在这里补上
+            try:
+                from backend.emby_server import merge_versions_worker as _mvw
+                # 如果本条目是被合并的，先找到主记录
+                _primary_id = item.id
+                if getattr(item, "merged_into_id", None):
+                    _primary_id = item.merged_into_id
+                _merged = _mvw.get_alternate_versions(db, _primary_id)
+            except Exception:
+                _merged = []
+            # 合并两个来源，按 id 去重（sibs 已按 id 排序，merged 首个是主记录）
+            _seen = set()
+            _all = []
+            for s in list(sibs) + _merged:
+                if s.id not in _seen:
+                    _seen.add(s.id)
+                    _all.append(s)
+            _all.sort(key=lambda s: s.id)
+            if len(_all) > 1:
                 dto["Versions"] = [
                     {
                         "Id": s.guid,
@@ -645,9 +665,9 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                         "Width": s.width or 0,
                         "Size": s.size or 0,
                         "Container": s.container or "",
-                        "IsPrimary": s.id == sibs[0].id,
+                        "IsPrimary": s.id == _all[0].id,
                     }
-                    for s in sibs
+                    for s in _all
                 ]
             else:
                 dto["Versions"] = []
