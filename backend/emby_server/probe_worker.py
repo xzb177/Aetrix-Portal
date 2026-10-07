@@ -196,13 +196,18 @@ def preprobe_sweep(db, limit: int = PREPROBE_SWEEP_LIMIT) -> int:
     missing_codec = or_(em.MediaItem.video_codec.is_(None),
                         em.MediaItem.video_codec == "")
     # 注意：probe_status 为 NULL 的也要扫（NOT IN 对 NULL 返回 unknown 会漏掉）
+    # done/degraded 也要排除：已探测过（即使没拿到 codec）的不再重复入队，
+    # 否则无法探测的文件会被无限重复排队
     not_queued = or_(em.MediaItem.probe_status.is_(None),
-                     em.MediaItem.probe_status.notin_(("pending", "probing", "failed")))
+                     em.MediaItem.probe_status.notin_(
+                         ("pending", "probing", "failed", "done", "degraded")))
     q = (db.query(em.MediaItem.id)
          .filter(em.MediaItem.item_type.in_(PROBE_ITEM_TYPES),
                  missing_codec,
                  em.MediaItem.file_path.isnot(None),
                  em.MediaItem.file_path != "",
+                 em.MediaItem.deleted_at.is_(None),
+                 em.MediaItem.merged_into_id.is_(None),
                  not_queued)
          .order_by(em.MediaItem.id)
          .limit(limit))

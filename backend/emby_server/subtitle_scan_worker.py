@@ -200,14 +200,14 @@ def _scan_once() -> Tuple[int, int]:
                 if has_external_subtitle_changed(db, item.id, item.file_path):
                     update_external_subtitles(db, item)
                     # 同步更新条目的 subtitle_languages（EA 展示用）
+                    # 字幕被删光时要清空，避免残留旧值
                     langs = sorted({
                         s.language for s in db.query(em.MediaStream).filter(
                             em.MediaStream.item_id == item.id,
                             em.MediaStream.stream_type == "Subtitle",
                         ).all() if s.language
                     })
-                    if langs:
-                        item.subtitle_languages = ",".join(langs)
+                    item.subtitle_languages = ",".join(langs) if langs else None
                     db.commit()
                     updated += 1
             except Exception as e:

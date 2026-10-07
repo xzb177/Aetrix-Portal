@@ -66,25 +66,30 @@ _start_lock = threading.Lock()
 
 def thumbnail_dir(guid: str) -> str:
     """某条目的缩略图目录。"""
-    return os.path.join(THUMBNAIL_ROOT, guid[:2], guid)
+    # guid 为空时返回一个不可能存在的路径，避免 TypeError
+    safe_guid = (guid or "").strip()
+    if not safe_guid:
+        return os.path.join(THUMBNAIL_ROOT, "__invalid__")
+    return os.path.join(THUMBNAIL_ROOT, safe_guid[:2], safe_guid)
 
 
 def has_thumbnails(guid: str) -> bool:
-    """是否有已提取的缩略图（文件系统即状态）。"""
-    d = thumbnail_dir(guid)
-    if not os.path.isdir(d):
+    """是否有已提取的缩略图（文件系统即状态）。
+
+    要求数量达到 THUMBNAIL_COUNT，避免上次中断只生成一半时误判为已完成。
+    """
+    if not (guid or "").strip():
         return False
-    try:
-        return any(
-            f.startswith("thumb_") and f.endswith(".jpg")
-            for f in os.listdir(d)
-        )
-    except OSError:
-        return False
+    thumbs = list_thumbnails(guid)
+    # 允许一定的容差：生成数量 >= 预期数量的 80% 即视为完成
+    # （某些视频太短，抽帧可能失败几张）
+    return len(thumbs) >= max(1, int(THUMBNAIL_COUNT * 0.8))
 
 
 def list_thumbnails(guid: str) -> List[str]:
     """列出缩略图文件（按序号排序）。"""
+    if not (guid or "").strip():
+        return []
     d = thumbnail_dir(guid)
     if not os.path.isdir(d):
         return []
@@ -126,7 +131,10 @@ def extract_thumbnails(item) -> int:
 
     对标 StrmAssistant VideoThumbnailApi.RefreshThumbnailImages。
     """
-    guid = item.guid
+    guid = (getattr(item, "guid", None) or "").strip()
+    if not guid:
+        logger.debug("缩略图：条目无 guid，跳过")
+        return 0
     if has_thumbnails(guid):
         return 0
 
@@ -235,11 +243,21 @@ def _extract_once() -> Tuple[int, int]:
         db.close()
 
 
+def _ffmpeg_available() -> bool:
+    """检查 ffmpeg 是否可用。"""
+    import shutil
+    return shutil.which("ffmpeg") is not None
+
+
 def _extract_loop():
     logger.info(
         "缩略图 worker 启动（间隔 %.0f 秒，每视频 %d 张）",
         THUMBNAIL_INTERVAL_SEC, THUMBNAIL_COUNT,
     )
+    # ffmpeg 不可用时直接退出，避免每轮空转浪费 CPU
+    if not _ffmpeg_available():
+        logger.warning("缩略图 worker：未找到 ffmpeg，已禁用")
+        return
     os.makedirs(THUMBNAIL_ROOT, exist_ok=True)
     try:
         checked, done = _extract_once()
