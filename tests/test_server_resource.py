@@ -87,55 +87,86 @@ def test_body_limit_middleware_exists():
 def test_emby_login_rate_limit_rule_exists():
     """RATE_LIMITS 里有 /emby/Users/AuthenticateByName 的 15次/分钟规则，
     且中间件覆盖 /emby/ 路径（原来只覆盖 /api/）。
-    EM（backend/main.py，单进程模式）和 EA（emby_api/main.py，分离部署生产用）都要有。"""
+    EM（backend/main.py，单进程模式）和 EA（emby_api，分离部署生产用）都要有。
+
+    EA 侧 2026-10-07 起为纯 ASGI 类（emby_api/asgi_middleware.py，
+    中转零拷贝优化），此处同时接受函数式与类式两种形态。
+    """
     import ast
-    for path in [
-        REPO_ROOT / "backend/main.py",
-        REPO_ROOT / "emby_api/main.py",
-    ]:
+
+    def _check_rule(path, var_name):
+        """解析文件中的限流规则表，校验登录规则存在且 <=15/分钟。"""
         src = open(path).read()
         assert '"/emby/Users/AuthenticateByName"' in src, path
         tree = ast.parse(src)
-        found_rule = False
         for n in ast.walk(tree):
             if isinstance(n, ast.Assign):
                 for t in n.targets:
-                    if isinstance(t, ast.Name) and t.id in ("RATE_LIMITS", "_EA_RATE_LIMITS"):
+                    if isinstance(t, ast.Name) and t.id == var_name:
                         val = ast.literal_eval(n.value)
                         rules = {p: (a, b) for p, a, b in val}
                         anon, auth = rules["/emby/Users/AuthenticateByName"]
                         assert anon <= 15 and auth <= 15, path
-                        found_rule = True
-        assert found_rule, path
-        # 限流中间件的路径判断要包含 /emby/
-        mw_names = ("rate_limit_middleware", "ea_rate_limit_middleware")
-        for n in ast.walk(tree):
-            if isinstance(n, ast.AsyncFunctionDef) and n.name in mw_names:
-                body_src = ast.get_source_segment(src, n)
-                assert "/emby/" in body_src, path
-                break
-        else:
-            raise AssertionError(f"rate limit middleware not found in {path}")
+                        return
+        raise AssertionError(f"rate limit rule {var_name} not parsed in {path}")
 
-
-def test_body_limit_middleware_in_both_apps():
-    """EM 和 EA 都有请求体大小限制中间件（413）。"""
-    import ast
-    for path, mw in [
-        (REPO_ROOT / "backend/main.py", "request_body_limit_middleware"),
-        (REPO_ROOT / "emby_api/main.py", "ea_body_limit_middleware"),
-    ]:
+    def _check_mw_covers_emby(path, names):
+        """限流中间件的路径判断要包含 /emby/（函数式或类式均可）。"""
         src = open(path).read()
         tree = ast.parse(src)
         for n in ast.walk(tree):
-            if isinstance(n, ast.AsyncFunctionDef) and n.name == mw:
+            if isinstance(n, ast.AsyncFunctionDef) and n.name in names:
                 body_src = ast.get_source_segment(src, n)
-                assert "413" in body_src, path
-                assert "content-length" in body_src, path
-                assert "MAX_REQUEST_BODY_MB" in body_src, path
-                break
-        else:
-            raise AssertionError(f"{mw} not found in {path}")
+                assert "/emby/" in body_src, path
+                return
+            if isinstance(n, ast.ClassDef) and n.name in names:
+                body_src = ast.get_source_segment(src, n)
+                assert "/emby/" in body_src, path
+                return
+        raise AssertionError(f"rate limit middleware {names} not found in {path}")
+
+    # EM（backend/main.py，单进程模式）：函数式
+    _check_rule(REPO_ROOT / "backend/main.py", "RATE_LIMITS")
+    _check_mw_covers_emby(REPO_ROOT / "backend/main.py", {"rate_limit_middleware"})
+
+    # EA（分离部署生产用）：纯 ASGI 类
+    ea_mw_path = REPO_ROOT / "emby_api/asgi_middleware.py"
+    _check_rule(ea_mw_path, "_EA_RATE_LIMITS")
+    _check_mw_covers_emby(ea_mw_path, {"EaRateLimitMiddleware"})
+
+def test_body_limit_middleware_in_both_apps():
+    """EM 和 EA 都有请求体大小限制中间件（413）。
+
+    EA 侧 2026-10-07 起为纯 ASGI 类（emby_api/asgi_middleware.py，
+    中转零拷贝优化），此处同时接受函数式与类式两种形态。
+    """
+    import ast
+
+    def _find(path, names):
+        src = open(path).read()
+        tree = ast.parse(src)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.AsyncFunctionDef) and n.name in names:
+                return ast.get_source_segment(src, n)
+            if isinstance(n, ast.ClassDef) and n.name in names:
+                return ast.get_source_segment(src, n)
+        return None
+
+    # EM：函数式（backend/main.py）
+    body_src = _find(REPO_ROOT / "backend/main.py",
+                     {"request_body_limit_middleware"})
+    assert body_src, "request_body_limit_middleware not found in backend/main.py"
+    assert "413" in body_src
+    assert "content-length" in body_src
+    assert "MAX_REQUEST_BODY_MB" in body_src
+
+    # EA：纯 ASGI 类（emby_api/asgi_middleware.py）
+    body_src = _find(REPO_ROOT / "emby_api/asgi_middleware.py",
+                     {"EaBodyLimitMiddleware"})
+    assert body_src, "EaBodyLimitMiddleware not found in emby_api/asgi_middleware.py"
+    assert "413" in body_src
+    assert "content-length" in body_src
+    assert "MAX_REQUEST_BODY_MB" in body_src
 
 
 # ---------- 4. Download/File 一律代理（不再 302） ----------

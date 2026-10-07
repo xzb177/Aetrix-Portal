@@ -3,10 +3,15 @@
 背景：2026-10-07，PR #387 修复了 security_headers 对所有 /emby/ 路径
 强制 no-store 的问题。现在视频分片路径（/stream）应跳过强制，
 让 handler 设的 public, max-age=21600 生效，Cloudflare 才能缓存。
+
+2026-10-07（perf/relay-zero-copy）：三个 @app.middleware("http")
+（BaseHTTPMiddleware）已迁为纯 ASGI 类（emby_api/asgi_middleware.py），
+中转链路零额外拷贝。以下测试锁定该结构不退化。
 """
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+MW_MODULE = REPO_ROOT / "emby_api" / "asgi_middleware.py"
 
 
 def _get_is_segment_path():
@@ -21,15 +26,19 @@ def _get_is_segment_path():
 
 
 def test_ea_is_pure_asgi_not_basehttp():
-    """EA 的 security_headers 不应是 BaseHTTPMiddleware（会缓冲大文件）。"""
-    src = (REPO_ROOT / "emby_api" / "main.py").read_text()
-    # 纯 ASGI 类的特征：class 定义 + __call__(self, scope, receive, send)
-    # 如果还是 @app.middleware("http") 函数式，标记为待迁移（不硬失败）
-    if "class SecurityHeadersMiddleware" in src:
-        assert "__call__" in src and "scope" in src
-    else:
-        # 函数式中间件：确认它至少对分片路径跳过 no-store（PR #387 的行为）
-        assert "is_segment_path" in src, "EA security_headers 缺少分片路径判断"
+    """EA 的三个中间件必须是纯 ASGI 类，不能是 @app.middleware("http")。"""
+    main_lines = (REPO_ROOT / "emby_api" / "main.py").read_text().splitlines()
+    decorators = [l for l in main_lines
+                  if l.strip().startswith('@app.middleware')]
+    assert not decorators, \
+        f"EA 仍有 BaseHTTPMiddleware（{decorators}），会给每个响应分块加中转开销"
+    mw_src = MW_MODULE.read_text()
+    for cls in ("SecurityHeadersMiddleware", "EaBodyLimitMiddleware",
+                "EaRateLimitMiddleware"):
+        assert f"class {cls}" in mw_src, f"{cls} 缺失"
+    # 纯 ASGI 特征：__call__(self, scope, receive, send)，且不读 body
+    assert "async def __call__(self, scope, receive, send)" in mw_src
+    assert "await request.body()" not in mw_src
 
 
 def test_api_is_pure_asgi_not_basehttp():
@@ -55,12 +64,8 @@ def test_non_stream_emby_path_gets_no_store():
 
 
 def test_body_not_buffered():
-    """security_headers 不应缓冲响应体（检查源码无 body 读取）。"""
-    for p in [REPO_ROOT / "emby_api" / "main.py", REPO_ROOT / "backend" / "main.py"]:
-        src = p.read_text()
-        # 找到 security_headers 函数体，确认没有 await request.body() 或 response.body 拼接
-        idx = src.find("security_headers")
-        if idx >= 0:
-            snippet = src[idx:idx + 2000]
-            # 函数式中间件只改 headers，不碰 body 是符合预期的
-            assert "response.body" not in snippet or "is_segment_path" in src
+    """纯 ASGI 中间件不缓冲响应体（源码无 body 读取/拼接）。"""
+    src = MW_MODULE.read_text()
+    assert ".body()" not in src or "request.body()" not in src
+    # 放行路径直接调 self.app，不包裹 send（零开销）
+    assert "await self.app(scope, receive, send)" in src

@@ -98,12 +98,14 @@ def test_fuse_mid_read_failure_truncates_gracefully(monkeypatch):
     "Response content shorter than Content-Length"。
     """
     monkeypatch.setattr(streaming, "FUSE_PREFIXES", ("/tmp/fake_mnt_mp/",))
-    p = _tmpfile(1024 * 1024, fuse=True)
+    # 文件 3MB：READ_CHUNK=1MB 时读满 2 块后返回空，仍能触发优雅截断
+    # （原来 CHUNK=256KB 时 1MB 文件就够；块变大后 fixture 跟着放大）
+    p = _tmpfile(3 * 1024 * 1024, fuse=True)
 
     real_open = open
 
     class FlakyFile:
-        """读满 2 个 CHUNK 后返回空，模拟 Drive 403 后 rclone 放弃。"""
+        """读满 2 个 READ_CHUNK 后返回空，模拟 Drive 403 后 rclone 放弃。"""
 
         def __init__(self, *a, **k):
             self._f = real_open(*a, **k)
@@ -126,11 +128,11 @@ def test_fuse_mid_read_failure_truncates_gracefully(monkeypatch):
 
     monkeypatch.setattr("builtins.open", FlakyFile)
     try:
-        resp = serve_file(p, _req("bytes=0-1048575"))
+        resp = serve_file(p, _req("bytes=0-3145727"))
         assert "content-length" not in {k.lower() for k in resp.headers}
         # 生成器必须正常结束（不抛），即使字节不足
         body = _collect(resp)
-        assert 0 < len(body) < 1048576
+        assert 0 < len(body) < 3145728
     finally:
         monkeypatch.undo()
         os.unlink(p)
