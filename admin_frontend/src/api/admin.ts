@@ -1471,6 +1471,51 @@ export const fetchCdnConfig = () =>
 export const updateCdnConfig = (payload: { domain: string; enabled: boolean }) =>
   put<{ success: boolean; cdn: CdnConfig }>('/playback/cdn', payload)
 
+// ==================== 流节点（join token 自助接入，/api/admin/stream-nodes） ====================
+// 管理后台"添加节点" → 生成一次性 token → 新机器一条 docker 命令带 token 自注册。
+// 全程不用 SSH、不用手动跑脚本。
+
+export interface StreamNodeRow {
+  url: string
+  name: string
+  weight: number
+}
+
+export interface JoinTokenRow {
+  token: string
+  status: 'pending' | 'used' | 'expired'
+  name: string
+  node_url: string
+  weight: number
+  created_at: number
+  expires_at: number
+  used_at: number | null
+}
+
+export const fetchStreamNodes = () =>
+  get<{ nodes: StreamNodeRow[]; healthy: string[]; tokens: JoinTokenRow[] }>(
+    '/stream-nodes',
+  )
+
+export const createJoinToken = (payload: {
+  name?: string
+  node_url?: string
+  weight?: number
+  ttl_minutes?: number
+}) =>
+  post<{ ok: boolean; token: string; name: string; node_url: string; weight: number; expires_at: number }>(
+    '/stream-nodes/token',
+    payload,
+  )
+
+export const revokeJoinToken = (token: string) =>
+  del<{ ok: boolean }>(`/stream-nodes/tokens/${encodeURIComponent(token)}`)
+
+export const unregisterStreamNode = (url: string) =>
+  del<{ ok: boolean; nodes: StreamNodeRow[] }>(
+    `/stream-nodes?url=${encodeURIComponent(url)}`,
+  )
+
 // ==================== VPS 本地缓存（播放线路「本地缓存」，/api/admin/playback/local-cache） ====================
 
 /** 本地缓存：配置 + 占用/命中率统计 + 条目列表（只读） */

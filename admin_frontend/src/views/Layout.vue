@@ -126,6 +126,7 @@ const navGroups: NavGroup[] = [
     icon: Server,
     items: [
       { path: '/servers', label: '服务器与线路' },
+      { path: '/stream-nodes', label: '流节点' },
       { path: '/emby', label: '媒体库' },
       // 谁能看到哪些库（服务器默认范围 + 指定用户覆盖）：默认关闭，不改现有行为
       { path: '/library-scope', label: '可见范围' },

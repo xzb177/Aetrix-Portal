@@ -105,3 +105,21 @@ COPY scripts/ /app/scripts/
 # ==================== 发行变体：默认产物 ====================
 # 见文件头的「三个 stage 的排布」。保持空，不要往这里加 COPY。
 FROM base AS runtime
+
+# ==================== 流节点镜像（join token 自助接入）====================
+# 在 runtime 之上加 rclone + fuse3 + entrypoint。必须排在 runtime 之后，
+# 默认构建（不带 --target）仍产出 runtime，不受影响。
+# 用法：docker build --target stream-node -f Dockerfile.backend -t aetrix-stream-node .
+FROM runtime AS stream-node
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fuse3 curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/rclone.zip').extractall('/tmp/rclone')" \
+    && cp /tmp/rclone/rclone-*/rclone /usr/local/bin/rclone \
+    && chmod +x /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone /tmp/rclone.zip \
+    && rclone version
+COPY scripts/stream-node-entrypoint.sh /app/stream-node-entrypoint.sh
+RUN chmod +x /app/stream-node-entrypoint.sh
+ENTRYPOINT ["/app/stream-node-entrypoint.sh"]
