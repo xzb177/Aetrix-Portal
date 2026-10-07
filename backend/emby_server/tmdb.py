@@ -88,10 +88,17 @@ TMDB_POSTER_LANGUAGE_OPTIONS = ("system", "original", "zh-CN")
 # StrmAssistant 对标：MovieDbFallbackLanguages
 # 首选语言无高置信命中时，按此链逐个重试（去重后）。
 MOVIEDB_FALLBACK_LANGUAGES = ("zh-CN", "zh-HK", "zh-TW", "ja-JP", "en-US")
+# fallback 最大深度（环境变量 TMDB_FALLBACK_MAX_LANGS）：首选语言 + 最多 N 种备选。
+# 最坏请求数 = (1+N) × 候选数；默认 2（最坏 15 请求），设 0 则关闭 fallback。
+try:
+    _FALLBACK_MAX = int(os.getenv("TMDB_FALLBACK_MAX_LANGS", "2") or 2)
+except ValueError:
+    _FALLBACK_MAX = 2
+TMDB_FALLBACK_MAX_LANGS = max(0, min(_FALLBACK_MAX, len(MOVIEDB_FALLBACK_LANGUAGES)))
 
 
 def language_fallback_chain(db=None) -> list[str]:
-    """TMDB 语言 fallback 链：首选语言打头，后跟备选（去重）。
+    """TMDB 语言 fallback 链：首选语言打头，后跟备选（去重，深度受限）。
 
     对标 StrmAssistant ``LanguageUtility.MovieDbFallbackLanguages``。
     zh-CN 无结果时自动试 zh-TW/en-US 等，不直接放弃。
@@ -99,6 +106,8 @@ def language_fallback_chain(db=None) -> list[str]:
     preferred = preferred_language(db)
     chain = [preferred]
     for lang in MOVIEDB_FALLBACK_LANGUAGES:
+        if len(chain) > TMDB_FALLBACK_MAX_LANGS:
+            break
         if lang not in chain:
             chain.append(lang)
     return chain
@@ -1462,6 +1471,8 @@ class TmdbClient:
         - "system"：返回 None（用 details 里的默认图，不额外请求）
         - "original"：取 ``include_image_language=en,null``（原版+无语言）
         - "zh-CN"：取 ``include_image_language=zh-CN,null``
+
+        磁盘缓存 30 天（同 details 口径）：同 tmdb_id 不重复打 TMDB。
         """
         if image_lang is None:
             pref = poster_language()
@@ -1469,11 +1480,26 @@ class TmdbClient:
                 return None
             image_lang = "en,null" if pref == "original" else "zh-CN,null"
         endpoint = "tv" if kind == "series" else "movie"
+        # 先读缓存（键含语言维度）
         try:
-            return self._get(f"/{endpoint}/{tmdb_id}/images",
+            hit, cached = tmdb_cache.load_details(
+                f"{endpoint}_images", str(tmdb_id), image_lang)
+            if hit and isinstance(cached, dict):
+                return cached
+        except Exception:
+            pass
+        try:
+            data = self._get(f"/{endpoint}/{tmdb_id}/images",
                              {"include_image_language": image_lang})
         except Exception:
             return None
+        if data:
+            try:
+                tmdb_cache.save_details(
+                    f"{endpoint}_images", str(tmdb_id), data, image_lang)
+            except Exception:
+                pass
+        return data
 
 
     def season_episodes(self, tmdb_id: str, season_number: int) -> Optional[list]:

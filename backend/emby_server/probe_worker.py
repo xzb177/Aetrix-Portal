@@ -198,9 +198,12 @@ def preprobe_sweep(db, limit: int = PREPROBE_SWEEP_LIMIT) -> int:
     # 注意：probe_status 为 NULL 的也要扫（NOT IN 对 NULL 返回 unknown 会漏掉）
     # done/degraded 也要排除：已探测过（即使没拿到 codec）的不再重复入队，
     # 否则无法探测的文件会被无限重复排队
+    # probed_no_duration 也要排除：历史终态（扫描器已不再写入），缺 codec 也不重探，
+    # 否则 3.9 万条历史条目会被重新入队烧 Drive 配额
     not_queued = or_(em.MediaItem.probe_status.is_(None),
                      em.MediaItem.probe_status.notin_(
-                         ("pending", "probing", "failed", "done", "degraded")))
+                         ("pending", "probing", "failed", "done", "degraded",
+                          "probed_no_duration")))
     q = (db.query(em.MediaItem.id)
          .filter(em.MediaItem.item_type.in_(PROBE_ITEM_TYPES),
                  missing_codec,
@@ -318,6 +321,16 @@ def _dispatcher_loop() -> None:
             if not claimed:
                 _stop_event.wait(PROBE_IDLE_SLEEP_SEC)
                 continue
+            # 背压：线程池积压过多时跳过本轮抢单，避免预提取的 5000 条积压
+            # 把用户触发的按需探测（priority 1000）饿死在队列尾部
+            try:
+                backlog = pool._work_queue.qsize()
+            except Exception:
+                backlog = 0
+            if backlog > PROBE_WORKERS * 4:
+                logger.debug("探测线程池积压 %d，跳过本轮抢单", backlog)
+                _stop_event.wait(PROBE_IDLE_SLEEP_SEC)
+                continue
             for item_id in claimed:
                 gap = PROBE_MIN_INTERVAL_SEC - (time.monotonic() - last_submit)
                 if gap > 0 and _stop_event.wait(gap):
@@ -351,12 +364,16 @@ def start() -> None:
         _dispatcher_thread = threading.Thread(
             target=_dispatcher_loop, name="media-probe-dispatcher", daemon=True)
         _dispatcher_thread.start()
+        from backend.emby_server import worker_registry as _wr
+        _wr.register("probe_dispatcher", _dispatcher_thread)
         logger.info("按需探测 worker 已启动")
         # 预提取定时器（对标 StrmAssistant ExtractMediaInfoTask）
         if PREPROBE_ENABLED and (_preprobe_thread is None or not _preprobe_thread.is_alive()):
             _preprobe_thread = threading.Thread(
                 target=_preprobe_loop, name="media-preprobe", daemon=True)
             _preprobe_thread.start()
+            from backend.emby_server import worker_registry as _wr2
+            _wr2.register("probe_preextract", _preprobe_thread)
             logger.info("预提取定时器已启动")
 
 

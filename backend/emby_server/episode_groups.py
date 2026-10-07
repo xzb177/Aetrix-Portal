@@ -22,12 +22,29 @@ logger = logging.getLogger(__name__)
 EPISODE_GROUP_CONFIG_PREFIX = "tmdb_episode_group_"
 
 
+# 剧集组数据几乎静态（TMDB 上几年不变），磁盘长 TTL 缓存（默认 30 天）。
+# 避免详情页每次打开都打 TMDB、烧配额。
+
+
 def get_episode_groups(tmdb_id: str) -> list[dict]:
     """取某剧的所有剧集组（对标 TMDB /tv/{id}/episode_groups）。
 
     返回 [{"id": group_id, "name": 组名, "type": 类型, "episode_count": 集数}]
+    磁盘缓存（数据几乎静态）。
     """
+    from backend.emby_server import tmdb_cache
     from backend.emby_server.tmdb import tmdb_client
+
+    tmdb_id = str(tmdb_id or "").strip()
+    if not tmdb_id:
+        return []
+    # 先读缓存
+    try:
+        hit, cached = tmdb_cache.load_details("episode_groups", tmdb_id, "en-US")
+        if hit and isinstance(cached, list):
+            return cached
+    except Exception:
+        pass
 
     client = tmdb_client
     try:
@@ -51,7 +68,13 @@ def get_episode_groups(tmdb_id: str) -> list[dict]:
             "type": str(g.get("type") or ""),
             "episode_count": episode_count,
         })
-    return [g for g in out if g["id"]]
+    result = [g for g in out if g["id"]]
+    # 写缓存
+    try:
+        tmdb_cache.save_details("episode_groups", tmdb_id, result, "en-US")
+    except Exception:
+        pass
+    return result
 
 
 def get_episode_group_detail(group_id: str) -> Optional[dict]:
@@ -59,8 +82,20 @@ def get_episode_group_detail(group_id: str) -> Optional[dict]:
 
     返回 {"id":..., "name":..., "groups": [{"id":..., "name":..., "episodes":[...]}]}
     每个 episode 含 season_number/episode_number/order。
+    磁盘缓存 30 天（数据几乎静态）。
     """
+    from backend.emby_server import tmdb_cache
     from backend.emby_server.tmdb import tmdb_client
+
+    group_id = str(group_id or "").strip()
+    if not group_id:
+        return None
+    try:
+        hit, cached = tmdb_cache.load_details("episode_group", group_id, "en-US")
+        if hit and isinstance(cached, dict):
+            return cached
+    except Exception:
+        pass
 
     client = tmdb_client
     try:
@@ -68,6 +103,11 @@ def get_episode_group_detail(group_id: str) -> Optional[dict]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("取剧集组详情失败 %s: %s", group_id, exc)
         return None
+    if data:
+        try:
+            tmdb_cache.save_details("episode_group", group_id, data, "en-US")
+        except Exception:
+            pass
     return data
 
 

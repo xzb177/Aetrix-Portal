@@ -57,7 +57,9 @@ THUMBNAIL_BATCH_LIMIT = _env_int("THUMBNAIL_BATCH_LIMIT", 500, 10, 10000)
 # 缩略图根目录
 THUMBNAIL_ROOT = os.getenv("THUMBNAIL_ROOT", "/data/thumbnails")
 # ffmpeg 超时（秒）
-THUMBNAIL_FFMPEG_TIMEOUT = _env_int("THUMBNAIL_FFMPEG_TIMEOUT", 300, 60, 1800)
+THUMBNAIL_FFMPEG_TIMEOUT = _env_int("THUMBNAIL_FFMPEG_TIMEOUT", 60, 10, 600)
+# 单视频总耗时上限（秒）：损坏文件 10 次超时也不应卡死 worker
+THUMBNAIL_PER_VIDEO_TIMEOUT = _env_int("THUMBNAIL_PER_VIDEO_TIMEOUT", 300, 60, 1800)
 
 _thumb_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
@@ -157,7 +159,12 @@ def extract_thumbnails(item) -> int:
         margin = 0
 
     generated = 0
+    video_start = time.monotonic()
     for i in range(count):
+        # 单视频总耗时上限：损坏文件不应卡死 worker（默认 5 分钟）
+        if time.monotonic() - video_start > THUMBNAIL_PER_VIDEO_TIMEOUT:
+            logger.warning("缩略图单视频超时 %s（已生成 %d 张）", item.name, generated)
+            break
         # 时间点：margin + (i + 0.5) / count * usable
         ts = margin + (i + 0.5) / count * usable
         out_path = os.path.join(out_dir, f"thumb_{i:03d}.jpg")
@@ -209,23 +216,29 @@ def _extract_once() -> Tuple[int, int]:
     db = SessionLocal()
     try:
         # 已探测（有 duration）且无缩略图的 movie/episode
-        items = (
-            db.query(em.MediaItem)
+        # mount:// 路径在 SQL 层直接过滤（_resolve_video_path 会跳过，别拉回来再扔）
+        # order_by(id) + 只取 id 列做游标，避免大库下永远只扫"任意" N 条
+        rows = (
+            db.query(em.MediaItem.id)
             .filter(
                 em.MediaItem.item_type.in_(("movie", "episode")),
                 em.MediaItem.deleted_at.is_(None),
                 em.MediaItem.merged_into_id.is_(None),
                 em.MediaItem.duration_ticks > 0,
                 em.MediaItem.file_path.isnot(None),
+                ~em.MediaItem.file_path.like("mount://%"),
             )
+            .order_by(em.MediaItem.id.asc())
             .limit(THUMBNAIL_BATCH_LIMIT)
             .all()
         )
-        # 过滤掉已有缩略图的（文件系统检查）
-        pending = [i for i in items if not has_thumbnails(i.guid)]
-        for item in pending:
+        # 按 id 取全行（分批，避免 1 万 ORM 常驻）
+        for (item_id,) in rows:
             if _stop_event.is_set():
                 break
+            item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+            if not item or has_thumbnails(item.guid):
+                continue
             checked += 1
             try:
                 n = extract_thumbnails(item)
@@ -233,6 +246,8 @@ def _extract_once() -> Tuple[int, int]:
                     done += 1
             except Exception as e:
                 logger.warning("缩略图提取失败 %s: %s", item.name, e)
+            # 及时释放 ORM，避免 identity map 无限增长
+            db.expunge_all()
         return checked, done
     finally:
         db.close()
@@ -266,6 +281,9 @@ def _extract_loop():
                 logger.info("缩略图完成：检查 %d，完成 %d", checked, done)
         except Exception as e:
             logger.warning("缩略图失败: %s", e)
+        finally:
+            from backend.emby_server import worker_registry as _wr
+            _wr.heartbeat("thumbnail")
 
 
 def start() -> bool:
@@ -282,6 +300,8 @@ def start() -> bool:
             target=_extract_loop, name="thumbnail-extract", daemon=True
         )
         _thumb_thread.start()
+        from backend.emby_server import worker_registry as _wr
+        _wr.register("thumbnail", _thumb_thread)
         return True
 
 
