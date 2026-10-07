@@ -364,7 +364,10 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     path = request.url.path
     if path.startswith(("/api/", "/emby/")):
-        response.headers.setdefault("Cache-Control", "no-store")
+        # video segments cacheable via cdn.is_segment_path; skip forced no-store
+        from backend.emby_server.cdn import is_segment_path
+        if not is_segment_path(path):
+            response.headers.setdefault("Cache-Control", "no-store")
     elif response.status_code == 200 and path.startswith(("/assets/", "/admin/assets/")):
         # Vite 产物文件名带内容哈希：内容不变则文件名不变，可以长期强缓存
         response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
