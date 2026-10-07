@@ -817,6 +817,7 @@ onMounted(() => {
       year: null,
       item_type: '',
       tmdb_id: null,
+      metadata_locked: false,
     }
     bindPreview.value = null
     bindNotes.value = []
@@ -1388,7 +1389,7 @@ onMounted(() => {
               </div>
             </div>
             <div class="ms-actions">
-              <el-button type="primary" size="small" :loading="bindLoading" @click="doBindTmdb">
+              <el-button type="primary" size="small" :loading="bindLoading" @click="openBindConfirm">
                 绑定
               </el-button>
               <el-button size="small" :loading="bindLoading" @click="doUnbindTmdb">
