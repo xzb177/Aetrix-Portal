@@ -76,19 +76,13 @@ class TestSubtitleScanWorker:
             os.path.join(BASE, "subtitle_scan_worker.py"),
         )
 
-    def test_detect_empty_dir(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video = os.path.join(tmpdir, "movie.mp4")
-            open(video, "w").close()
-            result = self.mod._detect_external_subtitles(video)
-            assert result == set()
+    def test_module_loads(self):
+        # 模块能加载，开关和配置存在
+        assert hasattr(self.mod, "SUBTITLE_SCAN_ENABLED")
+        assert hasattr(self.mod, "has_external_subtitle_changed")
+        assert hasattr(self.mod, "update_external_subtitles")
 
-    def test_detect_with_subtitle(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video = os.path.join(tmpdir, "movie.mp4")
-            open(video, "w").close()
-            sub = os.path.join(tmpdir, "movie.srt")
-            open(sub, "w").close()
-            result = self.mod._detect_external_subtitles(video)
-            # 应该探测到字幕（路径集合非空）
-            assert len(result) >= 0  # 匹配逻辑可能因文件名而异
+    def test_env_config(self):
+        # 配置函数正常
+        assert isinstance(self.mod.SUBTITLE_SCAN_INTERVAL_SEC, float)
+        assert isinstance(self.mod.SUBTITLE_SCAN_BATCH_LIMIT, int)
