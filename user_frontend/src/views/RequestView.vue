@@ -747,7 +747,7 @@ onMounted(async () => {
 }
 .quota-bar.empty svg,
 .quota-bar.empty strong { color: var(--au-warning); }
-.quota-tip { margin-left: auto; color: var(--au-warning); font-size: 0.75rem; }
+.quota-tip { margin-left: auto; color: var(--au-warning); font-size: 0.8125rem; }
 
 /* 表单 */
 .form-card { margin-bottom: 1.25rem; }
@@ -795,7 +795,7 @@ onMounted(async () => {
 
 .realm-hint {
   margin: 0.375rem 0 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   line-height: 1.5;
 }
@@ -896,7 +896,7 @@ select.au-input option { background: var(--au-bg-soft); }
   white-space: nowrap;
 }
 
-.hit-meta { font-size: 0.75rem; color: var(--au-text-3); }
+.hit-meta { font-size: 0.8125rem; color: var(--au-text-3); }
 .hit-play { color: var(--au-primary); flex-shrink: 0; }
 
 .lookup-note {
@@ -904,7 +904,7 @@ select.au-input option { background: var(--au-bg-soft); }
   align-items: center;
   gap: 0.375rem;
   margin: 0.375rem 0 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -920,7 +920,7 @@ select.au-input option { background: var(--au-bg-soft); }
   border: 1px solid var(--au-border);
   background: transparent;
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   cursor: pointer;
   transition: all var(--au-fast) var(--au-ease);
 }
@@ -966,7 +966,7 @@ select.au-input option { background: var(--au-bg-soft); }
   align-items: center;
   gap: 0.375rem;
   margin-top: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   flex-wrap: wrap;
 }
@@ -997,7 +997,7 @@ select.au-input option { background: var(--au-bg-soft); }
   color: var(--au-primary);
   font-weight: 600;
   margin-right: 0.4375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
 .item-actions { display: flex; justify-content: flex-end; margin-top: 0.625rem; }
@@ -1018,7 +1018,7 @@ select.au-input option { background: var(--au-bg-soft); }
   font-weight: 600;
 }
 
-.picked-chip em { font-style: normal; font-weight: 500; color: var(--au-text-3); font-size: 0.75rem; }
+.picked-chip em { font-style: normal; font-weight: 500; color: var(--au-text-3); font-size: 0.8125rem; }
 
 .picked-clear {
   display: inline-flex;
@@ -1028,7 +1028,7 @@ select.au-input option { background: var(--au-bg-soft); }
   border: none;
   cursor: pointer;
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   padding: 0.25rem;
 }
 
@@ -1036,7 +1036,7 @@ select.au-input option { background: var(--au-bg-soft); }
 
 /* TMDB 候选列表 */
 .cand-box { margin-bottom: 0.875rem; }
-.cand-head { display: flex; align-items: center; gap: 0.4375rem; font-size: 0.75rem; color: var(--au-text-3); margin-bottom: 0.5rem; }
+.cand-head { display: flex; align-items: center; gap: 0.4375rem; font-size: 0.8125rem; color: var(--au-text-3); margin-bottom: 0.5rem; }
 .cand-list { display: flex; flex-direction: column; gap: 0.4375rem; }
 
 .cand-item {
@@ -1078,14 +1078,14 @@ select.au-input option { background: var(--au-bg-soft); }
   white-space: nowrap;
 }
 
-.cand-meta { display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--au-text-3); }
+.cand-meta { display: flex; align-items: center; gap: 0.25rem; font-size: 0.8125rem; color: var(--au-text-3); }
 .cand-star { color: var(--au-warning); }
 
 .cand-still {
   background: none;
   border: none;
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   cursor: pointer;
   padding: 0.25rem;
   flex-shrink: 0;
@@ -1094,7 +1094,7 @@ select.au-input option { background: var(--au-bg-soft); }
 .cand-still:hover { color: var(--au-primary); }
 
 /* 季选择（剧集按整季申请） */
-.season-hint { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--au-text-3); }
+.season-hint { display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; color: var(--au-text-3); }
 .season-list { display: flex; flex-wrap: wrap; gap: 0.4375rem; }
 
 .season-opt {
@@ -1106,13 +1106,13 @@ select.au-input option { background: var(--au-bg-soft); }
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-full);
   color: var(--au-text-2);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
   transition: all var(--au-fast) var(--au-ease);
 }
 
-.season-opt em { font-style: normal; font-weight: 500; color: var(--au-text-3); font-size: 0.6875rem; }
+.season-opt em { font-style: normal; font-weight: 500; color: var(--au-text-3); font-size: 0.8125rem; }
 .season-opt:hover { border-color: var(--au-border-strong); color: var(--au-text); }
 
 .season-opt.on {
@@ -1122,7 +1122,7 @@ select.au-input option { background: var(--au-bg-soft); }
 }
 
 /* 提交区额度提示 */
-.quota-inline { margin-right: auto; font-size: 0.75rem; color: var(--au-text-3); }
+.quota-inline { margin-right: auto; font-size: 0.8125rem; color: var(--au-text-3); }
 .quota-inline strong { color: var(--au-primary); }
 
 .item-season { color: var(--au-primary); }

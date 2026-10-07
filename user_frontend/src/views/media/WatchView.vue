@@ -1087,7 +1087,7 @@ onBeforeUnmount(() => {
 
 .nextup-kicker {
   margin: 0 0 0.375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1162,14 +1162,13 @@ onBeforeUnmount(() => {
 
 .btn.primary {
   gap: 0.4375rem;
-  background: var(--au-gradient);
+  background: var(--au-primary);
   color: var(--au-on-primary);
   font-weight: 700;
-  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
 .btn.primary:hover {
-  box-shadow: 0 6px 22px var(--au-primary-glow);
+  filter: brightness(1.08);
 }
 
 .btn:active {
@@ -1186,10 +1185,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
-  background:
-    radial-gradient(700px 380px at 50% 0%, var(--au-violet-soft), transparent 65%),
-    var(--au-overlay);
-  backdrop-filter: blur(8px);
+  background: var(--au-overlay);
 }
 
 .paywall-card {
@@ -1197,8 +1193,9 @@ onBeforeUnmount(() => {
   max-width: 420px;
   padding: 1.75rem 1.5rem;
   text-align: center;
-  background: var(--au-overlay-menu);
-  border: 1px solid var(--au-primary-border);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border-strong);
+  border-top: 2px solid var(--au-primary);
   border-radius: var(--au-r-xl);
   box-shadow: var(--au-shadow-2);
 }
@@ -1407,7 +1404,7 @@ onBeforeUnmount(() => {
 }
 
 .time {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-2);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1419,7 +1416,7 @@ onBeforeUnmount(() => {
   background: var(--au-primary-soft);
   border-radius: var(--au-r-sm);
   color: var(--au-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -1449,7 +1446,7 @@ onBeforeUnmount(() => {
   background: var(--au-bg-soft);
   border: 1px solid var(--au-border);
   border-bottom: none;
-  border-radius: 18px 18px 0 0;
+  border-radius: 14px 14px 0 0;
   padding: 0.5rem 0.75rem 1.5rem;
 }
 
@@ -1487,7 +1484,7 @@ onBeforeUnmount(() => {
 .sheet-group {
   margin: 0.75rem 0 0.25rem;
   padding: 0 0.5rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--au-text-3);
 }
@@ -1559,7 +1556,7 @@ onBeforeUnmount(() => {
   background: var(--au-primary-soft);
   border-radius: var(--au-r-full);
   color: var(--au-primary);
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 

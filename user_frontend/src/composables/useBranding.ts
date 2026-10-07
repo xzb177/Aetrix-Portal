@@ -14,7 +14,15 @@ import { reactive } from 'vue'
 import { brandingApi, type Branding } from '@/api'
 
 export const DEFAULT_SITE_NAME = 'Aetrix'
-export const DEFAULT_THEME_COLOR = '#22d3ee'
+export const DEFAULT_THEME_COLOR = '#e8a84a'
+
+/**
+ * 旧主题（Aurora 电光青）的默认主题色。暗房影院改版起用户端换成「暗房影院」琥珀主题，
+ * 后端 / 管理后台的默认值仍是这支青色——没改过主题色的站点会原样下发它。
+ * 这种情况视作「没有自定义」，交给主题自己的琥珀令牌，不再注入覆盖；
+ * 管理员真的填了别的颜色才按品牌色覆盖。
+ */
+const LEGACY_DEFAULT_THEME_COLORS = new Set(['#22d3ee', DEFAULT_THEME_COLOR])
 
 export const branding = reactive<Branding>({
   site_name: DEFAULT_SITE_NAME,
@@ -38,7 +46,7 @@ function hexToRgb(hex: string): [number, number, number] {
   if (value.length === 3) value = value.split('').map((c) => c + c).join('')
   if (value.length === 8) value = value.slice(0, 6)   // 忽略 alpha，透明度由各令牌自己定
   const num = Number.parseInt(value, 16)
-  if (!Number.isFinite(num) || value.length !== 6) return [34, 211, 238]
+  if (!Number.isFinite(num) || value.length !== 6) return [232, 168, 74]
   return [(num >> 16) & 255, (num >> 8) & 255, num & 255]
 }
 
@@ -55,7 +63,7 @@ function darken(rgb: [number, number, number], factor: number): string {
 /** 主色上的文字色：按亮度选深/浅，保证对比度 */
 function onColor(rgb: [number, number, number]): string {
   const luminance = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
-  return luminance > 0.6 ? '#05141c' : '#ffffff'
+  return luminance > 0.6 ? '#1a1205' : '#ffffff'
 }
 
 function luminance(rgb: [number, number, number]): number {
@@ -110,6 +118,12 @@ export function applyBranding() {
  * 主题切换只改 html 的 data-theme 属性，两套品牌色即时切换，无需重新计算。
  */
 function applyBrandingTokens() {
+  const color = (branding.theme_color || '').trim().toLowerCase()
+  if (!color || LEGACY_DEFAULT_THEME_COLORS.has(color)) {
+    // 默认主题色：不注入，主题令牌（深色琥珀 / 浅色深琥珀）自己说了算
+    if (brandStyle) brandStyle.textContent = ''
+    return
+  }
   const rgb = hexToRgb(branding.theme_color)
 
   let light = [...rgb] as [number, number, number]
@@ -128,7 +142,7 @@ function applyBrandingTokens() {
     `--au-primary-soft:${rgba(rgb, 0.12)}`,
     `--au-primary-mid:${rgba(rgb, 0.2)}`,
     `--au-primary-border:${rgba(rgb, 0.28)}`,
-    `--au-primary-glow:${rgba(rgb, 0.35)}`,
+    '--au-primary-glow:transparent',
     `--au-on-primary:${onColor(rgb)}`,
     `--au-border-focus:${rgba(rgb, 0.55)}`,
   ].join(';')
@@ -140,7 +154,7 @@ function applyBrandingTokens() {
     `--au-primary-soft:${rgba(light, 0.1)}`,
     `--au-primary-mid:${rgba(light, 0.16)}`,
     `--au-primary-border:${rgba(light, 0.26)}`,
-    `--au-primary-glow:${rgba(light, 0.22)}`,
+    '--au-primary-glow:transparent',
     `--au-on-primary:${onColor(light)}`,
     `--au-border-focus:${rgba(light, 0.55)}`,
   ].join(';')

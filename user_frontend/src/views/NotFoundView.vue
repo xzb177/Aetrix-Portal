@@ -4,25 +4,77 @@ import { Home, ArrowLeft } from 'lucide-vue-next'
 </script>
 
 <template>
-  <div class="min-h-screen pt-20 flex items-center justify-center px-4">
-    <div class="text-center">
-      <h1 class="text-9xl font-bold text-primary-500 mb-4">404</h1>
-      <h2 class="text-2xl font-semibold text-gray-900 dark:text-white mb-4">
-        页面未找到
-      </h2>
-      <p class="text-gray-500 dark:text-gray-400 mb-8 max-w-md mx-auto">
+  <div class="nf-page">
+    <div class="nf-inner">
+      <p class="au-eyebrow nf-eyebrow">FILM NOT FOUND</p>
+      <h1 class="nf-code">404</h1>
+      <h2 class="nf-title">这一卷胶片不在片库里</h2>
+      <p class="nf-desc">
         抱歉，您访问的页面不存在或已被移除
       </p>
-      <div class="flex justify-center space-x-4">
-        <button @click="$router.back()" class="btn btn-secondary flex items-center space-x-2">
-          <ArrowLeft :size="18" />
+      <div class="nf-actions">
+        <button class="au-btn au-btn-ghost" @click="$router.back()">
+          <ArrowLeft :size="16" />
           <span>返回</span>
         </button>
-        <RouterLink to="/" class="btn btn-primary flex items-center space-x-2">
-          <Home :size="18" />
+        <RouterLink to="/" class="au-btn au-btn-primary">
+          <Home :size="16" />
           <span>首页</span>
         </RouterLink>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.nf-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5rem 1rem calc(3rem + var(--au-dock-space));
+}
+
+.nf-inner {
+  text-align: center;
+  animation: au-fade-up var(--au-fade-in) var(--au-ease) both;
+}
+
+.nf-eyebrow {
+  margin: 0 0 0.75rem;
+}
+
+.nf-code {
+  margin: 0 0 0.75rem;
+  font-size: clamp(4.5rem, 16vw, 8rem);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--au-text);
+}
+
+.nf-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--au-text);
+}
+
+.nf-desc {
+  max-width: 28rem;
+  margin: 0 auto 2rem;
+  font-size: 0.875rem;
+  color: var(--au-text-3);
+}
+
+.nf-actions {
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nf-inner { animation: none; }
+}
+</style>

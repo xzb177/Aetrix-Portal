@@ -107,7 +107,6 @@ onMounted(load)
   <div class="au-page checkin-view">
     <!-- 主打卡卡：左文右数据的横向布局 -->
     <section class="sign-card au-anim-up" :class="{ signed: status?.checked_today }">
-      <div class="sign-glow" aria-hidden="true" />
 
       <div class="sign-body">
         <!-- 左：打卡主区 -->
@@ -248,24 +247,12 @@ onMounted(load)
   position: relative;
   overflow: hidden;
   border-radius: var(--au-r-xl);
-  border: 1px solid var(--au-primary-border);
-  background: linear-gradient(160deg, var(--au-primary-soft), var(--au-violet-soft) 60%, var(--au-overlay-soft));
-  backdrop-filter: blur(14px);
+  border: 1px solid var(--au-border);
+  border-top: 2px solid var(--au-primary);
+  background: var(--au-surface);
   padding: 1.625rem 1.75rem;
 }
-.sign-card.signed { border-color: var(--au-success-border); }
-
-.sign-glow {
-  position: absolute;
-  top: -40%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 420px;
-  height: 280px;
-  background: radial-gradient(ellipse, var(--au-primary-mid), transparent 70%);
-  filter: blur(36px);
-  pointer-events: none;
-}
+.sign-card.signed { border-top-color: var(--au-success); }
 
 .sign-body {
   position: relative;
@@ -295,21 +282,19 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 16px;
-  background: var(--au-gradient);
-  color: var(--au-on-primary);
-  box-shadow: 0 8px 28px var(--au-primary-glow);
+  border-radius: var(--au-r-lg);
+  border: 1px solid var(--au-primary-border);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
   flex-shrink: 0;
 }
-.sign-icon-wrap.pulsing { animation: au-pulse-soft 1.8s ease-in-out infinite; }
 
-.sign-title { margin: 0; font-size: 1.3125rem; font-weight: 800; color: var(--au-text); letter-spacing: -0.01em; }
+.sign-title { margin: 0; font-size: 1.5rem; font-weight: 700; color: var(--au-text); }
 .sign-sub { margin: 0.1875rem 0 0; font-size: 0.8125rem; color: var(--au-text-2); }
 .sign-sub strong { color: var(--au-text); font-weight: 700; }
 
-/* ===== 签到按钮（v2.42.5 重做）：金币打卡质感 =====
-   主态：金渐变实底 + 深金描边 + 内高光 + 悬停光泽扫过；已完成态：优雅的成功确认胶囊。
-   动效只走 transform/opacity，移动端不重绘。 */
+/* ===== 签到按钮（暗房影院）：琥珀实色胶囊 =====
+   原「金币」渐变、内高光与扫光一律去掉：主态 = 纯琥珀底 + 深墨字，hover 略亮，按下微缩。 */
 .sign-btn {
   position: relative;
   display: inline-flex;
@@ -330,51 +315,23 @@ onMounted(load)
   height: 100%;
   padding: 0 1.625rem;
   border-radius: 999px;
-  background: linear-gradient(180deg, var(--au-gold-a), var(--au-gold-b));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    inset 0 -2px 0 rgba(146, 84, 4, 0.28),
-    0 1px 0 var(--au-gold-edge),
-    0 6px 18px rgba(236, 148, 32, 0.34);
-  color: #452604;
+  background: var(--au-gold-a);
+  color: var(--au-on-warning);
   font-size: 0.9375rem;
-  font-weight: 800;
-  letter-spacing: 0.01em;
-  transition: transform var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease),
-    filter var(--au-fast) var(--au-ease);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  transition: transform var(--au-fast) var(--au-ease), filter var(--au-fast) var(--au-ease),
+    background var(--au-fast) var(--au-ease);
 }
 
 .sign-btn:hover:not(:disabled) .sign-btn-face {
-  transform: translateY(-1px);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    inset 0 -2px 0 rgba(146, 84, 4, 0.28),
-    0 1px 0 var(--au-gold-edge),
-    0 9px 24px rgba(236, 148, 32, 0.44);
+  background: var(--au-gold-b);
 }
 
-.sign-btn:active:not(:disabled) .sign-btn-face { transform: translateY(1px) scale(0.98); }
+.sign-btn:active:not(:disabled) .sign-btn-face { transform: scale(0.98); }
 
-/* 光泽：一道斜向高光平时停在左外侧，hover 扫过按钮（只动 transform） */
-.sign-btn-shine {
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  overflow: hidden;
-  pointer-events: none;
-}
-.sign-btn-shine::after {
-  content: '';
-  position: absolute;
-  top: -30%;
-  bottom: -30%;
-  width: 34%;
-  left: -45%;
-  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.5), transparent);
-  transform: skewX(-18deg) translateX(0);
-  transition: transform 0.55s var(--au-ease);
-}
-.sign-btn:hover:not(:disabled) .sign-btn-shine::after { transform: skewX(-18deg) translateX(480%); }
+/* 原扫光层：保留节点，不再渲染 */
+.sign-btn-shine { display: none; }
 
 /* 连签火苗徽标：右上角小圆片，徽章感 */
 .sign-btn-flame {
@@ -387,38 +344,34 @@ onMounted(load)
   height: 20px;
   padding: 0 7px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #ff7d52, #f04e23);
-  color: #fff;
-  font-size: 0.6875rem;
-  font-weight: 800;
-  box-shadow: 0 2px 8px rgba(240, 78, 35, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  background: var(--au-surface-3);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  font-weight: 700;
 }
 
 /* 已签到 / 未开启：安静的成功确认态（同卡片的 success 气质，不再像禁用灰） */
 .sign-btn.done { cursor: default; }
 .sign-btn.done .sign-btn-face {
   background: var(--au-success-soft);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 1px 0 var(--au-success-border);
   border: 1px solid var(--au-success-border);
   color: var(--au-success);
   padding: 0 1.5rem;
 }
 
-/* 到账庆祝：轻快弹跳两下（reduced-motion 时被全局降级吃掉） */
-.sign-btn.celebrate .sign-btn-face { animation: sign-pop 0.6s var(--au-ease); }
+/* 到账：从黑场淡入一次（只动透明度） */
+.sign-btn.celebrate .sign-btn-face { animation: sign-pop var(--au-fade-in) var(--au-ease); }
 @keyframes sign-pop {
-  0% { transform: scale(0.94); }
-  45% { transform: scale(1.06); }
-  100% { transform: scale(1); }
+  from { opacity: 0.4; }
+  to { opacity: 1; }
 }
 
 .sign-btn-label { white-space: nowrap; }
 
 .sign-off-tip {
   margin: 0.625rem 0 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-warning);
 }
 
@@ -452,27 +405,24 @@ onMounted(load)
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   transition: all var(--au-med);
 }
 .streak-dot.lit {
-  background: var(--au-gradient);
+  background: var(--au-primary);
   border-color: transparent;
   color: var(--au-on-primary);
-  box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
 .streak-hint { margin: 0.125rem 0 0; font-size: 0.8125rem; color: var(--au-text-2); }
 .reward-num {
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent !important;
-  font-weight: 800;
+  color: var(--au-primary) !important;
+  font-family: var(--au-font-serif);
+  font-weight: 700;
   font-size: 0.9375rem;
 }
-.streak-rule { margin: 0; font-size: 0.75rem; color: var(--au-text-3); }
+.streak-rule { margin: 0; font-size: 0.8125rem; color: var(--au-text-3); }
 
 .spinner-sm { width: 15px; height: 15px; border-width: 2px; }
 
@@ -495,7 +445,8 @@ onMounted(load)
   align-items: center;
   gap: 0.4375rem;
   margin: 0;
-  font-size: 0.9375rem;
+  font-family: var(--au-font-serif);
+  font-size: 1.0625rem;
   font-weight: 700;
   color: var(--au-text);
 }
@@ -505,7 +456,7 @@ onMounted(load)
   display: inline-flex;
   align-items: center;
   gap: 0.125rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   text-decoration: none;
   transition: color var(--au-fast) var(--au-ease);
@@ -520,7 +471,7 @@ onMounted(load)
 }
 .cal-week span {
   text-align: center;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   font-weight: 600;
 }
@@ -542,10 +493,9 @@ onMounted(load)
   font-variant-numeric: tabular-nums;
 }
 .cal-day.today {
-  background: var(--au-gradient);
+  background: var(--au-primary);
   color: var(--au-on-primary);
-  font-weight: 800;
-  box-shadow: 0 3px 10px var(--au-primary-glow);
+  font-weight: 700;
 }
 .cal-day.done {
   background: var(--au-primary-soft);
@@ -553,7 +503,7 @@ onMounted(load)
   font-weight: 600;
 }
 
-.cal-note { margin: 0.875rem 0 0; font-size: 0.75rem; color: var(--au-text-3); }
+.cal-note { margin: 0.875rem 0 0; font-size: 0.8125rem; color: var(--au-text-3); }
 
 .gains-list {
   list-style: none;
@@ -576,11 +526,11 @@ onMounted(load)
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--au-gradient);
+  background: var(--au-primary);
   flex-shrink: 0;
 }
 .gains-desc { color: var(--au-text-2); flex: 1; }
-.gains-time { color: var(--au-text-3); font-size: 0.75rem; }
+.gains-time { color: var(--au-text-3); font-size: 0.8125rem; }
 .gains-amt { color: var(--au-success); font-variant-numeric: tabular-nums; }
 
 .au-empty.compact { padding: 2rem 1rem; }

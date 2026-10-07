@@ -480,7 +480,7 @@ onMounted(() => {
   padding: 0.125rem 0.5rem;
   background: var(--au-surface-3);
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-2);
 }
 
@@ -494,6 +494,12 @@ onMounted(() => {
 .ticket-status {
   font-weight: 500;
 }
+
+/* 状态色收进暗房影院的语义色（状态配置里的 Tailwind 色名只当作钩子用） */
+.ticket-status.text-orange-400 { color: var(--au-warning); }
+.ticket-status.text-blue-400 { color: var(--au-info); }
+.ticket-status.text-green-400 { color: var(--au-success); }
+.ticket-status.text-gray-400 { color: var(--au-text-3); }
 
 .ticket-time {
   color: var(--au-text-3);
@@ -514,7 +520,7 @@ onMounted(() => {
 }
 
 .message-author {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--au-primary);
 }
@@ -729,7 +735,7 @@ onMounted(() => {
 }
 
 .message-time {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 

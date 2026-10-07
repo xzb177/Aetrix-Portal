@@ -392,7 +392,7 @@ onMounted(() => {
   border-radius: var(--au-r-full);
   background: var(--au-primary);
   color: var(--au-on-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
@@ -416,7 +416,7 @@ onMounted(() => {
   border: 1px solid var(--au-border);
   background: transparent;
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   cursor: pointer;
   transition: all var(--au-fast) var(--au-ease);
 }
@@ -428,13 +428,13 @@ onMounted(() => {
   background: var(--au-primary-soft);
 }
 
-.tab-count { opacity: 0.65; font-size: 0.75rem; }
+.tab-count { opacity: 0.65; font-size: 0.8125rem; }
 
 /* 列表 */
 .msg-group { margin-bottom: 1.25rem; }
 
 .group-label {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--au-text-3);
   margin-bottom: 0.5rem;
@@ -483,11 +483,10 @@ onMounted(() => {
   height: 6px;
   border-radius: 50%;
   background: var(--au-primary);
-  box-shadow: 0 0 6px var(--au-primary-glow);
   flex-shrink: 0;
 }
 
-.msg-time { margin-left: auto; font-size: 0.75rem; color: var(--au-text-3); white-space: nowrap; }
+.msg-time { margin-left: auto; font-size: 0.8125rem; color: var(--au-text-3); white-space: nowrap; }
 
 .msg-title {
   font-size: 0.875rem;
@@ -499,7 +498,7 @@ onMounted(() => {
 }
 
 .msg-text {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   line-height: 1.5;
   display: -webkit-box;
@@ -527,7 +526,6 @@ onMounted(() => {
   justify-content: center;
   padding: 1rem;
   background: var(--au-overlay);
-  backdrop-filter: blur(6px);
 }
 
 .modal {
@@ -573,7 +571,7 @@ onMounted(() => {
   line-height: 1.35;
 }
 
-.modal-time { font-size: 0.75rem; color: var(--au-text-3); }
+.modal-time { font-size: 0.8125rem; color: var(--au-text-3); }
 
 .modal-close {
   width: 30px;

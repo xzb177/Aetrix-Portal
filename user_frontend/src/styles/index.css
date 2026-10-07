@@ -5,7 +5,7 @@
 
 /* ========================================
    Aetrix 用户门户 - 统一设计系统
-   主色：电光青 #22d3ee（Aurora 主题）
+   主色：放映机琥珀 #e8a84a（「暗房影院」主题）
    ======================================== */
 
 /* 向后兼容的旧变量映射
@@ -29,12 +29,12 @@
   --border-glass: var(--au-border);
   --border-glass-light: var(--au-border);
 
-  /* 强调色：主色统一电光青，语义色各自独立
+  /* 强调色：主色统一放映机琥珀，语义色各自独立
      （旧版把「成功」也写成主色，成功提示和主按钮一个颜色，等于没有语义） */
   --accent-primary: var(--au-primary);
   --accent-primary-hover: var(--au-primary-strong);
   --accent-blue: var(--au-info);        /* 仅用于信息提示，不用于主操作 */
-  --accent-blue-hover: #3b82f6;
+  --accent-blue-hover: var(--au-info);
   --accent-green: var(--au-primary);    /* 旧名，历史上就是主色 */
   --accent-red: var(--au-danger);
   --accent-yellow: var(--au-warning);
@@ -110,16 +110,12 @@ body.theme-transition *::after {
 .glass,
 .glass-nav {
   background: var(--au-surface);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--au-border);
 }
 
 /* 玻璃态卡片 */
 .glass-card {
   background: var(--au-surface);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
   transition: background-color var(--au-fast) var(--au-ease),
@@ -154,31 +150,24 @@ body.theme-transition *::after {
   white-space: nowrap;
 }
 
-/* 主按钮 —— 与 .au-btn-primary 同一套外观
-   旧版是「青色底 + 白字」，对比度只有 1.9:1（远低于 AA 的 4.5:1）；
-   Aurora 的口径是高亮底配深墨色文字，顺带用渐变与主色发光 */
+/* 主按钮 —— 与 .au-btn-primary 同一套外观：纯琥珀实色 + 深墨字，无发光、无上浮 */
 .btn-primary {
-  background: var(--au-gradient);
-  /* 亮青渐变底配深墨字；白日模式渐变压深后 token 已切为白字 */
+  background: var(--au-primary);
   color: var(--au-on-primary);
-  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
 .btn-primary:hover {
-  box-shadow: 0 6px 22px var(--au-primary-glow);
-  transform: translateY(-1px);
+  filter: brightness(1.08);
 }
 
 /* 主按钮按下态 */
 .btn-primary:active {
-  transform: translateY(0) scale(0.98);
+  transform: scale(0.98);
 }
 
 /* 次要按钮 - 玻璃态 */
 .btn-secondary {
   background: var(--au-surface-2);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--au-border);
   color: var(--au-text);
 }
@@ -202,12 +191,12 @@ body.theme-transition *::after {
 /* 危险按钮 - 底色 / 文字用同一支语义色，不再出现两套红 */
 .btn-danger {
   background: var(--au-danger-soft);
-  border: 1px solid rgba(251, 113, 133, 0.3);
+  border: 1px solid var(--au-danger-border);
   color: var(--au-danger);
 }
 
 .btn-danger:hover {
-  background: rgba(251, 113, 133, 0.2);
+  background: var(--au-danger-border);
 }
 
 /* 键盘焦点：统一走品牌色环（鼠标点击不会出现轮廓） */
@@ -237,8 +226,6 @@ body.theme-transition *::after {
 
 .card {
   background: var(--au-surface);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
   padding: 1.5rem;
@@ -298,14 +285,8 @@ body.theme-transition *::after {
 }
 
 @keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes fadeInDown {
@@ -353,12 +334,8 @@ body.theme-transition *::after {
 }
 
 @keyframes slideInUp {
-  from {
-    transform: translateY(100%);
-  }
-  to {
-    transform: translateY(0);
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes slideInDown {
@@ -416,7 +393,7 @@ body.theme-transition *::after {
 
 /* 动画工具类 */
 .animate-fadeIn { animation: fadeIn 0.3s ease; }
-.animate-fadeInUp { animation: fadeInUp 0.4s ease; }
+.animate-fadeInUp { animation: fadeInUp 0.7s ease; }
 .animate-fadeInDown { animation: fadeInDown 0.4s ease; }
 .animate-fadeInLeft { animation: fadeInLeft 0.4s ease; }
 .animate-fadeInRight { animation: fadeInRight 0.4s ease; }
@@ -473,8 +450,7 @@ body.theme-transition *::after {
 }
 
 .hover-lift:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  filter: brightness(1.06);
 }
 
 .hover-scale {
@@ -490,7 +466,7 @@ body.theme-transition *::after {
 }
 
 .hover-glow:hover {
-  box-shadow: 0 0 20px var(--brand-primary-light);
+  border-color: var(--au-primary-border);
 }
 
 /* ========================================
@@ -582,7 +558,7 @@ html {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 180, 220, 0.32);
+  background: rgba(245, 235, 220, 0.24);
 }
 
 /* 选择文本样式 */

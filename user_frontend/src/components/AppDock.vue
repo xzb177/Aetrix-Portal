@@ -52,9 +52,8 @@ function isActive(path: string) {
   align-items: stretch;
   justify-content: space-around;
   padding: 0 0.5rem env(safe-area-inset-bottom);
+  /* 暗房影院：实底 + 发丝线，不做毛玻璃 */
   background: var(--au-overlay-menu);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--au-border);
 }
 
@@ -83,13 +82,27 @@ function isActive(path: string) {
 }
 
 .dock-label {
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
 
-.dock-item-active { color: var(--au-primary); }
-.dock-item-active .dock-ic { background: var(--au-primary-soft); }
+.dock-item-active { color: var(--au-text); }
+.dock-item-active .dock-ic { color: var(--au-primary); }
+
+/* 当前页：图标下方一颗琥珀指示点（与顶栏导航同一语言），不再铺色块 */
+.dock-ic { position: relative; }
+.dock-item-active .dock-ic::after {
+  content: '';
+  position: absolute;
+  bottom: -3px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--au-primary);
+}
 
 @media (max-width: 768px) {
   .app-dock { display: flex; }

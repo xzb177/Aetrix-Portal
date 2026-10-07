@@ -609,7 +609,6 @@ onMounted(loadItem)
   color: var(--au-text-2);
   font-size: 0.8125rem;
   cursor: pointer;
-  backdrop-filter: blur(6px);
   transition: all 0.15s ease;
 }
 
@@ -659,13 +658,14 @@ onMounted(loadItem)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(160deg, var(--au-primary-soft), var(--au-surface));
+  background: var(--au-surface-2);
   color: var(--au-text-3);
 }
 
 .placeholder-char {
+  font-family: var(--au-font-serif);
   font-size: 4.5rem;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
   color: var(--au-primary);
   opacity: 0.75;
@@ -680,7 +680,8 @@ onMounted(loadItem)
 
 .title {
   margin: 0 0 0.625rem;
-  font-size: 1.75rem;
+  font-family: var(--au-font-serif);
+  font-size: 2rem;
   font-weight: 700;
   color: var(--au-text);
   line-height: 1.25;
@@ -709,9 +710,9 @@ onMounted(loadItem)
 }
 
 .meta-row .quality {
-  color: #ffd75e;
+  color: var(--au-primary);
   font-weight: 700;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.03em;
 }
 
@@ -725,7 +726,7 @@ onMounted(loadItem)
   padding: 0.125rem 0.4375rem;
   border: 1px solid var(--au-border-strong);
   border-radius: 5px;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 
@@ -754,7 +755,7 @@ onMounted(loadItem)
   border: 1px solid var(--au-primary-border);
   border-radius: 8px;
   color: var(--au-success);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
 .overview {
@@ -773,7 +774,8 @@ onMounted(loadItem)
   max-width: 560px;
   padding: 0.75rem 0.875rem;
   margin-bottom: 1rem;
-  background: linear-gradient(120deg, var(--au-primary-soft), var(--au-violet-soft));
+  background: var(--au-surface);
+  border-left: 2px solid var(--au-primary);
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-md);
   text-decoration: none;
@@ -782,7 +784,6 @@ onMounted(loadItem)
 
 .member-notice:hover {
   border-color: var(--au-primary);
-  transform: translateY(-1px);
 }
 
 .notice-icon {
@@ -821,7 +822,7 @@ onMounted(loadItem)
 
 .notice-body em {
   font-style: normal;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -831,10 +832,10 @@ onMounted(loadItem)
   display: inline-flex;
   align-items: center;
   padding: 0 0.75rem;
-  background: var(--au-gradient);
+  background: var(--au-primary);
   border-radius: var(--au-r-full);
   color: var(--au-on-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
 }
 
@@ -860,13 +861,12 @@ onMounted(loadItem)
 }
 
 .btn.primary {
-  background: var(--au-gradient);
+  background: var(--au-primary);
   color: var(--au-on-primary);
-  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
 .btn.primary:hover {
-  box-shadow: 0 6px 20px var(--au-primary-glow);
+  filter: brightness(1.08);
 }
 
 .btn.primary.disabled {
@@ -941,7 +941,7 @@ onMounted(loadItem)
   padding: 0.875rem 1rem;
   background: var(--au-primary-soft);
   border: 1px solid var(--au-primary-border);
-  border-radius: 12px;
+  border-radius: var(--au-r-md);
 }
 
 .resume-info {
@@ -951,7 +951,7 @@ onMounted(loadItem)
 
 .resume-kicker {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -974,7 +974,7 @@ onMounted(loadItem)
 
 .resume-fill {
   height: 100%;
-  background: var(--au-gradient);
+  background: var(--au-primary);
 }
 
 .btn.sm {
@@ -1002,7 +1002,7 @@ onMounted(loadItem)
 .ep-item {
   background: var(--au-surface);
   border: 1px solid var(--au-border);
-  border-radius: 12px;
+  border-radius: var(--au-r-md);
   overflow: hidden;
 }
 
@@ -1047,7 +1047,7 @@ onMounted(loadItem)
 
 .ep-overview {
   margin-top: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   line-height: 1.55;
   color: var(--au-text-3);
   display: -webkit-box;
@@ -1079,7 +1079,7 @@ onMounted(loadItem)
 }
 
 .ep-meta {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1185,7 +1185,7 @@ onMounted(loadItem)
   color: var(--au-text-4);
   background: var(--au-surface);
   border: 1px dashed var(--au-border);
-  border-radius: 12px;
+  border-radius: var(--au-r-md);
 }
 
 /* 点按反馈（移动端无 hover） */
@@ -1213,7 +1213,7 @@ onMounted(loadItem)
   background: var(--au-bg-soft);
   border: 1px solid var(--au-border);
   border-bottom: none;
-  border-radius: 18px 18px 0 0;
+  border-radius: 14px 14px 0 0;
   padding: 0.5rem 0.75rem 1.5rem;
 }
 
@@ -1283,7 +1283,7 @@ onMounted(loadItem)
 
 .sheet-item-count {
   flex-shrink: 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1356,7 +1356,7 @@ onMounted(loadItem)
 }
 .version-label {
   font-size: 13px;
-  color: var(--au-text-2, #999);
+  color: var(--au-text-2);
   flex-shrink: 0;
 }
 .version-options {
@@ -1366,18 +1366,18 @@ onMounted(loadItem)
 }
 .version-btn {
   padding: 6px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--au-border, #333);
+  border-radius: var(--au-r-lg);
+  border: 1px solid var(--au-border);
   background: transparent;
-  color: var(--au-text, #fff);
+  color: var(--au-text);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.2s;
 }
 .version-btn.active {
-  background: var(--au-primary, #00d4ff);
-  border-color: var(--au-primary, #00d4ff);
-  color: #000;
+  background: var(--au-primary);
+  border-color: var(--au-primary);
+  color: var(--au-on-primary);
   font-weight: 600;
 }
 </style>

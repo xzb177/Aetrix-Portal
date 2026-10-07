@@ -172,7 +172,7 @@ onMounted(load)
   align-items: center;
   gap: 0.3125rem;
   margin-top: 0.1875rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   flex-wrap: wrap;
 }
@@ -197,13 +197,13 @@ onMounted(load)
   overflow: hidden;
 }
 
-.bar-fill { height: 100%; background: var(--au-gradient); }
-.bar-text { font-size: 0.75rem; color: var(--au-text-3); white-space: nowrap; }
+.bar-fill { height: 100%; background: var(--au-primary); }
+.bar-text { font-size: 0.8125rem; color: var(--au-text-3); white-space: nowrap; }
 
 .stop-btn { flex-shrink: 0; }
 
 .session-empty { padding: 1.25rem 0 0.5rem; }
-.session-empty .empty-sub { font-size: 0.75rem; margin-top: 0.25rem; }
+.session-empty .empty-sub { font-size: 0.8125rem; margin-top: 0.25rem; }
 
 .skeleton-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .skel-row { height: 64px; border-radius: var(--au-r-md); }

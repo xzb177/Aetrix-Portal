@@ -52,7 +52,7 @@ const props = withDefaults(defineProps<Props>(), {
 .neo-badge--sm {
   height: 16px;
   padding: 0 6px;
-  font-size: 12px; /* SYS-5：正文下限 12px */
+  font-size: 0.8125rem; /* SYS-5：正文下限 12px */
 }
 
 .neo-badge--md {

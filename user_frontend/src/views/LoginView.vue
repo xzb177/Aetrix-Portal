@@ -142,9 +142,7 @@ onMounted(() => {
 
 <template>
   <div class="auth-page">
-    <!-- 背景装饰 -->
-    <div class="auth-glow" aria-hidden="true"></div>
-    <div class="auth-grid" aria-hidden="true"></div>
+    <!-- 暗房影院：背景只有暖黑底 + 全局胶片颗粒，不再有光斑与网格 -->
 
     <div class="auth-card">
       <div class="auth-brand">
@@ -354,44 +352,22 @@ onMounted(() => {
   background: var(--au-bg);
 }
 
-.auth-glow {
-  position: absolute;
-  top: -20%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 640px;
-  height: 480px;
-  background: radial-gradient(ellipse at center, var(--au-primary-soft) 0%, transparent 65%);
-  filter: blur(40px);
-  pointer-events: none;
-}
-
-.auth-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(var(--au-grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--au-grid-line) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black 30%, transparent 75%);
-  pointer-events: none;
-}
-
 .auth-card {
   position: relative;
   width: 100%;
   max-width: 400px;
-  background: var(--au-overlay-menu);
+  background: var(--au-surface);
   border: 1px solid var(--au-border);
-  border-radius: 20px;
+  border-radius: var(--au-r-lg);
   padding: 2rem 1.75rem 1.5rem;
   box-shadow: var(--au-shadow-2);
-  animation: cardIn 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: cardIn var(--au-fade-in) var(--au-ease) both;
 }
 
+/* 从黑场淡入（只动透明度） */
 @keyframes cardIn {
-  from { opacity: 0; transform: translateY(16px) scale(0.98); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .auth-brand {
@@ -403,14 +379,11 @@ onMounted(() => {
   width: 46px;
   height: 46px;
   margin: 0 auto 0.875rem;
-  border-radius: 13px;
+  border-radius: var(--au-r-md);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--au-primary);
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  box-shadow: var(--au-shadow-glow);
 }
 
 /* 自定义 Logo：铺满方块并保留圆角（图片比图标宽窄不一，用 contain 不裁切） */
@@ -422,10 +395,12 @@ onMounted(() => {
 }
 
 .brand-title {
-  font-size: 1.25rem;
+  font-size: 1.5rem;
   font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
   color: var(--au-text);
-  margin: 0 0 0.375rem;
+  margin: 0 0 0.5rem;
 }
 
 .brand-subtitle {
@@ -442,7 +417,7 @@ onMounted(() => {
   grid-template-columns: 1fr 1fr;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
-  border-radius: 12px;
+  border-radius: var(--au-r-md);
   padding: 4px;
   margin-bottom: 1.25rem;
 }
@@ -495,7 +470,7 @@ onMounted(() => {
 }
 
 .field-label {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--au-text-3);
 }
@@ -591,7 +566,7 @@ onMounted(() => {
 .strength-fill.lv-3 { width: 100%; background: var(--au-primary); }
 
 .strength-text {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   min-width: 16px;
 }
@@ -616,19 +591,18 @@ onMounted(() => {
   gap: 0.5rem;
   height: 46px;
   margin-top: 0.25rem;
-  background: var(--au-gradient);
+  background: var(--au-primary);
   border: none;
-  border-radius: 12px;
+  border-radius: var(--au-r-md);
   color: var(--au-on-primary);
   font-size: 0.9375rem;
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 
 .submit-btn:hover:not(:disabled) {
-  box-shadow: 0 6px 20px var(--au-primary-glow);
+  filter: brightness(1.08);
 }
 
 .submit-btn:active:not(:disabled) {
@@ -652,7 +626,7 @@ onMounted(() => {
 .auth-footnote {
   margin: 1.25rem 0 0;
   text-align: center;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   line-height: 1.5;
 }
@@ -660,7 +634,7 @@ onMounted(() => {
 @media (max-width: 480px) {
   .auth-card {
     padding: 1.5rem 1.25rem 1.25rem;
-    border-radius: 16px;
+    border-radius: var(--au-r-lg);
   }
 }
 </style>

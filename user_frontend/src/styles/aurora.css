@@ -1,115 +1,121 @@
 /* ========================================
-   Aurora 设计系统 v3 — Aetrix Portal
-   深蓝青色流光主题 · 全新视觉重构
+   Aurora 设计系统 v4 — Aetrix Portal
+   「暗房影院」主题：暖黑底 · 实色表面 · 放映机琥珀单一强调色 ·
+   衬线标题 · 胶片颗粒。令牌名沿用 --au-*，组件零改名。
    ======================================== */
 
 :root {
   /* 布局 — 内容区 gutter（与 .container 内边距对齐，横滑 bleed 用） */
   --gutter: 1.25rem;
-  /* 主色 — 电光青 */
-  --au-primary: #22d3ee;
-  --au-primary-strong: #06b6d4;
-  --au-primary-deep: #0e7490;
-  --au-primary-soft: rgba(34, 211, 238, 0.12);
-  /* 中间档：hover 底色与光晕点，比 soft 明显、比 border 温柔 */
-  --au-primary-mid: rgba(34, 211, 238, 0.2);
-  --au-primary-border: rgba(34, 211, 238, 0.28);
-  --au-primary-glow: rgba(34, 211, 238, 0.35);
-  /* 亮底上的文字：青→紫渐变底配白字只有 1.9:1 对比度，
-     全站但凡是「亮色块上的字」（渐变按钮 / 头像 / 成功徽标）都用这支深墨色 */
-  --au-on-primary: #05141c;
 
-  /* 辅助色 — 极光紫粉（渐变点缀） */
-  --au-violet: #a78bfa;
-  --au-pink: #f472b6;
-  --au-gradient: linear-gradient(135deg, #22d3ee 0%, #a78bfa 100%);
-  --au-gradient-warm: linear-gradient(135deg, #f472b6 0%, #a78bfa 100%);
+  /* 字体（暗房影院）：标题走衬线（片名 / 页标题 / 大数字说明），正文保持系统无衬线 */
+  --au-font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+  --au-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 
-  /* 语义色。每种都有 soft（底色）/ border（描边）两档，
-     页面里不再各写一份 rgba(52, 211, 153, …) —— 改一处就全站生效 */
-  --au-success: #34d399;
-  --au-success-soft: rgba(52, 211, 153, 0.12);
-  --au-success-border: rgba(52, 211, 153, 0.28);
-  --au-warning: #fbbf24;
-  --au-warning-soft: rgba(251, 191, 36, 0.12);
-  --au-warning-border: rgba(251, 191, 36, 0.28);
-  /* 金币系（签到按钮专属三档）：亮金渐变起 / 暗金渐变止 / 底部描边深金 */
-  --au-gold-a: #f6b545;
-  --au-gold-b: #ec9420;
-  --au-gold-edge: #c47a10;
+  /* 主色 — 放映机琥珀（全站唯一强调色） */
+  --au-primary: #e8a84a;
+  --au-primary-strong: #d4923a;
+  --au-primary-deep: #a86f24;
+  --au-primary-soft: rgba(232, 168, 74, 0.12);
+  /* 中间档：hover 底色，比 soft 明显、比 border 温柔 */
+  --au-primary-mid: rgba(232, 168, 74, 0.2);
+  --au-primary-border: rgba(232, 168, 74, 0.28);
+  /* 暗房里没有霓虹：发光一律取消（保留令牌名只为兼容，值为透明） */
+  --au-primary-glow: transparent;
+  /* 琥珀底上的文字：深棕墨 */
+  --au-on-primary: #1a1205;
+
+  /* 旧的「极光紫粉」辅助色：暗房影院只有一支强调色，紫 / 粉一律收成中性暖灰或琥珀 */
+  --au-violet: rgba(243, 237, 228, 0.72);
+  --au-pink: var(--au-primary-deep);
+  /* 渐变令牌保留名字做兼容，实际是纯色琥珀（不再有青→紫流光） */
+  --au-gradient: linear-gradient(var(--au-primary), var(--au-primary));
+  --au-gradient-warm: linear-gradient(var(--au-primary), var(--au-primary));
+
+  /* 语义色（降饱和，贴合暗房的暖调）。每种都有 soft（底色）/ border（描边）两档 */
+  --au-success: #8fbf8a;
+  --au-success-soft: rgba(143, 191, 138, 0.12);
+  --au-success-border: rgba(143, 191, 138, 0.28);
+  --au-warning: #e8a84a;
+  --au-warning-soft: rgba(232, 168, 74, 0.12);
+  --au-warning-border: rgba(232, 168, 74, 0.28);
+  /* 签到按钮（原金币系三档）：并入琥珀家族 */
+  --au-gold-a: #e8a84a;
+  --au-gold-b: #d4923a;
+  --au-gold-edge: #a86f24;
   /* 预警色底上的文字（同 --au-on-primary 的思路） */
   --au-on-warning: #1a1205;
-  --au-danger: #fb7185;
-  --au-danger-soft: rgba(251, 113, 133, 0.12);
-  --au-danger-border: rgba(251, 113, 133, 0.28);
-  --au-info: #60a5fa;
-  --au-info-soft: rgba(96, 165, 250, 0.12);
-  --au-info-border: rgba(96, 165, 250, 0.28);
-  /* 极光紫的 soft 档，和上面四个语义色保持同一套用法 */
-  --au-violet-soft: rgba(167, 139, 250, 0.12);
+  --au-danger: #d9776b;
+  --au-danger-soft: rgba(217, 119, 107, 0.12);
+  --au-danger-border: rgba(217, 119, 107, 0.28);
+  --au-info: #9db4c8;
+  --au-info-soft: rgba(157, 180, 200, 0.12);
+  --au-info-border: rgba(157, 180, 200, 0.28);
+  /* 旧紫色的 soft 档：中性暖灰底 */
+  --au-violet-soft: rgba(245, 235, 220, 0.06);
 
-  /* 背景层级 */
-  --au-bg: #070b12;
-  --au-bg-soft: #0a101a;
-  --au-surface: rgba(148, 180, 220, 0.05);
-  --au-surface-2: rgba(148, 180, 220, 0.08);
-  --au-surface-3: rgba(148, 180, 220, 0.12);
-  --au-overlay: rgba(4, 7, 12, 0.82);
-  /* 图片上方的叠加层（Hero 遮罩 / 封面进度槽）：都是 --au-bg 的透明版本，
-     页面里不再各写一份 rgba(7, 11, 18, …) —— 换主题只需改这里 */
-  --au-overlay-soft: rgba(7, 11, 18, 0.35);
-  --au-overlay-mid: rgba(7, 11, 18, 0.55);
-  --au-overlay-strong: rgba(7, 11, 18, 0.75);
-  /* 下拉菜单 / 浮层：比卡片更实，避免底下内容透出来干扰阅读 */
-  --au-overlay-menu: rgba(10, 16, 26, 0.97);
+  /* 背景层级：暖黑底 + 实色表面（不再是半透明玻璃） */
+  --au-bg: #0c0a09;
+  --au-bg-soft: #11100e;
+  --au-surface: #171412;
+  --au-surface-2: #1e1a17;
+  --au-surface-3: #26211d;
+  --au-overlay: rgba(12, 10, 9, 0.86);
+  /* 图片上方的叠加层（Hero 遮罩 / 封面进度槽）：都是 --au-bg 的透明版本 */
+  --au-overlay-soft: rgba(12, 10, 9, 0.35);
+  --au-overlay-mid: rgba(12, 10, 9, 0.55);
+  --au-overlay-strong: rgba(12, 10, 9, 0.8);
+  /* 下拉菜单 / 浮层：实色 */
+  --au-overlay-menu: rgba(23, 20, 18, 0.98);
   /* 弹窗背后的整屏遮罩 */
-  --au-scrim: rgba(0, 0, 0, 0.65);
-  /* 纯装饰网格线（登录页背景那种极淡的稿纸格），比 --au-border 再淡好几倍 */
-  --au-grid-line: rgba(148, 180, 220, 0.045);
+  --au-scrim: rgba(0, 0, 0, 0.7);
+  /* 纯装饰网格线（已不再用于背景，保留令牌） */
+  --au-grid-line: rgba(245, 235, 220, 0.04);
   /* 图片上的中性叠加与文字（不跟主题走冷暖，只保证在任意封面上可读） */
   --au-on-image: rgba(255, 255, 255, 0.12);
   --au-on-image-strong: rgba(255, 255, 255, 0.2);
-  --au-track: rgba(4, 7, 12, 0.6);
+  --au-track: rgba(245, 235, 220, 0.1);
 
-  /* 文字 */
-  --au-text: #eaf2fb;
-  --au-text-2: rgba(234, 242, 251, 0.68);
-  --au-text-3: rgba(234, 242, 251, 0.45);
-  --au-text-4: rgba(234, 242, 251, 0.3);
+  /* 文字：暖白 */
+  --au-text: #f3ede4;
+  --au-text-2: rgba(243, 237, 228, 0.72);
+  --au-text-3: rgba(243, 237, 228, 0.6);
+  --au-text-4: rgba(243, 237, 228, 0.42);
 
-  /* 边框 */
-  --au-border: rgba(148, 180, 220, 0.12);
-  --au-border-strong: rgba(148, 180, 220, 0.2);
-  --au-border-focus: rgba(34, 211, 238, 0.55);
+  /* 边框：发丝线 */
+  --au-border: rgba(245, 235, 220, 0.08);
+  --au-border-strong: rgba(245, 235, 220, 0.14);
+  --au-border-focus: rgba(232, 168, 74, 0.55);
 
-  /* 圆角 */
+  /* 圆角：收敛，不再有 22px 的大圆角 */
   --au-r-sm: 8px;
-  --au-r-md: 12px;
-  --au-r-lg: 16px;
-  --au-r-xl: 22px;
+  --au-r-md: 10px;
+  --au-r-lg: 14px;
+  --au-r-xl: 14px;
   --au-r-full: 999px;
 
-  /* 阴影 */
-  --au-shadow-1: 0 2px 10px rgba(0, 0, 0, 0.35);
-  --au-shadow-2: 0 10px 40px rgba(0, 0, 0, 0.45);
+  /* 阴影：克制，无发光 */
+  --au-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --au-shadow-2: 0 12px 32px rgba(0, 0, 0, 0.5);
   /* 只取颜色，给 filter: drop-shadow(…) 用（那里没法直接写 box-shadow） */
-  --au-shadow-color: rgba(0, 0, 0, 0.4);
+  --au-shadow-color: rgba(0, 0, 0, 0.45);
   /* 封面上的标题阴影：让白字在浅色海报上也能读 */
   --au-shadow-text: 0 2px 12px rgba(0, 0, 0, 0.6);
-  --au-shadow-glow: 0 0 24px var(--au-primary-glow);
+  --au-shadow-glow: none;
 
-  /* 动效 */
+  /* 动效：入场 = 从黑场淡入（只动透明度） */
   --au-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --au-fast: 0.16s;
   --au-med: 0.26s;
+  --au-fade-in: 0.7s;
 
   /* 页面底部安全留白：≤768px 底部导航坞（AppDock，约 58px + 安全区）悬在内容之上，
      全站页面靠这个变量让出高度，不需要各自写一份媒体查询 */
   --au-dock-space: 0px;
 
   /* ==================== 主题语义层（v2.42.2，双主题） ====================
-     组件只允许消费语义别名，不直接消费 --au-primary 这类「原料」。默认值 = 现有深色
-     体系（Aurora 深蓝青），一个字不改；白日模式在下方 [data-theme="light"] 独立调色。
+     组件只允许消费语义别名，不直接消费 --au-primary 这类「原料」。默认值 = 深色
+     体系（现为「暗房影院」）；白日模式在下方 [data-theme="light"] 独立调色。
      切换只改 html[data-theme] 一个属性，三档：自动跟随系统 / 浅色 / 深色。 */
   --bg-canvas: var(--au-bg);
   --bg-surface: var(--au-surface);
@@ -119,11 +125,11 @@
   --border-subtle: var(--au-border);
   --accent-primary: var(--au-primary);
 
-  /* 输入框（v2.42.6 双主题）：.au-input 以前直接写死 rgba(7, 11, 18, 0.55)，
+  /* 输入框（v2.42.6 双主题）：.au-input 以前直接写死一个深色半透明底，
      白日模式下就是一块「深灰底 + 浅灰字」——浅色主题里最刺眼的串色。
      收敛成语义 token，深浅两套各自调色，组件与页面零改动。 */
-  --au-input-bg: rgba(7, 11, 18, 0.55);
-  --au-input-bg-focus: rgba(7, 11, 18, 0.72);
+  --au-input-bg: #11100e;
+  --au-input-bg-focus: #0c0a09;
   --au-input-border: var(--au-border);
 
   /* 兼容旧 token（媒体库等页面依赖） */
@@ -157,53 +163,89 @@
   }
 }
 
-/* ==================== 资产功能色（v2.42.1，借鉴纸片人控制台） ====================
-   双资产色彩编码：每种资产一个固定功能色，从顶栏 pill → 卡片图标 / 数字 / CTA
-   全链路同色。组件内用 var(--asset / --asset-soft / --asset-border / --asset-mid)
-   取色，tone-x 类负责换色（资产卡与说明条幅共用）；定义放在这份全局表里，
-   设计令牌契约检查（check_frontend_tokens）才能看到它们，也保证后续页面复用同一套。 */
+/* ==================== 资产功能色（暗房影院收敛） ====================
+   暗房影院只有一支强调色：三种 tone（cyan / amber / violet）不再各染一色，
+   数字一律走正文色，只有图标与 CTA 用琥珀。保留类名，组件零改动；定义放在这份
+   全局表里，设计令牌契约检查（check_frontend_tokens）才能看到它们。 */
 
 .asset-card,
-.notice-banner {
-  --asset: var(--au-primary);
-  --asset-soft: var(--au-primary-soft);
-  --asset-border: var(--au-primary-border);
-  --asset-mid: var(--au-primary-mid);
-}
-
-.tone-cyan {
-  --asset: var(--au-primary);
-  --asset-soft: var(--au-primary-soft);
-  --asset-border: var(--au-primary-border);
-  --asset-mid: var(--au-primary-mid);
-}
-
-.tone-amber {
-  --asset: var(--au-warning);
-  --asset-soft: var(--au-warning-soft);
-  --asset-border: var(--au-warning-border);
-  --asset-mid: rgba(251, 191, 36, 0.2);
-}
-
+.notice-banner,
+.tone-cyan,
+.tone-amber,
 .tone-violet {
-  --asset: var(--au-violet);
-  --asset-soft: var(--au-violet-soft);
-  --asset-border: rgba(167, 139, 250, 0.28);
-  --asset-mid: rgba(167, 139, 250, 0.2);
+  --asset: var(--au-primary);
+  --asset-soft: var(--au-primary-soft);
+  --asset-border: var(--au-primary-border);
+  --asset-mid: var(--au-primary-mid);
+  /* 大数字的颜色：正文色，不染强调色 */
+  --asset-value: var(--au-text);
 }
 
 /* ==================== 基础 ==================== */
 
 body {
-  background:
-    radial-gradient(1000px 500px at 85% -10%, rgba(167, 139, 250, 0.07), transparent 60%),
-    radial-gradient(900px 480px at -10% 0%, rgba(34, 211, 238, 0.08), transparent 55%),
-    var(--au-bg);
+  background: var(--au-bg);
   color: var(--au-text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--au-font-sans);
+  font-variant-numeric: tabular-nums;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* 胶片颗粒：整屏静态噪点（内联 SVG feTurbulence），不动画、不吃事件，开销只有一次绘制 */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+
+/* 播放页不叠颗粒：画面本身就是影像，叠一层噪点只会脏画质 */
+body:has(.watch-view)::after {
+  display: none;
+}
+
+/* ==================== 排版：衬线标题 ====================
+   片名 / 页标题 / 区块标题 / 大数字说明走衬线（宋体系），正文仍是系统无衬线。 */
+h1,
+h2,
+h3,
+.page-title,
+.section-title,
+.hero-title,
+.pane-title,
+.modal-title,
+.sheet-title,
+.panel-title,
+.empty-state__title,
+.ui-section-header__title,
+.brand-title,
+.sign-title,
+.paywall-title,
+.unlock-title,
+.item-title,
+.au-serif {
+  font-family: var(--au-font-serif);
+  letter-spacing: 0.01em;
+}
+
+/* 数字一律等宽对齐（余额 / 天数 / 计数跳动时不抖） */
+.au-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 小号字距拉开的「眉题」：琥珀色、全大写感 */
+.au-eyebrow {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--au-primary);
 }
 
 /* ==================== 通用卡片 ==================== */
@@ -214,24 +256,15 @@ body {
   border-radius: var(--au-r-lg);
 }
 
-/* 性能：backdrop-blur 是 GPU 重负载滤镜（每帧回读背景），只给顶栏、底部坞、
-   Toast 这类真正压在滚动内容上的悬浮层保留；桌面端 au-card 加回细蒙層质感，
-   移动端与浅色主题不启用（低内存设备上多层 blur 是掉帧主因）。 */
-@media (min-width: 769px) {
-  html:not([data-theme='light']) .au-card {
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-  }
-}
+/* 暗房影院：卡片是实色表面，不再有毛玻璃（backdrop-blur 也是 GPU 重负载滤镜） */
 
 .au-card-pad { padding: 1.25rem; }
 
-/* 渐变强调边框卡片 */
+/* 强调卡片：琥珀发丝描边（不再是渐变边框） */
 .au-card-accent {
   position: relative;
-  background: linear-gradient(var(--au-bg-soft), var(--au-bg-soft)) padding-box,
-              var(--au-gradient) border-box;
-  border: 1px solid transparent;
+  background: var(--au-surface);
+  border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-lg);
 }
 
@@ -257,15 +290,13 @@ body {
 .au-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .au-btn-primary {
-  background: var(--au-gradient);
+  background: var(--au-primary);
   color: var(--au-on-primary);
-  box-shadow: 0 4px 16px var(--au-primary-glow);
 }
 .au-btn-primary:hover:not(:disabled) {
-  box-shadow: 0 6px 22px var(--au-primary-glow);
-  transform: translateY(-1px);
+  filter: brightness(1.08);
 }
-.au-btn-primary:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+.au-btn-primary:active:not(:disabled) { transform: scale(0.98); }
 
 .au-btn-ghost {
   background: var(--au-surface-2);
@@ -276,10 +307,10 @@ body {
 
 .au-btn-danger {
   background: var(--au-danger-soft);
-  border: 1px solid rgba(251, 113, 133, 0.3);
+  border: 1px solid var(--au-danger-border);
   color: var(--au-danger);
 }
-.au-btn-danger:hover:not(:disabled) { background: rgba(251, 113, 133, 0.2); }
+.au-btn-danger:hover:not(:disabled) { background: var(--au-danger-border); }
 
 .au-btn-sm { height: 32px; padding: 0 0.75rem; font-size: 0.8125rem; border-radius: var(--au-r-sm); }
 
@@ -323,7 +354,7 @@ body {
   gap: 0.25rem;
   padding: 0.1875rem 0.5625rem;
   border-radius: var(--au-r-full);
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -331,7 +362,7 @@ body {
 .au-badge-green { background: var(--au-success-soft); color: var(--au-success); }
 .au-badge-amber { background: var(--au-warning-soft); color: var(--au-warning); }
 .au-badge-rose { background: var(--au-danger-soft); color: var(--au-danger); }
-.au-badge-violet { background: rgba(167, 139, 250, 0.12); color: var(--au-violet); }
+.au-badge-violet { background: var(--au-violet-soft); color: var(--au-violet); }
 
 /* ==================== 骨架屏 / 加载 ==================== */
 
@@ -359,11 +390,12 @@ body {
 
 /* ==================== 动画 ==================== */
 
+/* 入场：从黑场淡入（只动透明度，不再上浮） */
 @keyframes au-fade-up {
-  from { opacity: 0; transform: translateY(14px); }
-  to { opacity: 1; transform: none; }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
-.au-anim-up { animation: au-fade-up 0.4s var(--au-ease) both; }
+.au-anim-up { animation: au-fade-up var(--au-fade-in) var(--au-ease) both; }
 
 /* 入场动画跟随系统「减少动态效果」降级：区块默认 opacity 本就是 1，
    关掉动画不会消失（animate-* 那批在 index.css 里各自处理） */
@@ -377,12 +409,9 @@ body {
 }
 .au-pulse { animation: au-pulse-soft 1.6s ease-in-out infinite; }
 
-/* 流光文字 */
+/* 强调文字（原「流光文字」）：纯琥珀 */
 .au-gradient-text {
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--au-primary);
 }
 
 /* ==================== 页面骨架（全站唯一一处定义） ====================
@@ -439,12 +468,16 @@ body {
   gap: 0.5rem;
   flex-wrap: wrap;
   margin: 0;
-  font-size: 1.375rem;
+  font-size: 1.5rem;
   font-weight: 700;
   color: var(--au-text);
 }
 
 .page-title svg { color: var(--au-primary); }
+
+@media (max-width: 640px) {
+  .page-title { font-size: 1.375rem; }
+}
 
 .page-sub {
   margin: 0.375rem 0 0;
@@ -474,7 +507,7 @@ body {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--au-border-strong); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(148, 180, 220, 0.32); }
+::-webkit-scrollbar-thumb:hover { background: rgba(245, 235, 220, 0.24); }
 
 ::selection { background: var(--au-primary-soft); color: var(--au-text); }
 
@@ -503,78 +536,72 @@ a:active {
   filter: brightness(0.9);
 }
 
-/* ==================== 白日模式（v2.42.2） ====================
-   不是反色，是独立调过的一套暖调纸白：底 #f5f8fb（冷白纸）、表面纯白、
-   文字深蓝黑（与深色主题的底色同族，品牌感延续）。所有在深色下「提亮」用的
-   浅色文字都要换成深色，青色主色在白底下压深两档保证 4.5:1 对比度。 */
+/* ==================== 白日模式「影院大厅」（暗房影院） ====================
+   不是反色，是一套独立调过的奶油纸色：底 #f5f1ea、表面近白、文字深墨；
+   琥珀在白底上压深到 #b9802f 保证文字对比度。 */
 
 html[data-theme='light'] {
   color-scheme: light;
 
-  /* 原料层：只换中性色与主色亮度，品牌色相不变 */
-  --au-bg: #f5f8fb;
-  --au-bg-soft: #eef3f8;
-  /* 输入框在白日模式下是白底 + 略深描边：与卡片同色，靠边框与聚焦环分层，
-     不再让深色底漏进浅色页面 */
-  --au-input-bg: #ffffff;
+  --au-bg: #f5f1ea;
+  --au-bg-soft: #efe9df;
+  --au-input-bg: #fffdf9;
   --au-input-bg-focus: #ffffff;
-  --au-input-border: rgba(15, 32, 48, 0.16);
-  --au-surface: #ffffff;
-  --au-surface-2: #f0f4f9;
-  --au-surface-3: #e6edf5;
-  --au-overlay: rgba(244, 248, 252, 0.86);
-  --au-overlay-soft: rgba(15, 32, 48, 0.16);
-  --au-overlay-mid: rgba(15, 32, 48, 0.3);
-  --au-overlay-strong: rgba(15, 32, 48, 0.52);
-  --au-overlay-menu: rgba(255, 255, 255, 0.97);
-  --au-scrim: rgba(15, 32, 48, 0.42);
-  --au-grid-line: rgba(15, 32, 48, 0.05);
-  --au-track: rgba(15, 32, 48, 0.09);
+  --au-input-border: rgba(28, 25, 21, 0.16);
+  --au-surface: #fffdf9;
+  --au-surface-2: #f7f2ea;
+  --au-surface-3: #efe8dd;
+  --au-overlay: rgba(245, 241, 234, 0.9);
+  --au-overlay-soft: rgba(28, 25, 21, 0.16);
+  --au-overlay-mid: rgba(28, 25, 21, 0.3);
+  --au-overlay-strong: rgba(28, 25, 21, 0.55);
+  --au-overlay-menu: rgba(255, 253, 249, 0.98);
+  --au-scrim: rgba(28, 25, 21, 0.42);
+  --au-grid-line: rgba(28, 25, 21, 0.05);
+  --au-track: rgba(28, 25, 21, 0.1);
 
-  --au-text: #16283a;
-  --au-text-2: rgba(22, 40, 58, 0.72);
-  --au-text-3: rgba(22, 40, 58, 0.52);
-  --au-text-4: rgba(22, 40, 58, 0.38);
+  --au-text: #1c1915;
+  --au-text-2: rgba(28, 25, 21, 0.74);
+  --au-text-3: rgba(28, 25, 21, 0.6);
+  --au-text-4: rgba(28, 25, 21, 0.42);
 
-  --au-border: rgba(15, 32, 48, 0.1);
-  --au-border-strong: rgba(15, 32, 48, 0.16);
+  --au-border: rgba(28, 25, 21, 0.1);
+  --au-border-strong: rgba(28, 25, 21, 0.18);
+  --au-border-focus: rgba(185, 128, 47, 0.55);
 
-  --au-primary: #0891b2;
-  --au-primary-strong: #0e7490;
-  --au-primary-deep: #155e75;
-  --au-primary-soft: rgba(8, 145, 178, 0.1);
-  --au-primary-mid: rgba(8, 145, 178, 0.16);
-  --au-primary-border: rgba(8, 145, 178, 0.26);
-  --au-primary-glow: rgba(8, 145, 178, 0.22);
-  /* 亮底上的青色块（渐变按钮 / 头像）改用白字：深青底 + 白字对比足够 */
+  --au-primary: #b9802f;
+  --au-primary-strong: #a06c24;
+  --au-primary-deep: #7f541b;
+  --au-primary-soft: rgba(185, 128, 47, 0.1);
+  --au-primary-mid: rgba(185, 128, 47, 0.16);
+  --au-primary-border: rgba(185, 128, 47, 0.3);
+  --au-primary-glow: transparent;
   --au-on-primary: #ffffff;
 
-  /* 语义色在白底上同步压深一档（text 徽章用法可读） */
-  --au-success: #059669;
-  --au-success-soft: rgba(5, 150, 105, 0.1);
-  --au-success-border: rgba(5, 150, 105, 0.24);
-  --au-warning: #b45309;
-  --au-warning-soft: rgba(180, 83, 9, 0.1);
-  --au-warning-border: rgba(180, 83, 9, 0.24);
+  --au-violet: rgba(28, 25, 21, 0.72);
+  --au-violet-soft: rgba(28, 25, 21, 0.05);
+
+  --au-success: #4f7f4a;
+  --au-success-soft: rgba(79, 127, 74, 0.1);
+  --au-success-border: rgba(79, 127, 74, 0.26);
+  --au-warning: #b9802f;
+  --au-warning-soft: rgba(185, 128, 47, 0.1);
+  --au-warning-border: rgba(185, 128, 47, 0.28);
   --au-on-warning: #ffffff;
-  --au-danger: #e11d48;
-  --au-danger-soft: rgba(225, 29, 72, 0.09);
-  --au-danger-border: rgba(225, 29, 72, 0.24);
-  --au-info: #2563eb;
-  --au-info-soft: rgba(37, 99, 235, 0.09);
-  --au-info-border: rgba(37, 99, 235, 0.24);
-  --au-violet: #7c3aed;
-  --au-violet-soft: rgba(124, 58, 237, 0.09);
+  --au-gold-a: #c58a36;
+  --au-gold-b: #b9802f;
+  --au-gold-edge: #8a5c1f;
+  --au-danger: #b4493c;
+  --au-danger-soft: rgba(180, 73, 60, 0.09);
+  --au-danger-border: rgba(180, 73, 60, 0.26);
+  --au-info: #4f6f8a;
+  --au-info-soft: rgba(79, 111, 138, 0.09);
+  --au-info-border: rgba(79, 111, 138, 0.24);
 
-  /* 渐变同步压深：浅色下 on-primary 是白字，亮青亮紫底（#22d3ee）只有 ~1.9:1，
-     换成深青→深紫（白字 ≥4.5:1），品牌色相不变 */
-  --au-gradient: linear-gradient(135deg, #0e7490 0%, #6d28d9 100%);
-  --au-gradient-warm: linear-gradient(135deg, #be185d 0%, #6d28d9 100%);
-
-  --au-shadow-1: 0 2px 10px rgba(15, 32, 48, 0.07);
-  --au-shadow-2: 0 10px 40px rgba(15, 32, 48, 0.12);
-  --au-shadow-color: rgba(15, 32, 48, 0.14);
-  --au-shadow-text: 0 2px 12px rgba(15, 32, 48, 0.35);
+  --au-shadow-1: 0 1px 2px rgba(28, 25, 21, 0.06);
+  --au-shadow-2: 0 12px 32px rgba(28, 25, 21, 0.12);
+  --au-shadow-color: rgba(28, 25, 21, 0.14);
+  --au-shadow-text: 0 2px 12px rgba(28, 25, 21, 0.35);
 
   /* 语义别名随之切换（组件零改动） */
   --bg-canvas: var(--au-bg);
@@ -586,28 +613,22 @@ html[data-theme='light'] {
   --accent-primary: var(--au-primary);
 }
 
-/* 浅色 body 底色：紫/青两团氛围光同步减淡，不煞白 */
 html[data-theme='light'] body {
-  background:
-    radial-gradient(1000px 500px at 85% -10%, rgba(124, 58, 237, 0.05), transparent 60%),
-    radial-gradient(900px 480px at -10% 0%, rgba(8, 145, 178, 0.06), transparent 55%),
-    var(--au-bg);
+  background: var(--au-bg);
   color: var(--au-text);
 }
 
-/* 浅色模式下滚动条 / 选中 / 蒙层里写死的中性色跟过来 */
+/* 纸面颗粒更淡一些，正片叠底 */
+html[data-theme='light'] body::after {
+  opacity: 0.04;
+  mix-blend-mode: multiply;
+}
+
+/* 浅色模式下滚动条里写死的中性色跟过来 */
 html[data-theme='light'] ::-webkit-scrollbar-thumb {
-  background: rgba(15, 32, 48, 0.16);
+  background: rgba(28, 25, 21, 0.16);
 }
 
 html[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(15, 32, 48, 0.28);
-}
-
-/* 资产 tone 色的浅色版：金在白底上压成赭金（b45309 才有对比度），青紫同步 */
-html[data-theme='light'] .tone-amber {
-  --asset: #b45309;
-  --asset-soft: rgba(180, 83, 9, 0.1);
-  --asset-border: rgba(180, 83, 9, 0.24);
-  --asset-mid: rgba(180, 83, 9, 0.16);
+  background: rgba(28, 25, 21, 0.28);
 }

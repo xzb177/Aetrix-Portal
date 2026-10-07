@@ -823,11 +823,8 @@ function formatDate(iso?: string | null) {
   padding: 1.375rem 1.5rem;
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-xl);
-  background:
-    radial-gradient(120% 160% at 0% 0%, var(--au-primary-soft) 0%, transparent 58%),
-    var(--au-surface);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--au-surface);
+  border-top: 2px solid var(--au-primary);
 }
 
 .id-body {
@@ -844,12 +841,13 @@ function formatDate(iso?: string | null) {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--au-r-lg);
-  background: var(--au-gradient);
-  color: var(--au-on-primary);
-  font-size: 1.375rem;
-  font-weight: 800;
-  box-shadow: 0 6px 20px var(--au-primary-glow);
+  border-radius: 50%;
+  border: 1px solid var(--au-primary-border);
+  background: var(--au-surface-2);
+  color: var(--au-primary);
+  font-family: var(--au-font-serif);
+  font-size: 1.5rem;
+  font-weight: 700;
 }
 
 .id-main { min-width: 0; }
@@ -860,9 +858,9 @@ function formatDate(iso?: string | null) {
   gap: 0.5rem;
   flex-wrap: wrap;
   margin: 0;
-  font-size: 1.3125rem;
-  font-weight: 800;
-  letter-spacing: -0.01em;
+  font-family: var(--au-font-serif);
+  font-size: 1.5rem;
+  font-weight: 700;
   color: var(--au-text);
 }
 
@@ -872,10 +870,11 @@ function formatDate(iso?: string | null) {
   gap: 0.25rem;
   padding: 0.125rem 0.5rem;
   border-radius: var(--au-r-full);
-  background: var(--au-gradient-warm);
-  color: var(--au-on-primary);
-  font-size: 0.75rem;
-  font-weight: 700;
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+  font-family: var(--au-font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .id-sub {
@@ -884,7 +883,7 @@ function formatDate(iso?: string | null) {
   border-radius: var(--au-r-full);
   background: var(--au-primary-soft);
   color: var(--au-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 
@@ -934,7 +933,7 @@ function formatDate(iso?: string | null) {
 .id-stat strong.accent { color: var(--au-primary); }
 
 .id-stat span {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -958,8 +957,6 @@ function formatDate(iso?: string | null) {
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .pane-head {
@@ -993,7 +990,7 @@ function formatDate(iso?: string | null) {
   margin: 0.875rem 0 0;
   padding-top: 0.875rem;
   border-top: 1px dashed var(--au-border);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--au-text-3);
 }
@@ -1002,7 +999,7 @@ function formatDate(iso?: string | null) {
   flex-shrink: 0;
   padding: 0.0625rem 0.5rem;
   border-radius: var(--au-r-full);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   background: var(--au-surface-2);
   color: var(--au-text-3);
 }
@@ -1022,7 +1019,7 @@ function formatDate(iso?: string | null) {
   padding: 0.0625rem 0.4375rem;
   border-radius: var(--au-r-full);
   background: var(--au-surface-2);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--au-text-3);
 }
@@ -1079,7 +1076,7 @@ function formatDate(iso?: string | null) {
 .row-label {
   flex-shrink: 0;
   width: 64px;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1154,7 +1151,7 @@ function formatDate(iso?: string | null) {
 .block-label {
   display: block;
   margin-bottom: 0.5rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1186,7 +1183,7 @@ function formatDate(iso?: string | null) {
   align-items: center;
   gap: 0.375rem;
   margin-top: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   word-break: break-all;
 }
@@ -1225,7 +1222,7 @@ function formatDate(iso?: string | null) {
 
 .unlock-hint {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1284,7 +1281,7 @@ function formatDate(iso?: string | null) {
 }
 
 .dev-meta {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1307,7 +1304,7 @@ function formatDate(iso?: string | null) {
 
 .sub-end {
   margin-top: 0.125rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1322,7 +1319,7 @@ function formatDate(iso?: string | null) {
   align-items: center;
   gap: 0.3125rem;
   margin: 0.375rem 0 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-warning);
 }
 
@@ -1337,7 +1334,7 @@ function formatDate(iso?: string | null) {
   align-items: center;
   gap: 0.5rem;
   padding: 0.4375rem 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-2);
 }
 
@@ -1350,7 +1347,7 @@ function formatDate(iso?: string | null) {
 
 .sub-realm {
   font-style: normal;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1432,7 +1429,7 @@ function formatDate(iso?: string | null) {
   border-radius: var(--au-r-full);
   background: none;
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
   transition: background var(--au-fast) var(--au-ease),
@@ -1444,12 +1441,11 @@ function formatDate(iso?: string | null) {
 .line-opt:hover:not(:disabled) { background: var(--au-surface-3); color: var(--au-text); }
 .line-opt:active:not(:disabled) { transform: scale(0.97); }
 .line-opt:disabled { cursor: wait; opacity: 0.7; }
-/* 选中态：主色实底 + on-primary 文字 + 微光晕 */
+/* 选中态：琥珀实底 + on-primary 文字（无光晕） */
 .line-opt.on {
   background: var(--au-primary);
   border-color: var(--au-primary);
   color: var(--au-on-primary);
-  box-shadow: 0 2px 10px var(--au-primary-glow);
 }
 .line-opt.on svg { color: var(--au-on-primary); }
 .line-opt:focus-visible {
@@ -1473,8 +1469,6 @@ function formatDate(iso?: string | null) {
   justify-content: center;
   padding: 1.5rem;
   background: var(--au-scrim);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   z-index: 100;
 }
 
@@ -1506,7 +1500,7 @@ function formatDate(iso?: string | null) {
 .field-label {
   display: block;
   margin-bottom: 0.375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1565,8 +1559,8 @@ function formatDate(iso?: string | null) {
 .btn.ghost:hover { background: var(--au-surface-3); }
 
 .btn.primary {
-  background: var(--au-gradient);
-  color: var(--au-on-primary);   /* 青底配白字只有 1.9:1，与全站主按钮统一为深墨色文字 */
+  background: var(--au-primary);
+  color: var(--au-on-primary);   /* 琥珀实底配深墨字，与全站主按钮一致 */
 }
 
 .btn.primary:disabled {

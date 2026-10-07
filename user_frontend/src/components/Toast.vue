@@ -101,13 +101,11 @@ const getToastClass = (type: string) => {
   padding: 0.875rem 1rem;
   min-width: 280px;
   max-width: 90vw;
-  /* 与页面其它浮层同一套表面：半透明 + 毛玻璃 + 强边框，不再是一块中性灰 */
+  /* 暗房影院：实色表面 + 强边框 + 克制阴影，不再有毛玻璃 */
   background: var(--au-surface-3);
   border: 1px solid var(--au-border-strong);
   border-radius: var(--au-r-md);
   box-shadow: var(--au-shadow-2);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
 }
 
 .toast-icon {
