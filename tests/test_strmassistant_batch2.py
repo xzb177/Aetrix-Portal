@@ -25,11 +25,12 @@ class TestMergeVersions:
             os.path.join(BASE, "merge_versions_worker.py"),
         )
 
-    def test_union_find(self):
-        parent = {1: 1, 2: 2, 3: 3}
-        self.mod._union(1, 2, parent)
-        self.mod._union(2, 3, parent)
-        assert self.mod._find(1, parent) == self.mod._find(3, parent)
+    def test_find_duplicate_groups_structure(self):
+        # union-find 已删除（按 key 分组天然保证传递性）；
+        # 这里只验证模块仍暴露核心函数
+        assert hasattr(self.mod, "find_duplicate_groups")
+        assert hasattr(self.mod, "merge_group")
+        assert hasattr(self.mod, "get_alternate_versions")
 
     def test_provider_key_tmdb_priority(self):
         class Fake:
