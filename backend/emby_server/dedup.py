@@ -101,8 +101,13 @@ def deduplicate_items(items: Iterable) -> list:
     属性上（内存属性，不写库），供详情页合并集数/版本时使用。
 
     非 movie/series 类型原样返回，不参与去重。
+
+    多版本合并（StrmAssistant #4）：``merged_into_id`` 非空的条目是已被
+    物理合并的 alternate version，直接过滤掉（主记录会展示多版本）。
     """
     items = list(items)
+    # 先过滤已被物理合并的（数据层合并优先于展示层去重）
+    items = [i for i in items if getattr(i, "merged_into_id", None) is None]
     groups: dict = {}
     order: list = []  # 保持原有顺序：记录每个 key 首次出现的位置
     for item in items:

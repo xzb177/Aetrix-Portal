@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Optional
 
 from backend.emby_server.filename_meta import parse_filename, resolution_to_wh
+from backend.emby_server.pinyin_sort import make_sort_name
 
 logger = logging.getLogger("fast_scanner")
 
@@ -562,7 +563,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "library_id": lib_id,
                 "item_type": "episode",
                 "name": parsed["name"],
-                "sort_name": parsed["name"].lower(),
+                "sort_name": make_sort_name(parsed["name"]),
                 "production_year": parsed.get("year"),
                 "season_number": season_no,
                 "episode_number": episode_no,
@@ -594,7 +595,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
                 "library_id": lib_id,
                 "item_type": "movie",
                 "name": parsed["name"],
-                "sort_name": parsed["name"].lower(),
+                "sort_name": make_sort_name(parsed["name"]),
                 "production_year": parsed.get("year"),
                 "file_path": f.path,
                 "drive_file_id": f.file_id or None,
@@ -633,7 +634,7 @@ def _bulk_insert(db, MI, files: list[FastScanFile], lib_id: int,
             "library_id": lib_id,
             "item_type": "series",
             "name": info["name"],
-            "sort_name": info["name"].lower(),
+            "sort_name": make_sort_name(info["name"]),
             "production_year": info["year"],
             "date_added": now,
             "probe_status": "done",  # 无文件可探测
