@@ -2830,6 +2830,13 @@ async def playback_info(
     if use_cdn and not _node_hit:
         stream_url = cdn.rewrite_url(db, stream_url, base)
         transcoding_url = cdn.rewrite_url(db, transcoding_url, base)
+    # 流媒体加速（单机）：开关打开且配了域名时，播放 URL 基址统一换成加速域名。
+    # 远端流节点命中 / CDN 改写过的 URL 不再动（rewrite_url_domain 对不上 base 会原样返回）。
+    from backend.emby_server import stream_accel
+    accel_domain = stream_accel.get_effective_domain(db)
+    if accel_domain and not _node_hit:
+        stream_url = stream_accel.rewrite_url_domain(stream_url, base, accel_domain)
+        transcoding_url = stream_accel.rewrite_url_domain(transcoding_url, base, accel_domain)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),

@@ -4,14 +4,17 @@
 （橙云）代理隐藏真实 IP，用户只能用域名访问。本模块提供两块开箱即用的能力：
 
 1. ``DomainGuardMiddleware`` —— 强制域名访问：
-   - 环境变量 ``ENFORCE_DOMAIN``（逗号分隔，如 ``stream.example.com``）未设置时
-     **完全透传**，单机部署行为一字不变；
+   - 管理后台「流媒体加速」开关打开时，自动用配置的加速域名做白名单
+     （DB 配置，进程内 60 秒 TTL 缓存，最长 60 秒生效）；
+   - 环境变量 ``ENFORCE_DOMAIN``（逗号分隔，如 ``stream.example.com``）是运维
+     手动覆盖：DB 开关未打开时才看它；都没设置时**完全透传**，单机部署行为一字不变；
    - 设置后，Host 头不在白名单的请求一律 403（防直接用 IP 绕过 CF 打源站）；
    - 例外：``/api/health`` 允许来自内网 IP（RFC1918 / 本机）的健康检查，
      主服务的节点健康检查走内网 IP 时不被误杀。
 
 2. ``CloudflareIPMiddleware`` —— 取真实用户 IP：
-   - 环境变量 ``TRUST_CF_IP=true`` 时才启用（默认关闭，不信任任何代理头）；
+   - 「流媒体加速」开关打开时自动启用；否则看环境变量 ``TRUST_CF_IP=true``
+     （默认关闭，不信任任何代理头）；
    - 优先 ``CF-Connecting-IP``，回退 ``X-Forwarded-For`` 首个；
    - 只接受合法 IP 格式，非法的直接忽略（不让伪造头污染日志/限流）；
    - 把解析出的 IP 写回 ``scope["client"]``，下游的限流/日志拿到的就是真人 IP。
@@ -39,7 +42,46 @@ TRUST_CF_IP_ENV = "TRUST_CF_IP"
 HEALTH_PATHS = ("/api/health",)
 
 
+# ---- 管理后台「流媒体加速」开关（DB 配置，store 统一 60 秒 TTL 缓存） ----
+# 横切能力只许一套：带缓存的配置热读统一走 backend.integrations.store，
+# 这里不另起一套 TTL。
+
+def _accel_db_config() -> tuple[Optional[set[str]], Optional[bool]]:
+    """读流媒体加速开关的 DB 配置。
+
+    返回 ``(allowed_hosts, trust_cf)``；开关未打开或 DB 不可用时返回
+    ``(None, None)``，调用方回退到环境变量。
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.integrations import store
+
+        db = SessionLocal()
+        try:
+            vals = store.get_values(
+                db,
+                ["stream_accel_enabled", "stream_accel_domain"],
+                {"stream_accel_enabled": "false", "stream_accel_domain": ""},
+                ttl=60.0,
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.debug("流媒体加速 DB 配置读取失败，回退环境变量", exc_info=True)
+        return None, None
+    enabled = (vals.get("stream_accel_enabled") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    domain = (vals.get("stream_accel_domain") or "").strip().lower()
+    if enabled and domain:
+        return {domain}, True
+    return None, None
+
+
 def _get_allowed_hosts() -> Optional[set[str]]:
+    allowed, _ = _accel_db_config()
+    if allowed:
+        return allowed
     raw = (os.environ.get(ENFORCE_DOMAIN_ENV) or "").strip()
     if not raw:
         return None
@@ -48,6 +90,9 @@ def _get_allowed_hosts() -> Optional[set[str]]:
 
 
 def _trust_cf_ip() -> bool:
+    _, trust_cf = _accel_db_config()
+    if trust_cf:
+        return True
     return (os.environ.get(TRUST_CF_IP_ENV) or "").strip().lower() in (
         "1", "true", "yes", "on",
     )

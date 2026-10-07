@@ -176,6 +176,9 @@ ECONOMY_CONFIG_KEYS = {
     "promotion_reward_type": "str",
     "promotion_reward_amount": "int",
     "promotion_reward_days": "int",
+    # 流媒体加速（v2.49.0）：一个开关 + 一个域名，点保存即生效（域名守卫侧最长 60 秒）
+    "stream_accel_enabled": "bool",
+    "stream_accel_domain": "str",
 }
 
 
@@ -205,6 +208,23 @@ def economy_update_settings(
     db: Session = Depends(get_db),
 ):
     """更新经济系统配置（secret 值为 ****** 时保持不变）"""
+    # 流媒体加速：开开关必须配合法域名，否则域名守卫会把所有请求 403 掉。
+    # 先按"请求值优先、DB 现有值兜底"算出最终状态，非法直接 400（此时尚未写库）。
+    if "stream_accel_enabled" in request.settings or "stream_accel_domain" in request.settings:
+        from backend.emby_server import stream_accel as _sa
+
+        def _final(key: str) -> str:
+            if key in request.settings:
+                return str(request.settings[key] or "")
+            row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+            return row.value if row and row.value else ""
+
+        _enabled = _final("stream_accel_enabled").strip().lower() in ("1", "true", "yes", "on")
+        if _enabled:
+            try:
+                _sa.validate_domain(_final("stream_accel_domain"))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
     changed = {}
     for key, value in request.settings.items():
         if key not in ECONOMY_CONFIG_KEYS:
@@ -219,6 +239,9 @@ def economy_update_settings(
         changed[key] = str(value) if ECONOMY_CONFIG_KEYS[key] != "secret" else "(已更新)"
 
     db.commit()
+    if "stream_accel_enabled" in changed or "stream_accel_domain" in changed:
+        from backend.integrations import store as _store
+        _store.invalidate("stream_accel_enabled", "stream_accel_domain")
     _audit(db, current_admin, "economy_update_settings", "system", None, changed)
     db.commit()
     return {"success": True, "changed": list(changed.keys())}
