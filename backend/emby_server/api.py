@@ -2040,8 +2040,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         }
 
     # 无限滚动的海报墙不需要总数：COUNT(*) 在带筛选/关联时很贵。
-    # EnableTotalRecordCount=false 时跳过 COUNT，用“多取一行”做有没有下一页的探测
-    # （TotalRecordCount 返回 -1 表示未知，前端用 HasMore 判断）。
+    # EnableTotalRecordCount=false 时跳过 COUNT，用“多取一行”做有没有下一页的探测。
+    # 注意：Emby 官方从不返回 TotalRecordCount=-1——第三方播放器用
+    # TotalRecordCount > Items.length 判断分页，-1 会导致列表显示不全。
+    # 因此跳过总数时返回本页数量作为非负总数，继续加载用 HasMore 判断。
     # 默认 true：第三方 Emby 客户端的行为与以前完全一致。
     want_total = (q.get("EnableTotalRecordCount") or "true").strip().lower() not in (
         "false", "0", "no", "off")
@@ -2059,7 +2061,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(picked)).all() if picked else []
         position = {item_id: index for index, item_id in enumerate(picked)}
         items.sort(key=lambda item: position.get(item.id, 0))
-        total = len(ids) if want_total else -1
+        total = len(ids) if want_total else len(picked)
     else:
         # 修复：去重必须在分页之前，否则 Limit=20 可能只返回 2-3 条
         # （第三方播放器靠 TotalRecordCount + 分页加载，去重后数量不对会显示不全）。
@@ -2076,11 +2078,12 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             .all()
         )
         primary_ids = _dedup_primary_ids(cand_rows, db)
-        total = len(primary_ids) if want_total else -1
+        page_ids = primary_ids[start:start + limit]
+        # Emby 官方从不返回 -1：跳过总数时用本页数量，保证非负
+        total = len(primary_ids) if want_total else len(page_ids)
         if not want_total:
             # 多取一个判断有没有下一页
             has_more = len(primary_ids) > start + limit
-        page_ids = primary_ids[start:start + limit]
         if not page_ids:
             items = []
         else:

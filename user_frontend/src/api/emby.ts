@@ -221,7 +221,8 @@ export interface EmbyQuery {
   recursive?: boolean
   /**
    * 无限滚动的海报墙不需要总数：false 时后端跳过 COUNT(*)，用 HasMore 告诉
-   * 前端有没有下一页（TotalRecordCount 此时为 -1）。默认 true（第三方客户端行为不变）。
+   * 前端有没有下一页（TotalRecordCount 此时为本页数量，Emby 官方从不返回 -1）。
+   * 默认 true（第三方客户端行为不变）。
    */
   enableTotalRecordCount?: boolean
   /** 请求取消信号（筛选/排序快速切换时丢弃过期响应，P1 #8） */
