@@ -88,6 +88,8 @@ def _client(monkeypatch, keys=("k1",), answer=None, rate=1_000_000.0) -> TmdbCli
 
 def test_every_http_request_consumes_a_token(monkeypatch):
     """一个条目打了几次 HTTP 就扣几个 token（旧口径是整条目只扣一个）"""
+    # 语言 fallback 会放大请求数，测试"请求级"口径时固定为单语言
+    monkeypatch.setattr(tmdb_mod, "MOVIEDB_FALLBACK_LANGUAGES", ("zh-CN",))
     client = _client(monkeypatch, answer=lambda url, params: _resp(payload={"results": []}))
     acquires: list = []
     original = client._limiter.acquire
@@ -179,6 +181,7 @@ def test_exact_hit_stops_the_candidate_loop(monkeypatch):
 
 def test_no_exact_hit_still_tries_every_candidate(monkeypatch):
     """没有精确命中就不能收手（模糊命中也得比完，否则会漏掉更好的结果）"""
+    monkeypatch.setattr(tmdb_mod, "MOVIEDB_FALLBACK_LANGUAGES", ("zh-CN",))
     client = _search_client(monkeypatch, hit={"id": 9, "name": "毫不相干的条目"})
     name = "进击的巨人 (2013) 中字"
 
