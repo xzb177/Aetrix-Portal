@@ -475,6 +475,22 @@ def _version_label(item):
     return "480p"
 
 
+def _item_etag(item: em.MediaItem) -> str:
+    """条目 ETag（官方 BaseItemDto.Etag，DtoService 按 ``item.GetEtag(user)`` 下发）
+
+    客户端拿它做列表/详情的缓存失效：任何会改变展示的元数据（标题、入库时间、
+    简介、海报、时长、大小）变了，Etag 就变，缓存自动重拉。
+    emby_items 没有 updated_at 列，所以把“会影响展示的列”拼进哈希。
+    """
+    raw = "|".join(
+        str(x) for x in (
+            item.guid, item.name, item.sort_name, item.date_added,
+            item.overview, item.poster_path, item.duration_ticks, item.size,
+        )
+    )
+    return hashlib.md5(raw.encode("utf-8", "ignore")).hexdigest()
+
+
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
               api_key: str = "") -> dict:
     download_ok = _download_ok(db)
@@ -490,8 +506,10 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
     # 三方客户端（SenPlayer/Lenna）对这些字段裸调 .length/.filter，null 直接崩。
     dto = {
         "Name": item.name or "",
+        "SortName": item.sort_name or item.name or "",
         "Id": item.guid,
         "ServerId": SERVER_ID,
+        "Etag": _item_etag(item),
         "Type": _emby_type(item.item_type),
         "IsFolder": item.item_type in ("series", "season"),
         "MediaType": "Video",
@@ -531,6 +549,8 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         } if (item.poster_path or item.primary_image_url
                or (item.item_type in ("episode", "season")
                    and _first_image(item, "Primary", db))) else {},
+        # 官方 AttachBasicFields 无条件置空字典（有模糊图时才填）；三方客户端裸读
+        "ImageBlurHashes": {},
         "ProviderIds": {
             k: v for k, v in (
                 ("Tmdb", item.tmdb_id),
@@ -539,7 +559,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                 ("Bangumi", getattr(item, "bangumi_id", None)),
             ) if v
         },
-        "UserData": _user_data_dto(umd),
+        "UserData": _user_data_dto(umd, item.guid),
         "MediaSources": [],
         # 三方客户端 Fields 参数常要的字段
         "Status": "Continuing",
@@ -684,20 +704,28 @@ def _people_dto(item: em.MediaItem, db: Session, prefetch: dict) -> list[dict]:
     return out
 
 
-def _user_data_dto(umd) -> dict:
+def _user_data_dto(umd, item_id: str = "") -> dict:
     # 对标 FakEmby：UserData 永不为 null，必填字段全给默认值
+    base = {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False,
+            "IsFavorite": False, "PlayedPercentage": 0.0}
     if not umd:
-        return {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False,
-                "IsFavorite": False, "PlayedPercentage": 0.0}
-    d = {
-        "PlaybackPositionTicks": umd.playback_position_ticks or 0,
-        "PlayCount": umd.play_count or 0,
-        "Played": bool(umd.played),
-        "IsFavorite": bool(umd.is_favorite),
-        "PlayedPercentage": 0.0,
-    }
-    if umd.last_played_at:
-        d["LastPlayedDate"] = _iso(umd.last_played_at)
+        d = dict(base)
+    else:
+        d = {
+            "PlaybackPositionTicks": umd.playback_position_ticks or 0,
+            "PlayCount": umd.play_count or 0,
+            "Played": bool(umd.played),
+            "IsFavorite": bool(umd.is_favorite),
+            "PlayedPercentage": 0.0,
+        }
+        if umd.last_played_at:
+            d["LastPlayedDate"] = _iso(umd.last_played_at)
+    # 官方 GetUserItemDataDto（Jellyfin DtoService）无条件下发 ItemId 与 Key：
+    # 三方客户端用 ItemId 把播放进度/收藏写回条目、用 Key 做本地缓存键，
+    # 缺字段时严格解码器直接失败（与 Views 缺 ServerId 同一类问题）。
+    if item_id:
+        d["ItemId"] = item_id
+        d["Key"] = item_id
     return d
 
 
@@ -887,6 +915,23 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         "SupportsDirectStream": True,
         "SupportsTranscoding": True,
         "IsRemote": False,
+        # 官方 MediaSourceInfo 的非空值类型/集合字段（对照
+        # MediaBrowser.Model/Dto/MediaSourceInfo.cs，均在构造器里初始化，序列化恒发）。
+        # 缺这些 bool/数组键时，严格解码 MediaSourceInfo 的三方客户端在
+        # PlaybackInfo 这一步就解析失败——那会直接表现为“不能播”。
+        "ReadAtNativeFramerate": False,
+        "IgnoreDts": False,
+        "IgnoreIndex": False,
+        "GenPtsInput": False,
+        "IsInfiniteStream": False,
+        "UseMostCompatibleTranscodingProfile": False,
+        "RequiresOpening": False,
+        "RequiresClosing": False,
+        "SupportsProbing": True,
+        "HasSegments": False,
+        "Formats": [],
+        "MediaAttachments": [],
+        "RequiredHttpHeaders": {},
         "DefaultSubtitleStreamIndex": _default_subtitle_index(item),
         "MediaStreams": [_stream_dto(s, base, item, api_key, db) for s in item.streams],
     }
@@ -1161,6 +1206,11 @@ def authenticate_by_name(
     access_token = token_value
     server_id = SERVER_ID
     user_dto = _user_dto(user, db)
+    # SessionInfo 字段对照官方 SessionInfo（MediaBrowser.Controller/Session/SessionInfo.cs）：
+    # PlayState / AdditionalUsers / NowPlayingQueue 在官方构造器里就初始化（恒发），
+    # IsActive / HasCustomDeviceName / SupportsMediaControl 是非空 bool（恒发），
+    # SupportedCommands / PlayableMediaTypes 在未上报能力时为空数组（恒发）。
+    # 缺这些字段时，严格解码 SessionInfo 的三方客户端在登录这一步就解析失败。
     return {
         "User": user_dto,
         "AccessToken": access_token,
@@ -1175,7 +1225,21 @@ def authenticate_by_name(
             "ServerId": server_id,
             "ApplicationVersion": auth.get("Version") or "1.0",
             "IsAuthenticated": True,
+            "IsActive": True,
+            "HasCustomDeviceName": False,
+            "LastActivityDate": _iso(datetime.now()),
             "SupportsRemoteControl": True,
+            "SupportsMediaControl": True,
+            "PlayState": {
+                "CanSeek": False,
+                "IsPaused": False,
+                "IsMuted": False,
+                "RepeatMode": "RepeatNone",
+            },
+            "AdditionalUsers": [],
+            "NowPlayingQueue": [],
+            "SupportedCommands": [],
+            "PlayableMediaTypes": [],
         },
     }
 
@@ -1287,20 +1351,60 @@ def _api_key_for(db: Session, request: Request) -> str:
 
 
 def _policy_dto(user: models.WebUser) -> dict:
+    """UserPolicy：对照官方 ``MediaBrowser.Model.Users.UserPolicy`` 逐字段下发
+
+    官方 UserPolicy 的 bool / int / 数组都是非空值类型，序列化时**每个键都发**；
+    旧实现只发 13 个键，严格解码整套 UserPolicy 的三方客户端会因缺键失败。
+    这里把官方字段补齐（值取官方构造器默认值），与本服务策略相关的几项按实际下发：
+    管理员才 EnableContentDeletion，下载/播放始终放行（下载另有全局开关在
+    CanDownload 上拦），并发口径用本服务自有的 SimultaneousStreamLimit。
+    """
+    admin = bool(user.is_staff)
     return {
-        "IsAdministrator": bool(user.is_staff),
+        "IsAdministrator": admin,
+        "IsHidden": False,
         "IsDisabled": not bool(user.is_active),
-        "EnableContentDeletion": bool(user.is_staff),
+        "EnableCollectionManagement": False,
+        "EnableSubtitleManagement": False,
+        "EnableLyricManagement": False,
+        "EnableContentDeletion": admin,
+        "EnableContentDeletionFromFolders": [],
         "EnableContentDownloading": True,
         "EnableMediaPlayback": True,
         "EnableAudioPlaybackTranscoding": True,
         "EnableVideoPlaybackTranscoding": True,
         "EnablePlaybackRemuxing": True,
-        "EnableSyncTranscoding": False,
+        "ForceRemoteSourceTranscoding": False,
+        "EnableSyncTranscoding": True,
+        "EnableMediaConversion": True,
         "EnableAllDevices": True,
+        "EnabledDevices": [],
         "EnableAllFolders": True,
-        "SimultaneousStreamLimit": 3,
+        "EnabledFolders": [],
+        "EnableAllChannels": True,
+        "EnabledChannels": [],
+        "EnableUserPreferenceAccess": True,
+        "EnableRemoteControlOfOtherUsers": False,
+        "EnableSharedDeviceControl": True,
+        "EnableRemoteAccess": True,
+        "EnableLiveTvManagement": True,
+        "EnableLiveTvAccess": True,
+        "EnablePublicSharing": False,
+        "BlockUnratedItems": [],
+        "BlockedTags": [],
+        "AllowedTags": [],
+        "BlockedMediaFolders": [],
+        "BlockedChannels": [],
+        "AccessSchedules": [],
         "InvalidLoginAttemptCount": 0,
+        "LoginAttemptsBeforeLockout": -1,
+        "MaxActiveSessions": 0,
+        "RemoteClientBitrateLimit": 0,
+        "AuthenticationProviderId": "Emby",
+        "PasswordResetProviderId": "Emby",
+        "SyncPlayAccess": "CreateAndJoinGroups",
+        # 本服务自有的并发口径（官方无此字段，多发不碍事，客户端读它限并发）
+        "SimultaneousStreamLimit": 3,
     }
 
 
@@ -1333,19 +1437,26 @@ def users_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depe
 
 
 def _user_dto(user: models.WebUser, db: Session) -> dict:
-    policy = {
-        "IsAdministrator": bool(user.is_staff),
-        "EnableContentDeletion": bool(user.is_staff),
-        "EnableContentDownloading": True,
-        "EnableMediaPlayback": True,
-        "EnableAudioPlaybackTranscoding": True,
-        "EnableVideoPlaybackTranscoding": True,
-        "EnablePlaybackRemuxing": True,
-        "EnableSyncTranscoding": True,
-        "EnableAllDevices": True,
-        "EnableAllFolders": True,
-        "SimultaneousStreamLimit": 3,
-        "InvalidLoginAttemptCount": 0,
+    # Policy 与 /Users/{id}/Policy 同一个出口（_policy_dto），两处不再各写一份
+    policy = _policy_dto(user)
+    # Configuration 对照官方 UserConfiguration：数组字段与 bool 字段官方恒发，
+    # 只有字符串可空字段才省略。缺 GroupedFolders / OrderedViews 这类数组键时，
+    # 严格解码器会在登录后的第一个 /Users/Me 请求上失败。
+    configuration = {
+        "SubtitleLanguagePreference": "chi",
+        "AudioLanguagePreference": "chi",
+        "PlayDefaultAudioTrack": True,
+        "DisplayMissingEpisodes": False,
+        "GroupedFolders": [],
+        "DisplayCollectionsView": False,
+        "EnableLocalPassword": False,
+        "OrderedViews": [],
+        "LatestItemsExcludes": [],
+        "MyMediaExcludes": [],
+        "HidePlayedInLatest": True,
+        "RememberAudioSelections": True,
+        "RememberSubtitleSelections": True,
+        "EnableNextEpisodeAutoPlay": True,
     }
     return {
         "Id": str(user.id),
@@ -1356,8 +1467,7 @@ def _user_dto(user: models.WebUser, db: Session) -> dict:
         "PrimaryImageTag": None,
         "IsAdministrator": bool(user.is_staff),
         "Policy": policy,
-        "Configuration": {"SubtitleLanguagePreference": "chi", "AudioLanguagePreference": "chi",
-                          "PlayDefaultAudioTrack": True, "DisplayMissingEpisodes": False},
+        "Configuration": configuration,
     }
 
 
@@ -1440,22 +1550,56 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             continue
         # 媒体库封面：有 cover_path 才给 Primary 标记，客户端才会去拉 /Images/Primary
         cover_path = getattr(lib, "cover_path", None)
-        image_tags = {"Primary": _library_cover_tag(cover_path)} if cover_path else {}
-        items.append({
+        cover_tag = _library_cover_tag(cover_path)
+        image_tags = {"Primary": cover_tag} if cover_path else {}
+        child_count = count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib)
+        # 虚拟库跨电影/剧集聚合，统一按 mixed 上报，客户端才能正常当普通文件夹浏览
+        collection_type = "mixed" if is_virtual else lib.collection_type
+        # 字段集对照官方 CollectionFolder BaseItemDto（Jellyfin DtoService，
+        # ``new DtoOptions()`` = 全字段默认开启 + UserViewsController 显式加
+        # PrimaryImageAspectRatio/DisplayPreferencesId）。少一个字段就可能被
+        # 严格的三方客户端整条丢弃（PR #372 的 ServerId 只是其中第一个）。
+        entry = {
             "Name": lib.name,
             "ServerId": SERVER_ID,
             "Id": lib.guid,
+            # 官方 dto.Etag = item.GetEtag(user)：改名 / 换封面 / 条目数变化即失效
+            "Etag": hashlib.md5(
+                f"{lib.guid}|{lib.name}|{cover_tag}|{child_count}".encode("utf-8")
+            ).hexdigest(),
             "Type": "CollectionFolder",
-            # 虚拟库跨电影/剧集聚合，统一按 mixed 上报，客户端才能正常当普通文件夹浏览
-            "CollectionType": "mixed" if is_virtual else lib.collection_type,
-            "IsFolder": True,
-            "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False, "IsFavorite": False},
-            "ImageTags": image_tags,
-            "BackdropImageTags": [],
+            # 官方 dto.MediaType 恒发（CollectionFolder → Unknown）
+            "MediaType": "Unknown",
             "SortName": lib.name,
             "LocationType": "FileSystem",
-            "ChildCount": count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib),
-        })
+            "IsFolder": True,
+            # 协议面不提供删除媒体库的端点，如实为否（官方按权限下发）
+            "CanDelete": False,
+            "CanDownload": _download_ok(db),
+            "Tags": [],                       # 官方 dto.Tags（全字段默认下发）
+            "ImageTags": image_tags,
+            "BackdropImageTags": [],
+            "ImageBlurHashes": {},            # 官方 AttachBasicFields 无条件置空字典
+            # 官方 UserViewsController 显式请求的字段：客户端按它给每个库存显示偏好
+            "DisplayPreferencesId": lib.guid,
+            "UserData": {
+                "PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False,
+                "IsFavorite": False, "PlayedPercentage": 0.0,
+                # 官方 GetUserItemDataDto 恒发 ItemId / Key
+                "ItemId": lib.guid, "Key": lib.guid,
+            },
+            "ChildCount": child_count,
+        }
+        if collection_type:
+            # 官方 CollectionType 为 null 时字段整个不发（nullable 枚举省略）
+            entry["CollectionType"] = collection_type
+        if cover_path:
+            # 官方 Views 显式带 PrimaryImageAspectRatio；无 Primary 图时官方为 null 不发
+            entry["PrimaryImageAspectRatio"] = 0.6666667
+        if lib.created_at:
+            # 官方 dto.DateCreated = item.DateCreated（全字段默认下发）
+            entry["DateCreated"] = _iso(lib.created_at)
+        items.append(entry)
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
 
@@ -2294,7 +2438,7 @@ async def rate_item(
                 umd.play_count = (umd.play_count or 0) + 1
                 umd.last_played_at = datetime.now()
         db.commit()
-        return _user_data_dto(umd)
+        return _user_data_dto(umd, item.guid)
 
     return await run_in_threadpool(_rate)
 
@@ -2316,7 +2460,7 @@ def mark_played(item_id: str, user_id: str,
     umd.last_played_at = datetime.now()
     umd.playback_position_ticks = 0
     db.commit()
-    return _user_data_dto(umd)
+    return _user_data_dto(umd, item.guid)
 
 
 @emby_router.delete("/emby/Users/{user_id}/PlayedItems/{item_id}")
@@ -2333,7 +2477,7 @@ def mark_unplayed(item_id: str, user_id: str,
         umd.play_count = 0
         umd.playback_position_ticks = 0
         db.commit()
-    return _user_data_dto(umd)
+    return _user_data_dto(umd, item.guid)
 
 
 # ==================== 播放 ====================
