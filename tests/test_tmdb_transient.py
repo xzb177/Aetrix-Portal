@@ -154,7 +154,7 @@ def test_search_returns_hit_when_later_candidate_transient(monkeypatch):
     client = _client(monkeypatch, lambda u, p: _resp())
     calls = {"n": 0}
 
-    def fake_search_raw(query, year, kind):
+    def fake_search_raw(query, year, kind, lang=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise TmdbTransientError("boom")
@@ -174,7 +174,7 @@ def test_search_none_when_all_candidates_answered_empty(monkeypatch):
 
 def test_search_candidates_graceful_with_warning(monkeypatch, caplog):
     """求片中心契约：瞬态失败也不 500，返回空表但留下 WARNING"""
-    def fake_search_raw(query, year, kind):
+    def fake_search_raw(query, year, kind, lang=None):
         raise TmdbTransientError("boom")
 
     client = _client(monkeypatch, lambda u, p: _resp())
