@@ -27,8 +27,8 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from sqlalchemy import false, func, or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import false, func, or_, select
+from sqlalchemy.orm import Session, aliased, joinedload
 
 from backend import library_scope, models, playback_policy
 from backend.database import SessionLocal, get_db
@@ -1470,6 +1470,63 @@ def get_items(
 
 
 
+def _batch_series_source_dirs(series_ids, db) -> dict:
+    """批量计算多个 series 的 source_dir（一次查 season，一次查 episode，避免 N+1）。
+
+    返回 {series_id: source_dir or None}。
+    逻辑与 _series_source_dir(item, db) 等价：找该剧第一个有 file_path 的单集，
+    取其 Season 目录的父目录（或文件父目录）。
+    """
+    result = {sid: None for sid in series_ids}
+    if not series_ids:
+        return result
+    # 1) 一次查出所有 series 的 season: (season_id, series_id)
+    season_rows = (
+        db.query(em.MediaItem.id, em.MediaItem.parent_id)
+        .filter(
+            em.MediaItem.parent_id.in_(series_ids),
+            em.MediaItem.item_type == "season",
+        )
+        .all()
+    )
+    if not season_rows:
+        return result
+    season_to_series = {}
+    for season_id, parent_id in season_rows:
+        # 一个 season 只属于一个 series；取第一个映射即可
+        season_to_series.setdefault(season_id, parent_id)
+    season_ids = list(season_to_series.keys())
+    # 2) 一次查出所有 season 下有 file_path 的 episode，按 id 排序保证第一个稳定
+    ep_rows = (
+        db.query(em.MediaItem.parent_id, em.MediaItem.file_path)
+        .filter(
+            em.MediaItem.parent_id.in_(season_ids),
+            em.MediaItem.item_type == "episode",
+            em.MediaItem.file_path.isnot(None),
+        )
+        .order_by(em.MediaItem.id)
+        .all()
+    )
+    # 每个 series 取第一个 episode 的 file_path
+    first_fp = {}
+    for season_id, fpath in ep_rows:
+        sid = season_to_series.get(season_id)
+        if sid is not None and sid not in first_fp and fpath:
+            first_fp[sid] = fpath
+    # 3) 内存里算 source_dir（与 _series_source_dir 同逻辑）
+    for sid, fp in first_fp.items():
+        parts = fp.split("/")
+        src = None
+        for i, p in enumerate(parts):
+            if p.startswith("Season"):
+                src = "/".join(parts[:i])
+                break
+        if src is None:
+            src = _parent_dir(fp)
+        result[sid] = src
+    return result
+
+
 def _dedup_primary_ids(cand_rows, db) -> list[int]:
     """对候选 (id, item_type, file_path, library_id) 去重，只保留主版本/主剧集的 id（保持原顺序）。
 
@@ -1501,9 +1558,8 @@ def _dedup_primary_ids(cand_rows, db) -> list[int]:
         keep.add(min(ids))
 
     # series 分组：先按 (library_id, name) 粗分组，只对有重复的组做 source_dir 精确检查
-    # （_series_siblings 内部是 O(N²)，全量调用太慢）
     if series_ids:
-        # 批量查出 series 的基本信息
+        # 批量查出 series 的基本信息（1 次查询）
         series_rows = db.query(
             em.MediaItem.id, em.MediaItem.library_id, em.MediaItem.name
         ).filter(em.MediaItem.id.in_(series_ids)).all()
@@ -1511,26 +1567,27 @@ def _dedup_primary_ids(cand_rows, db) -> list[int]:
         for sid, lib_id, sname in series_rows:
             key = (lib_id, sname or "")
             name_groups.setdefault(key, []).append(sid)
+        # 收集所有需要精确检查的 series id，一次批量算 source_dir（2 次查询）
+        dup_sids = []
         for _key, sids in name_groups.items():
             if len(sids) == 1:
                 keep.add(sids[0])
-                continue
-            # 有同名：按 source_dir 精确分组
-            dir_groups = {}
-            for sid in sids:
-                item = db.query(em.MediaItem).filter(em.MediaItem.id == sid).first()
-                if item is None:
-                    keep.add(sid)
+            else:
+                dup_sids.extend(sids)
+        if dup_sids:
+            src_dirs = _batch_series_source_dirs(dup_sids, db)
+            # 按 (library_id, name) 分组后，再按 source_dir 精确分组
+            for _key, sids in name_groups.items():
+                if len(sids) == 1:
                     continue
-                try:
-                    src = _series_source_dir(item, db)
-                except Exception:
-                    src = None
-                # source_dir 为空的，按 id 单独成组（不合并，避免误伤）
-                gkey = src if src else f"__noid__{sid}"
-                dir_groups.setdefault(gkey, []).append(sid)
-            for _gkey, gids in dir_groups.items():
-                keep.add(min(gids))
+                dir_groups = {}
+                for sid in sids:
+                    src = src_dirs.get(sid)
+                    # source_dir 为空的，按 id 单独成组（不合并，避免误伤）
+                    gkey = src if src else f"__noid__{sid}"
+                    dir_groups.setdefault(gkey, []).append(sid)
+                for _gkey, gids in dir_groups.items():
+                    keep.add(min(gids))
 
     return [row[0] for row in cand_rows if row[0] in keep]
 
@@ -1730,12 +1787,23 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             query = query.filter(em.UserMediaData.playback_position_ticks > 0)
 
     # 排序
+    # DateLastContentAdded: 剧集取其下所有单集的最大入库时间（新集入库即刷新），
+    # 其他类型取自身 date_added。Rex 等第三方客户端按此排序最新更新。
+    _ChildItem = aliased(em.MediaItem)
+    _date_last_content_added = func.coalesce(
+        select(func.max(_ChildItem.date_added))
+        .where(_ChildItem.series_id == em.MediaItem.id)
+        .correlate(em.MediaItem)
+        .scalar_subquery(),
+        em.MediaItem.date_added,
+    )
     order_cols = []
     for col in sort_by:
         c = {
             "SortName": em.MediaItem.sort_name, "Name": em.MediaItem.name,
             "DateCreated": em.MediaItem.date_added, "ProductionYear": em.MediaItem.production_year,
             "CommunityRating": em.MediaItem.community_rating, "DatePlayed": em.UserMediaData.last_played_at,
+            "DateLastContentAdded": _date_last_content_added,
         }.get(col.strip())
         if c is None:
             continue
