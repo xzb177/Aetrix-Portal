@@ -16,6 +16,9 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
+
+# 开箱即用播放优化：单文件并发 Range 限流（只此一处实现）
+from backend.emby_server.playback_tune import RANGE_LIMITER
 from urllib.parse import urljoin, urlsplit
 
 from backend.emby_server.mounts import MountError
@@ -135,6 +138,18 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
     if start > end or start >= size:
         raise HTTPException(status_code=416, detail="Requested range not satisfiable")
 
+    # 单文件并发 Range 限流：同一文件最多 3 路并发读，超出的排队等
+    # （移动端常开 5~7 个并发，7 路同时回源 Drive 会把带宽打满）。
+    # 拿不到名额（60 秒超时）直接 503，播放器会重试。
+    if not RANGE_LIMITER.acquire(path):
+        raise HTTPException(status_code=503, detail="Server busy, retry later")
+
+    def _guarded_iter():
+        try:
+            yield from iter_file()
+        finally:
+            RANGE_LIMITER.release(path)
+
     def iter_file():
         with open(path, "rb") as f:
             f.seek(start)
@@ -173,7 +188,7 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
         # 读失败时声明长度与实际字节对不上。Content-Range 保留（206 必需）。
         range_headers.pop("Content-Length", None)
     return StreamingResponse(
-        iter_file(),
+        _guarded_iter(),
         status_code=206,
         media_type=media_type,
         headers={**range_headers, **_validators_header(path), **extra_headers},

@@ -2716,6 +2716,19 @@ async def playback_info(
     # 所有碰 DB 的同步 helper 都经 run_db 扔线程池。
     from backend.emby_server.async_db import run_db
     item = await run_db(_require_item, db, item_id)
+    # 开箱即用播放优化：移动端 4K 透明降级（只此一处实现）。
+    # 手机屏看 4K 与 1080p 肉眼无差，但带宽差数倍；同部片有 ≤1080p 版本
+    # 时直接给低版本，客户端无感，不用转码、不用用户手动切。
+    try:
+        from backend.emby_server import playback_tune as _pt
+        _downgraded = await run_db(
+            _pt.maybe_downgrade_for_client, item,
+            request.headers.get("user-agent"), db,
+        )
+        if _downgraded is not None:
+            item = _downgraded
+    except Exception:  # noqa: BLE001
+        pass
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
     await run_db(ensure_playback_allowed, db, user)
     # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
