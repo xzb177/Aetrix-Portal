@@ -52,12 +52,28 @@ PROBE_WORKERS = _env_int("PROBE_WORKERS", 2, 1, 5)
 PROBE_MIN_INTERVAL_SEC = _env_float("PROBE_MIN_INTERVAL_SEC", 1.0, 0.0)
 PROBE_CLAIM_BATCH = _env_int("PROBE_CLAIM_BATCH", 20, 1, 100)
 PROBE_IDLE_SLEEP_SEC = _env_float("PROBE_IDLE_SLEEP_SEC", 5.0, 1.0)
+# 独占模式（对标 StrmAssistant GeneralOptions.CooldownDurationSeconds）：
+# 并发为 1 时每次探测后冷却 N 秒，避免 ffprobe 连续读网盘互相争抢。
+# 并发 >1 时不冷却（冷却只在单线程串行时有意义）。
+PROBE_COOLDOWN_SEC = _env_float("PROBE_COOLDOWN_SEC", 0.0, 0.0)
+
+# 预提取（对标 StrmAssistant ExtractMediaInfoTask）：定时把全库缺媒体信息的
+# 条目扫出来入队，首播时直接命中，零等待。
+# "1" = 开（默认）；"0" = 关（只保留按需探测）。
+PREPROBE_ENABLED = (os.getenv("PROBE_PREEXTRACT_ENABLED", "1") or "1").strip() not in ("0", "false", "no")
+# 预提取扫描间隔（秒），默认 6 小时；启动时先跑一轮。
+PREPROBE_INTERVAL_SEC = _env_float("PROBE_PREEXTRACT_INTERVAL_SEC", 21600.0, 60.0)
+# 预提取入队优先级（低于按需 1000，高于扫描器 100）
+PREPROBE_PRIORITY = 500
+# 单次扫描最多入队条数（防 40 万库一次全标 pending）
+PREPROBE_SWEEP_LIMIT = _env_int("PROBE_PREEXTRACT_SWEEP_LIMIT", 5000, 100, 100000)
 
 # 按需插队优先级（models.py 约定）；只做 movie/series，单集/季不碰
 ONDEMAND_PRIORITY = 1000
 PROBE_ITEM_TYPES = ("movie", "series")
 
 _dispatcher_thread: Optional[threading.Thread] = None
+_preprobe_thread: Optional[threading.Thread] = None
 _start_lock = threading.Lock()
 _stop_event = threading.Event()
 
@@ -169,6 +185,75 @@ def _recover_crashed(db) -> int:
     return len(rows)
 
 
+def preprobe_sweep(db, limit: int = PREPROBE_SWEEP_LIMIT) -> int:
+    """预提取扫描（对标 StrmAssistant ExtractMediaInfoTask.FetchPreExtractTaskItems）。
+
+    把全库「缺媒体信息、未判死、未在队列」的 movie/series 标为 pending，
+    优先级 ``PREPROBE_PRIORITY``（500），由调度器慢慢消费。
+
+    幂等、可重复跑；返回本次入队条数。
+    """
+    missing_codec = or_(em.MediaItem.video_codec.is_(None),
+                        em.MediaItem.video_codec == "")
+    # 注意：probe_status 为 NULL 的也要扫（NOT IN 对 NULL 返回 unknown 会漏掉）
+    not_queued = or_(em.MediaItem.probe_status.is_(None),
+                     em.MediaItem.probe_status.notin_(("pending", "probing", "failed")))
+    q = (db.query(em.MediaItem.id)
+         .filter(em.MediaItem.item_type.in_(PROBE_ITEM_TYPES),
+                 missing_codec,
+                 em.MediaItem.file_path.isnot(None),
+                 em.MediaItem.file_path != "",
+                 not_queued)
+         .order_by(em.MediaItem.id)
+         .limit(limit))
+    try:
+        rows = q.with_for_update(skip_locked=True).all()
+    except Exception:
+        rows = q.all()
+    ids = [r[0] for r in rows]
+    if ids:
+        (db.query(em.MediaItem)
+         .filter(em.MediaItem.id.in_(ids))
+         .update({"probe_status": "pending",
+                  "probe_priority": PREPROBE_PRIORITY,
+                  "probe_next_retry_at": None},
+                 synchronize_session=False))
+        db.commit()
+        logger.info("预提取扫描入队 %d 条（缺媒体信息）", len(ids))
+    else:
+        db.rollback()
+    return len(ids)
+
+
+def _preprobe_loop() -> None:
+    """预提取定时器：启动先跑一轮，之后按间隔重复。"""
+    from backend.database import SessionLocal
+    logger.info("预提取定时器启动（间隔 %gs）", PREPROBE_INTERVAL_SEC)
+    # 启动先跑一轮
+    _run_preprobe_once()
+    while not _stop_event.is_set():
+        if _stop_event.wait(PREPROBE_INTERVAL_SEC):
+            break
+        _run_preprobe_once()
+
+
+def _run_preprobe_once() -> None:
+    from backend.database import SessionLocal
+    db = SessionLocal()
+    try:
+        n = preprobe_sweep(db)
+        if n:
+            logger.info("预提取扫描完成，本次入队 %d 条", n)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("预提取扫描失败: %s", exc)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db.close()
+
+
 def _process_one(item_id: int) -> None:
     """单个条目的完整处理（worker 线程内跑，自带 session）。"""
     from backend.database import SessionLocal
@@ -178,7 +263,7 @@ def _process_one(item_id: int) -> None:
         if item is None or getattr(item, "probe_status", None) != "probing":
             db.rollback()
             return
-        # 抢到之后 codec 可能已被别的路（NFO/enrich）补上，没必要再探
+        # 抢到之后 codec 可能已被别的路（NFO/enrich/JSON 恢复）补上，没必要再探
         if getattr(item, "video_codec", None):
             item.probe_status = "done"
             item.probe_attempts = 0
@@ -194,6 +279,10 @@ def _process_one(item_id: int) -> None:
             pass
     finally:
         db.close()
+        # 独占模式冷却（对标 StrmAssistant CooldownDurationSeconds）：
+        # 单线程时每次探测后歇一会，避免连续读网盘互相争抢。
+        if PROBE_WORKERS <= 1 and PROBE_COOLDOWN_SEC > 0:
+            _stop_event.wait(PROBE_COOLDOWN_SEC)
 
 
 def _dispatcher_loop() -> None:
@@ -233,7 +322,7 @@ def _dispatcher_loop() -> None:
 
 def start() -> None:
     """启动按需探测 worker（幂等）。"""
-    global _dispatcher_thread
+    global _dispatcher_thread, _preprobe_thread
     if not PROBE_ENABLED:
         logger.info("按需探测已禁用（PROBE_ONDEMAND_ENABLED=0）")
         return
@@ -255,11 +344,17 @@ def start() -> None:
             target=_dispatcher_loop, name="media-probe-dispatcher", daemon=True)
         _dispatcher_thread.start()
         logger.info("按需探测 worker 已启动")
+        # 预提取定时器（对标 StrmAssistant ExtractMediaInfoTask）
+        if PREPROBE_ENABLED and (_preprobe_thread is None or not _preprobe_thread.is_alive()):
+            _preprobe_thread = threading.Thread(
+                target=_preprobe_loop, name="media-preprobe", daemon=True)
+            _preprobe_thread.start()
+            logger.info("预提取定时器已启动")
 
 
 def stop() -> None:
     """停止 worker（测试用）。"""
     _stop_event.set()
-    t = _dispatcher_thread
-    if t is not None and t.is_alive():
-        t.join(timeout=5)
+    for t in (_dispatcher_thread, _preprobe_thread):
+        if t is not None and t.is_alive():
+            t.join(timeout=5)

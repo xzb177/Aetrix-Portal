@@ -21,6 +21,7 @@ from typing import Optional
 
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mediainfo_persist as persist_lib
 from backend.emby_server.scanner import probe_metadata
 
 logger = logging.getLogger(__name__)
@@ -147,9 +148,21 @@ def mark_retry(db, item, reason: str) -> None:
 def probe_one(db, item) -> str:
     """对单个条目做一次探测，返回终态：done/degraded/failed/pending（待重试）。
 
+    对标 StrmAssistant 的 ``OrchestrateMediaInfoProcessAsync``：
+    持久化开启时先试 ``deserialize``（读 ``-mediainfo.json``），命中则零探测
+    直接返回；未命中才走 ffprobe；探完自动 ``serialize`` 落盘。
+
     调用方需先把条目置为 probing（防重入）；本函数只负责探测与状态流转。
     任何异常都不抛给调用方——探测失败永远不能影响播放/详情页。
     """
+    # 1. 先试 JSON 恢复（零探测）
+    try:
+        if persist_lib.deserialize(db, item):
+            return "done"
+    except Exception as exc:  # noqa: BLE001 — 恢复失败就走正常探测
+        logger.debug("媒体信息 JSON 恢复异常 item=%s，走 ffprobe: %s",
+                     getattr(item, "id", "?"), exc)
+
     resolved = resolve_probe_input(db, item)
     if not resolved:
         mark_retry(db, item, "无法解析探测地址")
@@ -172,4 +185,9 @@ def probe_one(db, item) -> str:
         return item.probe_status
 
     write_back(db, item, probe)
+    # 2. 探完落盘（对标 SerializeMediaInfo）
+    try:
+        persist_lib.serialize(db, item)
+    except Exception as exc:  # noqa: BLE001 — 落盘失败不影响已写库的结果
+        logger.debug("媒体信息落盘异常 item=%s: %s", getattr(item, "id", "?"), exc)
     return item.probe_status
