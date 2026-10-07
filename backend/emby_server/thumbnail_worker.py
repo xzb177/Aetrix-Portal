@@ -202,7 +202,7 @@ def extract_thumbnails(item) -> int:
             break
 
     if generated:
-        logger.info("缩略图：%s 生成 %d 张", item.name, generated)
+        logger.debug("缩略图：%s 生成 %d 张", item.name, generated)
     return generated
 
 

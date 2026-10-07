@@ -18,32 +18,6 @@ logger = logging.getLogger(__name__)
 
 # 默认 24 小时跑一次
 REFRESH_INTERVAL_SEC = int(os.getenv("PERSON_REFRESH_INTERVAL_SEC", "86400"))
-# 单次最多处理条数（防打爆 TMDB）
-MAX_ITEMS_PER_RUN = int(os.getenv("PERSON_REFRESH_MAX_ITEMS", "500"))
-
-
-def find_duplicate_persons(db) -> list[tuple]:
-    """找重复的演员行：同 item_id + 同 person_tmdb_id 有多条。
-
-    返回 [(item_id, person_tmdb_id, count), ...]
-    """
-    from sqlalchemy import func
-    from backend.emby_server import models as em
-
-    rows = (
-        db.query(
-            em.EmbyPerson.item_id,
-            em.EmbyPerson.person_tmdb_id,
-            func.count(em.EmbyPerson.id).label("cnt"),
-        )
-        .filter(em.EmbyPerson.person_tmdb_id.isnot(None))
-        .filter(em.EmbyPerson.person_tmdb_id != "")
-        .group_by(em.EmbyPerson.item_id, em.EmbyPerson.person_tmdb_id)
-        .having(func.count(em.EmbyPerson.id) > 1)
-        .limit(MAX_ITEMS_PER_RUN)
-        .all()
-    )
-    return [(r.item_id, r.person_tmdb_id, r.cnt) for r in rows]
 
 
 def deduplicate_persons(db) -> int:

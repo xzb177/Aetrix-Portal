@@ -63,6 +63,14 @@ def _remember_local_image(db: Session, item: em.MediaItem, kind: str, path: str)
         db.rollback()
 
 
+def _get_item_or_404(db: Session, item_id: str) -> em.MediaItem:
+    """按 guid 查条目，不存在则抛 404（多版本/片头标记/剧集组等新端点共用）。"""
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item
+
+
 @emby_router.get("/emby/Videos/{item_id}/hls1")
 @emby_router.get("/Videos/{item_id}/hls1")
 async def video_hls1(item_id: str, request: Request,
@@ -347,9 +355,7 @@ def item_alternate_versions(item_id: str, request: Request,
     """
     from backend.emby_server import merge_versions_worker as _mvw
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _get_item_or_404(db, item_id)
     # 如果查的是被合并的版本，定位到主记录
     primary_id = item.merged_into_id or item.id
     versions = _mvw.get_alternate_versions(db, primary_id)
@@ -369,9 +375,7 @@ def item_intro_markers(item_id: str, db: Session = Depends(get_db)):
     """返回某条目的片头片尾标记（含 Emby Chapter 格式，供播放器显示跳过按钮）。"""
     from backend.emby_server import intro_marker as _im
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _get_item_or_404(db, item_id)
     markers = _im.get_markers(db, item.id)
     return {"Markers": markers, "Chapters": _im.to_chapters(markers)}
 
@@ -388,9 +392,7 @@ def item_intro_marker_set(
     """设置/更新片头片尾标记（同类型只保留一条，幂等）。"""
     from backend.emby_server import intro_marker as _im
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _get_item_or_404(db, item_id)
     try:
         return _im.set_marker(db, item.id, marker_type, start_ms, end_ms)
     except ValueError as exc:
@@ -404,9 +406,7 @@ def item_intro_marker_delete(item_id: str, marker_type: str,
     """删除片头片尾标记。"""
     from backend.emby_server import intro_marker as _im
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _get_item_or_404(db, item_id)
     deleted = _im.delete_marker(db, item.id, marker_type)
     return {"deleted": deleted}
 
@@ -419,9 +419,7 @@ def item_episode_groups(item_id: str, db: Session = Depends(get_db)):
     """返回某剧集的 TMDB 剧集组列表（含用户当前选择）。"""
     from backend.emby_server import episode_groups as _eg
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _get_item_or_404(db, item_id)
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
     if not tmdb_id:
         return {"Groups": [], "Selected": ""}
@@ -452,9 +450,7 @@ def item_episode_group_select(
     """设置用户为某剧选择的剧集组（空串 = 恢复默认播出顺序）。"""
     from backend.emby_server import episode_groups as _eg
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _get_item_or_404(db, item_id)
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
     if not tmdb_id:
         raise HTTPException(status_code=400, detail="Item has no tmdb_id")
