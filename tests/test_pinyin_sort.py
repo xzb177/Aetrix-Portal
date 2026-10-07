@@ -1,11 +1,22 @@
 # -*- coding: utf-8 -*-
 """拼音首字母排序测试（对标 StrmAssistant #12）"""
+import importlib.util
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from backend.emby_server.pinyin_sort import make_sort_name, pinyin_initials
+def _load():
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "backend", "emby_server", "pinyin_sort.py"
+    )
+    spec = importlib.util.spec_from_file_location("pinyin_sort", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_mod = _load()
+make_sort_name = _mod.make_sort_name
+pinyin_initials = _mod.pinyin_initials
 
 
 def test_chinese_pinyin_initials():
