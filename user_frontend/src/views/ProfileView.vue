@@ -811,6 +811,8 @@ function formatDate(iso?: string | null) {
   display: flex;
   flex-direction: column;
   gap: 1.125rem;
+  /* 底部导航占位：防止最后的内容被吸底 tab 挡住 */
+  padding-bottom: var(--au-dock-space, calc(72px + env(safe-area-inset-bottom, 0px)));
 }
 
 /* ==================== 身份卡 ==================== */
