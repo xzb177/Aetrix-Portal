@@ -58,48 +58,42 @@ def _status(messages):
 def test_no_env_passthrough(monkeypatch):
     import asyncio
     monkeypatch.delenv("ENFORCE_DOMAIN", raising=False)
-    called, msgs, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware, _scope(host="1.2.3.4")))
+    called, msgs, _ = asyncio.run(_run(DomainGuardMiddleware, _scope(host="1.2.3.4")))
     assert called and _status(msgs) == 200
 
 
 def test_wrong_host_403(monkeypatch):
     import asyncio
     monkeypatch.setenv("ENFORCE_DOMAIN", "stream.example.com")
-    called, msgs, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware, _scope(host="5.6.7.8")))
+    called, msgs, _ = asyncio.run(_run(DomainGuardMiddleware, _scope(host="5.6.7.8")))
     assert not called and _status(msgs) == 403
 
 
 def test_correct_host_passthrough(monkeypatch):
     import asyncio
     monkeypatch.setenv("ENFORCE_DOMAIN", "stream.example.com")
-    called, msgs, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware, _scope(host="stream.example.com")))
+    called, msgs, _ = asyncio.run(_run(DomainGuardMiddleware, _scope(host="stream.example.com")))
     assert called and _status(msgs) == 200
 
 
 def test_host_with_port_stripped(monkeypatch):
     import asyncio
     monkeypatch.setenv("ENFORCE_DOMAIN", "stream.example.com")
-    called, msgs, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware, _scope(host="stream.example.com:8001")))
+    called, msgs, _ = asyncio.run(_run(DomainGuardMiddleware, _scope(host="stream.example.com:8001")))
     assert called and _status(msgs) == 200
 
 
 def test_multi_domain(monkeypatch):
     import asyncio
     monkeypatch.setenv("ENFORCE_DOMAIN", "a.example.com, stream.example.com")
-    called, msgs, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware, _scope(host="a.example.com")))
+    called, msgs, _ = asyncio.run(_run(DomainGuardMiddleware, _scope(host="a.example.com")))
     assert called
 
 
 def test_health_from_private_ip_allowed(monkeypatch):
     import asyncio
     monkeypatch.setenv("ENFORCE_DOMAIN", "stream.example.com")
-    called, msgs, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware,
+    called, msgs, _ = asyncio.run(_run(DomainGuardMiddleware,
              _scope(path="/api/health", host="10.0.0.9", client=("10.0.0.9", 4000))))
     assert called and _status(msgs) == 200
 
@@ -107,8 +101,7 @@ def test_health_from_private_ip_allowed(monkeypatch):
 def test_health_from_public_ip_still_blocked(monkeypatch):
     import asyncio
     monkeypatch.setenv("ENFORCE_DOMAIN", "stream.example.com")
-    called, msgs, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware,
+    called, msgs, _ = asyncio.run(_run(DomainGuardMiddleware,
              _scope(path="/api/health", host="5.6.7.8", client=("5.6.7.8", 4000))))
     assert not called and _status(msgs) == 403
 
@@ -117,8 +110,7 @@ def test_non_http_passthrough(monkeypatch):
     import asyncio
     monkeypatch.setenv("ENFORCE_DOMAIN", "stream.example.com")
     scope = {"type": "lifespan"}
-    called, _, _ = asyncio.get_event_loop().run_until_complete(
-        _run(DomainGuardMiddleware, scope))
+    called, _, _ = asyncio.run(_run(DomainGuardMiddleware, scope))
     assert called
 
 
@@ -129,8 +121,7 @@ def test_cf_ip_disabled_by_default(monkeypatch):
     monkeypatch.delenv("TRUST_CF_IP", raising=False)
     scope = _scope()
     scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
-    _, _, out = asyncio.get_event_loop().run_until_complete(
-        _run(CloudflareIPMiddleware, scope))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
     assert out["client"][0] == "1.2.3.4"  # 没动
 
 
@@ -140,8 +131,7 @@ def test_cf_connecting_ip_preferred(monkeypatch):
     scope = _scope()
     scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
     scope["headers"].append((b"x-forwarded-for", b"8.8.8.8, 7.7.7.7"))
-    _, _, out = asyncio.get_event_loop().run_until_complete(
-        _run(CloudflareIPMiddleware, scope))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
     assert out["client"][0] == "9.9.9.9"
 
 
@@ -150,8 +140,7 @@ def test_xff_fallback(monkeypatch):
     monkeypatch.setenv("TRUST_CF_IP", "1")
     scope = _scope()
     scope["headers"].append((b"x-forwarded-for", b"8.8.8.8, 7.7.7.7"))
-    _, _, out = asyncio.get_event_loop().run_until_complete(
-        _run(CloudflareIPMiddleware, scope))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
     assert out["client"][0] == "8.8.8.8"
 
 
@@ -160,6 +149,5 @@ def test_invalid_proxy_ip_ignored(monkeypatch):
     monkeypatch.setenv("TRUST_CF_IP", "true")
     scope = _scope()
     scope["headers"].append((b"cf-connecting-ip", b"not-an-ip"))
-    _, _, out = asyncio.get_event_loop().run_until_complete(
-        _run(CloudflareIPMiddleware, scope))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
     assert out["client"][0] == "1.2.3.4"
