@@ -36,6 +36,7 @@ from backend.emby_server import cdn
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
+from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
@@ -1741,66 +1742,86 @@ def _batch_series_source_dirs(series_ids, db) -> dict:
 
 
 def _dedup_primary_ids(cand_rows, db) -> list[int]:
-    """对候选 (id, item_type, file_path, library_id) 去重，只保留主版本/主剧集的 id（保持原顺序）。
+    """对候选 (id, item_type, file_path, library_id) 去重，只保留主记录的 id（保持原顺序）。
 
     去重在分页之前做，保证 Limit/StartIndex 语义正确：
     Limit=20 就返回 20 条不重复的，TotalRecordCount 也是去重后的总数。
+
+    去重键（参考 Emby 多版本逻辑）：
+    - movie/series：有 tmdb_id 用 (library_id, item_type, tmdb_id)，
+      无则用 (library_id, item_type, 归一化标题, 年份) —— 不同路径的同一部合并
+    - episode：(series去重键, season_number, episode_number) —— 同一集只保留一条
+
+    主记录选择：有海报 > 有 tmdb_id > 有简介 > id 最小（最早入库）。
     """
-    from collections import defaultdict
+    ids = [row[0] for row in cand_rows]
+    if not ids:
+        return []
 
-    movie_groups: dict[tuple, list] = defaultdict(list)
-    series_ids: list[int] = []
-    other_ids: list[int] = []
+    # 批量取出去重需要的字段（1 次查询）
+    rows = db.query(
+        em.MediaItem.id,
+        em.MediaItem.item_type,
+        em.MediaItem.library_id,
+        em.MediaItem.tmdb_id,
+        em.MediaItem.name,
+        em.MediaItem.production_year,
+        em.MediaItem.poster_path,
+        em.MediaItem.primary_image_url,
+        em.MediaItem.overview,
+        em.MediaItem.series_id,
+        em.MediaItem.season_number,
+        em.MediaItem.episode_number,
+    ).filter(em.MediaItem.id.in_(ids)).all()
 
-    for row in cand_rows:
-        iid, itype, fpath, lib_id = row[0], row[1], row[2], row[3]
-        if itype == "movie":
-            pdir = _parent_dir(fpath)
-            base = _version_base_name(fpath)
-            if pdir and base:
-                movie_groups[(lib_id, pdir, base)].append(iid)
-            else:
-                other_ids.append(iid)
-        elif itype == "series":
-            series_ids.append(iid)
+    # 先算出所有 series 的去重键（episode 需要用）
+    series_ids_needed = {r[9] for r in rows if r[1] == "episode" and r[9]}
+    series_key_map: dict[int, tuple] = {}
+    if series_ids_needed:
+        srows = db.query(
+            em.MediaItem.id, em.MediaItem.library_id,
+            em.MediaItem.tmdb_id, em.MediaItem.name,
+            em.MediaItem.production_year,
+        ).filter(em.MediaItem.id.in_(series_ids_needed)).all()
+        for sid, lib_id, tmdb_id, name, year in srows:
+            key = dedup_lib.dedup_key_for(lib_id, "series", tmdb_id, name, year)
+            series_key_map[sid] = key or ("__raw__", sid)
+
+    # 按去重键分组
+    groups: dict = {}
+    order: list = []
+    for r in rows:
+        (iid, itype, lib_id, tmdb_id, name, year, poster,
+         primary_url, overview, series_id, season_no, ep_no) = r
+        if itype in dedup_lib.DEDUP_TYPES:
+            key = dedup_lib.dedup_key_for(lib_id, itype, tmdb_id, name, year)
+            if key is None:
+                key = ("__raw__", iid)
+        elif itype == "episode":
+            # 集去重：同 series 去重键 + 同季集号只保留一条
+            skey = series_key_map.get(series_id, ("__raw__", series_id or 0))
+            key = ("episode", skey, season_no or 0, ep_no or 0)
         else:
-            other_ids.append(iid)
+            key = ("__raw__", iid)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append((iid, bool(poster or primary_url),
+                            bool((tmdb_id or "").strip()),
+                            bool((overview or "").strip())))
 
-    keep = set(other_ids)
-    for _key, ids in movie_groups.items():
-        keep.add(min(ids))
-
-    # series 分组：先按 (library_id, name) 粗分组，只对有重复的组做 source_dir 精确检查
-    if series_ids:
-        # 批量查出 series 的基本信息（1 次查询）
-        series_rows = db.query(
-            em.MediaItem.id, em.MediaItem.library_id, em.MediaItem.name
-        ).filter(em.MediaItem.id.in_(series_ids)).all()
-        name_groups = {}
-        for sid, lib_id, sname in series_rows:
-            key = (lib_id, sname or "")
-            name_groups.setdefault(key, []).append(sid)
-        # 收集所有需要精确检查的 series id，一次批量算 source_dir（2 次查询）
-        dup_sids = []
-        for _key, sids in name_groups.items():
-            if len(sids) == 1:
-                keep.add(sids[0])
-            else:
-                dup_sids.extend(sids)
-        if dup_sids:
-            src_dirs = _batch_series_source_dirs(dup_sids, db)
-            # 按 (library_id, name) 分组后，再按 source_dir 精确分组
-            for _key, sids in name_groups.items():
-                if len(sids) == 1:
-                    continue
-                dir_groups = {}
-                for sid in sids:
-                    src = src_dirs.get(sid)
-                    # source_dir 为空的，按 id 单独成组（不合并，避免误伤）
-                    gkey = src if src else f"__noid__{sid}"
-                    dir_groups.setdefault(gkey, []).append(sid)
-                for _gkey, gids in dir_groups.items():
-                    keep.add(min(gids))
+    keep: set[int] = set()
+    for key in order:
+        group = groups[key]
+        if len(group) == 1:
+            keep.add(group[0][0])
+            continue
+        # 选主：有海报 > 有 tmdb_id > 有简介 > id 最小
+        primary = min(group, key=lambda x: (0 if x[1] else 1,
+                                            0 if x[2] else 1,
+                                            0 if x[3] else 1,
+                                            x[0]))
+        keep.add(primary[0])
 
     return [row[0] for row in cand_rows if row[0] in keep]
 
@@ -1864,8 +1885,18 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         if parent:
             if parent.item_type in ("series", "season"):
                 if parent.item_type == "series":
+                    # 去重合并：该剧在不同路径可能有多条 series 记录，
+                    # 集数要合并展示（查出同去重键的所有 series id）
+                    series_ids = dedup_lib.find_duplicate_ids(
+                        db, parent.library_id, "series",
+                        tmdb_id=parent.tmdb_id, name=parent.name,
+                        year=parent.production_year,
+                    )
+                    series_ids.append(parent.id)
+                    series_ids = list(set(series_ids))
                     query = query.filter(
-                        or_(em.MediaItem.series_id == parent.id, em.MediaItem.id == parent.id)
+                        or_(em.MediaItem.series_id.in_(series_ids),
+                            em.MediaItem.id.in_(series_ids))
                     )
                 else:
                     query = query.filter(
@@ -2131,9 +2162,12 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
         .all()
     )
     base = _base_url(request)
-    _prefetch_list_data(db, user.id, [i for _umd, i in rows])
-    return {"Items": [_item_dto(i, base, user.id, db) for _umd, i in rows],
-            "TotalRecordCount": len(rows), "StartIndex": 0}
+    items = [i for _umd, i in rows]
+    # 去重：同一部剧/电影（同 tmdb_id）在不同路径有多条记录时只保留一条
+    items = dedup_lib.deduplicate_items(items)
+    _prefetch_list_data(db, user.id, items)
+    return {"Items": [_item_dto(i, base, user.id, db) for i in items],
+            "TotalRecordCount": len(items), "StartIndex": 0}
 
 
 @emby_router.get("/emby/Users/{user_id}/Items/Latest")
@@ -2162,6 +2196,8 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
         .limit(limit)
         .all()
     )
+    # 去重：同一部剧/电影在不同路径有多条记录时只保留一条（首页海报行不重复）
+    items = dedup_lib.deduplicate_items(items)
     base = _base_url(request)
     _prefetch_list_data(db, user.id, items)
     return [_item_dto(item, base, user.id, db) for item in items]
@@ -2378,8 +2414,17 @@ def get_episodes(item_id: str, request: Request,
                        db: Session = Depends(get_db)):
     item = _require_item(db, item_id)
     season_id = request.query_params.get("SeasonId")
+    # 系统性去重合并：该剧在不同路径可能有多条 series 记录，集数合并展示
+    series_ids = [item.id]
+    if item.item_type == "series":
+        dup_ids = dedup_lib.find_duplicate_ids(
+            db, item.library_id, "series",
+            tmdb_id=item.tmdb_id, name=item.name,
+            year=item.production_year,
+        )
+        series_ids = list(set(series_ids + dup_ids))
     query = db.query(em.MediaItem).filter(
-        or_(em.MediaItem.series_id == item.id, em.MediaItem.parent_id == item.id),
+        or_(em.MediaItem.series_id.in_(series_ids), em.MediaItem.parent_id == item.id),
         em.MediaItem.item_type == "episode",
     )
     if season_id:
@@ -2395,6 +2440,15 @@ def get_episodes(item_id: str, request: Request,
                 "Episodes 收到不匹配的 SeasonId，忽略该筛选：series=%s season_id=%s",
                 item.guid, season_id)
     episodes = query.order_by(em.MediaItem.season_number, em.MediaItem.episode_number).all()
+    # 集级别去重：同一季集号只保留一条（不同 series 记录下的重复集）
+    seen = set()
+    deduped = []
+    for e in episodes:
+        key = (e.season_number or 0, e.episode_number or 0)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(e)
+    episodes = deduped
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
     return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],

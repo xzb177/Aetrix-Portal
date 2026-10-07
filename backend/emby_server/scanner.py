@@ -389,6 +389,60 @@ def item_guid(path: str) -> str:
     return hashlib.md5(("rb:item:" + path.lower()).encode("utf-8")).hexdigest()
 
 
+def _find_duplicate_series(db, library_id: int, tmdb_id=None,
+                           name=None, year=None) -> list:
+    """系统性去重：建 series 前查库里是否已有同部剧。
+
+    去重键（参考 Emby 多版本逻辑）：
+    - 有 tmdb_id：同库同 tmdb_id
+    - 无 tmdb_id：同库同归一化标题（年份 ±1 容差）
+
+    返回已存在的 series id 列表（按 id 升序，最早的在前）。
+    """
+    MI = emby_models.MediaItem
+    q = db.query(MI.id).filter(
+        MI.library_id == library_id,
+        MI.item_type == "series",
+        MI.deleted_at.is_(None),
+    )
+    tmdb_id = (str(tmdb_id or "")).strip()
+    if tmdb_id:
+        q = q.filter(MI.tmdb_id == tmdb_id)
+        return [row[0] for row in q.order_by(MI.id.asc()).all()]
+
+    # 无 tmdb_id：按归一化标题匹配
+    try:
+        from backend.emby_server import dedup as dedup_lib
+        norm = dedup_lib.normalize_name(name)
+    except ImportError:
+        norm = (name or "").strip().lower()
+    if not norm:
+        return []
+    candidates = q
+    if year:
+        candidates = candidates.filter(
+            MI.production_year.between(year - 1, year + 1))
+    # 需要 name 做 Python 层精确比对
+    rows = db.query(MI.id, MI.name, MI.production_year).filter(
+        MI.library_id == library_id,
+        MI.item_type == "series",
+        MI.deleted_at.is_(None),
+    )
+    if year:
+        rows = rows.filter(MI.production_year.between(year - 1, year + 1))
+    try:
+        from backend.emby_server import dedup as dedup_lib
+        norm_fn = dedup_lib.normalize_name
+    except ImportError:
+        norm_fn = lambda n: (n or "").strip().lower()  # noqa: E731
+    out = []
+    for row_id, row_name, row_year in rows.order_by(MI.id.asc()).all():
+        if norm_fn(row_name) != norm:
+            continue
+        out.append(row_id)
+    return out
+
+
 def _file_fingerprint(scan_file: "ScanFile") -> str:
     """文件指纹：秒跳未变更文件的唯一依据。
 
@@ -2021,12 +2075,47 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
         p.claimed_item = None
         if p.item is None:
             to_claim.append(p)
-    for p in to_claim:
-        p.claimed_id = _claim_guid(db, p.guid, ctx.lib_id, {
-            "item_type": p.item_type,
-            "name": p.parsed["name"],
-            "file_path": p.scan_file.stored_path,
-        })
+
+    # 系统性去重（电影）：批量查库里是否已有同部电影，避免 N+1。
+    # 参考 Emby 多版本逻辑：同一部电影（同 tmdb_id，或同归一化标题+年份）只保留一条。
+    movie_dup_map: dict[int, int] = {}  # pending index -> existing movie id
+    movie_pendings = [(idx, p) for idx, p in enumerate(to_claim)
+                      if p.item_type == "movie"]
+    if movie_pendings:
+        try:
+            from backend.emby_server import dedup as dedup_lib
+            # 一次查出本库所有电影的 (id, tmdb_id, name, year)，Python 层建去重映射
+            existing = db.query(MI.id, MI.tmdb_id, MI.name,
+                                MI.production_year).filter(
+                MI.library_id == ctx.lib_id,
+                MI.item_type == "movie",
+                MI.deleted_at.is_(None),
+            ).all()
+            key_to_id: dict = {}
+            for eid, etmdb, ename, eyear in existing:
+                ekey = dedup_lib.dedup_key_for(ctx.lib_id, "movie", etmdb,
+                                               ename, eyear)
+                if ekey and ekey not in key_to_id:
+                    key_to_id[ekey] = eid
+            for idx, p in movie_pendings:
+                pkey = dedup_lib.dedup_key_for(
+                    ctx.lib_id, "movie", None,
+                    p.parsed.get("name"), p.parsed.get("year"))
+                if pkey and pkey in key_to_id:
+                    movie_dup_map[idx] = key_to_id[pkey]
+        except ImportError:
+            pass
+
+    for idx, p in enumerate(to_claim):
+        if idx in movie_dup_map:
+            # 命中已有的同部电影：复用，不建新记录
+            p.claimed_id = movie_dup_map[idx]
+        else:
+            p.claimed_id = _claim_guid(db, p.guid, ctx.lib_id, {
+                "item_type": p.item_type,
+                "name": p.parsed["name"],
+                "file_path": p.scan_file.stored_path,
+            })
     won_ids = [p.claimed_id for p in to_claim if p.claimed_id is not None]
     by_id = {}
     # 分片 IN 查询：SQL_IN_CHUNK=200，一批最多 400 个文件，至多 2 条语句
@@ -3486,19 +3575,34 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         series_guid = _pending.series_guid
                         series = ctx.series_items.get(series_guid)
                         if series is None:
-                            series = emby_models.MediaItem(
-                                guid=series_guid, library_id=library.id,
-                                item_type="series", name=_pending.series_name or parsed["name"],
-                                sort_name=(_pending.series_name or parsed["name"]).lower(),
-                                production_year=parsed["year"],
-                                platforms=item.platforms or "",
-                                date_added=datetime.now(),
-                                # 剧集/季没有文件可探测：直接 done，不进探测队列
-                                probe_status="done",
-                            )
-                            db.add(series)
-                            db.flush()
-                            ctx.series_items[series_guid] = series
+                            # 系统性去重：建 series 前先查库里是否已有同部剧
+                            # （同 tmdb_id，或同归一化标题+年份），有则复用，不建新记录。
+                            # 参考 Emby 多版本逻辑：同一部剧只保留一条。
+                            _series_name = _pending.series_name or parsed["name"]
+                            _series_year = parsed["year"]
+                            _nfo_tmdb = ((_pending.series_nfo_data or {}).get("tmdb_id")
+                                         if _pending.series_nfo_data else None)
+                            _dup_ids = _find_duplicate_series(
+                                db, library.id, tmdb_id=_nfo_tmdb,
+                                name=_series_name, year=_series_year)
+                            if _dup_ids:
+                                # 复用已有记录：把新 guid 也指向它，本批后续集数都挂过去
+                                series = db.get(emby_models.MediaItem, _dup_ids[0])
+                                ctx.series_items[series_guid] = series
+                            else:
+                                series = emby_models.MediaItem(
+                                    guid=series_guid, library_id=library.id,
+                                    item_type="series", name=_series_name,
+                                    sort_name=_series_name.lower(),
+                                    production_year=_series_year,
+                                    platforms=item.platforms or "",
+                                    date_added=datetime.now(),
+                                    # 剧集/季没有文件可探测：直接 done，不进探测队列
+                                    probe_status="done",
+                                )
+                                db.add(series)
+                                db.flush()
+                                ctx.series_items[series_guid] = series
                         # 现有隐式 series 可能是旧版本用 episode 文件名建出来的污染名称；
                         # 只要还没有 TMDB/NFO 的权威名称，就用目录名纠正。
                         if _pending.series_name and not series.tmdb_id:
