@@ -389,6 +389,49 @@ def test_scan_plan_never_touches_other_nodes_libraries(db, fake_enqueue):
     assert fake_enqueue == []
 
 
+def test_scan_plan_none_server_matches_nothing(db, fake_enqueue):
+    """BUG 文档化：传 server=None 时，node_id 非空的库一个都匹配不上。
+
+    scope_libraries 里 assigned 按 lib.node_id == server.id 过滤，
+    server=None 时 server.id 得 None，只有 node_id IS NULL 的库能中。
+    生产 10 个库 node_id 全是 1，所以一键扫描返回 0 个库。
+    端口（portal.scan_all_libraries_endpoint._plan）已改为传真实本机节点，
+    这里锁死「传 None 就是空」这个语义，防止将来有人又传 None。
+    """
+    realm = _realm(db)
+    server = _server(db, realm)
+    _library(db, realm, "有归属的库", node_id=server.id)
+
+    plan = server_ops.scan_plan(db, None)
+
+    assert plan["queued"] == []
+    assert plan["forward"] == []
+    assert fake_enqueue == []
+
+
+def test_scan_plan_real_self_node_queues_owned_libraries(db, fake_enqueue, monkeypatch):
+    """回归：一键扫描必须用 self_node 拿真实本机节点，不能传 None。
+
+    模拟 portal.scan_all_libraries_endpoint._plan 的修复后逻辑：
+    node_lib.self_node(db) -> 真实 RemoteServer -> scan_plan 匹配 node_id。
+    """
+    realm = _realm(db)
+    server = _server(db, realm, node_key="ea-01")
+    lib = _library(db, realm, "国产剧", node_id=server.id)
+    monkeypatch.setenv("NODE_KEY", "ea-01")
+    node_lib.reset_cache()
+    try:
+        real_server = node_lib.self_node(db)
+        assert real_server is not None, "NODE_KEY 已配，self_node 不该是 None"
+        assert real_server.id == server.id
+        plan = server_ops.scan_plan(db, real_server)
+    finally:
+        node_lib.reset_cache()
+
+    assert [row["id"] for row in plan["queued"]] == [lib.id]
+    assert plan["forward"] == []
+
+
 def test_scan_plan_caps_and_says_so(db, fake_enqueue, monkeypatch):
     realm = _realm(db)
     server = _server(db, realm)
