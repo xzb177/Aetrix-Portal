@@ -81,6 +81,9 @@ from backend.emby_server.portal import user_emby_router, admin_emby_router, conf
 # 存储挂载端点已从 portal.py 拆出（portal.py 尾部超出编辑窗口）：导入即注册到同一个
 # admin_emby_router 上，因此必须放在 app.include_router(admin_emby_router) 之前。
 from backend.emby_server import portal_mount_routes  # noqa: F401
+# admin_scrape 的路由（/scrape/tmdb/search 手动识别搜索等）挂在 admin_emby_router 上，
+# 必须在 app.include_router(admin_emby_router) 之前导入，否则路由注册不上导致前端空白。
+from backend.api import admin_scrape  # noqa: F401
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
