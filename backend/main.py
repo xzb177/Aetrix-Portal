@@ -45,6 +45,7 @@ from backend.api.home_summary import router as home_summary_router
 from backend.api.homepage_sections import router as homepage_sections_router
 from backend.api.realms import router as realms_router
 from backend.api.servers import router as servers_router
+from backend.emby_server.stream_nodes import admin_router as stream_nodes_router
 from backend import realms
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import maintenance
@@ -623,6 +624,8 @@ app.include_router(library_cover_router)
 app.include_router(realms_router)
 app.include_router(emby_servers_router)
 app.include_router(servers_router)
+# 流节点（分离架构）管理：一键部署脚本的注册/配置包接口
+app.include_router(stream_nodes_router)
 
 # ==================== 自建 Emby 协议网关 ====================
 # 默认由 EM 一并提供（单进程模式，现有部署行为不变）；

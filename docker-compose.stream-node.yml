@@ -1,0 +1,49 @@
+# Aetrix 流节点（分离架构）——部署在高宽带大盘机器上的独立出流服务。
+#
+# 用法（推荐）：直接用 scripts/deploy-streaming-node.sh 一键部署，
+# 它会自动生成带本机挂载点的 docker-compose.yml。本文件是给"手填配置"
+# 的用户准备的模板：复制后按注释填好 .env 再 `docker compose up -d`。
+#
+# 架构：
+#   主服务（API/DB/扫描）          流节点（本文件，高宽带大盘机器）
+#   ┌──────────────┐              ┌──────────────────────┐
+#   │ aetrix-api   │──DB只读──────▶│ aetrix-stream (EA)   │
+#   │ PlaybackInfo │  SECRET_KEY   │  /emby/Videos/*/stream│
+#   │ 改写播放 URL │──共享────────▶│  rclone FUSE 挂载      │──▶ Drive/115
+#   └──────────────┘              │  大盘 VFS 缓存         │
+#           ▲                     └──────────────────────┘
+#           │ 用户先拿到主服务的播放 URL（已改写到流节点域名）      ▲
+#           └──────────────────── 公网入口走 CF 橙云 ──────────────┘
+#
+# 流节点无状态（只读主库 + 本地缓存），可横向扩展多台做权重分流。
+
+name: aetrix-stream-node
+
+services:
+  aetrix-stream:
+    # 与主服务同一镜像、同一 tag（前后端版本必须配套）
+    image: ghcr.io/xzb177/aetrix-api:${AETRIX_IMAGE_TAG:-latest}
+    container_name: aetrix-stream
+    restart: unless-stopped
+    # 流角色：run_all.py 只起 EA 出流进程，不起 API/worker/后台任务
+    command: ["python", "backend/run_all.py"]
+    env_file:
+      - .env
+    environment:
+      AETRIX_ROLE: stream
+    # 只绑本机：公网入口必须走 CF（或反代），不要直接暴露
+    ports:
+      - "127.0.0.1:${STREAM_PORT:-8001}:8001"
+    volumes:
+      # 媒体挂载点：file_path 是绝对路径，容器内必须同路径可读。
+      # 按实际挂载加行，如：- /mnt/mp:/mnt/mp:ro
+      - ${MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
+      # - /mnt/paul:/mnt/paul:ro
+      - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone:ro
+      - ${RCLONE_SA_DIR:-./sa-accounts}:/sa-accounts:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5

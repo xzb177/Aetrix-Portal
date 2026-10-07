@@ -54,6 +54,7 @@ from backend.version import app_version
 from backend import models  # noqa: F401 — 注册全部模型，保证 ORM 关系可解析
 from backend.emby_server import models as _emby_models  # noqa: F401
 from backend.download_guard import DownloadGuardMiddleware
+from backend.domain_guard import CloudflareIPMiddleware, DomainGuardMiddleware
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import maintenance
 from backend.emby_server.api import emby_router
@@ -337,6 +338,13 @@ app.add_middleware(EaRateLimitMiddleware)
 
 # 下载策略兜底：站点关闭下载时，/Download 与 /Items/{id}/File 等路径在网关层拦截
 app.add_middleware(DownloadGuardMiddleware)
+
+# 流节点隐藏 IP 通用能力（纯 ASGI，不缓冲 body）：
+# ENFORCE_DOMAIN / TRUST_CF_IP 未设置时两者完全透传，单机部署零影响。
+# 注意顺序：后 add 的在外层，CloudflareIP 先还原真人 IP，
+# DomainGuard 再用它判断内网健康检查例外。
+app.add_middleware(DomainGuardMiddleware)
+app.add_middleware(CloudflareIPMiddleware)
 
 
 @app.exception_handler(Exception)

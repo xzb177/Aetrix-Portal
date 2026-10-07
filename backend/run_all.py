@@ -21,6 +21,16 @@ CHILDREN = {
 # 致命进程：退出则整个容器退出
 CRITICAL = {"api", "ea"}
 
+# 分离架构的流节点角色（AETRIX_ROLE=stream）：只起 EA 出流进程，
+# 不起 API / worker / 后台任务。无状态（只读主库 + 本地缓存），可横向扩展。
+# 由 docker-compose.stream-node.yml / deploy-streaming-node.sh 使用。
+ROLE_CHILDREN = {
+    "stream": ["ea"],
+}
+ROLE_CRITICAL = {
+    "stream": {"ea"},
+}
+
 # 各子进程的 AETRIX_ROLE（不在表里的子进程沿用容器环境变量）。
 #
 # api 必须显式声明。容器 env 是 AETRIX_ROLE=all，而 main.py 只把 "api" 认成 API 角色
@@ -87,7 +97,12 @@ def main():
     signal.signal(signal.SIGTERM, _handler)
     signal.signal(signal.SIGINT, _handler)
 
-    for name in CHILDREN:
+    role = os.environ.get("AETRIX_ROLE", "")
+    wanted = ROLE_CHILDREN.get(role, list(CHILDREN))
+    critical = ROLE_CRITICAL.get(role, CRITICAL)
+    if wanted != list(CHILDREN):
+        log("role %r: only starting %s" % (role, ",".join(wanted)))
+    for name in wanted:
         start(name)
 
     worker_restarts = 0
@@ -97,7 +112,7 @@ def main():
             rc = p.poll()
             if rc is not None:
                 log("%s exited (rc=%s)" % (name, rc))
-                if name in CRITICAL:
+                if name in critical:
                     log("%s is critical, exiting container" % name)
                     stop_all()
                     sys.exit(1)
