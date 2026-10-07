@@ -39,7 +39,12 @@ def test_api_path_still_nostore():
 
 def test_middleware_source_contains_guard():
     # lock the fix in place: both entry points must consult is_segment_path
-    for rel in ("emby_api/main.py", "backend/main.py"):
-        with open(rel) as f:
-            src = f.read()
-        assert "is_segment_path" in src, f"{rel} missing is_segment_path guard"
+    # EA 侧 2026-10-07 起搬到 emby_api/asgi_middleware.py（纯 ASGI，中转零拷贝），
+    # 此处同时接受两种位置。
+    ea_ok = any(
+        "is_segment_path" in open(rel).read()
+        for rel in ("emby_api/main.py", "emby_api/asgi_middleware.py")
+    )
+    assert ea_ok, "EA missing is_segment_path guard"
+    with open("backend/main.py") as f:
+        assert "is_segment_path" in f.read(), "backend/main.py missing is_segment_path guard"

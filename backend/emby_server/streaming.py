@@ -33,6 +33,12 @@ RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 CHUNK = 1024 * 256
 
+# 中转零拷贝优化：实际读盘/读源站的块大小。
+# 256KB 小块意味着每秒上百次「线程池提交 + FUSE read 系统调用 + Python 层拷贝」；
+# 1MB 大块把这些开销砍到 1/4，首字节不受影响（第一块照样立即发出）。
+# 注意：CHUNK 仍用于「客户端没给 Range 结束位置时的默认区间长度」计算，别混用。
+READ_CHUNK = 1024 * 1024
+
 # rclone FUSE 挂载点前缀（/mnt/mp、/mnt/paul，可用 EMBY_FUSE_PREFIXES 覆盖）。
 # 这些路径的读可能因 Drive 配额/网络抖动中途失败。
 FUSE_PREFIXES = tuple(
@@ -158,7 +164,7 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
             retries = 0
             while remaining > 0:
                 try:
-                    data = f.read(min(CHUNK, remaining))
+                    data = f.read(min(READ_CHUNK, remaining))
                 except OSError as exc:
                     # FUSE 瞬时抖动：退避重试几次再放弃
                     retries += 1
@@ -279,7 +285,7 @@ def serve_remote(
 
     def iter_remote():
         try:
-            for chunk in resp.iter_bytes(CHUNK):
+            for chunk in resp.iter_bytes(READ_CHUNK):
                 yield chunk
         finally:
             resp.close()
@@ -415,7 +421,7 @@ async def serve_remote_async(
 
     async def iter_remote():
         try:
-            async for chunk in resp.aiter_bytes(CHUNK):
+            async for chunk in resp.aiter_bytes(READ_CHUNK):
                 yield chunk
         finally:
             # 只关响应，不关 client —— client 是进程共享的，关了会让其它并发请求炸掉。
