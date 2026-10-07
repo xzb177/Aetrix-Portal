@@ -1,4 +1,5 @@
 """压力测试 P0/P1 修复的回归测试（2026-10-07）"""
+from pathlib import Path
 
 
 def test_db_pool_size_increased():
@@ -18,6 +19,8 @@ def test_janitor_runs_gc():
 
 def test_postgres_max_connections():
     """P0-1：docker-compose.yml 里 PG max_connections>=200"""
-    with open("docker-compose.yml") as f:
+    repo_root = Path(__file__).resolve().parent.parent
+    compose_path = repo_root / "docker-compose.yml"
+    with open(compose_path) as f:
         text = f.read()
     assert "max_connections=200" in text
