@@ -2,6 +2,21 @@
 
 > 通用能力：单机部署不受任何影响（`stream_nodes` 无配置时行为逐字节一致）；
 > 需要时一键加节点，不用改代码。
+>
+> ## 接入方式（join token 自助模式，推荐）
+>
+> 1. 管理后台 → **流节点** → **添加节点**：填名称/公网域名/权重 → 生成一次性 token（30 分钟有效）；
+> 2. 复制页面显示的 docker 命令，到新机器上执行：
+>    ```bash
+>    docker run -d --name aetrix-stream --restart unless-stopped \
+>      --cap-add SYS_ADMIN --device /dev/fuse --security-opt apparmor:unconfined \
+>      -e JOIN_TOKEN=xxx -e MAIN_URL=https://emby.example.com \
+>      -v /var/cache/rclone-stream:/var/cache/rclone \
+>      ghcr.io/xzb177/aetrix-stream-node:latest
+>    ```
+> 3. 容器自动：调 `/join` 自注册 → token 即焚 → 拉配置包 → 挂载 → 启动出流。
+>
+> 全程不用 SSH、不用手动跑脚本。旧的 `scripts/deploy-streaming-node.sh` 仍保留作备用。
 
 ## 什么时候需要
 

@@ -117,6 +117,21 @@ jobs:
             -t "ghcr.io/xzb177/aetrix-api:latest" \
             .
 
+      # ---- 流节点镜像（join token 自助接入）----
+      - name: 构建流节点镜像（不推送）
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          TAG_VERSION: ${{ steps.meta.outputs.version }}
+          TAG_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          docker build --pull \
+            --target stream-node \
+            -f Dockerfile.backend \
+            -t "ghcr.io/xzb177/aetrix-stream-node:$TAG_VERSION" \
+            -t "ghcr.io/xzb177/aetrix-stream-node:sha-$TAG_SHA" \
+            -t "ghcr.io/xzb177/aetrix-stream-node:latest" \
+            .
+
       # ---- 前端镜像 ----
       - name: 构建前端镜像（不推送）
         if: steps.gate.outputs.should_publish == 'true'

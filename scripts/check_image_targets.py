@@ -197,11 +197,15 @@ def check_publish_workflow() -> list[str]:
         return ["publish-images.yml 里找不到构建 Dockerfile.backend 的 docker build 命令"]
 
     for cmd in backend_builds:
-        if f"--target {LEAN_TARGET}" not in cmd:
+        # 后端 API 镜像必须 --target runtime；流节点镜像必须 --target stream-node。
+        # 两者都是显式 target，不依赖默认值（stage 顺序一变就静默推错镜像）。
+        is_stream_node = "aetrix-stream-node" in cmd
+        want_target = "stream-node" if is_stream_node else LEAN_TARGET
+        if f"--target {want_target}" not in cmd:
             problems.append(
                 "publish-images.yml 构建后端镜像时没有显式写 "
-                f"`--target {LEAN_TARGET}` —— 不能依赖默认值："
-                "stage 顺序一变就会静默推出带 scripts/ 的镜像，而 ghcr 的 latest "
+                f"`--target {want_target}` —— 不能依赖默认值："
+                "stage 顺序一变就会静默推出错镜像，而 ghcr 的 latest "
                 "被覆盖后撤不回来"
             )
         # 只看命令行本身（已剔除注释行），否则本函数上方的说明注释会把自己判死

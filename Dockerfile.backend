@@ -102,6 +102,25 @@ CMD ["python", "serve.py"]
 FROM base AS with-scripts
 COPY scripts/ /app/scripts/
 
+# ==================== 流节点镜像（join token 自助接入）====================
+# 在 base 之上加 rclone + fuse3 + entrypoint。必须排在 runtime 之前，
+# 因为 runtime 必须是最后一个 stage（发行契约，见 check_image_targets.py）。
+# 用法：docker build --target stream-node -f Dockerfile.backend -t aetrix-stream-node .
+FROM base AS stream-node
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fuse3 curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/rclone.zip').extractall('/tmp/rclone')" \
+    && cp /tmp/rclone/rclone-*/rclone /usr/local/bin/rclone \
+    && chmod +x /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone /tmp/rclone.zip \
+    && rclone version
+COPY docker/stream-node-entrypoint.sh /app/stream-node-entrypoint.sh
+RUN chmod +x /app/stream-node-entrypoint.sh
+ENTRYPOINT ["/app/stream-node-entrypoint.sh"]
+
 # ==================== 发行变体：默认产物 ====================
 # 见文件头的「三个 stage 的排布」。保持空，不要往这里加 COPY。
+# 必须是最后一个 stage（发行契约）。
 FROM base AS runtime
