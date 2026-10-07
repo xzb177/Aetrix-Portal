@@ -133,7 +133,7 @@ def update_external_subtitles(db, item) -> int:
             .delete(synchronize_session=False)
         )
         if deleted:
-            logger.info("字幕扫描：%s 移除了 %d 条残留外挂字幕", item.name, deleted)
+            logger.debug("字幕扫描：%s 移除了 %d 条残留外挂字幕", item.name, deleted)
         return 0
 
     # 重新匹配语言（find_external_subtitles_in 返回 (lang, path)）
@@ -179,7 +179,7 @@ def update_external_subtitles(db, item) -> int:
         next_idx += 1
         count += 1
 
-    logger.info("字幕扫描：%s 更新为 %d 条外挂字幕", item.name, count)
+    logger.debug("字幕扫描：%s 更新为 %d 条外挂字幕", item.name, count)
     return count
 
 

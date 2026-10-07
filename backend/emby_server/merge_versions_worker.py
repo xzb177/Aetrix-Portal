@@ -206,7 +206,7 @@ def merge_group(db, group: List) -> int:
             continue
         item.merged_into_id = primary.id
         merged += 1
-        logger.info(
+        logger.debug(
             "多版本合并：%s (id=%d) → 主记录 %s (id=%d)",
             item.name, item.id, primary.name, primary.id,
         )
