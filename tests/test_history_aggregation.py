@@ -123,3 +123,22 @@ def test_movie_row_unchanged(db, seed):
     assert row["id"] == seed["movie"].guid
     assert "episode_id" not in row
     assert row["position_ticks"] == 6000000000
+
+
+def test_series_row_prefers_session_position_over_zeroed_umd(db, seed):
+    """回归：umd 因「标为已看」被清零时，聚合行的进度必须取会话的实际位置。
+
+    PR #376 之前：`umd.playback_position_ticks if umd else session.position_ticks`
+    —— umd 存在但被清零（0）时，进度显示 0，CI 报 `assert 0 == 12000000000`。
+    修复后：会话有位置时优先用会话的。
+    """
+    # 给 e23 建一条被清零的 umd（模拟播完/标为已看）
+    umd = em.UserMediaData(user_id=seed["u"].id, item_id=seed["e23"].id,
+                           playback_position_ticks=0, played=True, play_count=1)
+    db.add(umd)
+    db.commit()
+
+    res = _history(db, seed, limit=30, offset=0, item_type="")
+    row = next(i for i in res["items"] if i["type"] == "series")
+    # 会话里看到一半（12000000000），不能因为 umd 被清零就显示 0
+    assert row["position_ticks"] == 12000000000
