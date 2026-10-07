@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import time
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -116,46 +117,72 @@ def find_duplicate_groups(db) -> List[List]:
 
     # 只查 movie/series，有 tmdb_id 或 imdb_id，未被合并，未软删除
     # 注意：只查有 tmdb_id/imdb_id 的（无 provider ID 的不参与合并，对标 HasAnyProviderId）
-    items = (
-        db.query(em.MediaItem)
+    # 两阶段：先只取分组所需的轻量列（id/library_id/item_type/tmdb_id/imdb_id），
+    # 找出重复组后，再按 id 加载全行做合并——避免每天拉 1 万个全量 ORM 进内存
+    light_rows = (
+        db.query(
+            em.MediaItem.id,
+            em.MediaItem.library_id,
+            em.MediaItem.item_type,
+            em.MediaItem.tmdb_id,
+            em.MediaItem.imdb_id,
+        )
         .filter(
             em.MediaItem.item_type.in_(("movie", "series")),
             em.MediaItem.deleted_at.is_(None),
             em.MediaItem.merged_into_id.is_(None),
             (em.MediaItem.tmdb_id.isnot(None) | em.MediaItem.imdb_id.isnot(None)),
         )
+        .order_by(em.MediaItem.id.asc())
         .limit(MERGE_VERSIONS_BATCH_LIMIT * 10)
         .all()
     )
 
     # 按 provider key 分组（含 library_id/item_type，防跨库跨类型合并）
     groups: Dict[Tuple, List] = {}
-    for item in items:
-        key = _provider_key(item)
+    for row in light_rows:
+        # Row 转命名空间，复用 _provider_key 的 getattr 口径
+        item_ns = SimpleNamespace(
+            library_id=row.library_id,
+            item_type=row.item_type,
+            tmdb_id=row.tmdb_id,
+            imdb_id=row.imdb_id,
+        )
+        key = _provider_key(item_ns)
         if key:
-            groups.setdefault(key, []).append(item)
+            groups.setdefault(key, []).append(row.id)
 
     # 只保留 2+ 条目的组
-    dup_groups = [g for g in groups.values() if len(g) >= 2]
-    if not dup_groups:
+    dup_id_groups = [g for g in groups.values() if len(g) >= 2]
+    if not dup_id_groups:
         return []
+
+    # 按 id 加载全行（只加载需要合并的组）
+    wanted_ids = {i for g in dup_id_groups for i in g}
+    items = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.id.in_(wanted_ids))
+        .all()
+    )
+    item_by_id = {item.id: item for item in items}
 
     # union-find 处理传递性（虽然按 key 分组已天然传递，但保留结构以对标）
     parent: Dict[int, int] = {}
-    for group in dup_groups:
-        for item in group:
-            if item.id not in parent:
-                parent[item.id] = item.id
-        root = group[0].id
-        for item in group[1:]:
-            _union(root, item.id, parent)
+    for id_group in dup_id_groups:
+        for item_id in id_group:
+            if item_id not in parent:
+                parent[item_id] = item_id
+        root = id_group[0]
+        for item_id in id_group[1:]:
+            _union(root, item_id, parent)
 
-    # 按根分组
+    # 按根分组（id → 全行对象）
     by_root: Dict[int, List] = {}
-    item_by_id = {item.id: item for group in dup_groups for item in group}
     for item_id in parent:
         r = _find(item_id, parent)
-        by_root.setdefault(r, []).append(item_by_id[item_id])
+        item = item_by_id.get(item_id)
+        if item is not None:
+            by_root.setdefault(r, []).append(item)
 
     return [g for g in by_root.values() if len(g) >= 2]
 
@@ -278,6 +305,9 @@ def _merge_loop():
                 logger.info("多版本合并完成：%d 组，合并 %d 条", groups, merged)
         except Exception as e:
             logger.warning("多版本合并失败: %s", e)
+        finally:
+            from backend.emby_server import worker_registry as _wr
+            _wr.heartbeat("merge_versions")
 
 
 def start() -> bool:
@@ -294,6 +324,8 @@ def start() -> bool:
             target=_merge_loop, name="merge-versions", daemon=True
         )
         _merge_thread.start()
+        from backend.emby_server import worker_registry as _wr
+        _wr.register("merge_versions", _merge_thread)
         return True
 
 

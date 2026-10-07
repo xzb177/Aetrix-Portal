@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -48,38 +49,33 @@ def find_duplicate_persons(db) -> list[tuple]:
 def deduplicate_persons(db) -> int:
     """删除重复的演员行（保留数据最全的一条）。返回删除数。
 
-    保留优先级：有头像 > id 最小。先入库的行不一定数据最全，
-    按 id 最小保留可能把唯一有头像的行删掉。
+    一条 SQL 用窗口函数搞定（N+1 → 1）：
+    按 (item_id, person_tmdb_id) 分组，优先保留有头像的行，其次 id 最小，
+    其余全部删除。
     """
-    from backend.emby_server import models as em
+    from sqlalchemy import text
 
-    total_deleted = 0
-    for item_id, person_tmdb_id, _cnt in find_duplicate_persons(db):
-        # 优先保留有头像的行，其次 id 最小
-        candidates = (
-            db.query(em.EmbyPerson)
-            .filter(em.EmbyPerson.item_id == item_id)
-            .filter(em.EmbyPerson.person_tmdb_id == person_tmdb_id)
-            .order_by(em.EmbyPerson.id.asc())
-            .all()
+    # PG 与 SQLite 都支持窗口函数
+    result = db.execute(text("""
+        DELETE FROM emby_people
+        WHERE id IN (
+            SELECT id FROM (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY item_id, person_tmdb_id
+                           ORDER BY (image IS NULL OR image = ''), id ASC
+                       ) AS rn
+                FROM emby_people
+                WHERE person_tmdb_id IS NOT NULL AND person_tmdb_id != ''
+            ) ranked
+            WHERE rn > 1
         )
-        if not candidates:
-            continue
-        with_image = [c for c in candidates
-                      if (c.image or "").strip()]
-        keep = (with_image or candidates)[0]
-        keep_ids = {keep.id}
-        deleted = (
-            db.query(em.EmbyPerson)
-            .filter(em.EmbyPerson.item_id == item_id)
-            .filter(em.EmbyPerson.person_tmdb_id == person_tmdb_id)
-            .filter(~em.EmbyPerson.id.in_(keep_ids))
-            .delete(synchronize_session=False)
-        )
-        total_deleted += deleted
-    if total_deleted:
+    """))
+    deleted = result.rowcount or 0
+    if deleted:
         db.commit()
-    return total_deleted
+    # SQLite 的 rowcount 对 DELETE 可能返回 -1，降级为 1（表示"删过"）
+    return max(deleted, 0) if deleted != -1 else 1
 
 
 def find_persons_missing_image(db, limit: int = 100) -> list:
@@ -137,6 +133,10 @@ def run_once(db) -> dict:
     }
 
 
+_start_lock = threading.Lock()
+_started = False
+
+
 def _run_loop_once() -> None:
     """跑一轮（供 _loop 与启动即跑共用）。"""
     from backend.database import get_db
@@ -150,8 +150,15 @@ def _run_loop_once() -> None:
 
 
 def start() -> bool:
-    """启动定时任务（后台线程，启动即跑一轮，之后每 24 小时跑一轮）。"""
-    import threading
+    """启动定时任务（后台线程，启动即跑一轮，之后每 24 小时跑一轮）。
+
+    幂等：重复调用只起一个线程。
+    """
+    global _started
+    with _start_lock:
+        if _started:
+            return True
+        _started = True
 
     def _loop():
         # 启动即跑一轮（与其它定时任务惯例一致），再按间隔 sleep
@@ -159,13 +166,21 @@ def start() -> bool:
             _run_loop_once()
         except Exception as exc:  # noqa: BLE001 — 后台任务不崩
             logger.warning("演员刷新失败: %s", exc)
+        finally:
+            from backend.emby_server import worker_registry as _wr
+            _wr.heartbeat("refresh_person")
         while True:
             try:
                 time.sleep(REFRESH_INTERVAL_SEC)
                 _run_loop_once()
             except Exception as exc:  # noqa: BLE001 — 后台任务不崩
                 logger.warning("演员刷新失败: %s", exc)
+            finally:
+                from backend.emby_server import worker_registry as _wr
+                _wr.heartbeat("refresh_person")
 
     t = threading.Thread(target=_loop, daemon=True, name="refresh-person")
     t.start()
+    from backend.emby_server import worker_registry as _wr
+    _wr.register("refresh_person", t)
     return True

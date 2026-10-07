@@ -190,9 +190,12 @@ def _scan_once() -> Tuple[int, int]:
 
     checked = 0
     updated = 0
+    pending_commit = 0
     db = SessionLocal()
     try:
-        items = (
+        # 流式迭代（yield_per），避免 1 万 ORM 常驻内存
+        # order_by(id) 保证大库下每轮推进，不永远扫"任意"子集
+        query = (
             db.query(em.MediaItem)
             .filter(
                 em.MediaItem.item_type.in_(("movie", "episode")),
@@ -200,12 +203,18 @@ def _scan_once() -> Tuple[int, int]:
                 em.MediaItem.merged_into_id.is_(None),
                 em.MediaItem.file_path.isnot(None),
             )
+            .order_by(em.MediaItem.id.asc())
+            .yield_per(500)
             .limit(SUBTITLE_SCAN_BATCH_LIMIT)
-            .all()
         )
-        for item in items:
+        for item in query:
             if _stop_event.is_set():
                 break
+            # 先判路径可探测性：mount:// 或不可访问目录直接跳过，
+            # 避免先打 1 万次 DB 查询再发现全是"未知"
+            if _detect_external_subtitles(item.file_path) is None:
+                db.expunge(item)
+                continue
             checked += 1
             try:
                 if has_external_subtitle_changed(db, item.id, item.file_path):
@@ -219,11 +228,21 @@ def _scan_once() -> Tuple[int, int]:
                         ).all() if s.language
                     })
                     item.subtitle_languages = ",".join(langs) if langs else None
-                    db.commit()
+                    pending_commit += 1
                     updated += 1
+                    # 攒批提交（100 条一 commit），避免上千短事务
+                    if pending_commit >= 100:
+                        db.commit()
+                        pending_commit = 0
             except Exception as e:
                 db.rollback()
+                pending_commit = 0
                 logger.warning("字幕扫描条目失败 %s: %s", item.file_path, e)
+            finally:
+                # 及时释放，避免 identity map 无限增长
+                db.expunge(item)
+        if pending_commit:
+            db.commit()
         return checked, updated
     finally:
         db.close()
@@ -245,6 +264,9 @@ def _scan_loop():
             logger.info("字幕扫描完成：检查 %d，更新 %d", checked, updated)
         except Exception as e:
             logger.warning("字幕扫描失败: %s", e)
+        finally:
+            from backend.emby_server import worker_registry as _wr
+            _wr.heartbeat("subtitle_scan")
 
 
 def start() -> bool:
@@ -261,6 +283,8 @@ def start() -> bool:
             target=_scan_loop, name="subtitle-scan", daemon=True
         )
         _scan_thread.start()
+        from backend.emby_server import worker_registry as _wr
+        _wr.register("subtitle_scan", _scan_thread)
         return True
 
 
