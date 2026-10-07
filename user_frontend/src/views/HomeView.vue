@@ -471,6 +471,7 @@ function realmNoteText() {
 // 只读一次追新日历：同一份数据既给 Hero 当背景图，也给「今日入库」海报横滑。
 // 失败（未开通被拦、后端老版本没有这个端点）一律静默：Hero 回落到暖黑渐变，海报行不渲染。
 const recentItems = ref<CalendarItem[]>([])
+const failedPosters = ref<Set<string>>(new Set())
 const recentHasToday = ref(false)
 
 function isoDay(d: Date): string {
@@ -517,6 +518,17 @@ function recentPoster(item: CalendarItem): string {
   // 日历接口的 ImageTags 可能为空（后端回退链未覆盖），跳过检查直接拼 URL；
   // 无图时后端返回 404，前端有占位卡兜底
   return posterUrl(item, 240, true)
+}
+
+// 海报 URL 缓存：模板中 v-if 和 :src 各调一次 recentPoster，避免重复计算
+const posterCache = new Map<string, string>()
+function cachedPoster(item: CalendarItem): string {
+  let url = posterCache.get(item.Id)
+  if (url === undefined) {
+    url = recentPoster(item)
+    posterCache.set(item.Id, url)
+  }
+  return url
 }
 
 /** Hero 眉题：有今日入库叫「今日新片」，否则「本周新片」；没有片单就只写站点氛围 */
@@ -747,11 +759,12 @@ onActivated(() => {
           >
             <span class="poster-frame">
               <img
-                v-if="recentPoster(item)"
-                :src="recentPoster(item)"
+                v-if="cachedPoster(item) && !failedPosters.has(item.Id)"
+                :src="cachedPoster(item)"
                 :alt="recentTitle(item)"
                 loading="lazy"
                 decoding="async"
+                @error="failedPosters.add(item.Id)"
               />
               <Film v-else :size="20" aria-hidden="true" />
             </span>
@@ -947,12 +960,12 @@ onActivated(() => {
 }
 
 /* 有背景图时字一律走浅色（图片在浅色主题下也是暗的） */
-.hero.has-image .hero-title { color: #f3ede4; text-shadow: var(--au-shadow-text); }
+.hero.has-image .hero-title { color: var(--au-text); text-shadow: var(--au-shadow-text); }
 .hero.has-image .hero-status,
 .hero.has-image .hero-sub,
-.hero.has-image .hero-steps em { color: rgba(243, 237, 228, 0.78); }
+.hero.has-image .hero-steps em { color: var(--au-text-2); }
 .hero.has-image .hero-steps strong,
-.hero.has-image .hero-link { color: #f3ede4; }
+.hero.has-image .hero-link { color: var(--au-text); }
 
 .hero-status {
   display: flex;
@@ -1738,6 +1751,15 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   .poster-row {
     margin: 0 -1rem;
     padding: 0 1rem 0.25rem;
+  }
+
+  /* 票根卡：手机上改为上下结构，票根在下 */
+  .ticket {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ticket-stub {
+    border-top: 1px dashed var(--au-border-strong);
+    border-left: none;
   }
 }
 

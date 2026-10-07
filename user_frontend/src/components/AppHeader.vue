@@ -569,8 +569,8 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   position: sticky;
   top: 0;
   z-index: 50;
-  /* 暗房影院：顶栏是近乎不透明的暖黑实底 + 一根发丝线，不再有毛玻璃与装饰光斑 */
-  background: var(--au-overlay);
+  /* 暗房影院：顶栏是完全不透明的暖黑实底 + 一根发丝线，不再有毛玻璃与装饰光斑 */
+  background: var(--au-bg);
   border-bottom: 1px solid var(--au-border);
   overflow: hidden;
 }
@@ -934,6 +934,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 
 @media (max-width: 768px) {
+  /* 下拉菜单不超出屏幕 */
+  .theme-dropdown, .msg-dropdown, .user-dropdown {
+    max-width: calc(100vw - 32px);
+  }
   /* 挂到 body 后 fixed 终于是真视口定位：底边锚在拇指区之上（--au-dock-space
      由 aurora.css 按断点定义），宽度留 12px 呼吸边，高过视口时内部滚 */
   .user-dropdown,

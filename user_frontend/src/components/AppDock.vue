@@ -53,7 +53,7 @@ function isActive(path: string) {
   justify-content: space-around;
   padding: 0 0.5rem env(safe-area-inset-bottom);
   /* 暗房影院：实底 + 发丝线，不做毛玻璃 */
-  background: var(--au-overlay-menu);
+  background: var(--au-bg);
   border-top: 1px solid var(--au-border);
 }
 
