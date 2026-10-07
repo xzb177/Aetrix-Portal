@@ -54,8 +54,16 @@
  * 同时接入双主题（跟随系统 / 白日 / 黑暗，见 useTheme.ts）：组件全部消费
  * --au-* 原料（在浅色下有独立调色），性能上移动端不启用卡片级 backdrop-blur、
  * 脉动与进度条动画只走 opacity/transform。
+ *
+ * 「暗房影院」改版：首页从上到下是——
+ *   ① 幕布 Hero：整幅背景图（取「追新日历」近 7 天入库里第一张带背景图的条目，
+ *      没有就是一块暖黑渐变），左下角琥珀眉题 + 衬线问候 + 状态行 + 唯一一个琥珀主按钮；
+ *   ② 票根卡：原三张资产卡（积分 / 订阅 / 观影数据）合成一张电影票，右侧票根是续费入口；
+ *   ③ 今日入库：近 7 天入库的竖版海报横滑（同一份日历数据，点击走 Rex deep link）；
+ *   ④ 正在播放 → ⑤ 进行中 → ⑥ 帮助中心（纯文字列表）。
+ * 数据口径一律沿用原有绑定，只换视觉；新增的只有一次追新日历请求（失败静默，不影响首屏）。
  */
-import { ref, computed, onMounted, onActivated, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { RouterLink } from 'vue-router'
 // 观影数据卡无落地页（媒体库已下线），同模板里 RouterLink 与 div 二选一
 import { useUserStore } from '@/stores/user'
@@ -66,11 +74,14 @@ import {
 import { useToast } from '@/composables/useToast'
 import Modal from '@/components/ui/Modal.vue'
 import { homeApi, type HomeSummary } from '@/api/economy'
+import { fetchCalendar, type CalendarItem } from '@/api/calendar'
+import { backdropUrl, posterUrl, type EmbyItem } from '@/api/emby'
+import { rexDeepLink } from '@/utils/rexDeepLink'
 import {
-  ChevronRight, Crown, MessageSquareDashed, Inbox,
-  Sparkles, Tv, TriangleAlert, Zap,
-  Clapperboard, Ticket, MonitorSmartphone, CircleStop,
-  RotateCcw, X, Megaphone,
+  ChevronRight, Crown, MessageSquareDashed,
+  Sparkles, TriangleAlert, Zap,
+  Clapperboard, Ticket, CircleStop,
+  RotateCcw, X, Megaphone, Film,
 } from 'lucide-vue-next'
 
 const userStore = useUserStore()
@@ -141,9 +152,8 @@ const memberProgress = computed(() => {
   return Math.max(1, Math.min(100, Math.round((used / total) * 100)))
 })
 
-// 资产卡（v2.42.1，四段式）：积分 / 订阅 / 观影数据。每种资产一个固定功能色（tone），
-// 从卡片图标 → 数字 / CTA 全链路同色：积分 = 品牌青，订阅 = 会员金，
-// 观影数据 = 极光紫。卡底统一「灰色说明 + 功能色 CTA」，全站一个模式。
+// 票根卡的三格（暗房影院改版起由原三张资产卡合并而来）：积分 / 订阅 / 观影数据。
+// 暗房影院只有一支强调色，tone 字段保留但不再决定颜色（数字一律正文色）。
 const assetCards = computed(() => {
   const st = stats.value
 
@@ -447,7 +457,7 @@ const fallbackBanner = computed(() => {
     return { icon: Sparkles, tone: 'cyan' as const, title: '公益服 · 免费开放', text: realmNoteText() }
   }
   if (!isMember.value) {
-    return { icon: Crown, tone: 'amber' as const, title: '会员未开通', text: '开通后即可播放全库内容，资产卡里的「订阅」可直接前往。' }
+    return { icon: Crown, tone: 'amber' as const, title: '会员未开通', text: '开通后即可播放全库内容，票根上的「立即开通」可直接前往。' }
   }
   return null
 })
@@ -456,9 +466,92 @@ function realmNoteText() {
   return userStore.realmNote || '本服为公益服 · 免费开放：无需开通会员即可观看全库内容。'
 }
 
+
+// ===== 暗房影院 暗房影院：幕布 Hero / 今日入库（追新日历近 7 天） =====
+// 只读一次追新日历：同一份数据既给 Hero 当背景图，也给「今日入库」海报横滑。
+// 失败（未开通被拦、后端老版本没有这个端点）一律静默：Hero 回落到暖黑渐变，海报行不渲染。
+const recentItems = ref<CalendarItem[]>([])
+const recentHasToday = ref(false)
+
+function isoDay(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
+async function loadRecent() {
+  const end = new Date()
+  const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 6)
+  try {
+    const res = await fetchCalendar({ start: isoDay(start), end: isoDay(end) })
+    const days = [...res.days].sort((a, b) => (a.date < b.date ? 1 : -1))
+    recentHasToday.value = days.some((d) => d.date === isoDay(end) && d.items.length > 0)
+    const seen = new Set<string>()
+    const flat: CalendarItem[] = []
+    for (const day of days) {
+      for (const item of day.items) {
+        // 同一部剧一天进好几集：海报行只留一张（按剧去重），否则一排全是同一张海报
+        const key = item.Type === 'Episode' && item.SeriesName ? `s:${item.SeriesName}` : item.Id
+        if (seen.has(key)) continue
+        seen.add(key)
+        flat.push(item)
+      }
+    }
+    recentItems.value = flat.slice(0, 12)
+  } catch {
+    recentItems.value = []
+  }
+}
+
+/** Hero 背景：近 7 天入库里第一张带背景图（Backdrop）的条目 */
+const heroItem = computed(() => recentItems.value.find((i) => i.BackdropImageTags?.length) || null)
+const heroImage = computed(() => (heroItem.value ? backdropUrl(heroItem.value, 1600) : ''))
+const heroImageFailed = ref(false)
+
+function recentTitle(item: CalendarItem): string {
+  if (item.Type === 'Episode' && item.SeriesName) return item.SeriesName
+  return item.Name
+}
+
+function recentPoster(item: CalendarItem): string {
+  return posterUrl(item, 240)
+}
+
+/** Hero 眉题：有今日入库叫「今日新片」，否则「本周新片」；没有片单就只写站点氛围 */
+const heroEyebrow = computed(() => {
+  if (!heroItem.value) return '今晚放映'
+  return `${recentHasToday.value ? '今日新片' : '本周新片'} · ${recentTitle(heroItem.value)}`
+})
+
+/** Hero 状态行：会员状态 + 签到（都是首页已有的数据，不额外请求） */
+const heroStatus = computed(() => {
+  const parts: string[] = []
+  if (isMember.value && activeSub.value) parts.push(`会员剩 ${activeSub.value.days_left} 天`)
+  else if (isFreeRealm.value) parts.push('公益服 · 免费开放')
+  else parts.push('会员未开通')
+  if (sessions.value.length) parts.push(`${sessions.value.length} 台设备正在播放`)
+  else parts.push(quickStats.value.checkedToday ? '今日已签到' : '今日还没签到')
+  return parts.join(' · ')
+})
+
+// 票根：订阅那一格的 CTA 文案就是票根上的按钮（续费 / 立即开通 / 查看套餐）
+const memberStat = computed(() => assetCards.value.find((c) => c.key === 'member') || null)
+
+// 正在播放的缩略图：会话里只有 item_id，按 Emby 图片端点拼海报地址；加载失败就退回图标
+const failedThumbs = ref<string[]>([])
+function sessionThumb(s: MyPlaybackSession): string {
+  if (!s.item_id || failedThumbs.value.includes(s.item_id)) return ''
+  return posterUrl({ Id: s.item_id, ImageTags: { Primary: '1' } } as unknown as EmbyItem, 160)
+}
+function onThumbError(s: MyPlaybackSession) {
+  failedThumbs.value = [...failedThumbs.value, s.item_id]
+}
+
 // 首屏只出骨架：数据统一走 loadDeferred（公告与资产同批，不再分关键/延后两波）
+// 追新日历与之并行、互不阻塞
 onMounted(() => {
   loadDeferred()
+  void loadRecent()
 })
 
 // 从别的 tab 切回来（KeepAlive 缓存命中）：后台静默刷新，不闪骨架屏
@@ -469,69 +562,79 @@ onActivated(() => {
 
 <template>
   <div class="home-view">
-    <!-- Hero：问候与主行动（会员/订阅状态在下方「我的资产」金色卡里，不再占右栏） -->
-    <section class="hero">
-      <div class="hero-glow" aria-hidden="true"></div>
-      <div class="hero-glow-2" aria-hidden="true"></div>
-      <div class="hero-orb" aria-hidden="true"></div>
-      <div class="container hero-grid">
-        <div class="hero-inner">
-          <p class="hero-eyebrow">{{ greeting }}，欢迎回来</p>
-          <div class="hero-title-row">
-            <h1 class="hero-title">{{ user?.username || '观影用户' }}</h1>
-            <span v-if="isMember" class="hero-vip">
-              <Crown :size="12" />
-              会员
-            </span>
-            <span v-else-if="isFreeRealm" class="hero-vip hero-free">
-              <Sparkles :size="12" />
-              公益服 · 免费开放
-            </span>
+    <!-- ① 幕布 Hero：整幅背景图（近 7 天入库的第一张背景图，没有就是暖黑渐变），
+         底部渐隐到页面底色；左下角眉题 + 衬线问候 + 状态行 + 唯一一个琥珀主按钮 -->
+    <section class="hero" :class="{ 'has-image': heroImage && !heroImageFailed }">
+      <img
+        v-if="heroImage && !heroImageFailed"
+        class="hero-backdrop"
+        :src="heroImage"
+        alt=""
+        aria-hidden="true"
+        decoding="async"
+        @error="heroImageFailed = true"
+      />
+      <div class="hero-shade" aria-hidden="true"></div>
+      <div class="container hero-inner">
+        <p class="au-eyebrow hero-eyebrow">{{ heroEyebrow }}</p>
+        <h1 class="hero-title">{{ greeting }}，{{ user?.username || '观影用户' }}</h1>
+        <p class="hero-status">
+          <span v-if="isMember" class="hero-tag">
+            <Crown :size="12" />
+            会员
+          </span>
+          <span v-else-if="isFreeRealm" class="hero-tag">
+            <Sparkles :size="12" />
+            公益服
+          </span>
+          <span>{{ heroStatus }}</span>
+        </p>
+
+        <!-- 未开通：三步看片指引。门户最大的 friction 是"付了钱不会配置客户端"，
+             所以首屏不讲会员权益、讲"怎么看上片"；主按钮只有一个（开通） -->
+        <template v-if="!isMember && !isFreeRealm">
+          <ol class="hero-steps">
+            <li>
+              <span class="step-num">1</span>
+              <span class="step-body"><strong>开通会员</strong><em>解锁全库影视资源</em></span>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <span class="step-body"><strong>下载播放器</strong><em>Infuse / Forward 等 Emby 客户端</em></span>
+            </li>
+            <li>
+              <span class="step-num">3</span>
+              <span class="step-body"><strong>一键导入</strong><em>在个人中心导入服务器地址与账号</em></span>
+            </li>
+          </ol>
+          <div class="hero-cta">
+            <RouterLink to="/wallet?tab=plans" class="au-btn au-btn-primary">
+              立即开通
+            </RouterLink>
+            <RouterLink to="/profile" class="hero-link">
+              连接教程
+              <ChevronRight :size="14" />
+            </RouterLink>
           </div>
-          <!-- 未开通：三步看片指引。门户最大的 friction 是"付了钱不会配置客户端"，
-               所以首屏不讲会员权益、讲"怎么看上片"；开通 CTA 在右侧会员卡里只留一个，
-               这里不再重复，避免同一屏出现两个开通按钮 -->
-          <template v-if="!isMember && !isFreeRealm">
-            <p class="hero-sub">三步开始观影：</p>
-            <ol class="hero-steps">
-              <li>
-                <span class="step-num">1</span>
-                <span class="step-body"><strong>开通会员</strong><em>解锁全库影视资源</em></span>
-              </li>
-              <li>
-                <span class="step-num">2</span>
-                <span class="step-body"><strong>下载播放器</strong><em>Infuse / Forward 等 Emby 客户端</em></span>
-              </li>
-              <li>
-                <span class="step-num">3</span>
-                <span class="step-body"><strong>一键导入</strong><em>在个人中心导入服务器地址与账号</em></span>
-              </li>
-            </ol>
-            <div class="hero-cta">
-              <RouterLink to="/profile" class="au-btn au-btn-ghost au-btn-sm">
-                查看连接教程
-              </RouterLink>
-            </div>
-          </template>
+        </template>
 
-          <!-- 已开通 / 公益服：服务台口径。看片在第三方客户端完成，
-               首页只给办事入口，不再造一个"继续观看"（那是客户端的事） -->
-          <template v-else>
-            <p class="hero-sub">门户账号即 Emby 账号 — 在 Infuse 等客户端登录即可观影。</p>
-            <div class="hero-quick">
-              <RouterLink to="/request" class="quick-link">
-                求片
-                <ChevronRight :size="13" />
-              </RouterLink>
-              <span class="quick-sep" aria-hidden="true"></span>
-              <RouterLink to="/profile" class="quick-link">
-                连接播放器
-                <ChevronRight :size="13" />
-              </RouterLink>
-            </div>
-          </template>
-        </div>
-
+        <!-- 已开通 / 公益服：看片在第三方客户端完成，主按钮就是「把服务器导进播放器」 -->
+        <template v-else>
+          <p class="hero-sub">门户账号即 Emby 账号 — 在 Infuse 等客户端登录即可观影。</p>
+          <div class="hero-cta">
+            <RouterLink to="/profile" class="au-btn au-btn-primary">
+              一键导入播放器
+            </RouterLink>
+            <RouterLink to="/profile" class="hero-link">
+              连接教程
+              <ChevronRight :size="14" />
+            </RouterLink>
+            <RouterLink to="/request" class="hero-link">
+              求片
+              <ChevronRight :size="14" />
+            </RouterLink>
+          </div>
+        </template>
       </div>
     </section>
 
@@ -546,10 +649,10 @@ onActivated(() => {
         </button>
       </div>
 
-      <!-- 说明条幅（v2.42.2）：置顶公告（可关闭）优先；无公告时按账号状态兑底
-           （公益服 / 未开通）。加载中不渲染，避免先出兑底再跳成公告 -->
+      <!-- 说明条幅：置顶公告（可关闭）优先；无公告时按账号状态兜底（公益服 / 未开通）。
+           加载中不渲染，避免先出兜底再跳成公告。暗房影院：左侧一根琥珀发丝线，不铺色 -->
       <Transition name="banner">
-        <div v-if="!loading && banners.length" class="notice-banner au-card tone-cyan">
+        <div v-if="!loading && banners.length" class="notice-banner">
           <Megaphone :size="16" class="banner-icon" />
           <div class="banner-body">
             <strong class="banner-title">{{ banners[0].title }}</strong>
@@ -559,11 +662,7 @@ onActivated(() => {
             <X :size="14" />
           </button>
         </div>
-        <div
-          v-else-if="!loading && fallbackBanner"
-          class="notice-banner au-card"
-          :class="fallbackBanner.tone === 'amber' ? 'tone-amber' : 'tone-cyan'"
-        >
+        <div v-else-if="!loading && fallbackBanner" class="notice-banner">
           <component :is="fallbackBanner.icon" :size="16" class="banner-icon" />
           <div class="banner-body">
             <strong class="banner-title">{{ fallbackBanner.title }}</strong>
@@ -572,117 +671,112 @@ onActivated(() => {
         </div>
       </Transition>
 
-      <!-- 我的资产（v2.42.1）：积分 / 订阅 / 观影数据，四段式资产卡。
-           每种资产一个固定功能色（青 / 金 / 紫），从卡片图标 → 数字 / CTA
-           全链路同色；卡底统一「灰色说明 + 功能色 CTA」。加载中显示真骨架占位，
-           而不是把「—」压暗——压暗的「—」会被读成「没有数据」 -->
-      <div class="section-label">
-        <span class="section-title">我的资产</span>
-      </div>
-      <section v-if="loading" class="asset-grid" aria-hidden="true">
-        <div v-for="i in 3" :key="i" class="asset-card au-card">
-          <div class="asset-head">
-            <span class="au-skeleton sk-asset-icon"></span>
-            <span class="au-skeleton sk-asset-title"></span>
+      <!-- ② 票根卡：积分 / 订阅 / 观影数据合成一张电影票。左边票面是三格数字，
+           中间一条打孔虚线（上下各一个半圆缺口），右边票根是订阅主操作 + ADMIT ONE -->
+      <section v-if="loading" class="ticket" aria-hidden="true">
+        <div class="ticket-main">
+          <div v-for="i in 3" :key="i" class="ticket-stat">
+            <span class="au-skeleton sk-stat-label"></span>
+            <span class="au-skeleton sk-stat-value"></span>
+            <span class="au-skeleton sk-stat-desc"></span>
           </div>
-          <span class="au-skeleton sk-asset-value"></span>
-          <span class="au-skeleton sk-asset-desc"></span>
-          <span class="au-skeleton sk-asset-foot"></span>
+        </div>
+        <div class="ticket-stub">
+          <span class="au-skeleton sk-stub-btn"></span>
         </div>
       </section>
-      <section v-else class="asset-grid au-anim-up">
-        <component
-          :is="c.to ? RouterLink : 'div'"
-          v-for="c in assetCards"
-          :key="c.key"
-          :to="c.to || undefined"
-          class="asset-card au-card"
-          :class="[{ 'asset-card-static': !c.to }, `tone-${c.tone}`]"
-        >
-          <!-- ① 图标盒 + 标题（功能色 10% 底 + 20% 边框） -->
-          <div class="asset-head">
-            <span class="asset-icon">
-              <component :is="c.icon" :size="19" />
+      <section v-else class="ticket au-anim-up" aria-label="我的资产">
+        <div class="ticket-main">
+          <component
+            :is="c.to ? RouterLink : 'div'"
+            v-for="c in assetCards"
+            :key="c.key"
+            :to="c.to || undefined"
+            class="ticket-stat"
+            :class="{ 'is-static': !c.to }"
+          >
+            <span class="stat-label">
+              <component :is="c.icon" :size="14" class="stat-icon" />
+              {{ c.title }}
+              <span v-if="c.badge" class="stat-badge" :class="{ hot: c.hot }">{{ c.badge }}</span>
             </span>
-            <span class="asset-title-row">
-              <span class="asset-title">{{ c.title }}</span>
-              <span v-if="c.badge" class="asset-badge" :class="{ hot: c.hot }">{{ c.badge }}</span>
+            <span class="stat-value-row">
+              <span class="stat-value">{{ c.value }}</span>
+              <span v-if="c.unit" class="stat-unit">{{ c.unit }}</span>
             </span>
-          </div>
-
-          <!-- ② 巨型等宽数字（染功能色）+ 订阅进度条（按真实周期算的口径不变） -->
-          <div class="asset-value-row">
-            <span class="asset-value">{{ c.value }}</span>
-            <span v-if="c.unit" class="asset-unit">{{ c.unit }}</span>
-          </div>
-          <div v-if="c.progress !== null" class="asset-progress" :title="`套餐周期已过 ${c.progress}%`">
-            <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
-            <div class="asset-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></div>
-          </div>
-
-          <!-- ③ 说明文案 -->
-          <p class="asset-desc">{{ c.desc }}</p>
-
-          <!-- ④ 底部分隔条：左灰色说明 + 右功能色 CTA（全站统一模式）；
-               没有落地页的卡（如观影数据）不渲染 CTA，只留说明 -->
-          <div class="asset-foot">
-            <span class="asset-note">{{ c.note }}</span>
-            <span v-if="c.footer" class="asset-cta">
-              {{ c.footer }}
-              <ChevronRight :size="13" />
+            <span
+              v-if="c.progress !== null"
+              class="stat-progress"
+              :title="`套餐周期已过 ${c.progress}%`"
+            >
+              <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
+              <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
             </span>
-          </div>
-        </component>
-      </section>
-
-      <!-- 我的面板（v2.34.0）：进行中的事项 / 正在播放（只在本账号真在播时出现）。
-           口径：这些是门户独有、客户端给不了的——账号名下的求片与工单状态、跨设备在播概况。
-           完整会话清单与设备管理仍在个人中心，这里只给「一眼看到 + 一键处理」。
-           观影数据已升级为「我的资产」里的紫色资产卡，这里不再重复一张同义卡。
-           加载中显示真骨架占位，避免内容突然出现顶开页面（CLS） -->
-      <section v-if="loading" class="panel-grid" aria-hidden="true">
-        <div class="panel-card">
-          <div class="au-skeleton sk-panel-title"></div>
-          <div class="au-skeleton sk-panel-row"></div>
-          <div class="au-skeleton sk-panel-row"></div>
-          <div class="au-skeleton sk-panel-row short"></div>
+            <span class="stat-desc">{{ c.desc }}</span>
+            <span class="stat-note">{{ c.note }}</span>
+          </component>
         </div>
-      </section>
-      <section v-else class="panel-grid au-anim-up">
-        <div class="panel-card">
-          <header class="panel-head">
-            <span class="panel-title">
-              <Inbox :size="15" />
-              进行中的事项
-            </span>
-          </header>
-          <div class="todo-list">
-            <RouterLink v-for="t in todoRows" :key="t.key" :to="t.to" class="todo-row">
-              <span class="todo-icon">
-                <component :is="t.icon" :size="15" />
-              </span>
-              <span class="todo-body">
-                <span class="todo-label">{{ t.label }}</span>
-                <span class="todo-sub">{{ t.sub }}</span>
-              </span>
-              <span class="todo-value" :class="{ hot: t.hot }">{{ t.value }}</span>
-              <ChevronRight :size="14" class="todo-arrow" />
-            </RouterLink>
-          </div>
+        <div class="ticket-stub">
+          <RouterLink v-if="memberStat" to="/wallet?tab=plans" class="au-btn au-btn-primary stub-btn">
+            {{ memberStat.footer }}
+          </RouterLink>
+          <RouterLink to="/wallet" class="stub-link">去钱包</RouterLink>
+          <span class="stub-admit" aria-hidden="true">ADMIT ONE</span>
         </div>
       </section>
 
-      <!-- 正在播放：有会话才出现（一条状态，不是管理清单）；完整清单在个人中心 -->
-      <section v-if="sessions.length" class="panel-card playing-card au-anim-up">
-        <header class="panel-head">
-          <span class="panel-title">
-            <MonitorSmartphone :size="15" />
-            正在播放
-          </span>
-          <span class="panel-hint">{{ sessions.length }} 个会话</span>
-        </header>
+      <!-- ③ 今日入库：近 7 天入库的竖版海报横滑（追新日历同一份数据），
+           点击与追新日历一致走 Rex deep link；没有数据整段不渲染 -->
+      <section v-if="recentItems.length" class="recent au-anim-up">
+        <div class="section-label">
+          <span class="section-title">{{ recentHasToday ? '今日入库' : '本周入库' }}</span>
+          <RouterLink to="/calendar" class="section-more">
+            追新日历
+            <ChevronRight :size="14" />
+          </RouterLink>
+        </div>
+        <div class="poster-row">
+          <a
+            v-for="item in recentItems"
+            :key="item.Id"
+            :href="rexDeepLink(item)"
+            class="poster-card"
+            :title="`在 Rex 里打开：${recentTitle(item)}`"
+          >
+            <span class="poster-frame">
+              <img
+                v-if="recentPoster(item)"
+                :src="recentPoster(item)"
+                :alt="recentTitle(item)"
+                loading="lazy"
+                decoding="async"
+              />
+              <Film v-else :size="20" aria-hidden="true" />
+            </span>
+            <span class="poster-name">{{ recentTitle(item) }}</span>
+          </a>
+        </div>
+      </section>
+
+      <!-- ④ 正在播放：有会话才出现（一条状态，不是管理清单）；完整清单在个人中心 -->
+      <section v-if="sessions.length" class="playing au-anim-up">
+        <div class="section-label">
+          <span class="section-title">正在播放</span>
+          <span class="section-hint">{{ sessions.length }} 个会话</span>
+        </div>
         <div class="playing-list">
           <div v-for="s in sessions" :key="s.session_key" class="playing-row">
+            <RouterLink :to="`/media/${s.item_id}`" class="playing-thumb" :aria-label="s.item">
+              <img
+                v-if="sessionThumb(s)"
+                :src="sessionThumb(s)"
+                alt=""
+                loading="lazy"
+                decoding="async"
+                @error="onThumbError(s)"
+              />
+              <Film v-else :size="18" aria-hidden="true" />
+            </RouterLink>
             <div class="playing-main">
               <div class="playing-title">
                 <RouterLink :to="`/media/${s.item_id}`">{{ s.item }}</RouterLink>
@@ -715,47 +809,53 @@ onActivated(() => {
         </div>
       </section>
 
-      <!-- v2.42.2：「最近上新」海报墙已移除——参考的纸片人 dashboard 没有媒体浏览，
-           首页只做资产与服务；媒体浏览统一在媒体库独立页（顶栏/底部坞入口不变） -->
+      <!-- ⑤ 进行中：自己提交的求片 / 工单处理到哪了 -->
+      <div class="section-label">
+        <span class="section-title">进行中</span>
+      </div>
+      <section v-if="loading" class="todo-card" aria-hidden="true">
+        <div class="au-skeleton sk-panel-row"></div>
+        <div class="au-skeleton sk-panel-row short"></div>
+      </section>
+      <section v-else class="todo-card au-anim-up">
+        <RouterLink v-for="t in todoRows" :key="t.key" :to="t.to" class="todo-row">
+          <component :is="t.icon" :size="16" class="todo-icon" />
+          <span class="todo-body">
+            <span class="todo-label">{{ t.label }}</span>
+            <span class="todo-sub">{{ t.sub }}</span>
+          </span>
+          <span class="todo-value" :class="{ hot: t.hot }">{{ t.value }}</span>
+          <ChevronRight :size="14" class="todo-arrow" />
+        </RouterLink>
+      </section>
 
-      <!-- 分组：帮助中心。首页是服务台，底部给办事入口；
-           账号类入口（订阅/设备/安全）在顶栏「我的」里，这里不重复 -->
+      <!-- ⑥ 帮助中心：纯文字列表 + 发丝分隔线，不再有图标方块 -->
       <div class="section-label">
         <span class="section-title">帮助中心</span>
       </div>
-
-      <div class="help-list au-card">
+      <nav class="help-list" aria-label="帮助中心">
         <RouterLink to="/profile" class="help-row">
-          <span class="help-row-icon">
-            <Tv :size="17" />
-          </span>
           <span class="help-row-body">
             <strong>连接播放器</strong>
             <em>Infuse / Forward 等客户端的服务器地址、账号与一键导入</em>
           </span>
-          <ChevronRight :size="16" class="help-row-arrow" />
+          <span class="help-row-arrow" aria-hidden="true">›</span>
         </RouterLink>
         <RouterLink to="/request" class="help-row">
-          <span class="help-row-icon">
-            <MessageSquareDashed :size="17" />
-          </span>
           <span class="help-row-body">
             <strong>求片</strong>
             <em>库里没有想看的？提交求片，入库后在消息中心通知你</em>
           </span>
-          <ChevronRight :size="16" class="help-row-arrow" />
+          <span class="help-row-arrow" aria-hidden="true">›</span>
         </RouterLink>
         <RouterLink to="/tickets" class="help-row">
-          <span class="help-row-icon">
-            <Ticket :size="17" />
-          </span>
           <span class="help-row-body">
             <strong>联系客服</strong>
             <em>遇到问题提交工单，客服会尽快回复</em>
           </span>
-          <ChevronRight :size="16" class="help-row-arrow" />
+          <span class="help-row-arrow" aria-hidden="true">›</span>
         </RouterLink>
-      </div>
+      </nav>
     </main>
 
     <!-- 结束播放二次确认：这是踢掉其他设备的操作，对方会立即断开 -->
@@ -779,535 +879,139 @@ onActivated(() => {
   color: var(--au-text);
 }
 
-/* ==================== Hero ==================== */
+/* ==================== ① 幕布 Hero ==================== */
 
 .hero {
   position: relative;
-  padding: 2.75rem 0 2rem;
-  border-bottom: 1px solid var(--au-border);
+  display: flex;
+  align-items: flex-end;
+  min-height: 46vh;
   overflow: hidden;
+  /* 没有背景图时：一块暖黑渐变，像放映前的幕布 */
+  background:
+    linear-gradient(180deg, var(--au-bg-soft) 0%, var(--au-surface) 55%, var(--au-bg) 100%);
+  animation: hero-fade var(--au-fade-in) var(--au-ease) both;
 }
 
-.hero-glow {
+.hero.has-image {
+  min-height: 56vh;
+}
+
+.hero-backdrop {
   position: absolute;
-  top: -40%;
-  right: -8%;
-  width: 480px;
-  height: 360px;
-  background: radial-gradient(ellipse at center, var(--au-primary-soft) 0%, transparent 70%);
-  filter: blur(52px);
-  pointer-events: none;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  object-fit: cover;
+  object-position: center 30%;
 }
 
-/* 浅色下氛围光再减淡一档：白底上 12% 透明度的青色已经很显，
-   不减会发灰发脏（深色下同样透明度是氛围，浅色下是污渍） */
-html[data-theme='light'] .hero-glow,
-html[data-theme='light'] .hero-glow-2 {
-  opacity: 0.5;
-}
-
-/* 欢迎卡的第二层装饰：左下角极光紫低透明度光斑，与右侧青色光晕呼应，
-   不抢内容、只给首屏多一层深度 */
-.hero-glow-2 {
+/* 背景图上叠两层：自左向右压暗（文字区可读）+ 自上而下渐隐到页面底色 */
+.hero-shade {
   position: absolute;
-  bottom: -55%;
-  left: -6%;
-  width: 420px;
-  height: 320px;
-  background: radial-gradient(ellipse at center, var(--au-violet-soft) 0%, transparent 70%);
-  filter: blur(56px);
+  inset: 0;
   pointer-events: none;
+  background:
+    linear-gradient(90deg, var(--au-overlay-strong) 0%, var(--au-overlay-mid) 45%, transparent 80%),
+    linear-gradient(180deg, transparent 30%, var(--au-overlay-mid) 65%, var(--au-bg) 100%);
 }
 
-/* 品牌色装饰圆（v2.42.4，纸片人做法）：右上角 ~240px 实心圆 + 5% 透明度 +
-   64px 高斯模糊。纯静态单次合成，不参与任何动画，成本可忽略；
-   深色下给首屏一角一点品牌色呼吸，浅色下是极淡的一团色渍（同样协调） */
-.hero-orb {
-  position: absolute;
-  top: -72px;
-  right: -48px;
-  width: 240px;
-  height: 240px;
-  border-radius: 50%;
-  background: var(--au-primary);
-  opacity: 0.05;
-  filter: blur(64px);
-  pointer-events: none;
-}
-
-/* 会员卡已并入订阅资产卡，hero 只剩左栏：双栏网格收敛为单列流 */
-.hero-grid {
-  position: relative;
-  display: block;
+.hero:not(.has-image) .hero-shade {
+  background: linear-gradient(180deg, transparent 50%, var(--au-bg) 100%);
 }
 
 .hero-inner {
   position: relative;
-  min-width: 0;
-}
-
-/* 轻量快捷入口（文字级，不抢 CTA） */
-.hero-quick {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.625rem;
-}
-
-.quick-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.1875rem;
-  font-size: 0.8125rem;
-  color: var(--au-text-2);
-  text-decoration: none;
-  transition: color var(--au-fast) var(--au-ease);
-}
-
-.quick-link:hover {
-  color: var(--au-primary);
-}
-
-.quick-link svg {
-  color: var(--au-text-3);
-  transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
-}
-
-.quick-link:hover svg {
-  color: var(--au-primary);
-  transform: translateX(2px);
-}
-
-.quick-sep {
-  width: 1px;
-  height: 12px;
-  background: var(--au-border-strong);
-}
-
-/* ==================== 我的资产（v2.42.1，四段式资产卡） ====================
-   卡片规格全站统一：16px 圆角（--au-r-lg）、1px 细边框、极克制阴影（--au-shadow-1）、
-   内边距移动端 20px / 桌面 28px。每种资产一个固定功能色（tone），
-   图标盒（10% 底 + 20% 边框）→ 巨型等宽数字 → 底部 CTA 全链路同色。 */
-
-.asset-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
-  margin-bottom: 2.25rem;
-}
-
-.asset-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1.25rem;
-  min-width: 0;
-  text-decoration: none;
-  box-shadow: var(--au-shadow-1);
-  transition: border-color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease),
-    box-shadow var(--au-fast) var(--au-ease);
-}
-
-@media (min-width: 769px) {
-  .asset-card { padding: 1.75rem; }
-}
-
-/* hover 微交互克制：边框与阴影走功能色、整卡轻抬，图标稍放大。
-   纯展示卡（无落地页，如观影数据）不参与 hover 位移 */
-.asset-card:hover {
-  border-color: var(--asset-border);
-  box-shadow: var(--au-shadow-2);
-  transform: translateY(-2px);
-}
-.asset-card-static:hover {
-  transform: none;
-  box-shadow: var(--au-shadow-1);
-}
-
-.asset-card:hover .asset-icon {
-  transform: scale(1.06);
-}
-
-.asset-card-static:hover .asset-icon { transform: none; }
-
-.asset-card:hover .asset-title {
-  color: var(--asset);
-}
-
-/* tone-x 类的功能色变量定义在 styles/aurora.css（全局唯一 token 源），
-   这里只消费；hoover 态与卡片结构样式都走 var(--asset*) */
-
-/* ① 图标盒：功能色 10% 底 + 20% 边框；小标题同行 */
-.asset-head {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  min-width: 0;
-}
-
-.asset-icon {
-  width: 44px;
-  height: 44px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 12px;
-  background: var(--asset-soft);
-  border: 1px solid var(--asset-border);
-  color: var(--asset);
-  transition: transform var(--au-fast) var(--au-ease);
-}
-
-.asset-title-row {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.asset-title {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text-2);
-  transition: color var(--au-fast) var(--au-ease);
-}
-
-/* 徽章/胶囊配方：rounded-full + 功能色 10% 底 + 20~25% 边框 + semibold 彩色字 */
-.asset-badge {
-  flex-shrink: 0;
-  padding: 0.125rem 0.5rem;
-  border-radius: var(--au-r-full);
-  background: var(--asset-soft);
-  border: 1px solid var(--asset-border);
-  color: var(--asset);
-  font-size: 0.6875rem;
-  font-weight: 600;
-}
-
-.asset-badge.hot {
-  background: var(--au-warning-soft);
-  border-color: var(--au-warning-border);
-  color: var(--au-warning);
-}
-
-/* ② 巨型等宽数字：移动端 30px / 桌面 48px，font-variant-numeric 保证数字不跳动 */
-.asset-value-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.3125rem;
-  min-width: 0;
-}
-
-.asset-value {
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 1.875rem;
-  font-weight: 800;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-  color: var(--asset);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-@media (min-width: 769px) {
-  .asset-value { font-size: 3rem; }
-}
-
-.asset-unit {
-  flex-shrink: 0;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text-3);
-}
-
-/* 进度条：10px 全圆角 + transition-all（只有订阅卡有） */
-.asset-progress {
-  height: 10px;
-  border-radius: var(--au-r-full);
-  background: var(--au-track);
-  overflow: hidden;
-}
-
-.asset-progress-fill {
-  height: 100%;
   width: 100%;
-  border-radius: var(--au-r-full);
-  transform-origin: left center;
-  /* 跟卡片的 tone 走（订阅卡 = 会员金），未来其它卡加进度条不用再改这里 */
-  background: var(--asset);
-  transition: transform var(--au-med) var(--au-ease);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .asset-progress-fill { transition: none; }
-}
-
-/* ③ 说明文案 */
-.asset-desc {
-  margin: 0;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: var(--au-text-3);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* ④ 底部分隔条：左灰色说明 + 右功能色加粗 CTA（全站统一模式） */
-.asset-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-top: auto;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--au-border);
-}
-
-.asset-note {
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.asset-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.125rem;
-  flex-shrink: 0;
-  font-size: 0.8125rem;
-  font-weight: 700;
-  color: var(--asset);
-}
-
-.asset-card:hover .asset-cta svg {
-  transform: translateX(2px);
-}
-
-.asset-cta svg {
-  transition: transform var(--au-fast) var(--au-ease);
-}
-
-/* 资产卡加载骨架：与真实卡片同高，加载完成不跳动（CLS） */
-.sk-asset-icon {
-  display: block;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-}
-
-.sk-asset-title {
-  display: block;
-  width: 64px;
-  height: 14px;
-}
-
-.sk-asset-value {
-  display: block;
-  width: 96px;
-  height: 30px;
-  margin-top: 0.25rem;
-}
-
-.sk-asset-desc {
-  display: block;
-  width: 85%;
-  height: 13px;
-}
-
-.sk-asset-foot {
-  display: block;
-  width: 100%;
-  height: 30px;
-  margin-top: 0.25rem;
-}
-
-/* ==================== 说明条幅（v2.42.2） ====================
-   公告 / 公益服 / 未开通三态共用一条：图标走对应功能色，正文两行截断。
-   广告牌法则：只告知，不抢资产的戏，高度克在两行文案内 */
-
-.notice-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.625rem;
-  padding: 0.875rem 1rem;
-  margin-bottom: 1.5rem;
-  box-shadow: var(--au-shadow-1);
-}
-
-.notice-banner.banner-enter-from,
-.notice-banner.banner-leave-to {
-  opacity: 0;
-  transform: translateY(-6px);
-}
-
-.banner-enter-active,
-.banner-leave-active {
-  transition: opacity var(--au-med) var(--au-ease), transform var(--au-med) var(--au-ease);
-}
-
-.notice-banner .banner-icon {
-  flex-shrink: 0;
-  margin-top: 0.125rem;
-  color: var(--asset, var(--au-primary));
-}
-
-.banner-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.banner-title {
-  display: block;
-  font-size: 0.8125rem;
-  font-weight: 700;
-  color: var(--text-main);
-}
-
-.banner-text {
-  margin: 0.125rem 0 0;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: var(--text-muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.banner-close {
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: var(--au-r-full);
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.banner-close:hover {
-  background: var(--au-surface-2);
-  color: var(--text-main);
-}
-
-/* ==================== 分组标签 ==================== */
-
-.section-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin: 0 0 1rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--au-border);
-}
-
-/* 中文标题：uppercase / letter-spacing 对中文无效，反而让字间距发虚，这里去掉 */
-.section-title {
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--au-text-3);
+  padding-top: 3rem;
+  padding-bottom: 2.25rem;
 }
 
 .hero-eyebrow {
-  font-size: 0.8125rem;
-  color: var(--au-primary);
-  margin: 0 0 0.4375rem;
+  margin: 0 0 0.75rem;
+  max-width: 34rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* 问候主标题（v2.42.4 加大）：20px / 桌面 24px，让首屏第一眼有主次 */
 .hero-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--au-text);
   margin: 0;
+  font-size: clamp(1.75rem, 4.2vw, 2.75rem);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--au-text);
 }
 
-@media (min-width: 769px) {
-  .hero-title { font-size: 1.5rem; }
-}
+/* 有背景图时字一律走浅色（图片在浅色主题下也是暗的） */
+.hero.has-image .hero-title { color: #f3ede4; text-shadow: var(--au-shadow-text); }
+.hero.has-image .hero-status,
+.hero.has-image .hero-sub,
+.hero.has-image .hero-steps em { color: rgba(243, 237, 228, 0.78); }
+.hero.has-image .hero-steps strong,
+.hero.has-image .hero-link { color: #f3ede4; }
 
-.hero-title-row {
+.hero-status {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
   flex-wrap: wrap;
-  margin-bottom: 0.5rem;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: var(--au-text-2);
 }
 
-.hero-vip {
+.hero-tag {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.1875rem 0.5625rem;
-  background: var(--au-gradient-warm);
-  color: var(--au-on-primary);
-  font-size: 0.75rem;
-  font-weight: 700;
-  border-radius: var(--au-r-full);
-}
-
-/* 公益服（v2.7.0）：免费开放用站点主色，不跟会员的金色混在一起 */
-.hero-free {
-  background: var(--au-primary-soft);
+  padding: 0.125rem 0.5rem;
   border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
   color: var(--au-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 
 .hero-sub {
+  margin: 0.875rem 0 0;
+  max-width: 34rem;
   font-size: 0.875rem;
+  line-height: 1.6;
   color: var(--au-text-3);
-  margin: 0 0 1.125rem;
 }
 
-/* 三步看片指引（未开通用户首屏）：数字序号 + 两行文字，移动端不挤 */
 .hero-steps {
-  list-style: none;
-  margin: 0 0 1.25rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  max-width: 44rem;
+  margin: 1.25rem 0 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.625rem;
+  list-style: none;
 }
 
 .hero-steps li {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
+  align-items: flex-start;
+  gap: 0.625rem;
 }
 
 .step-num {
-  width: 26px;
-  height: 26px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  color: var(--au-primary);
-  font-size: 0.75rem;
+  width: 1.5rem;
+  font-family: var(--au-font-serif);
+  font-size: 1.25rem;
   font-weight: 700;
+  line-height: 1.2;
+  color: var(--au-primary);
 }
 
 .step-body {
   display: flex;
   flex-direction: column;
-  gap: 0.0625rem;
+  gap: 0.125rem;
   min-width: 0;
 }
 
@@ -1319,144 +1023,532 @@ html[data-theme='light'] .hero-glow-2 {
 
 .step-body em {
   font-style: normal;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
   color: var(--au-text-3);
 }
 
 .hero-cta {
   display: flex;
-  gap: 0.625rem;
+  align-items: center;
   flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin-top: 1.5rem;
 }
 
-/* ==================== 我的面板（v2.34.0） ==================== */
+.hero-cta .au-btn-primary {
+  height: 44px;
+  padding: 0 1.5rem;
+  font-size: 0.9375rem;
+}
 
-.panel-grid {
-  display: grid;
-  /* 观影数据已并入资产卡：事项卡单独一条时占满整行，未来加回第二张卡时自动变两列 */
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+.hero-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--au-text-2);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.hero-link:hover { color: var(--au-primary); }
+
+@keyframes hero-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ==================== 主体 ==================== */
+
+.main {
+  padding-top: 1.5rem;
+  padding-bottom: 4rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.load-error-card {
+  margin-bottom: 1.25rem;
+}
+
+.section-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 2rem;
+  margin: 2.25rem 0 0.875rem;
 }
 
-/* 面板骨架：与真实卡片同高，加载完成不跳动 */
-.sk-panel-title {
-  width: 96px;
-  height: 18px;
-  margin-bottom: 1rem;
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--au-text);
 }
 
-.sk-panel-row {
-  height: 14px;
-  margin-bottom: 0.75rem;
+.section-more,
+.section-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+  text-decoration: none;
 }
 
-.sk-panel-row.short {
-  width: 55%;
-  margin-bottom: 0;
+.section-more:hover { color: var(--au-primary); }
+
+/* ==================== 说明条幅 ==================== */
+
+.notice-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+  padding: 0.875rem 1rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-left: 2px solid var(--au-primary);
+  border-radius: var(--au-r-sm);
 }
 
-.panel-card {
-  padding: 1rem 1.125rem 1.125rem;
+.banner-icon {
+  flex-shrink: 0;
+  margin-top: 0.125rem;
+  color: var(--au-primary);
+}
+
+.banner-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.banner-title {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.banner-text {
+  margin: 0.25rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--au-text-2);
+  white-space: pre-line;
+}
+
+.banner-close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--au-r-sm);
+  background: transparent;
+  color: var(--au-text-3);
+  cursor: pointer;
+}
+
+.banner-close:hover {
+  background: var(--au-surface-2);
+  color: var(--au-text);
+}
+
+.banner-enter-active,
+.banner-leave-active {
+  transition: opacity var(--au-med) var(--au-ease);
+}
+
+.banner-enter-from,
+.banner-leave-to {
+  opacity: 0;
+}
+
+/* ==================== ② 票根卡 ==================== */
+
+.ticket {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 156px;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
 }
 
-.panel-head {
+.ticket-main {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.ticket-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+  padding: 1.25rem 1.25rem 1.125rem;
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--au-fast) var(--au-ease);
+}
+
+.ticket-stat + .ticket-stat {
+  border-left: 1px solid var(--au-border);
+}
+
+.ticket-stat:first-child { border-radius: var(--au-r-lg) 0 0 var(--au-r-lg); }
+
+a.ticket-stat:hover { background: var(--au-surface-2); }
+
+.stat-label {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.875rem;
-}
-
-.panel-title {
-  display: inline-flex;
-  align-items: center;
   gap: 0.375rem;
+  font-family: var(--au-font-serif);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text-2);
+}
+
+.stat-icon { color: var(--au-primary); flex-shrink: 0; }
+
+.stat-badge {
+  margin-left: auto;
+  padding: 0 0.4375rem;
+  border: 1px solid var(--au-border-strong);
+  border-radius: var(--au-r-full);
+  font-family: var(--au-font-sans);
   font-size: 0.8125rem;
-  font-weight: 700;
-  color: var(--au-text);
-}
-
-.panel-title svg {
-  color: var(--au-primary);
-  flex-shrink: 0;
-}
-
-.panel-hint {
-  font-size: 0.75rem;
+  font-weight: 500;
   color: var(--au-text-3);
   white-space: nowrap;
 }
 
-.panel-more {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.125rem;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  text-decoration: none;
-  transition: color var(--au-fast) var(--au-ease);
-}
-
-.panel-more:hover {
+.stat-badge.hot {
+  border-color: var(--au-primary-border);
   color: var(--au-primary);
 }
 
-/* 进行中的事项：两行（求片 / 工单），每行一条真实状态 */
-.todo-list {
+.stat-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.stat-value {
+  font-family: var(--au-font-serif);
+  font-size: 2.25rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--asset-value, var(--au-text));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat-unit {
+  font-size: 0.875rem;
+  color: var(--au-text-3);
+}
+
+.stat-progress {
+  display: block;
+  height: 2px;
+  background: var(--au-track);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.stat-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--au-primary);
+  transform-origin: left center;
+}
+
+.stat-desc {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--au-text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.stat-note {
+  margin-top: auto;
+  font-size: 0.8125rem;
+  color: var(--au-text-4);
+}
+
+/* 票根：左侧一条打孔虚线，上下各挖一个与页面同色的半圆缺口 */
+.ticket-stub {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  padding: 1.25rem 1rem;
+  border-left: 1px dashed var(--au-border-strong);
+}
+
+.ticket-stub::before,
+.ticket-stub::after {
+  content: '';
+  position: absolute;
+  left: -11.5px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--au-bg);
+  border: 1px solid var(--au-border);
+}
+
+.ticket-stub::before {
+  top: -12px;
+  clip-path: inset(50% 0 0 0);
+}
+
+.ticket-stub::after {
+  bottom: -12px;
+  clip-path: inset(0 0 50% 0);
+}
+
+.stub-btn {
+  width: 100%;
+}
+
+.stub-link {
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+  text-decoration: none;
+}
+
+.stub-link:hover { color: var(--au-primary); }
+
+.stub-admit {
+  margin-top: 0.25rem;
+  font-family: var(--au-font-serif);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: var(--au-text-4);
+  white-space: nowrap;
+}
+
+/* 骨架 */
+.sk-stat-label { display: block; width: 4rem; height: 14px; }
+.sk-stat-value { display: block; width: 5.5rem; height: 36px; margin: 0.25rem 0; }
+.sk-stat-desc { display: block; width: 80%; height: 13px; }
+.sk-stub-btn { display: block; width: 100%; height: 40px; }
+
+/* ==================== ③ 今日入库 ==================== */
+
+.poster-row {
+  display: flex;
+  gap: 0.875rem;
+  margin: 0 calc(var(--gutter) * -1);
+  padding: 0 var(--gutter) 0.25rem;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+
+.poster-row::-webkit-scrollbar { display: none; }
+
+.poster-card {
+  flex: 0 0 auto;
+  width: 120px;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  color: inherit;
+  text-decoration: none;
+  scroll-snap-align: start;
 }
 
-.todo-row {
+.poster-frame {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
-  padding: 0.625rem 0.75rem;
-  border-radius: var(--au-r-md);
+  justify-content: center;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: var(--au-r-sm);
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
-  text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
+  color: var(--au-text-4);
 }
 
-.todo-row:hover {
-  border-color: var(--au-primary-border);
-  background: var(--au-surface-3);
+.poster-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter var(--au-fast) var(--au-ease);
 }
 
-.todo-icon {
-  width: 30px;
-  height: 30px;
+.poster-card:hover .poster-frame img { filter: brightness(1.08); }
+
+.poster-name {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--au-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== ④ 正在播放 ==================== */
+
+.playing-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+}
+
+.playing-row {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.875rem 1rem;
+}
+
+.playing-row + .playing-row { border-top: 1px solid var(--au-border); }
+
+.playing-thumb {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--au-r-sm);
-  background: var(--au-primary-soft);
-  color: var(--au-primary);
+  width: 44px;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--au-surface-2);
+  color: var(--au-text-4);
+}
+
+.playing-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.playing-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.playing-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.playing-title a {
+  color: var(--au-text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playing-title a:hover { color: var(--au-primary); }
+
+.playing-tag {
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--au-text-3);
+}
+
+.playing-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+}
+
+.playing-meta .dot { color: var(--au-text-4); }
+
+.playing-bar {
+  height: 2px;
+  margin-top: 0.625rem;
+  background: var(--au-track);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.playing-fill {
+  height: 100%;
+  background: var(--au-primary);
+}
+
+/* ==================== ⑤ 进行中 ==================== */
+
+.todo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+}
+
+section.todo-card[aria-hidden='true'] { padding: 1rem; }
+
+.todo-card.au-anim-up { gap: 0; }
+
+.todo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--au-fast) var(--au-ease);
+}
+
+.todo-row + .todo-row { border-top: 1px solid var(--au-border); }
+.todo-row:first-child { border-radius: var(--au-r-lg) var(--au-r-lg) 0 0; }
+.todo-row:last-child { border-radius: 0 0 var(--au-r-lg) var(--au-r-lg); }
+.todo-row:hover { background: var(--au-surface-2); }
+
+.todo-icon {
+  flex-shrink: 0;
+  color: var(--au-text-3);
 }
 
 .todo-body {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.0625rem;
+  gap: 0.125rem;
   min-width: 0;
-  flex: 1;
 }
 
 .todo-label {
-  font-size: 0.8125rem;
+  font-size: 0.9375rem;
   font-weight: 600;
   color: var(--au-text);
 }
 
 .todo-sub {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1464,115 +1556,76 @@ html[data-theme='light'] .hero-glow-2 {
 }
 
 .todo-value {
-  flex-shrink: 0;
-  font-size: 1rem;
+  font-family: var(--au-font-serif);
+  font-size: 1.25rem;
   font-weight: 700;
-  color: var(--au-text-3);
   font-variant-numeric: tabular-nums;
+  color: var(--au-text-3);
 }
 
-.todo-value.hot {
-  color: var(--au-warning);
-}
+.todo-value.hot { color: var(--au-primary); }
 
 .todo-arrow {
   flex-shrink: 0;
-  color: var(--au-text-3);
-  transition: color var(--au-fast) var(--au-ease);
+  color: var(--au-text-4);
 }
 
-.todo-row:hover .todo-arrow {
-  color: var(--au-primary);
-}
+.sk-panel-row { height: 44px; }
+.sk-panel-row.short { width: 60%; }
 
-/* 正在播放：跨整行的一条状态卡 */
-.playing-card {
-  margin-bottom: 2rem;
-}
+/* ==================== ⑥ 帮助中心 ==================== */
 
-.playing-list {
+.help-list {
   display: flex;
   flex-direction: column;
-  gap: 0.625rem;
+  border-top: 1px solid var(--au-border);
 }
 
-.playing-row {
+.help-row {
   display: flex;
   align-items: center;
-  gap: 0.875rem;
-  padding: 0.75rem 0.875rem;
-  border-radius: var(--au-r-md);
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
+  gap: 1rem;
+  padding: 1rem 0.25rem;
+  border-bottom: 1px solid var(--au-border);
+  color: inherit;
+  text-decoration: none;
 }
 
-.playing-main {
+.help-row-body {
   flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-}
-
-.playing-title {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
   min-width: 0;
 }
 
-.playing-title a {
-  font-size: 0.875rem;
+.help-row-body strong {
+  font-size: 0.9375rem;
   font-weight: 600;
   color: var(--au-text);
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  transition: color var(--au-fast) var(--au-ease);
 }
 
-.playing-title a:hover {
-  color: var(--au-primary);
-}
-
-.playing-tag {
-  flex-shrink: 0;
-  padding: 0.0625rem 0.375rem;
-  border-radius: var(--au-r-full);
-  background: var(--au-warning-soft);
-  color: var(--au-warning);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.playing-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.3125rem;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  min-width: 0;
-}
-
-/* 超长设备名截断，不把「结束」按钮挤出可视区 */
-.playing-meta > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.playing-meta .dot {
-  flex-shrink: 0;
+.help-row-body em {
+  font-style: normal;
+  font-size: 0.8125rem;
+  line-height: 1.5;
   color: var(--au-text-3);
 }
 
-/* 「结束」按钮不被挤压 */
-.playing-row .au-btn {
+.help-row-arrow {
   flex-shrink: 0;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--au-text-4);
+  transition: color var(--au-fast) var(--au-ease);
 }
 
-/* 结束播放二次确认弹窗 */
+.help-row:hover .help-row-body strong,
+.help-row:hover .help-row-arrow { color: var(--au-primary); }
+
+/* ==================== 弹窗 ==================== */
+
 .stop-confirm-text {
   margin: 0;
   font-size: 0.875rem;
@@ -1583,166 +1636,112 @@ html[data-theme='light'] .hero-glow-2 {
 .stop-confirm-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 0.625rem;
-}
-
-/* 会员加载失败的错误卡 */
-.load-error-card {
-  margin-bottom: 1.5rem;
-  padding: 1.75rem 1.25rem;
-  gap: 0.75rem;
-}
-
-.load-error-card svg {
-  color: var(--au-warning);
-}
-
-.load-error-card p {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--au-text-2);
-}
-
-.playing-bar {
-  height: 4px;
-  background: var(--au-track);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.playing-fill {
-  height: 100%;
-  background: var(--au-gradient);
-  border-radius: 2px;
-}
-
-/* ==================== 内容行 ==================== */
-
-.main {
-  padding: 2rem 1.25rem 3.5rem;
-}
-
-/* ==================== 帮助中心（三行入口，行间虚线分隔） ==================== */
-
-.help-list {
-  overflow: hidden;
-}
-
-.help-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 1.125rem;
-  text-decoration: none;
-  transition: background var(--au-fast) var(--au-ease);
-}
-
-.help-row + .help-row {
-  border-top: 1px dashed var(--au-border);
-}
-
-.help-row:hover {
-  background: var(--au-surface-2);
-}
-
-.help-row-icon {
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: 10px;
-  color: var(--au-primary);
-}
-
-.help-row-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.help-row-body strong {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.help-row-body em {
-  font-style: normal;
-  font-size: 0.75rem;
-  color: var(--au-text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.help-row-arrow {
-  flex-shrink: 0;
-  color: var(--au-text-3);
-  transition: color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
-}
-
-.help-row:hover .help-row-arrow {
-  color: var(--au-primary);
-  transform: translateX(2px);
+  gap: 0.5rem;
 }
 
 /* ==================== 响应式 ==================== */
 
-@media (max-width: 900px) {
-  /* 装饰光晕收一收：小屏上再占这么大面积会顶到内容 */
-  .hero-glow {
-    width: 340px;
-    height: 260px;
-  }
-
-  .hero-glow-2 {
-    width: 300px;
-    height: 220px;
-  }
-
-  /* 窄屏：两块面板竖排（观影数据在上、进行中的事项在下） */
-  .panel-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 768px) {
-  /* 底部坞（AppDock）出现后，页面尾部统一让位（--au-dock-space 由 App.vue 定义） */
+  .hero,
+  .hero.has-image {
+    min-height: 60vh;
+  }
+
   .main {
     padding-bottom: calc(3.5rem + var(--au-dock-space));
   }
 
-  /* 资产卡单列（卡片间距收窄一档） */
-  .asset-grid {
+  /* 票根竖排：票面在上、票根在下，打孔线横过来，缺口挪到左右两侧 */
+  .ticket {
     grid-template-columns: 1fr;
-    gap: 0.75rem;
   }
+
+  .ticket-stub {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    padding: 1rem 1.125rem;
+    border-left: none;
+    border-top: 1px dashed var(--au-border-strong);
+  }
+
+  .ticket-stub::before,
+  .ticket-stub::after {
+    top: -11.5px;
+    bottom: auto;
+  }
+
+  .ticket-stub::before {
+    left: -12px;
+    clip-path: inset(0 0 0 50%);
+  }
+
+  .ticket-stub::after {
+    left: auto;
+    right: -12px;
+    clip-path: inset(0 50% 0 0);
+  }
+
+  .stub-btn {
+    width: auto;
+    flex: 1 1 auto;
+    order: 2;
+  }
+
+  .stub-admit {
+    order: 1;
+    margin-top: 0;
+  }
+
+  .stub-link { order: 3; }
+
+  .ticket-stat:first-child { border-radius: var(--au-r-lg) 0 0 0; }
 }
 
 @media (max-width: 640px) {
-  .hero {
-    padding: 1.75rem 0 1.5rem;
+  .hero-inner {
+    padding-bottom: 1.75rem;
   }
 
-  .hero-title {
-    font-size: 1.125rem;
+  .hero-steps {
+    grid-template-columns: 1fr;
+    gap: 0.625rem;
   }
 
-  .hero-sub {
-    font-size: 0.8125rem;
-    margin-bottom: 1rem;
-  }
-
-  /* 内容区 padding 收窄：与底部坞时代移动端的卡片密度匹配 */
   .main {
     padding-left: 1rem;
     padding-right: 1rem;
+  }
+
+  .ticket-stat {
+    padding: 1rem 0.75rem 0.875rem;
+  }
+
+  .stat-value {
+    font-size: 1.625rem;
+  }
+
+  .stat-badge {
+    display: none;
+  }
+
+  .stat-desc {
+    display: none;
+  }
+
+  .poster-card {
+    width: 104px;
+  }
+
+  .poster-row {
+    margin: 0 -1rem;
+    padding: 0 1rem 0.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero {
+    animation: none;
   }
 }
 </style>

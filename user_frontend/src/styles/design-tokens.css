@@ -12,7 +12,7 @@
 :root {
   /* ==================== 色彩系统 ==================== */
 
-  /* 品牌色 - 电光青（Cyan） */
+  /* 品牌色 - 放映机琥珀（暗房影院） */
   --brand-50: var(--au-primary-soft);
   --brand-100: var(--au-primary-soft);
   --brand-200: var(--au-primary-soft);
@@ -108,8 +108,8 @@
   --font-size-h2: 16px;
   --font-size-h3: 14px;
   --font-size-body: 14px;
-  --font-size-small: 12px;   /* SYS-5：正文下限 12px */
-  --font-size-tiny: 12px;    /* SYS-5：从 11px 提到 12px */
+  --font-size-small: 13px;   /* 暗房影院：正文下限 13px */
+  --font-size-tiny: 13px;    /* 暗房影院：从 12px 提到 13px */
 
   /* 字重 */
   --font-weight-normal: 400;

@@ -60,7 +60,7 @@ withDefaults(defineProps<LoadingSpinnerProps>(), {
 }
 
 .loading-spinner__indicator {
-  stroke: var(--color-info, #3b82f6);
+  stroke: var(--au-primary);
   stroke-dasharray: 90 150;
   stroke-dashoffset: 0;
   animation: spinner-dash 1.5s ease-in-out infinite;

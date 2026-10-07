@@ -569,34 +569,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   position: sticky;
   top: 0;
   z-index: 50;
+  /* 暗房影院：顶栏是近乎不透明的暖黑实底 + 一根发丝线，不再有毛玻璃与装饰光斑 */
   background: var(--au-overlay);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--au-border);
-  /* 装饰圆要裁在顶栏内（下拉都 Teleport 到 body，不会被裁到） */
   overflow: hidden;
-}
-
-/* 顶栏也撒一颗品牌色装饰圆（v2.42.9，纸片人做法：见 HomeView 的 .hero-orb）：
-   右上一团 5% 品牌色 + 64px 模糊，纯静态单次合成、不参与动画。
-   深色下让顶栏右上角有一点品牌色呼吸，浅色下是一团极淡的色渍 */
-.app-header::after {
-  content: '';
-  position: absolute;
-  top: -64px;
-  right: 6%;
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  background: var(--au-primary);
-  opacity: 0.05;
-  filter: blur(64px);
-  pointer-events: none;
 }
 
 .header-container {
   position: relative;
-  /* 压住上面的装饰圆：伪元素是同层的最后一个盒子，抬一层才不会被它蒙住 */
   z-index: 1;
   max-width: 1080px;
   margin: 0 auto;
@@ -617,15 +597,13 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 
 .logo-mark {
-  width: 33px;
-  height: 33px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 11px;
-  background: var(--au-gradient);
-  color: var(--au-on-primary);
-  box-shadow: 0 3px 12px var(--au-primary-glow);
+  border-radius: var(--au-r-sm);
+  color: var(--au-primary);
 }
 
 .logo-mark img {
@@ -635,14 +613,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   border-radius: inherit;
 }
 
+/* 品牌字：衬线 + 大写 + 拉开字距（片头字幕的气质） */
 .logo-text {
-  font-size: 1.125rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-family: var(--au-font-serif);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--au-text);
 }
 
 .main-nav {
@@ -652,50 +630,50 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   min-width: 0;
 }
 
-/* 导航「片」（v2.42.9 纸片人化）：默认是一枚描边透明的空片，悬停时浮出浅表面 +
-   细描边，当前页用品牌色实底压出来 —— 与外观按钮、菜单里的选中态同一套语言
-   （同一件事只有一种表达）。描边常驻而非 hover 才加，避免悬停时 1px 的布局跳动 */
+/* 导航（暗房影院）：安静的纯文字，不再有胶囊底与图标；
+   当前页 = 正文色 + 下方一颗琥珀小圆点（像放映厅里那盏指示灯） */
 .nav-link {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
   padding: 0.4375rem 0.75rem;
-  border: 1px solid transparent;
-  border-radius: var(--au-r-full);
+  border: none;
+  border-radius: var(--au-r-sm);
   font-size: 0.875rem;
   font-weight: 500;
+  letter-spacing: 0.04em;
   white-space: nowrap;
-  color: var(--au-text-2);
+  color: var(--au-text-3);
   text-decoration: none;
-  transition: background var(--au-fast) var(--au-ease),
-    border-color var(--au-fast) var(--au-ease),
-    color var(--au-fast) var(--au-ease),
-    box-shadow var(--au-fast) var(--au-ease);
+  transition: color var(--au-fast) var(--au-ease);
 }
 
-.nav-link svg { opacity: 0.75; }
+.nav-link svg { display: none; }
 
 .nav-link:hover {
   color: var(--au-text);
-  background: var(--au-surface-2);
-  border-color: var(--au-border);
 }
 
 .nav-link:active { transform: scale(0.98); }
 
-/* 当前页：主色实底 + on-primary 字（浅色主题 #0891b2 配白字，深色主题 #22d3ee
-   配近黑字）+ 微光晕。旧版只有 12% 主色淡底，在顶栏这种低对比区域里几乎看不出
-   当前在哪一页 */
 .nav-link-active,
 .nav-link-active:hover {
-  color: var(--au-on-primary);
-  background: var(--au-primary);
-  border-color: var(--au-primary);
+  color: var(--au-text);
   font-weight: 600;
-  box-shadow: 0 2px 10px var(--au-primary-glow);
 }
 
-.nav-link-active svg { opacity: 1; }
+.nav-link-active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--au-primary);
+}
 
 /* 键盘焦点环：与全站其余可聚焦元素同一配方（替代掉的 .theme-opt:focus-visible 同源） */
 .nav-link:focus-visible {
@@ -765,7 +743,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   background: var(--au-primary);
   border-color: var(--au-primary);
   color: var(--au-on-primary);
-  box-shadow: 0 2px 10px var(--au-primary-glow);
 }
 
 .theme-btn:not(.auto):hover {
@@ -821,7 +798,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   justify-content: center;
   background: var(--au-warning);
   color: var(--au-on-warning);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 800;
   border-radius: var(--au-r-full);
   /* 与页面底色同色的描边环，把徽章从任何背景上“抠”出来 */
@@ -843,7 +820,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: var(--au-gradient);
+  background: var(--au-primary);
   color: var(--au-on-primary);
   font-size: 0.8125rem;
   font-weight: 800;
@@ -856,16 +833,15 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   align-items: center;
   height: 36px;
   padding: 0 1.125rem;
-  background: var(--au-gradient);
+  background: var(--au-primary);
   color: var(--au-on-primary);
   border-radius: var(--au-r-md);
   font-size: 0.8125rem;
   font-weight: 700;
   text-decoration: none;
-  box-shadow: 0 3px 12px var(--au-primary-glow);
   transition: transform var(--au-fast);
 }
-.login-btn:hover { transform: translateY(-1px); }
+.login-btn:hover { filter: brightness(1.08); }
 
 /* 过渡：柔和上浮淡入（opacity+transform，合成器友好） */
 .dd-enter-active, .dd-leave-active { transition: opacity var(--au-med) var(--au-ease), transform var(--au-med) var(--au-ease); }
@@ -986,10 +962,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   background: var(--au-warning-soft);
   border-radius: var(--au-r-full);
   color: var(--au-warning);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
 }
-.msg-drop-clear { font-size: 0.75rem; color: var(--au-text-3); }
+.msg-drop-clear { font-size: 0.8125rem; color: var(--au-text-3); }
 .msg-drop-item {
   display: flex;
   align-items: flex-start;
@@ -1027,7 +1003,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.msg-drop-meta { font-size: 0.75rem; color: var(--au-text-3); }
+.msg-drop-meta { font-size: 0.8125rem; color: var(--au-text-3); }
 .msg-drop-dot {
   width: 6px;
   height: 6px;
@@ -1040,7 +1016,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   margin: 0;
   padding: 1.125rem 1rem;
   text-align: center;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   border-bottom: 1px solid var(--au-border);
 }
@@ -1050,7 +1026,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   justify-content: center;
   gap: 0.1875rem;
   padding: 0.6875rem 1rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--au-primary);
   text-decoration: none;
@@ -1089,7 +1065,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   white-space: nowrap;
 }
 .dropdown-uid {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   font-variant-numeric: tabular-nums;
 }
@@ -1100,7 +1076,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   gap: 0.1875rem;
   padding: 0.1875rem 0.5rem;
   border-radius: var(--au-r-full);
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 700;
 }
 .dropdown-status.gold {
@@ -1148,9 +1124,9 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--au-gradient-warm);
+  background: var(--au-primary);
   color: var(--au-on-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
 }

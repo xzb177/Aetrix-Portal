@@ -99,11 +99,10 @@ const props = withDefaults(defineProps<Props>(), {
   font-size: var(--neo-font-size-lg);
 }
 
-/* 主按钮 - 电光青，主角感 */
+/* 主按钮 - 放映机琥珀实色，无发光 */
 .neo-btn--primary {
   background: var(--neo-primary);
   color: var(--neo-text-inverse);
-  box-shadow: var(--neo-glow-primary);
 }
 
 .neo-btn--primary:hover:not(.neo-btn--disabled) {

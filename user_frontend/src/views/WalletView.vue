@@ -892,22 +892,11 @@ onBeforeUnmount(stopPayPoll)
   gap: 1.5rem;
   padding: 1.5rem 1.625rem;
   border-radius: var(--au-r-xl);
-  background: linear-gradient(135deg, var(--au-primary-soft), var(--au-violet-soft) 55%, var(--au-overlay-soft));
-  border: 1px solid var(--au-primary-border);
-  backdrop-filter: blur(14px);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-top: 2px solid var(--au-primary);
   position: relative;
   overflow: hidden;
-}
-.balance-hero::after {
-  content: '';
-  position: absolute;
-  top: -60%;
-  right: -10%;
-  width: 300px;
-  height: 200px;
-  background: radial-gradient(ellipse, var(--au-primary-mid), transparent 70%);
-  filter: blur(30px);
-  pointer-events: none;
 }
 
 .bh-main {
@@ -932,13 +921,10 @@ onBeforeUnmount(stopPayPoll)
   gap: 0.375rem;
 }
 .balance-num .num {
+  font-family: var(--au-font-serif);
   font-size: 2.75rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-weight: 700;
+  color: var(--au-text);
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
 }
@@ -946,7 +932,7 @@ onBeforeUnmount(stopPayPoll)
 
 .balance-note {
   margin: 0.5rem 0 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   line-height: 1.5;
 }
@@ -963,7 +949,7 @@ onBeforeUnmount(stopPayPoll)
   border: 1px solid var(--au-warning-border);
   border-radius: var(--au-r-full);
   color: var(--au-warning);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   text-decoration: none;
   transition: all var(--au-fast) var(--au-ease);
 }
@@ -974,7 +960,6 @@ onBeforeUnmount(stopPayPoll)
   color: var(--au-success);
 }
 .checkin-pill:hover {
-  transform: translateY(-1px);
   border-color: var(--au-primary-border);
   color: var(--au-primary);
 }
@@ -1014,7 +999,7 @@ onBeforeUnmount(stopPayPoll)
 
 .redeem-hint {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -1054,9 +1039,8 @@ onBeforeUnmount(stopPayPoll)
 }
 .tab:hover { color: var(--au-text); background: var(--au-surface-2); }
 .tab.active {
-  background: var(--au-gradient);
+  background: var(--au-primary);
   color: var(--au-on-primary);
-  box-shadow: 0 3px 12px var(--au-primary-glow);
 }
 
 /* ==================== 支付方式 ==================== */
@@ -1070,7 +1054,7 @@ onBeforeUnmount(stopPayPoll)
 .order-amount .price-was {
   margin-right: 0.375rem;
   font-style: normal;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--au-text-3);
   text-decoration: line-through;
@@ -1120,9 +1104,7 @@ onBeforeUnmount(stopPayPoll)
 }
 .pkg-row:hover:not(:disabled) {
   border-color: var(--au-primary-border);
-  background: var(--au-primary-soft);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px var(--au-primary-soft);
+  background: var(--au-surface-2);
 }
 .pkg-row.popular { border-color: var(--au-primary-border); }
 .pkg-row:disabled { opacity: 0.6; cursor: wait; }
@@ -1149,24 +1131,22 @@ onBeforeUnmount(stopPayPoll)
 
 .pkg-points { display: flex; align-items: baseline; gap: 0.3125rem; }
 .pkg-points strong {
+  font-family: var(--au-font-serif);
   font-size: 1.5rem;
-  font-weight: 800;
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  font-weight: 700;
+  color: var(--au-text);
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
-.pkg-points em { font-style: normal; font-size: 0.75rem; color: var(--au-text-3); }
+.pkg-points em { font-style: normal; font-size: 0.8125rem; color: var(--au-text-3); }
 
-.pkg-name { font-size: 0.75rem; color: var(--au-text-3); }
+.pkg-name { font-size: 0.8125rem; color: var(--au-text-3); }
 
 .pkg-bonus {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-success);
 }
 
@@ -1179,9 +1159,9 @@ onBeforeUnmount(stopPayPoll)
 
 .pkg-pop-tag {
   padding: 0.125rem 0.5rem;
-  background: var(--au-gradient-warm);
+  background: var(--au-primary);
   color: var(--au-on-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
 }
@@ -1210,7 +1190,7 @@ onBeforeUnmount(stopPayPoll)
   transition: all var(--au-fast) var(--au-ease);
 }
 .pkg-row:hover:not(:disabled) .pkg-cta {
-  background: var(--au-gradient);
+  background: var(--au-primary);
   border-color: transparent;
   color: var(--au-on-primary);
 }
@@ -1250,7 +1230,7 @@ onBeforeUnmount(stopPayPoll)
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-full);
   color: var(--au-primary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 700;
 }
 
@@ -1267,7 +1247,7 @@ onBeforeUnmount(stopPayPoll)
   background: var(--au-primary-soft);
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-md);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-2);
 }
 .redeem-preview svg { color: var(--au-primary); flex-shrink: 0; }
@@ -1285,11 +1265,11 @@ onBeforeUnmount(stopPayPoll)
   width: 100%;
   margin-bottom: 0.875rem;
   padding: 0.625rem 0.875rem;
-  background: var(--au-surface-2, rgba(255, 255, 255, 0.02));
-  border: 1px dashed var(--au-border, rgba(255, 255, 255, 0.08));
+  background: var(--au-surface-2);
+  border: 1px dashed var(--au-border);
   border-radius: var(--au-r-md);
   color: var(--au-text-3, var(--au-text-2));
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
   transition: all var(--au-fast) var(--au-ease);
@@ -1300,7 +1280,6 @@ onBeforeUnmount(stopPayPoll)
 .code-tip:hover {
   border-color: var(--au-primary-border);
   color: var(--au-text-2);
-  transform: translateY(-1px);
 }
 
 .member-status.warn {
@@ -1317,7 +1296,7 @@ onBeforeUnmount(stopPayPoll)
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
 .member-status svg {
@@ -1361,7 +1340,7 @@ onBeforeUnmount(stopPayPoll)
   border-radius: var(--au-r-lg);
   transition: all var(--au-fast);
 }
-.plan-card.popular { border-color: var(--au-primary-border); box-shadow: var(--au-shadow-glow); }
+.plan-card.popular { border-color: var(--au-primary-border); }
 
 .plan-head {
   display: flex;
@@ -1369,7 +1348,7 @@ onBeforeUnmount(stopPayPoll)
   justify-content: space-between;
   gap: 0.75rem;
 }
-.plan-name { margin: 0; font-size: 1rem; font-weight: 700; color: var(--au-text); }
+.plan-name { margin: 0; font-family: var(--au-font-serif); font-size: 1.0625rem; font-weight: 700; color: var(--au-text); }
 /* 归属服：多服运营下同一页会列出几个服的套餐，买哪份要看得清 */
 .plan-realm {
   display: inline-block;
@@ -1379,14 +1358,14 @@ onBeforeUnmount(stopPayPoll)
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   font-style: normal;
   vertical-align: middle;
 }
 
 .plan-price { font-size: 1.125rem; font-weight: 800; color: var(--au-text); white-space: nowrap; }
-.plan-price em { font-style: normal; font-size: 0.75rem; font-weight: 400; color: var(--au-text-3); }
+.plan-price em { font-style: normal; font-size: 0.8125rem; font-weight: 400; color: var(--au-text-3); }
 
 .plan-desc { margin: 0; font-size: 0.8125rem; color: var(--au-text-3); line-height: 1.5; }
 
@@ -1452,7 +1431,7 @@ onBeforeUnmount(stopPayPoll)
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   overflow: hidden;
 }
@@ -1488,7 +1467,7 @@ onBeforeUnmount(stopPayPoll)
 
 .log-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.125rem; }
 .log-desc { font-size: 0.8125rem; color: var(--au-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-time { font-size: 0.75rem; color: var(--au-text-3); }
+.log-time { font-size: 0.8125rem; color: var(--au-text-3); }
 
 .log-amount { font-weight: 700; font-size: 0.9375rem; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .log-amount.in { color: var(--au-success); }

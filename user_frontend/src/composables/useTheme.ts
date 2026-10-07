@@ -53,8 +53,8 @@ function applyTheme() {
   const html = document.documentElement
   if (resolved.value === 'light') html.setAttribute('data-theme', 'light')
   else html.removeAttribute('data-theme')
-  // 浅色下浏览器工具栏跟底色（与 --au-bg 一致），深色维持原 #070b12
-  metaTheme?.setAttribute('content', resolved.value === 'light' ? '#f5f8fb' : '#070b12')
+  // 浏览器工具栏跟底色（与 --au-bg 一致）：浅色影院大厅 #f5f1ea，深色暗房 #0c0a09
+  metaTheme?.setAttribute('content', resolved.value === 'light' ? '#f5f1ea' : '#0c0a09')
 }
 
 function setPreference(value: ThemePreference) {

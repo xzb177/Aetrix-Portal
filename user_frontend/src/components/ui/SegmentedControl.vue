@@ -94,13 +94,10 @@ const emit = defineEmits<{
   color: var(--neo-text-primary);
 }
 
-/* 选中态 - 深绿底 + 内发光细边 */
+/* 选中态 - 琥珀实色，无发光 */
 .neo-segment__item--active {
   background: var(--neo-primary);
   color: var(--neo-text-inverse);
-  box-shadow: inset 0 0 0 1px var(--au-border-strong),
-              0 0 0 1px var(--neo-primary),
-              0 0 12px var(--au-primary-glow);
 }
 
 .neo-segment__item--active:hover {

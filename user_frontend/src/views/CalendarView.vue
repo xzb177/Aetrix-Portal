@@ -506,7 +506,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
   border-radius: var(--au-r-full);
   background: transparent;
   color: var(--au-text-3);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
@@ -525,7 +525,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
   border-radius: var(--au-r-full);
   background: var(--au-surface-3);
   color: var(--au-text-3);
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
 }
 /* 选中态的角标用 --au-text 而不是 --au-primary：浅色主题下
@@ -542,7 +542,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
 }
 .cal-week span {
   text-align: center;
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--au-text-4);
 }
@@ -582,7 +582,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
 .cal-cell.filled { background: var(--au-surface-2); }
 
 .cal-daynum {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -608,14 +608,14 @@ watch([year, month, libraryId, selectedTypes], async () => {
   position: absolute;
   top: 2px;
   right: 3px;
-  min-width: 14px;
-  padding: 0 3px;
+  min-width: 16px;
+  padding: 0 4px;
   border-radius: var(--au-r-full);
   background: var(--au-primary-soft);
   color: var(--au-primary);
-  font-size: 0.5625rem;
+  font-size: 0.8125rem;
   font-weight: 700;
-  line-height: 14px;
+  line-height: 16px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -635,7 +635,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
 
 .cal-note {
   margin: 0.875rem 0 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -687,7 +687,6 @@ watch([year, month, libraryId, selectedTypes], async () => {
 .day-item:hover {
   background: var(--au-surface-3);
   border-color: var(--au-primary-border);
-  transform: translateY(-1px);
 }
 .day-item:active { transform: translateY(0); }
 
@@ -728,7 +727,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
 }
 
 .day-sub {
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -744,9 +743,9 @@ watch([year, month, libraryId, selectedTypes], async () => {
 }
 
 .day-tags .au-badge {
-  font-size: 0.625rem;
+  font-size: 0.8125rem;
   padding: 0 0.4375rem;
-  height: 16px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   border-radius: var(--au-r-full);
@@ -757,7 +756,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
 .tag-episode { background: var(--au-success-soft); color: var(--au-success); }
 
 .day-lib {
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   color: var(--au-text-4);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -766,7 +765,7 @@ watch([year, month, libraryId, selectedTypes], async () => {
 }
 
 .day-rate {
-  font-size: 0.6875rem;
+  font-size: 0.8125rem;
   font-weight: 700;
   color: var(--au-warning);
   font-variant-numeric: tabular-nums;

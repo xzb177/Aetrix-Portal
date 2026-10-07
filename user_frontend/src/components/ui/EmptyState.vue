@@ -177,32 +177,20 @@ withDefaults(defineProps<EmptyStateProps>(), {
 
 /* 进入动画 */
 .empty-state__illustration {
-  animation: fadeInScale 0.5s ease-out;
+  animation: fadeInScale 0.7s ease-out;
 }
 
 .empty-state__content {
-  animation: fadeInUp 0.5s ease-out 0.1s both;
+  animation: fadeInUp 0.7s ease-out 0.1s both;
 }
 
 @keyframes fadeInScale {
-  from {
-    opacity: 0;
-    transform: scale(0.8);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 </style>

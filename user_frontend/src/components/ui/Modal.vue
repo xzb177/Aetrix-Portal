@@ -147,7 +147,7 @@ export default {
   position: fixed;
   inset: 0;
   z-index: var(--neo-z-overlay, 80);
-  background: var(--neo-bg-overlay, rgba(0, 0, 0, 0.75));
+  background: var(--au-scrim);
 }
 
 /* 减少 prefers-reduced-motion 的动效 */
@@ -157,12 +157,7 @@ export default {
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .modal-backdrop {
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-  }
-}
+/* 暗房影院：遮罩是纯黑场，不做毛玻璃 */
 
 /* ==================== 容器 ==================== */
 .modal-container {
@@ -185,8 +180,8 @@ export default {
 .modal-content-wrapper {
   position: relative;
   width: 100%;
-  background: var(--neo-bg-base, #0B0F14);
-  border: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  background: var(--au-surface);
+  border: 1px solid var(--au-border-strong);
   border-radius: var(--neo-radius-lg, 18px);
   box-shadow: var(--neo-shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.6));
   display: flex;
@@ -212,14 +207,14 @@ export default {
   align-items: center;
   justify-content: space-between;
   padding: 1.25rem 1.5rem;
-  border-bottom: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  border-bottom: 1px solid var(--neo-border-subtle);
   flex-shrink: 0;
 }
 
 .modal-title {
-  font-size: var(--neo-font-size-lg, 16px);
-  font-weight: var(--neo-font-weight-semibold, 600);
-  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--neo-text-primary);
   margin: 0;
 }
 
@@ -232,15 +227,15 @@ export default {
   background: transparent;
   border: none;
   border-radius: var(--neo-radius-xs, 8px);
-  color: var(--neo-text-tertiary, rgba(255, 255, 255, 0.48));
+  color: var(--neo-text-tertiary);
   cursor: pointer;
   transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default);
   flex-shrink: 0;
 }
 
 .modal-close:hover {
-  background: var(--neo-bg-surface-hover, rgba(255, 255, 255, 0.08));
-  color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
+  background: var(--neo-bg-surface-hover);
+  color: var(--neo-text-primary);
 }
 
 .modal-close:active {
@@ -273,12 +268,12 @@ export default {
 }
 
 .modal-body::-webkit-scrollbar-thumb {
-  background: var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  background: var(--neo-border-subtle);
   border-radius: 2px;
 }
 
 .modal-body::-webkit-scrollbar-thumb:hover {
-  background: var(--neo-border-default, rgba(255, 255, 255, 0.08));
+  background: var(--neo-border-default);
 }
 
 /* ==================== 底部 ==================== */
@@ -288,7 +283,7 @@ export default {
   justify-content: flex-end;
   gap: 0.75rem;
   padding: 1rem 1.5rem;
-  border-top: 1px solid var(--neo-border-subtle, rgba(255, 255, 255, 0.06));
+  border-top: 1px solid var(--neo-border-subtle);
   flex-shrink: 0;
 }
 

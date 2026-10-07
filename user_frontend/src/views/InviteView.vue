@@ -105,7 +105,6 @@ onMounted(load)
   <div class="au-page invite-view">
     <!-- 邀请主卡：左文案右码框的双栏布局 -->
     <section class="invite-hero au-anim-up">
-      <div class="hero-glow" aria-hidden="true" />
       <div class="hero-body">
         <div class="hero-left">
           <span class="hero-badge"><Gift :size="14" /> 邀请返利计划</span>
@@ -305,21 +304,10 @@ onMounted(load)
   position: relative;
   overflow: hidden;
   border-radius: var(--au-r-xl);
-  border: 1px solid var(--au-primary-border);
-  background: linear-gradient(150deg, var(--au-violet-soft), var(--au-primary-soft) 55%, var(--au-overlay-soft));
-  backdrop-filter: blur(14px);
+  border: 1px solid var(--au-border);
+  border-top: 2px solid var(--au-primary);
+  background: var(--au-surface);
   padding: 1.75rem 1.625rem;
-}
-
-.hero-glow {
-  position: absolute;
-  top: -50%;
-  right: -10%;
-  width: 380px;
-  height: 260px;
-  background: radial-gradient(ellipse, var(--au-violet-soft), transparent 70%);
-  filter: blur(34px);
-  pointer-events: none;
 }
 
 /* 左右双栏 */
@@ -349,15 +337,14 @@ onMounted(load)
   align-items: center;
   gap: 0.375rem;
   width: fit-content;
-  padding: 0.3125rem 0.75rem;
-  background: var(--au-gradient-warm);
-  color: var(--au-on-primary);
-  font-size: 0.75rem;
-  font-weight: 700;
-  border-radius: var(--au-r-full);
+  padding: 0;
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
 }
 
-.hero-left h1 { margin: 0; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
+.hero-left h1 { margin: 0; font-size: 1.75rem; font-weight: 700; line-height: 1.3; }
 
 .hero-desc { margin: 0; font-size: 0.875rem; color: var(--au-text-2); line-height: 1.7; }
 .hero-desc strong { color: var(--au-primary); font-weight: 700; }
@@ -367,7 +354,7 @@ onMounted(load)
   flex-direction: column;
   gap: 0.625rem;
   padding: 1.125rem;
-  background: var(--au-overlay-mid);
+  background: var(--au-bg-soft);
   border: 1px dashed var(--au-border-strong);
   border-radius: var(--au-r-lg);
   min-width: 0;
@@ -377,7 +364,7 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
 }
 
@@ -389,13 +376,10 @@ onMounted(load)
   font-size: 1.5rem;
   font-weight: 800;
   letter-spacing: 0.18em;
-  background: var(--au-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--au-primary);
 }
 
-.link-row .link-input { flex: 1; font-size: 0.75rem; color: var(--au-text-2); }
+.link-row .link-input { flex: 1; font-size: 0.8125rem; color: var(--au-text-2); }
 
 /* ===== 统计条（单卡分隔式，替代碎片 stat-card 网格） ===== */
 .stat-bar {
@@ -432,19 +416,21 @@ onMounted(load)
   border-radius: var(--au-r-md);
   flex-shrink: 0;
 }
-.stat-icon.c1 { background: var(--au-primary-soft); color: var(--au-primary); }
-.stat-icon.c2 { background: var(--au-violet-soft); color: var(--au-violet); }
-.stat-icon.c3 { background: var(--au-success-soft); color: var(--au-success); }
-.stat-icon.c4 { background: var(--au-warning-soft); color: var(--au-warning); }
+/* 暗房影院：四个统计图标同一支琥珀，不再各染一色 */
+.stat-icon.c1,
+.stat-icon.c2,
+.stat-icon.c3,
+.stat-icon.c4 { background: var(--au-surface-2); color: var(--au-primary); }
 
 .stat-num {
-  font-size: 1.0625rem;
-  font-weight: 800;
+  font-family: var(--au-font-serif);
+  font-size: 1.25rem;
+  font-weight: 700;
   color: var(--au-text);
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
 }
-.stat-label { font-size: 0.75rem; color: var(--au-text-3); }
+.stat-label { font-size: 0.8125rem; color: var(--au-text-3); }
 
 /* ===== 列表 ===== */
 .list-grid {
@@ -488,10 +474,10 @@ onMounted(load)
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: var(--au-gradient);
-  color: var(--au-on-primary);
-  font-size: 0.75rem;
-  font-weight: 800;
+  background: var(--au-surface-3);
+  color: var(--au-text);
+  font-size: 0.8125rem;
+  font-weight: 700;
   flex-shrink: 0;
 }
 
@@ -506,12 +492,12 @@ onMounted(load)
 
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.0625rem; }
 .row-title { font-size: 0.8125rem; color: var(--au-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-sub { font-size: 0.75rem; color: var(--au-text-3); }
+.row-sub { font-size: 0.8125rem; color: var(--au-text-3); }
 
 .row-amt { color: var(--au-success); font-size: 0.875rem; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
-/* 推广奖励：行首圆点换成紫色，与邀请记录（绿）一眼区分；间距沿用 .row-dot */
-.promo-dot { background: var(--au-violet); }
+/* 推广奖励：行首圆点用琥珀，与邀请记录（绿）一眼区分；间距沿用 .row-dot */
+.promo-dot { background: var(--au-primary); }
 
 /* ===== 规则（折叠） ===== */
 .rules summary {
@@ -526,7 +512,7 @@ onMounted(load)
   list-style: none;
 }
 .rules summary::-webkit-details-marker { display: none; }
-.rules summary svg { color: var(--au-violet); }
+.rules summary svg { color: var(--au-primary); }
 .rules-chevron {
   margin-left: auto;
   color: var(--au-text-3);

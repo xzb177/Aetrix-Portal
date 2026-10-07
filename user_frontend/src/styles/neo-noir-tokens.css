@@ -12,7 +12,7 @@
 :root {
   /* ==================== 色彩系统 ==================== */
 
-  /* 主色 - 电光青 */
+  /* 主色 - 放映机琥珀 */
   --neo-primary: var(--au-primary);
   --neo-primary-hover: var(--au-primary-strong);
   --neo-primary-active: var(--au-primary-deep);
@@ -103,9 +103,9 @@
 
   /* ==================== 字体系统（与 Aurora 无冲突，保留刻度） ==================== */
 
-  /* 字号：SYS-5 正文下限 12px，xs 从 11px 提到 12px */
-  --neo-font-size-xs: 12px;
-  --neo-font-size-sm: 12px;
+  /* 字号：暗房影院 正文下限 13px（移动端可读性） */
+  --neo-font-size-xs: 13px;
+  --neo-font-size-sm: 13px;
   --neo-font-size-md: 14px;
   --neo-font-size-lg: 16px;
   --neo-font-size-xl: 18px;
@@ -178,7 +178,7 @@
   --neo-badge-height: 20px;
   --neo-badge-radius: var(--au-r-full);
   --neo-badge-padding: 0 8px;
-  --neo-badge-font-size: 12px;
+  --neo-badge-font-size: 13px;
 
   /* Segmented Control */
   --neo-segment-height: 36px;

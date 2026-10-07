@@ -8,22 +8,24 @@ export default {
     extend: {
       colors: {
         primary: {
-          50: '#f0f9ff',
-          100: '#e0f2fe',
-          200: '#bae6fd',
-          300: '#7dd3fc',
-          400: '#38bdf8',
-          500: '#0ea5e9',
-          600: '#0284c7',
-          700: '#0369a1',
-          800: '#075985',
-          900: '#0c4a6e',
+          // 暗房影院：放映机琥珀（与 --au-primary 同一色相）
+          50: '#fbf3e6',
+          100: '#f6e3c3',
+          200: '#efcd94',
+          300: '#ecbb6c',
+          400: '#e8a84a',
+          500: '#d4923a',
+          600: '#a86f24',
+          700: '#7f541b',
+          800: '#573914',
+          900: '#2f1f0b',
         },
         accent: {
-          purple: '#8b5cf6',
-          pink: '#ec4899',
-          emerald: '#10b981',
-          amber: '#f59e0b',
+          // 只有一支强调色：紫 / 粉并入琥珀，语义绿降饱和
+          purple: '#e8a84a',
+          pink: '#d4923a',
+          emerald: '#8fbf8a',
+          amber: '#e8a84a',
         },
       },
       fontFamily: {

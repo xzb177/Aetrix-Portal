@@ -204,7 +204,7 @@ async function ask(text?: string) {
   color: var(--text-primary);
   border-radius: var(--au-r-full);
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: 0.8125rem;
   cursor: pointer;
   transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
 }
