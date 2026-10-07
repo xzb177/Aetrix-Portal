@@ -150,6 +150,8 @@ def test_transient_failure_does_not_poison_l1(monkeypatch):
 
 def test_search_returns_hit_when_later_candidate_transient(monkeypatch):
     """个别候选瞬态失败、别的候选命中 → 返回命中（部分失败不挡命中）"""
+    # 语言 fallback 会放大调用次数，固定单语言以测试候选级容错
+    monkeypatch.setattr(tmdb_mod, "MOVIEDB_FALLBACK_LANGUAGES", ("zh-CN",))
     assert len(list(tmdb_mod._search_candidates(NAME))) >= 3, "候选塌缩了测不出取舍"
     client = _client(monkeypatch, lambda u, p: _resp())
     calls = {"n": 0}
