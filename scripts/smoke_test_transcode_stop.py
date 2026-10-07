@@ -364,7 +364,7 @@ async def section_concurrency():
 suffix = uuid.uuid4().hex[:6]
 with SessionLocal() as db:
     owner = models.WebUser(username=f"tx_owner{suffix}", password_hash="x", is_active=True)
-    staff = models.WebUser(username=f"tx_staff{suffix}", password_hash="x", is_active=True, is_staff=True)
+    staff = models.WebUser(username=f"tx_staff{suffix}", password_hash="x", is_active=True, is_staff=True, admin_role="super")
     db.add_all([owner, staff])
     db.commit()
     db.refresh(owner)

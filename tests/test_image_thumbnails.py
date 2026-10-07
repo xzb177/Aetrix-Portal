@@ -260,3 +260,24 @@ def test_concurrent_burst_no_deadlock(imgdir):
     non_empty = [r for r in results if r]
     assert len(set(non_empty)) <= 5  # 单飞：同一源只生成一次
     assert all(r.endswith("_w320.jpg") for r in non_empty)
+
+
+def test_sidecar_posters_with_same_name_do_not_share_thumbnail(imgdir, tmp_path):
+    """库外的同名外挂图（poster.jpg）各自生成缩略图，不能互相串图"""
+    a_dir = tmp_path / "lib" / "Movie A"
+    b_dir = tmp_path / "lib" / "Movie B"
+    a_dir.mkdir(parents=True)
+    b_dir.mkdir(parents=True)
+    a = _make_jpeg(str(a_dir / "poster.jpg"), color=(200, 30, 30))
+    b = _make_jpeg(str(b_dir / "poster.jpg"), color=(30, 30, 200))
+    ta = image_store.resized_variant(a, max_width=320)
+    tb = image_store.resized_variant(b, max_width=320)
+    assert ta and tb and ta != tb
+    from PIL import Image
+
+    with Image.open(ta) as ia, Image.open(tb) as ib:
+        ra = ia.convert("RGB").getpixel((10, 10))
+        rb = ib.convert("RGB").getpixel((10, 10))
+    assert ra[0] > ra[2] and rb[2] > rb[0]
+    # 仍是可识别的缩略图命名（prune / 内存缓存靠它）
+    assert image_store.is_thumb_variant(ta) and image_store.is_thumb_variant(tb)

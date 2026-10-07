@@ -196,7 +196,7 @@ export interface EmbyMediaSource {
     IsExternal?: boolean
     IsTextSubtitleStream?: boolean
     IsDefault?: boolean
-    /** 字幕轨的可直取地址（服务端已附 api_key） */
+    /** 字幕轨的可直取地址（服务端已附短期播放签名） */
     DeliveryUrl?: string
   }>
   DefaultSubtitleStreamIndex?: number | null
@@ -386,7 +386,7 @@ export const embyApi = {
     return ud
   },
 
-  /** 播放信息（返回带 api_key 的直连 / HLS 地址） */
+  /** 播放信息（返回带短期播放签名 uid/exp/sign 的直连 / HLS 地址；JWT 不进 URL） */
   async getPlaybackInfo(itemId: string): Promise<{ MediaSources: EmbyMediaSource[]; PlaySessionId: string }> {
     return embyPost<{ MediaSources: EmbyMediaSource[]; PlaySessionId: string }>(
       `/emby/Items/${itemId}/PlaybackInfo`,

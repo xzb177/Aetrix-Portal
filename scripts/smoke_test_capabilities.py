@@ -182,7 +182,7 @@ def clear_capability_config() -> None:
 clear_capability_config()
 
 db = SessionLocal()
-staff = models.WebUser(username=f"cap_stf{suf}", password_hash=hash_password("pass12345"), is_staff=True)
+staff = models.WebUser(username=f"cap_stf{suf}", password_hash=hash_password("pass12345"), is_staff=True, admin_role="super")
 user = models.WebUser(username=f"cap_usr{suf}", password_hash=hash_password("pass12345"),
                       email=f"cap_usr{suf}@example.com")
 db.add_all([staff, user])

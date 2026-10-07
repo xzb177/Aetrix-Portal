@@ -54,7 +54,10 @@ echo ""
 echo "=== 主服务信息 ==="
 read -rp "主服务地址（https://emby.example.com）: " MAIN_URL
 MAIN_URL="${MAIN_URL%/}"
-read -rsp "面板密钥（主服务 SECRET_KEY）: " PANEL_KEY
+# 安全修复 S3：这里填**节点密钥**，不是 SECRET_KEY。主服务上查看：
+#   docker exec <主服务容器> python -m backend.node_auth
+# （= NODE_SHARED_SECRET；未设置时为 HMAC(SECRET_KEY, "aetrix-node-auth")）
+read -rsp "节点密钥（主服务上 python -m backend.node_auth 的输出）: " PANEL_KEY
 echo ""
 read -rp "本节点公网域名（https://stream.example.com，CF 橙云后的域名）: " NODE_URL
 NODE_URL="${NODE_URL%/}"
@@ -69,6 +72,7 @@ BUNDLE="$(curl -fsSL -m 30 "$MAIN_URL/api/admin/stream-nodes/bundle" \
 echo "$BUNDLE" | jq -e '.secret_key' >/dev/null || fatal "配置包格式错误"
 
 SECRET_KEY="$(echo "$BUNDLE" | jq -r '.secret_key')"
+NODE_SHARED_SECRET="$(echo "$BUNDLE" | jq -r '.node_shared_secret // ""')"
 DATABASE_URL="$(echo "$BUNDLE" | jq -r '.database_url')"
 DATABASE_TYPE="$(echo "$BUNDLE" | jq -r '.database_type')"
 SA_COUNT="$(echo "$BUNDLE" | jq -r '.sa_count')"
@@ -178,8 +182,14 @@ DATABASE_TYPE=${DATABASE_TYPE}
 AETRIX_ROLE=stream
 # 域名强制：只允许 CF 后的域名访问，直接 IP 打 403
 ENFORCE_DOMAIN=$(echo "$NODE_URL" | sed -e 's#https\?://##' -e 's#/.*##' | cut -d: -f1)
-# 信任 CF 的真实 IP 头（日志/限流用真人 IP）
+# 显式配置过的节点密钥（主服务未设置时为空 = 由 SECRET_KEY 派生，两端一致）
+NODE_SHARED_SECRET=${NODE_SHARED_SECRET}
+# 信任 CF 的真实 IP 头（日志/限流用真人 IP）。H4：只有 TCP 直连对端是 Cloudflare 官方网段 /
+# 本机回环 / TRUSTED_PROXIES 时才采信。容器端口只绑 127.0.0.1，经宿主机反代进来时容器看到的是
+# docker 网关地址，所以把 docker 默认私网段列为可信；**宿主机反代必须只接受 Cloudflare 回源**
+# （防火墙放行 CF 网段），否则直连源站的人仍可伪造 CF-Connecting-IP。
 TRUST_CF_IP=true
+TRUSTED_PROXIES=172.16.0.0/12
 # 本节点公网地址（节点自检/日志用）
 STREAM_NODE_PUBLIC_URL=${NODE_URL}
 # EA 端口

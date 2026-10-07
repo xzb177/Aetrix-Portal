@@ -62,7 +62,12 @@ def test_viewer_cannot_write_anywhere():
     assert blocked_reason(_req("/api/admin/users/1/ban"), _admin(ROLE_VIEWER))
 
 
-def test_empty_role_is_treated_as_super_for_legacy_admins():
-    """升级上来的老管理员没写过这个字段，按 super 处理（与升级前一致）"""
-    legacy = SimpleNamespace(admin_role=None, is_staff=False)
-    assert blocked_reason(_req("/api/admin/access-guard/policy"), legacy) is None
+def test_empty_role_is_treated_as_lowest_privilege():
+    """S1（fail closed）：空 / 未知角色按 viewer 处理，不再按 super——
+    升级上来的老管理员由启动期迁移显式写成 super（见 admin_roles.ensure_legacy_admin_roles）"""
+    legacy = SimpleNamespace(admin_role=None, is_staff=True)
+    assert blocked_reason(_req("/api/admin/access-guard/policy"), legacy)
+    assert blocked_reason(_req("/api/admin/users/1", method="PUT"), legacy)
+    assert blocked_reason(_req("/api/admin/users/1", method="GET"), legacy) is None
+    bogus = SimpleNamespace(admin_role="root", is_staff=True)
+    assert blocked_reason(_req("/api/admin/users/1", method="PUT"), bogus)

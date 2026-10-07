@@ -121,7 +121,7 @@ with SessionLocal() as db:
     # 站内消息要发给「启用中的管理员」：通知层没人可发时不会落库，验证也就没意义
     staff = models.WebUser(username=f"hot-staff-{suffix}",
                            password_hash=hash_password("hot-paths"),
-                           is_active=True, is_staff=True)
+                           is_active=True, is_staff=True, admin_role="super")
     db.add(staff)
     db.commit()
     db.refresh(staff)

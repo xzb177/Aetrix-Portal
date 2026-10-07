@@ -25,7 +25,8 @@ PlaybackInfo 生成的 ``DirectStreamUrl`` / ``TranscodingUrl`` 自动改写为
 - 永远不把播放 URL 改写到内网/回环地址（``is_public_node_url`` 守卫）：
   ``node_health`` 的默认本机条目（``http://127.0.0.1:8000``）只在无配置时
   兜底，改写层直接忽略它；
-- 管理接口（``admin_router``）用面板密钥（``X-Panel-Key`` = SECRET_KEY）
+- 管理接口（``admin_router``）用节点密钥（``X-Panel-Key`` = NODE_SHARED_SECRET 或其派生值，
+  见 backend/node_auth.py；不再接受 SECRET_KEY 原文）
   鉴权，与节点间既有机制一致（``mount_health.require_panel_key``）。
 """
 
@@ -233,6 +234,8 @@ def api_bundle(request: Request, db: Session = Depends(get_db)):
 
     bundle: dict = {
         "secret_key": SECRET_KEY,
+        # 显式配置了节点密钥时一起下发（未配置时节点由 SECRET_KEY 派生出同一个值）
+        "node_shared_secret": (os.environ.get("NODE_SHARED_SECRET") or "").strip(),
         "database_url": os.environ.get("DATABASE_URL", ""),
         "database_type": os.environ.get("DATABASE_TYPE", "postgresql"),
     }

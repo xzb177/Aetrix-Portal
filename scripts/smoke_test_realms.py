@@ -86,7 +86,7 @@ finally:
 db = SessionLocal()
 try:
     staff = models.WebUser(username=f"realm_staff{suf}", password_hash=hash_password(PASSWORD),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     db.add(staff)
     db.commit()
     staff_id = staff.id

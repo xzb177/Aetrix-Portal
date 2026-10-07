@@ -200,7 +200,7 @@ async def emby_overview(
     体检，并把不一致直接标成告警。
 
     ``live=True`` 会真的去问每台已启用的 EA「你是谁、属于哪个服、负责哪些库」
-    （``GET /api/admin/nodes/me``，共享 SECRET_KEY 鉴权）并重拉一次当前出流 EA 的挂载体检；
+    （``GET /api/admin/nodes/me``，节点签名鉴权，见 backend/node_auth.py）并重拉一次当前出流 EA 的挂载体检；
     默认只读已落库的结论，避免打开页面就被慢节点拖住。
     """
     def load() -> tuple[Optional[int], list, list, list, list]:

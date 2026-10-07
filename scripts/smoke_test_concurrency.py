@@ -486,7 +486,7 @@ with SessionLocal() as db:
     buyer = models.WebUser(username="cc-refund-buyer", password_hash="not-used",
                            is_active=True, points=REFUND_POINTS)
     staff = models.WebUser(username="cc-refund-staff", password_hash="not-used",
-                           is_active=True, is_staff=True)
+                           is_active=True, is_staff=True, admin_role="super")
     db.add_all([buyer, staff])
     db.commit()
     buyer_id, staff_id = buyer.id, staff.id

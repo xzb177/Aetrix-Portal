@@ -416,18 +416,6 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
                     getattr(item, "tmdb_id", None), True)
                 result["tmdb_hit"] = hit
                 result["tmdb_details"] = details
-        # 原语言海报（StrmAssistant #10）：IO 阶段预取语言偏好的海报，
-        # 写库阶段直接用（写事务里不碰网络，见模块注释处方 1）。
-        # poster_language() == "system" 时 images_with_language 返回 None，不额外请求。
-        try:
-            from backend.emby_server.tmdb import poster_language as _poster_lang
-            if _poster_lang() != "system":
-                _hit_for_img = result.get("tmdb_hit") or {}
-                _tid = str(_hit_for_img.get("id") or getattr(item, "tmdb_id", "") or "")
-                if _tid:
-                    result["tmdb_images_lang"] = tmdb_client.images_with_language(_tid, kind)
-        except Exception:
-            result["tmdb_images_lang"] = None
         # 豆瓣兜底：TMDB 没配置、或 TMDB 搜不到时才走。
         # 只补 TMDB 没给的（标题/年份/海报），绝不覆盖已有数据。
         #
@@ -527,7 +515,6 @@ def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
                 role=str(c.get("role") or "")[:200],
                 image=str(c.get("image") or "")[:1024],
                 sort_order=int(c.get("sort_order") or 0),
-                person_tmdb_id=str(c.get("person_id") or "")[:32],
             ))
     except Exception as exc:  # noqa: BLE001 — 演员落库失败不该影响主流程
         logger.debug("演员落库失败 %s: %s", getattr(item, "name", ""), exc)
@@ -585,8 +572,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                     needs_repair or not (item.imdb_id and item.aliases)):
                 tmdb_client.apply_details(item, details)
             if needs_repair or not (item.poster_path or item.primary_image_url):
-                tmdb_client.apply_images(item, details,
-                                         images_lang=fetched.get("tmdb_images_lang"))
+                tmdb_client.apply_images(item, details)
         if nfo_data:
             nfo_lib.apply_nfo(item, nfo_data, kind)
     elif fetched.get("tmdb_hit"):

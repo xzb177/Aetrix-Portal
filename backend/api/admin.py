@@ -340,6 +340,18 @@ class UserUpdateRequest(BaseModel):
     is_staff: Optional[bool] = None
 
 
+def _require_can_manage_target(current_admin: models.WebUser, target: models.WebUser) -> None:
+    """S2：管理员账号只能由超级管理员管理；运营 / 只读只能管普通用户"""
+    from backend import admin_roles
+
+    if target.is_staff and target.id != current_admin.id and not admin_roles.is_super(current_admin):
+        raise HTTPException(
+            status_code=403,
+            detail="目标账号是管理员：只有超级管理员能修改其他管理员（当前：{}）".format(
+                admin_roles.role_label(admin_roles.role_of(current_admin))),
+        )
+
+
 @admin_router.put("/users/{user_id}")
 def update_user(
     user_id: int,
@@ -349,8 +361,15 @@ def update_user(
 ):
     """更新用户状态（禁用/启用/授权管理员）
 
-    安全约束：不能禁用/降级自己，避免把自己锁在门外。
+    安全约束：
+    - 不能禁用/降级自己，避免把自己锁在门外；
+    - 授予 / 撤销管理员（``is_staff``）只有超级管理员能做，且授予时显式写**最低权限**
+      ``viewer``（再到「管理员」页调角色）——不再出现「空角色 = super」（S1）；
+    - 目标是管理员时只有超级管理员能改（S2）；不能停用 / 撤销最后一个超级管理员。
     """
+    from backend import admin_roles
+    from backend.api.admins_admin import MAX_ADMINS, _admins_query, _super_count
+
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -360,13 +379,34 @@ def update_user(
     ):
         raise HTTPException(status_code=400, detail="不能禁用或降级自己的账号")
 
+    _require_can_manage_target(current_admin, user)
+
+    staff_change = request.is_staff is not None and bool(request.is_staff) != bool(user.is_staff)
+    if staff_change and not admin_roles.is_super(current_admin):
+        raise HTTPException(status_code=403, detail="授予 / 撤销管理员只有超级管理员能做")
+
+    target_is_super = bool(user.is_staff) and admin_roles.role_of(user) == admin_roles.ROLE_SUPER
+    losing_super = target_is_super and (
+        request.is_active is False or request.is_staff is False
+    )
+    if losing_super and _super_count(db) <= 1:
+        raise HTTPException(status_code=400, detail="至少要保留一个超级管理员：请先给别的账号授予超级管理员")
+
     changed = {}
     if request.is_active is not None:
         user.is_active = request.is_active
         changed["is_active"] = request.is_active
-    if request.is_staff is not None:
-        user.is_staff = request.is_staff
-        changed["is_staff"] = request.is_staff
+    if staff_change:
+        if request.is_staff:
+            if _admins_query(db).count() >= MAX_ADMINS:
+                raise HTTPException(status_code=400, detail=f"管理员已达上限（{MAX_ADMINS} 个）")
+            user.is_staff = True
+            user.admin_role = admin_roles.ROLE_VIEWER
+            changed["admin_role"] = admin_roles.ROLE_VIEWER
+        else:
+            user.is_staff = False
+            user.admin_role = None
+        changed["is_staff"] = bool(request.is_staff)
 
     db.commit()
     _audit(db, current_admin, "update_user", "user", user.id, changed)
@@ -391,6 +431,8 @@ def reset_user_password(
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
+    # S2：重置其他管理员的密码 = 接管其账号，只有超级管理员能做
+    _require_can_manage_target(current_admin, user)
 
     user.password_hash = hash_password(request.new_password)
     db.commit()
@@ -1879,81 +1921,3 @@ async def economy_mark_order_paid(
 # ==================== 导出 ====================
 
 __all__ = ["admin_router"]
-
-
-# ==================== 多版本管理（对标 StrmAssistant #4） ====================
-
-@admin_router.get("/media/versions/{item_id}")
-def admin_get_versions(
-    item_id: str,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """查看某条目的所有多版本（管理后台用）。"""
-    from backend.emby_server import models as em
-    from backend.emby_server import merge_versions_worker as _mvw
-
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="条目不存在")
-    primary_id = item.merged_into_id or item.id
-    versions = _mvw.get_alternate_versions(db, primary_id)
-    return {
-        "primary_id": primary_id,
-        "versions": [
-            {
-                "id": v.id,
-                "guid": v.guid,
-                "name": v.name,
-                "file_path": v.file_path,
-                "height": v.height or 0,
-                "size": v.size or 0,
-                "is_primary": v.id == primary_id,
-                "is_merged": v.merged_into_id is not None,
-            }
-            for v in sorted(versions, key=lambda s: s.id)
-        ],
-    }
-
-
-@admin_router.post("/media/versions/{item_id}/unmerge")
-def admin_unmerge_version(
-    item_id: str,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """解除单个版本的合并（恢复为独立条目）。"""
-    from backend.emby_server import models as em
-    from backend.emby_server import merge_versions_worker as _mvw
-
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="条目不存在")
-    ok = _mvw.unmerge_version(db, item.id)
-    if not ok:
-        raise HTTPException(status_code=400, detail="该条目未被合并")
-    _audit(db, current_admin, "unmerge_version", "media_item", item.id,
-           {"name": item.name})
-    db.commit()
-    return {"success": True, "message": f"已解除合并：{item.name}"}
-
-
-@admin_router.post("/media/versions/{item_id}/unmerge-all")
-def admin_unmerge_all(
-    item_id: str,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """解除某主记录下所有版本的合并。"""
-    from backend.emby_server import models as em
-    from backend.emby_server import merge_versions_worker as _mvw
-
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="条目不存在")
-    primary_id = item.merged_into_id or item.id
-    count = _mvw.unmerge_all(db, primary_id)
-    _audit(db, current_admin, "unmerge_all_versions", "media_item", primary_id,
-           {"count": count})
-    db.commit()
-    return {"success": True, "message": f"已解除 {count} 个版本的合并"}

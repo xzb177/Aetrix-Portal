@@ -84,7 +84,7 @@ check("新账号不是会员（没有任何订阅）", r.json()["user"]["is_vip"
 
 with SessionLocal() as db:
     staff = models.WebUser(username="free_realm_staff", password_hash=hash_password("staffpass123"),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     db.add(staff)
     db.commit()
 

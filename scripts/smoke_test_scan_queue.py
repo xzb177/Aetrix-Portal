@@ -66,7 +66,7 @@ def wait_until(pred, timeout: float = 8.0, interval: float = 0.02) -> bool:
 def make_admin() -> dict:
     with SessionLocal() as db:
         user = models.WebUser(username="queue_admin", password_hash=hash_password("pass12345"),
-                              is_active=True, is_staff=True)
+                              is_active=True, is_staff=True, admin_role="super")
         db.add(user)
         db.commit()
         return {"Authorization": f"Bearer {create_access_token(user.id)}"}

@@ -70,7 +70,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 with SessionLocal() as db:
     realm = realms.active_realm(db)
     staff = models.WebUser(username="refund_staff", password_hash=hash_password("staffpass123"),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     buyer = models.WebUser(username="refund_buyer", password_hash=hash_password("buyerpass123"),
                            is_active=True, points=0)
     inviter = models.WebUser(username="refund_inviter", password_hash=hash_password("invpass123"),

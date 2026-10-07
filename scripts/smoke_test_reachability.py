@@ -59,7 +59,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def make_admin() -> dict:
     with SessionLocal() as db:
         user = models.WebUser(username="reach_admin", password_hash=hash_password("pass12345"),
-                              is_active=True, is_staff=True)
+                              is_active=True, is_staff=True, admin_role="super")
         db.add(user)
         db.commit()
         return {"Authorization": f"Bearer {create_access_token(user.id)}"}

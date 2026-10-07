@@ -590,7 +590,7 @@ purged = _purge_previous_runs()
 check("开跑前清理上一轮残留", True, f"媒体库 {purged} 项（正常情况下为 0）")
 
 staff = models.WebUser(username=f"mount_stf{suf}", password_hash=hash_password("pass12345"),
-                       is_staff=True)
+                       is_staff=True, admin_role="super")
 db.add(staff)
 
 # 挂载必须先落库：扫描按挂载 id 从数据库取行（与后台保存后的行为一致）

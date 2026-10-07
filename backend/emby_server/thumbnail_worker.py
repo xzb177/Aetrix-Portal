@@ -57,9 +57,8 @@ _start_lock = threading.Lock()
 
 def thumbnail_dir(guid: str) -> str:
     """某条目的缩略图目录。"""
-    # guid 只保留字母数字（与 mediainfo_persist._json_path_for_guid 同口径），
-    # 防路径穿越；guid 为空时返回一个不可能存在的路径，避免 TypeError
-    safe_guid = "".join(c for c in (guid or "") if c.isalnum())
+    # guid 为空时返回一个不可能存在的路径，避免 TypeError
+    safe_guid = (guid or "").strip()
     if not safe_guid:
         return os.path.join(THUMBNAIL_ROOT, "__invalid__")
     return os.path.join(THUMBNAIL_ROOT, safe_guid[:2], safe_guid)
@@ -101,14 +100,20 @@ def _resolve_video_path(item) -> Optional[str]:
     """解析视频文件的本地可读路径。
 
     file_path 已经是本地挂载路径（如 /mnt/mp/...），直接检查可读性。
-    mount:// 格式的路径暂不支持（返回 None，跳过该条目）。
     """
     path = (getattr(item, "file_path", None) or "").strip()
     if not path:
         return None
-    # mount:// 格式暂不支持：缩略图 worker 只处理本地可读路径
+    # mount:// 格式的转成本地路径（如果有）
     if path.startswith("mount://"):
-        return None
+        try:
+            from backend.emby_server import mounts as mount_lib
+            parsed = mount_lib.parse_mount_path(path)
+            if parsed:
+                # 尝试从挂载表找本地路径，找不到就跳过
+                return None
+        except Exception:
+            return None
     return path if os.path.isfile(path) else None
 
 
@@ -148,12 +153,7 @@ def extract_thumbnails(item) -> int:
         margin = 0
 
     generated = 0
-    video_start = time.monotonic()
     for i in range(count):
-        # 单视频总耗时上限：损坏文件不应卡死 worker（默认 5 分钟）
-        if time.monotonic() - video_start > THUMBNAIL_PER_VIDEO_TIMEOUT:
-            logger.warning("缩略图单视频超时 %s（已生成 %d 张）", item.name, generated)
-            break
         # 时间点：margin + (i + 0.5) / count * usable
         ts = margin + (i + 0.5) / count * usable
         out_path = os.path.join(out_dir, f"thumb_{i:03d}.jpg")
@@ -191,7 +191,7 @@ def extract_thumbnails(item) -> int:
             break
 
     if generated:
-        logger.debug("缩略图：%s 生成 %d 张", item.name, generated)
+        logger.info("缩略图：%s 生成 %d 张", item.name, generated)
     return generated
 
 
@@ -205,29 +205,23 @@ def _extract_once() -> Tuple[int, int]:
     db = SessionLocal()
     try:
         # 已探测（有 duration）且无缩略图的 movie/episode
-        # mount:// 路径在 SQL 层直接过滤（_resolve_video_path 会跳过，别拉回来再扔）
-        # order_by(id) + 只取 id 列做游标，避免大库下永远只扫"任意" N 条
-        rows = (
-            db.query(em.MediaItem.id)
+        items = (
+            db.query(em.MediaItem)
             .filter(
                 em.MediaItem.item_type.in_(("movie", "episode")),
                 em.MediaItem.deleted_at.is_(None),
                 em.MediaItem.merged_into_id.is_(None),
                 em.MediaItem.duration_ticks > 0,
                 em.MediaItem.file_path.isnot(None),
-                ~em.MediaItem.file_path.like("mount://%"),
             )
-            .order_by(em.MediaItem.id.asc())
             .limit(THUMBNAIL_BATCH_LIMIT)
             .all()
         )
-        # 按 id 取全行（分批，避免 1 万 ORM 常驻）
-        for (item_id,) in rows:
+        # 过滤掉已有缩略图的（文件系统检查）
+        pending = [i for i in items if not has_thumbnails(i.guid)]
+        for item in pending:
             if _stop_event.is_set():
                 break
-            item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
-            if not item or has_thumbnails(item.guid):
-                continue
             checked += 1
             try:
                 n = extract_thumbnails(item)
@@ -235,8 +229,6 @@ def _extract_once() -> Tuple[int, int]:
                     done += 1
             except Exception as e:
                 logger.warning("缩略图提取失败 %s: %s", item.name, e)
-            # 及时释放 ORM，避免 identity map 无限增长
-            db.expunge_all()
         return checked, done
     finally:
         db.close()
@@ -270,9 +262,6 @@ def _extract_loop():
                 logger.info("缩略图完成：检查 %d，完成 %d", checked, done)
         except Exception as e:
             logger.warning("缩略图失败: %s", e)
-        finally:
-            from backend.emby_server import worker_registry as _wr
-            _wr.heartbeat("thumbnail")
 
 
 def start() -> bool:
@@ -289,8 +278,6 @@ def start() -> bool:
             target=_extract_loop, name="thumbnail-extract", daemon=True
         )
         _thumb_thread.start()
-        from backend.emby_server import worker_registry as _wr
-        _wr.register("thumbnail", _thumb_thread)
         return True
 
 

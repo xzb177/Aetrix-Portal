@@ -138,7 +138,7 @@ async function resolveAndPlay() {
       .filter((s) => s.Type === 'Audio')
       .map((a) => ({ label: a.DisplayTitle || a.Language || a.Codec || '音轨' }))
 
-    // 1) 直连优先（服务器地址与页面同源，JWT 已附在 api_key）
+    // 1) 直连优先（服务器地址与页面同源，地址已附短期播放签名；JWT 不进 URL）
     const directUrl = source?.DirectStreamUrl
     probing.value = true
     let directOk = false

@@ -291,9 +291,11 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 - 修法通常二选一：在那台 EA 机器上把同样的路径 / rclone 配好；或者改用服务器侧直接访问的来源
   （`115` / `rclone`），它们只要两台机器能出网就行。
 
-> EA 上的体检端点是 `GET /api/admin/mounts/health`，鉴权用两端共享的 `SECRET_KEY`
-> （请求头 `X-Panel-Key`）。**EA 与 EM 的 `SECRET_KEY` 必须一致**，否则会得到
-> 「EA 拒绝了面板密钥」；该端点不存在于 EM 上，也不面向公网。
+> EA 上的体检端点是 `GET /api/admin/mounts/health`，鉴权用**节点签名**（`backend/node_auth.py`：
+> EM 只发送 HMAC 签名头，绝不发送 `SECRET_KEY` 或节点密钥本身，且不跟随重定向）。
+> 节点密钥 = `NODE_SHARED_SECRET`，未设置时由 `SECRET_KEY` 派生，所以 **EA 与 EM 的
+> `SECRET_KEY`（或 `NODE_SHARED_SECRET`）必须一致，且两端版本都要包含此修复**，否则会得到
+> 「EA 拒绝了节点签名」；该端点不存在于 EM 上，也不面向公网。
 
 ### 挂载来源不可用（媒体库扫不出内容 / 扫描日志里出现「跳过清理」）
 

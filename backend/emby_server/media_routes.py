@@ -40,7 +40,7 @@ from backend.emby_server.api import (
     _first_image,
     _play_target,
     _queue_image_repair,
-    _require_item,
+    _require_visible_item,
     video_hls,
 )
 
@@ -63,14 +63,6 @@ def _remember_local_image(db: Session, item: em.MediaItem, kind: str, path: str)
         db.rollback()
 
 
-def _get_item_or_404(db: Session, item_id: str) -> em.MediaItem:
-    """按 guid 查条目，不存在则抛 404（多版本/片头标记/剧集组等新端点共用）。"""
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return item
-
-
 @emby_router.get("/emby/Videos/{item_id}/hls1")
 @emby_router.get("/Videos/{item_id}/hls1")
 async def video_hls1(item_id: str, request: Request,
@@ -85,7 +77,7 @@ async def video_hls1(item_id: str, request: Request,
 def download_item(item_id: str, request: Request,
                   user: models.WebUser = Depends(get_emby_user),
                   db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     # 付费墙：下载与在线播放同一门槛，避免绕过
     ensure_playback_allowed(db, user)
     # 站点级下载开关：第三方播放器触发的下载同样拦下。
@@ -316,8 +308,6 @@ def item_thumbnails(item_id: str, request: Request,
         raise HTTPException(status_code=404, detail="Item not found")
     thumbs = _tw.list_thumbnails(item.guid)
     return {"TotalRecordCount": len(thumbs)}
-
-
 
 
 # ---------------------------------------------------------------------------

@@ -150,13 +150,11 @@ def test_transient_failure_does_not_poison_l1(monkeypatch):
 
 def test_search_returns_hit_when_later_candidate_transient(monkeypatch):
     """个别候选瞬态失败、别的候选命中 → 返回命中（部分失败不挡命中）"""
-    # 语言 fallback 会放大调用次数，固定单语言以测试候选级容错
-    monkeypatch.setattr(tmdb_mod, "MOVIEDB_FALLBACK_LANGUAGES", ("zh-CN",))
     assert len(list(tmdb_mod._search_candidates(NAME))) >= 3, "候选塌缩了测不出取舍"
     client = _client(monkeypatch, lambda u, p: _resp())
     calls = {"n": 0}
 
-    def fake_search_raw(query, year, kind, lang=None):
+    def fake_search_raw(query, year, kind):
         calls["n"] += 1
         if calls["n"] == 1:
             raise TmdbTransientError("boom")
@@ -176,7 +174,7 @@ def test_search_none_when_all_candidates_answered_empty(monkeypatch):
 
 def test_search_candidates_graceful_with_warning(monkeypatch, caplog):
     """求片中心契约：瞬态失败也不 500，返回空表但留下 WARNING"""
-    def fake_search_raw(query, year, kind, lang=None):
+    def fake_search_raw(query, year, kind):
         raise TmdbTransientError("boom")
 
     client = _client(monkeypatch, lambda u, p: _resp())

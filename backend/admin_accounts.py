@@ -82,6 +82,9 @@ def upsert_admin(db, username: str, password: str | None = None,
             password_hash=hash_password(applied),
             is_staff=True,
             is_active=True,
+            # 服务器本机建的号（安装向导 / create_admin.py）= 站长：显式 super。
+            # 空角色现在按只读处理（安全修复 S1），所以必须写明。
+            admin_role="super",
             # 注册渠道归因（v2.44.0）：管理员建的号不混进「开放注册」
             register_channel=register_channel.ADMIN,
         )
@@ -91,6 +94,8 @@ def upsert_admin(db, username: str, password: str | None = None,
             applied = generate_password()
         user.is_staff = True
         user.is_active = True
+        # 只有能在服务器上执行命令的人才走得到这里：显式写 super（S1：空角色不再等于 super）
+        user.admin_role = "super"
         if applied:
             user.password_hash = hash_password(applied)
 

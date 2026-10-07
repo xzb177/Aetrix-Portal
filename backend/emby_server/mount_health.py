@@ -20,8 +20,9 @@
    **以 EA 视角**的结果并存进 ``SystemConfig``（键见 ``EA_HEALTH_KEY``），
    供「存储挂载」页展示「EM 可达 / EA 可达」两个徽标。
 
-鉴权用两端本来就共享的 ``SECRET_KEY``：EA 校验请求头 ``X-Panel-Key``，缺失或不一致一律 401
-（密钥没配置时也拒绝，绝不能因为漏配而变成公开端点）。
+鉴权用**节点密钥**（``backend/node_auth.py``，安全修复 S3）：EM 发起的请求只带 HMAC 签名头
+（时间戳 + nonce + 方法 + 路径），绝不发送 ``SECRET_KEY`` 或节点密钥本身；运维脚本可用
+``X-Panel-Key: <节点密钥>``。缺失或不一致一律 401（密钥没配置时也拒绝）。
 """
 from __future__ import annotations
 
@@ -45,8 +46,8 @@ logger = logging.getLogger(__name__)
 
 # EM 保存 / 手动刷新时，把 EA 视角的体检结果存进这条 SystemConfig（JSON）
 EA_HEALTH_KEY = "emby_managed_mounts_health"
-# EM → EA 的证明：请求头里带共享密钥
-PANEL_KEY_HEADER = "X-Panel-Key"
+# EM → EA 的证明：见 backend/node_auth.py（签名头；静态头只给运维脚本用）
+from backend.node_auth import PANEL_KEY_HEADER  # noqa: E402
 
 PLAYBACK_NODE_EA = "ea"
 PLAYBACK_NODE_EXTERNAL = "external"
@@ -59,21 +60,26 @@ EA_FETCH_TIMEOUT = float(os.getenv("MOUNT_HEALTH_FETCH_TIMEOUT", "60"))
 # ==================== 面板密钥 ====================
 
 def panel_key() -> str:
-    return (os.getenv("SECRET_KEY") or "").strip()
+    """节点密钥（**不是** SECRET_KEY）：``NODE_SHARED_SECRET`` 或由 SECRET_KEY 单向派生"""
+    from backend.node_auth import node_shared_secret
+
+    return node_shared_secret()
 
 
 def panel_key_ok(request: Request) -> bool:
-    """请求头里的密钥是否等于本机的 SECRET_KEY（常量时间比较）"""
-    expected = panel_key()
-    provided = (request.headers.get(PANEL_KEY_HEADER) or "").strip()
-    return bool(expected) and bool(provided) and hmac.compare_digest(expected, provided)
+    """签名头或静态节点密钥头是否有效（常量时间比较；SECRET_KEY 原文不再被接受）"""
+    from backend.node_auth import verify_headers
+
+    path = getattr(getattr(request, "url", None), "path", "") or "/"
+    return verify_headers(request.headers, request.method, path)
 
 
 def require_panel_key(request: Request) -> None:
     if not panel_key_ok(request):
         raise HTTPException(
             status_code=401,
-            detail=f"缺少或错误的 {PANEL_KEY_HEADER}（应为 EM 的 SECRET_KEY）",
+            detail=f"缺少或错误的节点签名 / {PANEL_KEY_HEADER}（应为节点密钥 NODE_SHARED_SECRET，"
+                   "不再接受 SECRET_KEY 原文）",
         )
 
 
@@ -217,7 +223,7 @@ panel_router = APIRouter(prefix="/api/admin/mounts", tags=["挂载体检"])
 async def mounts_health_endpoint(db: Session = Depends(get_db)):
     """EA 视角的挂载体检（EM 保存服务入口 / 手动刷新时调用）
 
-    鉴权走 ``X-Panel-Key``（= 共享的 SECRET_KEY），不是管理员 JWT：
+    鉴权走节点签名（``backend/node_auth.py``，不是 SECRET_KEY 原文），不是管理员 JWT：
     EA 上不存在后台会话，而这条端点只该由 EM 调用。
 
     体检范围是本机能碰到的那几条挂载（不按服过滤）：这台机器上的存储就是它的能力。
@@ -235,18 +241,23 @@ async def fetch_ea_health(base_url: str, timeout: float = EA_FETCH_TIMEOUT) -> d
     """
     import httpx
 
+    from backend.node_auth import signed_headers
+
     url = f"{(base_url or '').rstrip('/')}/api/admin/mounts/health"
-    key = panel_key()
-    if not key:
-        return {"ok": False, "error": "EM 未配置 SECRET_KEY，无法向 EA 证明身份"}
+    headers = signed_headers("GET", url)
+    if not headers:
+        return {"ok": False, "error": "EM 未配置 SECRET_KEY / NODE_SHARED_SECRET，无法向 EA 证明身份"}
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(url, headers={PANEL_KEY_HEADER: key})
+        # S3：不跟随重定向（跨域 302 不会剥离自定义头）；只发签名，不发密钥
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await client.get(url, headers=headers)
     except Exception as exc:  # noqa: BLE001 — 网络问题只报告，不影响保存
         return {"ok": False, "error": f"无法连接 EA: {exc}"}
 
+    if 300 <= resp.status_code < 400:
+        return {"ok": False, "error": f"EA 返回重定向 HTTP {resp.status_code}（为安全不跟随，请填写最终地址）"}
     if resp.status_code == 401:
-        return {"ok": False, "error": "EA 拒绝了面板密钥（两端 SECRET_KEY 必须一致）"}
+        return {"ok": False, "error": "EA 拒绝了节点签名（两端 NODE_SHARED_SECRET / SECRET_KEY 必须一致，且 EA 需升级到同一版本）"}
     if resp.status_code >= 400:
         return {"ok": False, "error": f"EA 返回 HTTP {resp.status_code}"}
     try:

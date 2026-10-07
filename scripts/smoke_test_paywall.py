@@ -65,7 +65,7 @@ with open(media_file, "wb") as fh:
     fh.write(b"\x00" * 4096)
 
 db = SessionLocal()
-staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("pass12345"), is_staff=True)
+staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("pass12345"), is_staff=True, admin_role="super")
 member = models.WebUser(username=f"mem{suf}", password_hash=hash_password("pass12345"))
 free = models.WebUser(username=f"free{suf}", password_hash=hash_password("pass12345"))
 plan = models.SubscriptionPlan(name=f"付费墙套餐{suf}", price=19.9, duration_days=30, is_active=True)

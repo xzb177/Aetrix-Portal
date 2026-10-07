@@ -320,8 +320,8 @@ async function api(path, opts = {}) {
   const t = await r.text();
   return t ? JSON.parse(t) : null;
 }
-/* img 标签带不了 header，走 api_key 参数（后端支持，与 user_frontend 同口径） */
-const mkey = () => '&api_key=' + encodeURIComponent(store.k.token);
+/* 图片端点不需要鉴权：不再把 token 拼进图片 URL（安全修复 H2，与 user_frontend 同口径） */
+const mkey = () => '';
 const poster = (id, w) => '/emby/Items/' + encodeURIComponent(id) + '/Images/Primary?maxWidth=' + (w || 300) + mkey();
 const backdrop = (id, w) => '/emby/Items/' + encodeURIComponent(id) + '/Images/Backdrop?maxWidth=' + (w || 1280) + mkey();
 

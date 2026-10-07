@@ -4,7 +4,8 @@
 后台此前的身份只有 ``is_staff``：给客服 / 运营 / 审计开号，就得把「改系统设置、改上游 Key、
 管管理员」一起交出去。这里钉的是**角色真的生效**，而不只是界面上多了一个下拉框：
 
-1. **升级不变权**：``admin_role`` 为空的老管理员按超级管理员处理（/auth/me 报 super）；
+1. **fail closed（安全修复 S1）**：``admin_role`` 为空的管理员按只读（viewer）处理；升级上来的
+   站长由启动期迁移 ``admin_roles.ensure_legacy_admin_roles`` 显式写成 super；
 2. **三种角色**：super（全部）/ operator（日常运营，不能改设置、Key、策略、管理员）/
    viewer（只读：GET 放行、任何写操作 403）；
 3. **判定只有一个入口**：``/api/admin/*`` 与 ``/api/admin/emby/*`` 两套鉴权走同一套规则；
@@ -63,8 +64,8 @@ def headers(user_id: int) -> dict:
 
 
 # ==================== 1. 升级不变权 ====================
-print("=== 1. 老管理员（admin_role 为空）按超级管理员处理 ===")
-owner_id = make_user("owner", is_staff=True)          # 升级上来的老管理员：没有 admin_role
+print("=== 1. 空角色管理员按只读处理（S1 fail closed），站长由迁移显式写成 super ===")
+owner_id = make_user("owner", is_staff=True)          # 没有 admin_role 的管理员
 operator_id = make_user("operator")
 viewer_id = make_user("auditor")
 disabled_id = make_user("disabled_guy", is_active=False)
@@ -72,7 +73,18 @@ disabled_id = make_user("disabled_guy", is_active=False)
 H_OWNER, H_OP, H_VIEW = headers(owner_id), headers(operator_id), headers(viewer_id)
 
 me = client.get("/api/admin/auth/me", headers=H_OWNER)
-check("老管理员 /auth/me 报 super（升级前权限完全一致）",
+check("空角色管理员 /auth/me 报 viewer（不再默认 super）",
+      me.status_code == 200 and me.json().get("admin_role") == "viewer"
+      and me.json().get("is_super") is False, str(me.json()))
+check("空角色管理员不能写（不能授权管理员）",
+      client.post("/api/admin/admins", headers=H_OWNER,
+                  json={"username": "operator", "role": "operator"}).status_code == 403)
+# 模拟启动期迁移的结果：站长被显式写成 super（迁移本身见 tests/test_security_critical.py）
+with SessionLocal() as db:
+    db.query(models.WebUser).filter(models.WebUser.id == owner_id).update({"admin_role": "super"})
+    db.commit()
+me = client.get("/api/admin/auth/me", headers=H_OWNER)
+check("站长（显式 super）/auth/me 报 super",
       me.status_code == 200 and me.json().get("admin_role") == "super"
       and me.json().get("is_super") is True and me.json().get("role_label") == "超级管理员",
       str(me.json()))
@@ -190,10 +202,10 @@ check("授权 / 改角色 / 撤销都留了审计日志",
 
 # ==================== 7. 角色工具函数口径 ====================
 print("\n=== 7. 口径 ===")
-check("normalize_role：空 / 未知 → super（升级不变权）",
+check("normalize_role：空 / 未知 → viewer（S1 fail closed），super 必须显式写",
       (admin_roles.normalize_role(None), admin_roles.normalize_role(""),
        admin_roles.normalize_role("超级管理员"), admin_roles.normalize_role("super")) ==
-      ("super", "super", "super", "super"))
+      ("viewer", "viewer", "viewer", "super"))
 check("normalize_role：大小写与空格收敛",
       admin_roles.normalize_role(" OPERATOR ") == "operator")
 check("role_label 有中文标签", admin_roles.role_label("viewer") == "只读审计")

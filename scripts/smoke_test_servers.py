@@ -205,7 +205,7 @@ def config_of(key: str) -> str:
 db = SessionLocal()
 try:
     staff = models.WebUser(username=f"sv_staff{suf}", password_hash=hash_password(STAFF_PASSWORD),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     db.add(staff)
     db.commit()
     staff_id = staff.id

@@ -61,7 +61,7 @@ with SessionLocal() as db:
     alice = models.WebUser(username="sec-alice", password_hash=hash_password("alice-pw"), is_active=True)
     bob = models.WebUser(username="sec-bob", password_hash=hash_password("bob-pw"), is_active=True)
     staff = models.WebUser(
-        username="sec-staff", password_hash=hash_password("staff-pw"), is_active=True, is_staff=True
+        username="sec-staff", password_hash=hash_password("staff-pw"), is_active=True, is_staff=True, admin_role="super"
     )
     disabled = models.WebUser(
         username="sec-disabled", password_hash=hash_password("disabled-pw"), is_active=False

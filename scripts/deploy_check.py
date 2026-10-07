@@ -161,7 +161,7 @@ def preflight(media_dir: str) -> tuple[int, str, str]:
     password = f"DeployCheck#{suffix}"
     db = SessionLocal()
     user = models.WebUser(username=username, password_hash=hash_password(password),
-                          is_staff=True, is_active=True)
+                          is_staff=True, admin_role="super", is_active=True)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -388,6 +388,7 @@ def run_split_checks(em_base: str, ea_base: str, username: str, password: str,
     status, text, _ = request("GET", f"{ea_base}/api/admin/mounts/health")
     check("EA 挂载体检端点：无面板密钥时被拒", status == 401, f"HTTP {status}")
 
+    # S3：节点密钥（NODE_SHARED_SECRET 或由 SECRET_KEY 派生），不是 SECRET_KEY 原文
     status, text, _ = request("GET", f"{ea_base}/api/admin/mounts/health",
                               extra_headers={"X-Panel-Key": panel_key})
     ea_health = as_json(text) or {}
@@ -550,7 +551,10 @@ def main() -> int:
             "serve_emby.py", ea_port, args.timeout, label="EA（Emby 协议网关）",
             extra_env={"SECRET_KEY": secret, "EM_PANEL_URL": em_split_base})
         procs.append(ea_proc)
-        run_split_checks(em_split_base, ea_base, username, password, panel_key=secret)
+        import hashlib as _hl
+        import hmac as _hm
+        node_key = _hm.new(secret.encode("utf-8"), b"aetrix-node-auth", _hl.sha256).hexdigest()
+        run_split_checks(em_split_base, ea_base, username, password, panel_key=node_key)
     finally:
         teardown(procs, base, user_id, args.keep)
         shutil.rmtree(media_dir, ignore_errors=True)

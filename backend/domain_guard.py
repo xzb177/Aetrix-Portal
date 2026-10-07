@@ -15,7 +15,12 @@
 2. ``CloudflareIPMiddleware`` —— 取真实用户 IP：
    - 「流媒体加速」开关打开时自动启用；否则看环境变量 ``TRUST_CF_IP=true``
      （默认关闭，不信任任何代理头）；
-   - 优先 ``CF-Connecting-IP``，回退 ``X-Forwarded-For`` 首个；
+   - **只有 TCP 直连对端是可信代理时才读代理头**（安全修复 H4）：Cloudflare 官方网段
+     （内置，可用 ``CLOUDFLARE_IP_RANGES`` 覆盖）、本机回环、``TRUSTED_PROXIES`` 里的网段。
+     直连源站的请求带 ``CF-Connecting-IP: 127.0.0.1`` 不再生效；
+   - 优先 ``CF-Connecting-IP``，回退 ``X-Forwarded-For`` **最后一段**（最近一跳代理追加的，
+     首段是客户端可伪造的）；
+   - 还原出的地址是回环 / 未指定地址时拒绝（防止借此冒充本机绕过 /metrics 等）；
    - 只接受合法 IP 格式，非法的直接忽略（不让伪造头污染日志/限流）；
    - 把解析出的 IP 写回 ``scope["client"]``，下游的限流/日志拿到的就是真人 IP。
 
@@ -176,6 +181,53 @@ class DomainGuardMiddleware:
         await self.app(scope, receive, send)
 
 
+# Cloudflare 官方公布的回源网段（https://www.cloudflare.com/ips-v4 / ips-v6，2026-10 取）
+CLOUDFLARE_IP_RANGES_ENV = "CLOUDFLARE_IP_RANGES"
+DEFAULT_CLOUDFLARE_RANGES = (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+)
+
+
+def _cloudflare_networks() -> list:
+    raw = (os.environ.get(CLOUDFLARE_IP_RANGES_ENV) or "").strip()
+    parts = [p.strip() for p in raw.split(",") if p.strip()] if raw else list(DEFAULT_CLOUDFLARE_RANGES)
+    nets = []
+    for part in parts:
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def _peer_trusted(peer: str) -> bool:
+    """TCP 直连对端是否可信：Cloudflare 网段 / 回环 / TRUSTED_PROXIES"""
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for net in _cloudflare_networks():
+        if addr.version == net.version and addr in net:
+            return True
+    from backend.ratelimit import _is_trusted_proxy
+
+    return _is_trusted_proxy(peer)
+
+
+def _spoofable_target(ip: str) -> bool:
+    """还原出来的「真实 IP」是回环 / 未指定地址：不可能是真实公网用户，拒绝"""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return addr.is_loopback or addr.is_unspecified
+
+
 class CloudflareIPMiddleware:
     """CF 真实 IP 还原的纯 ASGI 中间件（见模块文档）。"""
 
@@ -184,6 +236,12 @@ class CloudflareIPMiddleware:
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") in ("http", "websocket") and _trust_cf_ip():
+            client = scope.get("client")
+            peer = client[0] if isinstance(client, (list, tuple)) and client else ""
+            if not _peer_trusted(str(peer or "")):
+                # H4：直连源站（不经 CF / 本机反代）的请求，代理头一律不信
+                await self.app(scope, receive, send)
+                return
             headers = {k.lower(): v for k, v in (scope.get("headers") or [])}
             real_ip = ""
             cf_ip = headers.get(b"cf-connecting-ip")
@@ -196,15 +254,15 @@ class CloudflareIPMiddleware:
                 xff = headers.get(b"x-forwarded-for")
                 if xff:
                     try:
-                        real_ip = xff.decode("latin-1").split(",")[0].strip()
+                        hops = [h.strip() for h in xff.decode("latin-1").split(",") if h.strip()]
+                        real_ip = hops[-1] if hops else ""
                     except Exception:
                         real_ip = ""
-            if real_ip and _valid_ip(real_ip):
-                client = scope.get("client")
+            if real_ip and _valid_ip(real_ip) and not _spoofable_target(real_ip):
                 port = client[1] if isinstance(client, (list, tuple)) and len(client) > 1 else 0
                 scope["client"] = (real_ip, port)
                 # 给下游留个标记：这个 IP 是代理头还原的
                 scope.setdefault("state", {})["real_ip_from_proxy"] = real_ip
             elif real_ip:
-                logger.warning("忽略非法代理 IP 头: %r", real_ip[:64])
+                logger.warning("忽略非法 / 可疑代理 IP 头: %r", real_ip[:64])
         await self.app(scope, receive, send)
