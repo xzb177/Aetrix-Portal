@@ -205,6 +205,21 @@ const GROUPS: Group[] = [
       { key: 'promotion_reward_days', label: '推广奖励·有效期天数', type: 'int', suffix: '天', hint: '类型为「有效期」时生效；0 = 不发' },
     ],
   },
+  {
+    id: 'stream_accel',
+    title: '流媒体加速',
+    desc: '一键开启：强制域名访问（防 IP 直连） + 自动信任 CF 真实 IP + 播放地址统一用加速域名',
+    icon: Zap,
+    fields: [
+      { key: 'stream_accel_enabled', label: '启用加速', type: 'bool' },
+      {
+        key: 'stream_accel_domain',
+        label: '加速域名',
+        type: 'str',
+        hint: '例如 emby.135505.autos，不带 https://；保存后最长 60 秒生效；开启后只能用该域名访问',
+      },
+    ],
+  },
 ]
 
 const loading = ref(true)
