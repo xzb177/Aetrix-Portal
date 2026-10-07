@@ -147,7 +147,8 @@ def test_apply_nfo_movie_sets_text_fields_and_ids():
     item = _item()
     nfo_lib.apply_nfo(item, nfo_lib.parse_nfo(MOVIE_NFO), "movie")
     assert item.name == "千与千寻"
-    assert item.sort_name == "千与千寻"
+    # 拼音排序（StrmAssistant #12）：中文标题的 sort_name 是拼音首字母
+    assert item.sort_name == "qyqx"
     assert item.original_title == "千と千尋の神隠し"
     assert item.overview == "少女千寻误入神灵世界……"
     assert item.community_rating == 8.5
