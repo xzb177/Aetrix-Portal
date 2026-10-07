@@ -324,9 +324,12 @@ def get_tmdb_language(
     """TMDB 首选语言：当前生效值 + 可选列表。
 
     from_env 为真时环境变量 TMDB_LANGUAGE 覆盖了后台配置（下拉改了也不生效）。
+
+    refresh=True 直查 DB（绕过 30s 进程缓存 + 60s store TTL）：管理后台
+    刚保存后立刻 GET 必须看到新值，不能等 TTL 过期。
     """
     return {
-        "language": preferred_language(db),
+        "language": preferred_language(db, refresh=True),
         "options": list(TMDB_LANGUAGE_OPTIONS),
         "default": TMDB_PREFERRED_LANGUAGE_DEFAULT,
         "from_env": bool((os.getenv("TMDB_LANGUAGE") or "").strip()),

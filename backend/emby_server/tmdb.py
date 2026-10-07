@@ -521,18 +521,23 @@ def validate_base(raw: str, field: str) -> str:
     return normalize_base(value, "")
 
 
-def _config_text(key: str, db=None) -> str:
-    """读一个 SystemConfig 字符串；读不到返回空（表没建好 / 未配置）"""
+def _config_text(key: str, db=None, *, refresh: bool = False) -> str:
+    """读一个 SystemConfig 字符串；读不到返回空（表没建好 / 未配置）
+
+    refresh=True 时绕过 store 的 TTL 热缓存，直查 DB（管理后台 GET 接口
+    在保存后立刻读时用，避免 60s TTL 窗口内读到旧值）。
+    """
     from backend.integrations import store
     try:
+        ttl = 0 if refresh else store.TTL_DEFAULT
         if db is None:
             from backend.database import SessionLocal
             session = SessionLocal()
             try:
-                return store.get_value(session, key, "")
+                return store.get_value(session, key, "", ttl=ttl)
             finally:
                 session.close()
-        return store.get_value(db, key, "")
+        return store.get_value(db, key, "", ttl=ttl)
     except Exception:  # noqa: BLE001 — DB 没建好时当没配
         return ""
 
@@ -584,18 +589,23 @@ def invalidate_settings() -> None:
 _LANGUAGE_CACHE: dict = {"at": 0.0, "value": ""}
 
 
-def preferred_language(db=None) -> str:
+def preferred_language(db=None, *, refresh: bool = False) -> str:
     """TMDB 首选语言：环境变量 TMDB_LANGUAGE > SystemConfig > zh-CN。
 
     与 settings() 同一套口径：进程内短 TTL 缓存（读多写少），保存时
     invalidate_language() 立刻失效。非法值回落到默认（防手写 DB 搞坏）。
+
+    refresh=True 时绕过 _LANGUAGE_CACHE 和 store TTL 缓存，直查 DB
+    （管理后台 GET /scrape/tmdb-language 在保存后立刻读时用）。
     """
     now = time.monotonic()
     with _settings_lock:
-        if (now - _LANGUAGE_CACHE["at"]) < SETTINGS_TTL_SEC and _LANGUAGE_CACHE["value"]:
+        if not refresh and (now - _LANGUAGE_CACHE["at"]) < SETTINGS_TTL_SEC \
+                and _LANGUAGE_CACHE["value"]:
             return _LANGUAGE_CACHE["value"]
     env_lang = (os.getenv("TMDB_LANGUAGE") or "").strip()
-    cfg_lang = (_config_text(TMDB_PREFERRED_LANGUAGE_CONFIG_KEY, db) or "").strip()
+    cfg_lang = (_config_text(TMDB_PREFERRED_LANGUAGE_CONFIG_KEY, db,
+                            refresh=refresh) or "").strip()
     value = env_lang or cfg_lang or TMDB_PREFERRED_LANGUAGE_DEFAULT
     if value not in TMDB_LANGUAGE_OPTIONS:
         value = TMDB_PREFERRED_LANGUAGE_DEFAULT
