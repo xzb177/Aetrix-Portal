@@ -1932,6 +1932,8 @@ def admin_unmerge_version(
     ok = _mvw.unmerge_version(db, item.id)
     if not ok:
         raise HTTPException(status_code=400, detail="该条目未被合并")
+    _audit(db, current_admin, "unmerge_version", "media_item", item.id,
+           {"name": item.name})
     db.commit()
     return {"success": True, "message": f"已解除合并：{item.name}"}
 
@@ -1951,5 +1953,7 @@ def admin_unmerge_all(
         raise HTTPException(status_code=404, detail="条目不存在")
     primary_id = item.merged_into_id or item.id
     count = _mvw.unmerge_all(db, primary_id)
+    _audit(db, current_admin, "unmerge_all_versions", "media_item", primary_id,
+           {"count": count})
     db.commit()
     return {"success": True, "message": f"已解除 {count} 个版本的合并"}
