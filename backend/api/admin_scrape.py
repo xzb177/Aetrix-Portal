@@ -356,7 +356,13 @@ def save_tmdb_language(
     #（保存后同一 db 读必须看到新值）
     db.expire_all()
     invalidate_language()
-    return {"success": True, "language": preferred_language(db)}
+    # 直接用刚保存的值计算生效值，不经过 preferred_language(db) 的 DB 回读：
+    # 回读要走 _LANGUAGE_CACHE + store._ttl_cache 两层缓存，任何一层残留旧值都会
+    # 被重新缓存并污染后续的 get_tmdb_language（保存后读到旧值的根因）。
+    # lang 已校验合法；环境变量优先口径与 preferred_language 一致。
+    env_lang = (os.getenv("TMDB_LANGUAGE") or "").strip()
+    effective = env_lang if env_lang in TMDB_LANGUAGE_OPTIONS else lang
+    return {"success": True, "language": effective}
 
 
 # ==================== 条目级重刮 ====================
