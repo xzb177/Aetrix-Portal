@@ -66,8 +66,9 @@ _start_lock = threading.Lock()
 
 def thumbnail_dir(guid: str) -> str:
     """某条目的缩略图目录。"""
-    # guid 为空时返回一个不可能存在的路径，避免 TypeError
-    safe_guid = (guid or "").strip()
+    # guid 只保留字母数字（与 mediainfo_persist._json_path_for_guid 同口径），
+    # 防路径穿越；guid 为空时返回一个不可能存在的路径，避免 TypeError
+    safe_guid = "".join(c for c in (guid or "") if c.isalnum())
     if not safe_guid:
         return os.path.join(THUMBNAIL_ROOT, "__invalid__")
     return os.path.join(THUMBNAIL_ROOT, safe_guid[:2], safe_guid)
@@ -109,20 +110,14 @@ def _resolve_video_path(item) -> Optional[str]:
     """解析视频文件的本地可读路径。
 
     file_path 已经是本地挂载路径（如 /mnt/mp/...），直接检查可读性。
+    mount:// 格式的路径暂不支持（返回 None，跳过该条目）。
     """
     path = (getattr(item, "file_path", None) or "").strip()
     if not path:
         return None
-    # mount:// 格式的转成本地路径（如果有）
+    # mount:// 格式暂不支持：缩略图 worker 只处理本地可读路径
     if path.startswith("mount://"):
-        try:
-            from backend.emby_server import mounts as mount_lib
-            parsed = mount_lib.parse_mount_path(path)
-            if parsed:
-                # 尝试从挂载表找本地路径，找不到就跳过
-                return None
-        except Exception:
-            return None
+        return None
     return path if os.path.isfile(path) else None
 
 

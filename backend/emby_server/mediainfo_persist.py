@@ -127,10 +127,13 @@ def _fingerprint_match(item, payload: dict) -> bool:
         old_size = int(payload.get("file_size", 0) or 0)
     except (TypeError, ValueError):
         return False
-    # mtime 和 size 都对不上才算变更；任一缺失时保守地认为未变更（避免反复重探）
-    if old_mtime and cur["file_mtime"] and abs(old_mtime - cur["file_mtime"]) > 1.0:
+    # 指纹缺失 = 无法验证文件是否变更 → 保守地视为不匹配（走 ffprobe 重探）。
+    # 反过来"缺失即视为未变更"会用无法证伪的旧数据：文件被替换后仍恢复过期媒体信息。
+    if not old_size or not cur["file_size"]:
         return False
-    if old_size and cur["file_size"] and old_size != cur["file_size"]:
+    if old_size != cur["file_size"]:
+        return False
+    if old_mtime and cur["file_mtime"] and abs(old_mtime - cur["file_mtime"]) > 1.0:
         return False
     return True
 

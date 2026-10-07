@@ -46,26 +46,34 @@ def find_duplicate_persons(db) -> list[tuple]:
 
 
 def deduplicate_persons(db) -> int:
-    """删除重复的演员行（保留 id 最小的一条）。返回删除数。"""
+    """删除重复的演员行（保留数据最全的一条）。返回删除数。
+
+    保留优先级：有头像 > id 最小。先入库的行不一定数据最全，
+    按 id 最小保留可能把唯一有头像的行删掉。
+    """
     from backend.emby_server import models as em
 
     total_deleted = 0
     for item_id, person_tmdb_id, _cnt in find_duplicate_persons(db):
-        # 保留 id 最小的，删其余
-        keep = (
-            db.query(em.EmbyPerson.id)
+        # 优先保留有头像的行，其次 id 最小
+        candidates = (
+            db.query(em.EmbyPerson)
             .filter(em.EmbyPerson.item_id == item_id)
             .filter(em.EmbyPerson.person_tmdb_id == person_tmdb_id)
             .order_by(em.EmbyPerson.id.asc())
-            .first()
+            .all()
         )
-        if not keep:
+        if not candidates:
             continue
+        with_image = [c for c in candidates
+                      if (c.image or "").strip()]
+        keep = (with_image or candidates)[0]
+        keep_ids = {keep.id}
         deleted = (
             db.query(em.EmbyPerson)
             .filter(em.EmbyPerson.item_id == item_id)
             .filter(em.EmbyPerson.person_tmdb_id == person_tmdb_id)
-            .filter(em.EmbyPerson.id != keep.id)
+            .filter(~em.EmbyPerson.id.in_(keep_ids))
             .delete(synchronize_session=False)
         )
         total_deleted += deleted
@@ -101,7 +109,7 @@ def refresh_person_images(db) -> int:
         return 0
 
     fixed = 0
-    client = tmdb_client()
+    client = tmdb_client
     base = image_base()
     for p in persons:
         try:
@@ -129,22 +137,32 @@ def run_once(db) -> dict:
     }
 
 
+def _run_loop_once() -> None:
+    """跑一轮（供 _loop 与启动即跑共用）。"""
+    from backend.database import get_db
+
+    db = next(get_db())
+    try:
+        stats = run_once(db)
+        logger.info("演员刷新完成: %s", stats)
+    finally:
+        db.close()
+
+
 def start() -> bool:
-    """启动定时任务（后台线程，每 24 小时跑一轮）。"""
+    """启动定时任务（后台线程，启动即跑一轮，之后每 24 小时跑一轮）。"""
     import threading
 
     def _loop():
+        # 启动即跑一轮（与其它定时任务惯例一致），再按间隔 sleep
+        try:
+            _run_loop_once()
+        except Exception as exc:  # noqa: BLE001 — 后台任务不崩
+            logger.warning("演员刷新失败: %s", exc)
         while True:
             try:
                 time.sleep(REFRESH_INTERVAL_SEC)
-                from backend.database import get_db
-
-                db = next(get_db())
-                try:
-                    stats = run_once(db)
-                    logger.info("演员刷新完成: %s", stats)
-                finally:
-                    db.close()
+                _run_loop_once()
             except Exception as exc:  # noqa: BLE001 — 后台任务不崩
                 logger.warning("演员刷新失败: %s", exc)
 

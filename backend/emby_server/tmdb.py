@@ -87,7 +87,7 @@ TMDB_POSTER_LANGUAGE_OPTIONS = ("system", "original", "zh-CN")
 
 # StrmAssistant 对标：MovieDbFallbackLanguages
 # 首选语言无高置信命中时，按此链逐个重试（去重后）。
-MOVIEDB_FALLBACK_LANGUAGES = ("zh-CN", "zh-SG", "zh-HK", "zh-TW", "ja-JP", "en-US")
+MOVIEDB_FALLBACK_LANGUAGES = ("zh-CN", "zh-HK", "zh-TW", "ja-JP", "en-US")
 
 
 def language_fallback_chain(db=None) -> list[str]:
@@ -1692,11 +1692,26 @@ class TmdbClient:
         image_store.prewarm(url for _kind, url in image_specs(data))
         return self.apply_images(item, data)
 
-    def apply_images(self, item: emby_models.MediaItem, data: dict) -> bool:
-        """把详情接口里的图片落到条目上（返回是否拿到图）"""
+    def apply_images(self, item: emby_models.MediaItem, data: dict,
+                     images_lang: Optional[dict] = None) -> bool:
+        """把详情接口里的图片落到条目上（返回是否拿到图）
+
+        images_lang：images_with_language() 预取的语言偏好图片（IO 阶段取，
+        对标 StrmAssistant #10 原语言海报）。有原语言海报时优先用它做主海报。
+        """
         if not data:
             return False
         specs = image_specs(data)
+        # 原语言海报优先：images 的 posters[0] 替换默认 Primary
+        if images_lang:
+            posters = [p for p in (images_lang.get("posters") or [])
+                       if isinstance(p, dict) and p.get("file_path")]
+            if posters:
+                base = image_base()
+                lang_poster = f"{base}/w500{posters[0]['file_path']}"
+                specs = [("Primary", lang_poster)] + [
+                    s for s in specs if s[0] != "Primary"
+                ]
         for img_kind, url in specs:
             _set_image(item, img_kind, url)
         if specs and getattr(item, "metadata_source", None) == "nfo":

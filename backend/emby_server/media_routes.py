@@ -359,3 +359,104 @@ def item_alternate_versions(item_id: str, request: Request,
     for v, s in zip(items, versions):
         v["IsPrimary"] = (s.id == primary_id)
     return {"Items": items, "TotalRecordCount": len(items)}
+
+
+# ==================== 片头片尾标记（StrmAssistant #3）====================
+
+@emby_router.get("/emby/Items/{item_id}/IntroMarkers")
+@emby_router.get("/Items/{item_id}/IntroMarkers")
+def item_intro_markers(item_id: str, db: Session = Depends(get_db)):
+    """返回某条目的片头片尾标记（含 Emby Chapter 格式，供播放器显示跳过按钮）。"""
+    from backend.emby_server import intro_marker as _im
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    markers = _im.get_markers(db, item.id)
+    return {"Markers": markers, "Chapters": _im.to_chapters(markers)}
+
+
+@emby_router.post("/emby/Items/{item_id}/IntroMarkers")
+@emby_router.post("/Items/{item_id}/IntroMarkers")
+def item_intro_marker_set(
+    item_id: str,
+    marker_type: str = Body(...),
+    start_ms: int = Body(...),
+    end_ms: int = Body(...),
+    db: Session = Depends(get_db),
+):
+    """设置/更新片头片尾标记（同类型只保留一条，幂等）。"""
+    from backend.emby_server import intro_marker as _im
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    try:
+        return _im.set_marker(db, item.id, marker_type, start_ms, end_ms)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@emby_router.delete("/emby/Items/{item_id}/IntroMarkers/{marker_type}")
+@emby_router.delete("/Items/{item_id}/IntroMarkers/{marker_type}")
+def item_intro_marker_delete(item_id: str, marker_type: str,
+                             db: Session = Depends(get_db)):
+    """删除片头片尾标记。"""
+    from backend.emby_server import intro_marker as _im
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    deleted = _im.delete_marker(db, item.id, marker_type)
+    return {"deleted": deleted}
+
+
+# ==================== TMDB 剧集组（StrmAssistant #15）====================
+
+@emby_router.get("/emby/Items/{item_id}/EpisodeGroups")
+@emby_router.get("/Items/{item_id}/EpisodeGroups")
+def item_episode_groups(item_id: str, db: Session = Depends(get_db)):
+    """返回某剧集的 TMDB 剧集组列表（含用户当前选择）。"""
+    from backend.emby_server import episode_groups as _eg
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
+    if not tmdb_id:
+        return {"Groups": [], "Selected": ""}
+    groups = _eg.get_episode_groups(tmdb_id)
+    selected = _eg.get_selected_group(db, tmdb_id)
+    return {"Groups": groups, "Selected": selected}
+
+
+@emby_router.get("/emby/EpisodeGroups/{group_id}")
+@emby_router.get("/EpisodeGroups/{group_id}")
+def episode_group_detail(group_id: str):
+    """返回某剧集组的详细信息（含每集的顺序映射）。"""
+    from backend.emby_server import episode_groups as _eg
+
+    detail = _eg.get_episode_group_detail(group_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Episode group not found")
+    return detail
+
+
+@emby_router.put("/emby/Items/{item_id}/EpisodeGroupSelection")
+@emby_router.put("/Items/{item_id}/EpisodeGroupSelection")
+def item_episode_group_select(
+    item_id: str,
+    group_id: str = Body("", embed=True),
+    db: Session = Depends(get_db),
+):
+    """设置用户为某剧选择的剧集组（空串 = 恢复默认播出顺序）。"""
+    from backend.emby_server import episode_groups as _eg
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
+    if not tmdb_id:
+        raise HTTPException(status_code=400, detail="Item has no tmdb_id")
+    _eg.set_selected_group(db, tmdb_id, group_id or "")
+    return {"success": True, "selected": group_id or ""}

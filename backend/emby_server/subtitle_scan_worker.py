@@ -53,25 +53,29 @@ _stop_event = threading.Event()
 _start_lock = threading.Lock()
 
 
-def _detect_external_subtitles(video_path: str) -> Set[str]:
+def _detect_external_subtitles(video_path: str) -> Optional[Set[str]]:
     """探测视频同目录下的外挂字幕，返回路径集合。
 
     对标 StrmAssistant SubtitleApi.GetExternalSubtitleStreams。
+
+    返回 None 表示"未知"（目录不可访问，如远程 mount:// 路径或挂载掉线），
+    调用方必须跳过、**不得**按"没有字幕"处理（否则会误删 DB 里的合法字幕）。
+    只有成功列出目录且确实没有字幕时才返回空集合。
     """
     from backend.emby_server import subtitle_match as sm
 
     directory = os.path.dirname(video_path or "")
     if not directory or not os.path.isdir(directory):
-        return set()
+        return None
     try:
         names = os.listdir(directory)
     except OSError:
-        return set()
+        return None
     try:
         found = sm.find_external_subtitles_in(names, video_path)
     except Exception as e:
         logger.debug("字幕探测失败 %s: %s", video_path, e)
-        return set()
+        return None
     return {path for _lang, path in found}
 
 
@@ -95,9 +99,12 @@ def has_external_subtitle_changed(db, item_id: int, video_path: str) -> bool:
     """外挂字幕是否有变化（对标 HasExternalSubtitleChanged）。
 
     DB 集合 vs 实际探测集合，不一致即为变化。
+    探测结果未知（None）时返回 False：跳过，不误判。
     """
     current = _get_db_external_subtitles(db, item_id)
     detected = _detect_external_subtitles(video_path)
+    if detected is None:
+        return False
     return current != detected
 
 
@@ -111,6 +118,9 @@ def update_external_subtitles(db, item) -> int:
     from backend.emby_server import subtitle_match as sm
 
     detected = _detect_external_subtitles(item.file_path)
+    if detected is None:
+        # 目录不可访问（远程 mount:// 路径、挂载掉线）：未知，不动 DB
+        return 0
     if not detected:
         # 目录里没有字幕：删掉 DB 里残留的外挂字幕记录
         deleted = (
@@ -161,6 +171,7 @@ def update_external_subtitles(db, item) -> int:
             language=lang or "und",
             display_title=os.path.basename(path),
             title=os.path.basename(path),
+            is_default=(count == 0),  # 与扫描器一致：第一条外挂字幕为默认
             is_external=True,
             external_path=path,
         )

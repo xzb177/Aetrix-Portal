@@ -40,7 +40,7 @@ prometheus-client>=0.19.0
 watchdog>=4.0.0
 
 # 中文拼音排序（StrmAssistant #12）：标题生成拼音首字母 sort_name
-pypinyin>=0.50.0
+pypinyin==0.55.0
 
 # 日志
 loguru>=0.7.0
