@@ -708,6 +708,7 @@ def start_janitor(interval_seconds: Optional[int] = None) -> bool:
                 summary = janitor_tick()
                 if any(summary.values()):
                     logger.info("维护周期完成: %s", summary)
+                gc.collect()  # 2026-10-07 压力测试：强制回收防内存不回落
             except Exception as exc:  # noqa: BLE001 — 维护线程绝不能因为一次失败而退出
                 logger.warning("维护周期异常: %s", exc)
 
