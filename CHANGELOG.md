@@ -2,46 +2,49 @@
 
 所有项目重要更改都将记录在此文件中。
 
-## [未发布] - 安全修复（3 严重 + 5 高危）
+## [未发布] - 安全修复：3 个严重 + 5 个高危漏洞
 
-### 严重
+### 安全修复
 
-1. **普通管理员提权漏洞**：普通管理员不能再给自己提权，也不能修改其他管理员账号。
-   只有最早创建的超级管理员保留完整权限。
-
-2. **SECRET_KEY 泄露给推流节点**：不再把 `SECRET_KEY` 发给推流节点。
-   改用独立的 `NODE_SHARED_SECRET` + 签名机制做节点身份认证。
-   面板与节点必须同时升级，否则节点会拒绝连接。
-
-3. **片库可见性绕过**：片库可见性校验现在覆盖所有接口，
-   未授权用户无法通过直接调接口访问受限片库。
-
-### 高危
-
-4. **JWT 出现在 URL**：JWT 不再出现在 URL 查询参数里，改走 Header 或 POST body，
-   避免日志/浏览器历史泄露 token。
-
-5. **IP 伪造**：只采信可信代理（`TRUSTED_PROXIES`）传来的真实 IP，
-   `X-Forwarded-For` 不再无条件信任。
-
-6. **兑换码重复使用**：同一兑换码每个用户只能兑换一次，
-   修复并发下重复兑换的竞态。
-
-7. **缩略图缓存串图**：外挂图（`poster.jpg` 等同名文件）的缩略图缓存 key
-   改用「绝对路径 + mtime + 大小」的 sha1，不再按文件名复用，
-   修复不同影片海报互相串图的问题。
+- **S1 管理员提权（严重）**：`admin_role` 为空 / 未知值此前按超管处理，运营把任意账号的 `is_staff` 置真即可造出超管。
+  现改为 fail closed：空值 / 未知值一律按最低权限 `viewer`；启动期迁移 `ensure_legacy_admin_roles` 只把最早的管理员显式写成 `super`，
+  库里没有任何启用中的超管时才自愈提升最早的管理员。
+- **S2 运营越权管理管理员（严重）**：管理员账号的增删改与角色授予收紧为仅超管可操作，运营角色不能再修改 / 停用 / 提权其他管理员。
+- **S3 SECRET_KEY 外发（严重）**：EM 此前把 `SECRET_KEY` 放进 `X-Panel-Key` 发往后台可配置的任意服务器地址（且跟随重定向），拿到即可伪造任意 JWT。
+  现改为独立的节点密钥 `NODE_SHARED_SECRET`（未设置时由 `SECRET_KEY` 单向派生），EM 发起的请求只带 HMAC 签名头
+  `X-Panel-Ts` / `X-Panel-Nonce` / `X-Panel-Sign`（绑定方法与路径、`NODE_AUTH_MAX_SKEW` 内有效、nonce 去重），探测一律不跟随重定向；
+  不再接受 `X-Panel-Key: <SECRET_KEY>`。新增 `backend/node_auth.py`。
+- **H1 片库可见性**：条目详情、PlaybackInfo、推流、收藏等接口统一按用户可见的媒体库范围校验，不能再凭 guid 访问 / 播放 / 收藏隐藏库里的条目。
+  多版本（`AlternateVersions`）、片头片尾标记（`IntroMarkers`）、剧集组（`EpisodeGroups`）、缺失集（`MissingEpisodes`）、
+  视频缩略图（`Thumbnails`）同样要求登录并校验可见库；片头标记的增删与剧集组选择是全站共享数据，改为仅可写角色的管理员可改。
+  （同时补回被误删的 `IntroMarker` 模型，`IntroMarkers` 接口此前直接 500。）
+- **H2 JWT 不进 URL**：网页播放器不再把 JWT 拼进播放 / 图片 URL，改用短期签名播放链接（有效期 `PLAY_SIGN_URL_TTL`，默认 21600 秒），
+  链接泄露（日志 / Referer / 分享）不再等于账号泄露。
+- **H3 管理接口仅 Bearer**：媒体库 / 挂载 / 115 等管理接口与 `/api/admin/*` 同一口径，只接受 `Authorization: Bearer <access JWT>`；
+  不再接受 `?api_key=` 或 Emby 客户端 token（管理员在播放器里登录的长期 token 不能再调删除 / 挂载等管理操作）。
+- **H4 可信代理**：`CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP` 只在 TCP 直连方是 Cloudflare 回源网段、回环或 `TRUSTED_PROXIES` 时才采信，
+  直连源站伪造 `CF-Connecting-IP: 127.0.0.1` 不再能绕过域名守卫 / 限流。新增 `TRUSTED_PROXIES` / `CLOUDFLARE_IP_RANGES` 说明（见 `env.example`）。
+- **H5 兑换码每人一次**：注册码 / 兑换码新增核销记录，同一用户对同一张多次码只能兑换一次（兼容升级前 `used_by` 里的记录）。
+- **缩略图缓存串图**：库外同名外挂图（`poster.jpg` / `folder.jpg` / `cover.jpg` / `fanart.jpg`……）此前共用同一张缩略图（如 `poster_w320.jpg`），
+  首页「本周入库」海报与片名对不上。现对缓存之外的原图按「绝对路径 + mtime + 大小」的 sha1 命名缩略图（`backend/emby_server/image_store.py`）。
 
 ### 升级须知
 
-- **管理员权限变更**：升级后只有最早的管理员保持超管身份，
-  其他管理员变为只读，如需管理权限请由超管重新授权。
-- **推流节点必须同步升级**：面板和推流节点要一起升级到此版本，
-  旧节点用旧协议连不上新面板。
-- **新增环境变量**：`NODE_SHARED_SECRET`（必填，见 `env.example`），
-  建议同时轮换 `SECRET_KEY`。
-- **TRUSTED_PROXIES**：如果用了反向代理，务必正确配置可信代理网段，
-  否则真实 IP 获取会不准。
-
+1. **管理员角色**：升级后只有**最早创建的那个管理员**（安装向导 / `scripts/create_admin.py` 建的号）保持超管；
+   其他从未显式设置过角色的管理员会变成**只读**，需超管在「管理员」页重新授予角色，或用 `scripts/create_admin.py` 处理。
+2. **EM / EA / 所有推流节点必须同时升级**：旧版 EM 发的 `X-Panel-Key: <SECRET_KEY>` 不再被接受，新旧混跑会互相拒绝。
+   部署脚本（`deploy-streaming-node.sh`）与运维 curl 的 `X-Panel-Key` 改用 `python -m backend.node_auth` 输出的**节点密钥**，不要再填 `SECRET_KEY`。
+   各端时钟需同步（误差超过 `NODE_AUTH_MAX_SKEW`，默认 300 秒，签名会被拒）。
+3. **建议轮换 `SECRET_KEY`**：旧版本已把它发往后台配置的服务器地址，视为可能泄露；轮换后所有用户需重新登录，EM / EA 两端同时改。
+   若显式设置了 `NODE_SHARED_SECRET`，所有节点同步更新。
+4. **Docker 反代需设置 `TRUSTED_PROXIES`**：默认只信 Cloudflare 回源网段与回环；宿主机 Nginx → docker-proxy → 容器的部署，
+   容器看到的直连方是 docker 网关，需把网段加入（如 `TRUSTED_PROXIES=172.16.0.0/12`，或按 `docker network inspect` 查到的子网），
+   否则所有用户共用一个限流桶。
+5. **网页播放链接会过期**：签名播放链接在 `PLAY_SIGN_URL_TTL`（默认 21600 秒 = 6 小时）后失效，长时间挂着的播放页刷新即可重新签发。
+6. **可清理旧缩略图**：图片缓存目录为 `EMBY_IMAGE_DIR`（默认 `<EMBY_TRANSCODE_DIR>/images`，即 `/tmp/emby_transcode/images`）。
+   旧版按外挂图文件名生成的串图缩略图（如 `poster_w320.jpg`、`folder_w160.jpg`）不会再被引用，可删除后按需重新生成：
+   `find "$EMBY_IMAGE_DIR" -maxdepth 1 -name '*_[wh][0-9]*.jpg' ! -regex '.*/[0-9a-f]\{40\}_[wh][0-9].*' -delete`
+   （只删非 sha1 命名的缩略图；缩略图本身都是可再生的，误删只会触发重新生成）。
 
 ## [未发布] - 用户端「暗房影院」主题全站改版
 

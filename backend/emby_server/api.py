@@ -646,7 +646,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     "SeriesName": item.series.name if item.series else None,
                     "IndexNumber": item.season_number})
     if full:
-        dto["MediaSources"] = [_media_source(item, base, api_key, db)]
+        dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs)]
         dto["MediaSourceCount"] = 1
         # 片头片尾标记 → Chapters（对标 StrmAssistant #3：播放器显示"跳过片头"按钮）
         try:

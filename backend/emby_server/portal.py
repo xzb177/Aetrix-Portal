@@ -224,10 +224,20 @@ def ensure_emby_backend_available(request: Request, db: Session = Depends(get_db
 _admin_bearer = HTTPBearer(auto_error=False)
 
 
-def require_staff(
+def _bearer_admin(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_admin_bearer),
     db: Session = Depends(get_db),
+) -> models.WebUser:
+    """与 ``/api/admin/*`` 的 ``get_current_admin`` 同一实现（只认 Authorization 头里的 JWT）"""
+    from backend.api.admin_core import get_current_admin
+
+    return get_current_admin(request, credentials, db)
+
+
+def require_staff(
+    request: Request,
+    user: models.WebUser = Depends(_bearer_admin),
     _: None = Depends(ensure_emby_backend_available),
 ) -> models.WebUser:
     """管理端鉴权：仅 is_staff 用户可访问（/api/admin/emby/* 全部端点）
@@ -235,14 +245,12 @@ def require_staff(
     安全修复 H3：与 ``/api/admin/*`` 的 ``get_current_admin`` **完全同一口径**——
     只接受 ``Authorization: Bearer <access JWT>``；不再接受 Emby 客户端 token
     （管理员在 Infuse 里登录后的 30 天 token 不能再调媒体库删除 / 挂载 / 115 Cookie），
-    也不接受 URL 查询串里的 ``?api_key=``。
+    也不接受 URL 查询串里的 ``?api_key=``。鉴权先于「后端可用」判定（未登录得 401 而不是 503）。
 
-    角色判定同 ``/api/admin/*``（backend/admin_roles.py）：只读角色不能扫描 /
-    改库 / 删条目这些写操作，否则「只读」在这个路由上是假的。
+    角色判定同 ``/api/admin/*``（backend/admin_roles.py，已在 get_current_admin 里做过）：
+    只读角色不能扫描 / 改库 / 删条目这些写操作，否则「只读」在这个路由上是假的。
     """
-    from backend.api.admin_core import get_current_admin
-
-    return get_current_admin(request, credentials, db)
+    return user
 
 
 user_emby_router = APIRouter(
