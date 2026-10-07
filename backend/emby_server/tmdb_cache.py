@@ -116,14 +116,20 @@ def _warn_once(reason: str) -> None:
         logger.warning("TMDB 磁盘缓存不可用（不影响刮削，只是每次都真的请求）: %s", reason)
 
 
-def _key_path(endpoint: str, ident: str, year: int) -> str:
-    """缓存键 → 分片文件路径：sha1(endpoint|归一化查询|年份)，前 2 位做目录
+def _key_path(endpoint: str, ident: str, year: int, lang: str = "") -> str:
+    """缓存键 → 分片文件路径：sha1(endpoint|归一化查询|年份|语言)，前 2 位做目录
 
     查询串由调用方用 ``_norm_text`` 归一化（大小写/全半角标点/空白不敏感）——
     这是让「跨条目/跨库去重」可靠而非碰运气的前提（§7.3③）。文件名不落原文，
     任何字符串都能安全落地。
+
+    语言是缓存维度（v2.49.0 起）：TMDB 返回的简介/标题是按 language 本地化的，
+    切了首选语言后旧语言的条目不再命中、各语言互不污染。老版本写下的无语言键
+    （lang=""）自然过期淘汰（prune 按 TTL），升级后最多触发一轮重新拉取。
     """
-    digest = hashlib.sha1(f"{endpoint}|{ident}|{int(year)}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(
+        f"{endpoint}|{ident}|{int(year)}|{str(lang or '')}".encode("utf-8")
+    ).hexdigest()
     return os.path.join(_cfg_dir(), digest[:2], f"{digest}.json")
 
 
@@ -203,31 +209,31 @@ def _save(path: str, payload) -> bool:
 
 # ---------- 公开 API（TmdbClient 调） ----------
 
-def load_search(endpoint: str, norm_query: str, year: int):
+def load_search(endpoint: str, norm_query: str, year: int, lang: str = ""):
     """search 缓存。返回 (hit, results)——hit=True 时 results 可能是 []（阴性命中）。"""
-    return _load(_key_path(endpoint, norm_query, int(year or 0)),
+    return _load(_key_path(endpoint, norm_query, int(year or 0), lang),
                  lambda v: _cfg_ttl_negative() if not v else _cfg_ttl_search())
 
 
-def save_search(endpoint: str, norm_query: str, year: int, results) -> bool:
+def save_search(endpoint: str, norm_query: str, year: int, results, lang: str = "") -> bool:
     """search 结果落盘；空列表（阴性）同样落盘，读时用更短的 TTL。"""
-    return _save(_key_path(endpoint, norm_query, int(year or 0)),
+    return _save(_key_path(endpoint, norm_query, int(year or 0), lang),
                  list(results or []))
 
 
-def load_details(endpoint: str, tmdb_id: str):
+def load_details(endpoint: str, tmdb_id: str, lang: str = ""):
     """details 缓存。返回 (hit, data)。"""
-    return _load(_key_path(endpoint, str(tmdb_id), 0), lambda v: _cfg_ttl_details())
+    return _load(_key_path(endpoint, str(tmdb_id), 0, lang), lambda v: _cfg_ttl_details())
 
 
-def save_details(endpoint: str, tmdb_id: str, data) -> bool:
+def save_details(endpoint: str, tmdb_id: str, data, lang: str = "") -> bool:
     """details 落盘。data 为空 = 请求失败（不是「没数据」），不落盘。"""
     if not data:
         return False
-    return _save(_key_path(endpoint, str(tmdb_id), 0), data)
+    return _save(_key_path(endpoint, str(tmdb_id), 0, lang), data)
 
 
-def invalidate_search(name: str, year: Optional[int], kind: str) -> int:
+def invalidate_search(name: str, year: Optional[int], kind: str, lang: str = "") -> int:
     """把一部片名的搜索缓存删掉（管理端「重试未匹配项」用）。
 
     按与 ``TmdbClient.search`` 完全相同的候选逻辑重算缓存键，逐一删除——
@@ -240,16 +246,21 @@ def invalidate_search(name: str, year: Optional[int], kind: str) -> int:
 
     endpoint = "tv" if kind == "series" else "movie"
     years = {int(year or 0), 0}   # year 维度两种取值都清（键里 year or 0）
+    # 语言维度也要对齐：当前语言的键 + 老版本无语言键（lang=""）都清。
+    # 后者覆盖升级前写下的缓存文件，以及测试/调用方用默认 lang="" 预置的情形；
+    # 不清的话重试仍会命中旧阴性缓存、一个请求都不发。
+    langs = {lang or "", ""}
     removed = 0
     for query, _fuzzy in _search_candidates(name or ""):
         norm = _norm_text(query)
         if not norm:
             continue
         for y in years:
-            path = _key_path(endpoint, norm, y)
-            if os.path.exists(path):
-                _unlink(path)
-                removed += 1
+            for lg in langs:
+                path = _key_path(endpoint, norm, y, lg)
+                if os.path.exists(path):
+                    _unlink(path)
+                    removed += 1
     return removed
 
 

@@ -36,6 +36,8 @@ TMDB_IMAGE_DEFAULT = "https://image.tmdb.org/t/p"
 # ``image_base()``，可以在管理后台配镜像（境内直连不通时用）。
 TMDB_API = TMDB_API_DEFAULT
 TMDB_IMAGE = TMDB_IMAGE_DEFAULT
+# 遗留常量：历史代码从环境变量读语言。新口径统一走 preferred_language()
+#（环境变量 TMDB_LANGUAGE > SystemConfig > zh-CN），这里仅保留兼容。
 TMDB_LANG = os.getenv("TMDB_LANGUAGE", "zh-CN")
 
 # TMDB API Key 在 SystemConfig 里的键：管理后台「元数据与刮削」填写，保存即热生效
@@ -51,6 +53,11 @@ DEFAULT_KEY_COOLDOWN_SEC = 900          # 15 分钟：配额窗口一般几分�
 DEFAULT_KEY_INVALID_COOLDOWN_SEC = 21600  # 6 小时：401 多半是 key 废了，等管理员换
 # 冷却 / 镜像配置的进程内 TTL：跨进程（API / worker / EA）靠它兜底，同进程保存即失效
 SETTINGS_TTL_SEC = 30.0
+# TMDB 首选语言（SystemConfig 落库）：简介/标题/别名返回哪种语言。
+# 管理后台「元数据与刮削」卡片的下拉框填写，保存即热生效。
+TMDB_PREFERRED_LANGUAGE_CONFIG_KEY = "tmdb_preferred_language"
+TMDB_PREFERRED_LANGUAGE_DEFAULT = "zh-CN"
+TMDB_LANGUAGE_OPTIONS = ("zh-CN", "zh-TW", "en-US", "ja-JP")
 
 # ---------------------------------------------------------------------------
 # 请求级限流 / 超时 / 429 退避（v2.42.9）
@@ -514,18 +521,23 @@ def validate_base(raw: str, field: str) -> str:
     return normalize_base(value, "")
 
 
-def _config_text(key: str, db=None) -> str:
-    """读一个 SystemConfig 字符串；读不到返回空（表没建好 / 未配置）"""
+def _config_text(key: str, db=None, *, refresh: bool = False) -> str:
+    """读一个 SystemConfig 字符串；读不到返回空（表没建好 / 未配置）
+
+    refresh=True 时绕过 store 的 TTL 热缓存，直查 DB（管理后台 GET 接口
+    在保存后立刻读时用，避免 60s TTL 窗口内读到旧值）。
+    """
     from backend.integrations import store
     try:
+        ttl = 0 if refresh else store.TTL_DEFAULT
         if db is None:
             from backend.database import SessionLocal
             session = SessionLocal()
             try:
-                return store.get_value(session, key, "")
+                return store.get_value(session, key, "", ttl=ttl)
             finally:
                 session.close()
-        return store.get_value(db, key, "")
+        return store.get_value(db, key, "", ttl=ttl)
     except Exception:  # noqa: BLE001 — DB 没建好时当没配
         return ""
 
@@ -572,6 +584,40 @@ def invalidate_settings() -> None:
     """保存镜像 / 冷却配置后立刻失效缓存（同进程即时生效，跨进程靠 TTL）"""
     with _settings_lock:
         _SETTINGS_CACHE.update({"at": 0.0, "data": {}})
+
+
+_LANGUAGE_CACHE: dict = {"at": 0.0, "value": ""}
+
+
+def preferred_language(db=None, *, refresh: bool = False) -> str:
+    """TMDB 首选语言：环境变量 TMDB_LANGUAGE > SystemConfig > zh-CN。
+
+    与 settings() 同一套口径：进程内短 TTL 缓存（读多写少），保存时
+    invalidate_language() 立刻失效。非法值回落到默认（防手写 DB 搞坏）。
+
+    refresh=True 时绕过 _LANGUAGE_CACHE 和 store TTL 缓存，直查 DB
+    （管理后台 GET /scrape/tmdb-language 在保存后立刻读时用）。
+    """
+    now = time.monotonic()
+    with _settings_lock:
+        if not refresh and (now - _LANGUAGE_CACHE["at"]) < SETTINGS_TTL_SEC \
+                and _LANGUAGE_CACHE["value"]:
+            return _LANGUAGE_CACHE["value"]
+    env_lang = (os.getenv("TMDB_LANGUAGE") or "").strip()
+    cfg_lang = (_config_text(TMDB_PREFERRED_LANGUAGE_CONFIG_KEY, db,
+                            refresh=refresh) or "").strip()
+    value = env_lang or cfg_lang or TMDB_PREFERRED_LANGUAGE_DEFAULT
+    if value not in TMDB_LANGUAGE_OPTIONS:
+        value = TMDB_PREFERRED_LANGUAGE_DEFAULT
+    with _settings_lock:
+        _LANGUAGE_CACHE.update({"at": now, "value": value})
+    return value
+
+
+def invalidate_language() -> None:
+    """保存首选语言后立刻失效缓存（同进程即时生效，跨进程靠 TTL）"""
+    with _settings_lock:
+        _LANGUAGE_CACHE.update({"at": 0.0, "value": ""})
 
 
 def api_base(db=None) -> str:
@@ -987,7 +1033,9 @@ class TmdbClient:
         """
         if not self.session:
             return None
-        payload = {**params, "api_key": key or self.api_key}
+        # 首选语言在这里统一注入：所有 TMDB 请求都带上。调用方如果显式传了
+        # language（极少数特殊接口），显式值仍然优先。
+        payload = {"language": preferred_language(), **params, "api_key": key or self.api_key}
         base = api_base()
         delay = 0.5
         for attempt in range(TMDB_NET_RETRIES + 1):
@@ -1139,11 +1187,13 @@ class TmdbClient:
             return []
         endpoint = "tv" if kind == "series" else "movie"
         norm = _norm_text(query)
-        key = ("search", endpoint, norm, year or 0)
+        # 语言是缓存维度：TMDB 按 language 返回本地化标题/简介，不同语言互不命中
+        lang = preferred_language()
+        key = ("search", endpoint, norm, year or 0, lang)
         cached = self._cache_get(key)
         if cached is not _MISS:
             return cached or []
-        hit, results = tmdb_cache.load_search(endpoint, norm, year or 0)
+        hit, results = tmdb_cache.load_search(endpoint, norm, year or 0, lang)
         if hit:
             progress.note_stage("tmdb_disk_hit")
             self._cache_put(key, results)   # 回填 L1：同批后续请求走内存
@@ -1153,12 +1203,12 @@ class TmdbClient:
             cached = self._cache_get(key)
             if cached is not _MISS:
                 return cached or []
-            hit, results = tmdb_cache.load_search(endpoint, norm, year or 0)
+            hit, results = tmdb_cache.load_search(endpoint, norm, year or 0, lang)
             if hit:
                 progress.note_stage("tmdb_disk_hit")
                 self._cache_put(key, results)
                 return results or []
-            params: dict = {"language": TMDB_LANG, "query": query}
+            params: dict = {"language": lang, "query": query}
             if year:
                 if endpoint == "tv":
                     params["first_air_date_year"] = year
@@ -1167,7 +1217,7 @@ class TmdbClient:
             data = self._get(f"/search/{endpoint}", params)
             results = (data or {}).get("results") or []
             if data is not None:
-                tmdb_cache.save_search(endpoint, norm, year or 0, results)
+                tmdb_cache.save_search(endpoint, norm, year or 0, results, lang)
             self._cache_put(key, results)
             return results
 
@@ -1216,18 +1266,20 @@ class TmdbClient:
     def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
         """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用。
 
-        两级缓存同 ``_search_raw``（L1 300 秒 → L2 磁盘 30 天，按 id 键）。
+        两级缓存同 ``_search_raw``（L1 300 秒 → L2 磁盘 30 天，按 id 键；
+        语言同样是维度：首选语言变了就按新语言重新拉，不会串味）。
 
         v2.51.0：``append_to_response`` 带上 ``credits``——演员表和详情**一次请求**
         拿全，不新增请求、不新增限流器（走同一个令牌桶）。升级前缓存的老载荷没有
         credits 键，读到时视为过期重拉一次（见 ``_has_credits``）。
         """
         endpoint = "tv" if kind == "series" else "movie"
-        key = ("details", endpoint, str(tmdb_id))
+        lang = preferred_language()
+        key = ("details", endpoint, str(tmdb_id), lang)
         cached = self._cache_get(key)
         if cached is not _MISS and _has_credits(cached):
             return cached
-        hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id))
+        hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id), lang)
         if hit and _has_credits(data):
             progress.note_stage("tmdb_disk_hit")
             self._cache_put(key, data)
@@ -1236,16 +1288,16 @@ class TmdbClient:
             cached = self._cache_get(key)
             if cached is not _MISS and _has_credits(cached):
                 return cached
-            hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id))
+            hit, data = tmdb_cache.load_details(endpoint, str(tmdb_id), lang)
             if hit and _has_credits(data):
                 progress.note_stage("tmdb_disk_hit")
                 self._cache_put(key, data)
                 return data
             data = self._get(f"/{endpoint}/{tmdb_id}",
-                             {"language": TMDB_LANG,
+                             {"language": lang,
                               "append_to_response": "alternative_titles,external_ids,credits"})
             if data is not None:
-                tmdb_cache.save_details(endpoint, str(tmdb_id), data)
+                tmdb_cache.save_details(endpoint, str(tmdb_id), data, lang)
             self._cache_put(key, data)
             return data
 
@@ -1273,12 +1325,13 @@ class TmdbClient:
             season_no = int(season_number)
         except (TypeError, ValueError):
             return None
-        key = ("season_episodes", str(tmdb_id), str(season_no))
+        lang = preferred_language()
+        key = ("season_episodes", str(tmdb_id), str(season_no), lang)
         cached = self._cache_get(key)
         if cached is not _MISS:
             return cached
         cache_key = f"{tmdb_id}_{season_no}"
-        hit, data = tmdb_cache.load_details("season", cache_key)
+        hit, data = tmdb_cache.load_details("season", cache_key, lang)
         if hit:
             progress.note_stage("tmdb_disk_hit")
             eps = (data or {}).get("episodes")
@@ -1288,16 +1341,16 @@ class TmdbClient:
             cached = self._cache_get(key)
             if cached is not _MISS:
                 return cached
-            hit, data = tmdb_cache.load_details("season", cache_key)
+            hit, data = tmdb_cache.load_details("season", cache_key, lang)
             if hit:
                 progress.note_stage("tmdb_disk_hit")
                 eps = (data or {}).get("episodes")
                 self._cache_put(key, eps)
                 return eps
             data = self._get(f"/tv/{tmdb_id}/season/{season_no}",
-                             {"language": TMDB_LANG})
+                             {"language": lang})
             if data is not None:
-                tmdb_cache.save_details("season", cache_key, data)
+                tmdb_cache.save_details("season", cache_key, data, lang)
             eps = (data or {}).get("episodes") if data else None
             self._cache_put(key, eps)
             return eps
@@ -1364,6 +1417,24 @@ class TmdbClient:
         if still:
             result["still_path"] = still
         return result
+
+    def find_by_imdb(self, imdb_id: str) -> Optional[dict]:
+        """按 IMDb ID 反查 TMDB（GET /find/{external_id}?external_source=imdb_id）。
+
+        手动识别时管理员手头常只有 IMDb 链接（tt 开头）；先换算成 TMDB ID 再走
+        现有流程。走 ``_get``：密钥轮换 / 限流 / language 注入与其它读取同一套口径；
+        L1 进程缓存按 imdb_id 键（IMDb→TMDB 映射是稳定的事实）。
+        """
+        iid = (imdb_id or "").strip()
+        if not iid:
+            return None
+        key = ("find", "imdb", iid, preferred_language())
+        cached = self._cache_get(key)
+        if cached is not _MISS:
+            return cached
+        data = self._get(f"/find/{iid}", {"external_source": "imdb_id"})
+        self._cache_put(key, data)
+        return data
 
     def enrich(self, item: emby_models.MediaItem, kind: str) -> None:
         """补齐 imdb_id 与 aliases（中英文/繁简多别名搜索的基础）"""

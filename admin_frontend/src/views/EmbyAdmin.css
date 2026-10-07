@@ -232,10 +232,13 @@
 
   .lib-foot {
     justify-content: stretch;
+    /* 按钮多了「识别」之后 7 个：窄屏允许换行，否则每个按钮只剩 ~45px 点不中 */
+    flex-wrap: wrap;
+    row-gap: 8px;
   }
 
   .lib-foot .el-button {
-    flex: 1;
+    flex: 1 1 30%;
     margin-left: 0;
   }
 
