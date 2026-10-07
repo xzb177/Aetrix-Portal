@@ -19,6 +19,8 @@ from functools import lru_cache
 from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
 
+from backend.emby_server.pinyin_sort import make_sort_name
+
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -3497,7 +3499,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item.item_type = item_type
                     item.name = parsed["name"]
                     item.original_title = parsed["name"]
-                    item.sort_name = parsed["name"].lower()
+                    item.sort_name = make_sort_name(parsed["name"])
                     item.production_year = parsed["year"]
                     item.file_path = full_path
                     # v2.52.0: 改名/移动的行，guid 跟着新路径走（保持 guid=path 派生不变式）；
@@ -3593,7 +3595,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                 series = emby_models.MediaItem(
                                     guid=series_guid, library_id=library.id,
                                     item_type="series", name=_series_name,
-                                    sort_name=_series_name.lower(),
+                                    sort_name=make_sort_name(_series_name),
                                     production_year=_series_year,
                                     platforms=item.platforms or "",
                                     date_added=datetime.now(),
@@ -3607,7 +3609,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         # 只要还没有 TMDB/NFO 的权威名称，就用目录名纠正。
                         if _pending.series_name and not series.tmdb_id:
                             series.name = _pending.series_name
-                            series.sort_name = _pending.series_name.lower()
+                            series.sort_name = make_sort_name(_pending.series_name)
                         item.series_id = series.id
                         # B 方案补全：本批为隐式 series 预取的 TMDB 搜索命中先落库
                         # （补 tmdb_id/简介/海报/评分/别名；NFO 文本随后覆盖，保证 NFO 优先）

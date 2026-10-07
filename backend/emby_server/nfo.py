@@ -9,6 +9,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from backend.emby_server.pinyin_sort import make_sort_name
+
 # 支持的 NFO 根标签：电影 / 剧集 / 单集 / 季
 _NFO_ROOTS = {"movie", "tvshow", "episodedetails", "season"}
 
@@ -197,7 +199,7 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str) -> None:
     if kind in ("movie", "series"):
         if data.get("title"):
             item.name = data["title"]
-            item.sort_name = data["title"].lower()
+            item.sort_name = make_sort_name(data["title"])
         if data.get("originaltitle"):
             item.original_title = data["originaltitle"]
         _merge_aliases(item, [data.get("title"), data.get("originaltitle")])

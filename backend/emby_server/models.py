@@ -258,6 +258,12 @@ class MediaItem(Base):
     # NULL = 正常可见；非 NULL = 已下架。读路径由 backend/emby_server/soft_delete.py
     # 的全局 ORM 过滤器自动挡掉，文件重新出现时扫描器会把它清空（连播放进度一起回来）。
     deleted_at = Column(DateTime, default=None)
+    # 多版本合并（对标 StrmAssistant MergeMultiVersionTask）：
+    # 同 tmdb_id/imdb_id 的重复条目合并为一条，主记录为 NULL，
+    # 被合并的条目指向主记录 id。API 列表默认过滤掉被合并的，
+    # 播放时可通过主记录查看/选择多版本。
+    # NULL = 主记录（或未参与合并）。
+    merged_into_id = Column(Integer, ForeignKey("emby_items.id"), default=None, index=True)
 
 
 from sqlalchemy.orm import relationship  # noqa: E402

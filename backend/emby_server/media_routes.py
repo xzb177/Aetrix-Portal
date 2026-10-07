@@ -268,3 +268,45 @@ def person_image(name: str, request: Request,
     raise HTTPException(status_code=404, detail="Image not found")
 
 
+# ---------------------------------------------------------------------------
+# 视频缩略图（对标 StrmAssistant #2 章节缩略图）
+# ---------------------------------------------------------------------------
+
+@emby_router.get("/emby/Items/{item_id}/Thumbnails/{index}")
+@emby_router.get("/Items/{item_id}/Thumbnails/{index}")
+def item_thumbnail(item_id: str, index: int, request: Request,
+                   db: Session = Depends(get_db)):
+    """视频预览缩略图：thumbnail_worker 按时长均分抽帧生成的 JPG。
+
+    index 从 0 开始。没有缩略图时 404（worker 后台生成中）。
+    """
+    import os as _os
+
+    from backend.emby_server import thumbnail_worker as _tw
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    thumbs = _tw.list_thumbnails(item.guid)
+    if not thumbs or index < 0 or index >= len(thumbs):
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    path = thumbs[index]
+    if not _os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+    return serve_file(path, request)
+
+
+@emby_router.get("/emby/Items/{item_id}/Thumbnails")
+@emby_router.get("/Items/{item_id}/Thumbnails")
+def item_thumbnails(item_id: str, request: Request,
+                    db: Session = Depends(get_db)):
+    """返回某条目的缩略图数量（供客户端判断是否有预览图）。"""
+    from backend.emby_server import thumbnail_worker as _tw
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    thumbs = _tw.list_thumbnails(item.guid)
+    return {"TotalRecordCount": len(thumbs)}
+
+

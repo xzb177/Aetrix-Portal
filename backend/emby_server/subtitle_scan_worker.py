@@ -1,0 +1,257 @@
+# -*- coding: utf-8 -*-
+"""独立的外挂字幕扫描（对标 StrmAssistant ScanExternalSubtitleTask）。
+
+StrmAssistant 做法：
+- `ScanExternalSubtitleTask`：独立定时任务，遍历视频条目
+- `SubtitleApi.HasExternalSubtitleChanged()`：对比库里已记录的外挂字幕 vs
+  重新探测到的，有变化才更新（不是无脑全刷）
+- `SubtitleApi.UpdateExternalSubtitles()`：只更新字幕轨道，不碰其他元数据
+
+本模块一比一复刻：
+- 定时任务：每 N 小时扫一遍（默认 12 小时），找出外挂字幕有变化的条目
+- 变化检测：DB 里 is_external 字幕的 external_path 集合 vs 目录里实际探测到的
+- 只更新有变化的条目；复用 subtitle_match 的匹配逻辑
+"""
+
+import logging
+import os
+import threading
+import time
+from datetime import datetime
+from typing import List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(hi, value))
+
+
+def _env_float(name: str, default: float, lo: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, value)
+
+
+# 开关：默认开
+SUBTITLE_SCAN_ENABLED = (
+    os.getenv("SUBTITLE_SCAN_ENABLED", "1") or "1"
+).strip().lower() not in ("0", "false", "no")
+# 扫描间隔（秒），默认 12 小时
+SUBTITLE_SCAN_INTERVAL_SEC = _env_float("SUBTITLE_SCAN_INTERVAL_SEC", 43200.0, 3600.0)
+# 单次扫描最多处理条数（防大库一次扫太久）
+SUBTITLE_SCAN_BATCH_LIMIT = _env_int("SUBTITLE_SCAN_BATCH_LIMIT", 10000, 100, 100000)
+
+_scan_thread: Optional[threading.Thread] = None
+_stop_event = threading.Event()
+_start_lock = threading.Lock()
+
+
+def _detect_external_subtitles(video_path: str) -> Set[str]:
+    """探测视频同目录下的外挂字幕，返回路径集合。
+
+    对标 StrmAssistant SubtitleApi.GetExternalSubtitleStreams。
+    """
+    from backend.emby_server import subtitle_match as sm
+
+    directory = os.path.dirname(video_path or "")
+    if not directory or not os.path.isdir(directory):
+        return set()
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return set()
+    try:
+        found = sm.find_external_subtitles_in(names, video_path)
+    except Exception as e:
+        logger.debug("字幕探测失败 %s: %s", video_path, e)
+        return set()
+    return {path for _lang, path in found}
+
+
+def _get_db_external_subtitles(db, item_id: int) -> Set[str]:
+    """DB 里已记录的外挂字幕路径集合。"""
+    from backend.emby_server import models as em
+
+    rows = (
+        db.query(em.MediaStream.external_path)
+        .filter(
+            em.MediaStream.item_id == item_id,
+            em.MediaStream.stream_type == "Subtitle",
+            em.MediaStream.is_external == True,  # noqa: E712
+        )
+        .all()
+    )
+    return {r[0] for r in rows if r[0]}
+
+
+def has_external_subtitle_changed(db, item_id: int, video_path: str) -> bool:
+    """外挂字幕是否有变化（对标 HasExternalSubtitleChanged）。
+
+    DB 集合 vs 实际探测集合，不一致即为变化。
+    """
+    current = _get_db_external_subtitles(db, item_id)
+    detected = _detect_external_subtitles(video_path)
+    return current != detected
+
+
+def update_external_subtitles(db, item) -> int:
+    """更新条目的外挂字幕（对标 UpdateExternalSubtitles）。
+
+    只重建字幕轨道（is_external 的 Subtitle），不动视频/音频轨。
+    返回更新后的字幕条数。
+    """
+    from backend.emby_server import models as em
+    from backend.emby_server import subtitle_match as sm
+
+    detected = _detect_external_subtitles(item.file_path)
+    if not detected:
+        # 目录里没有字幕：删掉 DB 里残留的外挂字幕记录
+        deleted = (
+            db.query(em.MediaStream)
+            .filter(
+                em.MediaStream.item_id == item.id,
+                em.MediaStream.stream_type == "Subtitle",
+                em.MediaStream.is_external == True,  # noqa: E712
+            )
+            .delete(synchronize_session=False)
+        )
+        if deleted:
+            logger.info("字幕扫描：%s 移除了 %d 条残留外挂字幕", item.name, deleted)
+        return 0
+
+    # 重新匹配语言（find_external_subtitles_in 返回 (lang, path)）
+    directory = os.path.dirname(item.file_path)
+    try:
+        names = os.listdir(directory)
+        matched = sm.find_external_subtitles_in(names, item.file_path)
+    except OSError:
+        return 0
+
+    # 删旧建新（只动外挂字幕）
+    db.query(em.MediaStream).filter(
+        em.MediaStream.item_id == item.id,
+        em.MediaStream.stream_type == "Subtitle",
+        em.MediaStream.is_external == True,  # noqa: E712
+    ).delete(synchronize_session=False)
+
+    # 现有轨道的最大 index，从它后面开始编号
+    max_idx = (
+        db.query(em.MediaStream.stream_index)
+        .filter(em.MediaStream.item_id == item.id)
+        .order_by(em.MediaStream.stream_index.desc())
+        .first()
+    )
+    next_idx = (max_idx[0] + 1) if max_idx and max_idx[0] is not None else 0
+
+    count = 0
+    for lang, path in matched:
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        stream = em.MediaStream(
+            item_id=item.id,
+            stream_index=next_idx,
+            stream_type="Subtitle",
+            codec=ext or "srt",
+            language=lang or "und",
+            display_title=os.path.basename(path),
+            title=os.path.basename(path),
+            is_external=True,
+            external_path=path,
+        )
+        db.add(stream)
+        next_idx += 1
+        count += 1
+
+    logger.info("字幕扫描：%s 更新为 %d 条外挂字幕", item.name, count)
+    return count
+
+
+def _scan_once() -> Tuple[int, int]:
+    """扫一轮：返回 (检查条数, 更新条数)。"""
+    from backend.database import SessionLocal
+    from backend.emby_server import models as em
+
+    checked = 0
+    updated = 0
+    db = SessionLocal()
+    try:
+        items = (
+            db.query(em.MediaItem)
+            .filter(
+                em.MediaItem.item_type.in_(("movie", "episode")),
+                em.MediaItem.deleted_at.is_(None),
+                em.MediaItem.merged_into_id.is_(None),
+                em.MediaItem.file_path.isnot(None),
+            )
+            .limit(SUBTITLE_SCAN_BATCH_LIMIT)
+            .all()
+        )
+        for item in items:
+            if _stop_event.is_set():
+                break
+            checked += 1
+            try:
+                if has_external_subtitle_changed(db, item.id, item.file_path):
+                    update_external_subtitles(db, item)
+                    # 同步更新条目的 subtitle_languages（EA 展示用）
+                    langs = sorted({
+                        s.language for s in db.query(em.MediaStream).filter(
+                            em.MediaStream.item_id == item.id,
+                            em.MediaStream.stream_type == "Subtitle",
+                        ).all() if s.language
+                    })
+                    if langs:
+                        item.subtitle_languages = ",".join(langs)
+                    db.commit()
+                    updated += 1
+            except Exception as e:
+                db.rollback()
+                logger.warning("字幕扫描条目失败 %s: %s", item.file_path, e)
+        return checked, updated
+    finally:
+        db.close()
+
+
+def _scan_loop():
+    logger.info(
+        "字幕扫描 worker 启动（间隔 %.0f 秒）", SUBTITLE_SCAN_INTERVAL_SEC
+    )
+    # 启动先跑一轮
+    try:
+        checked, updated = _scan_once()
+        logger.info("字幕扫描首轮完成：检查 %d，更新 %d", checked, updated)
+    except Exception as e:
+        logger.warning("字幕扫描首轮失败: %s", e)
+    while not _stop_event.wait(SUBTITLE_SCAN_INTERVAL_SEC):
+        try:
+            checked, updated = _scan_once()
+            logger.info("字幕扫描完成：检查 %d，更新 %d", checked, updated)
+        except Exception as e:
+            logger.warning("字幕扫描失败: %s", e)
+
+
+def start() -> bool:
+    """启动字幕扫描后台线程。返回 True 表示已启动。"""
+    global _scan_thread
+    if not SUBTITLE_SCAN_ENABLED:
+        logger.info("字幕扫描已禁用（SUBTITLE_SCAN_ENABLED=0）")
+        return False
+    with _start_lock:
+        if _scan_thread and _scan_thread.is_alive():
+            return True
+        _stop_event.clear()
+        _scan_thread = threading.Thread(
+            target=_scan_loop, name="subtitle-scan", daemon=True
+        )
+        _scan_thread.start()
+        return True
+
+
+def stop():
+    _stop_event.set()

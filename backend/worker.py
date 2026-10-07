@@ -229,6 +229,30 @@ def main() -> int:
             logger.warning(f"启动按需探测 worker 失败（可忽略）: {e}")
 
         try:
+            from backend.emby_server import subtitle_scan_worker
+            if subtitle_scan_worker.start():
+                started.append("subtitle_scan_worker")
+                logger.info("✅ 外挂字幕扫描 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动字幕扫描 worker 失败（可忽略）: {e}")
+
+        try:
+            from backend.emby_server import merge_versions_worker
+            if merge_versions_worker.start():
+                started.append("merge_versions_worker")
+                logger.info("✅ 多版本合并 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动多版本合并 worker 失败（可忽略）: {e}")
+
+        try:
+            from backend.emby_server import thumbnail_worker
+            if thumbnail_worker.start():
+                started.append("thumbnail_worker")
+                logger.info("✅ 视频缩略图 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动缩略图 worker 失败（可忽略）: {e}")
+
+        try:
             from backend import reminders
             if reminders.start_reminder_scheduler():
                 started.append("reminders")
