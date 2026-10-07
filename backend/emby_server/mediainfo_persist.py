@@ -26,6 +26,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# 文件 mtime 容差（秒）：网盘时间精度差异
+MTIME_TOLERANCE_SEC = 1.0
+
 # 持久化开关（对标 PersistMediaInfoOption：None/Default/Restore）
 # "0" = 关；"1" = 探完就存 + 恢复时读（默认）；"restore-only" = 只读不写
 def _persist_mode() -> str:
