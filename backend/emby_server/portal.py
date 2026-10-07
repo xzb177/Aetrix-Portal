@@ -1792,11 +1792,12 @@ async def scan_all_libraries_endpoint(
     """
     def _plan():
         # server_ops.scan_plan 会算清哪些入队、哪些已在队列、哪些跳过
-        # 需要 server 对象，这里传 None 表示本机（单机部署）
+        # 必须传真实本机节点：scan_plan 按 server.id 匹配 Library.node_id，
+        # 传 None 会让 node_id=1 的库一个都匹配不上（一键扫描返回 0 个库）
         from backend.emby_server import server_ops as _so
-        # 构造一个最小的 server 对象（scan_plan 只用它做节点归属判断）
-        # 单机部署：直接传 None，scan_plan 内部会处理
-        return _so.scan_plan(db, None)
+        from backend.emby_server import nodes as node_lib
+        server = node_lib.self_node(db)
+        return _so.scan_plan(db, server)
 
     result = await run_in_threadpool(_plan)
     queued = result.get("queued", [])
