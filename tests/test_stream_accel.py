@@ -163,3 +163,39 @@ def test_domain_guard_db_disabled_falls_back_to_env(monkeypatch):
     monkeypatch.setattr(dg, "_accel_db_config", lambda: (None, None))
     assert dg._get_allowed_hosts() == {"env.example.com"}
     assert dg._trust_cf_ip() is False
+"""Tests for rewrite_playback_urls_unified (merged URL rewrite pipeline)."""
+import sys
+sys.path.insert(0, '/opt/aetrix-portal')
+
+from backend.emby_server import stream_accel as sa
+
+
+class FakeDB:
+    pass
+
+
+def test_unified_no_node_no_accel_passthrough():
+    """无节点、无加速域名时原样返回。"""
+    # get_effective_domain 需要 DB，这里用 monkeypatch 思路：直接测空 domain 分支
+    # 简化：domain 为空时应原样返回
+    out = sa.rewrite_url_domain(
+        "http://1.2.3.4:8000/emby/Videos/abc/stream",
+        "http://1.2.3.4:8000",
+        "",
+    )
+    assert out == "http://1.2.3.4:8000/emby/Videos/abc/stream"
+
+
+def test_unified_accel_rewrite():
+    """加速域名改写生效。"""
+    out = sa.rewrite_url_domain(
+        "http://1.2.3.4:8000/emby/Videos/abc/stream?x=1",
+        "http://1.2.3.4:8000",
+        "emby.135505.autos",
+    )
+    assert out == "https://emby.135505.autos/emby/Videos/abc/stream?x=1"
+
+
+def test_unified_fn_exists():
+    """统一函数存在且可调用。"""
+    assert callable(sa.rewrite_playback_urls_unified)

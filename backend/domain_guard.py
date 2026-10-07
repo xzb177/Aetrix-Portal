@@ -58,10 +58,11 @@ def _accel_db_config() -> tuple[Optional[set[str]], Optional[bool]]:
 
         db = SessionLocal()
         try:
+            from backend.emby_server.stream_accel import CONFIG_DOMAIN, CONFIG_ENABLED
             vals = store.get_values(
                 db,
-                ["stream_accel_enabled", "stream_accel_domain"],
-                {"stream_accel_enabled": "false", "stream_accel_domain": ""},
+                [CONFIG_ENABLED, CONFIG_DOMAIN],
+                {CONFIG_ENABLED: "false", CONFIG_DOMAIN: ""},
                 ttl=60.0,
             )
         finally:
@@ -69,10 +70,10 @@ def _accel_db_config() -> tuple[Optional[set[str]], Optional[bool]]:
     except Exception:
         logger.debug("流媒体加速 DB 配置读取失败，回退环境变量", exc_info=True)
         return None, None
-    enabled = (vals.get("stream_accel_enabled") or "").strip().lower() in (
+    enabled = (vals.get(CONFIG_ENABLED) or "").strip().lower() in (
         "1", "true", "yes", "on",
     )
-    domain = (vals.get("stream_accel_domain") or "").strip().lower()
+    domain = (vals.get(CONFIG_DOMAIN) or "").strip().lower()
     if enabled and domain:
         return {domain}, True
     return None, None

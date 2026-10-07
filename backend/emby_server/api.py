@@ -42,7 +42,6 @@ from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_line
 from backend.emby_server import play_sign
-from backend.emby_server import stream_nodes
 from backend.emby_server import soft_delete
 from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
@@ -2822,21 +2821,15 @@ async def playback_info(
     transcoding_url = (
         f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}{signed_qs}"
     )
-    # 流节点（分离架构）：有远端健康流节点时播放 URL 直接指向流节点
-    # （签名查询串原样保留，流节点用同一 SECRET_KEY 验签）。
-    # 流节点命中时跳过 CDN 改写——节点域名本身就是边缘入口（CF 在前）。
-    stream_url, transcoding_url, _node_hit = stream_nodes.rewrite_playback_urls(
+    # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
+    # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
+    from backend.emby_server import stream_accel
+    stream_url, transcoding_url, _rewrite_src = stream_accel.rewrite_playback_urls_unified(
         db, stream_url, transcoding_url, base)
-    if use_cdn and not _node_hit:
+    # CDN 改写是另一套（老功能）：流节点/加速域名命中时跳过——它们本身就是边缘入口。
+    if use_cdn and _rewrite_src is None:
         stream_url = cdn.rewrite_url(db, stream_url, base)
         transcoding_url = cdn.rewrite_url(db, transcoding_url, base)
-    # 流媒体加速（单机）：开关打开且配了域名时，播放 URL 基址统一换成加速域名。
-    # 远端流节点命中 / CDN 改写过的 URL 不再动（rewrite_url_domain 对不上 base 会原样返回）。
-    from backend.emby_server import stream_accel
-    accel_domain = stream_accel.get_effective_domain(db)
-    if accel_domain and not _node_hit:
-        stream_url = stream_accel.rewrite_url_domain(stream_url, base, accel_domain)
-        transcoding_url = stream_accel.rewrite_url_domain(transcoding_url, base, accel_domain)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
