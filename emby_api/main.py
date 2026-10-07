@@ -30,12 +30,6 @@ if os.getenv("TRACEMALLOC", "0") == "1":
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-# 纯 ASGI 中间件（中转零拷贝优化）：替代原来的 @app.middleware("http")
-from emby_api.asgi_middleware import (
-    EaBodyLimitMiddleware,
-    EaRateLimitMiddleware,
-    SecurityHeadersMiddleware,
-)
 
 try:  # Starlette ≥ 0.47 提供默认排除表（老版本没有该常量，行为保持原样）
     from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_DEFAULTS
@@ -306,10 +300,18 @@ if _cors_origins:
     )
 
 
-# 纯 ASGI 中间件（中转零拷贝）：只改 http.response.start 的头，body 原样透传。
-# 原来这里是 @app.middleware("http")（BaseHTTPMiddleware），每个响应分块都要经过
-# 它的 task group + 内存流中转。行为与原来逐项对齐，注册顺序不变。
-app.add_middleware(SecurityHeadersMiddleware)
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.url.path.startswith("/emby/"):
+        # video segments cacheable, skip forced no-store
+        from backend.emby_server.cdn import is_segment_path
+        if not is_segment_path(request.url.path):
+            response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 
 # GZip 压缩：接口 JSON / 播放列表走压缩，已压缩或大块二进制内容不再压缩。
@@ -330,11 +332,101 @@ else:  # pragma: no cover — 旧版 Starlette 没有按内容类型排除的参
 # EA 公网暴露，需防滥用；健康检查不限流
 
 
-# 纯 ASGI（中转零拷贝）：放行时不包 send，零开销。行为与原来一致。
-app.add_middleware(EaBodyLimitMiddleware)
-# 限流逻辑已搬到 emby_api/asgi_middleware.py（纯 ASGI，行为一致）。
-# 纯 ASGI（中转零拷贝）：放行时不包 send，零开销。注册顺序与原来一致。
-app.add_middleware(EaRateLimitMiddleware)
+@app.middleware("http")
+async def ea_body_limit_middleware(request, call_next):
+    # 请求体大小上限：防恶意大包打爆内存。Content-Length 头做廉价拒绝。
+    import os
+
+    try:
+        max_mb = float(os.getenv("MAX_REQUEST_BODY_MB", "10"))
+    except ValueError:
+        max_mb = 10
+    max_bytes = int(max_mb * 1024 * 1024)
+    clen = request.headers.get("content-length")
+    if clen:
+        try:
+            if int(clen) > max_bytes:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": f"请求体过大，上限 {max_mb:g}MB"},
+                )
+        except ValueError:
+            pass
+    return await call_next(request)
+_EA_RATE_LIMITS = [
+    ("/api/health", 0, 0),              # 健康检查：不限流
+    ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
+    ("/api/admin/emby/login", 10, 10),  # 登录：防暴力破解
+    ("/api/user/login", 10, 10),
+    ("/api/", 120, 600),               # 普通 API
+]
+
+def _ea_get_ip(request) -> str:
+    """真实客户端 IP（与 EM 同一口径：只有可信代理写进来的头才算数）
+
+    以前这里直接取 `X-Forwarded-For` 第一段 / `X-Real-IP`：这两个头都是客户端
+    自己能伪造的，等于给爆破者免费换限流桶；反过来，反代没写这些头时所有人都会
+    落到 `request.client.host` 这**一个**桶上，一个人触发限流全站跟着 429。
+    EM（`backend/main.py`）早就换成了带可信代理校验的
+    `backend.ratelimit.get_client_ip`，EA 这里统一过来。
+    """
+    from backend.ratelimit import get_client_ip
+
+    return get_client_ip(request)
+
+def _ea_is_auth(request) -> bool:
+    auth = request.headers.get("authorization", "")
+    token = request.headers.get("x-emby-token", "") or request.headers.get("x-mediabrowser-token", "")
+    return bool(auth or token)
+
+def _ea_check_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, str]:
+    for prefix, limit_anon, limit_auth in _EA_RATE_LIMITS:
+        if path.startswith(prefix):
+            limit = limit_auth if authenticated else limit_anon
+            if limit == 0:
+                return True, ""
+            try:
+                from backend import database as db
+                r = db.redis_client
+                if r is None:
+                    return True, ""
+                import time
+                window = int(time.time() // 60)
+                auth_tag = "auth" if authenticated else "anon"
+                key = f"ratelimit:ea:{ip}:{prefix}:{auth_tag}:{window}"
+                count = r.incr(key)
+                if count == 1:
+                    r.expire(key, 70)
+                if count > limit:
+                    return False, f"每分钟最多 {limit} 次"
+            except Exception:
+                return True, ""
+            return True, ""
+    return True, ""
+
+@app.middleware("http")
+async def ea_rate_limit_middleware(request, call_next):
+    # /api/ 与 /emby/ 都限流：后者覆盖 Emby 客户端登录（其它 /emby/ 路径无匹配规则则放行）
+    if request.url.path.startswith(("/api/", "/emby/")):
+        ip = _ea_get_ip(request)
+        authenticated = _ea_is_auth(request)
+        # redis-py 是同步客户端：直接在事件循环里 incr/expire，等于每个请求都让整个
+        # 进程排队等一次 Redis 往返（socket_timeout=5s，Redis 一抖动就是全站卡）。
+        # 下放线程池——仓库既有手法，见 scripts/check_blocking_routes.py 的说明。
+        from starlette.concurrency import run_in_threadpool
+
+        allowed, reason = await run_in_threadpool(
+            _ea_check_limit, ip, request.url.path, authenticated
+        )
+        if not allowed:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"error": "请求太频繁，请稍后再试", "reason": reason},
+                headers={"Retry-After": "60"},
+            )
+    return await call_next(request)
 
 # 下载策略兜底：站点关闭下载时，/Download 与 /Items/{id}/File 等路径在网关层拦截
 app.add_middleware(DownloadGuardMiddleware)
