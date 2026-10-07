@@ -30,6 +30,21 @@ RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 CHUNK = 1024 * 256
 
+# rclone FUSE 挂载点前缀（/mnt/mp、/mnt/paul，可用 EMBY_FUSE_PREFIXES 覆盖）。
+# 这些路径的读可能因 Drive 配额/网络抖动中途失败。
+FUSE_PREFIXES = tuple(
+    p for p in os.getenv("EMBY_FUSE_PREFIXES", "/mnt/mp/,/mnt/paul/").split(",") if p
+)
+
+# FUSE 读遇到 OSError 时的重试次数与退避基数（秒，线性退避）。
+_FUSE_READ_RETRIES = 3
+_FUSE_READ_RETRY_DELAY = 0.5
+
+
+def is_fuse_path(path: str) -> bool:
+    """是不是 rclone FUSE 挂载上的文件（读可能中途失败，不能预先声明 Content-Length）。"""
+    return bool(path) and path.startswith(FUSE_PREFIXES)
+
 
 # 远程代理最多自己追几次重定向（与 httpx 的默认上限一致）
 MAX_REDIRECTS = 5
@@ -80,10 +95,17 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
 
     ``cache_control``（CDN 预留，第 2/3 层）：分片请求传 ``public, max-age…``，
     让 CDN 边缘缓存热门分片；None 时不发缓存头（行为与升级前一致）。
+
+    FUSE 说明：rclone 挂载（/mnt/mp、/mnt/paul）的读可能因 Drive 配额/网络抖动
+    中途失败。若 Range 响应预先声明 Content-Length 而实际字节不足，uvicorn 会抛
+    Response content shorter than Content-Length。因此 FUSE 路径的 Range 响应
+    不声明 Content-Length（走 chunked），读失败时优雅截断，播放器会重试该分片。
+    本地磁盘路径保持原有行为（声明 Content-Length）。
     """
     if not path or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Media file not found")
     size = os.path.getsize(path)
+    fuse = is_fuse_path(path)
 
     extra_headers = {"Accept-Ranges": "bytes", "X-Accel-Buffering": "no"}
     if cache_control:
@@ -117,18 +139,44 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
         with open(path, "rb") as f:
             f.seek(start)
             remaining = end - start + 1
+            retries = 0
             while remaining > 0:
-                data = f.read(min(CHUNK, remaining))
+                try:
+                    data = f.read(min(CHUNK, remaining))
+                except OSError as exc:
+                    # FUSE 瞬时抖动：退避重试几次再放弃
+                    retries += 1
+                    if retries > _FUSE_READ_RETRIES:
+                        logger.warning("FUSE 读失败放弃 %s [%d-%d]: %s", path, start, end, exc)
+                        break
+                    time.sleep(_FUSE_READ_RETRY_DELAY * retries)
+                    continue
                 if not data:
+                    # rclone 放弃重试（如 Drive 403 配额耗尽）后读返回空。
+                    # FUSE 下走 chunked（无 Content-Length），这里优雅截断：
+                    # 播放器会把这次当成普通网络中断并重试该分片，而不会触发
+                    # 服务端的 Response content shorter than Content-Length。
+                    if fuse:
+                        sent = (end - start + 1) - remaining
+                        logger.warning(
+                            "FUSE 读提前结束 %s [%d-%d]，已发送 %d/%d 字节",
+                            path, start, end, sent, end - start + 1,
+                        )
                     break
+                retries = 0
                 remaining -= len(data)
                 yield data
 
+    range_headers = _range_header(start, end, size)
+    if fuse:
+        # FUSE 路径的 Range 响应不声明 Content-Length，走 chunked，避免中途
+        # 读失败时声明长度与实际字节对不上。Content-Range 保留（206 必需）。
+        range_headers.pop("Content-Length", None)
     return StreamingResponse(
         iter_file(),
         status_code=206,
         media_type=media_type,
-        headers={**_range_header(start, end, size), **_validators_header(path), **extra_headers},
+        headers={**range_headers, **_validators_header(path), **extra_headers},
     )
 
 
