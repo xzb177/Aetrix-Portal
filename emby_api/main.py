@@ -17,8 +17,15 @@ from __future__ import annotations
 import inspect as _inspect
 import logging
 import os
+import tracemalloc as _tracemalloc
 from contextlib import asynccontextmanager
 from datetime import datetime
+
+# 内存泄漏排查：TRACEMALLOC=1 时启用 Python 内存分配追踪
+# 通过 /debug/tracemalloc/top 查看 top 分配
+if os.getenv("TRACEMALLOC", "0") == "1":
+    _tracemalloc.start(25)
+    logging.getLogger(__name__).warning("tracemalloc 已启用（25 层栈）")
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -224,6 +231,54 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ==================== 内存调试端点（仅 TRACEMALLOC=1 时有效）====================
+@app.get("/debug/tracemalloc/top")
+def _debug_tracemalloc_top(limit: int = 20):
+    """返回 tracemalloc top N 内存分配（用于定位内存泄漏）。"""
+    if not _tracemalloc.is_tracing():
+        return {"tracing": False, "hint": "设置 TRACEMALLOC=1 重启 EA"}
+    snap = _tracemalloc.take_snapshot()
+    stats = snap.statistics("traceback")[:limit]
+    out = []
+    for s in stats:
+        out.append({
+            "size_kb": round(s.size / 1024, 1),
+            "count": s.count,
+            "traceback": [str(f) for f in s.traceback][-5:],
+        })
+    return {"tracing": True, "top": out}
+
+
+@app.post("/debug/tracemalloc/snapshot")
+def _debug_tracemalloc_snapshot():
+    """打内存基线快照。"""
+    if not _tracemalloc.is_tracing():
+        return {"tracing": False}
+    _debug_tracemalloc_snapshot._baseline = _tracemalloc.take_snapshot()
+    return {"ok": True}
+
+
+@app.get("/debug/tracemalloc/diff")
+def _debug_tracemalloc_diff():
+    """对比上次快照的内存增长（需先 POST /debug/tracemalloc/snapshot 打基线）。"""
+    if not _tracemalloc.is_tracing():
+        return {"tracing": False}
+    if not hasattr(_debug_tracemalloc_snapshot, "_baseline"):
+        return {"error": "先 POST /debug/tracemalloc/snapshot 打基线"}
+    snap = _tracemalloc.take_snapshot()
+    base = _debug_tracemalloc_snapshot._baseline
+    diff = snap.compare_to(base, "traceback")
+    out = []
+    for s in diff[:20]:
+        if s.size_diff > 0:
+            out.append({
+                "size_diff_kb": round(s.size_diff / 1024, 1),
+                "count_diff": s.count_diff,
+                "traceback": [str(f) for f in s.traceback][-5:],
+            })
+    return {"diff": out}
+
+
 # ==================== 中间件 ====================
 # Emby 客户端不走浏览器 CORS，但网页播放器与第三方 Web 播放页会；沿用 EM 的口径
 # 安全：CORS_ORIGINS 为空时不添加中间件（同源请求不需要 CORS），绝不回退到 ["*"]
@@ -258,7 +313,10 @@ async def security_headers(request: Request, call_next):
 # GZip 压缩：接口 JSON / 播放列表走压缩，已压缩或大块二进制内容不再压缩。
 # Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
 # 远程挂载的直连流经本服务代理转发，若被按 level 9 压缩会白白吃满 CPU。
-_GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
+# 2026-10-07 压力测试：50 并发 Items（~500KB JSON）在事件循环里同步压缩，
+# 导致 loop lag 3.3s、EA 无响应。JSON 交给 nginx 在反向代理层压缩（C 实现不阻塞）。
+_GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip",
+                  "application/json")
 # FastAPI 延迟到首个请求才实例化中间件；注册时 try/except 抓不到参数不兼容。
 if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
     app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
