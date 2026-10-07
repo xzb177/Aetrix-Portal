@@ -139,6 +139,18 @@ def test_range_limiter_allows_max_concurrent():
     lim.release("/x/a.mkv")
 
 
+def test_range_limiter_try_acquire_nonblocking():
+    lim = pt.RangeConcurrencyLimiter(max_concurrent=1, acquire_timeout=30)
+    assert lim.try_acquire("/x/c.mkv") is True
+    # 非阻塞：拿不到立即返回 False，不等 timeout
+    t0 = time.monotonic()
+    assert lim.try_acquire("/x/c.mkv") is False
+    assert time.monotonic() - t0 < 1.0
+    lim.release("/x/c.mkv")
+    assert lim.try_acquire("/x/c.mkv") is True
+    lim.release("/x/c.mkv")
+
+
 def test_range_limiter_per_file_isolation():
     lim = pt.RangeConcurrencyLimiter(max_concurrent=1, acquire_timeout=1)
     assert lim.acquire("/x/a.mkv") is True
