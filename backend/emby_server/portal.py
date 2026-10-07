@@ -969,6 +969,10 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
     items = []
     for session, item, ep in page:
         umd = umd_map.get(ep.id if ep is not None else item.id)
+        # 进度口径：会话是最新一次播放的实际位置；umd 可能因「标为已看」/
+        # 播完被清零（playback_position_ticks=0），此时若仍优先 umd，
+        # 会把「看到一半」的进度显示成 0。会话有位置时优先用会话的。
+        _pos = session.position_ticks or (umd.playback_position_ticks if umd else 0)
         entry = {
             "id": item.guid,
             "name": item.name,
@@ -977,7 +981,7 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             "poster_url": f"/emby/Items/{item.guid}/Images/Primary"
             if (item.poster_path or item.primary_image_url) else None,
             "duration_ticks": (ep or item).duration_ticks,
-            "position_ticks": (umd.playback_position_ticks if umd else session.position_ticks),
+            "position_ticks": _pos,
             "played": bool(umd.played) if umd else False,
             "is_favorite": bool(umd.is_favorite) if umd else False,
             "play_count": int(umd.play_count or 0) if umd else 0,

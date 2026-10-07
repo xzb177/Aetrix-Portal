@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.emby_server.api import (
     emby_router,
+    SERVER_ID,
     SERVER_VERSION,
     _base_url,
     _empty_items,
@@ -293,6 +294,22 @@ def save_display_prefs(request: Request, user: models.WebUser = Depends(get_emby
     return {"success": True}
 
 
+# 每个媒体库（CollectionFolder）的显示偏好：官方 DisplayPreferences/{id} 路径，
+# 客户端打开库时会按 Views 给的 DisplayPreferencesId 来读/存排序与视图偏好。
+# 只实现 /users 时这个请求是 404，严格客户端会把库页当错误。本服务不持久化
+# 按库偏好，读写都回标准空结构（与 /users 同口径）。
+@emby_router.get("/emby/DisplayPreferences/{pref_id}")
+@emby_router.get("/DisplayPreferences/{pref_id}")
+def display_prefs_folder(pref_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return {"Id": pref_id, "CustomPrefs": {}}
+
+
+@emby_router.post("/emby/DisplayPreferences/{pref_id}")
+@emby_router.post("/DisplayPreferences/{pref_id}")
+def save_display_prefs_folder(pref_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return {"Id": pref_id, "CustomPrefs": {}}
+
+
 @emby_router.get("/emby/Localization/Culture")
 @emby_router.get("/Localization/Culture")
 def localization_cultures():
@@ -501,11 +518,26 @@ def critic_reviews(item_id: str, user: models.WebUser = Depends(get_emby_user)):
 # ---- 分类元数据 ----
 
 def _named_items(kind: str, names: list) -> dict:
-    items = [
-        {"Name": n, "Id": _guid_of(kind, n), "Type": kind,
-         "ImageTags": {}, "BackdropImageTags": []}
-        for n in names
-    ]
+    # 字段对照官方 BaseItemDto（Genre/Studio 等虚拟条目同样由 DtoService 生成：
+    # ServerId 无条件下发、MediaType 恒发、UserData 带 ItemId/Key、ImageBlurHashes
+    # 恒为空字典）。少发 ServerId 会让严格的三方客户端把整个分类列表丢掉——
+    # 与 Views 缺 ServerId 是同一类 P0。
+    items = []
+    for n in names:
+        item_id = _guid_of(kind, n)
+        items.append({
+            "Name": n,
+            "ServerId": SERVER_ID,
+            "Id": item_id,
+            "Type": kind,
+            "MediaType": "Unknown",
+            "ImageTags": {},
+            "BackdropImageTags": [],
+            "ImageBlurHashes": {},
+            "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False,
+                         "IsFavorite": False, "PlayedPercentage": 0.0,
+                         "ItemId": item_id, "Key": item_id},
+        })
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
 
@@ -537,8 +569,13 @@ def genres_list(user: models.WebUser = Depends(get_emby_user), db: Session = Dep
 @emby_router.get("/emby/Genres/{name}")
 @emby_router.get("/Genres/{name}")
 def genre_by_name(name: str, user: models.WebUser = Depends(get_emby_user)):
-    return {"Name": name, "Id": _guid_of("Genre", name), "Type": "Genre",
-            "ImageTags": {}, "BackdropImageTags": []}
+    item_id = _guid_of("Genre", name)
+    return {"Name": name, "ServerId": SERVER_ID, "Id": item_id, "Type": "Genre",
+            "MediaType": "Unknown",
+            "ImageTags": {}, "BackdropImageTags": [], "ImageBlurHashes": {},
+            "UserData": {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False,
+                         "IsFavorite": False, "PlayedPercentage": 0.0,
+                         "ItemId": item_id, "Key": item_id}}
 
 
 @emby_router.get("/emby/Studios")
