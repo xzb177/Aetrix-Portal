@@ -306,7 +306,10 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     if request.url.path.startswith("/emby/"):
-        response.headers.setdefault("Cache-Control", "no-store")
+        # video segments cacheable, skip forced no-store
+        from backend.emby_server.cdn import is_segment_path
+        if not is_segment_path(request.url.path):
+            response.headers.setdefault("Cache-Control", "no-store")
     return response
 
 
