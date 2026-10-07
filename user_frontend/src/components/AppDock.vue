@@ -52,8 +52,10 @@ function isActive(path: string) {
   align-items: stretch;
   justify-content: space-around;
   padding: 0 0.5rem env(safe-area-inset-bottom);
-  /* 暗房影院：实底 + 发丝线，不做毛玻璃 */
-  background: var(--au-bg);
+  /* 暗房影院：页面底色 0.96 + 模糊 + 发丝线（与顶栏同一配方），滚过去的字不再透出来 */
+  background: var(--au-chrome);
+  -webkit-backdrop-filter: saturate(1.4) blur(16px);
+  backdrop-filter: saturate(1.4) blur(16px);
   border-top: 1px solid var(--au-border);
 }
 

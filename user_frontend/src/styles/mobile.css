@@ -71,10 +71,6 @@
     min-height: 50vh;
   }
 
-  .hero-title {
-    font-size: var(--neo-font-size-2xl, 20px) !important;
-  }
-
   .hero-description {
     font-size: var(--neo-font-size-md, 14px) !important;
   }
@@ -141,10 +137,17 @@
     display: none !important;
   }
 
-  /* 内边距调整 */
-  .section,
-  .container {
+  /* 内边距调整。
+     .container 只管左右留白（= --gutter）：以前这里四边一律 16px !important，
+     把首页主体的 padding-bottom（给底部坞 + iOS 底栏让位）也压成了 16px，
+     最后一屏内容被坞盖住；Hero 的上下留白同样被抹平 */
+  .section {
     padding: var(--neo-space-4, 16px) !important;
+  }
+
+  .container {
+    padding-left: var(--gutter) !important;
+    padding-right: var(--gutter) !important;
   }
 
   /* ==================== 底部导航（统一 safe-area） ==================== */
@@ -184,12 +187,11 @@
 
 /* ==================== 超小屏幕优化 ==================== */
 @media (max-width: 480px) {
+  /* 暗房影院：原先这里有 .hero-title / .stat-value / .plan-card / .plan-price 的
+     !important 字号覆盖（旧 Neo-Noir 体系遗留），会把首页问候、票根大数字、
+     套餐价格一律压成 18~20px，各视图自己的字号层级全部失效——已删除，交给视图。 */
   /* SYS-5：删除 html { font-size: 14px } 全局降字号——它让所有 rem 再缩 12.5%，
      0.75rem 正文在小屏上只剩 10.5px。字号下限由各处 12px 直接保证。 */
-
-  .hero-title {
-    font-size: var(--neo-font-size-xl, 18px) !important;
-  }
 
   .hero-actions {
     flex-direction: column;
@@ -206,10 +208,6 @@
     padding: var(--neo-space-3, 12px) !important;
   }
 
-  .stat-value {
-    font-size: var(--neo-font-size-xl, 18px) !important;
-  }
-
   /* 登录表单 */
   .login-form {
     padding: var(--neo-space-6, 24px) !important;
@@ -219,14 +217,6 @@
     font-size: var(--neo-font-size-xl, 18px) !important;
   }
 
-  /* 订阅卡片 */
-  .plan-card {
-    padding: var(--neo-space-4, 16px) !important;
-  }
-
-  .plan-price {
-    font-size: var(--neo-font-size-2xl, 20px) !important;
-  }
 }
 
 /* ==================== 平板优化 ==================== */

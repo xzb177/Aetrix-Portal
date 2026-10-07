@@ -782,11 +782,11 @@ onBeforeUnmount(stopPayPoll)
       </div>
       <div v-else-if="!isFreeRealm" class="plan-grid">
         <div v-for="p in plans" :key="p.id" class="plan-card" :class="{ popular: p.is_popular }">
-          <span v-if="p.is_popular" class="pkg-pop-tag">推荐</span>
-
           <div class="plan-head">
             <h4 class="plan-name">
               {{ p.name }}
+              <!-- 推荐：套餐名旁一颗琥珀小标签（不再是整条琥珀横幅），卡片本身换 1px 琥珀描边 -->
+              <span v-if="p.is_popular" class="pop-pill">推荐</span>
               <em v-if="p.realm_name" class="plan-realm">{{ p.realm_name }}</em>
             </h4>
             <span class="plan-price">
@@ -894,7 +894,6 @@ onBeforeUnmount(stopPayPoll)
   border-radius: var(--au-r-xl);
   background: var(--au-surface);
   border: 1px solid var(--au-border);
-  border-top: 2px solid var(--au-primary);
   position: relative;
   overflow: hidden;
 }
@@ -1106,7 +1105,7 @@ onBeforeUnmount(stopPayPoll)
   border-color: var(--au-primary-border);
   background: var(--au-surface-2);
 }
-.pkg-row.popular { border-color: var(--au-primary-border); }
+.pkg-row.popular { border-color: var(--au-primary); }
 .pkg-row:disabled { opacity: 0.6; cursor: wait; }
 
 /* 首载骨架行：占位不闪空态；不可点、无 hover */
@@ -1158,19 +1157,22 @@ onBeforeUnmount(stopPayPoll)
 }
 
 .pkg-pop-tag {
-  padding: 0.125rem 0.5rem;
-  background: var(--au-primary);
-  color: var(--au-on-primary);
-  font-size: 0.8125rem;
-  font-weight: 700;
+  padding: 0.0625rem 0.4375rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   border-radius: var(--au-r-full);
 }
 
 .pkg-price {
-  font-size: 1.125rem;
-  font-weight: 800;
+  font-family: var(--au-font-serif);
+  font-size: 1.25rem;
+  font-weight: 700;
   color: var(--au-text);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 .pkg-cta {
@@ -1266,7 +1268,7 @@ onBeforeUnmount(stopPayPoll)
   margin-bottom: 0.875rem;
   padding: 0.625rem 0.875rem;
   background: var(--au-surface-2);
-  border: 1px dashed var(--au-border);
+  border: 1px solid var(--au-border);
   border-radius: var(--au-r-md);
   color: var(--au-text-3, var(--au-text-2));
   font-size: 0.8125rem;
@@ -1340,7 +1342,24 @@ onBeforeUnmount(stopPayPoll)
   border-radius: var(--au-r-lg);
   transition: all var(--au-fast);
 }
-.plan-card.popular { border-color: var(--au-primary-border); }
+.plan-card.popular { border-color: var(--au-primary); }
+
+.pop-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  margin-left: 0.375rem;
+  padding: 0 0.4375rem;
+  border-radius: var(--au-r-full);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+  font-family: var(--au-font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  vertical-align: 2px;
+}
 
 .plan-head {
   display: flex;
@@ -1364,8 +1383,15 @@ onBeforeUnmount(stopPayPoll)
   vertical-align: middle;
 }
 
-.plan-price { font-size: 1.125rem; font-weight: 800; color: var(--au-text); white-space: nowrap; }
-.plan-price em { font-style: normal; font-size: 0.8125rem; font-weight: 400; color: var(--au-text-3); }
+.plan-price {
+  font-family: var(--au-font-serif);
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--au-text);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.plan-price em { font-family: var(--au-font-sans); font-style: normal; font-size: 0.8125rem; font-weight: 400; color: var(--au-text-3); }
 
 .plan-desc { margin: 0; font-size: 0.8125rem; color: var(--au-text-3); line-height: 1.5; }
 
@@ -1439,7 +1465,7 @@ onBeforeUnmount(stopPayPoll)
 .order-sep { opacity: 0.5; }
 
 .order-side { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3125rem; flex-shrink: 0; }
-.order-amount { font-size: 0.9375rem; font-weight: 700; color: var(--au-text); }
+.order-amount { font-family: var(--au-font-serif); font-size: 1rem; font-weight: 700; color: var(--au-text); font-variant-numeric: tabular-nums lining-nums; }
 
 /* ==================== 流水 ==================== */
 .log-list { overflow: hidden; }

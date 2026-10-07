@@ -437,15 +437,26 @@ function positionTicks() {
  */
 export function posterUrl(item: EmbyItem, maxWidth = 320, skipCheck = false): string {
   if (!skipCheck && !item.ImageTags?.Primary) return ''
-  const token = localStorage.getItem('access_token') || ''
-  return `${embyBaseCache}/emby/Items/${item.Id}/Images/Primary?maxWidth=${maxWidth}&api_key=${encodeURIComponent(token)}`
+  return imageUrl(item.Id, 'Primary', maxWidth)
 }
 
 /** 背景图地址 */
 export function backdropUrl(item: EmbyItem, maxWidth = 1280): string {
   if (!item.BackdropImageTags?.length) return ''
+  return imageUrl(item.Id, 'Backdrop', maxWidth)
+}
+
+/**
+ * 条目图片地址。maxWidth <= 0 表示要原图（不带 maxWidth，服务端不走缩略图缓存）。
+ *
+ * 为什么需要「原图」这一档：服务端缩略图缓存按「原图文件名」命名，库内同目录外挂图
+ * （poster.jpg / folder.jpg / fanart.jpg）全库同名，带 maxWidth 请求时会拿到别的条目的
+ * 缩略图——首页「本周入库」海报与片名对不上就是这个。首页那一排只有十来张，先走原图。
+ */
+export function imageUrl(itemId: string, kind: 'Primary' | 'Backdrop', maxWidth = 0): string {
   const token = localStorage.getItem('access_token') || ''
-  return `${embyBaseCache}/emby/Items/${item.Id}/Images/Backdrop?maxWidth=${maxWidth}&api_key=${encodeURIComponent(token)}`
+  const size = maxWidth > 0 ? `maxWidth=${maxWidth}&` : ''
+  return `${embyBaseCache}/emby/Items/${itemId}/Images/${kind}?${size}api_key=${encodeURIComponent(token)}`
 }
 
 /** 进度条百分比 */
