@@ -81,15 +81,29 @@ def _union(a: int, b: int, parent: Dict[int, int]):
             parent[ra] = rb
 
 
-def _provider_key(item) -> Optional[Tuple[str, str]]:
-    """去重键：tmdb 优先，其次 imdb（对标 ProviderIdCheckKeys）。"""
+def _provider_key(item) -> Optional[Tuple]:
+    """去重键：与 dedup.dedup_key() 口径看齐。
+
+    键格式：(library_id, item_type, provider, provider_id)。
+    必须带 library_id（防跨库合并：同 tmdb_id 的电影分属两个库不能合并）
+    和 item_type（防跨类型合并：TMDB movie/tv 编号序列独立，数字可能重合）。
+    """
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
-    if tmdb_id:
-        return ("tmdb", tmdb_id)
     imdb_id = (getattr(item, "imdb_id", None) or "").strip()
-    if imdb_id:
-        return ("imdb", imdb_id)
-    return None
+    provider = None
+    provider_id = ""
+    if tmdb_id:
+        provider, provider_id = "tmdb", tmdb_id
+    elif imdb_id:
+        provider, provider_id = "imdb", imdb_id
+    else:
+        return None
+    return (
+        getattr(item, "library_id", None),
+        getattr(item, "item_type", None),
+        provider,
+        provider_id,
+    )
 
 
 def find_duplicate_groups(db) -> List[List]:
@@ -114,8 +128,8 @@ def find_duplicate_groups(db) -> List[List]:
         .all()
     )
 
-    # 按 provider key 分组
-    groups: Dict[Tuple[str, str], List] = {}
+    # 按 provider key 分组（含 library_id/item_type，防跨库跨类型合并）
+    groups: Dict[Tuple, List] = {}
     for item in items:
         key = _provider_key(item)
         if key:
@@ -177,11 +191,14 @@ def get_alternate_versions(db, primary_id: int) -> List:
     from backend.emby_server import models as em
 
     primary = db.query(em.MediaItem).filter(em.MediaItem.id == primary_id).first()
-    if not primary:
+    if not primary or primary.deleted_at is not None:
         return []
     alternates = (
         db.query(em.MediaItem)
-        .filter(em.MediaItem.merged_into_id == primary_id)
+        .filter(
+            em.MediaItem.merged_into_id == primary_id,
+            em.MediaItem.deleted_at.is_(None),
+        )
         .all()
     )
     return [primary] + alternates

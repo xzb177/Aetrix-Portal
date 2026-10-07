@@ -665,9 +665,8 @@ class IntroMarker(Base):
     数据来源：manual（手动标记）/ auto（自动探测，预留）
     """
     __tablename__ = "emby_intro_markers"
-    __table_args__ = (
-        Index("idx_intro_item", "item_id"),
-    )
+    # item_id 列级已有 index=True，这里不再重复建（避免同一列两个索引）
+    __table_args__ = ()
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False, index=True)

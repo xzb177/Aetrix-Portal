@@ -29,7 +29,7 @@ def get_episode_groups(tmdb_id: str) -> list[dict]:
     """
     from backend.emby_server.tmdb import tmdb_client
 
-    client = tmdb_client()
+    client = tmdb_client
     try:
         data = client._get(f"/tv/{tmdb_id}/episode_groups", {"language": "en-US"})
     except Exception as exc:  # noqa: BLE001
@@ -41,11 +41,15 @@ def get_episode_groups(tmdb_id: str) -> list[dict]:
     for g in groups:
         if not isinstance(g, dict):
             continue
+        try:
+            episode_count = int(g.get("episode_count") or 0)
+        except (TypeError, ValueError):
+            episode_count = 0
         out.append({
             "id": str(g.get("id") or ""),
             "name": str(g.get("name") or ""),
             "type": str(g.get("type") or ""),
-            "episode_count": int(g.get("episode_count") or 0),
+            "episode_count": episode_count,
         })
     return [g for g in out if g["id"]]
 
@@ -58,7 +62,7 @@ def get_episode_group_detail(group_id: str) -> Optional[dict]:
     """
     from backend.emby_server.tmdb import tmdb_client
 
-    client = tmdb_client()
+    client = tmdb_client
     try:
         data = client._get(f"/tv/episode_group/{group_id}", {"language": "en-US"})
     except Exception as exc:  # noqa: BLE001
@@ -78,4 +82,5 @@ def set_selected_group(db, tmdb_id: str, group_id: str) -> None:
     """设置用户为某剧选择的剧集组（空串 = 恢复默认）。"""
     from backend.integrations import store
 
-    store.set_value(db, f"{EPISODE_GROUP_CONFIG_PREFIX}{tmdb_id}", group_id or "")
+    store.write_values(db, {f"{EPISODE_GROUP_CONFIG_PREFIX}{tmdb_id}": group_id or ""})
+    db.commit()

@@ -263,6 +263,7 @@ def _process_one(item_id: int) -> None:
     """单个条目的完整处理（worker 线程内跑，自带 session）。"""
     from backend.database import SessionLocal
     db = SessionLocal()
+    probed = False
     try:
         item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
         if item is None or getattr(item, "probe_status", None) != "probing":
@@ -276,6 +277,7 @@ def _process_one(item_id: int) -> None:
             db.commit()
             return
         media_probe.probe_one(db, item)
+        probed = True
     except Exception as exc:  # noqa: BLE001
         logger.warning("按需探测处理异常 item=%s: %s", item_id, exc)
         try:
@@ -285,8 +287,9 @@ def _process_one(item_id: int) -> None:
     finally:
         db.close()
         # 独占模式冷却（对标 StrmAssistant CooldownDurationSeconds）：
-        # 单线程时每次探测后歇一会，避免连续读网盘互相争抢。
-        if PROBE_WORKERS <= 1 and PROBE_COOLDOWN_SEC > 0:
+        # 单线程时每次**实际执行探测**后歇一会，避免连续读网盘互相争抢。
+        # 被跳过（已有 codec / 状态不对）时不冷却。
+        if probed and PROBE_WORKERS <= 1 and PROBE_COOLDOWN_SEC > 0:
             _stop_event.wait(PROBE_COOLDOWN_SEC)
 
 

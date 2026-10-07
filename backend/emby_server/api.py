@@ -632,7 +632,12 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
     if full:
         dto["MediaSources"] = [_media_source(item, base, api_key, db)]
         dto["MediaSourceCount"] = 1
-        dto["Chapters"] = []
+        # 片头片尾标记 → Chapters（对标 StrmAssistant #3：播放器显示"跳过片头"按钮）
+        try:
+            from backend.emby_server import intro_marker as _im
+            dto["Chapters"] = _im.to_chapters(_im.get_markers(db, item.id))
+        except Exception:
+            dto["Chapters"] = []
         # 多版本：同一目录下的其他版本 + 物理合并的版本，供详情页版本切换器使用
         # （对标 StrmAssistant MergeMultiVersionTask：合并后用户要在详情页看到并切换版本）
         if item.item_type == "movie":
@@ -665,7 +670,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                         "Width": s.width or 0,
                         "Size": s.size or 0,
                         "Container": s.container or "",
-                        "IsPrimary": s.id == _all[0].id,
+                        "IsPrimary": s.id == _primary_id,
                     }
                     for s in _all
                 ]
