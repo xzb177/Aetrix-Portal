@@ -1469,6 +1469,75 @@ def get_items(
     return _query_items(request, user, db, _base_url(request))
 
 
+@emby_router.get("/emby/Users/{user_id}/Suggestions")
+@emby_router.get("/Users/{user_id}/Suggestions")
+def get_suggestions(user_id: str,
+                    request: Request,
+                    user: models.WebUser = Depends(get_emby_user),
+                    db: Session = Depends(get_db)):
+    """Homepage suggestions: latest additions plus site-wide popular items."""
+    limit = int(request.query_params.get("Limit") or 20)
+    limit = max(1, min(limit, 50))
+    allowed = _library_scope(db, user)
+    base_q = (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.item_type.in_(["movie", "series"]),
+            em.MediaItem.is_hidden == False,  # noqa: E712
+        )
+    )
+    base_q = _scope_items(base_q, allowed)
+    latest = (
+        base_q.order_by(em.MediaItem.date_added.desc().nullslast(),
+                        em.MediaItem.id.desc())
+        .limit(limit)
+        .all()
+    )
+    popular = []
+    try:
+        pop_rows = (
+            db.query(
+                em.MediaItem.id,
+                func.sum(em.UserMediaData.play_count).label("plays"),
+            )
+            .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
+            .filter(em.UserMediaData.play_count > 0)
+            .group_by(em.MediaItem.id)
+            .order_by(func.sum(em.UserMediaData.play_count).desc())
+            .limit(limit * 3)
+            .all()
+        )
+        pop_ids = [r.id for r in pop_rows if r.plays]
+        if pop_ids:
+            pop_items = base_q.filter(em.MediaItem.id.in_(pop_ids)).all()
+            series_plays = {}
+            play_map = {r.id: r.plays for r in pop_rows}
+            for it in pop_items:
+                top_id = it.series_id or it.id
+                series_plays[top_id] = series_plays.get(top_id, 0) + play_map.get(it.id, 0)
+            top_ids = sorted(series_plays, key=lambda i: series_plays[i], reverse=True)[:limit]
+            if top_ids:
+                id_order = {iid: n for n, iid in enumerate(top_ids)}
+                popular = sorted(
+                    base_q.filter(em.MediaItem.id.in_(top_ids)).all(),
+                    key=lambda it: id_order.get(it.id, 9999),
+                )
+    except Exception:
+        popular = []
+    seen = set()
+    items = []
+    for it in list(latest) + list(popular):
+        if it.id not in seen:
+            seen.add(it.id)
+            items.append(it)
+        if len(items) >= limit:
+            break
+    base = _base_url(request)
+    _prefetch_list_data(db, user.id, items)
+    return {"Items": [_item_dto(i, base, user.id, db) for i in items],
+            "TotalRecordCount": len(items), "StartIndex": 0}
+
+
 
 def _batch_series_source_dirs(series_ids, db) -> dict:
     """批量计算多个 series 的 source_dir（一次查 season，一次查 episode，避免 N+1）。
@@ -2182,8 +2251,10 @@ def get_episodes(item_id: str, request: Request,
 
 @emby_router.get("/emby/Shows/NextUp")
 @emby_router.get("/Shows/NextUp")
+@emby_router.get("/emby/Users/{user_id}/Shows/NextUp")
+@emby_router.get("/Users/{user_id}/Shows/NextUp")
 def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
-                      db: Session = Depends(get_db)):
+                db: Session = Depends(get_db), user_id: str = ""):
     """接下来看：每部「已开看」的剧集只返回下一集未看的单集。
 
     旧实现直接返回全库未播放单集（按季/集号排序），导致首页把每部剧的
