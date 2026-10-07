@@ -99,7 +99,7 @@ if DATABASE_TYPE == "sqlite":
     engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
 # 原值 20+40=60 是**每进程**的上限；api / worker / EA 三个进程各自持有独立 engine，
 # 峰值 180 > PG 默认 max_connections(100) → 高峰期随机 "too many clients already"。
-# 改为可配 + 对多进程安全的默认值（3×(10+10)=60，留足运维连接余量）。
+# 改为可配 + 对多进程安全的默认值（3×(25+25)=150（需 PG max_connections≥200），留足运维连接余量）。
 _POOL_SIZE = _env_int_or("DB_POOL_SIZE", 25, 1)
 _MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 25, 0)
 if DATABASE_TYPE == "postgresql":

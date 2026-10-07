@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import shutil

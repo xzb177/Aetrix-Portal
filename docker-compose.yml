@@ -22,8 +22,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-25}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-25}
       EMBY_IMAGE_DIR: /data/images
       EMBY_TRANSCODE_DIR: /data/transcode
       FRONTEND_DIST: /nonexistent-frontend
@@ -79,8 +79,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-25}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-25}
       EMBY_API_PORT: 8001
       EMBY_IMAGE_DIR: /data/images
       EMBY_TRANSCODE_DIR: /data/transcode
@@ -138,8 +138,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-25}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-25}
       EMBY_IMAGE_DIR: /data/images
       EMBY_TRANSCODE_DIR: /data/transcode
       ENRICH_BATCH: 200
