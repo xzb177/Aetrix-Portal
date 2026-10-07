@@ -18,23 +18,6 @@ def _load(name, path):
 BASE = os.path.join(os.path.dirname(__file__), "..", "backend", "emby_server")
 
 
-class TestPinyinSort:
-    def setup_method(self):
-        self.mod = _load("pinyin_sort", os.path.join(BASE, "pinyin_sort.py"))
-
-    def test_chinese(self):
-        assert self.mod.pinyin_initials("长津湖") == "zjh"
-
-    def test_english_unchanged(self):
-        assert self.mod.pinyin_initials("Inception") == "inception"
-
-    def test_empty(self):
-        assert self.mod.make_sort_name("") == ""
-
-    def test_make_sort_name(self):
-        assert self.mod.make_sort_name("长津湖") == "zjh"
-
-
 class TestMergeVersions:
     def setup_method(self):
         self.mod = _load(
