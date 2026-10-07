@@ -1,8 +1,10 @@
-"""Latest（最新入库）返回格式回归测试。
+"""Latest（最新入库）回归测试。
 
-背景：/emby/Users/{id}/Items/Latest 曾返回裸 JSON 数组 [...]，
-Emby 标准要求 {"Items": [...], "TotalRecordCount": N, "StartIndex": 0}。
-SenPlayer 解析失败后不再调用，导致首页无海报行。
+事实（多个独立信源证实）：
+1. Emby/Jellyfin 官方 /Items/Latest 返回**裸 JSON 数组** [...]，不是
+   {"Items": [...]}。PR #383 包成 dict 是错的，已纠正。
+2. SenPlayer 按库调 Latest（ParentId=<库 GUID>）取各库海报行，
+   ParentId 必须按库过滤——之前忽略 ParentId，10 次调用返回完全相同的全局数据。
 """
 import os
 import tempfile
@@ -49,21 +51,27 @@ def _mk(db, lib, item_type, name, date_added=None):
 
 @pytest.fixture
 def scene(db):
-    lib = em.Library(guid="L" * 32, name="电影库", collection_type="movies", paths="")
-    db.add(lib)
+    lib_a = em.Library(guid="A" * 32, name="电影库", collection_type="movies", paths="")
+    lib_b = em.Library(guid="B" * 32, name="剧集库", collection_type="tvshows", paths="")
+    db.add_all([lib_a, lib_b])
     db.flush()
     now = datetime.now()
-    m1 = _mk(db, lib, "movie", "老电影", date_added=now - timedelta(days=30))
-    m2 = _mk(db, lib, "movie", "新电影", date_added=now - timedelta(days=1))
+    m_old = _mk(db, lib_a, "movie", "老电影", date_added=now - timedelta(days=30))
+    m_new = _mk(db, lib_a, "movie", "新电影", date_added=now - timedelta(days=1))
+    s_new = _mk(db, lib_b, "series", "新剧集", date_added=now - timedelta(hours=1))
     user = core.WebUser(username="u1", password_hash="x")
     db.add(user)
     db.flush()
     db.commit()
-    return SimpleNamespace(db=db, user=user, m1=m1, m2=m2)
+    return SimpleNamespace(db=db, user=user, lib_a=lib_a, lib_b=lib_b,
+                           m_old=m_old, m_new=m_new, s_new=s_new)
 
 
-def _call_latest(db, user, limit=16):
-    req = SimpleNamespace(query_params={"Limit": str(limit)})
+def _call_latest(db, user, limit=16, parent_id=None):
+    params = {"Limit": str(limit)}
+    if parent_id:
+        params["ParentId"] = parent_id
+    req = SimpleNamespace(query_params=params)
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr(api, "_base_url", lambda request: "http://test")
         mp.setattr(api, "_prefetch_list_data", lambda *a, **k: None)
@@ -75,34 +83,30 @@ def _call_latest(db, user, limit=16):
         return api.get_latest(req, user, db)
 
 
-def test_latest_returns_query_result_format(scene):
-    """必须是 {Items, TotalRecordCount, StartIndex}，不能是裸数组。"""
+def test_latest_returns_bare_array(scene):
+    """Emby/Jellyfin 官方行为：裸数组，不能是 dict。"""
     res = _call_latest(scene.db, scene.user)
-    assert isinstance(res, dict), "必须返回 dict，不能是裸 list"
-    assert "Items" in res
-    assert "TotalRecordCount" in res
-    assert "StartIndex" in res
-    assert isinstance(res["Items"], list)
-    assert res["TotalRecordCount"] == len(res["Items"])
-    assert res["StartIndex"] == 0
+    assert isinstance(res, list), "必须返回裸 list，不能是 dict"
+    assert not isinstance(res, dict)
 
 
-def test_latest_not_bare_array(scene):
-    """回归：裸数组格式必须消失。"""
+def test_latest_not_wrapped_dict(scene):
+    """回归：PR #383 的 {"Items": ...} 包装是错的，必须消失。"""
     res = _call_latest(scene.db, scene.user)
-    assert not isinstance(res, list), "裸数组格式是 bug，见 issue"
+    assert not (isinstance(res, dict) and "Items" in res), \
+        "dict 包装格式是 bug（PR #383），见回归说明"
 
 
 def test_latest_newest_first(scene):
     res = _call_latest(scene.db, scene.user)
-    names = [i["Name"] for i in res["Items"]]
-    assert names[0] == "新电影"
+    names = [i["Name"] for i in res]
+    assert names[0] == "新剧集"  # 全局最新
+    assert names[1] == "新电影"
 
 
 def test_latest_limit(scene):
     res = _call_latest(scene.db, scene.user, limit=1)
-    assert len(res["Items"]) <= 1
-    assert res["TotalRecordCount"] == len(res["Items"])
+    assert len(res) == 1
 
 
 def test_latest_empty_db(db):
@@ -110,6 +114,49 @@ def test_latest_empty_db(db):
     db.add(user)
     db.flush()
     res = _call_latest(db, user)
-    assert res["Items"] == []
-    assert res["TotalRecordCount"] == 0
-    assert res["StartIndex"] == 0
+    assert res == []
+
+
+def test_latest_parent_id_filters_by_library(scene):
+    """ParentId=<库GUID> 必须只返回该库的条目。"""
+    res = _call_latest(scene.db, scene.user, parent_id="A" * 32)
+    names = [i["Name"] for i in res]
+    assert "新电影" in names
+    assert "老电影" in names
+    assert "新剧集" not in names, "ParentId 过滤失效：混入了别的库"
+
+    res_b = _call_latest(scene.db, scene.user, parent_id="B" * 32)
+    names_b = [i["Name"] for i in res_b]
+    assert names_b == ["新剧集"], f"剧集库应只返回自己的最新，实际: {names_b}"
+
+
+def test_latest_parent_id_per_library_differs(scene):
+    """10 个库调 Latest 不应返回完全相同的数据（Bug 2 的回归）。"""
+    res_a = _call_latest(scene.db, scene.user, parent_id="A" * 32)
+    res_b = _call_latest(scene.db, scene.user, parent_id="B" * 32)
+    ids_a = {i["Id"] for i in res_a}
+    ids_b = {i["Id"] for i in res_b}
+    assert ids_a != ids_b, "不同库的 Latest 返回完全相同，ParentId 被忽略"
+
+
+def test_latest_unknown_parent_id_no_filter(scene):
+    """ParentId 查不到库时不加过滤（与之前行为一致，不 500）。"""
+    res = _call_latest(scene.db, scene.user, parent_id="Z" * 32)
+    names = [i["Name"] for i in res]
+    assert "新剧集" in names and "新电影" in names
+
+
+def test_latest_keeps_type_scope(scene):
+    """Latest 仍只给 movie/series。"""
+    db = scene.db
+    ep = em.MediaItem(
+        guid=uuid.uuid4().hex[:32], library_id=scene.lib_a.id,
+        item_type="episode", name="单集", sort_name="单集",
+        is_hidden=False, date_added=datetime.now(),
+    )
+    db.add(ep)
+    db.flush()
+    db.commit()
+    res = _call_latest(db, scene.user)
+    types = {i["Type"] for i in res}
+    assert types <= {"movie", "series"}, f"混入了非法类型: {types}"

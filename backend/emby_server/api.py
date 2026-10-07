@@ -2140,26 +2140,31 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
 @emby_router.get("/Users/{user_id}/Items/Latest")
 def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
+    """Latest returns a bare JSON array (Emby/Jellyfin official behavior).
+
+    SenPlayer calls Latest per library (ParentId=<library guid>) for the
+    per-library poster rows, so ParentId must filter by library. Unknown
+    ParentId -> no extra filter (same as before).
+    """
     limit = int(request.query_params.get("Limit") or 16)
+    q = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type.in_(["movie", "series"]),
+        em.MediaItem.is_hidden == False,  # noqa: E712
+    )
+    parent_id = request.query_params.get("ParentId")
+    if parent_id:
+        lib = db.query(em.Library).filter(em.Library.guid == parent_id).first()
+        if lib is not None:
+            q = q.filter(em.MediaItem.library_id == lib.id)
     items = (
-        _scope_items(
-            db.query(em.MediaItem).filter(
-                em.MediaItem.item_type.in_(["movie", "series"]),
-                em.MediaItem.is_hidden == False,  # noqa: E712
-            ),
-            _library_scope(db, user),
-        )
+        _scope_items(q, _library_scope(db, user))
         .order_by(em.MediaItem.date_added.desc())
         .limit(limit)
         .all()
     )
     base = _base_url(request)
     _prefetch_list_data(db, user.id, items)
-    result = []
-    for item in items:
-        dto = _item_dto(item, base, user.id, db)
-        result.append(dto)
-    return {"Items": result, "TotalRecordCount": len(result), "StartIndex": 0}
+    return [_item_dto(item, base, user.id, db) for item in items]
 
 
 # /Items/Counts、/Items/Filters、/Items/Intros 必须注册在 /Items/{item_id} 之前，
