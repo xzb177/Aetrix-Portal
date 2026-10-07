@@ -297,6 +297,8 @@ class EmbyPerson(Base):
     role = Column(String(200))       # 饰演角色（TMDB character）
     image = Column(String(1024))     # 头像远程 URL（TMDB profile_path 拼出来的）
     sort_order = Column(Integer, default=0)  # TMDB cast 原顺序（戏份排序）
+    # StrmAssistant #9 对标：TMDB person id，供刷新演员详情用
+    person_tmdb_id = Column(String(32), index=True)
 
 
 class MediaStream(Base):
@@ -654,6 +656,29 @@ class LocalCacheStat(Base):
 # 会查条目的代码（不只 emby_server 下的）都自动看不到已下架的条目。
 from backend.emby_server import soft_delete as _soft_delete  # noqa: E402,F401
 
+
+class IntroMarker(Base):
+    """片头片尾标记（对标 StrmAssistant #3）。
+
+    marker_type: intro（片头）/ outro（片尾）/ credits（字幕）
+    时间单位：毫秒（与 Emby Chapter 标记对齐）。
+    数据来源：manual（手动标记）/ auto（自动探测，预留）
+    """
+    __tablename__ = "emby_intro_markers"
+    __table_args__ = (
+        Index("idx_intro_item", "item_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False, index=True)
+    marker_type = Column(String(20), nullable=False)  # intro / outro / credits
+    start_ms = Column(BigInteger, nullable=False, default=0)
+    end_ms = Column(BigInteger, nullable=False, default=0)
+    source = Column(String(20), default="manual")  # manual / auto
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 __all__ = [
     "Library",
     "ScanRun",
@@ -666,4 +691,5 @@ __all__ = [
     "EmbyApiToken",
     "LocalCacheEntry",
     "LocalCacheStat",
+    "IntroMarker",
 ]

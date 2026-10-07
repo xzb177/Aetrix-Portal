@@ -557,6 +557,10 @@ def _auto_migrate():
             ("channel_layout", "VARCHAR(30)", "NULL"),
             ("sample_format", "VARCHAR(20)", "NULL"),
         ]),
+        # StrmAssistant #9 演职人员增强：person_tmdb_id 供刷新演员详情用
+        ("emby_people", [
+            ("person_tmdb_id", "VARCHAR(32)", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

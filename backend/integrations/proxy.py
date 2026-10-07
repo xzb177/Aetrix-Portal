@@ -10,6 +10,7 @@ httpx（默认 ``trust_env=True``）、requests、rclone 都认这套变量，�
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -135,3 +136,51 @@ def _masked(url: str) -> str:
     scheme, rest = url.split("://", 1)
     _, host = rest.split("@", 1)
     return f"{scheme}://******@{host}"
+
+
+# ---------------------------------------------------------------------------
+# StrmAssistant #14 对标：代理 URL 校验与解析工具
+# （对标 CommonUtility.IsValidProxyUrl / TryParseProxyUrl）
+# ---------------------------------------------------------------------------
+
+def is_valid_proxy_url(proxy_url: str) -> bool:
+    """校验代理 URL 格式是否合法（http/https + 有效端口 + 可选认证）。"""
+    if not proxy_url or not proxy_url.strip():
+        return False
+    try:
+        from urllib.parse import urlparse
+        uri = urlparse(proxy_url.strip())
+        if uri.scheme not in ("http", "https"):
+            return False
+        if not uri.hostname:
+            return False
+        port = uri.port
+        # 默认端口或 1-65535
+        if port is not None and not (1 <= port <= 65535):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def try_parse_proxy_url(proxy_url: str) -> Optional[dict]:
+    """解析代理 URL 为结构化字典。
+
+    返回 {"scheme":..., "host":..., "port":..., "username":..., "password":...}，
+    解析失败返回 None。
+    """
+    if not is_valid_proxy_url(proxy_url):
+        return None
+    try:
+        from urllib.parse import urlparse
+        uri = urlparse(proxy_url.strip())
+        default_port = 80 if uri.scheme == "http" else 443
+        return {
+            "scheme": uri.scheme,
+            "host": uri.hostname or "",
+            "port": uri.port or default_port,
+            "username": uri.username or "",
+            "password": uri.password or "",
+        }
+    except Exception:
+        return None
