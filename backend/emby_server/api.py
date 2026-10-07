@@ -2156,7 +2156,7 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
     for item in items:
         dto = _item_dto(item, base, user.id, db)
         result.append(dto)
-    return result
+    return {"Items": result, "TotalRecordCount": len(result), "StartIndex": 0}
 
 
 # /Items/Counts、/Items/Filters、/Items/Intros 必须注册在 /Items/{item_id} 之前，
