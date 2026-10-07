@@ -133,7 +133,7 @@ def _fingerprint_match(item, payload: dict) -> bool:
         return False
     if old_size != cur["file_size"]:
         return False
-    if old_mtime and cur["file_mtime"] and abs(old_mtime - cur["file_mtime"]) > 1.0:
+    if old_mtime and cur["file_mtime"] and abs(old_mtime - cur["file_mtime"]) > MTIME_TOLERANCE_SEC:
         return False
     return True
 

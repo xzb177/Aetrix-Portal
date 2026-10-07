@@ -52,9 +52,9 @@ class TestSubtitleWorker:
     def test_path_check_before_db(self):
         with open(os.path.join(BASE, "subtitle_scan_worker.py")) as f:
             content = f.read()
-        # _detect_external_subtitles 在 has_external_subtitle_changed 之前调用
-        detect_pos = content.find("_detect_external_subtitles(item.file_path) is None")
-        assert detect_pos > 0
+        # _detect_external_subtitles 在 _scan_once 主循环开头调用（路径先行）
+        assert "detected = _detect_external_subtitles(item.file_path)" in content
+        assert "if detected is None:" in content
 
     def test_yield_per(self):
         with open(os.path.join(BASE, "subtitle_scan_worker.py")) as f:

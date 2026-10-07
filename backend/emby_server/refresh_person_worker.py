@@ -109,6 +109,7 @@ def run_once(db) -> dict:
 
 _start_lock = threading.Lock()
 _started = False
+_stop_event = threading.Event()
 
 
 def _run_loop_once() -> None:
@@ -143,9 +144,10 @@ def start() -> bool:
         finally:
             from backend.emby_server import worker_registry as _wr
             _wr.heartbeat("refresh_person")
-        while True:
+        while not _stop_event.is_set():
             try:
-                time.sleep(REFRESH_INTERVAL_SEC)
+                if _stop_event.wait(REFRESH_INTERVAL_SEC):
+                    break
                 _run_loop_once()
             except Exception as exc:  # noqa: BLE001 — 后台任务不崩
                 logger.warning("演员刷新失败: %s", exc)
@@ -158,3 +160,8 @@ def start() -> bool:
     from backend.emby_server import worker_registry as _wr
     _wr.register("refresh_person", t)
     return True
+
+
+def stop() -> None:
+    """停止后台线程（与其他 worker 对齐，测试/优雅关闭用）。"""
+    _stop_event.set()

@@ -14,6 +14,7 @@ StrmAssistant 做法：
 """
 
 import logging
+from backend.emby_server.env_util import env_float, env_int
 import os
 import threading
 import time
@@ -23,30 +24,15 @@ from typing import List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
-def _env_int(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, min(hi, value))
-
-
-def _env_float(name: str, default: float, lo: float) -> float:
-    try:
-        value = float(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, value)
-
 
 # 开关：默认开
 SUBTITLE_SCAN_ENABLED = (
     os.getenv("SUBTITLE_SCAN_ENABLED", "1") or "1"
 ).strip().lower() not in ("0", "false", "no")
 # 扫描间隔（秒），默认 12 小时
-SUBTITLE_SCAN_INTERVAL_SEC = _env_float("SUBTITLE_SCAN_INTERVAL_SEC", 43200.0, 3600.0)
+SUBTITLE_SCAN_INTERVAL_SEC = env_float("SUBTITLE_SCAN_INTERVAL_SEC", 43200.0, 3600.0)
 # 单次扫描最多处理条数（防大库一次扫太久）
-SUBTITLE_SCAN_BATCH_LIMIT = _env_int("SUBTITLE_SCAN_BATCH_LIMIT", 10000, 100, 100000)
+SUBTITLE_SCAN_BATCH_LIMIT = env_int("SUBTITLE_SCAN_BATCH_LIMIT", 10000, 100, 100000)
 
 _scan_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
@@ -95,29 +81,36 @@ def _get_db_external_subtitles(db, item_id: int) -> Set[str]:
     return {r[0] for r in rows if r[0]}
 
 
-def has_external_subtitle_changed(db, item_id: int, video_path: str) -> bool:
+def has_external_subtitle_changed(db, item_id: int, video_path: str,
+                                  detected: Optional[Set[str]] = None) -> bool:
     """外挂字幕是否有变化（对标 HasExternalSubtitleChanged）。
 
     DB 集合 vs 实际探测集合，不一致即为变化。
     探测结果未知（None）时返回 False：跳过，不误判。
+    detected 可由调用方传入（避免重复 listdir）。
     """
-    current = _get_db_external_subtitles(db, item_id)
-    detected = _detect_external_subtitles(video_path)
+    if detected is None:
+        detected = _detect_external_subtitles(video_path)
     if detected is None:
         return False
+    # 注意：detected 为空集合表示"目录可访问且确实无字幕"，
+    # 与 None（未知）语义不同，这里要区分
+    current = _get_db_external_subtitles(db, item_id)
     return current != detected
 
 
-def update_external_subtitles(db, item) -> int:
+def update_external_subtitles(db, item, detected: Optional[Set[str]] = None) -> int:
     """更新条目的外挂字幕（对标 UpdateExternalSubtitles）。
 
     只重建字幕轨道（is_external 的 Subtitle），不动视频/音频轨。
     返回更新后的字幕条数。
+    detected 可由调用方传入（避免重复 listdir）。
     """
     from backend.emby_server import models as em
     from backend.emby_server import subtitle_match as sm
 
-    detected = _detect_external_subtitles(item.file_path)
+    if detected is None:
+        detected = _detect_external_subtitles(item.file_path)
     if detected is None:
         # 目录不可访问（远程 mount:// 路径、挂载掉线）：未知，不动 DB
         return 0
@@ -211,14 +204,17 @@ def _scan_once() -> Tuple[int, int]:
             if _stop_event.is_set():
                 break
             # 先判路径可探测性：mount:// 或不可访问目录直接跳过，
-            # 避免先打 1 万次 DB 查询再发现全是"未知"
-            if _detect_external_subtitles(item.file_path) is None:
+            # 避免先打 1 万次 DB 查询再发现全是"未知"。
+            # 探测结果复用，避免 has/update 重复 listdir
+            detected = _detect_external_subtitles(item.file_path)
+            if detected is None:
                 db.expunge(item)
                 continue
             checked += 1
             try:
-                if has_external_subtitle_changed(db, item.id, item.file_path):
-                    update_external_subtitles(db, item)
+                if has_external_subtitle_changed(db, item.id, item.file_path,
+                                                detected=detected):
+                    update_external_subtitles(db, item, detected=detected)
                     # 同步更新条目的 subtitle_languages（EA 展示用）
                     # 字幕被删光时要清空，避免残留旧值
                     langs = sorted({

@@ -636,7 +636,8 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         try:
             from backend.emby_server import intro_marker as _im
             dto["Chapters"] = _im.to_chapters(_im.get_markers(db, item.id))
-        except Exception:
+        except Exception as exc:
+            logger.debug("Chapters 加载失败 item=%s: %s", getattr(item, "id", "?"), exc)
             dto["Chapters"] = []
         # 多版本：同一目录下的其他版本 + 物理合并的版本，供详情页版本切换器使用
         # （对标 StrmAssistant MergeMultiVersionTask：合并后用户要在详情页看到并切换版本）
@@ -647,21 +648,21 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
             try:
                 from backend.emby_server import merge_versions_worker as _mvw
                 # 如果本条目是被合并的，先找到主记录
-                _primary_id = item.id
+                primary_id = item.id
                 if getattr(item, "merged_into_id", None):
-                    _primary_id = item.merged_into_id
-                _merged = _mvw.get_alternate_versions(db, _primary_id)
+                    primary_id = item.merged_into_id
+                merged = _mvw.get_alternate_versions(db, primary_id)
             except Exception:
-                _merged = []
+                merged = []
             # 合并两个来源，按 id 去重（sibs 已按 id 排序，merged 首个是主记录）
-            _seen = set()
-            _all = []
-            for s in list(sibs) + _merged:
-                if s.id not in _seen:
-                    _seen.add(s.id)
-                    _all.append(s)
-            _all.sort(key=lambda s: s.id)
-            if len(_all) > 1:
+            seen_ids = set()
+            all_versions = []
+            for s in list(sibs) + merged:
+                if s.id not in seen_ids:
+                    seen_ids.add(s.id)
+                    all_versions.append(s)
+            all_versions.sort(key=lambda s: s.id)
+            if len(all_versions) > 1:
                 dto["Versions"] = [
                     {
                         "Id": s.guid,
@@ -670,9 +671,9 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                         "Width": s.width or 0,
                         "Size": s.size or 0,
                         "Container": s.container or "",
-                        "IsPrimary": s.id == _primary_id,
+                        "IsPrimary": s.id == primary_id,
                     }
-                    for s in _all
+                    for s in all_versions
                 ]
             else:
                 dto["Versions"] = []

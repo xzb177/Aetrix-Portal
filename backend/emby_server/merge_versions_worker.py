@@ -18,6 +18,7 @@ StrmAssistant 做法（ScheduledTask/MergeMultiVersionTask.cs）：
 """
 
 import logging
+from backend.emby_server.env_util import env_float, env_int
 import os
 import threading
 import time
@@ -27,7 +28,7 @@ from typing import Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
-def _env_float(name: str, default: float, lo: float) -> float:
+def env_float(name: str, default: float, lo: float) -> float:
     try:
         value = float(os.getenv(name, str(default)) or default)
     except (TypeError, ValueError):
@@ -35,24 +36,18 @@ def _env_float(name: str, default: float, lo: float) -> float:
     return max(lo, value)
 
 
-def _env_int(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        value = int(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, min(hi, value))
-
-
 # 开关：默认开
 MERGE_VERSIONS_ENABLED = (
     os.getenv("MERGE_VERSIONS_ENABLED", "1") or "1"
 ).strip().lower() not in ("0", "false", "no")
 # 扫描间隔（秒），默认 24 小时（合并是低频操作）
-MERGE_VERSIONS_INTERVAL_SEC = _env_float(
+MERGE_VERSIONS_INTERVAL_SEC = env_float(
     "MERGE_VERSIONS_INTERVAL_SEC", 86400.0, 3600.0
 )
 # 单次最多合并组数
-MERGE_VERSIONS_BATCH_LIMIT = _env_int(
+# 候选放大系数：轻量列只做分组，取 10 倍上限保护
+MERGE_CANDIDATE_MULTIPLIER = 10
+MERGE_VERSIONS_BATCH_LIMIT = env_int(
     "MERGE_VERSIONS_BATCH_LIMIT", 1000, 10, 100000
 )
 
@@ -64,23 +59,6 @@ _start_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # union-find（对标 StrmAssistant 的 Union/Find）
 # ---------------------------------------------------------------------------
-
-def _find(x: int, parent: Dict[int, int]) -> int:
-    while parent[x] != x:
-        parent[x] = parent[parent[x]]
-        x = parent[x]
-    return x
-
-
-def _union(a: int, b: int, parent: Dict[int, int]):
-    ra, rb = _find(a, parent), _find(b, parent)
-    if ra != rb:
-        # 小 id 做根（稳定）
-        if ra < rb:
-            parent[rb] = ra
-        else:
-            parent[ra] = rb
-
 
 def _provider_key(item) -> Optional[Tuple]:
     """去重键：与 dedup.dedup_key() 口径看齐。
@@ -134,7 +112,7 @@ def find_duplicate_groups(db) -> List[List]:
             (em.MediaItem.tmdb_id.isnot(None) | em.MediaItem.imdb_id.isnot(None)),
         )
         .order_by(em.MediaItem.id.asc())
-        .limit(MERGE_VERSIONS_BATCH_LIMIT * 10)
+        .limit(MERGE_VERSIONS_BATCH_LIMIT * MERGE_CANDIDATE_MULTIPLIER)
         .all()
     )
 
@@ -166,25 +144,12 @@ def find_duplicate_groups(db) -> List[List]:
     )
     item_by_id = {item.id: item for item in items}
 
-    # union-find 处理传递性（虽然按 key 分组已天然传递，但保留结构以对标）
-    parent: Dict[int, int] = {}
-    for id_group in dup_id_groups:
-        for item_id in id_group:
-            if item_id not in parent:
-                parent[item_id] = item_id
-        root = id_group[0]
-        for item_id in id_group[1:]:
-            _union(root, item_id, parent)
-
-    # 按根分组（id → 全行对象）
-    by_root: Dict[int, List] = {}
-    for item_id in parent:
-        r = _find(item_id, parent)
-        item = item_by_id.get(item_id)
-        if item is not None:
-            by_root.setdefault(r, []).append(item)
-
-    return [g for g in by_root.values() if len(g) >= 2]
+    # 按 id 加载全行（只加载需要合并的组）→ 直接返回分组
+    # （注：按 key 分组已天然保证传递性，无需 union-find）
+    return [
+        [item_by_id[i] for i in id_group if i in item_by_id]
+        for id_group in dup_id_groups
+    ]
 
 
 def merge_group(db, group: List) -> int:
