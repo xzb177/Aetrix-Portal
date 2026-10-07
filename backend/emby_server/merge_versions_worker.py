@@ -187,6 +187,38 @@ def get_alternate_versions(db, primary_id: int) -> List:
     return [primary] + alternates
 
 
+def unmerge_version(db, item_id: int) -> bool:
+    """解除单个条目的合并：将其 merged_into_id 清空，恢复为独立条目。
+
+    返回 True 表示成功找到并解除。
+    """
+    from backend.emby_server import models as em
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+    if not item or not item.merged_into_id:
+        return False
+    item.merged_into_id = None
+    logger.info("解除多版本合并：%s (id=%d) 恢复为独立条目", item.name, item.id)
+    return True
+
+
+def unmerge_all(db, primary_id: int) -> int:
+    """解除某主记录下所有版本的合并，返回解除的数量。"""
+    from backend.emby_server import models as em
+
+    items = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.merged_into_id == primary_id)
+        .all()
+    )
+    for item in items:
+        item.merged_into_id = None
+    if items:
+        logger.info("解除多版本合并：主记录 id=%d 下 %d 个版本恢复独立",
+                    primary_id, len(items))
+    return len(items)
+
+
 def _merge_once() -> Tuple[int, int]:
     """跑一轮合并：返回 (组数, 合并条目数)。"""
     from backend.database import SessionLocal

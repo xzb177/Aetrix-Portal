@@ -1879,3 +1879,81 @@ async def economy_mark_order_paid(
 # ==================== 导出 ====================
 
 __all__ = ["admin_router"]
+
+
+# ==================== 多版本管理（对标 StrmAssistant #4） ====================
+
+@admin_router.get("/media/versions/{item_id}")
+def admin_get_versions(
+    item_id: str,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """查看某条目的所有多版本（管理后台用）。"""
+    from backend.emby_server import models as em
+    from backend.emby_server import merge_versions_worker as _mvw
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    primary_id = item.merged_into_id or item.id
+    versions = _mvw.get_alternate_versions(db, primary_id)
+    return {
+        "primary_id": primary_id,
+        "versions": [
+            {
+                "id": v.id,
+                "guid": v.guid,
+                "name": v.name,
+                "file_path": v.file_path,
+                "height": v.height or 0,
+                "size": v.size or 0,
+                "is_primary": v.id == primary_id,
+                "is_merged": v.merged_into_id is not None,
+            }
+            for v in sorted(versions, key=lambda s: s.id)
+        ],
+    }
+
+
+@admin_router.post("/media/versions/{item_id}/unmerge")
+def admin_unmerge_version(
+    item_id: str,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """解除单个版本的合并（恢复为独立条目）。"""
+    from backend.emby_server import models as em
+    from backend.emby_server import merge_versions_worker as _mvw
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    ok = _mvw.unmerge_version(db, item.id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="该条目未被合并")
+    _audit(db, current_admin, "unmerge_version", "media_item", item.id,
+           {"name": item.name})
+    db.commit()
+    return {"success": True, "message": f"已解除合并：{item.name}"}
+
+
+@admin_router.post("/media/versions/{item_id}/unmerge-all")
+def admin_unmerge_all(
+    item_id: str,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """解除某主记录下所有版本的合并。"""
+    from backend.emby_server import models as em
+    from backend.emby_server import merge_versions_worker as _mvw
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    primary_id = item.merged_into_id or item.id
+    count = _mvw.unmerge_all(db, primary_id)
+    _audit(db, current_admin, "unmerge_all_versions", "media_item", primary_id,
+           {"count": count})
+    db.commit()
+    return {"success": True, "message": f"已解除 {count} 个版本的合并"}

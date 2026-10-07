@@ -310,3 +310,52 @@ def item_thumbnails(item_id: str, request: Request,
     return {"TotalRecordCount": len(thumbs)}
 
 
+
+
+# ---------------------------------------------------------------------------
+# 多版本（对标 StrmAssistant #4 MergeMultiVersionTask）
+# ---------------------------------------------------------------------------
+
+def _version_dto(s) -> dict:
+    """单个版本的信息，供版本切换器展示。"""
+    from backend.emby_server.api import _version_label
+
+    h = s.height or 0
+    return {
+        "Id": s.guid,
+        "Name": _version_label(s),
+        "Height": h,
+        "Width": s.width or 0,
+        "Size": s.size or 0,
+        "Container": s.container or "",
+        "VideoCodec": s.video_codec or "",
+        "AudioCodec": s.audio_codec or "",
+        "Bitrate": s.bitrate or 0,
+        "VideoResolution": s.video_resolution or "",
+        "MediaSource": s.media_source or "",
+    }
+
+
+@emby_router.get("/emby/Items/{item_id}/AlternateVersions")
+@emby_router.get("/Items/{item_id}/AlternateVersions")
+def item_alternate_versions(item_id: str, request: Request,
+                            db: Session = Depends(get_db)):
+    """返回某条目的所有多版本（含主记录自己）。
+
+    数据来源：merge_versions_worker 的物理合并（merged_into_id）。
+    供详情页版本切换器、第三方客户端使用。
+    """
+    from backend.emby_server import merge_versions_worker as _mvw
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    # 如果查的是被合并的版本，定位到主记录
+    primary_id = item.merged_into_id or item.id
+    versions = _mvw.get_alternate_versions(db, primary_id)
+    versions = sorted(versions, key=lambda s: s.id)
+    items = [_version_dto(s) for s in versions]
+    # 标记主记录
+    for v, s in zip(items, versions):
+        v["IsPrimary"] = (s.id == primary_id)
+    return {"Items": items, "TotalRecordCount": len(items)}
