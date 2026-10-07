@@ -514,7 +514,9 @@ function recentTitle(item: CalendarItem): string {
 }
 
 function recentPoster(item: CalendarItem): string {
-  return posterUrl(item, 240)
+  // 日历接口的 ImageTags 可能为空（后端回退链未覆盖），跳过检查直接拼 URL；
+  // 无图时后端返回 404，前端有占位卡兜底
+  return posterUrl(item, 240, true)
 }
 
 /** Hero 眉题：有今日入库叫「今日新片」，否则「本周新片」；没有片单就只写站点氛围 */

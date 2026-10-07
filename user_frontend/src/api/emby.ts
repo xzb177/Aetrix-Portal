@@ -435,8 +435,8 @@ function positionTicks() {
  * 必须是 EA 绝对/前缀地址。以前这里返回同源 /emby/...，在分离部署下打到 EM，
  * 图片 404 —— 就是首页那些只剩编号、没有封面的卡片的来源。
  */
-export function posterUrl(item: EmbyItem, maxWidth = 320): string {
-  if (!item.ImageTags?.Primary) return ''
+export function posterUrl(item: EmbyItem, maxWidth = 320, skipCheck = false): string {
+  if (!skipCheck && !item.ImageTags?.Primary) return ''
   const token = localStorage.getItem('access_token') || ''
   return `${embyBaseCache}/emby/Items/${item.Id}/Images/Primary?maxWidth=${maxWidth}&api_key=${encodeURIComponent(token)}`
 }
