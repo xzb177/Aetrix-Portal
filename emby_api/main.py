@@ -299,18 +299,48 @@ if _cors_origins:
     )
 
 
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    if request.url.path.startswith("/emby/"):
-        # video segments cacheable, skip forced no-store
-        from backend.emby_server.cdn import is_segment_path
-        if not is_segment_path(request.url.path):
-            response.headers.setdefault("Cache-Control", "no-store")
-    return response
+class SecurityHeadersMiddleware:
+    """纯 ASGI 安全头中间件（不缓冲响应体，大文件流式播放安全）
+
+    之前用 @app.middleware("http")（BaseHTTPMiddleware）会缓冲整个响应体，
+    22GB 大文件 Range 流在 Drive 中断时导致 "Response content shorter than
+    Content-Length"。纯 ASGI 只改 http.response.start 的头，不碰 body。
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+
+                def _has(name: str) -> bool:
+                    nl = name.lower().encode()
+                    return any(k.lower() == nl for k, _ in headers)
+
+                def _add(name: str, value: str):
+                    if not _has(name):
+                        headers.append((name.lower().encode(), value.encode()))
+
+                _add("X-Content-Type-Options", "nosniff")
+                _add("X-Frame-Options", "DENY")
+                _add("Referrer-Policy", "strict-origin-when-cross-origin")
+                if path.startswith("/emby/"):
+                    # video segments cacheable, skip forced no-store
+                    from backend.emby_server.cdn import is_segment_path
+                    if not is_segment_path(path):
+                        _add("Cache-Control", "no-store")
+                message["headers"] = headers
+            await send(message)
+
+        return await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # GZip 压缩：接口 JSON / 播放列表走压缩，已压缩或大块二进制内容不再压缩。

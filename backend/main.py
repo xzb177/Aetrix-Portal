@@ -355,26 +355,62 @@ async def rate_limit_middleware(request, call_next):
     return await call_next(request)
 
 
-# 安全响应头
-@app.middleware("http")
-async def security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    path = request.url.path
-    if path.startswith(("/api/", "/emby/")):
-        # video segments cacheable via cdn.is_segment_path; skip forced no-store
-        from backend.emby_server.cdn import is_segment_path
-        if not is_segment_path(path):
-            response.headers.setdefault("Cache-Control", "no-store")
-    elif response.status_code == 200 and path.startswith(("/assets/", "/admin/assets/")):
-        # Vite 产物文件名带内容哈希：内容不变则文件名不变，可以长期强缓存
-        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
-    elif "text/html" in response.headers.get("content-type", ""):
-        # SPA 入口每次都要回源校验：发了新版本用户刷新就能拿到新构建
-        response.headers.setdefault("Cache-Control", "no-cache")
-    return response
+# 安全响应头（纯 ASGI，不缓冲响应体，大文件流式播放安全）
+class SecurityHeadersMiddleware:
+    """纯 ASGI 安全头中间件
+
+    之前用 @app.middleware("http")（BaseHTTPMiddleware）会缓冲整个响应体，
+    22GB 大文件 Range 流在 Drive 中断时导致 "Response content shorter than
+    Content-Length"。纯 ASGI 只改 http.response.start 的头，不碰 body。
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+
+                def _has(name: str) -> bool:
+                    nl = name.lower().encode()
+                    return any(k.lower() == nl for k, _ in headers)
+
+                def _add(name: str, value: str):
+                    if not _has(name):
+                        headers.append((name.lower().encode(), value.encode()))
+
+                def _get(name: str) -> str:
+                    nl = name.lower().encode()
+                    for k, v in headers:
+                        if k.lower() == nl:
+                            return v.decode()
+                    return ""
+
+                _add("X-Content-Type-Options", "nosniff")
+                _add("X-Frame-Options", "DENY")
+                _add("Referrer-Policy", "strict-origin-when-cross-origin")
+                if path.startswith(("/api/", "/emby/")):
+                    # video segments cacheable via cdn.is_segment_path; skip forced no-store
+                    from backend.emby_server.cdn import is_segment_path
+                    if not is_segment_path(path):
+                        _add("Cache-Control", "no-store")
+                elif message.get("status") == 200 and path.startswith(("/assets/", "/admin/assets/")):
+                    # Vite 产物文件名带内容哈希：内容不变则文件名不变，可以长期强缓存
+                    _add("Cache-Control", "public, max-age=31536000, immutable")
+                elif "text/html" in _get("content-type"):
+                    # SPA 入口每次都要回源校验：发了新版本用户刷新就能拿到新构建
+                    _add("Cache-Control", "no-cache")
+                message["headers"] = headers
+            await send(message)
+
+        return await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 @app.middleware("http")
 async def request_body_limit_middleware(request, call_next):
