@@ -355,6 +355,16 @@ def test_language_get_put_roundtrip(own_db):
     res = admin_scrape.save_tmdb_language(
         admin_scrape.TmdbLanguageSaveRequest(language="en-US"), user, db)
     assert res["success"] is True
+    # === CI 诊断（临时）：打印 DB 真实状态 ===
+    from backend import models as _m
+    _row = db.query(_m.SystemConfig).filter(_m.SystemConfig.key == tmdb_mod.TMDB_PREFERRED_LANGUAGE_CONFIG_KEY).first()
+    print(f"\n[DIAG] DB row after save: {(_row.key, _row.value) if _row else None}")
+    print(f"[DIAG] store.read_value: {store.read_value(db, tmdb_mod.TMDB_PREFERRED_LANGUAGE_CONFIG_KEY, '<MISSING>')!r}")
+    print(f"[DIAG] store.get_value ttl=0: {store.get_value(db, tmdb_mod.TMDB_PREFERRED_LANGUAGE_CONFIG_KEY, '<MISSING>', ttl=0)!r}")
+    print(f"[DIAG] _LANGUAGE_CACHE: {tmdb_mod._LANGUAGE_CACHE}")
+    print(f"[DIAG] _ttl_cache key: {store._ttl_cache.get(tmdb_mod.TMDB_PREFERRED_LANGUAGE_CONFIG_KEY)}")
+    print(f"[DIAG] TMDB_LANGUAGE env: {os.getenv('TMDB_LANGUAGE')!r}")
+    # === 诊断结束 ===
     assert admin_scrape.get_tmdb_language(user, db)["language"] == "en-US"
     assert tmdb_mod.preferred_language(db) == "en-US", "读配置口径与热路径一致"
 
