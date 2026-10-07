@@ -208,8 +208,8 @@ def ensure_sa_rotation(conf_path: str | Path,
 # ---------------------------------------------------------------------------
 # 播放器（尤其手机端）对一个大文件会开 5~7 个并发 Range 请求，7 路同时回源
 # Drive 直接把带宽打满，谁都播不动。这里按文件限流：同一文件最多
-# ``MAX_CONCURRENT_RANGES_PER_FILE`` 路并发，超出的排队等（带超时），
-# 避免单个大文件饿死整台机器。
+# ``MAX_CONCURRENT_RANGES_PER_FILE`` 路并发，超出的直接 503（播放器会重试，
+# 效果等同排队）。注意：事件循环里必须用非阻塞的 try_acquire。
 MAX_CONCURRENT_RANGES_PER_FILE = 3
 RANGE_ACQUIRE_TIMEOUT_SEC = 60.0
 
@@ -246,6 +246,13 @@ class RangeConcurrencyLimiter:
     def acquire(self, path: str) -> bool:
         """阻塞最多 ``acquire_timeout`` 秒拿一个名额，拿到返回 True。"""
         return self._get(path).acquire(timeout=self._timeout)
+
+    def try_acquire(self, path: str) -> bool:
+        """非阻塞拿名额，拿到返回 True，拿不到立即返回 False。
+
+        在 async 事件循环里必须用这个（blocking 的 acquire 会卡住整个循环）。
+        拿不到时调用方直接 503，播放器会重试，效果等同排队。"""
+        return self._get(path).acquire(blocking=False)
 
     def release(self, path: str) -> None:
         sem = self._sems.get(path)
