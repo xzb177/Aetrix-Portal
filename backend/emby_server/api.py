@@ -42,6 +42,7 @@ from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_line
 from backend.emby_server import play_sign
+from backend.emby_server import stream_nodes
 from backend.emby_server import soft_delete
 from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
@@ -2821,7 +2822,12 @@ async def playback_info(
     transcoding_url = (
         f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}{signed_qs}"
     )
-    if use_cdn:
+    # 流节点（分离架构）：有远端健康流节点时播放 URL 直接指向流节点
+    # （签名查询串原样保留，流节点用同一 SECRET_KEY 验签）。
+    # 流节点命中时跳过 CDN 改写——节点域名本身就是边缘入口（CF 在前）。
+    stream_url, transcoding_url, _node_hit = stream_nodes.rewrite_playback_urls(
+        db, stream_url, transcoding_url, base)
+    if use_cdn and not _node_hit:
         stream_url = cdn.rewrite_url(db, stream_url, base)
         transcoding_url = cdn.rewrite_url(db, transcoding_url, base)
     media_source.update({

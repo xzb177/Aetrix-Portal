@@ -348,3 +348,53 @@ def maybe_downgrade_for_client(item: Any, user_agent: Optional[str],
     except Exception:  # noqa: BLE001
         logger.exception("透明降级查询失败，回退原片")
         return item
+
+
+# ---------------------------------------------------------------------------
+# 5. 大盘自动放大 VFS 缓存（分离架构 / 流节点）
+# ---------------------------------------------------------------------------
+# 磁盘总量 >= BIG_DISK_THRESHOLD_GB（默认 500GB）时，VFS 缓存自动给到
+# 空闲空间的 CACHE_DISK_RATIO（默认 70%）：热门内容常驻本地，回源大幅减少。
+# rclone VFS 缓存自带类 LRU 淘汰（--vfs-cache-max-age），冷数据自动腾地方，
+# 热门优先保留——不需要我们再写一套淘汰。
+# 小盘走默认 DEFAULT_SMALL_CACHE（20G），行为与以前一致。
+BIG_DISK_THRESHOLD_GB = 500
+CACHE_DISK_RATIO = 0.70
+DEFAULT_SMALL_CACHE = "20G"
+
+
+def auto_vfs_cache_size(cache_dir: str) -> str:
+    """按磁盘大小自动决定 ``--vfs-cache-max-size``。
+
+    返回如 ``"420G"`` / ``"20G"`` 的 rclone 可接受写法。
+    检测失败（权限/路径不存在）时回退默认小盘值，绝不抛异常。
+    """
+    try:
+        import shutil as _shutil
+        total, _used, free = _shutil.disk_usage(cache_dir)
+        total_gb = total // (1024 ** 3)
+        if total_gb >= BIG_DISK_THRESHOLD_GB:
+            size_gb = max(20, int((free // (1024 ** 3)) * CACHE_DISK_RATIO))
+            logger.info("大盘自动缓存：磁盘 %dGB，VFS 缓存给到 %dGB",
+                        total_gb, size_gb)
+            return f"{size_gb}G"
+    except Exception:  # noqa: BLE001 — 检测失败就走默认
+        logger.warning("磁盘检测失败，用默认 VFS 缓存 %s", DEFAULT_SMALL_CACHE)
+    return DEFAULT_SMALL_CACHE
+
+
+def vfs_cache_args(cache_dir: str, extra: Optional[Iterable[str]] = None) -> list[str]:
+    """开箱即用的 VFS 缓存参数（含大盘自动放大），供挂载脚本/代码统一调用。
+
+    与 ``build_rclone_mount_args`` 合并使用；本函数只负责缓存大小相关三件套。
+    """
+    size = auto_vfs_cache_size(cache_dir)
+    args = [
+        "--vfs-cache-mode", "full",
+        "--vfs-cache-max-size", size,
+        "--vfs-cache-max-age", "168h",
+        "--cache-dir", cache_dir,
+    ]
+    if extra:
+        args.extend(extra)
+    return args
