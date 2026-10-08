@@ -115,7 +115,11 @@ def beautify_episode_title(name: str | None,
     if raw and _is_garbage(raw):
         ep = episode_number
         if ep is None and file_path:
-            m = re.search(r"[Ss]\d{1,2}[Ee](\d{1,3})", os.path.basename(file_path or ""))
+            base = os.path.basename(file_path or "")
+            # S01E05 / S01EP05 / S01.E05 / E05 / EP05 / 第05集
+            m = (re.search(r"[Ss]\d{1,2}[Ee][Pp]?(\d{1,3})", base)
+                 or re.search(r"[Ee][Pp]?(\d{1,3})", base)
+                 or re.search(r"第\s*(\d{1,3})\s*集", base))
             if m:
                 ep = int(m.group(1))
         label = _canonical_episode_label(ep)
