@@ -633,7 +633,7 @@ def terminate_process_group(proc: subprocess.Popen, grace: float = 5.0) -> Optio
     收不回（D 状态）就交给后台线程 wait，调用方不陪着卡死。返回退出码（未知时 None）。
     """
     if proc.poll() is not None:
-        return proc.returncode
+        return getattr(proc, 'returncode', None)
 
     def _signal(sig):
         pid = getattr(proc, "pid", None)
