@@ -17,7 +17,12 @@ EA 是单 uvicorn worker。``async def`` 路由里直接调同步的 SQLAlchemy
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
+import logging
 from typing import Any, Callable, TypeVar
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -28,3 +33,62 @@ async def run_db(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     用法：``item = await run_db(_require_item, db, item_id)``
     """
     return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# S1（稳定性审查）：流式响应不得在整个播放期间占着 DB 连接
+# ---------------------------------------------------------------------------
+#
+# FastAPI ≥0.118 把 ``Depends(get_db)`` 这类 yield 依赖的清理放到「响应发完之后」。
+# 对 StreamingResponse / FileResponse 来说就是「整部片播完之后」：一个 2 小时的
+# ``bytes=0-`` 请求会让一个连接 idle-in-transaction 2 小时，约 50 路并发流就把
+# PG 连接池耗尽，全站 30 秒后 500。
+#
+# 流式端点在返回响应**之前**把会话关掉（连接还给池；ORM 对象随之 detached，
+# 返回前取好需要的字符串即可）。之后 yield 依赖的 ``db.close()`` 再跑一次是空操作。
+
+def _session_arg(sig: inspect.Signature, args, kwargs):
+    try:
+        return sig.bind_partial(*args, **kwargs).arguments.get("db")
+    except TypeError:
+        return kwargs.get("db")
+
+
+def _close_quietly(db) -> None:
+    close = getattr(db, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception:  # noqa: BLE001 - 关会话失败不能把已经算好的响应变成 500
+        logger.debug("释放流式请求的 DB 会话失败", exc_info=True)
+
+
+def release_db_before_response(fn):
+    """装饰流式端点：端点函数返回（或抛错）时立刻关掉参数 ``db`` 那个 Session。
+
+    同时支持 ``async def`` 与 ``def`` 端点；保留原签名（FastAPI 依赖注入照常）。
+    async 版本的关闭在线程池里做（``Session.close`` 可能触发一次 ROLLBACK）。
+    """
+    sig = inspect.signature(fn)
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def _async_wrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                db = _session_arg(sig, args, kwargs)
+                if db is not None:
+                    await asyncio.to_thread(_close_quietly, db)
+        return _async_wrapper
+
+    @functools.wraps(fn)
+    def _sync_wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            db = _session_arg(sig, args, kwargs)
+            if db is not None:
+                _close_quietly(db)
+    return _sync_wrapper

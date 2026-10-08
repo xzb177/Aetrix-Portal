@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 from backend import admin_roles, models
+from backend.emby_server.async_db import release_db_before_response
 from backend.database import SessionLocal, get_db
 from backend.emby_server import image_store
 from backend.emby_server import models as em
@@ -75,6 +76,7 @@ async def video_hls1(item_id: str, request: Request,
 
 @emby_router.get("/emby/Items/{item_id}/Download")
 @emby_router.get("/Items/{item_id}/Download")
+@release_db_before_response
 def download_item(item_id: str, request: Request,
                   user: models.WebUser = Depends(get_emby_user),
                   db: Session = Depends(get_db)):
@@ -275,6 +277,7 @@ def person_image(name: str, request: Request,
 
 @emby_router.get("/emby/Items/{item_id}/Thumbnails/{index}")
 @emby_router.get("/Items/{item_id}/Thumbnails/{index}")
+@release_db_before_response
 def item_thumbnail(item_id: str, index: int, request: Request,
                    user: models.WebUser = Depends(get_emby_user),
                    db: Session = Depends(get_db)):

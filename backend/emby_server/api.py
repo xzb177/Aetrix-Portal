@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session, aliased, joinedload
 from backend import library_scope, models, playback_policy
 from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
+from backend.emby_server.async_db import release_db_before_response
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
@@ -2902,6 +2903,7 @@ def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
 @emby_router.get("/Videos/{item_id}/stream")
+@release_db_before_response
 async def video_stream(
     item_id: str, request: Request,
     user: models.WebUser = Depends(get_play_user),
@@ -2977,6 +2979,7 @@ async def video_stream_ext(
 
 @emby_router.get("/emby/videos/{item_id}/{transcode_path:path}")
 @emby_router.get("/videos/{item_id}/{transcode_path:path}")
+@release_db_before_response
 async def video_hls(
     item_id: str, transcode_path: str, request: Request,
     user: models.WebUser = Depends(get_play_user),

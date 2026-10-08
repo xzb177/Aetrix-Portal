@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from backend import models
+from backend.emby_server.async_db import release_db_before_response
 from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server import subtitles as subs
@@ -46,6 +47,7 @@ async def video_stream_container(item_id: str, container: str, request: Request,
 
 @emby_router.get("/emby/Items/{item_id}/File")
 @emby_router.get("/Items/{item_id}/File")
+@release_db_before_response
 def item_file(item_id: str, user: models.WebUser = Depends(get_emby_user),
               db: Session = Depends(get_db)):
     item = _require_visible_item(db, user, item_id)
