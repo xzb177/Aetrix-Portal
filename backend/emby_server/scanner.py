@@ -749,7 +749,7 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
     # 每次调用先清零：上一次 ffprobe 超时不应让这一次的判定跟着走偏。
     _ffprobe_timeout_flag.timed_out = False
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=_timeout)
+        out = _run_probe_cmd(cmd, timeout=_timeout)
         import json
 
         data = json.loads(out.stdout or "{}")
@@ -783,6 +783,17 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
         return None
 
 
+def _run_probe_cmd(cmd, timeout: float):
+    """跑 ffprobe / mediainfo：有上限、整组可杀（见 ``proc_util.bounded_run``）。
+
+    原先是 ``subprocess.run(timeout=…)``：超时后只杀直接子进程再无限 ``wait()``，
+    FUSE 挂死（D 状态）时 wait 永不返回，探测 worker 的线程被永久吃掉。
+    这里同时尊重 ``proc_util.deadline`` 设下的「单条目总预算」。
+    """
+    from backend.emby_server import proc_util
+    return proc_util.bounded_run(cmd, timeout=timeout, text=True)
+
+
 def shutil_which(cmd: str) -> Optional[str]:
     from shutil import which
 
@@ -806,7 +817,7 @@ def _mediainfo(path: str, headers: Optional[dict] = None, size: int = 0) -> Opti
     # 与 ffprobe 用同一个上限：FUSE 上超时意味着挂载没响应，
     # 这时再等一次同样读不出东西。
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=PROBE_FILE_TIMEOUT)
+        out = _run_probe_cmd(cmd, timeout=PROBE_FILE_TIMEOUT)
         import json
         raw = json.loads(out.stdout or "{}")
         tracks = raw.get("media", {}).get("track", [])
