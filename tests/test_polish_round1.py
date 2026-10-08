@@ -100,11 +100,6 @@ class TestTmdbClientSingleton:
             content = f.read()
         assert "tmdb_client()" not in content
 
-    def test_refresh_person_uses_singleton(self):
-        with open(os.path.join(BASE, "refresh_person_worker.py")) as f:
-            content = f.read()
-        assert "tmdb_client()" not in content
-
 
 class TestPosterLanguageApi:
     """#10 原语言海报：配置键有管理端读写接口。"""

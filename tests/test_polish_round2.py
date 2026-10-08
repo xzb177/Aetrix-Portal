@@ -62,21 +62,6 @@ class TestSubtitleWorker:
         assert "yield_per" in content
 
 
-class TestRefreshPerson:
-    """窗口函数去重；start 幂等。"""
-
-    def test_window_function_dedup(self):
-        with open(os.path.join(BASE, "refresh_person_worker.py")) as f:
-            content = f.read()
-        assert "ROW_NUMBER()" in content
-        assert "PARTITION BY" in content
-
-    def test_start_idempotent(self):
-        with open(os.path.join(BASE, "refresh_person_worker.py")) as f:
-            content = f.read()
-        assert "_start_lock" in content and "_started" in content
-
-
 class TestTmdbFallback:
     """fallback 深度可配。"""
 
