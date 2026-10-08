@@ -693,6 +693,10 @@ def _auto_migrate():
             ("probe_priority", "INTEGER", "0"),
             ("probe_attempts", "INTEGER", "0"),
             ("probe_next_retry_at", "DATETIME", "NULL"),
+            # v2.53 探测 worker 重构：抢单租约（stale reclaim）+ 最近失败原因。
+            # 老库补列后为 NULL：历史 probing 行没有租约时刻，启动 reclaim 一律放回 pending。
+            ("probe_claimed_at", "DATETIME", "NULL"),
+            ("probe_last_error", "VARCHAR(255)", "NULL"),
             # v2.40.0 补全 worker 重试：老库补列后 enrich_attempts=0，
             # enrich_next_retry_at=NULL（可立即重试，由 worker 按退避调度）。
             ("enrich_attempts", "INTEGER", "0"),
@@ -868,6 +872,10 @@ _LEGACY_INDEXES: tuple[tuple[str, str, str, Optional[str], str], ...] = (
     # 两阶段扫描（v2.39.0）：worker 取待探测条目时走索引
     ("emby_items", "idx_item_probe", "probe_status, probe_priority, id", None,
      "  🔧 已迁移: emby_items.idx_item_probe（探测队列索引）"),
+    # v2.53：(probe_status, probe_next_retry_at)——抢单的「到期」判定、reclaim 与
+    # 进度接口的「重试中」计数都按它走，28 万级积压下不再全表扫
+    ("emby_items", "idx_item_probe_retry", "probe_status, probe_next_retry_at", None,
+     "  🔧 已迁移: emby_items.idx_item_probe_retry（探测退避索引）"),
     # v2.48.0：补全队列 _claim_batch 抢单是 WHERE enrich_status='pending' AND
     # enrich_next_retry_at<=now 再按 enrich_priority 排序，单列索引帮不上忙
     ("emby_items", "idx_item_enrich", "enrich_status, enrich_next_retry_at, enrich_priority", None,

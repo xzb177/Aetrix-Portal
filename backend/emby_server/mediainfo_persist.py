@@ -189,6 +189,8 @@ def deserialize(db, item) -> bool:
     item.probe_attempts = 0
     item.probe_next_retry_at = None
     item.probe_status = "done"
+    if hasattr(type(item), "probe_claimed_at"):
+        item.probe_claimed_at = None  # 释放探测抢单租约（v2.53）
     try:
         db.commit()
     except Exception as exc:  # noqa: BLE001

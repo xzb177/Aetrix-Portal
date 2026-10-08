@@ -111,6 +111,8 @@ class MediaItem(Base):
         Index("idx_item_series", "series_id"),
         # 两阶段扫描 Phase 2：后台探测按（状态，优先级）取待探测条目
         Index("idx_item_probe", "probe_status", "probe_priority", "id"),
+        # 退避到期判定 / 按状态统计「重试中」（v2.53）
+        Index("idx_item_probe_retry", "probe_status", "probe_next_retry_at"),
         # 补全队列抢单：WHERE enrich_status='pending' AND enrich_next_retry_at<=now
         # ORDER BY enrich_priority DESC。之前 enrich_status 只有单列索引，而抢单还
         # 带一个 to-time 条件与优先级排序，PG 得自己过滤 + 排序，积压一多就是全表级
@@ -203,6 +205,11 @@ class MediaItem(Base):
     probe_priority = Column(Integer, default=0)  # 越大越先探；新文件 100，按需插队 1000
     probe_attempts = Column(Integer, default=0)  # 已尝试次数，超限转 failed
     probe_next_retry_at = Column(DateTime)  # 下次可重试时间（退避）
+    # v2.53 探测 worker 重构：抢单租约 + 最近一次失败原因。
+    # probe_claimed_at：标 probing 的时刻；超过 PROBE_CLAIM_TTL_SEC 仍是 probing
+    # 视为抢单者已死（进程崩溃/线程卡死），由 reclaim 放回 pending。
+    probe_claimed_at = Column(DateTime)
+    probe_last_error = Column(String(255))
     last_scraped_at = Column(DateTime)  # 上次刮削时间，供 3m/6m/1y 策略判断是否到期
     # 数据库里有图片记录但本地文件丢失时置位，等待后台重新刮削修复
     repair_requested_at = Column(DateTime)

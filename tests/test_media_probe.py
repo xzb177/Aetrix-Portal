@@ -76,11 +76,26 @@ class TestMaybeEnqueue:
         db = SessionLocal()
         lib = _make_lib(db)
         try:
-            item = _make_item(db, lib, probe_status="pending", probe_priority=100)
+            item = _make_item(db, lib, probe_status="pending", probe_priority=1000)
             assert probe_worker.maybe_enqueue(db, item) is False
             db.refresh(item)
-            # 优先级不被抬高，已在队列里的不动
-            assert item.probe_priority == 100
+            assert item.probe_priority == 1000
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_pending_low_priority_is_bumped(self):
+        """v2.53：已在 pending 队尾（扫描器的 0/100）的，用户打开时插队到 1000。
+
+        旧行为是直接返回 False —— 28 万积压里被用户点开的条目照样排在最后。
+        """
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, probe_status="pending", probe_priority=100)
+            assert probe_worker.maybe_enqueue(db, item) is True
+            db.refresh(item)
+            assert item.probe_priority == probe_worker.ONDEMAND_PRIORITY
         finally:
             _cleanup(db, lib)
             db.close()
@@ -89,11 +104,13 @@ class TestMaybeEnqueue:
         db = SessionLocal()
         lib = _make_lib(db)
         try:
-            # 已有 codec
+            # 已有 codec + 时长
             i1 = _make_item(db, lib, video_codec="h264")
+            i1.duration_ticks = 10 ** 10
+            db.commit()
             assert probe_worker.maybe_enqueue(db, i1) is False
-            # 单集不做
-            i2 = _make_item(db, lib, item_type="episode", video_codec=None)
+            # 季（没有文件）不做；v2.53 起单集要做
+            i2 = _make_item(db, lib, item_type="season", video_codec=None)
             assert probe_worker.maybe_enqueue(db, i2) is False
             # 无 file_path
             i3 = _make_item(db, lib, video_codec=None, file_path=None)
@@ -132,13 +149,15 @@ class TestClaimBatch:
         try:
             low = _make_item(db, lib, item_type="movie", video_codec=None,
                              probe_status="pending", probe_priority=100)
-            high = _make_item(db, lib, item_type="series", video_codec=None,
+            high = _make_item(db, lib, item_type="episode", video_codec=None,
                               probe_status="pending", probe_priority=1000)
             # 不该被抢的
-            _make_item(db, lib, item_type="episode", video_codec=None,
-                       probe_status="pending")                      # 单集
-            _make_item(db, lib, item_type="movie", video_codec="h264",
-                       probe_status="pending")                      # 有 codec
+            _make_item(db, lib, item_type="series", video_codec=None,
+                       probe_status="pending")                      # 剧集骨架（无文件可探）
+            has_info = _make_item(db, lib, item_type="movie", video_codec="h264",
+                                  probe_status="pending")           # 有 codec + 时长
+            has_info.duration_ticks = 10 ** 10
+            db.commit()
             _make_item(db, lib, item_type="movie", video_codec=None,
                        probe_status="done")                         # 非 pending
             future = _make_item(db, lib, item_type="movie", video_codec=None,

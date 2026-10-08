@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 PROBE_MAX_ATTEMPTS = max(1, int(os.getenv("PROBE_MAX_ATTEMPTS", "3") or 3))
 # 重试退避基数（秒）：60/120/240…，与 enrich_worker 同口径，保护 Drive 配额
 PROBE_RETRY_BASE_SEC = max(10, int(os.getenv("PROBE_RETRY_BASE_SEC", "60") or 60))
+# 退避上限（秒）：指数退避不无限增长
+PROBE_RETRY_MAX_SEC = max(60, int(os.getenv("PROBE_RETRY_MAX_SEC", "21600") or 21600))
 # 这些 HTTP 状态码说明地址本身有问题，重试没用，直接判 failed
 NO_RETRY_HTTP_CODES = frozenset({400, 401, 403, 404, 410})
 
@@ -66,6 +68,18 @@ def resolve_probe_input(db, item) -> Optional[tuple]:
             return None
         headers = dict(getattr(target, "headers", None) or {})
         return (target.value, headers, size, container)
+
+    # 本机 .strm：内容是直链，探测直链而不是这个文本文件（以前 ffprobe 读 .strm 文本
+    # 必然失败，3 次后判 failed，白占名额）
+    if fp.lower().endswith(".strm"):
+        try:
+            target = mount_lib.local_play_target(fp)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("按需探测：STRM 解析失败 item=%s: %s", getattr(item, "id", "?"), exc)
+            return None
+        if getattr(target, "kind", "") == "url" and target.value:
+            return (target.value, dict(target.headers or {}), size, container)
+        return None
 
     # 本机文件
     try:
@@ -115,16 +129,26 @@ def write_back(db, item, probe: dict) -> None:
     item.probe_attempts = 0
     item.probe_next_retry_at = None
     item.probe_status = "degraded" if probe.get("_degraded") else "done"
+    _clear_claim(item, error=None)
     db.commit()
     logger.info("按需探测成功 item=%s %s %sx%s audio=%s",
                 item.id, item.video_codec or "?", item.width or "?",
                 item.height or "?", item.audio_codec or "?")
 
 
+def _clear_claim(item, error: Optional[str]) -> None:
+    """释放抢单租约，记录（或清空）最近失败原因。老库没这两列时静默跳过。"""
+    if hasattr(type(item), "probe_claimed_at"):
+        item.probe_claimed_at = None
+    if hasattr(type(item), "probe_last_error"):
+        item.probe_last_error = (error or "")[:250] or None
+
+
 def mark_failed(db, item, reason: str) -> None:
     """判死：不再重试。"""
     item.probe_status = "failed"
     item.probe_next_retry_at = None
+    _clear_claim(item, error=reason)
     db.commit()
     logger.warning("按需探测放弃 item=%s（%s 次）: %s",
                    item.id, item.probe_attempts or 0, reason)
@@ -137,9 +161,10 @@ def mark_retry(db, item, reason: str) -> None:
     if attempts >= PROBE_MAX_ATTEMPTS:
         mark_failed(db, item, f"{reason}（已达 {PROBE_MAX_ATTEMPTS} 次上限）")
         return
-    delay = PROBE_RETRY_BASE_SEC * (2 ** (attempts - 1))
+    delay = min(PROBE_RETRY_MAX_SEC, PROBE_RETRY_BASE_SEC * (2 ** (attempts - 1)))
     item.probe_status = "pending"
     item.probe_next_retry_at = datetime.now() + timedelta(seconds=delay)
+    _clear_claim(item, error=reason)
     db.commit()
     logger.info("按需探测失败 item=%s（%d/%d，%ds 后重试）: %s",
                 item.id, attempts, PROBE_MAX_ATTEMPTS, delay, reason)
