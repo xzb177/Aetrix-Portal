@@ -4,19 +4,13 @@ Aetrix Portal - 统一后端主入口
 """
 from pathlib import Path
 
-import inspect as _inspect
 import os
 
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-try:  # Starlette ≥ 0.47 提供默认排除表（老版本没有该常量，行为保持原样）
-    from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_DEFAULTS
-except ImportError:  # pragma: no cover
-    _GZIP_DEFAULTS = ()
 from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
@@ -401,20 +395,9 @@ async def request_body_limit_middleware(request, call_next):
     return await call_next(request)
 
 
-# GZip 压缩：JSON / HTML / 接口响应走压缩，已压缩或大块二进制内容不再压缩。
-# Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
-# 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
-_GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
-# GZip 压缩：JSON / HTML / 接口响应走压缩，已压缩或大块二进制内容不再压缩。
-# Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
-# 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
-# 注意：/emby/* 曾因三方 iOS 客户端 gzip+chunked 解压 bug 而跳过，但条件中间件实现有缺陷，
-# 暂时全局禁用 gzip 保稳定，后续如需压缩再针对非 /emby 路径单独加。
-# _GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
-# if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
-#     app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
-# else:
-#     app.add_middleware(GZipMiddleware, minimum_size=1000)
+# GZip：EM 不加 GZipMiddleware（JSON 压缩交给前端 nginx）。/emby/* 曾因三方 iOS 客户端
+# gzip+chunked 解压 bug 而跳过，但条件中间件实现有缺陷，于是全局禁用保稳定；
+# 如需恢复，只对非 /emby 路径加，并排除 application/octet-stream / application/zip。
 
 # 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）
 app.add_middleware(DownloadGuardMiddleware)
