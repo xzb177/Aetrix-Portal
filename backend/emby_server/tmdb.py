@@ -1244,7 +1244,7 @@ class TmdbClient:
                     cache.pop(old, None)
             cache[key] = (now, value)
 
-    def _search_raw(self, query: str, year: Optional[int], kind: str) -> list:
+    def _search_raw(self, query: str, year: Optional[int], kind: str, lang: Optional[str] = None) -> list:
         """原始搜索（带两级缓存），返回 results 列表。
 
         L1 进程内（300 秒，同一次扫描的预热/写库复用）→ L2 磁盘
@@ -1261,7 +1261,7 @@ class TmdbClient:
         endpoint = "tv" if kind == "series" else "movie"
         norm = _norm_text(query)
         # 语言是缓存维度：TMDB 按 language 返回本地化标题/简介，不同语言互不命中
-        lang = preferred_language()
+        lang = lang or preferred_language()
         key = ("search", endpoint, norm, year or 0, lang)
         cached = self._cache_get(key)
         if cached is not _MISS:
@@ -1306,28 +1306,31 @@ class TmdbClient:
         """
         best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
         transient: Optional[Exception] = None
-        for query, fuzzy_ok in _search_candidates(name):
-            # 短路（v2.42.9）：已有 Tier 2（归一化后**精确相等**）就收手。
-            # Tier 2 永远压过 Tier 1（元组比较先看 tier），后续候选最多只能换来
-            # 「更长的精确变体」这一个 rank 的差别，不值得再打 1~4 次 HTTP。
-            # 中文短标题的候选数最多（4~5 个）而命中率最低，正是这一条最划算的地方。
+        for lang in language_fallback_chain():
             if best is not None and best[0] == 2:
-                self._stats["short_circuit"] += 1
-                progress.note_stage("tmdb_search_short")
-                break
-            try:
-                results = self._search_raw(query, year, kind)
-            except TmdbTransientError as exc:
-                # 瞬态失败只记不吞：一个候选都没拿到真实响应时整次上抛，
-                # 条目走补全退避重试（吞成 None 会被写成终态 none）
-                transient = transient or exc
-                continue
-            except Exception:  # noqa: BLE001 — 缓存/磁盘等杂项异常换下一个候选
-                continue
-            for hit in results[:10]:
-                sc = _hit_score(name, query, hit, fuzzy_ok)
-                if sc and (best is None or sc > best[:2]):
-                    best = (sc[0], sc[1], hit)
+                break  # 已有精确命中，不再换语言
+            for query, fuzzy_ok in _search_candidates(name):
+                # 短路（v2.42.9）：已有 Tier 2（归一化后**精确相等**）就收手。
+                # Tier 2 永远压过 Tier 1（元组比较先看 tier），后续候选最多只能换来
+                # 「更长的精确变体」这一个 rank 的差别，不值得再打 1~4 次 HTTP。
+                # 中文短标题的候选数最多（4~5 个）而命中率最低，正是这一条最划算的地方。
+                if best is not None and best[0] == 2:
+                    self._stats["short_circuit"] += 1
+                    progress.note_stage("tmdb_search_short")
+                    break
+                try:
+                    results = self._search_raw(query, year, kind)
+                except TmdbTransientError as exc:
+                    # 瞬态失败只记不吞：一个候选都没拿到真实响应时整次上抛，
+                    # 条目走补全退避重试（吞成 None 会被写成终态 none）
+                    transient = transient or exc
+                    continue
+                except Exception:  # noqa: BLE001 — 缓存/磁盘等杂项异常换下一个候选
+                    continue
+                for hit in results[:10]:
+                    sc = _hit_score(name, query, hit, fuzzy_ok)
+                    if sc and (best is None or sc > best[:2]):
+                        best = (sc[0], sc[1], hit)
         if best:
             return best[2]
         if transient is not None:
@@ -1712,3 +1715,62 @@ class TmdbClient:
 
 
 tmdb_client = TmdbClient()  # 进程级单例：一次扫描里的预热与写库共用同一份缓存与连接池
+"""TMDB 备选语言与海报语言（神医助手对标，轻量通用）。
+
+备选语言：search() 按语言链逐语言搜索，提高非英文标题命中率。
+海报语言：images_with_language() 按配置的语言偏好选海报。
+"""
+
+# TMDB 备选语言链（默认）：中文优先，英文兜底
+MOVIEDB_FALLBACK_LANGUAGES = ["zh-CN", "zh-HK", "zh-TW", "en-US"]
+
+# 海报语言配置键（SystemConfig）
+TMDB_POSTER_LANGUAGE_CONFIG_KEY = "tmdb_poster_language"
+
+
+def language_fallback_chain(db=None):
+    """返回 TMDB 搜索的语言回退链。
+
+    优先读 DB 配置（SystemConfig），无配置时用默认常量。
+    """
+    if db is not None:
+        try:
+            from backend import models as m
+            row = db.query(m.SystemConfig).filter(
+                m.SystemConfig.key == "tmdb_fallback_languages").first()
+            if row and row.value:
+                langs = [l.strip() for l in row.value.split(",") if l.strip()]
+                if langs:
+                    return langs
+        except Exception:
+            pass
+    return list(MOVIEDB_FALLBACK_LANGUAGES)
+
+
+def images_with_language(images, preferred="original"):
+    """按语言偏好筛选 TMDB 图片列表。
+
+    preferred="original" 时优先原语言海报，否则按指定语言筛选。
+    纯函数，不调网络。
+    """
+    if not images:
+        return []
+    if preferred == "original":
+        # 原语言优先：有 iso_639_1 的按原语言排前面，无语言标记的其次
+        def _key(img):
+            lang = img.get("iso_639_1")
+            if lang and lang != "en":
+                return (0, lang)
+            if lang == "en":
+                return (2, lang)
+            return (1, "")
+        return sorted(images, key=_key)
+    # 指定语言优先
+    def _key2(img):
+        lang = img.get("iso_639_1") or ""
+        if lang == preferred:
+            return (0, lang)
+        if not lang:
+            return (1, "")
+        return (2, lang)
+    return sorted(images, key=_key2)

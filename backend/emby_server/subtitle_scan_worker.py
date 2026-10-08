@@ -39,25 +39,26 @@ _stop_event = threading.Event()
 _start_lock = threading.Lock()
 
 
-def _detect_external_subtitles(video_path: str) -> Set[str]:
+def _detect_external_subtitles(video_path: str):
     """探测视频同目录下的外挂字幕，返回路径集合。
 
     对标 StrmAssistant SubtitleApi.GetExternalSubtitleStreams。
+    目录不可访问时返回 None（未知），与空集合（确定无字幕）区分。
     """
     from backend.emby_server import subtitle_match as sm
 
     directory = os.path.dirname(video_path or "")
     if not directory or not os.path.isdir(directory):
-        return set()
+        return None
     try:
         names = os.listdir(directory)
     except OSError:
-        return set()
+        return None
     try:
         found = sm.find_external_subtitles_in(names, video_path)
     except Exception as e:
         logger.debug("字幕探测失败 %s: %s", video_path, e)
-        return set()
+        return None
     return {path for _lang, path in found}
 
 

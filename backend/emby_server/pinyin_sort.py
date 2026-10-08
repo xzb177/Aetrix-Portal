@@ -19,6 +19,7 @@ StrmAssistant 的描述："Auto generate pinyin initials as sort title"。
 import logging
 import os
 import re
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ def _has_cjk(text: str) -> bool:
     return bool(_CJK_RE.search(text or ""))
 
 
+@lru_cache(maxsize=8192)
 def pinyin_initials(name: str) -> str:
     """生成拼音首字母排序键。
 

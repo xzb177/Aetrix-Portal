@@ -59,14 +59,16 @@ _start_lock = threading.Lock()
 # union-find（对标 StrmAssistant 的 Union/Find）
 # ---------------------------------------------------------------------------
 
-def _provider_key(item) -> Optional[Tuple[str, str]]:
-    """去重键：tmdb 优先，其次 imdb（对标 ProviderIdCheckKeys）。"""
+def _provider_key(item) -> Optional[Tuple]:
+    """Merge key: (library_id, item_type, provider, provider_id)."""
+    library_id = getattr(item, "library_id", None)
+    item_type = getattr(item, "item_type", None) or getattr(item, "type", None)
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
     if tmdb_id:
-        return ("tmdb", tmdb_id)
+        return (library_id, item_type, "tmdb", tmdb_id)
     imdb_id = (getattr(item, "imdb_id", None) or "").strip()
     if imdb_id:
-        return ("imdb", imdb_id)
+        return (library_id, item_type, "imdb", imdb_id)
     return None
 
 
@@ -176,6 +178,38 @@ def get_alternate_versions(db, primary_id: int) -> List:
         .all()
     )
     return [primary] + alternates
+
+
+def unmerge_version(db, item_id: int) -> bool:
+    """拆分单个版本：把 merged_into_id 清掉，恢复为独立条目。
+
+    返回 True 表示拆分成功，False 表示该条目未被合并（或不存在）。
+    """
+    from backend.emby_server import models as em
+
+    item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+    if not item or item.merged_into_id is None:
+        return False
+    item.merged_into_id = None
+    logger.info("多版本拆分：%s (id=%d) 已恢复为独立条目", item.name, item.id)
+    return True
+
+
+def unmerge_all(db, primary_id: int) -> int:
+    """拆分主记录下的所有版本，返回被拆分的条目数。"""
+    from backend.emby_server import models as em
+
+    items = (
+        db.query(em.MediaItem)
+        .filter(em.MediaItem.merged_into_id == primary_id)
+        .all()
+    )
+    for item in items:
+        item.merged_into_id = None
+    if items:
+        logger.info("多版本拆分：主记录 id=%d 下 %d 个版本已恢复为独立条目",
+                    primary_id, len(items))
+    return len(items)
 
 
 def _merge_once() -> Tuple[int, int]:

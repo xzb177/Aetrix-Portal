@@ -135,3 +135,49 @@ def _masked(url: str) -> str:
     scheme, rest = url.split("://", 1)
     _, host = rest.split("@", 1)
     return f"{scheme}://******@{host}"
+"""代理 URL 校验与解析工具函数（纯函数，供测试与管理后台调用）。"""
+
+
+def is_valid_proxy_url(url: str) -> bool:
+    """校验是否为合法的代理 URL。
+
+    只接受 http / https / socks5 / socks5h 协议，且必须有 host。
+    """
+    if not url or not isinstance(url, str):
+        return False
+    parsed = try_parse_proxy_url(url)
+    return parsed is not None
+
+
+def try_parse_proxy_url(url: str):
+    """解析代理 URL，返回 dict 或 None。
+
+    返回字段：scheme / host / port / username / password。
+    port 缺省时按协议给默认值：http=8080、https=443、socks5/socks5h=1080。
+    非法时返回 None。
+    """
+    if not url or not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+    except Exception:
+        return None
+    scheme = (p.scheme or "").lower()
+    if scheme not in ("http", "https", "socks5", "socks5h"):
+        return None
+    host = p.hostname
+    if not host:
+        return None
+    default_ports = {"http": 8080, "https": 443, "socks5": 1080, "socks5h": 1080}
+    port = p.port or default_ports[scheme]
+    return {
+        "scheme": scheme,
+        "host": host,
+        "port": port,
+        "username": p.username or "",
+        "password": p.password or "",
+    }
