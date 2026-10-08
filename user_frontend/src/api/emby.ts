@@ -430,7 +430,10 @@ function positionTicks() {
 // ==================== 图片与播放地址工具 ====================
 
 /**
- * 海报地址：{EA}/emby/Items/{id}/Images/Primary（带 JWT，可直接给 <img> 使用）
+ * 海报地址：{EA}/emby/Items/{id}/Images/Primary（可直接给 <img> 使用）
+ *
+ * 图片端点本身不需要鉴权；**不要**再把门户 JWT 拼进 URL（安全修复 H2：URL 会进
+ * 反代 / CDN 日志、浏览器历史与 Referer）。
  *
  * 必须是 EA 绝对/前缀地址。以前这里返回同源 /emby/...，在分离部署下打到 EM，
  * 图片 404 —— 就是首页那些只剩编号、没有封面的卡片的来源。

@@ -111,6 +111,8 @@ class MediaItem(Base):
         Index("idx_item_series", "series_id"),
         # 两阶段扫描 Phase 2：后台探测按（状态，优先级）取待探测条目
         Index("idx_item_probe", "probe_status", "probe_priority", "id"),
+        # 退避到期判定 / 按状态统计「重试中」（v2.53）
+        Index("idx_item_probe_retry", "probe_status", "probe_next_retry_at"),
         # 补全队列抢单：WHERE enrich_status='pending' AND enrich_next_retry_at<=now
         # ORDER BY enrich_priority DESC。之前 enrich_status 只有单列索引，而抢单还
         # 带一个 to-time 条件与优先级排序，PG 得自己过滤 + 排序，积压一多就是全表级
@@ -203,6 +205,11 @@ class MediaItem(Base):
     probe_priority = Column(Integer, default=0)  # 越大越先探；新文件 100，按需插队 1000
     probe_attempts = Column(Integer, default=0)  # 已尝试次数，超限转 failed
     probe_next_retry_at = Column(DateTime)  # 下次可重试时间（退避）
+    # v2.53 探测 worker 重构：抢单租约 + 最近一次失败原因。
+    # probe_claimed_at：标 probing 的时刻；超过 PROBE_CLAIM_TTL_SEC 仍是 probing
+    # 视为抢单者已死（进程崩溃/线程卡死），由 reclaim 放回 pending。
+    probe_claimed_at = Column(DateTime)
+    probe_last_error = Column(String(255))
     last_scraped_at = Column(DateTime)  # 上次刮削时间，供 3m/6m/1y 策略判断是否到期
     # 数据库里有图片记录但本地文件丢失时置位，等待后台重新刮削修复
     repair_requested_at = Column(DateTime)
@@ -297,6 +304,8 @@ class EmbyPerson(Base):
     role = Column(String(200))       # 饰演角色（TMDB character）
     image = Column(String(1024))     # 头像远程 URL（TMDB profile_path 拼出来的）
     sort_order = Column(Integer, default=0)  # TMDB cast 原顺序（戏份排序）
+    # StrmAssistant #9 对标：TMDB person id，供刷新演员详情用
+    person_tmdb_id = Column(String(32), index=True)
 
 
 class MediaStream(Base):
@@ -654,6 +663,27 @@ class LocalCacheStat(Base):
 # 会查条目的代码（不只 emby_server 下的）都自动看不到已下架的条目。
 from backend.emby_server import soft_delete as _soft_delete  # noqa: E402,F401
 
+
+class IntroMarker(Base):
+    """片头片尾标记（对标 StrmAssistant #3）。
+
+    marker_type: intro（片头）/ outro（片尾）/ credits（字幕）
+    时间单位：毫秒（与 Emby Chapter 标记对齐）。
+    数据来源：manual（手动标记）/ auto（自动探测，预留）
+    """
+    __tablename__ = "emby_intro_markers"
+    # item_id 列级已有 index=True，这里不再重复建（避免同一列两个索引）
+    __table_args__ = ()
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False, index=True)
+    marker_type = Column(String(20), nullable=False)  # intro / outro / credits
+    start_ms = Column(BigInteger, nullable=False, default=0)
+    end_ms = Column(BigInteger, nullable=False, default=0)
+    source = Column(String(20), default="manual")  # manual / auto
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
 __all__ = [
     "Library",
     "ScanRun",
@@ -666,4 +696,5 @@ __all__ = [
     "EmbyApiToken",
     "LocalCacheEntry",
     "LocalCacheStat",
+    "IntroMarker",
 ]

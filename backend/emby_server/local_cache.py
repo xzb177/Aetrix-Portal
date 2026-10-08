@@ -483,14 +483,6 @@ def lookup(db: Session, item) -> Optional[str]:
         return None
 
 
-def record_miss(db: Session) -> None:
-    """单独记一次未命中（播放路径之外需要计入命中率的场景）"""
-    try:
-        _bump_stat(db, hit=False)
-    except Exception:  # noqa: BLE001
-        pass
-
-
 # ==================== 下载（worker 调用，阻塞、限速） ====================
 
 class _RemoteError(RuntimeError):

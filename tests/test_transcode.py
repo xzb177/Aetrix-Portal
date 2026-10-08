@@ -116,6 +116,13 @@ class _FakeStreaming:
     def get_transcode(self, sid):
         return self._TRANSCODE_PROCS.get(sid)
 
+    # S6：ensure_slot_or_503 满员时先让闲置会话让位（这里的假会话都视为活跃）
+    def transcode_idle_seconds(self):
+        return 120.0
+
+    def reap_idle_transcodes(self, idle_limit=None):
+        return 0
+
 
 def test_register_cache_session(monkeypatch):
     fake = _FakeStreaming()

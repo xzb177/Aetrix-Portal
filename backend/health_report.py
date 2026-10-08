@@ -146,6 +146,20 @@ def collect(db) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("读磁盘信息失败: %s", exc)
 
+    # ---- 后台 worker 存活（StrmAssistant 打磨 R2）----
+    # 线程静默死亡时这里报 warn，避免"后台任务停摆了却没人知道"
+    try:
+        from backend.emby_server import worker_registry as _wr
+        workers = _wr.snapshot()
+        metrics["workers"] = workers
+        dead = [n for n, s in workers.items() if not s["alive"]]
+        if dead:
+            _bump("warn")
+            issues.append({"level": "warn", "key": "workers",
+                           "message": f"后台 worker 线程已死亡：{', '.join(dead)}"})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("读 worker 状态失败: %s", exc)
+
     # ---- 媒体探测失败率 ----
     try:
         done = _count(db, "movie", "done") + _count(db, "episode", "done")
@@ -170,6 +184,38 @@ def collect(db) -> dict:
                            "通常是存储源读不到或云盘异常"})
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计探测失败率出错: %s", exc)
+
+    # ---- 探测 worker 是否真的在干活（v2.53）----
+    # 以前只看失败率：worker 不跑时 pending 只增不减，健康页却一片绿。
+    try:
+        from backend.emby_server import probe_worker
+        ps = probe_worker.status_snapshot(db)
+        rt = ps.get("runtime") or {}
+        metrics["probe_worker"] = {
+            "pending_ready": ps["pending_ready"], "retrying": ps["retrying"],
+            "stale_probing": ps["stale_probing"], "paused": ps["paused"],
+            "eta_hours": ps["eta_hours"], "rate_per_min": rt.get("rate_per_min"),
+            "running": rt.get("running"), "breakers": rt.get("breakers"),
+            "last_error": rt.get("last_error"),
+        }
+        if ps["enabled"] and not ps["paused"] and ps["pending_ready"] > 0 and not rt.get("running"):
+            _bump("warn")
+            issues.append({
+                "level": "warn", "key": "probe_worker",
+                "message": f"{ps['pending_ready']} 条待探测，但探测 worker 没有在运行"})
+        if ps["stale_probing"]:
+            _bump("warn")
+            issues.append({
+                "level": "warn", "key": "probe_stale",
+                "message": f"{ps['stale_probing']} 条探测抢单已过期（worker 卡死或崩溃），"
+                           "会自动回收；也可在后台手动重置"})
+        if rt.get("breakers") and any(b.get("open_for_sec") for b in rt["breakers"].values()):
+            _bump("warn")
+            names = "、".join(k for k, b in rt["breakers"].items() if b.get("open_for_sec"))
+            issues.append({"level": "warn", "key": "probe_breaker",
+                           "message": f"探测熔断中的挂载：{names}（连续超时，挂载可能挂死）"})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("统计探测 worker 状态出错: %s", exc)
 
     # ---- 补全/刮削失败率与堆积 ----
     try:
@@ -245,19 +291,6 @@ def collect(db) -> dict:
                 "message": f"{scans['failed']} 个媒体库最近一次扫描失败：{names}"})
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计扫描状态出错: %s", exc)
-
-    # ---- 后台 workers（via worker_registry）----
-    try:
-        from backend.emby_server import worker_registry
-        workers = worker_registry.snapshot()
-        metrics["workers"] = workers
-        for name, info in (workers or {}).items():
-            if isinstance(info, dict) and info.get("status") == "crashed":
-                _bump("warn")
-                issues.append({"level": "warn", "key": "worker_" + str(name),
-                               "message": "worker %s 异常退出" % name})
-    except Exception:
-        pass
 
     return {
         "level": level,

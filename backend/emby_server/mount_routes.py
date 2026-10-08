@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.emby_server.async_db import release_db_before_response
 from backend.database import get_db
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.api import _play_target, _require_visible_item
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 SUPERSEDED_FILE_PATHS = ("/emby/Items/{item_id}/File", "/Items/{item_id}/File")
 
 
+@release_db_before_response
 def mounted_item_file(
     item_id: str,
     request: Request,

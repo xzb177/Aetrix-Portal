@@ -189,6 +189,8 @@ def deserialize(db, item) -> bool:
     item.probe_attempts = 0
     item.probe_next_retry_at = None
     item.probe_status = "done"
+    if hasattr(type(item), "probe_claimed_at"):
+        item.probe_claimed_at = None  # 释放探测抢单租约（v2.53）
     try:
         db.commit()
     except Exception as exc:  # noqa: BLE001
@@ -204,8 +206,12 @@ def deserialize(db, item) -> bool:
     return True
 
 
+
 def delete_json(item) -> None:
-    """删除条目对应的 JSON（条目删除/文件变更时调用，对标 DeleteMediaInfoJson）。"""
+    """删除条目对应的 JSON（条目删除/文件变更时调用，对标 DeleteMediaInfoJson）。
+
+    scanner 的下架清理（恢复补丁，PR #405）在用，不能当零引用删掉。
+    """
     path = get_json_path(item)
     if not path:
         return

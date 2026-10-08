@@ -22,7 +22,7 @@ def test_local_probe_uses_short_timeout(monkeypatch):
     """本机文件（含 FUSE）用短上限，不再等满 90 秒"""
     seen = {}
     monkeypatch.setattr(
-        scanner.subprocess, "run",
+        scanner, "_run_probe_cmd",
         lambda cmd, **kw: (seen.update(kw), _Result())[1])
     # CI 的 ubuntu-latest 无 ffprobe：不 mock 的话 _ffprobe 入口直接返回 None，
     # subprocess.run 根本不会被调到（KeyError: 'timeout' 就是这么来的）。
@@ -36,7 +36,7 @@ def test_remote_probe_keeps_long_timeout(monkeypatch):
     """远端直链维持 90 秒：网络慢是常态，砍时间会误伤真正在下载的大文件"""
     seen = {}
     monkeypatch.setattr(
-        scanner.subprocess, "run",
+        scanner, "_run_probe_cmd",
         lambda cmd, **kw: (seen.update(kw), _Result())[1])
     monkeypatch.setattr(scanner, "shutil_which", lambda c: "/usr/bin/ffprobe")
     scanner._ffprobe("https://example.com/a.mp4", {"UA": "x"}, size=10)
@@ -62,7 +62,7 @@ def test_timeout_skips_mediainfo_fallback(monkeypatch, tmp_path):
             stderr = ""
         return _Empty()
 
-    monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+    monkeypatch.setattr(scanner, "_run_probe_cmd", fake_run)
     monkeypatch.setattr(scanner, "shutil_which", lambda c: "/usr/bin/mediainfo")
 
     scanner.probe_metadata(str(f), size=1, container="mkv")
@@ -85,7 +85,7 @@ def test_no_timeout_still_tries_mediainfo(monkeypatch, tmp_path):
             stderr = ""
         return _NoFormat()
 
-    monkeypatch.setattr(scanner.subprocess, "run", fake_run)
+    monkeypatch.setattr(scanner, "_run_probe_cmd", fake_run)
     monkeypatch.setattr(scanner, "shutil_which", lambda c: "/usr/bin/mediainfo")
 
     scanner.probe_metadata(str(f), size=1, container="mkv")

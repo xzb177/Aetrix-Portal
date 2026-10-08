@@ -374,3 +374,56 @@ def test_policy_payload_reports_state(db):
     assert payload["counts"]["overrides"] == 1
     assert any(u["id"] == user.id for u in payload["users"])
     assert {lib["id"] for lib in payload["libraries"]} == {open_lib.id, secret_lib.id}
+
+
+# ==================== 8. 读失败 fail-closed（S12） ====================
+
+
+def _break_scope_reads(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(library_scope, "user_overrides", _boom)
+    monkeypatch.setattr(library_scope, "_fallback_policy", _boom)
+
+
+def test_read_failure_fails_closed_for_normal_user(db, monkeypatch, caplog):
+    """可见范围读失败：普通用户一律不可见（空集合），并记 warning——
+    不能像旧实现那样退化为「全部可见」把稳定性故障变成越权"""
+    import logging
+
+    from fastapi import HTTPException
+
+    lib = _library(db, "电影")
+    movie = _movie(db, lib, "公开片")
+    user = _user(db)
+    _break_scope_reads(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=library_scope.logger.name):
+        allowed = library_scope.effective_ids_safe(db, user)
+    assert allowed == set()
+    assert any("fail-closed" in r.getMessage() for r in caplog.records)
+
+    # 列表 / 搜索：什么都查不到
+    assert library_scope.scope_query(db.query(em.MediaItem), allowed).all() == []
+    # 按条目取（详情 / 播放 / 下载的统一入口）：403
+    assert emby_api._item_visible(db, user, movie) is False
+    with pytest.raises(HTTPException) as exc:
+        emby_api._require_visible_item(db, user, movie.guid)
+    assert exc.value.status_code == 403
+
+
+def test_read_failure_keeps_staff_unrestricted(db, monkeypatch):
+    """工作人员豁免不受影响：读失败时管理员仍能看到全部"""
+    lib = _library(db, "电影")
+    movie = _movie(db, lib, "公开片")
+    boss = _user(db, "boss", is_staff=True)
+    _break_scope_reads(monkeypatch)
+
+    assert library_scope.effective_ids_safe(db, boss) is None
+    assert emby_api._require_visible_item(db, boss, movie.guid).id == movie.id
+
+    # 即便异常来自更早的位置（effective_ids 整体失败），管理员也兜底放行
+    monkeypatch.setattr(library_scope, "effective_ids",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert library_scope.effective_ids_safe(db, boss) is None

@@ -50,14 +50,13 @@ from backend.emby_server.tmdb import (
     TMDB_POSTER_LANGUAGE_OPTIONS,
     TMDB_PREFERRED_LANGUAGE_CONFIG_KEY,
     TMDB_PREFERRED_LANGUAGE_DEFAULT,
-    invalidate_poster_language,
-    poster_language,
     TmdbTransientError,
     _db_keys,
     _env_keys,
     _split_keys,
     invalidate_language,
     invalidate_settings,
+    poster_language,
     preferred_language,
     prewarm_images,
     settings as tmdb_settings,
@@ -376,7 +375,7 @@ def save_tmdb_language(
 
 class TmdbPosterLanguageSaveRequest(BaseModel):
     language: str = Field(default=TMDB_POSTER_LANGUAGE_DEFAULT,
-                          description="海报语言偏好：system=TMDB默认图，original=原语言优先，zh-CN=中文优先")
+                          description="海报语言偏好：system（跟随系统）/ original（原语言）/ zh-CN")
 
 
 @admin_emby_router.get("/scrape/tmdb-poster-language")
@@ -384,9 +383,9 @@ def get_tmdb_poster_language(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """海报语言偏好：当前生效值 + 可选列表（对标 StrmAssistant #10 原语言海报）。"""
+    """TMDB 海报语言偏好：当前值 + 可选列表（对标 StrmAssistant #10 原语言海报）。"""
     return {
-        "language": poster_language(db, refresh=True),
+        "language": poster_language(db),
         "options": list(TMDB_POSTER_LANGUAGE_OPTIONS),
         "default": TMDB_POSTER_LANGUAGE_DEFAULT,
     }
@@ -398,7 +397,7 @@ def save_tmdb_poster_language(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存海报语言偏好（写进 SystemConfig，保存即热生效，无需重启）"""
+    """保存 TMDB 海报语言偏好（写进 SystemConfig，保存即生效，无需重启）"""
     lang = (req.language or "").strip()
     if lang not in TMDB_POSTER_LANGUAGE_OPTIONS:
         raise HTTPException(
@@ -408,11 +407,10 @@ def save_tmdb_poster_language(
     store.write_values(
         db,
         {TMDB_POSTER_LANGUAGE_CONFIG_KEY: lang},
-        {TMDB_POSTER_LANGUAGE_CONFIG_KEY: "海报语言偏好（system=默认图，original=原语言优先，zh-CN=中文优先）"},
+        {TMDB_POSTER_LANGUAGE_CONFIG_KEY: "TMDB 海报语言偏好（system 跟随系统 / original 原语言 / zh-CN）"},
     )
     db.commit()
     db.expire_all()
-    invalidate_poster_language()
     return {"success": True, "language": lang}
 
 
@@ -1057,6 +1055,59 @@ def get_enrich_progress(
     """补全 worker 进度：enrich 待处理/进行中/成功/失败/重试中 + probe 队列 + 线程数"""
     from backend.emby_server import enrich_worker
     return {"success": True, **enrich_worker.get_progress()}
+
+
+# ==================== 媒体信息探测 worker（v2.53）====================
+
+class ProbeResetRequest(BaseModel):
+    # stuck：probing → pending；failed：failed → pending（次数清零）；
+    # retrying：退避中的立即可重试；all：以上全部
+    scope: str = Field("stuck", pattern="^(stuck|failed|retrying|all)$")
+
+
+@admin_emby_router.get("/scrape/probe-progress")
+def get_probe_progress(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """探测进度：各状态计数 / 重试中 / 过期抢单 / 常见错误 / 速率 / 熔断 / ETA"""
+    from backend.emby_server import probe_worker
+    return {"success": True, **probe_worker.status_snapshot(db)}
+
+
+@admin_emby_router.post("/scrape/probe/reset")
+def reset_probe_queue(
+    req: ProbeResetRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """重置卡住 / 失败的探测条目（放回 pending），调度器立即接着做"""
+    from backend.emby_server import probe_worker
+    try:
+        out = probe_worker.reset(db, req.scope)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "scope": req.scope, "reset": out}
+
+
+@admin_emby_router.post("/scrape/probe/pause")
+def pause_probe_worker(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """暂停后台探测（跨进程生效；按需入队照常记录，恢复后先处理）"""
+    from backend.emby_server import probe_worker
+    return {"success": True, "paused": probe_worker.set_paused(db, True)}
+
+
+@admin_emby_router.post("/scrape/probe/resume")
+def resume_probe_worker(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """恢复后台探测"""
+    from backend.emby_server import probe_worker
+    return {"success": True, "paused": probe_worker.set_paused(db, False)}
 
 
 @admin_emby_router.put("/scrape/auto-scan")

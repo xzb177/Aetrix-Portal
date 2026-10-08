@@ -4,19 +4,13 @@ Aetrix Portal - 统一后端主入口
 """
 from pathlib import Path
 
-import inspect as _inspect
 import os
 
 from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-try:  # Starlette ≥ 0.47 提供默认排除表（老版本没有该常量，行为保持原样）
-    from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_DEFAULTS
-except ImportError:  # pragma: no cover
-    _GZIP_DEFAULTS = ()
 from contextlib import asynccontextmanager
 import logging
 from datetime import datetime
@@ -160,6 +154,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动补全 worker 失败（可忽略）: {e}")
 
+        # 媒体信息探测（M11）：以前只有 backend/worker.py 起它，单体部署（python serve.py、
+        # 未设 AETRIX_ROLE）从来没有探测 worker —— pending 只增不减。
+        # 与 worker.py 共用同一个幂等入口 probe_worker.start()。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import probe_worker
+            if probe_worker.start():
+                logger.info("媒体信息探测 worker 已启动")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
+
         # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
         # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
     if not _is_api_role:
@@ -230,6 +235,12 @@ async def lifespan(app: FastAPI):
         maintenance.shutdown_cleanup()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"退出收尾失败（可忽略）: {e}")
+    # 探测 worker：已抢未处理的放回 pending（API 角色下它没启动，stop 是空操作）
+    try:
+        from backend.emby_server import probe_worker as _pw
+        _pw.stop(timeout=2.0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"停止探测 worker 失败（可忽略）: {e}")
     # 封面异步重生成线程（v2.48.0）：它是惰性起的，但排到队还没画完就退出会丢任务
     try:
         from backend.api.library_cover import stop_cover_worker
@@ -314,18 +325,16 @@ def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, st
                 return True, ""
             try:
                 from backend import database as db
-                r = db.redis_client
-                if r is None:
-                    return True, ""  # Redis 不可用时不限流（降级，保证可用性）
                 import time
+
                 window = int(time.time() // 60)
                 # 区分认证/未认证的 key，避免互相影响
                 auth_tag = "auth" if authenticated else "anon"
                 key = f"ratelimit:{ip}:{prefix}:{auth_tag}:{window}"
-                count = r.incr(key)
-                if count == 1:
-                    r.expire(key, 70)  # 窗口 60 秒 + 10 秒缓冲
-                if count > limit:
+                # S4：Redis 正常走 Redis；运行期故障 / 熔断中改用进程内计数（不再每请求
+                # 卡满 socket 超时）；未启用 Redis 时返回 None = 不限流（与升级前一致）
+                count = db.rate_limit_incr(key, 70)  # 窗口 60 秒 + 10 秒缓冲
+                if count is not None and count > limit:
                     return False, f"每分钟最多 {limit} 次"
             except Exception:
                 return True, ""  # 异常时不限流（降级）
@@ -401,20 +410,9 @@ async def request_body_limit_middleware(request, call_next):
     return await call_next(request)
 
 
-# GZip 压缩：JSON / HTML / 接口响应走压缩，已压缩或大块二进制内容不再压缩。
-# Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
-# 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
-_GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
-# GZip 压缩：JSON / HTML / 接口响应走压缩，已压缩或大块二进制内容不再压缩。
-# Starlette 默认排除 video/*、image/* 等；这里补上 application/octet-stream ——
-# 挂载代理转发的媒体文件若按 level 9 压缩会白白吃满 CPU，且对已压缩容器毫无收益。
-# 注意：/emby/* 曾因三方 iOS 客户端 gzip+chunked 解压 bug 而跳过，但条件中间件实现有缺陷，
-# 暂时全局禁用 gzip 保稳定，后续如需压缩再针对非 /emby 路径单独加。
-# _GZIP_EXCLUDES = (*_GZIP_DEFAULTS, "application/octet-stream", "application/zip")
-# if "exclude_content_types" in _inspect.signature(GZipMiddleware).parameters:
-#     app.add_middleware(GZipMiddleware, minimum_size=1000, exclude_content_types=_GZIP_EXCLUDES)
-# else:
-#     app.add_middleware(GZipMiddleware, minimum_size=1000)
+# GZip：EM 不加 GZipMiddleware（JSON 压缩交给前端 nginx）。/emby/* 曾因三方 iOS 客户端
+# gzip+chunked 解压 bug 而跳过，但条件中间件实现有缺陷，于是全局禁用保稳定；
+# 如需恢复，只对非 /emby 路径加，并排除 application/octet-stream / application/zip。
 
 # 下载策略兜底（覆盖 /Download 与 /Items/{id}/File 等全部下载类路径）
 app.add_middleware(DownloadGuardMiddleware)

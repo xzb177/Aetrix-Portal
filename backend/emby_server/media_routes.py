@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 
-from backend import models
+from backend import admin_roles, models
+from backend.emby_server.async_db import release_db_before_response
 from backend.database import SessionLocal, get_db
 from backend.emby_server import image_store
 from backend.emby_server import models as em
@@ -38,6 +39,7 @@ import os
 from backend.emby_server.api import (
     emby_router,
     _first_image,
+    _item_visible,
     _play_target,
     _queue_image_repair,
     _require_visible_item,
@@ -74,6 +76,7 @@ async def video_hls1(item_id: str, request: Request,
 
 @emby_router.get("/emby/Items/{item_id}/Download")
 @emby_router.get("/Items/{item_id}/Download")
+@release_db_before_response
 def download_item(item_id: str, request: Request,
                   user: models.WebUser = Depends(get_emby_user),
                   db: Session = Depends(get_db)):
@@ -274,7 +277,9 @@ def person_image(name: str, request: Request,
 
 @emby_router.get("/emby/Items/{item_id}/Thumbnails/{index}")
 @emby_router.get("/Items/{item_id}/Thumbnails/{index}")
+@release_db_before_response
 def item_thumbnail(item_id: str, index: int, request: Request,
+                   user: models.WebUser = Depends(get_emby_user),
                    db: Session = Depends(get_db)):
     """视频预览缩略图：thumbnail_worker 按时长均分抽帧生成的 JPG。
 
@@ -284,9 +289,7 @@ def item_thumbnail(item_id: str, index: int, request: Request,
 
     from backend.emby_server import thumbnail_worker as _tw
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _require_visible_item(db, user, item_id)
     thumbs = _tw.list_thumbnails(item.guid)
     if not thumbs or index < 0 or index >= len(thumbs):
         raise HTTPException(status_code=404, detail="Thumbnail not found")
@@ -299,13 +302,12 @@ def item_thumbnail(item_id: str, index: int, request: Request,
 @emby_router.get("/emby/Items/{item_id}/Thumbnails")
 @emby_router.get("/Items/{item_id}/Thumbnails")
 def item_thumbnails(item_id: str, request: Request,
+                    user: models.WebUser = Depends(get_emby_user),
                     db: Session = Depends(get_db)):
     """返回某条目的缩略图数量（供客户端判断是否有预览图）。"""
     from backend.emby_server import thumbnail_worker as _tw
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _require_visible_item(db, user, item_id)
     thumbs = _tw.list_thumbnails(item.guid)
     return {"TotalRecordCount": len(thumbs)}
 
@@ -337,6 +339,7 @@ def _version_dto(s) -> dict:
 @emby_router.get("/emby/Items/{item_id}/AlternateVersions")
 @emby_router.get("/Items/{item_id}/AlternateVersions")
 def item_alternate_versions(item_id: str, request: Request,
+                            user: models.WebUser = Depends(get_emby_user),
                             db: Session = Depends(get_db)):
     """返回某条目的所有多版本（含主记录自己）。
 
@@ -345,13 +348,12 @@ def item_alternate_versions(item_id: str, request: Request,
     """
     from backend.emby_server import merge_versions_worker as _mvw
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _require_visible_item(db, user, item_id)
     # 如果查的是被合并的版本，定位到主记录
     primary_id = item.merged_into_id or item.id
     versions = _mvw.get_alternate_versions(db, primary_id)
-    versions = sorted(versions, key=lambda s: s.id)
+    # H1：只列用户可见媒体库里的版本（合并可能跨库）
+    versions = sorted((v for v in versions if _item_visible(db, user, v)), key=lambda s: s.id)
     items = [_version_dto(s) for s in versions]
     # 标记主记录
     for v, s in zip(items, versions):
@@ -359,17 +361,24 @@ def item_alternate_versions(item_id: str, request: Request,
     return {"Items": items, "TotalRecordCount": len(items)}
 
 
+def _require_writer(request: Request, user) -> None:
+    """全站共享数据的写操作：仅管理员，且角色可写（与 /api/admin/* 同一口径）"""
+    if not getattr(user, "is_staff", False):
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    admin_roles.ensure_admin_allowed(request, user)
+
+
 # ==================== 片头片尾标记（StrmAssistant #3）====================
 
 @emby_router.get("/emby/Items/{item_id}/IntroMarkers")
 @emby_router.get("/Items/{item_id}/IntroMarkers")
-def item_intro_markers(item_id: str, db: Session = Depends(get_db)):
+def item_intro_markers(item_id: str,
+                       user: models.WebUser = Depends(get_emby_user),
+                       db: Session = Depends(get_db)):
     """返回某条目的片头片尾标记（含 Emby Chapter 格式，供播放器显示跳过按钮）。"""
     from backend.emby_server import intro_marker as _im
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _require_visible_item(db, user, item_id)
     markers = _im.get_markers(db, item.id)
     return {"Markers": markers, "Chapters": _im.to_chapters(markers)}
 
@@ -378,17 +387,19 @@ def item_intro_markers(item_id: str, db: Session = Depends(get_db)):
 @emby_router.post("/Items/{item_id}/IntroMarkers")
 def item_intro_marker_set(
     item_id: str,
+    request: Request,
     marker_type: str = Body(...),
     start_ms: int = Body(...),
     end_ms: int = Body(...),
+    user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
     """设置/更新片头片尾标记（同类型只保留一条，幂等）。"""
     from backend.emby_server import intro_marker as _im
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    # 标记 / 剧集组选择是全站共享数据：只有可写角色的管理员能改（只读审计角色同样拦）
+    _require_writer(request, user)
+    item = _require_visible_item(db, user, item_id)
     try:
         return _im.set_marker(db, item.id, marker_type, start_ms, end_ms)
     except ValueError as exc:
@@ -397,14 +408,15 @@ def item_intro_marker_set(
 
 @emby_router.delete("/emby/Items/{item_id}/IntroMarkers/{marker_type}")
 @emby_router.delete("/Items/{item_id}/IntroMarkers/{marker_type}")
-def item_intro_marker_delete(item_id: str, marker_type: str,
+def item_intro_marker_delete(item_id: str, marker_type: str, request: Request,
+                             user: models.WebUser = Depends(get_emby_user),
                              db: Session = Depends(get_db)):
     """删除片头片尾标记。"""
     from backend.emby_server import intro_marker as _im
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    # 标记 / 剧集组选择是全站共享数据：只有可写角色的管理员能改（只读审计角色同样拦）
+    _require_writer(request, user)
+    item = _require_visible_item(db, user, item_id)
     deleted = _im.delete_marker(db, item.id, marker_type)
     return {"deleted": deleted}
 
@@ -413,13 +425,13 @@ def item_intro_marker_delete(item_id: str, marker_type: str,
 
 @emby_router.get("/emby/Items/{item_id}/EpisodeGroups")
 @emby_router.get("/Items/{item_id}/EpisodeGroups")
-def item_episode_groups(item_id: str, db: Session = Depends(get_db)):
+def item_episode_groups(item_id: str,
+                        user: models.WebUser = Depends(get_emby_user),
+                        db: Session = Depends(get_db)):
     """返回某剧集的 TMDB 剧集组列表（含用户当前选择）。"""
     from backend.emby_server import episode_groups as _eg
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item = _require_visible_item(db, user, item_id)
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
     if not tmdb_id:
         return {"Groups": [], "Selected": ""}
@@ -430,7 +442,8 @@ def item_episode_groups(item_id: str, db: Session = Depends(get_db)):
 
 @emby_router.get("/emby/EpisodeGroups/{group_id}")
 @emby_router.get("/EpisodeGroups/{group_id}")
-def episode_group_detail(group_id: str):
+def episode_group_detail(group_id: str,
+                         user: models.WebUser = Depends(get_emby_user)):
     """返回某剧集组的详细信息（含每集的顺序映射）。"""
     from backend.emby_server import episode_groups as _eg
 
@@ -444,15 +457,17 @@ def episode_group_detail(group_id: str):
 @emby_router.put("/Items/{item_id}/EpisodeGroupSelection")
 def item_episode_group_select(
     item_id: str,
+    request: Request,
     group_id: str = Body("", embed=True),
+    user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
     """设置用户为某剧选择的剧集组（空串 = 恢复默认播出顺序）。"""
     from backend.emby_server import episode_groups as _eg
 
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    # 标记 / 剧集组选择是全站共享数据：只有可写角色的管理员能改（只读审计角色同样拦）
+    _require_writer(request, user)
+    item = _require_visible_item(db, user, item_id)
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
     if not tmdb_id:
         raise HTTPException(status_code=400, detail="Item has no tmdb_id")

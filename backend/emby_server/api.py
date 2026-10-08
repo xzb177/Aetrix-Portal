@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -19,10 +18,10 @@ import os
 import random
 import secrets
 import shutil
-import subprocess
 import time
 import urllib.parse
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -33,7 +32,9 @@ from sqlalchemy.orm import Session, aliased, joinedload
 from backend import library_scope, models, playback_policy
 from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
+from backend.emby_server.async_db import release_db_before_response
 from backend.emby_server import facets
+from backend.emby_server.fastjson import json_route
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
@@ -70,6 +71,7 @@ from backend.emby_server.streaming import (
     get_transcode,
     transcode_capacity,
     serve_file,
+    touch_transcode,
     serve_image,
     serve_remote,
     serve_remote_async,
@@ -130,6 +132,14 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+def _visible_in_session(it: em.MediaItem) -> bool:
+    """identity map 里取到的条目是否「查得到」（与软删除查询钩子同口径）"""
+    if it.deleted_at is None:
+        return True
+    from backend.emby_server import soft_delete
+    return not soft_delete.soft_delete_enabled() or soft_delete._allow_deleted.get()
+
+
 def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
     """图片回退链：条目自身 → 季 → 剧集海报
 
@@ -151,7 +161,13 @@ def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
     if item.item_type in ("episode", "season"):
         parents: list[em.MediaItem] = []
         if item.parent_id:
-            parent = db.query(em.MediaItem).filter(em.MediaItem.id == item.parent_id).first()
+            # db.get 先查 identity map：列表接口 _prefetch_list_data 已把季/剧加载进会话，
+            # 命中时零 SQL（原先 query().first() 每条集/季都发一次，含集列表 N+1）。
+            # 未命中时 get 照常发 SELECT，仍经过软删除 / 内容可见性钩子；命中时钩子不跑，
+            # 这里补上软删除判定，结果与原查询一致。
+            parent = db.get(em.MediaItem, item.parent_id)
+            if parent is not None and not _visible_in_session(parent):
+                parent = None
             if parent:
                 parents.append(parent)
         series = item.series
@@ -201,24 +217,6 @@ def _image_url(base: str, item: em.MediaItem, kind: str = "Primary") -> str | No
     if src.startswith("http"):
         return src
     return f"{base}/emby/Items/{item.guid}/Images/{kind}"
-
-
-def _image_urls(base: str, item: em.MediaItem) -> list[dict]:
-    urls = []
-    primary = _image_url(base, item, "Primary")
-    backdrop = _image_url(base, item, "Backdrop")
-    if primary:
-        urls.append({"imageType": "Primary", "url": primary})
-    if backdrop:
-        urls.append({"imageTags": {"Backdrop": "1"}, "url": backdrop, "imageType": "Backdrop"})
-    return urls
-
-
-def _ticks_to_pos(ticks: int) -> str:
-    secs = ticks // TICKS
-    h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def _download_ok(db: Session) -> bool:
@@ -403,14 +401,6 @@ def _series_siblings(item, db):
     )
     return [s for s in cands if _series_source_dir(s, db) == src]
 
-def _is_primary_series(item, db):
-    try:
-        sibs = _series_siblings(item, db)
-    except Exception:
-        return True
-    if len(sibs) <= 1:
-        return True
-    return sibs[0].id == item.id
 
 def _version_siblings(item, db):
     """找同一电影的所有版本：同库、同目录、**同主文件名**的 movie 条目。
@@ -438,19 +428,6 @@ def _version_siblings(item, db):
     )
     # 二次过滤：主文件名相同才算同一版本组（避免同目录下不同电影误合并）
     return [s for s in cands if _version_base_name(s.file_path) == base]
-
-
-def _is_primary_version(item, db):
-    """是否为该版本组的主版本（id 最小的那个）。
-    查不到兄弟版本时视为 primary（不去重），避免误伤虚拟库等特殊场景。
-    """
-    try:
-        sibs = _version_siblings(item, db)
-    except Exception:
-        return True
-    if len(sibs) <= 1:
-        return True
-    return sibs[0].id == item.id
 
 
 def _version_label(item):
@@ -646,7 +623,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     "SeriesName": item.series.name if item.series else None,
                     "IndexNumber": item.season_number})
     if full:
-        dto["MediaSources"] = [_media_source(item, base, api_key, db)]
+        dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs)]
         dto["MediaSourceCount"] = 1
         # 片头片尾标记 → Chapters（对标 StrmAssistant #3：播放器显示"跳过片头"按钮）
         try:
@@ -1031,55 +1008,6 @@ def _require_visible_item(db: Session, user, item_id: str) -> em.MediaItem:
 
 def _run_time_ticks(item: em.MediaItem) -> int:
     return item.duration_ticks or 0
-
-
-def _save_duration_ticks(db: Session, guid: str, ticks: int) -> None:
-    """按需探测写回时长（线程池内调用，幂等）。"""
-    db.query(em.MediaItem).filter(em.MediaItem.guid == guid).update(
-        {"duration_ticks": ticks}
-    )
-    db.commit()
-
-
-def _ffprobe_duration_sync(file_path: str, timeout: int = 10) -> int | None:
-    """同步探测单个文件的时长（阻塞，调用方必须扔线程池）。
-
-    只读文件头拿 duration，不下载全片。任何异常（文件不可读、ffprobe
-    不在、超时）都返回 None，绝不抛给调用方。
-    """
-    try:
-        if not os.path.isfile(file_path):
-            return None
-    except OSError:
-        return None
-    try:
-        proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", file_path],
-            capture_output=True, text=True, timeout=timeout,
-        )
-        if proc.returncode != 0:
-            return None
-        duration = float((proc.stdout or "").strip())
-        if duration <= 0:
-            return None
-        return int(duration * 10_000_000)  # 秒 -> 100ns ticks
-    except Exception:  # noqa: BLE001 — 探测失败不影响播放
-        return None
-
-
-async def _probe_duration_on_demand(file_path: str) -> int | None:
-    """按需探测：用户点播放、且库里没有时长时，才探测这一个文件。
-
-    后台批量探测已下线（烧 Drive 配额），这里一次只探一个。ffprobe 在
-    线程池跑，不占事件循环；整体超时 12 秒，失败/超时直接跳过。
-    """
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(_ffprobe_duration_sync, file_path), timeout=12,
-        )
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> dict:
@@ -1641,8 +1569,8 @@ def _library_scope(db: Session, user) -> "set[int] | None":
     """这个用户能看到哪些媒体库 id；``None`` = 不过滤（绝大多数部署）
 
     两层规则（服务器默认范围 + 指定用户覆盖）都在 ``backend/library_scope.py``，
-    这里只负责调用。走 ``effective_ids_safe``：读失败按「不过滤」处理，
-    展示层设置不该把整个浏览页拦下来。
+    这里只负责调用。走 ``effective_ids_safe``：读失败按「全部不可见」处理（S12
+    fail-closed，空集合 → 列表为空、按条目取 403），工作人员不受影响。
     """
     return library_scope.effective_ids_safe(db, user)
 
@@ -1723,8 +1651,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
 
-@emby_router.get("/emby/Users/{user_id}/Items")
-@emby_router.get("/Users/{user_id}/Items")
+@json_route(emby_router, "/emby/Users/{user_id}/Items", "/Users/{user_id}/Items")
 def get_items(
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
@@ -1802,111 +1729,39 @@ def get_suggestions(user_id: str,
             "TotalRecordCount": len(items), "StartIndex": 0}
 
 
-
-def _batch_series_source_dirs(series_ids, db) -> dict:
-    """批量计算多个 series 的 source_dir（一次查 season，一次查 episode，避免 N+1）。
-
-    返回 {series_id: source_dir or None}。
-    逻辑与 _series_source_dir(item, db) 等价：找该剧第一个有 file_path 的单集，
-    取其 Season 目录的父目录（或文件父目录）。
-    """
-    result = {sid: None for sid in series_ids}
-    if not series_ids:
-        return result
-    # 1) 一次查出所有 series 的 season: (season_id, series_id)
-    season_rows = (
-        db.query(em.MediaItem.id, em.MediaItem.parent_id)
-        .filter(
-            em.MediaItem.parent_id.in_(series_ids),
-            em.MediaItem.item_type == "season",
-        )
-        .all()
-    )
-    if not season_rows:
-        return result
-    season_to_series = {}
-    for season_id, parent_id in season_rows:
-        # 一个 season 只属于一个 series；取第一个映射即可
-        season_to_series.setdefault(season_id, parent_id)
-    season_ids = list(season_to_series.keys())
-    # 2) 一次查出所有 season 下有 file_path 的 episode，按 id 排序保证第一个稳定
-    ep_rows = (
-        db.query(em.MediaItem.parent_id, em.MediaItem.file_path)
-        .filter(
-            em.MediaItem.parent_id.in_(season_ids),
-            em.MediaItem.item_type == "episode",
-            em.MediaItem.file_path.isnot(None),
-        )
-        .order_by(em.MediaItem.id)
-        .all()
-    )
-    # 每个 series 取第一个 episode 的 file_path
-    first_fp = {}
-    for season_id, fpath in ep_rows:
-        sid = season_to_series.get(season_id)
-        if sid is not None and sid not in first_fp and fpath:
-            first_fp[sid] = fpath
-    # 3) 内存里算 source_dir（与 _series_source_dir 同逻辑）
-    for sid, fp in first_fp.items():
-        parts = fp.split("/")
-        src = None
-        for i, p in enumerate(parts):
-            if p.startswith("Season"):
-                src = "/".join(parts[:i])
-                break
-        if src is None:
-            src = _parent_dir(fp)
-        result[sid] = src
-    return result
+_DEDUP_FIELDS = (
+    em.MediaItem.id,
+    em.MediaItem.item_type,
+    em.MediaItem.library_id,
+    em.MediaItem.tmdb_id,
+    em.MediaItem.name,
+    em.MediaItem.production_year,
+    em.MediaItem.poster_path,
+    em.MediaItem.primary_image_url,
+    em.MediaItem.overview,
+    em.MediaItem.series_id,
+    em.MediaItem.season_number,
+    em.MediaItem.episode_number,
+)
 
 
-def _dedup_primary_ids(cand_rows, db) -> list[int]:
-    """对候选 (id, item_type, file_path, library_id) 去重，只保留主记录的 id（保持原顺序）。
-
-    去重在分页之前做，保证 Limit/StartIndex 语义正确：
-    Limit=20 就返回 20 条不重复的，TotalRecordCount 也是去重后的总数。
-
-    去重键（参考 Emby 多版本逻辑）：
-    - movie/series：有 tmdb_id 用 (library_id, item_type, tmdb_id)，
-      无则用 (library_id, item_type, 归一化标题, 年份) —— 不同路径的同一部合并
-    - episode：(series去重键, season_number, episode_number) —— 同一集只保留一条
-
-    主记录选择：有海报 > 有 tmdb_id > 有简介 > id 最小（最早入库）。
-    """
-    ids = [row[0] for row in cand_rows]
-    if not ids:
-        return []
-
-    # 批量取出去重需要的字段（1 次查询）
-    rows = db.query(
-        em.MediaItem.id,
-        em.MediaItem.item_type,
-        em.MediaItem.library_id,
-        em.MediaItem.tmdb_id,
-        em.MediaItem.name,
-        em.MediaItem.production_year,
-        em.MediaItem.poster_path,
-        em.MediaItem.primary_image_url,
-        em.MediaItem.overview,
-        em.MediaItem.series_id,
-        em.MediaItem.season_number,
-        em.MediaItem.episode_number,
-    ).filter(em.MediaItem.id.in_(ids)).all()
-
-    # 先算出所有 series 的去重键（episode 需要用）
-    series_ids_needed = {r[9] for r in rows if r[1] == "episode" and r[9]}
+def _series_key_map(db, series_ids) -> dict:
+    """series id → 去重键（无键时 ("__raw__", sid)）；episode 的去重键要用"""
     series_key_map: dict[int, tuple] = {}
-    if series_ids_needed:
+    if series_ids:
         srows = db.query(
             em.MediaItem.id, em.MediaItem.library_id,
             em.MediaItem.tmdb_id, em.MediaItem.name,
             em.MediaItem.production_year,
-        ).filter(em.MediaItem.id.in_(series_ids_needed)).all()
+        ).filter(em.MediaItem.id.in_(list(series_ids))).all()
         for sid, lib_id, tmdb_id, name, year in srows:
             key = dedup_lib.dedup_key_for(lib_id, "series", tmdb_id, name, year)
             series_key_map[sid] = key or ("__raw__", sid)
+    return series_key_map
 
-    # 按去重键分组
+
+def _dedup_keep_ids(rows, series_key_map: dict) -> set:
+    """按去重键分组选主（rows 为 :data:`_DEDUP_FIELDS` 顺序的元组），返回保留的 id 集合"""
     groups: dict = {}
     order: list = []
     for r in rows:
@@ -1941,8 +1796,125 @@ def _dedup_primary_ids(cand_rows, db) -> list[int]:
                                             0 if x[3] else 1,
                                             x[0]))
         keep.add(primary[0])
+    return keep
 
+
+def _dedup_primary_ids(cand_rows, db) -> list[int]:
+    """对候选 (id, item_type, file_path, library_id) 去重，只保留主记录的 id（保持原顺序）。
+
+    去重在分页之前做，保证 Limit/StartIndex 语义正确：
+    Limit=20 就返回 20 条不重复的，TotalRecordCount 也是去重后的总数。
+
+    去重键（参考 Emby 多版本逻辑）：
+    - movie/series：有 tmdb_id 用 (library_id, item_type, tmdb_id)，
+      无则用 (library_id, item_type, 归一化标题, 年份) —— 不同路径的同一部合并
+    - episode：(series去重键, season_number, episode_number) —— 同一集只保留一条
+
+    主记录选择：有海报 > 有 tmdb_id > 有简介 > id 最小（最早入库）。
+
+    这是**全量**实现（O(候选数)），P2 之后只作为 :func:`_dedup_dropped_ids` 放弃时的
+    回退与对照测试的基准。
+    """
+    ids = [row[0] for row in cand_rows]
+    if not ids:
+        return []
+
+    # 批量取出去重需要的字段（1 次查询）
+    rows = db.query(*_DEDUP_FIELDS).filter(em.MediaItem.id.in_(ids)).all()
+    series_ids_needed = {r[9] for r in rows if r[1] == "episode" and r[9]}
+    keep = _dedup_keep_ids(rows, _series_key_map(db, series_ids_needed))
     return [row[0] for row in cand_rows if row[0] in keep]
+
+
+#: P2：重复候选 / 被去掉的 id 超过这些量就回退全量实现（避免巨型 IN / CASE）
+_DEDUP_MAX_SUSPECTS = int(os.getenv("ITEMS_DEDUP_MAX_SUSPECTS", "20000") or 20000)
+_DEDUP_MAX_DROPPED = int(os.getenv("ITEMS_DEDUP_MAX_DROPPED", "5000") or 5000)
+_DEDUP_MAX_DUP_SERIES = 2000
+
+
+def _chunks(seq, n=900):
+    seq = list(seq)
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
+def _dedup_dropped_ids(query, db) -> Optional[set]:
+    """P2：只找出候选集里**会被去重去掉**的 id（SQL 里先圈出可能重复的行）。
+
+    旧实现每页都把全部候选拉回 Python 去重（O(全库)/请求，与页码无关）。现在：
+
+    1. 在候选集上用窗口函数 ``COUNT(*) OVER (PARTITION BY 粗桶)`` 圈出「同桶不止一条」的行。
+       粗桶是精确去重键的**超集**（键相同 ⇒ 桶相同），所以桶里只有一条的行一定不会被去掉：
+       - movie/series 有 tmdb：库 + 类型 + tmdb_id（去掉空白）
+       - movie/series 无 tmdb：库 + 类型 + 年份（归一化标题在 Python 里算）
+       - episode：剧的去重组 + 季号 + 集号（剧的去重组由全部 series 行在 Python 里算，
+         只把真正重复的剧写进 CASE）
+       - 其它类型：不参与去重
+    2. 只对圈出来的行取字段、跑与旧实现**同一个**分组选主函数（:func:`_dedup_keep_ids`）。
+
+    返回被去掉的 id 集合；圈出来的行太多（几乎全库都是重复）时返回 None，调用方回退全量实现。
+    """
+    from sqlalchemy import String, case, cast, literal
+
+    MI = em.MediaItem
+    # --- 剧的去重组（episode 桶要用）---
+    # 能跨剧合并的集，其所属剧必然被某条候选集引用：只看这些剧（不是全部 series）
+    ep_series = (query.filter(MI.item_type == "episode", MI.series_id.isnot(None))
+                 .with_entities(MI.series_id).order_by(None).distinct().subquery())
+    series_group_expr = func.coalesce(MI.series_id, 0)
+    srows = db.query(MI.id, MI.library_id, MI.tmdb_id, MI.name, MI.production_year).filter(
+        MI.item_type == "series", MI.id.in_(select(ep_series.c.series_id))).all()
+    if srows:
+        by_key: dict = {}
+        for sid, lib_id, tmdb_id, name, year in srows:
+            key = dedup_lib.dedup_key_for(lib_id, "series", tmdb_id, name, year)
+            if key is not None:
+                by_key.setdefault(key, []).append(sid)
+        rep: dict[int, int] = {}
+        for members in by_key.values():
+            if len(members) > 1:
+                head = min(members)
+                for sid in members:
+                    rep[sid] = head
+        if len(rep) > _DEDUP_MAX_DUP_SERIES:
+            return None
+        if rep:
+            series_group_expr = case(rep, value=MI.series_id, else_=func.coalesce(MI.series_id, 0))
+
+    tmdb_clean = func.trim(func.replace(func.replace(func.replace(
+        func.coalesce(MI.tmdb_id, ""), "\t", ""), "\n", ""), "\r", ""))
+    s = lambda x: cast(x, String)  # noqa: E731
+    bucket = case(
+        (MI.item_type.in_(dedup_lib.DEDUP_TYPES) & (func.length(tmdb_clean) > 0),
+         literal("T|") + s(MI.library_id) + "|" + MI.item_type + "|" + tmdb_clean),
+        (MI.item_type.in_(dedup_lib.DEDUP_TYPES),
+         literal("N|") + s(func.coalesce(MI.library_id, 0)) + "|" + MI.item_type + "|"
+         + s(func.coalesce(MI.production_year, 0))),
+        (MI.item_type == "episode",
+         literal("E|") + s(series_group_expr) + "|" + s(func.coalesce(MI.season_number, 0))
+         + "|" + s(func.coalesce(MI.episode_number, 0))),
+        else_=literal("R|") + s(MI.id),
+    )
+    cand = query.with_entities(
+        MI.id.label("cid"),
+        func.count().over(partition_by=bucket).label("bucket_n"),
+    ).order_by(None).subquery()
+    suspect_ids = [r[0] for r in db.query(cand.c.cid).filter(cand.c.bucket_n > 1).limit(
+        _DEDUP_MAX_SUSPECTS + 1).all()]
+    if len(suspect_ids) > _DEDUP_MAX_SUSPECTS:
+        return None
+    if not suspect_ids:
+        return set()
+    unique_ids = list(dict.fromkeys(suspect_ids))
+    rows = []
+    for chunk in _chunks(unique_ids):
+        rows.extend(db.query(*_DEDUP_FIELDS).filter(MI.id.in_(chunk)).all())
+    series_ids_needed = {r[9] for r in rows if r[1] == "episode" and r[9]}
+    keep = _dedup_keep_ids(rows, _series_key_map(db, series_ids_needed))
+    dropped = set(unique_ids) - keep
+    if len(dropped) > _DEDUP_MAX_DROPPED:
+        return None
+    return dropped
 
 
 def _query_items(request: Request, user: models.WebUser, db: Session, base: str) -> dict:
@@ -2132,7 +2104,13 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         if cond is not None:
             query = query.filter(cond)
 
-    if filters & {"isfavorite", "isplayed", "isunplayed", "isresumable"}:
+    # 用户数据（UserMediaData）按需外连接：播放类筛选或按用户数据排序（DatePlayed /
+    # PlayCount）时才需要。S9：旧实现只在筛选时 join，``SortBy=DatePlayed`` 单独出现
+    # 会引用未 join 的列 → SQLite ``no such column`` / PG ``missing FROM-clause`` 500。
+    # (user_id, item_id) 有唯一约束，外连接不会让一条条目变成多行。
+    _user_sort_keys = {"dateplayed", "playcount"}
+    _wants_user_sort = any(c.strip().lower() in _user_sort_keys for c in sort_by)
+    if filters & {"isfavorite", "isplayed", "isunplayed", "isresumable"} or _wants_user_sort:
         query = query.outerjoin(
             em.UserMediaData,
             (em.UserMediaData.item_id == em.MediaItem.id)
@@ -2161,16 +2139,25 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         em.MediaItem.date_added,
     )
     order_cols = []
+    _desc = bool(sort_order and sort_order[0].lower().startswith("desc"))
     for col in sort_by:
+        key = col.strip()
+        if key in ("DatePlayed", "PlayCount"):
+            # 没有用户数据的条目（外连接得 NULL）不论升降序都排在最后；
+            # 用 ``IS NULL`` 先排而非 NULLS LAST，SQLite / PG 写法一致。
+            c = em.UserMediaData.last_played_at if key == "DatePlayed" else em.UserMediaData.play_count
+            order_cols.append(c.is_(None).asc())
+            order_cols.append(c.desc() if _desc else c.asc())
+            continue
         c = {
             "SortName": em.MediaItem.sort_name, "Name": em.MediaItem.name,
             "DateCreated": em.MediaItem.date_added, "ProductionYear": em.MediaItem.production_year,
-            "CommunityRating": em.MediaItem.community_rating, "DatePlayed": em.UserMediaData.last_played_at,
+            "CommunityRating": em.MediaItem.community_rating,
             "DateLastContentAdded": _date_last_content_added,
-        }.get(col.strip())
+        }.get(key)
         if c is None:
             continue
-        order_cols.append(c.desc() if sort_order and sort_order[0].lower().startswith("desc") else c.asc())
+        order_cols.append(c.desc() if _desc else c.asc())
     if not order_cols:
         order_cols = [em.MediaItem.sort_name.asc()]
 
@@ -2215,25 +2202,47 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     else:
         # 修复：去重必须在分页之前，否则 Limit=20 可能只返回 2-3 条
         # （第三方播放器靠 TotalRecordCount + 分页加载，去重后数量不对会显示不全）。
-        # 先取所有候选的 (id, item_type, file_path)，Python 去重得到 primary_ids，
-        # 再对 primary_ids 做 offset/limit，最后按 id 取完整对象。
-        cand_rows = (
-            query.order_by(*order_cols)
-            .with_entities(
-                em.MediaItem.id,
-                em.MediaItem.item_type,
-                em.MediaItem.file_path,
-                em.MediaItem.library_id,
+        #
+        # P2（性能审查）：旧实现每页都把全部候选 (id,type,path,lib) 拉回 Python、再按
+        # IN(全部 id) 取 12 列（含简介全文）去重后切片——O(全库)/请求，翻第 1 页和第 28 页
+        # 一样慢。现在只在 SQL 里圈出「可能重复」的行在 Python 里精确判定，被去掉的 id
+        # 用 NOT IN 排除，排序 / 分页 / 计数全部下推到 SQL。结果与旧实现逐条一致
+        # （tests/test_items_dedup_sql.py 对照）；重复行多到离谱时回退旧实现。
+        # 排序加 id 作为最终决胜键：同名/同时间的并列行在分页之间顺序稳定（否则
+        # LIMIT/OFFSET 下并列行可能在两页重复或漏掉）。
+        order_cols = [*order_cols, em.MediaItem.id.asc()]
+        dropped = _dedup_dropped_ids(query, db)
+        if dropped is None:
+            cand_rows = (
+                query.order_by(*order_cols)
+                .with_entities(
+                    em.MediaItem.id,
+                    em.MediaItem.item_type,
+                    em.MediaItem.file_path,
+                    em.MediaItem.library_id,
+                )
+                .all()
             )
-            .all()
-        )
-        primary_ids = _dedup_primary_ids(cand_rows, db)
-        page_ids = primary_ids[start:start + limit]
-        # Emby 官方从不返回 -1：跳过总数时用本页数量，保证非负
-        total = len(primary_ids) if want_total else len(page_ids)
-        if not want_total:
-            # 多取一个判断有没有下一页
-            has_more = len(primary_ids) > start + limit
+            primary_ids = _dedup_primary_ids(cand_rows, db)
+            page_ids = primary_ids[start:start + limit]
+            # Emby 官方从不返回 -1：跳过总数时用本页数量，保证非负
+            total = len(primary_ids) if want_total else len(page_ids)
+            if not want_total:
+                # 多取一个判断有没有下一页
+                has_more = len(primary_ids) > start + limit
+        else:
+            kept = query.filter(~em.MediaItem.id.in_(dropped)) if dropped else query
+            fetch = limit + (0 if want_total else 1)
+            page_ids = [
+                row[0] for row in kept.order_by(*order_cols)
+                .with_entities(em.MediaItem.id).offset(start).limit(fetch).all()
+            ]
+            if not want_total:
+                has_more = len(page_ids) > limit
+                page_ids = page_ids[:limit]
+                total = len(page_ids)
+            else:
+                total = kept.order_by(None).count()
         if not page_ids:
             items = []
         else:
@@ -2251,8 +2260,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     }
 
 
-@emby_router.get("/emby/Users/{user_id}/Items/Resume")
-@emby_router.get("/Users/{user_id}/Items/Resume")
+@json_route(emby_router, "/emby/Users/{user_id}/Items/Resume", "/Users/{user_id}/Items/Resume")
 def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     """继续观看：只看电影/剧集，单集不单独出现在首页。
@@ -2289,8 +2297,7 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
             "TotalRecordCount": len(items), "StartIndex": 0}
 
 
-@emby_router.get("/emby/Users/{user_id}/Items/Latest")
-@emby_router.get("/Users/{user_id}/Items/Latest")
+@json_route(emby_router, "/emby/Users/{user_id}/Items/Latest", "/Users/{user_id}/Items/Latest")
 def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     """Latest returns a bare JSON array (Emby/Jellyfin official behavior).
@@ -2470,10 +2477,7 @@ def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = D
 
 
 
-@emby_router.get("/emby/Items/{item_id}")
-@emby_router.get("/Items/{item_id}")
-@emby_router.get("/emby/Users/{user_id}/Items/{item_id}")
-@emby_router.get("/Users/{user_id}/Items/{item_id}")
+@json_route(emby_router, "/emby/Items/{item_id}", "/Items/{item_id}", "/emby/Users/{user_id}/Items/{item_id}", "/Users/{user_id}/Items/{item_id}")
 def get_item_detail(
     item_id: str,
     request: Request,
@@ -2508,8 +2512,7 @@ def _season_belongs_to(season: em.MediaItem, show: em.MediaItem) -> bool:
     return season.series_id == show.id
 
 
-@emby_router.get("/emby/Shows/{item_id}/Seasons")
-@emby_router.get("/Shows/{item_id}/Seasons")
+@json_route(emby_router, "/emby/Shows/{item_id}/Seasons", "/Shows/{item_id}/Seasons")
 def get_seasons(item_id: str, request: Request,
                       user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
@@ -2526,8 +2529,7 @@ def get_seasons(item_id: str, request: Request,
             "TotalRecordCount": len(seasons), "StartIndex": 0}
 
 
-@emby_router.get("/emby/Shows/{item_id}/Episodes")
-@emby_router.get("/Shows/{item_id}/Episodes")
+@json_route(emby_router, "/emby/Shows/{item_id}/Episodes", "/Shows/{item_id}/Episodes")
 def get_episodes(item_id: str, request: Request,
                        user: models.WebUser = Depends(get_emby_user),
                        db: Session = Depends(get_db)):
@@ -2570,17 +2572,13 @@ def get_episodes(item_id: str, request: Request,
     episodes = deduped
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
-    # 分集标题美化：一次查出相关剧名（单条查询，供文件名去剧名前缀用）
-    series_names: dict[int, str] = {}
-    try:
-        _sids = {e.series_id for e in episodes if e.series_id}
-        if _sids:
-            for _sid, _sname in db.query(
-                    em.MediaItem.id, em.MediaItem.name).filter(
-                    em.MediaItem.id.in_(_sids)).all():
-                series_names[_sid] = _sname or ""
-    except Exception:
-        series_names = {}
+    # 分集标题美化：相关剧名（供文件名去剧名前缀用）。_prefetch_list_data 已把剧载入
+    # 并挂到 e.series（查不到 / 已软删的为 None），直接取，不再单独查一次。
+    series_names: dict[int, str] = {
+        e.series_id: (e.series.name or "")
+        for e in episodes
+        if e.series_id and e.series is not None
+    }
     return {"Items": [_item_dto(e, base, user.id, db, series_names=series_names)
                       for e in episodes],
             "TotalRecordCount": len(episodes), "StartIndex": 0}
@@ -2602,10 +2600,51 @@ def get_missing_episodes(item_id: str,
     return _missing_episodes.compute_missing(db, item)
 
 
-@emby_router.get("/emby/Shows/NextUp")
-@emby_router.get("/Shows/NextUp")
-@emby_router.get("/emby/Users/{user_id}/Shows/NextUp")
-@emby_router.get("/Users/{user_id}/Shows/NextUp")
+def _watched_exists(user_id: int):
+    """「该条目被这个用户看过 / 有进度 / 有播放次数」的关联子查询（NextUp 口径）"""
+    U = em.UserMediaData
+    return (
+        select(U.id)
+        .where(
+            U.item_id == em.MediaItem.id,
+            U.user_id == user_id,
+            or_(U.played == True, U.playback_position_ticks > 0, U.play_count > 0),  # noqa: E712
+        )
+        .correlate(em.MediaItem)
+        .exists()
+    )
+
+
+def _next_up_first_unwatched(db: Session, user_id: int, series_ids) -> dict:
+    """一条 SQL 取若干部剧各自「第一集未看的」：{series_id: MediaItem}
+
+    口径与旧的逐剧查询完全一致：item_type=episode、未隐藏、未看过（NOT EXISTS），
+    按 season_number / episode_number（NULL 排最后）/ id 取第一条。
+    """
+    if not series_ids:
+        return {}
+    MI = em.MediaItem
+    rn = func.row_number().over(
+        partition_by=MI.series_id,
+        order_by=(MI.season_number.asc().nullslast(), MI.episode_number.asc().nullslast(),
+                  MI.id.asc()),
+    ).label("rn")
+    ranked = (
+        db.query(MI.id.label("eid"), rn)
+        .filter(
+            MI.item_type == "episode",
+            MI.series_id.in_(list(series_ids)),
+            MI.is_hidden == False,  # noqa: E712
+            ~_watched_exists(user_id),
+        )
+        .subquery()
+    )
+    first_ids = db.query(ranked.c.eid).filter(ranked.c.rn == 1)
+    rows = db.query(MI).filter(MI.id.in_(first_ids)).all()
+    return {row.series_id: row for row in rows}
+
+
+@json_route(emby_router, "/emby/Shows/NextUp", "/Shows/NextUp", "/emby/Users/{user_id}/Shows/NextUp", "/Users/{user_id}/Shows/NextUp")
 def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
                 db: Session = Depends(get_db), user_id: str = ""):
     """接下来看：每部「已开看」的剧集只返回下一集未看的单集。
@@ -2631,24 +2670,13 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         if allowed is not None and requested_series.library_id not in allowed:
             # 别的库的剧直接拿来问「下一集」：不泄露它的存在，当没看见
             return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
-        watched_episode_ids = {
-            r.item_id for r in db.query(em.UserMediaData.item_id).filter(
-                em.UserMediaData.user_id == user.id,
-                or_(
-                    em.UserMediaData.played == True,  # noqa: E712
-                    em.UserMediaData.playback_position_ticks > 0,
-                    em.UserMediaData.play_count > 0,
-                ),
-            ).all()
-        }
         next_episode = (
             db.query(em.MediaItem)
             .filter(
                 em.MediaItem.item_type == "episode",
                 em.MediaItem.series_id == requested_series.id,
                 em.MediaItem.is_hidden == False,  # noqa: E712
-                ~em.MediaItem.id.in_(watched_episode_ids)
-                if watched_episode_ids else True,
+                ~_watched_exists(user.id),
             )
             .order_by(
                 em.MediaItem.season_number.asc().nullslast(),
@@ -2678,7 +2706,6 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
     )
     if not watched:
         return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
-    watched_ids = {w.item_id for w in watched}
     last_played = {}
     for w in watched:
         if w.last_played_at and w.item_id not in last_played:
@@ -2686,7 +2713,8 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
     ep_series = (
         _scope_items(
             db.query(em.MediaItem.id, em.MediaItem.series_id)
-            .filter(em.MediaItem.id.in_(watched_ids), em.MediaItem.series_id.isnot(None)),
+            # P3：EXISTS 关联子查询代替 IN (全部已看 id)，参数量不随观看记录增长
+            .filter(_watched_exists(user.id), em.MediaItem.series_id.isnot(None)),
             allowed,
         )
         .all()
@@ -2699,26 +2727,25 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         ts = last_played.get(eid)
         if ts and (sid not in series_recent or ts > series_recent[sid]):
             series_recent[sid] = ts
+    # P3（性能审查）：旧实现每部已开看的剧一条查询，且每条都绑定 ``NOT IN (全部已看 id)``
+    # （352 条 SQL / 1.2s；重度用户几千条观看记录时参数量随之线性增长）。现在：
+    # - 剧按「最近播放」倒序（并列按 series_id 升序，与旧实现的稳定排序一致）分批处理，
+    #   凑够 limit 部就停；
+    # - 每批一条 SQL：ROW_NUMBER() OVER (PARTITION BY series_id ORDER BY 季, 集, id)
+    #   取每部剧第一集未看的，「未看」用 NOT EXISTS 关联子查询（不再绑定已看 id 列表）。
+    ordered_series = sorted(series_ids, key=lambda sid: series_recent.get(sid) or datetime.min,
+                            reverse=True)
     ranked = []
-    for sid in series_ids:
-        nxt = (
-            db.query(em.MediaItem)
-            .filter(
-                em.MediaItem.item_type == "episode",
-                em.MediaItem.series_id == sid,
-                em.MediaItem.is_hidden == False,  # noqa: E712
-                ~em.MediaItem.id.in_(watched_ids),
-            )
-            .order_by(
-                em.MediaItem.season_number.asc().nullslast(),
-                em.MediaItem.episode_number.asc().nullslast(),
-                em.MediaItem.id.asc(),
-            )
-            .first()
-        )
-        if nxt is not None:
-            ranked.append((series_recent.get(sid), nxt))
-    ranked.sort(key=lambda x: x[0] or datetime.min, reverse=True)
+    batch = max(limit * 2, 32)
+    for i in range(0, len(ordered_series), batch):
+        chunk = ordered_series[i:i + batch]
+        nxt_map = _next_up_first_unwatched(db, user.id, chunk)
+        for sid in chunk:
+            nxt = nxt_map.get(sid)
+            if nxt is not None:
+                ranked.append((series_recent.get(sid), nxt))
+        if len(ranked) >= limit:
+            break
     episodes = [e for _, e in ranked[:limit]]
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
@@ -2924,7 +2951,8 @@ async def playback_info(
             ).hexdigest()[:12]
             cache_key = f"pi:{item.guid}:{user.id}:{profile_fp}:{max_bitrate // 1000}"
             from backend.database import CacheManager
-            hit = CacheManager.get(cache_key)
+            # S4：redis-py 是同步客户端，Redis 故障时一次 get 最长卡 socket 超时——放线程池
+            hit = await run_db(CacheManager.get, cache_key)
             if hit:
                 cached_source = json.loads(hit)
         except Exception:  # noqa: BLE001 — 缓存只是优化，失败就走正常流程
@@ -2936,7 +2964,8 @@ async def playback_info(
         if cache_key and cache_ttl > 0:
             try:
                 from backend.database import CacheManager
-                CacheManager.set(cache_key, json.dumps(media_source, ensure_ascii=False), ttl=cache_ttl)
+                await run_db(CacheManager.set, cache_key,
+                             json.dumps(media_source, ensure_ascii=False), ttl=cache_ttl)
             except Exception:  # noqa: BLE001
                 pass
     else:
@@ -3039,6 +3068,7 @@ def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
 @emby_router.get("/Videos/{item_id}/stream")
+@release_db_before_response
 async def video_stream(
     item_id: str, request: Request,
     user: models.WebUser = Depends(get_play_user),
@@ -3114,6 +3144,7 @@ async def video_stream_ext(
 
 @emby_router.get("/emby/videos/{item_id}/{transcode_path:path}")
 @emby_router.get("/videos/{item_id}/{transcode_path:path}")
+@release_db_before_response
 async def video_hls(
     item_id: str, transcode_path: str, request: Request,
     user: models.WebUser = Depends(get_play_user),
@@ -3134,6 +3165,8 @@ async def video_hls(
     existing = q.get("session")
     if existing and get_transcode(existing):
         info = get_transcode(existing)
+        # S6：客户端还在拉播放列表 / 切片 = 还有人在看（闲置回收按它判定）
+        touch_transcode(existing)
         try:
             file_path = safe_child_name(info["dir"], transcode_path)
             playlist = safe_child_name(info["dir"], "master.m3u8")
@@ -3146,7 +3179,9 @@ async def video_hls(
                 if not transcode_alive(existing):
                     raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
                 raise HTTPException(status_code=504, detail="转码尚未产出播放列表")
-            content = _rewrite_playlist(info["dir"], base, item.guid, existing, db=db, auth_qs=auth_qs)
+            # S3：重写要读 CDN 配置（同步 DB）与磁盘上的播放列表：放线程池
+            content = await run_db(_rewrite_playlist, info["dir"], base, item.guid, existing,
+                                   db=db, auth_qs=auth_qs)
             return Response(
                 content, media_type="application/vnd.apple.mpegurl",
                 # 播放列表绝不进 CDN/浏览器缓存：内容随时变（会话回收后失效）
@@ -3164,9 +3199,25 @@ async def video_hls(
                             headers={"Cache-Control": cdn.SEGMENT_CACHE_HEADER})
 
     # 新转码请求（付费墙 + 客户端与转码策略：建立会话前校验）
+    # S3：整段准备（策略校验的同步 DB、115 取直链的同步 HTTP、本地缓存查询/入队、
+    # 起 ffmpeg 的 Popen）一次性扔进线程池——旧实现直接在事件循环上做，115 慢的时候
+    # 单 worker 的 EA 整个卡住最长 20s+，所有人的播放 / 列表都停。
+    content = await run_db(_prepare_new_transcode, db, user, item, request, base, auth_qs)
+    return Response(content=content, media_type="application/vnd.apple.mpegurl")
+
+
+def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
+                           auth_qs: str) -> str:
+    """建立一次新的 HLS 转码会话，返回 master 播放列表文本（同步，必须在线程里调）
+
+    包含：防盗链 / 付费墙 / 客户端与转码策略校验、码率归档、播放目标解析（可能是
+    115 取直链等同步网络调用）、本地缓存线路查询与入队、转码缓存复用或起 ffmpeg、
+    子请求鉴权串与 CDN 改写。
+    """
+    q = request.query_params
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）；
     # 切片子请求走 session 票据，不经过这里。
-    await run_db(play_sign.check_referer, request, db)
+    play_sign.check_referer(request, db)
     ensure_playback_allowed(db, user)
     playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
     # 并发上限按**本机**正在跑的转码数判定：分离部署时 EA 就是那台播放节点
@@ -3243,12 +3294,9 @@ async def video_hls(
         f"{base}/emby/videos/{item.guid}/main.m3u8"
         f"?session={session_id}&{auth_qs}"
     )
-    if await run_db(cdn.enabled, db):
+    if cdn.enabled(db):
         variant_url = cdn.rewrite_url(db, variant_url, base)
-    return Response(
-        content=f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n",
-        media_type="application/vnd.apple.mpegurl",
-    )
+    return f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n"
 
 
 def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,  # noqa: D401

@@ -6,7 +6,9 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -238,7 +240,8 @@ def serve_remote(
     # 重定向自己追（不用 httpx 的 follow_redirects）：每一跳都要校验目标是不是内网，
     # 并在跨主机时剥掉凭据头——否则一个公开直链就能把服务器（带着你的 Cookie / Basic）
     # 引到内网运维接口上。
-    client = httpx.Client(timeout=httpx.Timeout(30.0, read=None), follow_redirects=False)
+    # S2：同一套超时（读超时 = 块间空闲上限），源站卡住时不再永久占着线程
+    client = httpx.Client(timeout=relay_timeout(), follow_redirects=False)
     try:
         current = url
         for _hop in range(MAX_REDIRECTS + 1):
@@ -287,6 +290,8 @@ def serve_remote(
         try:
             for chunk in resp.iter_bytes(READ_CHUNK):
                 yield chunk
+        except httpx.TransportError as exc:
+            logger.warning("远程代理流中断 %s: %s", url.split("?")[0], type(exc).__name__)
         finally:
             resp.close()
             client.close()
@@ -308,11 +313,44 @@ def serve_remote(
 _shared_client: Optional["httpx.AsyncClient"] = None
 _client_lock = threading.Lock()
 
-#: 同时保持的上游连接数。按并发播放人数给余量；``None`` = 不限。
-#: 定住上限是为了避免「人一多就把源站连接数打满」——那是把首字节变慢换成
-#: 源站限流。
-_RELAY_MAX_CONNECTIONS = max(4, min(64, int(os.getenv("RELAY_MAX_CONNECTIONS", "24") or 24)))
-_RELAY_MAX_KEEPALIVE = max(2, min(32, int(os.getenv("RELAY_MAX_KEEPALIVE", "12") or 12)))
+def _env_number(name: str, default: float, lo: float, hi: float, cast=float):
+    """读数值型环境变量并夹到 [lo, hi]；非法值回落默认值（不让一个手误拖垮启动）"""
+    raw = os.getenv(name, "")
+    try:
+        value = cast(raw) if str(raw).strip() else cast(default)
+    except (TypeError, ValueError):
+        logger.warning("环境变量 %s=%r 不是合法数值，使用默认值 %s", name, raw, default)
+        value = cast(default)
+    return max(cast(lo), min(cast(hi), value))
+
+
+#: 同时保持的上游连接数（S2）。每个正在播放的远程流在整个播放期间占一个连接，
+#: 旧默认 24 在第 25 路并发播放时就排队；默认提到 200，``RELAY_MAX_CONNECTIONS`` 可调。
+_RELAY_MAX_CONNECTIONS = _env_number("RELAY_MAX_CONNECTIONS", 200, 4, 5000, int)
+#: 空闲 keep-alive 连接上限（不超过总上限）
+_RELAY_MAX_KEEPALIVE = min(_RELAY_MAX_CONNECTIONS,
+                           _env_number("RELAY_MAX_KEEPALIVE", 50, 2, 5000, int))
+#: 连上源站的超时（秒）
+_RELAY_CONNECT_TIMEOUT = _env_number("RELAY_CONNECT_TIMEOUT", 10.0, 1.0, 120.0)
+#: 读超时（秒）= 两个数据块之间的最长空闲。旧值 None：源站 TCP 不断、不回数据时
+#: 连接与请求永远挂着、只增不减直到池耗尽。正常播放的块间隔远小于它。
+_RELAY_READ_TIMEOUT = _env_number("RELAY_READ_TIMEOUT", 30.0, 5.0, 600.0)
+#: 等池里空出连接的上限（秒）。旧值继承 30s：池满时用户白等 30 秒再拿 502；
+#: 现在很快给 503 + Retry-After，播放器会重试。
+_RELAY_POOL_TIMEOUT = _env_number("RELAY_POOL_TIMEOUT", 3.0, 0.1, 60.0)
+_RELAY_WRITE_TIMEOUT = 30.0
+
+
+def relay_timeout() -> "httpx.Timeout":
+    """共享代理客户端（以及同步下载代理）用的超时组合"""
+    import httpx
+
+    return httpx.Timeout(
+        connect=_RELAY_CONNECT_TIMEOUT,
+        read=_RELAY_READ_TIMEOUT,
+        write=_RELAY_WRITE_TIMEOUT,
+        pool=_RELAY_POOL_TIMEOUT,
+    )
 
 
 def get_relay_client() -> "httpx.AsyncClient":
@@ -331,7 +369,7 @@ def get_relay_client() -> "httpx.AsyncClient":
                     max_keepalive_connections=_RELAY_MAX_KEEPALIVE,
                 )
                 _shared_client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(30.0, read=None),
+                    timeout=relay_timeout(),
                     limits=limits,
                     # 重定向仍由本模块自己追（要逐跳校验、跨主机剥凭据）
                     follow_redirects=False,
@@ -399,6 +437,13 @@ async def serve_remote_async(
             raise HTTPException(status_code=502, detail="源站重定向次数过多")
     except HTTPException:
         raise
+    except httpx.PoolTimeout as exc:
+        # S2：上游连接池满（并发远程播放超过 RELAY_MAX_CONNECTIONS）：快速 503，
+        # 让播放器稍后重试，而不是白等 30 秒再 502
+        logger.warning("远程代理连接池已满（上限 %s），拒绝 %s", _RELAY_MAX_CONNECTIONS,
+                       url.split("?")[0])
+        raise HTTPException(status_code=503, detail="中转繁忙，请稍后重试",
+                            headers={"Retry-After": "2"}) from exc
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
         logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
         raise HTTPException(status_code=502, detail="源站不可达") from exc
@@ -423,6 +468,10 @@ async def serve_remote_async(
         try:
             async for chunk in resp.aiter_bytes(READ_CHUNK):
                 yield chunk
+        except httpx.TransportError as exc:
+            # S2：源站卡住（块间空闲超过 RELAY_READ_TIMEOUT）或中途断开：结束这条流、
+            # 归还连接。响应头已发出，只能截断；播放器会对剩余区间重新发 Range。
+            logger.warning("远程代理流中断 %s: %s", url.split("?")[0], type(exc).__name__)
         finally:
             # 只关响应，不关 client —— client 是进程共享的，关了会让其它并发请求炸掉。
             # 连接会在响应关闭后自动归还池里，供下一次 Range 请求复用。
@@ -508,7 +557,118 @@ def build_hls_command(
     # 异常退出时再把尾部提升到服务日志（见 _log_ffmpeg_tail）。
     log_path = os.path.join(out_dir, "ffmpeg.log")
     with open(log_path, "wb") as log_file:
-        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=log_file)
+        return spawn_ffmpeg(cmd, stdout=subprocess.DEVNULL, stderr=log_file)
+
+
+# ---- ffmpeg 子进程生命周期（审查 S7）----
+#
+# 1. ``start_new_session=True``：ffmpeg 自成进程组，停止时整组发信号（被 nice/sh 包一层
+#    或 ffmpeg 自己拉起的子进程也一并带走）；
+# 2. Linux 上 ``PR_SET_PDEATHSIG(SIGTERM)``：本服务进程崩溃 / 被 OOM 杀掉时，ffmpeg
+#    跟着收到 SIGTERM 退出，不再成为孤儿继续写盘、占 CPU。
+#
+# PDEATHSIG 的坑：它跟的是「fork 出子进程的那个**线程**」而不是进程——线程退出就会
+#    触发。anyio 的 to_thread 工作线程闲置 10 秒就退出，如果在那里面 Popen，ffmpeg 会在
+#    播放中途被莫名其妙杀掉。所以所有 ffmpeg 一律交给一个**常驻**的单线程 spawner 来 fork，
+#    这个线程与进程同寿。
+
+_PR_SET_PDEATHSIG = 1
+_libc = None
+_spawner = None
+_spawner_lock = threading.Lock()
+
+
+def _load_libc():
+    """在父进程里预先加载 libc（子进程 fork 之后再 dlopen 不安全）"""
+    global _libc
+    if _libc is None and sys.platform.startswith("linux"):
+        try:
+            import ctypes
+            import ctypes.util
+
+            _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+        except OSError:
+            _libc = False
+    return _libc or None
+
+
+def _child_preexec(parent_pid: int, libc):
+    """子进程 exec 前执行：设 PDEATHSIG；父进程若已不在则立即退出（竞态兜底）"""
+    def _fn():
+        if libc is not None:
+            libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+        if os.getppid() != parent_pid:
+            os._exit(1)
+    return _fn
+
+
+def _get_spawner():
+    global _spawner
+    if _spawner is None:
+        with _spawner_lock:
+            if _spawner is None:
+                from concurrent.futures import ThreadPoolExecutor
+
+                _spawner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ffmpeg-spawner")
+    return _spawner
+
+
+def _popen_detached(cmd, **kwargs) -> subprocess.Popen:
+    if os.name == "posix":
+        kwargs.setdefault("start_new_session", True)
+        libc = _load_libc()
+        if libc is not None:
+            kwargs.setdefault("preexec_fn", _child_preexec(os.getpid(), libc))
+    return subprocess.Popen(cmd, **kwargs)
+
+
+def spawn_ffmpeg(cmd, **kwargs) -> subprocess.Popen:
+    """启动 ffmpeg：独立进程组 + 随父进程退出（Linux），fork 在常驻 spawner 线程里做"""
+    return _get_spawner().submit(_popen_detached, cmd, **kwargs).result()
+
+
+def terminate_process_group(proc: subprocess.Popen, grace: float = 5.0) -> Optional[int]:
+    """整组结束子进程并收尸：SIGTERM → 等 grace 秒 → SIGKILL → 再等 2 秒
+
+    收不回（D 状态）就交给后台线程 wait，调用方不陪着卡死。返回退出码（未知时 None）。
+    """
+    if proc.poll() is not None:
+        return getattr(proc, 'returncode', None)
+
+    def _signal(sig):
+        pid = getattr(proc, "pid", None)
+        if os.name == "posix" and isinstance(pid, int) and pid > 0:
+            try:
+                # 只有 ffmpeg 自成一组（start_new_session）时才整组发；否则会误伤本进程组
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, sig)
+                    return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            (proc.kill if sig == signal.SIGKILL else proc.terminate)()
+        except Exception:  # noqa: BLE001 - 进程已不在
+            pass
+
+    _signal(signal.SIGTERM)
+    try:
+        return proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    _signal(signal.SIGKILL)  # SIGTERM 不理就 SIGKILL，否则进程会一直挂着
+    try:
+        return proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        def _reap_later():
+            try:
+                proc.wait()
+            except Exception:  # noqa: BLE001 - 收尸线程不抛
+                pass
+
+        threading.Thread(target=_reap_later, name="ffmpeg-reaper", daemon=True).start()
+        logger.warning("ffmpeg 进程 %s 在 SIGKILL 后仍未退出，已交给后台收尸",
+                       getattr(proc, "pid", "?"))
+        return None
 
 
 def start_transcode(
@@ -553,7 +713,10 @@ def start_transcode(
         "cache_key": cache_key,
         "fingerprint": fingerprint,
         "start_seconds": start_seconds,
+        # S6：客户端最后一次拉播放列表 / 切片的时间（monotonic），闲置判定看它
+        "last_access": time.monotonic(),
     }
+    _ensure_reaper()
     logger.info("HLS 转码启动 %s -> %s", os.path.basename(file_path), session_id)
     return session_id
 
@@ -593,6 +756,7 @@ def _reap_in_background() -> None:
     """
     try:
         reap_stale_transcodes()
+        reap_idle_transcodes()
         enforce_transcode_capacity()
     except Exception as exc:  # noqa: BLE001 — 后台回收失败不能影响本次播放
         logger.warning("后台回收转码会话失败: %s", exc)
@@ -651,12 +815,7 @@ def _terminate_and_cleanup(session_id: str, info: dict) -> None:
     """
     proc = info.get("proc")
     if proc is not None:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()      # SIGTERM 不理就 SIGKILL，否则进程会一直挂着
+        terminate_process_group(proc)  # S7：整组结束 + 收尸（不留僵尸 / 孤儿）
         _log_ffmpeg_tail(info.get("dir") or "", session_id, proc.poll())
     # 按需转码 P1：缓存会话（cached=True）跳过删目录，缓存留给下次复用
     if not info.get("cached"):
@@ -790,7 +949,7 @@ def transcode_capacity() -> int:
 
 
 def transcode_idle_seconds() -> float:
-    """输出目录多久没有新分片就认为这场播放已经没人看了（默认 120s）"""
+    """客户端多久没来拉播放列表/切片，就认为这场转码在并发紧张时可以让位（默认 120s）"""
     try:
         value = float(os.getenv("EMBY_TRANSCODE_IDLE", "") or 120)
     except ValueError:
@@ -798,12 +957,105 @@ def transcode_idle_seconds() -> float:
     return value if value > 0 else 120.0
 
 
-def _transcode_idle(info: dict) -> float:
-    """转码中 ffmpeg 会持续写分片：目录最近写入时间就是「还有人看」的信号"""
+def transcode_abandon_seconds() -> float:
+    """客户端多久没来拉任何东西，就**无条件**回收这场转码（默认 600s）
+
+    比 ``EMBY_TRANSCODE_IDLE`` 长：暂停看手机几分钟的用户不该被掐；真正离开的
+    （关 App / 切走 / 断网）10 分钟后 ffmpeg 停掉，不再把整部片转到片尾。
+    不小于 ``EMBY_TRANSCODE_IDLE``。
+    """
     try:
-        return max(0.0, time.time() - os.path.getmtime(info.get("dir") or ""))
-    except OSError:
-        return float("inf")  # 目录已不在：视为空闲，优先回收
+        value = float(os.getenv("EMBY_TRANSCODE_ABANDON", "") or 600)
+    except ValueError:
+        value = 600.0
+    if value <= 0:
+        value = 600.0
+    return max(value, transcode_idle_seconds())
+
+
+def touch_transcode(session_id: str) -> None:
+    """记一次客户端访问（video_hls 每次服务该会话的播放列表 / 切片时调用）"""
+    info = _TRANSCODE_PROCS.get(session_id)
+    if info is not None:
+        info["last_access"] = time.monotonic()
+
+
+def _transcode_idle(info: dict) -> float:
+    """距客户端最后一次拉播放列表 / 切片过了多少秒（S6）
+
+    旧口径看输出目录 mtime：ffmpeg（``-hls_list_size 0``）会一直写到片尾，目录永远
+    「刚更新」，用户走了也永远不算闲置。现在只看客户端的访问时间。
+    没有访问记录的老会话按启动时间算。
+    """
+    last = info.get("last_access")
+    if last is None:
+        started = info.get("started")
+        if isinstance(started, datetime):
+            return max(0.0, (datetime.now() - started).total_seconds())
+        return float("inf")
+    return max(0.0, time.monotonic() - float(last))
+
+
+def reap_idle_transcodes(idle_limit: Optional[float] = None) -> int:
+    """回收客户端闲置超过 ``idle_limit`` 秒的**正在运行**的转码（默认用放弃阈值）
+
+    同步实现（内部 terminate + wait + 删目录），只在线程里调用。
+    缓存复用会话（无进程）同样按闲置回收登记（不删缓存目录）。
+    """
+    limit = transcode_abandon_seconds() if idle_limit is None else float(idle_limit)
+    reaped = 0
+    for sid, info in list(_TRANSCODE_PROCS.items()):
+        idle = _transcode_idle(info)
+        if idle < limit:
+            continue
+        proc = info.get("proc")
+        if proc is not None and proc.poll() is not None:
+            continue  # 已退出的交给 reap_stale_transcodes（可能要提升进缓存）
+        logger.info("回收闲置 HLS 转码会话 %s（客户端 %.0fs 未访问）", sid, idle)
+        stop_transcode(sid)
+        reaped += 1
+    return reaped
+
+
+_REAPER_INTERVAL = 30.0
+_reaper_started = False
+_reaper_lock = threading.Lock()
+
+
+def transcode_reaper_tick() -> dict:
+    """一轮转码回收：收尸已退出的（含提升缓存）、回收放弃的、按并发上限让位闲置的"""
+    result = {"stale": 0, "abandoned": 0}
+    result["stale"] = reap_stale_transcodes()
+    result["abandoned"] = reap_idle_transcodes()
+    enforce_transcode_capacity()
+    return result
+
+
+def _ensure_reaper() -> None:
+    """进程内常驻的转码回收线程（首次起转码时懒启动；EM / EA 谁跑转码谁有）
+
+    维护 janitor 每 10 分钟才一轮且不在每个进程里都启动；而用户离开后 ffmpeg 会一直
+    转到片尾，所以这里单独 30 秒一轮。
+    """
+    global _reaper_started
+    if _reaper_started:
+        return
+    with _reaper_lock:
+        if _reaper_started:
+            return
+        _reaper_started = True
+
+    def _loop():
+        while True:
+            time.sleep(_REAPER_INTERVAL)
+            if not _TRANSCODE_PROCS:
+                continue
+            try:
+                transcode_reaper_tick()
+            except Exception as exc:  # noqa: BLE001 — 回收线程绝不能退出
+                logger.warning("转码回收周期异常: %s", exc)
+
+    threading.Thread(target=_loop, name="transcode-reaper", daemon=True).start()
 
 
 def enforce_transcode_capacity() -> None:
@@ -842,6 +1094,3 @@ def enforce_transcode_capacity() -> None:
 
 _TRANSCODE_PROCS: dict[str, dict] = {}
 
-
-def is_transcode(session_id: str) -> bool:
-    return session_id in _TRANSCODE_PROCS

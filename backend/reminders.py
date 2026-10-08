@@ -115,11 +115,6 @@ def _record(db: Session, item: dict, kind: str) -> bool:
         return False
 
 
-def _realm_name(db: Session, realm_id: Optional[int]) -> str:
-    realm = realms.get_realm(db, realm_id)
-    return realm.name if realm else ""
-
-
 def _site_url(db: Session) -> str:
     return (_config_value(db, "site_url") or "").strip().rstrip("/")
 

@@ -203,17 +203,25 @@ def effective_ids(db: Session, user) -> Optional[set[int]]:
 
 
 def effective_ids_safe(db: Session, user) -> Optional[set[int]]:
-    """``effective_ids``，但**读失败一律按「不过滤」处理**
+    """``effective_ids``，但读失败时**一律拒绝（fail-closed）**
 
-    可见范围是展示层设置：不能因为一次配置读取异常，把整个浏览页/搜索
-    拦下来（那比暂时多显示几个库严重得多）。接入点统一用这个，
+    S12（安全）：旧实现读失败按「不过滤」处理——DB 抖动 / 会话处于失败事务时，
+    H1 的条目可见性校验（详情、播放、下载都走 ``_require_visible_item``）会退化成
+    「全部可见」，把一次稳定性故障变成越权。现在读失败返回空集合：列表 / 搜索
+    暂时为空、按条目取则 403，并记一条 warning；故障恢复后自然恢复。
+
+    工作人员（``is_staff``）照旧不受限制——豁免判断在任何读取之前，不受影响；
+    这里再兜一次，保证管理员排障时不会因为配置读不到被挡在门外。
     配置读写那侧用裸的 ``effective_ids``，好让测试抓得到真错误。
     """
     try:
         return effective_ids(db, user)
-    except Exception:  # noqa: BLE001 — 展示层设置不该把浏览页搞挂
-        logger.warning("读取媒体库可见范围失败，本次按全部可见处理", exc_info=True)
-        return None
+    except Exception:  # noqa: BLE001 — 读失败不能放大成越权
+        if user is not None and getattr(user, "is_staff", False):
+            return None
+        logger.warning("读取媒体库可见范围失败，本次按不可见处理（fail-closed） user=%s",
+                       getattr(user, "id", None), exc_info=True)
+        return set()
 
 
 def scope_query(query, allowed: Optional[set[int]]):

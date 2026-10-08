@@ -73,20 +73,3 @@ def set_section_order(body: OrderUpdate, db: Session = Depends(get_db)):
     _set_order(db, body.order)
     return {"order": body.order}
 
-
-def sort_libraries_by_order(libraries: list, db: Session) -> list:
-    """
-    按保存的顺序对 library 列表排序。
-    未在顺序中的 library 按 id 排在后面（保持默认行为）。
-    """
-    order = _get_order(db)
-    if not order:
-        return libraries
-    order_index = {lid: idx for idx, lid in enumerate(order)}
-    return sorted(
-        libraries,
-        key=lambda lib: (
-            order_index.get(lib.id, len(order)),
-            lib.id,
-        ),
-    )

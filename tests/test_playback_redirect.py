@@ -39,6 +39,8 @@ def _stub_gates(monkeypatch):
 
 def _stub_stream(monkeypatch, target, proxied):
     monkeypatch.setattr(api, "_require_item", lambda db, item_id: SimpleNamespace(container="mp4"))
+    # 假 db/user 读不到可见范围；S12 起读失败 fail-closed，这里显式按「不过滤」桩掉
+    monkeypatch.setattr(api, "_library_scope", lambda db_, user_: None)
     _stub_gates(monkeypatch)
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
 
@@ -70,6 +72,8 @@ def test_video_stream_proxies_with_range_headers(monkeypatch):
     """代理转发是分片响应：带上可缓存头（CDN 边缘缓存用），兼容既有实现。"""
     target = PlayTarget("url", "https://cdn.example/movie.mkv", {"User-Agent": "server"})
     monkeypatch.setattr(api, "_require_item", lambda db, item_id: SimpleNamespace(container="mp4"))
+    # 假 db/user 读不到可见范围；S12 起读失败 fail-closed，这里显式按「不过滤」桩掉
+    monkeypatch.setattr(api, "_library_scope", lambda db_, user_: None)
     _stub_gates(monkeypatch)
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
     proxy = object()

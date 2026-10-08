@@ -2,6 +2,234 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [未发布] - 稳定性 / 性能：串流不占连接、代理与转码回收、Redis 熔断、列表下推 SQL
+
+依据性能审查（S1–S7、S9、S12，P2–P4）。接口路径与返回字段不变；数据库结构不变；
+除下文「行为变化」所列外，返回内容与升级前逐字一致（有新旧对照测试）。
+
+### 稳定性
+
+- **S1 串流不再占 DB 连接**：FastAPI ≥0.118 的 yield 依赖在响应发完后才清理，Range 流 / HLS 切片 /
+  下载在整个播放期间都占着一个连接（`idle in transaction`），约 50 路并发流即耗尽 PG 连接池、之后全站 500。
+  现在 `video_stream`（含 `.mkv/.mp4/.{container}` 变体）、`video_hls`、`/Items/{id}/Download`、
+  `/Items/{id}/File`、`/Items/{id}/Thumbnails/{index}` 在返回响应前就关闭会话（`async_db.release_db_before_response`）。
+- **S2 远程代理连接池**：上游连接上限 24 → 200（`RELAY_MAX_CONNECTIONS`，可配）；超时由 `Timeout(30, read=None)`
+  改为连接 10s / 块间读 30s / 池等待 3s。源站卡住不回数据时按读超时结束该流并归还连接（以前永远挂着、
+  逐步把池耗尽）；池满立即返回 503 + `Retry-After`，不再白等 30 秒再 502。同步下载代理用同一套超时。
+- **S6 转码闲置回收**：闲置改按「客户端最后一次拉播放列表 / 切片」判定（旧口径看输出目录 mtime，
+  ffmpeg 一直写到片尾，用户走了也永不闲置，名额被「幽灵会话」占满后所有新转码 503）。满员时闲置超过
+  `EMBY_TRANSCODE_IDLE` 的会话让位；闲置超过 `EMBY_TRANSCODE_ABANDON` 无条件停止；常驻回收线程 30 秒一轮收尸。
+- **S7 ffmpeg 随父退出**：ffmpeg 起在独立进程组并设置 Linux `PR_SET_PDEATHSIG`（主进程被杀时 ffmpeg 跟着退出）；
+  停止时整组 SIGTERM → SIGKILL，并回收僵尸进程。
+- **S3 HLS 新建转码移出事件循环**：策略校验、115 取直链（最长 20s）、本地缓存查询、起 ffmpeg 等整段放进线程池
+  一次完成；115 慢时不再卡住整个 EA 进程。
+- **S4 Redis 熔断降级**：Redis 超时 5s(+重试) → 1s 不重试；连续失败后熔断一段时间不碰 Redis，缓存改用有界内存缓存、
+  限流改为进程内计数（以前「Redis 故障即不限流」且每个请求卡满超时），到期自动探测恢复；启动时连不上 Redis
+  也会在后台重连，不再永久降级。PlaybackInfo 的缓存读写移出事件循环。
+- **S5 run_all 看护**：worker 退出按指数退避重启（封顶 5 分钟，稳定运行后计数清零），**永不拉停 API / EA**
+  （以前累计 3 次就整容器退出）；worker 启动时 Redis 不可用会等待重连而不是直接退出。关键进程（api / ea）
+  退出仍整容器退出，交给编排重启。
+- **S9 `SortBy=DatePlayed` 不再 500**：未带 `IsPlayed` / `IsFavorite` 等筛选时按「最近播放」排序会引用未关联的
+  用户数据列（SQLite `no such column` / PG `missing FROM-clause`）。现在按需外连接当前用户的播放数据，
+  没有播放记录的条目不论升降序都排在最后；同时支持 `SortBy=PlayCount`（此前被忽略）。
+- **S12 片库可见范围 fail-closed（安全）**：读取用户可见媒体库失败时，旧实现按「全部可见」处理——DB 抖动时
+  条目详情 / 播放 / 下载的可见性校验会退化成越权。现在读失败一律按不可见处理（列表 / 搜索为空、按条目取 403），
+  并记 warning；工作人员（`is_staff`）不受影响。
+
+### 性能
+
+- **P2 `/Items` 去重下推 SQL**：旧实现每页都把全部候选拉回 Python 再去重切片（O(全库)/请求，翻第 1 页与第 28 页一样慢）。
+  现在只在 SQL 里用窗口函数圈出「可能重复」的行在 Python 里精确判定，排序 / 分页 / 计数全部在 SQL；结果与旧实现
+  逐条一致。重复行多到超过 `ITEMS_DEDUP_MAX_*` 时自动回退旧实现。
+- **P3 NextUp 批量化**：旧实现每部已开看的剧一条查询并绑定 `NOT IN(全部已看 id)`；现在按批一条
+  `ROW_NUMBER() OVER (PARTITION BY series_id …)` 查询、「未看」改 `NOT EXISTS`，SQL 条数与剧数无关。
+- **P4 orjson 直出**：`Users/{id}/Items`、`Items/Resume`、`Items/Latest`、`Items/{id}`、`Shows/{id}/Seasons`、
+  `Shows/{id}/Episodes`、`Shows/NextUp` 改用 orjson 序列化（审查实测 100 条电影 11.7ms → 0.26ms），
+  不再在事件循环上跑 `jsonable_encoder`；响应字节与升级前一致。
+
+### 行为变化
+
+- `/Items` 排序追加条目 id 作为最终决胜键：**排序键相同的并列行（同名、同入库时间等）之间的先后顺序可能与升级前不同**，
+  但从此在分页之间稳定（以前并列行顺序取决于查询计划，翻页时可能重复或漏掉）。
+- 远程代理：源站超过 `RELAY_READ_TIMEOUT` 秒不回数据时会结束这条流（播放器会自动重试 Range）；池满返回 503 而非 502。
+- 转码：客户端离开超过 `EMBY_TRANSCODE_ABANDON` 秒后 ffmpeg 会被停止。
+- 片库可见范围读取失败时普通用户暂时看不到任何条目（以前是全部可见）。
+- 配置了 Redis 但 Redis 故障时，限流改由进程内计数继续生效（`REDIS_ENABLED=false` 仍不限流，与以前一致）。
+
+### 升级须知
+
+- 无需迁移；新环境变量均为可选，留空即用默认值（见 `env.example`「稳定性调优」）：
+
+  | 变量 | 默认值 | 说明 |
+  |---|---|---|
+  | `RELAY_MAX_CONNECTIONS` | 200 | 远程代理上游连接上限（旧版固定 24） |
+  | `RELAY_MAX_KEEPALIVE` | 50 | 空闲保活连接上限（旧版 12） |
+  | `RELAY_CONNECT_TIMEOUT` | 10 | 连接源站超时（秒） |
+  | `RELAY_READ_TIMEOUT` | 30 | 两个数据块之间最长空闲（秒） |
+  | `RELAY_POOL_TIMEOUT` | 3 | 连接池满时最多等待（秒），超时 503 |
+  | `EMBY_TRANSCODE_IDLE` | 120 | 满员时闲置超过此秒数的转码让位 |
+  | `EMBY_TRANSCODE_ABANDON` | 600 | 闲置超过此秒数无条件停止转码（不小于上一项） |
+  | `REDIS_SOCKET_TIMEOUT` | 1 | Redis 读写超时（秒，旧版 5 且重试） |
+  | `REDIS_CONNECT_TIMEOUT` | 1 | Redis 连接超时（秒） |
+  | `REDIS_BREAKER_FAILURES` | 3 | 连续失败多少次熔断 |
+  | `REDIS_BREAKER_SECONDS` | 30 | 熔断时长 / 后台重连间隔（秒） |
+  | `WORKER_RESTART_BASE` | 5 | worker 首次重启等待（秒），之后翻倍 |
+  | `WORKER_RESTART_MAX` | 300 | worker 重启等待上限（秒） |
+  | `WORKER_STABLE_SECONDS` | 600 | 稳定运行多久后退避计数清零（秒） |
+  | `WORKER_REDIS_WAIT_MAX` | 30 | worker 启动等 Redis 的重试间隔上限（秒） |
+  | `ITEMS_DEDUP_MAX_SUSPECTS` | 20000 | `/Items` 去重：可能重复的行超过此数回退旧实现 |
+  | `ITEMS_DEDUP_MAX_DROPPED` | 5000 | `/Items` 去重：被去掉的行超过此数回退旧实现 |
+
+- 如果之前靠调大 PG 连接池来扛并发播放，S1 之后可以按 API 请求量重新评估连接池大小。
+
+## [未发布] - 媒体信息探测 worker 重构（28.5 万条 pending 卡住 / 时不时卡死）
+
+现象：日志里「预提取定时器启动」照常出现，后台显示 28.5 万条待探测，但数字几乎不动，
+探测 worker 隔一阵就整体卡住，只有重启才恢复一会儿。
+
+### 根因（均已用种子库 + mock ffprobe 复现）
+
+1. **队列口径对不上，绝大多数 pending 永远抢不到**：扫描器（fast_scanner / scanner background
+   模式 / enrich 衔接）和老库补列的默认值把单集、季、剧集骨架、文件名已解析出 codec 的电影
+   全标成 `pending`，而旧调度器只抢「movie/series 且 video_codec 为空」。复现库 3800 条 pending
+   时 `_claim_batch` 返回 `[]`；预提取扫描只扫「未在队列」的条目，它们已经是 pending →
+   每轮入队 0 条。定时器在跑，实际什么都没探。
+2. **抢单泄漏**：旧调度器先把一批标 `probing`，再判断线程池背压，背压时直接跳过——这批永远
+   停在 probing（复现：30 秒泄漏 600 条），只有重启时恢复。
+3. **单条目没有硬上限**：`subprocess.run(timeout)` 只杀直接子进程后无限 `wait()`，FUSE 挂死
+   （D 状态）时线程永久卡住；`os.path.isfile` 同理。线程卡满 → 背压 → 第 2 条持续泄漏，
+   表现为「时不时卡死」（复现：挂死挂载上 4 个线程全部卡住后，健康挂载 30 秒内 0 条被探测）。
+4. **单体模式根本没启动探测 worker**（M11）：只有 `backend/worker.py` 起它。
+5. 用户打开详情 / 播放时，条目若已在 pending 队尾，`maybe_enqueue` 直接返回，不插队。
+
+### 新方案
+
+- **按需优先**：详情页 / PlaybackInfo 仍不阻塞（起播用文件名解析的信息）；已在 pending 的条目
+  被打开时提到优先级 1000 并立即唤醒调度器；单集也纳入（`PROBE_ITEM_TYPES`，默认 movie,episode）。
+- **DB 状态驱动的后台补齐**：新增 `probe_claimed_at`（租约）、`probe_last_error`，索引
+  `idx_item_probe_retry (probe_status, probe_next_retry_at)`；PG 用 `FOR UPDATE SKIP LOCKED` 抢单，
+  SQLite 用带状态守卫的 UPDATE；只抢有空槽的量，绝不「抢了不处理」；租约过期自动回收；
+  指数退避（封顶 6 小时），K 次后 failed 并记录原因。
+- **队列整理（triage）**：启动时及每 6 小时按 id 分段纠正状态：季/剧集/无文件/已删/已合并 → 新状态
+  `skipped`，已有完整信息 → `done`，`NULL` 且缺信息 → 入队；最近 30 天播放过的提到优先级 800。
+- **硬上限**：所有 ffprobe / mediainfo 走 `proc_util.bounded_run`（独立进程组、超时整组 SIGKILL、
+  收不回就放弃等待）；单条目解析 ≤ 20s、探测总预算 ≤ 60s；DB 连接不跨探测持有。
+- **按挂载限流 + 熔断**：远程挂载每个默认并发 2、本机 4；同一挂载连续 3 次超时熔断 5 分钟
+  （翻倍，最长 1 小时），熔断期间不抢该挂载的条目，健康挂载照常推进。
+- **可观测 / 可运维**：`GET /api/admin/emby/scrape/probe-progress`（各状态计数、重试中、过期抢单、
+  常见错误、近 10 分钟速率、熔断、ETA）；`POST /scrape/probe/reset`（scope=stuck/failed/retrying/all）；
+  `POST /scrape/probe/pause`、`/resume`（存 system_configs，跨进程生效）；`/api/health` 详细报告
+  新增「有待探测但 worker 没在运行 / 过期抢单 / 熔断中的挂载」告警。
+- **自愈**：调度循环任何异常只记日志不退出；`worker_registry` 支持 restart 回调 + 监督线程，
+  线程死了 30 秒内自动重启；`snapshot()` 补上 `status` 字段（health 的 crashed 告警此前永不触发）。
+- **单体 / worker 同一入口**：`main.py` lifespan（非 api 角色）与 `worker.py` 都调用幂等的
+  `probe_worker.start()`；退出时已抢未处理的条目放回 pending。
+
+### 升级须知
+
+- **自动迁移**：启动时补 `emby_items.probe_claimed_at`、`probe_last_error` 两列和
+  `idx_item_probe_retry` 索引（PG 上建索引会短暂阻塞写入，28 万行通常几秒）。
+- **一次性自动纠正**：首次启动时所有残留 `probing` 放回 `pending`；随后 triage 把不需要探测的
+  pending 改成 `skipped` / `done`——**后台「待探测」数字会在启动后几分钟内大幅下降，这是纠正，
+  不是数据丢失**。新状态 `skipped` 只表示「这一行没有可探测的文件」。
+- **行为变化**：单集默认也会被探测（只想探电影设 `PROBE_ITEM_TYPES=movie`）；单体部署现在会
+  启动探测 worker；`PROBE_WORKERS` 默认 2→4、上限 5→16，`PROBE_MIN_INTERVAL_SEC` 默认 1→0.5。
+- **新环境变量**（均可选，见 env.example）：`PROBE_ITEM_TYPES`、`PROBE_REMOTE_CONCURRENCY`、
+  `PROBE_LOCAL_CONCURRENCY`、`PROBE_ITEM_TIMEOUT_SEC`、`PROBE_RESOLVE_TIMEOUT_SEC`、
+  `PROBE_CLAIM_TTL_SEC`、`PROBE_BREAKER_THRESHOLD`、`PROBE_BREAKER_COOLDOWN_SEC`、
+  `PROBE_RETRY_MAX_SEC`、`PROBE_TRIAGE_CHUNK`。
+- 管理后台前端尚未加探测进度卡片，接口已就绪（见上）。
+
+## [未发布] - 安全修复：3 个严重 + 5 个高危漏洞
+
+### 安全修复
+
+- **S1 管理员提权（严重）**：`admin_role` 为空 / 未知值此前按超管处理，运营把任意账号的 `is_staff` 置真即可造出超管。
+  现改为 fail closed：空值 / 未知值一律按最低权限 `viewer`；启动期迁移 `ensure_legacy_admin_roles` 只把最早的管理员显式写成 `super`，
+  库里没有任何启用中的超管时才自愈提升最早的管理员。
+- **S2 运营越权管理管理员（严重）**：管理员账号的增删改与角色授予收紧为仅超管可操作，运营角色不能再修改 / 停用 / 提权其他管理员。
+- **S3 SECRET_KEY 外发（严重）**：EM 此前把 `SECRET_KEY` 放进 `X-Panel-Key` 发往后台可配置的任意服务器地址（且跟随重定向），拿到即可伪造任意 JWT。
+  现改为独立的节点密钥 `NODE_SHARED_SECRET`（未设置时由 `SECRET_KEY` 单向派生），EM 发起的请求只带 HMAC 签名头
+  `X-Panel-Ts` / `X-Panel-Nonce` / `X-Panel-Sign`（绑定方法与路径、`NODE_AUTH_MAX_SKEW` 内有效、nonce 去重），探测一律不跟随重定向；
+  不再接受 `X-Panel-Key: <SECRET_KEY>`。新增 `backend/node_auth.py`。
+- **H1 片库可见性**：条目详情、PlaybackInfo、推流、收藏等接口统一按用户可见的媒体库范围校验，不能再凭 guid 访问 / 播放 / 收藏隐藏库里的条目。
+  多版本（`AlternateVersions`）、片头片尾标记（`IntroMarkers`）、剧集组（`EpisodeGroups`）、缺失集（`MissingEpisodes`）、
+  视频缩略图（`Thumbnails`）同样要求登录并校验可见库；片头标记的增删与剧集组选择是全站共享数据，改为仅可写角色的管理员可改。
+  （同时补回被误删的 `IntroMarker` 模型，`IntroMarkers` 接口此前直接 500。）
+- **H2 JWT 不进 URL**：网页播放器不再把 JWT 拼进播放 / 图片 URL，改用短期签名播放链接（有效期 `PLAY_SIGN_URL_TTL`，默认 21600 秒），
+  链接泄露（日志 / Referer / 分享）不再等于账号泄露。
+- **H3 管理接口仅 Bearer**：媒体库 / 挂载 / 115 等管理接口与 `/api/admin/*` 同一口径，只接受 `Authorization: Bearer <access JWT>`；
+  不再接受 `?api_key=` 或 Emby 客户端 token（管理员在播放器里登录的长期 token 不能再调删除 / 挂载等管理操作）。
+- **H4 可信代理**：`CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP` 只在 TCP 直连方是 Cloudflare 回源网段、回环或 `TRUSTED_PROXIES` 时才采信，
+  直连源站伪造 `CF-Connecting-IP: 127.0.0.1` 不再能绕过域名守卫 / 限流。新增 `TRUSTED_PROXIES` / `CLOUDFLARE_IP_RANGES` 说明（见 `env.example`）。
+- **H5 兑换码每人一次**：注册码 / 兑换码新增核销记录，同一用户对同一张多次码只能兑换一次（兼容升级前 `used_by` 里的记录）。
+- **缩略图缓存串图**：库外同名外挂图（`poster.jpg` / `folder.jpg` / `cover.jpg` / `fanart.jpg`……）此前共用同一张缩略图（如 `poster_w320.jpg`），
+  首页「本周入库」海报与片名对不上。现对缓存之外的原图按「绝对路径 + mtime + 大小」的 sha1 命名缩略图（`backend/emby_server/image_store.py`）。
+
+## [未发布] - 修复：恢复 2d7d996 误删的功能
+
+### 修复
+
+2d7d996（安全修复 v2）基于旧底稿重新应用，把 PR #400、#403~#408 的一批
+StrmAssistant（神医助手）移植功能整段覆盖掉了。这些删除不是有意的，现按原提交恢复
+（2d7d996 的安全语义全部保留：管理员角色 fail closed、节点签名、可见性校验、
+JWT 不进 URL、可信代理、兑换码每人一次、缩略图缓存 key）。
+
+- **片头片尾标记**：恢复 `IntroMarker` 模型（`emby_intro_markers` 表）。
+  此前 `/Items/{id}/IntroMarkers` 接口访问即 500。
+- **演员增强**：恢复 `emby_people.person_tmdb_id` 字段、老库自动加列、
+  `(item_id, person_tmdb_id)` 复合索引、刮削落库，以及演员刷新 worker 的启动。
+- **TMDB 备选语言 / 原语言海报**：恢复 `language_fallback_chain`（首选语言无命中时
+  按 zh-CN → zh-HK → zh-TW → ja-JP → en-US 重试，深度由 `TMDB_FALLBACK_MAX_LANGS` 控制）、
+  海报语言偏好（默认 `system`）与原语言海报优先；「重试未匹配项」会清整条语言链的缓存。
+- **代理工具**：恢复 `is_valid_proxy_url` / `try_parse_proxy_url`。
+- **拼音排序**：恢复 `lru_cache(65536)`；`pypinyin` 恢复锁定 `==0.55.0`。
+- **后台 worker**：恢复 Redis 跨进程心跳（`/api/health` 能看到 worker 容器的线程）与
+  死线程告警；缩略图 / 字幕扫描 / 多版本合并恢复三轮打磨（guid 防穿越、单视频超时、
+  分批提交、目录不可访问不误删字幕、防跨库 / 跨类型合并等）。
+- **扫描器**：条目下架时同步清理 `/data/mediainfo` 里的媒体信息 JSON。
+- **多版本管理后台接口**：恢复 `/api/admin/media/versions/{id}`、`/unmerge`、`/unmerge-all`。
+- **文档**：`docs/新手指南.md` 文件名恢复（此前被改成乱码，README 链接失效）。
+
+## [未发布] - 后端清理：删除死代码与无用依赖、合并重复 helper、修集图片 N+1
+
+只做「不改行为」的清理（依据性能审查第 7 节中标为低风险 / 机械安全的条目），外加一个纯性能修复。
+接口、配置项、数据库结构均不变；未删除任何仍被引用的代码。
+
+### 删除
+
+- `backend/emby_server/fast_scanner.py`（731 行）：生产代码零 import，`USE_FAST_SCANNER` 无人读取；
+  只测它的 `tests/test_incremental_scan.py` 一并删除。
+- ~~`backend/emby_server/refresh_person_worker.py`~~：**保留**。清理时它在 main 上确实无人启动，
+  但「恢复 2d7d996 误删的功能」已把 `worker.py` 里的演员刷新 worker 启动接回来，故不删（相关断言一并保留）。
+- 28 个全仓零引用的函数 / 类（原清单 29 个；`mediainfo_persist.delete_json` 已被恢复的「下架时清理媒体信息 JSON」使用，保留）（api.py 里的 `_image_urls`、`_probe_duration_on_demand` /
+  `_ffprobe_duration_sync`、`_batch_series_source_dirs` 等 8 个，及 reminders / websocket / mounts /
+  scan_queue / streaming 等模块里的 21 个），删除前逐个全仓 grep 复核（含字符串 / getattr / 路由注册）。
+- `main.py` 里重复两遍的 GZip 注释与被注释掉的死代码（GZip 仍保持禁用）。
+
+### 依赖
+
+- 从 `backend/requirements.txt` 移除未使用的 `alembic`、`aiofiles`、`apscheduler`、`loguru`、
+  `pydantic-settings`、`email-validator`。
+- `passlib[bcrypt]` 换成显式 `bcrypt>=4.0.0`：代码从未 import passlib，`security.py` 直接用 bcrypt。
+
+### 合并
+
+- `database.py` 的 7 个 `_ensure_*_index` 合并为一张索引表 `_LEGACY_INDEXES` + 一个幂等 helper；
+  执行顺序、DDL 与迁移日志沿用「恢复」后的版本（演员索引为 `idx_person_item_tmdb (item_id, person_tmdb_id)`）。
+
+### 性能
+
+- 集 / 季的图片回退链取季改用 `db.get`（命中会话 identity map 时零 SQL）：含集列表每条集原先多
+  2 次 SQL，审查实测 `Items?IncludeItemTypes=Episode&Limit=1000` 2015 条 SQL；一页 40 集的回退链
+  从 80 条 SQL 降到 0。新增 `tests/test_image_chain_sql.py` 钉住。
+- `Shows/{id}/Episodes` 的剧名改从预取结果取，每次请求少一次 IN 查询。
+
+### 升级须知
+
+- 无需任何操作。自定义镜像如果依赖上面移除的 Python 包，需要自行安装。
+
+
 ## [未发布] - 安全修复（3 严重 + 5 高危）
 
 ### 严重
@@ -33,15 +261,21 @@
 
 ### 升级须知
 
-- **管理员权限变更**：升级后只有最早的管理员保持超管身份，
-  其他管理员变为只读，如需管理权限请由超管重新授权。
-- **推流节点必须同步升级**：面板和推流节点要一起升级到此版本，
-  旧节点用旧协议连不上新面板。
-- **新增环境变量**：`NODE_SHARED_SECRET`（必填，见 `env.example`），
-  建议同时轮换 `SECRET_KEY`。
-- **TRUSTED_PROXIES**：如果用了反向代理，务必正确配置可信代理网段，
-  否则真实 IP 获取会不准。
-
+1. **管理员角色**：升级后只有**最早创建的那个管理员**（安装向导 / `scripts/create_admin.py` 建的号）保持超管；
+   其他从未显式设置过角色的管理员会变成**只读**，需超管在「管理员」页重新授予角色，或用 `scripts/create_admin.py` 处理。
+2. **EM / EA / 所有推流节点必须同时升级**：旧版 EM 发的 `X-Panel-Key: <SECRET_KEY>` 不再被接受，新旧混跑会互相拒绝。
+   部署脚本（`deploy-streaming-node.sh`）与运维 curl 的 `X-Panel-Key` 改用 `python -m backend.node_auth` 输出的**节点密钥**，不要再填 `SECRET_KEY`。
+   各端时钟需同步（误差超过 `NODE_AUTH_MAX_SKEW`，默认 300 秒，签名会被拒）。
+3. **建议轮换 `SECRET_KEY`**：旧版本已把它发往后台配置的服务器地址，视为可能泄露；轮换后所有用户需重新登录，EM / EA 两端同时改。
+   若显式设置了 `NODE_SHARED_SECRET`，所有节点同步更新。
+4. **Docker 反代需设置 `TRUSTED_PROXIES`**：默认只信 Cloudflare 回源网段与回环；宿主机 Nginx → docker-proxy → 容器的部署，
+   容器看到的直连方是 docker 网关，需把网段加入（如 `TRUSTED_PROXIES=172.16.0.0/12`，或按 `docker network inspect` 查到的子网），
+   否则所有用户共用一个限流桶。
+5. **网页播放链接会过期**：签名播放链接在 `PLAY_SIGN_URL_TTL`（默认 21600 秒 = 6 小时）后失效，长时间挂着的播放页刷新即可重新签发。
+6. **可清理旧缩略图**：图片缓存目录为 `EMBY_IMAGE_DIR`（默认 `<EMBY_TRANSCODE_DIR>/images`，即 `/tmp/emby_transcode/images`）。
+   旧版按外挂图文件名生成的串图缩略图（如 `poster_w320.jpg`、`folder_w160.jpg`）不会再被引用，可删除后按需重新生成：
+   `find "$EMBY_IMAGE_DIR" -maxdepth 1 -name '*_[wh][0-9]*.jpg' ! -regex '.*/[0-9a-f]\{40\}_[wh][0-9].*' -delete`
+   （只删非 sha1 命名的缩略图；缩略图本身都是可再生的，误删只会触发重新生成）。
 
 ## [未发布] - 用户端「暗房影院」主题全站改版
 

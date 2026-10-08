@@ -119,17 +119,6 @@ def _position_of(library_id: int) -> int | None:
     return None
 
 
-def queue_length() -> int:
-    """Redis 队列当前长度"""
-    r = _redis()
-    if r is None:
-        return 0
-    try:
-        return int(r.llen(REDIS_SCAN_QUEUE_KEY))
-    except Exception:
-        return 0
-
-
 def cancel_scan_request(library_id: int) -> str:
     """API 进程：从 Redis 队列取消排队中的扫描
 

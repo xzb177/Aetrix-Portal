@@ -240,10 +240,6 @@ class RcloneConfSave(BaseModel):
     conf: str = ""
 
 
-class MountBrowseParams(BaseModel):
-    rel: str = "/"
-
-
 @admin_emby_router.get("/mounts")
 def list_mounts(staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db),
                      realm_id: int | None = None):

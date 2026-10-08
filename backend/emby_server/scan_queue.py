@@ -339,30 +339,6 @@ def cancel(library_id: int) -> str:
     return "canceled"
 
 
-def state_of(library_id: int) -> Optional[dict]:
-    """某个库当前在队列里的状态（空闲返回 None）"""
-    # 后端拆分：API 进程查 Redis 里的排队位置
-    if AETRIX_ROLE == "api":
-        try:
-            from backend.emby_server import scan_queue_redis as _rq
-            if _rq.is_redis_mode():
-                pos = _rq._position_of(int(library_id))
-                if pos is not None:
-                    return {
-                        "library_id": int(library_id),
-                        "state": "queued",
-                        "position": pos,
-                        "via": "redis",
-                    }
-        except Exception:
-            pass
-    with _LOCK:
-        task = _task_of_locked(library_id)
-        if task is None:
-            return None
-        return task.as_dict(position=_position_locked(task))
-
-
 def is_busy(library_id: int) -> bool:
     # 后端拆分：API 进程查 Redis 去重集合
     if AETRIX_ROLE == "api":

@@ -370,6 +370,84 @@ def test_h1_guardrail_no_unscoped_item_lookup_in_protocol_routes():
     assert not offenders, "协议端点必须用 _require_visible_item：" + ", ".join(offenders)
 
 
+def _two_libs(db):
+    lib_ok = em.Library(guid="lib-ok", name="可见", is_enabled=True)
+    lib_hidden = em.Library(guid="lib-hidden", name="内部", is_enabled=True)
+    db.add_all([lib_ok, lib_hidden])
+    db.flush()
+    db.add_all([
+        em.MediaItem(guid="visible", library_id=lib_ok.id, item_type="series", name="a", tmdb_id="1"),
+        em.MediaItem(guid="secret", library_id=lib_hidden.id, item_type="series", name="b", tmdb_id="2"),
+    ])
+    db.commit()
+    return lib_ok, lib_hidden
+
+
+def test_h1_strmassistant_item_routes_enforce_visibility(db, monkeypatch):
+    """main 新增的按条目 id 路由（多版本 / 片头标记 / 剧集组 / 缩略图 / 缺失集）同样要校验可见库"""
+    from backend.emby_server import api, media_routes
+
+    lib_ok, _ = _two_libs(db)
+    user = _user(db, "alice")
+    monkeypatch.setattr(api, "_library_scope", lambda _db, _u: {lib_ok.id})
+    req = _request("/Items/secret/AlternateVersions")
+    calls = [
+        lambda: media_routes.item_alternate_versions("secret", req, user, db),
+        lambda: media_routes.item_intro_markers("secret", user, db),
+        lambda: media_routes.item_episode_groups("secret", user, db),
+        lambda: media_routes.item_thumbnails("secret", req, user, db),
+        lambda: media_routes.item_thumbnail("secret", 0, req, user, db),
+        lambda: api.get_missing_episodes("secret", user, db),
+    ]
+    for call in calls:
+        with pytest.raises(HTTPException) as exc:
+            call()
+        assert exc.value.status_code == 403
+    # 可见库里的条目照常
+    assert media_routes.item_intro_markers("visible", user, db)["Markers"] == []
+
+
+def test_h1_shared_writes_need_writable_admin(db, monkeypatch):
+    """片头标记 / 剧集组选择是全站共享数据：普通用户与只读管理员都不能改"""
+    from backend.emby_server import api, media_routes
+
+    lib_ok, _ = _two_libs(db)
+    monkeypatch.setattr(api, "_library_scope", lambda _db, _u: {lib_ok.id})
+    alice = _user(db, "alice")
+    viewer = _user(db, "viewer", is_staff=True, role=admin_roles.ROLE_VIEWER)
+    for u in (alice, viewer):
+        for method, call in (
+            ("POST", lambda r: media_routes.item_intro_marker_set("visible", r, "intro", 0, 1000, u, db)),
+            ("DELETE", lambda r: media_routes.item_intro_marker_delete("visible", "intro", r, u, db)),
+            ("PUT", lambda r: media_routes.item_episode_group_select("visible", r, "g1", u, db)),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                call(_request("/Items/visible/IntroMarkers", method=method))
+            assert exc.value.status_code == 403
+
+
+def test_h1_guardrail_no_raw_guid_lookup_in_item_routes():
+    """路由函数里不许直接按 guid 查 MediaItem 绕过可见性（图片端点除外：<img> 不带凭据）"""
+    allow = {("media_routes.py", "item_image"), ("portal.py", "admin_delete_item")}
+    offenders = []
+    for name in ("api.py", "compat_routes.py", "media_routes.py", "mount_routes.py",
+                 "stream_routes.py", "session_routes.py", "search_api.py", "image_routes.py"):
+        path = ROOT / "backend" / "emby_server" / name
+        if not path.exists():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            if not any("router" in ast.unparse(d) for d in fn.decorator_list):
+                continue
+            if (name, fn.name) in allow:
+                continue
+            for cmp in ast.walk(fn):
+                if (isinstance(cmp, ast.Compare) and "MediaItem.guid" in ast.unparse(cmp.left)
+                        and any(isinstance(c, ast.Name) and c.id == "item_id" for c in cmp.comparators)):
+                    offenders.append(f"{name}:{fn.name}:{cmp.lineno}")
+    assert not offenders, "按条目 id 的路由必须用 _require_visible_item：" + ", ".join(offenders)
+
+
 # ===========================================================================
 # H2：JWT 不进 URL；网页端改用短期播放签名
 # ===========================================================================
@@ -452,25 +530,25 @@ def test_h3_require_staff_rejects_emby_token_and_query_jwt(db):
     for req in (_request(path, headers={"X-Emby-Token": raw}),
                 _request(path, query=f"api_key={raw}".encode())):
         with pytest.raises(HTTPException) as exc:
-            portal.require_staff(req, None, db, None)
+            portal._bearer_admin(req, None, db)
         assert exc.value.status_code == 401
     # Bearer 里塞 Emby token → 401（不是 JWT）
     with pytest.raises(HTTPException) as exc:
-        portal.require_staff(_request(path), HTTPAuthorizationCredentials(scheme="Bearer", credentials=raw), db, None)
+        portal._bearer_admin(_request(path), HTTPAuthorizationCredentials(scheme="Bearer", credentials=raw), db)
     assert exc.value.status_code == 401
     # URL 里的管理员 JWT → 401
     jwt = create_access_token(boss.id, {"username": "boss", "staff": True})
     with pytest.raises(HTTPException) as exc:
-        portal.require_staff(_request(path, query=f"api_key={jwt}".encode()), None, db, None)
+        portal._bearer_admin(_request(path, query=f"api_key={jwt}".encode()), None, db)
     assert exc.value.status_code == 401
     # 正路：Authorization: Bearer <admin JWT>
-    got = portal.require_staff(_request(path), HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt), db, None)
+    got = portal._bearer_admin(_request(path), HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt), db)
     assert got.id == boss.id
     # 非管理员 JWT → 403
     alice = _user(db, "alice")
     with pytest.raises(HTTPException) as exc:
-        portal.require_staff(_request(path), HTTPAuthorizationCredentials(
-            scheme="Bearer", credentials=create_access_token(alice.id)), db, None)
+        portal._bearer_admin(_request(path), HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials=create_access_token(alice.id)), db)
     assert exc.value.status_code == 403
 
 

@@ -616,6 +616,9 @@ db.add_all([lib_local, lib_remote, lib_strm, lib_dual])
 db.commit()
 for row in (lib_local, lib_remote, lib_strm, lib_dual):
     db.refresh(row)
+# 提前取出 id（避免后续 session 关闭后访问 ORM 属性触发 DetachedInstanceError）
+lib_local_id, lib_remote_id = lib_local.id, lib_remote.id
+lib_strm_id, lib_dual_id = lib_strm.id, lib_dual.id
 
 snap = sc.LibrarySnapshot.of(lib_local)
 check("配置快照记录挂载 id", snap.mount_ids == (local_row.id,), str(snap.mount_ids))
@@ -635,18 +638,18 @@ sc.probe_metadata = lambda p, headers=None, size=0: {
 stats_local = sc.scan_library_sync(db, lib_local, sc.LibrarySnapshot.of(lib_local))
 check("本机挂载库扫描入库", stats_local["added"] == 2 and stats_local["removal_skipped"] is False,
       str(stats_local))
-local_items = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_local.id).all()
+local_items = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_local_id).all()
 # 只关心带文件的条目（series / season 是层级节点，本身没有文件）
-local_files = [i for i in local_items if i.file_path]
+local_files = [(i.guid, i.file_path) for i in local_items if i.file_path]
 check("本机挂载条目存真实路径",
       len(local_files) == 2
-      and all(not i.file_path.startswith(mnt.MOUNT_PATH_PREFIX) for i in local_files),
-      str([i.file_path for i in local_files])[:120])
+      and all(not i[1].startswith(mnt.MOUNT_PATH_PREFIX) for i in local_files),
+      str([i[1] for i in local_files])[:120])
 
 stats_remote = sc.scan_library_sync(db, lib_remote, sc.LibrarySnapshot.of(lib_remote))
 check("远程挂载库扫描入库", stats_remote["added"] == 2, str(stats_remote))
 remote_items = [
-    i for i in db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_remote.id).all()
+    i for i in db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_remote_id).all()
     if i.file_path
 ]
 check("远程挂载条目存 mount:// 路径",
@@ -670,7 +673,7 @@ check("停用挂载报为不可用来源",
       str(failed_disabled))
 stats_disabled = sc.scan_library_sync(db, lib_remote, sc.LibrarySnapshot.of(lib_remote))
 still_there = db.query(em.MediaItem).filter(
-    em.MediaItem.library_id == lib_remote.id, em.MediaItem.file_path.isnot(None),
+    em.MediaItem.library_id == lib_remote_id, em.MediaItem.file_path.isnot(None),
 ).count()
 check("来源不可用时跳过清理（不误删条目）",
       stats_disabled["removal_skipped"] is True and stats_disabled["removed"] == 0
@@ -695,7 +698,7 @@ check("同一目录不会产生重复条目", _dual_scope_count() == before_rows
       f"{before_rows} → {db.query(em.MediaItem).count()}")
 
 stats_strm = sc.scan_library_sync(db, lib_strm, sc.LibrarySnapshot.of(lib_strm))
-strm_items = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_strm.id).all()
+strm_items = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_strm_id).all()
 strm_ok = next((i for i in strm_items if "Strm" in i.name), None)
 check("STRM 挂载入库且容器取自直链", strm_ok is not None and strm_ok.container == "mkv",
       f"added={stats_strm['added']} container={strm_ok.container if strm_ok else '无'}")
@@ -746,8 +749,8 @@ check("代理时带上挂载鉴权头（不下发客户端）",
       bool(recorded.get("headers", {}).get("Cookie")),
       str(sorted(recorded.get("headers", {}))))
 
-local_only = next(i for i in local_items if (i.file_path or "").endswith("Local.Movie.2024.1080p.mkv"))
-local_resp = call_endpoint(mount_routes.mounted_item_file(local_only.guid, req, staff, db))
+local_only = next(i for i in local_files if (i[1] or "").endswith("Local.Movie.2024.1080p.mkv"))
+local_resp = call_endpoint(mount_routes.mounted_item_file(local_only[0], req, staff, db))
 check("本机条目仍直接返回文件", isinstance(local_resp, FileResponse), type(local_resp).__name__)
 mount_routes.serve_remote = _original_serve_remote
 
@@ -1090,7 +1093,7 @@ rclone_lib_id = r.json()["id"]
 
 # 远程挂载条目的 file_path 是 mount://，播放/存在性都靠提供者解析
 cloud_item = db.query(em.MediaItem).filter(
-    em.MediaItem.library_id == lib_remote.id,
+    em.MediaItem.library_id == lib_remote_id,
 ).first()
 check("播放入口统一走 resolve_final（远程条目）",
       mnt.resolve_play_target(cloud_item.file_path, db).kind == "url",
@@ -1099,7 +1102,7 @@ check("播放入口统一走 resolve_final（远程条目）",
 # ==================== 收尾：清理本次测试写入的数据 ====================
 # 冒烟测试共用同一个数据库：远程挂载条目按 mount://<id>/<rel> 生成 guid，
 # 每次运行的挂载 id 都不同，不清理会持续累积（并影响其它测试的全局统计断言）。
-cleanup_lib_ids = [x for x in (lib_local.id, lib_remote.id, lib_strm.id, lib_dual.id,
+cleanup_lib_ids = [x for x in (lib_local_id, lib_remote_id, lib_strm_id, lib_dual_id,
                               api_lib_id, rclone_lib_id) if x]
 cleanup_rows = db.query(em.MediaItem).filter(em.MediaItem.library_id.in_(cleanup_lib_ids)).all()
 for row in cleanup_rows:
