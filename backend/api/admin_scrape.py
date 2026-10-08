@@ -1057,6 +1057,59 @@ def get_enrich_progress(
     return {"success": True, **enrich_worker.get_progress()}
 
 
+# ==================== 媒体信息探测 worker（v2.53）====================
+
+class ProbeResetRequest(BaseModel):
+    # stuck：probing → pending；failed：failed → pending（次数清零）；
+    # retrying：退避中的立即可重试；all：以上全部
+    scope: str = Field("stuck", pattern="^(stuck|failed|retrying|all)$")
+
+
+@admin_emby_router.get("/scrape/probe-progress")
+def get_probe_progress(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """探测进度：各状态计数 / 重试中 / 过期抢单 / 常见错误 / 速率 / 熔断 / ETA"""
+    from backend.emby_server import probe_worker
+    return {"success": True, **probe_worker.status_snapshot(db)}
+
+
+@admin_emby_router.post("/scrape/probe/reset")
+def reset_probe_queue(
+    req: ProbeResetRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """重置卡住 / 失败的探测条目（放回 pending），调度器立即接着做"""
+    from backend.emby_server import probe_worker
+    try:
+        out = probe_worker.reset(db, req.scope)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "scope": req.scope, "reset": out}
+
+
+@admin_emby_router.post("/scrape/probe/pause")
+def pause_probe_worker(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """暂停后台探测（跨进程生效；按需入队照常记录，恢复后先处理）"""
+    from backend.emby_server import probe_worker
+    return {"success": True, "paused": probe_worker.set_paused(db, True)}
+
+
+@admin_emby_router.post("/scrape/probe/resume")
+def resume_probe_worker(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """恢复后台探测"""
+    from backend.emby_server import probe_worker
+    return {"success": True, "paused": probe_worker.set_paused(db, False)}
+
+
 @admin_emby_router.put("/scrape/auto-scan")
 def save_auto_scan(
     req: AutoScanSaveRequest,

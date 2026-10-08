@@ -276,9 +276,9 @@ def main() -> int:
 
         try:
             from backend.emby_server import probe_worker
-            probe_worker.start()
-            started.append("probe_worker")
-            logger.info("✅ 按需探测 worker 已启动")
+            if probe_worker.start():
+                started.append("probe_worker")
+                logger.info("✅ 媒体信息探测 worker 已启动")
         except Exception as e:
             logger.warning(f"启动按需探测 worker 失败（可忽略）: {e}")
 
@@ -411,6 +411,12 @@ def main() -> int:
         _sq.stop_redis_consumer(timeout=5.0)
     except Exception as e:
         logger.warning(f"停止 Redis 扫描消费失败：{e}")
+    # 探测 worker：把已抢未处理的条目放回 pending，下个实例立刻能接着做
+    try:
+        from backend.emby_server import probe_worker as _pw
+        _pw.stop(timeout=5.0)
+    except Exception as e:
+        logger.warning(f"停止探测 worker 失败：{e}")
 
 
 if __name__ == "__main__":

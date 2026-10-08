@@ -154,6 +154,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动补全 worker 失败（可忽略）: {e}")
 
+        # 媒体信息探测（M11）：以前只有 backend/worker.py 起它，单体部署（python serve.py、
+        # 未设 AETRIX_ROLE）从来没有探测 worker —— pending 只增不减。
+        # 与 worker.py 共用同一个幂等入口 probe_worker.start()。
+    if not _is_api_role:
+        try:
+            from backend.emby_server import probe_worker
+            if probe_worker.start():
+                logger.info("媒体信息探测 worker 已启动")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动探测 worker 失败（可忽略）: {e}")
+
         # 订阅到期提醒：会员到期前按 7/3/1 天提前通知（否则只能等用户自己想起来续费）。
         # 与维护一样是后台线程，失败不影响启动；EA 侧不启动（见 backend/reminders.py）。
     if not _is_api_role:
@@ -224,6 +235,12 @@ async def lifespan(app: FastAPI):
         maintenance.shutdown_cleanup()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"退出收尾失败（可忽略）: {e}")
+    # 探测 worker：已抢未处理的放回 pending（API 角色下它没启动，stop 是空操作）
+    try:
+        from backend.emby_server import probe_worker as _pw
+        _pw.stop(timeout=2.0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"停止探测 worker 失败（可忽略）: {e}")
     # 封面异步重生成线程（v2.48.0）：它是惰性起的，但排到队还没画完就退出会丢任务
     try:
         from backend.api.library_cover import stop_cover_worker

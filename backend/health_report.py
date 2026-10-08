@@ -185,6 +185,38 @@ def collect(db) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计探测失败率出错: %s", exc)
 
+    # ---- 探测 worker 是否真的在干活（v2.53）----
+    # 以前只看失败率：worker 不跑时 pending 只增不减，健康页却一片绿。
+    try:
+        from backend.emby_server import probe_worker
+        ps = probe_worker.status_snapshot(db)
+        rt = ps.get("runtime") or {}
+        metrics["probe_worker"] = {
+            "pending_ready": ps["pending_ready"], "retrying": ps["retrying"],
+            "stale_probing": ps["stale_probing"], "paused": ps["paused"],
+            "eta_hours": ps["eta_hours"], "rate_per_min": rt.get("rate_per_min"),
+            "running": rt.get("running"), "breakers": rt.get("breakers"),
+            "last_error": rt.get("last_error"),
+        }
+        if ps["enabled"] and not ps["paused"] and ps["pending_ready"] > 0 and not rt.get("running"):
+            _bump("warn")
+            issues.append({
+                "level": "warn", "key": "probe_worker",
+                "message": f"{ps['pending_ready']} 条待探测，但探测 worker 没有在运行"})
+        if ps["stale_probing"]:
+            _bump("warn")
+            issues.append({
+                "level": "warn", "key": "probe_stale",
+                "message": f"{ps['stale_probing']} 条探测抢单已过期（worker 卡死或崩溃），"
+                           "会自动回收；也可在后台手动重置"})
+        if rt.get("breakers") and any(b.get("open_for_sec") for b in rt["breakers"].values()):
+            _bump("warn")
+            names = "、".join(k for k, b in rt["breakers"].items() if b.get("open_for_sec"))
+            issues.append({"level": "warn", "key": "probe_breaker",
+                           "message": f"探测熔断中的挂载：{names}（连续超时，挂载可能挂死）"})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("统计探测 worker 状态出错: %s", exc)
+
     # ---- 补全/刮削失败率与堆积 ----
     try:
         edone = _enrich_count(db, "done")
