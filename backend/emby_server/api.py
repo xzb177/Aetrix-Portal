@@ -2436,17 +2436,13 @@ def get_episodes(item_id: str, request: Request,
     episodes = deduped
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
-    # 分集标题美化：一次查出相关剧名（单条查询，供文件名去剧名前缀用）
-    series_names: dict[int, str] = {}
-    try:
-        _sids = {e.series_id for e in episodes if e.series_id}
-        if _sids:
-            for _sid, _sname in db.query(
-                    em.MediaItem.id, em.MediaItem.name).filter(
-                    em.MediaItem.id.in_(_sids)).all():
-                series_names[_sid] = _sname or ""
-    except Exception:
-        series_names = {}
+    # 分集标题美化：相关剧名（供文件名去剧名前缀用）。_prefetch_list_data 已把剧载入
+    # 并挂到 e.series（查不到 / 已软删的为 None），直接取，不再单独查一次。
+    series_names: dict[int, str] = {
+        e.series_id: (e.series.name or "")
+        for e in episodes
+        if e.series_id and e.series is not None
+    }
     return {"Items": [_item_dto(e, base, user.id, db, series_names=series_names)
                       for e in episodes],
             "TotalRecordCount": len(episodes), "StartIndex": 0}
