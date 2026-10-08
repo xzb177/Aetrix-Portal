@@ -83,7 +83,7 @@ with SessionLocal() as db:
     viewer = models.WebUser(username="policy_user", password_hash=hash_password("pass12345"),
                             is_active=True)
     boss = models.WebUser(username="policy_admin", password_hash=hash_password("pass12345"),
-                          is_active=True, is_staff=True)
+                          is_active=True, is_staff=True, admin_role="super")
     lib = em.Library(guid="p" * 32, name="策略测试库", collection_type="movies", paths="")
     db.add_all([viewer, boss, lib])
     db.commit()

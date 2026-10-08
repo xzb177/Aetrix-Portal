@@ -72,7 +72,7 @@ SECRET_PASSWORD = f"dav-pass-{suf}"
 db = SessionLocal()
 try:
     staff = models.WebUser(username=f"mh_staff{suf}", password_hash=hash_password("pass12345"),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     db.add(staff)
     db.commit()
 
@@ -147,9 +147,16 @@ try:
                   headers={mount_health.PANEL_KEY_HEADER: "wrong-key"}, timeout=30)
     check("密钥错误 → 401", r.status_code == 401, f"HTTP {r.status_code}")
 
+    # S3：SECRET_KEY 原文不再被接受（它是 JWT 根密钥，绝不能出现在请求头里）
     r = httpx.get(f"{ea_url}/api/admin/mounts/health",
-                  headers={mount_health.PANEL_KEY_HEADER: SECRET}, timeout=60)
-    check("共享 SECRET_KEY → 200", r.status_code == 200, f"HTTP {r.status_code}")
+                  headers={mount_health.PANEL_KEY_HEADER: SECRET}, timeout=30)
+    check("SECRET_KEY 原文 → 401（S3）", r.status_code == 401, f"HTTP {r.status_code}")
+
+    from backend import node_auth  # noqa: E402
+
+    _url = f"{ea_url}/api/admin/mounts/health"
+    r = httpx.get(_url, headers=node_auth.signed_headers("GET", _url), timeout=60)
+    check("节点签名（EM 的实际用法）→ 200", r.status_code == 200, f"HTTP {r.status_code}")
     health = r.json() if r.status_code == 200 else {}
     check("如实上报 service=ea", health.get("service") == "ea", str(health.get("service")))
 

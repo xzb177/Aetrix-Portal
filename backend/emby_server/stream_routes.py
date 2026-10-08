@@ -17,7 +17,7 @@ from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server import subtitles as subs
 from backend.emby_server.playback_security import validate_local_file_path
-from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
+from backend.emby_server.auth import get_emby_user, get_play_user, parse_emby_authorization, resolve_token
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
@@ -26,7 +26,7 @@ import os
 
 from backend.emby_server.api import (
     emby_router,
-    _require_item,
+    _require_visible_item,
     video_hls,
     video_stream,
 )
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 @emby_router.get("/emby/Videos/{item_id}/stream.{container}")
 @emby_router.get("/Videos/{item_id}/stream.{container}")
 async def video_stream_container(item_id: str, container: str, request: Request,
-                                 user: models.WebUser = Depends(get_emby_user),
+                                 user: models.WebUser = Depends(get_play_user),
                                  db: Session = Depends(get_db)):
     return await video_stream(item_id, request, user, db)
 
@@ -48,7 +48,7 @@ async def video_stream_container(item_id: str, container: str, request: Request,
 @emby_router.get("/Items/{item_id}/File")
 def item_file(item_id: str, user: models.WebUser = Depends(get_emby_user),
               db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     ensure_playback_allowed(db, user)
     if not item.file_path:
         raise HTTPException(status_code=404, detail="File not found")
@@ -87,7 +87,7 @@ def _subtitle_ordinal(item: em.MediaItem, stream) -> int:
 
 
 def _serve_subtitle(item_id: str, sub_index: str, fmt: str, user, db) -> Response:
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     # 字幕与播放同一门槛，避免非会员绕过付费墙拿到内容文本
     ensure_playback_allowed(db, user)
     stream = _find_subtitle_stream(item, sub_index)
@@ -106,7 +106,7 @@ def _serve_subtitle(item_id: str, sub_index: str, fmt: str, user, db) -> Respons
 @emby_router.get("/Videos/{item_id}/subtitles/{sub_index}/Stream.{fmt}")
 def video_subtitle(item_id: str, sub_index: str, fmt: str, request: Request,
                    media_source_id: str = "",
-                   user: models.WebUser = Depends(get_emby_user),
+                   user: models.WebUser = Depends(get_play_user),
                    db: Session = Depends(get_db)):
     return _serve_subtitle(item_id, sub_index, fmt, user, db)
 
@@ -117,7 +117,7 @@ def video_subtitle(item_id: str, sub_index: str, fmt: str, request: Request,
 @emby_router.get("/Videos/{item_id}/subtitles/{sub_index}/{start_ticks}/Stream.{fmt}")
 def video_subtitle_offset(item_id: str, sub_index: str, start_ticks: str, fmt: str,
                           request: Request, media_source_id: str = "",
-                          user: models.WebUser = Depends(get_emby_user),
+                          user: models.WebUser = Depends(get_play_user),
                           db: Session = Depends(get_db)):
     # 非直播场景忽略时间偏移，直接投递完整字幕
     return _serve_subtitle(item_id, sub_index, fmt, user, db)
@@ -128,7 +128,7 @@ def video_subtitle_offset(item_id: str, sub_index: str, start_ticks: str, fmt: s
 @emby_router.get("/emby/Videos/{item_id}/{transcode_path:path}")
 @emby_router.get("/Videos/{item_id}/{transcode_path:path}")
 async def video_hls_upper(item_id: str, transcode_path: str, request: Request,
-                          user: models.WebUser = Depends(get_emby_user),
+                          user: models.WebUser = Depends(get_play_user),
                           db: Session = Depends(get_db)):
     """Emby 客户端在不同版本混用 /Videos 与 /videos 前缀，补齐大写前缀的通配"""
     return await video_hls(item_id, transcode_path, request, user, db)

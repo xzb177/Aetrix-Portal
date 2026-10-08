@@ -813,6 +813,26 @@ class ExchangeCode(Base):
 
 # ==================== 邀请系统 ====================
 
+class CodeRedemption(Base):
+    """每人每码一次的核销记录（安全修复 H5）
+
+    兑换码 / 卡码的 ``max_uses`` 是**总**次数：此前「100 人份」的公共码同一个账号能一直兑换。
+    这里用 ``(code_kind, code_id, user_id)`` 唯一约束兜底：核销时在**同一事务**里先 INSERT，
+    并发的第二个请求在唯一索引上冲突（PostgreSQL 等第一个提交后报 IntegrityError），
+    直接拒绝，不会发两份奖励。``code_kind``：``exchange`` = ExchangeCode，``reg`` = RegistrationCode。
+    """
+    __tablename__ = 'code_redemptions'
+    __table_args__ = (
+        UniqueConstraint('code_kind', 'code_id', 'user_id', name='uq_code_redemption_user'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code_kind = Column(String(20), nullable=False)
+    code_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class RegistrationCode(Base):
     """卡码表（注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码）
 

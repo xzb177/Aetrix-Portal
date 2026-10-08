@@ -2796,24 +2796,6 @@ def _purge_items(db: Session, item_ids: list) -> None:
     孤儿行；这类行只增不减，追新久了就是几十万条垃圾，也是「跑久了变慢」的来源之一。
     """
     ids = list(item_ids)
-    # 媒体信息 JSON 清理（对标 DeleteMediaInfoJson）：先取 guid 再删库，
-    # 否则删库后算不出 JSON 路径，/data/mediainfo 只增不减
-    try:
-        from types import SimpleNamespace
-        from backend.emby_server import mediainfo_persist as _mip
-        _guids = [
-            r[0] for r in
-            db.query(emby_models.MediaItem.guid)
-            .filter(emby_models.MediaItem.id.in_(ids))
-            .all()
-        ]
-        for _g in _guids:
-            try:
-                _mip.delete_json(SimpleNamespace(guid=_g))
-            except Exception:
-                pass
-    except Exception:
-        pass
     db.query(emby_models.UserMediaData).filter(
         emby_models.UserMediaData.item_id.in_(ids)
     ).delete(synchronize_session=False)

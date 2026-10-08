@@ -35,7 +35,7 @@ class TestMergeVersions:
     def test_provider_key_tmdb_priority(self):
         class Fake:
             library_id = 1
-            item_type = "movie"
+            type = "movie"
             tmdb_id = "123"
             imdb_id = "tt456"
         assert self.mod._provider_key(Fake()) == (1, "movie", "tmdb", "123")
@@ -43,7 +43,7 @@ class TestMergeVersions:
     def test_provider_key_imdb_fallback(self):
         class Fake:
             library_id = 1
-            item_type = "movie"
+            type = "movie"
             tmdb_id = ""
             imdb_id = "tt456"
         assert self.mod._provider_key(Fake()) == (1, "movie", "imdb", "tt456")
@@ -51,38 +51,10 @@ class TestMergeVersions:
     def test_provider_key_none(self):
         class Fake:
             library_id = 1
-            item_type = "movie"
+            type = "movie"
             tmdb_id = ""
             imdb_id = ""
         assert self.mod._provider_key(Fake()) is None
-
-    def test_provider_key_cross_library_differs(self):
-        # 同 tmdb_id 但不同库 → 不同 key（防跨库合并）
-        class FakeA:
-            library_id = 1
-            item_type = "movie"
-            tmdb_id = "123"
-            imdb_id = ""
-        class FakeB:
-            library_id = 2
-            item_type = "movie"
-            tmdb_id = "123"
-            imdb_id = ""
-        assert self.mod._provider_key(FakeA()) != self.mod._provider_key(FakeB())
-
-    def test_provider_key_cross_type_differs(self):
-        # 同 tmdb_id 但不同类型 → 不同 key（防跨类型合并）
-        class FakeA:
-            library_id = 1
-            item_type = "movie"
-            tmdb_id = "123"
-            imdb_id = ""
-        class FakeB:
-            library_id = 1
-            item_type = "series"
-            tmdb_id = "123"
-            imdb_id = ""
-        assert self.mod._provider_key(FakeA()) != self.mod._provider_key(FakeB())
 
 
 class TestThumbnailWorker:

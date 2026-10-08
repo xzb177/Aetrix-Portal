@@ -83,8 +83,25 @@ def thumb_widths() -> list[int]:
 
 def thumb_variant_path(path: str, max_width: int | None = None,
                        max_height: int | None = None) -> str:
-    """缩略图的文件路径（内容寻址：原图 digest + 尺寸，后缀统一 .jpg）"""
+    """缩略图的文件路径（内容寻址：原图 digest + 尺寸，后缀统一 .jpg）
+
+    - 原图在我们自己的图片缓存里（``local_path`` 落下的 ``<sha1>.jpg``）：文件名本身
+      就是内容寻址的 digest，直接沿用；
+    - 原图在缓存**之外**（扫描到的同目录外挂图：``poster.jpg`` / ``folder.jpg`` /
+      ``cover.jpg`` / ``fanart.jpg``……）：文件名在全库里大量重名，绝不能拿来当 digest——
+      否则所有叫 ``poster.jpg`` 的海报共用一张 ``poster_w320.jpg``，先被请求的那部片子的
+      缩略图会发给后面每一部（首页「本周入库」海报与片名对不上就是这么来的）。
+      这里改用「绝对路径 + mtime + 大小」的 sha1：不同条目各有各的缩略图，
+      外挂图被替换后也会自然换新。
+    """
     digest = os.path.basename(path).rsplit(".", 1)[0]
+    if not is_cached_path(path):
+        try:
+            st = os.stat(path)
+            sig = f"{os.path.abspath(path)}|{int(st.st_mtime)}|{st.st_size}"
+        except OSError:
+            sig = os.path.abspath(path)
+        digest = hashlib.sha1(sig.encode("utf-8", "ignore")).hexdigest()
     tag = ""
     if max_width:
         tag += f"_w{max_width}"

@@ -357,7 +357,7 @@ def _node_libraries(db: Session, realm_id: Optional[int], node_id: Optional[int]
 def node_me(db: Session = Depends(get_db)):
     """这台节点是谁、属于哪个服、负责哪些库（面板用它核对 REALM / NODE_KEY 配置）
 
-    鉴权走 ``X-Panel-Key``（= 两端共享的 SECRET_KEY），与挂载体检同一套：
+    鉴权走节点签名 / 节点密钥（``backend/node_auth.py``），与挂载体检同一套：
     EA 上不存在后台会话，这条端点只该由 EM 调用。
     """
     realm_id = self_realm_id(db)
@@ -426,19 +426,22 @@ def start_local_scan(db: Session, lib, force_full: bool = False) -> dict:
 async def _get_node(url: str, path: str, timeout: float = NODE_IO_TIMEOUT) -> dict:
     import httpx
 
-    from backend.emby_server.mount_health import panel_key
+    from backend.node_auth import signed_headers
 
-    key = panel_key()
-    if not key:
-        return {"ok": False, "error": "EM 未配置 SECRET_KEY，无法向节点证明身份"}
     target = f"{(url or '').rstrip('/')}{path}"
+    headers = signed_headers("GET", target)
+    if not headers:
+        return {"ok": False, "error": "EM 未配置 SECRET_KEY / NODE_SHARED_SECRET，无法向节点证明身份"}
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(target, headers={PANEL_KEY_HEADER: key})
+        # S3：只发签名、不跟随重定向
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await client.get(target, headers=headers)
     except Exception as exc:  # noqa: BLE001 — 网络问题只报告，不影响主流程
         return {"ok": False, "error": f"无法连接节点: {exc}"}
+    if 300 <= resp.status_code < 400:
+        return {"ok": False, "error": f"节点返回重定向 HTTP {resp.status_code}（为安全不跟随，请填写最终地址）"}
     if resp.status_code == 401:
-        return {"ok": False, "error": "节点拒绝了面板密钥（两端 SECRET_KEY 必须一致）"}
+        return {"ok": False, "error": "节点拒绝了签名（两端 NODE_SHARED_SECRET / SECRET_KEY 必须一致，且节点需升级）"}
     if resp.status_code >= 400:
         return {"ok": False, "error": f"节点返回 HTTP {resp.status_code}"}
     try:
@@ -463,21 +466,22 @@ async def push_scan(url: str, library_id: int, timeout: float = 20.0,
     """
     import httpx
 
-    from backend.emby_server.mount_health import panel_key
+    from backend.node_auth import signed_headers
 
-    key = panel_key()
-    if not key:
-        return {"ok": False, "error": "EM 未配置 SECRET_KEY，无法让节点执行扫描"}
     target = f"{(url or '').rstrip('/')}/api/admin/nodes/libraries/{int(library_id)}/scan"
+    headers = signed_headers("POST", target)
+    if not headers:
+        return {"ok": False, "error": "EM 未配置 SECRET_KEY / NODE_SHARED_SECRET，无法让节点执行扫描"}
     params = {"full": "true"} if full else None
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.post(target, headers={PANEL_KEY_HEADER: key},
-                                     params=params)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await client.post(target, headers=headers, params=params)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"无法连接节点: {exc}"}
+    if 300 <= resp.status_code < 400:
+        return {"ok": False, "error": f"节点返回重定向 HTTP {resp.status_code}（为安全不跟随）"}
     if resp.status_code == 401:
-        return {"ok": False, "error": "节点拒绝了面板密钥（两端 SECRET_KEY 必须一致）"}
+        return {"ok": False, "error": "节点拒绝了签名（两端 NODE_SHARED_SECRET / SECRET_KEY 必须一致，且节点需升级）"}
     if resp.status_code >= 400:
         try:
             detail = (resp.json() or {}).get("detail")

@@ -67,6 +67,8 @@
   --au-overlay-strong: rgba(12, 10, 9, 0.8);
   /* 下拉菜单 / 浮层：实色 */
   --au-overlay-menu: rgba(23, 20, 18, 0.98);
+  /* 顶栏 / 底部坞的底色：页面底色 0.96，再叠 backdrop-filter——滚过去的内容不再透字 */
+  --au-chrome: rgba(12, 10, 9, 0.96);
   /* 弹窗背后的整屏遮罩 */
   --au-scrim: rgba(0, 0, 0, 0.7);
   /* 纯装饰网格线（已不再用于背景，保留令牌） */
@@ -159,7 +161,8 @@
 
 @media (max-width: 768px) {
   :root {
-    --au-dock-space: calc(58px + env(safe-area-inset-bottom));
+    /* 坞本体约 62px（图标 26 + 标签 + 上下内距）+ iOS 底部安全区 */
+    --au-dock-space: calc(62px + env(safe-area-inset-bottom));
   }
 }
 
@@ -288,6 +291,15 @@ h3,
 }
 
 .au-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 主按钮的禁用态：不做「褪色琥珀」（看起来像坏了），统一成中性表面 + 三级字 */
+.au-btn-primary:disabled {
+  opacity: 1;
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
+  box-shadow: inset 0 0 0 1px var(--au-border);
+  filter: none;
+}
 
 .au-btn-primary {
   background: var(--au-primary);
@@ -556,6 +568,7 @@ html[data-theme='light'] {
   --au-overlay-mid: rgba(28, 25, 21, 0.3);
   --au-overlay-strong: rgba(28, 25, 21, 0.55);
   --au-overlay-menu: rgba(255, 253, 249, 0.98);
+  --au-chrome: rgba(245, 241, 234, 0.96);
   --au-scrim: rgba(28, 25, 21, 0.42);
   --au-grid-line: rgba(28, 25, 21, 0.05);
   --au-track: rgba(28, 25, 21, 0.1);

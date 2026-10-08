@@ -61,7 +61,7 @@ BOB_KEY = "sess-bob"
 with SessionLocal() as db:
     alice = models.WebUser(username="sess-alice", password_hash="not-used", is_active=True)
     bob = models.WebUser(username="sess-bob", password_hash="not-used", is_active=True)
-    staff = models.WebUser(username="sess-staff", password_hash="not-used", is_active=True, is_staff=True)
+    staff = models.WebUser(username="sess-staff", password_hash="not-used", is_active=True, is_staff=True, admin_role="super")
     db.add_all([alice, bob, staff])
     db.commit()
     for u in (alice, bob, staff):

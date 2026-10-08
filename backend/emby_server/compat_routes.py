@@ -56,7 +56,7 @@ from backend.emby_server.api import (
     item_guid_for,
     _policy_dto,
     _query_result,
-    _require_item,
+    _require_visible_item,
     _user_data_dto,
     user_views,
 )
@@ -150,7 +150,7 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
 
 
 def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
-    item = _require_item(db, body.get("ItemId") or "")
+    item = _require_visible_item(db, user, body.get("ItemId") or "")
     session, _wrote = _upsert_session(db, request, user, item, body)
     if session is None:
         # 被防共享拦下（session 返回 None = 不建会话）
@@ -161,7 +161,7 @@ def _record_playing(request: Request, user: models.WebUser, db: Session, body: d
 
 
 def _record_progress(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
-    item = _require_item(db, body.get("ItemId") or "")
+    item = _require_visible_item(db, user, body.get("ItemId") or "")
     _session, wrote = _upsert_session(db, request, user, item, body)
     if _session is None:
         # 被拦下的会话：库里没有它，也没有观看进度可写，直接告诉客户端
@@ -200,7 +200,7 @@ def _record_progress(request: Request, user: models.WebUser, db: Session, body: 
 
 
 def _record_stopped(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
-    item = _require_item(db, body.get("ItemId") or "")
+    item = _require_visible_item(db, user, body.get("ItemId") or "")
     _upsert_session(db, request, user, item, body, ended=True)
 
 
@@ -383,7 +383,7 @@ def set_user_policy(user_id: str, user: models.WebUser = Depends(get_emby_user))
 # ---- 收藏的规范路由（客户端除 Rating 外还会直接调 FavoriteItems）----
 
 def _set_favorite(db: Session, user: models.WebUser, item_id: str, value: bool) -> dict:
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     umd = db.query(em.UserMediaData).filter(
         em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
     ).first()
@@ -424,7 +424,7 @@ def remove_favorite(item_id: str, user_id: str,
 def similar_items(item_id: str, request: Request,
                   user: models.WebUser = Depends(get_emby_user),
                   db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     genres = [g for g in (item.genres or "").split(",") if g]
     if not genres:
         return _empty_items()
@@ -457,7 +457,7 @@ def similar_items(item_id: str, request: Request,
 def item_ancestors(item_id: str, request: Request,
                    user: models.WebUser = Depends(get_emby_user),
                    db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     chain: list = []
     seen: set = set()
     if item.item_type == "episode" and item.parent is not None:

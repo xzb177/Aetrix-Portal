@@ -43,6 +43,8 @@ from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_line
 from backend.emby_server import play_sign
 from backend.emby_server import soft_delete
+from backend.emby_server import title_beautify
+from backend.emby_server import missing_episodes as _missing_episodes
 from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
@@ -492,8 +494,22 @@ def _item_etag(item: em.MediaItem) -> str:
     return hashlib.md5(raw.encode("utf-8", "ignore")).hexdigest()
 
 
+def _display_name(item: em.MediaItem, series_names: dict | None = None) -> str:
+    """展示用标题：分集走标题美化（占位/垃圾名友好化），其他类型原样。
+
+    纯展示层（StrmAssistant 对标），不写库、不调外部 API，默认生效。
+    """
+    if item.item_type == "episode":
+        series_name = (series_names or {}).get(item.series_id) if item.series_id else None
+        return title_beautify.beautify_episode_title(
+            item.name, item.file_path, item.season_number,
+            item.episode_number, series_name)
+    return item.name or ""
+
+
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
-              api_key: str = "") -> dict:
+              api_key: str = "", auth_qs: str = "",
+              series_names: dict | None = None) -> dict:
     download_ok = _download_ok(db)
     prefetch = _prefetched(db)
     umd = prefetch.get("umd", {}).get(item.id)
@@ -506,7 +522,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
     # 对标 FakEmby/官方 Emby：数组/map 字段必须发 []/{}, 不能省略也不能 null。
     # 三方客户端（SenPlayer/Lenna）对这些字段裸调 .length/.filter，null 直接崩。
     dto = {
-        "Name": item.name or "",
+        "Name": _display_name(item, series_names),
         "SortName": item.sort_name or item.name or "",
         "Id": item.guid,
         "ServerId": SERVER_ID,
@@ -757,7 +773,12 @@ def _user_data_dto(umd, item_id: str = "") -> dict:
 
 
 def _bearer_raw(request: Request) -> str:
-    """提取原始 Bearer 值（JWT 或客户端 token），用于拼接 api_key 查询参数"""
+    """提取原始 Bearer 值（JWT 或客户端 token）
+
+    注意（H2）：**不要**把返回值直接拼进 URL——它可能是门户 / 管理员 JWT。
+    需要放进 URL 的凭据一律走 ``_api_key_for``（只回显 Emby 客户端 token）或
+    ``_url_auth_qs``（门户 JWT 换成短期播放签名）。
+    """
     raw = request.headers.get("Authorization", "")
     if raw.lower().startswith("bearer "):
         return raw[7:].strip()
@@ -830,7 +851,8 @@ def _external_urls(item: em.MediaItem) -> list:
     return urls
 
 
-def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = None) -> dict:
+def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = None,
+                auth_qs: str = "") -> dict:
     # ffprobe 的 video stream 经常不单独给 bitrate（尤其是远程 HEVC 文件），
     # 但条目级 probe 已经有可靠的总 bitrate / 分辨率。不能把 0 映射成客户端的
     # 「1kbps」假数据，也不能把 3840×1920 丢掉。
@@ -877,9 +899,10 @@ def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = No
         dto["DeliveryMethod"] = "External"
         if text_track:
             # 客户端靠 DeliveryUrl 发现字幕地址；缺失会表现为“服务器无字幕”
+            # 鉴权查询串：显式给了 auth_qs（门户 → 播放签名）就用它，否则沿用 Emby 的 api_key
             delivery = (
                 f"{base}/emby/Videos/{item.guid}/{item.guid}"
-                f"/Subtitles/{s.stream_index}/Stream.vtt?api_key={api_key}"
+                f"/Subtitles/{s.stream_index}/Stream.vtt?{auth_qs or f'api_key={api_key}'}"
             )
             # CDN 预留（第 2/3 层）：启用时字幕也走 CDN 域名（回源到本服务）
             if db is not None:
@@ -925,7 +948,8 @@ def _container_of(item: em.MediaItem) -> Optional[str]:
     return None
 
 
-def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None) -> dict:
+def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
+                  auth_qs: str = "") -> dict:
     dto = {
         "Id": item.guid,
         "Name": item.name,
@@ -960,7 +984,7 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         "MediaAttachments": [],
         "RequiredHttpHeaders": {},
         "DefaultSubtitleStreamIndex": _default_subtitle_index(item),
-        "MediaStreams": [_stream_dto(s, base, item, api_key, db) for s in item.streams],
+        "MediaStreams": [_stream_dto(s, base, item, api_key, db, auth_qs) for s in item.streams],
     }
     # 文件名解析的视频信息（v2.49.0）：MediaStreams 为空时客户端「媒体信息」页
     # 也有编码可显示；有流信息时以流为准（这里只是回退）。
@@ -975,9 +999,33 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
 
 
 def _require_item(db: Session, item_id: str) -> em.MediaItem:
+    """按 guid 取条目（**不做**可见范围判断）
+
+    协议端点（按用户取条目的地方）一律用 ``_require_visible_item``；直接调用本函数的
+    协议端点会被 ``scripts/check_item_scope.py`` 护栏拦下（安全修复 H1）。
+    """
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    return item
+
+
+def _item_visible(db: Session, user, item) -> bool:
+    """条目所在媒体库对该用户可见吗（口径与列表 / 浏览的 ``_library_scope`` 完全一致）"""
+    allowed = _library_scope(db, user)
+    return allowed is None or getattr(item, "library_id", None) in allowed
+
+
+def _require_visible_item(db: Session, user, item_id: str) -> em.MediaItem:
+    """按 guid 取条目 + 媒体库可见范围校验（安全修复 H1）
+
+    所有「按条目 id 取东西」的协议端点（详情、PlaybackInfo、直放、HLS、拉文件、下载、字幕、
+    季 / 集、相似、祖先、收藏 / 已看 / 评分、播放进度上报）统一走这里：
+    guid 可由路径推算（``md5("rb:item:" + path)``），不能当作访问凭据。
+    """
+    item = _require_item(db, item_id)
+    if not _item_visible(db, user, item):
+        raise HTTPException(status_code=403, detail="Library not accessible")
     return item
 
 
@@ -1368,13 +1416,58 @@ def _query_result(items: list, user: models.WebUser, db: Session, base: str) -> 
 
 
 def _api_key_for(db: Session, request: Request) -> str:
-    """拼接播放/字幕地址用的 api_key：回显请求中的原始 token。
+    """拼接播放/字幕地址用的 api_key：回显请求中的 **Emby 客户端 token**（URL 编码后）。
 
     注意：不能用库里的 token 字段——P1 #200 后库中只存 SHA256 哈希，
     把哈希拼进 URL 会导致服务端二次哈希校验失败（401）。
-    调用方已鉴权，这里只做透传。
+
+    安全修复 H2：门户 / 管理员 **JWT 绝不回显进 URL**（会落进反代 / CDN 日志、浏览器历史、
+    Referer）。请求凭据是 JWT 时返回空串，调用方改用 ``_url_auth_qs`` 的短期播放签名。
+    第三方 Emby 客户端（Infuse 等）本来就把自己的 token 放在 ``api_key`` 里，保持兼容。
     """
-    return _token_from_request(request) or _bearer_raw(request)
+    import urllib.parse as _up
+
+    from backend.security import resolve_jwt_user_id
+
+    raw = (_token_from_request(request) or _bearer_raw(request) or "").strip()
+    if not raw or resolve_jwt_user_id(raw) is not None or raw.count(".") == 2:
+        return ""
+    return _up.quote(raw, safe="")
+
+
+# 门户（JWT）播放地址的签名有效期：网页端暂停 / 切片请求可能拖很久，默认 6 小时。
+# 签名只绑定「这个用户 + 这一部片」，泄露的影响远小于整把 JWT（含管理员 JWT）。
+PLAY_SIGN_URL_TTL = int(os.getenv("PLAY_SIGN_URL_TTL", "21600") or 21600)
+
+
+def _url_auth_qs(db: Session, request: Request, user, item_guid: str) -> str:
+    """放进播放 / 字幕 / HLS 地址的鉴权查询串（不含前导 ``?`` / ``&``）
+
+    - 请求带的是 Emby 客户端 token：``api_key=<token>``（Emby 协议兼容，第三方客户端依赖它）；
+    - 否则（门户 JWT / 管理员 JWT）：``uid&exp&sign`` 短期播放签名（``play_sign``），
+      JWT 不进 URL（H2）。
+    """
+    key = _api_key_for(db, request)
+    if key:
+        return f"api_key={key}"
+    exp, sig = play_sign.issue_play_sign(user.id, item_guid, PLAY_SIGN_URL_TTL)
+    return f"uid={user.id}&exp={exp}&sign={sig}"
+
+
+def _echo_auth_qs(request: Request) -> str:
+    """HLS 子请求（变体 / 切片）沿用本次请求的凭据：签名原样带下去，Emby token 回显，JWT 丢弃"""
+    import urllib.parse as _up
+
+    # Emby 客户端 token 优先：它与升级前完全一致（切片可能在 15 分钟签名过期后才请求）
+    key = _api_key_for(None, request)
+    if key:
+        return f"api_key={key}"
+    q = request.query_params
+    if q.get("sign") and q.get("exp") and q.get("uid"):
+        return "uid={}&exp={}&sign={}".format(
+            _up.quote(q.get("uid"), safe=""), _up.quote(q.get("exp"), safe=""),
+            _up.quote(q.get("sign"), safe=""))
+    return ""
 
 
 def _policy_dto(user: models.WebUser) -> dict:
@@ -2387,7 +2480,7 @@ def get_item_detail(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     # 按需探测：缺媒体信息的电影/剧集入队，后台限流探测，不阻塞详情页（v2.51.0）
     try:
         from backend.emby_server import probe_worker
@@ -2395,7 +2488,7 @@ def get_item_detail(
     except Exception:  # noqa: BLE001 — 入队失败不影响详情页
         pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
-                     api_key=_api_key_for(db, request))
+                     auth_qs=_url_auth_qs(db, request, user, item.guid))
 
 
 def _season_belongs_to(season: em.MediaItem, show: em.MediaItem) -> bool:
@@ -2420,7 +2513,7 @@ def _season_belongs_to(season: em.MediaItem, show: em.MediaItem) -> bool:
 def get_seasons(item_id: str, request: Request,
                       user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     seasons = (
         db.query(em.MediaItem)
         .filter(em.MediaItem.series_id == item.id, em.MediaItem.item_type == "season")
@@ -2438,7 +2531,7 @@ def get_seasons(item_id: str, request: Request,
 def get_episodes(item_id: str, request: Request,
                        user: models.WebUser = Depends(get_emby_user),
                        db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     season_id = request.query_params.get("SeasonId")
     # 系统性去重合并：该剧在不同路径可能有多条 series 记录，集数合并展示
     series_ids = [item.id]
@@ -2477,8 +2570,36 @@ def get_episodes(item_id: str, request: Request,
     episodes = deduped
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
-    return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
+    # 分集标题美化：一次查出相关剧名（单条查询，供文件名去剧名前缀用）
+    series_names: dict[int, str] = {}
+    try:
+        _sids = {e.series_id for e in episodes if e.series_id}
+        if _sids:
+            for _sid, _sname in db.query(
+                    em.MediaItem.id, em.MediaItem.name).filter(
+                    em.MediaItem.id.in_(_sids)).all():
+                series_names[_sid] = _sname or ""
+    except Exception:
+        series_names = {}
+    return {"Items": [_item_dto(e, base, user.id, db, series_names=series_names)
+                      for e in episodes],
             "TotalRecordCount": len(episodes), "StartIndex": 0}
+
+
+@emby_router.get("/emby/Shows/{item_id}/MissingEpisodes")
+@emby_router.get("/Shows/{item_id}/MissingEpisodes")
+def get_missing_episodes(item_id: str,
+                         user: models.WebUser = Depends(get_emby_user),
+                         db: Session = Depends(get_db)):
+    """缺失集数（StrmAssistant 对标）：本地集 vs TMDB 预期集。
+
+    轻量通用能力：纯计算，只读磁盘缓存，零网络请求、无后台任务，默认生效。
+    优先用用户选定的剧集组（有缓存时），否则用 TMDB TV 详情（有缓存时）。
+    """
+    item = _require_visible_item(db, user, item_id)
+    if item.item_type != "series":
+        raise HTTPException(status_code=400, detail="Not a series")
+    return _missing_episodes.compute_missing(db, item)
 
 
 @emby_router.get("/emby/Shows/NextUp")
@@ -2650,7 +2771,7 @@ async def rate_item(
 
     def _rate() -> dict:
         """收藏 / 标记已看：读条目、读写 UserMediaData、序列化都不在循环上"""
-        item = _require_item(db, item_id)
+        item = _require_visible_item(db, user, item_id)
         umd = db.query(em.UserMediaData).filter(
             em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
         ).first()
@@ -2675,7 +2796,7 @@ async def rate_item(
 def mark_played(item_id: str, user_id: str,
                       user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     umd = db.query(em.UserMediaData).filter(
         em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
     ).first()
@@ -2695,7 +2816,7 @@ def mark_played(item_id: str, user_id: str,
 def mark_unplayed(item_id: str, user_id: str,
                         user: models.WebUser = Depends(get_emby_user),
                         db: Session = Depends(get_db)):
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     umd = db.query(em.UserMediaData).filter(
         em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
     ).first()
@@ -2741,7 +2862,8 @@ async def playback_info(
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     # 所有碰 DB 的同步 helper 都经 run_db 扔线程池。
     from backend.emby_server.async_db import run_db
-    item = await run_db(_require_item, db, item_id)
+    # H1：PlaybackInfo 同样要过可见范围（此前只校验了付费墙）
+    item = await run_db(_require_visible_item, db, user, item_id)
     # 开箱即用播放优化：移动端 4K 透明降级（只此一处实现）。
     # 手机屏看 4K 与 1080p 肉眼无差，但带宽差数倍；同部片有 ≤1080p 版本
     # 时直接给低版本，客户端无感，不用转码、不用用户手动切。
@@ -2751,7 +2873,7 @@ async def playback_info(
             _pt.maybe_downgrade_for_client, item,
             request.headers.get("user-agent"), db,
         )
-        if _downgraded is not None:
+        if _downgraded is not None and await run_db(_item_visible, db, user, _downgraded):
             item = _downgraded
     except Exception:  # noqa: BLE001
         pass
@@ -2759,14 +2881,6 @@ async def playback_info(
     await run_db(ensure_playback_allowed, db, user)
     # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
-    # 按需探测（v2.49.0）：库里没有时长时，播放瞬间才探测这一个文件。
-    # 后台批量探测已下线（烧 Drive 配额）。线程池跑、不占事件循环，整体
-    # 超时 12 秒；失败/超时直接跳过，不影响播放。写回 DB 后下次不再探。
-    if not item.duration_ticks and item.file_path:
-        _ticks = await _probe_duration_on_demand(item.file_path)
-        if _ticks:
-            await run_db(_save_duration_ticks, db, item.guid, _ticks)
-            item.duration_ticks = _ticks
     # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
     try:
         from backend.emby_server import probe_worker
@@ -2828,8 +2942,8 @@ async def playback_info(
     else:
         media_source = cached_source
     direct = item.bitrate and item.bitrate <= max_bitrate
-    # api_key：优先 Emby 客户端 token；JWT 访问时（网页端）直接把 JWT 作为 api_key，
-    # 流媒体端点（stream/master.m3u8/切片）均可通过 JWT 回退鉴权
+    # api_key：只回显 Emby 客户端 token（第三方客户端兼容）。
+    # 安全修复 H2：门户 / 管理员 JWT 不再进 URL——网页端只拿短期播放签名（uid/exp/sign）。
     api_key = _api_key_for(db, request)
     # CDN 预留（第 2/3 层）：启用时播放面 URL 换 CDN 域名（回源到本服务，
     # 鉴权查询串原样透传；CDN 侧的缓存规则由管理员配置）。线路选择里选了
@@ -2839,13 +2953,22 @@ async def playback_info(
     use_cdn = user_wants_cdn or await run_db(cdn.enabled, db)
     # 播放短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带 uid/exp/sign，
     # 播放端点优先验签。签名 15 分钟过期、绑定 user_id+item_id，泄露后窗口极小。
-    play_exp, play_sig = play_sign.issue_play_sign(user.id, item.guid)
+    play_exp, play_sig = play_sign.issue_play_sign(
+        user.id, item.guid, play_sign.SIGN_TTL_SECONDS if api_key else PLAY_SIGN_URL_TTL)
     signed_qs = f"&uid={user.id}&exp={play_exp}&sign={play_sig}"
+    key_qs = f"&api_key={api_key}" if api_key else ""
+    # 字幕 DeliveryUrl：缓存里的 media_source 不带凭据（不能把别人的凭据缓存出去），
+    # 这里按本次请求补上——Emby 客户端补 api_key，门户（JWT）补播放签名，JWT 不进 URL（H2）
+    sub_auth = f"api_key={api_key}" if api_key else f"uid={user.id}&exp={play_exp}&sign={play_sig}"
+    for _st in media_source.get("MediaStreams") or []:
+        _du = _st.get("DeliveryUrl") if isinstance(_st, dict) else None
+        if _du and _du.endswith("?api_key="):
+            _st["DeliveryUrl"] = _du[: -len("api_key=")] + sub_auth
     stream_url = (
-        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}&api_key={api_key}{signed_qs}"
+        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}"
     )
     transcoding_url = (
-        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}&api_key={api_key}{signed_qs}"
+        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}{key_qs}{signed_qs}"
     )
     # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
     # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
@@ -2923,16 +3046,13 @@ async def video_stream(
 ):
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     from backend.emby_server.async_db import run_db
-    item = await run_db(_require_item, db, item_id)
+    # 安全修复（P0 / H1）：条目必须在用户可见的库范围内（统一 helper）
+    item = await run_db(_require_visible_item, db, user, item_id)
     # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token / JWT）
     await run_db(ensure_playback_allowed, db, user)
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）
     await run_db(play_sign.check_referer, request, db)
-    # P0 安全修复：检查条目是否在用户可见的库范围内
-    allowed_libs = await run_db(_library_scope, db, user)
-    if allowed_libs is not None and getattr(item, "library_id", None) not in allowed_libs:
-        raise HTTPException(status_code=403, detail="Library not accessible")
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     target = await run_db(_play_target, db, item)
     if target.kind == "url":
@@ -3001,18 +3121,16 @@ async def video_hls(
 ):
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     from backend.emby_server.async_db import run_db
-    item = await run_db(_require_item, db, item_id)
-    # P0 安全修复：检查条目是否在用户可见的库范围内
-    allowed_libs = await run_db(_library_scope, db, user)
-    if allowed_libs is not None and getattr(item, "library_id", None) not in allowed_libs:
-        raise HTTPException(status_code=403, detail="Library not accessible")
+    # 安全修复（P0 / H1）：条目必须在用户可见的库范围内（统一 helper）
+    item = await run_db(_require_visible_item, db, user, item_id)
     base = _base_url(request)
     q = request.query_params
 
     # 已存在的转码会话：直接回放列表/切片
     # 注意：切片请求走 session 票据校验（HLS 播放器无法对切片附加 api_key），
     # 会话本身只在建立转码（master.m3u8 首次请求）时经过完整鉴权创建。
-    api_key = _api_key_for(db, request)
+    # H2：子请求沿用本次请求的签名 / Emby token；门户 JWT 不回显进播放列表
+    auth_qs = _echo_auth_qs(request)
     existing = q.get("session")
     if existing and get_transcode(existing):
         info = get_transcode(existing)
@@ -3028,7 +3146,7 @@ async def video_hls(
                 if not transcode_alive(existing):
                     raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
                 raise HTTPException(status_code=504, detail="转码尚未产出播放列表")
-            content = _rewrite_playlist(info["dir"], base, item.guid, existing, api_key, db)
+            content = _rewrite_playlist(info["dir"], base, item.guid, existing, db=db, auth_qs=auth_qs)
             return Response(
                 content, media_type="application/vnd.apple.mpegurl",
                 # 播放列表绝不进 CDN/浏览器缓存：内容随时变（会话回收后失效）
@@ -3118,9 +3236,12 @@ async def video_hls(
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
     # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
     # CDN 预留（第 2/3 层）：启用时变体/切片都走 CDN 域名（回源本服务）。
+    if not auth_qs:
+        # 首次请求是 header 里的 JWT（无签名 / 无 Emby token）：给子请求签一把短期播放签名
+        auth_qs = _url_auth_qs(db, request, user, item.guid)
     variant_url = (
         f"{base}/emby/videos/{item.guid}/main.m3u8"
-        f"?session={session_id}&api_key={urllib.parse.quote(api_key)}"
+        f"?session={session_id}&{auth_qs}"
     )
     if await run_db(cdn.enabled, db):
         variant_url = cdn.rewrite_url(db, variant_url, base)
@@ -3131,7 +3252,7 @@ async def video_hls(
 
 
 def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,  # noqa: D401
-                     api_key: str = "", db: Session = None) -> str:
+                     api_key: str = "", db: Session = None, auth_qs: str = "") -> str:
     """重写 ffmpeg 播放列表：切片指向本服务，并带上 session 票据与 api_key
 
     不带 api_key 时播放器对切片子请求不会附加认证头，会直接 401。
@@ -3143,7 +3264,10 @@ def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id:
         return "#EXTM3U\n"
     with open(master, "r", encoding="utf-8", errors="ignore") as f:
         content = f.read()
-    suffix = f"&api_key={urllib.parse.quote(api_key)}" if api_key else ""
+    if auth_qs:
+        suffix = f"&{auth_qs}"
+    else:
+        suffix = f"&api_key={urllib.parse.quote(api_key)}" if api_key else ""
     seg_base = base
     if db is not None and cdn.enabled(db):
         seg_base = cdn.origin_base(db, base)

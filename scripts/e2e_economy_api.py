@@ -52,7 +52,7 @@ from backend.database import SessionLocal
 from backend.security import hash_password
 
 db = SessionLocal()
-admin = models.WebUser(username=f"api_admin{suf}", password_hash=hash_password("admin12345"), is_staff=True)
+admin = models.WebUser(username=f"api_admin{suf}", password_hash=hash_password("admin12345"), is_staff=True, admin_role="super")
 db.add(admin)
 db.commit()
 db.refresh(admin)

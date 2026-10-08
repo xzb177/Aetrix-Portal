@@ -32,7 +32,8 @@ class TestLibraryScopeStreamGuard:
         assert _blocked({1, 2, 3}, getattr(FakeItem(), "library_id", None))
 
     def test_fix_present_in_api(self):
-        """修复代码已写入 api.py 的两个播放端点"""
+        """两个播放端点都经统一 helper 做库范围校验（H1：_require_visible_item）"""
         with open("backend/emby_server/api.py", encoding="utf-8") as f:
             content = f.read()
-        assert content.count("P0 安全修复") == 2
+        assert content.count("P0 / H1") == 2
+        assert content.count("await run_db(_require_visible_item, db, user, item_id)") >= 3

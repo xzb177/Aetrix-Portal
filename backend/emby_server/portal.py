@@ -16,8 +16,10 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -219,22 +221,28 @@ def ensure_emby_backend_available(request: Request, db: Session = Depends(get_db
         raise HTTPException(status_code=503, detail="分离部署的 EA 尚未连接成功，请先部署 EA 并在后台「服务器」页添加它为后端服")
 
 
+_admin_bearer = HTTPBearer(auto_error=False)
+
+
 def require_staff(
     request: Request,
-    user: models.WebUser = Depends(get_admin_or_emby_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_admin_bearer),
+    db: Session = Depends(get_db),
     _: None = Depends(ensure_emby_backend_available),
 ) -> models.WebUser:
     """管理端鉴权：仅 is_staff 用户可访问（/api/admin/emby/* 全部端点）
 
-    与 ``/api/admin/*`` 用同一套角色判定（backend/admin_roles.py）：只读角色不能扫描 /
+    安全修复 H3：与 ``/api/admin/*`` 的 ``get_current_admin`` **完全同一口径**——
+    只接受 ``Authorization: Bearer <access JWT>``；不再接受 Emby 客户端 token
+    （管理员在 Infuse 里登录后的 30 天 token 不能再调媒体库删除 / 挂载 / 115 Cookie），
+    也不接受 URL 查询串里的 ``?api_key=``。
+
+    角色判定同 ``/api/admin/*``（backend/admin_roles.py）：只读角色不能扫描 /
     改库 / 删条目这些写操作，否则「只读」在这个路由上是假的。
     """
-    from backend import admin_roles
+    from backend.api.admin_core import get_current_admin
 
-    if not user.is_staff:
-        raise HTTPException(status_code=403, detail="需要管理员权限")
-    admin_roles.ensure_admin_allowed(request, user)
-    return user
+    return get_current_admin(request, credentials, db)
 
 
 user_emby_router = APIRouter(
@@ -598,9 +606,14 @@ def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_emby_u
 @user_emby_router.post("/favorites/{item_id}")
 def toggle_favorite(item_id: str, request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
+    from backend.emby_server.api import _item_visible
+
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="条目不存在")
+    # H1：不可见库里的条目不能收藏（否则可借此确认 / 读取隐藏条目）
+    if not _item_visible(db, request_user, item):
+        raise HTTPException(status_code=403, detail="该条目所在媒体库对你不可见")
     umd = db.query(em.UserMediaData).filter(
         em.UserMediaData.user_id == request_user.id, em.UserMediaData.item_id == item.id
     ).first()
@@ -1765,7 +1778,7 @@ async def scan_library_endpoint(lib_id: int, full: bool = False,
             raise HTTPException(
                 status_code=502,
                 detail=f"这个库归「{target['name']}」扫描，但转发失败了：{forward.get('error')}"
-                "（请检查该节点的地址与两端 SECRET_KEY）",
+                "（请检查该节点的地址、两端 SECRET_KEY / NODE_SHARED_SECRET 是否一致，节点是否已升级）",
             )
         return {"success": True, "message": f"已让节点「{target['name']}」开始扫描",
                 "forwarded_to": target, "library_id": lib_id}

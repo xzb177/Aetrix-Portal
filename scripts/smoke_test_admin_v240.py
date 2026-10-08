@@ -38,7 +38,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 # ---------- 造数据 ----------
 db = SessionLocal()
-admin = models.WebUser(username=f"adm{suf}", password_hash=hash_password("admin12345"), is_staff=True)
+admin = models.WebUser(username=f"adm{suf}", password_hash=hash_password("admin12345"), is_staff=True, admin_role="super")
 target = models.WebUser(username=f"usr{suf}", password_hash=hash_password("user12345"), points=320)
 invitee = models.WebUser(username=f"inv{suf}", password_hash=hash_password("user12345"))
 plan = models.SubscriptionPlan(

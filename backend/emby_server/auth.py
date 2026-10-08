@@ -187,10 +187,11 @@ def resolve_request_user(db: Session, request: Request) -> Optional[models.WebUs
     if resolved is not None:
         return resolved[0]
 
+    # H2：门户 JWT 只认请求头，不认 URL 里的 ?api_key=<JWT>（URL 会进日志 / 历史 / Referer）
     raw = (
         request.headers.get("X-Emby-Token")
         or request.headers.get("X-MediaBrowser-Token")
-        or request.query_params.get("api_key", "")
+        or ""
     )
     auth = request.headers.get("Authorization") or ""
     if auth.lower().startswith("bearer "):
@@ -237,10 +238,12 @@ def get_emby_user(
     if result is None:
         result = resolve_token(db, request)
     if result is None:
-        # 回退：门户 JWT（Authorization: Bearer <jwt> 或 ?api_key=<jwt>）
+        # 回退：门户 JWT（只认 Authorization: Bearer <jwt> / X-Emby-Token 请求头）。
+        # H2：不再接受 ?api_key=<JWT>——服务端与前端都不再把 JWT 放进 URL，
+        # 网页端播放 / 字幕 / HLS 地址改用短期播放签名（uid/exp/sign，见 get_play_user）。
+        # 第三方 Emby 客户端在 ?api_key= 里带的是 Emby token，走上面的 resolve_token，不受影响。
         raw = (
             (credentials.credentials if credentials else None)
-            or request.query_params.get("api_key", "")
             or request.headers.get("X-Emby-Token", "")
         )
         if raw:
@@ -277,10 +280,8 @@ def get_admin_or_emby_user(request: Request, db: Session = Depends(get_db)) -> m
     「纯数字即 user_id」的旧版兼容分支已彻底移除：它让任何人只要猜到一个小整数
     就能冒充任意用户，且历史部署里曾被默认开启。
     """
-    raw = (
-        request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        or request.query_params.get("api_key", "")
-    )
+    # H2：JWT 只从 Authorization 头取，URL 查询串里的 JWT 一律不认
+    raw = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     if raw:
         from backend.security import resolve_jwt_user_id
 

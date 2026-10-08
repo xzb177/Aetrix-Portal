@@ -36,7 +36,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 # ---------- 造数据 ----------
 db = SessionLocal()
-staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("staff12345"), is_staff=True)
+staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("staff12345"), is_staff=True, admin_role="super")
 vip = models.WebUser(username=f"vip{suf}", password_hash=hash_password("pass12345"))
 expired = models.WebUser(username=f"exp{suf}", password_hash=hash_password("pass12345"))
 plain = models.WebUser(username=f"pln{suf}", password_hash=hash_password("pass12345"))

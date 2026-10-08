@@ -181,7 +181,7 @@ from backend.main import app  # noqa: E402
 
 suf = str(random.randint(100000, 999999))
 db = SessionLocal()
-db.add(models.WebUser(username=f"migadm{suf}", password_hash=hash_password("admin12345"), is_staff=True))
+db.add(models.WebUser(username=f"migadm{suf}", password_hash=hash_password("admin12345"), is_staff=True, admin_role="super"))
 db.commit()
 db.close()
 

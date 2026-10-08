@@ -276,6 +276,42 @@ def find_reg_code(db: Session, raw: str) -> Optional[models.RegistrationCode]:
     )
 
 
+REDEMPTION_KIND_REG = "reg"
+REDEMPTION_KIND_EXCHANGE = "exchange"
+
+
+def user_already_redeemed(db: Session, kind: str, code, user_id: int) -> bool:
+    """这个用户是否已经用过这张码（H5）：核销记录表 + 升级前留在 ``used_by`` 里的审计"""
+    if user_id is None:
+        return False
+    hit = db.query(models.CodeRedemption.id).filter(
+        models.CodeRedemption.code_kind == kind,
+        models.CodeRedemption.code_id == code.id,
+        models.CodeRedemption.user_id == user_id,
+    ).first()
+    if hit is not None:
+        return True
+    used = {i.strip() for i in str(getattr(code, "used_by", "") or "").split(",") if i.strip()}
+    return str(user_id) in used
+
+
+def record_redemption(db: Session, kind: str, code_id: int, user_id: int) -> bool:
+    """在当前事务里登记「这个人用过这张码」；唯一约束冲突（已用过 / 并发重复提交）返回 False
+
+    冲突时会 ``rollback`` 整个事务（SQLite 的 SAVEPOINT 不可靠，不做嵌套事务）；
+    调用方拿到 False 必须直接拒绝，不要再继续写。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    db.add(models.CodeRedemption(code_kind=kind, code_id=code_id, user_id=user_id))
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        return False
+    return True
+
+
 def claim_code(db: Session, code: models.RegistrationCode, user_id: int) -> bool:
     """**原子占位**一次卡码消耗：抢不到（已停用 / 过期 / 用尽）返回 False
 
@@ -289,6 +325,11 @@ def claim_code(db: Session, code: models.RegistrationCode, user_id: int) -> bool
     （见 ``grant_membership_days``），调用方提交前崩溃时两者一起回滚，
     不会留下「码烧了、会员没到账」或「会员到账、码还能再用」。
     """
+    # H5：同一个人同一张码最多一次——先在本事务里登记（唯一约束），冲突即拒绝
+    if user_already_redeemed(db, REDEMPTION_KIND_REG, code, user_id):
+        return False
+    if not record_redemption(db, REDEMPTION_KIND_REG, code.id, user_id):
+        return False
     now = datetime.now()
     claimed = (
         db.query(models.RegistrationCode)
@@ -463,6 +504,8 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
 
     # 先原子占位再发奖：并发提交同一张卡码时只有一个请求能拿到那一行（见 claim_code）。
     # 抢不到 = 这张码在这次请求之前已经被用掉，如实告诉用户，不发天数。
+    if user_already_redeemed(db, REDEMPTION_KIND_REG, code, user.id):
+        return {"success": False, "message": "你已经使用过这张卡码（每个账号每张码限用一次）"}
     if not claim_code(db, code, user.id):
         return {"success": False, "message": "卡码已被使用"}
 

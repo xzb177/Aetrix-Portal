@@ -196,7 +196,7 @@ export interface EmbyMediaSource {
     IsExternal?: boolean
     IsTextSubtitleStream?: boolean
     IsDefault?: boolean
-    /** 字幕轨的可直取地址（服务端已附 api_key） */
+    /** 字幕轨的可直取地址（服务端已附短期播放签名） */
     DeliveryUrl?: string
   }>
   DefaultSubtitleStreamIndex?: number | null
@@ -386,7 +386,7 @@ export const embyApi = {
     return ud
   },
 
-  /** 播放信息（返回带 api_key 的直连 / HLS 地址） */
+  /** 播放信息（返回带短期播放签名 uid/exp/sign 的直连 / HLS 地址；JWT 不进 URL） */
   async getPlaybackInfo(itemId: string): Promise<{ MediaSources: EmbyMediaSource[]; PlaySessionId: string }> {
     return embyPost<{ MediaSources: EmbyMediaSource[]; PlaySessionId: string }>(
       `/emby/Items/${itemId}/PlaybackInfo`,
@@ -435,17 +435,30 @@ function positionTicks() {
  * 必须是 EA 绝对/前缀地址。以前这里返回同源 /emby/...，在分离部署下打到 EM，
  * 图片 404 —— 就是首页那些只剩编号、没有封面的卡片的来源。
  */
-export function posterUrl(item: EmbyItem, maxWidth = 320): string {
-  if (!item.ImageTags?.Primary) return ''
-  const token = localStorage.getItem('access_token') || ''
-  return `${embyBaseCache}/emby/Items/${item.Id}/Images/Primary?maxWidth=${maxWidth}&api_key=${encodeURIComponent(token)}`
+export function posterUrl(item: EmbyItem, maxWidth = 320, skipCheck = false): string {
+  if (!skipCheck && !item.ImageTags?.Primary) return ''
+  return imageUrl(item.Id, 'Primary', maxWidth)
 }
 
 /** 背景图地址 */
 export function backdropUrl(item: EmbyItem, maxWidth = 1280): string {
   if (!item.BackdropImageTags?.length) return ''
-  const token = localStorage.getItem('access_token') || ''
-  return `${embyBaseCache}/emby/Items/${item.Id}/Images/Backdrop?maxWidth=${maxWidth}&api_key=${encodeURIComponent(token)}`
+  return imageUrl(item.Id, 'Backdrop', maxWidth)
+}
+
+/**
+ * 条目图片地址。maxWidth <= 0 表示要原图（不带 maxWidth，服务端不走缩略图缓存）。
+ *
+ * 为什么需要「原图」这一档：服务端缩略图缓存按「原图文件名」命名，库内同目录外挂图
+ * （poster.jpg / folder.jpg / fanart.jpg）全库同名，带 maxWidth 请求时会拿到别的条目的
+ * 缩略图——首页「本周入库」海报与片名对不上就是这个。首页那一排只有十来张，先走原图。
+ */
+export function imageUrl(itemId: string, kind: 'Primary' | 'Backdrop', maxWidth = 0): string {
+  // H2 安全：不再把 JWT 放进 URL（URL 会进日志/历史/Referer）。
+  // 图片接口走 Cookie 鉴权（浏览器 <img> 自动带），无需显式 token。
+  const size = maxWidth > 0 ? `maxWidth=${maxWidth}` : ''
+  const q = size ? `?${size}` : ''
+  return `${embyBaseCache}/emby/Items/${itemId}/Images/${kind}${q}`
 }
 
 /** 进度条百分比 */

@@ -39,14 +39,11 @@ _stop_event = threading.Event()
 _start_lock = threading.Lock()
 
 
-def _detect_external_subtitles(video_path: str) -> Optional[Set[str]]:
+def _detect_external_subtitles(video_path: str):
     """探测视频同目录下的外挂字幕，返回路径集合。
 
     对标 StrmAssistant SubtitleApi.GetExternalSubtitleStreams。
-
-    返回 None 表示"未知"（目录不可访问，如远程 mount:// 路径或挂载掉线），
-    调用方必须跳过、**不得**按"没有字幕"处理（否则会误删 DB 里的合法字幕）。
-    只有成功列出目录且确实没有字幕时才返回空集合。
+    目录不可访问时返回 None（未知），与空集合（确定无字幕）区分。
     """
     from backend.emby_server import subtitle_match as sm
 
@@ -126,7 +123,7 @@ def update_external_subtitles(db, item, detected: Optional[Set[str]] = None) -> 
             .delete(synchronize_session=False)
         )
         if deleted:
-            logger.debug("字幕扫描：%s 移除了 %d 条残留外挂字幕", item.name, deleted)
+            logger.info("字幕扫描：%s 移除了 %d 条残留外挂字幕", item.name, deleted)
         return 0
 
     # 重新匹配语言（find_external_subtitles_in 返回 (lang, path)）
@@ -164,7 +161,6 @@ def update_external_subtitles(db, item, detected: Optional[Set[str]] = None) -> 
             language=lang or "und",
             display_title=os.path.basename(path),
             title=os.path.basename(path),
-            is_default=(count == 0),  # 与扫描器一致：第一条外挂字幕为默认
             is_external=True,
             external_path=path,
         )
@@ -172,7 +168,7 @@ def update_external_subtitles(db, item, detected: Optional[Set[str]] = None) -> 
         next_idx += 1
         count += 1
 
-    logger.debug("字幕扫描：%s 更新为 %d 条外挂字幕", item.name, count)
+    logger.info("字幕扫描：%s 更新为 %d 条外挂字幕", item.name, count)
     return count
 
 
@@ -183,12 +179,9 @@ def _scan_once() -> Tuple[int, int]:
 
     checked = 0
     updated = 0
-    pending_commit = 0
     db = SessionLocal()
     try:
-        # 流式迭代（yield_per），避免 1 万 ORM 常驻内存
-        # order_by(id) 保证大库下每轮推进，不永远扫"任意"子集
-        query = (
+        items = (
             db.query(em.MediaItem)
             .filter(
                 em.MediaItem.item_type.in_(("movie", "episode")),
@@ -200,7 +193,7 @@ def _scan_once() -> Tuple[int, int]:
             .yield_per(500)
             .limit(SUBTITLE_SCAN_BATCH_LIMIT)
         )
-        for item in query:
+        for item in items:
             if _stop_event.is_set():
                 break
             # 先判路径可探测性：mount:// 或不可访问目录直接跳过，
@@ -224,21 +217,11 @@ def _scan_once() -> Tuple[int, int]:
                         ).all() if s.language
                     })
                     item.subtitle_languages = ",".join(langs) if langs else None
-                    pending_commit += 1
+                    db.commit()
                     updated += 1
-                    # 攒批提交（100 条一 commit），避免上千短事务
-                    if pending_commit >= 100:
-                        db.commit()
-                        pending_commit = 0
             except Exception as e:
                 db.rollback()
-                pending_commit = 0
                 logger.warning("字幕扫描条目失败 %s: %s", item.file_path, e)
-            finally:
-                # 及时释放，避免 identity map 无限增长
-                db.expunge(item)
-        if pending_commit:
-            db.commit()
         return checked, updated
     finally:
         db.close()
@@ -260,9 +243,6 @@ def _scan_loop():
             logger.info("字幕扫描完成：检查 %d，更新 %d", checked, updated)
         except Exception as e:
             logger.warning("字幕扫描失败: %s", e)
-        finally:
-            from backend.emby_server import worker_registry as _wr
-            _wr.heartbeat("subtitle_scan")
 
 
 def start() -> bool:
@@ -279,8 +259,6 @@ def start() -> bool:
             target=_scan_loop, name="subtitle-scan", daemon=True
         )
         _scan_thread.start()
-        from backend.emby_server import worker_registry as _wr
-        _wr.register("subtitle_scan", _scan_thread)
         return True
 
 

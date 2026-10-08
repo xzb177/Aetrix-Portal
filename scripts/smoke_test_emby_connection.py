@@ -53,7 +53,7 @@ admin = models.WebUser(
     username="smoke-admin",
     password_hash="not-used",
     is_active=True,
-    is_staff=True,
+    is_staff=True, admin_role="super",
 )
 with SessionLocal() as db:
     db.add(admin)

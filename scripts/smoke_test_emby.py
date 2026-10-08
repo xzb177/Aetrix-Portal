@@ -35,7 +35,7 @@ user = models.WebUser(
     username="alice",
     password_hash="x",
     is_active=True,
-    is_staff=True,
+    is_staff=True, admin_role="super",
     emby_username="emby_alice",
     emby_password=hash_password("alice-play-pw"),
 )

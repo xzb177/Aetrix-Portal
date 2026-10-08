@@ -230,7 +230,7 @@ class ProbedTmdbSession:
 with SessionLocal() as db:
     staff = models.WebUser(username="scanwrite_staff",
                            password_hash=hash_password("scanwritepass123"),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     db.add(staff)
     db.commit()
     library = em.Library(guid="c" * 32, name="并发扫描库", collection_type="movies",

@@ -146,20 +146,6 @@ def collect(db) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("读磁盘信息失败: %s", exc)
 
-    # ---- 后台 worker 存活（StrmAssistant 打磨 R2）----
-    # 线程静默死亡时这里报 warn，避免"后台任务停摆了却没人知道"
-    try:
-        from backend.emby_server import worker_registry as _wr
-        workers = _wr.snapshot()
-        metrics["workers"] = workers
-        dead = [n for n, s in workers.items() if not s["alive"]]
-        if dead:
-            _bump("warn")
-            issues.append({"level": "warn", "key": "workers",
-                           "message": f"后台 worker 线程已死亡：{', '.join(dead)}"})
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("读 worker 状态失败: %s", exc)
-
     # ---- 媒体探测失败率 ----
     try:
         done = _count(db, "movie", "done") + _count(db, "episode", "done")
@@ -259,6 +245,19 @@ def collect(db) -> dict:
                 "message": f"{scans['failed']} 个媒体库最近一次扫描失败：{names}"})
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计扫描状态出错: %s", exc)
+
+    # ---- 后台 workers（via worker_registry）----
+    try:
+        from backend.emby_server import worker_registry
+        workers = worker_registry.snapshot()
+        metrics["workers"] = workers
+        for name, info in (workers or {}).items():
+            if isinstance(info, dict) and info.get("status") == "crashed":
+                _bump("warn")
+                issues.append({"level": "warn", "key": "worker_" + str(name),
+                               "message": "worker %s 异常退出" % name})
+    except Exception:
+        pass
 
     return {
         "level": level,

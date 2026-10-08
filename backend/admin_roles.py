@@ -5,8 +5,11 @@
 
 这里在原身份之上加一层**角色**（存 ``web_users.admin_role``）：
 
-- ``super``：全部（**升级前的老管理员都是它**：``admin_role`` 为空按 super 处理，
-  既不会因为升级把现有管理员降权，也不会出现「没人进得去后台」）；
+- ``super``：全部。**必须显式写 ``admin_role='super'``**——空值 / 未知值一律按最低权限
+  ``viewer`` 处理（fail closed，安全修复 S1）。升级前没写过角色的老管理员由启动期迁移
+  ``ensure_legacy_admin_roles``（见本文件末尾，``init_db`` 调用）一次性把**最早的那个
+  管理员**（安装向导 / ``create_admin.py`` 建的号）写成 super；其余空角色管理员保持只读，
+  由超管在「管理员」页显式授予角色；若库里一个 super 都没有，启动时自愈提升最早的管理员；
 - ``operator``：日常运营全都能做（用户、订阅、经济流水、卡码、优惠券、订单、求片、工单、
   公告、设备、媒体库、存储来源、服务器与线路、扫描与修复、切当前服），
   但改不了**系统设置 / 经济设置、能力中心（上游 Key）、播放与客户端策略、管理员与权限**；
@@ -61,11 +64,12 @@ SUPER_ONLY_PREFIXES = (
 def normalize_role(raw: Optional[str]) -> str:
     """把库里的值收敛到枚举内
 
-    空值 / 未知值都当 super：升级上来的老管理员没写过这个字段，
-    误判成 viewer 会让人以为「系统坏了」，而 super 与升级前行为完全一致。
+    空值 / 未知值一律当 **viewer（最低权限）**——fail closed（安全修复 S1）。
+    此前空值按 super 处理，导致运营只要把任意账号的 ``is_staff`` 置真就能造出一个超管。
+    升级上来的老管理员由 ``ensure_legacy_admin_roles`` 在启动时显式写角色，不靠这里兜底。
     """
     value = (raw or "").strip().lower()
-    return value if value in ROLES else ROLE_SUPER
+    return value if value in ROLES else ROLE_VIEWER
 
 
 def role_of(user) -> str:
@@ -127,3 +131,60 @@ def permission_payload(user) -> dict:
         "can_write": role != ROLE_VIEWER,
         "is_super": role == ROLE_SUPER,
     }
+
+
+# ---------------------------------------------------------------------------
+# 启动期迁移 / 自愈（安全修复 S1）
+# ---------------------------------------------------------------------------
+
+LEGACY_MIGRATION_KEY = "security.admin_role_legacy_migrated"
+
+
+def ensure_legacy_admin_roles(db) -> dict:
+    """把升级前「空角色 = super」的语义显式落库，然后再也不靠空值判 super
+
+    1. **一次性迁移**（``system_configs`` 里记标记，只跑一次）：最早创建的那个空角色管理员
+       （安装向导 / ``scripts/create_admin.py`` 建的号，即原始站长）写成 ``super``；
+       其余空角色管理员**不自动提权**，按 viewer（只读）处理并打警告日志，
+       由超管在「管理员」页显式授予角色。
+    2. **防锁死自愈**（每次启动）：库里一个启用中的 super 都没有时，把最早的启用中管理员
+       提为 super——只在「没人能管」时生效，已有超管时绝不触发，所以无法被用来提权。
+
+    返回做了什么（便于日志 / 测试）。任何异常都不阻断启动。
+    """
+    from backend import models
+
+    result = {"migrated": [], "left_viewer": [], "healed": None}
+    staff_q = db.query(models.WebUser).filter(models.WebUser.is_staff.is_(True))
+
+    def _is_blank(u) -> bool:
+        return not (getattr(u, "admin_role", None) or "").strip()
+
+    done = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == LEGACY_MIGRATION_KEY
+    ).first()
+    if done is None:
+        blanks = [u for u in staff_q.order_by(models.WebUser.id).all() if _is_blank(u)]
+        if blanks:
+            owner = blanks[0]
+            owner.admin_role = ROLE_SUPER
+            result["migrated"].append(owner.id)
+            result["left_viewer"] = [u.id for u in blanks[1:]]
+        db.add(models.SystemConfig(
+            key=LEGACY_MIGRATION_KEY,
+            value="1",
+            description="S1：空角色管理员已迁移（最早的管理员 → super，其余按只读）",
+        ))
+        db.commit()
+
+    has_super = any(
+        role_of(u) == ROLE_SUPER and u.is_active
+        for u in staff_q.all()
+    )
+    if not has_super:
+        first = staff_q.filter(models.WebUser.is_active.is_(True)).order_by(models.WebUser.id).first()
+        if first is not None:
+            first.admin_role = ROLE_SUPER
+            result["healed"] = first.id
+            db.commit()
+    return result

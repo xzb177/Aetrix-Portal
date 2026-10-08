@@ -52,8 +52,10 @@ function isActive(path: string) {
   align-items: stretch;
   justify-content: space-around;
   padding: 0 0.5rem env(safe-area-inset-bottom);
-  /* 暗房影院：实底 + 发丝线，不做毛玻璃 */
-  background: var(--au-overlay-menu);
+  /* 暗房影院：页面底色 0.96 + 模糊 + 发丝线（与顶栏同一配方），滚过去的字不再透出来 */
+  background: var(--au-chrome);
+  -webkit-backdrop-filter: saturate(1.4) blur(16px);
+  backdrop-filter: saturate(1.4) blur(16px);
   border-top: 1px solid var(--au-border);
 }
 
@@ -65,7 +67,7 @@ function isActive(path: string) {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 0.5rem 0 0.375rem;
+  padding: 0.375rem 0 0.25rem;
   text-decoration: none;
   color: var(--au-text-3);
   transition: color var(--au-fast) var(--au-ease);

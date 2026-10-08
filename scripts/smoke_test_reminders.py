@@ -69,7 +69,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 with SessionLocal() as db:
     staff = models.WebUser(username="reminder_staff", password_hash=hash_password("staffpass123"),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     db.add(staff)
     db.commit()
 

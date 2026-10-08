@@ -248,7 +248,7 @@ def run_scenario(mode: str) -> dict:
 
     with SessionLocal() as db:
         admin = models.WebUser(username=f"verify_{mode}", password_hash=hash_password("verify12345"),
-                               is_active=True, is_staff=True)
+                               is_active=True, is_staff=True, admin_role="super")
         db.add(admin)
         db.commit()
         headers = {"Authorization": f"Bearer {create_access_token(admin.id)}"}

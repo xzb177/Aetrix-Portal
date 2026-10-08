@@ -43,7 +43,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 # ---------- 造数据 ----------
 db = SessionLocal()
-staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("staff12345"), is_staff=True)
+staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("staff12345"), is_staff=True, admin_role="super")
 user = models.WebUser(username=f"usr{suf}", password_hash=hash_password("user12345"))
 other = models.WebUser(username=f"oth{suf}", password_hash=hash_password("user12345"))
 db.add_all([staff, user, other])

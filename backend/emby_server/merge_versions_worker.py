@@ -22,7 +22,6 @@ from backend.emby_server.env_util import env_float, env_int
 import os
 import threading
 import time
-from types import SimpleNamespace
 from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -61,28 +60,16 @@ _start_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def _provider_key(item) -> Optional[Tuple]:
-    """去重键：与 dedup.dedup_key() 口径看齐。
-
-    键格式：(library_id, item_type, provider, provider_id)。
-    必须带 library_id（防跨库合并：同 tmdb_id 的电影分属两个库不能合并）
-    和 item_type（防跨类型合并：TMDB movie/tv 编号序列独立，数字可能重合）。
-    """
+    """Merge key: (library_id, item_type, provider, provider_id)."""
+    library_id = getattr(item, "library_id", None)
+    item_type = getattr(item, "item_type", None) or getattr(item, "type", None)
     tmdb_id = (getattr(item, "tmdb_id", None) or "").strip()
-    imdb_id = (getattr(item, "imdb_id", None) or "").strip()
-    provider = None
-    provider_id = ""
     if tmdb_id:
-        provider, provider_id = "tmdb", tmdb_id
-    elif imdb_id:
-        provider, provider_id = "imdb", imdb_id
-    else:
-        return None
-    return (
-        getattr(item, "library_id", None),
-        getattr(item, "item_type", None),
-        provider,
-        provider_id,
-    )
+        return (library_id, item_type, "tmdb", tmdb_id)
+    imdb_id = (getattr(item, "imdb_id", None) or "").strip()
+    if imdb_id:
+        return (library_id, item_type, "imdb", imdb_id)
+    return None
 
 
 def find_duplicate_groups(db) -> List[List]:
@@ -171,7 +158,7 @@ def merge_group(db, group: List) -> int:
             continue
         item.merged_into_id = primary.id
         merged += 1
-        logger.debug(
+        logger.info(
             "多版本合并：%s (id=%d) → 主记录 %s (id=%d)",
             item.name, item.id, primary.name, primary.id,
         )
@@ -183,36 +170,33 @@ def get_alternate_versions(db, primary_id: int) -> List:
     from backend.emby_server import models as em
 
     primary = db.query(em.MediaItem).filter(em.MediaItem.id == primary_id).first()
-    if not primary or primary.deleted_at is not None:
+    if not primary:
         return []
     alternates = (
         db.query(em.MediaItem)
-        .filter(
-            em.MediaItem.merged_into_id == primary_id,
-            em.MediaItem.deleted_at.is_(None),
-        )
+        .filter(em.MediaItem.merged_into_id == primary_id)
         .all()
     )
     return [primary] + alternates
 
 
 def unmerge_version(db, item_id: int) -> bool:
-    """解除单个条目的合并：将其 merged_into_id 清空，恢复为独立条目。
+    """拆分单个版本：把 merged_into_id 清掉，恢复为独立条目。
 
-    返回 True 表示成功找到并解除。
+    返回 True 表示拆分成功，False 表示该条目未被合并（或不存在）。
     """
     from backend.emby_server import models as em
 
     item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
-    if not item or not item.merged_into_id:
+    if not item or item.merged_into_id is None:
         return False
     item.merged_into_id = None
-    logger.info("解除多版本合并：%s (id=%d) 恢复为独立条目", item.name, item.id)
+    logger.info("多版本拆分：%s (id=%d) 已恢复为独立条目", item.name, item.id)
     return True
 
 
 def unmerge_all(db, primary_id: int) -> int:
-    """解除某主记录下所有版本的合并，返回解除的数量。"""
+    """拆分主记录下的所有版本，返回被拆分的条目数。"""
     from backend.emby_server import models as em
 
     items = (
@@ -223,7 +207,7 @@ def unmerge_all(db, primary_id: int) -> int:
     for item in items:
         item.merged_into_id = None
     if items:
-        logger.info("解除多版本合并：主记录 id=%d 下 %d 个版本恢复独立",
+        logger.info("多版本拆分：主记录 id=%d 下 %d 个版本已恢复为独立条目",
                     primary_id, len(items))
     return len(items)
 
@@ -270,9 +254,6 @@ def _merge_loop():
                 logger.info("多版本合并完成：%d 组，合并 %d 条", groups, merged)
         except Exception as e:
             logger.warning("多版本合并失败: %s", e)
-        finally:
-            from backend.emby_server import worker_registry as _wr
-            _wr.heartbeat("merge_versions")
 
 
 def start() -> bool:
@@ -289,8 +270,6 @@ def start() -> bool:
             target=_merge_loop, name="merge-versions", daemon=True
         )
         _merge_thread.start()
-        from backend.emby_server import worker_registry as _wr
-        _wr.register("merge_versions", _merge_thread)
         return True
 
 

@@ -383,8 +383,10 @@ function formatDate(iso?: string | null) {
         <div class="id-main">
           <h1 class="id-name">
             <span>{{ user?.username || '用户' }}</span>
-            <span v-if="user?.is_vip" class="id-vip"><Crown :size="12" /> VIP</span>
-            <span v-if="activeSub" class="id-sub">{{ activeSub.plan_name }} · 剩 {{ activeSub.days_left }} 天</span>
+            <!-- 会员身份只写一次：有生效订阅就是「年卡 · 剩 N 天」（带皇冠），
+                 没有订阅但账号标了 VIP（老数据 / 管理员手动开）才退回 VIP 字样 -->
+            <span v-if="activeSub" class="id-sub"><Crown :size="12" />{{ activeSub.plan_name }} · 剩 {{ activeSub.days_left }} 天</span>
+            <span v-else-if="user?.is_vip" class="id-sub"><Crown :size="12" />VIP</span>
           </h1>
           <div class="id-meta">
             <span><Mail :size="13" />{{ user?.email || '未绑定邮箱' }}</span>
@@ -395,7 +397,7 @@ function formatDate(iso?: string | null) {
 
       <div class="id-stats">
         <div class="id-stat">
-          <strong class="accent">{{ watchHours }}</strong>
+          <strong>{{ watchHours }}</strong>
           <span>累计观看</span>
         </div>
         <div class="id-stat">
@@ -811,6 +813,8 @@ function formatDate(iso?: string | null) {
   display: flex;
   flex-direction: column;
   gap: 1.125rem;
+  /* 底部导航占位：用系统变量精确留白 */
+  padding-bottom: 80px;
 }
 
 /* ==================== 身份卡 ==================== */
@@ -824,7 +828,6 @@ function formatDate(iso?: string | null) {
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-xl);
   background: var(--au-surface);
-  border-top: 2px solid var(--au-primary);
 }
 
 .id-body {
@@ -878,7 +881,12 @@ function formatDate(iso?: string | null) {
 }
 
 .id-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   padding: 0.125rem 0.5rem;
+  font-family: var(--au-font-sans);
+  white-space: nowrap;
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-full);
   background: var(--au-primary-soft);
@@ -924,13 +932,14 @@ function formatDate(iso?: string | null) {
 .id-stat:first-child { border-left: none; padding-left: 0; }
 
 .id-stat strong {
-  font-size: 1.125rem;
-  font-weight: 800;
+  font-family: var(--au-font-serif);
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.3;
   color: var(--au-text);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums lining-nums;
+  white-space: nowrap;
 }
-
-.id-stat strong.accent { color: var(--au-primary); }
 
 .id-stat span {
   font-size: 0.8125rem;
@@ -940,6 +949,9 @@ function formatDate(iso?: string | null) {
 /* ==================== 卡片 ==================== */
 .p-grid {
   display: grid;
+  /* 列宽一律 minmax(0, …)：裸写 1fr 等于 minmax(auto, 1fr)，轨道最小宽度 = 内容的
+     min-content，而 Emby 账号卡里那行 nowrap 的等宽地址（https://emby.…）的 min-content
+     就是它整行的宽度——整列被撑出屏幕，下面每张卡都跟着出界 */
   grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
   gap: 1.125rem;
   align-items: start;
@@ -953,6 +965,7 @@ function formatDate(iso?: string | null) {
 }
 
 .pane {
+  min-width: 0;
   padding: 1.25rem;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
@@ -989,7 +1002,7 @@ function formatDate(iso?: string | null) {
 .pane-tip {
   margin: 0.875rem 0 0;
   padding-top: 0.875rem;
-  border-top: 1px dashed var(--au-border);
+  border-top: 1px solid var(--au-border);
   font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--au-text-3);
@@ -1141,11 +1154,9 @@ function formatDate(iso?: string | null) {
 .text-btn.danger:hover { background: var(--au-danger-soft); color: var(--au-danger); }
 .text-btn.danger.confirming { color: var(--au-danger); font-weight: 600; }
 
-/* 多服 / 一键导入：与信息行之间用虚线分隔，避免整张卡看起来是一堆块 */
+/* 多服 / 一键导入：与信息行之间靠留白分组（不再用虚线） */
 .sub-block {
-  margin-top: 0.875rem;
-  padding-top: 0.875rem;
-  border-top: 1px dashed var(--au-border);
+  margin-top: 1.125rem;
 }
 
 .block-label {
@@ -1199,7 +1210,7 @@ function formatDate(iso?: string | null) {
   align-items: flex-start;
   gap: 0.625rem;
   padding: 1rem 1.125rem;
-  border: 1px dashed var(--au-border);
+  border: 1px solid var(--au-border);
   border-radius: var(--au-r-md);
   background: var(--au-surface-2);
 }
@@ -1570,7 +1581,7 @@ function formatDate(iso?: string | null) {
 
 /* ==================== 响应式 ==================== */
 @media (max-width: 900px) {
-  .p-grid { grid-template-columns: 1fr; }
+  .p-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 640px) {
@@ -1585,7 +1596,7 @@ function formatDate(iso?: string | null) {
     width: 100%;
     padding-top: 1rem;
     border-top: 1px solid var(--au-border);
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .id-stat {

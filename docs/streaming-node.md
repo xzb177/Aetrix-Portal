@@ -78,8 +78,10 @@ STREAM_NODE_PUBLIC_URL=https://stream.example.com
 5. 主服务注册节点（二选一）：
    - 后台「播放节点」页添加（规划中），或
    - `curl -X POST https://主服务/api/admin/stream-nodes/register \
-       -H "X-Panel-Key: $SECRET_KEY" -H "Content-Type: application/json" \
+       -H "X-Panel-Key: $NODE_KEY" -H "Content-Type: application/json" \
        -d '{"url":"https://stream.example.com","name":"流节点-1","weight":100}'`
+     （`$NODE_KEY` 是**节点密钥**，在主服务上 `python -m backend.node_auth` 查看；
+     自 S3 安全修复起不再接受 `SECRET_KEY` 原文）
 
 ## 大盘缓存
 

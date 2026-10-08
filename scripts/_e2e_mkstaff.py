@@ -18,6 +18,7 @@ u = db.query(models.WebUser).filter(models.WebUser.username == username).first()
 if u is None:
     raise SystemExit(f"user not found: {username}")
 u.is_staff = True
+u.admin_role = "super"  # S1：空角色按只读处理，显式写 super
 u.is_active = True
 db.commit()
 print(f"staff granted to {username} (uid={u.id})")

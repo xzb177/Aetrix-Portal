@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.emby_server import mounts as mount_lib
-from backend.emby_server.api import _play_target, _require_item
+from backend.emby_server.api import _play_target, _require_visible_item
 from backend.emby_server.auth import get_emby_user
 from backend.emby_server.streaming import serve_remote
 from backend.subscriptions import ensure_playback_allowed
@@ -43,7 +43,7 @@ def mounted_item_file(
     db: Session = Depends(get_db),
 ):
     """条目原始文件（Emby 客户端的「下载 / 拉文件」路径之一）"""
-    item = _require_item(db, item_id)
+    item = _require_visible_item(db, user, item_id)
     # 与在线播放、下载同一门槛：付费墙对拉文件同样生效
     ensure_playback_allowed(db, user)
     # 复用 api 的目标解析与错误映射，保证两条端点对同一份数据行为一致

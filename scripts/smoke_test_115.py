@@ -203,7 +203,7 @@ db.close()
 
 print("\n--- 管理端账号 API ---")
 db = SessionLocal()
-staff = models.WebUser(username=f"pan115_stf{suf}", password_hash=hash_password("pass12345"), is_staff=True)
+staff = models.WebUser(username=f"pan115_stf{suf}", password_hash=hash_password("pass12345"), is_staff=True, admin_role="super")
 db.add(staff)
 db.commit()
 db.refresh(staff)

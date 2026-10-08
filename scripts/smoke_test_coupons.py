@@ -75,7 +75,7 @@ with SessionLocal() as db:
     db.commit()
 
     staff = models.WebUser(username="coupon_staff", password_hash=hash_password("staffpass123"),
-                           is_staff=True, is_active=True)
+                           is_staff=True, admin_role="super", is_active=True)
     buyer = models.WebUser(username="coupon_buyer", password_hash=hash_password("buyerpass123"),
                            is_active=True, points=0)
     buyer2 = models.WebUser(username="coupon_buyer2", password_hash=hash_password("buyer2pass123"),

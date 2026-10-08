@@ -357,9 +357,20 @@ async def redeem_exchange_code(
         if code is None or not code.is_active or (code.expires_at and code.expires_at < now):
             raise HTTPException(status_code=400, detail="兑换码无效或已过期")
 
+        # H5：同一个账号同一张码最多兑换一次（max_uses 是总次数，不是每人次数）。
+        # 先查（含升级前 used_by 里的历史），再在本事务里写核销记录：唯一约束兜住并发重复提交。
+        from backend import codes as code_lib
+
+        if code_lib.user_already_redeemed(db, code_lib.REDEMPTION_KIND_EXCHANGE, code, user_id):
+            raise HTTPException(status_code=400, detail="你已经兑换过这个兑换码（每个账号限一次）")
+
         # 先原子占位再去发奖：只有仍可用的兑换码才会被 +1，并发下第二个请求 rowcount=0，
         # 因此不会出现「同一张单次码被同时核销两次、发两份奖励」。
         try:
+            if not code_lib.record_redemption(
+                db, code_lib.REDEMPTION_KIND_EXCHANGE, code.id, user_id
+            ):
+                raise HTTPException(status_code=400, detail="你已经兑换过这个兑换码（每个账号限一次）")
             claimed = (
                 db.query(models.ExchangeCode)
                 .filter(
