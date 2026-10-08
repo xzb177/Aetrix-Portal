@@ -2,6 +2,86 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [未发布] - 稳定性 / 性能：串流不占连接、代理与转码回收、Redis 熔断、列表下推 SQL
+
+依据性能审查（S1–S7、S9、S12，P2–P4）。接口路径与返回字段不变；数据库结构不变；
+除下文「行为变化」所列外，返回内容与升级前逐字一致（有新旧对照测试）。
+
+### 稳定性
+
+- **S1 串流不再占 DB 连接**：FastAPI ≥0.118 的 yield 依赖在响应发完后才清理，Range 流 / HLS 切片 /
+  下载在整个播放期间都占着一个连接（`idle in transaction`），约 50 路并发流即耗尽 PG 连接池、之后全站 500。
+  现在 `video_stream`（含 `.mkv/.mp4/.{container}` 变体）、`video_hls`、`/Items/{id}/Download`、
+  `/Items/{id}/File`、`/Items/{id}/Thumbnails/{index}` 在返回响应前就关闭会话（`async_db.release_db_before_response`）。
+- **S2 远程代理连接池**：上游连接上限 24 → 200（`RELAY_MAX_CONNECTIONS`，可配）；超时由 `Timeout(30, read=None)`
+  改为连接 10s / 块间读 30s / 池等待 3s。源站卡住不回数据时按读超时结束该流并归还连接（以前永远挂着、
+  逐步把池耗尽）；池满立即返回 503 + `Retry-After`，不再白等 30 秒再 502。同步下载代理用同一套超时。
+- **S6 转码闲置回收**：闲置改按「客户端最后一次拉播放列表 / 切片」判定（旧口径看输出目录 mtime，
+  ffmpeg 一直写到片尾，用户走了也永不闲置，名额被「幽灵会话」占满后所有新转码 503）。满员时闲置超过
+  `EMBY_TRANSCODE_IDLE` 的会话让位；闲置超过 `EMBY_TRANSCODE_ABANDON` 无条件停止；常驻回收线程 30 秒一轮收尸。
+- **S7 ffmpeg 随父退出**：ffmpeg 起在独立进程组并设置 Linux `PR_SET_PDEATHSIG`（主进程被杀时 ffmpeg 跟着退出）；
+  停止时整组 SIGTERM → SIGKILL，并回收僵尸进程。
+- **S3 HLS 新建转码移出事件循环**：策略校验、115 取直链（最长 20s）、本地缓存查询、起 ffmpeg 等整段放进线程池
+  一次完成；115 慢时不再卡住整个 EA 进程。
+- **S4 Redis 熔断降级**：Redis 超时 5s(+重试) → 1s 不重试；连续失败后熔断一段时间不碰 Redis，缓存改用有界内存缓存、
+  限流改为进程内计数（以前「Redis 故障即不限流」且每个请求卡满超时），到期自动探测恢复；启动时连不上 Redis
+  也会在后台重连，不再永久降级。PlaybackInfo 的缓存读写移出事件循环。
+- **S5 run_all 看护**：worker 退出按指数退避重启（封顶 5 分钟，稳定运行后计数清零），**永不拉停 API / EA**
+  （以前累计 3 次就整容器退出）；worker 启动时 Redis 不可用会等待重连而不是直接退出。关键进程（api / ea）
+  退出仍整容器退出，交给编排重启。
+- **S9 `SortBy=DatePlayed` 不再 500**：未带 `IsPlayed` / `IsFavorite` 等筛选时按「最近播放」排序会引用未关联的
+  用户数据列（SQLite `no such column` / PG `missing FROM-clause`）。现在按需外连接当前用户的播放数据，
+  没有播放记录的条目不论升降序都排在最后；同时支持 `SortBy=PlayCount`（此前被忽略）。
+- **S12 片库可见范围 fail-closed（安全）**：读取用户可见媒体库失败时，旧实现按「全部可见」处理——DB 抖动时
+  条目详情 / 播放 / 下载的可见性校验会退化成越权。现在读失败一律按不可见处理（列表 / 搜索为空、按条目取 403），
+  并记 warning；工作人员（`is_staff`）不受影响。
+
+### 性能
+
+- **P2 `/Items` 去重下推 SQL**：旧实现每页都把全部候选拉回 Python 再去重切片（O(全库)/请求，翻第 1 页与第 28 页一样慢）。
+  现在只在 SQL 里用窗口函数圈出「可能重复」的行在 Python 里精确判定，排序 / 分页 / 计数全部在 SQL；结果与旧实现
+  逐条一致。重复行多到超过 `ITEMS_DEDUP_MAX_*` 时自动回退旧实现。
+- **P3 NextUp 批量化**：旧实现每部已开看的剧一条查询并绑定 `NOT IN(全部已看 id)`；现在按批一条
+  `ROW_NUMBER() OVER (PARTITION BY series_id …)` 查询、「未看」改 `NOT EXISTS`，SQL 条数与剧数无关。
+- **P4 orjson 直出**：`Users/{id}/Items`、`Items/Resume`、`Items/Latest`、`Items/{id}`、`Shows/{id}/Seasons`、
+  `Shows/{id}/Episodes`、`Shows/NextUp` 改用 orjson 序列化（审查实测 100 条电影 11.7ms → 0.26ms），
+  不再在事件循环上跑 `jsonable_encoder`；响应字节与升级前一致。
+
+### 行为变化
+
+- `/Items` 排序追加条目 id 作为最终决胜键：**排序键相同的并列行（同名、同入库时间等）之间的先后顺序可能与升级前不同**，
+  但从此在分页之间稳定（以前并列行顺序取决于查询计划，翻页时可能重复或漏掉）。
+- 远程代理：源站超过 `RELAY_READ_TIMEOUT` 秒不回数据时会结束这条流（播放器会自动重试 Range）；池满返回 503 而非 502。
+- 转码：客户端离开超过 `EMBY_TRANSCODE_ABANDON` 秒后 ffmpeg 会被停止。
+- 片库可见范围读取失败时普通用户暂时看不到任何条目（以前是全部可见）。
+- 配置了 Redis 但 Redis 故障时，限流改由进程内计数继续生效（`REDIS_ENABLED=false` 仍不限流，与以前一致）。
+
+### 升级须知
+
+- 无需迁移；新环境变量均为可选，留空即用默认值（见 `env.example`「稳定性调优」）：
+
+  | 变量 | 默认值 | 说明 |
+  |---|---|---|
+  | `RELAY_MAX_CONNECTIONS` | 200 | 远程代理上游连接上限（旧版固定 24） |
+  | `RELAY_MAX_KEEPALIVE` | 50 | 空闲保活连接上限（旧版 12） |
+  | `RELAY_CONNECT_TIMEOUT` | 10 | 连接源站超时（秒） |
+  | `RELAY_READ_TIMEOUT` | 30 | 两个数据块之间最长空闲（秒） |
+  | `RELAY_POOL_TIMEOUT` | 3 | 连接池满时最多等待（秒），超时 503 |
+  | `EMBY_TRANSCODE_IDLE` | 120 | 满员时闲置超过此秒数的转码让位 |
+  | `EMBY_TRANSCODE_ABANDON` | 600 | 闲置超过此秒数无条件停止转码（不小于上一项） |
+  | `REDIS_SOCKET_TIMEOUT` | 1 | Redis 读写超时（秒，旧版 5 且重试） |
+  | `REDIS_CONNECT_TIMEOUT` | 1 | Redis 连接超时（秒） |
+  | `REDIS_BREAKER_FAILURES` | 3 | 连续失败多少次熔断 |
+  | `REDIS_BREAKER_SECONDS` | 30 | 熔断时长 / 后台重连间隔（秒） |
+  | `WORKER_RESTART_BASE` | 5 | worker 首次重启等待（秒），之后翻倍 |
+  | `WORKER_RESTART_MAX` | 300 | worker 重启等待上限（秒） |
+  | `WORKER_STABLE_SECONDS` | 600 | 稳定运行多久后退避计数清零（秒） |
+  | `WORKER_REDIS_WAIT_MAX` | 30 | worker 启动等 Redis 的重试间隔上限（秒） |
+  | `ITEMS_DEDUP_MAX_SUSPECTS` | 20000 | `/Items` 去重：可能重复的行超过此数回退旧实现 |
+  | `ITEMS_DEDUP_MAX_DROPPED` | 5000 | `/Items` 去重：被去掉的行超过此数回退旧实现 |
+
+- 如果之前靠调大 PG 连接池来扛并发播放，S1 之后可以按 API 请求量重新评估连接池大小。
+
 ## [未发布] - 媒体信息探测 worker 重构（28.5 万条 pending 卡住 / 时不时卡死）
 
 现象：日志里「预提取定时器启动」照常出现，后台显示 28.5 万条待探测，但数字几乎不动，
