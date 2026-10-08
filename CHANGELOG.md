@@ -27,6 +27,7 @@
 - **H5 兑换码每人一次**：注册码 / 兑换码新增核销记录，同一用户对同一张多次码只能兑换一次（兼容升级前 `used_by` 里的记录）。
 - **缩略图缓存串图**：库外同名外挂图（`poster.jpg` / `folder.jpg` / `cover.jpg` / `fanart.jpg`……）此前共用同一张缩略图（如 `poster_w320.jpg`），
   首页「本周入库」海报与片名对不上。现对缓存之外的原图按「绝对路径 + mtime + 大小」的 sha1 命名缩略图（`backend/emby_server/image_store.py`）。
+
 ## [未发布] - 修复：恢复 2d7d996 误删的功能
 
 ### 修复
@@ -61,9 +62,9 @@ JWT 不进 URL、可信代理、兑换码每人一次、缩略图缓存 key）�
 
 - `backend/emby_server/fast_scanner.py`（731 行）：生产代码零 import，`USE_FAST_SCANNER` 无人读取；
   只测它的 `tests/test_incremental_scan.py` 一并删除。
-- `backend/emby_server/refresh_person_worker.py`：全仓无 import、从未启动；
-  删除 `test_polish_round1/2` 里三条只读这个文件源码文本的断言。
-- 29 个全仓零引用的函数 / 类（api.py 里的 `_image_urls`、`_probe_duration_on_demand` /
+- ~~`backend/emby_server/refresh_person_worker.py`~~：**保留**。清理时它在 main 上确实无人启动，
+  但「恢复 2d7d996 误删的功能」已把 `worker.py` 里的演员刷新 worker 启动接回来，故不删（相关断言一并保留）。
+- 28 个全仓零引用的函数 / 类（原清单 29 个；`mediainfo_persist.delete_json` 已被恢复的「下架时清理媒体信息 JSON」使用，保留）（api.py 里的 `_image_urls`、`_probe_duration_on_demand` /
   `_ffprobe_duration_sync`、`_batch_series_source_dirs` 等 8 个，及 reminders / websocket / mounts /
   scan_queue / streaming 等模块里的 21 个），删除前逐个全仓 grep 复核（含字符串 / getattr / 路由注册）。
 - `main.py` 里重复两遍的 GZip 注释与被注释掉的死代码（GZip 仍保持禁用）。
@@ -77,7 +78,7 @@ JWT 不进 URL、可信代理、兑换码每人一次、缩略图缓存 key）�
 ### 合并
 
 - `database.py` 的 7 个 `_ensure_*_index` 合并为一张索引表 `_LEGACY_INDEXES` + 一个幂等 helper；
-  执行顺序、DDL 与迁移日志逐字不变（已对比新库与老库两种场景）。
+  执行顺序、DDL 与迁移日志沿用「恢复」后的版本（演员索引为 `idx_person_item_tmdb (item_id, person_tmdb_id)`）。
 
 ### 性能
 

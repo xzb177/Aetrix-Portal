@@ -38,7 +38,7 @@ import os
 import threading
 import time
 from contextlib import contextmanager
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 

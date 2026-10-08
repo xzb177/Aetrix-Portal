@@ -21,6 +21,7 @@ import shutil
 import time
 import urllib.parse
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
