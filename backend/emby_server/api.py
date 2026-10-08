@@ -128,6 +128,14 @@ def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+def _visible_in_session(it: em.MediaItem) -> bool:
+    """identity map 里取到的条目是否「查得到」（与软删除查询钩子同口径）"""
+    if it.deleted_at is None:
+        return True
+    from backend.emby_server import soft_delete
+    return not soft_delete.soft_delete_enabled() or soft_delete._allow_deleted.get()
+
+
 def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
     """图片回退链：条目自身 → 季 → 剧集海报
 
@@ -149,7 +157,13 @@ def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
     if item.item_type in ("episode", "season"):
         parents: list[em.MediaItem] = []
         if item.parent_id:
-            parent = db.query(em.MediaItem).filter(em.MediaItem.id == item.parent_id).first()
+            # db.get 先查 identity map：列表接口 _prefetch_list_data 已把季/剧加载进会话，
+            # 命中时零 SQL（原先 query().first() 每条集/季都发一次，含集列表 N+1）。
+            # 未命中时 get 照常发 SELECT，仍经过软删除 / 内容可见性钩子；命中时钩子不跑，
+            # 这里补上软删除判定，结果与原查询一致。
+            parent = db.get(em.MediaItem, item.parent_id)
+            if parent is not None and not _visible_in_session(parent):
+                parent = None
             if parent:
                 parents.append(parent)
         series = item.series

@@ -8,7 +8,7 @@ def test_episode_image_tag_uses_parent_fallback():
     """episode 自身没海报时，DTO 仍必须宣告有 Primary 图片。"""
     parent = SimpleNamespace(
         item_type="season", poster_path=None, primary_image_url="https://img/series.jpg",
-        backdrop_path=None, backdrop_image_url=None, id=2,
+        backdrop_path=None, backdrop_image_url=None, id=2, deleted_at=None,
     )
     series = SimpleNamespace(
         item_type="series", poster_path="/data/series.jpg", primary_image_url=None,
@@ -25,14 +25,8 @@ def test_episode_image_tag_uses_parent_fallback():
         original_title=None, season_number=1, episode_number=1,
         is_hidden=False, streams=[], aliases="",
     )
-    class _Query:
-        def filter(self, *args, **kwargs):
-            return self
-
-        def first(self):
-            return parent
-
-    db = SimpleNamespace(query=lambda *args, **kwargs: _Query())
+    # _image_chain 用 db.get 取季（走 identity map，见性能审查 P1）
+    db = SimpleNamespace(get=lambda model, pk: parent if pk == parent.id else None)
     assert api._image_chain(item, "Primary", db) == [
         "https://img/series.jpg", "/data/series.jpg"
     ]
