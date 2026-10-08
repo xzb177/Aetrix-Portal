@@ -746,7 +746,7 @@ check("代理时带上挂载鉴权头（不下发客户端）",
       bool(recorded.get("headers", {}).get("Cookie")),
       str(sorted(recorded.get("headers", {}))))
 
-local_only = next(i for i in local_items if (i.file_path or "").endswith("Local.Movie.2024.1080p.mkv"))
+local_only = next(i for i in local_files if (i.file_path or "").endswith("Local.Movie.2024.1080p.mkv"))
 local_resp = call_endpoint(mount_routes.mounted_item_file(local_only.guid, req, staff, db))
 check("本机条目仍直接返回文件", isinstance(local_resp, FileResponse), type(local_resp).__name__)
 mount_routes.serve_remote = _original_serve_remote
