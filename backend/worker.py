@@ -53,6 +53,59 @@ def _handle_signal(signum, frame):
     _shutdown_event.set()
 
 
+#: 等 Redis 的重试间隔上限（秒）
+_REDIS_WAIT_MAX_SEC = max(1.0, float(os.getenv("WORKER_REDIS_WAIT_MAX", "30") or 30))
+
+
+def _wait_for_redis(max_wait: float | None = None):
+    """等到 Redis 可用为止（指数退避 1s→2s→…→WORKER_REDIS_WAIT_MAX），返回客户端
+
+    - ``REDIS_ENABLED=false``：配置错误，等也等不来 → 记错误返回 None；
+    - 收到关闭信号 / 超过 ``max_wait``（测试用）→ 返回 None。
+    读的是 ``backend.database.redis_client`` 的**当前值**（后台重连线程连上后会更新它），
+    同时自己也按退避间隔主动 ping 一次。
+    """
+    from backend import database as dbmod
+
+    if not dbmod.REDIS_ENABLED:
+        logger.error("REDIS_ENABLED=false：worker 依赖 Redis（单实例锁 + 扫描队列），无法启动")
+        return None
+    delay = 1.0
+    started = time.monotonic()
+    warned = False
+    while not _shutdown_event.is_set():
+        client = dbmod.redis_client
+        if client is None:
+            try:
+                candidate = dbmod._make_redis_client()
+                candidate.ping()
+                dbmod.redis_client = client = candidate
+                dbmod.redis_breaker.reset()
+            except Exception as exc:  # noqa: BLE001
+                client = None
+                last_error = exc
+        else:
+            try:
+                client.ping()
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                client = None
+        if client is not None:
+            if warned:
+                logger.info("Redis 已可用（等待 %.0fs）", time.monotonic() - started)
+            return client
+        if max_wait is not None and time.monotonic() - started >= max_wait:
+            return None
+        if not warned:
+            logger.warning("Redis 暂不可用（%s），worker 等待重连…", last_error)
+            warned = True
+        else:
+            logger.info("仍在等待 Redis（%.0fs）：%s", time.monotonic() - started, last_error)
+        _shutdown_event.wait(delay)
+        delay = min(delay * 2, _REDIS_WAIT_MAX_SEC)
+    return None
+
+
 def _acquire_worker_lock(redis_client) -> bool:
     """获取 worker 单实例锁（Redis SET NX PX）。
 
@@ -177,20 +230,21 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"配置自愈失败（可忽略）: {e}")
 
+    # 信号处理提前装：等 Redis 期间也要能被 SIGTERM 优雅叫停
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
     # 3. Redis 连接（worker 必须有 Redis：单实例锁 + 扫描队列都依赖它）
-    from backend.database import redis_client
+    # S5：Redis 启动慢 / 短暂不可用时**等它**，而不是立刻退出——旧实现 20 秒内退出
+    # 4 次就让 run_all 把整个容器（含 API 与 EA）拉停。
+    redis_client = _wait_for_redis()
     if redis_client is None:
-        logger.error("Redis 不可用（REDIS_ENABLED=true 且 REDIS_URL 可达是 worker 的硬要求），worker 拒绝启动")
-        return 1
+        return 0 if _shutdown_event.is_set() else 1
     logger.info("✅ Redis 连接正常")
 
     # 4. 单实例锁
     if not _acquire_worker_lock(redis_client):
         return 1
-
-    # 5. 信号处理
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
 
     # 6. 启动锁续期线程
     global _lock_renew_thread
