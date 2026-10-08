@@ -38,7 +38,6 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from backend import devices, models, realms, subscriptions
-from backend.emby_server import line_health, play_line
 
 logger = logging.getLogger(__name__)
 
@@ -223,14 +222,13 @@ def realm_card(db: Session, user: models.WebUser,
 
 
 def summary(db: Session, user: models.WebUser, cards: list[dict]) -> dict:
-    """抽屉顶部那几行：能看几个服 / 设备用了几台 / 选的哪条播放线路"""
+    """抽屉顶部那几行：能看几个服 / 设备用了几台"""
     try:
         limit: Optional[int] = devices.device_limit(db)
         used: Optional[int] = len(devices.active_devices(db, user.id))
     except Exception:  # noqa: BLE001 — 设备数读不到不该让整张抽屉失败
         logger.warning("读取用户 %s 的设备数失败（显示为未知）", user.id, exc_info=True)
         limit, used = None, None
-    line = play_line.get_play_line(db, user.id)
     return {
         "realms_total": len(cards),
         "realms_playable": len([c for c in cards if c["can_play"]]),
@@ -238,9 +236,8 @@ def summary(db: Session, user: models.WebUser, cards: list[dict]) -> dict:
         "realms_expired": len([c for c in cards if c["grant"] == GRANT_EXPIRED]),
         "devices_used": used,
         "device_limit": limit,
-        "play_line": line,
-        # 线路名复用 Phase 3 的 LINE_LABELS（播放线路可观测卡片同一份），不写第二张对照表
-        "play_line_label": line_health.LINE_LABELS.get(line, line),
+        "play_line": "relay",
+        "play_line_label": "代理中转",
         "scope_note": "授权与到期按当下现算（订阅行的 status 字段不会随时间自动过期）；"
                       "停用的服同样列出来并标注，它不改变播放判定，只是提醒管理员该清理了。",
     }

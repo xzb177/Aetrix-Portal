@@ -1,8 +1,8 @@
-"""VPS 本地缓存（播放线路「本地缓存」，播放三层之外的另一层）
+"""VPS 本地缓存（中转路径下的自动缓存层，2026-10 起不再是可选线路）
 
-**定位**：把「热门」的远程挂载片子提前拉到 VPS 本机磁盘上，播放线路 ``cache``
-的用户优先读本地副本，没命中才回源 Google Drive —— 减少对云盘配额的依赖，
-拖动进度条也不再受源站抖动影响。
+**定位**：把「热门」的远程挂载片子提前拉到 VPS 本机磁盘上，播放时自动优先
+读本地副本，没命中才回源 —— 减少对云盘配额的依赖，拖动进度条也不再受
+源站抖动影响。
 
 - 配置落在 ``SystemConfig``（与播放策略 / CDN 同一套机制：热读短 TTL + 保存即失效），
   EM 与 EA 共用同一个库 → 后台改完两边同时生效；
@@ -40,7 +40,6 @@ from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
-from backend.emby_server import play_line
 from backend.integrations import store
 
 logger = logging.getLogger(__name__)
@@ -168,7 +167,6 @@ def config_payload(db: Session) -> dict:
         "hot_days": hot_days(db),
         "hot_plays": hot_plays(db),
         "rate_mbps": rate_mbps(db),
-        "play_line": play_line.LINE_CACHE,
         "busy_rate_mbps": BUSY_RATE_MBPS,
         "active_playback_window_sec": ACTIVE_PLAYBACK_WINDOW_SEC,
         "max_attempts": MAX_ATTEMPTS,
