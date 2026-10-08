@@ -1419,7 +1419,7 @@ def _policy_dto(user: models.WebUser) -> dict:
         "EnableContentDownloading": True,
         "EnableMediaPlayback": True,
         "EnableAudioPlaybackTranscoding": True,
-        "EnableVideoPlaybackTranscoding": True,
+        "EnableVideoPlaybackTranscoding": bool(getattr(user, "enable_video_transcoding", True)),
         "EnablePlaybackRemuxing": True,
         "ForceRemoteSourceTranscoding": False,
         "EnableSyncTranscoding": True,
@@ -2934,7 +2934,7 @@ async def playback_info(
     ) or 120_000_000
     # 2026-10 简化：删除服务端码率钳制，客户端要多少给多少（学 Linger 薄服务器思路）
     # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
-    allow_transcode = await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)
+    allow_transcode = (await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)) and bool(getattr(user, "enable_video_transcoding", True))
 
     # PlaybackInfo 短期缓存（5 分钟）：同一部片子短时间内重复请求直接走 Redis，
     # 省掉 _media_source 的 DB 查询。PlaySessionId 和 api_key 每次重新生成，不进缓存。
