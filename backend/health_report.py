@@ -246,6 +246,19 @@ def collect(db) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计扫描状态出错: %s", exc)
 
+    # ---- 后台 workers（via worker_registry）----
+    try:
+        from backend.emby_server import worker_registry
+        workers = worker_registry.snapshot()
+        metrics["workers"] = workers
+        for name, info in (workers or {}).items():
+            if isinstance(info, dict) and info.get("status") == "crashed":
+                _bump("warn")
+                issues.append({"level": "warn", "key": "worker_" + str(name),
+                               "message": "worker %s 异常退出" % name})
+    except Exception:
+        pass
+
     return {
         "level": level,
         "status": {"ok": "healthy", "warn": "degraded", "down": "unhealthy"}[level],
