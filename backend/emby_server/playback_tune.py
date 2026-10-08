@@ -48,10 +48,6 @@ DEFAULT_RCLONE_MOUNT_FLAGS: list[str] = [
 ]
 
 
-def _flag_key(args: list[str], idx: int) -> str:
-    return args[idx]
-
-
 def build_rclone_mount_args(extra: Optional[Iterable[str]] = None) -> list[str]:
     """合并默认优化参数与用户自定义参数，用户显式给的胜出。
 
@@ -382,19 +378,3 @@ def auto_vfs_cache_size(cache_dir: str) -> str:
         logger.warning("磁盘检测失败，用默认 VFS 缓存 %s", DEFAULT_SMALL_CACHE)
     return DEFAULT_SMALL_CACHE
 
-
-def vfs_cache_args(cache_dir: str, extra: Optional[Iterable[str]] = None) -> list[str]:
-    """开箱即用的 VFS 缓存参数（含大盘自动放大），供挂载脚本/代码统一调用。
-
-    与 ``build_rclone_mount_args`` 合并使用；本函数只负责缓存大小相关三件套。
-    """
-    size = auto_vfs_cache_size(cache_dir)
-    args = [
-        "--vfs-cache-mode", "full",
-        "--vfs-cache-max-size", size,
-        "--vfs-cache-max-age", "168h",
-        "--cache-dir", cache_dir,
-    ]
-    if extra:
-        args.extend(extra)
-    return args

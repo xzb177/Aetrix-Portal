@@ -203,14 +203,3 @@ def deserialize(db, item) -> bool:
                 item.width or "?", item.height or "?")
     return True
 
-
-def delete_json(item) -> None:
-    """删除条目对应的 JSON（条目删除/文件变更时调用，对标 DeleteMediaInfoJson）。"""
-    path = get_json_path(item)
-    if not path:
-        return
-    try:
-        if os.path.isfile(path):
-            os.remove(path)
-    except OSError:
-        pass

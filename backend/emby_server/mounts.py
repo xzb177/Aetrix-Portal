@@ -191,10 +191,6 @@ def type_meta(mount_type: str) -> dict:
     return MOUNT_TYPE_MAP.get((mount_type or "").strip(), {})
 
 
-def type_group(mount_type: str) -> str:
-    return type_meta(mount_type).get("group") or "local"
-
-
 def supports_browse(mount_type: str) -> bool:
     return bool(type_meta(mount_type).get("browse"))
 
@@ -1318,16 +1314,6 @@ def test_mount(mount, db: Optional[Session] = None, library=None) -> dict:
     except Exception as exc:  # noqa: BLE001 — 兜底：任何异常都要变成可读提示
         logger.warning("挂载测试异常 %s: %s", getattr(mount, "id", None), exc)
         return {"ok": False, "message": f"连接失败: {exc}", "auth_error": False}
-
-
-def record_test_result(db: Optional[Session], mount, result: dict) -> None:
-    """把测试结果写回挂载（仅展示用）"""
-    if db is None or mount is None:
-        return
-    mount.last_checked_at = datetime.now()
-    mount.last_check_ok = bool(result.get("ok"))
-    mount.last_check_message = (str(result.get("message") or ""))[:300]
-    db.commit()
 
 
 # ==================== 媒体库 → 来源 ====================

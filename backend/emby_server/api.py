@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -19,7 +18,6 @@ import os
 import random
 import secrets
 import shutil
-import subprocess
 import time
 import urllib.parse
 from datetime import datetime, timedelta
@@ -201,24 +199,6 @@ def _image_url(base: str, item: em.MediaItem, kind: str = "Primary") -> str | No
     if src.startswith("http"):
         return src
     return f"{base}/emby/Items/{item.guid}/Images/{kind}"
-
-
-def _image_urls(base: str, item: em.MediaItem) -> list[dict]:
-    urls = []
-    primary = _image_url(base, item, "Primary")
-    backdrop = _image_url(base, item, "Backdrop")
-    if primary:
-        urls.append({"imageType": "Primary", "url": primary})
-    if backdrop:
-        urls.append({"imageTags": {"Backdrop": "1"}, "url": backdrop, "imageType": "Backdrop"})
-    return urls
-
-
-def _ticks_to_pos(ticks: int) -> str:
-    secs = ticks // TICKS
-    h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def _download_ok(db: Session) -> bool:
@@ -403,14 +383,6 @@ def _series_siblings(item, db):
     )
     return [s for s in cands if _series_source_dir(s, db) == src]
 
-def _is_primary_series(item, db):
-    try:
-        sibs = _series_siblings(item, db)
-    except Exception:
-        return True
-    if len(sibs) <= 1:
-        return True
-    return sibs[0].id == item.id
 
 def _version_siblings(item, db):
     """找同一电影的所有版本：同库、同目录、**同主文件名**的 movie 条目。
@@ -438,19 +410,6 @@ def _version_siblings(item, db):
     )
     # 二次过滤：主文件名相同才算同一版本组（避免同目录下不同电影误合并）
     return [s for s in cands if _version_base_name(s.file_path) == base]
-
-
-def _is_primary_version(item, db):
-    """是否为该版本组的主版本（id 最小的那个）。
-    查不到兄弟版本时视为 primary（不去重），避免误伤虚拟库等特殊场景。
-    """
-    try:
-        sibs = _version_siblings(item, db)
-    except Exception:
-        return True
-    if len(sibs) <= 1:
-        return True
-    return sibs[0].id == item.id
 
 
 def _version_label(item):
@@ -1031,55 +990,6 @@ def _require_visible_item(db: Session, user, item_id: str) -> em.MediaItem:
 
 def _run_time_ticks(item: em.MediaItem) -> int:
     return item.duration_ticks or 0
-
-
-def _save_duration_ticks(db: Session, guid: str, ticks: int) -> None:
-    """按需探测写回时长（线程池内调用，幂等）。"""
-    db.query(em.MediaItem).filter(em.MediaItem.guid == guid).update(
-        {"duration_ticks": ticks}
-    )
-    db.commit()
-
-
-def _ffprobe_duration_sync(file_path: str, timeout: int = 10) -> int | None:
-    """同步探测单个文件的时长（阻塞，调用方必须扔线程池）。
-
-    只读文件头拿 duration，不下载全片。任何异常（文件不可读、ffprobe
-    不在、超时）都返回 None，绝不抛给调用方。
-    """
-    try:
-        if not os.path.isfile(file_path):
-            return None
-    except OSError:
-        return None
-    try:
-        proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", file_path],
-            capture_output=True, text=True, timeout=timeout,
-        )
-        if proc.returncode != 0:
-            return None
-        duration = float((proc.stdout or "").strip())
-        if duration <= 0:
-            return None
-        return int(duration * 10_000_000)  # 秒 -> 100ns ticks
-    except Exception:  # noqa: BLE001 — 探测失败不影响播放
-        return None
-
-
-async def _probe_duration_on_demand(file_path: str) -> int | None:
-    """按需探测：用户点播放、且库里没有时长时，才探测这一个文件。
-
-    后台批量探测已下线（烧 Drive 配额），这里一次只探一个。ffprobe 在
-    线程池跑，不占事件循环；整体超时 12 秒，失败/超时直接跳过。
-    """
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(_ffprobe_duration_sync, file_path), timeout=12,
-        )
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> dict:
@@ -1800,64 +1710,6 @@ def get_suggestions(user_id: str,
     _prefetch_list_data(db, user.id, items)
     return {"Items": [_item_dto(i, base, user.id, db) for i in items],
             "TotalRecordCount": len(items), "StartIndex": 0}
-
-
-
-def _batch_series_source_dirs(series_ids, db) -> dict:
-    """批量计算多个 series 的 source_dir（一次查 season，一次查 episode，避免 N+1）。
-
-    返回 {series_id: source_dir or None}。
-    逻辑与 _series_source_dir(item, db) 等价：找该剧第一个有 file_path 的单集，
-    取其 Season 目录的父目录（或文件父目录）。
-    """
-    result = {sid: None for sid in series_ids}
-    if not series_ids:
-        return result
-    # 1) 一次查出所有 series 的 season: (season_id, series_id)
-    season_rows = (
-        db.query(em.MediaItem.id, em.MediaItem.parent_id)
-        .filter(
-            em.MediaItem.parent_id.in_(series_ids),
-            em.MediaItem.item_type == "season",
-        )
-        .all()
-    )
-    if not season_rows:
-        return result
-    season_to_series = {}
-    for season_id, parent_id in season_rows:
-        # 一个 season 只属于一个 series；取第一个映射即可
-        season_to_series.setdefault(season_id, parent_id)
-    season_ids = list(season_to_series.keys())
-    # 2) 一次查出所有 season 下有 file_path 的 episode，按 id 排序保证第一个稳定
-    ep_rows = (
-        db.query(em.MediaItem.parent_id, em.MediaItem.file_path)
-        .filter(
-            em.MediaItem.parent_id.in_(season_ids),
-            em.MediaItem.item_type == "episode",
-            em.MediaItem.file_path.isnot(None),
-        )
-        .order_by(em.MediaItem.id)
-        .all()
-    )
-    # 每个 series 取第一个 episode 的 file_path
-    first_fp = {}
-    for season_id, fpath in ep_rows:
-        sid = season_to_series.get(season_id)
-        if sid is not None and sid not in first_fp and fpath:
-            first_fp[sid] = fpath
-    # 3) 内存里算 source_dir（与 _series_source_dir 同逻辑）
-    for sid, fp in first_fp.items():
-        parts = fp.split("/")
-        src = None
-        for i, p in enumerate(parts):
-            if p.startswith("Season"):
-                src = "/".join(parts[:i])
-                break
-        if src is None:
-            src = _parent_dir(fp)
-        result[sid] = src
-    return result
 
 
 def _dedup_primary_ids(cand_rows, db) -> list[int]:

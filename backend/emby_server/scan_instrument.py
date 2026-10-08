@@ -53,11 +53,6 @@ def install() -> bool:
         return True
 
 
-def install_for_tests() -> bool:
-    """测试入口（与 install 同一实现；存在只是为了让意图显式）"""
-    return install()
-
-
 def _wrap_file_counter(counter_cls) -> None:
     original = counter_cls.__iter__
     if getattr(original, "_rb_progress_wrapped", False):

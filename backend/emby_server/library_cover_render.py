@@ -496,12 +496,3 @@ def render_cover_bytes(
                        exc_info=True)
         return None
 
-
-def render_cover_for_library(db, library) -> Optional[bytes]:
-    """按库里已保存的模板/标题配置重新生成封面（扫描后或保存时调用）"""
-    return render_cover_bytes(
-        db, library,
-        template=library.cover_template or DEFAULT_TEMPLATE,
-        title=library.cover_title or "",
-        subtitle=library.cover_subtitle or "",
-    )

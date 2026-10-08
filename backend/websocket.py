@@ -216,12 +216,6 @@ def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
         db.close()
 
 
-class SubscribeRequest(BaseModel):
-    """订阅请求模型"""
-    channels: list
-    action: str = "subscribe"  # subscribe 或 unsubscribe
-
-
 @websocket_router.websocket("/ws/{user_id}")
 async def websocket_endpoint(
     websocket: WebSocket,

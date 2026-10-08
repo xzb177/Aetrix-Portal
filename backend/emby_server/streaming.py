@@ -842,6 +842,3 @@ def enforce_transcode_capacity() -> None:
 
 _TRANSCODE_PROCS: dict[str, dict] = {}
 
-
-def is_transcode(session_id: str) -> bool:
-    return session_id in _TRANSCODE_PROCS

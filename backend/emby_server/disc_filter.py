@@ -29,15 +29,6 @@ def is_disc_subtree_dir(name: str) -> bool:
     return cleaned in DISC_STRUCTURE_DIRS
 
 
-def has_disc_subtree_dir(name: str) -> bool:
-    """这个目录**自己**是不是一张未解原盘（含 BDMV / VIDEO_TS）
-
-    与 :func:`is_disc_subtree_dir` 相反：它不跳过自己，而是用来识别
-    「这个目录是一张盘」的场合。
-    """
-    return (name or "").strip().upper() in {"BDMV", "VIDEO_TS"}
-
-
 def is_disc_subtree_rel(rel: str) -> bool:
     """按路径判断：路径里任意一段目录是原盘结构就跳过
 

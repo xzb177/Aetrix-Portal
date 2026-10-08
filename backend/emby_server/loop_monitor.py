@@ -50,9 +50,3 @@ def start_loop_monitor() -> None:
     _monitor_task = asyncio.create_task(_monitor_loop())
     logger.info("事件循环健康监控已启动（lag > %.1fs 告警）", LAG_WARN_SECONDS)
 
-
-def stop_loop_monitor() -> None:
-    global _monitor_task
-    if _monitor_task is not None:
-        _monitor_task.cancel()
-        _monitor_task = None

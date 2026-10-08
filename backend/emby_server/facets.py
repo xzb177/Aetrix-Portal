@@ -133,19 +133,6 @@ def sync_items(db: Session, items) -> int:
     return len(rows)
 
 
-def delete_for_items(db: Session, item_ids) -> int:
-    """删除条目时一并清掉关联行（**不提交**）——否则会留下永远指向不存在条目的垃圾行"""
-    ids = [i for i in item_ids if i is not None]
-    if not ids:
-        return 0
-    removed = db.query(em.ItemFacet).filter(em.ItemFacet.item_id.in_(ids)).delete(
-        synchronize_session=False
-    )
-    if removed:
-        invalidate_values_cache()
-    return int(removed or 0)
-
-
 def prune_orphans(db: Session, commit: bool = True) -> int:
     """清掉指向已不存在条目的关联行
 

@@ -611,11 +611,6 @@ def _resolve_seek_realm(db: Session, user: models.WebUser,
     return None
 
 
-def _seek_daily_limit(db: Session) -> int:
-    """每日上限（兼容旧调用点；规则与默认值都在 media_seek.daily_limit）"""
-    return media_seek.daily_limit(db)
-
-
 @user_router.get("/media-seek/search")
 def search_media_seek_candidates(
     query: str,

@@ -185,11 +185,6 @@ def snapshot() -> list[dict]:
         return [_public(entry) for entry in _PROGRESS.values()]
 
 
-def running_library_ids() -> list[int]:
-    with _LOCK:
-        return list(_PROGRESS.keys())
-
-
 def in_scan_session() -> bool:
     """本进程是否有扫描正在进行（mounts 用它决定目录列举能不能吃 TTL 过期）"""
     with _LOCK:

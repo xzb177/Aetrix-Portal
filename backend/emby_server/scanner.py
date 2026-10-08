@@ -1327,11 +1327,6 @@ def find_local_images_in(entries, dir_path: str, base_name: str) -> tuple[Option
     return poster, fanart
 
 
-def find_local_images(dir_path: str, base_name: str) -> tuple[Optional[str], Optional[str]]:
-    """查找同目录的 poster/fanart 本地图片（目录列表走本次扫描的缓存）"""
-    return find_local_images_in(_list_dir_cached(dir_path), dir_path, base_name)
-
-
 def find_external_subtitles(file_path: str) -> list[tuple[str, str]]:
     """本机文件的外挂字幕：返回 [(lang, 绝对路径)]（目录列表走本次扫描的缓存）
 
