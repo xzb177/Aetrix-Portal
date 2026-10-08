@@ -454,11 +454,9 @@ export function backdropUrl(item: EmbyItem, maxWidth = 1280): string {
  * 缩略图——首页「本周入库」海报与片名对不上就是这个。首页那一排只有十来张，先走原图。
  */
 export function imageUrl(itemId: string, kind: 'Primary' | 'Backdrop', maxWidth = 0): string {
-  // H2 安全：不再把 JWT 放进 URL（URL 会进日志/历史/Referer）。
-  // 图片接口走 Cookie 鉴权（浏览器 <img> 自动带），无需显式 token。
-  const size = maxWidth > 0 ? `maxWidth=${maxWidth}` : ''
-  const q = size ? `?${size}` : ''
-  return `${embyBaseCache}/emby/Items/${itemId}/Images/${kind}${q}`
+  const token = localStorage.getItem('access_token') || ''
+  const size = maxWidth > 0 ? `maxWidth=${maxWidth}&` : ''
+  return `${embyBaseCache}/emby/Items/${itemId}/Images/${kind}?${size}api_key=${encodeURIComponent(token)}`
 }
 
 /** 进度条百分比 */
