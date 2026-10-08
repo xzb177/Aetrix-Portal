@@ -2,6 +2,63 @@
 
 所有项目重要更改都将记录在此文件中。
 
+## [未发布] - 媒体信息探测 worker 重构（28.5 万条 pending 卡住 / 时不时卡死）
+
+现象：日志里「预提取定时器启动」照常出现，后台显示 28.5 万条待探测，但数字几乎不动，
+探测 worker 隔一阵就整体卡住，只有重启才恢复一会儿。
+
+### 根因（均已用种子库 + mock ffprobe 复现）
+
+1. **队列口径对不上，绝大多数 pending 永远抢不到**：扫描器（fast_scanner / scanner background
+   模式 / enrich 衔接）和老库补列的默认值把单集、季、剧集骨架、文件名已解析出 codec 的电影
+   全标成 `pending`，而旧调度器只抢「movie/series 且 video_codec 为空」。复现库 3800 条 pending
+   时 `_claim_batch` 返回 `[]`；预提取扫描只扫「未在队列」的条目，它们已经是 pending →
+   每轮入队 0 条。定时器在跑，实际什么都没探。
+2. **抢单泄漏**：旧调度器先把一批标 `probing`，再判断线程池背压，背压时直接跳过——这批永远
+   停在 probing（复现：30 秒泄漏 600 条），只有重启时恢复。
+3. **单条目没有硬上限**：`subprocess.run(timeout)` 只杀直接子进程后无限 `wait()`，FUSE 挂死
+   （D 状态）时线程永久卡住；`os.path.isfile` 同理。线程卡满 → 背压 → 第 2 条持续泄漏，
+   表现为「时不时卡死」（复现：挂死挂载上 4 个线程全部卡住后，健康挂载 30 秒内 0 条被探测）。
+4. **单体模式根本没启动探测 worker**（M11）：只有 `backend/worker.py` 起它。
+5. 用户打开详情 / 播放时，条目若已在 pending 队尾，`maybe_enqueue` 直接返回，不插队。
+
+### 新方案
+
+- **按需优先**：详情页 / PlaybackInfo 仍不阻塞（起播用文件名解析的信息）；已在 pending 的条目
+  被打开时提到优先级 1000 并立即唤醒调度器；单集也纳入（`PROBE_ITEM_TYPES`，默认 movie,episode）。
+- **DB 状态驱动的后台补齐**：新增 `probe_claimed_at`（租约）、`probe_last_error`，索引
+  `idx_item_probe_retry (probe_status, probe_next_retry_at)`；PG 用 `FOR UPDATE SKIP LOCKED` 抢单，
+  SQLite 用带状态守卫的 UPDATE；只抢有空槽的量，绝不「抢了不处理」；租约过期自动回收；
+  指数退避（封顶 6 小时），K 次后 failed 并记录原因。
+- **队列整理（triage）**：启动时及每 6 小时按 id 分段纠正状态：季/剧集/无文件/已删/已合并 → 新状态
+  `skipped`，已有完整信息 → `done`，`NULL` 且缺信息 → 入队；最近 30 天播放过的提到优先级 800。
+- **硬上限**：所有 ffprobe / mediainfo 走 `proc_util.bounded_run`（独立进程组、超时整组 SIGKILL、
+  收不回就放弃等待）；单条目解析 ≤ 20s、探测总预算 ≤ 60s；DB 连接不跨探测持有。
+- **按挂载限流 + 熔断**：远程挂载每个默认并发 2、本机 4；同一挂载连续 3 次超时熔断 5 分钟
+  （翻倍，最长 1 小时），熔断期间不抢该挂载的条目，健康挂载照常推进。
+- **可观测 / 可运维**：`GET /api/admin/emby/scrape/probe-progress`（各状态计数、重试中、过期抢单、
+  常见错误、近 10 分钟速率、熔断、ETA）；`POST /scrape/probe/reset`（scope=stuck/failed/retrying/all）；
+  `POST /scrape/probe/pause`、`/resume`（存 system_configs，跨进程生效）；`/api/health` 详细报告
+  新增「有待探测但 worker 没在运行 / 过期抢单 / 熔断中的挂载」告警。
+- **自愈**：调度循环任何异常只记日志不退出；`worker_registry` 支持 restart 回调 + 监督线程，
+  线程死了 30 秒内自动重启；`snapshot()` 补上 `status` 字段（health 的 crashed 告警此前永不触发）。
+- **单体 / worker 同一入口**：`main.py` lifespan（非 api 角色）与 `worker.py` 都调用幂等的
+  `probe_worker.start()`；退出时已抢未处理的条目放回 pending。
+
+### 升级须知
+
+- **自动迁移**：启动时补 `emby_items.probe_claimed_at`、`probe_last_error` 两列和
+  `idx_item_probe_retry` 索引（PG 上建索引会短暂阻塞写入，28 万行通常几秒）。
+- **一次性自动纠正**：首次启动时所有残留 `probing` 放回 `pending`；随后 triage 把不需要探测的
+  pending 改成 `skipped` / `done`——**后台「待探测」数字会在启动后几分钟内大幅下降，这是纠正，
+  不是数据丢失**。新状态 `skipped` 只表示「这一行没有可探测的文件」。
+- **行为变化**：单集默认也会被探测（只想探电影设 `PROBE_ITEM_TYPES=movie`）；单体部署现在会
+  启动探测 worker；`PROBE_WORKERS` 默认 2→4、上限 5→16，`PROBE_MIN_INTERVAL_SEC` 默认 1→0.5。
+- **新环境变量**（均可选，见 env.example）：`PROBE_ITEM_TYPES`、`PROBE_REMOTE_CONCURRENCY`、
+  `PROBE_LOCAL_CONCURRENCY`、`PROBE_ITEM_TIMEOUT_SEC`、`PROBE_RESOLVE_TIMEOUT_SEC`、
+  `PROBE_CLAIM_TTL_SEC`、`PROBE_BREAKER_THRESHOLD`、`PROBE_BREAKER_COOLDOWN_SEC`、
+  `PROBE_RETRY_MAX_SEC`、`PROBE_TRIAGE_CHUNK`。
+- 管理后台前端尚未加探测进度卡片，接口已就绪（见上）。
 ## [未发布] - 安全修复：3 个严重 + 5 个高危漏洞
 
 ### 安全修复
