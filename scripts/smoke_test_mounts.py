@@ -637,7 +637,7 @@ check("本机挂载库扫描入库", stats_local["added"] == 2 and stats_local["
       str(stats_local))
 local_items = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_local.id).all()
 # 只关心带文件的条目（series / season 是层级节点，本身没有文件）
-local_files = [i for i in local_items if i.file_path]
+local_files = [(i.guid, i.file_path) for i in local_items if i.file_path]
 check("本机挂载条目存真实路径",
       len(local_files) == 2
       and all(not i.file_path.startswith(mnt.MOUNT_PATH_PREFIX) for i in local_files),
@@ -746,8 +746,8 @@ check("代理时带上挂载鉴权头（不下发客户端）",
       bool(recorded.get("headers", {}).get("Cookie")),
       str(sorted(recorded.get("headers", {}))))
 
-local_only = next(i for i in local_files if (i.file_path or "").endswith("Local.Movie.2024.1080p.mkv"))
-local_resp = call_endpoint(mount_routes.mounted_item_file(local_only.guid, req, staff, db))
+local_only = next(i for i in local_files if (i[1] or "").endswith("Local.Movie.2024.1080p.mkv"))
+local_resp = call_endpoint(mount_routes.mounted_item_file(local_only[0], req, staff, db))
 check("本机条目仍直接返回文件", isinstance(local_resp, FileResponse), type(local_resp).__name__)
 mount_routes.serve_remote = _original_serve_remote
 
