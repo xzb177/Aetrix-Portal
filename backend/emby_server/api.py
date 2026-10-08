@@ -34,6 +34,7 @@ from backend.database import SessionLocal, get_db
 from backend.emby_server import cdn
 from backend.emby_server.async_db import release_db_before_response
 from backend.emby_server import facets
+from backend.emby_server.fastjson import json_route
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
@@ -1650,8 +1651,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
 
-@emby_router.get("/emby/Users/{user_id}/Items")
-@emby_router.get("/Users/{user_id}/Items")
+@json_route(emby_router, "/emby/Users/{user_id}/Items", "/Users/{user_id}/Items")
 def get_items(
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
@@ -2245,8 +2245,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     }
 
 
-@emby_router.get("/emby/Users/{user_id}/Items/Resume")
-@emby_router.get("/Users/{user_id}/Items/Resume")
+@json_route(emby_router, "/emby/Users/{user_id}/Items/Resume", "/Users/{user_id}/Items/Resume")
 def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     """继续观看：只看电影/剧集，单集不单独出现在首页。
@@ -2283,8 +2282,7 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
             "TotalRecordCount": len(items), "StartIndex": 0}
 
 
-@emby_router.get("/emby/Users/{user_id}/Items/Latest")
-@emby_router.get("/Users/{user_id}/Items/Latest")
+@json_route(emby_router, "/emby/Users/{user_id}/Items/Latest", "/Users/{user_id}/Items/Latest")
 def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     """Latest returns a bare JSON array (Emby/Jellyfin official behavior).
@@ -2464,10 +2462,7 @@ def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = D
 
 
 
-@emby_router.get("/emby/Items/{item_id}")
-@emby_router.get("/Items/{item_id}")
-@emby_router.get("/emby/Users/{user_id}/Items/{item_id}")
-@emby_router.get("/Users/{user_id}/Items/{item_id}")
+@json_route(emby_router, "/emby/Items/{item_id}", "/Items/{item_id}", "/emby/Users/{user_id}/Items/{item_id}", "/Users/{user_id}/Items/{item_id}")
 def get_item_detail(
     item_id: str,
     request: Request,
@@ -2502,8 +2497,7 @@ def _season_belongs_to(season: em.MediaItem, show: em.MediaItem) -> bool:
     return season.series_id == show.id
 
 
-@emby_router.get("/emby/Shows/{item_id}/Seasons")
-@emby_router.get("/Shows/{item_id}/Seasons")
+@json_route(emby_router, "/emby/Shows/{item_id}/Seasons", "/Shows/{item_id}/Seasons")
 def get_seasons(item_id: str, request: Request,
                       user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
@@ -2520,8 +2514,7 @@ def get_seasons(item_id: str, request: Request,
             "TotalRecordCount": len(seasons), "StartIndex": 0}
 
 
-@emby_router.get("/emby/Shows/{item_id}/Episodes")
-@emby_router.get("/Shows/{item_id}/Episodes")
+@json_route(emby_router, "/emby/Shows/{item_id}/Episodes", "/Shows/{item_id}/Episodes")
 def get_episodes(item_id: str, request: Request,
                        user: models.WebUser = Depends(get_emby_user),
                        db: Session = Depends(get_db)):
@@ -2636,10 +2629,7 @@ def _next_up_first_unwatched(db: Session, user_id: int, series_ids) -> dict:
     return {row.series_id: row for row in rows}
 
 
-@emby_router.get("/emby/Shows/NextUp")
-@emby_router.get("/Shows/NextUp")
-@emby_router.get("/emby/Users/{user_id}/Shows/NextUp")
-@emby_router.get("/Users/{user_id}/Shows/NextUp")
+@json_route(emby_router, "/emby/Shows/NextUp", "/Shows/NextUp", "/emby/Users/{user_id}/Shows/NextUp", "/Users/{user_id}/Shows/NextUp")
 def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
                 db: Session = Depends(get_db), user_id: str = ""):
     """接下来看：每部「已开看」的剧集只返回下一集未看的单集。
