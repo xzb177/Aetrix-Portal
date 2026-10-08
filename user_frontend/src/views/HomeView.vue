@@ -601,7 +601,7 @@ onActivated(() => {
             <Sparkles :size="12" />
             公益服
           </span>
-          <span>{{ heroStatus }}</span>
+
         </p>
 
         <!-- 未开通：三步看片指引。门户最大的 friction 是"付了钱不会配置客户端"，
@@ -634,7 +634,7 @@ onActivated(() => {
 
         <!-- 已开通 / 公益服：看片在第三方客户端完成，主按钮就是「把服务器导进播放器」 -->
         <template v-else>
-          <p class="hero-sub">门户账号即 Emby 账号 — 在 Infuse 等客户端登录即可观影。</p>
+
           <div class="hero-cta">
             <RouterLink to="/profile" class="au-btn au-btn-primary">
               一键导入播放器
