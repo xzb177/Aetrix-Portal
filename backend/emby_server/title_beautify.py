@@ -95,9 +95,10 @@ def _extract_desc_title(file_path: str | None, series_name: str | None = None) -
         # 简单处理：去掉与剧名单词重合的连续词
         series_words = {w.lower() for w in re.split(r"[\s.\-_]+", series_name) if w}
         tokens = [t for t in tokens if t.lower() not in series_words]
-    # 去掉仍像占位符的 token（第N集 / 纯数字）
+    # 去掉仍像占位符的 token（第N集 / 纯数字 / "第"/"集"碎片）
     tokens = [t for t in tokens
               if not re.fullmatch(r"第?\s*\d+\s*集?", t)
+              and t not in ("第", "集", "S", "E")
               and not t.isdigit()]
     return " ".join(tokens).strip()
 
@@ -110,9 +111,14 @@ def beautify_episode_title(name: str | None,
     """返回展示用分集标题。输入为 DB 原始值，不修改 DB。"""
     raw = (name or "").strip()
 
-    # 1. 垃圾值 → 用集号重建
+    # 1. 垃圾值 → 用集号重建（集号缺失时尝试从文件名 SxxExx 提取）
     if raw and _is_garbage(raw):
-        label = _canonical_episode_label(episode_number)
+        ep = episode_number
+        if ep is None and file_path:
+            m = re.search(r"[Ss]\d{1,2}[Ee](\d{1,3})", os.path.basename(file_path or ""))
+            if m:
+                ep = int(m.group(1))
+        label = _canonical_episode_label(ep)
         return label or raw
 
     # 2. 空或占位符 → 尝试文件名提取
