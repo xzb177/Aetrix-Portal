@@ -814,7 +814,7 @@ function formatDate(iso?: string | null) {
   flex-direction: column;
   gap: 1.125rem;
   /* 底部导航占位：用系统变量精确留白 */
-  padding-bottom: var(--au-dock-space, 0px);
+  padding-bottom: 100px;
 }
 
 /* ==================== 身份卡 ==================== */
