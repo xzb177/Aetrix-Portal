@@ -39,7 +39,6 @@ def test_new_transcode_preparation_runs_in_threadpool(monkeypatch):
     monkeypatch.setattr(api, "ensure_playback_allowed", rec("ensure_playback_allowed"))
     monkeypatch.setattr(api.playback_policy, "ensure_client_allowed", rec("ensure_client_allowed"))
     monkeypatch.setattr(api.playback_policy, "ensure_transcode_allowed", rec("ensure_transcode_allowed"))
-    monkeypatch.setattr(api.playback_policy, "clamp_bitrate_kbps", lambda db, v: v)
     monkeypatch.setattr(api.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(api, "_play_target",
                         rec("_play_target", PlayTarget("url", "https://115.example/v.mkv", {}), sleep=0.4))

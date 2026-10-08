@@ -50,8 +50,6 @@ def harness(monkeypatch):
                         lambda db, user, ua: None)
     monkeypatch.setattr(api.playback_policy, "ensure_transcode_allowed",
                         lambda db, user, **kw: None)
-    monkeypatch.setattr(api.playback_policy, "clamp_bitrate_kbps",
-                        lambda db, v: v or 0)
     monkeypatch.setattr(api.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(api, "_api_key_for", lambda db, request: "k")
     monkeypatch.setattr(api, "_play_target", lambda db, item: state.target)
