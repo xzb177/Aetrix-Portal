@@ -148,13 +148,25 @@ def _fake_streaming_with(n_running):
     return fake
 
 
+def _mock_8_cpus(monkeypatch):
+    from backend.emby_server import cpu_budget
+    # 先清 lru_cache，再 mock（mock 后就没有 cache_clear 了）
+    try:
+        cpu_budget.cpu_count.cache_clear()
+    except AttributeError:
+        pass
+    monkeypatch.setattr(cpu_budget, "cpu_count", lambda: 8)
+
+
 def test_slot_ok_when_under_limit(monkeypatch):
+    _mock_8_cpus(monkeypatch)
     monkeypatch.setattr(tc, "_streaming", lambda: _fake_streaming_with(1))
     monkeypatch.setenv("TRANSCODE_MAX_CONCURRENT", "2")
     tc.ensure_slot_or_503()  # 不抛异常
 
 
 def test_slot_503_when_full(monkeypatch):
+    _mock_8_cpus(monkeypatch)
     monkeypatch.setattr(tc, "_streaming", lambda: _fake_streaming_with(2))
     monkeypatch.setenv("TRANSCODE_MAX_CONCURRENT", "2")
     with pytest.raises(HTTPException) as exc_info:
@@ -163,6 +175,7 @@ def test_slot_503_when_full(monkeypatch):
 
 
 def test_slot_limit_env_override(monkeypatch):
+    _mock_8_cpus(monkeypatch)
     monkeypatch.setattr(tc, "_streaming", lambda: _fake_streaming_with(3))
     monkeypatch.setenv("TRANSCODE_MAX_CONCURRENT", "4")
     tc.ensure_slot_or_503()  # 4 路上限，3 路在跑 → 放行

@@ -204,5 +204,5 @@ def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
     # 回收时 cached=True 跳过删目录，缓存留给下次复用。
     info["dir"] = dst
     info["cached"] = True
-    logger.info("转码缓存落盘 %s %s", info.get("item_guid"), tier)
+    logger.info("转码缓存落盘 %s %sbps", info.get("item_guid"), info.get("video_bitrate"))
     return True
