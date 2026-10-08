@@ -2104,7 +2104,13 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         if cond is not None:
             query = query.filter(cond)
 
-    if filters & {"isfavorite", "isplayed", "isunplayed", "isresumable"}:
+    # 用户数据（UserMediaData）按需外连接：播放类筛选或按用户数据排序（DatePlayed /
+    # PlayCount）时才需要。S9：旧实现只在筛选时 join，``SortBy=DatePlayed`` 单独出现
+    # 会引用未 join 的列 → SQLite ``no such column`` / PG ``missing FROM-clause`` 500。
+    # (user_id, item_id) 有唯一约束，外连接不会让一条条目变成多行。
+    _user_sort_keys = {"dateplayed", "playcount"}
+    _wants_user_sort = any(c.strip().lower() in _user_sort_keys for c in sort_by)
+    if filters & {"isfavorite", "isplayed", "isunplayed", "isresumable"} or _wants_user_sort:
         query = query.outerjoin(
             em.UserMediaData,
             (em.UserMediaData.item_id == em.MediaItem.id)
@@ -2133,16 +2139,25 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         em.MediaItem.date_added,
     )
     order_cols = []
+    _desc = bool(sort_order and sort_order[0].lower().startswith("desc"))
     for col in sort_by:
+        key = col.strip()
+        if key in ("DatePlayed", "PlayCount"):
+            # 没有用户数据的条目（外连接得 NULL）不论升降序都排在最后；
+            # 用 ``IS NULL`` 先排而非 NULLS LAST，SQLite / PG 写法一致。
+            c = em.UserMediaData.last_played_at if key == "DatePlayed" else em.UserMediaData.play_count
+            order_cols.append(c.is_(None).asc())
+            order_cols.append(c.desc() if _desc else c.asc())
+            continue
         c = {
             "SortName": em.MediaItem.sort_name, "Name": em.MediaItem.name,
             "DateCreated": em.MediaItem.date_added, "ProductionYear": em.MediaItem.production_year,
-            "CommunityRating": em.MediaItem.community_rating, "DatePlayed": em.UserMediaData.last_played_at,
+            "CommunityRating": em.MediaItem.community_rating,
             "DateLastContentAdded": _date_last_content_added,
-        }.get(col.strip())
+        }.get(key)
         if c is None:
             continue
-        order_cols.append(c.desc() if sort_order and sort_order[0].lower().startswith("desc") else c.asc())
+        order_cols.append(c.desc() if _desc else c.asc())
     if not order_cols:
         order_cols = [em.MediaItem.sort_name.asc()]
 
