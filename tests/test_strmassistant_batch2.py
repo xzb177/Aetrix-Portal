@@ -34,18 +34,24 @@ class TestMergeVersions:
 
     def test_provider_key_tmdb_priority(self):
         class Fake:
+            library_id = 1
+            type = "movie"
             tmdb_id = "123"
             imdb_id = "tt456"
-        assert self.mod._provider_key(Fake()) == ("tmdb", "123")
+        assert self.mod._provider_key(Fake()) == (1, "movie", "tmdb", "123")
 
     def test_provider_key_imdb_fallback(self):
         class Fake:
+            library_id = 1
+            type = "movie"
             tmdb_id = ""
             imdb_id = "tt456"
-        assert self.mod._provider_key(Fake()) == ("imdb", "tt456")
+        assert self.mod._provider_key(Fake()) == (1, "movie", "imdb", "tt456")
 
     def test_provider_key_none(self):
         class Fake:
+            library_id = 1
+            type = "movie"
             tmdb_id = ""
             imdb_id = ""
         assert self.mod._provider_key(Fake()) is None
