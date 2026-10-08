@@ -176,8 +176,8 @@ def check_referer(request: Request, db: Session) -> None:
     """防盗链检查：白名单为空直接放行；Referer 缺失放行（原生客户端兼容）；
 
     仅当 Referer 存在且主机不在白名单时抛 403。
-    配置读失败时 fail-open（放行）：播放链路不能因为配置表读不到就全挂，
-    与 _library_scope 的 effective_ids_safe 同一口径。
+    配置读失败时 fail-open（放行）：播放链路不能因为配置表读不到就全挂。
+    （防盗链只是附加防护；条目可见性校验 _library_scope 读失败则是 fail-closed。）
     """
     try:
         whitelist = get_allowed_referers(db)

@@ -137,6 +137,8 @@ def test_relay_line_never_redirects_without_explicit_param(monkeypatch):
 
     target = PlayTarget("url", "https://cdn.example/movie.mkv", {})
     monkeypatch.setattr(api, "_require_item", lambda db_, item_id: SimpleNamespace(container="mp4"))
+    # 假 db/user 读不到可见范围；S12 起读失败 fail-closed，这里显式按「不过滤」桩掉
+    monkeypatch.setattr(api, "_library_scope", lambda db_, user_: None)
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda *a, **k: None)
     monkeypatch.setattr(api.playback_policy, "ensure_client_allowed", lambda *a, **k: None)
     monkeypatch.setattr(api, "_play_target", lambda db_, item: target)
@@ -167,6 +169,8 @@ def test_rclone_target_with_credentials_never_redirects(monkeypatch):
     target = PlayTarget("url", "http://127.0.0.1:5572/%5Bgdrive:%5D/a.mkv",
                         {"Authorization": "Basic dXNlcjpwYXNz"})
     monkeypatch.setattr(api, "_require_item", lambda db_, item_id: SimpleNamespace(container="mp4"))
+    # 假 db/user 读不到可见范围；S12 起读失败 fail-closed，这里显式按「不过滤」桩掉
+    monkeypatch.setattr(api, "_library_scope", lambda db_, user_: None)
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda *a, **k: None)
     monkeypatch.setattr(api.playback_policy, "ensure_client_allowed", lambda *a, **k: None)
     monkeypatch.setattr(api, "_play_target", lambda db_, item: target)

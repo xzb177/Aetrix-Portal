@@ -1569,8 +1569,8 @@ def _library_scope(db: Session, user) -> "set[int] | None":
     """这个用户能看到哪些媒体库 id；``None`` = 不过滤（绝大多数部署）
 
     两层规则（服务器默认范围 + 指定用户覆盖）都在 ``backend/library_scope.py``，
-    这里只负责调用。走 ``effective_ids_safe``：读失败按「不过滤」处理，
-    展示层设置不该把整个浏览页拦下来。
+    这里只负责调用。走 ``effective_ids_safe``：读失败按「全部不可见」处理（S12
+    fail-closed，空集合 → 列表为空、按条目取 403），工作人员不受影响。
     """
     return library_scope.effective_ids_safe(db, user)
 
