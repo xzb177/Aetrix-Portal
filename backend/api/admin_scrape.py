@@ -45,8 +45,13 @@ from backend.emby_server.tmdb import (
     TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY,
     TMDB_KEYS_CONFIG_KEY,
     TMDB_LANGUAGE_OPTIONS,
+    TMDB_POSTER_LANGUAGE_CONFIG_KEY,
+    TMDB_POSTER_LANGUAGE_DEFAULT,
+    TMDB_POSTER_LANGUAGE_OPTIONS,
     TMDB_PREFERRED_LANGUAGE_CONFIG_KEY,
     TMDB_PREFERRED_LANGUAGE_DEFAULT,
+    invalidate_poster_language,
+    poster_language,
     TmdbTransientError,
     _db_keys,
     _env_keys,
@@ -367,6 +372,48 @@ def save_tmdb_language(
     env_lang = (os.getenv("TMDB_LANGUAGE") or "").strip()
     effective = env_lang if env_lang in TMDB_LANGUAGE_OPTIONS else lang
     return {"success": True, "language": effective}
+
+
+class TmdbPosterLanguageSaveRequest(BaseModel):
+    language: str = Field(default=TMDB_POSTER_LANGUAGE_DEFAULT,
+                          description="海报语言偏好：system=TMDB默认图，original=原语言优先，zh-CN=中文优先")
+
+
+@admin_emby_router.get("/scrape/tmdb-poster-language")
+def get_tmdb_poster_language(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """海报语言偏好：当前生效值 + 可选列表（对标 StrmAssistant #10 原语言海报）。"""
+    return {
+        "language": poster_language(db, refresh=True),
+        "options": list(TMDB_POSTER_LANGUAGE_OPTIONS),
+        "default": TMDB_POSTER_LANGUAGE_DEFAULT,
+    }
+
+
+@admin_emby_router.put("/scrape/tmdb-poster-language")
+def save_tmdb_poster_language(
+    req: TmdbPosterLanguageSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存海报语言偏好（写进 SystemConfig，保存即热生效，无需重启）"""
+    lang = (req.language or "").strip()
+    if lang not in TMDB_POSTER_LANGUAGE_OPTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的语言：{lang}（可选：{'、'.join(TMDB_POSTER_LANGUAGE_OPTIONS)}）",
+        )
+    store.write_values(
+        db,
+        {TMDB_POSTER_LANGUAGE_CONFIG_KEY: lang},
+        {TMDB_POSTER_LANGUAGE_CONFIG_KEY: "海报语言偏好（system=默认图，original=原语言优先，zh-CN=中文优先）"},
+    )
+    db.commit()
+    db.expire_all()
+    invalidate_poster_language()
+    return {"success": True, "language": lang}
 
 
 # ==================== 条目级重刮 ====================

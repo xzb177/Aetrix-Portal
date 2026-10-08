@@ -205,6 +205,8 @@ def _extract_once() -> Tuple[int, int]:
     db = SessionLocal()
     try:
         # 已探测（有 duration）且无缩略图的 movie/episode
+        # SQL 层直接过滤掉 mount:// 伪路径（未解析的挂载引用，ffmpeg 读不了），
+        # 避免拉回 Python 再过滤，省一次全量文件系统检查。
         items = (
             db.query(em.MediaItem)
             .filter(
@@ -213,6 +215,7 @@ def _extract_once() -> Tuple[int, int]:
                 em.MediaItem.merged_into_id.is_(None),
                 em.MediaItem.duration_ticks > 0,
                 em.MediaItem.file_path.isnot(None),
+                ~em.MediaItem.file_path.like('mount://%'),
             )
             .limit(THUMBNAIL_BATCH_LIMIT)
             .all()

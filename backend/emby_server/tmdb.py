@@ -674,6 +674,39 @@ def invalidate_language() -> None:
         _LANGUAGE_CACHE.update({"at": 0.0, "value": ""})
 
 
+_POSTER_LANGUAGE_CACHE = {"at": 0.0, "value": ""}
+
+
+def poster_language(db=None, *, refresh: bool = False) -> str:
+    """海报语言偏好：SystemConfig > original。
+
+    - "system"：用 TMDB 默认图，不额外请求图片接口
+    - "original"：原语言海报优先（include_image_language=en,null）
+    - "zh-CN"：中文海报优先（include_image_language=zh-CN,null）
+    非法值回落到默认（防手写 DB 搞坏）。
+    refresh=True 时绕过进程缓存直查 DB（管理后台保存后立刻读时用）。
+    """
+    now = time.monotonic()
+    with _settings_lock:
+        if not refresh and (now - _POSTER_LANGUAGE_CACHE["at"]) < SETTINGS_TTL_SEC \
+                and _POSTER_LANGUAGE_CACHE["value"]:
+            return _POSTER_LANGUAGE_CACHE["value"]
+    cfg_lang = (_config_text(TMDB_POSTER_LANGUAGE_CONFIG_KEY, db,
+                            refresh=refresh) or "").strip()
+    value = cfg_lang or TMDB_POSTER_LANGUAGE_DEFAULT
+    if value not in TMDB_POSTER_LANGUAGE_OPTIONS:
+        value = TMDB_POSTER_LANGUAGE_DEFAULT
+    with _settings_lock:
+        _POSTER_LANGUAGE_CACHE.update({"at": now, "value": value})
+    return value
+
+
+def invalidate_poster_language() -> None:
+    """保存海报语言后立刻失效缓存（同进程即时生效，跨进程靠 TTL）"""
+    with _settings_lock:
+        _POSTER_LANGUAGE_CACHE.update({"at": 0.0, "value": ""})
+
+
 def api_base(db=None) -> str:
     """当前生效的 API 基础地址（镜像 / 反代）"""
     return settings(db)["api_base"]
@@ -1727,11 +1760,19 @@ MOVIEDB_FALLBACK_LANGUAGES = ["zh-CN", "zh-HK", "zh-TW", "en-US"]
 # 海报语言配置键（SystemConfig）
 TMDB_POSTER_LANGUAGE_CONFIG_KEY = "tmdb_poster_language"
 
+# 海报语言可选值：system=用 TMDB 默认图，original=原语言海报优先，zh-CN=中文海报优先
+TMDB_POSTER_LANGUAGE_OPTIONS = ("system", "original", "zh-CN")
+TMDB_POSTER_LANGUAGE_DEFAULT = "original"
+
+# TMDB 备选语言链最大深度（可配）：search() 按语言链逐语言搜索时最多尝试几种语言
+TMDB_FALLBACK_MAX_LANGS = 4
+
 
 def language_fallback_chain(db=None):
     """返回 TMDB 搜索的语言回退链。
 
     优先读 DB 配置（SystemConfig），无配置时用默认常量。
+    长度受 TMDB_FALLBACK_MAX_LANGS 限制（可配，防链过长烧配额）。
     """
     if db is not None:
         try:
@@ -1741,10 +1782,10 @@ def language_fallback_chain(db=None):
             if row and row.value:
                 langs = [l.strip() for l in row.value.split(",") if l.strip()]
                 if langs:
-                    return langs
+                    return langs[:TMDB_FALLBACK_MAX_LANGS]
         except Exception:
             pass
-    return list(MOVIEDB_FALLBACK_LANGUAGES)
+    return list(MOVIEDB_FALLBACK_LANGUAGES)[:TMDB_FALLBACK_MAX_LANGS]
 
 
 def images_with_language(images, preferred="original"):
