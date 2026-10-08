@@ -4,14 +4,15 @@
 以前这些策略散在两处：环境变量（``EMBY_MAX_TRANSCODES``，改一次要登机器重启）与设置页里的
 下载开关。现在它们是面板上的**播放与客户端策略**，而且**真的在播放入口生效**：
 
-1. 默认 = 与升级前完全一致（允许转码、不限并发、不限码率、不拦客户端）；
+1. 默认 = 与升级前完全一致（允许转码、不限并发、不拦客户端）；
 2. 关掉转码 → 播放信息不再给「可转码」与转码地址，直接请求 master.m3u8 得到 403；
 3. 并发上限 → 满了拒绝**新的**转码请求（503），不影响已经在看的人；
-4. 码率上限 → 客户端要 40Mbps 也按上限给，直连判定跟着收紧；
-5. 客户端准入 → 黑名单 UA 连播放信息都拿不到（403），白名单模式下未列入的客户端同样被拦；
+4. 客户端准入 → 黑名单 UA 连播放信息都拿不到（403），白名单模式下未列入的客户端同样被拦；
    **管理员不受限**（排障时不能被自己的策略挡住）；
-6. 写策略只认白名单键（未知键 / 非法值不影响原值），并且只有超级管理员能写；
-7. 每次写入都留审计日志。
+5. 写策略只认白名单键（未知键 / 非法值不影响原值），并且只有超级管理员能写；
+6. 每次写入都留审计日志。
+
+2026-10：删除服务端码率钳制，客户端要多少码率给多少。
 
 用法：python scripts/smoke_test_client_policy.py
 """
@@ -110,11 +111,10 @@ def playback(headers=H_USER, ua="Emby/4.9.0.30 Android", body=None):
 print("=== 1. 默认（与升级前一致）===")
 r = client.get("/api/admin/playback/policy", headers=H_STAFF)
 policy = r.json() if r.status_code == 200 else {}
-check("策略端点 200 且返回默认值（允许转码 / 不限并发 / 不限码率 / 不拦客户端）",
+check("策略端点 200 且返回默认值（允许转码 / 不限并发 / 不拦客户端）",
       r.status_code == 200
       and policy["policy"]["transcode_enabled"] is True
       and policy["policy"]["max_concurrent_transcodes"] == 0
-      and policy["policy"]["max_bitrate_kbps"] == 0
       and policy["policy"]["blocked_agents"] == "",
       str(policy.get("policy")))
 check("策略端点带回运行态（本机并发 / 上限 / 谁在出流 / ffmpeg）",
@@ -169,27 +169,8 @@ check("上限归零（= 用进程内置上限）：不再按策略拒绝",
       not (r.status_code == 503 and "上限" in detail and "已达上限（" in detail),
       f"HTTP {r.status_code} {detail[:80]}")
 
-# ==================== 4. 码率上限 ====================
-print("\n=== 4. 码率上限 ===")
-check("工具口径：0 = 不限", playback_policy.clamp_bitrate_kbps.__doc__ is not None)
-with SessionLocal() as db:
-    check("clamp：不限时原样返回", playback_policy.clamp_bitrate_kbps(db, 40_000) == 40_000)
-set_config("playback_max_bitrate_kbps", "8000")
-with SessionLocal() as db:
-    check("clamp：超上限压到上限", playback_policy.clamp_bitrate_kbps(db, 40_000) == 8000)
-    check("clamp：低于上限不动", playback_policy.clamp_bitrate_kbps(db, 2000) == 2000)
-r = playback(body={"MaxStreamingBitrate": 40_000_000})
-src = r.json()["MediaSources"][0] if r.status_code == 200 else {}
-check("码率上限生效：12Mbps 的条目在上限 8Mbps 下不再声明直传",
-      r.status_code == 200 and src.get("SupportsDirectStream") is False,
-      str(src.get("SupportsDirectStream")))
-set_config("playback_max_bitrate_kbps", None)
-r = playback(body={"MaxStreamingBitrate": 40_000_000})
-check("上限清空后恢复直传",
-      r.status_code == 200 and r.json()["MediaSources"][0]["SupportsDirectStream"] is True)
-
-# ==================== 5. 客户端准入 ====================
-print("\n=== 5. 客户端准入 ===")
+# ==================== 4. 客户端准入 ====================
+print("\n=== 4. 客户端准入 ===")
 set_config("client_blocked_agents", "old-tv, v2.0")
 r = playback(ua="Emby/Old-TV 2.0")
 check("黑名单命中：连播放信息都拿不到（403）",
@@ -208,17 +189,13 @@ check("白名单模式：列表内的客户端放行", playback(ua="Infuse/7.6")
 set_config("client_allowed_agents", None)
 
 # ==================== 6. 写策略：白名单键与权限 ====================
-print("\n=== 6. 写策略 ===")
+print("\n=== 5. 写策略 ===")
 r = client.put("/api/admin/playback/policy", headers=H_STAFF,
                json={"policy": {"playback_max_concurrent_transcodes": "3",
-                                "playback_max_bitrate_kbps": "-5",
                                 "unknown_key": "1"}})
 applied = r.json().get("applied", {}) if r.status_code == 200 else {}
 check("写策略 200 且只应用白名单里的键",
-      r.status_code == 200 and set(applied) == {"playback_max_concurrent_transcodes",
-                                                "playback_max_bitrate_kbps"},
-      str(applied))
-check("负数归零（不是写进一个负数把所有人挡住）", applied.get("playback_max_bitrate_kbps") == "0",
+      r.status_code == 200 and set(applied) == {"playback_max_concurrent_transcodes"},
       str(applied))
 with SessionLocal() as db:
     check("回读一致",
@@ -237,7 +214,7 @@ with SessionLocal() as db:
     final = playback_policy.policy_payload(db)
 check("清空后回到与升级前一致的口径",
       final["transcode_enabled"] is True and final["blocked_agents"] == ""
-      and final["max_concurrent_transcodes"] == 0 and final["max_bitrate_kbps"] == 0,
+      and final["max_concurrent_transcodes"] == 0,
       str(final))
 
 print()
