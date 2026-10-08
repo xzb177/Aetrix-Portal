@@ -3015,7 +3015,9 @@ async def video_hls(
                 if not transcode_alive(existing):
                     raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
                 raise HTTPException(status_code=504, detail="转码尚未产出播放列表")
-            content = _rewrite_playlist(info["dir"], base, item.guid, existing, db=db, auth_qs=auth_qs)
+            # S3：重写要读 CDN 配置（同步 DB）与磁盘上的播放列表：放线程池
+            content = await run_db(_rewrite_playlist, info["dir"], base, item.guid, existing,
+                                   db=db, auth_qs=auth_qs)
             return Response(
                 content, media_type="application/vnd.apple.mpegurl",
                 # 播放列表绝不进 CDN/浏览器缓存：内容随时变（会话回收后失效）
@@ -3033,9 +3035,25 @@ async def video_hls(
                             headers={"Cache-Control": cdn.SEGMENT_CACHE_HEADER})
 
     # 新转码请求（付费墙 + 客户端与转码策略：建立会话前校验）
+    # S3：整段准备（策略校验的同步 DB、115 取直链的同步 HTTP、本地缓存查询/入队、
+    # 起 ffmpeg 的 Popen）一次性扔进线程池——旧实现直接在事件循环上做，115 慢的时候
+    # 单 worker 的 EA 整个卡住最长 20s+，所有人的播放 / 列表都停。
+    content = await run_db(_prepare_new_transcode, db, user, item, request, base, auth_qs)
+    return Response(content=content, media_type="application/vnd.apple.mpegurl")
+
+
+def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
+                           auth_qs: str) -> str:
+    """建立一次新的 HLS 转码会话，返回 master 播放列表文本（同步，必须在线程里调）
+
+    包含：防盗链 / 付费墙 / 客户端与转码策略校验、码率归档、播放目标解析（可能是
+    115 取直链等同步网络调用）、本地缓存线路查询与入队、转码缓存复用或起 ffmpeg、
+    子请求鉴权串与 CDN 改写。
+    """
+    q = request.query_params
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）；
     # 切片子请求走 session 票据，不经过这里。
-    await run_db(play_sign.check_referer, request, db)
+    play_sign.check_referer(request, db)
     ensure_playback_allowed(db, user)
     playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
     # 并发上限按**本机**正在跑的转码数判定：分离部署时 EA 就是那台播放节点
@@ -3112,12 +3130,9 @@ async def video_hls(
         f"{base}/emby/videos/{item.guid}/main.m3u8"
         f"?session={session_id}&{auth_qs}"
     )
-    if await run_db(cdn.enabled, db):
+    if cdn.enabled(db):
         variant_url = cdn.rewrite_url(db, variant_url, base)
-    return Response(
-        content=f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n",
-        media_type="application/vnd.apple.mpegurl",
-    )
+    return f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n"
 
 
 def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,  # noqa: D401
