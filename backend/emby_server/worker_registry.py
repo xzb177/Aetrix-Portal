@@ -22,6 +22,9 @@ _lock = threading.Lock()
 _registry: dict = {}
 
 SUPERVISE_INTERVAL_SEC = 30.0
+# 同一 worker 两次 Redis 心跳写入的最小间隔（秒）
+_REDIS_HEARTBEAT_MIN_SEC = 15.0
+_redis_last_write: dict = {}
 _supervisor: Optional[threading.Thread] = None
 _supervisor_stop = threading.Event()
 
@@ -60,7 +63,15 @@ def heartbeat(name: str) -> None:
         entry = _registry.get(name)
         if entry:
             entry["last_heartbeat"] = time.time()
-    # 跨进程：API 容器的 /api/health 要能看到 worker 容器的线程状态
+    # 跨进程：API 容器的 /api/health 要能看到 worker 容器的线程状态。
+    # 探测调度器每轮循环（最快 0.5s）都会调 heartbeat，Redis 写按名字节流到
+    # _REDIS_HEARTBEAT_MIN_SEC 一次（存活判定阈值是 1 小时，节流不影响告警）
+    now = time.time()
+    with _lock:
+        last = _redis_last_write.get(name, 0.0)
+        if now - last < _REDIS_HEARTBEAT_MIN_SEC:
+            return
+        _redis_last_write[name] = now
     try:
         r = _redis()
         if r is not None:

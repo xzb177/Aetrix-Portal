@@ -59,6 +59,7 @@
   `PROBE_CLAIM_TTL_SEC`、`PROBE_BREAKER_THRESHOLD`、`PROBE_BREAKER_COOLDOWN_SEC`、
   `PROBE_RETRY_MAX_SEC`、`PROBE_TRIAGE_CHUNK`。
 - 管理后台前端尚未加探测进度卡片，接口已就绪（见上）。
+
 ## [未发布] - 安全修复：3 个严重 + 5 个高危漏洞
 
 ### 安全修复

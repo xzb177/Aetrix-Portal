@@ -1,5 +1,7 @@
 """老库补索引：7 个 _ensure_*_index 合并为一张表后，行为与拆分前一致。
 
+- 探测 worker 重构（v2.53）在 idx_item_probe 之后追加 idx_item_probe_retry
+
 - 表不存在 → 跳过；依赖列（emby_people.person_tmdb_id）不存在 → 跳过
 - 演员索引沿用恢复补丁（PR #403/#406）的 idx_person_item_tmdb (item_id, person_tmdb_id)
 - 缺的索引按原 DDL 补上；已存在 → 不重复建（幂等）
@@ -15,6 +17,7 @@ from backend import database
 
 _ITEM_INDEXES = {
     "idx_item_probe": ["probe_status", "probe_priority", "id"],
+    "idx_item_probe_retry": ["probe_status", "probe_next_retry_at"],
     "idx_item_enrich": ["enrich_status", "enrich_next_retry_at", "enrich_priority"],
     "idx_item_merged_into_id": ["merged_into_id"],
     "idx_item_added": ["date_added", "item_type"],
@@ -28,7 +31,7 @@ def _engine(tmp_path):
     with eng.begin() as conn:
         conn.execute(text(
             "CREATE TABLE emby_items (id INTEGER PRIMARY KEY, probe_status TEXT, "
-            "probe_priority INTEGER, enrich_status TEXT, enrich_next_retry_at TEXT, "
+            "probe_priority INTEGER, probe_next_retry_at TEXT, enrich_status TEXT, enrich_next_retry_at TEXT, "
             "enrich_priority INTEGER, merged_into_id INTEGER, date_added TEXT, "
             "item_type TEXT, library_id INTEGER, deleted_at TEXT, drive_file_id TEXT)"
         ))
@@ -43,7 +46,7 @@ def _indexes(eng, table):
 def test_spec_table_covers_all_seven_in_restored_order():
     names = [spec[1] for spec in database._LEGACY_INDEXES]
     assert names == [
-        "idx_item_probe", "idx_item_enrich", "idx_item_added",
+        "idx_item_probe", "idx_item_probe_retry", "idx_item_enrich", "idx_item_added",
         "idx_item_lib_deleted", "idx_item_drive_file_id",
         "idx_item_merged_into_id", "idx_person_item_tmdb",
     ]
@@ -59,7 +62,7 @@ def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
     first = capsys.readouterr().out
-    assert first.count("已迁移") == 6
+    assert first.count("已迁移") == 7
 
     # 第二次：全部已存在，不再建、不再打日志
     database._ensure_legacy_indexes(tables)
