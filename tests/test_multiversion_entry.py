@@ -61,12 +61,17 @@ def _load_worker_isolated():
     models = _make_models_mock()
     dedup = types.ModuleType("backend.emby_server.dedup")
     dedup.pick_primary = lambda group: group[0]
+    # env_util：merge_versions_worker 导入 env_float/env_int（R3 打磨统一）
+    env_util = types.ModuleType("backend.emby_server.env_util")
+    env_util.env_int = lambda name, default, lo, hi: default
+    env_util.env_float = lambda name, default, lo: default
 
     mocks = {
         "backend": backend,
         "backend.emby_server": emby_server,
         "backend.emby_server.models": models,
         "backend.emby_server.dedup": dedup,
+        "backend.emby_server.env_util": env_util,
     }
     patcher = patch.dict(sys.modules, mocks)
     patcher.start()
