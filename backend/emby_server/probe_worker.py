@@ -63,6 +63,7 @@ from sqlalchemy import and_, func, or_
 from backend.emby_server import media_probe
 from backend.emby_server import models as em
 from backend.emby_server import proc_util
+from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
@@ -74,8 +75,8 @@ def _env_flag(name: str, default: str = "1") -> bool:
 
 # ---------------------------------------------------------------- 配置
 PROBE_ENABLED = _env_flag("PROBE_ONDEMAND_ENABLED")
-# 总并发（线程池大小）
-PROBE_WORKERS = env_int("PROBE_WORKERS", 4, 1, 16)
+# 总并发（线程池大小）：按 CPU 自适应，永远给前台留一核
+PROBE_WORKERS = _cpu_workers("PROBE_WORKERS")
 # 每个挂载的并发上限：远程（115/rclone/WebDAV/FUSE/直链）默认 2，本机磁盘默认 4
 PROBE_REMOTE_CONCURRENCY = env_int("PROBE_REMOTE_CONCURRENCY", 2, 1, 16)
 PROBE_LOCAL_CONCURRENCY = env_int("PROBE_LOCAL_CONCURRENCY", 4, 1, 16)

@@ -41,7 +41,6 @@ from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
-from backend.emby_server import play_line
 from backend.emby_server import play_sign
 from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
@@ -2894,16 +2893,16 @@ async def playback_info(
     # 开箱即用播放优化：移动端 4K 透明降级（只此一处实现）。
     # 手机屏看 4K 与 1080p 肉眼无差，但带宽差数倍；同部片有 ≤1080p 版本
     # 时直接给低版本，客户端无感，不用转码、不用用户手动切。
-    try:
-        from backend.emby_server import playback_tune as _pt
-        _downgraded = await run_db(
-            _pt.maybe_downgrade_for_client, item,
-            request.headers.get("user-agent"), db,
-        )
-        if _downgraded is not None and await run_db(_item_visible, db, user, _downgraded):
-            item = _downgraded
-    except Exception:  # noqa: BLE001
-        pass
+    # DISABLED 2026-10-08:     try:
+    # DISABLED 2026-10-08:         from backend.emby_server import playback_tune as _pt
+    # DISABLED 2026-10-08:         _downgraded = await run_db(
+    # DISABLED 2026-10-08:             _pt.maybe_downgrade_for_client, item,
+    # DISABLED 2026-10-08:             request.headers.get("user-agent"), db,
+    # DISABLED 2026-10-08:         )
+    # DISABLED 2026-10-08:         if _downgraded is not None and await run_db(_item_visible, db, user, _downgraded):
+    # DISABLED 2026-10-08:             item = _downgraded
+    # DISABLED 2026-10-08:     except Exception:  # noqa: BLE001
+    # DISABLED 2026-10-08:         pass
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
     await run_db(ensure_playback_allowed, db, user)
     # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
@@ -2933,8 +2932,7 @@ async def playback_info(
     max_bitrate = int(body.get("MaxStreamingBitrate") or 0) or int(
         (device_profile.get("MaxStreamingBitrate") or 0)
     ) or 120_000_000
-    # 码率上限（v2.26.0）：客户端要 40Mbps 也只按上限给，直连/直传的判定跟着一起收紧
-    max_bitrate = await run_db(playback_policy.clamp_bitrate_kbps, db, max_bitrate // 1000) * 1000
+    # 2026-10 简化：删除服务端码率钳制，客户端要多少给多少（学 Linger 薄服务器思路）
     # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
     allow_transcode = await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)
 
@@ -2974,12 +2972,10 @@ async def playback_info(
     # api_key：只回显 Emby 客户端 token（第三方客户端兼容）。
     # 安全修复 H2：门户 / 管理员 JWT 不再进 URL——网页端只拿短期播放签名（uid/exp/sign）。
     api_key = _api_key_for(db, request)
-    # CDN 预留（第 2/3 层）：启用时播放面 URL 换 CDN 域名（回源到本服务，
-    # 鉴权查询串原样透传；CDN 侧的缓存规则由管理员配置）。线路选择里选了
-    # cdn 的用户同样走 CDN——未启用/未选时 URL 与升级前逐字节一致。
-    user_wants_cdn = await run_db(
-        play_line.get_play_line, db, getattr(user, "id", None)) == play_line.LINE_CDN
-    use_cdn = user_wants_cdn or await run_db(cdn.enabled, db)
+    # CDN 域名（管理员级开关）：启用时播放面 URL 换 CDN 域名（回源到本服务，
+    # 鉴权查询串原样透传；CDN 侧的缓存规则由管理员配置）。未启用时 URL
+    # 与升级前逐字节一致。
+    use_cdn = await run_db(cdn.enabled, db)
     # 播放短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带 uid/exp/sign，
     # 播放端点优先验签。签名 15 分钟过期、绑定 user_id+item_id，泄露后窗口极小。
     play_exp, play_sig = play_sign.issue_play_sign(
@@ -3025,8 +3021,8 @@ async def playback_info(
     })
 
 
-def _observe_line(response, line: str):
-    """给播放响应包一层计字节（Phase 3 可观测用），并记一次请求
+def _observe_traffic(response):
+    """给播放响应包一层计字节（可观测用），并记一次请求
 
     只包 ``body_iterator``，不改状态码、不改头、不改内容——包装器把原迭代器
     原样吐出去，只在旁边数一下一共流了多少字节。计数在迭代器跑完后上报一次，
@@ -3037,7 +3033,7 @@ def _observe_line(response, line: str):
     也不按 Content-Length 记账：客户端中途断开时那样会把没发出去的字节算进去，
     面板上的「出流量」就会虚高——宁可口径窄，也不能给一个偏大的数。
     """
-    line_stats.record_request(line)
+    line_stats.record_request()
     iterator = getattr(response, "body_iterator", None)
     if iterator is None:
         return response
@@ -3049,21 +3045,10 @@ def _observe_line(response, line: str):
                 total += len(chunk)
                 yield chunk
         finally:
-            line_stats.record_bytes(line, total)
+            line_stats.record_bytes(total)
 
     response.body_iterator = _counting()
     return response
-
-
-def _note_line_fallback(selected: str, actual: str, reason: str) -> None:
-    """用户选的线路退化成了另一条：两边都记一笔
-
-    退化方记「降级 +1 与原因」，实际承载的那条记请求——否则运维会看到
-    「本地缓存很忙」，而流量其实全压在回源上。
-    """
-    line_stats.record_request(selected, degraded=reason)
-    if actual and actual != selected:
-        line_stats.record_request(actual)
 
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
@@ -3086,43 +3071,26 @@ async def video_stream(
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     target = await run_db(_play_target, db, item)
     if target.kind == "url":
-        # 线路选择（用户维度，play_line 模块）：
-        # 302 真直连已下线（原因见 play_line 模块说明：302 带不过 Authorization 头，
-        # token 放 URL 会被 Google 限流），所以 kind=url 一律由本服务代理转发。
-        # cdn 线路与 relay 同口径——CDN 只挡回源流量，URL 的域名改写在
-        # PlaybackInfo/播放列表那几层已完成（cdn 模块）。
-        line = await run_db(play_line.get_play_line, db, getattr(user, "id", None))
-        # 本地缓存线路（local_cache 模块）：命中本机副本就直接读本机（不过网络、
+        # 单一播放路径（2026-10 简化）：中转 + 本地缓存自动层。
+        # 本地缓存（local_cache 模块）：命中本机副本就直接读本机（不过网络、
         # 不碰云盘配额）；没命中就走下面的回源口径，同时按最高优先级排进缓存队列
-        # （后台单线程限速下载，播放时自动让路）。未启用缓存时 queue 为空操作，
-        # 行为与 relay 完全一致。
-        if line == play_line.LINE_CACHE:
-            cached_file = await run_db(local_cache.lookup, db, item)
-            if cached_file:
-                return _observe_line(
-                    serve_file(cached_file, request, media_type,
-                               cache_control=cdn.cache_control_for(str(request.url.path))),
-                    play_line.LINE_CACHE)
-            await run_db(local_cache.enqueue, db, item, local_cache.PLAY_PRIORITY)
-            # 没命中 → 这次实际走的是下面那条回源路径，缓存线路记一次降级
-            _note_line_fallback(play_line.LINE_CACHE, "", "本机无副本，已回源并排队缓存")
-        # CDN 预留（第 2/3 层）：代理转发形态也带上分片缓存头，让 CDN 边缘能缓存
-        # 回源结果。
+        # （后台单线程限速下载，播放时自动让路）。未启用缓存时 lookup/enqueue
+        # 都是空操作，行为与纯中转完全一致。
+        cached_file = await run_db(local_cache.lookup, db, item)
+        if cached_file:
+            return _observe_traffic(
+                serve_file(cached_file, request, media_type,
+                           cache_control=cdn.cache_control_for(str(request.url.path))))
+        await run_db(local_cache.enqueue, db, item, local_cache.PLAY_PRIORITY)
+        # 分片缓存头：让 CF 边缘能缓存回源结果。
         seg_cache = cdn.cache_control_for(str(request.url.path))
-        if line == play_line.LINE_RELAY:
-            return _observe_line(
-                await serve_remote_async(target.value, request, target.headers, media_type,
-                                         cache_control=seg_cache),
-                play_line.LINE_RELAY)
-        # 挂载来源（115 / rclone / 本地 .strm 直链）：一律由本服务代理转发，
-        # Range 与状态码透传，凭据不下发。**不再有任何 302 分支**。
+        # 中转：本服务代理转发。Range 与状态码透传，凭据不下发。
         #
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
         # 不能让一个用户的拖动进度条把整个事件循环卡住。
-        return _observe_line(
+        return _observe_traffic(
             await serve_remote_async(target.value, request, target.headers, media_type,
-                                     cache_control=seg_cache),
-            line)
+                                     cache_control=seg_cache))
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
     return serve_file(target.value, request, media_type,
                       cache_control=cdn.cache_control_for(str(request.url.path)))
@@ -3226,62 +3194,41 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
     )
     if not shutil.which(os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")):
         raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法转码；请使用直连播放")
-    # 码率上限：客户端要多少都压到策略上限内（0 = 不限）
-    video_bitrate = playback_policy.clamp_bitrate_kbps(
-        db, int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000) // 1000,
-    ) * 1000
+    # 2026-10 简化：删除服务端码率钳制，客户端要多少转多少
+    video_bitrate = int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000)
     height = int(q.get("Height") or 0) or None
-    # 按需转码 P1：码率归档到 480p/720p/1080p 三档（弱网降码率只转需要的档）；
-    # 源片分辨率低于档位时不做无意义的上采样
+    # 2026-10 简化：删除服务端三档转码。客户端要多少码率/分辨率就转多少，
+    # 只在源片分辨率低于请求时不做无意义的上采样（学 Linger 薄服务器思路）。
     from backend.emby_server import transcode as transcode_mod
-    tier = transcode_mod.pick_tier(video_bitrate, getattr(item, "height", None))
-    video_bitrate = transcode_mod.TIERS[tier]["video_bitrate"]
-    height = transcode_mod.TIERS[tier]["height"]
+    height = transcode_mod.clamp_to_source(height, getattr(item, "height", None))
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS
     target = _play_target(db, item)
-    # 本地缓存线路：有本机副本时让 ffmpeg 直接读本地（少一次远程回源）；
+    # 本地缓存自动层：有本机副本时让 ffmpeg 直接读本地（少一次远程回源）；
     # 没命中就把这条排进缓存队列（与 video_stream 同口径）。
-    if (target.kind == "url"
-            and play_line.get_play_line(db, getattr(user, "id", None)) == play_line.LINE_CACHE):
+    if target.kind == "url":
         cached_file = local_cache.lookup(db, item)
         if cached_file:
             target = mount_lib.PlayTarget("local", cached_file, {})
-            # 转码口径下命中本机副本：这条请求确实走的是缓存线路
-            line_stats.record_request(play_line.LINE_CACHE)
         else:
             local_cache.enqueue(db, item, local_cache.PLAY_PRIORITY)
-            _note_line_fallback(play_line.LINE_CACHE, "", "本机无副本，转码从回源拉流")
-    elif target.kind == "url":
         # 转码的拉流字节由 ffmpeg 进程走，不经过本服务的响应体，
         # 所以这里只记请求不记流量（面板上已标明流量口径不含转码拉流）。
-        #
-        # 记的是**用户选的那条线**。原先这里按 ``cdn.enabled(db)`` 记成 cdn
-        # 或 direct —— 整条转码路径压根没看过 ``get_play_line``，于是选了
-        # 中转线路的用户，面板上「代理中转」永远是 0，看起来就像「切换
-        # 没生效」。转码输入本来就是本服务的 ffmpeg 去拉源站（这正是 relay
-        # 的语义），所以口径上记 relay 没有偏差。
-        selected = play_line.get_play_line(db, getattr(user, "id", None))
-        if selected == play_line.LINE_CDN and not cdn.enabled(db):
-            # 选了 CDN 但没启用 = 退化到回源，与 video_stream 的口径对齐
-            # （回源即 relay：302 直连下线后，回源就是代理转发这一种形态）
-            _note_line_fallback(play_line.LINE_CDN, play_line.LINE_RELAY,
-                                "CDN 未启用，转码从回源拉流")
-        else:
-            line_stats.record_request(selected)
+        line_stats.record_request()
     # 按需转码 P1：缓存命中直接复用，不再起 ffmpeg；
     # 2 路硬限制超了就 503，让客户端降级走直连
     fingerprint = getattr(item, "file_fingerprint", None)
-    cached_dir = transcode_mod.find_cache(item.guid, tier, fingerprint)
+    cached_dir = transcode_mod.find_cache(item.guid, video_bitrate, height, fingerprint)
     if cached_dir:
         session_id = transcode_mod.register_cache_session(
-            cached_dir, user_id=user.id, item_guid=item.guid, tier=tier)
+            cached_dir, user_id=user.id, item_guid=item.guid,
+            video_bitrate=video_bitrate, height=height)
     else:
         transcode_mod.ensure_slot_or_503()
         session_id = start_transcode(
             target.value, start_seconds, video_bitrate, height,
             user_id=user.id, item_guid=item.guid, input_headers=target.headers,
-            tier=tier, cache_key=transcode_mod.cache_key(item.guid, tier, fingerprint),
+            cache_key=transcode_mod.cache_key(item.guid, video_bitrate, height, fingerprint),
             fingerprint=fingerprint,
         )
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，

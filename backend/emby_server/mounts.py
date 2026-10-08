@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 
 from backend.emby_server import disc_filter
 from backend.emby_server import models as em
+from backend.emby_server.cpu_budget import capped_workers as _capped_workers
 # 远程 IO 计数与「扫描会话」标记（只依赖标准库，不会形成循环导入）
 from backend.emby_server import scan_progress as progress
 from backend.emby_server.playback_security import (
@@ -1130,11 +1131,8 @@ def walk_workers_limit() -> int:
     并且把大量请求堆成 context canceled / connection reset（生产 24 小时 5.2 万条）。
     降一半后单轮扫描慢一些，但成功率与错误量都大幅改善。
     """
-    try:
-        n = int(os.getenv("SCAN_WALK_WORKERS", "8") or 8)
-    except (TypeError, ValueError):
-        n = 8
-    return max(1, n)
+    # 按 CPU 自适应（cpu_budget）：默认 8，手动配置时截断到核数-1，永远给前台留一核
+    return _capped_workers("SCAN_WALK_WORKERS", 8)
 
 
 class RemoteMount(MountProvider):

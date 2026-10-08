@@ -21,7 +21,6 @@ import {
   type AuthUser, type AccountCard, type AccountRealmCard, type MySubscription, type WatchStats,
 } from '@/api'
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
-import { getPlayLine, setPlayLine, type PlayLine } from '@/api/user'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
 import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
@@ -59,59 +58,8 @@ const watchHours = computed(() => {
 const copiedField = ref('')
 const showPlayPassword = ref(false)
 
-// ===== 播放线路选择 =====
-// relay = 中转线路（默认）：视频字节经本服务转发，Google 凭据不下发到客户端；
-// cdn = CDN 线路（第 2/3 层预留）：走管理员预留的 CDN 域名，热门分片由边缘缓存；
-//        仅管理员在后台开启 CDN 后才展示（后端给 cdn_enabled）；
-// cache = 本地缓存线路：优先从 VPS 本地读热门片，本地没有则回源并触发缓存；
-//        仅管理员在后台开启本地缓存后才展示（后端给 cache_enabled）。
-//
-// direct（302 直连）已下线：调研 Alist / RClone / Cloudreve 后确认 Google Drive
-// 的 302 真直链不可行——重定向带不过 Authorization 头，token 放进 URL 又会被
-// Google 限流，三家也都是服务端代理。库里存过 direct 的老用户由前端与后端
-// 两侧都折成 relay，所以界面上不会出现「选了也没用」的选项。
-const playLine = ref<PlayLine>('relay')
-const lineSaving = ref(false)
-const cdnAvailable = ref(false)
-const cacheAvailable = ref(false)
-
-/** 当前真正可选项：CDN / 本地缓存没开就不出现（不给点了没变化的死选项） */
-const lineOptions = computed<PlayLine[]>(() => {
-  const options: PlayLine[] = []
-  if (cdnAvailable.value) options.push('cdn')
-  if (cacheAvailable.value) options.push('cache')
-  options.push('relay')
-  return options
-})
-
-/**
- * 只有一个可选项时，分段选择器本身没有意义（一个按钮点下去什么都不会变），
- * 改成一行静态文案。等以后接上 CDN，这里会自动恢复成可点的分段器。
- */
-const singleLine = computed(() => (lineOptions.value.length === 1 ? lineOptions.value[0] : null))
-
-async function pickLine(line: PlayLine) {
-  if (lineSaving.value || playLine.value === line) return
-  lineSaving.value = true
-  try {
-    playLine.value = await setPlayLine(line)
-    toast.success(
-      line === 'cdn' ? '已切换到 CDN 线路'
-        : line === 'cache' ? '已切换到本地缓存线路'
-          : '已切换到中转线路',
-    )
-  } catch (err: any) {
-    // 不要把服务器给的原因丢掉：400（线路非法）/ 503（自建 Emby 已停用）/
-    // 断网 / 会话过期，各有各的可操作动作。一律报「切换失败，请重试」
-    // 等于让用户和排查都只能瞎猜——这正是这个 bug 最难受的地方。
-    const detail = err?.response?.data?.detail
-    toast.error(
-      (typeof detail === 'string' && detail) || err?.message || '切换失败，请重试',
-    )
-  } finally {
-    lineSaving.value = false
-  }
-}
+// ===== 播放路径（2026-10 简化）：只有中转一条，无需选择 =====
+// 视频经服务器转发，热门内容自动走本地缓存 + CF 边缘缓存。
 
 const embyUsername = computed(() => account.value?.emby_username || user.value?.emby_username || user.value?.username || '—')
 const serverUrl = computed(() => account.value?.base_url || window.location.origin)
@@ -335,17 +283,7 @@ async function loadProfile(silent = false) {
     // 直接赋值会把好数据刷成"—"/空；首屏失败则保持旧行为（显示空态）
     if (!silent || watchStats) stats.value = watchStats
     if (!silent || subs.length) subscriptions.value = subs
-    // 播放线路偏好加载失败不阻塞页面：拿不到就按默认中转展示
-    getPlayLine()
-      .then((res) => {
-        cdnAvailable.value = res.cdnEnabled
-        cacheAvailable.value = res.cacheEnabled
-        playLine.value = res.line
-        // 服务端不支持的线路（未开启）：退回中转，不留一个点了没变化的死选项
-        if (playLine.value === 'cache' && !res.cacheEnabled) playLine.value = 'relay'
-        if (playLine.value === 'cdn' && !res.cdnEnabled) playLine.value = 'relay'
-      })
-      .catch(() => {})
+    // 播放路径只有中转一条，无需加载偏好
   } catch {
     // 401 已由拦截器处理
   } finally {
@@ -654,7 +592,7 @@ function formatDate(iso?: string | null) {
           <p class="pane-tip">远程结束播放只会终止会话，不会删除观看记录。</p>
         </section>
 
-        <!-- 播放设置：线路选择。默认中转（经服务器转发），接上 CDN 后会多出选项 -->
+        <!-- 播放设置：只有中转一条路径，热门内容自动走缓存 -->
         <section class="pane">
           <header class="pane-head">
             <h2 class="pane-title">
@@ -662,57 +600,9 @@ function formatDate(iso?: string | null) {
               播放设置
             </h2>
           </header>
-          <!-- 只有一个可选项时不做成可点的分段器：点它什么都不会变，
-               直接说清当前线路，等新线路接入后自动恢复成分段选择 -->
-          <p v-if="singleLine" class="line-only">
+          <p class="line-only">
             <Route :size="14" />
-            当前线路：中转（视频经服务器转发，网盘凭据不下发到客户端）
-          </p>
-          <div v-else class="line-seg" role="radiogroup" aria-label="播放线路">
-            <button
-              v-if="cdnAvailable"
-              type="button"
-              class="line-opt"
-              :class="{ on: playLine === 'cdn' }"
-              role="radio"
-              :aria-checked="playLine === 'cdn'"
-              :disabled="lineSaving"
-              @click="pickLine('cdn')"
-            >
-              <Cloud :size="13" />
-              CDN 线路
-            </button>
-            <button
-              v-if="cacheAvailable"
-              type="button"
-              class="line-opt"
-              :class="{ on: playLine === 'cache' }"
-              role="radio"
-              :aria-checked="playLine === 'cache'"
-              :disabled="lineSaving"
-              @click="pickLine('cache')"
-            >
-              <HardDrive :size="13" />
-              本地缓存
-            </button>
-            <button
-              type="button"
-              class="line-opt"
-              :class="{ on: playLine === 'relay' }"
-              role="radio"
-              :aria-checked="playLine === 'relay'"
-              :disabled="lineSaving"
-              @click="pickLine('relay')"
-            >
-              <Route :size="13" />
-              中转线路
-            </button>
-          </div>
-          <p class="pane-tip">
-            <template v-if="playLine === 'cdn'">CDN 线路：热门影片走边缘节点分发，播放更稳。首次播放自动缓存，后续直接命中。</template>
-            <template v-else-if="playLine === 'cache'">本地缓存：优先读服务器本地已缓存的热门片，不受网盘波动影响。没缓存时自动回源。</template>
-            <template v-else>中转线路：视频经服务器转发，Google 账号信息不下发到你的设备。</template>
-            <template v-if="!singleLine">切换后重新播放生效。</template>
+            中转播放（视频经服务器转发，网盘凭据不下发到客户端；热门内容自动缓存）
           </p>
         </section>
 

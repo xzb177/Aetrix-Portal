@@ -36,6 +36,7 @@ from typing import Any, Optional
 from backend.database import SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import scan_progress as progress
+from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ logger = logging.getLogger(__name__)
 # 令牌桶。旧实现是在这里按**条目**扣 token，而一个条目背后是 0~6 次 HTTP
 # （中文标题 4~5 个候选搜索最贵），于是「2/秒」实际打出去 4~12 请求/秒，
 # 而且扫描那条路（scanner._tmdb_work）完全没有限速。现在只有一个桶。
-ENRICH_WORKERS = max(1, min(16, int(os.getenv("ENRICH_WORKERS", "4") or 4)))
+# 并发按 CPU 自适应（cpu_budget）：未配置时按核数一半，永远给前台留一核
+ENRICH_WORKERS = _cpu_workers("ENRICH_WORKERS")
 ENRICH_BATCH = max(10, int(os.getenv("ENRICH_BATCH", "100") or 100))
 ENRICH_IDLE_POLL_SEC = max(5, int(os.getenv("ENRICH_IDLE_POLL_SEC", "30") or 30))
 ENRICH_ENABLED = (os.getenv("ENRICH_WORKER", "1") or "1").strip().lower() not in {

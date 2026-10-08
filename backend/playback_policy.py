@@ -1,4 +1,4 @@
-"""播放与客户端策略（v2.26.0）
+"""播放与客户端策略（v2.26.0，2026-10 简化）
 
 以前这些策略散在两处：一部分是环境变量（``EMBY_MAX_TRANSCODES`` / ``EMBY_TRANSCODE_IDLE``，
 改一次要登机器重启进程），一部分是设置页里的下载 / 设备开关。运营想要的是
@@ -6,11 +6,11 @@
 
 - **允许转码吗**（关掉只放直连/直接播放：省 CPU，代价是客户端兼容性变差）；
 - **同时几路转码**（超了直接拒绝新的，而不是把正在看的人挤掉）；
-- **码率上限**（客户端要 40Mbps 也只给到设定值，防止一条链路打满上行）；
 - **哪些客户端不许进**（老版本 / 盗版客户端的 UA 子串黑名单，也支持白名单模式）。
 
-判定口径与 ``backend/subscriptions.py`` 一致：**管理员不受限**（排障时不能被自己的策略挡住），
-缺省配置 = 与升级前完全一样的行为（允许转码、不限并发、不限码率、不拦客户端）。
+2026-10 删除服务端码率钳制：客户端要多少码率给多少（学 Linger 薄服务器思路）。
+
+判定口径与 ``backend/subscriptions.py`` 一致：**管理员不受限**（排障时不能被自己的策略挡住）。
 
 落库仍然是 ``SystemConfig`` 键值（EM 与 EA 用的是同一个库，见 deploy-ea.md），
 所以面板上改完最多 60 秒生效（同一进程内保存即生效，跨进程靠短 TTL 兜底）。
@@ -28,7 +28,6 @@ from backend.integrations import store
 
 CONFIG_TRANSCODE_ENABLED = "playback_transcode_enabled"
 CONFIG_MAX_TRANSCODES = "playback_max_concurrent_transcodes"
-CONFIG_MAX_BITRATE = "playback_max_bitrate_kbps"
 CONFIG_BLOCKED_AGENTS = "client_blocked_agents"
 CONFIG_ALLOWED_AGENTS = "client_allowed_agents"
 
@@ -36,19 +35,15 @@ CONFIG_ALLOWED_AGENTS = "client_allowed_agents"
 POLICY_KEYS = {
     CONFIG_TRANSCODE_ENABLED: "bool",
     CONFIG_MAX_TRANSCODES: "int",
-    CONFIG_MAX_BITRATE: "int",
     CONFIG_BLOCKED_AGENTS: "str",
     CONFIG_ALLOWED_AGENTS: "str",
 }
-
-DEFAULT_BITRATE_CEILING_KBPS = 0  # 0 = 不限
 
 # 各键的出厂默认值（字符串形态，与 _config_bool / _config_int / _agent_list 的缺省语义一致）。
 # 配置自愈（backend/config_self_heal.py）引用这份表补缺失行 —— 默认值只许在这里定义一次。
 POLICY_DEFAULTS = {
     CONFIG_TRANSCODE_ENABLED: "true",
     CONFIG_MAX_TRANSCODES: "0",
-    CONFIG_MAX_BITRATE: str(DEFAULT_BITRATE_CEILING_KBPS),
     CONFIG_BLOCKED_AGENTS: "",
     CONFIG_ALLOWED_AGENTS: "",
 }
@@ -86,12 +81,6 @@ def max_transcodes(db: Session) -> int:
     """并发转码上限；0 = 用进程内置上限（``EMBY_MAX_TRANSCODES`` / CPU 核数）"""
     return max(0, _config_int(db, CONFIG_MAX_TRANSCODES,
                         int(POLICY_DEFAULTS[CONFIG_MAX_TRANSCODES])))
-
-
-def max_bitrate_kbps(db: Session) -> int:
-    """码率上限（kbps）；0 = 不限"""
-    return max(0, _config_int(db, CONFIG_MAX_BITRATE,
-                        int(POLICY_DEFAULTS[CONFIG_MAX_BITRATE])))
 
 
 def _agent_list(db: Session, key: str) -> list[str]:
@@ -150,20 +139,11 @@ def ensure_transcode_allowed(db: Session, user, *, running: int, capacity: int) 
         )
 
 
-def clamp_bitrate_kbps(db: Session, requested_kbps: int) -> int:
-    """把客户端请求的码率压到上限内（0 表示不限）"""
-    limit = max_bitrate_kbps(db)
-    if not limit:
-        return requested_kbps
-    return min(requested_kbps, limit) if requested_kbps else limit
-
-
 def policy_payload(db: Session) -> dict:
     """当前策略（面板读一份，前端不维护默认值）"""
     return {
         "transcode_enabled": transcode_enabled(db),
         "max_concurrent_transcodes": max_transcodes(db),
-        "max_bitrate_kbps": max_bitrate_kbps(db),
         "blocked_agents": _raw(db, CONFIG_BLOCKED_AGENTS) or "",
         "allowed_agents": _raw(db, CONFIG_ALLOWED_AGENTS) or "",
     }

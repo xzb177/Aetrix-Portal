@@ -7,12 +7,10 @@
   上限多少、由谁出流）——运营改「并发上限」之前得先知道现在跑到什么程度；
 - ``PUT  /api/admin/playback/policy``：写回策略（仅超级管理员，前缀规则见 admin_roles）。
 
-播放线路可观测（Phase 3）：
+播放可观测（2026-10 简化：单路径）：
 
-- ``GET  /api/admin/playback/lines``：direct / cdn / cache / relay 四条线路各一张卡片：
-  能不能用（配置就绪）、是不是在降级（配置缺口 + 本进程降级原因）、有多少人 / 多少
-  流量在这条线上（用户分布 + 本进程计数）、效果如何（缓存命中率 / CDN 缓存口径）。
-  **纯只读**：不在这里改线路配置；灰度发布 / 影子流量本期不做。
+- ``GET  /api/admin/playback/lines``：单路径快照——播放流量（本进程请求数/出流量）、
+  本地缓存层状态（启用/命中率/占用）、CDN 域名状态。**纯只读**。
 
 CDN 域名预留（播放三层第 2/3 层极简预留版）：
 
@@ -78,11 +76,7 @@ def get_play_lines(
     current_admin=Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """四条播放线路各一张可观测卡片（健康 / 降级 / 流量 / 效果）
-
-    只读端点：面板不提供「在这里改线路」的能力——线路是用户侧偏好，
-    改配置在 CDN / 本地缓存那两个卡片里，不在可观测卡片里。
-    """
+    """单路径播放可观测快照（流量 / 本地缓存层 / CDN 域名状态）"""
     return line_health.snapshot(db)
 
 

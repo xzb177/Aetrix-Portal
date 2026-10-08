@@ -26,7 +26,7 @@ import { useDangerOps, fmtBytes } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
   CdnConfig, LocalCacheConfig, LocalCacheEntryInfo, LocalCacheStats, PlaybackPolicy, PlaybackRuntime,
-  PlayLineCard, PlayLinesSnapshot,
+  PlayLinesSnapshot,
 } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
@@ -48,7 +48,6 @@ const cleaningCache = ref(false)
 const policy = ref<PlaybackPolicy>({
   transcode_enabled: true,
   max_concurrent_transcodes: 0,
-  max_bitrate_kbps: 0,
   blocked_agents: '',
   allowed_agents: '',
 })
@@ -136,45 +135,9 @@ onMounted(load)
 // 只回答“这会儿每条线路怎么样”：能不能用、是不是在降级、有多少人多少流量、效果如何。
 
 const playLines = ref<PlayLinesSnapshot | null>(null)
-/** 在用线路（剔除已下线的直连，否则就绪率会被历史卡片拉低） */
-const liveLines = computed(() => (playLines.value?.lines ?? []).filter((l) => !l.retired))
 
 /** 本机文件整文件直发 / 转码拉流不走本服务响应体，流量口径不包含它们 */
 const lineBytesHint = '流量 = 本进程经手的出流量（不含转码时 ffmpeg 的拉流与整文件直发）'
-
-function lineState(card: PlayLineCard): { text: string; cls: string } {
-  if (!card.ready) return { text: '降级中', cls: 'warn' }
-  if (card.degraded_requests > 0) return { text: '有降级', cls: 'warn' }
-  return { text: '正常', cls: 'ok' }
-}
-
-/** 降级原因合并成一行（配置缺口 + 运行态，按次数降序） */
-function lineDegradeText(card: PlayLineCard): string {
-  const parts: string[] = []
-  if (card.degraded_by_config) parts.push(card.degraded_by_config)
-  card.degraded_reasons.forEach((r) => parts.push(`${r.reason}（${r.count} 次）`))
-  return parts.join('；')
-}
-
-function lineIdleText(card: PlayLineCard): string {
-  if (card.idle_seconds === null) return '本进程内还没人用过'
-  if (card.idle_seconds < 60) return '刚刚还在用'
-  if (card.idle_seconds < 3600) return `${Math.floor(card.idle_seconds / 60)} 分钟前用过`
-  return `${Math.floor(card.idle_seconds / 3600)} 小时前用过`
-}
-
-/** 每条线路“效果”那一栏：按线路给不同口径（缓存给命中率、CDN 给缓存口径…） */
-function lineEffectText(card: PlayLineCard): string {
-  const e = card.effect
-  if (card.line === 'cache') {
-    if (e.hit_rate === null || e.hit_rate === undefined) return '还没有过查找，命中率待观察'
-    return `命中率 ${fmtRate(e.hit_rate)}（命中 ${e.hits ?? 0} / 未命中 ${e.misses ?? 0}）`
-  }
-  if (card.line === 'cdn') {
-    return e.domain ? `回源域名 ${e.domain}` : '未启用或域名未填，播放 URL 走本服务'
-  }
-  return e.note || ''
-}
 
 async function savePolicy() {
   savingPolicy.value = true
@@ -368,75 +331,52 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
         />
       </div>
 
-      <div class="field-row">
-        <div class="field-main">
-          <label>码率上限</label>
-          <p class="field-hint">
-            单位 kbps，0 = 不限。客户端就算要 40Mbps 也只按上限给，且直连判定会跟着收紧
-            （超过上限的条目改走转码），适合上行有限的部署。
-          </p>
-        </div>
-        <el-input-number
-          v-model="policy.max_bitrate_kbps"
-          :min="0" :max="200000" :step="1000"
-          :disabled="!isSuper"
-        />
-      </div>
     </section>
 
-    <!-- CDN 域名预留（播放三层第 2/3 层，默认关闭） -->
-    <!-- 播放线路可观测（Phase 3）：四条线路各一张卡片，只读；配置在下面两张卡片里改 -->
+    <!-- 播放可观测（2026-10 简化）：单路径，只读 -->
     <section class="admin-card">
       <div class="card-header">
-        <h2><Activity :size="15" /> 播放线路</h2>
+        <h2><Activity :size="15" /> 播放路径</h2>
         <span class="badge-hint">
-          {{ playLines ? `${liveLines.filter((l) => l.ready).length} / ${liveLines.length} 条就绪` : '加载中…' }}
+          {{ playLines ? '中转（单路径）' : '加载中…' }}
         </span>
       </div>
 
       <p class="field-hint" style="margin-top: 0">
-        各条线路的<b>健康状态、流量与降级</b>。它们都不会“挂”：任何一条都以降级方式回退到
-        另一条（所以功能不会坏），但“降级中”意味着它此刻<b>没按自己该有的方式工作</b>——
-        比如本地缓存线路没副本时，用户拿到的其实是回源流。
-        <br />
-        <b>302 直连已下线</b>（Google Drive 带不过 Authorization 头，token 放 URL 会被限流），
-        末尾那张卡片只留历史计数，不计入就绪分母。
+        只有一条播放路径：<b>中转</b>（视频经服务器转发）。热门内容自动走本地缓存
+        与 CF 边缘缓存，无需用户选择。
         <br />
         {{ playLines?.scope_note || lineBytesHint }}
       </p>
 
       <div v-if="playLines" class="line-grid">
-        <div v-for="card in playLines.lines" :key="card.line" class="line-card">
+        <div class="line-card">
           <div class="line-head">
-            <b>{{ card.label }}</b>
-            <span class="mini-badge" :class="lineState(card).cls">{{ lineState(card).text }}</span>
-            <span v-if="card.degraded_requests > 0" class="mini-badge warn">
-              降级 {{ card.degraded_requests }} 次
-            </span>
+            <b>代理中转</b>
           </div>
-          <p class="line-summary">{{ card.summary }}</p>
+          <p class="line-summary">{{ playLines.summary }}</p>
 
           <div class="line-metrics">
             <div class="line-metric">
-              <b>{{ card.requests }}</b><em>播放请求（本进程）</em>
+              <b>{{ playLines.requests }}</b><em>播放请求（本进程）</em>
             </div>
             <div class="line-metric">
-              <b>{{ fmtBytes(card.bytes_out) }}</b><em>出流量（本进程）</em>
-            </div>
-            <div class="line-metric">
-              <b>{{ card.users }}</b><em>选了这条的用户</em>
+              <b>{{ fmtBytes(playLines.bytes_out) }}</b><em>出流量（本进程）</em>
             </div>
           </div>
 
           <p class="line-ready">
-            <span class="line-dot" :class="lineState(card).cls" />{{ card.ready_note }}
+            CDN：{{ playLines.cdn.ready_note }}
           </p>
-          <p v-if="lineDegradeText(card)" class="line-degrade">{{ lineDegradeText(card) }}</p>
-          <p class="line-effect">{{ lineEffectText(card) }}</p>
-          <p class="line-idle">{{ lineIdleText(card) }}</p>
+          <p class="line-ready">
+            本地缓存：{{ playLines.cache.ready_note }}
+            <template v-if="playLines.cache.hit_rate !== null && playLines.cache.hit_rate !== undefined">
+             （命中率 {{ (playLines.cache.hit_rate * 100).toFixed(1) }}%）
+            </template>
+          </p>
         </div>
       </div>
-      <div v-else class="field-hint">线路数据读取失败，下方策略与配置不受影响；点「刷新」重试。</div>
+      <div v-else class="field-hint">数据读取失败，下方策略与配置不受影响；点「刷新」重试。</div>
     </section>
 
     <section class="admin-card">

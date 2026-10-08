@@ -80,22 +80,14 @@ def test_legacy_pref_reads_back_as_relay(db):
     assert portal.get_play_line_pref(user, db)["line"] == LINE_RELAY
 
 
-def test_put_direct_migrates_row_and_echoes_relay(db):
-    """老客户端重发 direct：不 400、不报错，且回显的是真正落库的那条线"""
+def test_put_any_line_returns_relay(db):
+    """线路选择已下线：任何值都返回 relay，不报错"""
     user = _user(db)
     _store_raw_pref(db, user.id, LINE_DIRECT)
-    out = portal.set_play_line_pref(portal.PlayLineRequest(line="direct"), user, db)
-    assert out == {"line": LINE_RELAY}
+    for line in ["direct", "cdn", "cache", "relay", "bogus"]:
+        out = portal.set_play_line_pref({"line": line}, user, db)
+        assert out == {"line": LINE_RELAY}
     assert play_line.get_play_line(db, user.id) == LINE_RELAY
-
-
-def test_put_unknown_line_is_rejected(db):
-    from fastapi import HTTPException
-
-    user = _user(db)
-    with pytest.raises(HTTPException) as exc:
-        portal.set_play_line_pref(portal.PlayLineRequest(line="bogus"), user, db)
-    assert exc.value.status_code == 400
 
 
 def test_direct_is_not_a_selectable_line():
@@ -229,17 +221,10 @@ def test_user_frontend_play_line_type_has_no_direct():
     assert "'relay'" in union.group(1)
 
 
-def test_user_frontend_normalize_maps_legacy_direct_to_relay():
+def test_user_frontend_play_line_is_deprecated():
+    """用户端线路选择已删除：user.ts 只剩废弃兼容，ProfileView 无选择器"""
     source = _src("user_frontend/src/api/user.ts")
-    body = re.search(r"function normalizeLine\(line: unknown\): PlayLine \{(.*?)\n\}", source, re.S)
-    assert body, "normalizeLine 没找到"
-    assert "'relay'" in body.group(1)
-    assert "'direct'" not in body.group(1), (
-        "老用户的 direct 必须落到 relay，而不是又被当成一个独立选项")
-
-
-def test_profile_view_has_no_direct_line_option():
-    source = _src("user_frontend/src/views/ProfileView.vue")
-    assert "pickLine('direct')" not in source
-    assert "直连线路" not in source
-    assert "中转线路" in source
+    assert "已废弃" in source or "deprecated" in source.lower()
+    vue = _src("user_frontend/src/views/ProfileView.vue")
+    assert "pickLine(" not in vue, "线路选择器已删除"
+    assert "中转播放" in vue

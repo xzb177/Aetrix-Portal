@@ -679,7 +679,6 @@ def start_transcode(
     user_id: Optional[int] = None,
     item_guid: Optional[str] = None,
     input_headers: Optional[dict] = None,
-    tier: Optional[str] = None,
     cache_key: Optional[str] = None,
     fingerprint: Optional[str] = None,
 ) -> str:
@@ -693,7 +692,7 @@ def start_transcode(
     # 为别人遗留的会话等待（见 _reap_in_background）。
     threading.Thread(target=_reap_in_background, daemon=True).start()
     if user_id is not None and item_guid:
-        existing = find_active_transcode(user_id, item_guid, tier)
+        existing = find_active_transcode(user_id, item_guid, video_bitrate, height)
         if existing:
             logger.info("复用进行中的 HLS 转码 %s", existing)
             return existing
@@ -708,8 +707,9 @@ def start_transcode(
         "user_id": user_id,
         "item_guid": item_guid,      # 「结束播放」按它反查（见 find_transcodes）
         "file_path": file_path,
-        # 按需转码 P1：档位 / 缓存键 / 源指纹 / 起始秒数（回收时判断能否落盘缓存）
-        "tier": tier,
+        # 转码参数 / 缓存键 / 源指纹 / 起始秒数（回收时判断能否落盘缓存）
+        "video_bitrate": video_bitrate,
+        "height": height,
         "cache_key": cache_key,
         "fingerprint": fingerprint,
         "start_seconds": start_seconds,
@@ -735,12 +735,15 @@ def find_transcodes(user_id: int, item_guid: Optional[str] = None) -> list:
 
 
 def find_active_transcode(user_id: int, item_guid: str,
-                        tier: Optional[str] = None) -> Optional[str]:
-    """查找同一用户同一影片仍在运行的转码会话（tier 指定时只复用同档）"""
+                        video_bitrate: Optional[int] = None,
+                        height: Optional[int] = None) -> Optional[str]:
+    """查找同一用户同一影片仍在运行的转码会话（参数指定时只复用同参数）"""
     for sid, info in _TRANSCODE_PROCS.items():
         if info.get("user_id") != user_id or info.get("item_guid") != item_guid:
             continue
-        if tier is not None and info.get("tier") != tier:
+        if video_bitrate is not None and info.get("video_bitrate") != video_bitrate:
+            continue
+        if height is not None and info.get("height") != height:
             continue
         proc = info.get("proc")
         if proc is not None and proc.poll() is None:

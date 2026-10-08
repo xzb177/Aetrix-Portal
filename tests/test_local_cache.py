@@ -104,7 +104,6 @@ def test_config_defaults_disabled(db):
     assert payload["hot_days"] == 7
     assert payload["hot_plays"] == 3
     assert payload["rate_mbps"] == 20
-    assert payload["play_line"] == "cache"
     assert local_cache.enabled(db) is False
 
 

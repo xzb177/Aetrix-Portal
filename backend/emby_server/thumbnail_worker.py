@@ -39,8 +39,11 @@ THUMBNAIL_ENABLED = (
 THUMBNAIL_INTERVAL_SEC = env_float("THUMBNAIL_INTERVAL_SEC", 21600.0, 3600.0)
 # 每视频抽帧数
 THUMBNAIL_COUNT = env_int("THUMBNAIL_COUNT", 10, 1, 50)
-# 并发数（默认 1，Rclone 场景防 I/O 争抢）
-THUMBNAIL_WORKERS = env_int("THUMBNAIL_WORKERS", 1, 1, 3)
+# 并发数（默认 1，Rclone 场景防 I/O 争抢；手动配置时按 CPU 上限截断，永远给前台留一核）
+from backend.emby_server.cpu_budget import capped_workers as _capped_workers
+
+THUMBNAIL_WORKERS = _capped_workers("THUMBNAIL_WORKERS", 1, max_cap=3)
+del _capped_workers
 # 单次扫描最多处理条数
 THUMBNAIL_BATCH_LIMIT = env_int("THUMBNAIL_BATCH_LIMIT", 500, 10, 10000)
 # 缩略图根目录

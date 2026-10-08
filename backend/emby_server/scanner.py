@@ -19,6 +19,7 @@ from functools import lru_cache
 from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
 
+from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.pinyin_sort import make_sort_name
 
 from sqlalchemy import func, select, text
@@ -66,7 +67,8 @@ logger = logging.getLogger(__name__)
 #   SCAN_BATCH  一批多少个文件（批量查库 / 批量提交 / 批后清空会话）
 #   SCAN_WORKERS 并行 IO 线程数（ffprobe、目录列举、TMDB 搜索都是“等网络/等磁盘”，不是吃 CPU）
 SCAN_BATCH = max(20, int(os.getenv("SCAN_BATCH", "400") or 400))
-SCAN_WORKERS = max(1, min(16, int(os.getenv("SCAN_WORKERS", "4") or 4)))
+# 并发按 CPU 自适应（cpu_budget）：未配置时按核数一半，永远给前台留一核
+SCAN_WORKERS = _cpu_workers("SCAN_WORKERS")
 # 两阶段扫描（v2.39.0）：
 #   inline（默认）：与旧行为完全一致，扫描时直接 ffprobe；
 #   background：Phase 1 只入库结构（路径解析/NFO/TMDB 图），不做 ffprobe，

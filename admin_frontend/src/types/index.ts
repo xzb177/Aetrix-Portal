@@ -47,8 +47,6 @@ export interface PlaybackPolicy {
   transcode_enabled: boolean
   /** 并发转码上限；0 = 用进程内置上限（EMBY_MAX_TRANSCODES / CPU 核数） */
   max_concurrent_transcodes: number
-  /** 码率上限（kbps）；0 = 不限 */
-  max_bitrate_kbps: number
   /** 客户端 UA 黑名单（子串，逗号分隔） */
   blocked_agents: string
   /** 客户端 UA 白名单（填了就只放列表内的客户端） */
@@ -161,40 +159,48 @@ export interface LineEffect {
   note?: string
 }
 
-/** 播放线路可观测卡片（Phase 3，/api/admin/playback/lines） */
+/** 播放路径可观测（2026-10 简化：单路径，/api/admin/playback/lines） */
 export interface PlayLineCard {
   line: string
   label: string
-  /** 这条线路到底把流量送到哪（一句话） */
-  summary: string
-  /** 配置上能不能用（不看运行数据） */
-  ready: boolean
-  /** 已下线的线路（302 直连）：只留历史计数，不计入「就绪」分母 */
-  retired: boolean
-  ready_note: string
-  /** 配置缺口导致的降级（空 = 没降级）；文案是「退化成什么」而不是「坏了」 */
-  degraded_by_config: string
-  /** 运行态降级原因（本进程累计） */
-  degraded_reasons: LineDegradeReason[]
-  /** 本进程经手的播放请求数 */
   requests: number
-  /** 本进程经手的出流量（字节）；已下线的 302 直连等不经本机的路径不计入 */
   bytes_out: number
-  degraded_requests: number
-  /** 最近一次使用距今多少秒（null = 本进程内还没用过） */
   idle_seconds: number | null
-  /** 显式选这条线路的用户数（没配过的走默认线路，不计入；已下线的 direct 归中转） */
-  users: number
-  effect: LineEffect
+}
+
+export interface PlayPathCacheState {
+  enabled: boolean
+  ready_note: string
+  hit_rate: number | null
+  hits: number
+  misses: number
+  bytes_used: number
+  max_bytes: number
+  entries_total: number
+}
+
+export interface PlayPathCdnState {
+  enabled: boolean
+  domain: string
+  ready_note: string
 }
 
 export interface PlayLinesSnapshot {
+  path: string
+  label: string
+  summary: string
+  requests: number
+  bytes_out: number
+  idle_seconds: number | null
+  uptime_seconds: number
+  cdn: PlayPathCdnState
+  cache: PlayPathCacheState
+  /** 口径说明 */
+  scope_note: string
+  /** 兼容字段 */
   lines: PlayLineCard[]
   total_users: number
   default_line: string
-  uptime_seconds: number
-  /** 口径说明（流量/降级是本进程，用户数是全库） */
-  scope_note: string
 }
 
 export interface LoginResponse {
