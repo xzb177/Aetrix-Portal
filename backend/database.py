@@ -193,23 +193,216 @@ def configure_session_local(factory=None) -> None:
 Base = declarative_base()
 
 # ==================== Redis 连接 ====================
+#
+# S4（稳定性审查）：Redis 运行期故障不能把事件循环 / 线程池卡死。
+#
+# - socket 超时从 5s（且 retry_on_timeout=True，最坏 10s+）降到默认 1s、不重试；
+# - 熔断器：连续 REDIS_BREAKER_FAILURES 次失败后 REDIS_BREAKER_SECONDS 秒内不再碰
+#   Redis（缓存走内存、限流走进程内计数），到期后半开放行一次探测，成功即恢复；
+# - 启动时 Redis 不可达不再「永久降级」：后台线程定期重连，连上后自动切回。
+import threading as _threading
+import time as _time
+
+
+def _env_float(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        value = float(os.getenv(name, "") or default)
+    except ValueError:
+        value = default
+    return max(lo, min(hi, value))
+
+
+REDIS_SOCKET_TIMEOUT = _env_float("REDIS_SOCKET_TIMEOUT", 1.0, 0.1, 30.0)
+REDIS_CONNECT_TIMEOUT = _env_float("REDIS_CONNECT_TIMEOUT", 1.0, 0.1, 30.0)
+REDIS_BREAKER_FAILURES = int(_env_float("REDIS_BREAKER_FAILURES", 3, 1, 100))
+REDIS_BREAKER_SECONDS = _env_float("REDIS_BREAKER_SECONDS", 30.0, 1.0, 3600.0)
+
+
+class RedisBreaker:
+    """极简熔断器：closed →（连续 N 次失败）→ open（冷却期内直接拒绝）→ 半开（放行一次探测）"""
+
+    def __init__(self, failures: int = REDIS_BREAKER_FAILURES,
+                 cooldown: float = REDIS_BREAKER_SECONDS):
+        self.failures = failures
+        self.cooldown = cooldown
+        self._lock = _threading.Lock()
+        self._consecutive = 0
+        self._open_until = 0.0
+        self._probing = False
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            if self._open_until == 0.0:
+                return "closed"
+            return "open" if _time.monotonic() < self._open_until else "half-open"
+
+    def allow(self) -> bool:
+        with self._lock:
+            if self._open_until == 0.0:
+                return True
+            if _time.monotonic() < self._open_until:
+                return False
+            if self._probing:
+                return False  # 半开：同一时刻只放一个探测请求
+            self._probing = True
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            if self._open_until:
+                print("✅ Redis 已恢复，退出降级")
+            self._consecutive = 0
+            self._open_until = 0.0
+            self._probing = False
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive += 1
+            self._probing = False
+            if self._consecutive >= self.failures:
+                if not self._open_until or _time.monotonic() >= self._open_until:
+                    print(f"⚠️ Redis 连续 {self._consecutive} 次失败，"
+                          f"{self.cooldown:.0f}s 内改用内存缓存 / 进程内限流")
+                self._open_until = _time.monotonic() + self.cooldown
+
+    def reset(self) -> None:
+        with self._lock:
+            self._consecutive = 0
+            self._open_until = 0.0
+            self._probing = False
+
+
+redis_breaker = RedisBreaker()
 redis_client: Optional[redis.Redis] = None
+
+
+def _make_redis_client() -> "redis.Redis":
+    return redis.from_url(
+        REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+        socket_timeout=REDIS_SOCKET_TIMEOUT,
+        retry_on_timeout=False,
+        health_check_interval=30,
+    )
+
+
+_reconnect_started = False
+_reconnect_lock = _threading.Lock()
+
+
+def _start_redis_reconnect() -> None:
+    """启动时没连上 Redis：后台每 REDIS_BREAKER_SECONDS 秒重试，连上后切回 Redis"""
+    global _reconnect_started
+    with _reconnect_lock:
+        if _reconnect_started:
+            return
+        _reconnect_started = True
+
+    def _loop():
+        global redis_client, _reconnect_started
+        while redis_client is None:
+            _time.sleep(REDIS_BREAKER_SECONDS)
+            try:
+                client = _make_redis_client()
+                client.ping()
+            except Exception:  # noqa: BLE001 - 继续等
+                continue
+            redis_client = client
+            redis_breaker.reset()
+            print("✅ Redis 重连成功，切回 Redis 缓存 / 限流")
+        _reconnect_started = False
+
+    _threading.Thread(target=_loop, name="redis-reconnect", daemon=True).start()
+
 
 if REDIS_ENABLED:
     try:
-        redis_client = redis.from_url(
-            REDIS_URL,
-            decode_responses=True,
-            socket_connect_timeout=5,
-            socket_timeout=5,
-            retry_on_timeout=True
-        )
+        redis_client = _make_redis_client()
         # 测试连接
         redis_client.ping()
         print("✅ Redis 连接成功")
     except Exception as e:
-        print(f"⚠️ Redis 连接失败: {e}，将使用内存缓存")
+        print(f"⚠️ Redis 连接失败: {e}，将使用内存缓存（后台每 {REDIS_BREAKER_SECONDS:.0f}s 重连）")
         redis_client = None
+        _start_redis_reconnect()
+
+
+def get_redis() -> Optional["redis.Redis"]:
+    """取可用的 Redis 客户端：未配置 / 未连上 / 熔断中 → None（调用方走降级路径）
+
+    拿到客户端后调用方应在成功 / 失败时回报 ``redis_breaker.record_success()`` /
+    ``record_failure()``（或直接用 :func:`redis_call`）。
+    """
+    client = redis_client
+    if client is None or not redis_breaker.allow():
+        return None
+    return client
+
+
+def redis_degraded() -> bool:
+    """配置了 Redis 但当前用不了（启动未连上 / 熔断中）——限流应改用进程内计数"""
+    return REDIS_ENABLED and (redis_client is None or redis_breaker.state == "open")
+
+
+_MISSING = object()
+
+
+def redis_call(fn, default=None):
+    """``fn(client)`` 走熔断器：不可用或出错时返回 ``default``（并记一次失败）"""
+    client = get_redis()
+    if client is None:
+        return default
+    try:
+        result = fn(client)
+    except Exception:  # noqa: BLE001 - Redis 故障一律降级
+        redis_breaker.record_failure()
+        return default
+    redis_breaker.record_success()
+    return result
+
+
+# 进程内限流计数（Redis 降级期间用）：固定窗口，有界
+_mem_counter_lock = _threading.Lock()
+_mem_counters: dict = {}
+_MEM_COUNTER_MAX = 20000
+
+
+def memory_rate_incr(key: str, ttl: int = 70) -> int:
+    """进程内 INCR + EXPIRE（Redis 降级期间的限流计数；多进程部署下各进程各算一份）"""
+    now = _time.monotonic()
+    with _mem_counter_lock:
+        entry = _mem_counters.get(key)
+        if entry is None or entry[1] <= now:
+            if len(_mem_counters) >= _MEM_COUNTER_MAX:
+                for k in [k for k, (_, exp) in _mem_counters.items() if exp <= now]:
+                    _mem_counters.pop(k, None)
+                while len(_mem_counters) >= _MEM_COUNTER_MAX:
+                    _mem_counters.pop(next(iter(_mem_counters)))
+            entry = [0, now + ttl]
+            _mem_counters[key] = entry
+        entry[0] += 1
+        return entry[0]
+
+
+def rate_limit_incr(key: str, ttl: int = 70) -> Optional[int]:
+    """限流计数：Redis 正常走 Redis；配置了 Redis 但故障/熔断 → 进程内计数；
+    未启用 Redis（REDIS_ENABLED=false）→ None（不限流，与升级前一致）"""
+    client = get_redis()
+    if client is not None:
+        try:
+            count = client.incr(key)
+            if count == 1:
+                client.expire(key, ttl)
+        except Exception:  # noqa: BLE001
+            redis_breaker.record_failure()
+        else:
+            redis_breaker.record_success()
+            return int(count)
+    if REDIS_ENABLED:
+        return memory_rate_incr(key, ttl)
+    return None
 
 
 # ==================== 缓存管理 ====================
@@ -269,34 +462,27 @@ class CacheManager:
 
     @staticmethod
     def get(key: str) -> Optional[str]:
-        """获取缓存"""
-        if redis_client:
-            try:
-                value = redis_client.get(f"rb:{key}")
-                return value
-            except Exception:
-                pass
+        """获取缓存（Redis 熔断 / 故障时走内存）"""
+        value = redis_call(lambda r: r.get(f"rb:{key}"), _MISSING)
+        if value is not _MISSING:
+            return value
         return CacheManager._memory_get(key)
 
     @staticmethod
     def set(key: str, value: str, ttl: int = 300) -> bool:
         """设置缓存"""
-        if redis_client:
-            try:
-                return redis_client.setex(f"rb:{key}", ttl, value)
-            except Exception:
-                pass
+        ok = redis_call(lambda r: r.setex(f"rb:{key}", ttl, value), _MISSING)
+        if ok is not _MISSING:
+            return ok
         CacheManager._memory_set(key, value, ttl)
         return True
 
     @staticmethod
     def delete(key: str) -> bool:
         """删除缓存"""
-        if redis_client:
-            try:
-                return redis_client.delete(f"rb:{key}") > 0
-            except Exception:
-                pass
+        res = redis_call(lambda r: r.delete(f"rb:{key}") > 0, _MISSING)
+        if res is not _MISSING:
+            return res
         if key in CacheManager._memory_cache:
             del CacheManager._memory_cache[key]
             try:
@@ -308,24 +494,21 @@ class CacheManager:
     @staticmethod
     def delete_pattern(pattern: str) -> int:
         """批量删除缓存"""
-        if redis_client:
-            try:
-                keys = redis_client.keys(f"rb:{pattern}")
-                if keys:
-                    return redis_client.delete(*keys)
-            except Exception:
-                pass
+        def _del(r):
+            keys = r.keys(f"rb:{pattern}")
+            return r.delete(*keys) if keys else 0
+        res = redis_call(_del, _MISSING)
+        if res is not _MISSING:
+            return res
         # 内存缓存不支持模式匹配
         return 0
 
     @staticmethod
     def exists(key: str) -> bool:
         """检查缓存是否存在"""
-        if redis_client:
-            try:
-                return redis_client.exists(f"rb:{key}") > 0
-            except Exception:
-                pass
+        res = redis_call(lambda r: r.exists(f"rb:{key}") > 0, _MISSING)
+        if res is not _MISSING:
+            return res
         return CacheManager._memory_get(key) is not None
 
 

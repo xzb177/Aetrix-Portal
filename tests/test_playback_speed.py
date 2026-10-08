@@ -63,8 +63,9 @@ class TestPlaybackInfoCache:
 
     def test_cache_uses_redis_cache_manager(self):
         src = self._src()
-        assert "CacheManager.get(cache_key)" in src
-        assert "CacheManager.set(cache_key" in src
+        # S4：同步 Redis 调用经 run_db 下放线程池
+        assert "run_db(CacheManager.get, cache_key)" in src
+        assert "run_db(CacheManager.set, cache_key" in src
 
     def test_cache_key_contains_user_and_profile(self):
         src = self._src()
@@ -85,7 +86,7 @@ class TestPlaybackInfoCache:
         src = self._src()
         assert '"PlaySessionId": secrets.token_hex(8)' in src
         # 缓存 set 的是 media_source，不是整个 response
-        assert "CacheManager.set(cache_key, json.dumps(media_source" in src
+        assert "run_db(CacheManager.set, cache_key,\n                             json.dumps(media_source" in src
 
     def test_apikey_url_added_per_request(self):
         # DirectStreamUrl 含 api_key，必须在缓存命中后按当前请求重拼，

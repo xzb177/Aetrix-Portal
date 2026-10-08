@@ -308,18 +308,16 @@ def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, st
                 return True, ""
             try:
                 from backend import database as db
-                r = db.redis_client
-                if r is None:
-                    return True, ""  # Redis 不可用时不限流（降级，保证可用性）
                 import time
+
                 window = int(time.time() // 60)
                 # 区分认证/未认证的 key，避免互相影响
                 auth_tag = "auth" if authenticated else "anon"
                 key = f"ratelimit:{ip}:{prefix}:{auth_tag}:{window}"
-                count = r.incr(key)
-                if count == 1:
-                    r.expire(key, 70)  # 窗口 60 秒 + 10 秒缓冲
-                if count > limit:
+                # S4：Redis 正常走 Redis；运行期故障 / 熔断中改用进程内计数（不再每请求
+                # 卡满 socket 超时）；未启用 Redis 时返回 None = 不限流（与升级前一致）
+                count = db.rate_limit_incr(key, 70)  # 窗口 60 秒 + 10 秒缓冲
+                if count is not None and count > limit:
                     return False, f"每分钟最多 {limit} 次"
             except Exception:
                 return True, ""  # 异常时不限流（降级）

@@ -2789,7 +2789,8 @@ async def playback_info(
             ).hexdigest()[:12]
             cache_key = f"pi:{item.guid}:{user.id}:{profile_fp}:{max_bitrate // 1000}"
             from backend.database import CacheManager
-            hit = CacheManager.get(cache_key)
+            # S4：redis-py 是同步客户端，Redis 故障时一次 get 最长卡 socket 超时——放线程池
+            hit = await run_db(CacheManager.get, cache_key)
             if hit:
                 cached_source = json.loads(hit)
         except Exception:  # noqa: BLE001 — 缓存只是优化，失败就走正常流程
@@ -2801,7 +2802,8 @@ async def playback_info(
         if cache_key and cache_ttl > 0:
             try:
                 from backend.database import CacheManager
-                CacheManager.set(cache_key, json.dumps(media_source, ensure_ascii=False), ttl=cache_ttl)
+                await run_db(CacheManager.set, cache_key,
+                             json.dumps(media_source, ensure_ascii=False), ttl=cache_ttl)
             except Exception:  # noqa: BLE001
                 pass
     else:
