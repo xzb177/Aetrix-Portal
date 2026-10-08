@@ -70,6 +70,7 @@ from backend.emby_server.streaming import (
     get_transcode,
     transcode_capacity,
     serve_file,
+    touch_transcode,
     serve_image,
     serve_remote,
     serve_remote_async,
@@ -3000,6 +3001,8 @@ async def video_hls(
     existing = q.get("session")
     if existing and get_transcode(existing):
         info = get_transcode(existing)
+        # S6：客户端还在拉播放列表 / 切片 = 还有人在看（闲置回收按它判定）
+        touch_transcode(existing)
         try:
             file_path = safe_child_name(info["dir"], transcode_path)
             playlist = safe_child_name(info["dir"], "master.m3u8")

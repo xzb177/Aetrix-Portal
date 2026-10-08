@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import shutil
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -124,6 +125,7 @@ def register_cache_session(cache_path: str, user_id: int, item_guid: str, tier: 
         "item_guid": item_guid,
         "tier": tier,
         "cached": True,
+        "last_access": time.monotonic(),  # S6：闲置按客户端最后访问算
     }
     return session_id
 
@@ -150,6 +152,13 @@ def ensure_slot_or_503() -> None:
     """
     limit = max_concurrent()
     running = live_transcode_count()
+    if running >= limit:
+        # S6：先把客户端已闲置（EMBY_TRANSCODE_IDLE 内没拉过播放列表/切片）的会话让出来，
+        # 再判定。旧实现只在**起新转码之后**才回收，而这里先 503 了，回收永远轮不到。
+        # 同步调用（terminate + wait），调用方须在线程里（见 api.video_hls 的准备阶段）。
+        streaming = _streaming()
+        if streaming.reap_idle_transcodes(streaming.transcode_idle_seconds()):
+            running = live_transcode_count()
     if running >= limit:
         raise HTTPException(
             status_code=503,
