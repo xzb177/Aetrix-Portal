@@ -2932,8 +2932,7 @@ async def playback_info(
     max_bitrate = int(body.get("MaxStreamingBitrate") or 0) or int(
         (device_profile.get("MaxStreamingBitrate") or 0)
     ) or 120_000_000
-    # 码率上限（v2.26.0）：客户端要 40Mbps 也只按上限给，直连/直传的判定跟着一起收紧
-    max_bitrate = await run_db(playback_policy.clamp_bitrate_kbps, db, max_bitrate // 1000) * 1000
+    # 2026-10 简化：删除服务端码率钳制，客户端要多少给多少（学 Linger 薄服务器思路）
     # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
     allow_transcode = await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)
 
@@ -3195,10 +3194,8 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
     )
     if not shutil.which(os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")):
         raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法转码；请使用直连播放")
-    # 码率上限：客户端要多少都压到策略上限内（0 = 不限）
-    video_bitrate = playback_policy.clamp_bitrate_kbps(
-        db, int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000) // 1000,
-    ) * 1000
+    # 2026-10 简化：删除服务端码率钳制，客户端要多少转多少
+    video_bitrate = int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000)
     height = int(q.get("Height") or 0) or None
     # 2026-10 简化：删除服务端三档转码。客户端要多少码率/分辨率就转多少，
     # 只在源片分辨率低于请求时不做无意义的上采样（学 Linger 薄服务器思路）。

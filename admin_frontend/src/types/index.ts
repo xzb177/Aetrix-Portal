@@ -47,8 +47,6 @@ export interface PlaybackPolicy {
   transcode_enabled: boolean
   /** 并发转码上限；0 = 用进程内置上限（EMBY_MAX_TRANSCODES / CPU 核数） */
   max_concurrent_transcodes: number
-  /** 码率上限（kbps）；0 = 不限 */
-  max_bitrate_kbps: number
   /** 客户端 UA 黑名单（子串，逗号分隔） */
   blocked_agents: string
   /** 客户端 UA 白名单（填了就只放列表内的客户端） */

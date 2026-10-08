@@ -48,7 +48,6 @@ const cleaningCache = ref(false)
 const policy = ref<PlaybackPolicy>({
   transcode_enabled: true,
   max_concurrent_transcodes: 0,
-  max_bitrate_kbps: 0,
   blocked_agents: '',
   allowed_agents: '',
 })
@@ -332,20 +331,6 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
         />
       </div>
 
-      <div class="field-row">
-        <div class="field-main">
-          <label>码率上限</label>
-          <p class="field-hint">
-            单位 kbps，0 = 不限。客户端就算要 40Mbps 也只按上限给，且直连判定会跟着收紧
-            （超过上限的条目改走转码），适合上行有限的部署。
-          </p>
-        </div>
-        <el-input-number
-          v-model="policy.max_bitrate_kbps"
-          :min="0" :max="200000" :step="1000"
-          :disabled="!isSuper"
-        />
-      </div>
     </section>
 
     <!-- 播放可观测（2026-10 简化）：单路径，只读 -->
