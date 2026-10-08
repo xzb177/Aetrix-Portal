@@ -586,13 +586,7 @@ def _auto_migrate():
     # （纯字符串解析，零 Drive 调用；只跑一次，下次启动列已存在不会再触发）
     if ("emby_items", "video_resolution") in _newly_added_columns:
         _backfill_filename_meta()
-    _ensure_probe_index(existing_tables)
-    _ensure_enrich_index(existing_tables)
-    _ensure_added_index(existing_tables)
-    _ensure_deleted_index(existing_tables)
-    _ensure_drive_file_id_index(existing_tables)
-    _ensure_merged_into_id_index(existing_tables)
-    _ensure_person_tmdb_id_index(existing_tables)
+    _ensure_legacy_indexes(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -683,168 +677,66 @@ def _hash_plain_emby_tokens(existing_tables: set) -> None:
             print(f"  🔧 已迁移: emby_api_tokens.token 哈希化 {len(rows)} 条")
 
 
-def _ensure_probe_index(existing_tables: set) -> None:
-    """两阶段扫描（v2.39.0）：给老库补探测队列表索引（幂等）
+# 给老库补索引（幂等）。create_all 只在建新表时建索引；升级上来的库表已存在，
+# 这里按 inspector 显式补上。每条：(表, 索引名, 列, 需要先存在的列 or None, 迁移日志)。
+# 顺序即执行顺序（与拆分前各 _ensure_*_index 的调用顺序一致）。
+# **可回滚**：任一索引 ``DROP INDEX <name>`` 即可，无数据影响。
+_LEGACY_INDEXES: tuple[tuple[str, str, str, Optional[str], str], ...] = (
+    # 两阶段扫描（v2.39.0）：worker 取待探测条目时走索引
+    ("emby_items", "idx_item_probe", "probe_status, probe_priority, id", None,
+     "  🔧 已迁移: emby_items.idx_item_probe（探测队列索引）"),
+    # v2.48.0：补全队列 _claim_batch 抢单是 WHERE enrich_status='pending' AND
+    # enrich_next_retry_at<=now 再按 enrich_priority 排序，单列索引帮不上忙
+    ("emby_items", "idx_item_enrich", "enrich_status, enrich_next_retry_at, enrich_priority", None,
+     "  🔧 已迁移: emby_items.idx_item_enrich（补全队列复合索引）"),
+    # 追新日历：否则用户打开追新日历就是一次全表扫
+    ("emby_items", "idx_item_added", "date_added, item_type", None,
+     "  🔧 已迁移: emby_items.idx_item_added（追新日历索引）"),
+    # v2.48.0 软删除可见性：deleted_at IS NULL 与几乎所有查询的 library_id = ? 绑在一起，
+    # deleted_at 跟在 library_id 后面，已下架的行在索引里就被跳过
+    ("emby_items", "idx_item_lib_deleted", "library_id, deleted_at", None,
+     "  🔧 已迁移: emby_items.idx_item_lib_deleted（软删除可见性索引）"),
+    # v2.52.0：改名/移动检测按 drive_file_id 批量查条目，没有索引就是全表扫
+    ("emby_items", "idx_item_drive_file_id", "drive_file_id", None,
+     "  已迁移: emby_items.idx_item_drive_file_id"),
+    # StrmAssistant 打磨 R2（PR #406）：get_alternate_versions() 按 merged_into_id 查版本，
+    # 详情页每次打开都触发；models.py 的 index=True 只对 create_all 新建表生效，
+    # 老库升级上来没有索引就是全表扫（40 万行约 0.5-2 秒/次，拖慢播放链路）
+    ("emby_items", "idx_item_merged_into_id", "merged_into_id", None,
+     "  已迁移: emby_items.idx_item_merged_into_id"),
+    # StrmAssistant 打磨 R2（PR #406）：refresh_person_worker 每天做全表
+    # GROUP BY (item_id, person_tmdb_id) 去重，无复合索引时是分钟级全表扫 + hash 聚合。
+    # 等价 DDL：CREATE INDEX idx_person_item_tmdb ON emby_people (item_id, person_tmdb_id)
+    # person_tmdb_id 列由上面的列迁移先补上；列不存在时静默跳过（防御式）
+    ("emby_people", "idx_person_item_tmdb", "item_id, person_tmdb_id", "person_tmdb_id",
+     "  已迁移: emby_people.idx_person_item_tmdb"),
+)
 
-    create_all 只在建新表时建索引；升级上来的库 emby_items 表已存在，
-    这里按 inspector 显式补上 ``idx_item_probe``，worker 取待探测条目时走索引。
-    """
+
+def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
+                  required_column: Optional[str], message: str) -> None:
+    """给老库补一条索引（幂等）：表不存在 / 依赖列不存在 / 索引已在 → 什么都不做"""
     from sqlalchemy import inspect, text
 
-    if "emby_items" not in existing_tables:
+    if table not in existing_tables:
         return
     inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
-    if "idx_item_probe" in names:
+    if required_column is not None:
+        cols = {c["name"] for c in inspector.get_columns(table)}
+        if required_column not in cols:
+            return
+    names = {ix["name"] for ix in inspector.get_indexes(table)}
+    if name in names:
         return
     with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_item_probe "
-            "ON emby_items (probe_status, probe_priority, id)"
-        ))
-        print("  🔧 已迁移: emby_items.idx_item_probe（探测队列索引）")
+        conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
+        print(message)
 
 
-def _ensure_enrich_index(existing_tables: set) -> None:
-    """给老库补补全队列的复合索引（幂等，v2.48.0）
-
-    与 :func:`_ensure_probe_index` 同理。探测队列早就有 ``idx_item_probe``，
-    补全队列当初只给了 ``enrich_status`` 单列索引——而 ``_claim_batch`` 的抢单是
-    ``WHERE enrich_status='pending' AND enrich_next_retry_at<=now`` 再按
-    ``enrich_priority`` 排序，单列索引帮不上忙，积压一涨就是排序全表。
-
-    **可回滚**：``DROP INDEX idx_item_enrich`` 即可，无数据影响。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_items" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
-    if "idx_item_enrich" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_item_enrich "
-            "ON emby_items (enrich_status, enrich_next_retry_at, enrich_priority)"
-        ))
-        print("  🔧 已迁移: emby_items.idx_item_enrich（补全队列复合索引）")
-
-
-def _ensure_added_index(existing_tables: set) -> None:
-    """给老库补追新日历的入库时间索引（幂等）
-
-    与 :func:`_ensure_probe_index` 同理：``create_all`` 只在建新表时建索引，
-    升级上来的库 ``emby_items`` 表已存在，这里按 inspector 显式补上
-    ``idx_item_added``，否则用户打开追新日历就是一次全表扫。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_items" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
-    if "idx_item_added" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_item_added "
-            "ON emby_items (date_added, item_type)"
-        ))
-        print("  🔧 已迁移: emby_items.idx_item_added（追新日历索引）")
-
-
-def _ensure_deleted_index(existing_tables: set) -> None:
-    """给老库补软删除可见性索引（幂等，v2.48.0）
-
-    可见性过滤（``deleted_at IS NULL``）是全局拼上去的，与几乎所有查询的
-    ``library_id = ?`` 绑在一起。把 deleted_at 跟在 library_id 后面，已下架的行
-    在索引里就被跳过，不必回表再过滤。
-
-    **可回滚**：``DROP INDEX idx_item_lib_deleted`` 即可，无数据影响。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_items" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
-    if "idx_item_lib_deleted" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_item_lib_deleted "
-            "ON emby_items (library_id, deleted_at)"
-        ))
-        print("  🔧 已迁移: emby_items.idx_item_lib_deleted（软删除可见性索引）")
-
-
-
-def _ensure_drive_file_id_index(existing_tables: set) -> None:
-    """v2.52.0: 给老库补 drive_file_id 索引（幂等）
-
-    改名/移动检测按 drive_file_id 批量查条目，没有索引就是全表扫。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_items" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
-    if "idx_item_drive_file_id" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_item_drive_file_id "
-            "ON emby_items (drive_file_id)"
-        ))
-        print("  已迁移: emby_items.idx_item_drive_file_id")
-
-
-def _ensure_merged_into_id_index(existing_tables: set) -> None:
-    """StrmAssistant 打磨 R2: 给老库补 merged_into_id 索引（幂等）
-
-    get_alternate_versions() 按 merged_into_id 查版本，详情页每次打开都触发；
-    models.py 的 index=True 只对 create_all 新建表生效，老库升级上来没有索引
-    就是全表扫（40 万行约 0.5-2 秒/次，直接拖慢播放链路）。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_items" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
-    if "idx_item_merged_into_id" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_item_merged_into_id "
-            "ON emby_items (merged_into_id)"
-        ))
-        print("  已迁移: emby_items.idx_item_merged_into_id")
-
-
-def _ensure_person_tmdb_id_index(existing_tables: set) -> None:
-    """StrmAssistant 打磨 R2: 给老库补 (item_id, person_tmdb_id) 复合索引（幂等）
-
-    refresh_person_worker 每天做全表 GROUP BY (item_id, person_tmdb_id) 去重，
-    无复合索引时是分钟级的全表扫描 + hash 聚合（emby_people 约数百万行）。
-    复合索引同时覆盖去重查询和单列过滤。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_people" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_people")}
-    if "idx_person_item_tmdb" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_person_item_tmdb "
-            "ON emby_people (item_id, person_tmdb_id)"
-        ))
-        print("  已迁移: emby_people.idx_person_item_tmdb")
+def _ensure_legacy_indexes(existing_tables: set) -> None:
+    """按 :data:`_LEGACY_INDEXES` 逐条补索引（含 idx_item_merged_into_id、idx_person_item_tmdb 等）"""
+    for spec in _LEGACY_INDEXES:
+        _ensure_index(existing_tables, *spec)
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:

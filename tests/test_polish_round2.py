@@ -111,8 +111,10 @@ class TestDatabaseIndexes:
                             "backend", "database.py")
         with open(path) as f:
             content = f.read()
-        assert "_ensure_merged_into_id_index" in content
-        assert "_ensure_person_tmdb_id_index" in content
+        # 7 个 _ensure_*_index 已合并为 _LEGACY_INDEXES 表 + _ensure_legacy_indexes
+        assert "_ensure_legacy_indexes" in content
+        assert "idx_item_merged_into_id" in content
+        assert "idx_person_item_tmdb" in content
 
 
 class TestPinyinCache:
