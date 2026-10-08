@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Tests for on-demand transcode P1 (transcode.py): tiers, cache, slot limit."""
+"""Tests for on-demand transcode (transcode.py): cache, slot limit.
+
+2026-10：删除服务端三档转码，码率/分辨率由客户端指定。
+"""
 import os
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
@@ -11,50 +14,35 @@ from fastapi import HTTPException
 from backend.emby_server import transcode as tc
 
 
-# ---------- pick_tier ----------
+# ---------- clamp_to_source ----------
 
-def test_pick_tier_boundaries():
-    assert tc.pick_tier(4_000_000) == "1080p"
-    assert tc.pick_tier(10_000_000) == "1080p"
-    assert tc.pick_tier(3_999_999) == "720p"
-    assert tc.pick_tier(1_500_000) == "720p"
-    assert tc.pick_tier(1_499_999) == "480p"
-    assert tc.pick_tier(500_000) == "480p"
-    assert tc.pick_tier(0) == "480p"
-
-
-def test_pick_tier_no_pointless_upscale():
-    # 480p 源要 1080p 也只给 480p 档
-    assert tc.pick_tier(8_000_000, src_height=480) == "480p"
-    assert tc.pick_tier(8_000_000, src_height=720) == "720p"
-    assert tc.pick_tier(8_000_000, src_height=1080) == "1080p"
-    # 源分辨率未知时按码率走
-    assert tc.pick_tier(8_000_000, src_height=None) == "1080p"
-
-
-def test_tiers_shape():
-    for name, spec in tc.TIERS.items():
-        assert spec["height"] > 0
-        assert spec["video_bitrate"] > 0
-        assert spec["audio_bitrate"] > 0
+def test_clamp_to_source_no_pointless_upscale():
+    # 480p 源要 1080p 也只给 480p
+    assert tc.clamp_to_source(1080, 480) == 480
+    assert tc.clamp_to_source(1080, 720) == 720
+    assert tc.clamp_to_source(1080, 1080) == 1080
+    # 源分辨率未知时按请求走
+    assert tc.clamp_to_source(1080, None) == 1080
+    assert tc.clamp_to_source(None, 480) is None
 
 
 # ---------- cache_key ----------
 
 def test_cache_key_deterministic():
-    k1 = tc.cache_key("guid-1", "720p", "fp-1")
-    k2 = tc.cache_key("guid-1", "720p", "fp-1")
+    k1 = tc.cache_key("guid-1", 2500000, 720, "fp-1")
+    k2 = tc.cache_key("guid-1", 2500000, 720, "fp-1")
     assert k1 == k2
     assert len(k1) == 32
 
 
 def test_cache_key_sensitive_to_inputs():
-    base = tc.cache_key("guid-1", "720p", "fp-1")
-    assert tc.cache_key("guid-2", "720p", "fp-1") != base
-    assert tc.cache_key("guid-1", "1080p", "fp-1") != base
-    assert tc.cache_key("guid-1", "720p", "fp-2") != base
+    base = tc.cache_key("guid-1", 2500000, 720, "fp-1")
+    assert tc.cache_key("guid-2", 2500000, 720, "fp-1") != base
+    assert tc.cache_key("guid-1", 5000000, 720, "fp-1") != base
+    assert tc.cache_key("guid-1", 2500000, 1080, "fp-1") != base
+    assert tc.cache_key("guid-1", 2500000, 720, "fp-2") != base
     # 源文件被替换（指纹变）→ 缓存键变 → 旧缓存自动失效
-    assert tc.cache_key("guid-1", "720p", None) != base
+    assert tc.cache_key("guid-1", 2500000, 720, None) != base
 
 
 # ---------- find_cache ----------
@@ -72,36 +60,36 @@ def _make_cache_dir(root, key, valid=True, with_segments=True):
 
 def test_find_cache_hit(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBY_TRANSCODE_CACHE_DIR", str(tmp_path))
-    key = tc.cache_key("g1", "720p", "f1")
+    key = tc.cache_key("g1", 2500000, 720, "f1")
     _make_cache_dir(str(tmp_path), key)
-    assert tc.find_cache("g1", "720p", "f1") == os.path.join(str(tmp_path), key)
+    assert tc.find_cache("g1", 2500000, 720, "f1") == os.path.join(str(tmp_path), key)
 
 
 def test_find_cache_miss_no_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBY_TRANSCODE_CACHE_DIR", str(tmp_path))
-    assert tc.find_cache("g1", "720p", "f1") is None
+    assert tc.find_cache("g1", 2500000, 720, "f1") is None
 
 
 def test_find_cache_miss_empty_playlist(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBY_TRANSCODE_CACHE_DIR", str(tmp_path))
-    key = tc.cache_key("g1", "720p", "f1")
+    key = tc.cache_key("g1", 2500000, 720, "f1")
     _make_cache_dir(str(tmp_path), key, valid=False)
-    assert tc.find_cache("g1", "720p", "f1") is None
+    assert tc.find_cache("g1", 2500000, 720, "f1") is None
 
 
 def test_find_cache_miss_no_segments(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBY_TRANSCODE_CACHE_DIR", str(tmp_path))
-    key = tc.cache_key("g1", "720p", "f1")
+    key = tc.cache_key("g1", 2500000, 720, "f1")
     _make_cache_dir(str(tmp_path), key, with_segments=False)
-    assert tc.find_cache("g1", "720p", "f1") is None
+    assert tc.find_cache("g1", 2500000, 720, "f1") is None
 
 
 def test_find_cache_miss_fingerprint_changed(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBY_TRANSCODE_CACHE_DIR", str(tmp_path))
-    key = tc.cache_key("g1", "720p", "f1")
+    key = tc.cache_key("g1", 2500000, 720, "f1")
     _make_cache_dir(str(tmp_path), key)
     # 文件被替换后指纹变化，旧缓存不再命中
-    assert tc.find_cache("g1", "720p", "f2") is None
+    assert tc.find_cache("g1", 2500000, 720, "f2") is None
 
 
 # ---------- register_cache_session ----------
@@ -128,14 +116,16 @@ def test_register_cache_session(monkeypatch):
     fake = _FakeStreaming()
     monkeypatch.setattr(tc, "_streaming", lambda: fake)
     sid = tc.register_cache_session("/cache/abc", user_id=7,
-                                    item_guid="g1", tier="720p")
+                                    item_guid="g1",
+                                    video_bitrate=2500000, height=720)
     info = fake.get_transcode(sid)
     assert info is not None
     assert info["dir"] == "/cache/abc"
     assert info["proc"] is None
     assert info["cached"] is True
     assert info["user_id"] == 7
-    assert info["tier"] == "720p"
+    assert info["video_bitrate"] == 2500000
+    assert info["height"] == 720
 
 
 # ---------- ensure_slot_or_503 ----------
@@ -198,12 +188,12 @@ class _ProcStub:
         return self._rc
 
 
-def _promote_info(src_dir, returncode=0, start_seconds=0,
-                  tier="720p", key="k" * 32):
+def _promote_info(src_dir, returncode=0, start_seconds=0, key="k" * 32):
     return {
         "proc": _ProcStub(returncode),
         "dir": src_dir,
-        "tier": tier,
+        "video_bitrate": 2500000,
+        "height": 720,
         "cache_key": key,
         "fingerprint": "f1",
         "item_guid": "g1",
@@ -248,10 +238,10 @@ def test_promote_skips_no_proc(tmp_path, monkeypatch):
     assert tc.maybe_promote_to_cache("s1", info) is False
 
 
-def test_promote_skips_missing_tier(tmp_path, monkeypatch):
+def test_promote_skips_missing_key(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBY_TRANSCODE_CACHE_DIR", str(tmp_path))
     src = _session_dir(str(tmp_path), "sess")
-    info = _promote_info(src, tier=None)
+    info = _promote_info(src, key=None)
     assert tc.maybe_promote_to_cache("s1", info) is False
 
 

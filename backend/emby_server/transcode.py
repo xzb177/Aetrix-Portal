@@ -32,14 +32,9 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-# 三档转码：只转需要的档。码率按 H.264 veryfast 的经验值给，
-# 弱网用户 480p 1Mbps 能流畅，720p 2.5Mbps 够手机看。
-TIERS: dict[str, dict[str, int]] = {
-    "480p": {"height": 480, "video_bitrate": 1_000_000, "audio_bitrate": 128_000},
-    "720p": {"height": 720, "video_bitrate": 2_500_000, "audio_bitrate": 128_000},
-    "1080p": {"height": 1080, "video_bitrate": 5_000_000, "audio_bitrate": 192_000},
-}
-_TIER_ORDER = ("480p", "720p", "1080p")
+# 2026-10 简化：删除服务端三档转码（480p/720p/1080p）。
+# 转码参数由客户端在 PlaybackInfo/播放请求里指定，服务端只管"转不转、转几路"，
+# 不再把客户端要的码率归档到固定档位（学 Linger 的"薄服务器"思路）。
 
 
 def _streaming():
@@ -60,30 +55,20 @@ def max_concurrent() -> int:
     return _cpu_workers("TRANSCODE_MAX_CONCURRENT")
 
 
-def pick_tier(video_bitrate: int, src_height: Optional[int] = None) -> str:
-    """按客户端请求的码率就近归档。
-
-    ``src_height`` 已知且低于档位时不做无意义的上采样（480p 源要 1080p
-    也只给 480p 档）。
-    """
-    if video_bitrate >= 4_000_000:
-        tier = "1080p"
-    elif video_bitrate >= 1_500_000:
-        tier = "720p"
-    else:
-        tier = "480p"
-    if src_height:
-        while tier != "480p" and TIERS[tier]["height"] > src_height:
-            tier = _TIER_ORDER[_TIER_ORDER.index(tier) - 1]
-    return tier
+def clamp_to_source(height: Optional[int], src_height: Optional[int]) -> Optional[int]:
+    """源片分辨率低于请求时不做无意义的上采样。"""
+    if height and src_height and height > src_height:
+        return src_height
+    return height
 
 
-def cache_key(item_guid: str, tier: str, fingerprint: Optional[str] = None) -> str:
-    """缓存键：同一片 + 同档位 + 同源文件指纹 → 同一份转码缓存。
+def cache_key(item_guid: str, video_bitrate: int, height: Optional[int],
+              fingerprint: Optional[str] = None) -> str:
+    """缓存键：同一片 + 同码率 + 同分辨率 + 同源文件指纹 → 同一份转码缓存。
 
     源文件被替换（指纹变化）时缓存自动失效，不会播出旧内容。
     """
-    raw = f"{item_guid}|{tier}|{fingerprint or ''}"
+    raw = f"{item_guid}|{video_bitrate}|{height or 0}|{fingerprint or ''}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -101,16 +86,18 @@ def _cache_valid(path: str) -> bool:
         return False
 
 
-def find_cache(item_guid: str, tier: str, fingerprint: Optional[str] = None) -> Optional[str]:
+def find_cache(item_guid: str, video_bitrate: int, height: Optional[int],
+               fingerprint: Optional[str] = None) -> Optional[str]:
     """找可复用的转码缓存，命中返回缓存目录，否则 None。"""
-    path = os.path.join(cache_dir(), cache_key(item_guid, tier, fingerprint))
+    path = os.path.join(cache_dir(), cache_key(item_guid, video_bitrate, height, fingerprint))
     if _cache_valid(path):
-        logger.info("转码缓存命中 %s %s", item_guid, tier)
+        logger.info("转码缓存命中 %s %dbps %s", item_guid, video_bitrate, height)
         return path
     return None
 
 
-def register_cache_session(cache_path: str, user_id: int, item_guid: str, tier: str) -> str:
+def register_cache_session(cache_path: str, user_id: int, item_guid: str,
+                           video_bitrate: int, height: Optional[int]) -> str:
     """把缓存目录注册成一个「无进程」的转码会话。
 
     复用 ``video_hls`` 已有的会话服务逻辑（播放列表重写 / 切片投递）；
@@ -124,7 +111,8 @@ def register_cache_session(cache_path: str, user_id: int, item_guid: str, tier: 
         "started": datetime.now(),
         "user_id": user_id,
         "item_guid": item_guid,
-        "tier": tier,
+        "video_bitrate": video_bitrate,
+        "height": height,
         "cached": True,
         "last_access": time.monotonic(),  # S6：闲置按客户端最后访问算
     }
@@ -181,10 +169,9 @@ def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
         return False
     if (info.get("start_seconds") or 0) > 1:
         return False
-    tier = info.get("tier")
     key = info.get("cache_key")
     src_dir = info.get("dir")
-    if not tier or not key or not src_dir:
+    if not key or not src_dir:
         return False
     if not _cache_valid(src_dir):
         return False
@@ -204,7 +191,8 @@ def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
     try:
         meta = {
             "item_guid": info.get("item_guid"),
-            "tier": tier,
+            "video_bitrate": info.get("video_bitrate"),
+            "height": info.get("height"),
             "fingerprint": info.get("fingerprint"),
             "completed_at": datetime.now().isoformat(timespec="seconds"),
         }

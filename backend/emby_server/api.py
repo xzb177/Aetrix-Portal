@@ -3200,12 +3200,10 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
         db, int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000) // 1000,
     ) * 1000
     height = int(q.get("Height") or 0) or None
-    # 按需转码 P1：码率归档到 480p/720p/1080p 三档（弱网降码率只转需要的档）；
-    # 源片分辨率低于档位时不做无意义的上采样
+    # 2026-10 简化：删除服务端三档转码。客户端要多少码率/分辨率就转多少，
+    # 只在源片分辨率低于请求时不做无意义的上采样（学 Linger 薄服务器思路）。
     from backend.emby_server import transcode as transcode_mod
-    tier = transcode_mod.pick_tier(video_bitrate, getattr(item, "height", None))
-    video_bitrate = transcode_mod.TIERS[tier]["video_bitrate"]
-    height = transcode_mod.TIERS[tier]["height"]
+    height = transcode_mod.clamp_to_source(height, getattr(item, "height", None))
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS
     target = _play_target(db, item)
@@ -3223,16 +3221,18 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
     # 按需转码 P1：缓存命中直接复用，不再起 ffmpeg；
     # 2 路硬限制超了就 503，让客户端降级走直连
     fingerprint = getattr(item, "file_fingerprint", None)
-    cached_dir = transcode_mod.find_cache(item.guid, tier, fingerprint)
+    cached_dir = transcode_mod.find_cache(item.guid, video_bitrate, height, fingerprint)
     if cached_dir:
         session_id = transcode_mod.register_cache_session(
-            cached_dir, user_id=user.id, item_guid=item.guid, tier=tier)
+            cached_dir, user_id=user.id, item_guid=item.guid,
+            video_bitrate=video_bitrate, height=height)
     else:
         transcode_mod.ensure_slot_or_503()
         session_id = start_transcode(
             target.value, start_seconds, video_bitrate, height,
             user_id=user.id, item_guid=item.guid, input_headers=target.headers,
-            tier=tier, cache_key=transcode_mod.cache_key(item.guid, tier, fingerprint),
+            video_bitrate=video_bitrate, height=height,
+            cache_key=transcode_mod.cache_key(item.guid, video_bitrate, height, fingerprint),
             fingerprint=fingerprint,
         )
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
