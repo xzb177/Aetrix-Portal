@@ -43,7 +43,6 @@ def test_new_transcode_preparation_runs_in_threadpool(monkeypatch):
     monkeypatch.setattr(api.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(api, "_play_target",
                         rec("_play_target", PlayTarget("url", "https://115.example/v.mkv", {}), sleep=0.4))
-    monkeypatch.setattr(api.play_line, "get_play_line", rec("get_play_line", api.play_line.LINE_RELAY))
     monkeypatch.setattr(api.cdn, "enabled", rec("cdn_enabled", False))
     monkeypatch.setattr(api.line_stats, "record_request", lambda *a, **k: None)
     from backend.emby_server import transcode as tc
