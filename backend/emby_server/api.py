@@ -2837,14 +2837,6 @@ async def playback_info(
     await run_db(ensure_playback_allowed, db, user)
     # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
-    # 按需探测（v2.49.0）：库里没有时长时，播放瞬间才探测这一个文件。
-    # 后台批量探测已下线（烧 Drive 配额）。线程池跑、不占事件循环，整体
-    # 超时 12 秒；失败/超时直接跳过，不影响播放。写回 DB 后下次不再探。
-    if not item.duration_ticks and item.file_path:
-        _ticks = await _probe_duration_on_demand(item.file_path)
-        if _ticks:
-            await run_db(_save_duration_ticks, db, item.guid, _ticks)
-            item.duration_ticks = _ticks
     # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
     try:
         from backend.emby_server import probe_worker
