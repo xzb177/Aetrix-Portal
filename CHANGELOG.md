@@ -52,6 +52,45 @@ JWT 不进 URL、可信代理、兑换码每人一次、缩略图缓存 key）�
 - **多版本管理后台接口**：恢复 `/api/admin/media/versions/{id}`、`/unmerge`、`/unmerge-all`。
 - **文档**：`docs/新手指南.md` 文件名恢复（此前被改成乱码，README 链接失效）。
 
+## [未发布] - 后端清理：删除死代码与无用依赖、合并重复 helper、修集图片 N+1
+
+只做「不改行为」的清理（依据性能审查第 7 节中标为低风险 / 机械安全的条目），外加一个纯性能修复。
+接口、配置项、数据库结构均不变；未删除任何仍被引用的代码。
+
+### 删除
+
+- `backend/emby_server/fast_scanner.py`（731 行）：生产代码零 import，`USE_FAST_SCANNER` 无人读取；
+  只测它的 `tests/test_incremental_scan.py` 一并删除。
+- `backend/emby_server/refresh_person_worker.py`：全仓无 import、从未启动；
+  删除 `test_polish_round1/2` 里三条只读这个文件源码文本的断言。
+- 29 个全仓零引用的函数 / 类（api.py 里的 `_image_urls`、`_probe_duration_on_demand` /
+  `_ffprobe_duration_sync`、`_batch_series_source_dirs` 等 8 个，及 reminders / websocket / mounts /
+  scan_queue / streaming 等模块里的 21 个），删除前逐个全仓 grep 复核（含字符串 / getattr / 路由注册）。
+- `main.py` 里重复两遍的 GZip 注释与被注释掉的死代码（GZip 仍保持禁用）。
+
+### 依赖
+
+- 从 `backend/requirements.txt` 移除未使用的 `alembic`、`aiofiles`、`apscheduler`、`loguru`、
+  `pydantic-settings`、`email-validator`。
+- `passlib[bcrypt]` 换成显式 `bcrypt>=4.0.0`：代码从未 import passlib，`security.py` 直接用 bcrypt。
+
+### 合并
+
+- `database.py` 的 7 个 `_ensure_*_index` 合并为一张索引表 `_LEGACY_INDEXES` + 一个幂等 helper；
+  执行顺序、DDL 与迁移日志逐字不变（已对比新库与老库两种场景）。
+
+### 性能
+
+- 集 / 季的图片回退链取季改用 `db.get`（命中会话 identity map 时零 SQL）：含集列表每条集原先多
+  2 次 SQL，审查实测 `Items?IncludeItemTypes=Episode&Limit=1000` 2015 条 SQL；一页 40 集的回退链
+  从 80 条 SQL 降到 0。新增 `tests/test_image_chain_sql.py` 钉住。
+- `Shows/{id}/Episodes` 的剧名改从预取结果取，每次请求少一次 IN 查询。
+
+### 升级须知
+
+- 无需任何操作。自定义镜像如果依赖上面移除的 Python 包，需要自行安装。
+
+
 ## [未发布] - 安全修复（3 严重 + 5 高危）
 
 ### 严重
