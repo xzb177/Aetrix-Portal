@@ -527,6 +527,7 @@ def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
                 role=str(c.get("role") or "")[:200],
                 image=str(c.get("image") or "")[:1024],
                 sort_order=int(c.get("sort_order") or 0),
+                person_tmdb_id=str(c.get("person_id") or "")[:32],
             ))
     except Exception as exc:  # noqa: BLE001 — 演员落库失败不该影响主流程
         logger.debug("演员落库失败 %s: %s", getattr(item, "name", ""), exc)

@@ -297,6 +297,8 @@ class EmbyPerson(Base):
     role = Column(String(200))       # 饰演角色（TMDB character）
     image = Column(String(1024))     # 头像远程 URL（TMDB profile_path 拼出来的）
     sort_order = Column(Integer, default=0)  # TMDB cast 原顺序（戏份排序）
+    # StrmAssistant #9 对标：TMDB person id，供刷新演员详情用
+    person_tmdb_id = Column(String(32), index=True)
 
 
 class MediaStream(Base):

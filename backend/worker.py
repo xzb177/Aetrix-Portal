@@ -253,6 +253,14 @@ def main() -> int:
             logger.warning(f"启动缩略图 worker 失败（可忽略）: {e}")
 
         try:
+            from backend.emby_server import refresh_person_worker
+            if refresh_person_worker.start():
+                started.append("refresh_person_worker")
+                logger.info("✅ 演员刷新 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动演员刷新 worker 失败（可忽略）: {e}")
+
+        try:
             from backend import reminders
             if reminders.start_reminder_scheduler():
                 started.append("reminders")

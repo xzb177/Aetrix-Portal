@@ -798,7 +798,8 @@ def cast_list(details: Optional[dict], limit: int = TMDB_CAST_LIMIT) -> list[dic
     """从 details 载荷（``append_to_response=credits``）里取前 N 个演员。
 
     返回 ``[{"name": 演员名, "role": 饰演角色, "image": 头像 URL,
-    "sort_order": 原顺序}]``。头像尺寸用 w185（TMDB 标准头像尺寸）。
+    "sort_order": 原顺序, "person_id": TMDB person id}]``。头像尺寸用 w185
+    （TMDB 标准头像尺寸）。
 
     **单一口径**：``_enrich_fetch`` 用它拼预热 URL，``_enrich_apply`` 用它写
     ``emby_people``——两边看到的演员表必须完全一致，否则预热和落库会对不上
@@ -821,6 +822,8 @@ def cast_list(details: Optional[dict], limit: int = TMDB_CAST_LIMIT) -> list[dic
             "role": str(c.get("character") or "").strip(),
             "image": f"{base}/w185{profile}" if profile else "",
             "sort_order": len(out),
+            # StrmAssistant #9 对标：存 person tmdb_id，供后续刷新演员详情用
+            "person_id": str(c.get("id") or ""),
         })
     return out
 

@@ -557,6 +557,10 @@ def _auto_migrate():
             ("channel_layout", "VARCHAR(30)", "NULL"),
             ("sample_format", "VARCHAR(20)", "NULL"),
         ]),
+        # StrmAssistant #9 演职人员增强：person_tmdb_id 供刷新演员详情用
+        ("emby_people", [
+            ("person_tmdb_id", "VARCHAR(32)", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -584,11 +588,11 @@ def _auto_migrate():
         _backfill_filename_meta()
     _ensure_probe_index(existing_tables)
     _ensure_enrich_index(existing_tables)
-    _ensure_merged_into_id_index(existing_tables)
-    _ensure_person_tmdb_id_index(existing_tables)
     _ensure_added_index(existing_tables)
     _ensure_deleted_index(existing_tables)
     _ensure_drive_file_id_index(existing_tables)
+    _ensure_merged_into_id_index(existing_tables)
+    _ensure_person_tmdb_id_index(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -776,54 +780,6 @@ def _ensure_deleted_index(existing_tables: set) -> None:
 
 
 
-def _ensure_merged_into_id_index(existing_tables: set) -> None:
-    """给老库补多版本合并查询索引（幂等）
-
-    ``merged_into_id`` 列在模型里有 ``index=True``，但老库是 ALTER 加的列，
-    create_all 不会给已存在的表补索引。这里显式补上，供多版本合并/
-    拆分查询 ``WHERE merged_into_id = ?`` 走索引。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_items" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
-    if "idx_item_merged_into_id" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_item_merged_into_id "
-            "ON emby_items (merged_into_id)"
-        ))
-        print("  已迁移: emby_items.idx_item_merged_into_id（多版本合并索引）")
-
-
-def _ensure_person_tmdb_id_index(existing_tables: set) -> None:
-    """给老库补演员 TMDB ID 索引（幂等，防御式）
-
-    emby_people 表较新，老库可能没有 tmdb_id 列：先检查列存在才建索引，
-    列不存在时静默跳过（不报错、不阻塞启动）。
-    """
-    from sqlalchemy import inspect, text
-
-    if "emby_people" not in existing_tables:
-        return
-    inspector = inspect(engine)
-    cols = {c["name"] for c in inspector.get_columns("emby_people")}
-    if "tmdb_id" not in cols:
-        return
-    names = {ix["name"] for ix in inspector.get_indexes("emby_people")}
-    if "idx_person_tmdb_id" in names:
-        return
-    with engine.begin() as conn:
-        conn.execute(text(
-            "CREATE INDEX idx_person_tmdb_id "
-            "ON emby_people (tmdb_id)"
-        ))
-        print("  已迁移: emby_people.idx_person_tmdb_id（演员 TMDB 索引）")
-
-
 def _ensure_drive_file_id_index(existing_tables: set) -> None:
     """v2.52.0: 给老库补 drive_file_id 索引（幂等）
 
@@ -843,6 +799,52 @@ def _ensure_drive_file_id_index(existing_tables: set) -> None:
             "ON emby_items (drive_file_id)"
         ))
         print("  已迁移: emby_items.idx_item_drive_file_id")
+
+
+def _ensure_merged_into_id_index(existing_tables: set) -> None:
+    """StrmAssistant 打磨 R2: 给老库补 merged_into_id 索引（幂等）
+
+    get_alternate_versions() 按 merged_into_id 查版本，详情页每次打开都触发；
+    models.py 的 index=True 只对 create_all 新建表生效，老库升级上来没有索引
+    就是全表扫（40 万行约 0.5-2 秒/次，直接拖慢播放链路）。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_items" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_items")}
+    if "idx_item_merged_into_id" in names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX idx_item_merged_into_id "
+            "ON emby_items (merged_into_id)"
+        ))
+        print("  已迁移: emby_items.idx_item_merged_into_id")
+
+
+def _ensure_person_tmdb_id_index(existing_tables: set) -> None:
+    """StrmAssistant 打磨 R2: 给老库补 (item_id, person_tmdb_id) 复合索引（幂等）
+
+    refresh_person_worker 每天做全表 GROUP BY (item_id, person_tmdb_id) 去重，
+    无复合索引时是分钟级的全表扫描 + hash 聚合（emby_people 约数百万行）。
+    复合索引同时覆盖去重查询和单列过滤。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_people" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_people")}
+    if "idx_person_item_tmdb" in names:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE INDEX idx_person_item_tmdb "
+            "ON emby_people (item_id, person_tmdb_id)"
+        ))
+        print("  已迁移: emby_people.idx_person_item_tmdb")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:
