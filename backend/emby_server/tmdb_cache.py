@@ -233,23 +233,33 @@ def save_details(endpoint: str, tmdb_id: str, data, lang: str = "") -> bool:
     return _save(_key_path(endpoint, str(tmdb_id), 0, lang), data)
 
 
-def invalidate_search(name: str, year: Optional[int], kind: str, lang: str = "") -> int:
+def invalidate_search(name: str, year: Optional[int], kind: str, lang: str = "",
+                    langs: Optional[list] = None) -> int:
     """把一部片名的搜索缓存删掉（管理端「重试未匹配项」用）。
 
     按与 ``TmdbClient.search`` 完全相同的候选逻辑重算缓存键，逐一删除——
     否则点「重试」只会命中旧的阴性缓存、一个请求都不发，重试就成了摆设。
     返回删除的文件数（尽力而为：文件本来就不在时不算数也不报错）。
+
+    langs：要清理的语言列表；None 则按 language_fallback_chain() 全链清理
+    （fallback 上线后一次 search 会写下多种语言的键，只清首选语言会让
+    fallback 链名存实亡——其余语言仍命中旧阴性缓存）。
     """
     if not _cfg_enabled():
         return 0
-    from backend.emby_server.tmdb import _norm_text, _search_candidates
+    from backend.emby_server.tmdb import _norm_text, _search_candidates, language_fallback_chain
 
     endpoint = "tv" if kind == "series" else "movie"
     years = {int(year or 0), 0}   # year 维度两种取值都清（键里 year or 0）
-    # 语言维度也要对齐：当前语言的键 + 老版本无语言键（lang=""）都清。
+    # 语言维度也要对齐：fallback 全链 + 老版本无语言键（lang=""）都清。
     # 后者覆盖升级前写下的缓存文件，以及测试/调用方用默认 lang="" 预置的情形；
     # 不清的话重试仍会命中旧阴性缓存、一个请求都不发。
-    langs = {lang or "", ""}
+    if langs is None:
+        try:
+            langs = list(language_fallback_chain())
+        except Exception:
+            langs = []
+    langs = {*(langs or []), lang or "", ""}
     removed = 0
     for query, _fuzzy in _search_candidates(name or ""):
         norm = _norm_text(query)

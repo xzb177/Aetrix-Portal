@@ -74,8 +74,43 @@ TMDB_PREFERRED_LANGUAGE_CONFIG_KEY = "tmdb_preferred_language"
 TMDB_PREFERRED_LANGUAGE_DEFAULT = "zh-CN"
 TMDB_LANGUAGE_OPTIONS = ("zh-CN", "zh-TW", "en-US", "ja-JP")
 
+# StrmAssistant 对标 #10：海报语言偏好
+# - "system"：跟随系统语言（默认，现有行为）
+# - "original"：优先原语言海报（如英文原版海报）
+# - "zh-CN"：优先中文海报
+TMDB_POSTER_LANGUAGE_CONFIG_KEY = "tmdb_poster_language"
+TMDB_POSTER_LANGUAGE_DEFAULT = "system"
+TMDB_POSTER_LANGUAGE_OPTIONS = ("system", "original", "zh-CN")
+
 # ---------------------------------------------------------------------------
 # 请求级限流 / 超时 / 429 退避（v2.42.9）
+
+# StrmAssistant 对标：MovieDbFallbackLanguages
+# 首选语言无高置信命中时，按此链逐个重试（去重后）。
+MOVIEDB_FALLBACK_LANGUAGES = ("zh-CN", "zh-HK", "zh-TW", "ja-JP", "en-US")
+# fallback 最大深度（环境变量 TMDB_FALLBACK_MAX_LANGS）：首选语言 + 最多 N 种备选。
+# 最坏请求数 = (1+N) × 候选数；默认 2（最坏 15 请求），设 0 则关闭 fallback。
+try:
+    _FALLBACK_MAX = int(os.getenv("TMDB_FALLBACK_MAX_LANGS", "2") or 2)
+except ValueError:
+    _FALLBACK_MAX = 2
+TMDB_FALLBACK_MAX_LANGS = max(0, min(_FALLBACK_MAX, len(MOVIEDB_FALLBACK_LANGUAGES)))
+
+
+def language_fallback_chain(db=None) -> list[str]:
+    """TMDB 语言 fallback 链：首选语言打头，后跟备选（去重，深度受限）。
+
+    对标 StrmAssistant ``LanguageUtility.MovieDbFallbackLanguages``。
+    zh-CN 无结果时自动试 zh-TW/en-US 等，不直接放弃。
+    """
+    preferred = preferred_language(db)
+    chain = [preferred]
+    for lang in MOVIEDB_FALLBACK_LANGUAGES:
+        if len(chain) > TMDB_FALLBACK_MAX_LANGS:
+            break
+        if lang not in chain:
+            chain.append(lang)
+    return chain
 #
 # 旧实现把令牌桶放在 enrich_worker 里，**按条目**扣一个 token，而一个条目后面可能是
 # 0~6 个 HTTP（中文标题 4~5 个候选搜索，最贵）；于是“4/秒”实际上是 8~24 请求/秒，
@@ -674,37 +709,18 @@ def invalidate_language() -> None:
         _LANGUAGE_CACHE.update({"at": 0.0, "value": ""})
 
 
-_POSTER_LANGUAGE_CACHE = {"at": 0.0, "value": ""}
+def poster_language(db=None) -> str:
+    """海报语言偏好：SystemConfig > system（跟随系统）。
 
-
-def poster_language(db=None, *, refresh: bool = False) -> str:
-    """海报语言偏好：SystemConfig > original。
-
-    - "system"：用 TMDB 默认图，不额外请求图片接口
-    - "original"：原语言海报优先（include_image_language=en,null）
-    - "zh-CN"：中文海报优先（include_image_language=zh-CN,null）
-    非法值回落到默认（防手写 DB 搞坏）。
-    refresh=True 时绕过进程缓存直查 DB（管理后台保存后立刻读时用）。
+    对标 StrmAssistant #10「获取原语言海报」。
     """
-    now = time.monotonic()
-    with _settings_lock:
-        if not refresh and (now - _POSTER_LANGUAGE_CACHE["at"]) < SETTINGS_TTL_SEC \
-                and _POSTER_LANGUAGE_CACHE["value"]:
-            return _POSTER_LANGUAGE_CACHE["value"]
-    cfg_lang = (_config_text(TMDB_POSTER_LANGUAGE_CONFIG_KEY, db,
-                            refresh=refresh) or "").strip()
-    value = cfg_lang or TMDB_POSTER_LANGUAGE_DEFAULT
+    try:
+        value = (_config_text(TMDB_POSTER_LANGUAGE_CONFIG_KEY, db) or "").strip()
+    except Exception:
+        value = ""
     if value not in TMDB_POSTER_LANGUAGE_OPTIONS:
         value = TMDB_POSTER_LANGUAGE_DEFAULT
-    with _settings_lock:
-        _POSTER_LANGUAGE_CACHE.update({"at": now, "value": value})
     return value
-
-
-def invalidate_poster_language() -> None:
-    """保存海报语言后立刻失效缓存（同进程即时生效，跨进程靠 TTL）"""
-    with _settings_lock:
-        _POSTER_LANGUAGE_CACHE.update({"at": 0.0, "value": ""})
 
 
 def api_base(db=None) -> str:
@@ -1280,7 +1296,8 @@ class TmdbClient:
                     cache.pop(old, None)
             cache[key] = (now, value)
 
-    def _search_raw(self, query: str, year: Optional[int], kind: str, lang: Optional[str] = None) -> list:
+    def _search_raw(self, query: str, year: Optional[int], kind: str,
+                    lang: Optional[str] = None) -> list:
         """原始搜索（带两级缓存），返回 results 列表。
 
         L1 进程内（300 秒，同一次扫描的预热/写库复用）→ L2 磁盘
@@ -1290,6 +1307,8 @@ class TmdbClient:
         一遍——跨条目去重从此可靠而非碰运气（§7.3③）。
         瞬态失败直接抛 ``TmdbTransientError``（L1/L2 都不写，网络恢复后自然
         重打）；``data=None`` 的非瞬态（401/404）不写 L2 磁盘。
+
+        lang：指定语言（fallback 链用）；None 则用首选语言。
         """
         self._ensure_session()
         if not self.session:
@@ -1339,12 +1358,15 @@ class TmdbClient:
         瞬态失败（网络/5xx/全 key 429）在**没有任何命中**时上抛
         ``TmdbTransientError``——那不是「搜过了没有」，是「没搜成」，
         条目应进重试队列；已有命中则照常返回（部分候选失败不挡命中）。
+
+        语言 fallback（对标 StrmAssistant）：首选语言无高置信命中时，
+        按 ``language_fallback_chain()`` 逐个语言重试。
         """
-        best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
-        transient: Optional[Exception] = None
+        # 外层：语言 fallback 链；内层：查询候选
+        # 首选语言先走完所有候选，无命中才换语言（省请求）
         for lang in language_fallback_chain():
-            if best is not None and best[0] == 2:
-                break  # 已有精确命中，不再换语言
+            best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
+            transient: Optional[Exception] = None
             for query, fuzzy_ok in _search_candidates(name):
                 # 短路（v2.42.9）：已有 Tier 2（归一化后**精确相等**）就收手。
                 # Tier 2 永远压过 Tier 1（元组比较先看 tier），后续候选最多只能换来
@@ -1355,7 +1377,7 @@ class TmdbClient:
                     progress.note_stage("tmdb_search_short")
                     break
                 try:
-                    results = self._search_raw(query, year, kind)
+                    results = self._search_raw(query, year, kind, lang=lang)
                 except TmdbTransientError as exc:
                     # 瞬态失败只记不吞：一个候选都没拿到真实响应时整次上抛，
                     # 条目走补全退避重试（吞成 None 会被写成终态 none）
@@ -1367,10 +1389,11 @@ class TmdbClient:
                     sc = _hit_score(name, query, hit, fuzzy_ok)
                     if sc and (best is None or sc > best[:2]):
                         best = (sc[0], sc[1], hit)
-        if best:
-            return best[2]
-        if transient is not None:
-            raise transient
+            if best:
+                return best[2]
+            if transient is not None:
+                raise transient
+            # 本语言无命中，继续下一种语言
         return None
 
     def search_candidates(self, name: str, kind: str, limit: int = 6) -> list[dict]:
@@ -1694,11 +1717,26 @@ class TmdbClient:
         image_store.prewarm(url for _kind, url in image_specs(data))
         return self.apply_images(item, data)
 
-    def apply_images(self, item: emby_models.MediaItem, data: dict) -> bool:
-        """把详情接口里的图片落到条目上（返回是否拿到图）"""
+    def apply_images(self, item: emby_models.MediaItem, data: dict,
+                     images_lang: Optional[dict] = None) -> bool:
+        """把详情接口里的图片落到条目上（返回是否拿到图）
+
+        images_lang：images_with_language() 预取的语言偏好图片（IO 阶段取，
+        对标 StrmAssistant #10 原语言海报）。有原语言海报时优先用它做主海报。
+        """
         if not data:
             return False
         specs = image_specs(data)
+        # 原语言海报优先：images 的 posters[0] 替换默认 Primary
+        if images_lang:
+            posters = [p for p in (images_lang.get("posters") or [])
+                       if isinstance(p, dict) and p.get("file_path")]
+            if posters:
+                base = image_base()
+                lang_poster = f"{base}/w500{posters[0]['file_path']}"
+                specs = [("Primary", lang_poster)] + [
+                    s for s in specs if s[0] != "Primary"
+                ]
         for img_kind, url in specs:
             _set_image(item, img_kind, url)
         if specs and getattr(item, "metadata_source", None) == "nfo":
@@ -1751,70 +1789,3 @@ class TmdbClient:
 
 
 tmdb_client = TmdbClient()  # 进程级单例：一次扫描里的预热与写库共用同一份缓存与连接池
-"""TMDB 备选语言与海报语言（神医助手对标，轻量通用）。
-
-备选语言：search() 按语言链逐语言搜索，提高非英文标题命中率。
-海报语言：images_with_language() 按配置的语言偏好选海报。
-"""
-
-# TMDB 备选语言链（默认）：中文优先，英文兜底
-MOVIEDB_FALLBACK_LANGUAGES = ["zh-CN", "zh-HK", "zh-TW", "en-US"]
-
-# 海报语言配置键（SystemConfig）
-TMDB_POSTER_LANGUAGE_CONFIG_KEY = "tmdb_poster_language"
-
-# 海报语言可选值：system=用 TMDB 默认图，original=原语言海报优先，zh-CN=中文海报优先
-TMDB_POSTER_LANGUAGE_OPTIONS = ("system", "original", "zh-CN")
-TMDB_POSTER_LANGUAGE_DEFAULT = "original"
-
-# TMDB 备选语言链最大深度（可配）：search() 按语言链逐语言搜索时最多尝试几种语言
-TMDB_FALLBACK_MAX_LANGS = 4
-
-
-def language_fallback_chain(db=None):
-    """返回 TMDB 搜索的语言回退链。
-
-    优先读 DB 配置（SystemConfig），无配置时用默认常量。
-    长度受 TMDB_FALLBACK_MAX_LANGS 限制（可配，防链过长烧配额）。
-    """
-    if db is not None:
-        try:
-            from backend import models as m
-            row = db.query(m.SystemConfig).filter(
-                m.SystemConfig.key == "tmdb_fallback_languages").first()
-            if row and row.value:
-                langs = [l.strip() for l in row.value.split(",") if l.strip()]
-                if langs:
-                    return langs[:TMDB_FALLBACK_MAX_LANGS]
-        except Exception:
-            pass
-    return list(MOVIEDB_FALLBACK_LANGUAGES)[:TMDB_FALLBACK_MAX_LANGS]
-
-
-def images_with_language(images, preferred="original"):
-    """按语言偏好筛选 TMDB 图片列表。
-
-    preferred="original" 时优先原语言海报，否则按指定语言筛选。
-    纯函数，不调网络。
-    """
-    if not images:
-        return []
-    if preferred == "original":
-        # 原语言优先：有 iso_639_1 的按原语言排前面，无语言标记的其次
-        def _key(img):
-            lang = img.get("iso_639_1")
-            if lang and lang != "en":
-                return (0, lang)
-            if lang == "en":
-                return (2, lang)
-            return (1, "")
-        return sorted(images, key=_key)
-    # 指定语言优先
-    def _key2(img):
-        lang = img.get("iso_639_1") or ""
-        if lang == preferred:
-            return (0, lang)
-        if not lang:
-            return (1, "")
-        return (2, lang)
-    return sorted(images, key=_key2)

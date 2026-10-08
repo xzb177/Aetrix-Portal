@@ -50,14 +50,13 @@ from backend.emby_server.tmdb import (
     TMDB_POSTER_LANGUAGE_OPTIONS,
     TMDB_PREFERRED_LANGUAGE_CONFIG_KEY,
     TMDB_PREFERRED_LANGUAGE_DEFAULT,
-    invalidate_poster_language,
-    poster_language,
     TmdbTransientError,
     _db_keys,
     _env_keys,
     _split_keys,
     invalidate_language,
     invalidate_settings,
+    poster_language,
     preferred_language,
     prewarm_images,
     settings as tmdb_settings,
@@ -376,7 +375,7 @@ def save_tmdb_language(
 
 class TmdbPosterLanguageSaveRequest(BaseModel):
     language: str = Field(default=TMDB_POSTER_LANGUAGE_DEFAULT,
-                          description="海报语言偏好：system=TMDB默认图，original=原语言优先，zh-CN=中文优先")
+                          description="海报语言偏好：system（跟随系统）/ original（原语言）/ zh-CN")
 
 
 @admin_emby_router.get("/scrape/tmdb-poster-language")
@@ -384,9 +383,9 @@ def get_tmdb_poster_language(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """海报语言偏好：当前生效值 + 可选列表（对标 StrmAssistant #10 原语言海报）。"""
+    """TMDB 海报语言偏好：当前值 + 可选列表（对标 StrmAssistant #10 原语言海报）。"""
     return {
-        "language": poster_language(db, refresh=True),
+        "language": poster_language(db),
         "options": list(TMDB_POSTER_LANGUAGE_OPTIONS),
         "default": TMDB_POSTER_LANGUAGE_DEFAULT,
     }
@@ -398,7 +397,7 @@ def save_tmdb_poster_language(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存海报语言偏好（写进 SystemConfig，保存即热生效，无需重启）"""
+    """保存 TMDB 海报语言偏好（写进 SystemConfig，保存即生效，无需重启）"""
     lang = (req.language or "").strip()
     if lang not in TMDB_POSTER_LANGUAGE_OPTIONS:
         raise HTTPException(
@@ -408,11 +407,10 @@ def save_tmdb_poster_language(
     store.write_values(
         db,
         {TMDB_POSTER_LANGUAGE_CONFIG_KEY: lang},
-        {TMDB_POSTER_LANGUAGE_CONFIG_KEY: "海报语言偏好（system=默认图，original=原语言优先，zh-CN=中文优先）"},
+        {TMDB_POSTER_LANGUAGE_CONFIG_KEY: "TMDB 海报语言偏好（system 跟随系统 / original 原语言 / zh-CN）"},
     )
     db.commit()
     db.expire_all()
-    invalidate_poster_language()
     return {"success": True, "language": lang}
 
 
