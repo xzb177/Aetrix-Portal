@@ -67,7 +67,7 @@ function isActive(path: string) {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 0.5rem 0 0.375rem;
+  padding: 0.375rem 0 0.25rem;
   text-decoration: none;
   color: var(--au-text-3);
   transition: color var(--au-fast) var(--au-ease);
