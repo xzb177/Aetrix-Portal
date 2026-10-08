@@ -640,8 +640,8 @@ local_items = db.query(em.MediaItem).filter(em.MediaItem.library_id == lib_local
 local_files = [(i.guid, i.file_path) for i in local_items if i.file_path]
 check("本机挂载条目存真实路径",
       len(local_files) == 2
-      and all(not i.file_path.startswith(mnt.MOUNT_PATH_PREFIX) for i in local_files),
-      str([i.file_path for i in local_files])[:120])
+      and all(not i[1].startswith(mnt.MOUNT_PATH_PREFIX) for i in local_files),
+      str([i[1] for i in local_files])[:120])
 
 stats_remote = sc.scan_library_sync(db, lib_remote, sc.LibrarySnapshot.of(lib_remote))
 check("远程挂载库扫描入库", stats_remote["added"] == 2, str(stats_remote))
