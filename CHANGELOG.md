@@ -27,6 +27,59 @@
 - **H5 兑换码每人一次**：注册码 / 兑换码新增核销记录，同一用户对同一张多次码只能兑换一次（兼容升级前 `used_by` 里的记录）。
 - **缩略图缓存串图**：库外同名外挂图（`poster.jpg` / `folder.jpg` / `cover.jpg` / `fanart.jpg`……）此前共用同一张缩略图（如 `poster_w320.jpg`），
   首页「本周入库」海报与片名对不上。现对缓存之外的原图按「绝对路径 + mtime + 大小」的 sha1 命名缩略图（`backend/emby_server/image_store.py`）。
+## [未发布] - 修复：恢复 2d7d996 误删的功能
+
+### 修复
+
+2d7d996（安全修复 v2）基于旧底稿重新应用，把 PR #400、#403~#408 的一批
+StrmAssistant（神医助手）移植功能整段覆盖掉了。这些删除不是有意的，现按原提交恢复
+（2d7d996 的安全语义全部保留：管理员角色 fail closed、节点签名、可见性校验、
+JWT 不进 URL、可信代理、兑换码每人一次、缩略图缓存 key）。
+
+- **片头片尾标记**：恢复 `IntroMarker` 模型（`emby_intro_markers` 表）。
+  此前 `/Items/{id}/IntroMarkers` 接口访问即 500。
+- **演员增强**：恢复 `emby_people.person_tmdb_id` 字段、老库自动加列、
+  `(item_id, person_tmdb_id)` 复合索引、刮削落库，以及演员刷新 worker 的启动。
+- **TMDB 备选语言 / 原语言海报**：恢复 `language_fallback_chain`（首选语言无命中时
+  按 zh-CN → zh-HK → zh-TW → ja-JP → en-US 重试，深度由 `TMDB_FALLBACK_MAX_LANGS` 控制）、
+  海报语言偏好（默认 `system`）与原语言海报优先；「重试未匹配项」会清整条语言链的缓存。
+- **代理工具**：恢复 `is_valid_proxy_url` / `try_parse_proxy_url`。
+- **拼音排序**：恢复 `lru_cache(65536)`；`pypinyin` 恢复锁定 `==0.55.0`。
+- **后台 worker**：恢复 Redis 跨进程心跳（`/api/health` 能看到 worker 容器的线程）与
+  死线程告警；缩略图 / 字幕扫描 / 多版本合并恢复三轮打磨（guid 防穿越、单视频超时、
+  分批提交、目录不可访问不误删字幕、防跨库 / 跨类型合并等）。
+- **扫描器**：条目下架时同步清理 `/data/mediainfo` 里的媒体信息 JSON。
+- **多版本管理后台接口**：恢复 `/api/admin/media/versions/{id}`、`/unmerge`、`/unmerge-all`。
+- **文档**：`docs/新手指南.md` 文件名恢复（此前被改成乱码，README 链接失效）。
+
+## [未发布] - 安全修复（3 严重 + 5 高危）
+
+### 严重
+
+1. **普通管理员提权漏洞**：普通管理员不能再给自己提权，也不能修改其他管理员账号。
+   只有最早创建的超级管理员保留完整权限。
+
+2. **SECRET_KEY 泄露给推流节点**：不再把 `SECRET_KEY` 发给推流节点。
+   改用独立的 `NODE_SHARED_SECRET` + 签名机制做节点身份认证。
+   面板与节点必须同时升级，否则节点会拒绝连接。
+
+3. **片库可见性绕过**：片库可见性校验现在覆盖所有接口，
+   未授权用户无法通过直接调接口访问受限片库。
+
+### 高危
+
+4. **JWT 出现在 URL**：JWT 不再出现在 URL 查询参数里，改走 Header 或 POST body，
+   避免日志/浏览器历史泄露 token。
+
+5. **IP 伪造**：只采信可信代理（`TRUSTED_PROXIES`）传来的真实 IP，
+   `X-Forwarded-For` 不再无条件信任。
+
+6. **兑换码重复使用**：同一兑换码每个用户只能兑换一次，
+   修复并发下重复兑换的竞态。
+
+7. **缩略图缓存串图**：外挂图（`poster.jpg` 等同名文件）的缩略图缓存 key
+   改用「绝对路径 + mtime + 大小」的 sha1，不再按文件名复用，
+   修复不同影片海报互相串图的问题。
 
 ### 升级须知
 
