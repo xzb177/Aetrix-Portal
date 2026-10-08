@@ -95,9 +95,10 @@ def background_workers(env_name: str, *, default_divisor: int = 2,
 
 
 def capped_workers(env_name: str, default: int, *, max_cap: int = 16) -> int:
-    """保留自定义默认值的版本：未配置时用 default，手动配置时按 CPU 截断。
+    """保留自定义默认值的版本：未配置/非法值时用 default，手动配置时按 CPU 截断。
 
     适用于默认有特殊考量（如缩略图防 I/O 争抢默认 1）的场景。
+    0/负数按 1 处理（与旧的 max(1, n) 行为一致）。
     """
     cpus = cpu_count()
     reserve = max(1, cpus - 1)
@@ -107,6 +108,6 @@ def capped_workers(env_name: str, default: int, *, max_cap: int = 16) -> int:
             v = int(raw)
         except ValueError:
             return default
-        if v > 0:
-            return max(1, min(v, reserve, max_cap))
+        # 0/负数 → 1（旧行为）；正数按 CPU 截断
+        return max(1, min(v if v > 0 else 1, reserve, max_cap))
     return default

@@ -3228,7 +3228,6 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
         session_id = start_transcode(
             target.value, start_seconds, video_bitrate, height,
             user_id=user.id, item_guid=item.guid, input_headers=target.headers,
-            video_bitrate=video_bitrate, height=height,
             cache_key=transcode_mod.cache_key(item.guid, video_bitrate, height, fingerprint),
             fingerprint=fingerprint,
         )
