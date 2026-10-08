@@ -238,7 +238,8 @@ def serve_remote(
     # 重定向自己追（不用 httpx 的 follow_redirects）：每一跳都要校验目标是不是内网，
     # 并在跨主机时剥掉凭据头——否则一个公开直链就能把服务器（带着你的 Cookie / Basic）
     # 引到内网运维接口上。
-    client = httpx.Client(timeout=httpx.Timeout(30.0, read=None), follow_redirects=False)
+    # S2：同一套超时（读超时 = 块间空闲上限），源站卡住时不再永久占着线程
+    client = httpx.Client(timeout=relay_timeout(), follow_redirects=False)
     try:
         current = url
         for _hop in range(MAX_REDIRECTS + 1):
@@ -287,6 +288,8 @@ def serve_remote(
         try:
             for chunk in resp.iter_bytes(READ_CHUNK):
                 yield chunk
+        except httpx.TransportError as exc:
+            logger.warning("远程代理流中断 %s: %s", url.split("?")[0], type(exc).__name__)
         finally:
             resp.close()
             client.close()
@@ -308,11 +311,44 @@ def serve_remote(
 _shared_client: Optional["httpx.AsyncClient"] = None
 _client_lock = threading.Lock()
 
-#: 同时保持的上游连接数。按并发播放人数给余量；``None`` = 不限。
-#: 定住上限是为了避免「人一多就把源站连接数打满」——那是把首字节变慢换成
-#: 源站限流。
-_RELAY_MAX_CONNECTIONS = max(4, min(64, int(os.getenv("RELAY_MAX_CONNECTIONS", "24") or 24)))
-_RELAY_MAX_KEEPALIVE = max(2, min(32, int(os.getenv("RELAY_MAX_KEEPALIVE", "12") or 12)))
+def _env_number(name: str, default: float, lo: float, hi: float, cast=float):
+    """读数值型环境变量并夹到 [lo, hi]；非法值回落默认值（不让一个手误拖垮启动）"""
+    raw = os.getenv(name, "")
+    try:
+        value = cast(raw) if str(raw).strip() else cast(default)
+    except (TypeError, ValueError):
+        logger.warning("环境变量 %s=%r 不是合法数值，使用默认值 %s", name, raw, default)
+        value = cast(default)
+    return max(cast(lo), min(cast(hi), value))
+
+
+#: 同时保持的上游连接数（S2）。每个正在播放的远程流在整个播放期间占一个连接，
+#: 旧默认 24 在第 25 路并发播放时就排队；默认提到 200，``RELAY_MAX_CONNECTIONS`` 可调。
+_RELAY_MAX_CONNECTIONS = _env_number("RELAY_MAX_CONNECTIONS", 200, 4, 5000, int)
+#: 空闲 keep-alive 连接上限（不超过总上限）
+_RELAY_MAX_KEEPALIVE = min(_RELAY_MAX_CONNECTIONS,
+                           _env_number("RELAY_MAX_KEEPALIVE", 50, 2, 5000, int))
+#: 连上源站的超时（秒）
+_RELAY_CONNECT_TIMEOUT = _env_number("RELAY_CONNECT_TIMEOUT", 10.0, 1.0, 120.0)
+#: 读超时（秒）= 两个数据块之间的最长空闲。旧值 None：源站 TCP 不断、不回数据时
+#: 连接与请求永远挂着、只增不减直到池耗尽。正常播放的块间隔远小于它。
+_RELAY_READ_TIMEOUT = _env_number("RELAY_READ_TIMEOUT", 30.0, 5.0, 600.0)
+#: 等池里空出连接的上限（秒）。旧值继承 30s：池满时用户白等 30 秒再拿 502；
+#: 现在很快给 503 + Retry-After，播放器会重试。
+_RELAY_POOL_TIMEOUT = _env_number("RELAY_POOL_TIMEOUT", 3.0, 0.1, 60.0)
+_RELAY_WRITE_TIMEOUT = 30.0
+
+
+def relay_timeout() -> "httpx.Timeout":
+    """共享代理客户端（以及同步下载代理）用的超时组合"""
+    import httpx
+
+    return httpx.Timeout(
+        connect=_RELAY_CONNECT_TIMEOUT,
+        read=_RELAY_READ_TIMEOUT,
+        write=_RELAY_WRITE_TIMEOUT,
+        pool=_RELAY_POOL_TIMEOUT,
+    )
 
 
 def get_relay_client() -> "httpx.AsyncClient":
@@ -331,7 +367,7 @@ def get_relay_client() -> "httpx.AsyncClient":
                     max_keepalive_connections=_RELAY_MAX_KEEPALIVE,
                 )
                 _shared_client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(30.0, read=None),
+                    timeout=relay_timeout(),
                     limits=limits,
                     # 重定向仍由本模块自己追（要逐跳校验、跨主机剥凭据）
                     follow_redirects=False,
@@ -399,6 +435,13 @@ async def serve_remote_async(
             raise HTTPException(status_code=502, detail="源站重定向次数过多")
     except HTTPException:
         raise
+    except httpx.PoolTimeout as exc:
+        # S2：上游连接池满（并发远程播放超过 RELAY_MAX_CONNECTIONS）：快速 503，
+        # 让播放器稍后重试，而不是白等 30 秒再 502
+        logger.warning("远程代理连接池已满（上限 %s），拒绝 %s", _RELAY_MAX_CONNECTIONS,
+                       url.split("?")[0])
+        raise HTTPException(status_code=503, detail="中转繁忙，请稍后重试",
+                            headers={"Retry-After": "2"}) from exc
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
         logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
         raise HTTPException(status_code=502, detail="源站不可达") from exc
@@ -423,6 +466,10 @@ async def serve_remote_async(
         try:
             async for chunk in resp.aiter_bytes(READ_CHUNK):
                 yield chunk
+        except httpx.TransportError as exc:
+            # S2：源站卡住（块间空闲超过 RELAY_READ_TIMEOUT）或中途断开：结束这条流、
+            # 归还连接。响应头已发出，只能截断；播放器会对剩余区间重新发 Range。
+            logger.warning("远程代理流中断 %s: %s", url.split("?")[0], type(exc).__name__)
         finally:
             # 只关响应，不关 client —— client 是进程共享的，关了会让其它并发请求炸掉。
             # 连接会在响应关闭后自动归还池里，供下一次 Range 请求复用。
