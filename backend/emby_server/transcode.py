@@ -27,6 +27,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -52,11 +53,11 @@ def cache_dir() -> str:
 
 
 def max_concurrent() -> int:
-    try:
-        value = int(os.getenv("TRANSCODE_MAX_CONCURRENT", "2") or "2")
-    except ValueError:
-        value = 2
-    return value if value > 0 else 2
+    """同时允许的转码路数：按 CPU 自适应（cpu_budget），未配置时按核数一半。
+
+    转码是吃 CPU 大户，手动配置的值会被截断到核数-1，永远给 API/直传留一核。
+    """
+    return _cpu_workers("TRANSCODE_MAX_CONCURRENT")
 
 
 def pick_tier(video_bitrate: int, src_height: Optional[int] = None) -> str:

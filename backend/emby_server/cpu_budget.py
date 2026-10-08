@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,12 @@ def _read_cgroup_quota() -> int | None:
     return None
 
 
+@lru_cache(maxsize=1)
 def cpu_count() -> int:
-    """本进程实际可用的 CPU 核数（考虑容器配额与亲和性）"""
+    """本进程实际可用的 CPU 核数（考虑容器配额与亲和性）。
+
+    结果缓存：容器 CPU 配额启动后不变，避免每次调用都读 cgroup 文件。
+    """
     candidates = []
     # 1. CPU 亲和性（最准：进程实际能跑在哪几个核上）
     try:
