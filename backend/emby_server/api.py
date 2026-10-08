@@ -43,6 +43,8 @@ from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_line
 from backend.emby_server import play_sign
 from backend.emby_server import soft_delete
+from backend.emby_server import title_beautify
+from backend.emby_server import missing_episodes as _missing_episodes
 from backend.emby_server.playback_security import safe_child_name
 from backend.emby_server import subtitles as subs
 from backend.emby_server.auth import (
@@ -492,8 +494,22 @@ def _item_etag(item: em.MediaItem) -> str:
     return hashlib.md5(raw.encode("utf-8", "ignore")).hexdigest()
 
 
+def _display_name(item: em.MediaItem, series_names: dict | None = None) -> str:
+    """展示用标题：分集走标题美化（占位/垃圾名友好化），其他类型原样。
+
+    纯展示层（StrmAssistant 对标），不写库、不调外部 API，默认生效。
+    """
+    if item.item_type == "episode":
+        series_name = (series_names or {}).get(item.series_id) if item.series_id else None
+        return title_beautify.beautify_episode_title(
+            item.name, item.file_path, item.season_number,
+            item.episode_number, series_name)
+    return item.name or ""
+
+
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
-              api_key: str = "", auth_qs: str = "") -> dict:
+              api_key: str = "", auth_qs: str = "",
+              series_names: dict | None = None) -> dict:
     download_ok = _download_ok(db)
     prefetch = _prefetched(db)
     umd = prefetch.get("umd", {}).get(item.id)
@@ -506,7 +522,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
     # 对标 FakEmby/官方 Emby：数组/map 字段必须发 []/{}, 不能省略也不能 null。
     # 三方客户端（SenPlayer/Lenna）对这些字段裸调 .length/.filter，null 直接崩。
     dto = {
-        "Name": item.name or "",
+        "Name": _display_name(item, series_names),
         "SortName": item.sort_name or item.name or "",
         "Id": item.guid,
         "ServerId": SERVER_ID,
@@ -2554,8 +2570,36 @@ def get_episodes(item_id: str, request: Request,
     episodes = deduped
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
-    return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
+    # 分集标题美化：一次查出相关剧名（单条查询，供文件名去剧名前缀用）
+    series_names: dict[int, str] = {}
+    try:
+        _sids = {e.series_id for e in episodes if e.series_id}
+        if _sids:
+            for _sid, _sname in db.query(
+                    em.MediaItem.id, em.MediaItem.name).filter(
+                    em.MediaItem.id.in_(_sids)).all():
+                series_names[_sid] = _sname or ""
+    except Exception:
+        series_names = {}
+    return {"Items": [_item_dto(e, base, user.id, db, series_names=series_names)
+                      for e in episodes],
             "TotalRecordCount": len(episodes), "StartIndex": 0}
+
+
+@emby_router.get("/emby/Shows/{item_id}/MissingEpisodes")
+@emby_router.get("/Shows/{item_id}/MissingEpisodes")
+def get_missing_episodes(item_id: str,
+                         user: models.WebUser = Depends(get_emby_user),
+                         db: Session = Depends(get_db)):
+    """缺失集数（StrmAssistant 对标）：本地集 vs TMDB 预期集。
+
+    轻量通用能力：纯计算，只读磁盘缓存，零网络请求、无后台任务，默认生效。
+    优先用用户选定的剧集组（有缓存时），否则用 TMDB TV 详情（有缓存时）。
+    """
+    item = _require_visible_item(db, user, item_id)
+    if item.item_type != "series":
+        raise HTTPException(status_code=400, detail="Not a series")
+    return _missing_episodes.compute_missing(db, item)
 
 
 @emby_router.get("/emby/Shows/NextUp")
