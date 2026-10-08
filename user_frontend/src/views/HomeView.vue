@@ -900,7 +900,7 @@ onActivated(() => {
   position: relative;
   display: flex;
   align-items: flex-end;
-  min-height: 46vh;
+  min-height: 32vh;
   overflow: hidden;
   /* 没有背景图时：一块暖黑渐变，像放映前的幕布 */
   background:
@@ -909,7 +909,7 @@ onActivated(() => {
 }
 
 .hero.has-image {
-  min-height: 56vh;
+  min-height: 38vh;
 }
 
 .hero-backdrop {
