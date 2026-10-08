@@ -406,9 +406,21 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
             alias_id = _alias_tmdb_id(item.name or "")
             if alias_id:
                 progress.note_stage("enrich_alias_hit")
-                result["tmdb_id"] = alias_id
                 _hit, details = _sc._tmdb_work(
                     False, "", None, kind, alias_id, True)
+                if details is None:
+                    progress.note_stage("enrich_alias_stale")
+                    logger.warning(
+                        "alias tmdb_id=%s stale (TMDB 404), fallback to search name=%r",
+                        alias_id, item.name)
+                    hit, details = _sc._tmdb_work(
+                        True, item.name or "", item.production_year, kind,
+                        None, True)
+                    result["tmdb_hit"] = hit
+                    if hit and hit.get("id"):
+                        result["tmdb_id"] = str(hit["id"])
+                else:
+                    result["tmdb_id"] = alias_id
                 result["tmdb_details"] = details
             else:
                 hit, details = _sc._tmdb_work(
