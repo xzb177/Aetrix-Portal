@@ -192,7 +192,7 @@ def _scan_once() -> Tuple[int, int]:
             .yield_per(500)
             .limit(SUBTITLE_SCAN_BATCH_LIMIT)
         )
-        for item in query:
+        for item in items:
             if _stop_event.is_set():
                 break
             # 先判路径可探测性：mount:// 或不可访问目录直接跳过，
