@@ -52,7 +52,7 @@ CHANGES_TOKEN_URL = "https://www.googleapis.com/drive/v3/changes/getStartPageTok
 CHANGES_LIST_URL = "https://www.googleapis.com/drive/v3/changes"
 FILES_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
 
-# 视频扩展名（与 fast_scanner.VIDEO_EXTS 保持一致，本地判型不额外 import）
+# 视频扩展名（本地判型用，不额外 import scanner）
 _VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts",
     ".ts", ".mpg", ".mpeg", ".rmvb", ".rm", ".asf", ".3gp", ".f4v",
@@ -357,7 +357,7 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
         for r in remotes:
             remote_drive[r] = drive_id
 
-    # 本机 FUSE 挂载点 -> rclone remote（与 fast_scanner.MOUNT_TO_RCLONE 一致）
+    # 本机 FUSE 挂载点 -> rclone remote
     fuse_map = {"/mnt/mp": "MP:", "/mnt/paul": "paul_emby:"}
 
     out: list[tuple[int, str, str]] = []
