@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import random
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -102,12 +103,34 @@ def _add_points(
 
 
 def _checkin_rules(db: Session) -> dict:
-    """签到奖励规则（管理端 SystemConfig 可调）"""
+    """签到奖励规则（管理端 SystemConfig 可调）
+
+    2026-10-09 合并公益服签到后的统一规则：
+    - 基础积分：checkin_base_min ~ checkin_base_max 随机；
+      未配置 min/max 时回退到 checkin_base_points（默认 5~5 = 固定 5 分，旧行为不变）
+    - 连签加成：streak_bonus * (streak-1)，封顶 streak_max_bonus
+    - 惩罚：penalty_pct% 概率扣 penalty_min ~ penalty_max（默认 0 = 关闭，旧行为不变）
+    - 积分仅发放给公益服用户（is_welfare=True）；其他用户签到只记录连签
+    """
+    base_points = _get_int_config(db, "checkin_base_points", 5)
+    base_min = _get_int_config(db, "checkin_base_min", base_points)
+    base_max = _get_int_config(db, "checkin_base_max", base_points)
+    if base_min > base_max:
+        base_min, base_max = base_max, base_min
+    penalty_min = _get_int_config(db, "checkin_penalty_min", 1)
+    penalty_max = _get_int_config(db, "checkin_penalty_max", 3)
+    if penalty_min > penalty_max:
+        penalty_min, penalty_max = penalty_max, penalty_min
     return {
         "enabled": _get_bool_config(db, "checkin_enabled", True),
-        "base_points": _get_int_config(db, "checkin_base_points", 5),
+        "base_points": base_points,
+        "base_min": base_min,
+        "base_max": base_max,
         "streak_bonus": _get_int_config(db, "checkin_streak_bonus", 2),
         "streak_max_bonus": _get_int_config(db, "checkin_streak_max_bonus", 10),
+        "penalty_pct": _get_int_config(db, "checkin_penalty_pct", 0),
+        "penalty_min": penalty_min,
+        "penalty_max": penalty_max,
     }
 
 
@@ -119,6 +142,11 @@ class CheckinStatusResponse(BaseModel):
     streak_bonus: int
     streak_max_bonus: int
     points: int
+    # 2026-10-09 合并公益服签到后新增（带默认值，保持旧客户端兼容）
+    base_min: int = 5
+    base_max: int = 5
+    penalty_pct: int = 0
+    points_enabled: bool = True  # 当前用户是否为公益服（是否会获得积分）
 
 
 @router.get("/checkin/status", response_model=CheckinStatusResponse)
@@ -151,7 +179,88 @@ def checkin_status(
         streak_bonus=rules["streak_bonus"],
         streak_max_bonus=rules["streak_max_bonus"],
         points=current_user.points or 0,
+        base_min=rules["base_min"],
+        base_max=rules["base_max"],
+        penalty_pct=rules["penalty_pct"],
+        points_enabled=bool(getattr(current_user, "is_welfare", False)),
     )
+
+
+def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
+    """签到核心逻辑（同步，在线程池中执行）
+
+    2026-10-09 合并公益服签到后的统一逻辑：
+    - 积分仅发放给公益服用户（is_welfare=True）；其他用户签到只记录连签，积分为 0
+    - 公益服用户：基础积分 base_min ~ base_max 随机 + 连签加成 - 惩罚（按概率）
+
+    唯一索引 (user_id, checkin_date) 是并发防重的最后一道门：先 flush 让冲突在提交前
+    暴露，避免「先发积分、后落库失败」或直接 500。
+
+    返回 {"points_awarded", "streak", "balance", "penalty"}，失败时抛 HTTPException。
+    供 POST /api/user/economy/checkin 路由和已废弃的 POST /api/points/signin 复用。
+    """
+    user_id = user.id
+    rules = _checkin_rules(db)
+    if not rules["enabled"]:
+        raise HTTPException(status_code=403, detail="签到功能未开启")
+
+    today = _today_start()
+    exists = db.query(models.CheckinRecord).filter(
+        models.CheckinRecord.user_id == user_id,
+        models.CheckinRecord.checkin_date >= today,
+    ).first()
+    if exists:
+        raise HTTPException(status_code=400, detail="今天已经签到过啦")
+
+    # 连签：昨天有记录则 +1，否则重置为 1
+    yesterday_record = db.query(models.CheckinRecord).filter(
+        models.CheckinRecord.user_id == user_id,
+        models.CheckinRecord.checkin_date >= today - timedelta(days=1),
+        models.CheckinRecord.checkin_date < today,
+    ).order_by(models.CheckinRecord.checkin_date.desc()).first()
+    streak = (yesterday_record.streak + 1) if yesterday_record else 1
+
+    # 奖励计算：仅公益服用户获得积分
+    is_welfare = bool(getattr(user, "is_welfare", False))
+    penalty = False
+    if not is_welfare:
+        reward = 0
+    else:
+        base = random.randint(rules["base_min"], rules["base_max"])
+        bonus = min(rules["streak_bonus"] * (streak - 1), rules["streak_max_bonus"])
+        penalty_amount = 0
+        if rules["penalty_pct"] > 0 and random.random() * 100 < rules["penalty_pct"]:
+            penalty_amount = random.randint(rules["penalty_min"], rules["penalty_max"])
+            penalty = True
+        reward = base + bonus - penalty_amount
+
+    record = models.CheckinRecord(
+        user_id=user_id,
+        checkin_date=today,
+        points_awarded=reward,
+        streak=streak,
+    )
+    db.add(record)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="今天已经签到过啦")
+    except OperationalError:
+        # 数据库写锁竞争：没发奖也没落库，让客户端重试
+        db.rollback()
+        raise HTTPException(status_code=409, detail="签到请求冲突，请稍后重试")
+    if reward:
+        description = f"每日签到（连续 {streak} 天）"
+    else:
+        description = f"每日签到（连续 {streak} 天，无积分奖励）"
+    balance = _add_points(
+        db, user, reward, "checkin",
+        description, f"checkin:{today.strftime('%Y%m%d')}",
+    )
+    db.commit()
+    return {"points_awarded": reward, "streak": streak, "balance": balance,
+            "penalty": penalty}
 
 
 @router.post("/checkin")
@@ -160,80 +269,36 @@ async def do_checkin(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """每日签到：基础积分 + 连签加成（封顶）"""
+    """每日签到：基础积分 + 连签加成（封顶）；积分仅限公益服用户"""
     user_id = current_user.id
 
     allowed, _ = check_rate_limit(f"checkin:{user_id}", 5, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
 
-    def _checkin() -> dict:
-        """签到整段（读规则 / 防重 / 连签 / 发积分 / 落库）同步执行，由路由下放线程池
+    award = await run_in_threadpool(_do_checkin_core, db, current_user)
 
-        唯一索引 (user_id, checkin_date) 是并发防重的最后一道门：先 flush 让冲突在提交前
-        暴露，避免「先发积分、后落库失败」或直接 500。
-        """
-        rules = _checkin_rules(db)
-        if not rules["enabled"]:
-            raise HTTPException(status_code=403, detail="签到功能未开启")
-
-        today = _today_start()
-        exists = db.query(models.CheckinRecord).filter(
-            models.CheckinRecord.user_id == user_id,
-            models.CheckinRecord.checkin_date >= today,
-        ).first()
-        if exists:
-            raise HTTPException(status_code=400, detail="今天已经签到过啦")
-
-        # 连签：昨天有记录则 +1，否则重置为 1
-        yesterday_record = db.query(models.CheckinRecord).filter(
-            models.CheckinRecord.user_id == user_id,
-            models.CheckinRecord.checkin_date >= today - timedelta(days=1),
-            models.CheckinRecord.checkin_date < today,
-        ).order_by(models.CheckinRecord.checkin_date.desc()).first()
-        streak = (yesterday_record.streak + 1) if yesterday_record else 1
-
-        bonus = min(rules["streak_bonus"] * (streak - 1), rules["streak_max_bonus"])
-        reward = rules["base_points"] + bonus
-
-        record = models.CheckinRecord(
-            user_id=user_id,
-            checkin_date=today,
-            points_awarded=reward,
-            streak=streak,
-        )
-        db.add(record)
-        try:
-            db.flush()
-        except IntegrityError:
-            db.rollback()
-            raise HTTPException(status_code=400, detail="今天已经签到过啦")
-        except OperationalError:
-            # 数据库写锁竞争：没发奖也没落库，让客户端重试
-            db.rollback()
-            raise HTTPException(status_code=409, detail="签到请求冲突，请稍后重试")
-        balance = _add_points(
-            db, current_user, reward, "checkin",
-            f"每日签到（连续 {streak} 天）", f"checkin:{today.strftime('%Y%m%d')}",
-        )
-        db.commit()
-        return {"points_awarded": reward, "streak": streak, "balance": balance}
-
-    award = await run_in_threadpool(_checkin)
-
+    if award["points_awarded"] > 0:
+        title = f"📅 签到成功 +{award['points_awarded']} 积分"
+        content = (f"已连续签到 {award['streak']} 天，当前余额 {award['balance']} 积分。"
+                   f"\n明日再来看看，连签奖励更高！")
+        message = f"签到成功，+{award['points_awarded']} 积分（连续 {award['streak']} 天）"
+    else:
+        title = "📅 签到成功"
+        content = (f"已连续签到 {award['streak']} 天。积分奖励仅限公益服用户。")
+        message = f"签到成功（连续 {award['streak']} 天，积分仅限公益服用户）"
     await notify_admin_event(
         event_type="economy.checkin",
         user_id=user_id,
-        title=f"📅 签到成功 +{award['points_awarded']} 积分",
-        content=(f"已连续签到 {award['streak']} 天，当前余额 {award['balance']} 积分。"
-                 f"\n明日再来看看，连签奖励更高！"),
+        title=title,
+        content=content,
     )
     return {
         "success": True,
         "points_awarded": award["points_awarded"],
         "streak": award["streak"],
         "balance": award["balance"],
-        "message": f"签到成功，+{award['points_awarded']} 积分（连续 {award['streak']} 天）",
+        "message": message,
     }
 
 

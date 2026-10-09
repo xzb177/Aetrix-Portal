@@ -117,6 +117,9 @@ with SessionLocal() as db:
         db.refresh(u)
     alice, bob, inviter, invitee = users
     alice_id, bob_id, inviter_id, invitee_id = alice.id, bob.id, inviter.id, invitee.id
+    # 2026-10-09 签到合并后积分仅限公益服用户：bob 用于签到测试，设为公益服
+    db.query(models.WebUser).filter(models.WebUser.id == bob_id).update({"is_welfare": True})
+    db.commit()
 
     db.add(models.ExchangeCode(
         code="CC-SINGLE-USE", type="points", points_value=100,
@@ -197,6 +200,23 @@ bad = [
 check("并发签到：失败方返回 400/409，不是 500", not bad, f"异常状态码={bad}")
 check("并发签到：当日只有 1 条记录", records == 1, f"记录数={records}")
 check("并发签到：只发了一份奖励", balance(bob_id) == 5, f"余额={balance(bob_id)}")
+
+# ==================== 2b. 非公益服用户签到不加分 ====================
+
+def checkin_nonwelfare():
+    db = SessionLocal()
+    try:
+        user = db.query(models.WebUser).filter(models.WebUser.id == alice_id).first()
+        return run_async_endpoint(do_checkin, FakeRequest(), user, db)
+    finally:
+        db.close()
+
+ok_nw, res_nw = checkin_nonwelfare()
+check("非公益服签到：请求成功", ok_nw, f"结果={res_nw}")
+if ok_nw:
+    check("非公益服签到：积分为 0", res_nw.get("points_awarded") == 0, f"奖励={res_nw.get('points_awarded')}")
+    # alice 在第 1 节通过兑换码获得 100 分，签到不应增加
+    check("非公益服签到：余额不变", balance(alice_id) == 100, f"余额={balance(alice_id)}")
 
 # ==================== 3. _add_points 并发累加不丢更新 ====================
 

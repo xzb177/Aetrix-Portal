@@ -8,7 +8,8 @@
 - award_chat_points：发言奖励（每日上限）
 - get_points_summary：积分概览
 - redeem_welfare：积分兑换公益天数
-- welfare_signin：公益服签到（Foam 风格：随机 1-3 分、连签奖励、15% 惩罚）
+- welfare_signin：【已废弃 2026-10-09】转发到 backend.api.economy._do_checkin_core，
+  签到已统一到 POST /api/user/economy/checkin（配置在系统设置→每日签到）
 
 SystemConfig 键（backend/api/economy._get_int_config 读取）：
 - points_signin_min=1, points_signin_max=3
@@ -136,83 +137,23 @@ def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
 
 
 def welfare_signin(db: Session, user: models.WebUser) -> dict:
-    """公益服签到（Foam 风格）
+    """【已废弃 2026-10-09】公益服签到已统一到 backend.api.economy._do_checkin_core。
 
-    - 每日 1 次，随机 points_signin_min ~ points_signin_max 分
-    - 连续 points_signin_streak_days 天奖励 points_signin_streak_bonus 分
-    - points_signin_penalty_pct% 概率触发惩罚，扣 points_signin_penalty_min ~ max 分
-    - 复用 CheckinRecord 防重（唯一索引是最后一道门）
+    此函数仅为兼容保留（POST /api/points/signin 无人调用），转发到统一核心。
+    新代码请直接调用 economy._do_checkin_core。
 
-    返回：{'points': 实际得分（可为负）, 'streak': 连签天数,
+    返回：{'points': 实际得分, 'streak': 连签天数,
            'balance': 余额, 'penalty': 是否触发惩罚}
     """
-    user_id = user.id
-    today = _today_start()
-
-    # 防重：今日已签到
-    exists = db.query(models.CheckinRecord).filter(
-        models.CheckinRecord.user_id == user_id,
-        models.CheckinRecord.checkin_date >= today,
-    ).first()
-    if exists:
-        raise ValueError("今天已经签到过啦")
-
-    # 连签：昨天有记录则 +1，否则重置为 1
-    yesterday_record = db.query(models.CheckinRecord).filter(
-        models.CheckinRecord.user_id == user_id,
-        models.CheckinRecord.checkin_date >= today - timedelta(days=1),
-        models.CheckinRecord.checkin_date < today,
-    ).order_by(models.CheckinRecord.checkin_date.desc()).first()
-    streak = (yesterday_record.streak + 1) if yesterday_record else 1
-
-    # 基础随机分
-    p_min = _get_int(db, "points_signin_min", 1)
-    p_max = _get_int(db, "points_signin_max", 3)
-    if p_min > p_max:
-        p_min, p_max = p_max, p_min
-    base = random.randint(p_min, p_max)
-
-    # 连签奖励
-    streak_days = _get_int(db, "points_signin_streak_days", 7)
-    streak_bonus_cfg = _get_int(db, "points_signin_streak_bonus", 2)
-    bonus = streak_bonus_cfg if streak >= streak_days else 0
-
-    # 惩罚（Foam 的点睛之笔）
-    penalty_pct = _get_int(db, "points_signin_penalty_pct", 15)
-    penalty = False
-    penalty_amount = 0
-    if random.random() * 100 < penalty_pct:
-        pen_min = _get_int(db, "points_signin_penalty_min", 1)
-        pen_max = _get_int(db, "points_signin_penalty_max", 3)
-        if pen_min > pen_max:
-            pen_min, pen_max = pen_max, pen_min
-        penalty_amount = random.randint(pen_min, pen_max)
-        penalty = True
-
-    total = base + bonus - penalty_amount
-
-    # 落库（CheckinRecord 唯一索引防并发重复）
-    record = models.CheckinRecord(
-        user_id=user_id,
-        checkin_date=today,
-        points_awarded=total,
-        streak=streak,
+    logger.warning(
+        "deprecated backend.points.welfare_signin called for user %s; "
+        "use backend.api.economy._do_checkin_core instead", user.id,
     )
-    db.add(record)
-    try:
-        db.flush()
-    except IntegrityError:
-        # 唯一索引冲突：并发重复签到
-        db.rollback()
-        raise ValueError("今天已经签到过啦")
-
-    # 发分
-    new_balance = economy._add_points(db, user, total, "signin", "公益签到")
-    db.commit()
-
+    from backend.api.economy import _do_checkin_core
+    result = _do_checkin_core(db, user)
     return {
-        "points": total,
-        "streak": streak,
-        "balance": new_balance,
-        "penalty": penalty,
+        "points": result["points_awarded"],
+        "streak": result["streak"],
+        "balance": result["balance"],
+        "penalty": result.get("penalty", False),
     }
