@@ -44,6 +44,11 @@ const routes: RouteRecordRaw[] = [
       { path: 'announcements', name: 'Announcements', component: () => import('@/views/Announcements.vue'), meta: { title: '公告管理' } },
       { path: 'tickets', name: 'Tickets', component: () => import('@/views/Tickets.vue'), meta: { title: '工单' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
+      // 公益服（v2.54.0）：公益用户 / 求片审核 / 抽奖配置 / 积分配置
+      { path: 'welfare-users', name: 'WelfareUsers', component: () => import('@/views/WelfareUsers.vue'), meta: { title: '公益服·用户' } },
+      { path: 'welfare-requests', name: 'WelfareRequests', component: () => import('@/views/WelfareRequests.vue'), meta: { title: '公益服·求片审核' } },
+      { path: 'welfare-lottery', name: 'WelfareLottery', component: () => import('@/views/WelfareLottery.vue'), meta: { title: '公益服·抽奖' } },
+      { path: 'welfare-points', name: 'WelfarePoints', component: () => import('@/views/WelfarePoints.vue'), meta: { title: '公益服·积分配置' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库' } },
       // 媒体库可见范围（v2.43.0）：服务器默认范围 + 指定用户单独覆盖，默认关闭
       { path: 'library-scope', name: 'LibraryScope', component: () => import('@/views/LibraryScope.vue'), meta: { title: '媒体库可见范围' } },
