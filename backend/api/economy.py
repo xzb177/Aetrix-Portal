@@ -466,6 +466,48 @@ async def exchange_config(db: Session = Depends(get_db)):
     }
 
 
+def _best_discount_credit(db: Session, user_id: int) -> Optional[models.ExchangeDiscountCredit]:
+    """用户最优的一张未用折扣权益（pct 最小=折扣最大），没有返回 None"""
+    now = datetime.now()
+    return (
+        db.query(models.ExchangeDiscountCredit)
+        .filter(
+            models.ExchangeDiscountCredit.user_id == user_id,
+            models.ExchangeDiscountCredit.status == "unused",
+            or_(
+                models.ExchangeDiscountCredit.expires_at.is_(None),
+                models.ExchangeDiscountCredit.expires_at > now,
+            ),
+        )
+        .order_by(models.ExchangeDiscountCredit.discount_pct.asc())
+        .first()
+    )
+
+
+def _grant_discount_credit(db: Session, user_id: int, code: models.ExchangeCode) -> models.ExchangeDiscountCredit:
+    """核销 discount 型兑换码：发一张折扣权益。调用方已做占位和并发保护；pct 合法性由调用方校验。"""
+    credit = models.ExchangeDiscountCredit(
+        user_id=user_id,
+        exchange_code_id=code.id,
+        discount_pct=code.discount_pct,
+        expires_at=code.expires_at,
+    )
+    db.add(credit)
+    return credit
+
+
+def _exchange_discount_amount(list_price: Decimal, pct: int) -> tuple[Decimal, Decimal]:
+    """兑换码折扣金额口径：与 coupons.compute 的 percent 一致（pct=实付百分比，85=八五折）。
+    返回 (优惠额, 实付额)，两位小数。"""
+    from backend.coupons import _money
+    pct = max(1, min(99, int(pct or 0)))
+    discount = _money(list_price * (Decimal("100") - Decimal(str(pct))) / Decimal("100"))
+    if discount > list_price:
+        discount = list_price
+    paid = _money(list_price - discount)
+    return discount, paid
+
+
 class RedeemRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=32)
 
@@ -477,7 +519,7 @@ async def redeem_exchange_code(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """兑换码核销：points 型发积分；subscription 型发订阅
+    """兑换码核销：points 型发积分；subscription 型发订阅；discount 型发一张订阅折扣权益
 
     占位 / 发奖 / 审计整段是同步 SQLAlchemy（体内一个 await 都没有），下放线程池执行；
     通知要走 WebSocket，必须留在事件循环上 await。
@@ -570,6 +612,13 @@ async def redeem_exchange_code(
                           days=code.duration_days,
                           end_date=subscription.end_date.isoformat(),
                           message=f"兑换成功，「{plan.name}」× {code.duration_days} 天")
+        elif code.type == "discount":
+            if not (1 <= (code.discount_pct or 0) <= 99):
+                db.rollback()
+                raise HTTPException(status_code=400, detail="该折扣码配置无效")
+            _grant_discount_credit(db, user_id, code)
+            result.update(reward_type="discount", discount_pct=code.discount_pct,
+                          message=f"兑换成功，获得订阅 {code.discount_pct} 折优惠，下次购买订阅自动抵扣")
         else:
             db.rollback()
             raise HTTPException(status_code=400, detail="兑换码类型不支持")
@@ -593,6 +642,22 @@ async def redeem_exchange_code(
         content=result["message"],
     )
     return result
+
+
+@router.get("/exchange/discount-credit")
+def my_discount_credit(
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """我未使用的兑换码折扣权益（最优一张），前端在订阅购买区展示"""
+    credit = _best_discount_credit(db, current_user.id)
+    if credit is None:
+        return {"has_credit": False}
+    return {
+        "has_credit": True,
+        "discount_pct": credit.discount_pct,
+        "expires_at": credit.expires_at.isoformat() if credit.expires_at else None,
+    }
 
 
 # ==================== 支付下单（易支付兼容网关） ====================
@@ -839,6 +904,7 @@ def create_payment_order(
     paid_amount = list_price
     preview = None
     coupon_code = (req.coupon_code or "").strip()
+    credit = None
     # P2：自定义金额充值暂不支持优惠券（无套餐可供优惠券校验）；积分支付已直接返回，不会到这里
     is_custom_recharge = req.kind == "recharge" and req.custom_amount is not None
     if coupon_code and not is_custom_recharge:
@@ -847,6 +913,11 @@ def create_payment_order(
         discount_amount = Decimal(str(preview["discount_amount"]))
         paid_amount = Decimal(str(preview["paid_amount"]))
         coupon_code = preview["code"]
+    elif req.kind == "subscription":
+        # 兑换码折扣权益：没填优惠券时自动用最优的一张（pct 最小=折扣最大），不与优惠券叠加
+        credit = _best_discount_credit(db, current_user.id)
+        if credit is not None:
+            discount_amount, paid_amount = _exchange_discount_amount(list_price, credit.discount_pct)
 
     # 订单上快照「原价 / 优惠 / 实付」，并让订单金额一律等于**实付**：
     # 对账、邀请返利比例、退款都以用户真付的钱为准，不能按原价算。
@@ -858,6 +929,22 @@ def create_payment_order(
         order.amount = paid_amount
 
     db.add(order)
+    if credit is not None:
+        # 兑换码折扣权益：下单即核销（一张只用一次）。条件 UPDATE 防并发双下单抢同一张。
+        claimed = (
+            db.query(models.ExchangeDiscountCredit)
+            .filter(
+                models.ExchangeDiscountCredit.id == credit.id,
+                models.ExchangeDiscountCredit.status == "unused",
+            )
+            .update(
+                {"status": "used", "used_order_id": order_id},
+                synchronize_session=False,
+            )
+        )
+        if not claimed:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="折扣权益已被使用，请刷新后重试")
     if preview is not None:
         coupon = db.query(models.CouponCode).filter(
             models.CouponCode.id == preview["coupon_id"]).first()
@@ -895,6 +982,7 @@ def create_payment_order(
         "list_price": float(list_price),
         "discount_amount": float(discount_amount),
         "coupon_code": coupon_code,
+        "exchange_discount_pct": credit.discount_pct if credit is not None else 0,
         "pay_url": pay_url,
         "message": "订单已创建，正在跳转支付",
     }
