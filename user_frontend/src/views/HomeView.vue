@@ -111,6 +111,8 @@ const quickStats = ref({
   streak: null as number | null,
   checkedToday: false,
   invited: null as number | null,
+  // 签到功能开关（管理端可配）：关闭时首页隐藏签到相关文案
+  checkinEnabled: true,
 })
 
 // ===== 我的面板（v2.34.0）：观影数据 / 进行中的事项 / 正在播放 =====
@@ -230,19 +232,22 @@ const assetCards = computed(() => {
       value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
       unit: '',
       progress: null,
-      desc: '签到、邀请与兑换都能攒积分',
+      desc: quickStats.value.checkinEnabled ? '签到、邀请与兑换都能攒积分' : '邀请与兑换都能攒积分',
       // 连击天数并进说明行，数据不丢（原速览条的独立「每日签到」格不再重复）
-      note: quickStats.value.checkedToday
+      // 签到开关关闭时不显示签到相关文案
+      note: !quickStats.value.checkinEnabled ? ''
+        : quickStats.value.checkedToday
         ? (quickStats.value.streak ? `今日已签 · 连续 ${quickStats.value.streak} 天` : '今日已签 · 明天再来')
         : '今天还没签到',
       // 窄屏票面只留一行 ≤6 字的状态（长说明在宽屏才显示）
-      short: quickStats.value.checkedToday
+      short: !quickStats.value.checkinEnabled ? ''
+        : quickStats.value.checkedToday
         ? (quickStats.value.streak ? `连签 ${quickStats.value.streak} 天` : '今日已签')
         : '今日未签',
       footer: '去钱包',
-      badge: quickStats.value.checkedToday ? null : '今日未签',
+      badge: !quickStats.value.checkinEnabled ? null : (quickStats.value.checkedToday ? null : '今日未签'),
       // 未签时徽章走警示色（hot），与订阅临期同一套提醒语言
-      hot: !quickStats.value.checkedToday,
+      hot: quickStats.value.checkinEnabled && !quickStats.value.checkedToday,
     },
     {
       key: 'member',
@@ -396,6 +401,7 @@ function applySummary(data: HomeSummary) {
   if (data.checkin) {
     quickStats.value.streak = data.checkin.streak
     quickStats.value.checkedToday = data.checkin.checked_today
+    quickStats.value.checkinEnabled = data.checkin.enabled !== false
   }
   if (data.invite) quickStats.value.invited = data.invite.invited_count
   if (data.subscriptions) subscriptions.value = data.subscriptions
@@ -675,14 +681,15 @@ const heroEyebrow = computed(() => {
   return `${recentHasToday.value ? '今日新片' : '本周新片'} · ${recentTitle(heroItem.value)}`
 })
 
-/** Hero 状态行：会员状态 + 签到（都是首页已有的数据，不额外请求） */
+/** Hero 状态行：会员状态 + 签到（都是首页已有的数据，不额外请求）
+ *  签到开关关闭时不显示签到状态 */
 const heroStatus = computed(() => {
   const parts: string[] = []
   if (isMember.value && activeSub.value) parts.push(`会员剩 ${activeSub.value.days_left} 天`)
   else if (isFreeRealm.value) parts.push('公益服 · 免费开放')
   else parts.push('会员未开通')
   if (sessions.value.length) parts.push(`${sessions.value.length} 台设备正在播放`)
-  else parts.push(quickStats.value.checkedToday ? '今日已签到' : '今日还没签到')
+  else if (quickStats.value.checkinEnabled) parts.push(quickStats.value.checkedToday ? '今日已签到' : '今日还没签到')
   return parts.join(' · ')
 })
 

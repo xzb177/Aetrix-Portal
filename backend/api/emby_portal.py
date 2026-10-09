@@ -195,6 +195,27 @@ def captcha_config(request: Request, db: Session = Depends(get_db)):
     return captcha.widget_info(db)
 
 
+@auth_router.get("/register-config")
+def register_config(db: Session = Depends(get_db)):
+    """公开：注册页需要的开关状态（未登录可调）。
+
+    前端据此决定显示/隐藏注册码、邀请码输入框：
+    - registration_mode: open=开放注册 / code=必须携带注册码 / closed=关闭注册
+    - invitation_enabled: 邀请码功能开关
+    """
+    from backend.api.invitation import get_invite_config
+
+    row = (
+        db.query(models.SystemConfig)
+        .filter(models.SystemConfig.key == "registration_mode")
+        .first()
+    )
+    return {
+        "registration_mode": row.value if row and row.value else "open",
+        "invitation_enabled": get_invite_config(db)["enabled"],
+    }
+
+
 @auth_router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     """注册新用户（用户名唯一，密码 bcrypt 存储，自动生成自建 Emby 凭据）"""
