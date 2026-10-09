@@ -1,142 +1,111 @@
-"""Telegram update 路由：命令解析、绑定码识别、限流与分发（业务入口）。"""
+"""Telegram 消息路由：把 getUpdates 的单个 update 分发到命令处理器。"""
 from __future__ import annotations
 
 import logging
-import re
-import threading
-import time
-from dataclasses import dataclass
-
-from backend.database import SessionLocal
-from backend.tg_bot.sender import TgSender
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-RATE_LIMIT_SECONDS = 3.0
 
-# 限流内存表：{(telegram_id, 命令): 上次放行时间}，B1 简版
-_rate_limits: dict[tuple[int, str], float] = {}
-_rate_lock = threading.Lock()
+def _verify_bind_code(db, update: dict) -> None:
+    """验证网页端发起的绑定码（流程 A）。
 
+    用户在网页点"绑定"生成码（user_id 已填），然后给 bot 发 6 位码。
+    验证通过后设置 WebUser.telegram_id。
+    """
+    from backend.models import TgBindCode, WebUser
+    from backend.tg_bot import sender
 
-@dataclass
-class BotContext:
-    """bot 运行上下文：发送器、bot 用户名、站点信息。"""
-
-    sender: TgSender
-    bot_username: str
-    site_name: str
-    site_base_url: str
-
-
-def parse_command(text: str) -> tuple[str, list[str]] | None:
-    """解析 "/cmd args" 文本；返回 (命令名小写去@后缀, 参数列表)，非命令返回 None。"""
-    text = text.strip()
-    if not text.startswith("/"):
-        return None
-    parts = text.split()
-    name = parts[0][1:].split("@", 1)[0].lower()
-    if not name:
-        return None
-    return name, parts[1:]
-
-
-def is_potential_bind_code(text: str) -> bool:
-    """判断文本是否为 6 位纯数字（绑定码候选）。"""
-    return re.fullmatch(r"\d{6}", text.strip()) is not None
-
-
-def _allow(user_id: int, key: str) -> bool:
-    """每用户每命令 3 秒限流，返回是否放行。"""
-    now = time.monotonic()
-    with _rate_lock:
-        last = _rate_limits.get((user_id, key))
-        if last is not None and now - last < RATE_LIMIT_SECONDS:
-            return False
-        _rate_limits[(user_id, key)] = now
-        return True
-
-
-def _reply(ctx: BotContext, chat_id: int | None, text: str) -> None:
-    """尽力回复；chat_id 不可用时跳过。"""
-    if chat_id is None:
+    msg = update.get("message") or {}
+    text = (msg.get("text") or "").strip()
+    tg_user = msg.get("from") or {}
+    tg_user_id = tg_user.get("id")
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not tg_user_id or not chat_id:
         return
-    ctx.sender.send_message(chat_id, text)
+
+    now = datetime.now()
+    record = (
+        db.query(TgBindCode)
+        .filter(
+            TgBindCode.code == text,
+            TgBindCode.user_id.isnot(None),
+            TgBindCode.telegram_id.is_(None),
+            TgBindCode.used_at.is_(None),
+            TgBindCode.expires_at > now,
+        )
+        .order_by(TgBindCode.id.desc())
+        .first()
+    )
+    if not record:
+        return  # 不是有效的绑定码，静默忽略
+
+    user = db.query(WebUser).filter(WebUser.id == record.user_id).first()
+    if not user:
+        return
+    # 检查该 TG 账号是否已被其他用户绑定
+    existing = (
+        db.query(WebUser)
+        .filter(WebUser.telegram_id == tg_user_id, WebUser.id != user.id)
+        .first()
+    )
+    if existing:
+        sender.send_message(db, chat_id, "该 Telegram 账号已被其他用户绑定")
+        return
+
+    user.telegram_id = tg_user_id
+    record.telegram_id = tg_user_id
+    record.used_at = now
+    db.commit()
+    sender.send_message(db, chat_id, "绑定成功！现在可以使用公益服功能了。")
+    logger.info("tg bind success: user_id=%s tg_id=%s", user.id, tg_user_id)
 
 
-def _load_handler(cmd: str):
-    """延迟导入 handlers 模块并取 handle_<cmd>（P2 生成），找不到返回 None。"""
+def dispatch(db, update: dict) -> None:
+    """分发单个 update 到对应的处理器。"""
+    from backend.tg_bot import handlers, sender
+
     try:
-        from backend.tg_bot import handlers
-    except ImportError:
-        logger.warning("handlers 模块尚未就绪 cmd=%s", cmd)
-        return None
-    return getattr(handlers, "handle_" + cmd, None)
-
-
-def _load_bind_verifier():
-    """延迟导入 bind 模块并取 verify_bind_code（P2 生成），找不到返回 None。"""
-    try:
-        from backend.tg_bot import bind as bind_module
-    except ImportError:
-        logger.warning("bind 模块尚未就绪")
-        return None
-    return getattr(bind_module, "verify_bind_code", None)
-
-
-def dispatch(update: dict, ctx: BotContext) -> None:
-    """分发单个 update；独立 DB session，异常只记日志不外抛。"""
-    db = SessionLocal()
-    chat_id: int | None = None
-    try:
-        if "message" in update:
-            message = update.get("message") or {}
-            chat_id = (message.get("chat") or {}).get("id")
-            text = message.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return  # 无文本消息忽略
-            telegram_id = (message.get("from") or {}).get("id") or chat_id or 0
-            text = text.strip()
-
-            # 1) 命令分发
-            parsed = parse_command(text)
-            if parsed is not None:
-                cmd, _args = parsed
-                handler = _load_handler(cmd)
-                if handler is None:
-                    _reply(ctx, chat_id, "未知命令，发送 /help 查看")
-                    return
-                if not _allow(telegram_id, cmd):
-                    _reply(ctx, chat_id, "操作太快了，稍后再试")
-                    return
-                # 约定签名（P2 实现）：handler(db, message, ctx)
-                handler(db, message, ctx)
-                return
-
-            # 2) 6 位绑定码
-            if is_potential_bind_code(text):
-                verify = _load_bind_verifier()
-                if verify is None:
-                    return
-                if not _allow(telegram_id, "bind"):
-                    _reply(ctx, chat_id, "操作太快了，稍后再试")
-                    return
-                # 约定签名（P2 实现）：verify_bind_code(db, message, code, ctx)
-                verify(db, message, text, ctx)
-                return
-            return
-
-        # 3) 回调查询：B1 仅记录并占位回复（B3 实现抢红包）
+        # callback_query 走 B3
         if "callback_query" in update:
-            cb = update.get("callback_query") or {}
-            chat_id = ((cb.get("message") or {}).get("chat") or {}).get("id")
-            logger.info("callback_query data=%s chat_id=%s", cb.get("data"), chat_id)
-            _reply(ctx, chat_id, "即将上线")
+            from backend.tg_bot import callbacks
+            callbacks.handle_callback(db, update["callback_query"])
             return
 
-        # 其余 update 类型忽略
-    except Exception:
-        logger.exception("dispatch update 失败")
-        _reply(ctx, chat_id, "服务开小差了，请稍后再试")
-    finally:
-        db.close()
+        msg = update.get("message") or {}
+        text = (msg.get("text") or "").strip()
+        if not text:
+            return
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        tg_user = msg.get("from") or {}
+        if not chat_id:
+            return
+
+        # 6 位纯数字 → 绑定码验证
+        if text.isdigit() and len(text) == 6:
+            _verify_bind_code(db, update)
+            return
+
+        # 非命令文本忽略
+        if not text.startswith("/"):
+            return
+
+        # 解析命令（去掉 @bot 后缀）
+        first_token = text.split()[0]
+        cmd = first_token.split("@")[0].lower()
+        args = text[len(first_token):].strip()
+
+        commands = {
+            "/start": handlers.handle_start,
+            "/help": handlers.handle_help,
+            "/bind": handlers.handle_bind,
+        }
+        fn = commands.get(cmd)
+        if fn:
+            reply = fn(db, tg_user, chat_id, args)
+        else:
+            reply = "未知命令，发送 /help 查看可用命令"
+        sender.send_message(db, chat_id, reply)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("tg dispatch failed: %s", exc, exc_info=True)
