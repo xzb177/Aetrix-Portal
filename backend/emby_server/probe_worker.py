@@ -1104,4 +1104,3 @@ def stop(timeout: float = 5.0) -> None:
             t.join(timeout=timeout)
     from backend.emby_server import worker_registry as _wr
     _wr.unregister("probe_dispatcher")
-    _wr.unregister("probe_preextract")
