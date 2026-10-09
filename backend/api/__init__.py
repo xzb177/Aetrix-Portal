@@ -10,5 +10,6 @@ from backend.api.admin import admin_router
 from backend.api import admin_economy  # noqa: F401 — 导入即注册
 from backend.api import admin_scrape  # noqa: F401 — 导入即注册（元数据与刮削）
 from backend.api import admin_user_grants  # noqa: F401 — 导入即注册（用户授权资源卡片）
+from backend.api import welfare_admin  # noqa: F401 — 导入即注册（公益服管理后台）
 
 __all__ = ["user_router", "admin_router"]
