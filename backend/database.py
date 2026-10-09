@@ -582,7 +582,7 @@ def _auto_migrate():
             ("welfare_expires_at", "DATETIME", "NULL"),
             ("welfare_grant_channel", "VARCHAR(20)", "NULL"),
             ("welfare_granted_at", "DATETIME", "NULL"),
-            # P1 统一货币体系：会员经验与缓存等级。老用户补列后 xp=0/level=1（初幕），
+            # P1 统一货币体系：会员经验与缓存等级。老用户补列后 xp=0/level=1（普通会员），
             # 与升级前行为一致（此前无等级概念）。
             ("member_xp", "INTEGER", "0"),
             ("member_level", "INTEGER", "1"),
@@ -665,8 +665,6 @@ def _auto_migrate():
         # v2.6.20 多服运营：订阅、套餐、卡码、求片、挂载都归属到某个服
         ("subscription_plans", [
             ("realm_id", "INTEGER", "NULL"),
-            # P2 统一货币体系：套餐积分价。老库补列后为 NULL（不支持积分购买），与升级前行为一致。
-            ("points_price", "NUMERIC(10, 2)", "NULL"),
         ]),
         ("user_subscriptions", [
             ("realm_id", "INTEGER", "NULL"),
@@ -766,6 +764,11 @@ def _auto_migrate():
         # StrmAssistant #9 演职人员增强：person_tmdb_id 供刷新演员详情用
         ("emby_people", [
             ("person_tmdb_id", "VARCHAR(32)", "NULL"),
+        ]),
+        # P3 兑换码折扣类型：老库补 discount_pct 列（默认 0，老兑换码不受影响）；
+        # 新表 exchange_discount_credits 由 create_all 建，不在此列
+        ("exchange_codes", [
+            ("discount_pct", "INTEGER", "0"),
         ]),
     ]
 

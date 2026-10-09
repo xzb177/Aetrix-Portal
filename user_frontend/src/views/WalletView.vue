@@ -13,11 +13,10 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, TriangleAlert, Undo2, Percent, X, User, Medal, Award, Gem,
-  Ticket, Clapperboard, Glasses, Projector,
+  KeyRound, TriangleAlert, Undo2, Percent, X, User, Medal, Award, Gem, Gift,
 } from 'lucide-vue-next'
 import {
-  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi, currencyApi,
+  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi, discountCreditApi,
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview, type CouponQuote,
   type MyMemberInfo,
@@ -46,26 +45,9 @@ const orderLoading = ref<number | null>(null)
 // ===== 会员等级（P1 统一货币体系）=====
 const member = ref<MyMemberInfo | null>(null)
 const showLevels = ref(false)
-/** 徽章图标名 → lucide 组件（暗房影院主题：票根/场记板/鉴赏镜/放映机/星芒/王冠） */
-const levelIconMap: Record<string, unknown> = {
-  User, Medal, Award, Crown, Gem, Sparkles,
-  Ticket, Clapperboard, Glasses, Projector,
-}
-const levelIcon = (name: string) => levelIconMap[name] || Ticket
-
-/** 徽章样式：暗房影院质感——深色底上的径向高光渐变，而非纯色圆块 */
-const badgeStyle = (color: string, level: number) => {
-  const c = color || '#9ca3af'
-  // 高等级（造梦者/传奇）用更亮的高光，低等级保持沉稳
-  const highlight = level >= 5 ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.28)'
-  const glow = level >= 5 ? `${c}66` : 'transparent'
-  return {
-    background: `radial-gradient(circle at 32% 28%, ${highlight}, transparent 55%), linear-gradient(145deg, ${c}, ${c}cc)`,
-    boxShadow: `0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 12px ${glow}`,
-  } as Record<string, string>
-}
-/** 徽章档位：用于 CSS 分级动画（仅传奇有呼吸光晕） */
-const badgeTier = (level: number) => (level >= 6 ? 'legend' : 'common')
+/** 徽章图标名 → lucide 组件 */
+const levelIconMap: Record<string, unknown> = { User, Medal, Award, Crown, Gem, Sparkles }
+const levelIcon = (name: string) => levelIconMap[name] || User
 
 // ===== 优惠券（v2.10.0；v2.10.1 收进统一核销入口）=====
 // 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
@@ -84,12 +66,26 @@ interface QuoteRow {
 }
 
 const quoteOf = (kind: 'recharge' | 'subscription', id: number) => couponQuotes.value[`${kind}:${id}`] || null
-/** 折后实付（未用券 = 原价），模板里直接取字符串，避免到处写非空断言 */
-const paidPrice = (kind: 'recharge' | 'subscription', id: number, price: number) =>
-  (quoteOf(kind, id)?.paid_amount ?? price).toFixed(2)
+/** 兑换码折扣权益：核销 discount 型兑换码后获得，订阅下单自动抵扣（不与优惠券叠加） */
+const discountCredit = ref<{ has_credit: boolean; discount_pct?: number }>({ has_credit: false })
+/** 折后实付（未用券 = 原价；有折扣权益时按权益价），模板里直接取字符串，避免到处写非空断言 */
+const paidPrice = (kind: 'recharge' | 'subscription', id: number, price: number) => {
+  const q = quoteOf(kind, id)
+  if (q) return q.paid_amount.toFixed(2)
+  const pct = kind === 'subscription' && discountCredit.value.has_credit
+    ? discountCredit.value.discount_pct
+    : undefined
+  if (pct != null) return (Math.round(price * pct) / 100).toFixed(2)
+  return price.toFixed(2)
+}
 const wasPrice = (kind: 'recharge' | 'subscription', id: number) => {
   const q = quoteOf(kind, id)
-  return q ? q.list_price.toFixed(2) : ''
+  if (q) return q.list_price.toFixed(2)
+  if (kind === 'subscription' && discountCredit.value.has_credit) {
+    const p = plans.value.find(p => p.id === id)?.price
+    return p != null ? p.toFixed(2) : ''
+  }
+  return ''
 }
 const couponSavings = computed(() => {
   const values = Object.values(couponQuotes.value)
@@ -333,7 +329,7 @@ async function confirmCodeRedeem() {
 }
 
 // ===== 下单 =====
-async function handleOrder(kind: 'recharge' | 'subscription', itemId?: number) {
+async function handleOrder(kind: 'recharge' | 'subscription', itemId: number) {
   orderLoading.value = itemId
   try {
     // 优惠码在试算通过的商品上才带：后端会按同一套口径再算一遍并占额度
@@ -356,43 +352,6 @@ async function handleOrder(kind: 'recharge' | 'subscription', itemId?: number) {
   } finally {
     orderLoading.value = null
   }
-}
-
-// ===== 自定义金额充值（P2）=====
-const customAmount = ref<number | null>(null)
-const rechargeRatio = ref(1.2)
-const canCustomRecharge = computed(() => (customAmount.value ?? 0) >= 1)
-const customPointsPreview = computed(() => {
-  const amt = customAmount.value ?? 0
-  if (amt < 1) return ''
-  return ` ${Math.floor(amt * rechargeRatio.value)} `
-})
-async function handleCustomRecharge() {
-  const amt = customAmount.value ?? 0
-  if (amt < 1 || amt > 100000) { toast.error('请输入 1~100000 元'); return }
-  orderLoading.value = -1
-  try {
-    const res = await paymentApi.createOrder({ kind: 'recharge', payment_method: payMethod.value, custom_amount: amt })
-    if (res.pay_url) { toast.success('正在跳转支付…'); window.location.href = res.pay_url }
-    else toast.error('未获取到支付链接')
-  } catch (err: any) {
-    toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
-  } finally { orderLoading.value = null }
-}
-async function handlePointsOrder(plan: SubscriptionPlan) {
-  orderLoading.value = -plan.id
-  try {
-    const res = await paymentApi.createOrder({ kind: 'subscription', item_id: plan.id, payment_method: 'points', pay_with_points: true })
-    if (res.paid_with_points) {
-      toast.success(res.message || '积分支付成功，订阅已开通')
-      await refreshSubscriptions()
-      await refreshBalance()
-    } else if (res.pay_url) {
-      window.location.href = res.pay_url
-    }
-  } catch (err: any) {
-    toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
-  } finally { orderLoading.value = null }
 }
 
 // ===== 数据加载 =====
@@ -439,7 +398,7 @@ async function loadAll(silent = false) {
     const emptySubs: MySubscription[] = []
     const exchangeFallback = { enabled: true }
     const couponFallback = { enabled: false }
-    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR, memberR] = await Promise.allSettled([
+    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR, memberR, discR] = await Promise.allSettled([
       paymentApi.packages(),
       paymentApi.plans(),
       paymentApi.methods(),
@@ -451,6 +410,7 @@ async function loadAll(silent = false) {
       // 接口失败时按「关闭」处理：宁可不展示，也不让用户填完码才报错
       couponApi.config(),
       memberApi.info(),
+      discountCreditApi.get().catch(() => ({ has_credit: false })),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -483,6 +443,8 @@ async function loadAll(silent = false) {
     if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
     const memberData = memberR.status === 'fulfilled' ? memberR.value : null
     member.value = memberData
+    const disc = discR.status === 'fulfilled' ? discR.value : { has_credit: false }
+    if (disc && typeof disc.has_credit === 'boolean') discountCredit.value = disc
   } finally {
     loading.value = false
     hasLoaded.value = true
@@ -594,11 +556,6 @@ function handleEntryQuery() {
 onMounted(async () => {
   await loadAll()
   handleEntryQuery()
-  // P2：拉取充值比例（自定义金额换算用），失败时保持默认 1.2
-  try {
-    const info = await currencyApi.info()
-    if (info?.recharge_ratio) rechargeRatio.value = info.recharge_ratio
-  } catch { /* 静默 */ }
 })
 
 // 从别的 tab 切回来（KeepAlive 缓存命中）：先处理 query，再后台静默刷新
@@ -642,9 +599,16 @@ onBeforeUnmount(stopPayPoll)
           <ChevronRight :size="12" class="pill-arrow" />
         </RouterLink>
 
+        <!-- 抽奖入口：跟签到胶囊同一排 -->
+        <RouterLink to="/lottery" class="lottery-pill">
+          <Gift :size="13" />
+          <span>幸运抽奖</span>
+          <ChevronRight :size="12" class="pill-arrow" />
+        </RouterLink>
+
         <!-- 会员等级：徽章 + 经验进度（P1 统一货币体系） -->
         <div v-if="member" class="member-row">
-          <span class="member-badge" :style="badgeStyle(member.badge_color, member.level)" :data-tier="badgeTier(member.level)">
+          <span class="member-badge" :style="{ background: member.badge_color }">
             <component :is="levelIcon(member.badge_icon)" :size="17" />
           </span>
           <div class="member-meta">
@@ -673,9 +637,8 @@ onBeforeUnmount(stopPayPoll)
             :key="lv.level"
             class="level-card"
             :class="{ current: lv.level === member.level }"
-            :style="{ borderTopColor: lv.badge_color }"
           >
-            <span class="member-badge sm" :style="badgeStyle(lv.badge_color, lv.level)" :data-tier="badgeTier(lv.level)">
+            <span class="member-badge sm" :style="{ background: lv.badge_color }">
               <component :is="levelIcon(lv.badge_icon)" :size="14" />
             </span>
             <div class="level-head">
@@ -725,6 +688,7 @@ onBeforeUnmount(stopPayPoll)
           <span class="rp-text">
             {{ codePreview.type_name }}
             <strong>· {{ codePreview.days_text }}</strong>
+            <strong v-if="codePreview.discount_text && codePreview.discount_text !== '-'">· {{ codePreview.discount_text }}</strong>
             <template v-if="codePreview.realm_name"> · 开「{{ codePreview.realm_name }}」的会员</template>
             <template v-if="codePreview.is_named"> · 限指定账号</template>
           </span>
@@ -851,24 +815,6 @@ onBeforeUnmount(stopPayPoll)
           </span>
         </button>
       </div>
-      <!-- 自定义金额充值（P2）：按 recharge_ratio 换算积分 -->
-      <div class="custom-recharge au-card">
-        <div class="custom-recharge-head">
-          <Coins :size="15" />
-          <span>自定义金额充值</span>
-        </div>
-        <div class="custom-recharge-body">
-          <div class="custom-input-wrap">
-            <span class="custom-prefix">¥</span>
-            <input v-model.number="customAmount" type="number" min="1" max="100000" placeholder="输入金额" class="custom-input" />
-          </div>
-          <button class="au-btn au-btn-primary" :disabled="!canCustomRecharge || orderLoading === -1" @click="handleCustomRecharge">
-            <span v-if="orderLoading === -1" class="au-spinner spinner-sm" />
-            <template v-else>充值{{ customPointsPreview }}积分</template>
-          </button>
-        </div>
-        <p class="custom-hint">按当前比例 {{ rechargeRatio }} 兑换（1 元 = {{ rechargeRatio }} 积分）</p>
-      </div>
     </section>
 
     <!-- 购买订阅：公益服换成「免费开放」说明，其余按原样卖套餐 -->
@@ -897,6 +843,15 @@ onBeforeUnmount(stopPayPoll)
           </span>
         </template>
         <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
+      </div>
+
+      <!-- 兑换码折扣权益：有未用权益时提示，下单自动抵扣（不与优惠券叠加） -->
+      <div v-if="plansEnabled && !isFreeRealm && discountCredit.has_credit" class="discount-callout au-card">
+        <span class="discount-badge">
+          <Percent :size="13" />
+          {{ discountCredit.discount_pct }} 折待使用
+        </span>
+        <p class="discount-lead">兑换码折扣已到账，下单购买订阅时自动抵扣，不与优惠券叠加。</p>
       </div>
 
       <!-- 卡码 / 兑换码 / 优惠券的入口已收归顶部那一个面板，这里只留一行指引，
@@ -929,9 +884,6 @@ onBeforeUnmount(stopPayPoll)
               ¥{{ paidPrice('subscription', p.id, p.price) }}
               <em class="plan-days">/ {{ p.duration_days }} 天</em>
             </span>
-            <span v-if="p.points_price != null" class="plan-points-price">
-              或 {{ p.points_price }} 积分
-            </span>
           </div>
           <p class="plan-desc">{{ p.description || '会员专属权益' }}</p>
 
@@ -941,26 +893,15 @@ onBeforeUnmount(stopPayPoll)
             </li>
           </ul>
 
-          <div class="plan-actions">
-            <button
-              class="au-btn plan-btn"
-              :class="p.is_popular ? 'au-btn-primary' : 'au-btn-ghost'"
-              :disabled="orderLoading === p.id"
-              @click="handleOrder('subscription', p.id)"
-            >
-              <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
-              <template v-else>¥{{ paidPrice('subscription', p.id, p.price) }} 开通</template>
-            </button>
-            <button
-              v-if="p.points_price != null"
-              class="au-btn au-btn-ghost plan-btn"
-              :disabled="orderLoading === -p.id"
-              @click="handlePointsOrder(p)"
-            >
-              <span v-if="orderLoading === -p.id" class="au-spinner spinner-sm" />
-              <template v-else>{{ p.points_price }} 积分开通</template>
-            </button>
-          </div>
+          <button
+            class="au-btn plan-btn"
+            :class="p.is_popular ? 'au-btn-primary' : 'au-btn-ghost'"
+            :disabled="orderLoading === p.id"
+            @click="handleOrder('subscription', p.id)"
+          >
+            <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
+            <template v-else>立即开通</template>
+          </button>
         </div>
       </div>
     </section>
@@ -1108,6 +1049,25 @@ onBeforeUnmount(stopPayPoll)
   color: var(--au-success);
 }
 
+/* 抽奖入口胶囊：与签到胶囊同一视觉语言 */
+.lottery-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  width: fit-content;
+  margin-top: 0.375rem;
+  margin-left: 0.5rem;
+  padding: 0.3125rem 0.6875rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  transition: all var(--au-fast) var(--au-ease);
+}
+.lottery-pill:hover { filter: brightness(1.08); }
+
 /* ==================== 会员等级（P1 统一货币体系） ==================== */
 .member-row {
   display: flex;
@@ -1128,19 +1088,7 @@ onBeforeUnmount(stopPayPoll)
   border-radius: 50%;
   color: #fff;
   flex-shrink: 0;
-  /* 暗房质感：内高光 + 边框（具体背景/光晕由 badgeStyle() 行内设置） */
-  border: 1px solid rgba(255, 255, 255, 0.18);
-}
-/* 传奇档：缓慢呼吸光晕，影殿不朽的气场（传奇固定为 #eab308 金） */
-.member-badge[data-tier="legend"] {
-  animation: badge-breathe 3.2s ease-in-out infinite;
-}
-@keyframes badge-breathe {
-  0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 10px #eab30866; }
-  50% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 22px #eab30899; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .member-badge[data-tier="legend"] { animation: none; }
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 .member-badge.sm { width: 2rem; height: 2rem; }
 .member-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.375rem; }
@@ -1196,8 +1144,6 @@ onBeforeUnmount(stopPayPoll)
   background: var(--au-surface-2, rgba(255, 255, 255, 0.03));
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
-  /* 顶部等级色带：暗房影院的色带感（颜色由行内 borderTopColor 按等级设置） */
-  border-top-width: 2px;
 }
 .level-card.current {
   border-color: var(--au-primary);
@@ -1502,6 +1448,31 @@ onBeforeUnmount(stopPayPoll)
 .free-lead { margin: 0; font-size: 0.875rem; color: var(--au-text); }
 .free-note { margin: 0; font-size: 0.8125rem; line-height: 1.6; color: var(--au-text-3); }
 
+/* 兑换码折扣权益提示条（复用 free-callout 排版语言） */
+.discount-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 1rem 1.125rem;
+  margin-bottom: 0.75rem;
+}
+
+.discount-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.5625rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.discount-lead { margin: 0; font-size: 0.875rem; color: var(--au-text); }
+
 /* 卡码预检通过后的确认行（内联在核销面板里） */
 .redeem-preview {
   display: flex;
@@ -1676,40 +1647,6 @@ onBeforeUnmount(stopPayPoll)
 .plan-features svg { color: var(--au-success); flex-shrink: 0; }
 
 .plan-btn { margin-top: auto; width: 100%; }
-
-/* P2 双轨订阅：人民币/积分双按钮 */
-.plan-actions { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
-.plan-actions .plan-btn { margin-top: 0; }
-.plan-points-price {
-  display: inline-block;
-  margin-left: 8px;
-  font-size: 0.75rem;
-  color: var(--au-warning);
-  font-weight: 600;
-}
-
-/* P2 自定义金额充值 */
-.custom-recharge { margin-top: 16px; padding: 16px; }
-.custom-recharge-head {
-  display: flex; align-items: center; gap: 8px;
-  font-weight: 600; font-size: 0.9rem; margin-bottom: 12px;
-}
-.custom-recharge-body { display: flex; gap: 12px; align-items: center; }
-.custom-input-wrap {
-  display: flex; align-items: center; flex: 1;
-  border: 1px solid var(--au-border);
-  border-radius: 8px; padding: 0 12px;
-  background: var(--au-surface-2);
-}
-.custom-prefix { color: var(--au-text-3); margin-right: 6px; font-weight: 600; }
-.custom-input {
-  flex: 1; border: none; outline: none; background: transparent;
-  padding: 10px 0; font-size: 1rem; color: var(--au-text);
-  -moz-appearance: textfield;
-}
-.custom-input::-webkit-outer-spin-button,
-.custom-input::-webkit-inner-spin-button { -webkit-appearance: none; }
-.custom-hint { margin: 10px 0 0; font-size: 0.75rem; color: var(--au-text-3); }
 
 /* ==================== 订单 ==================== */
 .order-list { overflow: hidden; }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 兑换码管理：批量生成（积分/订阅型）、停用/启用、使用审计
+ * 兑换码管理：批量生成（积分/订阅/折扣型）、停用/启用、使用审计
  */
 import { onMounted, ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -39,10 +39,11 @@ const plans = ref<PlanRowFull[]>([])
 const genVisible = ref(false)
 const genForm = ref({
   count: 10,
-  type: 'points' as 'points' | 'subscription',
+  type: 'points' as 'points' | 'subscription' | 'discount',
   points_value: 50,
   plan_id: undefined as number | undefined,
   duration_days: 30,
+  discount_pct: 85,
   max_uses: 1,
   expires_days: 30,
   note: '',
@@ -77,6 +78,7 @@ async function handleGenerate() {
       points_value: genForm.value.type === 'points' ? genForm.value.points_value : undefined,
       plan_id: genForm.value.type === 'subscription' ? genForm.value.plan_id : undefined,
       duration_days: genForm.value.type === 'subscription' ? genForm.value.duration_days : undefined,
+      discount_pct: genForm.value.type === 'discount' ? genForm.value.discount_pct : undefined,
       max_uses: genForm.value.max_uses,
       expires_days: genForm.value.expires_days,
       note: genForm.value.note || undefined,
@@ -104,7 +106,11 @@ async function toggleCode(row: ExchangeCodeRow) {
 }
 
 const rewardText = (row: ExchangeCodeRow) =>
-  row.type === 'points' ? `${row.points_value} 积分` : `${row.plan_name || '套餐'} × ${row.duration_days} 天`
+  row.type === 'points'
+    ? `${row.points_value} 积分`
+    : row.type === 'subscription'
+      ? `${row.plan_name || '套餐'} × ${row.duration_days} 天`
+      : `${row.discount_pct} 折`
 
 function copyAll() {
   navigator.clipboard.writeText(genResult.value.join('\n'))
@@ -123,7 +129,7 @@ const activeCount = computed(() => codes.value.filter((c) => c.is_active).length
 
 // 前端筛选（后端一次给最近 200 条）
 const keyword = ref('')
-const typeFilter = ref<'' | 'points' | 'subscription'>('')
+const typeFilter = ref<'' | 'points' | 'subscription' | 'discount'>('')
 const statusFilter = ref<'' | 'active' | 'inactive'>('')
 const hasFilter = computed(() => Boolean(keyword.value.trim() || typeFilter.value || statusFilter.value))
 
@@ -180,6 +186,7 @@ onMounted(load)
             <el-option value="" label="全部类型" />
             <el-option value="points" label="积分" />
             <el-option value="subscription" label="订阅" />
+            <el-option value="discount" label="折扣" />
           </el-select>
           <el-select v-model="statusFilter" placeholder="全部状态">
             <el-option value="" label="全部状态" />
@@ -206,8 +213,8 @@ onMounted(load)
         </template>
 
         <template #cell-type="{ row }">
-          <span class="au-badge" :class="row.type === 'points' ? 'au-badge-green' : 'au-badge-amber'">
-            {{ row.type === 'points' ? '积分' : '订阅' }}
+          <span class="au-badge" :class="row.type === 'points' ? 'au-badge-green' : row.type === 'subscription' ? 'au-badge-amber' : 'au-badge-blue'">
+            {{ row.type === 'points' ? '积分' : row.type === 'subscription' ? '订阅' : '折扣' }}
           </span>
         </template>
 
@@ -248,10 +255,15 @@ onMounted(load)
           <el-radio-group v-model="genForm.type">
             <el-radio-button value="points">积分</el-radio-button>
             <el-radio-button value="subscription">订阅</el-radio-button>
+            <el-radio-button value="discount">折扣</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="genForm.type === 'points'" label="积分数">
           <el-input-number v-model="genForm.points_value" :min="1" :max="100000" style="width: 100%" />
+        </el-form-item>
+        <el-form-item v-else-if="genForm.type === 'discount'" label="折扣（实付百分比）">
+          <el-input-number v-model="genForm.discount_pct" :min="1" :max="99" style="width: 100%" />
+          <div class="form-hint">85 = 八五折，用户下次购买订阅实付 85%</div>
         </el-form-item>
         <template v-else>
           <el-form-item label="套餐">

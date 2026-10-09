@@ -149,7 +149,6 @@ def list_plans(
             "is_popular": p.is_popular,
             "realm_id": p.realm_id,
             "realm_name": (p.realm.name if p.realm else ""),
-            "points_price": (float(p.points_price) if p.points_price is not None else None),
         }
         for p in plans
     ],
@@ -1491,7 +1490,6 @@ class PlanUpsertRequest(BaseModel):
     sort_order: int = 0
     # 套餐一个服一个：留空时归到面板当前服
     realm_id: Optional[int] = None
-    points_price: Optional[float] = Field(default=None, ge=0, description="积分价；为空表示不支持积分购买")
 
 
 @admin_router.get("/economy/plans")
@@ -1514,7 +1512,6 @@ def economy_list_plans(
             "is_popular": p.is_popular, "sort_order": p.sort_order,
             "realm_id": p.realm_id,
             "realm_name": (p.realm.name if p.realm else ""),
-            "points_price": (float(p.points_price) if p.points_price is not None else None),
         }
         for p in plans
     ],
@@ -1538,14 +1535,12 @@ def economy_create_plan(
         features=request.features, is_active=request.is_active,
         is_popular=request.is_popular, sort_order=request.sort_order,
         realm_id=realm_id,
-        points_price=(Decimal(str(request.points_price)) if request.points_price is not None else None),
     )
     db.add(plan)
     db.commit()
     db.refresh(plan)
     _audit(db, current_admin, "economy_create_plan", "plan", plan.id,
-           {"name": plan.name, "price": float(plan.price), "realm_id": realm_id,
-            "points_price": (float(plan.points_price) if plan.points_price is not None else None)})
+           {"name": plan.name, "price": float(plan.price), "realm_id": realm_id})
     db.commit()
     return {"success": True, "id": plan.id}
 
@@ -1566,7 +1561,6 @@ def economy_update_plan(
     plan.name = request.name
     plan.description = request.description
     plan.price = Decimal(str(request.price))
-    plan.points_price = Decimal(str(request.points_price)) if request.points_price is not None else None
     plan.duration_days = request.duration_days
     plan.features = request.features
     plan.is_active = request.is_active
@@ -1724,10 +1718,11 @@ def economy_delete_package(
 
 class ExchangeCodeBatchRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=100)
-    type: str = Field(default="points")  # points / subscription
+    type: str = Field(default="points")  # points / subscription / discount
     points_value: int = Field(default=0, ge=0)
     plan_id: Optional[int] = None
     duration_days: int = Field(default=0, ge=0)
+    discount_pct: int = Field(default=0, ge=0, le=99)  # discount 型：实付百分比，85=八五折
     max_uses: int = Field(default=1, ge=1, le=1000)
     expires_days: int = Field(default=30, ge=1, le=3650)
     note: str = ""
@@ -1757,6 +1752,7 @@ def economy_list_exchange_codes(
         items.append({
             "id": c.id, "code": c.code, "type": c.type,
             "points_value": c.points_value,
+            "discount_pct": c.discount_pct,
             "plan_name": plans.get(c.plan_id),
             "duration_days": c.duration_days,
             "max_uses": c.max_uses, "use_count": c.use_count,
@@ -1774,11 +1770,13 @@ def economy_create_exchange_codes(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """批量生成兑换码（积分型 / 订阅型）"""
-    if request.type not in ("points", "subscription"):
-        raise HTTPException(status_code=400, detail="type 必须是 points 或 subscription")
+    """批量生成兑换码（积分型 / 订阅型 / 折扣型）"""
+    if request.type not in ("points", "subscription", "discount"):
+        raise HTTPException(status_code=400, detail="type 必须是 points、subscription 或 discount")
     if request.type == "points" and request.points_value <= 0:
         raise HTTPException(status_code=400, detail="积分型兑换码必须设置 points_value")
+    if request.type == "discount" and not (1 <= request.discount_pct <= 99):
+        raise HTTPException(status_code=400, detail="折扣型兑换码的 discount_pct 必须在 1-99 之间（85=八五折）")
     if request.type == "subscription":
         if not request.plan_id:
             raise HTTPException(status_code=400, detail="订阅型兑换码必须选择套餐")
@@ -1794,6 +1792,7 @@ def economy_create_exchange_codes(
             points_value=request.points_value if request.type == "points" else 0,
             plan_id=request.plan_id if request.type == "subscription" else None,
             duration_days=request.duration_days if request.type == "subscription" else 0,
+            discount_pct=request.discount_pct if request.type == "discount" else 0,
             max_uses=request.max_uses,
             is_active=True,
             note=request.note or None,
