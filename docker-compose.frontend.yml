@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     ports:
       - "8081:80"
+    # 后端地址：默认 aetrix-api:8000；跨服务器部署时在环境或 .env 里设置 BACKEND_HOST=主机:8000
+    environment:
+      - BACKEND_HOST=${BACKEND_HOST:-aetrix-api:8000}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
       interval: 30s
