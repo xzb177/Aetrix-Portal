@@ -12,6 +12,10 @@ import router from './router'
 // 先挂载再拉取，不让一次额外的请求把首屏拖住；拉到之后主题色与标题会自己更新。
 import { initBranding } from './composables/useBranding'
 
+// iOS Safari 要求页面有 touchstart 监听器才会触发 :active 伪类
+// 空函数即可，passive 避免滚动性能问题
+document.addEventListener('touchstart', () => {}, { passive: true })
+
 const app = createApp(App)
 const pinia = createPinia()
 
