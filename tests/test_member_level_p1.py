@@ -1,0 +1,179 @@
+"""P1 统一货币体系：会员等级 / 经验值测试
+
+全部用隔离的内存 SQLite，不碰生产库。
+"""
+import os
+
+os.environ.setdefault("DATABASE_TYPE", "sqlite")
+os.environ.setdefault("REDIS_ENABLED", "false")
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from backend import models
+from backend import member_level as ml
+
+
+@pytest.fixture()
+def db():
+    engine = create_engine("sqlite://")
+    models.Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    ml.ensure_member_levels_seeded(session)
+    yield session
+    session.close()
+
+
+def _make_user(db, username):
+    u = models.WebUser(username=username, password_hash="x")
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    return u
+
+
+# ---------- 种子 ----------
+
+def test_seed_is_idempotent(db):
+    """种子幂等：调两次还是 6 条"""
+    assert ml.ensure_member_levels_seeded(db) == 0
+    assert db.query(models.MemberLevel).count() == 6
+
+
+def test_seed_defaults(db):
+    lv2 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 2).first()
+    assert lv2.name == "铜牌会员"
+    assert lv2.xp_threshold == 100
+    assert lv2.is_active is True
+
+
+# ---------- 经验累加 ----------
+
+def test_add_xp_basic(db):
+    u = _make_user(db, "xp1")
+    r = ml.add_xp(db, u, 50, "recharge", ref_id="recharge:order1")
+    db.commit()
+    assert r["added"] is True
+    assert r["xp_after"] == 50
+    assert r["level"] == 1  # 50 < 100，仍是普通会员
+    assert r["leveled_up"] is False
+    # 流水
+    log = db.query(models.MemberXpLog).filter(
+        models.MemberXpLog.user_id == u.id).first()
+    assert log.xp_delta == 50 and log.xp_after == 50
+    assert log.source == "recharge" and log.ref_id == "recharge:order1"
+
+
+def test_add_xp_level_up(db):
+    u = _make_user(db, "xp2")
+    r = ml.add_xp(db, u, 100, "recharge")
+    db.commit()
+    assert r["level"] == 2
+    assert r["leveled_up"] is True
+    assert r["old_level"] == 1
+    # 缓存等级写回
+    db.refresh(u)
+    assert u.member_level == 2
+
+
+def test_add_xp_multi_level_jump(db):
+    """一次加 600 经验：100 阈值过 2 级，500 阈值过 3 级"""
+    u = _make_user(db, "xp3")
+    r = ml.add_xp(db, u, 600, "invite", ref_id="invite:9")
+    db.commit()
+    assert r["level"] == 3
+    assert r["leveled_up"] is True
+
+
+def test_add_xp_nonpositive_ignored(db):
+    u = _make_user(db, "xp4")
+    assert ml.add_xp(db, u, 0, "recharge")["added"] is False
+    assert ml.add_xp(db, u, -5, "recharge")["added"] is False
+    assert db.query(models.MemberXpLog).count() == 0
+
+
+def test_add_xp_accumulates(db):
+    """多次累加：50 + 60 = 110，触发升级"""
+    u = _make_user(db, "xp5")
+    ml.add_xp(db, u, 50, "recharge")
+    db.commit()
+    r = ml.add_xp(db, u, 60, "recharge")
+    db.commit()
+    assert r["xp_after"] == 110
+    assert r["level"] == 2 and r["leveled_up"] is True
+
+
+# ---------- 等级信息 ----------
+
+def test_get_member_info_progress(db):
+    u = _make_user(db, "xp6")
+    ml.add_xp(db, u, 50, "recharge")
+    db.commit()
+    info = ml.get_member_info(db, u)
+    assert info["level"] == 1
+    assert info["level_name"] == "普通会员"
+    assert info["xp"] == 50
+    assert info["next_level"] == 2
+    assert info["next_threshold"] == 100
+    assert info["xp_to_next"] == 50
+    assert info["progress_pct"] == 50.0
+    assert len(info["levels"]) == 6
+    # 每个等级权益公开
+    assert isinstance(info["levels"][0]["benefits"], list)
+
+
+def test_get_member_info_max_level(db):
+    u = _make_user(db, "xp7")
+    ml.add_xp(db, u, 20000, "recharge")
+    db.commit()
+    info = ml.get_member_info(db, u)
+    assert info["level"] == 6
+    assert info["next_level"] is None
+    assert info["progress_pct"] == 100.0
+
+
+def test_disabled_level_skipped(db):
+    """禁用的等级不参与推导"""
+    lv2 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 2).first()
+    lv2.is_active = False
+    db.commit()
+    u = _make_user(db, "xp8")
+    r = ml.add_xp(db, u, 100, "recharge")
+    db.commit()
+    # 2 级禁用，100 经验仍停留在 1 级（500 才到 3 级）
+    assert r["level"] == 1
+
+
+# ---------- 邀请经验 ----------
+
+def test_invitation_grants_xp(db):
+    """有效邀请：邀请人 +10 经验"""
+    from backend.api import invitation as inv
+
+    inviter = _make_user(db, "inviter1")
+    invitee = _make_user(db, "invitee1")
+    code = models.InvitationCode(code="TESTCODE1", user_id=inviter.id,
+                                 is_active=True, use_count=0)
+    db.add(code)
+    db.commit()
+
+    # 开关默认可能关闭，先确保开启
+    cfg = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == "invitation_enabled").first()
+    if cfg:
+        cfg.value = "true"
+    else:
+        db.add(models.SystemConfig(key="invitation_enabled", value="true"))
+    db.commit()
+
+    result = inv.apply_invitation(db, invitee, "TESTCODE1")
+    db.commit()
+    assert result["applied"] is True
+
+    xlog = db.query(models.MemberXpLog).filter(
+        models.MemberXpLog.user_id == inviter.id,
+        models.MemberXpLog.source == "invite",
+    ).first()
+    assert xlog is not None
+    assert xlog.xp_delta == 10

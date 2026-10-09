@@ -965,6 +965,16 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                 f"充值到账（订单 {recharge_order.order_id}）",
                 f"recharge:{recharge_order.order_id}",
             )
+            # P1 会员经验：真实充值 1 元 = 1 经验（向下取整），与积分/订单在同一事务。
+            # 经验失败不阻塞充值履约（只记日志），避免「钱收了货没发全」。
+            try:
+                from backend import member_level as _ml
+                _xp = max(0, int(recharge_order.price or 0))
+                if _xp:
+                    _ml.add_xp(db, user, _xp, "recharge",
+                               f"recharge:{recharge_order.order_id}")
+            except Exception:  # noqa: BLE001
+                logger.exception("充值经验累加失败: %s", recharge_order.order_id)
             # 邀请返利：被邀请人充值 → 邀请人得返利积分
             try:
                 from backend.api.invitation import apply_rebate
@@ -1004,6 +1014,15 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                 plan.duration_days, "purchase", subscription_order.order_id,
                 realm_id=plan.realm_id,
             )
+            # P1 会员经验：订阅实付 1 元 = 1 经验（向下取整），与订阅发放同一事务。
+            try:
+                from backend import member_level as _ml
+                _xp = max(0, int(subscription_order.amount or 0))
+                if _xp:
+                    _ml.add_xp(db, user, _xp, "subscription",
+                               f"subscription:{subscription_order.order_id}")
+            except Exception:  # noqa: BLE001 — 经验失败不阻塞订阅履约
+                logger.exception("订阅经验累加失败: %s", subscription_order.order_id)
             # 记下「这条订单开出的是哪份订阅、多少天」：退款按这笔精确回滚，
             # 不靠猜用户当前那笔生效中的订阅（可能来自卡码/兑换码/别的订单）。
             subscription_order.subscription_id = subscription.id
