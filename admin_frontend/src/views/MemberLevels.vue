@@ -3,7 +3,7 @@
  * 会员等级管理（P1 统一货币体系）
  *
  * 暗房影院统一风格：PageHeader + SectionCard + DataTable。
- * v1 只展示等级徽章与进度，不做等级折扣与特权。
+ * 等级折扣：订阅购买时按等级 discount_pct 打折，仅付费服生效，公益服不打折。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -27,6 +27,7 @@ const columns = computed<DataColumn[]>(() => [
   { key: 'badge', label: '徽章', width: 150 },
   { key: 'name', label: '名称', width: 140, mobile: 'title' },
   { key: 'xp_threshold', label: '经验阈值', width: 110 },
+  { key: 'discount_pct', label: '订阅折扣%', width: 110 },
   { key: 'benefits', label: '权益' },
   { key: 'is_active', label: '启用', width: 90 },
   { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
@@ -49,6 +50,7 @@ const dlg = ref({
   form: {
     name: '',
     xp_threshold: 0,
+    discount_pct: 0,
     badge_icon: '',
     badge_color: '',
     benefitsText: '',
@@ -62,6 +64,7 @@ function openEdit(row: MemberLevelRow) {
     form: {
       name: row.name,
       xp_threshold: row.xp_threshold,
+      discount_pct: row.discount_pct || 0,
       badge_icon: row.badge_icon,
       badge_color: row.badge_color,
       benefitsText: row.benefits.join('\n'),
@@ -78,6 +81,7 @@ async function doSave() {
   await updateMemberLevel(dlg.value.editing.id, {
     name: dlg.value.form.name,
     xp_threshold: dlg.value.form.xp_threshold,
+    discount_pct: dlg.value.form.discount_pct,
     badge_icon: dlg.value.form.badge_icon,
     badge_color: dlg.value.form.badge_color,
     benefits,
@@ -112,7 +116,7 @@ onMounted(() => { loadLevels() })
     <PageHeader
       eyebrow="货币体系"
       title="会员等级"
-      description="管理 Lv1-Lv6 会员等级：经验阈值、徽章、公开权益（v1 只展示不赋权）"
+      description="管理 Lv1-Lv6 会员等级：经验阈值、徽章、公开权益、订阅折扣（仅付费服）"
     >
       <template #actions>
         <el-button :icon="RefreshCw" @click="loadLevels">刷新</el-button>
@@ -124,7 +128,7 @@ onMounted(() => { loadLevels() })
       type="info"
       :closable="false"
       show-icon
-      title="经验来源：真实充值 1 元 = 1 经验、有效邀请 +10；兑换码 / 红包 / 签到不加经验。v1 只展示等级徽章与进度，不做等级折扣与特权。"
+      title="经验来源：真实充值 1 元 = 1 经验、有效邀请 +10；兑换码 / 红包 / 签到不加经验。订阅折扣仅付费服生效。"
     />
 
     <SectionCard title="等级列表" :icon="Crown" :meta="`${levels.length} 个等级`" flush>
@@ -169,6 +173,10 @@ onMounted(() => { loadLevels() })
         </el-form-item>
         <el-form-item label="经验阈值">
           <el-input-number v-model="dlg.form.xp_threshold" :min="0" />
+        </el-form-item>
+        <el-form-item label="订阅折扣%">
+          <el-input-number v-model="dlg.form.discount_pct" :min="0" :max="100" />
+          <span class="form-hint">仅付费服生效，公益服不打折</span>
         </el-form-item>
         <el-form-item label="徽章图标">
           <el-input v-model="dlg.form.badge_icon" placeholder="lucide 图标名，如 Crown" />
