@@ -1052,7 +1052,7 @@ onBeforeUnmount(stopPayPoll)
   display: block;
   height: 100%;
   border-radius: var(--au-r-full);
-  background: linear-gradient(90deg, var(--au-primary), var(--au-accent, #f59e0b));
+  background: linear-gradient(90deg, var(--au-primary), var(--au-gold-b));
   transition: width 0.5s var(--au-ease);
 }
 .member-next {
