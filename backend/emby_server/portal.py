@@ -2300,3 +2300,76 @@ async def browse_pan115(
     }
 
 
+
+
+# ===== 公益服身份与资格（模块 1）=====
+
+def is_welfare_user(db, user) -> bool:
+    """判定用户是否为有效公益用户。
+
+    有效公益用户需满足：is_welfare=True 且资格未过期
+    （welfare_expires_at 为 NULL 视为永不过期）。
+    """
+    if user is None:
+        return False
+    if not getattr(user, 'is_welfare', False):
+        return False
+    expires_at = getattr(user, 'welfare_expires_at', None)
+    if expires_at is None:
+        return True
+    return expires_at > datetime.now()
+
+
+def grant_welfare(db, user, channel, days, granted_by=None):
+    """开通或续期用户的公益资格。
+
+    规则：
+    - days=0 表示永不过期；
+    - 已有未过期资格时，在原到期时间上累加天数；
+    - 资格已过期（或从未开通）时，从当前时间开始计算；
+    - 已是永不过期的用户再次开通有限天数，仍保持永不过期。
+    """
+    now = datetime.now()
+    days = days or 0
+    if days > 0:
+        expires_at = getattr(user, 'welfare_expires_at', None)
+        if expires_at is None:
+            new_expires = None
+        elif expires_at > now:
+            new_expires = expires_at + timedelta(days=days)
+        else:
+            new_expires = now + timedelta(days=days)
+    else:
+        new_expires = None
+    user.is_welfare = True
+    user.welfare_expires_at = new_expires
+    user.welfare_grant_channel = channel
+    user.welfare_granted_at = now
+    db.add(models.WelfareGrantLog(
+        user_id=user.id,
+        channel=channel,
+        days=days,
+        granted_by=granted_by,
+    ))
+    db.commit()
+    return new_expires
+
+
+def get_welfare_status(db, user) -> dict:
+    """获取用户的公益资格状态。"""
+    if user is None:
+        return {'is_welfare': False, 'expires_at': None, 'days_left': 0, 'channel': None}
+    now = datetime.now()
+    expires_at = getattr(user, 'welfare_expires_at', None)
+    if expires_at is None:
+        days_left = None
+    elif expires_at > now:
+        days_left = (expires_at - now).days
+    else:
+        days_left = 0
+    return {
+        'is_welfare': is_welfare_user(db, user),
+        'expires_at': expires_at,
+        'days_left': days_left,
+        'channel': getattr(user, 'welfare_grant_channel', None),
+    }
