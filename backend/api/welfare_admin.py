@@ -266,7 +266,7 @@ def _request_to_dict(r):
     }
 
 
-@admin_router.get("/welfare/requests", deprecated=True)
+@admin_router.get("/welfare/requests")
 def welfare_requests(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -287,7 +287,7 @@ class RequestNote(BaseModel):
     admin_note: str = ""
 
 
-@admin_router.post("/welfare/requests/{request_id}/approve", deprecated=True)
+@admin_router.post("/welfare/requests/{request_id}/approve")
 def welfare_request_approve(
     request_id: int,
     req: RequestNote,
@@ -305,7 +305,7 @@ def welfare_request_approve(
     return {"success": True}
 
 
-@admin_router.post("/welfare/requests/{request_id}/reject", deprecated=True)
+@admin_router.post("/welfare/requests/{request_id}/reject")
 def welfare_request_reject(
     request_id: int,
     req: RequestNote,
@@ -323,7 +323,7 @@ def welfare_request_reject(
     return {"success": True}
 
 
-@admin_router.post("/welfare/requests/{request_id}/done", deprecated=True)
+@admin_router.post("/welfare/requests/{request_id}/done")
 def welfare_request_done(
     request_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -352,6 +352,11 @@ WELFARE_CONFIG_KEYS = {
     "welfare_inactive_days": "30",
     "welfare_request_monthly": "3",
     "lottery_cost": "10",
+    # P0 统一货币体系：充值比例与红包规则
+    "recharge_ratio": "1.2",
+    "redpacket_fee_pct": "5",
+    "redpacket_send_limit_7d": "20",
+    "redpacket_recv_limit_7d": "10",
 }
 
 
