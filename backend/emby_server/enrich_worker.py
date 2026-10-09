@@ -551,8 +551,19 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     """写库阶段（单条短事务内调用）：把 IO 阶段拿到的数据落库。"""
     from backend.emby_server import nfo as nfo_lib
     from backend.emby_server.tmdb import tmdb_client
-    from backend.emby_server import scanner as _sc
     from sqlalchemy import func as _func
+
+    # 锁后认领：如果条目在抢单之后被管理员锁定，不再写入任何自动结果，
+    # 直接 done 并释放租约（之前这里不检查，锁定形同虚设）。
+    # 注意：手动操作（bind-tmdb / rescrape）不走这个函数，不受影响。
+    if getattr(item, "metadata_locked", False):
+        logger.info("补全跳过（抢单后被锁定）id=%s name=%r",
+                    getattr(item, "id", "?"), getattr(item, "name", ""))
+        item.enrich_status = "done"
+        item.enrich_claimed_at = None
+        item.enrich_claim_token = None
+        _maybe_queue_probe(db, item)
+        return
 
     item_type = item.item_type or ""
     kind = {"series": "series", "season": "season",
@@ -772,15 +783,44 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。
     if not item.metadata_source and kind in ("series", "movie", "season", "episode"):
         item.metadata_source = "none"
-    item.enrich_status = "pending" if _incomplete else "done"
-    item.enrich_attempts = 0
-    item.enrich_next_retry_at = None
+    if _incomplete:
+        # 资料不全：按失败计次 + 指数退避，超限转 failed。
+        # 之前这里 attempts 清零且 next_retry_at 置空 → 下一轮抢单立刻重新领取 →
+        # 无限空转：队列永远不降，还白烧 TMDB 配额。
+        attempts = (item.enrich_attempts or 0) + 1
+        item.enrich_attempts = attempts
+        if attempts >= ENRICH_MAX_ATTEMPTS:
+            item.enrich_status = "failed"
+            item.enrich_next_retry_at = None
+            logger.warning("补全资料不全超限转 failed id=%s attempts=%s",
+                           item.id, attempts)
+        else:
+            backoff = ENRICH_RETRY_BASE_SEC * (2 ** (attempts - 1))
+            item.enrich_status = "pending"
+            item.enrich_next_retry_at = datetime.now() + timedelta(seconds=backoff)
+            logger.info("补全资料不全待重试 id=%s attempts=%s %ss后",
+                        item.id, attempts, backoff)
+    else:
+        item.enrich_status = "done"
+        item.enrich_attempts = 0
+        item.enrich_next_retry_at = None
     item.enrich_claimed_at = None  # 处理完毕，释放 claim 租约（v2.42.9）
+    item.enrich_claim_token = None
     # 优先级消费完归零（处方 4）：repair 的 100 在上面已随 repair_requested_at
     # 清除；重试未匹配的 50 也一样——残留值会让这个条目在未来的重试里永久插队。
     item.enrich_priority = 0
 
     # probe 衔接：需要探测的送进 probe 队列（幂等）
+    _maybe_queue_probe(db, item)
+
+
+def _maybe_queue_probe(db, item: Any) -> None:
+    """probe 衔接：需要探测的送进 probe 队列（幂等）。
+
+    从 _enrich_apply 尾部提取：锁定时跳过元数据写入，但探测（技术信息，
+    非元数据）仍要入队，所以两处都要调。
+    """
+    from backend.emby_server import scanner as _sc
     try:
         if _sc.needs_probe(item, item.file_path or "", item.size or 0):
             if getattr(item, "probe_status", None) not in ("pending", "probing"):
@@ -792,11 +832,50 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         pass
 
 
+def _claim_group_atomic(db, q, now) -> list:
+    """原子认领一组候选：单条 UPDATE ... WHERE enrich_status='pending'。
+
+    背景：旧实现是 SELECT（PG 上 FOR UPDATE SKIP LOCKED）→ 内存改状态 →
+    commit。SQLite 不支持 SKIP LOCKED（退化成普通查询），多 worker 并发时
+    两个线程会选中同一批 pending 行 → 同一条目被处理 1.3~2.5 次。
+    新实现把「选中→改状态」压成一条带 status='pending' 谓词的原子 UPDATE：
+    并发下只有一个赢家。赢到的行用本批次 token 查回，保证处理的是自己
+    赢到的行（候选顺序即 q 自带的 ORDER BY/LIMIT 顺序）。
+
+    SQLite 上输家的 UPDATE 会撞 busy（忙等待后仍冲突）→ 返回 []，
+    本轮跳过，下轮再抢；worker 循环会重试，不丢任务。
+    """
+    from sqlalchemy.exc import OperationalError
+    cand_ids = [r[0] for r in q.with_entities(em.MediaItem.id).all()]
+    if not cand_ids:
+        return []
+    token = uuid.uuid4().hex
+    try:
+        db.query(em.MediaItem).filter(
+            em.MediaItem.id.in_(cand_ids),
+            em.MediaItem.enrich_status == "pending",
+        ).update(
+            {"enrich_status": "enriching",
+             "enrich_claimed_at": now,  # claim 租约：janitor 据此回收僵尸行
+             "enrich_claim_token": token},
+            synchronize_session=False)
+        db.flush()
+    except OperationalError:
+        # 并发写冲突（主要在 SQLite 上）：本轮放弃，下轮再抢
+        db.rollback()
+        return []
+    # bulk UPDATE 绕过了 identity map；逐出旧对象，保证查回的是赢到的行
+    db.expire_all()
+    rows_by_id = {r.id: r for r in db.query(em.MediaItem)
+                  .filter(em.MediaItem.enrich_claim_token == token).all()}
+    return [rows_by_id[i] for i in cand_ids if i in rows_by_id]
+
+
 def _claim_batch(db, limit: int) -> list:
     """原子抢一批待补全条目（多 worker/多进程不重复）。
 
-    SELECT FOR UPDATE SKIP LOCKED：PostgreSQL/MySQL 原子跳过已被锁的行；
-    SQLite 忽略 SKIP LOCKED 但事务本身串行化，同样不会重入。
+    认领是原子的（_claim_group_atomic）：单条
+    UPDATE ... WHERE enrich_status='pending'，PG/SQLite 都不会重复认领。
     只抢「到重试时间」的（next_retry_at IS NULL 或已到期）。
 
     v2.42.9 第 5 批（处方 2）：**按父级成组**抢单。组 = ``coalesce(series_id, id)``
@@ -866,14 +945,8 @@ def _claim_batch(db, limit: int) -> list:
                  em.MediaItem.episode_number,
                  em.MediaItem.date_added.desc())
              .limit(limit - len(claimed)))
-        try:
-            rows = q.with_for_update(skip_locked=True).all()
-        except Exception:
-            # 方言不支持 FOR UPDATE 时退回普通查询（单 worker 仍正确）
-            rows = q.all()
-        for r in rows:
-            r.enrich_status = "enriching"
-            r.enrich_claimed_at = now   # claim 租约：janitor 据此回收僵尸行（v2.42.9）
+        # 原子认领：赢到的行才进 batch（并发下同一行只被一个 worker 赢走）
+        rows = _claim_group_atomic(db, q, now)
         claimed.extend(rows)
     if claimed:
         db.commit()
@@ -916,6 +989,7 @@ def _mark_failed(db, item_id: int, attempts: int, error: str) -> str:
         attempts = (attempts or 0) + 1
         item.enrich_attempts = attempts
         item.enrich_claimed_at = None  # 释放 claim 租约（v2.42.9）
+        item.enrich_claim_token = None
         if attempts >= ENRICH_MAX_ATTEMPTS:
             item.enrich_status = "failed"
             item.enrich_next_retry_at = None
@@ -944,7 +1018,8 @@ def _recover_crashed(db) -> int:
     """
     n = (db.query(em.MediaItem)
          .filter(em.MediaItem.enrich_status == "enriching")
-         .update({"enrich_status": "pending", "enrich_claimed_at": None},
+         .update({"enrich_status": "pending", "enrich_claimed_at": None,
+                  "enrich_claim_token": None},
                  synchronize_session=False))
     db.commit()
     return n
@@ -974,7 +1049,8 @@ def _reclaim_stale(db, lease_sec: Optional[int] = None) -> int:
              _and(em.MediaItem.enrich_claimed_at.is_(None),
                   em.MediaItem.date_modified <= cutoff),
          ))
-         .update({"enrich_status": "pending", "enrich_claimed_at": None},
+         .update({"enrich_status": "pending", "enrich_claimed_at": None,
+                  "enrich_claim_token": None},
                  synchronize_session=False))
     db.commit()
     return n
@@ -1124,6 +1200,7 @@ def _requeue_mount_unavailable(db, item_id: int, mount_id: Optional[int] = None)
             return "skip"
         item.enrich_status = "pending"
         item.enrich_claimed_at = None
+        item.enrich_claim_token = None
         item.enrich_next_retry_at = datetime.now() + timedelta(seconds=retry_sec)
         db.commit()
         logger.info("补全跳过（存储不可用）id=%s mount=%s %ss后重试",
@@ -1206,7 +1283,8 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
             db.rollback()
             return "skip"
         _enrich_apply(db, fresh, fetched)
-        outcome = "done" if (fresh.enrich_status or "") == "done" else "retry"
+        _st = (fresh.enrich_status or "")
+        outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
         db.commit()
         return outcome
     except Exception as exc:  # noqa: BLE001

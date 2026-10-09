@@ -153,8 +153,14 @@ def test_bind_tmdb_ignores_lock(own_db):
     assert it.metadata_locked is True
 
 
-def test_unbind_keeps_lock_flag(own_db):
-    """解绑重排补全队列时也不动锁定标记"""
+def test_unbind_unlocks_bind_lock(own_db):
+    """解绑时解锁：绑定自动加的锁随解绑解除，条目回到自动刮削队列。
+
+    绑定-锁定生命周期（Hark 刮削第 3 项）：bind 自动锁定 → unbind 自动解锁。
+    解绑的语义是"交还给自动刮削"；锁定的条目自动刮削永不认领，
+    保留锁会制造 pending 僵尸（一直 pending 但永远不被处理）。
+    通过锁定 API 手动加的锁，解绑时同样解除——如需继续保护，重新锁定即可。
+    """
     db, lib = own_db
     it = _movie(db, lib, metadata_locked=True, tmdb_id="12345",
                 enrich_status="done")
@@ -163,7 +169,8 @@ def test_unbind_keeps_lock_flag(own_db):
         _staff(), db)
     assert res["unbound"] is True
     db.refresh(it)
-    assert it.metadata_locked is True
+    assert it.metadata_locked is False
+    assert it.enrich_status == "pending"
 
 
 # ---------- _auto_migrate 幂等补列 ----------

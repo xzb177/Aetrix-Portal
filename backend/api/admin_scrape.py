@@ -1313,6 +1313,8 @@ def bind_tmdb_id(
         item.enrich_status = "pending"
         item.enrich_attempts = 0
         item.enrich_next_retry_at = None
+        # 解绑即解锁：绑定时加的锁随之解除，恢复自动刮削
+        item.metadata_locked = False
         db.commit()
         return {
             "success": True, "unbound": True,
@@ -1377,6 +1379,11 @@ def bind_tmdb_id(
     item.enrich_status = "done"
     item.enrich_attempts = 0
     item.enrich_next_retry_at = None
+    # 绑定成功即锁定：这是管理员的手动成果，自动刮削不再碰它
+    #（enrich worker 抢单时跳过 metadata_locked=True 的条目）。
+    # 解绑（unbind 分支）时解锁，恢复自动刮削。
+    item.metadata_locked = True
+    notes.append("已锁定：自动刮削不再覆盖（解绑可解锁）")
     db.commit()
     return {
         "success": True, "unbound": False,

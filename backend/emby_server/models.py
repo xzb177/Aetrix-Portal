@@ -235,6 +235,11 @@ class MediaItem(Base):
     # 的行并打回 pending（见 enrich_worker._reclaim_stale），不必等重启。
     # 老库补列后为 NULL：视为「旧格式 enriching」，由 date_modified 近似判定。
     enrich_claimed_at = Column(DateTime)
+    # 抢单令牌（v2.54）：原子认领的归属标记。_claim_batch 先按条件
+    # UPDATE ... WHERE enrich_status='pending' 抢行（单条原子语句，PG/SQLite
+    # 都不会重复认领），再用本批次的 token 把赢到的行查回来。
+    # 老库补列后为 NULL；janitor/完成/失败释放租约时一并清空。
+    enrich_claim_token = Column(String(32), default=None)
     # v2.42.9 处方 4 调度优先级：越大越先补全（0 = 默认，沿用旧口径）。
     # repair（用户主动修复）置 100；「重试未匹配项」置 50。只影响同库内的排序，
     # 跨库公平由按库轮转保证（见 enrich_worker._claim_batch）。

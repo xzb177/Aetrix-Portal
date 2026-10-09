@@ -406,13 +406,17 @@ def _first_run(query):
     return ""
 
 
-def _search_candidates(name):
+def _search_candidates(name, year=None):
     """按优先级返回 (候选查询, 是否允许模糊接受)。
 
     顺序：清洗后全名 → 原名 → 首个标题词段 → 中日韩部分。
     只有"中日韩部分"是信息有损的（丢了拉丁关键词，如演唱会的艺人名），
     它只允许 Tier 2 精确接受，不做模糊——否则"容祖儿 演唱会"会配到
     "容祖儿1314演唱会"（原文件名是 My Secret Live）。
+
+    year：已知年份时追加 "清洗名 YYYY" 候选。parse 已把年份从名字里剥掉，
+    但年份可能是标题的一部分（如《Wonder Woman 1984》实为 2020 年电影），
+    没有这个候选就永远精确命中不了它。
     """
     # 原始名也要折全角标点：它会直接进 _query_variants 去和 TMDB 标题比对
     raw = _fold_punct((name or "").strip())
@@ -432,6 +436,12 @@ def _search_candidates(name):
     cjk = " ".join(_CJK_RE.findall(cleaned))
     if cjk and cjk not in [x[0] for x in cands]:
         cands.append((cjk, False))
+    if year:
+        # 年份可能是标题的一部分（如 Wonder Woman 1984，实为 2020 年电影）：
+        # 补一个带年份的候选，否则永远精确命中不了它
+        yq = f"{cleaned} {year}".strip()
+        if yq and yq not in [x[0] for x in cands]:
+            cands.append((yq, True))
     return cands
 
 
@@ -498,7 +508,28 @@ def _cjk_contain_rank(variants, names, hit):
     return None
 
 
-def _hit_score(raw_name, query, hit, fuzzy_ok=True):
+def _confirm_year(score, year, hit):
+    """年份二次确认：用解析出的年份（调用方传入），而不是从名字里正则挖。
+
+    名字里的 4 位数字可能是标题的一部分（如《Blade Runner 2049》的 2049、
+    《Wonder Woman 1984》的 1984），按它否决会把正确结果打下去。
+    同名不同年（Dune 1984 vs 2021）：年份对不上的结果降一级，
+    年份对上的胜出——不只看 TMDB 返回顺序。
+    year 为 None（没解析出年份）时跳过：没有可靠信号，不做启发式猜测。
+    score：(tier, rank) 元组或 Tier 1 的 int rank。
+    """
+    if not year:
+        return score
+    qy = str(year)
+    hy = (hit.get("first_air_date") or hit.get("release_date") or "")[:4]
+    if hy and hy != qy:
+        if isinstance(score, tuple):
+            return (score[0], score[1] - 1)
+        return score - 1
+    return score
+
+
+def _hit_score(raw_name, query, hit, fuzzy_ok=True, year=None):
     """置信度打分：返回 (tier, rank)，tier 大者优先，同 tier 比 rank；None 表拒绝。
 
     Tier 2（精确）：任一归一化变体与任一标题字段（name/title/原名）精确相等。
@@ -518,7 +549,7 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True):
         return None
     for v in variants:
         if v in names:
-            return (2, len(v))
+            return _confirm_year((2, len(v)), year, hit)
     if not fuzzy_ok:
         return None
     latin_ok = all(any(w in hn for hn in names) for w in _latin_words(query))
@@ -544,18 +575,7 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True):
             best = (1.5, t15)
     if best is None:
         return None
-    # 年份不符**不再直接否决**。目录里的年份常是季/版本/重制年份，而不是 TMDB
-    # 的首播年；早先「年份对不上就 return None」把大量本可命中的条目毙掉
-    # （欧美剧 679 条里有 129 条因此没刮上）。现在只把年份不符的结果排在后面。
-    m = _YEAR_RE.search(raw_name or "")
-    if m:
-        qy = m.group(1)
-        hy = (hit.get("first_air_date") or hit.get("release_date") or "")[:4]
-        if hy and hy != qy:
-            if isinstance(best, tuple):
-                best = (best[0], best[1] - 1)
-            else:
-                best -= 1
+    best = _confirm_year(best, year, hit)
     return best if isinstance(best, tuple) else (1, best)
 
 
@@ -1367,7 +1387,8 @@ class TmdbClient:
         for lang in language_fallback_chain():
             best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
             transient: Optional[Exception] = None
-            for query, fuzzy_ok in _search_candidates(name):
+            saw_results = False
+            for query, fuzzy_ok in _search_candidates(name, year):
                 # 短路（v2.42.9）：已有 Tier 2（归一化后**精确相等**）就收手。
                 # Tier 2 永远压过 Tier 1（元组比较先看 tier），后续候选最多只能换来
                 # 「更长的精确变体」这一个 rank 的差别，不值得再打 1~4 次 HTTP。
@@ -1385,12 +1406,35 @@ class TmdbClient:
                     continue
                 except Exception:  # noqa: BLE001 — 缓存/磁盘等杂项异常换下一个候选
                     continue
+                if results:
+                    saw_results = True
                 for hit in results[:10]:
-                    sc = _hit_score(name, query, hit, fuzzy_ok)
+                    sc = _hit_score(name, query, hit, fuzzy_ok, year=year)
                     if sc and (best is None or sc > best[:2]):
                         best = (sc[0], sc[1], hit)
             if best:
                 return best[2]
+            if year and not saw_results:
+                # 年份回退：带年份过滤搜出来是空的（不是没命中，是 TMDB 直接
+                # 没返回）→ 文件名里的年份可能是标题的一部分（如
+                # 《Wonder Woman 1984》实为 2020 年电影），去年份再搜一轮。
+                # 注意回退后不再做年份二次确认（年份已知不可靠），
+                # 但候选仍保留"清洗名 YYYY"（年份可能是标题的一部分）。
+                # 缓存键年份维度不同（year or 0），不会污染带年份的缓存。
+                for query, fuzzy_ok in _search_candidates(name, year):
+                    try:
+                        results = self._search_raw(query, None, kind, lang=lang)
+                    except TmdbTransientError as exc:
+                        transient = transient or exc
+                        continue
+                    except Exception:  # noqa: BLE001
+                        continue
+                    for hit in results[:10]:
+                        sc = _hit_score(name, query, hit, fuzzy_ok, year=None)
+                        if sc and (best is None or sc > best[:2]):
+                            best = (sc[0], sc[1], hit)
+                if best:
+                    return best[2]
             if transient is not None:
                 raise transient
             # 本语言无命中，继续下一种语言
