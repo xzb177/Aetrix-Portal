@@ -55,3 +55,80 @@ export const fetchWelfareConfig = () =>
 
 export const saveWelfareConfig = (data: Record<string, string>) =>
   put<{ success: boolean; updated: string[] }>(`${E}/config`, data)
+
+// ==================== 群抽奖活动（G2） ====================
+export type LotteryRoundStatus = 'open' | 'drawing' | 'done' | 'cancelled'
+
+export interface LotteryRoundRow {
+  id: number
+  title: string
+  chat_id: string
+  status: LotteryRoundStatus
+  participant_count: number
+  prize_count: number
+  draw_at: string | null
+  created_at: string | null
+}
+
+export interface LotteryRoundPrizeRow {
+  id: number
+  round_id: number
+  name: string
+  type: 'days' | 'points' | 'whitelist'
+  value: number
+  quantity: number
+  sort: number
+}
+
+export interface LotteryRoundEntryRow {
+  id: number
+  user_id: number | null
+  telegram_id: string | null
+  joined_at: string | null
+}
+
+export interface LotteryRoundWinnerRow {
+  id: number
+  prize_id: number
+  prize_name: string
+  user_id: number | null
+  telegram_id: string | null
+  distributed: boolean
+  distributed_at: string | null
+}
+
+export interface LotteryRoundDetail {
+  round: Record<string, unknown>
+  prizes: LotteryRoundPrizeRow[]
+  entries: LotteryRoundEntryRow[]
+  winners: LotteryRoundWinnerRow[]
+  verify: Record<string, unknown> | null
+}
+
+export interface CreateRoundPayload {
+  title: string
+  chat_id: number
+  prizes: Array<{
+    name: string
+    type: 'days' | 'points' | 'whitelist'
+    value: number
+    quantity: number
+  }>
+  draw_at?: string | null
+  max_participants?: number | null
+}
+
+export const fetchLotteryRounds = (params: { page?: number; page_size?: number; status?: LotteryRoundStatus } = {}) =>
+  get<{ total: number; items: LotteryRoundRow[] }>(`${E}/lottery/rounds`, params)
+
+export const createLotteryRound = (data: CreateRoundPayload) =>
+  post<Record<string, unknown>>(`${E}/lottery/rounds`, data)
+
+export const fetchLotteryRound = (id: number) =>
+  get<LotteryRoundDetail>(`${E}/lottery/rounds/${id}`)
+
+export const drawLotteryRound = (id: number) =>
+  post<{ success: boolean; winners: unknown[]; distribute: unknown }>(`${E}/lottery/rounds/${id}/draw`, {})
+
+export const cancelLotteryRound = (id: number) =>
+  post<{ success: boolean }>(`${E}/lottery/rounds/${id}/cancel`, {})

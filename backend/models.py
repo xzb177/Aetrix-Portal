@@ -1413,6 +1413,66 @@ class LotteryLog(Base):
     prize = relationship("LotteryPrize")
 
 
+class LotteryRound(Base):
+    """群抽奖活动轮次：一期抽奖"""
+    __tablename__ = 'lottery_rounds'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(200), nullable=False)
+    chat_id = Column(BigInteger, nullable=False)  # 群组 chat_id
+    status = Column(String(20), nullable=False, default='open')  # open/drawing/done/cancelled
+    start_at = Column(DateTime, default=datetime.now)
+    draw_at = Column(DateTime, nullable=True)      # 计划开奖时间，空=手动开奖
+    drawn_at = Column(DateTime, nullable=True)
+    max_participants = Column(Integer, nullable=False, default=0)  # 0=不限
+    seed_hash = Column(String(64), nullable=True)  # 开奖前公布的承诺
+    seed = Column(String(64), nullable=True)       # 开奖后揭示
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class LotteryRoundPrize(Base):
+    """群抽奖奖品：挂在某一轮下面"""
+    __tablename__ = 'lottery_round_prizes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    round_id = Column(Integer, ForeignKey('lottery_rounds.id', ondelete='CASCADE'), nullable=False)
+    name = Column(String(100), nullable=False)
+    type = Column(String(20), nullable=False)  # days=公益天数 / points=积分 / whitelist=白名单(永久)
+    value = Column(Integer, nullable=False, default=0)
+    quantity = Column(Integer, nullable=False, default=1)
+    sort = Column(Integer, nullable=False, default=0)
+
+
+class LotteryRoundEntry(Base):
+    """群抽奖参与记录：一人一期只能参加一次"""
+    __tablename__ = 'lottery_round_entries'
+
+    __table_args__ = (
+        UniqueConstraint('round_id', 'user_id', name='uq_lottery_round_entry'),
+        Index('idx_lottery_entry_round', 'round_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    round_id = Column(Integer, ForeignKey('lottery_rounds.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    telegram_id = Column(BigInteger, nullable=False)
+    joined_at = Column(DateTime, default=datetime.now)
+
+
+class LotteryRoundWinner(Base):
+    """群抽奖中奖记录"""
+    __tablename__ = 'lottery_round_winners'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    round_id = Column(Integer, ForeignKey('lottery_rounds.id', ondelete='CASCADE'), nullable=False)
+    entry_id = Column(Integer, ForeignKey('lottery_round_entries.id'), nullable=False)
+    prize_id = Column(Integer, ForeignKey('lottery_round_prizes.id'), nullable=False)
+    distributed = Column(Boolean, nullable=False, default=False, server_default='0')
+    distributed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class RedPacket(Base):
     """红包表（积分红包）"""
     __tablename__ = 'red_packets'
