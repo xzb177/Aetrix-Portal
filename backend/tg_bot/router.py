@@ -123,6 +123,9 @@ def dispatch(db, update: dict) -> None:
             "/start": handlers.handle_start,
             "/help": handlers.handle_help,
             "/bind": handlers.handle_bind,
+            "/checkin": handlers.handle_checkin,
+            "/points": handlers.handle_points,
+            "/redeem": handlers.handle_redeem,
         }
         fn = commands.get(cmd)
         tg_uid = tg_user.get("id") or 0

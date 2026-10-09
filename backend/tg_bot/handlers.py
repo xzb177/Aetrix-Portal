@@ -16,9 +16,16 @@ def _command_list() -> str:
         "/start  欢迎与快捷入口\n"
         "/help   帮助\n"
         "/bind   绑定 Telegram\n"
-        "/checkin  每日签到（即将上线）\n"
-        "/points   查积分（即将上线）\n"
+        "/checkin  每日签到\n"
+        "/points   查积分\n"
         "/lottery  抽奖（即将上线）"
+    )
+
+
+def _bind_guide_text() -> str:
+    return (
+        "公益服功能（签到/积分/兑换/抽奖）需要先绑定 Telegram。\n"
+        "发送 /bind 获取 6 位绑定码，按指引完成绑定即可使用。"
     )
 
 
@@ -75,3 +82,62 @@ def handle_bind(db, tg_user: dict, chat_id: int, args: str) -> str:
         "请在网页端登录后进入 个人中心 → 绑定 Telegram，输入该绑定码完成绑定。\n"
         "绑定码 10 分钟内有效，仅可使用一次。"
     )
+
+
+def handle_checkin(db, tg_user: dict, chat_id: int, args: str) -> str:
+    from backend.api.economy import _do_checkin_core
+    from fastapi import HTTPException
+
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    try:
+        award = _do_checkin_core(db, user)
+    except HTTPException as e:
+        return e.detail
+    except Exception:
+        return "签到失败，请稍后再试"
+    if award["points_awarded"] > 0:
+        text = f"📅 签到成功 +{award['points_awarded']} 积分（连续 {award['streak']} 天）"
+    else:
+        text = f"📅 签到成功（连续 {award['streak']} 天，积分仅限公益服用户）"
+    if award.get("vitality_gained", 0) > 0:
+        text += f"\n⚡ 活力值 +{award['vitality_gained']}"
+    return text
+
+
+def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    points = int(user.points or 0)
+    text = f"✨ 当前积分：{points}"
+    try:
+        from backend import vitality as _vitality
+
+        cfg = _vitality.get_vitality_config(db)
+        if cfg.get("enabled") and getattr(user, "is_welfare", False):
+            v = int(getattr(user, "vitality", None) or 0)
+            text += f"\n⚡ 活力值 {v}/{cfg.get('max', 14)}"
+    except Exception:
+        pass
+    return text
+
+
+def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
+    from backend.api.economy import _redeem_exchange_core
+    from fastapi import HTTPException
+
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    code_str = (args or "").strip()
+    if not code_str:
+        return "用法：/redeem 兑换码\n例如：/redeem ABCD1234"
+    try:
+        result = _redeem_exchange_core(db, user, code_str)
+    except HTTPException as e:
+        return e.detail
+    except Exception:
+        return "兑换失败，请稍后再试"
+    return "🎁 " + str(result.get("message", "兑换成功"))

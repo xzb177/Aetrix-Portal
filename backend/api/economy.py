@@ -512,6 +512,118 @@ class RedeemRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=32)
 
 
+def _redeem_exchange_core(db: Session, user: models.WebUser, code_str: str) -> dict:
+    """兑换码核销核心（同步，成功结尾 db.commit()；失败抛 HTTPException，detail 为用户可读文案）。
+
+    HTTP 路由 POST /api/user/economy/exchange/redeem 与 TG Bot /redeem 命令共用同一实现
+    （"横切能力只许一套"：不要复制第二套核销逻辑）。
+    """
+    user_id = user.id
+    if not _get_bool_config(db, "exchange_enabled", True):
+        raise HTTPException(status_code=403, detail="兑换功能未开启")
+
+    code_str = code_str.strip().upper()
+    code = db.query(models.ExchangeCode).filter(
+        models.ExchangeCode.code == code_str
+    ).first()
+
+    now = datetime.now()
+    if code is None or not code.is_active or (code.expires_at and code.expires_at < now):
+        raise HTTPException(status_code=400, detail="兑换码无效或已过期")
+
+    # H5：同一个账号同一张码最多兑换一次（max_uses 是总次数，不是每人次数）。
+    # 先查（含升级前 used_by 里的历史），再在本事务里写核销记录：唯一约束兜住并发重复提交。
+    from backend import codes as code_lib
+
+    if code_lib.user_already_redeemed(db, code_lib.REDEMPTION_KIND_EXCHANGE, code, user_id):
+        raise HTTPException(status_code=400, detail="你已经兑换过这个兑换码（每个账号限一次）")
+
+    # 先原子占位再去发奖：只有仍可用的兑换码才会被 +1，并发下第二个请求 rowcount=0，
+    # 因此不会出现「同一张单次码被同时核销两次、发两份奖励」。
+    try:
+        if not code_lib.record_redemption(
+            db, code_lib.REDEMPTION_KIND_EXCHANGE, code.id, user_id
+        ):
+            raise HTTPException(status_code=400, detail="你已经兑换过这个兑换码（每个账号限一次）")
+        claimed = (
+            db.query(models.ExchangeCode)
+            .filter(
+                models.ExchangeCode.id == code.id,
+                models.ExchangeCode.is_active.is_(True),
+                or_(
+                    models.ExchangeCode.expires_at.is_(None),
+                    models.ExchangeCode.expires_at > now,
+                ),
+                or_(
+                    models.ExchangeCode.max_uses.is_(None),
+                    models.ExchangeCode.use_count < models.ExchangeCode.max_uses,
+                ),
+            )
+            .update(
+                {models.ExchangeCode.use_count: func.coalesce(models.ExchangeCode.use_count, 0) + 1},
+                synchronize_session=False,
+            )
+        )
+    except OperationalError:
+        # SQLite 下读写事务升级失败（并发写入）：没发奖也没占位，让客户端重试
+        db.rollback()
+        raise HTTPException(status_code=409, detail="兑换码正在核销中，请稍后重试")
+    if not claimed:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="兑换码已用尽或已过期")
+
+    # 占位成功后才读回详情：use_count 是 SQL 级自增，身份映射里的旧实例要 refresh，
+    # 否则下面判断「用满停用」会拿到过期的 0
+    db.refresh(code)
+
+    result: dict = {"success": True}
+    if code.type == "points":
+        balance = _add_points(
+            db, user, code.points_value, "exchange",
+            f"兑换码 {code_str}", f"exchange:{code_str}",
+        )
+        result.update(reward_type="points", points=code.points_value, balance=balance,
+                      message=f"兑换成功，+{code.points_value} 积分")
+    elif code.type == "subscription":
+        plan = db.query(models.SubscriptionPlan).filter(
+            models.SubscriptionPlan.id == code.plan_id
+        ).first() if code.plan_id else None
+        if not plan:
+            # 已原子占位但无法履约：回滚，别白白吃掉一次使用次数
+            db.rollback()
+            raise HTTPException(status_code=400, detail="兑换码关联套餐不存在")
+        subscription = _grant_subscription(
+            db, user, plan, code.duration_days, "exchange", code_str,
+            # 兑换码按它自己所属的服发会员（未标注时回退到套餐的服）
+            realm_id=getattr(code, "realm_id", None) or plan.realm_id,
+        )
+        result.update(reward_type="subscription", plan_name=plan.name,
+                      days=code.duration_days,
+                      end_date=subscription.end_date.isoformat(),
+                      message=f"兑换成功，「{plan.name}」× {code.duration_days} 天")
+    elif code.type == "discount":
+        if not (1 <= (code.discount_pct or 0) <= 99):
+            db.rollback()
+            raise HTTPException(status_code=400, detail="该折扣码配置无效")
+        _grant_discount_credit(db, user_id, code)
+        result.update(reward_type="discount", discount_pct=code.discount_pct,
+                      message=f"兑换成功，获得订阅 {code.discount_pct} 折优惠，下次购买订阅自动抵扣")
+    else:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="兑换码类型不支持")
+
+    # 核销审计（use_count 已在上面原子 +1，这里只补使用者并处理用满停用）
+    used = [i for i in str(code.used_by or "").split(",") if i.strip()]
+    if str(user_id) not in used:
+        used.append(str(user_id))
+    code.used_by = ",".join(used)[:500]
+    if code.max_uses and (code.use_count or 0) >= code.max_uses:
+        code.is_active = False
+    db.commit()
+    return result
+
+
+
 @router.post("/exchange/redeem")
 async def redeem_exchange_code(
     request: Request,
@@ -529,111 +641,7 @@ async def redeem_exchange_code(
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
 
-    def _redeem() -> dict:
-        if not _get_bool_config(db, "exchange_enabled", True):
-            raise HTTPException(status_code=403, detail="兑换功能未开启")
-
-        code_str = req.code.strip().upper()
-        code = db.query(models.ExchangeCode).filter(
-            models.ExchangeCode.code == code_str
-        ).first()
-
-        now = datetime.now()
-        if code is None or not code.is_active or (code.expires_at and code.expires_at < now):
-            raise HTTPException(status_code=400, detail="兑换码无效或已过期")
-
-        # H5：同一个账号同一张码最多兑换一次（max_uses 是总次数，不是每人次数）。
-        # 先查（含升级前 used_by 里的历史），再在本事务里写核销记录：唯一约束兜住并发重复提交。
-        from backend import codes as code_lib
-
-        if code_lib.user_already_redeemed(db, code_lib.REDEMPTION_KIND_EXCHANGE, code, user_id):
-            raise HTTPException(status_code=400, detail="你已经兑换过这个兑换码（每个账号限一次）")
-
-        # 先原子占位再去发奖：只有仍可用的兑换码才会被 +1，并发下第二个请求 rowcount=0，
-        # 因此不会出现「同一张单次码被同时核销两次、发两份奖励」。
-        try:
-            if not code_lib.record_redemption(
-                db, code_lib.REDEMPTION_KIND_EXCHANGE, code.id, user_id
-            ):
-                raise HTTPException(status_code=400, detail="你已经兑换过这个兑换码（每个账号限一次）")
-            claimed = (
-                db.query(models.ExchangeCode)
-                .filter(
-                    models.ExchangeCode.id == code.id,
-                    models.ExchangeCode.is_active.is_(True),
-                    or_(
-                        models.ExchangeCode.expires_at.is_(None),
-                        models.ExchangeCode.expires_at > now,
-                    ),
-                    or_(
-                        models.ExchangeCode.max_uses.is_(None),
-                        models.ExchangeCode.use_count < models.ExchangeCode.max_uses,
-                    ),
-                )
-                .update(
-                    {models.ExchangeCode.use_count: func.coalesce(models.ExchangeCode.use_count, 0) + 1},
-                    synchronize_session=False,
-                )
-            )
-        except OperationalError:
-            # SQLite 下读写事务升级失败（并发写入）：没发奖也没占位，让客户端重试
-            db.rollback()
-            raise HTTPException(status_code=409, detail="兑换码正在核销中，请稍后重试")
-        if not claimed:
-            db.rollback()
-            raise HTTPException(status_code=400, detail="兑换码已用尽或已过期")
-
-        # 占位成功后才读回详情：use_count 是 SQL 级自增，身份映射里的旧实例要 refresh，
-        # 否则下面判断「用满停用」会拿到过期的 0
-        db.refresh(code)
-
-        result: dict = {"success": True}
-        if code.type == "points":
-            balance = _add_points(
-                db, current_user, code.points_value, "exchange",
-                f"兑换码 {code_str}", f"exchange:{code_str}",
-            )
-            result.update(reward_type="points", points=code.points_value, balance=balance,
-                          message=f"兑换成功，+{code.points_value} 积分")
-        elif code.type == "subscription":
-            plan = db.query(models.SubscriptionPlan).filter(
-                models.SubscriptionPlan.id == code.plan_id
-            ).first() if code.plan_id else None
-            if not plan:
-                # 已原子占位但无法履约：回滚，别白白吃掉一次使用次数
-                db.rollback()
-                raise HTTPException(status_code=400, detail="兑换码关联套餐不存在")
-            subscription = _grant_subscription(
-                db, current_user, plan, code.duration_days, "exchange", code_str,
-                # 兑换码按它自己所属的服发会员（未标注时回退到套餐的服）
-                realm_id=getattr(code, "realm_id", None) or plan.realm_id,
-            )
-            result.update(reward_type="subscription", plan_name=plan.name,
-                          days=code.duration_days,
-                          end_date=subscription.end_date.isoformat(),
-                          message=f"兑换成功，「{plan.name}」× {code.duration_days} 天")
-        elif code.type == "discount":
-            if not (1 <= (code.discount_pct or 0) <= 99):
-                db.rollback()
-                raise HTTPException(status_code=400, detail="该折扣码配置无效")
-            _grant_discount_credit(db, user_id, code)
-            result.update(reward_type="discount", discount_pct=code.discount_pct,
-                          message=f"兑换成功，获得订阅 {code.discount_pct} 折优惠，下次购买订阅自动抵扣")
-        else:
-            db.rollback()
-            raise HTTPException(status_code=400, detail="兑换码类型不支持")
-
-        # 核销审计（use_count 已在上面原子 +1，这里只补使用者并处理用满停用）
-        used = [i for i in str(code.used_by or "").split(",") if i.strip()]
-        if str(user_id) not in used:
-            used.append(str(user_id))
-        code.used_by = ",".join(used)[:500]
-        if code.max_uses and (code.use_count or 0) >= code.max_uses:
-            code.is_active = False
-        db.commit()
-        return result
-
-    result = await run_in_threadpool(_redeem)
+    result = await run_in_threadpool(_redeem_exchange_core, db, current_user, req.code)
 
     await notify_admin_event(
         event_type="economy.redeem",
