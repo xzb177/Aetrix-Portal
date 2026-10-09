@@ -36,12 +36,13 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from backend import coupons, models, realms
+from backend import coupons, models, realms, vitality as _vitality
 from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import resolve_jwt_user_id
 from backend.notifications import notify_admin_event
+from backend.tg_bind import require_tg_bound
 
 logger = logging.getLogger(__name__)
 
@@ -266,9 +267,17 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         db, user, reward, "checkin",
         description, f"checkin:{today.strftime('%Y%m%d')}",
     )
+    # C1 活力值：公益服用户签到恢复 1 点活力（上限钳制）
+    vitality_gained = 0
+    if is_welfare:
+        try:
+            if _vitality.get_vitality_config(db)["enabled"]:
+                vitality_gained = _vitality._add_vitality(db, user_id, 1, "checkin")
+        except Exception:
+            logger.exception("checkin vitality restore failed for user %s", user_id)
     db.commit()
     return {"points_awarded": reward, "streak": streak, "balance": balance,
-            "penalty": penalty}
+            "penalty": penalty, "vitality_gained": vitality_gained}
 
 
 @router.post("/checkin")
@@ -276,6 +285,7 @@ async def do_checkin(
     request: Request,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    _tg: models.WebUser = Depends(require_tg_bound)
 ):
     """每日签到：基础积分 + 连签加成（封顶）；积分仅限公益服用户"""
     user_id = current_user.id
@@ -306,8 +316,68 @@ async def do_checkin(
         "points_awarded": award["points_awarded"],
         "streak": award["streak"],
         "balance": award["balance"],
+        "vitality_gained": award.get("vitality_gained", 0),
         "message": message,
     }
+
+
+# ==================== 活力值 ====================
+
+
+@router.get("/vitality")
+def get_vitality(
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """查询我的活力值状态（仅公益服用户）"""
+    if not getattr(current_user, "is_welfare", False):
+        raise HTTPException(status_code=403, detail="活力值仅限公益服用户")
+    return {"success": True, **_vitality.vitality_status(db, current_user)}
+
+
+class VitalityRechargeRequest(BaseModel):
+    points: int = Field(..., gt=0, description="要消耗的积分数")
+
+
+@router.post("/vitality/recharge")
+async def recharge_vitality(
+    request: Request,
+    payload: VitalityRechargeRequest,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """用积分续活力值：1 点活力 = vitality_point_cost 积分（可配置）"""
+    if not getattr(current_user, "is_welfare", False):
+        raise HTTPException(status_code=403, detail="活力值仅限公益服用户")
+    allowed, _ = check_rate_limit(f"vitality_recharge:{current_user.id}", 5, 60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
+    cfg = _vitality.get_vitality_config(db)
+    if not cfg["enabled"]:
+        raise HTTPException(status_code=403, detail="活力值功能未开启")
+    cost = cfg["point_cost"]
+    if payload.points % cost != 0:
+        raise HTTPException(status_code=400, detail=f"积分数必须是 {cost} 的整数倍")
+    want = payload.points // cost
+    st = _vitality.vitality_status(db, current_user)
+    room = st["max"] - st["vitality"]
+    if room <= 0:
+        raise HTTPException(status_code=400, detail="活力值已满，无需续")
+    want = min(want, room)
+    spend = want * cost
+
+    def _do() -> dict:
+        balance = _add_points(db, current_user, -spend, "vitality_recharge",
+                              f"积分续活力 +{want}", f"vitality:{want}")
+        if balance < 0:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="积分不足")
+        new_v = _vitality._add_vitality(db, current_user.id, want, "recharge")
+        db.commit()
+        return {"vitality_gained": want, "points_spent": spend,
+                "vitality": new_v, "points_balance": balance}
+
+    return {"success": True, **await run_in_threadpool(_do)}
 
 
 # ==================== 积分流水 ====================

@@ -168,6 +168,23 @@ export const checkinApi = {
   doCheckin: () => api.post<never, { success: boolean; points_awarded: number; streak: number; balance: number; message: string }>('/api/user/economy/checkin'),
 }
 
+// ==================== 活力值 ====================
+
+export interface VitalityStatus {
+  success: boolean
+  vitality: number
+  max: number
+  limit_threshold: number
+  can_play: boolean
+  suspended: boolean
+}
+
+export const vitalityApi = {
+  status: () => api.get<never, VitalityStatus>('/api/user/economy/vitality'),
+  recharge: (points: number) =>
+    api.post<never, { success: boolean; vitality_gained: number; points_spent: number; vitality: number; points_balance: number }>('/api/user/economy/vitality/recharge', { points }),
+}
+
 // ==================== 积分 ====================
 
 export const pointsApi = {
