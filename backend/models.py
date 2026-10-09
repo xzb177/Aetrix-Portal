@@ -209,7 +209,7 @@ class StationMessage(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    from_user_id = Column(Integer, ForeignKey('admin_users.id'))  # 发送者（管理员），系统消息为空
+    from_user_id = Column(Integer, ForeignKey('web_users.id'))  # 发送者（管理员 WebUser.id），系统消息为空
     to_user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)  # 接收者
     title = Column(String(200), nullable=False)
     content = Column(Text, nullable=False)
@@ -219,8 +219,8 @@ class StationMessage(Base):
     read_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
 
-    from_user = relationship("AdminUser")
-    to_user = relationship("WebUser", backref="station_messages")
+    from_user = relationship("WebUser", foreign_keys=[from_user_id])
+    to_user = relationship("WebUser", backref="station_messages", foreign_keys=[to_user_id])
 
 
 # ==================== 用户相关 ====================
