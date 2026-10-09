@@ -355,6 +355,7 @@ WELFARE_CONFIG_KEYS = {
     "lottery_cost": "10",
     # P0 统一货币体系：充值比例与红包规则
     "recharge_ratio": "1.2",
+    "redpacket_bot_enabled": "1",
     "redpacket_fee_pct": "5",
     "redpacket_send_limit_7d": "20",
     "redpacket_recv_limit_7d": "10",

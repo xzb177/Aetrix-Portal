@@ -21,7 +21,7 @@ withDefaults(defineProps<SkeletonProps>(), {
   background: linear-gradient(
     90deg,
     var(--skeleton-base) 0%,
-    rgba(232, 168, 74, 0.08) 50%,
+    var(--skeleton-highlight) 50%,
     var(--skeleton-base) 100%
   );
   background-size: 200% 100%;
@@ -29,7 +29,7 @@ withDefaults(defineProps<SkeletonProps>(), {
 }
 
 .skeleton--pulse {
-  animation: shimmer 1.2s ease-in-out infinite;
+  animation: shimmer 1.5s ease-in-out infinite;
 }
 
 .skeleton--text {

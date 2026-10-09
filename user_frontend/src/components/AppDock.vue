@@ -80,11 +80,7 @@ function isActive(path: string) {
   width: 44px;
   height: 26px;
   border-radius: var(--au-r-full);
-  transition: background var(--au-fast) var(--au-ease), transform 90ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.dock-item:active .dock-ic {
-  transform: scale(0.85);
+  transition: background var(--au-fast) var(--au-ease);
 }
 
 .dock-label {
@@ -114,4 +110,3 @@ function isActive(path: string) {
   .app-dock { display: flex; }
 }
 </style>
-
