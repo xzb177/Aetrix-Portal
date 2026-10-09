@@ -1,7 +1,7 @@
 # 发布准备度核查（2026-10-09）
 
 > 临时产物：本文件是 `cline/gd6enahn` 保存分支上的核查记录，不是正式文档，未加入 `docs/README.md` 索引。
-> 核查对象：`main` @ `18cc793`（Merge PR #423）。工作树无改动。
+> 核查对象：`main` @ **`636ba05`**（Merge PR #416，2026-10-09 13:28）。首轮核查针对 `18cc793`，main 前进后已复验。
 
 ## 结论
 
@@ -9,16 +9,17 @@
 
 - ✅ 4 项必需状态检查在本地全部复现通过（见 §1）。
 - ❌ `VERSION` 仍是上一版 `2.48.0`，未抬升。
-- ❌ `CHANGELOG.md` 顶部有 7 个 `[未发布]` 段落未定稿（其中 2 段重复），且落后于 `main`（PR #411–#423 的改动完全没记录）。
+- ❌ `CHANGELOG.md` 顶部有 7 个 `[未发布]` 段落未定稿（其中 2 段重复），且落后于 `main`。
+- ❌ PR #416 刚删掉预提取，而 `env.example` / 模块 docstring / CHANGELOG 都还在描述它（见 §4）。
 
 ## 1. 4 项必需检查的本地复现结果
 
 | 必需检查 | 结果 | 证据 |
 |---|---|---|
-| 前端 · user_frontend | ✅ 4/4 | 路由契约 / 令牌契约 / `vue-tsc` / `vite build` 退出码均 0；dist 44 个文件 |
+| 前端 · user_frontend | ✅ 4/4 | 路由契约 / 令牌契约 / `vue-tsc` / `vite build` 退出码均 0（基于 `18cc793`；`18cc793..636ba05` **未触碰任何前端文件**，故结论对新 main 同样成立） |
 | 前端 · admin_frontend | ✅ 4/4 | 同上；`base: '/admin/'` 正确，`dist/index.html` 无裸 `/assets/` 泄漏 |
-| 后端 · 冒烟测试 | ✅ 59/59 步骤 | pytest **1941 passed / 0 failed**；46 条 smoke 脚本全绿；3 处环境性 SKIP |
-| 后端 · 部署自检 | ✅ | `scripts/deploy_check.py`：真起 uvicorn + 真发 HTTP，「部署自检全部通过」，2 条警告（无 ffprobe / 未设 SECRET_KEY） |
+| 后端 · 冒烟测试 | ✅ 59/59 步骤 | 在 `636ba05` 的独立 worktree 上按 CI 顺序重跑：58 条脚本步骤全绿，pytest **1940 passed / 0 failed**（比 `18cc793` 少 1 条，系 PR #416 删除 `tests/test_mediainfo_persist.py` 的用例） |
+| 后端 · 部署自检 | ✅ | 在 `636ba05` 上跑 `scripts/deploy_check.py`：「部署自检全部通过」，4 条警告（2 条构建产物时间戳、无 ffprobe、未设 SECRET_KEY） |
 
 环境性 SKIP（不判红）：2 处 ffmpeg/HLS（本机无 ffmpeg）、1 处 TMDB 密钥未配。
 
@@ -43,8 +44,8 @@
   一次可补齐多个版本段落（先例：`版本号 2.39.0 → 2.42.0，补齐 2.40.0/2.41.0/2.42.0`）。
   → 发布前应把 7 段**逐段升为独立版本号 + 日期**，而不是合并成一段。
 - **CHANGELOG 落后于 main**：`grep -cE '单一播放路径|片头缓存|硬件转码|CPU 自适应' CHANGELOG.md` = 0。
-  2026-10-08 09:13 之后合入的 PR #411–#423（单一播放路径重构、CPU 自适应、用户级转码开关、
-  硬件转码自检、片头缓存增删、`header_cache.py` 删除）不在任何段落里。
+  PR #411–#423（单一播放路径重构、CPU 自适应、用户级转码开关、硬件转码自检、片头缓存增删、
+  `header_cache.py` 删除）以及 **PR #416（删除预提取/秒播助手）** 都不在任何段落里。
 
 ## 3. 发布机制（澄清）
 
@@ -55,12 +56,18 @@
 - **不打 git tag、不建 GitHub Release、不改 CHANGELOG**（仓库 tag 与 Release 数量均为 0，这是设计而非缺陷）。
 - 所以"发版"的实际动作 = 改 `VERSION` + 定稿 `CHANGELOG` → 提 PR 合入 `main` → 等 CI 绿 → 镜像自动出。
 
-## 4. 其它已知项（非阻断）
+## 4. 其它已知项（非阻断，但影响发布说明准确性）
 
-- `env.example` 已列出 CHANGELOG 承诺的全部新变量（`RELAY_*` / `EMBY_TRANSCODE_IDLE|ABANDON` /
+- **`PROBE_PREEXTRACT_INTERVAL_SEC` 已是死变量**：PR #416 移除了它的全部读取点
+  （`probe_worker.py` 里只剩 `PROBE_TRIAGE_CHUNK`），但 `env.example:401` 仍把它注释为
+  「队列整理（triage）间隔」，`probe_worker.py:30` 的模块 docstring 也仍在引用它。
+  用户按文档设置该变量将**毫无效果**。
+- **CHANGELOG 与代码相互矛盾**：`[未发布]` 第 85 行那段把「预提取」写成了新设计的组成部分，
+  而 PR #416 已把预提取整体删除。
+- `env.example` 已列出 CHANGELOG 承诺的其余新变量（`RELAY_*` / `EMBY_TRANSCODE_IDLE|ABANDON` /
   `REDIS_BREAKER_*` / `WORKER_RESTART_*` / `ITEMS_DEDUP_MAX_*` / `PROBE_*`，行 351–401）。
 - 但 `scripts/check_env_contract.py` **不覆盖**这些变量（它只查 compose.prod ↔ env.example），
-  即这批调优项没有机器门禁保护。
+  即这批调优项（含上面那个死变量）没有机器门禁保护——**这正是死变量能溜进来的原因**。
 - 管理端"探测进度卡片"未实现（后端 `GET /api/admin/emby/scrape/probe-progress` 已就绪，
   `admin_frontend/src` 内无对应 UI）——CHANGELOG 第 141 行已自认。
 - `backend/notifications.py:730` 有一处描述历史的 `TODO`，非待办。
@@ -69,5 +76,6 @@
 
 1. 拍定目标版本号（代码/`env.example` 里的特性标签最高到 `v2.53.0`，跨度约 2.49–2.53）。
 2. 抬升 `VERSION`，并同步两个前端 `package.json` + `package-lock.json` + `admin_frontend/src/composables/branding.ts` 的 `APP_VERSION`。
-3. 定稿 `CHANGELOG`：7 段逐段成版、去重、补记 PR #411–#423。
-4. 提 PR 合入 `main`，等 4 项必需检查全绿；绿了镜像自动发到 ghcr.io。
+3. 定稿 `CHANGELOG`：7 段逐段成版、去重、补记 PR #411–#423 与 #416，并修正第 85 行关于预提取的描述。
+4. 清掉 `PROBE_PREEXTRACT_INTERVAL_SEC` 的残留（env.example / docstring）。
+5. 提 PR 合入 `main`，等 4 项必需检查全绿；绿了镜像自动发到 ghcr.io。
