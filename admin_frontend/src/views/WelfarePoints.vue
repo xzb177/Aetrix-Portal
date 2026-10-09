@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Coins, Gift, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { Coins, Gift, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
 
@@ -43,6 +43,20 @@ const welfareFields = [
   { key: 'welfare_request_monthly', label: '公益求片额度', hint: '默认 3', suffix: '次/月' },
   { key: 'lottery_cost', label: '抽奖消耗积分', hint: '默认 10', suffix: '积分/次' },
 ]
+
+const chatPointsFields = [
+  { key: 'chat_points_group_ids', label: '目标群 ID', hint: '逗号分隔的 TG 群 id，空=不计分', suffix: '' },
+  { key: 'chat_points_per_message', label: '单条分值', hint: '默认 1', suffix: '积分/条' },
+  { key: 'chat_points_min_len', label: '最小字符数', hint: '默认 2，过滤纯表情刷屏', suffix: '字' },
+  { key: 'chat_points_minute_window', label: '防刷窗口', hint: '同一用户多少秒内最多计 1 条，默认 60', suffix: '秒' },
+  { key: 'chat_points_daily_cap', label: '每日上限', hint: '默认 20', suffix: '积分/天' },
+  { key: 'chat_points_points_per_day', label: '兑换参考比例', hint: '多少积分兑 1 天（仅展示说明），默认 100', suffix: '积分/天' },
+]
+
+const chatPointsEnabled = computed({
+  get: () => form.value['chat_points_enabled'] === 'true',
+  set: (v: boolean) => { form.value['chat_points_enabled'] = v ? 'true' : 'false' },
+})
 
 async function load() {
   loading.value = true
@@ -146,6 +160,24 @@ onMounted(load)
       >
         <el-form label-width="120px" class="config-form">
           <el-form-item v-for="f in welfareFields" :key="f.key" :label="f.label">
+            <el-input v-model="form[f.key]" style="width: 160px" />
+            <span class="field-suffix">{{ f.suffix }}</span>
+            <span class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+        </el-form>
+      </SectionCard>
+
+      <SectionCard
+        title="群发言积分"
+        :icon="MessageCircle"
+        description="Bot 统计群发言赚积分，总开关默认关闭"
+      >
+        <el-form label-width="120px" class="config-form">
+          <el-form-item label="总开关">
+            <el-switch v-model="chatPointsEnabled" />
+            <span class="field-hint">关闭时 bot 不统计任何发言，默认关闭</span>
+          </el-form-item>
+          <el-form-item v-for="f in chatPointsFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
