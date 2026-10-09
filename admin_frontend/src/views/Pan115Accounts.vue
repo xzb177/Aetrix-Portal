@@ -10,10 +10,16 @@
  *
  * v2.18.0：分享链接转存 / 下载任务那一整套（标签页、任务表、新建任务弹窗）已下线，
  * 页面只保留账号配置。
+ *
+ * v2.54（暗房影院）：PageHeader + StatTile（账号 / 启用 / 校验失败才染警示）+ flush SectionCard 账号表；
+ * 空 / 错态用 EmptyState；目录浏览弹窗改成发丝线列表（文件夹图标代替 emoji、面包屑是可聚焦按钮）。
  */
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpen, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import {
+  AlertTriangle, ChevronRight, Cloud, CircleCheck, Folder, FolderOpen, KeyRound, Plus, RefreshCw, ShieldAlert, ShieldCheck, Trash2,
+} from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   browsePan115,
   createPan115Account,
@@ -30,6 +36,16 @@ import type { DataColumn } from '@/components/DataTable.vue'
 const loading = ref(false)
 const accounts = ref<Pan115Account[]>([])
 const envCookieConfigured = ref(false)
+/** 账号列表加载失败（区别于「还没有账号」） */
+const loadError = ref(false)
+
+/** 顶部概况：只有「最近校验失败」的账号才值得染色提醒 */
+const accountStats = computed(() => ({
+  total: accounts.value.length,
+  enabled: accounts.value.filter((a) => a.is_enabled).length,
+  failed: accounts.value.filter((a) => a.last_verified_at && !a.last_verify_ok).length,
+  defaultName: accounts.value.find((a) => a.is_default)?.name || '',
+}))
 
 const accountColumns: DataColumn[] = [
   { key: 'name', label: '名称', minWidth: 150, mobile: 'title' },
@@ -44,11 +60,15 @@ const accountColumns: DataColumn[] = [
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     const res = await fetchPan115Accounts()
     accounts.value = res.accounts
     envCookieConfigured.value = res.env_cookie_configured
     uaPresets.value = res.ua_presets || []
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
+    loadError.value = true
   } finally {
     loading.value = false
   }
@@ -239,37 +259,55 @@ function currentPath(): string {
 </script>
 
 <template>
-  <div class="admin-page">
-    <!-- 头部用全局的 admin-page-header / admin-page-desc（标题与副标题样式，见 styles/index.css） -->
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">115 账号</h1>
-        <p class="admin-page-desc">
-          配置 115 Cookie 以使用「存储来源 → 115」直挂：面板 / EA 直接列目录、换直链播放
-        </p>
-      </div>
-      <div class="head-actions">
-        <el-button :loading="loading" @click="load">
-          <RefreshCw :size="15" style="margin-right: 4px" />刷新
-        </el-button>
-        <el-button type="primary" @click="openAccount(null)">
-          <Plus :size="15" style="margin-right: 4px" />添加账号
-        </el-button>
-      </div>
-    </div>
+  <div class="admin-page pan115-page">
+    <PageHeader
+      eyebrow="媒体与交付"
+      title="115 账号"
+      description="配置 115 Cookie 以使用「存储来源 → 115」直挂：面板 / EA 直接列目录、换直链播放，不需要转存。"
+    >
+      <template #actions>
+        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="openAccount(null)">添加账号</el-button>
+      </template>
+    </PageHeader>
 
-    <div class="admin-card">
-      <div class="acc-head">
-        <div>
-          <div class="acc-title">115 Cookie 配置档</div>
-          <div class="acc-hint">
-            支持多账号与默认账号，媒体库可单独绑定；未绑定 / 未配置时回退到默认账号
-            <template v-if="envCookieConfigured">，环境变量 PAN115_COOKIE 也会作为兜底</template>
-          </div>
-        </div>
-      </div>
+    <section v-if="accounts.length" class="stat-row" aria-label="115 账号概况">
+      <StatTile
+        label="账号配置档"
+        :value="accountStats.total"
+        :icon="Cloud"
+        :hint="accountStats.defaultName ? `默认：${accountStats.defaultName}` : '还没有默认账号'"
+      />
+      <StatTile label="启用中" :value="accountStats.enabled" :icon="CircleCheck" />
+      <StatTile
+        label="最近校验失败"
+        :value="accountStats.failed"
+        :icon="ShieldAlert"
+        :tone="accountStats.failed > 0 ? 'warn' : 'plain'"
+        :hint="accountStats.failed > 0 ? 'Cookie 可能过期，点「管理」重新校验' : '没有失效的账号'"
+      />
+      <StatTile
+        label="环境变量兜底"
+        :value="envCookieConfigured ? '已配置' : '未配置'"
+        :icon="KeyRound"
+        hint="PAN115_COOKIE"
+      />
+    </section>
+
+    <SectionCard
+      title="Cookie 配置档"
+      :icon="Cloud"
+      :meta="accounts.length ? `${accounts.length} 个` : ''"
+      :description="`支持多账号与默认账号，媒体库可单独绑定；未绑定 / 未配置时回退到默认账号${envCookieConfigured ? '，环境变量 PAN115_COOKIE 也会作为兜底' : ''}。`"
+      flush
+    >
+      <EmptyState v-if="loadError && !accounts.length" :icon="AlertTriangle" title="账号列表加载失败" description="网络或服务暂时不可用，稍后重试。">
+        <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
+      </EmptyState>
 
       <DataTable
+        v-else
+        class="flush-table"
         :rows="accounts"
         :columns="accountColumns"
         :loading="loading"
@@ -277,35 +315,35 @@ function currentPath(): string {
         clickable
       >
         <template #cell-cookie_preview="{ row }">
-          <span class="mono muted">{{ row.cookie_preview || '—' }}</span>
+          <span class="mono faint">{{ row.cookie_preview || '—' }}</span>
         </template>
 
         <template #cell-is_default="{ row }">
-          <span v-if="row.is_default" class="mini-badge ok">默认</span>
-          <span v-else class="muted">—</span>
+          <span v-if="row.is_default" class="au-badge au-badge-amber">默认</span>
+          <span v-else class="faint">—</span>
         </template>
 
         <template #cell-is_enabled="{ row }">
-          <span class="mini-badge" :class="row.is_enabled ? 'ok' : 'off'">
+          <span class="au-badge" :class="row.is_enabled ? 'au-badge-green' : 'au-badge-muted'">
             {{ row.is_enabled ? '启用' : '停用' }}
           </span>
         </template>
 
         <template #cell-last_verified_at="{ row }">
           <template v-if="row.last_verified_at">
-            {{ fmtDate(row.last_verified_at) }}
+            <span class="num">{{ fmtDate(row.last_verified_at) }}</span>
             <span :class="row.last_verify_ok ? 'ok-text' : 'bad-text'">
               {{ row.last_verify_ok ? '有效' : '无效' }}
             </span>
-            <span v-if="row.last_verify_message && !row.last_verify_ok" class="muted">
+            <span v-if="row.last_verify_message && !row.last_verify_ok" class="sub">
               · {{ row.last_verify_message }}
             </span>
           </template>
-          <span v-else class="muted">未校验</span>
+          <span v-else class="faint">未校验</span>
         </template>
 
         <template #cell-remark="{ row }">
-          <span v-if="!row.remark" class="muted">—</span>
+          <span v-if="!row.remark" class="faint">—</span>
           <span v-else>{{ row.remark }}</span>
         </template>
 
@@ -313,8 +351,21 @@ function currentPath(): string {
           <!-- 一个入口：校验 / 浏览 / 编辑 / 删除 都在弹窗里（原来这行有 4 个按钮） -->
           <el-button size="small" plain @click="openManage(row)">管理</el-button>
         </template>
+
+        <template #empty>
+          <EmptyState
+            compact
+            :icon="Cloud"
+            title="还没有账号配置档"
+            :description="envCookieConfigured ? '当前用环境变量 PAN115_COOKIE 兜底；添加配置档后可多账号切换与单独绑定。' : '添加一个 115 账号，存储来源才能直挂 115。'"
+          >
+            <template #actions>
+              <el-button size="small" type="primary" :icon="Plus" @click="openAccount(null)">添加账号</el-button>
+            </template>
+          </EmptyState>
+        </template>
       </DataTable>
-    </div>
+    </SectionCard>
 
     <!-- 账号编辑 -->
     <el-dialog v-model="accVisible" :title="accEditing ? '编辑 115 账号' : '添加 115 账号'" width="560px">
@@ -374,7 +425,7 @@ function currentPath(): string {
           </div>
           <div class="kv-row"><span class="kv-key">状态</span>
             <span class="kv-value">
-              <span class="mini-badge" :class="manage.row.is_enabled ? 'ok' : 'off'">
+              <span class="au-badge" :class="manage.row.is_enabled ? 'au-badge-green' : 'au-badge-muted'">
                 {{ manage.row.is_enabled ? '启用' : '停用' }}
               </span>
             </span>
@@ -390,7 +441,7 @@ function currentPath(): string {
                   {{ manage.row.last_verify_ok ? '有效' : '无效' }}
                 </span>
               </template>
-              <span v-else class="muted">未校验</span>
+              <span v-else class="faint">未校验</span>
             </span>
           </div>
           <div v-if="manage.row.last_verify_message && !manage.row.last_verify_ok" class="kv-row">
@@ -409,18 +460,12 @@ function currentPath(): string {
 
       <template #footer>
         <div class="mg-footer">
-          <el-button v-if="manage.row" type="danger" plain @click="removeAccount(manage.row)">
-            <Trash2 :size="13" style="margin-right: 3px" />删除
-          </el-button>
+          <el-button v-if="manage.row" type="danger" plain :icon="Trash2" @click="removeAccount(manage.row)">删除</el-button>
           <div class="mg-footer-right">
             <el-button @click="manage.visible = false">关闭</el-button>
             <template v-if="manage.row">
-              <el-button @click="verify(manage.row)">
-                <ShieldCheck :size="13" style="margin-right: 3px" />校验 Cookie
-              </el-button>
-              <el-button @click="browseFromManage(manage.row)">
-                <FolderOpen :size="13" style="margin-right: 3px" />浏览目录
-              </el-button>
+              <el-button :icon="ShieldCheck" @click="verify(manage.row)">校验 Cookie</el-button>
+              <el-button :icon="FolderOpen" @click="browseFromManage(manage.row)">浏览目录</el-button>
               <el-button type="primary" @click="editFromManage(manage.row)">编辑</el-button>
             </template>
           </div>
@@ -429,112 +474,157 @@ function currentPath(): string {
     </el-dialog>
 
     <!-- 目录浏览：用该配置档实测列目录 -->
-    <el-dialog v-model="browseVisible" title="115 目录浏览" width="560px">
+    <el-dialog v-model="browseVisible" :title="`115 目录浏览 · ${browseAccount?.name || ''}`" width="560px">
       <div class="browser">
         <div class="browser-bar">
-          <span class="browser-path">{{ currentPath() }}</span>
-          <el-button size="small" :loading="browsing" @click="goto(browseStack[browseStack.length - 1].cid)">
-            <RefreshCw :size="13" style="margin-right: 3px" />刷新
+          <nav class="crumbs" aria-label="当前路径">
+            <template v-for="(p, i) in browseStack" :key="p.cid + i">
+              <ChevronRight v-if="i > 0" :size="12" class="crumb-sep" />
+              <button
+                type="button"
+                class="crumb-item"
+                :class="{ 'is-current': i === browseStack.length - 1 }"
+                @click="popTo(i)"
+              >{{ p.name }}</button>
+            </template>
+          </nav>
+          <el-button size="small" :icon="RefreshCw" :loading="browsing" @click="goto(browseStack[browseStack.length - 1].cid)">
+            刷新
           </el-button>
         </div>
-        <div class="crumbs">
-          <span
-            v-for="(p, i) in browseStack"
-            :key="p.cid + i"
-            class="crumb-item"
-            @click="popTo(i)"
-          >{{ p.name }}</span>
-        </div>
+        <div class="browser-path mono" :title="currentPath()">{{ currentPath() }}</div>
         <div v-loading="browsing" class="dir-list">
-          <div v-if="!browseDirs.length" class="dir-empty muted">该目录下没有子目录</div>
-          <div
+          <EmptyState v-if="!browseDirs.length && !browsing" compact :icon="FolderOpen" title="该目录下没有子目录" />
+          <button
             v-for="e in browseDirs"
             :key="e.cid || e.fid"
+            type="button"
             class="dir-item"
             @click="enterDir(e)"
-          >📁 {{ e.name }}</div>
+          >
+            <Folder :size="14" class="dir-icon" />
+            <span class="dir-name">{{ e.name }}</span>
+            <ChevronRight :size="13" class="dir-arrow" />
+          </button>
         </div>
       </div>
       <template #footer>
-        <span class="form-hint" style="margin-right: auto">
-          <template v-if="browseSource">Cookie 来源：{{ browseSource }}</template>
-        </span>
-        <el-button @click="browseVisible = false">关闭</el-button>
+        <div class="browse-foot">
+          <span class="form-hint">
+            <template v-if="browseSource">Cookie 来源：{{ browseSource }}</template>
+          </span>
+          <el-button @click="browseVisible = false">关闭</el-button>
+        </div>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.head-actions { display: flex; gap: 8px; }
-
-.acc-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
-  margin-bottom: 16px;
 }
 
-.acc-title { font-size: var(--font-size-lg); font-weight: var(--font-weight-bold); color: var(--text-primary); }
-.acc-hint { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 5px; max-width: 640px; line-height: 1.6; }
+.flush-table :deep(.dt-cards) { padding: 12px 12px 8px; }
 
-.ok-text { color: var(--success); font-weight: 600; }
-.bad-text { color: var(--danger); font-weight: 600; }
+/* ---------- 单元格 ---------- */
+.num { font-variant-numeric: tabular-nums; }
+.faint { color: var(--au-text-4); }
+.sub { font-size: 12px; color: var(--au-text-3); }
+.ok-text { margin-left: 6px; font-weight: 600; color: var(--au-success); }
+.bad-text { margin-left: 6px; font-weight: 600; color: var(--au-danger); }
 
+/* ---------- 目录浏览 ---------- */
 .browser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
   padding: 10px;
-  background: var(--bg-inset);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
 }
 
-.browser-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.browser-bar { display: flex; align-items: center; gap: 8px; }
+
+.crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 4px; flex: 1 1 auto; min-width: 0; }
+.crumb-sep { color: var(--au-text-4); flex-shrink: 0; }
+.crumb-item {
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--au-primary);
+  background: none;
+  border: 0;
+  border-radius: var(--au-r-sm);
+  cursor: pointer;
+}
+.crumb-item:hover { background: var(--au-primary-soft); }
+.crumb-item.is-current { color: var(--au-text); font-weight: 600; cursor: default; }
+.crumb-item:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 1px; }
 
 .browser-path {
-  flex: 1 1 140px;
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
+  font-size: 11.5px;
+  color: var(--au-text-4);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.crumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.crumb-item { font-size: var(--font-size-xs); cursor: pointer; color: var(--primary); }
-.crumb-item::after { content: ' /'; color: var(--text-faint); }
-
-.dir-list { margin-top: 8px; max-height: 240px; overflow-y: auto; }
-
-.dir-item {
-  font-size: var(--font-size-xs);
-  padding: 7px 8px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  color: var(--text-secondary);
+.dir-list {
+  min-height: 60px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-sm);
 }
 
-.dir-item:hover { background: var(--bg-hover); color: var(--text-primary); }
-.dir-empty { margin-top: 8px; font-size: var(--font-size-xs); }
+.dir-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--au-text-2);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: background var(--au-fast) var(--au-ease);
+}
+.dir-item + .dir-item { border-top: 1px solid var(--au-border); }
+.dir-item:hover { background: var(--au-violet-soft); color: var(--au-text); }
+.dir-item:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: -2px; }
+.dir-icon { color: var(--au-primary); flex-shrink: 0; }
+.dir-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dir-arrow { color: var(--au-text-4); flex-shrink: 0; }
 
-/* 账号管理弹窗：详情用全局 .kv-list，只补说明与页脚布局 */
+.browse-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+/* ---------- 账号管理弹窗：详情用全局 .kv-list，只补说明与页脚布局 ---------- */
 .mg-body { display: flex; flex-direction: column; gap: 12px; }
 .mg-body .kv-row .kv-value { text-align: left; }
 .mg-hint {
   margin: 0;
+  padding: 10px 12px;
   font-size: 12px;
   line-height: 1.7;
-  color: var(--text-muted);
-  background: var(--bg-inset);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
+  color: var(--au-text-3);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
 }
 .mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
 
-@media (max-width: 640px) {
-  .acc-head { flex-direction: column; align-items: stretch; }
+@media (max-width: 768px) {
+  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .browser-bar { flex-wrap: wrap; }
 }
 </style>

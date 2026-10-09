@@ -16,14 +16,15 @@
  * 侧边栏已经是这两个页面的入口，页内再堆按钮只会让人以为「这里管不了，得去别处」。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
   Delete, Film, FolderPlus, HardDrive, History, ImagePlus, RefreshCcw, RefreshCw, ScanSearch,
-  Search, Server,
+  CalendarClock, Info, ListChecks, Search, Server, ShieldAlert,
   Settings2, Square, Wand2, X,
 } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import {
   cancelQueuedScan,
   createLibrary,
@@ -922,6 +923,24 @@ const tmdbStatus = ref<TmdbKeysStatus | null>(null)
 /** 手动识别入口前移（P1）：库卡片上的「识别」按钮直达元数据来源页 */
 const router = useRouter()
 
+/** 页内标签（v2.54）：媒体库 / 扫描队列 / 定时与刮削；?tab= 可深链，切换时同步回地址栏 */
+const route = useRoute()
+const EMBY_TABS = ['libraries', 'queue', 'schedule'] as const
+type EmbyTab = (typeof EMBY_TABS)[number]
+const initialTab = String(route.query.tab || '')
+const activeTab = ref<EmbyTab>(
+  (EMBY_TABS as readonly string[]).includes(initialTab) ? (initialTab as EmbyTab) : 'libraries',
+)
+function onTabChange(name: string | number) {
+  const tab = String(name)
+  router.replace({ query: { ...route.query, tab: tab === 'libraries' ? undefined : tab } })
+}
+/** 标签上的计数：正在跑 + 排队中（有数字才显示，0 不打扰） */
+const queueActiveCount = computed(
+  () => (scanQueue.value?.running.length || 0) + (scanQueue.value?.waiting.length || 0),
+)
+const enabledLibCount = computed(() => libraries.value.filter((l) => l.is_enabled).length)
+
 /** 跳到「元数据来源」页并带上条目 ID：对方 onMounted 会自动填入并选中，跳过「搜条目」一步 */
 function goIdentify(l: EmbyLibrary) {
   router.push({ name: 'MetadataSources', query: { item_id: String(l.id) } })
@@ -1335,14 +1354,12 @@ function typeLabel(t: string): string {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">媒体库</h1>
-        <p class="admin-page-desc">
-          点「新建媒体库」或卡片上的「设置」打开同一张配置表单：分组改完路径、归属、刮削与追新
-        </p>
-      </div>
-      <div class="admin-page-actions">
+    <PageHeader
+      eyebrow="媒体与交付"
+      title="媒体库"
+      description="点「新建媒体库」或卡片上的「设置」打开同一张配置表单：分组改完路径、归属、刮削与追新"
+    >
+      <template #actions>
         <el-button v-if="repairCount > 0" @click="repairNow">
           修复缺图（{{ repairCount }}）
         </el-button>
@@ -1355,29 +1372,34 @@ function typeLabel(t: string): string {
         <el-button type="primary" @click="openCreate">
           <FolderPlus :size="15" style="margin-right: 4px" />新建媒体库
         </el-button>
-        <el-button :loading="loading" aria-label="刷新" @click="load">
+        <el-button :loading="loading" aria-label="刷新" title="刷新" @click="load">
           <RefreshCw :size="15" />
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!--
       播放可达性（v2.28.0）：面板扫描没问题 ≠ 出流的机器拿得到内容。
       分离部署（EM 控制面 + EA 数据面 + 共享 WebDAV/rclone）下，内容只存在于面板那台机器
       上时（本机目录 / local 挂载），客户端会看得到条目却播不了；这里提前说清楚。
     -->
-    <div v-if="reachHasContent && reachability" class="admin-card reach-card">
-      <div class="card-header">
-        <h2>
-          播放可达性
-          <span class="mini-badge" :class="reachCls(reachability.level)">
-            {{ reachText(reachability.level) }}
-          </span>
-        </h2>
+    <SectionCard
+      v-if="reachHasContent && reachability"
+      class="reach-card"
+      :icon="ShieldAlert"
+      :tone="reachability.level === 'ok' ? 'default' : 'accent'"
+    >
+      <template #title>
+        播放可达性
+        <span class="mini-badge" :class="reachCls(reachability.level)">
+          {{ reachText(reachability.level) }}
+        </span>
+      </template>
+      <template #actions>
         <div class="queue-facts">
           <span v-for="f in reachFacts()" :key="f" class="fact">{{ f }}</span>
         </div>
-      </div>
+      </template>
 
       <!-- 用户端该连哪个地址（分离部署最容易配错的一处） -->
       <div v-if="reachability.client_endpoint.level !== 'ok'" class="reach-row">
@@ -1409,343 +1431,379 @@ function typeLabel(t: string): string {
           <div v-if="p.fix" class="reach-row-fix">{{ p.fix }}</div>
         </div>
       </div>
-    </div>
+    </SectionCard>
 
-    <!-- 扫描队列：同一远程挂载同时只跑一个扫描，其它库在这里排队（不再让管理员自己控并发） -->
-    <div v-if="queueHasContent" class="admin-card queue-card">
-      <div class="card-header">
-        <h2>扫描队列</h2>
-        <div class="queue-facts">
-          <span class="fact">并发上限 {{ scanQueue?.max_parallel }}</span>
-          <span class="fact">{{ scanQueue?.mount_serial ? '同一远程挂载串行' : '挂载串行已关闭' }}</span>
-          <span class="fact" title="本轮真实远程请求 / 内存复用 / 在飞请求">
-            远程请求 {{ scanQueue?.remote.lists }} · 复用 {{ scanQueue?.remote.reused }}
-            · 在飞 {{ scanQueue?.remote.inflight }}
+    <!--
+      v2.54：这一页原来是四张卡竖着堆（队列 / 定时刮削 / 一键扫描说明 / 库卡片），
+      真正要找的库卡片被压在一屏以下。拆成三个标签：媒体库（默认）/ 扫描队列 / 定时与追新。
+      ?tab= 深链可直达（如 /emby?tab=queue）。
+    -->
+    <el-tabs v-model="activeTab" class="emby-tabs" @tab-change="onTabChange">
+      <el-tab-pane name="libraries">
+        <template #label>
+          <span class="tab-label">媒体库<span class="tab-count">{{ libraries.length }}</span></span>
+        </template>
+        <div class="lib-toolbar">
+          <span class="lib-toolbar-meta">
+            共 {{ libraries.length }} 个库<template v-if="enabledLibCount !== libraries.length">，启用 {{ enabledLibCount }} 个</template>
           </span>
-          <!-- 扫描拆给 worker 执行后，本进程看不到它的内存队列：
-               这两列来自它写进库里的状态（进度按刷盘间隔更新），说清楚免得被当成实时值 -->
-          <span
-            v-if="scanQueue?.view === 'db'"
-            class="fact"
-            title="扫描由执行节点（worker）运行；「正在扫描」「最近完成」两列来自它写进数据库的状态，进度按刷盘间隔更新"
-          >
-            进度来自执行节点
-          </span>
-        </div>
-      </div>
-
-      <div class="queue-grid">
-        <div class="queue-col">
-          <div class="queue-col-title">正在扫描（{{ scanQueue?.running.length || 0 }}）</div>
-          <div v-for="t in scanQueue?.running" :key="'run-' + t.library_id" class="queue-row">
-            <div class="queue-row-head">
-              <span class="queue-name">{{ t.name }}</span>
-              <span class="mini-badge scanning">{{ t.progress?.phase_label || '准备中' }}</span>
-              <span
-                v-if="t.via === 'db'"
-                class="mini-badge muted"
-                title="本轮由执行扫描的节点运行；这里显示的是它写进数据库的进度快照"
-              >执行节点</span>
-            </div>
-            <div class="queue-row-sub mono">{{ progressLine(t) || '刚刚开始' }}</div>
-            <div v-if="t.progress?.current" class="queue-row-sub mono" :title="t.progress.current">
-              {{ t.progress.current }}
-            </div>
+          <div class="lib-toolbar-actions">
+            <el-popover placement="bottom-end" :width="340" trigger="click">
+              <template #reference>
+                <el-button text>
+                  <Info :size="14" style="margin-right: 4px" />扫描说明
+                </el-button>
+              </template>
+              <div class="scan-help">
+                <div>• <b>扫描</b>（每个库）：增量扫描，只处理新增/改过的文件，没变化的跳过。日常用这个。</div>
+                <div>• <b>一键扫描全部</b>：把所有库各扫一次（增量）。新用户挂载后点这个。</div>
+                <div>• <b>全量扫描</b>（每个库）：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。</div>
+              </div>
+            </el-popover>
+            <el-button
+              type="primary"
+              plain
+              title="把所有启用的库各扫一次（增量扫描）。新用户挂载后点这个，不用一个个点。"
+              @click="scanAll"
+            >
+              <ScanSearch :size="14" style="margin-right: 4px" />一键扫描全部
+            </el-button>
           </div>
-          <div v-if="!scanQueue?.running.length" class="queue-empty">没有正在跑的扫描</div>
         </div>
+        <div v-if="libraries.length" class="lib-grid">
+          <article v-for="l in libraries" :key="l.id" class="lib-card">
+            <div class="lib-cover">
+              <img v-if="coverUrls[l.id]" :src="coverUrls[l.id]" :alt="`${l.name} 封面`" />
+              <div v-else class="lib-cover-empty">
+                <Film :size="32" />
+                <span>{{ typeLabel(l.collection_type) }}库</span>
+              </div>
+              <div class="lib-cover-shade" />
+              <div class="lib-cover-badges">
+                <span v-if="l.is_virtual" class="mini-badge pin">虚拟库</span>
+                <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">
+                  {{ l.is_enabled ? '启用' : '停用' }}
+                </span>
+                <span v-if="cardBadge(l)" class="mini-badge" :class="cardBadge(l)?.cls">
+                  {{ cardBadge(l)?.text }}
+                </span>
+              </div>
+              <div class="lib-cover-actions">
+                <el-upload
+                  :accept="'image/jpeg,image/png,image/webp'"
+                  :show-file-list="false"
+                  :disabled="coverUploading[l.id]"
+                  :http-request="(options: UploadRequestOptions) => requestCoverUpload(l, options)"
+                >
+                  <el-button
+                    class="cover-button"
+                    circle
+                    text
+                    :loading="coverUploading[l.id]"
+                    :title="l.cover_url ? '更换封面' : '上传封面'"
+                    aria-label="上传媒体库封面"
+                  >
+                    <ImagePlus :size="18" />
+                  </el-button>
+                </el-upload>
+                <el-button
+                  v-if="l.cover_url"
+                  class="cover-button"
+                  circle
+                  text
+                  title="移除封面"
+                  aria-label="移除媒体库封面"
+                  @click="removeCover(l)"
+                >
+                  <X :size="17" />
+                </el-button>
+              </div>
+            </div>
 
-        <div class="queue-col">
-          <div class="queue-col-title">排队中（{{ scanQueue?.waiting.length || 0 }}）</div>
-          <div v-for="t in scanQueue?.waiting" :key="'wait-' + t.library_id" class="queue-row">
-            <div class="queue-row-head">
-              <span class="queue-name">{{ t.name }}</span>
-              <span class="mini-badge muted">第 {{ t.position ?? '-' }} 位</span>
+            <div class="lib-body">
+              <div class="lib-head">
+                <span class="lib-name">{{ l.name }}</span>
+                <span class="lib-meta">{{ typeLabel(l.collection_type) }}库</span>
+              </div>
+
+              <div class="lib-facts">
+                <span class="fact" :class="{ warn: serviceFact(l).warn }" :title="'服务：' + serviceFact(l).text">
+                  <Server :size="12" />{{ serviceFact(l).text }}
+                </span>
+
+                <span class="fact" :class="{ warn: sourceFact(l).warn }" :title="'来源：' + sourceFact(l).text">
+                  <HardDrive :size="12" />{{ sourceFact(l).text }}
+                </span>
+                <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
+              </div>
+
+              <!-- 一句话策略摘要：路径 / 轮询间隔 / 刮削策略，不点进设置也知道这个库怎么跑 -->
+              <div class="lib-summary" :title="libSummaryTitle(l)">{{ libSummary(l) }}</div>
+
+              <div class="lib-state">
+                <span v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
+                  <span class="scan-dot" :class="liveFor(l)?.state === 'queued' ? 'is-queued' : 'is-running'" />
+                  {{ cardLiveHint(l) }}
+                </span>
+                <span v-else class="lib-time">
+                  {{ l.last_scan_at ? `上次扫描 ${fmtDate(l.last_scan_at)}` : '尚未扫描' }}
+                </span>
+              </div>
+
+              <div v-if="scanError(l)" class="scan-error" :title="scanError(l)">{{ scanError(l) }}</div>
+              <div v-else-if="libReach(l)?.level === 'bad'" class="scan-error" :title="reachTitle(l)">
+                播放风险：{{ libReach(l)?.message }}
+              </div>
+            </div>
+
+            <div class="lib-foot">
               <el-button
                 size="small"
-                text
-                :icon="X"
-                @click="cancelQueued(t)"
-              >取消</el-button>
-            </div>
-            <div class="queue-row-sub warn">{{ waitingText(t) }}</div>
-            <div class="queue-row-sub mono">
-              {{ [queuedSince(t), triggerLabel(t.trigger)].filter(Boolean).join(' · ') }}
-            </div>
-          </div>
-          <div v-if="!scanQueue?.waiting.length" class="queue-empty">没有排队的扫描</div>
-        </div>
-
-        <div class="queue-col">
-          <div class="queue-col-title" style="display: flex; align-items: center; justify-content: space-between;">
-            <span>最近完成</span>
-            <el-switch v-model="showScanHistory" size="small" title="显示/隐藏扫描记录" />
-          </div>
-          <template v-if="showScanHistory">
-          <div v-for="t in queueHistory" :key="'done-' + t.library_id + t.requested_at" class="queue-row">
-            <div class="queue-row-head">
-              <span class="queue-name">{{ t.name }}</span>
-              <span class="mini-badge" :class="taskBadge(t).cls">{{ taskBadge(t).text }}</span>
-            </div>
-            <div class="queue-row-sub mono">
-              {{ [scanCountText(t),
-                 t.duration_ms != null ? `耗时 ${fmtDuration(t.duration_ms)}` : '',
-                 queuedSince(t), triggerLabel(t.trigger),
-                 t.request_count > 1 ? `被点 ${t.request_count} 次` : ''].filter(Boolean).join(' · ') }}
-            </div>
-            <div v-if="t.error" class="queue-row-sub danger" :title="t.error">{{ t.error }}</div>
-          </div>
-          <div v-if="!queueHistory.length" class="queue-empty">还没有跑完的扫描</div>
-          </template>
-        </div>
-      </div>
-    </div>
-
-    <!-- 元数据与刮削：按库的扫描 / 定时 / 追新收在这里（密钥不在本页填，见页面末尾的说明） -->
-    <div class="admin-card scrape-card">
-      <div class="card-header">
-        <h2>元数据与刮削</h2>
-        <div class="queue-facts">
-          <span class="fact" :class="{ warn: tmdbStatus !== null && !tmdbStatus.configured }">
-            TMDB：{{ tmdbStatusText }}
-          </span>
-        </div>
-      </div>
-      <div class="scrape-grid">
-        <div class="scrape-block">
-          <h3>定时扫描</h3>
-          <p class="drawer-hint">
-            每天到点自动扫描所有启用库（增量，没变化的跳过）
-          </p>
-          <div v-if="autoScan" class="scrape-actions" style="align-items: center">
-            <el-switch v-model="autoScan.enabled" active-text="开启" inactive-text="关闭" />
-            <el-time-picker
-              v-model="autoScan.time"
-              format="HH:mm"
-              value-format="HH:mm"
-              placeholder="每天几点"
-              style="width: 130px"
-              :disabled="!autoScan.enabled"
-            />
-            <el-button type="primary" size="small" :loading="autoScanSaving" @click="saveAutoScanAction">
-              保存
-            </el-button>
-          </div>
-          <div v-if="autoScan?.last_run" class="drawer-hint" style="margin-top: 6px">
-            上次执行：{{ autoScan.last_run }}
-          </div>
-          <div v-else-if="autoScan" class="drawer-hint" style="margin-top: 6px">
-            还没有执行过
-          </div>
-        </div>
-        <div class="scrape-block">
-          <h3>追新</h3>
-          <p class="drawer-hint">
-            每隔 N 分钟检查新文件，发现即自动扫描刮削
-          </p>
-          <div v-if="chaseNew" class="scrape-actions" style="align-items: center">
-            <el-switch v-model="chaseNew.enabled" active-text="开启" inactive-text="关闭" />
-            <el-input-number
-              v-model="chaseNew.interval"
-              :min="5" :max="120" :step="5"
-              placeholder="分钟"
-              style="width: 130px"
-              :disabled="!chaseNew.enabled"
-            />
-            <span class="drawer-hint">分钟</span>
-            <el-button type="primary" size="small" :loading="chaseNewSaving" @click="saveChaseNewAction">
-              保存
-            </el-button>
-          </div>
-          <div v-if="chaseNew?.last_check" class="drawer-hint" style="margin-top: 6px">
-            上次检查：{{ chaseNew.last_check }} ｜ 上轮发现 {{ chaseNew.last_found }} 个新文件
-          </div>
-          <div v-else-if="chaseNew" class="drawer-hint" style="margin-top: 6px">
-            还没有检查过
-          </div>
-        </div>
-        <div class="scrape-block">
-          <h3>TMDB 首选语言</h3>
-          <p class="drawer-hint">
-            TMDB 返回的简介 / 标题 / 别名用哪种语言（保存后立即生效）
-          </p>
-          <div v-if="tmdbLang" class="scrape-actions" style="align-items: center">
-            <el-select v-model="tmdbLang.language" style="width: 160px" aria-label="TMDB 首选语言">
-              <el-option
-                v-for="v in tmdbLang.options"
-                :key="v"
-                :label="tmdbLangLabel(v)"
-                :value="v"
-              />
-            </el-select>
-            <el-button type="primary" size="small" :loading="tmdbLangSaving" @click="saveTmdbLanguageAction">
-              保存
-            </el-button>
-          </div>
-          <div v-else class="drawer-hint" style="margin-top: 6px">
-            加载中…
-          </div>
-          <div v-if="tmdbLang?.from_env" class="drawer-hint" style="margin-top: 6px">
-            环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
-          </div>
-        </div>
-        
-      </div>
-    </div>
-
-    <!-- 媒体库列表：卡片只保留识别信息、关键状态和高频操作，其余设置收进抽屉 -->
-    <div class="admin-card" style="margin-bottom: 16px;">
-      <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-        <el-button
-          type="primary"
-          title="把所有启用的库各扫一次（增量扫描）。新用户挂载后点这个，不用一个个点。"
-          @click="scanAll"
-        >
-          <ScanSearch :size="14" />一键扫描全部
-        </el-button>
-        <span class="drawer-hint">新用户挂载后点这个，不用一个个点 11 次</span>
-      </div>
-      <el-alert
-        type="info"
-        :closable="false"
-        style="margin-top: 12px;"
-        title="扫描说明"
-      >
-        <template #default>
-          <div style="line-height: 1.8;">
-            <div>• <b>扫描</b>（每个库）：增量扫描，只处理新增/改过的文件，没变化的跳过。日常用这个。</div>
-            <div>• <b>一键扫描全部</b>：把所有库各扫一次（增量）。新用户挂载后点这个。</div>
-            <div>• <b>全量扫描</b>（每个库）：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。</div>
-          </div>
-        </template>
-      </el-alert>
-    </div>
-    <div class="lib-grid">
-      <article v-for="l in libraries" :key="l.id" class="admin-card lib-card">
-        <div class="lib-cover">
-          <img v-if="coverUrls[l.id]" :src="coverUrls[l.id]" :alt="`${l.name} 封面`" />
-          <div v-else class="lib-cover-empty">
-            <Film :size="32" />
-            <span>{{ typeLabel(l.collection_type) }}库</span>
-          </div>
-          <div class="lib-cover-shade" />
-          <div class="lib-cover-badges">
-            <span v-if="l.is_virtual" class="mini-badge pin">虚拟库</span>
-            <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">
-              {{ l.is_enabled ? '启用' : '停用' }}
-            </span>
-            <span v-if="cardBadge(l)" class="mini-badge" :class="cardBadge(l)?.cls">
-              {{ cardBadge(l)?.text }}
-            </span>
-          </div>
-          <div class="lib-cover-actions">
-            <el-upload
-              :accept="'image/jpeg,image/png,image/webp'"
-              :show-file-list="false"
-              :disabled="coverUploading[l.id]"
-              :http-request="(options: UploadRequestOptions) => requestCoverUpload(l, options)"
-            >
-              <el-button
-                class="cover-button"
-                circle
-                text
-                :loading="coverUploading[l.id]"
-                :title="l.cover_url ? '更换封面' : '上传封面'"
-                aria-label="上传媒体库封面"
+                type="primary"
+                plain
+                title="增量扫描：只处理新增/改过的文件，没变化的跳过。日常用这个。"
+                @click="scan(l)"
               >
-                <ImagePlus :size="18" />
+                <ScanSearch :size="13" />扫描
               </el-button>
-            </el-upload>
-            <el-button
-              v-if="l.cover_url"
-              class="cover-button"
-              circle
-              text
-              title="移除封面"
-              aria-label="移除媒体库封面"
-              @click="removeCover(l)"
-            >
-              <X :size="17" />
+              <el-button
+                size="small"
+                plain
+                title="全量扫描：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。"
+                @click="scanFull(l)"
+              >
+                <RefreshCcw :size="13" />全量扫描
+              </el-button>
+              <el-button size="small" plain title="刷新已有条目的元数据（不扫描新文件）" @click="openRescrape(l)">
+                <RefreshCw :size="13" />刷新元数据
+              </el-button>
+              <el-button size="small" plain title="手动识别：跳到「元数据来源」页直接绑定 TMDB / IMDb ID" @click="goIdentify(l)">
+                <Search :size="13" />识别
+              </el-button>
+              <el-button size="small" plain @click="openSettings(l)">
+                <Settings2 :size="13" />设置
+              </el-button>
+              <el-button size="small" plain title="扫描记录" @click="openScans(l)">
+                <History :size="13" />
+              </el-button>
+              <el-button size="small" type="danger" plain title="删除媒体库" @click="removeLib(l)">
+                <Delete :size="13" />
+              </el-button>
+            </div>
+          </article>
+
+        </div>
+        <EmptyState
+          v-if="libraries.length === 0 && !loading"
+          class="lib-empty"
+          :icon="Film"
+          title="暂无媒体库"
+          description="新建一个媒体库，选好目录后扫描一次，条目就会出现在这里。"
+        >
+          <template #actions>
+            <el-button type="primary" @click="openCreate">
+              <FolderPlus :size="14" style="margin-right: 4px" />新建媒体库
             </el-button>
-          </div>
+          </template>
+        </EmptyState>
+        <div v-else-if="loading && libraries.length === 0" class="lib-grid" aria-busy="true">
+          <div v-for="n in 3" :key="n" class="au-skeleton lib-skeleton" />
         </div>
+      </el-tab-pane>
 
-        <div class="lib-body">
-          <div class="lib-head">
-            <span class="lib-name">{{ l.name }}</span>
-            <span class="lib-meta">{{ typeLabel(l.collection_type) }}库</span>
+      <el-tab-pane name="queue">
+        <template #label>
+          <span class="tab-label">
+            扫描队列
+            <span v-if="queueActiveCount" class="tab-count is-live">{{ queueActiveCount }}</span>
+          </span>
+        </template>
+        <!-- 扫描队列：同一远程挂载同时只跑一个扫描，其它库在这里排队（不再让管理员自己控并发） -->
+        <SectionCard v-if="queueHasContent" class="queue-card" title="扫描队列" :icon="ListChecks">
+          <template #actions>
+            <div class="queue-facts">
+              <span class="fact">并发上限 {{ scanQueue?.max_parallel }}</span>
+              <span class="fact">{{ scanQueue?.mount_serial ? '同一远程挂载串行' : '挂载串行已关闭' }}</span>
+              <span class="fact" title="本轮真实远程请求 / 内存复用 / 在飞请求">
+                远程请求 {{ scanQueue?.remote.lists }} · 复用 {{ scanQueue?.remote.reused }}
+                · 在飞 {{ scanQueue?.remote.inflight }}
+              </span>
+              <!-- 扫描拆给 worker 执行后，本进程看不到它的内存队列：
+                   这两列来自它写进库里的状态（进度按刷盘间隔更新），说清楚免得被当成实时值 -->
+              <span
+                v-if="scanQueue?.view === 'db'"
+                class="fact"
+                title="扫描由执行节点（worker）运行；「正在扫描」「最近完成」两列来自它写进数据库的状态，进度按刷盘间隔更新"
+              >
+                进度来自执行节点
+              </span>
+            </div>
+          </template>
+
+          <div class="queue-grid">
+            <div class="queue-col">
+              <div class="queue-col-title">正在扫描（{{ scanQueue?.running.length || 0 }}）</div>
+              <div v-for="t in scanQueue?.running" :key="'run-' + t.library_id" class="queue-row">
+                <div class="queue-row-head">
+                  <span class="queue-name">{{ t.name }}</span>
+                  <span class="mini-badge scanning">{{ t.progress?.phase_label || '准备中' }}</span>
+                  <span
+                    v-if="t.via === 'db'"
+                    class="mini-badge muted"
+                    title="本轮由执行扫描的节点运行；这里显示的是它写进数据库的进度快照"
+                  >执行节点</span>
+                </div>
+                <div class="queue-row-sub mono">{{ progressLine(t) || '刚刚开始' }}</div>
+                <div v-if="t.progress?.current" class="queue-row-sub mono" :title="t.progress.current">
+                  {{ t.progress.current }}
+                </div>
+              </div>
+              <div v-if="!scanQueue?.running.length" class="queue-empty">没有正在跑的扫描</div>
+            </div>
+
+            <div class="queue-col">
+              <div class="queue-col-title">排队中（{{ scanQueue?.waiting.length || 0 }}）</div>
+              <div v-for="t in scanQueue?.waiting" :key="'wait-' + t.library_id" class="queue-row">
+                <div class="queue-row-head">
+                  <span class="queue-name">{{ t.name }}</span>
+                  <span class="mini-badge muted">第 {{ t.position ?? '-' }} 位</span>
+                  <el-button
+                    size="small"
+                    text
+                    :icon="X"
+                    @click="cancelQueued(t)"
+                  >取消</el-button>
+                </div>
+                <div class="queue-row-sub warn">{{ waitingText(t) }}</div>
+                <div class="queue-row-sub mono">
+                  {{ [queuedSince(t), triggerLabel(t.trigger)].filter(Boolean).join(' · ') }}
+                </div>
+              </div>
+              <div v-if="!scanQueue?.waiting.length" class="queue-empty">没有排队的扫描</div>
+            </div>
+
+            <div class="queue-col">
+              <div class="queue-col-title queue-col-title--split">
+                <span>最近完成</span>
+                <el-switch v-model="showScanHistory" size="small" title="显示/隐藏扫描记录" />
+              </div>
+              <template v-if="showScanHistory">
+              <div v-for="t in queueHistory" :key="'done-' + t.library_id + t.requested_at" class="queue-row">
+                <div class="queue-row-head">
+                  <span class="queue-name">{{ t.name }}</span>
+                  <span class="mini-badge" :class="taskBadge(t).cls">{{ taskBadge(t).text }}</span>
+                </div>
+                <div class="queue-row-sub mono">
+                  {{ [scanCountText(t),
+                     t.duration_ms != null ? `耗时 ${fmtDuration(t.duration_ms)}` : '',
+                     queuedSince(t), triggerLabel(t.trigger),
+                     t.request_count > 1 ? `被点 ${t.request_count} 次` : ''].filter(Boolean).join(' · ') }}
+                </div>
+                <div v-if="t.error" class="queue-row-sub danger" :title="t.error">{{ t.error }}</div>
+              </div>
+              <div v-if="!queueHistory.length" class="queue-empty">还没有跑完的扫描</div>
+              </template>
+            </div>
           </div>
+        </SectionCard>
+        <EmptyState
+          v-else
+          :icon="ListChecks"
+          title="扫描队列是空的"
+          description="没有正在跑或排队的扫描，也还没有跑完的记录。在「媒体库」标签点「扫描」或「一键扫描全部」后，进度会显示在这里。"
+        />
+      </el-tab-pane>
 
-          <div class="lib-facts">
-            <span class="fact" :class="{ warn: serviceFact(l).warn }" :title="'服务：' + serviceFact(l).text">
-              <Server :size="12" />{{ serviceFact(l).text }}
-            </span>
-
-            <span class="fact" :class="{ warn: sourceFact(l).warn }" :title="'来源：' + sourceFact(l).text">
-              <HardDrive :size="12" />{{ sourceFact(l).text }}
-            </span>
-            <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
+      <el-tab-pane label="定时与刮削" name="schedule">
+        <!-- 元数据与刮削：按库的扫描 / 定时 / 追新收在这里（密钥不在本页填，见页面末尾的说明） -->
+        <SectionCard class="scrape-card" title="元数据与刮削" :icon="CalendarClock">
+          <template #actions>
+            <div class="queue-facts">
+              <span class="fact" :class="{ warn: tmdbStatus !== null && !tmdbStatus.configured }">
+                TMDB：{{ tmdbStatusText }}
+              </span>
+            </div>
+          </template>
+          <div class="scrape-grid">
+            <div class="scrape-block">
+              <h3>定时扫描</h3>
+              <p class="drawer-hint">
+                每天到点自动扫描所有启用库（增量，没变化的跳过）
+              </p>
+              <div v-if="autoScan" class="scrape-actions">
+                <el-switch v-model="autoScan.enabled" active-text="开启" inactive-text="关闭" />
+                <el-time-picker
+                  v-model="autoScan.time"
+                  format="HH:mm"
+                  value-format="HH:mm"
+                  placeholder="每天几点"
+                  style="width: 130px"
+                  :disabled="!autoScan.enabled"
+                />
+                <el-button type="primary" size="small" :loading="autoScanSaving" @click="saveAutoScanAction">
+                  保存
+                </el-button>
+              </div>
+              <div v-if="autoScan?.last_run" class="drawer-hint drawer-hint--after">
+                上次执行：{{ autoScan.last_run }}
+              </div>
+              <div v-else-if="autoScan" class="drawer-hint drawer-hint--after">
+                还没有执行过
+              </div>
+            </div>
+            <div class="scrape-block">
+              <h3>追新</h3>
+              <p class="drawer-hint">
+                每隔 N 分钟检查新文件，发现即自动扫描刮削
+              </p>
+              <div v-if="chaseNew" class="scrape-actions">
+                <el-switch v-model="chaseNew.enabled" active-text="开启" inactive-text="关闭" />
+                <el-input-number
+                  v-model="chaseNew.interval"
+                  :min="5" :max="120" :step="5"
+                  placeholder="分钟"
+                  style="width: 130px"
+                  :disabled="!chaseNew.enabled"
+                />
+                <span class="drawer-hint">分钟</span>
+                <el-button type="primary" size="small" :loading="chaseNewSaving" @click="saveChaseNewAction">
+                  保存
+                </el-button>
+              </div>
+              <div v-if="chaseNew?.last_check" class="drawer-hint drawer-hint--after">
+                上次检查：{{ chaseNew.last_check }} ｜ 上轮发现 {{ chaseNew.last_found }} 个新文件
+              </div>
+              <div v-else-if="chaseNew" class="drawer-hint drawer-hint--after">
+                还没有检查过
+              </div>
+            </div>
+            <div class="scrape-block">
+              <h3>TMDB 首选语言</h3>
+              <p class="drawer-hint">
+                TMDB 返回的简介 / 标题 / 别名用哪种语言（保存后立即生效）
+              </p>
+              <div v-if="tmdbLang" class="scrape-actions">
+                <el-select v-model="tmdbLang.language" style="width: 160px" aria-label="TMDB 首选语言">
+                  <el-option
+                    v-for="v in tmdbLang.options"
+                    :key="v"
+                    :label="tmdbLangLabel(v)"
+                    :value="v"
+                  />
+                </el-select>
+                <el-button type="primary" size="small" :loading="tmdbLangSaving" @click="saveTmdbLanguageAction">
+                  保存
+                </el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+              <div v-if="tmdbLang?.from_env" class="drawer-hint drawer-hint--after">
+                环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
+              </div>
+            </div>
           </div>
-
-          <!-- 一句话策略摘要：路径 / 轮询间隔 / 刮削策略，不点进设置也知道这个库怎么跑 -->
-          <div class="lib-summary" :title="libSummaryTitle(l)">{{ libSummary(l) }}</div>
-
-          <div class="lib-state">
-            <span v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
-              <span class="scan-dot" :class="liveFor(l)?.state === 'queued' ? 'is-queued' : 'is-running'" />
-              {{ cardLiveHint(l) }}
-            </span>
-            <span v-else class="lib-time">
-              {{ l.last_scan_at ? `上次扫描 ${fmtDate(l.last_scan_at)}` : '尚未扫描' }}
-            </span>
-          </div>
-
-          <div v-if="scanError(l)" class="scan-error" :title="scanError(l)">{{ scanError(l) }}</div>
-          <div v-else-if="libReach(l)?.level === 'bad'" class="scan-error" :title="reachTitle(l)">
-            播放风险：{{ libReach(l)?.message }}
-          </div>
-        </div>
-
-        <div class="lib-foot">
-          <el-button
-            size="small"
-            type="primary"
-            plain
-            title="增量扫描：只处理新增/改过的文件，没变化的跳过。日常用这个。"
-            @click="scan(l)"
-          >
-            <ScanSearch :size="13" />扫描
-          </el-button>
-          <el-button
-            size="small"
-            plain
-            title="全量扫描：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。"
-            @click="scanFull(l)"
-          >
-            <RefreshCcw :size="13" />全量扫描
-          </el-button>
-          <el-button size="small" plain title="刷新已有条目的元数据（不扫描新文件）" @click="openRescrape(l)">
-            <RefreshCw :size="13" />刷新元数据
-          </el-button>
-          <el-button size="small" plain title="手动识别：跳到「元数据来源」页直接绑定 TMDB / IMDb ID" @click="goIdentify(l)">
-            <Search :size="13" />识别
-          </el-button>
-          <el-button size="small" plain @click="openSettings(l)">
-            <Settings2 :size="13" />设置
-          </el-button>
-          <el-button size="small" plain title="扫描记录" @click="openScans(l)">
-            <History :size="13" />
-          </el-button>
-          <el-button size="small" type="danger" plain title="删除媒体库" @click="removeLib(l)">
-            <Delete :size="13" />
-          </el-button>
-        </div>
-      </article>
-
-      <div v-if="libraries.length === 0 && !loading" class="admin-card empty-card">
-        暂无媒体库，点击右上角「新建媒体库」开始
-      </div>
-    </div>
+        </SectionCard>
+      </el-tab-pane>
+    </el-tabs>
 
     <!--
       媒体库配置：新建与编辑共用这一张单页表单（借鉴 Emby Manager）。
@@ -1928,7 +1986,7 @@ function typeLabel(t: string): string {
                 上次执行：{{ autoScan.last_run || '还没有执行过' }}。
               </p>
               <p v-else>读取中…</p>
-              <p>所有启用库共用一份计划，开关与时间在本页下方「元数据与刮削」里改。</p>
+              <p>所有启用库共用一份计划，开关与时间在本页「定时与刮削」标签里改。</p>
             </div>
           </el-form>
         </div>
@@ -1990,7 +2048,7 @@ function typeLabel(t: string): string {
         :value="t.value"
       />
     </el-select>
-    <p class="drawer-hint" style="margin-top: 4px">
+    <p class="drawer-hint drawer-hint--tight">
       选中的样式：{{ optionOf(COVER_TEMPLATES, coverTemplate)?.hint || '不生成，仍用上传的封面' }}
     </p>
     <div class="cover-autogen">
@@ -2004,7 +2062,7 @@ function typeLabel(t: string): string {
         重新拼一张封面；没有新片就不动它。渲染在<b>后台排队</b>进行，不会拖慢扫描；转场一次入库
         几百个文件也只会排一个任务，画不出来时旧封面原样保留。默认关闭。
         <template v-if="!coverTemplate">
-          <br /><span style="color: var(--el-color-warning)">需先选一个封面样式，否则不会生效。</span>
+          <br /><span class="field-warn-inline">需先选一个封面样式，否则不会生效。</span>
         </template>
       </p>
     </div>
@@ -2138,7 +2196,7 @@ function typeLabel(t: string): string {
               <p v-if="chaseNew">
                 {{ chaseNew.enabled
                   ? `已开启 · 每 ${chaseNew.interval} 分钟检查一次`
-                  : '未开启（开关与间隔在本页下方「元数据与刮削」）' }}
+                  : '未开启（开关与间隔在本页「定时与刮削」标签）' }}
               </p>
               <p v-if="chaseNew?.last_check">
                 上次检查：{{ chaseNew.last_check }} ｜ 上轮发现 {{ chaseNew.last_found }} 个新文件
@@ -2173,7 +2231,7 @@ function typeLabel(t: string): string {
     </el-drawer>
 
     <!-- 刷新元数据：选策略；all 二次确认并提示配额消耗 -->
-    <el-dialog v-model="rescrapeVisible" title="刷新元数据" width="420px">
+    <el-dialog v-model="rescrapeVisible" title="刷新元数据" width="min(420px, 92vw)">
       <p class="drawer-hint">
         对「{{ rescrapeTarget?.name }}」里**已有**的条目重新刮削一遍。不会扫描新文件（要发现新片请用「扫描」），
         策略只覆盖本轮，不改库配置。
@@ -2192,7 +2250,7 @@ function typeLabel(t: string): string {
     </el-dialog>
 
     <!-- 扫描记录：最近若干轮（每轮的状态 / 触发方 / 增量 / 耗时 / 原因） -->
-    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="620px">
+    <el-drawer v-model="scanDrawer" :title="`扫描记录 · ${scanTarget?.name || ''}`" size="min(620px, 96vw)">
       <p class="drawer-hint">
         每轮扫描一行，最近的在最上面（每库最多保留 {{ scanKeep }} 条）。
         「每轮都失败」和「只是最近一轮失败」是两件事，这里能直接看出来。
@@ -2205,6 +2263,9 @@ function typeLabel(t: string): string {
         empty="还没有扫描记录"
         row-key="id"
       >
+        <template #empty>
+          <EmptyState compact :icon="History" title="还没有扫描记录" description="点库卡片上的「扫描」跑一轮后，这里会出现记录。" />
+        </template>
         <template #cell-started_at="{ row }">{{ fmtDate(row.started_at) }}</template>
 
         <template #cell-status="{ row }">
@@ -2241,174 +2302,143 @@ function typeLabel(t: string): string {
 </template>
 
 <style scoped>
-.admin-page { gap: 16px; }
+/* v2.54 暗房影院：颜色 / 圆角只走 --au-* 令牌；卡片 = 实色表面 + 发丝线，不靠阴影。
+   库卡片的封面、配置抽屉的大部分规则在 EmbyAdmin.css（下拉面板挂在 body 上，scoped 盖不到）。 */
 
-/* 老库的只读挂载回显：说清“还在生效” + “不再能改”，否则看着像残留的破 UI */
-.legacy-mount-note {
-  margin-top: 12px;
-  padding: 10px 14px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-left: 3px solid var(--el-color-warning);
-  border-radius: 6px;
-  background: var(--el-fill-color-lighter);
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  line-height: 1.6;
+/* ==================== 页内标签 ==================== */
+.emby-tabs :deep(.el-tabs__header) { margin-bottom: 16px; }
+.emby-tabs :deep(.el-tab-pane) { display: flex; flex-direction: column; gap: 16px; }
+.tab-label { display: inline-flex; align-items: center; gap: 6px; }
+.tab-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: var(--au-r-full);
+  background: var(--au-violet-soft);
+  color: var(--au-text-3);
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
-.legacy-mount-note p {
-  margin: 6px 0 0;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
+.tab-count.is-live { background: var(--au-primary-soft); color: var(--au-primary); }
+
+/* ==================== 媒体库工具条 + 卡片墙 ==================== */
+.lib-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
 }
+.lib-toolbar-meta { font-size: var(--font-size-sm); color: var(--au-text-3); }
+.lib-toolbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.scan-help { display: flex; flex-direction: column; gap: 6px; font-size: var(--font-size-xs); line-height: 1.7; color: var(--au-text-2); }
 
 .lib-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
   gap: 16px;
 }
-
-.lib-card { display: flex; flex-direction: column; gap: 0; overflow: hidden; min-width: 0; }
+.lib-card {
+  display: flex; flex-direction: column; gap: 0; overflow: hidden; min-width: 0;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  transition: border-color var(--au-fast) var(--au-ease);
+}
+.lib-card:hover { border-color: var(--au-border-strong); }
+.lib-skeleton { height: 320px; border-radius: var(--au-r-lg); }
+.lib-empty {
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+}
 .lib-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: nowrap; }
 .lib-name {
-  font-weight: var(--font-weight-bold); font-size: var(--font-size-lg); color: var(--text-primary);
+  font-family: var(--au-font-serif);
+  font-weight: 700; font-size: var(--font-size-lg); color: var(--au-text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.lib-meta { flex-shrink: 0; font-size: var(--font-size-xs); color: var(--text-tertiary); }
-lib-state { min-height: 18px; }
+.lib-meta { flex-shrink: 0; font-size: var(--font-size-xs); color: var(--au-text-3); }
+.lib-time { font-size: var(--font-size-xs); color: var(--au-text-4); }
 
-.lib-cover { position: relative; aspect-ratio: 16 / 8.5; overflow: hidden; background: var(--bg-inset); }
-lib-cover > img { width: 100%; height: 100%; object-fit: cover; display: block; }
-lib-cover-empty {
-  width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 8px; color: var(--text-muted); font-size: var(--font-size-xs);
-}
-lib-cover-shade {
-  position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(to bottom, rgb(0 0 0 / 0.32), transparent 45%, rgb(0 0 0 / 0.18));
-}
-lib-cover-badges { position: absolute; top: 10px; left: 10px; right: 58px; display: flex; gap: 6px; flex-wrap: wrap; }
-lib-cover-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
-cover-button {
-  color: #fff !important; background: rgb(0 0 0 / 0.48) !important;
-  border: 1px solid rgb(255 255 255 / 0.22) !important;
-}
-cover-button:hover { background: rgb(0 0 0 / 0.72) !important; }
-lib-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 14px 12px; flex: 1; }
-lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
 .fact {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--font-size-xs); color: var(--au-text-2);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.fact.warn { color: var(--warning); }
-
-.lib-paths {
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lib-policy { display: flex; align-items: center; gap: 10px; }
-.policy-label { font-size: var(--font-size-xs); color: var(--text-tertiary); width: 62px; flex-shrink: 0; }
-.lib-policy :deep(.el-select) { flex: 1; min-width: 0; }
+.fact.warn { color: var(--au-warning); }
 
 .lib-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+  margin-top: 4px; padding-top: 12px;
+  border-top: 1px solid var(--au-border);
 }
 
-.drawer-hint { margin: 0 0 12px; font-size: var(--font-size-xs); color: var(--text-tertiary); }
+/* 老库的只读挂载回显：说清“还在生效” + “不再能改”，否则看着像残留的破 UI */
+.legacy-mount-note {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--au-warning-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-warning-soft);
+  font-size: var(--font-size-sm);
+  color: var(--au-text-2);
+  line-height: 1.6;
+}
+.legacy-mount-note b { color: var(--au-warning); }
+.legacy-mount-note p { margin: 6px 0 0; font-size: var(--font-size-xs); color: var(--au-text-3); }
 
-.text-danger { color: var(--danger); }
-.scrape-card { margin-bottom: 16px; }
-.scrape-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-.scrape-block h3 { margin: 0 0 8px; font-size: var(--font-size-sm); font-weight: 600; }
-.scrape-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-@media (max-width: 900px) { .scrape-grid { grid-template-columns: 1fr; } }
+.drawer-hint { margin: 0 0 12px; font-size: var(--font-size-xs); color: var(--au-text-3); line-height: 1.7; }
+.drawer-hint--after { margin: 6px 0 0; }
+.drawer-hint--tight { margin: 4px 0 0; }
+.text-danger { color: var(--au-danger); }
+.field-warn-inline { color: var(--au-warning); }
 
-/* 最近一次扫描结果：摘要一行 +（失败时）原因一行 */
-.lib-scan { display: flex; flex-direction: column; gap: 3px; }
-.scan-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* ==================== 定时与刮削 ==================== */
+.scrape-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.scrape-block {
+  display: flex; flex-direction: column;
+  padding: 14px 16px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
+}
+.scrape-block h3 { margin: 0 0 6px; font-size: var(--font-size-sm); font-weight: 700; color: var(--au-text); }
+.scrape-block .drawer-hint { margin-bottom: 10px; }
+.scrape-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.scrape-skeleton { height: 32px; border-radius: var(--au-r-md); }
+
+/* ==================== 扫描状态（卡片 + 记录抽屉） ==================== */
+.scan-dot { width: 6px; height: 6px; border-radius: var(--au-r-full); background: var(--au-text-4); flex-shrink: 0; }
+.scan-dot.is-success { background: var(--au-success); }
+.scan-dot.is-partial { background: var(--au-warning); }
+.scan-dot.is-failed { background: var(--au-danger); }
+.scan-dot.is-running { background: var(--au-info); }
+.scan-dot.is-queued { background: var(--au-text-3); }
+.scan-error, .scan-hint {
   font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  color: var(--au-warning);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.scan-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
-.scan-dot.is-success { background: var(--success); }
-.scan-dot.is-partial { background: var(--warning); }
-.scan-dot.is-failed { background: var(--danger); }
-.scan-dot.is-running { background: var(--info); }
-.scan-error {
-  font-size: var(--font-size-xs);
-  color: var(--warning);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.scan-hint {
-  font-size: var(--font-size-xs);
-  color: var(--warning);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* 实时状态一行（排队原因 / 扫描进度）：与「最近一次结果」分层，后者是落库的历史 */
 .lib-live {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--font-size-xs);
-  color: var(--info);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--font-size-xs); color: var(--au-info);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.scan-dot.is-queued { background: var(--text-tertiary); }
 
-/* 扫描队列：正在跑 / 排队中 / 最近完成 三列（同一远程挂载串行化的可见面） */
-.reach-card { display: flex; flex-direction: column; gap: 10px; }
-.reach-card .card-header h2 { display: flex; align-items: center; gap: 8px; }
+/* ==================== 播放可达性 ==================== */
+.reach-card :deep(.au-section__body) { display: flex; flex-direction: column; gap: 10px; }
 .reach-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  display: flex; align-items: flex-start; gap: 10px;
   padding: 8px 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
 }
 .reach-row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.reach-row-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.reach-name { font-weight: var(--font-weight-bold); color: var(--text-primary); }
-.reach-node { font-size: var(--font-size-xs); color: var(--text-tertiary); }
-.reach-row-fix { font-size: var(--font-size-xs); color: var(--text-secondary); }
+.reach-row-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; color: var(--au-text); }
+.reach-name { font-weight: 700; color: var(--au-text); }
+.reach-node { font-size: var(--font-size-xs); color: var(--au-text-3); }
+.reach-row-fix { font-size: var(--font-size-xs); color: var(--au-text-2); }
 
-.queue-card { display: flex; flex-direction: column; gap: 12px; }
-.queue-card .card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
+/* ==================== 扫描队列：正在跑 / 排队中 / 最近完成 ==================== */
 .queue-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .queue-grid {
   display: grid;
@@ -2416,129 +2446,42 @@ lib-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; }
   gap: 12px;
 }
 .queue-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.queue-col-title { font-size: var(--font-size-xs); color: var(--text-tertiary); }
+.queue-col-title { font-size: var(--font-size-xs); color: var(--au-text-3); letter-spacing: 0.04em; }
+.queue-col-title--split { display: flex; align-items: center; justify-content: space-between; }
 .queue-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: flex; flex-direction: column; gap: 4px;
   padding: 8px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-inset);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
   min-width: 0;
 }
 .queue-row-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .queue-name {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--font-size-sm); font-weight: 500; color: var(--au-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .queue-row-head :deep(.el-button) { margin-left: auto; padding: 0 4px; }
 .queue-row-sub {
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--font-size-xs); color: var(--au-text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.queue-row-sub.warn { color: var(--warning); }
-.queue-row-sub.danger { color: var(--danger); }
-.queue-empty { font-size: var(--font-size-xs); color: var(--text-muted); }
-
-.lib-time { font-size: var(--font-size-xs); color: var(--text-muted); }
-.lib-actions { display: flex; gap: 8px; }
-.lib-actions :deep(.el-button) { margin-left: 0; }
-
-.empty-card { text-align: center; color: var(--text-muted); padding: 40px 16px; font-size: var(--font-size-sm); }
-
-.card-header h2 {
-  margin: 0;
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+.queue-row-sub.warn { color: var(--au-warning); }
+.queue-row-sub.danger { color: var(--au-danger); }
+.queue-empty {
+  padding: 14px 10px;
+  border: 1px dashed var(--au-border);
+  border-radius: var(--au-r-md);
+  text-align: center;
+  font-size: var(--font-size-xs); color: var(--au-text-4);
 }
 
-.user-name { font-weight: 600; color: var(--text-primary); }
-
-.s-method {
-  font-size: 11px;
-  background: rgba(255, 255, 255, 0.07);
-  border-radius: var(--radius-full);
-  padding: 2px 7px;
-  margin-left: 7px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-}
-
-.progress-track {
-  height: 5px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.09);
-  overflow: hidden;
-  max-width: 110px;
-}
-
-.progress-fill { height: 100%; background: var(--gradient-brand); border-radius: 3px; }
-.progress-num { font-size: var(--font-size-xs); color: var(--text-muted); }
-
-/* 手机：卡片内标签与控件竖排，路径允许换行 */
-@media (max-width: 640px) {
+/* ==================== 手机（≤768px） ==================== */
+@media (max-width: 768px) {
   .lib-grid { grid-template-columns: minmax(0, 1fr); }
-  .lib-policy { flex-direction: column; align-items: stretch; gap: 6px; }
-  .policy-label { width: auto; }
-  .lib-paths { white-space: normal; word-break: break-all; }
-  .lib-actions { width: 100%; }
-  .lib-actions :deep(.el-button) { flex: 1; }
-  .admin-page-actions :deep(.el-button.is-primary) { flex: 1 1 100%; }
-}
-.sa-panel {
-  margin-top: 6px;
-  padding: 8px;
-  background: rgba(0,0,0,0.2);
-  border-radius: 6px;
-}
-.sa-search {
-  margin-bottom: 6px;
-}
-.sa-email-list {
-  max-height: 220px;
-  overflow-y: auto;
-  font-size: 12px;
-}
-.sa-email-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0;
-  color: var(--text-secondary);
-}
-.sa-email-item.sa-disabled {
-  opacity: 0.45;
-}
-.sa-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #555;
-  flex-shrink: 0;
-}
-.sa-dot.on {
-  background: var(--success);
-}
-.sa-email {
-  word-break: break-all;
-  flex: 1;
-}
-.sa-project {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  flex-shrink: 0;
-}
-.sa-enabled-count {
-  color: var(--success);
-  font-size: 12px;
+  .lib-toolbar-actions { width: 100%; }
+  .lib-toolbar-actions .el-button { flex: 1; margin-left: 0; }
+  .scrape-grid { grid-template-columns: 1fr; gap: 12px; }
+  .emby-tabs :deep(.el-tabs__nav-wrap) { overflow-x: auto; }
 }
 </style>

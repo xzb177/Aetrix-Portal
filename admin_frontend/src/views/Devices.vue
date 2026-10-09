@@ -5,9 +5,10 @@
  * 用户第三方客户端（Infuse / Forward / SenPlayer 等）登录即登记设备。
  * 这里做跨用户审查：查设备、封禁（同时吊销令牌）与移除（踢下线）。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, Ban, CircleCheck, LogOut, Search } from 'lucide-vue-next'
+import { RefreshCw, Ban, CircleCheck, LogOut, Search, Smartphone, Activity, Gauge } from 'lucide-vue-next'
+import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchDeviceStats, fetchDevices, removeDevice, setDeviceBlocked } from '@/api/admin'
 import type { DeviceRow, DeviceStats } from '@/types'
 import DataTable from '@/components/DataTable.vue'
@@ -29,11 +30,13 @@ const columns: DataColumn[] = [
 const devices = ref<DeviceRow[]>([])
 const stats = ref<DeviceStats | null>(null)
 const loading = ref(false)
+const loadError = ref('')
 const total = ref(0)
 const filters = ref({ keyword: '', only_blocked: false })
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     const [list, stat] = await Promise.all([
       fetchDevices({
@@ -46,12 +49,21 @@ async function load() {
     devices.value = list.devices
     total.value = list.total
     stats.value = stat
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
   }
 }
 
 onMounted(load)
+
+const hasFilter = computed(() => Boolean(filters.value.keyword || filters.value.only_blocked))
+
+function resetFilters() {
+  filters.value = { keyword: '', only_blocked: false }
+  load()
+}
 
 // ==================== 设备详情弹窗（v2.29.0） ====================
 // 以前封禁 / 移除是行里两个按钮，点下去只有一句确认框，看不到设备 ID、客户端版本、
@@ -144,64 +156,75 @@ function ago(s: string | null): string {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">设备与安全</h1>
-        <p class="admin-page-desc">
-          第三方客户端登录设备审查 —— 封禁会同时吊销令牌，移除等于踢下线
-        </p>
-      </div>
-      <div class="toolbar">
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
+    <PageHeader
+      eyebrow="用户与账号"
+      title="设备与安全"
+      description="第三方客户端（Infuse / Forward / SenPlayer 等）登录即登记设备。封禁会同时吊销令牌，移除等于踢下线。"
+    >
+      <template #actions>
+        <el-button :loading="loading" :icon="RefreshCw" @click="load">刷新</el-button>
+      </template>
+    </PageHeader>
+
+    <div v-if="stats" class="stat-row">
+      <StatTile label="设备总数" :value="stats.total" :icon="Smartphone" :hint="`来自 ${stats.users} 位用户`" />
+      <StatTile
+        :label="`近 ${stats.active_days} 天活跃`"
+        :value="stats.active_30d"
+        :icon="Activity"
+        hint="长期未活跃的设备不计入上限"
+      />
+      <StatTile
+        label="已封禁"
+        :value="stats.blocked"
+        :icon="Ban"
+        :tone="stats.blocked > 0 ? 'danger' : 'plain'"
+        hint="封禁设备无法再次登录"
+      />
+      <StatTile
+        label="每用户上限"
+        :value="stats.limit_per_user || '不限'"
+        :icon="Gauge"
+        :hint="stats.auto_evict ? '超限自动踢最久未用' : '超限直接拒绝新设备'"
+      />
+    </div>
+    <div v-else-if="loading" class="stat-row" aria-hidden="true">
+      <span v-for="n in 4" :key="n" class="au-skeleton stat-skeleton" />
     </div>
 
-    <div v-if="stats" class="stat-grid">
-      <div class="stat-tile">
-        <div class="stat-label">设备总数</div>
-        <div class="stat-value">{{ stats.total }}</div>
-        <div class="stat-hint">来自 {{ stats.users }} 位用户</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">近 {{ stats.active_days }} 天活跃</div>
-        <div class="stat-value">{{ stats.active_30d }}</div>
-        <div class="stat-hint">长期未活跃的设备不计入上限</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-danger': stats.blocked > 0 }">
-        <div class="stat-label">已封禁</div>
-        <div class="stat-value">{{ stats.blocked }}</div>
-        <div class="stat-hint">封禁设备无法再次登录</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">每用户上限</div>
-        <div class="stat-value">{{ stats.limit_per_user || '不限' }}</div>
-        <div class="stat-hint">
-          {{ stats.auto_evict ? '超限自动踢最久未用' : '超限直接拒绝新设备' }}
+    <SectionCard title="设备清单" :icon="Smartphone" :meta="loading ? '' : `共 ${total} 台`" flush>
+      <div class="list-bar">
+        <div class="filter-bar">
+          <el-input
+            v-model="filters.keyword"
+            placeholder="搜索用户名 / 设备 / 客户端 / IP"
+            clearable
+           
+            @keyup.enter="load"
+            @clear="load"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-checkbox v-model="filters.only_blocked" @change="load">只看已封禁</el-checkbox>
+        </div>
+        <div class="head-actions">
+          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
+          <el-button type="primary" :icon="Search" @click="load">查询</el-button>
         </div>
       </div>
-    </div>
 
-    <div class="admin-card filter-bar">
-      <el-input
-        v-model="filters.keyword"
-        placeholder="搜索用户名 / 设备 / 客户端 / IP"
-        style="max-width: 280px"
-        clearable
-        @keyup.enter="load"
-        @clear="load"
+      <DataTable
+        :rows="devices"
+        :columns="columns"
+        :loading="loading"
+        :error="loadError"
+        :empty="hasFilter ? '没有匹配的设备' : '暂无设备记录'"
+        :empty-description="hasFilter ? '换个关键字，或取消「只看已封禁」。' : '用户用第三方客户端登录后，设备会登记在这里。'"
+        @retry="load"
       >
-        <template #prefix><Search :size="14" /></template>
-      </el-input>
-      <el-checkbox v-model="filters.only_blocked" @change="load">只看已封禁</el-checkbox>
-      <el-button @click="load">查询</el-button>
-      <span class="filter-count">共 {{ total }} 台</span>
-    </div>
-
-    <div class="admin-card">
-      <DataTable :rows="devices" :columns="columns" :loading="loading" empty="暂无设备记录">
         <template #cell-username="{ row }">
           <span class="user-name">{{ row.username }}</span>
-          <span v-if="!row.is_user_active" class="mini-badge danger">已禁用</span>
+          <span v-if="!row.is_user_active" class="au-badge au-badge-rose badge-gap">已禁用</span>
         </template>
 
         <template #cell-name="{ row }">
@@ -218,24 +241,24 @@ function ago(s: string | null): string {
           <span class="mono">{{ row.ip || '—' }}</span>
         </template>
 
-        <template #cell-first_seen_at="{ row }">{{ fmt(row.first_seen_at) }}</template>
+        <template #cell-first_seen_at="{ row }"><span class="mono">{{ fmt(row.first_seen_at) }}</span></template>
 
         <template #cell-last_seen_at="{ row }">
           <span :class="{ muted: !row.is_online_recent }">{{ ago(row.last_seen_at) }}</span>
         </template>
 
         <template #cell-is_blocked="{ row }">
-          <span class="mini-badge" :class="row.is_blocked ? 'danger' : 'ok'">
+          <span class="au-badge" :class="row.is_blocked ? 'au-badge-rose' : 'au-badge-green'">
             {{ row.is_blocked ? '已封禁' : '正常' }}
           </span>
         </template>
 
         <template #cell-actions="{ row }">
           <!-- 一个入口：详情 + 封禁 / 解封 / 移除 都在弹窗里 -->
-          <el-button size="small" plain @click="openDetail(row)">详情</el-button>
+          <el-button size="small" @click="openDetail(row)">详情</el-button>
         </template>
       </DataTable>
-    </div>
+    </SectionCard>
 
     <!-- 设备详情与处置（弹窗）：先把这台设备是什么说清楚，再动手 -->
     <el-dialog v-model="detail.visible" title="设备详情与处置" width="540px">
@@ -244,7 +267,7 @@ function ago(s: string | null): string {
           <div class="kv-row"><span class="kv-key">所属用户</span>
             <span class="kv-value">
               {{ detail.row.username }}
-              <span v-if="!detail.row.is_user_active" class="mini-badge danger">账号已禁用</span>
+              <span v-if="!detail.row.is_user_active" class="au-badge au-badge-rose badge-gap">账号已禁用</span>
             </span>
           </div>
           <div class="kv-row"><span class="kv-key">设备</span>
@@ -268,7 +291,7 @@ function ago(s: string | null): string {
           </div>
           <div class="kv-row"><span class="kv-key">当前状态</span>
             <span class="kv-value">
-              <span class="mini-badge" :class="detail.row.is_blocked ? 'danger' : 'ok'">
+              <span class="au-badge" :class="detail.row.is_blocked ? 'au-badge-rose' : 'au-badge-green'">
                 {{ detail.row.is_blocked ? '已封禁' : '正常' }}
               </span>
             </span>
@@ -283,22 +306,23 @@ function ago(s: string | null): string {
 
       <template #footer>
         <div class="dev-footer">
-          <el-button type="warning" plain :loading="!!detail.row && rowBusyKey === `${detail.row.user_id}:${detail.row.device_id}`" @click="detail.row && kick(detail.row)">
-            <LogOut :size="13" style="margin-right: 4px" />移除（踢下线）
+          <el-button
+            type="warning"
+            :icon="LogOut"
+            :loading="!!detail.row && rowBusyKey === `${detail.row.user_id}:${detail.row.device_id}`"
+            @click="detail.row && kick(detail.row)"
+          >
+            移除（踢下线）
           </el-button>
           <div class="dev-footer-right">
             <el-button @click="detail.visible = false">关闭</el-button>
             <el-button
               v-if="detail.row"
               :type="detail.row.is_blocked ? 'success' : 'danger'"
+              :icon="detail.row.is_blocked ? CircleCheck : Ban"
               :loading="!!detail.row && rowBusyKey === `${detail.row.user_id}:${detail.row.device_id}`"
               @click="detail.row && toggleBlock(detail.row)"
             >
-              <component
-                :is="detail.row.is_blocked ? CircleCheck : Ban"
-                :size="13"
-                style="margin-right: 4px"
-              />
               {{ detail.row.is_blocked ? '解封这台设备' : '封禁这台设备' }}
             </el-button>
           </div>
@@ -309,66 +333,61 @@ function ago(s: string | null): string {
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; }
-
-.stat-grid {
+.stat-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
-  margin-bottom: 14px;
 }
-.stat-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color, #262626);
-  border-radius: 12px;
-  padding: 14px 16px;
+.stat-skeleton { display: block; height: 96px; border-radius: var(--au-r-lg); }
+
+.list-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 12px;
 }
-.stat-card.danger { border-color: rgba(239, 68, 68, 0.45); }
-.stat-label { font-size: 12px; color: var(--text-secondary); }
-.stat-value { font-size: 22px; font-weight: 600; margin: 4px 0 2px; }
-.stat-hint { font-size: 11px; color: var(--text-muted); }
+.list-bar .filter-bar { flex: 1 1 auto; }
+.list-bar .head-actions { justify-content: flex-end; }
 
-.filter-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.filter-count { font-size: 12px; color: var(--text-muted); margin-left: auto; }
-
-.dev-name { font-size: 13px; }
+.user-name { font-weight: 600; color: var(--au-text); }
+.badge-gap { margin-left: 6px; }
+.dev-name { font-size: 13px; color: var(--au-text); }
 .dev-id {
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--au-text-3);
   word-break: break-all;
 }
-.mini-badge {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  background: var(--border-color, #262626);
-  color: var(--text-secondary);
-}
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.danger { background: var(--danger-bg); color: var(--danger); }
-.muted { color: var(--text-muted); }
-
-/* 「已封禁」那块统计立牌要能看出异常：类名写了却没定义过（对照页定义了同样的规则）*/
-.stat-tile.is-danger { border-color: var(--danger-border); }
+.muted { color: var(--au-text-4); }
 
 /* 设备详情弹窗：详情用全局 .kv-list，只补两处间距 */
 .dev-detail { display: flex; flex-direction: column; gap: 12px; }
 /* 弹窗里的键值行靠左：值与值之间会很长（设备 ID / 提示文案），右对齐读不动 */
 .dev-detail .kv-row .kv-value { text-align: left; }
-.dev-ver { margin-left: 6px; font-size: 11px; color: var(--text-muted); }
-.dev-ago { margin-left: 6px; font-size: 11px; color: var(--text-muted); }
+.dev-ver,
+.dev-ago { margin-left: 6px; font-size: 12px; color: var(--au-text-3); }
 .dev-actions-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.7;
-  color: var(--text-secondary);
-  background: var(--bg-inset, rgba(255, 255, 255, 0.03));
-  border-radius: 8px;
+  color: var(--au-text-2);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
   padding: 10px 12px;
 }
 .dev-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .dev-footer-right { display: flex; gap: 8px; }
+
+@media (max-width: 768px) {
+  .list-bar { padding: 4px 16px 12px; }
+}
+
+@media (max-width: 640px) {
+  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .dev-footer { flex-direction: column-reverse; align-items: stretch; }
+  .dev-footer-right :deep(.el-button) { flex: 1; margin-left: 0; }
+}
 </style>

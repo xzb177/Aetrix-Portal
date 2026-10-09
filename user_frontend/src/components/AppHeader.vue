@@ -241,10 +241,38 @@ async function loadMsgPreview() {
   }
 }
 
+/**
+ * 下拉锚点（≥769px）：两个下拉 Teleport 到 body 之后，原来的 `position:absolute; top:100%`
+ * 相对的是整页（初始包含块）而不是按钮——桌面上菜单落在首屏之外（y≈视口高度），点了像没反应。
+ * 打开时按按钮位置算一次 fixed 坐标；≤768px 仍由 CSS 锚在底部坞之上，不加内联样式。
+ */
+const dropStyle = ref<Record<string, string>>({})
+function anchorDropdown(el: HTMLElement | null) {
+  if (!el || window.innerWidth <= 768) {
+    dropStyle.value = {}
+    return
+  }
+  const r = el.getBoundingClientRect()
+  dropStyle.value = {
+    position: 'fixed',
+    top: `${Math.round(r.bottom + 8)}px`,
+    right: `${Math.max(8, Math.round(document.documentElement.clientWidth - r.right))}px`,
+  }
+}
+
+function toggleUserMenu() {
+  msgMenuOpen.value = false
+  userMenuOpen.value = !userMenuOpen.value
+  if (userMenuOpen.value) anchorDropdown(userMenuRef.value)
+}
+
 function toggleMsgMenu() {
   userMenuOpen.value = false
   msgMenuOpen.value = !msgMenuOpen.value
-  if (msgMenuOpen.value) loadMsgPreview()
+  if (msgMenuOpen.value) {
+    anchorDropdown(msgMenuRef.value)
+    loadMsgPreview()
+  }
 }
 
 /**
@@ -420,7 +448,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
           <span>{{ pointsBalance }}</span>
         </RouterLink>
         <button
-          class="theme-btn round-btn"
+          class="theme-btn round-btn wide-only"
           :class="{ auto: themePreference === 'system' }"
           :title="themeTitle"
           :aria-label="themeTitle"
@@ -431,7 +459,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
         <template v-if="userStore.isLoggedIn">
           <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
-          <div ref="msgMenuRef" class="msg-menu">
+          <div ref="msgMenuRef" class="msg-menu wide-only">
             <button
               class="msg-btn round-btn"
               :class="{ alert: unreadCount > 0, open: msgMenuOpen }"
@@ -448,7 +476,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                  fixed 后代的包含块，fixed 定位会相对 header 而非视口（真机自测抓到过） -->
             <Teleport to="body">
             <Transition name="dd">
-              <div v-if="msgMenuOpen" class="msg-dropdown">
+              <div v-if="msgMenuOpen" class="msg-dropdown" :style="dropStyle">
                 <div class="msg-drop-head">
                   <span class="msg-drop-title">消息中心</span>
                   <span v-if="unreadCount > 0" class="msg-drop-unread">{{ unreadCount > 99 ? '99+' : unreadCount }} 条未读</span>
@@ -494,9 +522,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
               aria-haspopup="menu"
               :aria-label="`${displayName} · 账号菜单`"
               :title="displayName"
-              @click="userMenuOpen = !userMenuOpen"
+              @click="toggleUserMenu"
             >
               <span class="avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
+              <!-- ≤420px 消息按钮收进头像菜单：有未读时头像右上角点一颗小圆点 -->
+              <span v-if="unreadCount > 0" class="avatar-dot narrow-only" aria-hidden="true"></span>
             </button>
 
             <Teleport to="body">
@@ -505,7 +535,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                    ≤768px 底边锚在拇指区（底部坞）之上、内部滚动；z-index 60 在根层高于
                    顶栏（50）与底部坞（在其上下文内），低于 Toast（120）与弹窗（80 不冲突：
                    弹窗打开时应盖住菜单）。点击外部关闭的判定见 onDocClick 的 closest 兼容 -->
-              <div v-if="userMenuOpen" class="user-dropdown" role="menu">
+              <div v-if="userMenuOpen" class="user-dropdown" role="menu" :style="dropStyle">
                 <!-- ① 头部：头像 + 昵称 + @id + 状态徽章 -->
                 <div class="dropdown-head">
                   <span class="avatar dropdown-avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
@@ -534,6 +564,18 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                     class="dropdown-badge"
                   >{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
                 </RouterLink>
+
+                <!-- ≤420px：顶栏只留积分与头像，外观切换收进菜单（宽屏仍是顶栏那枚圆钮） -->
+                <button
+                  type="button"
+                  class="dropdown-item dropdown-narrow-only"
+                  role="menuitem"
+                  :title="themeTitle"
+                  @click="toggleTheme"
+                >
+                  <component :is="themeCurrent.icon" :size="15" /> 外观
+                  <span class="dropdown-meta">{{ themeCurrent.label }}</span>
+                </button>
 
                 <!-- 管理后台是另一个前端（同源 /admin/），必须用浏览器跳转：
                      写成 RouterLink 会被用户端路由当成 404 兜底页 -->
@@ -569,8 +611,11 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   position: sticky;
   top: 0;
   z-index: 50;
-  /* 暗房影院：顶栏是完全不透明的暖黑实底 + 一根发丝线，不再有毛玻璃与装饰光斑 */
-  background: var(--au-bg);
+  /* 暗房影院：顶栏 = 页面底色 0.96 + 模糊（滚过去的内容不再透出字形）+ 一根发丝线。
+     两套主题都是同一个配方（--au-chrome 在浅色下是奶油纸色） */
+  background: var(--au-chrome);
+  -webkit-backdrop-filter: saturate(1.4) blur(16px);
+  backdrop-filter: saturate(1.4) blur(16px);
   border-bottom: 1px solid var(--au-border);
   overflow: hidden;
 }
@@ -812,6 +857,20 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 /* 头像按钮：与消息按钮同一配方（.round-btn），里面正好嵌一颗 30px 头像
    （昵称不再出现在顶栏 → 菜单头部那一行仍是完整身份展示） */
 .user-btn { padding: 3px; }
+
+/* 头像右上角的未读点（只在 ≤420px 消息按钮收进菜单时出现） */
+.avatar-dot {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--au-warning);
+  box-shadow: 0 0 0 2px var(--au-bg);
+}
+
+.narrow-only { display: none; }
 
 .avatar {
   width: 30px;
@@ -1120,6 +1179,15 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .dropdown-item:active { background: var(--au-surface-3); }
 .dropdown-item svg { color: var(--au-text-3); transition: color var(--au-fast) var(--au-ease); }
 .dropdown-item:hover svg { color: var(--au-primary); }
+.dropdown-meta {
+  margin-left: auto;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+}
+.dropdown-narrow-only { display: none; }
+@media (max-width: 420px) {
+  .dropdown-narrow-only { display: flex; }
+}
 .dropdown-badge {
   margin-left: auto;
   min-width: 18px;
@@ -1171,5 +1239,16 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
    （375px 下：内距 24 + 品牌 ~91 + 三枚 114 + 两个 8px 间距 = ~245px） */
 @media (max-width: 400px) {
   .header-container { padding: 0 0.75rem; gap: 0.5rem; }
+}
+
+/* ≤420px（iPhone 竖屏）：顶栏只留「品牌 · 积分 · 头像」三件事。
+   外观切换与消息入口收进头像菜单（菜单里本就有「消息中心」一项，未读数照常显示），
+   功能一样不少；品牌字距从 0.28em 收到 0.18em，免得四颗圆钮把品牌挤成两行 */
+@media (max-width: 420px) {
+  .wide-only { display: none; }
+  .narrow-only { display: block; }
+  .logo-text { font-size: 0.9375rem; letter-spacing: 0.18em; }
+  .logo-mark { width: 26px; height: 26px; }
+  .points-pill { padding: 0.3125rem 0.625rem; }
 }
 </style>

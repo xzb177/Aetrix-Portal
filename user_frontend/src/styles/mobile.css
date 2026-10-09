@@ -54,9 +54,9 @@
     gap: var(--neo-space-3, 12px) !important;
   }
 
-  /* 弹窗全屏 */
-  .modal,
-  .dialog,
+  /* 弹窗全屏：只对通用 Modal 组件的容器生效。
+     各视图自带的 .modal（个人中心改密码、工单、消息详情）本身就是「居中卡片 + max-height」
+     的设计，被这里拉成 100% 高之后，表单挤在顶部、下面空一大片——不再波及它们 */
   .modal-container {
     width: 100% !important;
     height: 100% !important;

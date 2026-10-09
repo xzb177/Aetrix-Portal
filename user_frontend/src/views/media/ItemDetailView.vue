@@ -572,7 +572,8 @@ onMounted(loadItem)
   min-height: 100vh;
   background: var(--au-bg);
   color: var(--au-text);
-  padding-bottom: 3rem;
+  /* ≤768px 底部坞悬在内容之上：最后一屏让出坞 + iOS 底栏的高度 */
+  padding-bottom: calc(3rem + var(--au-dock-space));
 }
 
 .backdrop {
@@ -580,17 +581,19 @@ onMounted(loadItem)
   top: 0;
   left: 0;
   right: 0;
-  height: 380px;
+  height: 340px;
   background-size: cover;
   background-position: center 20%;
-  background-color: var(--au-bg-soft);
+  /* 与首页 Hero 同一口径：背景图是一块「银幕」，两套主题都是暗的、底边硬切，
+     海报压在切口上（白日模式下不再渐隐成一片发灰的奶油色） */
+  background-color: #11100e;
   pointer-events: none;
 }
 
 .backdrop-shade {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to bottom, var(--au-overlay-soft), var(--au-overlay-strong) 70%, var(--au-bg));
+  background: linear-gradient(to bottom, rgba(12, 10, 9, 0.35), rgba(12, 10, 9, 0.88));
 }
 
 .content {
@@ -603,17 +606,18 @@ onMounted(loadItem)
   align-items: center;
   gap: 0.375rem;
   padding: 0.4375rem 0.75rem;
-  background: var(--au-overlay-soft);
-  border: 1px solid var(--au-border);
+  /* 返回键压在暗银幕上：两套主题都用浅字暗底 */
+  background: rgba(12, 10, 9, 0.45);
+  border: 1px solid rgba(245, 235, 220, 0.16);
   border-radius: 10px;
-  color: var(--au-text-2);
+  color: rgba(243, 237, 228, 0.86);
   font-size: 0.8125rem;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .back-btn:hover {
-  color: var(--au-text);
+  color: #f3ede4;
 }
 
 .loading {
@@ -690,7 +694,7 @@ onMounted(loadItem)
 .meta-row {
   display: flex;
   align-items: center;
-  gap: 0.875rem;
+  gap: 0.25rem 1rem;
   flex-wrap: wrap;
   font-size: 0.8125rem;
   color: var(--au-text-3);
@@ -698,6 +702,7 @@ onMounted(loadItem)
 }
 
 /* Emby 风：元数据项之间用 · 分隔 */
+/* 分隔点：正好落在 1rem 间距的正中（translateX(-50%)），带描边的分级标签也不会把点圈进框里 */
 .meta-row > span + span {
   position: relative;
 }
@@ -705,8 +710,11 @@ onMounted(loadItem)
 .meta-row > span + span::before {
   content: '·';
   position: absolute;
-  left: -0.5625rem;
-  color: var(--au-text-3);
+  left: -0.5rem;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--au-text-4);
+  pointer-events: none;
 }
 
 .meta-row .quality {
@@ -775,7 +783,6 @@ onMounted(loadItem)
   padding: 0.75rem 0.875rem;
   margin-bottom: 1rem;
   background: var(--au-surface);
-  border-left: 2px solid var(--au-primary);
   border: 1px solid var(--au-primary-border);
   border-radius: var(--au-r-md);
   text-decoration: none;
@@ -901,8 +908,8 @@ onMounted(loadItem)
 
 .section-title {
   margin: 0;
-  font-size: 1.0625rem;
-  font-weight: 600;
+  font-size: 1.25rem;
+  font-weight: 700;
   color: var(--au-text);
 }
 
@@ -913,7 +920,7 @@ onMounted(loadItem)
   gap: 0.5rem;
   height: 40px; /* SYS-2：触摸目标保底 40px */
   padding: 0 0.75rem;
-  background: var(--au-overlay-soft);
+  background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   border-radius: 9px;
   color: var(--au-text);

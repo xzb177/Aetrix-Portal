@@ -18,6 +18,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowDown,
   ArrowUp,
+  ChevronDown,
   KeyRound,
   Layers,
   ListOrdered,
@@ -69,6 +70,7 @@ import type {
   TmdbPreview,
   TmdbTestResult,
 } from '@/api/admin'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
 
 // ==================== 条目元数据刷新 ====================
@@ -827,27 +829,23 @@ onMounted(() => {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">元数据来源</h1>
-        <p class="admin-page-desc">
-          条目这一层的元数据从哪来、错了怎么纠、补全队列跑到哪一步。
-          按库的扫描与刮削策略仍在「媒体库」页。
-        </p>
-      </div>
-      <div class="toolbar">
-        <RouterLink to="/emby"><el-button size="small">去媒体库页</el-button></RouterLink>
+    <PageHeader
+      eyebrow="媒体与交付"
+      title="元数据来源"
+      description="条目这一层的元数据从哪来、错了怎么纠、补全队列跑到哪一步。按库的扫描与刮削策略仍在「媒体库」页。"
+    >
+      <template #actions>
+        <RouterLink to="/emby" class="au-btn au-btn-ghost au-btn-sm">去媒体库页</RouterLink>
         <el-button size="small" :loading="enrichProgressLoading" @click="loadEnrichProgress">
           <RefreshCw :size="14" style="margin-right: 4px" />刷新进度
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="ms-grid">
       <!-- 0. 多源元数据补全（Phase 6b）：总开关 / 中文优先 / 顺序 / 逐源开关与密钥池 -->
-      <div class="admin-card ms-card ms-card-wide">
-        <div class="card-header">
-          <h2><Layers :size="16" style="margin-right: 6px" />多源元数据补全</h2>
+      <SectionCard class="ms-card ms-card-wide" title="多源元数据补全" :icon="Layers">
+        <template #actions>
           <div class="ms-facts">
             <span v-if="meta" class="fact" :class="meta.enabled ? 'ok' : 'muted'">
               总开关：{{ meta.enabled ? '已开启' : '已关闭' }}
@@ -858,7 +856,7 @@ onMounted(() => {
             </span>
             <span v-if="metaDirty" class="fact warn">有未保存的改动</span>
           </div>
-        </div>
+        </template>
         <p class="ms-hint">
           TMDB 对中文剧集 / 综艺收录偏少。开多源后，TMDB 没搜到的条目会按下面的顺序
           再问一遍其它源：<strong>标题 / 简介 / 类型 / 评分逐个字段按序填充</strong>，
@@ -866,8 +864,20 @@ onMounted(() => {
           都只影响它自己，不会中断整条刮削。命中的各源外部 ID 会合并存到条目上。
         </p>
 
-        <div v-if="metaLoading && !meta" class="ms-hint">加载中…</div>
-        <div v-else-if="!meta" class="ms-hint">读取多源配置失败，稍后点「刷新」重试。</div>
+        <div v-if="metaLoading && !meta" class="ms-skeleton" aria-busy="true">
+          <div class="au-skeleton" /><div class="au-skeleton" /><div class="au-skeleton" />
+        </div>
+        <EmptyState
+          v-else-if="!meta"
+          compact
+          :icon="Layers"
+          title="读取多源配置失败"
+          description="可能是网络或后端暂时不可用。"
+        >
+          <template #actions>
+            <el-button size="small" :loading="metaLoading" @click="loadMeta">重试</el-button>
+          </template>
+        </EmptyState>
         <template v-else>
           <el-alert
             v-if="!meta.enabled"
@@ -1140,12 +1150,12 @@ onMounted(() => {
             </div>
           </div>
         </template>
-      </div>
+      </SectionCard>
 
       <!-- 1. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
-      <div ref="tmdbPoolRef" class="admin-card ms-card ms-card-wide">
-        <div class="card-header">
-          <h2><KeyRound :size="16" style="margin-right: 6px" />TMDB 密钥池与镜像</h2>
+      <div ref="tmdbPoolRef" class="ms-card-wide">
+      <SectionCard class="ms-card" title="TMDB 密钥池与镜像" :icon="KeyRound">
+        <template #actions>
           <div class="ms-facts">
             <span v-if="tmdbKeys" class="fact">
               来源：{{ tmdbKeys.source === 'env' ? '环境变量' : tmdbKeys.source === 'db' ? '后台填写' : '未配置' }}
@@ -1156,7 +1166,7 @@ onMounted(() => {
             </span>
             <span v-if="tmdbKeys" class="fact">实际 {{ tmdbKeys.rate ?? 0 }}/秒（上限 {{ tmdbKeys.rate_ceiling ?? 0 }}）</span>
           </div>
-        </div>
+        </template>
         <p class="ms-hint">
           多把密钥轮着：一把被限流（429）或失效（401）会自动冷却并切到下一把，
           冷却时长走配置（当前 429 {{ mirror?.cooldown_sec ?? '—' }} 秒 / 401
@@ -1173,12 +1183,27 @@ onMounted(() => {
           下面添加的密钥会存下来但<strong>暂不生效</strong>。
         </el-alert>
 
-        <div v-if="tmdbKeysLoading && !tmdbKeys" class="ms-hint">加载中…</div>
-        <div v-else-if="!tmdbKeys" class="ms-hint">读取密钥池失败，稍后点「刷新」重试。</div>
-        <div v-else-if="!keyRows.length" class="ms-hint">
-          还没有密钥：刮削会静默跳过。在下方输入框添一把（可多添几把轮着用），
-          填完点「测试全部」先确认能通。
+        <div v-if="tmdbKeysLoading && !tmdbKeys" class="ms-skeleton" aria-busy="true">
+          <div class="au-skeleton" /><div class="au-skeleton" />
         </div>
+        <EmptyState
+          v-else-if="!tmdbKeys"
+          compact
+          :icon="KeyRound"
+          title="读取密钥池失败"
+          description="可能是网络或后端暂时不可用。"
+        >
+          <template #actions>
+            <el-button size="small" :loading="tmdbKeysLoading" @click="loadTmdbKeys">重试</el-button>
+          </template>
+        </EmptyState>
+        <EmptyState
+          v-else-if="!keyRows.length"
+          compact
+          :icon="KeyRound"
+          title="还没有 TMDB 密钥"
+          description="没有密钥时刮削会静默跳过。在下方输入框添一把（可多添几把轮着用），填完点「测试全部」先确认能通。"
+        />
         <table v-else class="ms-table">
           <thead>
             <tr><th>#</th><th>密钥</th><th>状态</th><th>操作</th></tr>
@@ -1249,12 +1274,10 @@ onMounted(() => {
           ｜图片 <code class="mono">{{ mirror.image_base }}</code>
           {{ mirror.image_base_from_env ? '（来自环境变量）' : '' }}
         </p>
+      </SectionCard>
       </div>
       <!-- 2. 条目元数据刷新 -->
-      <div class="admin-card ms-card">
-        <div class="card-header">
-          <h2><RotateCw :size="16" style="margin-right: 6px" />条目元数据刷新</h2>
-        </div>
+      <SectionCard class="ms-card" title="条目元数据刷新" :icon="RotateCw">
         <p class="ms-hint">
           按条目 ID 立即重刮一条：有 NFO 就重读 NFO（文字以 NFO 为准），
           再用 TMDB 补缺失的图片 / IMDb / 别名。电影 / 剧集优先，季 / 集按 NFO 能力处理。
@@ -1268,20 +1291,22 @@ onMounted(() => {
         <div v-if="rescrapeItemNotes.length" class="ms-results">
           <div v-for="(n, i) in rescrapeItemNotes" :key="i" class="ms-result">{{ n }}</div>
         </div>
-      </div>
+      </SectionCard>
 
       <!-- 3. 手动绑定 TMDB（默认折叠） -->
-      <div class="admin-card ms-card">
-        <div class="card-header" style="cursor: pointer" @click="toggleBindCard">
-          <h2><Wand2 :size="16" style="margin-right: 6px" />手动绑定 TMDB</h2>
-          <span class="ms-hint">{{ bindCardCollapsed ? '展开' : '收起' }}</span>
-        </div>
+      <SectionCard class="ms-card" title="手动绑定 TMDB" :icon="Wand2">
+        <template #actions>
+          <el-button size="small" text :aria-expanded="!bindCardCollapsed" @click="toggleBindCard">
+            <ChevronDown :size="14" class="ms-chevron" :class="{ 'is-open': !bindCardCollapsed }" />
+            {{ bindCardCollapsed ? '展开' : '收起' }}
+          </el-button>
+        </template>
         <div v-show="!bindCardCollapsed">
         <p class="ms-hint">
           TMDB 对中文剧集 / 综艺收录偏少，自动刮削搜不到的条目在这里手动识别。
           第一步搜库内条目并选中，第二步搜 TMDB 候选、一键绑定（或手动输入 TMDB ID / tt 开头的 IMDb ID）；绑定后自动补全缺失的图 / 简介 / IMDb / 别名。
         </p>
-        <div class="ms-hint" style="font-weight: 600">第一步：搜库内条目</div>
+        <div class="ms-step">第一步 · 搜库内条目</div>
         <div class="ms-actions">
           <el-input v-model="bindSearchQ" placeholder="剧名关键字，如：黑鸟" style="width: 200px" clearable @keyup.enter="doSearchBindItems" />
           <el-input v-model="bindSearchYear" placeholder="年份（可选）" style="width: 110px" clearable @keyup.enter="doSearchBindItems" />
@@ -1329,7 +1354,7 @@ onMounted(() => {
         </div>
         <!-- 第二步：搜 TMDB 候选，一键绑定（Emby 式手动识别） -->
         <template v-if="bindSelectedItem">
-          <div class="ms-hint" style="font-weight: 600; margin-top: 10px">第二步：搜 TMDB 候选，一键绑定</div>
+          <div class="ms-step">第二步 · 搜 TMDB 候选，一键绑定</div>
           <div class="ms-actions">
             <el-input v-model="tmdbSearchQ" placeholder="剧名，如：黑鸟" style="width: 200px" clearable @keyup.enter="doSearchTmdbCandidates" />
             <el-input v-model="tmdbSearchYear" placeholder="年份（可选）" style="width: 110px" clearable @keyup.enter="doSearchTmdbCandidates" />
@@ -1423,27 +1448,40 @@ onMounted(() => {
           <div v-for="(n, i) in bindNotes" :key="i" class="ms-result">{{ n }}</div>
         </div>
         </div>
-      </div>
+      </SectionCard>
 
       <!-- 4. 补全进度 -->
-      <div class="admin-card ms-card ms-card-wide">
-        <div class="card-header">
-          <h2><RefreshCw :size="16" style="margin-right: 6px" />补全进度</h2>
+      <SectionCard
+        class="ms-card ms-card-wide"
+        title="补全进度"
+        :icon="RefreshCw"
+        description="后台补全 worker（enrich）的工作进度：待处理 / 进行中 / 已完成 / 失败 / 重试中。"
+      >
+        <div v-if="enrichProgressLoading && !enrichProgress" class="ms-stat-grid" aria-busy="true">
+          <div v-for="n in 5" :key="n" class="au-skeleton ms-stat-skeleton" />
         </div>
-        <p class="ms-hint">
-          后台补全 worker（enrich）的工作进度：待处理 / 进行中 / 已完成 / 失败 / 重试中。
-        </p>
-        <div v-if="enrichProgressLoading && !enrichProgress" class="ms-hint">加载中…</div>
-        <div v-else-if="!enrichProgress" class="ms-hint">暂无数据</div>
-        <div v-else>
-          <div class="ms-facts">
-            <span class="fact">待处理 {{ enrichProgress.enrich.pending }}</span>
-            <span class="fact">进行中 {{ enrichProgress.enrich.enriching }}</span>
-            <span class="fact ok">已完成 {{ enrichProgress.enrich.done }}</span>
-            <span class="fact" :class="{ danger: enrichProgress.enrich.failed > 0 }">
-              失败 {{ enrichProgress.enrich.failed }}
-            </span>
-            <span class="fact">重试中 {{ enrichProgress.enrich.retrying }}</span>
+        <EmptyState
+          v-else-if="!enrichProgress"
+          compact
+          :icon="RefreshCw"
+          title="暂无补全进度"
+          description="读取失败或 worker 还没上报过数据。"
+        >
+          <template #actions>
+            <el-button size="small" :loading="enrichProgressLoading" @click="loadEnrichProgress">重试</el-button>
+          </template>
+        </EmptyState>
+        <div v-else class="ms-progress">
+          <div class="ms-stat-grid">
+            <StatTile label="待处理" :value="enrichProgress.enrich.pending" />
+            <StatTile label="进行中" :value="enrichProgress.enrich.enriching" />
+            <StatTile label="已完成" :value="enrichProgress.enrich.done" />
+            <StatTile
+              label="失败"
+              :value="enrichProgress.enrich.failed"
+              :tone="enrichProgress.enrich.failed > 0 ? 'danger' : 'plain'"
+            />
+            <StatTile label="重试中" :value="enrichProgress.enrich.retrying" />
           </div>
           <!-- v2.42.9：阶段用时分解 + 近 5 分钟完成速率。只报「进程内计数」——
                分母是本次进程运行时长，重启会归零，所以标签写清「本进程」。 -->
@@ -1465,7 +1503,7 @@ onMounted(() => {
             </el-button>
           </p>
         </div>
-      </div>
+      </SectionCard>
     </div>
   </div>
 </template>

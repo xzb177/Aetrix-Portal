@@ -31,6 +31,7 @@
       <button
         v-if="clearable && modelValue && !disabled"
         type="button"
+        aria-label="清空"
         class="neo-input__clear"
         @click="handleClear"
       >

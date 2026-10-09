@@ -1,4 +1,5 @@
-/* 元数据来源页：样式从 EmbyAdmin 的 scoped 样式原样搬来（迁移只改位置，不改观感） */
+/* 元数据来源页：v2.54 暗房影院——卡片换成 SectionCard，颜色 / 圆角只走 --au-* 令牌。
+   注意这是**全局**样式表（被 MetadataSources.vue import），所有规则都挂在 .ms-* 前缀下。 */
 .ms-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -6,22 +7,58 @@
   align-items: start;
 }
 
-.ms-card {
+/* SectionCard 的内容区竖排留缝：SectionCard 的样式是 scoped（0,2,0），这里多挂一层 .ms-grid 稳赢 */
+.ms-grid .ms-card > .au-section__body {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-/* 卡片标题：与 EmbyAdmin 的 .card-header h2 同一套值（那个是 scoped，这里自带） */
-.ms-card .card-header h2 {
+/* 加载骨架：几条细长条，代替「加载中…」一行字 */
+.ms-skeleton {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  margin: 0;
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
 }
+.ms-skeleton .au-skeleton {
+  height: 14px;
+  border-radius: var(--au-r-sm);
+}
+.ms-skeleton .au-skeleton:nth-child(2) { width: 82%; }
+.ms-skeleton .au-skeleton:nth-child(3) { width: 64%; }
+
+/* 补全进度：五个 StatTile */
+.ms-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ms-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+.ms-stat-skeleton {
+  height: 74px;
+  border-radius: var(--au-r-lg);
+}
+
+/* 手动绑定的步骤小标题：琥珀眉题 */
+.ms-step {
+  margin-top: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--au-primary);
+}
+
+/* 折叠按钮的小箭头 */
+.ms-chevron {
+  margin-right: 2px;
+  transition: transform var(--au-fast) var(--au-ease);
+  transform: rotate(-90deg);
+}
+.ms-chevron.is-open { transform: none; }
 
 /* 补全进度要放下两排阶段耗时：整行 */
 .ms-card-wide {
@@ -31,7 +68,7 @@
 .ms-hint {
   margin: 0;
   font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
   line-height: 1.8;
 }
 
@@ -48,16 +85,18 @@
 
 .ms-table th {
   text-align: left;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
   font-weight: var(--font-weight-medium);
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--au-border);
   white-space: nowrap;
 }
 
 .ms-table td {
   padding: 7px 8px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--au-border);
   vertical-align: top;
 }
 
@@ -68,16 +107,16 @@
 .ms-sub {
   margin-top: 4px;
   padding-top: 8px;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--au-border);
   font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  color: var(--au-text-2);
   font-weight: var(--font-weight-medium);
 }
 
 /* .mono 是全局已有的等宽字体类（index.css），这里不重复定义 */
 
 .ms-facts .fact.warn {
-  color: var(--warning);
+  color: var(--au-warning);
 }
 
 .ms-hint.ms-block {
@@ -120,15 +159,15 @@
   align-items: center;
   gap: 5px;
   font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  color: var(--au-text-2);
 }
 
 .ms-facts .fact.ok {
-  color: var(--success);
+  color: var(--au-success);
 }
 
 .ms-facts .fact.danger {
-  color: var(--danger);
+  color: var(--au-danger);
 }
 
 /* ==================== 多源元数据（Phase 6b） ==================== */
@@ -141,11 +180,11 @@
 
 /* 小节下方的状态文案：.warn / .danger 全局没有同名类，挂在本页下 */
 .ms-hint.warn {
-  color: var(--warning);
+  color: var(--au-warning);
 }
 
 .ms-hint.danger {
-  color: var(--danger);
+  color: var(--au-danger);
 }
 
 .ms-block {
@@ -170,7 +209,7 @@
 .ms-switch-title {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
-  color: var(--text-primary);
+  color: var(--au-text);
 }
 
 /* 源表：位次、开关、限速、密钥、操作五列 */
@@ -201,9 +240,9 @@
   justify-content: center;
   width: 20px;
   height: 20px;
-  border-radius: var(--radius-sm);
-  background: var(--primary-bg);
-  color: var(--text-primary);
+  border-radius: var(--au-r-sm);
+  background: var(--au-primary-soft);
+  color: var(--au-text);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
 }
@@ -218,7 +257,7 @@
   align-items: center;
   gap: 6px;
   font-weight: var(--font-weight-medium);
-  color: var(--text-primary);
+  color: var(--au-text);
 }
 
 .ms-row-ops {
@@ -233,29 +272,31 @@
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
 }
 
 /* 表格单元格里的一行说明：不能拿 .ms-sub（有分隔线），单独一个类 */
 .ms-note {
   margin-top: 2px;
   font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
   line-height: 1.7;
   white-space: normal;
 }
 
 .ms-note.warn {
-  color: var(--warning);
+  color: var(--au-warning);
 }
 
 /* key 申请入口：直接跳官方页面，不让管理员去搜索引擎里找 */
+.ms-apply-link:hover { color: var(--au-primary-strong); }
+
 .ms-apply-link {
   display: inline-block;
   margin-top: 2px;
-  color: var(--primary);
+  color: var(--au-primary);
   word-break: break-all;
 }
 
@@ -264,7 +305,7 @@
   align-items: center;
   gap: 4px;
   font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  color: var(--au-text-2);
   font-weight: var(--font-weight-medium);
 }
 
@@ -285,7 +326,7 @@
 }
 
 .ms-probe-value {
-  color: var(--text-secondary);
+  color: var(--au-text-2);
   word-break: break-word;
   max-width: 720px;
 }
@@ -349,10 +390,10 @@
     gap: 8px 10px;
     padding: 10px 12px;
     margin-bottom: 8px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
+    border: 1px solid var(--au-border);
+    border-radius: var(--au-r-md);
     /* 卡片里的卡片：用 --bg-inset（内嵌面）而不是 --bg-card（与外层卡同色，会看不见） */
-    background: var(--bg-inset);
+    background: var(--au-bg-soft);
   }
   .ms-table-order td {
     display: block;
@@ -373,7 +414,7 @@
   .ms-cell-label {
     display: block;
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--au-text-3);
     line-height: 1.4;
   }
 
@@ -403,8 +444,8 @@
 
 /* 手动绑定 TMDB：搜索结果选中态 */
 .ms-result.is-selected {
-  background: var(--el-color-primary-light-9);
-  border-radius: 6px;
+  background: var(--au-primary-soft);
+  border-radius: var(--au-r-sm);
   padding: 2px 8px;
 }
 
@@ -442,12 +483,12 @@
   align-items: center;
 }
 .ms-result .lock-mark {
-  color: var(--el-color-warning);
+  color: var(--au-warning);
   margin-left: 4px;
   flex: none;
 }
 .ms-result.is-locked .ms-result-name {
-  color: var(--text-secondary);
+  color: var(--au-text-2);
 }
 .ms-result .lock-btn {
   margin-left: auto;
@@ -475,9 +516,9 @@
   display: flex;
   gap: 10px;
   padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-inset);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
 }
 
 .tmdb-poster {
@@ -490,8 +531,8 @@
   width: 72px;
   height: 108px;
   object-fit: cover;
-  border-radius: 4px;
-  background: var(--bg-hover);
+  border-radius: calc(var(--au-r-sm) / 2);
+  background: var(--au-violet-soft);
 }
 
 .tmdb-poster-empty {
@@ -500,9 +541,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
-  background: var(--bg-hover);
-  color: var(--text-tertiary);
+  border-radius: calc(var(--au-r-sm) / 2);
+  background: var(--au-violet-soft);
+  color: var(--au-text-3);
   font-size: var(--font-size-xs);
   text-align: center;
 }
@@ -523,7 +564,7 @@
 
 .tmdb-meta {
   font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
 }
 
 /* 简介只露两行，hover 显示全文（title 属性兜底） */
@@ -531,7 +572,7 @@
   margin: 0;
   font-size: var(--font-size-xs);
   line-height: 1.6;
-  color: var(--text-secondary);
+  color: var(--au-text-2);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;

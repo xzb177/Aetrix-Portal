@@ -3,8 +3,13 @@
  * 管理后台外壳（Console v6）
  *
  * 结构：固定侧边栏（≤1024px 变抽屉）+ 顶栏（页面标题 / 刷新 / 管理员菜单）+ 内容区。
- * 导航按业务域分组，可折叠（状态记在 localStorage），当前页所在分组自动展开；
  * 手机上抽屉打开时锁背景滚动、Esc / 点遮罩 / 切路由都能关。
+ *
+ * v2.54（暗房影院）：外壳与用户端 AppHeader 同一套语言——不透明暖黑顶栏 + 发丝线、
+ * 衬线大写拉字距的品牌字、琥珀放映机标、三枚同配方的圆形图标按钮。侧边栏不再是
+ * 「可折叠手风琴」：分区标题是常驻的小眉题，每一项带自己的图标，当前页 = 正文色 +
+ * 实色表面 + 右侧一颗琥珀指示灯。分区按交付链重排为 7 组（安全准入从「用户与账号」
+ * 拆出，单项的「服务支持」并入「内容与服务」），所有路径与权限标记一个没少。
  *
  * v2.25.0：一级导航按**交付链**重组（仪表盘 / 用户与账号 / 媒体与交付 / 求片与内容 /
  * 运营中心 / 服务支持 / 系统与审计）——“多服”不再是要先理解的一级概念：
@@ -15,10 +20,12 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  LayoutDashboard, Users, Package, Film, Ticket, Settings, Server,
-  Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Tv,
+  LayoutDashboard, Users, Package, Ticket, Settings, Server,
+  Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Clapperboard,
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
-  TriangleAlert,
+  TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
+  Database, Cloud, Megaphone, Receipt, Gift, TicketPercent, UserPlus, KeySquare,
+  UserCog, Activity,
   Sun, Moon, MonitorSmartphone,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
@@ -80,7 +87,6 @@ const SUPER_ONLY_HINT = '需要超级管理员角色：可以查看，保存会�
 const roleLabel = computed(() => auth.admin?.role_label || '超级管理员')
 
 const APP_VERSION = APP_VERSION_BASE
-const OPEN_GROUPS_KEY = 'admin_nav_groups'
 
 const drawerOpen = ref(false)
 
@@ -92,6 +98,8 @@ useFocusTrap(sidebarRef, sidebarTrapActive)
 interface NavItem {
   path: string
   label: string
+  /** 侧边栏 / 命令面板里这一项的图标 */
+  icon: unknown
   /** 仅超级管理员可写（v2.26.0）：其他角色能看，改不了——入口上直接标出来 */
   superOnly?: boolean
 }
@@ -102,22 +110,33 @@ interface NavGroup {
   items: NavItem[]
 }
 
+/**
+ * 导航分区（暗房影院重排）：按「谁在用 → 谁能进 → 内容从哪来 → 内容 / 服务 → 钱 → 系统」
+ * 一条交付链排下来。路径一个字没动（旧收藏、外部链接照旧打开）。
+ */
 const navGroups: NavGroup[] = [
-  { title: '仪表盘', icon: LayoutDashboard, items: [{ path: '/', label: '仪表盘' }] },
+  { title: '概览', icon: LayoutDashboard, items: [{ path: '/', label: '仪表盘', icon: LayoutDashboard }] },
   {
     title: '用户与账号',
     icon: Users,
     items: [
-      { path: '/users', label: '用户' },
-      { path: '/subscriptions', label: '订阅与权益' },
-      { path: '/devices', label: '设备与安全' },
+      { path: '/users', label: '用户', icon: Users },
+      { path: '/subscriptions', label: '订阅与权益', icon: Crown },
+      { path: '/devices', label: '设备与安全', icon: Smartphone },
+      { path: '/login-logs', label: '登录日志', icon: ScrollText },
+    ],
+  },
+  {
+    // 「谁能进、能做什么」三件事从用户组里拆出来：它们都是全站级开关，影响所有人
+    title: '安全与准入',
+    icon: ShieldAlert,
+    items: [
       // 客户端能做什么（转码 / 清晰度 / 准入 / 下载与设备）：与「设备与安全」互为补充
-      { path: '/client-policy', label: '客户端策略', superOnly: true },
-      { path: '/login-logs', label: '登录日志' },
+      { path: '/client-policy', label: '客户端策略', icon: MonitorCog, superOnly: true },
       // 防共享：跨城市轨迹 + 同播检测。默认关闭，但「处置」档会停用账号 → 仅超管可改
-      { path: '/share-guard', label: '防共享', superOnly: true },
+      { path: '/share-guard', label: '防共享', icon: ShieldAlert, superOnly: true },
       // 访问拦截：UA 关键词 + IP 归属地。默认全关，但一旦打开就直接影响所有人能否访问 → 仅超管可改
-      { path: '/access-guard', label: '访问拦截', superOnly: true },
+      { path: '/access-guard', label: '访问拦截', icon: Ban, superOnly: true },
     ],
   },
   {
@@ -125,44 +144,45 @@ const navGroups: NavGroup[] = [
     title: '媒体与交付',
     icon: Server,
     items: [
-      { path: '/servers', label: '服务器与线路' },
-      { path: '/emby', label: '媒体库' },
+      { path: '/servers', label: '服务器与线路', icon: Server },
+      { path: '/emby', label: '媒体库', icon: Library },
       // 谁能看到哪些库（服务器默认范围 + 指定用户覆盖）：默认关闭，不改现有行为
-      { path: '/library-scope', label: '可见范围' },
+      { path: '/library-scope', label: '可见范围', icon: Eye },
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
-      { path: '/metadata-sources', label: '元数据来源' },
-      { path: '/pan115', label: '115 账号' },
+      { path: '/metadata-sources', label: '元数据来源', icon: Database },
+      { path: '/pan115', label: '115 账号', icon: Cloud },
     ],
   },
   {
-    title: '求片与内容',
-    icon: Film,
+    // 求片 / 公告 / 工单都是「和用户对话」：原来工单单独占一个只有一项的分组
+    title: '内容与服务',
+    icon: MessageSquareDashed,
     items: [
-      { path: '/media-seek', label: '求片管理' },
-      { path: '/announcements', label: '公告管理' },
+      { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
+      { path: '/announcements', label: '公告管理', icon: Megaphone },
+      { path: '/tickets', label: '工单', icon: Ticket },
     ],
   },
   {
     title: '运营中心',
     icon: Package,
     items: [
-      { path: '/goods', label: '商品与套餐' },
-      { path: '/orders', label: '订单' },
-      { path: '/exchange-codes', label: '兑换码' },
-      { path: '/coupons', label: '优惠券' },
-      { path: '/invitations', label: '邀请与积分' },
-      { path: '/codes', label: '卡码管理' },
+      { path: '/goods', label: '商品与套餐', icon: Package },
+      { path: '/orders', label: '订单', icon: Receipt },
+      { path: '/exchange-codes', label: '兑换码', icon: Gift },
+      { path: '/coupons', label: '优惠券', icon: TicketPercent },
+      { path: '/invitations', label: '邀请与积分', icon: UserPlus },
+      { path: '/codes', label: '卡码管理', icon: KeySquare },
     ],
   },
-  { title: '服务支持', icon: Ticket, items: [{ path: '/tickets', label: '工单' }] },
   {
     title: '系统与审计',
     icon: Settings,
     items: [
-      { path: '/admins', label: '管理员与权限', superOnly: true },
-      { path: '/settings', label: '系统设置', superOnly: true },
-      { path: '/logs', label: '操作日志' },
-      { path: '/health', label: '服务健康' },
+      { path: '/admins', label: '管理员与权限', icon: UserCog, superOnly: true },
+      { path: '/settings', label: '系统设置', icon: Settings, superOnly: true },
+      { path: '/logs', label: '操作日志', icon: ScrollText },
+      { path: '/health', label: '服务健康', icon: Activity },
     ],
   },
 ]
@@ -187,39 +207,7 @@ function groupOf(path: string): NavGroup | undefined {
 const activeGroup = computed(() => groupOf(route.path))
 
 const pageTitle = computed(() => (route.meta.title as string) || '管理后台')
-const crumbGroup = computed(() => (activeGroup.value?.items.length ? activeGroup.value.title : ''))
-
-// ==================== 分组折叠（记住上次展开状态）====================
-
-function loadOpenGroups(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(OPEN_GROUPS_KEY)
-    if (raw) return JSON.parse(raw) as Record<string, boolean>
-  } catch {
-    /* 忽略损坏的缓存 */
-  }
-  return {}
-}
-
-const openGroups = reactive<Record<string, boolean>>(loadOpenGroups())
-
-function persistOpenGroups() {
-  try {
-    localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(openGroups))
-  } catch {
-    /* 隐私模式等场景写入失败不影响使用 */
-  }
-}
-
-function isOpen(title: string): boolean {
-  return !!openGroups[title]
-}
-
-function toggleGroup(title: string) {
-  if (navGroups.find((g) => g.title === title)?.items.length === 1) return
-  openGroups[title] = !openGroups[title]
-  persistOpenGroups()
-}
+const crumbGroup = computed(() => (activeGroup.value && activeGroup.value.title !== '概览' ? activeGroup.value.title : ''))
 
 // ==================== 抽屉 ====================
 
@@ -270,7 +258,7 @@ const pageCommands = computed<PaletteItem[]>(() => {
         label: item.label,
         group: group.title,
         to: item.path,
-        icon: group.icon,
+        icon: item.icon,
         hint: locked ? SUPER_ONLY_HINT : item.path,
         keywords: locked ? '仅超级管理员' : undefined,
       })
@@ -325,18 +313,17 @@ function onPaletteRun(item: PaletteItem) {
   item.run?.()
 }
 
+// 切路由就收起抽屉（窄屏）
 watch(
   () => route.path,
-  (path) => {
-    closeDrawer()
-    const group = groupOf(path)
-    // 单项目分组不需要记忆；多项目分组进入时自动展开当前所在分组
-    if (group && group.items.length > 1 && !openGroups[group.title]) {
-      openGroups[group.title] = true
-      persistOpenGroups()
-    }
-  },
+  () => closeDrawer(),
 )
+
+/** 当前页判定：仪表盘只认精确的 /，其它入口认自己及子路径 */
+function isActive(path: string): boolean {
+  if (path === '/') return route.path === '/'
+  return route.path === path || route.path.startsWith(`${path}/`)
+}
 
 function refreshPage() {
   router.go(0)
@@ -444,67 +431,44 @@ onUnmounted(() => {
       :aria-modal="isTablet ? 'true' : undefined"
       aria-label="管理导航"
     >
+      <!-- 品牌：与用户端 AppHeader 同一套——琥珀放映机标 + 衬线大写拉字距的站名 -->
       <div class="brand">
-        <span class="brand-mark">
-          <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
-          <Tv v-else :size="18" />
-        </span>
-        <div class="brand-text">
-          <strong>{{ siteName() }}</strong>
-          <span>管理控制台</span>
-        </div>
-        <button class="icon-btn brand-close" aria-label="关闭菜单" @click="closeDrawer">
-          <X :size="18" />
+        <RouterLink to="/" class="brand-link">
+          <span class="brand-mark">
+            <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+            <Clapperboard v-else :size="17" />
+          </span>
+          <span class="brand-text">
+            <strong class="brand-name">{{ siteName() }}</strong>
+            <span class="brand-sub">管理控制台</span>
+          </span>
+        </RouterLink>
+        <button class="round-btn brand-close" aria-label="关闭菜单" @click="closeDrawer">
+          <X :size="17" />
         </button>
       </div>
 
-      <nav class="nav">
-        <template v-for="(group, gi) in navGroups" :key="group.title">
-          <!-- 单项分组：直接是入口 -->
+      <nav class="nav" aria-label="后台页面">
+        <section v-for="group in navGroups" :key="group.title" class="nav-section">
+          <h2 class="nav-eyebrow">{{ group.title }}</h2>
           <RouterLink
-            v-if="group.items.length === 1"
-            :to="group.items[0].path"
-            class="nav-group-head nav-single"
-            :class="{ active: route.path === group.items[0].path }"
+            v-for="item in group.items"
+            :key="item.path"
+            :to="item.path"
+            class="nav-item"
+            :class="{ active: isActive(item.path) }"
+            :aria-current="isActive(item.path) ? 'page' : undefined"
           >
-            <component :is="group.icon" :size="18" />
-            <span>{{ group.title }}</span>
+            <component :is="item.icon" :size="16" class="nav-icon" />
+            <span class="nav-label">{{ item.label }}</span>
+            <Lock v-if="item.superOnly && !isSuper" :size="12" class="nav-super" :title="SUPER_ONLY_HINT" />
           </RouterLink>
-
-          <!-- 多项分组：可折叠 -->
-          <div v-else class="nav-group">
-            <button
-              class="nav-group-head"
-              :class="{ active: activeGroup?.title === group.title && !isOpen(group.title) }"
-              :aria-expanded="isOpen(group.title)"
-              :aria-controls="`nav-group-${gi}`"
-              @click="toggleGroup(group.title)"
-            >
-              <component :is="group.icon" :size="18" />
-              <span>{{ group.title }}</span>
-              <ChevronDown :size="15" class="chev" :class="{ open: isOpen(group.title) }" />
-            </button>
-            <div v-show="isOpen(group.title)" :id="`nav-group-${gi}`" class="nav-items">
-              <RouterLink
-                v-for="item in group.items"
-                :key="item.path"
-                :to="item.path"
-                class="nav-item"
-                :class="{ active: route.path === item.path }"
-              >
-                <span class="nav-label">{{ item.label }}</span>
-                <Lock v-if="item.superOnly && !isSuper" :size="12" class="nav-super" :title="SUPER_ONLY_HINT" />
-              </RouterLink>
-            </div>
-          </div>
-        </template>
+        </section>
       </nav>
 
       <div class="sidebar-foot">
-        <!-- 外观三段切换器（.theme-row）已删（v2.42.9）：外观只剩顶栏那一枚圆形按钮，
-             侧栏不再为「换主题」占一整块，腾出的空间留给账号块与页脚 -->
         <div class="who">
-          <span class="who-avatar">{{ initial }}</span>
+          <span class="avatar who-avatar">{{ initial }}</span>
           <div class="who-info">
             <div class="who-name">{{ auth.admin?.username || '管理员' }}</div>
             <div class="who-role">{{ roleLabel }}</div>
@@ -527,18 +491,19 @@ onUnmounted(() => {
 
     <!-- 主区域 -->
     <div class="main">
+      <!-- 顶栏：不透明暖黑实底 + 一根发丝线（同用户端 .app-header），不再有毛玻璃 -->
       <header class="topbar">
-        <button class="icon-btn menu-btn" aria-label="打开菜单" @click="drawerOpen = true">
-          <Menu :size="20" />
+        <button class="round-btn menu-btn" aria-label="打开菜单" @click="drawerOpen = true">
+          <Menu :size="18" />
         </button>
 
         <div class="topbar-title">
-          <h1>{{ pageTitle }}</h1>
           <span v-if="crumbGroup" class="topbar-crumb">{{ crumbGroup }}</span>
+          <h1>{{ pageTitle }}</h1>
         </div>
 
         <div class="topbar-actions">
-          <!-- 命令搜索（Phase 5）：桌面带 ⌘K 提示，手机只留图标（顶栏本来就很挤） -->
+          <!-- 命令搜索：桌面带 ⌘K 提示，手机只留图标 -->
           <button
             class="cmd-btn"
             title="命令搜索（⌘K / Ctrl+K）"
@@ -546,7 +511,7 @@ onUnmounted(() => {
             @click="paletteOpen = true; closeDrawer()"
           >
             <Search :size="15" />
-            <span class="cmd-btn-text">搜索</span>
+            <span class="cmd-btn-text">搜索页面或操作</span>
             <kbd class="cmd-btn-kbd">⌘K</kbd>
           </button>
 
@@ -578,11 +543,11 @@ onUnmounted(() => {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <!-- 外观（v2.42.9）：侧栏那排三段切换器删掉后，这里是本端唯一入口——
-               图标即当前档（跟随系统 / 白日 / 黑暗），点一下轮换一档；
-               手动指定档时品牌色实底，跟随系统时中性底 + 品牌色细环 -->
+
+          <!-- 外观：图标即当前档（跟随系统 / 白日 / 黑暗），点一下轮换一档；
+               手动指定档 = 琥珀实底，跟随系统 = 中性底 + 琥珀细环（同用户端顶栏） -->
           <button
-            class="icon-btn theme-quick"
+            class="round-btn theme-btn"
             :class="{ auto: themePreference === 'system' }"
             :title="themeTitle"
             :aria-label="themeTitle"
@@ -592,16 +557,18 @@ onUnmounted(() => {
             <Sun v-else-if="themePreference === 'light'" :size="17" />
             <Moon v-else :size="17" />
           </button>
-          <button class="icon-btn" title="刷新当前页" aria-label="刷新当前页" @click="refreshPage">
+          <button class="round-btn refresh-btn" title="刷新当前页" aria-label="刷新当前页" @click="refreshPage">
             <RefreshCw :size="17" />
           </button>
           <el-dropdown trigger="click" @command="onAdminCommand">
-            <button class="admin-chip" aria-label="管理员菜单">
-              <span class="chip-avatar">{{ initial }}</span>
-              <span class="chip-name">{{ auth.admin?.username || '管理员' }}</span>
-              <ChevronDown :size="14" class="chip-chev" />
+            <button class="round-btn admin-btn" :aria-label="`${auth.admin?.username || '管理员'} · 管理员菜单`" :title="auth.admin?.username || '管理员'">
+              <span class="avatar">{{ initial }}</span>
             </button>
             <template #dropdown>
+              <div class="admin-menu-head">
+                <span class="admin-menu-name">{{ auth.admin?.username || '管理员' }}</span>
+                <span class="admin-menu-role">{{ roleLabel }}</span>
+              </div>
               <el-dropdown-menu>
                 <el-dropdown-item command="password">
                   <KeyRound :size="15" style="margin-right: 8px" />修改密码
@@ -651,50 +618,73 @@ onUnmounted(() => {
   display: flex;
   min-height: 100vh;
   min-height: 100dvh;
-  background: transparent;
+  background: var(--au-bg);
 }
 
-.icon-btn {
+/* ==================== 圆形图标按钮（同用户端 AppHeader .round-btn） ==================== */
+.round-btn {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-tertiary);
+  padding: 0;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  background: var(--au-surface);
+  color: var(--au-text-2);
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease);
 }
 
-.icon-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
+.round-btn:hover {
+  color: var(--au-text);
+  background: var(--au-surface-2);
+  border-color: var(--au-border-strong);
 }
 
-/* ==================== 外观（v2.42.9） ====================
-   侧栏 foot 的三档分段（自动 / 白日 / 黑暗）已删，外观只剩顶栏这一枚圆形按钮：
-   图标即当前档，点一下轮换一档。选中态分两类、靠底色一眼区分：
-   · 手动指定档（白日 / 黑暗）→ 品牌色实底 + on-primary 图标 + 微光晕，
-     与侧栏导航选中项、用户端顶栏同一套「主色实底压出来」的配方；
-   · 跟随系统 → 中性底部 + 品牌色细环（表示这一档是生效中的「自动」，
-     而不是「哪一个都没选」） */
-.theme-quick { width: 32px; height: 32px; border-radius: var(--radius-full); }
-.theme-quick.auto { border-color: var(--primary-border); }
-.theme-quick.auto:hover { border-color: var(--primary); }
-.icon-btn.theme-quick:not(.auto) {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--primary-on);
-  box-shadow: 0 2px 10px var(--primary-glow);
+.round-btn:active { transform: scale(0.96); }
+
+.round-btn:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: 2px;
 }
-.icon-btn.theme-quick:not(.auto):hover {
-  background: var(--primary-hover);
-  border-color: var(--primary-hover);
-  color: var(--primary-on);
+
+/* 外观按钮：手动档 = 琥珀实底；跟随系统 = 中性底 + 琥珀细环 */
+.theme-btn.auto { border-color: var(--au-primary-border); }
+.theme-btn.auto:hover { border-color: var(--au-primary); }
+
+.round-btn.theme-btn:not(.auto) {
+  background: var(--au-primary);
+  border-color: var(--au-primary);
+  color: var(--au-on-primary);
 }
+
+.round-btn.theme-btn:not(.auto):hover {
+  background: var(--au-primary-strong);
+  border-color: var(--au-primary-strong);
+  color: var(--au-on-primary);
+}
+
+/* 头像：琥珀实底 + 深棕墨字母（同用户端 .avatar） */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--au-r-full);
+  background: var(--au-primary);
+  color: var(--au-on-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.admin-btn { padding: 0; }
 
 /* ==================== 侧边栏 ==================== */
 .sidebar {
@@ -703,8 +693,8 @@ onUnmounted(() => {
   width: var(--sidebar-w);
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface);
-  border-right: 1px solid var(--border-subtle);
+  background: var(--au-bg);
+  border-right: 1px solid var(--au-border);
   z-index: var(--z-sticky);
 }
 
@@ -712,94 +702,143 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  min-height: var(--header-h);
+  padding: 0 14px 0 18px;
+  min-height: 62px;
+  border-bottom: 1px solid var(--au-border);
+}
+
+.brand-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  text-decoration: none;
 }
 
 .brand-mark {
-  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border-radius: var(--radius-sm);
-  background: var(--gradient-brand);
-  color: var(--primary-on);
+  border-radius: var(--au-r-sm);
+  color: var(--au-primary);
 }
 
-.brand-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
-.brand-text strong { font-size: var(--font-size-md); font-weight: var(--font-weight-bold); letter-spacing: 0.01em; }
-.brand-text span { font-size: 11.5px; color: var(--text-muted); }
-.brand-close { display: none; margin-left: auto; }
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+
+.brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+
+/* 品牌字：衬线 + 大写 + 拉开字距（片头字幕的气质，同用户端 .logo-text） */
+.brand-name {
+  font-family: var(--au-font-serif);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--au-primary);
+}
+
+.brand-close { display: none; margin-left: auto; width: 34px; height: 34px; }
 
 .nav {
   flex: 1;
-  padding: 10px;
+  padding: 6px 10px 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.nav-group + .nav-group,
-.nav-single + .nav-group { margin-top: 2px; }
+.nav-section { padding-top: 14px; }
 
-.nav-group-head {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  width: 100%;
-  padding: 10px 12px;
-  border: none;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-medium);
-  text-align: left;
-  text-decoration: none;
-  transition: background var(--transition-fast), color var(--transition-fast);
+/* 分区眉题：小号、拉开字距、四级字（安静，不抢页面标题） */
+.nav-eyebrow {
+  margin: 0 0 4px;
+  padding: 0 12px;
+  font-family: var(--au-font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: var(--au-text-4);
 }
-
-.nav-group-head:hover { background: var(--bg-hover); color: var(--text-primary); }
-.nav-group-head.active { background: var(--bg-active); color: var(--primary); font-weight: var(--font-weight-semibold); }
-.nav-group-head .chev { margin-left: auto; color: var(--text-faint); transition: transform var(--transition-base); }
-.nav-group-head .chev.open { transform: rotate(180deg); }
-
-.nav-items { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 6px; }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 9px 12px 9px 41px;
-  border-radius: var(--radius-md);
-  color: var(--text-tertiary);
-  font-size: var(--font-size-sm);
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--au-r-md);
+  color: var(--au-text-3);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   text-decoration: none;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease);
 }
 
-.nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-item + .nav-item { margin-top: 1px; }
 
-.nav-label { flex: 1; min-width: 0; }
-.nav-super { color: var(--text-faint); flex-shrink: 0; }
+.nav-icon { flex-shrink: 0; color: var(--au-text-4); transition: color var(--au-fast) var(--au-ease); }
 
+.nav-item:hover { color: var(--au-text); background: var(--au-surface); }
+.nav-item:hover .nav-icon { color: var(--au-text-2); }
+
+.nav-item:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: -2px;
+}
+
+/* 当前页：正文色 + 实色表面 + 发丝描边 + 右侧一颗琥珀指示灯（同用户端主导航的小圆点） */
 .nav-item.active {
-  background: var(--primary-bg);
-  color: var(--primary);
-  font-weight: var(--font-weight-semibold);
-  box-shadow: inset 2px 0 0 0 var(--primary);
+  color: var(--au-text);
+  font-weight: 600;
+  background: var(--au-surface);
+  border-color: var(--au-border);
 }
+
+.nav-item.active .nav-icon { color: var(--au-primary); }
+
+.nav-item.active::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: var(--au-primary);
+}
+
+.nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-super { color: var(--au-text-4); flex-shrink: 0; }
+.nav-item.active .nav-super { margin-right: 12px; }
 
 .sidebar-foot {
   padding: 12px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--au-border);
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
 
-/* 账号块：外观切换器删掉后（v2.42.9），它就是侧栏 foot 的第一块，
-   自己那条分隔线要去掉——.sidebar-foot 已有 border-top，两根挨着就是双线 */
 .who {
   display: flex;
   align-items: center;
@@ -807,50 +846,39 @@ onUnmounted(() => {
   padding: 4px 4px 12px;
 }
 
-.who-avatar,
-.chip-avatar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: var(--font-weight-bold);
-  color: var(--primary-on);
-  background: var(--gradient-brand);
-}
-
-.who-avatar { width: 34px; height: 34px; border-radius: var(--radius-full); font-size: 13px; flex-shrink: 0; }
-.chip-avatar { width: 24px; height: 24px; border-radius: var(--radius-full); font-size: 11.5px; }
+.who-avatar { width: 34px; height: 34px; flex-shrink: 0; }
 
 .who-info { flex: 1; min-width: 0; }
-.who-name { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.who-role { font-size: 11.5px; color: var(--text-muted); }
+.who-name { font-size: 13px; font-weight: 600; color: var(--au-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-role { font-size: 11.5px; color: var(--au-text-3); }
 
-.foot-links { display: flex; flex-direction: column; gap: 2px; }
+.foot-links { display: flex; flex-direction: column; gap: 1px; }
 
 .foot-link {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--au-r-md);
   background: transparent;
-  color: var(--text-tertiary);
-  font-size: var(--font-size-sm);
+  color: var(--au-text-3);
+  font-size: 13px;
   text-align: left;
   text-decoration: none;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition: background var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
 
-.foot-link:hover { background: var(--bg-hover); color: var(--text-primary); }
-.foot-link.danger:hover { background: var(--danger-bg); color: var(--danger); }
+.foot-link:hover { background: var(--au-surface); color: var(--au-text); }
+.foot-link.danger:hover { background: var(--au-danger-soft); color: var(--au-danger); }
 
 .foot-version {
   margin-top: 8px;
   padding: 0 12px;
   font-size: 11px;
-  color: var(--text-faint);
-  letter-spacing: var(--tracking-wide);
+  color: var(--au-text-4);
+  letter-spacing: 0.06em;
 }
 
 /* ==================== 主区域 ==================== */
@@ -862,6 +890,7 @@ onUnmounted(() => {
   margin-left: var(--sidebar-w);
 }
 
+/* 顶栏：不透明暖黑实底 + 发丝线（同用户端 .app-header：滚过去的内容不透字） */
 .topbar {
   position: sticky;
   top: 0;
@@ -869,100 +898,107 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: var(--header-h);
-  padding: 0 20px;
+  min-height: 62px;
+  padding: 0 24px;
   padding-top: env(safe-area-inset-top);
-  /* 半透明表面：深浅色各由令牌分叉（color-mix 保住毛玻璃透底色的质感） */
-  background: color-mix(in srgb, var(--bg-surface) 86%, transparent);
-  backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--border-subtle);
+  background: var(--au-bg);
+  border-bottom: 1px solid var(--au-border);
 }
 
-.topbar-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.topbar-title { display: flex; flex-direction: column; justify-content: center; min-width: 0; line-height: 1.2; }
 
 .topbar-title h1 {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
-  letter-spacing: -0.01em;
+  margin: 0;
+  font-family: var(--au-font-serif);
+  font-size: 1.1875rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--au-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.topbar-crumb { font-size: var(--font-size-xs); color: var(--text-muted); flex-shrink: 0; }
+/* 面包屑：眉题样式，压在标题上方 */
+.topbar-crumb {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: var(--au-primary);
+  margin-bottom: 2px;
+}
 
-.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
-/* 命令搜索入口：与顶栏其它按钮同高；宽屏才展开文字 + ⌘K 提示 */
+/* 命令搜索入口：一条安静的输入框外观，宽屏展开文字 + ⌘K 提示 */
 .cmd-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-full);
-  background: var(--bg-elevated);
-  color: var(--text-muted);
+  gap: 8px;
+  height: 38px;
+  min-width: 220px;
+  padding: 0 8px 0 12px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  background: var(--au-input-bg);
+  color: var(--au-text-4);
   font: inherit;
-  font-size: var(--font-size-xs);
+  font-size: 13px;
   cursor: pointer;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
+  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
-.cmd-btn:hover { border-color: var(--primary-border); color: var(--text-primary); }
+.cmd-btn:hover { border-color: var(--au-border-strong); color: var(--au-text-2); }
+.cmd-btn:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+.cmd-btn-text { flex: 1; text-align: left; }
 .cmd-btn-kbd {
-  padding: 0 5px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  background: var(--bg-inset);
+  padding: 0 6px;
+  border: 1px solid var(--au-border);
+  border-radius: 6px;
+  background: var(--au-surface);
+  color: var(--au-text-3);
   font-family: var(--font-mono);
   font-size: 10.5px;
-  line-height: 1.7;
+  line-height: 1.8;
 }
-
-.admin-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px 5px 6px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  transition: border-color var(--transition-fast), background var(--transition-fast);
-}
-
-.admin-chip:hover { border-color: var(--border-strong); background: var(--bg-elevated); }
-.chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip-chev { color: var(--text-faint); }
 
 /* 当前服：一眼看出“现在运营的是哪个服”，点开就能切 */
 .realm-chip {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 10px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-medium);
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface);
+  color: var(--au-text-2);
+  font-size: 13px;
+  font-weight: 500;
+  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
-.realm-chip:hover { border-color: var(--primary); color: var(--text-primary); }
+.realm-chip svg:first-child { color: var(--au-primary); }
+.realm-chip:hover { border-color: var(--au-primary-border); color: var(--au-text); }
 .realm-chip-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.realm-off { color: var(--text-faint); font-size: var(--font-size-xs); }
+.chip-chev { color: var(--au-text-4); }
+.realm-off { color: var(--au-text-4); font-size: 12px; }
+
+/* 管理员菜单头（下拉是 Teleport 出去的，这里用 :global 才能命中） */
+:global(.admin-menu-head) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 18px 8px;
+  border-bottom: 1px solid var(--au-border);
+}
+:global(.admin-menu-name) { font-family: var(--au-font-serif); font-weight: 700; color: var(--au-text); font-size: 14px; }
+:global(.admin-menu-role) { font-size: 11.5px; color: var(--au-text-3); }
 
 .content {
   flex: 1;
   width: 100%;
   max-width: 1440px;
   margin: 0 auto;
-  padding: 20px;
+  padding: 24px;
 }
 
 /* 抽屉遮罩 */
@@ -970,32 +1006,32 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: calc(var(--z-sticky) - 1);
-  background: var(--bg-overlay);
-  backdrop-filter: blur(3px);
+  background: var(--au-scrim);
 }
 
 .mask-enter-active,
-.mask-leave-active { transition: opacity var(--transition-base); }
+.mask-leave-active { transition: opacity var(--au-med) var(--au-ease); }
 .mask-enter-from,
 .mask-leave-to { opacity: 0; }
 
 /* ==================== 响应式 ==================== */
 
-/* ≤1024px（平板 / 小窗）：侧边栏收成抽屉。768~1024 这一档以前还是被挤扁的桌面布局 */
+/* ≤1024px（平板 / 小窗）：侧边栏收成抽屉 */
 @media (max-width: 1024px) {
   .sidebar {
     z-index: var(--z-modal);
     transform: translateX(-100%);
     visibility: hidden;
-    transition: transform var(--transition-base), visibility var(--transition-base);
-    box-shadow: var(--shadow-lg);
+    transition: transform var(--au-med) var(--au-ease), visibility var(--au-med) var(--au-ease);
+    box-shadow: var(--au-shadow-2);
   }
 
   .sidebar.open { transform: translateX(0); visibility: visible; }
 
   .brand-close { display: inline-flex; }
   .main { margin-left: 0; }
-  .content { padding: 16px; }
+  .content { padding: 18px; }
+  .cmd-btn { min-width: 0; }
 }
 
 @media (min-width: 1025px) {
@@ -1005,20 +1041,19 @@ onUnmounted(() => {
 
 /* 手机 */
 @media (max-width: 768px) {
-  .topbar { padding: 0 12px; padding-top: env(safe-area-inset-top); gap: 8px; }
-  .topbar-title h1 { font-size: var(--font-size-lg); }
+  .topbar { padding: 0 12px; padding-top: env(safe-area-inset-top); gap: 8px; min-height: 56px; }
+  .topbar-title h1 { font-size: 1.0625rem; }
   .topbar-crumb { display: none; }
-  .chip-name,
-  .chip-chev { display: none; }
-  /* 手机：只留放大镜图标，文字与 ⌘K 提示都藏起来（顶栏要留给服切换与账号） */
-  .cmd-btn { width: 32px; padding: 0; justify-content: center; }
+  .topbar-actions { gap: 6px; }
+  .round-btn { width: 36px; height: 36px; }
+  /* 手机：搜索只留放大镜图标；刷新收起（浏览器自己就能刷新），顶栏留给服切换与账号 */
+  .cmd-btn { width: 36px; height: 36px; padding: 0; justify-content: center; }
   .cmd-btn-text,
-  .cmd-btn-kbd { display: none; }
+  .cmd-btn-kbd,
+  .refresh-btn { display: none; }
+  .realm-chip { height: 36px; padding: 0 10px; }
   .realm-chip-name { max-width: 84px; }
-  .admin-chip { padding: 4px; border-radius: var(--radius-full); }
-  .chip-avatar { width: 28px; height: 28px; font-size: 12px; }
   .content { padding: 12px 12px calc(28px + env(safe-area-inset-bottom)); }
-  .nav-item { padding: 11px 12px 11px 41px; }
-  .nav-group-head { padding: 12px; }
+  .nav-item { padding: 10px 12px; }
 }
 </style>

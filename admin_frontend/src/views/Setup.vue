@@ -4,10 +4,14 @@
  * 进 /admin/ 时路由守卫已确认 setup_completed 为 false 才放行到这里；
  * 页面加载时再向后端确认一次（已完成则直接去登录页）。
  * 成功后跳登录页（?initialized=1），向导入口永久关闭。
+ *
+ * 暗房影院：与 Login.vue 同一张「认证卡」——暖黑底 + 胶片颗粒、实色卡片 + 发丝线、
+ * 琥珀放映机标、衬线大写拉字距的站名、带图标的输入框（聚焦琥珀光环）、琥珀实心提交按钮；
+ * 眉题写「初始化向导」，并多一条两步的步骤条。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { CheckCircle2, KeyRound, Loader2, ShieldCheck, User, Wand2 } from 'lucide-vue-next'
+import { CheckCircle2, Clapperboard, KeyRound, Loader2, Lock, ShieldCheck, User } from 'lucide-vue-next'
 import { createFirstAdmin, setupStatus } from '@/api/admin'
 import { branding, initBranding } from '@/composables/branding'
 
@@ -76,129 +80,280 @@ async function submit() {
 </script>
 
 <template>
-  <div class="setup-page">
-    <div class="setup-glow" aria-hidden="true" />
-
-    <div class="setup-card">
-      <div class="setup-brand">
-        <span class="brand-mark">
+  <div class="auth-page">
+    <!-- 暗房影院：背景只有暖黑底 + 全局胶片颗粒（base.css），不再有光斑 -->
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="brand-mark">
           <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
-          <Wand2 v-else :size="18" />
-        </span>
-        <h1>{{ branding.site_name }} 初始化向导</h1>
-        <p>第一次使用：先创建一个管理员账号，之后这个入口会永久关闭</p>
+          <Clapperboard v-else :size="22" />
+        </div>
+        <p class="au-eyebrow brand-eyebrow">初始化向导</p>
+        <h1 class="brand-title">{{ branding.site_name }}</h1>
+        <p class="brand-subtitle">第一次使用：先创建一个管理员账号，之后这个入口会永久关闭</p>
       </div>
 
       <!-- 步骤条 -->
-      <ol class="setup-steps">
-        <li class="active"><span class="dot">1</span>创建管理员</li>
-        <li :class="{ active: done }"><span class="dot">2</span>完成</li>
+      <ol class="setup-steps" aria-label="初始化步骤">
+        <li :class="done ? 'is-done' : 'is-active'" :aria-current="done ? undefined : 'step'">
+          <span class="dot"><CheckCircle2 v-if="done" :size="12" /><template v-else>1</template></span>创建管理员
+        </li>
+        <li :class="{ 'is-active': done }" :aria-current="done ? 'step' : undefined">
+          <span class="dot">2</span>完成
+        </li>
       </ol>
 
-      <div v-if="checking" class="setup-loading">
+      <div v-if="checking" class="setup-loading" aria-busy="true">
         <Loader2 :size="18" class="spinning" />
         <span>正在确认初始化状态…</span>
       </div>
 
-      <div v-else-if="done" class="setup-done">
-        <CheckCircle2 :size="40" class="done-icon" />
+      <div v-else-if="done" class="setup-done" role="status">
+        <span class="done-icon"><CheckCircle2 :size="26" /></span>
         <h2>初始化完成</h2>
         <p>管理员账号 <strong>{{ form.username }}</strong> 已创建，向导入口已永久关闭。<br />正在前往登录页…</p>
       </div>
 
-      <form v-else @submit.prevent="submit">
+      <form v-else class="auth-form" @submit.prevent="submit">
         <label class="field">
-          <span class="field-label"><User :size="14" /> 管理员用户名</span>
-          <input v-model="form.username" type="text" autocomplete="username" placeholder="例如 admin" />
+          <span class="field-label">管理员用户名</span>
+          <span class="field-box" :class="{ 'is-warn': usernameHint }">
+            <User :size="16" class="field-icon" />
+            <input v-model="form.username" type="text" name="username" autocomplete="username" placeholder="例如 admin" />
+          </span>
           <span v-if="usernameHint" class="field-hint warn">{{ usernameHint }}</span>
         </label>
         <label class="field">
-          <span class="field-label"><KeyRound :size="14" /> 密码</span>
-          <input v-model="form.password" type="password" autocomplete="new-password" placeholder="至少 6 位" />
+          <span class="field-label">密码</span>
+          <span class="field-box" :class="{ 'is-warn': form.password && form.password.length < 6 }">
+            <Lock :size="16" class="field-icon" />
+            <input v-model="form.password" type="password" name="password" autocomplete="new-password" placeholder="至少 6 位" />
+          </span>
           <span v-if="passwordHint" class="field-hint" :class="{ warn: form.password.length < 6 }">
             {{ passwordHint }}
           </span>
         </label>
         <label class="field">
-          <span class="field-label"><KeyRound :size="14" /> 确认密码</span>
-          <input v-model="form.confirm" type="password" autocomplete="new-password" placeholder="再输一次密码" />
+          <span class="field-label">确认密码</span>
+          <span class="field-box" :class="{ 'is-warn': confirmHint }">
+            <KeyRound :size="16" class="field-icon" />
+            <input v-model="form.confirm" type="password" name="confirm" autocomplete="new-password" placeholder="再输一次密码" />
+          </span>
           <span v-if="confirmHint" class="field-hint warn">{{ confirmHint }}</span>
         </label>
 
-        <div v-if="error" class="setup-error">{{ error }}</div>
+        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
 
-        <button class="setup-btn" type="submit" :disabled="!canSubmit">
+        <button class="submit-btn" type="submit" :disabled="!canSubmit">
           <Loader2 v-if="submitting" :size="16" class="spinning" />
           <span>{{ submitting ? '创建中…' : '创建管理员并完成初始化' }}</span>
         </button>
       </form>
 
-      <p class="setup-foot">
-        <ShieldCheck :size="13" /> 账号与门户共用同一套体系，密码即 Emby 播放密码
-      </p>
+      <p class="auth-foot"><ShieldCheck :size="13" /> 账号与门户共用同一套体系，密码即 Emby 播放密码</p>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 与 Login.vue 同一套深色主题变量：--border-default / --text-secondary / --gradient-brand … */
-.setup-page {
-  position: relative;
+.auth-page {
   min-height: 100vh;
   min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
-  overflow: hidden;
+  padding: 1.5rem;
+  background: var(--au-bg);
 }
 
-.setup-glow {
-  position: absolute;
-  inset: -20% -10% auto -10%;
-  height: 70vh;
-  background:
-    radial-gradient(ellipse 50% 60% at 30% 0%, rgba(34, 211, 238, 0.16), transparent 65%),
-    radial-gradient(ellipse 45% 55% at 78% 12%, rgba(167, 139, 250, 0.14), transparent 65%);
-  pointer-events: none;
-}
-
-.setup-card {
-  position: relative;
+.auth-card {
   width: 100%;
   max-width: 420px;
-  background: linear-gradient(180deg, rgba(16, 26, 40, 0.92), rgba(10, 16, 26, 0.92));
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  padding: 34px 28px 26px;
-  box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(14px);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  padding: 2rem 1.75rem 1.5rem;
+  box-shadow: var(--au-shadow-2);
+  animation: au-fade-up var(--au-fade-in) var(--au-ease) both;
 }
 
-.setup-brand { text-align: center; margin-bottom: 22px; }
-.setup-brand h1 { font-size: 20px; margin: 14px 0 6px; letter-spacing: -0.01em; }
-.setup-brand p { font-size: 12.5px; color: var(--text-secondary); margin: 0; }
+.auth-brand {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
 
 .brand-mark {
-  display: inline-flex;
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 0.75rem;
+  border-radius: var(--au-r-md);
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  background: var(--gradient-brand);
-  box-shadow: var(--shadow-glow);
-  overflow: hidden;
-  color: var(--primary-on);
+  color: var(--au-primary);
 }
 
-.brand-mark img { width: 100%; height: 100%; object-fit: contain; }
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
 
+.brand-eyebrow { margin: 0 0 0.375rem; }
+
+/* 站名：衬线（base.css 的 h1）+ 大写 + 拉开字距，同用户端 .brand-title */
+.brand-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--au-text);
+  margin: 0 0 0.5rem;
+}
+
+.brand-subtitle {
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.auth-hint {
+  font-size: 0.8125rem;
+  color: var(--au-text-2);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-sm);
+  padding: 0.5rem 0.75rem;
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.field-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--au-text-3);
+}
+
+.field-box {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-input-border);
+  border-radius: var(--au-r-md);
+  padding: 0 0.75rem;
+  transition: border-color var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease),
+    background var(--au-fast) var(--au-ease);
+}
+
+.field-box:focus-within {
+  background: var(--au-input-bg-focus);
+  border-color: var(--au-border-focus);
+  box-shadow: 0 0 0 3px var(--au-primary-soft);
+}
+
+.field-icon {
+  color: var(--au-text-3);
+  margin-right: 0.5rem;
+  flex-shrink: 0;
+}
+
+.field-box:focus-within .field-icon { color: var(--au-primary); }
+
+.field-box input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--au-text);
+  font-size: 0.875rem;
+}
+
+.field-box input::placeholder { color: var(--au-text-4); }
+
+.form-error {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--au-r-sm);
+  background: var(--au-danger-soft);
+  border: 1px solid var(--au-danger-border);
+  color: var(--au-danger);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.submit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 46px;
+  margin-top: 0.25rem;
+  background: var(--au-primary);
+  border: none;
+  border-radius: var(--au-r-md);
+  color: var(--au-on-primary);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
+}
+
+.submit-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.submit-btn:active:not(:disabled) { transform: scale(0.98); }
+
+/* 禁用态：中性表面 + 三级字（不做「褪色琥珀」，同用户端 .au-btn-primary:disabled） */
+.submit-btn:disabled {
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
+  box-shadow: inset 0 0 0 1px var(--au-border);
+  cursor: not-allowed;
+}
+
+.submit-btn:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.auth-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--au-text-4);
+  margin: 1.25rem 0 0;
+}
+
+/* 手机：卡片少一点内边距，键盘弹起时不被顶出屏幕（同 Login.vue） */
+@media (max-width: 480px) {
+  .auth-page { padding: 14px; align-items: flex-start; padding-top: max(28px, env(safe-area-inset-top)); }
+  .auth-card { padding: 1.625rem 1.25rem 1.25rem; }
+  .brand-title { font-size: 1.25rem; }
+}
+
+/* ---------- 初始化向导独有：步骤条 / 检查中 / 完成态 / 字段提示 ---------- */
 .setup-steps {
   display: flex;
   gap: 8px;
   list-style: none;
-  margin: 0 0 22px;
+  margin: 0 0 1.25rem;
   padding: 0;
 }
 
@@ -207,18 +362,17 @@ async function submit() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
-  color: var(--text-muted);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm);
+  min-width: 0;
   padding: 8px 10px;
-  background: var(--bg-input);
+  font-size: 0.8125rem;
+  color: var(--au-text-4);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-sm);
 }
 
-.setup-steps li.active {
-  color: var(--text-primary);
-  border-color: var(--border-focus);
-}
+.setup-steps li.is-active { color: var(--au-text); border-color: var(--au-primary-border); background: var(--au-primary-soft); }
+.setup-steps li.is-done { color: var(--au-text-2); }
 
 .setup-steps .dot {
   display: inline-flex;
@@ -226,111 +380,46 @@ async function submit() {
   justify-content: center;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
-  background: var(--gradient-brand);
-  color: var(--primary-on);
+  flex: none;
+  border-radius: var(--au-r-full);
+  background: var(--au-surface-3);
+  color: var(--au-text-3);
   font-size: 11px;
   font-weight: 700;
-  flex: none;
 }
+
+.setup-steps li.is-active .dot { background: var(--au-primary); color: var(--au-on-primary); }
+.setup-steps li.is-done .dot { background: var(--au-success-soft); color: var(--au-success); }
 
 .setup-loading {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 40px 0;
-  color: var(--text-secondary);
-  font-size: 13.5px;
+  padding: 2.5rem 0;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
 }
 
-.setup-done { text-align: center; padding: 18px 0 8px; }
-.setup-done .done-icon { color: var(--success, #34d399); }
-.setup-done h2 { font-size: 18px; margin: 12px 0 8px; }
-.setup-done p { font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin: 0; }
-.setup-done strong { color: var(--text-primary); }
+.setup-done { text-align: center; padding: 0.75rem 0 0.25rem; }
 
-.field { display: block; margin-bottom: 16px; }
-
-.field-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 6px;
-}
-
-.field input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 11px 14px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-default);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-size: 14px;
-  outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-}
-
-.field input::placeholder { color: var(--text-muted); }
-
-.field input:focus {
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
-}
-
-.field-hint { display: block; margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
-.field-hint.warn { color: var(--warning, #fbbf24); }
-
-.setup-error {
-  font-size: 13px;
-  color: var(--danger);
-  background: var(--danger-bg);
-  border: 1px solid rgba(251, 113, 133, 0.28);
-  border-radius: var(--radius-sm);
-  padding: 9px 12px;
-  margin-bottom: 14px;
-}
-
-.setup-btn {
-  display: flex;
+.done-icon {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 12px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: var(--gradient-brand);
-  color: var(--primary-on);
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: filter var(--transition-fast), transform var(--transition-fast);
+  width: 52px;
+  height: 52px;
+  border-radius: var(--au-r-full);
+  background: var(--au-success-soft);
+  border: 1px solid var(--au-success-border);
+  color: var(--au-success);
 }
 
-.setup-btn:hover:not(:disabled) { background: var(--gradient-brand-hover); }
-.setup-btn:active:not(:disabled) { transform: scale(0.99); }
-.setup-btn:disabled { opacity: 0.65; cursor: not-allowed; }
+.setup-done h2 { font-size: 1.125rem; margin: 0.75rem 0 0.5rem; color: var(--au-text); }
+.setup-done p { font-size: 0.8125rem; color: var(--au-text-3); line-height: 1.7; margin: 0; }
+.setup-done strong { color: var(--au-text); }
 
-.spinning { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-.setup-foot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  margin: 18px 0 0;
-}
-
-@media (max-width: 480px) {
-  .setup-page { padding: 14px; align-items: flex-start; padding-top: max(28px, env(safe-area-inset-top)); }
-  .setup-card { padding: 26px 20px 20px; }
-  .setup-brand h1 { font-size: 18px; }
-}
+.field-box.is-warn { border-color: var(--au-warning-border); }
+.field-hint { font-size: 0.75rem; line-height: 1.5; color: var(--au-text-3); }
+.field-hint.warn { color: var(--au-warning); }
 </style>

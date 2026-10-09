@@ -1195,7 +1195,6 @@ onBeforeUnmount(() => {
   text-align: center;
   background: var(--au-surface);
   border: 1px solid var(--au-border-strong);
-  border-top: 2px solid var(--au-primary);
   border-radius: var(--au-r-xl);
   box-shadow: var(--au-shadow-2);
 }

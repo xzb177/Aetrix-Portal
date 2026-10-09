@@ -9,6 +9,10 @@
  * - **面板顶部切的是「当前服」**：切过去之后，订阅、套餐、媒体库、挂载、服务器都只看这个服。
  *
  * 所以这一页只做四件事：看清单（带每服的运营数据）、新建 / 改名、切换当前服、删服（数据可移交）。
+ *
+ * v2.54（暗房影院）：PageHeader + StatTile 总览；每个服是一张 SectionCard（当前服走琥珀发丝描边，
+ * 不再有位移 / 光晕），统计格、节点列表、操作区全部改走 --au-* 令牌；
+ * 首次加载有骨架、加载失败 / 没有服时给 EmptyState。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -16,6 +20,7 @@ import {
   AlertTriangle, CheckCircle2, Crown, Film, Info, Network, Pencil, Plus,
   RefreshCw, Route, Server, Trash2, Wifi,
 } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { createRealm, deleteRealm, syncRealmNodes, updateRealm } from '@/api/admin'
 import { useRealmStore } from '@/stores/realm'
 import type { RealmNodeSync, RealmRow } from '@/types'
@@ -28,13 +33,17 @@ const summary = computed(() => realm.summary)
 const activeId = computed(() => realm.activeId)
 const loading = ref(false)
 const busyId = ref<number | null>(null)
+/** 服清单加载失败（区别于「还没有服」） */
+const loadError = ref(false)
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     await realm.refresh()
   } catch {
     /* 错误提示由 HTTP 拦截器统一处理 */
+    loadError.value = true
   } finally {
     loading.value = false
   }
@@ -45,6 +54,8 @@ onMounted(async () => {
     loading.value = true
     try {
       await realm.load()
+    } catch {
+      loadError.value = true
     } finally {
       loading.value = false
     }
@@ -234,9 +245,9 @@ function nodesText(row: RealmRow): string {
 }
 
 function nodeBadge(node: RealmRow['nodes'][number]): string {
-  if (!node.is_enabled) return 'off'
-  if (node.online) return 'ok'
-  return 'warn'
+  if (!node.is_enabled) return 'au-badge-muted'
+  if (node.online) return 'au-badge-green'
+  return 'badge-warn'
 }
 
 function nodeText(node: RealmRow['nodes'][number]): string {
@@ -250,44 +261,35 @@ function shortDate(s: string | null): string {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">服管理</h1>
-        <p class="admin-page-desc">
-          一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储来源、套餐、
-          订阅、卡码与求片；同一个服可以部署到多台机器，每台机器就是一台播放节点，同时对外出流。
-        </p>
-      </div>
-      <div class="toolbar">
-        <el-button :loading="loading" @click="load"><RefreshCw :size="14" /></el-button>
-        <el-button type="primary" @click="openCreate">
-          <Plus :size="14" style="margin-right: 4px" />新建服
-        </el-button>
-      </div>
-    </div>
+  <div class="admin-page realms-page">
+    <PageHeader
+      eyebrow="媒体与交付"
+      title="服管理"
+      description="一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储来源、套餐、订阅、卡码与求片；同一个服可以部署到多台机器，每台机器就是一台播放节点。"
+    >
+      <template #actions>
+        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">新建服</el-button>
+      </template>
+    </PageHeader>
 
-    <section class="stat-grid">
-      <div class="stat-tile">
-        <div class="stat-label"><Route :size="13" /> 服</div>
-        <div class="stat-value stat-accent">{{ summary?.total_realms ?? 0 }}</div>
-        <div class="stat-foot">{{ summary?.enabled_realms ?? 0 }} 个启用中</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label"><Crown :size="13" /> 有效订阅</div>
-        <div class="stat-value">{{ summary?.active_subscriptions ?? 0 }}</div>
-        <div class="stat-foot">{{ summary?.subscribers ?? 0 }} 位订阅用户（全部服合计）</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label"><Film :size="13" /> 媒体库 / 条目</div>
-        <div class="stat-value">{{ summary?.libraries ?? 0 }}</div>
-        <div class="stat-foot">{{ summary?.items ?? 0 }} 个条目</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label"><Network :size="13" /> 播放节点</div>
-        <div class="stat-value">{{ summary?.nodes_online ?? 0 }} / {{ summary?.nodes ?? 0 }}</div>
-        <div class="stat-foot">在线 / 总数，一个服可以有多台</div>
-      </div>
+    <section class="stat-row" aria-label="多服总览">
+      <StatTile label="服" :value="summary?.total_realms ?? 0" :icon="Route" :hint="`${summary?.enabled_realms ?? 0} 个启用中`" />
+      <StatTile
+        label="有效订阅"
+        :value="summary?.active_subscriptions ?? 0"
+        :icon="Crown"
+        :hint="`${summary?.subscribers ?? 0} 位订阅用户（全部服合计）`"
+      />
+      <StatTile label="媒体库" :value="summary?.libraries ?? 0" :icon="Film" :hint="`${summary?.items ?? 0} 个条目`" />
+      <StatTile
+        label="播放节点在线"
+        :value="summary?.nodes_online ?? 0"
+        :suffix="`/ ${summary?.nodes ?? 0}`"
+        :icon="Network"
+        :tone="(summary?.nodes ?? 0) > (summary?.nodes_online ?? 0) ? 'warn' : 'plain'"
+        hint="在线 / 总数，一个服可以有多台"
+      />
     </section>
 
     <NoticePanel
@@ -295,7 +297,6 @@ function shortDate(s: string | null): string {
       summary="套餐、订阅、媒体库、存储与卡码都按当前服隔离"
       :icon="Info"
       storage-key="realms-scope"
-      class="guide-panel"
     >
       <div class="guide">
         套餐、订阅、媒体库、存储来源、服务器与线路、卡码、求片 —— 这些都属于某一个服，
@@ -305,90 +306,120 @@ function shortDate(s: string | null): string {
       </div>
     </NoticePanel>
 
-    <div v-loading="loading" class="realm-grid">
-      <article
+    <!-- 首屏骨架：与卡片同形 -->
+    <div v-if="loading && !realms.length" class="realm-grid" aria-busy="true" aria-label="加载中">
+      <div v-for="n in 2" :key="n" class="au-skeleton sk-card" />
+    </div>
+
+    <SectionCard v-else-if="!realms.length">
+      <EmptyState
+        :icon="loadError ? AlertTriangle : Route"
+        :title="loadError ? '服清单加载失败' : '还没有服'"
+        :description="loadError ? '网络或服务暂时不可用，稍后重试。' : '新建一个服，再去媒体库 / 存储来源 / 商品与套餐里往里填内容。'"
+      >
+        <template #actions>
+          <el-button v-if="loadError" :loading="loading" @click="load">重试</el-button>
+          <el-button v-else type="primary" :icon="Plus" @click="openCreate">新建服</el-button>
+        </template>
+      </EmptyState>
+    </SectionCard>
+
+    <div v-else class="realm-grid">
+      <SectionCard
         v-for="row in realms"
         :key="row.id"
-        class="realm-card admin-card"
-        :class="{ current: row.id === activeId, off: !row.is_active }"
+        as="article"
+        class="realm-card"
+        :class="{ 'is-off': !row.is_active }"
+        :tone="row.id === activeId ? 'accent' : 'default'"
       >
-        <header class="realm-head">
-          <span class="realm-icon"><Route :size="17" /></span>
-          <div class="realm-title">
-            <strong>{{ row.name }}</strong>
-            <span class="realm-slug">{{ row.slug }}</span>
+        <template #title>
+          <span class="realm-icon"><Route :size="16" /></span>
+          <span class="realm-title">
+            <span class="realm-name">{{ row.name }}</span>
+            <span class="realm-slug mono">{{ row.slug }}</span>
+          </span>
+        </template>
+        <template #actions>
+          <div class="realm-badges">
+            <span v-if="row.id === activeId" class="au-badge au-badge-amber">当前服</span>
+            <span v-if="row.is_default" class="au-badge au-badge-info">默认服</span>
+            <!-- 接入方式：公益服免费开放（不需要订阅），付费服按订阅闸门 -->
+            <span v-if="row.is_free" class="au-badge au-badge-green">公益服</span>
+            <span v-else class="au-badge au-badge-muted">付费服</span>
+            <span v-if="!row.is_active" class="au-badge au-badge-rose">已停用</span>
           </div>
-          <span v-if="row.id === activeId" class="mini-badge ok">当前服</span>
-          <span v-if="row.is_default" class="mini-badge info">默认服</span>
-          <!-- 接入方式：公益服免费开放（不需要订阅），付费服按订阅闸门 -->
-          <span v-if="row.is_free" class="mini-badge free">公益服</span>
-          <span v-else class="mini-badge paid">付费服</span>
-          <span v-if="!row.is_active" class="mini-badge off">已停用</span>
-        </header>
+        </template>
 
-        <p v-if="row.description" class="realm-desc">{{ row.description }}</p>
-        <p v-if="row.is_free" class="realm-desc realm-free">
-          免费开放（无需订阅）· 下载{{ policyOf(row) === 'allow' ? '允许' : '禁止' }}
-        </p>
-        <p class="realm-url">
-          <template v-if="row.public_url">用户端地址：<code>{{ row.public_url }}</code></template>
-          <template v-else>还没填对外地址：用户端拿不到这个服的连接地址</template>
-        </p>
-
-        <dl class="realm-stats">
-          <div><dt>媒体库</dt><dd>{{ row.stats.libraries }}</dd></div>
-          <div><dt>条目</dt><dd>{{ row.stats.items }}</dd></div>
-          <div><dt>挂载</dt><dd>{{ row.stats.mounts }}</dd></div>
-          <div><dt>套餐</dt><dd>{{ row.stats.plans }}</dd></div>
-          <div><dt>有效订阅</dt><dd>{{ row.stats.active_subscriptions }}</dd></div>
-          <div><dt>待审求片</dt><dd>{{ row.stats.pending_requests }}</dd></div>
-        </dl>
-
-        <div class="realm-nodes">
-          <div class="nodes-head">
-            <Network :size="13" /> 播放节点 · {{ nodesText(row) }}
-          </div>
-          <ul v-if="row.nodes.length" class="node-list">
-            <li v-for="node in row.nodes" :key="node.id">
-              <Server :size="12" />
-              <span class="node-name">{{ node.name }}</span>
-              <span class="mini-badge" :class="nodeBadge(node)">{{ nodeText(node) }}</span>
-              <span class="node-time">{{ shortDate(node.last_checked_at) }}</span>
-            </li>
-          </ul>
-          <p v-else class="nodes-empty">
-            还没有认领的节点：在「服务器」页加一台后端服（EA）并把「归属服」选成本服，
-            再给那台机器配 <code>NODE_KEY</code> 启动即可
+        <div class="realm-body">
+          <p v-if="row.description" class="realm-desc">{{ row.description }}</p>
+          <p v-if="row.is_free" class="realm-free">
+            免费开放（无需订阅）· 下载{{ policyOf(row) === 'allow' ? '允许' : '禁止' }}
           </p>
+          <p class="realm-url">
+            <template v-if="row.public_url">用户端地址：<code>{{ row.public_url }}</code></template>
+            <span v-else class="realm-url-missing">还没填对外地址：用户端拿不到这个服的连接地址</span>
+          </p>
+
+          <dl class="realm-stats">
+            <div><dt>媒体库</dt><dd>{{ row.stats.libraries }}</dd></div>
+            <div><dt>条目</dt><dd>{{ row.stats.items }}</dd></div>
+            <div><dt>挂载</dt><dd>{{ row.stats.mounts }}</dd></div>
+            <div><dt>套餐</dt><dd>{{ row.stats.plans }}</dd></div>
+            <div><dt>有效订阅</dt><dd>{{ row.stats.active_subscriptions }}</dd></div>
+            <div><dt>待审求片</dt><dd>{{ row.stats.pending_requests }}</dd></div>
+          </dl>
+
+          <div class="realm-nodes">
+            <div class="nodes-head">
+              <Network :size="13" /> 播放节点 · {{ nodesText(row) }}
+            </div>
+            <ul v-if="row.nodes.length" class="node-list">
+              <li v-for="node in row.nodes" :key="node.id">
+                <Server :size="12" class="node-icon" />
+                <span class="node-name">{{ node.name }}</span>
+                <span class="au-badge" :class="nodeBadge(node)">{{ nodeText(node) }}</span>
+                <span class="node-time">{{ shortDate(node.last_checked_at) }}</span>
+              </li>
+            </ul>
+            <p v-else class="nodes-empty">
+              还没有认领的节点：在「服务器」页加一台后端服（EA）并把「归属服」选成本服，
+              再给那台机器配 <code>NODE_KEY</code> 启动即可
+            </p>
+          </div>
         </div>
 
-        <footer class="realm-actions">
-          <el-button
-            v-if="row.id !== activeId"
-            type="primary"
-            size="small"
-            :disabled="!row.is_active"
-            :loading="busyId === row.id"
-            @click="switchTo(row)"
-          >
-            <CheckCircle2 :size="13" style="margin-right: 3px" />切换到此服
-          </el-button>
-          <span v-else class="current-hint">正在运营这个服</span>
-          <el-button size="small" :loading="busyId === row.id" @click="runSync(row)">
-            <Wifi :size="13" style="margin-right: 3px" />节点体检
-          </el-button>
-          <el-button size="small" @click="openEdit(row)"><Pencil :size="13" /></el-button>
-          <el-button
-            size="small"
-            type="danger"
-            plain
-            :disabled="row.is_default"
-            @click="openDelete(row)"
-          >
-            <Trash2 :size="13" />
-          </el-button>
-        </footer>
-      </article>
+        <template #footer>
+          <div class="realm-actions">
+            <el-button
+              v-if="row.id !== activeId"
+              type="primary"
+              size="small"
+              :icon="CheckCircle2"
+              :disabled="!row.is_active"
+              :loading="busyId === row.id"
+              @click="switchTo(row)"
+            >
+              切换到此服
+            </el-button>
+            <span v-else class="current-hint">正在运营这个服</span>
+            <span class="realm-actions__right">
+              <el-button size="small" :icon="Wifi" :loading="busyId === row.id" @click="runSync(row)">节点体检</el-button>
+              <el-button size="small" :icon="Pencil" aria-label="编辑" title="编辑" @click="openEdit(row)" />
+              <el-button
+                size="small"
+                type="danger"
+                plain
+                :icon="Trash2"
+                aria-label="删除"
+                :title="row.is_default ? '默认服不能删除' : '删除'"
+                :disabled="row.is_default"
+                @click="openDelete(row)"
+              />
+            </span>
+          </div>
+        </template>
+      </SectionCard>
     </div>
 
     <!-- 新建 / 编辑 -->
@@ -459,9 +490,9 @@ function shortDate(s: string | null): string {
         <li v-for="n in syncResults" :key="n.id" :class="n.ok ? 'ok' : 'bad'">
           <span class="sync-name">{{ n.name }}</span>
           <span class="sync-url">{{ n.url }}</span>
-          <span class="mini-badge" :class="n.ok ? 'ok' : 'danger'">{{ n.ok ? '可达' : '不可达' }}</span>
-          <span class="mini-badge type">{{ n.libraries }} 个库</span>
-          <span v-if="n.node_key_claimed" class="mini-badge muted">key: {{ n.node_key_claimed }}</span>
+          <span class="au-badge" :class="n.ok ? 'au-badge-green' : 'au-badge-rose'">{{ n.ok ? '可达' : '不可达' }}</span>
+          <span class="au-badge au-badge-muted">{{ n.libraries }} 个库</span>
+          <span v-if="n.node_key_claimed" class="au-badge au-badge-muted">key: {{ n.node_key_claimed }}</span>
           <div v-if="n.realm_mismatch" class="sync-warn">
             <AlertTriangle :size="13" />
             该节点自称属于「{{ n.realm_slug_reported }}」，与这个服（{{ syncTarget?.slug }}）不一致：
@@ -470,7 +501,7 @@ function shortDate(s: string | null): string {
           <div v-else-if="!n.ok && n.message" class="sync-msg">{{ n.message }}</div>
         </li>
       </ul>
-      <p v-if="!syncResults.length" class="nodes-empty">这个服还没有播放节点。</p>
+      <EmptyState v-if="!syncResults.length" compact :icon="Network" title="这个服还没有播放节点" />
       <template #footer>
         <el-button type="primary" @click="syncVisible = false">知道了</el-button>
       </template>
@@ -483,7 +514,7 @@ function shortDate(s: string | null): string {
       </p>
       <template v-if="hasData">
         <div class="delete-stats">
-          <span v-for="s in deleteStats" :key="s.label" class="mini-badge muted">
+          <span v-for="s in deleteStats" :key="s.label" class="au-badge au-badge-muted">
             {{ s.label }} {{ s.value }}
           </span>
         </div>
@@ -511,92 +542,116 @@ function shortDate(s: string | null): string {
 </template>
 
 <style scoped>
-.guide-panel { margin-bottom: 14px; }
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
 .guide { line-height: 1.75; }
 
 .realm-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 14px;
+  gap: 16px;
+  align-items: stretch;
 }
 
-.realm-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface);
-  transition: border-color var(--transition-base), transform var(--transition-base);
-}
-.realm-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
-.realm-card.current { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary-bg); }
-.realm-card.off { opacity: 0.72; }
+.sk-card { height: 300px; border-radius: var(--au-r-lg); }
 
-.realm-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 每个服一张卡：分层靠发丝线，当前服由 SectionCard tone=accent 给琥珀描边 */
+.realm-card { display: flex; flex-direction: column; }
+.realm-card :deep(.au-section__body) { flex: 1; }
+.realm-card.is-off { opacity: 0.72; }
+
 .realm-icon {
-  width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0;
-  border-radius: 9px; background: var(--primary-bg); color: var(--primary);
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
 }
-.realm-title { display: flex; flex-direction: column; min-width: 0; margin-right: auto; }
-.realm-title strong { color: var(--text-primary); font-size: var(--font-size-lg); font-weight: var(--font-weight-semibold); }
-.realm-slug { color: var(--text-muted); font-size: var(--font-size-xs); }
+.realm-title { display: inline-flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.realm-name { font-size: 16px; color: var(--au-text); overflow-wrap: anywhere; }
+.realm-slug { font-size: 11.5px; font-weight: 400; letter-spacing: 0; color: var(--au-text-4); }
+.realm-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
-.realm-desc { color: var(--text-tertiary); font-size: var(--font-size-sm); margin: 0; line-height: 1.6; }
+.realm-body { display: flex; flex-direction: column; gap: 12px; }
+.realm-desc { margin: 0; font-size: 13px; line-height: 1.6; color: var(--au-text-2); }
 /* 公益服：免费开放与下载口径，一眼能看出这个服不靠会员收费 */
-.realm-free { color: var(--primary); font-size: var(--font-size-xs); margin-top: 2px; }
-.realm-url { color: var(--text-muted); font-size: var(--font-size-xs); margin: 0; word-break: break-all; }
-.realm-url code { color: var(--text-secondary); }
+.realm-free { margin: 0; font-size: 12px; color: var(--au-success); }
+.realm-url { margin: 0; font-size: 12px; color: var(--au-text-3); word-break: break-all; }
+.realm-url code { color: var(--au-text-2); }
+.realm-url-missing { color: var(--au-warning); }
 
 .realm-stats {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px 10px; margin: 0; padding: 10px 12px;
-  background: var(--bg-hover); border-radius: var(--radius-md);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
 }
 .realm-stats div { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
-.realm-stats dt { color: var(--text-muted); font-size: var(--font-size-xs); }
-.realm-stats dd {
-  margin: 0; color: var(--text-primary); font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums;
-}
+.realm-stats dt { font-size: 12px; color: var(--au-text-3); }
+.realm-stats dd { margin: 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--au-text); }
 
 .realm-nodes { display: flex; flex-direction: column; gap: 6px; }
-.nodes-head {
-  display: flex; align-items: center; gap: 6px;
-  color: var(--text-tertiary); font-size: var(--font-size-xs); font-weight: var(--font-weight-medium);
-}
-.node-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
-.node-list li { display: flex; align-items: center; gap: 7px; font-size: var(--font-size-xs); color: var(--text-secondary); }
-.node-name { color: var(--text-primary); font-weight: var(--font-weight-medium); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.node-time { margin-left: auto; color: var(--text-muted); }
-.nodes-empty { color: var(--text-muted); font-size: var(--font-size-xs); margin: 0; line-height: 1.65; }
+.nodes-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--au-text-3); }
+.node-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.node-list li { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--au-text-2); }
+.node-icon { color: var(--au-text-4); flex-shrink: 0; }
+.node-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--au-text); }
+.node-time { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--au-text-4); }
+.nodes-empty { margin: 0; font-size: 12px; line-height: 1.65; color: var(--au-text-3); }
 
-.realm-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: auto; }
-.current-hint { color: var(--primary); font-size: var(--font-size-xs); font-weight: var(--font-weight-semibold); margin-right: auto; }
+.realm-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.realm-actions__right { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .realm-actions .el-button + .el-button { margin-left: 0; }
+.current-hint { font-size: 12px; font-weight: 600; color: var(--au-primary); }
 
-.field-help { color: var(--text-muted); font-size: var(--font-size-xs); margin: 5px 0 0; line-height: 1.6; }
+.badge-warn { background: var(--au-warning-soft); color: var(--au-warning); border-color: var(--au-warning-border); }
 
-.sync-lead, .delete-lead { color: var(--text-tertiary); font-size: var(--font-size-sm); line-height: 1.7; margin: 0 0 10px; }
-.sync-lead code, .delete-lead code { color: var(--text-secondary); }
+/* ---------- 弹窗 ---------- */
+.field-help { margin: 5px 0 0; font-size: 12px; line-height: 1.6; color: var(--au-text-3); }
+
+.sync-lead, .delete-lead { margin: 0 0 10px; font-size: 13px; line-height: 1.7; color: var(--au-text-2); }
+.sync-lead code, .delete-lead code { color: var(--au-text); }
 .sync-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .sync-list li {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 10px 12px; border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle); background: var(--bg-card);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
 }
-.sync-list li.ok { border-color: var(--success-border); }
-.sync-list li.bad { border-color: var(--danger-border); }
-.sync-name { color: var(--text-primary); font-weight: var(--font-weight-medium); font-size: var(--font-size-sm); }
-.sync-url { color: var(--text-muted); font-size: var(--font-size-xs); word-break: break-all; }
-.sync-warn, .sync-msg {
-  flex-basis: 100%; display: flex; align-items: center; gap: 6px;
-  font-size: var(--font-size-xs); line-height: 1.6;
-}
-.sync-warn { color: var(--danger); }
-.sync-msg { color: var(--text-muted); }
+.sync-list li.ok { border-color: var(--au-success-border); }
+.sync-list li.bad { border-color: var(--au-danger-border); }
+.sync-name { font-size: 13px; font-weight: 500; color: var(--au-text); }
+.sync-url { font-size: 12px; word-break: break-all; color: var(--au-text-3); }
+.sync-warn, .sync-msg { flex-basis: 100%; display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.6; }
+.sync-warn { color: var(--au-danger); }
+.sync-msg { color: var(--au-text-3); }
 .delete-stats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
 
 @media (max-width: 900px) {
   .realm-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 768px) {
+  .realm-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .realm-actions > .el-button { flex: 1 1 100%; }
+  .current-hint { flex: 1 1 100%; }
+  .realm-actions__right { margin-left: 0; width: 100%; }
+  .realm-actions__right > .el-button:first-child { flex: 1; }
 }
 </style>

@@ -1,5 +1,12 @@
 /**
- * Aetrix Admin —— 设计令牌 v5（Console）
+ * Aetrix Admin —— 设计令牌 v6（暗房影院别名层）
+ *
+ * v6：颜色 / 表面 / 文字 / 边框 / 圆角 / 阴影 / 字体**不再在本文件定义值**，
+ * 全部映射到 aurora.css 的 --au-*（与用户端同名同值），只保留历史名字做兼容；
+ * 间距、字号、字重、z-index、尺寸等与主题无关的刻度仍是字面量。
+ * 新代码请直接用 --au-*；下面是 v5 时代的说明，保留备查。
+ *
+ * —— 以下为 v5 原注释 ——
  *
  * v5 的三条原则（对应上一版被吐槽的问题）：
  * 1. **文字一律用实色**，不再用「半透明白」叠在深色上——透明叠色会让小字号标签
@@ -25,15 +32,16 @@
 
   /* ==================== 圆角（v2.42.4 对齐用户端：卡片统一 16px） ==================== */
   --radius-xs: 6px;
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-full: 9999px;
+  --radius-sm: var(--au-r-sm);
+  --radius-md: var(--au-r-md);
+  --radius-lg: var(--au-r-lg);
+  --radius-xl: var(--au-r-xl);
+  --radius-full: var(--au-r-full);
 
   /* ==================== 字体 ==================== */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'HarmonyOS Sans SC', 'Hiragino Sans GB', 'Microsoft YaHei', Roboto, sans-serif;
+  --font-sans: var(--au-font-sans);
+  /* 衬线展示字（页标题 / 区块标题 / 品牌字），与用户端同一支 Noto Serif SC */
+  --font-serif: var(--au-font-serif);
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
     'Liberation Mono', monospace;
 
@@ -58,79 +66,77 @@
   /* 中文小字行高要留够，否则字挤在一起显得很脏 */
   --tracking-wide: 0.02em;
 
-  /* ==================== 表面层 ==================== */
-  --bg-app: #070b12;         /* 最底层画布 */
-  --bg-surface: #0c121c;     /* 侧边栏 / 顶栏 */
-  --bg-card: #101823;        /* 卡片 */
-  --bg-elevated: #16202d;    /* 弹层 / 抽屉 / 输入框 */
-  --bg-inset: #0a1018;       /* 内嵌区（表头、代码块、空状态） */
-  --bg-hover: rgba(255, 255, 255, 0.05);
-  --bg-active: rgba(34, 211, 238, 0.12);
-  --bg-overlay: rgba(4, 7, 12, 0.72);
+  /* ==================== 表面层（→ Aurora） ==================== */
+  --bg-app: var(--au-bg);             /* 最底层画布：暖黑 / 奶油纸 */
+  --bg-surface: var(--au-bg-soft);    /* 侧边栏 / 弹窗页脚 */
+  --bg-card: var(--au-surface);       /* 卡片 */
+  --bg-elevated: var(--au-surface-2); /* 弹层 / 抽屉 / 默认按钮 */
+  --bg-inset: var(--au-bg-soft);      /* 内嵌区（表头、代码块、空状态） */
+  --bg-hover: var(--au-violet-soft);  /* 中性暖灰悬停底 */
+  --bg-active: var(--au-primary-soft);
+  --bg-overlay: var(--au-scrim);
 
   /* 名称兼容（历史页面大量引用） */
   --bg-primary: var(--bg-app);
-  --bg-glass: rgba(255, 255, 255, 0.03);
-  --bg-glass-light: rgba(255, 255, 255, 0.02);
-  --bg-glass-hover: rgba(255, 255, 255, 0.06);
-  --bg-input: var(--bg-elevated);
+  --bg-glass: var(--au-violet-soft);
+  --bg-glass-light: var(--au-violet-soft);
+  --bg-glass-hover: var(--au-track);
+  --bg-input: var(--au-input-bg);
 
-  /* ==================== 边框 ==================== */
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-default: rgba(255, 255, 255, 0.11);
-  --border-strong: rgba(255, 255, 255, 0.17);
-  --border-focus: rgba(34, 211, 238, 0.6);
+  /* ==================== 边框（发丝线） ==================== */
+  --border-subtle: var(--au-border);
+  --border-default: var(--au-border);
+  --border-strong: var(--au-border-strong);
+  --border-focus: var(--au-border-focus);
   --border-color: var(--border-default);
   --border-color-light: var(--border-subtle);
 
-  /* ==================== 文字（实色，括号内为在 --bg-card 上的大致对比度）==================== */
-  --text-primary: #f2f6fb;   /* ≈16:1  正文 / 标题 */
-  --text-secondary: #cbd6e2; /* ≈11:1  次级正文 */
-  --text-tertiary: #a2b0c2;  /* ≈7:1   标签、表头 */
-  --text-muted: #8593a6;     /* ≈4.9:1 说明文字（依然是 AA） */
-  --text-faint: #5f6b7c;     /* ≈3.1:1 仅用于禁用态 / 大号装饰 */
-  --text-inverse: #05202a;   /* 亮色按钮上的深色文字 */
+  /* ==================== 文字（暖白 / 深墨） ==================== */
+  --text-primary: var(--au-text);
+  --text-secondary: var(--au-text-2);
+  --text-tertiary: var(--au-text-3);
+  --text-muted: var(--au-text-3);
+  --text-faint: var(--au-text-4);
+  --text-inverse: var(--au-on-primary);
 
-  /* ==================== 主色 ==================== */
-  --primary: #22d3ee;
-  --primary-hover: #4fdcf2;
-  --primary-active: #0fb9d6;
-  --primary-bg: rgba(34, 211, 238, 0.12);
-  --primary-soft: rgba(34, 211, 238, 0.08);
-  --primary-border: rgba(34, 211, 238, 0.32);
-  --primary-glow: rgba(34, 211, 238, 0.28);
-  --primary-on: #05202a;     /* 放在主色上的文字 */
+  /* ==================== 主色：放映机琥珀 ==================== */
+  --primary: var(--au-primary);
+  --primary-hover: var(--au-primary-strong);
+  --primary-active: var(--au-primary-deep);
+  --primary-bg: var(--au-primary-soft);
+  --primary-soft: var(--au-primary-soft);
+  --primary-border: var(--au-primary-border);
+  --primary-glow: var(--au-primary-glow);
+  --primary-on: var(--au-on-primary);
 
-  --violet: #a78bfa;
-  --pink: #f472b6;
-  /* v2.42.4：蓝紫渐变退役（用户端反馈「突兀」），全后台统一品牌青实色。
-     变量名保留（历史页面在用），值改为主色/主色 hover——所有引用处
-     一次性变成品牌青按钮/进度条/头像，功能色体系归一 */
-  --gradient-brand: var(--primary);
-  --gradient-brand-hover: var(--primary-hover);
-  --gradient-warm: var(--warning);
+  /* 暗房影院只有一支强调色：紫 / 粉收成中性暖灰与深琥珀 */
+  --violet: var(--au-violet);
+  --pink: var(--au-pink);
+  --gradient-brand: var(--au-primary);
+  --gradient-brand-hover: var(--au-primary-strong);
+  --gradient-warm: var(--au-warning);
 
-  /* ==================== 语义色 ==================== */
-  --success: #34d399;
-  --success-strong: #10b981;
-  --success-bg: rgba(52, 211, 153, 0.14);
-  --success-border: rgba(52, 211, 153, 0.3);
-  --success-on: #04291d;
-  --warning: #fbbf24;
-  --warning-strong: #f59e0b;
-  --warning-bg: rgba(251, 191, 36, 0.14);
-  --warning-border: rgba(251, 191, 36, 0.3);
-  --warning-on: #2b1a02;
-  --danger: #fb7185;
-  --danger-strong: #e11d48;
-  --danger-bg: rgba(251, 113, 133, 0.14);
-  --danger-border: rgba(251, 113, 133, 0.3);
-  --danger-on: #ffffff;
-  --info: #60a5fa;
-  --info-strong: #2563eb;
-  --info-bg: rgba(96, 165, 250, 0.14);
-  --info-border: rgba(96, 165, 250, 0.3);
-  --info-on: #ffffff;
+  /* ==================== 语义色（降饱和暖调） ==================== */
+  --success: var(--au-success);
+  --success-strong: var(--au-success);
+  --success-bg: var(--au-success-soft);
+  --success-border: var(--au-success-border);
+  --success-on: var(--au-on-primary);
+  --warning: var(--au-warning);
+  --warning-strong: var(--au-primary-strong);
+  --warning-bg: var(--au-warning-soft);
+  --warning-border: var(--au-warning-border);
+  --warning-on: var(--au-on-warning);
+  --danger: var(--au-danger);
+  --danger-strong: var(--au-danger);
+  --danger-bg: var(--au-danger-soft);
+  --danger-border: var(--au-danger-border);
+  --danger-on: var(--au-on-primary);
+  --info: var(--au-info);
+  --info-strong: var(--au-info);
+  --info-bg: var(--au-info-soft);
+  --info-border: var(--au-info-border);
+  --info-on: var(--au-on-primary);
 
   /* 兼容旧命名 */
   --color-success: var(--success);
@@ -139,16 +145,16 @@
   --color-error: var(--danger);
   --color-info: var(--info);
 
-  /* ==================== 阴影 ==================== */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.32);
-  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.42);
-  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.55);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35);
-  --shadow-glow: 0 6px 20px rgba(34, 211, 238, 0.22);
+  /* ==================== 阴影（克制，无发光） ==================== */
+  --shadow-xs: var(--au-shadow-1);
+  --shadow-sm: var(--au-shadow-1);
+  --shadow-md: var(--au-shadow-2);
+  --shadow-lg: var(--au-shadow-2);
+  --shadow-card: none;
+  --shadow-glow: var(--au-shadow-glow);
 
   /* ==================== 过渡 ==================== */
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease: var(--au-ease);
   --transition-fast: 0.14s var(--ease);
   --transition-base: 0.2s var(--ease);
   --transition-normal: 0.2s var(--ease);
@@ -176,7 +182,7 @@
   --brand-primary-dark: var(--primary-active);
   --brand-primary-light: var(--primary-bg);
   --brand-secondary: var(--violet);
-  --brand-secondary-dark: #8b5cf6;
+  --brand-secondary-dark: var(--au-primary-deep);
 
   --color-bg-primary: var(--bg-app);
   --color-bg-secondary: var(--bg-surface);
@@ -228,78 +234,6 @@
   opacity: 0.9;
 }
 
-/* ==================== 白日模式（v2.42.4，与用户端同族暖调纸白） ====================
-   不是反色：底 #f5f8fb、表面纯白、深蓝黑文字（与深色底同族），品牌青压深到
-   #0891b2 保白底 4.5:1。切换方式与用户端一致：html[data-theme='light']。
-   历史页面里写死的少量 rgba(255,255,255,…) 蒙层在浅色下会退化成几乎不可见的
-   高光（无害），关键表面/文字/边框都走这里定义的令牌。 */
-
-html[data-theme='light'] {
-  color-scheme: light;
-
-  --bg-app: #f5f8fb;
-  --bg-surface: #ffffff;
-  --bg-card: #ffffff;
-  --bg-elevated: #ffffff;
-  --bg-inset: #eef3f8;
-  --bg-hover: rgba(15, 32, 48, 0.05);
-  --bg-active: rgba(8, 145, 178, 0.1);
-  --bg-overlay: rgba(15, 32, 48, 0.4);
-  --bg-glass: rgba(15, 32, 48, 0.03);
-  --bg-glass-light: rgba(15, 32, 48, 0.02);
-  --bg-glass-hover: rgba(15, 32, 48, 0.06);
-  --bg-input: #f0f4f9;
-
-  --border-subtle: rgba(15, 32, 48, 0.09);
-  --border-default: rgba(15, 32, 48, 0.14);
-  --border-strong: rgba(15, 32, 48, 0.22);
-  --border-focus: rgba(8, 145, 178, 0.55);
-
-  --text-primary: #16283a;
-  --text-secondary: rgba(22, 40, 58, 0.78);
-  --text-tertiary: rgba(22, 40, 58, 0.6);
-  --text-muted: rgba(22, 40, 58, 0.52);
-  --text-faint: rgba(22, 40, 58, 0.38);
-  --text-inverse: #ffffff;
-
-  --primary: #0891b2;
-  --primary-hover: #0e7490;
-  --primary-active: #155e75;
-  --primary-bg: rgba(8, 145, 178, 0.1);
-  --primary-soft: rgba(8, 145, 178, 0.08);
-  --primary-border: rgba(8, 145, 178, 0.28);
-  --primary-glow: rgba(8, 145, 178, 0.22);
-  --primary-on: #ffffff;
-
-  --success: #059669;
-  --success-strong: #047857;
-  --success-bg: rgba(5, 150, 105, 0.1);
-  --success-border: rgba(5, 150, 105, 0.26);
-  --success-on: #ffffff;
-  --warning: #b45309;
-  --warning-strong: #92400e;
-  --warning-bg: rgba(180, 83, 9, 0.1);
-  --warning-border: rgba(180, 83, 9, 0.26);
-  --warning-on: #ffffff;
-  --danger: #e11d48;
-  --danger-strong: #be123c;
-  --danger-bg: rgba(225, 29, 72, 0.09);
-  --danger-border: rgba(225, 29, 72, 0.26);
-  --danger-on: #ffffff;
-  --info: #2563eb;
-  --info-strong: #1d4ed8;
-  --info-bg: rgba(37, 99, 235, 0.09);
-  --info-border: rgba(37, 99, 235, 0.26);
-  --info-on: #ffffff;
-  --violet: #7c3aed;
-
-  --shadow-xs: 0 1px 2px rgba(15, 32, 48, 0.06);
-  --shadow-sm: 0 2px 8px rgba(15, 32, 48, 0.07);
-  --shadow-md: 0 10px 28px rgba(15, 32, 48, 0.1);
-  --shadow-lg: 0 18px 48px rgba(15, 32, 48, 0.14);
-  --shadow-card: 0 1px 2px rgba(15, 32, 48, 0.06);
-
-  --gradient-brand: var(--primary);
-  --gradient-brand-hover: var(--primary-hover);
-  --gradient-warm: var(--warning);
-}
+/* ==================== 白日模式 ====================
+   不再在这里单独调色：上面每个变量都映射到 --au-*，而 aurora.css 的
+   html[data-theme='light'] 块整体切成「影院大厅」奶油纸色——与用户端同一套值。 */

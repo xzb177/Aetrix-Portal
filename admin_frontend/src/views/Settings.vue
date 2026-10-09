@@ -24,8 +24,10 @@ import { ElMessage } from 'element-plus'
 import {
   CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
-  DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal,
+  DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal, PlugZap,
 } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 import {
   fetchRegistrationSettings, updateRegistrationSettings,
 } from '@/api/admin'
@@ -41,6 +43,9 @@ import NoticePanel from '@/components/NoticePanel.vue'
 
 const route = useRoute()
 const auth = useAuthStore()
+/** 手机上能力配置抽屉铺满整屏 */
+const { isPhone } = useBreakpoint()
+const capDrawerSize = computed(() => (isPhone.value ? '100%' : '520px'))
 
 /** ==================== 页签（Phase 5） ==================== */
 
@@ -223,6 +228,8 @@ const GROUPS: Group[] = [
 ]
 
 const loading = ref(true)
+/** 运营参数读取失败：显示错误态，避免管理员对着空表单点保存 */
+const paramsError = ref(false)
 const savingGroup = ref('')
 const settings = reactive<EconomySettings>({})
 const original = ref<EconomySettings>({})
@@ -256,6 +263,7 @@ const TEST_INPUTS: Record<string, { key: string; label: string; placeholder: str
 
 const capabilities = ref<CapabilityCard[]>([])
 const capsLoading = ref(true)
+const capsError = ref(false)
 const capGroups = computed(() => {
   const groups: { name: string; items: CapabilityCard[] }[] = []
   for (const card of capabilities.value) {
@@ -296,11 +304,13 @@ function capStatus(card: CapabilityCard): { label: string; tone: 'ok' | 'warn' |
 
 async function loadCapabilities() {
   capsLoading.value = true
+  capsError.value = false
   try {
     const res = await fetchCapabilities()
     capabilities.value = res.capabilities
   } catch {
     // 拦截器已提示
+    capsError.value = !capabilities.value.length
   } finally {
     capsLoading.value = false
   }
@@ -362,6 +372,7 @@ async function runCapabilityTest() {
 
 async function load() {
   loading.value = true
+  paramsError.value = false
   try {
     const [econ, registration] = await Promise.all([
       fetchEconomySettings(),
@@ -373,6 +384,7 @@ async function load() {
     reg.message = registration.message || ''
   } catch {
     // 错误提示由 HTTP 拦截器统一处理
+    paramsError.value = true
   } finally {
     loading.value = false
   }
@@ -381,6 +393,18 @@ async function load() {
 onMounted(async () => {
   await Promise.all([load(), loadCapabilities()])
 })
+
+/** 运营参数页签顶部的分组跳转：分组多（8 块），先看目录再定位，不用一路滚 */
+function scrollToGroup(id: string) {
+  document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+/** 「重新载入」：当前页签用得上的都重拉一遍 */
+function reloadAll() {
+  loadCapabilities()
+  load()
+  if (tab.value === 'danger') loadDanger()
+}
 
 function isDirty(group: Group): boolean {
   return group.fields.some((f) => String(settings[f.key] ?? '') !== String(original.value[f.key] ?? ''))
@@ -484,16 +508,18 @@ watch(
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">系统设置</h1>
-        <p class="admin-page-desc">外部服务能力、运营参数与危险操作；修改后立即对用户端生效</p>
-      </div>
-      <el-button @click="loadCapabilities(); load(); tab === 'danger' && loadDanger()">
-        <RefreshCw :size="14" style="margin-right: 4px" />重新载入
-      </el-button>
-    </div>
+  <div class="admin-page settings-page">
+    <PageHeader
+      eyebrow="系统与审计"
+      title="系统设置"
+      description="外部服务能力、运营参数与危险操作；修改后立即对用户端生效。"
+    >
+      <template #actions>
+        <el-button @click="reloadAll">
+          <RefreshCw :size="14" class="btn-ico" />重新载入
+        </el-button>
+      </template>
+    </PageHeader>
 
     <!-- Phase 5：日常要改的放前两个页签，不可撤销的独立一页 -->
     <el-tabs v-model="tab" class="settings-tabs">
@@ -502,43 +528,68 @@ watch(
           <span class="tab-label"><Globe :size="13" />能力与服务</span>
         </template>
 
-        <!-- ==================== 外部服务能力 ==================== -->
-        <NoticePanel
-          title="外部服务能力说明"
-          summary="凭据由管理员自行填写，填入后即可测试连接"
-          :icon="Zap"
-          storage-key="settings-capabilities"
-        >
-          <p class="capability-note">
-            能力由面板提供，<strong>凭据全部由你自己填</strong>：各家的 API Key / 站点密钥 / 代理地址 / Bot Token
-            都由本项目之外的账号体系签发，填进来即可用，每个能力都能当场「测试连接」。
-          </p>
-        </NoticePanel>
+        <div class="settings-body">
+          <!-- ==================== 外部服务能力 ==================== -->
+          <NoticePanel
+            title="外部服务能力说明"
+            summary="凭据由管理员自行填写，填入后即可测试连接"
+            :icon="Zap"
+            storage-key="settings-capabilities"
+          >
+            <p class="capability-note">
+              能力由面板提供，<strong>凭据全部由你自己填</strong>：各家的 API Key / 站点密钥 / 代理地址 / Bot Token
+              都由本项目之外的账号体系签发，填进来即可用，每个能力都能当场「测试连接」。
+            </p>
+          </NoticePanel>
 
-        <div v-loading="capsLoading" class="settings-body cap-flow">
-          <section v-for="g in capGroups" :key="g.name" class="cap-section">
-            <h2 class="cap-group-title">{{ g.name }}</h2>
-            <div class="cap-grid">
-              <button
-                v-for="card in g.items"
-                :key="card.slug"
-                type="button"
-                class="cap-card"
-                :class="capStatus(card).tone"
-                @click="openCapability(card.slug)"
-              >
-                <div class="cap-card-top">
-                  <span class="cap-icon">
-                    <component :is="CAP_ICONS[card.slug] || Globe" :size="18" />
-                  </span>
-                  <span class="cap-badge" :class="capStatus(card).tone">{{ capStatus(card).label }}</span>
-                </div>
-                <h3>{{ card.title }}</h3>
-                <p>{{ card.desc }}</p>
-                <span class="cap-more">配置与测试 →</span>
-              </button>
-            </div>
-          </section>
+          <div v-if="capsLoading && !capabilities.length" class="cap-skeleton" aria-busy="true" aria-label="加载中">
+            <div v-for="n in 6" :key="n" class="au-skeleton sk-cap" />
+          </div>
+
+          <EmptyState
+            v-else-if="capsError"
+            :icon="PlugZap"
+            title="能力列表读取失败"
+            description="可能是网络或后端暂时不可用。"
+          >
+            <template #actions><el-button size="small" @click="loadCapabilities">重试</el-button></template>
+          </EmptyState>
+
+          <EmptyState
+            v-else-if="!capabilities.length"
+            :icon="PlugZap"
+            title="暂无可配置的外部能力"
+            description="后端没有下发任何能力项。"
+          />
+
+          <div v-else class="cap-flow" :class="{ 'is-refreshing': capsLoading }">
+            <section v-for="g in capGroups" :key="g.name" class="cap-section">
+              <h2 class="au-eyebrow cap-group-title">{{ g.name }}</h2>
+              <div class="cap-grid">
+                <button
+                  v-for="card in g.items"
+                  :key="card.slug"
+                  type="button"
+                  class="cap-card"
+                  :class="capStatus(card).tone"
+                  @click="openCapability(card.slug)"
+                >
+                  <div class="cap-card-top">
+                    <span class="cap-icon">
+                      <component :is="CAP_ICONS[card.slug] || Globe" :size="18" />
+                    </span>
+                    <span
+                      class="au-badge"
+                      :class="capStatus(card).tone === 'ok' ? 'au-badge-green' : capStatus(card).tone === 'warn' ? 'au-badge-amber' : 'au-badge-muted'"
+                    >{{ capStatus(card).label }}</span>
+                  </div>
+                  <h3 class="cap-title">{{ card.title }}</h3>
+                  <p>{{ card.desc }}</p>
+                  <span class="cap-more">配置与测试 →</span>
+                </button>
+              </div>
+            </section>
+          </div>
         </div>
       </el-tab-pane>
 
@@ -547,110 +598,158 @@ watch(
           <span class="tab-label"><SlidersHorizontal :size="13" />运营参数</span>
         </template>
 
-        <div v-loading="loading" class="settings-body">
-          <!-- 注册策略 -->
-          <section class="admin-card">
-            <header class="card-header">
-              <div class="card-title">
-                <KeyRound :size="16" />
-                <div>
-                  <h2>注册策略</h2>
-                  <p>决定新用户如何进入站点</p>
-                </div>
-              </div>
-            </header>
+        <div v-if="loading && !Object.keys(original).length" class="params-skeleton" aria-busy="true" aria-label="加载中">
+          <div class="au-skeleton sk-nav" />
+          <div v-for="n in 3" :key="n" class="au-skeleton sk-card" />
+        </div>
 
+        <div v-else class="settings-body" :class="{ 'is-refreshing': loading }">
+          <el-alert
+            v-if="paramsError"
+            type="error"
+            show-icon
+            :closable="false"
+            title="运营参数读取失败"
+            description="下面的表单可能不是当前生效值，请先点右上角「重新载入」再修改。"
+          />
+
+          <!-- 分组目录：8 块配置一眼看全，带未保存标记，点击跳转 -->
+          <nav class="group-nav" aria-label="运营参数分组">
+            <button type="button" class="group-chip" @click="scrollToGroup('registration')">
+              <KeyRound :size="13" />注册策略
+            </button>
+            <button
+              v-for="g in GROUPS"
+              :key="g.id"
+              type="button"
+              class="group-chip"
+              :class="{ 'is-dirty': isDirty(g) }"
+              @click="scrollToGroup(g.id)"
+            >
+              <component :is="g.icon" :size="13" />{{ g.title }}
+              <span v-if="isDirty(g)" class="chip-dot" aria-label="有未保存的改动" />
+            </button>
+          </nav>
+
+          <!-- 注册策略 -->
+          <SectionCard
+            id="group-registration"
+            title="注册策略"
+            :icon="KeyRound"
+            description="决定新用户如何进入站点"
+            class="group-card"
+          >
             <el-form label-position="top" class="field-form">
               <el-form-item label="注册模式">
-                <el-radio-group v-model="reg.mode">
-                  <el-radio-button value="open">开放注册</el-radio-button>
-                  <el-radio-button value="code">注册码</el-radio-button>
-                  <el-radio-button value="closed">关闭注册</el-radio-button>
-                </el-radio-group>
-                <span class="field-hint">{{ regModeHint }}</span>
+                <div class="field-stack">
+                  <el-radio-group v-model="reg.mode">
+                    <el-radio-button value="open">开放注册</el-radio-button>
+                    <el-radio-button value="code">注册码</el-radio-button>
+                    <el-radio-button value="closed">关闭注册</el-radio-button>
+                  </el-radio-group>
+                  <span class="field-hint">{{ regModeHint }}</span>
+                </div>
               </el-form-item>
               <el-form-item v-if="reg.mode === 'closed'" label="关闭提示">
                 <el-input v-model="reg.message" type="textarea" :rows="2" placeholder="展示给无法注册的用户…" />
               </el-form-item>
             </el-form>
 
-            <div class="card-footer">
-              <el-button type="primary" :loading="regSaving" @click="saveRegistration">
-                <Save :size="14" style="margin-right: 4px" />保存注册策略
-              </el-button>
-            </div>
-          </section>
+            <template #footer>
+              <div class="card-footer">
+                <el-button type="primary" :loading="regSaving" @click="saveRegistration">
+                  <Save :size="14" class="btn-ico" />保存注册策略
+                </el-button>
+              </div>
+            </template>
+          </SectionCard>
 
           <!-- 支付状态提示 -->
-          <div class="notice" :class="{ ok: paymentReady }">
-            <ShieldAlert :size="15" />
-            <span v-if="paymentReady">支付网关已配置完成，用户端可直接下单充值。</span>
-            <span v-else>支付网关尚未配置齐全（需要网关地址 + 商户 ID + 商户密钥），用户端充值下单会提示未启用。</span>
-          </div>
+          <el-alert
+            :type="paymentReady ? 'success' : 'warning'"
+            show-icon
+            :closable="false"
+            :title="paymentReady
+              ? '支付网关已配置完成，用户端可直接下单充值。'
+              : '支付网关尚未配置齐全（需要网关地址 + 商户 ID + 商户密钥），用户端充值下单会提示未启用。'"
+          />
 
           <!-- 经济配置分组 -->
-          <section v-for="g in GROUPS" :key="g.id" class="admin-card">
-            <header class="card-header">
-              <div class="card-title">
-                <component :is="g.icon" :size="16" />
-                <div>
-                  <h2>{{ g.title }}</h2>
-                  <p>{{ g.desc }}</p>
-                </div>
-              </div>
-              <span v-if="isDirty(g)" class="dirty-dot">未保存</span>
-            </header>
+          <SectionCard
+            v-for="g in GROUPS"
+            :id="`group-${g.id}`"
+            :key="g.id"
+            :title="g.title"
+            :icon="g.icon"
+            :description="g.desc"
+            :tone="isDirty(g) ? 'accent' : 'default'"
+            class="group-card"
+          >
+            <template v-if="isDirty(g)" #actions>
+              <span class="au-badge au-badge-amber">未保存</span>
+            </template>
 
-            <el-form label-position="top" class="field-form">
-              <el-form-item v-for="f in g.fields" :key="f.key" :label="f.label">
-                <el-switch
-                  v-if="f.type === 'bool'"
-                  v-model="settings[f.key]"
-                  active-value="true"
-                  inactive-value="false"
-                />
-                <el-input
-                  v-else-if="f.type === 'int'"
-                  v-model="settings[f.key]"
-                  type="number"
-                  min="0"
-                  class="num-input"
-                />
-                <el-select
-                  v-else-if="f.choices"
-                  v-model="settings[f.key]"
-                  style="width: 100%"
-                >
-                  <el-option
-                    v-for="c in f.choices"
-                    :key="c.value"
-                    :label="c.label"
-                    :value="c.value"
-                  />
-                </el-select>
-                <el-input
-                  v-else
-                  v-model="settings[f.key]"
-                  :type="f.type === 'secret' ? 'password' : 'text'"
-                  :show-password="f.type === 'secret'"
-                  :placeholder="f.type === 'secret' ? '留空表示不修改' : ''"
-                />
-                <span v-if="f.suffix" class="field-suffix">{{ f.suffix }}</span>
-                <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+            <el-form label-position="top" class="field-form field-grid">
+              <el-form-item
+                v-for="f in g.fields"
+                :key="f.key"
+                :label="f.label"
+                :class="{ 'is-wide': f.type === 'str' || f.type === 'secret' }"
+              >
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch
+                      v-if="f.type === 'bool'"
+                      v-model="settings[f.key]"
+                      active-value="true"
+                      inactive-value="false"
+                    />
+                    <el-input
+                      v-else-if="f.type === 'int'"
+                      v-model="settings[f.key]"
+                      type="number"
+                      min="0"
+                      class="num-input"
+                    />
+                    <el-select
+                      v-else-if="f.choices"
+                      v-model="settings[f.key]"
+                      class="w-full"
+                    >
+                      <el-option
+                        v-for="c in f.choices"
+                        :key="c.value"
+                        :label="c.label"
+                        :value="c.value"
+                      />
+                    </el-select>
+                    <el-input
+                      v-else
+                      v-model="settings[f.key]"
+                      :type="f.type === 'secret' ? 'password' : 'text'"
+                      :show-password="f.type === 'secret'"
+                      :placeholder="f.type === 'secret' ? '留空表示不修改' : ''"
+                    />
+                    <span v-if="f.suffix" class="field-suffix">{{ f.suffix }}</span>
+                  </div>
+                  <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+                </div>
               </el-form-item>
             </el-form>
 
-            <div class="card-footer">
-              <el-button
-                type="primary"
-                :disabled="!isDirty(g)"
-                :loading="savingGroup === g.id"
-                @click="saveGroup(g)"
-              >
-                <Save :size="14" style="margin-right: 4px" />保存{{ g.title }}
-              </el-button>
-            </div>
-          </section>
+            <template #footer>
+              <div class="card-footer">
+                <el-button
+                  type="primary"
+                  :disabled="!isDirty(g)"
+                  :loading="savingGroup === g.id"
+                  @click="saveGroup(g)"
+                >
+                  <Save :size="14" class="btn-ico" />保存{{ g.title }}
+                </el-button>
+              </div>
+            </template>
+          </SectionCard>
 
           <p class="foot-note">
             <Coins :size="13" />
@@ -667,55 +766,49 @@ watch(
 
         <div v-loading="dangerLoading" class="settings-body">
           <!-- 先备份：不可撤销的操作之前，总得有个能回退的地方 -->
-          <section class="admin-card danger-guard">
-            <div class="danger-guard-main">
-              <DatabaseBackup :size="18" class="danger-guard-icon" />
-              <div>
-                <h2>动手之前，先备份一次</h2>
-                <p>
-                  下面三项都会立刻改变线上数据，其中两项不可恢复。
-                  定时备份是每天一次，不等于「刚才那一刻的状态」。
-                </p>
-                <p class="danger-guard-meta">
-                  定时备份 {{ backupInfo?.enabled ? `已开启 · 每天 ${backupInfo.time} · 保留 ${backupInfo.keep_days} 天` : '未开启' }}
-                  · 上次执行 {{ backupInfo?.last_run || '—' }}
-                  · 已有 {{ backupInfo?.backups.length ?? 0 }} 份备份
-                </p>
-              </div>
-            </div>
-            <el-button
-              type="primary"
-              :loading="dangerBusy === 'backup'"
-              :disabled="!canWrite"
-              :title="canWrite ? '' : WRITE_HINT"
-              @click="doBackup"
-            >
-              <DatabaseBackup :size="14" style="margin-right: 4px" />立即备份
-            </el-button>
-          </section>
+          <SectionCard title="动手之前，先备份一次" :icon="DatabaseBackup" class="danger-guard">
+            <template #actions>
+              <el-button
+                type="primary"
+                :loading="dangerBusy === 'backup'"
+                :disabled="!canWrite"
+                :title="canWrite ? '' : WRITE_HINT"
+                @click="doBackup"
+              >
+                <DatabaseBackup :size="14" class="btn-ico" />立即备份
+              </el-button>
+            </template>
+            <p class="danger-effect">
+              下面的操作都会立刻改变线上数据，大多不可恢复。
+              定时备份是每天一次，不等于「刚才那一刻的状态」。
+            </p>
+            <p class="danger-guard-meta">
+              定时备份 {{ backupInfo?.enabled ? `已开启 · 每天 ${backupInfo.time} · 保留 ${backupInfo.keep_days} 天` : '未开启' }}
+              · 上次执行 {{ backupInfo?.last_run || '—' }}
+              · 已有 {{ backupInfo?.backups.length ?? 0 }} 份备份
+            </p>
+          </SectionCard>
 
-          <div v-if="!canWrite" class="notice danger-locked">
-            <ShieldAlert :size="15" />
-            <span>{{ WRITE_HINT }}。下面的按钮已置灰，但内容仍然可读。</span>
-          </div>
-
+          <el-alert
+            v-if="!canWrite"
+            type="warning"
+            show-icon
+            :closable="false"
+            :title="`${WRITE_HINT}。下面的按钮已置灰，但内容仍然可读。`"
+          />
 
           <!-- 1. 本地播放缓存 -->
-          <section
+          <SectionCard
             id="danger-cache"
-            class="admin-card danger-card"
+            title="清空本地播放缓存"
+            :icon="HardDrive"
+            description="清的是 VPS 本机副本（热门片提前拉到本机的那份），不是媒体库里的文件"
+            class="danger-card"
             :class="{ 'is-target': target === 'cache' }"
           >
-            <header class="card-header">
-              <div class="card-title">
-                <HardDrive :size="16" />
-                <div>
-                  <h2>清空本地播放缓存</h2>
-                  <p>清的是 VPS 本机副本（热门片提前拉到本机的那份），不是媒体库里的文件</p>
-                </div>
-              </div>
-              <span class="mini-badge warn">清掉不可恢复</span>
-            </header>
+            <template #actions>
+              <span class="au-badge au-badge-amber">清掉不可恢复</span>
+            </template>
             <p class="danger-effect">
               当前占用 <strong>{{ fmtBytes(cacheStats?.bytes_used || 0) }}</strong>
               （上限 {{ fmtBytes(cacheStats?.max_bytes || 0) }}）
@@ -724,70 +817,77 @@ watch(
               </template>
               。清完之后这些片子要重新回源拉一次，热门时段会变慢。
             </p>
-            <div class="card-footer">
-              <el-button
-                :disabled="!canWrite"
-                :loading="dangerBusy === 'cache:ready'"
-                :title="canWrite ? '' : WRITE_HINT"
-                @click="doCleanCache('ready')"
-              >
-                <Eraser :size="14" style="margin-right: 4px" />清理已缓存副本
-              </el-button>
-              <el-button
-                :disabled="!canWrite"
-                :loading="dangerBusy === 'cache:failed'"
-                :title="canWrite ? '' : WRITE_HINT"
-                @click="doCleanCache('failed')"
-              >
-                清理失败记录
-              </el-button>
-              <el-button
-                type="danger"
-                plain
-                :disabled="!canWrite"
-                :loading="dangerBusy === 'cache:all'"
-                :title="canWrite ? '' : WRITE_HINT"
-                @click="doCleanCache('all')"
-              >
-                清空全部
-              </el-button>
-            </div>
-          </section>
+            <template #footer>
+              <div class="card-footer">
+                <el-button
+                  :disabled="!canWrite"
+                  :loading="dangerBusy === 'cache:ready'"
+                  :title="canWrite ? '' : WRITE_HINT"
+                  @click="doCleanCache('ready')"
+                >
+                  <Eraser :size="14" class="btn-ico" />清理已缓存副本
+                </el-button>
+                <el-button
+                  :disabled="!canWrite"
+                  :loading="dangerBusy === 'cache:failed'"
+                  :title="canWrite ? '' : WRITE_HINT"
+                  @click="doCleanCache('failed')"
+                >
+                  清理失败记录
+                </el-button>
+                <el-button
+                  type="danger"
+                  plain
+                  :disabled="!canWrite"
+                  :loading="dangerBusy === 'cache:all'"
+                  :title="canWrite ? '' : WRITE_HINT"
+                  @click="doCleanCache('all')"
+                >
+                  清空全部
+                </el-button>
+              </div>
+            </template>
+          </SectionCard>
 
-          <!-- 3. 登录与安全日志 -->
-          <section
+          <!-- 2. 登录与安全日志 -->
+          <SectionCard
             id="danger-logs"
-            class="admin-card danger-card"
+            title="清理登录与安全日志"
+            :icon="History"
+            description="登录成功/失败、设备超限被拒、诱饵码触发封禁等风控事件的流水"
+            class="danger-card"
             :class="{ 'is-target': target === 'logs' }"
           >
-            <header class="card-header">
-              <div class="card-title">
-                <History :size="16" />
-                <div>
-                  <h2>清理登录与安全日志</h2>
-                  <p>登录成功/失败、设备超限被拒、诱饵码触发封禁等风控事件的流水</p>
-                </div>
-              </div>
-              <span class="mini-badge danger">删掉就查不到了</span>
-            </header>
+            <template #actions>
+              <span class="au-badge au-badge-rose">删掉就查不到了</span>
+            </template>
             <p class="danger-effect">
               保留 <strong>0</strong> 天 = 清空全部。删掉之后，风控与安全审计就查不到那段历史了。
               想让它自然收敛，应该去「系统设置 → 运营参数 → 下载与设备风控」改日志保留天数。
             </p>
-            <div class="card-footer">
-              <span class="field-suffix">保留天数</span>
-              <el-input-number v-model="purgeDays" :min="0" :max="3650" :controls="false" style="width: 120px" />
-              <el-button
-                type="danger"
-                :disabled="!canWrite"
-                :loading="dangerBusy === 'logs'"
-                :title="canWrite ? '' : WRITE_HINT"
-                @click="doPurgeLogs(purgeDays)"
-              >
-                清理日志
-              </el-button>
-            </div>
-          </section>
+            <template #footer>
+              <div class="card-footer">
+                <label class="field-suffix" for="purge-days">保留天数</label>
+                <el-input-number
+                  id="purge-days"
+                  v-model="purgeDays"
+                  :min="0"
+                  :max="3650"
+                  :controls="false"
+                  class="purge-input"
+                />
+                <el-button
+                  type="danger"
+                  :disabled="!canWrite"
+                  :loading="dangerBusy === 'logs'"
+                  :title="canWrite ? '' : WRITE_HINT"
+                  @click="doPurgeLogs(purgeDays)"
+                >
+                  清理日志
+                </el-button>
+              </div>
+            </template>
+          </SectionCard>
 
           <p class="foot-note">
             <TriangleAlert :size="13" />
@@ -799,37 +899,39 @@ watch(
     </el-tabs>
 
     <!-- ==================== 能力配置抽屉 ==================== -->
-    <el-drawer v-model="drawerOpen" :title="drawerTitle" size="520px">
+    <el-drawer v-model="drawerOpen" :title="drawerTitle" :size="capDrawerSize">
       <div class="cap-drawer">
         <p class="cap-drawer-desc">{{ drawerDesc }}</p>
-        <p v-if="drawerHint" class="field-hint">{{ drawerHint }}</p>
+        <p v-if="drawerHint" class="field-hint cap-drawer-hint">{{ drawerHint }}</p>
 
         <el-form label-position="top" class="field-form">
           <el-form-item v-for="f in drawerFields" :key="f.key" :label="f.label">
-            <el-switch
-              v-if="f.type === 'bool'"
-              v-model="drawerValues[f.key]"
-              active-value="true"
-              inactive-value="false"
-            />
-            <el-select v-else-if="f.type === 'select'" v-model="drawerValues[f.key]">
-              <el-option v-for="opt in f.options" :key="opt" :label="opt" :value="opt" />
-            </el-select>
-            <el-input
-              v-else-if="f.type === 'int'"
-              v-model="drawerValues[f.key]"
-              type="number"
-              class="num-input"
-            />
-            <el-input
-              v-else
-              v-model="drawerValues[f.key]"
-              :type="f.type === 'secret' ? 'password' : 'text'"
-              :show-password="f.type === 'secret'"
-              :placeholder="f.type === 'secret' && drawerValues[f.key] === '******'
-                ? '已配置：保持 ****** 不修改，清空则删除' : (f.placeholder || '')"
-            />
-            <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+            <div class="field-stack">
+              <el-switch
+                v-if="f.type === 'bool'"
+                v-model="drawerValues[f.key]"
+                active-value="true"
+                inactive-value="false"
+              />
+              <el-select v-else-if="f.type === 'select'" v-model="drawerValues[f.key]">
+                <el-option v-for="opt in f.options" :key="opt" :label="opt" :value="opt" />
+              </el-select>
+              <el-input
+                v-else-if="f.type === 'int'"
+                v-model="drawerValues[f.key]"
+                type="number"
+                class="num-input"
+              />
+              <el-input
+                v-else
+                v-model="drawerValues[f.key]"
+                :type="f.type === 'secret' ? 'password' : 'text'"
+                :show-password="f.type === 'secret'"
+                :placeholder="f.type === 'secret' && drawerValues[f.key] === '******'
+                  ? '已配置：保持 ****** 不修改，清空则删除' : (f.placeholder || '')"
+              />
+              <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+            </div>
           </el-form-item>
 
           <el-form-item v-if="drawerTestInput" :label="drawerTestInput.label">
@@ -851,7 +953,7 @@ watch(
             {{ drawerTestLabel }}
           </el-button>
           <el-button type="primary" :loading="capSaving" @click="saveCurrentCapability">
-            <Save :size="14" style="margin-right: 4px" />{{ drawerDirty ? '保存修改' : '保存' }}
+            <Save :size="14" class="btn-ico" />{{ drawerDirty ? '保存修改' : '保存' }}
           </el-button>
         </div>
         <p class="foot-note">
@@ -863,131 +965,118 @@ watch(
 </template>
 
 <style scoped>
-.settings-body { display: flex; flex-direction: column; gap: 14px; }
+.settings-page { gap: 16px; }
+.btn-ico { margin-right: 4px; }
+.w-full { width: 100%; }
+.settings-body { display: flex; flex-direction: column; gap: 16px; }
+.is-refreshing { opacity: 0.6; transition: opacity var(--au-fast) var(--au-ease); }
 
-/* ==================== 页签（Phase 5） ==================== */
-.settings-tabs { margin-bottom: 4px; }
+/* ==================== 页签 ==================== */
 .tab-label { display: inline-flex; align-items: center; gap: 4px; }
-.danger-locked { border-color: var(--warning-border); }
 
-/* 危险操作卡：左边一条警示色，与前两个页签的日常配置卡区分开 */
-.danger-card { border-left: 3px solid var(--danger-border); }
-.danger-card.is-target {
-  border-color: var(--danger);
-  box-shadow: 0 0 0 3px var(--danger-bg);
+/* ==================== 骨架 ==================== */
+.cap-skeleton {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
 }
+.sk-cap { height: 132px; border-radius: var(--au-r-lg); }
+.params-skeleton { display: flex; flex-direction: column; gap: 16px; }
+.sk-nav { height: 40px; border-radius: var(--au-r-md); }
+.sk-card { height: 220px; border-radius: var(--au-r-lg); }
 
-.danger-guard {
+/* ==================== 运营参数：分组目录 ==================== */
+.group-nav {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  gap: 6px;
   flex-wrap: wrap;
-  border-color: var(--success-border);
-  background: var(--success-bg);
 }
-.danger-guard-main { display: flex; align-items: flex-start; gap: 12px; flex: 1; min-width: 0; }
-.danger-guard-icon { color: var(--success); flex-shrink: 0; margin-top: 2px; }
-.danger-guard h2 { font-size: 15px; margin: 0; color: var(--text-primary); }
-.danger-guard p { margin: 4px 0 0; font-size: var(--font-size-xs); color: var(--text-secondary); line-height: 1.6; }
-.danger-guard-meta { color: var(--text-muted) !important; }
-
-.danger-effect {
-  margin: 0 0 4px;
-  font-size: var(--font-size-xs);
-  line-height: 1.7;
-  color: var(--text-secondary);
+.group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  background: var(--au-surface);
+  color: var(--au-text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
-.danger-effect strong { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
+.group-chip:hover { border-color: var(--au-border-strong); color: var(--au-text); }
+.group-chip:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+.group-chip svg { color: var(--au-primary); }
+.group-chip.is-dirty { border-color: var(--au-primary-border); color: var(--au-text); }
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--au-r-full);
+  background: var(--au-primary);
+}
+/* 跳转落点别被顶栏压住 */
+.group-card { scroll-margin-top: 80px; }
 
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: var(--radius-full); font-weight: 600; flex-shrink: 0; }
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.warn { background: var(--warning-bg); color: var(--warning); }
-.mini-badge.danger { background: var(--danger-bg); color: var(--danger); }
-
-.card-title { display: flex; align-items: flex-start; gap: 10px; }
-.card-title h2 { font-size: 15px; margin: 0; }
-.card-title p { font-size: 12px; color: var(--text-muted); margin: 2px 0 0; }
-
-.field-form { max-width: 640px; }
-.field-suffix { margin-left: 8px; font-size: var(--font-size-xs); color: var(--text-tertiary); }
-.field-hint { font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.6; }
+/* ==================== 表单 ==================== */
+.field-form :deep(.el-form-item) { margin-bottom: 18px; }
+.field-form :deep(.el-form-item:last-child) { margin-bottom: 0; }
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0 24px;
+}
+.field-grid :deep(.el-form-item.is-wide) { grid-column: 1 / -1; max-width: 640px; }
+.field-grid :deep(.el-form-item:last-child) { margin-bottom: 18px; }
+.field-stack { display: flex; flex-direction: column; gap: 6px; width: 100%; min-width: 0; }
+.field-control { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.field-suffix { font-size: 12px; color: var(--au-text-3); white-space: nowrap; }
+.field-hint { font-size: 12px; color: var(--au-text-3); line-height: 1.6; }
 .num-input { width: 160px; }
-
-/* 控件与标签之间留出呼吸位：label 在上时不再挤在一行里 */
-.field-form :deep(.el-form-item) { margin-bottom: 20px; }
-.field-form :deep(.el-form-item__content) { flex-wrap: wrap; gap: 6px 0; }
 
 .card-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
-  margin-top: 4px;
-}
-
-.dirty-dot {
-  font-size: 11px;
-  color: var(--warning);
-  background: var(--warning-bg);
-  border-radius: var(--radius-full);
-  padding: 2px 10px;
-}
-
-/* 支付网关提示横幅（v2.42.6）：文字改走语义 token。
-   旧版写死 #fde68a / #a7f3d0（深色底上才够亮的浅黄/浅绿），
-   白日模式下面就是「浅黄字压浅底」，几乎读不出来。 */
-.notice {
-  display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 12px 14px;
-  border-radius: var(--radius-md);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  line-height: 1.6;
-  border: 1px solid var(--warning-border);
-  background: var(--warning-bg);
-  /* -strong 档：浅色下 #92400e 压 10% 琥珀底 ≈ 6:1，基础档 #b45309 只有 ≈ 4.3:1
-     （13px 正文不够 AA） */
-  color: var(--warning-strong);
+  gap: 8px;
+  flex-wrap: wrap;
 }
-
-.notice :deep(svg) { flex-shrink: 0; color: var(--warning-strong); }
-
-.notice.ok {
-  border-color: var(--success-border);
-  background: var(--success-bg);
-  color: var(--success-strong);
-}
-
-.notice.ok :deep(svg) { color: var(--success-strong); }
-
-.notice strong,
-.capability-note strong { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
 
 .capability-note { margin: 0; line-height: 1.7; }
+.capability-note strong { color: var(--au-text); font-weight: 600; }
 
 .foot-note {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  padding: 4px 2px 10px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--au-text-3);
+  padding: 0 2px 8px;
 }
+.foot-note strong { color: var(--au-text-2); }
+
+/* ==================== 危险操作 ==================== */
+/* 危险操作卡：左边一条警示色，与前两个页签的日常配置卡区分开 */
+.danger-card { border-left: 3px solid var(--au-danger-border); scroll-margin-top: 80px; }
+.danger-card.is-target {
+  border-color: var(--au-danger);
+  outline: 3px solid var(--au-danger-soft);
+}
+.danger-guard { border-color: var(--au-success-border); }
+.danger-guard-meta { margin: 6px 0 0; font-size: 12px; color: var(--au-text-3); line-height: 1.6; }
+.danger-effect {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--au-text-2);
+}
+.danger-effect strong { color: var(--au-text); font-weight: 600; }
+.purge-input { width: 120px; }
 
 /* ==================== 能力卡片 ==================== */
-
 .cap-section { display: flex; flex-direction: column; gap: 10px; }
-
-.cap-group-title {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-tertiary);
-  letter-spacing: var(--tracking-wide);
-  margin: 6px 0 0;
-}
+.cap-group-title { margin: 4px 0 2px; }
 
 .cap-grid {
   display: grid;
@@ -996,9 +1085,8 @@ watch(
 }
 
 /*
-  能力卡按列打包（v2.42.5）：此前每个分组各占一整行，「AI 与智能」「站点与品牌」
-  这种只有 1 张卡的分组会让整行右侧大片留白。改成多列打包后，单卡分组与相邻分组
-  并排；分组本身不被拆开（break-inside: avoid），阅读顺序仍是分组的自然顺序。
+  能力卡按列打包（v2.42.5）：单卡分组与相邻分组并排；分组本身不被拆开（break-inside: avoid），
+  阅读顺序仍是分组的自然顺序。
 */
 .cap-flow {
   display: block;
@@ -1008,7 +1096,7 @@ watch(
 .cap-flow .cap-section {
   display: block;
   break-inside: avoid;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .cap-flow .cap-grid { display: block; }
 .cap-flow .cap-card { margin-bottom: 12px; break-inside: avoid; }
@@ -1017,27 +1105,22 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 6px;
+  width: 100%;
   text-align: left;
-  padding: var(--space-4);
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  padding: 16px;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
   cursor: pointer;
   font: inherit;
   color: inherit;
-  transition: border-color var(--transition-fast), transform var(--transition-fast),
-    box-shadow var(--transition-fast);
+  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
 }
-
-.cap-card:hover {
-  border-color: var(--border-strong);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-sm);
-}
-
-.cap-card.ok { border-color: var(--success-border); }
-.cap-card.warn { border-color: var(--warning-border); }
+.cap-card:hover { border-color: var(--au-border-strong); background: var(--au-surface-2); }
+.cap-card:active { transform: scale(0.98); }
+.cap-card:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+.cap-card.ok { border-color: var(--au-success-border); }
+.cap-card.warn { border-color: var(--au-warning-border); }
 
 .cap-card-top { display: flex; align-items: center; justify-content: space-between; }
 
@@ -1047,28 +1130,18 @@ watch(
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-md);
-  background: var(--primary-bg);
-  color: var(--primary);
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
 }
 
-.cap-badge {
-  font-size: 11px;
-  padding: 2px 10px;
-  border-radius: var(--radius-full);
-  color: var(--text-muted);
-  background: var(--bg-inset);
-}
+.cap-title { font-size: 15px; margin: 2px 0 0; color: var(--au-text); }
+.cap-card p { font-size: 12px; color: var(--au-text-3); line-height: 1.6; margin: 0; }
+.cap-more { font-size: 12px; color: var(--au-primary); margin-top: 4px; }
 
-.cap-badge.ok { color: var(--success); background: var(--success-bg); }
-.cap-badge.warn { color: var(--warning); background: var(--warning-bg); }
-
-.cap-card h3 { font-size: var(--font-size-md); margin: 2px 0 0; color: var(--text-primary); }
-.cap-card p { font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.6; margin: 0; }
-.cap-more { font-size: var(--font-size-xs); color: var(--primary); margin-top: 4px; }
-
-.cap-drawer { display: flex; flex-direction: column; gap: 10px; }
-.cap-drawer-desc { font-size: var(--font-size-sm); color: var(--text-secondary); margin: 0; line-height: 1.6; }
+.cap-drawer { display: flex; flex-direction: column; gap: 12px; }
+.cap-drawer-desc { font-size: 13px; color: var(--au-text-2); margin: 0; line-height: 1.6; }
+.cap-drawer-hint { margin: 0; }
 .cap-drawer :deep(.el-select) { width: 100%; }
 
 .cap-drawer-footer {
@@ -1076,21 +1149,25 @@ watch(
   justify-content: flex-end;
   gap: 8px;
   padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--au-border);
 }
 
-/* 手机：数字输入铺满、保存按钮拉满整行、提示图标不压缩 */
-@media (max-width: 640px) {
+/* 手机：数字输入铺满、保存按钮拉满整行 */
+@media (max-width: 768px) {
   .num-input { width: 100%; }
+  .field-grid { grid-template-columns: 1fr; }
   .card-footer { justify-content: stretch; }
-  .card-footer :deep(.el-button) { flex: 1; margin-left: 0; }
+  .card-footer :deep(.el-button) { flex: 1 1 auto; margin-left: 0; }
+  .purge-input { flex: 1 1 100px; }
   .settings-body { gap: 12px; }
+  .group-nav { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+  .group-chip { flex: none; }
   .cap-grid { grid-template-columns: 1fr; }
-  /* 手机：能力卡回到单列，分组标题紧贴自己的卡片 */
   .cap-flow { column-width: auto; column-count: 1; }
   .cap-flow .cap-section { margin-bottom: 12px; }
   .cap-flow .cap-card { margin-bottom: 10px; }
   .cap-drawer-footer { justify-content: stretch; }
   .cap-drawer-footer :deep(.el-button) { flex: 1; margin-left: 0; }
+  .danger-guard :deep(.au-section__head) { flex-wrap: wrap; }
 }
 </style>

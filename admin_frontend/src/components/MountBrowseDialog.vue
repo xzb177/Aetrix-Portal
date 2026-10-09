@@ -9,6 +9,7 @@
 import { computed, ref, watch } from 'vue'
 import { FolderOpen } from 'lucide-vue-next'
 import { browseMount } from '@/api/admin'
+import { EmptyState } from '@/components/ui'
 import type { MountDirEntry, StorageMount } from '@/types'
 
 const props = defineProps<{
@@ -70,7 +71,7 @@ const title = computed(() => `浏览：${props.mount?.name || ''}`)
   <el-dialog
     :model-value="modelValue"
     :title="title"
-    width="560px"
+    width="min(560px, 94vw)"
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >
     <div class="browse-bar">
@@ -91,7 +92,13 @@ const title = computed(() => `浏览：${props.mount?.name || ''}`)
         <span v-if="entryIdLabel(e)" class="browse-id">{{ entryIdLabel(e) }}</span>
         <span v-else class="browse-size">{{ e.is_dir ? '' : (e.size / 1024 / 1024).toFixed(1) + ' MB' }}</span>
       </div>
-      <div v-if="entries.length === 0 && !loading" class="browse-empty">目录为空</div>
+      <EmptyState
+        v-if="entries.length === 0 && !loading"
+        compact
+        :icon="FolderOpen"
+        title="目录为空"
+        description="这个目录下没有文件或子目录。"
+      />
     </div>
     <template #footer>
       <span v-if="rootKeyLabel" class="form-hint">
@@ -105,20 +112,24 @@ const title = computed(() => `浏览：${props.mount?.name || ''}`)
 <style scoped>
 .browse-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .browse-path {
-  flex: 1; font-size: var(--font-size-xs); color: var(--text-muted);
+  flex: 1; font-size: var(--font-size-xs); color: var(--au-text-3); font-family: var(--font-mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.browse-list { min-height: 180px; max-height: 46vh; overflow-y: auto; }
+.browse-list {
+  min-height: 180px; max-height: 46vh; overflow-y: auto;
+  border: 1px solid var(--au-border); border-radius: var(--au-r-md); padding: 4px;
+}
 .browse-item {
   display: flex; align-items: center; gap: 8px; padding: 7px 8px;
-  border-radius: var(--radius-sm); cursor: pointer; font-size: var(--font-size-sm);
+  border-radius: var(--au-r-sm); cursor: pointer; font-size: var(--font-size-sm);
 }
-.browse-item:hover { background: var(--bg-hover); }
+.browse-item { transition: background-color var(--au-fast) var(--au-ease); }
+.browse-item:hover { background: var(--au-violet-soft); }
+.browse-item.dir svg { color: var(--au-primary); flex-shrink: 0; }
 .browse-item.dir { font-weight: 500; }
 .browse-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .browse-id, .browse-size {
-  font-size: var(--font-size-xs); color: var(--text-muted); flex-shrink: 0;
+  font-size: var(--font-size-xs); color: var(--au-text-3); flex-shrink: 0; font-variant-numeric: tabular-nums;
 }
-.browse-empty { padding: 24px; text-align: center; color: var(--text-muted); }
-.form-hint { font-size: var(--font-size-xs); color: var(--text-muted); margin-right: 8px; }
+.form-hint { font-size: var(--font-size-xs); color: var(--au-text-3); margin-right: 8px; }
 </style>

@@ -1,0 +1,272 @@
+/* ========================================
+   Aurora 设计系统 v4 —— 管理端移植（暗房影院）
+
+   与用户端 user_frontend/src/styles/aurora.css **同名同值**：暖黑底 · 实色表面 ·
+   放映机琥珀单一强调色 · 衬线标题 · 发丝线边框；白日模式是独立调过的奶油纸色。
+   改这里的值之前先改用户端那份——两端必须是同一套令牌，UI 才统一。
+
+   管理端只消费 --au-*：tokens.css 把历史变量（--bg-card / --primary / --text-muted …）
+   全部映射到这里（别名层，同用户端 neo-noir-tokens.css 的做法），页面零改动跟着换肤。
+   主题切换只改 html[data-theme]（见 composables/useTheme.ts），品牌主题色由
+   composables/branding.ts 注入覆盖 --au-primary 一族。
+   ======================================== */
+
+:root {
+  /* 字体（暗房影院）：标题走衬线（片名 / 页标题 / 大数字说明），正文保持系统无衬线 */
+  --au-font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+  --au-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* 主色 — 放映机琥珀（全站唯一强调色） */
+  --au-primary: #e8a84a;
+  --au-primary-strong: #d4923a;
+  --au-primary-deep: #a86f24;
+  --au-primary-soft: rgba(232, 168, 74, 0.12);
+  /* 中间档：hover 底色，比 soft 明显、比 border 温柔 */
+  --au-primary-mid: rgba(232, 168, 74, 0.2);
+  --au-primary-border: rgba(232, 168, 74, 0.28);
+  /* 暗房里没有霓虹：发光一律取消（保留令牌名只为兼容，值为透明） */
+  --au-primary-glow: transparent;
+  /* 琥珀底上的文字：深棕墨 */
+  --au-on-primary: #1a1205;
+
+  /* 旧的「极光紫粉」辅助色：暗房影院只有一支强调色，紫 / 粉一律收成中性暖灰或琥珀 */
+  --au-violet: rgba(243, 237, 228, 0.72);
+  --au-pink: var(--au-primary-deep);
+  /* 渐变令牌保留名字做兼容，实际是纯色琥珀（不再有青→紫流光） */
+  --au-gradient: linear-gradient(var(--au-primary), var(--au-primary));
+  --au-gradient-warm: linear-gradient(var(--au-primary), var(--au-primary));
+
+  /* 语义色（降饱和，贴合暗房的暖调）。每种都有 soft（底色）/ border（描边）两档 */
+  --au-success: #8fbf8a;
+  --au-success-soft: rgba(143, 191, 138, 0.12);
+  --au-success-border: rgba(143, 191, 138, 0.28);
+  --au-warning: #e8a84a;
+  --au-warning-soft: rgba(232, 168, 74, 0.12);
+  --au-warning-border: rgba(232, 168, 74, 0.28);
+  /* 签到按钮（原金币系三档）：并入琥珀家族 */
+  --au-gold-a: #e8a84a;
+  --au-gold-b: #d4923a;
+  --au-gold-edge: #a86f24;
+  /* 预警色底上的文字（同 --au-on-primary 的思路） */
+  --au-on-warning: #1a1205;
+  --au-danger: #d9776b;
+  --au-danger-soft: rgba(217, 119, 107, 0.12);
+  --au-danger-border: rgba(217, 119, 107, 0.28);
+  --au-info: #9db4c8;
+  --au-info-soft: rgba(157, 180, 200, 0.12);
+  --au-info-border: rgba(157, 180, 200, 0.28);
+  /* 旧紫色的 soft 档：中性暖灰底 */
+  --au-violet-soft: rgba(245, 235, 220, 0.06);
+
+  /* 背景层级：暖黑底 + 实色表面（不再是半透明玻璃） */
+  --au-bg: #0c0a09;
+  --au-bg-soft: #11100e;
+  --au-surface: #171412;
+  --au-surface-2: #1e1a17;
+  --au-surface-3: #26211d;
+  --au-overlay: rgba(12, 10, 9, 0.86);
+  /* 图片上方的叠加层（Hero 遮罩 / 封面进度槽）：都是 --au-bg 的透明版本 */
+  --au-overlay-soft: rgba(12, 10, 9, 0.35);
+  --au-overlay-mid: rgba(12, 10, 9, 0.55);
+  --au-overlay-strong: rgba(12, 10, 9, 0.8);
+  /* 下拉菜单 / 浮层：实色 */
+  --au-overlay-menu: rgba(23, 20, 18, 0.98);
+  /* 顶栏 / 底部坞的底色：页面底色 0.96，再叠 backdrop-filter——滚过去的内容不再透字 */
+  --au-chrome: rgba(12, 10, 9, 0.96);
+  /* 弹窗背后的整屏遮罩 */
+  --au-scrim: rgba(0, 0, 0, 0.7);
+  /* 纯装饰网格线（已不再用于背景，保留令牌） */
+  --au-grid-line: rgba(245, 235, 220, 0.04);
+  /* 图片上的中性叠加与文字（不跟主题走冷暖，只保证在任意封面上可读） */
+  --au-on-image: rgba(255, 255, 255, 0.12);
+  --au-on-image-strong: rgba(255, 255, 255, 0.2);
+  --au-track: rgba(245, 235, 220, 0.1);
+
+  /* 文字：暖白 */
+  --au-text: #f3ede4;
+  --au-text-2: rgba(243, 237, 228, 0.72);
+  --au-text-3: rgba(243, 237, 228, 0.6);
+  --au-text-4: rgba(243, 237, 228, 0.42);
+
+  /* 边框：发丝线 */
+  --au-border: rgba(245, 235, 220, 0.08);
+  --au-border-strong: rgba(245, 235, 220, 0.14);
+  --au-border-focus: rgba(232, 168, 74, 0.55);
+
+  /* 圆角：收敛，不再有 22px 的大圆角 */
+  --au-r-sm: 8px;
+  --au-r-md: 10px;
+  --au-r-lg: 14px;
+  --au-r-xl: 14px;
+  --au-r-full: 999px;
+
+  /* 阴影：克制，无发光 */
+  --au-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --au-shadow-2: 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* 只取颜色，给 filter: drop-shadow(…) 用（那里没法直接写 box-shadow） */
+  --au-shadow-color: rgba(0, 0, 0, 0.45);
+  /* 封面上的标题阴影：让白字在浅色海报上也能读 */
+  --au-shadow-text: 0 2px 12px rgba(0, 0, 0, 0.6);
+  --au-shadow-glow: none;
+
+  /* 动效：入场 = 从黑场淡入（只动透明度） */
+  --au-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --au-fast: 0.16s;
+  --au-med: 0.26s;
+  --au-fade-in: 0.7s;
+
+  /* 输入框（双主题）：深浅两套各自调色 */
+  --au-input-bg: #11100e;
+  --au-input-bg-focus: #0c0a09;
+  --au-input-border: var(--au-border);
+}
+
+/* ==================== 白日模式「影院大厅」 ==================== */
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --au-bg: #f5f1ea;
+  --au-bg-soft: #efe9df;
+  --au-input-bg: #fffdf9;
+  --au-input-bg-focus: #ffffff;
+  --au-input-border: rgba(28, 25, 21, 0.16);
+  --au-surface: #fffdf9;
+  --au-surface-2: #f7f2ea;
+  --au-surface-3: #efe8dd;
+  --au-overlay: rgba(245, 241, 234, 0.9);
+  --au-overlay-soft: rgba(28, 25, 21, 0.16);
+  --au-overlay-mid: rgba(28, 25, 21, 0.3);
+  --au-overlay-strong: rgba(28, 25, 21, 0.55);
+  --au-overlay-menu: rgba(255, 253, 249, 0.98);
+  --au-chrome: rgba(245, 241, 234, 0.96);
+  --au-scrim: rgba(28, 25, 21, 0.42);
+  --au-grid-line: rgba(28, 25, 21, 0.05);
+  --au-track: rgba(28, 25, 21, 0.1);
+
+  --au-text: #1c1915;
+  --au-text-2: rgba(28, 25, 21, 0.74);
+  --au-text-3: rgba(28, 25, 21, 0.6);
+  --au-text-4: rgba(28, 25, 21, 0.42);
+
+  --au-border: rgba(28, 25, 21, 0.1);
+  --au-border-strong: rgba(28, 25, 21, 0.18);
+  --au-border-focus: rgba(185, 128, 47, 0.55);
+
+  --au-primary: #b9802f;
+  --au-primary-strong: #a06c24;
+  --au-primary-deep: #7f541b;
+  --au-primary-soft: rgba(185, 128, 47, 0.1);
+  --au-primary-mid: rgba(185, 128, 47, 0.16);
+  --au-primary-border: rgba(185, 128, 47, 0.3);
+  --au-primary-glow: transparent;
+  --au-on-primary: #ffffff;
+
+  --au-violet: rgba(28, 25, 21, 0.72);
+  --au-violet-soft: rgba(28, 25, 21, 0.05);
+
+  --au-success: #4f7f4a;
+  --au-success-soft: rgba(79, 127, 74, 0.1);
+  --au-success-border: rgba(79, 127, 74, 0.26);
+  --au-warning: #b9802f;
+  --au-warning-soft: rgba(185, 128, 47, 0.1);
+  --au-warning-border: rgba(185, 128, 47, 0.28);
+  --au-on-warning: #ffffff;
+  --au-gold-a: #c58a36;
+  --au-gold-b: #b9802f;
+  --au-gold-edge: #8a5c1f;
+  --au-danger: #b4493c;
+  --au-danger-soft: rgba(180, 73, 60, 0.09);
+  --au-danger-border: rgba(180, 73, 60, 0.26);
+  --au-info: #4f6f8a;
+  --au-info-soft: rgba(79, 111, 138, 0.09);
+  --au-info-border: rgba(79, 111, 138, 0.24);
+
+  --au-shadow-1: 0 1px 2px rgba(28, 25, 21, 0.06);
+  --au-shadow-2: 0 12px 32px rgba(28, 25, 21, 0.12);
+  --au-shadow-color: rgba(28, 25, 21, 0.14);
+  --au-shadow-text: 0 2px 12px rgba(28, 25, 21, 0.35);
+}
+
+/* ==================== 通用原子类（与用户端同名同配方） ====================
+   页面里需要「用户端那种按钮 / 卡片 / 眉题」又不想上 Element Plus 时直接用。 */
+
+/* 衬线标题：页标题 / 区块标题 / 卡片标题 / 弹窗标题 */
+.au-serif {
+  font-family: var(--au-font-serif);
+  letter-spacing: 0.01em;
+}
+
+.au-num { font-variant-numeric: tabular-nums; }
+
+/* 小号字距拉开的「眉题」：琥珀色 */
+.au-eyebrow {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--au-primary);
+}
+
+.au-card {
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+}
+
+.au-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 36px;
+  padding: 0 1rem;
+  border: none;
+  border-radius: var(--au-r-md);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all var(--au-fast) var(--au-ease);
+  white-space: nowrap;
+}
+.au-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.au-btn-primary { background: var(--au-primary); color: var(--au-on-primary); }
+.au-btn-primary:hover:not(:disabled) { filter: brightness(1.08); color: var(--au-on-primary); }
+.au-btn-primary:active:not(:disabled) { transform: scale(0.98); }
+.au-btn-ghost { background: var(--au-surface-2); border: 1px solid var(--au-border); color: var(--au-text); }
+.au-btn-ghost:hover:not(:disabled) { background: var(--au-surface-3); border-color: var(--au-border-strong); color: var(--au-text); }
+.au-btn-danger { background: var(--au-danger-soft); border: 1px solid var(--au-danger-border); color: var(--au-danger); }
+.au-btn-danger:hover:not(:disabled) { background: var(--au-danger-border); }
+.au-btn-sm { height: 30px; padding: 0 0.75rem; font-size: 0.8125rem; border-radius: var(--au-r-sm); }
+
+.au-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--au-r-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+.au-badge-amber { background: var(--au-primary-soft); color: var(--au-primary); border-color: var(--au-primary-border); }
+.au-badge-green { background: var(--au-success-soft); color: var(--au-success); border-color: var(--au-success-border); }
+.au-badge-rose { background: var(--au-danger-soft); color: var(--au-danger); border-color: var(--au-danger-border); }
+.au-badge-info { background: var(--au-info-soft); color: var(--au-info); border-color: var(--au-info-border); }
+.au-badge-muted { background: var(--au-violet-soft); color: var(--au-text-3); border-color: var(--au-border); }
+
+.au-skeleton {
+  background: linear-gradient(90deg, var(--au-surface) 25%, var(--au-surface-2) 50%, var(--au-surface) 75%);
+  background-size: 200% 100%;
+  animation: au-shimmer 1.4s infinite;
+  border-radius: var(--au-r-md);
+}
+@keyframes au-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* 入场：从黑场淡入（只动透明度） */
+@keyframes au-fade-up { from { opacity: 0; } to { opacity: 1; } }
+.au-anim-up { animation: au-fade-up var(--au-fade-in) var(--au-ease) both; }
+@media (prefers-reduced-motion: reduce) { .au-anim-up { animation: none; } }

@@ -76,9 +76,20 @@ const placeholder = computed(() => TYPES.find((x) => x.value === props.type)?.pl
 <style scoped>
 .mount-source-editor { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .ms-hint {
-  color: var(--text-muted);
+  color: var(--au-text-3);
   font-size: var(--font-size-xs);
   margin: 0;
   line-height: 1.6;
+}
+.ms-hint code {
+  font-family: var(--font-mono);
+  padding: 0 4px;
+  border-radius: calc(var(--au-r-sm) / 2);
+  background: var(--au-bg-soft);
+  border: 1px solid var(--au-border);
+  color: var(--au-text-2);
+}
+@media (max-width: 768px) {
+  .mount-source-editor :deep(.el-radio-group) { flex-wrap: wrap; }
 }
 </style>

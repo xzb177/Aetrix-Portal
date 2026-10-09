@@ -188,6 +188,7 @@ async function ask(text?: string) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding: 1rem 1.125rem;
   min-height: 220px;
   max-height: 58vh;
   overflow-y: auto;
@@ -195,6 +196,7 @@ async function ask(text?: string) {
 
 .chat-empty { display: flex; flex-direction: column; gap: 10px; color: var(--text-muted); }
 .chat-empty p { margin: 0; font-size: 13px; }
+.chat-empty svg { color: var(--au-primary); }
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 
@@ -232,7 +234,7 @@ async function ask(text?: string) {
   max-width: 76%;
   padding: 10px 13px;
   border-radius: var(--au-r-md);
-  background: var(--au-surface);
+  background: var(--au-surface-2);
   border: 1px solid var(--au-border);
 }
 
@@ -241,11 +243,12 @@ async function ask(text?: string) {
 
 .bubble p { margin: 0; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; color: var(--text-primary); }
 
-.composer { display: flex; gap: 10px; }
+.composer { display: flex; gap: 10px; margin-top: 0.75rem; }
+.composer .au-input { flex: 1; min-width: 0; }
 
 @media (max-width: 640px) {
   .bubble { max-width: 84%; }
-  .composer { flex-direction: column; }
-  .composer .au-btn { width: 100%; }
+  /* 窄屏也保持「输入框 + 发送」一行（聊天输入的肌肉记忆），按钮只收窄 */
+  .composer .au-btn { flex-shrink: 0; padding: 0 0.875rem; }
 }
 </style>

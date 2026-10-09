@@ -862,7 +862,7 @@ select.au-input option { background: var(--au-bg-soft); }
   gap: 0.5rem;
   padding: 0.4375rem 0.5rem;
   border-radius: var(--au-r-sm);
-  background: var(--au-overlay-soft);
+  background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   text-decoration: none;
   transition: border-color var(--au-fast) var(--au-ease);

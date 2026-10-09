@@ -157,6 +157,11 @@
   --radius-sm: var(--au-r-sm);
   --radius-md: var(--au-r-md);
   --radius-lg: var(--au-r-lg);
+  /* 原 design-tokens.css 里仍有引用的几项（其余别名与上面重复或无人使用，文件已删） */
+  --font-size-small: 13px;   /* 暗房影院：正文下限 13px */
+  --skeleton-base: var(--au-surface-2);
+  --skeleton-highlight: var(--au-surface-3);
+  --z-tooltip: var(--neo-z-toast);
 }
 
 @media (max-width: 768px) {

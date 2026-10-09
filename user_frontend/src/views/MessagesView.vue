@@ -26,6 +26,8 @@ const route = useRoute()
 const messages = ref<StationMessage[]>([])
 const loading = ref(false)
 const refreshing = ref(false)
+/** 列表拉取失败：和「真的没有消息」分开显示，给一个重试入口 */
+const loadError = ref(false)
 const unreadOnly = ref(false)
 const keyword = ref('')
 const selectedType = ref<string>('all')
@@ -113,8 +115,13 @@ async function load(showSpinner = true) {
   if (showSpinner) loading.value = true
   try {
     messages.value = (await messageApi.getMessages({ unread_only: false, limit: 100 })) || []
+    loadError.value = false
   } catch {
-    messages.value = []
+    // 静默刷新失败时保留已有列表，只有首屏失败才进错误态
+    if (showSpinner || !messages.value.length) {
+      messages.value = []
+      loadError.value = true
+    }
   } finally {
     loading.value = false
   }
@@ -241,6 +248,13 @@ onMounted(() => {
         <div v-for="i in 4" :key="i" class="au-skeleton skel" />
       </div>
 
+      <div v-else-if="loadError && !messages.length" class="au-empty" role="alert">
+        <Bell :size="30" />
+        <h3>消息暂时读取失败</h3>
+        <p>可能是网络波动，稍后再试</p>
+        <button class="au-btn au-btn-ghost au-btn-sm" @click="load()">重新加载</button>
+      </div>
+
       <div v-else-if="filtered.length === 0" class="au-empty">
         <Bell :size="30" />
         <h3>
@@ -317,7 +331,7 @@ onMounted(() => {
               <h2>{{ detail.title }}</h2>
               <span class="modal-time">{{ fmtFull(detail.created_at) }}</span>
             </div>
-            <button class="modal-close" @click="detail = null"><X :size="18" /></button>
+            <button class="modal-close" aria-label="关闭" @click="detail = null"><X :size="18" /></button>
           </header>
 
           <div class="modal-body">{{ detail.content }}</div>
@@ -525,7 +539,8 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   padding: 1rem;
-  background: var(--au-overlay);
+  /* 与其它弹窗同一块遮罩（浅色主题下 --au-overlay 是奶油色半透明，像没遮住） */
+  background: var(--au-scrim);
 }
 
 .modal {
@@ -610,4 +625,9 @@ onMounted(() => {
 
 .fade-enter-active, .fade-leave-active { transition: opacity var(--au-med) var(--au-ease); }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* 手机：图标按钮的点按宽度补到 44px（高度由 mobile.css 统一补齐） */
+@media (max-width: 768px) {
+  .modal-close { min-width: 44px; }
+}
 </style>

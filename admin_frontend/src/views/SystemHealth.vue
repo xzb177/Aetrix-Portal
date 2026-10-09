@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Activity, Database, Film, HardDrive, RefreshCw, Radio, Users } from 'lucide-vue-next'
+import { Activity, AlertTriangle, Database, Film, HardDrive, RefreshCw, Radio, Users } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
 import { fetchBackupConfig, saveBackupConfig, runBackupNow } from '@/api/admin'
 import type { EmbySessionRow, StorageMount } from '@/types'
@@ -14,6 +15,8 @@ const mounts = ref<StorageMount[]>([])
 const overview = ref<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number } | null>(null)
 const loading = ref(false)
 const lastChecked = ref('')
+/** 面板健康接口失败（其余子查询各自兜底，不算失败） */
+const loadError = ref('')
 
 const backup = ref<BackupConfig | null>(null)
 const backupSaving = ref(false)
@@ -45,6 +48,7 @@ const checks = computed(() => [
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     const [h, o, s, m, b] = await Promise.all([
       fetchPanelHealth(),
@@ -59,7 +63,8 @@ async function load() {
     mounts.value = m.mounts
     backup.value = b
     lastChecked.value = new Date().toLocaleTimeString()
-  } catch {
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : '请求失败'
     ElMessage.error('健康检查失败，请确认 EM 服务仍在运行')
   } finally {
     loading.value = false
@@ -109,110 +114,181 @@ onMounted(load)
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">服务健康</h1>
-        <p class="admin-page-desc">从媒体服务运维角度查看 EM、媒体库、在线会话与存储来源，而不是只看业务统计。</p>
-      </div>
-      <el-button :loading="loading" type="primary" @click="load">
-        <RefreshCw :size="14" style="margin-right: 5px" />重新检查
-      </el-button>
+    <PageHeader
+      eyebrow="系统与审计"
+      title="服务健康"
+      description="从媒体服务运维角度查看 EM、媒体库、在线会话与存储来源，而不是只看业务统计。"
+    >
+      <template #actions>
+        <span class="checked-at">最近检查 {{ lastChecked || '—' }}</span>
+        <el-button :loading="loading" type="primary" @click="load" :icon="RefreshCw">
+          重新检查
+        </el-button>
+      </template>
+    </PageHeader>
+
+    <SectionCard v-if="loadError && !health" tone="accent">
+      <EmptyState
+        compact
+        :icon="AlertTriangle"
+        title="健康检查失败"
+        :description="`请确认 EM 服务仍在运行（${loadError}）`"
+      >
+        <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
+      </EmptyState>
+    </SectionCard>
+
+    <div class="health-grid" :aria-busy="loading">
+      <StatTile
+        v-for="item in checks"
+        :key="item.label"
+        layout="icon-left"
+        :icon="item.icon"
+        :label="item.label"
+        :value="!health && loading ? '检查中' : item.ok ? '正常' : '异常'"
+        :tone="!health && loading ? 'plain' : item.ok ? 'ok' : 'danger'"
+        :hint="item.detail"
+        :title="item.detail"
+        class="health-tile"
+      />
     </div>
 
-    <div class="health-grid">
-      <div v-for="item in checks" :key="item.label" class="admin-card health-card">
-        <div class="health-icon" :class="{ bad: item.ok === false }"><component :is="item.icon" :size="18" /></div>
-        <div class="health-copy">
-          <strong>{{ item.label }}</strong>
-          <span>{{ item.detail }}</span>
-        </div>
-        <span class="health-dot" :class="{ bad: item.ok === false, idle: item.ok === undefined }" />
-      </div>
-    </div>
+    <SectionCard title="运行态" :icon="Radio" :meta="health?.emby_server || 'Aetrix Media Server'">
+      <dl class="runtime-grid">
+        <div><dt>在线用户</dt><dd>{{ health?.online_users ?? 0 }}</dd></div>
+        <div><dt>在线会话</dt><dd>{{ overview?.active_sessions ?? sessions.length }}</dd></div>
+        <div><dt>媒体条目</dt><dd>{{ overview?.total_items ?? 0 }}</dd></div>
+        <div><dt>媒体库</dt><dd>{{ overview?.total_libraries ?? 0 }}</dd></div>
+        <div><dt>管理员看到的挂载</dt><dd>{{ mounts.length }}</dd></div>
+      </dl>
+    </SectionCard>
 
-    <section class="admin-card">
-      <div class="card-header"><h2><Radio :size="15" />运行态</h2><span class="muted">最近检查 {{ lastChecked || '—' }}</span></div>
-      <div class="runtime-grid">
-        <div><span>服务名称</span><strong>{{ health?.emby_server || 'Aetrix Media Server' }}</strong></div>
-        <div><span>在线用户</span><strong>{{ health?.online_users ?? 0 }}</strong></div>
-        <div><span>在线会话</span><strong>{{ overview?.active_sessions ?? sessions.length }}</strong></div>
-        <div><span>媒体条目</span><strong>{{ overview?.total_items ?? 0 }}</strong></div>
-        <div><span>媒体库</span><strong>{{ overview?.total_libraries ?? 0 }}</strong></div>
-        <div><span>管理员看到的挂载</span><strong>{{ mounts.length }}</strong></div>
-      </div>
-    </section>
+    <div class="ops-grid">
+      <SectionCard
+        title="实时会话"
+        :icon="Users"
+        :meta="sessions.length > 8 ? `前 8 / 共 ${sessions.length}` : sessions.length ? `${sessions.length} 个` : ''"
+      >
+        <ul v-if="sessions.length" class="status-list">
+          <li v-for="session in sessions.slice(0, 8)" :key="session.session_key" class="status-row">
+            <span class="status-main">{{ session.username }} · {{ session.item }}</span>
+            <span class="muted mono">{{ fmtDate(session.started_at) }}</span>
+          </li>
+        </ul>
+        <EmptyState v-else compact :icon="Users" title="当前没有播放会话" />
+      </SectionCard>
 
-    <section class="ops-grid">
-      <div class="admin-card">
-        <div class="card-header"><h2><Users :size="15" />实时会话</h2></div>
-        <div v-if="sessions.length" class="status-list">
-          <div v-for="session in sessions.slice(0, 8)" :key="session.session_key" class="status-row"><span>{{ session.username }} · {{ session.item }}</span><span class="muted">{{ fmtDate(session.started_at) }}</span></div>
-        </div>
-        <div v-else class="empty-hint">当前没有播放会话</div>
-      </div>
-
-      <div class="admin-card">
-        <div class="card-header">
-          <h2><Database :size="15" />数据库备份</h2>
-          <span class="muted">上次执行 {{ backup?.last_run || '—' }}</span>
-        </div>
+      <SectionCard title="数据库备份" :icon="Database" :meta="`上次执行 ${backup?.last_run || '—'}`">
         <div v-if="backup" class="backup-form">
           <div class="backup-row">
             <el-switch v-model="backup.enabled" active-text="定时备份" />
-            <el-time-picker v-model="backup.time" format="HH:mm" value-format="HH:mm"
-                            placeholder="执行时间" style="width: 130px" :clearable="false" />
-            <span class="muted">保留</span>
-            <el-input-number v-model="backup.keep_days" :min="1" :max="30" :controls="false"
-                             style="width: 70px" />
-            <span class="muted">天</span>
+            <el-time-picker
+              v-model="backup.time"
+              format="HH:mm"
+              value-format="HH:mm"
+              placeholder="执行时间"
+              class="w-time"
+              :clearable="false"
+            />
+            <span class="keep">
+              <span class="muted">保留</span>
+              <el-input-number v-model="backup.keep_days" :min="1" :max="30" :controls="false" class="w-days" />
+              <span class="muted">天</span>
+            </span>
           </div>
-          <div class="backup-row">
-            <el-button type="primary" size="small" :loading="backupSaving" @click="saveBackup">保存配置</el-button>
-            <el-button size="small" :loading="backupRunning" @click="manualBackup">立即备份</el-button>
+          <div class="backup-row backup-actions">
+            <el-button :loading="backupRunning" @click="manualBackup">立即备份</el-button>
+            <el-button type="primary" :loading="backupSaving" @click="saveBackup">保存配置</el-button>
           </div>
-          <div v-if="backup.backups.length" class="status-list backup-list">
-            <div v-for="f in backup.backups.slice(0, 7)" :key="f.name" class="status-row">
-              <span>{{ f.name }}</span>
+          <ul v-if="backup.backups.length" class="status-list backup-list">
+            <li v-for="f in backup.backups.slice(0, 7)" :key="f.name" class="status-row">
+              <span class="status-main mono">{{ f.name }}</span>
               <span class="muted">{{ fmtSize(f.size) }} · {{ f.created_at }}</span>
-            </div>
-          </div>
-          <div v-else class="empty-hint">暂无备份文件</div>
+            </li>
+          </ul>
+          <EmptyState v-else compact title="暂无备份文件" description="开启定时备份，或点「立即备份」生成第一份。" />
         </div>
-        <div v-else class="empty-hint">备份信息加载失败（不影响页面其他内容）</div>
-      </div>
-    </section>
+        <div v-else-if="loading" class="backup-skeleton">
+          <span class="au-skeleton" /><span class="au-skeleton" /><span class="au-skeleton is-short" />
+        </div>
+        <EmptyState v-else compact :icon="AlertTriangle" title="备份信息加载失败" description="不影响页面其他内容，可点「重新检查」再试。" />
+      </SectionCard>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.checked-at { font-size: 12px; color: var(--au-text-4); }
+
 .health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-/* 修饰类：只保留横向排版（卡片基础样式走全局 .admin-card） */
-.health-card { display: flex; align-items: center; gap: 11px; min-width: 0; }
-.health-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 10px; color: var(--success); background: var(--success-bg); }
-.health-icon.bad { color: var(--danger); background: var(--danger-bg); }
-.health-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.health-copy strong { font-size: 13px; color: var(--text-primary); }
-.health-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-muted); }
-.health-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px var(--success-bg); }
-.health-dot.bad { background: var(--danger); box-shadow: 0 0 0 4px var(--danger-bg); }
-.health-dot.idle { background: var(--text-faint); box-shadow: 0 0 0 4px var(--bg-hover); }
-.card-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
-.card-header h2 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 15px; }
-.runtime-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
-.runtime-grid div { display: flex; flex-direction: column; gap: 5px; padding: 12px; border-radius: var(--radius-md); background: var(--bg-inset); }
-.runtime-grid span { font-size: 11.5px; color: var(--text-muted); }
-.runtime-grid strong { font-size: 18px; color: var(--text-primary); }
-.ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.status-list { display: flex; flex-direction: column; }
-.status-row { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
+/* 脚注只放一行（悬停看全文），四块高度对齐 */
+.health-tile :deep(.au-stat__hint) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.health-tile :deep(.au-stat__value) { font-size: 1.25rem; }
+
+.runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.runtime-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+}
+.runtime-grid dt { font-size: 12px; color: var(--au-text-3); }
+.runtime-grid dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--au-text);
+}
+
+.ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+
+.status-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--au-border);
+  font-size: 13px;
+  color: var(--au-text-2);
+}
 .status-row:last-child { border-bottom: 0; }
-.status-row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.muted { color: var(--text-muted); font-size: 12px; }
+.status-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-row .muted { flex-shrink: 0; }
+.muted { color: var(--au-text-3); font-size: 12px; }
+
 .backup-form { display: flex; flex-direction: column; gap: 12px; }
-.backup-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.backup-list { max-height: 220px; overflow-y: auto; }
-.ok-text { color: var(--success); }
-.warn-text { color: var(--warning); }
-@media (max-width: 900px) { .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .runtime-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 640px) { .health-grid, .ops-grid { grid-template-columns: 1fr; } .runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.backup-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.backup-actions { justify-content: flex-end; }
+.keep { display: inline-flex; align-items: center; gap: 6px; }
+.w-time { width: 130px; }
+.w-days { width: 70px; }
+.backup-list { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--au-border); }
+.backup-skeleton { display: flex; flex-direction: column; gap: 10px; }
+.backup-skeleton .au-skeleton { display: block; height: 14px; border-radius: var(--au-r-sm); }
+.backup-skeleton .is-short { width: 60%; }
+
+@media (max-width: 1024px) {
+  .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .runtime-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ops-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .health-grid { grid-template-columns: 1fr; gap: 10px; }
+  .runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .status-row { flex-direction: column; gap: 2px; }
+  .backup-actions { justify-content: stretch; }
+  .backup-actions :deep(.el-button) { flex: 1; margin-left: 0; }
+}
 </style>

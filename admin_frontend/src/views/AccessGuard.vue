@@ -19,7 +19,8 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FlaskConical, Globe2, Info, RefreshCw, Save, ShieldOff, Undo2 } from 'lucide-vue-next'
+import { Fingerprint, FlaskConical, Globe2, Info, RefreshCw, Save, ShieldOff, SlidersHorizontal, Undo2 } from 'lucide-vue-next'
+import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchAccessGuard,
   previewAccessGuard,
@@ -46,6 +47,8 @@ const WRITE_HINT = '访问拦截是全站开关（UA 黑白名单 / 地区封禁
 
 const data = ref<AccessGuardPolicy | null>(null)
 const loading = ref(false)
+/** 首次加载失败：给出可重试的错误态，而不是一页空白 */
+const loadError = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 
@@ -98,6 +101,7 @@ const regionButNoGeo = computed(() =>
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     const res = await fetchAccessGuard()
     data.value = res.policy
@@ -106,6 +110,9 @@ async function load() {
     uaDenyText.value = toText(res.policy.ua_deny)
     countryText.value = toText(res.policy.region_countries)
     keywordText.value = toText(res.policy.region_keywords)
+  } catch {
+    /* 拦截器已提示；没有数据时显示错误态 */
+    loadError.value = !data.value
   } finally {
     loading.value = false
   }
@@ -195,64 +202,91 @@ const testSummary = computed(() => {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">访问拦截</h1>
-        <p class="admin-page-desc">
-          按 UA 关键词与 IP 归属地拦截访问。全部规则默认关闭，关闭时对正常请求零开销。
-        </p>
-      </div>
-      <div class="toolbar">
+  <div class="admin-page access-guard">
+    <PageHeader
+      eyebrow="安全与准入"
+      title="访问拦截"
+      description="按 UA 关键词与 IP 归属地拦截访问。全部规则默认关闭，关闭时对正常请求零开销。"
+    >
+      <template #actions>
         <el-button :loading="loading" @click="load">
-          <RefreshCw :size="14" style="margin-right: 4px" />刷新
+          <RefreshCw :size="14" class="btn-ico" />刷新
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
-    <!-- 现在的状态：开着的时候必须一眼看见 -->
-    <div v-if="data" class="stat-grid">
-      <div class="stat-tile" :class="{ 'is-danger': data.active }">
-        <div class="stat-label"><ShieldOff :size="13" /> 当前状态</div>
-        <div class="stat-value">{{ data.active ? '拦截生效中' : '未启用' }}</div>
-        <div class="stat-hint">
-          {{ data.active ? '命中的请求会收到 403 与提示页' : '所有请求原样放行' }}
-        </div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-warn': data.ua_enabled }">
-        <div class="stat-label">UA 规则</div>
-        <div class="stat-value">{{ data.ua_enabled ? '开启' : '关闭' }}</div>
-        <div class="stat-hint">
-          黑名单 {{ data.ua_deny.length }} 项 · 白名单 {{ data.ua_allow.length }} 项
-        </div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-warn': data.region_enabled }">
-        <div class="stat-label"><Globe2 :size="13" /> 归属地规则</div>
-        <div class="stat-value">{{ data.region_enabled ? '开启' : '关闭' }}</div>
-        <div class="stat-hint">{{ data.mode_labels[data.region_mode] || data.region_mode }}</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-warn': !data.geo_ready }">
-        <div class="stat-label"><FlaskConical :size="13" /> 地理能力</div>
-        <div class="stat-value">{{ data.geo_ready ? '已配置' : '未配置' }}</div>
-        <div class="stat-hint">{{ data.geo_ready ? '可以解析归属地' : '归属地规则不会生效' }}</div>
-      </div>
+    <!-- 首屏骨架 -->
+    <div v-if="loading && !data" class="ag-skeleton" aria-busy="true" aria-label="加载中">
+      <div v-for="n in 4" :key="n" class="au-skeleton sk-tile" />
+      <div class="au-skeleton sk-wide" />
     </div>
 
     <el-alert
-      v-if="data && !data.geo_ready"
-      class="ag-alert"
-      type="warning"
+      v-else-if="loadError"
+      type="error"
       show-icon
       :closable="false"
-      title="未配置「IP 与地理位置」能力"
-      description="归属地规则需要它才能查到来访者所在地区。没配置时地区规则一律不生效，且系统按「查不到就放行」处理，不会误伤任何人。可到「能力中心 → IP 与地理位置」配置。"
+      title="访问拦截配置加载失败"
+      description="可能是网络或后端暂时不可用。点右上角「刷新」重试。"
     />
 
-    <section v-if="draft" class="admin-card">
-      <header class="card-header">
-        <h2>规则</h2>
-        <span v-if="dirty" class="fact warn">有未保存的改动</span>
-      </header>
+    <template v-if="data">
+      <!-- 现在的状态：开着的时候必须一眼看见 -->
+      <section class="stat-grid" aria-label="当前状态">
+        <StatTile
+          label="当前状态"
+          :icon="ShieldOff"
+          :value="data.active ? '拦截生效中' : '未启用'"
+          :tone="data.active ? 'danger' : 'plain'"
+          :hint="data.active ? '命中的请求会收到 403 与提示页' : '所有请求原样放行'"
+          class="text-tile"
+        />
+        <StatTile
+          label="UA 规则"
+          :icon="Fingerprint"
+          :value="data.ua_enabled ? '开启' : '关闭'"
+          :tone="data.ua_enabled ? 'warn' : 'plain'"
+          :hint="`黑名单 ${data.ua_deny.length} 项 · 白名单 ${data.ua_allow.length} 项`"
+          class="text-tile"
+        />
+        <StatTile
+          label="归属地规则"
+          :icon="Globe2"
+          :value="data.region_enabled ? '开启' : '关闭'"
+          :tone="data.region_enabled ? 'warn' : 'plain'"
+          :hint="data.mode_labels[data.region_mode] || data.region_mode"
+          class="text-tile"
+        />
+        <StatTile
+          label="地理能力"
+          :icon="FlaskConical"
+          :value="data.geo_ready ? '已配置' : '未配置'"
+          :tone="data.geo_ready ? 'ok' : 'warn'"
+          :hint="data.geo_ready ? '可以解析归属地' : '归属地规则不会生效'"
+          class="text-tile"
+        />
+      </section>
+
+      <el-alert
+        v-if="!data.geo_ready"
+        type="warning"
+        show-icon
+        :closable="false"
+        title="未配置「IP 与地理位置」能力"
+        description="归属地规则需要它才能查到来访者所在地区。没配置时地区规则一律不生效，且系统按「查不到就放行」处理，不会误伤任何人。可到「能力中心 → IP 与地理位置」配置。"
+      />
+    </template>
+
+    <SectionCard
+      v-if="draft"
+      title="规则"
+      :icon="SlidersHorizontal"
+      description="改完点底部「保存」才写入后端；保存前可以先在下方「试一下」验证。"
+      :tone="dirty ? 'accent' : 'default'"
+    >
+      <template v-if="dirty" #actions>
+        <span class="au-badge au-badge-amber">有未保存的改动</span>
+      </template>
 
       <el-alert
         v-if="!canWrite"
@@ -268,33 +302,36 @@ const testSummary = computed(() => {
         <!-- UA -->
         <div class="ag-block">
           <div class="ag-block-head">
-            <h3>UA 关键词</h3>
+            <h4 class="ag-block-title"><Fingerprint :size="15" />UA 关键词</h4>
             <el-switch v-model="draft.ua_enabled" active-text="启用" inactive-text="关闭" />
           </div>
           <p class="ag-hint">
             按 <code>User-Agent</code> 做<strong>子串</strong>匹配（大小写不敏感）。
             白名单非空时表示「只放行命中的」，且<strong>优先于黑名单</strong>。
             关键词用逗号或换行分隔。
-            <br />
+          </p>
+          <p class="ag-hint ag-risk">
             <strong>白名单有风险：</strong>白名单没包含你自己浏览器的 UA 时，你会被关在门外。
             同一台服务器 / 同一局域网的访问始终放行，可以从那里改回来。
           </p>
-          <el-form-item label="黑名单（命中即拦，如 Googlebot、SemrushBot）">
-            <el-input
-              v-model="uaDenyText"
-              type="textarea"
-              :rows="2"
-              placeholder="Googlebot, SemrushBot, AhrefsBot"
-            />
-          </el-form-item>
-          <el-form-item label="白名单（非空时只放行命中的，如 Emby、Infuse）">
-            <el-input
-              v-model="uaAllowText"
-              type="textarea"
-              :rows="2"
-              placeholder="Emby, Infuse, FongMi"
-            />
-          </el-form-item>
+          <div class="ag-fields">
+            <el-form-item label="黑名单（命中即拦，如 Googlebot、SemrushBot）">
+              <el-input
+                v-model="uaDenyText"
+                type="textarea"
+                :rows="2"
+                placeholder="Googlebot, SemrushBot, AhrefsBot"
+              />
+            </el-form-item>
+            <el-form-item label="白名单（非空时只放行命中的，如 Emby、Infuse）">
+              <el-input
+                v-model="uaAllowText"
+                type="textarea"
+                :rows="2"
+                placeholder="Emby, Infuse, FongMi"
+              />
+            </el-form-item>
+          </div>
           <p v-if="uaIncomplete" class="ag-note is-warn">
             开关已打开但两个列表都是空的——这样不会拦任何人，请先填关键词。
           </p>
@@ -303,7 +340,7 @@ const testSummary = computed(() => {
         <!-- 归属地 -->
         <div class="ag-block">
           <div class="ag-block-head">
-            <h3><Globe2 :size="15" style="margin-right: 6px" />IP 归属地</h3>
+            <h4 class="ag-block-title"><Globe2 :size="15" />IP 归属地</h4>
             <el-switch v-model="draft.region_enabled" active-text="启用" inactive-text="关闭" />
           </div>
           <p class="ag-hint">
@@ -312,23 +349,27 @@ const testSummary = computed(() => {
             把「未知」当成「境外」会让地理库一挂全站对外全灭。
           </p>
           <el-form-item label="判定方向">
-            <el-radio-group v-model="draft.region_mode">
-              <el-radio-button
-                v-for="opt in MODE_OPTIONS"
-                :key="opt.value"
-                :value="opt.value"
-              >{{ opt.label }}</el-radio-button>
-            </el-radio-group>
-            <span class="ag-hint">
-              {{ MODE_OPTIONS.find((o) => o.value === draft!.region_mode)?.hint }}
-            </span>
+            <div class="ag-mode">
+              <el-radio-group v-model="draft.region_mode">
+                <el-radio-button
+                  v-for="opt in MODE_OPTIONS"
+                  :key="opt.value"
+                  :value="opt.value"
+                >{{ opt.label }}</el-radio-button>
+              </el-radio-group>
+              <span class="ag-hint ag-hint-inline">
+                {{ MODE_OPTIONS.find((o) => o.value === draft!.region_mode)?.hint }}
+              </span>
+            </div>
           </el-form-item>
-          <el-form-item label="国家 / 地区（只与国家名比对，如「中国」）">
-            <el-input v-model="countryText" placeholder="中国" />
-          </el-form-item>
-          <el-form-item label="省 / 市（与地区串比对，如「香港」「新加坡」）">
-            <el-input v-model="keywordText" placeholder="香港, 台湾, 新加坡" />
-          </el-form-item>
+          <div class="ag-fields">
+            <el-form-item label="国家 / 地区（只与国家名比对，如「中国」）">
+              <el-input v-model="countryText" placeholder="中国" />
+            </el-form-item>
+            <el-form-item label="省 / 市（与地区串比对，如「香港」「新加坡」）">
+              <el-input v-model="keywordText" placeholder="香港, 台湾, 新加坡" />
+            </el-form-item>
+          </div>
           <p v-if="regionIncomplete" class="ag-note is-warn">
             开关已打开但两个列表都是空的——这样不会拦任何人，请先填关键词。
           </p>
@@ -336,48 +377,50 @@ const testSummary = computed(() => {
             还没配置地理能力，这一档当前查不到任何归属地，等于没开。
           </p>
         </div>
+      </el-form>
 
+      <template #footer>
         <div class="ag-actions">
-          <el-button type="primary" :loading="saving" :disabled="!canWrite || !dirty" @click="save">
-            <Save :size="14" style="margin-right: 4px" />保存
-          </el-button>
-          <el-button :disabled="!dirty" @click="revert">
-            <Undo2 :size="14" style="margin-right: 4px" />还原
-          </el-button>
-          <span class="ag-hint">
+          <span class="ag-hint ag-hint-inline">
             生效范围是全站（含 Emby 客户端），但不拦内网 / 本机来源。保存后同进程立即生效，其他进程最多 5 秒。
           </span>
+          <div class="ag-actions-btns">
+            <el-button :disabled="!dirty" @click="revert">
+              <Undo2 :size="14" class="btn-ico" />还原
+            </el-button>
+            <el-button type="primary" :loading="saving" :disabled="!canWrite || !dirty" @click="save">
+              <Save :size="14" class="btn-ico" />保存
+            </el-button>
+          </div>
         </div>
-      </el-form>
-    </section>
+      </template>
+    </SectionCard>
 
     <!-- 试跑 -->
-    <section class="admin-card">
-      <header class="card-header">
-        <h2>试一下</h2>
-        <span class="ag-hint" style="margin: 0">
-          用当前规则跑一个样本，<strong>不会拦截任何真实请求</strong>
-        </span>
-      </header>
-
-      <div class="ag-test">
-        <el-input v-model="testIp" placeholder="来访者 IP，如 1.1.1.1" class="ag-test-ip" />
+    <SectionCard
+      title="试一下"
+      :icon="FlaskConical"
+      description="用当前（已保存的）规则跑一个样本，不会拦截任何真实请求。"
+    >
+      <form class="ag-test" @submit.prevent="runTest">
+        <el-input v-model="testIp" placeholder="来访者 IP，如 1.1.1.1" class="ag-test-ip" aria-label="来访者 IP" />
         <el-input
           v-model="testUa"
           placeholder="User-Agent，如 Mozilla/5.0 Chrome/120"
           class="ag-test-ua"
+          aria-label="User-Agent"
         />
-        <el-button type="primary" :loading="testing" @click="runTest">
-          <FlaskConical :size="14" style="margin-right: 4px" />试跑
+        <el-button type="primary" native-type="submit" :loading="testing">
+          <FlaskConical :size="14" class="btn-ico" />试跑
         </el-button>
-      </div>
+      </form>
 
-      <div v-if="testResult" class="ag-result" :class="{ 'is-blocked': testResult.blocked }">
+      <div v-if="testResult" class="ag-result" :class="{ 'is-blocked': testResult.blocked }" aria-live="polite">
         <div class="ag-result-head">
           <strong>{{ testSummary }}</strong>
-          <el-tag :type="testResult.blocked ? 'danger' : 'success'" size="small">
+          <span class="au-badge" :class="testResult.blocked ? 'au-badge-rose' : 'au-badge-green'">
             {{ testResult.blocked ? '拦下' : '放行' }}
-          </el-tag>
+          </span>
         </div>
         <dl class="ag-result-list">
           <dt>归属地</dt>
@@ -394,20 +437,39 @@ const testSummary = computed(() => {
         </dl>
       </div>
 
-      <p class="ag-hint ag-test-tip">
-        <Info :size="12" style="margin-right: 4px; vertical-align: -1px" />
-        开「只允许国内访问」前，先把自己的出口 IP 填进来试一次。
-      </p>
-    </section>
+      <template #footer>
+        <span class="ag-tip">
+          <Info :size="12" />
+          开「只允许国内访问」前，先把自己的出口 IP 填进来试一次。
+        </span>
+      </template>
+    </SectionCard>
   </div>
 </template>
 
 <style scoped>
-.ag-alert { margin: 0 0 12px; }
+.access-guard { gap: 16px; }
+.btn-ico { margin-right: 4px; }
+
+/* ===== 骨架 / 网格 ===== */
+.ag-skeleton,
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+.sk-tile { height: 96px; border-radius: var(--au-r-lg); }
+.sk-wide { grid-column: 1 / -1; height: 280px; border-radius: var(--au-r-lg); }
+/* 状态瓦片的值是短文字，不是数字：字号收一档 */
+.text-tile :deep(.au-stat__value) { font-size: 1.125rem; }
+
+.ag-alert { margin: 0 0 16px; }
+
+/* ===== 规则分块 ===== */
 .ag-block {
-  padding-bottom: 16px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--au-border);
 }
 .ag-block:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .ag-block-head {
@@ -415,38 +477,68 @@ const testSummary = computed(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
-.ag-block-head h3 {
+.ag-block-title {
   display: flex;
   align-items: center;
+  gap: 6px;
   margin: 0;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+  font-family: var(--au-font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--au-text);
+}
+.ag-block-title svg { color: var(--au-primary); }
+.ag-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0 16px;
 }
 .ag-hint {
   display: block;
-  margin: 0 0 8px;
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--au-text-2);
   line-height: 1.8;
+}
+.ag-hint code {
+  font-family: var(--font-mono);
+  padding: 0 4px;
+  border-radius: var(--au-r-sm);
+  background: var(--au-surface-2);
+}
+.ag-risk {
+  padding: 8px 12px;
+  border-radius: var(--au-r-md);
+  border: 1px solid var(--au-warning-border);
+  background: var(--au-warning-soft);
+}
+.ag-hint-inline { margin: 0; }
+.ag-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 .ag-note {
   margin: 4px 0 0;
-  font-size: var(--font-size-xs);
+  font-size: 12px;
   line-height: 1.7;
 }
-.ag-note.is-warn { color: var(--warning); }
+.ag-note.is-warn { color: var(--au-warning); }
+
 .ag-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
   flex-wrap: wrap;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
 }
-.ag-actions .ag-hint { margin: 0; }
+.ag-actions .ag-hint { flex: 1 1 280px; }
+.ag-actions-btns { display: flex; gap: 8px; }
+
+/* ===== 试跑 ===== */
 .ag-test {
   display: flex;
   gap: 8px;
@@ -457,44 +549,46 @@ const testSummary = computed(() => {
 .ag-result {
   margin-top: 12px;
   padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-inset);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
 }
-.ag-result.is-blocked { border-color: var(--danger-border); }
+.ag-result.is-blocked { border-color: var(--au-danger-border); }
 .ag-result-head {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 8px;
-  font-size: var(--font-size-sm);
-  color: var(--text-primary);
+  font-size: 13px;
+  color: var(--au-text);
 }
 .ag-result-list {
   display: grid;
   grid-template-columns: 72px 1fr;
   gap: 4px 10px;
   margin: 0;
-  font-size: var(--font-size-xs);
+  font-size: 12px;
 }
-/* dt 用 secondary 而不是 muted：muted 在浅色主题的 --bg-inset 上只有 3.18:1，
-   而这里写的是「归属地 / 命中 / UA」这些必须看懂的关键字 */
-.ag-result-list dt { color: var(--text-secondary); }
-.ag-result-list dd { margin: 0; color: var(--text-secondary); word-break: break-all; }
+.ag-result-list dt { color: var(--au-text-2); }
+.ag-result-list dd { margin: 0; color: var(--au-text-2); word-break: break-all; }
 .ag-mono { font-family: var(--font-mono); }
-.ag-test-tip { margin: 10px 0 0; }
+.ag-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--au-text-3);
+}
 
-.fact.warn { color: var(--warning); font-size: var(--font-size-xs); }
-.stat-tile.is-warn { border-color: var(--warning-border); }
-.stat-tile.is-danger { border-color: var(--danger-border); }
-
-/* 手机：试跑输入框竖排，按钮独占一行 */
-@media (max-width: 767px) {
+/* 手机：试跑输入框竖排，操作按钮铺满 */
+@media (max-width: 768px) {
   .ag-test-ip,
   .ag-test-ua { flex: 1 1 100%; }
-  .ag-actions .el-button { flex: 1 1 auto; }
-  .ag-actions .ag-hint { flex: 1 1 100%; }
+  .ag-test .el-button { flex: 1 1 100%; }
+  .ag-actions-btns { flex: 1 1 100%; }
+  .ag-actions-btns .el-button { flex: 1 1 0; }
   .ag-block-head { flex-wrap: wrap; }
+  .ag-result-list { grid-template-columns: 56px 1fr; }
 }
 </style>

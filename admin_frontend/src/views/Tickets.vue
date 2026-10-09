@@ -2,7 +2,8 @@
 /** 工单管理：列表筛选/回复/关闭，回复联动站内通知 */
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, Send } from 'lucide-vue-next'
+import { Inbox, RefreshCw, Send, Ticket } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { closeTicket, fetchTicketMessages, fetchTickets, replyTicket, updateTicket } from '@/api/admin'
 import type { TicketMessageRow, TicketRow } from '@/types'
 import { useQueryFilter } from '@/composables/useQueryFilter'
@@ -21,6 +22,7 @@ const columns: DataColumn[] = [
 
 const list = ref<TicketRow[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const statusFilter = ref('')
 // 深链：仪表盘「待处理工单」/ 命令面板跳过来时带的就是这个筛选（Phase 5）
 useQueryFilter(statusFilter, 'status', load)
@@ -38,8 +40,11 @@ const metaSaving = ref(false)
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     list.value = await fetchTickets(statusFilter.value ? { status_filter: statusFilter.value } : {})
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
   }
@@ -110,6 +115,13 @@ async function patchTicket(patch: { status?: string; priority?: string }) {
   }
 }
 
+const STATUS_TABS = [
+  { value: '', label: '全部' },
+  { value: 'open', label: '进行中' },
+  { value: 'pending', label: '待处理' },
+  { value: 'closed', label: '已关闭' },
+]
+
 const PRIORITY_LABELS: Record<string, string> = { low: '低', medium: '中', high: '高', urgent: '紧急' }
 
 function fmtDate(s: string): string {
@@ -122,31 +134,39 @@ function statusLabel(status: string): string {
 }
 
 function statusBadge(status: string): string {
-  const map: Record<string, string> = { open: 'ok', pending: 'warn', closed: 'off' }
-  return map[status] || 'off'
+  const map: Record<string, string> = { open: 'au-badge-green', pending: 'au-badge-amber', closed: 'au-badge-muted' }
+  return map[status] || 'au-badge-muted'
 }
 </script>
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">工单</h1>
-        <p class="admin-page-desc">回复会以站内消息通知用户</p>
-      </div>
-      <div class="toolbar">
-        <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 120px" @change="load">
-          <el-option label="进行中" value="open" />
-          <el-option label="已关闭" value="closed" />
-        </el-select>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
-    </div>
+    <PageHeader eyebrow="内容与服务" title="工单" description="点标题打开对话；回复会以站内消息通知用户，可在详情里直接改状态与优先级。">
+      <template #actions>
+        <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
+      </template>
+    </PageHeader>
 
-    <div class="admin-card">
-      <DataTable :rows="list" :columns="columns" :loading="loading" empty="暂无工单">
+    <SectionCard title="工单列表" :icon="Ticket" :meta="loading ? '' : `${list.length} 条`" flush>
+      <div class="list-bar">
+        <div class="toolbar">
+          <el-radio-group v-model="statusFilter" aria-label="按状态筛选" @change="load">
+            <el-radio-button v-for="t in STATUS_TABS" :key="t.value" :value="t.value">{{ t.label }}</el-radio-button>
+          </el-radio-group>
+        </div>
+      </div>
+
+      <DataTable
+        :rows="list"
+        :columns="columns"
+        :loading="loading"
+        :error="loadError"
+        :empty="statusFilter ? `没有${statusLabel(statusFilter)}的工单` : '还没有工单'"
+        :empty-description="statusFilter ? '切到「全部」看看其它状态。' : '用户提交的工单会出现在这里。'"
+        @retry="load"
+      >
         <template #cell-title="{ row }">
-          <button class="ticket-title" @click="openDetail(row)">{{ row.title }}</button>
+          <button type="button" class="ticket-title" @click="openDetail(row)">{{ row.title }}</button>
           <div class="ticket-preview">{{ row.latest_message || '—' }}</div>
         </template>
 
@@ -159,53 +179,54 @@ function statusBadge(status: string): string {
         </template>
 
         <template #cell-status="{ row }">
-          <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
+          <span class="au-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
         </template>
 
-        <template #cell-updated_at="{ row }">{{ fmtDate(row.updated_at) }}</template>
+        <template #cell-updated_at="{ row }"><span class="mono">{{ fmtDate(row.updated_at) }}</span></template>
 
         <template #cell-actions="{ row }">
-          <el-button v-if="row.status !== 'closed'" size="small" type="danger" plain :loading="rowBusyId === row.id" @click="close(row)">
+          <el-button v-if="row.status !== 'closed'" size="small" type="danger" :loading="rowBusyId === row.id" @click="close(row)">
             关闭
           </el-button>
-          <span v-else class="muted done-hint">已关闭</span>
+          <span v-else class="muted">已关闭</span>
         </template>
       </DataTable>
-    </div>
+    </SectionCard>
 
     <el-drawer v-model="drawerVisible" :title="current?.title || '工单详情'" size="460px">
       <div v-if="current" class="ticket-meta">
-        <div class="meta-line">
-          <span class="meta-label">提交人</span>
-          <span>{{ current.user_name }}</span>
-          <span class="meta-label">分类</span>
-          <span>{{ current.category }}</span>
-          <span class="meta-label">创建</span>
-          <span>{{ fmtDate(current.created_at) }}</span>
-        </div>
+        <dl class="meta-line">
+          <div><dt>提交人</dt><dd>{{ current.user_name }}</dd></div>
+          <div><dt>分类</dt><dd>{{ current.category }}</dd></div>
+          <div><dt>创建</dt><dd class="mono">{{ fmtDate(current.created_at) }}</dd></div>
+        </dl>
         <div class="meta-controls">
-          <span class="meta-label">状态</span>
-          <el-select
-            :model-value="current.status"
-            size="small"
-            style="width: 110px"
-            :disabled="metaSaving"
-            @change="(v: string) => patchTicket({ status: v })"
-          >
-            <el-option label="进行中" value="open" />
-            <el-option label="待处理" value="pending" />
-            <el-option label="已关闭" value="closed" />
-          </el-select>
-          <span class="meta-label">优先级</span>
-          <el-select
-            :model-value="current.priority"
-            size="small"
-            style="width: 110px"
-            :disabled="metaSaving"
-            @change="(v: string) => patchTicket({ priority: v })"
-          >
-            <el-option v-for="(label, key) in PRIORITY_LABELS" :key="key" :label="label" :value="key" />
-          </el-select>
+          <label class="meta-field">
+            <span class="meta-label">状态</span>
+            <el-select
+              :model-value="current.status"
+              size="small"
+              class="w-meta"
+              :disabled="metaSaving"
+              @change="(v: string) => patchTicket({ status: v })"
+            >
+              <el-option label="进行中" value="open" />
+              <el-option label="待处理" value="pending" />
+              <el-option label="已关闭" value="closed" />
+            </el-select>
+          </label>
+          <label class="meta-field">
+            <span class="meta-label">优先级</span>
+            <el-select
+              :model-value="current.priority"
+              size="small"
+              class="w-meta"
+              :disabled="metaSaving"
+              @change="(v: string) => patchTicket({ priority: v })"
+            >
+              <el-option v-for="(label, key) in PRIORITY_LABELS" :key="key" :label="label" :value="key" />
+            </el-select>
+          </label>
         </div>
       </div>
 
@@ -213,7 +234,7 @@ function statusBadge(status: string): string {
         <div v-if="detailLoading" class="msg-loading">
           <el-skeleton :rows="3" animated />
         </div>
-        <p v-else-if="!messages.length" class="msg-empty">还没有对话内容</p>
+        <EmptyState v-else-if="!messages.length" compact :icon="Inbox" title="还没有对话内容" />
         <div v-for="m in messages" :key="m.id" class="msg" :class="{ admin: m.is_admin }">
           <div class="msg-meta">
             {{ m.is_admin ? (m.admin_name || '管理员') : current?.user_name }} · {{ fmtDate(m.created_at) }}
@@ -222,11 +243,11 @@ function statusBadge(status: string): string {
         </div>
       </div>
 
-      <div class="reply-box" v-if="current && current.status !== 'closed'">
+      <div v-if="current && current.status !== 'closed'" class="reply-box">
         <el-input v-model="replyText" type="textarea" :rows="3" placeholder="输入回复内容…" />
         <div class="reply-actions">
-          <el-button :disabled="sending || !replyText.trim()" @click="send(false)">
-            <Send :size="14" style="margin-right: 4px" />回复
+          <el-button :disabled="sending || !replyText.trim()" @click="send(false)" :icon="Send">
+            回复
           </el-button>
           <el-button type="primary" :disabled="sending || !replyText.trim()" @click="send(true)">回复并关闭</el-button>
         </div>
@@ -237,53 +258,95 @@ function statusBadge(status: string): string {
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; }
-.ticket-title { background: none; border: none; color: inherit; font-weight: 600; font-size: 14px; cursor: pointer; padding: 0; text-align: left; }
-.ticket-title:hover { color: var(--primary); }
+.list-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 12px;
+}
+
+.ticket-title {
+  background: none;
+  border: none;
+  color: var(--au-text);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  border-radius: var(--au-r-sm);
+}
+.ticket-title:hover { color: var(--au-primary); }
+.ticket-title:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+
 .ticket-preview {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--au-text-3);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 320px;
 }
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; font-weight: 600; }
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.warn { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-border); }
-.mini-badge.off { background: var(--bg-hover); color: var(--text-muted); }
 
-.prio { font-size: 11px; color: var(--text-secondary); }
-.prio.high, .prio.urgent { color: var(--danger); font-weight: 600; }
-.prio.low { color: var(--text-muted); }
+.prio { font-size: 12px; color: var(--au-text-2); }
+.prio.high, .prio.urgent { color: var(--au-danger); font-weight: 600; }
+.prio.low { color: var(--au-text-4); }
+.muted { color: var(--au-text-4); font-size: 12px; }
 
 .ticket-meta {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  margin-bottom: 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-glass);
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border-radius: var(--au-r-md);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface-2);
 }
 
-.meta-line, .meta-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
-.meta-label { color: var(--text-muted); }
+.meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.meta-line div { display: flex; gap: 6px; }
+.meta-line dt, .meta-label { color: var(--au-text-3); }
+.meta-line dd { margin: 0; color: var(--au-text); }
 
-.msg-list { display: flex; flex-direction: column; gap: 12px; }
-.msg-empty { text-align: center; color: var(--text-muted); font-size: 13px; margin: 24px 0; }
+.meta-controls { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; font-size: 12.5px; }
+.meta-field { display: inline-flex; align-items: center; gap: 8px; }
+.w-meta { width: 110px; }
+
+.msg-list { display: flex; flex-direction: column; gap: 10px; }
 .msg {
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 12px;
+  max-width: 92%;
+  align-self: flex-start;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
   padding: 10px 12px;
 }
-.msg.admin { background: var(--primary-bg); border: 1px solid var(--primary-border); }
-.msg-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
-.msg-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.msg.admin { align-self: flex-end; background: var(--au-primary-soft); border-color: var(--au-primary-border); }
+.msg-meta { font-size: 11.5px; color: var(--au-text-3); margin-bottom: 4px; }
+.msg-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; color: var(--au-text); overflow-wrap: anywhere; }
 
-.reply-box { margin-top: 16px; }
-.reply-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-.closed-hint { margin-top: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+.reply-box { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--au-border); }
+.reply-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.closed-hint { margin-top: 16px; text-align: center; color: var(--au-text-3); font-size: 13px; }
+
+@media (max-width: 768px) {
+  .list-bar { padding: 4px 16px 12px; }
+  .list-bar :deep(.el-radio-group) { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
+}
+
+@media (max-width: 640px) {
+  .ticket-preview { max-width: 100%; }
+  .msg { max-width: 100%; }
+  .reply-actions :deep(.el-button) { flex: 1; margin-left: 0; }
+}
 </style>

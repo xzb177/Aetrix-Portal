@@ -30,10 +30,11 @@
 }
 
 .admin-page-title {
+  font-family: var(--au-font-serif);
   font-size: var(--font-size-3xl);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-tight);
-  letter-spacing: -0.01em;
+  letter-spacing: 0.01em;
   color: var(--text-primary);
   margin: 0;
 }
@@ -61,10 +62,9 @@
 .admin-card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  /* v2.42.4 对齐用户端设计语言：16px 大圆角 + 极克制阴影（细边框承担分层） */
-  border-radius: var(--radius-lg);
+  /* 暗房影院：实色表面 + 发丝线 + 14px 圆角，不靠阴影分层（同用户端 .au-card） */
+  border-radius: var(--au-r-lg);
   padding: var(--space-5);
-  box-shadow: var(--shadow-xs);
 }
 
 .admin-layout .admin-content .admin-card {
@@ -81,6 +81,15 @@
   color: var(--text-primary);
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-semibold);
+}
+
+/* 卡片标题本身走衬线（h2/h3 已由 base.css 统一；这里兜住写成 div 的标题） */
+.admin-layout .admin-content .card-header h2,
+.admin-layout .admin-content .card-header h3 {
+  font-family: var(--au-font-serif);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  margin: 0;
 }
 
 .admin-layout .admin-content .card-header:not(:last-child),
@@ -102,15 +111,13 @@
   overflow: hidden;
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--au-r-lg);
   padding: var(--space-4);
-  box-shadow: var(--shadow-card);
-  transition: border-color var(--transition-fast), transform var(--transition-fast);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
 .stat-tile:hover {
-  border-color: var(--border-strong);
-  transform: translateY(-1px);
+  border-color: var(--au-border-strong);
 }
 
 .stat-tile .stat-label,
@@ -158,8 +165,7 @@
 .admin-layout .admin-content .stat-item {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  border-radius: var(--au-r-lg);
 }
 
 /* ==================== 过滤 / 工具条 ==================== */
@@ -234,7 +240,7 @@
   padding: 0 8px;
   border-radius: var(--radius-full);
   border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--au-violet-soft);
   color: var(--text-secondary);
   font-size: 11.5px;
   font-weight: var(--font-weight-semibold);
@@ -245,26 +251,26 @@
 .mini-badge.vip,
 .mini-badge.ok,
 .mini-badge.success,
-.mini-badge.running { background: var(--success-bg); color: #6ee7b7; border-color: var(--success-border); }
+.mini-badge.running { background: var(--success-bg); color: var(--success); border-color: var(--success-border); }
 
 .mini-badge.staff,
 .mini-badge.virtual,
 .mini-badge.info,
-.mini-badge.pin { background: var(--info-bg); color: #93c5fd; border-color: var(--info-border); }
+.mini-badge.pin { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
 
 .mini-badge.warn,
 .mini-badge.warning,
 .mini-badge.scanning { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-border); }
 
 /* 公益服（v2.7.0）：免费开放，用主色区分于付费服与状态类徽标 */
-.mini-badge.free { background: var(--primary-bg); color: #67e8f9; border-color: var(--primary-border); }
+.mini-badge.free { background: var(--primary-bg); color: var(--primary); border-color: var(--primary-border); }
 
 .mini-badge.danger,
 .mini-badge.disabled,
 .mini-badge.off { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
 
 .mini-badge.type,
-.mini-badge.muted { background: rgba(255, 255, 255, 0.06); color: var(--text-tertiary); border-color: var(--border-subtle); }
+.mini-badge.muted { background: var(--au-violet-soft); color: var(--text-tertiary); border-color: var(--border-subtle); }
 
 /* ==================== 排行榜 / 列表行 ==================== */
 .rank-row {
@@ -283,7 +289,7 @@
   flex-shrink: 0;
   border-radius: var(--radius-sm);
   background: var(--primary-bg);
-  color: #7fe6f6;
+  color: var(--primary);
   font-size: 12px;
   font-weight: var(--font-weight-bold);
   display: flex;
@@ -323,9 +329,7 @@
 .kv-row .kv-value { color: var(--text-primary); text-align: right; word-break: break-word; }
 
 /* ==================== 主色渐变文字（标题点缀）==================== */
+/* 暗房影院没有流光渐变：强调文字就是纯琥珀（类名保留兼容） */
 .gradient-text {
-  background: var(--gradient-brand);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--au-primary);
 }

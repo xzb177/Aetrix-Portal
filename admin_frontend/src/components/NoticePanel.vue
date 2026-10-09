@@ -79,73 +79,75 @@ function toggle() {
 </template>
 
 <style scoped>
-/* 与 .admin-card 同一套令牌，但内边距由自己定（标题行要整行可点，见文件头注释） */
+/* 与 SectionCard 同一套外观（实色表面 + 发丝线 + 14px 圆角，无阴影），内边距由自己定（标题行要整行可点，见文件头注释） */
 .notice-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
+  min-width: 0;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
   overflow: hidden;
 }
 
 .notice-head {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
   width: 100%;
-  min-height: var(--touch-target-min);
+  min-height: 44px;
   margin: 0;
-  padding: var(--space-3) var(--space-4);
+  padding: 12px 20px;
   border: 0;
   background: none;
   cursor: pointer;
   text-align: left;
-  color: var(--text-primary);
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-normal);
-  transition: background var(--transition-fast);
+  color: var(--au-text);
+  font-size: 14px;
+  line-height: 1.5;
+  transition: background var(--au-fast) var(--au-ease);
 }
 
-.notice-head:hover { background: var(--bg-hover); }
+.notice-head:hover { background: var(--au-violet-soft); }
 
 .notice-title {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 8px;
+  font-family: var(--au-font-serif);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
+.notice-title :deep(svg) { color: var(--au-primary); flex-shrink: 0; }
+
 .notice-summary {
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-normal);
+  color: var(--au-text-3);
+  font-size: 12.5px;
+  font-weight: 400;
 }
 
 .notice-caret {
   margin-left: auto;
   flex-shrink: 0;
-  color: var(--text-muted);
-  transition: transform var(--transition-fast);
+  color: var(--au-text-4);
+  transition: transform var(--au-fast) var(--au-ease);
 }
 
 .notice-caret.open { transform: rotate(180deg); }
 
-.notice-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
-.notice-head:hover .notice-title,
-.notice-head:focus-visible .notice-title { color: var(--primary); }
+.notice-head:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: -2px; }
 
-.notice-body { padding: 0 var(--space-4) var(--space-4); }
-
-/* 断点与 styles/responsive.css 的卡片节奏对齐（否则旁边卡片变小圆角，这里还是个大的） */
-@media (max-width: 1024px) {
-  .notice-panel { border-radius: var(--radius-md); }
-  .notice-head { padding: var(--space-3) var(--space-3); }
-  .notice-body { padding: 0 var(--space-3) var(--space-3); }
+.notice-body {
+  padding: 4px 20px 18px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--au-text-2);
 }
 
 @media (max-width: 640px) {
+  .notice-head { padding: 12px 16px; flex-wrap: wrap; }
   /* 手机一行放不下「标题 + 摘要 + 箭头」：摘要换行，别把标题挤断 */
-  .notice-head { flex-wrap: wrap; }
-  .notice-summary { flex: 1 1 100%; }
+  .notice-summary { flex: 1 1 100%; order: 3; }
+  .notice-body { padding: 4px 16px 16px; }
 }
 </style>

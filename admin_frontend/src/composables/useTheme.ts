@@ -4,7 +4,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
  * 管理后台外观切换（v2.42.4，与用户端 useTheme 同一套口径）：
  * 三档（跟随系统 / 白日 / 黑暗）持久化在 localStorage('aetrix-theme')，
  * 实际生效只有 dark / light 两档，切换只改 html[data-theme] ——
- * 浅色的全部令牌定义在 tokens.css 的 html[data-theme='light'] 规则里，
+ * 浅色令牌定义在 aurora.css 的 html[data-theme='light'] 规则里（tokens.css 只是别名层），
  * Element Plus 变量在 element-plus-theme.css 的浅色块里同步分叉。
  */
 
@@ -48,8 +48,8 @@ function applyTheme() {
   const html = document.documentElement
   if (resolved.value === 'light') html.setAttribute('data-theme', 'light')
   else html.removeAttribute('data-theme')
-  // 浅色下浏览器工具栏跟底色（与 tokens.css 浅色 --bg-app 一致），深色维持原 #070b12
-  metaTheme?.setAttribute('content', resolved.value === 'light' ? '#f5f8fb' : '#070b12')
+  // 浏览器工具栏跟画布色（aurora.css 的 --au-bg：深色暖黑 #0c0a09 / 白日奶油纸 #f5f1ea）
+  metaTheme?.setAttribute('content', resolved.value === 'light' ? '#f5f1ea' : '#0c0a09')
 }
 
 function setPreference(value: ThemePreference) {

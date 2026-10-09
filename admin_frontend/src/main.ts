@@ -12,6 +12,8 @@ import router from './router'
 // 先挂载再拉取，不让一次额外请求把首屏拖住；拉到后主题色与文档标题会自己更新。
 import { initBranding } from './composables/branding'
 
+// 暗房影院令牌（与用户端同名同值）必须最先引入：tokens.css 只是它的别名层
+import './styles/aurora.css'
 import './styles/tokens.css'
 import './styles/base.css'
 import './styles/index.css'

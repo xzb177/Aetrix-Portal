@@ -10,6 +10,7 @@
  * 鉴权：全部携带门户 JWT（后端 /emby/* 已支持 JWT 回退）。
  * 复用 api/index.ts 的 axios 实例：自动附 Authorization 头 + 401 自动刷新。
  */
+import { shallowRef } from 'vue'
 import api from '@/api'
 
 /**
@@ -50,9 +51,18 @@ const _cachedBase = readCachedBase()
  */
 let embyBaseCache: string = _cachedBase.url
 let embyBaseTs: number = _cachedBase.ts
+/**
+ * 同一个 EA 地址的**响应式**副本：图片地址是模板 / computed 里同步拼的，
+ * 第一次渲染时地址可能还没拉到（刚登录：登出时缓存已清空，App 启动时又没有 token
+ * 跳过了预取）。以前拼出来的是同源 /emby/...，分离部署下 EM 不提供图片 → 整排 404，
+ * 而且 computed 不会因为普通变量变化而重算，KeepAlive 的首页就一直是占位卡。
+ * imageUrl 读它，地址一到，依赖它的 computed 自动重算。
+ */
+const embyBaseRef = shallowRef<string>(_cachedBase.url)
 
 function setEmbyBase(base: string): string {
   embyBaseCache = (base || '').replace(/\/+$/, '')
+  embyBaseRef.value = embyBaseCache
   embyBaseTs = Date.now()
   try {
     if (embyBaseCache) localStorage.setItem(EMBY_BASE_CACHE_KEY, JSON.stringify({ u: embyBaseCache, t: embyBaseTs }))
@@ -99,6 +109,17 @@ export function refreshEmbyBaseUrl(): void {
     return
   }
   fetchEmbyBase().catch(() => {})
+}
+
+/**
+ * 确保 EA 地址已就绪（图片地址依赖它）；拉不到（未开通 / 网络错误）时返回当前值（可能为空），不抛错。
+ */
+export async function ensureEmbyBase(): Promise<string> {
+  try {
+    return await embyBaseUrl()
+  } catch {
+    return embyBaseCache
+  }
 }
 
 async function embyGet<T>(path: string, config?: object): Promise<T> {
@@ -438,8 +459,8 @@ function positionTicks() {
  * 必须是 EA 绝对/前缀地址。以前这里返回同源 /emby/...，在分离部署下打到 EM，
  * 图片 404 —— 就是首页那些只剩编号、没有封面的卡片的来源。
  */
-export function posterUrl(item: EmbyItem, maxWidth = 320, skipCheck = false): string {
-  if (!skipCheck && !item.ImageTags?.Primary) return ''
+export function posterUrl(item: EmbyItem, maxWidth = 320): string {
+  if (!item.ImageTags?.Primary) return ''
   return imageUrl(item.Id, 'Primary', maxWidth)
 }
 
@@ -450,18 +471,19 @@ export function backdropUrl(item: EmbyItem, maxWidth = 1280): string {
 }
 
 /**
- * 条目图片地址。maxWidth <= 0 表示要原图（不带 maxWidth，服务端不走缩略图缓存）。
+ * 条目图片地址。maxWidth <= 0 表示要原图（不带 maxWidth）。
  *
- * 为什么需要「原图」这一档：服务端缩略图缓存按「原图文件名」命名，库内同目录外挂图
- * （poster.jpg / folder.jpg / fanart.jpg）全库同名，带 maxWidth 请求时会拿到别的条目的
- * 缩略图——首页「本周入库」海报与片名对不上就是这个。首页那一排只有十来张，先走原图。
+ * 缩略图串图（服务端缩略图缓存曾按「原图文件名」命名，外挂 poster.jpg / fanart.jpg 全库同名）
+ * 已在服务端修复（缩略图按「绝对路径 + mtime + 大小」的 sha1 命名，见 image_store），
+ * 所以列表 / 横滑行可以放心带 maxWidth，不必为了避开串图去拉几 MB 的原图。
+ *
+ * Thumb：服务端按横版背景图（Backdrop 链）出图，用作海报缺失时的兜底。
  */
-export function imageUrl(itemId: string, kind: 'Primary' | 'Backdrop', maxWidth = 0): string {
-  // H2 安全：不再把 JWT 放进 URL（URL 会进日志/历史/Referer）。
-  // 图片接口走 Cookie 鉴权（浏览器 <img> 自动带），无需显式 token。
-  const size = maxWidth > 0 ? `maxWidth=${maxWidth}` : ''
-  const q = size ? `?${size}` : ''
-  return `${embyBaseCache}/emby/Items/${itemId}/Images/${kind}${q}`
+export function imageUrl(itemId: string, kind: 'Primary' | 'Backdrop' | 'Thumb', maxWidth = 0): string {
+  // H2 安全：URL 里不带任何凭据（JWT 会进反代 / CDN 日志、浏览器历史与 Referer）。
+  // 条目图片端点本身是公开的（不校验 token / Cookie），<img> 跨域直接加载即可。
+  const q = maxWidth > 0 ? `?maxWidth=${maxWidth}` : ''
+  return `${embyBaseRef.value}/emby/Items/${encodeURIComponent(itemId)}/Images/${kind}${q}`
 }
 
 /** 进度条百分比 */

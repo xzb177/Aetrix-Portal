@@ -4,7 +4,8 @@
  */
 import { onMounted, ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, RefreshCw } from 'lucide-vue-next'
+import { Gift, Plus, RefreshCw, Search, CheckCircle2, Ticket } from 'lucide-vue-next'
+import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
@@ -30,6 +31,7 @@ import {
 } from '@/api/economy'
 
 const loading = ref(false)
+const loadError = ref('')
 const codes = ref<ExchangeCodeRow[]>([])
 const plans = ref<PlanRowFull[]>([])
 
@@ -51,6 +53,7 @@ const resultVisible = ref(false)
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     const [c, p] = await Promise.all([
       fetchExchangeCodes({ limit: 200 }),
@@ -58,6 +61,8 @@ async function load() {
     ])
     codes.value = c.codes
     plans.value = (p as { plans: PlanRowFull[] }).plans
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
   }
@@ -114,6 +119,31 @@ const usedSummary = computed(() =>
   codes.value.reduce((acc, c) => acc + c.use_count, 0),
 )
 
+const activeCount = computed(() => codes.value.filter((c) => c.is_active).length)
+
+// 前端筛选（后端一次给最近 200 条）
+const keyword = ref('')
+const typeFilter = ref<'' | 'points' | 'subscription'>('')
+const statusFilter = ref<'' | 'active' | 'inactive'>('')
+const hasFilter = computed(() => Boolean(keyword.value.trim() || typeFilter.value || statusFilter.value))
+
+const visibleCodes = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  return codes.value.filter((c) => {
+    if (typeFilter.value && c.type !== typeFilter.value) return false
+    if (statusFilter.value === 'active' && !c.is_active) return false
+    if (statusFilter.value === 'inactive' && c.is_active) return false
+    if (!kw) return true
+    return [c.code, c.note, c.plan_name, usedNames(c)].join(' ').toLowerCase().includes(kw)
+  })
+})
+
+function resetFilters() {
+  keyword.value = ''
+  typeFilter.value = ''
+  statusFilter.value = ''
+}
+
 function fmtTime(iso?: string | null) {
   return iso ? iso.slice(0, 10) : '—'
 }
@@ -123,34 +153,69 @@ onMounted(load)
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">兑换码</h1>
-        <p class="admin-page-desc">积分 / 订阅兑换码生成与核销审计（已核销 {{ usedSummary }} 次）</p>
-      </div>
-      <div class="head-actions">
-        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="genVisible = true">批量生成</el-button>
-      </div>
+    <PageHeader
+      eyebrow="运营中心"
+      title="兑换码"
+      description="批量生成积分 / 订阅兑换码，停用或启用单个码，并查看谁核销了它。列表为最近 200 个。"
+    >
+      <template #actions>
+        <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
+        <el-button type="primary" @click="genVisible = true" :icon="Plus">批量生成</el-button>
+      </template>
+    </PageHeader>
+
+    <div class="stat-row">
+      <StatTile label="兑换码" :value="codes.length" :icon="Ticket" hint="最近 200 个以内" />
+      <StatTile label="启用中" :value="activeCount" :suffix="`/ ${codes.length}`" :icon="CheckCircle2" hint="停用的码不能再核销" />
+      <StatTile label="累计核销" :value="usedSummary" suffix="次" :icon="Gift" hint="按每码使用次数求和" />
     </div>
 
-    <div class="admin-card">
-      <DataTable :rows="codes" :columns="columns" :loading="loading" empty="暂无兑换码">
+    <SectionCard title="全部兑换码" :icon="Gift" :meta="hasFilter ? `筛出 ${visibleCodes.length} / ${codes.length}` : ''" flush>
+      <div class="list-bar">
+        <div class="filter-bar">
+          <el-input v-model="keyword" placeholder="搜索兑换码 / 备注 / 核销人" clearable>
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="typeFilter" placeholder="全部类型">
+            <el-option value="" label="全部类型" />
+            <el-option value="points" label="积分" />
+            <el-option value="subscription" label="订阅" />
+          </el-select>
+          <el-select v-model="statusFilter" placeholder="全部状态">
+            <el-option value="" label="全部状态" />
+            <el-option value="active" label="启用" />
+            <el-option value="inactive" label="停用" />
+          </el-select>
+        </div>
+        <div class="head-actions">
+          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
+        </div>
+      </div>
+
+      <DataTable
+        :rows="visibleCodes"
+        :columns="columns"
+        :loading="loading"
+        :error="loadError"
+        :empty="hasFilter ? '没有匹配的兑换码' : '还没有兑换码'"
+        :empty-description="hasFilter ? '换个关键字或清空筛选。' : '点右上角「批量生成」做第一批。'"
+        @retry="load"
+      >
         <template #cell-code="{ row }">
           <span class="mono code">{{ row.code }}</span>
         </template>
 
         <template #cell-type="{ row }">
-          <el-tag :type="row.type === 'points' ? 'success' : 'primary'" size="small">
+          <span class="au-badge" :class="row.type === 'points' ? 'au-badge-green' : 'au-badge-amber'">
             {{ row.type === 'points' ? '积分' : '订阅' }}
-          </el-tag>
+          </span>
         </template>
 
         <template #cell-reward="{ row }">{{ rewardText(row) }}</template>
 
-        <template #cell-use_count="{ row }">{{ row.use_count }}/{{ row.max_uses }}</template>
+        <template #cell-use_count="{ row }"><span class="mono">{{ row.use_count }}/{{ row.max_uses }}</span></template>
 
-        <template #cell-expires_at="{ row }">{{ fmtTime(row.expires_at) }}</template>
+        <template #cell-expires_at="{ row }"><span class="mono">{{ fmtTime(row.expires_at) }}</span></template>
 
         <template #cell-note="{ row }">
           <span v-if="!row.note" class="muted">—</span>
@@ -158,9 +223,9 @@ onMounted(load)
         </template>
 
         <template #cell-is_active="{ row }">
-          <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
+          <span class="au-badge" :class="row.is_active ? 'au-badge-green' : 'au-badge-muted'">
             {{ row.is_active ? '启用' : '停用' }}
-          </el-tag>
+          </span>
         </template>
 
         <template #cell-used_by="{ row }">
@@ -169,17 +234,12 @@ onMounted(load)
         </template>
 
         <template #cell-actions="{ row }">
-          <el-button
-            size="small"
-            :type="row.is_active ? 'warning' : 'success'"
-            plain
-            @click="toggleCode(row)"
-          >
+          <el-button size="small" :type="row.is_active ? 'warning' : 'success'" @click="toggleCode(row)">
             {{ row.is_active ? '停用' : '启用' }}
           </el-button>
         </template>
       </DataTable>
-    </div>
+    </SectionCard>
 
     <!-- 生成对话框 -->
     <el-dialog v-model="genVisible" title="批量生成兑换码" width="480px">
@@ -239,9 +299,32 @@ onMounted(load)
 </template>
 
 <style scoped>
-.head-actions { display: flex; gap: 8px; }
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
 
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.code { letter-spacing: 0.06em; font-weight: 600; color: var(--primary); }
-.muted { color: var(--text-muted); font-size: 12px; }
+.list-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 12px;
+}
+
+.list-bar .filter-bar { flex: 1 1 auto; }
+.list-bar .head-actions { justify-content: flex-end; width: auto; }
+
+.code { letter-spacing: 0.06em; font-weight: 600; color: var(--au-text); }
+.muted { color: var(--au-text-3); font-size: 12px; }
+
+@media (max-width: 768px) {
+  .list-bar { padding: 4px 16px 12px; }
+}
+
+@media (max-width: 640px) {
+  .stat-row { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+}
 </style>
