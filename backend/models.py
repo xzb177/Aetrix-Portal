@@ -3,7 +3,7 @@
 整合用户端、管理后台和主项目的所有数据模型
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, Index, ForeignKey, JSON, Float, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, Date, Text, Numeric, Index, ForeignKey, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -363,8 +363,6 @@ class SubscriptionPlan(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text)
     price = Column(Numeric(10, 2), nullable=False)
-    # 积分价（P2 货币体系双轨）：NULL=不支持积分购买；用户端可二选一（人民币 price 或积分 points_price）
-    points_price = Column(Numeric(10, 2), nullable=True)
     duration_days = Column(Integer, nullable=False)
     features = Column(JSON)  # 特性列表
     # 属于哪个服：套餐一个服一个（见 ServerRealm）。同一套餐只卖给该服的用户。
@@ -1442,7 +1440,7 @@ class MemberLevel(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     level = Column(Integer, unique=True, nullable=False)  # 等级 1-6
-    name = Column(String(30), nullable=False)  # 等级名称：初幕/影迷/鉴赏家/放映师/造梦者/传奇（暗房影院主题）
+    name = Column(String(30), nullable=False)  # 等级名称：普通会员/铜牌/白银/黄金/铂金/钻石
     xp_threshold = Column(Integer, nullable=False, default=0)  # 升级所需经验阈值
     benefits_json = Column(Text, nullable=True)  # 权益描述 JSON 数组，如 ["权益1","权益2"]
     badge_icon = Column(String(30), nullable=True)  # 徽章图标名（lucide 图标名）
@@ -1472,3 +1470,30 @@ class MemberXpLog(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
+
+
+class ChatPointsLog(Base):
+    """群发言积分明细表（M1）
+
+    bot 统计 TG 群有效发言的计分明细，同时作为防刷依据：
+    - 唯一约束 (telegram_id, chat_id, message_id) 保证幂等（offset 重放/重启不重复计分）
+    - 索引 (web_user_id, points_date) 供每日上限查询
+    - 索引 (telegram_id, created_at) 供防刷窗口查询
+    积分本身进 WebUser.points（单一货币），流水见 PointsLog(type='chat')。
+    """
+    __tablename__ = 'chat_points_log'
+
+    __table_args__ = (
+        UniqueConstraint('telegram_id', 'chat_id', 'message_id', name='uq_chat_points_msg'),
+        Index('idx_chat_points_user_date', 'web_user_id', 'points_date'),
+        Index('idx_chat_points_tg_time', 'telegram_id', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    web_user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    telegram_id = Column(BigInteger, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    message_id = Column(BigInteger, nullable=False)
+    points = Column(Integer, nullable=False, default=1)
+    points_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
