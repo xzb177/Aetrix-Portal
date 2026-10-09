@@ -75,6 +75,7 @@ export interface SubscriptionPlan {
   name: string
   description: string | null
   price: number
+  points_price: number | null
   duration_days: number
   features: string[] | null
   is_popular: boolean
@@ -276,6 +277,12 @@ export const couponApi = {
     api.post<never, CouponQuote>('/api/user/economy/payment/coupon/quote', data),
 }
 
+/** 货币体系公开信息（P2）：用户端自定义充值换算用 */
+export const currencyApi = {
+  info: () =>
+    api.get<never, { name: string; recharge_ratio: number }>('/api/user/economy/currency'),
+}
+
 // ==================== 支付 ====================
 
 export const paymentApi = {
@@ -286,8 +293,8 @@ export const paymentApi = {
     api.get<never, { enabled: boolean; plans: SubscriptionPlan[]; access_mode?: 'paid' | 'free'; is_free?: boolean; access_note?: string }>(
       '/api/user/economy/payment/plans',
     ),
-  createOrder: (data: { kind: 'recharge' | 'subscription'; item_id: number; payment_method: string; coupon_code?: string }) =>
-    api.post<never, { success: boolean; order_id: string; amount: number; list_price?: number; discount_amount?: number; coupon_code?: string; pay_url: string; message: string }>('/api/user/economy/payment/order', data),
+  createOrder: (data: { kind: 'recharge' | 'subscription'; item_id?: number; payment_method: string; coupon_code?: string; custom_amount?: number; pay_with_points?: boolean }) =>
+    api.post<never, { success: boolean; order_id: string; amount: number; list_price?: number; discount_amount?: number; coupon_code?: string; pay_url?: string; message: string; paid_with_points?: boolean; points_cost?: number }>('/api/user/economy/payment/order', data),
   orders: (params?: { kind?: string; limit?: number }) =>
     api.get<never, { orders: OrderRow[] }>('/api/user/economy/payment/orders', { params }),
 }

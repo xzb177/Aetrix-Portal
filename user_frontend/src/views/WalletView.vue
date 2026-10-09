@@ -17,7 +17,7 @@ import {
   Ticket, Clapperboard, Glasses, Projector,
 } from 'lucide-vue-next'
 import {
-  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi,
+  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi, currencyApi,
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview, type CouponQuote,
   type MyMemberInfo,
@@ -333,7 +333,7 @@ async function confirmCodeRedeem() {
 }
 
 // ===== 下单 =====
-async function handleOrder(kind: 'recharge' | 'subscription', itemId: number) {
+async function handleOrder(kind: 'recharge' | 'subscription', itemId?: number) {
   orderLoading.value = itemId
   try {
     // 优惠码在试算通过的商品上才带：后端会按同一套口径再算一遍并占额度
@@ -356,6 +356,43 @@ async function handleOrder(kind: 'recharge' | 'subscription', itemId: number) {
   } finally {
     orderLoading.value = null
   }
+}
+
+// ===== 自定义金额充值（P2）=====
+const customAmount = ref<number | null>(null)
+const rechargeRatio = ref(1.2)
+const canCustomRecharge = computed(() => (customAmount.value ?? 0) >= 1)
+const customPointsPreview = computed(() => {
+  const amt = customAmount.value ?? 0
+  if (amt < 1) return ''
+  return ` ${Math.floor(amt * rechargeRatio.value)} `
+})
+async function handleCustomRecharge() {
+  const amt = customAmount.value ?? 0
+  if (amt < 1 || amt > 100000) { toast.error('请输入 1~100000 元'); return }
+  orderLoading.value = -1
+  try {
+    const res = await paymentApi.createOrder({ kind: 'recharge', payment_method: payMethod.value, custom_amount: amt })
+    if (res.pay_url) { toast.success('正在跳转支付…'); window.location.href = res.pay_url }
+    else toast.error('未获取到支付链接')
+  } catch (err: any) {
+    toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
+  } finally { orderLoading.value = null }
+}
+async function handlePointsOrder(plan: SubscriptionPlan) {
+  orderLoading.value = -plan.id
+  try {
+    const res = await paymentApi.createOrder({ kind: 'subscription', item_id: plan.id, payment_method: 'points', pay_with_points: true })
+    if (res.paid_with_points) {
+      toast.success(res.message || '积分支付成功，订阅已开通')
+      await refreshSubscriptions()
+      await refreshBalance()
+    } else if (res.pay_url) {
+      window.location.href = res.pay_url
+    }
+  } catch (err: any) {
+    toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
+  } finally { orderLoading.value = null }
 }
 
 // ===== 数据加载 =====
@@ -557,6 +594,11 @@ function handleEntryQuery() {
 onMounted(async () => {
   await loadAll()
   handleEntryQuery()
+  // P2：拉取充值比例（自定义金额换算用），失败时保持默认 1.2
+  try {
+    const info = await currencyApi.info()
+    if (info?.recharge_ratio) rechargeRatio.value = info.recharge_ratio
+  } catch { /* 静默 */ }
 })
 
 // 从别的 tab 切回来（KeepAlive 缓存命中）：先处理 query，再后台静默刷新
@@ -809,6 +851,24 @@ onBeforeUnmount(stopPayPoll)
           </span>
         </button>
       </div>
+      <!-- 自定义金额充值（P2）：按 recharge_ratio 换算积分 -->
+      <div class="custom-recharge au-card">
+        <div class="custom-recharge-head">
+          <Coins :size="15" />
+          <span>自定义金额充值</span>
+        </div>
+        <div class="custom-recharge-body">
+          <div class="custom-input-wrap">
+            <span class="custom-prefix">¥</span>
+            <input v-model.number="customAmount" type="number" min="1" max="100000" placeholder="输入金额" class="custom-input" />
+          </div>
+          <button class="au-btn au-btn-primary" :disabled="!canCustomRecharge || orderLoading === -1" @click="handleCustomRecharge">
+            <span v-if="orderLoading === -1" class="au-spinner spinner-sm" />
+            <template v-else>充值{{ customPointsPreview }}积分</template>
+          </button>
+        </div>
+        <p class="custom-hint">按当前比例 {{ rechargeRatio }} 兑换（1 元 = {{ rechargeRatio }} 积分）</p>
+      </div>
     </section>
 
     <!-- 购买订阅：公益服换成「免费开放」说明，其余按原样卖套餐 -->
@@ -869,6 +929,9 @@ onBeforeUnmount(stopPayPoll)
               ¥{{ paidPrice('subscription', p.id, p.price) }}
               <em class="plan-days">/ {{ p.duration_days }} 天</em>
             </span>
+            <span v-if="p.points_price != null" class="plan-points-price">
+              或 {{ p.points_price }} 积分
+            </span>
           </div>
           <p class="plan-desc">{{ p.description || '会员专属权益' }}</p>
 
@@ -878,15 +941,26 @@ onBeforeUnmount(stopPayPoll)
             </li>
           </ul>
 
-          <button
-            class="au-btn plan-btn"
-            :class="p.is_popular ? 'au-btn-primary' : 'au-btn-ghost'"
-            :disabled="orderLoading === p.id"
-            @click="handleOrder('subscription', p.id)"
-          >
-            <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
-            <template v-else>立即开通</template>
-          </button>
+          <div class="plan-actions">
+            <button
+              class="au-btn plan-btn"
+              :class="p.is_popular ? 'au-btn-primary' : 'au-btn-ghost'"
+              :disabled="orderLoading === p.id"
+              @click="handleOrder('subscription', p.id)"
+            >
+              <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
+              <template v-else>¥{{ paidPrice('subscription', p.id, p.price) }} 开通</template>
+            </button>
+            <button
+              v-if="p.points_price != null"
+              class="au-btn au-btn-ghost plan-btn"
+              :disabled="orderLoading === -p.id"
+              @click="handlePointsOrder(p)"
+            >
+              <span v-if="orderLoading === -p.id" class="au-spinner spinner-sm" />
+              <template v-else>{{ p.points_price }} 积分开通</template>
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -1602,6 +1676,40 @@ onBeforeUnmount(stopPayPoll)
 .plan-features svg { color: var(--au-success); flex-shrink: 0; }
 
 .plan-btn { margin-top: auto; width: 100%; }
+
+/* P2 双轨订阅：人民币/积分双按钮 */
+.plan-actions { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+.plan-actions .plan-btn { margin-top: 0; }
+.plan-points-price {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.75rem;
+  color: var(--au-warning);
+  font-weight: 600;
+}
+
+/* P2 自定义金额充值 */
+.custom-recharge { margin-top: 16px; padding: 16px; }
+.custom-recharge-head {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; font-size: 0.9rem; margin-bottom: 12px;
+}
+.custom-recharge-body { display: flex; gap: 12px; align-items: center; }
+.custom-input-wrap {
+  display: flex; align-items: center; flex: 1;
+  border: 1px solid var(--au-border);
+  border-radius: 8px; padding: 0 12px;
+  background: var(--au-surface-2);
+}
+.custom-prefix { color: var(--au-text-3); margin-right: 6px; font-weight: 600; }
+.custom-input {
+  flex: 1; border: none; outline: none; background: transparent;
+  padding: 10px 0; font-size: 1rem; color: var(--au-text);
+  -moz-appearance: textfield;
+}
+.custom-input::-webkit-outer-spin-button,
+.custom-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+.custom-hint { margin: 10px 0 0; font-size: 0.75rem; color: var(--au-text-3); }
 
 /* ==================== 订单 ==================== */
 .order-list { overflow: hidden; }

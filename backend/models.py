@@ -363,6 +363,8 @@ class SubscriptionPlan(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text)
     price = Column(Numeric(10, 2), nullable=False)
+    # 积分价（P2 货币体系双轨）：NULL=不支持积分购买；用户端可二选一（人民币 price 或积分 points_price）
+    points_price = Column(Numeric(10, 2), nullable=True)
     duration_days = Column(Integer, nullable=False)
     features = Column(JSON)  # 特性列表
     # 属于哪个服：套餐一个服一个（见 ServerRealm）。同一套餐只卖给该服的用户。

@@ -149,6 +149,7 @@ def list_plans(
             "is_popular": p.is_popular,
             "realm_id": p.realm_id,
             "realm_name": (p.realm.name if p.realm else ""),
+            "points_price": (float(p.points_price) if p.points_price is not None else None),
         }
         for p in plans
     ],
@@ -1490,6 +1491,7 @@ class PlanUpsertRequest(BaseModel):
     sort_order: int = 0
     # 套餐一个服一个：留空时归到面板当前服
     realm_id: Optional[int] = None
+    points_price: Optional[float] = Field(default=None, ge=0, description="积分价；为空表示不支持积分购买")
 
 
 @admin_router.get("/economy/plans")
@@ -1512,6 +1514,7 @@ def economy_list_plans(
             "is_popular": p.is_popular, "sort_order": p.sort_order,
             "realm_id": p.realm_id,
             "realm_name": (p.realm.name if p.realm else ""),
+            "points_price": (float(p.points_price) if p.points_price is not None else None),
         }
         for p in plans
     ],
@@ -1535,12 +1538,14 @@ def economy_create_plan(
         features=request.features, is_active=request.is_active,
         is_popular=request.is_popular, sort_order=request.sort_order,
         realm_id=realm_id,
+        points_price=(Decimal(str(request.points_price)) if request.points_price is not None else None),
     )
     db.add(plan)
     db.commit()
     db.refresh(plan)
     _audit(db, current_admin, "economy_create_plan", "plan", plan.id,
-           {"name": plan.name, "price": float(plan.price), "realm_id": realm_id})
+           {"name": plan.name, "price": float(plan.price), "realm_id": realm_id,
+            "points_price": (float(plan.points_price) if plan.points_price is not None else None)})
     db.commit()
     return {"success": True, "id": plan.id}
 
@@ -1561,6 +1566,7 @@ def economy_update_plan(
     plan.name = request.name
     plan.description = request.description
     plan.price = Decimal(str(request.price))
+    plan.points_price = Decimal(str(request.points_price)) if request.points_price is not None else None
     plan.duration_days = request.duration_days
     plan.features = request.features
     plan.is_active = request.is_active

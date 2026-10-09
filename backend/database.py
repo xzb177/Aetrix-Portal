@@ -665,6 +665,8 @@ def _auto_migrate():
         # v2.6.20 多服运营：订阅、套餐、卡码、求片、挂载都归属到某个服
         ("subscription_plans", [
             ("realm_id", "INTEGER", "NULL"),
+            # P2 统一货币体系：套餐积分价。老库补列后为 NULL（不支持积分购买），与升级前行为一致。
+            ("points_price", "NUMERIC(10, 2)", "NULL"),
         ]),
         ("user_subscriptions", [
             ("realm_id", "INTEGER", "NULL"),
