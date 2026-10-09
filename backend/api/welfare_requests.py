@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """求片中心 API 路由（公益服模块3-娱乐板块）
 
-手动编写（OpenRouter 免费模型 429 限流，按 backend/api/points.py 模式手写）。
+.. deprecated::
+    求片已并入统一求片流程（backend/media_seek.py + /api/media-seek）。
+    本模块所有端点均标记 deprecated，仅保留兼容，不再演进。
 
 用户端（前缀 /api/requests）：
 - POST /            提交求片
@@ -40,7 +42,7 @@ class ReviewNote(BaseModel):
     admin_note: str = Field("", description="审核备注")
 
 
-@router.post("")
+@router.post("", deprecated=True)
 def submit(
     req: SubmitRequest,
     current_user: models.WebUser = Depends(get_current_user),
@@ -54,7 +56,7 @@ def submit(
     return req_mod._to_dict(r)
 
 
-@router.get("")
+@router.get("", deprecated=True)
 def my_list(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -65,7 +67,7 @@ def my_list(
     return req_mod.list_my_requests(db, current_user, page, page_size)
 
 
-@router.get("/quota")
+@router.get("/quota", deprecated=True)
 def quota(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -76,7 +78,7 @@ def quota(
 
 # ---------- 管理端 ----------
 
-@admin_router.get("/welfare/requests")
+@admin_router.get("/welfare/requests", deprecated=True)
 def admin_list(
     status: str = Query("", description="按状态过滤"),
     page: int = Query(1, ge=1),
@@ -88,7 +90,7 @@ def admin_list(
     return req_mod.list_all_requests(db, status or None, page, page_size)
 
 
-@admin_router.post("/welfare/requests/{request_id}/approve")
+@admin_router.post("/welfare/requests/{request_id}/approve", deprecated=True)
 def admin_approve(
     request_id: int,
     note: ReviewNote,
@@ -103,7 +105,7 @@ def admin_approve(
     return req_mod._to_dict(r)
 
 
-@admin_router.post("/welfare/requests/{request_id}/reject")
+@admin_router.post("/welfare/requests/{request_id}/reject", deprecated=True)
 def admin_reject(
     request_id: int,
     note: ReviewNote,
@@ -118,7 +120,7 @@ def admin_reject(
     return req_mod._to_dict(r)
 
 
-@admin_router.post("/welfare/requests/{request_id}/done")
+@admin_router.post("/welfare/requests/{request_id}/done", deprecated=True)
 def admin_done(
     request_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),

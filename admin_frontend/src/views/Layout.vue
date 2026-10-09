@@ -169,7 +169,7 @@ const navGroups: NavGroup[] = [
     icon: Heart,
     items: [
       { path: '/welfare-users', label: '公益用户', icon: Users },
-      { path: '/welfare-requests', label: '求片审核', icon: ScrollText },
+      // 求片审核已并入「求片管理」，菜单移除
       { path: '/welfare-lottery', label: '抽奖配置', icon: Gift },
       { path: '/welfare-points', label: '积分配置', icon: Wallet },
     ],

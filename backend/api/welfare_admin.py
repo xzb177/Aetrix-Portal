@@ -266,7 +266,7 @@ def _request_to_dict(r):
     }
 
 
-@admin_router.get("/welfare/requests")
+@admin_router.get("/welfare/requests", deprecated=True)
 def welfare_requests(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -287,7 +287,7 @@ class RequestNote(BaseModel):
     admin_note: str = ""
 
 
-@admin_router.post("/welfare/requests/{request_id}/approve")
+@admin_router.post("/welfare/requests/{request_id}/approve", deprecated=True)
 def welfare_request_approve(
     request_id: int,
     req: RequestNote,
@@ -305,7 +305,7 @@ def welfare_request_approve(
     return {"success": True}
 
 
-@admin_router.post("/welfare/requests/{request_id}/reject")
+@admin_router.post("/welfare/requests/{request_id}/reject", deprecated=True)
 def welfare_request_reject(
     request_id: int,
     req: RequestNote,
@@ -323,7 +323,7 @@ def welfare_request_reject(
     return {"success": True}
 
 
-@admin_router.post("/welfare/requests/{request_id}/done")
+@admin_router.post("/welfare/requests/{request_id}/done", deprecated=True)
 def welfare_request_done(
     request_id: int,
     current_admin: models.WebUser = Depends(get_current_admin),

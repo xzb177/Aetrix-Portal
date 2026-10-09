@@ -151,9 +151,13 @@ check("每日额度上限 → 429", r.status_code == 429, str(r.status_code))
 
 r = client.get("/api/user/media-seek", headers=headers)
 body = r.json() if r.status_code == 200 else {}
+_q = body.get("quota", {})
 check("求片列表带额度",
-      r.status_code == 200 and body["quota"] == {"used_today": 3, "daily_limit": 3, "remaining": 0},
-      str(body.get("quota")))
+      r.status_code == 200
+      and _q.get("used_today") == 3 and _q.get("daily_limit") == 3 and _q.get("remaining") == 0
+      and _q.get("kind") == "paid" and _q.get("monthly_limit") == 10
+      and _q.get("monthly_used") == 3 and _q.get("monthly_remaining") == 7,
+      str(_q))
 
 # ---------- 求片：通知管理员（此前是 TODO） ----------
 r = client.get("/api/user/messages", headers=staff_headers)
@@ -172,9 +176,12 @@ check("撤回不退额度 → 429", r.status_code == 429, str(r.status_code))
 
 r = client.get("/api/user/media-seek", headers=headers)
 body = r.json() if r.status_code == 200 else {}
-check("额度按今天的提交数算（含已撤回）", body.get("quota") == {
-    "used_today": 3, "daily_limit": 3, "remaining": 0,
-}, str(body.get("quota")))
+_q2 = body.get("quota", {})
+check("额度按今天的提交数算（含已撤回）",
+      _q2.get("used_today") == 3 and _q2.get("daily_limit") == 3 and _q2.get("remaining") == 0
+      and _q2.get("kind") == "paid" and _q2.get("monthly_limit") == 10
+      and _q2.get("monthly_used") == 3 and _q2.get("monthly_remaining") == 7,
+      str(_q2))
 check("已撤回的条目不列在求片列表里",
       all(x["id"] != first_id for x in body.get("requests", [])), str(body.get("requests")))
 

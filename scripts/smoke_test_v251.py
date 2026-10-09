@@ -125,9 +125,13 @@ r = client.post("/api/user/media-seek", json={"movie_name": f"限额二{suf}"}, 
 check("限额=1 时第二条 429", r.status_code == 429, str(r.status_code))
 
 r = client.get("/api/user/media-seek", headers=plain_h)
+_q = r.json().get("quota", {}) if r.status_code == 200 else {}
 check("用户端额度随配置变化",
-      r.status_code == 200 and r.json()["quota"] == {"used_today": 1, "daily_limit": 1, "remaining": 0},
-      str(r.json().get("quota")))
+      r.status_code == 200
+      and _q.get("used_today") == 1 and _q.get("daily_limit") == 1 and _q.get("remaining") == 0
+      and _q.get("kind") == "paid" and _q.get("monthly_limit") == 10
+      and _q.get("monthly_used") == 1 and _q.get("monthly_remaining") == 9,
+      str(_q))
 
 # 还原默认，避免影响其它用例
 client.put("/api/admin/economy/settings",

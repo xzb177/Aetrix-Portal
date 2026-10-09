@@ -46,7 +46,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
       // 公益服（v2.54.0）：公益用户 / 求片审核 / 抽奖配置 / 积分配置
       { path: 'welfare-users', name: 'WelfareUsers', component: () => import('@/views/WelfareUsers.vue'), meta: { title: '公益服·用户' } },
-      { path: 'welfare-requests', name: 'WelfareRequests', component: () => import('@/views/WelfareRequests.vue'), meta: { title: '公益服·求片审核' } },
+      // 求片审核已并入「求片管理」（MediaSeek.vue），路由移除
       { path: 'welfare-lottery', name: 'WelfareLottery', component: () => import('@/views/WelfareLottery.vue'), meta: { title: '公益服·抽奖' } },
       { path: 'welfare-points', name: 'WelfarePoints', component: () => import('@/views/WelfarePoints.vue'), meta: { title: '公益服·积分配置' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库' } },

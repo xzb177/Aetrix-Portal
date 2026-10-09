@@ -1038,6 +1038,7 @@ def get_media_seeks(
         ).first()
         result.append({
             "id": req.id,
+            "user_id": req.user_id,
             "movie_name": req.movie_name,
             "year": req.year,
             "type": req.type,
@@ -1060,6 +1061,19 @@ def get_media_seeks(
             "pushed_at": req.pushed_at.isoformat() if req.pushed_at else None,
         })
     return result
+
+
+@admin_router.get("/media-seek/user-quota/{user_id}")
+def get_media_seek_user_quota(
+    user_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """某用户的求片月度额度（管理后台审核时查看：公益/付费区分）"""
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return media_seek.monthly_quota(db, user)
 
 
 def _load_movie_request_sync(db: Session, request_id: int) -> models.MovieRequest:

@@ -26,32 +26,8 @@ export const revokeWelfare = (user_id: number) =>
 export const bulkExtendWelfare = (data: { min_expired_days: number; max_expired_days: number; add_days: number }) =>
   post<{ success: boolean; affected: number }>(`${E}/bulk-extend`, data)
 
-// ==================== 求片审核 ====================
-
-export interface WelfareRequestRow {
-  id: number
-  title: string
-  media_type: string
-  tmdb_id: string
-  username: string
-  status: string
-  admin_note: string
-  created_at: string
-}
-
-export const fetchWelfareRequests = (params: { page?: number; page_size?: number; status?: string } = {}) =>
-  get<{ total: number; items: WelfareRequestRow[] }>(`${E}/requests`, params)
-
-export const approveWelfareRequest = (id: number, admin_note: string) =>
-  post(`${E}/requests/${id}/approve`, { admin_note })
-
-export const rejectWelfareRequest = (id: number, admin_note: string) =>
-  post(`${E}/requests/${id}/reject`, { admin_note })
-
-export const doneWelfareRequest = (id: number) =>
-  post(`${E}/requests/${id}/done`, {})
-
 // ==================== 抽奖 ====================
+// 注：求片审核已并入「求片管理」（MediaSeek.vue），welfare.ts 不再保留求片 API。
 
 export interface LotteryPrizeRow {
   id: number

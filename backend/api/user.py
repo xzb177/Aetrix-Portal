@@ -717,6 +717,15 @@ def _create_media_seek_sync(
     if media_seek.used_today(db, user.id) >= limit:
         raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
 
+    # 月度额度：公益服 / 付费区分（与旧版公益服求片中心合并，见 media_seek.monthly_quota）。
+    # 每日额度与月度额度同时校验，两个都通过才放行。
+    mquota = media_seek.monthly_quota(db, user)
+    if mquota["monthly_remaining"] <= 0:
+        raise HTTPException(
+            status_code=429,
+            detail=f"本月求片额度已用完（{mquota['monthly_used']}/{mquota['monthly_limit']}），请下月再提交",
+        )
+
     media_request = models.MovieRequest(
         user_id=user.id,
         movie_name=name,
@@ -846,8 +855,9 @@ def get_my_media_seeks(
             }
             for r in requests
         ],
-        # 「申请时显示剩余额度」：统一走 media_seek.quota（与提交时的校验同一份口径）
-        "quota": media_seek.quota(db, current_user.id),
+        # 「申请时显示剩余额度」：统一走 media_seek.quota（与提交时的校验同一份口径）；
+        # 月度额度（公益/付费区分）一并返回，前端可展示
+        "quota": {**media_seek.quota(db, current_user.id), **media_seek.monthly_quota(db, current_user)},
     }
 
 
