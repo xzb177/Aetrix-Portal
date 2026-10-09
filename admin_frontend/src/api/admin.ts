@@ -159,8 +159,13 @@ export const updateRegistrationCode = (id: number, is_active: boolean) =>
 
 export const fetchRegistrationSettings = () => get<RegistrationSettings>('/settings/registration')
 
-export const updateRegistrationSettings = (data: { mode: string; message?: string }) =>
-  put<{ success: boolean }>('/settings/registration', data)
+export const updateRegistrationSettings = (data: {
+  mode: string
+  message?: string
+  ratelimit_enabled?: boolean
+  ratelimit_max?: number
+  ratelimit_window?: number
+}) => put<{ success: boolean }>('/settings/registration', data)
 
 /** 类型化卡码生成（注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码） */
 export const generateCodes = (data: {
