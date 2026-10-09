@@ -305,7 +305,6 @@ onMounted(load)
   overflow: hidden;
   border-radius: var(--au-r-xl);
   border: 1px solid var(--au-border);
-  border-top: 2px solid var(--au-primary);
   background: var(--au-surface);
   padding: 1.75rem 1.625rem;
 }
@@ -435,7 +434,7 @@ onMounted(load)
 /* ===== 列表 ===== */
 .list-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1.125rem;
   align-items: start;
 }
@@ -532,10 +531,21 @@ onMounted(load)
 .au-empty.compact p { margin: 0; font-size: 0.8125rem; }
 
 @media (max-width: 720px) {
-  .stat-bar { justify-content: flex-start; gap: 1rem; }
+  /* 窄屏：三格等分（与个人中心的统计行同一形态），图标与竖线收起，数字居中对齐 */
+  .stat-bar {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    padding: 0.875rem 0.5rem;
+  }
+  .stat-divider,
+  .stat-icon { display: none; }
+  .stat-cell { justify-content: center; text-align: center; }
+  .stat-cell + .stat-divider + .stat-cell { border-left: 1px solid var(--au-border); }
+  .stat-body { align-items: center; }
   .hide-sm { display: none; }
-  .list-grid { grid-template-columns: 1fr; }
-  .hero-body { grid-template-columns: 1fr; gap: 1.25rem; }
+  .list-grid { grid-template-columns: minmax(0, 1fr); }
+  .hero-body { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
   .hero-divider { height: 1px; width: 100%; min-height: 0; }
   .code-row { flex-wrap: wrap; }
   .code-value { font-size: 1.25rem; }

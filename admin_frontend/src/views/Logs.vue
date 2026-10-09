@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /** 操作日志：管理员操作审计流水 */
 import { computed, onMounted, ref } from 'vue'
-import { RefreshCw, Search } from 'lucide-vue-next'
+import { RefreshCw, ScrollText, Search } from 'lucide-vue-next'
 import { fetchLogs } from '@/api/admin'
+import { PageHeader, SectionCard } from '@/components/ui'
 import type { AdminLogRow } from '@/types'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -19,6 +20,7 @@ const columns: DataColumn[] = [
 
 const logs = ref<AdminLogRow[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const actionFilter = ref('')
 const limit = ref(100)
 const keyword = ref('')
@@ -75,16 +77,30 @@ const QUICK_ACTIONS = [
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     const params: Record<string, unknown> = { limit: limit.value }
     if (actionFilter.value) params.action_filter = actionFilter.value
     logs.value = await fetchLogs(params)
+  } catch (e) {
+    // 查询失败拦截器不弹提示（见 utils/request.ts），由表格错误态兜底
+    loadError.value = e instanceof Error ? e.message : '加载失败'
+    logs.value = []
   } finally {
     loading.value = false
   }
 }
 
 onMounted(load)
+
+function toggleQuick(a: string) {
+  actionFilter.value = actionFilter.value === a ? '' : a
+  load()
+}
+
+const metaText = computed(() =>
+  keyword.value.trim() ? `筛出 ${visibleLogs.value.length} / ${logs.value.length} 条` : `最近 ${logs.value.length} 条`,
+)
 
 function fmtDate(s: string): string {
   return s.slice(0, 19).replace('T', ' ')
@@ -102,49 +118,65 @@ function detailText(log: AdminLogRow): string {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">操作日志</h1>
-        <p class="admin-page-desc">
-          全部管理操作均有审计记录（最近 {{ limit }} 条{{ keyword ? `，筛出 ${visibleLogs.length} 条` : '' }}）
-        </p>
-      </div>
-      <div class="toolbar">
-        <el-input v-model="keyword" placeholder="搜索操作人 / 目标 / 详情" clearable style="width: 220px">
-          <template #prefix><Search :size="14" /></template>
-        </el-input>
-        <el-select v-model="actionFilter" placeholder="操作类型" clearable filterable style="width: 170px" @change="load">
-          <el-option v-for="(label, key) in ACTION_LABELS" :key="key" :label="label" :value="key" />
-        </el-select>
-        <el-select v-model="limit" style="width: 110px" @change="load">
-          <el-option :label="'最近 100 条'" :value="100" />
-          <el-option :label="'最近 300 条'" :value="300" />
-          <el-option :label="'最近 500 条'" :value="500" />
-        </el-select>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
-    </div>
+    <PageHeader
+      eyebrow="系统与审计"
+      title="操作日志"
+      :description="`每一次管理操作都会留下审计记录；后端按操作类型筛选，关键字在已加载的最近 ${limit} 条里查。`"
+    >
+      <template #actions>
+        <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
+      </template>
+    </PageHeader>
 
-    <div class="quick-filters">
-      <button
-        v-for="a in QUICK_ACTIONS"
-        :key="a"
-        class="quick-chip"
-        :class="{ active: actionFilter === a }"
-        @click="actionFilter = actionFilter === a ? '' : a; load()"
-      >{{ ACTION_LABELS[a] }}</button>
-    </div>
+    <SectionCard title="审计流水" :icon="ScrollText" :meta="loading ? '加载中…' : metaText" flush>
+      <div class="list-bar">
+        <div class="toolbar">
+          <el-input v-model="keyword" placeholder="搜索操作人 / 目标 / 详情" clearable>
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="actionFilter" placeholder="全部操作类型" clearable filterable @change="load">
+            <el-option v-for="(label, key) in ACTION_LABELS" :key="key" :label="label" :value="key" />
+          </el-select>
+        </div>
+        <div class="head-actions">
+          <el-select v-model="limit" class="w-limit" aria-label="加载条数" @change="load">
+            <el-option :label="'最近 100 条'" :value="100" />
+            <el-option :label="'最近 300 条'" :value="300" />
+            <el-option :label="'最近 500 条'" :value="500" />
+          </el-select>
+        </div>
+      </div>
 
-    <div class="admin-card">
-      <DataTable :rows="visibleLogs" :columns="columns" :loading="loading" empty="暂无操作日志">
+      <div class="quick-filters" role="group" aria-label="常用操作快捷筛选">
+        <span class="quick-label">常用</span>
+        <button
+          v-for="a in QUICK_ACTIONS"
+          :key="a"
+          type="button"
+          class="quick-chip"
+          :class="{ active: actionFilter === a }"
+          :aria-pressed="actionFilter === a"
+          @click="toggleQuick(a)"
+        >{{ ACTION_LABELS[a] }}</button>
+      </div>
+
+      <DataTable
+        :rows="visibleLogs"
+        :columns="columns"
+        :loading="loading"
+        :error="loadError"
+        :empty="keyword || actionFilter ? '没有匹配的日志' : '暂无操作日志'"
+        :empty-description="keyword || actionFilter ? '换个关键字或清空操作类型再试。' : '管理员的每次改动都会记录在这里。'"
+        @retry="load"
+      >
         <template #cell-action="{ row }">
-          <span class="action-chip">{{ ACTION_LABELS[row.action] || row.action }}</span>
+          <span class="au-badge au-badge-amber">{{ ACTION_LABELS[row.action] || row.action }}</span>
         </template>
 
         <template #cell-admin_name="{ row }">{{ row.admin_name }}</template>
 
         <template #cell-target_type="{ row }">
-          <span v-if="row.target_type">{{ row.target_type }}#{{ row.target_id }}</span>
+          <span v-if="row.target_type" class="mono">{{ row.target_type }}#{{ row.target_id }}</span>
           <span v-else class="muted">—</span>
         </template>
 
@@ -156,50 +188,70 @@ function detailText(log: AdminLogRow): string {
           <span class="mono">{{ row.ip_address || '—' }}</span>
         </template>
 
-        <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+        <template #cell-created_at="{ row }"><span class="mono">{{ fmtDate(row.created_at) }}</span></template>
       </DataTable>
-    </div>
+    </SectionCard>
   </div>
 </template>
 
 <style scoped>
-.action-chip {
-  font-size: var(--font-size-xs);
-  background: var(--primary-soft);
-  border: 1px solid var(--primary-border);
-  color: var(--primary);
-  border-radius: var(--radius-sm);
-  padding: 3px 8px;
-  white-space: nowrap;
+.list-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 10px;
+}
+
+.list-bar .toolbar { flex: 1 1 auto; }
+.list-bar .head-actions { justify-content: flex-end; }
+.w-limit { width: 124px; }
+
+.quick-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 20px 12px;
+}
+
+.quick-label { font-size: 12px; color: var(--au-text-4); margin-right: 2px; }
+
+.quick-chip {
+  padding: 4px 12px;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: transparent;
+  color: var(--au-text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease),
+    background var(--au-fast) var(--au-ease);
+}
+
+.quick-chip:hover { color: var(--au-text); border-color: var(--au-border-strong); }
+.quick-chip:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 1px; }
+
+.quick-chip.active {
+  color: var(--au-primary);
+  border-color: var(--au-primary-border);
+  background: var(--au-primary-soft);
+  font-weight: 600;
 }
 
 .log-detail {
-  font-size: var(--font-size-xs);
+  font-size: 12px;
   font-family: var(--font-mono);
-  color: var(--text-secondary);
+  color: var(--au-text-2);
   word-break: break-all;
 }
 
-.quick-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.muted { color: var(--au-text-4); }
 
-.quick-chip {
-  padding: 6px 13px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--font-size-xs);
-  cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast),
-    background var(--transition-fast);
-}
-
-.quick-chip:hover { color: var(--text-primary); border-color: var(--border-strong); }
-
-.quick-chip.active {
-  color: var(--primary);
-  border-color: var(--primary-border);
-  background: var(--primary-bg);
-  font-weight: var(--font-weight-semibold);
+@media (max-width: 768px) {
+  .list-bar { padding: 4px 16px 10px; }
+  .quick-filters { padding: 0 16px 12px; }
+  .w-limit { flex: 1 1 150px; width: auto; }
 }
 </style>

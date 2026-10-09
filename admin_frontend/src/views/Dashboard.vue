@@ -15,14 +15,18 @@
  * - 交易概览：今日营收、累计营收、积分存量、今日签到、兑换码核销、邀请人数（均可点）
  * - 趋势图：近 7/14/30 天的新增用户 / 播放 / 营收 / 签到（纯 SVG，无额外依赖）
  * - 播放榜：用户榜 + 热门内容榜
+ *
+ * v2.54（暗房影院）：整页改用 components/ui 的共享原语（PageHeader / SectionCard /
+ * StatTile / EmptyState），是其它页面改造的参考实现——见 components/ui/README.md。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   Film, MessageSquareDashed, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
-  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon,
+  Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, Trophy, Flame, Activity,
 } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
   fetchServersSummary, fetchStatsTrend, fetchBackendServices,
@@ -52,12 +56,13 @@ const trendLoading = ref(false)
 const days = ref(14)
 type Metric = 'new_users' | 'plays' | 'revenue' | 'checkins'
 const metric = ref<Metric>('new_users')
-// 趋势图指标语义色：每个指标固定一种颜色便于区分，且 stop-color / stroke 等 SVG 属性不支持 var()，故保留硬编码
+// 趋势图指标色（暗房影院）：走 --au-* 令牌，随深浅主题与品牌色切换。
+// SVG 的 stroke / stop-color **属性**不认 var()，所以模板里一律写进 style（CSS 属性认）。
 const metricTabs: { key: Metric; label: string; color: string }[] = [
-  { key: 'new_users', label: '新增用户', color: '#22d3ee' },
-  { key: 'plays', label: '播放次数', color: '#a78bfa' },
-  { key: 'revenue', label: '营收 (¥)', color: '#34d399' },
-  { key: 'checkins', label: '签到次数', color: '#fbbf24' },
+  { key: 'new_users', label: '新增用户', color: 'var(--au-primary)' },
+  { key: 'plays', label: '播放次数', color: 'var(--au-info)' },
+  { key: 'revenue', label: '营收 (¥)', color: 'var(--au-success)' },
+  { key: 'checkins', label: '签到次数', color: 'var(--au-danger)' },
 ]
 
 async function loadTrend() {
@@ -296,34 +301,47 @@ function serviceStatusLabel(status: string): string {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div v-if="loading" class="page-loading">加载中…</div>
+  <div class="admin-page dashboard">
+    <PageHeader
+      eyebrow="概览"
+      title="经营驾驶舱"
+      description="先看现在能不能用、有没有要处理的，再看经营与排行。每个数字都能点进带好筛选的明细页。"
+    >
+      <template #actions>
+        <RouterLink to="/health" class="au-btn au-btn-ghost au-btn-sm">
+          <Activity :size="14" /> 服务健康
+        </RouterLink>
+      </template>
+    </PageHeader>
+
+    <!-- 首屏骨架：与真实布局同形，不再是一行「加载中…」 -->
+    <div v-if="loading" class="dash-skeleton" aria-busy="true" aria-label="加载中">
+      <div v-for="n in 5" :key="n" class="au-skeleton sk-tile" />
+      <div class="au-skeleton sk-wide" />
+    </div>
 
     <template v-else>
       <!--
         交付链数据卡：先回答「现在能不能用、有没有要处理的」——
-        用户 → 播放 → 待办 → 内容（扫描）→ 存储，每张卡点进去就是这个数的明细页。
+        用户 → 求片 → 工单 → 内容（扫描）→ 存储，每张卡点进去就是这个数的明细页。
       -->
-      <section class="kpi-grid">
-        <RouterLink
+      <section class="kpi-grid" aria-label="交付链">
+        <StatTile
           v-for="k in kpis"
           :key="k.key"
+          layout="icon-left"
+          :label="k.label"
+          :value="k.value"
+          :hint="k.foot"
+          :icon="k.icon"
+          :tone="k.tone"
           :to="k.to"
-          class="admin-card kpi-card"
-          :class="`tone-${k.tone}`"
           :title="k.title"
-        >
-          <span class="kpi-icon"><component :is="k.icon" :size="16" /></span>
-          <div class="kpi-body">
-            <div class="kpi-label">{{ k.label }}</div>
-            <div class="kpi-value">{{ k.value }}</div>
-            <div class="kpi-foot">{{ k.foot }}</div>
-          </div>
-        </RouterLink>
+        />
       </section>
 
       <!-- 待办 -->
-      <section v-if="todos.length" class="todo-bar" :class="{ clear: todoTotal === 0 }">
+      <section v-if="todos.length" class="todo-bar" :class="{ clear: todoTotal === 0 }" aria-label="待办">
         <div class="todo-lead">
           <span class="todo-lead-label">{{ todoTotal === 0 ? '全部处理完毕' : '待办事项' }}</span>
           <span v-if="todoTotal > 0" class="todo-lead-count">{{ todoTotal }}</span>
@@ -343,82 +361,58 @@ function serviceStatusLabel(status: string): string {
       </section>
 
       <!--
-        服务器接入：接了什么、几台能用、当前用哪台。以前只能靠「服务入口」那一页猜，
-        接入 MoviePilot / qB 之后更需要一个一眼能看完的地方（明细在「服务器」页）。
+        服务器接入：接了什么、几台能用、当前用哪台（明细在「服务器与线路」页）。
+        后端服务：aetrix-api + aetrix-worker 运行状态。两组同一行网格。
       -->
-      <section v-if="serverTiles.length" class="stat-grid">
-        <RouterLink
+      <section v-if="serverTiles.length || backendServices.length" class="tile-grid" aria-label="服务接入">
+        <StatTile
           v-for="tile in serverTiles"
           :key="tile.stat.kind"
           to="/servers"
-          class="stat-tile server-tile"
+          :icon="tile.icon"
+          :label="tile.stat.short"
+          :value="tile.stat.total"
+          :suffix="`台 · 可用 ${tile.stat.reachable}`"
+          :tone="tile.stat.reachable > 0 ? 'ok' : 'plain'"
+          :hint="tile.stat.activatable
+            ? (tile.stat.active_name || '未设置当前使用')
+            : (tile.stat.reachable > 0 ? '可用于求片' : '未连接')"
         >
-          <div class="stat-label">
-            <component :is="tile.icon" :size="13" /> {{ tile.stat.short }}
-            <span v-if="tile.stat.active_name" class="server-current">当前</span>
-          </div>
-          <div class="stat-value" :class="{ 'stat-accent': tile.stat.reachable > 0 }">
-            {{ tile.stat.total }}<span class="stat-sub"> 台 · 可用 {{ tile.stat.reachable }}</span>
-          </div>
-          <div class="stat-foot">
-            <template v-if="tile.stat.activatable">
-              {{ tile.stat.active_name || '未设置当前使用' }}
-            </template>
-            <template v-else>
-              {{ tile.stat.reachable > 0 ? '可用于求片' : '未连接' }}
-            </template>
-          </div>
-        </RouterLink>
-      </section>
-
-      <!-- 后端服务：aetrix-api + aetrix-worker 运行状态 -->
-      <section v-if="backendServices.length" class="stat-grid">
-        <div
+          <template v-if="tile.stat.active_name" #label-extra>
+            <span class="au-badge au-badge-amber tile-badge">当前</span>
+          </template>
+        </StatTile>
+        <StatTile
           v-for="svc in backendServices"
           :key="svc.name"
-          class="stat-tile server-tile"
+          :icon="Server"
+          :label="svc.name"
+          :value="serviceStatusLabel(svc.status)"
+          :suffix="svc.lag_seconds != null ? `· 心跳 ${svc.lag_seconds}s 前` : ''"
+          :tone="svc.status === 'healthy' ? 'ok' : 'warn'"
+          :hint="svc.role === 'worker' && svc.pid ? `PID ${svc.pid}` : 'API 服务'"
+          class="svc-tile"
         >
-          <div class="stat-label">
-            <Server :size="13" /> {{ svc.name }}
-            <span class="server-current">{{ svc.role }}</span>
-          </div>
-          <div class="stat-value" :class="{ 'stat-accent': svc.status === 'healthy', 'stat-warn-text': svc.status !== 'healthy' }">
-            {{ serviceStatusLabel(svc.status) }}
-            <span v-if="svc.lag_seconds != null" class="stat-sub"> · 心跳 {{ svc.lag_seconds }}s 前</span>
-          </div>
-          <div class="stat-foot">
-            <template v-if="svc.role === 'worker' && svc.pid">
-              PID {{ svc.pid }}
-            </template>
-            <template v-else>
-              API 服务
-            </template>
-          </div>
-        </div>
+          <template #label-extra>
+            <span class="au-badge au-badge-muted tile-badge">{{ svc.role }}</span>
+          </template>
+        </StatTile>
       </section>
-
 
       <!--
         各服概况：每个服的会员 / 内容 / 播放节点都在这里，不用一个个切过去看。
-        「多服」不是一个要单独学的模块：切当前作用域在顶栏，服与线路的归属在
-        「服务器与线路」页按范围看（这里的每行也直接进那一页）。
+        切当前作用域在顶栏，服与线路的归属在「服务器与线路」页按范围看。
       -->
-      <section v-if="realms?.realms.length" class="admin-card realm-block">
-        <div class="card-header">
-          <h2><RealmIcon :size="15" /> 各服概况</h2>
-          <span class="realm-sum">
-            {{ realms.summary.total_realms }} 个服 · 有效订阅 {{ realms.summary.active_subscriptions }} ·
-            播放节点在线 {{ realms.summary.nodes_online }}/{{ realms.summary.nodes }}
-          </span>
-          <span class="realm-links">
-            <RouterLink class="realm-manage" to="/servers">
-              服务器与线路<ArrowRight :size="13" />
-            </RouterLink>
-            <RouterLink class="realm-manage" to="/realms">
-              服管理<ArrowRight :size="13" />
-            </RouterLink>
-          </span>
-        </div>
+      <SectionCard
+        v-if="realms?.realms.length"
+        title="各服概况"
+        :icon="RealmIcon"
+        :meta="`${realms.summary.total_realms} 个服 · 有效订阅 ${realms.summary.active_subscriptions} · 播放节点在线 ${realms.summary.nodes_online}/${realms.summary.nodes}`"
+      >
+        <template #actions>
+          <RouterLink class="card-link" to="/servers">服务器与线路<ArrowRight :size="13" /></RouterLink>
+          <RouterLink class="card-link" to="/realms">服管理<ArrowRight :size="13" /></RouterLink>
+        </template>
         <div class="realm-rows">
           <RouterLink
             v-for="r in realms.realms"
@@ -429,9 +423,9 @@ function serviceStatusLabel(status: string): string {
           >
             <div class="realm-name">
               <strong>{{ r.name }}</strong>
-              <span class="mini-badge muted">{{ r.slug }}</span>
-              <span v-if="r.id === realms.active_realm_id" class="mini-badge ok">当前服</span>
-              <span v-if="r.is_default" class="mini-badge info">默认服</span>
+              <span class="au-badge au-badge-muted">{{ r.slug }}</span>
+              <span v-if="r.id === realms.active_realm_id" class="au-badge au-badge-amber">当前服</span>
+              <span v-if="r.is_default" class="au-badge au-badge-info">默认服</span>
             </div>
             <div class="realm-stats">
               <span>媒体库 <b>{{ r.stats.libraries }}</b></span>
@@ -448,63 +442,54 @@ function serviceStatusLabel(status: string): string {
             </div>
           </RouterLink>
         </div>
-      </section>
+      </SectionCard>
 
-      <!-- 交易概览：每个数字都能点进它自己的明细页（v2.42.10 带筛选深链） -->
-      <section class="stat-grid">
-        <RouterLink class="stat-tile stat-link" to="/orders?status=paid">
-          <div class="stat-label"><Wallet :size="13" /> 累计营收</div>
-          <div class="stat-value stat-accent">{{ fmtMoney(economy?.orders.revenue ?? 0) }}</div>
-          <div class="stat-foot">{{ economy?.orders.pending ?? 0 }} 笔待支付</div>
-        </RouterLink>
-        <RouterLink class="stat-tile stat-link" to="/invitations">
-          <div class="stat-label"><Coins :size="13" /> 积分存量</div>
-          <div class="stat-value">{{ economy?.total_points ?? 0 }}</div>
-          <div class="stat-foot">全站用户持有</div>
-        </RouterLink>
-        <RouterLink class="stat-tile stat-link" to="/users">
-          <div class="stat-label"><CalendarCheck :size="13" /> 今日签到</div>
-          <div class="stat-value">{{ economy?.checkins_today ?? 0 }}</div>
-          <div class="stat-foot">人已签到</div>
-        </RouterLink>
-        <RouterLink class="stat-tile stat-link" to="/exchange-codes">
-          <div class="stat-label"><TicketCheck :size="13" /> 兑换码</div>
-          <div class="stat-value">
-            {{ economy?.exchange_codes.used ?? 0 }}<span class="stat-sub"> / {{ economy?.exchange_codes.total ?? 0 }}</span>
-          </div>
-          <div class="stat-foot">已核销 / 已生成</div>
-        </RouterLink>
-        <RouterLink class="stat-tile stat-link" to="/invitations">
-          <div class="stat-label"><Gift :size="13" /> 邀请关系</div>
-          <div class="stat-value">{{ economy?.invitations ?? 0 }}</div>
-          <div class="stat-foot">累计成功邀请</div>
-        </RouterLink>
+      <!-- 交易概览：每个数字都能点进它自己的明细页（带筛选深链） -->
+      <section class="tile-grid" aria-label="交易概览">
+        <StatTile
+          to="/orders?status=paid"
+          :icon="Wallet"
+          label="累计营收"
+          :value="fmtMoney(economy?.orders.revenue ?? 0)"
+          tone="accent"
+          :hint="`${economy?.orders.pending ?? 0} 笔待支付`"
+        />
+        <StatTile to="/invitations" :icon="Coins" label="积分存量" :value="economy?.total_points ?? 0" hint="全站用户持有" />
+        <StatTile to="/users" :icon="CalendarCheck" label="今日签到" :value="economy?.checkins_today ?? 0" hint="人已签到" />
+        <StatTile
+          to="/exchange-codes"
+          :icon="TicketCheck"
+          label="兑换码"
+          :value="economy?.exchange_codes.used ?? 0"
+          :suffix="`/ ${economy?.exchange_codes.total ?? 0}`"
+          hint="已核销 / 已生成"
+        />
+        <StatTile to="/invitations" :icon="Gift" label="邀请关系" :value="economy?.invitations ?? 0" hint="累计成功邀请" />
       </section>
 
       <!-- 趋势 -->
-      <section class="admin-card trend-card">
-        <div class="card-header">
-          <h2><TrendingUp :size="15" /> 趋势</h2>
-          <div class="trend-controls">
-            <div class="metric-tabs">
-              <button
-                v-for="t in metricTabs"
-                :key="t.key"
-                class="metric-tab"
-                :class="{ active: metric === t.key }"
-                :style="metric === t.key ? { color: t.color, borderColor: t.color } : undefined"
-                @click="metric = t.key"
-              >
-                {{ t.label }}
-              </button>
-            </div>
-            <el-radio-group v-model="days" size="small">
-              <el-radio-button :value="7">7 天</el-radio-button>
-              <el-radio-button :value="14">14 天</el-radio-button>
-              <el-radio-button :value="30">30 天</el-radio-button>
-            </el-radio-group>
+      <SectionCard title="趋势" :icon="TrendingUp" :meta="`近 ${days} 天`">
+        <template #actions>
+          <div class="metric-tabs" role="tablist" aria-label="趋势指标">
+            <button
+              v-for="t in metricTabs"
+              :key="t.key"
+              class="metric-tab"
+              role="tab"
+              :aria-selected="metric === t.key"
+              :class="{ active: metric === t.key }"
+              @click="metric = t.key"
+            >
+              <span class="metric-dot" :style="{ background: t.color }" aria-hidden="true" />
+              {{ t.label }}
+            </button>
           </div>
-        </div>
+          <el-radio-group v-model="days" size="small">
+            <el-radio-button :value="7">7 天</el-radio-button>
+            <el-radio-button :value="14">14 天</el-radio-button>
+            <el-radio-button :value="30">30 天</el-radio-button>
+          </el-radio-group>
+        </template>
 
         <div class="trend-total">
           <span class="trend-total-label">近 {{ days }} 天合计</span>
@@ -514,18 +499,18 @@ function serviceStatusLabel(status: string): string {
         </div>
 
         <div class="chart-wrap" v-loading="trendLoading">
-          <svg class="chart" :viewBox="`0 0 ${CHART_W} ${CHART_H}`" preserveAspectRatio="none" role="img">
+          <svg class="chart" :viewBox="`0 0 ${CHART_W} ${CHART_H}`" preserveAspectRatio="none" role="img" :aria-label="`${currentMetric.label}趋势`">
             <defs>
               <linearGradient :id="`grad-${metric}`" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" :stop-color="currentMetric.color" stop-opacity="0.36" />
-                <stop offset="100%" :stop-color="currentMetric.color" stop-opacity="0" />
+                <stop offset="0%" :style="{ stopColor: currentMetric.color, stopOpacity: 0.28 }" />
+                <stop offset="100%" :style="{ stopColor: currentMetric.color, stopOpacity: 0 }" />
               </linearGradient>
             </defs>
             <path :d="areaPath" :fill="`url(#grad-${metric})`" />
             <path
               :d="linePath"
               fill="none"
-              :stroke="currentMetric.color"
+              :style="{ stroke: currentMetric.color }"
               stroke-width="2"
               vector-effect="non-scaling-stroke"
               stroke-linejoin="round"
@@ -536,208 +521,103 @@ function serviceStatusLabel(status: string): string {
             <span v-for="(l, i) in axisLabels" :key="l + i">{{ l }}</span>
           </div>
         </div>
-      </section>
+      </SectionCard>
 
-      <!-- 媒体服务运行态：把媒体库与扫描状态放到首页，而不是让管理员逐页排查（实时会话只在服务健康页展示） -->
-      <section v-if="libraries.length" class="ops-grid">
-        <div class="admin-card ops-card">
-          <div class="card-header">
-            <h2>
-              <Film :size="15" /> 媒体服务
-              <span class="range-hint">条 {{ overview?.emby.total_items ?? 0 }}</span>
-            </h2>
-            <RouterLink to="/emby" class="card-link">管理媒体库 <ArrowRight :size="13" /></RouterLink>
-          </div>
-          <div v-if="libraries.length" class="ops-list">
-            <div v-for="library in libraries.slice(0, 5)" :key="library.id" class="ops-row">
-              <div class="ops-main">
-                <strong>{{ library.name }}</strong>
-                <span>{{ library.item_count }} 个条目 · {{ libraryStatus(library) }}</span>
-              </div>
-              <span class="status-dot" :class="{ warning: library.is_scanning, danger: !library.is_enabled }" />
+      <!-- 媒体服务运行态：把媒体库与扫描状态放到首页，而不是让管理员逐页排查 -->
+      <SectionCard
+        v-if="libraries.length"
+        title="媒体服务"
+        :icon="Film"
+        :meta="`条目 ${overview?.emby.total_items ?? 0}`"
+      >
+        <template #actions>
+          <RouterLink to="/emby" class="card-link">管理媒体库 <ArrowRight :size="13" /></RouterLink>
+        </template>
+        <div class="ops-list">
+          <div v-for="library in libraries.slice(0, 5)" :key="library.id" class="ops-row">
+            <div class="ops-main">
+              <strong>{{ library.name }}</strong>
+              <span>{{ library.item_count }} 个条目 · {{ libraryStatus(library) }}</span>
             </div>
+            <span class="status-dot" :class="{ warning: library.is_scanning, danger: !library.is_enabled }" />
           </div>
-          <div v-else class="empty-hint">暂无媒体库</div>
         </div>
-
-      </section>
+      </SectionCard>
 
       <!-- 排行榜 -->
-      <section class="stats-two-col" v-if="playback">
-        <div class="admin-card">
-          <div class="card-header">
-            <h2>用户播放排行 <span class="range-hint">近 7 天</span></h2>
-          </div>
-          <div v-if="playback.user_ranking.length === 0" class="empty-hint">暂无播放数据</div>
+      <section v-if="playback" class="two-col">
+        <SectionCard title="用户播放排行" :icon="Trophy" meta="近 7 天">
+          <EmptyState v-if="playback.user_ranking.length === 0" compact :icon="Users" title="暂无播放数据" />
           <div v-for="(u, i) in playback.user_ranking" :key="u.username" class="rank-row">
-            <span class="rank-index">{{ i + 1 }}</span>
+            <span class="rank-index" :class="{ top: i < 3 }">{{ i + 1 }}</span>
             <span class="rank-name">{{ u.username }}</span>
             <span class="rank-value">{{ u.plays }} 次</span>
           </div>
-        </div>
+        </SectionCard>
 
-        <div class="admin-card">
-          <div class="card-header">
-            <h2>热门内容 <span class="range-hint">近 7 天</span></h2>
-          </div>
-          <div v-if="playback.item_ranking.length === 0" class="empty-hint">暂无播放数据</div>
+        <SectionCard title="热门内容" :icon="Flame" meta="近 7 天">
+          <EmptyState v-if="playback.item_ranking.length === 0" compact :icon="Film" title="暂无播放数据" />
           <div v-for="(it, i) in playback.item_ranking" :key="it.name" class="rank-row">
-            <span class="rank-index">{{ i + 1 }}</span>
+            <span class="rank-index" :class="{ top: i < 3 }">{{ i + 1 }}</span>
             <span class="rank-name">
               {{ it.name }}
               <span class="rank-type">{{ it.type === 'episode' ? '剧集' : it.type === 'movie' ? '电影' : it.type }}</span>
             </span>
             <span class="rank-value">{{ it.plays }} 次</span>
           </div>
-        </div>
+        </SectionCard>
       </section>
     </template>
   </div>
 </template>
 
 <style scoped>
-/* 非健康服务（如 Redis 不可用）：警示色小号字，不再和 30px 大数字抢权重 */
-.stat-warn-text {
-  color: var(--warning);
-  font-size: 16px;
-  font-variant-numeric: normal;
-  letter-spacing: 0;
-}
-/* 危险操作全部收在「系统设置 → 危险操作」：这里给个入口，不在仪表盘开第二个现场 */
-.danger-jump {
-  margin-left: 8px;
-  color: var(--text-muted);
-  text-decoration: none;
-  font-size: 11.5px;
-}
-.danger-jump:hover { color: var(--danger); text-decoration: underline; }
-.page-loading { text-align: center; color: var(--text-secondary); padding: 60px 0; }
+/* 页面节奏：区块之间统一 16px（各区块自己不再写 margin） */
+.dashboard { gap: 16px; }
+.dashboard :deep(.au-page-header) { margin-bottom: 4px; }
 
-/* ===== 交付链数据卡（顶部六张，一点直达明细页）===== */
+/* ===== 首屏骨架 ===== */
+.dash-skeleton {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+.sk-tile { height: 104px; border-radius: var(--au-r-lg); }
+.sk-wide { grid-column: 1 / -1; height: 240px; border-radius: var(--au-r-lg); }
+
+/* ===== 网格 ===== */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 12px;
-  margin-bottom: 14px;
 }
 
-/* 修饰类：只保留 KPI 横向排版（卡片基础样式走全局 .admin-card） */
-.kpi-card {
-  display: flex;
-  align-items: flex-start;
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
-  text-decoration: none;
-  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
 }
 
-.kpi-card:hover {
-  border-color: var(--primary-border);
-  background: var(--bg-elevated);
-  transform: translateY(-1px);
+.two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
 }
 
-.kpi-icon {
+.tile-badge { padding: 0 6px; font-size: 10.5px; margin-left: 2px; }
+/* 非健康服务的状态文字较长：字号收一档，不和大数字抢权重 */
+.svc-tile :deep(.au-stat__value) { font-size: 1.125rem; }
+
+/* ===== 卡片头里的文字链接 ===== */
+.card-link {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-glass);
-  color: var(--text-secondary);
+  gap: 4px;
+  color: var(--au-primary);
+  font-size: 12px;
+  text-decoration: none;
 }
-
-.kpi-body { min-width: 0; flex: 1; }
-.kpi-label { font-size: 12px; color: var(--text-tertiary); }
-
-/* KPI 大数字：仪表字型（等宽 + tabular-nums + 800，见 tokens.css 的 .stat-num 配方） */
-.kpi-value {
-  margin-top: 3px;
-  font-family: var(--font-mono);
-  font-size: 26px;
-  font-weight: 800;
-  line-height: 1.1;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-}
-
-/* 脚注允许换行（v2.42.5）：nowrap + ellipsis 会把「异常 2（日…」截断，
-   到底哪个来源异常反而看不到；换行后完整可读，卡片高度由网格自行拉齐。 */
-.kpi-foot {
-  margin-top: 4px;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-/* 状态包：颜色只用来提示「有没有要看的」，不当装饰 */
-.kpi-card.tone-ok .kpi-icon { background: var(--success-bg); color: var(--success); }
-.kpi-card.tone-info .kpi-icon { background: var(--info-bg); color: var(--info); }
-.kpi-card.tone-warn { border-color: rgba(251, 191, 36, 0.28); }
-.kpi-card.tone-warn .kpi-icon { background: var(--warning-bg); color: var(--warning); }
-.kpi-card.tone-warn .kpi-value { color: var(--warning); }
-.kpi-card.tone-danger { border-color: rgba(248, 113, 113, 0.28); }
-.kpi-card.tone-danger .kpi-icon { background: var(--danger-bg); color: var(--danger); }
-.kpi-card.tone-danger .kpi-value { color: var(--danger); }
-
-.realm-links { display: inline-flex; align-items: center; gap: 10px; }
-
-.ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.ops-card { min-width: 0; }
-.ops-list { display: flex; flex-direction: column; }
-.ops-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
-.ops-row:last-child { border-bottom: none; }
-.ops-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.ops-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-primary); }
-.ops-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-muted); }
-.status-dot, .play-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px var(--success-bg); }
-.status-dot.warning { background: var(--warning); box-shadow: 0 0 0 4px var(--warning-bg); }
-.status-dot.danger { background: var(--danger); box-shadow: 0 0 0 4px var(--danger-bg); }
-.play-dot.paused { background: var(--warning); box-shadow: 0 0 0 4px var(--warning-bg); }
-.card-link { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); font-size: 11.5px; text-decoration: none; }
-.card-link:hover { color: var(--text-primary); }
-.stat-sub { font-size: 15px; color: var(--text-secondary); font-weight: 500; }
-.stat-label { display: flex; align-items: center; gap: 6px; }
-.stat-foot { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
-
-/* ===== 服务器接入卡（一点直达「服务器」页）===== */
-.server-tile { text-decoration: none; display: block; }
-.server-tile:hover { border-color: var(--primary); }
-
-/* 交易概览的数字也点得进去：与服务器接入卡同一套「悬停亮边」反馈 */
-.stat-link { text-decoration: none; display: block; }
-.stat-link:hover { border-color: var(--primary); }
-.stat-link .stat-value { color: inherit; }
-.server-current {
-  margin-left: 4px; padding: 0 6px; border-radius: 999px;
-  background: var(--primary-bg); color: var(--primary); font-size: 10px; font-weight: 700;
-}
-
-/* ===== 多服运营卡（每个服一行，切服在顶栏）===== */
-.realm-block { margin-bottom: 14px; }
-.realm-sum { color: var(--text-muted); font-size: 12px; margin-left: auto; }
-.realm-manage { display: inline-flex; align-items: center; gap: 4px; color: var(--primary); font-size: 11.5px; text-decoration: none; }
-.realm-manage:hover { color: var(--text-primary); }
-.realm-rows { display: flex; flex-direction: column; gap: 6px; }
-.realm-row {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 10px 12px; border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle); background: var(--bg-glass);
-  text-decoration: none; transition: border-color var(--transition-fast), background var(--transition-fast);
-}
-.realm-row:hover { border-color: var(--primary); }
-.realm-row.current { border-color: var(--primary-border); background: var(--primary-bg); }
-.realm-row.off { opacity: 0.7; }
-.realm-name { display: flex; align-items: center; gap: 7px; min-width: 190px; }
-.realm-name strong { color: var(--text-primary); font-size: 13px; }
-.realm-stats { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
-.realm-stats span { color: var(--text-muted); font-size: 11.5px; }
-.realm-stats b { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.realm-stats span.warn b { color: var(--warning); }
+.card-link:hover { color: var(--au-text); }
 
 /* ===== 待办条 ===== */
 .todo-bar {
@@ -746,134 +626,174 @@ function serviceStatusLabel(status: string): string {
   gap: 10px;
   flex-wrap: wrap;
   padding: 12px 16px;
-  margin-bottom: 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-card);
+  border-radius: var(--au-r-lg);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface);
 }
 
-.todo-bar.clear { border-color: rgba(52, 211, 153, 0.25); }
+.todo-bar.clear { border-color: var(--au-success-border); }
 
 .todo-lead {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
   padding-right: 6px;
+  font-family: var(--au-font-serif);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--au-text);
 }
 
+.todo-bar.clear .todo-lead { color: var(--au-success); }
+
 .todo-lead-count {
-  background: var(--danger-bg);
-  color: var(--danger);
-  border-radius: var(--radius-full);
-  padding: 1px 9px;
+  font-family: var(--au-font-sans);
+  background: var(--au-danger-soft);
+  border: 1px solid var(--au-danger-border);
+  color: var(--au-danger);
+  border-radius: var(--au-r-full);
+  padding: 0 8px;
   font-size: 12px;
+  line-height: 20px;
 }
 
 .todo-pill {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 12px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
-  background: var(--bg-glass);
-  color: var(--text-secondary);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface-2);
+  color: var(--au-text-2);
   font-size: 12.5px;
   text-decoration: none;
-  transition: all var(--transition-fast);
+  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
 
-.todo-pill:hover { border-color: var(--primary-border); color: var(--text-primary); }
-.todo-pill strong { color: var(--text-primary); font-size: 13.5px; }
-.todo-pill.zero { opacity: 0.5; }
-.todo-pill.zero strong { color: var(--text-muted); }
-.todo-pill.danger strong { color: var(--danger); }
-.todo-pill.warning strong { color: var(--warning); }
-.todo-pill.info strong { color: var(--info); }
-.todo-arrow { opacity: 0; transition: opacity var(--transition-fast); }
+.todo-pill:hover { border-color: var(--au-border-strong); color: var(--au-text); }
+.todo-pill strong { color: var(--au-text); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.todo-pill.zero { opacity: 0.55; }
+.todo-pill.zero strong { color: var(--au-text-3); }
+.todo-pill.danger:not(.zero) strong { color: var(--au-danger); }
+.todo-pill.warning:not(.zero) strong { color: var(--au-warning); }
+.todo-pill.info:not(.zero) strong { color: var(--au-info); }
+.todo-arrow { opacity: 0; transition: opacity var(--au-fast) var(--au-ease); }
 .todo-pill:hover .todo-arrow { opacity: 1; }
 
-/* ===== 趋势卡 ===== */
-.trend-card { margin-bottom: 14px; }
-
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
+/* ===== 多服运营（每个服一行，切服在顶栏）===== */
+.realm-rows { display: flex; flex-direction: column; gap: 6px; }
+.realm-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px; border-radius: var(--au-r-md);
+  border: 1px solid var(--au-border); background: var(--au-bg-soft);
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
 }
+.realm-row:hover { border-color: var(--au-border-strong); background: var(--au-surface-2); }
+.realm-row.current { border-color: var(--au-primary-border); }
+.realm-row.off { opacity: 0.6; }
+.realm-name { display: flex; align-items: center; gap: 7px; min-width: 190px; }
+.realm-name strong { color: var(--au-text); font-size: 13px; }
+.realm-stats { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
+.realm-stats span { color: var(--au-text-3); font-size: 12px; }
+.realm-stats b { color: var(--au-text-2); font-variant-numeric: tabular-nums; }
+.realm-stats span.warn b { color: var(--au-warning); }
 
-.card-header h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; margin: 0; }
-
-.trend-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-
-.metric-tabs { display: flex; gap: 6px; }
+/* ===== 趋势 ===== */
+.metric-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
 
 .metric-tab {
-  padding: 4px 11px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border-default);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--au-r-full);
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--au-text-3);
   font-size: 12px;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: color var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease),
+    background var(--au-fast) var(--au-ease);
 }
 
-.metric-tab:hover { color: var(--text-primary); border-color: var(--border-strong); }
-.metric-tab.active { background: var(--bg-glass); }
+.metric-dot { width: 6px; height: 6px; border-radius: 50%; opacity: 0.5; }
+.metric-tab:hover { color: var(--au-text); }
+.metric-tab.active { color: var(--au-text); border-color: var(--au-border); background: var(--au-surface-2); font-weight: 600; }
+.metric-tab.active .metric-dot { opacity: 1; }
+.metric-tab:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
 
 .trend-total { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
-.trend-total-label { font-size: 12px; color: var(--text-muted); }
-.trend-total-value { font-size: 22px; font-weight: 700; }
+.trend-total-label { font-size: 12px; color: var(--au-text-3); }
+.trend-total-value { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 
 .chart-wrap { position: relative; }
-.chart { width: 100%; height: 150px; display: block; }
+.chart { width: 100%; height: 160px; display: block; }
 
 .chart-axis {
   display: flex;
   justify-content: space-between;
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--au-text-4);
   margin-top: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
-/* ===== 双列 ===== */
-.stats-two-col {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 14px;
+/* ===== 媒体服务 ===== */
+.ops-list { display: flex; flex-direction: column; }
+.ops-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--au-border); }
+.ops-row:last-child { border-bottom: none; }
+.ops-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ops-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--au-text); }
+.ops-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--au-text-3); }
+.status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--au-success); box-shadow: 0 0 0 4px var(--au-success-soft); }
+.status-dot.warning { background: var(--au-warning); box-shadow: 0 0 0 4px var(--au-warning-soft); }
+.status-dot.danger { background: var(--au-danger); box-shadow: 0 0 0 4px var(--au-danger-soft); }
+
+/* ===== 排行 ===== */
+.rank-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--au-border);
 }
+.rank-row:last-child { border-bottom: none; }
 
-.range-hint { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+.rank-index {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--au-r-sm);
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.rank-index.top { background: var(--au-primary-soft); color: var(--au-primary); }
 
-.rank-name { flex: 1; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rank-type { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
-.rank-value { font-size: 12px; color: var(--text-secondary); }
-.empty-hint { font-size: 13px; color: var(--text-muted); padding: 12px 0; }
+.rank-name { flex: 1; font-size: 13px; color: var(--au-text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rank-type { font-size: 11px; color: var(--au-text-4); margin-left: 6px; }
+.rank-value { font-size: 12px; color: var(--au-text-2); font-variant-numeric: tabular-nums; }
 
 /* ===== 手机 ===== */
 @media (max-width: 640px) {
-  .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-  .kpi-card { gap: 10px; }
-  .kpi-value { font-size: 20px; }
-  .kpi-foot { white-space: normal; }
+  .dashboard { gap: 12px; }
+  .kpi-grid,
+  .tile-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
   .todo-bar { padding: 10px 12px; gap: 8px; }
   .todo-lead { width: 100%; padding-right: 0; }
-  .metric-tabs { flex-wrap: wrap; }
   .chart { height: 132px; }
   /* 7-30 个日期标签在窄屏会挤成一团，隔一个显示一个 */
   .chart-axis span:nth-child(even) { display: none; }
-  .trend-total-value { font-size: 18px; }
-  .stat-sub { font-size: 13px; }
-  .stats-two-col { grid-template-columns: 1fr; }
-}
-@media (max-width: 760px) {
-  .ops-grid { grid-template-columns: minmax(0, 1fr); }
+  .trend-total-value { font-size: 1.25rem; }
+  .two-col { grid-template-columns: 1fr; }
 }
 </style>

@@ -11,8 +11,9 @@
  * → 帮助中心（连接播放器 / 求片 / 联系客服）。
  *
  * Hero 左栏三形态：未开通显示"三步看片"指引（开通→下载客户端→一键导入），
- * 已开通/公益服显示服务台快捷入口（求片/连接播放器）。看片在客户端完成，
- * 首页不再造"继续观看"（观看记录保留在媒体库的 tab 里）。
+ * 已开通/公益服显示服务台快捷入口（求片/连接播放器）。看片在客户端完成。
+ * （早先这里写的是「首页不造继续观看」；暗房影院改版后按设计稿补回了一条精简版，
+ * 见文件末尾「继续观看」的说明。）
  *
  * v2.10.3：底部那张「消息中心」卡去掉——它和顶栏带角标的音铃列的是同一批未读，
  * 同一件事在首页出现两遍。站内消息统一由顶栏铃铛承担（角标 + 点开预览 + 落到消息
@@ -60,8 +61,16 @@
  *      没有就是一块暖黑渐变），左下角琥珀眉题 + 衬线问候 + 状态行 + 唯一一个琥珀主按钮；
  *   ② 票根卡：原三张资产卡（积分 / 订阅 / 观影数据）合成一张电影票，右侧票根是续费入口；
  *   ③ 今日入库：近 7 天入库的竖版海报横滑（同一份日历数据，点击走 Rex deep link）；
+ *   ③b 继续观看：最多 3 条「有进度、没看完」，最近播放的在前；
  *   ④ 正在播放 → ⑤ 进行中 → ⑥ 帮助中心（纯文字列表）。
  * 数据口径一律沿用原有绑定，只换视觉；新增的只有一次追新日历请求（失败静默，不影响首屏）。
+ *
+ * 继续观看（按设计稿补回）：不是客户端首页那种货架，只是「上次看到哪、在哪台设备上看的」
+ * 一眼状态——每行 16:9 剧照 + 《片名》第 N 集 + 「客户端 · 设备」+ 琥珀进度条。
+ * 数据走门户的 /api/user/emby/resume（不是三方客户端用的 /Items/Resume：那边按口径
+ * 把单集整个排除了，剧看到一半在那边看不到）：单集已按剧聚合，客户端 / 设备取自
+ * 该条目最近一次播放会话。点击与「本周入库」一致走 Rex deep link；没有条目整段不渲染，
+ * 请求失败也静默。首页是 keep-alive，切回来时后台刷新一次（刚在客户端看完回来要对得上）。
  */
 import { ref, computed, onMounted, onActivated } from 'vue'
 import { RouterLink } from 'vue-router'
@@ -70,12 +79,14 @@ import { useUserStore } from '@/stores/user'
 import {
   isExpiringSoon, embyApi,
   type MySubscription, type WatchStats, type MyPlaybackSession, type Announcement,
+  type PortalResumeItem,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
 import Modal from '@/components/ui/Modal.vue'
 import { homeApi, type HomeSummary } from '@/api/economy'
 import { fetchCalendar, type CalendarItem } from '@/api/calendar'
-import { backdropUrl, posterUrl, type EmbyItem } from '@/api/emby'
+import { ensureEmbyBase, imageUrl, posterUrl, type EmbyItem } from '@/api/emby'
+import { groupRecentResources, stripEpisodeSuffix, type RecentResource } from '@/utils/recentResources'
 import { rexDeepLink } from '@/utils/rexDeepLink'
 import {
   ChevronRight, Crown, MessageSquareDashed,
@@ -178,6 +189,7 @@ const assetCards = computed(() => {
         progress: memberProgress.value,
         desc: `${activeSub.value.plan_name} · ${activeSub.value.end_date?.slice(0, 10) || ''}到期`,
         note: expiringSoon.value ? '续费后新时长在到期日之后叠加' : '会员权益全库通用',
+        short: expiringSoon.value ? '即将到期' : '',
         footer: '续费',
         badge: expiringSoon.value ? '临期' : '生效中',
         hot: expiringSoon.value,
@@ -189,6 +201,7 @@ const assetCards = computed(() => {
           progress: null,
           desc: userStore.realmNote || '公益服开放中，无需订阅即可观看全库内容',
           note: '本服不需要会员',
+          short: '公益服',
           footer: '查看套餐',
           badge: null,
           hot: false,
@@ -199,6 +212,7 @@ const assetCards = computed(() => {
           progress: null,
           desc: gateMessage.value || '开通会员后可无限观看全部影视内容',
           note: '开通后解锁全库',
+          short: '未开通',
           footer: '立即开通',
           badge: null,
           hot: false,
@@ -221,6 +235,10 @@ const assetCards = computed(() => {
       note: quickStats.value.checkedToday
         ? (quickStats.value.streak ? `今日已签 · 连续 ${quickStats.value.streak} 天` : '今日已签 · 明天再来')
         : '今天还没签到',
+      // 窄屏票面只留一行 ≤6 字的状态（长说明在宽屏才显示）
+      short: quickStats.value.checkedToday
+        ? (quickStats.value.streak ? `连签 ${quickStats.value.streak} 天` : '今日已签')
+        : '今日未签',
       footer: '去钱包',
       badge: quickStats.value.checkedToday ? null : '今日未签',
       // 未签时徽章走警示色（hot），与订阅临期同一套提醒语言
@@ -245,6 +263,7 @@ const assetCards = computed(() => {
       progress: null,
       desc: `播放 ${st ? st.total_plays : '—'} 次 · 看过 ${st ? st.watched_items : '—'} 部`,
       note: '在 Infuse 等客户端继续观影',
+      short: st ? `播放 ${st.total_plays} 次` : '',
       footer: '',
       badge: null,
       hot: false,
@@ -252,7 +271,8 @@ const assetCards = computed(() => {
   ]
 })
 
-// 进行中的事项：只列「自己提交的东西处理到哪了」。数量为 0 时显示「—」而不显示 0，
+// 进行中的事项：只列「自己提交的东西处理到哪了」。数量为 0 时右侧只留箭头（不写 0 也不写孤零零的「—」，
+// 后者读起来像「数值坏了」），
 // sub 再说清下一步会发生什么——一个孤零零的 0 读起来像「功能坏了」，不像「没事可做」。
 const todoRows = computed(() => {
   const seek = seekCounts.value
@@ -265,7 +285,7 @@ const todoRows = computed(() => {
       to: '/request',
       icon: MessageSquareDashed,
       label: '我的求片',
-      value: seekActive > 0 ? String(seekActive) : '—',
+      value: seekActive > 0 ? String(seekActive) : '',
       sub: !seek
         ? '查看求片进度'
         : seekActive > 0
@@ -280,7 +300,7 @@ const todoRows = computed(() => {
       to: '/tickets',
       icon: Ticket,
       label: '我的工单',
-      value: ticketActive > 0 ? String(ticketActive) : '—',
+      value: ticketActive > 0 ? String(ticketActive) : '',
       sub: !ticket
         ? '查看工单状态'
         : ticketActive > 0
@@ -471,7 +491,6 @@ function realmNoteText() {
 // 只读一次追新日历：同一份数据既给 Hero 当背景图，也给「今日入库」海报横滑。
 // 失败（未开通被拦、后端老版本没有这个端点）一律静默：Hero 回落到暖黑渐变，海报行不渲染。
 const recentItems = ref<CalendarItem[]>([])
-const failedPosters = ref<Set<string>>(new Set())
 const recentHasToday = ref(false)
 
 function isoDay(d: Date): string {
@@ -484,51 +503,162 @@ async function loadRecent() {
   const end = new Date()
   const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - 6)
   try {
-    const res = await fetchCalendar({ start: isoDay(start), end: isoDay(end) })
+    // 图片地址要拼在 EA 地址上：和日历并行拉一次账号卡，免得刚登录时拼出同源 /emby/... 全部 404
+    const [res] = await Promise.all([
+      fetchCalendar({ start: isoDay(start), end: isoDay(end) }),
+      ensureEmbyBase(),
+    ])
     const days = [...res.days].sort((a, b) => (a.date < b.date ? 1 : -1))
     recentHasToday.value = days.some((d) => d.date === isoDay(end) && d.items.length > 0)
-    const seen = new Set<string>()
-    const flat: CalendarItem[] = []
-    for (const day of days) {
-      for (const item of day.items) {
-        // 同一部剧一天进好几集：海报行只留一张（按剧去重），否则一排全是同一张海报
-        const key = item.Type === 'Episode' && item.SeriesName ? `s:${item.SeriesName}` : item.Id
-        if (seen.has(key)) continue
-        seen.add(key)
-        flat.push(item)
-      }
-    }
-    recentItems.value = flat.slice(0, 12)
+    // 按「新 → 旧」摊平：天倒序，天内后端已按入库时间倒序；归并成资源在 recentCards 里做
+    recentItems.value = days.flatMap((d) => d.items)
+    posterAttempts.value = {}
   } catch {
     recentItems.value = []
   }
 }
 
-/** Hero 背景：近 7 天入库里第一张带背景图（Backdrop）的条目 */
+/** Hero 背景：近 7 天入库里第一张带背景图（Backdrop）的条目——眉题写的就是这一条 */
 const heroItem = computed(() => recentItems.value.find((i) => i.BackdropImageTags?.length) || null)
-const heroImage = computed(() => (heroItem.value ? backdropUrl(heroItem.value, 1600) : ''))
+// 缩略图串图已在服务端修复（见 api/emby.ts imageUrl 的说明），背景图按 1280 宽取
+const heroImage = computed(() => (heroItem.value ? imageUrl(heroItem.value.Id, 'Backdrop', 1280) : ''))
 const heroImageFailed = ref(false)
 
 function recentTitle(item: CalendarItem): string {
-  if (item.Type === 'Episode' && item.SeriesName) return item.SeriesName
+  if (item.Type === 'Episode') return item.SeriesName || stripEpisodeSuffix(item.Name)
   return item.Name
 }
 
-function recentPoster(item: CalendarItem): string {
-  // 日历接口的 ImageTags 可能为空（后端回退链未覆盖），跳过检查直接拼 URL；
-  // 无图时后端返回 404，前端有占位卡兜底
-  return posterUrl(item, 240, true)
+/**
+ * 海报行的卡片：**一部剧 / 一部电影一张**，不出单集（归并规则见 utils/recentResources）。
+ *
+ * - 片名只写剧名 / 电影名，不带「第 N 集」/ SxxExx；
+ * - 图片按候选顺序试：单集 → 剧的 Primary → 单集 Primary（服务端按 集→季→剧 回退）→ Thumb；
+ *   电影 / 剧 → 自己的 Primary → Thumb。某一张加载失败就换下一张，全失败才落排版占位卡；
+ * - 海报行卡片宽 104–120px，取 maxWidth=320（覆盖 2.5x 屏）。
+ */
+const POSTER_WIDTH = 320
+
+interface RecentCard {
+  key: string
+  title: string
+  year: string
+  /** 当前要试的图片地址；空串 = 候选已试完，走排版占位卡 */
+  poster: string
+  href: string
 }
 
-// 海报 URL 缓存：模板中 v-if 和 :src 各调一次 recentPoster，避免重复计算
-const posterCache = new Map<string, string>()
-function cachedPoster(item: CalendarItem): string {
-  let url = posterCache.get(item.Id)
-  if (url === undefined) {
-    url = recentPoster(item)
-    posterCache.set(item.Id, url)
+/** 每张卡已经失败了几张候选图（key → 已失败数） */
+const posterAttempts = ref<Record<string, number>>({})
+
+function cardHref(r: RecentResource): string {
+  // 单集归并成剧之后按剧名搜；电影 / 剧本体有 TMDB id 时精确跳
+  return rexDeepLink({
+    Type: r.type,
+    Name: r.title,
+    ProviderIds: r.tmdbId ? { Tmdb: r.tmdbId } : null,
+  })
+}
+
+const recentResources = computed(() => groupRecentResources(recentItems.value, 12))
+
+const recentCards = computed<RecentCard[]>(() =>
+  recentResources.value.map((r) => {
+    const candidate = r.posters[posterAttempts.value[r.key] || 0]
+    return {
+      key: r.key,
+      title: r.title,
+      year: r.year,
+      poster: candidate ? imageUrl(candidate.itemId, candidate.kind, POSTER_WIDTH) : '',
+      href: cardHref(r),
+    }
+  }),
+)
+
+function onPosterError(card: RecentCard) {
+  posterAttempts.value = { ...posterAttempts.value, [card.key]: (posterAttempts.value[card.key] || 0) + 1 }
+}
+
+// ===== 继续观看：最多 3 条，最近播放的在前（口径见文件头） =====
+const RESUME_MAX = 3
+// 卡片左侧剧照约占 40% 宽（手机 ~150px，桌面 ~220px），取 480 覆盖 2x～3x 屏
+const RESUME_THUMB_WIDTH = 480
+
+const resumeItems = ref<PortalResumeItem[]>([])
+let resumeLoaded = false
+/** 每张卡已经失败了几张候选图（key → 已失败数） */
+const resumeThumbAttempts = ref<Record<string, number>>({})
+
+async function loadResume() {
+  try {
+    // 剧照地址拼在 EA 地址上：与列表并行等账号卡就绪，刚登录时才不会拼出同源 /emby/... 全部 404
+    const [res] = await Promise.all([embyApi.getResume(RESUME_MAX * 2), ensureEmbyBase()])
+    resumeItems.value = (res?.items || []).slice(0, RESUME_MAX)
+    resumeThumbAttempts.value = {}
+  } catch {
+    // 未开通 / 网络错误：整段不渲染，不打扰首屏；切回来时还会再试
+    if (!resumeLoaded) resumeItems.value = []
+  } finally {
+    resumeLoaded = true
   }
-  return url
+}
+
+interface ResumeCard {
+  key: string
+  /** 《剧名》 第 N 集 / 《片名》 */
+  title: string
+  /** 排版占位卡上的片名（不带书名号与集号） */
+  name: string
+  /** 客户端 · 设备；都没有就是空串（整行不渲染） */
+  meta: string
+  /** 0–100；没有时长时为 null（不画进度条，不猜百分比） */
+  percent: number | null
+  /** 当前要试的剧照地址；空串 = 候选已试完，走排版占位卡 */
+  thumb: string
+  href: string
+}
+
+/**
+ * 剧照候选（16:9）：单集 → 单集 Thumb → 剧 Thumb → 剧 Primary；电影 → Thumb → Primary。
+ * Thumb 服务端按横版背景图（Backdrop 链）出图；Primary 是竖版海报，object-fit 裁成横版兜底。
+ */
+function resumeThumbs(r: PortalResumeItem): { itemId: string; kind: 'Thumb' | 'Primary' }[] {
+  const list: { itemId: string; kind: 'Thumb' | 'Primary' }[] = []
+  if (r.episode_id) list.push({ itemId: r.episode_id, kind: 'Thumb' })
+  list.push({ itemId: r.id, kind: 'Thumb' })
+  if (r.poster_url) list.push({ itemId: r.id, kind: 'Primary' })
+  return list
+}
+
+const resumeCards = computed<ResumeCard[]>(() =>
+  resumeItems.value.map((r) => {
+    const key = r.episode_id || r.id
+    const isSeries = r.type === 'series'
+    const ep = isSeries && r.episode_number != null ? ` 第 ${r.episode_number} 集` : ''
+    const candidate = resumeThumbs(r)[resumeThumbAttempts.value[key] || 0]
+    const duration = r.duration_ticks || 0
+    return {
+      key,
+      title: `《${r.name}》${ep}`,
+      name: r.name,
+      meta: [r.client, r.device].filter((v): v is string => !!v).join(' · '),
+      percent: duration > 0 ? Math.max(0, Math.min(100, Math.round(r.progress || 0))) : null,
+      thumb: candidate ? imageUrl(candidate.itemId, candidate.kind, RESUME_THUMB_WIDTH) : '',
+      // 与「本周入库」同一条跳转规则：电影 / 剧有 TMDB id 精确跳，否则按名字搜
+      href: rexDeepLink({
+        Type: isSeries ? 'Series' : 'Movie',
+        Name: r.name,
+        ProviderIds: r.tmdb_id ? { Tmdb: r.tmdb_id } : null,
+      }),
+    }
+  }),
+)
+
+function onResumeThumbError(card: ResumeCard) {
+  resumeThumbAttempts.value = {
+    ...resumeThumbAttempts.value,
+    [card.key]: (resumeThumbAttempts.value[card.key] || 0) + 1,
+  }
 }
 
 /** Hero 眉题：有今日入库叫「今日新片」，否则「本周新片」；没有片单就只写站点氛围 */
@@ -566,11 +696,14 @@ function onThumbError(s: MyPlaybackSession) {
 onMounted(() => {
   loadDeferred()
   void loadRecent()
+  void loadResume()
 })
 
 // 从别的 tab 切回来（KeepAlive 缓存命中）：后台静默刷新，不闪骨架屏
 onActivated(() => {
   if (hasLoaded.value) void loadDeferred(true)
+  // 继续观看：刚在客户端看完切回来，进度要对得上（首次挂载由 onMounted 拉，这里不重复）
+  if (resumeLoaded) void loadResume()
 })
 </script>
 
@@ -718,30 +851,37 @@ onActivated(() => {
               <span class="stat-value">{{ c.value }}</span>
               <span v-if="c.unit" class="stat-unit">{{ c.unit }}</span>
             </span>
-            <span
-              v-if="c.progress !== null"
-              class="stat-progress"
-              :title="`套餐周期已过 ${c.progress}%`"
-            >
-              <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
-              <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
+            <!-- 数字下面固定一行：订阅是细进度条，其余是一行 ≤6 字的状态。
+                 三格这一行等高，大数字因此落在同一条基线上 -->
+            <span class="stat-foot">
+              <span
+                v-if="c.progress !== null"
+                class="stat-progress"
+                :title="`套餐周期已过 ${c.progress}%`"
+              >
+                <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
+                <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
+              </span>
+              <span v-else-if="c.short" class="stat-short">{{ c.short }}</span>
             </span>
             <span class="stat-desc">{{ c.desc }}</span>
             <span class="stat-note">{{ c.note }}</span>
           </component>
         </div>
+        <!-- 票根：左边一行小字 ADMIT ONE · 套餐名，右边一枚紧凑的琥珀按钮（去钱包入口并进来，不再单列） -->
         <div class="ticket-stub">
-          <RouterLink v-if="memberStat" to="/wallet?tab=plans" class="au-btn au-btn-primary stub-btn">
+          <span class="stub-admit" aria-hidden="true">
+            ADMIT ONE<span v-if="activeSub" class="stub-plan"><i> · </i>{{ activeSub.plan_name }}</span>
+          </span>
+          <RouterLink v-if="memberStat" to="/wallet?tab=plans" class="au-btn au-btn-primary au-btn-sm stub-btn">
             {{ memberStat.footer }}
           </RouterLink>
-          <RouterLink to="/wallet" class="stub-link">去钱包</RouterLink>
-          <span class="stub-admit" aria-hidden="true">ADMIT ONE</span>
         </div>
       </section>
 
       <!-- ③ 今日入库：近 7 天入库的竖版海报横滑（追新日历同一份数据），
            点击与追新日历一致走 Rex deep link；没有数据整段不渲染 -->
-      <section v-if="recentItems.length" class="recent au-anim-up">
+      <section v-if="recentCards.length" class="recent au-anim-up">
         <div class="section-label">
           <span class="section-title">{{ recentHasToday ? '今日入库' : '本周入库' }}</span>
           <RouterLink to="/calendar" class="section-more">
@@ -751,24 +891,78 @@ onActivated(() => {
         </div>
         <div class="poster-row">
           <a
-            v-for="item in recentItems"
-            :key="item.Id"
-            :href="rexDeepLink(item)"
+            v-for="card in recentCards"
+            :key="card.key"
+            :href="card.href"
             class="poster-card"
-            :title="`在 Rex 里打开：${recentTitle(item)}`"
+            :title="`在 Rex 里打开：${card.title}`"
           >
             <span class="poster-frame">
               <img
-                v-if="cachedPoster(item) && !failedPosters.has(item.Id)"
-                :src="cachedPoster(item)"
-                :alt="recentTitle(item)"
+                v-if="card.poster"
+                :key="card.poster"
+                :src="card.poster"
+                :alt="card.title"
                 loading="lazy"
                 decoding="async"
-                @error="failedPosters.add(item.Id)"
+                @error="onPosterError(card)"
               />
-              <Film v-else :size="20" aria-hidden="true" />
+              <!-- 没图：排版占位卡（暗色暖底 + 衬线片名 + 年份），像一张没印图的片名卡 -->
+              <span v-else class="poster-type" aria-hidden="true">
+                <span class="poster-type-title">{{ card.title }}</span>
+                <span v-if="card.year" class="poster-type-year">{{ card.year }}</span>
+              </span>
             </span>
-            <span class="poster-name">{{ recentTitle(item) }}</span>
+            <span class="poster-name">{{ card.title }}</span>
+          </a>
+        </div>
+      </section>
+
+      <!-- ③b 继续观看：最多 3 条，最近播放的在前；没有条目整段不渲染。
+           点击与「本周入库」一致走 Rex deep link -->
+      <section v-if="resumeCards.length" class="resume au-anim-up">
+        <div class="section-label">
+          <span class="section-title">继续观看</span>
+        </div>
+        <div class="resume-list">
+          <a
+            v-for="card in resumeCards"
+            :key="card.key"
+            :href="card.href"
+            class="resume-card"
+            :title="`在 Rex 里打开：${card.name}`"
+          >
+            <span class="resume-thumb">
+              <img
+                v-if="card.thumb"
+                :key="card.thumb"
+                :src="card.thumb"
+                alt=""
+                loading="lazy"
+                decoding="async"
+                @error="onResumeThumbError(card)"
+              />
+              <span v-else class="poster-type resume-type" aria-hidden="true">
+                <span class="poster-type-title">{{ card.name }}</span>
+              </span>
+            </span>
+            <span class="resume-main">
+              <span class="resume-title">{{ card.title }}</span>
+              <span v-if="card.meta" class="resume-meta">{{ card.meta }}</span>
+              <span v-if="card.percent !== null" class="resume-progress">
+                <span
+                  class="resume-bar"
+                  role="progressbar"
+                  :aria-valuenow="card.percent"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  :aria-label="`已看 ${card.percent}%`"
+                >
+                  <span class="resume-fill" :style="{ width: card.percent + '%' }"></span>
+                </span>
+                <span class="resume-pct">{{ card.percent }}%</span>
+              </span>
+            </span>
           </a>
         </div>
       </section>
@@ -839,7 +1033,7 @@ onActivated(() => {
             <span class="todo-label">{{ t.label }}</span>
             <span class="todo-sub">{{ t.sub }}</span>
           </span>
-          <span class="todo-value" :class="{ hot: t.hot }">{{ t.value }}</span>
+          <span v-if="t.value" class="todo-value" :class="{ hot: t.hot }">{{ t.value }}</span>
           <ChevronRight :size="14" class="todo-arrow" />
         </RouterLink>
       </section>
@@ -894,17 +1088,28 @@ onActivated(() => {
   color: var(--au-text);
 }
 
-/* ==================== ① 幕布 Hero ==================== */
+/* ==================== ① 幕布 Hero ====================
+   Hero 是一块「银幕」：两套主题下都是暗的（白日模式下也不渐隐到奶油色——
+   那样白字会落在发灰的背景上、按钮行压在一片浑浊的灰里）。
+   做法：在 .hero 上把文字 / 强调色令牌就地改回暗房口径，内部组件零改动；
+   底部用一道硬边结束，下面直接是页面底色。 */
 
 .hero {
+  --au-text: #f3ede4;
+  --au-text-2: rgba(243, 237, 228, 0.82);
+  --au-text-3: rgba(243, 237, 228, 0.66);
+  --au-primary: #e8a84a;
+  --au-primary-border: rgba(232, 168, 74, 0.4);
+  --au-on-primary: #1a1205;
+
   position: relative;
   display: flex;
   align-items: flex-end;
   min-height: 32vh;
   overflow: hidden;
-  /* 没有背景图时：一块暖黑渐变，像放映前的幕布 */
-  background:
-    linear-gradient(180deg, var(--au-bg-soft) 0%, var(--au-surface) 55%, var(--au-bg) 100%);
+  color: var(--au-text);
+  /* 没有背景图时：一块暖黑渐变，像放映前的幕布（写死暗色，不跟主题） */
+  background: linear-gradient(180deg, #171412 0%, #11100e 60%, #0c0a09 100%);
   animation: hero-fade var(--au-fade-in) var(--au-ease) both;
 }
 
@@ -922,18 +1127,19 @@ onActivated(() => {
   object-position: center 30%;
 }
 
-/* 背景图上叠两层：自左向右压暗（文字区可读）+ 自上而下渐隐到页面底色 */
+/* 背景图上叠两层（都是写死的暖黑，不跟主题）：
+   自左向右压暗（文字区可读）+ 自上而下由透明压到 0.92（底部文字与按钮行落在近黑上） */
 .hero-shade {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(90deg, var(--au-overlay-strong) 0%, var(--au-overlay-mid) 45%, transparent 80%),
-    linear-gradient(180deg, transparent 30%, var(--au-overlay-mid) 65%, var(--au-bg) 100%);
+    linear-gradient(90deg, rgba(12, 10, 9, 0.55) 0%, rgba(12, 10, 9, 0.2) 55%, transparent 85%),
+    linear-gradient(180deg, transparent 0%, rgba(12, 10, 9, 0.35) 40%, rgba(12, 10, 9, 0.92) 100%);
 }
 
 .hero:not(.has-image) .hero-shade {
-  background: linear-gradient(180deg, transparent 50%, var(--au-bg) 100%);
+  background: none;
 }
 
 .hero-inner {
@@ -957,15 +1163,9 @@ onActivated(() => {
   font-weight: 700;
   line-height: 1.2;
   color: var(--au-text);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  overflow-wrap: anywhere;
 }
-
-/* 有背景图时字一律走浅色（图片在浅色主题下也是暗的） */
-.hero.has-image .hero-title { color: var(--au-text); text-shadow: var(--au-shadow-text); }
-.hero.has-image .hero-status,
-.hero.has-image .hero-sub,
-.hero.has-image .hero-steps em { color: var(--au-text-2); }
-.hero.has-image .hero-steps strong,
-.hero.has-image .hero-link { color: var(--au-text); }
 
 .hero-status {
   display: flex;
@@ -990,9 +1190,9 @@ onActivated(() => {
 }
 
 .hero-sub {
-  margin: 0.875rem 0 0;
+  margin: 0.5rem 0 0;
   max-width: 34rem;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   line-height: 1.6;
   color: var(--au-text-3);
 }
@@ -1048,7 +1248,7 @@ onActivated(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 0.5rem 1.25rem;
-  margin-top: 1.5rem;
+  margin-top: 1.375rem;
 }
 
 .hero-cta .au-btn-primary {
@@ -1061,6 +1261,7 @@ onActivated(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.125rem;
+  min-height: 44px;
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--au-text-2);
@@ -1188,7 +1389,7 @@ onActivated(() => {
 .ticket {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 156px;
+  grid-template-columns: minmax(0, 1fr) 168px;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
@@ -1223,10 +1424,12 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  font-family: var(--au-font-serif);
-  font-size: 0.875rem;
+  min-height: 1.25rem;
+  font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--au-text-2);
+  letter-spacing: 0.06em;
+  color: var(--au-text-3);
+  white-space: nowrap;
 }
 
 .stat-icon { color: var(--au-primary); flex-shrink: 0; }
@@ -1236,9 +1439,9 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   padding: 0 0.4375rem;
   border: 1px solid var(--au-border-strong);
   border-radius: var(--au-r-full);
-  font-family: var(--au-font-sans);
   font-size: 0.8125rem;
   font-weight: 500;
+  letter-spacing: 0;
   color: var(--au-text-3);
   white-space: nowrap;
 }
@@ -1260,7 +1463,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   font-size: 2.25rem;
   font-weight: 700;
   line-height: 1.1;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums lining-nums;
   color: var(--asset-value, var(--au-text));
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1268,12 +1471,22 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 }
 
 .stat-unit {
-  font-size: 0.875rem;
+  flex-shrink: 0;
+  font-size: 0.8125rem;
   color: var(--au-text-3);
+}
+
+/* 数字下方固定高度的一行：三格等高 → 大数字同一基线 */
+.stat-foot {
+  display: flex;
+  align-items: center;
+  min-height: 1.125rem;
 }
 
 .stat-progress {
   display: block;
+  width: 100%;
+  max-width: 7rem;
   height: 2px;
   background: var(--au-track);
   border-radius: 1px;
@@ -1286,6 +1499,17 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   background: var(--au-primary);
   transform-origin: left center;
 }
+
+.stat-short {
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 宽屏才有长说明：stat-short 与 stat-desc 讲的是同一件事，宽屏只留后者 */
+.stat-foot .stat-short { display: none; }
 
 .stat-desc {
   font-size: 0.8125rem;
@@ -1303,14 +1527,14 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   color: var(--au-text-4);
 }
 
-/* 票根：左侧一条打孔虚线，上下各挖一个与页面同色的半圆缺口 */
+/* 票根：左侧一条打孔虚线（全卡唯一一处虚线），上下各挖一个与页面同色的半圆缺口 */
 .ticket-stub {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.625rem;
+  gap: 0.75rem;
   padding: 1.25rem 1rem;
   border-left: 1px dashed var(--au-border-strong);
 }
@@ -1338,41 +1562,59 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 }
 
 .stub-btn {
-  width: 100%;
+  min-width: 6rem;
 }
 
-.stub-link {
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-  text-decoration: none;
+/* 紧凑琥珀按钮：盖过 mobile.css 对所有 a 的 44px 最小高度（票根里它不是唯一的点按目标——
+   整张票面三格都可点） */
+.ticket-stub .stub-btn {
+  min-height: 0;
+  height: 36px;
+  padding: 0 1.25rem;
 }
-
-.stub-link:hover { color: var(--au-primary); }
 
 .stub-admit {
-  margin-top: 0.25rem;
-  font-family: var(--au-font-serif);
-  font-size: 0.8125rem;
-  font-weight: 700;
-  letter-spacing: 0.28em;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.24em;
   color: var(--au-text-4);
   white-space: nowrap;
 }
+
+/* 宽屏票根是竖条：ADMIT ONE 一行、套餐名另起一行；窄屏横排时才用「 · 」连成一行 */
+.stub-plan {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  letter-spacing: 0.12em;
+}
+.stub-plan i { display: none; font-style: normal; }
 
 /* 骨架 */
 .sk-stat-label { display: block; width: 4rem; height: 14px; }
 .sk-stat-value { display: block; width: 5.5rem; height: 36px; margin: 0.25rem 0; }
 .sk-stat-desc { display: block; width: 80%; height: 13px; }
-.sk-stub-btn { display: block; width: 100%; height: 40px; }
+.sk-stub-btn { display: block; width: 6rem; height: 32px; }
 
-/* ==================== ③ 今日入库 ==================== */
+/* ==================== ③ 今日入库 ====================
+   横滑行向两侧出血到屏幕边，但第一张卡与页面 gutter 对齐：
+   padding-inline = gutter 决定起始位置，scroll-padding-inline 让 scroll-snap 也按 gutter 对齐
+   （没有它，snap 会把第一张卡吸到屏幕最左边） */
 
 .poster-row {
   display: flex;
   gap: 0.875rem;
   margin: 0 calc(var(--gutter) * -1);
   padding: 0 var(--gutter) 0.25rem;
+  scroll-padding-inline: var(--gutter);
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   scroll-snap-type: x proximity;
   scrollbar-width: none;
 }
@@ -1382,6 +1624,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 .poster-card {
   flex: 0 0 auto;
   width: 120px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -1411,13 +1654,159 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 
 .poster-card:hover .poster-frame img { filter: brightness(1.08); }
 
+/* 没有海报：排版占位卡。暗色暖底（两套主题都暗，像一张片名卡）+ 衬线片名居中 + 年份 */
+.poster-type {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  height: 100%;
+  padding: 0.75rem;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(232, 168, 74, 0.12), transparent 60%),
+    #1e1a17;
+  text-align: center;
+}
+
+.poster-type-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: var(--au-font-serif);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #f3ede4;
+  overflow-wrap: anywhere;
+}
+
+.poster-type-year {
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  font-variant-numeric: tabular-nums;
+  color: rgba(232, 168, 74, 0.85);
+}
+
 .poster-name {
+  display: block;
+  min-width: 0;
   font-size: 0.8125rem;
   line-height: 1.4;
   color: var(--au-text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ==================== ③b 继续观看 ==================== */
+
+.resume-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.resume-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+  padding: 0.625rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--au-fast) var(--au-ease);
+}
+
+.resume-card:hover { border-color: var(--au-border-strong); }
+.resume-card:hover .resume-thumb img { filter: brightness(1.08); }
+
+.resume-thumb {
+  flex: 0 0 auto;
+  display: flex;
+  width: min(40%, 220px);
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--au-r-sm);
+  background: var(--au-surface-2);
+}
+
+.resume-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter var(--au-fast) var(--au-ease);
+}
+
+/* 横版占位卡：沿用海报行的排版占位，片名收到两行 */
+.resume-type { padding: 0.5rem 0.625rem; }
+.resume-type .poster-type-title {
+  -webkit-line-clamp: 2;
+  font-size: 0.875rem;
+}
+
+.resume-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.resume-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--au-text);
+  overflow-wrap: anywhere;
+}
+
+.resume-meta {
+  overflow: hidden;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resume-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-top: 0.375rem;
+}
+
+.resume-bar {
+  flex: 1;
+  height: 3px;
+  background: var(--au-track);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.resume-fill {
+  display: block;
+  height: 100%;
+  background: var(--au-primary);
+  border-radius: inherit;
+}
+
+.resume-pct {
+  flex-shrink: 0;
+  min-width: 2.5em;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--au-primary);
 }
 
 /* ==================== ④ 正在播放 ==================== */
@@ -1473,6 +1862,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 }
 
 .playing-title a {
+  min-height: 0;
   color: var(--au-text);
   text-decoration: none;
   overflow: hidden;
@@ -1657,25 +2047,26 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
 /* ==================== 响应式 ==================== */
 
 @media (max-width: 768px) {
+  /* 手机：银幕收到 52vh，给票根卡留出首屏位置 */
   .hero,
   .hero.has-image {
-    min-height: 60vh;
+    min-height: 52vh;
   }
 
   .main {
-    padding-bottom: calc(3.5rem + var(--au-dock-space));
+    padding-bottom: calc(3rem + var(--au-dock-space));
   }
 
   /* 票根竖排：票面在上、票根在下，打孔线横过来，缺口挪到左右两侧 */
   .ticket {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .ticket-stub {
     flex-direction: row;
-    flex-wrap: wrap;
     justify-content: space-between;
-    padding: 1rem 1.125rem;
+    gap: 1rem;
+    padding: 0.875rem 1.125rem;
     border-left: none;
     border-top: 1px dashed var(--au-border-strong);
   }
@@ -1698,69 +2089,81 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   }
 
   .stub-btn {
-    width: auto;
-    flex: 1 1 auto;
-    order: 2;
+    flex-shrink: 0;
+    min-width: 5rem;
   }
 
   .stub-admit {
-    order: 1;
-    margin-top: 0;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0;
+    overflow: hidden;
   }
 
-  .stub-link { order: 3; }
+  .stub-plan { letter-spacing: 0.24em; }
+  .stub-plan i { display: inline; }
 
   .ticket-stat:first-child { border-radius: var(--au-r-lg) 0 0 0; }
 }
 
 @media (max-width: 640px) {
   .hero-inner {
-    padding-bottom: 1.75rem;
+    padding-top: 2rem;
+    padding-bottom: 1.5rem;
   }
 
   .hero-steps {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.625rem;
   }
 
   .main {
-    padding-left: 1rem;
-    padding-right: 1rem;
+    padding-left: var(--gutter);
+    padding-right: var(--gutter);
   }
 
+  /* 票面三格：标签 + 大号衬线数字 + 单位，下面一行 ≤6 字的状态（或订阅进度条） */
   .ticket-stat {
-    padding: 1rem 0.75rem 0.875rem;
+    gap: 0.3125rem;
+    padding: 1rem 0.875rem 0.9375rem;
   }
+
+  .stat-label svg { display: none; }
 
   .stat-value {
-    font-size: 1.625rem;
+    font-size: 1.75rem;
   }
 
-  .stat-badge {
+  .stat-badge,
+  .stat-desc,
+  .stat-note {
     display: none;
   }
 
-  .stat-desc {
-    display: none;
-  }
+  .stat-foot .stat-short { display: block; }
 
   .poster-card {
     width: 104px;
   }
 
-  .poster-row {
-    margin: 0 -1rem;
-    padding: 0 1rem 0.25rem;
+  /* 手机：剧照占卡片约 40% 宽，文字区收紧 */
+  .resume-card {
+    gap: 0.75rem;
+    padding: 0.5rem;
   }
 
-  /* 票根卡：手机上改为上下结构，票根在下 */
-  .ticket {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .ticket-stub {
-    border-top: 1px dashed var(--au-border-strong);
-    border-left: none;
-  }
+  .resume-thumb { width: 40%; }
+
+  .resume-title { font-size: 0.875rem; }
+
+  .resume-meta { font-size: 0.75rem; }
+
+  .resume-progress { margin-top: 0.25rem; }
+}
+
+@media (max-width: 360px) {
+  .ticket-stat { padding-left: 0.75rem; padding-right: 0.625rem; }
+  .stat-value { font-size: 1.5rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

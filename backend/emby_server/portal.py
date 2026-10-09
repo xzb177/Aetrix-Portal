@@ -543,30 +543,115 @@ def set_play_line_pref(req: dict,
 def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db),
                           limit: int = 12):
+    """门户首页「继续观看」：有进度、未播完，最近播放的在前。
+
+    与 Emby 兼容层的 ``/Users/{uid}/Items/Resume`` 分工不同：那条给三方客户端，
+    按「只出电影 / 剧」的口径把单集整个排除了（见 tests/test_resume_item_type.py），
+    剧集看到一半在那边是看不到的。门户这条只给 web 首页用，口径是：
+
+    - 电影按自身一行；单集**按剧聚合**，每部剧只留最近在看的那一集，行上带
+      ``episode_id / season_number / episode_number``（顶层仍只有 movie / series）；
+    - 隐藏条目、不在本账号可见媒体库里的条目不出；
+    - 每行附上**最近一次播放会话**的客户端 / 设备（``client`` / ``device``），
+      全页一次分组查询取齐，不逐行查。
+
+    原有字段（id / name / type / year / position_ticks / duration_ticks / progress /
+    poster_url）保持不变，新增字段只追加。
+    """
+    limit = max(1, min(int(limit or 12), 50))
+    UMD, MI, PS = em.UserMediaData, em.MediaItem, em.PlaybackSession
     rows = (
-        db.query(em.UserMediaData, em.MediaItem)
-        .join(em.MediaItem, em.MediaItem.id == em.UserMediaData.item_id)
-        .filter(
-            em.UserMediaData.user_id == request_user.id,
-            em.UserMediaData.playback_position_ticks > 0,
-            em.UserMediaData.played == False,  # noqa: E712
+        _scope_items(
+            db.query(UMD, MI)
+            .join(MI, MI.id == UMD.item_id)
+            .filter(
+                UMD.user_id == request_user.id,
+                UMD.playback_position_ticks > 0,
+                UMD.played == False,  # noqa: E712
+                MI.item_type.in_(["movie", "episode"]),
+                MI.is_hidden == False,  # noqa: E712
+            ),
+            _library_scope(db, request_user),
         )
-        .order_by(em.UserMediaData.last_played_at.desc())
-        .limit(limit)
+        # 同一部剧的几集会被聚合成一行，多取一些候选再截断
+        .order_by(UMD.last_played_at.desc().nullslast(), UMD.id.desc())
+        .limit(limit * 5 + 20)
         .all()
     )
-    items = []
+
+    # 单集 → 所属剧（一次取齐）
+    series_ids = {it.series_id for _u, it in rows if it.item_type == "episode" and it.series_id}
+    series_map: dict[int, em.MediaItem] = {}
+    if series_ids:
+        series_map = {
+            s.id: s for s in db.query(MI).filter(
+                MI.id.in_(series_ids), MI.is_hidden == False,  # noqa: E712
+            ).all()
+        }
+
+    page: list[tuple] = []  # (umd, 展示条目, 单集|None)
+    seen_series: set[int] = set()
     for umd, item in rows:
-        items.append({
+        if item.item_type == "episode":
+            series = series_map.get(item.series_id) if item.series_id else None
+            if series is None or series.id in seen_series:
+                continue  # 孤儿 / 隐藏剧的单集不出；同剧只留最近一集
+            seen_series.add(series.id)
+            page.append((umd, series, item))
+        else:
+            page.append((umd, item, None))
+        if len(page) >= limit:
+            break
+
+    # 每个实际播放条目（电影 / 单集）的最近一次会话：一条分组子查询 + 一次 join
+    played_ids = [(ep or it).id for _u, it, ep in page]
+    last_session: dict[int, em.PlaybackSession] = {}
+    if played_ids:
+        latest = (
+            db.query(PS.item_id.label("item_id"), func.max(PS.last_update_at).label("ts"))
+            .filter(PS.user_id == request_user.id, PS.item_id.in_(played_ids))
+            .group_by(PS.item_id)
+            .subquery()
+        )
+        for ps in (
+            db.query(PS)
+            .join(latest, (PS.item_id == latest.c.item_id) & (PS.last_update_at == latest.c.ts))
+            .filter(PS.user_id == request_user.id)
+            .order_by(PS.id.desc())
+            .all()
+        ):
+            last_session.setdefault(ps.item_id, ps)  # 同一时刻两条会话时取后建的那条
+
+    items = []
+    for umd, item, ep in page:
+        played = ep or item
+        pos = umd.playback_position_ticks or 0
+        duration = played.duration_ticks or 0
+        session = last_session.get(played.id)
+        entry = {
             "id": item.guid,
             "name": item.name,
             "type": item.item_type,
             "year": item.production_year,
-            "position_ticks": umd.playback_position_ticks,
-            "duration_ticks": item.duration_ticks,
-            "progress": round((umd.playback_position_ticks or 0) / (item.duration_ticks or 1) * 100, 1),
-            "poster_url": f"/emby/Items/{item.guid}/Images/Primary" if (item.poster_path or item.primary_image_url) else None,
-        })
+            "position_ticks": pos,
+            "duration_ticks": duration,
+            # 没有时长就不猜百分比（旧实现除以 1，会算出几百万 %）
+            "progress": min(100.0, round(pos / duration * 100, 1)) if duration else 0.0,
+            "poster_url": f"/emby/Items/{item.guid}/Images/Primary"
+            if (item.poster_path or item.primary_image_url) else None,
+            "tmdb_id": item.tmdb_id or None,
+            "last_played_at": umd.last_played_at.isoformat() if umd.last_played_at else None,
+            "client": (session.client_name or None) if session else None,
+            "device": (session.device_name or None) if session else None,
+        }
+        if ep is not None:
+            entry.update({
+                "episode_id": ep.guid,
+                "episode_name": ep.name,
+                "season_number": ep.season_number,
+                "episode_number": ep.episode_number,
+            })
+        items.append(entry)
     return {"items": items}
 
 

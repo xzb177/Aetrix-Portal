@@ -103,7 +103,7 @@ onMounted(load)
           </div>
           <div class="session-progress">
             <div class="bar"><div class="bar-fill" :style="{ width: s.progress + '%' }" /></div>
-            <span class="bar-text">{{ s.progress }}% · {{ fmtTime(s.updated_at) }}</span>
+            <span class="bar-text">{{ s.progress }}%<template v-if="s.updated_at"> · {{ fmtTime(s.updated_at) }}</template></span>
           </div>
         </div>
 

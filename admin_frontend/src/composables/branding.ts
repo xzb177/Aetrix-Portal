@@ -1,15 +1,20 @@
 /**
  * 站点品牌（能力：站点与品牌）—— 管理后台侧
  *
- * 与用户端（`user_frontend/src/composables/useBranding.ts`）读同一份配置，但落到**不同的令牌**：
- * 管理端用 `--primary*`（用户端是 `--au-primary*`）。主题色由后台自己填，改完刷新即生效，
- * 不需要重新构建前端。
+ * 与用户端（`user_frontend/src/composables/useBranding.ts`）读同一份配置、落到**同一组令牌**
+ * （`--au-primary*`，暗房影院 v6 起两端统一；管理端历史的 `--primary*` 是它们的别名，
+ * 见 styles/tokens.css）。主题色由后台自己填，改完刷新即生效，不需要重新构建前端。
  */
 import { reactive } from 'vue'
 import { siteApi, type Branding } from '@/api/site'
 
 export const DEFAULT_SITE_NAME = 'Aetrix'
-export const DEFAULT_THEME_COLOR = '#22d3ee'
+export const DEFAULT_THEME_COLOR = '#e8a84a'
+/**
+ * 「没自定义过」的主题色：后端默认值仍是旧品牌青 #22d3ee，加上现在的放映机琥珀。
+ * 命中时不注入任何覆盖——让 aurora.css 自己的深色琥珀 / 白日深琥珀说了算（同用户端口径）。
+ */
+const LEGACY_DEFAULT_THEME_COLORS = new Set(['#22d3ee', DEFAULT_THEME_COLOR])
 // 管理后台页脚展示的版本号（views/Layout.vue 的 foot-version）。构建期写死，不读根目录
 // VERSION —— 所以必须与 VERSION 保持一致，由 scripts/check_version.py 门禁守着：
 // 它曾停在 v2.33.0 而 VERSION 已到 2.42.6，导致「看界面版本判断线上跑的是哪个构建」
@@ -40,7 +45,7 @@ function hexToRgb(hex: string): [number, number, number] {
   if (value.length === 3) value = value.split('').map((c) => c + c).join('')
   if (value.length === 8) value = value.slice(0, 6)
   const num = Number.parseInt(value, 16)
-  if (!Number.isFinite(num) || value.length !== 6) return [34, 211, 238]
+  if (!Number.isFinite(num) || value.length !== 6) return [232, 168, 74]
   return [(num >> 16) & 255, (num >> 8) & 255, num & 255]
 }
 
@@ -56,7 +61,7 @@ function shift(rgb: [number, number, number], factor: number): string {
 /** 主色上的文字色：按亮度选深/浅，保证对比度 */
 function onColor(rgb: [number, number, number]): string {
   const luminance = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
-  return luminance > 0.6 ? '#05202a' : '#ffffff'
+  return luminance > 0.6 ? '#1a1205' : '#ffffff'
 }
 
 /** 相对亮度（0~1，未做 sRGB 线性化，只用于「够不够亮」的阈值判断） */
@@ -77,7 +82,7 @@ let brandStyle: HTMLStyleElement | null = null
  *
  * 不再写 `documentElement.style`：inline 自定义属性优先级最高，
  * `html[data-theme='light']` 里的浅色覆盖**永远**赢不了它——
- * 所以外观切到白日时主色仍是亮青（#22d3ee），而浅色主题的说明文字、
+ * 所以外观切到白日时主色仍是深色档的亮色，而浅色主题的说明文字、
  * 描边按钮文字都是「亮青压白底」，对比度只有 ~1.9:1，看不清。
  *
  * 改为注入一段 <style>，深浅各一条规则：
@@ -91,6 +96,12 @@ let brandStyle: HTMLStyleElement | null = null
  * 两套品牌色即时切换，不需要重新计算。
  */
 function applyBrandingTokens() {
+  const color = (branding.theme_color || '').trim().toLowerCase()
+  if (!color || LEGACY_DEFAULT_THEME_COLORS.has(color)) {
+    // 默认主题色：不注入，主题令牌（深色琥珀 / 白日深琥珀）自己说了算
+    if (brandStyle) brandStyle.textContent = ''
+    return
+  }
   const rgb = hexToRgb(branding.theme_color)
 
   let light = [...rgb] as [number, number, number]
@@ -102,32 +113,29 @@ function applyBrandingTokens() {
     ]
   }
 
+  // 与用户端 useBranding.ts 同一组令牌、同一套派生：两端换主题色的效果一致
   const darkRules = [
-    `--primary:${branding.theme_color}`,
-    `--primary-hover:${shift(rgb, 1.16)}`,
-    `--primary-active:${shift(rgb, 0.86)}`,
-    `--primary-bg:${rgba(rgb, 0.12)}`,
-    `--primary-soft:${rgba(rgb, 0.08)}`,
-    `--primary-border:${rgba(rgb, 0.32)}`,
-    `--primary-glow:${rgba(rgb, 0.28)}`,
-    `--primary-on:${onColor(rgb)}`,
-    `--border-focus:${rgba(rgb, 0.6)}`,
-    `--gradient-brand:linear-gradient(135deg, ${branding.theme_color} 0%, ${shift(rgb, 0.72)} 100%)`,
-    `--gradient-brand-hover:linear-gradient(135deg, ${shift(rgb, 1.16)} 0%, ${shift(rgb, 0.86)} 100%)`,
+    `--au-primary:${branding.theme_color}`,
+    `--au-primary-strong:${shift(rgb, 0.85)}`,
+    `--au-primary-deep:${shift(rgb, 0.55)}`,
+    `--au-primary-soft:${rgba(rgb, 0.12)}`,
+    `--au-primary-mid:${rgba(rgb, 0.2)}`,
+    `--au-primary-border:${rgba(rgb, 0.28)}`,
+    '--au-primary-glow:transparent',
+    `--au-on-primary:${onColor(rgb)}`,
+    `--au-border-focus:${rgba(rgb, 0.55)}`,
   ].join(';')
 
   const lightRules = [
-    `--primary:${toHex(light)}`,
-    `--primary-hover:${shift(light, 0.88)}`,
-    `--primary-active:${shift(light, 0.76)}`,
-    `--primary-bg:${rgba(light, 0.1)}`,
-    `--primary-soft:${rgba(light, 0.08)}`,
-    `--primary-border:${rgba(light, 0.28)}`,
-    `--primary-glow:${rgba(light, 0.22)}`,
-    `--primary-on:${onColor(light)}`,
-    `--border-focus:${rgba(light, 0.55)}`,
-    `--gradient-brand:linear-gradient(135deg, ${toHex(light)} 0%, ${shift(light, 0.72)} 100%)`,
-    `--gradient-brand-hover:linear-gradient(135deg, ${shift(light, 0.88)} 0%, ${shift(light, 0.76)} 100%)`,
+    `--au-primary:${toHex(light)}`,
+    `--au-primary-strong:${shift(light, 0.85)}`,
+    `--au-primary-deep:${shift(light, 0.55)}`,
+    `--au-primary-soft:${rgba(light, 0.1)}`,
+    `--au-primary-mid:${rgba(light, 0.16)}`,
+    `--au-primary-border:${rgba(light, 0.26)}`,
+    '--au-primary-glow:transparent',
+    `--au-on-primary:${onColor(light)}`,
+    `--au-border-focus:${rgba(light, 0.55)}`,
   ].join(';')
 
   if (!brandStyle) {

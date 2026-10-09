@@ -466,7 +466,8 @@ watch([year, month, libraryId, selectedTypes], async () => {
 .cal-month {
   min-width: 6.5rem;
   text-align: center;
-  font-size: 0.9375rem;
+  font-family: var(--au-font-serif);
+  font-size: 1.0625rem;
   font-weight: 700;
   color: var(--au-text);
   font-variant-numeric: tabular-nums;
@@ -499,8 +500,11 @@ watch([year, month, libraryId, selectedTypes], async () => {
 .cal-chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.3125rem;
-  height: 26px;
+  height: 28px;
+  /* 分段器里的小胶囊：不吃 mobile.css 给所有 button 的 44px 最小高度（那会把整条撑成一排大药丸） */
+  min-height: 0;
   padding: 0 0.625rem;
   border: 0;
   border-radius: var(--au-r-full);
@@ -783,6 +787,8 @@ watch([year, month, libraryId, selectedTypes], async () => {
   .cal-toolbar { gap: 0.625rem; }
   .cal-nav { width: 100%; justify-content: space-between; }
   .cal-month { flex: 1; }
+  .cal-types { width: 100%; }
+  .cal-chip { flex: 1; height: 32px; }
   .cal-filters { width: 100%; }
   .cal-select { flex: 1; min-width: 0; }
 

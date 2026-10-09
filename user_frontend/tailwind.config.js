@@ -33,5 +33,11 @@ export default {
       },
     },
   },
+  // .container 是 aurora.css 的页面骨架（max-width 1080 + gutter）。Tailwind 自带的同名组件
+  // 在 ≥1280px 会把 max-width 改成 1280、在样式表里还排在后面——宽屏下首页主体比顶栏宽一截、
+  // 贴着屏幕左右边。全站没有用 Tailwind 的 container 语义，直接关掉
+  corePlugins: {
+    container: false,
+  },
   plugins: [],
 }

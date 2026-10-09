@@ -14,9 +14,11 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CalendarCheck, CircleCheck, CircleSlash, Coins, Crown, Download, Eye, EyeOff, Film, Gift,
-  KeyRound, Megaphone, MonitorSmartphone, MoreHorizontal, PlayCircle, RefreshCw, Search,
-  Server, ShieldCheck, Wallet, Waypoints,
+  History, KeyRound, Mail, Megaphone, MonitorSmartphone, MoreHorizontal, PlayCircle, RefreshCw, Search,
+  Server, ShieldCheck, Smartphone, UserX, Users as UsersIcon, Wallet, Waypoints,
 } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
+import { useBreakpoint } from '@/composables/useBreakpoint'
 import {
   broadcastMessage, extendSubscription, fetchDevices, fetchPlans, fetchUserDetail, fetchUsers,
   fetchUserGrants, grantSubscription, removeDevice, resetUserPassword, sendUserMessage, setDeviceBlocked,
@@ -29,6 +31,9 @@ import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
 const auth = useAuthStore()
+/** 手机上详情抽屉铺满整屏（620px 抽屉在 390px 屏幕上会被裁掉） */
+const { isPhone } = useBreakpoint()
+const drawerSize = computed(() => (isPhone.value ? '100%' : '620px'))
 
 /** 用户列表：手机端用户名做标题，注册时间隐藏（详情抽屉里有） */
 const columns: DataColumn[] = [
@@ -69,8 +74,28 @@ const subFilter = ref<string>('')
 const channelFilter = ref<string>('')
 const channels = ref<Array<{ value: string; label: string }>>([])
 const loading = ref(false)
+/** 列表加载失败：表格空态换成可重试的错误提示，而不是「没有匹配的用户」 */
+const loadError = ref(false)
 const page = ref(0)
 const PAGE_SIZE = 20
+
+/** 是否有任何筛选条件（决定空态文案：没匹配 vs 还没有用户） */
+const hasFilter = computed(() =>
+  Boolean(search.value || activeFilter.value || channelFilter.value || subFilter.value),
+)
+
+function applyFilter() {
+  page.value = 0
+  load()
+}
+
+function resetFilters() {
+  search.value = ''
+  activeFilter.value = ''
+  channelFilter.value = ''
+  subFilter.value = ''
+  applyFilter()
+}
 
 /** 后端 /users 未支持订阅筛选，这里做客户端补筛（当前页） */
 const visibleUsers = computed(() => {
@@ -81,6 +106,7 @@ const visibleUsers = computed(() => {
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     const params: Record<string, unknown> = { limit: PAGE_SIZE, offset: page.value * PAGE_SIZE }
     if (search.value) params.search = search.value
@@ -90,6 +116,9 @@ async function load() {
     users.value = res.users
     total.value = res.total
     if (res.channels?.length) channels.value = res.channels
+  } catch {
+    /* 拦截器已提示 */
+    loadError.value = true
   } finally {
     loading.value = false
   }
@@ -423,6 +452,7 @@ function logTypeLabel(type: string): string {
 // ==================== 授权资源卡片（Phase 4） ====================
 
 /** 卡片状态点：生效 / 即将到期 / 未授权（颜色只在点上，卡片本体不染色） */
+const BADGE_BY_STATE: Record<string, string> = { ok: 'au-badge-green', warn: 'au-badge-amber', off: 'au-badge-muted' }
 function grantState(card: UserGrantCard): { cls: string; text: string } {
   if (card.state === 'warn') return { cls: 'warn', text: `${card.subscription?.days_left ?? 0} 天后到期` }
   if (card.state === 'ok') return { cls: 'ok', text: card.grant_label }
@@ -456,48 +486,85 @@ function fmtCount(n: number | null | undefined): string {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">用户</h1>
-        <p class="admin-page-desc">共 {{ total }} 位用户 · 点击用户名或「详情」可查看完整画像</p>
-      </div>
-      <div class="toolbar">
-        <el-input
-          v-model="search"
-          placeholder="搜索用户名 / 邮箱"
-          clearable
-          @keyup.enter="page = 0; load()"
-          @clear="page = 0; load()"
-        >
-          <template #prefix><Search :size="14" /></template>
-        </el-input>
-        <el-select v-model="activeFilter" placeholder="账号状态" clearable @change="page = 0; load()">
-          <el-option label="正常" value="true" />
-          <el-option label="已禁用" value="false" />
-        </el-select>
-        <el-select v-model="channelFilter" placeholder="注册来源" clearable @change="page = 0; load()">
-          <el-option v-for="c in channels" :key="c.value" :label="c.label" :value="c.value" />
-        </el-select>
-        <el-select v-model="subFilter" placeholder="订阅状态" clearable>
-          <el-option label="订阅中" value="has" />
-          <el-option label="未订阅" value="none" />
-        </el-select>
-        <el-button @click="broadcastVisible = true"><Megaphone :size="14" style="margin-right: 4px" />全站广播</el-button>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
-    </div>
+  <div class="admin-page users-page">
+    <PageHeader
+      eyebrow="用户与账号"
+      title="用户"
+      description="点用户名或「详情」打开 360° 画像：订阅、积分、订单、邀请、设备与授权资源都在抽屉里处理。"
+    >
+      <template #actions>
+        <el-button @click="broadcastVisible = true">
+          <Megaphone :size="14" class="btn-ico" />全站广播
+        </el-button>
+        <el-button :loading="loading" @click="load">
+          <RefreshCw :size="14" class="btn-ico" />刷新
+        </el-button>
+      </template>
+    </PageHeader>
 
-    <div class="admin-card">
+    <SectionCard title="全部用户" :icon="UsersIcon" :meta="`共 ${total} 位`" flush>
+      <!-- 工具栏：筛选在左，重置在右 -->
+      <div class="users-toolbar">
+        <div class="users-filters">
+          <el-input
+            v-model="search"
+            class="f-search"
+            placeholder="搜索用户名 / 邮箱"
+            aria-label="搜索用户"
+            clearable
+            @keyup.enter="applyFilter"
+            @clear="applyFilter"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="activeFilter" class="f-select" placeholder="账号状态" clearable @change="applyFilter">
+            <el-option label="正常" value="true" />
+            <el-option label="已禁用" value="false" />
+          </el-select>
+          <el-select v-model="channelFilter" class="f-select" placeholder="注册来源" clearable @change="applyFilter">
+            <el-option v-for="c in channels" :key="c.value" :label="c.label" :value="c.value" />
+          </el-select>
+          <el-select v-model="subFilter" class="f-select" placeholder="订阅状态（本页）" clearable>
+            <el-option label="订阅中" value="has" />
+            <el-option label="未订阅" value="none" />
+          </el-select>
+        </div>
+        <div v-if="hasFilter" class="users-actions">
+          <el-button text @click="resetFilters">清除筛选</el-button>
+        </div>
+      </div>
+
       <DataTable :rows="visibleUsers" :columns="columns" :loading="loading" empty="没有匹配的用户">
+        <template #empty>
+          <EmptyState
+            v-if="loadError"
+            compact
+            :icon="UserX"
+            title="用户列表加载失败"
+            description="可能是网络或后端暂时不可用。"
+          >
+            <template #actions><el-button size="small" @click="load">重试</el-button></template>
+          </EmptyState>
+          <EmptyState
+            v-else-if="hasFilter"
+            compact
+            :icon="Search"
+            title="没有匹配的用户"
+            description="换个关键词，或清除筛选再看。"
+          >
+            <template #actions><el-button size="small" @click="resetFilters">清除筛选</el-button></template>
+          </EmptyState>
+          <EmptyState v-else compact :icon="UsersIcon" title="还没有用户" description="用户注册后会出现在这里。" />
+        </template>
+
         <template #cell-username="{ row }">
           <div class="user-cell">
             <button class="user-link" @click="openDetail(row)">{{ row.username }}</button>
             <!-- 角色位始终有值：非管理员的用户不再是一片空白（v2.42.5） -->
-            <span class="mini-badge" :class="row.is_staff ? 'staff' : 'off'">
+            <span class="au-badge" :class="row.is_staff ? 'au-badge-amber' : 'au-badge-muted'">
               {{ row.is_staff ? '管理员' : '用户' }}
             </span>
-            <span v-if="!row.is_active" class="mini-badge disabled">已禁用</span>
+            <span v-if="!row.is_active" class="au-badge au-badge-rose">已禁用</span>
           </div>
           <div class="user-sub">{{ row.email || '未绑定邮箱' }}</div>
         </template>
@@ -506,22 +573,22 @@ function fmtCount(n: number | null | undefined): string {
 
         <template #cell-subscription="{ row }">
           <template v-if="row.has_subscription">
-            <span class="mini-badge vip">生效中</span>
+            <span class="au-badge au-badge-green">生效中</span>
             <div class="user-sub">至 {{ fmtDay(row.subscription_end) }}</div>
           </template>
-          <span v-else class="mini-badge off">未订阅</span>
+          <span v-else class="au-badge au-badge-muted">未订阅</span>
         </template>
 
-        <template #cell-last_login_at="{ row }">{{ fmtDate(row.last_login_at) }}</template>
+        <template #cell-last_login_at="{ row }"><span class="au-num">{{ fmtDate(row.last_login_at) }}</span></template>
 
-        <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+        <template #cell-created_at="{ row }"><span class="au-num">{{ fmtDate(row.created_at) }}</span></template>
 
         <template #cell-actions="{ row }">
           <el-button size="small" text type="primary" @click="openDetail(row)">
-            <Eye :size="14" style="margin-right: 2px" />详情
+            <Eye :size="14" class="btn-ico-sm" />详情
           </el-button>
           <el-dropdown trigger="click" @command="(cmd: string) => onRowCommand(cmd, row)">
-            <el-button size="small" text>
+            <el-button size="small" text aria-label="更多操作">
               <MoreHorizontal :size="16" />
             </el-button>
             <template #dropdown>
@@ -543,29 +610,48 @@ function fmtCount(n: number | null | undefined): string {
         </template>
       </DataTable>
 
-      <div class="pager" v-if="total > PAGE_SIZE">
-        <el-pagination
-          layout="prev, pager, next, total"
-          :total="total"
-          :page-size="PAGE_SIZE"
-          :current-page="page + 1"
-          @current-change="(p: number) => { page = p - 1; load() }"
-        />
-      </div>
-    </div>
+      <template v-if="total > PAGE_SIZE" #footer>
+        <div class="pager">
+          <span class="pager-note">订阅状态筛选只作用于当前页</span>
+          <el-pagination
+            layout="prev, pager, next, total"
+            :total="total"
+            :page-size="PAGE_SIZE"
+            :current-page="page + 1"
+            :pager-count="isPhone ? 5 : 7"
+            size="small"
+            @current-change="(p: number) => { page = p - 1; load() }"
+          />
+        </div>
+      </template>
+    </SectionCard>
 
     <!-- ==================== 用户 360° 详情 ==================== -->
-    <el-drawer v-model="detailVisible" size="620px" :title="detailUser ? `用户画像 · ${detailUser.username}` : '用户详情'">
+    <el-drawer
+      v-model="detailVisible"
+      :size="drawerSize"
+      :title="detailUser ? `用户画像 · ${detailUser.username}` : '用户详情'"
+      class="user-drawer"
+    >
       <div v-loading="detailLoading" class="detail-body">
+        <EmptyState
+          v-if="!detailLoading && !detail"
+          :icon="UserX"
+          title="用户详情读取失败"
+          description="可能是网络或后端暂时不可用。"
+        >
+          <template #actions><el-button size="small" @click="refreshDetail">重试</el-button></template>
+        </EmptyState>
+
         <template v-if="detail">
           <!-- 概览 -->
           <div class="detail-hero">
-            <div class="hero-avatar">{{ detail.profile.username.charAt(0).toUpperCase() }}</div>
+            <div class="hero-avatar" aria-hidden="true">{{ detail.profile.username.charAt(0).toUpperCase() }}</div>
             <div class="hero-main">
               <div class="hero-name">
-                {{ detail.profile.username }}
-                <span v-if="detail.profile.is_staff" class="mini-badge staff">管理员</span>
-                <span v-if="!detail.profile.is_active" class="mini-badge disabled">已禁用</span>
+                <span class="au-serif">{{ detail.profile.username }}</span>
+                <span v-if="detail.profile.is_staff" class="au-badge au-badge-amber">管理员</span>
+                <span v-if="!detail.profile.is_active" class="au-badge au-badge-rose">已禁用</span>
               </div>
               <div class="hero-sub">
                 ID {{ detail.profile.id }} · {{ detail.profile.email || '未绑定邮箱' }} ·
@@ -576,52 +662,51 @@ function fmtCount(n: number | null | undefined): string {
           </div>
 
           <div class="detail-stats">
-            <div class="ds-item">
-              <span class="ds-label"><Crown :size="12" /> 订阅</span>
-              <span class="ds-value">
-                <template v-if="detail.subscription.active">
-                  {{ detail.subscription.active.plan_name }}
-                  <em>剩 {{ detail.subscription.active.days_left }} 天</em>
-                </template>
-                <template v-else><em class="muted">未订阅</em></template>
-              </span>
-            </div>
-            <div class="ds-item">
-              <span class="ds-label"><Coins :size="12" /> 积分</span>
-              <span class="ds-value">{{ detail.points.balance }}</span>
-            </div>
-            <div class="ds-item">
-              <span class="ds-label"><CalendarCheck :size="12" /> 签到</span>
-              <span class="ds-value">{{ detail.checkin.total }} 次<em>连签 {{ detail.checkin.streak }}</em></span>
-            </div>
-            <div class="ds-item">
-              <span class="ds-label"><Gift :size="12" /> 邀请</span>
-              <span class="ds-value">{{ detail.invitation.count }} 人<em>返利 {{ detail.invitation.rebate_total }}</em></span>
-            </div>
-            <div class="ds-item">
-              <span class="ds-label"><Wallet :size="12" /> 累计付费</span>
-              <span class="ds-value">¥{{ detail.orders.paid_total.toFixed(2) }}</span>
-            </div>
-            <div class="ds-item">
-              <span class="ds-label"><Film :size="12" /> 观看</span>
-              <span class="ds-value">{{ detail.watch.plays }} 次<em>已看 {{ detail.watch.watched_items }}</em></span>
-            </div>
+            <StatTile
+              label="订阅"
+              :icon="Crown"
+              :value="detail.subscription.active ? detail.subscription.active.plan_name : '未订阅'"
+              :suffix="detail.subscription.active ? `剩 ${detail.subscription.active.days_left} 天` : ''"
+              class="text-tile"
+            />
+            <StatTile label="积分" :icon="Coins" :value="detail.points.balance" />
+            <StatTile
+              label="签到"
+              :icon="CalendarCheck"
+              :value="detail.checkin.total"
+              :suffix="`次 · 连签 ${detail.checkin.streak}`"
+            />
+            <StatTile
+              label="邀请"
+              :icon="Gift"
+              :value="detail.invitation.count"
+              :suffix="`人 · 返利 ${detail.invitation.rebate_total}`"
+            />
+            <StatTile label="累计付费" :icon="Wallet" :value="`¥${detail.orders.paid_total.toFixed(2)}`" />
+            <StatTile
+              label="观看"
+              :icon="Film"
+              :value="detail.watch.plays"
+              :suffix="`次 · 已看 ${detail.watch.watched_items}`"
+            />
           </div>
 
           <div class="detail-actions">
             <el-button size="small" type="primary" @click="detailUser && openGrant(detailUser)">
-              <Crown :size="13" style="margin-right: 4px" />授予订阅
+              <Crown :size="13" class="btn-ico" />授予订阅
             </el-button>
             <el-button v-if="detailUser?.subscription_id" size="small" @click="detailUser && openExtend(detailUser)">延长订阅</el-button>
             <el-button size="small" @click="detailUser && openPoints(detailUser)">
-              <Coins :size="13" style="margin-right: 4px" />调整积分
+              <Coins :size="13" class="btn-ico" />调整积分
             </el-button>
             <el-button size="small" @click="detailUser && openPwd(detailUser)">
-              <KeyRound :size="13" style="margin-right: 4px" />重置密码
+              <KeyRound :size="13" class="btn-ico" />重置密码
             </el-button>
-            <el-button size="small" @click="detailUser && openMsg(detailUser)">发送消息</el-button>
+            <el-button size="small" @click="detailUser && openMsg(detailUser)">
+              <Mail :size="13" class="btn-ico" />发送消息
+            </el-button>
             <el-button size="small" @click="detailUser && toggleStaff(detailUser)">
-              <ShieldCheck :size="13" style="margin-right: 4px" />{{ detailUser?.is_staff ? '移除管理员' : '设为管理员' }}
+              <ShieldCheck :size="13" class="btn-ico" />{{ detailUser?.is_staff ? '移除管理员' : '设为管理员' }}
             </el-button>
           </div>
 
@@ -631,8 +716,17 @@ function fmtCount(n: number | null | undefined): string {
               <template #label>
                 <span class="tab-label"><Server :size="13" />授权资源</span>
               </template>
-              <div v-if="grantsLoading" class="empty-hint">授权卡片读取中…</div>
-              <div v-else-if="!grants" class="empty-hint">授权卡片读取失败，关掉抽屉重开可重试</div>
+              <div v-if="grantsLoading" class="grant-skeleton" aria-busy="true" aria-label="授权卡片读取中">
+                <div class="au-skeleton sk-row" />
+                <div class="au-skeleton sk-card" />
+              </div>
+              <EmptyState
+                v-else-if="!grants"
+                compact
+                :icon="Server"
+                title="授权卡片读取失败"
+                description="不影响上面的资料与操作；关掉抽屉重开可重试。"
+              />
               <template v-else>
                 <div class="grant-summary">
                   <div class="gs-item">
@@ -641,9 +735,9 @@ function fmtCount(n: number | null | undefined): string {
                       {{ grants.summary.realms_playable }} / {{ grants.summary.realms_total }} 个服
                     </span>
                   </div>
-                  <div class="gs-item">
+                  <div class="gs-item" :class="{ 'is-warn': grants.summary.realms_expiring > 0 }">
                     <span class="gs-label">即将到期</span>
-                    <span class="gs-value" :class="{ warn: grants.summary.realms_expiring > 0 }">
+                    <span class="gs-value">
                       {{ grants.summary.realms_expiring }} 个服
                     </span>
                   </div>
@@ -666,18 +760,22 @@ function fmtCount(n: number | null | undefined): string {
                   </div>
                 </div>
 
-                <div v-if="grants.cards.length === 0" class="empty-hint">
-                  还没有配置任何服，先到「服管理」建一个
-                </div>
+                <EmptyState
+                  v-if="grants.cards.length === 0"
+                  compact
+                  :icon="Server"
+                  title="还没有配置任何服"
+                  description="先到「服管理」建一个。"
+                />
                 <div v-else class="grant-grid">
                   <div v-for="card in grants.cards" :key="card.realm_id" class="grant-card">
                     <div class="grant-head">
                       <span class="grant-dot" :class="grantState(card).cls" />
                       <b class="grant-name">{{ card.realm_name }}</b>
-                      <span class="mini-badge" :class="grantState(card).cls">{{ grantState(card).text }}</span>
-                      <span v-if="card.is_default" class="mini-badge off">默认服</span>
-                      <span v-if="card.is_free" class="mini-badge vip">公益服</span>
-                      <span v-if="!card.is_active" class="mini-badge disabled">已停用</span>
+                      <span class="au-badge" :class="BADGE_BY_STATE[grantState(card).cls] || 'au-badge-muted'">{{ grantState(card).text }}</span>
+                      <span v-if="card.is_default" class="au-badge au-badge-muted">默认服</span>
+                      <span v-if="card.is_free" class="au-badge au-badge-info">公益服</span>
+                      <span v-if="!card.is_active" class="au-badge au-badge-rose">已停用</span>
                     </div>
 
                     <p class="grant-reason">{{ grantReason(card) }}</p>
@@ -734,7 +832,13 @@ function fmtCount(n: number | null | undefined): string {
             </el-tab-pane>
 
             <el-tab-pane label="订阅记录" name="overview">
-              <div v-if="detail.subscription.history.length === 0" class="empty-hint">暂无订阅记录</div>
+              <EmptyState
+                v-if="detail.subscription.history.length === 0"
+                compact
+                :icon="History"
+                title="暂无订阅记录"
+                description="授予或用户自己购买订阅后会出现在这里。"
+              />
               <DataTable
                 v-else
                 :rows="detail.subscription.history"
@@ -750,7 +854,7 @@ function fmtCount(n: number | null | undefined): string {
                 <template #cell-days_left="{ row }">{{ row.days_left }} 天</template>
 
                 <template #cell-status="{ row }">
-                  <span class="mini-badge" :class="row.status === 'active' && row.days_left > 0 ? 'vip' : 'off'">
+                  <span class="au-badge" :class="row.status === 'active' && row.days_left > 0 ? 'au-badge-green' : 'au-badge-muted'">
                     {{ row.status === 'active' && row.days_left > 0 ? '生效中' : '已结束' }}
                   </span>
                 </template>
@@ -763,9 +867,9 @@ function fmtCount(n: number | null | undefined): string {
                 · 累计消耗 <strong class="bad">-{{ detail.points.expense }}</strong>
                 · 当前 <strong>{{ detail.points.balance }}</strong>
               </div>
-              <div v-if="detail.points.recent.length === 0" class="empty-hint">暂无积分流水</div>
+              <EmptyState v-if="detail.points.recent.length === 0" compact :icon="Coins" title="暂无积分流水" />
               <div v-for="l in detail.points.recent.slice(0, LOGIN_LIMIT)" :key="l.id" class="line-row">
-                <span class="line-tag">{{ logTypeLabel(l.type) }}</span>
+                <span class="au-badge au-badge-amber line-tag">{{ logTypeLabel(l.type) }}</span>
                 <span class="line-desc">{{ l.description || '—' }}</span>
                 <span class="line-amount" :class="l.amount >= 0 ? 'ok' : 'bad'">
                   {{ l.amount >= 0 ? '+' : '' }}{{ l.amount }}
@@ -775,15 +879,20 @@ function fmtCount(n: number | null | undefined): string {
             </el-tab-pane>
 
             <el-tab-pane label="订单" name="orders">
-              <div v-if="!detail.orders.recharge.length && !detail.orders.subscription.length" class="empty-hint">暂无订单</div>
+              <EmptyState
+                v-if="!detail.orders.recharge.length && !detail.orders.subscription.length"
+                compact
+                :icon="Wallet"
+                title="暂无订单"
+              />
               <div v-for="o in detail.orders.recharge" :key="o.order_id" class="line-row">
-                <span class="line-tag">充值</span>
+                <span class="au-badge au-badge-amber line-tag">充值</span>
                 <span class="line-desc">{{ o.item_name }} · {{ o.points }} 积分</span>
                 <span class="line-amount">¥{{ o.amount }}</span>
                 <span class="line-date">{{ fmtDate(o.created_at) }}</span>
               </div>
               <div v-for="o in detail.orders.subscription" :key="o.order_id" class="line-row">
-                <span class="line-tag">订阅</span>
+                <span class="au-badge au-badge-amber line-tag">订阅</span>
                 <span class="line-desc">{{ o.item_name }}</span>
                 <span class="line-amount">¥{{ o.amount }}</span>
                 <span class="line-date">{{ fmtDate(o.created_at) }}</span>
@@ -791,9 +900,9 @@ function fmtCount(n: number | null | undefined): string {
             </el-tab-pane>
 
             <el-tab-pane label="邀请" name="invite">
-              <div v-if="detail.invitation.invitees.length === 0" class="empty-hint">暂无邀请记录</div>
+              <EmptyState v-if="detail.invitation.invitees.length === 0" compact :icon="Gift" title="暂无邀请记录" />
               <div v-for="(i, idx) in detail.invitation.invitees" :key="idx" class="line-row">
-                <span class="line-tag">邀请</span>
+                <span class="au-badge au-badge-amber line-tag">邀请</span>
                 <span class="line-desc">{{ i.username }}</span>
                 <span class="line-amount ok">+{{ i.reward_points }}</span>
                 <span class="line-date">{{ fmtDate(i.created_at) }}</span>
@@ -809,12 +918,15 @@ function fmtCount(n: number | null | undefined): string {
                 row-key="device_id"
                 empty="该用户还没有登录设备"
               >
+                <template #empty>
+                  <EmptyState compact :icon="Smartphone" title="该用户还没有登录设备" />
+                </template>
                 <template #cell-name="{ row }">{{ row.name || row.device_id }}</template>
                 <template #cell-client="{ row }">{{ row.client || '—' }}</template>
                 <template #cell-ip="{ row }"><span class="mono">{{ row.ip || '—' }}</span></template>
                 <template #cell-last_seen_at="{ row }">{{ fmtDeviceDate(row.last_seen_at) }}</template>
                 <template #cell-is_blocked="{ row }">
-                  <span class="mini-badge" :class="row.is_blocked ? 'danger' : 'ok'">{{ row.is_blocked ? '已封禁' : '正常' }}</span>
+                  <span class="au-badge" :class="row.is_blocked ? 'au-badge-rose' : 'au-badge-green'">{{ row.is_blocked ? '已封禁' : '正常' }}</span>
                 </template>
                 <template #cell-actions="{ row }">
                   <el-button size="small" text :type="row.is_blocked ? 'success' : 'warning'" @click="toggleUserDevice(row)">
@@ -840,7 +952,7 @@ function fmtCount(n: number | null | undefined): string {
           <span class="dialog-user">{{ subDialog.user?.username }}</span>
         </el-form-item>
         <el-form-item v-if="subDialog.mode === 'grant'" label="套餐">
-          <el-select v-model="subDialog.planId" style="width: 100%" @change="onPlanChange">
+          <el-select v-model="subDialog.planId" class="w-full" @change="onPlanChange">
             <el-option
               v-for="p in plans"
               :key="p.id"
@@ -853,7 +965,7 @@ function fmtCount(n: number | null | undefined): string {
           <span class="dialog-user">{{ fmtDay(subDialog.user?.subscription_end ?? null) }}</span>
         </el-form-item>
         <el-form-item label="天数">
-          <el-input-number v-model="subDialog.days" :min="1" :max="3650" style="width: 100%" />
+          <el-input-number v-model="subDialog.days" :min="1" :max="3650" class="w-full" />
         </el-form-item>
         <el-form-item label="预期区间">
           <span class="dialog-hint">{{ grantPreview }}</span>
@@ -875,7 +987,7 @@ function fmtCount(n: number | null | undefined): string {
           <span class="dialog-user">{{ pointsDialog.user?.username }}</span>
         </el-form-item>
         <el-form-item label="调整数额">
-          <el-input-number v-model="pointsDialog.amount" :min="-1000000" :max="1000000" style="width: 100%" />
+          <el-input-number v-model="pointsDialog.amount" :min="-1000000" :max="1000000" class="w-full" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="pointsDialog.reason" placeholder="例如：活动补偿 / 客服补偿" />
@@ -934,6 +1046,9 @@ function fmtCount(n: number | null | undefined): string {
         <el-form-item label="内容">
           <el-input v-model="broadcastForm.content" type="textarea" :rows="4" placeholder="将推送给全部用户…" />
         </el-form-item>
+        <el-form-item label=" ">
+          <span class="dialog-hint warn">会推送给全部用户，发出后无法撤回。</span>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="broadcastVisible = false">取消</el-button>
@@ -944,29 +1059,44 @@ function fmtCount(n: number | null | undefined): string {
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.user-cell { display: flex; align-items: center; gap: 6px; }
+.users-page { gap: 16px; }
+.btn-ico { margin-right: 4px; }
+.btn-ico-sm { margin-right: 2px; }
+.w-full { width: 100%; }
+
+/* ===== 工具栏：筛选左、操作右 ===== */
+.users-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--au-border);
+}
+.users-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.users-actions { display: flex; align-items: center; gap: 8px; }
+.f-search { width: 240px; }
+.f-select { width: 150px; }
+
+/* ===== 列表单元格 ===== */
+.user-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .user-link {
   background: none;
   border: none;
   padding: 0;
-  color: inherit;
+  color: var(--au-text);
   font-weight: 600;
   font-size: 14px;
   cursor: pointer;
+  border-radius: var(--au-r-sm);
 }
-.user-link:hover { color: var(--primary); }
-.user-sub { font-size: 12px; color: var(--text-muted); }
+.user-link:hover { color: var(--au-primary); }
+.user-link:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+.user-sub { font-size: 12px; color: var(--au-text-3); }
 
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: var(--radius-full); font-weight: 600; }
-.mini-badge.staff { background: var(--primary-bg); color: var(--primary); }
-.mini-badge.disabled { background: var(--danger-bg); color: var(--danger); }
-.mini-badge.vip { background: var(--warning-bg); color: var(--warning); }
-.mini-badge.off { background: var(--bg-hover); color: var(--text-muted); }
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.warn { background: var(--warning-bg); color: var(--warning); }
-
-.pager { display: flex; justify-content: flex-end; padding: 14px 0 4px; }
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.pager-note { font-size: 12px; color: var(--au-text-3); }
 
 /* ===== 详情抽屉 ===== */
 .detail-body { min-height: 260px; }
@@ -976,96 +1106,86 @@ function fmtCount(n: number | null | undefined): string {
 .hero-avatar {
   width: 52px;
   height: 52px;
-  border-radius: var(--radius-md);
+  border-radius: var(--au-r-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-family: var(--au-font-serif);
+  font-size: 22px;
   font-weight: 700;
-  color: var(--primary-on);
-  background: var(--gradient-brand);
+  color: var(--au-primary);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
   flex-shrink: 0;
 }
 
 .hero-main { min-width: 0; }
-.hero-name { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600; }
-.hero-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.hero-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 18px; font-weight: 600; color: var(--au-text); }
+.hero-sub { font-size: 12px; color: var(--au-text-3); margin-top: 3px; word-break: break-all; }
 
 .detail-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
-
-.ds-item {
-  background: var(--bg-glass);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-}
-
-.ds-label { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-muted); }
-.ds-value { display: block; font-size: 15px; font-weight: 600; margin-top: 3px; }
-.ds-value em { font-style: normal; font-size: 11.5px; color: var(--text-secondary); font-weight: 400; margin-left: 6px; }
-.ds-value em.muted { margin-left: 0; }
+/* 订阅格的值是套餐名（文字）：字号收一档，避免长名字换三行 */
+.text-tile :deep(.au-stat__value) { font-size: 1.05rem; }
 
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.detail-actions .el-button { margin-left: 0; }
 .detail-tabs { margin-top: 6px; }
 
-.mini-summary { font-size: 12.5px; color: var(--text-secondary); margin-bottom: 10px; }
-.ok { color: var(--success); }
-.bad { color: var(--danger); }
+.mini-summary { font-size: 12.5px; color: var(--au-text-2); margin-bottom: 10px; }
+.ok { color: var(--au-success); }
+.bad { color: var(--au-danger); }
 
 .line-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 9px 0;
+  border-bottom: 1px solid var(--au-border);
   font-size: 13px;
+  color: var(--au-text);
 }
 .line-row:last-child { border-bottom: none; }
-.line-tag {
-  font-size: 11px;
-  color: var(--primary);
-  background: var(--primary-bg);
-  border-radius: var(--radius-xs);
-  padding: 1px 7px;
-  flex-shrink: 0;
-}
+.line-tag { flex-shrink: 0; }
 .line-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.line-amount { font-weight: 600; }
-.line-date { font-size: 11.5px; color: var(--text-muted); flex-shrink: 0; }
+.line-amount { font-weight: 600; font-variant-numeric: tabular-nums; }
+.line-date { font-size: 11.5px; color: var(--au-text-3); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--font-mono); }
 
-.empty-hint { font-size: 13px; color: var(--text-muted); padding: 14px 0; text-align: center; }
-.dialog-user { font-weight: 600; }
-.dialog-hint { font-size: 12px; color: var(--text-muted); }
-.dialog-hint.warn { color: var(--warning); }
+.dialog-user { font-weight: 600; color: var(--au-text); }
+.dialog-hint { font-size: 12px; color: var(--au-text-3); line-height: 1.6; }
+.dialog-hint.warn { color: var(--au-warning); }
 
 /* ===== 授权资源卡片（Phase 4）===== */
 .tab-label { display: inline-flex; align-items: center; gap: 4px; }
+.grant-skeleton { display: flex; flex-direction: column; gap: 10px; }
+.sk-row { height: 56px; border-radius: var(--au-r-md); }
+.sk-card { height: 160px; border-radius: var(--au-r-md); }
 
 .grant-summary {
   display: grid;
-  /* 104px 下限：620px 抽屉里一行放得下 5 项，92vw 的手机上一行 3 项自动换行 */
+  /* 104px 下限：620px 抽屉里一行放得下 5 项，手机上一行 3 项自动换行 */
   grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
 
 .gs-item {
-  background: var(--bg-glass);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-sm);
   padding: 8px 10px;
 }
+.gs-item.is-warn { border-color: var(--au-warning-border); }
+.gs-item.is-warn .gs-value { color: var(--au-warning); }
 
-.gs-label { display: block; font-size: 11.5px; color: var(--text-muted); }
-.gs-value { display: block; margin-top: 2px; font-size: 14px; font-weight: 600; }
-.gs-value.warn { color: var(--warning); }
-.gs-value em { font-style: normal; margin-left: 4px; font-size: 11.5px; font-weight: 400; color: var(--text-secondary); }
+.gs-label { display: block; font-size: 11.5px; color: var(--au-text-3); }
+.gs-value { display: block; margin-top: 2px; font-size: 14px; font-weight: 600; color: var(--au-text); }
+.gs-value em { font-style: normal; margin-left: 4px; font-size: 11.5px; font-weight: 400; color: var(--au-text-2); }
 
 .grant-grid {
   display: grid;
@@ -1078,31 +1198,30 @@ function fmtCount(n: number | null | undefined): string {
   flex-direction: column;
   gap: 7px;
   padding: 12px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  /* 抽屉底色就是 --bg-card，卡片再用同色会只剩一条边；用 inset 表面拉开层次 */
-  background: var(--bg-inset);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  /* 抽屉底色是表面色，卡片用次级画布拉开层次（发丝线分层，不靠阴影） */
+  background: var(--au-bg-soft);
 }
 
-/* 状态色只落在标题行的点上，卡片本体不染色（否则整块变色压迫阅读） */
+/* 状态色只落在标题行的点上，卡片本体不染色 */
 .grant-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.grant-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.grant-name { font-size: 14px; font-weight: 600; color: var(--au-text); }
 
 .grant-dot {
   width: 7px;
   height: 7px;
-  border-radius: var(--radius-full);
+  border-radius: var(--au-r-full);
   flex-shrink: 0;
-  background: var(--text-muted);
+  background: var(--au-text-4);
 }
-.grant-dot.ok { background: var(--success); }
-.grant-dot.warn { background: var(--warning); }
-.grant-dot.off { background: var(--text-muted); }
+.grant-dot.ok { background: var(--au-success); }
+.grant-dot.warn { background: var(--au-warning); }
 
 .grant-reason {
   margin: 0;
   font-size: 12.5px;
-  color: var(--text-secondary);
+  color: var(--au-text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1114,12 +1233,13 @@ function fmtCount(n: number | null | undefined): string {
   align-items: center;
   gap: 3px;
   padding: 1px 7px;
-  border-radius: var(--radius-xs);
+  border-radius: var(--au-r-full);
+  border: 1px solid transparent;
   font-size: 11px;
   font-weight: 500;
 }
-.cap.on { background: var(--success-bg); color: var(--success); }
-.cap.off { background: var(--bg-hover); color: var(--text-muted); }
+.cap.on { background: var(--au-success-soft); color: var(--au-success); border-color: var(--au-success-border); }
+.cap.off { background: var(--au-violet-soft); color: var(--au-text-3); border-color: var(--au-border); }
 
 .grant-metrics {
   display: grid;
@@ -1129,13 +1249,13 @@ function fmtCount(n: number | null | undefined): string {
 }
 .grant-metric { display: flex; flex-direction: column; gap: 1px; }
 .grant-metric b {
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--au-text);
   font-variant-numeric: tabular-nums;
 }
-.grant-metric b em { font-style: normal; font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
-.grant-metric span { font-size: 11px; color: var(--text-muted); }
+.grant-metric b em { font-style: normal; font-size: 11.5px; font-weight: 400; color: var(--au-text-3); }
+.grant-metric span { font-size: 11px; color: var(--au-text-3); }
 
 .grant-note {
   display: flex;
@@ -1144,21 +1264,32 @@ function fmtCount(n: number | null | undefined): string {
   margin: 0;
   font-size: 11.5px;
   line-height: 1.5;
-  color: var(--text-secondary);
+  color: var(--au-text-2);
 }
 .grant-note svg { margin-top: 2px; flex-shrink: 0; }
-.grant-note.muted { color: var(--text-muted); }
+.grant-note.muted { color: var(--au-text-3); }
 
 .grant-scope {
   margin: 10px 0 0;
   font-size: 11.5px;
   line-height: 1.6;
-  color: var(--text-muted);
+  color: var(--au-text-3);
 }
 
-@media (max-width: 640px) {
-  .grant-metrics { grid-template-columns: repeat(3, 1fr); gap: 6px; }
-  .grant-metric b { font-size: var(--font-size-sm); }
+/* flush 卡片里的手机卡片列表：DataTable 本身不留边距，这里补回左右内距 */
+.users-page :deep(.dt-cards) { padding: 0 12px 12px; }
+
+@media (max-width: 768px) {
+  .users-toolbar { padding: 10px 16px; }
+  .users-filters { flex: 1 1 100%; }
+  .f-search { flex: 1 1 100%; width: auto; }
+  .f-select { flex: 1 1 calc(50% - 4px); width: auto; min-width: 0; }
+  .pager { justify-content: center; }
+  .detail-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grant-metric b { font-size: 14px; }
   .grant-reason { white-space: normal; }
+  .line-row { flex-wrap: wrap; row-gap: 2px; }
+  .line-desc { flex: 1 1 60%; }
+  .line-date { flex: 1 1 100%; }
 }
 </style>

@@ -206,7 +206,7 @@ onMounted(() => {
               placeholder="输入密码"
               @keyup.enter="handleLogin"
             />
-            <button type="button" class="eye-btn" @click="showLoginPassword = !showLoginPassword">
+            <button type="button" class="eye-btn" :aria-label="showLoginPassword ? '隐藏密码' : '显示密码'" @click="showLoginPassword = !showLoginPassword">
               <EyeOff v-if="showLoginPassword" :size="15" />
               <Eye v-else :size="15" />
             </button>
@@ -252,7 +252,7 @@ onMounted(() => {
               placeholder="至少 6 位"
               @keyup.enter="handleRegister"
             />
-            <button type="button" class="eye-btn" @click="showRegisterPassword = !showRegisterPassword">
+            <button type="button" class="eye-btn" :aria-label="showRegisterPassword ? '隐藏密码' : '显示密码'" @click="showRegisterPassword = !showRegisterPassword">
               <EyeOff v-if="showRegisterPassword" :size="15" />
               <Eye v-else :size="15" />
             </button>
@@ -484,7 +484,8 @@ onMounted(() => {
   display: flex;
   align-items: center;
   height: 44px;
-  background: var(--au-overlay-soft);
+  /* 字段底色走输入框令牌：--au-overlay-soft 是「图片上的压暗层」，浅色主题下它是一块深灰 */
+  background: var(--au-input-bg);
   border: 1px solid var(--au-border);
   border-radius: 11px;
   padding: 0 0.75rem;
@@ -636,5 +637,10 @@ onMounted(() => {
     padding: 1.5rem 1.25rem 1.25rem;
     border-radius: var(--au-r-lg);
   }
+}
+
+/* 手机：图标按钮的点按宽度补到 44px（高度由 mobile.css 统一补齐） */
+@media (max-width: 768px) {
+  .eye-btn { min-width: 44px; }
 }
 </style>

@@ -11,10 +11,17 @@
  *
  * v2.6.24：卡码是**一个服一个**的——一张卡码开的是它所属服的会员（乙服的注册码
  * 在乙服的 EA 上才生效）。默认只看当前服，可切「全部服」汇总；生成时可以指定归属服。
+ *
+ * v2.54（暗房影院）：PageHeader（范围切换 + 生成入口）· StatTile 总览（诱饵命中才染危险色）·
+ * 「注册模式」与「按类型」两张 SectionCard 并排 · 码表 flush + 统一工具条（筛选左、计数与查询右）；
+ * 加载失败给可重试的错误态。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Copy, Plus, RefreshCw, ShieldAlert, Trash2 } from 'lucide-vue-next'
+import {
+  AlertTriangle, CalendarPlus, Copy, DoorOpen, KeySquare, Layers, Plus, RefreshCw, Search, ShieldAlert, TimerOff, Trash2,
+} from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   createRegistrationCodes,
   deleteRegistrationCode,
@@ -41,6 +48,8 @@ const stats = ref<CodeStats | null>(null)
 const settings = ref<RegistrationSettings>({ mode: 'open', message: '' })
 const loading = ref(false)
 const total = ref(0)
+/** 码表加载失败（区别于「还没有生成过卡码」） */
+const loadError = ref(false)
 
 const filters = ref({ code_type: 0, state: '', keyword: '' })
 
@@ -114,6 +123,7 @@ const STATE_LABEL: Record<string, string> = {
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     // realm_id=0 → 全部服；其余按服过滤（后端以当前服作为兜底）
     const scopeId = scope.value === 'all' ? 0 : (realm.activeId ?? 0)
@@ -133,12 +143,25 @@ async function load() {
     stats.value = stat
     settings.value = setting
     if (list.realms?.length) realmOptions.value = list.realms
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
+    loadError.value = true
   } finally {
     loading.value = false
   }
 }
 
 onMounted(load)
+
+const hasFilter = computed(() => !!(filters.value.code_type || filters.value.state || filters.value.keyword))
+
+function resetFilters() {
+  filters.value = { code_type: 0, state: '', keyword: '' }
+  load()
+}
+
+/** 类型徽章：注册 / 续期 / 白名单 三种各一档（不再用紫色） */
+const TYPE_BADGE: Record<number, string> = { 1: 'au-badge-info', 2: 'au-badge-amber', 3: 'badge-warn' }
 
 function openGenerate(codeType: 1 | 2 | 3) {
   genForm.value.code_type = codeType
@@ -247,111 +270,80 @@ function usedByNames(row: RegistrationCode): string {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">卡码管理</h1>
-        <p class="admin-page-desc">
-          注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码 —— 生成、审计与注册模式管控
-        </p>
-      </div>
-      <div class="admin-page-actions">
-        <el-button @click="quickGenerate">
-          <Plus :size="14" style="margin-right: 4px" />快捷生成 5 个注册码
-        </el-button>
-        <el-button type="primary" @click="openGenerate(1)">
-          <Plus :size="15" style="margin-right: 4px" />类型化生成
-        </el-button>
-        <el-button class="icon-only" @click="load" aria-label="刷新">
-          <RefreshCw :size="15" />
-        </el-button>
-      </div>
-    </div>
-
-    <!-- 运营总览 -->
-    <div v-if="stats" class="stat-grid">
-      <div class="stat-tile">
-        <div class="stat-label">卡码总数</div>
-        <div class="stat-value">{{ stats.total }}</div>
-        <div class="stat-hint">可用 {{ stats.active }} · 停用 {{ stats.disabled }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">已过期 / 已用尽</div>
-        <div class="stat-value">{{ stats.expired }} / {{ stats.used_up }}</div>
-        <div class="stat-hint">到期与次数用尽的卡码</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">累计授予</div>
-        <div class="stat-value">{{ stats.days_granted }} <span class="unit">天</span></div>
-        <div class="stat-hint">不含白名单（永久）与诱饵码</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-alert': stats.decoy.triggered > 0 }">
-        <div class="stat-label">诱饵码命中</div>
-        <div class="stat-value">{{ stats.decoy.triggered }} / {{ stats.decoy.total }}</div>
-        <div class="stat-hint">命中即自动封禁使用者账号</div>
-      </div>
-    </div>
-
-    <!-- 按类型统计 -->
-    <div v-if="stats?.by_type.length" class="admin-card type-row-card">
-      <div v-for="t in stats.by_type" :key="t.code_type" class="type-chip">
-        <span class="type-name">{{ t.code_type_name }}</span>
-        <span class="type-num">{{ t.available }} 可用 / {{ t.total }} 总计</span>
-        <span class="type-used">已核销 {{ t.used }} 次</span>
-      </div>
-    </div>
-
-    <!-- 注册模式 -->
-    <div class="admin-card mode-card">
-      <div class="mode-row">
-        <span class="mode-label">注册模式</span>
-        <el-radio-group v-model="settings.mode" @change="saveMode">
-          <el-radio-button value="open">开放注册</el-radio-button>
-          <el-radio-button value="code">凭码注册</el-radio-button>
-          <el-radio-button value="closed">关闭注册</el-radio-button>
+  <div class="admin-page codes-page">
+    <PageHeader
+      eyebrow="运营中心"
+      title="卡码管理"
+      description="注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码——生成、审计与注册模式管控。卡码开的是它所属服的会员。"
+    >
+      <template #actions>
+        <el-radio-group v-model="scope" @change="load">
+          <el-radio-button value="realm">当前服</el-radio-button>
+          <el-radio-button value="all">全部服</el-radio-button>
         </el-radio-group>
-        <span class="mode-desc">{{ modeDesc(settings.mode) }}</span>
-      </div>
-      <div v-if="settings.mode === 'closed'" class="mode-row">
-        <span class="mode-label">关闭提示</span>
-        <el-input
-          v-model="settings.message"
-          placeholder="关闭注册时展示给用户的消息"
-          style="max-width: 420px"
-        />
-        <el-button size="small" :loading="modeBusy" @click="saveMode">保存</el-button>
-      </div>
-    </div>
+        <el-button :icon="RefreshCw" :loading="loading" aria-label="刷新" @click="load">刷新</el-button>
+        <el-button :icon="Plus" @click="quickGenerate">快捷生成 5 个注册码</el-button>
+        <el-button type="primary" :icon="Plus" @click="openGenerate(1)">类型化生成</el-button>
+      </template>
+    </PageHeader>
 
-    <!-- 筛选 -->
-    <div class="admin-card filter-bar">
-      <el-radio-group v-model="scope" size="small" @change="load">
-        <el-radio-button value="realm">当前服</el-radio-button>
-        <el-radio-button value="all">全部服</el-radio-button>
-      </el-radio-group>
-      <el-select v-model="filters.code_type" placeholder="全部类型" style="width: 140px" @change="load">
-        <el-option :value="0" label="全部类型" />
-        <el-option :value="1" label="注册码" />
-        <el-option :value="2" label="续期码" />
-        <el-option :value="3" label="白名单码" />
-      </el-select>
-      <el-select v-model="filters.state" placeholder="全部状态" style="width: 140px" @change="load">
-        <el-option value="" label="全部状态" />
-        <el-option value="active" label="可用" />
-        <el-option value="disabled" label="已停用" />
-        <el-option value="expired" label="已过期" />
-        <el-option value="used_up" label="已用尽" />
-      </el-select>
-      <el-input
-        v-model="filters.keyword"
-        placeholder="搜索卡码 / 备注 / 指名账号"
-        style="max-width: 260px"
-        clearable
-        @keyup.enter="load"
-        @clear="load"
+    <!-- 运营总览：数字走正文色，只有诱饵码被命中才染危险色 -->
+    <section v-if="stats" class="stat-row" aria-label="卡码总览">
+      <StatTile label="卡码总数" :value="stats.total" :icon="KeySquare" :hint="`可用 ${stats.active} · 停用 ${stats.disabled}`" />
+      <StatTile
+        label="已过期 / 已用尽"
+        :value="stats.expired"
+        :suffix="`/ ${stats.used_up}`"
+        :icon="TimerOff"
+        hint="到期与次数用尽的卡码"
       />
-      <el-button @click="load">查询</el-button>
-      <span class="filter-count">共 {{ total }} 条{{ scope === 'realm' ? '（当前服）' : '（全部服）' }}</span>
+      <StatTile
+        label="累计授予"
+        :value="stats.days_granted"
+        suffix="天"
+        :icon="CalendarPlus"
+        hint="不含白名单（永久）与诱饵码"
+      />
+      <StatTile
+        label="诱饵码命中"
+        :value="stats.decoy.triggered"
+        :suffix="`/ ${stats.decoy.total}`"
+        :icon="ShieldAlert"
+        :tone="stats.decoy.triggered > 0 ? 'danger' : 'plain'"
+        hint="命中即自动封禁使用者账号"
+      />
+    </section>
+
+    <div class="split">
+      <!-- 注册模式：全站级开关，切换即保存 -->
+      <SectionCard title="注册模式" :icon="DoorOpen" :description="modeDesc(settings.mode)">
+        <div class="mode-body">
+          <el-radio-group v-model="settings.mode" @change="saveMode">
+            <el-radio-button value="open">开放注册</el-radio-button>
+            <el-radio-button value="code">凭码注册</el-radio-button>
+            <el-radio-button value="closed">关闭注册</el-radio-button>
+          </el-radio-group>
+          <div v-if="settings.mode === 'closed'" class="mode-msg">
+            <label class="mode-label" for="close-msg">关闭提示</label>
+            <div class="mode-msg-row">
+              <el-input id="close-msg" v-model="settings.message" placeholder="关闭注册时展示给用户的消息" />
+              <el-button :loading="modeBusy" @click="saveMode">保存</el-button>
+            </div>
+          </div>
+        </div>
+      </SectionCard>
+
+      <!-- 按类型统计 -->
+      <SectionCard title="按类型" :icon="Layers" flush>
+        <ul v-if="stats?.by_type.length" class="type-list">
+          <li v-for="t in stats.by_type" :key="t.code_type" class="type-row">
+            <span class="au-badge" :class="TYPE_BADGE[t.code_type] || 'au-badge-muted'">{{ t.code_type_name }}</span>
+            <span class="type-num"><strong>{{ t.available }}</strong> 可用 / {{ t.total }} 总计</span>
+            <span class="type-used">已核销 {{ t.used }} 次</span>
+          </li>
+        </ul>
+        <EmptyState v-else compact title="还没有按类型的统计" description="生成第一批卡码后这里会分类统计。" />
+      </SectionCard>
     </div>
 
     <!-- 生成弹窗 -->
@@ -382,7 +374,7 @@ function usedByNames(row: RegistrationCode): string {
             :max="3650"
             :disabled="genForm.code_type === 3"
           />
-          <span class="form-hint" style="margin-left: 10px">本次授予：{{ dailyDefault }}</span>
+          <span class="form-hint inline-hint">本次授予：{{ dailyDefault }}</span>
         </el-form-item>
         <el-form-item label="每码次数">
           <el-input-number v-model="genForm.max_uses" :min="1" :max="1000" />
@@ -404,7 +396,7 @@ function usedByNames(row: RegistrationCode): string {
         </el-form-item>
         <el-form-item label="诱饵码">
           <el-switch v-model="genForm.is_decoy" />
-          <div class="form-hint">
+          <div class="form-hint decoy-hint">
             <ShieldAlert :size="12" /> 蜜罐：在盗版渠道流通，使用即自动封禁账号
           </div>
         </el-form-item>
@@ -428,141 +420,238 @@ function usedByNames(row: RegistrationCode): string {
       </template>
     </el-dialog>
 
-    <!-- 码表：桌面表格 / 手机卡片 -->
-    <div class="admin-card">
-      <DataTable :rows="codes" :columns="columns" :loading="loading" empty="还没有生成过卡码">
+    <!-- 码表：筛选在左、计数与查询在右；桌面表格 / 手机卡片 -->
+    <SectionCard
+      title="全部卡码"
+      :icon="KeySquare"
+      :meta="`共 ${total} 条${scope === 'realm' ? '（当前服）' : '（全部服）'}`"
+      flush
+    >
+      <div class="view-toolbar">
+        <div class="view-toolbar__filters">
+          <el-input
+            v-model="filters.keyword"
+            class="f-search"
+            placeholder="搜索卡码 / 备注 / 指名账号"
+            clearable
+            @keyup.enter="load"
+            @clear="load"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="filters.code_type" class="f-select" placeholder="全部类型" @change="load">
+            <el-option :value="0" label="全部类型" />
+            <el-option :value="1" label="注册码" />
+            <el-option :value="2" label="续期码" />
+            <el-option :value="3" label="白名单码" />
+          </el-select>
+          <el-select v-model="filters.state" class="f-select" placeholder="全部状态" @change="load">
+            <el-option value="" label="全部状态" />
+            <el-option value="active" label="可用" />
+            <el-option value="disabled" label="已停用" />
+            <el-option value="expired" label="已过期" />
+            <el-option value="used_up" label="已用尽" />
+          </el-select>
+        </div>
+        <div class="view-toolbar__actions">
+          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
+          <el-button type="primary" :icon="Search" @click="load">查询</el-button>
+        </div>
+      </div>
+
+      <EmptyState v-if="loadError && !codes.length" :icon="AlertTriangle" title="卡码加载失败" description="网络或服务暂时不可用，稍后重试。">
+        <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
+      </EmptyState>
+
+      <DataTable v-else class="flush-table" :rows="codes" :columns="columns" :loading="loading" empty="还没有生成过卡码">
         <template #cell-code="{ row }">
           <div class="code-cell">
-            <button class="code-chip" @click.stop="copyText(row.code)">
+            <button type="button" class="code-chip" title="点击复制" @click.stop="copyText(row.code)">
               {{ row.code }}<Copy :size="12" />
             </button>
-            <span v-if="row.is_decoy" class="mini-badge danger">诱饵</span>
+            <span v-if="row.is_decoy" class="au-badge au-badge-rose">诱饵</span>
           </div>
         </template>
 
         <template #cell-code_type="{ row }">
-          <span class="mini-badge" :class="`type-${row.code_type}`">{{ row.code_type_name }}</span>
+          <span class="au-badge" :class="TYPE_BADGE[row.code_type] || 'au-badge-muted'">{{ row.code_type_name }}</span>
         </template>
 
         <template #cell-realm="{ row }">
-          <span class="mini-badge" :class="row.realm_id ? '' : 'muted'">{{ realmLabel(row) }}</span>
+          <span class="au-badge" :class="row.realm_id ? 'au-badge-info' : 'au-badge-muted'">{{ realmLabel(row) }}</span>
         </template>
 
         <template #cell-days_text="{ row }">{{ row.days_text }}</template>
 
-        <template #cell-use_count="{ row }">{{ row.use_count }} / {{ row.max_uses }}</template>
+        <template #cell-use_count="{ row }"><span class="num">{{ row.use_count }} / {{ row.max_uses }}</span></template>
 
         <template #cell-state="{ row }">
-          <span class="mini-badge" :class="row.state === 'active' ? 'ok' : 'off'">
+          <span class="au-badge" :class="row.state === 'active' ? 'au-badge-green' : 'au-badge-muted'">
             {{ STATE_LABEL[row.state] || row.state }}
           </span>
         </template>
 
         <template #cell-target_username="{ row }">
-          <span v-if="!row.target_username" class="muted">—</span>
+          <span v-if="!row.target_username" class="faint">—</span>
           <span v-else>{{ row.target_username }}</span>
         </template>
 
-        <template #cell-expires_at="{ row }">{{ fmtDateTime(row.expires_at) }}</template>
+        <template #cell-expires_at="{ row }"><span class="num">{{ fmtDateTime(row.expires_at) }}</span></template>
 
         <template #cell-note="{ row }">
-          <span v-if="!row.note" class="muted">—</span>
+          <span v-if="!row.note" class="faint">—</span>
           <span v-else>{{ row.note }}</span>
         </template>
 
         <template #cell-used_by="{ row }">
-          <span v-if="row.used_by.length === 0" class="muted">—</span>
+          <span v-if="row.used_by.length === 0" class="faint">—</span>
           <span v-else>{{ usedByNames(row) }}</span>
         </template>
 
         <template #cell-actions="{ row }">
           <el-button
             size="small"
-            :type="row.is_active ? 'danger' : 'success'"
+            :type="row.is_active ? 'warning' : 'success'"
             plain
             :loading="rowBusyId === row.id"
             @click="toggle(row)"
           >
             {{ row.is_active ? '停用' : '启用' }}
           </el-button>
-          <el-button size="small" type="danger" plain :loading="rowBusyId === row.id" @click="remove(row)">
-            <Trash2 :size="13" style="margin-right: 2px" />删除
+          <el-button size="small" type="danger" plain :icon="Trash2" :loading="rowBusyId === row.id" @click="remove(row)">
+            删除
           </el-button>
         </template>
+
+        <template #empty>
+          <EmptyState
+            compact
+            :icon="KeySquare"
+            :title="hasFilter ? '没有符合条件的卡码' : '还没有生成过卡码'"
+            :description="hasFilter ? '换个条件，或清空筛选看全部。' : '用右上角「类型化生成」发一批注册码 / 续期码。'"
+          >
+            <template #actions>
+              <el-button v-if="hasFilter" size="small" @click="resetFilters">清空筛选</el-button>
+              <el-button v-else size="small" type="primary" :icon="Plus" @click="openGenerate(1)">类型化生成</el-button>
+            </template>
+          </EmptyState>
+        </template>
       </DataTable>
-    </div>
+    </SectionCard>
   </div>
 </template>
 
 <style scoped>
-/* 页面只保留自己专有的样式；卡片、徽标、统计瓦片、form-hint 都走全局原语 */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
 
-.stat-tile .unit { font-size: 14px; font-weight: 500; color: var(--text-tertiary); }
-.stat-tile.is-alert { border-color: var(--danger-border); }
+/* 注册模式 + 按类型：并排，窄屏叠起来 */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
 
-.type-row-card { display: flex; gap: 20px; flex-wrap: wrap; }
-.type-chip { display: flex; flex-direction: column; gap: 3px; }
-.type-name { font-size: var(--font-size-sm); font-weight: 600; color: var(--text-primary); }
-.type-num { font-size: var(--font-size-xs); color: var(--text-tertiary); }
-.type-used { font-size: var(--font-size-xs); color: var(--text-muted); }
+.mode-body { display: flex; flex-direction: column; gap: 14px; }
+.mode-msg { display: flex; flex-direction: column; gap: 6px; }
+.mode-label { font-size: 12px; color: var(--au-text-3); }
+.mode-msg-row { display: flex; gap: 8px; }
 
-.mode-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.mode-row + .mode-row { margin-top: 12px; }
-.mode-label { font-size: var(--font-size-sm); font-weight: 600; color: var(--text-tertiary); }
-.mode-desc { font-size: var(--font-size-xs); color: var(--text-muted); }
+.type-list { list-style: none; margin: 0; padding: 0; }
+.type-row {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  font-size: 12.5px;
+}
+.type-row + .type-row { border-top: 1px solid var(--au-border); }
+.type-num { flex: 1 1 auto; color: var(--au-text-2); font-variant-numeric: tabular-nums; }
+.type-num strong { color: var(--au-text); font-weight: 700; }
+.type-used { color: var(--au-text-4); font-variant-numeric: tabular-nums; }
 
-.filter-bar { margin-bottom: 0; }
-.filter-count { font-size: var(--font-size-xs); color: var(--text-muted); margin-left: auto; }
+/* ---------- 工具条：筛选在左、动作在右 ---------- */
+.view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 14px;
+  border-bottom: 1px solid var(--au-border);
+}
+.view-toolbar__filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.view-toolbar__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.f-search { width: 240px; }
+.f-select { width: 130px; }
 
+.flush-table :deep(.dt-cards) { padding: 12px 12px 8px; }
+
+/* ---------- 单元格 ---------- */
+.num { font-variant-numeric: tabular-nums; }
+.faint { color: var(--au-text-4); }
+.badge-warn { background: var(--au-warning-soft); color: var(--au-warning); border-color: var(--au-warning-border); }
 .code-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .code-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 4px 10px;
   font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
+  font-size: 12.5px;
   letter-spacing: 0.06em;
-  background: var(--primary-soft);
-  color: var(--primary);
-  border: 1px solid var(--primary-border);
-  border-radius: var(--radius-sm);
-  padding: 5px 10px;
+  color: var(--au-primary);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-sm);
   cursor: pointer;
-  transition: background var(--transition-fast);
+  transition: background var(--au-fast) var(--au-ease);
 }
+.code-chip:hover { background: var(--au-primary-mid); }
+.code-chip:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
 
-.code-chip:hover { background: var(--primary-bg); }
-
-/* 用 .admin-page 前缀把权重抬到高于全局徽标规则，颜色才不会被覆盖 */
-.admin-page .mini-badge.type-1 { background: var(--info-bg); color: #93c5fd; border-color: var(--info-border); }
-.admin-page .mini-badge.type-2 { background: rgba(167, 139, 250, 0.14); color: var(--violet); border-color: rgba(167, 139, 250, 0.3); }
-.admin-page .mini-badge.type-3 { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-border); }
+/* ---------- 弹窗 ---------- */
+.inline-hint { margin-left: 10px; }
+.decoy-hint { display: inline-flex; align-items: center; gap: 4px; }
 
 .gen-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; }
-
 .gen-code {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
+  padding: 10px 12px;
   font-family: var(--font-mono);
   letter-spacing: 0.06em;
-  background: var(--bg-inset);
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  cursor: pointer;
   text-align: left;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  color: var(--au-text);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  cursor: pointer;
+  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
+}
+.gen-code:hover { border-color: var(--au-primary-border); background: var(--au-primary-soft); }
+.gen-days { font-size: 12px; color: var(--au-text-3); white-space: nowrap; }
+
+@media (max-width: 1000px) {
+  .split { grid-template-columns: minmax(0, 1fr); }
 }
 
-.gen-code:hover { border-color: var(--primary-border); background: var(--primary-soft); }
-.gen-days { font-size: var(--font-size-xs); color: var(--text-tertiary); white-space: nowrap; }
-
-/* 手机：主操作按钮铺满，次要按钮并排 */
-@media (max-width: 640px) {
-  .admin-page-actions > .el-button.is-primary { flex: 1 1 100%; }
+@media (max-width: 768px) {
+  .view-toolbar { padding: 2px 16px 12px; }
+  .view-toolbar__filters > .f-search { flex: 1 1 100%; width: auto; }
+  .view-toolbar__filters > .f-select { flex: 1 1 120px; width: auto; }
+  .view-toolbar__actions { width: 100%; justify-content: flex-end; }
+  .type-row { padding: 10px 16px; }
+  .mode-body :deep(.el-radio-group) { display: flex; width: 100%; }
+  .mode-body :deep(.el-radio-button) { flex: 1; }
+  .mode-body :deep(.el-radio-button__inner) { width: 100%; }
 }
 </style>

@@ -7,10 +7,17 @@
  *
  * v2.6.20：订阅是**一个服一个**的。默认只看面板当前服（会员开在哪个服、能在哪台 EA 上播
  * 都由它决定），顶部可以切到「全部服」做跨服汇总——这时列表会多一列归属服。
+ *
+ * v2.54（暗房影院）：PageHeader（范围切换 + 刷新）· 四个 StatTile 兼作状态筛选按钮
+ * （外面包一层 button，选中走琥珀描边）· 到期提醒与订阅清单都换成 SectionCard，
+ * 清单是 flush 表格 + 统一工具条；加载失败给可重试的错误态。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { BellRing, CalendarClock, Crown, RefreshCw, Search, TimerOff, Users } from 'lucide-vue-next'
+import {
+  AlertTriangle, BellRing, CalendarClock, Crown, ListChecks, RefreshCw, Search, TimerOff, Users,
+} from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchPlans, fetchRealmSubscriptions, type PlanRow } from '@/api/admin'
 import {
   extendUserSubscription, grantUserSubscription,
@@ -47,6 +54,8 @@ const rows = ref<SubscriptionOverviewRow[]>([])
 const summary = ref({ total: 0, active: 0, expiring_7d: 0, expired: 0 })
 const statusFilter = ref<string>('')
 const search = ref('')
+/** 清单加载失败（区别于「没有符合条件的记录」） */
+const loadError = ref(false)
 // 深链：仪表盘 / 命令面板带筛选过来（Phase 5，如 /subscriptions?status=expiring）
 useQueryFilter(statusFilter, 'status', load)
 
@@ -59,6 +68,7 @@ const plans = ref<PlanRow[]>([])
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     const params: Record<string, unknown> = { limit: 200 }
     if (statusFilter.value) params.status_filter = statusFilter.value
@@ -69,7 +79,8 @@ async function load() {
     summary.value = res.summary
     scopeRealmName.value = res.realm_name
   } catch {
-    // 错误提示由 HTTP 拦截器统一处理
+    // 错误提示由 HTTP 拦截器统一处理；这里只记下「失败了」好给出重试入口
+    loadError.value = true
   } finally {
     loading.value = false
   }
@@ -97,10 +108,37 @@ function onScopeChange() {
 
 const activeCount = computed(() => summary.value.active)
 
+const hasFilter = computed(() => !!(statusFilter.value || search.value.trim()))
+
+function resetFilters() {
+  statusFilter.value = ''
+  search.value = ''
+  load()
+}
+
+/** 顶部数字块（兼作筛选按钮）：数字走正文色，只有「7 天内到期 > 0」染警示 */
+const statTiles = computed(() => [
+  { key: 'active', label: '生效中', value: summary.value.active, icon: Crown, tone: 'plain' as const, title: '只看生效中的订阅' },
+  {
+    key: 'expiring', label: '7 天内到期', value: summary.value.expiring_7d, icon: CalendarClock,
+    tone: summary.value.expiring_7d > 0 ? ('warn' as const) : ('plain' as const), title: '只看 7 天内到期的订阅',
+  },
+  { key: 'expired', label: '已过期', value: summary.value.expired, icon: TimerOff, tone: 'plain' as const, title: '只看已过期的订阅' },
+  { key: '', label: '记录总数', value: summary.value.total, icon: Users, tone: 'plain' as const, title: '取消筛选，看全部记录' },
+])
+
 function daysTone(row: SubscriptionOverviewRow): string {
   if (row.days_left <= 0) return 'off'
   if (row.days_left <= 7) return 'warn'
   return 'ok'
+}
+
+/** 状态徽章：生效中绿 / 临期警示 / 已过期中性 */
+function badgeClass(row: SubscriptionOverviewRow): string {
+  const tone = daysTone(row)
+  if (tone === 'ok') return 'au-badge-green'
+  if (tone === 'warn') return 'badge-warn'
+  return 'au-badge-muted'
 }
 
 function statusText(row: SubscriptionOverviewRow): string {
@@ -248,156 +286,140 @@ async function submit() {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">订阅与权益</h1>
-        <p class="admin-page-desc">
-          共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位用户处于订阅中
-          <template v-if="scopeRealmName">· 范围：{{ scopeRealmName }}</template>
-        </p>
-      </div>
-      <div class="toolbar">
-        <el-radio-group v-model="scope" size="small" @change="onScopeChange">
+  <div class="admin-page subs-page">
+    <PageHeader eyebrow="用户与账号" title="订阅与权益">
+      <template #description>
+        共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位用户处于订阅中
+        <template v-if="scopeRealmName">· 范围：{{ scopeRealmName }}</template>
+      </template>
+      <template #actions>
+        <el-radio-group v-model="scope" @change="onScopeChange">
           <el-radio-button value="realm">当前服</el-radio-button>
           <el-radio-button value="all">全部服</el-radio-button>
         </el-radio-group>
-        <el-input
-          v-model="search"
-          placeholder="搜索用户名"
-          clearable
-          @keyup.enter="load"
-          @clear="load"
-        >
-          <template #prefix><Search :size="14" /></template>
-        </el-input>
-        <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="load">
-          <el-option label="生效中" value="active" />
-          <el-option label="7 天内到期" value="expiring" />
-          <el-option label="已过期" value="expired" />
-        </el-select>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
-    </div>
+        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
+      </template>
+    </PageHeader>
 
-    <section class="stat-grid">
+    <!-- 四个数字块 = 四个筛选入口：点一下把下面的清单筛成这个状态，再点一下取消 -->
+    <section class="stat-row" aria-label="订阅概况（点击筛选）">
       <button
-        class="stat-tile stat-tile-btn"
-        :class="{ active: statusFilter === 'active' }"
-        title="只看生效中的订阅"
-        @click="filterBy('active')"
+        v-for="t in statTiles"
+        :key="t.key || 'all'"
+        type="button"
+        class="tile-btn"
+        :class="{ 'is-active': statusFilter === t.key }"
+        :aria-pressed="statusFilter === t.key"
+        :title="t.title"
+        @click="filterBy(t.key)"
       >
-        <div class="stat-label"><Crown :size="13" /> 生效中</div>
-        <div class="stat-value stat-accent">{{ summary.active }}</div>
-      </button>
-      <button
-        class="stat-tile stat-tile-btn"
-        :class="{ active: statusFilter === 'expiring' }"
-        title="只看 7 天内到期的订阅"
-        @click="filterBy('expiring')"
-      >
-        <div class="stat-label"><CalendarClock :size="13" /> 7 天内到期</div>
-        <div class="stat-value" :class="{ 'stat-warn': summary.expiring_7d > 0 }">{{ summary.expiring_7d }}</div>
-      </button>
-      <button
-        class="stat-tile stat-tile-btn"
-        :class="{ active: statusFilter === 'expired' }"
-        title="只看已过期的订阅"
-        @click="filterBy('expired')"
-      >
-        <div class="stat-label"><TimerOff :size="13" /> 已过期</div>
-        <div class="stat-value">{{ summary.expired }}</div>
-      </button>
-      <button
-        class="stat-tile stat-tile-btn"
-        :class="{ active: statusFilter === '' }"
-        title="取消筛选，看全部记录"
-        @click="filterBy('')"
-      >
-        <div class="stat-label"><Users :size="13" /> 记录总数</div>
-        <div class="stat-value">{{ summary.total }}</div>
+        <StatTile :label="t.label" :value="t.value" :icon="t.icon" :tone="t.tone" />
       </button>
     </section>
 
     <!-- 到期提醒：会员到期前自动触达，是续费率最直接的一环；面板要能看出它在跑 -->
-    <div class="admin-card reminder-card">
-      <div class="reminder-head">
-        <div class="reminder-title">
-          <BellRing :size="15" />
-          到期续费提醒
-          <span
-            class="mini-badge"
-            :class="reminders?.enabled ? 'ok' : 'muted'"
-          >{{ reminders?.enabled ? '已开启' : '已关闭' }}</span>
-        </div>
-        <div class="reminder-actions">
-          <el-switch
-            :model-value="reminders?.enabled ?? false"
-            :loading="reminderSaving"
-            @change="(v: string | number | boolean) => toggleReminders(Boolean(v))"
-          />
-          <el-button
-            size="small"
-            :loading="reminderRunning"
-            @click="runReminderPass(true)"
-          >预览</el-button>
-          <el-button
-            size="small"
-            type="primary"
-            :loading="reminderRunning"
-            :disabled="!reminders?.enabled"
-            @click="runReminderPass(false)"
-          >立即检查并发送</el-button>
-        </div>
-      </div>
+    <SectionCard :icon="BellRing" description="会员到期前按档位自动发站内信；每个档位只提醒一次。">
+      <template #title>
+        到期续费提醒
+        <span class="au-badge" :class="reminders?.enabled ? 'au-badge-green' : 'au-badge-muted'">
+          {{ reminders?.enabled ? '已开启' : '已关闭' }}
+        </span>
+      </template>
+      <template #actions>
+        <el-switch
+          :model-value="reminders?.enabled ?? false"
+          :loading="reminderSaving"
+          aria-label="到期提醒开关"
+          @change="(v: string | number | boolean) => toggleReminders(Boolean(v))"
+        />
+        <el-button size="small" :loading="reminderRunning" @click="runReminderPass(true)">预览</el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="reminderRunning"
+          :disabled="!reminders?.enabled"
+          @click="runReminderPass(false)"
+        >立即检查并发送</el-button>
+      </template>
 
       <div class="reminder-body">
         <div class="reminder-field">
-          <label>提前提醒档位</label>
+          <label class="field-label" for="reminder-days">提前提醒档位</label>
           <div class="reminder-input">
-            <el-input v-model="reminderDays" size="small" placeholder="7,3,1" style="width: 140px" />
+            <el-input id="reminder-days" v-model="reminderDays" size="small" placeholder="7,3,1" class="days-input" />
             <el-button size="small" :loading="reminderSaving" @click="saveReminderDays">保存</el-button>
           </div>
-          <p class="reminder-hint">
-            逗号分隔的天数，每个档位只提醒一次（当前：{{ reminders?.thresholds?.join(' / ') || '—' }} 天）
+          <p class="field-hint">
+            逗号分隔的天数（当前：{{ reminders?.thresholds?.join(' / ') || '—' }} 天）
           </p>
         </div>
-        <div class="reminder-stats">
+        <dl class="reminder-stats">
           <div class="reminder-stat">
-            <span class="rs-label">待发 · 临期</span>
-            <span class="rs-value">{{ reminders?.pending_reminders ?? '—' }}</span>
+            <dt>待发 · 临期</dt>
+            <dd>{{ reminders?.pending_reminders ?? '—' }}</dd>
           </div>
           <div class="reminder-stat">
-            <span class="rs-label">待发 · 已到期</span>
-            <span class="rs-value">{{ reminders?.pending_expired ?? '—' }}</span>
+            <dt>待发 · 已到期</dt>
+            <dd>{{ reminders?.pending_expired ?? '—' }}</dd>
           </div>
           <div class="reminder-stat">
-            <span class="rs-label">累计已发</span>
-            <span class="rs-value">{{ reminders?.total_sent ?? '—' }}</span>
+            <dt>累计已发</dt>
+            <dd>{{ reminders?.total_sent ?? '—' }}</dd>
           </div>
           <div class="reminder-stat">
-            <span class="rs-label">检查间隔</span>
-            <span class="rs-value">
-              {{ reminders ? Math.round(reminders.interval_seconds / 60) + ' 分钟' : '—' }}
-            </span>
+            <dt>检查间隔</dt>
+            <dd>{{ reminders ? Math.round(reminders.interval_seconds / 60) + ' 分钟' : '—' }}</dd>
           </div>
+        </dl>
+      </div>
+
+      <template #footer>
+        <div v-if="reminders?.recent?.length" class="reminder-recent">
+          <span class="rr-label">最近发送</span>
+          <span v-for="r in reminders.recent.slice(0, 6)" :key="r.id" class="au-badge au-badge-muted">
+            {{ r.username }}<em class="rr-kind">{{ kindText(r.kind) }}</em>
+          </span>
+        </div>
+        <template v-else>还没有发送记录。已有会员临期时，这里会出现「谁 · 哪一档」的明细。</template>
+      </template>
+    </SectionCard>
+
+    <!-- 订阅清单：筛选在左、清空在右；桌面表格 / 手机卡片 -->
+    <SectionCard title="订阅清单" :icon="ListChecks" :meta="rows.length ? `${rows.length} 条` : ''" flush>
+      <div class="view-toolbar">
+        <div class="view-toolbar__filters">
+          <el-input
+            v-model="search"
+            class="f-search"
+            placeholder="搜索用户名"
+            clearable
+            @keyup.enter="load"
+            @clear="load"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="statusFilter" class="f-select" placeholder="全部状态" clearable @change="load">
+            <el-option label="生效中" value="active" />
+            <el-option label="7 天内到期" value="expiring" />
+            <el-option label="已过期" value="expired" />
+          </el-select>
+        </div>
+        <div class="view-toolbar__actions">
+          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
+          <el-button type="primary" :icon="Search" @click="load">查询</el-button>
         </div>
       </div>
 
-      <div v-if="reminders?.recent?.length" class="reminder-recent">
-        <span class="rr-label">最近发送</span>
-        <span v-for="r in reminders.recent.slice(0, 6)" :key="r.id" class="rr-item">
-          {{ r.username }}
-          <em>{{ kindText(r.kind) }}</em>
-        </span>
-      </div>
-      <p v-else class="reminder-empty">
-        还没有发送记录。已有会员临期时，这里会出现「谁 · 哪一档」的明细。
-      </p>
-    </div>
+      <EmptyState
+        v-if="loadError && !rows.length"
+        :icon="AlertTriangle"
+        title="订阅清单加载失败"
+        description="网络或服务暂时不可用，稍后重试。"
+      >
+        <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
+      </EmptyState>
 
-    <div class="admin-card">
-      <DataTable :rows="rows" :columns="columns" :loading="loading" empty="没有符合条件的订阅记录">
+      <DataTable v-else class="flush-table" :rows="rows" :columns="columns" :loading="loading" empty="没有符合条件的订阅记录">
         <template #cell-username="{ row }">
           <span class="user-name">{{ row.username }}</span>
         </template>
@@ -405,17 +427,19 @@ async function submit() {
         <template #cell-plan_name="{ row }">{{ row.plan_name }}</template>
 
         <template #cell-realm_name="{ row }">
-          <span class="mini-badge muted">{{ row.realm_name || '未标注' }}</span>
+          <span class="au-badge au-badge-muted">{{ row.realm_name || '未标注' }}</span>
         </template>
 
-        <template #cell-period="{ row }">{{ fmtDay(row.start_date) }} → {{ fmtDay(row.end_date) }}</template>
+        <template #cell-period="{ row }">
+          <span class="period">{{ fmtDay(row.start_date) }} → {{ fmtDay(row.end_date) }}</span>
+        </template>
 
         <template #cell-days_left="{ row }">
-          <span :class="row.days_left <= 7 ? 'days-warn' : 'days-ok'">{{ row.days_left }} 天</span>
+          <span class="days" :class="`is-${daysTone(row)}`">{{ row.days_left }} 天</span>
         </template>
 
         <template #cell-status="{ row }">
-          <span class="mini-badge" :class="daysTone(row)">{{ statusText(row) }}</span>
+          <span class="au-badge" :class="badgeClass(row)">{{ statusText(row) }}</span>
         </template>
 
         <template #cell-actions="{ row }">
@@ -428,8 +452,21 @@ async function submit() {
           >延长</el-button>
           <el-button v-else size="small" text type="primary" @click="openGrant(row)">续订</el-button>
         </template>
+
+        <template #empty>
+          <EmptyState
+            compact
+            :icon="Crown"
+            :title="hasFilter ? '没有符合条件的订阅记录' : '还没有订阅记录'"
+            :description="hasFilter ? '换个条件，或清空筛选看全部。' : '用户购买套餐或被授予订阅后会出现在这里。'"
+          >
+            <template v-if="hasFilter" #actions>
+              <el-button size="small" @click="resetFilters">清空筛选</el-button>
+            </template>
+          </EmptyState>
+        </template>
       </DataTable>
-    </div>
+    </SectionCard>
 
     <el-dialog
       v-model="dialog.visible"
@@ -469,82 +506,90 @@ async function submit() {
 </template>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.user-name { font-weight: 600; }
-.stat-warn { color: var(--warning); }
+/* ---------- 数字块兼作筛选按钮：外层 button 只负责交互，外观交给 StatTile ---------- */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
 
-.days-ok { color: var(--success); font-weight: 600; }
-.days-warn { color: var(--warning); font-weight: 600; }
+.tile-btn {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--au-r-lg);
+}
 
-/* ==================== 到期提醒 ==================== */
-.reminder-card { margin-bottom: 16px; }
-.reminder-head {
+.tile-btn :deep(.au-stat) { height: 100%; transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease); }
+.tile-btn:hover :deep(.au-stat) { border-color: var(--au-border-strong); background: var(--au-surface-2); }
+.tile-btn.is-active :deep(.au-stat) { border-color: var(--au-primary-border); background: var(--au-primary-soft); }
+.tile-btn:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+
+/* ---------- 工具条：筛选在左、动作在右 ---------- */
+.view-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px 12px;
   flex-wrap: wrap;
+  padding: 4px 20px 14px;
+  border-bottom: 1px solid var(--au-border);
 }
-.reminder-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  font-weight: 700;
-}
-.reminder-actions { display: flex; align-items: center; gap: 8px; }
+
+.view-toolbar__filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.view-toolbar__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.f-search { width: 220px; }
+.f-select { width: 140px; }
+
+.flush-table :deep(.dt-cards) { padding: 12px 12px 8px; }
+
+/* ---------- 表格单元 ---------- */
+.period { font-variant-numeric: tabular-nums; color: var(--au-text-2); }
+.days { font-weight: 600; font-variant-numeric: tabular-nums; }
+.days.is-ok { color: var(--au-text); }
+.days.is-warn { color: var(--au-warning); }
+.days.is-off { color: var(--au-text-4); }
+.badge-warn { background: var(--au-warning-soft); color: var(--au-warning); border-color: var(--au-warning-border); }
+
+/* ---------- 到期提醒 ---------- */
 .reminder-body {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 16px 24px;
   flex-wrap: wrap;
-  margin-top: 12px;
 }
-.reminder-field label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+
+.field-label { display: block; margin-bottom: 6px; font-size: 12px; color: var(--au-text-3); }
 .reminder-input { display: flex; align-items: center; gap: 8px; }
-.reminder-hint { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); }
-.reminder-stats { display: flex; gap: 18px; flex-wrap: wrap; }
+.days-input { width: 140px; }
+.field-hint { margin: 6px 0 0; font-size: 12px; color: var(--au-text-3); }
+
+.reminder-stats { display: flex; gap: 8px 24px; flex-wrap: wrap; margin: 0; }
 .reminder-stat { display: flex; flex-direction: column; gap: 2px; }
-.rs-label { font-size: 12px; color: var(--text-muted); }
-.rs-value { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.reminder-recent {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-color);
-  font-size: 12px;
-}
-.rr-label { color: var(--text-muted); }
-.rr-item { padding: 1px 7px; border-radius: var(--radius-full); background: var(--bg-hover); }
-.rr-item em { font-style: normal; color: var(--text-muted); margin-left: 4px; }
-.reminder-empty { margin: 12px 0 0; font-size: 12px; color: var(--text-muted); }
+.reminder-stat dt { font-size: 12px; color: var(--au-text-3); }
+.reminder-stat dd { margin: 0; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--au-text); }
 
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: var(--radius-full); font-weight: 600; }
-.mini-badge.ok { background: var(--success-bg); color: var(--success); }
-.mini-badge.warn { background: var(--warning-bg); color: var(--warning); }
-.mini-badge.off,
-.mini-badge.muted { background: var(--bg-hover); color: var(--text-muted); }
+.reminder-recent { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
+.rr-label { color: var(--au-text-3); }
+.rr-kind { font-style: normal; color: var(--au-text-4); margin-left: 4px; }
 
-.empty-hint { font-size: 13px; color: var(--text-muted); padding: 16px 0; text-align: center; }
 .dialog-user { font-weight: 600; }
-.dialog-user em { font-style: normal; font-size: 12px; color: var(--text-muted); font-weight: 400; }
+.dialog-user em { font-style: normal; font-size: 12px; color: var(--au-text-3); font-weight: 400; }
 
-/* 数字块兼作筛选按钮：语义上它们本来就是「按这个状态看清单」的入口。
-   选中态走边框+底色（与各处 tab / chip 一致），不改变数字本身的颜色语义。 */
-.stat-tile-btn {
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
-}
-.stat-tile-btn:hover { border-color: var(--primary); }
-.stat-tile-btn.active {
-  border-color: var(--primary-border);
-  background: var(--primary-bg);
+@media (max-width: 768px) {
+  .stat-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .view-toolbar { padding: 2px 16px 12px; }
+  .view-toolbar__filters > .f-search { flex: 1 1 100%; width: auto; }
+  .view-toolbar__filters > .f-select { flex: 1 1 120px; width: auto; }
+  .view-toolbar__actions { width: 100%; justify-content: flex-end; }
+  .reminder-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .reminder-field, .reminder-input { width: 100%; }
+  .days-input { flex: 1; width: auto; }
 }
 </style>

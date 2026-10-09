@@ -13,6 +13,8 @@
  * 页面只需要声明列 + 提供 `#cell-<key>` 插槽（桌面与手机共用同一份渲染逻辑）。
  */
 import { computed } from 'vue'
+import { AlertTriangle, Inbox, RotateCw } from 'lucide-vue-next'
+import { EmptyState } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
 export interface DataColumn {
@@ -35,15 +37,20 @@ const props = withDefaults(
     rows: T[]
     columns: DataColumn[]
     loading?: boolean
+    /** 空状态标题 */
     empty?: string
+    /** 空状态补充说明（下一步 / 为什么是空的） */
+    emptyDescription?: string
+    /** 加载失败时的提示：有值就显示错误态（带「重试」，触发 retry 事件），优先于空状态 */
+    error?: string
     rowKey?: string
     /** 点整行触发 row-click（手机卡片同样生效） */
     clickable?: boolean
   }>(),
-  { loading: false, empty: '暂无数据', rowKey: 'id', clickable: false },
+  { loading: false, empty: '暂无数据', emptyDescription: '', error: '', rowKey: 'id', clickable: false },
 )
 
-const emit = defineEmits<{ 'row-click': [row: T] }>()
+const emit = defineEmits<{ 'row-click': [row: T]; retry: [] }>()
 
 // 插槽按列定义：`#cell-<列 key>` 同时用于桌面单元格与手机卡片取值
 // （插槽名是动态的，必须显式声明类型，否则页面里解构不到 row）
@@ -133,15 +140,31 @@ function onRowClick(row: T) {
     </el-table-column>
 
     <template #empty>
-      <slot name="empty">
-        <span class="dt-empty-text">{{ empty }}</span>
+      <div v-if="loading" class="dt-table-loading" />
+      <EmptyState v-else-if="error" compact :icon="AlertTriangle" title="加载失败" :description="error">
+        <template #actions><el-button size="small" @click="emit('retry')" :icon="RotateCw">重试</el-button></template>
+      </EmptyState>
+      <slot v-else name="empty">
+        <EmptyState compact :icon="Inbox" :title="empty" :description="emptyDescription" />
       </slot>
     </template>
   </el-table>
 
   <!-- 手机：卡片列表 -->
   <div v-else class="dt-cards">
-    <div v-if="loading" class="dt-loading">加载中…</div>
+    <div v-if="loading && !rows.length" class="dt-loading" aria-busy="true" aria-label="加载中">
+      <div v-for="n in 3" :key="n" class="dt-card dt-card--skeleton">
+        <span class="au-skeleton dt-sk-title" />
+        <span class="au-skeleton dt-sk-line" />
+        <span class="au-skeleton dt-sk-line is-short" />
+      </div>
+    </div>
+
+    <div v-else-if="error && !rows.length" class="dt-empty">
+      <EmptyState compact :icon="AlertTriangle" title="加载失败" :description="error">
+        <template #actions><el-button size="small" @click="emit('retry')" :icon="RotateCw">重试</el-button></template>
+      </EmptyState>
+    </div>
 
     <template v-else-if="rows.length">
       <article
@@ -181,7 +204,9 @@ function onRowClick(row: T) {
     </template>
 
     <div v-else class="dt-empty">
-      <slot name="empty">{{ empty }}</slot>
+      <slot name="empty">
+        <EmptyState compact :icon="Inbox" :title="empty" :description="emptyDescription" />
+      </slot>
     </div>
   </div>
 </template>
@@ -193,50 +218,40 @@ function onRowClick(row: T) {
   gap: 10px;
 }
 
-.dt-empty {
-  padding: 32px 12px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-}
+.dt-table-loading { height: 120px; }
 
-.dt-empty-text { color: var(--text-muted); font-size: var(--font-size-sm); }
-
-.dt-loading {
-  padding: 28px 0;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-}
+.dt-loading { display: flex; flex-direction: column; gap: 10px; }
 
 .dt-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: 13px 14px;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  min-width: 0;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  padding: 12px 14px;
+  transition: border-color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease);
 }
 
-.dt-card.is-clickable:active { background: var(--bg-hover); }
+.dt-card.is-clickable { cursor: pointer; }
+.dt-card.is-clickable:active { background: var(--au-surface-2); }
+
+.dt-card--skeleton { display: flex; flex-direction: column; gap: 10px; }
+.dt-sk-title { display: block; height: 16px; width: 55%; border-radius: var(--au-r-sm); }
+.dt-sk-line { display: block; height: 12px; width: 100%; border-radius: var(--au-r-sm); }
+.dt-sk-line.is-short { width: 70%; }
 
 .dt-title {
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-  line-height: var(--line-height-normal);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--au-text);
+  line-height: 1.5;
   word-break: break-word;
 }
 
-.dt-fields {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
-}
-
+.dt-fields,
 .dt-extra {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--au-border);
 }
 
 .dt-actions {
@@ -245,10 +260,15 @@ function onRowClick(row: T) {
   gap: 8px;
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--au-border);
 }
 
 .dt-actions :deep(.el-button) { flex: 1 1 auto; min-width: 84px; margin-left: 0; }
 
 :deep(.el-table.is-clickable .el-table__row) { cursor: pointer; }
+</style>
+
+<style>
+/* 放进 flush 的 SectionCard（内容区无内边距）时，手机卡片列表自己留出左右边距 */
+.au-section.is-flush .dt-cards { padding: 4px 12px 12px; }
 </style>

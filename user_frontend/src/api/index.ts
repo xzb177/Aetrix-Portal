@@ -332,6 +332,23 @@ export interface PortalMediaItem {
   poster_url?: string | null
 }
 
+/**
+ * 门户「继续观看」条目（/api/user/emby/resume）：电影一行；单集按剧聚合，
+ * id / name 是剧的，episode_* 是最近在看的那一集。client / device 取自该条目
+ * 最近一次播放会话（没有会话时为 null）。
+ */
+export interface PortalResumeItem extends PortalMediaItem {
+  type: 'movie' | 'series' | string
+  tmdb_id?: string | null
+  last_played_at?: string | null
+  client?: string | null
+  device?: string | null
+  episode_id?: string
+  episode_name?: string | null
+  season_number?: number | null
+  episode_number?: number | null
+}
+
 /** 观看历史条目 */
 export interface WatchHistoryItem {
   id: string
@@ -394,8 +411,8 @@ export const embyApi = {
   // 设置/修改 Emby 播放密码
   setPassword: (password: string) => api.post('/api/user/emby/password', { password }),
 
-  // 续看列表
-  getResume: (limit = 12) => api.get<never, { items: PortalMediaItem[] }>('/api/user/emby/resume', { params: { limit } }),
+  // 续看列表（首页「继续观看」：单集按剧聚合，带上次播放的客户端 / 设备）
+  getResume: (limit = 12) => api.get<never, { items: PortalResumeItem[] }>('/api/user/emby/resume', { params: { limit } }),
 
   // 收藏列表
   getFavorites: () => api.get<never, { items: PortalMediaItem[] }>('/api/user/emby/favorites'),

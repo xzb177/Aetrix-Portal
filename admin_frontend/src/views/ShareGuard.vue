@@ -18,8 +18,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  CalendarClock, Eraser, MapPin, MonitorPlay, RefreshCw, Save, ShieldAlert, TriangleAlert,
+  CalendarClock, Eraser, History, MapPin, MonitorPlay, RefreshCw, Save, ShieldAlert, ShieldCheck,
+  SlidersHorizontal, TriangleAlert, Undo2,
 } from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchShareGuard,
   purgeShareGuardEvents,
@@ -45,6 +47,8 @@ const columns: DataColumn[] = [
 
 const data = ref<ShareGuardResponse | null>(null)
 const loading = ref(false)
+/** 首次加载失败：给出可重试的错误态 */
+const loadError = ref(false)
 const saving = ref(false)
 const kindFilter = ref('')
 
@@ -79,9 +83,13 @@ const ACTION_OPTIONS = [
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     data.value = await fetchShareGuard({ kind: kindFilter.value || undefined, limit: 300 })
     draft.value = { ...data.value.policy }
+  } catch {
+    /* 拦截器已提示；没有数据时显示错误态 */
+    loadError.value = !data.value
   } finally {
     loading.value = false
   }
@@ -178,60 +186,75 @@ const emptyText = computed(() => {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">防共享</h1>
-        <p class="admin-page-desc">
-          跨城市行为轨迹与同播检测。默认全部关闭；「处置」档会停用账号、拦下多余会话。
-        </p>
-      </div>
-      <div class="toolbar">
+  <div class="admin-page share-guard">
+    <PageHeader
+      eyebrow="安全与准入"
+      title="防共享"
+      description="跨城市行为轨迹与同播检测。默认全部关闭；「处置」档会停用账号、拦下多余会话。"
+    >
+      <template #actions>
         <el-button :loading="loading" @click="load">
-          <RefreshCw :size="14" style="margin-right: 4px" />刷新
+          <RefreshCw :size="14" class="btn-ico" />刷新
         </el-button>
-        <el-button
-          :loading="pruning"
-          :disabled="!data || data.policy.retention_days <= 0"
-          @click="pruneOld"
-        >
-          <CalendarClock :size="14" style="margin-right: 4px" />清理过期
-        </el-button>
-        <el-button :loading="purging" @click="purge">
-          <Eraser :size="14" style="margin-right: 4px" />清空事件
-        </el-button>
-      </div>
+      </template>
+    </PageHeader>
+
+    <!-- 首屏骨架 -->
+    <div v-if="loading && !data" class="sg-skeleton" aria-busy="true" aria-label="加载中">
+      <div v-for="n in 4" :key="n" class="au-skeleton sk-tile" />
+      <div class="au-skeleton sk-wide" />
     </div>
 
-    <div v-if="data" class="stat-grid">
-      <div class="stat-tile">
-        <div class="stat-label"><ShieldAlert :size="13" /> 事件总数</div>
-        <div class="stat-value">{{ data.summary.total }}</div>
-        <div class="stat-hint">跨城市 + 同播，一条时间轴</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-warn': data.summary.travel_24h > 0 }">
-        <div class="stat-label"><MapPin :size="13" /> 24h 跨城市</div>
-        <div class="stat-value">{{ data.summary.travel_24h }}</div>
-        <div class="stat-hint">窗口内换城市的判定</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-warn': data.summary.concurrent_24h > 0 }">
-        <div class="stat-label"><MonitorPlay :size="13" /> 24h 同播</div>
-        <div class="stat-value">{{ data.summary.concurrent_24h }}</div>
-        <div class="stat-hint">并发路数超出上限的判定</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-danger': data.summary.enforced_24h > 0 }">
-        <div class="stat-label"><TriangleAlert :size="13" /> 24h 已处置</div>
-        <div class="stat-value">{{ data.summary.enforced_24h }}</div>
-        <div class="stat-hint">停用了账号或拦下了会话</div>
-      </div>
-    </div>
+    <el-alert
+      v-else-if="loadError"
+      type="error"
+      show-icon
+      :closable="false"
+      title="防共享数据加载失败"
+      description="可能是网络或后端暂时不可用。点右上角「刷新」重试。"
+    />
+
+    <section v-if="data" class="stat-grid" aria-label="近 24 小时">
+      <StatTile
+        label="事件总数"
+        :icon="ShieldAlert"
+        :value="data.summary.total"
+        hint="跨城市 + 同播，一条时间轴"
+      />
+      <StatTile
+        label="24h 跨城市"
+        :icon="MapPin"
+        :value="data.summary.travel_24h"
+        :tone="data.summary.travel_24h > 0 ? 'warn' : 'plain'"
+        hint="窗口内换城市的判定"
+      />
+      <StatTile
+        label="24h 同播"
+        :icon="MonitorPlay"
+        :value="data.summary.concurrent_24h"
+        :tone="data.summary.concurrent_24h > 0 ? 'warn' : 'plain'"
+        hint="并发路数超出上限的判定"
+      />
+      <StatTile
+        label="24h 已处置"
+        :icon="TriangleAlert"
+        :value="data.summary.enforced_24h"
+        :tone="data.summary.enforced_24h > 0 ? 'danger' : 'plain'"
+        hint="停用了账号或拦下了会话"
+      />
+    </section>
 
     <!-- 策略 -->
-    <section class="admin-card">
-      <header class="card-header">
-        <h2>检测策略</h2>
-        <span v-if="dirty" class="fact warn">有未保存的改动</span>
-      </header>
+    <SectionCard
+      v-if="draft"
+      title="检测策略"
+      :icon="SlidersHorizontal"
+      description="两项检测各自选档位；建议先「只记录」观察几天，再考虑告警或处置。"
+      :tone="dirty ? 'accent' : 'default'"
+    >
+      <template v-if="dirty" #actions>
+        <span class="au-badge au-badge-amber">有未保存的改动</span>
+      </template>
 
       <el-alert
         v-if="data && !data.policy.geo_ready"
@@ -255,10 +278,10 @@ const emptyText = computed(() => {
         {{ WRITE_HINT }}。下面的按钮已置灰，但内容仍然可读。
       </el-alert>
 
-      <div v-if="draft" class="sg-grid">
+      <div class="sg-grid">
         <!-- 跨城市 -->
         <div class="sg-block">
-          <h3><MapPin :size="15" style="margin-right: 6px" />跨城市行为轨迹</h3>
+          <h4 class="sg-block-title"><MapPin :size="15" />跨城市行为轨迹</h4>
           <p class="sg-hint">
             登录与开始播放时记下「IP → 城市」。同一个账号在
             <strong>时间窗口内</strong>出现在两个城市，物理上几乎不可能，判定为异常。
@@ -266,7 +289,7 @@ const emptyText = computed(() => {
           </p>
           <el-form label-position="top" class="sg-form">
             <el-form-item label="命中后怎么办">
-              <el-select v-model="draft.travel_action" :disabled="!canWrite" style="width: 100%">
+              <el-select v-model="draft.travel_action" :disabled="!canWrite" class="sg-full">
                 <el-option
                   v-for="opt in ACTION_OPTIONS"
                   :key="opt.value"
@@ -281,32 +304,34 @@ const emptyText = computed(() => {
               </el-select>
             </el-form-item>
             <el-form-item label="时间窗口（分钟）">
-              <el-input-number
-                v-model="draft.travel_window_minutes"
-                :min="1"
-                :max="1440"
-                :step="5"
-                :disabled="!canWrite"
-                controls-position="right"
-                style="width: 160px"
-              />
-              <span class="sg-hint">
-                窗口内换城市才算异常。出差、回家、换网络都是正常行为，窗口调太小会大量误报。
-              </span>
+              <div class="sg-field">
+                <el-input-number
+                  v-model="draft.travel_window_minutes"
+                  :min="1"
+                  :max="1440"
+                  :step="5"
+                  :disabled="!canWrite"
+                  controls-position="right"
+                  class="sg-num"
+                />
+                <span class="sg-hint">
+                  窗口内换城市才算异常。出差、回家、换网络都是正常行为，窗口调太小会大量误报。
+                </span>
+              </div>
             </el-form-item>
           </el-form>
         </div>
 
         <!-- 同播 -->
         <div class="sg-block">
-          <h3><MonitorPlay :size="15" style="margin-right: 6px" />同播检测</h3>
+          <h4 class="sg-block-title"><MonitorPlay :size="15" />同播检测</h4>
           <p class="sg-hint">
             同一个账号同时有多路播放会话时判定为异常。「上限 N」= 允许 N 路并发，
             第 N+1 路才算超。一家人一台机各看各的不算超，所以别把上限设成 1。
           </p>
           <el-form label-position="top" class="sg-form">
             <el-form-item label="命中后怎么办">
-              <el-select v-model="draft.concurrent_action" :disabled="!canWrite" style="width: 100%">
+              <el-select v-model="draft.concurrent_action" :disabled="!canWrite" class="sg-full">
                 <el-option
                   v-for="opt in ACTION_OPTIONS"
                   :key="opt.value"
@@ -321,56 +346,71 @@ const emptyText = computed(() => {
               </el-select>
             </el-form-item>
             <el-form-item label="同时播放数上限">
-              <el-input-number
-                v-model="draft.concurrent_limit"
-                :min="1"
-                :max="20"
-                :disabled="!canWrite"
-                controls-position="right"
-                style="width: 160px"
-              />
-              <span class="sg-hint">
-                当前策略：上限 {{ draft.concurrent_limit }} 路。
-                超出部分在「处置」档会被拦下并给客户端一个明确的提示。
-              </span>
+              <div class="sg-field">
+                <el-input-number
+                  v-model="draft.concurrent_limit"
+                  :min="1"
+                  :max="20"
+                  :disabled="!canWrite"
+                  controls-position="right"
+                  class="sg-num"
+                />
+                <span class="sg-hint">
+                  当前策略：上限 {{ draft.concurrent_limit }} 路。
+                  超出部分在「处置」档会被拦下并给客户端一个明确的提示。
+                </span>
+              </div>
             </el-form-item>
           </el-form>
         </div>
       </div>
 
-      <div class="sg-actions">
-        <el-button
-          type="primary"
-          :disabled="!canWrite || !dirty"
-          :loading="saving"
-          @click="save"
-        >
-          <Save :size="14" style="margin-right: 4px" />保存
-        </el-button>
-        <el-button :disabled="!canWrite || !dirty" @click="revert">还原</el-button>
-        <span v-if="draft" class="sg-keep">
-          <span class="sg-keep-label">记录保留</span>
-          <el-input-number
-            v-model="draft.retention_days"
-            :min="0"
-            :max="3650"
-            :step="10"
-            :disabled="!canWrite"
-            controls-position="right"
-            size="small"
-            style="width: 130px"
-          />
-          <span class="sg-hint">天。0 = 永不清理；点上方「清理过期」立即按它执行一次（不影响账号状态）。</span>
-        </span>
+      <!-- 保留天数：自己就是入口，不再指向另一个页面 -->
+      <div class="sg-keep">
+        <span class="sg-keep-label">记录保留</span>
+        <el-input-number
+          v-model="draft.retention_days"
+          :min="0"
+          :max="3650"
+          :step="10"
+          :disabled="!canWrite"
+          controls-position="right"
+          size="small"
+          class="sg-num-sm"
+        />
+        <span class="sg-hint sg-hint-inline">天。0 = 永不清理；「判定记录」里的「清理过期」按已保存的天数立即执行一次（不影响账号状态）。</span>
       </div>
-    </section>
+
+      <template #footer>
+        <div class="sg-actions">
+          <span class="sg-hint sg-hint-inline">保存后立即生效。</span>
+          <div class="sg-actions-btns">
+            <el-button :disabled="!canWrite || !dirty" @click="revert">
+              <Undo2 :size="14" class="btn-ico" />还原
+            </el-button>
+            <el-button
+              type="primary"
+              :disabled="!canWrite || !dirty"
+              :loading="saving"
+              @click="save"
+            >
+              <Save :size="14" class="btn-ico" />保存
+            </el-button>
+          </div>
+        </div>
+      </template>
+    </SectionCard>
 
     <!-- 事件流水 -->
-    <section class="admin-card">
-      <header class="card-header">
-        <h2>判定记录</h2>
-        <div class="sg-facts">
-          <el-select v-model="kindFilter" style="width: 160px" @change="load">
+    <SectionCard
+      title="判定记录"
+      :icon="History"
+      :meta="data ? `${data.events.length} 条（最多显示 300）` : ''"
+      flush
+    >
+      <div class="sg-toolbar">
+        <div class="sg-toolbar-filters">
+          <el-select v-model="kindFilter" class="sg-kind" aria-label="检测类型" @change="load">
             <el-option
               v-for="k in data?.kinds || [{ value: '', label: '全部' }]"
               :key="k.value"
@@ -379,8 +419,20 @@ const emptyText = computed(() => {
             />
           </el-select>
         </div>
-      </header>
-      <p class="sg-hint">
+        <div class="sg-toolbar-actions">
+          <el-button
+            :loading="pruning"
+            :disabled="!data || data.policy.retention_days <= 0"
+            @click="pruneOld"
+          >
+            <CalendarClock :size="14" class="btn-ico" />清理过期
+          </el-button>
+          <el-button type="danger" plain :loading="purging" @click="purge">
+            <Eraser :size="14" class="btn-ico" />清空事件
+          </el-button>
+        </div>
+      </div>
+      <p class="sg-hint sg-table-hint">
         这里只列<strong>判定</strong>：行里的「甲城 → 乙城」是跨城市异常，「同时播放 N 路」是同播。
         「用户还在原地」这类基线记录不列在这里（判定靠它记住上一次的城市）。
       </p>
@@ -390,22 +442,26 @@ const emptyText = computed(() => {
         :loading="loading"
         :empty="emptyText"
       >
+        <template #empty>
+          <EmptyState compact :icon="ShieldCheck" title="暂无防共享事件" :description="emptyText" />
+        </template>
+
         <template #cell-username="{ row }">
           <span class="user-name">{{ row.username || '—' }}</span>
         </template>
 
-        <template #cell-created_at="{ row }">{{ fmt(row.created_at) }}</template>
+        <template #cell-created_at="{ row }"><span class="au-num">{{ fmt(row.created_at) }}</span></template>
 
         <template #cell-kind="{ row }">
-          <span class="mini-badge" :class="row.kind === 'travel' ? 'info' : 'warn'">
+          <span class="au-badge" :class="row.kind === 'travel' ? 'au-badge-info' : 'au-badge-amber'">
             {{ row.kind_label }}
           </span>
         </template>
 
         <template #cell-action="{ row }">
           <span
-            class="mini-badge"
-            :class="row.action === 'enforce' ? 'danger' : row.action === 'alert' ? 'warn' : 'muted'"
+            class="au-badge"
+            :class="row.action === 'enforce' ? 'au-badge-rose' : row.action === 'alert' ? 'au-badge-amber' : 'au-badge-muted'"
           >
             {{ row.action_label }}
           </span>
@@ -416,99 +472,142 @@ const emptyText = computed(() => {
             {{ row.prev_region }} → {{ row.region || '未知' }}
           </span>
           <span v-else-if="row.region" class="sg-region">{{ row.region }}</span>
-          <span v-else class="muted">—</span>
-          <span v-if="row.ip" class="sg-ip mono">{{ row.ip }}</span>
+          <span v-else class="sg-muted">—</span>
+          <span v-if="row.ip" class="sg-ip">{{ row.ip }}</span>
         </template>
 
         <template #cell-detail="{ row }">
-          <span v-if="!row.detail" class="muted">—</span>
+          <span v-if="!row.detail" class="sg-muted">—</span>
           <span v-else>{{ row.detail }}</span>
         </template>
       </DataTable>
-    </section>
+    </SectionCard>
   </div>
 </template>
 
 <style scoped>
+.share-guard { gap: 16px; }
+.btn-ico { margin-right: 4px; }
+
+/* ===== 骨架 / 网格 ===== */
+.sg-skeleton,
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+.sk-tile { height: 96px; border-radius: var(--au-r-lg); }
+.sk-wide { grid-column: 1 / -1; height: 300px; border-radius: var(--au-r-lg); }
+
+.sg-alert { margin: 0 0 16px; }
+
+/* ===== 策略 ===== */
 .sg-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
 }
 .sg-block {
   min-width: 0;
+  padding: 14px 16px 4px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
 }
-.sg-block h3 {
+.sg-block-title {
   display: flex;
   align-items: center;
+  gap: 6px;
   margin: 0 0 6px;
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
+  font-family: var(--au-font-serif);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--au-text);
 }
+.sg-block-title svg { color: var(--au-primary); }
 .sg-hint {
   display: block;
   margin: 0 0 8px;
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--au-text-3);
   line-height: 1.8;
 }
-.sg-alert { margin: 0 0 12px; }
-/* 保留天数：跟在保存/还原旁边的小控件（自己就是入口，不再指向另一个页面） */
+.sg-hint-inline { margin: 0; }
+.sg-full { width: 100%; }
+.sg-num { width: 160px; }
+.sg-num-sm { width: 130px; }
+.sg-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sg-field .sg-hint { margin: 0; }
+.sg-form :deep(.el-form-item) { margin-bottom: 12px; }
 .sg-keep {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  margin-top: 16px;
 }
 .sg-keep-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  font-size: 13px;
+  color: var(--au-text-2);
   white-space: nowrap;
 }
-.sg-keep .sg-hint { margin: 0; }
-.sg-form :deep(.el-form-item) { margin-bottom: 12px; }
+.sg-keep .sg-hint { flex: 1 1 260px; }
 .sg-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
-}
-.sg-facts {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
   flex-wrap: wrap;
 }
+.sg-actions-btns { display: flex; gap: 8px; }
+
 /* 下拉里的选项：标题 + 一行「点下去会发生什么」 */
 .sg-option { display: flex; flex-direction: column; gap: 2px; }
 .sg-option-hint {
   font-size: 11.5px;
-  color: var(--text-muted);
+  color: var(--au-text-3);
   line-height: 1.5;
 }
+
+/* ===== 判定记录：筛选在左、操作在右 ===== */
+.sg-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 20px 0;
+}
+.sg-toolbar-filters,
+.sg-toolbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sg-kind { width: 160px; }
+.sg-table-hint { padding: 8px 20px 4px; margin: 0; }
 .sg-region {
   display: block;
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
+  font-size: 12px;
+  color: var(--au-text-2);
 }
 .sg-ip {
   display: block;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: var(--text-muted);
+  color: var(--au-text-3);
 }
-.user-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
-.fact.warn { color: var(--warning); font-size: var(--font-size-xs); }
-.stat-tile.is-warn { border-color: var(--warning-border); }
-.stat-tile.is-danger { border-color: var(--danger-border); }
+.sg-muted { color: var(--au-text-4); }
+.user-name { font-weight: 600; color: var(--au-text); }
 
-/* 手机：两张策略卡竖排，按钮独占一行；统计瓦片沿用全局原语 */
-@media (max-width: 767px) {
-  .sg-grid { grid-template-columns: 1fr; gap: 14px; }
-  .sg-actions .el-button { flex: 1 1 auto; }
-  .sg-actions .sg-hint { flex: 1 1 100%; }
+/* flush 卡片里的手机卡片列表：DataTable 本身不留边距，这里补回左右内距 */
+.share-guard :deep(.dt-cards) { padding: 0 12px 12px; }
+
+@media (max-width: 768px) {
+  .sg-grid { grid-template-columns: 1fr; gap: 12px; }
+  .sg-toolbar { padding: 10px 16px 0; }
+  .sg-table-hint { padding: 8px 16px 4px; }
+  .sg-toolbar-filters,
+  .sg-toolbar-actions { flex: 1 1 100%; }
+  .sg-kind { flex: 1 1 auto; width: auto; }
+  .sg-toolbar-actions .el-button { flex: 1 1 0; margin-left: 0; }
+  .sg-actions-btns { flex: 1 1 100%; }
+  .sg-actions-btns .el-button { flex: 1 1 0; }
 }
 </style>

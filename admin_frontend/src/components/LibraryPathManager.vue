@@ -16,6 +16,7 @@ import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { FolderOpen, FolderSearch, Plus, X } from 'lucide-vue-next'
 import LibraryPathDialog from './LibraryPathDialog.vue'
+import { EmptyState } from '@/components/ui'
 import type { LibraryPathEntry, StorageBackend, StorageMount } from '@/types'
 
 const props = withDefaults(defineProps<{
@@ -117,8 +118,12 @@ function removeAt(index: number) {
 <template>
   <div class="lpm">
     <div v-if="!entries.length" class="lpm-empty">
-      <FolderOpen :size="20" style="vertical-align: -4px; margin-right: 6px" />
-      还没有媒体路径。点下方「按类型添加路径」，默认就是服务器本地硬盘，选个目录就行。
+      <EmptyState
+        compact
+        :icon="FolderOpen"
+        title="还没有媒体路径"
+        description="点下方「按类型添加路径」，默认就是服务器本地硬盘，选个目录就行。"
+      />
     </div>
 
     <div v-for="(e, i) in entries" :key="`${e.backend}-${e.mount_id ?? 0}-${e.path}-${i}`" class="lpm-row">
@@ -174,26 +179,23 @@ function removeAt(index: number) {
 <style scoped>
 .lpm { width: 100%; }
 .lpm-empty {
-  padding: 18px 14px;
-  border: 1px dashed var(--el-border-color);
-  border-radius: 8px;
-  color: var(--text-muted);
-  font-size: var(--font-size-sm);
-  text-align: center;
+  border: 1px dashed var(--au-border-strong);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
 }
 .lpm-row {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
   margin-bottom: 8px;
-  background: var(--el-fill-color-blank);
-  transition: border-color 0.15s ease;
+  background: var(--au-surface);
+  transition: border-color var(--au-fast) var(--au-ease);
 }
-.lpm-row:hover { border-color: var(--el-border-color); }
-.lpm-icon { flex: none; color: var(--text-muted); }
+.lpm-row:hover { border-color: var(--au-border-strong); }
+.lpm-icon { flex: none; color: var(--au-text-3); }
 .lpm-main { flex: 1; min-width: 0; }
 .lpm-path {
   display: block;
@@ -211,7 +213,7 @@ function removeAt(index: number) {
 }
 .lpm-hint, .lpm-hint-block {
   font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  color: var(--au-text-3);
 }
 .lpm-hint-block { margin: 8px 0 0; line-height: 1.6; }
 .lpm-op {
@@ -222,11 +224,17 @@ function removeAt(index: number) {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--au-r-sm);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--au-text-3);
   cursor: pointer;
 }
-.lpm-op:hover { background: var(--el-fill-color-light); color: var(--el-color-primary); }
-.lpm-op--danger:hover { background: var(--el-color-danger-light-9); color: var(--el-color-danger); }
+.lpm-op:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 1px; }
+.lpm-op:hover { background: var(--au-violet-soft); color: var(--au-primary); }
+.lpm-op--danger:hover { background: var(--au-danger-soft); color: var(--au-danger); }
+@media (max-width: 768px) {
+  .lpm-row { padding: 8px 10px; gap: 8px; }
+  .lpm-op { width: 34px; height: 34px; }
+  .lpm-meta { flex-wrap: wrap; }
+}
 </style>

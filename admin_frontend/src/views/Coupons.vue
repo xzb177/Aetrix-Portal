@@ -8,10 +8,17 @@
  * 额度是**预订制**的：下单就占（reserved），付款转已用（consumed），关单/退款释放（released）。
  * 面板上必须能看见「占用中」这一档——它可能随时变成已用，也可能超时被自动清理，
  * 只看 `use_count` 会说不清「这张券到底还能不能发」。
+ *
+ * v2.54（暗房影院）：PageHeader + StatTile（总数 / 可用 / 占用中 / 已核销）+
+ * 「功能设置」SectionCard（两行设置，保存在标题行右侧）+ flush 券表（筛选左、查询右）；
+ * 加载失败给可重试的错误态。弹窗结构不变，只把写死的颜色 / 圆角换成 --au-* 令牌。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, RefreshCw, Settings2, TicketPercent } from 'lucide-vue-next'
+import {
+  AlertTriangle, CircleCheck, Clock3, Plus, RefreshCw, Search, Settings2, TicketPercent, Tickets,
+} from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import { useRealmStore } from '@/stores/realm'
@@ -37,6 +44,8 @@ const enabled = ref(true)
 const reserveHours = ref(24)
 const activeUsage = ref(0)
 const settingsSaving = ref(false)
+/** 券表加载失败（区别于「还没有优惠券」） */
+const loadError = ref(false)
 
 // 筛选
 const filters = ref({ kind: '', active: '', search: '' })
@@ -65,6 +74,7 @@ const usagesColumns: DataColumn[] = [
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     const [list, settings] = await Promise.all([
       fetchCoupons({
@@ -82,9 +92,19 @@ async function load() {
       reserveHours.value = settings.reserve_hours
       activeUsage.value = settings.active_usage
     }
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
+    loadError.value = true
   } finally {
     loading.value = false
   }
+}
+
+const hasFilter = computed(() => !!(filters.value.kind || filters.value.active || filters.value.search))
+
+function resetFilters() {
+  filters.value = { kind: '', active: '', search: '' }
+  load()
 }
 
 // ==================== 文案 ====================
@@ -372,80 +392,106 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">优惠券</h1>
-        <p class="admin-page-desc">
-          付费时抵扣：共 {{ summary.total }} 张（可用 {{ summary.usable }}）·
-          占用中 {{ summary.reserved }} · 已核销 {{ summary.consumed }}
-        </p>
-      </div>
-      <div class="head-actions">
+  <div class="admin-page coupons-page">
+    <PageHeader
+      eyebrow="运营中心"
+      title="优惠券"
+      description="付费时抵扣：钱照旧走支付网关，只是单价变了。额度下单即占用，付款转已用，关单 / 退款释放。"
+    >
+      <template #actions>
         <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
         <el-button :icon="TicketPercent" @click="openUsages()">核销记录</el-button>
         <el-button type="primary" :icon="Plus" @click="createVisible = true">新建优惠券</el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
+
+    <section class="stat-row" aria-label="优惠券概况">
+      <StatTile label="优惠券" :value="summary.total" suffix="张" :icon="Tickets" hint="当前筛选范围内" />
+      <StatTile label="可用" :value="summary.usable" :icon="CircleCheck" :tone="summary.usable > 0 ? 'ok' : 'plain'" />
+      <StatTile
+        label="占用中"
+        :value="summary.reserved"
+        :icon="Clock3"
+        :tone="summary.reserved > 0 ? 'info' : 'plain'"
+        hint="已下单未付款，超时会自动释放"
+      />
+      <StatTile label="已核销" :value="summary.consumed" :icon="TicketPercent" />
+    </section>
 
     <!-- 开关与预订清理：额度不能被「点了下单没付款」的订单永远占着 -->
-    <div class="admin-card settings-bar">
-      <div class="setting">
-        <span class="setting-label">
-          <Settings2 :size="14" />
-          优惠券功能
-        </span>
-        <el-switch v-model="enabled" active-text="开启" inactive-text="关闭" />
-        <span class="setting-hint">关闭后用户端不再显示优惠码入口，已下的单不受影响</span>
+    <SectionCard title="功能设置" :icon="Settings2">
+      <template #actions>
+        <el-button type="primary" plain size="small" :loading="settingsSaving" @click="saveSettings">保存设置</el-button>
+      </template>
+      <div class="settings">
+        <div class="setting">
+          <div class="setting-text">
+            <span class="setting-label">优惠券功能</span>
+            <span class="setting-hint">关闭后用户端不再显示优惠码入口，已下的单不受影响</span>
+          </div>
+          <el-switch v-model="enabled" active-text="开启" inactive-text="关闭" />
+        </div>
+        <div class="setting">
+          <div class="setting-text">
+            <span class="setting-label">超时未支付自动收尾</span>
+            <span class="setting-hint">
+              小时（0 = 不自动清理）：到点后自动关单并退回优惠额度，当前占用中 {{ activeUsage }} 笔
+            </span>
+          </div>
+          <el-input-number v-model="reserveHours" :min="0" :max="720" :step="6" size="small" />
+        </div>
       </div>
-      <div class="setting">
-        <span class="setting-label">超时未支付自动收尾</span>
-        <el-input-number v-model="reserveHours" :min="0" :max="720" :step="6" size="small" />
-        <span class="setting-hint">
-          小时（0 = 不自动清理）：到点后自动关单并退回优惠额度，当前占用中 {{ activeUsage }} 笔
-        </span>
-      </div>
-      <el-button type="primary" plain :loading="settingsSaving" @click="saveSettings">保存设置</el-button>
-    </div>
+    </SectionCard>
 
-    <div class="admin-card">
-      <div class="filters">
-        <el-select v-model="filters.kind" placeholder="适用范围" clearable style="width: 140px" @change="load">
-          <el-option label="全部商品" value="all" />
-          <el-option label="仅会员" value="subscription" />
-          <el-option label="仅充值" value="recharge" />
-        </el-select>
-        <el-select v-model="filters.active" placeholder="状态" clearable style="width: 120px" @change="load">
-          <el-option label="启用" value="true" />
-          <el-option label="停用" value="false" />
-        </el-select>
-        <el-input
-          v-model="filters.search"
-          placeholder="搜索优惠码"
-          clearable
-          style="width: 200px"
-          @keyup.enter="load"
-          @clear="load"
-        />
-        <el-button @click="load">查询</el-button>
+    <SectionCard title="全部优惠券" :icon="Tickets" :meta="coupons.length ? `${coupons.length} 张` : ''" flush>
+      <div class="view-toolbar">
+        <div class="view-toolbar__filters">
+          <el-input
+            v-model="filters.search"
+            class="f-search"
+            placeholder="搜索优惠码"
+            clearable
+            @keyup.enter="load"
+            @clear="load"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="filters.kind" class="f-select" placeholder="适用范围" clearable @change="load">
+            <el-option label="全部商品" value="all" />
+            <el-option label="仅会员" value="subscription" />
+            <el-option label="仅充值" value="recharge" />
+          </el-select>
+          <el-select v-model="filters.active" class="f-select" placeholder="状态" clearable @change="load">
+            <el-option label="启用" value="true" />
+            <el-option label="停用" value="false" />
+          </el-select>
+        </div>
+        <div class="view-toolbar__actions">
+          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
+          <el-button type="primary" :icon="Search" @click="load">查询</el-button>
+        </div>
       </div>
 
-      <DataTable :rows="coupons" :columns="columns" :loading="loading" empty="还没有优惠券">
+      <EmptyState v-if="loadError && !coupons.length" :icon="AlertTriangle" title="优惠券加载失败" description="网络或服务暂时不可用，稍后重试。">
+        <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
+      </EmptyState>
+
+      <DataTable v-else class="flush-table" :rows="coupons" :columns="columns" :loading="loading" empty="还没有优惠券">
         <template #cell-code="{ row }">
           <span class="mono code">{{ row.code }}</span>
         </template>
 
         <template #cell-discount="{ row }">
           <span class="discount">{{ discountText(row) }}</span>
-          <div v-if="row.min_amount > 0 || row.max_discount > 0" class="muted">
+          <div v-if="row.min_amount > 0 || row.max_discount > 0" class="sub">
             <span v-if="row.min_amount > 0">满 ¥{{ row.min_amount.toFixed(2) }} 可用</span>
             <span v-if="row.max_discount > 0">· 最多省 ¥{{ row.max_discount.toFixed(2) }}</span>
           </div>
         </template>
 
         <template #cell-limits="{ row }">
-          <span>{{ usageText(row) }}</span>
-          <div class="muted">
+          <span class="num">{{ usageText(row) }}</span>
+          <div class="sub">
             每人 {{ row.per_user_limit ? row.per_user_limit + ' 次' : '不限' }}
             <span v-if="row.stats?.reserved">· 占用中 {{ row.stats.reserved }}</span>
           </div>
@@ -454,11 +500,11 @@ onMounted(() => {
         <template #cell-scope="{ row }">{{ scopeText(row) }}</template>
 
         <template #cell-valid="{ row }">
-          <span :class="{ muted: !row.valid_until }">{{ validText(row) }}</span>
+          <span :class="row.valid_until ? 'num' : 'faint'">{{ validText(row) }}</span>
         </template>
 
         <template #cell-note="{ row }">
-          <span v-if="!row.note" class="muted">—</span>
+          <span v-if="!row.note" class="faint">—</span>
           <span v-else>{{ row.note }}</span>
         </template>
 
@@ -472,8 +518,22 @@ onMounted(() => {
           <!-- 一个入口：核销记录 / 编辑 / 停用 / 删除 都在弹窗里（原来这行有 4 个按钮） -->
           <el-button size="small" plain @click="openManage(row)">管理</el-button>
         </template>
+
+        <template #empty>
+          <EmptyState
+            compact
+            :icon="TicketPercent"
+            :title="hasFilter ? '没有符合条件的优惠券' : '还没有优惠券'"
+            :description="hasFilter ? '换个条件，或清空筛选看全部。' : '新建一批券，用户付费时输入优惠码即可抵扣。'"
+          >
+            <template #actions>
+              <el-button v-if="hasFilter" size="small" @click="resetFilters">清空筛选</el-button>
+              <el-button v-else size="small" type="primary" :icon="Plus" @click="createVisible = true">新建优惠券</el-button>
+            </template>
+          </EmptyState>
+        </template>
       </DataTable>
-    </div>
+    </SectionCard>
 
     <!-- 新建 -->
     <el-dialog v-model="createVisible" title="新建优惠券" width="560px">
@@ -635,6 +695,7 @@ onMounted(() => {
       width="760px"
     >
       <DataTable
+        class="usage-table"
         :rows="usages"
         :columns="usagesColumns"
         :loading="usagesLoading"
@@ -654,6 +715,10 @@ onMounted(() => {
         </template>
 
         <template #cell-time="{ row }">{{ fmtTime(row.created_at) }}</template>
+
+        <template #empty>
+          <EmptyState compact :icon="TicketPercent" title="还没有核销记录" description="用户下单使用优惠码后会出现在这里。" />
+        </template>
       </DataTable>
     </el-dialog>
 
@@ -665,7 +730,7 @@ onMounted(() => {
       <div v-if="manage.row" class="mg-body">
         <div class="mg-head">
           <span class="mg-discount">{{ discountText(manage.row) }}</span>
-          <span class="mini-badge" :class="manage.row.usable ? 'ok' : 'off'">
+          <span class="au-badge" :class="manage.row.usable ? 'au-badge-green' : 'au-badge-muted'">
             {{ manage.row.usable ? '可用' : manage.row.is_active ? '暂不可用' : '已停用' }}
           </span>
         </div>
@@ -725,43 +790,80 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.head-actions { display: flex; gap: 8px; }
-
-.settings-bar {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  flex-wrap: wrap;
-  padding: 14px 16px;
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
 }
 
-.setting { display: flex; align-items: center; gap: 8px; }
-.setting-label { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 600; }
-.setting-hint { font-size: 12px; color: var(--text-muted); }
+/* ---------- 功能设置：一行一项，说明在左、控件在右 ---------- */
+.settings { display: flex; flex-direction: column; }
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+}
+.setting + .setting { border-top: 1px solid var(--au-border); }
+.setting:first-child { padding-top: 0; }
+.setting:last-child { padding-bottom: 0; }
+.setting-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 260px; }
+.setting-label { font-size: 13px; font-weight: 600; color: var(--au-text); }
+.setting-hint { font-size: 12px; line-height: 1.5; color: var(--au-text-3); }
 
-.filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+/* ---------- 工具条：筛选在左、动作在右 ---------- */
+.view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 14px;
+  border-bottom: 1px solid var(--au-border);
+}
+.view-toolbar__filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.view-toolbar__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.f-search { width: 200px; }
+.f-select { width: 130px; }
 
+.flush-table :deep(.dt-cards) { padding: 12px 12px 8px; }
+
+/* ---------- 单元格 ---------- */
+.code { letter-spacing: 0.06em; font-weight: 600; color: var(--au-primary); }
+.discount { font-weight: 600; color: var(--au-text); }
+.num { font-variant-numeric: tabular-nums; }
+.sub { margin-top: 2px; font-size: 12px; color: var(--au-text-3); }
+.faint { color: var(--au-text-4); }
+.usage-table :deep(.muted) { font-size: 12px; color: var(--au-text-3); }
+
+/* ---------- 弹窗 ---------- */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
-
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.code { letter-spacing: 0.06em; font-weight: 600; color: var(--primary); }
-.discount { font-weight: 600; }
-.muted { color: var(--text-muted); font-size: 12px; }
 
 /* 管理弹窗：详情用全局 .kv-list，只补折扣行与说明 */
 .mg-body { display: flex; flex-direction: column; gap: 12px; }
 .mg-body .kv-row .kv-value { text-align: left; }
 .mg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.mg-discount { font-size: 16px; font-weight: 600; }
+.mg-discount { font-size: 16px; font-weight: 700; color: var(--au-text); }
 .mg-hint {
   margin: 0;
+  padding: 10px 12px;
   font-size: 12px;
   line-height: 1.7;
-  color: var(--text-muted);
-  background: var(--bg-inset, rgba(255, 255, 255, 0.03));
-  border-radius: 8px;
-  padding: 10px 12px;
+  color: var(--au-text-3);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
 }
 .mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
+
+@media (max-width: 768px) {
+  .view-toolbar { padding: 2px 16px 12px; }
+  .view-toolbar__filters > .f-search { flex: 1 1 100%; width: auto; }
+  .view-toolbar__filters > .f-select { flex: 1 1 120px; width: auto; }
+  .view-toolbar__actions { width: 100%; justify-content: flex-end; }
+  .form-grid { grid-template-columns: 1fr; }
+}
 </style>

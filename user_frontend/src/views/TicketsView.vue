@@ -35,6 +35,8 @@ interface Ticket {
 // 状态
 const tickets = ref<Ticket[]>([])
 const loading = ref(false)
+/** 列表首屏拉取失败：和「真的没有工单」分开显示 */
+const loadError = ref(false)
 const refreshing = ref(false)
 const selectedTicket = ref<Ticket | null>(null)
 const messages = ref<TicketMessage[]>([])
@@ -77,8 +79,10 @@ async function fetchTickets(showSpinner = true) {
   try {
     const res = await ticketApi.getMyTickets()
     tickets.value = (res as any) || []
+    loadError.value = false
   } catch (error) {
     console.error('获取工单列表失败:', error)
+    if (!tickets.value.length) loadError.value = true
   } finally {
     if (showSpinner) loading.value = false
   }
@@ -202,7 +206,7 @@ async function closeTicket() {
 function formatDate(dateStr: string) {
   const date = new Date(dateStr)
   const now = new Date()
-  // 未来时间（时钟偏差）钳制为 0，避免 "-1天前"
+  // 服务器时钟比本机快几秒 / 时区写法不一致时 diff 会是负数：一律当「刚刚」，不出现「-1天前」
   const diff = Math.max(0, now.getTime() - date.getTime())
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
 
@@ -263,6 +267,15 @@ onMounted(() => {
         <div v-for="i in 3" :key="i" class="au-skeleton skel" />
       </div>
 
+      <div v-else-if="loadError && tickets.length === 0" class="empty-state" role="alert">
+        <div class="empty-icon">
+          <Ticket :size="32" />
+        </div>
+        <p>工单列表暂时读取失败</p>
+        <p class="empty-hint">可能是网络波动，稍后再试</p>
+        <button @click="fetchTickets()" class="btn btn-secondary">重新加载</button>
+      </div>
+
       <div v-else-if="tickets.length === 0" class="empty-state">
         <div class="empty-icon">
           <Ticket :size="32" />
@@ -304,7 +317,7 @@ onMounted(() => {
       <div class="modal glass-card">
         <div class="modal-header">
           <h3>创建工单</h3>
-          <button @click="showCreateModal = false" class="btn-close">
+          <button @click="showCreateModal = false" class="btn-close" aria-label="关闭">
             <X :size="18" />
           </button>
         </div>
@@ -358,7 +371,7 @@ onMounted(() => {
       <div class="modal modal-large glass-card">
         <div class="modal-header">
           <h3>{{ selectedTicket?.title }}</h3>
-          <button @click="showDetailModal = false" class="btn-close">
+          <button @click="showDetailModal = false" class="btn-close" aria-label="关闭">
             <X :size="18" />
           </button>
         </div>
@@ -420,16 +433,17 @@ onMounted(() => {
    结果工单页比别的页面窄一截、标题也偏粗白。 */
 
 .btn-create {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.625rem 1rem;
+  gap: 0.375rem;
+  height: 32px;
+  padding: 0 0.875rem;
   background: var(--au-primary);
   border: none;
-  border-radius: 0.5rem;
+  border-radius: var(--au-r-sm);
   color: var(--au-on-primary);
-  font-size: 0.875rem;
-  font-weight: 500;
+  font-size: 0.8125rem;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
 }
@@ -832,10 +846,6 @@ onMounted(() => {
     width: 100%;
   }
 
-  .btn-create {
-    width: 100%;
-    justify-content: center;
-  }
 
   .modal-footer {
     flex-direction: column;
@@ -848,5 +858,10 @@ onMounted(() => {
   .btn {
     width: 100%;
   }
+}
+
+/* 手机：图标按钮的点按宽度补到 44px（高度由 mobile.css 统一补齐） */
+@media (max-width: 768px) {
+  .btn-close { min-width: 44px; }
 }
 </style>

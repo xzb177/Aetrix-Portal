@@ -13,7 +13,7 @@
   position: relative;
   aspect-ratio: 16 / 8.5;
   overflow: hidden;
-  background: var(--bg-inset);
+  background: var(--au-bg-soft);
 }
 
 .lib-cover > img {
@@ -31,17 +31,17 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  color: var(--text-muted);
+  color: var(--au-text-3);
   font-size: var(--font-size-xs);
 }
 
-/* 压图叠加层（封面渐隐罩）：压在封面照片上，保证徽标在任意图片下可读。
-   与主题表面分层无关，tokens.css 无对应变量，硬编码属业务语义色，予以保留。 */
+/* 压图叠加层：只在封面顶部压一道遮罩，保证徽标在任意图片下可读。
+   这是照片保护层（功能性），不是装饰渐变；颜色走 --au-overlay-* 令牌，随主题切换。 */
 .lib-cover-shade {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(to bottom, rgb(0 0 0 / 0.32), transparent 45%, rgb(0 0 0 / 0.18));
+  background: linear-gradient(to bottom, var(--au-overlay-mid), transparent 42%);
 }
 
 .lib-cover-badges {
@@ -62,16 +62,17 @@
   gap: 4px;
 }
 
-/* 压图浮动按钮：压在封面照片上的操作按钮，白字 + 黑半透明底保证任意图片下可读。
-   与主题无关，tokens.css 无对应变量，硬编码属业务语义色，予以保留。 */
+/* 压图浮动按钮：实色表面小圆钮（与卡片同一层表面），任意图片、深浅两档下都可读；
+   !important 是为了盖过 el-button text 变体的透明底。 */
 .cover-button {
-  color: #fff !important;
-  background: rgb(0 0 0 / 0.48) !important;
-  border: 1px solid rgb(255 255 255 / 0.22) !important;
+  color: var(--au-text) !important;
+  background: var(--au-surface) !important;
+  border: 1px solid var(--au-border-strong) !important;
 }
 
 .cover-button:hover {
-  background: rgb(0 0 0 / 0.72) !important;
+  color: var(--au-primary) !important;
+  background: var(--au-surface-2) !important;
 }
 
 .lib-body {
@@ -131,26 +132,28 @@
 
 .settings-section-title {
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-primary);
+  border-bottom: 1px solid var(--au-border);
+  color: var(--au-text);
+  font-family: var(--au-font-serif);
   font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .settings-paths {
   padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--bg-inset);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
 }
 
 .settings-paths > span {
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
   font-size: var(--font-size-xs);
 }
 
 .settings-paths p {
   margin: 5px 0 0;
-  color: var(--text-secondary);
+  color: var(--au-text-2);
   font-size: var(--font-size-xs);
   line-height: 1.6;
   word-break: break-all;
@@ -158,7 +161,7 @@
 
 /* 表单里每一项下面那句人话说明（与 Servers.vue 的 .field-help 同一套值） */
 .field-help {
-  color: var(--text-muted);
+  color: var(--au-text-3);
   font-size: var(--font-size-xs);
   margin: 5px 0 0;
   line-height: 1.6;
@@ -168,10 +171,10 @@
 .lib-summary {
   font-size: var(--font-size-xs);
   font-family: var(--font-mono);
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
   padding: 5px 8px;
-  border-radius: var(--radius-md);
-  background: var(--bg-inset);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -189,9 +192,9 @@
   aspect-ratio: 16 / 9;
   flex-shrink: 0;
   overflow: hidden;
-  border-radius: var(--radius-md);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
+  border: 1px solid var(--au-border);
 }
 .lib-cover-thumb img {
   width: 100%;
@@ -216,7 +219,7 @@
 }
 .lib-form-dirty {
   font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  color: var(--au-text-3);
 }
 .lib-form-foot-btns {
   display: flex;
@@ -273,22 +276,22 @@
 }
 .lib-opt-popper .opt-label {
   font-size: var(--font-size-sm);
-  color: var(--text-primary);
+  color: var(--au-text);
 }
 .lib-opt-popper .opt-rec {
   font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
 }
 .lib-opt-popper .opt-hint {
   font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
   white-space: normal;
   line-height: 1.5;
 }
 
 /* 监听降级提示：橙色实心会像报错，这里只说“已降级为定时扫描”，不是故障 */
 .field-warn {
-  color: var(--el-color-warning);
+  color: var(--au-warning);
   font-size: var(--font-size-xs);
   margin: 4px 0 0;
 }
@@ -297,16 +300,17 @@
 .cover-autogen {
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid var(--el-border-color-lighter);
+  border-top: 1px solid var(--au-border);
 }
 
 /* 媒体路径：默认只展示列表，“高级前缀路径”收在折叠块里（绝大多数人用不到） */
 .lpm-advanced {
   margin-top: 10px;
 }
-.lpm-advanced :deep(.el-collapse-item__header) {
+/* 注意：这是全局样式表，:deep() 在这里无效（之前写的是 :deep，规则整条被丢弃） */
+.lpm-advanced .el-collapse-item__header {
   font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  color: var(--au-text-3);
   border-bottom: none;
 }
 
@@ -325,9 +329,9 @@
   min-width: 260px;
   max-width: 560px;
   aspect-ratio: 16 / 9;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-inset);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -344,7 +348,7 @@
 .cover-preview-hint {
   padding: 16px;
   text-align: center;
-  color: var(--text-tertiary);
+  color: var(--au-text-3);
   font-size: var(--font-size-xs);
   line-height: 1.6;
 }

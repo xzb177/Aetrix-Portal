@@ -231,7 +231,7 @@ onMounted(load)
             <span class="gains-dot" />
             <span class="gains-desc">签到奖励</span>
             <span class="gains-time">{{ (g.created_at || '').slice(0, 10) }}</span>
-            <strong class="gains-amt">+{{ g.amount }}</strong>
+            <strong class="gains-amt">{{ g.amount > 0 ? '+' : '' }}{{ g.amount }}</strong>
           </li>
         </ul>
       </section>
@@ -248,11 +248,9 @@ onMounted(load)
   overflow: hidden;
   border-radius: var(--au-r-xl);
   border: 1px solid var(--au-border);
-  border-top: 2px solid var(--au-primary);
   background: var(--au-surface);
   padding: 1.625rem 1.75rem;
 }
-.sign-card.signed { border-top-color: var(--au-success); }
 
 .sign-body {
   position: relative;

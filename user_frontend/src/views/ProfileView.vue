@@ -971,7 +971,8 @@ function formatDate(iso?: string | null) {
   align-items: center;
   gap: 0.75rem;
   padding: 0.6875rem 0.875rem;
-  background: var(--au-bg-soft);
+  /* 字段底色：深色下是内凹的暗底，浅色下就是纸白（不再是一块发灰的色块） */
+  background: var(--au-input-bg);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-md);
 }

@@ -1,10 +1,17 @@
 <script setup lang="ts">
 /**
  * 运营管理：经济总览 + 订单管理 + 人工补单
+ *
+ * v2.54（暗房影院）：PageHeader + StatTile 总览（待支付 > 0 才染警示、可点进带筛选的列表）+
+ * flush SectionCard 订单表（筛选在左、查询在右，分页收进卡片底栏）；加载失败给可重试的错误态。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, Search, CircleCheck, Wallet, Ban, Undo2, ReceiptText } from 'lucide-vue-next'
+import {
+  RefreshCw, Search, CircleCheck, Wallet, Ban, Undo2, ReceiptText, Coins, CalendarCheck, Clock3,
+  Gift, UserPlus, AlertTriangle,
+} from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import { useQueryFilter } from '@/composables/useQueryFilter'
@@ -43,6 +50,8 @@ const pageSize = 20
 const statusFilter = ref('')
 const kindFilter = ref('')
 const search = ref('')
+/** 订单主表加载失败（不是「没有订单」）：表格位置换成可重试的错误态 */
+const loadError = ref('')
 // 深链：仪表盘 KPI / 命令面板带筛选过来（Phase 5，如 /orders?status=pending）
 // 回调里回到第一页：带着筛选翻到第 5 页是空页，深链不该把人送到空页上
 useQueryFilter(statusFilter, 'status', () => { page.value = 1; load() })
@@ -51,6 +60,7 @@ useQueryFilter(search, 'search', () => { page.value = 1; load() })
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     const [s, o] = await Promise.all([
       fetchEconomyStats().catch(() => null),
@@ -66,10 +76,26 @@ async function load() {
     orders.value = o.orders
     total.value = o.total
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '加载失败')
+    loadError.value = (e as Error)?.message || '加载失败'
+    ElMessage.error(loadError.value)
   } finally {
     loading.value = false
   }
+}
+
+/** 筛选变化 / 点「查询」：回到第一页再拉 */
+function query() {
+  page.value = 1
+  load()
+}
+
+const hasFilter = computed(() => !!(statusFilter.value || kindFilter.value || search.value))
+
+function resetFilters() {
+  statusFilter.value = ''
+  kindFilter.value = ''
+  search.value = ''
+  query()
 }
 
 // ==================== 关单 / 退款（v2.9.0） ====================
@@ -229,70 +255,83 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">订单</h1>
-        <p class="admin-page-desc">充值 / 订阅订单、营收统计与人工补单</p>
-      </div>
-      <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
-    </div>
+  <div class="admin-page orders-page">
+    <PageHeader
+      eyebrow="运营中心"
+      title="订单"
+      description="充值 / 订阅订单、营收统计与人工补单。点「处理 / 详情」补单、关单或退款。"
+    >
+      <template #actions>
+        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
+      </template>
+    </PageHeader>
 
-    <!-- 统计卡 -->
-    <div v-if="stats" class="stat-grid">
-      <div class="stat-tile">
-        <div class="stat-label">累计充值积分</div>
-        <div class="stat-value">{{ stats.total_points.toLocaleString() }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">今日签到人次</div>
-        <div class="stat-value">{{ stats.checkins_today }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">待支付订单</div>
-        <div class="stat-value" :class="{ 'stat-warn': stats.orders.pending > 0 }">{{ stats.orders.pending }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">累计营收 (¥)</div>
-        <div class="stat-value stat-accent">{{ stats.orders.revenue.toFixed(2) }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">兑换码已用 / 总数</div>
-        <div class="stat-value">{{ stats.exchange_codes.used }} / {{ stats.exchange_codes.total }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">邀请总数</div>
-        <div class="stat-value">{{ stats.invitations }}</div>
-      </div>
-    </div>
+    <!-- 经济总览：数字走正文色，只有「待支付 > 0」染警示；累计营收是全页唯一的琥珀数字 -->
+    <section v-if="stats" class="stat-row" aria-label="经济总览">
+      <StatTile label="累计营收" :value="stats.orders.revenue.toFixed(2)" suffix="¥" :icon="Wallet" tone="accent" />
+      <StatTile
+        label="待支付订单"
+        :value="stats.orders.pending"
+        :icon="Clock3"
+        :tone="stats.orders.pending > 0 ? 'warn' : 'plain'"
+        :to="stats.orders.pending > 0 ? '/orders?status=pending' : undefined"
+        :hint="stats.orders.pending > 0 ? '点开只看待支付' : '没有待处理的'"
+      />
+      <StatTile label="累计充值积分" :value="stats.total_points.toLocaleString()" :icon="Coins" />
+      <StatTile label="今日签到人次" :value="stats.checkins_today" :icon="CalendarCheck" />
+      <StatTile
+        label="兑换码已用"
+        :value="stats.exchange_codes.used"
+        :suffix="`/ ${stats.exchange_codes.total}`"
+        :icon="Gift"
+        to="/exchange-codes"
+      />
+      <StatTile label="邀请总数" :value="stats.invitations" :icon="UserPlus" to="/invitations" />
+    </section>
 
-    <!-- 筛选 -->
-    <div class="toolbar">
-      <el-input
-        v-model="search"
-        placeholder="搜索订单号 / 用户名"
-        clearable
-        style="width: 220px"
-        @keyup.enter="page = 1; load()"
+    <!-- 订单表：筛选在左、查询在右；桌面表格 / 手机卡片；分页在卡片底栏 -->
+    <SectionCard title="全部订单" :icon="ReceiptText" :meta="total ? `共 ${total} 条` : ''" flush>
+      <div class="view-toolbar">
+        <div class="view-toolbar__filters">
+          <el-input
+            v-model="search"
+            class="f-search"
+            placeholder="搜索订单号 / 用户名"
+            clearable
+            @keyup.enter="query"
+            @clear="query"
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="kindFilter" class="f-select" placeholder="类型" clearable @change="query">
+            <el-option label="充值" value="recharge" />
+            <el-option label="订阅" value="subscription" />
+          </el-select>
+          <el-select v-model="statusFilter" class="f-select" placeholder="状态" clearable @change="query">
+            <el-option label="待支付" value="pending" />
+            <el-option label="已支付" value="paid" />
+            <el-option label="已退款" value="refunded" />
+            <el-option label="已关闭" value="closed" />
+          </el-select>
+        </div>
+        <div class="view-toolbar__actions">
+          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
+          <el-button type="primary" :icon="Search" @click="query">查询</el-button>
+        </div>
+      </div>
+
+      <EmptyState
+        v-if="loadError && !orders.length"
+        :icon="AlertTriangle"
+        title="订单加载失败"
+        :description="loadError"
       >
-        <template #prefix><Search :size="14" /></template>
-      </el-input>
-      <el-select v-model="kindFilter" placeholder="类型" clearable style="width: 130px" @change="page = 1; load()">
-        <el-option label="充值" value="recharge" />
-        <el-option label="订阅" value="subscription" />
-      </el-select>
-      <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 130px" @change="page = 1; load()">
-        <el-option label="待支付" value="pending" />
-        <el-option label="已支付" value="paid" />
-        <el-option label="已退款" value="refunded" />
-        <el-option label="已关闭" value="closed" />
-      </el-select>
-      <el-button type="primary" @click="page = 1; load()">查询</el-button>
-    </div>
+        <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
+      </EmptyState>
 
-    <!-- 订单表：桌面表格 / 手机卡片 -->
-    <div class="admin-card">
       <DataTable
+        v-else
+        class="flush-table"
         :rows="orders"
         :columns="columns"
         :loading="loading"
@@ -333,42 +372,51 @@ onMounted(() => {
         </template>
 
         <template #empty>
-          <el-empty description="暂无订单" :image-size="72">
-            <template #image><Wallet :size="42" style="color: var(--text-faint)" /></template>
-          </el-empty>
+          <EmptyState
+            compact
+            :icon="Wallet"
+            :title="hasFilter ? '没有符合筛选的订单' : '还没有订单'"
+            :description="hasFilter ? '换个条件，或清空筛选看全部。' : '用户充值或订阅后，订单会出现在这里。'"
+          >
+            <template v-if="hasFilter" #actions>
+              <el-button size="small" @click="resetFilters">清空筛选</el-button>
+            </template>
+          </EmptyState>
         </template>
       </DataTable>
-    </div>
+
+      <template v-if="total > pageSize" #footer>
+        <el-pagination
+          v-model:current-page="page"
+          :page-size="pageSize"
+          :total="total"
+          layout="prev, pager, next, total"
+          class="card-pager"
+          @current-change="load"
+        />
+      </template>
+    </SectionCard>
 
     <!-- 退款 / 关单记录：订单表只有状态标签，说不清「为什么退的」 -->
-    <div v-if="records.length" class="admin-card records-card">
-      <div class="records-head">
-        <ReceiptText :size="14" />
-        最近的退款 / 关单
-        <span class="muted records-hint">原因会同时写进操作审计</span>
-      </div>
+    <SectionCard
+      v-if="records.length"
+      title="最近的退款 / 关单"
+      :icon="Undo2"
+      meta="原因会同时写进操作审计"
+      flush
+    >
       <ul class="records">
         <li v-for="r in records" :key="r.order_id + r.status" class="record">
-          <span class="mono">{{ r.order_id }}</span>
-          <span class="mini-badge" :class="r.status === 'refunded' ? 'danger' : 'muted'">
+          <span class="mono record-id">{{ r.order_id }}</span>
+          <span class="au-badge" :class="r.status === 'refunded' ? 'au-badge-rose' : 'au-badge-muted'">
             {{ r.status === 'refunded' ? '已退款' : '已关闭' }}
           </span>
           <span class="record-user">{{ r.username }}</span>
           <span class="record-reason">{{ r.reason || '（未填原因）' }}</span>
-          <span class="muted record-time">{{ fmtTime(r.at) }}</span>
+          <span class="record-time">{{ fmtTime(r.at) }}</span>
         </li>
       </ul>
-    </div>
-
-    <el-pagination
-      v-if="total > pageSize"
-      v-model:current-page="page"
-      :page-size="pageSize"
-      :total="total"
-      layout="prev, pager, next, total"
-      class="pager"
-      @current-change="load"
-    />
+    </SectionCard>
 
     <!-- 退款：默认回滚权益，余额不够时可显式允许扣成负数 -->
     <el-dialog v-model="refundDialog.visible" title="订单退款" width="480px">
@@ -474,38 +522,85 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.stat-warn { color: var(--warning); }
-.amount { font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; }
-.done-hint { font-size: var(--font-size-xs); }
-.dialog-order { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.dialog-order em { font-style: normal; font-size: var(--font-size-xs); }
-.opt-hint { margin: 2px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.5; }
+/* ---------- 总览瓦片 ---------- */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
 
-/* 订单详情弹窗：详情用全局 .kv-list，只补金额行与说明 */
+/* ---------- 工具条：筛选在左、动作在右 ---------- */
+.view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 14px;
+  border-bottom: 1px solid var(--au-border);
+}
+
+.view-toolbar__filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.view-toolbar__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.f-search { width: 240px; }
+.f-select { width: 130px; }
+
+/* flush 卡片里的表格 / 手机卡片：表格贴边，手机卡片留出边距 */
+.flush-table :deep(.dt-cards) { padding: 12px 12px 8px; }
+.card-pager { display: flex; justify-content: flex-end; flex-wrap: wrap; row-gap: 8px; }
+
+.amount { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--au-text); }
+.dialog-order { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dialog-order em { font-style: normal; font-size: 12px; }
+.opt-hint { margin: 2px 0 0; font-size: 12px; color: var(--au-text-3); line-height: 1.5; }
+
+/* ---------- 订单详情弹窗：详情用全局 .kv-list，只补金额行与说明 ---------- */
 .od-body { display: flex; flex-direction: column; gap: 12px; }
 .od-body .kv-row .kv-value { text-align: left; }
 .od-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.od-amount { font-size: var(--font-size-lg, 18px); font-weight: 600; font-variant-numeric: tabular-nums; }
+.od-amount { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--au-text); }
 .od-hint {
   margin: 0;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  line-height: 1.7;
-  background: var(--bg-inset, rgba(255, 255, 255, 0.03));
-  border-radius: var(--radius-md, 10px);
   padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--au-text-3);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
 }
 
-.records-card { margin-top: 16px; }
-.records-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
-.records-hint { font-weight: 400; }
-.records { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.record { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
-.record-user { color: var(--text-muted); }
+/* ---------- 退款 / 关单记录：贴边列表，发丝线分行 ---------- */
+.records { list-style: none; margin: 0; padding: 0; }
+.record {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  font-size: 12.5px;
+  color: var(--au-text-2);
+}
+.record + .record { border-top: 1px solid var(--au-border); }
+.record-id { color: var(--au-text); }
+.record-user { color: var(--au-text-3); }
 .record-reason { flex: 1 1 160px; min-width: 120px; }
-.record-time { font-variant-numeric: tabular-nums; }
-.mono { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
-.mini-badge { font-size: 10px; padding: 1px 7px; border-radius: var(--radius-full); font-weight: 600; }
-.mini-badge.danger { background: var(--danger-bg); color: var(--danger); }
-.mini-badge.muted { background: var(--bg-hover); color: var(--text-muted); }
+.record-time { font-variant-numeric: tabular-nums; color: var(--au-text-4); }
+
+@media (max-width: 768px) {
+  .view-toolbar { padding: 2px 16px 12px; }
+  .view-toolbar__filters > .f-search { flex: 1 1 100%; width: auto; }
+  .view-toolbar__filters > .f-select { flex: 1 1 120px; width: auto; }
+  .view-toolbar__actions { width: 100%; justify-content: flex-end; }
+  .card-pager { justify-content: center; }
+  .record { padding: 10px 16px; }
+}
 </style>

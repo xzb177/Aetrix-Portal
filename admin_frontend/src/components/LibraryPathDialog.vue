@@ -390,37 +390,38 @@ function confirmChecked() {
   gap: 8px;
   margin-bottom: 8px;
   padding: 7px 12px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
   font-size: var(--font-size-sm);
-  color: var(--text-muted);
+  color: var(--au-text-3);
 }
-.lpd-source b { color: var(--el-text-color-primary); }
+.lpd-source b { color: var(--au-text); }
 .lpd-source-icon { flex: none; }
 .lpd-advanced { margin-bottom: 10px; }
 .lpd-hint {
   margin: 4px 0 0;
   font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  color: var(--au-text-3);
   line-height: 1.6;
 }
 .lpd-warn {
   margin: 4px 0 0;
   font-size: var(--font-size-xs);
-  color: var(--el-color-warning);
+  color: var(--au-warning);
   line-height: 1.6;
 }
 .lpd-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .lpd-multi { flex: none; }
 .lpd-crumbs { margin-bottom: 6px; font-size: var(--font-size-xs); }
-.lpd-crumbs a { cursor: pointer; color: var(--el-color-primary); }
+.lpd-crumbs a { cursor: pointer; color: var(--au-primary); }
+.lpd-crumbs a:hover { color: var(--au-primary-strong); }
 .lpd-list {
   max-height: 46vh;
   min-height: 140px;
   overflow-y: auto;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
 }
 .lpd-row {
   display: flex;
@@ -429,21 +430,22 @@ function confirmChecked() {
   padding: 8px 12px;
   cursor: pointer;
   font-size: var(--font-size-sm);
-  border-bottom: 1px solid var(--el-border-color-extra-light);
+  border-bottom: 1px solid var(--au-border);
 }
 .lpd-row:last-child { border-bottom: none; }
-.lpd-row:hover { background: var(--el-fill-color-light); }
-.lpd-row.picked { background: var(--el-color-primary-light-9); }
-.lpd-up { color: var(--el-text-color-secondary); }
-.lpd-icon { flex: none; color: var(--text-muted); }
+.lpd-row { transition: background-color var(--au-fast) var(--au-ease); }
+.lpd-row:hover { background: var(--au-violet-soft); }
+.lpd-row.picked { background: var(--au-primary-soft); }
+.lpd-up { color: var(--au-text-3); }
+.lpd-icon { flex: none; color: var(--au-text-3); }
 .lpd-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lpd-tag { flex: none; font-size: var(--font-size-xs); color: var(--el-text-color-placeholder); }
+.lpd-tag { flex: none; font-size: var(--font-size-xs); color: var(--au-text-4); }
 .lpd-box {
   flex: none;
   width: 16px;
   height: 16px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 4px;
+  border: 1px solid var(--au-border);
+  border-radius: calc(var(--au-r-sm) / 2);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -453,19 +455,24 @@ function confirmChecked() {
   user-select: none;
 }
 .lpd-box.on {
-  background: var(--el-color-primary);
-  border-color: var(--el-color-primary);
-  /* 勾选态底色用主色（深浅色主题下都是主色），白勾不依赖主题变量，令牌检查也只认被引入的定义 */
-  color: #fff;
+  background: var(--au-primary);
+  border-color: var(--au-primary);
+  /* 勾选态：琥珀底上的字色走 --au-on-primary，品牌色覆盖后也保持可读 */
+  color: var(--au-on-primary);
 }
 .lpd-empty, .lpd-error { padding: 24px; text-align: center; font-size: var(--font-size-sm); }
-.lpd-empty { color: var(--el-text-color-placeholder); }
-.lpd-error { color: var(--el-color-danger); }
+.lpd-empty { color: var(--au-text-4); }
+.lpd-error { color: var(--au-danger); }
 .lpd-checked {
   margin-top: 8px;
   font-size: var(--font-size-sm);
-  color: var(--el-text-color-regular);
+  color: var(--au-text-2);
 }
-.lpd-checked b { color: var(--el-color-primary); font-size: 15px; }
-.lpd-clear { margin-left: 10px; cursor: pointer; color: var(--el-color-primary); font-size: var(--font-size-xs); }
+.lpd-checked b { color: var(--au-primary); font-size: 15px; font-variant-numeric: tabular-nums; }
+.lpd-clear { margin-left: 10px; cursor: pointer; color: var(--au-primary); font-size: var(--font-size-xs); }
+@media (max-width: 768px) {
+  .lpd-toolbar { flex-wrap: wrap; }
+  .lpd-toolbar .el-input { flex: 1 1 100%; }
+  .lpd-row { padding: 10px 12px; }
+}
 </style>

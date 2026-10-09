@@ -7,11 +7,18 @@
  *
  * v2.6.11：两张台账改用 DataTable（手机上变成卡片列表，不再需要横向拖），
  * 统计瓦片统一为全局 .stat-tile。
+ *
+ * v2.54（暗房影院）：PageHeader + StatTile + SectionCard 原语；四张台账都是 flush 表格，
+ * 邀请码的筛选在左、「批量生成」在右；积分流水分页收进卡片底栏；
+ * 推广奖励的配置条改成发丝线分隔的表单行；三处台账加载失败都有可重试的错误态。
  */
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Coins, Gift, Megaphone, Plus, QrCode, RefreshCw, Settings } from 'lucide-vue-next'
+import {
+  AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, Settings, UserPlus,
+} from 'lucide-vue-next'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchInvitations,
   fetchPointsLogs,
@@ -36,6 +43,8 @@ import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
 const loading = ref(false)
+/** 积分流水加载失败（邀请记录 / 总览各自兜底为空，不影响主表） */
+const logsError = ref(false)
 const stats = ref<EconomyStats | null>(null)
 
 // ===== 邀请记录 =====
@@ -95,6 +104,7 @@ const rebateTotal = computed(() =>
 
 async function load() {
   loading.value = true
+  logsError.value = false
   try {
     const [inv, log, econ] = await Promise.all([
       fetchInvitations({ limit: 100 }).catch(() => ({ records: [] })),
@@ -105,6 +115,9 @@ async function load() {
     logs.value = log.logs
     logTotal.value = log.total
     stats.value = econ
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
+    logsError.value = true
   } finally {
     loading.value = false
   }
@@ -145,6 +158,7 @@ const invCodes = ref<InvitationCodeRow[]>([])
 const invSummary = ref<Record<string, number>>({})
 const invStates = ref<{ value: string; label: string }[]>([])
 const invKeyword = ref('')
+const codesError = ref(false)
 const invState = ref('')
 
 const invColumns: DataColumn[] = [
@@ -161,6 +175,7 @@ const invColumns: DataColumn[] = [
 
 async function loadCodes() {
   invLoading.value = true
+  codesError.value = false
   try {
     const res = await fetchInvitationCodes({
       keyword: invKeyword.value || undefined,
@@ -172,6 +187,7 @@ async function loadCodes() {
     invStates.value = res.states
   } catch {
     /* 拦截器已提示 */
+    codesError.value = true
   } finally {
     invLoading.value = false
   }
@@ -347,6 +363,14 @@ const TYPE_LABELS: Record<string, string> = {
   exchange: '兑换码', recharge: '充值', admin_grant: '管理发放', admin_deduct: '管理扣除',
 }
 
+/** 邀请码状态 → 徽章配色 */
+function codeBadge(state: string): string {
+  if (state === 'active') return 'au-badge-green'
+  if (state === 'revoked') return 'au-badge-muted'
+  if (state === 'expired') return 'au-badge-rose'
+  return 'badge-warn'
+}
+
 function reloadAll() {
   load()
   loadCodes()
@@ -357,126 +381,107 @@ onMounted(reloadAll)
 </script>
 
 <template>
-  <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">邀请与积分</h1>
-        <p class="admin-page-desc">邀请台账与全站积分流水；规则参数已移至「系统设置」</p>
-      </div>
-      <div class="admin-page-actions">
-        <el-button :loading="loading" @click="reloadAll">
-          <RefreshCw :size="15" style="margin-right: 4px" />刷新
-        </el-button>
-        <el-button @click="openAdjust">
-          <Plus :size="15" style="margin-right: 4px" />调整积分
-        </el-button>
-        <RouterLink to="/settings" class="link-button">
-          <el-button type="primary">
-            <Settings :size="15" style="margin-right: 4px" />规则设置
-          </el-button>
+  <div class="admin-page invite-page">
+    <PageHeader
+      eyebrow="运营中心"
+      title="邀请与积分"
+      description="邀请码、邀请台账与全站积分流水；签到 / 支付 / 返利比例等规则参数在「系统设置」。"
+    >
+      <template #actions>
+        <el-button :icon="RefreshCw" :loading="loading" @click="reloadAll">刷新</el-button>
+        <el-button :icon="Plus" @click="openAdjust">调整积分</el-button>
+        <RouterLink v-slot="{ navigate }" to="/settings" custom>
+          <el-button type="primary" :icon="Settings" @click="navigate">规则设置</el-button>
         </RouterLink>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
-    <section class="stat-grid">
-      <div class="stat-tile">
-        <div class="stat-label"><Gift :size="13" /> 本页邀请记录</div>
-        <div class="stat-value stat-accent">{{ inviteTotal }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label"><Coins :size="13" /> 全站积分存量</div>
-        <div class="stat-value">{{ stats?.total_points ?? '—' }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">累计邀请关系</div>
-        <div class="stat-value">{{ stats?.invitations ?? '—' }}</div>
-      </div>
-      <div class="stat-tile">
-        <div class="stat-label">本页返利合计</div>
-        <div class="stat-value stat-accent">{{ rebateTotal }}</div>
-      </div>
+    <section class="stat-row" aria-label="邀请与积分概况">
+      <StatTile label="全站积分存量" :value="stats?.total_points?.toLocaleString() ?? '—'" :icon="Coins" tone="accent" />
+      <StatTile label="累计邀请关系" :value="stats?.invitations ?? '—'" :icon="UserPlus" />
+      <StatTile label="本页邀请记录" :value="inviteTotal" :icon="Gift" hint="最新 100 条" />
+      <StatTile label="本页返利合计" :value="rebateTotal" :icon="HandCoins" hint="当前积分流水页内" />
     </section>
 
-    <!-- 邀请码管理（v2.44.0） -->
-    <section class="admin-card block inv-card">
-      <div class="block-head inv-head">
-        <h3><QrCode :size="15" class="head-icon" />邀请码</h3>
-        <div class="inv-tools">
-          <span class="inv-summary">
-            共 {{ invSummary.total ?? 0 }} 张 · 可用 {{ invSummary.active ?? 0 }} ·
-            已用 {{ invSummary.uses ?? 0 }} 次
-          </span>
-          <el-select
-            v-model="invState"
-            placeholder="全部状态"
-            clearable
-            size="small"
-            style="width: 118px"
-            @change="loadCodes"
-          >
-            <el-option v-for="s in invStates" :key="s.value" :label="s.label" :value="s.value" />
-          </el-select>
+    <!-- 邀请码管理（v2.44.0）：筛选在左、批量生成在右 -->
+    <SectionCard
+      title="邀请码"
+      :icon="QrCode"
+      :meta="`共 ${invSummary.total ?? 0} 张 · 可用 ${invSummary.active ?? 0} · 已用 ${invSummary.uses ?? 0} 次`"
+      description="管理员维度发的渠道码，用户自己那张码（个人中心 → 邀请）不受影响。次数 0 = 不限，无有效期 = 永不过期，白名单留空 = 谁都能用。"
+      flush
+    >
+      <div class="view-toolbar">
+        <div class="view-toolbar__filters">
           <el-input
             v-model="invKeyword"
-            size="small"
+            class="f-search"
             placeholder="搜邀请码"
             clearable
-            style="width: 150px"
             @change="loadCodes"
             @clear="loadCodes"
-          />
-          <el-button size="small" type="primary" @click="openGen">
-            <Plus :size="14" style="margin-right: 4px" />批量生成
-          </el-button>
+          >
+            <template #prefix><Search :size="14" /></template>
+          </el-input>
+          <el-select v-model="invState" class="f-select" placeholder="全部状态" clearable @change="loadCodes">
+            <el-option v-for="st in invStates" :key="st.value" :label="st.label" :value="st.value" />
+          </el-select>
+        </div>
+        <div class="view-toolbar__actions">
+          <el-button type="primary" :icon="Plus" @click="openGen">批量生成</el-button>
         </div>
       </div>
-      <p class="inv-hint">
-        这里是<strong>管理员维度</strong>发的渠道码；每个用户自己那张码（个人中心 → 邀请）不受影响。
-        「0 次数」= 不限，「无有效期」= 永不过期，白名单留空 = 谁都能用。
-      </p>
 
-      <DataTable :rows="invCodes" :columns="invColumns" :loading="invLoading"
-                 empty="还没有邀请码：点右上角「批量生成」发一批">
+      <EmptyState v-if="codesError && !invCodes.length" :icon="AlertTriangle" title="邀请码加载失败" compact>
+        <template #actions><el-button size="small" :loading="invLoading" @click="loadCodes">重试</el-button></template>
+      </EmptyState>
+      <DataTable
+        v-else
+        class="flush-table"
+        :rows="invCodes"
+        :columns="invColumns"
+        :loading="invLoading"
+        empty="还没有邀请码"
+      >
         <template #cell-code="{ row }">
           <span class="inv-code mono">{{ row.code }}</span>
         </template>
         <template #cell-owner_username="{ row }">
           <span class="user-name">{{ row.owner_username }}</span>
         </template>
-        <template #cell-use_count="{ row }">{{ usesText(row) }}</template>
+        <template #cell-use_count="{ row }"><span class="num">{{ usesText(row) }}</span></template>
         <template #cell-state_label="{ row }">
-          <span class="mini-badge"
-                :class="row.state === 'active' ? 'success'
-                  : row.state === 'revoked' ? 'muted'
-                  : row.state === 'expired' ? 'danger' : 'warn'">
-            {{ row.state_label }}
-          </span>
+          <span class="au-badge" :class="codeBadge(row.state)">{{ row.state_label }}</span>
         </template>
         <template #cell-expires_at="{ row }">
-          <span v-if="!row.expires_at" class="muted">永久</span>
-          <span v-else>{{ fmtTime(row.expires_at) }}</span>
+          <span v-if="!row.expires_at" class="faint">永久</span>
+          <span v-else class="num">{{ fmtTime(row.expires_at) }}</span>
         </template>
         <template #cell-whitelist="{ row }">
-          <span v-if="!row.whitelist.length" class="muted">不限</span>
+          <span v-if="!row.whitelist.length" class="faint">不限</span>
           <span v-else>{{ row.whitelist.join('、') }}</span>
         </template>
         <template #cell-actions="{ row }">
-          <div class="inv-row-actions">
+          <div class="row-actions">
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="row.is_active" size="small" type="danger" plain
-                       @click="handleRevoke([row])">作废</el-button>
+            <el-button v-if="row.is_active" size="small" type="danger" plain @click="handleRevoke([row])">作废</el-button>
           </div>
         </template>
+        <template #empty>
+          <EmptyState
+            compact
+            :icon="QrCode"
+            :title="invKeyword || invState ? '没有符合条件的邀请码' : '还没有邀请码'"
+            :description="invKeyword || invState ? '换个条件再试。' : '点「批量生成」给渠道或内测发一批。'"
+          />
+        </template>
       </DataTable>
-    </section>
+    </SectionCard>
 
-    <div class="grid">
+    <div class="ledger-grid">
       <!-- 邀请记录 -->
-      <section class="admin-card block">
-        <div class="block-head">
-          <h3>邀请记录（最新 {{ invitations.length }} 条）</h3>
-        </div>
-        <DataTable :rows="invitations" :columns="inviteColumns" :loading="loading" empty="暂无邀请记录">
+      <SectionCard title="邀请记录" :icon="UserPlus" :meta="`最新 ${invitations.length} 条`" flush>
+        <DataTable class="flush-table" :rows="invitations" :columns="inviteColumns" :loading="loading" empty="暂无邀请记录">
           <template #cell-inviter="{ row }">
             <span class="user-name">{{ row.inviter }}</span>
           </template>
@@ -484,27 +489,32 @@ onMounted(reloadAll)
           <template #cell-reward_points="{ row }">
             <span class="amt-in">+{{ row.reward_points }}</span>
           </template>
-          <template #cell-created_at="{ row }">{{ fmtTime(row.created_at) }}</template>
+          <template #cell-created_at="{ row }"><span class="num">{{ fmtTime(row.created_at) }}</span></template>
+          <template #empty>
+            <EmptyState compact :icon="UserPlus" title="暂无邀请记录" description="用户通过邀请码注册后会记在这里。" />
+          </template>
         </DataTable>
-      </section>
+      </SectionCard>
 
-      <!-- 积分流水 -->
-      <section class="admin-card block">
-        <div class="block-head">
-          <h3>积分流水（共 {{ logTotal }} 条）</h3>
+      <!-- 积分流水：类型筛选放在卡片标题行右侧，分页在底栏 -->
+      <SectionCard title="积分流水" :icon="History" :meta="`共 ${logTotal} 条`" flush>
+        <template #actions>
           <el-select
             v-model="logTypeFilter"
+            class="f-select"
             placeholder="全部类型"
             clearable
             size="small"
-            style="width: 140px"
             @change="logPage = 1; load()"
           >
             <el-option v-for="(label, key) in TYPE_LABELS" :key="key" :label="label" :value="key" />
           </el-select>
-        </div>
+        </template>
 
-        <DataTable :rows="logs" :columns="logColumns" :loading="loading" empty="暂无积分流水">
+        <EmptyState v-if="logsError && !logs.length" :icon="AlertTriangle" title="积分流水加载失败" compact>
+          <template #actions><el-button size="small" :loading="loading" @click="load">重试</el-button></template>
+        </EmptyState>
+        <DataTable v-else class="flush-table" :rows="logs" :columns="logColumns" :loading="loading" empty="暂无积分流水">
           <template #cell-username="{ row }">
             <span class="user-name">{{ row.username }}</span>
           </template>
@@ -515,73 +525,106 @@ onMounted(reloadAll)
           </template>
           <template #cell-type="{ row }">{{ TYPE_LABELS[row.type] || row.type }}</template>
           <template #cell-description="{ row }">
-            <span v-if="!row.description" class="muted">—</span>
+            <span v-if="!row.description" class="faint">—</span>
             <span v-else>{{ row.description }}</span>
           </template>
-          <template #cell-balance_after="{ row }">{{ row.balance_after }}</template>
-          <template #cell-created_at="{ row }">{{ fmtTime(row.created_at) }}</template>
+          <template #cell-balance_after="{ row }"><span class="num">{{ row.balance_after }}</span></template>
+          <template #cell-created_at="{ row }"><span class="num">{{ fmtTime(row.created_at) }}</span></template>
+          <template #empty>
+            <EmptyState compact :icon="History" :title="logTypeFilter ? '这个类型下还没有流水' : '暂无积分流水'" />
+          </template>
         </DataTable>
 
-        <el-pagination
-          v-if="logTotal > 30"
-          v-model:current-page="logPage"
-          :page-size="30"
-          :total="logTotal"
-          layout="prev, pager, next"
-          size="small"
-          class="pager"
-          @current-change="load"
-        />
-      </section>
+        <template v-if="logTotal > 30" #footer>
+          <el-pagination
+            v-model:current-page="logPage"
+            :page-size="30"
+            :total="logTotal"
+            layout="prev, pager, next"
+            size="small"
+            class="card-pager"
+            @current-change="load"
+          />
+        </template>
+      </SectionCard>
     </div>
 
-    <!-- 推广奖励（v2.44.0）：开关与阈值全在系统设置里也能改，这里两处同一份 -->
-    <section class="admin-card block" style="margin-top: 14px">
-      <div class="block-head inv-head">
-        <h3><Megaphone :size="15" class="head-icon" />推广奖励</h3>
-        <span v-if="promoDirty" class="promo-dirty">有未保存的改动</span>
-      </div>
-      <p class="inv-hint">
-        邀请成功后在双向积分之外「另发」一笔，类型与数值全走配置。
-        <strong>默认关闭</strong>——不手动打开就不会发；明细同时在「系统设置 → 邀请返利」里可改。
-      </p>
+    <!-- 推广奖励（v2.44.0）：开关与阈值在系统设置里也能改，两处同一份 -->
+    <SectionCard
+      :icon="Megaphone"
+      description="邀请成功后在双向积分之外「另发」一笔，类型与数值全走配置。默认关闭——不手动打开就不会发；也可在「系统设置 → 邀请返利」里改。"
+      flush
+    >
+      <template #title>
+        推广奖励
+        <span v-if="promoDirty" class="au-badge badge-warn">有未保存的改动</span>
+      </template>
 
-      <div v-if="promo" class="promo-form">
-        <el-switch v-model="promoDraft.enabled" active-text="开启" inactive-text="关闭" />
-        <el-select v-model="promoDraft.reward_type" style="width: 170px">
-          <el-option v-for="t in promo.policy.reward_types" :key="t"
-                     :value="t" :label="promo.policy.reward_type_labels[t] || t" />
-        </el-select>
-        <template v-if="promoDraft.reward_type === 'days'">
-          <el-input-number v-model="promoDraft.days" :min="0" :max="3650"
-                           controls-position="right" style="width: 130px" />
-          <span class="field-suffix">天</span>
-        </template>
-        <template v-else>
-          <el-input-number v-model="promoDraft.amount" :min="0" :max="1000000"
-                           controls-position="right" style="width: 150px" />
-          <span class="field-suffix">积分</span>
-        </template>
-        <el-button type="primary" size="small" :disabled="!promoDirty" :loading="promoSaving"
-                   @click="savePromotion">保存</el-button>
-        <span class="promo-state" :class="{ 'is-off': !promoDraft.enabled }">{{ promoHint }}</span>
-      </div>
+      <EmptyState
+        v-if="!promo && !promoLoading"
+        :icon="AlertTriangle"
+        title="推广奖励配置加载失败"
+        compact
+      >
+        <template #actions><el-button size="small" @click="loadPromotion">重试</el-button></template>
+      </EmptyState>
 
-      <DataTable :rows="promo?.rewards || []" :columns="promoColumns" :loading="promoLoading"
-                 empty="还没有推广奖励记录（开关默认关闭，打开后邀请成功才会记在这里）">
-        <template #cell-inviter_username="{ row }">
-          <span class="user-name">{{ row.inviter_username || '—' }}</span>
-        </template>
-        <template #cell-invitee_username="{ row }">{{ row.invitee_username }}</template>
-        <template #cell-reward_type_label="{ row }">
-          <span class="mini-badge info">{{ row.reward_type_label }}</span>
-        </template>
-        <template #cell-reward_value="{ row }">
-          <span class="amt-in">+{{ row.reward_value }}</span>
-        </template>
-        <template #cell-created_at="{ row }">{{ fmtTime(row.created_at) }}</template>
-      </DataTable>
-    </section>
+      <template v-else>
+        <div v-if="promo" class="promo-form">
+          <el-switch v-model="promoDraft.enabled" active-text="开启" inactive-text="关闭" />
+          <el-select v-model="promoDraft.reward_type" class="promo-type">
+            <el-option
+              v-for="t in promo.policy.reward_types"
+              :key="t"
+              :value="t"
+              :label="promo.policy.reward_type_labels[t] || t"
+            />
+          </el-select>
+          <span class="promo-value">
+            <template v-if="promoDraft.reward_type === 'days'">
+              <el-input-number v-model="promoDraft.days" :min="0" :max="3650" controls-position="right" class="promo-num" />
+              <span class="field-suffix">天</span>
+            </template>
+            <template v-else>
+              <el-input-number v-model="promoDraft.amount" :min="0" :max="1000000" controls-position="right" class="promo-num" />
+              <span class="field-suffix">积分</span>
+            </template>
+          </span>
+          <el-button type="primary" size="small" :disabled="!promoDirty" :loading="promoSaving" @click="savePromotion">
+            保存
+          </el-button>
+          <span class="promo-state" :class="{ 'is-off': !promoDraft.enabled }">{{ promoHint }}</span>
+        </div>
+
+        <DataTable
+          class="flush-table"
+          :rows="promo?.rewards || []"
+          :columns="promoColumns"
+          :loading="promoLoading"
+          empty="还没有推广奖励记录"
+        >
+          <template #cell-inviter_username="{ row }">
+            <span class="user-name">{{ row.inviter_username || '—' }}</span>
+          </template>
+          <template #cell-invitee_username="{ row }">{{ row.invitee_username }}</template>
+          <template #cell-reward_type_label="{ row }">
+            <span class="au-badge au-badge-info">{{ row.reward_type_label }}</span>
+          </template>
+          <template #cell-reward_value="{ row }">
+            <span class="amt-in">+{{ row.reward_value }}</span>
+          </template>
+          <template #cell-created_at="{ row }"><span class="num">{{ fmtTime(row.created_at) }}</span></template>
+          <template #empty>
+            <EmptyState
+              compact
+              :icon="Megaphone"
+              title="还没有推广奖励记录"
+              description="开关默认关闭，打开后邀请成功才会记在这里。"
+            />
+          </template>
+        </DataTable>
+      </template>
+    </SectionCard>
 
     <!-- 调整积分对话框 -->
     <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="440px">
@@ -693,99 +736,89 @@ onMounted(reloadAll)
 </template>
 
 <style scoped>
-.link-button { text-decoration: none; }
-
-.grid {
+.stat-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-  gap: 14px;
-  align-items: start;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
 }
 
-.block-head h3 {
-  margin: 0;
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-}
-
-.user-name { font-weight: 600; color: var(--text-primary); }
-/* 收支金额：写死的浅绿/浅玫瑰在白日模式下只有 1.6~2:1，改走语义 token */
-.amt-in { color: var(--success); font-weight: 600; font-variant-numeric: tabular-nums; }
-.amt-out { color: var(--danger); font-weight: 600; font-variant-numeric: tabular-nums; }
-
-.adjust-preview {
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--primary-soft);
-  border: 1px solid var(--primary-border);
-  color: var(--primary);
-  font-size: var(--font-size-xs);
-}
-
-/* ===== 邀请码 / 推广奖励（v2.44.0）=====
-   block-head 是全局原语，这里只补头部的换行与右侧工具条 */
-.inv-card { margin-bottom: 14px; }
-.inv-head {
+/* ---------- 工具条：筛选在左、动作在右 ---------- */
+.view-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 10px 12px;
   flex-wrap: wrap;
+  padding: 4px 20px 14px;
+  border-bottom: 1px solid var(--au-border);
 }
-.head-icon { margin-right: 6px; vertical-align: -2px; color: var(--text-secondary); }
-.inv-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.inv-summary { font-size: var(--font-size-xs); color: var(--text-tertiary); }
-.inv-hint {
-  margin: 6px 0 12px;
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
-  line-height: 1.8;
-}
-.inv-code { font-size: var(--font-size-sm); color: var(--text-primary); letter-spacing: 0.4px; }
-.inv-row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
+.view-toolbar__filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
+.view-toolbar__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.f-search { width: 200px; }
+.f-select { width: 140px; }
+
+.flush-table :deep(.dt-cards) { padding: 12px 12px 8px; }
+.card-pager { display: flex; justify-content: flex-end; flex-wrap: wrap; row-gap: 8px; }
+
+/* 邀请记录 + 积分流水并排；窄屏叠起来 */
+.ledger-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: 16px;
+  align-items: start;
+}
+
+/* ---------- 单元格 ---------- */
+.user-name { font-weight: 600; color: var(--au-text); }
+.num { font-variant-numeric: tabular-nums; }
+.faint { color: var(--au-text-4); }
+.amt-in { color: var(--au-success); font-weight: 600; font-variant-numeric: tabular-nums; }
+.amt-out { color: var(--au-danger); font-weight: 600; font-variant-numeric: tabular-nums; }
+.inv-code { font-size: 13px; color: var(--au-text); letter-spacing: 0.04em; }
+.row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.badge-warn { background: var(--au-warning-soft); color: var(--au-warning); border-color: var(--au-warning-border); }
+
+/* ---------- 推广奖励配置行 ---------- */
 .promo-form {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 10px 12px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  padding: 4px 20px 14px;
+  border-bottom: 1px solid var(--au-border);
+}
+.promo-type { width: 170px; }
+.promo-value { display: inline-flex; align-items: center; gap: 6px; }
+.promo-num { width: 150px; }
+.field-suffix { font-size: 12px; color: var(--au-text-3); }
+.promo-state { flex: 1 1 220px; font-size: 12px; line-height: 1.7; color: var(--au-success); }
+.promo-state.is-off { color: var(--au-text-3); }
+
+/* ---------- 对话框 ---------- */
+.adjust-preview {
   padding: 10px 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  color: var(--au-primary);
+  font-size: 12px;
 }
-.promo-state {
-  flex: 1 1 220px;
-  font-size: var(--font-size-xs);
-  color: var(--success);
-  line-height: 1.7;
-}
-.promo-state.is-off { color: var(--text-tertiary); }
-.promo-dirty { color: var(--warning); font-size: var(--font-size-xs); }
-.field-suffix { font-size: var(--font-size-xs); color: var(--text-tertiary); }
 
 @media (max-width: 1000px) {
-  .grid { grid-template-columns: minmax(0, 1fr); }
+  .ledger-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* 手机：工具条竖排，提示文案占满整行
-   宽度覆盖要 !important：这些 el-input / el-select / el-input-number 在标记上写了
-   行内 style（桌面端固定宽），普通样式表压不住行内样式 */
-@media (max-width: 767px) {
-  .inv-head { align-items: flex-start; }
-  .inv-tools { width: 100%; }
-  .inv-tools .el-input,
-  .inv-tools .el-select { flex: 1 1 auto; width: auto !important; min-width: 110px; }
-  .inv-tools .el-button { flex: 1 1 auto; }
-  .promo-form { flex-direction: column; align-items: stretch; }
-  .promo-form .el-input-number,
-  .promo-form .el-select { width: 100% !important; }
-  .promo-state { flex: 1 1 auto; }
+@media (max-width: 768px) {
+  .view-toolbar { padding: 2px 16px 12px; }
+  .view-toolbar__filters > .f-search,
+  .view-toolbar__filters > .f-select { flex: 1 1 140px; width: auto; }
+  .view-toolbar__actions { width: 100%; }
+  .view-toolbar__actions > .el-button { flex: 1; }
+  .card-pager { justify-content: center; }
+  .promo-form { flex-direction: column; align-items: stretch; padding: 2px 16px 12px; }
+  .promo-type, .promo-num { width: 100%; }
+  .promo-value { width: 100%; }
+  .promo-value .promo-num { flex: 1; }
 }
 </style>

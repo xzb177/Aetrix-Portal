@@ -20,11 +20,11 @@
  * 内容自动化（MoviePilot / qB）与出流入口分开成两段，避免混在一起看不清谁在出流。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, CheckCircle2, CloudDownload, Download, FolderOpen, HardDrive, Info, Pencil,
-  Plus, RefreshCw, Route as RealmIcon, Server, Trash2, Wifi,
+  AlertTriangle, CheckCircle2, ChevronDown, CloudDownload, Download, FolderOpen, HardDrive, History,
+  Info, Library, ListChecks, Pencil, Plus, RefreshCw, Route as RealmIcon, ScanSearch, Server, Trash2, Wifi,
 } from 'lucide-vue-next'
 import {
   activateServer,
@@ -59,8 +59,10 @@ import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import NoticePanel from '@/components/NoticePanel.vue'
+import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 
 const realm = useRealmStore()
+const router = useRouter()
 
 /** 出流入口（一个服一个）与内容自动化（可全服共用）——分两段展示，别混在一起 */
 const ENTRY_KINDS: ServerKind[] = ['ea', 'emby']
@@ -152,6 +154,13 @@ async function runMountHealth() {
   } finally {
     checkingMounts.value = false
   }
+}
+
+/** 页头「更多」下拉：服管理 / 存储来源 / 媒体库（原来是三颗并排按钮，行为不变） */
+function onHeaderCommand(cmd: string) {
+  if (cmd === 'realms') router.push({ name: 'Realms' })
+  else if (cmd === 'emby') router.push({ name: 'EmbyAdmin' })
+  else if (cmd === 'mounts') openMountsForServer()
 }
 
 /** 「存储来源」按钮：直接开这台服（本服已激活的 EA）的弹窗，里面就是它的挂载区 */
@@ -851,54 +860,46 @@ const opsLastScan = ref<{
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">服务器与线路</h1>
-        <p class="admin-page-desc">
-          接了几台后端服、几台已有 Emby、当前用哪台出流、库归谁、这台机器碰不碰得到存储 ——
-          都在这一页（范围在右上角切，不用先理解「多服」是个什么模块）
-        </p>
-      </div>
-      <div class="toolbar">
-        <el-button @click="$router.push({ name: 'Realms' })">
-          <RealmIcon :size="14" style="margin-right: 4px" />服管理
-        </el-button>
-        <el-button @click="openMountsForServer">存储来源</el-button>
-        <el-button @click="$router.push({ name: 'EmbyAdmin' })">媒体库</el-button>
+    <PageHeader
+      eyebrow="媒体与交付"
+      title="服务器与线路"
+      description="接了几台后端服、几台已有 Emby、当前用哪台出流、库归谁、这台机器碰不碰得到存储 —— 都在这一页（范围在「概况」右侧切，不用先理解「多服」是个什么模块）"
+    >
+      <template #actions>
         <el-button :loading="liveRunning" @click="runLive">
           <Wifi :size="14" style="margin-right: 4px" />一键体检
         </el-button>
         <el-button @click="runRefreshMounts">EA 挂载体检</el-button>
+        <!-- 跳转类入口收进「更多」：页头只留体检与添加，窄屏不再折成三行按钮 -->
+        <el-dropdown trigger="click" @command="onHeaderCommand">
+          <el-button>
+            更多<ChevronDown :size="14" style="margin-left: 4px" />
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="realms">
+                <RealmIcon :size="14" style="margin-right: 6px" />服管理
+              </el-dropdown-item>
+              <el-dropdown-item command="mounts">
+                <HardDrive :size="14" style="margin-right: 6px" />存储来源
+              </el-dropdown-item>
+              <el-dropdown-item command="emby">
+                <Server :size="14" style="margin-right: 6px" />媒体库
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button aria-label="刷新" title="刷新" :loading="loading" @click="load"><RefreshCw :size="14" /></el-button>
         <el-button type="primary" @click="openCreate()">
           <Plus :size="14" style="margin-right: 4px" />添加服务器
         </el-button>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- 汇总：一眼看出「接了多少、多少可用、多少要处理」 -->
-    <div class="ov-totals admin-card">
-      <span class="ov-item">
-        <b>{{ totals?.entry ?? 0 }}</b>
-        <em>Emby 出流入口</em>
-      </span>
-      <span class="ov-item">
-        <b class="ok">{{ totals?.online ?? 0 }}</b>
-        <em>连接正常</em>
-      </span>
-      <span class="ov-item">
-        <b>{{ totals?.libraries ?? 0 }}</b>
-        <em>媒体库</em>
-      </span>
-      <span class="ov-item">
-        <b :class="{ warn: (totals?.libraries_unassigned ?? 0) > 0 }">{{ totals?.libraries_unassigned ?? 0 }}</b>
-        <em>未分配节点</em>
-      </span>
-      <span class="ov-item">
-        <b :class="{ danger: warnCount > 0, ok: warnCount === 0 }">{{ warnCount }}</b>
-        <em>需要处理</em>
-      </span>
-      <span class="ov-scope">
+    <SectionCard title="概况" :icon="Server" class="ov-card">
+      <template #actions>
+        <span class="ov-scope">
         <!-- 当前服与范围都在这一页选：多服不是一个要单独学的模块，只是这里的一个筛选条件 -->
         <span class="ov-scope-label">当前服</span>
         <el-select
@@ -915,16 +916,30 @@ const opsLastScan = ref<{
           <el-radio-button :value="true">全部服</el-radio-button>
           <el-radio-button :value="false">仅当前服</el-radio-button>
         </el-radio-group>
-      </span>
-    </div>
+        </span>
+      </template>
+      <div class="ov-grid">
+        <StatTile label="Emby 出流入口" :value="totals?.entry ?? 0" />
+        <StatTile label="连接正常" :value="totals?.online ?? 0" />
+        <StatTile label="媒体库" :value="totals?.libraries ?? 0" />
+        <StatTile
+          label="未分配节点"
+          :value="totals?.libraries_unassigned ?? 0"
+          :tone="(totals?.libraries_unassigned ?? 0) > 0 ? 'warn' : 'plain'"
+        />
+        <StatTile label="需要处理" :value="warnCount" :tone="warnCount > 0 ? 'danger' : 'ok'" />
+      </div>
+    </SectionCard>
 
     <!-- 统计卡：点一下只看那一类（内容自动化与出流入口分开看） -->
     <div class="kind-grid">
       <button
         v-for="card in kindCards"
         :key="card.meta.value"
-        class="admin-card filter-card"
+        type="button"
+        class="filter-card"
         :class="{ active: kindFilter === card.meta.value }"
+        :aria-pressed="kindFilter === card.meta.value"
         @click="kindFilter = kindFilter === card.meta.value ? '' : card.meta.value"
       >
         <div class="kind-top">
@@ -964,29 +979,32 @@ const opsLastScan = ref<{
     <!-- ==================== Emby 总览（按服） ==================== -->
     <template v-if="showEntries">
       <div v-loading="loading" class="realm-stack">
-        <section
+        <EmptyState
+          v-if="!loading && !realmCards.length"
+          :icon="RealmIcon"
+          title="还没有可显示的服"
+          description="先到「服管理」建一个服，再回来给它加 EA 或已有 Emby 作为出流入口。"
+        >
+          <template #actions>
+            <RouterLink to="/realms" class="au-btn au-btn-ghost au-btn-sm">去服管理</RouterLink>
+          </template>
+        </EmptyState>
+        <SectionCard
           v-for="{ card, rows: entryRows } in realmCards"
           :key="card.id"
-          class="realm-card admin-card"
+          class="realm-card"
+          :icon="RealmIcon"
+          :tone="card.warnings?.length ? 'accent' : 'default'"
         >
-          <header class="realm-head">
-            <span class="realm-icon"><RealmIcon :size="16" /></span>
+          <template #title>
             <span class="realm-name">
               {{ card.name }}
               <span v-if="card.is_default" class="mini-badge muted">默认服</span>
               <span v-if="!card.is_active" class="mini-badge warn">已停用</span>
               <em class="realm-slug">{{ card.slug }}</em>
             </span>
-            <span class="realm-entry">
-              <span class="mini-badge" :class="card.entry.mode === 'panel' ? 'warn' : 'ok'">
-                当前入口：{{ card.entry.label }}
-              </span>
-              <span v-if="card.entry.url" class="muted realm-url">{{ card.entry.url }}</span>
-              <span class="muted">
-                媒体库 {{ card.libraries.total }} 个<template v-if="card.libraries.unassigned">
-                  （未分配节点 {{ card.libraries.unassigned }}）</template>
-              </span>
-            </span>
+          </template>
+          <template #actions>
             <span class="realm-actions">
               <RouterLink :to="`/realms`" class="muted link">服管理</RouterLink>
               <RouterLink :to="`/emby`" class="muted link">媒体库</RouterLink>
@@ -997,7 +1015,17 @@ const opsLastScan = ref<{
                 <Plus :size="13" style="margin-right: 3px" />加 Emby
               </el-button>
             </span>
-          </header>
+          </template>
+            <div class="realm-entry">
+              <span class="mini-badge" :class="card.entry.mode === 'panel' ? 'warn' : 'ok'">
+                当前入口：{{ card.entry.label }}
+              </span>
+              <span v-if="card.entry.url" class="muted realm-url">{{ card.entry.url }}</span>
+              <span class="muted">
+                媒体库 {{ card.libraries.total }} 个<template v-if="card.libraries.unassigned">
+                  （未分配节点 {{ card.libraries.unassigned }}）</template>
+              </span>
+            </div>
 
           <div v-if="card.warnings?.length" class="warn-box">
             <span v-for="w in card.warnings" :key="w" class="warn-line">
@@ -1010,6 +1038,14 @@ const opsLastScan = ref<{
             :columns="entryColumns"
             empty="这个服还没有 Emby 出流入口：点右上角「加 EA」或「加 Emby」"
           >
+            <template #empty>
+              <EmptyState
+                compact
+                :icon="Server"
+                title="这个服还没有 Emby 出流入口"
+                description="点右上角「加 EA」或「加 Emby」。"
+              />
+            </template>
             <template #cell-name="{ row }">
               <div class="name-cell">
                 <span class="name">{{ row.name }}</span>
@@ -1098,23 +1134,39 @@ const opsLastScan = ref<{
               <AlertTriangle :size="13" /><b>{{ r.name }}：</b>{{ r.warnings.join('；') }}
             </span>
           </div>
-        </section>
+        </SectionCard>
       </div>
     </template>
 
     <!-- ==================== 内容自动化（求片用） ==================== -->
     <template v-if="showContent">
-      <div class="section-label">
-        <span class="section-title">内容自动化（求片用）</span>
-        <span class="muted">MoviePilot 负责找片、qB 负责下载；可以声明「全服共用」，多服接一套就够</span>
-      </div>
-      <div class="admin-card">
+      <SectionCard
+        title="内容自动化（求片用）"
+        :icon="CloudDownload"
+        description="MoviePilot 负责找片、qB 负责下载；可以声明「全服共用」，多服接一套就够"
+      >
+        <template #actions>
+          <el-button size="small" @click="openCreate('moviepilot')">
+            <Plus :size="13" style="margin-right: 3px" />加 MoviePilot
+          </el-button>
+          <el-button size="small" @click="openCreate('qbittorrent')">
+            <Plus :size="13" style="margin-right: 3px" />加 qB
+          </el-button>
+        </template>
         <DataTable
           :rows="contentRows"
           :columns="contentColumns"
           :loading="loading"
           empty="还没有接 MoviePilot / qBittorrent：求片批准后就没办法把片子弄进来"
         >
+          <template #empty>
+            <EmptyState
+              compact
+              :icon="CloudDownload"
+              title="还没有接 MoviePilot / qBittorrent"
+              description="求片批准后就没办法把片子弄进来。"
+            />
+          </template>
           <template #cell-name="{ row }">
             <div class="name-cell">
               <span class="name">{{ row.name }}</span>
@@ -1143,13 +1195,13 @@ const opsLastScan = ref<{
             <el-button size="small" plain @click="openManage(row)">管理</el-button>
           </template>
         </DataTable>
-      </div>
+      </SectionCard>
     </template>
 
     <el-dialog
       v-model="dialogVisible"
       :title="editingId ? '编辑服务器' : '添加服务器'"
-      width="560px"
+      width="min(560px, 94vw)"
       class="server-dialog"
     >
       <el-form label-position="top">
@@ -1241,7 +1293,9 @@ const opsLastScan = ref<{
             挂载 = 把内容接进媒体库的方式。类型由路径前缀决定；建在这里就固定由这台 EA 读，
             并用这台 EA 自己的 rclone.conf。
           </p>
-          <div v-if="mountsLoading" class="field-help">读取中…</div>
+          <div v-if="mountsLoading" class="server-mounts" aria-busy="true">
+            <div class="au-skeleton mount-skeleton" /><div class="au-skeleton mount-skeleton" />
+          </div>
           <div v-else-if="serverMounts.length" class="server-mounts">
             <div v-for="m in serverMounts" :key="m.id" class="server-mount-row">
               <div class="server-mount-main">
@@ -1253,23 +1307,30 @@ const opsLastScan = ref<{
                 <div v-if="m.legacy_note" class="legacy-note">{{ m.legacy_note }}</div>
               </div>
               <div class="server-mount-ops">
-                <el-button link :loading="busyId === m.id" @click="testOneMount(m)">
+                <el-button link :loading="busyId === m.id" title="测试挂载" aria-label="测试挂载" @click="testOneMount(m)">
                   <Wifi :size="14" />
                 </el-button>
-                <el-button link @click="openMountBrowse(m)">
+                <el-button link title="浏览目录" aria-label="浏览目录" @click="openMountBrowse(m)">
                   <FolderOpen :size="14" />
                 </el-button>
                 <el-button link @click="startEditMount(m)">编辑</el-button>
                 <el-button link @click="toggleMount(m)">
                   {{ m.is_enabled ? '停用' : '启用' }}
                 </el-button>
-                <el-button link type="danger" @click="removeMount(m)">
+                <el-button link type="danger" title="删除挂载" aria-label="删除挂载" @click="removeMount(m)">
                   <Trash2 :size="14" />
                 </el-button>
               </div>
             </div>
           </div>
-          <div v-else class="field-help">这台服务器还没有挂载</div>
+          <EmptyState
+            v-else
+            compact
+            :icon="HardDrive"
+            title="这台服务器还没有挂载"
+            description="在下方填名称与路径即可添加。"
+            class="mount-empty"
+          />
 
           <div class="add-mount">
             <el-input v-model="mountForm.name" placeholder="挂载名称，例如「主号电影」" />
@@ -1294,8 +1355,10 @@ const opsLastScan = ref<{
         </el-form-item>
       </el-form>
 
-      <div v-if="unsavedResult" class="probe" :class="unsavedResult.ok ? 'ok' : 'bad'">
-        {{ unsavedResult.ok ? '✓' : '✗' }} {{ unsavedResult.message || (unsavedResult.ok ? '连接成功' : '连接失败') }}
+      <div v-if="unsavedResult" class="probe" :class="unsavedResult.ok ? 'ok' : 'bad'" role="status">
+        <CheckCircle2 v-if="unsavedResult.ok" :size="14" />
+        <AlertTriangle v-else :size="14" />
+        {{ unsavedResult.message || (unsavedResult.ok ? '连接成功' : '连接失败') }}
       </div>
 
       <template #footer>
@@ -1312,7 +1375,7 @@ const opsLastScan = ref<{
       与全部动作放在一处。以前这些分散在带 tooltip 的列里，左边是 5 个按钮。
       动作做完弹窗不关，弹窗里的快照就地刷新。
     -->
-    <el-dialog v-model="manage.visible" :title="`管理服务器「${manage.row?.name || ''}」`" width="580px">
+    <el-dialog v-model="manage.visible" :title="`管理服务器「${manage.row?.name || ''}」`" width="min(580px, 94vw)">
       <div v-if="manage.row" class="mg-body">
         <div class="kv-list">
           <div class="kv-row"><span class="kv-key">名称</span>
@@ -1438,8 +1501,7 @@ const opsLastScan = ref<{
           </div>
         </div>
 
-        <div class="ops-card">
-          <div class="ops-card-title">一键扫描 + 刮削</div>
+        <SectionCard class="ops-card" title="一键扫描 + 刮削" :icon="ScanSearch">
           <p class="ops-hint">
             把归这台节点的启用库推入扫描队列：面板碰得到的本地入队，归这台节点的转发给它
             （只有那台机器能读到那些目录），已在队列 / 正在扫的不重复推。扫完自动接刮削流水线
@@ -1471,11 +1533,10 @@ const opsLastScan = ref<{
               跳过 · {{ row.name }}：{{ row.reason }}
             </div>
           </div>
-        </div>
+        </SectionCard>
 
         <!-- 任务：扫描队列 + 刮削补全 / 修复 + 内容转交 -->
-        <div class="ops-card">
-          <div class="ops-card-title">任务</div>
+        <SectionCard class="ops-card" title="任务" :icon="ListChecks">
 
           <div class="ops-sub">扫描队列（{{ ops?.queue.view === 'db' ? '由执行节点写回库里的状态' : '本进程队列' }}）</div>
           <p v-if="!ops?.queue.running.length && !ops?.queue.waiting.length" class="ops-hint">
@@ -1534,14 +1595,11 @@ const opsLastScan = ref<{
               <span class="muted">{{ fmtDate(item.pushed_at) }}</span>
             </div>
           </div>
-        </div>
+        </SectionCard>
 
         <!-- 整服视角扫描历史 -->
-        <div class="ops-card">
-          <div class="ops-card-title">
-            扫描历史（最近 {{ ops?.runs.length ?? 0 }} 轮）
-          </div>
-          <p v-if="!ops?.runs.length" class="ops-hint">还没有扫描流水。</p>
+        <SectionCard class="ops-card" title="扫描历史" :meta="`最近 ${ops?.runs.length ?? 0} 轮`" :icon="History">
+          <EmptyState v-if="!ops?.runs.length" compact :icon="History" title="还没有扫描流水" />
           <table v-else class="ops-table">
             <thead>
               <tr>
@@ -1562,14 +1620,16 @@ const opsLastScan = ref<{
               </tr>
             </tbody>
           </table>
-        </div>
+        </SectionCard>
 
         <!-- 归这台节点的库（只读：配置在媒体库页改） -->
-        <div class="ops-card">
-          <div class="ops-card-title">
-            媒体库（{{ ops?.scope.libraries ?? 0 }} 个，其中 {{ ops?.scope.enabled ?? 0 }} 个可扫）
-          </div>
-          <p v-if="!ops?.libraries.length" class="ops-hint">这个范围里还没有媒体库。</p>
+        <SectionCard
+          class="ops-card"
+          title="媒体库"
+          :meta="`${ops?.scope.libraries ?? 0} 个，其中 ${ops?.scope.enabled ?? 0} 个可扫`"
+          :icon="Library"
+        >
+          <EmptyState v-if="!ops?.libraries.length" compact :icon="Library" title="这个范围里还没有媒体库" />
           <table v-else class="ops-table">
             <thead>
               <tr><th>库名</th><th>状态</th><th>条目</th><th>来源</th><th>最近扫描</th></tr>
@@ -1593,7 +1653,7 @@ const opsLastScan = ref<{
               </tr>
             </tbody>
           </table>
-        </div>
+        </SectionCard>
       </div>
 
       <template #footer>
@@ -1619,90 +1679,84 @@ const opsLastScan = ref<{
 .mg-body { display: flex; flex-direction: column; gap: 12px; }
 .mg-body .kv-row .kv-value { text-align: left; }
 .mg-gap { margin-left: 6px; }
-.mg-msg { display: block; margin-top: 3px; font-size: var(--font-size-xs); color: var(--text-muted); }
+.mg-msg { display: block; margin-top: 3px; font-size: var(--font-size-xs); color: var(--au-text-3); }
 .mg-warn { margin: 0; padding-left: 18px; font-size: var(--font-size-xs); line-height: 1.8; }
 .mg-hint {
   margin: 0;
   font-size: var(--font-size-xs);
   line-height: 1.8;
-  color: var(--text-muted);
-  background: var(--bg-inset);
-  border-radius: var(--radius-md);
+  color: var(--au-text-3);
+  background: var(--au-bg-soft);
+  border-radius: var(--au-r-md);
   padding: 10px 12px;
 }
 .mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
 
-/* ==================== 汇总条 ==================== */
-.ov-totals {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 22px;
-  padding: 12px 16px;
-  margin-bottom: 14px;
+/* ==================== 概况（StatTile + 范围切换） ==================== */
+.ov-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
 }
-.ov-item { display: flex; flex-direction: column; gap: 1px; }
-.ov-item b { font-size: 20px; font-weight: var(--font-weight-semibold); color: var(--text-primary); font-variant-numeric: tabular-nums; }
-.ov-item b.ok { color: var(--success); }
-.ov-item b.warn { color: var(--warning); }
-.ov-item b.danger { color: var(--danger); }
-.ov-item em { font-style: normal; font-size: var(--font-size-xs); color: var(--text-muted); }
-.ov-scope { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
-.ov-scope-label { font-size: var(--font-size-xs); color: var(--text-muted); }
+.ov-scope { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ov-scope-label { font-size: var(--font-size-xs); color: var(--au-text-3); }
 .scope-realm { width: 150px; }
 
 /* ==================== 类型卡片 ==================== */
-/* 基座直接用规范 .admin-card（radius-lg + space-5），这里只保留"可点击筛选"的交互差异 */
+/* 可点击的筛选卡：与 StatTile 同配方（实色表面 + 发丝线 + 14px），选中 = 琥珀描边 + 浅琥珀底 */
 .kind-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 14px;
 }
 .filter-card {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
   text-align: left;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
-  transition: border-color var(--transition-base), background var(--transition-base);
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  transition: border-color var(--au-fast) var(--au-ease), background-color var(--au-fast) var(--au-ease);
 }
-.filter-card:hover { border-color: var(--primary); }
-.filter-card.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary-bg); }
+.filter-card:hover { border-color: var(--au-border-strong); }
+.filter-card:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+.filter-card:active { transform: scale(0.98); }
+.filter-card.active { border-color: var(--au-primary-border); background: var(--au-primary-soft); }
 .kind-top { display: flex; align-items: center; gap: 8px; }
 .kind-icon {
   width: 30px; height: 30px; display: grid; place-items: center;
-  border-radius: 9px; background: var(--primary-bg); color: var(--primary);
+  border-radius: var(--au-r-sm); background: var(--au-primary-soft); color: var(--au-primary);
 }
-.kind-label { color: var(--text-secondary); font-size: var(--font-size-sm); }
-.kind-count { margin-left: auto; font-size: 22px; font-weight: var(--font-weight-semibold); color: var(--text-primary); }
+.kind-label { color: var(--au-text-2); font-size: var(--font-size-sm); }
+.kind-count {
+  margin-left: auto; font-size: 22px; font-weight: 700; color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+}
 .kind-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-.kind-current { color: var(--text-muted); font-size: var(--font-size-xs); }
-.guide-panel { margin-bottom: 14px; }
+.kind-current { color: var(--au-text-3); font-size: var(--font-size-xs); }
+
 .guide { line-height: 1.75; }
 
-/* ==================== 按服的入口卡片 ==================== */
-.realm-stack { display: flex; flex-direction: column; gap: 14px; }
-.realm-card { padding: 14px 16px 16px; }
-.realm-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-.realm-icon {
-  width: 30px; height: 30px; display: grid; place-items: center; flex-shrink: 0;
-  border-radius: 9px; background: var(--primary-bg); color: var(--primary);
-}
+/* ==================== 按服的入口卡片（SectionCard） ==================== */
+.realm-stack { display: flex; flex-direction: column; gap: 16px; min-height: 60px; }
 .realm-name {
-  display: flex; align-items: center; gap: 6px;
-  color: var(--text-primary); font-weight: var(--font-weight-semibold);
+  display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
-.realm-slug { font-style: normal; font-size: var(--font-size-xs); color: var(--text-muted); }
-.realm-entry { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.realm-url { font-size: var(--font-size-xs); word-break: break-all; }
-.realm-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.realm-slug {
+  font-family: var(--au-font-sans); font-style: normal; font-weight: 400;
+  font-size: var(--font-size-xs); color: var(--au-text-4); letter-spacing: 0;
+}
+.realm-entry { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.realm-url { font-size: var(--font-size-xs); word-break: break-all; font-family: var(--font-mono); }
+.realm-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .link { font-size: var(--font-size-xs); text-decoration: none; }
-.link:hover { color: var(--primary); }
+.link:hover { color: var(--au-primary); }
+.link:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; border-radius: var(--au-r-sm); }
 
 /* ==================== 告警 ==================== */
 .warn-box, .row-warnings {
@@ -1715,9 +1769,10 @@ const opsLastScan = ref<{
 .warn-line {
   display: flex; align-items: flex-start; gap: 6px;
   padding: 7px 10px;
-  border-radius: var(--radius-md);
-  background: var(--danger-bg);
-  color: var(--danger);
+  border: 1px solid var(--au-danger-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-danger-soft);
+  color: var(--au-danger);
   font-size: var(--font-size-xs);
   line-height: 1.6;
 }
@@ -1725,93 +1780,106 @@ const opsLastScan = ref<{
 
 /* ==================== 单元格 ==================== */
 .name-cell { display: flex; flex-direction: column; gap: 3px; }
-.name-cell .name { color: var(--text-primary); font-weight: var(--font-weight-medium); }
+.name-cell .name { color: var(--au-text); font-weight: var(--font-weight-medium); }
 .badges { display: flex; flex-wrap: wrap; gap: 4px; }
 .remark { font-size: var(--font-size-xs); }
-.url { color: var(--text-secondary); word-break: break-all; font-size: var(--font-size-sm); }
+.url { color: var(--au-text-2); word-break: break-all; font-size: var(--font-size-sm); }
 .state-cell { display: flex; flex-direction: column; gap: 3px; }
 .sub { font-size: var(--font-size-xs); }
 .ellipsis { display: block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.section-label {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  margin: 20px 0 10px;
-}
-.section-title { color: var(--text-primary); font-weight: var(--font-weight-semibold); }
-.section-label .muted { font-size: var(--font-size-xs); }
-.field-help { color: var(--text-muted); font-size: var(--font-size-xs); margin: 5px 0 0; line-height: 1.6; }
+.field-help { color: var(--au-text-3); font-size: var(--font-size-xs); margin: 5px 0 0; line-height: 1.6; }
 .rclone-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 .server-mounts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .server-mount-row {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
-  padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  padding: 8px 10px; border: 1px solid var(--au-border); border-radius: var(--au-r-md);
 }
 .server-mount-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .server-mount-ops { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .server-mount-main code { font-size: var(--font-size-xs); word-break: break-all; }
 .legacy-note {
-  color: var(--danger); font-size: var(--font-size-xs); line-height: 1.6; margin-top: 2px;
+  color: var(--au-danger); font-size: var(--font-size-xs); line-height: 1.6; margin-top: 2px;
 }
 .add-mount { display: flex; flex-direction: column; gap: 8px; }
 .add-mount-ops { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.probe { padding: 9px 11px; border-radius: var(--radius-md); font-size: var(--font-size-sm); margin-top: 4px; }
-.probe.ok { color: var(--success); background: var(--success-bg); }
-.probe.bad { color: var(--danger); background: var(--danger-bg); }
+.mount-skeleton { height: 46px; border-radius: var(--au-r-md); }
+.mount-empty {
+  margin-bottom: 10px;
+  border: 1px dashed var(--au-border-strong);
+  border-radius: var(--au-r-md);
+}
+.probe {
+  display: flex; align-items: center; gap: 6px;
+  padding: 9px 11px; border: 1px solid transparent; border-radius: var(--au-r-md);
+  font-size: var(--font-size-sm); margin-top: 4px;
+}
+.probe svg { flex-shrink: 0; }
+.probe.ok { color: var(--au-success); background: var(--au-success-soft); border-color: var(--au-success-border); }
+.probe.bad { color: var(--au-danger); background: var(--au-danger-soft); border-color: var(--au-danger-border); }
 
 /* ==================== 媒体运维抽屉 ==================== */
 .ops { display: flex; flex-direction: column; gap: 14px; }
 .ops-head { display: flex; flex-direction: column; gap: 8px; }
-.ops-hint { margin: 0; font-size: var(--font-size-xs); color: var(--text-muted); line-height: 1.8; }
-.ops-hint.bad { color: var(--danger); }
+.ops-hint { margin: 0; font-size: var(--font-size-xs); color: var(--au-text-3); line-height: 1.8; }
+.ops-hint.bad { color: var(--au-danger); }
 .ops-scope { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ops-notes {
   display: flex; flex-direction: column; gap: 6px;
-  padding: 10px 12px; border-radius: var(--radius-md); background: var(--bg-inset);
+  padding: 10px 12px; border-radius: var(--au-r-md); background: var(--au-bg-soft);
 }
 .ops-note {
   display: flex; align-items: flex-start; gap: 6px;
-  font-size: var(--font-size-xs); color: var(--text-secondary); line-height: 1.7;
+  font-size: var(--font-size-xs); color: var(--au-text-2); line-height: 1.7;
 }
-.ops-note svg { flex-shrink: 0; margin-top: 3px; color: var(--text-muted); }
-.ops-card {
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 14px; border: 1px solid var(--border-color); border-radius: var(--radius-lg);
-}
-.ops-card-title { font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); color: var(--text-primary); }
+.ops-note svg { flex-shrink: 0; margin-top: 3px; color: var(--au-text-3); }
+.ops-card :deep(.au-section__body) { display: flex; flex-direction: column; gap: 10px; }
 .ops-sub {
-  font-size: var(--font-size-xs); color: var(--text-secondary); font-weight: var(--font-weight-medium);
-  margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border-color);
+  font-size: var(--font-size-xs); color: var(--au-text-2); font-weight: var(--font-weight-medium);
+  margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--au-border);
 }
 .ops-tasks { display: flex; flex-direction: column; gap: 6px; }
 .ops-task {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   font-size: var(--font-size-xs);
 }
-.ops-task-name { color: var(--text-primary); font-weight: var(--font-weight-medium); }
+.ops-task-name { color: var(--au-text); font-weight: var(--font-weight-medium); }
 .ops-result {
   display: flex; flex-direction: column; gap: 4px;
-  padding: 10px 12px; border-radius: var(--radius-md); background: var(--bg-inset);
+  padding: 10px 12px; border-radius: var(--au-r-md); background: var(--au-bg-soft);
   font-size: var(--font-size-xs); line-height: 1.7;
 }
-.ops-result-line { color: var(--text-secondary); }
-.ops-result-line.ok { color: var(--success); }
-.ops-result-line.bad { color: var(--danger); }
-.ops-result-line.muted { color: var(--text-muted); }
+.ops-result-line { color: var(--au-text-2); }
+.ops-result-line.ok { color: var(--au-success); }
+.ops-result-line.bad { color: var(--au-danger); }
+.ops-result-line.muted { color: var(--au-text-3); }
 .ops-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-xs); }
 .ops-table th {
-  text-align: left; font-weight: var(--font-weight-medium); color: var(--text-muted);
-  padding: 6px 8px; border-bottom: 1px solid var(--border-color); white-space: nowrap;
+  text-align: left; font-weight: var(--font-weight-medium); color: var(--au-text-3); letter-spacing: 0.04em;
+  padding: 6px 8px; border-bottom: 1px solid var(--au-border); white-space: nowrap;
 }
-.ops-table td { padding: 7px 8px; border-bottom: 1px solid var(--border-color); vertical-align: top; }
+.ops-table td { padding: 7px 8px; border-bottom: 1px solid var(--au-border); vertical-align: top; }
 .ops-table tr:last-child td { border-bottom: none; }
-.ops-err { color: var(--danger); margin-top: 3px; }
+.ops-err { color: var(--au-danger); margin-top: 3px; }
 .ops-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .ops-foot .muted { font-size: var(--font-size-xs); }
 
 @media (max-width: 1100px) { .kind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 640px) {
+@media (max-width: 768px) {
+  .kind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .filter-card { padding: 12px; }
+  .kind-count { font-size: 19px; }
+  .ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .ov-scope { width: 100%; }
+  .scope-realm { flex: 1 1 120px; width: auto; }
+  .realm-actions { width: 100%; }
+  .server-mount-row { flex-direction: column; }
+  .server-mount-ops { align-self: flex-end; }
+  .mg-footer, .mg-footer-right { width: 100%; }
+}
+@media (max-width: 420px) {
   .kind-grid { grid-template-columns: 1fr; }
-  .realm-actions { margin-left: 0; width: 100%; }
-  .ov-scope { margin-left: 0; }
+}
+@media (max-width: 640px) {
   .ops-table { display: block; overflow-x: auto; white-space: nowrap; }
   .ops-foot { flex-direction: column; align-items: stretch; }
   .ops-foot .el-button { width: 100%; }

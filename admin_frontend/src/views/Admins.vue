@@ -15,8 +15,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, CheckCircle2, Mail, RefreshCw, ShieldCheck, ShieldHalf, UserPlus, Eye,
+  AlertTriangle, CheckCircle2, Mail, RefreshCw, ShieldCheck, ShieldHalf, UserPlus, Eye, UserCog, UserX,
 } from 'lucide-vue-next'
+import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchAdmins, grantAdmin, revokeAdmin, updateAdmin } from '@/api/admin'
 import type { AdminListResponse, AdminRole, AdminRoleMeta, AdminRow } from '@/types'
 import { useAuthStore } from '@/stores/auth'
@@ -27,6 +28,7 @@ import NoticePanel from '@/components/NoticePanel.vue'
 const auth = useAuthStore()
 
 const loading = ref(false)
+const loadError = ref('')
 const saving = ref(false)
 const data = ref<AdminListResponse | null>(null)
 
@@ -35,6 +37,7 @@ const roles = computed<AdminRoleMeta[]>(() => data.value?.roles || [])
 const superCount = computed(() => data.value?.super_count || 0)
 const myId = computed(() => data.value?.me.id ?? auth.admin?.id ?? 0)
 const isSuper = computed(() => auth.admin?.is_super !== false)
+const inactiveCount = computed(() => admins.value.filter((a) => !a.is_active).length)
 
 const ROLE_ICONS: Record<AdminRole, unknown> = {
   super: ShieldCheck,
@@ -92,10 +95,12 @@ function roleLabel(value: AdminRole): string {
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     data.value = await fetchAdmins()
-  } catch {
-    /* 拦截器已提示 */
+  } catch (e) {
+    // 查询失败拦截器不弹提示，由表格错误态兜底
+    loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
   }
@@ -184,32 +189,94 @@ function fmtDate(value: string | null): string {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">管理员与权限</h1>
-        <p class="admin-page-desc">
-          后台账号就是前台账号：这里只把已注册的人标记为管理员并给他一个角色，不新建账号
-        </p>
-      </div>
-      <div class="admin-page-actions">
+    <PageHeader
+      eyebrow="系统与审计"
+      title="管理员与权限"
+      description="后台账号就是前台账号：这里只把已注册的人标记为管理员并给他一个角色，不新建账号。"
+    >
+      <template #actions>
+        <el-button :loading="loading" :icon="RefreshCw" @click="load">刷新</el-button>
         <!-- 授权收进弹窗：不用时它不再占着版面 -->
-        <el-button type="primary" :disabled="!isSuper" @click="openGrant">
-          <UserPlus :size="14" style="margin-right: 4px" />授予管理员
-        </el-button>
-        <el-button :loading="loading" @click="load"><RefreshCw :size="15" /></el-button>
-      </div>
-    </div>
+        <el-button type="primary" :disabled="!isSuper" :icon="UserPlus" @click="openGrant">授予管理员</el-button>
+      </template>
+    </PageHeader>
 
-    <el-alert v-if="!isSuper" type="warning" :closable="false" show-icon class="role-warn">
+    <el-alert v-if="!isSuper" type="warning" :closable="false" show-icon>
       <template #title>当前账号不是超级管理员</template>
       <template #default>
         你可以查看这一页，但授权 / 改角色 / 撤销会被服务端拒绝（需要超级管理员角色）。
       </template>
     </el-alert>
 
+    <div class="stat-row">
+      <StatTile label="管理员" :value="admins.length" :icon="UserCog" suffix="名" />
+      <StatTile
+        label="超级管理员"
+        :value="superCount"
+        :icon="ShieldCheck"
+        :tone="data && superCount <= 1 ? 'warn' : 'plain'"
+        :hint="data && superCount <= 1 ? '只剩一名：它不能被降级或撤销' : '至少保留一名（服务端护栏）'"
+      />
+      <StatTile
+        label="已停用"
+        :value="inactiveCount"
+        :icon="UserX"
+        suffix="名"
+        hint="停用的管理员登不进后台"
+      />
+    </div>
+
+    <!-- 清单 -->
+    <SectionCard
+      title="管理员清单"
+      :icon="ShieldCheck"
+      :meta="data ? `共 ${admins.length} 名` : ''"
+      description="不能改自己、不能没有超级管理员（服务端护栏）。点「管理」改角色、启用 / 停用或撤销。"
+      flush
+    >
+      <DataTable
+        :rows="admins"
+        :columns="columns"
+        :loading="loading"
+        :error="loadError"
+        empty="还没有管理员"
+        row-key="id"
+        @retry="load"
+      >
+        <template #cell-username="{ row }">
+          <div class="who-cell">
+            <span class="who-name">{{ row.username }}</span>
+            <span v-if="row.id === myId" class="au-badge au-badge-amber">我</span>
+            <span v-if="!row.is_active" class="au-badge au-badge-rose">已停用</span>
+            <span v-if="row.email" class="who-mail">{{ row.email }}</span>
+          </div>
+        </template>
+
+        <template #cell-role="{ row }">
+          <span class="role-tag">
+            <component :is="ROLE_ICONS[row.admin_role as AdminRole] || ShieldHalf" :size="13" />
+            {{ row.role_label || roleLabel(row.admin_role) }}
+          </span>
+        </template>
+
+        <template #cell-last_login_at="{ row }"><span class="mono">{{ fmtDate(row.last_login_at) }}</span></template>
+
+        <template #cell-is_active="{ row }">
+          <span class="au-badge" :class="row.is_active ? 'au-badge-green' : 'au-badge-muted'">
+            {{ row.is_active ? '启用' : '停用' }}
+          </span>
+        </template>
+
+        <template #cell-actions="{ row }">
+          <!-- 角色 / 启用停用 / 撤销 都在弹窗里（原来这行是一个行内下拉 + 两个按钮） -->
+          <el-button size="small" @click="openManage(row)">管理</el-button>
+        </template>
+      </DataTable>
+    </SectionCard>
+
     <!--
       角色说明：来自后端元数据，前端不维护第二份。
-      默认收起（v2.32.0）：三张说明卡常驻时占掉整屏，手机上一次滑动都到不了管理员清单。
+      默认收起（v2.32.0）：说明放在清单之后——这一页要操作的是清单，说明是需要时再点开的解释。
     -->
     <NoticePanel
       title="角色说明"
@@ -217,55 +284,36 @@ function fmtDate(value: string | null): string {
       :icon="ShieldCheck"
       storage-key="admins-roles"
     >
-      <section class="role-grid">
-        <div v-for="role in roles" :key="role.value" class="role-card admin-card">
+      <div class="role-grid">
+        <div v-for="role in roles" :key="role.value" class="role-card">
           <div class="role-head">
             <span class="role-icon"><component :is="ROLE_ICONS[role.value]" :size="16" /></span>
             <strong>{{ role.label }}</strong>
-            <span class="role-key">{{ role.value }}</span>
+            <span class="role-key mono">{{ role.value }}</span>
           </div>
           <p class="role-hint">{{ role.hint }}</p>
         </div>
-      </section>
+      </div>
     </NoticePanel>
 
-    <!-- 清单 -->
-    <section class="admin-card">
-      <div class="card-header">
-        <h2><ShieldCheck :size="15" /> 管理员清单</h2>
-        <span class="hint">
-          共 {{ admins.length }} 名（超级管理员 {{ superCount }} 名）· 不能改自己、不能没有超级管理员（服务端护栏）
-        </span>
+    <!-- 三条护栏：默认收起（v2.32.0）——它是解释，不是这一页要操作的东西 -->
+    <NoticePanel
+      title="三条护栏（服务端强制执行）"
+      summary="不能改自己 · 不能没有超级管理员 · 停用账号不能当管理员"
+      :icon="AlertTriangle"
+      storage-key="admins-guards"
+    >
+      <div class="tips">
+        <ul>
+          <li><CheckCircle2 :size="13" /> <b>不能改自己</b>：把自己的角色降下去或撤销自己，等于把自己关在门外。</li>
+          <li><CheckCircle2 :size="13" /> <b>不能没有超级管理员</b>：最后一名 super 既不能降级也不能撤销。</li>
+          <li><CheckCircle2 :size="13" /> <b>停用账号不能当管理员</b>：那种号永远登不进来，先启用再说。</li>
+        </ul>
+        <p class="tips-foot">
+          只读角色在服务端拦截一切写操作（包括扫描、扫描与挂载体检），不是「界面置灰」而已。
+        </p>
       </div>
-      <DataTable :rows="admins" :columns="columns" :loading="loading" empty="还没有管理员" row-key="id">
-        <template #cell-username="{ row }">
-          <div class="who-cell">
-            <span class="who-name">{{ row.username }}</span>
-            <span v-if="row.id === myId" class="mini-badge info">我</span>
-            <span v-if="!row.is_active" class="mini-badge warn">已停用</span>
-            <span v-if="row.email" class="who-mail">{{ row.email }}</span>
-          </div>
-        </template>
-
-        <template #cell-role="{ row }">
-          <span class="mini-badge muted">{{ row.role_label || roleLabel(row.admin_role) }}</span>
-        </template>
-
-        <template #cell-last_login_at="{ row }">{{ fmtDate(row.last_login_at) }}</template>
-
-        <template #cell-is_active="{ row }">
-          <span class="mini-badge" :class="row.is_active ? 'ok' : 'off'">
-            {{ row.is_active ? '启用' : '停用' }}
-          </span>
-        </template>
-
-        <template #cell-actions="{ row }">
-          <!-- 角色 / 启用停用 / 撤销 都在弹窗里（原来这行是一个行内下拉 + 两个按钮） -->
-          <el-button size="small" plain @click="openManage(row)">管理</el-button>
-        </template>
-      </DataTable>
-    </section>
-
+    </NoticePanel>
     <!-- 授予管理员（弹窗）：账号需要先在站点注册过 -->
     <el-dialog v-model="grantVisible" title="授予管理员" width="460px">
       <el-form label-position="top">
@@ -281,7 +329,7 @@ function fmtDate(value: string | null): string {
           <p class="form-hint">这里不新建账号：只把已经在站点注册过的人标记为管理员。</p>
         </el-form-item>
         <el-form-item label="角色">
-          <el-select v-model="form.role" style="width: 100%">
+          <el-select v-model="form.role" class="w-full">
             <el-option v-for="role in roles" :key="role.value" :label="role.label" :value="role.value">
               <span class="opt-row">
                 <component :is="ROLE_ICONS[role.value]" :size="14" />{{ role.label }}
@@ -312,7 +360,7 @@ function fmtDate(value: string | null): string {
 
         <el-form label-position="top" class="manage-form">
           <el-form-item label="角色">
-            <el-select v-model="manage.role" :disabled="manageLocked" style="width: 100%">
+            <el-select v-model="manage.role" :disabled="manageLocked" class="w-full">
               <el-option v-for="role in roles" :key="role.value" :label="role.label" :value="role.value" />
             </el-select>
             <p class="form-hint">{{ roleHint(manage.role) }}</p>
@@ -341,7 +389,6 @@ function fmtDate(value: string | null): string {
         <div class="manage-footer">
           <el-button
             type="danger"
-            plain
             :disabled="manageLocked"
             :loading="saving"
             @click="revokeFromDialog"
@@ -363,29 +410,15 @@ function fmtDate(value: string | null): string {
       </template>
     </el-dialog>
 
-    <!-- 三条护栏：默认收起（v2.32.0）——它是解释，不是这一页要操作的东西 -->
-    <NoticePanel
-      title="三条护栏（服务端强制执行）"
-      summary="不能改自己 · 不能没有超级管理员 · 停用账号不能当管理员"
-      :icon="AlertTriangle"
-      storage-key="admins-guards"
-    >
-      <div class="tips">
-        <ul>
-          <li><CheckCircle2 :size="13" /> <b>不能改自己</b>：把自己的角色降下去或撤销自己，等于把自己关在门外。</li>
-          <li><CheckCircle2 :size="13" /> <b>不能没有超级管理员</b>：最后一名 super 既不能降级也不能撤销。</li>
-          <li><CheckCircle2 :size="13" /> <b>停用账号不能当管理员</b>：那种号永远登不进来，先启用再说。</li>
-        </ul>
-        <p class="tips-foot">
-          只读角色在服务端拦截一切写操作（包括扫描、扫描与挂载体检），不是「界面置灰」而已。
-        </p>
-      </div>
-    </NoticePanel>
   </div>
 </template>
 
 <style scoped>
-.role-warn { margin-bottom: 14px; }
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
 
 .role-grid {
   display: grid;
@@ -393,8 +426,16 @@ function fmtDate(value: string | null): string {
   gap: 12px;
 }
 
-.role-card { display: flex; flex-direction: column; gap: 8px; }
-.role-head { display: flex; align-items: center; gap: 8px; }
+.role-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+}
+.role-head { display: flex; align-items: center; gap: 8px; color: var(--au-text); }
 
 .role-icon {
   display: inline-flex;
@@ -402,17 +443,21 @@ function fmtDate(value: string | null): string {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: var(--radius-sm);
-  background: var(--primary-bg);
-  color: var(--primary);
+  border-radius: var(--au-r-sm);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
 }
 
-.role-key { margin-left: auto; font-size: var(--font-size-xs); color: var(--text-faint); }
-.role-hint { margin: 0; font-size: var(--font-size-xs); color: var(--text-tertiary); line-height: 1.6; }
+.role-key { margin-left: auto; font-size: 12px; color: var(--au-text-4); }
+.role-hint { margin: 0; font-size: 12.5px; color: var(--au-text-3); line-height: 1.6; }
 
 .who-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.who-name { font-weight: var(--font-weight-semibold); }
-.who-mail { font-size: var(--font-size-xs); color: var(--text-muted); }
+.who-name { font-weight: 600; color: var(--au-text); }
+.who-mail { font-size: 12px; color: var(--au-text-3); }
+
+.role-tag { display: inline-flex; align-items: center; gap: 6px; color: var(--au-text-2); }
+.role-tag :deep(svg) { color: var(--au-text-4); flex-shrink: 0; }
+.w-full { width: 100%; }
 
 /* 弹窗：详情用全局 .kv-list，只补布局 */
 .manage-body { display: flex; flex-direction: column; gap: 14px; }
@@ -425,11 +470,17 @@ function fmtDate(value: string | null): string {
 .tips ul { margin: 0; padding-left: 4px; list-style: none; display: flex; flex-direction: column; gap: 8px; }
 .tips li {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
+  font-size: 13px;
+  color: var(--au-text-2);
 }
-.tips li :deep(svg) { color: var(--success); flex-shrink: 0; }
-.tips-foot { margin: 12px 0 0; font-size: var(--font-size-xs); color: var(--text-muted); }
+.tips li :deep(svg) { color: var(--au-success); flex-shrink: 0; margin-top: 3px; }
+.tips-foot { margin: 12px 0 0; font-size: 12px; color: var(--au-text-3); }
+
+@media (max-width: 640px) {
+  .stat-row { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .manage-footer { flex-direction: column-reverse; align-items: stretch; }
+  .manage-footer-right :deep(.el-button) { flex: 1; margin-left: 0; }
+}
 </style>

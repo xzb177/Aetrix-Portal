@@ -1,4 +1,10 @@
-@import './design-tokens.css';
+/* 高对比度：三级文字提一档（原 design-tokens.css；必须在 neo-noir-tokens 之后加载才压得住它的 :root 别名） */
+@media (prefers-contrast: high) {
+  :root {
+    --text-tertiary: var(--au-text-2);
+  }
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

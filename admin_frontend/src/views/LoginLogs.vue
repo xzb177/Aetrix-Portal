@@ -5,9 +5,10 @@
  * 记录门户与客户端登录、登录失败、设备超限被拒、诱饵码触发封禁等事件，
  * 供风控审查；支持按保留天数清理，避免表无限增长。
  */
-import { onMounted, ref } from 'vue'
-import { RefreshCw, Search, Trash2, ShieldAlert } from 'lucide-vue-next'
+import { computed, onMounted, ref } from 'vue'
+import { RefreshCw, Search, Trash2, ShieldAlert, ScrollText, KeyRound, Database } from 'lucide-vue-next'
 import { fetchLoginLogs } from '@/api/admin'
+import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { useDangerOps } from '@/composables/useDangerOps'
 import type { LoginLogRow, LoginLogsResponse } from '@/types'
 import DataTable from '@/components/DataTable.vue'
@@ -28,6 +29,7 @@ const columns: DataColumn[] = [
 
 const data = ref<LoginLogsResponse | null>(null)
 const loading = ref(false)
+const loadError = ref('')
 const filters = ref<{ username: string; ip: string; reason: string; success: string }>({
   username: '',
   ip: '',
@@ -37,6 +39,7 @@ const filters = ref<{ username: string; ip: string; reason: string; success: str
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     data.value = await fetchLoginLogs({
       username: filters.value.username || undefined,
@@ -45,6 +48,9 @@ async function load() {
       success: filters.value.success === '' ? undefined : filters.value.success === 'true',
       limit: 300,
     })
+  } catch (e) {
+    // 查询失败拦截器不弹提示，由表格错误态兜底（保留上一次的数据与统计）
+    loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
   }
@@ -72,6 +78,20 @@ function fmt(s: string | null): string {
   return s.slice(0, 19).replace('T', ' ')
 }
 
+const hasFilter = computed(() =>
+  Boolean(filters.value.username || filters.value.ip || filters.value.reason || filters.value.success),
+)
+
+function resetFilters() {
+  filters.value = { username: '', ip: '', reason: '', success: '' }
+  load()
+}
+
+function riskBadge(row: LoginLogRow): string {
+  const level = riskLevel(row)
+  return level === '高风险' ? 'au-badge-rose' : level === '注意' ? 'au-badge-amber' : 'au-badge-green'
+}
+
 function riskLevel(row: LoginLogRow): string {
   if (row.reason === 'decoy_code' || row.reason === 'device_limit') return '高风险'
   if (!row.success) return '注意'
@@ -81,104 +101,86 @@ function riskLevel(row: LoginLogRow): string {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">登录日志</h1>
-        <p class="admin-page-desc">登录成功/失败、设备超限、诱饵码触发等风控事件审查</p>
-      </div>
-      <div class="toolbar">
+    <PageHeader
+      eyebrow="用户与账号"
+      title="登录日志"
+      description="登录成功 / 失败、设备超限、诱饵码触发等风控事件；最多加载最近 300 条。"
+    >
+      <template #actions>
         <RouterLink class="danger-jump" :to="{ name: 'Settings', query: { tab: 'danger', op: 'logs' } }">
           危险操作中心 →
         </RouterLink>
-        <el-button :loading="purgeBusy" @click="purge(data && data.total > 0 ? 90 : 0)">
-          <Trash2 :size="14" style="margin-right: 4px" />清理日志
+        <el-button :loading="purgeBusy" @click="purge(data && data.total > 0 ? 90 : 0)" :icon="Trash2">
+          清理日志
         </el-button>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
+        <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
+      </template>
+    </PageHeader>
+
+    <div class="stat-row">
+      <StatTile label="日志总数" :value="data?.total ?? 0" :icon="Database" hint="按保留天数自动清理" />
+      <StatTile
+        label="24h 登录失败"
+        :value="data?.summary.failed_24h ?? 0"
+        :icon="KeyRound"
+        :tone="(data?.summary.failed_24h ?? 0) > 0 ? 'warn' : 'plain'"
+        hint="含客户端与门户登录失败"
+      />
+      <StatTile
+        label="24h 风控拦截"
+        :value="data?.summary.risk_24h ?? 0"
+        :icon="ShieldAlert"
+        :tone="(data?.summary.risk_24h ?? 0) > 0 ? 'danger' : 'plain'"
+        hint="设备超限 / 诱饵码触发"
+      />
     </div>
 
-    <div class="stat-grid">
-      <div class="stat-tile">
-        <div class="stat-label">日志总数</div>
-        <div class="stat-value">{{ data?.total ?? 0 }}</div>
-        <div class="stat-hint">按保留天数自动清理</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-warn': (data?.summary.failed_24h ?? 0) > 0 }">
-        <div class="stat-label">24h 登录失败</div>
-        <div class="stat-value">{{ data?.summary.failed_24h ?? 0 }}</div>
-        <div class="stat-hint">含客户端与门户登录失败</div>
-      </div>
-      <div class="stat-tile" :class="{ 'is-danger': (data?.summary.risk_24h ?? 0) > 0 }">
-        <div class="stat-label">24h 风控拦截</div>
-        <div class="stat-value">{{ data?.summary.risk_24h ?? 0 }}</div>
-        <div class="stat-hint">
-          <ShieldAlert :size="12" /> 设备超限 / 诱饵码触发
+    <SectionCard title="登录事件" :icon="ScrollText" :meta="data ? `${data.logs.length} 条` : ''" flush>
+      <div class="list-bar">
+        <div class="filter-bar">
+          <el-input v-model="filters.username" placeholder="用户名" clearable @keyup.enter="load" @clear="load" />
+          <el-input v-model="filters.ip" placeholder="IP" clearable @keyup.enter="load" @clear="load" />
+          <el-select v-model="filters.reason" placeholder="全部事件" @change="load">
+            <el-option value="" label="全部事件" />
+            <el-option v-for="r in data?.reasons || []" :key="r.value" :value="r.value" :label="r.label" />
+          </el-select>
+          <el-select v-model="filters.success" placeholder="全部结果" @change="load">
+            <el-option value="" label="全部结果" />
+            <el-option value="true" label="成功" />
+            <el-option value="false" label="失败" />
+          </el-select>
+        </div>
+        <div class="head-actions">
+          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
+          <el-button type="primary" @click="load" :icon="Search">查询</el-button>
         </div>
       </div>
-    </div>
 
-    <div class="admin-card filter-bar">
-      <el-input
-        v-model="filters.username"
-        placeholder="用户名"
-        style="width: 160px"
-        clearable
-        @keyup.enter="load"
-        @clear="load"
-      />
-      <el-input
-        v-model="filters.ip"
-        placeholder="IP"
-        style="width: 150px"
-        clearable
-        @keyup.enter="load"
-        @clear="load"
-      />
-      <el-select v-model="filters.reason" placeholder="全部事件" style="width: 170px" @change="load">
-        <el-option value="" label="全部事件" />
-        <el-option
-          v-for="r in data?.reasons || []"
-          :key="r.value"
-          :value="r.value"
-          :label="r.label"
-        />
-      </el-select>
-      <el-select v-model="filters.success" placeholder="全部结果" style="width: 130px" @change="load">
-        <el-option value="" label="全部结果" />
-        <el-option value="true" label="成功" />
-        <el-option value="false" label="失败" />
-      </el-select>
-      <el-button @click="load"><Search :size="14" /></el-button>
-    </div>
-
-    <div class="admin-card">
       <DataTable
         :rows="data?.logs || []"
         :columns="columns"
         :loading="loading"
-        empty="暂无登录日志"
+        :error="loadError"
+        :empty="hasFilter ? '没有匹配的登录记录' : '暂无登录日志'"
+        :empty-description="hasFilter ? '换个用户名 / IP，或清空筛选再查。' : ''"
+        @retry="load"
       >
         <template #cell-username="{ row }">
           <span class="user-name">{{ row.username || '—' }}</span>
         </template>
 
-        <template #cell-created_at="{ row }">{{ fmt(row.created_at) }}</template>
+        <template #cell-created_at="{ row }"><span class="mono">{{ fmt(row.created_at) }}</span></template>
 
         <template #cell-reason_label="{ row }">{{ row.reason_label }}</template>
 
         <template #cell-success="{ row }">
-          <span class="mini-badge" :class="row.success ? 'ok' : 'off'">
+          <span class="au-badge" :class="row.success ? 'au-badge-green' : 'au-badge-rose'">
             {{ row.success ? '成功' : '失败' }}
           </span>
         </template>
 
         <template #cell-risk="{ row }">
-          <span
-            class="mini-badge"
-            :class="riskLevel(row) === '高风险' ? 'danger' : riskLevel(row) === '注意' ? 'warn' : 'ok'"
-          >
-            {{ riskLevel(row) }}
-          </span>
+          <span class="au-badge" :class="riskBadge(row)">{{ riskLevel(row) }}</span>
         </template>
 
         <template #cell-ip="{ row }">
@@ -195,37 +197,64 @@ function riskLevel(row: LoginLogRow): string {
           <span class="ua">{{ row.user_agent || '—' }}</span>
         </template>
       </DataTable>
-    </div>
+    </SectionCard>
   </div>
 </template>
 
 <style scoped>
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.list-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 12px;
+}
+
+.list-bar .filter-bar { flex: 1 1 auto; }
+.list-bar .head-actions { justify-content: flex-end; }
+
 /* 危险操作全部收在「系统设置 → 危险操作」：这里只留一个入口，不开第二个现场 */
 .danger-jump {
-  color: var(--text-muted);
+  color: var(--au-text-3);
   text-decoration: none;
-  font-size: var(--font-size-xs);
+  font-size: 12px;
+  padding: 0 4px;
 }
-.danger-jump:hover { color: var(--danger); text-decoration: underline; }
-/* 统计瓦片、工具条、徽标都走全局原语，页面只补两种状态描边 */
-.stat-tile.is-warn { border-color: var(--warning-border); }
-.stat-tile.is-danger { border-color: var(--danger-border); }
+.danger-jump:hover { color: var(--au-danger); text-decoration: underline; }
+.danger-jump:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; border-radius: var(--au-r-sm); }
 
-.user-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
+.user-name { font-weight: 600; color: var(--au-text); }
+.muted { color: var(--au-text-4); }
 
 .region {
   display: block;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  font-size: 12px;
+  color: var(--au-text-3);
 }
 
 .ua {
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  font-size: 12px;
+  color: var(--au-text-3);
   display: inline-block;
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .list-bar { padding: 4px 16px 12px; }
+}
+
+@media (max-width: 640px) {
+  .stat-row { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .ua { max-width: 100%; }
 }
 </style>

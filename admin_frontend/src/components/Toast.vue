@@ -1,68 +1,50 @@
 <script setup lang="ts">
+/**
+ * 全局轻提示（暗房影院）：实色浮层 + 发丝线 + 左侧语义色细条，只淡入不横滑。
+ * 语义色只染图标与左侧细条，正文走正文色（与 el-message 同口径）。
+ */
 import { CheckCircle, XCircle, AlertCircle, Info, X } from 'lucide-vue-next'
-import { useToast, type ToastType } from '@/composables/useToast'
+import { useToast } from '@/composables/useToast'
 
 const { toasts, removeToast } = useToast()
 
-// Toast 图标
 const toastIcons = {
   success: CheckCircle,
   error: XCircle,
   warning: AlertCircle,
   info: Info,
 }
-
-// Toast 颜色
-// 与 Aurora 令牌一致的语义色
-const toastColors = {
-  success: { bg: 'var(--success-bg)', border: 'var(--success)', icon: 'var(--success)' },
-  error: { bg: 'var(--danger-bg)', border: 'var(--danger)', icon: 'var(--danger)' },
-  warning: { bg: 'var(--warning-bg)', border: 'var(--warning)', icon: 'var(--warning)' },
-  info: { bg: 'var(--info-bg)', border: 'var(--info)', icon: 'var(--info)' },
-}
-
-const getToastColor = (type: ToastType) => toastColors[type]
 </script>
 
 <template>
   <Teleport to="body">
-    <div class="toast-container">
-      <Transition
+    <TransitionGroup tag="div" name="toast" class="toast-container" aria-live="polite">
+      <div
         v-for="toast in toasts"
         :key="toast.id"
-        name="toast"
+        class="toast"
+        :class="`is-${toast.type}`"
+        :role="toast.type === 'error' ? 'alert' : 'status'"
       >
-        <div
-          class="toast"
-          :style="{
-            background: getToastColor(toast.type).bg,
-            borderColor: getToastColor(toast.type).border,
-          }"
-        >
-          <component
-            :is="toastIcons[toast.type]"
-            :size="20"
-            :style="{ color: getToastColor(toast.type).icon }"
-          />
-          <span class="toast-message">{{ toast.message }}</span>
-          <button class="toast-close" @click="removeToast(toast.id)">
-            <X :size="16" />
-          </button>
-        </div>
-      </Transition>
-    </div>
+        <component :is="toastIcons[toast.type]" :size="18" class="toast-icon" />
+        <span class="toast-message">{{ toast.message }}</span>
+        <button type="button" class="toast-close" aria-label="关闭提示" @click="removeToast(toast.id)">
+          <X :size="15" />
+        </button>
+      </div>
+    </TransitionGroup>
   </Teleport>
 </template>
 
 <style scoped>
 .toast-container {
   position: fixed;
-  top: 1rem;
-  right: 1rem;
+  top: 16px;
+  right: 16px;
   z-index: 9999;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 10px;
   pointer-events: none;
 }
 
@@ -70,68 +52,60 @@ const getToastColor = (type: ToastType) => toastColors[type]
   pointer-events: auto;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  border-radius: 12px;
-  border-left: 4px solid;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
-  min-width: 300px;
-  max-width: 450px;
+  gap: 10px;
+  min-width: 280px;
+  max-width: 440px;
+  padding: 12px 12px 12px 14px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border-strong);
+  border-left: 3px solid var(--au-info);
+  border-radius: var(--au-r-md);
+  box-shadow: var(--au-shadow-2);
+  color: var(--au-text);
 }
+
+.toast.is-success { border-left-color: var(--au-success); }
+.toast.is-error { border-left-color: var(--au-danger); }
+.toast.is-warning { border-left-color: var(--au-warning); }
+
+.toast-icon { flex-shrink: 0; color: var(--au-info); }
+.is-success .toast-icon { color: var(--au-success); }
+.is-error .toast-icon { color: var(--au-danger); }
+.is-warning .toast-icon { color: var(--au-warning); }
 
 .toast-message {
   flex: 1;
-  font-size: 0.875rem;
-  color: var(--text-primary);
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .toast-close {
-  padding: 0.25rem;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  flex-shrink: 0;
+  padding: 4px;
+  border: none;
+  border-radius: var(--au-r-sm);
+  background: transparent;
+  color: var(--au-text-3);
+  cursor: pointer;
+  transition: background var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
 
-.toast-close:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--text-primary);
-}
+.toast-close:hover { background: var(--au-violet-soft); color: var(--au-text); }
+.toast-close:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 1px; }
 
-/* Toast 动画 */
-.toast-enter-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
+/* 只淡入淡出（设计规则 7：不上浮、不横滑） */
+.toast-enter-active,
+.toast-leave-active { transition: opacity var(--au-med) var(--au-ease); }
+.toast-enter-from,
+.toast-leave-to { opacity: 0; }
 
-.toast-leave-active {
-  transition: all 0.2s ease;
-}
-
-.toast-enter-from {
-  opacity: 0;
-  transform: translateX(100%);
-}
-
-.toast-leave-to {
-  opacity: 0;
-  transform: translateX(100%);
-}
-
-/* 移动端适配 */
 @media (max-width: 640px) {
-  .toast-container {
-    left: 1rem;
-    right: 1rem;
-  }
-
-  .toast {
-    min-width: auto;
-    max-width: none;
-  }
+  .toast-container { left: 12px; right: 12px; top: 12px; }
+  .toast { min-width: 0; max-width: none; }
 }
 </style>

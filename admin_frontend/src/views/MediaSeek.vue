@@ -2,7 +2,8 @@
 /** 求片管理：审核批准/拒绝/标记完成，联动用户通知 */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, CloudDownload, Download, RefreshCw, X } from 'lucide-vue-next'
+import { Check, CloudDownload, Download, MessageSquareDashed, RefreshCw, X } from 'lucide-vue-next'
+import { PageHeader, SectionCard } from '@/components/ui'
 import {
   fetchMediaSeeks, fetchServersSummary, markMediaSeekInLibrary, pushMediaSeek, updateMediaSeek,
 } from '@/api/admin'
@@ -35,6 +36,7 @@ const columns = computed<DataColumn[]>(() => [
 
 const list = ref<MediaSeekRow[]>([])
 const loading = ref(false)
+const loadError = ref('')
 const statusFilter = ref('')
 // 深链：仪表盘「待审求片」/ 命令面板跳过来时带的就是这个筛选（Phase 5）
 useQueryFilter(statusFilter, 'status', load)
@@ -49,6 +51,7 @@ const noPushTarget = computed(() => !canMoviePilot.value && !canQbittorrent.valu
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     const params: { status_filter?: string; realm_id?: number } = {}
     if (statusFilter.value) params.status_filter = statusFilter.value
@@ -58,6 +61,8 @@ async function load() {
     // 服务器没接好时按钮点了也只会失败，所以这里如实反映当前可用目标
     const summary = await fetchServersSummary()
     pushReady.value = summary.push_ready || []
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
   }
@@ -196,9 +201,10 @@ function fmtDate(s: string): string {
 
 function statusBadge(status: string): string {
   const map: Record<string, string> = {
-    pending: 'warn', approved: 'ok', completed: 'ok', rejected: 'off', withdrawn: 'off',
+    pending: 'au-badge-amber', approved: 'au-badge-info', completed: 'au-badge-green',
+    rejected: 'au-badge-rose', withdrawn: 'au-badge-muted',
   }
-  return map[status] || 'off'
+  return map[status] || 'au-badge-muted'
 }
 
 function typeLabel(type: string | null): string {
@@ -220,42 +226,53 @@ function statusLabel(status: string): string {
 
 <template>
   <div class="admin-page">
-    <div class="admin-page-header">
-      <div>
-        <h1 class="admin-page-title">求片管理</h1>
-        <p class="admin-page-desc">审核结果会通知提交用户</p>
-      </div>
-      <div class="toolbar">
-        <el-radio-group v-model="scope" size="small" @change="load">
-          <el-radio-button value="realm">当前服</el-radio-button>
-          <el-radio-button value="all">全部服</el-radio-button>
-        </el-radio-group>
-        <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 120px" @change="load">
-          <el-option label="待审核" value="pending" />
-          <el-option label="已批准" value="approved" />
-          <el-option label="已入库" value="completed" />
-          <el-option label="已拒绝" value="rejected" />
-          <!-- 用户自己撤掉的默认不在待办里（额度仍按提交数算），需要审计时从这里查 -->
-          <el-option label="已撤回" value="withdrawn" />
-        </el-select>
-        <el-button @click="load"><RefreshCw :size="14" /></el-button>
-      </div>
-    </div>
+    <PageHeader eyebrow="内容与服务" title="求片管理" description="批准 / 拒绝、转交外部下载服务、标记已入库都在「处理」弹窗里；审核结果会通知提交用户。">
+      <template #actions>
+        <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
+      </template>
+    </PageHeader>
 
     <!-- 没接好 MoviePilot / qB 时，求片批了也没法真的把片子弄进来：如实说明并给出入口 -->
-    <el-alert v-if="noPushTarget" type="warning" :closable="false" show-icon class="push-guide">
+    <el-alert v-if="noPushTarget && !loading && !loadError" type="warning" :closable="false" show-icon class="push-guide">
       <template #default>
-        还没有可以接收求片的服务：请在「服务器」页添加 <b>MoviePilot</b>（搜片下载与整理）或
-        <b>qBittorrent</b>（下载器），测试连接通过后这里就会出现转交按钮。
+        还没有可以接收求片的服务：请在<RouterLink to="/servers" class="inline-link">「服务器与线路」</RouterLink>页添加
+        <b>MoviePilot</b>（搜片下载与整理）或 <b>qBittorrent</b>（下载器），测试连接通过后这里就会出现转交按钮。
       </template>
     </el-alert>
 
-    <div class="admin-card">
-      <DataTable :rows="list" :columns="columns" :loading="loading" empty="暂无求片记录">
+    <SectionCard title="求片列表" :icon="MessageSquareDashed" :meta="loading ? '' : `${list.length} 条`" flush>
+      <div class="list-bar">
+        <div class="filter-bar">
+          <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="load">
+            <el-option label="待审核" value="pending" />
+            <el-option label="已批准" value="approved" />
+            <el-option label="已入库" value="completed" />
+            <el-option label="已拒绝" value="rejected" />
+            <!-- 用户自己撤掉的默认不在待办里（额度仍按提交数算），需要审计时从这里查 -->
+            <el-option label="已撤回" value="withdrawn" />
+          </el-select>
+        </div>
+        <div class="head-actions">
+          <el-radio-group v-model="scope" aria-label="统计范围" @change="load">
+            <el-radio-button value="realm">当前服</el-radio-button>
+            <el-radio-button value="all">全部服</el-radio-button>
+          </el-radio-group>
+        </div>
+      </div>
+
+      <DataTable
+        :rows="list"
+        :columns="columns"
+        :loading="loading"
+        :error="loadError"
+        :empty="statusFilter ? `没有「${statusLabel(statusFilter)}」的求片` : '暂无求片记录'"
+        :empty-description="statusFilter ? '清空状态筛选看看全部。' : scope === 'realm' ? '当前服还没人求片；可切到「全部服」看看。' : '用户提交的求片会出现在这里。'"
+        @retry="load"
+      >
         <template #cell-movie_name="{ row }">
           <span class="movie-name">《{{ row.movie_name }}》</span>
           <span v-if="row.year" class="movie-year">{{ row.year }}</span>
-          <span v-if="row.season_label" class="mini-badge muted movie-season">{{ row.season_label }}</span>
+          <span v-if="row.season_label" class="au-badge au-badge-muted movie-season">{{ row.season_label }}</span>
           <div v-if="row.note" class="movie-note">用户备注：{{ row.note }}</div>
         </template>
 
@@ -264,11 +281,11 @@ function statusLabel(status: string): string {
         <template #cell-user_name="{ row }">{{ row.user_name }}</template>
 
         <template #cell-realm_name="{ row }">
-          <span class="mini-badge muted">{{ row.realm_name || '未标注' }}</span>
+          <span class="au-badge au-badge-muted">{{ row.realm_name || '未标注' }}</span>
         </template>
 
         <template #cell-status="{ row }">
-          <span class="mini-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
+          <span class="au-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
         </template>
 
         <template #cell-admin_note="{ row }">
@@ -279,7 +296,7 @@ function statusLabel(status: string): string {
         <template #cell-push="{ row }">
           <div v-if="!row.push_target" class="muted">未转交</div>
           <div v-else class="push-cell">
-            <span class="mini-badge" :class="row.push_status === 'ok' ? 'ok' : 'danger'">
+            <span class="au-badge" :class="row.push_status === 'ok' ? 'au-badge-green' : 'au-badge-rose'">
               {{ pushLabel(row.push_target) }}{{ row.push_status === 'ok' ? ' 已提交' : ' 失败' }}
             </span>
             <el-tooltip v-if="row.push_message" :content="row.push_message" placement="top">
@@ -288,21 +305,20 @@ function statusLabel(status: string): string {
           </div>
         </template>
 
-        <template #cell-created_at="{ row }">{{ fmtDate(row.created_at) }}</template>
+        <template #cell-created_at="{ row }"><span class="mono">{{ fmtDate(row.created_at) }}</span></template>
 
         <template #cell-actions="{ row }">
           <!-- 一个入口：详情 + 批准 / 拒绝 / 转交 / 标记已入库 都在弹窗里（原来这行有 5 个按钮） -->
           <el-button
             size="small"
             :type="isActionable(row) ? 'primary' : 'default'"
-            :plain="isActionable(row)"
             @click="openHandle(row)"
           >
             {{ isActionable(row) ? '处理' : '查看' }}
           </el-button>
         </template>
       </DataTable>
-    </div>
+    </SectionCard>
 
     <!--
       处理弹窗（v2.29.0）：求片详情 + 处理备注 + 全部动作都在这一处。
@@ -330,7 +346,7 @@ function statusLabel(status: string): string {
           <div class="kv-row"><span class="kv-key">提交时间</span><span class="kv-value">{{ fmtDate(handle.row.created_at) }}</span></div>
           <div class="kv-row"><span class="kv-key">当前状态</span>
             <span class="kv-value">
-              <span class="mini-badge" :class="statusBadge(handle.row.status)">{{ statusLabel(handle.row.status) }}</span>
+              <span class="au-badge" :class="statusBadge(handle.row.status)">{{ statusLabel(handle.row.status) }}</span>
             </span>
           </div>
           <div class="kv-row"><span class="kv-key">用户备注</span>
@@ -378,21 +394,21 @@ function statusLabel(status: string): string {
               v-if="handle.row?.status === 'pending'"
               size="small"
               type="danger"
-              plain
               :loading="busyId === handle.row.id"
+              :icon="X"
               @click="reviewStatus('rejected')"
             >
-              <X :size="13" style="margin-right: 3px" />拒绝
+              拒绝
             </el-button>
             <el-button
               v-if="handle.row?.status === 'pending'"
               size="small"
-              type="success"
-              plain
+              type="primary"
               :loading="busyId === handle.row.id"
+              :icon="Check"
               @click="reviewStatus('approved')"
             >
-              <Check :size="13" style="margin-right: 3px" />批准
+              批准
             </el-button>
             <!--
               标记已入库：走后端校验——先确认片真的在媒体库里（按 tmdb_id / 片名匹配），
@@ -401,8 +417,7 @@ function statusLabel(status: string): string {
             <el-button
               v-if="handle.row?.status === 'approved' || handle.row?.status === 'pending'"
               size="small"
-              type="primary"
-              plain
+              :type="handle.row?.status === 'approved' ? 'primary' : 'default'"
               :loading="busyId === handle.row.id"
               @click="markInLibrary"
             >
@@ -411,21 +426,20 @@ function statusLabel(status: string): string {
             <el-button
               v-if="canMoviePilot && handle.row && isActionable(handle.row)"
               size="small"
-              type="primary"
-              plain
               :loading="busyId === handle.row.id"
+              :icon="CloudDownload"
               @click="pushTo('moviepilot')"
             >
-              <CloudDownload :size="13" style="margin-right: 3px" />交 MoviePilot
+              交 MoviePilot
             </el-button>
             <el-button
               v-if="canQbittorrent && handle.row && isActionable(handle.row)"
               size="small"
-              plain
               :loading="busyId === handle.row.id"
+              :icon="Download"
               @click="pushTo('qbittorrent')"
             >
-              <Download :size="13" style="margin-right: 3px" />交给 qB
+              交给 qB
             </el-button>
           </div>
         </div>
@@ -435,16 +449,27 @@ function statusLabel(status: string): string {
 </template>
 
 <style scoped>
-/* 工具条、徽标、muted 等技术样式已收到全局原语（styles/index.css），页面只留专有样式 */
-.movie-name { font-weight: var(--font-weight-semibold); color: var(--text-primary); }
-.movie-year { font-size: var(--font-size-xs); color: var(--text-muted); margin-left: 6px; }
+.list-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  padding: 4px 20px 12px;
+}
+.list-bar .head-actions { width: auto; justify-content: flex-end; }
+
+.movie-name { font-weight: 600; color: var(--au-text); }
+.movie-year { font-size: 12px; color: var(--au-text-3); margin-left: 6px; }
 .movie-season { margin-left: 6px; }
-.movie-note { font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 3px; }
-.done-hint { font-size: var(--font-size-xs); }
-.push-guide { margin-bottom: 14px; line-height: 1.7; }
+.movie-note { font-size: 12px; color: var(--au-text-3); margin-top: 3px; }
+.muted { color: var(--au-text-4); font-size: 12px; }
+
+.push-guide { line-height: 1.7; }
+.inline-link { color: var(--au-primary); text-decoration: underline; text-underline-offset: 2px; }
 .push-cell { display: flex; flex-direction: column; gap: 3px; }
-.push-cell .mini-badge { align-self: flex-start; }
-.push-msg { display: block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-xs); }
+.push-cell .au-badge { align-self: flex-start; }
+.push-msg { display: block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 
 /* 处理弹窗：详情用全局 .kv-list 原语，只补两处专有间距 */
 .handle-body { display: flex; flex-direction: column; gap: 14px; }
@@ -452,7 +477,17 @@ function statusLabel(status: string): string {
 .handle-body .kv-row .kv-value { text-align: left; }
 .handle-form { margin-top: 2px; }
 .handle-form :deep(.el-form-item) { margin-bottom: 12px; }
-.push-msg-line { display: block; font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 2px; }
+.push-msg-line { display: block; font-size: 12px; color: var(--au-text-3); margin-top: 2px; }
 .handle-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.handle-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.handle-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+@media (max-width: 768px) {
+  .list-bar { padding: 4px 16px 12px; }
+}
+
+@media (max-width: 640px) {
+  .push-msg { max-width: 100%; }
+  .handle-footer { flex-direction: column-reverse; align-items: stretch; }
+  .handle-actions :deep(.el-button) { flex: 1 1 40%; margin-left: 0; }
+}
 </style>
