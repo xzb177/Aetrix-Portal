@@ -650,6 +650,8 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
                 "episode_name": ep.name,
                 "season_number": ep.season_number,
                 "episode_number": ep.episode_number,
+                # 明确给出剧名，前端不再靠 name 猜（issue: 继续观看只显示集数）
+                "series_name": item.name,
             })
         items.append(entry)
     return {"items": items}

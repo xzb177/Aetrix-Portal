@@ -22,6 +22,8 @@ export interface RecentSourceItem {
   SeriesName?: string | null
   ProductionYear?: number | null
   ProviderIds?: Record<string, string> | null
+  /** 单集的集号（Emby IndexNumber），用于统计"更新至 N 集" */
+  IndexNumber?: number | null
 }
 
 export interface PosterCandidate {
@@ -41,6 +43,10 @@ export interface RecentResource {
   tmdbId: string
   /** 按优先级排好的图片候选，至少一项 */
   posters: PosterCandidate[]
+  /** 归并的单集数（>1 时卡片标题显示"更新至 N 集"） */
+  episodeCount: number
+  /** 归并单集中最大的集号（用于"更新至 N 集"） */
+  maxEpisode: number | null
 }
 
 /** 集号后缀：S01E58 / S01 / E58 / 第58集 / 第 58 话 / EP58 / - 58 */
@@ -87,7 +93,8 @@ export function groupRecentResources(items: RecentSourceItem[], limit = 12): Rec
       const posters: PosterCandidate[] = []
       if (item.SeriesId) posters.push({ itemId: String(item.SeriesId), kind: 'Primary' })
       posters.push({ itemId: item.Id, kind: 'Primary' }, { itemId: item.Id, kind: 'Thumb' })
-      res = { key, title, year: '', type: 'Series', tmdbId: '', posters }
+      const epNum = typeof item.IndexNumber === 'number' ? item.IndexNumber : null
+      res = { key, title, year: '', type: 'Series', tmdbId: '', posters, episodeCount: 1, maxEpisode: epNum }
     } else if (type === 'Series') {
       key = `s:${item.Id}`
       res = {
@@ -97,6 +104,8 @@ export function groupRecentResources(items: RecentSourceItem[], limit = 12): Rec
         type: 'Series',
         tmdbId: tmdbOf(item),
         posters: [{ itemId: item.Id, kind: 'Primary' }, { itemId: item.Id, kind: 'Thumb' }],
+        episodeCount: 0,
+        maxEpisode: null,
       }
     } else {
       key = `m:${item.Id}`
@@ -107,6 +116,8 @@ export function groupRecentResources(items: RecentSourceItem[], limit = 12): Rec
         type: 'Movie',
         tmdbId: tmdbOf(item),
         posters: [{ itemId: item.Id, kind: 'Primary' }, { itemId: item.Id, kind: 'Thumb' }],
+        episodeCount: 0,
+        maxEpisode: null,
       }
     }
 
@@ -118,6 +129,13 @@ export function groupRecentResources(items: RecentSourceItem[], limit = 12): Rec
         if (!existing.tmdbId) existing.tmdbId = res.tmdbId
         if (!existing.posters.some((p) => p.itemId === item.Id && p.kind === 'Primary')) {
           existing.posters.unshift({ itemId: item.Id, kind: 'Primary' })
+        }
+      }
+      // 单集归并：累计集数，记录最大集号（用于"更新至 N 集"）
+      if (type === 'Episode') {
+        existing.episodeCount += 1
+        if (res.maxEpisode != null && (existing.maxEpisode == null || res.maxEpisode > existing.maxEpisode)) {
+          existing.maxEpisode = res.maxEpisode
         }
       }
       continue
