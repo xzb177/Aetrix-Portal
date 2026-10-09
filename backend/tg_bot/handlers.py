@@ -1,7 +1,7 @@
 import random
 import datetime
 
-from backend.tg_bot.identity import resolve
+from backend.tg_bot.identity import resolve_user
 from backend.models import TgBindCode
 
 
@@ -20,7 +20,7 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str:
     """/start：欢迎语，根据是否已绑定返回不同引导"""
     # 查询该 Telegram 用户是否已绑定 WebUser
     tg_user_id = tg_user.get("id")
-    web_user = resolve(db, tg_user_id) if tg_user_id else None
+    web_user = resolve_user(db, tg_user_id) if tg_user_id else None
     name = tg_user.get("first_name") or "用户"
 
     if web_user is not None:
@@ -44,7 +44,7 @@ def handle_bind(db, tg_user: dict, chat_id: int, args: str) -> str:
     """/bind：生成 6 位数字绑定码并入库（10 分钟有效）"""
     tg_user_id = tg_user.get("id")
     # 已绑定用户无需重复绑定
-    if tg_user_id and resolve(db, tg_user_id) is not None:
+    if tg_user_id and resolve_user(db, tg_user_id) is not None:
         return "您已绑定，无需重复绑定"
 
     # 生成 6 位数字绑定码

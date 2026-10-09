@@ -50,14 +50,14 @@ def _make_user(db, username="u1", tg_id=None):
 
 def test_identity_resolve_found(db):
     u = _make_user(db, tg_id=123456789)
-    found = identity.resolve(db, 123456789)
+    found = identity.resolve_user(db, 123456789)
     assert found is not None
     assert found.id == u.id
 
 
 def test_identity_resolve_not_found(db):
     _make_user(db, tg_id=111)
-    assert identity.resolve(db, 999) is None
+    assert identity.resolve_user(db, 999) is None
 
 
 def test_handle_start_unbound(db):

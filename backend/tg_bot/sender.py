@@ -64,3 +64,21 @@ class TgSender:
     def escape(text: str) -> str:
         """HTML 转义用户可控内容（回复文本必须先过本方法）。"""
         return html.escape(text)
+
+
+def send_message(db, chat_id: int, text: str, reply_markup: dict | None = None) -> tuple:
+    """模块级便捷发送（router / tests 用）：按 db 读 ``telegram_bot_token``。
+
+    返回 ``(ok, None)``；token 未配置时返回 ``(False, None)``。永不抛异常。
+    """
+    from backend.integrations.telegram import token as get_token
+
+    bot_token = get_token(db)
+    if not bot_token:
+        logger.warning("send_message: token 未配置，chat_id=%s", chat_id)
+        return (False, None)
+    s = TgSender(bot_token)
+    try:
+        return (s.send_message(chat_id, text, reply_markup=reply_markup), None)
+    finally:
+        s.close()
