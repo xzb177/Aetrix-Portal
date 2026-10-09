@@ -871,11 +871,23 @@ class LocalMount(MountProvider):
         fs_root = self._require_path()
         # rel 始终按挂载根计算（入库路径不变），只把遍历起点挪到子目录
         walk_root = os.path.join(fs_root, root.lstrip("/")) if root.strip("/") else fs_root
+        # 子目录列举失败不能静默吞掉：下面文件没列出来，清理阶段会误判为
+        # 「已删除」而下架条目。收集起来，遍历结束后统一抛错，上层按来源
+        # 不可用处理并跳过清理（其他目录照常扫完，不中断整库扫描）。
+        walk_errors: list[str] = []
+
+        def _onerr(err: OSError) -> None:
+            walk_errors.append(
+                f"{getattr(err, 'filename', '') or walk_root}: "
+                f"{getattr(err, 'strerror', '') or err}"
+            )
+
         for dirpath, _dirnames, filenames in os.walk(
             walk_root,
             # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵剪掉：
             # 里面的 .m2ts 是码流片段，当成电影会产出一堆没法刮削的条目
             topdown=True,
+            onerror=_onerr,
         ):
             _dirnames[:] = [
                 d for d in _dirnames if not disc_filter.is_disc_subtree_dir(d)
@@ -894,6 +906,14 @@ class LocalMount(MountProvider):
                 except OSError:
                     size = 0
                 yield MountFile(rel=rel, name=fname, size=size, is_strm=is_strm)
+        if walk_errors:
+            # 生成器收尾时抛：已产出的文件照常处理，上层 _guarded 会把错误记进
+            # failed_roots 并跳过清理阶段，避免误删该子目录下的条目。
+            raise MountError(
+                f"本地挂载 {len(walk_errors)} 个子目录列举失败: "
+                + "; ".join(walk_errors[:5])
+                + ("..." if len(walk_errors) > 5 else "")
+            )
 
     def resolve(self, rel: str) -> PlayTarget:
         root = self._require_path()
@@ -1224,18 +1244,20 @@ class RemoteMount(MountProvider):
         return body if isinstance(body, dict) else {}
 
     def _entries(self, rel: str) -> list[MountEntry]:
-        """列目录；**子目录**读不到时只记日志不中断整库扫描
+        """列目录。
 
-        根目录失败仍然抛错（扫描据此判定来源不可用并跳过清理），但一个没权限的子目录
-        不应该让整个媒体库扫不完。
+        子目录读不到时**抛错**（携带失败目录）：``walk_media`` 会收集这些失败、
+        扫完其他目录后统一抛 ``MountError``，扫描器据此跳过清理阶段。
+        「读不到」不能当成「文件已删除」——否则该子目录下的条目会被误删
+        （之前这里返回空列表静默跳过，正是误删的根因之一）。
+        根目录失败直接抛 ``MountError``（来源不可用）。
         """
         try:
             return self.list_dir(rel)
         except MountError as exc:
             if rel in ("", "/"):
                 raise
-            logger.warning("%s 子目录读取失败，跳过: %s (%s)", self.what, rel, exc)
-            return []
+            raise MountError(f"子目录列举失败 {rel}: {exc}") from exc
 
     def walk_workers(self) -> int:
         """本挂载遍历的并发上限（默认全局 ``SCAN_WALK_WORKERS``）。
@@ -1280,6 +1302,10 @@ class RemoteMount(MountProvider):
         # 测试里的假挂载常只实现必需方法、没继承这个钩子，直接调会 AttributeError
         # 让整轮遍历失败（2026-10 加这个钩子时踩过）。取不到就退回全局默认。
         workers = self.walk_workers() if hasattr(self, "walk_workers") else walk_workers_limit()
+        # 子目录列举失败不能静默吞掉：下面文件没列出来，清理阶段会误判为
+        # 「已删除」而下架条目。收集起来，遍历结束后统一抛错——其他目录照常
+        # 扫完（不中断整库扫描），上层按来源不可用处理并跳过清理。
+        walk_errors: list[str] = []
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="walk") as pool:
             while current:
                 fut_to_dir = {
@@ -1291,8 +1317,9 @@ class RemoteMount(MountProvider):
                     rel, depth = fut_to_dir[fut]
                     try:
                         entries = fut.result()
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 — 单个子目录失败不中断整库，统一收集后上报
                         logger.warning("%s 并行列目录失败 %s: %s", self.what, rel, e)
+                        walk_errors.append(f"{rel}: {e}")
                         continue
                     for entry in entries:
                         if entry.is_dir:
@@ -1313,6 +1340,14 @@ class RemoteMount(MountProvider):
                         yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
                                         is_strm=_is_strm_name(entry.name),
                                         file_id=getattr(entry, "file_id", "") or "")
+        if walk_errors:
+            # 生成器收尾时抛：已产出的文件照常处理，上层 _guarded 会把错误记进
+            # failed_roots 并跳过清理阶段，避免误删这些子目录下的条目。
+            raise MountError(
+                f"{self.what} {len(walk_errors)} 个子目录列举失败: "
+                + "; ".join(walk_errors[:5])
+                + ("..." if len(walk_errors) > 5 else "")
+            )
 
     def read_text(self, rel: str) -> str:
         """默认实现：解析成直链后把内容当文本读（用于 .strm 与字幕）"""

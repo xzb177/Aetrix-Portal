@@ -1451,8 +1451,12 @@ def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
     """本机目录：与历史行为一致，直接 os.walk 真实文件"""
     for dirpath, _dirnames, filenames in os.walk(
         root,
-        # 带上来源根目录：失败原因要能归到具体某条来源上（见 _source_entry 的前缀匹配）
-        onerror=lambda e: failed_roots.append(f"{root}: {getattr(e, 'strerror', '') or e}"),
+        # 失败要能归到具体的子目录（e.filename）：_source_entry 靠 "{label}: " 前缀
+        # 把失败原因归到来源上，所以条目必须以来源标签开头，子目录写在后面
+        onerror=lambda e: failed_roots.append(
+            f"{root}: 子目录 {getattr(e, 'filename', None) or '?'} 列举失败: "
+            f"{getattr(e, 'strerror', '') or e}"
+        ),
     ):
         # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵剪掉：里面的 .m2ts 是码流片段，
         # 当成电影会产出一堆名为「00000」这样、既刮不出元数据也没有封面的条目
@@ -1550,6 +1554,81 @@ def _prefix_filter(files, prefixes: tuple) -> "Iterator":
                 break
 
 
+def _source_path_prefix(src) -> str:
+    """该来源的入库路径前缀（用于判断库里是否已有该来源的条目）。
+
+    - 本机来源：绝对目录，如 ``/mnt/mp/剧集/``；
+    - 本地挂载：挂载根 + 子目录，如 ``/mnt/paul/剧集/``；
+    - 远程挂载：``mount://<id>/<子目录>/``。
+    库里条目的 ``file_path`` 都以此前缀开头。
+    """
+    if src.kind == "local":
+        return (src.path or "").rstrip("/") + "/"
+    mount_id = getattr(src.mount, "id", None)
+    subpath = (getattr(src, "subpath", "/") or "/").strip("/")
+    provider = getattr(src, "provider", None)
+    local_root = getattr(provider, "local_root", None) if provider else None
+    if local_root:
+        base = os.path.join(local_root, subpath) if subpath else local_root
+        return base.rstrip("/") + "/"
+    if mount_id is None:
+        return ""
+    tail = (subpath + "/") if subpath else ""
+    return f"{mount_lib.MOUNT_PATH_PREFIX}{mount_id}/{tail}"
+
+
+def _count_visible_under(db: Session, library_id: int, prefix: str) -> int:
+    """库里该路径前缀下还有多少可见条目（LIKE 转义，避免路径里的 % _ 误匹配）"""
+    esc = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return int(db.execute(
+        text(
+            "SELECT COUNT(*) FROM emby_items "
+            "WHERE library_id = :lib AND deleted_at IS NULL "
+            "AND file_path LIKE :pfx ESCAPE '\\'"
+        ),
+        {"lib": library_id, "pfx": esc + "%"},
+    ).scalar() or 0)
+
+
+def _watch_empty_source(label: str, src, files: Iterator,
+                        db: Session, library_id: int,
+                        failed_roots: list, check_empty: bool = True) -> Iterator:
+    """包一层来源文件流：来源"零文件产出"时判定是不可用还是真空。
+
+    挂载抖动/目录被临时收回时，一个来源可能一反常态地列出 0 个文件——这时不能
+    当成"该来源文件全删了"，否则清理阶段会把该来源的条目全下架。
+    判定口径：本轮 0 产出 **且** 库里该来源路径下还有可见条目 → 视为不可用，
+    记进 ``failed_roots``（扫描器据此跳过清理阶段，与来源报错同一条保护链）。
+    真空的来源（库里该来源下本来就没条目）不受影响，照常走清理。
+
+    注意：这个包装器的尾部判定只在**正常遍历完**时执行。内层抛错（走
+    ``_guarded`` 记进 failed_roots）或调用方提前放弃时，判定都不会跑——
+    前者已有错误记录，后者说明扫描本身没跑完，清理本来也不会正常执行。
+
+    ``check_empty=False`` 时只透传不判定：定向扫描（limit_prefixes）下来源
+    0 产出是正常的，不能误判为不可用。
+    """
+    seen = 0
+    for f in files:
+        seen += 1
+        yield f
+    if seen > 0 or not check_empty:
+        return
+    prefix = _source_path_prefix(src)
+    if not prefix:
+        return
+    try:
+        n = _count_visible_under(db, library_id, prefix)
+    except Exception as exc:  # noqa: BLE001 — 计数失败不该影响扫描本身
+        logger.warning("来源 %s 空产出判定计数失败: %s", label, exc)
+        return
+    if n > 0:
+        msg = (f"{label}: 本轮列出 0 个文件，但库里该来源下还有 {n} 条记录——"
+               f"视为来源不可用，本轮跳过清理")
+        logger.warning("媒体库来源异常：%s", msg)
+        failed_roots.append(msg)
+
+
 def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
                       failed_roots: list,
                       report: Optional[list] = None) -> Iterator[tuple]:
@@ -1575,15 +1654,22 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
     try:
         prefixes = getattr(snap, "limit_prefixes", ()) or ()
         for src in sources:
+            # 定向扫描只扫部分目录：来源 0 产出是正常的，不做空来源判定
+            check_empty = not prefixes
             if src.kind == "local":
-                yield src.label, _prefix_filter(
-                    _local_dir_files(src.path, failed_roots), prefixes)
+                yield src.label, _watch_empty_source(
+                    src.label, src,
+                    _prefix_filter(_local_dir_files(src.path, failed_roots), prefixes),
+                    db, library.id, failed_roots, check_empty)
                 continue
 
-            def _guarded(src=src):
+            def _guarded(src=src, check_empty=check_empty):
                 try:
-                    yield from _prefix_filter(
-                        _mount_files(src, src.provider, failed_roots), prefixes)
+                    yield from _watch_empty_source(
+                        src.label, src,
+                        _prefix_filter(_mount_files(src, src.provider, failed_roots),
+                                       prefixes),
+                        db, library.id, failed_roots, check_empty)
                 except mount_lib.MountError as exc:
                     logger.warning("媒体库「%s」的挂载「%s」不可用：%s", snap.name, src.label, exc)
                     failed_roots.append(f"{src.label}: {exc}")
@@ -2464,6 +2550,149 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
         ctx.stats["renamed"] = ctx.stats.get("renamed", 0) + matched
 
 
+def _attach_known_items(prepared: list, known: dict) -> None:
+    """把 guid 命中的已有行挂到 pending 上。
+
+    改名匹配（file_id / 指纹）已经把旧行挂上来的不要覆盖——否则改名识别的成果
+    在这里被丢掉：旧行会被清理阶段删掉、新行重建，播放进度等元数据就丢了。
+    只有没匹配上的才从 known 里取。
+    """
+    for pending in prepared:
+        if pending.item is None:
+            pending.item = known.get(pending.guid)
+
+
+def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
+                                  ctx: "_ScanContext") -> None:
+    """用 (文件大小, 解析身份) 指纹识别改名/移动（无 file_id 的来源）。
+
+    ``_match_renames_by_file_id`` 只覆盖有稳定 file_id 的来源（Drive/rclone）；
+    本地目录和 115 没有 file_id，改名/移动会走"删旧建新"，播放进度、收藏、
+    刮削元数据全丢在这里。
+
+    指纹 = (size, 解析身份)：size 必须 > 0 且相等（大小变了说明内容变了，
+    不算改名）；解析身份 movie 用归一化标题 + 年份，episode 用归一化剧名 +
+    季 + 集，候选行用 ``parse_media_filename`` 同口径解析，保证两边一致。
+
+    保守策略（宁可删旧建新，不张冠李戴）：
+    - 同一指纹下必须**恰好 1 个待匹配文件对恰好 1 个候选行**才认领；
+    - 候选行必须本轮没再见到（guid 在 seen_guids 里的是重复文件，不是改名）；
+    - 有 file_id 的文件跳过——file_id 是权威身份，没匹配上就是真新文件。
+    """
+    from types import SimpleNamespace
+
+    def _norm(name: str) -> str:
+        return "".join(
+            ch for ch in (name or "").lower()
+            if not ch.isspace() and ch not in "._-"
+        )
+
+    def _pending_fp(p) -> Optional[tuple]:
+        size = p.scan_file.size or 0
+        if size <= 0:
+            return None
+        parsed = p.parsed or {}
+        if p.item_type == "movie":
+            if not parsed.get("name"):
+                return None
+            return ("movie", size, _norm(parsed["name"]), parsed.get("year"))
+        if p.item_type == "episode":
+            if (not p.series_name or parsed.get("season") is None
+                    or parsed.get("episode") is None):
+                return None
+            return ("episode", size, _norm(p.series_name),
+                    parsed["season"], parsed["episode"])
+        return None
+
+    def _row_fp(row) -> Optional[tuple]:
+        if not row.file_path or not row.size:
+            return None
+        lib_type = "movies" if row.item_type == "movie" else "tvshows"
+        try:
+            parsed = parse_media_filename(row.file_path, lib_type)
+        except Exception:  # noqa: BLE001 — 解析失败的行不参与指纹匹配
+            return None
+        if row.item_type == "movie":
+            if not parsed.get("name"):
+                return None
+            return ("movie", row.size, _norm(parsed["name"]), parsed.get("year"))
+        # episode：用 _series_name_of 从旧路径推导剧名（与 pending 侧同口径）
+        if mount_lib.is_mount_path(row.file_path):
+            _mid, rel = mount_lib.parse_mount_path(row.file_path)
+            sf = SimpleNamespace(local_dir=None,
+                                 dir_rel=posixpath.dirname(rel) or "/")
+        else:
+            sf = SimpleNamespace(local_dir=os.path.dirname(row.file_path),
+                                 dir_rel=None)
+        try:
+            series_name = _series_name_of(sf, parsed)
+        except Exception:  # noqa: BLE001
+            return None
+        if (not series_name or parsed.get("season") is None
+                or parsed.get("episode") is None):
+            return None
+        return ("episode", row.size, _norm(series_name),
+                parsed["season"], parsed["episode"])
+
+    need: list = []
+    for p in prepared:
+        if p.item is not None or p.renamed:
+            continue
+        if p.item_type not in ("movie", "episode"):
+            continue
+        if getattr(p.scan_file, "file_id", "") or "":
+            continue  # 有 file_id 的走 file_id 版，不掺和
+        fp = _pending_fp(p)
+        if fp is None:
+            continue
+        need.append((p, fp))
+    if not need:
+        return
+
+    sizes = sorted({fp[1] for _, fp in need})
+    candidates: list = []
+    with _soft_delete.include_deleted():
+        for chunk in _chunks(sizes, SQL_IN_CHUNK):
+            candidates.extend(
+                db.query(emby_models.MediaItem).filter(
+                    emby_models.MediaItem.library_id == ctx.lib_id,
+                    emby_models.MediaItem.item_type.in_(("movie", "episode")),
+                    emby_models.MediaItem.size.in_(chunk),
+                ).all()
+            )
+
+    by_fp: dict = {}
+    for row in candidates:
+        if row.guid in ctx.seen_guids:
+            continue  # 本轮还见到的行是重复文件，不是改名
+        fp = _row_fp(row)
+        if fp is None:
+            continue
+        by_fp.setdefault(fp, []).append(row)
+
+    # 1:1 才认领：同一指纹多个待匹配文件，或多个候选行，都算歧义，放弃
+    want_count: dict = {}
+    for _, fp in need:
+        want_count[fp] = want_count.get(fp, 0) + 1
+    claimed_rows: set = set()
+    matched = 0
+    for p, fp in need:
+        if want_count[fp] != 1:
+            continue
+        rows = [r for r in by_fp.get(fp, []) if r.id not in claimed_rows]
+        if len(rows) != 1:
+            continue
+        row = rows[0]
+        claimed_rows.add(row.id)
+        p.item = row
+        p.renamed = True
+        matched += 1
+        logger.info("扫描指纹识别改名/移动: %s -> %s（保留元数据）",
+                    row.file_path, p.scan_file.stored_path)
+    if matched:
+        ctx.stats["renamed"] = ctx.stats.get("renamed", 0) + matched
+
+
 def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -> list:
     """把一批文件变成「可直接写库」的任务：一次查库 + 并行预取"""
     prepared: list = []
@@ -2498,6 +2727,10 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
 
     # v2.52.0: guid 没命中的，用 drive_file_id 识别改名/移动（复用已有行）
     _match_renames_by_file_id(db, prepared, known, ctx)
+
+    # v2.53.x: 没有 file_id 的来源（本地目录/115），用 (大小, 解析身份) 指纹
+    # 识别改名/移动，保住播放进度与元数据
+    _match_renames_by_fingerprint(db, prepared, known, ctx)
 
     # 外挂字幕一批查齐：秒跳时每个文件都要比对字幕有无变化，不能逐文件查 DB
     ctx.ext_subtitles = _load_external_subtitles(
@@ -2535,9 +2768,9 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     ) if _incremental_on(ctx) else {}
 
     policy = ctx.snap.scrape_policy
+    _attach_known_items(prepared, known)
     for pending in prepared:
-        item = known.get(pending.guid)
-        pending.item = item
+        item = pending.item
         scan_file = pending.scan_file
         is_new = item is None
         # 分层扫描 L1 秒跳：文件指纹是「文件本身变没变」的唯一依据，一次哈希比较。
