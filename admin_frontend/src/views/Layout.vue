@@ -24,7 +24,7 @@ import {
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Clapperboard,
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
-  Database, Cloud, Megaphone, Receipt, Gift, TicketPercent, UserPlus, KeySquare,
+  Database, Cloud, Megaphone, Receipt, Gift, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Heart,
   Sun, Moon, MonitorSmartphone,
 } from 'lucide-vue-next'
@@ -170,6 +170,7 @@ const navGroups: NavGroup[] = [
     items: [
       // 求片审核已并入「求片管理」，菜单移除
       { path: '/welfare-lottery', label: '抽奖配置', icon: Gift },
+      { path: '/welfare-lottery-rounds', label: '群抽奖活动', icon: Trophy },
       { path: '/welfare-points', label: '积分配置', icon: Wallet },
     ],
   },

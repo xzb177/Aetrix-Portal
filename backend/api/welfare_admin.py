@@ -14,10 +14,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -360,10 +361,19 @@ WELFARE_CONFIG_KEYS = {
     "redpacket_recv_limit_7d": "10",
     # TG 门禁：公益服能力（签到/积分/红包/抽奖）是否要求绑定 Telegram
     "welfare_require_tg_bind": "1",
+    # 群抽奖：总开关默认开（关闭后不可新建活动），允许群逗号分隔、空=不限制
+    "lottery_enabled": "1",
+    "lottery_group_ids": "",
     # 注册后 TG 绑定引导页总开关
     "tg_bind_guide_enabled": "1",
 # M1 群发言积分：总开关默认关闭，服主手动开启
     "chat_points_enabled": "false",
+    # C2 积分转账：总开关默认开启，手续费/限额可配（0=不收/不限）
+    "points_transfer_enabled": "1",
+    "points_transfer_fee_pct": "5",
+    "points_transfer_min": "1",
+    "points_transfer_max": "0",
+    "points_transfer_daily_cap": "0",
     "chat_points_group_ids": "",
     "chat_points_per_message": "1",
     "chat_points_min_len": "2",
@@ -406,3 +416,260 @@ def welfare_config_set(
     _audit(db, current_admin.id, "welfare_config_update", "system", None, {"updated": updated})
     db.commit()
     return {"success": True, "updated": updated}
+
+
+# ==================== 群抽奖活动管理（G2） ====================
+
+def _get_lottery():
+    """获取群抽奖核心模块（G1），未部署时抛出 501。"""
+    try:
+        import backend.lottery as lottery_module
+        return lottery_module
+    except ImportError:
+        raise HTTPException(status_code=501, detail="群抽奖核心模块（G1）尚未部署")
+
+
+def _row_to_dict(row):
+    """把 SQL 查询行转为字典，datetime 统一转 isoformat，None 保持 None。"""
+    data = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+    out = {}
+    for key, value in data.items():
+        if isinstance(value, datetime):
+            out[key] = value.isoformat()
+        else:
+            out[key] = value
+    return out
+
+
+class PrizeItem(BaseModel):
+    """抽奖奖品项。"""
+    name: str
+    type: str
+    value: int = Field(ge=0)
+    quantity: int = Field(ge=1)
+
+
+class RoundCreateRequest(BaseModel):
+    """创建群抽奖活动请求体。"""
+    title: str
+    chat_id: int  # Telegram 群组 chat_id（整数，可为负数）
+    prizes: List[PrizeItem]
+    draw_at: Optional[str] = None
+    max_participants: Optional[int] = None
+
+
+@admin_router.get("/welfare/lottery/rounds")
+def list_lottery_rounds(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(None),
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """分页查询群抽奖活动列表。"""
+    _get_lottery()
+    offset = (page - 1) * page_size
+    total = db.execute(
+        text("SELECT COUNT(*) FROM lottery_rounds WHERE (:status IS NULL OR status = :status)"),
+        {"status": status},
+    ).scalar()
+    rows = db.execute(
+        text(
+            """
+            SELECT r.id, r.title, r.chat_id, r.status, r.draw_at, r.created_at,
+                   (SELECT COUNT(*) FROM lottery_round_entries e WHERE e.round_id = r.id) AS participant_count,
+                   (SELECT COUNT(*) FROM lottery_round_prizes p WHERE p.round_id = r.id) AS prize_count
+            FROM lottery_rounds r
+            WHERE (:status IS NULL OR r.status = :status)
+            ORDER BY r.id DESC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        {"status": status, "limit": page_size, "offset": offset},
+    ).all()
+    items = []
+    for row in rows:
+        d = _row_to_dict(row)
+        items.append(
+            {
+                "id": d.get("id"),
+                "title": d.get("title"),
+                "chat_id": d.get("chat_id"),
+                "status": d.get("status"),
+                "participant_count": d.get("participant_count"),
+                "prize_count": d.get("prize_count"),
+                "draw_at": d.get("draw_at"),
+                "created_at": d.get("created_at"),
+            }
+        )
+    return {"total": total, "items": items}
+
+
+@admin_router.post("/welfare/lottery/rounds")
+def create_lottery_round(
+    req: RoundCreateRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """创建群抽奖活动。"""
+    lottery_module = _get_lottery()
+    if not req.title or not req.title.strip():
+        raise HTTPException(status_code=400, detail="活动标题不能为空")
+    if not req.chat_id:
+        raise HTTPException(status_code=400, detail="群 ID 不能为空")
+    if not req.prizes:
+        raise HTTPException(status_code=400, detail="至少需要配置 1 个奖品")
+    for item in req.prizes:
+        if item.type not in ("days", "points", "whitelist"):
+            raise HTTPException(status_code=400, detail="奖品类型只能是 days/points/whitelist")
+        if item.value < 0:
+            raise HTTPException(status_code=400, detail="奖品价值不能为负数")
+        if item.quantity < 1:
+            raise HTTPException(status_code=400, detail="奖品数量至少为 1")
+    dt = None
+    if req.draw_at:
+        try:
+            dt = datetime.fromisoformat(req.draw_at)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="draw_at 时间格式无效")
+    if req.max_participants is not None and req.max_participants < 1:
+        raise HTTPException(status_code=400, detail="最大参与人数至少为 1")
+    # 总开关：读 SystemConfig，查不到视为开启
+    enabled_cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == "lottery_enabled").first()
+    enabled_raw = enabled_cfg.value if enabled_cfg else "1"
+    if str(enabled_raw).strip().lower() in ("0", "false"):
+        raise HTTPException(status_code=403, detail="群抽奖功能未开启")
+    # 群白名单：查不到视为不限制
+    group_cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == "lottery_group_ids").first()
+    group_raw = group_cfg.value if group_cfg else ""
+    if group_raw and str(group_raw).strip():
+        allowed_ids = set()
+        for x in str(group_raw).split(","):
+            x = x.strip()
+            if x:
+                try:
+                    allowed_ids.add(int(x))
+                except ValueError:
+                    pass
+        if allowed_ids and req.chat_id not in allowed_ids:
+            raise HTTPException(status_code=403, detail="该群未被允许")
+    # 同群已有进行中的活动则拒绝
+    active = lottery_module.get_active_round(db, req.chat_id)
+    if active:
+        raise HTTPException(status_code=400, detail="该群已有进行中的抽奖活动")
+    result = lottery_module.create_round(
+        db=db,
+        title=req.title,
+        chat_id=req.chat_id,
+        prizes=[item.model_dump() for item in req.prizes],
+        draw_at=dt,
+        max_participants=req.max_participants,
+        created_by=current_admin.id,
+    )
+    _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": req.chat_id})
+    db.commit()
+    return {
+        "id": result.id,
+        "title": result.title,
+        "chat_id": result.chat_id,
+        "status": result.status,
+        "seed_hash": result.seed_hash,
+        "draw_at": result.draw_at.isoformat() if result.draw_at else None,
+        "created_at": result.created_at.isoformat() if result.created_at else None,
+    }
+
+
+@admin_router.get("/welfare/lottery/rounds/{round_id}")
+def get_lottery_round(
+    round_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """查询群抽奖活动详情。"""
+    lottery_module = _get_lottery()
+    row = db.execute(text("SELECT * FROM lottery_rounds WHERE id = :id"), {"id": round_id}).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="抽奖活动不存在")
+    round_dict = _row_to_dict(row)
+    prizes = [
+        _row_to_dict(r)
+        for r in db.execute(
+            text("SELECT id, round_id, name, type, value, quantity, sort FROM lottery_round_prizes WHERE round_id = :id ORDER BY sort ASC"),
+            {"id": round_id},
+        ).all()
+    ]
+    entries = [
+        _row_to_dict(r)
+        for r in db.execute(
+            text("SELECT id, user_id, telegram_id, joined_at FROM lottery_round_entries WHERE round_id = :id ORDER BY joined_at ASC LIMIT 100"),
+            {"id": round_id},
+        ).all()
+    ]
+    winners = [
+        _row_to_dict(r)
+        for r in db.execute(
+            text(
+                """
+                SELECT w.id, w.prize_id, p.name AS prize_name, e.user_id, e.telegram_id,
+                       w.distributed, w.distributed_at
+                FROM lottery_round_winners w
+                LEFT JOIN lottery_round_prizes p ON p.id = w.prize_id
+                LEFT JOIN lottery_round_entries e ON e.id = w.entry_id
+                WHERE w.round_id = :id
+                ORDER BY w.id ASC
+                """
+            ),
+            {"id": round_id},
+        ).all()
+    ]
+    try:
+        verify = lottery_module.verify_round(db, round_id)
+    except Exception:
+        verify = None
+    return {"round": round_dict, "prizes": prizes, "entries": entries, "winners": winners, "verify": verify}
+
+
+@admin_router.post("/welfare/lottery/rounds/{round_id}/draw")
+def draw_lottery_round(
+    round_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """手动执行群抽奖开奖与发放。"""
+    lottery_module = _get_lottery()
+    row = db.execute(text("SELECT id, status FROM lottery_rounds WHERE id = :id"), {"id": round_id}).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="抽奖活动不存在")
+    if dict(row._mapping).get("status") != "open":
+        raise HTTPException(status_code=400, detail="只能对进行中的活动开奖")
+    winners = lottery_module.draw_round(db, round_id)
+    distribute_result = lottery_module.distribute_round(db, round_id)
+    _audit(db, current_admin.id, "lottery_round_draw", "lottery_round", round_id, {"winner_count": len(winners) if isinstance(winners, list) else 0})
+    db.commit()
+    return {
+        "success": True,
+        "winners": [
+            {"id": w.id, "entry_id": w.entry_id, "prize_id": w.prize_id, "distributed": bool(w.distributed)}
+            for w in (winners if isinstance(winners, list) else [])
+        ],
+        "distribute": distribute_result,
+    }
+
+
+@admin_router.post("/welfare/lottery/rounds/{round_id}/cancel")
+def cancel_lottery_round(
+    round_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """取消进行中的群抽奖活动。"""
+    _get_lottery()
+    row = db.execute(text("SELECT id, status FROM lottery_rounds WHERE id = :id"), {"id": round_id}).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="抽奖活动不存在")
+    if dict(row._mapping).get("status") != "open":
+        raise HTTPException(status_code=400, detail="只能取消进行中的活动")
+    db.execute(text("UPDATE lottery_rounds SET status = 'cancelled' WHERE id = :id"), {"id": round_id})
+    _audit(db, current_admin.id, "lottery_round_cancel", "lottery_round", round_id, {})
+    db.commit()
+    return {"success": True}

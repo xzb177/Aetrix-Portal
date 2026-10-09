@@ -806,6 +806,7 @@ def _auto_migrate():
     if ("emby_items", "video_resolution") in _newly_added_columns:
         _backfill_filename_meta()
     _ensure_legacy_indexes(existing_tables)
+    _ensure_lottery_g1_tables(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -934,6 +935,28 @@ _LEGACY_INDEXES: tuple[tuple[str, str, str, Optional[str], str], ...] = (
     ("emby_people", "idx_person_item_tmdb", "item_id, person_tmdb_id", "person_tmdb_id",
      "  已迁移: emby_people.idx_person_item_tmdb"),
 )
+
+
+def _ensure_lottery_g1_tables(existing_tables: set) -> None:
+    """群抽奖 G1：PG/MySQL 上显式建 4 张新表（幂等），SQLite 跳过。
+
+    幂等：表已存在则跳过；create 时用 checkfirst=True 双保险。
+    SQLite 由 init_db 的 create_all 建表，此处直接返回。
+    """
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+    from backend import models
+    tables = (
+        models.LotteryRound.__table__,
+        models.LotteryRoundPrize.__table__,
+        models.LotteryRoundEntry.__table__,
+        models.LotteryRoundWinner.__table__,
+    )
+    for tbl in tables:
+        if tbl.name not in existing_tables:
+            tbl.create(bind=engine, checkfirst=True)
+            print(f"  🔧 已迁移: 新建表 {tbl.name}（群抽奖 G1）")
 
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,

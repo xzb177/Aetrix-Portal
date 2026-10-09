@@ -253,7 +253,14 @@ const settings = reactive<EconomySettings>({})
 const original = ref<EconomySettings>({})
 
 /** 注册策略 */
-const reg = reactive({ mode: 'open', message: '', legacyCode: false })
+const reg = reactive({
+  mode: 'open',
+  message: '',
+  legacyCode: false,
+  ratelimitEnabled: true,
+  ratelimitMax: 5,
+  ratelimitWindow: 3600,
+})
 const regSaving = ref(false)
 
 const regModeHint = computed(() => {
@@ -401,6 +408,16 @@ async function load() {
     reg.mode = registration.mode === 'code' ? 'open' : registration.mode
     reg.legacyCode = registration.mode === 'code'
     reg.message = registration.message || ''
+    // 注册限流（C5）：后端带默认值下发，做类型保护后赋值
+    reg.ratelimitEnabled = typeof registration.ratelimit_enabled === 'boolean'
+      ? registration.ratelimit_enabled
+      : true
+    reg.ratelimitMax = typeof registration.ratelimit_max === 'number' && Number.isFinite(registration.ratelimit_max)
+      ? Math.floor(registration.ratelimit_max)
+      : 5
+    reg.ratelimitWindow = typeof registration.ratelimit_window === 'number' && Number.isFinite(registration.ratelimit_window)
+      ? Math.floor(registration.ratelimit_window)
+      : 3600
   } catch {
     // 错误提示由 HTTP 拦截器统一处理
     paramsError.value = true
@@ -462,9 +479,26 @@ const paymentReady = computed(() => {
 })
 
 async function saveRegistration() {
+  // 注册限流前端校验（C5）
+  const rlMax = Number.parseInt(String(reg.ratelimitMax), 10)
+  const rlWindow = Number.parseInt(String(reg.ratelimitWindow), 10)
+  if (!Number.isFinite(rlMax) || rlMax < 1) {
+    ElMessage.error('窗口内最大注册次数必须大于等于 1')
+    return
+  }
+  if (!Number.isFinite(rlWindow) || rlWindow < 60) {
+    ElMessage.error('限流窗口必须大于等于 60 秒')
+    return
+  }
   regSaving.value = true
   try {
-    await updateRegistrationSettings({ mode: reg.mode, message: reg.message })
+    await updateRegistrationSettings({
+      mode: reg.mode,
+      message: reg.message,
+      ratelimit_enabled: reg.ratelimitEnabled,
+      ratelimit_max: rlMax,
+      ratelimit_window: rlWindow,
+    })
     ElMessage.success('注册策略已保存')
     reg.legacyCode = false
   } catch {
@@ -680,6 +714,24 @@ watch(
               </el-form-item>
               <el-form-item v-if="reg.mode === 'closed'" label="关闭提示">
                 <el-input v-model="reg.message" type="textarea" :rows="2" placeholder="展示给无法注册的用户…" />
+              </el-form-item>
+              <el-form-item label="新用户注册限流">
+                <div class="field-stack">
+                  <el-switch v-model="reg.ratelimitEnabled" active-text="启用" inactive-text="关闭" />
+                  <span class="field-hint">按 IP 限制新用户注册频率，防批量注册。关闭后同一 IP 可无限制注册。</span>
+                </div>
+              </el-form-item>
+              <el-form-item v-if="reg.ratelimitEnabled" label="窗口内最大注册次数">
+                <div class="field-stack">
+                  <el-input-number v-model="reg.ratelimitMax" :min="1" :max="10000" :step="1" />
+                  <span class="field-hint">同一 IP 在一个时间窗口内最多可注册次数（默认 5）</span>
+                </div>
+              </el-form-item>
+              <el-form-item v-if="reg.ratelimitEnabled" label="限流时间窗口（秒）">
+                <div class="field-stack">
+                  <el-input-number v-model="reg.ratelimitWindow" :min="60" :max="86400" :step="60" />
+                  <span class="field-hint">滑动窗口长度，单位秒（默认 3600，即 1 小时）</span>
+                </div>
               </el-form-item>
             </el-form>
 

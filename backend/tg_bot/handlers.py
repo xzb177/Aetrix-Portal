@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 from datetime import datetime
 
 from backend.integrations import store
@@ -8,6 +9,18 @@ from backend.models import SubscriptionPlan, TgBindCode, UserSubscription, WebUs
 from backend.tg_bot import login_token
 from backend.tg_bot import redpacket_common
 from backend.tg_bot.identity import resolve
+
+logger = logging.getLogger(__name__)
+
+
+def _lottery():
+    """惰性导入 lottery 模块（G1 契约，并行任务尚未合入时返回 None）。"""
+    try:
+        from backend import lottery
+
+        return lottery
+    except ImportError:
+        return None
 
 
 def _command_list() -> str:
@@ -19,7 +32,7 @@ def _command_list() -> str:
         "/checkin  每日签到\n"
         "/points   查积分\n"
         "/redpacket  发红包：/redpacket <总积分> <个数>\n"
-        "/lottery  抽奖（即将上线）"
+        "/lottery  抽奖"
     )
 
 
@@ -204,7 +217,97 @@ def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
     except Exception:
         return "兑换失败，请稍后再试"
     return "🎁 " + str(result.get("message", "兑换成功"))
-    return "🎁 " + str(result.get("message", "兑换成功"))
+
+
+def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -> str | tuple[str, dict | None]:
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+
+    lot = _lottery()
+    try:
+        enabled = bool(lot.is_enabled(db)) if lot is not None else False
+    except Exception:
+        logger.warning("lottery.is_enabled failed", exc_info=True)
+        enabled = False
+    if not enabled:
+        return "🎲 抽奖功能暂未开启"
+
+    if is_group:
+        try:
+            round = lot.get_active_round(db, chat_id)
+        except Exception:
+            logger.warning("获取群抽奖轮次失败", exc_info=True)
+            return "🎲 抽奖功能暂未开启"
+        if round is None:
+            return "🎲 本群暂无进行中的抽奖，敬请期待"
+
+        round_id = getattr(round, "id", None)
+        title = html.escape(str(getattr(round, "title", None) or "未命名抽奖"))
+        prize_raw = getattr(round, "prize_name", None) or getattr(round, "prize_desc", None) or "待定"
+        prize = html.escape(str(prize_raw))
+        draw_at = getattr(round, "draw_at", None)
+        if isinstance(draw_at, datetime):
+            draw_at_text = draw_at.strftime("%m-%d %H:%M")
+        else:
+            draw_at_text = "待定"
+        entry_count = getattr(round, "entry_count", None)
+        if entry_count is None:
+            entries = getattr(round, "entries", None)
+            if entries is not None:
+                try:
+                    entry_count = len(entries)
+                except TypeError:
+                    entry_count = None
+        entry_text = "—" if entry_count is None else str(entry_count)
+        max_entries = getattr(round, "max_entries", None)
+        suffix = f"/{max_entries}" if max_entries else ""
+
+        text = (
+            "🎲 群抽奖\n"
+            f"📌 {title}\n"
+            f"🎁 奖品：{prize}\n"
+            f"⏰ 开奖时间：{draw_at_text}\n"
+            f"👥 已参加：{entry_text}{suffix}"
+        )
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "🎲 参加抽奖", "callback_data": f"lottery_join:{round_id}"}]
+            ]
+        }
+        return (text, reply_markup)
+
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT r.id, r.title, r.status, r.draw_at, "
+        "(SELECT COUNT(*) FROM lottery_round_winners w WHERE w.round_id = r.id AND w.user_id = :uid) AS won "
+        "FROM lottery_rounds r "
+        "JOIN lottery_round_entries e ON e.round_id = r.id AND e.user_id = :uid "
+        "ORDER BY r.id DESC LIMIT 10"
+    )
+    try:
+        rows = db.execute(text(sql), {"uid": user.id}).fetchall()
+    except Exception:
+        return "🎲 你还没有参加过抽奖"
+    if not rows:
+        return "🎲 你还没有参加过抽奖"
+
+    status_map = {
+        "open": "进行中",
+        "drawing": "开奖中",
+        "done": "已结束",
+        "cancelled": "已取消",
+    }
+    lines = ["🎲 我的抽奖记录"]
+    for row in rows:
+        row_title = html.escape(str(getattr(row, "title", None) or "未命名抽奖"))
+        row_status = getattr(row, "status", None)
+        status_text = status_map.get(row_status, str(row_status))
+        won = getattr(row, "won", 0) or 0
+        result = "🏆 已中奖" if won > 0 else "未中奖/待开奖"
+        lines.append(f"📌 {row_title} ｜ 状态：{status_text} ｜ {result}")
+    return "\n".join(lines)
 
 
 def handle_redpacket(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:

@@ -88,11 +88,20 @@ def dispatch(db, update: dict) -> None:
             "/checkin": handlers.handle_checkin,
             "/points": handlers.handle_points,
             "/redeem": handlers.handle_redeem,
+            "/lottery": handlers.handle_lottery,
             "/redpacket": handlers.handle_redpacket,
         }
         fn = commands.get(cmd)
         tg_uid = tg_user.get("id") or 0
-        if fn:
+        if cmd == "/lottery":
+            # /lottery 需要群聊/私聊上下文（chat.type），单独分发
+            if not _allow(tg_uid, cmd):
+                sender.send_message(db, chat_id, "操作太快了，稍后再试")
+                return
+            chat_type = (chat.get("type") or "")
+            reply = handlers.handle_lottery(
+                db, tg_user, chat_id, args, chat_type in ("group", "supergroup"))
+        elif fn:
             if not _allow(tg_uid, cmd):
                 sender.send_message(db, chat_id, "操作太快了，稍后再试")
                 return

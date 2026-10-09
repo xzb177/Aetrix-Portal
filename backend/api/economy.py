@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import math
 import random
 import time
 import uuid
@@ -1413,3 +1414,123 @@ async def payment_return(request: Request, db: Session = Depends(get_db)):
     """同步跳转：返回前端跳转地址（前端钱包页轮询订单状态）"""
     order_id = request.query_params.get("out_trade_no", "")
     return {"success": True, "order_id": order_id, "redirect": f"/wallet?order={order_id}"}
+
+
+# ==================== 积分转账（C2） ====================
+
+def _transfer_enabled(db: Session) -> bool:
+    """积分转账总开关（points_transfer_enabled，"1"=开；兼容 true/on/yes）。"""
+    value = str(_get_config(db, "points_transfer_enabled", "1")).strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def transfer_points_core(db: Session, sender: models.WebUser, recipient_username: str, amount: int) -> dict:
+    """积分转账核心逻辑：校验开关、收款人、金额限制、每日转出上限、手续费与余额，并完成转出方、手续费、收款方三方记账。"""
+    if not _transfer_enabled(db):
+        raise ValueError("积分转账功能已关闭")
+
+    recipient_username = (recipient_username or "").strip()
+    if not recipient_username:
+        raise ValueError("请输入对方用户名")
+
+    if recipient_username.lower() == (sender.username or "").lower():
+        raise ValueError("不能给自己转账")
+
+    if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+        raise ValueError("转账金额必须为正整数")
+
+    min_amount = _get_int_config(db, "points_transfer_min", 1)
+    max_amount = _get_int_config(db, "points_transfer_max", 0)
+    daily_cap = _get_int_config(db, "points_transfer_daily_cap", 0)
+    fee_pct = _get_int_config(db, "points_transfer_fee_pct", 5)
+
+    if amount < min_amount:
+        raise ValueError(f"单笔最少转账 {min_amount} 积分")
+
+    if max_amount > 0 and amount > max_amount:
+        raise ValueError(f"单笔最多转账 {max_amount} 积分")
+
+    recipient = (
+        db.query(models.WebUser)
+        .filter(func.lower(models.WebUser.username) == recipient_username.lower())
+        .first()
+    )
+    if not recipient or not recipient.is_active:
+        raise ValueError("对方用户不存在")
+
+    if daily_cap > 0:
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        used_today = (
+            db.query(func.coalesce(func.sum(-models.PointsLog.amount), 0))
+            .filter(
+                models.PointsLog.user_id == sender.id,
+                models.PointsLog.type == "transfer_out",
+                models.PointsLog.amount < 0,
+                models.PointsLog.created_at >= today_start,
+            )
+            .scalar()
+        ) or 0
+        if used_today + amount > daily_cap:
+            raise ValueError(f"今日转账额度已用完（上限 {daily_cap} 积分）")
+
+    fee = math.ceil(amount * fee_pct / 100) if fee_pct > 0 else 0
+    need = amount + fee
+    balance = sender.points or 0
+    if balance < need:
+        if fee > 0:
+            raise ValueError(f"积分不足，需要 {need} 分（含手续费 {fee} 分），当前 {balance} 分")
+        raise ValueError(f"积分不足，需要 {need} 分，当前 {balance} 分")
+
+    ref_id = f"transfer:{sender.id}:{recipient.id}:{int(datetime.now().timestamp())}"
+
+    new_balance = _add_points(
+        db, sender, -amount, "transfer_out",
+        f"转账给 {recipient.username}（{amount} 积分）", ref_id=ref_id,
+    )
+    if fee > 0:
+        new_balance = _add_points(
+            db, sender, -fee, "transfer_fee",
+            f"转账手续费 {fee} 积分（{fee_pct}%）", ref_id=ref_id,
+        )
+    _add_points(
+        db, recipient, amount, "transfer_in",
+        f"收到 {sender.username} 的转账（{amount} 积分）", ref_id=ref_id,
+    )
+    db.commit()
+
+    return {"amount": amount, "fee": fee, "recipient": recipient.username, "balance": new_balance}
+
+
+class PointsTransferRequest(BaseModel):
+    """积分转账请求体。"""
+    recipient: str
+    amount: int
+
+
+@router.post("/points/transfer")
+def transfer_points(
+    payload: PointsTransferRequest,
+    db: Session = Depends(get_db),
+    current_user: models.WebUser = Depends(get_current_user),
+):
+    """积分转账接口：校验并执行一笔积分转账，返回转账金额、手续费、收款人与转出后余额。"""
+    try:
+        result = transfer_points_core(db, current_user, payload.recipient, payload.amount)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, **result}
+
+
+@router.get("/points/transfer-config")
+def get_points_transfer_config(
+    db: Session = Depends(get_db),
+    current_user: models.WebUser = Depends(get_current_user),
+):
+    """读取积分转账开关与规则（手续费比例、单笔最小/最大、每日转出上限），供前端隐藏入口与展示提示。"""
+    return {
+        "enabled": _transfer_enabled(db),
+        "fee_pct": _get_int_config(db, "points_transfer_fee_pct", 5),
+        "min": _get_int_config(db, "points_transfer_min", 1),
+        "max": _get_int_config(db, "points_transfer_max", 0),
+        "daily_cap": _get_int_config(db, "points_transfer_daily_cap", 0),
+    }

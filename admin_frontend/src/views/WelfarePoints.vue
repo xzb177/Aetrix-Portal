@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Coins, Gift, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { ArrowLeftRight, Coins, Gift, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
 
@@ -25,6 +25,18 @@ const redpacketFields = [
   { key: 'redpacket_send_limit_7d', label: '发送频率限制', hint: '7 天内最多发送次数，默认 20，填 0 不限', suffix: '次' },
   { key: 'redpacket_recv_limit_7d', label: '领取频率限制', hint: '7 天内最多领取次数，默认 10，填 0 不限（管理员发的不计）', suffix: '次' },
 ]
+
+const transferFields = [
+  { key: 'points_transfer_fee_pct', label: '手续费', hint: '按转账金额比例收取，默认 5，填 0 不收', suffix: '%' },
+  { key: 'points_transfer_min', label: '单笔最小', hint: '默认 1', suffix: '积分' },
+  { key: 'points_transfer_max', label: '单笔最大', hint: '默认 0 表示不限', suffix: '积分' },
+  { key: 'points_transfer_daily_cap', label: '每日转出上限', hint: '默认 0 表示不限', suffix: '积分/天' },
+]
+
+const transferEnabled = computed({
+  get: () => (form.value['points_transfer_enabled'] ?? '1') === '1',
+  set: (v: boolean) => { form.value['points_transfer_enabled'] = v ? '1' : '0' },
+})
 
 const earnRedeemFields = [
   { key: 'points_chat_daily_cap', label: '发言每日上限', hint: '默认 20', suffix: '积分/天' },
@@ -133,6 +145,24 @@ onMounted(load)
             <span class="field-hint">关闭后 /redpacket 与抢红包按钮均不可用；后端红包接口不受影响</span>
           </el-form-item>
           <el-form-item v-for="f in redpacketFields" :key="f.key" :label="f.label">
+            <el-input v-model="form[f.key]" style="width: 160px" />
+            <span class="field-suffix">{{ f.suffix }}</span>
+            <span class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+        </el-form>
+      </SectionCard>
+
+      <SectionCard
+        title="积分转账"
+        :icon="ArrowLeftRight"
+        description="用户间积分转账的开关、手续费与限额"
+      >
+        <el-form label-width="120px" class="config-form">
+          <el-form-item label="功能开关">
+            <el-switch v-model="transferEnabled" />
+            <span class="field-hint">关闭后用户端隐藏转账入口，后端接口拒绝</span>
+          </el-form-item>
+          <el-form-item v-for="f in transferFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>

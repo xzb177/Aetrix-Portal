@@ -345,6 +345,10 @@ export interface RegistrationSettings {
   // 注册码门禁（'code'）已下线：后端不再接受 'code'；DB 残留值由前端归一为 'open' 展示
   mode: 'open' | 'closed' | 'code'
   message: string
+  // 注册限流（C5）：后端带默认值下发；可选以兼容旧构造处
+  ratelimit_enabled?: boolean
+  ratelimit_max?: number
+  ratelimit_window?: number
 }
 
 export interface Announcement {

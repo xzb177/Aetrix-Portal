@@ -669,6 +669,10 @@ class RegistrationModeRequest(BaseModel):
     # 由注册接口兼容处理（按 open 走），这里直接拒绝新写入。
     mode: str  # open / closed
     message: str = ""
+    # 注册限流（可选，None 表示不修改）
+    ratelimit_enabled: Optional[bool] = None  # 是否启用注册限流
+    ratelimit_max: Optional[int] = None  # 窗口内最大注册次数
+    ratelimit_window: Optional[int] = None  # 窗口秒数
 
 
 @admin_router.put("/settings/registration")
@@ -677,21 +681,57 @@ def set_registration_mode(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """设置注册模式：open 开放注册 / closed 关闭注册"""
+    """设置注册模式：open 开放注册 / closed 关闭注册
+
+    可选附带注册限流配置（None 表示不修改）：
+    - ratelimit_enabled: 是否启用注册限流
+    - ratelimit_max: 窗口内最大注册次数（必须 >= 1）
+    - ratelimit_window: 窗口秒数（必须 >= 60）
+    """
     if request.mode not in ("open", "closed"):
         raise HTTPException(status_code=400, detail="mode 必须是 open/closed")
+    if request.ratelimit_max is not None and request.ratelimit_max < 1:
+        raise HTTPException(status_code=400, detail="ratelimit_max 必须大于等于 1")
+    if request.ratelimit_window is not None and request.ratelimit_window < 60:
+        raise HTTPException(status_code=400, detail="ratelimit_window 必须大于等于 60")
 
-    for key, value in (("registration_mode", request.mode),
-                       ("registration_closed_message", request.message)):
-        config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if config:
-            config.value = value
+    # 注册限流：仅当字段提供（非 None）时写入；与模式配置合并为一次批量 upsert
+    updates = [
+        ("registration_mode", request.mode),
+        ("registration_closed_message", request.message),
+    ]
+    if request.ratelimit_enabled is not None:
+        updates.append(
+            ("register_ratelimit_enabled",
+             "true" if request.ratelimit_enabled else "false"))
+    if request.ratelimit_max is not None:
+        updates.append(("register_ratelimit_max", str(request.ratelimit_max)))
+    if request.ratelimit_window is not None:
+        updates.append(("register_ratelimit_window", str(request.ratelimit_window)))
+
+    # 一次查询取回已存在的键，避免逐 key 查询
+    existing = {
+        r.key: r
+        for r in db.query(models.SystemConfig)
+        .filter(models.SystemConfig.key.in_([k for k, _ in updates]))
+        .all()
+    }
+    for key, value in updates:
+        if key in existing:
+            existing[key].value = value
         else:
             db.add(models.SystemConfig(key=key, value=value))
 
     db.commit()
+    audit_details = {"mode": request.mode}
+    if request.ratelimit_enabled is not None:
+        audit_details["ratelimit_enabled"] = request.ratelimit_enabled
+    if request.ratelimit_max is not None:
+        audit_details["ratelimit_max"] = request.ratelimit_max
+    if request.ratelimit_window is not None:
+        audit_details["ratelimit_window"] = request.ratelimit_window
     _audit(db, current_admin, "set_registration_mode", "system", None,
-           {"mode": request.mode})
+           audit_details)
     db.commit()
     return {"success": True, "mode": request.mode}
 
@@ -701,15 +741,52 @@ def get_registration_mode(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    mode_config = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == "registration_mode"
-    ).first()
-    msg_config = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == "registration_closed_message"
-    ).first()
+    # 一次查询取回全部五个键
+    rows = (
+        db.query(models.SystemConfig)
+        .filter(models.SystemConfig.key.in_([
+            "registration_mode",
+            "registration_closed_message",
+            "register_ratelimit_enabled",
+            "register_ratelimit_max",
+            "register_ratelimit_window",
+        ]))
+        .all()
+    )
+    values = {r.key: r.value for r in rows}
+
+    mode = values.get("registration_mode") or "open"
+    message = values.get("registration_closed_message") or ""
+
+    ratelimit_enabled = True
+    enabled_raw = values.get("register_ratelimit_enabled")
+    if enabled_raw is not None:
+        normalized = enabled_raw.strip().lower()
+        if normalized in ("true", "false"):
+            ratelimit_enabled = normalized == "true"
+
+    ratelimit_max = 5
+    max_raw = values.get("register_ratelimit_max")
+    if max_raw is not None:
+        try:
+            ratelimit_max = int(max_raw)
+        except (TypeError, ValueError):
+            ratelimit_max = 5
+
+    ratelimit_window = 3600
+    window_raw = values.get("register_ratelimit_window")
+    if window_raw is not None:
+        try:
+            ratelimit_window = int(window_raw)
+        except (TypeError, ValueError):
+            ratelimit_window = 3600
+
     return {
-        "mode": mode_config.value if mode_config else "open",
-        "message": msg_config.value if msg_config else "",
+        "mode": mode,
+        "message": message,
+        "ratelimit_enabled": ratelimit_enabled,
+        "ratelimit_max": ratelimit_max,
+        "ratelimit_window": ratelimit_window,
     }
 
 
