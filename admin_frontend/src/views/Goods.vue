@@ -22,6 +22,7 @@ const planColumns: DataColumn[] = [
   { key: 'realm_name', label: '归属服', width: 130 },
   { key: 'description', label: '描述', minWidth: 170, mobile: 'hide' },
   { key: 'price', label: '价格', width: 100 },
+  { key: 'points_price', label: '积分价', width: 110 },
   { key: 'duration_days', label: '时长', width: 90 },
   { key: 'is_popular', label: '推荐', width: 80, mobile: 'hide' },
   { key: 'is_active', label: '状态', width: 90 },
@@ -63,6 +64,7 @@ const planEditing = ref<PlanRowFull | null>(null)
 const planForm = ref({
   name: '', description: '', price: 19.9, duration_days: 30,
   features: '', is_active: true, is_popular: false, sort_order: 0,
+  points_price: null as number | null,
   realm_id: null as number | null,
 })
 
@@ -74,6 +76,7 @@ function openPlanCreate() {
   planForm.value = {
     name: '', description: '', price: 19.9, duration_days: 30, features: '',
     is_active: true, is_popular: false, sort_order: 0,
+    points_price: null,
     realm_id: realm.activeId,
   }
   planVisible.value = true
@@ -85,6 +88,7 @@ function openPlanEdit(row: PlanRowFull) {
     name: row.name,
     description: row.description || '',
     price: row.price,
+    points_price: row.points_price ?? null,
     duration_days: row.duration_days,
     features: (row.features || []).join('\n'),
     is_active: row.is_active,
@@ -102,6 +106,7 @@ async function savePlan() {
     name: f.name.trim(),
     description: f.description.trim() || null,
     price: f.price,
+    points_price: f.points_price ?? null,
     duration_days: f.duration_days,
     features: f.features.split('\n').map(s => s.trim()).filter(Boolean),
     is_active: f.is_active,
@@ -348,6 +353,9 @@ onMounted(load)
         <el-form-item label="描述"><el-input v-model="planForm.description" maxlength="200" /></el-form-item>
         <div class="form-grid">
           <el-form-item label="价格 (¥)"><el-input-number v-model="planForm.price" :min="0" :precision="2" class="w-full" /></el-form-item>
+          <el-form-item label="积分价">
+            <el-input-number v-model="planForm.points_price" :min="0" :precision="0" placeholder="空=不支持积分购买" class="w-full" />
+          </el-form-item>
           <el-form-item label="时长 (天)"><el-input-number v-model="planForm.duration_days" :min="1" :max="3650" class="w-full" /></el-form-item>
         </div>
         <el-form-item label="特性">
