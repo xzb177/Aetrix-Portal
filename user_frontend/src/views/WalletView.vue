@@ -14,6 +14,7 @@ import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
   KeyRound, TriangleAlert, Undo2, Percent, X, User, Medal, Award, Gem,
+  Ticket, Clapperboard, Glasses, Projector,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi,
@@ -45,9 +46,26 @@ const orderLoading = ref<number | null>(null)
 // ===== 会员等级（P1 统一货币体系）=====
 const member = ref<MyMemberInfo | null>(null)
 const showLevels = ref(false)
-/** 徽章图标名 → lucide 组件 */
-const levelIconMap: Record<string, unknown> = { User, Medal, Award, Crown, Gem, Sparkles }
-const levelIcon = (name: string) => levelIconMap[name] || User
+/** 徽章图标名 → lucide 组件（暗房影院主题：票根/场记板/鉴赏镜/放映机/星芒/王冠） */
+const levelIconMap: Record<string, unknown> = {
+  User, Medal, Award, Crown, Gem, Sparkles,
+  Ticket, Clapperboard, Glasses, Projector,
+}
+const levelIcon = (name: string) => levelIconMap[name] || Ticket
+
+/** 徽章样式：暗房影院质感——深色底上的径向高光渐变，而非纯色圆块 */
+const badgeStyle = (color: string, level: number) => {
+  const c = color || '#9ca3af'
+  // 高等级（造梦者/传奇）用更亮的高光，低等级保持沉稳
+  const highlight = level >= 5 ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.28)'
+  const glow = level >= 5 ? `${c}66` : 'transparent'
+  return {
+    background: `radial-gradient(circle at 32% 28%, ${highlight}, transparent 55%), linear-gradient(145deg, ${c}, ${c}cc)`,
+    boxShadow: `0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 12px ${glow}`,
+  } as Record<string, string>
+}
+/** 徽章档位：用于 CSS 分级动画（仅传奇有呼吸光晕） */
+const badgeTier = (level: number) => (level >= 6 ? 'legend' : 'common')
 
 // ===== 优惠券（v2.10.0；v2.10.1 收进统一核销入口）=====
 // 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
@@ -584,7 +602,7 @@ onBeforeUnmount(stopPayPoll)
 
         <!-- 会员等级：徽章 + 经验进度（P1 统一货币体系） -->
         <div v-if="member" class="member-row">
-          <span class="member-badge" :style="{ background: member.badge_color }">
+          <span class="member-badge" :style="badgeStyle(member.badge_color, member.level)" :data-tier="badgeTier(member.level)">
             <component :is="levelIcon(member.badge_icon)" :size="17" />
           </span>
           <div class="member-meta">
@@ -613,8 +631,9 @@ onBeforeUnmount(stopPayPoll)
             :key="lv.level"
             class="level-card"
             :class="{ current: lv.level === member.level }"
+            :style="{ borderTopColor: lv.badge_color }"
           >
-            <span class="member-badge sm" :style="{ background: lv.badge_color }">
+            <span class="member-badge sm" :style="badgeStyle(lv.badge_color, lv.level)" :data-tier="badgeTier(lv.level)">
               <component :is="levelIcon(lv.badge_icon)" :size="14" />
             </span>
             <div class="level-head">
@@ -1035,7 +1054,19 @@ onBeforeUnmount(stopPayPoll)
   border-radius: 50%;
   color: #fff;
   flex-shrink: 0;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  /* 暗房质感：内高光 + 边框（具体背景/光晕由 badgeStyle() 行内设置） */
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+/* 传奇档：缓慢呼吸光晕，影殿不朽的气场（传奇固定为 #eab308 金） */
+.member-badge[data-tier="legend"] {
+  animation: badge-breathe 3.2s ease-in-out infinite;
+}
+@keyframes badge-breathe {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 10px #eab30866; }
+  50% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 22px #eab30899; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .member-badge[data-tier="legend"] { animation: none; }
 }
 .member-badge.sm { width: 2rem; height: 2rem; }
 .member-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.375rem; }
@@ -1091,6 +1122,8 @@ onBeforeUnmount(stopPayPoll)
   background: var(--au-surface-2, rgba(255, 255, 255, 0.03));
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
+  /* 顶部等级色带：暗房影院的色带感（颜色由行内 borderTopColor 按等级设置） */
+  border-top-width: 2px;
 }
 .level-card.current {
   border-color: var(--au-primary);

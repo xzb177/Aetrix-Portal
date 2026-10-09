@@ -582,7 +582,7 @@ def _auto_migrate():
             ("welfare_expires_at", "DATETIME", "NULL"),
             ("welfare_grant_channel", "VARCHAR(20)", "NULL"),
             ("welfare_granted_at", "DATETIME", "NULL"),
-            # P1 统一货币体系：会员经验与缓存等级。老用户补列后 xp=0/level=1（普通会员），
+            # P1 统一货币体系：会员经验与缓存等级。老用户补列后 xp=0/level=1（初幕），
             # 与升级前行为一致（此前无等级概念）。
             ("member_xp", "INTEGER", "0"),
             ("member_level", "INTEGER", "1"),

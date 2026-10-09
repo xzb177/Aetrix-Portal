@@ -43,7 +43,7 @@ def test_seed_is_idempotent(db):
 
 def test_seed_defaults(db):
     lv2 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 2).first()
-    assert lv2.name == "铜牌会员"
+    assert lv2.name == "影迷"
     assert lv2.xp_threshold == 100
     assert lv2.is_active is True
 
@@ -56,7 +56,7 @@ def test_add_xp_basic(db):
     db.commit()
     assert r["added"] is True
     assert r["xp_after"] == 50
-    assert r["level"] == 1  # 50 < 100，仍是普通会员
+    assert r["level"] == 1  # 50 < 100，仍是初幕
     assert r["leveled_up"] is False
     # 流水
     log = db.query(models.MemberXpLog).filter(
@@ -112,7 +112,7 @@ def test_get_member_info_progress(db):
     db.commit()
     info = ml.get_member_info(db, u)
     assert info["level"] == 1
-    assert info["level_name"] == "普通会员"
+    assert info["level_name"] == "初幕"
     assert info["xp"] == 50
     assert info["next_level"] == 2
     assert info["next_threshold"] == 100
@@ -177,3 +177,64 @@ def test_invitation_grants_xp(db):
     ).first()
     assert xlog is not None
     assert xlog.xp_delta == 10
+
+
+# ---------- v1 → v2 命名迁移 ----------
+
+def test_migrate_legacy_names(db):
+    """旧命名行被迁移为暗房影院主题名，徽章同步更新"""
+    # 模拟 v1 旧数据
+    for lv in db.query(models.MemberLevel).all():
+        lv.name = {"初幕": "普通会员", "影迷": "铜牌会员", "鉴赏家": "白银会员",
+                   "放映师": "黄金会员", "造梦者": "铂金会员", "传奇": "钻石会员"}[lv.name]
+    db.commit()
+
+    updated = ml.migrate_legacy_level_names(db)
+    assert updated == 6
+
+    lv2 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 2).first()
+    assert lv2.name == "影迷"
+    assert lv2.badge_icon == "Clapperboard"
+    assert lv2.badge_color == "#f59e0b"
+
+    lv6 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 6).first()
+    assert lv6.name == "传奇"
+    assert lv6.badge_icon == "Crown"
+
+
+def test_migrate_is_idempotent(db):
+    """迁移幂等：已是新名的行不受影响，跑多次结果一致"""
+    assert ml.migrate_legacy_level_names(db) == 0
+    assert ml.migrate_legacy_level_names(db) == 0
+    lv1 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 1).first()
+    assert lv1.name == "初幕"
+
+
+def test_migrate_preserves_custom_names(db):
+    """管理员手动改过的名称不被迁移覆盖"""
+    lv3 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 3).first()
+    lv3.name = "我的专属等级"
+    db.commit()
+
+    updated = ml.migrate_legacy_level_names(db)
+    assert updated == 0  # 没有旧默认名可迁移
+
+    lv3 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 3).first()
+    assert lv3.name == "我的专属等级"
+
+
+def test_migrate_updates_benefits_text(db):
+    """权益文案中的旧名同步替换"""
+    for lv in db.query(models.MemberLevel).all():
+        lv.name = {"初幕": "普通会员", "影迷": "铜牌会员", "鉴赏家": "白银会员",
+                   "放映师": "黄金会员", "造梦者": "铂金会员", "传奇": "钻石会员"}[lv.name]
+    import json
+    lv2 = db.query(models.MemberLevel).filter(models.MemberLevel.level == 2).first()
+    lv2.benefits_json = json.dumps(["铜牌专属徽章", "邀请奖励加成"], ensure_ascii=False)
+    db.commit()
+
+    ml.migrate_legacy_level_names(db)
+
+    import json as _json
+    benefits = _json.loads(lv2.benefits_json)
+    assert benefits[0] == "影迷专属徽章"
