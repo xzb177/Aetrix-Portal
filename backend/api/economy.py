@@ -122,7 +122,11 @@ def _append_points_log(
 
     调用方负责余额本身的增减与 balance_after 的正确性；本函数只负责台账行。
     开关开启时用行锁取该用户最新一条流水作为链尾，写入 prev_hash / record_hash；
-    关闭时两列留 NULL。返回 PointsLog 对象（已 add + flush，未 commit）。
+    关闭时两列留 NULL。返回 PointsLog 对象（已 add，未 commit）。
+
+    注意：刻意不在这里 flush。调用方（如 apply_invitation）依赖"所有写一次 flush、
+    冲突整体回滚"的语义，提前 flush 会把唯一约束冲突提前抛到它们的 try/except 之外。
+    created_at 在构造时显式赋值（与列默认 datetime.now 等价），hash 直接用该值计算。
     """
     audit_enabled = _get_bool_config(db, "points_audit_enabled", True)
     prev_hash = ""
@@ -136,6 +140,7 @@ def _append_points_log(
             .first()
         )
         prev_hash = (tail.record_hash if tail and tail.record_hash else "") or ""
+    now = datetime.now()
     log = models.PointsLog(
         user_id=user_id,
         amount=amount,
@@ -143,15 +148,15 @@ def _append_points_log(
         type=type_,
         description=description,
         ref_id=ref_id,
+        created_at=now,
     )
-    db.add(log)
     if audit_enabled:
-        db.flush()  # 拿到 created_at 默认值后再算 hash
         log.prev_hash = prev_hash
         log.record_hash = _points_record_hash(
             prev_hash, user_id, amount, balance_after,
-            type_, description, ref_id, log.created_at,
+            type_, description, ref_id, now,
         )
+    db.add(log)
     return log
 
 
