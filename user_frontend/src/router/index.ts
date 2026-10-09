@@ -19,12 +19,6 @@ const router = createRouter({
       meta: { title: '登录' },
     },
     {
-      path: '/tg-login',
-      name: 'tg-login',
-      component: () => import('@/views/TgLoginView.vue'),
-      meta: { title: 'Telegram 快捷登录' },
-    },
-    {
       path: '/profile',
       name: 'profile',
       component: () => import('@/views/ProfileView.vue'),
@@ -56,12 +50,20 @@ const router = createRouter({
       component: () => import('@/views/AssistantView.vue'),
       meta: { title: 'AI 助手', requiresAuth: true },
     },
-    // ==================== 经济系统（v2.3.0） ====================
+    // ==================== 经济系统（v2.3.0；v2.43.0 钱包/商店拆分） ====================
+    // 商店：买东西（充值积分、购买订阅、优惠券）
+    {
+      path: '/store',
+      name: 'store',
+      component: () => import('@/views/StoreView.vue'),
+      meta: { title: '商店', requiresAuth: true },
+    },
+    // 钱包：我的资产（余额、卡码/兑换码核销、订单、积分流水）
     {
       path: '/wallet',
       name: 'wallet',
       component: () => import('@/views/WalletView.vue'),
-      meta: { title: '商店', requiresAuth: true },
+      meta: { title: '钱包', requiresAuth: true },
     },
     {
       path: '/checkin',

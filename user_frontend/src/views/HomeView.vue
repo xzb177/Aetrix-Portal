@@ -246,7 +246,7 @@ const assetCards = computed(() => {
     },
     {
       key: 'member',
-      to: '/wallet?tab=plans',
+      to: '/store?tab=plans',
       icon: Crown,
       tone: 'cyan',
       title: '订阅',
@@ -763,7 +763,7 @@ onActivated(() => {
             </li>
           </ol>
           <div class="hero-cta">
-            <RouterLink to="/wallet?tab=plans" class="au-btn au-btn-primary">
+            <RouterLink to="/store?tab=plans" class="au-btn au-btn-primary">
               立即开通
             </RouterLink>
             <RouterLink to="/profile" class="hero-link">
@@ -881,7 +881,7 @@ onActivated(() => {
           <span class="stub-admit" aria-hidden="true">
             ADMIT ONE<span v-if="activeSub" class="stub-plan"><i> · </i>{{ activeSub.plan_name }}</span>
           </span>
-          <RouterLink v-if="memberStat" to="/wallet?tab=plans" class="au-btn au-btn-primary au-btn-sm stub-btn">
+          <RouterLink v-if="memberStat" to="/store?tab=plans" class="au-btn au-btn-primary au-btn-sm stub-btn">
             {{ memberStat.footer }}
           </RouterLink>
         </div>
