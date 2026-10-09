@@ -105,6 +105,12 @@ async def lifespan(app: FastAPI):
         logger.info("AETRIX_ROLE=api：API 模式，后台任务由 worker 进程负责，这里跳过启动")
 
     logger.info(f"📊 数据库类型: {DATABASE_TYPE}")
+    # Hardware transcode detection (Linger): one-frame self-test at startup
+    try:
+        from backend.emby_server import hwaccel as _hwaccel
+        _hwaccel.detect_hardware()
+    except Exception as e:
+        logger.warning(f"HW transcode check failed, using software: {e}")
 
     # JWT 密钥是 EM/EA 认证与节点配对的根信任。未配置或过短时必须 fail-closed，
     # 不能让服务用导入期随机值带病上线。
