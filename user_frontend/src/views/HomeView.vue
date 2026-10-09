@@ -565,9 +565,14 @@ const recentResources = computed(() => groupRecentResources(recentItems.value, 1
 const recentCards = computed<RecentCard[]>(() =>
   recentResources.value.map((r) => {
     const candidate = r.posters[posterAttempts.value[r.key] || 0]
+    // 同一部剧多集合并成一张卡时，标题显示"更新至 N 集"
+    const title =
+      r.type === 'Series' && r.episodeCount > 1 && r.maxEpisode != null
+        ? `${r.title}（更新至 ${r.maxEpisode} 集）`
+        : r.title
     return {
       key: r.key,
-      title: r.title,
+      title,
       year: r.year,
       poster: candidate ? imageUrl(candidate.itemId, candidate.kind, POSTER_WIDTH) : '',
       href: cardHref(r),
@@ -634,20 +639,23 @@ const resumeCards = computed<ResumeCard[]>(() =>
   resumeItems.value.map((r) => {
     const key = r.episode_id || r.id
     const isSeries = r.type === 'series'
-    const ep = isSeries && r.episode_number != null ? ` 第 ${r.episode_number} 集` : ''
+    // 剧名优先用后端明确给的 series_name，兜底用 name；防止只显示集数看不到是哪部剧
+    const seriesName = (r.series_name || r.name || '').trim()
+    const ep = isSeries && r.episode_number != null ? `第 ${r.episode_number} 集` : ''
+    const title = isSeries && ep ? `《${seriesName}》${ep}` : `《${seriesName || r.name}》`
     const candidate = resumeThumbs(r)[resumeThumbAttempts.value[key] || 0]
     const duration = r.duration_ticks || 0
     return {
       key,
-      title: `《${r.name}》${ep}`,
-      name: r.name,
+      title,
+      name: seriesName || r.name,
       meta: [r.client, r.device].filter((v): v is string => !!v).join(' · '),
       percent: duration > 0 ? Math.max(0, Math.min(100, Math.round(r.progress || 0))) : null,
       thumb: candidate ? imageUrl(candidate.itemId, candidate.kind, RESUME_THUMB_WIDTH) : '',
       // 与「本周入库」同一条跳转规则：电影 / 剧有 TMDB id 精确跳，否则按名字搜
       href: rexDeepLink({
         Type: isSeries ? 'Series' : 'Movie',
-        Name: r.name,
+        Name: seriesName || r.name,
         ProviderIds: r.tmdb_id ? { Tmdb: r.tmdb_id } : null,
       }),
     }

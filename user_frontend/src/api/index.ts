@@ -347,6 +347,8 @@ export interface PortalResumeItem extends PortalMediaItem {
   episode_name?: string | null
   season_number?: number | null
   episode_number?: number | null
+  /** 剧名（单集聚合时后端明确给出，前端优先用它拼标题） */
+  series_name?: string | null
 }
 
 /** 观看历史条目 */
