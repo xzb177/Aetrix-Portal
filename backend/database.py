@@ -662,6 +662,11 @@ def _auto_migrate():
             ("access_note", "VARCHAR(500)", "''"),
             ("allow_download", "BOOLEAN", "NULL"),
         ]),
+        # P1 统一货币体系：会员等级表。discount_pct 老库补列后为 0（无折扣），
+        # 与升级前行为一致；migrate_discount_pct 会按等级回填默认值。
+        ("member_levels", [
+            ("discount_pct", "INTEGER", "0"),
+        ]),
         # v2.6.20 多服运营：订阅、套餐、卡码、求片、挂载都归属到某个服
         ("subscription_plans", [
             ("realm_id", "INTEGER", "NULL"),

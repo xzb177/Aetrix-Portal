@@ -378,6 +378,7 @@ export interface MemberLevelRow {
   level: number
   name: string
   xp_threshold: number
+  discount_pct: number
   benefits: string[]
   badge_icon: string
   badge_color: string

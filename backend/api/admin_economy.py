@@ -18,7 +18,7 @@ from typing import List, Optional
 
 from fastapi import Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -660,6 +660,7 @@ def _level_to_dict(lv: models.MemberLevel) -> dict:
         "level": lv.level,
         "name": lv.name,
         "xp_threshold": lv.xp_threshold,
+        "discount_pct": lv.discount_pct or 0,
         "benefits": benefits,
         "badge_icon": lv.badge_icon,
         "badge_color": lv.badge_color,
@@ -671,6 +672,7 @@ class MemberLevelCreate(BaseModel):
     level: int
     name: str
     xp_threshold: int = 0
+    discount_pct: int = Field(default=0, ge=0, le=100)
     benefits: List[str] = []
     badge_icon: str = ""
     badge_color: str = "#9ca3af"
@@ -679,6 +681,7 @@ class MemberLevelCreate(BaseModel):
 class MemberLevelUpdate(BaseModel):
     name: Optional[str] = None
     xp_threshold: Optional[int] = None
+    discount_pct: Optional[int] = Field(default=None, ge=0, le=100)
     benefits: Optional[List[str]] = None
     badge_icon: Optional[str] = None
     badge_color: Optional[str] = None
@@ -707,6 +710,7 @@ def create_member_level(payload: MemberLevelCreate, current_admin: models.WebUse
         level=payload.level,
         name=payload.name,
         xp_threshold=payload.xp_threshold,
+        discount_pct=payload.discount_pct,
         benefits_json=json.dumps(payload.benefits, ensure_ascii=False),
         badge_icon=payload.badge_icon,
         badge_color=payload.badge_color,
@@ -733,6 +737,9 @@ def update_member_level(level_id: int, payload: MemberLevelUpdate, current_admin
             raise HTTPException(status_code=400, detail="经验阈值不能为负数")
         lv.xp_threshold = payload.xp_threshold
         update_data["xp_threshold"] = payload.xp_threshold
+    if payload.discount_pct is not None:
+        lv.discount_pct = payload.discount_pct
+        update_data["discount_pct"] = payload.discount_pct
     if payload.benefits is not None:
         # 数组转 JSON 存储
         lv.benefits_json = json.dumps(payload.benefits, ensure_ascii=False)

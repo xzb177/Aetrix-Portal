@@ -1432,7 +1432,7 @@ class MemberLevel(Base):
     """会员等级配置表（P1 统一货币体系）
 
     等级 1-6，经验阈值默认 0/100/500/1500/5000/15000（后台可改）。
-    v1 只展示：等级徽章 + 经验进度条，权益公开透明，不做等级折扣/特权。
+    等级折扣：订阅购买时按等级 discount_pct 打折，仅付费服（access_mode='paid'）生效，公益服不打折。
     """
     __tablename__ = 'member_levels'
 
@@ -1442,8 +1442,9 @@ class MemberLevel(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     level = Column(Integer, unique=True, nullable=False)  # 等级 1-6
-    name = Column(String(30), nullable=False)  # 等级名称：普通会员/铜牌/白银/黄金/铂金/钻石
+    name = Column(String(30), nullable=False)  # 等级名称：初幕/影迷/鉴赏家/放映师/造梦者/传奇（暗房影院主题）
     xp_threshold = Column(Integer, nullable=False, default=0)  # 升级所需经验阈值
+    discount_pct = Column(Integer, nullable=False, default=0, server_default="0")  # 等级订阅折扣百分比 0-100，仅付费服生效
     benefits_json = Column(Text, nullable=True)  # 权益描述 JSON 数组，如 ["权益1","权益2"]
     badge_icon = Column(String(30), nullable=True)  # 徽章图标名（lucide 图标名）
     badge_color = Column(String(20), nullable=True)  # 徽章主题色，如 "#c0c0c0"
@@ -1472,27 +1473,3 @@ class MemberXpLog(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
-
-
-class TgBindCode(Base):
-    """TG 绑定码表（B1：bot 绑定基础设施）
-
-    支持两种绑定流程：
-    - 网页发起：user_id 已填，telegram_id 为空 → 用户给 bot 发码验证
-    - Bot 发起：telegram_id 已填，user_id 为空 → 用户在网页输入码验证
-    """
-    __tablename__ = 'tg_bind_codes'
-
-    __table_args__ = (
-        Index('idx_tgbind_code', 'code'),
-        Index('idx_tgbind_user', 'user_id'),
-        Index('idx_tgbind_tgid', 'telegram_id'),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True, index=True)
-    telegram_id = Column(BigInteger, nullable=True, index=True)
-    code = Column(String(6), nullable=False, index=True)
-    expires_at = Column(DateTime, nullable=False)
-    used_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)

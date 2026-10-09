@@ -23,6 +23,7 @@ DEFAULT_LEVELS = [
         "xp_threshold": 0,
         "badge_icon": "Ticket",
         "badge_color": "#9ca3af",
+        "discount_pct": 0,
         "benefits": ["基础观影权益", "每日签到"],
     },
     {
@@ -31,6 +32,7 @@ DEFAULT_LEVELS = [
         "xp_threshold": 100,
         "badge_icon": "Clapperboard",
         "badge_color": "#f59e0b",
+        "discount_pct": 2,
         "benefits": ["影迷专属徽章", "邀请奖励加成"],
     },
     {
@@ -39,6 +41,7 @@ DEFAULT_LEVELS = [
         "xp_threshold": 500,
         "badge_icon": "Glasses",
         "badge_color": "#7dd3fc",
+        "discount_pct": 5,
         "benefits": ["鉴赏家专属徽章", "优先客服"],
     },
     {
@@ -47,6 +50,7 @@ DEFAULT_LEVELS = [
         "xp_threshold": 1500,
         "badge_icon": "Projector",
         "badge_color": "#d97706",
+        "discount_pct": 8,
         "benefits": ["放映师专属徽章", "专属客服通道"],
     },
     {
@@ -55,6 +59,7 @@ DEFAULT_LEVELS = [
         "xp_threshold": 5000,
         "badge_icon": "Sparkles",
         "badge_color": "#a78bfa",
+        "discount_pct": 12,
         "benefits": ["造梦者专属徽章", "新片优先通知"],
     },
     {
@@ -63,6 +68,7 @@ DEFAULT_LEVELS = [
         "xp_threshold": 15000,
         "badge_icon": "Crown",
         "badge_color": "#eab308",
+        "discount_pct": 15,
         "benefits": ["传奇专属徽章", "专属活动邀请"],
     },
 ]
@@ -165,6 +171,7 @@ def ensure_member_levels_seeded(db: Session) -> int:
                 level=item["level"],
                 name=item["name"],
                 xp_threshold=item["xp_threshold"],
+                discount_pct=item.get("discount_pct", 0),
                 badge_icon=item["badge_icon"],
                 badge_color=item["badge_color"],
                 benefits_json=json.dumps(item["benefits"], ensure_ascii=False),
@@ -181,6 +188,61 @@ def ensure_member_levels_seeded(db: Session) -> int:
         raise
     logger.info("会员等级种子写入完成，共 %d 条", len(DEFAULT_LEVELS))
     return len(DEFAULT_LEVELS)
+
+
+# 各等级默认折扣（百分比），与 DEFAULT_LEVELS 保持一致
+DISCOUNT_DEFAULTS = {1: 0, 2: 2, 3: 5, 4: 8, 5: 12, 6: 15}
+
+_MIGRATION_FLAG = "member_discount_pct_migrated"
+
+
+def migrate_discount_pct(db: Session) -> int:
+    """幂等回填：把存量等级行的 discount_pct 按等级回填默认值。
+
+    只在首次运行时回填（用 SystemConfig 标记），避免覆盖管理员后续手动调整。
+    首次运行回填所有 discount_pct 为 NULL 或 0 的行；之后不再碰已有值。
+    返回回填数量。
+    """
+    flag = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == _MIGRATION_FLAG).first()
+    if flag is not None:
+        return 0
+    rows = (
+        db.query(models.MemberLevel)
+        .filter(
+            (models.MemberLevel.discount_pct.is_(None))
+            | (models.MemberLevel.discount_pct == 0)
+        )
+        .all()
+    )
+    count = 0
+    for lv in rows:
+        default = DISCOUNT_DEFAULTS.get(lv.level, 0)
+        if (lv.discount_pct or 0) != default:
+            lv.discount_pct = default
+            count += 1
+    db.add(models.SystemConfig(key=_MIGRATION_FLAG, value="1",
+                               description="会员等级折扣回填已执行"))
+    db.commit()
+    if count:
+        logger.info("会员等级折扣回填完成，共 %d 条", count)
+    return count
+
+
+def get_user_discount_pct(db: Session, user: models.WebUser) -> int:
+    """返回用户当前等级的订阅折扣百分比（0-100）。查不到按 0 处理。"""
+    level = user.member_level or 1
+    lv = (
+        db.query(models.MemberLevel)
+        .filter(
+            models.MemberLevel.level == level,
+            models.MemberLevel.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+    if lv is None or lv.discount_pct is None:
+        return 0
+    return max(0, min(100, int(lv.discount_pct)))
 
 
 def _recompute_level(db: Session, user: models.WebUser) -> int:
@@ -273,7 +335,7 @@ def add_xp(
 
 def get_member_info(db: Session, user: models.WebUser) -> dict:
     """用户端 /api/user/member 使用：等级列表 + 当前等级 + 进度。"""
-    # 确保种子存在，并把旧命名迁移到新主题（幂等）
+# 确保种子存在，并把旧命名迁移到新主题（幂等）
     ensure_member_levels_seeded(db)
     migrate_legacy_level_names(db)
 
@@ -290,6 +352,7 @@ def get_member_info(db: Session, user: models.WebUser) -> dict:
                 "level": lv.level,
                 "name": lv.name,
                 "xp_threshold": lv.xp_threshold or 0,
+                "discount_pct": lv.discount_pct or 0,
                 "benefits": _parse_benefits(lv.benefits_json),
                 "badge_icon": lv.badge_icon,
                 "badge_color": lv.badge_color,
@@ -339,6 +402,7 @@ def get_member_info(db: Session, user: models.WebUser) -> dict:
         "xp": xp,
         "badge_icon": badge_icon,
         "badge_color": badge_color,
+        "discount_pct": get_user_discount_pct(db, user),
         "next_level": next_level,
         "next_threshold": next_threshold,
         "xp_to_next": xp_to_next,

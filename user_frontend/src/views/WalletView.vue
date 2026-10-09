@@ -651,6 +651,9 @@ onBeforeUnmount(stopPayPoll)
             <div class="member-top">
               <strong class="member-name">{{ member.level_name }}</strong>
               <span class="member-xp">{{ member.xp }} 经验</span>
+              <span v-if="(member.discount_pct || 0) > 0" class="member-discount">
+                订阅 {{ (100 - member.discount_pct) / 10 }} 折
+              </span>
             </div>
             <div class="member-bar" role="progressbar" :aria-valuenow="member.progress_pct" aria-valuemin="0" aria-valuemax="100">
               <i :style="{ width: member.progress_pct + '%' }" />
@@ -681,6 +684,9 @@ onBeforeUnmount(stopPayPoll)
             <div class="level-head">
               <strong>Lv.{{ lv.level }} {{ lv.name }}</strong>
               <span class="level-th">{{ lv.xp_threshold }} 经验</span>
+              <span v-if="(lv.discount_pct || 0) > 0" class="level-discount">
+                {{ (100 - lv.discount_pct) / 10 }} 折
+              </span>
             </div>
             <ul class="level-benefits">
               <li v-for="(b, i) in lv.benefits" :key="i">{{ b }}</li>
@@ -933,6 +939,9 @@ onBeforeUnmount(stopPayPoll)
               或 {{ p.points_price }} 积分
             </span>
           </div>
+          <p v-if="(member?.discount_pct || 0) > 0" class="plan-member-hint">
+            <Percent :size="12" /> 会员 {{ (100 - (member?.discount_pct || 0)) / 10 }} 折，下单自动抵扣
+          </p>
           <p class="plan-desc">{{ p.description || '会员专属权益' }}</p>
 
           <ul v-if="p.features && p.features.length" class="plan-features">
@@ -1147,6 +1156,12 @@ onBeforeUnmount(stopPayPoll)
 .member-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
 .member-name { font-size: 0.9375rem; color: var(--au-text); }
 .member-xp { font-size: 0.75rem; color: var(--au-text-3); font-variant-numeric: tabular-nums; }
+.member-discount {
+  font-size: 0.75rem; font-weight: 700; color: var(--au-accent);
+  background: color-mix(in srgb, var(--au-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--au-accent) 35%, transparent);
+  border-radius: 999px; padding: 0.1rem 0.5rem; white-space: nowrap;
+}
 .member-bar {
   height: 0.375rem;
   border-radius: var(--au-r-full);
@@ -1206,6 +1221,12 @@ onBeforeUnmount(stopPayPoll)
 .level-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
 .level-head strong { font-size: 0.875rem; color: var(--au-text); }
 .level-th { font-size: 0.75rem; color: var(--au-text-3); white-space: nowrap; }
+.level-discount {
+  font-size: 0.75rem; font-weight: 700; color: var(--au-accent);
+  background: color-mix(in srgb, var(--au-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--au-accent) 35%, transparent);
+  border-radius: 999px; padding: 0.1rem 0.5rem; white-space: nowrap;
+}
 .level-benefits {
   margin: 0;
   padding: 0;
@@ -1653,6 +1674,10 @@ onBeforeUnmount(stopPayPoll)
   color: var(--au-text);
   white-space: nowrap;
   font-variant-numeric: tabular-nums lining-nums;
+}
+.plan-member-hint {
+  display: flex; align-items: center; gap: 0.3rem;
+  margin: 0.35rem 0 0; font-size: 0.75rem; font-weight: 600; color: var(--au-accent);
 }
 .plan-price em { font-family: var(--au-font-sans); font-style: normal; font-size: 0.8125rem; font-weight: 400; color: var(--au-text-3); }
 

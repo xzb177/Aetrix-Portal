@@ -319,6 +319,7 @@ export interface MemberLevelInfo {
   level: number
   name: string
   xp_threshold: number
+  discount_pct: number
   benefits: string[]
   badge_icon: string
   badge_color: string
@@ -330,6 +331,7 @@ export interface MyMemberInfo {
   xp: number
   badge_icon: string
   badge_color: string
+  discount_pct: number
   next_level: number | null
   next_threshold: number | null
   xp_to_next: number | null
