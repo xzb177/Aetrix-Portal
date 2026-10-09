@@ -45,9 +45,6 @@ const methods = ref<PaymentMethod[]>([])
 const payMethod = ref('alipay')
 const orderLoading = ref<number | null>(null)
 
-/** 花积分区：支持积分开通的订阅套餐（points_price 为 null 的只能在线支付） */
-const pointsPlans = computed(() => plans.value.filter((p) => p.points_price != null))
-
 // ===== 优惠券（v2.10.0；v2.10.1 收进统一核销入口）=====
 // 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
 // 所以应用时对商品各试算一次，行内直接显示折后价；下单时后端会再算一遍。
@@ -325,22 +322,6 @@ async function handleCustomRecharge() {
     toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
   } finally { orderLoading.value = null }
 }
-async function handlePointsOrder(plan: SubscriptionPlan) {
-  orderLoading.value = -plan.id
-  try {
-    const res = await paymentApi.createOrder({ kind: 'subscription', item_id: plan.id, payment_method: 'points', pay_with_points: true })
-    if (res.paid_with_points) {
-      toast.success(res.message || '积分支付成功，订阅已开通')
-      await refreshSubscriptions()
-      await refreshBalance()
-    } else if (res.pay_url) {
-      window.location.href = res.pay_url
-    }
-  } catch (err: any) {
-    toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
-  } finally { orderLoading.value = null }
-}
-
 // ===== 数据加载 =====
 async function refreshBalance() {
   try {
@@ -720,21 +701,6 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
         <p v-if="!vitality.can_play" class="spend-warn"><TriangleAlert :size="13" /> 活力值低于观影阈值 {{ vitality.limit_threshold }}，已限制观影</p>
       </div>
 
-      <div v-if="pointsPlans.length" class="spend-card">
-        <div class="spend-top">
-          <span class="spend-icon"><Crown :size="15" /></span>
-          <div class="spend-meta"><strong>积分开通订阅</strong><span class="spend-sub">用积分直接开通会员</span></div>
-        </div>
-        <div class="points-plan-list">
-          <div v-for="p in pointsPlans" :key="p.id" class="points-plan-row">
-            <span class="ppr-name">{{ p.name }}<em> / {{ p.duration_days }} 天</em></span>
-            <button type="button" class="au-btn au-btn-ghost au-btn-sm" :disabled="orderLoading === -p.id" @click="handlePointsOrder(p)">
-              <span v-if="orderLoading === -p.id" class="au-spinner spinner-sm" /><template v-else>{{ p.points_price }} 积分开通</template>
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div class="spend-card spend-soon">
         <span class="spend-icon"><Flame :size="15" /></span><span>积分兑换公益天数 · 即将上线</span>
       </div>
@@ -843,14 +809,6 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
 .spend-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap; }
 .spend-warn { display: flex; align-items: center; gap: 0.375rem; margin: 0.75rem 0 0; font-size: 0.75rem; color: var(--au-danger); }
 .spend-soon { display: flex; align-items: center; gap: 0.75rem; color: var(--au-text-3); font-size: 0.875rem; border-style: dashed; }
-
-/* 积分开通订阅列表 */
-.points-plan-list { display: flex; flex-direction: column; }
-.points-plan-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.625rem 0; border-top: 1px solid var(--au-border); }
-.points-plan-row:first-child { border-top: none; padding-top: 0; }
-.points-plan-row:last-child { padding-bottom: 0; }
-.ppr-name { font-size: 0.875rem; font-weight: 600; color: var(--au-text); }
-.ppr-name em { font-style: normal; font-weight: 400; font-size: 0.75rem; color: var(--au-text-3); }
 
 /* 移动端微调 */
 @media (max-width: 480px) {
