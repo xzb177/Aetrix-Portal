@@ -146,6 +146,7 @@ def policy_payload(db: Session) -> dict:
         "max_concurrent_transcodes": max_transcodes(db),
         "blocked_agents": _raw(db, CONFIG_BLOCKED_AGENTS) or "",
         "allowed_agents": _raw(db, CONFIG_ALLOWED_AGENTS) or "",
+        "guarantee": "转码是可牺牲的，直传是不可牺牲的。达到并发上限时，新转码请求会被拒绝（客户端自动降级直传），直播放不受任何影响。",
     }
 
 
