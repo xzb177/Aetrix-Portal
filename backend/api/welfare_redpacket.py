@@ -29,7 +29,7 @@ class SendPacket(BaseModel):
 
 
 @router.post("/send")
-def send(
+def send_packet(
     req: SendPacket,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
