@@ -342,7 +342,8 @@ export interface LoginLogsResponse {
 }
 
 export interface RegistrationSettings {
-  mode: 'open' | 'code' | 'closed'
+  // 注册码门禁（'code'）已下线：后端不再接受 'code'；DB 残留值由前端归一为 'open' 展示
+  mode: 'open' | 'closed' | 'code'
   message: string
 }
 

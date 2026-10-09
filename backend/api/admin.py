@@ -663,7 +663,9 @@ def update_registration_code(
 
 
 class RegistrationModeRequest(BaseModel):
-    mode: str  # open / code / closed
+    # 注册码门禁（"code"）已下线：只接受 open / closed。DB 里残留的 "code"
+    # 由注册接口兼容处理（按 open 走），这里直接拒绝新写入。
+    mode: str  # open / closed
     message: str = ""
 
 
@@ -673,9 +675,9 @@ def set_registration_mode(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """设置注册模式：open 开放注册 / code 需要注册码 / closed 关闭注册"""
-    if request.mode not in ("open", "code", "closed"):
-        raise HTTPException(status_code=400, detail="mode 必须是 open/code/closed")
+    """设置注册模式：open 开放注册 / closed 关闭注册"""
+    if request.mode not in ("open", "closed"):
+        raise HTTPException(status_code=400, detail="mode 必须是 open/closed")
 
     for key, value in (("registration_mode", request.mode),
                        ("registration_closed_message", request.message)):

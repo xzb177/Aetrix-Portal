@@ -154,6 +154,10 @@ def migrate_legacy_level_names(db: Session) -> int:
     return updated
 
 
+# 会员等级订阅折扣默认值（种子写入 + 首次回填用，之后以数据库值为准，后台可改）
+DISCOUNT_DEFAULTS = {1: 0, 2: 2, 3: 5, 4: 8, 5: 12, 6: 15}
+
+
 def ensure_member_levels_seeded(db: Session) -> int:
     """幂等种子：member_levels 表为空时插入 DEFAULT_LEVELS，返回插入数量。"""
     count = db.query(models.MemberLevel).count()
@@ -165,6 +169,7 @@ def ensure_member_levels_seeded(db: Session) -> int:
                 level=item["level"],
                 name=item["name"],
                 xp_threshold=item["xp_threshold"],
+                discount_pct=DISCOUNT_DEFAULTS.get(item["level"], 0),
                 badge_icon=item["badge_icon"],
                 badge_color=item["badge_color"],
                 benefits_json=json.dumps(item["benefits"], ensure_ascii=False),
@@ -271,11 +276,62 @@ def add_xp(
     }
 
 
+_MIGRATION_FLAG = "member_discount_pct_migrated"
+def migrate_discount_pct(db: Session) -> int:
+    """幂等回填：把存量等级行的 discount_pct 按等级回填默认值。
+
+    只在首次运行时回填（用 SystemConfig 标记），避免覆盖管理员后续手动调整。
+    首次运行回填所有 discount_pct 为 NULL 或 0 的行；之后不再碰已有值。
+    返回回填数量。
+    """
+    flag = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == _MIGRATION_FLAG).first()
+    if flag is not None:
+        return 0
+    rows = (
+        db.query(models.MemberLevel)
+        .filter(
+            (models.MemberLevel.discount_pct.is_(None))
+            | (models.MemberLevel.discount_pct == 0)
+        )
+        .all()
+    )
+    count = 0
+    for lv in rows:
+        default = DISCOUNT_DEFAULTS.get(lv.level, 0)
+        if (lv.discount_pct or 0) != default:
+            lv.discount_pct = default
+            count += 1
+    db.add(models.SystemConfig(key=_MIGRATION_FLAG, value="1",
+                               description="会员等级折扣回填已执行"))
+    db.commit()
+    if count:
+        logger.info("会员等级折扣回填完成，共 %d 条", count)
+    return count
+
+
+def get_user_discount_pct(db: Session, user: models.WebUser) -> int:
+    """返回用户当前等级的订阅折扣百分比（0-100）。查不到按 0 处理。"""
+    level = user.member_level or 1
+    lv = (
+        db.query(models.MemberLevel)
+        .filter(
+            models.MemberLevel.level == level,
+            models.MemberLevel.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+    if lv is None or lv.discount_pct is None:
+        return 0
+    return max(0, min(100, int(lv.discount_pct)))
+
+
 def get_member_info(db: Session, user: models.WebUser) -> dict:
     """用户端 /api/user/member 使用：等级列表 + 当前等级 + 进度。"""
-    # 确保种子存在，并把旧命名迁移到新主题（幂等）
+    # 确保种子存在，并把旧命名迁移到新主题（幂等），再回填存量等级的折扣
     ensure_member_levels_seeded(db)
     migrate_legacy_level_names(db)
+    migrate_discount_pct(db)
 
     rows = (
         db.query(models.MemberLevel)
@@ -290,6 +346,7 @@ def get_member_info(db: Session, user: models.WebUser) -> dict:
                 "level": lv.level,
                 "name": lv.name,
                 "xp_threshold": lv.xp_threshold or 0,
+                "discount_pct": lv.discount_pct or 0,
                 "benefits": _parse_benefits(lv.benefits_json),
                 "badge_icon": lv.badge_icon,
                 "badge_color": lv.badge_color,
@@ -339,6 +396,7 @@ def get_member_info(db: Session, user: models.WebUser) -> dict:
         "xp": xp,
         "badge_icon": badge_icon,
         "badge_color": badge_color,
+        "discount_pct": get_user_discount_pct(db, user),
         "next_level": next_level,
         "next_threshold": next_threshold,
         "xp_to_next": xp_to_next,

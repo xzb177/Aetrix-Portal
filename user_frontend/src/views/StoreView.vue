@@ -16,10 +16,10 @@ import {
   CircleCheck, CircleAlert, TriangleAlert, X, Percent,
 } from 'lucide-vue-next'
 import {
-  pointsApi, exchangeApi, paymentApi, membershipApi, couponApi, currencyApi,
+  pointsApi, exchangeApi, paymentApi, membershipApi, couponApi, currencyApi, memberApi,
   type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CodePreview, type CouponQuote,
-  type PointsLogEntry,
+  type PointsLogEntry, type MyMemberInfo,
 } from '@/api/economy'
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -33,6 +33,8 @@ const userStore = useUserStore()
 // ===== 状态 =====
 const loading = ref(true)
 const balance = ref(0)
+/** 会员等级（含订阅折扣，失败时为 null 不展示） */
+const member = ref<MyMemberInfo | null>(null)
 const packages = ref<RechargePackage[]>([])
 const plans = ref<SubscriptionPlan[]>([])
 const methods = ref<PaymentMethod[]>([])
@@ -321,21 +323,6 @@ async function handleCustomRecharge() {
     toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
   } finally { orderLoading.value = null }
 }
-async function handlePointsOrder(plan: SubscriptionPlan) {
-  orderLoading.value = -plan.id
-  try {
-    const res = await paymentApi.createOrder({ kind: 'subscription', item_id: plan.id, payment_method: 'points', pay_with_points: true })
-    if (res.paid_with_points) {
-      toast.success(res.message || '积分支付成功，订阅已开通')
-      await refreshSubscriptions()
-      await refreshBalance()
-    } else if (res.pay_url) {
-      window.location.href = res.pay_url
-    }
-  } catch (err: any) {
-    toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
-  } finally { orderLoading.value = null }
-}
 
 // ===== 数据加载 =====
 async function refreshBalance() {
@@ -373,7 +360,7 @@ async function loadAll(silent = false) {
     const emptyLogs = { total: 0, balance: 0, logs: [] as PointsLogEntry[] }
     const emptySubs: MySubscription[] = []
     const couponFallback = { enabled: false }
-    const [pkgR, planR, methodR, logR, subsR, couponR] = await Promise.allSettled([
+    const [pkgR, planR, methodR, logR, subsR, couponR, memberR] = await Promise.allSettled([
       paymentApi.packages(),
       paymentApi.plans(),
       paymentApi.methods(),
@@ -381,6 +368,8 @@ async function loadAll(silent = false) {
       subscriptionApi.getMine(),
       // 接口失败时按「关闭」处理：宁可不展示，也不让用户填完码才报错
       couponApi.config(),
+      // 会员等级：失败时走 settled 兜底为 null，不展示折扣
+      memberApi.info(),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -402,6 +391,8 @@ async function loadAll(silent = false) {
     if (subs !== undefined) subscriptions.value = Array.isArray(subs) ? subs : []
     const couponCfg = settled(couponR, couponFallback, silent)
     if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
+    const memberData = settled(memberR, null, silent)
+    if (memberData !== undefined) member.value = memberData
     // 商品与价格回来后，已应用的券要按最新价格重算一次
     // （替代原来的 watch(tab)：本页没有分页，只在数据刷新时重算）
     if (couponApplied.value) void applyCoupon(couponApplied.value, { silent: true })
@@ -683,6 +674,9 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
                   <span class="plan-now"><span class="nowrap">¥{{ paidPrice('subscription', p.id, p.price) }}</span></span> / <span class="nowrap">{{ p.duration_days }} 天</span>
                 </div>
                 <p v-if="p.description" class="plan-desc">{{ p.description }}</p>
+                <p v-if="(member?.discount_pct || 0) > 0" class="plan-member-hint">
+                  <Percent :size="12" /> 会员 {{ (100 - (member?.discount_pct || 0)) / 10 }} 折，下单自动抵扣
+                </p>
                 <ul v-if="p.features && p.features.length" class="plan-features">
                   <li v-for="(f, i) in p.features" :key="i"><CircleCheck /> {{ f }}</li>
                 </ul>
@@ -695,16 +689,6 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
                   >
                     <span v-if="orderLoading === p.id" class="spinner"></span>
                     <template v-else><span class="nowrap">¥{{ paidPrice('subscription', p.id, p.price) }}</span> 开通</template>
-                  </button>
-                  <button
-                    v-if="p.points_price != null"
-                    type="button"
-                    class="plan-points"
-                    :disabled="orderLoading === -p.id"
-                    @click="handlePointsOrder(p)"
-                  >
-                    <span v-if="orderLoading === -p.id" class="spinner"></span>
-                    <template v-else><span class="nowrap">{{ p.points_price }} 积分</span>开通</template>
                   </button>
                 </div>
               </article>
@@ -1363,6 +1347,12 @@ p.plan-desc {
   margin: 0;
 }
 
+.plan-member-hint {
+  display: flex; align-items: center; gap: 4px;
+  margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--au-primary);
+  white-space: nowrap;
+}
+
 ul.plan-features {
   list-style: none;
   margin: 0;
@@ -1393,34 +1383,6 @@ ul.plan-features li svg {
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 8px;
-}
-
-
-button.plan-points {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 16px;
-  background: transparent;
-  border: 1px solid var(--au-border-strong);
-  color: var(--au-text-2);
-  border-radius: var(--au-r-md);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-button.plan-points:hover {
-  border-color: var(--au-primary);
-  color: var(--au-text);
-}
-
-button.plan-points:disabled {
-  opacity: .5;
-  cursor: not-allowed;
 }
 
 .coupon-box {

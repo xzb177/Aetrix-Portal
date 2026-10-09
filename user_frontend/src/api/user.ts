@@ -32,16 +32,18 @@ export async function setPlayLine(_line: PlayLine): Promise<PlayLine> {
 
 /** 注册页开关状态（公开接口，未登录可调） */
 export interface RegisterConfig {
-  registration_mode: 'open' | 'code' | 'closed'
+  registration_mode: 'open' | 'closed'
   invitation_enabled: boolean
 }
 
 /** 获取注册页开关：注册模式 + 邀请码开关 */
 export async function getRegisterConfig(): Promise<RegisterConfig> {
   try {
-    const res = await api.get<never, RegisterConfig>('/api/user/auth/register-config')
+    const res = await api.get<never, { registration_mode: string; invitation_enabled: boolean }>('/api/user/auth/register-config')
+    // code 模式已下线：历史残留值归一为 open
+    const mode = res.registration_mode === 'closed' ? 'closed' : 'open'
     return {
-      registration_mode: res.registration_mode || 'open',
+      registration_mode: mode,
       invitation_enabled: res.invitation_enabled !== false,
     }
   } catch {

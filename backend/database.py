@@ -670,6 +670,11 @@ def _auto_migrate():
             # P2 统一货币体系：套餐积分价。老库补列后为 NULL（不支持积分购买），与升级前行为一致。
             ("points_price", "NUMERIC(10, 2)", "NULL"),
         ]),
+        # P4 会员等级订阅折扣：老库补列后为 0（无折扣），与升级前行为一致；
+        # migrate_discount_pct 会按等级回填默认值。
+        ("member_levels", [
+            ("discount_pct", "INTEGER", "0"),
+        ]),
         ("user_subscriptions", [
             ("realm_id", "INTEGER", "NULL"),
         ]),
