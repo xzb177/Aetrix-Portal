@@ -42,10 +42,11 @@ export interface PackageRow {
 export interface ExchangeCodeRow {
   id: number
   code: string
-  type: 'points' | 'subscription'
+  type: 'points' | 'subscription' | 'discount'
   points_value: number
   plan_name: string | null
   duration_days: number
+  discount_pct: number
   max_uses: number
   use_count: number
   is_active: boolean
@@ -148,10 +149,11 @@ export const fetchExchangeCodes = (params: { limit?: number } = {}) =>
 
 export const createExchangeCodes = (data: {
   count: number
-  type: 'points' | 'subscription'
+  type: 'points' | 'subscription' | 'discount'
   points_value?: number
   plan_id?: number
   duration_days?: number
+  discount_pct?: number
   max_uses?: number
   expires_days?: number
   note?: string

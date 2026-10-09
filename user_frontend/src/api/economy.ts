@@ -212,6 +212,7 @@ export interface CodePreview {
   type_name?: string
   days?: number
   days_text?: string
+  discount_text?: string
   is_named?: boolean
   target_username?: string | null
   remaining_uses?: number
@@ -300,6 +301,16 @@ export const currencyApi = {
     api.get<never, { name: string; recharge_ratio: number }>('/api/user/economy/currency'),
 }
 
+export interface DiscountCredit {
+  has_credit: boolean
+  discount_pct?: number
+  expires_at?: string | null
+}
+/** 兑换码折扣权益：用户核销 discount 型兑换码后获得，订阅下单自动抵扣 */
+export const discountCreditApi = {
+  get: () => api.get<never, DiscountCredit>('/api/user/economy/exchange/discount-credit'),
+}
+
 // ==================== 支付 ====================
 
 export const paymentApi = {
@@ -311,7 +322,7 @@ export const paymentApi = {
       '/api/user/economy/payment/plans',
     ),
   createOrder: (data: { kind: 'recharge' | 'subscription'; item_id?: number; payment_method: string; coupon_code?: string; custom_amount?: number; pay_with_points?: boolean }) =>
-    api.post<never, { success: boolean; order_id: string; amount: number; list_price?: number; discount_amount?: number; coupon_code?: string; pay_url?: string; message: string; paid_with_points?: boolean; points_cost?: number }>('/api/user/economy/payment/order', data),
+    api.post<never, { success: boolean; order_id: string; amount: number; list_price?: number; discount_amount?: number; coupon_code?: string; exchange_discount_pct?: number; pay_url?: string; message: string; paid_with_points?: boolean; points_cost?: number }>('/api/user/economy/payment/order', data),
   orders: (params?: { kind?: string; limit?: number }) =>
     api.get<never, { orders: OrderRow[] }>('/api/user/economy/payment/orders', { params }),
 }

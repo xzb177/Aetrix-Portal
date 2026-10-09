@@ -18,7 +18,7 @@ import {
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi, currencyApi,
-  vitalityApi,
+  vitalityApi, discountCreditApi,
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview, type CouponQuote,
   type MyMemberInfo, type VitalityStatus,
@@ -93,12 +93,26 @@ interface QuoteRow {
 }
 
 const quoteOf = (kind: 'recharge' | 'subscription', id: number) => couponQuotes.value[`${kind}:${id}`] || null
-/** 折后实付（未用券 = 原价），模板里直接取字符串，避免到处写非空断言 */
-const paidPrice = (kind: 'recharge' | 'subscription', id: number, price: number) =>
-  (quoteOf(kind, id)?.paid_amount ?? price).toFixed(2)
+/** 兑换码折扣权益：核销 discount 型兑换码后获得，订阅下单自动抵扣（不与优惠券叠加） */
+const discountCredit = ref<{ has_credit: boolean; discount_pct?: number }>({ has_credit: false })
+/** 折后实付（未用券 = 原价；有折扣权益时按权益价），模板里直接取字符串，避免到处写非空断言 */
+const paidPrice = (kind: 'recharge' | 'subscription', id: number, price: number) => {
+  const q = quoteOf(kind, id)
+  if (q) return q.paid_amount.toFixed(2)
+  const pct = kind === 'subscription' && discountCredit.value.has_credit
+    ? discountCredit.value.discount_pct
+    : undefined
+  if (pct != null) return (Math.round(price * pct) / 100).toFixed(2)
+  return price.toFixed(2)
+}
 const wasPrice = (kind: 'recharge' | 'subscription', id: number) => {
   const q = quoteOf(kind, id)
-  return q ? q.list_price.toFixed(2) : ''
+  if (q) return q.list_price.toFixed(2)
+  if (kind === 'subscription' && discountCredit.value.has_credit) {
+    const p = plans.value.find(p => p.id === id)?.price
+    return p != null ? p.toFixed(2) : ''
+  }
+  return ''
 }
 const couponSavings = computed(() => {
   const values = Object.values(couponQuotes.value)
@@ -463,7 +477,7 @@ async function loadAll(silent = false) {
     const emptySubs: MySubscription[] = []
     const exchangeFallback = { enabled: true }
     const couponFallback = { enabled: false }
-    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR, memberR, vitalityR] = await Promise.allSettled([
+    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR, memberR, vitalityR, discR] = await Promise.allSettled([
       paymentApi.packages(),
       paymentApi.plans(),
       paymentApi.methods(),
@@ -477,6 +491,7 @@ async function loadAll(silent = false) {
       memberApi.info(),
       // 活力值：非公益服用户 403，settled 兜底为 null 不展示
       vitalityApi.status(),
+      discountCreditApi.get().catch(() => ({ has_credit: false })),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -511,6 +526,8 @@ async function loadAll(silent = false) {
     member.value = memberData
     const vitalityData = vitalityR.status === 'fulfilled' ? vitalityR.value : null
     vitality.value = vitalityData && vitalityData.success ? vitalityData : null
+    const disc = discR.status === 'fulfilled' ? discR.value : { has_credit: false }
+    if (disc && typeof disc.has_credit === 'boolean') discountCredit.value = disc
   } finally {
     loading.value = false
     hasLoaded.value = true
@@ -773,6 +790,7 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
           <span class="rp-text">
             {{ codePreview.type_name }}
             <strong>· {{ codePreview.days_text }}</strong>
+            <strong v-if="codePreview.discount_text && codePreview.discount_text !== '-'">· {{ codePreview.discount_text }}</strong>
             <template v-if="codePreview.realm_name"> · 开「{{ codePreview.realm_name }}」的会员</template>
             <template v-if="codePreview.is_named"> · 限指定账号</template>
           </span>
@@ -945,6 +963,15 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
           </span>
         </template>
         <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
+      </div>
+
+      <!-- 兑换码折扣权益：有未用权益时提示，下单自动抵扣（不与优惠券叠加） -->
+      <div v-if="plansEnabled && !isFreeRealm && discountCredit.has_credit" class="discount-callout au-card">
+        <span class="discount-badge">
+          <Percent :size="13" />
+          {{ discountCredit.discount_pct }} 折待使用
+        </span>
+        <p class="discount-lead">兑换码折扣已到账，下单购买订阅时自动抵扣，不与优惠券叠加。</p>
       </div>
 
       <!-- 卡码 / 兑换码 / 优惠券的入口已收归顶部那一个面板，这里只留一行指引，
@@ -1565,6 +1592,31 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
 
 .free-lead { margin: 0; font-size: 0.875rem; color: var(--au-text); }
 .free-note { margin: 0; font-size: 0.8125rem; line-height: 1.6; color: var(--au-text-3); }
+
+/* 兑换码折扣权益提示条（复用 free-callout 排版语言） */
+.discount-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 1rem 1.125rem;
+  margin-bottom: 0.75rem;
+}
+
+.discount-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.5625rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.discount-lead { margin: 0; font-size: 0.875rem; color: var(--au-text); }
 
 /* 卡码预检通过后的确认行（内联在核销面板里） */
 .redeem-preview {

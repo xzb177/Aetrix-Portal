@@ -821,7 +821,7 @@ class EmbyViewUnlock(Base):
 
 
 class ExchangeCode(Base):
-    """兑换码表（积分兑换 / 订阅兑换）"""
+    """兑换码表（积分兑换 / 订阅兑换 / 折扣兑换）"""
     __tablename__ = 'exchange_codes'
 
     __table_args__ = (
@@ -830,10 +830,11 @@ class ExchangeCode(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String(20), unique=True, nullable=False, index=True)
-    type = Column(String(20), default='points')  # points 积分 / subscription 订阅
+    type = Column(String(20), default='points')  # points 积分 / subscription 订阅 / discount 折扣
     points_value = Column(Integer, default=0)  # points 型：兑换积分数
     plan_id = Column(Integer, ForeignKey('subscription_plans.id'), nullable=True)  # subscription 型：套餐
     duration_days = Column(Integer, default=0)  # subscription 型：时长
+    discount_pct = Column(Integer, default=0)  # discount 型：实付百分比，85=八五折
     max_uses = Column(Integer, default=1)
     use_count = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
@@ -844,6 +845,28 @@ class ExchangeCode(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     plan = relationship("SubscriptionPlan")
+
+class ExchangeDiscountCredit(Base):
+    """兑换码折扣权益：用户核销 discount 型兑换码后获得一张，下次购买订阅时自动抵扣。
+
+    一张兑换码每人限核销一次（走 CodeRedemption 唯一约束的老逻辑），一张权益只用一次。
+    不与优惠券叠加：下单时填了 coupon_code 就走优惠券，否则用这里最优的一张。
+    """
+    __tablename__ = 'exchange_discount_credits'
+
+    __table_args__ = (
+        Index('idx_exdisc_user', 'user_id'),
+        Index('idx_exdisc_status', 'status'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    exchange_code_id = Column(Integer, ForeignKey('exchange_codes.id'), nullable=False)
+    discount_pct = Column(Integer, default=0)  # 实付百分比，85=八五折
+    status = Column(String(20), default='unused')  # unused 未用 / used 已用
+    used_order_id = Column(String(64))
+    expires_at = Column(DateTime)  # 继承兑换码的 expires_at，可空
+    created_at = Column(DateTime, default=datetime.now)
 
 
 # ==================== 邀请系统 ====================

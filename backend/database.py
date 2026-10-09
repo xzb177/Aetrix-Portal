@@ -769,6 +769,11 @@ def _auto_migrate():
         ("emby_people", [
             ("person_tmdb_id", "VARCHAR(32)", "NULL"),
         ]),
+        # P3 兑换码折扣类型：老库补 discount_pct 列（默认 0，老兑换码不受影响）；
+        # 新表 exchange_discount_credits 由 create_all 建，不在此列
+        ("exchange_codes", [
+            ("discount_pct", "INTEGER", "0"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

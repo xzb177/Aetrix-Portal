@@ -427,6 +427,7 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         return {
             "valid": False, "kind": "exchange", "days": exchange.duration_days or 0,
             "days_text": format_days(exchange.duration_days) if exchange.type == "subscription" else "-",
+            "discount_text": f"{exchange.discount_pct}折" if exchange.type == "discount" else "-",
             # 兑换码在同一个入口里直接核销，不再指向已经收掉的「钱包 → 兑换码」
             "message": "这是兑换码，点「使用」直接核销",
         }
