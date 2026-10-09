@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # 前端专用镜像：构建 user_frontend + admin_frontend，用 nginx serve。
-# /api/* 反代到后端 aetrix-api:8000（见 nginx.conf）。
+# /api/* 反代到后端（见 nginx.conf + docker/web-entrypoint.sh，后端地址由 BACKEND_HOST 环境变量决定）。
 #
 # ---- 构建阶段用 node:22-slim（glibc）而不是 alpine（musl）----
 # 实测在 alpine 上构建 admin_frontend 会直接失败：
@@ -32,7 +32,10 @@ RUN npm run build
 FROM nginx:1.27-alpine
 COPY --from=user-build /src/user_frontend/dist /usr/share/nginx/html/
 COPY --from=admin-build /src/admin_frontend/dist /usr/share/nginx/html/admin/
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+# nginx.conf 是模板：${BACKEND_HOST} 由启动钩子渲染（见 docker/web-entrypoint.sh）。
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf.template
+COPY docker/web-entrypoint.sh /docker-entrypoint.d/15-backend-host.sh
+RUN chmod +x /docker-entrypoint.d/15-backend-host.sh
 EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1/ || exit 1
