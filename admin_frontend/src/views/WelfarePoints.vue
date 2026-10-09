@@ -18,6 +18,7 @@ const form = ref<Record<string, string>>({})
 
 const currencyFields = [
   { key: 'recharge_ratio', label: '充值比例', hint: '1 元人民币兑换多少积分，默认 1.2', suffix: '积分/元' },
+  { key: 'recharge_quick_amounts', label: '快捷金额', hint: '自定义充值快捷金额，逗号分隔、最多 8 个，默认 10,30,50,100,200', suffix: '元' },
 ]
 
 const redpacketFields = [

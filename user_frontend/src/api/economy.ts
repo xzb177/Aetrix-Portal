@@ -315,10 +315,10 @@ export const couponApi = {
     api.post<never, CouponQuote>('/api/user/economy/payment/coupon/quote', data),
 }
 
-/** 货币体系公开信息（P2）：用户端自定义充值换算用 */
+/** 货币体系公开信息（P2/C4）：用户端自定义充值换算用 */
 export const currencyApi = {
   info: () =>
-    api.get<never, { name: string; recharge_ratio: number }>('/api/user/economy/currency'),
+    api.get<never, { name: string; recharge_ratio: number; quick_amounts: number[] }>('/api/user/economy/currency'),
 }
 
 export interface DiscountCredit {

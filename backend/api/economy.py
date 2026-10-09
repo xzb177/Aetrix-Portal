@@ -74,6 +74,18 @@ def _get_float_config(db: Session, key: str, default: float) -> float:
         return default
 
 
+def _get_quick_amounts(db: Session) -> list[int]:
+    """快捷充值金额（C4）：读 recharge_quick_amounts，逗号分隔；非法/空回退默认；去重、升序、最多 8 个、只保留 1~100000 的正整数。"""
+    default_amounts = [10, 30, 50, 100, 200]
+    raw = _get_config(db, "recharge_quick_amounts", "10,30,50,100,200")
+    try:
+        values = [int(part.strip()) for part in raw.split(",")]
+    except (TypeError, ValueError):
+        return default_amounts
+    amounts = sorted({v for v in values if 1 <= v <= 100000})[:8]
+    return amounts or default_amounts
+
+
 def _get_bool_config(db: Session, key: str, default: bool) -> bool:
     return _get_config(db, key, "true" if default else "false").strip().lower() == "true"
 
@@ -757,10 +769,11 @@ def coupon_config(db: Session = Depends(get_db)):
 
 @router.get("/currency")
 def currency_info(db: Session = Depends(get_db)):
-    """货币体系公开信息（P2）：名称、充值比例——用户端自定义充值换算用"""
+    """货币体系公开信息（P2/C4）：名称、充值比例、快捷金额——用户端自定义充值换算用"""
     return {
         "name": "积分",
         "recharge_ratio": _get_float_config(db, "recharge_ratio", 1.2),
+        "quick_amounts": _get_quick_amounts(db),
     }
 
 
