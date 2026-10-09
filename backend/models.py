@@ -258,6 +258,11 @@ class WebUser(Base):
     # 用户级转码开关（Linger 借鉴，Emby 标准字段 EnableVideoPlaybackTranscoding）
     # 管理员可对特定用户禁用转码（只给直传，省服务器资源），默认允许
     enable_video_transcoding = Column(Boolean, default=True, nullable=False, server_default="1")
+    # 公益服身份与资格（模块1）
+    is_welfare = Column(Boolean, default=False, nullable=False, server_default="0")
+    welfare_expires_at = Column(DateTime, nullable=True)
+    welfare_grant_channel = Column(String(20), nullable=True)
+    welfare_granted_at = Column(DateTime, nullable=True)
     last_login_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -1016,11 +1021,23 @@ class InvitationCode(Base):
     # 用完即无效——与卡码的 target_username 同一个思路（内测码 / 渠道码）。
     # 空 = 不限（与升级前行为一致）。
     whitelist = Column(Text, default="")
+    welfare_days = Column(Integer, default=30, nullable=False, server_default="30")
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
 
 
+
+
+class WelfareGrantLog(Base):
+    """公益资格开通/续期记录表"""
+    __tablename__ = "welfare_grant_logs"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("web_users.id"), nullable=False, index=True)
+    channel = Column(String(20), nullable=False)
+    days = Column(Integer, nullable=False, default=0)
+    granted_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
 class InvitationRecord(Base):
     """邀请记录表"""
     __tablename__ = 'invitation_records'
