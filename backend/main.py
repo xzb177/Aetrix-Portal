@@ -82,7 +82,6 @@ from backend.api.invitation import router as invitation_router
 from backend.api.points import router as welfare_points_router
 from backend.api.welfare_requests import router as welfare_requests_router
 from backend.api.welfare_lottery import router as welfare_lottery_router
-from backend.api.welfare_expiry import router as welfare_expiry_router
 from backend.api.welfare_redpacket import router as welfare_redpacket_router
 from backend.api.welfare_reviews import router as welfare_reviews_router
 
@@ -713,7 +712,6 @@ app.include_router(invitation_router)
 app.include_router(welfare_points_router)
 app.include_router(welfare_requests_router)
 app.include_router(welfare_lottery_router)
-app.include_router(welfare_expiry_router)
 app.include_router(welfare_redpacket_router)
 app.include_router(welfare_reviews_router)
 
