@@ -335,9 +335,10 @@ def add_xp(
 
 def get_member_info(db: Session, user: models.WebUser) -> dict:
     """用户端 /api/user/member 使用：等级列表 + 当前等级 + 进度。"""
-# 确保种子存在，并把旧命名迁移到新主题（幂等）
+    # 确保种子存在，并把旧命名迁移到新主题（幂等），再回填存量等级的折扣
     ensure_member_levels_seeded(db)
     migrate_legacy_level_names(db)
+    migrate_discount_pct(db)
 
     rows = (
         db.query(models.MemberLevel)
