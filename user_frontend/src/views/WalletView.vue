@@ -1157,9 +1157,9 @@ onBeforeUnmount(stopPayPoll)
 .member-name { font-size: 0.9375rem; color: var(--au-text); }
 .member-xp { font-size: 0.75rem; color: var(--au-text-3); font-variant-numeric: tabular-nums; }
 .member-discount {
-  font-size: 0.75rem; font-weight: 700; color: var(--au-accent);
-  background: color-mix(in srgb, var(--au-accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--au-accent) 35%, transparent);
+  font-size: 0.75rem; font-weight: 700; color: var(--au-primary);
+  background: color-mix(in srgb, var(--au-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--au-primary) 35%, transparent);
   border-radius: 999px; padding: 0.1rem 0.5rem; white-space: nowrap;
 }
 .member-bar {
@@ -1222,9 +1222,9 @@ onBeforeUnmount(stopPayPoll)
 .level-head strong { font-size: 0.875rem; color: var(--au-text); }
 .level-th { font-size: 0.75rem; color: var(--au-text-3); white-space: nowrap; }
 .level-discount {
-  font-size: 0.75rem; font-weight: 700; color: var(--au-accent);
-  background: color-mix(in srgb, var(--au-accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--au-accent) 35%, transparent);
+  font-size: 0.75rem; font-weight: 700; color: var(--au-primary);
+  background: color-mix(in srgb, var(--au-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--au-primary) 35%, transparent);
   border-radius: 999px; padding: 0.1rem 0.5rem; white-space: nowrap;
 }
 .level-benefits {
@@ -1677,7 +1677,7 @@ onBeforeUnmount(stopPayPoll)
 }
 .plan-member-hint {
   display: flex; align-items: center; gap: 0.3rem;
-  margin: 0.35rem 0 0; font-size: 0.75rem; font-weight: 600; color: var(--au-accent);
+  margin: 0.35rem 0 0; font-size: 0.75rem; font-weight: 600; color: var(--au-primary);
 }
 .plan-price em { font-family: var(--au-font-sans); font-style: normal; font-size: 0.8125rem; font-weight: 400; color: var(--au-text-3); }
 
