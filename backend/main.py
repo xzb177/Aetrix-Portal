@@ -83,6 +83,7 @@ from backend.api.points import router as welfare_points_router
 from backend.api.welfare_requests import router as welfare_requests_router
 from backend.api.welfare_reviews import router as welfare_reviews_router
 from backend.api.tg_bind import router as tg_bind_router
+from backend.api.lottery import router as lottery_router
 
 # 配置日志
 logging.basicConfig(
@@ -720,6 +721,9 @@ app.include_router(welfare_points_router)
 app.include_router(welfare_requests_router)
 app.include_router(welfare_reviews_router)
 app.include_router(tg_bind_router)
+
+# 群抽奖公开核验（无需登录，纯只读）
+app.include_router(lottery_router)
 
 
 # ==================== 根路径 ====================
