@@ -399,74 +399,60 @@ set_config("allow_download", None)
 r = client.get(f"/emby/Items/{item_guid}/File", headers=a_h)
 check("重新允许下载后可访问", r.status_code == 200, str(r.status_code))
 
-# ==================== 六、凭码注册（类型化卡码） ====================
+# ==================== 六、注册模式开关（注册码门禁已下线） ====================
+# 注册码注册门禁已于 v2.7.x 彻底删除：只剩 open（开放注册）/ closed（关闭注册），
+# DB 里残留的 "code" 值按 open 处理。卡码体系走核销路径，不受影响。
 
-set_config("registration_mode", "code")
-
+set_config("registration_mode", "open")
 r = client.post("/api/user/auth/register", json={
-    "username": f"reg_none{suf}", "password": "pass12345",
+    "username": f"reg_open{suf}", "password": "pass12345",
 })
-check("注册模式为码时无码注册 → 400", r.status_code == 400
-      and "注册码" in (r.json().get("detail") or ""), str(r.json().get("detail")))
-
-r = client.post("/api/admin/registration-codes/generate",
-                json={"code_type": 2, "count": 1, "days": 7}, headers=staff_h)
-fresh_renew = r.json()["codes"][0]["code"]
-r = client.post("/api/user/auth/register", json={
-    "username": f"reg_ren{suf}", "password": "pass12345", "registration_code": fresh_renew,
-})
-check("续期码不能用于注册 → 400", r.status_code == 400
-      and "续期" in (r.json().get("detail") or ""), str(r.json().get("detail")))
-
-r = client.post("/api/admin/registration-codes/generate",
-                json={"code_type": 1, "count": 1, "days": 10}, headers=staff_h)
-signup_code = r.json()["codes"][0]["code"]
-new_name = f"reg_new{suf}"
-r = client.post("/api/user/auth/register", json={
-    "username": new_name, "password": "pass12345", "registration_code": signup_code,
-})
-check("凭注册码注册成功", r.status_code in (200, 201), str(r.status_code))
+check("开放注册成功", r.status_code in (200, 201), str(r.status_code))
 if r.status_code in (200, 201):
-    new_h = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    subs = client.get("/api/user/subscriptions", headers=new_h).json()
-    days = subs[0]["days_left"] if subs else -1
-    check("注册码天数在注册时直接生效（10 天）", 8 <= days <= 10, f"days_left={days}")
+    db = SessionLocal()
+    u = db.query(models.WebUser).filter(models.WebUser.username == f"reg_open{suf}").first()
+    check("开放注册用户渠道记为 open", u is not None and u.register_channel == "open",
+          f"register_channel={u.register_channel if u else None}")
+    db.close()
 
-r = client.post("/api/admin/registration-codes/generate",
-                json={"code_type": 3, "count": 1}, headers=staff_h)
-signup_vip = r.json()["codes"][0]["code"]
+set_config("registration_mode", "closed")
 r = client.post("/api/user/auth/register", json={
-    "username": f"reg_vip{suf}", "password": "pass12345", "registration_code": signup_vip,
+    "username": f"reg_cls{suf}", "password": "pass12345",
 })
-vip_ok = r.status_code in (200, 201)
-vip_days = 0
-if vip_ok:
-    vh = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    vip_subs = client.get("/api/user/subscriptions", headers=vh).json()
-    vip_days = vip_subs[0]["days_left"] if vip_subs else 0
-check("白名单码注册 → 长期有效", vip_ok and vip_days > 3000, f"days_left={vip_days}")
+check("关闭注册时注册 → 403", r.status_code == 403, str(r.status_code))
 
+# 遗留值兼容：DB 里残留的 "code" 按 open 处理（后端已拒绝新的 "code" 写入）
+set_config("registration_mode", "code")
+r = client.post("/api/user/auth/register", json={
+    "username": f"reg_legacy{suf}", "password": "pass12345",
+})
+check("遗留 code 模式按开放注册处理", r.status_code in (200, 201), str(r.status_code))
+
+r = client.put("/api/admin/settings/registration", json={"mode": "code", "message": ""},
+               headers=staff_h)
+check("管理接口拒绝 code 模式 → 400", r.status_code == 400, str(r.status_code))
+
+# 诱饵码仍走核销路径：注册一个普通用户，核销诱饵码 → 400 + 封号 + 风控日志
 r = client.post("/api/admin/registration-codes/generate",
                 json={"code_type": 1, "count": 1, "is_decoy": True}, headers=staff_h)
 signup_decoy = r.json()["codes"][0]["code"]
-decoy_name = f"reg_dec{suf}"
+victim = f"decoy_vic{suf}"
 r = client.post("/api/user/auth/register", json={
-    "username": decoy_name, "password": "pass12345", "registration_code": signup_decoy,
+    "username": victim, "password": "pass12345",
 })
-check("诱饵码注册被拒", r.status_code == 400, str(r.status_code))
+vic_h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+r = client.post("/api/user/membership/redeem", json={"code": signup_decoy}, headers=vic_h)
+check("诱饵码核销被拒", r.status_code == 400, str(r.status_code))
 db = SessionLocal()
-banned = db.query(models.WebUser).filter(models.WebUser.username == decoy_name).first()
+banned = db.query(models.WebUser).filter(models.WebUser.username == victim).first()
 reg_decoy_log = db.query(models.LoginLog).filter(
-    models.LoginLog.reason == "decoy_code", models.LoginLog.username == decoy_name
+    models.LoginLog.reason == "decoy_code", models.LoginLog.username == victim
 ).first()
-created_after_decoy = banned is not None
-if banned:
-    db.delete(banned)
-    db.commit()
+banned_flag = banned is not None and not banned.is_active
 db.close()
-check("诱饵码注册不落用户，但落风控日志",
-      (not created_after_decoy) and reg_decoy_log is not None,
-      f"created={created_after_decoy} logged={reg_decoy_log is not None}")
+check("诱饵码核销后用户被封并落风控日志",
+      banned_flag and reg_decoy_log is not None,
+      f"banned={banned_flag} logged={reg_decoy_log is not None}")
 
 set_config("registration_mode", None)
 

@@ -19,7 +19,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend import codes, models, register_channel
+from backend import models, register_channel
 from backend.db_retry import commit_with_retry
 from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend import share_guard
@@ -62,7 +62,6 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=6, max_length=64)
     email: str | None = None
     invitation_code: str | None = None  # 邀请码（选填，双向奖励+返利绑定）
-    registration_code: str | None = None  # 注册模式下必填
     captcha_token: str | None = None  # 人机验证令牌（管理员开启保护时必填）
 
 
@@ -214,14 +213,15 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
     if existing:
         raise HTTPException(status_code=409, detail="用户名已被注册")
 
-    # ===== 注册模式开关（借鉴 twilight-kotomi 的卡码体系）=====
-    # open: 开放注册 / code: 必须携带有效注册码 / closed: 关闭注册
+    # ===== 注册模式开关 =====
+    # open: 开放注册 / closed: 关闭注册
+    # 「code」（注册码门禁）已于 v2.7.x 下线：DB 里残留的 "code" 值一律按 open 处理，
+    # 卡码体系（钱包/个人中心核销注册码/续期码/白名单码）不受影响。
     mode_config = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == "registration_mode"
     ).first()
     reg_mode = mode_config.value if mode_config else "open"
 
-    reg_code = None  # 命中的注册码（延迟到用户创建成功后再消耗）
     if reg_mode == "closed":
         closed_msg_config = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == "registration_closed_message"
@@ -232,29 +232,8 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
                     else "当前未开放注册"),
         )
     if reg_mode == "code":
-        if not req.registration_code:
-            raise HTTPException(status_code=400, detail="当前注册需要注册码")
-        reg_code = codes.find_reg_code(db, req.registration_code)
-        error = codes.reg_code_error(reg_code) if reg_code else "卡码无效"
-        if not error and reg_code and reg_code.code_type == codes.CODE_TYPE_RENEW:
-            # 与参考实现口径一致：续期码只能由已登录用户使用
-            error = "该卡码为续期码，请登录后在个人中心使用"
-        if not error and reg_code and reg_code.target_username:
-            if reg_code.target_username.strip().lower() != username.lower():
-                error = "该卡码限指定账号使用"
-        if not error and reg_code and codes.is_honeypot(reg_code):
-            # 诱饵码：只应出现在盗版/破解渠道，注册即拒绝并落安全日志
-            logger.warning(
-                "诱饵码触发：注册尝试 username=%s 于 %s 使用了诱饵码 %s，已拒绝并落安全日志",
-                username, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reg_code.code,
-            )
-            record_event(
-                db, username=username, ip=log_ip(request), agent=user_agent(request),
-                success=False, reason="decoy_code", detail=f"注册使用了诱饵码 {reg_code.code}",
-            )
-            error = "注册码无效或已过期"
-        if error:
-            raise HTTPException(status_code=400, detail=error)
+        # 已下线的值，兼容 DB 残留：按 open 处理（见上方注释）
+        reg_mode = "open"
 
     if req.email:
         email = req.email.strip()
@@ -269,27 +248,11 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
         password_hash=hash_password(req.password),
         email=req.email.strip() if req.email else None,
         is_active=True,
-        # 注册渠道归因（v2.44.0）：先记进门的凭据，邀请码生效后再升级为 invitation
-        register_channel=(register_channel.CODE if reg_code is not None
-                          else register_channel.OPEN),
+        # 注册渠道归因（v2.44.0）：注册码门禁已下线，新用户只有开放注册/邀请两种入口
+        register_channel=register_channel.OPEN,
     )
     db.add(user)
-    db.flush()   # 先拿主键；**不提交**：用户 + 卡码消耗 + 会员天数要么全成、要么全不留痕
-
-    # 卡码消耗 + 按卡码类型授予会员天数（注册码开通、白名单码置为长期有效）
-    # 开的是**卡码所属服**的会员：多服下用乙服的注册码注册，就该拿到乙服的会员
-    if reg_code is not None:
-        # 先原子占位（见 codes.claim_code）：并发用同一张单次注册码注册时只有一个能成功。
-        # 抢不到就直接回滚整条注册——不能出现「码只够一次，却开了两个号的会员」
-        if not codes.claim_code(db, reg_code, user.id):
-            db.rollback()
-            raise HTTPException(status_code=400, detail="注册码已被使用")
-        codes.grant_membership_days(db, user, codes.grant_days_for(reg_code),
-                                    codes.code_realm_id(db, reg_code))
-
-    # 一次提交落盘：用户、卡码消耗、会员订阅同一个事务（旧实现是两次提交，
-    # 中间崩一次就成了「码烧了、会员没到账」，见 docs/performance.md）
-    commit_with_retry(db, label="注册落库")
+    commit_with_retry(db, label="注册落库")  # 一次提交落盘
     db.refresh(user)
 
     # 邀请返利：注册时应用邀请码（双向发奖，失败静默不阻塞注册）
@@ -299,7 +262,7 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
 
             result = apply_invitation(db, user, req.invitation_code)
             # 归因收尾：码无效/被拒时这个号就是自己注册的，记成 invitation 会把
-            # 渠道分析带偏。优先级（卡密 > 邀请码 > 开放）由 resolve 统一裁决。
+            # 渠道分析带偏。优先级（邀请码 > 开放）由 resolve 统一裁决。
             user.register_channel = register_channel.resolve(
                 user.register_channel, bool((result or {}).get("applied")))
             db.commit()
