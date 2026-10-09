@@ -47,11 +47,12 @@ def packet_text(packet, sender_name: str) -> str:
 
 def finished_text(packet, sender_name: str, reason: str) -> str:
     """红包终态的按钮消息正文。reason: "empty"（已抢完）/ "expired"（已过期）。
-    包含：🧧 表情、发送者名、总额 X 积分 / 共 N 个；empty → "🎉 红包已抢完"；expired → "⌛ 红包已过期，剩余积分已退回发送者"。"""
+    包含：🧧 表情、发送者名、总额 X 积分 / 共 N 个；empty → "🎉 红包已抢完"；expired → "⌛ 红包已过期"。
+    注意：过期退款由后端定时任务 refund_expired 执行，这里不宣称已退款。"""
     if reason == "empty":
         status = "🎉 红包已抢完"
     else:
-        status = "⌛ 红包已过期，剩余积分已退回发送者"
+        status = "⌛ 红包已过期"
     return (
         f"🧧 {sender_name} 的红包\n"
         f"总额 {packet.total_amount} 积分 / 共 {packet.total_count} 个\n"
