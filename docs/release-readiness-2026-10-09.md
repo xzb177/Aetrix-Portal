@@ -71,6 +71,38 @@
 - 管理端"探测进度卡片"未实现（后端 `GET /api/admin/emby/scrape/probe-progress` 已就绪，
   `admin_frontend/src` 内无对应 UI）——CHANGELOG 第 141 行已自认。
 - `backend/notifications.py:730` 有一处描述历史的 `TODO`，非待办。
+## 6. 发布动作（已执行）
+
+- 分支 `chore/release-2.55.0`（从 `origin/main` @ `636ba05` 切出），PR **#425**。
+- `VERSION` 2.48.0 → **2.55.0**（同步两个 `package.json` + lock + `branding.ts` 的 `APP_VERSION`）。
+- CHANGELOG：7 段 `[未发布]` 定稿为 **2.49.0–2.54.0**，新增 `[2.55.0]` 补记 PR #413–#416 / #420 / #422 / #423；
+  删掉与第 143 行重复的安全修复段（其「升级须知」并入 2.52.0）。
+- **版本映射是推断的**：依据「一版一段 + 顶部最新（=版本降序）」惯例，并用代码里的两处标注交叉印证
+  （`v2.51.0 演员表` ↔ 「恢复误删功能」段、`v2.53 探测 worker` ↔ 第 2 段）。需要维护者确认；
+  代码里另有 `v2.49.0 文件名解析` / `v2.50.0 增量扫描` / `v2.52.0 Drive Changes` 等标注，
+  这些功能在 CHANGELOG 里**没有任何段落**，属于仍缺的记录。
+- 本地已验证：后端冒烟 job 59/59（pytest 1940 passed）、部署自检通过、两个前端契约 + 类型检查 + 构建全绿。
+
+## 7. 顺带发现并修掉的真回归（PR #416 遗留）
+
+- `_preprobe_loop` 被删时，把挂在它上面的 **triage 调度一起删了** → `triage()` / `_run_triage_once()`
+  只剩定义、全仓无调用点 → 2.53.0 承诺的「启动时及每 6 小时纠正状态、给最近播放过的条目提权」
+  在生产上**一次都不执行**。
+- 维护者知情但只在测试里绕过：`tests/test_probe_worker_redesign.py` 有注释
+  「PR #416 删除 preprobe 后，triage 可能未及时运行」，并显式调用 `probe_worker.triage(db)`。
+- 已在 PR #425 接回 `_triage_loop()` / `_spawn_triage()` / `_restart_triage()`，注册为 `probe_triage`，
+  间隔变量改为语义正确的 `PROBE_TRIAGE_INTERVAL_SEC`；回归测试改为断言调度已注册、
+  且 `series` 条目无需手动干预即被标成 `skipped`。
+- `PROBE_PREEXTRACT_INTERVAL_SEC` 是死变量（代码无任何读取点，`env.example` 仍在文档化），已随本 PR 清掉。
+
+## 8. 另一处风险：镜像 tag 被反复覆盖
+
+`VERSION` 长期停在 `2.48.0`，而 `publish-images.yml` 是「CI 全绿 + push 到 main 就发布」，
+因此**每次合并 main 都会把 `ghcr.io/xzb177/aetrix-api:2.48.0` / `:latest` 覆盖成当时的 main**
+（`gh run list --workflow=publish-images.yml` 最近 12 次全 success，其中多次是真构建）。
+客户按 `DEPLOY.md` 的说明 pin `2.48.0` 拿到的并不是 2.48.0 的内容。PR #425 抬升版本号后，
+下一次发布才会产生新 tag。
+
 
 ## 5. 要发布还差什么
 
