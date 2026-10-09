@@ -41,6 +41,7 @@ const columns: DataColumn[] = [
   { key: 'username', label: '用户', minWidth: 200, mobile: 'title' },
   // 用户类型（v2.55 公益服并入用户管理）：公益服 / 付费 / 普通
   { key: 'user_type', label: '类型', width: 150 },
+  { key: 'tg_bound', label: 'TG', width: 70 },
   { key: 'emby_username', label: 'Emby 账号', minWidth: 130 },
   { key: 'subscription', label: '订阅', minWidth: 160 },
   // 注册渠道（v2.44.0 归因）：一眼看出这个号是哪来的
@@ -680,6 +681,11 @@ function fmtCount(n: number | null | undefined): string {
           </template>
           <span v-else-if="row.user_type === 'paid'" class="au-badge au-badge-amber">付费</span>
           <span v-else class="au-badge au-badge-muted">普通</span>
+        </template>
+
+        <template #cell-tg_bound="{ row }">
+          <span v-if="row.tg_bound" class="au-badge au-badge-cyan" title="已绑定 Telegram">已绑</span>
+          <span v-else class="au-badge au-badge-muted" title="未绑定 Telegram">未绑</span>
         </template>
 
         <template #cell-last_login_at="{ row }"><span class="au-num">{{ fmtDate(row.last_login_at) }}</span></template>

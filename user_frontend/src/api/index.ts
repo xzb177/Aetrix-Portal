@@ -150,6 +150,18 @@ api.interceptors.response.use(
       }
     }
 
+    // 公益服 TG 门禁：后端 403 + TG_NOT_BOUND → 全局事件，App.vue 统一引导去绑定
+    if (error.response?.status === 403 && !originalRequest._tgNotified) {
+      const detail = error.response?.data?.detail
+      const code = detail && typeof detail === 'object' ? (detail as { code?: string }).code : null
+      if (code === 'TG_NOT_BOUND') {
+        originalRequest._tgNotified = true
+        window.dispatchEvent(new CustomEvent('tg-not-bound', {
+          detail: { message: (detail as { message?: string })?.message || '公益服功能需要绑定 Telegram，防小号，1 分钟搞定' },
+        }))
+      }
+    }
+
     return Promise.reject(error)
   }
 )

@@ -24,6 +24,8 @@ import {
 } from '@/api/economy'
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
+import { tgApi, type TgBindStatus } from '@/api/tg'
+import TgBindCard from '@/components/TgBindCard.vue'
 
 const toast = useToast()
 const route = useRoute()
@@ -615,10 +617,14 @@ watch(() => route.query.tab, (tabParam) => {
 })
 
 onBeforeUnmount(stopPayPoll)
+const tgStatus = ref<TgBindStatus | null>(null)
+const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required && !tgStatus.value.bound && !tgStatus.value.in_grace)
+onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {}) })
 </script>
 
 <template>
   <div class="au-page wallet-view">
+    <TgBindCard v-if="showTgBanner" compact class="tg-banner" />
     <!-- 余额主卡：左右分区 — 左侧余额与签到态，右侧核销面板 -->
     <section class="balance-hero au-anim-up">
       <div class="bh-main">
@@ -1811,4 +1817,8 @@ onBeforeUnmount(stopPayPoll)
   .pkg-buy { justify-content: space-between; }
   .order-item { flex-wrap: wrap; }
 }
+</style>
+
+<style scoped>
+.tg-banner { margin-bottom: 12px; }
 </style>

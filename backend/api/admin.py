@@ -345,6 +345,8 @@ def list_users(
             "is_welfare": bool(u.is_welfare),
             "welfare_expires_at": u.welfare_expires_at.isoformat() if u.welfare_expires_at else None,
             "welfare_grant_channel": u.welfare_grant_channel,
+            # TG 绑定状态（公益服门禁用）：只暴露是否绑定，不暴露具体 ID
+            "tg_bound": bool(u.telegram_id),
             "user_type": (
                 "welfare" if u.is_welfare
                 else ("paid" if active_sub is not None else "normal")

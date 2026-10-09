@@ -19,6 +19,7 @@ from backend import models
 from backend import points as points_mod
 from backend.api.user import get_current_user
 from backend.database import get_db
+from backend.tg_bind import require_tg_bound
 
 router = APIRouter(prefix="/api/points", tags=["公益服-积分"])
 
@@ -31,6 +32,7 @@ class RedeemRequest(BaseModel):
 def welfare_signin(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    _tg: models.WebUser = Depends(require_tg_bound)
 ):
     """【已废弃 2026-10-09】公益服签到已统一到 POST /api/user/economy/checkin。
 
@@ -47,6 +49,7 @@ def redeem_welfare(
     req: RedeemRequest,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    _tg: models.WebUser = Depends(require_tg_bound)
 ):
     """积分兑换公益天数"""
     try:
@@ -100,6 +103,7 @@ def chat_award(
     user_id: int = Query(..., description="被奖励用户 ID"),
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    _tg: models.WebUser = Depends(require_tg_bound)
 ):
     """发言奖励（内部接口）"""
     awarded = points_mod.award_chat_points(db, user_id)
