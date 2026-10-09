@@ -371,7 +371,7 @@ async function focusActiveTab(center: boolean) {
 
 // 签到 / 钱包操作后回到任意页面时，头像菜单里的会员状态、顶栏积分即时刷新
 watch(() => route.path, (p, old) => {
-  const economyPaths = ['/wallet', '/checkin']
+  const economyPaths = ['/wallet', '/checkin', '/lottery']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshSubscription()
     loadPoints()

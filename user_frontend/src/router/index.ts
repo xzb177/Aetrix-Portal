@@ -69,6 +69,12 @@ const router = createRouter({
       component: () => import('@/views/InviteView.vue'),
       meta: { title: '邀请返利', requiresAuth: true },
     },
+    {
+      path: '/lottery',
+      name: 'lottery',
+      component: () => import('@/views/LotteryView.vue'),
+      meta: { title: '幸运抽奖', requiresAuth: true },
+    },
     // 追新日历：站内唯一一个「按时间看片」的页面（媒体浏览在第三方客户端，
     // 门户只保留“最近入库”这一个内容型入口）
     {
