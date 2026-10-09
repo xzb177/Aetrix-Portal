@@ -37,15 +37,15 @@ def _write(db, enabled: str, domain: str):
 # ---------- 1. 域名清洗与校验 ----------
 
 def test_normalize_domain():
-    assert sa.normalize_domain("emby.135505.autos") == "emby.135505.autos"
-    assert sa.normalize_domain("  https://Emby.135505.Autos/emby/  ") == "emby.135505.autos"
-    assert sa.normalize_domain("emby.135505.autos:443") == "emby.135505.autos"
+    assert sa.normalize_domain("cdn.example.com") == "cdn.example.com"
+    assert sa.normalize_domain("  https://cdn.example.com/emby/  ") == "cdn.example.com"
+    assert sa.normalize_domain("cdn.example.com:443") == "cdn.example.com"
     assert sa.normalize_domain("") == ""
     assert sa.normalize_domain(None) == ""
 
 
 def test_validate_domain_ok():
-    assert sa.validate_domain("emby.135505.autos") == "emby.135505.autos"
+    assert sa.validate_domain("cdn.example.com") == "cdn.example.com"
     assert sa.validate_domain("https://stream.example.com/") == "stream.example.com"
 
 
@@ -60,25 +60,25 @@ def test_validate_domain_bad():
 
 def test_rewrite_url_domain():
     url = "http://1.2.3.4:8000/emby/Videos/abc/stream?x=1"
-    out = sa.rewrite_url_domain(url, "http://1.2.3.4:8000", "emby.135505.autos")
-    assert out == "https://emby.135505.autos/emby/Videos/abc/stream?x=1"
+    out = sa.rewrite_url_domain(url, "http://1.2.3.4:8000", "cdn.example.com")
+    assert out == "https://cdn.example.com/emby/Videos/abc/stream?x=1"
 
 
 def test_rewrite_url_domain_no_base_match():
     # CDN/流节点改写过的 URL（对不上 base）原样返回，绝不造坏 URL
     url = "https://cdn.example.com/emby/Videos/abc/stream"
-    assert sa.rewrite_url_domain(url, "http://1.2.3.4:8000", "emby.135505.autos") == url
+    assert sa.rewrite_url_domain(url, "http://1.2.3.4:8000", "cdn.example.com") == url
 
 
 def test_rewrite_url_domain_idempotent():
-    url = "https://emby.135505.autos/emby/Videos/abc/stream"
-    assert sa.rewrite_url_domain(url, "https://emby.135505.autos", "emby.135505.autos") == url
+    url = "https://cdn.example.com/emby/Videos/abc/stream"
+    assert sa.rewrite_url_domain(url, "https://cdn.example.com", "cdn.example.com") == url
 
 
 def test_rewrite_url_domain_empty():
     url = "http://1.2.3.4:8000/emby/Videos/abc/stream"
     assert sa.rewrite_url_domain(url, "http://1.2.3.4:8000", "") == url
-    assert sa.rewrite_url_domain("", "http://1.2.3.4:8000", "emby.135505.autos") == ""
+    assert sa.rewrite_url_domain("", "http://1.2.3.4:8000", "cdn.example.com") == ""
 
 
 # ---------- 3. 配置读写 ----------
@@ -88,13 +88,13 @@ def test_get_config_defaults(db):
 
 
 def test_get_effective_domain_disabled(db):
-    _write(db, "false", "emby.135505.autos")
+    _write(db, "false", "cdn.example.com")
     assert sa.get_effective_domain(db) == ""
 
 
 def test_get_effective_domain_enabled(db):
-    _write(db, "true", "emby.135505.autos")
-    assert sa.get_effective_domain(db) == "emby.135505.autos"
+    _write(db, "true", "cdn.example.com")
+    assert sa.get_effective_domain(db) == "cdn.example.com"
 
 
 def test_get_effective_domain_bad_value_ignored(db):
@@ -106,8 +106,8 @@ def test_get_effective_domain_bad_value_ignored(db):
 def test_get_effective_domain_true_variants(db):
     for v in ("1", "true", "TRUE", "on"):
         db.query(base_models.SystemConfig).delete()
-        _write(db, v, "emby.135505.autos")
-        assert sa.get_effective_domain(db) == "emby.135505.autos", v
+        _write(db, v, "cdn.example.com")
+        assert sa.get_effective_domain(db) == "cdn.example.com", v
 
 
 # ---------- 4. domain_guard 优先读 DB 开关 ----------
@@ -119,9 +119,9 @@ def test_domain_guard_prefers_db_over_env(monkeypatch):
     monkeypatch.setenv("ENFORCE_DOMAIN", "")
     monkeypatch.delenv("TRUST_CF_IP", raising=False)
     # DB 说开：即使环境变量没设，也要拦截非域名
-    monkeypatch.setattr(dg, "_accel_db_config", lambda: ({"emby.135505.autos"}, True))
+    monkeypatch.setattr(dg, "_accel_db_config", lambda: ({"cdn.example.com"}, True))
 
-    assert dg._get_allowed_hosts() == {"emby.135505.autos"}
+    assert dg._get_allowed_hosts() == {"cdn.example.com"}
     assert dg._trust_cf_ip() is True
 
     async def _run():
@@ -191,9 +191,9 @@ def test_unified_accel_rewrite():
     out = sa.rewrite_url_domain(
         "http://1.2.3.4:8000/emby/Videos/abc/stream?x=1",
         "http://1.2.3.4:8000",
-        "emby.135505.autos",
+        "cdn.example.com",
     )
-    assert out == "https://emby.135505.autos/emby/Videos/abc/stream?x=1"
+    assert out == "https://cdn.example.com/emby/Videos/abc/stream?x=1"
 
 
 def test_unified_fn_exists():

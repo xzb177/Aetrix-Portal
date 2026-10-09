@@ -136,21 +136,21 @@ class TestReferer:
         play_sign.check_referer(_FakeRequest("https://evil.com/x"), _FakeDB(None))
 
     def test_matching_referer_passes(self):
-        db = _FakeDB("emby.135505.autos, cdn.example.com")
+        db = _FakeDB("cdn.example.com, cdn.example.com")
         play_sign.check_referer(
-            _FakeRequest("https://emby.135505.autos/emby/Videos/1/stream"), db)
+            _FakeRequest("https://cdn.example.com/emby/Videos/1/stream"), db)
 
     def test_non_matching_referer_blocked(self):
         from fastapi import HTTPException
 
-        db = _FakeDB("emby.135505.autos")
+        db = _FakeDB("cdn.example.com")
         with pytest.raises(HTTPException) as exc:
             play_sign.check_referer(_FakeRequest("https://evil.com/steal"), db)
         assert exc.value.status_code == 403
 
     def test_missing_referer_passes_with_whitelist(self):
         """原生客户端（Infuse/VLC）一般不带 Referer，不能一刀切拦掉。"""
-        db = _FakeDB("emby.135505.autos")
+        db = _FakeDB("cdn.example.com")
         play_sign.check_referer(_FakeRequest(None), db)
 
     def test_db_error_fail_open(self):

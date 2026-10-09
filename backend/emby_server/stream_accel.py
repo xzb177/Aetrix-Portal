@@ -11,7 +11,7 @@
 
 配置键（SystemConfig）：
 - ``stream_accel_enabled``：\"true\"/\"false\"（前端开关序列化格式）
-- ``stream_accel_domain``：如 emby.135505.autos（不带 scheme）
+- ``stream_accel_domain``：如 cdn.example.com（不带 scheme）
 """
 
 from __future__ import annotations
@@ -52,11 +52,11 @@ def validate_domain(raw: Optional[str]) -> str:
     """校验加速域名；合法返回清洗后的域名，非法抛 ValueError。"""
     domain = normalize_domain(raw)
     if not domain:
-        raise ValueError("加速域名不能为空（例如 emby.135505.autos）")
+        raise ValueError("加速域名不能为空（例如 cdn.example.com）")
     if len(domain) > 253:
         raise ValueError("加速域名过长")
     if not _DOMAIN_RE.match(domain):
-        raise ValueError(f"加速域名格式非法：{raw!r}（应为类似 emby.135505.autos 的域名）")
+        raise ValueError(f"加速域名格式非法：{raw!r}（应为类似 cdn.example.com 的域名）")
     # 拒绝纯 IP：加速域名必须是域名（IP 直连走域名守卫没有意义）
     if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", domain):
         raise ValueError("加速域名不能是 IP 地址，请填写域名")
