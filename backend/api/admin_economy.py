@@ -181,6 +181,9 @@ ECONOMY_CONFIG_KEYS = {
     # 流媒体加速（v2.49.0）：一个开关 + 一个域名，点保存即生效（域名守卫侧最长 60 秒）
     "stream_accel_enabled": "bool",
     "stream_accel_domain": "str",
+    # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率，全部可配
+    "vitality_enabled": "bool", "vitality_max": "int", "vitality_daily_cost": "int",
+    "vitality_limit_threshold": "int", "vitality_point_cost": "int",
 }
 
 
@@ -244,6 +247,11 @@ def economy_update_settings(
     if "stream_accel_enabled" in changed or "stream_accel_domain" in changed:
         from backend.integrations import store as _store
         _store.invalidate("stream_accel_enabled", "stream_accel_domain")
+    # C1 活力值：配置保存后同一进程立即生效（跨进程靠 60 秒 TTL 兜底）
+    _vitality_keys = [k for k in changed if k.startswith("vitality_")]
+    if _vitality_keys:
+        from backend.integrations import store as _store2
+        _store2.invalidate(*_vitality_keys)
     _audit(db, current_admin, "economy_update_settings", "system", None, changed)
     db.commit()
     return {"success": True, "changed": list(changed.keys())}
