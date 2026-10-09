@@ -48,8 +48,8 @@ const typeConfigs: Record<string, { label: string; icon: unknown; tone: string }
 const DEEP_LINKS: Record<string, { to: string; label: string }> = {
   ticket: { to: '/tickets', label: '查看工单' },
   media_seek: { to: '/request', label: '查看求片进度' },
-  subscription: { to: '/store?tab=plans', label: '查看我的订阅' },
-  exchange_code: { to: '/wallet', label: '前往钱包' },
+  subscription: { to: '/store', label: '查看我的订阅' },
+  exchange_code: { to: '/store', label: '前往核销' },
   announcement: { to: '/messages', label: '消息中心' },
 }
 

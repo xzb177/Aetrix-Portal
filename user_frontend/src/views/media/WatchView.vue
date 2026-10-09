@@ -778,7 +778,7 @@ onBeforeUnmount(() => {
             <span><Wallet :size="13" /> 支持积分与在线支付</span>
           </div>
           <div class="paywall-actions">
-            <RouterLink to="/store?tab=plans" class="btn primary">
+            <RouterLink to="/store" class="btn primary">
               <Crown :size="16" />
               开通会员
             </RouterLink>
