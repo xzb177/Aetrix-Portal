@@ -2371,6 +2371,18 @@ def _load_external_subtitles(db, item_ids: list) -> dict:
     return result
 
 
+def _ext_subtitles_need_refresh(external, db_paths) -> bool:
+    """本文件是否需要走外挂字幕删除+重建。
+
+    external: 本轮发现的字幕 list[(lang, sub_path)] 或 None
+    db_paths: DB 已登记的字幕路径 set 或 None（来自 ctx.ext_subtitles，零额外 SQL）
+    返回 False 时调用方跳过 db.flush() 和 DELETE（零 DB 写）。
+    """
+    if external:
+        return True
+    return bool(db_paths)
+
+
 def _local_names(ctx: "_ScanContext", dirpath: str) -> list:
     """本机目录列表（与写库线程共用同一份缓存，预热之后不会重复读目录）"""
     return _list_dir_cached(dirpath)
@@ -4141,13 +4153,19 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     # 并且需要合成 stream_index：客户端靠它拼
                     # /Videos/{id}/{mid}/Subtitles/{Index}/Stream.{Format}，
                     # 旧实现不写 stream_index（None），字幕地址会变成 Subtitles/None 无法拉取。
-                    db.flush()
-                    db.query(emby_models.MediaStream).filter(
-                        emby_models.MediaStream.item_id == item.id,
-                        emby_models.MediaStream.is_external.is_(True),
-                    ).delete(synchronize_session=False)
+                    # v2.54.0: 无字幕且 DB 无记录时跳过 flush + DELETE（十万文件省十万次无用写）。
+                    _sub_db_paths = ctx.ext_subtitles.get(item.id) or set()
+                    if _ext_subtitles_need_refresh(external, _sub_db_paths):
+                        if item.id is None:
+                            db.flush()
+                        db.query(emby_models.MediaStream).filter(
+                            emby_models.MediaStream.item_id == item.id,
+                            emby_models.MediaStream.is_external.is_(True),
+                        ).delete(synchronize_session=False)
                     next_index = 0
-                    if external:
+                    if external and _ext_subtitles_need_refresh(external, _sub_db_paths):
+                        if item.id is None:
+                            db.flush()
                         next_index = db.query(func.max(emby_models.MediaStream.stream_index)).filter(
                             emby_models.MediaStream.item_id == item.id
                         ).scalar() or 0
