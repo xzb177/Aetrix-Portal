@@ -650,3 +650,15 @@ html[data-theme='light'] ::-webkit-scrollbar-thumb {
 html[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
   background: rgba(28, 25, 21, 0.28);
 }
+
+
+/* ==================== iOS 触摸反馈修复（2026-10-10） ==================== */
+/* 去掉 iOS Safari 默认的灰色 tap 高亮，用我们自己的 :active 反馈代替 */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 去掉 300ms 点击延迟，按压反馈即时 */
+a, button, .dock-item, .poster-card {
+  touch-action: manipulation;
+}

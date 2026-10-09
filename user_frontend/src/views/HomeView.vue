@@ -1658,6 +1658,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   color: var(--au-text-4);
+  transition: box-shadow 150ms ease-out, border-color 150ms ease-out;
 }
 
 .poster-frame img {
@@ -1668,6 +1669,22 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 }
 
 .poster-card:hover .poster-frame img { filter: brightness(1.08); }
+
+@media (hover: hover) and (pointer: fine) {
+  .poster-card:hover .poster-frame {
+    border-color: rgba(232, 168, 74, 0.6);
+    box-shadow: 0 0 12px rgba(232, 168, 74, 0.4);
+  }
+}
+
+/* 移动端按压：手指盖住中心也能从边缘看到反馈 */
+.poster-card:active .poster-frame {
+  border-color: rgba(232, 168, 74, 0.7);
+  box-shadow: 0 0 12px rgba(232, 168, 74, 0.5);
+  filter: brightness(0.88);
+  transform: scale(0.97);
+  transition: none;
+}
 
 /* 没有海报：排版占位卡。暗色暖底（两套主题都暗，像一张片名卡）+ 衬线片名居中 + 年份 */
 .poster-type {
@@ -2187,3 +2204,4 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   }
 }
 </style>
+
