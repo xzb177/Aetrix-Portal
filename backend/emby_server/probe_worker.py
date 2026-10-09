@@ -83,6 +83,14 @@ PROBE_LOCAL_CONCURRENCY = env_int("PROBE_LOCAL_CONCURRENCY", 4, 1, 16)
 PROBE_MIN_INTERVAL_SEC = env_float("PROBE_MIN_INTERVAL_SEC", 0.5, 0.0)
 PROBE_CLAIM_BATCH = env_int("PROBE_CLAIM_BATCH", 20, 1, 200)
 PROBE_IDLE_SLEEP_SEC = env_float("PROBE_IDLE_SLEEP_SEC", 5.0, 0.2)
+# 空队列退避上限（Hark 6链路第4项）：连续空轮指数退避，最高睡这么久
+PROBE_IDLE_MAX_SLEEP_SEC = env_float("PROBE_IDLE_MAX_SLEEP_SEC", 300.0, 1.0)
+# 有播放时的探测并发（Hark 6链路第4项）：后台探测不能抢播放链路资源
+PROBE_PLAYBACK_WORKERS = env_int("PROBE_PLAYBACK_WORKERS", 1, 1, 16)
+# 播放状态检测缓存秒数（避免每轮调度都查库）
+PROBE_PLAYBACK_CHECK_SEC = env_float("PROBE_PLAYBACK_CHECK_SEC", 30.0, 1.0)
+# 连续提交不等待的个数（Hark 6链路第4项）：解除「每提交必等 0.5s」的硬上限
+PROBE_SUBMIT_BURST = env_int("PROBE_SUBMIT_BURST", PROBE_WORKERS, 1, 200)
 # 单条目预算
 PROBE_RESOLVE_TIMEOUT_SEC = env_float("PROBE_RESOLVE_TIMEOUT_SEC", 20.0, 1.0)
 PROBE_ITEM_TIMEOUT_SEC = env_float("PROBE_ITEM_TIMEOUT_SEC", 60.0, 1.0)
@@ -759,6 +767,95 @@ def _process_one(item_id: int) -> None:
         logger.warning("按需探测处理异常 item=%s: %s", item_id, exc)
 
 
+def idle_backoff_sleep(consecutive_idle: int, base: float = None, cap: float = None) -> float:
+    """空队列退避休眠（Hark 6链路第4项）：base * 2**consecutive_idle，上限 cap。
+
+    base/cap 为 None 时取配置。按需入队（maybe_enqueue）和任务完成会 _wake 立刻
+    唤醒调度器，所以睡得久也不影响按需探测的实时性。
+
+    注意：用循环逐次翻倍、达到上限即返回，避免 2**rounds 的 float 溢出。
+    """
+    b = base if base is not None else PROBE_IDLE_SLEEP_SEC
+    c = cap if cap is not None else PROBE_IDLE_MAX_SLEEP_SEC
+    sleep = b
+    for _ in range(max(0, int(consecutive_idle))):
+        sleep *= 2
+        if sleep >= c:
+            return c
+    return min(sleep, c)
+
+
+_playback_cache = {"value": False, "at": 0.0}
+
+
+def has_active_playback(db=None) -> bool:
+    """是否有正在进行的播放（Hark 6链路第4项）：PlaybackSession.ended_at IS NULL。
+
+    结果缓存 PROBE_PLAYBACK_CHECK_SEC 秒，避免每轮调度都查库。
+    db 为 None 时自建 session；异常时返回缓存值。
+    """
+    now = time.monotonic()
+    own = False
+    try:
+        if db is None and (now - _playback_cache["at"]) < PROBE_PLAYBACK_CHECK_SEC:
+            return _playback_cache["value"]
+        own = db is None
+        if own:
+            from backend.database import SessionLocal
+            db = SessionLocal()
+        active = (db.query(em.PlaybackSession.id)
+                  .filter(em.PlaybackSession.ended_at.is_(None)).first() is not None)
+        if own:
+            db.rollback()
+        _playback_cache["value"] = active
+        _playback_cache["at"] = now
+        return active
+    except Exception:  # noqa: BLE001 — 检测失败不影响调度，用缓存值
+        logger.debug("检测播放状态失败，沿用缓存值")
+        return _playback_cache["value"]
+    finally:
+        if own and db is not None:
+            db.close()
+
+
+def effective_workers(playback_active: bool, base: int = None,
+                      playback_workers: int = None) -> int:
+    """播放时降并发（Hark 6链路第4项）：有播放 → min(playback_workers, base)，
+    至少 1；无播放 → base。base/playback_workers 为 None 时取配置。"""
+    b = base if base is not None else PROBE_WORKERS
+    pw = playback_workers if playback_workers is not None else PROBE_PLAYBACK_WORKERS
+    if playback_active:
+        return max(1, min(pw, b))
+    return b
+
+
+class SubmitPacer:
+    """批量提交节流（Hark 6链路第4项）：每 burst 次提交内不等待，burst 用完后按
+    min_interval 间隔；mark_waited() 后 burst 计数清零。
+
+    解除「每提交必等 0.5s」的硬上限：worker 空闲槽位多时一次补满，
+    平均速率仍受 min_interval 约束（保护网盘配额）。
+    """
+
+    def __init__(self, min_interval: float, burst: int):
+        self.min_interval = max(0.0, min_interval)
+        self.burst = max(1, burst)
+        self._last = 0.0
+        self._burst_used = 0
+
+    def wait_seconds(self, now: float) -> float:
+        if self._burst_used < self.burst:
+            return 0.0
+        return max(0.0, self.min_interval - (now - self._last))
+
+    def mark_submitted(self, now: float) -> None:
+        self._last = now
+        self._burst_used += 1
+
+    def mark_waited(self) -> None:
+        self._burst_used = 0
+
+
 # ---------------------------------------------------------------- 调度器
 def _record_outcome(outcome: str, err: str = "") -> None:
     with _metrics_lock:
@@ -796,6 +893,9 @@ def runtime_status() -> dict:
             "workers": PROBE_WORKERS, "remote_concurrency": PROBE_REMOTE_CONCURRENCY,
             "local_concurrency": PROBE_LOCAL_CONCURRENCY,
             "min_interval_sec": PROBE_MIN_INTERVAL_SEC,
+            "submit_burst": PROBE_SUBMIT_BURST,
+            "idle_max_sleep_sec": PROBE_IDLE_MAX_SLEEP_SEC,
+            "playback_workers": PROBE_PLAYBACK_WORKERS,
             "item_timeout_sec": PROBE_ITEM_TIMEOUT_SEC,
             "resolve_timeout_sec": PROBE_RESOLVE_TIMEOUT_SEC,
             "claim_ttl_sec": PROBE_CLAIM_TTL_SEC, "max_attempts": media_probe.PROBE_MAX_ATTEMPTS,
@@ -827,7 +927,8 @@ def _dispatcher_loop() -> None:
     in_flight = {"total": 0}
     per_key: Dict[str, int] = {}
     buffer: deque = deque()  # (id, key, remote, claimed_mono)
-    last_submit = 0.0
+    pacer = SubmitPacer(PROBE_MIN_INTERVAL_SEC, PROBE_SUBMIT_BURST)
+    idle_rounds = 0  # 连续空轮数（空队列退避用）
     last_reclaim = time.monotonic()
     last_publish = 0.0
 
@@ -882,9 +983,11 @@ def _dispatcher_loop() -> None:
                     finally:
                         db.close()
 
+                # Hark 6链路第4项：有播放时降并发，后台探测不抢播放链路资源
+                eff = effective_workers(has_active_playback())
                 with lock:
-                    free = PROBE_WORKERS - in_flight["total"]
-                want = max(0, PROBE_WORKERS * PROBE_BACKLOG_FACTOR - len(buffer))
+                    free = eff - in_flight["total"]
+                want = max(0, eff * PROBE_BACKLOG_FACTOR - len(buffer))
                 if free > 0 and want > 0:
                     db = SessionLocal()
                     try:
@@ -914,7 +1017,8 @@ def _dispatcher_loop() -> None:
                         continue
                     limit = PROBE_REMOTE_CONCURRENCY if remote else PROBE_LOCAL_CONCURRENCY
                     with lock:
-                        busy_total = in_flight["total"] >= PROBE_WORKERS
+                        # 用 eff（播放时已降并发），不是 PROBE_WORKERS
+                        busy_total = in_flight["total"] >= eff
                         busy_key = per_key.get(key, 0) >= limit
                     if busy_total or busy_key:
                         if time.monotonic() - ts > PROBE_BUFFER_MAX_SEC:
@@ -922,11 +1026,15 @@ def _dispatcher_loop() -> None:
                         else:
                             keep.append((item_id, key, remote, ts))
                         continue
-                    gap = PROBE_MIN_INTERVAL_SEC - (time.monotonic() - last_submit)
-                    if gap > 0 and _stop_event.wait(gap):
-                        keep.append((item_id, key, remote, ts))
-                        break
-                    last_submit = time.monotonic()
+                    # Hark 6链路第4项：批量提交节流——burst 内连发不等待，
+                    # 解除「每提交必等 0.5s」的硬上限；平均速率仍受间隔约束（保护网盘配额）
+                    wait = pacer.wait_seconds(time.monotonic())
+                    if wait > 0:
+                        if _stop_event.wait(wait):
+                            keep.append((item_id, key, remote, ts))
+                            break
+                        pacer.mark_waited()
+                    pacer.mark_submitted(time.monotonic())
                     with lock:
                         in_flight["total"] += 1
                         per_key[key] = per_key.get(key, 0) + 1
@@ -956,10 +1064,16 @@ def _dispatcher_loop() -> None:
                 logger.exception("探测调度循环异常（继续运行）")
                 _stop_event.wait(PROBE_IDLE_SLEEP_SEC)
                 continue
-            if claimed_now == 0 and submitted_now == 0:
-                _wake.wait(PROBE_IDLE_SLEEP_SEC if not buffer else 0.5)
-            elif submitted_now == 0:
-                _wake.wait(0.5)
+            # Hark 6链路第4项：空队列退避休眠——连续空轮指数退避（上限
+            # PROBE_IDLE_MAX_SLEEP_SEC），不再固定间隔忙轮询；maybe_enqueue /
+            # 任务完成会 _wake 立刻唤醒，不影响按需探测实时性
+            if claimed_now == 0 and submitted_now == 0 and not buffer:
+                _wake.wait(idle_backoff_sleep(idle_rounds))
+                idle_rounds += 1
+            else:
+                idle_rounds = 0
+                if submitted_now == 0:
+                    _wake.wait(0.5)
     finally:
         if buffer:
             _release([b[0] for b in buffer])
