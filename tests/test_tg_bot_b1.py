@@ -24,6 +24,9 @@ def db():
     models.TgBindCode.__table__.create(engine, checkfirst=True)
     # SystemConfig 表（store.get_value 需要）
     models.SystemConfig.__table__.create(engine, checkfirst=True)
+    # 绑定成功消息需要查订阅与套餐
+    models.UserSubscription.__table__.create(engine, checkfirst=True)
+    models.SubscriptionPlan.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
     session = Session()
     yield session
@@ -75,16 +78,70 @@ def test_handle_help(db):
     assert "/start" in text and "/bind" in text
 
 
-def test_handle_bind_generates_code(db):
-    tg_user = {"id": 777, "first_name": "Jerry"}
-    text = handlers.handle_bind(db, tg_user, 777, "")
-    assert "绑定码" in text
-    rec = db.query(models.TgBindCode).filter(
-        models.TgBindCode.telegram_id == 777,
-        models.TgBindCode.used_at.is_(None),
-    ).first()
-    assert rec is not None
-    assert len(rec.code) == 6 and rec.code.isdigit()
+def test_handle_bind_no_args_returns_guide(db):
+    text = handlers.handle_bind(db, {"id": 999010}, 999010, "")
+    assert "🔗 如何绑定账号" in text
+    assert "/bind 绑定码" in text
+    assert db.query(models.TgBindCode).count() == 0
+
+
+def test_handle_bind_with_valid_code(db):
+    u = _make_user(db, username="webuser2")
+    code = models.TgBindCode(
+        code="234567",
+        user_id=u.id,
+        expires_at=datetime.now() + timedelta(minutes=10),
+    )
+    db.add(code)
+    db.commit()
+
+    text = handlers.handle_bind(db, {"id": 999011}, 999011, "234567")
+
+    assert "✅ 绑定成功" in text
+    assert "👤 用户名：webuser2" in text
+    assert "无有效订阅" in text
+    db.refresh(u)
+    assert u.telegram_id == 999011
+
+
+def test_handle_bind_with_invalid_code(db):
+    text = handlers.handle_bind(db, {"id": 999012}, 999012, "000000")
+    assert text == "绑定码无效或已过期，请在网页端重新获取绑定码"
+
+
+def test_handle_bind_success_with_subscription(db):
+    u = _make_user(db, username="subuser")
+    plan = models.SubscriptionPlan(name="月卡", price=30, duration_days=30)
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    sub = models.UserSubscription(
+        user_id=u.id,
+        plan_id=plan.id,
+        status="active",
+        start_date=datetime.now(),
+        end_date=datetime.now() + timedelta(days=30),
+    )
+    db.add(sub)
+    db.commit()
+    code = models.TgBindCode(
+        code="345678",
+        user_id=u.id,
+        expires_at=datetime.now() + timedelta(minutes=10),
+    )
+    db.add(code)
+    db.commit()
+
+    text = handlers.handle_bind(db, {"id": 999013}, 999013, "345678")
+
+    assert "📦 订阅服务：月卡" in text
+    assert "有有效订阅" in text
+
+
+def test_handle_help_appends_bind_guide(db):
+    text = handlers.handle_help(db, {}, 1, "")
+    assert "🔗 如何绑定账号" in text
+    assert "/start" in text
 
 
 def test_handle_bind_already_bound(db):

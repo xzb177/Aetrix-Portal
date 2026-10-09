@@ -59,6 +59,12 @@ def is_require_enabled(db: Session) -> bool:
     return value in ("1", "true")
 
 
+def is_guide_enabled(db: Session) -> bool:
+    """是否显示 TG 绑定引导页（tg_bind_guide_enabled，默认开启）。"""
+    value = str(_cfg(db, "tg_bind_guide_enabled", "1")).strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
 def get_bot_username(db: Session) -> str:
     """获取 Bot 用户名：优先读缓存，没有则调 getMe 并缓存；失败返回空字符串。"""
     cached = _cfg(db, "telegram_bot_username", "")
@@ -201,6 +207,7 @@ def get_bind_status(db: Session, user: models.WebUser) -> dict:
         "bound": bound,
         "telegram_id": user.telegram_id,
         "required": is_require_enabled(db),
+        "guide_enabled": is_guide_enabled(db),
         "in_grace": (not bound) and in_grace_period(db, user),
         "bot_username": get_bot_username(db),
     }

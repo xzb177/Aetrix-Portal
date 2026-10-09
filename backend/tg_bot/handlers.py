@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import html
-import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from backend.integrations import store
-from backend.models import TgBindCode
+from backend.models import SubscriptionPlan, TgBindCode, UserSubscription, WebUser
 from backend.tg_bot import login_token
 from backend.tg_bot.identity import resolve
 
@@ -24,9 +23,81 @@ def _command_list() -> str:
 
 def _bind_guide_text() -> str:
     return (
-        "公益服功能（签到/积分/兑换/抽奖）需要先绑定 Telegram。\n"
-        "发送 /bind 获取 6 位绑定码，按指引完成绑定即可使用。"
+        "🔗 如何绑定账号\n"
+        "1️⃣ 登录网站 Dashboard\n"
+        '2️⃣ 点击"绑定 Telegram"按钮\n'
+        "3️⃣ 复制弹窗中显示的绑定码\n"
+        "4️⃣ 回到这里发送：/bind 绑定码\n"
+        "\n"
+        "绑定后可收到：\n"
+        "• 求片进度通知\n"
+        "• 订阅到期提醒\n"
+        "• 签到领积分"
     )
+
+
+def _bind_success_text(db, user) -> str:
+    username = html.escape(str(user.username or ""))
+    now = datetime.now()
+    sub = (
+        db.query(UserSubscription)
+        .filter(
+            UserSubscription.user_id == user.id,
+            UserSubscription.status == "active",
+            UserSubscription.end_date > now,
+        )
+        .order_by(UserSubscription.end_date.desc())
+        .first()
+    )
+    plan_name = "无"
+    if sub:
+        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == sub.plan_id).first()
+        if plan:
+            plan_name = html.escape(str(plan.name))
+    has_sub = sub is not None
+    return (
+        "✅ 绑定成功！\n"
+        f"👤 用户名：{username}\n"
+        f"📦 订阅服务：{plan_name}\n"
+        f"{'✅' if has_sub else '❌'} 订阅状态：{'有' if has_sub else '无'}有效订阅\n"
+        "您将收到：\n"
+        "• 求片进度通知\n"
+        "• 订阅到期提醒\n"
+        "• 系统公告推送"
+    )
+
+
+def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None:
+    now = datetime.now()
+    record = (
+        db.query(TgBindCode)
+        .filter(
+            TgBindCode.code == code.strip(),
+            TgBindCode.user_id.isnot(None),
+            TgBindCode.telegram_id.is_(None),
+            TgBindCode.used_at.is_(None),
+            TgBindCode.expires_at > now,
+        )
+        .order_by(TgBindCode.id.desc())
+        .first()
+    )
+    if not record:
+        return None
+    user = db.query(WebUser).filter(WebUser.id == record.user_id).first()
+    if not user:
+        return None
+    other = (
+        db.query(WebUser)
+        .filter(WebUser.telegram_id == tg_user_id, WebUser.id != user.id)
+        .first()
+    )
+    if other:
+        return "该 Telegram 账号已被其他用户绑定"
+    user.telegram_id = tg_user_id
+    record.telegram_id = tg_user_id
+    record.used_at = now
+    db.commit()
+    return _bind_success_text(db, user)
 
 
 def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
@@ -36,14 +107,12 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
     telegram_id = tg_user.get("id")
     web_user = resolve(db, int(telegram_id)) if telegram_id else None
     if web_user:
-        # 已绑定：当前账号 + 命令列表，并尝试生成一键登录按钮
         username = html.escape(str(web_user.username or ""))
         text += f"\n• 当前账号：{username}\n\n{_command_list()}"
         url = login_token.build_login_url(db, web_user)
         if url:
             return (text, {"inline_keyboard": [[{"text": "🚀 一键免密进入控制面板", "url": url}]]})
         return text
-    # 未绑定：引导先完成 Telegram 绑定
     text += (
         "\n• 公益服功能（签到/积分/红包/抽奖）需要先绑定 Telegram，1 分钟搞定：\n"
         "  ① 在网页端登录 → 个人中心 → 绑定 Telegram 获取 6 位绑定码\n"
@@ -59,6 +128,8 @@ def handle_help(db, tg_user: dict, chat_id: int, args: str) -> str:
         "本机器人用于接收签到、积分、抽奖等公益服通知与快捷操作。\n\n"
         f"{_command_list()}\n"
         "如遇问题，请在网页端联系客服。"
+        "\n\n"
+        f"{_bind_guide_text()}"
     )
 
 
@@ -68,20 +139,10 @@ def handle_bind(db, tg_user: dict, chat_id: int, args: str) -> str:
         return "暂时无法获取你的 Telegram ID，请稍后再试"
     if resolve(db, int(telegram_id)):
         return "你的账号已绑定，无需重复绑定；如需更换绑定请联系客服解绑。"
-    # bot 发起绑定流程：生成 6 位一次性绑定码，用户在网页端个人中心输入
-    code = "".join(secrets.choice("0123456789") for _ in range(6))
-    bind = TgBindCode(
-        telegram_id=int(telegram_id),
-        code=code,
-        expires_at=datetime.now() + timedelta(minutes=10),
-    )
-    db.add(bind)
-    db.commit()
-    return (
-        f"你的绑定码：{code}\n"
-        "请在网页端登录后进入 个人中心 → 绑定 Telegram，输入该绑定码完成绑定。\n"
-        "绑定码 10 分钟内有效，仅可使用一次。"
-    )
+    if not args.strip():
+        return _bind_guide_text()
+    msg = verify_bind_code(db, int(telegram_id), chat_id, args.strip())
+    return msg if msg else "绑定码无效或已过期，请在网页端重新获取绑定码"
 
 
 def handle_checkin(db, tg_user: dict, chat_id: int, args: str) -> str:
