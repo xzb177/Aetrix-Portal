@@ -16,10 +16,10 @@ import {
 } from 'lucide-vue-next'
 import {
   pointsApi, exchangeApi, paymentApi, membershipApi, couponApi, currencyApi,
-  vitalityApi,
+  vitalityApi, memberApi,
   type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CodePreview, type CouponQuote,
-  type VitalityStatus, type PointsLogEntry,
+  type VitalityStatus, type PointsLogEntry, type MyMemberInfo,
 } from '@/api/economy'
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -35,6 +35,8 @@ const loading = ref(true)
 const balance = ref(0)
 /** 活力值（仅公益服用户有值） */
 const vitality = ref<VitalityStatus | null>(null)
+/** 会员等级（含订阅折扣） */
+const member = ref<MyMemberInfo | null>(null)
 const rechargeQty = ref(1)
 const recharging = ref(false)
 const vitalityPointCost = ref(10)
@@ -373,7 +375,7 @@ async function loadAll(silent = false) {
     const emptyLogs = { total: 0, balance: 0, logs: [] as PointsLogEntry[] }
     const emptySubs: MySubscription[] = []
     const couponFallback = { enabled: false }
-    const [pkgR, planR, methodR, logR, subsR, couponR, vitalityR] = await Promise.allSettled([
+    const [pkgR, planR, methodR, logR, subsR, couponR, vitalityR, memberR] = await Promise.allSettled([
       paymentApi.packages(),
       paymentApi.plans(),
       paymentApi.methods(),
@@ -383,6 +385,8 @@ async function loadAll(silent = false) {
       couponApi.config(),
       // 活力值：非公益服用户 403，兜底为 null 不展示
       vitalityApi.status(),
+      // 会员等级：失败时走 settled 兜底为 null，不展示折扣
+      memberApi.info(),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -406,6 +410,8 @@ async function loadAll(silent = false) {
     if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
     const vitalityData = vitalityR.status === 'fulfilled' ? vitalityR.value : null
     vitality.value = vitalityData && vitalityData.success ? vitalityData : null
+    const memberData = settled(memberR, null, silent)
+    if (memberData !== undefined) member.value = memberData
 
     // 商品与价格回来后，已应用的券要按最新价格重算一次
     // （替代原来的 watch(tab)：本页没有分页，只在数据刷新时重算）
@@ -656,6 +662,9 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
                 <em class="plan-days">/ {{ p.duration_days }} 天</em>
               </span>
             </div>
+            <p v-if="(member?.discount_pct || 0) > 0" class="plan-member-hint">
+              <Percent :size="12" /> 会员 {{ (100 - (member?.discount_pct || 0)) / 10 }} 折，下单自动抵扣
+            </p>
             <p class="plan-desc">{{ p.description || '会员专属权益' }}</p>
 
             <ul v-if="p.features && p.features.length" class="plan-features">
@@ -1162,6 +1171,11 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
 
 .plan-price em { font-family: var(--au-font-sans); font-style: normal; font-size: 0.8125rem; font-weight: 400; color: var(--au-text-3); }
 
+.plan-member-hint {
+  display: flex; align-items: center; gap: 0.3rem;
+  margin: 0.35rem 0 0; font-size: 0.75rem; font-weight: 600; color: var(--au-primary);
+  white-space: nowrap;
+}
 .plan-desc { margin: 0; font-size: 0.8125rem; color: var(--au-text-3); line-height: 1.5; }
 
 .plan-features {

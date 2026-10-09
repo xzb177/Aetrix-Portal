@@ -34,7 +34,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from backend import coupons, models, realms, vitality as _vitality
 from backend.database import get_db
@@ -770,13 +770,44 @@ def coupon_quote(
     """优惠码试算（下单前预览）
 
     用 POST 而不是 GET：优惠码不该进访问日志/浏览器历史（与卡码预检同一考虑）。
-    下单时走的是同一套 `coupons.quote`，不会出现「预览 8 折、实付全价」。
+    下单时走的是同一套口径（先会员折扣→再优惠券），不会出现「预览 8 折、实付全价」。
+    返回里带 member_discount_pct/amount，前端可算出最终实付。
     """
     allowed, _ = check_rate_limit(f"coupon-quote:{current_user.id}", 30, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
-    return coupons.quote(db, user=current_user, code=req.code,
-                         kind=req.kind, item_id=req.item_id)
+    result = coupons.quote(db, user=current_user, code=req.code,
+                           kind=req.kind, item_id=req.item_id)
+    # 会员等级折扣（仅订阅+仅付费服），与 create_payment_order 同一口径：
+    # 先会员折扣得中间价，再对中间价算优惠券。预览与下单必须一致。
+    member_discount_pct = 0
+    member_discount_amount = Decimal("0.00")
+    if req.kind == "subscription":
+        from backend import member_level as _ml
+        plan = db.query(models.SubscriptionPlan).options(
+            joinedload(models.SubscriptionPlan.realm)
+        ).filter(models.SubscriptionPlan.id == req.item_id).first()
+        _realm = plan.realm if plan else None
+        _is_paid = not (_realm is not None
+                        and getattr(_realm, "access_mode", "paid") == "free")
+        if _is_paid:
+            member_discount_pct = _ml.get_user_discount_pct(db, current_user)
+            if member_discount_pct > 0:
+                _list = Decimal(str(result.get("list_price", 0)))
+                member_discount_amount = (
+                    _list * Decimal(member_discount_pct) / Decimal(100)
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                # 对中间价重算优惠券（与下单逻辑一致）
+                coupon_obj = db.query(models.CouponCode).filter(
+                    models.CouponCode.id == result["coupon_id"]).first()
+                if coupon_obj is not None:
+                    _base = _list - member_discount_amount
+                    c_discount, c_paid = coupons.compute(_base, coupon_obj)
+                    result["discount_amount"] = float(member_discount_amount + c_discount)
+                    result["paid_amount"] = float(c_paid)
+    result["member_discount_pct"] = member_discount_pct
+    result["member_discount_amount"] = float(member_discount_amount)
+    return result
 
 
 class CreateOrderRequest(BaseModel):
@@ -855,7 +886,9 @@ def create_payment_order(
     elif req.kind == "subscription":
         if not _get_bool_config(db, "subscription_purchase_enabled", True):
             raise HTTPException(status_code=403, detail="订阅购买未开启")
-        plan = db.query(models.SubscriptionPlan).filter(
+        plan = db.query(models.SubscriptionPlan).options(
+            joinedload(models.SubscriptionPlan.realm)
+        ).filter(
             models.SubscriptionPlan.id == req.item_id,
             models.SubscriptionPlan.is_active == True,  # noqa: E712
         ).first()
@@ -898,10 +931,28 @@ def create_payment_order(
     else:
         raise HTTPException(status_code=400, detail="kind 必须是 recharge 或 subscription")
 
-    # 优惠券：预览与下单共用 coupons.quote（同一套口径），下单即占额度
+    # 会员等级折扣：仅订阅 + 仅付费服。公益服（access_mode='free'）不打折，充值不打折。
+    # 叠加顺序：先等级折扣得中间价，再对中间价算优惠券。
     list_price = Decimal(str(amount))
-    discount_amount = Decimal("0.00")
-    paid_amount = list_price
+    member_discount_pct = 0
+    member_discount_amount = Decimal("0.00")
+    if req.kind == "subscription":
+        from backend import member_level as _ml
+        # plan.realm 已用 joinedload 预加载；realm 为空（老数据）按付费服处理
+        _realm = plan.realm
+        _is_paid_plan = not (_realm is not None
+                             and getattr(_realm, "access_mode", "paid") == "free")
+        if _is_paid_plan:
+            member_discount_pct = _ml.get_user_discount_pct(db, current_user)
+            if member_discount_pct > 0:
+                member_discount_amount = (
+                    list_price * Decimal(member_discount_pct) / Decimal(100)
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    coupon_base = list_price - member_discount_amount
+
+    # 优惠券：先用 quote 校验券有效性（按原价校验门槛），再对中间价重算折扣
+    discount_amount = member_discount_amount
+    paid_amount = coupon_base
     preview = None
     coupon_code = (req.coupon_code or "").strip()
     credit = None
@@ -910,8 +961,13 @@ def create_payment_order(
     if coupon_code and not is_custom_recharge:
         preview = coupons.quote(db, user=current_user, code=coupon_code,
                                 kind=req.kind, item_id=req.item_id)
-        discount_amount = Decimal(str(preview["discount_amount"]))
-        paid_amount = Decimal(str(preview["paid_amount"]))
+        coupon_obj = db.query(models.CouponCode).filter(
+            models.CouponCode.id == preview["coupon_id"]).first()
+        if coupon_obj is None:
+            raise HTTPException(status_code=400, detail="优惠码不存在")
+        c_discount, c_paid = coupons.compute(coupon_base, coupon_obj)
+        discount_amount = member_discount_amount + c_discount
+        paid_amount = c_paid
         coupon_code = preview["code"]
     elif req.kind == "subscription":
         # 兑换码折扣权益：没填优惠券时自动用最优的一张（pct 最小=折扣最大），不与优惠券叠加
@@ -951,9 +1007,11 @@ def create_payment_order(
         if coupon is None:
             raise HTTPException(status_code=400, detail="优惠码不存在")
         # 占额度（条件 UPDATE，并发也超不了总限）；失败则整笔下单回滚
+        # reserve 记录的是优惠券口径：list_price=中间价，discount=仅优惠券部分
         usage = coupons.reserve(db, coupon=coupon, user=current_user, order_id=order_id,
-                                kind=req.kind, list_price=list_price,
-                                discount=discount_amount, paid=paid_amount)
+                                kind=req.kind, list_price=coupon_base,
+                                discount=discount_amount - member_discount_amount,
+                                paid=paid_amount)
         order.coupon_usage_id = usage.id
     db.commit()
 
@@ -981,6 +1039,8 @@ def create_payment_order(
         "amount": float(paid_amount),
         "list_price": float(list_price),
         "discount_amount": float(discount_amount),
+        "member_discount_pct": member_discount_pct,
+        "member_discount_amount": float(member_discount_amount),
         "coupon_code": coupon_code,
         "exchange_discount_pct": credit.discount_pct if credit is not None else 0,
         "pay_url": pay_url,
