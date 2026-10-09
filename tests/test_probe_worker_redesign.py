@@ -393,8 +393,7 @@ class TestDrain:
         """
         for k, v in {"PROBE_RESOLVE_TIMEOUT_SEC": 0.5, "PROBE_ITEM_TIMEOUT_SEC": 0.5,
                      "PROBE_MIN_INTERVAL_SEC": 0.0, "PROBE_IDLE_SLEEP_SEC": 0.2,
-                     "PROBE_WORKERS": 4, "PROBE_REMOTE_CONCURRENCY": 4,
-                     "PREPROBE_ENABLED": True}.items():
+                     "PROBE_WORKERS": 4, "PROBE_REMOTE_CONCURRENCY": 4}.items():
             monkeypatch.setattr(probe_worker, k, v)
         monkeypatch.setattr(probe_worker, "breaker", probe_worker.MountBreaker(3, 600))
         monkeypatch.setattr(media_probe.persist_lib, "deserialize", lambda db, item: False)
@@ -461,7 +460,6 @@ class TestStartup:
         assert "probe_worker.start()" in wsrc
 
     def test_start_registers_and_supervisor_restarts(self, monkeypatch):
-        monkeypatch.setattr(probe_worker, "PREPROBE_ENABLED", False)
         monkeypatch.setattr(probe_worker, "is_paused", lambda *a, **k: True)
         try:
             assert probe_worker.start() is True
