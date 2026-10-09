@@ -1,10 +1,14 @@
 <script setup lang="ts">
 /**
  * 公益服·抽奖配置：奖品增删改 / 启用禁用 / 抽奖记录
+ *
+ * v2.55（暗房影院统一）：PageHeader + SectionCard，
+ * 逻辑与 PR #432 一致，仅模板迁移到共享组件。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, RefreshCw } from 'lucide-vue-next'
+import { Gift, History, Plus, RefreshCw } from 'lucide-vue-next'
+import { PageHeader, SectionCard } from '@/components/ui'
 import {
   fetchLotteryPrizes,
   createLotteryPrize,
@@ -92,34 +96,40 @@ onMounted(() => { loadPrizes(); loadLogs() })
 </script>
 
 <template>
-  <div class="page">
-    <div class="page-head">
-      <h2>抽奖配置</h2>
-      <div class="head-actions">
+  <div>
+    <PageHeader
+      eyebrow="公益服"
+      title="抽奖配置"
+      description="管理积分抽奖的奖品池与中奖记录"
+    >
+      <template #actions>
         <el-button :icon="RefreshCw" @click="loadPrizes">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">新增奖品</el-button>
-      </div>
-    </div>
-
-    <DataTable :columns="prizeColumns" :rows="prizes" :loading="loading">
-      <template #cell-type="{ row }">{{ typeMap[row.type] || row.type }}</template>
-      <template #cell-enabled="{ row }">
-        <el-switch :model-value="row.enabled" @change="toggleEnabled(row)" />
       </template>
-      <template #cell-actions="{ row }">
-        <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-        <el-button link type="danger" @click="doDelete(row)">删除</el-button>
-      </template>
-    </DataTable>
+    </PageHeader>
 
-    <h3 style="margin: 20px 0 12px">抽奖记录</h3>
-    <DataTable :columns="logColumns" :rows="logs">
-      <template #cell-created_at="{ row }">{{ row.created_at?.replace('T', ' ').slice(0, 19) }}</template>
-    </DataTable>
-    <el-pagination
-      v-model:current-page="logPage" :total="logTotal"
-      layout="total, prev, pager, next" @change="loadLogs"
-      style="margin-top: 12px; justify-content: flex-end" />
+    <SectionCard title="奖品池" :icon="Gift" :meta="`${prizes.length} 个奖品`" flush>
+      <DataTable :columns="prizeColumns" :rows="prizes" :loading="loading">
+        <template #cell-type="{ row }">{{ typeMap[row.type] || row.type }}</template>
+        <template #cell-enabled="{ row }">
+          <el-switch :model-value="row.enabled" @change="toggleEnabled(row)" />
+        </template>
+        <template #cell-actions="{ row }">
+          <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button link type="danger" @click="doDelete(row)">删除</el-button>
+        </template>
+      </DataTable>
+    </SectionCard>
+
+    <SectionCard title="抽奖记录" :icon="History" :meta="`共 ${logTotal} 条`" flush class="section-gap">
+      <DataTable :columns="logColumns" :rows="logs">
+        <template #cell-created_at="{ row }">{{ row.created_at?.replace('T', ' ').slice(0, 19) }}</template>
+      </DataTable>
+      <el-pagination
+        v-model:current-page="logPage" :total="logTotal"
+        layout="total, prev, pager, next" @change="loadLogs"
+        class="au-pagination" />
+    </SectionCard>
 
     <el-dialog v-model="dlg.visible" :title="dlg.editing ? '编辑奖品' : '新增奖品'" width="420px">
       <el-form label-width="80px">
@@ -144,7 +154,10 @@ onMounted(() => { loadPrizes(); loadLogs() })
 </template>
 
 <style scoped>
-.page-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.page-head h2 { margin: 0; font-size: 18px; }
-.head-actions { display: flex; gap: 8px; align-items: center; }
+.section-gap { margin-top: 16px; }
+.au-pagination {
+  margin-top: 12px;
+  justify-content: flex-end;
+  padding: 0 16px 16px;
+}
 </style>

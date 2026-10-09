@@ -2,10 +2,14 @@
 /**
  * 公益服·求片审核：列表 / 通过 / 拒绝 / 标记已入库
  * 注：这是公益服求片中心（media_requests），与旧版求片管理（MediaSeek）是两套表。
+ *
+ * v2.55（暗房影院统一）：PageHeader + StatTile + SectionCard(flush)，
+ * 逻辑与 PR #432 一致，仅模板迁移到共享组件。
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, RefreshCw, X } from 'lucide-vue-next'
+import { Check, CircleCheck, Clock3, RefreshCw, X, XCircle } from 'lucide-vue-next'
+import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchWelfareRequests,
   approveWelfareRequest,
@@ -35,6 +39,11 @@ const columns = computed<DataColumn[]>(() => [
   { key: 'created_at', label: '申请时间', width: 160 },
   { key: 'actions', label: '操作', width: 220, fixed: 'right', align: 'right' },
 ])
+
+const statPending = computed(() => list.value.filter(r => r.status === 'pending').length)
+const statApproved = computed(() => list.value.filter(r => r.status === 'approved').length)
+const statRejected = computed(() => list.value.filter(r => r.status === 'rejected').length)
+const statDone = computed(() => list.value.filter(r => r.status === 'done').length)
 
 async function load() {
   loading.value = true
@@ -71,10 +80,13 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <div class="page-head">
-      <h2>求片审核</h2>
-      <div class="head-actions">
+  <div>
+    <PageHeader
+      eyebrow="公益服"
+      title="求片审核"
+      description="审核公益服求片中心的申请：通过、拒绝或标记已入库"
+    >
+      <template #actions>
         <el-select v-model="statusFilter" placeholder="状态筛选" clearable style="width: 140px" @change="load">
           <el-option label="待审核" value="pending" />
           <el-option label="已通过" value="approved" />
@@ -82,38 +94,56 @@ onMounted(load)
           <el-option label="已入库" value="done" />
         </el-select>
         <el-button :icon="RefreshCw" @click="load">刷新</el-button>
-      </div>
+      </template>
+    </PageHeader>
+
+    <div class="stat-row">
+      <StatTile label="待审核" :value="statPending" :icon="Clock3" tone="warn" />
+      <StatTile label="已通过" :value="statApproved" :icon="CircleCheck" tone="ok" />
+      <StatTile label="已拒绝" :value="statRejected" :icon="XCircle" tone="danger" />
+      <StatTile label="已入库" :value="statDone" :icon="Check" tone="info" />
     </div>
 
-    <DataTable :columns="columns" :rows="list" :loading="loading">
-      <template #cell-media_type="{ row }">{{ row.media_type === 'tv' ? '剧集' : '电影' }}</template>
-      <template #cell-status="{ row }">
-        <el-tag :type="row.status === 'pending' ? 'warning' : row.status === 'approved' ? 'success' : row.status === 'done' ? 'info' : 'danger'">
-          {{ statusMap[row.status] || row.status }}
-        </el-tag>
-      </template>
-      <template #cell-created_at="{ row }">{{ row.created_at?.replace('T', ' ').slice(0, 19) }}</template>
-      <template #cell-actions="{ row }">
-        <template v-if="row.status === 'pending'">
-          <el-button link type="success" :icon="Check" @click="doApprove(row)">通过</el-button>
-          <el-button link type="danger" :icon="X" @click="doReject(row)">拒绝</el-button>
+    <SectionCard title="求片列表" :meta="`共 ${total} 条`" flush>
+      <DataTable :columns="columns" :rows="list" :loading="loading">
+        <template #cell-media_type="{ row }">{{ row.media_type === 'tv' ? '剧集' : '电影' }}</template>
+        <template #cell-status="{ row }">
+          <el-tag :type="row.status === 'pending' ? 'warning' : row.status === 'approved' ? 'success' : row.status === 'done' ? 'info' : 'danger'">
+            {{ statusMap[row.status] || row.status }}
+          </el-tag>
         </template>
-        <template v-else-if="row.status === 'approved'">
-          <el-button link type="primary" @click="doDone(row)">标记入库</el-button>
+        <template #cell-created_at="{ row }">{{ row.created_at?.replace('T', ' ').slice(0, 19) }}</template>
+        <template #cell-actions="{ row }">
+          <template v-if="row.status === 'pending'">
+            <el-button link type="success" :icon="Check" @click="doApprove(row)">通过</el-button>
+            <el-button link type="danger" :icon="X" @click="doReject(row)">拒绝</el-button>
+          </template>
+          <template v-else-if="row.status === 'approved'">
+            <el-button link type="primary" @click="doDone(row)">标记入库</el-button>
+          </template>
+          <span v-else class="au-muted">—</span>
         </template>
-        <span v-else style="color: #909399">—</span>
-      </template>
-    </DataTable>
-
-    <el-pagination
-      v-model:current-page="page" v-model:page-size="pageSize"
-      :total="total" layout="total, prev, pager, next" @change="load"
-      style="margin-top: 12px; justify-content: flex-end" />
+      </DataTable>
+      <el-pagination
+        v-model:current-page="page" v-model:page-size="pageSize"
+        :total="total" layout="total, prev, pager, next" @change="load"
+        class="au-pagination" />
+    </SectionCard>
   </div>
 </template>
 
 <style scoped>
-.page-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.page-head h2 { margin: 0; font-size: 18px; }
-.head-actions { display: flex; gap: 8px; align-items: center; }
+.stat-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.stat-row > * { flex: 1 1 160px; }
+.au-pagination {
+  margin-top: 12px;
+  justify-content: flex-end;
+  padding: 0 16px 16px;
+}
+.au-muted { color: var(--au-text-2); }
 </style>
