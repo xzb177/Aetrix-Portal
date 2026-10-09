@@ -75,6 +75,7 @@ export interface SubscriptionPlan {
   name: string
   description: string | null
   price: number
+  points_price: number | null
   duration_days: number
   features: string[] | null
   is_popular: boolean
@@ -277,6 +278,12 @@ export const couponApi = {
     api.post<never, CouponQuote>('/api/user/economy/payment/coupon/quote', data),
 }
 
+/** 货币体系公开信息（P2）：用户端自定义充值换算用 */
+export const currencyApi = {
+  info: () =>
+    api.get<never, { name: string; recharge_ratio: number }>('/api/user/economy/currency'),
+}
+
 export interface DiscountCredit {
   has_credit: boolean
   discount_pct?: number
@@ -297,47 +304,10 @@ export const paymentApi = {
     api.get<never, { enabled: boolean; plans: SubscriptionPlan[]; access_mode?: 'paid' | 'free'; is_free?: boolean; access_note?: string }>(
       '/api/user/economy/payment/plans',
     ),
-  createOrder: (data: { kind: 'recharge' | 'subscription'; item_id: number; payment_method: string; coupon_code?: string }) =>
-    api.post<never, { success: boolean; order_id: string; amount: number; list_price?: number; discount_amount?: number; coupon_code?: string; exchange_discount_pct?: number; pay_url: string; message: string }>('/api/user/economy/payment/order', data),
+  createOrder: (data: { kind: 'recharge' | 'subscription'; item_id?: number; payment_method: string; coupon_code?: string; custom_amount?: number; pay_with_points?: boolean }) =>
+    api.post<never, { success: boolean; order_id: string; amount: number; list_price?: number; discount_amount?: number; coupon_code?: string; exchange_discount_pct?: number; pay_url?: string; message: string; paid_with_points?: boolean; points_cost?: number }>('/api/user/economy/payment/order', data),
   orders: (params?: { kind?: string; limit?: number }) =>
     api.get<never, { orders: OrderRow[] }>('/api/user/economy/payment/orders', { params }),
-}
-
-// ==================== 抽奖 ====================
-
-export interface LotteryPrize {
-  id: number
-  name: string
-  /** days=公益天数，points=积分，whitelist=永久白名单 */
-  type: 'days' | 'points' | 'whitelist'
-  value: number
-}
-
-export interface LotteryDrawResult {
-  prize: LotteryPrize
-  grant: { type: string; days?: number; points?: number; balance?: number }
-  cost: number
-}
-
-export interface LotteryLogEntry {
-  id: number
-  prize_id: number
-  prize_name: string
-  created_at: string | null
-}
-
-export interface LotteryLogResponse {
-  total: number
-  page: number
-  page_size: number
-  items: LotteryLogEntry[]
-}
-
-export const lotteryApi = {
-  prizes: () => api.get<never, { prizes: LotteryPrize[] }>('/api/lottery/prizes'),
-  draw: () => api.post<never, LotteryDrawResult>('/api/lottery/draw'),
-  logs: (params?: { page?: number; page_size?: number }) =>
-    api.get<never, LotteryLogResponse>('/api/lottery/logs', { params }),
 }
 
 // ==================== 邀请返利 ====================

@@ -64,6 +64,14 @@ def _get_int_config(db: Session, key: str, default: int) -> int:
         return default
 
 
+def _get_float_config(db: Session, key: str, default: float) -> float:
+    """读浮点配置（P2 货币体系：recharge_ratio 用）"""
+    try:
+        return float(_get_config(db, key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 def _get_bool_config(db: Session, key: str, default: bool) -> bool:
     return _get_config(db, key, "true" if default else "false").strip().lower() == "true"
 
@@ -655,6 +663,7 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
                 "features": p.features, "is_popular": p.is_popular,
                 "realm_id": p.realm_id,
                 "realm_name": (p.realm.name if p.realm else ""),
+                "points_price": (float(p.points_price) if p.points_price is not None else None),
             }
             for p in plans
         ],
@@ -665,6 +674,15 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
 def coupon_config(db: Session = Depends(get_db)):
     """优惠券开关：关闭时用户端不展示优惠码输入框，避免填了才报错"""
     return {"enabled": coupons.enabled(db)}
+
+
+@router.get("/currency")
+def currency_info(db: Session = Depends(get_db)):
+    """货币体系公开信息（P2）：名称、充值比例——用户端自定义充值换算用"""
+    return {
+        "name": "积分",
+        "recharge_ratio": _get_float_config(db, "recharge_ratio", 1.2),
+    }
 
 
 class CouponQuoteRequest(BaseModel):
@@ -693,9 +711,11 @@ def coupon_quote(
 
 class CreateOrderRequest(BaseModel):
     kind: str = Field(..., description="recharge=充值积分 / subscription=购买订阅")
-    item_id: int = Field(..., description="充值套餐ID 或 套餐ID")
+    item_id: Optional[int] = Field(default=None, description="充值套餐ID 或 套餐ID；自定义金额充值时可为空")
     payment_method: str = Field(default="alipay")
     coupon_code: str = Field(default="", description="优惠码（可空）；下单时占额度，付款转已用，关单/退款自动还回")
+    custom_amount: Optional[float] = Field(default=None, ge=1, le=100000, description="自定义充值金额（元）；仅 kind=recharge 时有效，与 item_id 二选一")
+    pay_with_points: bool = Field(default=False, description="积分支付；仅 kind=subscription 时有效")
 
 
 def _yipay_sign(params: dict, key: str) -> str:
@@ -733,19 +753,35 @@ def create_payment_order(
     if req.kind == "recharge":
         if not _get_bool_config(db, "recharge_enabled", True):
             raise HTTPException(status_code=403, detail="充值功能未开启")
-        package = db.query(models.RechargePackage).filter(
-            models.RechargePackage.id == req.item_id,
-            models.RechargePackage.is_active == True,  # noqa: E712
-        ).first()
-        if not package:
-            raise HTTPException(status_code=404, detail="充值套餐不存在")
-        item_name = f"积分充值 - {package.name}"
-        amount = package.price
-        order = models.RechargeOrder(
-            order_id=order_id, user_id=current_user.id,
-            package_id=package.id, amount=package.amount + package.bonus,
-            price=amount, payment_method=req.payment_method, status="pending",
-        )
+        if req.custom_amount is not None:
+            if req.custom_amount < 1 or req.custom_amount > 100000:
+                raise HTTPException(status_code=400, detail="自定义金额需在 1~100000 元之间")
+            ratio = _get_float_config(db, "recharge_ratio", 1.2)
+            if ratio <= 0:
+                ratio = 1.2
+            points = int(Decimal(str(req.custom_amount)) * Decimal(str(ratio)))
+            if points < 1:
+                raise HTTPException(status_code=400, detail="金额过小，无法兑换积分")
+            item_name = f"积分充值 - 自定义 {req.custom_amount:.2f} 元"
+            amount = Decimal(str(req.custom_amount))
+            order = models.RechargeOrder(
+                order_id=order_id, user_id=current_user.id,
+                package_id=0, amount=points, price=amount, payment_method=req.payment_method, status="pending",
+            )
+        else:
+            package = db.query(models.RechargePackage).filter(
+                models.RechargePackage.id == req.item_id,
+                models.RechargePackage.is_active == True,  # noqa: E712
+            ).first()
+            if not package:
+                raise HTTPException(status_code=404, detail="充值套餐不存在")
+            item_name = f"积分充值 - {package.name}"
+            amount = package.price
+            order = models.RechargeOrder(
+                order_id=order_id, user_id=current_user.id,
+                package_id=package.id, amount=package.amount + package.bonus,
+                price=amount, payment_method=req.payment_method, status="pending",
+            )
     elif req.kind == "subscription":
         if not _get_bool_config(db, "subscription_purchase_enabled", True):
             raise HTTPException(status_code=403, detail="订阅购买未开启")
@@ -755,6 +791,33 @@ def create_payment_order(
         ).first()
         if not plan:
             raise HTTPException(status_code=404, detail="套餐不存在")
+        if req.pay_with_points:
+            if plan.points_price is None:
+                raise HTTPException(status_code=400, detail="该套餐不支持积分购买")
+            points_cost = int(plan.points_price)
+            if points_cost <= 0:
+                raise HTTPException(status_code=400, detail="套餐积分价配置错误")
+            balance = db.query(models.WebUser.points).filter(models.WebUser.id == current_user.id).scalar() or 0
+            if balance < points_cost:
+                raise HTTPException(status_code=400, detail=f"积分不足（需要 {points_cost}，当前 {int(balance)}）")
+            _add_points(db, current_user, -points_cost, "subscription_buy", f"积分购买订阅 - {plan.name}", f"subscription_points:{order_id}")
+            sub = _grant_subscription(db, current_user, plan, plan.duration_days, "points_purchase", f"subscription_points:{order_id}")
+            order = models.SubscriptionOrder(
+                order_id=order_id, user_id=current_user.id,
+                plan_id=plan.id, item_name=plan.name,
+                amount=plan.price, payment_method="points", status="paid",
+                paid_at=datetime.now(),
+                subscription_id=sub.id, days_granted=plan.duration_days,
+            )
+            db.add(order)
+            db.commit()
+            return {
+                "success": True,
+                "order_id": order_id,
+                "paid_with_points": True,
+                "points_cost": points_cost,
+                "message": "积分支付成功，订阅已开通",
+            }
         item_name = f"订阅购买 - {plan.name}"
         amount = plan.price
         order = models.SubscriptionOrder(
@@ -772,7 +835,9 @@ def create_payment_order(
     preview = None
     coupon_code = (req.coupon_code or "").strip()
     credit = None
-    if coupon_code:
+    # P2：自定义金额充值暂不支持优惠券（无套餐可供优惠券校验）；积分支付已直接返回，不会到这里
+    is_custom_recharge = req.kind == "recharge" and req.custom_amount is not None
+    if coupon_code and not is_custom_recharge:
         preview = coupons.quote(db, user=current_user, code=coupon_code,
                                 kind=req.kind, item_id=req.item_id)
         discount_amount = Decimal(str(preview["discount_amount"]))

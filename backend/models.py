@@ -363,6 +363,8 @@ class SubscriptionPlan(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text)
     price = Column(Numeric(10, 2), nullable=False)
+    # 积分价（P2 货币体系双轨）：NULL=不支持积分购买；用户端可二选一（人民币 price 或积分 points_price）
+    points_price = Column(Numeric(10, 2), nullable=True)
     duration_days = Column(Integer, nullable=False)
     features = Column(JSON)  # 特性列表
     # 属于哪个服：套餐一个服一个（见 ServerRealm）。同一套餐只卖给该服的用户。
@@ -1493,3 +1495,27 @@ class MemberXpLog(Base):
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
+
+
+class TgBindCode(Base):
+    """TG 绑定码表（B1：bot 绑定基础设施）
+
+    支持两种绑定流程：
+    - 网页发起：user_id 已填，telegram_id 为空 → 用户给 bot 发码验证
+    - Bot 发起：telegram_id 已填，user_id 为空 → 用户在网页输入码验证
+    """
+    __tablename__ = 'tg_bind_codes'
+
+    __table_args__ = (
+        Index('idx_tgbind_code', 'code'),
+        Index('idx_tgbind_user', 'user_id'),
+        Index('idx_tgbind_tgid', 'telegram_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True, index=True)
+    telegram_id = Column(BigInteger, nullable=True, index=True)
+    code = Column(String(6), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)

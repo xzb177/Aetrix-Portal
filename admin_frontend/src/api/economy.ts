@@ -17,6 +17,7 @@ export interface PlanRowFull {
   name: string
   description: string | null
   price: number
+  points_price: number | null
   duration_days: number
   features: string[] | null
   is_active: boolean
