@@ -82,6 +82,7 @@ from backend.api.invitation import router as invitation_router
 from backend.api.points import router as welfare_points_router
 from backend.api.welfare_requests import router as welfare_requests_router
 from backend.api.welfare_lottery import router as welfare_lottery_router
+from backend.api.welfare_expiry import router as welfare_expiry_router
 from backend.api.welfare_redpacket import router as welfare_redpacket_router
 from backend.api.welfare_reviews import router as welfare_reviews_router
 
@@ -199,6 +200,13 @@ async def lifespan(app: FastAPI):
             db_backup.start_backup_scheduler()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动数据库备份调度失败（可忽略）: {e}")
+        # 公益服到期检查：每天一次，处理过期保留和不活跃用户；失败不影响启动。
+    if not _is_api_role:
+        try:
+            from backend import welfare_expiry
+            welfare_expiry.start_welfare_expiry_scheduler()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动公益到期检查调度失败（可忽略）: {e}")
         # 追新：默认关闭，不打扰任何现有行为。失败不影响启动。
     if not _is_api_role:
         try:
@@ -705,6 +713,7 @@ app.include_router(invitation_router)
 app.include_router(welfare_points_router)
 app.include_router(welfare_requests_router)
 app.include_router(welfare_lottery_router)
+app.include_router(welfare_expiry_router)
 app.include_router(welfare_redpacket_router)
 app.include_router(welfare_reviews_router)
 
