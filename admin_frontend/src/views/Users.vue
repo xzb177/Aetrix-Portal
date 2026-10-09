@@ -25,6 +25,7 @@ import {
   updateUser, type PlanRow,
 } from '@/api/admin'
 import { adjustUserPoints } from '@/api/economy'
+import { bulkExtendWelfare, grantWelfare, revokeWelfare } from '@/api/welfare'
 import type { AdminUserRow, DeviceRow, UserDetail, UserGrantCard, UserGrants } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/DataTable.vue'
@@ -38,6 +39,8 @@ const drawerSize = computed(() => (isPhone.value ? '100%' : '620px'))
 /** 用户列表：手机端用户名做标题，注册时间隐藏（详情抽屉里有） */
 const columns: DataColumn[] = [
   { key: 'username', label: '用户', minWidth: 200, mobile: 'title' },
+  // 用户类型（v2.55 公益服并入用户管理）：公益服 / 付费 / 普通
+  { key: 'user_type', label: '类型', width: 150 },
   { key: 'emby_username', label: 'Emby 账号', minWidth: 130 },
   { key: 'subscription', label: '订阅', minWidth: 160 },
   // 注册渠道（v2.44.0 归因）：一眼看出这个号是哪来的
@@ -70,6 +73,8 @@ const total = ref(0)
 const search = ref('')
 const activeFilter = ref<string>('')
 const subFilter = ref<string>('')
+/** 用户类型筛选（v2.55 公益服并入用户管理）：空=全部，welfare=公益服，paid=付费，normal=普通 */
+const typeFilter = ref<string>('')
 /** 注册渠道枚举由后端下发（含「未记录」），前端不自己拼一份 */
 const channelFilter = ref<string>('')
 const channels = ref<Array<{ value: string; label: string }>>([])
@@ -81,7 +86,7 @@ const PAGE_SIZE = 20
 
 /** 是否有任何筛选条件（决定空态文案：没匹配 vs 还没有用户） */
 const hasFilter = computed(() =>
-  Boolean(search.value || activeFilter.value || channelFilter.value || subFilter.value),
+  Boolean(search.value || activeFilter.value || channelFilter.value || subFilter.value || typeFilter.value),
 )
 
 function applyFilter() {
@@ -94,6 +99,7 @@ function resetFilters() {
   activeFilter.value = ''
   channelFilter.value = ''
   subFilter.value = ''
+  typeFilter.value = ''
   applyFilter()
 }
 
@@ -112,6 +118,7 @@ async function load() {
     if (search.value) params.search = search.value
     if (activeFilter.value !== '') params.active = activeFilter.value === 'true'
     if (channelFilter.value) params.channel = channelFilter.value
+    if (typeFilter.value) params.user_type = typeFilter.value
     const res = await fetchUsers(params)
     users.value = res.users
     total.value = res.total
@@ -294,6 +301,79 @@ async function submitSub() {
   }
 }
 
+// ==================== 公益服操作（v2.55 公益用户页并入） ====================
+
+const welfareGrantDlg = reactive({
+  visible: false,
+  user: null as AdminUserRow | null,
+  days: 30,
+})
+
+function openWelfareGrant(row: AdminUserRow) {
+  welfareGrantDlg.user = row
+  welfareGrantDlg.days = 30
+  welfareGrantDlg.visible = true
+}
+
+async function submitWelfareGrant() {
+  const u = welfareGrantDlg.user
+  if (!u) return
+  try {
+    await grantWelfare({ user_id: u.id, days: welfareGrantDlg.days, channel: 'admin' })
+    ElMessage.success('已开通/续期公益')
+    welfareGrantDlg.visible = false
+    await load()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+async function doWelfareRevoke(row: AdminUserRow) {
+  try {
+    await ElMessageBox.confirm(`确定取消 ${row.username} 的公益资格？`, '确认', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await revokeWelfare(row.id)
+    ElMessage.success('已取消公益资格')
+    await load()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+const welfareBulkDlg = reactive({
+  visible: false,
+  min_expired_days: 0,
+  max_expired_days: 30,
+  add_days: 30,
+  busy: false,
+})
+
+async function submitWelfareBulk() {
+  welfareBulkDlg.busy = true
+  try {
+    const res = await bulkExtendWelfare({
+      min_expired_days: welfareBulkDlg.min_expired_days,
+      max_expired_days: welfareBulkDlg.max_expired_days,
+      add_days: welfareBulkDlg.add_days,
+    })
+    ElMessage.success(`已延期 ${res.affected} 个用户`)
+    welfareBulkDlg.visible = false
+    await load()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    welfareBulkDlg.busy = false
+  }
+}
+
+function fmtWelfareDate(s: string | null): string {
+  if (!s) return '永不过期'
+  return s.replace('T', ' ').slice(0, 16)
+}
+
 // ==================== 积分调整 ====================
 
 const pointsDialog = reactive({
@@ -432,6 +512,8 @@ function onRowCommand(cmd: string, row: AdminUserRow) {
     grant: () => openGrant(row),
     extend: () => openExtend(row),
     points: () => openPoints(row),
+    welfare_grant: () => openWelfareGrant(row),
+    welfare_revoke: () => doWelfareRevoke(row),
     password: () => openPwd(row),
     message: () => openMsg(row),
     active: () => toggleActive(row),
@@ -499,6 +581,7 @@ function fmtCount(n: number | null | undefined): string {
         <el-button :loading="loading" @click="load">
           <RefreshCw :size="14" class="btn-ico" />刷新
         </el-button>
+        <el-button @click="welfareBulkDlg.visible = true">批量延期</el-button>
       </template>
     </PageHeader>
 
@@ -527,6 +610,11 @@ function fmtCount(n: number | null | undefined): string {
           <el-select v-model="subFilter" class="f-select" placeholder="订阅状态（本页）" clearable>
             <el-option label="订阅中" value="has" />
             <el-option label="未订阅" value="none" />
+          </el-select>
+          <el-select v-model="typeFilter" class="f-select" placeholder="用户类型" clearable @change="applyFilter">
+            <el-option label="公益服" value="welfare" />
+            <el-option label="付费" value="paid" />
+            <el-option label="普通" value="normal" />
           </el-select>
         </div>
         <div v-if="hasFilter" class="users-actions">
@@ -579,6 +667,21 @@ function fmtCount(n: number | null | undefined): string {
           <span v-else class="au-badge au-badge-muted">未订阅</span>
         </template>
 
+        <template #cell-user_type="{ row }">
+          <template v-if="row.user_type === 'welfare'">
+            <span class="au-badge au-badge-green">公益服</span>
+            <div class="user-sub">
+              <span
+                v-if="row.welfare_expires_at && new Date(row.welfare_expires_at) < new Date()"
+                :style="{ color: 'var(--au-danger)' }"
+              >已过期</span>
+              <span v-else>{{ fmtWelfareDate(row.welfare_expires_at) }}</span>
+            </div>
+          </template>
+          <span v-else-if="row.user_type === 'paid'" class="au-badge au-badge-amber">付费</span>
+          <span v-else class="au-badge au-badge-muted">普通</span>
+        </template>
+
         <template #cell-last_login_at="{ row }"><span class="au-num">{{ fmtDate(row.last_login_at) }}</span></template>
 
         <template #cell-created_at="{ row }"><span class="au-num">{{ fmtDate(row.created_at) }}</span></template>
@@ -596,6 +699,8 @@ function fmtCount(n: number | null | undefined): string {
                 <el-dropdown-item command="grant">授予订阅</el-dropdown-item>
                 <el-dropdown-item v-if="row.subscription_id" command="extend">延长订阅</el-dropdown-item>
                 <el-dropdown-item command="points">调整积分</el-dropdown-item>
+                <el-dropdown-item command="welfare_grant">公益开通/续期</el-dropdown-item>
+                <el-dropdown-item v-if="row.is_welfare" command="welfare_revoke" divided>取消公益资格</el-dropdown-item>
                 <el-dropdown-item command="password" divided>重置密码</el-dropdown-item>
                 <el-dropdown-item command="message">发送消息</el-dropdown-item>
                 <el-dropdown-item command="active" divided>
@@ -1018,6 +1123,41 @@ function fmtCount(n: number | null | undefined): string {
       </template>
     </el-dialog>
 
+    <!-- ==================== 公益开通/续期 ==================== -->
+    <el-dialog v-model="welfareGrantDlg.visible" title="开通/续期公益" width="400px">
+      <el-form label-width="80px">
+        <el-form-item label="用户">
+          <span class="dialog-user">{{ welfareGrantDlg.user?.username }}</span>
+        </el-form-item>
+        <el-form-item label="天数">
+          <el-input-number v-model="welfareGrantDlg.days" :min="0" :max="3650" />
+          <span class="au-hint">0 = 永不过期</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="welfareGrantDlg.visible = false">取消</el-button>
+        <el-button type="primary" @click="submitWelfareGrant">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ==================== 公益批量延期 ==================== -->
+    <el-dialog v-model="welfareBulkDlg.visible" title="批量延期公益" width="420px">
+      <el-form label-width="110px">
+        <el-form-item label="过期天数范围">
+          <el-input-number v-model="welfareBulkDlg.min_expired_days" :min="0" style="width: 110px" />
+          <span style="margin: 0 6px">~</span>
+          <el-input-number v-model="welfareBulkDlg.max_expired_days" :min="0" style="width: 110px" />
+        </el-form-item>
+        <el-form-item label="增加天数">
+          <el-input-number v-model="welfareBulkDlg.add_days" :min="1" :max="365" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="welfareBulkDlg.visible = false">取消</el-button>
+        <el-button type="primary" :loading="welfareBulkDlg.busy" @click="submitWelfareBulk">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- ==================== 发送消息 ==================== -->
     <el-dialog v-model="msgDialog.visible" title="发送站内消息" width="460px">
       <el-form label-width="80px">
@@ -1278,6 +1418,12 @@ function fmtCount(n: number | null | undefined): string {
 
 /* flush 卡片里的手机卡片列表：DataTable 本身不留边距，这里补回左右内距 */
 .users-page :deep(.dt-cards) { padding: 0 12px 12px; }
+
+/* 公益弹窗里的行内提示（v2.55 公益用户页并入） */
+.au-hint {
+  margin-left: 8px;
+  color: var(--au-text-2);
+}
 
 @media (max-width: 768px) {
   .users-toolbar { padding: 10px 16px; }

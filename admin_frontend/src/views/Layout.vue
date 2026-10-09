@@ -164,11 +164,10 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    // 公益服（v2.54.0）：公益用户 / 求片审核 / 抽奖配置 / 积分配置
+    // 公益服：抽奖配置 / 积分配置（公益用户已并入「用户管理」，求片审核已并入「求片管理」）
     title: '公益服',
     icon: Heart,
     items: [
-      { path: '/welfare-users', label: '公益用户', icon: Users },
       // 求片审核已并入「求片管理」，菜单移除
       { path: '/welfare-lottery', label: '抽奖配置', icon: Gift },
       { path: '/welfare-points', label: '积分配置', icon: Wallet },

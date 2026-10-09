@@ -225,6 +225,11 @@ export interface AdminUserRow {
   register_channel: string
   register_channel_label: string
   created_at: string
+  /** 用户类型（v2.55 公益服并入用户管理）：welfare=公益服，paid=付费，normal=普通 */
+  is_welfare: boolean
+  welfare_expires_at: string | null
+  welfare_grant_channel: string | null
+  user_type: 'welfare' | 'paid' | 'normal'
 }
 
 export interface UsersResponse {

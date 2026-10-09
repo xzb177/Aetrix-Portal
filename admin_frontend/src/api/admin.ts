@@ -88,6 +88,8 @@ export const fetchUsers = (params: {
   active?: boolean
   /** 注册渠道：空 = 全部；__unrecorded = 升级前存量（未记录） */
   channel?: string
+  /** 用户类型：空 = 全部；welfare = 公益服；paid = 付费；normal = 普通 */
+  user_type?: string
   limit?: number
   offset?: number
 }) => get<UsersResponse>('/users', params)

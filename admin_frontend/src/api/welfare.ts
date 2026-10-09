@@ -3,19 +3,7 @@ import { get, post, put, del } from '@/utils/request'
 
 const E = '/welfare'
 
-// ==================== 公益用户 ====================
-
-export interface WelfareUserRow {
-  id: number
-  username: string
-  is_welfare: boolean
-  welfare_expires_at: string | null
-  days_left: number | null
-  welfare_grant_channel: string | null
-}
-
-export const fetchWelfareUsers = (params: { page?: number; page_size?: number; keyword?: string; only_welfare?: boolean } = {}) =>
-  get<{ total: number; items: WelfareUserRow[] }>(`${E}/users`, params)
+// ==================== 公益用户操作（v2.55 用户列表已并入用户管理，列表接口停用） ====================
 
 export const grantWelfare = (data: { user_id: number; days: number; channel?: string }) =>
   post<{ success: boolean; expires_at: string | null }>(`${E}/grant`, data)

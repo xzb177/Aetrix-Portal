@@ -271,14 +271,17 @@ def list_users(
     search: str = "",
     active: Optional[bool] = None,
     channel: str = "",
+    user_type: str = "",
     limit: int = 50,
     offset: int = 0,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """用户列表：搜索（用户名/邮箱）+ 状态筛选 + 注册渠道筛选 + 分页
+    """用户列表：搜索（用户名/邮箱）+ 状态筛选 + 注册渠道筛选 + 用户类型筛选 + 分页
 
     ``channel`` 空 = 全部；``channel=__unrecorded`` = 存量用户（当时没记渠道）。
+    ``user_type`` 空 = 全部；``welfare`` = 公益服（is_welfare 为真）；
+    ``paid`` = 付费（有生效中订阅且非公益）；``normal`` = 普通（非公益且无生效中订阅）。
     """
     query = db.query(models.WebUser)
     if search:
@@ -298,6 +301,27 @@ def list_users(
         else:
             query = query.filter(or_(col.is_(None), col == ""))
 
+    # 用户类型筛选（v2.55 公益服并入用户管理）：公益 > 付费 > 普通
+    if user_type == "welfare":
+        query = query.filter(models.WebUser.is_welfare == True)  # noqa: E712
+    elif user_type in ("paid", "normal"):
+        _active_sub_q = (
+            db.query(models.UserSubscription.user_id)
+            .filter(
+                models.UserSubscription.status == "active",
+                models.UserSubscription.end_date > datetime.now(),
+            )
+            .distinct()
+        )
+        _not_welfare = or_(
+            models.WebUser.is_welfare == False,  # noqa: E712
+            models.WebUser.is_welfare.is_(None),
+        )
+        if user_type == "paid":
+            query = query.filter(_not_welfare, models.WebUser.id.in_(_active_sub_q))
+        else:
+            query = query.filter(_not_welfare, ~models.WebUser.id.in_(_active_sub_q))
+
     total = query.count()
     users = query.order_by(models.WebUser.id.desc()).offset(offset).limit(min(limit, 200)).all()
     now = datetime.now()
@@ -316,6 +340,14 @@ def list_users(
             "is_active": u.is_active,
             "is_staff": u.is_staff,
             "emby_username": u.emby_username,
+            # 用户类型（v2.55 公益服并入用户管理）：welfare > paid > normal
+            "is_welfare": bool(u.is_welfare),
+            "welfare_expires_at": u.welfare_expires_at.isoformat() if u.welfare_expires_at else None,
+            "welfare_grant_channel": u.welfare_grant_channel,
+            "user_type": (
+                "welfare" if u.is_welfare
+                else ("paid" if active_sub is not None else "normal")
+            ),
             "has_subscription": active_sub is not None,
             "subscription_id": active_sub.id if active_sub else None,
             "subscription_end": active_sub.end_date.isoformat() if active_sub else None,
