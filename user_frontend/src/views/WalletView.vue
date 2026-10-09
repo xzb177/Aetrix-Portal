@@ -13,7 +13,7 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, TriangleAlert, Undo2, Percent, X, User, Medal, Award, Gem,
+  KeyRound, TriangleAlert, Undo2, Percent, X, User, Medal, Award, Gem, Gift,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi, currencyApi,
@@ -624,6 +624,13 @@ onBeforeUnmount(stopPayPoll)
           <ChevronRight :size="12" class="pill-arrow" />
         </RouterLink>
 
+        <!-- 抽奖入口：跟签到胶囊同一排 -->
+        <RouterLink to="/lottery" class="lottery-pill">
+          <Gift :size="13" />
+          <span>幸运抽奖</span>
+          <ChevronRight :size="12" class="pill-arrow" />
+        </RouterLink>
+
         <!-- 会员等级：徽章 + 经验进度（P1 统一货币体系） -->
         <div v-if="member" class="member-row">
           <span class="member-badge" :style="{ background: member.badge_color }">
@@ -1088,6 +1095,25 @@ onBeforeUnmount(stopPayPoll)
   border-color: var(--au-success-border);
   color: var(--au-success);
 }
+
+/* 抽奖入口胶囊：与签到胶囊同一视觉语言 */
+.lottery-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  width: fit-content;
+  margin-top: 0.375rem;
+  margin-left: 0.5rem;
+  padding: 0.3125rem 0.6875rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  transition: all var(--au-fast) var(--au-ease);
+}
+.lottery-pill:hover { filter: brightness(1.08); }
 
 /* ==================== 会员等级（P1 统一货币体系） ==================== */
 .member-row {
