@@ -86,7 +86,19 @@ export interface PointsLogRow {
   type: string
   description: string | null
   ref_id: string | null
+  audited: boolean // C3：是否有 hash（审计开启后写入的流水）
   created_at: string | null
+}
+
+export interface PointsAuditResult {
+  ok: boolean
+  user_id: number
+  username: string
+  total: number
+  verified: number
+  legacy_skipped: number
+  broken_at: number | null
+  broken_reason: string
 }
 
 export interface EconomySettings {
@@ -317,6 +329,11 @@ export const fetchPointsLogs = (params: { user_id?: number; type_filter?: string
 
 export const adjustUserPoints = (userId: number, data: { amount: number; reason?: string }) =>
   post<{ success: boolean; balance: number }>(`/economy/users/${userId}/points`, data)
+
+// ==================== C3 流水审计 ====================
+
+export const verifyPointsAudit = (user_id: number) =>
+  post<PointsAuditResult>('/economy/points-audit/verify', { user_id })
 
 // ==================== 经济设置 ====================
 

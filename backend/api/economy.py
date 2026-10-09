@@ -74,6 +74,18 @@ def _get_float_config(db: Session, key: str, default: float) -> float:
         return default
 
 
+def _get_quick_amounts(db: Session) -> list[int]:
+    """快捷充值金额（C4）：读 recharge_quick_amounts，逗号分隔；非法/空回退默认；去重、升序、最多 8 个、只保留 1~100000 的正整数。"""
+    default_amounts = [10, 30, 50, 100, 200]
+    raw = _get_config(db, "recharge_quick_amounts", "10,30,50,100,200")
+    try:
+        values = [int(part.strip()) for part in raw.split(",")]
+    except (TypeError, ValueError):
+        return default_amounts
+    amounts = sorted({v for v in values if 1 <= v <= 100000})[:8]
+    return amounts or default_amounts
+
+
 def _get_bool_config(db: Session, key: str, default: bool) -> bool:
     return _get_config(db, key, "true" if default else "false").strip().lower() == "true"
 
@@ -82,6 +94,70 @@ def _get_bool_config(db: Session, key: str, default: bool) -> bool:
 
 def _today_start() -> datetime:
     return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _points_record_hash(
+    prev_hash: str, user_id: int, amount: int, balance_after: int,
+    type_: str, description: str | None, ref_id: str | None, created_at,
+) -> str:
+    """C3 流水审计：计算单条流水的 hash。
+
+    hash = sha256("prev_hash|user_id|amount|balance_after|type|description|ref_id|created_at_iso")。
+    每条记录链接上一条的 record_hash，形成防篡改链；任何字段被改都会导致本条及后续 hash 对不上。
+    """
+    ts = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+    payload = "|".join([
+        prev_hash or "",
+        str(user_id), str(amount), str(balance_after),
+        type_ or "", description or "", ref_id or "", ts,
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _append_points_log(
+    db: Session, user_id: int, amount: int, balance_after: int,
+    type_: str, description: str, ref_id: str | None = None,
+) -> models.PointsLog:
+    """写一条积分流水并按 `points_audit_enabled` 开关接入 hash 链（C3）。
+
+    调用方负责余额本身的增减与 balance_after 的正确性；本函数只负责台账行。
+    开关开启时用行锁取该用户最新一条流水作为链尾，写入 prev_hash / record_hash；
+    关闭时两列留 NULL。返回 PointsLog 对象（已 add，未 commit）。
+
+    注意：刻意不在这里 flush。调用方（如 apply_invitation）依赖"所有写一次 flush、
+    冲突整体回滚"的语义，提前 flush 会把唯一约束冲突提前抛到它们的 try/except 之外。
+    created_at 在构造时显式赋值（与列默认 datetime.now 等价），hash 直接用该值计算。
+    """
+    audit_enabled = _get_bool_config(db, "points_audit_enabled", True)
+    prev_hash = ""
+    if audit_enabled:
+        # 行锁取链尾：并发写同一用户时串行化，保证 prev_hash 链接不断
+        tail = (
+            db.query(models.PointsLog)
+            .filter(models.PointsLog.user_id == user_id)
+            .order_by(models.PointsLog.id.desc())
+            .with_for_update()
+            .first()
+        )
+        prev_hash = (tail.record_hash if tail and tail.record_hash else "") or ""
+    now = datetime.now()
+    log = models.PointsLog(
+        user_id=user_id,
+        amount=amount,
+        balance_after=balance_after,
+        type=type_,
+        description=description,
+        ref_id=ref_id,
+        created_at=now,
+    )
+    if audit_enabled:
+        log.prev_hash = prev_hash
+        log.record_hash = _points_record_hash(
+            prev_hash, user_id, amount, balance_after,
+            type_, description, ref_id, now,
+        )
+    db.add(log)
+    return log
 
 
 def _add_points(
@@ -101,15 +177,70 @@ def _add_points(
     balance = int(
         db.query(models.WebUser.points).filter(models.WebUser.id == user.id).scalar() or 0
     )
-    db.add(models.PointsLog(
-        user_id=user.id,
-        amount=amount,
-        balance_after=balance,
-        type=type_,
-        description=description,
-        ref_id=ref_id,
-    ))
+    _append_points_log(db, user.id, amount, balance, type_, description, ref_id)
     return balance
+
+
+def verify_points_chain(db: Session, user_id: int, limit: int = 20000) -> dict:
+    """C3 流水审计：核验某用户的积分流水 hash 链是否完整。
+
+    按 id 升序逐条重算 hash 并校验链接：
+    - record_hash 为 NULL 的是审计开启前的历史记录，跳过校验（计入 legacy_skipped），
+      且链条从其之后的第一条审计记录重新起头（prev_hash=""）；
+    - 每条审计记录校验两点：prev_hash == 上一条的 record_hash（链头为 ""），
+      且按同样算法重算的 hash == record_hash。
+
+    返回 {"ok", "total", "verified", "legacy_skipped", "broken_at", "broken_reason"}。
+
+    只核验最近 limit 条（倒序取再正序验）：用户流水可能很多，抽查最近的才有意义。
+    多取一条做锚点：窗口内第一条的 prev_hash 应等于锚点的 record_hash（无锚点=全量，
+    则第一条必须是链头 ""）。
+    """
+    rows = (
+        db.query(models.PointsLog)
+        .filter(models.PointsLog.user_id == user_id)
+        .order_by(models.PointsLog.id.desc())
+        .limit(limit + 1)
+        .all()
+    )
+    rows.reverse()  # 最老在前
+    if len(rows) == limit + 1:
+        anchor, logs = rows[0], rows[1:]
+        expected_prev = anchor.record_hash or ""  # 锚点是历史记录时链条从 "" 起头
+    else:
+        logs = rows
+        expected_prev = ""
+    verified = 0
+    legacy_skipped = 0
+    broken_at = None
+    broken_reason = ""
+    for log in logs:
+        if not log.record_hash:
+            legacy_skipped += 1
+            expected_prev = ""  # 历史缺口之后链条重新起头
+            continue
+        if (log.prev_hash or "") != expected_prev:
+            broken_at = log.id
+            broken_reason = "prev_hash 链接断裂（上一条记录可能被删除或篡改）"
+            break
+        recalc = _points_record_hash(
+            log.prev_hash or "", log.user_id, log.amount, log.balance_after,
+            log.type, log.description, log.ref_id, log.created_at,
+        )
+        if recalc != log.record_hash:
+            broken_at = log.id
+            broken_reason = "本条记录字段被篡改（重算 hash 与记录不一致）"
+            break
+        verified += 1
+        expected_prev = log.record_hash
+    return {
+        "ok": broken_at is None,
+        "total": len(logs),
+        "verified": verified,
+        "legacy_skipped": legacy_skipped,
+        "broken_at": broken_at,
+        "broken_reason": broken_reason,
+    }
 
 
 def _checkin_rules(db: Session) -> dict:
@@ -757,10 +888,11 @@ def coupon_config(db: Session = Depends(get_db)):
 
 @router.get("/currency")
 def currency_info(db: Session = Depends(get_db)):
-    """货币体系公开信息（P2）：名称、充值比例——用户端自定义充值换算用"""
+    """货币体系公开信息（P2/C4）：名称、充值比例、快捷金额——用户端自定义充值换算用"""
     return {
         "name": "积分",
         "recharge_ratio": _get_float_config(db, "recharge_ratio", 1.2),
+        "quick_amounts": _get_quick_amounts(db),
     }
 
 

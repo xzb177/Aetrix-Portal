@@ -772,6 +772,8 @@ class PointsLog(Base):
     type = Column(String(30), default='system')  # checkin, invite, invitee, rebate, exchange, recharge, admin_grant, admin_deduct
     description = Column(String(255))
     ref_id = Column(String(64))  # 关联对象（订单号/兑换码等）
+    prev_hash = Column(String(64), nullable=True)  # C3 流水审计：上一条该用户流水的 record_hash（链头为空字符串）
+    record_hash = Column(String(64), nullable=True)  # C3 流水审计：本条记录的 hash；NULL=审计开启前的历史记录
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
