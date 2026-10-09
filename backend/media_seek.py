@@ -4,6 +4,8 @@
 
 - **额度**：每日上限走 SystemConfig ``media_seek_daily_limit``（后台可改），
   默认值只在这里定义一次（``DEFAULT_DAILY_LIMIT``），config_self_heal 引用它；
+  另有月度上限（公益服 ``welfare_request_monthly`` 默认3 / 付费 ``paid_request_monthly``
+  默认10，与旧版公益服求片中心合并），每日与月度同时生效；
 - **剧集按整季申请**：``season`` 存 ``"1,2"`` 或 ``"all"``（全季），
   ``normalize_season`` 负责校验与归一化，界面文案走 ``season_label``；
 - **TMDB 候选搜索**：用户端「搜你想看的片」列的是 TMDB 条目，
@@ -80,6 +82,65 @@ def quota(db: Session, user_id: int) -> dict:
     limit = daily_limit(db)
     used = used_today(db, user_id)
     return {"used_today": used, "daily_limit": limit, "remaining": max(0, limit - used)}
+
+
+# ==================== 月度额度（公益服/付费区分） ====================
+# 与旧版公益服求片中心（backend/welfare_requests.py，已废弃）合并：
+# 公益用户每月 welfare_request_monthly 条（默认3），付费用户每月 paid_request_monthly 条（默认10）。
+
+CONFIG_MONTHLY_WELFARE = "welfare_request_monthly"
+CONFIG_MONTHLY_PAID = "paid_request_monthly"
+DEFAULT_MONTHLY_WELFARE = 3
+DEFAULT_MONTHLY_PAID = 10
+
+
+def _is_welfare_active(user) -> bool:
+    """用户公益资格是否有效（is_welfare 开关 + 到期时间）"""
+    if not bool(getattr(user, "is_welfare", False)):
+        return False
+    expires_at = getattr(user, "welfare_expires_at", None)
+    if expires_at is None:
+        return True  # 永不过期
+    return expires_at > datetime.now()
+
+
+def _monthly_limit_value(db: Session, key: str, default: int) -> int:
+    """读月度上限配置：缺省/脏值回默认值（绝不让脏配置把求片打死）"""
+    cfg = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == key
+    ).first()
+    raw = str(cfg.value).strip() if cfg and cfg.value is not None else ""
+    if not raw.isdigit():
+        return default
+    return max(1, int(raw))
+
+
+def monthly_limit(db: Session, user) -> int:
+    """该用户的月度求片上限：公益服走 welfare_request_monthly，其余走 paid_request_monthly"""
+    if _is_welfare_active(user):
+        return _monthly_limit_value(db, CONFIG_MONTHLY_WELFARE, DEFAULT_MONTHLY_WELFARE)
+    return _monthly_limit_value(db, CONFIG_MONTHLY_PAID, DEFAULT_MONTHLY_PAID)
+
+
+def used_this_month(db: Session, user_id: int) -> int:
+    """本月提交过多少条（含后来撤回的，与 used_today 同一口径）"""
+    month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return db.query(models.MovieRequest).filter(
+        models.MovieRequest.user_id == user_id,
+        models.MovieRequest.created_at >= month_start,
+    ).count()
+
+
+def monthly_quota(db: Session, user) -> dict:
+    """月度额度快照：kind=用户类型，limit/used/remaining=上限/已用/剩余（剩余不为负）"""
+    limit = monthly_limit(db, user)
+    used = used_this_month(db, user.id)
+    return {
+        "kind": "welfare" if _is_welfare_active(user) else "paid",
+        "monthly_limit": limit,
+        "monthly_used": used,
+        "monthly_remaining": max(0, limit - used),
+    }
 
 
 # ==================== 剧集按整季申请 ====================

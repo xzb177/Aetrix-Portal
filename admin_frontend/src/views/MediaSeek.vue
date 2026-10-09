@@ -5,8 +5,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CloudDownload, Download, MessageSquareDashed, RefreshCw, X } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import {
-  fetchMediaSeeks, fetchServersSummary, markMediaSeekInLibrary, pushMediaSeek, updateMediaSeek,
+  fetchMediaSeeks, fetchServersSummary, getMediaSeekUserQuota, markMediaSeekInLibrary, pushMediaSeek, updateMediaSeek,
 } from '@/api/admin'
+import type { MediaSeekMonthlyQuota } from '@/api/admin'
 import type { MediaSeekRow, ServerKind } from '@/types'
 import { useQueryFilter } from '@/composables/useQueryFilter'
 import { useRealmStore } from '@/stores/realm'
@@ -86,8 +87,17 @@ function isActionable(r: MediaSeekRow): boolean {
   return r.status === 'pending' || r.status === 'approved'
 }
 
+/** 处理弹窗里展示的提交用户本月额度（公益/付费区分） */
+const handleQuota = ref<MediaSeekMonthlyQuota | null>(null)
+
 function openHandle(r: MediaSeekRow) {
   handle.value = { visible: true, row: r, note: r.admin_note || '', link: '' }
+  // 拉取该用户本月求片额度：审核时一眼看到还剩几次
+  handleQuota.value = null
+  getMediaSeekUserQuota(r.user_id).then(
+    (q) => { handleQuota.value = q },
+    () => { /* 拿不到就不展示，不挡审核 */ },
+  )
 }
 
 /** 动作做完刷新列表，并把弹窗里的行换成最新快照（转交结果、状态就地可见） */
@@ -340,6 +350,9 @@ function statusLabel(status: string): string {
             <span class="kv-value">{{ handle.row.season_label }}</span>
           </div>
           <div class="kv-row"><span class="kv-key">提交用户</span><span class="kv-value">{{ handle.row.user_name }}</span></div>
+          <div v-if="handleQuota" class="kv-row"><span class="kv-key">本月额度</span>
+            <span class="kv-value">已用 {{ handleQuota.monthly_used }} / {{ handleQuota.monthly_limit }}（{{ handleQuota.kind === 'welfare' ? '公益服' : '付费' }}），剩余 {{ handleQuota.monthly_remaining }} 次</span>
+          </div>
           <div class="kv-row"><span class="kv-key">求给</span>
             <span class="kv-value">{{ handle.row.realm_name || '未标注' }}</span>
           </div>

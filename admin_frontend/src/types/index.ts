@@ -386,6 +386,7 @@ export interface MediaSeekRow {
   tmdb_id?: string | null
   /** 已入库条目的 guid（标记入库时记下，用户端可直接去观看） */
   emby_item_id?: string | null
+  user_id: number
   user_name: string
   /** 这部片是给哪个服求的（用户提交时选/单服自动带出）；空 = 未标注 */
   realm_id?: number | null

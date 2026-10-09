@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """求片中心业务逻辑（公益服模块3-娱乐板块）
 
-手动编写（OpenRouter 免费模型 429 限流，按 backend/points.py 模式手写）。
+.. deprecated::
+    求片额度逻辑已并入 backend/media_seek.py（月度额度：公益/付费区分）。
+    本模块保留仅供旧端点兼容，不再演进。
 
 规则：
 - 月额度：公益用户 welfare_request_monthly（默认3），付费用户 paid_request_monthly（默认10）

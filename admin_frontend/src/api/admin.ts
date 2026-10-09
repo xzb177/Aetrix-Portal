@@ -573,6 +573,16 @@ export const markMediaSeekInLibrary = (id: number, force = false) =>
     { silent: true },
   )
 
+/** 某用户的求片月度额度（公益/付费区分）：审核时查看该用户本月还剩几次 */
+export interface MediaSeekMonthlyQuota {
+  kind: 'welfare' | 'paid'
+  monthly_limit: number
+  monthly_used: number
+  monthly_remaining: number
+}
+export const getMediaSeekUserQuota = (userId: number) =>
+  get<MediaSeekMonthlyQuota>(`/media-seek/user-quota/${userId}`)
+
 /**
  * 把求片交给外部服务：MoviePilot（提交订阅）或 qBittorrent（加种）。
  * qB 自己不会去找片子，所以选它时必须带链接（磁力或 .torrent 地址）。

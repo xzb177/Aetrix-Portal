@@ -1304,7 +1304,12 @@ __all__ = [
 # ==================== 娱乐板块（公益服模块3） ====================
 
 class MediaRequest(Base):
-    """求片请求表（用户端娱乐板块）"""
+    """求片请求表（用户端娱乐板块）
+
+    .. deprecated::
+        求片已统一走 movie_requests（MediaSeek 流程）。本表不再写入，
+        保留模型仅为兼容历史数据。
+    """
     __tablename__ = 'media_requests'
 
     __table_args__ = (
