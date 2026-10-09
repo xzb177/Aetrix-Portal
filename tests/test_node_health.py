@@ -86,3 +86,74 @@ def test_pick_node_weighted():
 def test_daemon_idempotent():
     _nh.start_health_daemon(lambda: mock.MagicMock())
     _nh.start_health_daemon(lambda: mock.MagicMock())
+
+
+class _StopLoop(Exception):
+    pass
+
+
+def test_health_loop_completes_iteration_without_unboundlocal():
+    """回归：_health_loop 一轮内不得抛 UnboundLocalError（曾每 30s 刷 warning）"""
+    urls = ['http://n1:8000', 'http://n2:8000']
+    for u in urls:
+        _nh._node_health.pop(u, None)
+    warnings = []
+    nodes = [{'url': u, 'weight': 100, 'name': u} for u in urls]
+
+    def fake_get_nodes(db):
+        return nodes
+
+    def fake_check_one(url):
+        return url == 'http://n1:8000'
+
+    def fake_sleep(_):
+        raise _StopLoop()
+
+    with mock.patch.object(_nh, 'get_nodes', side_effect=fake_get_nodes), \
+         mock.patch.object(_nh, '_check_one', side_effect=fake_check_one), \
+         mock.patch.object(_nh.time, 'sleep', side_effect=fake_sleep), \
+         mock.patch.object(_nh.logger, 'warning', side_effect=lambda *a, **k: warnings.append(a)):
+        try:
+            _nh._health_loop(lambda: mock.MagicMock())
+        except _StopLoop:
+            pass
+
+    try:
+        bug_warnings = [w for w in warnings if '节点健康检查异常' in str(w[0])]
+        assert not bug_warnings, f"health loop 不应报检查异常，实际: {bug_warnings}"
+        assert _nh._node_health['http://n1:8000']['healthy'] is True
+        assert _nh._node_health['http://n2:8000']['healthy'] is False
+    finally:
+        for u in urls:
+            _nh._node_health.pop(u, None)
+
+
+def test_health_loop_skips_nodes_without_url():
+    """无 url 字段的节点配置不得炸掉循环"""
+    for u in ['http://ok:8000']:
+        _nh._node_health.pop(u, None)
+    warnings = []
+    nodes = [
+        {'url': 'http://ok:8000', 'weight': 100},
+        {'weight': 100},          # 缺 url
+        'not-a-dict',            # 非 dict
+    ]
+
+    def fake_sleep(_):
+        raise _StopLoop()
+
+    with mock.patch.object(_nh, 'get_nodes', return_value=nodes), \
+         mock.patch.object(_nh, '_check_one', return_value=True), \
+         mock.patch.object(_nh.time, 'sleep', side_effect=fake_sleep), \
+         mock.patch.object(_nh.logger, 'warning', side_effect=lambda *a, **k: warnings.append(a)):
+        try:
+            _nh._health_loop(lambda: mock.MagicMock())
+        except _StopLoop:
+            pass
+
+    try:
+        bug_warnings = [w for w in warnings if '节点健康检查异常' in str(w[0])]
+        assert not bug_warnings, f"health loop 不应报检查异常，实际: {bug_warnings}"
+        assert _nh._node_health['http://ok:8000']['healthy'] is True
+    finally:
+        _nh._node_health.pop('http://ok:8000', None)

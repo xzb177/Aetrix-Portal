@@ -72,10 +72,10 @@ def _health_loop(get_db):
                 nodes = get_nodes(db)
             finally:
                 db.close()
-            urls = [n.get(url, ) for n in nodes if n.get(url, )]
+            urls = [n["url"] for n in nodes if isinstance(n, dict) and n.get("url")]
             _probe_results = {}
             if urls:
-                with ThreadPoolExecutor(max_workers=min(len(urls), 10), thread_name_prefix=health-probe) as ex:
+                with ThreadPoolExecutor(max_workers=min(len(urls), 10), thread_name_prefix="health-probe") as ex:
                     _fut2url = {ex.submit(_check_one, u): u for u in urls}
                     for _fut in as_completed(_fut2url):
                         _u = _fut2url[_fut]
