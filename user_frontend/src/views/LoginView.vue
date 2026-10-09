@@ -12,7 +12,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
-import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Ticket, Gift } from 'lucide-vue-next'
+import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Gift } from 'lucide-vue-next'
 // 人机验证挂件（能力：人机验证）：管理员未开启时该组件自己什么都不渲染
 import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
 // 站名来自「站点与品牌」能力（未配置时用默认值）
@@ -25,22 +25,20 @@ const userStore = useUserStore()
 const toast = useToast()
 
 // 注册页开关（管理端可配）：注册模式 + 邀请码开关
-// registration_mode: open=开放注册 / code=必须注册码 / closed=关闭注册
-const registrationMode = ref<'open' | 'code' | 'closed'>('open')
+// registration_mode: open=开放注册 / closed=关闭注册（code 模式已下线）
+const registrationMode = ref<'open' | 'closed'>('open')
 const invitationEnabled = ref(true)
-const showRegCodeField = computed(() => registrationMode.value === 'code')
 const showInviteField = computed(() => invitationEnabled.value)
 const registrationClosed = computed(() => registrationMode.value === 'closed')
 
 const mode = ref<'login' | 'register'>('login')
 
 const loginForm = reactive({ username: '', password: '' })
-// 注册码 / 邀请码：此前只有从带参链接进来（?code= / ?invite=）才拿得到，表单里
-// 根本没有输入框——站点开成「卡码注册」时，从首页点进来的用户只会看到
-// 「当前注册需要注册码」却无处可填。现在两个都能手填，链接进来自动预填。
+// 邀请码：此前只有从带参链接进来（?invite=）才拿得到，表单里根本没有输入框，
+// 现在能手填，链接进来自动预填。
 const registerForm = reactive({
   username: '', password: '', confirmPassword: '', email: '',
-  registrationCode: '', inviteCode: '',
+  inviteCode: '',
 })
 
 const showLoginPassword = ref(false)
@@ -122,10 +120,9 @@ async function handleRegister() {
   try {
     // 表单里填的优先；没填时沿用链接带来的
     const inviteCode = f.inviteCode.trim() || (route.query.invite as string) || ''
-    const regCode = f.registrationCode.trim() || (route.query.code as string) || ''
     await userStore.register(
       f.username.trim(), f.password, f.email || undefined,
-      inviteCode || undefined, regCode || undefined, captchaToken.value,
+      inviteCode || undefined, captchaToken.value,
     )
     toast.success('注册成功，已自动开通观影账号')
     router.push((route.query.redirect as string) || '/')
@@ -138,9 +135,10 @@ async function handleRegister() {
 }
 
 onMounted(() => {
-  // 拉取注册页开关（公开接口）：按管理端配置显示/隐藏注册码、邀请码输入框
+  // 拉取注册页开关（公开接口）：按管理端配置显示/隐藏邀请码输入框、是否关闭注册
   getRegisterConfig().then((cfg) => {
-    registrationMode.value = cfg.registration_mode
+    // code 模式已下线：后端/此处统一归一为 open
+    registrationMode.value = cfg.registration_mode === 'closed' ? 'closed' : 'open'
     invitationEnabled.value = cfg.invitation_enabled
   }).catch(() => { /* 拿不到时按默认值显示，不锁死 */ })
   if (route.query.mode === 'register') mode.value = 'register'
@@ -149,11 +147,6 @@ onMounted(() => {
     mode.value = 'register'
     registerForm.inviteCode = String(route.query.invite)
     toast.info(`已收到好友邀请码，注册成功后双方都得积分奖励`, 5000)
-  }
-  // 卡码链接 ?code=XXX：同样预填，用户不用再手抄一遍
-  if (route.query.code) {
-    mode.value = 'register'
-    registerForm.registrationCode = String(route.query.code)
   }
 })
 </script>
@@ -309,20 +302,6 @@ onMounted(() => {
               name="email"
               autocomplete="email"
               placeholder="用于找回密码"
-              @keyup.enter="handleRegister"
-            />
-          </div>
-        </label>
-
-        <label v-if="showRegCodeField" class="field">
-          <span class="field-label">注册码 <em class="optional">站点要求时填写</em></span>
-          <div class="field-box">
-            <Ticket :size="16" class="field-icon" />
-            <input
-              v-model="registerForm.registrationCode"
-              type="text"
-              name="registration-code"
-              placeholder="开放注册时可留空"
               @keyup.enter="handleRegister"
             />
           </div>

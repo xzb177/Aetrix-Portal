@@ -141,7 +141,10 @@ async function load() {
     codes.value = list.codes
     total.value = list.total
     stats.value = stat
-    settings.value = setting
+    // 注册码门禁（'code'）已下线：DB 残留值按开放注册展示
+    settings.value = setting.mode === 'code'
+      ? { ...setting, mode: 'open' as const }
+      : setting
     if (list.realms?.length) realmOptions.value = list.realms
   } catch {
     // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
@@ -260,7 +263,6 @@ function fmtDateTime(s: string | null): string {
 
 function modeDesc(mode: string): string {
   if (mode === 'open') return '开放注册：任何人可注册'
-  if (mode === 'code') return '凭码注册：必须携带有效注册码'
   return '关闭注册：暂停新用户加入'
 }
 
@@ -320,7 +322,6 @@ function usedByNames(row: RegistrationCode): string {
         <div class="mode-body">
           <el-radio-group v-model="settings.mode" @change="saveMode">
             <el-radio-button value="open">开放注册</el-radio-button>
-            <el-radio-button value="code">凭码注册</el-radio-button>
             <el-radio-button value="closed">关闭注册</el-radio-button>
           </el-radio-group>
           <div v-if="settings.mode === 'closed'" class="mode-msg">
