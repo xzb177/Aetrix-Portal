@@ -42,6 +42,7 @@ from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import resolve_jwt_user_id
 from backend.notifications import notify_admin_event
+from backend.tg_bind import require_tg_bound
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +285,7 @@ async def do_checkin(
     request: Request,
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    _tg: models.WebUser = Depends(require_tg_bound)
 ):
     """每日签到：基础积分 + 连签加成（封顶）；积分仅限公益服用户"""
     user_id = current_user.id

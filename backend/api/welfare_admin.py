@@ -357,6 +357,8 @@ WELFARE_CONFIG_KEYS = {
     "redpacket_fee_pct": "5",
     "redpacket_send_limit_7d": "20",
     "redpacket_recv_limit_7d": "10",
+    # TG 门禁：公益服能力（签到/积分/红包/抽奖）是否要求绑定 Telegram
+    "welfare_require_tg_bind": "1",
 }
 
 

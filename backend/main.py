@@ -82,6 +82,7 @@ from backend.api.invitation import router as invitation_router
 from backend.api.points import router as welfare_points_router
 from backend.api.welfare_requests import router as welfare_requests_router
 from backend.api.welfare_reviews import router as welfare_reviews_router
+from backend.api.tg_bind import router as tg_bind_router
 
 # 配置日志
 logging.basicConfig(
@@ -718,6 +719,7 @@ app.include_router(invitation_router)
 app.include_router(welfare_points_router)
 app.include_router(welfare_requests_router)
 app.include_router(welfare_reviews_router)
+app.include_router(tg_bind_router)
 
 
 # ==================== 根路径 ====================

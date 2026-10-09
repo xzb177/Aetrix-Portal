@@ -230,6 +230,8 @@ export interface AdminUserRow {
   welfare_expires_at: string | null
   welfare_grant_channel: string | null
   user_type: 'welfare' | 'paid' | 'normal'
+  /** TG 绑定状态（公益服门禁用）：是否绑定 Telegram */
+  tg_bound: boolean
 }
 
 export interface UsersResponse {

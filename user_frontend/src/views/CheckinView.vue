@@ -9,6 +9,8 @@ import {
 } from 'lucide-vue-next'
 import { checkinApi, pointsApi, type CheckinStatus, type PointsLogEntry } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
+import { tgApi, type TgBindStatus } from '@/api/tg'
+import TgBindCard from '@/components/TgBindCard.vue'
 
 const toast = useToast()
 
@@ -101,10 +103,14 @@ async function handleSign() {
 }
 
 onMounted(load)
+const tgStatus = ref<TgBindStatus | null>(null)
+const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required && !tgStatus.value.bound && !tgStatus.value.in_grace)
+onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {}) })
 </script>
 
 <template>
   <div class="au-page checkin-view">
+    <TgBindCard v-if="showTgBanner" compact class="tg-banner" />
     <!-- 主打卡卡：左文右数据的横向布局 -->
     <section class="sign-card au-anim-up" :class="{ signed: status?.checked_today }">
 
@@ -540,4 +546,8 @@ onMounted(load)
   .sign-body { grid-template-columns: 1fr; gap: 1.25rem; }
   .sign-divider { height: 1px; width: 100%; min-height: 0; }
 }
+</style>
+
+<style scoped>
+.tg-banner { margin-bottom: 12px; }
 </style>

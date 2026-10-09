@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { RouterView, useRoute } from 'vue-router'
-import { computed, onMounted } from 'vue'
+import { RouterView, useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted } from 'vue'
 import Toast from '@/components/Toast.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import AppDock from '@/components/AppDock.vue'
@@ -8,7 +8,7 @@ import { useToast } from '@/composables/useToast'
 import { useUserStore } from '@/stores/user'
 import { refreshEmbyBaseUrl } from '@/api/emby'
 
-const { messages, remove } = useToast()
+const { messages, remove, warning } = useToast()
 const userStore = useUserStore()
 const route = useRoute()
 
@@ -39,7 +39,21 @@ const viewCacheKey = computed(
   () => `${route.path}:${userStore.user?.id ?? 'guest'}#${userStore.sessionSeq}`,
 )
 
+const router = useRouter()
+
+let lastTgNotify = 0
+function onTgNotBound(e: Event) {
+  // 节流：多接口同时 403 时只处理一次
+  const now = Date.now()
+  if (now - lastTgNotify < 3000) return
+  lastTgNotify = now
+  const message = (e as CustomEvent)?.detail?.message || '公益服功能需要绑定 Telegram，防小号，1 分钟搞定'
+  warning(message + '，正在前往绑定…')
+  setTimeout(() => router.push('/profile'), 600)
+}
+
 onMounted(() => {
+  window.addEventListener('tg-not-bound', onTgNotBound)
   userStore.init()
   // P0#1：后台重新校验 EA 地址（8001→8002 这类变更 1 小时内自动纠正，不阻塞首屏）
   refreshEmbyBaseUrl()
@@ -49,6 +63,9 @@ onMounted(() => {
   if (userStore.isLoggedIn) {
     userStore.fetchUser().catch(() => {})
   }
+})
+onUnmounted(() => {
+  window.removeEventListener('tg-not-bound', onTgNotBound)
 })
 </script>
 
