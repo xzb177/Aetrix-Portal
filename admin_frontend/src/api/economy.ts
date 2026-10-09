@@ -369,3 +369,28 @@ export const updateReminderSettings = (
 /** 立即执行一轮；dryRun=true 只预览会发给谁（不落库、不发消息） */
 export const runReminders = (dryRun = false) =>
   post<ReminderRunSummary>(`/economy/expiry-reminders/run${dryRun ? '?dry_run=true' : ''}`)
+
+// ==================== 会员等级（P1 统一货币体系） ====================
+
+export interface MemberLevelRow {
+  id: number
+  level: number
+  name: string
+  xp_threshold: number
+  benefits: string[]
+  badge_icon: string
+  badge_color: string
+  is_active: boolean
+}
+
+export const fetchMemberLevels = () =>
+  get<{ levels: MemberLevelRow[] }>('/member-levels')
+
+export const updateMemberLevel = (id: number, data: Partial<MemberLevelRow>) =>
+  put<{ level: MemberLevelRow }>(`/member-levels/${id}`, data)
+
+export const toggleMemberLevel = (id: number) =>
+  put<{ level: MemberLevelRow }>(`/member-levels/${id}/toggle`)
+
+export const deleteMemberLevel = (id: number) =>
+  del<{ deleted: boolean }>(`/member-levels/${id}`)

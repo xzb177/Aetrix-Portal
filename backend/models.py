@@ -246,6 +246,9 @@ class WebUser(Base):
     # 空值 = 升级前的老管理员 → 按 super 处理（不改权、也不会「没人进得去后台」）
     admin_role = Column(String(20), nullable=True)
     points = Column(Integer, default=0)  # 积分余额（签到/邀请返利/兑换/充值）
+    # 会员等级（P1 统一货币体系）：经验值只来自真实充值/有效邀请，等级由阈值推导并缓存
+    member_xp = Column(Integer, default=0, nullable=False, server_default="0")  # 会员经验值
+    member_level = Column(Integer, default=1, nullable=False, server_default="1")  # 缓存的当前等级（1-6）
 
     # 注册渠道（v2.44.0 归因）：admin=管理员创建 / code=卡密注册 /
     # invitation=邀请码注册 / open=开放注册。
@@ -1421,3 +1424,49 @@ class Review(Base):
 
     user = relationship("WebUser")
 
+
+
+class MemberLevel(Base):
+    """会员等级配置表（P1 统一货币体系）
+
+    等级 1-6，经验阈值默认 0/100/500/1500/5000/15000（后台可改）。
+    v1 只展示：等级徽章 + 经验进度条，权益公开透明，不做等级折扣/特权。
+    """
+    __tablename__ = 'member_levels'
+
+    __table_args__ = (
+        Index('idx_member_level', 'level'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    level = Column(Integer, unique=True, nullable=False)  # 等级 1-6
+    name = Column(String(30), nullable=False)  # 等级名称：普通会员/铜牌/白银/黄金/铂金/钻石
+    xp_threshold = Column(Integer, nullable=False, default=0)  # 升级所需经验阈值
+    benefits_json = Column(Text, nullable=True)  # 权益描述 JSON 数组，如 ["权益1","权益2"]
+    badge_icon = Column(String(30), nullable=True)  # 徽章图标名（lucide 图标名）
+    badge_color = Column(String(20), nullable=True)  # 徽章主题色，如 "#c0c0c0"
+    is_active = Column(Boolean, default=True, nullable=False, server_default="1")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class MemberXpLog(Base):
+    """会员经验流水表（P1 统一货币体系）
+
+    经验只来自真实充值（订单回调成功）和有效邀请；兑换码/红包/签到不加经验。
+    """
+    __tablename__ = 'member_xp_log'
+
+    __table_args__ = (
+        Index('idx_xplog_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    xp_delta = Column(Integer, nullable=False)  # 经验变动（正数）
+    xp_after = Column(Integer, nullable=False)  # 变动后经验
+    source = Column(String(20), nullable=False)  # recharge=充值 / invite=有效邀请 / subscription=订阅购买
+    ref_id = Column(String(64), nullable=True)  # 关联订单号等
+    created_at = Column(DateTime, default=datetime.now)
+
+    user = relationship("WebUser")

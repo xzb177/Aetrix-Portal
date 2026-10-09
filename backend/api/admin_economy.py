@@ -13,7 +13,8 @@
 路由对象与其它后台模块共用 ``admin_core.admin_router``，导入即注册。
 """
 from datetime import datetime, timedelta
-from typing import Optional
+import json
+from typing import List, Optional
 
 from fastapi import Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -22,6 +23,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.member_level import ensure_member_levels_seeded
 from backend.api.admin_core import (
     _audit,
     admin_router,
@@ -639,3 +641,149 @@ def economy_list_subscriptions(
             for r in rows
         ],
     }
+
+
+# ========== 会员等级管理（P1 统一货币体系） ==========
+
+def _level_to_dict(lv: models.MemberLevel) -> dict:
+    """MemberLevel 转 dict（benefits_json 容错解析为数组）"""
+    benefits = []
+    if lv.benefits_json:
+        try:
+            parsed = json.loads(lv.benefits_json)
+            if isinstance(parsed, list):
+                benefits = parsed
+        except (ValueError, TypeError):
+            benefits = []
+    return {
+        "id": lv.id,
+        "level": lv.level,
+        "name": lv.name,
+        "xp_threshold": lv.xp_threshold,
+        "benefits": benefits,
+        "badge_icon": lv.badge_icon,
+        "badge_color": lv.badge_color,
+        "is_active": lv.is_active,
+    }
+
+
+class MemberLevelCreate(BaseModel):
+    level: int
+    name: str
+    xp_threshold: int = 0
+    benefits: List[str] = []
+    badge_icon: str = ""
+    badge_color: str = "#9ca3af"
+
+
+class MemberLevelUpdate(BaseModel):
+    name: Optional[str] = None
+    xp_threshold: Optional[int] = None
+    benefits: Optional[List[str]] = None
+    badge_icon: Optional[str] = None
+    badge_color: Optional[str] = None
+
+
+@admin_router.get("/member-levels")
+def list_member_levels(current_admin: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    # 确保种子等级存在
+    ensure_member_levels_seeded(db)
+    levels = db.query(models.MemberLevel).order_by(models.MemberLevel.level.asc()).all()
+    return {"levels": [_level_to_dict(lv) for lv in levels]}
+
+
+@admin_router.post("/member-levels")
+def create_member_level(payload: MemberLevelCreate, current_admin: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    # 校验等级范围与经验阈值
+    if payload.level < 1 or payload.level > 6:
+        raise HTTPException(status_code=400, detail="等级必须在 1-6 之间")
+    if payload.xp_threshold < 0:
+        raise HTTPException(status_code=400, detail="经验阈值不能为负数")
+    # 等级重复校验
+    exists = db.query(models.MemberLevel).filter(models.MemberLevel.level == payload.level).first()
+    if exists:
+        raise HTTPException(status_code=400, detail=f"等级 {payload.level} 已存在")
+    lv = models.MemberLevel(
+        level=payload.level,
+        name=payload.name,
+        xp_threshold=payload.xp_threshold,
+        benefits_json=json.dumps(payload.benefits, ensure_ascii=False),
+        badge_icon=payload.badge_icon,
+        badge_color=payload.badge_color,
+        is_active=True,
+    )
+    db.add(lv)
+    db.commit()
+    db.refresh(lv)
+    _audit(db, current_admin.id, "member_level_create", "member_level", lv.id, {"level": lv.level})
+    return {"level": _level_to_dict(lv)}
+
+
+@admin_router.put("/member-levels/{level_id}")
+def update_member_level(level_id: int, payload: MemberLevelUpdate, current_admin: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    lv = db.query(models.MemberLevel).filter(models.MemberLevel.id == level_id).first()
+    if not lv:
+        raise HTTPException(status_code=404, detail="等级不存在")
+    update_data = {}
+    if payload.name is not None:
+        lv.name = payload.name
+        update_data["name"] = payload.name
+    if payload.xp_threshold is not None:
+        if payload.xp_threshold < 0:
+            raise HTTPException(status_code=400, detail="经验阈值不能为负数")
+        lv.xp_threshold = payload.xp_threshold
+        update_data["xp_threshold"] = payload.xp_threshold
+    if payload.benefits is not None:
+        # 数组转 JSON 存储
+        lv.benefits_json = json.dumps(payload.benefits, ensure_ascii=False)
+        update_data["benefits"] = payload.benefits
+    if payload.badge_icon is not None:
+        lv.badge_icon = payload.badge_icon
+        update_data["badge_icon"] = payload.badge_icon
+    if payload.badge_color is not None:
+        lv.badge_color = payload.badge_color
+        update_data["badge_color"] = payload.badge_color
+    db.commit()
+    db.refresh(lv)
+    _audit(db, current_admin.id, "member_level_update", "member_level", lv.id, update_data)
+    return {"level": _level_to_dict(lv)}
+
+
+@admin_router.delete("/member-levels/{level_id}")
+def delete_member_level(level_id: int, current_admin: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    lv = db.query(models.MemberLevel).filter(models.MemberLevel.id == level_id).first()
+    if not lv:
+        raise HTTPException(status_code=404, detail="等级不存在")
+    # 删除前校验：删除启用等级时至少保留 1 个启用等级
+    if lv.is_active:
+        active_count = db.query(models.MemberLevel).filter(
+            models.MemberLevel.is_active.is_(True),
+            models.MemberLevel.id != level_id,
+        ).count()
+        if active_count < 1:
+            raise HTTPException(status_code=400, detail="至少保留 1 个启用等级")
+    level_num = lv.level
+    db.delete(lv)
+    db.commit()
+    _audit(db, current_admin.id, "member_level_delete", "member_level", level_id, {"level": level_num})
+    return {"deleted": True}
+
+
+@admin_router.put("/member-levels/{level_id}/toggle")
+def toggle_member_level(level_id: int, current_admin: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    lv = db.query(models.MemberLevel).filter(models.MemberLevel.id == level_id).first()
+    if not lv:
+        raise HTTPException(status_code=404, detail="等级不存在")
+    # 关闭时需保证至少保留 1 个启用等级
+    if lv.is_active:
+        active_count = db.query(models.MemberLevel).filter(
+            models.MemberLevel.is_active.is_(True),
+            models.MemberLevel.id != level_id,
+        ).count()
+        if active_count < 1:
+            raise HTTPException(status_code=400, detail="至少保留 1 个启用等级")
+    lv.is_active = not lv.is_active
+    db.commit()
+    db.refresh(lv)
+    _audit(db, current_admin.id, "member_level_toggle", "member_level", lv.id, {"is_active": lv.is_active})
+    return {"level": _level_to_dict(lv)}

@@ -582,6 +582,10 @@ def _auto_migrate():
             ("welfare_expires_at", "DATETIME", "NULL"),
             ("welfare_grant_channel", "VARCHAR(20)", "NULL"),
             ("welfare_granted_at", "DATETIME", "NULL"),
+            # P1 统一货币体系：会员经验与缓存等级。老用户补列后 xp=0/level=1（普通会员），
+            # 与升级前行为一致（此前无等级概念）。
+            ("member_xp", "INTEGER", "0"),
+            ("member_level", "INTEGER", "1"),
         ]),
         # v2.44.0 邀请码白名单（内测码 / 渠道码）：NULL / 空串都按「不限」处理，
         # 所以存量邀请码行为升级前后完全一致（见 backend/api/invitation.py）
@@ -1300,6 +1304,16 @@ def init_db():
         Base.metadata.create_all(bind=engine)
         _auto_migrate()
         _ensure_admin_roles()
+        # P1 统一货币体系：幂等播种默认 6 个会员等级（表空才插）
+        try:
+            from backend import member_level as _ml
+            _s = SessionLocal()
+            try:
+                _ml.ensure_member_levels_seeded(_s)
+            finally:
+                _s.close()
+        except Exception as e:  # noqa: BLE001 — 播种失败不阻止启动，用户端懒播种兜底
+            print(f"⚠️ 会员等级种子写入失败（可忽略）: {e}")
     print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
 

@@ -183,6 +183,7 @@ const navGroups: NavGroup[] = [
       { path: '/exchange-codes', label: '兑换码', icon: Gift },
       { path: '/coupons', label: '优惠券', icon: TicketPercent },
       { path: '/invitations', label: '邀请与积分', icon: UserPlus },
+      { path: '/member-levels', label: '会员等级', icon: Crown },
       { path: '/codes', label: '卡码管理', icon: KeySquare },
     ],
   },

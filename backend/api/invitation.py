@@ -130,6 +130,14 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
         f"使用邀请码 {code_str} 注册", f"invited_by:{inviter.id}",
     )
 
+    # P1 会员经验：有效邀请，邀请人 +10 经验（与双向积分在同一事务，一起落盘）。
+    # 经验失败不阻塞邀请发奖（只记日志）。
+    try:
+        from backend import member_level as _ml
+        _ml.add_xp(db, inviter, 10, "invite", f"invite:{user.id}")
+    except Exception:  # noqa: BLE001
+        logger.exception("邀请经验累加失败: inviter=%s", inviter.id)
+
     code.use_count = (code.use_count or 0) + 1
 
     # 推广奖励（v2.44.0）：独立开关、独立阈值，**默认关闭** → 这里返回 None，
