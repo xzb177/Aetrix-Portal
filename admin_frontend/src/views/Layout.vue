@@ -25,7 +25,7 @@ import {
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Database, Cloud, Megaphone, Receipt, Gift, TicketPercent, UserPlus, KeySquare,
-  UserCog, Activity,
+  UserCog, Activity, Heart,
   Sun, Moon, MonitorSmartphone,
 } from 'lucide-vue-next'
 import { changePassword, fetchMe } from '@/api/admin'
@@ -161,6 +161,17 @@ const navGroups: NavGroup[] = [
       { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
       { path: '/announcements', label: '公告管理', icon: Megaphone },
       { path: '/tickets', label: '工单', icon: Ticket },
+    ],
+  },
+  {
+    // 公益服（v2.54.0）：公益用户 / 求片审核 / 抽奖配置 / 积分配置
+    title: '公益服',
+    icon: Heart,
+    items: [
+      { path: '/welfare-users', label: '公益用户', icon: Users },
+      { path: '/welfare-requests', label: '求片审核', icon: ScrollText },
+      { path: '/welfare-lottery', label: '抽奖配置', icon: Gift },
+      { path: '/welfare-points', label: '积分配置', icon: Wallet },
     ],
   },
   {
