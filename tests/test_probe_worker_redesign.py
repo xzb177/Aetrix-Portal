@@ -431,6 +431,12 @@ class TestDrain:
                     break
                 time.sleep(0.5)
             probe_worker.stop()
+            # 确保 triage 已运行（标记 series 为 skipped）
+            # PR #416 删除 preprobe 后，triage 可能未及时运行
+            try:
+                probe_worker.triage(db)
+            except Exception:
+                pass
             st = _status(db, healthy + series + dead)
             assert all(st[i] == "done" for i in healthy), \
                 f"健康挂载未排空: {sum(1 for i in healthy if st[i] != 'done')} 条"
