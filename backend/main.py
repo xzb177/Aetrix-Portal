@@ -79,6 +79,7 @@ from backend.emby_server import portal_mount_routes  # noqa: F401
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
+from backend.api.points import router as welfare_points_router
 
 # 配置日志
 logging.basicConfig(
@@ -697,6 +698,7 @@ app.include_router(auth_router)
 # 用户经济系统（签到/兑换码/支付/订单）与邀请返利
 app.include_router(economy_router)
 app.include_router(invitation_router)
+app.include_router(welfare_points_router)
 
 
 # ==================== 根路径 ====================
