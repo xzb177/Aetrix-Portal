@@ -88,6 +88,7 @@ def dispatch(db, update: dict) -> None:
             "/checkin": handlers.handle_checkin,
             "/points": handlers.handle_points,
             "/redeem": handlers.handle_redeem,
+            "/redpacket": handlers.handle_redpacket,
         }
         fn = commands.get(cmd)
         tg_uid = tg_user.get("id") or 0

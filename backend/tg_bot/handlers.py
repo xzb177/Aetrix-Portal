@@ -6,6 +6,7 @@ from datetime import datetime
 from backend.integrations import store
 from backend.models import SubscriptionPlan, TgBindCode, UserSubscription, WebUser
 from backend.tg_bot import login_token
+from backend.tg_bot import redpacket_common
 from backend.tg_bot.identity import resolve
 
 
@@ -17,6 +18,7 @@ def _command_list() -> str:
         "/bind   绑定 Telegram\n"
         "/checkin  每日签到\n"
         "/points   查积分\n"
+        "/redpacket  发红包：/redpacket <总积分> <个数>\n"
         "/lottery  抽奖（即将上线）"
     )
 
@@ -202,3 +204,34 @@ def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
     except Exception:
         return "兑换失败，请稍后再试"
     return "🎁 " + str(result.get("message", "兑换成功"))
+    return "🎁 " + str(result.get("message", "兑换成功"))
+
+
+def handle_redpacket(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
+    # 1. 总开关：关闭时直接提示
+    if not redpacket_common.enabled(db):
+        return "🧧 红包功能已关闭"
+    # 2. 身份：未绑定则引导绑定
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return _bind_guide_text()
+    # 3. 参数：取前两个并转 int，数量不对或转换失败则提示用法
+    parts = args.split()[:2]
+    if len(parts) != 2:
+        return "用法：/redpacket <总积分> <个数>\n例如：/redpacket 100 10（100 积分分成 10 个）"
+    try:
+        total, count = int(parts[0]), int(parts[1])
+    except ValueError:
+        return "用法：/redpacket <总积分> <个数>\n例如：/redpacket 100 10（100 积分分成 10 个）"
+    # 4. 发红包：复用后端校验与扣减逻辑
+    from backend import welfare_redpacket
+    try:
+        packet = welfare_redpacket.send_packet(db, user, total, count)
+    except ValueError as e:
+        return f"🧧 {e}"
+    except Exception:
+        return "🧧 发红包失败，请稍后再试"
+    # 5. 成功：返回红包正文与领取按钮
+    sender_name = html.escape(str(user.username or "朋友"))
+    text = redpacket_common.packet_text(packet, sender_name)
+    return (text, redpacket_common.claim_markup(packet.id))
