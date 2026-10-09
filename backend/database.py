@@ -574,6 +574,8 @@ def _auto_migrate():
             # v2.44.0 注册渠道归因（admin/code/invitation/open）：老用户补列后为 NULL，
             # 按「未记录」显示——不硬猜成 open（见 backend/register_channel.py）
             ("register_channel", "VARCHAR(20)", "NULL"),
+            # 用户级转码开关（Linger 借鉴）：默认允许，老用户补列后为 True
+            ("enable_video_transcoding", "BOOLEAN", "1"),
         ]),
         # v2.44.0 邀请码白名单（内测码 / 渠道码）：NULL / 空串都按「不限」处理，
         # 所以存量邀请码行为升级前后完全一致（见 backend/api/invitation.py）
