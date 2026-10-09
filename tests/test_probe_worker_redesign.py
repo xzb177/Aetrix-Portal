@@ -2,7 +2,7 @@
 """探测 worker 重构（v2.53）：抢单租约 / 回收 / 退避 / 超时整组杀 / 熔断 / 单体启动 / 排空。
 
 生产事故：「探测 worker 启动了定时器，但实际探测没在跑，28.5 万条卡住，时不时卡死」。
-复现与根因见 CHANGELOG [未发布]；这里钉住修复后的每一条行为。
+复现与根因见 CHANGELOG 2.53.0 / 2.55.0；这里钉住修复后的每一条行为。
 """
 import os
 
@@ -421,6 +421,9 @@ class TestDrain:
             dead = _add(db, lib, 20, file_path="mount://7/d/{g}.mkv", probe_priority=100)
             healthy = eps + fn_movies
             probe_worker.start()
+            # triage 必须有调度入口：PR #416 删除 preprobe 时把它删成了死代码（只剩定义、
+            # 没有任何调用点），这里钉住 start() 真的注册了整理线程。
+            assert "probe_triage" in worker_registry.snapshot(), "triage 调度未注册"
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 left = db.query(func.count(em.MediaItem.id)).filter(
@@ -431,12 +434,6 @@ class TestDrain:
                     break
                 time.sleep(0.5)
             probe_worker.stop()
-            # 确保 triage 已运行（标记 series 为 skipped）
-            # PR #416 删除 preprobe 后，triage 可能未及时运行
-            try:
-                probe_worker.triage(db)
-            except Exception:
-                pass
             st = _status(db, healthy + series + dead)
             assert all(st[i] == "done" for i in healthy), \
                 f"健康挂载未排空: {sum(1 for i in healthy if st[i] != 'done')} 条"
