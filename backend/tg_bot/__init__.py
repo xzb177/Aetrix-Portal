@@ -1,2 +1,2 @@
-# -*- coding: utf-8 -*-
-"""Telegram Bot 功能包（M1 起：群发言积分；B1 合并后含 poller/router/handlers）。"""
+# backend/tg_bot/__init__.py
+"""Telegram Bot 命令化：公益服功能的 Bot 入口。"""
