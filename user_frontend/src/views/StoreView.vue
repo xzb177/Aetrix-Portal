@@ -404,8 +404,8 @@ async function loadAll(silent = false) {
       couponApi.config(),
       // 活力值：非公益服用户 403，兜底为 null 不展示
       vitalityApi.status(),
-      // 会员等级：失败时兜底为 null，不展示折扣
-      memberApi.info().catch(() => null),
+      // 会员等级：失败时走 settled 兜底为 null，不展示折扣
+      memberApi.info(),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -429,8 +429,8 @@ async function loadAll(silent = false) {
     if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
     const vitalityData = vitalityR.status === 'fulfilled' ? vitalityR.value : null
     vitality.value = vitalityData && vitalityData.success ? vitalityData : null
-    const memberData = memberR.status === 'fulfilled' ? memberR.value : null
-    member.value = memberData
+    const memberData = settled(memberR, null, silent)
+    if (memberData !== undefined) member.value = memberData
 
     // 商品与价格回来后，已应用的券要按最新价格重算一次
     // （替代原来的 watch(tab)：本页没有分页，只在数据刷新时重算）
