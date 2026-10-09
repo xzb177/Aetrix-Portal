@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 import logging
 from sqlalchemy.orm import Session
 from backend import models
-from backend.emby_server import portal
 from backend.api import economy
 
 logger = logging.getLogger(__name__)
@@ -100,6 +99,7 @@ _SCHEDULER_LOCK = threading.Lock()
 
 def bulk_extend_welfare(db: Session, min_expired_days: int, max_expired_days: int, add_days: int, granted_by=None) -> dict:
     """批量延期：找出过期天数在 [min_expired_days, max_expired_days] 的公益用户，每人加 add_days 天。"""
+    from backend.emby_server import portal
     now = datetime.now()
     # (now - exp).days >= min  <=>  exp <= now - min days
     # (now - exp).days <= max  <=>  exp >  now - (max + 1) days
