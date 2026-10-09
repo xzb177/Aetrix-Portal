@@ -80,6 +80,10 @@ from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
 from backend.api.points import router as welfare_points_router
+from backend.api.welfare_requests import router as welfare_requests_router
+from backend.api.welfare_lottery import router as welfare_lottery_router
+from backend.api.welfare_redpacket import router as welfare_redpacket_router
+from backend.api.welfare_reviews import router as welfare_reviews_router
 
 # 配置日志
 logging.basicConfig(
@@ -699,6 +703,10 @@ app.include_router(auth_router)
 app.include_router(economy_router)
 app.include_router(invitation_router)
 app.include_router(welfare_points_router)
+app.include_router(welfare_requests_router)
+app.include_router(welfare_lottery_router)
+app.include_router(welfare_redpacket_router)
+app.include_router(welfare_reviews_router)
 
 
 # ==================== 根路径 ====================

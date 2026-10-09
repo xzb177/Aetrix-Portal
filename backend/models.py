@@ -1299,3 +1299,120 @@ __all__ = [
     # 监控
     "SystemMetric", "AlertRule", "Alert",
 ]
+
+
+# ==================== 娱乐板块（公益服模块3） ====================
+
+class MediaRequest(Base):
+    """求片请求表（用户端娱乐板块）"""
+    __tablename__ = 'media_requests'
+
+    __table_args__ = (
+        Index('idx_mreq_user', 'user_id'),
+        Index('idx_mreq_status', 'status'),
+        Index('idx_mreq_tmdb', 'tmdb_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    tmdb_id = Column(String(20), nullable=False)
+    media_type = Column(String(10), nullable=False, default='movie')  # movie / tv
+    title = Column(String(255), nullable=False)
+    status = Column(String(20), default='pending')  # pending/approved/rejected/done
+    admin_note = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship("WebUser")
+
+
+class LotteryPrize(Base):
+    """抽奖奖品配置表"""
+    __tablename__ = 'lottery_prizes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    # days=公益天数 / points=积分 / whitelist=白名单(永不过期)
+    type = Column(String(20), nullable=False, default='days')
+    value = Column(Integer, nullable=False, default=0)
+    probability = Column(Float, nullable=False, default=0.0)  # 权重，非百分比
+    enabled = Column(Boolean, default=True, nullable=False, server_default="1")
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class LotteryLog(Base):
+    """抽奖记录表"""
+    __tablename__ = 'lottery_logs'
+
+    __table_args__ = (
+        Index('idx_lottery_user', 'user_id'),
+        Index('idx_lottery_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    prize_id = Column(Integer, ForeignKey('lottery_prizes.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    user = relationship("WebUser")
+    prize = relationship("LotteryPrize")
+
+
+class RedPacket(Base):
+    """红包表（积分红包）"""
+    __tablename__ = 'red_packets'
+
+    __table_args__ = (
+        Index('idx_rp_sender', 'sender_id'),
+        Index('idx_rp_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sender_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    total_amount = Column(Integer, nullable=False)  # 总积分
+    total_count = Column(Integer, nullable=False)  # 总个数
+    remaining_amount = Column(Integer, nullable=False)
+    remaining_count = Column(Integer, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    sender = relationship("WebUser")
+
+
+class RedPacketClaim(Base):
+    """红包领取记录表"""
+    __tablename__ = 'red_packet_claims'
+
+    __table_args__ = (
+        Index('idx_rpc_packet', 'packet_id'),
+        Index('idx_rpc_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    packet_id = Column(Integer, ForeignKey('red_packets.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    amount = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    user = relationship("WebUser")
+
+
+class Review(Base):
+    """影评表"""
+    __tablename__ = 'reviews'
+
+    __table_args__ = (
+        Index('idx_review_guid', 'item_guid'),
+        Index('idx_review_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    item_guid = Column(String(64), nullable=False)
+    rating = Column(Integer, nullable=False, default=5)  # 1-5
+    content = Column(Text, nullable=False)
+    likes = Column(Integer, default=0, nullable=False, server_default="0")
+    created_at = Column(DateTime, default=datetime.now)
+
+    user = relationship("WebUser")
+
