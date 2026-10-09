@@ -2,7 +2,48 @@
 
 所有项目重要更改都将记录在此文件中。
 
-## [未发布] - 稳定性 / 性能：串流不占连接、代理与转码回收、Redis 熔断、列表下推 SQL
+## [2.55.0] - 2026-10-09
+
+播放链路与转码策略的一轮改造（PR #413–#416、#420、#422、#423）。
+
+### 单一播放路径（#413）
+
+播放不再让用户在「直连 / 中转」等多条线路之间选择：统一走一条**中转 + CF** 路径，缓存按热度
+自动分层（`local_cache`），线路选择相关的状态与口径（`line_health` / `line_stats` / `play_line`）
+随之收敛；管理后台「客户端策略」页去掉线路选择项。
+
+### 用户级转码开关（#414）
+
+`web_users` 新增 `enable_video_transcoding`（Emby 标准字段 `EnableVideoPlaybackTranscoding`），
+默认允许；管理员可对指定用户关闭转码、只给直传以省服务器资源。PlaybackInfo 的转码判定加入用户级检查。
+（#420 移除了此前一并下发的 `guarantee` 文案字段——它会让前端白屏。）
+
+### 硬件转码自检（#415）
+
+启动时用一帧真实编码做自检，按 NVENC → QSV → VAAPI 顺序选可用的硬件编码器，都不可用时静默
+回退软件转码（`backend/emby_server/hwaccel.py`）。
+
+### 删除「神医助手秒播助手」（预提取，#416）并接回队列整理
+
+用户反馈该功能从未成功起播，确认无用后删除 `preprobe_sweep` / `_preprobe_loop` / `_spawn_preprobe` /
+`_restart_preprobe` 及相关常量。
+
+⚠️ 那次删除把**队列整理（triage）的调度一起删掉了**：`_preprobe_loop` 原本负责「启动先跑一轮、
+之后每 `PROBE_PREEXTRACT_INTERVAL_SEC` 跑一轮」，循环删掉之后 `triage()` / `_run_triage_once()`
+只剩定义、全仓没有任何调用点——也就是 2.53.0 承诺的「启动时及每 6 小时纠正状态、给最近播放过的
+条目提权」在生产上**一次都不会执行**（维护者在 `tests/test_probe_worker_redesign.py` 里用「显式调用
+triage」绕过了这个现象）。本版把它接回来：新增 `_triage_loop()` / `_spawn_triage()` /
+`_restart_triage()`，由 `start()` 启动、`stop()` 停止，并在 `worker_registry` 注册为 `probe_triage`
+（带崩溃自愈重启）；间隔改用语义正确的 `PROBE_TRIAGE_INTERVAL_SEC`（默认 21600 秒），
+`env.example` 同步改名，回归测试改为断言 `probe_triage` 已注册、且 `series` 条目无需手动干预
+就被标成 `skipped`。
+
+### 未保留的改动
+
+「播放前预热文件头 10MB」（#417）与「片头缓存 50MB / 24h」（#419）已按用户要求在 #422 / #423 中
+整体移除，最终未保留任何片头缓存代码。
+
+## [2.54.0] - 2026-10-09
 
 依据性能审查（S1–S7、S9、S12，P2–P4）。接口路径与返回字段不变；数据库结构不变；
 除下文「行为变化」所列外，返回内容与升级前逐字一致（有新旧对照测试）。
@@ -82,8 +123,9 @@
 
 - 如果之前靠调大 PG 连接池来扛并发播放，S1 之后可以按 API 请求量重新评估连接池大小。
 
-## [未发布] - 媒体信息探测 worker 重构（28.5 万条 pending 卡住 / 时不时卡死）
+## [2.53.0] - 2026-10-09
 
+媒体信息探测 worker 重构：28.5 万条 pending 卡住不动、worker 隔一阵整体卡死。
 现象：日志里「预提取定时器启动」照常出现，后台显示 28.5 万条待探测，但数字几乎不动，
 探测 worker 隔一阵就整体卡住，只有重启才恢复一会儿。
 
@@ -139,8 +181,11 @@
   `PROBE_CLAIM_TTL_SEC`、`PROBE_BREAKER_THRESHOLD`、`PROBE_BREAKER_COOLDOWN_SEC`、
   `PROBE_RETRY_MAX_SEC`、`PROBE_TRIAGE_CHUNK`。
 - 管理后台前端尚未加探测进度卡片，接口已就绪（见上）。
+- **预提取（神医助手「秒播助手」）已在 2.55.0 删除**（PR #416）：用户反馈该功能从未成功起播，`preprobe_sweep` / `_preprobe_loop` / `_spawn_preprobe` / `_restart_preprobe` 及相关常量、`PROBE_PREEXTRACT_*` 环境变量一并移除；上面的「预提取定时器」现象描述指的是删除之前的旧行为。
 
-## [未发布] - 安全修复：3 个严重 + 5 个高危漏洞
+## [2.52.0] - 2026-10-09
+
+本轮修复 3 个严重 + 5 个高危漏洞。 - 安全修复：3 个严重 + 5 个高危漏洞
 
 ### 安全修复
 
@@ -166,7 +211,25 @@
 - **缩略图缓存串图**：库外同名外挂图（`poster.jpg` / `folder.jpg` / `cover.jpg` / `fanart.jpg`……）此前共用同一张缩略图（如 `poster_w320.jpg`），
   首页「本周入库」海报与片名对不上。现对缓存之外的原图按「绝对路径 + mtime + 大小」的 sha1 命名缩略图（`backend/emby_server/image_store.py`）。
 
-## [未发布] - 修复：恢复 2d7d996 误删的功能
+### 升级须知
+
+1. **管理员角色**：升级后只有**最早创建的那个管理员**（安装向导 / `scripts/create_admin.py` 建的号）保持超管；
+   其他从未显式设置过角色的管理员会变成**只读**，需超管在「管理员」页重新授予角色，或用 `scripts/create_admin.py` 处理。
+2. **EM / EA / 所有推流节点必须同时升级**：旧版 EM 发的 `X-Panel-Key: <SECRET_KEY>` 不再被接受，新旧混跑会互相拒绝。
+   部署脚本（`deploy-streaming-node.sh`）与运维 curl 的 `X-Panel-Key` 改用 `python -m backend.node_auth` 输出的**节点密钥**，不要再填 `SECRET_KEY`。
+   各端时钟需同步（误差超过 `NODE_AUTH_MAX_SKEW`，默认 300 秒，签名会被拒）。
+3. **建议轮换 `SECRET_KEY`**：旧版本已把它发往后台配置的服务器地址，视为可能泄露；轮换后所有用户需重新登录，EM / EA 两端同时改。
+   若显式设置了 `NODE_SHARED_SECRET`，所有节点同步更新。
+4. **Docker 反代需设置 `TRUSTED_PROXIES`**：默认只信 Cloudflare 回源网段与回环；宿主机 Nginx → docker-proxy → 容器的部署，
+   容器看到的直连方是 docker 网关，需把网段加入（如 `TRUSTED_PROXIES=172.16.0.0/12`，或按 `docker network inspect` 查到的子网），
+   否则所有用户共用一个限流桶。
+5. **网页播放链接会过期**：签名播放链接在 `PLAY_SIGN_URL_TTL`（默认 21600 秒 = 6 小时）后失效，长时间挂着的播放页刷新即可重新签发。
+6. **可清理旧缩略图**：图片缓存目录为 `EMBY_IMAGE_DIR`（默认 `<EMBY_TRANSCODE_DIR>/images`，即 `/tmp/emby_transcode/images`）。
+   旧版按外挂图文件名生成的串图缩略图（如 `poster_w320.jpg`、`folder_w160.jpg`）不会再被引用，可删除后按需重新生成：
+   `find "$EMBY_IMAGE_DIR" -maxdepth 1 -name '*_[wh][0-9]*.jpg' ! -regex '.*/[0-9a-f]\{40\}_[wh][0-9].*' -delete`
+   （只删非 sha1 命名的缩略图；缩略图本身都是可再生的，误删只会触发重新生成）。
+
+## [2.51.0] - 2026-10-09
 
 ### 修复
 
@@ -191,7 +254,7 @@ JWT 不进 URL、可信代理、兑换码每人一次、缩略图缓存 key）�
 - **多版本管理后台接口**：恢复 `/api/admin/media/versions/{id}`、`/unmerge`、`/unmerge-all`。
 - **文档**：`docs/新手指南.md` 文件名恢复（此前被改成乱码，README 链接失效）。
 
-## [未发布] - 后端清理：删除死代码与无用依赖、合并重复 helper、修集图片 N+1
+## [2.50.0] - 2026-10-09
 
 只做「不改行为」的清理（依据性能审查第 7 节中标为低风险 / 机械安全的条目），外加一个纯性能修复。
 接口、配置项、数据库结构均不变；未删除任何仍被引用的代码。
@@ -229,55 +292,7 @@ JWT 不进 URL、可信代理、兑换码每人一次、缩略图缓存 key）�
 
 - 无需任何操作。自定义镜像如果依赖上面移除的 Python 包，需要自行安装。
 
-
-## [未发布] - 安全修复（3 严重 + 5 高危）
-
-### 严重
-
-1. **普通管理员提权漏洞**：普通管理员不能再给自己提权，也不能修改其他管理员账号。
-   只有最早创建的超级管理员保留完整权限。
-
-2. **SECRET_KEY 泄露给推流节点**：不再把 `SECRET_KEY` 发给推流节点。
-   改用独立的 `NODE_SHARED_SECRET` + 签名机制做节点身份认证。
-   面板与节点必须同时升级，否则节点会拒绝连接。
-
-3. **片库可见性绕过**：片库可见性校验现在覆盖所有接口，
-   未授权用户无法通过直接调接口访问受限片库。
-
-### 高危
-
-4. **JWT 出现在 URL**：JWT 不再出现在 URL 查询参数里，改走 Header 或 POST body，
-   避免日志/浏览器历史泄露 token。
-
-5. **IP 伪造**：只采信可信代理（`TRUSTED_PROXIES`）传来的真实 IP，
-   `X-Forwarded-For` 不再无条件信任。
-
-6. **兑换码重复使用**：同一兑换码每个用户只能兑换一次，
-   修复并发下重复兑换的竞态。
-
-7. **缩略图缓存串图**：外挂图（`poster.jpg` 等同名文件）的缩略图缓存 key
-   改用「绝对路径 + mtime + 大小」的 sha1，不再按文件名复用，
-   修复不同影片海报互相串图的问题。
-
-### 升级须知
-
-1. **管理员角色**：升级后只有**最早创建的那个管理员**（安装向导 / `scripts/create_admin.py` 建的号）保持超管；
-   其他从未显式设置过角色的管理员会变成**只读**，需超管在「管理员」页重新授予角色，或用 `scripts/create_admin.py` 处理。
-2. **EM / EA / 所有推流节点必须同时升级**：旧版 EM 发的 `X-Panel-Key: <SECRET_KEY>` 不再被接受，新旧混跑会互相拒绝。
-   部署脚本（`deploy-streaming-node.sh`）与运维 curl 的 `X-Panel-Key` 改用 `python -m backend.node_auth` 输出的**节点密钥**，不要再填 `SECRET_KEY`。
-   各端时钟需同步（误差超过 `NODE_AUTH_MAX_SKEW`，默认 300 秒，签名会被拒）。
-3. **建议轮换 `SECRET_KEY`**：旧版本已把它发往后台配置的服务器地址，视为可能泄露；轮换后所有用户需重新登录，EM / EA 两端同时改。
-   若显式设置了 `NODE_SHARED_SECRET`，所有节点同步更新。
-4. **Docker 反代需设置 `TRUSTED_PROXIES`**：默认只信 Cloudflare 回源网段与回环；宿主机 Nginx → docker-proxy → 容器的部署，
-   容器看到的直连方是 docker 网关，需把网段加入（如 `TRUSTED_PROXIES=172.16.0.0/12`，或按 `docker network inspect` 查到的子网），
-   否则所有用户共用一个限流桶。
-5. **网页播放链接会过期**：签名播放链接在 `PLAY_SIGN_URL_TTL`（默认 21600 秒 = 6 小时）后失效，长时间挂着的播放页刷新即可重新签发。
-6. **可清理旧缩略图**：图片缓存目录为 `EMBY_IMAGE_DIR`（默认 `<EMBY_TRANSCODE_DIR>/images`，即 `/tmp/emby_transcode/images`）。
-   旧版按外挂图文件名生成的串图缩略图（如 `poster_w320.jpg`、`folder_w160.jpg`）不会再被引用，可删除后按需重新生成：
-   `find "$EMBY_IMAGE_DIR" -maxdepth 1 -name '*_[wh][0-9]*.jpg' ! -regex '.*/[0-9a-f]\{40\}_[wh][0-9].*' -delete`
-   （只删非 sha1 命名的缩略图；缩略图本身都是可再生的，误删只会触发重新生成）。
-
-## [未发布] - 用户端「暗房影院」主题全站改版
+## [2.49.0] - 2026-10-09
 
 用户端（`user_frontend/`）整体换成「暗房影院」视觉：暖黑底、实色卡片、放映机琥珀**单一强调色**、
 衬线标题、整屏胶片颗粒。只改视觉与首页编排，路由 / 接口 / 业务逻辑不变；管理后台与后端未改动。

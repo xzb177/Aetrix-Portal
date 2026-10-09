@@ -27,7 +27,7 @@ CHANGELOG / docs，简述：
   ``probe_attempts`` + ``probe_next_retry_at`` + ``probe_claimed_at``（租约）+
   ``probe_last_error``。抢单 ``FOR UPDATE SKIP LOCKED``（PG）/ 带状态守卫的 UPDATE（SQLite）；
   租约超时（``PROBE_CLAIM_TTL_SEC``）自动放回 pending；失败指数退避，K 次后 failed。
-- **整理（triage）**：启动时和每 ``PROBE_PREEXTRACT_INTERVAL_SEC`` 按 id 分段把
+- **整理（triage）**：启动时和每 ``PROBE_TRIAGE_INTERVAL_SEC``（默认 6 小时）按 id 分段把
   ``pending`` 纠正成真实状态：不需要探测的（季/剧集/无文件/已删/已合并）→ ``skipped``，
   已有完整信息的 → ``done``；``probe_status IS NULL`` 的按同一口径入队。最近播放过的
   pending 条目提到优先级 800。
@@ -63,7 +63,6 @@ from sqlalchemy import and_, func, or_
 from backend.emby_server import media_probe
 from backend.emby_server import models as em
 from backend.emby_server import proc_util
-from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
@@ -75,8 +74,8 @@ def _env_flag(name: str, default: str = "1") -> bool:
 
 # ---------------------------------------------------------------- 配置
 PROBE_ENABLED = _env_flag("PROBE_ONDEMAND_ENABLED")
-# 总并发（线程池大小）：按 CPU 自适应，永远给前台留一核
-PROBE_WORKERS = _cpu_workers("PROBE_WORKERS")
+# 总并发（线程池大小）
+PROBE_WORKERS = env_int("PROBE_WORKERS", 4, 1, 16)
 # 每个挂载的并发上限：远程（115/rclone/WebDAV/FUSE/直链）默认 2，本机磁盘默认 4
 PROBE_REMOTE_CONCURRENCY = env_int("PROBE_REMOTE_CONCURRENCY", 2, 1, 16)
 PROBE_LOCAL_CONCURRENCY = env_int("PROBE_LOCAL_CONCURRENCY", 4, 1, 16)
@@ -107,19 +106,17 @@ PROBE_ITEM_TYPES = tuple(
     t.strip() for t in (os.getenv("PROBE_ITEM_TYPES", "movie,episode") or "movie,episode").split(",")
     if t.strip()) or ("movie", "episode")
 
-# 预提取 / 整理（triage）
-PREPROBE_ENABLED = _env_flag("PROBE_PREEXTRACT_ENABLED")
-PREPROBE_INTERVAL_SEC = env_float("PROBE_PREEXTRACT_INTERVAL_SEC", 21600.0, 60.0)
-PREPROBE_PRIORITY = 500
-PREPROBE_SWEEP_LIMIT = env_int("PROBE_PREEXTRACT_SWEEP_LIMIT", 5000, 100, 100000)
+# 队列整理（triage）
 TRIAGE_CHUNK = env_int("PROBE_TRIAGE_CHUNK", 5000, 100, 100000)
+# 整理间隔：启动先跑一轮，之后按此间隔重复（默认 6 小时）
+TRIAGE_INTERVAL_SEC = env_float("PROBE_TRIAGE_INTERVAL_SEC", 21600.0, 60.0)
 RECENT_PLAY_DAYS = 30
 RECENT_PLAY_PRIORITY = 800
 
 # 按需插队优先级（models.py 约定）
 ONDEMAND_PRIORITY = 1000
 
-# 终态：这些状态的条目 preprobe / triage 不复活
+# 终态：这些状态的条目 triage 不复活
 #（probed_no_duration 是扫描器历史终态，缺 codec 也不重探，否则会烧 Drive 配额）
 TERMINAL_STATUSES = ("done", "degraded", "failed", "skipped", "probed_no_duration")
 QUEUE_STATUSES = ("pending", "probing")
@@ -129,7 +126,7 @@ STATUS_CACHE_KEY = "aetrix:probe:status"
 
 # ---------------------------------------------------------------- 运行时状态
 _dispatcher_thread: Optional[threading.Thread] = None
-_preprobe_thread: Optional[threading.Thread] = None
+_triage_thread: Optional[threading.Thread] = None
 _start_lock = threading.Lock()
 _stop_event = threading.Event()
 _wake = threading.Event()
@@ -529,7 +526,7 @@ def _recover_crashed(db) -> int:
     return reclaim_stale(db, ttl_sec=None)
 
 
-# ---------------------------------------------------------------- 整理 / 预提取
+# ---------------------------------------------------------------- 整理（triage）
 def triage(db, chunk: int = TRIAGE_CHUNK, pause_sec: float = 0.0,
            interruptible: bool = False) -> dict:
     """把 probe_status 纠正成真实状态（幂等，按 id 分段，避免长事务锁表）。
@@ -562,7 +559,7 @@ def triage(db, chunk: int = TRIAGE_CHUNK, pause_sec: float = 0.0,
                                   synchronize_session=False))
         stats["queued"] += (db.query(MI).filter(rng, MI.probe_status.is_(None), shape, missing)
                             .update({"probe_status": "pending",
-                                     "probe_priority": PREPROBE_PRIORITY,
+                                     "probe_priority": 500,
                                      "probe_next_retry_at": None},
                                     synchronize_session=False))
         db.commit()
@@ -593,34 +590,12 @@ def triage(db, chunk: int = TRIAGE_CHUNK, pause_sec: float = 0.0,
     return stats
 
 
-def preprobe_sweep(db, limit: int = PREPROBE_SWEEP_LIMIT) -> int:
-    """预提取扫描（兼容接口）：probe_status 不在队列也不是终态、且缺信息的条目入队。
-
-    注意 NULL 也要扫（NOT IN 对 NULL 返回 unknown 会漏掉）。
-    """
-    MI = em.MediaItem
-    not_queued = or_(MI.probe_status.is_(None),
-                     MI.probe_status.notin_(QUEUE_STATUSES + TERMINAL_STATUSES))
-    ids = [r[0] for r in db.query(MI.id)
-           .filter(_shape_clause(), _missing_info_clause(), not_queued)
-           .order_by(MI.id.desc()).limit(limit).all()]
-    if ids:
-        (db.query(MI).filter(MI.id.in_(ids))
-         .update({"probe_status": "pending", "probe_priority": PREPROBE_PRIORITY,
-                  "probe_next_retry_at": None}, synchronize_session=False))
-        db.commit()
-        logger.info("预提取扫描入队 %d 条（缺媒体信息）", len(ids))
-    else:
-        db.rollback()
-    return len(ids)
-
 
 def _run_triage_once() -> None:
     from backend.database import SessionLocal
     db = SessionLocal()
     try:
         triage(db, pause_sec=0.05, interruptible=True)
-        preprobe_sweep(db)
     except Exception as exc:  # noqa: BLE001
         logger.warning("探测队列整理失败: %s", exc)
         _set_error(f"整理失败: {exc}")
@@ -632,15 +607,19 @@ def _run_triage_once() -> None:
         db.close()
 
 
-def _preprobe_loop() -> None:
-    """整理/预提取定时器：启动先跑一轮，之后按间隔重复。"""
+def _triage_loop() -> None:
+    """队列整理定时器：启动先跑一轮，之后按 ``TRIAGE_INTERVAL_SEC`` 重复。
+
+    PR #416 删除预提取时把这段调度一起删掉了（``triage`` 只剩定义、没有任何调用点），
+    这里按原行为接回来，但不再调用已删除的 ``preprobe_sweep``。
+    """
     from backend.emby_server import worker_registry as _wr
-    logger.info("探测队列整理定时器启动（间隔 %gs）", PREPROBE_INTERVAL_SEC)
+    logger.info("探测队列整理定时器启动（间隔 %gs）", TRIAGE_INTERVAL_SEC)
     _run_triage_once()
     _wake.set()
     while not _stop_event.is_set():
-        _wr.heartbeat("probe_preextract")
-        if _stop_event.wait(PREPROBE_INTERVAL_SEC):
+        _wr.heartbeat("probe_triage")
+        if _stop_event.wait(TRIAGE_INTERVAL_SEC):
             break
         _run_triage_once()
 
@@ -1089,12 +1068,6 @@ def _spawn_dispatcher() -> None:
     _wr.register("probe_dispatcher", _dispatcher_thread, restart=_restart_dispatcher)
 
 
-def _spawn_preprobe() -> None:
-    global _preprobe_thread
-    from backend.emby_server import worker_registry as _wr
-    _preprobe_thread = threading.Thread(target=_preprobe_loop, name="media-preprobe", daemon=True)
-    _preprobe_thread.start()
-    _wr.register("probe_preextract", _preprobe_thread, restart=_restart_preprobe)
 
 
 def _restart_dispatcher() -> None:
@@ -1104,11 +1077,21 @@ def _restart_dispatcher() -> None:
         _spawn_dispatcher()
 
 
-def _restart_preprobe() -> None:
+def _spawn_triage() -> None:
+    global _triage_thread
+    from backend.emby_server import worker_registry as _wr
+    _triage_thread = threading.Thread(target=_triage_loop, name="media-probe-triage", daemon=True)
+    _triage_thread.start()
+    _wr.register("probe_triage", _triage_thread, restart=_restart_triage)
+
+
+def _restart_triage() -> None:
     with _start_lock:
-        if _stop_event.is_set() or (_preprobe_thread is not None and _preprobe_thread.is_alive()):
+        if _stop_event.is_set() or (_triage_thread is not None and _triage_thread.is_alive()):
             return
-        _spawn_preprobe()
+        _spawn_triage()
+
+
 
 
 def start() -> bool:
@@ -1141,8 +1124,7 @@ def start() -> bool:
             _metrics["started_at"] = datetime.now().isoformat(timespec="seconds")
             _metrics["_started_mono"] = time.monotonic()
         _spawn_dispatcher()
-        if PREPROBE_ENABLED and (_preprobe_thread is None or not _preprobe_thread.is_alive()):
-            _spawn_preprobe()
+        _spawn_triage()
         from backend.emby_server import worker_registry as _wr
         _wr.ensure_supervisor()
         logger.info("媒体信息探测 worker 已启动")
@@ -1153,9 +1135,9 @@ def stop(timeout: float = 5.0) -> None:
     """停止 worker（测试 / 优雅退出）。"""
     _stop_event.set()
     _wake.set()
-    for t in (_dispatcher_thread, _preprobe_thread):
+    for t in (_dispatcher_thread, _triage_thread):
         if t is not None and t.is_alive():
             t.join(timeout=timeout)
     from backend.emby_server import worker_registry as _wr
     _wr.unregister("probe_dispatcher")
-    _wr.unregister("probe_preextract")
+    _wr.unregister("probe_triage")

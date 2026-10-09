@@ -271,10 +271,25 @@ async def section_async():
     # 真子进程（忽略 SIGTERM 的 python）：真的走完「等 5 秒 → SIGKILL → 删目录」，
     # 而事件循环在这 5 秒里始终是活的——这是最接近生产里 ffmpeg 卡死的形态
     real_dir = fake_session_dir(files=10)
+    # 竞态修复：子进程需要时间执行 signal.signal(SIG_IGN)，否则 SIGTERM 可能在
+    # 处理器设置前到达，导致子进程被直接杀掉（测试期望它忽略 SIGTERM 走 5 秒超时路径）
+    # 用 stdout 同步确保子进程已就绪
     child = subprocess.Popen(
         [sys.executable, "-c",
-         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"],
+         "import signal, time, sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+         "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(60)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
     )
+    try:
+        # 等待子进程输出 ready（最多等 5 秒）
+        import select
+        rlist, _, _ = select.select([child.stdout], [], [], 5.0)
+        if rlist:
+            child.stdout.readline()
+    except Exception:
+        pass
     real_id = f"txreal{uuid.uuid4().hex[:8]}"
     streaming._TRANSCODE_PROCS[real_id] = {   # noqa: SLF001
         "proc": child, "dir": real_dir, "started": __import__("datetime").datetime.now(),

@@ -2,7 +2,7 @@
 """探测 worker 重构（v2.53）：抢单租约 / 回收 / 退避 / 超时整组杀 / 熔断 / 单体启动 / 排空。
 
 生产事故：「探测 worker 启动了定时器，但实际探测没在跑，28.5 万条卡住，时不时卡死」。
-复现与根因见 CHANGELOG [未发布]；这里钉住修复后的每一条行为。
+复现与根因见 CHANGELOG 2.53.0 / 2.55.0；这里钉住修复后的每一条行为。
 """
 import os
 
@@ -393,8 +393,7 @@ class TestDrain:
         """
         for k, v in {"PROBE_RESOLVE_TIMEOUT_SEC": 0.5, "PROBE_ITEM_TIMEOUT_SEC": 0.5,
                      "PROBE_MIN_INTERVAL_SEC": 0.0, "PROBE_IDLE_SLEEP_SEC": 0.2,
-                     "PROBE_WORKERS": 4, "PROBE_REMOTE_CONCURRENCY": 4,
-                     "PREPROBE_ENABLED": True}.items():
+                     "PROBE_WORKERS": 4, "PROBE_REMOTE_CONCURRENCY": 4}.items():
             monkeypatch.setattr(probe_worker, k, v)
         monkeypatch.setattr(probe_worker, "breaker", probe_worker.MountBreaker(3, 600))
         monkeypatch.setattr(media_probe.persist_lib, "deserialize", lambda db, item: False)
@@ -422,6 +421,9 @@ class TestDrain:
             dead = _add(db, lib, 20, file_path="mount://7/d/{g}.mkv", probe_priority=100)
             healthy = eps + fn_movies
             probe_worker.start()
+            # triage 必须有调度入口：PR #416 删除 preprobe 时把它删成了死代码（只剩定义、
+            # 没有任何调用点），这里钉住 start() 真的注册了整理线程。
+            assert "probe_triage" in worker_registry.snapshot(), "triage 调度未注册"
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 left = db.query(func.count(em.MediaItem.id)).filter(
@@ -461,7 +463,6 @@ class TestStartup:
         assert "probe_worker.start()" in wsrc
 
     def test_start_registers_and_supervisor_restarts(self, monkeypatch):
-        monkeypatch.setattr(probe_worker, "PREPROBE_ENABLED", False)
         monkeypatch.setattr(probe_worker, "is_paused", lambda *a, **k: True)
         try:
             assert probe_worker.start() is True

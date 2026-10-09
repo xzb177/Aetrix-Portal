@@ -143,31 +143,3 @@ def test_deserialize_rejects_guid_mismatch():
         db.close()
 
 
-def test_preprobe_sweep_enqueues_missing():
-    """预提取扫描：缺媒体信息的入队，已有/判死的跳过。"""
-    from backend.emby_server import probe_worker
-    db = SessionLocal()
-    try:
-        lib = _make_lib(db)
-        missing = _make_item(db, lib, video_codec=None, width=0)
-        missing.probe_status = None
-        db.commit()
-        has_info = _make_item(db, lib, video_codec="h264")
-        dead = _make_item(db, lib, video_codec=None, width=0)
-        dead.probe_status = "failed"
-        db.commit()
-
-        n = probe_worker.preprobe_sweep(db, limit=100)
-        assert n >= 1
-
-        db.refresh(missing)
-        assert missing.probe_status == "pending"
-        assert missing.probe_priority == probe_worker.PREPROBE_PRIORITY
-
-        db.refresh(has_info)
-        assert has_info.probe_status == "done"  # 有信息的没动
-
-        db.refresh(dead)
-        assert dead.probe_status == "failed"  # 判死的没复活
-    finally:
-        db.close()
