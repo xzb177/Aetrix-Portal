@@ -19,6 +19,12 @@ const router = createRouter({
       meta: { title: '登录' },
     },
     {
+      path: '/tg-login',
+      name: 'tg-login',
+      component: () => import('@/views/TgLoginView.vue'),
+      meta: { title: 'Telegram 快捷登录' },
+    },
+    {
       path: '/profile',
       name: 'profile',
       component: () => import('@/views/ProfileView.vue'),

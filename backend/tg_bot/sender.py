@@ -56,4 +56,3 @@ def send_message(db, chat_id: int, text: str, reply_markup: dict | None = None) 
     except ValueError:
         # 响应 JSON 解析失败
         return False, "响应解析失败"
-

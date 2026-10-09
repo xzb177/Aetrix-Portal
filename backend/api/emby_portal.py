@@ -396,6 +396,29 @@ def logout(current_user: models.WebUser = Depends(get_current_user_jwt)):
     return {"success": True, "message": "已登出"}
 
 
+class TgLoginRequest(BaseModel):
+    token: str
+
+
+@auth_router.post("/tg-login")
+def tg_login(req: TgLoginRequest, db: Session = Depends(get_db)):
+    """bot 一键免密登录：一次性 token 换本站登录态"""
+    from backend.tg_bot import login_token as _lt
+    payload = _lt.consume_login_token((req.token or "").strip())
+    if not payload:
+        raise HTTPException(status_code=401, detail="登录链接无效或已过期，请在机器人中重新获取")
+    try:
+        user_id = int(payload.get("user_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="登录链接无效")
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+    if user.telegram_id != payload.get("telegram_id"):
+        raise HTTPException(status_code=401, detail="身份校验失败")
+    return _issue_auth_response(user, db)
+
+
 @auth_router.post("/change-password")
 def change_password(
     req: ChangePasswordRequest,

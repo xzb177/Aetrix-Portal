@@ -1,64 +1,77 @@
-import random
-import datetime
+from __future__ import annotations
 
-from backend.tg_bot.identity import resolve
+import html
+import secrets
+from datetime import datetime, timedelta
+
+from backend.integrations import store
 from backend.models import TgBindCode
+from backend.tg_bot import login_token
+from backend.tg_bot.identity import resolve
 
 
 def _command_list() -> str:
-    """返回命令列表文本"""
     return (
-        "/start - 开始使用\n"
-        "/help - 帮助\n"
-        "/bind - 绑定账号\n"
-        "/checkin - 每日签到（B2）\n"
-        "/points - 查积分（B2）"
+        "可用命令：\n"
+        "/start  欢迎与快捷入口\n"
+        "/help   帮助\n"
+        "/bind   绑定 Telegram\n"
+        "/checkin  每日签到（即将上线）\n"
+        "/points   查积分（即将上线）\n"
+        "/lottery  抽奖（即将上线）"
     )
 
 
-def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """/start：欢迎语，根据是否已绑定返回不同引导"""
-    # 查询该 Telegram 用户是否已绑定 WebUser
-    tg_user_id = tg_user.get("id")
-    web_user = resolve(db, tg_user_id) if tg_user_id else None
-    name = tg_user.get("first_name") or "用户"
-
-    if web_user is not None:
-        # 已绑定：欢迎回来 + 命令列表
-        return f"欢迎回来，{name}！\n\n{_command_list()}"
-
-    # 未绑定：欢迎 + 绑定引导 + 命令列表
-    return (
-        f"欢迎使用，{name}！\n\n"
-        "发送 /bind 获取绑定码，然后在网页个人中心输入完成绑定。\n\n"
-        f"{_command_list()}"
+def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
+    site_name = store.get_value(db, "site_name", "Aetrix")
+    name = html.escape(str(tg_user.get("first_name") or "朋友"))
+    text = f"✨ 欢迎回到{site_name} ✨\n\n👋 亲爱的 {name}，你的积分、抽奖、签到，都在这里等你。"
+    telegram_id = tg_user.get("id")
+    web_user = resolve(db, int(telegram_id)) if telegram_id else None
+    if web_user:
+        # 已绑定：当前账号 + 命令列表，并尝试生成一键登录按钮
+        username = html.escape(str(web_user.username or ""))
+        text += f"\n• 当前账号：{username}\n\n{_command_list()}"
+        url = login_token.build_login_url(db, web_user)
+        if url:
+            return (text, {"inline_keyboard": [[{"text": "🚀 一键免密进入控制面板", "url": url}]]})
+        return text
+    # 未绑定：引导先完成 Telegram 绑定
+    text += (
+        "\n• 公益服功能（签到/积分/红包/抽奖）需要先绑定 Telegram，1 分钟搞定：\n"
+        "  ① 在网页端登录 → 个人中心 → 绑定 Telegram 获取 6 位绑定码\n"
+        "  ② 把绑定码发给我即可完成绑定\n\n"
     )
+    text += _command_list()
+    return text
 
 
 def handle_help(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """/help：返回命令列表"""
-    return _command_list()
+    return (
+        "帮助：\n"
+        "本机器人用于接收签到、积分、抽奖等公益服通知与快捷操作。\n\n"
+        f"{_command_list()}\n"
+        "如遇问题，请在网页端联系客服。"
+    )
 
 
 def handle_bind(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """/bind：生成 6 位数字绑定码并入库（10 分钟有效）"""
-    tg_user_id = tg_user.get("id")
-    # 已绑定用户无需重复绑定
-    if tg_user_id and resolve(db, tg_user_id) is not None:
-        return "您已绑定，无需重复绑定"
-
-    # 生成 6 位数字绑定码
-    code = f"{random.randint(0, 999999):06d}"
-    expires_at = datetime.datetime.now() + datetime.timedelta(minutes=10)
-
-    # 创建绑定码记录并提交
-    bind_code = TgBindCode(
-        telegram_id=tg_user_id,
+    telegram_id = tg_user.get("id")
+    if not telegram_id:
+        return "暂时无法获取你的 Telegram ID，请稍后再试"
+    if resolve(db, int(telegram_id)):
+        return "你的账号已绑定，无需重复绑定；如需更换绑定请联系客服解绑。"
+    # bot 发起绑定流程：生成 6 位一次性绑定码，用户在网页端个人中心输入
+    code = "".join(secrets.choice("0123456789") for _ in range(6))
+    bind = TgBindCode(
+        telegram_id=int(telegram_id),
         code=code,
-        expires_at=expires_at,
+        expires_at=datetime.now() + timedelta(minutes=10),
     )
-    db.add(bind_code)
+    db.add(bind)
     db.commit()
-
-    return f"你的绑定码是 {code}（10 分钟有效）。请在网页个人中心输入此码完成绑定。"
-
+    return (
+        f"你的绑定码：{code}\n"
+        "请在网页端登录后进入 个人中心 → 绑定 Telegram，输入该绑定码完成绑定。\n"
+        "绑定码 10 分钟内有效，仅可使用一次。"
+    )
