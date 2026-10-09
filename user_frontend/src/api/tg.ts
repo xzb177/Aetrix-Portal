@@ -7,6 +7,7 @@ export interface TgBindStatus {
   bound: boolean
   telegram_id: number | null
   required: boolean
+  guide_enabled: boolean
   in_grace: boolean
   bot_username: string
 }

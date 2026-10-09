@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +30,8 @@ def _allow(tg_user_id: int, cmd: str) -> bool:
 
 
 def _verify_bind_code(db, update: dict) -> None:
-    """验证网页端发起的绑定码（流程 A）。
-
-    用户在网页点"绑定"生成码（user_id 已填），然后给 bot 发 6 位码。
-    验证通过后设置 WebUser.telegram_id。
-    """
-    from backend.models import TgBindCode, WebUser
-    from backend.tg_bot import sender
+    """验证网页端发起的绑定码（流程 A）：纯 6 位数字消息走共享验证函数。"""
+    from backend.tg_bot import handlers, sender
 
     msg = update.get("message") or {}
     text = (msg.get("text") or "").strip()
@@ -46,42 +40,10 @@ def _verify_bind_code(db, update: dict) -> None:
     chat_id = (msg.get("chat") or {}).get("id")
     if not tg_user_id or not chat_id:
         return
-
-    now = datetime.now()
-    record = (
-        db.query(TgBindCode)
-        .filter(
-            TgBindCode.code == text,
-            TgBindCode.user_id.isnot(None),
-            TgBindCode.telegram_id.is_(None),
-            TgBindCode.used_at.is_(None),
-            TgBindCode.expires_at > now,
-        )
-        .order_by(TgBindCode.id.desc())
-        .first()
-    )
-    if not record:
-        return  # 不是有效的绑定码，静默忽略
-
-    user = db.query(WebUser).filter(WebUser.id == record.user_id).first()
-    if not user:
-        return
-    # 检查该 TG 账号是否已被其他用户绑定
-    existing = (
-        db.query(WebUser)
-        .filter(WebUser.telegram_id == tg_user_id, WebUser.id != user.id)
-        .first()
-    )
-    if existing:
-        sender.send_message(db, chat_id, "该 Telegram 账号已被其他用户绑定")
-        return
-
-    user.telegram_id = tg_user_id
-    record.telegram_id = tg_user_id
-    record.used_at = now
-    db.commit()
-    sender.send_message(db, chat_id, "绑定成功！现在可以使用公益服功能了。")
-    logger.info("tg bind success: user_id=%s tg_id=%s", user.id, tg_user_id)
+    reply = handlers.verify_bind_code(db, tg_user_id, chat_id, text)
+    if reply:
+        sender.send_message(db, chat_id, reply)
+    # reply 为 None → 不是有效的绑定码，静默忽略
 
 
 def dispatch(db, update: dict) -> None:

@@ -75,6 +75,13 @@ const router = createRouter({
       component: () => import('@/views/InviteView.vue'),
       meta: { title: '邀请返利', requiresAuth: true },
     },
+    // 注册后 TG 绑定引导页：仅注册流程进入，未绑定且管理员开启时展示
+    {
+      path: '/tg-bind',
+      name: 'tg-bind-guide',
+      component: () => import('@/views/TgBindGuideView.vue'),
+      meta: { title: '绑定 Telegram', requiresAuth: true },
+    },
     // 追新日历：站内唯一一个「按时间看片」的页面（媒体浏览在第三方客户端，
     // 门户只保留“最近入库”这一个内容型入口）
     {

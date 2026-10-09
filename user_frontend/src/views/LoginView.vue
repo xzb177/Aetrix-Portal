@@ -18,6 +18,7 @@ import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
 // 站名来自「站点与品牌」能力（未配置时用默认值）
 import { branding } from '@/composables/useBranding'
 import { getRegisterConfig } from '@/api/user'
+import { tgApi } from '@/api/tg'
 
 const router = useRouter()
 const route = useRoute()
@@ -125,7 +126,19 @@ async function handleRegister() {
       inviteCode || undefined, captchaToken.value,
     )
     toast.success('注册成功，已自动开通观影账号')
-    router.push((route.query.redirect as string) || '/')
+    // 注册后 TG 绑定引导：仅注册流程触发，普通登录不动。
+    // 状态接口失败时按默认放行进首页，绝不锁死用户。
+    const redirect = (route.query.redirect as string) || '/'
+    try {
+      const st = await tgApi.status()
+      if (st.required && !st.bound && st.guide_enabled) {
+        router.push({ path: '/tg-bind', query: route.query.redirect ? { redirect: route.query.redirect as string } : {} })
+        return
+      }
+    } catch {
+      /* 拿不到绑定状态就按默认放行 */
+    }
+    router.push(redirect)
   } catch (err) {
     error.value = friendlyError(err, '注册失败，请稍后重试')
     captchaRef.value?.reset()

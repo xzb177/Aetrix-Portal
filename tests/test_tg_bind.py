@@ -123,3 +123,24 @@ def test_get_bind_status(db):
     db.refresh(user)
     status = tg_bind.get_bind_status(db, user)
     assert status["bound"] is True
+
+
+def test_guide_enabled_default_true(db):
+    user = _make_user(db, "alice")
+    assert tg_bind.get_bind_status(db, user)["guide_enabled"] is True
+
+
+def test_guide_enabled_off(db):
+    user = _make_user(db, "bob")
+    _set_config(db, "tg_bind_guide_enabled", "0")
+    assert tg_bind.get_bind_status(db, user)["guide_enabled"] is False
+
+
+def test_guide_enabled_value_variants(db):
+    user = _make_user(db, "carol")
+    for value in ("false", "no", "off"):
+        _set_config(db, "tg_bind_guide_enabled", value)
+        assert tg_bind.get_bind_status(db, user)["guide_enabled"] is False
+    for value in ("1", "true"):
+        _set_config(db, "tg_bind_guide_enabled", value)
+        assert tg_bind.get_bind_status(db, user)["guide_enabled"] is True

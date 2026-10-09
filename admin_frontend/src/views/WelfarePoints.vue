@@ -37,6 +37,11 @@ const tgBindEnabled = computed({
   set: (v: boolean) => { form.value['welfare_require_tg_bind'] = v ? '1' : '0' },
 })
 
+const tgGuideEnabled = computed({
+  get: () => (form.value['tg_bind_guide_enabled'] ?? '1') === '1',
+  set: (v: boolean) => { form.value['tg_bind_guide_enabled'] = v ? '1' : '0' },
+})
+
 const welfareFields = [
   { key: 'welfare_grace_days', label: '到期保留天数', hint: '到期后可登录但不可播放，默认 7', suffix: '天' },
   { key: 'welfare_inactive_days', label: '未活跃禁用天数', hint: '默认 30', suffix: '天' },
@@ -135,6 +140,10 @@ onMounted(load)
           <el-form-item label="强制绑定">
             <el-switch v-model="tgBindEnabled" />
             <span class="field-hint">开启后未绑定用户无法使用公益服写操作；老用户有 7 天宽限期；Bot 故障时可关闭降级</span>
+          </el-form-item>
+          <el-form-item label="引导页">
+            <el-switch v-model="tgGuideEnabled" />
+            <span class="field-hint">开启后，新用户注册成功将进入 TG 绑定引导页，未完成绑定前无法使用面板</span>
           </el-form-item>
         </el-form>
       </SectionCard>
