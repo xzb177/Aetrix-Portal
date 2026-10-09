@@ -55,9 +55,9 @@ def _text(result):
 
 
 def test_redpacket_disabled(db):
-    db.add(models.SystemConfig(key="redpacket_bot_enabled", value="0"))
+    db.add(models.SystemConfig(key="bot_redpacket_enabled", value="false"))
     db.commit()
-    store.invalidate("redpacket_bot_enabled")
+    store.invalidate("bot_redpacket_enabled")
     result = handlers.handle_redpacket(db, {"id": 1001}, 1, "100 10")
     assert _text(result) == "🧧 红包功能已关闭"
 
@@ -192,9 +192,9 @@ def test_callback_bot_disabled(db, monkeypatch):
     welfare_redpacket.send_packet(db, sender_user, 50, 5)
     packet = db.query(models.RedPacket).filter_by(sender_id=sender_user.id).first()
     _make_user(db, "c_off", 700012, 0)
-    db.add(models.SystemConfig(key="redpacket_bot_enabled", value="0"))
+    db.add(models.SystemConfig(key="bot_redpacket_enabled", value="false"))
     db.commit()
-    store.invalidate("redpacket_bot_enabled")
+    store.invalidate("bot_redpacket_enabled")
     cq = {"id": "cq2", "from": {"id": 700012}, "data": f"redpacket_claim:{packet.id}",
           "message": {"message_id": 99, "chat": {"id": -100123}}}
     callbacks.handle_callback(db, cq)
@@ -329,7 +329,7 @@ def test_router_dispatch_redpacket(db, monkeypatch):
 
 
 def test_rate_limit_redpacket():
-    from backend.tg_bot.router import _allow
-    assert _allow(930043, "/redpacket") is True
-    assert _allow(930043, "/redpacket") is False
-    assert _allow(930043, "/points") is True
+    from backend.tg_bot.router import _user_cmd_allow
+    assert _user_cmd_allow(930043, "/redpacket", 3.0) is True
+    assert _user_cmd_allow(930043, "/redpacket", 3.0) is False
+    assert _user_cmd_allow(930043, "/points", 3.0) is True

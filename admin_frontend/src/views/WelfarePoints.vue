@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeftRight, Coins, Gift, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { ArrowLeftRight, Bot, Coins, Gift, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
 
@@ -58,6 +58,29 @@ const tgGuideEnabled = computed({
   get: () => (form.value['tg_bind_guide_enabled'] ?? '1') === '1',
   set: (v: boolean) => { form.value['tg_bind_guide_enabled'] = v ? '1' : '0' },
 })
+
+// B4 TG Bot 总控：true/false 开关统一用辅助函数生成
+function boolSwitch(key: string, dflt = 'true') {
+  return computed({
+    get: () => (form.value[key] ?? dflt) === 'true',
+    set: (v: boolean) => { form.value[key] = v ? 'true' : 'false' },
+  })
+}
+
+const botEnabled = boolSwitch('bot_enabled')
+const botRedpacketEnabled = boolSwitch('bot_redpacket_enabled')
+const botCmdSwitches = [
+  { key: 'bot_cmd_checkin', label: '/checkin' },
+  { key: 'bot_cmd_points', label: '/points' },
+  { key: 'bot_cmd_redeem', label: '/redeem' },
+  { key: 'bot_cmd_bind', label: '/bind' },
+].map((s) => ({ ...s, model: boolSwitch(s.key) }))
+
+const botFields = [
+  { key: 'bot_group_ids', label: '启用群 ID', hint: '逗号分隔的 TG 群 id，空=所有群都启用 Bot', suffix: '' },
+  { key: 'bot_rate_limit_seconds', label: '命令限流', hint: '每用户每命令最小间隔，默认 3', suffix: '秒' },
+  { key: 'bot_group_rate_limit', label: '群限流', hint: '每群每分钟最多处理消息数，超限静默丢弃，默认 20', suffix: '条/分' },
+]
 
 const welfareFields = [
   { key: 'welfare_grace_days', label: '到期保留天数', hint: '到期后可登录但不可播放，默认 7', suffix: '天' },
@@ -183,6 +206,32 @@ onMounted(load)
           <el-form-item label="引导页">
             <el-switch v-model="tgGuideEnabled" />
             <span class="field-hint">开启后，新用户注册成功将进入 TG 绑定引导页，未完成绑定前无法使用面板</span>
+          </el-form-item>
+        </el-form>
+      </SectionCard>
+
+      <SectionCard
+        title="TG Bot 总控"
+        :icon="Bot"
+        description="Bot 总开关、群白名单、限流与各功能开关（B4）"
+      >
+        <el-form label-width="120px" class="config-form">
+          <el-form-item label="总开关">
+            <el-switch v-model="botEnabled" />
+            <span class="field-hint">关闭后 Bot 不响应任何消息（轮询继续跑）；默认开启</span>
+          </el-form-item>
+          <el-form-item label="红包功能">
+            <el-switch v-model="botRedpacketEnabled" />
+            <span class="field-hint">关闭后 /redpacket 与抢红包按钮均提示已关闭；后端红包接口不受影响</span>
+          </el-form-item>
+          <el-form-item v-for="s in botCmdSwitches" :key="s.key" :label="s.label">
+            <el-switch v-model="s.model.value" />
+            <span class="field-hint">关闭后该命令回复"该功能已关闭"</span>
+          </el-form-item>
+          <el-form-item v-for="f in botFields" :key="f.key" :label="f.label">
+            <el-input v-model="form[f.key]" style="width: 160px" />
+            <span class="field-suffix">{{ f.suffix }}</span>
+            <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
         </el-form>
       </SectionCard>

@@ -1,31 +1,79 @@
-"""Telegram 消息路由：把 getUpdates 的单个 update 分发到命令处理器。"""
+"""Telegram 消息路由：把 getUpdates 的单个 update 分发到命令处理器。
+
+B4 策略（全部可配置，见 backend/tg_bot/policy.py）：
+- 总开关 bot_enabled：关闭后静默丢弃所有 update（poller 继续跑）
+- 群白名单 bot_group_ids：非名单群聊的消息/callback 静默忽略，私聊不受影响
+- 命令开关：关闭的命令回复"该功能已关闭"（/start /help 常开）
+- 限流：每用户每命令间隔 bot_rate_limit_seconds 秒；每群每分钟最多
+  bot_group_rate_limit 条；超限静默丢弃（用户级限流仍提示一句话）
+"""
 from __future__ import annotations
 
 import logging
 import threading
 import time
+from collections import deque
+
+from backend.tg_bot import policy
 
 logger = logging.getLogger(__name__)
 
-# 命令级限流：每用户每命令 3 秒 1 次（B1 简版内存实现）
-_RATE_LIMIT_SECONDS = 3.0
-_rate_limits: dict[tuple[int, str], float] = {}
+# 命令级限流：(tg_user_id, cmd) -> 上次通过时间的 monotonic 时间戳
+_user_cmd_limits: dict[tuple[int, str], float] = {}
+# 群级限流：chat_id -> 最近 60 秒内已处理消息的时间戳滑动窗口
+_group_windows: dict[int, deque[float]] = {}
 _rate_lock = threading.Lock()
 
+# 内存结构上限：超过后触发一次清理，防止长期运行泄漏
+_MAX_TRACKED_KEYS = 10000
+# 清理时保留多久的记录（单调时钟秒）；远大于任何合理限流窗口即可
+_RETENTION_SECONDS = 3600.0
+_GROUP_WINDOW_SECONDS = 60.0
 
-def _allow(tg_user_id: int, cmd: str) -> bool:
-    """限流检查，通过返回 True"""
+_GROUP_CHAT_TYPES = ("group", "supergroup")
+
+
+def _is_group_chat(chat: dict) -> bool:
+    """是否为群聊（group/supergroup）；type 缺失或未知时按私聊处理（不拦截）。"""
+    return chat.get("type") in _GROUP_CHAT_TYPES
+
+
+def _user_cmd_allow(tg_user_id: int, cmd: str, seconds: float) -> bool:
+    """用户级命令限流：距离上次通过不足 seconds 秒则返回 False。"""
     now = time.monotonic()
     with _rate_lock:
-        last = _rate_limits.get((tg_user_id, cmd))
-        if last is not None and now - last < _RATE_LIMIT_SECONDS:
+        last = _user_cmd_limits.get((tg_user_id, cmd))
+        if last is not None and now - last < seconds:
             return False
-        _rate_limits[(tg_user_id, cmd)] = now
-        if len(_rate_limits) > 10000:
-            cutoff = now - _RATE_LIMIT_SECONDS
-            for k, v in list(_rate_limits.items()):
+        _user_cmd_limits[(tg_user_id, cmd)] = now
+        if len(_user_cmd_limits) > _MAX_TRACKED_KEYS:
+            cutoff = now - max(seconds, _RETENTION_SECONDS)
+            for k, v in list(_user_cmd_limits.items()):
                 if v < cutoff:
-                    del _rate_limits[k]
+                    del _user_cmd_limits[k]
+        return True
+
+
+def _group_allow(chat_id: int, per_minute: int) -> bool:
+    """群级滑动窗口限流：60 秒内已处理数达到上限则返回 False（静默丢弃）。"""
+    now = time.monotonic()
+    window_start = now - _GROUP_WINDOW_SECONDS
+    with _rate_lock:
+        dq = _group_windows.get(chat_id)
+        if dq is None:
+            dq = deque()
+            _group_windows[chat_id] = dq
+        while dq and dq[0] < window_start:
+            dq.popleft()
+        if len(dq) >= per_minute:
+            return False
+        dq.append(now)
+        if len(_group_windows) > _MAX_TRACKED_KEYS:
+            for cid, old_dq in list(_group_windows.items()):
+                while old_dq and old_dq[0] < window_start:
+                    old_dq.popleft()
+                if not old_dq:
+                    del _group_windows[cid]
         return True
 
 
@@ -51,10 +99,23 @@ def dispatch(db, update: dict) -> None:
     from backend.tg_bot import handlers, sender
 
     try:
-        # callback_query 走 B3
+        # B4：批量读取全部 Bot 策略配置（1 次 DB 查询）
+        cfg = policy.read_bot_config(db)
+
+        # 总开关：关闭后完全不响应（poller 继续跑，offset 照常推进）
+        if not policy.is_enabled(cfg):
+            return
+
+        # callback_query 走 B3（群白名单同样适用：在非名单群点的抢红包按钮静默忽略）
         if "callback_query" in update:
+            cq = update["callback_query"]
+            chat = ((cq.get("message") or {}).get("chat") or {})
+            if _is_group_chat(chat) and not policy.is_group_allowed(cfg, chat.get("id")):
+                return
             from backend.tg_bot import callbacks
-            callbacks.handle_callback(db, update["callback_query"])
+            callbacks.handle_callback(
+                db, cq, redpacket_enabled=policy.is_redpacket_enabled(cfg)
+            )
             return
 
         msg = update.get("message") or {}
@@ -66,9 +127,18 @@ def dispatch(db, update: dict) -> None:
         tg_user = msg.get("from") or {}
         if not chat_id:
             return
+        in_group = _is_group_chat(chat)
+
+        # 群白名单：非名单群聊静默忽略（私聊不受影响）
+        if in_group and not policy.is_group_allowed(cfg, chat_id):
+            return
+
+        group_limit = policy.group_rate_limit(cfg)
 
         # 6 位纯数字 → 绑定码验证
         if text.isdigit() and len(text) == 6:
+            if in_group and not _group_allow(chat_id, group_limit):
+                return
             _verify_bind_code(db, update)
             return
 
@@ -92,22 +162,37 @@ def dispatch(db, update: dict) -> None:
             "/redpacket": handlers.handle_redpacket,
         }
         fn = commands.get(cmd)
+        if fn is None:
+            sender.send_message(db, chat_id, "未知命令，发送 /help 查看可用命令")
+            return
+
+        # 群级限流：超限静默丢弃，避免刷屏
+        if in_group and not _group_allow(chat_id, group_limit):
+            return
+
+        # 红包开关：关闭后发红包提示已关闭（与 B3 文案一致）
+        if cmd == "/redpacket" and not policy.is_redpacket_enabled(cfg):
+            sender.send_message(db, chat_id, "🧧 红包功能已关闭")
+            return
+
+        # 各命令开关：关闭后统一回复"该功能已关闭"（/start /help 常开）
+        if not policy.is_command_enabled(cfg, cmd):
+            sender.send_message(db, chat_id, "该功能已关闭")
+            return
+
+        # 用户级命令限流：间隔可配置
         tg_uid = tg_user.get("id") or 0
+        if not _user_cmd_allow(tg_uid, cmd, policy.rate_limit_seconds(cfg)):
+            sender.send_message(db, chat_id, "操作太快了，稍后再试")
+            return
+
         if cmd == "/lottery":
             # /lottery 需要群聊/私聊上下文（chat.type），单独分发
-            if not _allow(tg_uid, cmd):
-                sender.send_message(db, chat_id, "操作太快了，稍后再试")
-                return
             chat_type = (chat.get("type") or "")
             reply = handlers.handle_lottery(
                 db, tg_user, chat_id, args, chat_type in ("group", "supergroup"))
-        elif fn:
-            if not _allow(tg_uid, cmd):
-                sender.send_message(db, chat_id, "操作太快了，稍后再试")
-                return
-            reply = fn(db, tg_user, chat_id, args)
         else:
-            reply = "未知命令，发送 /help 查看可用命令"
+            reply = fn(db, tg_user, chat_id, args)
         # handler 可返回 str 或 (text, reply_markup) 元组（一键登录按钮）
         if isinstance(reply, tuple):
             text, markup = reply

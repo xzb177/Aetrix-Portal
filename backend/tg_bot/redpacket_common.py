@@ -5,13 +5,13 @@ from backend.integrations import store
 
 # callback_data 前缀，按钮回调形如 "redpacket_claim:<packet_id>"
 CALLBACK_PREFIX = "redpacket_claim:"
-# 总开关配置键（SystemConfig），"1"=开启，默认开启
-CONFIG_KEY = "redpacket_bot_enabled"
+# 红包功能开关（SystemConfig），"true"=开启，默认开启（B4 统一命名）
+CONFIG_KEY = "bot_redpacket_enabled"
 
 
 def enabled(db) -> bool:
-    """红包总开关是否开启（默认开启）。"""
-    return store.get_value(db, CONFIG_KEY, "1") == "1"
+    """红包功能开关是否开启（默认开启）。"""
+    return store.get_value(db, CONFIG_KEY, "true").strip().lower() == "true"
 
 
 def parse_claim_data(data: str | None) -> int | None:
@@ -47,12 +47,11 @@ def packet_text(packet, sender_name: str) -> str:
 
 def finished_text(packet, sender_name: str, reason: str) -> str:
     """红包终态的按钮消息正文。reason: "empty"（已抢完）/ "expired"（已过期）。
-    包含：🧧 表情、发送者名、总额 X 积分 / 共 N 个；empty → "🎉 红包已抢完"；expired → "⌛ 红包已过期"。
-    注意：过期退款由后端定时任务 refund_expired 执行，这里不宣称已退款。"""
+    包含：🧧 表情、发送者名、总额 X 积分 / 共 N 个；empty → "🎉 红包已抢完"；expired → "⌛ 红包已过期，剩余积分已退回发送者"。"""
     if reason == "empty":
         status = "🎉 红包已抢完"
     else:
-        status = "⌛ 红包已过期"
+        status = "⌛ 红包已过期，剩余积分已退回发送者"
     return (
         f"🧧 {sender_name} 的红包\n"
         f"总额 {packet.total_amount} 积分 / 共 {packet.total_count} 个\n"

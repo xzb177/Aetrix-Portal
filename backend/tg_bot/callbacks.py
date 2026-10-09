@@ -9,23 +9,26 @@ from backend import models
 from . import redpacket_common, sender
 from .identity import resolve
 
-from backend.tg_bot.identity import resolve
+from backend import models
+from . import redpacket_common, sender
+from .identity import resolve
 
 logger = logging.getLogger(__name__)
 
 
-def handle_callback(db, callback_query: dict) -> None:
-    """处理 callback_query：抢红包按钮 + 抽奖参加按钮。"""
+def handle_callback(db, callback_query: dict, redpacket_enabled: bool | None = None) -> None:
+    """处理 callback_query：抢红包按钮 + 抽奖参加按钮。
+
+    redpacket_enabled：调用方（router.dispatch）已批量读到的红包开关值；
+    传 None 时回退为自行读取（兼容直接调用）。
+    """
     data = (callback_query.get("data") or "")
     if data.startswith("redpacket_claim:"):
-        _handle_redpacket_claim(db, callback_query)
+        _handle_redpacket_claim(db, callback_query, redpacket_enabled)
         return
     if data.startswith("lottery_join:"):
         _handle_lottery_join(db, callback_query)
         return
-    logger.debug("callback_query ignored: %s", data[:64])
-
-
 def _answer_callback(db, callback_id, text: str, show_alert: bool = False) -> None:
     """调用 answerCallbackQuery 给用户 toast 提示（幂等、可重复调用）。"""
     if not callback_id:
@@ -184,8 +187,11 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
         _answer_callback(db, cb_id, "系统繁忙，请稍后再试")
 
 
-def _handle_redpacket_claim(db, callback_query: dict) -> None:
-    """处理抢红包按钮点击（B3）。"""
+def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | None = None) -> None:
+    """处理抢红包按钮点击（B3）。
+
+    redpacket_enabled：调用方已批量读到的开关值；None 时自行读取。
+    """
     packet_id = redpacket_common.parse_claim_data(callback_query.get("data"))
     if packet_id is None:
         logger.debug("tg unknown callback data: %s", callback_query.get("data"))
@@ -202,7 +208,9 @@ def _handle_redpacket_claim(db, callback_query: dict) -> None:
             return
         sender.answer_callback_query(db, cq_id, text, show_alert)
 
-    if not redpacket_common.enabled(db):
+    if redpacket_enabled is None:
+        redpacket_enabled = redpacket_common.enabled(db)
+    if not redpacket_enabled:
         _answer("🧧 红包功能已关闭")
         return
 
