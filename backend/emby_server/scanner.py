@@ -773,6 +773,10 @@ PROBE_HTTP_TIMEOUT = 45.0
 PROBE_FILE_TIMEOUT = max(5.0, float(os.getenv("PROBE_FILE_TIMEOUT_SEC", "30") or 30))
 #: 远端 URL 的探测上限不变：网络慢是常态，砍时间会误伤真正在下载的大文件。
 PROBE_REMOTE_TIMEOUT = max(10.0, float(os.getenv("PROBE_REMOTE_TIMEOUT_SEC", "90") or 90))
+#: ffprobe 分析上限（Hark 6链路第4项）：显式限制，避免在残缺/远程流上无限制读取。
+#: -probesize 字节数（默认 10 MiB），-analyzeduration 微秒数（默认 10s）。
+FFPROBE_PROBESIZE = max(1024, int(os.getenv("FFPROBE_PROBESIZE", "10485760") or 10485760))
+FFPROBE_ANALYZEDURATION = max(1000, int(os.getenv("FFPROBE_ANALYZEDURATION", "10000000") or 10000000))
 
 #: 最近一次 ffprobe 是否以超时告终。ffprobe 跑在多个 worker 线程里，所以用线程局部
 #: 存；判定只发生在紧接其后的调用点，不跨条目复用。
@@ -841,6 +845,8 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
         return None
     # -v error：只输出错误（不用 quiet，否则 403/404 的真实原因被吞掉）
     cmd = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams"]
+    # Hark 6链路第4项：显式限制分析量，避免在残缺/远程流上无限制读取导致探测慢
+    cmd += ["-probesize", str(FFPROBE_PROBESIZE), "-analyzeduration", str(FFPROBE_ANALYZEDURATION)]
     target = local_path or path
     if not local_path:
         probe_headers = dict(headers or {})
