@@ -3107,23 +3107,6 @@ async def video_stream(
             await serve_remote_async(target.value, request, target.headers, media_type,
                                      cache_control=seg_cache))
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
-    # 片头缓存：请求开头且有 SSD 缓存时直接 serve（限时 24h，LRU）
-    try:
-        from backend.emby_server import header_cache as _hc
-        rh = request.headers.get("range", "")
-        if rh.startswith("bytes=0-"):
-            try:
-                end_s = rh[7:].split(",")[0].split("-")[1]
-                if end_s and int(end_s) < 52428800:
-                    ch = _hc.get_cached_header(item.guid, target.value)
-                    if ch:
-                        return serve_file(str(ch), request, media_type,
-                                          cache_control=cdn.cache_control_for(str(request.url.path)))
-            except Exception:
-                pass
-        _hc.warm_header_async(item.guid, target.value)
-    except Exception:
-        pass
     return serve_file(target.value, request, media_type,
                       cache_control=cdn.cache_control_for(str(request.url.path)))
 
