@@ -101,12 +101,13 @@ def test_every_http_request_consumes_a_token(monkeypatch):
     monkeypatch.setattr(client._limiter, "acquire", counting)
 
     name = "进击的巨人 (2013) 中字"
-    candidates = tmdb_mod._search_candidates(name)
+    candidates = tmdb_mod._search_candidates(name, 2013)
     assert len(candidates) >= 3, "候选塌缩了就测不出「请求级」这个口径"
     client.search(name, 2013, "series")
 
-    assert len(client.session.calls) == len(candidates)
-    assert len(acquires) == len(candidates)   # 请求 = token，一一对应
+    # 年份回退：带年份搜出空结果会去年份再搜一轮，所以是 2 倍
+    assert len(client.session.calls) == len(candidates) * 2
+    assert len(acquires) == len(candidates) * 2   # 请求 = token，一一对应
 
 
 def test_throttle_halves_the_rate_and_floors_at_min_rate():
@@ -186,7 +187,7 @@ def test_no_exact_hit_still_tries_every_candidate(monkeypatch):
     name = "进击的巨人 (2013) 中字"
 
     assert client.search(name, 2013, "series") is None
-    assert len(client.session.calls) == len(tmdb_mod._search_candidates(name))
+    assert len(client.session.calls) == len(tmdb_mod._search_candidates(name, 2013))
     assert client.stats()["short_circuits"] == 0
 
 

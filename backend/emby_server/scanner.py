@@ -189,12 +189,23 @@ VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # 集号解析: S01E02 / 1x02 / 第1集 / EP03 / E03
+# 注意：调用方用 `parsed["season"] is not None` 判定条目是单集还是电影/剧，
+# 所以**新增的集号模式一律只在剧集库启用**（EP_PATTERNS_TV），否则
+# "Movie 2" 这类电影会被误判成 episode。
 EP_PATTERNS = [
-    re.compile(r"[Ss](\d{1,2})\s?[\s._-]*[Ee](\d{1,3})"),
-    re.compile(r"(\d{1,2})x(\d{1,3})"),
-    re.compile(r"第\s*(\d{1,3})\s*[集话話]"),
-    re.compile(r"\b[Ee][Pp]\.?\s?(\d{1,3})(?!\d)"),
+    re.compile(r"[Ss](\d{1,2})\s?[\s._-]*[Ee](\d{1,4})"),
+    re.compile(r"(\d{1,2})x(\d{1,4})"),
+    re.compile(r"第\s*([一二三四五六七八九十百千万两\d]{1,6})\s*[集话話]"),
+    re.compile(r"\b[Ee][Pp]\.?\s?(\d{1,4})(?!\d)"),
 ]
+# 仅剧集库：独立 E05（不带 P，动漫常见）/ 4 位 EP
+# `\b[Ee]` 在 "S01E05" 里（"1E" 间无词边界）不会误命中，SxxEyy 仍走上面。
+EP_PATTERNS_TV = [
+    re.compile(r"\b[Ee][Pp]?\.?\s?(\d{1,4})(?!\d)"),
+]
+# 仅剧集库：绝对集数（动漫常见 `Frieren - 28`）。
+# 要求分隔符 + 锚定末尾；年份段位 (1900-2099) 让位给年份解析；不与已匹配段重叠。
+_ABS_EP_RE = re.compile(r"[\s\-_.](\d{1,4})\s*$")
 
 # 只有季号（季包 / 中文命名）: S09 / Season 9 / 第九季 / 第9季
 # 注意：裸 S09 只在剧集库里启用，否则 "S1m0ne" 这类片名会被误判成第 1 季。
@@ -204,31 +215,97 @@ SEASON_PATTERNS_TV = [
 SEASON_PATTERNS_ANY = [
     re.compile(r"[Ss]eason\s*\.?\s*(\d{1,2})", re.IGNORECASE),
     re.compile(r"第\s*(\d{1,2})\s*季"),
-    re.compile(r"第\s*([一二三四五六七八九十]{1,3})\s*季"),
+    re.compile(r"第\s*([一二三四五六七八九十百]{1,3})\s*季"),
 ]
-# 电影文件名解析: Name (2019) / Name.2019.1080p
-YEAR_RE = re.compile(r"[\(\.\s](\d{4})[\)\.\s]")
+# 年份候选：4 位年份段数字，前后不能紧贴数字（避免 1080p 的 1080 误命中，
+# 不过 1080 < 1900 本来也会被范围检查滤掉）。
+_YEAR_CAND_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
 # 旧写法 `[.\_-_\[\]【】]+'` 在字符类外多了一个引号，导致这个正则几乎永不命中，
 # 于是 `Rick.and.Morty` 这类点分隔片名会原样入库（显示成 "Rick.and.Morty"）。
 CLEAN_RE = re.compile(r"[\.\_\-\[\]【】]+")
 
 _CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
               "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000}
 
 
 def cn_to_int(text: str) -> Optional[int]:
-    """中文数字 → 整数（支持 一 ~ 九十九，够用于季数）"""
+    """中文数字 → 整数（支持到千位：十二/二十三/一百二十三/两百/一千零一）。
+
+    集号解析需要百位（第十二集、第两百集），季号调用方仍限制 <=99。
+    """
     text = (text or "").strip()
     if not text:
         return None
     if text.isdigit():
         return int(text)
-    if "十" in text:
-        head, _, tail = text.partition("十")
-        tens = _CN_DIGITS.get(head, 1) if head else 1
-        ones = _CN_DIGITS.get(tail, 0) if tail else 0
-        return tens * 10 + ones
-    return _CN_DIGITS.get(text)
+    total, num = 0, 0
+    for ch in text:
+        if ch in _CN_UNITS:
+            # 十/百/千是单位（"十" 不能走 _CN_DIGITS 的数字分支）
+            unit = _CN_UNITS[ch]
+            if num == 0:
+                num = 1  # "十" = 10，"百" = 100
+            total += num * unit
+            num = 0
+        elif ch in _CN_DIGITS:
+            num = _CN_DIGITS[ch]
+        else:
+            return None
+    return total + num
+
+
+def _overlaps(a0: int, a1: int, span) -> bool:
+    """[a0, a1) 是否与 span (s0, s1) 重叠；span 为 None 返回 False"""
+    if not span:
+        return False
+    s0, s1 = span
+    return a0 < s1 and s0 < a1
+
+
+def _extract_year(stem: str, folder: str, exclude_spans=()) -> Optional[int]:
+    """从文件名 stem、目录名 folder 提取年份。
+
+    旧 YEAR_RE 的两个 bug：
+    1. 要求年份后必须跟 `)`/`.`/空白 → `Inception.2010`、`Wonder Woman 1984`、
+       `Dune.2021`（位于 stem 末尾）解析不到；
+    2. 只取第一个匹配 → `Blade Runner 2049 (2017)` 先撞上 " 2049 "，
+       范围检查拒绝后直接返回 None，不再尝试 (2017)。
+
+    新规则：扫描全部候选，括号里的年份最优先，否则取最晚出现的有效候选
+    （年份通常缀在标题末尾；`2012.2009` 里 2012 是片名、2009 才是上映年）。
+    exclude_spans：(start, end) 列表（基于 stem 坐标），与之重叠的候选跳过，
+    避免 `S01E2019` 的 2019 被当成年份。
+    """
+    now_max = datetime.now().year + 2
+
+    def _cands(text: str, exclude=()):
+        out = []
+        for m in _YEAR_CAND_RE.finditer(text or ""):
+            y = int(m.group(1))
+            if not (1900 <= y <= now_max):
+                continue
+            if any(_overlaps(m.start(), m.end(), sp) for sp in exclude):
+                continue
+            # 括号里的年份最可信：[(（[【]YYYY[)）\]】]，括号内允许空格
+            i, j = m.start() - 1, m.end()
+            while i >= 0 and text[i] in " \t":
+                i -= 1
+            while j < len(text) and text[j] in " \t":
+                j += 1
+            paren = (i >= 0 and text[i] in "(（[【"
+                     and j < len(text) and text[j] in ")）]】")
+            out.append((paren, m.start(), y))
+        return out
+
+    cands = _cands(stem, exclude_spans)
+    if not cands:
+        cands = _cands(folder)
+    if not cands:
+        return None
+    # 括号优先；同优先级取最晚出现
+    cands.sort(key=lambda t: (t[0], t[1]))
+    return cands[-1][2]
 
 # ==================== 发行平台识别（虚拟媒体库的数据来源）====================
 # 片名里的发行组标签是最稳定的平台信号：NF / DSNP / ATVP / AMZN / MAX …
@@ -544,9 +621,20 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     season = episode = None
     matched_in_folder = False
     match_span: Optional[tuple[int, int]] = None
+    abs_ep_span: Optional[tuple[int, int]] = None
+
+    def _to_num(g: str) -> Optional[int]:
+        g = (g or "").strip()
+        if not g:
+            return None
+        if g.isdigit():
+            return int(g)
+        return cn_to_int(g)
 
     # 1) 带集号：文件名优先，剧集库再退回目录名
-    for pat in EP_PATTERNS:
+    #    剧集库先试 EP_PATTERNS_TV（独立 E05 / 4 位 EP），再试通用模式
+    ep_patterns = (EP_PATTERNS_TV if is_tv else []) + EP_PATTERNS
+    for pat in ep_patterns:
         m = pat.search(stem)
         if not m and is_tv:
             m = pat.search(folder)
@@ -555,9 +643,13 @@ def parse_media_filename(path: str, library_type: str) -> dict:
             continue
         groups = m.groups()
         if len(groups) == 2:
-            season, episode = int(groups[0]), int(groups[1])
+            season, episode = int(groups[0]), _to_num(groups[1])
         else:
-            season, episode = 1, int(groups[0])
+            season, episode = 1, _to_num(groups[0])
+        if episode is None:
+            # 中文数字解析失败（如非法字符），继续试下一个模式
+            season = None
+            continue
         match_span = (m.start(), m.end())
         break
 
@@ -579,21 +671,41 @@ def parse_media_filename(path: str, library_type: str) -> dict:
             match_span = (m.start(), m.end())
             break
 
+    # 2b) 绝对集数（仅剧集库）：动漫 `Frieren - 28` 这类无 E 标记的写法。
+    # 必须在季号匹配之后：`The 100 Season 1` 的 "1" 是季号，不能被当成集号
+    #（用 _overlaps 排除已匹配段）。
+    # 年份段位 (1900-2099) 让位给年份解析。
+    if episode is None and is_tv and not matched_in_folder:
+        m = _ABS_EP_RE.search(stem)
+        if m and not _overlaps(m.start(), m.end(), match_span):
+            n = int(m.group(1))
+            if not (1900 <= n <= 2099):
+                if season is None:
+                    season = 1
+                episode = n
+                abs_ep_span = (m.start(), m.end())
+
     # 片名：把匹配到的季/集标记从名称里**挖掉**其余保留。
     # 只看前缀在 "Rick.and.Morty.Season 9" 这类命名上会把季号留在片名里，
     # 也会在标记在最前面时丢掉片名。
+    # 从后往前挖，避免位置偏移；只有基于 target 文本的段才参与挖掘
+    #（match_span 可能基于 folder，abs_ep_span 只在 stem 上）。
     target = folder if matched_in_folder else stem
+    dig_spans = []
+    if match_span and not matched_in_folder:
+        dig_spans.append(match_span)
+    if abs_ep_span:
+        dig_spans.append(abs_ep_span)
     raw_name = target
-    if season is not None and match_span:
-        raw_name = f"{target[: match_span[0]]} {target[match_span[1]:]}".strip()
+    for s0, s1 in sorted(dig_spans, reverse=True):
+        raw_name = f"{raw_name[:s0]} {raw_name[s1:]}".strip()
     name_part = _tidy_name(raw_name) or _tidy_name(folder) or _tidy_name(stem)
 
-    year = None
-    m = YEAR_RE.search(stem) or YEAR_RE.search(folder)
-    if m:
-        y = int(m.group(1))
-        if 1900 <= y <= datetime.now().year + 2:
-            year = y
+    # 年份：排除集号匹配段，避免 S01E2019 的 2019 被当成年份
+    #（_extract_year 内部已处理 stem→folder 回退；exclude 只作用于 stem 坐标）
+    year_spans = [s for s in (match_span if not matched_in_folder else None,
+                             abs_ep_span) if s]
+    year = _extract_year(stem, folder, exclude_spans=year_spans)
     if year and str(year) in name_part:
         name_part = name_part.replace(str(year), "").strip(" .-_()")
 
