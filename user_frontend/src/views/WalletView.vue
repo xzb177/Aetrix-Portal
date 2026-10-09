@@ -1022,6 +1022,25 @@ onBeforeUnmount(stopPayPoll)
   color: var(--au-success);
 }
 
+/* 抽奖入口胶囊：与签到胶囊同一视觉语言 */
+.lottery-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  width: fit-content;
+  margin-top: 0.375rem;
+  margin-left: 0.5rem;
+  padding: 0.3125rem 0.6875rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  transition: all var(--au-fast) var(--au-ease);
+}
+.lottery-pill:hover { filter: brightness(1.08); }
+
 /* ==================== 会员等级（P1 统一货币体系） ==================== */
 .member-row {
   display: flex;
@@ -1121,25 +1140,6 @@ onBeforeUnmount(stopPayPoll)
   margin-right: 0.375rem;
   color: var(--au-primary);
 }
-
-/* 抽奖入口胶囊：与签到胶囊同一视觉语言 */
-.lottery-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4375rem;
-  width: fit-content;
-  margin-top: 0.375rem;
-  margin-left: 0.5rem;
-  padding: 0.3125rem 0.6875rem;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: var(--au-r-full);
-  color: var(--au-primary);
-  font-size: 0.8125rem;
-  text-decoration: none;
-  transition: all var(--au-fast) var(--au-ease);
-}
-.lottery-pill:hover { filter: brightness(1.08); }
 .checkin-pill:hover {
   border-color: var(--au-primary-border);
   color: var(--au-primary);
