@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * 商店 — 充积分 / 买会员 / 花积分 / 核销（卡码·兑换码·优惠券）
- * 布局：套餐卡横向结构化行；核销面板固定在底部
+ * 布局（极简重做）：顶部状态条 + 充积分/买会员双大卡 + 底部核销折叠入口；
+ * 深链 ?tab=plans/?tab=recharge 滚动到对应卡片
  *
  * v2.11.0：从 WalletView 拆分。订单记录、积分流水、余额总览、会员等级
  * 搬去钱包页；本页只留「花钱 / 花积分」的入口。优惠券试算不再跟随分页
@@ -11,15 +12,14 @@ import { ref, computed, onMounted, onActivated, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
-  Coins, TicketCheck, Sparkles, Zap, Crown, Flame, ExternalLink, ChevronRight,
+  Coins, TicketCheck, Sparkles, Zap, Crown, ExternalLink, ChevronRight,
   CircleCheck, CircleAlert, TriangleAlert, X, Percent,
 } from 'lucide-vue-next'
 import {
   pointsApi, exchangeApi, paymentApi, membershipApi, couponApi, currencyApi,
-  vitalityApi,
   type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CodePreview, type CouponQuote,
-  type VitalityStatus, type PointsLogEntry,
+  type PointsLogEntry,
 } from '@/api/economy'
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -33,20 +33,12 @@ const userStore = useUserStore()
 // ===== 状态 =====
 const loading = ref(true)
 const balance = ref(0)
-/** 活力值（仅公益服用户有值） */
-const vitality = ref<VitalityStatus | null>(null)
-const rechargeQty = ref(1)
-const recharging = ref(false)
-const vitalityPointCost = ref(10)
 const packages = ref<RechargePackage[]>([])
 const plans = ref<SubscriptionPlan[]>([])
 const methods = ref<PaymentMethod[]>([])
 
 const payMethod = ref('alipay')
 const orderLoading = ref<number | null>(null)
-
-/** 花积分区：支持积分开通的订阅套餐（points_price 为 null 的只能在线支付） */
-const pointsPlans = computed(() => plans.value.filter((p) => p.points_price != null))
 
 // ===== 优惠券（v2.10.0；v2.10.1 收进统一核销入口）=====
 // 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
@@ -56,6 +48,8 @@ const couponApplied = ref('')          // 已生效的码（空 = 没在用券�
 const couponLoading = ref(false)
 const couponError = ref('')
 const couponQuotes = ref<Record<string, CouponQuote>>({})
+/** 买会员卡片内的优惠券输入框（与底部核销入口共用同一套试算状态） */
+const couponCode = ref('')
 
 /** 一次试算的结果：用不了的商品带上后端给的说明（满减门槛、适用范围等） */
 interface QuoteRow {
@@ -187,6 +181,8 @@ const redeemLoading = ref(false)
 const codePreview = ref<CodePreview | null>(null)
 const codeNotice = ref('')
 const redeemInputRef = ref<HTMLInputElement | null>(null)
+/** 核销折叠区开关：默认收起，只留一行入口 */
+const redeemOpen = ref(false)
 
 /** 重新输入时清掉上一轮预检结果，避免残留提示误导 */
 function resetCodeFeedback() {
@@ -350,21 +346,6 @@ async function refreshBalance() {
   } catch { /* 静默 */ }
 }
 
-/** 活力值：用积分续活力（花积分区卡片直接操作，无弹窗） */
-async function doRechargeVitality() {
-  recharging.value = true
-  try {
-    const r = await vitalityApi.recharge(rechargeQty.value * vitalityPointCost.value)
-    if (vitality.value) vitality.value.vitality = r.vitality
-    balance.value = r.points_balance
-    toast.success('续命成功')
-  } catch (e: any) {
-    alert(e?.response?.data?.detail || '续活失败，请稍后重试')
-  } finally {
-    recharging.value = false
-  }
-}
-
 /** 是否已完成过首屏加载：KeepAlive 缓存命中时走静默刷新 */
 const hasLoaded = ref(false)
 
@@ -392,7 +373,7 @@ async function loadAll(silent = false) {
     const emptyLogs = { total: 0, balance: 0, logs: [] as PointsLogEntry[] }
     const emptySubs: MySubscription[] = []
     const couponFallback = { enabled: false }
-    const [pkgR, planR, methodR, logR, subsR, couponR, vitalityR] = await Promise.allSettled([
+    const [pkgR, planR, methodR, logR, subsR, couponR] = await Promise.allSettled([
       paymentApi.packages(),
       paymentApi.plans(),
       paymentApi.methods(),
@@ -400,8 +381,6 @@ async function loadAll(silent = false) {
       subscriptionApi.getMine(),
       // 接口失败时按「关闭」处理：宁可不展示，也不让用户填完码才报错
       couponApi.config(),
-      // 活力值：非公益服用户 403，兜底为 null 不展示
-      vitalityApi.status(),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -423,9 +402,6 @@ async function loadAll(silent = false) {
     if (subs !== undefined) subscriptions.value = Array.isArray(subs) ? subs : []
     const couponCfg = settled(couponR, couponFallback, silent)
     if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
-    const vitalityData = vitalityR.status === 'fulfilled' ? vitalityR.value : null
-    vitality.value = vitalityData && vitalityData.success ? vitalityData : null
-
     // 商品与价格回来后，已应用的券要按最新价格重算一次
     // （替代原来的 watch(tab)：本页没有分页，只在数据刷新时重算）
     if (couponApplied.value) void applyCoupon(couponApplied.value, { silent: true })
@@ -508,9 +484,21 @@ function handleEntryQuery() {
   }
 }
 
+/** 深链：/store?tab=plans 滚到买会员卡，/store?tab=recharge 滚到充积分卡 */
+function scrollToStoreCard() {
+  const tab = String(route.query.tab ?? '')
+  const id = tab === 'plans' ? 'card-plans' : tab === 'recharge' ? 'card-recharge' : ''
+  if (!id) return
+  // 等两帧再滚：首屏骨架屏高度与数据回来后不一致，晚一点滚更准
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }))
+}
+
 onMounted(async () => {
   await loadAll()
   handleEntryQuery()
+  scrollToStoreCard()
   // P2：拉取充值比例（自定义金额换算用），失败时保持默认 1.2
   try {
     const info = await currencyApi.info()
@@ -522,6 +510,7 @@ onMounted(async () => {
 // 从别的 tab 切回来（KeepAlive 缓存命中）：先处理 query，再后台静默刷新
 onActivated(() => {
   handleEntryQuery()
+  scrollToStoreCard()
   if (hasLoaded.value) void loadAll(true)
 })
 
@@ -531,718 +520,1182 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
 </script>
 
 <template>
-  <div class="au-page store-view">
-    <TgBindCard v-if="showTgBanner" compact class="tg-banner" />
+  <div class="store-page">
+    <TgBindCard v-if="showTgBanner" compact class="store-tg" />
 
-    <header class="store-head au-anim-up">
-      <div class="sh-title"><h1>商店</h1><p>{{ isFreeRealm ? '积分当钱花，全部免费玩' : '充值积分，开通会员' }}</p></div>
-      <RouterLink to="/wallet" class="balance-pill"><Sparkles :size="13" /><span>{{ balance }} 积分</span><ChevronRight :size="12" /></RouterLink>
-    </header>
-
-    <!-- 充积分区 -->
-    <section class="store-group au-card au-anim-up">
-      <div class="group-head"><h2><Coins :size="16" /> 充积分</h2><p class="group-desc">用人民币购买积分</p></div>
-
-      <div v-if="!rechargeEnabled" class="au-empty">
-        <CircleAlert :size="30" />
-        <p>充值通道暂未开启，可先通过签到、邀请或兑换获取积分</p>
+    <div class="store-status au-anim-up">
+      <div class="store-status-left">
+        <Crown class="store-status-crown" />
+        <span v-if="isFreeRealm">公益服 · 免费开放</span>
+        <span v-else-if="currentSub">你是{{ currentSub.plan_name }}会员</span>
+        <span v-else>你还不是会员</span>
       </div>
-      <div v-else-if="loading && !packages.length" class="pkg-list" aria-hidden="true">
-        <div v-for="i in 3" :key="i" class="pkg-row pkg-row-skeleton">
-          <span class="pkg-points-wrap">
-            <span class="pkg-points"><strong class="skel-num">···</strong><em>积分</em></span>
-          </span>
-          <span class="pkg-buy"><span class="pkg-price">¥··</span></span>
+      <RouterLink to="/wallet" class="status-points">
+        <Sparkles />
+        <span class="nowrap">{{ balance }} 积分</span>
+        <ChevronRight />
+      </RouterLink>
+    </div>
+
+    <div class="store-cards">
+      <section id="card-recharge" class="store-card au-anim-up">
+        <header class="store-card-head">
+          <Coins class="store-card-icon" />
+          <h2>充积分</h2>
+          <small>用人民币购买积分</small>
+        </header>
+
+        <div v-if="!rechargeEnabled" class="store-empty">
+          <CircleAlert />
+          <p>充值通道暂未开启，可先通过签到、邀请或兑换获取积分</p>
         </div>
-      </div>
-      <div v-else-if="!packages.length" class="au-empty">
-        <Coins :size="30" />
-        <p>暂无可用充值套餐</p>
-      </div>
-      <div v-else class="pkg-list">
-        <button
-          v-for="p in packages"
-          :key="p.id"
-          class="pkg-row"
-          :class="{ popular: p.is_popular }"
-          :disabled="orderLoading === p.id"
-          @click="handleOrder('recharge', p.id)"
-        >
-          <span class="pkg-points-wrap">
-            <span class="pkg-points">
-              <strong>{{ p.total_points }}</strong>
-              <em>积分</em>
-            </span>
-            <span class="pkg-name">{{ p.name }}</span>
-            <span v-if="p.bonus > 0" class="pkg-bonus">
-              <Sparkles :size="11" />
-              含赠送 {{ p.bonus }} 积分
-            </span>
-          </span>
 
-          <span class="pkg-buy">
-            <span v-if="p.is_popular" class="pkg-pop-tag">超值</span>
-            <span class="pkg-price">
-              <em v-if="wasPrice('recharge', p.id)" class="price-was">¥{{ wasPrice('recharge', p.id) }}</em>
-              ¥{{ paidPrice('recharge', p.id, p.price) }}
-            </span>
-            <span class="pkg-cta">
-              <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
-              <template v-else>
-                购买
-                <ExternalLink :size="12" />
-              </template>
-            </span>
-          </span>
-        </button>
-      </div>
-
-      <!-- 自定义金额充值：按 recharge_ratio 换算积分 -->
-      <div class="custom-recharge au-card">
-        <div class="custom-recharge-head">
-          <Coins :size="15" />
-          <span>自定义金额充值</span>
-        </div>
-        <div class="custom-recharge-body">
-          <div class="custom-input-wrap">
-            <span class="custom-prefix">¥</span>
-            <input v-model.number="customAmount" type="number" min="1" max="100000" placeholder="输入金额" class="custom-input" />
+        <div v-else-if="loading && !packages.length" class="store-skeleton">
+          <div v-for="i in 3" :key="i" class="store-skel-row">
+            <span class="store-skel-points"></span>
+            <span class="store-skel-price"></span>
           </div>
-          <button class="au-btn au-btn-primary" :disabled="!canCustomRecharge || orderLoading === -1" @click="handleCustomRecharge">
-            <span v-if="orderLoading === -1" class="au-spinner spinner-sm" />
-            <template v-else>充值{{ customPointsPreview }}积分</template>
-          </button>
-        </div>
-        <p class="custom-hint">按当前比例 {{ rechargeRatio }} 兑换（1 元 = {{ rechargeRatio }} 积分）</p>
-      </div>
-
-      <!-- 支付方式：收进本区底部 -->
-      <div v-if="methods.length" class="pay-methods">
-        <span class="pay-methods-label">支付方式</span>
-        <button
-          v-for="m in methods"
-          :key="m.id"
-          class="pay-method"
-          :class="{ active: payMethod === m.id }"
-          @click="payMethod = m.id"
-        >
-          {{ m.name }}
-        </button>
-      </div>
-    </section>
-
-    <!-- 买会员区 -->
-    <section class="store-group au-card au-anim-up">
-      <div class="group-head"><h2><Zap :size="16" /> 买会员</h2><p class="group-desc">人民币开通会员，解锁全库播放</p></div>
-
-      <div v-if="isFreeRealm" class="free-line"><Sparkles :size="13" /><span>公益服免费开放，无需购买会员</span></div>
-
-      <template v-else>
-        <!-- 当前会员状态条 -->
-        <div v-if="plansEnabled" class="member-status" :class="{ inactive: !currentSub, warn: subExpiringSoon }">
-          <Crown :size="15" />
-          <template v-if="currentSub">
-            <span>当前会员：<strong>{{ currentSub.plan_name }}</strong></span>
-            <span class="ms-sep">·</span>
-            <span>剩 <strong>{{ currentSub.days_left }}</strong> 天（{{ currentSub.end_date?.slice(0, 10) }} 到期）</span>
-            <span v-if="subExpiringSoon" class="ms-warn">
-              <TriangleAlert :size="13" />
-              即将到期，现在续费可无缝接续
-            </span>
-          </template>
-          <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
         </div>
 
-        <div v-if="!plansEnabled" class="au-empty">
-          <CircleAlert :size="30" />
-          <p>订阅购买暂未开启，可联系管理员换用卡码开通</p>
+        <div v-else-if="!packages.length" class="store-empty">
+          <Coins />
+          <p>暂无可用充值套餐</p>
         </div>
-        <div v-else-if="!plans.length" class="au-empty">
-          <Zap :size="30" />
-          <p>暂无可购买套餐，请联系管理员开通</p>
-        </div>
-        <div v-else class="plan-grid">
-          <div v-for="p in plans" :key="p.id" class="plan-card" :class="{ popular: p.is_popular }">
-            <div class="plan-head">
-              <h4 class="plan-name">
-                {{ p.name }}
-                <span v-if="p.is_popular" class="pop-pill">推荐</span>
-                <em v-if="p.realm_name" class="plan-realm">{{ p.realm_name }}</em>
-              </h4>
-              <span class="plan-price">
-                <em v-if="wasPrice('subscription', p.id)" class="price-was">¥{{ wasPrice('subscription', p.id) }}</em>
-                ¥{{ paidPrice('subscription', p.id, p.price) }}
-                <em class="plan-days">/ {{ p.duration_days }} 天</em>
+
+        <template v-else>
+          <div class="pkg-list">
+            <button
+              v-for="p in packages"
+              :key="p.id"
+              type="button"
+              class="pkg-row"
+              :class="{ popular: p.is_popular }"
+              :disabled="orderLoading === p.id"
+              @click="handleOrder('recharge', p.id)"
+            >
+              <span class="pkg-info">
+                <span class="nowrap"><strong>{{ p.total_points }}</strong> 积分</span>
+                <span class="pkg-name">{{ p.name }}</span>
+                <span v-if="p.bonus > 0" class="pkg-bonus"><Sparkles /> 含赠送 <span class="nowrap">{{ p.bonus }} 积分</span></span>
               </span>
-            </div>
-            <p class="plan-desc">{{ p.description || '会员专属权益' }}</p>
-
-            <ul v-if="p.features && p.features.length" class="plan-features">
-              <li v-for="(f, i) in p.features" :key="i">
-                <CircleCheck :size="13" /> {{ f }}
-              </li>
-            </ul>
-
-            <div class="plan-actions">
-              <button
-                class="au-btn plan-btn"
-                :class="p.is_popular ? 'au-btn-primary' : 'au-btn-ghost'"
-                :disabled="orderLoading === p.id"
-                @click="handleOrder('subscription', p.id)"
-              >
-                <span v-if="orderLoading === p.id" class="au-spinner spinner-sm" />
-                <template v-else>¥{{ paidPrice('subscription', p.id, p.price) }} 开通</template>
-              </button>
-            </div>
-          </div>
-        </div>
-      </template>
-    </section>
-
-    <!-- 花积分区 -->
-    <section class="store-group au-card au-anim-up" id="spend">
-      <div class="group-head"><h2><Sparkles :size="16" /> 花积分</h2><p class="group-desc">积分能换这些服务</p></div>
-
-      <div v-if="vitality" class="spend-card">
-        <div class="spend-top">
-          <span class="spend-icon"><Zap :size="15" /></span>
-          <div class="spend-meta"><strong>活力值续命</strong><span class="spend-sub">当前 {{ vitality.vitality }} / {{ vitality.max }} · 1 点 = {{ vitalityPointCost }} 积分</span></div>
-        </div>
-        <div class="member-bar" role="progressbar"><i :style="{ width: (vitality.vitality / vitality.max * 100) + '%' }" /></div>
-        <div class="spend-actions">
-          <div class="qty-row">
-            <button v-for="n in [1,3,7,14]" :key="n" type="button" class="qty-btn" :class="{ active: rechargeQty === n }" @click="rechargeQty = n">+{{ n }}</button>
-          </div>
-          <button type="button" class="au-btn au-btn-primary" :disabled="recharging" @click="doRechargeVitality">
-            <span v-if="recharging" class="au-spinner spinner-sm" /><template v-else>消耗 {{ rechargeQty * vitalityPointCost }} 积分续命</template>
-          </button>
-        </div>
-        <p v-if="!vitality.can_play" class="spend-warn"><TriangleAlert :size="13" /> 活力值低于观影阈值 {{ vitality.limit_threshold }}，已限制观影</p>
-      </div>
-
-      <div v-if="pointsPlans.length" class="spend-card">
-        <div class="spend-top">
-          <span class="spend-icon"><Crown :size="15" /></span>
-          <div class="spend-meta"><strong>积分开通订阅</strong><span class="spend-sub">用积分直接开通会员</span></div>
-        </div>
-        <div class="points-plan-list">
-          <div v-for="p in pointsPlans" :key="p.id" class="points-plan-row">
-            <span class="ppr-name">{{ p.name }}<em> / {{ p.duration_days }} 天</em></span>
-            <button type="button" class="au-btn au-btn-ghost au-btn-sm" :disabled="orderLoading === -p.id" @click="handlePointsOrder(p)">
-              <span v-if="orderLoading === -p.id" class="au-spinner spinner-sm" /><template v-else>{{ p.points_price }} 积分开通</template>
+              <span class="pkg-price">
+                <del v-if="wasPrice('recharge', p.id)"><span class="nowrap">¥{{ wasPrice('recharge', p.id) }}</span></del>
+                <span class="pkg-now"><span class="nowrap">¥{{ paidPrice('recharge', p.id, p.price) }}</span></span>
+                <em v-if="p.is_popular" class="pkg-badge">超值</em>
+              </span>
+              <span class="pkg-action">
+                <span v-if="orderLoading === p.id" class="spinner"></span>
+                <template v-else>购买 <ExternalLink /></template>
+              </span>
             </button>
           </div>
+
+          <div class="store-custom">
+            <div class="store-custom-row">
+              <span class="store-custom-currency">¥</span>
+              <input
+                v-model.number="customAmount"
+                type="number"
+                min="1"
+                max="100000"
+                placeholder="输入金额"
+                class="store-custom-input"
+              />
+              <button
+                type="button"
+                class="store-custom-btn"
+                :disabled="!canCustomRecharge || orderLoading === -1"
+                @click="handleCustomRecharge"
+              >
+                <span v-if="orderLoading === -1" class="spinner"></span>
+                <template v-else>充值<span class="nowrap">{{ customPointsPreview }}积分</span></template>
+              </button>
+            </div>
+            <small class="store-custom-note">按当前比例 <span class="nowrap">{{ rechargeRatio }}</span> 兑换（<span class="nowrap">1 元</span> = <span class="nowrap">{{ rechargeRatio }} 积分</span>）</small>
+          </div>
+
+          <div v-if="methods.length" class="store-pay">
+            <span class="store-pay-label">支付方式</span>
+            <div class="store-pay-group">
+              <button
+                v-for="m in methods"
+                :key="m.id"
+                type="button"
+                class="store-pay-btn"
+                :class="{ active: payMethod === m.id }"
+                @click="payMethod = m.id"
+              >{{ m.name }}</button>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <section id="card-plans" class="store-card au-anim-up">
+        <header class="store-card-head">
+          <Zap class="store-card-icon" />
+          <h2>买会员</h2>
+          <small>开通会员，解锁全库播放</small>
+        </header>
+
+        <div v-if="isFreeRealm" class="store-free">
+          <Sparkles />
+          <p>公益服免费开放，无需购买</p>
         </div>
-      </div>
 
-      <div class="spend-card spend-soon">
-        <span class="spend-icon"><Flame :size="15" /></span><span>积分兑换公益天数 · 即将上线</span>
-      </div>
-    </section>
+        <template v-else>
+          <div v-if="plansEnabled" class="store-sub" :class="{ warn: subExpiringSoon }">
+            <Crown />
+            <template v-if="currentSub">
+              <span>当前会员：<strong>{{ currentSub.plan_name }}</strong> · 剩 <span class="nowrap"><strong>{{ currentSub.days_left }}</strong> 天</span>（{{ currentSub.end_date.slice(0, 10) }} 到期）</span>
+              <template v-if="subExpiringSoon">
+                <TriangleAlert />
+                <span>即将到期，现在续费可无缝接续</span>
+              </template>
+            </template>
+            <span v-else>当前未开通会员，选择套餐即可解锁全库播放</span>
+          </div>
 
-    <!-- 核销区 -->
-    <section class="store-group au-card au-anim-up">
-      <div class="group-head"><h2><TicketCheck :size="16" /> 核销</h2><p class="group-desc">卡码 · 兑换码 · 优惠券，自动识别</p></div>
+          <div v-if="!plansEnabled" class="store-empty">
+            <CircleAlert />
+            <p>订阅购买暂未开启，可联系管理员换用卡码开通</p>
+          </div>
+          <div v-else-if="loading && !plans.length" class="store-skeleton" aria-hidden="true">
+            <div v-for="i in 3" :key="i" class="store-skel-row">
+              <span class="store-skel-points"></span>
+              <span class="store-skel-price"></span>
+            </div>
+          </div>
+          <div v-else-if="!plans.length" class="store-empty">
+            <Zap />
+            <p>暂无可购买套餐，请联系管理员开通</p>
+          </div>
 
-      <form class="bh-redeem" @submit.prevent="handleRedeem">
-        <span class="redeem-label">
-          <TicketCheck :size="14" />
-          卡码 · 兑换码 · 优惠券
-        </span>
-        <div class="redeem-row">
+          <template v-else>
+            <div class="plan-list">
+              <article v-for="p in plans" :key="p.id" class="plan-item" :class="{ popular: p.is_popular }">
+                <header class="plan-head">
+                  <strong class="plan-name">{{ p.name }}</strong>
+                  <em v-if="p.is_popular" class="plan-badge">推荐</em>
+                  <span v-if="p.realm_name" class="plan-realm">{{ p.realm_name }}</span>
+                </header>
+                <div class="plan-price">
+                  <del v-if="wasPrice('subscription', p.id)"><span class="nowrap">¥{{ wasPrice('subscription', p.id) }}</span></del>
+                  <span class="plan-now"><span class="nowrap">¥{{ paidPrice('subscription', p.id, p.price) }}</span></span> / <span class="nowrap">{{ p.duration_days }} 天</span>
+                </div>
+                <p v-if="p.description" class="plan-desc">{{ p.description }}</p>
+                <ul v-if="p.features && p.features.length" class="plan-features">
+                  <li v-for="(f, i) in p.features" :key="i"><CircleCheck /> {{ f }}</li>
+                </ul>
+                <div class="plan-actions">
+                  <button
+                    type="button"
+                    class="plan-buy"
+                    :disabled="orderLoading === p.id"
+                    @click="handleOrder('subscription', p.id)"
+                  >
+                    <span v-if="orderLoading === p.id" class="spinner"></span>
+                    <template v-else><span class="nowrap">¥{{ paidPrice('subscription', p.id, p.price) }}</span> 开通</template>
+                  </button>
+                  <button
+                    v-if="p.points_price != null"
+                    type="button"
+                    class="plan-points"
+                    :disabled="orderLoading === -p.id"
+                    @click="handlePointsOrder(p)"
+                  >
+                    <span v-if="orderLoading === -p.id" class="spinner"></span>
+                    <template v-else><span class="nowrap">{{ p.points_price }} 积分</span>开通</template>
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div v-if="couponEnabled" class="coupon-box">
+              <small class="coupon-title">优惠券</small>
+              <div v-if="!couponApplied" class="coupon-row">
+                <input v-model="couponCode" placeholder="优惠券码，购买时抵扣" class="coupon-input" />
+                <button
+                  type="button"
+                  class="coupon-apply"
+                  :disabled="couponLoading || !couponCode.trim()"
+                  @click="applyCoupon(couponCode)"
+                >
+                  <span v-if="couponLoading" class="spinner"></span>
+                  <template v-else>应用</template>
+                </button>
+              </div>
+              <div v-else class="coupon-applied">
+                <Percent />
+                <span>优惠券 <strong>{{ couponApplied }}</strong> 已应用</span>
+                <span v-if="couponSavings > 0" class="coupon-savings"> · 本页最高省 <span class="nowrap">¥{{ couponSavings.toFixed(2) }}</span></span>
+                <button type="button" class="coupon-clear" @click="clearCoupon"><X /></button>
+              </div>
+              <p v-if="couponError" class="coupon-error">{{ couponError }}</p>
+            </div>
+          </template>
+        </template>
+      </section>
+    </div>
+
+    <div class="store-redeem au-anim-up">
+      <button
+        type="button"
+        class="redeem-toggle"
+        @click="redeemOpen = !redeemOpen"
+        :aria-expanded="redeemOpen"
+      >
+        <TicketCheck />
+        <span>卡码 / 兑换码核销</span>
+        <ChevronRight :class="{ open: redeemOpen }" />
+      </button>
+
+      <div v-if="redeemOpen" class="redeem-panel">
+        <form class="redeem-form" @submit.prevent="handleRedeem">
           <input
             ref="redeemInputRef"
             v-model="redeemCode"
-            class="au-input redeem-input"
-            placeholder="输入卡码 / 兑换码 / 优惠券"
+            placeholder="输入卡码 / 兑换码"
             maxlength="64"
             autocomplete="off"
+            class="redeem-input"
             @input="resetCodeFeedback"
-          >
+          />
           <button
             type="submit"
-            class="au-btn au-btn-primary"
+            class="redeem-submit"
             :disabled="redeemLoading || !redeemCode.trim()"
           >
-            <Sparkles v-if="!redeemLoading" :size="15" />
-            <span v-else class="au-spinner spinner-sm" />
-            使用
+            <span v-if="redeemLoading" class="spinner"></span>
+            <template v-else>使用</template>
           </button>
-        </div>
+        </form>
 
-        <!-- 会员卡码预检通过：先给类型与天数，确认后再核销 -->
         <div v-if="codePreview" class="redeem-preview">
-          <CircleCheck :size="14" />
-          <span class="rp-text">
-            {{ codePreview.type_name }}
-            <strong>· {{ codePreview.days_text }}</strong>
-            <template v-if="codePreview.realm_name"> · 开「{{ codePreview.realm_name }}」的会员</template>
-            <template v-if="codePreview.is_named"> · 限指定账号</template>
-          </span>
+          <CircleCheck />
+          <span>{{ codePreview.type_name }} · <strong><span class="nowrap">{{ codePreview.days_text }}</span></strong></span>
+          <span v-if="codePreview.realm_name"> · 开「{{ codePreview.realm_name }}」的会员</span>
+          <span v-if="codePreview.is_named"> · 限指定账号</span>
           <button
             type="button"
-            class="au-btn au-btn-primary au-btn-sm"
+            class="redeem-confirm"
             :disabled="redeemLoading"
             @click="confirmCodeRedeem"
           >
-            <span v-if="redeemLoading" class="au-spinner spinner-sm" />
-            确认开通
+            <span v-if="redeemLoading" class="spinner"></span>
+            <template v-else>确认开通</template>
           </button>
         </div>
-
-        <!-- 优惠券已应用 -->
-        <div v-else-if="couponApplied" class="redeem-preview">
-          <Percent :size="14" />
-          <span class="rp-text">
-            优惠券 <strong>{{ couponApplied }}</strong> 已应用<template v-if="couponSavings > 0"> · 本页最高省 ¥{{ couponSavings.toFixed(2) }}</template>
-          </span>
-          <button type="button" class="au-btn au-btn-ghost au-btn-sm" :disabled="couponLoading" @click="clearCoupon">
-            <X :size="13" />
-            清除
-          </button>
+        <div v-else-if="couponApplied" class="redeem-coupon">
+          <Percent />
+          <span>优惠券 <strong>{{ couponApplied }}</strong> 已应用</span>
+          <button type="button" class="redeem-clear" @click="clearCoupon"><X /></button>
         </div>
 
-        <p class="redeem-hint" :class="{ warn: !!redeemNotice }">
-          {{ redeemNotice || redeemHint }}
-        </p>
-      </form>
-    </section>
+        <p class="redeem-note" :class="{ warn: !!redeemNotice }">{{ redeemNotice || redeemHint }}</p>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* 页面容器：纵向排列，组间距 16px（1rem），与 au-page 搭配 */
-.store-view { display: flex; flex-direction: column; gap: 1rem; }
-
-/* 页头：标题左，余额 pill 右 */
-.store-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
-.sh-title h1 { margin: 0; font-size: 1.375rem; font-weight: 800; color: var(--au-text); font-family: var(--au-font-serif); }
-.sh-title p { margin: 0.25rem 0 0; font-size: 0.8125rem; color: var(--au-text-3); }
-.balance-pill { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.5rem 0.875rem; border-radius: var(--au-r-full); background: var(--au-primary-soft); color: var(--au-primary); font-size: 0.8125rem; font-weight: 700; text-decoration: none; white-space: nowrap; }
-.balance-pill:hover { filter: brightness(1.05); }
-
-/* 分组卡：组标题 16px 加粗 + 灰色说明 12px */
-.store-group { padding: 1.125rem; }
-.group-head { margin-bottom: 1rem; }
-.group-head h2 { margin: 0; display: flex; align-items: center; gap: 0.5rem; font-size: 1rem; font-weight: 700; color: var(--au-text); }
-.group-head h2 svg { color: var(--au-primary); }
-.group-desc { margin: 0.375rem 0 0; font-size: 0.75rem; color: var(--au-text-3); }
-
-/* 公益服一行说明 */
-.free-line { display: flex; align-items: center; gap: 0.5rem; padding: 0.875rem 1rem; border-radius: var(--au-r-lg); background: var(--au-surface-2); border: 1px dashed var(--au-border); font-size: 0.875rem; color: var(--au-text-2); }
-.free-line svg { color: var(--au-primary); flex-shrink: 0; }
-
-/* 花积分区卡片 */
-.spend-card { border: 1px solid var(--au-border); border-radius: var(--au-r-lg); background: var(--au-surface-2); padding: 1rem; }
-.spend-card + .spend-card { margin-top: 0.75rem; }
-.spend-top { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
-.spend-icon { display: inline-flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; border-radius: var(--au-r-lg); background: var(--au-primary-soft); color: var(--au-primary); flex-shrink: 0; }
-.spend-meta { display: flex; flex-direction: column; gap: 0.125rem; }
-.spend-meta strong { font-size: 0.9375rem; color: var(--au-text); }
-.spend-sub { font-size: 0.75rem; color: var(--au-text-3); }
-.spend-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap; }
-.spend-warn { display: flex; align-items: center; gap: 0.375rem; margin: 0.75rem 0 0; font-size: 0.75rem; color: var(--au-danger); }
-.spend-soon { display: flex; align-items: center; gap: 0.75rem; color: var(--au-text-3); font-size: 0.875rem; border-style: dashed; }
-
-/* 积分开通订阅列表 */
-.points-plan-list { display: flex; flex-direction: column; }
-.points-plan-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.625rem 0; border-top: 1px solid var(--au-border); }
-.points-plan-row:first-child { border-top: none; padding-top: 0; }
-.points-plan-row:last-child { padding-bottom: 0; }
-.ppr-name { font-size: 0.875rem; font-weight: 600; color: var(--au-text); }
-.ppr-name em { font-style: normal; font-weight: 400; font-size: 0.75rem; color: var(--au-text-3); }
-
-/* 移动端微调 */
-@media (max-width: 480px) {
-  .store-group { padding: 1rem 0.875rem; }
-  .spend-actions { flex-direction: column; align-items: stretch; }
-}
-
-/* ===== 以下复用原 WalletView 样式（商品卡/核销/支付） ===== */
-.member-bar {
-  height: 0.375rem;
-  border-radius: var(--au-r-full);
-  background: var(--au-border);
-  overflow: hidden;
-}
-
-.member-bar i {
-  display: block;
-  height: 100%;
-  border-radius: var(--au-r-full);
-  background: linear-gradient(90deg, var(--au-primary), var(--au-gold-b));
-  transition: width 0.5s var(--au-ease);
-}
-
-.bh-redeem {
+.store-page {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 0.4375rem;
+  gap: 32px;
+}
+
+.store-page .nowrap {
+  white-space: nowrap;
+}
+
+.store-page svg {
+  flex-shrink: 0;
+  vertical-align: -2px;
+}
+
+.store-tg {
+  margin: 0;
+}
+
+.store-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--au-text-2);
+}
+
+.store-status-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.store-status-crown {
+  width: 15px;
+  height: 15px;
+  color: var(--au-gold-a);
+  flex-shrink: 0;
+}
+
+a.status-points {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--au-text);
+  text-decoration: none;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+a.status-points:hover {
+  color: var(--au-primary);
+}
+
+a.status-points svg {
+  width: 14px;
+  height: 14px;
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.store-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.store-card {
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-xl);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
   min-width: 0;
 }
 
-.redeem-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text-2);
-}
-
-.redeem-row { display: flex; gap: 0.5rem; }
-
-.redeem-input { flex: 1; min-width: 0; height: 40px; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.8125rem; }
-
-.redeem-hint {
+.store-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin: 0;
-  font-size: 0.8125rem;
+}
+
+.store-card-head h2 {
+  font-size: 20px;
+  font-weight: 650;
+  color: var(--au-text);
+  margin: 0;
+  white-space: nowrap;
+}
+
+.store-card-head small {
+  font-size: 13px;
   color: var(--au-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.spinning { animation: au-spin 0.9s linear infinite; }
-
-.pay-methods { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-
-.pay-methods-label { font-size: 0.8125rem; color: var(--au-text-3); }
-
-.pkg-price .price-was,
-
-.plan-price .price-was,
-
-.pay-method {
-  height: 32px;
-  padding: 0 0.875rem;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
-  color: var(--au-text-2);
-  font-size: 0.8125rem;
-  cursor: pointer;
-  transition: all var(--au-fast);
-}
-
-.pay-method:hover { border-color: var(--au-border-strong); color: var(--au-text); }
-
-.pay-method.active {
-  background: var(--au-primary-soft);
-  border-color: var(--au-primary-border);
+.store-card-icon {
+  width: 18px;
+  height: 18px;
   color: var(--au-primary);
-  font-weight: 600;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.store-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: var(--au-text-3);
+  font-size: 13px;
+  text-align: center;
+}
+
+.store-empty svg {
+  width: 28px;
+  height: 28px;
+  opacity: .5;
+}
+
+.store-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.store-skel-row {
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  border-radius: var(--au-r-lg);
+  background: var(--au-surface-2);
+}
+
+.store-skel-points,
+.store-skel-price {
+  background: var(--au-track);
+  animation: store-shimmer 1.2s ease-in-out infinite;
+}
+
+.store-skel-points {
+  width: 120px;
+  height: 22px;
+  border-radius: 4px;
+}
+
+.store-skel-price {
+  width: 80px;
+  height: 18px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+@keyframes store-shimmer {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.8;
+  }
 }
 
 .pkg-list {
   display: flex;
   flex-direction: column;
-  gap: 0.625rem;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
 }
 
-.pkg-row {
+button.pkg-row {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 1.25rem;
-  padding: 0.9375rem 1.25rem;
-  background: var(--au-surface);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 16px;
+  background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
   cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
   text-align: left;
-  position: relative;
+  font: inherit;
+  transition: border-color var(--au-fast) var(--au-ease);
 }
 
-.pkg-row:hover:not(:disabled) {
-  border-color: var(--au-primary-border);
-  background: var(--au-surface-2);
+button.pkg-row:hover {
+  border-color: var(--au-border-strong);
 }
 
-.pkg-row.popular { border-color: var(--au-primary); }
-
-.pkg-row:disabled { opacity: 0.6; cursor: wait; }
-
-.pkg-row-skeleton { cursor: default; pointer-events: none; opacity: 0.6; }
-
-.pkg-row-skeleton strong,
-
-.pkg-row-skeleton .pkg-price {
-  background: linear-gradient(90deg, var(--au-border) 25%, var(--au-surface) 50%, var(--au-border) 75%);
-  background-size: 200% 100%;
-  animation: skel-slide 1.2s linear infinite;
-  border-radius: var(--au-r-sm);
-  color: transparent;
+button.pkg-row.popular {
+  box-shadow: inset 2px 0 0 var(--au-gold-a);
 }
 
-.pkg-points-wrap {
+button.pkg-row:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pkg-info {
   display: flex;
-  flex-direction: column;
-  gap: 0.1875rem;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
   min-width: 0;
 }
 
-.pkg-points { display: flex; align-items: baseline; gap: 0.3125rem; }
-
-.pkg-points strong {
-  font-family: var(--au-font-serif);
-  font-size: 1.5rem;
+.pkg-info strong {
+  font-size: 22px;
   font-weight: 700;
   color: var(--au-text);
   font-variant-numeric: tabular-nums;
-  line-height: 1.15;
 }
 
-.pkg-points em { font-style: normal; font-size: 0.8125rem; color: var(--au-text-3); }
+.pkg-info .nowrap {
+  font-size: 13px;
+  color: var(--au-text-3);
+}
 
-.pkg-name { font-size: 0.8125rem; color: var(--au-text-3); }
+.pkg-name {
+  font-size: 13px;
+  color: var(--au-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.plan-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .pkg-bonus {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  font-size: 0.8125rem;
-  color: var(--au-success);
+  gap: 8px;
+  font-size: 12px;
+  color: var(--au-gold-b);
+  white-space: nowrap;
 }
 
-.pkg-buy {
-  display: flex;
-  align-items: center;
-  gap: 0.875rem;
-  flex-shrink: 0;
-}
-
-.pkg-pop-tag {
-  padding: 0.0625rem 0.4375rem;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  color: var(--au-primary);
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  border-radius: var(--au-r-full);
+.pkg-bonus svg {
+  width: 11px;
+  height: 11px;
 }
 
 .pkg-price {
-  font-family: var(--au-font-serif);
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--au-text);
-  font-variant-numeric: tabular-nums lining-nums;
-}
-
-.pkg-cta {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3125rem;
-  height: 34px;
-  min-width: 76px;
-  padding: 0 1rem;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text-2);
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.pkg-row:hover:not(:disabled) .pkg-cta {
-  background: var(--au-primary);
-  border-color: transparent;
-  color: var(--au-on-primary);
-}
-
-.spinner-sm { width: 14px; height: 14px; border-width: 2px; }
-
-.member-status {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.375rem;
-  margin-bottom: 0.875rem;
-  padding: 0.6875rem 0.9375rem;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: var(--au-r-md);
-  font-size: 0.8125rem;
-  color: var(--au-text-2);
-}
-
-.redeem-preview {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.4375rem 0.625rem;
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  border-radius: var(--au-r-md);
-  font-size: 0.8125rem;
-  color: var(--au-text-2);
-}
-
-.redeem-preview svg { color: var(--au-primary); flex-shrink: 0; }
-
-.redeem-preview strong { color: var(--au-text); font-variant-numeric: tabular-nums; }
-
-.redeem-preview .rp-text { flex: 1; min-width: 0; }
-
-.redeem-preview .au-btn { margin-left: auto; }
-
-.redeem-hint.warn { color: var(--au-warning); }
-
-.member-status.warn {
-  background: var(--au-warning-soft);
-  border-color: var(--au-warning-soft);
-}
-
-.member-status.warn svg,
-
-.member-status.warn .ms-warn {
-  color: var(--au-warning);
-}
-
-.ms-warn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.8125rem;
-}
-
-.member-status svg {
-  color: var(--au-primary);
+  align-items: baseline;
+  gap: 8px;
   flex-shrink: 0;
 }
 
-.member-status strong {
+.pkg-price del {
+  font-size: 13px;
+  color: var(--au-text-3);
+}
+
+.pkg-now {
+  font-size: 17px;
+  font-weight: 700;
   color: var(--au-text);
   font-variant-numeric: tabular-nums;
 }
 
-.member-status.inactive {
-  background: var(--au-warning-soft);
-  border-color: var(--au-warning-border);
+.pkg-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--au-r-full);
+  color: var(--au-gold-b);
+  border: 1px solid var(--au-gold-edge);
+  white-space: nowrap;
+  font-weight: 600;
 }
 
-.member-status.inactive svg {
-  color: var(--au-warning);
+.pkg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--au-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 52px;
+  justify-content: flex-end;
 }
 
-.ms-sep {
+.pkg-action svg {
+  width: 12px;
+  height: 12px;
+}
+
+.store-custom {
+  border-top: 1px solid var(--au-border);
+  padding-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.store-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.store-custom-currency {
+  font-size: 15px;
+  color: var(--au-text-3);
+  flex-shrink: 0;
+}
+
+input.store-custom-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-input-border);
+  border-radius: var(--au-r-md);
+  padding: 0 12px;
+  height: 44px;
+  color: var(--au-text);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+input.store-custom-input:focus {
+  border-color: var(--au-primary);
+  outline: none;
+}
+
+button.store-custom-btn,
+button.plan-buy,
+button.coupon-apply,
+button.redeem-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  background: var(--au-primary);
+  color: var(--au-on-primary);
+  border: none;
+  border-radius: var(--au-r-md);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+button.store-custom-btn:hover,
+button.plan-buy:hover,
+button.coupon-apply:hover,
+button.redeem-submit:hover {
+  background: var(--au-primary-strong);
+}
+
+button.store-custom-btn:disabled,
+button.plan-buy:disabled,
+button.coupon-apply:disabled,
+button.redeem-submit:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+
+small.store-custom-note {
+  font-size: 12px;
   color: var(--au-text-3);
 }
 
-.plan-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 0.875rem;
-}
-
-.plan-card {
-  position: relative;
+.store-pay {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 1.25rem;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-lg);
-  transition: all var(--au-fast);
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.plan-card.popular { border-color: var(--au-primary); }
+.store-pay-label {
+  font-size: 13px;
+  color: var(--au-text-3);
+  white-space: nowrap;
+}
 
-.pop-pill {
+.store-pay-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+button.store-pay-btn {
   display: inline-flex;
   align-items: center;
-  height: 20px;
-  margin-left: 0.375rem;
-  padding: 0 0.4375rem;
+  min-height: 36px;
+  padding: 0 16px;
   border-radius: var(--au-r-full);
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
+  border: 1px solid var(--au-border);
+  background: transparent;
+  color: var(--au-text-2);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.store-pay-btn.active {
+  border-color: var(--au-primary);
   color: var(--au-primary);
-  font-family: var(--au-font-sans);
-  font-size: 0.75rem;
+  background: var(--au-primary-soft);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  vertical-align: 2px;
+}
+
+.store-free {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--au-text-2);
+  font-size: 14px;
+}
+
+.store-free svg {
+  width: 15px;
+  height: 15px;
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.store-free p {
+  margin: 0;
+}
+
+.store-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  font-size: 13px;
+  color: var(--au-text-2);
+}
+
+.store-sub svg {
+  width: 15px;
+  height: 15px;
+  color: var(--au-gold-a);
+  flex-shrink: 0;
+}
+
+.store-sub strong {
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.store-sub.warn {
+  border-color: var(--au-warning);
+  background: var(--au-warning-soft);
+}
+
+.plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+}
+
+.plan-item {
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  padding: 16px;
+  background: var(--au-surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plan-item.popular {
+  border-color: var(--au-gold-edge);
 }
 
 .plan-head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
 }
 
-.plan-name { margin: 0; font-family: var(--au-font-serif); font-size: 1.0625rem; font-weight: 700; color: var(--au-text); }
+.plan-name {
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+em.plan-badge {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--au-r-full);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
+  white-space: nowrap;
+}
 
 .plan-realm {
-  display: inline-block;
-  margin-left: 0.375rem;
-  padding: 0.0625rem 0.4375rem;
-  border-radius: 999px;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
+  font-size: 12px;
   color: var(--au-text-3);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  font-style: normal;
-  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .plan-price {
-  font-family: var(--au-font-serif);
-  font-size: 1.375rem;
-  font-weight: 700;
-  color: var(--au-text);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums lining-nums;
-}
-
-.plan-price em { font-family: var(--au-font-sans); font-style: normal; font-size: 0.8125rem; font-weight: 400; color: var(--au-text-3); }
-
-.plan-desc { margin: 0; font-size: 0.8125rem; color: var(--au-text-3); line-height: 1.5; }
-
-.plan-features {
-  list-style: none;
-  margin: 0.125rem 0 0;
-  padding: 0;
   display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.plan-features li {
-  display: flex;
-  align-items: center;
-  gap: 0.4375rem;
-  font-size: 0.8125rem;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
   color: var(--au-text-2);
 }
 
-.plan-features svg { color: var(--au-success); flex-shrink: 0; }
-
-.plan-btn { margin-top: auto; width: 100%; }
-
-.plan-actions { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
-
-.plan-actions .plan-btn { margin-top: 0; }
-
-.custom-recharge { margin-top: 16px; padding: 16px; }
-
-.custom-recharge-head {
-  display: flex; align-items: center; gap: 8px;
-  font-weight: 600; font-size: 0.9rem; margin-bottom: 12px;
+.plan-price del {
+  font-size: 13px;
+  color: var(--au-text-3);
 }
 
-.custom-recharge-body { display: flex; gap: 12px; align-items: center; }
+.plan-price .plan-now {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+}
 
-.qty-row { display: flex; gap: 0.5rem; margin: 0.75rem 0; }
+p.plan-desc {
+  font-size: 13px;
+  color: var(--au-text-3);
+  margin: 0;
+}
 
-.qty-btn { padding: 0.5rem 1rem; border-radius: var(--au-r-full); border: 1px solid var(--au-border); background: var(--au-surface-2); color: var(--au-text); cursor: pointer; font-weight: 700; }
+ul.plan-features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
-.qty-btn.active { border-color: var(--au-primary); color: var(--au-primary); }
+ul.plan-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--au-text-2);
+}
+
+ul.plan-features li svg {
+  width: 13px;
+  height: 13px;
+  color: var(--au-primary);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.plan-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+
+button.plan-points {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  background: transparent;
+  border: 1px solid var(--au-border-strong);
+  color: var(--au-text-2);
+  border-radius: var(--au-r-md);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.plan-points:hover {
+  border-color: var(--au-primary);
+  color: var(--au-text);
+}
+
+button.plan-points:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.coupon-box {
+  border-top: 1px solid var(--au-border);
+  padding-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+small.coupon-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--au-text-3);
+}
+
+.coupon-row {
+  display: flex;
+  gap: 8px;
+}
+
+input.coupon-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-input-border);
+  border-radius: var(--au-r-md);
+  padding: 0 12px;
+  height: 44px;
+  color: var(--au-text);
+  font-size: 14px;
+}
+
+input.coupon-input:focus {
+  border-color: var(--au-primary);
+  outline: none;
+}
+
+input.coupon-input::placeholder {
+  color: var(--au-text-3);
+}
+
+
+.coupon-applied {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--au-text-2);
+}
+
+.coupon-applied svg {
+  width: 14px;
+  height: 14px;
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.coupon-applied strong {
+  color: var(--au-text);
+}
+
+.coupon-savings {
+  color: var(--au-gold-b);
+  font-variant-numeric: tabular-nums;
+}
+
+button.coupon-clear,
+button.redeem-clear {
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--au-border-strong);
+  color: var(--au-text-2);
+  border-radius: var(--au-r-md);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button.coupon-clear:hover,
+button.redeem-clear:hover {
+
+  border-color: var(--au-primary);
+  color: var(--au-text);
+}
+
+button.coupon-clear svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+p.coupon-error {
+  font-size: 13px;
+  color: var(--au-danger);
+  margin: 0;
+}
+
+
+.store-redeem { opacity: .85; }
+
+.store-redeem button.redeem-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 8px 2px;
+  color: var(--au-text-3);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.store-redeem button.redeem-toggle:hover { color: var(--au-text-2); }
+
+.store-redeem button.redeem-toggle svg:first-child {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.store-redeem button.redeem-toggle svg:last-child {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: transform var(--au-fast) var(--au-ease);
+}
+
+.store-redeem button.redeem-toggle svg.open { transform: rotate(90deg); }
+
+.redeem-panel {
+  margin-top: 8px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  padding: 16px;
+  background: var(--au-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.redeem-form {
+  display: flex;
+  gap: 8px;
+}
+
+.redeem-form input.redeem-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-input-border);
+  border-radius: var(--au-r-md);
+  padding: 0 12px;
+  height: 44px;
+  color: var(--au-text);
+  font-size: 14px;
+}
+
+.redeem-form input.redeem-input:focus {
+  border-color: var(--au-primary);
+  outline: none;
+}
+
+.redeem-form input.redeem-input::placeholder { color: var(--au-text-3); }
+
+
+.redeem-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--au-text-2);
+}
+
+.redeem-preview svg {
+  width: 14px;
+  height: 14px;
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.redeem-preview strong { color: var(--au-text); }
+
+button.redeem-confirm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 16px;
+  background: var(--au-primary);
+  color: var(--au-on-primary);
+  border: none;
+  border-radius: var(--au-r-md);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.redeem-preview button.redeem-confirm:hover { background: var(--au-primary-strong); }
+
+.redeem-preview button.redeem-confirm:disabled { opacity: .5; }
+
+.redeem-coupon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--au-text-2);
+}
+
+.redeem-coupon svg {
+  width: 14px;
+  height: 14px;
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.redeem-coupon strong { color: var(--au-text); }
+
+
+.redeem-coupon button.redeem-clear svg {
+  width: 13px;
+  height: 13px;
+}
+
+.redeem-note {
+  font-size: 12px;
+  color: var(--au-text-3);
+  margin: 0;
+}
+
+.redeem-note.warn { color: var(--au-warning); }
+
+.store-page .spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--au-border-strong);
+  border-top-color: var(--au-primary);
+  animation: store-spin .7s linear infinite;
+  vertical-align: -2px;
+}
+
+@keyframes store-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+  .store-page {
+    padding: 16px;
+    gap: 24px;
+  }
+
+  .store-cards { grid-template-columns: 1fr; }
+
+  .store-card { padding: 20px; }
+
+  .pkg-row { padding: 16px; }
+
+  .plan-actions button { flex: 1; }
+
+  .pkg-name { max-width: 40vw; }
+}
 </style>
