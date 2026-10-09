@@ -29,3 +29,23 @@ export async function getPlayLine(): Promise<{ line: PlayLine; cdnEnabled: boole
 export async function setPlayLine(_line: PlayLine): Promise<PlayLine> {
   return 'relay'
 }
+
+/** 注册页开关状态（公开接口，未登录可调） */
+export interface RegisterConfig {
+  registration_mode: 'open' | 'code' | 'closed'
+  invitation_enabled: boolean
+}
+
+/** 获取注册页开关：注册模式 + 邀请码开关 */
+export async function getRegisterConfig(): Promise<RegisterConfig> {
+  try {
+    const res = await api.get<never, RegisterConfig>('/api/user/auth/register-config')
+    return {
+      registration_mode: res.registration_mode || 'open',
+      invitation_enabled: res.invitation_enabled !== false,
+    }
+  } catch {
+    // 拿不到时按最宽松处理：开放注册 + 邀请码显示（不把用户锁在门外）
+    return { registration_mode: 'open', invitation_enabled: true }
+  }
+}

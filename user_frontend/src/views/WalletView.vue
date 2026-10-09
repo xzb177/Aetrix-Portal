@@ -368,8 +368,8 @@ onBeforeUnmount(stopPayPoll)
         <!-- 多服运营下这句必须写明：积分是一份通用的，会员才是一个服一个 -->
         <p class="balance-note">积分与余额全站通用（多服共用一份）；会员是一个服一个。</p>
 
-        <!-- 签到态：紧凑胶囊 -->
-        <RouterLink v-if="checkin" to="/checkin" class="checkin-pill" :class="{ done: checkin.checked_today }">
+        <!-- 签到态：紧凑胶囊（签到开关关闭时隐藏） -->
+        <RouterLink v-if="checkin && checkin.enabled !== false" to="/checkin" class="checkin-pill" :class="{ done: checkin.checked_today }">
           <Flame :size="13" />
           <span>连签 <strong>{{ checkin.streak }}</strong> 天</span>
           <span class="pill-divider" />

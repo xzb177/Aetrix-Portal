@@ -17,11 +17,20 @@ import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Ticket, Gift } from 'lucid
 import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
 // 站名来自「站点与品牌」能力（未配置时用默认值）
 import { branding } from '@/composables/useBranding'
+import { getRegisterConfig } from '@/api/user'
 
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 const toast = useToast()
+
+// 注册页开关（管理端可配）：注册模式 + 邀请码开关
+// registration_mode: open=开放注册 / code=必须注册码 / closed=关闭注册
+const registrationMode = ref<'open' | 'code' | 'closed'>('open')
+const invitationEnabled = ref(true)
+const showRegCodeField = computed(() => registrationMode.value === 'code')
+const showInviteField = computed(() => invitationEnabled.value)
+const registrationClosed = computed(() => registrationMode.value === 'closed')
 
 const mode = ref<'login' | 'register'>('login')
 
@@ -87,6 +96,10 @@ async function handleLogin() {
 }
 
 async function handleRegister() {
+  if (registrationClosed.value) {
+    error.value = '当前未开放注册'
+    return
+  }
   const f = registerForm
   if (!f.username || !f.password || !f.confirmPassword) {
     error.value = '请完整填写注册信息'
@@ -125,6 +138,11 @@ async function handleRegister() {
 }
 
 onMounted(() => {
+  // 拉取注册页开关（公开接口）：按管理端配置显示/隐藏注册码、邀请码输入框
+  getRegisterConfig().then((cfg) => {
+    registrationMode.value = cfg.registration_mode
+    invitationEnabled.value = cfg.invitation_enabled
+  }).catch(() => { /* 拿不到时按默认值显示，不锁死 */ })
   if (route.query.mode === 'register') mode.value = 'register'
   // 邀请链接 ?invite=CODE：自动切到注册页、预填邀请码并提示
   if (route.query.invite) {
@@ -225,6 +243,7 @@ onMounted(() => {
 
       <!-- 注册表单 -->
       <form v-else class="auth-form" @submit.prevent="handleRegister">
+        <p v-if="registrationClosed" class="closed-notice">当前未开放注册</p>
         <label class="field">
           <span class="field-label">用户名</span>
           <div class="field-box">
@@ -295,7 +314,7 @@ onMounted(() => {
           </div>
         </label>
 
-        <label class="field">
+        <label v-if="showRegCodeField" class="field">
           <span class="field-label">注册码 <em class="optional">站点要求时填写</em></span>
           <div class="field-box">
             <Ticket :size="16" class="field-icon" />
@@ -309,7 +328,7 @@ onMounted(() => {
           </div>
         </label>
 
-        <label class="field">
+        <label v-if="showInviteField" class="field">
           <span class="field-label">邀请码 <em class="optional">选填，双方得积分</em></span>
           <div class="field-box">
             <Gift :size="16" class="field-icon" />
@@ -327,7 +346,7 @@ onMounted(() => {
 
         <CaptchaChallenge ref="captchaRef" action="register" @update:token="captchaToken = $event" />
 
-        <button type="submit" class="submit-btn" :disabled="loading">
+        <button type="submit" class="submit-btn" :disabled="loading || registrationClosed">
           <span v-if="loading" class="spinner"></span>
           {{ loading ? '注册中…' : '注 册' }}
         </button>
@@ -582,6 +601,18 @@ onMounted(() => {
   color: var(--au-danger);
   font-size: 0.8125rem;
   line-height: 1.4;
+}
+
+/* 注册关闭提示：跟随暗房影院警告色 */
+.closed-notice {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 9px;
+  background: var(--au-warning-soft, var(--au-danger-soft));
+  border: 1px solid var(--au-warning-border, var(--au-danger-border));
+  color: var(--au-warning, var(--au-danger));
+  font-size: 0.875rem;
+  text-align: center;
 }
 
 /* 提交按钮 */

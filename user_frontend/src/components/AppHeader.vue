@@ -19,6 +19,8 @@ import { branding } from '@/composables/useBranding'
 
 /** 积分余额（顶栏 pill 显示，登录后加载） */
 const pointsBalance = ref<number | null>(null)
+/** 签到功能开关（管理端可配）：关闭时隐藏头像菜单里的签到入口 */
+const checkinEnabled = ref(true)
 async function loadPoints() {
   if (!userStore.isLoggedIn) {
     pointsBalance.value = null
@@ -27,6 +29,7 @@ async function loadPoints() {
   try {
     const st = await checkinApi.status()
     pointsBalance.value = st.points
+    checkinEnabled.value = st.enabled !== false
   } catch {
     /* 拿不到就不显示，不打扰 */
   }
@@ -109,8 +112,14 @@ const menuBadge = computed(() => {
   return { icon: Crown, text: '未开通会员', cls: 'muted' }
 })
 
-/** 用户菜单里的操作项（纸片人式列表）；退出登录独立成红色分区，不混在列表里 */
-const menuActions = computed(() => menuSections.flatMap((g) => g.items))
+/** 用户菜单里的操作项（纸片人式列表）；退出登录独立成红色分区，不混在列表里
+ *  签到开关关闭时隐藏「每日签到」入口（与管理端开关同步） */
+const menuActions = computed(() =>
+  menuSections.flatMap((g) => g.items).filter((item) => {
+    if (item.path === '/checkin' && !checkinEnabled.value) return false
+    return true
+  }),
+)
 
 /** 昵称展示：登录名可能是一长串邮箱，头像旁只取 @ 前段；@id 用数字 id */
 const displayName = computed(() => {
