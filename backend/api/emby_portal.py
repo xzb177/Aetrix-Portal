@@ -218,12 +218,60 @@ def register_config(db: Session = Depends(get_db)):
     }
 
 
+def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
+    """读取注册限流配置。
+
+    配置键（均存于 SystemConfig 表）：
+    - register_ratelimit_enabled：是否启用注册限流，值为 "true"（忽略首尾空格与大小写）时启用，默认启用；
+    - register_ratelimit_max：限流时间窗口内允许的最大注册次数，默认 5；
+    - register_ratelimit_window：限流时间窗口长度（秒），默认 3600。
+
+    任何读取或转换异常均回退到默认值，保证注册流程不会因配置读取失败而报错。
+    非法的非正数值同样回退默认值（管理后台写入时已有 >=1 / >=60 校验，
+    这里防的是直接改库的脏数据）。
+    """
+    enabled = True
+    max_events = 5
+    window_seconds = 3600
+    try:
+        # 一次查询取回三个键，避免三次 round trip；每个键独立容错
+        rows = (
+            db.query(models.SystemConfig)
+            .filter(models.SystemConfig.key.in_([
+                "register_ratelimit_enabled",
+                "register_ratelimit_max",
+                "register_ratelimit_window",
+            ]))
+            .all()
+        )
+        values = {r.key: r.value for r in rows if r.value}
+    except Exception:
+        values = {}
+    if "register_ratelimit_enabled" in values:
+        enabled = values["register_ratelimit_enabled"].strip().lower() == "true"
+    try:
+        if "register_ratelimit_max" in values:
+            v = int(values["register_ratelimit_max"])
+            max_events = v if v >= 1 else 5
+    except (TypeError, ValueError):
+        pass
+    try:
+        if "register_ratelimit_window" in values:
+            v = int(values["register_ratelimit_window"])
+            window_seconds = v if v >= 1 else 3600
+    except (TypeError, ValueError):
+        pass
+    return enabled, max_events, window_seconds
+
+
 @auth_router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     """注册新用户（用户名唯一，密码 bcrypt 存储，自动生成自建 Emby 凭据）"""
-    allowed, retry_after = check_rate_limit(f"register:{client_ip(request)}", 5, 3600)
-    if not allowed:
-        raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
+    rl_enabled, rl_max, rl_window = _get_register_ratelimit(db)
+    if rl_enabled:
+        allowed, retry_after = check_rate_limit(f"register:{client_ip(request)}", rl_max, rl_window)
+        if not allowed:
+            raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
     # 人机验证（能力中心）：未配置 / 未开保护时直接放行；失败一律 400 + 安全日志
     captcha.guard(db, request, "register", req.captcha_token, username=req.username.strip())
     username = req.username.strip()
