@@ -798,6 +798,7 @@ def _auto_migrate():
 
     _widen_code_column(existing_tables, inspector)
     _widen_bitrate_column(existing_tables, inspector)
+    _fix_station_message_from_user_fk(existing_tables, inspector)
     _widen_stream_title_columns(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
     # v2.49.0：本次刚补上 video_resolution 列的老库，用文件名解析回填已有条目
@@ -1143,6 +1144,82 @@ def _widen_bitrate_column(existing_tables: set, inspector) -> None:
             else:
                 conn.execute(text("ALTER TABLE emby_items MODIFY COLUMN bitrate BIGINT"))
         print("  🔧 已迁移: emby_items.bitrate → BIGINT（修 32 位码率溢出）")
+
+
+def _fix_station_message_from_user_fk(existing_tables: set, inspector) -> None:
+    """站内消息发送者外键纠偏：from_user_id 原先指向已废弃的 admin_users(id)，
+    实际写入的一直是管理员的 web_users.id；PG 强校验外键导致站内消息 INSERT
+    失败且被调用方吞掉（管理后台"发送成功"但库里没有）。
+
+    幂等：from_user_id 上已存在指向 web_users 的 FK 时直接返回；SQLite 跳过。
+    """
+    from sqlalchemy import text
+
+    if "station_messages" not in existing_tables:
+        return
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+
+    with engine.begin() as conn:
+        if dialect == "postgresql":
+            # 1) 已有指向 web_users 的 FK → 幂等返回
+            already = conn.execute(text(
+                "SELECT 1 FROM pg_constraint "
+                "WHERE conrelid='station_messages'::regclass AND contype='f' "
+                "AND confrelid='web_users'::regclass "
+                "AND 'from_user_id' = ANY (SELECT attname FROM pg_attribute "
+                "WHERE attrelid=conrelid AND attnum = ANY (conkey))"
+            )).fetchone()
+            if already:
+                return
+            # 2) 删掉 from_user_id 上所有指向非 web_users 表的旧 FK
+            old = conn.execute(text(
+                "SELECT conname FROM pg_constraint "
+                "WHERE conrelid='station_messages'::regclass AND contype='f' "
+                "AND confrelid != 'web_users'::regclass "
+                "AND 'from_user_id' = ANY (SELECT attname FROM pg_attribute "
+                "WHERE attrelid=conrelid AND attnum = ANY (conkey))"
+            )).fetchall()
+            for (conname,) in old:
+                safe = conname.replace('"', '""')
+                conn.execute(text(
+                    f'ALTER TABLE station_messages DROP CONSTRAINT "{safe}"'
+                ))
+        else:  # mysql
+            # 1) 幂等检查
+            already = conn.execute(text(
+                "SELECT 1 FROM information_schema.KEY_COLUMN_USAGE "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'station_messages' "
+                "AND COLUMN_NAME = 'from_user_id' AND REFERENCED_TABLE_NAME = 'web_users' "
+                "LIMIT 1"
+            )).fetchone()
+            if already:
+                return
+            # 2) 删旧 FK
+            old = conn.execute(text(
+                "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'station_messages' "
+                "AND COLUMN_NAME = 'from_user_id' AND REFERENCED_TABLE_NAME IS NOT NULL "
+                "AND REFERENCED_TABLE_NAME != 'web_users'"
+            )).fetchall()
+            for (conname,) in old:
+                conn.execute(text(
+                    f"ALTER TABLE station_messages DROP FOREIGN KEY `{conname}`"
+                ))
+        # 3) 孤儿值置空（旧约束下非空孤儿值本就写不进来，置空不丢有效数据；
+        #    不清则 ADD CONSTRAINT 可能被脏数据卡住导致启动失败）
+        conn.execute(text(
+            "UPDATE station_messages SET from_user_id = NULL "
+            "WHERE from_user_id IS NOT NULL "
+            "AND from_user_id NOT IN (SELECT id FROM web_users)"
+        ))
+        # 4) 加新约束（名与 PG create_all 自动命名一致，新库/迁移库 schema 统一）
+        conn.execute(text(
+            "ALTER TABLE station_messages ADD CONSTRAINT station_messages_from_user_id_fkey "
+            "FOREIGN KEY (from_user_id) REFERENCES web_users(id)"
+        ))
+    print("  🔧 已迁移: station_messages.from_user_id 外键 → web_users(id)（修管理后台发消息静默失败）")
 
 
 def _widen_code_column(existing_tables: set, inspector) -> None:

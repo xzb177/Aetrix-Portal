@@ -504,13 +504,15 @@ async def send_user_message(
 
     await run_in_threadpool(_prepare)
 
-    await notify_admin_event(
+    results = await notify_admin_event(
         event_type=f"station.{request.message_type}",
         user_id=user_id,
         title=request.title,
         content=request.content,
         from_admin_id=current_admin.id,
     )
+    if not results.get("in_app", False):
+        raise HTTPException(status_code=500, detail="消息发送失败")
     return {"success": True, "message": "消息发送成功"}
 
 
