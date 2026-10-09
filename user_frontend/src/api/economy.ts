@@ -292,6 +292,43 @@ export const paymentApi = {
     api.get<never, { orders: OrderRow[] }>('/api/user/economy/payment/orders', { params }),
 }
 
+// ==================== 抽奖 ====================
+
+export interface LotteryPrize {
+  id: number
+  name: string
+  /** days=公益天数，points=积分，whitelist=永久白名单 */
+  type: 'days' | 'points' | 'whitelist'
+  value: number
+}
+
+export interface LotteryDrawResult {
+  prize: LotteryPrize
+  grant: { type: string; days?: number; points?: number; balance?: number }
+  cost: number
+}
+
+export interface LotteryLogEntry {
+  id: number
+  prize_id: number
+  prize_name: string
+  created_at: string | null
+}
+
+export interface LotteryLogResponse {
+  total: number
+  page: number
+  page_size: number
+  items: LotteryLogEntry[]
+}
+
+export const lotteryApi = {
+  prizes: () => api.get<never, { prizes: LotteryPrize[] }>('/api/lottery/prizes'),
+  draw: () => api.post<never, LotteryDrawResult>('/api/lottery/draw'),
+  logs: (params?: { page?: number; page_size?: number }) =>
+    api.get<never, LotteryLogResponse>('/api/lottery/logs', { params }),
+}
+
 // ==================== 邀请返利 ====================
 
 export const inviteApi = {
