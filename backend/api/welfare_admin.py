@@ -359,6 +359,14 @@ WELFARE_CONFIG_KEYS = {
     "redpacket_recv_limit_7d": "10",
     # TG 门禁：公益服能力（签到/积分/红包/抽奖）是否要求绑定 Telegram
     "welfare_require_tg_bind": "1",
+# M1 群发言积分：总开关默认关闭，服主手动开启
+    "chat_points_enabled": "false",
+    "chat_points_group_ids": "",
+    "chat_points_per_message": "1",
+    "chat_points_min_len": "2",
+    "chat_points_minute_window": "60",
+    "chat_points_daily_cap": "20",
+    "chat_points_points_per_day": "100",
 }
 
 
