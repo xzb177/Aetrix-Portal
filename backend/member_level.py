@@ -11,57 +11,82 @@ from backend import models
 
 logger = logging.getLogger(__name__)
 
-# 默认 6 个等级的种子数据
+# 默认 6 个等级的种子数据（v2：暗房影院主题命名）
+#
+# 命名理念：影迷在暗房影院的进阶之旅——
+#   初幕（幕布初启）→ 影迷（爱上电影）→ 鉴赏家（懂得光影）
+#   → 放映师（掌管暗房）→ 造梦者（编织梦境）→ 传奇（影殿不朽）
 DEFAULT_LEVELS = [
     {
         "level": 1,
-        "name": "普通会员",
+        "name": "初幕",
         "xp_threshold": 0,
-        "badge_icon": "User",
+        "badge_icon": "Ticket",
         "badge_color": "#9ca3af",
         "benefits": ["基础观影权益", "每日签到"],
     },
     {
         "level": 2,
-        "name": "铜牌会员",
+        "name": "影迷",
         "xp_threshold": 100,
-        "badge_icon": "Medal",
-        "badge_color": "#cd7f32",
-        "benefits": ["铜牌专属徽章", "邀请奖励加成"],
+        "badge_icon": "Clapperboard",
+        "badge_color": "#f59e0b",
+        "benefits": ["影迷专属徽章", "邀请奖励加成"],
     },
     {
         "level": 3,
-        "name": "白银会员",
+        "name": "鉴赏家",
         "xp_threshold": 500,
-        "badge_icon": "Award",
-        "badge_color": "#c0c0c0",
-        "benefits": ["白银专属徽章", "优先客服"],
+        "badge_icon": "Glasses",
+        "badge_color": "#7dd3fc",
+        "benefits": ["鉴赏家专属徽章", "优先客服"],
     },
     {
         "level": 4,
-        "name": "黄金会员",
+        "name": "放映师",
         "xp_threshold": 1500,
-        "badge_icon": "Crown",
-        "badge_color": "#ffd700",
-        "benefits": ["黄金专属徽章", "专属客服通道"],
+        "badge_icon": "Projector",
+        "badge_color": "#d97706",
+        "benefits": ["放映师专属徽章", "专属客服通道"],
     },
     {
         "level": 5,
-        "name": "铂金会员",
+        "name": "造梦者",
         "xp_threshold": 5000,
-        "badge_icon": "Gem",
-        "badge_color": "#e5e4e2",
-        "benefits": ["铂金专属徽章", "新片优先通知"],
+        "badge_icon": "Sparkles",
+        "badge_color": "#a78bfa",
+        "benefits": ["造梦者专属徽章", "新片优先通知"],
     },
     {
         "level": 6,
-        "name": "钻石会员",
+        "name": "传奇",
         "xp_threshold": 15000,
-        "badge_icon": "Sparkles",
-        "badge_color": "#b9f2ff",
-        "benefits": ["钻石专属徽章", "专属活动邀请"],
+        "badge_icon": "Crown",
+        "badge_color": "#eab308",
+        "benefits": ["传奇专属徽章", "专属活动邀请"],
     },
 ]
+
+# v1 旧命名 → v2 新命名的迁移映射（仅用于升级仍在使用旧默认名的数据库行；
+# 管理员已手动改过名的行不会被触碰）
+LEGACY_NAME_MIGRATION = {
+    "普通会员": "初幕",
+    "铜牌会员": "影迷",
+    "白银会员": "鉴赏家",
+    "黄金会员": "放映师",
+    "铂金会员": "造梦者",
+    "钻石会员": "传奇",
+}
+
+# v1 旧徽章 → v2 新徽章（与名称迁移配套）
+LEGACY_BADGE_MIGRATION = {
+    1: ("Ticket", "#9ca3af"),
+    2: ("Clapperboard", "#f59e0b"),
+    3: ("Glasses", "#7dd3fc"),
+    4: ("Projector", "#d97706"),
+    5: ("Sparkles", "#a78bfa"),
+    6: ("Crown", "#eab308"),
+}
 
 
 def _parse_benefits(benefits_json):
@@ -74,6 +99,59 @@ def _parse_benefits(benefits_json):
         logger.warning("benefits_json 解析失败: %s", exc)
         return []
     return data if isinstance(data, list) else []
+
+
+def migrate_legacy_level_names(db: Session) -> int:
+    """v1 → v2 命名迁移：把仍在使用旧默认名的等级行升级为暗房影院主题命名。
+
+    只更新 name 仍在 LEGACY_NAME_MIGRATION 键中的行（即管理员未手动改过名的）；
+    徽章图标/颜色同步更新为新主题。返回更新的行数。幂等：跑多次结果一致。
+
+    性能：先用轻量查询判断是否存在旧名，无则直接返回 0，避免每次全表加载。
+    """
+    legacy_names = list(LEGACY_NAME_MIGRATION.keys())
+    has_legacy = (
+        db.query(models.MemberLevel.id)
+        .filter(models.MemberLevel.name.in_(legacy_names))
+        .first()
+        is not None
+    )
+    if not has_legacy:
+        return 0
+
+    updated = 0
+    rows = (
+        db.query(models.MemberLevel)
+        .filter(models.MemberLevel.name.in_(legacy_names))
+        .all()
+    )
+    for row in rows:
+        new_name = LEGACY_NAME_MIGRATION.get(row.name)
+        if not new_name:
+            continue
+        row.name = new_name
+        icon, color = LEGACY_BADGE_MIGRATION.get(row.level, (row.badge_icon, row.badge_color))
+        row.badge_icon = icon
+        row.badge_color = color
+        # 权益文案中的旧名同步替换（如"铜牌专属徽章"→"影迷专属徽章"）
+        benefits = _parse_benefits(row.benefits_json)
+        new_benefits = []
+        for b in benefits:
+            for old, new in LEGACY_NAME_MIGRATION.items():
+                old_short = old.replace("会员", "")
+                if old_short and old_short in b:
+                    b = b.replace(old_short, new)
+            new_benefits.append(b)
+        row.benefits_json = json.dumps(new_benefits, ensure_ascii=False)
+        updated += 1
+    if updated:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        logger.info("会员等级命名迁移完成，共更新 %d 行", updated)
+    return updated
 
 
 def ensure_member_levels_seeded(db: Session) -> int:
@@ -195,8 +273,9 @@ def add_xp(
 
 def get_member_info(db: Session, user: models.WebUser) -> dict:
     """用户端 /api/user/member 使用：等级列表 + 当前等级 + 进度。"""
-    # 确保种子存在
+    # 确保种子存在，并把旧命名迁移到新主题（幂等）
     ensure_member_levels_seeded(db)
+    migrate_legacy_level_names(db)
 
     rows = (
         db.query(models.MemberLevel)
@@ -228,7 +307,7 @@ def get_member_info(db: Session, user: models.WebUser) -> dict:
         current = fallback[-1] if fallback else (levels[0] if levels else None)
         level = current["level"] if current else 1
 
-    level_name = current["name"] if current else "普通会员"
+    level_name = current["name"] if current else "初幕"
     badge_icon = current["badge_icon"] if current else "User"
     badge_color = current["badge_color"] if current else "#9ca3af"
     cur_threshold = current["xp_threshold"] if current else 0

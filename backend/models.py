@@ -1440,7 +1440,7 @@ class MemberLevel(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     level = Column(Integer, unique=True, nullable=False)  # 等级 1-6
-    name = Column(String(30), nullable=False)  # 等级名称：普通会员/铜牌/白银/黄金/铂金/钻石
+    name = Column(String(30), nullable=False)  # 等级名称：初幕/影迷/鉴赏家/放映师/造梦者/传奇（暗房影院主题）
     xp_threshold = Column(Integer, nullable=False, default=0)  # 升级所需经验阈值
     benefits_json = Column(Text, nullable=True)  # 权益描述 JSON 数组，如 ["权益1","权益2"]
     badge_icon = Column(String(30), nullable=True)  # 徽章图标名（lucide 图标名）
