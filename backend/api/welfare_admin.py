@@ -355,6 +355,8 @@ WELFARE_CONFIG_KEYS = {
     "lottery_cost": "10",
     # P0 统一货币体系：充值比例与红包规则
     "recharge_ratio": "1.2",
+    # C4 商店改造：快捷金额
+    "recharge_quick_amounts": "10,30,50,100,200",
     # B4 TG Bot 总控：总开关、群白名单、限流、各命令开关、红包开关
     "bot_enabled": "true",
     "bot_group_ids": "",

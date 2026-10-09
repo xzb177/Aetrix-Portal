@@ -305,6 +305,8 @@ async function handleOrder(kind: 'recharge' | 'subscription', itemId?: number) {
 // ===== 自定义金额充值（P2）=====
 const customAmount = ref<number | null>(null)
 const rechargeRatio = ref(1.2)
+// C4：快捷金额
+const quickAmounts = ref<number[]>([])
 const canCustomRecharge = computed(() => (customAmount.value ?? 0) >= 1)
 const customPointsPreview = computed(() => {
   const amt = customAmount.value ?? 0
@@ -490,10 +492,11 @@ onMounted(async () => {
   await loadAll()
   handleEntryQuery()
   scrollToStoreCard()
-  // P2：拉取充值比例（自定义金额换算用），失败时保持默认 1.2
+  // P2/C4：拉取充值比例与快捷金额（自定义金额换算用），失败时保持默认
   try {
     const info = await currencyApi.info()
     if (info?.recharge_ratio) rechargeRatio.value = info.recharge_ratio
+    if (Array.isArray(info?.quick_amounts) && info.quick_amounts.length) quickAmounts.value = info.quick_amounts
   } catch { /* 静默 */ }
   tgApi.status().then(s => { tgStatus.value = s }).catch(() => {})
 })
@@ -534,6 +537,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
           <Coins class="store-card-icon" />
           <h2>充积分</h2>
           <small>用人民币购买积分</small>
+          <span class="rate-badge"><span class="nowrap">1&nbsp;元</span><span class="rate-eq">=</span><span class="nowrap">{{ rechargeRatio }}&nbsp;积分</span></span>
         </header>
 
         <div v-if="!rechargeEnabled" class="store-empty">
@@ -579,6 +583,20 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
                 <template v-else>购买 <ExternalLink /></template>
               </span>
             </button>
+          </div>
+
+          <div v-if="quickAmounts.length" class="store-quick">
+            <span class="store-quick-label">快捷金额</span>
+            <div class="store-quick-chips">
+              <button
+                v-for="amt in quickAmounts"
+                :key="amt"
+                type="button"
+                class="quick-chip"
+                :class="{ active: customAmount === amt }"
+                @click="customAmount = amt"
+              ><span class="nowrap">¥{{ amt }}</span></button>
+            </div>
           </div>
 
           <div class="store-custom">
@@ -874,6 +892,24 @@ a.status-points svg {
   margin: 0;
 }
 
+.rate-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--au-border);
+  border-radius: 999px;
+  background: var(--au-input-bg);
+  color: var(--au-text-3);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: center;
+  font-variant-numeric: tabular-nums;
+}
+.rate-badge .rate-eq { color: var(--au-primary); font-weight: 700; }
+
 .store-card-head h2 {
   font-size: 20px;
   font-weight: 650;
@@ -1092,6 +1128,41 @@ button.pkg-row:disabled {
   height: 12px;
 }
 
+.store-quick {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.store-quick-label {
+  font-size: 13px;
+  color: var(--au-text-3);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.store-quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+button.quick-chip {
+  padding: 8px 14px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-input-bg);
+  color: var(--au-text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+button.quick-chip:hover { border-color: var(--au-primary); }
+button.quick-chip.active {
+  border-color: var(--au-primary);
+  color: var(--au-primary);
+  background: var(--au-primary-soft);
+}
 .store-custom {
   border-top: 1px solid var(--au-border);
   padding-top: 24px;
