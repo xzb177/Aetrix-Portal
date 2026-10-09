@@ -63,6 +63,18 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  /** TG bot 一键免密登录：用一次性 token 换登录态 */
+  async function loginWithTgToken(token: string) {
+    loading.value = true
+    try {
+      const response = await authApi.tgLogin({ token })
+      _persist(response)
+      return true
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function register(
     username: string,
     password: string,
@@ -134,6 +146,7 @@ export const useUserStore = defineStore('user', () => {
     realmNote,
     init,
     login,
+    loginWithTgToken,
     register,
     fetchUser,
     logout,

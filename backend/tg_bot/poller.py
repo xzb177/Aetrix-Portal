@@ -26,7 +26,8 @@ def _get_offset(db) -> int:
 def _save_offset(db, offset: int) -> None:
     """持久化 offset 到 SystemConfig。"""
     from backend.integrations import store
-    store.set_value(db, "tg_bot_update_offset", str(offset))
+    # 注意：store 只有 write_values，没有 set_value
+    store.write_values(db, {_OFFSET_KEY: str(offset)})
 
 
 def _poll_once(token: str, offset: int, timeout: int = 30) -> list:

@@ -93,6 +93,10 @@ PRE_AUTH: dict[tuple[str, str], str] = {
         "登录同理：限流（按 IP）+ 人机验证 + 登录日志（成功与失败都记）",
     ("POST", "/api/user/auth/refresh"):
         "刷新令牌：只认请求里带的那枚 refresh token 自己，无效即拒（限流同上）",
+    ("POST", "/api/user/auth/tg-login"):
+        "Bot 一键免密登录：登录本身就是取得身份前的动作；凭 32 字节随机一次性 token"
+        "（10 分钟过期、一次消费、每用户每小时最多 10 个），且 token 内 user_id 与"
+        " telegram_id 必须与 WebUser 记录一致，不一致即 401",
     ("POST", "/api/user/economy/payment/notify"):
         "支付网关回调：拿不到管理员身份（是网关在调），靠 HMAC 验签 + 金额与订单实付核对 + 订单幂等",
     ("POST", "/api/admin/auth/login"):

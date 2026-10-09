@@ -22,12 +22,8 @@ def db():
     # 只建需要的表
     models.WebUser.__table__.create(engine, checkfirst=True)
     models.TgBindCode.__table__.create(engine, checkfirst=True)
-    # SystemConfig 表（store 需要）
-    from backend.integrations import store as _store  # noqa
-    try:
-        _store.SystemConfig.__table__.create(engine, checkfirst=True)
-    except Exception:
-        pass
+    # SystemConfig 表（store.get_value 需要）
+    models.SystemConfig.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
     session = Session()
     yield session
@@ -69,8 +65,9 @@ def test_handle_start_unbound(db):
 def test_handle_start_bound(db):
     _make_user(db, tg_id=555)
     tg_user = {"id": 555, "first_name": "Tom"}
-    text = handlers.handle_start(db, tg_user, 555, "")
-    assert "欢迎回来" in text
+    result = handlers.handle_start(db, tg_user, 555, "")
+    text = result[0] if isinstance(result, tuple) else result
+    assert "欢迎回到" in text and "当前账号" in text
 
 
 def test_handle_help(db):
@@ -177,7 +174,7 @@ def test_router_unknown_command(db):
     from backend.tg_bot import sender
     sent = []
     orig = sender.send_message
-    sender.send_message = lambda db_, chat_id, text, rm=None: sent.append(text) or (True, None)
+    sender.send_message = lambda db_, chat_id, text, reply_markup=None, **kw: sent.append(text) or (True, None)
     try:
         router.dispatch(db, update)
     finally:

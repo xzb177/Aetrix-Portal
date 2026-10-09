@@ -1,0 +1,107 @@
+<template>
+  <div class="au-page tg-login-page">
+    <div class="au-card tg-login-card">
+      <h1 class="tg-login-title">Telegram 快捷登录</h1>
+      <div v-if="state === 'loading'" class="tg-login-loading">
+        <span class="tg-spinner" aria-hidden="true"></span>
+        <p class="tg-login-msg">正在为您登录…</p>
+      </div>
+      <p v-else-if="state === 'success'" class="tg-login-msg tg-login-ok">✅ 登录成功，正在跳转…</p>
+      <div v-else>
+        <p class="tg-login-msg tg-login-error">登录链接无效或已过期，请在机器人中重新获取</p>
+        <button class="au-btn tg-login-home" @click="goHome">返回首页</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useUserStore } from '@/stores/user'
+
+type LoginState = 'loading' | 'success' | 'error'
+
+const route = useRoute()
+const router = useRouter()
+const userStore = useUserStore()
+const state = ref<LoginState>('loading')
+
+onMounted(async () => {
+  // TS 严格模式下 query.token 需手动收窄
+  const raw = route.query.token
+  const token = typeof raw === 'string' ? raw : Array.isArray(raw) ? (raw[0] ?? '') : ''
+  if (!token) {
+    state.value = 'error'
+    return
+  }
+  state.value = 'loading'
+  try {
+    const ok = await userStore.loginWithTgToken(token)
+    // 请求已发出，清掉地址栏 token，避免泄漏
+    router.replace({ query: {} })
+    if (ok) {
+      state.value = 'success'
+      window.setTimeout(() => {
+        router.replace('/profile')
+      }, 1000)
+    } else {
+      state.value = 'error'
+    }
+  } catch {
+    state.value = 'error'
+  }
+})
+
+function goHome() {
+  router.replace('/')
+}
+</script>
+
+<style scoped>
+.tg-login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+.tg-login-card {
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+  padding: 2.5rem 1.5rem;
+}
+.tg-login-title {
+  font-size: 1.25rem;
+  margin-bottom: 1rem;
+}
+.tg-login-msg {
+  color: var(--au-text-2, #9aa0a6);
+}
+.tg-login-ok {
+  color: #34d399;
+}
+.tg-login-error {
+  color: #f87171;
+}
+.tg-login-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+.tg-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--au-primary, #f59e0b);
+  animation: tg-spin 0.8s linear infinite;
+}
+@keyframes tg-spin {
+  to { transform: rotate(360deg); }
+}
+.tg-login-home {
+  margin-top: 1.25rem;
+}
+</style>

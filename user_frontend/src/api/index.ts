@@ -215,6 +215,10 @@ export const authApi = {
   register: (data: { username: string; password: string; email?: string; invitation_code?: string; registration_code?: string; captcha_token?: string }) =>
     api.post<never, AuthResponse>('/api/user/auth/register', data),
 
+  /** bot 一键免密登录：用一次性 token 换登录态 */
+  tgLogin: (data: { token: string }) =>
+    api.post<never, AuthResponse>('/api/user/auth/tg-login', data),
+
   getCurrentUser: () => api.get<never, AuthUser>('/api/user/auth/me'),
 
   logout: () => api.post('/api/user/auth/logout'),

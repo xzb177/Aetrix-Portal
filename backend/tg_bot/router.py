@@ -2,9 +2,32 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# 命令级限流：每用户每命令 3 秒 1 次（B1 简版内存实现）
+_RATE_LIMIT_SECONDS = 3.0
+_rate_limits: dict[tuple[int, str], float] = {}
+_rate_lock = threading.Lock()
+
+
+def _allow(tg_user_id: int, cmd: str) -> bool:
+    """限流检查，通过返回 True"""
+    now = time.monotonic()
+    with _rate_lock:
+        last = _rate_limits.get((tg_user_id, cmd))
+        if last is not None and now - last < _RATE_LIMIT_SECONDS:
+            return False
+        _rate_limits[(tg_user_id, cmd)] = now
+        if len(_rate_limits) > 10000:
+            cutoff = now - _RATE_LIMIT_SECONDS
+            for k, v in list(_rate_limits.items()):
+                if v < cutoff:
+                    del _rate_limits[k]
+        return True
 
 
 def _verify_bind_code(db, update: dict) -> None:
@@ -87,10 +110,8 @@ def dispatch(db, update: dict) -> None:
             _verify_bind_code(db, update)
             return
 
-        # 非命令文本：群发言积分（M1）；群抽奖口令（G2）在此之前匹配
+        # 非命令文本忽略
         if not text.startswith("/"):
-            from backend.tg_bot import chat_points
-            chat_points.handle_group_message(db, update)
             return
 
         # 解析命令（去掉 @bot 后缀）
@@ -98,20 +119,25 @@ def dispatch(db, update: dict) -> None:
         cmd = first_token.split("@")[0].lower()
         args = text[len(first_token):].strip()
 
-        from backend.tg_bot import chat_points
         commands = {
             "/start": handlers.handle_start,
             "/help": handlers.handle_help,
             "/bind": handlers.handle_bind,
-            "/chatpoints": chat_points.handle_chatpoints,
         }
         fn = commands.get(cmd)
+        tg_uid = tg_user.get("id") or 0
         if fn:
+            if not _allow(tg_uid, cmd):
+                sender.send_message(db, chat_id, "操作太快了，稍后再试")
+                return
             reply = fn(db, tg_user, chat_id, args)
         else:
             reply = "未知命令，发送 /help 查看可用命令"
-        # /chatpoints 私聊回复，避免在群里泄露积分信息（M1）
-        target = tg_user.get("id") if cmd == "/chatpoints" else chat_id
-        sender.send_message(db, target or chat_id, reply)
+        # handler 可返回 str 或 (text, reply_markup) 元组（一键登录按钮）
+        if isinstance(reply, tuple):
+            text, markup = reply
+        else:
+            text, markup = reply, None
+        sender.send_message(db, chat_id, text, reply_markup=markup)
     except Exception as exc:  # noqa: BLE001
         logger.error("tg dispatch failed: %s", exc, exc_info=True)
