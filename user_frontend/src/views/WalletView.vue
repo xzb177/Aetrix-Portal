@@ -58,13 +58,14 @@ const badgeStyle = (color: string, level: number) => {
   const c = color || '#9ca3af'
   // 高等级（造梦者/传奇）用更亮的高光，低等级保持沉稳
   const highlight = level >= 5 ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.28)'
+  const glow = level >= 5 ? `${c}66` : 'transparent'
   return {
     background: `radial-gradient(circle at 32% 28%, ${highlight}, transparent 55%), linear-gradient(145deg, ${c}, ${c}cc)`,
-    '--badge-glow': level >= 5 ? `${c}66` : 'transparent',
+    boxShadow: `0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 12px ${glow}`,
   } as Record<string, string>
 }
-/** 徽章档位：用于 CSS 分级光晕（高等级才有光晕，避免满屏发光） */
-const badgeTier = (level: number) => (level >= 6 ? 'legend' : level >= 5 ? 'epic' : level >= 4 ? 'rare' : 'common')
+/** 徽章档位：用于 CSS 分级动画（仅传奇有呼吸光晕） */
+const badgeTier = (level: number) => (level >= 6 ? 'legend' : 'common')
 
 // ===== 优惠券（v2.10.0；v2.10.1 收进统一核销入口）=====
 // 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
@@ -630,7 +631,7 @@ onBeforeUnmount(stopPayPoll)
             :key="lv.level"
             class="level-card"
             :class="{ current: lv.level === member.level }"
-            :style="{ '--lv-accent': lv.badge_color }"
+            :style="{ borderTopColor: lv.badge_color }"
           >
             <span class="member-badge sm" :style="badgeStyle(lv.badge_color, lv.level)" :data-tier="badgeTier(lv.level)">
               <component :is="levelIcon(lv.badge_icon)" :size="14" />
@@ -1053,20 +1054,16 @@ onBeforeUnmount(stopPayPoll)
   border-radius: 50%;
   color: #fff;
   flex-shrink: 0;
-  /* 暗房质感：内高光 + 外发光（高等级经 --badge-glow 着色） */
-  box-shadow:
-    0 2px 8px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    0 0 12px var(--badge-glow, transparent);
+  /* 暗房质感：内高光 + 边框（具体背景/光晕由 badgeStyle() 行内设置） */
   border: 1px solid rgba(255, 255, 255, 0.18);
 }
-/* 传奇档：缓慢呼吸光晕，影殿不朽的气场 */
+/* 传奇档：缓慢呼吸光晕，影殿不朽的气场（传奇固定为 #eab308 金） */
 .member-badge[data-tier="legend"] {
   animation: badge-breathe 3.2s ease-in-out infinite;
 }
 @keyframes badge-breathe {
-  0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 10px var(--badge-glow, transparent); }
-  50% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 22px var(--badge-glow, transparent); }
+  0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 10px #eab30866; }
+  50% { box-shadow: 0 2px 8px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25), 0 0 22px #eab30899; }
 }
 @media (prefers-reduced-motion: reduce) {
   .member-badge[data-tier="legend"] { animation: none; }
@@ -1125,13 +1122,12 @@ onBeforeUnmount(stopPayPoll)
   background: var(--au-surface-2, rgba(255, 255, 255, 0.03));
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
-  /* 顶部等级色条：暗房影院的色带感 */
-  border-top: 2px solid var(--lv-accent, var(--au-border));
+  /* 顶部等级色带：暗房影院的色带感（颜色由行内 borderTopColor 按等级设置） */
+  border-top-width: 2px;
 }
 .level-card.current {
   border-color: var(--au-primary);
   box-shadow: 0 0 0 1px var(--au-primary);
-  border-top-color: var(--lv-accent, var(--au-primary));
 }
 .level-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
 .level-head strong { font-size: 0.875rem; color: var(--au-text); }
