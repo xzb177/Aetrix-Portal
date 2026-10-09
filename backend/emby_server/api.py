@@ -38,7 +38,6 @@ from backend.emby_server.fastjson import json_route
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
-from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
@@ -3087,16 +3086,6 @@ async def video_stream(
     target = await run_db(_play_target, db, item)
     if target.kind == "url":
         # 单一播放路径（2026-10 简化）：中转 + 本地缓存自动层。
-        # 本地缓存（local_cache 模块）：命中本机副本就直接读本机（不过网络、
-        # 不碰云盘配额）；没命中就走下面的回源口径，同时按最高优先级排进缓存队列
-        # （后台单线程限速下载，播放时自动让路）。未启用缓存时 lookup/enqueue
-        # 都是空操作，行为与纯中转完全一致。
-        cached_file = await run_db(local_cache.lookup, db, item)
-        if cached_file:
-            return _observe_traffic(
-                serve_file(cached_file, request, media_type,
-                           cache_control=cdn.cache_control_for(str(request.url.path))))
-        await run_db(local_cache.enqueue, db, item, local_cache.PLAY_PRIORITY)
         # 分片缓存头：让 CF 边缘能缓存回源结果。
         seg_cache = cdn.cache_control_for(str(request.url.path))
         # 中转：本服务代理转发。Range 与状态码透传，凭据不下发。
@@ -3219,17 +3208,9 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
     start_ticks = int(q.get("PositionTicks") or 0)
     start_seconds = start_ticks / TICKS
     target = _play_target(db, item)
-    # 本地缓存自动层：有本机副本时让 ffmpeg 直接读本地（少一次远程回源）；
-    # 没命中就把这条排进缓存队列（与 video_stream 同口径）。
-    if target.kind == "url":
-        cached_file = local_cache.lookup(db, item)
-        if cached_file:
-            target = mount_lib.PlayTarget("local", cached_file, {})
-        else:
-            local_cache.enqueue(db, item, local_cache.PLAY_PRIORITY)
-        # 转码的拉流字节由 ffmpeg 进程走，不经过本服务的响应体，
-        # 所以这里只记请求不记流量（面板上已标明流量口径不含转码拉流）。
-        line_stats.record_request()
+    # 转码的拉流字节由 ffmpeg 进程走，不经过本服务的响应体，
+    # 所以这里只记请求不记流量（面板上已标明流量口径不含转码拉流）。
+    line_stats.record_request()
     # 按需转码 P1：缓存命中直接复用，不再起 ffmpeg；
     # 2 路硬限制超了就 503，让客户端降级走直连
     fingerprint = getattr(item, "file_fingerprint", None)
