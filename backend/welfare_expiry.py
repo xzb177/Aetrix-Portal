@@ -161,9 +161,8 @@ def start_welfare_expiry_scheduler() -> bool:
         _SCHEDULER_STARTED = True
 
     def _run():
-        # 延迟到函数内部 import，避免与 backend.welfare_expiry 循环导入
+        # 延迟导入 SessionLocal，避免启动时循环导入
         from backend.database import SessionLocal
-        from backend.welfare_expiry import check_welfare_expiry, check_inactive_users
 
         while True:
             db = SessionLocal()
