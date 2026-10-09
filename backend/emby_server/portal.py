@@ -475,10 +475,9 @@ def unlock_emby_view(
     db.flush()
     balance = int(db.query(models.WebUser.points)
                     .filter(models.WebUser.id == request_user.id).scalar() or 0)
-    db.add(models.PointsLog(user_id=request_user.id, amount=-price_points,
-                            balance_after=balance, type="view_unlock",
-                            description=f"解锁{realm.name}查看权限",
-                            ref_id=f"emby-view:{realm_id}"))
+    from backend.api.economy import _append_points_log  # C3：流水 hash 链走统一入口
+    _append_points_log(db, request_user.id, -price_points, balance, "view_unlock",
+                       f"解锁{realm.name}查看权限", f"emby-view:{realm_id}")
     expires_at = None if price_days <= 0 else now + timedelta(days=price_days)
     db.add(models.EmbyViewUnlock(user_id=request_user.id, realm_id=realm_id,
                                  unlocked_at=now, expires_at=expires_at,

@@ -16,17 +16,21 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, Settings, UserPlus,
+  AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, Settings, ShieldCheck, UserPlus,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchInvitations,
   fetchPointsLogs,
   fetchEconomyStats,
+  fetchEconomySettings,
+  updateEconomySettings,
+  verifyPointsAudit,
   adjustUserPoints,
   type InvitationRow,
   type PointsLogRow,
   type EconomyStats,
+  type PointsAuditResult,
 } from '@/api/economy'
 import {
   fetchInvitationCodes,
@@ -69,8 +73,51 @@ const logColumns: DataColumn[] = [
   { key: 'type', label: '类型', width: 100 },
   { key: 'description', label: '说明', minWidth: 170 },
   { key: 'balance_after', label: '余额', width: 90 },
+  { key: 'audited', label: '审计', width: 80 },
   { key: 'created_at', label: '时间', width: 160 },
 ]
+
+// ===== C3 流水审计 =====
+/** hash 链总开关（字符串 'true'/'false'，与经济设置其它布尔项一致） */
+const auditEnabled = ref('true')
+const auditSaving = ref(false)
+const verifyUserId = ref<number | undefined>(undefined)
+const verifyLoading = ref(false)
+const verifyResult = ref<PointsAuditResult | null>(null)
+
+async function loadAuditSettings() {
+  try {
+    const res = await fetchEconomySettings()
+    auditEnabled.value = res.settings.points_audit_enabled ?? 'true'
+  } catch {
+    /* 读不到就保持默认开，拦截器已提示 */
+  }
+}
+
+async function toggleAudit(v: boolean) {
+  auditSaving.value = true
+  try {
+    await updateEconomySettings({ points_audit_enabled: v ? 'true' : 'false' })
+    auditEnabled.value = v ? 'true' : 'false'
+    ElMessage.success(v ? '流水审计已开启，新流水将写入 hash 链' : '流水审计已关闭，新流水不再写 hash')
+  } finally {
+    auditSaving.value = false
+  }
+}
+
+async function handleVerify() {
+  if (!verifyUserId.value) {
+    ElMessage.warning('请先选择要核验的用户')
+    return
+  }
+  verifyLoading.value = true
+  verifyResult.value = null
+  try {
+    verifyResult.value = await verifyPointsAudit(verifyUserId.value)
+  } finally {
+    verifyLoading.value = false
+  }
+}
 
 // ===== 手动调整 =====
 const adjustVisible = ref(false)
@@ -375,6 +422,7 @@ function reloadAll() {
   load()
   loadCodes()
   loadPromotion()
+  loadAuditSettings()
 }
 
 onMounted(reloadAll)
@@ -529,6 +577,10 @@ onMounted(reloadAll)
             <span v-else>{{ row.description }}</span>
           </template>
           <template #cell-balance_after="{ row }"><span class="num">{{ row.balance_after }}</span></template>
+          <template #cell-audited="{ row }">
+            <span v-if="row.audited" class="au-badge au-badge-green" title="该笔流水已写入 hash 链">已审计</span>
+            <span v-else class="au-badge au-badge-muted" title="审计开启前的历史流水，无 hash">历史</span>
+          </template>
           <template #cell-created_at="{ row }"><span class="num">{{ fmtTime(row.created_at) }}</span></template>
           <template #empty>
             <EmptyState compact :icon="History" :title="logTypeFilter ? '这个类型下还没有流水' : '暂无积分流水'" />
@@ -548,6 +600,53 @@ onMounted(reloadAll)
         </template>
       </SectionCard>
     </div>
+
+    <!-- C3 流水审计：hash 链防篡改 -->
+    <SectionCard
+      title="流水审计"
+      :icon="ShieldCheck"
+      description="每笔积分流水写入时链接上一条的 hash，形成防篡改链。关闭后新流水不再写 hash（历史记录不受影响）；核验会逐条重算，发现篡改或断链即报警。"
+    >
+      <div class="audit-row">
+        <el-switch
+          :model-value="auditEnabled === 'true'"
+          :loading="auditSaving"
+          active-text="开启"
+          inactive-text="关闭"
+          @update:model-value="(v) => toggleAudit(!!v)"
+        />
+        <span class="faint">审计总开关（points_audit_enabled）</span>
+      </div>
+      <div class="audit-verify">
+        <el-select
+          v-model="verifyUserId"
+          class="f-select"
+          placeholder="输入用户名搜索要核验的用户"
+          filterable
+          remote
+          :remote-method="searchUsers"
+          :loading="userSearching"
+          clearable
+        >
+          <el-option v-for="u in userOptions" :key="u.id" :label="u.username" :value="u.id" />
+        </el-select>
+        <el-button type="primary" :icon="ShieldCheck" :loading="verifyLoading" @click="handleVerify">
+          核验链条
+        </el-button>
+      </div>
+      <div v-if="verifyResult" class="audit-result">
+        <span v-if="verifyResult.ok" class="au-badge au-badge-green">链条完整</span>
+        <span v-else class="au-badge au-badge-rose">发现异常</span>
+        <span class="audit-meta">
+          {{ verifyResult.username }}：共 {{ verifyResult.total }} 条 ·
+          已校验 {{ verifyResult.verified }} 条 ·
+          历史（无 hash）{{ verifyResult.legacy_skipped }} 条
+        </span>
+        <span v-if="!verifyResult.ok" class="audit-broken">
+          断裂于记录 #{{ verifyResult.broken_at }}：{{ verifyResult.broken_reason }}
+        </span>
+      </div>
+    </SectionCard>
 
     <!-- 推广奖励（v2.44.0）：开关与阈值在系统设置里也能改，两处同一份 -->
     <SectionCard
@@ -804,6 +903,14 @@ onMounted(reloadAll)
   color: var(--au-primary);
   font-size: 12px;
 }
+
+/* ---------- C3 流水审计 ---------- */
+.audit-row { display: flex; align-items: center; gap: 12px; padding: 4px 0 12px; }
+.audit-verify { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-bottom: 4px; }
+.audit-verify .f-select { width: 260px; }
+.audit-result { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 10px; font-size: 13px; }
+.audit-meta { color: var(--au-text-2); }
+.audit-broken { color: var(--au-danger, #e5484d); }
 
 @media (max-width: 1000px) {
   .ledger-grid { grid-template-columns: minmax(0, 1fr); }

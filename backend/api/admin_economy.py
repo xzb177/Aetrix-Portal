@@ -94,11 +94,37 @@ def economy_points_logs(
                 "amount": l.amount, "balance_after": l.balance_after,
                 "type": l.type, "description": l.description,
                 "ref_id": l.ref_id,
+                "audited": l.record_hash is not None,  # C3：是否有 hash（审计开启后写入的）
                 "created_at": l.created_at.isoformat() if l.created_at else None,
             }
             for l in logs
         ],
     }
+
+
+class PointsAuditVerifyRequest(BaseModel):
+    user_id: int
+    limit: int = 20000
+
+
+@admin_router.post("/economy/points-audit/verify")
+def economy_points_audit_verify(
+    request: PointsAuditVerifyRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """C3 流水审计：核验某用户的积分流水 hash 链是否完整（防篡改）"""
+    from backend.api.economy import verify_points_chain
+    user = db.query(models.WebUser).filter(models.WebUser.id == request.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    result = verify_points_chain(db, request.user_id, limit=max(1, min(request.limit, 100000)))
+    result["user_id"] = request.user_id
+    result["username"] = user.username
+    _audit(db, current_admin, "points_audit_verify", "user", request.user_id,
+           {"ok": result["ok"], "verified": result["verified"]})
+    db.commit()
+    return result
 
 
 class PointsAdjustRequest(BaseModel):
@@ -184,6 +210,8 @@ ECONOMY_CONFIG_KEYS = {
     # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率，全部可配
     "vitality_enabled": "bool", "vitality_max": "int", "vitality_daily_cost": "int",
     "vitality_limit_threshold": "int", "vitality_point_cost": "int",
+    # C3 流水审计：积分流水 hash 链总开关（默认开；关闭后新流水不写 hash）
+    "points_audit_enabled": "bool",
 }
 
 
