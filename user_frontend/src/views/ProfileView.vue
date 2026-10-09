@@ -21,13 +21,15 @@ import {
   type AuthUser, type AccountCard, type AccountRealmCard, type MySubscription, type WatchStats,
 } from '@/api'
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
+import { tgApi, type TgBindStatus } from '@/api/tg'
+import TgBindModal from '@/components/TgBindModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
 import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
-  MonitorPlay, LayoutDashboard, Settings2, Route, Cloud, HardDrive,
+  MonitorPlay, LayoutDashboard, Settings2, Route, Cloud, HardDrive, Send,
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -56,6 +58,18 @@ const watchHours = computed(() => {
 })
 
 const copiedField = ref('')
+// Telegram 绑定
+const showTgBind = ref(false)
+const tgStatus = ref<TgBindStatus | null>(null)
+async function loadTgStatus() {
+  try {
+    tgStatus.value = await tgApi.status()
+  } catch { /* 未登录等情况忽略 */ }
+}
+async function handleTgBound() {
+  await loadTgStatus()
+  try { await userStore.fetchUser() } catch { /* 忽略 */ }
+}
 const showPlayPassword = ref(false)
 
 // ===== 播放路径（2026-10 简化）：只有中转一条，无需选择 =====
@@ -294,6 +308,7 @@ async function loadProfile(silent = false) {
 }
 
 onMounted(() => {
+  loadTgStatus()
   loadProfile()
 })
 
@@ -434,7 +449,7 @@ function formatDate(iso?: string | null) {
           <template v-else>
             <p class="unlock-title">开通会员后可见</p>
             <p class="unlock-desc">服务器地址、Emby 账号与一键导入只向会员开放。</p>
-            <button class="btn primary" @click="router.push('/store?tab=plans')">去开通会员</button>
+            <button class="btn primary" @click="router.push('/store')">去开通会员</button>
           </template>
         </div>
 
@@ -616,6 +631,13 @@ function formatDate(iso?: string | null) {
           </header>
 
           <div class="list">
+            <button class="list-item" @click="showTgBind = true">
+              <Send :size="16" class="list-icon" />
+              <span class="list-text">绑定 Telegram</span>
+              <span v-if="tgStatus?.bound" class="badge ok">已绑定</span>
+              <span v-else class="badge off">未绑定</span>
+              <ChevronRight class="list-arrow" :size="15" />
+            </button>
             <button class="list-item" @click="showChangePwd = true">
               <Lock :size="16" class="list-icon" />
               <span class="list-text">修改登录密码</span>
@@ -635,6 +657,8 @@ function formatDate(iso?: string | null) {
         </section>
       </div>
     </div>
+
+    <TgBindModal v-model="showTgBind" @bound="handleTgBound" />
 
     <!-- 修改密码弹窗 -->
     <div v-if="showChangePwd" class="modal-mask" @click.self="showChangePwd = false">

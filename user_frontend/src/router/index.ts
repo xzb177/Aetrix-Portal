@@ -50,15 +50,13 @@ const router = createRouter({
       component: () => import('@/views/AssistantView.vue'),
       meta: { title: 'AI 助手', requiresAuth: true },
     },
-    // ==================== 经济系统（v2.3.0；v2.43.0 钱包/商店拆分） ====================
-    // 商店：买东西（充值积分、购买订阅、优惠券）
+    // ==================== 经济系统（v2.3.0；v2.11.0 商店/钱包拆分） ====================
     {
       path: '/store',
       name: 'store',
       component: () => import('@/views/StoreView.vue'),
       meta: { title: '商店', requiresAuth: true },
     },
-    // 钱包：我的资产（余额、卡码/兑换码核销、订单、积分流水）
     {
       path: '/wallet',
       name: 'wallet',
