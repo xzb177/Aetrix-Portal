@@ -217,8 +217,8 @@ onBeforeUnmount(() => {
   width: min(420px, calc(100vw - 32px));
   padding: 28px 24px 24px;
   border-radius: 16px;
-  background: var(--bg-elev, #1a1a22);
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: var(--au-surface, #1a1a22);
+  border: 1px solid var(--au-border, rgba(255, 255, 255, 0.08));
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
   color: var(--text-primary, #ececf1);
 }
@@ -241,7 +241,7 @@ onBeforeUnmount(() => {
 }
 
 .tg-close:hover {
-  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+  background: var(--au-surface-2, rgba(255, 255, 255, 0.06));
   color: var(--text-primary, #ececf1);
 }
 
@@ -260,7 +260,7 @@ onBeforeUnmount(() => {
 }
 
 .tg-hint b {
-  color: var(--accent, #7c5cff);
+  color: var(--au-primary, #7c5cff);
   font-weight: 600;
 }
 
@@ -275,14 +275,14 @@ onBeforeUnmount(() => {
   flex: 1;
   padding: 14px 16px;
   border-radius: 12px;
-  background: var(--bg-deep, rgba(0, 0, 0, 0.3));
-  border: 1px dashed var(--border, rgba(255, 255, 255, 0.12));
+  background: var(--au-bg, rgba(0, 0, 0, 0.3));
+  border: 1px dashed var(--au-border, rgba(255, 255, 255, 0.12));
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 30px;
   font-weight: 700;
   letter-spacing: 8px;
   text-align: center;
-  color: var(--accent, #7c5cff);
+  color: var(--au-primary, #7c5cff);
 }
 
 .tg-copy {
@@ -290,7 +290,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--au-border, rgba(255, 255, 255, 0.1));
   border-radius: 10px;
   background: transparent;
   color: var(--text-secondary, #9a9ab0);
@@ -301,7 +301,7 @@ onBeforeUnmount(() => {
 
 .tg-copy:hover {
   color: var(--text-primary, #ececf1);
-  border-color: var(--accent, #7c5cff);
+  border-color: var(--au-primary, #7c5cff);
 }
 
 .tg-countdown {
@@ -311,7 +311,7 @@ onBeforeUnmount(() => {
 }
 
 .tg-countdown.expired {
-  color: var(--danger, #ff5c6c);
+  color: var(--au-danger, #ff5c6c);
 }
 
 .tg-error {
@@ -322,7 +322,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(255, 92, 108, 0.3);
   font-size: 13px;
   line-height: 1.5;
-  color: var(--danger, #ff5c6c);
+  color: var(--au-danger, #ff5c6c);
 }
 
 .tg-actions {
@@ -356,12 +356,12 @@ onBeforeUnmount(() => {
   height: 64px;
   border-radius: 50%;
   background: rgba(61, 220, 151, 0.12);
-  color: var(--success, #3ddc97);
+  color: var(--au-success, #3ddc97);
 }
 
 .spin {
   animation: tg-spin 1s linear infinite;
-  color: var(--accent, #7c5cff);
+  color: var(--au-primary, #7c5cff);
 }
 
 @keyframes tg-spin {

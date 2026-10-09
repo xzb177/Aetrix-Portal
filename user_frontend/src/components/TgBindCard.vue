@@ -50,14 +50,14 @@ function goBind() {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: var(--au-bg-2);
-  color: var(--au-text-1);
+  background: var(--au-surface-2);
+  color: var(--au-text);
 }
 .tg-bind-title {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: var(--au-text-1);
+  color: var(--au-text);
 }
 .tg-bind-desc {
   margin: 0;
