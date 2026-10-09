@@ -14,6 +14,7 @@ import random
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sqlalchemy.orm import Session
 
@@ -71,11 +72,18 @@ def _health_loop(get_db):
                 nodes = get_nodes(db)
             finally:
                 db.close()
-            for node in nodes:
-                url = node.get("url", "")
-                if not url:
-                    continue
-                healthy = _check_one(url)
+            urls = [n.get(url, ) for n in nodes if n.get(url, )]
+            _probe_results = {}
+            if urls:
+                with ThreadPoolExecutor(max_workers=min(len(urls), 10), thread_name_prefix=health-probe) as ex:
+                    _fut2url = {ex.submit(_check_one, u): u for u in urls}
+                    for _fut in as_completed(_fut2url):
+                        _u = _fut2url[_fut]
+                        try:
+                            _probe_results[_u] = _fut.result()
+                        except Exception:
+                            _probe_results[_u] = False
+            for url, healthy in _probe_results.items():
                 with _lock:
                     prev = _node_health.get(url, {})
                     was = prev.get("healthy", True)

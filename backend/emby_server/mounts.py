@@ -1077,7 +1077,11 @@ class Pan115Mount(MountProvider):
         if not entry.get("pickcode"):
             raise MountError(f"115 未返回该文件的 pickcode: {rel}")
         try:
-            url = self._client().download_url(entry["pickcode"])
+            pickcode_115 = entry["pickcode"]
+            url = _get_cached_115_url(pickcode_115)
+            if not url:
+                url = self._client().download_url(pickcode_115)
+                _set_cached_115_url(pickcode_115, url)
         except (transfer115.Pan115Error, transfer115.Pan115AuthError) as exc:
             raise self._wrap(exc) from exc
         # 直链自带签名，但仍带上 UA/Cookie：EA 代理转发，客户端看不到这些头
@@ -1085,6 +1089,7 @@ class Pan115Mount(MountProvider):
             "User-Agent": self._ua() or MOUNT_UA,
             "Referer": "https://115.com/",
             "Cookie": self._cookie(),
+            "X-Pickcode": pickcode_115,
         })
 
     def read_text(self, rel: str) -> str:
@@ -1101,6 +1106,44 @@ class Pan115Mount(MountProvider):
 # 的同步 API 是线程安全的，可在扫描线程池里共用。
 _shared_clients: dict = {}
 _shared_clients_lock = None
+
+
+# 115 direct URL cache: pickcode -> (url, expire_at). URLs valid ~4h, cache 3h.
+_pan115_url_cache = {}
+_pan115_url_cache_lock = None
+
+def _get_cached_115_url(pickcode):
+    import threading, time
+    global _pan115_url_cache_lock
+    if _pan115_url_cache_lock is None:
+        _pan115_url_cache_lock = threading.Lock()
+    with _pan115_url_cache_lock:
+        entry = _pan115_url_cache.get(pickcode)
+        if entry and entry[1] > time.time():
+            return entry[0]
+        elif entry:
+            del _pan115_url_cache[pickcode]
+    return None
+
+def _set_cached_115_url(pickcode, url, ttl=10800):
+    import threading, time
+    global _pan115_url_cache_lock
+    if _pan115_url_cache_lock is None:
+        _pan115_url_cache_lock = threading.Lock()
+    with _pan115_url_cache_lock:
+        if len(_pan115_url_cache) >= 1000:
+            sk = sorted(_pan115_url_cache, key=lambda k: _pan115_url_cache[k][1])
+            for k in sk[:500]:
+                del _pan115_url_cache[k]
+        _pan115_url_cache[pickcode] = (url, time.time() + ttl)
+
+def _invalidate_115_url(pickcode):
+    import threading
+    global _pan115_url_cache_lock
+    if _pan115_url_cache_lock is None:
+        _pan115_url_cache_lock = threading.Lock()
+    with _pan115_url_cache_lock:
+        _pan115_url_cache.pop(pickcode, None)
 
 
 def _shared_http_client(key: str = "default", timeout=None):

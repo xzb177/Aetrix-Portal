@@ -407,6 +407,8 @@ async def serve_remote_async(
     import httpx
 
     forward = {k: v for k, v in (headers or {}).items()}
+    # X-Pickcode is internal (for 115 cache invalidation), do not forward to origin
+    forward.pop("X-Pickcode", None)
     forward.setdefault("User-Agent", REMOTE_UA)
     range_header = request.headers.get("range")
     if range_header:
@@ -436,6 +438,16 @@ async def serve_remote_async(
         else:
             await resp.aclose()
             raise HTTPException(status_code=502, detail="源站重定向次数过多")
+        # 115 直链过期检测：403/404 时清缓存，客户端重试将拿到新直链（2026-10-09）
+        if resp.status_code in (403, 404):
+            _pickcode = (headers or {}).get("X-Pickcode")
+            if _pickcode:
+                try:
+                    from backend.emby_server.mounts import _invalidate_115_url
+                    _invalidate_115_url(_pickcode)
+                    logger.info("115 direct URL expired, cache cleared")
+                except Exception:
+                    pass
     except HTTPException:
         raise
     except httpx.PoolTimeout as exc:

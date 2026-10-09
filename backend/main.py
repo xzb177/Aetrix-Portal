@@ -243,6 +243,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — 能力落地失败不能拦住启动
         logger.warning(f"外部服务能力未落地（可忽略）: {e}")
 
+    # 节点健康检查：后台进程探测流媒体节点，摘除不健康的（2026-10-09）
+    try:
+        from backend.emby_server import node_health
+        if _is_api_role:
+            node_health.start_health_daemon(SessionLocal)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"节点健康检查启动失败（可忽略）: {e}")
+
     logger.info("✅ Aetrix Portal 启动完成")
 
     yield
