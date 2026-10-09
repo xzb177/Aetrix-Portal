@@ -101,6 +101,19 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    id: 'vitality',
+    title: '活力值',
+    desc: '公益服活力值：每日 00:00 自动扣减，低于阈值限制观影，签到/积分可恢复',
+    icon: Zap,
+    fields: [
+      { key: 'vitality_enabled', label: '启用活力值', type: 'bool' },
+      { key: 'vitality_max', label: '活力上限', type: 'int', suffix: '点', hint: '活力值上限，默认 14' },
+      { key: 'vitality_daily_cost', label: '每日扣减', type: 'int', suffix: '点/天', hint: '每天 00:00 自动扣除' },
+      { key: 'vitality_limit_threshold', label: '观影阈值', type: 'int', suffix: '点', hint: '低于此值限制观影' },
+      { key: 'vitality_point_cost', label: '续活兑换率', type: 'int', suffix: '积分/点', hint: '1 点活力需要的积分数' },
+    ],
+  },
+  {
     id: 'exchange',
     title: '兑换码 · 求片',
     desc: '兑换开关与用户每日求片上限',

@@ -322,6 +322,15 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动到期提醒失败（可忽略）: {e}")
 
+        # C1 活力值：每日 00:00 扣减公益服用户活力值（daemon 线程，失败可忽略）
+        try:
+            from backend import vitality
+            if vitality.start_vitality_scheduler():
+                started.append("vitality")
+                logger.info("✅ 活力值调度已启动")
+        except Exception as e:
+            logger.warning(f"启动活力值调度失败（可忽略）: {e}")
+
         try:
             from backend.emby_server import auto_scan
             if auto_scan.start_auto_scan_scheduler():

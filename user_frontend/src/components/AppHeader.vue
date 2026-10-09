@@ -5,7 +5,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, LayoutDashboard,
+  ChevronRight, LayoutDashboard, Zap,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -13,7 +13,7 @@ import api, {
 } from '@/api'
 import type { MySubscription } from '@/api'
 import { primaryNav, menuSections } from '@/config/navigation'
-import { checkinApi } from '@/api/economy'
+import { checkinApi, vitalityApi } from '@/api/economy'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
 import { branding } from '@/composables/useBranding'
 
@@ -29,6 +29,20 @@ async function loadPoints() {
     pointsBalance.value = st.points
   } catch {
     /* 拿不到就不显示，不打扰 */
+  }
+}
+/** 活力值（顶栏 pill 显示，仅公益服用户，403 则不显示） */
+const vitality = ref<number | null>(null)
+async function loadVitality() {
+  if (!userStore.isLoggedIn) {
+    vitality.value = null
+    return
+  }
+  try {
+    const st = await vitalityApi.status()
+    vitality.value = st.vitality
+  } catch {
+    vitality.value = null
   }
 }
 // 三档外观（跟随系统 / 白日 / 黑暗），见 useTheme.ts 的口径说明
@@ -375,6 +389,7 @@ watch(() => route.path, (p, old) => {
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshSubscription()
     loadPoints()
+    loadVitality()
   }
 })
 
@@ -382,6 +397,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
   if (loggedIn) {
     poll()
     loadPoints()
+    loadVitality()
   } else {
     unreadCount.value = 0
     activeSub.value = null
@@ -389,6 +405,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
     msgMenuOpen.value = false
     userMenuOpen.value = false
     pointsBalance.value = null
+    vitality.value = null
   }
 })
 
@@ -399,6 +416,7 @@ onMounted(() => {
   document.addEventListener('click', onDocClick)
   poll()
   loadPoints()
+  loadVitality()
   window.setInterval(poll, 60_000)
   focusActiveTab(false)
 })
@@ -446,6 +464,16 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         >
           <Sparkles :size="13" />
           <span>{{ pointsBalance }}</span>
+        </RouterLink>
+        <!-- 活力值徽章：仅公益服用户显示，点击进钱包 -->
+        <RouterLink
+          v-if="userStore.isLoggedIn && vitality !== null"
+          to="/wallet"
+          class="points-pill vitality-pill"
+          title="我的活力值，点击查看钱包"
+        >
+          <Zap :size="13" />
+          <span>{{ vitality }}</span>
         </RouterLink>
         <button
           class="theme-btn round-btn wide-only"
@@ -819,6 +847,10 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .points-pill svg {
   color: var(--au-primary);
   flex-shrink: 0;
+}
+/* 活力值徽章：图标用警示色，与积分徽章区分 */
+.vitality-pill svg {
+  color: var(--au-warning, #f59e0b);
 }
 
 /* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */

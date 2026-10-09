@@ -317,6 +317,12 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         (k, v, f"播放策略：{k}") for k, v in playback_policy.POLICY_DEFAULTS.items()
     ])
 
+    # 7.4 活力值（C1 竞品借鉴）：默认开启/上限14/每日扣1/阈值3/1点=10积分
+    from backend import vitality
+    items.extend([
+        (k, v, f"活力值：{k}") for k, v in vitality.VITALITY_DEFAULTS.items()
+    ])
+
     # 7.5 CDN 域名预留（播放三层第 2/3 层）：默认关闭 + 空域名 = 与升级前一致
     from backend.emby_server import cdn
     items.extend([

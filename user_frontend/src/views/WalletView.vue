@@ -18,9 +18,10 @@ import {
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi, currencyApi,
+  vitalityApi,
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview, type CouponQuote,
-  type MyMemberInfo,
+  type MyMemberInfo, type VitalityStatus,
 } from '@/api/economy'
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -33,6 +34,12 @@ const userStore = useUserStore()
 const loading = ref(true)
 const balance = ref(0)
 const checkin = ref<CheckinStatus | null>(null)
+/** 活力值（仅公益服用户有值） */
+const vitality = ref<VitalityStatus | null>(null)
+const showRechargeVitality = ref(false)
+const rechargeQty = ref(1)
+const recharging = ref(false)
+const vitalityPointCost = ref(10)
 const packages = ref<RechargePackage[]>([])
 const plans = ref<SubscriptionPlan[]>([])
 const methods = ref<PaymentMethod[]>([])
@@ -408,6 +415,21 @@ async function refreshBalance() {
   } catch { /* 静默 */ }
 }
 
+/** 活力值：用积分续活力 */
+async function doRechargeVitality() {
+  recharging.value = true
+  try {
+    const r = await vitalityApi.recharge(rechargeQty.value * vitalityPointCost.value)
+    if (vitality.value) vitality.value.vitality = r.vitality
+    balance.value = r.points_balance
+    showRechargeVitality.value = false
+  } catch (e: any) {
+    alert(e?.response?.data?.detail || '续活失败，请稍后重试')
+  } finally {
+    recharging.value = false
+  }
+}
+
 /** 是否已完成过首屏加载：KeepAlive 缓存命中时走静默刷新 */
 const hasLoaded = ref(false)
 
@@ -439,7 +461,7 @@ async function loadAll(silent = false) {
     const emptySubs: MySubscription[] = []
     const exchangeFallback = { enabled: true }
     const couponFallback = { enabled: false }
-    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR, memberR] = await Promise.allSettled([
+    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR, memberR, vitalityR] = await Promise.allSettled([
       paymentApi.packages(),
       paymentApi.plans(),
       paymentApi.methods(),
@@ -451,6 +473,8 @@ async function loadAll(silent = false) {
       // 接口失败时按「关闭」处理：宁可不展示，也不让用户填完码才报错
       couponApi.config(),
       memberApi.info(),
+      // 活力值：非公益服用户 403，settled 兜底为 null 不展示
+      vitalityApi.status(),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -483,6 +507,8 @@ async function loadAll(silent = false) {
     if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
     const memberData = memberR.status === 'fulfilled' ? memberR.value : null
     member.value = memberData
+    const vitalityData = vitalityR.status === 'fulfilled' ? vitalityR.value : null
+    vitality.value = vitalityData && vitalityData.success ? vitalityData : null
   } finally {
     loading.value = false
     hasLoaded.value = true
@@ -632,6 +658,22 @@ onBeforeUnmount(stopPayPoll)
         </div>
         <!-- 多服运营下这句必须写明：积分是一份通用的，会员才是一个服一个 -->
         <p class="balance-note">积分与余额全站通用（多服共用一份）；会员是一个服一个。</p>
+
+        <!-- 活力值：仅公益服用户（C1 竞品借鉴） -->
+        <div v-if="vitality" class="vitality-row">
+          <span class="vitality-icon"><Zap :size="15" /></span>
+          <div class="vitality-meta">
+            <div class="vitality-top">
+              <strong>活力值 {{ vitality.vitality }} / {{ vitality.max }}</strong>
+              <span v-if="!vitality.can_play" class="vitality-warn">低于观影阈值 {{ vitality.limit_threshold }}，已限制观影</span>
+              <span v-else class="vitality-ok">每日 00:00 自动扣 1 点</span>
+            </div>
+            <div class="member-bar" role="progressbar" :aria-valuenow="vitality.vitality" aria-valuemin="0" :aria-valuemax="vitality.max">
+              <i :style="{ width: (vitality.vitality / vitality.max * 100) + '%' }" />
+            </div>
+          </div>
+          <button type="button" class="vitality-recharge-btn" @click="showRechargeVitality = true">用积分续</button>
+        </div>
 
         <!-- 签到态：紧凑胶囊 -->
         <RouterLink v-if="checkin" to="/checkin" class="checkin-pill" :class="{ done: checkin.checked_today }">
@@ -1027,6 +1069,22 @@ onBeforeUnmount(stopPayPoll)
         </div>
       </div>
     </section>
+
+    <!-- 活力值续活弹窗（C1 竞品借鉴） -->
+    <div v-if="showRechargeVitality" class="result-mask" @click.self="showRechargeVitality = false">
+      <div class="result-card vitality-dialog">
+        <h3 class="result-title">用积分续活力</h3>
+        <p class="dialog-note">1 点活力 = {{ vitalityPointCost }} 积分（当前 {{ vitality?.vitality }}/{{ vitality?.max }}）</p>
+        <div class="qty-row">
+          <button v-for="n in [1,3,7,14]" :key="n" type="button" class="qty-btn" :class="{ active: rechargeQty === n }" @click="rechargeQty = n">+{{ n }}</button>
+        </div>
+        <p class="dialog-note">将消耗 {{ rechargeQty * vitalityPointCost }} 积分</p>
+        <div class="dialog-actions">
+          <button type="button" class="au-btn" @click="showRechargeVitality = false">取消</button>
+          <button type="button" class="au-btn au-btn-primary" :disabled="recharging" @click="doRechargeVitality">{{ recharging ? '处理中…' : '确认续活' }}</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1797,6 +1855,34 @@ onBeforeUnmount(stopPayPoll)
 .log-amount.out { color: var(--au-danger); }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ==================== 活力值（C1 竞品借鉴） ==================== */
+.vitality-row { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; padding: 0.625rem 0.875rem; border: 1px solid var(--au-border); border-radius: var(--au-r-lg); background: var(--au-surface-2); }
+.vitality-icon { color: var(--au-warning, #f59e0b); display: inline-flex; flex-shrink: 0; }
+.vitality-meta { flex: 1; min-width: 0; }
+.vitality-top { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; font-size: 0.8125rem; margin-bottom: 0.375rem; }
+.vitality-warn { color: var(--au-danger, #ef4444); font-size: 0.75rem; }
+.vitality-ok { color: var(--au-text-3); font-size: 0.75rem; }
+.vitality-recharge-btn { flex-shrink: 0; padding: 0.375rem 0.75rem; border-radius: var(--au-r-full); border: 1px solid var(--au-primary); color: var(--au-primary); background: transparent; font-size: 0.75rem; font-weight: 700; cursor: pointer; }
+.vitality-recharge-btn:hover { background: var(--au-primary-soft); }
+.vitality-dialog { align-items: stretch; text-align: left; }
+.dialog-note { margin: 0; font-size: 0.8125rem; color: var(--au-text-2); }
+.dialog-actions { display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1rem; }
+.qty-row { display: flex; gap: 0.5rem; margin: 0.75rem 0; }
+.qty-btn { padding: 0.5rem 1rem; border-radius: var(--au-r-full); border: 1px solid var(--au-border); background: var(--au-surface-2); color: var(--au-text); cursor: pointer; font-weight: 700; }
+.qty-btn.active { border-color: var(--au-primary); color: var(--au-primary); }
+
+/* 续活弹窗遮罩：沿用抽奖结果弹窗的配方 */
+.result-mask {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+  padding: 1.25rem; background: rgba(0, 0, 0, 0.62); backdrop-filter: blur(4px);
+}
+.result-card { animation: result-in 0.28s var(--au-ease) both; }
+@keyframes result-in {
+  from { opacity: 0; transform: scale(0.92) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.result-title { margin: 0; font-size: 1.125rem; font-weight: 700; color: var(--au-text); }
 
 @media (max-width: 720px) {
   .balance-hero {

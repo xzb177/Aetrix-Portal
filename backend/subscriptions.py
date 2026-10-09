@@ -34,7 +34,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from backend import models, realms
+from backend import models, realms, vitality as _vitality
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,8 @@ def ensure_playback_allowed(db: Session, user: models.WebUser,
     """
     if not can_play(db, user, realm_id):
         raise HTTPException(status_code=403, detail=gate_message(db))
+    # C1 活力值：公益服用户活力值低于阈值时限制观影（管理员/非公益用户不受影响）
+    _vitality.ensure_can_play(db, user)
 
 
 def download_allowed(db: Session, realm_id: Optional[int] = None) -> bool:

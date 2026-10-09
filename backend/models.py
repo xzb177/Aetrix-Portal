@@ -249,6 +249,9 @@ class WebUser(Base):
     # 会员等级（P1 统一货币体系）：经验值只来自真实充值/有效邀请，等级由阈值推导并缓存
     member_xp = Column(Integer, default=0, nullable=False, server_default="0")  # 会员经验值
     member_level = Column(Integer, default=1, nullable=False, server_default="1")  # 缓存的当前等级（1-6）
+    # 活力值（C1 竞品借鉴）：公益服用户每日 00:00 扣 1，上限/阈值/兑换率全部可配；
+    # 低于阈值限制观影，耗尽（0）即休眠，签到/续活力后自动恢复。老库补列默认满值。
+    vitality = Column(Integer, default=14, nullable=False, server_default="14")
 
     # 注册渠道（v2.44.0 归因）：admin=管理员创建 / code=卡密注册 /
     # invitation=邀请码注册 / open=开放注册。
@@ -769,6 +772,25 @@ class PointsLog(Base):
     type = Column(String(30), default='system')  # checkin, invite, invitee, rebate, exchange, recharge, admin_grant, admin_deduct
     description = Column(String(255))
     ref_id = Column(String(64))  # 关联对象（订单号/兑换码等）
+    created_at = Column(DateTime, default=datetime.now)
+
+    user = relationship("WebUser")
+
+
+class VitalityLog(Base):
+    """活力值变动流水（C1 竞品借鉴）：每日扣减/签到恢复/积分续活"""
+    __tablename__ = 'vitality_logs'
+
+    __table_args__ = (
+        Index('idx_vitality_user', 'user_id'),
+        Index('idx_vitality_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    delta = Column(Integer, nullable=False)  # 正数恢复 / 负数扣减
+    balance_after = Column(Integer, default=0)  # 变动后活力值
+    reason = Column(String(30), default='system')  # daily_deduct, checkin, recharge, admin_grant, admin_deduct
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
