@@ -3013,6 +3013,21 @@ async def playback_info(
     if allow_transcode:
         media_source["TranscodingUrl"] = transcoding_url
 
+    try:
+        is_pb = request.query_params.get("IsPlayback", "false").lower() == "true"
+        if is_pb and item.file_path:
+            import threading
+            _wp = item.file_path
+            def _wf():
+                try:
+                    with open(_wp, "rb") as fh:
+                        fh.read(10485760)
+                except Exception:
+                    pass
+            threading.Thread(target=_wf, daemon=True).start()
+    except Exception:
+        pass
+
     return _strip_nulls({
         "MediaSources": [media_source],
         # 每次播放会话一个独立票据，客户端据此上报进度
