@@ -339,6 +339,14 @@ def main() -> int:
             logger.warning(f"启动数据库备份调度失败（可忽略）: {e}")
 
         try:
+            from backend.tg_bot import scheduler as tg_bot_scheduler
+            if tg_bot_scheduler.start_tg_bot_poller():
+                started.append("tg_bot_poller")
+                logger.info("✅ TG Bot 轮询器已启动")
+        except Exception as e:
+            logger.warning(f"启动 TG Bot 轮询器失败（可忽略）: {e}")
+
+        try:
             from backend.emby_server import change_watcher
             change_watcher.start_chase_new_watcher()
             started.append("change_watcher")
