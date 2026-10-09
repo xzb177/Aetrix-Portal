@@ -1,7 +1,7 @@
 /** 公益服管理后台 API（全部走 /api/admin/welfare/*） */
 import { get, post, put, del } from '@/utils/request'
 
-const E = '/api/admin/welfare'
+const E = '/welfare'
 
 // ==================== 公益用户 ====================
 

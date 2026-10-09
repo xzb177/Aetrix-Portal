@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from fastapi import Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -248,6 +249,94 @@ def lottery_logs(
             "created_at": log.created_at.isoformat() if log.created_at else None,
         })
     return {"total": total, "items": items}
+
+
+# ==================== 求片审核 ====================
+
+def _request_to_dict(r):
+    return {
+        "id": r.id,
+        "title": r.title,
+        "media_type": r.media_type,
+        "tmdb_id": r.tmdb_id,
+        "username": r.user.username if r.user else "",
+        "status": r.status,
+        "admin_note": r.admin_note or "",
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
+@admin_router.get("/welfare/requests")
+def welfare_requests(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(None),
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """求片审核列表"""
+    q = db.query(models.MediaRequest).order_by(models.MediaRequest.id.desc())
+    if status:
+        q = q.filter(models.MediaRequest.status == status)
+    total = q.count()
+    items = q.offset((page - 1) * page_size).limit(page_size).all()
+    return {"total": total, "items": [_request_to_dict(r) for r in items]}
+
+
+class RequestNote(BaseModel):
+    admin_note: str = ""
+
+
+@admin_router.post("/welfare/requests/{request_id}/approve")
+def welfare_request_approve(
+    request_id: int,
+    req: RequestNote,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """通过求片"""
+    r = db.query(models.MediaRequest).filter(models.MediaRequest.id == request_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="求片记录不存在")
+    r.status = "approved"
+    r.admin_note = req.admin_note
+    _audit(db, current_admin.id, "welfare_request_approve", "media_request", r.id, {"title": r.title})
+    db.commit()
+    return {"success": True}
+
+
+@admin_router.post("/welfare/requests/{request_id}/reject")
+def welfare_request_reject(
+    request_id: int,
+    req: RequestNote,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """拒绝求片"""
+    r = db.query(models.MediaRequest).filter(models.MediaRequest.id == request_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="求片记录不存在")
+    r.status = "rejected"
+    r.admin_note = req.admin_note
+    _audit(db, current_admin.id, "welfare_request_reject", "media_request", r.id, {"title": r.title})
+    db.commit()
+    return {"success": True}
+
+
+@admin_router.post("/welfare/requests/{request_id}/done")
+def welfare_request_done(
+    request_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """标记求片已入库"""
+    r = db.query(models.MediaRequest).filter(models.MediaRequest.id == request_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="求片记录不存在")
+    r.status = "done"
+    _audit(db, current_admin.id, "welfare_request_done", "media_request", r.id, {"title": r.title})
+    db.commit()
+    return {"success": True}
 
 
 # ==================== 公益配置 ====================

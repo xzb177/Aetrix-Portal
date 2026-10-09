@@ -168,10 +168,10 @@ const navGroups: NavGroup[] = [
     title: '公益服',
     icon: Heart,
     items: [
-      { path: '/welfare-users', label: '公益用户' },
-      { path: '/welfare-requests', label: '求片审核' },
-      { path: '/welfare-lottery', label: '抽奖配置' },
-      { path: '/welfare-points', label: '积分配置' },
+      { path: '/welfare-users', label: '公益用户', icon: Users },
+      { path: '/welfare-requests', label: '求片审核', icon: ScrollText },
+      { path: '/welfare-lottery', label: '抽奖配置', icon: Gift },
+      { path: '/welfare-points', label: '积分配置', icon: Wallet },
     ],
   },
   {
