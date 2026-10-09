@@ -367,6 +367,12 @@ WELFARE_CONFIG_KEYS = {
     "tg_bind_guide_enabled": "1",
 # M1 群发言积分：总开关默认关闭，服主手动开启
     "chat_points_enabled": "false",
+    # C2 积分转账：总开关默认开启，手续费/限额可配（0=不收/不限）
+    "points_transfer_enabled": "1",
+    "points_transfer_fee_pct": "5",
+    "points_transfer_min": "1",
+    "points_transfer_max": "0",
+    "points_transfer_daily_cap": "0",
     "chat_points_group_ids": "",
     "chat_points_per_message": "1",
     "chat_points_min_len": "2",

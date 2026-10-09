@@ -187,9 +187,29 @@ export const vitalityApi = {
 
 // ==================== 积分 ====================
 
+export interface TransferConfig {
+  enabled: boolean
+  fee_pct: number
+  min: number
+  max: number
+  daily_cap: number
+}
+export interface TransferResult {
+  success: boolean
+  amount: number
+  fee: number
+  recipient: string
+  balance: number
+}
 export const pointsApi = {
   log: (params?: { limit?: number; offset?: number; type_filter?: string }) =>
     api.get<never, PointsLogResponse>('/api/user/economy/points/log', { params }),
+  /** 积分转账开关与规则（关闭时用户端隐藏转账入口） */
+  transferConfig: () =>
+    api.get<never, TransferConfig>('/api/user/economy/points/transfer-config'),
+  /** 积分转账：recipient 对方用户名，amount 正整数积分 */
+  transfer: (recipient: string, amount: number) =>
+    api.post<never, TransferResult>('/api/user/economy/points/transfer', { recipient, amount }),
 }
 
 // ==================== 兑换码 ====================

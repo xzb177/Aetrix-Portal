@@ -20,7 +20,7 @@ import {
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, vitalityApi,
-  type PointsLogEntry,
+  type PointsLogEntry, type TransferConfig,
   type OrderRow, type CheckinStatus, type CodePreview, type VitalityStatus,
 } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
@@ -42,6 +42,40 @@ const vitalityPointCost = ref(10)
 const orders = ref<OrderRow[]>([])
 const logs = ref<PointsLogEntry[]>([])
 const tab = ref<'orders' | 'log'>('orders')
+
+// ===== 积分转账（C2）=====
+const transferConfig = ref<TransferConfig | null>(null)
+const transferRecipient = ref('')
+const transferAmount = ref<number | null>(null)
+const transferring = ref(false)
+/** 手续费预览：向上取整 */
+const transferFeePreview = computed(() => {
+  if (transferAmount.value == null || transferAmount.value <= 0 || !transferConfig.value) return 0
+  const pct = transferConfig.value.fee_pct
+  return pct > 0 ? Math.ceil(transferAmount.value * pct / 100) : 0
+})
+async function loadTransferConfig() {
+  try { transferConfig.value = await pointsApi.transferConfig() }
+  catch { transferConfig.value = null }
+}
+async function handleTransfer() {
+  const to = transferRecipient.value.trim()
+  const amt = transferAmount.value
+  if (!to) { toast.error('请输入对方用户名'); return }
+  if (!amt || amt <= 0 || !Number.isInteger(amt)) { toast.error('请输入正整数金额'); return }
+  transferring.value = true
+  try {
+    const res = await pointsApi.transfer(to, amt)
+    toast.success(`已转给 ${res.recipient} ${res.amount} 积分` + (res.fee > 0 ? `（手续费 ${res.fee} 积分）` : ''))
+    transferRecipient.value = ''
+    transferAmount.value = null
+    balance.value = res.balance
+  } catch (e: any) {
+    toast.error(e?.response?.data?.detail || '转账失败')
+  } finally {
+    transferring.value = false
+  }
+}
 
 // ===== 统一核销入口（卡码 / 兑换码 / 邀请码自动识别）=====
 // 卡码（会员时长）与兑换码（积分/订阅）原本是两个输入框，用户得自己判断该填哪个。
@@ -220,6 +254,9 @@ const TYPE_META: Record<string, { label: string; income: boolean }> = {
   recharge: { label: '充值', income: true },
   admin_grant: { label: '管理员发放', income: true },
   admin_deduct: { label: '管理员扣除', income: false },
+  transfer_out: { label: '转账转出', income: false },
+  transfer_in: { label: '转账转入', income: true },
+  transfer_fee: { label: '转账手续费', income: false },
 }
 
 function typeMeta(t: string) {
@@ -325,6 +362,7 @@ function handleEntryQuery() {
 onMounted(async () => {
   await loadAll()
   handleEntryQuery()
+  loadTransferConfig()
 })
 
 onActivated(() => {
@@ -440,6 +478,27 @@ onBeforeUnmount(stopPayPoll)
     <RefreshCw :size="14" :class="{ spinning: loading }" />
   </button>
 </form>
+
+    <!-- 积分转账（C2）：开关关闭时隐藏 -->
+    <section v-if="transferConfig?.enabled" class="au-card transfer-card au-anim-up">
+      <div class="transfer-head">
+        <ArrowUpRight :size="15" />
+        <strong>积分转账</strong>
+        <span class="transfer-fee-note">手续费 {{ transferConfig.fee_pct }}%</span>
+      </div>
+      <div class="transfer-row">
+        <input v-model="transferRecipient" class="redeem-input" placeholder="对方用户名" maxlength="50" />
+        <input v-model.number="transferAmount" type="number" min="1" class="redeem-input" placeholder="转账金额（积分）" />
+        <button class="au-btn au-btn-primary" :disabled="transferring" @click="handleTransfer">
+          <span v-if="transferring" class="spinner"></span>
+          转账
+        </button>
+      </div>
+      <p class="redeem-hint" v-if="transferFeePreview > 0">
+        将扣除 <span class="nw">{{ (transferAmount || 0) }} 积分</span> + <span class="nw">手续费 {{ transferFeePreview }} 积分</span>
+      </p>
+      <p class="redeem-hint" v-else>输入金额后显示手续费</p>
+    </section>
 
     <!-- 选项卡 -->
     <nav class="tabs au-anim-up" style="animation-delay: 100ms">
@@ -1330,4 +1389,17 @@ onBeforeUnmount(stopPayPoll)
   .pkg-buy { justify-content: space-between; }
   .order-item { flex-wrap: wrap; }
 }
+
+/* 积分转账卡片（C2） */
+.transfer-card { margin-top: 16px; padding: 16px; }
+.transfer-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.transfer-head strong { font-size: 15px; }
+.transfer-fee-note { margin-left: auto; font-size: 12px; color: var(--au-text-3); white-space: nowrap; }
+.transfer-row { display: flex; gap: 8px; }
+.transfer-row .redeem-input { flex: 1; min-width: 0; }
+.nw { white-space: nowrap; }
+@media (max-width: 768px) {
+  .transfer-row { flex-direction: column; }
+}
+
 </style>
