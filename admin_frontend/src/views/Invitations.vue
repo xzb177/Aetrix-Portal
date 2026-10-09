@@ -613,7 +613,7 @@ onMounted(reloadAll)
           :loading="auditSaving"
           active-text="开启"
           inactive-text="关闭"
-          @update:model-value="(v) => toggleAudit(!!v)"
+          @update:model-value="(v: boolean) => toggleAudit(v)"
         />
         <span class="faint">审计总开关（points_audit_enabled）</span>
       </div>
