@@ -253,13 +253,12 @@ const settings = reactive<EconomySettings>({})
 const original = ref<EconomySettings>({})
 
 /** 注册策略 */
-const reg = reactive({ mode: 'open', message: '' })
+const reg = reactive({ mode: 'open', message: '', legacyCode: false })
 const regSaving = ref(false)
 
 const regModeHint = computed(() => {
   const map: Record<string, string> = {
     open: '任何人都可以直接注册',
-    code: '必须填写有效注册码才能注册',
     closed: '关闭注册入口，仅显示提示文案',
   }
   return map[reg.mode] || ''
@@ -398,7 +397,9 @@ async function load() {
     ])
     Object.assign(settings, econ.settings)
     original.value = { ...econ.settings }
-    reg.mode = registration.mode
+    // 注册码门禁已下线：DB 里残留的 "code" 一律按 open 展示，保存时后端也会拒绝 "code"
+    reg.mode = registration.mode === 'code' ? 'open' : registration.mode
+    reg.legacyCode = registration.mode === 'code'
     reg.message = registration.message || ''
   } catch {
     // 错误提示由 HTTP 拦截器统一处理
@@ -465,6 +466,7 @@ async function saveRegistration() {
   try {
     await updateRegistrationSettings({ mode: reg.mode, message: reg.message })
     ElMessage.success('注册策略已保存')
+    reg.legacyCode = false
   } catch {
     // 拦截器已提示
   } finally {
@@ -662,10 +664,18 @@ watch(
                 <div class="field-stack">
                   <el-radio-group v-model="reg.mode">
                     <el-radio-button value="open">开放注册</el-radio-button>
-                    <el-radio-button value="code">注册码</el-radio-button>
                     <el-radio-button value="closed">关闭注册</el-radio-button>
                   </el-radio-group>
                   <span class="field-hint">{{ regModeHint }}</span>
+                  <!-- 注册码门禁已下线：DB 残留 "code" 自动归一为开放注册 -->
+                  <el-alert
+                    v-if="reg.legacyCode"
+                    type="warning"
+                    show-icon
+                    :closable="false"
+                    title="该站点的注册模式曾设为「注册码」，该模式已下线"
+                    description="已自动按「开放注册」处理，点击保存后将正式更新为开放注册。"
+                  />
                 </div>
               </el-form-item>
               <el-form-item v-if="reg.mode === 'closed'" label="关闭提示">
