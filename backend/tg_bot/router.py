@@ -87,8 +87,10 @@ def dispatch(db, update: dict) -> None:
             _verify_bind_code(db, update)
             return
 
-        # 非命令文本忽略
+        # 非命令文本：群发言积分（M1）；群抽奖口令（G2）在此之前匹配
         if not text.startswith("/"):
+            from backend.tg_bot import chat_points
+            chat_points.handle_group_message(db, update)
             return
 
         # 解析命令（去掉 @bot 后缀）
@@ -96,16 +98,20 @@ def dispatch(db, update: dict) -> None:
         cmd = first_token.split("@")[0].lower()
         args = text[len(first_token):].strip()
 
+        from backend.tg_bot import chat_points
         commands = {
             "/start": handlers.handle_start,
             "/help": handlers.handle_help,
             "/bind": handlers.handle_bind,
+            "/chatpoints": chat_points.handle_chatpoints,
         }
         fn = commands.get(cmd)
         if fn:
             reply = fn(db, tg_user, chat_id, args)
         else:
             reply = "未知命令，发送 /help 查看可用命令"
-        sender.send_message(db, chat_id, reply)
+        # /chatpoints 私聊回复，避免在群里泄露积分信息（M1）
+        target = tg_user.get("id") if cmd == "/chatpoints" else chat_id
+        sender.send_message(db, target or chat_id, reply)
     except Exception as exc:  # noqa: BLE001
         logger.error("tg dispatch failed: %s", exc, exc_info=True)

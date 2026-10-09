@@ -3,7 +3,7 @@
 整合用户端、管理后台和主项目的所有数据模型
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, Index, ForeignKey, JSON, Float, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, Date, Text, Numeric, Index, ForeignKey, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
@@ -1496,3 +1496,31 @@ class TgBindCode(Base):
     expires_at = Column(DateTime, nullable=False)
     used_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
+
+
+class ChatPointsLog(Base):
+    """群发言积分明细表（M1）
+
+    bot 统计 TG 群有效发言的计分明细，同时作为防刷依据：
+    - 唯一约束 (telegram_id, chat_id, message_id) 保证幂等（offset 重放/重启不重复计分）
+    - 索引 (web_user_id, points_date) 供每日上限查询
+    - 索引 (telegram_id, created_at) 供防刷窗口查询
+    积分本身进 WebUser.points（单一货币），流水见 PointsLog(type='chat')。
+    """
+    __tablename__ = 'chat_points_log'
+
+    __table_args__ = (
+        UniqueConstraint('telegram_id', 'chat_id', 'message_id', name='uq_chat_points_msg'),
+        Index('idx_chat_points_user_date', 'web_user_id', 'points_date'),
+        Index('idx_chat_points_tg_time', 'telegram_id', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    web_user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    telegram_id = Column(BigInteger, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    message_id = Column(BigInteger, nullable=False)
+    points = Column(Integer, nullable=False, default=1)
+    points_date = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
