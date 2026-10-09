@@ -1647,6 +1647,9 @@ button.redeem-confirm {
 @media (max-width: 768px) {
   .store-page {
     padding: 16px;
+    /* 底部给固定导航坞让位：坞高约 62px + iOS 安全区，否则最底部
+       「卡码 / 兑换码核销」会被坞盖住，iOS 松手回弹后看不到 */
+    padding-bottom: calc(16px + var(--au-dock-space, 62px));
     gap: 24px;
   }
 
