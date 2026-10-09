@@ -226,7 +226,7 @@ const GROUPS: Group[] = [
         key: 'stream_accel_domain',
         label: '加速域名',
         type: 'str',
-        hint: '例如 emby.135505.autos，不带 https://；保存后最长 60 秒生效；开启后只能用该域名访问',
+        hint: '例如 cdn.example.com，不带 https://；保存后最长 60 秒生效；开启后只能用该域名访问',
       },
     ],
   },
