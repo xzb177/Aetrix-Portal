@@ -13,12 +13,13 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, Coins, TicketCheck, Receipt, RefreshCw, Sparkles, Zap, Flame, Crown,
   ExternalLink, ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  KeyRound, TriangleAlert, Undo2, Percent, X, Gift,
+  KeyRound, TriangleAlert, Undo2, Percent, X, User, Medal, Award, Gem, Gift,
 } from 'lucide-vue-next'
 import {
-  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi,
+  pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, couponApi, memberApi,
   type PointsLogEntry, type RechargePackage, type SubscriptionPlan,
   type OrderRow, type PaymentMethod, type CheckinStatus, type CodePreview, type CouponQuote,
+  type MyMemberInfo,
 } from '@/api/economy'
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -40,6 +41,13 @@ const logs = ref<PointsLogEntry[]>([])
 const tab = ref<'recharge' | 'plans' | 'orders' | 'log'>('recharge')
 const payMethod = ref('alipay')
 const orderLoading = ref<number | null>(null)
+
+// ===== 会员等级（P1 统一货币体系）=====
+const member = ref<MyMemberInfo | null>(null)
+const showLevels = ref(false)
+/** 徽章图标名 → lucide 组件 */
+const levelIconMap: Record<string, unknown> = { User, Medal, Award, Crown, Gem, Sparkles }
+const levelIcon = (name: string) => levelIconMap[name] || User
 
 // ===== 优惠券（v2.10.0；v2.10.1 收进统一核销入口）=====
 // 优惠额度是按「商品」算的（同一张 9 折券，100 元的包和 30 元的会员省得不一样），
@@ -376,7 +384,7 @@ async function loadAll(silent = false) {
     const emptySubs: MySubscription[] = []
     const exchangeFallback = { enabled: true }
     const couponFallback = { enabled: false }
-    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR] = await Promise.allSettled([
+    const [pkgR, planR, methodR, orderR, logR, statusR, exchangeR, subsR, couponR, memberR] = await Promise.allSettled([
       paymentApi.packages(),
       paymentApi.plans(),
       paymentApi.methods(),
@@ -387,6 +395,7 @@ async function loadAll(silent = false) {
       subscriptionApi.getMine(),
       // 接口失败时按「关闭」处理：宁可不展示，也不让用户填完码才报错
       couponApi.config(),
+      memberApi.info(),
     ])
     const pkg = settled(pkgR, emptyPkgs, silent)
     if (pkg !== undefined) {
@@ -417,6 +426,8 @@ async function loadAll(silent = false) {
     if (subs !== undefined) subscriptions.value = Array.isArray(subs) ? subs : []
     const couponCfg = settled(couponR, couponFallback, silent)
     if (couponCfg !== undefined) couponEnabled.value = couponCfg.enabled === true
+    const memberData = memberR.status === 'fulfilled' ? memberR.value : null
+    member.value = memberData
   } finally {
     loading.value = false
     hasLoaded.value = true
@@ -570,12 +581,58 @@ onBeforeUnmount(stopPayPoll)
           <span>{{ checkin.checked_today ? '今日已签' : '今日未签' }}</span>
           <ChevronRight :size="12" class="pill-arrow" />
         </RouterLink>
+
         <!-- 抽奖入口：跟签到胶囊同一排 -->
         <RouterLink to="/lottery" class="lottery-pill">
           <Gift :size="13" />
           <span>幸运抽奖</span>
           <ChevronRight :size="12" class="pill-arrow" />
         </RouterLink>
+
+        <!-- 会员等级：徽章 + 经验进度（P1 统一货币体系） -->
+        <div v-if="member" class="member-row">
+          <span class="member-badge" :style="{ background: member.badge_color }">
+            <component :is="levelIcon(member.badge_icon)" :size="17" />
+          </span>
+          <div class="member-meta">
+            <div class="member-top">
+              <strong class="member-name">{{ member.level_name }}</strong>
+              <span class="member-xp">{{ member.xp }} 经验</span>
+            </div>
+            <div class="member-bar" role="progressbar" :aria-valuenow="member.progress_pct" aria-valuemin="0" aria-valuemax="100">
+              <i :style="{ width: member.progress_pct + '%' }" />
+            </div>
+            <div class="member-next">
+              <span v-if="member.next_level">距 Lv.{{ member.next_level }} 还差 {{ member.xp_to_next }} 经验</span>
+              <span v-else>已满级</span>
+              <button type="button" class="member-levels-toggle" @click="showLevels = !showLevels">
+                等级权益 {{ showLevels ? '收起' : '展开' }}
+                <ChevronRight :size="12" :class="{ rotated: showLevels }" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 全等级权益（公开透明） -->
+        <div v-if="member && showLevels" class="levels-grid">
+          <div
+            v-for="lv in member.levels"
+            :key="lv.level"
+            class="level-card"
+            :class="{ current: lv.level === member.level }"
+          >
+            <span class="member-badge sm" :style="{ background: lv.badge_color }">
+              <component :is="levelIcon(lv.badge_icon)" :size="14" />
+            </span>
+            <div class="level-head">
+              <strong>Lv.{{ lv.level }} {{ lv.name }}</strong>
+              <span class="level-th">{{ lv.xp_threshold }} 经验</span>
+            </div>
+            <ul class="level-benefits">
+              <li v-for="(b, i) in lv.benefits" :key="i">{{ b }}</li>
+            </ul>
+          </div>
+        </div>
       </div>
 
       <div class="bh-divider" aria-hidden="true" />
@@ -963,6 +1020,106 @@ onBeforeUnmount(stopPayPoll)
   background: var(--au-success-soft);
   border-color: var(--au-success-border);
   color: var(--au-success);
+}
+
+/* ==================== 会员等级（P1 统一货币体系） ==================== */
+.member-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem 0.875rem;
+  background: var(--au-surface-2, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+}
+.member-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  color: #fff;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+.member-badge.sm { width: 2rem; height: 2rem; }
+.member-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.375rem; }
+.member-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.member-name { font-size: 0.9375rem; color: var(--au-text); }
+.member-xp { font-size: 0.75rem; color: var(--au-text-3); font-variant-numeric: tabular-nums; }
+.member-bar {
+  height: 0.375rem;
+  border-radius: var(--au-r-full);
+  background: var(--au-border);
+  overflow: hidden;
+}
+.member-bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--au-r-full);
+  background: linear-gradient(90deg, var(--au-primary), var(--au-gold-b));
+  transition: width 0.5s var(--au-ease);
+}
+.member-next {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--au-text-3);
+}
+.member-levels-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.75rem;
+  color: var(--au-primary);
+  cursor: pointer;
+}
+.member-levels-toggle .rotated { transform: rotate(90deg); }
+
+/* 全等级权益卡片 */
+.levels-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.level-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.875rem;
+  background: var(--au-surface-2, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+}
+.level-card.current {
+  border-color: var(--au-primary);
+  box-shadow: 0 0 0 1px var(--au-primary);
+}
+.level-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.level-head strong { font-size: 0.875rem; color: var(--au-text); }
+.level-th { font-size: 0.75rem; color: var(--au-text-3); white-space: nowrap; }
+.level-benefits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--au-text-2);
+}
+.level-benefits li::before {
+  content: '·';
+  margin-right: 0.375rem;
+  color: var(--au-primary);
 }
 
 /* 抽奖入口胶囊：与签到胶囊同一视觉语言 */

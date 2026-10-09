@@ -342,3 +342,32 @@ export const inviteApi = {
   promotions: (params?: { limit?: number }) =>
     api.get<never, MyPromotions>('/api/user/invite/promotions', { params }),
 }
+
+// ==================== 会员等级（P1 统一货币体系） ====================
+
+export interface MemberLevelInfo {
+  level: number
+  name: string
+  xp_threshold: number
+  benefits: string[]
+  badge_icon: string
+  badge_color: string
+}
+
+export interface MyMemberInfo {
+  level: number
+  level_name: string
+  xp: number
+  badge_icon: string
+  badge_color: string
+  next_level: number | null
+  next_threshold: number | null
+  xp_to_next: number | null
+  progress_pct: number
+  levels: MemberLevelInfo[]
+}
+
+export const memberApi = {
+  /** 当前会员等级 / 经验 / 进度 / 全等级列表（含公开权益） */
+  info: () => api.get<never, MyMemberInfo>('/api/user/member'),
+}
