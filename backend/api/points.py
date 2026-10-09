@@ -2,7 +2,7 @@
 """公益服积分 API 路由（挂载到 backend/points.py 的 router）
 
 端点（前缀 /api/points）：
-- POST /signin          公益签到（Foam 风格）
+- POST /signin          【已废弃】转发到 POST /api/user/economy/checkin
 - POST /redeem          积分兑换公益天数 {days_option: 7 | 30}
 - GET  /balance         积分概览（余额/今日获得/累计获得）
 - GET  /logs            积分明细（分页）
@@ -27,12 +27,15 @@ class RedeemRequest(BaseModel):
     days_option: int = Field(..., description="兑换天数，仅支持 7 或 30")
 
 
-@router.post("/signin")
+@router.post("/signin", deprecated=True)
 def welfare_signin(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """公益服签到"""
+    """【已废弃 2026-10-09】公益服签到已统一到 POST /api/user/economy/checkin。
+
+    此接口仅为兼容保留，转发到统一签到逻辑。新客户端请使用 /api/user/economy/checkin。
+    """
     try:
         return points_mod.welfare_signin(db, current_user)
     except ValueError as e:

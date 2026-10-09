@@ -86,13 +86,18 @@ const GROUPS: Group[] = [
   {
     id: 'checkin',
     title: '每日签到',
-    desc: '签到基础积分与连签加成规则',
+    desc: '签到基础积分与连签加成规则（积分仅限公益服用户）',
     icon: CalendarCheck,
     fields: [
       { key: 'checkin_enabled', label: '启用签到', type: 'bool' },
-      { key: 'checkin_base_points', label: '基础积分', type: 'int', suffix: '积分/次' },
+      { key: 'checkin_base_points', label: '基础积分', type: 'int', suffix: '积分/次', hint: '未设置随机范围时的默认值' },
+      { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，默认跟随基础积分' },
+      { key: 'checkin_base_max', label: '基础积分上限', type: 'int', suffix: '积分/次', hint: '随机范围上限，与下限相同=固定值' },
       { key: 'checkin_streak_bonus', label: '连签加成', type: 'int', suffix: '积分/天', hint: '每多连签一天额外增加的积分' },
       { key: 'checkin_streak_max_bonus', label: '加成上限', type: 'int', suffix: '积分', hint: '连签加成的封顶值' },
+      { key: 'checkin_penalty_pct', label: '惩罚概率', type: 'int', suffix: '%', hint: '0=关闭惩罚' },
+      { key: 'checkin_penalty_min', label: '惩罚下限', type: 'int', suffix: '积分' },
+      { key: 'checkin_penalty_max', label: '惩罚上限', type: 'int', suffix: '积分' },
     ],
   },
   {
