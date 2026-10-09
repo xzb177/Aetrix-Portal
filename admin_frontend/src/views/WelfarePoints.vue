@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Coins, Gift, MessageCircle, RefreshCw, Save, Settings2, Wallet } from 'lucide-vue-next'
+import { Coins, Gift, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
 
@@ -31,6 +31,11 @@ const earnRedeemFields = [
   { key: 'points_redeem_7d', label: '兑换 7 天', hint: '默认 100', suffix: '积分' },
   { key: 'points_redeem_30d', label: '兑换 30 天', hint: '默认 300', suffix: '积分' },
 ]
+
+const tgBindEnabled = computed({
+  get: () => (form.value['welfare_require_tg_bind'] ?? '1') === '1',
+  set: (v: boolean) => { form.value['welfare_require_tg_bind'] = v ? '1' : '0' },
+})
 
 const welfareFields = [
   { key: 'welfare_grace_days', label: '到期保留天数', hint: '到期后可登录但不可播放，默认 7', suffix: '天' },
@@ -117,6 +122,19 @@ onMounted(load)
             <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+        </el-form>
+      </SectionCard>
+
+      <SectionCard
+        title="Telegram 门禁"
+        :icon="Send"
+        description="公益服能力（签到/积分/红包/抽奖）是否要求绑定 Telegram"
+      >
+        <el-form label-width="120px" class="config-form">
+          <el-form-item label="强制绑定">
+            <el-switch v-model="tgBindEnabled" />
+            <span class="field-hint">开启后未绑定用户无法使用公益服写操作；老用户有 7 天宽限期；Bot 故障时可关闭降级</span>
           </el-form-item>
         </el-form>
       </SectionCard>
