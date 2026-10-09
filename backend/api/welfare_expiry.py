@@ -23,7 +23,6 @@ from backend import welfare_expiry as exp_mod
 from backend.api.admin_core import admin_router, get_current_admin
 from backend.api.user import get_current_user
 from backend.database import get_db
-from backend.emby_server import portal
 
 router = APIRouter(prefix="/api/welfare/expiry", tags=["公益-到期管理"])
 
@@ -86,10 +85,24 @@ def my_status(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """我的公益资格状态"""
+    """我的公益资格状态（是否有效、到期时间、剩余天数）"""
     try:
-        status = portal.get_welfare_status(db, current_user)
-        status["grace_days"] = exp_mod._get_int(db, "welfare_grace_days", 7)
-        return status
+        from datetime import datetime
+        now = datetime.now()
+        exp = current_user.welfare_expires_at
+        is_welfare = bool(current_user.is_welfare)
+        if is_welfare and exp is not None and exp <= now:
+            is_welfare = False
+        if exp is None:
+            days_left = None
+        elif exp > now:
+            days_left = (exp - now).days
+        else:
+            days_left = 0
+        return {
+            "is_welfare": is_welfare,
+            "expires_at": exp.isoformat() if exp else None,
+            "days_left": days_left,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
