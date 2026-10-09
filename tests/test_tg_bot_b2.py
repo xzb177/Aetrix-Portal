@@ -163,10 +163,10 @@ def test_router_dispatch_checkin(db):
 
 
 def test_router_dispatch_points_and_redeem_registered(db):
-    """router.commands 包含三个新命令（自动享受 3 秒限流）。"""
-    from backend.tg_bot.router import _allow
-    # 间接验证：_allow 对新命令生效且互不干扰
-    assert _allow(920001, "/checkin") is True
-    assert _allow(920001, "/checkin") is False  # 3 秒内重复被限
-    assert _allow(920001, "/points") is True    # 不同命令独立计数
-    assert _allow(920001, "/redeem") is True
+    """router.commands 包含三个新命令（自动享受可配置限流）。"""
+    from backend.tg_bot.router import _user_cmd_allow
+    # 间接验证：_user_cmd_allow 对新命令生效且互不干扰
+    assert _user_cmd_allow(920001, "/checkin", 3.0) is True
+    assert _user_cmd_allow(920001, "/checkin", 3.0) is False  # 3 秒内重复被限
+    assert _user_cmd_allow(920001, "/points", 3.0) is True    # 不同命令独立计数
+    assert _user_cmd_allow(920001, "/redeem", 3.0) is True

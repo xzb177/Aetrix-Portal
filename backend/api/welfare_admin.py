@@ -355,7 +355,16 @@ WELFARE_CONFIG_KEYS = {
     "lottery_cost": "10",
     # P0 统一货币体系：充值比例与红包规则
     "recharge_ratio": "1.2",
-    "redpacket_bot_enabled": "1",
+    # B4 TG Bot 总控：总开关、群白名单、限流、各命令开关、红包开关
+    "bot_enabled": "true",
+    "bot_group_ids": "",
+    "bot_rate_limit_seconds": "3",
+    "bot_group_rate_limit": "20",
+    "bot_cmd_checkin": "true",
+    "bot_cmd_points": "true",
+    "bot_cmd_redeem": "true",
+    "bot_cmd_bind": "true",
+    "bot_redpacket_enabled": "true",
     "redpacket_fee_pct": "5",
     "redpacket_send_limit_7d": "20",
     "redpacket_recv_limit_7d": "10",
