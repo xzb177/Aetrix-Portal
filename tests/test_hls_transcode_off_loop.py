@@ -43,8 +43,6 @@ def test_new_transcode_preparation_runs_in_threadpool(monkeypatch):
     monkeypatch.setattr(api, "_play_target",
                         rec("_play_target", PlayTarget("url", "https://115.example/v.mkv", {}), sleep=0.4))
     monkeypatch.setattr(api.cdn, "enabled", rec("cdn_enabled", False))
-    monkeypatch.setattr(api.local_cache, "lookup", lambda db, item: None)
-    monkeypatch.setattr(api.local_cache, "enqueue", lambda db, item, prio: None)
     monkeypatch.setattr(api.line_stats, "record_request", lambda *a, **k: None)
     from backend.emby_server import transcode as tc
     monkeypatch.setattr(tc, "find_cache", lambda *a, **k: None)
