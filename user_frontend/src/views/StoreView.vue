@@ -50,8 +50,7 @@ const couponApplied = ref('')          // 已生效的码（空 = 没在用券�
 const couponLoading = ref(false)
 const couponError = ref('')
 const couponQuotes = ref<Record<string, CouponQuote>>({})
-/** 买会员卡片内的优惠券输入框（与底部核销入口共用同一套试算状态） */
-const couponCode = ref('')
+/** 优惠券统一在底部核销中心输入（买会员卡内只保留已应用状态条），试算状态共用 */
 
 /** 一次试算的结果：用不了的商品带上后端给的说明（满减门槛、适用范围等） */
 interface QuoteRow {
@@ -518,20 +517,29 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
     <div class="store-ambiance" aria-hidden="true"></div>
     <TgBindCard v-if="showTgBanner" compact class="store-tg" />
 
-    <div class="store-status au-anim-up">
-      <div class="store-status-left">
-        <Crown class="store-status-crown" />
-        <span v-if="isFreeRealm">公益服 · 免费开放</span>
-        <span v-else-if="currentSub">你是{{ currentSub.plan_name }}会员</span>
-        <span v-else>你还不是会员</span>
+    <section class="store-hero au-anim-up" aria-label="账户概览">
+      <div class="sh-balance">
+        <span class="sh-label">积分余额</span>
+        <RouterLink to="/wallet" class="sh-num">
+          <span class="num">{{ balance }}</span>
+          <span class="unit">积分</span>
+          <ChevronRight class="sh-go" />
+        </RouterLink>
       </div>
-      <span class="divider" aria-hidden="true"></span>
-      <RouterLink to="/wallet" class="status-points">
-        <Sparkles />
-        <span class="nowrap">{{ balance }} 积分</span>
-        <ChevronRight />
-      </RouterLink>
-    </div>
+      <span class="sh-divider" aria-hidden="true"></span>
+      <div class="sh-member">
+        <Crown class="sh-crown" />
+        <div class="sh-member-text">
+          <strong v-if="isFreeRealm">公益服</strong>
+          <strong v-else-if="currentSub">{{ currentSub.plan_name }}会员</strong>
+          <strong v-else>还不是会员</strong>
+          <small v-if="isFreeRealm">免费开放 · 无需购买</small>
+          <small v-else-if="currentSub">剩 <span class="nowrap">{{ currentSub.days_left }} 天</span> · {{ currentSub.end_date.slice(0, 10) }} 到期</small>
+          <small v-else>开通解锁全库播放</small>
+        </div>
+        <a v-if="!isFreeRealm" class="sh-cta" href="#card-plans">去开通</a>
+      </div>
+    </section>
 
     <div class="store-cards">
       <section id="card-recharge" class="store-card au-anim-up">
@@ -587,21 +595,22 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
             </button>
           </div>
 
-          <div v-if="quickAmounts.length" class="store-quick">
-            <span class="store-quick-label">快捷金额</span>
-            <div class="store-quick-chips">
-              <button
-                v-for="amt in quickAmounts"
-                :key="amt"
-                type="button"
-                class="quick-chip"
-                :class="{ active: customAmount === amt }"
-                @click="customAmount = amt"
-              ><span class="nowrap">¥{{ amt }}</span></button>
+          <div class="recharge-amount">
+            <span class="sec-label">充值金额</span>
+            <div v-if="quickAmounts.length" class="store-quick">
+              <div class="store-quick-chips">
+                <button
+                  v-for="amt in quickAmounts"
+                  :key="amt"
+                  type="button"
+                  class="quick-chip"
+                  :class="{ active: customAmount === amt }"
+                  @click="customAmount = amt"
+                ><span class="nowrap">¥{{ amt }}</span></button>
+              </div>
             </div>
-          </div>
 
-          <div class="store-custom">
+            <div class="store-custom">
             <div class="store-custom-row">
               <span class="store-custom-currency">¥</span>
               <input
@@ -624,9 +633,10 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
             </div>
             <small class="store-custom-note">按当前比例 <span class="nowrap">{{ rechargeRatio }}</span> 兑换（<span class="nowrap">1 元</span> = <span class="nowrap">{{ rechargeRatio }} 积分</span>）</small>
           </div>
+          </div>
 
           <div v-if="methods.length" class="store-pay">
-            <span class="store-pay-label">支付方式</span>
+            <span class="sec-label">支付方式</span>
             <div class="store-pay-group">
               <button
                 v-for="m in methods"
@@ -714,34 +724,25 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
               </article>
             </div>
 
-            <div v-if="couponEnabled" class="coupon-box">
-              <small class="coupon-title">优惠券</small>
-              <div v-if="!couponApplied" class="coupon-row">
-                <input v-model="couponCode" placeholder="优惠券码，购买时抵扣" class="coupon-input" />
-                <button
-                  type="button"
-                  class="coupon-apply"
-                  :disabled="couponLoading || !couponCode.trim()"
-                  @click="applyCoupon(couponCode)"
-                >
-                  <span v-if="couponLoading" class="spinner"></span>
-                  <template v-else>应用</template>
-                </button>
-              </div>
-              <div v-else class="coupon-applied">
-                <Percent />
-                <span>优惠券 <strong>{{ couponApplied }}</strong> 已应用</span>
-                <span v-if="couponSavings > 0" class="coupon-savings"> · 本页最高省 <span class="nowrap">¥{{ couponSavings.toFixed(2) }}</span></span>
-                <button type="button" class="coupon-clear" @click="clearCoupon"><X /></button>
-              </div>
-              <p v-if="couponError" class="coupon-error">{{ couponError }}</p>
+            <div v-if="couponApplied" class="coupon-strip">
+              <Percent />
+              <span>优惠券 <strong>{{ couponApplied }}</strong> 已应用 · 下单自动抵扣</span>
+              <span v-if="couponSavings > 0" class="coupon-savings">最高省 <span class="nowrap">¥{{ couponSavings.toFixed(2) }}</span></span>
+              <button type="button" class="coupon-clear" @click="clearCoupon" aria-label="取消优惠券"><X /></button>
             </div>
+            <a v-else-if="couponEnabled" class="coupon-goto" href="#store-redeem" @click="redeemOpen = true">
+              <TicketCheck />
+              <span>有优惠券？去核销中心使用</span>
+              <ChevronRight />
+            </a>
+            <p v-if="couponError" class="coupon-error">{{ couponError }}</p>
           </template>
         </template>
       </section>
     </div>
 
-    <div class="store-redeem au-anim-up">
+    <section id="store-redeem" class="store-redeem au-anim-up" aria-label="核销中心">
+      <span class="sec-label">核销中心</span>
       <button
         type="button"
         class="redeem-toggle"
@@ -749,7 +750,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
         :aria-expanded="redeemOpen"
       >
         <TicketCheck />
-        <span>卡码 / 兑换码核销</span>
+        <span>卡码 / 兑换码 / 优惠券</span>
         <ChevronRight :class="{ open: redeemOpen }" />
       </button>
 
@@ -760,7 +761,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
           <input
             ref="redeemInputRef"
             v-model="redeemCode"
-            placeholder="输入卡码 / 兑换码"
+            placeholder="输入卡码 / 兑换码 / 优惠券"
             maxlength="64"
             autocomplete="off"
             class="redeem-input"
@@ -801,7 +802,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
       </div>
       </div>
       </div>
-    </div>
+    </section>
   </div>
 </template>
 
@@ -843,54 +844,155 @@ html[data-theme='light'] .store-ambiance {
   display: none;
 }
 
-.store-status {
+/* 账户 Hero：余额大数字 + 会员状态（信息架构第一层） */
+.store-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 20px;
+  padding: 20px 24px;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-xl);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--au-text) 4%, transparent);
+  position: relative;
+  overflow: hidden;
+}
+
+.store-hero::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--au-primary-border), transparent);
+}
+
+.sh-balance {
   display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 4px 0;
-  font-size: 13px;
-  color: var(--au-text-2);
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
 }
 
-.store-status-left {
+.sh-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--au-text-3);
+}
+
+a.sh-num {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
-}
-
-.store-status .divider {
-  width: 1px;
-  height: 16px;
-  background: var(--au-border-strong);
-}
-
-.store-status-crown {
-  width: 15px;
-  height: 15px;
-  color: var(--au-gold-a);
-}
-
-a.status-points {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--au-text);
   text-decoration: none;
-  font-size: 13px;
+  color: var(--au-text);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+a.sh-num .num {
+  font-family: var(--au-font-serif);
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+a.sh-num .unit {
+  font-size: 13px;
+  color: var(--au-text-3);
   white-space: nowrap;
 }
 
-a.status-points svg {
-  width: 14px;
-  height: 14px;
-  color: var(--au-text-2);
+.sh-go {
+  width: 16px;
+  height: 16px;
+  color: var(--au-text-3);
+  align-self: center;
 }
 
-a.status-points:hover {
+.sh-divider {
+  background: var(--au-border-strong);
+}
+
+.sh-member {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sh-crown {
+  width: 22px;
+  height: 22px;
+  color: var(--au-text-2);
+  flex-shrink: 0;
+}
+
+.sh-member-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.sh-member-text strong {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--au-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sh-member-text small {
+  font-size: 12px;
+  color: var(--au-text-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.sh-cta {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 700;
   color: var(--au-primary);
+  text-decoration: none;
+  padding: 8px 16px;
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-full);
+  background: var(--au-primary-soft);
+  white-space: nowrap;
+}
+
+/* 通用区块微标签（land-book 式 Section 结构） */
+.store-page .sec-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--au-text-3);
+  margin: 0 0 10px;
+}
+
+/* 深链滚动不被顶栏遮住 */
+#card-recharge,
+#card-plans,
+#store-redeem {
+  scroll-margin-top: 76px;
 }
 
 .store-cards {
@@ -1147,14 +1249,18 @@ button.pkg-row.popular {
   gap: 12px;
 }
 
-.store-quick-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--au-text-3);
-  white-space: nowrap;
-  flex-shrink: 0;
+.recharge-amount {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  background: var(--au-surface-2);
+}
+
+.recharge-amount .sec-label {
+  margin-bottom: 0;
 }
 
 .store-quick-chips {
@@ -1280,19 +1386,11 @@ small.store-custom-note {
 
 .store-pay {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
 
-.store-pay-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--au-text-3);
-  white-space: nowrap;
-}
 
 .store-pay-group {
   display: flex;
@@ -1376,12 +1474,36 @@ button.store-pay-btn:active {
   margin: 0;
 }
 
+/* 套餐陈列：移动端横滑轮播（App Store 式，一屏露 1.2 张暗示可滑），桌面端双列网格 */
 .plan-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin: 0;
-  padding: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: min(78%, 320px);
+  gap: 12px;
+  margin: -8px -4px -12px;
+  padding: 8px 4px 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.plan-list::-webkit-scrollbar {
+  display: none;
+}
+
+.plan-list > .plan-item {
+  scroll-snap-align: start;
+}
+
+@media (min-width: 1024px) {
+  .plan-list {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 .plan-item {
@@ -1552,84 +1674,46 @@ button.plan-buy:active {
   transform: scale(0.97);
 }
 
-.coupon-box {
-  border-top: 1px solid var(--au-border);
-  padding-top: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-small.coupon-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--au-text-3);
-}
-.coupon-row {
-  display: flex;
-  gap: 8px;
-}
-input.coupon-input {
-  flex: 1;
-  min-width: 0;
-  background: var(--au-input-bg);
-  border: 1px solid var(--au-input-border);
-  border-radius: var(--au-r-md);
-  padding: 0 12px;
-  height: 44px;
-  color: var(--au-text);
-  font-size: 14px;
-}
-input.coupon-input::placeholder {
-  color: var(--au-text-3);
-}
-input.coupon-input:focus {
-  border-color: var(--au-primary);
-  outline: none;
-  box-shadow: 0 0 12px var(--au-primary-border);
-}
-button.coupon-apply {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 16px;
-  background: var(--au-primary);
-  color: var(--au-on-primary);
-  border: none;
-  border-radius: var(--au-r-md);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-button.coupon-apply:hover {
-  background: var(--au-primary-strong);
-  box-shadow: 0 0 12px var(--au-primary-border);
-}
-button.coupon-apply:disabled {
-  opacity: 0.5;
-}
-button.coupon-apply:active {
-  transform: scale(0.97);
-}
-.coupon-applied {
+.coupon-strip {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   font-size: 13px;
   color: var(--au-text-2);
+  padding: 10px 14px;
+  border: 1px dashed var(--au-primary-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
 }
-.coupon-applied svg {
+.coupon-strip svg {
   width: 14px;
   height: 14px;
   color: var(--au-primary);
+  flex-shrink: 0;
 }
-.coupon-applied strong {
+.coupon-strip strong {
+  color: var(--au-text);
+}
+a.coupon-goto {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--au-text-3);
+  text-decoration: none;
+  padding: 4px 0;
+  white-space: nowrap;
+}
+a.coupon-goto svg {
+  width: 14px;
+  height: 14px;
+}
+a.coupon-goto:hover {
+  color: var(--au-primary);
+}
+
+.coupon-strip strong {
   color: var(--au-text);
 }
 .coupon-savings {
@@ -1987,6 +2071,21 @@ button.redeem-clear svg {
     padding: 16px;
     padding-bottom: calc(16px + var(--au-dock-space, 62px));
     gap: 24px;
+  }
+
+  .store-hero {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 18px 20px;
+  }
+
+  .sh-divider {
+    height: 1px;
+    width: 100%;
+  }
+
+  a.sh-num .num {
+    font-size: 34px;
   }
 
   .store-cards {
