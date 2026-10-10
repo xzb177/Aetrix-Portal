@@ -80,7 +80,9 @@ def _accel_db_config() -> tuple[Optional[set[str]], Optional[bool]]:
     )
     domain = (vals.get(CONFIG_DOMAIN) or "").strip().lower()
     if enabled and domain:
-        return {domain}, True
+        hosts = {h.strip().lower() for h in domain.split(",") if h.strip()}
+        if hosts:
+            return hosts, True
     return None, None
 
 
