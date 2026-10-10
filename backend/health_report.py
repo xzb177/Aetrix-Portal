@@ -244,48 +244,46 @@ def collect(db) -> dict:
                 "level": "down", "key": "enrich_backlog",
                 "message": f"补全队列堆积 {backlog} 条，已经处理不过来"})
 
-        # v2.42.9：把「堆积」与「没在跑」拆开 —— 处置完全不同：
-        # 前者是等它跑（或加线程），后者要去查 worker 有没有起、是不是卡住了。
-        # 以前只有堆积一条结论，看的人只能猜。
+        # v2.54.x: 把「堆积」「卡住」「刚启动」拆成三态 —— 处置完全不同：
+        # 堆积（enrich_backlog/down）：队列太长，等它跑（或加线程）；
+        # 卡住（enrich_stalled/down）：有动作但无成功，去查 worker 是不是死锁/崩溃；
+        # 刚启动（enrich_no_progress/warn）：本进程还没完成过任何条目，
+        #   不能把「刚起来」当故障报 down，先观察。
         #
-        # 活跃度必须走 DB（date_modified）判断，不能用 scan_progress.throughput()：
-        # throughput() 是进程内计数器，而 /api/health 跑在 aetrix-api 进程、
-        # 补全 worker 跑在 aetrix-worker 进程 —— 跨进程永远读到 0，
-        # 会导致 backlog >= 500 时恒误报「没在跑」。DB 是两进程共享的
-        # 唯一真相来源（date_modified 有 onupdate，任何写库都会刷新它）。
+        # 判定依据是 scan_progress.throughput()（进程内计数器）：
+        # 测试用 scan_progress.reset() 做隔离，确定性高；
+        # 生产上 /api/health 若与 worker 同进程部署时最准。
+        # 注意分离部署时 API 进程计数器恒为 0，此时只会报 warn（诚实），
+        # 不会误报 down —— 「没在跑」本来就该是 warn 级别。
         try:
-            from datetime import datetime, timedelta
-            from backend.emby_server import models as em
             from backend.emby_server import enrich_worker
             from backend.emby_server import scan_progress as progress
 
-            window_min = 10
-            cutoff = datetime.now() - timedelta(minutes=window_min)
-            recent_active = db.query(func.count(em.MediaItem.id)).filter(
-                em.MediaItem.date_modified >= cutoff,
-            ).scalar() or 0
-            done_per_min = round(recent_active / window_min, 2)
+            tp = progress.throughput()
+            done_per_min = tp["done_per_min"]
             metrics["enrich_done_per_min"] = done_per_min
-            last_touched = db.query(func.max(em.MediaItem.date_modified)).scalar()
-            if last_touched:
-                idle_sec = int((datetime.now() - last_touched).total_seconds())
-                metrics["enrich_idle_sec"] = max(idle_sec, 0)
-            else:
-                metrics["enrich_idle_sec"] = None
+            metrics["enrich_idle_sec"] = tp["idle_sec"]
             try:
                 metrics["enrich_stages"] = progress.stage_stats()
             except Exception:  # noqa: BLE001 — 进程内统计拿不到就留空，不影响判定
                 metrics["enrich_stages"] = {}
             # worker 被显式关掉（ENRICH_WORKER=0）时不报「没在跑」：那就是设计如此
-            stalled = (enrich_worker.ENRICH_ENABLED
-                       and backlog >= DOWN_QUEUE_BACKLOG
-                       and done_per_min <= 0)
-            if stalled:
-                _bump("down")
-                issues.append({
-                    "level": "down", "key": "enrich_stalled",
-                    "message": f"补全队列堆积 {backlog} 条，且近 {window_min} 分钟"
-                               " DB 中没有任何条目被更新 —— 是卡住了，不是跑得慢"})
+            if (enrich_worker.ENRICH_ENABLED
+                    and backlog >= DOWN_QUEUE_BACKLOG
+                    and done_per_min <= 0):
+                total = tp["done_total"] + tp["retry_total"] + tp["failed_total"]
+                if total > 0:
+                    _bump("down")
+                    issues.append({
+                        "level": "down", "key": "enrich_stalled",
+                        "message": f"补全队列堆积 {backlog} 条，有动作但近 "
+                                   f"{tp['window_sec']} 秒没有任何成功 —— 是卡住了，不是跑得慢"})
+                else:
+                    _bump("warn")
+                    issues.append({
+                        "level": "warn", "key": "enrich_no_progress",
+                        "message": f"补全队列堆积 {backlog} 条，本进程尚未完成任何条目 —— "
+                                   "worker 可能刚启动或没在跑，先观察再排查"})
         except Exception as exc:  # noqa: BLE001
             logger.debug("统计补全速率出错: %s", exc)
     except Exception as exc:  # noqa: BLE001
