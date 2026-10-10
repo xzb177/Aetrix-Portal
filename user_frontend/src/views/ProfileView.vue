@@ -570,7 +570,7 @@ function formatDate(iso?: string | null) {
               <button
                 v-if="s.status === 'active'"
                 type="button"
-                class="link-danger"
+                class="text-btn danger"
                 :disabled="cancellingSub === s.id"
                 @click="cancelSubscription(s)"
               >{{ cancellingSub === s.id ? '终止中…' : '终止' }}</button>

@@ -184,7 +184,7 @@ onMounted(load)
   margin-top: 12px;
 }
 .disk-info {
-  background: var(--au-bg-2, #1a1a1a);
+  background: var(--au-bg-soft, #1a1a1a);
   padding: 12px;
   border-radius: 8px;
   font-size: 12px;
