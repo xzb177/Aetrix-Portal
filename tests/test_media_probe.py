@@ -400,3 +400,66 @@ class TestResolve:
         finally:
             _cleanup(db, lib)
             db.close()
+
+
+class TestProbeUrlConversion:
+    """P0: .strm 里 legacy 的 drive.google.com/uc?export=download 直链即使带 SA
+    Bearer 也只返回登录页/HTML，ffprobe 拿不到 format（生产 99% 探测失败根因）。
+    探测必须走 Drive API alt=media 端点（与播放链路 streaming.py 同口径）。"""
+
+    def test_probe_url_converts_drive_uc(self):
+        url = "https://drive.google.com/uc?export=download&id=ABC123xyz&confirm=t"
+        out = media_probe._probe_url(url)
+        assert out == "https://www.googleapis.com/drive/v3/files/ABC123xyz?alt=media"
+
+    def test_probe_url_passthrough_non_drive(self):
+        url = "https://cdn.example.com/video/abc.mkv"
+        assert media_probe._probe_url(url) == url
+
+    def test_probe_url_passthrough_empty(self):
+        assert media_probe._probe_url("") == ""
+
+    def test_resolve_strm_converts_drive_url(self):
+        import tempfile
+        db = SessionLocal()
+        lib = _make_lib(db)
+        strm_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".strm", delete=False,
+                    encoding="utf-8") as f:
+                f.write("https://drive.google.com/uc?export=download&id=FILEID99&confirm=t\n")
+                strm_path = f.name
+            item = _make_item(db, lib, file_path=strm_path)
+            resolved = media_probe.resolve_probe_input(db, item)
+            assert resolved is not None
+            path, headers, size, container = resolved
+            assert path == "https://www.googleapis.com/drive/v3/files/FILEID99?alt=media"
+            assert isinstance(headers, dict)
+        finally:
+            if strm_path and os.path.exists(strm_path):
+                os.unlink(strm_path)
+            _cleanup(db, lib)
+            db.close()
+
+    def test_resolve_strm_non_drive_url_unchanged(self):
+        import tempfile
+        db = SessionLocal()
+        lib = _make_lib(db)
+        strm_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".strm", delete=False,
+                    encoding="utf-8") as f:
+                f.write("https://cdn.example.com/video/abc.mkv\n")
+                strm_path = f.name
+            item = _make_item(db, lib, file_path=strm_path)
+            resolved = media_probe.resolve_probe_input(db, item)
+            assert resolved is not None
+            path, headers, size, container = resolved
+            assert path == "https://cdn.example.com/video/abc.mkv"
+        finally:
+            if strm_path and os.path.exists(strm_path):
+                os.unlink(strm_path)
+            _cleanup(db, lib)
+            db.close()
