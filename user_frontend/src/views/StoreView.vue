@@ -886,7 +886,7 @@ a.status-points {
 a.status-points svg {
   width: 14px;
   height: 14px;
-  color: var(--au-primary);
+  color: var(--au-text-2);
 }
 
 a.status-points:hover {
@@ -939,7 +939,7 @@ a.status-points:hover {
 .store-card-icon {
   width: 18px;
   height: 18px;
-  color: var(--au-primary);
+  color: var(--au-text-2);
 }
 
 .rate-badge {
@@ -2014,3 +2014,4 @@ button.redeem-clear svg {
   margin: 0;
 }
 </style>
+
