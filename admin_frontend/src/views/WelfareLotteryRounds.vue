@@ -164,10 +164,18 @@ const handleCancel = async (row: { id: number; title: string }) => {
 }
 
 // 功能开关
-const config = ref({ lottery_enabled: '1', lottery_group_ids: '' })
+const config = ref({ lottery_enabled: '1', lottery_group_ids: '', lottery_auto_draw_enabled: '1', lottery_draw_interval_sec: '60', lottery_notify_winners: '1' })
 const lotteryEnabled = computed({
   get: () => config.value.lottery_enabled === '1',
   set: (v: boolean) => { config.value.lottery_enabled = v ? '1' : '0' }
+})
+const autoDrawEnabled = computed({
+  get: () => config.value.lottery_auto_draw_enabled === '1',
+  set: (v: boolean) => { config.value.lottery_auto_draw_enabled = v ? '1' : '0' }
+})
+const notifyWinners = computed({
+  get: () => config.value.lottery_notify_winners === '1',
+  set: (v: boolean) => { config.value.lottery_notify_winners = v ? '1' : '0' }
 })
 const loadConfig = async () => {
   try {
@@ -175,15 +183,26 @@ const loadConfig = async () => {
     const data = res?.data ?? res ?? {}
     config.value = {
       lottery_enabled: data.lottery_enabled === '1' ? '1' : '0',
-      lottery_group_ids: data.lottery_group_ids ?? ''
+      lottery_group_ids: data.lottery_group_ids ?? '',
+      lottery_auto_draw_enabled: data.lottery_auto_draw_enabled === '0' ? '0' : '1',
+      lottery_draw_interval_sec: data.lottery_draw_interval_sec ?? '60',
+      lottery_notify_winners: data.lottery_notify_winners === '0' ? '0' : '1'
     }
   } catch (e) {
     ElMessage.error(errDetail(e))
   }
 }
 const saveConfig = async () => {
+  const interval = Number(config.value.lottery_draw_interval_sec)
+  if (!Number.isInteger(interval) || interval < 30) { ElMessage.warning('扫描间隔必须是 >= 30 的整数（秒）'); return }
   try {
-    await saveWelfareConfig({ lottery_enabled: config.value.lottery_enabled, lottery_group_ids: config.value.lottery_group_ids })
+    await saveWelfareConfig({
+      lottery_enabled: config.value.lottery_enabled,
+      lottery_group_ids: config.value.lottery_group_ids,
+      lottery_auto_draw_enabled: config.value.lottery_auto_draw_enabled,
+      lottery_draw_interval_sec: String(interval),
+      lottery_notify_winners: config.value.lottery_notify_winners
+    })
     ElMessage.success('已保存')
   } catch (e) {
     ElMessage.error(errDetail(e))
@@ -229,6 +248,19 @@ onMounted(() => {
         </el-form-item>
         <el-form-item label="允许群ID">
           <el-input v-model="config.lottery_group_ids" placeholder="逗号分隔的群 chat_id，空=不限制" style="max-width: 360px" />
+        </el-form-item>
+        <el-form-item label="自动开奖">
+          <el-switch v-model="autoDrawEnabled" />
+          <span class="field-hint">关闭后到期活动不再自动开奖，只能手动开奖</span>
+        </el-form-item>
+        <el-form-item label="扫描间隔">
+          <el-input v-model="config.lottery_draw_interval_sec" style="max-width: 160px" />
+          <span class="field-suffix">秒</span>
+          <span class="field-hint">每隔多少秒扫描一次到期活动，默认 60，最小 30</span>
+        </el-form-item>
+        <el-form-item label="开奖通知">
+          <el-switch v-model="notifyWinners" />
+          <span class="field-hint">开奖后在群里公布中奖名单并私聊通知中奖者</span>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="saveConfig">保存</el-button>
@@ -332,4 +364,14 @@ onMounted(() => {
 <style scoped>
 .section-gap { margin-top: 16px; }
 .au-pagination { margin-top: 12px; justify-content: flex-end; padding: 0 16px 16px; }
+.field-suffix {
+  margin-left: 8px;
+  color: var(--au-text-2);
+  white-space: nowrap;
+}
+.field-hint {
+  margin-left: 8px;
+  color: var(--au-text-2);
+  font-size: 12px;
+}
 </style>

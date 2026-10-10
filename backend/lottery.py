@@ -11,9 +11,11 @@
 import hashlib
 import secrets
 import logging
+import threading
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -431,3 +433,223 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
         "winners": winners_out,
     }
 
+
+
+# ==================== 自动开奖调度 ====================
+
+_LOTTERY_DRAW_SCHEDULER_STARTED = False
+_LOTTERY_DRAW_SCHEDULER_LOCK = threading.Lock()
+
+DRAW_INTERVAL_DEFAULT_SEC = 60
+DRAW_INTERVAL_MIN_SEC = 30
+
+
+def _get_int_config(db: Session, key: str, default: int) -> int:
+    """读取整数型系统配置，读不到或非法时回退默认值。"""
+    raw = _get_str_config(db, key, None)
+    if raw is None:
+        return default
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def auto_draw_enabled(db: Session) -> bool:
+    """自动开奖总开关：lottery_auto_draw_enabled 为 "1"/"true" 时开，默认 "1"。"""
+    val = _get_str_config(db, "lottery_auto_draw_enabled", "1")
+    return str(val or "1").strip().lower() in ("1", "true")
+
+
+def notify_winners_enabled(db: Session) -> bool:
+    """开奖通知开关：lottery_notify_winners 为 "1"/"true" 时开，默认 "1"。"""
+    val = _get_str_config(db, "lottery_notify_winners", "1")
+    return str(val or "1").strip().lower() in ("1", "true")
+
+
+def draw_interval_sec(db: Session) -> int:
+    """自动开奖扫描间隔（秒）：lottery_draw_interval_sec，默认 60，最小 30。"""
+    return max(_get_int_config(db, "lottery_draw_interval_sec", DRAW_INTERVAL_DEFAULT_SEC), DRAW_INTERVAL_MIN_SEC)
+
+
+def _mask_telegram(telegram_id: int) -> str:
+    """TG id 打码：只保留后四位（与 verify_round 保持一致）。"""
+    s = str(telegram_id)
+    if len(s) <= 4:
+        return "*" * len(s)
+    return "****" + s[-4:]
+
+
+def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
+    """开奖后通知：群公告 + 中奖者私聊。
+
+    TG 发送走函数内懒导入（避免循环依赖），任何发送失败只记日志不抛异常。
+    """
+    result: dict[str, Any] = {"sent": False, "group": False, "dm_sent": 0, "dm_failed": 0}
+    if not notify_winners_enabled(db):
+        return result
+    try:
+        from backend.tg_bot import sender
+    except Exception:
+        logger.exception("群抽奖通知：导入 tg_bot.sender 失败")
+        return result
+
+    round = db.query(models.LotteryRound).filter(models.LotteryRound.id == round_id).first()
+    if not round:
+        return result
+    prizes_by_id = {
+        p.id: p
+        for p in db.query(models.LotteryRoundPrize).filter(models.LotteryRoundPrize.round_id == round_id).all()
+    }
+    entries_by_id = {
+        e.id: e
+        for e in db.query(models.LotteryRoundEntry).filter(models.LotteryRoundEntry.round_id == round_id).all()
+    }
+
+    lines: list[str] = []
+    dm_targets: list[tuple[int, str]] = []
+    for w in winners or []:
+        prize = prizes_by_id.get(w.prize_id)
+        entry = entries_by_id.get(w.entry_id)
+        if prize is None or entry is None:
+            continue
+        lines.append(f"🥇 {prize.name}：用户{_mask_telegram(entry.telegram_id)}")
+        dm_targets.append((entry.telegram_id, prize.name))
+
+    group_text = (
+        f"🎉 群抽奖开奖啦！\n\n「{round.title}」\n"
+        + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
+        + "\n\n奖励已自动发放。seed 公示可在管理后台核验。"
+    )
+    try:
+        ok, err = sender.send_message(db, round.chat_id, group_text)
+        result["group"] = bool(ok)
+        if not ok:
+            logger.warning("群抽奖开奖群公告发送失败 round_id=%s: %s", round_id, err)
+    except Exception:
+        logger.exception("群抽奖开奖群公告发送异常 round_id=%s", round_id)
+
+    for telegram_id, prize_name in dm_targets:
+        try:
+            ok, err = sender.send_message(
+                db,
+                telegram_id,
+                f"🎉 恭喜！你在「{round.title}」中抽中了「{prize_name}」，奖励已发放到账。",
+            )
+            if ok:
+                result["dm_sent"] += 1
+            else:
+                result["dm_failed"] += 1
+                logger.warning("群抽奖中奖私聊发送失败 round_id=%s tg_id=***: %s", round_id, err)
+        except Exception:
+            result["dm_failed"] += 1
+            logger.exception("群抽奖中奖私聊发送异常 round_id=%s", round_id)
+
+    result["sent"] = True
+    return result
+
+
+def run_due_draws(db: Session) -> dict:
+    """扫描并自动开奖所有到期的轮次。
+
+    到期条件：status='open' 且 draw_at 不为空且 draw_at <= now。
+    原子认领（UPDATE ... WHERE status='open'）防止多 worker 重复开奖；
+    单个轮次失败回滚并记入 errors，不中断整批。
+    """
+    summary: dict[str, Any] = {"checked": 0, "drawn": [], "errors": []}
+    if not auto_draw_enabled(db):
+        return summary
+    now = datetime.now()
+    due_ids = [
+        row.id
+        for row in db.query(models.LotteryRound.id)
+        .filter(
+            models.LotteryRound.status == "open",
+            models.LotteryRound.draw_at.isnot(None),
+            models.LotteryRound.draw_at <= now,
+        )
+        .order_by(models.LotteryRound.id.asc())
+        .all()
+    ]
+    summary["checked"] = len(due_ids)
+    for round_id in due_ids:
+        try:
+            claimed = db.execute(
+                text("UPDATE lottery_rounds SET status='drawing' WHERE id=:id AND status='open'"),
+                {"id": round_id},
+            ).rowcount
+            db.commit()
+            if not claimed:
+                # 别的 worker 已认领，跳过
+                continue
+            # 此时 status 已为 drawing，走 draw_round 的重入路径正常开奖
+            winners = draw_round(db, round_id)
+            distribute_round(db, round_id)
+            try:
+                notify_draw_results(db, round_id, winners)
+            except Exception:
+                logger.exception("群抽奖开奖通知失败 round_id=%s（不影响开奖结果）", round_id)
+            summary["drawn"].append(round_id)
+            logger.info("群抽奖自动开奖完成 round_id=%s", round_id)
+        except Exception as exc:
+            db.rollback()
+            # 认领后失败：把状态打回 open，下一轮 tick 可重试
+            # （draw 的 seed 确定性 + distribute 的 distributed 幂等保证重试安全）
+            try:
+                db.execute(
+                    text("UPDATE lottery_rounds SET status='open' WHERE id=:id AND status='drawing'"),
+                    {"id": round_id},
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.exception("群抽奖自动开奖状态回滚失败 round_id=%s", round_id)
+            summary["errors"].append({"round_id": round_id, "error": str(exc)})
+            logger.exception("群抽奖自动开奖失败 round_id=%s", round_id)
+    return summary
+
+
+def start_lottery_auto_draw_scheduler() -> bool:
+    """启动群抽奖自动开奖调度（daemon 线程，同一进程只启动一次）。
+
+    每隔 lottery_draw_interval_sec（默认 60s，最小 30s）扫描一次；
+    总开关 lottery_auto_draw_enabled（默认开）关闭时跳过本轮。
+    间隔每次循环重读，管理后台改完即时生效。
+    """
+    global _LOTTERY_DRAW_SCHEDULER_STARTED
+    with _LOTTERY_DRAW_SCHEDULER_LOCK:
+        if _LOTTERY_DRAW_SCHEDULER_STARTED:
+            return False
+        _LOTTERY_DRAW_SCHEDULER_STARTED = True
+
+    def _tick():
+        try:
+            from backend.database import SessionLocal
+            db = SessionLocal()
+            try:
+                result = run_due_draws(db)
+                if result["drawn"]:
+                    logger.info("群抽奖自动开奖完成: %s", result)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("lottery auto draw scheduler tick failed")
+
+    def _loop():
+        while True:
+            try:
+                from backend.database import SessionLocal
+                db = SessionLocal()
+                try:
+                    interval = draw_interval_sec(db)
+                finally:
+                    db.close()
+            except Exception:
+                logger.exception("lottery auto draw scheduler interval read failed")
+                interval = DRAW_INTERVAL_DEFAULT_SEC
+            threading.Event().wait(interval)
+            _tick()
+
+    threading.Thread(target=_loop, daemon=True, name="lottery-auto-draw-scheduler").start()
+    logger.info("群抽奖自动开奖调度已启动")
+    return True
