@@ -36,6 +36,22 @@ PROBE_RETRY_MAX_SEC = max(60, int(os.getenv("PROBE_RETRY_MAX_SEC", "21600") or 2
 NO_RETRY_HTTP_CODES = frozenset({400, 401, 403, 404, 410})
 
 
+def _probe_url(url: str) -> str:
+    """探测用的直链修正（与播放链路 streaming.py 同口径）。
+
+    ``.strm`` 里存的是 ``drive.google.com/uc?export=download&id=…`` legacy 直链，
+    即使带上 SA 的 Bearer <redacted> 也只返回登录页/HTML——ffprobe 读到的是 HTML
+    而不是视频，format 为空，白白记 failed（生产 99% 的探测失败都是这个原因）。
+    探测走 Drive API ``alt=media`` 端点才能用 token 下载私有文件且支持 Range；
+    非 uc 格式的 URL 原样返回，转换失败也不阻断探测。
+    """
+    try:
+        from backend.emby_server import drive_auth
+        return drive_auth.drive_api_media_url(url)
+    except Exception:  # noqa: BLE001 — 转换失败就用原地址
+        return url
+
+
 def resolve_probe_input(db, item) -> Optional[tuple]:
     """把条目的 ``file_path`` 解析成 ``(path, headers, size, container)``。
 
@@ -67,7 +83,7 @@ def resolve_probe_input(db, item) -> Optional[tuple]:
         if not target or not getattr(target, "value", None):
             return None
         headers = dict(getattr(target, "headers", None) or {})
-        return (target.value, headers, size, container)
+        return (_probe_url(target.value), headers, size, container)
 
     # 本机 .strm：内容是直链，探测直链而不是这个文本文件（以前 ffprobe 读 .strm 文本
     # 必然失败，3 次后判 failed，白占名额）
@@ -78,7 +94,7 @@ def resolve_probe_input(db, item) -> Optional[tuple]:
             logger.warning("按需探测：STRM 解析失败 item=%s: %s", getattr(item, "id", "?"), exc)
             return None
         if getattr(target, "kind", "") == "url" and target.value:
-            return (target.value, dict(target.headers or {}), size, container)
+            return (_probe_url(target.value), dict(target.headers or {}), size, container)
         return None
 
     # 本机文件
