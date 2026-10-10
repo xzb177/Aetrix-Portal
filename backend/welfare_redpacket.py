@@ -22,8 +22,10 @@ from __future__ import annotations
 import logging
 import math
 import random
+import threading
 from datetime import datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -117,9 +119,13 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
     校验：红包存在、未过期、还有剩余、未领过
     频率：7天内领取次数上限（redpacket_recv_limit_7d，0=不限；管理员发出的不计）
     金额：随机 1 ~ (剩余金额-剩余个数+1)，最后一个拿全部剩余
+    并发：红包行加行锁（FOR UPDATE），同一红包的抢领串行化，防超发；
+    领取记录有唯一约束 (packet_id, user_id) 兜底，竞态重复走 IntegrityError
     """
+    # 行锁取红包行：高并发下同一红包的抢领串行化，防超发。
+    # 锁从这里一直持有到最后 commit，金额计算→扣减→写记录在同一事务内完成。
     packet = db.query(models.RedPacket).filter(
-        models.RedPacket.id == packet_id).first()
+        models.RedPacket.id == packet_id).with_for_update().first()
     if packet is None:
         raise ValueError("红包不存在")
 
@@ -169,10 +175,15 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
     # 给领取者加分
     economy._add_points(db, user, amount, "redpacket", f"抢到红包 {amount} 分")
 
-    # 写领取记录
+    # 写领取记录（唯一约束 (packet_id, user_id) 兜底并发重复）
     db.add(models.RedPacketClaim(
         packet_id=packet.id, user_id=user.id, amount=amount))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发竞态：另一请求已先写入同一 (packet_id, user_id) 的领取记录
+        db.rollback()
+        raise ValueError("你已经领过这个红包了")
 
     logger.info("红包领取: packet=%s user=%s amount=%s", packet_id, user.id, amount)
     return {
@@ -225,28 +236,120 @@ def get_packet(db: Session, packet_id: int, user: models.WebUser | None = None) 
 
 
 def refund_expired(db: Session) -> int:
-    """过期红包退款（供定时任务调用）：剩余积分退回发送者"""
-    now = datetime.now()
-    expired = db.query(models.RedPacket).filter(
-        models.RedPacket.expires_at < now,
-        models.RedPacket.remaining_count > 0,
-        models.RedPacket.remaining_amount > 0,
-    ).all()
+    """过期红包退款（供定时任务调用）：剩余积分退回发送者。
 
+    行锁（FOR UPDATE SKIP LOCKED）+ 锁后二次校验 + 逐包提交，幂等：
+    多 worker 并发跑也不会重复退款。
+    """
+    now = datetime.now()
     count = 0
-    for packet in expired:
+    while True:
+        packet = (
+            db.query(models.RedPacket)
+            .filter(
+                models.RedPacket.expires_at < now,
+                models.RedPacket.remaining_count > 0,
+                models.RedPacket.remaining_amount > 0,
+            )
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if packet is None:
+            break
+        # 锁后二次校验：锁等待期间可能已被抢完
+        if packet.remaining_count <= 0 or packet.remaining_amount <= 0:
+            db.rollback()
+            continue
         sender = db.query(models.WebUser).filter(
             models.WebUser.id == packet.sender_id).first()
         if sender is None:
+            # 发送者已删除：清零避免每轮重复扫描，退款无处可去
+            packet.remaining_amount = 0
+            packet.remaining_count = 0
+            db.commit()
+            logger.warning("过期红包退款跳过：发送者不存在 packet=%s", packet.id)
             continue
         refund = packet.remaining_amount
         economy._add_points(
             db, sender, refund, "redpacket", f"红包过期退回 {refund} 分")
         packet.remaining_amount = 0
         packet.remaining_count = 0
+        db.commit()
         count += 1
 
     if count:
-        db.commit()
         logger.info("过期红包退款: %s 个", count)
     return count
+
+
+_REFUND_SCHEDULER_STARTED = False
+_REFUND_SCHEDULER_LOCK = threading.Lock()
+
+# 退款扫描间隔（秒）：默认 5 分钟，最小 1 分钟
+REFUND_INTERVAL_DEFAULT_SEC = 300
+REFUND_INTERVAL_MIN_SEC = 60
+
+
+def _get_str_config(db: Session, key: str, default: str) -> str:
+    """读 SystemConfig 字符串配置（读不到则用默认值）"""
+    cfg = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == key).first()
+    return str(cfg.value) if cfg and cfg.value is not None else default
+
+
+def _refund_interval_sec(db: Session) -> int:
+    """退款扫描间隔（秒），管理后台可配，最小 60 秒"""
+    v = _get_int_config(
+        db, "redpacket_refund_interval_sec", REFUND_INTERVAL_DEFAULT_SEC)
+    return max(v, REFUND_INTERVAL_MIN_SEC)
+
+
+def start_redpacket_refund_scheduler() -> bool:
+    """启动过期红包自动退款调度（daemon 线程，同一进程只启动一次）
+
+    每隔 redpacket_refund_interval_sec（默认 300s，最小 60s）扫描一次；
+    总开关 redpacket_refund_enabled（默认 true）关闭时跳过本轮。
+    间隔每次循环重读，管理后台改完即时生效。
+    """
+    global _REFUND_SCHEDULER_STARTED
+    with _REFUND_SCHEDULER_LOCK:
+        if _REFUND_SCHEDULER_STARTED:
+            return False
+        _REFUND_SCHEDULER_STARTED = True
+
+    def _tick():
+        try:
+            from backend.database import SessionLocal
+            db = SessionLocal()
+            try:
+                if _get_str_config(
+                        db, "redpacket_refund_enabled", "true").lower() != "true":
+                    return
+                n = refund_expired(db)
+                if n:
+                    logger.info("红包过期自动退款完成: %s 个", n)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("redpacket refund scheduler tick failed")
+
+    def _loop():
+        while True:
+            try:
+                from backend.database import SessionLocal
+                db = SessionLocal()
+                try:
+                    interval = _refund_interval_sec(db)
+                finally:
+                    db.close()
+            except Exception:
+                logger.exception(
+                    "redpacket refund scheduler interval read failed")
+                interval = REFUND_INTERVAL_DEFAULT_SEC
+            threading.Event().wait(interval)
+            _tick()
+
+    threading.Thread(
+        target=_loop, daemon=True, name="redpacket-refund-scheduler").start()
+    logger.info("红包过期退款调度已启动")
+    return True

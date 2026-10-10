@@ -370,6 +370,9 @@ WELFARE_CONFIG_KEYS = {
     "redpacket_fee_pct": "5",
     "redpacket_send_limit_7d": "20",
     "redpacket_recv_limit_7d": "10",
+    # 红包过期自动退款：总开关 + 扫描间隔（秒，最小 60）
+    "redpacket_refund_enabled": "true",
+    "redpacket_refund_interval_sec": "300",
     # TG 门禁：公益服能力（签到/积分/红包/抽奖）是否要求绑定 Telegram
     "welfare_require_tg_bind": "1",
     # 群抽奖：总开关默认开（关闭后不可新建活动），允许群逗号分隔、空=不限制

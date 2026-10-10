@@ -25,7 +25,10 @@ const redpacketFields = [
   { key: 'redpacket_fee_pct', label: '红包手续费', hint: '按发送金额比例收取，默认 5，填 0 不收', suffix: '%' },
   { key: 'redpacket_send_limit_7d', label: '发送频率限制', hint: '7 天内最多发送次数，默认 20，填 0 不限', suffix: '次' },
   { key: 'redpacket_recv_limit_7d', label: '领取频率限制', hint: '7 天内最多领取次数，默认 10，填 0 不限（管理员发的不计）', suffix: '次' },
+  { key: 'redpacket_refund_interval_sec', label: '退款扫描间隔', hint: '每隔多少秒扫描一次过期红包，默认 300，最小 60', suffix: '秒' },
 ]
+
+const redpacketRefundEnabled = boolSwitch('redpacket_refund_enabled')
 
 const transferFields = [
   { key: 'points_transfer_fee_pct', label: '手续费', hint: '按转账金额比例收取，默认 5，填 0 不收', suffix: '%' },
@@ -167,6 +170,10 @@ onMounted(load)
           <el-form-item label="Bot 红包总开关">
             <el-switch v-model="redpacketBotEnabled" />
             <span class="field-hint">关闭后 /redpacket 与抢红包按钮均不可用；后端红包接口不受影响</span>
+          </el-form-item>
+          <el-form-item label="过期自动退款">
+            <el-switch v-model="redpacketRefundEnabled" />
+            <span class="field-hint">关闭后过期红包不再自动退款；默认开启</span>
           </el-form-item>
           <el-form-item v-for="f in redpacketFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" style="width: 160px" />

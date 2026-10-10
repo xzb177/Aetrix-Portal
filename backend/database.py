@@ -807,6 +807,7 @@ def _auto_migrate():
         _backfill_filename_meta()
     _ensure_legacy_indexes(existing_tables)
     _ensure_lottery_g1_tables(existing_tables)
+    _migrate_redpacket_claim_unique(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -983,6 +984,48 @@ def _ensure_legacy_indexes(existing_tables: set) -> None:
     """按 :data:`_LEGACY_INDEXES` 逐条补索引（含 idx_item_merged_into_id、idx_person_item_tmdb 等）"""
     for spec in _LEGACY_INDEXES:
         _ensure_index(existing_tables, *spec)
+
+
+def _migrate_redpacket_claim_unique(existing_tables: set) -> None:
+    """red_packet_claims 加唯一约束 (packet_id, user_id)（幂等）
+
+    并发重复领取的数据库级兜底：同一用户对同一红包只能有一条领取记录。
+    先去重（同一对只保留 id 最早的一条），再加约束；
+    SQLite 由 create_all 建表时自带约束，此处跳过。
+    """
+    from sqlalchemy import inspect, text
+
+    if "red_packet_claims" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    existing = {c["name"] for c in inspector.get_unique_constraints("red_packet_claims")}
+    # 唯一索引与唯一约束同名也会冲突，一并检查
+    existing |= {ix["name"] for ix in inspector.get_indexes("red_packet_claims")
+                 if ix.get("unique")}
+    if "uq_rpc_packet_user" in existing:
+        return
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+    with engine.begin() as conn:
+        # 去重：同一 (packet_id, user_id) 只保留最早一条（其余是历史竞态脏数据，
+        # 积分已在 PointsLog 落账，删领取行不影响余额）
+        if dialect == "postgresql":
+            conn.execute(text(
+                "DELETE FROM red_packet_claims a USING red_packet_claims b "
+                "WHERE a.id > b.id AND a.packet_id = b.packet_id AND a.user_id = b.user_id"
+            ))
+        else:
+            conn.execute(text(
+                "DELETE a FROM red_packet_claims a "
+                "JOIN red_packet_claims b ON a.packet_id = b.packet_id "
+                "AND a.user_id = b.user_id AND a.id > b.id"
+            ))
+        conn.execute(text(
+            "ALTER TABLE red_packet_claims ADD CONSTRAINT uq_rpc_packet_user "
+            "UNIQUE (packet_id, user_id)"
+        ))
+    print("  🔧 已迁移: red_packet_claims 唯一约束 (packet_id, user_id)")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:
