@@ -135,3 +135,57 @@ def test_collect_never_raises_on_broken_db():
     res = health_report.collect(_Broken())
     assert res["level"] in ("warn", "down"), res
     assert res["issues"], res
+
+
+def _backlog_items(db, n_pending, recent_touch=True):
+    """造 n_pending 条积压；recent_touch=True 时 date_modified 为现在（模拟 worker 在干活）"""
+    from datetime import datetime, timedelta
+    lib = em.Library(guid="B" * 32, name="积压库", collection_type="movies", paths="")
+    db.add(lib)
+    db.flush()
+    touched = datetime.now() if recent_touch else datetime.now() - timedelta(hours=2)
+    for i in range(n_pending):
+        item = em.MediaItem(guid=f"b{i:032d}", library_id=lib.id, item_type="movie",
+                            name=f"积压{i}", probe_status="done", enrich_status="pending")
+        db.add(item)
+        db.flush()
+        # date_modified 有 onupdate 但 bulk 场景下显式赋值更可靠
+        item.date_modified = touched
+    db.flush()
+    # 必须 commit：health_report.collect() 内部会调 db.rollback()
+    #（status_snapshot 的自保），不提交测试数据会被回滚掉。
+    # 生产环境 worker 都是 commit 后才可见，这里模拟的是已提交状态。
+    db.commit()
+
+
+def test_no_false_stall_when_worker_is_active(db, monkeypatch):
+    """worker 在干活（DB 最近有更新）时，即使积压大也不应报 enrich_stalled。
+
+    回归：旧实现用进程内 throughput() 计数器，/api/health 跑在 api 进程、
+    worker 跑在 worker 进程，跨进程永远读到 0，导致恒误报。
+    """
+    counts = {"done": 100, "failed": 0, "pending": 900, "enriching": 100}
+    monkeypatch.setattr(health_report, "_count", lambda db, t, s: 20 if s == "done" else 0)
+    monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: counts.get(s, 0))
+    monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
+    monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
+                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+    _backlog_items(db, 100, recent_touch=True)
+    res = health_report.collect(db)
+    # 积压本身仍是 down（阈值设计如此），但不能再有“没在跑”的误报
+    assert not any(i["key"] in ("enrich_stalled", "enrich_no_progress") for i in res["issues"]), res
+    assert res["metrics"]["enrich_done_per_min"] > 0, res["metrics"]
+
+
+def test_stalled_when_db_silent(db, monkeypatch):
+    """DB 近 10 分钟无任何更新 + 大积压 = 真卡死，应报 enrich_stalled（down）"""
+    counts = {"done": 100, "failed": 0, "pending": 900, "enriching": 100}
+    monkeypatch.setattr(health_report, "_count", lambda db, t, s: 20 if s == "done" else 0)
+    monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: counts.get(s, 0))
+    monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
+    monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
+                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+    _backlog_items(db, 100, recent_touch=False)
+    res = health_report.collect(db)
+    assert res["level"] == "down", res
+    assert any(i["key"] == "enrich_stalled" for i in res["issues"]), res
