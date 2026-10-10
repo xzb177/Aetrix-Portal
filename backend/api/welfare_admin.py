@@ -10,10 +10,13 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Optional, List
 
 from fastapi import Depends, HTTPException, Query
+
+logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -589,6 +592,14 @@ def draw_lottery_round(
         raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，请刷新后查看")
     winners = lottery_module.draw_round(db, round_id)
     distribute_result = lottery_module.distribute_round(db, round_id)
+    # 手动开奖也要通知到群（与自动开奖 run_due_draws 同一口径）。
+    # 之前漏掉了 notify 调用，导致管理后台点"开奖"后群里收不到开奖公告。
+    # 通知失败不影响开奖结果，只记日志。
+    try:
+        notify_result = lottery_module.notify_draw_results(db, round_id, winners)
+    except Exception:
+        notify_result = None
+        logger.exception("群抽奖手动开奖通知失败 round_id=%s（不影响开奖结果）", round_id)
     _audit(db, current_admin.id, "lottery_round_draw", "lottery_round", round_id, {"winner_count": len(winners) if isinstance(winners, list) else 0})
     db.commit()
     return {
@@ -598,6 +609,7 @@ def draw_lottery_round(
             for w in (winners if isinstance(winners, list) else [])
         ],
         "distribute": distribute_result,
+        "notify": notify_result,
     }
 
 
