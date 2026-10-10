@@ -105,18 +105,24 @@ _sa_lock = threading.Lock()
 _token_cache: dict[str, tuple[str, float]] = {}
 
 
-def _discover_sa_files() -> list[str]:
-    """找到所有 SA json 文件"""
-    global _sa_files
-    if _sa_files is not None:
-        return _sa_files
+def _collect_json_files(dirs: list[str]) -> list[str]:
+    """从给定目录（含其子目录 sa/）收集 *.json，按 realpath 去重并排序"""
     candidates = []
-    for base in (SA_DIR, os.path.join(SA_DIR, "sa")):
-        if os.path.isdir(base):
-            for fn in sorted(os.listdir(base)):
-                if fn.endswith(".json"):
-                    candidates.append(os.path.join(base, fn))
-    # 去重（SA_DIR 本身可能就是 sa 目录）
+    for base in dirs:
+        for d in (base, os.path.join(base, "sa")):
+            if not os.path.isdir(d):
+                continue
+            try:
+                entries = sorted(os.listdir(d))
+            except OSError as e:
+                logger.warning("Drive Changes: 列出目录 %s 失败: %s", d, e)
+                continue
+            for fn in entries:
+                if not fn.endswith(".json"):
+                    continue
+                p = os.path.join(d, fn)
+                if os.path.isfile(p) and os.access(p, os.R_OK):
+                    candidates.append(p)
     seen = set()
     uniq = []
     for p in candidates:
@@ -124,9 +130,69 @@ def _discover_sa_files() -> list[str]:
         if rp not in seen:
             seen.add(rp)
             uniq.append(p)
-    _sa_files = uniq
-    logger.info("Drive Changes: 发现 %d 个 service account", len(uniq))
+    uniq.sort()
     return uniq
+
+
+def _sa_files_from_rclone_conf() -> list[str]:
+    """解析 rclone.conf，取所有 type=drive remote 的 service_account_file"""
+    if not os.path.isfile(RCLONE_CONF):
+        return []
+    cp = configparser.ConfigParser(interpolation=None)
+    paths: list[str] = []
+    try:
+        cp.read(RCLONE_CONF, encoding="utf-8")
+        for section in cp.sections():
+            if cp.get(section, "type", fallback="").strip().lower() != "drive":
+                continue
+            sa = cp.get(section, "service_account_file", fallback="").strip()
+            if not sa or not sa.endswith(".json"):
+                continue
+            if not os.path.isfile(sa) or not os.access(sa, os.R_OK):
+                continue
+            paths.append(sa)
+    except Exception as e:
+        logger.warning("Drive Changes: 解析 rclone.conf 失败: %s", e)
+        return []
+    seen = set()
+    uniq = []
+    for p in paths:
+        rp = os.path.realpath(p)
+        if rp not in seen:
+            seen.add(rp)
+            uniq.append(p)
+    uniq.sort()
+    return uniq
+
+
+def _discover_sa_files() -> list[str]:
+    """找到所有 SA json 文件
+
+    兜底链（任一命中即成功，日志打 INFO 说明用了哪条路径）：
+    ① $RCLONE_SA_DIR（默认 /sa-accounts）；② rclone.conf 里各 drive remote 的
+    service_account_file；③ /opt/rclone-sa。
+
+    生产实证：生产 100 个 SA 在宿主机 /opt/rclone-sa/，而生产 .env 未设
+    RCLONE_SA_DIR，导致旧实现（只看 ①）永远发现 0 个 SA，增量发现从未启动。
+    """
+    global _sa_files
+    if _sa_files is not None:
+        return _sa_files
+    files = _collect_json_files([SA_DIR])
+    if files:
+        logger.info("Drive Changes: 从 SA 目录发现 %d 个 service account", len(files))
+    else:
+        files = _sa_files_from_rclone_conf()
+        if files:
+            logger.info("Drive Changes: 从 rclone.conf service_account_file 兜底发现 %d 个 service account", len(files))
+        else:
+            files = _collect_json_files(["/opt/rclone-sa"])
+            if files:
+                logger.info("Drive Changes: 从 /opt/rclone-sa 兜底发现 %d 个 service account", len(files))
+            else:
+                logger.info("Drive Changes: 发现 0 个 service account")
+    _sa_files = files
+    return _sa_files
 
 
 def _next_sa() -> dict | None:
@@ -235,17 +301,32 @@ def _api_get(url: str, token: str, params: dict) -> dict:
     return resp.json()
 
 
+def _is_personal_drive_key(drive_id: str) -> bool:
+    """个人盘 key 形如 "myDrive:<remote名>"，此时 Drive Changes API 不能传 driveId。"""
+    return drive_id.startswith("myDrive:")
+
+
 def get_start_page_token(drive_id: str) -> str | None:
-    """首次：拿初始 page token（调用方存下来，下次从它开始 poll）"""
+    """首次：拿初始 page token（调用方存下来，下次从它开始 poll）。
+
+    个人盘不传 driveId（Drive API 会报 400），改传 spaces=drive。
+    """
     token = _get_token()
     if not token:
         logger.error("Drive Changes: 拿不到 SA token")
         return None
-    try:
-        body = _api_get(CHANGES_TOKEN_URL, token, {
+    if _is_personal_drive_key(drive_id):
+        params = {
+            "spaces": "drive",
+            "supportsAllDrives": "true",
+        }
+    else:
+        params = {
             "driveId": drive_id,
             "supportsAllDrives": "true",
-        })
+        }
+    try:
+        body = _api_get(CHANGES_TOKEN_URL, token, params)
         return body.get("startPageToken")
     except DriveNotFoundError:
         raise
@@ -260,6 +341,7 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
     changes 每项：{"fileId": ..., "removed": bool,
                    "file": {"name":..., "parents": [...], "mimeType":...,
                             "trashed": bool}}
+    个人盘不传 driveId 和 includeItemsFromAllDrives，改传 spaces=drive。
     """
     token = _get_token()
     if not token:
@@ -267,18 +349,30 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
     all_changes: list[dict] = []
     new_start = None
     next_token: str | None = page_token
+    fields = ("changes(fileId,removed,file(id,name,parents,mimeType,trashed)),"
+              "newStartPageToken,nextPageToken")
     try:
         while next_token:
-            body = _api_get(CHANGES_LIST_URL, token, {
-                "pageToken": next_token,
-                "driveId": drive_id,
-                "supportsAllDrives": "true",
-                "includeItemsFromAllDrives": "true",
-                "includeRemoved": "true",
-                "pageSize": 1000,
-                "fields": "changes(fileId,removed,file(id,name,parents,mimeType,trashed)),"
-                          "newStartPageToken,nextPageToken",
-            })
+            if _is_personal_drive_key(drive_id):
+                params = {
+                    "pageToken": next_token,
+                    "spaces": "drive",
+                    "supportsAllDrives": "true",
+                    "includeRemoved": "true",
+                    "pageSize": 1000,
+                    "fields": fields,
+                }
+            else:
+                params = {
+                    "pageToken": next_token,
+                    "driveId": drive_id,
+                    "supportsAllDrives": "true",
+                    "includeItemsFromAllDrives": "true",
+                    "includeRemoved": "true",
+                    "pageSize": 1000,
+                    "fields": fields,
+                }
+            body = _api_get(CHANGES_LIST_URL, token, params)
             all_changes.extend(body.get("changes", []))
             new_start = body.get("newStartPageToken") or new_start
             next_token = body.get("nextPageToken")
@@ -320,7 +414,7 @@ def drive_path_of(file_id: str, name: str, parents: list[str],
     while cur_parents and depth < 32:
         depth += 1
         pid = cur_parents[0]
-        if pid in seen or pid == drive_id:
+        if pid in seen or pid == drive_id or pid == "root":
             break
         seen.add(pid)
         meta = _file_meta(pid, token)
@@ -352,6 +446,10 @@ def discover_drives() -> dict[str, list[str]]:
                 team_drive = cp.get(section, "team_drive", fallback="").strip()
                 if team_drive:
                     result.setdefault(team_drive, []).append(section)
+                else:
+                    # 个人盘（type=drive 但无 team_drive）：key 用 myDrive:<remote名>。
+                    # Changes API 调个人盘时不能传 driveId（见 _is_personal_drive_key）。
+                    result.setdefault(f"myDrive:{section}", []).append(section)
             except Exception:
                 continue
     except Exception as exc:
@@ -561,6 +659,26 @@ def _library_fs_prefixes(db) -> dict[tuple[int, str], str]:
 _watcher_thread: threading.Thread | None = None
 _watcher_stop = threading.Event()
 
+#: 最近一轮 poll 的状态（管理后台展示用，P1-3）
+_last_poll_at: str | None = None
+_last_poll_changes: int = 0
+_last_poll_libs: int = 0
+
+
+def is_running() -> bool:
+    """守护线程是否在跑（change_watcher 用它决定远程源是否跳过快照列举）。"""
+    return bool(_watcher_thread and _watcher_thread.is_alive())
+
+
+def status() -> dict:
+    """管理后台展示用：drive_changes 运行状态。"""
+    return {
+        "running": is_running(),
+        "last_poll": _last_poll_at,
+        "last_changes": _last_poll_changes,
+        "last_libs_triggered": _last_poll_libs,
+    }
+
 
 def _trigger_scan(db, library_id: int, prefixes: set[str]) -> None:
     """触发定向扫描（只扫变化的目录，不全扫）"""
@@ -586,8 +704,12 @@ def _trigger_scan(db, library_id: int, prefixes: set[str]) -> None:
 
 def poll_once() -> dict:
     """跑一轮增量发现。返回统计。"""
+    global _last_poll_at, _last_poll_changes, _last_poll_libs
     from backend.database import SessionLocal
-    stats = {"drives": 0, "changes": 0, "libraries": 0}
+    from backend.emby_server import change_watcher as cw  # 延迟导入，避免循环 import
+    t0 = time.time()
+    started = datetime.now(timezone.utc)
+    stats = {"drives": 0, "changes": 0, "libraries": 0, "errors": 0}
     if not ENABLED:
         return stats
     drives = discover_drives()
@@ -595,9 +717,12 @@ def poll_once() -> dict:
         logger.info("Drive Changes: 没有发现 Drive remote，跳过")
         return stats
     db = SessionLocal()
+    fatal_error = ""
     try:
         for drive_id in drives:
             stats["drives"] += 1
+            logger.debug("Drive Changes: 轮询 drive=%s（%s）", drive_id,
+                         "个人盘" if _is_personal_drive_key(drive_id) else "共享盘")
             if _is_dead_drive(drive_id):
                 # 404 退避期内：跳过，不再请求 API、不再打 error 日志
                 logger.debug("Drive Changes: drive %s 在 404 退避期内，跳过", drive_id)
@@ -614,6 +739,7 @@ def poll_once() -> dict:
                 changes, new_token = list_changes(page_token, drive_id)
             except DriveNotFoundError:
                 # drive_id 永久性无效：标记 dead 并退避，error 日志只打一次
+                stats["errors"] += 1
                 _mark_dead_drive(drive_id)
                 logger.error(
                     "Drive Changes: 共享盘 ID 无效 drive=%s（Drive API 返回 404），"
@@ -635,11 +761,31 @@ def poll_once() -> dict:
                 _trigger_scan(db, lib_id, prefixes)
             # 清一下 parent 缓存，防止跨轮过期
             _parent_cache.clear()
+    except Exception as exc:
+        stats["errors"] += 1
+        fatal_error = str(exc)[:500]
+        logger.warning("Drive Changes: 本轮异常: %s", exc)
     finally:
+        _last_poll_at = datetime.now(timezone.utc).isoformat()
+        _last_poll_changes = stats["changes"]
+        _last_poll_libs = stats["libraries"]
+        run_status = "ok" if stats["errors"] == 0 else ("partial" if stats["changes"] else "fail")
+        try:
+            cw.record_chase_run(
+                db, source="drive-changes", started_at=started,
+                finished_at=datetime.now(timezone.utc),
+                libs_checked=stats["drives"], files_listed=stats["changes"],
+                new_found=stats["changes"], scans_triggered=stats["libraries"],
+                status=run_status, error=fatal_error)
+        except Exception:
+            logger.warning("Drive Changes: 写运行历史失败", exc_info=True)
         try:
             db.close()
         except Exception:
             pass
+    logger.info("[drive-changes] round done: drives=%d changes=%d libs=%d dur=%ds errors=%d",
+                stats["drives"], stats["changes"], stats["libraries"],
+                int(time.time() - t0), stats["errors"])
     return stats
 
 

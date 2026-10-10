@@ -106,6 +106,139 @@ def _set_config(db: Session, key: str, value: str) -> None:
     db.commit()
 
 
+# ---------------------------------------------------------------------------
+# 追新快照 / 源状态 / 运行历史 / 单例锁（P0-2 + P1-1 + P1-2）
+# ---------------------------------------------------------------------------
+
+def _get_source_state(db: Session, source_key: str):
+    """取追新源状态行，没有返回 None。"""
+    return db.get(em.ChaseSourceState, source_key)
+
+
+def _touch_source_state(db: Session, source_key: str, ok: bool,
+                        error: str = "", snapshot_now: bool = False) -> None:
+    """更新源状态（get-or-create，commit）：
+    - ok=True：last_ok_at=now(UTC)，consec_failures=0，last_error=""；
+      snapshot_now=True 时 last_snapshot_at=now。
+    - ok=False：consec_failures+1，last_error=error[:500]。
+    """
+    now = datetime.now(timezone.utc)
+    state = _get_source_state(db, source_key)
+    if state is None:
+        state = em.ChaseSourceState(source_key=source_key)
+        db.add(state)
+    if ok:
+        state.last_ok_at = now
+        state.consec_failures = 0
+        state.last_error = ""
+        if snapshot_now:
+            state.last_snapshot_at = now
+    else:
+        state.consec_failures = (state.consec_failures or 0) + 1
+        state.last_error = error[:500]
+    db.commit()
+
+
+def _diff_against_snapshot(db: Session, library_id: int, source_key: str,
+                           entries: list[tuple[str, float, float]],
+                           baseline_if_empty: bool = True) -> list[str]:
+    """文件指纹快照 diff。entries 是 (rel_path, size, mod_ts) 列表。
+
+    - 一次查出该 (library_id, source_key) 的全部快照行建 dict。
+    - 无记录 → 新增行（first_seen_at=last_seen_at=now UTC）并计入返回；
+      size 或 mod_ts 变化 → 更新行并计入返回（mod_ts 比较用 abs 差 > 1e-6）。
+    - 已见且未变 → 只更新 last_seen_at。
+    - baseline_if_empty=True 且该源快照完全为空（首次建基线）→ 全部插入但
+      返回 []（避免部署后第一轮把全库当新增触发扫描风暴）。
+    - 最后 db.commit() 一次。返回新增/变更的 rel_path 列表。
+    """
+    now = datetime.now(timezone.utc)
+    existing = {
+        row.rel_path: row
+        for row in db.query(em.ChaseFileSnapshot).filter(
+            em.ChaseFileSnapshot.library_id == library_id,
+            em.ChaseFileSnapshot.source_key == source_key,
+        ).all()
+    }
+    changed: list[str] = []
+
+    if baseline_if_empty and not existing:
+        for rel_path, size, mod_ts in entries:
+            db.add(em.ChaseFileSnapshot(
+                library_id=library_id,
+                source_key=source_key,
+                rel_path=rel_path,
+                size=size or 0,
+                mod_ts=mod_ts or 0.0,
+                first_seen_at=now,
+                last_seen_at=now,
+            ))
+        db.commit()
+        return []
+
+    for rel_path, size, mod_ts in entries:
+        size = size or 0
+        mod_ts = mod_ts or 0.0
+        row = existing.get(rel_path)
+        if row is None:
+            db.add(em.ChaseFileSnapshot(
+                library_id=library_id,
+                source_key=source_key,
+                rel_path=rel_path,
+                size=size,
+                mod_ts=mod_ts,
+                first_seen_at=now,
+                last_seen_at=now,
+            ))
+            changed.append(rel_path)
+            continue
+        if (row.size or 0) != size or abs((row.mod_ts or 0.0) - mod_ts) > 1e-6:
+            row.size = size
+            row.mod_ts = mod_ts
+            row.last_seen_at = now
+            changed.append(rel_path)
+        else:
+            row.last_seen_at = now
+    db.commit()
+    return changed
+
+
+def record_chase_run(db: Session, source: str, started_at: datetime,
+                     finished_at: datetime, libs_checked: int = 0,
+                     files_listed: int = 0, new_found: int = 0,
+                     scans_triggered: int = 0, status: str = "ok",
+                     error: str = "") -> None:
+    """写一行追新运行历史（chase_run），commit。status 取 ok/partial/fail。"""
+    db.add(em.ChaseRun(
+        started_at=started_at, finished_at=finished_at, source=source,
+        libs_checked=libs_checked, files_listed=files_listed,
+        new_found=new_found, scans_triggered=scans_triggered,
+        status=status, error=error or ""))
+    db.commit()
+
+
+_ADVISORY_LOCK_KEY = 20261010
+_LOCAL_ADVISORY_LOCK = threading.Lock()
+
+
+def _try_advisory_lock(db: Session) -> bool:
+    """拿 PG advisory 锁（单例轮询用）。成功 True；拿不到 False。
+
+    api 与 worker 两个容器都会起追新线程，锁保证实际只跑一份；
+    拿不到锁的本轮跳过并打 debug 日志。
+    """
+    from sqlalchemy import text  # 函数内导入
+    try:
+        row = db.execute(
+            text("SELECT pg_try_advisory_lock(:k)"),
+            {"k": _ADVISORY_LOCK_KEY}).first()
+        return bool(row and row[0])
+    except Exception:
+        # sqlite 等没有 pg_try_advisory_lock：降级为进程内线程锁（测试/单机够用）
+        db.rollback()
+        return _LOCAL_ADVISORY_LOCK.acquire(blocking=False)
+
+
 def _parse_interval(raw: str) -> int:
     """解析轮询间隔，非法值按默认处理"""
     try:
@@ -239,72 +372,108 @@ def _walk_files(provider, rel: str, max_depth: int, max_entries: int) -> list:
     return found
 
 
-def _find_new_videos_remote(db: Session, mount_id: int, rel_dir: str,
-                            since_ts: float) -> list[str]:
-    """远程挂载（rclone RC）按 ModTime 找新增视频
+def _drive_changes_active() -> bool:
+    """drive_changes 守护线程是否在跑。在跑则远程源靠 Changes API（O(Δ)），本轮跳过快照列举。"""
+    try:
+        from backend.emby_server import drive_changes as dc
+        return dc.is_running()
+    except Exception:
+        return False
 
-    直接对整库递归列举在生产是走不通的：国产剧 1.4 万个文件，rclone RC 要几分钟，
-    超过任何合理超时，而且 11 个库串行跑一轮远超轮询间隔（每轮都超时）。
 
-    改成**两级**：先只列顶层（一次请求、几百个目录，每个都带 ModTime），
-    再对每个顶层目录列一层子目录（季级），只对「ModTime 落在窗口内」的季级
-    子目录往下钻。实测顶层 402 个目录全部带 ModTime，正常情况下每轮只钻
-    最近变动的少数几个季目录——成本从上万文件降到几十个。
+def _parent_prefix(p: str) -> str:
+    """新文件路径 → 其所在目录（定向扫描的 prefixes 用）。
+    mount://<id>/a/b/f.mkv → mount://<id>/a/b；本机路径用 os.path.dirname。"""
+    if p.startswith(MOUNT_PATH_PREFIX):
+        rest = p[len(MOUNT_PATH_PREFIX):]
+        slash = rest.find("/")
+        if slash == -1:
+            return p
+        mount_part = rest[:slash]
+        parent = os.path.dirname(rest[slash:]) or "/"
+        return MOUNT_PATH_PREFIX + mount_part + parent
+    return os.path.dirname(p)
 
-    **不能在顶层按 mtime 过滤**：新出一集只改动 ``Season/`` 子目录的 mtime，
-    顶层剧集目录的 mtime 不变（rclone/Drive 只更新直接父目录）。如果在顶层
-    按 mtime 筛，"老剧出新集"（追新最主要的场景）会被漏掉。
 
-    2026-10：这里以前直接调 ``rc_call``，是一条**无限流旁路**——绕开了缓存、限流、
-    熔断与统计，生产 24 小时把 rclone 打出 5.2 万条报错。现在全部改走
-    ``mounts`` 的公共通道（``build_provider`` → ``list_dir``），并用
-    ``remote_io_purpose`` 把追新划到**自己的、更小的 RC 名额**上，不与扫描抢。
+#: 远程快照 diff 每源最小间隔（秒）：文件级全量列举贵，平时靠 drive_changes
+REMOTE_SNAPSHOT_MIN_INTERVAL = 3600
+#: 远程快照列举的条目上限（国产剧单库上万文件，默认 5000 会截断漏检）
+REMOTE_SNAPSHOT_MAX_ENTRIES = 100000
+#: 从库根往下走的深度：库根/剧集/季 = 2 层，再加 CHASE_MAX_DEPTH（季内 特别篇/压制组）
+_REMOTE_WALK_DEPTH = CHASE_MAX_DEPTH + 2
+
+
+def _find_new_videos_remote(db: Session, library_id: int, mount_id: int,
+                            rel_dir: str) -> tuple[list[str], int]:
+    """远程挂载：文件指纹快照 diff（P0-2）。
+
+    不再按目录 mtime 过滤——生产实证 Drive 上季目录 mtime=2026-07-30 而其内新剧集
+    文件 mtime=2026-08-08，旧实现把这类季目录整个跳过 → 新剧集永远发现不了。
+    改为文件级列举（复用 _walk_files 逐层逻辑）拿 (rel_path, size, mod_ts)，
+    与 chase_file_snapshot diff：快照无记录=新增，size/mod_ts 变化=变更。
+
+    成本控制：每源每小时最多跑一次（last_snapshot_at）；drive_changes 在跑时
+    直接返回空（平时靠 Changes API）。首次建基线返回空（防扫描风暴）。
+
+    返回 (新增/变更文件的 mount:// URL 列表, 本轮列举的文件数)。
+    异常直接抛给调用方（调用方记 consec_failures）。
     """
+    skey = f"mount://{mount_id}"
+    state = _get_source_state(db, skey)
+    if state and state.last_snapshot_at:
+        last_dt = state.last_snapshot_at
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        if time.time() - last_dt.timestamp() < REMOTE_SNAPSHOT_MIN_INTERVAL:
+            logger.debug("[chase-new] 远程源 %s 快照未满 1 小时，跳过", skey)
+            return [], 0
+    if _drive_changes_active():
+        logger.debug("[chase-new] drive_changes 在跑，远程源 %s 本轮跳过快照列举", skey)
+        return [], 0
     mount = db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
     if mount is None:
-        return []
+        return [], 0
     provider = _chase_provider(mount, db)
     if provider is None:
-        return []
+        return [], 0
     base = "/" + (rel_dir or "/").lstrip("/")
-
     with mount_lib.remote_io_purpose(mount_lib.PURPOSE_CHASE):
-        try:
-            top = provider.list_dir(base)
-        except Exception as exc:  # noqa: BLE001 — 顶层列不出来就跳过该库，不拖垮整轮
-            logger.warning("[chase-new] 列 %s 顶层失败: %s", base, exc)
-            return []
+        entries = _walk_files(provider, base, _REMOTE_WALK_DEPTH, REMOTE_SNAPSHOT_MAX_ENTRIES)
+    changed = _diff_against_snapshot(db, library_id, skey, [(e.rel, e.size, e.mod_ts) for e in entries])
+    _touch_source_state(db, skey, True, snapshot_now=True)
+    return ([_mount_url(mount_id, r) for r in changed], len(entries))
 
-        found: list[str] = []
-        for it in top:
-            if not it.is_dir:
-                # 顶层散片
-                if (os.path.splitext(it.name)[1].lower() in VIDEO_EXTS
-                        and it.mod_ts > since_ts):
-                    found.append(_mount_url(mount_id, it.rel))
-                continue
-            # 顶层目录（剧集）：不按 mtime 过滤，直接列第二级（季目录/散文件）
+
+def _find_new_videos_local(db: Session, library_id: int, base: str,
+                           fallback_since_ts: float) -> tuple[list[str], int]:
+    """本机目录：find -newermt（since 取该源持久化的 last_ok_at，容器重建不丢失）
+    + 快照 diff 二次确认（防 FUSE mtime 抖动误报）。
+    返回 (新增/变更文件绝对路径列表, 本轮候选文件数)。失败时记源失败并抛给调用方。
+    """
+    state = _get_source_state(db, base)
+    since_ts = fallback_since_ts
+    if state and state.last_ok_at:
+        last_dt = state.last_ok_at
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        since_ts = last_dt.timestamp()
+    try:
+        candidates = _find_new_videos([base], since_ts)
+        entries = []
+        for p in candidates:
             try:
-                subs = provider.list_dir(it.rel)
-            except Exception as exc:  # noqa: BLE001 — 单个剧集目录失败不影响其它
-                logger.warning("[chase-new] 列 %s 第二级失败: %s", it.rel, exc)
+                st = os.stat(p)
+            except OSError:
                 continue
-            for sub in subs:
-                if not sub.is_dir:
-                    # 剧集目录下直接放视频（无季目录结构）
-                    if (os.path.splitext(sub.name)[1].lower() in VIDEO_EXTS
-                            and sub.mod_ts > since_ts):
-                        found.append(_mount_url(mount_id, sub.rel))
-                    continue
-                if sub.mod_ts <= since_ts:
-                    continue
-                # 季目录在窗口内变动：逐层往下钻（每一跳都受缓存/限流/熔断保护）
-                for entry in _walk_files(provider, sub.rel, CHASE_MAX_DEPTH,
-                                         CHASE_MAX_ENTRIES):
-                    if entry.mod_ts <= since_ts:
-                        continue
-                    found.append(_mount_url(mount_id, entry.rel))
-    return found
+            rel = os.path.relpath(p, base).replace(os.sep, "/")
+            entries.append(("/" + rel, st.st_size, st.st_mtime))
+        changed = _diff_against_snapshot(db, library_id, base, entries)
+        _touch_source_state(db, base, True)
+        return ([os.path.join(base, r.lstrip("/")) for r in changed], len(entries))
+    except Exception as exc:
+        _touch_source_state(db, base, False, error=str(exc))
+        raise
+
 
 
 def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
@@ -416,48 +585,98 @@ def resolve_excluded(db: Session) -> list[int]:
 
 
 def _check_once() -> None:
-    """执行一轮检查"""
+    """执行一轮检查：快照 diff 发现新增/变更 → 定向扫描 → 写运行历史。"""
+    t0 = time.time()
+    started = datetime.now(timezone.utc)
     db = SessionLocal()
+    stats = {"libs": 0, "listed": 0, "new": 0, "scans": 0, "errors": 0}
+    status = "ok"
+    fatal_error = ""
+    ran = False
     try:
-        enabled = _get_config(db, CONFIG_ENABLED, "0") == "1"
-        if not enabled:
+        if _get_config(db, CONFIG_ENABLED, "0") != "1":
             return
-
+        ran = True
         interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))
-        # 用 2 倍间隔作为 mtime 阈值，防漏检
-        since_ts = time.time() - (interval * 2 * 60)
-
-        # 解析要监听的库：**排除清单里没有的**全部启用库都监听
+        fallback_since = time.time() - interval * 2 * 60
         excluded = set(resolve_excluded(db))
-        query = db.query(em.Library).filter(em.Library.is_enabled == True)
-        libraries = [lib for lib in query.all() if lib.id not in excluded]
-
-        total_found = 0
+        libraries = [lib for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()
+                     if lib.id not in excluded]
         for lib in libraries:
+            stats["libs"] += 1
             try:
-                found_paths = _find_new_videos(_library_local_paths(lib, db), since_ts)
+                found: list[str] = []
+                for base in _library_local_paths(lib, db):
+                    try:
+                        paths, n = _find_new_videos_local(db, lib.id, base, fallback_since)
+                    except Exception as exc:
+                        stats["errors"] += 1
+                        logger.warning("[chase-new] 库《%s》本地源 %s 检查失败: %s",
+                                       getattr(lib, "name", lib.id), base, exc)
+                        continue
+                    stats["listed"] += n
+                    found += paths
                 for mid, rel in _library_mount_sources(lib, db):
                     try:
-                        found_paths += _find_new_videos_remote(db, mid, rel, since_ts)
-                    except Exception as exc:  # noqa: BLE001 — 单个挂载失败不影响其它库
+                        paths, n = _find_new_videos_remote(db, lib.id, mid, rel)
+                    except Exception as exc:
+                        stats["errors"] += 1
                         logger.warning("[chase-new] 库《%s》远程挂载 %s 检查失败: %s",
                                        getattr(lib, "name", lib.id), mid, exc)
-                if found_paths:
-                    total_found += len(found_paths)
-                    logger.info("[chase-new] 库《%s》发现 %d 个新文件，触发扫描",
-                                getattr(lib, "name", lib.id), len(found_paths))
-                    scan_queue.enqueue(lib, trigger="chase-new")
+                        continue
+                    stats["listed"] += n
+                    found += paths
+                if found:
+                    stats["new"] += len(found)
+                    prefixes = sorted({_parent_prefix(p) for p in found})
+                    logger.info("[chase-new] 库《%s》发现 %d 个新增/变更文件，定向扫描 %d 个目录",
+                                getattr(lib, "name", lib.id), len(found), len(prefixes))
+                    scan_queue.enqueue_targeted(lib, prefixes, trigger="chase-new")
+                    stats["scans"] += 1
             except Exception as e:
+                stats["errors"] += 1
                 logger.error("[chase-new] 库《%s》检查失败: %s", getattr(lib, "id", "?"), e)
-
         _set_config(db, CONFIG_LAST_CHECK, datetime.now(timezone.utc).isoformat())
-        _set_config(db, CONFIG_LAST_FOUND, str(total_found))
-        if total_found:
-            logger.info("[chase-new] 本轮共发现 %d 个新文件", total_found)
+        _set_config(db, CONFIG_LAST_FOUND, str(stats["new"]))
+        if stats["errors"]:
+            status = "partial" if (stats["new"] or stats["scans"]) else "fail"
     except Exception as e:
+        status = "fail"
+        fatal_error = str(e)[:500]
         logger.error("[chase-new] 轮询异常: %s", e)
     finally:
+        if ran:
+            try:
+                record_chase_run(db, source="poll", started_at=started,
+                                 finished_at=datetime.now(timezone.utc),
+                                 libs_checked=stats["libs"], files_listed=stats["listed"],
+                                 new_found=stats["new"], scans_triggered=stats["scans"],
+                                 status=status, error=fatal_error)
+            except Exception:
+                logger.warning("[chase-new] 写运行历史失败", exc_info=True)
         db.close()
+    dur = int(time.time() - t0)
+    logger.info("[chase-new] round done: libs=%d listed=%d new=%d scans=%d dur=%ds errors=%d",
+                stats["libs"], stats["listed"], stats["new"], stats["scans"], dur, stats["errors"])
+
+
+
+def _maybe_check_once() -> None:
+    """拿 advisory 锁并跑一轮；拿不到就跳过（api/worker 双容器单例，P1-2）。"""
+    db = SessionLocal()
+    try:
+        if _try_advisory_lock(db):
+            try:
+                _check_once()
+            finally:
+                # 降级到进程内锁时手动释放；PG advisory 锁随 session 关闭自动释放
+                if _LOCAL_ADVISORY_LOCK.locked():
+                    _LOCAL_ADVISORY_LOCK.release()
+        else:
+            logger.debug("[chase-new] 未拿到 advisory lock，本轮跳过（另一进程正在跑）")
+    finally:
+        db.close()
+
 
 
 def _watcher_loop() -> None:
@@ -472,13 +691,12 @@ def _watcher_loop() -> None:
             finally:
                 db.close()
             if enabled:
-                _check_once()
-            # 每 60 秒检查一次开关，间隔到了才真正轮询
-            # 简化：直接按间隔 sleep，开关变化最多延迟一个周期
+                _maybe_check_once()
             time.sleep(interval * 60)
         except Exception as e:
             logger.error("[chase-new] 线程异常: %s", e)
             time.sleep(60)
+
 
 
 def get_config(db: Session) -> dict:

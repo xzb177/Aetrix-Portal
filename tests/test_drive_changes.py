@@ -394,3 +394,132 @@ def test_is_dead_drive_expiry():
             assert did not in drive_changes._dead_drives
     finally:
         drive_changes._dead_drives.pop(did, None)
+
+
+# ---------------------------------------------------------------------------
+# P0-1：SA 兜底链（生产 100 个 SA 在宿主机 /opt/rclone-sa，旧实现只看
+# $RCLONE_SA_DIR 导致永远 0 SA、增量发现从未启动）
+# ---------------------------------------------------------------------------
+
+def test_sa_files_from_rclone_conf_direct(tmp_path):
+    sa = tmp_path / "real-sa.json"
+    sa.write_text("{}")
+    conf = tmp_path / "rclone.conf"
+    conf.write_text(
+        "[MP]\ntype = drive\nteam_drive = D1\nservice_account_file = %s\n\n"
+        "[PAUL]\ntype = drive\nservice_account_file = %s\n\n"
+        "[MISSING]\ntype = drive\nservice_account_file = /nonexistent/x.json\n\n"
+        "[LOCAL]\ntype = local\nservice_account_file = %s\n"
+        % (sa, sa, sa))
+    with mock.patch.object(drive_changes, "RCLONE_CONF", str(conf)):
+        files = drive_changes._sa_files_from_rclone_conf()
+    # 去重：MP 和 PAUL 指向同一个文件只收一次；不存在的与非 drive 的不要
+    assert files == [str(sa)], files
+
+
+def test_sa_files_from_rclone_conf_missing_conf(tmp_path):
+    with mock.patch.object(drive_changes, "RCLONE_CONF",
+                           str(tmp_path / "none.conf")):
+        assert drive_changes._sa_files_from_rclone_conf() == []
+
+
+def test_sa_fallback_chain_uses_rclone_conf(tmp_path, caplog):
+    import logging
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    drive_changes._sa_files = None
+    try:
+        with mock.patch.object(drive_changes, "SA_DIR", str(empty)), \
+             mock.patch.object(drive_changes, "_sa_files_from_rclone_conf",
+                               return_value=["/x/sa.json"]) as m_conf, \
+             mock.patch.object(drive_changes, "_collect_json_files",
+                               return_value=[]) as m_collect, \
+             caplog.at_level(logging.INFO,
+                             logger="backend.emby_server.drive_changes"):
+            files = drive_changes._discover_sa_files()
+        assert files == ["/x/sa.json"]
+        m_conf.assert_called_once()
+        # ② 已命中，③ 不再试：收集器只被调过一次（[SA_DIR]）
+        assert m_collect.call_count == 1
+        assert any("rclone.conf" in r.getMessage() for r in caplog.records), \
+            "命中兜底必须打 INFO 说明用了哪条路径"
+    finally:
+        drive_changes._sa_files = None
+
+
+def test_sa_fallback_chain_prefers_sa_dir(tmp_path):
+    d = tmp_path / "sa"
+    d.mkdir()
+    (d / "a.json").write_text("{}")
+    drive_changes._sa_files = None
+    try:
+        with mock.patch.object(drive_changes, "SA_DIR", str(tmp_path)), \
+             mock.patch.object(drive_changes, "_sa_files_from_rclone_conf",
+                               side_effect=AssertionError("不应走到兜底")):
+            files = drive_changes._discover_sa_files()
+        assert files == [str(d / "a.json")]
+    finally:
+        drive_changes._sa_files = None
+
+
+# ---------------------------------------------------------------------------
+# P0-1：个人盘纳入（type=drive 但无 team_drive）
+# ---------------------------------------------------------------------------
+
+def test_discover_drives_includes_personal(tmp_path):
+    conf = tmp_path / "rclone.conf"
+    conf.write_text(
+        "[MP]\ntype = drive\nteam_drive = DRIVE123\n\n"
+        "[PAUL]\ntype = drive\n\n"
+        "[local]\ntype = local\n")
+    with mock.patch.object(drive_changes, "RCLONE_CONF", str(conf)):
+        drives = drive_changes.discover_drives()
+    assert drives == {"DRIVE123": ["MP"], "myDrive:PAUL": ["PAUL"]}, drives
+    assert drive_changes._is_personal_drive_key("myDrive:PAUL")
+    assert not drive_changes._is_personal_drive_key("DRIVE123")
+
+
+def test_personal_drive_start_token_no_drive_id():
+    captured = []
+
+    def fake_api(url, token, params):
+        captured.append(params)
+        return {"startPageToken": "tok123"}
+
+    with mock.patch.object(drive_changes, "_get_token", return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get", side_effect=fake_api):
+        assert drive_changes.get_start_page_token("myDrive:PAUL") == "tok123"
+    assert len(captured) == 1
+    assert "driveId" not in captured[0], "个人盘不能传 driveId（Drive API 报 400）"
+    assert captured[0].get("spaces") == "drive"
+
+
+def test_personal_drive_list_changes_no_drive_id():
+    captured = []
+
+    def fake_api(url, token, params):
+        captured.append(params)
+        return {"changes": [], "newStartPageToken": None}
+
+    with mock.patch.object(drive_changes, "_get_token", return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get", side_effect=fake_api):
+        changes, _ = drive_changes.list_changes("pt", "myDrive:PAUL")
+    assert changes == []
+    assert len(captured) == 1
+    assert "driveId" not in captured[0]
+    assert "includeItemsFromAllDrives" not in captured[0]
+    assert captured[0].get("spaces") == "drive"
+
+
+def test_shared_drive_params_unchanged():
+    captured = []
+
+    def fake_api(url, token, params):
+        captured.append(params)
+        return {"startPageToken": "tok"}
+
+    with mock.patch.object(drive_changes, "_get_token", return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get", side_effect=fake_api):
+        drive_changes.get_start_page_token("DRIVE123")
+    assert captured[0].get("driveId") == "DRIVE123"
+    assert "spaces" not in captured[0]

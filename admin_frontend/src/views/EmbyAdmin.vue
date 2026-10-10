@@ -604,6 +604,10 @@ async function toggleChase(on: boolean) {
       libraries: res.libraries,
       last_check: res.last_check,
       last_found: res.last_found,
+      drive_changes: res.drive_changes || { running: false, last_poll: null, last_changes: 0, last_libs_triggered: 0 },
+      recent_runs: res.recent_runs || [],
+      alerts: res.alerts || [],
+      total_found: res.total_found || 0,
     }
     libForm.chase = on
     // 追新是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
@@ -883,7 +887,7 @@ const chaseNewSaving = ref(false)
 async function loadChaseNewConfig() {
   try {
     const res = await fetchChaseNew()
-    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found, drive_changes: res.drive_changes || { running: false, last_poll: null, last_changes: 0, last_libs_triggered: 0 }, recent_runs: res.recent_runs || [], alerts: res.alerts || [], total_found: res.total_found || 0 }
   } catch {
     chaseNew.value = null
   }
@@ -894,7 +898,7 @@ async function saveChaseNewAction() {
   chaseNewSaving.value = true
   try {
     const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded)
-    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found }
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found, drive_changes: res.drive_changes || { running: false, last_poll: null, last_changes: 0, last_libs_triggered: 0 }, recent_runs: res.recent_runs || [], alerts: res.alerts || [], total_found: res.total_found || 0 }
     ElMessage.success(res.enabled ? '追新已开启（每 ' + res.interval + ' 分钟）' : '追新已关闭')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
@@ -1776,6 +1780,20 @@ function typeLabel(t: string): string {
               <div v-else-if="chaseNew" class="drawer-hint drawer-hint--after">
                 还没有检查过
               </div>
+              <div v-if="chaseNew?.alerts?.length" class="chase-alert">
+                ⚠ 追新告警：{{ chaseNew.alerts.length }} 个源连续失败 ≥3 次<span v-for="a in chaseNew.alerts" :key="a.source_key"> · {{ a.source_key }}（{{ a.last_error || '未知错误' }}）</span>
+              </div>
+              <div v-if="chaseNew?.drive_changes" class="drawer-hint drawer-hint--after">
+                增量发现（Drive Changes）：{{ chaseNew.drive_changes.running ? '运行中' : '未运行' }}<span v-if="chaseNew.drive_changes.last_poll"> ｜ 上次轮询 {{ chaseNew.drive_changes.last_poll }}，变化 {{ chaseNew.drive_changes.last_changes }} 个文件，触发 {{ chaseNew.drive_changes.last_libs_triggered }} 个库</span>
+              </div>
+              <ul v-if="chaseNew?.recent_runs?.length" class="chase-runs">
+                <li v-for="r in chaseNew.recent_runs" :key="r.id">
+                  {{ (r.started_at || '').slice(0, 19).replace('T', ' ') }} · {{ r.source === 'drive-changes' ? '增量发现' : '轮询' }} · 发现 {{ r.new_found }} / 扫描 {{ r.scans_triggered }} · {{ r.status }}
+                </li>
+              </ul>
+              <div v-if="chaseNew" class="drawer-hint drawer-hint--after">
+                历史累计发现 {{ chaseNew.total_found || 0 }} 个新文件
+              </div>
             </div>
             <div class="scrape-block">
               <h3>TMDB 首选语言</h3>
@@ -2389,6 +2407,24 @@ function typeLabel(t: string): string {
 .drawer-hint--tight { margin: 4px 0 0; }
 .text-danger { color: var(--au-danger); }
 .field-warn-inline { color: var(--au-warning); }
+.chase-alert {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--au-danger);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
+  color: var(--au-danger);
+  font-size: var(--font-size-xs);
+  line-height: 1.7;
+}
+.chase-runs {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: var(--font-size-xs);
+  color: var(--au-text-3);
+  line-height: 1.8;
+}
 
 /* ==================== 定时与刮削 ==================== */
 .scrape-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }

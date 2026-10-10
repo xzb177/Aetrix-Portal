@@ -1387,7 +1387,37 @@ export interface ChaseNewConfig {
   libraries: string
   last_check: string
   last_found: number
+  /** drive_changes（Drive Changes API 增量发现）运行状态 */
+  drive_changes: {
+    running: boolean
+    last_poll: string | null
+    last_changes: number
+    last_libs_triggered: number
+  }
+  /** 最近 10 轮追新运行历史（poll / drive-changes） */
+  recent_runs: Array<{
+    id: number
+    started_at: string | null
+    finished_at: string | null
+    source: string
+    libs_checked: number
+    files_listed: number
+    new_found: number
+    scans_triggered: number
+    status: string
+    error: string
+  }>
+  /** 连续失败 >= 3 的源告警 */
+  alerts: Array<{
+    source_key: string
+    consec_failures: number
+    last_error: string
+    last_ok_at: string | null
+  }>
+  /** chase_run.new_found 历史累计 */
+  total_found: number
 }
+
 export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
 export const saveChaseNew = (enabled: boolean, interval: number, excluded: string) =>
   put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded })
