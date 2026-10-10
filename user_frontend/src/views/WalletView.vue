@@ -391,6 +391,7 @@ onBeforeUnmount(stopPayPoll)
 
 <template>
   <div class="au-page wallet-view">
+    <div class="wallet-ambiance" aria-hidden="true"></div>
 
     <!-- 余额主卡：左右分区 — 左侧余额与签到态，右侧核销面板 -->
     <section class="balance-hero au-anim-up">
@@ -594,20 +595,67 @@ onBeforeUnmount(stopPayPoll)
 </template>
 
 <style scoped>
-.wallet-view { display: flex; flex-direction: column; gap: 1.125rem; }
+.wallet-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1.125rem;
+  position: relative;
+  max-width: 1080px;
+  margin: 0 auto;
+  width: 100%;
+}
 
-/* ==================== 余额主卡（左右分区） ==================== */
+.wallet-ambiance {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(ellipse 55% 35% at 20% 0%, rgba(232,168,74,0.09), transparent 70%);
+}
+
+.wallet-ambiance::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.wallet-view > *:not(.wallet-ambiance) {
+  position: relative;
+  z-index: 1;
+}
+
+html[data-theme='light'] .wallet-ambiance {
+  display: none;
+}
+
 .balance-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
   align-items: stretch;
   gap: 1.5rem;
-  padding: 1.5rem 1.625rem;
+  padding: 1.75rem 1.75rem;
   border-radius: var(--au-r-xl);
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   position: relative;
   overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.balance-hero::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--au-primary-border), transparent);
+}
+
+.bh-divider {
+  background: var(--au-border-strong);
 }
 
 .bh-main {
@@ -624,117 +672,414 @@ onBeforeUnmount(stopPayPoll)
   gap: 0.375rem;
   font-size: 0.8125rem;
   color: var(--au-text-2);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .balance-num {
   display: flex;
   align-items: baseline;
-  gap: 0.375rem;
+  gap: 0.5rem;
 }
+
 .balance-num .num {
   font-family: var(--au-font-serif);
-  font-size: 2.75rem;
+  font-size: 3rem;
   font-weight: 700;
   color: var(--au-text);
   font-variant-numeric: tabular-nums;
   line-height: 1.1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
 }
-.balance-num .unit { font-size: 0.875rem; color: var(--au-text-3); }
+
+.balance-num .unit {
+  font-size: 0.875rem;
+  color: var(--au-text-3);
+  white-space: nowrap;
+}
 
 .balance-note {
   margin: 0.5rem 0 0;
   font-size: 0.8125rem;
   color: var(--au-text-3);
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
-/* 签到态胶囊 */
 .checkin-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.4375rem;
   width: fit-content;
-  margin-top: 0.375rem;
-  padding: 0.3125rem 0.6875rem;
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.75rem;
   background: var(--au-warning-soft);
   border: 1px solid var(--au-warning-border);
   border-radius: var(--au-r-full);
   color: var(--au-warning);
   font-size: 0.8125rem;
+  font-weight: 600;
   text-decoration: none;
-  transition: all var(--au-fast) var(--au-ease);
+  transition: transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s ease-out;
 }
-.checkin-pill strong { font-weight: 700; }
+
+.checkin-pill:hover {
+  box-shadow: 0 0 12px var(--au-primary-border);
+}
+
+.checkin-pill:active {
+  transform: scale(0.95);
+}
+
 .checkin-pill.done {
   background: var(--au-success-soft);
   border-color: var(--au-success-border);
   color: var(--au-success);
 }
 
-.refresh { align-self: flex-start; margin-top: 0.25rem; }
-.spinning { animation: au-spin 0.9s linear infinite; }
+.checkin-pill strong {
+  font-weight: 700;
+}
 
-/* ==================== 选项卡 ==================== */
+.checkin-pill .pill-divider {
+  width: 1px;
+  height: 12px;
+  background: currentColor;
+  opacity: 0.3;
+}
+
+.checkin-pill .pill-arrow {
+  width: 12px;
+  height: 12px;
+}
+
+.vitality-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  background: var(--au-surface-2);
+}
+
+.vitality-icon {
+  color: var(--au-warning);
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.vitality-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.vitality-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  margin-bottom: 0.375rem;
+}
+
+.vitality-warn {
+  color: var(--au-danger);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.vitality-ok {
+  color: var(--au-text-3);
+  font-size: 0.75rem;
+}
+
+.member-bar {
+  height: 6px;
+  border-radius: var(--au-r-full);
+  background: var(--au-track);
+  overflow: hidden;
+}
+
+.member-bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--au-r-full);
+  background: linear-gradient(90deg, var(--au-gold-b), var(--au-gold-a));
+  transition: width 0.4s var(--au-ease);
+}
+
+.vitality-recharge-btn {
+  flex-shrink: 0;
+  padding: 0.375rem 0.875rem;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-primary);
+  color: var(--au-primary);
+  background: transparent;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+.vitality-recharge-btn:hover {
+  background: var(--au-primary-soft);
+  box-shadow: 0 0 8px var(--au-primary-border);
+}
+
+.vitality-recharge-btn:active {
+  transform: scale(0.95);
+}
+
+.refresh {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+}
+
+.refresh.spinning {
+  animation: au-spin 0.9s linear infinite;
+}
+
+@keyframes au-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.wallet-view button {
+  transition: transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.15s ease-out, box-shadow 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+.wallet-view button:active {
+  transform: scale(0.97);
+}
+
+.bh-redeem {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: .625rem;
+  min-width: 0;
+}
+
+.redeem-label {
+  display: inline-flex;
+  align-items: center;
+  gap: .375rem;
+  font-size: .8125rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--au-text-3);
+}
+
+.redeem-row {
+  display: flex;
+  gap: .5rem;
+}
+
+input.redeem-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-input-border);
+  border-radius: var(--au-r-md);
+  padding: 0 .75rem;
+  height: 44px;
+  color: var(--au-text);
+  font-size: .875rem;
+}
+
+input.redeem-input::placeholder {
+  color: var(--au-text-3);
+}
+
+input.redeem-input:focus {
+  border-color: var(--au-primary);
+  outline: none;
+  box-shadow: 0 0 12px var(--au-primary-border);
+}
+
+.bh-redeem .au-btn-primary:hover {
+  box-shadow: 0 0 12px var(--au-primary-border);
+}
+
+.redeem-hint {
+  font-size: .75rem;
+  color: var(--au-text-3);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.redeem-hint.warn {
+  color: var(--au-danger);
+}
+
+.redeem-hint a {
+  color: var(--au-primary);
+}
+
+.redeem-preview {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+  padding: .625rem .75rem;
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  font-size: .8125rem;
+  color: var(--au-text-2);
+}
+
+.rp-text {
+  display: flex;
+  align-items: center;
+  gap: .375rem;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.redeem-preview svg {
+  width: 14px;
+  height: 14px;
+  color: var(--au-primary);
+  flex-shrink: 0;
+}
+
+.redeem-preview strong {
+  color: var(--au-text);
+}
+
+.transfer-card {
+  margin-top: 16px;
+  padding: 20px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.transfer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.transfer-head svg {
+  width: 15px;
+  height: 15px;
+  color: var(--au-primary);
+}
+
+.transfer-head strong {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--au-text);
+}
+
+.transfer-fee-note {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--au-text-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.transfer-row {
+  display: flex;
+  gap: 8px;
+}
+
+.transfer-row input.redeem-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.transfer-row .au-btn-primary:hover {
+  box-shadow: 0 0 12px var(--au-primary-border);
+}
+
+.nw {
+  white-space: nowrap;
+}
+
 .tabs {
   display: flex;
-  gap: 0.375rem;
+  gap: .375rem;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
-  padding: 0.3125rem;
+  padding: .3125rem;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.tabs::-webkit-scrollbar { display: none; }
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
 
 .tab {
   flex: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.375rem;
-  height: 38px;
-  padding: 0 0.875rem;
+  gap: .375rem;
+  height: 40px;
+  padding: 0 .875rem;
   background: none;
   border: none;
   border-radius: var(--au-r-md);
   color: var(--au-text-3);
-  font-size: 0.8125rem;
+  font-size: .8125rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all var(--au-fast);
   white-space: nowrap;
+  transition: transform var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease), background var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease);
 }
-.tab:hover { color: var(--au-text); background: var(--au-surface-2); }
+
+.tab:hover {
+  color: var(--au-text);
+  background: var(--au-surface-2);
+}
+
 .tab.active {
   background: var(--au-primary);
   color: var(--au-on-primary);
+  box-shadow: 0 0 12px var(--au-primary-border);
 }
 
-/* ==================== 订单原价删除线 ==================== */
-.order-amount .price-was {
-  margin-right: 0.375rem;
-  font-style: normal;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--au-text-3);
-  text-decoration: line-through;
+.tab.active:active {
+  transform: scale(.97);
 }
 
-.order-coupon { color: var(--au-primary); }
-.order-coupon svg { flex-shrink: 0; }
+.tab-body {
+  min-height: 200px;
+}
 
-/* ==================== 订单 ==================== */
-.order-list { overflow: hidden; }
+.order-list,
+.log-list {
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 var(--au-border);
+}
 
 .order-item {
   display: flex;
   align-items: center;
-  gap: 0.875rem;
-  padding: 0.9375rem 1.125rem;
+  gap: .875rem;
+  padding: 1rem 1.125rem;
   border-bottom: 1px solid var(--au-border);
 }
-.order-item:last-child { border-bottom: none; }
+
+.order-item:last-child {
+  border-bottom: none;
+}
+
+.order-item:hover {
+  background: var(--au-surface-2);
+}
 
 .order-icon {
   width: 34px;
@@ -747,47 +1092,109 @@ onBeforeUnmount(stopPayPoll)
   color: var(--au-success);
   flex-shrink: 0;
 }
-.order-icon.refunded {
-  color: var(--au-danger);
-  background: var(--au-danger-soft);
-}
-
-.order-refund {
-  color: var(--au-danger);
-}
 
 .order-icon.pending {
   background: var(--au-warning-soft);
   color: var(--au-warning);
 }
 
-.order-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1875rem; }
-.order-name { font-size: 0.875rem; font-weight: 600; color: var(--au-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-icon.refunded {
+  background: var(--au-danger-soft);
+  color: var(--au-danger);
+}
+
+.order-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .1875rem;
+}
+
+.order-name {
+  font-size: .875rem;
+  font-weight: 600;
+  color: var(--au-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
 .order-sub {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
-  font-size: 0.8125rem;
+  gap: .375rem;
+  font-size: .8125rem;
   color: var(--au-text-3);
   overflow: hidden;
 }
-.order-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.order-sep { opacity: 0.5; }
 
-.order-side { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3125rem; flex-shrink: 0; }
-.order-amount { font-family: var(--au-font-serif); font-size: 1rem; font-weight: 700; color: var(--au-text); font-variant-numeric: tabular-nums lining-nums; }
+.order-id {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+}
 
-/* ==================== 流水 ==================== */
-.log-list { overflow: hidden; }
+.order-sep {
+  opacity: .5;
+}
+
+.order-refund {
+  color: var(--au-danger);
+}
+
+.order-coupon {
+  color: var(--au-primary);
+}
+
+.order-coupon svg {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+}
+
+.order-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: .3125rem;
+  flex-shrink: 0;
+}
+
+.order-amount {
+  font-family: var(--au-font-serif);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.price-was {
+  margin-right: .375rem;
+  font-style: normal;
+  font-size: .8125rem;
+  font-weight: 500;
+  color: var(--au-text-3);
+  text-decoration: line-through;
+}
 
 .log-item {
   display: flex;
   align-items: center;
-  gap: 0.875rem;
-  padding: 0.875rem 1.125rem;
+  gap: .875rem;
+  padding: .875rem 1.125rem;
   border-bottom: 1px solid var(--au-border);
 }
-.log-item:last-child { border-bottom: none; }
+
+.log-item:last-child {
+  border-bottom: none;
+}
+
+.log-item:hover {
+  background: var(--au-surface-2);
+}
 
 .log-icon {
   width: 32px;
@@ -798,34 +1205,114 @@ onBeforeUnmount(stopPayPoll)
   border-radius: var(--au-r-md);
   flex-shrink: 0;
 }
-.log-icon.in { background: var(--au-success-soft); color: var(--au-success); }
-.log-icon.out { background: var(--au-danger-soft); color: var(--au-danger); }
 
-.log-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.125rem; }
-.log-desc { font-size: 0.8125rem; color: var(--au-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-time { font-size: 0.8125rem; color: var(--au-text-3); }
+.log-icon.in {
+  background: var(--au-success-soft);
+  color: var(--au-success);
+}
 
-.log-amount { font-weight: 700; font-size: 0.9375rem; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.log-amount.in { color: var(--au-success); }
-.log-amount.out { color: var(--au-danger); }
+.log-icon.out {
+  background: var(--au-danger-soft);
+  color: var(--au-danger);
+}
 
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.log-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .125rem;
+}
 
-/* ==================== 活力值 ==================== */
-.vitality-row { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; padding: 0.625rem 0.875rem; border: 1px solid var(--au-border); border-radius: var(--au-r-lg); background: var(--au-surface-2); }
-.vitality-icon { color: var(--au-warning, #f59e0b); display: inline-flex; flex-shrink: 0; }
-.vitality-meta { flex: 1; min-width: 0; }
-.vitality-top { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; font-size: 0.8125rem; margin-bottom: 0.375rem; }
-.vitality-warn { color: var(--au-danger, #ef4444); font-size: 0.75rem; }
-.vitality-ok { color: var(--au-text-3); font-size: 0.75rem; }
-.vitality-recharge-btn { flex-shrink: 0; padding: 0.375rem 0.75rem; border-radius: var(--au-r-full); border: 1px solid var(--au-primary); color: var(--au-primary); background: transparent; font-size: 0.75rem; font-weight: 700; cursor: pointer; }
-.vitality-recharge-btn:hover { background: var(--au-primary-soft); }
-.vitality-dialog { align-items: stretch; text-align: left; }
-.dialog-note { margin: 0; font-size: 0.8125rem; color: var(--au-text-2); }
-.dialog-actions { display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1rem; }
-.qty-row { display: flex; gap: 0.5rem; margin: 0.75rem 0; }
-.qty-btn { padding: 0.5rem 1rem; border-radius: var(--au-r-full); border: 1px solid var(--au-border); background: var(--au-surface-2); color: var(--au-text); cursor: pointer; font-weight: 700; }
-.qty-btn.active { border-color: var(--au-primary); color: var(--au-primary); }
+.log-desc {
+  font-size: .8125rem;
+  color: var(--au-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.log-time {
+  font-size: .8125rem;
+  color: var(--au-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.log-amount {
+  font-weight: 700;
+  font-size: .9375rem;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.log-amount.in {
+  color: var(--au-success);
+}
+
+.log-amount.out {
+  color: var(--au-danger);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.vitality-dialog {
+  align-items: stretch;
+  text-align: left;
+  min-width: min(420px, 90vw);
+}
+
+.dialog-note {
+  margin: 0;
+  font-size: .8125rem;
+  color: var(--au-text-2);
+  line-height: 1.6;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: .75rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.qty-row {
+  display: flex;
+  gap: .5rem;
+  margin: .75rem 0;
+  flex-wrap: wrap;
+}
+
+button.qty-btn {
+  padding: .5rem 1rem;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface-2);
+  color: var(--au-text);
+  cursor: pointer;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition: transform .12s var(--au-ease), border-color .12s var(--au-ease), box-shadow .12s var(--au-ease), color .12s var(--au-ease);
+}
+
+button.qty-btn:hover {
+  border-color: var(--au-primary);
+}
+
+button.qty-btn.active {
+  border-color: var(--au-primary);
+  color: var(--au-primary);
+  background: var(--au-primary-soft);
+  box-shadow: 0 0 8px var(--au-primary-border);
+}
+
+button.qty-btn:active {
+  transform: scale(.95);
+}
 
 @media (max-width: 720px) {
   .balance-hero {
@@ -833,22 +1320,33 @@ onBeforeUnmount(stopPayPoll)
     gap: 1.25rem;
     padding: 1.375rem 1.25rem;
   }
-  .bh-divider { height: 1px; width: 100%; margin: 0; }
-  .refresh { position: absolute; top: 1.125rem; right: 1.125rem; margin: 0; }
-  .balance-num .num { font-size: 2.25rem; }
-  .order-item { flex-wrap: wrap; }
+
+  .bh-divider {
+    height: 1px;
+    width: 100%;
+    margin: 0;
+  }
+
+  .refresh {
+    position: absolute;
+    top: 1.125rem;
+    right: 1.125rem;
+    margin: 0;
+  }
+
+  .balance-num .num {
+    font-size: 2.25rem;
+  }
+
+  .order-item {
+    flex-wrap: wrap;
+  }
 }
 
-/* 积分转账卡片（C2） */
-.transfer-card { margin-top: 16px; padding: 16px; }
-.transfer-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.transfer-head strong { font-size: 15px; }
-.transfer-fee-note { margin-left: auto; font-size: 12px; color: var(--au-text-3); white-space: nowrap; }
-.transfer-row { display: flex; gap: 8px; }
-.transfer-row .redeem-input { flex: 1; min-width: 0; }
-.nw { white-space: nowrap; }
 @media (max-width: 768px) {
-  .transfer-row { flex-direction: column; }
+  .transfer-row {
+    flex-direction: column;
+  }
 }
 
 </style>
