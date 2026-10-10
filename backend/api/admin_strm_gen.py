@@ -1,7 +1,8 @@
 """管理后台 · .strm 生成器
 
 把 Google Drive 视频批量生成 .strm 文件的能力收进后端：
-- 配置：总开关 / Drive 源目录 / 每天执行时刻（全部 SystemConfig，热生效）
+- 配置：总开关 / Drive 源目录 / 每天执行时刻（服务器本地时间）/ 过期清理开关
+  （全部 SystemConfig，热生效）
 - 手动触发：增量（默认）或全量重建
 - 进度查询：轮询看 listing/generating/verifying 各阶段进度
 - 缺集报告：上次生成的完整性校验结果（哪个剧缺了哪几集）
@@ -24,15 +25,19 @@ from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
-# 手动触发用独立线程跑，避免阻塞 HTTP 请求
-_trigger_lock = threading.Lock()
-
 
 class StrmGenConfigSave(BaseModel):
     enabled: bool = Field(default=True, description="总开关")
     source_dir: str = Field(default="MoviePilot/", description="Drive 源目录（相对网盘根）")
-    schedule: str = Field(default="03:00", description="每天执行时刻 HH:MM，空=关闭定时")
+    schedule: str = Field(
+        default="03:00",
+        description="每天执行时刻 HH:MM（按服务器本地时间，生产为悉尼时间），空=关闭定时",
+    )
     drive_id: str = Field(default="", description="指定 Drive ID，空=自动选择")
+    prune: bool = Field(
+        default=False,
+        description="清理 Drive 上已不存在的 .strm 文件及状态行（不可逆，默认只上报不删）",
+    )
 
 
 class StrmGenTrigger(BaseModel):
@@ -45,6 +50,7 @@ def _read_config(db: Session) -> dict:
         "source_dir": _gen.source_dir(db),
         "schedule": _gen.schedule(db),
         "drive_id": _gen.drive_id_config(db),
+        "prune": _gen.prune_enabled(db),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
 
@@ -72,10 +78,22 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         if not ok:
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail="执行时刻格式应为 HH:MM（如 03:00），留空关闭定时")
-    store.set_value(db, _gen.CONFIG_ENABLED, "true" if body.enabled else "false")
-    store.set_value(db, _gen.CONFIG_SOURCE_DIR, (src + "/") if src else "")
-    store.set_value(db, _gen.CONFIG_SCHEDULE, sched)
-    store.set_value(db, _gen.CONFIG_DRIVE_ID, (body.drive_id or "").strip())
+    # 注意：store 只有 write_values（批量写），没有 set_value；
+    # 且 write_values 不自动提交，提交时机由调用方决定。
+    store.write_values(db, {
+        _gen.CONFIG_ENABLED: "true" if body.enabled else "false",
+        _gen.CONFIG_SOURCE_DIR: (src + "/") if src else "",
+        _gen.CONFIG_SCHEDULE: sched,
+        _gen.CONFIG_DRIVE_ID: (body.drive_id or "").strip(),
+        _gen.CONFIG_PRUNE: "true" if body.prune else "false",
+    }, {
+        _gen.CONFIG_ENABLED: ".strm 生成器总开关",
+        _gen.CONFIG_SOURCE_DIR: ".strm 生成器 Drive 源目录",
+        _gen.CONFIG_SCHEDULE: ".strm 生成器每天执行时刻（HH:MM，服务器本地时间）",
+        _gen.CONFIG_DRIVE_ID: ".strm 生成器指定 Drive ID",
+        _gen.CONFIG_PRUNE: ".strm 生成器是否清理 Drive 已不存在的文件",
+    })
+    db.commit()
     return {"success": True, "config": _read_config(db)}
 
 
@@ -85,26 +103,23 @@ def strm_gen_trigger(body: StrmGenTrigger,
                      _staff=Depends(require_staff)):
     """手动触发一次生成（后台线程执行，立即返回）。
 
-    修 P3-6：旧实现先放行 HTTP 再由工作线程标记 running，快速连点两次
-    都会返回"已开始"，第二次实际被静默拒绝。现在先原子抢占运行权
-    （try_acquire），抢到才起线程。
+    运行权用 _gen.try_acquire() 原子获取：获取与置位在同一把锁内完成，
+    快速连点也不会出现"两次都返回已开始、第二次被静默吞掉"的竞态。
     """
-    with _trigger_lock:
-        if not _gen.try_acquire():
-            return {"success": False, "error": "已有生成任务在运行中",
-                    "progress": _gen.get_progress()}
+    if not _gen.try_acquire():
+        return {"success": False, "error": "已有生成任务在运行中",
+                "progress": _gen.get_progress()}
 
-        def _run():
-            from backend.database import SessionLocal
-            sess = SessionLocal()
-            try:
-                # 运行权已持有，走 claimed 路径（结束自动释放）
-                _gen.run_generation_claimed(sess, full=body.full)
-            finally:
-                sess.close()
+    def _run():
+        from backend.database import SessionLocal
+        sess = SessionLocal()
+        try:
+            _gen.run_owned(sess, full=body.full)
+        finally:
+            sess.close()
 
-        t = threading.Thread(target=_run, daemon=True, name="strm-gen-manual")
-        t.start()
+    t = threading.Thread(target=_run, daemon=True, name="strm-gen-manual")
+    t.start()
     return {"success": True, "message": "已开始%s生成" % ("全量" if body.full else "增量")}
 
 

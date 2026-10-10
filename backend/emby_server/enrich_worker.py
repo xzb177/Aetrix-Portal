@@ -1952,58 +1952,66 @@ def _worker_loop(worker_id: int) -> None:
     # _claim_batch 提交后不要让 ORM 条目过期；否则下面访问 series_id / file_path
     # 会重新 SELECT，打开一个事务，再把它带进 FUSE/TMDB 慢 IO。
     db.expire_on_commit = False
-    # v2.54.0 统一任务调度：函数内导入 task_scheduler（它内部全是延迟导入，
-    # 无循环导入风险）。扫描（用户触发）优先于刮削（后台）——有扫描在等时让路。
+    # v2.54.1 统一任务调度：函数内导入 task_scheduler（它内部全是延迟导入，
+    # 无循环导入风险）。扫描（用户触发）优先于刮削（后台）——有可派发扫描
+    # 在等时降并发让路（保留 ENRICH_PREEMPT_MIN_THREADS 个线程继续刮削，
+    # 其余线程短睡后重试），而不是全停。
     from backend.emby_server import task_scheduler as _ts
 
     try:
         while not _stop_event.is_set():
             # SCAN_PREEMPT_ENRICH=0 可关闭，回退到旧行为（各自抢资源）。
+            # acquire_enrich_permit 永不抛异常（内部 fail-safe）。
+            _permit = _ts.acquire_enrich_permit()
+            if _permit is None:
+                _ts.note_enrich_yielded()
+                # P2-2：等待加 0~2s 随机抖动，打散 32 线程的对齐惊群
+                _stop_event.wait(_ts.preempt_wait_with_jitter())
+                continue
+            # v2.54.1：permit 必须在批次处理完后归还（try/finally 保证
+            # 任何异常路径都不泄漏降并发名额，否则信号量被耗尽后
+            # 所有线程永久让路）
             try:
-                if _ts.should_enrich_yield():
-                    _ts.note_enrich_yielded(_ts.ENRICH_PREEMPT_WAIT_SEC)
-                    _stop_event.wait(_ts.ENRICH_PREEMPT_WAIT_SEC)
+                try:
+                    batch = _claim_batch(db, ENRICH_BATCH)
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    logger.warning("补全 worker 取单失败: %s", exc)
+                    _stop_event.wait(ENRICH_IDLE_POLL_SEC)
                     continue
-            except Exception:
-                # 调度器异常不能阻断刮削：按"不让路"继续
-                pass
-            try:
-                batch = _claim_batch(db, ENRICH_BATCH)
-            except Exception as exc:  # noqa: BLE001
-                db.rollback()
-                logger.warning("补全 worker 取单失败: %s", exc)
-                _stop_event.wait(ENRICH_IDLE_POLL_SEC)
-                continue
-            if not batch:
-                _stop_event.wait(ENRICH_IDLE_POLL_SEC)
-                continue
-            # v2.42.9 第 5 批（处方 1+2）：批次按组（同一部剧）聚在一起返回，
-            # 组内条目共享一份 _ScanContext——同一季的目录列举与 tvshow.nfo
-            # 只付一次网络成本；组边界上丢弃重建，缓存不随积压增长。
-            # v2.53.1 TMDB 批量：多条时走 _process_batch（pre 逐条 → TMDB 批量 →
-            # post+写库逐条），批量失败自动回退逐条。
-            if ENRICH_TMDB_BATCH and len(batch) > 1:
-                _process_batch(db, batch)
-            else:
-                holder: Optional[dict] = None
-                current_group = None
-                for item in batch:
-                    if _stop_event.is_set():
-                        break
-                    gkey = item.series_id or item.id
-                    if gkey != current_group:
-                        holder = {}          # 新组：上一组的 ctx 缓存随之释放
-                        current_group = gkey
-                    # v2.42.9：单条计时 + 结果计数。这两项就是「单条平均耗时」与
-                    # 「近 5 分钟 done/分钟」的来源 —— 后面几批优化（纯继承 / ctx 复用 /
-                    # 终态化）到底有没有把积压量降下来，靠它们验收。
-                    started = time.monotonic()
-                    outcome = _process_item(db, item, holder)
-                    progress.note_stage(
-                        "enrich_item", (time.monotonic() - started) * 1000.0)
-                    progress.note_completed(outcome)
-            # 批次之间释放 session 身份映射，避免长连接内存膨胀
-            db.expire_all()
+                if not batch:
+                    _stop_event.wait(ENRICH_IDLE_POLL_SEC)
+                    continue
+                # v2.42.9 第 5 批（处方 1+2）：批次按组（同一部剧）聚在一起返回，
+                # 组内条目共享一份 _ScanContext——同一季的目录列举与 tvshow.nfo
+                # 只付一次网络成本；组边界上丢弃重建，缓存不随积压增长。
+                # v2.53.1 TMDB 批量：多条时走 _process_batch（pre 逐条 → TMDB 批量 →
+                # post+写库逐条），批量失败自动回退逐条。
+                if ENRICH_TMDB_BATCH and len(batch) > 1:
+                    _process_batch(db, batch)
+                else:
+                    holder: Optional[dict] = None
+                    current_group = None
+                    for item in batch:
+                        if _stop_event.is_set():
+                            break
+                        gkey = item.series_id or item.id
+                        if gkey != current_group:
+                            holder = {}          # 新组：上一组的 ctx 缓存随之释放
+                            current_group = gkey
+                        # v2.42.9：单条计时 + 结果计数。这两项就是「单条平均耗时」与
+                        # 「近 5 分钟 done/分钟」的来源 —— 后面几批优化（纯继承 / ctx 复用 /
+                        # 终态化）到底有没有把积压量降下来，靠它们验收。
+                        started = time.monotonic()
+                        outcome = _process_item(db, item, holder)
+                        progress.note_stage(
+                            "enrich_item", (time.monotonic() - started) * 1000.0)
+                        progress.note_completed(outcome)
+                # 批次之间释放 session 身份映射，避免长连接内存膨胀
+                db.expire_all()
+            finally:
+                _ts.release_enrich_permit(_permit)
+
     finally:
         db.close()
     logger.info("补全 worker #%d 退出", worker_id)

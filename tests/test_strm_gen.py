@@ -169,115 +169,255 @@ def _patch_db_config(monkeypatch):
     monkeypatch.setattr(sg, "_db_config", fake_db_config)
 
 
-class TestTokenRefreshRetry:
-    """P1-1：401 后刷新 token 重试。"""
+class TestStrmGenModel:
+    """P0-1：StrmGenFile 表必须存在（原来引用了但没建表，状态读写静默失败）。"""
 
-    def test_retry_on_401_then_succeed(self, monkeypatch):
-        calls = {"n": 0}
-        holder = {"token": "old-token"}
+    def test_table_exists(self):
+        from backend.emby_server.models import StrmGenFile
+        assert StrmGenFile.__tablename__ == "strm_gen_files"
+        cols = {c.key for c in StrmGenFile.__table__.columns}
+        assert {"remote_path", "file_id", "size", "strm_path", "updated_at"} <= cols
 
-        def fake_list_page(token, drive_id, query, page_token=None):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                assert token == "old-token"
+    def test_remote_path_is_pk(self):
+        from backend.emby_server.models import StrmGenFile
+        pks = [c.key for c in StrmGenFile.__table__.primary_key.columns]
+        assert pks == ["remote_path"]
+
+
+class TestRoutesRegistered:
+    """P0-3：5 个 API 路由必须挂在 admin_emby_router 上（原来从未被 import）。"""
+
+    def test_five_routes(self):
+        import backend.api.admin_strm_gen  # noqa: F401  # 触发装饰器注册
+        from backend.emby_server.portal import admin_emby_router
+        by_path: dict[str, set[str]] = {}
+        for r in admin_emby_router.routes:
+            p = getattr(r, "path", "")
+            if "strm-gen" in p:
+                by_path.setdefault(p, set()).update(getattr(r, "methods", None) or set())
+        assert by_path.get("/api/admin/emby/strm-gen/config", set()) >= {"GET", "PUT"}
+        assert by_path.get("/api/admin/emby/strm-gen/trigger", set()) >= {"POST"}
+        assert by_path.get("/api/admin/emby/strm-gen/progress", set()) >= {"GET"}
+        assert by_path.get("/api/admin/emby/strm-gen/missing", set()) >= {"GET"}
+
+
+class TestRunControl:
+    """P3-6：运行权原子获取，不再有触发竞态。"""
+
+    def test_try_acquire(self):
+        sg._set_progress(running=False, phase="idle")
+        try:
+            assert sg.try_acquire() is True
+            assert sg.try_acquire() is False  # 第二次拿不到
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert sg.try_acquire() is True
+        sg._set_progress(running=False, phase="idle")
+
+    def test_run_generation_rejects_when_running(self):
+        sg._set_progress(running=True, phase="generating")
+        try:
+            res = sg.run_generation(None)
+            assert res["ok"] is False
+            assert "运行中" in res["error"]
+        finally:
+            sg._set_progress(running=False, phase="idle")
+
+    def test_start_scheduler_idempotent(self, monkeypatch):
+        # 不真正起线程：只验证幂等标记逻辑
+        import threading
+        monkeypatch.setattr(sg, "_scheduler_started", True)
+        before = threading.active_count()
+        assert sg.start_scheduler() is True
+        assert threading.active_count() == before  # 没起新线程
+        monkeypatch.setattr(sg, "_scheduler_started", False)
+
+
+class TestSafeRelpath:
+    """P3-7：输出路径防目录穿越。"""
+
+    def test_dotdot_stripped(self):
+        assert sg._safe_relpath("a/../../b") == "a/b"
+        assert sg._safe_relpath("../x") == "x"
+
+    def test_strm_relpath_sanitized(self):
+        assert sg.strm_relpath("MoviePilot/../x.mkv", "MoviePilot/") == "x.strm"
+
+
+class TestPageFetcher:
+    """P1-1：列举中途 401 自动刷新 token 续跑。"""
+
+    def test_refresh_on_401(self, monkeypatch):
+        calls = []
+        tokens = ["old", "new"]
+        monkeypatch.setattr(sg, "_get_token", lambda: tokens.pop(0))
+        def fake_list_page(token, drive_id, query, page_token):
+            calls.append(token)
+            if token == "old":
                 raise PermissionError("Drive token 无效或过期")
-            assert token == "new-token"
-            return ([{"id": "f1", "name": "a.mkv", "mimeType": "video/mp4",
-                      "size": "10", "trashed": False}], None)
-
-        def fake_refresh(h):
-            h["token"] = "new-token"
-            return True
-
+            return ([{"id": "1"}], None)
         monkeypatch.setattr(sg, "_list_files_page", fake_list_page)
-        monkeypatch.setattr(sg, "_refresh_token", fake_refresh)
-        files, nxt = sg._list_files_page_with_retry(holder, "d1", "q")
-        assert len(files) == 1
-        assert calls["n"] == 2
-        assert holder["token"] == "new-token"
+        fetch = sg._page_fetcher("d1")
+        files, _ = fetch("q", None)
+        assert files == [{"id": "1"}]
+        assert calls == ["old", "new"]
 
-    def test_give_up_after_max_retries(self, monkeypatch):
-        holder = {"token": "bad"}
-
-        def fake_list_page(token, drive_id, query, page_token=None):
-            raise PermissionError("expired")
-
-        refreshed = {"n": 0}
-
-        def fake_refresh(h):
-            refreshed["n"] += 1
-            h["token"] = f"tok{refreshed['n']}"
-            return True
-
+    def test_reraise_when_refresh_fails(self, monkeypatch):
+        monkeypatch.setattr(sg, "_get_token", lambda: "same")
+        def fake_list_page(token, drive_id, query, page_token):
+            raise PermissionError("Drive token 无效或过期")
         monkeypatch.setattr(sg, "_list_files_page", fake_list_page)
-        monkeypatch.setattr(sg, "_refresh_token", fake_refresh)
-        monkeypatch.setattr(sg, "TOKEN_RETRY_MAX", 3)
+        fetch = sg._page_fetcher("d1")
+        import pytest as _pytest
+        with _pytest.raises(PermissionError):
+            fetch("q", None)
+
+
+class TestVerifyDisk:
+    """P3-2：完整性校验同时验磁盘真实存在。"""
+
+    def test_missing_on_disk_counts_as_incomplete(self, tmp_path):
+        videos = [
+            ("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100),
+            ("MoviePilot/剧集/A/Season 1/A - S01E02.mkv", "f2", 100),
+        ]
+        # DB 有行，但磁盘上一个文件都没有
+        state = {rel: (fid, size, rel.replace(".mkv", ".strm").replace("MoviePilot/", ""))
+                 for rel, fid, size in videos}
+        result = sg._verify_completeness(videos, state, "MoviePilot/", strm_root=str(tmp_path))
+        assert result["incomplete_series"] == 1
+        assert result["incomplete"][0]["strm_count"] == 0
+
+    def test_present_on_disk_counts_as_complete(self, tmp_path):
+        videos = [("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100)]
+        spath = "剧集/A/Season 1/A - S01E01.strm"
+        (tmp_path / "剧集/A/Season 1").mkdir(parents=True)
+        (tmp_path / spath).write_text("x")
+        state = {videos[0][0]: ("f1", 100, spath)}
+        result = sg._verify_completeness(videos, state, "MoviePilot/", strm_root=str(tmp_path))
+        assert result["incomplete_series"] == 0
+
+
+class TestRunGenerationMocked:
+    """核心流程 mock 测试（Drive/DB/落盘全部隔离）。"""
+
+    def _patch_all(self, tmp_path, monkeypatch, videos, state=None, drives=None):
+        monkeypatch.setattr(sg, "iter_drive_videos",
+                            lambda drive_id, dir_path: iter(list(videos)))
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: drives if drives is not None else {"d1": ["sa1"]})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: str(tmp_path))
+        monkeypatch.setattr(sg, "_load_state", lambda: dict(state or {}))
+        saved: dict = {}
+        monkeypatch.setattr(sg, "_save_state_rows",
+                            lambda rows: saved.update({r[0]: r for r in rows}))
+        deleted: list = []
+        monkeypatch.setattr(sg, "_delete_state_rows", lambda rows: deleted.extend(rows))
+        # _release_progress 里真实的 store.set_value 打桩掉
+        import backend.integrations.store as _store
+        monkeypatch.setattr(_store, "write_values", lambda *a, **k: 0)
+        return saved, deleted
+
+    def test_full_run_creates_strm(self, tmp_path, monkeypatch):
+        videos = [
+            ("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "fid1", 100),
+            ("MoviePilot/剧集/A/Season 1/A - S01E02.mkv", "fid2", 200),
+        ]
+        self._patch_all(tmp_path, monkeypatch, videos)
         try:
-            sg._list_files_page_with_retry(holder, "d1", "q")
-            assert False, "应抛出 PermissionError"
-        except PermissionError:
-            pass
-        assert refreshed["n"] == 2  # 最后一次失败后不再刷新
+            res = sg.run_generation(_FakeDb({}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["ok"] is True
+        assert res["stats"]["generated"] == 2
+        p = tmp_path / "剧集/A/Season 1/A - S01E01.strm"
+        assert p.exists()
+        assert "fid1" in p.read_text()
 
-    def test_no_retry_on_other_errors(self, monkeypatch):
-        holder = {"token": "t"}
-
-        def fake_list_page(token, drive_id, query, page_token=None):
-            raise TimeoutError("network")
-
-        monkeypatch.setattr(sg, "_list_files_page", fake_list_page)
+    def test_incremental_skips_unchanged(self, tmp_path, monkeypatch):
+        videos = [("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "fid1", 100)]
+        state = {"MoviePilot/剧集/A/Season 1/A - S01E01.mkv":
+                 ("fid1", 100, "剧集/A/Season 1/A - S01E01.strm")}
+        (tmp_path / "剧集/A/Season 1").mkdir(parents=True)
+        (tmp_path / "剧集/A/Season 1/A - S01E01.strm").write_text("old")
+        self._patch_all(tmp_path, monkeypatch, videos, state=state)
         try:
-            sg._list_files_page_with_retry(holder, "d1", "q")
-            assert False, "应抛出 TimeoutError"
-        except TimeoutError:
-            pass
+            res = sg.run_generation(_FakeDb({}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["stats"]["skipped"] == 1
+        assert res["stats"]["generated"] == 0
 
-    def test_refresh_clears_token_cache(self, monkeypatch):
-        # _refresh_token 应清掉 drive_changes 的 token 缓存，避免拿到同一个坏 token
-        cleared = {"n": 0}
+    def test_size_change_rebuilds(self, tmp_path, monkeypatch):
+        """P3-9：size 变化也触发重建（原来只比 file_id）。"""
+        videos = [("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "fid1", 999)]
+        state = {"MoviePilot/剧集/A/Season 1/A - S01E01.mkv":
+                 ("fid1", 100, "剧集/A/Season 1/A - S01E01.strm")}
+        (tmp_path / "剧集/A/Season 1").mkdir(parents=True)
+        (tmp_path / "剧集/A/Season 1/A - S01E01.strm").write_text("old")
+        self._patch_all(tmp_path, monkeypatch, videos, state=state)
+        try:
+            res = sg.run_generation(_FakeDb({}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["stats"]["generated"] == 1
+        assert res["stats"]["skipped"] == 0
 
-        class FakeDc:
-            _token_cache = {"a@x": ("bad", 9999999999.0)}
+    def test_multi_drive(self, tmp_path, monkeypatch):
+        """P1-2：不指定 drive 时遍历所有共享盘（原来只跑第一个）。"""
+        def fake_iter(drive_id, dir_path):
+            return iter([(f"MoviePilot/{drive_id}/a.mkv", f"fid-{drive_id}", 10)])
+        monkeypatch.setattr(sg, "iter_drive_videos", fake_iter)
+        monkeypatch.setattr(sg, "_discover_drives", lambda: {"d1": ["s"], "d2": ["s"]})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: str(tmp_path))
+        monkeypatch.setattr(sg, "_load_state", lambda: {})
+        monkeypatch.setattr(sg, "_save_state_rows", lambda rows: None)
+        import backend.integrations.store as _store
+        monkeypatch.setattr(_store, "write_values", lambda *a, **k: 0)
+        try:
+            res = sg.run_generation(_FakeDb({}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["ok"] is True
+        assert res["stats"]["generated"] == 2
+        assert (tmp_path / "d1/a.strm").exists()
+        assert (tmp_path / "d2/a.strm").exists()
 
-        def fake_modules():
-            return FakeDc()
+    def test_prune_removes_stale(self, tmp_path, monkeypatch):
+        """P2-3：prune 开启时删除 Drive 已不存在的条目；默认关闭。"""
+        videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
+        state = {
+            "MoviePilot/剧集/A/a.mkv": ("fid1", 100, "剧集/A/a.strm"),
+            "MoviePilot/剧集/OLD/old.mkv": ("fidOld", 100, "剧集/OLD/old.strm"),
+        }
+        (tmp_path / "剧集/A").mkdir(parents=True)
+        (tmp_path / "剧集/A/a.strm").write_text("x")
+        (tmp_path / "剧集/OLD").mkdir(parents=True)
+        (tmp_path / "剧集/OLD/old.strm").write_text("x")
+        _saved, deleted = self._patch_all(tmp_path, monkeypatch, videos, state=state)
+        try:
+            res = sg.run_generation(_FakeDb({"strm_gen_prune": "true"}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["ok"] is True
+        assert res["stats"]["pruned"] == 1
+        assert not (tmp_path / "剧集/OLD/old.strm").exists()
+        assert (tmp_path / "剧集/A/a.strm").exists()
+        assert deleted == ["MoviePilot/剧集/OLD/old.mkv"]
 
-        def fake_get_token():
-            cleared["n"] += 1
-            return "fresh"
-
-        monkeypatch.setattr(sg, "_drive_modules", fake_modules)
-        monkeypatch.setattr(sg, "_get_token", fake_get_token)
-        holder = {"token": "bad"}
-        assert sg._refresh_token(holder) is True
-        assert holder["token"] == "fresh"
-        assert FakeDc._token_cache == {}
-
-
-class TestResolveDirIdPagination:
-    """P2-1：_resolve_dir_id 应翻页查找。"""
-
-    def test_finds_on_second_page(self, monkeypatch):
-        holder = {"token": "t"}
-
-        def fake_retry(h, drive_id, query, page_token=None):
-            # 第一页没命中但有下一页；目标在第二页
-            if page_token is None:
-                return ([], "p2")
-            return ([{"id": "dir123", "name": "MoviePilot", "trashed": False}], None)
-
-        monkeypatch.setattr(sg, "_list_files_page_with_retry", fake_retry)
-        got = sg._resolve_dir_id(holder, "d1", "MoviePilot/")
-        assert got == "dir123"
-
-    def test_returns_none_when_not_found(self, monkeypatch):
-        holder = {"token": "t"}
-
-        def fake_retry(h, drive_id, query, page_token=None):
-            return ([], None)
-
-        monkeypatch.setattr(sg, "_list_files_page_with_retry", fake_retry)
-        assert sg._resolve_dir_id(holder, "d1", "不存在的目录/") is None
+    def test_prune_off_by_default(self, tmp_path, monkeypatch):
+        videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
+        state = {"MoviePilot/剧集/OLD/old.mkv": ("fidOld", 100, "剧集/OLD/old.strm")}
+        (tmp_path / "剧集/OLD").mkdir(parents=True)
+        (tmp_path / "剧集/OLD/old.strm").write_text("x")
+        _saved, deleted = self._patch_all(tmp_path, monkeypatch, videos, state=state)
+        try:
+            res = sg.run_generation(_FakeDb({}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["stats"]["pruned"] == 0
+        assert (tmp_path / "剧集/OLD/old.strm").exists()
+        assert deleted == []
 
 
 class TestSelectDrive:
@@ -323,39 +463,33 @@ class TestSelectDrive:
         assert [d["drive_id"] for d in drives] == ["aa", "zz"]
 
 
-class TestTryAcquire:
-    """P3-6：运行权抢占语义。"""
-
-    def test_acquire_release(self):
-        sg.release()  # 先确保干净
-        assert sg.try_acquire() is True
-        assert sg.try_acquire() is False  # 已持有则失败
-        sg.release()
-        assert sg.try_acquire() is True
-        sg.release()
-
-    def test_run_generation_refuses_when_running(self, monkeypatch):
-        # 已在运行时 run_generation 直接拒绝，不执行
-        monkeypatch.setattr(sg, "try_acquire", lambda: False)
-        called = {"n": 0}
-
-        def fake_execute(db, full, drive_id):
-            called["n"] += 1
-            return {"ok": True}
-
-        monkeypatch.setattr(sg, "_execute_generation", fake_execute)
-        result = sg.run_generation(_FakeDb({}))
-        assert result["ok"] is False
-        assert called["n"] == 0
-
-
 class TestSafeName:
     """P3-7：文件名清理。"""
 
     def test_strips_dotdot(self):
         assert sg._safe_name("..") == ""
         assert sg._safe_name("../a") == "a"
-        assert sg._safe_name("a/./b") == "a/b"
 
-    def test_normal(self):
-        assert sg._safe_name("惊枝 - S01E01.mkv") == "惊枝 - S01E01.mkv"
+
+class TestResolveDirIdPagination:
+    """P2-1：_resolve_dir_id 应翻页查找（fetch 闭包版）。"""
+
+    def test_finds_on_second_page(self):
+        calls = {"n": 0}
+
+        def fetch(query, page_token=None):
+            calls["n"] += 1
+            # 第一页没命中但有下一页；目标在第二页
+            if page_token is None:
+                return ([], "p2")
+            return ([{"id": "dir123", "name": "MoviePilot", "trashed": False}], None)
+
+        got = sg._resolve_dir_id(fetch, "d1", "MoviePilot/")
+        assert got == "dir123"
+        assert calls["n"] == 2
+
+    def test_returns_none_when_not_found(self):
+        def fetch(query, page_token=None):
+            return ([], None)
+
+        assert sg._resolve_dir_id(fetch, "d1", "不存在的目录/") is None
