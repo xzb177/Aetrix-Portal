@@ -26,6 +26,7 @@ import {
   LockOpen,
   PlugZap,
   RefreshCw,
+  BookOpen,
   RotateCw,
   Search,
   Wand2,
@@ -36,6 +37,7 @@ import {
   bindTmdb,
   deleteMetaSourceKey,
   deleteTmdbKey,
+  fetchDoubanConfig,
   fetchEnrichProgress,
   fetchMetaSources,
   fetchTmdbKeys,
@@ -48,6 +50,7 @@ import {
   rescrapeItem,
   resetMetaSourceCooldown,
   resetTmdbKeyCooldown,
+  saveDoubanConfig,
   saveMetaSources,
   saveTmdbMirror,
   testMetaSourceKeys,
@@ -69,6 +72,7 @@ import type {
   TmdbMirror,
   TmdbPreview,
   TmdbTestResult,
+  DoubanConfig,
 } from '@/api/admin'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
@@ -525,6 +529,49 @@ const keyPanelOpen = ref('')
 const keyInput = ref('')
 const keyBusy = ref('')
 const sourceKeyTests = ref<Record<string, Array<{ index: number; masked: string; ok: boolean; message: string }>>>({})
+// ==================== 豆瓣优先 ====================
+const doubanCfg = ref<DoubanConfig | null>(null)
+const doubanLoading = ref(false)
+const doubanSaving = ref(false)
+const doubanDraft = reactive({ enabled: true, min_interval: 1.0 })
+
+const doubanDirty = computed(() => {
+  if (!doubanCfg.value) return false
+  return (
+    doubanCfg.value.enabled !== doubanDraft.enabled ||
+    Number(doubanCfg.value.min_interval) !== Number(doubanDraft.min_interval)
+  )
+})
+
+async function loadDouban() {
+  doubanLoading.value = true
+  try {
+    const cfg = await fetchDoubanConfig()
+    doubanCfg.value = cfg
+    doubanDraft.enabled = cfg.enabled
+    doubanDraft.min_interval = Number(cfg.min_interval) || 1.0
+  } catch {
+    doubanCfg.value = null
+  } finally {
+    doubanLoading.value = false
+  }
+}
+
+async function saveDouban() {
+  doubanSaving.value = true
+  try {
+    const cfg = await saveDoubanConfig(doubanDraft.enabled, Number(doubanDraft.min_interval) || 1.0)
+    doubanCfg.value = cfg
+    doubanDraft.enabled = cfg.enabled
+    doubanDraft.min_interval = Number(cfg.min_interval) || 1.0
+    ElMessage.success('豆瓣优先配置已保存')
+  } catch {
+    ElMessage.error('保存失败，请重试')
+  } finally {
+    doubanSaving.value = false
+  }
+}
+
 const probe = reactive({ title: '', year: '', kind: 'series' as 'series' | 'movie' })
 const probeResult = ref<MetaSourceProbe | null>(null)
 const probeOnly = ref('')
@@ -806,6 +853,7 @@ onMounted(() => {
   loadTmdbKeys().catch(() => undefined)
   loadMirror().catch(() => undefined)
   loadMeta().catch(() => undefined)
+  loadDouban().catch(() => undefined)
   // P1 入口前移：媒体库列表的「识别」按钮跳过来时带 ?item_id=xxx，
   // 直接填入条目 ID 并选中，跳过「搜条目」一步（深链刷新页面也要生效）
   const deepItemId = Number(route.query.item_id)
@@ -1148,6 +1196,58 @@ onMounted(() => {
                 {{ row.site }}: {{ row.id }}
               </span>
             </div>
+          </div>
+        </template>
+      </SectionCard>
+
+      <!-- 0.5 豆瓣优先：中文标题先走豆瓣（TMDB 中文收录差） -->
+      <SectionCard class="ms-card" title="豆瓣优先" :icon="BookOpen">
+        <template #actions>
+          <div class="ms-facts">
+            <span v-if="doubanCfg" class="fact" :class="doubanCfg.enabled ? 'ok' : 'muted'">
+              {{ doubanCfg.enabled ? '已开启' : '已关闭' }}
+            </span>
+            <span v-if="doubanDirty" class="fact warn">有未保存的改动</span>
+          </div>
+        </template>
+        <p class="ms-hint">
+          TMDB 对中文剧集 / 综艺收录偏少。开启后，<strong>含中文的标题优先走豆瓣搜索</strong>：
+          搜中则取详情（标题 / 简介 / 评分 / 海报）写库；没搜中则回退到 TMDB。
+          非中文标题不受影响，直接走 TMDB。
+        </p>
+        <div v-if="doubanLoading && !doubanCfg" class="ms-skeleton" aria-busy="true">
+          <div class="au-skeleton" /><div class="au-skeleton" />
+        </div>
+        <template v-else-if="doubanCfg">
+          <div class="ms-switches">
+            <div class="ms-switch">
+              <el-switch v-model="doubanDraft.enabled" />
+              <div>
+                <div class="ms-switch-title">中文优先走豆瓣</div>
+                <div class="ms-hint">关 = 中文标题也直接走 TMDB（原行为）</div>
+              </div>
+            </div>
+          </div>
+          <div class="ms-field">
+            <span class="ms-field-label">请求间隔（秒）</span>
+            <el-input-number
+              v-model="doubanDraft.min_interval"
+              :min="0"
+              :max="10"
+              :step="0.5"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">两次豆瓣请求之间的最小间隔，防反爬封 IP（默认 1.0）</span>
+          </div>
+          <div class="ms-actions">
+            <el-button
+              type="primary"
+              size="small"
+              :loading="doubanSaving"
+              :disabled="!doubanDirty"
+              @click="saveDouban"
+            >保存</el-button>
           </div>
         </template>
       </SectionCard>
