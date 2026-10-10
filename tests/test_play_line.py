@@ -1,8 +1,11 @@
 """线路选择（play_line）单元测试。
 
+2026-10 简化：只有 relay 一条播放路径。cdn / cache / direct 均为历史值，
+任何输入都折成 relay；set_play_line 为空操作（不再落库）。
+
 - 纯逻辑用隔离的内存 SQLite，不碰生产库。
 - video_stream 决策分支沿用 test_playback_redirect.py 的 monkeypatch 风格。
-- 302 直连已下线：这里的重点是“老用户存的 direct 会被迁成 relay”，
+- 302 直连已下线：这里的重点是"老用户存的 direct 读出来是 relay"，
   以及任何线路都不会再把播放 302 到 Google。
 """
 import asyncio
@@ -71,37 +74,47 @@ def test_legacy_direct_pref_is_read_as_relay(db):
 
 
 def test_setting_direct_migrates_the_stored_row(db):
-    """老客户端重发 direct：不报错，库里那条老记录顺手迁成 relay"""
+    """老客户端重发 direct：不报错，读出来是 relay。
+
+    2026-10 简化后 set_play_line 是空操作（不再落库/迁移），
+    库里那条老记录原样保留，读取时统一折成 relay。
+    """
     from backend import models
 
     u = _make_user(db, "u3b")
     db.add(models.UserPlayLine(user_id=u.id, line=LINE_DIRECT))
     db.commit()
     assert set_play_line(db, u.id, LINE_DIRECT) == LINE_RELAY
-    assert db.query(models.UserPlayLine).filter(
-        models.UserPlayLine.user_id == u.id).first().line == LINE_RELAY
+    assert get_play_line(db, u.id) == LINE_RELAY
 
 
 def test_normalize_maps_legacy_and_rejects_unknown():
     assert normalize(LINE_DIRECT) == LINE_RELAY
+    assert normalize(LINE_CDN) == LINE_RELAY       # 2026-10：cdn/cache 也折成 relay
+    assert normalize(LINE_CACHE) == LINE_RELAY
     assert normalize("DIRECT") == LINE_RELAY          # 大小写 / 空白都归一
     assert normalize("  relay ") == LINE_RELAY
     assert normalize(None) is None
     assert normalize("bogus") is None
 
 
-def test_set_invalid_raises_and_keeps_default(db):
+def test_set_invalid_no_longer_raises(db):
+    """2026-10 简化：set_play_line 是空操作，任何输入都返回 relay，不再抛 ValueError。
+
+    非法值仍在 API 层被拦截（portal.set_play_line_pref 先过 normalize），
+    模块函数本身不再做校验。
+    """
     u = _make_user(db, "u4")
-    with pytest.raises(ValueError):
-        set_play_line(db, u.id, "bogus")
+    assert set_play_line(db, u.id, "bogus") == LINE_RELAY
     assert get_play_line(db, u.id) == LINE_RELAY
 
 
 def test_users_are_independent(db):
+    """2026-10 简化：所有用户读到的都是 relay（偏好不再区分用户）"""
     a = _make_user(db, "ua")
     b = _make_user(db, "ub")
     set_play_line(db, a.id, LINE_CDN)
-    assert get_play_line(db, a.id) == LINE_CDN
+    assert get_play_line(db, a.id) == LINE_RELAY
     assert get_play_line(db, b.id) == LINE_RELAY
 
 
@@ -126,24 +139,27 @@ def test_broken_db_or_no_user_id_falls_back_to_default(db):
 
 
 def test_play_lines_contract():
-    # cdn（边缘缓存预留）/ cache（VPS 本地缓存）/ relay（中转，默认）
-    # direct 已下线：常量还在（历史数据/统计认它），但不再是可选项
-    assert set(PLAY_LINES) == {"cdn", "cache", "relay"}
+    # 2026-10 简化：只有 relay 一条播放路径；cdn / cache / direct 都是历史值，
+    # 常量保留（历史数据/统计口径认它们），但不再是可选项
+    assert set(PLAY_LINES) == {"relay"}
     assert LINE_DIRECT not in PLAY_LINES
+    assert LINE_CDN not in PLAY_LINES
+    assert LINE_CACHE not in PLAY_LINES
     assert DEFAULT_LINE == LINE_RELAY
 
 
 def test_set_and_get_cdn(db):
+    """cdn 已下线：设置 cdn 返回 relay，读取也是 relay（静默折叠，不报错）"""
     u = _make_user(db, "ucdn")
-    assert set_play_line(db, u.id, LINE_CDN) == LINE_CDN
-    assert get_play_line(db, u.id) == LINE_CDN
+    assert set_play_line(db, u.id, LINE_CDN) == LINE_RELAY
+    assert get_play_line(db, u.id) == LINE_RELAY
 
 
 def test_set_and_get_cache_line(db):
-    """本地缓存线路可持久化（选择与读取与其它线路同口径）"""
+    """cache 已下线：设置 cache 返回 relay，读取也是 relay（静默折叠，不报错）"""
     u = _make_user(db, "ucache")
-    assert set_play_line(db, u.id, LINE_CACHE) == LINE_CACHE
-    assert get_play_line(db, u.id) == LINE_CACHE
+    assert set_play_line(db, u.id, LINE_CACHE) == LINE_RELAY
+    assert get_play_line(db, u.id) == LINE_RELAY
 
 
 # ---- video_stream 决策分支 ----

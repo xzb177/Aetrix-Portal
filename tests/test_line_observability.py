@@ -276,7 +276,8 @@ def test_direct_card_states_zero_bytes_is_correct_not_missing(db):
 
 
 def test_users_only_counts_explicit_preferences(db):
-    """没配过的用户走默认 direct，但不能算成「选了 direct 的人」"""
+    """没配过的用户不计入任何线路；2026-10 简化后所有历史值（cdn/cache/direct）
+    都按 relay 归类——面板上不再挂"有人选了 cdn/cache"的死选项。"""
     from backend.models import UserPlayLine
 
     db.add(UserPlayLine(user_id=1, line=play_line.LINE_RELAY))
@@ -284,8 +285,8 @@ def test_users_only_counts_explicit_preferences(db):
     db.add(UserPlayLine(user_id=3, line=play_line.LINE_CACHE))
     db.commit()
     cards = {c["line"]: c for c in line_health.snapshot(db)["lines"]}
-    assert cards[play_line.LINE_RELAY]["users"] == 2
-    assert cards[play_line.LINE_CACHE]["users"] == 1
+    assert cards[play_line.LINE_RELAY]["users"] == 3
+    assert cards[play_line.LINE_CACHE]["users"] == 0
     assert cards[play_line.LINE_DIRECT]["users"] == 0
     assert line_health.snapshot(db)["total_users"] == 3
 

@@ -163,11 +163,16 @@ def test_cache_control_taxonomy():
 # ---------- 与 play_line / 播放面打通 ----------
 
 def test_play_lines_expose_cdn_line():
+    """2026-10 简化：只有 relay 一条播放路径，不再对外暴露 cdn 线路。
+
+    cdn 模块的播放 URL 口径（分片缓存头等）不受影响，变的只是"可选线路"。
+    """
     from backend.emby_server import cdn, play_line
 
     assert cdn.play_lines() == play_line.PLAY_LINES
-    assert "cdn" in cdn.play_lines()
-    assert play_line.LINE_CDN == "cdn"
+    assert cdn.play_lines() == ("relay",)
+    assert "cdn" not in cdn.play_lines()
+    assert play_line.LINE_CDN == "cdn"  # 常量保留，仅为历史数据/统计口径
 
 
 def test_play_line_pref_payload_exposes_cdn_flag(db):
