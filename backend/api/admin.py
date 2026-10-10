@@ -1884,10 +1884,14 @@ def economy_create_exchange_codes(
     }
 
 
+class ExchangeCodeUpdateRequest(BaseModel):
+    is_active: Optional[bool] = None
+
+
 @admin_router.put("/economy/exchange-codes/{code_id}")
 def economy_update_exchange_code(
     code_id: int,
-    request: RegistrationCodeUpdateRequest,
+    request: ExchangeCodeUpdateRequest,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
