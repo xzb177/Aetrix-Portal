@@ -442,3 +442,17 @@ class TestRedirectHeaders:
             fwd, "https://drive.google.com/a", "https://docs.google.com/b"
         )
         assert out == {"AUTHORIZATION": "Bearer Y"}
+
+
+def test_needs_refresh_resigns_expired_authentic_signature(monkeypatch):
+    """刷新任务错过窗口（停机 > 剩余有效期）后，过期但签名真实的 .strm 必须重签，
+    否则全库永久 bad 拒播；被篡改的仍然不碰。"""
+    from backend.emby_server import strm_sign
+
+    real_time = time.time
+    signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=300)
+    monkeypatch.setattr(strm_sign.time, "time", lambda: real_time() + 3600)
+    assert strm_sign.verify_strm_url(signed)[1] == "bad"
+    assert strm_sign.needs_refresh(signed) is True
+    tampered = signed.replace("id=ABC123", "id=EVIL")
+    assert strm_sign.needs_refresh(tampered) is False

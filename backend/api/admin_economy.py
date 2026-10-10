@@ -185,6 +185,9 @@ async def economy_adjust_points(
 ECONOMY_CONFIG_KEYS = {
     "checkin_enabled": "bool", "checkin_base_points": "int", "checkin_streak_bonus": "int",
     "checkin_streak_max_bonus": "int",
+    # 签到随机基础分 / 惩罚（economy._checkin_rules 读取；留空=回退到 checkin_base_points / 默认值）
+    "checkin_base_min": "int", "checkin_base_max": "int",
+    "checkin_penalty_pct": "int", "checkin_penalty_min": "int", "checkin_penalty_max": "int",
     "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
     "exchange_enabled": "bool",
     "recharge_enabled": "bool", "subscription_purchase_enabled": "bool",
@@ -221,6 +224,46 @@ ECONOMY_CONFIG_KEYS = {
     "playback_prewarm_timeout_seconds": "int",
     "playback_prewarm_chunk_bytes": "int",
 }
+
+
+# 签到数值配置的取值范围（含端点）；空字符串表示「未设置」，读取侧回退默认值
+_CHECKIN_INT_RANGES = {
+    "checkin_base_min": (0, 100000),
+    "checkin_base_max": (0, 100000),
+    "checkin_penalty_pct": (0, 100),
+    "checkin_penalty_min": (0, 100000),
+    "checkin_penalty_max": (0, 100000),
+}
+
+
+def _validate_checkin_settings(db: Session, settings: dict) -> None:
+    """签到随机/惩罚配置校验：整数、范围内、下限不大于上限（非法直接 400，此时尚未写库）"""
+    if not any(k in settings for k in _CHECKIN_INT_RANGES):
+        return
+
+    def _final(key: str) -> str:
+        if key in settings:
+            return str(settings[key] if settings[key] is not None else "").strip()
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+        return (row.value or "").strip() if row else ""
+
+    parsed: dict = {}
+    for key, (lo, hi) in _CHECKIN_INT_RANGES.items():
+        raw = _final(key)
+        if raw == "":
+            parsed[key] = None
+            continue
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} 必须是整数")
+        if not lo <= val <= hi:
+            raise HTTPException(status_code=400, detail=f"{key} 需在 {lo}~{hi} 之间")
+        parsed[key] = val
+    for lo_key, hi_key, label in (("checkin_base_min", "checkin_base_max", "签到基础积分"),
+                                  ("checkin_penalty_min", "checkin_penalty_max", "签到惩罚")):
+        if parsed[lo_key] is not None and parsed[hi_key] is not None and parsed[lo_key] > parsed[hi_key]:
+            raise HTTPException(status_code=400, detail=f"{label}下限不能大于上限")
 
 
 class EconomySettingsRequest(BaseModel):
@@ -266,6 +309,7 @@ def economy_update_settings(
                 _sa.validate_domain(_final("stream_accel_domain"))
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
+    _validate_checkin_settings(db, request.settings)
     changed = {}
     for key, value in request.settings.items():
         if key not in ECONOMY_CONFIG_KEYS:

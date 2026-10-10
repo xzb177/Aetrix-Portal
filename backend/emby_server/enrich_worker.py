@@ -598,6 +598,16 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
                     _dd = _dbn.client.get_details(_dh["id"])
                     if _dd:
                         result["douban_details"] = _dd
+                    # 豆瓣优先命中的条目不走 TMDB → 没有 credits → 演员表永远是空的
+                    # （没有 emby_people 行，refresh_person_worker 也补不了头像）。
+                    # 这里顺手取豆瓣演职员表，写库阶段在 TMDB 没给演员时落库。
+                    try:
+                        _dc = _dbn.client.get_celebrities(_dh["id"])
+                    except Exception as exc:  # noqa: BLE001 — 演员表是增强信息
+                        logger.debug("豆瓣演职员表失败 %s: %s", item.name, exc)
+                        _dc = []
+                    if _dc:
+                        result["douban_cast"] = _dc
                     progress.note_stage("enrich_douban_first")
                     logger.info("[douban] 优先命中 %r -> %s",
                                 item.name, _dh.get("title"))
@@ -757,6 +767,9 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
     # 口径与 _enrich_apply 写 emby_people 用的是同一个 cast_list，预热和落库对得上。
     cast_urls = [c["image"] for c in cast_list(result.get("tmdb_details"))
                  if c.get("image")]
+    if not cast_urls:
+        cast_urls = [c["image"] for c in _douban_cast_rows(result.get("douban_cast"))
+                     if c.get("image")]
     result["images_prewarmed"] = prewarm_images(
         result.get("tmdb_hit"), result.get("tmdb_details"),
         extra=[(result.get(_k) or {}).get("image")
@@ -777,6 +790,56 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
     if tmdb_ctx is None:
         return result
     return _enrich_fetch_tmdb_post(result, item, tmdb_ctx, batch_out=None)
+
+
+def _douban_cast_rows(celebs: Optional[list]) -> list[dict]:
+    """豆瓣演职员表 → 与 ``cast_list`` 同口径的行（name/role/image/sort_order）。
+
+    预热与落库共用这一份，保证两边看到的演员表一致。
+    """
+    from backend.emby_server import douban as _dbn
+    from backend.emby_server.tmdb import TMDB_CAST_LIMIT
+    out: list[dict] = []
+    for c in celebs or []:
+        if len(out) >= TMDB_CAST_LIMIT:
+            break
+        if not isinstance(c, dict):
+            continue
+        name = _dbn.display_name(str(c.get("name") or ""))
+        if not name:
+            continue
+        out.append({"name": name, "role": str(c.get("role") or ""),
+                    "image": str(c.get("image") or ""),
+                    "sort_order": len(out), "person_id": ""})
+    return out
+
+
+def _apply_douban_cast(db, item: Any, celebs: Optional[list]) -> None:
+    """写库阶段：豆瓣优先命中、TMDB 没给演员表时，用豆瓣演职员表写 ``emby_people``。
+
+    幂等：条目已有演员行就不动（TMDB 写过的、或上一轮写过的）。失败只记日志。
+    """
+    rows = _douban_cast_rows(celebs)
+    if not rows:
+        return
+    try:
+        exists = db.query(em.EmbyPerson.id).filter(
+            em.EmbyPerson.item_id == item.id).first()
+        if exists:
+            return
+        for c in rows:
+            db.add(em.EmbyPerson(
+                item_id=item.id, name=c["name"][:200], role=c["role"][:200],
+                image=c["image"][:1024], sort_order=c["sort_order"],
+                person_tmdb_id=""))
+        if any(not c["image"] for c in rows):
+            try:
+                from backend.emby_server import refresh_person_worker as _rpw
+                _rpw.kick()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("豆瓣演员落库失败 %s: %s", getattr(item, "name", ""), exc)
 
 
 def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
@@ -910,6 +973,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
 
     # 3.5 演员表（v2.51.0）：details 自带 credits；幂等，只在没有演员行时写。
     _apply_cast(db, item, fetched.get("tmdb_details"))
+    if fetched.get("douban_cast"):
+        db.flush()
+        _apply_douban_cast(db, item, fetched.get("douban_cast"))
     # 元数据片长（只补空）：apply_details 被「已有 imdb+别名」短路时也要落
     try:
         from backend.emby_server.tmdb import apply_runtime as _apply_rt

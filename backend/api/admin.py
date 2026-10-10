@@ -575,7 +575,8 @@ def gdrive_sa_rotate(
     sa_dir = Path("/opt/rclone-sa")
     if not sa_dir.exists():
         raise HTTPException(status_code=404, detail="SA 目录不存在")
-    result = playback_tune.ensure_sa_rotation("/root/.config/rclone/rclone.conf")
+    # sa_dir 是必填参数：以前漏传，这个接口每次都 TypeError → 500，手动轮换从没生效过
+    result = playback_tune.ensure_sa_rotation("/root/.config/rclone/rclone.conf", sa_dir)
     _audit(db, current_admin, "gdrive_sa_rotate", "gdrive_sa", 0, {"sa_file": result.get("sa_file")})
     db.commit()
     return {"success": True, "sa_file": result.get("sa_file"), "mode": result.get("mode")}
@@ -672,7 +673,9 @@ def get_registration_mode(
     )
     values = {r.key: r.value for r in rows}
 
-    mode = values.get("registration_mode") or "open"
+    # 与注册接口同口径：历史 code / 未知值按 closed 展示（注册接口实际也拒绝注册）
+    from backend.api.emby_portal import _normalize_registration_mode
+    mode = _normalize_registration_mode(values.get("registration_mode"))
     message = values.get("registration_closed_message") or ""
 
     ratelimit_enabled = True

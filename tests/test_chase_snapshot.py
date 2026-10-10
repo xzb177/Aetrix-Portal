@@ -161,3 +161,23 @@ def test_maybe_check_once_runs_with_lock(monkeypatch):
     monkeypatch.setattr(cw, "_check_once", check)
     cw._maybe_check_once()
     check.assert_called_once()
+
+
+def test_maybe_check_once_releases_pg_advisory_lock(monkeypatch):
+    """PG session 级 advisory 锁不随 Session.close() 释放（连接回池仍存活）：
+    跑完一轮必须显式 pg_advisory_unlock，否则之后谁都拿不到锁，追新静默停摆。"""
+    db = mock.MagicMock()
+    db.execute.return_value.first.return_value = (True,)
+    monkeypatch.setattr(cw, "SessionLocal", lambda: db)
+    monkeypatch.setattr(cw, "_check_once", lambda: None)
+    cw._maybe_check_once()
+    sqls = [str(c[0][0]) for c in db.execute.call_args_list]
+    assert any("pg_try_advisory_lock" in q for q in sqls)
+    assert any("pg_advisory_unlock" in q for q in sqls), sqls
+
+
+def test_maybe_check_once_releases_local_lock_on_sqlite(db, monkeypatch):
+    monkeypatch.setattr(cw, "SessionLocal", lambda: db)
+    monkeypatch.setattr(cw, "_check_once", lambda: None)
+    cw._maybe_check_once()
+    assert not cw._LOCAL_ADVISORY_LOCK.locked()

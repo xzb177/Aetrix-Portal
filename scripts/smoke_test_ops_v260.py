@@ -401,7 +401,8 @@ check("重新允许下载后可访问", r.status_code == 200, str(r.status_code)
 
 # ==================== 六、注册模式开关（注册码门禁已下线） ====================
 # 注册码注册门禁已于 v2.7.x 彻底删除：只剩 open（开放注册）/ closed（关闭注册），
-# DB 里残留的 "code" 值按 open 处理。卡码体系走核销路径，不受影响。
+# DB 里残留的 "code" 值按 closed 处理（fail-closed，避免静默开放注册）。
+# 卡码体系走核销路径，不受影响。
 
 set_config("registration_mode", "open")
 r = client.post("/api/user/auth/register", json={
@@ -421,12 +422,15 @@ r = client.post("/api/user/auth/register", json={
 })
 check("关闭注册时注册 → 403", r.status_code == 403, str(r.status_code))
 
-# 遗留值兼容：DB 里残留的 "code" 按 open 处理（后端已拒绝新的 "code" 写入）
+# 遗留值兼容：DB 里残留的 "code"（及任何未知值）按 closed 处理
+# （fail-closed：当初设 code 是为了不对外开放，升级后不能静默变成开放注册）
 set_config("registration_mode", "code")
 r = client.post("/api/user/auth/register", json={
     "username": f"reg_legacy{suf}", "password": "pass12345",
 })
-check("遗留 code 模式按开放注册处理", r.status_code in (200, 201), str(r.status_code))
+check("遗留 code 模式按关闭注册处理（fail-closed）", r.status_code == 403, str(r.status_code))
+# 后续用例（诱饵码受害者注册）需要开放注册，切回 open
+set_config("registration_mode", "open")
 
 r = client.put("/api/admin/settings/registration", json={"mode": "code", "message": ""},
                headers=staff_h)

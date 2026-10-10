@@ -217,10 +217,20 @@ def _next_sa_index(sa_files: list[Path], state_path: Path) -> int:
 
 
 def _sa_json_files(sa_dir: str | Path) -> list[Path]:
+    """SA 目录下的 *.json；顶层没有时看 ``sa/`` 子目录（与 drive_changes 同口径，
+    生产 /opt/rclone-sa 的布局是 ``sa/*.json``）。"""
     p = Path(sa_dir)
     if not p.is_dir():
         return []
-    return sorted(f for f in p.glob("*.json") if f.is_file())
+    files = sorted(f for f in p.glob("*.json") if f.is_file())
+    if not files and (p / "sa").is_dir():
+        files = sorted(f for f in (p / "sa").glob("*.json") if f.is_file())
+    return files
+
+
+#: 轮换是「读状态 → +1 → 写状态 → 改 rclone.conf」的读改写，并发调用
+#: （管理端连点 / 部署脚本同时跑）会两次拿到同一个下标、或交错写坏配置
+_SA_ROTATE_LOCK = threading.Lock()
 
 
 def ensure_sa_rotation(conf_path: str | Path,
@@ -243,6 +253,11 @@ def ensure_sa_rotation(conf_path: str | Path,
     注意：rclone 已移除内核目录轮换（service_account_file_path），本函数
     改为应用层轮换；调用后需要重启挂载生效（SA 在挂载时加载）。
     """
+    with _SA_ROTATE_LOCK:
+        return _ensure_sa_rotation_locked(conf_path, sa_dir, state_path)
+
+
+def _ensure_sa_rotation_locked(conf_path, sa_dir, state_path) -> dict:
     result: dict = {"changed": False, "mode": "none", "warning": None,
                     "sa_file": None}
     conf = Path(conf_path)

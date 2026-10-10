@@ -325,31 +325,44 @@ def distribute_round(db: Session, round_id: int) -> dict[str, Any]:
         if user is None:
             errors.append({"winner_id": w.id, "error": "用户不存在"})
             continue
+        if prize.type in ("points", "days") and (prize.value or 0) <= 0:
+            # days=0 在 grant_welfare 语义里是永久，days 奖品不许借道发放永久资格
+            errors.append({"winner_id": w.id, "error": f"{'积分' if prize.type == 'points' else '天数'}奖品 value 非正：{prize.value}"})
+            continue
+        if prize.type not in ("points", "days", "whitelist"):
+            errors.append({"winner_id": w.id, "error": f"未知奖品类型：{prize.type}"})
+            continue
+        # 原子认领：UPDATE ... WHERE distributed = false。上面的 w.distributed 是读出来的旧值，
+        # 管理员手动开奖与自动开奖调度（或连点两次）并发跑同一轮时都会读到 False → 双倍发奖。
+        # 只有认领到这一行的请求发奖；发奖失败回滚会连认领一起撤销，下次可重试。
+        claimed = (
+            db.query(models.LotteryRoundWinner)
+            .filter(
+                models.LotteryRoundWinner.id == w.id,
+                models.LotteryRoundWinner.distributed.is_(False),
+            )
+            .update(
+                {"distributed": True, "distributed_at": datetime.now()},
+                synchronize_session=False,
+            )
+        )
+        if not claimed:
+            db.rollback()
+            skipped += 1
+            continue
         try:
             if prize.type == "points":
-                if (prize.value or 0) <= 0:
-                    errors.append({"winner_id": w.id, "error": f"积分奖品 value 非正：{prize.value}"})
-                    continue
                 _add_points(db, user, prize.value, "lottery_win", f"群抽奖中奖：{prize.name}", f"lottery:{round_id}")
             elif prize.type == "days":
-                if (prize.value or 0) <= 0:
-                    # days=0 在 grant_welfare 语义里是永久，days 奖品不许借道发放永久资格
-                    errors.append({"winner_id": w.id, "error": f"天数奖品 value 非正：{prize.value}"})
-                    continue
                 portal.grant_welfare(db, user, channel="lottery_win", days=prize.value)
-            elif prize.type == "whitelist":
+            else:  # whitelist
                 # days=0 表示永不过期（已核实 grant_welfare 源码）
                 portal.grant_welfare(db, user, channel="lottery_win", days=0)
-            else:
-                errors.append({"winner_id": w.id, "error": f"未知奖品类型：{prize.type}"})
-                continue
         except Exception as exc:
-            # 单个失败不中断整轮
+            # 单个失败不中断整轮（回滚同时撤销上面的认领）
             db.rollback()
             errors.append({"winner_id": w.id, "error": str(exc)})
             continue
-        w.distributed = True
-        w.distributed_at = datetime.now()
         db.commit()
         distributed += 1
         logger.info(

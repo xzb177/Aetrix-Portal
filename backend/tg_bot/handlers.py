@@ -82,7 +82,20 @@ def _bind_success_text(db, user) -> str:
     )
 
 
+# 绑定码只有 6 位数字：每个 Telegram 账号 10 分钟内最多尝试这么多次，防止枚举他人绑定码
+# （绑定成功即可用 /start 一键免密登录该网页账号，等同账号接管）
+BIND_ATTEMPTS_MAX = 5
+BIND_ATTEMPTS_WINDOW = 600
+
+
 def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None:
+    from backend.ratelimit import check_rate_limit
+
+    allowed, _retry = check_rate_limit(
+        f"tg_bind_attempt:{tg_user_id}", BIND_ATTEMPTS_MAX, BIND_ATTEMPTS_WINDOW)
+    if not allowed:
+        logger.warning("tg 绑定码尝试过于频繁，已拒绝 tg_user_id=%s", tg_user_id)
+        return "绑定码尝试过于频繁，请 10 分钟后再试"
     now = datetime.now()
     record = (
         db.query(TgBindCode)
@@ -124,6 +137,11 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
     if web_user:
         username = html.escape(str(web_user.username or ""))
         text += f"\n• 当前账号：{username}\n\n{_command_list()}"
+        # 一键免密登录链接 = 账号凭据：只在与本人的私聊里下发（私聊 chat_id == 用户 id）。
+        # 群里发出去，群内任何人先点就以该用户身份登录。
+        if chat_id != telegram_id:
+            text += "\n\n🔐 一键免密登录请私聊我发送 /start"
+            return text
         url = login_token.build_login_url(db, web_user)
         if url:
             return (text, {"inline_keyboard": [[{"text": "🚀 一键免密进入控制面板", "url": url}]]})

@@ -581,6 +581,10 @@ def map_changes_to_libraries(db, drive_id: str,
     fs_map = _library_fs_prefixes(db)  # {(lib_id, drive子目录): fs路径前缀}
 
     token = _get_token()
+    if not token and changes:
+        # 拿不到 token 就建不了路径：必须让调用方知道，不能静默返回空——
+        # 调用方据此不推进 page token，下一轮重放这批 changes。
+        raise RuntimeError("Drive Changes: 拿不到 SA token，无法映射 changes")
     affected: dict[int, set[str]] = {}
     for ch in changes:
         f = ch.get("file") or {}
@@ -593,8 +597,6 @@ def map_changes_to_libraries(db, drive_id: str,
         if not is_dir and not _is_video_name(name):
             continue
         parents = f.get("parents", []) or []
-        if not token:
-            break
         dpath = drive_path_of(ch.get("fileId", ""), name, parents, drive_id, token)
         if not dpath:
             continue
@@ -684,15 +686,19 @@ def status() -> dict:
     }
 
 
-def _trigger_scan(db, library_id: int, prefixes: set[str]) -> None:
-    """触发定向扫描（只扫变化的目录，不全扫）"""
+def _trigger_scan(db, library_id: int, prefixes: set[str]) -> bool:
+    """触发定向扫描（只扫变化的目录，不全扫）。
+
+    返回 False 表示入队失败（调用方据此不推进 page token，下轮重放）；
+    库不存在 / 没有前缀算「无事可做」，返回 True。
+    """
     from backend.emby_server import models as em
     from backend.emby_server import scan_queue
     lib = db.query(em.Library).filter(em.Library.id == library_id).first()
     if not lib:
-        return
+        return True
     if not prefixes:
-        return
+        return True
     logger.info("Drive Changes: 库 %s(%s) 定向扫描 %d 个目录",
                 getattr(lib, "name", "?"), library_id, len(prefixes))
     try:
@@ -704,6 +710,8 @@ def _trigger_scan(db, library_id: int, prefixes: set[str]) -> None:
             scan_queue.enqueue(lib, trigger="drive-changes")
     except Exception as exc:
         logger.warning("Drive Changes: 入队失败 库=%s: %s", library_id, exc)
+        return False
+    return True
 
 
 def poll_once() -> dict:
@@ -754,17 +762,37 @@ def poll_once() -> dict:
                 )
                 continue
             stats["changes"] += len(changes)
-            if new_token:
-                _save_page_token(db, drive_id, new_token)
-            if not changes:
-                continue
-            affected = map_changes_to_libraries(db, drive_id, changes)
-            for lib_id, prefixes in affected.items():
-                stats["libraries"] += 1
-                # 每个库独立 session，避免长事务
-                _trigger_scan(db, lib_id, prefixes)
-            # 清一下 parent 缓存，防止跨轮过期
-            _parent_cache.clear()
+            # page token 只在这批 changes **已经映射并入队**之后才推进。
+            # 以前先存 token 再映射：映射/入队任何一步失败（token 换不到、
+            # DB 抖动、入队异常），这批新文件就被永久跳过——下一轮从新 token
+            # 开始，Changes API 不会再把它们吐出来，只能等全量扫描兜底。
+            # 单个盘的失败也不再中断后面的盘。
+            try:
+                ok = True
+                if changes:
+                    affected = map_changes_to_libraries(db, drive_id, changes)
+                    for lib_id, prefixes in affected.items():
+                        stats["libraries"] += 1
+                        if not _trigger_scan(db, lib_id, prefixes):
+                            ok = False
+                if ok and new_token:
+                    _save_page_token(db, drive_id, new_token)
+                elif not ok:
+                    stats["errors"] += 1
+                    logger.warning("Drive Changes: drive %s 有库入队失败，"
+                                   "page token 不推进，下轮重放", drive_id)
+            except Exception as exc:
+                stats["errors"] += 1
+                fatal_error = str(exc)[:500]
+                logger.warning("Drive Changes: drive %s 映射/入队失败，"
+                               "page token 不推进，下轮重放: %s", drive_id, exc)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                # 清一下 parent 缓存，防止跨轮过期
+                _parent_cache.clear()
     except Exception as exc:
         stats["errors"] += 1
         fatal_error = str(exc)[:500]
