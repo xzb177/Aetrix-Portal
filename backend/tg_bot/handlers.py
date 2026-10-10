@@ -358,7 +358,8 @@ def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -
     return "\n".join(lines)
 
 
-def handle_redpacket(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
+def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
+                     update_id: int | None = None) -> str | tuple[str, dict | None]:
     # 1. 总开关：关闭时直接提示
     if not redpacket_common.enabled(db):
         return "🧧 红包功能已关闭"
@@ -375,9 +376,12 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[
     except ValueError:
         return "用法：/redpacket <总积分> <个数>\n例如：/redpacket 100 10（100 积分分成 10 个）"
     # 4. 发红包：复用后端校验与扣减逻辑
+    # P1 修复：TG poller at-least-once 可能重放同一 update，用 update_id 做幂等键
     from backend import welfare_redpacket
+    idem_key = f"tg:{update_id}" if update_id else None
     try:
-        packet = welfare_redpacket.send_packet(db, user, total, count)
+        packet = welfare_redpacket.send_packet(db, user, total, count,
+                                               idempotency_key=idem_key)
     except ValueError as e:
         return f"🧧 {e}"
     except Exception:

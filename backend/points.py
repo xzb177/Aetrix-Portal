@@ -113,14 +113,15 @@ def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
     default_cost = 100 if days_option == 7 else 300
     cost = _get_int(db, cost_key, default_cost)
 
-    balance = int(user.points or 0)
-    if balance < cost:
-        raise ValueError(f"积分不足，需要 {cost} 分，当前 {balance} 分")
-
-    # 先扣分
-    new_balance = economy._add_points(
-        db, user, -cost, "redeem", f"积分兑换公益{days_option}天"
-    )
+    # P1 修复（审查）：「先读余额判断、再 _add_points 扣」是读-改-写双花。
+    # _spend_points 把「够不够」放进 UPDATE 的 WHERE 由数据库原子判定。
+    from backend.api.economy import _spend_points, InsufficientPoints
+    try:
+        new_balance = _spend_points(
+            db, user, cost, "redeem", f"积分兑换公益{days_option}天"
+        )
+    except InsufficientPoints as exc:
+        raise ValueError(str(exc)) from exc
 
     # 再开通（内部 commit）
     from backend.emby_server import portal

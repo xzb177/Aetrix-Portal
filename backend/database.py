@@ -787,6 +787,11 @@ def _auto_migrate():
         ("exchange_codes", [
             ("discount_pct", "INTEGER", "0"),
         ]),
+        # P1 审查修复：红包幂等键（防 TG poller 重放双花）。老库补列后为 NULL，
+        # 唯一约束只对将来带键的新包生效，存量包行为不变。
+        ("red_packets", [
+            ("idempotency_key", "VARCHAR(64)", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -816,6 +821,7 @@ def _auto_migrate():
     _ensure_legacy_indexes(existing_tables)
     _ensure_lottery_g1_tables(existing_tables)
     _migrate_redpacket_claim_unique(existing_tables)
+    _migrate_redpacket_idempotency_unique(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -1034,6 +1040,34 @@ def _migrate_redpacket_claim_unique(existing_tables: set) -> None:
             "UNIQUE (packet_id, user_id)"
         ))
     print("  🔧 已迁移: red_packet_claims 唯一约束 (packet_id, user_id)")
+
+
+def _migrate_redpacket_idempotency_unique(existing_tables: set) -> None:
+    """red_packets 加唯一约束 idempotency_key（幂等，防 TG 重放双花）
+
+    列由 _auto_migrate 补齐后，这里补唯一约束。SQLite 由 create_all 建表时
+    自带约束，此处跳过；PG/MySQL 显式加。NULL 值不参与唯一性（各方言一致），
+    老包 idempotency_key 全 NULL 不会冲突。
+    """
+    from sqlalchemy import inspect, text
+
+    if "red_packets" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    existing = {c["name"] for c in inspector.get_unique_constraints("red_packets")}
+    existing |= {ix["name"] for ix in inspector.get_indexes("red_packets")
+                 if ix.get("unique")}
+    if "uq_redpacket_idempotency" in existing:
+        return
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE red_packets ADD CONSTRAINT uq_redpacket_idempotency "
+            "UNIQUE (idempotency_key)"
+        ))
+    print("  🔧 已迁移: red_packets 唯一约束 (idempotency_key)")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:
