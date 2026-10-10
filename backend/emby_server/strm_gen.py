@@ -187,6 +187,10 @@ def drive_url(file_id: str) -> str:
 # Drive API 列举（复用 drive_changes 的 SA/凭据能力）
 # ---------------------------------------------------------------------------
 
+#: Drive files.list 地址（_list_files_page 列举文件/目录用）
+FILES_LIST_URL = "https://www.googleapis.com/drive/v3/files"
+
+
 def _drive_modules():
     """惰性导入 drive_changes（重依赖，避免循环导入）。"""
     try:
