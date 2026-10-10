@@ -893,3 +893,32 @@ def test_collect_multisource_guarded_semaphore():
     finally:
         ew._MULTISOURCE_SEMAPHORE.release()
         ew._MULTISOURCE_SEMAPHORE.release()
+
+
+def test_stop_clears_registry_without_error():
+    """stop() 不应抛 UnboundLocalError，且应清空线程注册表并 join 所有线程"""
+    from unittest.mock import MagicMock
+
+    from backend.emby_server import enrich_worker as ew
+
+    # 备份全局状态，测试结束后恢复，避免污染其他测试
+    orig_threads = ew._worker_threads
+    orig_stop_event = ew._stop_event
+    try:
+        # 伪造两个线程对象，验证 join 均以 timeout=10 调用
+        t1, t2 = MagicMock(), MagicMock()
+        ew._worker_threads = [t1, t2]
+
+        ew.stop()  # 修复前此处必抛 UnboundLocalError
+
+        assert ew._worker_threads == []
+        for t in (t1, t2):
+            t.join.assert_called_once_with(timeout=10)
+
+        # 注册表为空时再次调用也不应报错
+        ew.stop()
+        assert ew._worker_threads == []
+    finally:
+        ew._worker_threads = orig_threads
+        ew._stop_event = orig_stop_event
+        ew._stop_event.clear()
