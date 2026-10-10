@@ -1676,6 +1676,93 @@ export const fetchStrmConfig = () =>
 export const saveStrmConfig = (data: { enabled: boolean; host_dir: string; container_path: string }) =>
   put<{ success: boolean; strm: StrmConfig }>(`${E}/mounts/strm`, data)
 
+// ==================== .strm 生成器（后端 /api/admin/emby/strm-gen/*） ====================
+
+/** .strm 生成器配置（总开关 / Drive 源目录 / 每天执行时刻 / 指定 Drive / 过期清理） */
+export interface StrmGenConfig {
+  enabled: boolean
+  source_dir: string
+  /** 每天执行时刻 HH:MM（服务器本地时间），空=关闭定时 */
+  schedule: string
+  /** 指定 Drive ID，空=自动选择 */
+  drive_id: string
+  /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
+  prune: boolean
+  /** 上次执行时间（ISO 字符串），可能为空 */
+  last_run: string
+}
+
+/** 生成进度（phase: idle | listing | generating | verifying | done | error） */
+export interface StrmGenProgress {
+  running: boolean
+  started_at: string | null
+  finished_at: string | null
+  phase: string
+  total: number
+  done: number
+  generated: number
+  skipped: number
+  failed: number
+  /** 最近的错误信息（最多 20 条） */
+  errors: string[]
+  /** 当前处理的文件 */
+  current: string
+}
+
+/** Drive 列表项 */
+export interface StrmGenDrive {
+  drive_id: string
+  remotes: string[]
+  is_personal: boolean
+}
+
+/** 缺集报告里的一个剧 */
+export interface StrmGenIncomplete {
+  series: string
+  drive_count: number
+  strm_count: number
+  missing_count: number
+  missing_sample: string[]
+}
+
+/** 读 .strm 生成器配置 */
+export const fetchStrmGenConfig = () =>
+  get<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`)
+
+/** 写 .strm 生成器配置（保存即热生效）；格式非法时后端 400 */
+export const saveStrmGenConfig = (data: {
+  enabled: boolean
+  source_dir: string
+  schedule: string
+  drive_id: string
+  prune: boolean
+}) => put<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`, data)
+
+/** 手动触发一次生成（full=false 增量，true 全量）；已有任务在跑时后端返回 success=false */
+export const triggerStrmGen = (full = false) =>
+  post<{ success: boolean; message?: string; error?: string; progress?: StrmGenProgress }>(
+    `${E}/strm-gen/trigger`, { full })
+
+/** 查生成进度（附带当前配置，前端轮询用） */
+export const fetchStrmGenProgress = () =>
+  get<{ success: boolean; progress: StrmGenProgress; config: StrmGenConfig }>(`${E}/strm-gen/progress`)
+
+/** 列出发现的 Drive（供 drive_id 配置选择） */
+export const fetchStrmGenDrives = () =>
+  get<{ success: boolean; drives?: StrmGenDrive[]; error?: string }>(`${E}/strm-gen/drives`)
+
+/** 缺集报告：上次生成时 Drive 有但 .strm 缺失的剧集 */
+export const fetchStrmGenMissing = (limit = 100) =>
+  get<{
+    ok: boolean
+    has_data?: boolean
+    total_series?: number
+    complete_series?: number
+    incomplete_series?: number
+    incomplete?: StrmGenIncomplete[]
+    error?: string
+  }>(`${E}/strm-gen/missing`, { limit })
+
 // ==================== 每台 EA 一份 rclone.conf ====================
 
 /** 读这台 EA 的 rclone.conf：**只返 remote 名，不返明文**（含 token） */
