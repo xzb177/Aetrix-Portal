@@ -333,3 +333,47 @@ def test_rate_limit_redpacket():
     assert _user_cmd_allow(930043, "/redpacket", 3.0) is True
     assert _user_cmd_allow(930043, "/redpacket", 3.0) is False
     assert _user_cmd_allow(930043, "/points", 3.0) is True
+
+
+def test_router_dispatch_redpacket_replay_idempotent(db, monkeypatch):
+    from backend.tg_bot import router
+
+    _make_user(db, "r_dp_replay", 700044, 1000)
+    sent = []
+    monkeypatch.setattr(
+        sender,
+        "send_message",
+        lambda db_, chat_id, text, reply_markup=None, **kw: sent.append((text, reply_markup)) or (True, None),
+    )
+
+    update = {
+        "update_id": 44,
+        "message": {
+            "message_id": 44,
+            "from": {"id": 700044, "first_name": "R"},
+            "chat": {"id": -10044, "type": "group"},
+            "text": "/redpacket 100 5",
+        },
+    }
+
+    router.dispatch(db, update)
+    assert len(sent) == 1
+    assert "总额 100 积分" in sent[0][0]
+
+    # 模拟 poller 崩溃重启：进程内限流状态全部清零，update 被重放
+    router._user_cmd_limits.clear()
+    router._group_windows.clear()
+
+    router.dispatch(db, update)
+
+    # 两次都发出消息
+    assert len(sent) == 2
+    assert "总额 100 积分" in sent[1][0]
+
+    # 只创建了一个红包
+    assert db.query(models.RedPacket).count() == 1
+
+    # 只扣一次款：100 本体 + 5% 手续费 5 = 105
+    db.expire_all()
+    u = db.query(models.WebUser).filter(models.WebUser.telegram_id == 700044).one()
+    assert u.points == 895
