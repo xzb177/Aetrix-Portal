@@ -1019,7 +1019,7 @@ select.au-input option { background: var(--au-bg-soft); }
 /* v2 热门求片 */
 .hot-section { margin-top: 1.5rem; }
 .section-head { margin-bottom: 0.75rem; }
-.section-title { display: flex; align-items: center; gap: 0.375rem; font-size: 1rem; font-weight: 700; color: var(--au-text-1); }
+.section-title { display: flex; align-items: center; gap: 0.375rem; font-size: 1rem; font-weight: 700; color: var(--au-text-2); }
 .section-title svg { color: var(--au-primary); }
 .section-sub { font-size: 0.75rem; color: var(--au-text-3); margin-top: 0.25rem; }
 .hot-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.625rem; }
