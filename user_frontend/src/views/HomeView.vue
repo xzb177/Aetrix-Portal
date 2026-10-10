@@ -1655,7 +1655,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 }
 
 .poster-card:hover .poster-name {
-  color: var(--au-text-1);
+  color: var(--au-text);
 }
 
 .poster-card:focus-visible {
