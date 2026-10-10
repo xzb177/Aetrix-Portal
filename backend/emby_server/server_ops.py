@@ -72,7 +72,11 @@ def scope_libraries(db: Session, server, include_unassigned: bool = False
     realm_id = getattr(server, "realm_id", None)
     rows = (realms.scope_inclusive(db.query(em.Library), em.Library.realm_id, realm_id)
             .order_by(em.Library.id).all())
-    assigned = [lib for lib in rows if getattr(lib, "node_id", None) == getattr(server, "id", None)]
+    server_id = getattr(server, "id", None)
+    # server 为空（面板没配 NODE_KEY）时 server_id=None：不能让「node_id IS NULL」
+    # 同时算进 assigned 与 unassigned，否则 include_unassigned 会把同一个库推两遍
+    assigned = ([lib for lib in rows if getattr(lib, "node_id", None) == server_id]
+                if server_id is not None else [])
     unassigned = [lib for lib in rows if not getattr(lib, "node_id", None)]
     return (assigned + unassigned if include_unassigned else assigned), unassigned
 

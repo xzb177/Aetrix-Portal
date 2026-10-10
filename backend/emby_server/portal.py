@@ -1905,22 +1905,41 @@ async def scan_all_libraries_endpoint(
         from backend.emby_server import server_ops as _so
         from backend.emby_server import nodes as node_lib
         server = node_lib.self_node(db)
-        return _so.scan_plan(db, server)
+        # include_unassigned=True：node_id 为空的库（后台新建库默认不选节点，例如
+        # 新加的 .strm 直链库）由面板自己扫——单库「扫描」与定时扫描一直这么做，
+        # 一键扫描漏掉它们就会出现「单独点能扫、一键扫描扫不到」。
+        return _so.scan_plan(db, server, include_unassigned=True)
 
     result = await run_in_threadpool(_plan)
     queued = result.get("queued", [])
     already = result.get("already", [])
     skipped = result.get("skipped", [])
 
+    # 归别的节点的库：scan_plan 只计划不执行，转发是网络调用，在这里 await
+    forwarded: list[dict] = []
+    failed: list[dict] = []
+    for entry in result.get("forward", []) or []:
+        res = await node_lib.push_scan(entry["url"], entry["id"])
+        row = {"id": entry["id"], "name": entry["name"], "node_name": entry.get("node_name")}
+        if res.get("ok"):
+            forwarded.append(row)
+        else:
+            failed.append({**row, "error": str(res.get("error") or "转发失败")[:200]})
+
     return {
         "success": True,
         "queued_count": len(queued),
         "already_count": len(already),
         "skipped_count": len(skipped),
+        "forwarded_count": len(forwarded),
         "queued": queued,
         "already": already,
         "skipped": skipped,
+        "forwarded": forwarded,
+        "failed": failed,
         "message": f"已加入 {len(queued)} 个库的扫描队列"
+        + (f"，{len(forwarded)} 个已转发给归属节点" if forwarded else "")
+        + (f"，{len(failed)} 个转发失败" if failed else "")
         + (f"，{len(already)} 个正在扫/已在队列（已跳过）" if already else "")
         + (f"，{len(skipped)} 个已停用/虚拟（已跳过）" if skipped else ""),
     }
