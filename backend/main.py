@@ -508,11 +508,18 @@ async def health_check():
     现在由 health_report 依据真实指标判定（healthy / degraded / unhealthy）。
     """
     health = _collect_health()
+    # 播放预热指标（并发/去重/超时计数 + 平均耗时；模块内部永不抛异常）
+    try:
+        from backend.emby_server import playback_prewarm as _pb_prewarm
+        _prewarm_metrics = _pb_prewarm.metrics_snapshot()
+    except Exception:  # noqa: BLE001
+        _prewarm_metrics = {}
     return {
         "status": health["status"],
         "health_level": health["level"],
         "health_issues": health["issues"],
         "health_metrics": health["metrics"],
+        "playback_prewarm": _prewarm_metrics,
         "timestamp": datetime.now().isoformat(),
         "database": DATABASE_TYPE,
         "online_users": manager.get_online_count(),
