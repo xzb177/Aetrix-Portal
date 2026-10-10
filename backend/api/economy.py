@@ -1030,7 +1030,8 @@ def coupon_quote(
 class CreateOrderRequest(BaseModel):
     kind: str = Field(..., description="recharge=充值积分 / subscription=购买订阅")
     item_id: Optional[int] = Field(default=None, description="充值套餐ID 或 套餐ID；自定义金额充值时可为空")
-    payment_method: str = Field(default="alipay")
+    # P3 修复（审查）：payment_method 无白名单，任意字符串进网关。限定可选值。
+    payment_method: str = Field(default="alipay", pattern="^(alipay|wxpay|qqpay)$")
     coupon_code: str = Field(default="", description="优惠码（可空）；下单时占额度，付款转已用，关单/退款自动还回")
     custom_amount: Optional[float] = Field(default=None, ge=1, le=100000, description="自定义充值金额（元）；仅 kind=recharge 时有效，与 item_id 二选一")
     pay_with_points: bool = Field(default=False, description="积分支付；仅 kind=subscription 时有效")
@@ -1055,6 +1056,30 @@ def create_payment_order(
     allowed, _ = check_rate_limit(f"order:{current_user.id}", 10, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="下单过于频繁，请稍后再试")
+
+    # P2 修复（审查）：用户可无限创建 pending 订单（10/min = 600/小时），
+    # 每单都 coupons.reserve 占额度，可耗尽一张券的 max_uses。限制每用户
+    # pending 订单数（默认 5，可配）。
+    try:
+        max_pending = int(_get_config(db, "max_pending_orders_per_user", "5") or 5)
+    except ValueError:
+        max_pending = 5
+    if max_pending > 0:
+        pending = (
+            db.query(models.RechargeOrder).filter(
+                models.RechargeOrder.user_id == current_user.id,
+                models.RechargeOrder.status == "pending",
+            ).count()
+            + db.query(models.SubscriptionOrder).filter(
+                models.SubscriptionOrder.user_id == current_user.id,
+                models.SubscriptionOrder.status == "pending",
+            ).count()
+        )
+        if pending >= max_pending:
+            raise HTTPException(
+                status_code=429,
+                detail=f"待支付订单过多（{pending} 笔），请先完成或取消后再下单",
+            )
 
     gateway = _get_config(db, "payment_gateway_url", "").strip().rstrip("/")
     pid = _get_config(db, "payment_partner_id", "").strip()
