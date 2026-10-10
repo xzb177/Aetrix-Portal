@@ -1381,6 +1381,8 @@ export const fetchAutoScan = () => get<{ success: boolean } & AutoScanConfig>(`$
 export interface ChaseNewConfig {
   enabled: boolean
   interval: number
+  /** .strm 监听开关（默认开）：库路径是 /strm/... 时，strm_gen 产出的新 .strm 才会触发增量扫描 */
+  strm_enabled: boolean
   /** v2.45.0：**排除**清单（逗号分隔的库 id）。空 = 全部启用库都监听 */
   excluded: string
   /** 已废弃：旧的包含清单，后端固定返回空串（保留字段以兼容老前端） */
@@ -1419,8 +1421,8 @@ export interface ChaseNewConfig {
 }
 
 export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
-export const saveChaseNew = (enabled: boolean, interval: number, excluded: string) =>
-  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded })
+export const saveChaseNew = (enabled: boolean, interval: number, excluded: string, strmEnabled: boolean) =>
+  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded, strm_enabled: strmEnabled })
 
 export const saveAutoScan = (enabled: boolean, time: string) =>
   put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })

@@ -626,7 +626,7 @@ async function toggleChase(on: boolean) {
   else ids.delete(libForm.id)
   chaseLibSaving.value = true
   try {
-    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','))
+    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','), cfg.strm_enabled)
     chaseNew.value = normalizeChase(res)
     libForm.chase = on
     // 追新是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
@@ -925,6 +925,8 @@ function normalizeChase(res: ChaseNewConfig): ChaseNewConfig {
   return {
     enabled: res.enabled,
     interval: res.interval,
+    // 老后端没有这个字段时按默认开处理——和后端的 CONFIG_STRM_ENABLED 默认 "1" 一致
+    strm_enabled: res.strm_enabled ?? true,
     excluded: res.excluded,
     libraries: res.libraries,
     last_check: res.last_check,
@@ -952,7 +954,7 @@ async function saveChaseNewAction() {
   if (!chaseNew.value) return
   chaseNewSaving.value = true
   try {
-    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded)
+    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded, chaseNew.value.strm_enabled)
     chaseNew.value = normalizeChase(res)
     ElMessage.success(res.enabled ? '追新已开启（每 ' + res.interval + ' 分钟）' : '追新已关闭')
   } catch (e: any) {
@@ -1876,6 +1878,10 @@ function typeLabel(t: string): string {
                   保存
                 </el-button>
               </div>
+              <div v-if="chaseNew" class="scrape-actions" style="margin-top: 8px">
+                <el-switch v-model="chaseNew.strm_enabled" active-text="监听 .strm" inactive-text="忽略 .strm" />
+                <span class="drawer-hint">库路径是 /strm/... 时，strm 生成器产出的新分集（.strm 文件）也会触发增量扫描 + 刮削</span>
+              </div>
               <div v-else-if="chaseNewError" class="drawer-hint drawer-hint--after">
                 读取失败
                 <el-button size="small" text @click="loadChaseNewConfig">重试</el-button>
@@ -2362,7 +2368,7 @@ function typeLabel(t: string): string {
         <div v-if="libFormTarget && !libFormTarget.is_virtual" class="settings-section">
           <div class="settings-section-title">目录变更监听</div>
           <p class="form-hint">
-            「追新」每隔几分钟扫一遍目录，发现新视频文件就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
+            「追新」每隔几分钟扫一遍目录，发现新视频文件（.strm 开关开时也含 .strm）就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
             不用等手动扫描。开关与间隔是全局的，纳不纳入某个库在这里定。
           </p>
           <el-form label-position="top">
