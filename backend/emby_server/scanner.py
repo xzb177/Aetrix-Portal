@@ -31,6 +31,7 @@ from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import nfo as nfo_lib
+from backend.emby_server import strm_config as _strm_config
 # 软删除（v2.48.0）：清理阶段默认只标记 deleted_at，物理删除留给过期回收
 from backend.emby_server import soft_delete as _soft_delete
 # 实时进度与远程 IO 计数（v2.27.0）：只依赖标准库，不会与 scanner / mounts 形成循环
@@ -1672,6 +1673,24 @@ def _prefix_filter(files, prefixes: tuple) -> "Iterator":
                 break
 
 
+def _strm_filter(files, include_strm: bool) -> "Iterator":
+    """strm_enabled=false 时跳过 .strm 文件（.strm 功能总开关的语义）。
+
+    按文件名后缀判断：.strm 条目的 container 会被改写成直链里的真实容器
+    （见 _local_dir_files / _mount_files），后缀是最可靠的判据。
+    注意这是生成器：include_strm 在调用方（iter_scan_sources）每轮扫描只读一次
+    配置（热读短 TTL），同一轮内保持一致。
+    """
+    if include_strm:
+        yield from files
+        return
+    for sf in files:
+        name = getattr(sf, "name", "") or ""
+        if name.lower().endswith(".strm"):
+            continue
+        yield sf
+
+
 def _source_path_prefix(src) -> str:
     """该来源的入库路径前缀（用于判断库里是否已有该来源的条目）。
 
@@ -1771,13 +1790,17 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
 
     try:
         prefixes = getattr(snap, "limit_prefixes", ()) or ()
+        # .strm 总开关：每轮扫描读一次（热读，管理后台改完最多 60 秒生效，无需重启）
+        include_strm = _strm_config.enabled(db)
         for src in sources:
             # 定向扫描只扫部分目录：来源 0 产出是正常的，不做空来源判定
             check_empty = not prefixes
             if src.kind == "local":
                 yield src.label, _watch_empty_source(
                     src.label, src,
-                    _prefix_filter(_local_dir_files(src.path, failed_roots), prefixes),
+                    _strm_filter(
+                        _prefix_filter(_local_dir_files(src.path, failed_roots), prefixes),
+                        include_strm),
                     db, library.id, failed_roots, check_empty)
                 continue
 
@@ -1785,8 +1808,10 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
                 try:
                     yield from _watch_empty_source(
                         src.label, src,
-                        _prefix_filter(_mount_files(src, src.provider, failed_roots),
-                                       prefixes),
+                        _strm_filter(
+                            _prefix_filter(_mount_files(src, src.provider, failed_roots),
+                                           prefixes),
+                            include_strm),
                         db, library.id, failed_roots, check_empty)
                 except mount_lib.MountError as exc:
                     logger.warning("媒体库「%s」的挂载「%s」不可用：%s", snap.name, src.label, exc)
