@@ -370,9 +370,10 @@ const storageBackends = ref<StorageBackend[]>([
   { value: '115', label: '115 网盘' },
 ])
 
-/** 单机单节点时隐藏「归属服 / 播放节点」：只有一个选项时下拉框只会传递「没必要选」的信号 */
+/** 单机单服时隐藏「归属服」：只有一个选项时下拉框只会传递「没必要选」的信号。
+ *  注意：「归属播放节点」不隐藏——即使只有一个节点，用户也需要能显式分配，
+ *  否则库会一直处于「未分配」状态（node_id 为空 vs 明确指向该节点是两种语义）。 */
 const isSingleRealm = computed(() => realmOptions.value.length <= 1)
-const isSingleNode = computed(() => nodes.value.length <= 1)
 
 /** 这个库是不是真的需要 115？只看「有没有 115 网盘来源」——
  *  纯本机目录的库也摆个 115 账号选择器，只会让人以为要用 115（§十一 ⑨）。
@@ -2071,7 +2072,7 @@ function typeLabel(t: string): string {
             </el-form-item>
 
             <el-form-item
-              v-if="!libFormTarget?.is_virtual && !isSingleNode"
+              v-if="!libFormTarget?.is_virtual"
               label="归属播放节点"
             >
               <el-select
