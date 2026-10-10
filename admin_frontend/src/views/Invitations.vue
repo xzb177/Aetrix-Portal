@@ -1015,7 +1015,7 @@ onMounted(reloadAll)
 }
 
 .invite-anchors a:hover {
-  border-color: var(--au-accent);
+  border-color: var(--au-primary);
   color: var(--au-text);
 }
 
