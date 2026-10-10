@@ -402,7 +402,7 @@ onUnmounted(() => {
   margin: 0;
   padding-left: 18px;
   font-size: 12px;
-  color: var(--au-text-1);
+  color: var(--au-text);
 }
 .error-list li {
   margin-bottom: 4px;
