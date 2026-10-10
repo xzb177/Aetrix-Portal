@@ -8,6 +8,9 @@
 - 发现新视频文件 → 整库入 scan_queue（trigger="chase-new"）
   → 扫描器增量秒跳，只处理新文件
 - 新入库条目自动进 enrich 队列刮削（NFO→TMDB→豆瓣）
+- **.strm 增量**：库路径现在是 /strm/...（.strm 通用化之后），strm_gen 产出的新
+  .strm 文件同样走 mtime 检测（独立开关 ``chase_new_strm_enabled``，默认开），
+  发现即定向扫描 → 扫描器把 .strm 当媒体入库 → 自动刮削
 
 v1 范围：
 - 本机目录：文件 mtime 检测（``find -newermt``）
@@ -41,6 +44,11 @@ logger = logging.getLogger(__name__)
 
 CONFIG_ENABLED = "chase_new_enabled"
 CONFIG_INTERVAL = "chase_new_interval"
+#: **.strm 监听独立开关**（"1"/"0"，默认 "1" 开）。库路径是 /strm/... 时，
+#: strm_gen 产出的新 .strm 就是「新资源」——关掉它等于追新对新分集睁眼瞎。
+#: 与 VIDEO_EXTS 分开：VIDEO_EXTS 是「视频文件」的口径（扫描器/播放链路多处
+#: 引用），追新要的是「发现即扫」的口径，两边语义不同，不混用一套常量。
+CONFIG_STRM_ENABLED = "chase_new_strm_enabled"
 #: v2.45.0：**排除清单**（逗号分隔的库 id）。空 = 全部启用库都监听。
 #:
 #: 为什么从「包含清单」改成「排除清单」：包含清单空 = 全部，于是想关掉 A 库就必须先去
@@ -67,6 +75,19 @@ _FIND_TIMEOUT_SEC = max(10, int(os.getenv("CHASE_NEW_FIND_TIMEOUT", "60") or 60)
 
 # 视频扩展名白名单
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm"}
+
+#: .strm 扩展名（独立开关 ``CONFIG_STRM_ENABLED`` 控制是否纳入检测）。
+#: 不直接并进 VIDEO_EXTS——那是「视频文件」口径，追新用 ``_tracked_exts()``
+#: 按开关动态拼，开关关了也不影响别处对 VIDEO_EXTS 的引用。
+STRM_EXTS = {".strm"}
+
+
+def _tracked_exts(db: Session) -> set[str]:
+    """本轮要监听的扩展名：视频扩展名 +（.strm 开关开时）.strm。"""
+    exts = set(VIDEO_EXTS)
+    if _get_config(db, CONFIG_STRM_ENABLED, "1") == "1":
+        exts |= STRM_EXTS
+    return exts
 
 # 追新在一个季目录里最多往下钻几层。rclone 的一次递归列举会把整个子树拍平返回，
 # 国产剧 1.4 万个文件时生产实测要几分钟、远超任何合理超时。改成逐层走公共通道后
@@ -149,7 +170,13 @@ def _diff_against_snapshot(db: Session, library_id: int, source_key: str,
       size 或 mod_ts 变化 → 更新行并计入返回（mod_ts 比较用 abs 差 > 1e-6）。
     - 已见且未变 → 只更新 last_seen_at。
     - baseline_if_empty=True 且该源快照完全为空（首次建基线）→ 全部插入但
-      返回 []（避免部署后第一轮把全库当新增触发扫描风暴）。
+      返回 []（避免部署后第一轮把全库当新增触发扫描风暴）。调用方按
+      「source_state 行是否存在」传 baseline_if_empty：只要这个源成功检查过
+      一次就不再建基线。
+      注意：entries 本身为空时不算「建基线」——空目录首轮无行可插，
+      若此时返回基线语义，之后新文件进来会因「快照仍为空」被再次当成基线
+      静默吞掉（新库的第一个 .strm 永远触发不了扫描）。空 entries 直接走
+      正常 diff（本来就是空，无风暴可言）。
     - 最后 db.commit() 一次。返回新增/变更的 rel_path 列表。
     """
     now = datetime.now(timezone.utc)
@@ -162,7 +189,7 @@ def _diff_against_snapshot(db: Session, library_id: int, source_key: str,
     }
     changed: list[str] = []
 
-    if baseline_if_empty and not existing:
+    if baseline_if_empty and not existing and entries:
         for rel_path, size, mod_ts in entries:
             db.add(em.ChaseFileSnapshot(
                 library_id=library_id,
@@ -355,7 +382,8 @@ def _mount_url(mount_id: int, rel: str) -> str:
     return f"{MOUNT_PATH_PREFIX}{int(mount_id)}/{(rel or '').lstrip('/')}"
 
 
-def _walk_files(provider, rel: str, max_depth: int, max_entries: int) -> list:
+def _walk_files(provider, rel: str, max_depth: int, max_entries: int,
+               exts: set[str] | None = None) -> list:
     """从 ``rel`` 往下逐层找视频文件（每一跳都走公共通道）
 
     旧实现是一次 ``recurse=True`` 把整个子树拍平拿回来（国产剧 1.4 万个文件要几分钟、
@@ -385,7 +413,7 @@ def _walk_files(provider, rel: str, max_depth: int, max_entries: int) -> list:
                         seen_dirs.add(child)
                         nxt.append(child)
                     continue
-                if os.path.splitext(entry.name)[1].lower() in VIDEO_EXTS:
+                if os.path.splitext(entry.name)[1].lower() in (exts or VIDEO_EXTS):
                     found.append(entry)
         current = nxt
         depth += 1
@@ -427,7 +455,8 @@ _REMOTE_WALK_DEPTH = CHASE_MAX_DEPTH + 2
 
 
 def _find_new_videos_remote(db: Session, library_id: int, mount_id: int,
-                            rel_dir: str) -> tuple[list[str], int]:
+                            rel_dir: str,
+                            exts: set[str] | None = None) -> tuple[list[str], int]:
     """远程挂载：文件指纹快照 diff（P0-2）。
 
     不再按目录 mtime 过滤——生产实证 Drive 上季目录 mtime=2026-07-30 而其内新剧集
@@ -465,14 +494,20 @@ def _find_new_videos_remote(db: Session, library_id: int, mount_id: int,
         return [], 0
     base = "/" + (rel_dir or "/").lstrip("/")
     with mount_lib.remote_io_purpose(mount_lib.PURPOSE_CHASE):
-        entries = _walk_files(provider, base, _REMOTE_WALK_DEPTH, REMOTE_SNAPSHOT_MAX_ENTRIES)
-    changed = _diff_against_snapshot(db, library_id, skey, [(e.rel, e.size, e.mod_ts) for e in entries])
+        entries = _walk_files(provider, base, _REMOTE_WALK_DEPTH,
+                              REMOTE_SNAPSHOT_MAX_ENTRIES, exts or _tracked_exts(db))
+    # 基线只建一次：state 行不存在 = 这个源从没检查过（本地路径同理，见
+    # _find_new_videos_local）。检查过一次之后新文件必须上报。
+    changed = _diff_against_snapshot(db, library_id, skey,
+                                     [(e.rel, e.size, e.mod_ts) for e in entries],
+                                     baseline_if_empty=state is None)
     _touch_source_state(db, skey, True, snapshot_now=True)
     return ([_mount_url(mount_id, r) for r in changed], len(entries))
 
 
 def _find_new_videos_local(db: Session, library_id: int, base: str,
-                           fallback_since_ts: float) -> tuple[list[str], int]:
+                           fallback_since_ts: float,
+                           exts: set[str] | None = None) -> tuple[list[str], int]:
     """本机目录：find -newermt（since 取该源持久化的 last_ok_at，容器重建不丢失）
     + 快照 diff 二次确认（防 FUSE mtime 抖动误报）。
     返回 (新增/变更文件绝对路径列表, 本轮候选文件数)。失败时记源失败并抛给调用方。
@@ -485,7 +520,7 @@ def _find_new_videos_local(db: Session, library_id: int, base: str,
             last_dt = last_dt.replace(tzinfo=timezone.utc)
         since_ts = last_dt.timestamp()
     try:
-        candidates = _find_new_videos([base], since_ts)
+        candidates = _find_new_videos([base], since_ts, exts or _tracked_exts(db))
         entries = []
         for p in candidates:
             try:
@@ -494,7 +529,12 @@ def _find_new_videos_local(db: Session, library_id: int, base: str,
                 continue
             rel = os.path.relpath(p, base).replace(os.sep, "/")
             entries.append(("/" + rel, st.st_size, st.st_mtime))
-        changed = _diff_against_snapshot(db, library_id, base, entries)
+        # 基线只建一次：state 行不存在 = 这个源从没成功检查过。只要检查过一次
+        # （哪怕当时是空目录），之后的新文件都必须上报——否则空目录首轮无行可插，
+        # 下一轮「快照仍为空」会被再次当成基线静默吞掉，新库的第一个 .strm
+        # 永远触发不了扫描。
+        changed = _diff_against_snapshot(db, library_id, base, entries,
+                                         baseline_if_empty=state is None)
         _touch_source_state(db, base, True)
         return ([os.path.join(base, r.lstrip("/")) for r in changed], len(entries))
     except Exception as exc:
@@ -503,7 +543,8 @@ def _find_new_videos_local(db: Session, library_id: int, base: str,
 
 
 
-def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
+def _find_new_videos(paths: list[str], since_ts: float,
+                     exts: set[str] | None = None) -> list[str]:
     """找出 since_ts 之后新增/修改的视频文件（用 find -newermt，C 实现比 os.walk 快）
 
     FUSE / rclone 挂载上 ``find`` 常在 60 秒内扫不完大目录。旧实现超时后直接
@@ -519,7 +560,7 @@ def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
     since_str = datetime.fromtimestamp(since_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     # 构建 find 的扩展名过滤：\( -iname "*.mp4" -o -iname "*.mkv" ... \)
     ext_args = []
-    for i, ext in enumerate(sorted(VIDEO_EXTS)):
+    for i, ext in enumerate(sorted(exts or VIDEO_EXTS)):
         if i > 0:
             ext_args.append("-o")
         ext_args.extend(["-iname", f"*{ext}"])
@@ -536,13 +577,14 @@ def _find_new_videos(paths: list[str], since_ts: float) -> list[str]:
             logger.warning(
                 "[chase-new] find %s 超时（%ss），改用 scandir 兜底",
                 base, _FIND_TIMEOUT_SEC)
-            new_files.extend(_scandir_new_videos(base, since_ts))
+            new_files.extend(_scandir_new_videos(base, since_ts, exts))
         except Exception as e:
             logger.warning("[chase-new] find %s 异常: %s", base, e)
     return new_files
 
 
-def _scandir_new_videos(base: str, since_ts: float) -> list[str]:
+def _scandir_new_videos(base: str, since_ts: float,
+                        exts: set[str] | None = None) -> list[str]:
     """``find`` 超时后的兜底：os.scandir + mtime 过滤（慢，但不会丢整个目录）
 
     不用 ``os.walk``：它默认对每个目录都 ``stat``，在 FUSE 上会额外放大往返。
@@ -551,6 +593,7 @@ def _scandir_new_videos(base: str, since_ts: float) -> list[str]:
     """
     import os
 
+    suffixes = tuple(e.lower() for e in (exts or VIDEO_EXTS))
     found: list = []
     try:
         with os.scandir(base) as it:
@@ -558,7 +601,7 @@ def _scandir_new_videos(base: str, since_ts: float) -> list[str]:
                 try:
                     if not entry.is_file(follow_symlinks=False):
                         continue
-                    if not entry.name.lower().endswith(tuple(e.lower() for e in VIDEO_EXTS)):
+                    if not entry.name.lower().endswith(suffixes):
                         continue
                     if entry.stat(follow_symlinks=False).st_mtime <= since_ts:
                         continue
@@ -627,6 +670,8 @@ def _check_once() -> None:
         interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))
         fallback_since = time.time() - interval * 2 * 60
         excluded = set(resolve_excluded(db))
+        # 扩展名集合每轮只算一次：_get_config 是直查 DB，逐源重复读是 N+1
+        exts = _tracked_exts(db)
         libraries = [lib for lib in db.query(em.Library).filter(em.Library.is_enabled == True).all()
                      if lib.id not in excluded]
         for lib in libraries:
@@ -635,7 +680,7 @@ def _check_once() -> None:
                 found: list[str] = []
                 for base in _library_local_paths(lib, db):
                     try:
-                        paths, n = _find_new_videos_local(db, lib.id, base, fallback_since)
+                        paths, n = _find_new_videos_local(db, lib.id, base, fallback_since, exts)
                     except Exception as exc:
                         stats["errors"] += 1
                         logger.warning("[chase-new] 库《%s》本地源 %s 检查失败: %s",
@@ -645,7 +690,7 @@ def _check_once() -> None:
                     found += paths
                 for mid, rel in _library_mount_sources(lib, db):
                     try:
-                        paths, n = _find_new_videos_remote(db, lib.id, mid, rel)
+                        paths, n = _find_new_videos_remote(db, lib.id, mid, rel, exts)
                     except Exception as exc:
                         stats["errors"] += 1
                         logger.warning("[chase-new] 库《%s》远程挂载 %s 检查失败: %s",
@@ -735,6 +780,7 @@ def get_config(db: Session) -> dict:
     return {
         "enabled": _get_config(db, CONFIG_ENABLED, "0") == "1",
         "interval": _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL))),
+        "strm_enabled": _get_config(db, CONFIG_STRM_ENABLED, "1") == "1",
         "excluded": ",".join(str(i) for i in resolve_excluded(db)),
         "libraries": "",
         "last_check": _get_config(db, CONFIG_LAST_CHECK, ""),
@@ -743,16 +789,25 @@ def get_config(db: Session) -> dict:
 
 
 def save_config(db: Session, enabled: bool, interval: int,
-                excluded: str = "", libraries: Optional[str] = None) -> dict:
+                excluded: str = "", libraries: Optional[str] = None,
+                strm_enabled: Optional[bool] = None) -> dict:
     """保存追新配置，立即生效
 
     ``excluded`` 是排除清单。``libraries`` 是**旧字段**（包含清单），只为老调用方保留：
     传了它就按老语义换算成排除清单（启用库 − 包含清单），而不是直接当排除清单存——
     否则一个还在用老前端的部署会把清单含义整个反过来。
+
+    ``strm_enabled``：是否同时监听 .strm 文件（默认开）。库路径是 /strm/... 时，
+    strm_gen 产出的新 .strm 就是新资源；关掉后追新只看视频扩展名。
+    传 ``None``（老前端没这个字段时）= 保持现有值，不会被默认 True 悄悄改掉——
+    和 ``libraries`` 的「没传就不碰」是同一个纪律。
     """
     minutes = _parse_interval(str(interval))
     _set_config(db, CONFIG_ENABLED, "1" if enabled else "0")
     _set_config(db, CONFIG_INTERVAL, str(minutes))
+    if strm_enabled is None:
+        strm_enabled = _get_config(db, CONFIG_STRM_ENABLED, "1") == "1"
+    _set_config(db, CONFIG_STRM_ENABLED, "1" if strm_enabled else "0")
     if libraries is not None and not excluded:
         included = set(_parse_ids(libraries))
         ids = sorted(i for i in _enabled_library_ids(db) if i not in included)
@@ -762,8 +817,8 @@ def save_config(db: Session, enabled: bool, interval: int,
     # 旧键清空：万一还有进程在按老口径读，它看到的是「空 = 全部监听」，
     # 与新语义下的“排除为空”一致，不会出现两边理解打架。
     _set_config(db, CONFIG_LIBRARIES, "")
-    logger.info("[chase-new] 配置已保存: enabled=%s interval=%d excluded=%s",
-                enabled, minutes, ",".join(str(i) for i in ids))
+    logger.info("[chase-new] 配置已保存: enabled=%s interval=%d strm_enabled=%s excluded=%s",
+                enabled, minutes, strm_enabled, ",".join(str(i) for i in ids))
     # 排除清单同时管着 inotify（v2.46.0 起两边同语义），所以改完要立即重建监听，
     # 否则被排除的库还要等容器重启才真的停下来。重建走 sync_from_db() 内部幂等：
     # 差异对比 + unschedule/schedule，不会因为反复调而叠出第二个 observer。
