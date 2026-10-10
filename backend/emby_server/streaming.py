@@ -261,6 +261,15 @@ def serve_remote(
     # S2：同一套超时（读超时 = 块间空闲上限），源站卡住时不再永久占着线程
     client = httpx.Client(timeout=relay_timeout(), follow_redirects=False)
     try:
+        # Drive 私有化修复（2026-10-10）：uc?export=download&id= 直链即使带 SA
+        # Bearer token 也只返回登录页；转成 Drive API alt=media 端点才能用 token
+        # 下载私有文件。www.googleapis.com 已在 DRIVE_HOSTS 白名单内，重定向/
+        # 凭据保留逻辑不受影响。
+        try:
+            from backend.emby_server.drive_auth import drive_api_media_url
+            url = drive_api_media_url(url)
+        except Exception:
+            pass
         current = url
         for _hop in range(MAX_REDIRECTS + 1):
             resp = client.send(client.build_request("GET", current, headers=forward), stream=True)
@@ -435,6 +444,12 @@ async def serve_remote_async(
     # 共享 client（连接复用）；**响应**仍然每次独立，用完在 iter_remote 里关。
     client = get_relay_client()
     try:
+        # Drive 私有化修复（2026-10-10）：同同步版，uc 直链转 API alt=media。
+        try:
+            from backend.emby_server.drive_auth import drive_api_media_url
+            url = drive_api_media_url(url)
+        except Exception:
+            pass
         current = url
         for _hop in range(MAX_REDIRECTS + 1):
             resp = await client.send(client.build_request("GET", current, headers=forward), stream=True)
