@@ -183,7 +183,7 @@ const handleCancel = async (row: { id: number; title: string }) => {
 }
 
 // 功能开关
-const config = ref({ lottery_enabled: '1', lottery_group_ids: '', lottery_auto_draw_enabled: '1', lottery_draw_interval_sec: '60', lottery_notify_winners: '1' })
+const config = ref({ lottery_enabled: '1', lottery_group_ids: '', lottery_auto_draw_enabled: '1', lottery_draw_interval_sec: '60', lottery_notify_winners: '1', lottery_require_group_member: '1', lottery_min_account_age_days: '0', lottery_max_joins_per_day: '0' })
 const lotteryEnabled = computed({
   get: () => config.value.lottery_enabled === '1',
   set: (v: boolean) => { config.value.lottery_enabled = v ? '1' : '0' }
@@ -196,6 +196,11 @@ const notifyWinners = computed({
   get: () => config.value.lottery_notify_winners === '1',
   set: (v: boolean) => { config.value.lottery_notify_winners = v ? '1' : '0' }
 })
+// 三重门·身份门：参赛者必须在 TG 群里
+const requireGroupMember = computed({
+  get: () => config.value.lottery_require_group_member !== '0',
+  set: (v: boolean) => { config.value.lottery_require_group_member = v ? '1' : '0' }
+})
 const loadConfig = async () => {
   try {
     const res: any = await fetchWelfareConfig()
@@ -205,7 +210,10 @@ const loadConfig = async () => {
       lottery_group_ids: data.lottery_group_ids ?? '',
       lottery_auto_draw_enabled: data.lottery_auto_draw_enabled === '0' ? '0' : '1',
       lottery_draw_interval_sec: data.lottery_draw_interval_sec ?? '60',
-      lottery_notify_winners: data.lottery_notify_winners === '0' ? '0' : '1'
+      lottery_notify_winners: data.lottery_notify_winners === '0' ? '0' : '1',
+      lottery_require_group_member: data.lottery_require_group_member === '0' ? '0' : '1',
+      lottery_min_account_age_days: data.lottery_min_account_age_days ?? '0',
+      lottery_max_joins_per_day: data.lottery_max_joins_per_day ?? '0'
     }
   } catch (e) {
     ElMessage.error(errDetail(e))
@@ -216,6 +224,10 @@ const saveConfig = async () => {
   if (savingConfig.value) return
   const interval = Number(config.value.lottery_draw_interval_sec)
   if (!Number.isInteger(interval) || interval < 30) { ElMessage.warning('扫描间隔必须是 >= 30 的整数（秒）'); return }
+  const minAge = Number(config.value.lottery_min_account_age_days)
+  if (!Number.isInteger(minAge) || minAge < 0) { ElMessage.warning('新号限制天数必须 >= 0 的整数'); return }
+  const maxJoins = Number(config.value.lottery_max_joins_per_day)
+  if (!Number.isInteger(maxJoins) || maxJoins < 0) { ElMessage.warning('每日参加上限必须 >= 0 的整数'); return }
   savingConfig.value = true
   try {
     await saveWelfareConfig({
@@ -223,7 +235,10 @@ const saveConfig = async () => {
       lottery_group_ids: config.value.lottery_group_ids,
       lottery_auto_draw_enabled: config.value.lottery_auto_draw_enabled,
       lottery_draw_interval_sec: String(interval),
-      lottery_notify_winners: config.value.lottery_notify_winners
+      lottery_notify_winners: config.value.lottery_notify_winners,
+      lottery_require_group_member: config.value.lottery_require_group_member,
+      lottery_min_account_age_days: String(minAge),
+      lottery_max_joins_per_day: String(maxJoins)
     })
     ElMessage.success('已保存')
   } catch {
@@ -300,6 +315,20 @@ onMounted(() => {
         <el-form-item label="开奖通知">
           <el-switch v-model="notifyWinners" />
           <span class="field-hint">开奖后在群里公布中奖名单并私聊通知中奖者</span>
+        </el-form-item>
+        <el-form-item label="身份门：必须在群里">
+          <el-switch v-model="requireGroupMember" />
+          <span class="field-hint">参赛者必须在 TG 群成员列表里，防群外薅奖</span>
+        </el-form-item>
+        <el-form-item label="资格门：新号限制">
+          <el-input v-model="config.lottery_min_account_age_days" class="field-sm" />
+          <span class="field-suffix">天</span>
+          <span class="field-hint">账号注册满多少天才能参加，0=不限制</span>
+        </el-form-item>
+        <el-form-item label="资格门：每日上限">
+          <el-input v-model="config.lottery_max_joins_per_day" class="field-sm" />
+          <span class="field-suffix">次</span>
+          <span class="field-hint">每人每天最多参加次数，0=不限制</span>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="savingConfig" @click="saveConfig">保存</el-button>

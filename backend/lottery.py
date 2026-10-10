@@ -54,6 +54,172 @@ def allowed_group_ids(db: Session) -> set[int]:
     return ids
 
 
+# ==================== 三重门：抽奖守卫体系 ====================
+#
+# 设计理念（我们自己的方案，非照抄开源）：
+# 所有参赛资格检查收敛到 check_eligibility 一个入口，返回结构化结果，
+# 调用方（TG 回调/管理后台）只做文案映射。新增门禁只需加一个 reason，
+# 不用改调用方——这是"横切能力只许一套"纪律在抽奖域的落地。
+#
+# 三重门：
+#   身份门：参赛者必须在 TG 群里（getChatMember 校验），防群外薅奖
+#   资格门：黑名单 / 新号限制 / 参与频率限流，防薅
+#   公信门：开奖种子混入 drand 公开随机信标，任何人可验证
+
+def require_group_member(db: Session) -> bool:
+    """身份门开关：lottery_require_group_member，默认开启。"""
+    val = _get_str_config(db, "lottery_require_group_member", "1").strip().lower()
+    return val in ("1", "true")
+
+
+def min_account_age_days(db: Session) -> int:
+    """资格门：账号最小注册天数（lottery_min_account_age_days），默认 0=不限制。"""
+    try:
+        return max(0, int(_get_str_config(db, "lottery_min_account_age_days", "0").strip()))
+    except ValueError:
+        return 0
+
+
+def max_joins_per_day(db: Session) -> int:
+    """资格门：每人每天最多参加次数（lottery_max_joins_per_day），默认 0=不限制。"""
+    try:
+        return max(0, int(_get_str_config(db, "lottery_max_joins_per_day", "0").strip()))
+    except ValueError:
+        return 0
+
+
+def is_blacklisted(db: Session, user_id: int) -> models.LotteryBlacklist | None:
+    """资格门：查用户是否在抽奖黑名单里，返回黑名单记录或 None。"""
+    return (
+        db.query(models.LotteryBlacklist)
+        .filter(models.LotteryBlacklist.user_id == user_id)
+        .first()
+    )
+
+
+def check_eligibility(
+    db: Session,
+    round: models.LotteryRound,
+    user: models.WebUser,
+) -> dict[str, Any]:
+    """三重门·资格门：参赛资格检查（不含"是否在群里"，那是身份门，走 TG API）。
+
+    返回 {"ok": True} 或 {"ok": False, "reason": ...}：
+    - "disabled"：功能总开关关闭
+    - "closed"：活动已结束或未开始
+    - "blacklisted"：在黑名单中
+    - "too_new"：账号注册天数不足
+    - "rate_limited"：今日参加次数超限
+    - "already"：已参加过本轮
+    - "full"：名额已满
+
+    注意：身份门（getChatMember）需要 TG API，由调用方在调此函数前完成，
+    因为 lottery 模块不依赖 tg_bot（避免循环依赖）。
+    """
+    if not is_enabled(db):
+        return {"ok": False, "reason": "disabled"}
+    if round.status != "open":
+        return {"ok": False, "reason": "closed"}
+    # 资格门第1层：黑名单
+    if is_blacklisted(db, user.id):
+        return {"ok": False, "reason": "blacklisted"}
+    # 资格门第2层：新号限制
+    min_days = min_account_age_days(db)
+    if min_days > 0:
+        created = getattr(user, "created_at", None)
+        if created is not None:
+            age_days = (datetime.now() - created).days
+            if age_days < min_days:
+                return {"ok": False, "reason": "too_new", "min_days": min_days}
+    # 资格门第3层：参与频率限流
+    max_joins = max_joins_per_day(db)
+    if max_joins > 0:
+        day_ago = datetime.now() - timedelta(hours=24)
+        count = (
+            db.query(models.LotteryRoundEntry)
+            .filter(
+                models.LotteryRoundEntry.user_id == user.id,
+                models.LotteryRoundEntry.joined_at >= day_ago,
+            )
+            .count()
+        )
+        if count >= max_joins:
+            return {"ok": False, "reason": "rate_limited", "max_joins": max_joins}
+    # 已参加过？
+    exists = (
+        db.query(models.LotteryRoundEntry.id)
+        .filter(
+            models.LotteryRoundEntry.round_id == round.id,
+            models.LotteryRoundEntry.user_id == user.id,
+        )
+        .first()
+    )
+    if exists:
+        return {"ok": False, "reason": "already"}
+    # 名额检查（P2 修复保留：FOR UPDATE 防并发超员）
+    if round.max_participants and round.max_participants > 0:
+        try:
+            db.execute(
+                text("SELECT id FROM lottery_rounds WHERE id = :id FOR UPDATE"),
+                {"id": round.id},
+            )
+        except Exception:
+            db.execute(
+                text("UPDATE lottery_rounds SET id = id WHERE id = :id"),
+                {"id": round.id},
+            )
+        current = (
+            db.query(models.LotteryRoundEntry)
+            .filter(models.LotteryRoundEntry.round_id == round.id)
+            .count()
+        )
+        if current >= round.max_participants:
+            return {"ok": False, "reason": "full"}
+    return {"ok": True}
+
+
+# ---------------- 公信门：drand 公开随机信标 ----------------
+
+DRAND_API_URL = "https://api.drand.sh/52db9f592a2b3d2ff7e0f5693a67db2393fdd434a48b9d0a64a5e1d5e69df/public/latest"
+DRAND_TIMEOUT_SEC = 10
+
+
+def fetch_drand_beacon() -> dict[str, Any] | None:
+    """抓取 drand 主网最新公开随机信标。
+
+    drand（https://drand.love）是 League of Entropy 运营的公开随机信标，
+    每 30 秒产生一轮，任何人可免费验证。开奖时把信标混入种子，
+    管理员无法通过"挑 seed"操纵结果——因为信标在开奖时刻才产生。
+
+    返回 {"round": int, "randomness": str}，失败返回 None（调用方降级用纯 seed）。
+    """
+    try:
+        import httpx
+
+        resp = httpx.get(DRAND_API_URL, timeout=DRAND_TIMEOUT_SEC)
+        resp.raise_for_status()
+        data = resp.json()
+        round_no = data.get("round")
+        randomness = data.get("randomness")
+        if not round_no or not randomness:
+            logger.warning("drand 信标返回缺字段: %s", str(data)[:200])
+            return None
+        return {"round": int(round_no), "randomness": str(randomness)}
+    except Exception:
+        logger.warning("drand 信标抓取失败，降级为纯 seed 开奖", exc_info=True)
+        return None
+
+
+def mix_seed_with_drand(db_seed: str, drand_randomness: str | None) -> str:
+    """公信门：混合种子 = sha256(db_seed + drand_randomness)。
+
+    drand 为空（抓取失败）时返回原 seed，保证可用性优先。
+    """
+    if not drand_randomness:
+        return db_seed
+    return hashlib.sha256(f"{db_seed}:{drand_randomness}".encode()).hexdigest()
+
+
 def create_round(
     db: Session,
     title: str,
@@ -135,47 +301,21 @@ def join_round(
 
     不抛异常，用 dict 表达结果，方便调用方（TG 回调）直接映射文案：
     - 成功：{"ok": True, "entry": entry}
-    - 失败：{"ok": False, "reason": "already" | "full" | "closed" | "disabled"}
-      （已参加过 / 名额已满 / 活动已结束或未开始 / 功能总开关关闭）
+    - 失败：{"ok": False, "reason": ...}
+      三重门 reason 全集：
+      "disabled"（总开关关闭）| "closed"（活动已结束）
+      | "blacklisted"（黑名单）| "too_new"（账号太新）
+      | "rate_limited"（今日参加超限）| "not_member"（不在 TG 群里）
+      | "already"（已参加过）| "full"（名额已满）
+
+    注意："not_member"（身份门）由调用方在调本函数前完成 getChatMember 校验
+    后传入，本函数只做资格门检查——lottery 模块不依赖 tg_bot，避免循环依赖。
     并发重复参加由 uq_lottery_round_entry 唯一约束兜底，同样返回 already。
     """
-    if not is_enabled(db):
-        return {"ok": False, "reason": "disabled"}
-    if round.status != "open":
-        return {"ok": False, "reason": "closed"}
-    exists = (
-        db.query(models.LotteryRoundEntry.id)
-        .filter(
-            models.LotteryRoundEntry.round_id == round.id,
-            models.LotteryRoundEntry.user_id == user.id,
-        )
-        .first()
-    )
-    if exists:
-        return {"ok": False, "reason": "already"}
-    if round.max_participants and round.max_participants > 0:
-        # P2 修复（审查）：max_participants 是"先 count 后 insert"，并发可超员。
-        # 锁住 round 行再计数（PG 用 FOR UPDATE，SQLite 用 lock 语义），
-        # 第二个请求在锁上等前者提交后，重新计数能看到前者的插入。
-        from sqlalchemy import text as _text
-        try:
-            db.execute(
-                _text("SELECT id FROM lottery_rounds WHERE id = :id FOR UPDATE"),
-                {"id": round.id},
-            )
-        except Exception:
-            # SQLite 不支持 FOR UPDATE：用无副作用 UPDATE 拿写锁（与 lock_user_row 同口径）
-            db.execute(
-                _text("UPDATE lottery_rounds SET id = id WHERE id = :id"),
-                {"id": round.id},
-            )
-        current = (
-            db.query(models.LotteryRoundEntry)
-            .filter(models.LotteryRoundEntry.round_id == round.id)
-            .count()
-        )
-        if current >= round.max_participants:
-            return {"ok": False, "reason": "full"}
+    # 三重门·资格门：集中检查（黑名单/新号/限流/已参加/名额/开关/状态）
+    check = check_eligibility(db, round, user)
+    if not check["ok"]:
+        return check
 
     entry = models.LotteryRoundEntry(
         round_id=round.id,
@@ -266,7 +406,26 @@ def draw_round(db: Session, round_id: int) -> list[models.LotteryRoundWinner]:
         .all()
     )
 
-    result = compute_winners(round.seed, entry_ids, [{"id": p.id, "quantity": p.quantity} for p in prizes])
+    # 三重门·公信门：抓取 drand 公开随机信标，与库内 seed 混合成最终种子。
+    # 信标在开奖时刻才产生且公开可验证，管理员无法通过"挑 seed"操纵结果。
+    # 抓取失败时降级为纯 seed（可用性优先），verify 报告会如实标注。
+    beacon = fetch_drand_beacon()
+    if beacon:
+        round.drand_round = beacon["round"]
+        round.drand_randomness = beacon["randomness"]
+        final_seed = mix_seed_with_drand(round.seed, beacon["randomness"])
+        logger.info(
+            "群抽奖公信门：drand 信标已混入 round_id=%s drand_round=%s",
+            round_id,
+            beacon["round"],
+        )
+    else:
+        round.drand_round = None
+        round.drand_randomness = None
+        final_seed = round.seed
+        logger.warning("群抽奖公信门：drand 抓取失败，降级为纯 seed 开奖 round_id=%s", round_id)
+
+    result = compute_winners(final_seed, entry_ids, [{"id": p.id, "quantity": p.quantity} for p in prizes])
 
     for prize_id, entry_id_list in result.items():
         for entry_id in entry_id_list:
@@ -438,9 +597,19 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
         }
         for e in entries
     ]
+    # 三重门·公信门：核验时用同样的混合种子重算，保证可复算。
+    is_done = (round.status or "") == "done"
+    verify_seed = None
+    if is_done:
+        verify_seed = mix_seed_with_drand(round.seed, round.drand_randomness)
+
     winners_out = []
     for w in winners:
-        score = hashlib.sha256(f"{round.seed}:{w.entry_id}".encode()).hexdigest()
+        score = (
+            hashlib.sha256(f"{verify_seed}:{w.entry_id}".encode()).hexdigest()
+            if verify_seed
+            else None
+        )
         prize = prizes_by_id.get(w.prize_id)
         winners_out.append(
             {
@@ -452,14 +621,17 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
 
     # P1 修复（审查）：seed 明文只能在开奖后公开。开奖前任何人拿到 seed
     # 就能用公开算法算出全部中奖者，公平性完全丧失。未开奖时只给 seed_hash。
-    is_done = (round.status or "") == "done"
     return {
         "round_id": round.id,
         "title": round.title,
         "status": round.status,
         "seed_hash": round.seed_hash,
         "seed": round.seed if is_done else None,
-        "algorithm": "sha256(seed:entry_id)升序",
+        "algorithm": "sha256(final_seed:entry_id)升序，final_seed=sha256(db_seed:drand_randomness)",
+        # 三重门·公信门：drand 信标公开可验证（https://drand.love）
+        "drand_round": round.drand_round,
+        "drand_randomness": round.drand_randomness if is_done else None,
+        "drand_verified": bool(round.drand_randomness),
         "entries": entries_out,
         "winners": winners_out,
     }
