@@ -23,31 +23,37 @@ def _lottery():
         return None
 
 
+def _cmd(code: str) -> str:
+    """命令 chip：<code> 包裹后 Telegram 客户端可一键点击发送。"""
+    return f"<code>{code}</code>"
+
+
 def _command_list() -> str:
     return (
-        "可用命令：\n"
-        "/start  欢迎与快捷入口\n"
-        "/help   帮助\n"
-        "/bind   绑定 Telegram\n"
-        "/checkin  每日签到\n"
-        "/points   查积分\n"
-        "/redpacket  发红包：/redpacket <总积分> <个数>\n"
-        "/lottery  抽奖"
+        "📋 <b>可用命令</b>\n"
+        f"▪️ {_cmd('/start')}　欢迎与快捷入口\n"
+        f"▪️ {_cmd('/help')}　帮助\n"
+        f"▪️ {_cmd('/bind')}　绑定 Telegram\n"
+        f"▪️ {_cmd('/checkin')}　每日签到\n"
+        f"▪️ {_cmd('/points')}　查积分\n"
+        f"▪️ {_cmd('/redpacket')}　发红包：{_cmd('/redpacket')} <i>总积分 个数</i>\n"
+        f"▪️ {_cmd('/lottery')}　抽奖"
     )
 
 
 def _bind_guide_text() -> str:
     return (
-        "🔗 如何绑定账号\n"
+        "🔗 <b>如何绑定账号</b>\n"
+        "\n"
         "1️⃣ 登录网站 Dashboard\n"
-        '2️⃣ 点击"绑定 Telegram"按钮\n'
-        "3️⃣ 复制弹窗中显示的绑定码\n"
+        "2️⃣ 点击「<b>绑定 Telegram</b>」按钮\n"
+        "3️⃣ 复制弹窗中显示的 <b>6 位绑定码</b>\n"
         "4️⃣ 回到这里发送：/bind 绑定码\n"
         "\n"
-        "绑定后可收到：\n"
-        "• 求片进度通知\n"
-        "• 订阅到期提醒\n"
-        "• 签到领积分"
+        "🎁 <b>绑定后可收到</b>\n"
+        "• 🔔 求片进度通知\n"
+        "• ⏰ 订阅到期提醒\n"
+        "• 📣 系统公告推送"
     )
 
 
@@ -71,11 +77,13 @@ def _bind_success_text(db, user) -> str:
             plan_name = html.escape(str(plan.name))
     has_sub = sub is not None
     return (
-        "✅ 绑定成功！\n"
+        "✅ <b>绑定成功！</b>\n"
+        "\n"
         f"👤 用户名：{username}\n"
         f"📦 订阅服务：{plan_name}\n"
         f"{'✅' if has_sub else '❌'} 订阅状态：{'有' if has_sub else '无'}有效订阅\n"
-        "您将收到：\n"
+        "\n"
+        "🔔 <b>您将收到</b>\n"
         "• 求片进度通知\n"
         "• 订阅到期提醒\n"
         "• 系统公告推送"
@@ -158,41 +166,111 @@ def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None
     return _bind_success_text(db, user)
 
 
-def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
-    site_name = store.get_value(db, "site_name", "Aetrix")
-    name = html.escape(str(tg_user.get("first_name") or "朋友"))
-    text = f"✨ 欢迎回到{site_name} ✨\n\n👋 亲爱的 {name}，你的积分、抽奖、签到，都在这里等你。"
-    telegram_id = tg_user.get("id")
-    web_user = resolve(db, int(telegram_id)) if telegram_id else None
-    if web_user:
-        username = html.escape(str(web_user.username or ""))
-        text += f"\n• 当前账号：{username}\n\n{_command_list()}"
-        # 一键免密登录链接 = 账号凭据：只在与本人的私聊里下发（私聊 chat_id == 用户 id）。
-        # 群里发出去，群内任何人先点就以该用户身份登录。
-        if chat_id != telegram_id:
-            text += "\n\n🔐 一键免密登录请私聊我发送 /start"
-            return text
+def _menu_markup(db, web_user, is_private: bool) -> dict:
+    """主菜单 inline 按钮。私聊时首行是一键免密登录（URL 按钮必须在 [0][0]）。"""
+    rows: list[list[dict]] = []
+    if is_private:
         url = login_token.build_login_url(db, web_user)
         if url:
-            return (text, {"inline_keyboard": [[{"text": "🚀 一键免密进入控制面板", "url": url}]]})
-        return text
-    text += (
-        "\n• 公益服功能（签到/积分/红包/抽奖）需要先绑定 Telegram，1 分钟搞定：\n"
-        "  ① 在网页端登录 → 个人中心 → 绑定 Telegram 获取 6 位绑定码\n"
-        "  ② 把绑定码发给我即可完成绑定\n\n"
+            rows.append([{"text": "🚀 一键免密进入控制面板", "url": url}])
+    rows.append([
+        {"text": "📅 签到", "callback_data": "menu:checkin"},
+        {"text": "✨ 积分", "callback_data": "menu:points"},
+    ])
+    rows.append([
+        {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
+        {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
+    ])
+    rows.append([
+        {"text": "🔗 绑定", "callback_data": "menu:bind"},
+        {"text": "❓ 帮助", "callback_data": "menu:help"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def back_markup() -> dict:
+    """「返回主菜单」按钮，供菜单子页面复用。"""
+    return {"inline_keyboard": [[{"text": "‹ 返回主菜单", "callback_data": "menu:main"}]]}
+
+
+def menu_main(db, tg_user: dict, is_private: bool) -> tuple[str, dict]:
+    """主菜单卡片（文本, 按钮），供 /start 与 menu:main 回调复用。"""
+    web_user = resolve(db, int(tg_user.get("id") or 0))
+    if web_user is None:
+        text = (
+            "🏠 <b>主菜单</b>\n"
+            "\n"
+            "还没有绑定账号，绑定后解锁签到、积分、抽奖、红包等功能。"
+        )
+        markup = {"inline_keyboard": [
+            [{"text": "🔗 绑定账号", "callback_data": "menu:bind"}],
+            [{"text": "❓ 帮助", "callback_data": "menu:help"}],
+        ]}
+        return text, markup
+    username = html.escape(str(web_user.username or ""))
+    text = (
+        "🏠 <b>主菜单</b>\n"
+        "\n"
+        f"👤 当前账号：{username}\n"
+        "\n"
+        "请选择功能："
     )
-    text += _command_list()
-    return text
+    return text, _menu_markup(db, web_user, is_private)
+
+
+def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str, dict | None]:
+    site_name = html.escape(str(store.get_value(db, "site_name", "Aetrix")))
+    name = html.escape(str(tg_user.get("first_name") or "朋友"))
+    telegram_id = tg_user.get("id")
+    web_user = resolve(db, int(telegram_id)) if telegram_id else None
+    is_private = (chat_id == telegram_id)
+
+    if web_user:
+        username = html.escape(str(web_user.username or ""))
+        text = (
+            f"✨ <b>欢迎回到{site_name}</b> ✨\n"
+            "\n"
+            f"👋 亲爱的 <b>{name}</b>\n"
+            f"👤 当前账号：{username}\n"
+            "\n"
+            f"{_command_list()}"
+        )
+        if not is_private:
+            # 一键免密登录链接 = 账号凭据：只在与本人的私聊里下发（私聊 chat_id == 用户 id）。
+            # 群里发出去，群内任何人先点就以该用户身份登录。
+            text += "\n\n🔐 一键免密登录请私聊我发送 /start"
+            return text
+        return text, _menu_markup(db, web_user, is_private=True)
+
+    text = (
+        f"✨ <b>欢迎回到{site_name}</b> ✨\n"
+        "\n"
+        f"👋 亲爱的 <b>{name}</b>，你的积分、抽奖、签到，都在这里等你。\n"
+        "\n"
+        "🎁 <b>公益服功能</b>（签到 / 积分 / 红包 / 抽奖）需要先绑定 Telegram，1 分钟搞定：\n"
+        "1️⃣ 在网页端登录 → <b>个人中心</b> → <b>绑定 Telegram</b> 获取 6 位绑定码\n"
+        "2️⃣ 把绑定码发给我即可完成绑定\n"
+        "\n"
+        f"{_command_list()}"
+    )
+    markup = {"inline_keyboard": [
+        [{"text": "🔗 绑定账号", "callback_data": "menu:bind"}],
+        [{"text": "❓ 帮助", "callback_data": "menu:help"}],
+    ]}
+    return text, markup
 
 
 def handle_help(db, tg_user: dict, chat_id: int, args: str) -> str:
     return (
-        "帮助：\n"
-        "本机器人用于接收签到、积分、抽奖等公益服通知与快捷操作。\n\n"
+        "📖 <b>使用帮助</b>\n"
+        "\n"
+        "🤖 本机器人用于公益服快捷操作：签到领积分、查积分、发红包、抽奖，以及接收求片进度、订阅到期等通知。\n"
+        "\n"
         f"{_command_list()}\n"
-        "如遇问题，请在网页端联系客服。"
-        "\n\n"
-        f"{_bind_guide_text()}"
+        "\n"
+        f"{_bind_guide_text()}\n"
+        "\n"
+        "💬 如遇问题，请在网页端联系客服。"
     )
 
 
@@ -201,7 +279,7 @@ def handle_bind(db, tg_user: dict, chat_id: int, args: str) -> str:
     if not telegram_id:
         return "暂时无法获取你的 Telegram ID，请稍后再试"
     if resolve(db, int(telegram_id)):
-        return "你的账号已绑定，无需重复绑定；如需更换绑定请联系客服解绑。"
+        return "✅ 你的账号已绑定，无需重复绑定；如需更换绑定请联系客服解绑。"
     if not args.strip():
         return _bind_guide_text()
     msg = verify_bind_code(db, int(telegram_id), chat_id, args.strip())
@@ -218,13 +296,23 @@ def handle_checkin(db, tg_user: dict, chat_id: int, args: str) -> str:
     try:
         award = _do_checkin_core(db, user)
     except HTTPException as e:
-        return e.detail
+        return html.escape(str(e.detail))
     except Exception:
         return "签到失败，请稍后再试"
     if award["points_awarded"] > 0:
-        text = f"📅 签到成功 +{award['points_awarded']} 积分（连续 {award['streak']} 天）"
+        text = (
+            "📅 <b>签到成功！</b>\n"
+            "\n"
+            f"💰 积分 <b>+{award['points_awarded']}</b>\n"
+            f"🔥 已连续签到 <b>{award['streak']}</b> 天"
+        )
     else:
-        text = f"📅 签到成功（连续 {award['streak']} 天，积分仅限公益服用户）"
+        text = (
+            "📅 <b>签到成功！</b>\n"
+            "\n"
+            f"🔥 已连续签到 <b>{award['streak']}</b> 天\n"
+            "💡 积分仅限公益服用户领取"
+        )
     if award.get("vitality_gained", 0) > 0:
         text += f"\n⚡ 活力值 +{award['vitality_gained']}"
     return text
@@ -242,7 +330,13 @@ def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
         cfg = _vitality.get_vitality_config(db)
         if cfg.get("enabled") and getattr(user, "is_welfare", False):
             v = int(getattr(user, "vitality", None) or 0)
-            text += f"\n⚡ 活力值 {v}/{cfg.get('max', 14)}"
+            vmax = int(cfg.get("max", 14) or 14)
+            filled = round(v / vmax * 10) if vmax > 0 else 0
+            bar = "▓" * filled + "░" * (10 - filled)
+            text += (
+                f"\n\n⚡ <b>活力值</b> {v}/{vmax}\n"
+                f"<code>{bar}</code>"
+            )
     except Exception:
         pass
     return text
@@ -257,14 +351,19 @@ def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
         return _bind_guide_text()
     code_str = (args or "").strip()
     if not code_str:
-        return "用法：/redeem 兑换码\n例如：/redeem ABCD1234"
+        return (
+            "🎟️ <b>兑换码兑换</b>\n"
+            "\n"
+            f"用法：{_cmd('/redeem')} <i>兑换码</i>\n"
+            f"例如：{_cmd('/redeem ABCD1234')}"
+        )
     try:
         result = _redeem_exchange_core(db, user, code_str)
     except HTTPException as e:
-        return e.detail
+        return html.escape(str(e.detail))
     except Exception:
         return "兑换失败，请稍后再试"
-    return "🎁 " + str(result.get("message", "兑换成功"))
+    return "🎁 " + html.escape(str(result.get("message", "兑换成功")))
 
 
 def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -> str | tuple[str, dict | None]:
@@ -312,11 +411,14 @@ def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -
         suffix = f"/{max_entries}" if max_entries else ""
 
         text = (
-            "🎲 群抽奖\n"
-            f"📌 {title}\n"
+            "🎲 <b>群抽奖</b>\n"
+            "\n"
+            f"📌 <b>{title}</b>\n"
             f"🎁 奖品：{prize}\n"
-            f"⏰ 开奖时间：{draw_at_text}\n"
-            f"👥 已参加：{entry_text}{suffix}"
+            f"⏰ 开奖：{draw_at_text}\n"
+            f"👥 已参加：<b>{entry_text}{suffix}</b>\n"
+            "\n"
+            "👇 点击下方按钮参加"
         )
         reply_markup = {
             "inline_keyboard": [
@@ -347,14 +449,14 @@ def handle_lottery(db, tg_user: dict, chat_id: int, args: str, is_group: bool) -
         "done": "已结束",
         "cancelled": "已取消",
     }
-    lines = ["🎲 我的抽奖记录"]
+    lines = ["🎲 <b>我的抽奖记录</b>", ""]
     for row in rows:
         row_title = html.escape(str(getattr(row, "title", None) or "未命名抽奖"))
         row_status = getattr(row, "status", None)
-        status_text = status_map.get(row_status, str(row_status))
+        status_text = status_map.get(row_status, html.escape(str(row_status)))
         won = getattr(row, "won", 0) or 0
-        result = "🏆 已中奖" if won > 0 else "未中奖/待开奖"
-        lines.append(f"📌 {row_title} ｜ 状态：{status_text} ｜ {result}")
+        result = "🏆 <b>已中奖</b>" if won > 0 else "未中奖/待开奖"
+        lines.append(f"📌 <b>{row_title}</b>\n　　状态：{status_text} ｜ {result}")
     return "\n".join(lines)
 
 
@@ -370,20 +472,29 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
     # 3. 参数：取前两个并转 int，数量不对或转换失败则提示用法
     parts = args.split()[:2]
     if len(parts) != 2:
-        return "用法：/redpacket <总积分> <个数>\n例如：/redpacket 100 10（100 积分分成 10 个）"
+        return (
+            "用法：/redpacket <i>总积分 个数</i>\n"
+            f"例如：{_cmd('/redpacket 100 10')}（100 积分分成 10 个）"
+        )
     try:
         total, count = int(parts[0]), int(parts[1])
     except ValueError:
-        return "用法：/redpacket <总积分> <个数>\n例如：/redpacket 100 10（100 积分分成 10 个）"
+        return (
+            "用法：/redpacket <i>总积分 个数</i>\n"
+            f"例如：{_cmd('/redpacket 100 10')}"
+        )
     # 4. 发红包：复用后端校验与扣减逻辑
-    # P1 修复：TG poller at-least-once 可能重放同一 update，用 update_id 做幂等键
+    # P1 幂等：以 tg:<update_id> 作为幂等键（后端唯一约束），
+    # TG poller at-least-once 重放同一 update 时，第二次 insert 撞唯一约束
+    # → 回滚并返回已存在的包，不再重复扣款（防重放双花）。
+    # update_id 为 None（旧调用方/非 TG 场景）时不做幂等，保持向后兼容。
     from backend import welfare_redpacket
-    idem_key = f"tg:{update_id}" if update_id else None
+    idempotency_key = f"tg:{update_id}" if update_id is not None else None
     try:
-        packet = welfare_redpacket.send_packet(db, user, total, count,
-                                               idempotency_key=idem_key)
+        packet = welfare_redpacket.send_packet(
+            db, user, total, count, idempotency_key=idempotency_key)
     except ValueError as e:
-        return f"🧧 {e}"
+        return f"🧧 {html.escape(str(e))}"
     except Exception:
         return "🧧 发红包失败，请稍后再试"
     # 5. 成功：返回红包正文与领取按钮

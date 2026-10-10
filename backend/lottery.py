@@ -9,6 +9,7 @@
 """
 
 import hashlib
+import html
 import secrets
 import logging
 import threading
@@ -716,11 +717,12 @@ def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
         entry = entries_by_id.get(w.entry_id)
         if prize is None or entry is None:
             continue
-        lines.append(f"🥇 {prize.name}：用户{_mask_telegram(entry.telegram_id)}")
-        dm_targets.append((entry.telegram_id, prize.name))
+        lines.append(f"🥇 {html.escape(str(prize.name))}：用户{_mask_telegram(entry.telegram_id)}")
+        dm_targets.append((entry.telegram_id, str(prize.name)))
 
+    round_title = html.escape(str(round.title or ""))
     group_text = (
-        f"🎉 群抽奖开奖啦！\n\n「{round.title}」\n"
+        f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
         + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
         + "\n\n奖励已自动发放。seed 公示可在管理后台核验。"
     )
@@ -737,7 +739,7 @@ def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
             ok, err = sender.send_message(
                 db,
                 telegram_id,
-                f"🎉 恭喜！你在「{round.title}」中抽中了「{prize_name}」，奖励已发放到账。",
+                f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了「{html.escape(prize_name)}」，奖励已发放到账。",
             )
             if ok:
                 result["dm_sent"] += 1

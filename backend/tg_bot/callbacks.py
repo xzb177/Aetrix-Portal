@@ -1,4 +1,4 @@
-"""callback_query 处理：抢红包按钮（redpacket_claim:{id}）+ 抽奖参加按钮（lottery_join:{round_id}）。"""
+"""callback_query 处理：主菜单按钮（menu:*）+ 抢红包按钮（redpacket_claim:{id}）+ 抽奖参加按钮（lottery_join:{round_id}）。"""
 from __future__ import annotations
 
 import html
@@ -9,26 +9,109 @@ from backend import models
 from . import redpacket_common, sender
 from .identity import resolve
 
-from backend import models
-from . import redpacket_common, sender
-from .identity import resolve
-
 logger = logging.getLogger(__name__)
 
 
 def handle_callback(db, callback_query: dict, redpacket_enabled: bool | None = None) -> None:
-    """处理 callback_query：抢红包按钮 + 抽奖参加按钮。
+    """处理 callback_query：菜单按钮（menu:*）+ 抢红包按钮 + 抽奖参加按钮。
 
     redpacket_enabled：调用方（router.dispatch）已批量读到的红包开关值；
     传 None 时回退为自行读取（兼容直接调用）。
     """
     data = (callback_query.get("data") or "")
+    if data.startswith("menu:"):
+        _handle_menu(db, callback_query)
+        return
     if data.startswith("redpacket_claim:"):
         _handle_redpacket_claim(db, callback_query, redpacket_enabled)
         return
     if data.startswith("lottery_join:"):
         _handle_lottery_join(db, callback_query)
         return
+
+
+def _handle_menu(db, callback_query: dict) -> None:
+    """处理主菜单 inline 按钮（menu:*）：原地编辑消息展示对应页面。"""
+    from . import handlers
+
+    data = callback_query.get("data") or ""
+    action = data.split(":", 1)[1] if ":" in data else ""
+    cq_id = callback_query.get("id")
+    from_user = callback_query.get("from") or {}
+    tg_id = from_user.get("id")
+    msg = callback_query.get("message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = msg.get("message_id")
+    if not chat_id or not message_id or not tg_id:
+        return
+    is_private = (chat_id == tg_id)
+    tg_user = {"id": tg_id, "first_name": from_user.get("first_name")}
+
+    # 先消除按钮 loading
+    sender.answer_callback_query(db, cq_id)
+
+    try:
+        text, markup = _render_menu(db, tg_user, tg_id, chat_id, is_private, action)
+    except _UnknownMenuAction:
+        return  # 未知菜单：静默忽略
+    except Exception:
+        logger.exception("tg menu render failed: action=%s", action)
+        text, markup = "系统繁忙，请稍后再试", handlers.back_markup()
+
+    ok, err = sender.edit_message_text(db, chat_id, message_id, text, markup)
+    if not ok:
+        logger.debug("tg menu edit failed: action=%s err=%s", action, err)
+
+
+def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
+                 action: str) -> tuple[str, dict | None]:
+    """渲染菜单页面，返回 (text, markup)。未知 action 返回 None 标记。"""
+    from . import handlers
+
+    text: str
+    markup: dict | None
+    if action == "main":
+        text, markup = handlers.menu_main(db, tg_user, is_private)
+    elif action == "checkin":
+        text = handlers.handle_checkin(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action == "points":
+        text = handlers.handle_points(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action == "lottery":
+        reply = handlers.handle_lottery(db, tg_user, chat_id, "", False)
+        if isinstance(reply, tuple):
+            text, markup = reply
+        else:
+            text, markup = reply, handlers.back_markup()
+    elif action == "bind":
+        user = resolve(db, int(tg_id))
+        if user is not None:
+            text = "✅ 你的账号已绑定，无需重复绑定；如需更换绑定请联系客服解绑。"
+        else:
+            text = handlers._bind_guide_text()
+        markup = handlers.back_markup()
+    elif action == "help":
+        text = handlers.handle_help(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action == "redpacket":
+        text = (
+            "🧧 <b>发红包</b>\n"
+            "\n"
+            f"用法：{handlers._cmd('/redpacket')} <i>总积分 个数</i>\n"
+            f"例如：{handlers._cmd('/redpacket 100 10')}（100 积分分成 10 个）\n"
+            "\n"
+            "💡 请直接发送命令发红包（按钮不支持输入参数）"
+        )
+        markup = handlers.back_markup()
+    else:
+        raise _UnknownMenuAction(action)
+    return text, markup
+
+
+class _UnknownMenuAction(Exception):
+    """未知菜单 action：调用方静默忽略。"""
 def _answer_callback(db, callback_id, text: str, show_alert: bool = False) -> None:
     """调用 answerCallbackQuery 给用户 toast 提示（幂等、可重复调用）。"""
     if not callback_id:

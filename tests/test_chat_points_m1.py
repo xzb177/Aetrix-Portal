@@ -181,8 +181,8 @@ def test_chatpoints_summary(db):
     cp.handle_group_message(db, _make_update(message_id=1))
     cp.handle_group_message(db, _make_update(message_id=2))
     text = cp.handle_chatpoints(db, _make_update()['message']['from'], -100999, '')
-    assert "今日已得：2 / 20" in text
-    assert "本月累计：2" in text
+    assert "今日已得：<b>2</b> / 20 分" in text
+    assert "本月累计：<b>2</b> 分" in text
 
 
 def test_get_today_summary(db):

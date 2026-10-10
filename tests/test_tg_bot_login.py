@@ -81,5 +81,5 @@ def test_handle_start_bound_returns_tuple(db):
 
 def test_handle_start_unbound_returns_str(db):
     reply = handlers.handle_start(db, {"id": 1005, "first_name": "Tester"}, 1005, "")
-    assert isinstance(reply, str)
-    assert "绑定" in reply
+    text = reply[0] if isinstance(reply, tuple) else reply
+    assert "绑定" in text

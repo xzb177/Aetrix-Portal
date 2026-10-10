@@ -214,11 +214,17 @@ def handle_chatpoints(
     if not user:
         return "💬 请先绑定 Telegram 账号：在网页个人中心 → 绑定 Telegram，或发送 /bind 获取绑定码。"
     summary = get_today_summary(db, user)
+    today, cap, month = summary["today"], summary["cap"], summary["month"]
+    filled = round(today / cap * 10) if cap > 0 else 0
+    bar = "▓" * filled + "░" * (10 - filled)
     lines = [
-        "💬 群发言积分",
-        f"今日已得：{summary['today']} / {summary['cap']} 分",
-        f"本月累计：{summary['month']} 分",
+        "💬 <b>群发言积分</b>",
+        "",
+        f"📊 今日已得：<b>{today}</b> / {cap} 分",
+        f"<code>{bar}</code>",
+        f"📅 本月累计：<b>{month}</b> 分",
     ]
-    if summary["today"] >= summary["cap"]:
-        lines.append("（今日已达上限，明天再来）")
+    if today >= cap:
+        lines.append("")
+        lines.append("✅ 今日已达上限，明天再来！")
     return "\n".join(lines)
