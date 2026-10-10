@@ -435,12 +435,15 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
             }
         )
 
+    # P1 修复（审查）：seed 明文只能在开奖后公开。开奖前任何人拿到 seed
+    # 就能用公开算法算出全部中奖者，公平性完全丧失。未开奖时只给 seed_hash。
+    is_done = (round.status or "") == "done"
     return {
         "round_id": round.id,
         "title": round.title,
         "status": round.status,
         "seed_hash": round.seed_hash,
-        "seed": round.seed,
+        "seed": round.seed if is_done else None,
         "algorithm": "sha256(seed:entry_id)升序",
         "entries": entries_out,
         "winners": winners_out,

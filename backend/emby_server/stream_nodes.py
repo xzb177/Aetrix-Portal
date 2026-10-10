@@ -45,6 +45,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.emby_server import node_health
 from backend.emby_server.mount_health import require_panel_key
+from backend import node_auth
 
 logger = logging.getLogger(__name__)
 
@@ -226,10 +227,22 @@ def api_bundle(request: Request, db: Session = Depends(get_db)):
     """一键部署包：流节点建自身所需的主服务侧配置。
 
     包含：SECRET_KEY（验签）、DATABASE_URL（只读主库）、rclone.conf 内容、
-    SA 文件（{文件名: 内容}）、rclone 远端列表。走 HTTPS + 面板密钥，
-    与既有节点间机制同等信任级别。
+    SA 文件（{文件名: 内容}）、rclone 远端列表。走 HTTPS + 节点签名头。
+
+    P1 修复（审查）：此前接受长期静态 X-Panel-Key bearer 头，而该头明文躺在
+    每台流节点的 .env、部署脚本、shell 历史里——拿到它就能换走全部根凭据。
+    现只接受有时效（±5 分钟）+ nonce 防重放 + 绑定 method+path 的 HMAC 签名头。
+    部署脚本已同步改为 openssl 本地签名（scripts/deploy-streaming-node.sh）。
     """
-    _panel_auth(request)
+    # 只认签名头，不认静态 bearer：根凭据下发必须用一次一签的短期凭证
+    if not node_auth.verify_signed_headers(
+        request.headers, request.method, request.url.path
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="bundle 下发只接受节点签名头（X-Panel-Ts/Nonce/Sign），"
+                   "不接受静态 X-Panel-Key；请用新版部署脚本拉取",
+        )
     from backend.security import SECRET_KEY
 
     bundle: dict = {

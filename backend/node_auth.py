@@ -124,6 +124,35 @@ def verify_headers(headers, method: str, path: str) -> bool:
     return bool(provided) and hmac.compare_digest(expected, provided)
 
 
+def verify_signed_headers(headers, method: str, path: str) -> bool:
+    """只接受 HMAC 签名头（不接受静态 X-Panel-Key）。
+
+    P1 修复（审查）：/bundle 一类「下发根凭据」的端点，不能用长期静态
+    bearer 头换走 SECRET_KEY / DATABASE_URL / SA 私钥。静态头躺在各流节点
+    的 .env、部署脚本、shell 历史里，泄露面太大；签名头有时效（±5 分钟）
+    + nonce 防重放 + 绑定 method+path。
+    """
+    expected = node_shared_secret()
+    if not expected:
+        return False
+    sign = (headers.get(PANEL_SIGN_HEADER) or "").strip()
+    ts = (headers.get(PANEL_TS_HEADER) or "").strip()
+    nonce = (headers.get(PANEL_NONCE_HEADER) or "").strip()
+    if not sign or not ts or not nonce or len(nonce) > 128:
+        return False
+    try:
+        ts_val = int(ts)
+    except ValueError:
+        return False
+    now = time.time()
+    if abs(now - ts_val) > SIGN_MAX_SKEW:
+        return False
+    good = _sign(expected, ts, nonce, method, path)
+    if not hmac.compare_digest(good, sign):
+        return False
+    return _remember_nonce(nonce, now)
+
+
 if __name__ == "__main__":  # pragma: no cover - 运维辅助
     value = node_shared_secret()
     if not value:
