@@ -19,13 +19,14 @@ import threading
 import time
 from types import ModuleType
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 __all__ = [
     "DRIVE_HOSTS",
     "is_drive_url",
     "get_drive_bearer_token",
     "drive_auth_headers",
+    "drive_api_media_url",
 ]
 
 logger = logging.getLogger(__name__)
@@ -156,3 +157,30 @@ def drive_auth_headers(url: str) -> dict[str, str]:
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
+
+
+def drive_api_media_url(url: str) -> str:
+    """把 Drive uc 直链转换为 Drive API alt=media 下载地址。
+
+    ``https://drive.google.com/uc?export=download&id=<FILE_ID>`` 即使带上 SA 的
+    Bearer token 也只会返回登录页（私有文件无法这样下载）；Drive API 的
+    ``https://www.googleapis.com/drive/v3/files/<FILE_ID>?alt=media`` 才是
+    Bearer token 能用的下载端点，支持 Range 分片。
+
+    非 uc 格式的 URL 原样返回，永不抛异常。
+    """
+    try:
+        if not url:
+            return url
+        parsed = urlparse(url)
+        if (parsed.hostname or "").lower() != "drive.google.com":
+            return url
+        if parsed.path.rstrip("/") != "/uc":
+            return url
+        params = dict(parse_qsl(parsed.query))
+        file_id = params.get("id")
+        if not file_id:
+            return url
+        return "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
+    except Exception:
+        return url
