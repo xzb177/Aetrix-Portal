@@ -2143,6 +2143,7 @@ def start() -> None:
 
 def stop() -> None:
     """停止后台补全线程"""
+    global _worker_threads
     _stop_event.set()
     with _worker_lock:
         threads, _worker_threads = _worker_threads, []
