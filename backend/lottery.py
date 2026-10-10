@@ -154,6 +154,21 @@ def join_round(
     if exists:
         return {"ok": False, "reason": "already"}
     if round.max_participants and round.max_participants > 0:
+        # P2 修复（审查）：max_participants 是"先 count 后 insert"，并发可超员。
+        # 锁住 round 行再计数（PG 用 FOR UPDATE，SQLite 用 lock 语义），
+        # 第二个请求在锁上等前者提交后，重新计数能看到前者的插入。
+        from sqlalchemy import text as _text
+        try:
+            db.execute(
+                _text("SELECT id FROM lottery_rounds WHERE id = :id FOR UPDATE"),
+                {"id": round.id},
+            )
+        except Exception:
+            # SQLite 不支持 FOR UPDATE：用无副作用 UPDATE 拿写锁（与 lock_user_row 同口径）
+            db.execute(
+                _text("UPDATE lottery_rounds SET id = id WHERE id = :id"),
+                {"id": round.id},
+            )
         current = (
             db.query(models.LotteryRoundEntry)
             .filter(models.LotteryRoundEntry.round_id == round.id)
@@ -435,12 +450,15 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
             }
         )
 
+    # P1 修复（审查）：seed 明文只能在开奖后公开。开奖前任何人拿到 seed
+    # 就能用公开算法算出全部中奖者，公平性完全丧失。未开奖时只给 seed_hash。
+    is_done = (round.status or "") == "done"
     return {
         "round_id": round.id,
         "title": round.title,
         "status": round.status,
         "seed_hash": round.seed_hash,
-        "seed": round.seed,
+        "seed": round.seed if is_done else None,
         "algorithm": "sha256(seed:entry_id)升序",
         "entries": entries_out,
         "winners": winners_out,
