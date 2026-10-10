@@ -135,12 +135,25 @@ print("OK change-password")
 # 旧密码登录失败
 r = client.post("/api/user/auth/login", json={"username": "newuser", "password": "secret123"})
 assert r.status_code == 401
+# 改密前的 token 留作"旧 token 应作废"的断言
+stale_access = new_access
+stale_refresh = new_refresh
 # 新密码登录成功，且 Emby 密码已同步
 r = client.post("/api/user/auth/login", json={"username": "newuser", "password": "newpass456"})
 assert r.status_code == 200
+new_access = r.json()["access_token"]
+assert new_access and new_access != stale_access, "改密后应签发新 token"
 emby_password_synced = r.json()["user"]["emby_username"] is not None
 assert emby_password_synced
 print("OK relogin with new password")
+
+# 审查第八批 P2/P3：改密后旧 access / 旧 refresh 必须作废（后续步骤改用新 token）
+r = client.get("/api/user/auth/me", headers={"Authorization": f"Bearer {stale_access}"})
+assert r.status_code == 401, f"改密后旧 access 应被拒绝, got {r.status_code}"
+print("OK stale access token rejected after password change")
+r = client.post("/api/user/auth/refresh", json={"refresh_token": stale_refresh})
+assert r.status_code == 401, f"改密后旧 refresh 应被拒绝, got {r.status_code}"
+print("OK stale refresh token rejected after password change")
 
 # Emby 播放密码同步验证（应为 bcrypt 哈希，而非明文）
 import sqlite3  # noqa: E402

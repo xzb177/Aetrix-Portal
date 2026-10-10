@@ -586,6 +586,9 @@ def _auto_migrate():
             # 与升级前行为一致（此前无等级概念）。
             ("member_xp", "INTEGER", "0"),
             ("member_level", "INTEGER", "1"),
+            # P2/P3 审查修复：token 版本号（改密后旧 JWT 作废）。老库补列默认 0，
+            # 存量 token 的 tv 也是 0，对得上，不会误杀。
+            ("token_version", "INTEGER", "0"),
             # C1 活力值（竞品借鉴）：老库补列默认满值 14，升级后无人被误拦观影。
             ("vitality", "INTEGER", "14"),
         ]),

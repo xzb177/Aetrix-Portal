@@ -101,8 +101,9 @@ def admin_login(
         agent=user_agent(http_request), success=True, reason="admin_login",
     )
 
-    access = create_access_token(user.id, {"username": user.username, "staff": True})
-    refresh = create_refresh_token(user.id)
+    access = create_access_token(user.id, {"username": user.username, "staff": True},
+                                  token_version=user.token_version or 0)
+    refresh = create_refresh_token(user.id, token_version=user.token_version or 0)
     # 登录响应带上角色（与 /auth/me 同一个 payload）：进后台立刻按真实角色渲染导航与按钮，
     # 不用先显示成「超级管理员」再等一次 /auth/me 纠正（v2.26.0）
     perms = admin_roles.permission_payload(user)
