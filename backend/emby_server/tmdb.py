@@ -1499,7 +1499,7 @@ class TmdbClient:
             self._cache_put(key, data)
             return data
 
-    def batch_search(self, queries):
+    def batch_search(self, queries, return_transient=False):
         """批量搜索。
 
         使用 8 个线程并发调用 self.search(name, year, kind)，
@@ -1510,11 +1510,15 @@ class TmdbClient:
         search() 内部的两级缓存（L1 内存 + L2 磁盘），命中不发请求。
 
         :param queries: [(name, year, kind), ...] 搜索参数列表
-        :return: dict，键为输入下标，值为搜索命中 dict 或 None
+        :param return_transient: 为 True 时返回 (results, transient_indices) 二元组，
+            transient_indices 为触发 TmdbTransientError 的下标 set（对应结果仍记 None）
+        :return: dict，键为输入下标，值为搜索命中 dict 或 None；
+            return_transient=True 时返回 (results, transient_indices) 二元组
         """
         import concurrent.futures
 
         results = {}
+        transient_indices = set()
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             future_to_index = {
                 executor.submit(self.search, name, year, kind): index
@@ -1524,11 +1528,16 @@ class TmdbClient:
                 index = future_to_index[future]
                 try:
                     results[index] = future.result()
+                except TmdbTransientError:
+                    transient_indices.add(index)
+                    results[index] = None
                 except Exception:
                     results[index] = None
+        if return_transient:
+            return results, transient_indices
         return results
 
-    def batch_details(self, ids):
+    def batch_details(self, ids, return_transient=False):
         """批量取详情。
 
         使用 8 个线程并发调用 self.details(tid, kind)，
@@ -1538,11 +1547,15 @@ class TmdbClient:
         限速与缓存口径同 batch_search（共用令牌桶 + 两级缓存）。
 
         :param ids: [(tmdb_id, kind), ...] 详情参数列表
-        :return: dict，键为输入下标，值为详情 dict 或 None
+        :param return_transient: 为 True 时返回 (results, transient_indices) 二元组，
+            transient_indices 为触发 TmdbTransientError 的下标 set（对应结果仍记 None）
+        :return: dict，键为输入下标，值为详情 dict 或 None；
+            return_transient=True 时返回 (results, transient_indices) 二元组
         """
         import concurrent.futures
 
         results = {}
+        transient_indices = set()
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             future_to_index = {
                 executor.submit(self.details, tid, kind): index
@@ -1552,8 +1565,13 @@ class TmdbClient:
                 index = future_to_index[future]
                 try:
                     results[index] = future.result()
+                except TmdbTransientError:
+                    transient_indices.add(index)
+                    results[index] = None
                 except Exception:
                     results[index] = None
+        if return_transient:
+            return results, transient_indices
         return results
 
     def credits(self, tmdb_id: str, kind: str) -> list[dict]:
