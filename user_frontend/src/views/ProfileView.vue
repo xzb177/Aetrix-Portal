@@ -329,40 +329,31 @@ function formatDate(iso?: string | null) {
 
 <template>
   <div class="au-page profile-page">
-    <!-- 身份卡：账号是谁、看了多少 -->
-    <section class="id-card">
-      <div class="id-body">
-        <div class="id-avatar">{{ initial }}</div>
-        <div class="id-main">
-          <h1 class="id-name">
-            <span>{{ user?.username || '用户' }}</span>
-            <!-- 会员身份只写一次：有生效订阅就是「年卡 · 剩 N 天」（带皇冠），
-                 没有订阅但账号标了 VIP（老数据 / 管理员手动开）才退回 VIP 字样 -->
-            <span v-if="activeSub" class="id-sub"><Crown :size="12" />{{ activeSub.plan_name }} · 剩 {{ activeSub.days_left }} 天</span>
-            <span v-else-if="user?.is_vip" class="id-sub"><Crown :size="12" />VIP</span>
-          </h1>
-          <div class="id-meta">
-            <span><Mail :size="13" />{{ user?.email || '未绑定邮箱' }}</span>
-            <span><CalendarDays :size="13" />注册于 {{ formatDate(user?.created_at) }}</span>
-          </div>
-        </div>
+    <!-- Hero 身份区：放映机票根式 -->
+<section class="hero">
+  <div class="hero-ambiance" aria-hidden="true"></div>
+  <div class="hero-top">
+    <div class="hero-avatar" :class="{ 'is-vip': activeSub || user?.is_vip }">{{ initial }}</div>
+    <div class="hero-main">
+      <p class="micro-label">我的账号</p>
+      <h1 class="hero-name">{{ user?.username || '用户' }}</h1>
+      <p class="hero-sub">
+        <span v-if="activeSub" class="ticket"><Crown :size="12" />{{ activeSub.plan_name }} · 剩 {{ activeSub.days_left }} 天</span>
+        <span v-else-if="user?.is_vip" class="ticket"><Crown :size="12" />VIP</span>
+      </p>
+      <div class="hero-meta">
+        <span class="meta-item"><Mail :size="13" />{{ user?.email || '未绑定邮箱' }}</span>
+        <span class="meta-dot"></span>
+        <span class="meta-item"><CalendarDays :size="13" />注册于 {{ formatDate(user?.created_at) }}</span>
       </div>
-
-      <div class="id-stats">
-        <div class="id-stat">
-          <strong>{{ watchHours }}</strong>
-          <span>累计观看</span>
-        </div>
-        <div class="id-stat">
-          <strong>{{ stats?.total_plays ?? '—' }}</strong>
-          <span>播放次数</span>
-        </div>
-        <div class="id-stat">
-          <strong>{{ stats?.watched_items ?? '—' }}</strong>
-          <span>看过影片</span>
-        </div>
-      </div>
-    </section>
+    </div>
+  </div>
+  <div class="hero-stats">
+    <div class="hero-stat"><strong>{{ watchHours }}</strong><span>累计观看</span></div>
+    <div class="hero-stat"><strong>{{ stats?.total_plays ?? '—' }}</strong><span>播放次数</span></div>
+    <div class="hero-stat"><strong>{{ stats?.watched_items ?? '—' }}</strong><span>看过影片</span></div>
+  </div>
+</section>
 
     <!-- 账号的两栏：左边是「怎么连播放器」，右边是「我的钱 / 我的设备 / 我的安全」 -->
     <div class="p-grid">
@@ -502,6 +493,18 @@ function formatDate(iso?: string | null) {
       </section>
 
       <div class="p-side">
+        <!-- 正在播放：讲的是「控制」（哪台设备在放、能不能停），不是「我看过什么」，
+             所以它在这里，而历史留在媒体库的观看记录分段 -->
+        <section class="pane">
+          <header class="pane-head">
+            <h2 class="pane-title">
+              <MonitorPlay :size="17" />
+              正在播放
+            </h2>
+          </header>
+          <PlaybackSessions />
+          <p class="pane-tip">远程结束播放只会终止会话，不会删除观看记录。</p>
+        </section>
         <!-- 我的订阅 -->
         <section class="pane">
           <header class="pane-head">
@@ -594,18 +597,6 @@ function formatDate(iso?: string | null) {
           </p>
         </section>
 
-        <!-- 正在播放：讲的是「控制」（哪台设备在放、能不能停），不是「我看过什么」，
-             所以它在这里，而历史留在媒体库的观看记录分段 -->
-        <section class="pane">
-          <header class="pane-head">
-            <h2 class="pane-title">
-              <MonitorPlay :size="17" />
-              正在播放
-            </h2>
-          </header>
-          <PlaybackSessions />
-          <p class="pane-tip">远程结束播放只会终止会话，不会删除观看记录。</p>
-        </section>
 
         <!-- 播放设置：只有中转一条路径，热门内容自动走缓存 -->
         <section class="pane">
@@ -723,6 +714,13 @@ function formatDate(iso?: string | null) {
 </template>
 
 <style scoped>
+/* ============================================================
+   个人中心 — 最终版样式（2026-10-10）
+   设计语言：暗房影院 · 放映机票根式 Hero · Spotify 三级表面
+   约束：8pt 网格 / 数字 tabular-nums + nowrap / 琥珀三处原则 /
+         零硬编码色值（全 --au-*）/ prefers-reduced-motion
+   ============================================================ */
+
 .profile-page {
   display: flex;
   flex-direction: column;
@@ -731,136 +729,170 @@ function formatDate(iso?: string | null) {
   padding-bottom: 80px;
 }
 
-/* ==================== 身份卡 ==================== */
-.id-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.5rem;
-  flex-wrap: wrap;
-  padding: 1.375rem 1.5rem;
+/* ==================== Hero 身份区 ==================== */
+.hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  background: linear-gradient(180deg, var(--au-surface), var(--au-bg-soft));
   border: 1px solid var(--au-border);
-  border-radius: var(--au-r-xl);
-  background: var(--au-surface);
+  padding: 28px 24px 0;
 }
 
-.id-body {
+/* 氛围光：radial 琥珀晕开 + feTurbulence 颗粒，深色专享 */
+.hero-ambiance {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 90% at 15% 0%, rgba(232, 168, 74, 0.14), transparent 70%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+
+html[data-theme="light"] .hero-ambiance {
+  display: none;
+}
+
+.hero-top {
   display: flex;
+  gap: 20px;
   align-items: center;
-  gap: 1.125rem;
-  min-width: 0;
+  position: relative;
+  z-index: 1;
 }
 
-.id-avatar {
-  width: 58px;
-  height: 58px;
+.hero-avatar {
+  width: 72px;
+  height: 72px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  border: 1px solid var(--au-primary-border);
   background: var(--au-surface-2);
-  color: var(--au-primary);
+  border: 1px solid var(--au-border-strong);
+  color: var(--au-text);
   font-family: var(--au-font-serif);
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 28px;
+  font-weight: 500;
 }
 
-.id-main { min-width: 0; }
+/* 会员光环：Opal 辉光选中态（深色底用辉光不用描边） */
+.hero-avatar.is-vip {
+  border-color: rgba(232, 168, 74, 0.55);
+  box-shadow: 0 0 16px rgba(232, 168, 74, 0.28);
+}
 
-.id-name {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+.hero-main {
+  min-width: 0;
+  flex: 1;
+}
+
+/* 微标签：11px 大写，字距 .12em */
+.micro-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--au-text-4);
+}
+
+.hero-name {
   margin: 0;
   font-family: var(--au-font-serif);
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--au-text);
-}
-
-.id-vip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.125rem 0.5rem;
-  border-radius: var(--au-r-full);
-  border: 1px solid var(--au-primary-border);
-  color: var(--au-primary);
-  font-family: var(--au-font-sans);
-  font-size: 0.8125rem;
-  font-weight: 600;
-}
-
-.id-sub {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.125rem 0.5rem;
-  font-family: var(--au-font-sans);
   white-space: nowrap;
-  border: 1px solid var(--au-primary-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hero-sub {
+  margin: 8px 0 0;
+}
+
+/* 票根徽章：琥珀三处原则之一（会员身份） */
+.ticket {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
   border-radius: var(--au-r-full);
+  border: 1px solid var(--au-primary-border);
   background: var(--au-primary-soft);
   color: var(--au-primary);
-  font-size: 0.8125rem;
+  font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
-.id-meta {
+.hero-meta {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.375rem 1rem;
-  margin: 0.4375rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
+  gap: 10px;
+  margin-top: 10px;
 }
 
-.id-meta span {
+.meta-item {
   display: inline-flex;
   align-items: center;
-  gap: 0.375rem;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--au-text-3);
+  white-space: nowrap;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.id-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(76px, auto));
+.meta-dot {
+  width: 3px;
+  height: 3px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--au-text-4);
 }
 
-.id-stat {
+.hero-stats {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  padding: 0 1.125rem;
+  position: relative;
+  z-index: 1;
+  margin-top: 24px;
+  border-top: 1px solid var(--au-border);
+}
+
+.hero-stat {
+  flex: 1;
+  min-width: 0;
+  padding: 18px 8px;
+  text-align: center;
+}
+
+.hero-stat + .hero-stat {
   border-left: 1px solid var(--au-border);
 }
 
-.id-stat:first-child { border-left: none; padding-left: 0; }
-
-.id-stat strong {
+.hero-stat strong {
+  display: block;
   font-family: var(--au-font-serif);
-  font-size: 1.25rem;
-  font-weight: 700;
-  line-height: 1.3;
+  font-size: 22px;
+  font-weight: 500;
   color: var(--au-text);
-  font-variant-numeric: tabular-nums lining-nums;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.id-stat span {
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
+.hero-stat span {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--au-text-4);
+  white-space: nowrap;
 }
 
-/* ==================== 卡片 ==================== */
+/* ==================== 网格 ==================== */
 .p-grid {
   display: grid;
   /* 列宽一律 minmax(0, …)：裸写 1fr 等于 minmax(auto, 1fr)，轨道最小宽度 = 内容的
@@ -878,12 +910,25 @@ function formatDate(iso?: string | null) {
   min-width: 0;
 }
 
+/* ==================== 卡片 ==================== */
 .pane {
   min-width: 0;
   padding: 1.25rem;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
+  animation: pane-in 0.45s var(--au-ease) both;
+}
+
+/* 右列卡片 stagger 入场（60fps.design：50-100ms 间隔） */
+.p-side .pane:nth-child(2) { animation-delay: 0.06s; }
+.p-side .pane:nth-child(3) { animation-delay: 0.12s; }
+.p-side .pane:nth-child(4) { animation-delay: 0.18s; }
+.p-side .pane:nth-child(5) { animation-delay: 0.24s; }
+
+@keyframes pane-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
 }
 
 .pane-head {
@@ -899,8 +944,10 @@ function formatDate(iso?: string | null) {
   align-items: center;
   gap: 0.5rem;
   margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 700;
+  font-family: var(--au-font-serif);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--au-text);
 }
 
@@ -922,11 +969,15 @@ function formatDate(iso?: string | null) {
   color: var(--au-text-3);
 }
 
+/* ==================== 徽章 ==================== */
 .badge {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
   padding: 0.0625rem 0.5rem;
   border-radius: var(--au-r-full);
   font-size: 0.8125rem;
+  white-space: nowrap;
   background: var(--au-surface-2);
   color: var(--au-text-3);
 }
@@ -936,7 +987,7 @@ function formatDate(iso?: string | null) {
 .badge.off { background: var(--au-danger-soft); color: var(--au-danger); }
 /* 临期：与后台「到期前提醒」同色系 */
 .badge.warn { background: var(--au-warning-soft); color: var(--au-warning); }
-/* 公益服：免费开放不是“未开通”，用站点主色单独区分 */
+/* 公益服：免费开放不是"未开通"，用站点主色单独区分 */
 .badge.free { background: var(--au-primary-soft); color: var(--au-primary); }
 
 .sub-free { display: flex; flex-direction: column; gap: 0.375rem; align-items: flex-start; }
@@ -949,6 +1000,28 @@ function formatDate(iso?: string | null) {
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--au-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ==================== 按钮 ==================== */
+/* 按压缩放：Airbnb 触觉回弹 cubic-bezier(0.34,1.56,0.64,1)，120ms */
+.icon-btn,
+.copy-btn,
+.text-btn,
+.btn,
+.scheme-btn,
+.list-item {
+  transition: transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.icon-btn:active,
+.copy-btn:active,
+.text-btn:active:not(:disabled),
+.btn:active:not(:disabled),
+.scheme-btn:active,
+.list-item:active {
+  transform: scale(0.97);
 }
 
 .icon-btn {
@@ -963,7 +1036,6 @@ function formatDate(iso?: string | null) {
   border-radius: var(--au-r-sm);
   color: var(--au-text-2);
   cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
 }
 
 .icon-btn:hover {
@@ -975,54 +1047,6 @@ function formatDate(iso?: string | null) {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
-}
-
-/* ==================== Emby 账号信息行 ==================== */
-.rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.625rem;
-  transition: opacity var(--au-fast) var(--au-ease);
-}
-
-.rows.loading {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.6875rem 0.875rem;
-  /* 字段底色：深色下是内凹的暗底，浅色下就是纸白（不再是一块发灰的色块） */
-  background: var(--au-input-bg);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
-}
-
-.row-label {
-  flex-shrink: 0;
-  width: 64px;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-}
-
-.row-value {
-  flex: 1;
-  min-width: 0;
-  font-size: 0.8125rem;
-  color: var(--au-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 公益规则这类长文本要换行，不能像地址那样截断 */
-.row-value.wrap { overflow: visible; white-space: normal; line-height: 1.6; }
-
-.mono {
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 .copy-btn {
@@ -1037,7 +1061,6 @@ function formatDate(iso?: string | null) {
   border-radius: var(--au-r-sm);
   color: var(--au-text-3);
   cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
 }
 
 .copy-btn:hover {
@@ -1055,6 +1078,7 @@ function formatDate(iso?: string | null) {
   border-radius: var(--au-r-sm);
   color: var(--au-primary);
   font-size: 0.8125rem;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -1069,7 +1093,131 @@ function formatDate(iso?: string | null) {
 .text-btn.danger:hover { background: var(--au-danger-soft); color: var(--au-danger); }
 .text-btn.danger.confirming { color: var(--au-danger); font-weight: 600; }
 
-/* 多服 / 一键导入：与信息行之间靠留白分组（不再用虚线） */
+.btn {
+  height: 38px;
+  padding: 0 1rem;
+  border: none;
+  border-radius: var(--au-r-md);
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.btn.ghost {
+  background: var(--au-surface-2);
+  color: var(--au-text-2);
+}
+
+.btn.ghost:hover { background: var(--au-surface-3); }
+
+/* 主按钮：琥珀三处原则之一 */
+.btn.primary {
+  background: var(--au-primary);
+  color: var(--au-on-primary);
+  font-weight: 600;
+}
+
+.btn.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ==================== Emby 账号信息行 ==================== */
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+/* 呼吸式加载（Wabi Soothing Loading）：opacity 0.45↔0.7，2s 周期 */
+.rows.loading {
+  pointer-events: none;
+  animation: breathe 2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.7; }
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 12px 14px;
+  background: var(--au-input-bg);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+}
+
+.row-label {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--au-text-3);
+  white-space: nowrap;
+}
+
+.row-value {
+  flex: 1;
+  min-width: 0;
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--au-text);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 公益规则这类长文本要换行，不能像地址那样截断 */
+.row-value.wrap { overflow: visible; white-space: normal; line-height: 1.6; text-align: left; }
+
+.mono {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* ==================== 解锁卡 ==================== */
+.unlock-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 24px 16px;
+  border: 1px dashed var(--au-primary-border);
+  border-radius: var(--au-r-lg);
+  background: var(--au-surface-2);
+  text-align: center;
+}
+
+.unlock-title {
+  margin: 0;
+  font-family: var(--au-font-serif);
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--au-text);
+}
+
+.unlock-desc {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--au-text-3);
+}
+
+.unlock-desc strong {
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.unlock-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--au-text-4);
+}
+
+/* ==================== 多服 / 一键导入 ==================== */
 .sub-block {
   margin-top: 1.125rem;
 }
@@ -1077,8 +1225,10 @@ function formatDate(iso?: string | null) {
 .block-label {
   display: block;
   margin-bottom: 0.5rem;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--au-text-4);
 }
 
 .realm-list {
@@ -1088,7 +1238,7 @@ function formatDate(iso?: string | null) {
 }
 
 .realm-item {
-  padding: 0.5rem 0.6875rem;
+  padding: 12px 14px;
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-sm);
@@ -1116,41 +1266,7 @@ function formatDate(iso?: string | null) {
 
 .realm-url .mono { flex: 1; }
 
-.realm-url.muted { color: var(--au-text-3); font-style: normal; }
-
-/* 没查看权限时的解锁卡 */
-.unlock-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.625rem;
-  padding: 1rem 1.125rem;
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
-  background: var(--au-surface-2);
-}
-
-.unlock-title {
-  margin: 0;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--au-text);
-}
-
-.unlock-desc {
-  margin: 0;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: var(--au-text-3);
-}
-
-.unlock-desc strong { color: var(--au-text); }
-
-.unlock-hint {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-}
+.realm-url.muted { color: var(--au-text-4); font-style: normal; }
 
 .scheme-btns {
   display: flex;
@@ -1162,53 +1278,22 @@ function formatDate(iso?: string | null) {
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
-  height: 32px;
-  padding: 0 0.8125rem;
+  height: 36px;
+  padding: 0 1rem;
   background: var(--au-surface-2);
   border: 1px solid var(--au-border);
-  border-radius: var(--au-r-sm);
+  border-radius: var(--au-r-full);
   color: var(--au-text-2);
   font-size: 0.8125rem;
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
 }
 
 .scheme-btn:hover {
   background: var(--au-primary-soft);
   border-color: var(--au-primary-border);
   color: var(--au-primary);
-}
-
-/* ==================== 我的设备 ==================== */
-.dev-row {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.625rem 0;
-}
-
-.dev-row + .dev-row { border-top: 1px solid var(--au-border); }
-
-.dev-main {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.dev-name {
-  font-size: 0.875rem;
-  color: var(--au-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dev-meta {
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
 }
 
 /* ==================== 我的订阅 ==================== */
@@ -1226,15 +1311,18 @@ function formatDate(iso?: string | null) {
 .sub-plan {
   font-weight: 600;
   color: var(--au-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .sub-end {
   margin-top: 0.125rem;
   font-size: 0.8125rem;
   color: var(--au-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-/* 临期状态：整块底色换成警示色，避免“还剩 3 天”淹没在常规配色里 */
+/* 临期状态：整块底色换成警示色，避免"还剩 3 天"淹没在常规配色里 */
 .sub-active.warn {
   background: var(--au-warning-soft);
   border-color: var(--au-warning-soft);
@@ -1269,12 +1357,50 @@ function formatDate(iso?: string | null) {
 .sub-history-date {
   flex: 1;
   color: var(--au-text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .sub-realm {
   font-style: normal;
   font-size: 0.8125rem;
   color: var(--au-text-3);
+}
+
+/* ==================== 我的设备 ==================== */
+.dev-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 12px 0;
+}
+
+.dev-row + .dev-row { border-top: 1px solid var(--au-border); }
+
+.dev-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.dev-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-meta {
+  font-size: 0.8125rem;
+  color: var(--au-text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ==================== 安全设置 ==================== */
@@ -1288,16 +1414,16 @@ function formatDate(iso?: string | null) {
   align-items: center;
   gap: 0.75rem;
   width: 100%;
+  min-height: 52px;
   padding: 0.8125rem 0.25rem;
   background: transparent;
   border: none;
   border-top: 1px solid var(--au-border);
   color: var(--au-text-2);
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   text-align: left;
   text-decoration: none;
   cursor: pointer;
-  transition: color var(--au-fast) var(--au-ease);
 }
 
 .list-item:first-child { border-top: none; }
@@ -1306,29 +1432,15 @@ function formatDate(iso?: string | null) {
 
 .list-item.danger { color: var(--au-danger); }
 
-.list-icon { color: var(--au-text-3); }
+.list-icon { color: var(--au-text-3); flex-shrink: 0; }
 
 .list-item.danger .list-icon { color: var(--au-danger); opacity: 0.8; }
 
 .list-text { flex: 1; }
 
-.list-arrow { color: var(--au-text-3); }
+.list-arrow { color: var(--au-text-4); flex-shrink: 0; }
 
-/* ==================== 播放线路分段选择 ==================== */
-/* 视觉语言与顶栏外观按钮（AppHeader .theme-btn）一致：选中态用主色实底 +
-   on-primary 文字，两套主题下都清晰（顶栏那排三段切换器已在 v2.42.9 删除） */
-.line-seg {
-  display: grid;
-  /* 列数随可选项变化（CDN / 本地缓存接上就会变 2 → 3），不写死列数 */
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: 3px;
-  padding: 3px;
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
-}
-/* 只有一个可选项时的静态文案（不是按钮，所以没有 hover / 选中态） */
+/* ==================== 播放设置 ==================== */
 .line-only {
   display: flex;
   align-items: center;
@@ -1342,49 +1454,8 @@ function formatDate(iso?: string | null) {
   font-size: 0.8125rem;
   line-height: 1.5;
 }
+
 .line-only svg { flex-shrink: 0; color: var(--au-primary); }
-.line-opt {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3125rem;
-  min-width: 0;
-  height: 34px;
-  padding: 0 0.5rem;
-  border: 1px solid transparent;
-  border-radius: var(--au-r-full);
-  background: none;
-  color: var(--au-text-3);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--au-fast) var(--au-ease),
-    color var(--au-fast) var(--au-ease),
-    border-color var(--au-fast) var(--au-ease),
-    box-shadow var(--au-fast) var(--au-ease);
-}
-.line-opt svg { flex-shrink: 0; }
-.line-opt:hover:not(:disabled) { background: var(--au-surface-3); color: var(--au-text); }
-.line-opt:active:not(:disabled) { transform: scale(0.97); }
-.line-opt:disabled { cursor: wait; opacity: 0.7; }
-/* 选中态：琥珀实底 + on-primary 文字（无光晕） */
-.line-opt.on {
-  background: var(--au-primary);
-  border-color: var(--au-primary);
-  color: var(--au-on-primary);
-}
-.line-opt.on svg { color: var(--au-on-primary); }
-.line-opt:focus-visible {
-  outline: 2px solid var(--au-border-focus);
-  outline-offset: 2px;
-}
-@media (max-width: 768px) {
-  /* 拇指区高度与主题切换器看齐 */
-  .line-opt { height: 40px; font-size: 0.8125rem; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .line-opt { transition: none; }
-}
 
 /* ==================== 弹窗 ==================== */
 .modal-mask {
@@ -1396,6 +1467,12 @@ function formatDate(iso?: string | null) {
   padding: 1.5rem;
   background: var(--au-scrim);
   z-index: 100;
+  animation: fade-in 0.2s var(--au-ease);
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .modal {
@@ -1405,12 +1482,19 @@ function formatDate(iso?: string | null) {
   background: var(--au-bg-soft);
   border: 1px solid var(--au-border-strong);
   border-radius: var(--au-r-lg);
+  animation: modal-up 0.25s cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+@keyframes modal-up {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 
 .modal-title {
   margin: 0 0 0.375rem;
-  font-size: 1.0625rem;
-  font-weight: 700;
+  font-family: var(--au-font-serif);
+  font-size: 19px;
+  font-weight: 500;
   color: var(--au-text);
 }
 
@@ -1466,63 +1550,49 @@ function formatDate(iso?: string | null) {
   margin-top: 1.125rem;
 }
 
-.btn {
-  height: 38px;
-  padding: 0 1rem;
-  border: none;
-  border-radius: var(--au-r-md);
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--au-fast) var(--au-ease);
-}
-
-.btn.ghost {
-  background: var(--au-surface-2);
-  color: var(--au-text-2);
-}
-
-.btn.ghost:hover { background: var(--au-surface-3); }
-
-.btn.primary {
-  background: var(--au-primary);
-  color: var(--au-on-primary);   /* 琥珀实底配深墨字，与全站主按钮一致 */
-}
-
-.btn.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* ==================== 响应式 ==================== */
 @media (max-width: 900px) {
   .p-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 640px) {
-  .id-card {
-    padding: 1.25rem;
-    align-items: flex-start;
+  .hero {
+    padding: 24px 20px 0;
+    border-radius: 16px;
   }
 
-  .id-body { gap: 0.875rem; }
+  .hero-top { gap: 16px; }
 
-  .id-stats {
-    width: 100%;
-    padding-top: 1rem;
-    border-top: 1px solid var(--au-border);
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .hero-avatar {
+    width: 60px;
+    height: 60px;
+    font-size: 24px;
   }
 
-  .id-stat {
-    padding: 0 0.5rem;
-  }
+  .hero-name { font-size: 24px; }
 
-  .id-stat:first-child { padding-left: 0.5rem; }
+  .hero-stat strong { font-size: 19px; }
+
+  .pane { padding: 1rem; }
+
+  /* 拇指区：列表项最小 52px 高已在 .list-item 保证 */
+  .scheme-btn { height: 40px; }
+  .btn { height: 44px; }
 }
 
+/* ==================== 动效偏好 ==================== */
 @media (prefers-reduced-motion: reduce) {
+  .pane { animation: none; }
+  .rows.loading { animation: none; opacity: 0.55; }
   .spinning { animation-duration: 2.4s; }
+  .modal-mask, .modal { animation: none; }
+  .icon-btn:active,
+  .copy-btn:active,
+  .text-btn:active:not(:disabled),
+  .btn:active:not(:disabled),
+  .scheme-btn:active,
+  .list-item:active {
+    transform: none;
+  }
 }
 </style>
-
