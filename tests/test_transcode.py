@@ -265,3 +265,47 @@ def test_promote_skips_already_cached(tmp_path, monkeypatch):
     info["cached"] = True
     assert tc.maybe_promote_to_cache("s1", info) is False
     assert os.path.isdir(src)
+
+
+def test_promote_concurrent_loser_discards_without_nesting(tmp_path, monkeypatch):
+    """回归"检查→落盘"窗口期的并发落盘竞态。
+
+    旧实现先 ``if os.path.isdir(dst): return False`` 再直接 ``shutil.move(src_dir, dst)``；
+    两个相同 cache_key 的会话同时转完时，后到者在检查窗口内看到 dst 不存在，
+    于是把 sess2 整个嵌套成 dst/sess2 并返回 True，污染了先到者的缓存。
+    新实现用 tmp + os.rename 原子认领：认领失败的一方丢弃 tmp，不动先到者的缓存。
+    """
+    monkeypatch.setenv("EMBY_TRANSCODE_CACHE_DIR", str(tmp_path))
+    root = tmp_path
+    key = "k" * 32
+
+    dst = _make_cache_dir(root, key)  # 先到者已经落盘的缓存目录
+    src = _session_dir(root, "sess2")  # 后到者的会话源目录
+    info = _promote_info(src, key=key)
+
+    # 模拟竞态窗口：对 dst 的第 1 次 isdir 调用返回 False，之后所有调用走真实值
+    real_isdir = os.path.isdir
+    dst_abs = os.path.abspath(dst)
+    isdir_calls = {"dst": 0}
+
+    def fake_isdir(path):
+        if os.path.abspath(path) == dst_abs:
+            isdir_calls["dst"] += 1
+            if isdir_calls["dst"] == 1:
+                return False
+        return real_isdir(path)
+
+    monkeypatch.setattr(os.path, "isdir", fake_isdir)
+
+    # 后到者必须认输，而不是把源目录塞进 dst
+    assert tc.maybe_promote_to_cache("s2", info) is False
+
+    # 竞态失败方的源目录已被搬进 tmp 并随 tmp 丢弃（等价于调用方照常回收删目录，
+    # _terminate_and_cleanup 用 ignore_errors=True，目录不在了也没关系）
+    assert not os.path.exists(src)
+    # 没有发生嵌套（旧实现在此会生成 dst/sess2 并返回 True）
+    assert not os.path.exists(os.path.join(dst, "sess2"))
+    # 先到者的缓存完好无损
+    assert tc._cache_valid(dst) is True
+    # 没有遗留.promote- 临时目录
+    assert [n for n in os.listdir(tmp_path) if ".promote-" in n] == []
