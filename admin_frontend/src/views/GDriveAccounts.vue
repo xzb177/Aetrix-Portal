@@ -9,8 +9,8 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Cloud, RefreshCw, RotateCw, HardDrive } from 'lucide-vue-next'
-import { PageHeader, SectionCard, StatTile } from '@/components/ui'
-import { EmptyState } from '@/components/ui'
+import { PageHeader, SectionCard, StatTile, EmptyState } from '@/components/ui'
+import { fetchGDriveSaStatus, rotateGDriveSa } from '@/api/admin'
 
 interface SaStatus {
   sa_count: number
@@ -18,7 +18,7 @@ interface SaStatus {
   sa_truncated: boolean
   current_sa: string | null
   rotation_index: number
-  disk: Record<string, any>
+  disk: Record<string, unknown>
   cache_size_bytes: number
   cache_size_human: string
 }
@@ -32,11 +32,7 @@ async function load() {
   loading.value = true
   loadError.value = false
   try {
-    const res = await fetch('/api/admin/gdrive/sa-status', {
-      headers: { Authorization: `Bearer ${localStorage.getItem('admin_token')}` },
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    status.value = await res.json()
+    status.value = await fetchGDriveSaStatus()
   } catch {
     loadError.value = true
   } finally {
@@ -56,16 +52,11 @@ async function rotate() {
   }
   rotating.value = true
   try {
-    const res = await fetch('/api/admin/gdrive/sa-rotate', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${localStorage.getItem('admin_token')}` },
-    })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.detail || '轮换失败')
+    const data = await rotateGDriveSa()
     ElMessage.success(`已切换到 ${data.sa_file || '下一个账号'}`)
     await load()
   } catch (err: any) {
-    ElMessage.error(err.message || '轮换失败')
+    ElMessage.error(err?.message || '轮换失败')
   } finally {
     rotating.value = false
   }
