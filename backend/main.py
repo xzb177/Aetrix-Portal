@@ -430,13 +430,15 @@ async def security_headers(request: Request, call_next):
 @app.middleware("http")
 async def request_body_limit_middleware(request, call_next):
     # 请求体大小上限：防恶意大包打爆内存（借鉴 go-emby 的 MaxBytesReader 思路）。
-    # 先看 Content-Length 头做廉价拒绝；分块传输的超限包会在读取时被 Starlette 截断，
-    # 这里只做头检查，解析层 FastAPI 本身也会按此拒绝。
+    # P2 修复（审查）：此前只看 Content-Length 头，分块传输（无该头）的请求
+    # 完全绕过上限——Starlette 默认不截断，大包会完整读进内存。
+    # 现用包装 receive 的方式强制上限：读超即 413。
     try:
         max_mb = float(os.getenv("MAX_REQUEST_BODY_MB", "10"))
     except ValueError:
         max_mb = 10
     max_bytes = int(max_mb * 1024 * 1024)
+
     clen = request.headers.get("content-length")
     if clen:
         try:
@@ -448,7 +450,35 @@ async def request_body_limit_middleware(request, call_next):
                 )
         except ValueError:
             pass
-    return await call_next(request)
+
+    # 分块传输没有 Content-Length：包装 receive 累计计数，超限即抛 413
+    _receive = request._receive
+    _consumed = 0
+
+    class _BodyTooLarge(Exception):
+        pass
+
+    async def _limited_receive():
+        nonlocal _consumed
+        message = await _receive()
+        if message.get("type") == "http.request":
+            body = message.get("body", b"")
+            _consumed += len(body)
+            if _consumed > max_bytes:
+                raise _BodyTooLarge()
+        return message
+
+    request._receive = _limited_receive
+    try:
+        return await call_next(request)
+    except _BodyTooLarge:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"请求体过大，上限 {max_mb:g}MB"},
+        )
+    finally:
+        request._receive = _receive
 
 
 # GZip：EM 不加 GZipMiddleware（JSON 压缩交给前端 nginx）。/emby/* 曾因三方 iOS 客户端
@@ -521,8 +551,12 @@ async def health_check():
     status **不再硬编码 healthy**：以前数据库断、Redis 挂、worker 刷几千条探测
     失败，这里一律返回 healthy——「服务健康」页一片绿，出问题只能去翻日志。
     现在由 health_report 依据真实指标判定（healthy / degraded / unhealthy）。
+
+    P1 修复（审查）：_collect_health 约 20 个 SQL + 目录 walk + Redis ping，
+    同步跑会卡住事件循环几十到几百毫秒（探针 10~30s 打一次）。扔线程池。
     """
-    health = _collect_health()
+    from starlette.concurrency import run_in_threadpool
+    health = await run_in_threadpool(_collect_health)
     # 播放预热指标（并发/去重/超时计数 + 平均耗时；模块内部永不抛异常）
     try:
         from backend.emby_server import playback_prewarm as _pb_prewarm
