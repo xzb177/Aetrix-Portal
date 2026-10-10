@@ -18,6 +18,14 @@ const router = createRouter({
       component: () => import('@/views/LoginView.vue'),
       meta: { title: '登录' },
     },
+    // TG 一键登录：后端 tg_bot/login_token.py 生成 {site_base_url}/tg-login?token=xxx，
+    // 路由缺失会导致 404（2026-10-10 审计发现）
+    {
+      path: '/tg-login',
+      name: 'tg-login',
+      component: () => import('@/views/TgLoginView.vue'),
+      meta: { title: 'Telegram 快捷登录' },
+    },
     {
       path: '/profile',
       name: 'profile',

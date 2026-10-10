@@ -46,7 +46,6 @@ const routes: RouteRecordRaw[] = [
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
       // 公益服：抽奖配置 / 积分配置（v2.55 公益用户页已并入用户管理，求片审核页已合并）
       // 求片审核已并入「求片管理」（MediaSeek.vue），路由移除
-      { path: 'welfare-lottery', name: 'WelfareLottery', component: () => import('@/views/WelfareLottery.vue'), meta: { title: '公益服·抽奖' } },
       { path: 'welfare-lottery-rounds', name: 'WelfareLotteryRounds', component: () => import('@/views/WelfareLotteryRounds.vue'), meta: { title: '公益服·群抽奖' } },
       { path: 'welfare-points', name: 'WelfarePoints', component: () => import('@/views/WelfarePoints.vue'), meta: { title: '公益服·积分配置' } },
       // 会员等级（P1 统一货币体系）：运营中心 → 会员等级

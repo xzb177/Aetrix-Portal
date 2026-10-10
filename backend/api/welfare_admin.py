@@ -5,9 +5,6 @@
 - POST /welfare/grant              开通/续期公益
 - POST /welfare/revoke             取消公益资格
 - POST /welfare/bulk-extend        批量延期
-- GET/POST /welfare/lottery/prizes 奖品列表/新增
-- PUT/DELETE /welfare/lottery/prizes/{id} 编辑/删除奖品
-- GET  /welfare/lottery/logs       抽奖记录
 - GET/PUT /welfare/config          公益配置读写
 """
 
@@ -136,122 +133,6 @@ def welfare_bulk_extend(
     return {"success": True, "affected": affected}
 
 
-# ==================== 抽奖奖品管理 ====================
-
-def _prize_to_dict(p):
-    return {
-        "id": p.id,
-        "name": p.name,
-        "type": p.type,
-        "value": p.value,
-        "probability": p.probability,
-        "enabled": bool(p.enabled),
-    }
-
-
-@admin_router.get("/welfare/lottery/prizes")
-def lottery_prizes(
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """奖品列表"""
-    prizes = db.query(models.LotteryPrize).order_by(models.LotteryPrize.id).all()
-    return [_prize_to_dict(p) for p in prizes]
-
-
-class PrizeRequest(BaseModel):
-    name: str
-    type: str = "days"
-    value: int = 0
-    probability: float = 1.0
-    enabled: bool = True
-
-
-@admin_router.post("/welfare/lottery/prizes")
-def lottery_prize_create(
-    req: PrizeRequest,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """新增奖品"""
-    p = models.LotteryPrize(
-        name=req.name, type=req.type, value=req.value,
-        probability=req.probability, enabled=req.enabled,
-    )
-    db.add(p)
-    db.commit()
-    db.refresh(p)
-    _audit(db, current_admin.id, "lottery_prize_create", "lottery_prize", p.id, {"name": req.name})
-    db.commit()
-    return _prize_to_dict(p)
-
-
-class PrizeUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    type: Optional[str] = None
-    value: Optional[int] = None
-    probability: Optional[float] = None
-    enabled: Optional[bool] = None
-
-
-@admin_router.put("/welfare/lottery/prizes/{prize_id}")
-def lottery_prize_update(
-    prize_id: int,
-    req: PrizeUpdateRequest,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """编辑奖品"""
-    p = db.query(models.LotteryPrize).filter(models.LotteryPrize.id == prize_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="奖品不存在")
-    for field in ("name", "type", "value", "probability", "enabled"):
-        v = getattr(req, field)
-        if v is not None:
-            setattr(p, field, v)
-    _audit(db, current_admin.id, "lottery_prize_update", "lottery_prize", p.id, {})
-    db.commit()
-    return _prize_to_dict(p)
-
-
-@admin_router.delete("/welfare/lottery/prizes/{prize_id}")
-def lottery_prize_delete(
-    prize_id: int,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """删除奖品"""
-    p = db.query(models.LotteryPrize).filter(models.LotteryPrize.id == prize_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="奖品不存在")
-    _audit(db, current_admin.id, "lottery_prize_delete", "lottery_prize", prize_id, {"name": p.name})
-    db.delete(p)
-    db.commit()
-    return {"success": True}
-
-
-@admin_router.get("/welfare/lottery/logs")
-def lottery_logs(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """抽奖记录"""
-    q = db.query(models.LotteryLog).order_by(models.LotteryLog.id.desc())
-    total = q.count()
-    logs = q.offset((page - 1) * page_size).limit(page_size).all()
-    items = []
-    for log in logs:
-        items.append({
-            "id": log.id,
-            "username": log.user.username if log.user else "",
-            "prize_name": log.prize.name if log.prize else "",
-            "created_at": log.created_at.isoformat() if log.created_at else None,
-        })
-    return {"total": total, "items": items}
-
-
 # ==================== 求片审核 ====================
 
 def _request_to_dict(r):
@@ -352,7 +233,6 @@ WELFARE_CONFIG_KEYS = {
     "welfare_grace_days": "7",
     "welfare_inactive_days": "30",
     "welfare_request_monthly": "3",
-    "lottery_cost": "10",
     # P0 统一货币体系：充值比例与红包规则
     "recharge_ratio": "1.2",
     # C4 商店改造：快捷金额

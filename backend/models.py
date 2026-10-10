@@ -1400,38 +1400,6 @@ class MediaRequest(Base):
     user = relationship("WebUser")
 
 
-class LotteryPrize(Base):
-    """抽奖奖品配置表"""
-    __tablename__ = 'lottery_prizes'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), nullable=False)
-    # days=公益天数 / points=积分 / whitelist=白名单(永不过期)
-    type = Column(String(20), nullable=False, default='days')
-    value = Column(Integer, nullable=False, default=0)
-    probability = Column(Float, nullable=False, default=0.0)  # 权重，非百分比
-    enabled = Column(Boolean, default=True, nullable=False, server_default="1")
-    created_at = Column(DateTime, default=datetime.now)
-
-
-class LotteryLog(Base):
-    """抽奖记录表"""
-    __tablename__ = 'lottery_logs'
-
-    __table_args__ = (
-        Index('idx_lottery_user', 'user_id'),
-        Index('idx_lottery_time', 'created_at'),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
-    prize_id = Column(Integer, ForeignKey('lottery_prizes.id'), nullable=False)
-    created_at = Column(DateTime, default=datetime.now)
-
-    user = relationship("WebUser")
-    prize = relationship("LotteryPrize")
-
-
 class LotteryRound(Base):
     """群抽奖活动轮次：一期抽奖"""
     __tablename__ = 'lottery_rounds'
