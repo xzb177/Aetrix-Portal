@@ -52,10 +52,14 @@ CONFIG_SOURCE_DIR = "strm_gen_source_dir"
 CONFIG_SCHEDULE = "strm_gen_schedule"
 CONFIG_LAST_RUN = "strm_gen_last_run"
 CONFIG_LAST_STATS = "strm_gen_last_stats"
+CONFIG_DRIVE_ID = "strm_gen_drive_id"
 CONFIG_PRUNE = "strm_gen_prune"
 
 DEFAULT_SOURCE_DIR = "MoviePilot/"
 DEFAULT_SCHEDULE = "03:00"
+
+# token 401 后刷新重试的最大次数
+TOKEN_RETRY_MAX = 3
 
 VIDEO_EXTS = frozenset({
     ".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".mts", ".vob",
@@ -102,6 +106,27 @@ def schedule(db) -> str:
     return ""
 
 
+def drive_id_config(db) -> str:
+    """配置指定的 Drive ID（空 = 自动选择）。"""
+    return _db_config(db, CONFIG_DRIVE_ID, "").strip()
+
+
+def list_drives() -> list[dict]:
+    """列出发现的 Drive，供管理后台展示/选择。
+
+    返回 [{"drive_id": ..., "remotes": [...], "is_personal": bool}]，
+    按 drive_id 排序，保证展示顺序稳定。
+    """
+    drives = _discover_drives()
+    dc = _drive_modules()
+    out = []
+    for did in sorted(drives.keys()):
+        try:
+            personal = dc._is_personal_drive_key(did)
+        except Exception:
+            personal = False
+        out.append({"drive_id": did, "remotes": drives[did], "is_personal": personal})
+    return out
 def prune_enabled(db) -> bool:
     """是否删除 Drive 上已不存在的 .strm 文件及状态行。
 
@@ -194,7 +219,18 @@ def _api_get(url: str, token: str, params: dict) -> dict:
     return dc._api_get(url, token, params)
 
 
-FILES_LIST_URL = "https://www.googleapis.com/drive/v3/files"
+def _safe_name(name: str) -> str:
+    """清理 Drive 返回的文件/目录名（纵深防御）。
+
+    Drive 文件名理论上不含 "/"，但防御性地过滤掉空段、"." 和 ".."，
+    防止恶意或异常文件名导致路径穿越。
+    """
+    parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    return "/".join(parts)
+
+
+
+
 
 
 def _list_files_page(token: str, drive_id: str, query: str,
@@ -291,6 +327,9 @@ def iter_drive_videos(drive_id: str, dir_path: str):
 
     yield (root_relpath, file_id, size)。root_relpath 为相对网盘根路径。
     用 files.list 全量分页 + 递归子目录，避免 rclone 单次超长列举丢文件。
+
+    （修 P1-1：旧实现只在开始时取一次 token，8 万级文件的长列举
+    会因 SA token 过期而整体作废）。
     """
     fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
     dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
@@ -329,7 +368,7 @@ def iter_drive_videos(drive_id: str, dir_path: str):
             for f in files:
                 if f.get("trashed"):
                     continue
-                name = f.get("name", "")
+                name = _safe_name(f.get("name", ""))
                 fid = f.get("id", "")
                 if not name or not fid:
                     continue
@@ -509,7 +548,7 @@ def _reset_progress():
     """重置一次运行的进度计数（调用方已持有运行权）。"""
     with _lock:
         _progress.update({
-            "running": True, "phase": "listing",
+            "phase": "listing",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "finished_at": None, "total": 0, "done": 0,
             "generated": 0, "skipped": 0, "failed": 0, "pruned": 0,
@@ -577,16 +616,56 @@ def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[st
     stats = {"generated": 0, "skipped": 0, "failed": 0, "pruned": 0, "total": 0}
     try:
         return _run_generation_inner(db, full, drive_id, stats)
+    except Exception as exc:
+        # 修 P3-3：旧实现非预期异常时 running=False 但 phase 停在 "generating"，
+        # 前端会一直显示"生成中"。这里显式置为 error。
+        _set_progress(phase="error")
+        _add_error(f"生成异常: {exc}")
+        logger.exception("strm_gen: 生成异常")
+        return {"ok": False, "error": str(exc)}
     finally:
         _release_progress(stats, db)
+
+
+def _select_drive_id(db, drive_id: Optional[str]) -> tuple[Optional[str], dict]:
+    """确定本次生成使用的 drive_id。
+
+    优先级：显式参数 > strm_gen_drive_id 配置 > 自动选择第一个。
+    返回 (drive_id, info)，info 含 drives_found / auto_selected 供统计与日志。
+    修 P1-2：旧实现静默只用第一个共享盘，多盘用户的其余盘文件永远不生成
+    且无任何提示。现在自动选择时会明确打日志告知发现了哪些盘、用的是哪个。
+    """
+    info: dict[str, Any] = {"drives_found": 0, "auto_selected": False, "drive_note": ""}
+    if drive_id:
+        return drive_id, info
+    cfg_drive = drive_id_config(db)
+    if cfg_drive:
+        return cfg_drive, info
+    drives = _discover_drives()
+    info["drives_found"] = len(drives)
+    if not drives:
+        return None, info
+    ordered = sorted(drives.keys())
+    picked = ordered[0]
+    info["auto_selected"] = True
+    if len(ordered) > 1:
+        note = (f"发现 {len(ordered)} 个 Drive {ordered}，自动选用 {picked}；"
+                "其余盘本次不生成，可通过 strm_gen_drive_id 配置指定，"
+                "或分多次传入 drive_id 触发")
+        info["drive_note"] = note
+        logger.warning("strm_gen: %s", note)
+    else:
+        logger.info("strm_gen: 发现 1 个 Drive，使用 %s", picked)
+    return picked, info
 
 
 def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) -> dict[str, Any]:
     src_prefix = source_dir(db)
     strm_root = _container_strm_root(db)
 
-    # 确定要跑的盘：未指定时遍历所有发现的共享盘（原来只取第一个，
-    # 多共享盘用户其余盘的文件永远不生成且无任何提示）。
+    # 确定要跑的盘：显式参数 > strm_gen_drive_id 配置 > 遍历所有发现的共享盘。
+    # （原来只取第一个盘，多共享盘用户其余盘的文件永远不生成且无任何提示。）
+    drive_id = drive_id or drive_id_config(db)
     if drive_id:
         drive_ids = [drive_id]
     else:

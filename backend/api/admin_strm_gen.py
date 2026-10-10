@@ -33,6 +33,7 @@ class StrmGenConfigSave(BaseModel):
         default="03:00",
         description="每天执行时刻 HH:MM（按服务器本地时间，生产为悉尼时间），空=关闭定时",
     )
+    drive_id: str = Field(default="", description="指定 Drive ID，空=自动选择")
     prune: bool = Field(
         default=False,
         description="清理 Drive 上已不存在的 .strm 文件及状态行（不可逆，默认只上报不删）",
@@ -48,6 +49,7 @@ def _read_config(db: Session) -> dict:
         "enabled": _gen.enabled(db),
         "source_dir": _gen.source_dir(db),
         "schedule": _gen.schedule(db),
+        "drive_id": _gen.drive_id_config(db),
         "prune": _gen.prune_enabled(db),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
@@ -82,11 +84,13 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_ENABLED: "true" if body.enabled else "false",
         _gen.CONFIG_SOURCE_DIR: (src + "/") if src else "",
         _gen.CONFIG_SCHEDULE: sched,
+        _gen.CONFIG_DRIVE_ID: (body.drive_id or "").strip(),
         _gen.CONFIG_PRUNE: "true" if body.prune else "false",
     }, {
         _gen.CONFIG_ENABLED: ".strm 生成器总开关",
         _gen.CONFIG_SOURCE_DIR: ".strm 生成器 Drive 源目录",
         _gen.CONFIG_SCHEDULE: ".strm 生成器每天执行时刻（HH:MM，服务器本地时间）",
+        _gen.CONFIG_DRIVE_ID: ".strm 生成器指定 Drive ID",
         _gen.CONFIG_PRUNE: ".strm 生成器是否清理 Drive 已不存在的文件",
     })
     db.commit()
@@ -124,6 +128,16 @@ def strm_gen_progress(db: Session = Depends(get_db), _staff=Depends(require_staf
     """查生成进度（前端轮询用）。"""
     prog = _gen.get_progress()
     return {"success": True, "progress": prog, "config": _read_config(db)}
+
+
+@admin_emby_router.get("/strm-gen/drives")
+def strm_gen_drives(_staff=Depends(require_staff)):
+    """列出发现的 Drive（供 drive_id 配置选择）。"""
+    try:
+        drives = _gen.list_drives()
+        return {"success": True, "drives": drives}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 @admin_emby_router.get("/strm-gen/missing")

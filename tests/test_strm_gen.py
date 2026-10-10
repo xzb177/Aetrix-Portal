@@ -83,26 +83,53 @@ class TestVerifyCompleteness:
             ("MoviePilot/剧集/B/Season 1/B - S01E01.mkv", "f4", 100),
         ]
 
-    def test_all_complete(self):
+    def _make_state_on_disk(self, videos, tmp_path, skip=()):
+        # state: {rel: (fid, size, spath)}，并在 tmp_path 下创建真实 .strm 文件
+        import os
+        state = {}
+        for rel, fid, size in videos:
+            if any(s in rel for s in skip):
+                continue
+            spath = rel.replace("MoviePilot/", "").replace(".mkv", ".strm")
+            full = os.path.join(str(tmp_path), spath)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write("x")
+            state[rel] = (fid, size, spath)
+        return state
+
+    def test_all_complete(self, tmp_path):
         videos = self._videos()
-        state = {rel: (fid, size, rel.replace(".mkv", ".strm"))
-                 for rel, fid, size in videos}
-        result = sg._verify_completeness(videos, state, "MoviePilot/")
+        state = self._make_state_on_disk(videos, tmp_path)
+        result = sg._verify_completeness(videos, state, "MoviePilot/", str(tmp_path))
         assert result["total_series"] == 2  # A/Season 1, B/Season 1
         assert result["incomplete_series"] == 0
 
-    def test_missing_detected(self):
+    def test_missing_detected(self, tmp_path):
         videos = self._videos()
         # state 缺了 A 的 E03
-        state = {rel: (fid, size, rel.replace(".mkv", ".strm"))
-                 for rel, fid, size in videos
-                 if "E03" not in rel}
-        result = sg._verify_completeness(videos, state, "MoviePilot/")
+        state = self._make_state_on_disk(videos, tmp_path, skip=("E03",))
+        result = sg._verify_completeness(videos, state, "MoviePilot/", str(tmp_path))
         assert result["incomplete_series"] == 1
         inc = result["incomplete"][0]
         assert inc["series"] == "剧集/A/Season 1"
         assert inc["missing_count"] == 1
         assert any("E03" in m for m in inc["missing_sample"])
+
+
+    def test_missing_file_on_disk_counts_as_missing(self, tmp_path):
+        # DB 有行但 .strm 文件不在磁盘 → 计为缺失（P3-2）
+        videos = self._videos()
+        state = self._make_state_on_disk(videos, tmp_path)
+        # 删掉一个 .strm 文件
+        import os
+        gone = os.path.join(str(tmp_path), "剧集/A/Season 1/A - S01E01.strm")
+        os.remove(gone)
+        result = sg._verify_completeness(videos, state, "MoviePilot/", str(tmp_path))
+        assert result["incomplete_series"] == 1
+        inc = result["incomplete"][0]
+        assert inc["series"] == "剧集/A/Season 1"
+        assert inc["missing_count"] == 1
 
 
 class TestSchedule:
@@ -391,3 +418,78 @@ class TestRunGenerationMocked:
         assert res["stats"]["pruned"] == 0
         assert (tmp_path / "剧集/OLD/old.strm").exists()
         assert deleted == []
+
+
+class TestSelectDrive:
+    """P1-2：多盘选择逻辑。"""
+
+    def test_explicit_param_wins(self):
+        did, info = sg._select_drive_id(_FakeDb({}), drive_id="dd")
+        assert did == "dd"
+        assert info["drives_found"] == 0
+
+    def test_config_wins_over_auto(self, monkeypatch):
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {"b": ["r"], "a": ["r"]})
+        did, info = sg._select_drive_id(
+            _FakeDb({"strm_gen_drive_id": "b"}), drive_id=None)
+        assert did == "b"
+
+    def test_auto_picks_first_sorted_and_notes(self, monkeypatch):
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {"zz": ["r1"], "aa": ["r2"]})
+        did, info = sg._select_drive_id(_FakeDb({}), drive_id=None)
+        assert did == "aa"
+        assert info["auto_selected"] is True
+        assert info["drives_found"] == 2
+        assert "aa" in info["drive_note"] and "zz" in info["drive_note"]
+
+    def test_no_drives(self, monkeypatch):
+        monkeypatch.setattr(sg, "_discover_drives", lambda: {})
+        did, info = sg._select_drive_id(_FakeDb({}), drive_id=None)
+        assert did is None
+
+    def test_list_drives_sorted(self, monkeypatch):
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {"zz": ["r1"], "aa": ["r2"]})
+
+        class FakeDc:
+            @staticmethod
+            def _is_personal_drive_key(did):
+                return did.startswith("myDrive:")
+
+        monkeypatch.setattr(sg, "_drive_modules", lambda: FakeDc())
+        drives = sg.list_drives()
+        assert [d["drive_id"] for d in drives] == ["aa", "zz"]
+
+
+class TestSafeName:
+    """P3-7：文件名清理。"""
+
+    def test_strips_dotdot(self):
+        assert sg._safe_name("..") == ""
+        assert sg._safe_name("../a") == "a"
+
+
+class TestResolveDirIdPagination:
+    """P2-1：_resolve_dir_id 应翻页查找（fetch 闭包版）。"""
+
+    def test_finds_on_second_page(self):
+        calls = {"n": 0}
+
+        def fetch(query, page_token=None):
+            calls["n"] += 1
+            # 第一页没命中但有下一页；目标在第二页
+            if page_token is None:
+                return ([], "p2")
+            return ([{"id": "dir123", "name": "MoviePilot", "trashed": False}], None)
+
+        got = sg._resolve_dir_id(fetch, "d1", "MoviePilot/")
+        assert got == "dir123"
+        assert calls["n"] == 2
+
+    def test_returns_none_when_not_found(self):
+        def fetch(query, page_token=None):
+            return ([], None)
+
+        assert sg._resolve_dir_id(fetch, "d1", "不存在的目录/") is None
