@@ -420,34 +420,8 @@ class TestRunGenerationMocked:
         assert deleted == []
 
 
-class TestSelectDrive:
-    """P1-2：多盘选择逻辑。"""
-
-    def test_explicit_param_wins(self):
-        did, info = sg._select_drive_id(_FakeDb({}), drive_id="dd")
-        assert did == "dd"
-        assert info["drives_found"] == 0
-
-    def test_config_wins_over_auto(self, monkeypatch):
-        monkeypatch.setattr(sg, "_discover_drives",
-                            lambda: {"b": ["r"], "a": ["r"]})
-        did, info = sg._select_drive_id(
-            _FakeDb({"strm_gen_drive_id": "b"}), drive_id=None)
-        assert did == "b"
-
-    def test_auto_picks_first_sorted_and_notes(self, monkeypatch):
-        monkeypatch.setattr(sg, "_discover_drives",
-                            lambda: {"zz": ["r1"], "aa": ["r2"]})
-        did, info = sg._select_drive_id(_FakeDb({}), drive_id=None)
-        assert did == "aa"
-        assert info["auto_selected"] is True
-        assert info["drives_found"] == 2
-        assert "aa" in info["drive_note"] and "zz" in info["drive_note"]
-
-    def test_no_drives(self, monkeypatch):
-        monkeypatch.setattr(sg, "_discover_drives", lambda: {})
-        did, info = sg._select_drive_id(_FakeDb({}), drive_id=None)
-        assert did is None
+class TestListDrives:
+    """list_drives 按 drive_id 排序展示。"""
 
     def test_list_drives_sorted(self, monkeypatch):
         monkeypatch.setattr(sg, "_discover_drives",
@@ -493,3 +467,104 @@ class TestResolveDirIdPagination:
             return ([], None)
 
         assert sg._resolve_dir_id(fetch, "d1", "不存在的目录/") is None
+
+
+def _flat_drive_fixture():
+    """构造一个共享盘 d1 的扁平条目：目录树 MoviePilot/剧集[/Season 1] + 干扰项。"""
+    F = "application/vnd.google-apps.folder"
+    return [
+        {"id": "f_mp", "name": "MoviePilot", "mimeType": F, "parents": ["d1"]},
+        {"id": "f_tv", "name": "剧集", "mimeType": F, "parents": ["f_mp"]},
+        {"id": "f_s1", "name": "Season 1", "mimeType": F, "parents": ["f_tv"]},
+        {"id": "f_h", "name": ".hidden", "mimeType": F, "parents": ["f_mp"]},
+        {"id": "v1", "name": "a.mkv", "mimeType": "video/x-matroska",
+         "size": "100", "parents": ["f_tv"]},
+        {"id": "v2", "name": "b.mp4", "mimeType": "video/mp4",
+         "size": "200", "parents": ["f_s1"]},
+        {"id": "v3", "name": "c.txt", "mimeType": "text/plain",
+         "size": "10", "parents": ["f_s1"]},
+        {"id": "v4", "name": "d.mkv", "mimeType": "video/x-matroska",
+         "size": "50", "parents": ["f_h"]},
+        {"id": "v5", "name": "t.mkv", "mimeType": "video/x-matroska",
+         "size": "60", "parents": ["f_tv"], "trashed": True},
+        {"id": "v9", "name": "other.mkv", "mimeType": "video/x-matroska",
+         "size": "70", "parents": ["d1"]},
+    ]
+
+
+def _make_fake_fetcher(items, page_size=2):
+    """fake _page_fetcher：目录解析走 name 查询，扁平拉取走分页。"""
+    calls = {"n": 0}
+
+    def fetch(query, page_token=None):
+        calls["n"] += 1
+        if "mimeType='application/vnd.google-apps.folder'" in query:
+            # _resolve_dir_id 的按名查找
+            hit = [f for f in items
+                   if f.get("mimeType") == "application/vnd.google-apps.folder"
+                   and "name='MoviePilot'" in query and f["name"] == "MoviePilot"]
+            return (hit, None)
+        # 扁平拉取：按 page_size 分页
+        start = int(page_token) if page_token else 0
+        page = items[start:start + page_size]
+        nxt = str(start + page_size) if start + page_size < len(items) else None
+        return (page, nxt)
+
+    fetch.calls = calls
+    return fetch
+
+
+class TestIterDriveVideosFlat:
+    """扁平拉取 + 本地建树：替代原来每目录一次 API 的 BFS。"""
+
+    def _patch(self, monkeypatch, items, page_size=2):
+        fake_fetch = _make_fake_fetcher(items, page_size)
+        monkeypatch.setattr(sg, "_page_fetcher", lambda drive_id: fake_fetch)
+        return fake_fetch
+
+    def test_yields_videos_with_source_prefix(self, monkeypatch):
+        self._patch(monkeypatch, _flat_drive_fixture())
+        got = sorted(sg.iter_drive_videos("d1", "MoviePilot/"))
+        assert got == [
+            ("MoviePilot/剧集/Season 1/b.mp4", "v2", 200),
+            ("MoviePilot/剧集/a.mkv", "v1", 100),
+        ]
+
+    def test_excludes_outside_source_dir(self, monkeypatch):
+        # v9 在 d1 根（源目录之外）、c.txt 非视频、v4 在隐藏目录、
+        # v5 已删除——都不应出现
+        self._patch(monkeypatch, _flat_drive_fixture())
+        ids = {fid for _rel, fid, _size in sg.iter_drive_videos("d1", "MoviePilot/")}
+        assert ids == {"v1", "v2"}
+
+    def test_source_dir_not_found_raises(self, monkeypatch):
+        self._patch(monkeypatch, _flat_drive_fixture())
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError, match="找不到源目录"):
+            list(sg.iter_drive_videos("d1", "不存在的目录/"))
+
+    def test_progress_updated_during_flat_pull(self, monkeypatch):
+        self._patch(monkeypatch, _flat_drive_fixture(), page_size=2)
+        seen = []
+        monkeypatch.setattr(sg, "_set_progress",
+                            lambda **kw: seen.append(kw.get("total")))
+        list(sg.iter_drive_videos("d1", "MoviePilot/"))
+        # 10 条 / 每页 2 条 = 5 次进度汇报，且单调递增
+        assert len(seen) == 5
+        assert seen == sorted(seen) and seen[-1] == 10
+
+    def test_single_flat_query_not_per_folder(self, monkeypatch):
+        # 扁平拉取：API 调用次数 = 目录解析(1) + 分页数，不随目录数增长
+        fake_fetch = self._patch(monkeypatch, _flat_drive_fixture(), page_size=5)
+        list(sg.iter_drive_videos("d1", "MoviePilot/"))
+        # 1（目录解析）+ 2（10 条 / 每页 5 条）
+        assert fake_fetch.calls["n"] == 3
+
+    def test_root_dir_shared_drive(self, monkeypatch):
+        self._patch(monkeypatch, _flat_drive_fixture())
+        got = sorted(sg.iter_drive_videos("d1", ""))
+        rels = [r for r, _f, _s in got]
+        # 网盘根：所有视频都列出，rel 不带源目录前缀剥离（根即无前缀）
+        assert "other.mkv" in rels
+        assert "MoviePilot/剧集/a.mkv" in rels
+        assert "MoviePilot/剧集/Season 1/b.mp4" in rels

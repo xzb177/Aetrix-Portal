@@ -94,7 +94,10 @@ def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[st
     （由 AuthenticateByName 转成可读响应），避免在函数内部直接返回 HTTP 错误。
     """
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
-    device_id = auth.get("DeviceId") or request.headers.get("X-Device-Id") or "unknown-device"
+    # P3 修复（审查）：客户端 DeviceId 头未经截断直接写入 EmbyApiToken.device_id
+    #（String(100)），超长 → DB 报错 → 登录 500。截断到 100。
+    device_id = (auth.get("DeviceId") or request.headers.get("X-Device-Id")
+                 or "unknown-device")[:100]
     app_name = auth.get("Client") or "Emby Client"
     app_version = auth.get("Version") or "1.0"
 

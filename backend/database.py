@@ -586,6 +586,9 @@ def _auto_migrate():
             # 与升级前行为一致（此前无等级概念）。
             ("member_xp", "INTEGER", "0"),
             ("member_level", "INTEGER", "1"),
+            # P2/P3 审查修复：token 版本号（改密后旧 JWT 作废）。老库补列默认 0，
+            # 存量 token 的 tv 也是 0，对得上，不会误杀。
+            ("token_version", "INTEGER", "0"),
             # C1 活力值（竞品借鉴）：老库补列默认满值 14，升级后无人被误拦观影。
             ("vitality", "INTEGER", "14"),
         ]),
@@ -953,7 +956,7 @@ _LEGACY_INDEXES: tuple[tuple[str, str, str, Optional[str], str], ...] = (
 
 
 def _ensure_lottery_g1_tables(existing_tables: set) -> None:
-    """群抽奖 G1：PG/MySQL 上显式建 4 张新表（幂等），SQLite 跳过。
+    """群抽奖 G1：PG/MySQL 上显式建表（幂等），SQLite 跳过。
 
     幂等：表已存在则跳过；create 时用 checkfirst=True 双保险。
     SQLite 由 init_db 的 create_all 建表，此处直接返回。
@@ -967,11 +970,26 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
         models.LotteryRoundPrize.__table__,
         models.LotteryRoundEntry.__table__,
         models.LotteryRoundWinner.__table__,
+        # 三重门·资格门：黑名单表
+        models.LotteryBlacklist.__table__,
     )
     for tbl in tables:
         if tbl.name not in existing_tables:
             tbl.create(bind=engine, checkfirst=True)
-            print(f"  🔧 已迁移: 新建表 {tbl.name}（群抽奖 G1）")
+            print(f"  🔧 已迁移: 新建表 {tbl.name}（群抽奖）")
+
+    # 三重门·公信门：lottery_rounds 补 drand 列（老库）
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    cols = {c["name"] for c in inspector.get_columns("lottery_rounds")}
+    for col_name, col_def in (
+        ("drand_round", "BIGINT"),
+        ("drand_randomness", "VARCHAR(128)"),
+    ):
+        if col_name not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE lottery_rounds ADD COLUMN {col_name} {col_def}"))
+            print(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（三重门·公信门）")
 
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,

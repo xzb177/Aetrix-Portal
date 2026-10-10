@@ -246,6 +246,30 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
             )
             return
 
+        # 6.5 三重门·身份门：参赛者必须在 TG 群里（防群外薅奖）。
+        # fail-open：API 失败时放行（记日志），可用性优先，不因 TG 抖动误伤用户。
+        require_member = True
+        if hasattr(lot, "require_group_member"):
+            try:
+                require_member = bool(lot.require_group_member(db))
+            except Exception:
+                logger.exception("lottery.require_group_member failed")
+                require_member = True
+        if require_member:
+            try:
+                is_member, _status = sender.get_chat_member(db, chat_id, int(telegram_id))
+            except Exception:
+                logger.exception("getChatMember failed, fail-open")
+                is_member = None
+            if is_member is False:
+                _answer_callback(
+                    db,
+                    cb_id,
+                    "请先加入本群后再参加抽奖",
+                    show_alert=True,
+                )
+                return
+
         # 7. 参加（幂等核心）
         try:
             result = lot.join_round(db, round_obj, user, int(telegram_id))
@@ -263,6 +287,16 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
             _answer_callback(db, cb_id, "名额已满，下次再来")
         elif reason in ("closed", "disabled"):
             _answer_callback(db, cb_id, "本轮抽奖已结束")
+        elif reason == "blacklisted":
+            _answer_callback(db, cb_id, "你暂无抽奖资格", show_alert=True)
+        elif reason == "too_new":
+            _answer_callback(
+                db, cb_id,
+                f"账号注册满 {result.get('min_days', 0)} 天后才能参加",
+                show_alert=True,
+            )
+        elif reason == "rate_limited":
+            _answer_callback(db, cb_id, "今日参加次数已用完，明天再来")
         else:
             _answer_callback(db, cb_id, "参加失败，请稍后再试")
     except Exception:

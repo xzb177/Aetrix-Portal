@@ -45,7 +45,8 @@ def test_series_without_file_path_still_queries_tmdb():
     with mock.patch.object(_ew(), "_scanfile_from_item", return_value=None), \
          mock.patch("backend.emby_server.scanner._tmdb_work",
                     return_value=({"id": 98410}, {"id": 98410})) as m_tmdb, \
-         mock.patch("backend.emby_server.tmdb.tmdb_client") as m_client:
+         mock.patch("backend.emby_server.tmdb.tmdb_client") as m_client, \
+         mock.patch("backend.emby_server.douban.enabled", return_value=False):
         m_client.configured = True
         res = _ew()._enrich_fetch(item)
 
@@ -94,7 +95,8 @@ def test_series_with_file_path_still_reads_nfo_and_side():
          mock.patch("backend.emby_server.scanner._nfo_work",
                     return_value=({"tmdb_id": "42"}, None, None)) as m_nfo, \
          mock.patch("backend.emby_server.scanner._tmdb_work") as m_tmdb, \
-         mock.patch("backend.emby_server.tmdb.tmdb_client") as m_client:
+         mock.patch("backend.emby_server.tmdb.tmdb_client") as m_client, \
+         mock.patch("backend.emby_server.douban.enabled", return_value=False):
         m_client.configured = True
         res = _ew()._enrich_fetch(item)
 

@@ -155,6 +155,81 @@ def ensure_slot_or_503() -> None:
         )
 
 
+def _dir_size(path: str) -> int:
+    """目录总字节数；异常返回 0（不影响主流程）。"""
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _cache_mtime(entry_path: str) -> float:
+    """缓存目录的 LRU 时间：优先 cache.json 的 completed_at，否则目录 mtime。"""
+    try:
+        with open(os.path.join(entry_path, "cache.json"), encoding="utf-8") as fh:
+            completed = json.load(fh).get("completed_at")
+        if completed:
+            return datetime.fromisoformat(completed).timestamp()
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        return os.path.getmtime(entry_path)
+    except OSError:
+        return 0.0
+
+
+def _enforce_cache_capacity(new_dir: str) -> None:
+    """P1 修复（审查）：转码缓存 LRU 淘汰，防止无上限写满磁盘。
+
+    上限由 EMBY_TRANSCODE_CACHE_MAX_GB 控制（默认 10G）；超限时按最旧优先
+    删除，直到回到上限 90%。跳过刚落盘的 new_dir。全部异常内部吞掉。
+    """
+    try:
+        max_gb = float(os.getenv("EMBY_TRANSCODE_CACHE_MAX_GB", "10") or 10)
+    except ValueError:
+        max_gb = 10.0
+    if max_gb <= 0:
+        return
+    base = cache_dir()
+    try:
+        entries = [
+            os.path.join(base, name) for name in os.listdir(base)
+            if os.path.isdir(os.path.join(base, name))
+        ]
+    except OSError:
+        return
+    sizes = {p: _dir_size(p) for p in entries}
+    total = sum(sizes.values())
+    limit = max_gb * 1024 ** 3
+    if total <= limit:
+        return
+    # 最旧优先，跳过刚落盘的目录
+    victims = sorted(
+        (p for p in entries if os.path.abspath(p) != os.path.abspath(new_dir)),
+        key=_cache_mtime,
+    )
+    removed, freed = 0, 0
+    for path in victims:
+        if total <= limit * 0.9:
+            break
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+        except OSError as exc:
+            logger.warning("转码缓存淘汰删除失败 %s: %s", path, exc)
+            continue
+        removed += 1
+        freed += sizes.get(path, 0)
+        total -= sizes.get(path, 0)
+    logger.info("转码缓存 LRU 淘汰：删除 %d 个目录，释放 %.1fMB", removed, freed / 1024 ** 2)
+
+
 def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
     """转码完成 → 落盘进持久缓存。返回是否已提升。
 
@@ -183,10 +258,25 @@ def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
     if os.path.isdir(dst):
         # 并发转完：先到的已落盘，后到的直接丢弃（调用方正常回收删目录）
         return False
+    # 两步落盘，堵住上面 isdir 检查与真正落盘之间的窗口：
+    # 先把 src_dir 搬到缓存目录下的唯一临时名（与 dst 同目录，保证 rename 不跨设备），
+    # 再用 os.rename 原子认领 dst。若直接 shutil.move(src_dir, dst) 而此刻 dst 已被
+    # 并发方建好，move 不会报错，而是把 src_dir 整个塞进 dst 里（dst/<src_basename>），
+    # 造成缓存目录嵌套与磁盘双倍占用。rename 到已存在的非空目录则必然抛 OSError，
+    # 后到者据此判定输掉竞态，丢弃自己的临时拷贝，绝不污染先到者的 dst。
+    tmp = dst + ".promote-" + uuid.uuid4().hex[:12]
     try:
-        shutil.move(src_dir, dst)
+        shutil.move(src_dir, tmp)
     except OSError as exc:
         logger.warning("转码缓存落盘失败 %s: %s", session_id, exc)
+        return False
+    try:
+        os.rename(tmp, dst)
+    except OSError as exc:
+        # 竞态失败方（dst 已存在）或落盘失败：清掉自己的临时目录后返回。
+        shutil.rmtree(tmp, ignore_errors=True)
+        if not os.path.isdir(dst):
+            logger.warning("转码缓存落盘失败 %s: %s", session_id, exc)
         return False
     try:
         meta = {
@@ -205,4 +295,9 @@ def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
     info["dir"] = dst
     info["cached"] = True
     logger.info("转码缓存落盘 %s %sbps", info.get("item_guid"), info.get("video_bitrate"))
+    # 落盘后检查容量：超限则 LRU 淘汰最旧的缓存（防无上限写满磁盘）
+    try:
+        _enforce_cache_capacity(dst)
+    except Exception:  # noqa: BLE001 — 淘汰失败绝不影响已落盘的缓存
+        logger.warning("转码缓存容量检查失败", exc_info=True)
     return True

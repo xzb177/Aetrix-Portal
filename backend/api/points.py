@@ -105,6 +105,12 @@ def chat_award(
     db: Session = Depends(get_db),
     _tg: models.WebUser = Depends(require_tg_bound)
 ):
-    """发言奖励（内部接口）"""
+    """发言奖励（内部接口）
+
+    P1 修复（审查）：此前任意登录用户可给任意 user_id 发奖励，
+    零发言每天白嫖上限积分。现强制只能给自己发。
+    """
+    if user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="只能为自己领取发言奖励")
     awarded = points_mod.award_chat_points(db, user_id)
     return {"awarded": awarded}

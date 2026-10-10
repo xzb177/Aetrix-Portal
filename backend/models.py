@@ -257,6 +257,9 @@ class WebUser(Base):
     # invitation=邀请码注册 / open=开放注册。
     # 空值 = 升级前的存量用户（当时没记，不硬猜），后台显示为「未记录」。
     register_channel = Column(String(20), index=True)
+    # P2/P3 修复（审查）：token 版本号。改密码 / 管理员踢下线时 +1，
+    # JWT payload 里带 tv，鉴权时比对——旧版本 token 全部失效（改密后旧 token 立即作废）。
+    token_version = Column(Integer, default=0, nullable=False, server_default="0")
 
     # 自建 Emby 凭据（完全自建模式下，Emby 客户端用此账号密码登录）
     emby_username = Column(String(64), unique=True, nullable=True)
@@ -1419,6 +1422,9 @@ class LotteryRound(Base):
     max_participants = Column(Integer, nullable=False, default=0)  # 0=不限
     seed_hash = Column(String(64), nullable=True)  # 开奖前公布的承诺
     seed = Column(String(64), nullable=True)       # 开奖后揭示
+    # 三重门·公信门：drand 公开随机信标（开奖时抓取，与 seed 混合成最终种子）
+    drand_round = Column(BigInteger, nullable=True)      # drand 信标轮次
+    drand_randomness = Column(String(128), nullable=True)  # drand 信标随机值（hex）
     created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
@@ -1462,6 +1468,25 @@ class LotteryRoundWinner(Base):
     prize_id = Column(Integer, ForeignKey('lottery_round_prizes.id'), nullable=False)
     distributed = Column(Boolean, nullable=False, default=False, server_default='0')
     distributed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class LotteryBlacklist(Base):
+    """群抽奖黑名单：三重门·资格门。
+
+    被拉黑的用户无法参加任何群抽奖。由管理后台维护。
+    """
+    __tablename__ = 'lottery_blacklist'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', name='uq_lottery_blacklist_user'),
+        Index('idx_lottery_blacklist_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id', ondelete='CASCADE'), nullable=False)
+    reason = Column(String(200), nullable=True)  # 拉黑原因
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
 
@@ -1631,3 +1656,18 @@ class ChatPointsLog(Base):
     points_date = Column(Date, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
+
+
+class RevokedJwt(Base):
+    """JWT 吊销表（P2 修复：jti 生成了但从未校验/存储，无吊销能力）。
+
+    登出 / 改密码 / 管理员踢下线时把 jti 写进来；鉴权时查表，已吊销则 401。
+    expires_at 过期后由定时任务清理（token 本来也过期了，留着无意义）。
+    """
+    __tablename__ = 'revoked_jwt'
+
+    jti = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    reason = Column(String(50), nullable=False, default="logout")
+    revoked_at = Column(DateTime, default=datetime.now, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)

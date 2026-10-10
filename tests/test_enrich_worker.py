@@ -576,7 +576,8 @@ def test_fetch_skips_alt_fallback_when_tmdb_configured(db, monkeypatch):
     it = _make_item(db, item_type="series", name="快失败父级", file_path="")
     from backend.emby_server import scanner as _sc
     with mock.patch.object(enrich_worker, "_alias_tmdb_id", return_value=None), \
-            mock.patch("backend.emby_server.tmdb.tmdb_client") as fake_client:
+            mock.patch("backend.emby_server.tmdb.tmdb_client") as fake_client, \
+            mock.patch("backend.emby_server.douban.enabled", return_value=False):
         fake_client.configured = True
         with mock.patch.object(_sc, "_tmdb_work", return_value=(None, None)):
             fetched = enrich_worker._enrich_fetch(it, holder=None)
@@ -803,6 +804,7 @@ def test_transient_tmdb_failure_retries_instead_of_terminal(db, monkeypatch):
     monkeypatch.setattr(tmdb_mod.TmdbClient, "configured",
                         property(lambda self: True))
     monkeypatch.setattr(tmdb_mod.tmdb_client, "search", boom)
+    monkeypatch.setattr("backend.emby_server.douban.enabled", lambda db: False)
 
     it = _make_item(db, item_type="series", name="黑鸟", file_path=None)
     outcome = enrich_worker._process_item(db, it)
@@ -822,6 +824,7 @@ def test_genuine_miss_still_terminal_none(db, monkeypatch):
     monkeypatch.setattr(tmdb_mod.TmdbClient, "configured",
                         property(lambda self: True))
     monkeypatch.setattr(tmdb_mod.tmdb_client, "search", lambda *a, **k: None)
+    monkeypatch.setattr("backend.emby_server.douban.enabled", lambda db: False)
 
     it = _make_item(db, item_type="series", name="不存在的剧", file_path=None)
     outcome = enrich_worker._process_item(db, it)

@@ -588,7 +588,10 @@ def serialize(db: Session, server) -> dict:
         "realm_name": realm.name if realm else "",
         # 内容自动化（MoviePilot / qB）可以「全服共用」：归属服留空，每个服都能用它求片
         "shared": server.realm_id is None and server.kind in PUSH_TARGETS,
-        "node_key": server.node_key or "",
+        # P2 修复（审查）：node_key 是节点认领凭据，凭它可冒充播放节点接入。
+        # 与 mask_config 同口径：只回"是否已配置"，绝不回明文（含只读管理员）。
+        "node_key": "已配置" if server.node_key else "",
+        "node_key_set": bool(server.node_key),
         "kind_group": kind_meta(server.kind).get("group", ""),
         "url": server.url,
         "config": config,

@@ -330,68 +330,83 @@ def iter_drive_videos(drive_id: str, dir_path: str):
     """流式列出源目录下所有视频文件。
 
     yield (root_relpath, file_id, size)。root_relpath 为相对网盘根路径。
-    用 files.list 全量分页 + 递归子目录，避免 rclone 单次超长列举丢文件。
+
+    实现：扁平全量拉取 + 本地建树。
+    旧实现是 BFS、每个目录发一次 files.list（"'{folder_id}' in parents"）：
+    8.5 万文件 / 数千目录 = 数千次 API，每次 200~500ms，列举阶段要
+    10~30 分钟，且全程不更新进度——前端一直显示"列举 Drive 文件…"
+    且计数全 0，看起来像卡死（用户实报）。
+    新实现一次 files.list（无 parents 限定，pageSize=1000）分页拉完全盘条目，
+    本地按 parents 建树再从源目录 BFS 展开：API 调用从数千降到约 100，
+    且每拉完一页就汇报进度，前端能看到条目数在涨。
+    代价：会拉取源目录之外的条目元数据（仅 id/name/parents，不下载内容）；
+    对 MoviePilot 这类单用途盘可忽略。
 
     （修 P1-1：旧实现只在开始时取一次 token，8 万级文件的长列举
-    会因 SA token 过期而整体作废）。
+    会因 SA token 过期而整体作废——_page_fetcher 的 401 自动刷新保留）。
     """
     fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
     dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
     if dir_path and not dir_id:
         raise RuntimeError(f"Drive 上找不到源目录: {dir_path!r}")
 
-    # 共享盘根目录：'root' 别名只对个人盘有效，共享盘顶层用 '<driveId>' in parents。
-    # 原来无条件用 'root' in parents，共享盘配空源目录时列举结果恒为空（静默丢全部）。
-    is_root = not dir_path.strip("/")
-    root_parents_q = None
-    if is_root:
+    # 1. 扁平拉取：全盘条目（文件+目录）一次拉完，本地按 parents 建树。
+    #    只取源目录子树在第 2 步过滤，这里不加 in parents 限定。
+    children: dict[str, list[dict]] = {}
+    listed = 0
+    page_token: Optional[str] = None
+    while True:
+        files, page_token = fetch("trashed=false", page_token)
+        for f in files:
+            if f.get("trashed"):
+                continue
+            for pid in f.get("parents") or []:
+                children.setdefault(pid, []).append(f)
+        listed += len(files)
+        _set_progress(total=listed,
+                      current=f"正在列举 Drive 文件…（已拉取 {listed} 个条目）")
+        if not page_token:
+            break
+    logger.info("strm_gen: drive=%s 扁平拉取 %d 个条目", drive_id, listed)
+
+    # 2. 本地 BFS：从源目录（或网盘根）逐层展开，只取源目录子树。
+    #    网盘根相对路径前缀：dir_path 本身（与旧实现一致，状态键保持兼容）。
+    norm = dir_path.strip("/")
+    if norm:
+        stack: list[tuple[str, str]] = [(dir_id, "")]
+        root_prefix = norm + "/"
+    else:
+        # 共享盘根目录：'root' 别名只对个人盘有效，共享盘顶层用 drive_id。
+        # 原来无条件用 'root' in parents，共享盘配空源目录时列举结果恒为空
+        # （静默丢全部）——这里换成本地建树的等价逻辑。
         dc = _drive_modules()
         try:
             is_personal = dc._is_personal_drive_key(drive_id)
         except Exception:
             is_personal = False
-        root_parents_q = "'root' in parents" if is_personal else f"'{drive_id}' in parents"
-
-    # BFS 遍历目录树
-    # (folder_id, rel_prefix)
-    stack: list[tuple[Optional[str], str]] = [(dir_id, "")]
-    # 网盘根相对路径前缀：dir_path 本身
-    root_prefix = dir_path.strip("/") + "/" if dir_path.strip("/") else ""
+        stack = [("root" if is_personal else drive_id, "")]
+        root_prefix = ""
 
     while stack:
         folder_id, rel_prefix = stack.pop()
-        page_token: Optional[str] = None
-        while True:
-            q = "trashed=false"
-            if folder_id:
-                q += f" and '{folder_id}' in parents"
-            elif root_parents_q:
-                # 网盘根：只列顶层（避免无 parents 限定导致的全盘重复列举）
-                q += f" and {root_parents_q}"
-            files, page_token = fetch(q, page_token)
-            for f in files:
-                if f.get("trashed"):
+        for f in children.get(folder_id, []):
+            name = _safe_name(f.get("name", ""))
+            fid = f.get("id", "")
+            if not name or not fid:
+                continue
+            if f.get("mimeType") == "application/vnd.google-apps.folder":
+                if name.startswith(".") or name in SKIP_DIR_NAMES:
                     continue
-                name = _safe_name(f.get("name", ""))
-                fid = f.get("id", "")
-                if not name or not fid:
+                stack.append((fid, rel_prefix + name + "/"))
+            else:
+                rel = root_prefix + rel_prefix + name
+                if not is_video_path(rel):
                     continue
-                mime = f.get("mimeType", "")
-                if mime == "application/vnd.google-apps.folder":
-                    if name.startswith(".") or name in SKIP_DIR_NAMES:
-                        continue
-                    stack.append((fid, rel_prefix + name + "/"))
-                else:
-                    rel = root_prefix + rel_prefix + name
-                    if not is_video_path(rel):
-                        continue
-                    try:
-                        size = int(f.get("size") or 0)
-                    except (ValueError, TypeError):
-                        size = 0
-                    yield rel, fid, size
-            if not page_token:
-                break
+                try:
+                    size = int(f.get("size") or 0)
+                except (ValueError, TypeError):
+                    size = 0
+                yield rel, fid, size
 
 
 # ---------------------------------------------------------------------------
@@ -631,38 +646,6 @@ def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[st
         _release_progress(stats, db)
 
 
-def _select_drive_id(db, drive_id: Optional[str]) -> tuple[Optional[str], dict]:
-    """确定本次生成使用的 drive_id。
-
-    优先级：显式参数 > strm_gen_drive_id 配置 > 自动选择第一个。
-    返回 (drive_id, info)，info 含 drives_found / auto_selected 供统计与日志。
-    修 P1-2：旧实现静默只用第一个共享盘，多盘用户的其余盘文件永远不生成
-    且无任何提示。现在自动选择时会明确打日志告知发现了哪些盘、用的是哪个。
-    """
-    info: dict[str, Any] = {"drives_found": 0, "auto_selected": False, "drive_note": ""}
-    if drive_id:
-        return drive_id, info
-    cfg_drive = drive_id_config(db)
-    if cfg_drive:
-        return cfg_drive, info
-    drives = _discover_drives()
-    info["drives_found"] = len(drives)
-    if not drives:
-        return None, info
-    ordered = sorted(drives.keys())
-    picked = ordered[0]
-    info["auto_selected"] = True
-    if len(ordered) > 1:
-        note = (f"发现 {len(ordered)} 个 Drive {ordered}，自动选用 {picked}；"
-                "其余盘本次不生成，可通过 strm_gen_drive_id 配置指定，"
-                "或分多次传入 drive_id 触发")
-        info["drive_note"] = note
-        logger.warning("strm_gen: %s", note)
-    else:
-        logger.info("strm_gen: 发现 1 个 Drive，使用 %s", picked)
-    return picked, info
-
-
 def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) -> dict[str, Any]:
     src_prefix = source_dir(db)
     strm_root = _container_strm_root(db)
@@ -857,6 +840,10 @@ def missing_report(db, limit: int = 100) -> dict[str, Any]:
             return {"ok": True, "has_data": False, "incomplete": []}
         stats = json.loads(raw)
         verify = stats.get("verify", {})
+        # 生成失败/未完成校验时 stats 里没有 verify，此时视为无数据，
+        # 否则前端会显示"剧集总数 0、完整 0、缺集 0"的误导性空报告。
+        if not verify:
+            return {"ok": True, "has_data": False, "incomplete": []}
         return {
             "ok": True,
             "has_data": True,

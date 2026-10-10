@@ -191,24 +191,31 @@ def test_trusted_peer_cannot_restore_loopback(monkeypatch):
     assert out["client"][0] == CF_PEER[0]
 
 
-def test_local_reverse_proxy_trusted(monkeypatch):
-    """本机反代（回环直连）默认可信"""
+def test_loopback_cf_header_not_trusted(monkeypatch):
+    """P2（审查第七批）：回环对端发来的 CF-Connecting-IP 不再采信。
+
+    旧行为把回环当可信，攻击者经本机 nginx 伪造该头即可任意冒充客户端 IP
+    （限流绕过、审计投毒）。现在只认 CF 官方网段，回环来的该头直接忽略。
+    """
     import asyncio
     monkeypatch.setenv("TRUST_CF_IP", "true")
     scope = _scope(client=("127.0.0.1", 4000))
     scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
     _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
-    assert out["client"][0] == "9.9.9.9"
+    assert out["client"][0] == "127.0.0.1"
 
 
-def test_trusted_proxies_env_extends_list(monkeypatch):
+def test_trusted_proxy_cf_header_not_trusted_xff_still_works(monkeypatch):
+    """P2（审查第七批）：自配可信代理发来的 CF-Connecting-IP 不再采信，
+    回退走 X-Forwarded-For 末段（自配代理的正确传 IP 姿势）。"""
     import asyncio
     monkeypatch.setenv("TRUST_CF_IP", "true")
     monkeypatch.setenv("TRUSTED_PROXIES", "172.18.0.0/16")
     scope = _scope(client=("172.18.0.1", 4000))
     scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
+    scope["headers"].append((b"x-forwarded-for", b"8.8.8.8"))
     _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
-    assert out["client"][0] == "9.9.9.9"
+    assert out["client"][0] == "8.8.8.8"
 
 
 def test_cloudflare_ranges_override(monkeypatch):

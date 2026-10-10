@@ -23,6 +23,7 @@ def db():
     models.LotteryRoundPrize.__table__.create(engine, checkfirst=True)
     models.LotteryRoundEntry.__table__.create(engine, checkfirst=True)
     models.LotteryRoundWinner.__table__.create(engine, checkfirst=True)
+    models.LotteryBlacklist.__table__.create(engine, checkfirst=True)
     models.PointsLog.__table__.create(engine, checkfirst=True)
     models.WelfareGrantLog.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
@@ -354,7 +355,7 @@ def test_verify_round(db):
     assert v["status"] == "done"
     assert v["seed"] == "fixed-seed-for-test"
     assert v["seed_hash"] == hashlib.sha256(b"fixed-seed-for-test").hexdigest()
-    assert v["algorithm"] == "sha256(seed:entry_id)升序"
+    assert v["algorithm"].startswith("sha256(final_seed:entry_id)升序")
 
     assert len(v["entries"]) == 5
     for e in v["entries"]:

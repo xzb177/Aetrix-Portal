@@ -152,8 +152,9 @@ def _issue_auth_response(
         ensure_emby_credentials(db, user, password=plain_password)
     else:
         ensure_emby_credentials(db, user)
-    access = create_access_token(user.id, {"username": user.username})
-    refresh = create_refresh_token(user.id)
+    access = create_access_token(user.id, {"username": user.username},
+                                  token_version=user.token_version or 0)
+    refresh = create_refresh_token(user.id, token_version=user.token_version or 0)
 
     return AuthResponse(
         access_token=access,
@@ -171,6 +172,10 @@ def get_current_user_jwt(
     """JWT 鉴权依赖：Authorization: Bearer <access_token>"""
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未提供认证凭证")
+    from backend.security import decode_token, enforce_token_freshness
+    payload = decode_token(credentials.credentials, expected_type="access")
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或已过期的凭证")
     user_id = resolve_jwt_user_id(credentials.credentials)
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或已过期的凭证")
@@ -179,6 +184,8 @@ def get_current_user_jwt(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="用户已被禁用")
+    # P2/P3：吊销 + token_version 双检查（横切能力只许一套，见 security.enforce_token_freshness）
+    enforce_token_freshness(db, payload, user)
     return user
 
 
@@ -411,9 +418,14 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
 
+    # P3（审查第八批）：改密/登出后旧 refresh_token 作废，否则换新 access 形同虚设
+    from backend.security import enforce_token_freshness
+    enforce_token_freshness(db, payload, user)
+
     return {
-        "access_token": create_access_token(user.id, {"username": user.username}),
-        "refresh_token": create_refresh_token(user.id),  # 轮换
+        "access_token": create_access_token(user.id, {"username": user.username},
+                                          token_version=user.token_version or 0),
+        "refresh_token": create_refresh_token(user.id, token_version=user.token_version or 0),  # 轮换
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "user": _user_out(user, db),
@@ -430,8 +442,26 @@ def me(
 
 
 @auth_router.post("/logout")
-def logout(current_user: models.WebUser = Depends(get_current_user_jwt)):
-    """登出（无状态 JWT，客户端清除 token）"""
+def logout(request: Request,
+           current_user: models.WebUser = Depends(get_current_user_jwt),
+           db: Session = Depends(get_db)):
+    """登出：吊销当前 access token（jti 进吊销表），客户端同时清除本地 token。
+
+    P2 修复（审查）：此前登出只是客户端清除，服务端无吊销能力，
+    偷到的 token 在过期前一直有效。
+    """
+    from backend.security import decode_token, revoke_jti
+    token = None
+    try:
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    except Exception:
+        pass
+    if token:
+        payload = decode_token(token, expected_type="access")
+        if payload:
+            revoke_jti(db, payload.get("jti"), current_user.id, reason="logout")
     return {"success": True, "message": "已登出"}
 
 
@@ -485,5 +515,7 @@ def change_password(
     current_user.password_hash = hash_password(req.new_password)
     # 同步自建 Emby 播放密码（bcrypt 哈希存储），保持两端一致
     current_user.emby_password = hash_password(req.new_password)
+    # P3 修复（审查）：改密码后旧 token 全部作废（防盗号后持续登录）
+    current_user.token_version = int(current_user.token_version or 0) + 1
     db.commit()
     return {"success": True, "message": "密码已更新"}
