@@ -5,7 +5,7 @@
  * v2.54（暗房影院）：PageHeader + StatTile 总览（待支付 > 0 才染警示、可点进带筛选的列表）+
  * flush SectionCard 订单表（筛选在左、查询在右，分页收进卡片底栏）；加载失败给可重试的错误态。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   RefreshCw, Search, CircleCheck, Wallet, Ban, Undo2, ReceiptText, Coins, CalendarCheck, Clock3,
@@ -58,36 +58,76 @@ useQueryFilter(statusFilter, 'status', () => { page.value = 1; load() })
 useQueryFilter(kindFilter, 'kind', () => { page.value = 1; load() })
 useQueryFilter(search, 'search', () => { page.value = 1; load() })
 
+/**
+ * 经济总览与筛选 / 翻页无关：单独拉，翻页、改筛选时不再重复请求统计接口。
+ * 失败只隐藏总览，不影响订单主表。
+ */
+async function loadStats() {
+  try {
+    stats.value = await fetchEconomyStats()
+  } catch {
+    // 保留上一次的总览
+  }
+}
+
+/** 请求序号：连续改筛选 / 翻页时只采纳最后一次请求，避免旧响应覆盖新结果 */
+let loadSeq = 0
+/** 最近一次实际查询用的关键字：防抖回调据此跳过重复查询（深链改 search 时 load 已经发过） */
+let lastSearch = ''
+
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   loadError.value = ''
+  lastSearch = search.value
   try {
-    const [s, o] = await Promise.all([
-      fetchEconomyStats().catch(() => null),
-      fetchEconomyOrders({
-        status_filter: statusFilter.value || undefined,
-        kind: kindFilter.value || undefined,
-        search: search.value || undefined,
-        limit: pageSize,
-        offset: (page.value - 1) * pageSize,
-      }),
-    ])
-    stats.value = s
+    const o = await fetchEconomyOrders({
+      status_filter: statusFilter.value || undefined,
+      kind: kindFilter.value || undefined,
+      search: search.value || undefined,
+      limit: pageSize,
+      offset: (page.value - 1) * pageSize,
+    })
+    if (seq !== loadSeq) return
+    // 关单 / 退款后当前页可能被筛空：回到最后一页，而不是停在空页上显示「没有订单」
+    if (!o.orders.length && o.total > 0 && page.value > 1) {
+      page.value = Math.max(1, Math.ceil(o.total / pageSize))
+      void load()
+      return
+    }
     orders.value = o.orders
     total.value = o.total
   } catch (e: unknown) {
+    if (seq !== loadSeq) return
     loadError.value = (e as Error)?.message || '加载失败'
     ElMessage.error(loadError.value)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
+}
+
+/** 「刷新」：总览与订单一起重拉 */
+function refreshAll() {
+  loadStats()
+  load()
 }
 
 /** 筛选变化 / 点「查询」：回到第一页再拉 */
 function query() {
+  clearTimeout(searchTimer)
   page.value = 1
   load()
 }
+
+/** 搜索框输入防抖：停手 350ms 自动查询（回车 / 清空仍立即查询） */
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch(search, (value) => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    if (value !== lastSearch) query()
+  }, 350)
+})
+onBeforeUnmount(() => clearTimeout(searchTimer))
 
 const hasFilter = computed(() => !!(statusFilter.value || kindFilter.value || search.value))
 
@@ -139,7 +179,7 @@ function openDetail(row: OrderRow) {
 
 /** 动作后刷新订单与退款记录，并把弹窗里的订单换成最新快照 */
 async function afterAction(orderId: string) {
-  await Promise.all([load(), loadRecords()])
+  await Promise.all([load(), loadRecords(), loadStats()])
   const fresh = orders.value.find((o) => o.order_id === orderId)
   if (fresh) {
     detail.value.row = fresh
@@ -250,6 +290,7 @@ function fmtTime(iso?: string | null) {
 
 onMounted(() => {
   load()
+  loadStats()
   loadRecords()
 })
 </script>
@@ -262,7 +303,7 @@ onMounted(() => {
       description="充值 / 订阅订单、营收统计与人工补单。点「处理 / 详情」补单、关单或退款。"
     >
       <template #actions>
-        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
+        <el-button :icon="RefreshCw" :loading="loading" @click="refreshAll">刷新</el-button>
       </template>
     </PageHeader>
 
@@ -419,7 +460,7 @@ onMounted(() => {
     </SectionCard>
 
     <!-- 退款：默认回滚权益，余额不够时可显式允许扣成负数 -->
-    <el-dialog v-model="refundDialog.visible" title="订单退款" width="480px">
+    <el-dialog v-model="refundDialog.visible" title="订单退款" width="min(480px, 92vw)">
       <el-form label-position="top">
         <el-form-item label="订单">
           <span class="dialog-order">
@@ -462,7 +503,7 @@ onMounted(() => {
       可用的处理动作随状态变化（待支付：补单或关单；已支付：退款），退款仍走专门的退款弹窗
       （勾选项多，放在同一层会看不清）。
     -->
-    <el-dialog v-model="detail.visible" title="订单详情" width="520px">
+    <el-dialog v-model="detail.visible" title="订单详情" width="min(520px, 92vw)">
       <div v-if="detail.row" class="od-body">
         <div class="od-head">
           <el-tag :type="statusType(detail.row.status)" size="small">

@@ -59,6 +59,8 @@ const runtime = ref<PlaybackRuntime | null>(null)
 
 /** 下载与设备风控（与「系统设置」共用同一批键，这里只是换个更顺手的入口） */
 const ops = ref({ allow_download: 'true', device_limit_per_user: '0', device_limit_auto_evict: 'false' })
+/** 下载与设备配置没读到：表单里不是生效值，禁止保存（否则会用空值覆盖线上配置） */
+const opsError = ref(false)
 
 /** CDN 域名预留（播放三层第 2/3 层）：只做域名预留，默认关闭 */
 const cdnConfig = ref<CdnConfig>({
@@ -102,7 +104,7 @@ async function load() {
   try {
     const [p, s, c, lc, ln] = await Promise.all([
       fetchPlaybackPolicy(),
-      fetchEconomySettings().catch(() => ({ settings: {} as Record<string, string> })),
+      fetchEconomySettings().catch(() => null),
       fetchCdnConfig().catch(() => null),
       fetchLocalCacheConfig().catch(() => null),
       // 线路可观测读不到不影响本页其它卡片（CDN / 本地缓存配置）
@@ -121,10 +123,13 @@ async function load() {
       cacheStats.value = lc.stats
       cacheEntries.value = lc.entries
     }
-    ops.value = {
-      allow_download: s.settings.allow_download ?? '',
-      device_limit_per_user: s.settings.device_limit_per_user ?? '',
-      device_limit_auto_evict: s.settings.device_limit_auto_evict ?? '',
+    opsError.value = !s
+    if (s) {
+      ops.value = {
+        allow_download: s.settings.allow_download ?? '',
+        device_limit_per_user: s.settings.device_limit_per_user ?? '',
+        device_limit_auto_evict: s.settings.device_limit_auto_evict ?? '',
+      }
     }
   } catch {
     /* 拦截器已提示；运行态都没拿到说明主策略没读到 */
@@ -159,6 +164,7 @@ async function savePolicy() {
 }
 
 async function saveOps() {
+  if (opsError.value) return
   savingOps.value = true
   try {
     await updateEconomySettings({ ...ops.value })
@@ -408,6 +414,15 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
 
     <!-- 下载与设备（原来在系统设置里） -->
     <SectionCard title="下载与设备" :icon="Download" description="与「系统设置」共用同一批配置，这里只是更顺手的入口。">
+      <el-alert
+        v-if="opsError"
+        type="error"
+        show-icon
+        :closable="false"
+        class="cp-ops-alert"
+        title="下载与设备配置读取失败"
+        description="下面不是当前生效值，已禁止保存；点右上角「刷新」重新读取。"
+      />
       <div class="cp-field">
         <div class="cp-field-main">
           <label class="cp-label">允许下载</label>
@@ -449,7 +464,13 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
           <span class="cp-save-hint cp-inline-icon">
             <Smartphone :size="13" /> 逐台设备与登录日志在「设备与安全 / 登录日志」；这里只决定「多一台设备时怎么处理」。
           </span>
-          <el-button type="primary" :loading="savingOps" :disabled="!isSuper" @click="saveOps">
+          <el-button
+            type="primary"
+            :loading="savingOps"
+            :disabled="!isSuper || opsError"
+            :title="opsError ? '配置读取失败，请先刷新再保存' : ''"
+            @click="saveOps"
+          >
             <Save :size="14" class="btn-ico" />保存
           </el-button>
         </div>
@@ -816,6 +837,7 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
 .num-pair .el-input-number { flex: none; width: 120px; }
 
 /* ===== 卡片底部保存栏：说明左、按钮右 ===== */
+.cp-ops-alert { margin-bottom: 12px; }
 .cp-save {
   display: flex;
   align-items: center;

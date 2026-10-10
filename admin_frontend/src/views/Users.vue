@@ -10,7 +10,7 @@
  * v2.6.10：手机（≤640px）下表格列收窄并隐藏「注册时间」（详情抽屉里本来就有），
  * 否则 375px 宽的屏幕上列宽合计近 1000px，必须先横向拖很远才能看到操作列。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CalendarCheck, CircleCheck, CircleSlash, Coins, Crown, Download, Eye, EyeOff, Film, Gift,
@@ -73,7 +73,6 @@ const users = ref<AdminUserRow[]>([])
 const total = ref(0)
 const search = ref('')
 const activeFilter = ref<string>('')
-const subFilter = ref<string>('')
 /** 用户类型筛选（v2.55 公益服并入用户管理）：空=全部，welfare=公益服，paid=付费，normal=普通 */
 const typeFilter = ref<string>('')
 /** 注册渠道枚举由后端下发（含「未记录」），前端不自己拼一份 */
@@ -87,10 +86,19 @@ const PAGE_SIZE = 20
 
 /** 是否有任何筛选条件（决定空态文案：没匹配 vs 还没有用户） */
 const hasFilter = computed(() =>
-  Boolean(search.value || activeFilter.value || channelFilter.value || subFilter.value || typeFilter.value),
+  Boolean(search.value || activeFilter.value || channelFilter.value || typeFilter.value),
 )
 
+/** 搜索框输入防抖：停手 350ms 自动查询（回车 / 清空仍立即查询） */
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch(search, () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(applyFilter, 350)
+})
+onBeforeUnmount(() => clearTimeout(searchTimer))
+
 function applyFilter() {
+  clearTimeout(searchTimer)
   page.value = 0
   load()
 }
@@ -99,19 +107,15 @@ function resetFilters() {
   search.value = ''
   activeFilter.value = ''
   channelFilter.value = ''
-  subFilter.value = ''
   typeFilter.value = ''
   applyFilter()
 }
 
-/** 后端 /users 未支持订阅筛选，这里做客户端补筛（当前页） */
-const visibleUsers = computed(() => {
-  if (subFilter.value === 'has') return users.value.filter((u) => u.has_subscription)
-  if (subFilter.value === 'none') return users.value.filter((u) => !u.has_subscription)
-  return users.value
-})
+/** 请求序号：筛选连续变化时只采纳最后一次请求的结果，避免旧响应覆盖新筛选 */
+let loadSeq = 0
 
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   loadError.value = false
   try {
@@ -121,14 +125,22 @@ async function load() {
     if (channelFilter.value) params.channel = channelFilter.value
     if (typeFilter.value) params.user_type = typeFilter.value
     const res = await fetchUsers(params)
+    if (seq !== loadSeq) return
+    // 操作后（取消公益、禁用…）当前页可能被筛空：回退到最后一页而不是显示「没有匹配」
+    if (!res.users.length && res.total > 0 && page.value > 0) {
+      page.value = Math.max(0, Math.ceil(res.total / PAGE_SIZE) - 1)
+      void load()
+      return
+    }
     users.value = res.users
     total.value = res.total
     if (res.channels?.length) channels.value = res.channels
   } catch {
-    /* 拦截器已提示 */
+    if (seq !== loadSeq) return
+    /* 拦截器已提示；保留上一页数据，空态换成可重试的错误提示 */
     loadError.value = true
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -213,22 +225,30 @@ async function toggleUserDevice(device: DeviceRow) {
     const res = await setDeviceBlocked(device.user_id, device.device_id, nextBlocked)
     ElMessage.success(res.message)
     userDevices.value = (await fetchDevices({ user_id: device.user_id, limit: 100 })).devices
+  } catch {
+    // 拦截器已提示
   } finally {
     deviceLoading.value = false
   }
 }
 
 async function removeUserDevice(device: DeviceRow) {
-  await ElMessageBox.confirm(
-    `移除「${device.name || device.device_id}」后客户端需要重新登录，确定吗？`,
-    '移除设备',
-    { type: 'warning' },
-  )
+  try {
+    await ElMessageBox.confirm(
+      `移除「${device.name || device.device_id}」后客户端需要重新登录，确定吗？`,
+      '移除设备',
+      { type: 'warning' },
+    )
+  } catch {
+    return // 取消
+  }
   deviceLoading.value = true
   try {
     const res = await removeDevice(device.user_id, device.device_id)
     ElMessage.success(res.message)
     userDevices.value = (await fetchDevices({ user_id: device.user_id, limit: 100 })).devices
+  } catch {
+    // 拦截器已提示
   } finally {
     deviceLoading.value = false
   }
@@ -308,6 +328,7 @@ const welfareGrantDlg = reactive({
   visible: false,
   user: null as AdminUserRow | null,
   days: 30,
+  busy: false,
 })
 
 function openWelfareGrant(row: AdminUserRow) {
@@ -319,6 +340,7 @@ function openWelfareGrant(row: AdminUserRow) {
 async function submitWelfareGrant() {
   const u = welfareGrantDlg.user
   if (!u) return
+  welfareGrantDlg.busy = true
   try {
     await grantWelfare({ user_id: u.id, days: welfareGrantDlg.days, channel: 'admin' })
     ElMessage.success('已开通/续期公益')
@@ -326,6 +348,8 @@ async function submitWelfareGrant() {
     await load()
   } catch {
     // 拦截器已提示
+  } finally {
+    welfareGrantDlg.busy = false
   }
 }
 
@@ -419,10 +443,18 @@ async function submitPoints() {
 
 async function toggleActive(u: AdminUserRow) {
   const action = u.is_active ? '禁用' : '启用'
-  await ElMessageBox.confirm(`确定要${action}用户「${u.username}」吗？`, '确认', { type: 'warning' })
-  await updateUser(u.id, { is_active: !u.is_active })
-  ElMessage.success(`已${action}`)
-  load()
+  try {
+    await ElMessageBox.confirm(`确定要${action}用户「${u.username}」吗？`, '确认', { type: 'warning' })
+  } catch {
+    return // 取消
+  }
+  try {
+    await updateUser(u.id, { is_active: !u.is_active })
+    ElMessage.success(`已${action}`)
+    load()
+  } catch {
+    // 拦截器已提示
+  }
 }
 
 async function toggleStaff(u: AdminUserRow) {
@@ -431,10 +463,18 @@ async function toggleStaff(u: AdminUserRow) {
     return
   }
   const action = u.is_staff ? '移除管理员' : '设为管理员'
-  await ElMessageBox.confirm(`确定要${action}「${u.username}」吗？`, '确认', { type: 'warning' })
-  await updateUser(u.id, { is_staff: !u.is_staff })
-  ElMessage.success('已更新')
-  load()
+  try {
+    await ElMessageBox.confirm(`确定要${action}「${u.username}」吗？`, '确认', { type: 'warning' })
+  } catch {
+    return // 取消
+  }
+  try {
+    await updateUser(u.id, { is_staff: !u.is_staff })
+    ElMessage.success('已更新')
+    load()
+  } catch {
+    // 拦截器已提示
+  }
 }
 
 const pwdDialog = reactive({ visible: false, user: null as AdminUserRow | null, value: '' })
@@ -495,16 +535,24 @@ async function submitMsg() {
 
 const broadcastVisible = ref(false)
 const broadcastForm = reactive({ title: '系统广播', content: '' })
+const broadcastSaving = ref(false)
 
 async function submitBroadcast() {
   if (!broadcastForm.content.trim()) {
     ElMessage.warning('请输入广播内容')
     return
   }
-  await broadcastMessage({ title: broadcastForm.title || '系统广播', content: broadcastForm.content })
-  ElMessage.success('广播已发送给全部用户')
-  broadcastVisible.value = false
-  broadcastForm.content = ''
+  broadcastSaving.value = true
+  try {
+    await broadcastMessage({ title: broadcastForm.title || '系统广播', content: broadcastForm.content })
+    ElMessage.success('广播已发送给全部用户')
+    broadcastVisible.value = false
+    broadcastForm.content = ''
+  } catch {
+    // 拦截器已提示；保留已输入的内容
+  } finally {
+    broadcastSaving.value = false
+  }
 }
 
 function onRowCommand(cmd: string, row: AdminUserRow) {
@@ -582,7 +630,9 @@ function fmtCount(n: number | null | undefined): string {
         <el-button :loading="loading" @click="load">
           <RefreshCw :size="14" class="btn-ico" />刷新
         </el-button>
-        <el-button @click="welfareBulkDlg.visible = true">批量延期</el-button>
+        <el-button @click="welfareBulkDlg.visible = true">
+          <CalendarCheck :size="14" class="btn-ico" />公益批量延期
+        </el-button>
       </template>
     </PageHeader>
 
@@ -608,14 +658,10 @@ function fmtCount(n: number | null | undefined): string {
           <el-select v-model="channelFilter" class="f-select" placeholder="注册来源" clearable @change="applyFilter">
             <el-option v-for="c in channels" :key="c.value" :label="c.label" :value="c.value" />
           </el-select>
-          <el-select v-model="subFilter" class="f-select" placeholder="订阅状态（本页）" clearable>
-            <el-option label="订阅中" value="has" />
-            <el-option label="未订阅" value="none" />
-          </el-select>
           <el-select v-model="typeFilter" class="f-select" placeholder="用户类型" clearable @change="applyFilter">
             <el-option label="公益服" value="welfare" />
-            <el-option label="付费" value="paid" />
-            <el-option label="普通" value="normal" />
+            <el-option label="付费（订阅生效中）" value="paid" />
+            <el-option label="普通（无订阅）" value="normal" />
           </el-select>
         </div>
         <div v-if="hasFilter" class="users-actions">
@@ -623,7 +669,7 @@ function fmtCount(n: number | null | undefined): string {
         </div>
       </div>
 
-      <DataTable :rows="visibleUsers" :columns="columns" :loading="loading" empty="没有匹配的用户">
+      <DataTable :rows="users" :columns="columns" :loading="loading" empty="没有匹配的用户">
         <template #empty>
           <EmptyState
             v-if="loadError"
@@ -674,7 +720,7 @@ function fmtCount(n: number | null | undefined): string {
             <div class="user-sub">
               <span
                 v-if="row.welfare_expires_at && new Date(row.welfare_expires_at) < new Date()"
-                :style="{ color: 'var(--au-danger)' }"
+                class="welfare-expired"
               >已过期</span>
               <span v-else>{{ fmtWelfareDate(row.welfare_expires_at) }}</span>
             </div>
@@ -684,7 +730,7 @@ function fmtCount(n: number | null | undefined): string {
         </template>
 
         <template #cell-tg_bound="{ row }">
-          <span v-if="row.tg_bound" class="au-badge au-badge-cyan" title="已绑定 Telegram">已绑</span>
+          <span v-if="row.tg_bound" class="au-badge au-badge-info" title="已绑定 Telegram">已绑</span>
           <span v-else class="au-badge au-badge-muted" title="未绑定 Telegram">未绑</span>
         </template>
 
@@ -723,7 +769,6 @@ function fmtCount(n: number | null | undefined): string {
 
       <template v-if="total > PAGE_SIZE" #footer>
         <div class="pager">
-          <span class="pager-note">订阅状态筛选只作用于当前页</span>
           <el-pagination
             layout="prev, pager, next, total"
             :total="total"
@@ -1056,7 +1101,7 @@ function fmtCount(n: number | null | undefined): string {
     <el-dialog
       v-model="subDialog.visible"
       :title="subDialog.mode === 'grant' ? '授予订阅' : '延长订阅'"
-      width="440px"
+      width="min(440px, 92vw)"
     >
       <el-form label-width="80px">
         <el-form-item label="用户">
@@ -1092,7 +1137,7 @@ function fmtCount(n: number | null | undefined): string {
     </el-dialog>
 
     <!-- ==================== 积分调整 ==================== -->
-    <el-dialog v-model="pointsDialog.visible" title="调整积分" width="420px">
+    <el-dialog v-model="pointsDialog.visible" title="调整积分" width="min(420px, 92vw)">
       <el-form label-width="80px">
         <el-form-item label="用户">
           <span class="dialog-user">{{ pointsDialog.user?.username }}</span>
@@ -1114,7 +1159,7 @@ function fmtCount(n: number | null | undefined): string {
     </el-dialog>
 
     <!-- ==================== 重置密码 ==================== -->
-    <el-dialog v-model="pwdDialog.visible" title="重置密码" width="400px">
+    <el-dialog v-model="pwdDialog.visible" title="重置密码" width="min(400px, 92vw)">
       <el-form label-width="80px">
         <el-form-item label="用户">
           <span class="dialog-user">{{ pwdDialog.user?.username }}</span>
@@ -1130,7 +1175,7 @@ function fmtCount(n: number | null | undefined): string {
     </el-dialog>
 
     <!-- ==================== 公益开通/续期 ==================== -->
-    <el-dialog v-model="welfareGrantDlg.visible" title="开通/续期公益" width="400px">
+    <el-dialog v-model="welfareGrantDlg.visible" title="开通/续期公益" width="min(400px, 92vw)">
       <el-form label-width="80px">
         <el-form-item label="用户">
           <span class="dialog-user">{{ welfareGrantDlg.user?.username }}</span>
@@ -1142,17 +1187,20 @@ function fmtCount(n: number | null | undefined): string {
       </el-form>
       <template #footer>
         <el-button @click="welfareGrantDlg.visible = false">取消</el-button>
-        <el-button type="primary" @click="submitWelfareGrant">确定</el-button>
+        <el-button type="primary" :loading="welfareGrantDlg.busy" @click="submitWelfareGrant">确定</el-button>
       </template>
     </el-dialog>
 
     <!-- ==================== 公益批量延期 ==================== -->
-    <el-dialog v-model="welfareBulkDlg.visible" title="批量延期公益" width="420px">
+    <el-dialog v-model="welfareBulkDlg.visible" title="批量延期公益" width="min(420px, 92vw)">
       <el-form label-width="110px">
         <el-form-item label="过期天数范围">
-          <el-input-number v-model="welfareBulkDlg.min_expired_days" :min="0" style="width: 110px" />
-          <span style="margin: 0 6px">~</span>
-          <el-input-number v-model="welfareBulkDlg.max_expired_days" :min="0" style="width: 110px" />
+          <div class="range-row">
+            <el-input-number v-model="welfareBulkDlg.min_expired_days" :min="0" class="range-num" />
+            <span class="range-sep">~</span>
+            <el-input-number v-model="welfareBulkDlg.max_expired_days" :min="welfareBulkDlg.min_expired_days" class="range-num" />
+          </div>
+          <span class="dialog-hint">已过期天数落在该区间内的公益用户会统一延期</span>
         </el-form-item>
         <el-form-item label="增加天数">
           <el-input-number v-model="welfareBulkDlg.add_days" :min="1" :max="365" />
@@ -1165,7 +1213,7 @@ function fmtCount(n: number | null | undefined): string {
     </el-dialog>
 
     <!-- ==================== 发送消息 ==================== -->
-    <el-dialog v-model="msgDialog.visible" title="发送站内消息" width="460px">
+    <el-dialog v-model="msgDialog.visible" title="发送站内消息" width="min(460px, 92vw)">
       <el-form label-width="80px">
         <el-form-item label="收件人">
           <span class="dialog-user">{{ msgDialog.user?.username }}</span>
@@ -1184,7 +1232,7 @@ function fmtCount(n: number | null | undefined): string {
     </el-dialog>
 
     <!-- ==================== 全站广播 ==================== -->
-    <el-dialog v-model="broadcastVisible" title="全站广播" width="460px">
+    <el-dialog v-model="broadcastVisible" title="全站广播" width="min(460px, 92vw)">
       <el-form label-width="80px">
         <el-form-item label="标题">
           <el-input v-model="broadcastForm.title" />
@@ -1198,7 +1246,7 @@ function fmtCount(n: number | null | undefined): string {
       </el-form>
       <template #footer>
         <el-button @click="broadcastVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitBroadcast">发送广播</el-button>
+        <el-button type="primary" :loading="broadcastSaving" @click="submitBroadcast">发送广播</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1242,7 +1290,6 @@ function fmtCount(n: number | null | undefined): string {
 .user-sub { font-size: 12px; color: var(--au-text-3); }
 
 .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.pager-note { font-size: 12px; color: var(--au-text-3); }
 
 /* ===== 详情抽屉 ===== */
 .detail-body { min-height: 260px; }
@@ -1305,6 +1352,10 @@ function fmtCount(n: number | null | undefined): string {
 .dialog-user { font-weight: 600; color: var(--au-text); }
 .dialog-hint { font-size: 12px; color: var(--au-text-3); line-height: 1.6; }
 .dialog-hint.warn { color: var(--au-warning); }
+.welfare-expired { color: var(--au-danger); }
+.range-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; width: 100%; }
+.range-num { width: 120px; }
+.range-sep { color: var(--au-text-3); }
 
 /* ===== 授权资源卡片（Phase 4）===== */
 .tab-label { display: inline-flex; align-items: center; gap: 4px; }
