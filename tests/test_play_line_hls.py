@@ -1,7 +1,7 @@
 """转码 / HLS 路径（video_hls）回归测试（2026-10 简化版）
 
-单路径：转码请求统一记录，不再按线路区分。本地缓存是自动层：
-有本机副本时 ffmpeg 直接读本地，没命中则排进缓存队列。
+单路径：转码请求统一记录，不再按线路区分。（2026-10-09 起 local_cache
+已按用户要求从播放链路移除：不再有"本地缓存自动层"。）
 
 （本文件最初还怀疑「转码把源站凭据丢了」，实测 ``start_transcode`` 确实带着
 ``input_headers`` 走到 ffmpeg 的 ``-headers``，那个猜测是错的；
@@ -38,13 +38,13 @@ def harness(monkeypatch):
     from backend.emby_server.mounts import PlayTarget
 
     state = SimpleNamespace(
-        recorded=[], transcode_args=None, enqueued=[],
+        recorded=[], transcode_args=None,
         target=PlayTarget("url", "https://origin.example/movie.mkv",
                           {"Authorization": "Basic c2VjcmV0"}),
     )
 
-    monkeypatch.setattr(api, "_require_item",
-                        lambda db, item_id: SimpleNamespace(container="mp4", guid="g1"))
+    monkeypatch.setattr(api, "_require_visible_item",
+                        lambda db, user, item_id: SimpleNamespace(container="mp4", guid="g1"))
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
     monkeypatch.setattr(api.playback_policy, "ensure_client_allowed",
                         lambda db, user, ua: None)
@@ -55,9 +55,6 @@ def harness(monkeypatch):
     monkeypatch.setattr(api, "_play_target", lambda db, item: state.target)
     monkeypatch.setattr(api.cdn, "enabled", lambda db: False)
     monkeypatch.setattr(api.cdn, "rewrite_url", lambda db, url, base: url)
-    monkeypatch.setattr(api.local_cache, "lookup", lambda db, item: None)
-    monkeypatch.setattr(api.local_cache, "enqueue",
-                        lambda db, item, prio: state.enqueued.append(item))
     monkeypatch.setattr(
         api.line_stats, "record_request",
         lambda **kw: state.recorded.append(kw),
@@ -82,25 +79,6 @@ def test_transcode_records_request(harness):
     api, state = harness
     _run(api)
     assert len(state.recorded) == 1
-
-
-def test_cache_miss_enqueues_for_caching(harness):
-    """本地缓存没命中：排进缓存队列"""
-    api, state = harness
-    _run(api)
-    assert state.enqueued, "缓存未命中时仍要排进缓存队列"
-
-
-def test_cache_hit_uses_local_file(harness, monkeypatch):
-    """本地缓存命中：ffmpeg 直接读本机文件"""
-    from backend.emby_server.mounts import PlayTarget
-
-    api, state = harness
-    monkeypatch.setattr(api.local_cache, "lookup",
-                        lambda db, item: "/cache/movie.mkv")
-    _run(api)
-    assert state.transcode_args is not None
-    assert state.transcode_args["source"] == "/cache/movie.mkv"
 
 
 def test_transcode_input_carries_source_credentials(harness):
